@@ -161,6 +161,7 @@ use std::collections::{HashMap, VecDeque};
 #[cfg(test)]
 use std::fs;
 use std::io::{Read, Write};
+use std::ops::Range;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
@@ -756,6 +757,7 @@ enum DisplayCommand {
     text: Arc<str>,
     runs: Option<Arc<Vec<ShapedRun>>>,
     style: Arc<ComputedStyle>,
+    document_selection: Option<Arc<Vec<Range<usize>>>>,
   },
   Replaced {
     rect: Rect,
@@ -2957,6 +2959,7 @@ impl Painter {
         text,
         baseline_offset,
         shaped,
+        document_selection,
         ..
       } => {
         if let Some(style) = fragment.style.clone() {
@@ -2966,6 +2969,7 @@ impl Painter {
             text: text.clone(),
             runs: shaped.clone(),
             style,
+            document_selection: document_selection.clone(),
           });
         }
       }
@@ -3036,6 +3040,7 @@ impl Painter {
             text: text.clone(),
             runs: shaped.clone(),
             style,
+            document_selection: None,
           });
         }
       }
@@ -3165,6 +3170,7 @@ impl Painter {
         text,
         runs,
         style,
+        document_selection,
       } => {
         let rect = *rect;
         let baseline_offset = *baseline_offset;
@@ -3188,6 +3194,51 @@ impl Painter {
           .map(|start| start.elapsed().as_secs_f64() * 1000.0)
           .unwrap_or(0.0);
         let paint_start = text_profile_enabled.then(Instant::now);
+
+        if let Some(selection_ranges) = document_selection.as_deref() {
+          let selection_color = Rgba {
+            r: 0,
+            g: 120,
+            b: 215,
+            a: 0.35,
+          };
+          let runs: &[ShapedRun] = shaped_runs.as_deref().map(Vec::as_slice).unwrap_or(&[]);
+          for range in selection_ranges {
+            if range.start >= range.end {
+              continue;
+            }
+            for (x1, x2) in crate::text::caret::selection_segments_for_char_range(
+              &text,
+              runs,
+              range.start,
+              range.end,
+            ) {
+              let width = x2 - x1;
+              if !width.is_finite() || width <= f32::EPSILON {
+                continue;
+              }
+              let sel_rect = Rect::from_xywh(
+                rect.x() + x1,
+                rect.y(),
+                width.max(0.0),
+                rect.height().max(0.0),
+              );
+              if sel_rect.width() <= f32::EPSILON || sel_rect.height() <= f32::EPSILON {
+                continue;
+              }
+              let device_rect = self.device_rect(sel_rect);
+              crate::paint::rasterize::fill_rect(
+                &mut self.pixmap,
+                device_rect.x(),
+                device_rect.y(),
+                device_rect.width(),
+                device_rect.height(),
+                selection_color,
+              );
+            }
+          }
+        }
+
         let inline_vertical = matches!(
           style.writing_mode,
           crate::style::types::WritingMode::VerticalRl
@@ -4338,18 +4389,19 @@ impl Painter {
       commands: &[DisplayCommand],
       painted_any: &mut bool,
     ) {
-      for cmd in commands {
-        match cmd {
-          DisplayCommand::Text {
-            rect,
-            baseline_offset,
-            text,
-            runs,
-            style,
-          } => {
-            if text.is_empty() {
-              continue;
-            }
+        for cmd in commands {
+          match cmd {
+           DisplayCommand::Text {
+             rect,
+             baseline_offset,
+             text,
+             runs,
+             style,
+             ..
+           } => {
+              if text.is_empty() {
+                continue;
+              }
 
             let inline_vertical = matches!(
               style.writing_mode,
@@ -21571,6 +21623,7 @@ mod tests {
         shaped: None,
         is_marker: true,
         emphasis_offset: Default::default(),
+        document_selection: None,
       },
       vec![],
       style,

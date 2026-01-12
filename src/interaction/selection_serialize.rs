@@ -12,7 +12,7 @@ use std::sync::Arc;
 /// This is intentionally a small, layout-oriented representation rather than a full DOM Range:
 /// today we only need selection-for-copy, and our MVP selection engine tracks endpoints within
 /// text nodes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum DocumentSelection {
   /// The entire rendered document (excluding non-selectable/hidden content).
   All,
@@ -20,13 +20,13 @@ pub enum DocumentSelection {
   Range(DocumentSelectionRange),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct DocumentSelectionRange {
   pub start: DocumentSelectionPoint,
   pub end: DocumentSelectionPoint,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct DocumentSelectionPoint {
   /// DOM pre-order id (matching `crate::dom::enumerate_dom_ids` / `BoxNode::styled_node_id`).
   pub node_id: usize,

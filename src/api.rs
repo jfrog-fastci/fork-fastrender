@@ -13956,6 +13956,16 @@ impl FastRender {
       }
     }
 
+    // Apply document selection onto the fragment tree for paint-time highlighting.
+    //
+    // This is done post-layout so paint backends can render selection highlights without direct
+    // access to the interaction state.
+    crate::interaction::document_selection::apply_document_selection_to_fragment_tree(
+      &box_tree,
+      &mut fragment_tree,
+      interaction_state.and_then(|state| state.document_selection.as_ref()),
+    );
+
     // Viewport scrollbar gutter sizing decisions should be driven by scrollable overflow, which
     // requires the overflow metadata pass (it also excludes viewport-fixed elements).
     fragment_tree.ensure_scroll_metadata();
@@ -22576,6 +22586,7 @@ mod tests {
         shaped: None,
         is_marker: false,
         emphasis_offset: Default::default(),
+        document_selection: None,
       },
       vec![],
       old_style.clone(),
@@ -22650,6 +22661,7 @@ mod tests {
         shaped: None,
         is_marker: false,
         emphasis_offset: Default::default(),
+        document_selection: None,
       },
       vec![],
       old_letter_style.clone(),
@@ -22730,6 +22742,7 @@ mod tests {
         shaped: None,
         is_marker: false,
         emphasis_offset: Default::default(),
+        document_selection: None,
       },
       vec![],
       old_style.clone(),

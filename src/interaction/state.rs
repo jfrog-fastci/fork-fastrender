@@ -1,5 +1,7 @@
 use crate::text::caret::CaretAffinity;
+use crate::interaction::selection_serialize::{DocumentSelectionPoint, DocumentSelectionRange};
 use rustc_hash::{FxHashMap, FxHashSet};
+use std::cmp::Ordering;
 
 /// Live (non-DOM) form control state.
 ///
@@ -43,6 +45,130 @@ impl FormState {
   }
 }
 
+/// Document (non-form-control) selection state.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum DocumentSelectionState {
+  /// The entire rendered document (excluding non-selectable/hidden content).
+  All,
+  /// One or more explicit selection ranges.
+  Ranges(DocumentSelectionRanges),
+}
+
+impl DocumentSelectionState {
+  /// Returns true when this selection contains at least one non-collapsed range.
+  pub fn has_highlight(&self) -> bool {
+    match self {
+      Self::All => true,
+      Self::Ranges(ranges) => ranges.has_highlight(),
+    }
+  }
+}
+
+/// A multi-range document selection.
+///
+/// Ranges are expected to be:
+/// - normalized (`start <= end`),
+/// - ordered by DOM position, and
+/// - non-overlapping (adjacent/overlapping ranges are merged).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct DocumentSelectionRanges {
+  pub ranges: Vec<DocumentSelectionRange>,
+  /// Index into `ranges` representing the primary range for caret/extension semantics.
+  pub primary: usize,
+  /// Fixed anchor point for extending the primary range.
+  pub anchor: DocumentSelectionPoint,
+  /// Moving focus point for extending the primary range.
+  pub focus: DocumentSelectionPoint,
+}
+
+impl DocumentSelectionRanges {
+  pub fn collapsed(point: DocumentSelectionPoint) -> Self {
+    Self {
+      ranges: vec![DocumentSelectionRange {
+        start: point,
+        end: point,
+      }],
+      primary: 0,
+      anchor: point,
+      focus: point,
+    }
+  }
+
+  pub fn has_highlight(&self) -> bool {
+    self
+      .ranges
+      .iter()
+      .any(|r| r.start != r.end)
+  }
+
+  fn cmp_point(a: DocumentSelectionPoint, b: DocumentSelectionPoint) -> Ordering {
+    a.node_id
+      .cmp(&b.node_id)
+      .then_with(|| a.char_offset.cmp(&b.char_offset))
+  }
+
+  fn range_contains_range(
+    outer: &DocumentSelectionRange,
+    inner: &DocumentSelectionRange,
+  ) -> bool {
+    Self::cmp_point(outer.start, inner.start) != Ordering::Greater
+      && Self::cmp_point(outer.end, inner.end) != Ordering::Less
+  }
+
+  /// Ensure `ranges` are normalized, sorted, and non-overlapping (merging overlap/adjacency).
+  ///
+  /// Also repairs `primary` to point at the range containing the current anchor/focus span.
+  pub fn normalize(&mut self) {
+    if self.ranges.is_empty() {
+      self.primary = 0;
+      return;
+    }
+
+    for range in &mut self.ranges {
+      *range = range.normalized();
+    }
+
+    self.ranges.sort_by(|a, b| {
+      Self::cmp_point(a.start, b.start).then_with(|| Self::cmp_point(a.end, b.end))
+    });
+
+    let mut merged: Vec<DocumentSelectionRange> = Vec::with_capacity(self.ranges.len());
+    for range in self.ranges.drain(..) {
+      if let Some(last) = merged.last_mut() {
+        // Merge when overlapping or adjacent.
+        if Self::cmp_point(range.start, last.end) != Ordering::Greater {
+          if Self::cmp_point(range.end, last.end) == Ordering::Greater {
+            last.end = range.end;
+          }
+          continue;
+        }
+      }
+      merged.push(range);
+    }
+    self.ranges = merged;
+
+    // Repair primary index based on the current anchor/focus span.
+    let primary_span = DocumentSelectionRange {
+      start: self.anchor,
+      end: self.focus,
+    }
+    .normalized();
+    if let Some(idx) = self
+      .ranges
+      .iter()
+      .position(|r| Self::range_contains_range(r, &primary_span))
+    {
+      self.primary = idx;
+    } else {
+      // Fallback: clamp primary into bounds and update anchor/focus to match.
+      self.primary = self.primary.min(self.ranges.len().saturating_sub(1));
+      let primary = self.ranges[self.primary];
+      self.anchor = primary.start;
+      self.focus = primary.end;
+    }
+  }
+}
+
 /// Internal, non-DOM-visible interaction state for a single document/tab.
 ///
 /// This replaces the legacy `data-fastr-*` DOM attribute mutations that were previously used to
@@ -82,11 +208,8 @@ pub struct InteractionState {
   /// Live form state for value-bearing and toggleable controls.
   pub form_state: FormState,
 
-  /// Whether the document (non-form-control) currently has an active selection.
-  ///
-  /// This is a best-effort signal for downstream tooling (e.g. accessibility debug exports). The
-  /// renderer does not yet expose a concrete document selection range.
-  pub document_has_selection: bool,
+  /// Current document (non-form-control) selection.
+  pub document_selection: Option<DocumentSelectionState>,
 
   /// Node ids (controls/forms) that have flipped HTML "user validity" from false to true.
   ///

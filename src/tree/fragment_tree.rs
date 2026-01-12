@@ -401,6 +401,12 @@ pub enum FragmentContent {
     /// Extra offset to apply to text emphasis marks (e.g. when ruby annotations occupy the same
     /// side as the emphasis marks).
     emphasis_offset: TextEmphasisOffset,
+
+    /// Optional per-fragment document selection ranges (in character indices local to `text`).
+    ///
+    /// This is populated after layout using the current interaction state so paint backends can
+    /// render document selection highlights without direct access to `InteractionState`.
+    document_selection: Option<Arc<Vec<Range<usize>>>>,
   },
 
   /// Line box containing inline and text fragments
@@ -1111,6 +1117,7 @@ impl FragmentNode {
         shaped: None,
         is_marker: false,
         emphasis_offset: TextEmphasisOffset::default(),
+        document_selection: None,
       },
       vec![],
     )
@@ -1133,6 +1140,7 @@ impl FragmentNode {
         shaped: None,
         is_marker: false,
         emphasis_offset: TextEmphasisOffset::default(),
+        document_selection: None,
       },
       vec![],
       style,
@@ -1157,6 +1165,7 @@ impl FragmentNode {
         shaped: Some(shaped.into()),
         is_marker: false,
         emphasis_offset: TextEmphasisOffset::default(),
+        document_selection: None,
       },
       vec![],
       style,
@@ -2753,6 +2762,7 @@ mod tests {
       shaped: None,
       is_marker: false,
       emphasis_offset: Default::default(),
+      document_selection: None,
     };
     assert!(text.is_text());
     assert_eq!(text.text(), Some("test"));

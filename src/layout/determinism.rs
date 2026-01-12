@@ -384,6 +384,7 @@ fn hash_fragment_content(hasher: &mut FingerprintHasher, content: &FragmentConte
       shaped,
       is_marker,
       emphasis_offset,
+      ..
     } => {
       hasher.write_u8(2);
       hasher.write_str(text);

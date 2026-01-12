@@ -8298,20 +8298,21 @@ impl InlineFormattingContext {
           text_item.advance + paint_offset.abs(),
           text_item.metrics.height,
         );
-        FragmentNode::new_with_style(
-          bounds,
-          FragmentContent::Text {
-            text: Arc::from(text_item.text.clone()),
-            box_id,
-            source_range: TextSourceRange::new(text_item.source_range()),
-            baseline_offset: text_item.metrics.baseline_offset,
-            shaped: Some(Arc::from(text_item.runs.clone())),
-            is_marker: text_item.is_marker,
-            emphasis_offset: text_item.emphasis_offset,
-          },
-          vec![],
-          text_item.style.clone(),
-        )
+          FragmentNode::new_with_style(
+            bounds,
+            FragmentContent::Text {
+              text: Arc::from(text_item.text.clone()),
+              box_id,
+              source_range: TextSourceRange::new(text_item.source_range()),
+              baseline_offset: text_item.metrics.baseline_offset,
+              shaped: Some(Arc::from(text_item.runs.clone())),
+              is_marker: text_item.is_marker,
+              emphasis_offset: text_item.emphasis_offset,
+              document_selection: None,
+            },
+            vec![],
+            text_item.style.clone(),
+          )
       }
       InlineItem::SoftBreak => {
         // Soft breaks should be handled by `LineBuilder` and never reach fragment construction.
@@ -8819,6 +8820,7 @@ impl InlineFormattingContext {
             shaped: Some(Arc::from(text_item.runs.clone())),
             is_marker: text_item.is_marker,
             emphasis_offset: text_item.emphasis_offset,
+            document_selection: None,
           },
           vec![],
           text_item.style.clone(),

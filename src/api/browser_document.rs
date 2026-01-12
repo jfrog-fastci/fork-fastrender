@@ -92,6 +92,12 @@ fn interaction_state_fingerprint(state: Option<&InteractionState>) -> u64 {
       } else {
         0u8.hash(&mut hasher);
       }
+      if let Some(selection) = &state.document_selection {
+        1u8.hash(&mut hasher);
+        selection.hash(&mut hasher);
+      } else {
+        0u8.hash(&mut hasher);
+      }
       hash_usize_set(&mut hasher, &state.user_validity);
     }
   }

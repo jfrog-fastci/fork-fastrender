@@ -272,7 +272,12 @@ pub fn build_accessibility_tree(
     children,
     #[cfg(any(debug_assertions, feature = "a11y_debug"))]
     debug: interaction_state
-      .is_some_and(|state| state.document_has_selection)
+      .is_some_and(|state| {
+        state
+          .document_selection
+          .as_ref()
+          .is_some_and(|sel| sel.has_highlight())
+      })
       .then_some(AccessibilityDebugInfo {
         text_selection: None,
         document_has_selection: true,
@@ -1449,7 +1454,10 @@ fn debug_info_for_node(node: &StyledNode, ctx: &BuildContext<'_, '_>) -> Option<
       selection_start,
       selection_end,
     }),
-    document_has_selection: false,
+    document_has_selection: state
+      .document_selection
+      .as_ref()
+      .is_some_and(|sel| sel.has_highlight()),
   })
 }
 

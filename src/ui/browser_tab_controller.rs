@@ -755,10 +755,21 @@ impl BrowserTabController {
 
   fn handle_copy(&mut self) -> Result<Vec<WorkerToUi>> {
     let mut copied: Option<String> = None;
-    let _ = self.document.mutate_dom(|dom| {
-      copied = self.interaction.clipboard_copy(dom);
-      false
-    });
+    if self
+      .document
+      .mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
+        copied = self
+          .interaction
+          .clipboard_copy_with_layout(dom, box_tree, fragment_tree);
+        (false, ())
+      })
+      .is_err()
+    {
+      let _ = self.document.mutate_dom(|dom| {
+        copied = self.interaction.clipboard_copy(dom);
+        false
+      });
+    }
     let Some(text) = copied else {
       return Ok(Vec::new());
     };

@@ -6684,6 +6684,7 @@ impl DisplayListBuilder {
         shaped,
         is_marker,
         emphasis_offset,
+        document_selection,
         ..
       } => {
         if text.is_empty() {
@@ -6740,6 +6741,51 @@ impl DisplayListBuilder {
         } else {
           None
         };
+
+        if let Some(selection_ranges) = document_selection.as_deref() {
+          let selection_color = Rgba {
+            r: 0,
+            g: 120,
+            b: 215,
+            a: 0.35,
+          };
+          let runs: &[ShapedRun] = runs_ref.unwrap_or(&[]);
+          for range in selection_ranges.iter() {
+            if range.start >= range.end {
+              continue;
+            }
+            for (x1, x2) in crate::text::caret::selection_segments_for_char_range(
+              text,
+              runs,
+              range.start,
+              range.end,
+            ) {
+              let width = x2 - x1;
+              if !width.is_finite() || width <= f32::EPSILON {
+                continue;
+              }
+              let sel_rect = Rect::from_xywh(
+                rect.x() + x1,
+                rect.y(),
+                width.max(0.0),
+                rect.height().max(0.0),
+              );
+              let sel_rect = if let Some(cull) = culling_rect {
+                sel_rect.intersection(cull)
+              } else {
+                Some(sel_rect)
+              };
+              if let Some(sel_rect) =
+                sel_rect.filter(|r| r.width() > f32::EPSILON && r.height() > f32::EPSILON)
+              {
+                self.list.push(DisplayItem::FillRect(FillRectItem {
+                  rect: sel_rect,
+                  color: selection_color,
+                }));
+              }
+            }
+          }
+        }
 
         if let Some(runs) = runs_ref {
           if runtime::runtime_toggles().truthy("FASTR_TEXT_METRICS_CHECK") {
