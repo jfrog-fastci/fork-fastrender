@@ -126,6 +126,63 @@ export function f() {
 }
 
 #[test]
+fn import_expr_returns_promise_unknown_for_non_literal_specifier() {
+  let source = r#"
+export function f(spec: string) {
+  return import(spec);
+}
+"#;
+  let program = program_with_source(
+    source,
+    vec![lib_file(
+      "promise.d.ts",
+      r#"
+interface Promise<T> {}
+declare var Promise: any;
+"#,
+    )],
+  );
+
+  let diagnostics = program.check();
+  assert!(
+    diagnostics.is_empty(),
+    "unexpected diagnostics: {diagnostics:?}"
+  );
+
+  let file_id = program.file_id(&FileKey::new("entry.ts")).expect("file id");
+  let offset = source
+    .find("import(spec)")
+    .expect("import(spec) in source") as u32
+    + 1;
+  let ty = program.type_at(file_id, offset).expect("type at import(spec)");
+  assert_eq!(program.display_type(ty).to_string(), "Promise<unknown>");
+}
+
+#[test]
+fn import_expr_falls_back_to_unknown_without_promise() {
+  let source = r#"
+export function f(spec: string) {
+  return import(spec);
+}
+"#;
+  let program = program_with_source(source, Vec::new());
+
+  let diagnostics = program.check();
+  assert!(
+    diagnostics.is_empty(),
+    "unexpected diagnostics: {diagnostics:?}"
+  );
+
+  let file_id = program.file_id(&FileKey::new("entry.ts")).expect("file id");
+  let offset = source
+    .find("import(spec)")
+    .expect("import(spec) in source") as u32
+    + 1;
+  let ty = program.type_at(file_id, offset).expect("type at import(spec)");
+  assert_eq!(program.display_type(ty).to_string(), "unknown");
+}
+
+#[test]
 fn import_meta_is_typed_when_import_meta_interface_exists() {
   let program = program_with_source(
     r#"

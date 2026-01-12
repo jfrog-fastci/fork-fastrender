@@ -1206,7 +1206,6 @@ pub fn check_body(
     None,
     None,
     None,
-    None,
   )
 }
 
@@ -1237,7 +1236,6 @@ pub fn check_body_with_expander(
   no_implicit_any: bool,
   jsx_mode: Option<JsxMode>,
   jsx_import_source: Option<String>,
-  def_spans: Option<&HashMap<(FileId, TextRange), DefId>>,
   cancelled: Option<&Arc<AtomicBool>>,
 ) -> BodyCheckResult {
   if let Some(flag) = cancelled {
@@ -1437,7 +1435,6 @@ pub fn check_body_with_expander(
     contextual_fn_ty,
     this_super_context,
     expr_value_overrides,
-    def_spans,
     cancelled,
     _names: names,
     _bump: Bump::new(),
@@ -1605,7 +1602,6 @@ struct Checker<'a> {
   contextual_fn_ty: Option<TypeId>,
   this_super_context: BodyThisSuperContext,
   expr_value_overrides: Option<&'a HashMap<TextRange, TypeId>>,
-  def_spans: Option<&'a HashMap<(FileId, TextRange), DefId>>,
   cancelled: Option<&'a Arc<AtomicBool>>,
   _names: &'a NameInterner,
   _bump: Bump,

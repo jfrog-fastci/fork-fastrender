@@ -2139,7 +2139,6 @@ pub mod body_check {
         no_implicit_any,
         ctx.jsx_mode,
         ctx.jsx_import_source.clone(),
-        Some(&ctx.def_spans),
         Some(&ctx.cancelled),
       );
 
