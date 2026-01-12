@@ -587,7 +587,7 @@ Contract:
 
 Pool sizing:
 
-- Default: `min(std::thread::available_parallelism(), 32)`
+- Default: `min(std::thread::available_parallelism(), 4)`
 - Override: set `ECMA_RS_RUNTIME_NATIVE_BLOCKING_THREADS` to a positive integer before first use
   (`RT_BLOCKING_THREADS` is also supported as a legacy alias).
 
