@@ -12738,7 +12738,7 @@ pub fn string_raw(
 
 /// `String.prototype.toString` (minimal).
 pub fn string_prototype_to_string(
-  _vm: &mut Vm,
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
   _hooks: &mut dyn VmHostHooks,
@@ -12746,25 +12746,119 @@ pub fn string_prototype_to_string(
   this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
+  let mut scope = scope.reborrow();
+  let s = this_string_value(
+    vm,
+    &mut scope,
+    this,
+    "String.prototype.toString called on incompatible receiver",
+  )?;
+  Ok(Value::String(s))
+}
+
+/// `String.prototype.valueOf` (ECMA-262).
+pub fn string_prototype_value_of(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let mut scope = scope.reborrow();
+  let s = this_string_value(
+    vm,
+    &mut scope,
+    this,
+    "String.prototype.valueOf called on incompatible receiver",
+  )?;
+  Ok(Value::String(s))
+}
+
+fn parse_to_primitive_hint(
+  scope: &Scope<'_>,
+  hint: Value,
+  method: &'static str,
+) -> Result<crate::ToPrimitiveHint, VmError> {
+  const HINT_DEFAULT: [u16; 7] = [
+    b'd' as u16, b'e' as u16, b'f' as u16, b'a' as u16, b'u' as u16, b'l' as u16, b't' as u16,
+  ];
+  const HINT_NUMBER: [u16; 6] = [
+    b'n' as u16, b'u' as u16, b'm' as u16, b'b' as u16, b'e' as u16, b'r' as u16,
+  ];
+  const HINT_STRING: [u16; 6] = [
+    b's' as u16, b't' as u16, b'r' as u16, b'i' as u16, b'n' as u16, b'g' as u16,
+  ];
+
+  let Value::String(hint_s) = hint else {
+    return Err(VmError::TypeError(method));
+  };
+  let units = scope.heap().get_string(hint_s)?.as_code_units();
+  if units == HINT_STRING {
+    Ok(crate::ToPrimitiveHint::String)
+  } else if units == HINT_NUMBER {
+    Ok(crate::ToPrimitiveHint::Number)
+  } else if units == HINT_DEFAULT {
+    Ok(crate::ToPrimitiveHint::Default)
+  } else {
+    Err(VmError::TypeError(method))
+  }
+}
+
+/// `String.prototype[Symbol.toPrimitive]` (ECMA-262).
+pub fn string_prototype_to_primitive(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let mut scope = scope.reborrow();
+  let _hint = parse_to_primitive_hint(
+    &scope,
+    args.get(0).copied().unwrap_or(Value::Undefined),
+    "String.prototype[@@toPrimitive] called with invalid hint",
+  )?;
+  let s = this_string_value(
+    vm,
+    &mut scope,
+    this,
+    "String.prototype[@@toPrimitive] called on incompatible receiver",
+  )?;
+  Ok(Value::String(s))
+}
+
+fn this_string_value(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  this: Value,
+  method: &'static str,
+) -> Result<GcString, VmError> {
   match this {
-    Value::String(s) => Ok(Value::String(s)),
+    Value::String(s) => Ok(s),
     Value::Object(obj) => {
-      let marker = scope.alloc_string("vm-js.internal.StringData")?;
-      let marker_sym = scope.heap_mut().symbol_for(marker)?;
+      // Root the receiver while interning marker symbols, which can trigger GC.
+      scope.push_root(Value::Object(obj))?;
+      let marker_sym = match scope.heap().internal_string_data_symbol() {
+        Some(sym) => sym,
+        None => {
+          let marker = scope.alloc_string("vm-js.internal.StringData")?;
+          scope.heap_mut().symbol_for_with_tick(marker, || vm.tick())?
+        }
+      };
       let marker_key = PropertyKey::from_symbol(marker_sym);
       match scope
         .heap()
         .object_get_own_data_property_value(obj, &marker_key)?
       {
-        Some(Value::String(s)) => Ok(Value::String(s)),
-        _ => Err(VmError::Unimplemented(
-          "String.prototype.toString on non-String object",
-        )),
+        Some(Value::String(s)) => Ok(s),
+        _ => Err(VmError::TypeError(method)),
       }
     }
-    _ => Err(VmError::Unimplemented(
-      "String.prototype.toString on non-string",
-    )),
+    _ => Err(VmError::TypeError(method)),
   }
 }
 
@@ -15488,6 +15582,33 @@ pub fn number_prototype_to_locale_string(
   number_prototype_to_string(vm, scope, host, hooks, callee, this, &[])
 }
 
+/// `Number.prototype[Symbol.toPrimitive]` (ECMA-262).
+pub fn number_prototype_to_primitive(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let mut scope = scope.reborrow();
+  let x = this_number_value(
+    &mut scope,
+    this,
+    "Number.prototype[@@toPrimitive] called on incompatible receiver",
+  )?;
+  let hint = parse_to_primitive_hint(
+    &scope,
+    args.get(0).copied().unwrap_or(Value::Undefined),
+    "Number.prototype[@@toPrimitive] called with invalid hint",
+  )?;
+  match hint {
+    crate::ToPrimitiveHint::String => Ok(Value::String(scope.heap_mut().to_string(Value::Number(x))?)),
+    crate::ToPrimitiveHint::Number | crate::ToPrimitiveHint::Default => Ok(Value::Number(x)),
+  }
+}
+
 /// `Boolean` constructor called as a function.
 pub fn boolean_constructor_call(
   _vm: &mut Vm,
@@ -15578,6 +15699,29 @@ pub fn boolean_prototype_to_string(
   } else {
     Ok(Value::String(scope.alloc_string("false")?))
   }
+}
+
+/// `Boolean.prototype[Symbol.toPrimitive]` (ECMA-262).
+pub fn boolean_prototype_to_primitive(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let mut scope = scope.reborrow();
+  let _hint = parse_to_primitive_hint(
+    &scope,
+    args.get(0).copied().unwrap_or(Value::Undefined),
+    "Boolean.prototype[@@toPrimitive] called with invalid hint",
+  )?;
+  Ok(Value::Bool(this_boolean_value(
+    &mut scope,
+    this,
+    "Boolean.prototype[@@toPrimitive] called on incompatible receiver",
+  )?))
 }
 
 /// `Number.isNaN`.

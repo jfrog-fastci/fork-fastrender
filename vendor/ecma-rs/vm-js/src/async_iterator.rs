@@ -425,7 +425,10 @@ mod tests {
   #[test]
   fn async_from_sync_iterator_continuation_roots_thrown_value_during_iterator_close() -> Result<(), VmError> {
     let mut vm = Vm::new(VmOptions::default());
-    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    // This test allocates a non-trivial Promise + iterator graph, and the intrinsic graph grows as
+    // vm-js gains more built-ins. Keep this small (to encourage frequent GC) but large enough that
+    // intrinsic initialization doesn't starve the test allocations.
+    let mut heap = Heap::new(HeapLimits::new(2 * 1024 * 1024, 2 * 1024 * 1024));
     let mut realm = Realm::new(&mut vm, &mut heap)?;
 
     let mut host_ctx = ();

@@ -99,3 +99,41 @@ fn number_prototype_formatting_methods_work() -> Result<(), VmError> {
 
   Ok(())
 }
+
+#[test]
+fn number_prototype_symbol_to_primitive_is_installed_and_validates_hint() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  assert_eq!(
+    rt.exec_script(
+      r#"
+        typeof Number.prototype[Symbol.toPrimitive] === "function" &&
+        Object.getOwnPropertyDescriptor(Number.prototype, Symbol.toPrimitive).writable === false &&
+        Object.getOwnPropertyDescriptor(Number.prototype, Symbol.toPrimitive).enumerable === false &&
+        Object.getOwnPropertyDescriptor(Number.prototype, Symbol.toPrimitive).configurable === true
+      "#,
+    )?,
+    Value::Bool(true)
+  );
+
+  assert_eq!(
+    rt.exec_script(
+      r#"
+        const f = Number.prototype[Symbol.toPrimitive];
+        f.call(new Number(1), "string") === "1" &&
+        f.call(new Number(1), "number") === 1 &&
+        f.call(new Number(1), "default") === 1
+      "#,
+    )?,
+    Value::Bool(true)
+  );
+
+  let s = rt.exec_script(r#"try { Number.prototype[Symbol.toPrimitive].call(1, "bad"); } catch (e) { e.name }"#)?;
+  assert_eq!(as_utf8_lossy(&rt, s), "TypeError");
+  let s = rt.exec_script(r#"try { Number.prototype[Symbol.toPrimitive].call(1, 1); } catch (e) { e.name }"#)?;
+  assert_eq!(as_utf8_lossy(&rt, s), "TypeError");
+  let s = rt.exec_script(r#"try { Number.prototype[Symbol.toPrimitive].call("x", "number"); } catch (e) { e.name }"#)?;
+  assert_eq!(as_utf8_lossy(&rt, s), "TypeError");
+
+  Ok(())
+}

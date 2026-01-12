@@ -837,6 +837,9 @@ impl Intrinsics {
     let array_iterator_next_call = vm.register_native_call(builtins::array_iterator_next)?;
     let iterator_prototype_iterator = vm.register_native_call(builtins::iterator_prototype_iterator)?;
     let string_prototype_to_string = vm.register_native_call(builtins::string_prototype_to_string)?;
+    let string_prototype_value_of = vm.register_native_call(builtins::string_prototype_value_of)?;
+    let string_prototype_to_primitive =
+      vm.register_native_call(builtins::string_prototype_to_primitive)?;
     let string_prototype_char_code_at =
       vm.register_native_call(builtins::string_prototype_char_code_at)?;
     let string_prototype_char_at = vm.register_native_call(builtins::string_prototype_char_at)?;
@@ -899,8 +902,12 @@ impl Intrinsics {
       vm.register_native_call(builtins::number_prototype_to_precision)?;
     let number_prototype_to_locale_string =
       vm.register_native_call(builtins::number_prototype_to_locale_string)?;
+    let number_prototype_to_primitive =
+      vm.register_native_call(builtins::number_prototype_to_primitive)?;
     let boolean_prototype_value_of = vm.register_native_call(builtins::boolean_prototype_value_of)?;
     let boolean_prototype_to_string = vm.register_native_call(builtins::boolean_prototype_to_string)?;
+    let boolean_prototype_to_primitive =
+      vm.register_native_call(builtins::boolean_prototype_to_primitive)?;
     let number_is_nan = vm.register_native_call(builtins::number_is_nan)?;
     let number_is_finite = vm.register_native_call(builtins::number_is_finite)?;
     let number_is_integer = vm.register_native_call(builtins::number_is_integer)?;
@@ -2188,6 +2195,41 @@ impl Intrinsics {
       )?;
     }
 
+      // String.prototype.valueOf
+      {
+        let value_of_s = scope.alloc_string("valueOf")?;
+        scope.push_root(Value::String(value_of_s))?;
+        let key = PropertyKey::from_string(value_of_s);
+        let func = scope.alloc_native_function(string_prototype_value_of, None, value_of_s, 0)?;
+        scope.push_root(Value::Object(func))?;
+        scope
+          .heap_mut()
+          .object_set_prototype(func, Some(function_prototype))?;
+        scope.define_property(
+          string_prototype,
+          key,
+          data_desc(Value::Object(func), true, false, true),
+        )?;
+      }
+
+      // String.prototype[Symbol.toPrimitive]
+      {
+        let to_prim_s = scope.alloc_string("[Symbol.toPrimitive]")?;
+        scope.push_root(Value::String(to_prim_s))?;
+        let to_prim_fn =
+          scope.alloc_native_function(string_prototype_to_primitive, None, to_prim_s, 1)?;
+        scope.push_root(Value::Object(to_prim_fn))?;
+        scope
+          .heap_mut()
+          .object_set_prototype(to_prim_fn, Some(function_prototype))?;
+        scope.define_property(
+          string_prototype,
+          PropertyKey::Symbol(well_known_symbols.to_primitive),
+          // Per ECMA-262, `String.prototype[@@toPrimitive]` is non-writable.
+          data_desc(Value::Object(to_prim_fn), false, false, true),
+        )?;
+      }
+
       // String.prototype.charCodeAt
       {
         let char_code_at_s = scope.alloc_string("charCodeAt")?;
@@ -3121,6 +3163,24 @@ impl Intrinsics {
       )?;
     }
 
+    // Number.prototype[Symbol.toPrimitive]
+    {
+      let to_prim_s = scope.alloc_string("[Symbol.toPrimitive]")?;
+      scope.push_root(Value::String(to_prim_s))?;
+      let to_prim_fn =
+        scope.alloc_native_function(number_prototype_to_primitive, None, to_prim_s, 1)?;
+      scope.push_root(Value::Object(to_prim_fn))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(to_prim_fn, Some(function_prototype))?;
+      scope.define_property(
+        number_prototype,
+        PropertyKey::Symbol(well_known_symbols.to_primitive),
+        // Per ECMA-262, `Number.prototype[@@toPrimitive]` is non-writable.
+        data_desc(Value::Object(to_prim_fn), false, false, true),
+      )?;
+    }
+
     // Number static properties.
     {
       let cases: [(&str, Value); 8] = [
@@ -3229,6 +3289,24 @@ impl Intrinsics {
         boolean_prototype,
         key,
         data_desc(Value::Object(func), true, false, true),
+      )?;
+    }
+
+    // Boolean.prototype[Symbol.toPrimitive]
+    {
+      let to_prim_s = scope.alloc_string("[Symbol.toPrimitive]")?;
+      scope.push_root(Value::String(to_prim_s))?;
+      let to_prim_fn =
+        scope.alloc_native_function(boolean_prototype_to_primitive, None, to_prim_s, 1)?;
+      scope.push_root(Value::Object(to_prim_fn))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(to_prim_fn, Some(function_prototype))?;
+      scope.define_property(
+        boolean_prototype,
+        PropertyKey::Symbol(well_known_symbols.to_primitive),
+        // Per ECMA-262, `Boolean.prototype[@@toPrimitive]` is non-writable.
+        data_desc(Value::Object(to_prim_fn), false, false, true),
       )?;
     }
 
