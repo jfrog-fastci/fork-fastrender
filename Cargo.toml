@@ -12,13 +12,11 @@ members = [
   "crates/webidl-bindings-core",
   "crates/webidl-ir",
   "crates/js-wpt-dom-runner",
-  "crates/js-dom-bindings",
-  "crates/js-dom-bindings-quickjs",
   "crates/webidl-js-runtime",
   "crates/webidl-vm-js",
 ]
-# Keep legacy QuickJS crates in the workspace for now, but exclude them from the default workspace
-# build so `cargo build/test` stays vm-js-only unless explicitly requested.
+# NOTE: crates/webidl-* should be migrated into vendor/ecma-rs/ per instructions/ecma_rs_ownership.md
+# and instructions/webidl_consolidation.md. These are temporary until consolidation is complete.
 default-members = [
   ".",
   "xtask",

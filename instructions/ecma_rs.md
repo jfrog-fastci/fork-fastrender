@@ -1,12 +1,13 @@
 # `ecma-rs` integration (vendored)
 
-> **⚠️ DEPRECATED**: This integration guide has been superseded:
+> **⚠️ DEPRECATED**: This file is superseded by:
 >
-> - For **FastRender JS engine work**, see [`js_engine.md`](js_engine.md)
-> - For **ecma-rs workstreams**, see [`vendor/ecma-rs/AGENTS.md`](../vendor/ecma-rs/AGENTS.md)
+> - [`ecma_rs_ownership.md`](ecma_rs_ownership.md) — **The ownership principle (READ THIS)**
+> - [`js_engine.md`](js_engine.md) — JS engine workstream
+> - [`vendor/ecma-rs/AGENTS.md`](../vendor/ecma-rs/AGENTS.md) — ecma-rs agent instructions
 >
-> FastRender **owns** ecma-rs and modifies it directly. All JS engine work should go through the
-> appropriate workstream above. This file is kept for historical reference.
+> FastRender **owns** ecma-rs. All JavaScript/WebIDL infrastructure belongs in `vendor/ecma-rs/`,
+> not in parallel FastRender crates. See `ecma_rs_ownership.md` for the principle.
 
 ---
 
@@ -93,21 +94,12 @@ If changes to `vendor/ecma-rs` break compilation with errors around `Vm::call` a
 handler signatures, update both FastRender's native handlers and any engine-internal callers like
 `webidl-vm-js`.
 
-## FastRender workspace-local copy: `crates/webidl-vm-js`
+## ❌ REMOVED: workspace-local copies
 
-Upstream `ecma-rs` includes a `webidl-vm-js` crate under `vendor/ecma-rs/webidl-vm-js`, but
-FastRender uses a **workspace-local copy** at `crates/webidl-vm-js`.
-
-This avoids ambiguity about which adapter FastRender should depend on (and keeps FastRender’s Cargo
-workspace decoupled from the vendored `ecma-rs` workspace), while still allowing small FastRender
-patches (for example: using `Vm::call_without_host` from within iterator helpers).
-
-When updating `vendor/ecma-rs`, sync any relevant upstream changes into `crates/webidl-vm-js` and
-validate with:
-
-```bash
-timeout -k 10 600 bash scripts/cargo_agent.sh test -p webidl-vm-js
-```
+> **This section previously documented a deprecated anti-pattern.** FastRender maintained parallel
+> WebIDL crates in `crates/` to "avoid workspace coupling." This was wrong.
+>
+> All WebIDL infrastructure now belongs in `vendor/ecma-rs/`. See [`ecma_rs_ownership.md`](ecma_rs_ownership.md).
 
 ## Common integration gotcha: `vm-js` Promise job / microtask GC safety (FastRender requirement)
 
