@@ -419,6 +419,55 @@ fn media_range_syntax_requires_valid_lengths() {
 }
 
 #[test]
+fn media_inline_and_block_size_alias_width_and_height() {
+  // In `@media`, logical size features are evaluated with the initial writing mode
+  // (`horizontal-tb`), so inline-size == width and block-size == height.
+  let ctx = MediaContext::screen(800.0, 600.0);
+
+  // Discrete + min/max forms.
+  let inline_exact = MediaQuery::parse("(inline-size: 800px)").unwrap();
+  let width_exact = MediaQuery::parse("(width: 800px)").unwrap();
+  assert_eq!(ctx.evaluate(&inline_exact), ctx.evaluate(&width_exact));
+  assert!(ctx.evaluate(&inline_exact));
+
+  let min_inline = MediaQuery::parse("(min-inline-size: 1px)").unwrap();
+  let min_width = MediaQuery::parse("(min-width: 1px)").unwrap();
+  assert_eq!(ctx.evaluate(&min_inline), ctx.evaluate(&min_width));
+  assert!(ctx.evaluate(&min_inline));
+
+  let max_inline = MediaQuery::parse("(max-inline-size: 799px)").unwrap();
+  let max_width = MediaQuery::parse("(max-width: 799px)").unwrap();
+  assert_eq!(ctx.evaluate(&max_inline), ctx.evaluate(&max_width));
+  assert!(!ctx.evaluate(&max_inline));
+
+  let block_exact = MediaQuery::parse("(block-size: 600px)").unwrap();
+  let height_exact = MediaQuery::parse("(height: 600px)").unwrap();
+  assert_eq!(ctx.evaluate(&block_exact), ctx.evaluate(&height_exact));
+  assert!(ctx.evaluate(&block_exact));
+
+  let min_block = MediaQuery::parse("(min-block-size: 1px)").unwrap();
+  let min_height = MediaQuery::parse("(min-height: 1px)").unwrap();
+  assert_eq!(ctx.evaluate(&min_block), ctx.evaluate(&min_height));
+  assert!(ctx.evaluate(&min_block));
+
+  let max_block = MediaQuery::parse("(max-block-size: 599px)").unwrap();
+  let max_height = MediaQuery::parse("(max-height: 599px)").unwrap();
+  assert_eq!(ctx.evaluate(&max_block), ctx.evaluate(&max_height));
+  assert!(!ctx.evaluate(&max_block));
+
+  // Range syntax.
+  let inline_range = MediaQuery::parse("(1px < inline-size < 1000px)").unwrap();
+  let width_range = MediaQuery::parse("(1px < width < 1000px)").unwrap();
+  assert_eq!(ctx.evaluate(&inline_range), ctx.evaluate(&width_range));
+  assert!(ctx.evaluate(&inline_range));
+
+  let block_range = MediaQuery::parse("(1px < block-size < 1000px)").unwrap();
+  let height_range = MediaQuery::parse("(1px < height < 1000px)").unwrap();
+  assert_eq!(ctx.evaluate(&block_range), ctx.evaluate(&height_range));
+  assert!(ctx.evaluate(&block_range));
+}
+
+#[test]
 fn media_resolution_rejects_invalid_units() {
   let invalid_res = MediaQuery::parse("(min-resolution: 2xyz)");
   assert!(

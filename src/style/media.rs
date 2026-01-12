@@ -306,7 +306,14 @@ impl fmt::Display for MediaModifier {
 /// ```
 #[derive(Debug, Clone, PartialEq)]
 pub enum MediaFeature {
-  // Viewport width/inline-size features
+  // Viewport width/inline-size features.
+  //
+  // Note: `inline-size`/`block-size` are the logical equivalents of `width`/`height`. When
+  // evaluating `@media`, there is no styled element to supply a writing mode; per CSS Values &
+  // Units 4 (viewport-percentage lengths `vi`/`vb`), we use the initial writing mode
+  // (`horizontal-tb`). This makes `inline-size` behave as an alias for `width` (and `block-size`
+  // as an alias for `height`). Container queries evaluate `inline-size`/`block-size` against the
+  // query container’s writing mode separately.
   /// Exact viewport width: `(width: 768px)`
   Width(Length),
   /// Minimum viewport width: `(min-width: 768px)`
