@@ -44,7 +44,7 @@ fn url_search_params_iterator_kind(operation: &str) -> Result<UrlSearchParamsIte
 }
 
 #[cfg(test)]
-mod tests {
+mod url_search_params_iterator_kind_tests {
   use super::*;
 
   #[test]
