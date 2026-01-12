@@ -14,6 +14,7 @@ use vm_js::{
 use webidl_vm_js::{CallbackHandle, CallbackKind};
 
 mod ecma_webidl;
+pub use ecma_webidl::VmJsWebIdlCx;
 
 type HostFn = Rc<dyn Fn(&mut VmJsRuntime, Value, &[Value]) -> Result<Value, VmError>>;
 
@@ -195,6 +196,18 @@ impl VmJsRuntime {
 
     self.bindings_host_ptr = prev;
     out
+  }
+
+  /// Runs `f` with a `webidl::JsRuntime` conversion context.
+  ///
+  /// The `vendor/ecma-rs/webidl` conversions and overload resolution helpers can keep `vm-js` GC
+  /// handles alive across multiple allocations. Since this legacy runtime does not execute real JS
+  /// code (and therefore has no VM stack), callers must use an explicit conversion context that
+  /// roots produced/consumed values for the duration of the conversion.
+  #[inline]
+  pub fn with_webidl_cx<R>(&mut self, f: impl FnOnce(&mut VmJsWebIdlCx<'_>) -> R) -> R {
+    let mut cx = VmJsWebIdlCx::new(self);
+    f(&mut cx)
   }
 
   pub fn heap(&self) -> &Heap {
