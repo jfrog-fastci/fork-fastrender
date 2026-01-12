@@ -6517,7 +6517,7 @@ fn apply_color_matrix_values(
 }
 
 #[cfg(test)]
-mod tests {
+mod unit_tests {
   use super::*;
   use crate::api::ResourceContext;
   use crate::paint::painter::{enable_paint_diagnostics, take_paint_diagnostics};

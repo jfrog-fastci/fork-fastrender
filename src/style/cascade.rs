@@ -16050,7 +16050,6 @@ fn collect_matching_rules<'a>(
     false,
     scopes.treat_custom_elements_as_defined,
     scopes.quirks_mode,
-    scopes.treat_custom_elements_as_defined,
   )?;
 
   if let Some((base, allow_shadow_host)) = scope_rule_index_with_shadow_host(scopes, scope_host) {
@@ -16078,7 +16077,6 @@ fn collect_matching_rules<'a>(
       false,
       scopes.treat_custom_elements_as_defined,
       scopes.quirks_mode,
-      scopes.treat_custom_elements_as_defined,
     )?);
   }
 
@@ -16108,7 +16106,6 @@ fn collect_matching_rules<'a>(
           false,
           scopes.treat_custom_elements_as_defined,
           scopes.quirks_mode,
-          scopes.treat_custom_elements_as_defined,
         )?);
       }
     }
@@ -16137,7 +16134,6 @@ fn collect_matching_rules<'a>(
         true,
         scopes.treat_custom_elements_as_defined,
         scopes.quirks_mode,
-        scopes.treat_custom_elements_as_defined,
       )?);
     }
   }
@@ -16166,7 +16162,6 @@ fn collect_matching_rules<'a>(
           false,
           scopes.treat_custom_elements_as_defined,
           scopes.quirks_mode,
-          scopes.treat_custom_elements_as_defined,
         )?);
       }
     }
@@ -16248,7 +16243,6 @@ fn collect_pseudo_matching_rules<'a>(
     false,
     scopes.treat_custom_elements_as_defined,
     scopes.quirks_mode,
-    scopes.treat_custom_elements_as_defined,
   );
 
   if let Some((base, allow_shadow_host)) = scope_rule_index_with_shadow_host(scopes, scope_host) {
@@ -16276,7 +16270,6 @@ fn collect_pseudo_matching_rules<'a>(
       false,
       scopes.treat_custom_elements_as_defined,
       scopes.quirks_mode,
-      scopes.treat_custom_elements_as_defined,
     ));
   }
 
@@ -16307,7 +16300,6 @@ fn collect_pseudo_matching_rules<'a>(
           false,
           scopes.treat_custom_elements_as_defined,
           scopes.quirks_mode,
-          scopes.treat_custom_elements_as_defined,
         ));
       }
     }
@@ -16338,7 +16330,6 @@ fn collect_pseudo_matching_rules<'a>(
       true,
       scopes.treat_custom_elements_as_defined,
       scopes.quirks_mode,
-      scopes.treat_custom_elements_as_defined,
     ));
   }
 
@@ -21206,7 +21197,6 @@ mod tests {
           false,
           true,
           QuirksMode::NoQuirks,
-          true,
         )
         .unwrap_or_else(|err| {
           panic!(
@@ -33818,7 +33808,6 @@ slot[name=\"s\"]::slotted(.assigned) { color: rgb(4, 5, 6); }"
       false,
       true,
       QuirksMode::NoQuirks,
-      true,
     );
     assert_eq!(
       marker_matches.len(),
@@ -35228,7 +35217,6 @@ fn find_matching_rules<'a>(
   featureless_subject: bool,
   treat_custom_elements_as_defined: bool,
   quirks_mode: QuirksMode,
-  treat_custom_elements_as_defined: bool,
 ) -> Result<Vec<MatchedRule<'a>>, RenderError> {
   if !node.is_element() {
     return Ok(Vec::new());
@@ -35977,7 +35965,6 @@ fn find_pseudo_element_rules<'a>(
   featureless_subject: bool,
   treat_custom_elements_as_defined: bool,
   quirks_mode: QuirksMode,
-  treat_custom_elements_as_defined: bool,
 ) -> Vec<MatchedRule<'a>> {
   if !node.is_element() {
     return Vec::new();

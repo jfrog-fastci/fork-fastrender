@@ -269,23 +269,27 @@ mod tests {
           url: "https://a.example/".to_string(),
           title: Some("A".to_string()),
           visited_at_ms: Some(2_000),
+          visit_count: 1,
         },
         // More recent, but missing title; should not clobber previous title for the same URL.
         super::super::GlobalHistoryEntry {
           url: "https://a.example/".to_string(),
           title: None,
           visited_at_ms: Some(6_000),
+          visit_count: 1,
         },
         // Out-of-order timestamp compared to file order: this should still be newer than `c`.
         super::super::GlobalHistoryEntry {
           url: "https://b.example/".to_string(),
           title: Some("B".to_string()),
           visited_at_ms: Some(5_000),
+          visit_count: 1,
         },
         super::super::GlobalHistoryEntry {
           url: "https://c.example/".to_string(),
           title: Some("C".to_string()),
           visited_at_ms: Some(3_000),
+          visit_count: 1,
         },
       ],
     };
@@ -317,11 +321,13 @@ mod tests {
           url: "about:newtab".to_string(),
           title: Some("New Tab".to_string()),
           visited_at_ms: Some(10_000),
+          visit_count: 1,
         },
         super::super::GlobalHistoryEntry {
           url: "https://example.com/".to_string(),
           title: Some("Example".to_string()),
           visited_at_ms: Some(11_000),
+          visit_count: 1,
         },
       ],
     };

@@ -389,22 +389,6 @@ impl Document {
 
   // --- Form controls ----------------------------------------------------------
 
-  pub fn input_value(&self, input: NodeId) -> &str {
-    self.reflected_string(input, "value")
-  }
-
-  pub fn set_input_value(&mut self, input: NodeId, value: &str) -> Result<bool, DomError> {
-    self.set_reflected_string(input, "value", value)
-  }
-
-  pub fn input_checked(&self, input: NodeId) -> bool {
-    self.reflected_bool(input, "checked")
-  }
-
-  pub fn set_input_checked(&mut self, input: NodeId, value: bool) -> Result<bool, DomError> {
-    self.set_reflected_bool(input, "checked", value)
-  }
-
   pub fn input_disabled(&self, input: NodeId) -> bool {
     self.reflected_bool(input, "disabled")
   }
@@ -424,41 +408,6 @@ impl Document {
       out.push_str(content);
     }
     (out, saw_text)
-  }
-
-  pub fn textarea_value(&self, textarea: NodeId) -> String {
-    let (content, saw_text) = self.subtree_text_content(textarea);
-    if saw_text {
-      content
-    } else {
-      self
-        .get_attribute(textarea, "value")
-        .ok()
-        .flatten()
-        .unwrap_or("")
-        .to_string()
-    }
-  }
-
-  pub fn set_textarea_value(&mut self, textarea: NodeId, value: &str) -> Result<bool, DomError> {
-    let current = self.textarea_value(textarea);
-    if current == value {
-      return Ok(false);
-    }
-
-    let existing_children = self.children(textarea)?.to_vec();
-    for child in existing_children {
-      // `remove_child` validates `child.parent == Some(textarea)`; in well-formed trees this will
-      // always succeed.
-      self.remove_child(textarea, child)?;
-    }
-
-    // Materialize the value as a single text node so subsequent `textarea_value()` calls observe
-    // the new state even if the element previously relied on the attribute fallback.
-    let text = self.create_text(value);
-    self.append_child(textarea, text)?;
-
-    Ok(true)
   }
 
   fn is_html_element_tag(&self, node: NodeId, tag: &str) -> bool {
@@ -549,10 +498,6 @@ impl Document {
   }
 
   pub fn form_submit(&mut self, _form: NodeId) -> Result<(), DomError> {
-    Ok(())
-  }
-
-  pub fn form_reset(&mut self, _form: NodeId) -> Result<(), DomError> {
     Ok(())
   }
 }

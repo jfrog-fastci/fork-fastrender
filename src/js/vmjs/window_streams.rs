@@ -413,13 +413,9 @@ fn reader_read_native(
       ));
     };
 
-    let Some(stream_obj) = stream_weak.upgrade(scope.heap()) else {
-      return Ok(ReadOutcome::Error("ReadableStream has been garbage collected".to_string()));
-    };
-
     let stream_state = state
       .streams
-      .get_mut(&WeakGcObject::from(stream_obj))
+      .get_mut(&stream_weak)
       .ok_or(VmError::TypeError(
         "ReadableStreamDefaultReader has an invalid stream",
       ))?;
@@ -565,10 +561,8 @@ fn reader_release_lock_native(
       return Ok(Value::Undefined);
     };
 
-    if let Some(stream_obj) = stream_weak.upgrade(scope.heap()) {
-      if let Some(stream_state) = state.streams.get_mut(&WeakGcObject::from(stream_obj)) {
-        stream_state.locked = false;
-      }
+    if let Some(stream_state) = state.streams.get_mut(&stream_weak) {
+      stream_state.locked = false;
     }
 
     Ok(Value::Undefined)
@@ -609,10 +603,7 @@ fn reader_cancel_native(
     let Some(stream_weak) = reader_state.stream else {
       return Ok(ReadOutcome::Done);
     };
-    let Some(stream_obj) = stream_weak.upgrade(scope.heap()) else {
-      return Ok(ReadOutcome::Done);
-    };
-    let Some(stream_state) = state.streams.get_mut(&WeakGcObject::from(stream_obj)) else {
+    let Some(stream_state) = state.streams.get_mut(&stream_weak) else {
       return Ok(ReadOutcome::Done);
     };
 
@@ -1063,19 +1054,21 @@ mod tests {
     let init_calls = Arc::new(AtomicUsize::new(0));
     let init_calls_for_stream = Arc::clone(&init_calls);
 
-    let (vm, realm_obj, heap) = realm.vm_realm_and_heap_mut();
-    let global = realm_obj.global_object();
-    let mut scope = heap.scope();
-    scope.push_root(Value::Object(global))?;
+    {
+      let (vm, realm_obj, heap) = realm.vm_realm_and_heap_mut();
+      let global = realm_obj.global_object();
+      let mut scope = heap.scope();
+      scope.push_root(Value::Object(global))?;
 
-    let stream = create_readable_byte_stream_lazy(vm, &mut scope, ctor_obj, move || {
-      init_calls_for_stream.fetch_add(1, Ordering::SeqCst);
-      Ok(b"ok".to_vec())
-    })?;
-    scope.push_root(Value::Object(stream))?;
+      let stream = create_readable_byte_stream_lazy(vm, &mut scope, ctor_obj, move || {
+        init_calls_for_stream.fetch_add(1, Ordering::SeqCst);
+        Ok(b"ok".to_vec())
+      })?;
+      scope.push_root(Value::Object(stream))?;
 
-    let stream_key = alloc_key(&mut scope, "lazyStream")?;
-    scope.define_property(global, stream_key, data_desc(Value::Object(stream), true))?;
+      let stream_key = alloc_key(&mut scope, "lazyStream")?;
+      scope.define_property(global, stream_key, data_desc(Value::Object(stream), true))?;
+    }
 
     assert_eq!(init_calls.load(Ordering::SeqCst), 0);
 
