@@ -2436,7 +2436,6 @@ fn proxy_constructor_impl(
   let proxy = proxy_scope.alloc_proxy(Some(target), Some(handler))?;
   Ok(Value::Object(proxy))
 }
-
 /// `Proxy` constructor (ECMA-262).
 ///
 /// Proxy must be called with `new`; calling it as a normal function throws a TypeError.
