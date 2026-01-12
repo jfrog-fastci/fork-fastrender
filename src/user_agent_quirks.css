@@ -2,11 +2,15 @@
  *
  * This file contains UA defaults that differ in HTML quirks mode.
  *
- * Observed in Chrome: many block-level elements have their default vertical margins
- * removed in quirks mode, while horizontal indentation (e.g. blockquote) remains.
+ * Observed in Chrome (headless baselines):
+ * - Many block-level elements have their *top* UA margin removed in quirks mode.
+ * - The *bottom* UA margin is still present (e.g. `<h2>` still has a non-zero margin-bottom).
+ *
+ * This matters for real-world fixtures that omit a doctype (thus quirks mode), where Chrome's
+ * layout includes those bottom margins.
  */
 
-/* Block vertical margin resets */
+/* Quirks-mode top margin resets (preserve the UA bottom margins). */
 p,
 h1,
 h2,
@@ -21,11 +25,9 @@ dir,
 dl,
 pre {
   margin-top: 0;
-  margin-bottom: 0;
 }
 
 blockquote,
 figure {
   margin-top: 0;
-  margin-bottom: 0;
 }

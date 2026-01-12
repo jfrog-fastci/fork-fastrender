@@ -97,6 +97,34 @@ fn quirks_mode_preserves_author_margins_at_top_of_document() {
 }
 
 #[test]
+fn quirks_mode_preserves_user_agent_default_bottom_margins() {
+  // No doctype -> quirks mode.
+  //
+  // Chrome preserves bottom UA margins in quirks mode (even when top margins are removed). For
+  // example, <h2> keeps its default `margin-bottom: 0.83em` (where `em` is based on h2's font-size).
+  //
+  // This test locks in that behavior to avoid fixture regressions where content appears ~20px too
+  // high (e.g. slashdot.org).
+  let html = r#"
+    <style>
+      body { margin: 0; }
+      /* Force a stable, zero-height block so the next element's y comes only from h2's bottom margin. */
+      h2 { margin-top: 0; font-size: 24px; height: 0; overflow: hidden; }
+    </style>
+    <h2>Title</h2>
+    <div>After</div>
+  "#;
+
+  let tree = render_tree(html, 200, 200);
+  let y = block_y_for_text(&tree.root, "After").expect("text fragment");
+  // `margin-bottom: 0.83em` with `font-size: 24px` -> 19.92px.
+  assert!(
+    (y - 19.92).abs() <= EPS,
+    "expected UA default bottom margins to be preserved in quirks mode (got y={y})"
+  );
+}
+
+#[test]
 fn quirks_mode_ignores_user_agent_margins_recursively_when_collapsing() {
   let html = r#"
     <style>
