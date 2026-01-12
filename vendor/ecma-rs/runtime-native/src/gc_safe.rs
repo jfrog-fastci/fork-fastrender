@@ -128,6 +128,26 @@ pub fn enter_gc_safe_region() -> GcSafeGuard {
     };
   };
 
+  // If runtime-native code is holding handle-stack roots, it is very likely it also has raw GC
+  // pointers live in locals/registers that are *not* represented in the thread's published
+  // safepoint context/register file. Entering a GC-safe region in that state is therefore
+  // potentially unsound (a moving GC might relocate the object and the stale raw pointer would not
+  // be updated).
+  //
+  // Keep this as a debug assertion: the runtime should still make progress in release builds, but
+  // tests (and debug runs) should fail fast and make the violation obvious.
+  #[cfg(debug_assertions)]
+  {
+    let len = thread.handle_stack_len();
+    debug_assert_eq!(
+      len,
+      0,
+      "thread {:?} attempted to enter a GC-safe region while holding {len} handle-stack roots; \
+       store GC references in RootHandles/RootRegistry (stable handles) before blocking",
+      thread.id()
+    );
+  }
+
   // Only the outermost transition needs to publish a safepoint context and mark
   // the thread as NativeSafe.
   if thread.native_safe_depth.load(Ordering::Relaxed) == 0 {
