@@ -210,3 +210,18 @@ regex = "(?i)^events/(event|eventtarget).*?(strict|webidl|constructor|brand|inva
 backend = "quickjs"
 status = "skip"
 reason = "QuickJS backend uses minimal Event/EventTarget shims; strict WebIDL/brand/InvalidStateError tests are vm-js-only."
+
+[[expectations]]
+id = "dom/live_range_insert_remove.window.js"
+status = "xfail"
+reason = "Live Range insertion/removal boundary updates are not implemented yet."
+
+[[expectations]]
+id = "dom/live_range_replace_data.window.js"
+status = "xfail"
+reason = "Live Range updates for CharacterData replace-data are not implemented yet."
+
+[[expectations]]
+id = "dom/nodeiterator_pre_remove.window.js"
+status = "xfail"
+reason = "NodeIterator pre-remove steps (live iterator updates on node removal) are not implemented yet."
