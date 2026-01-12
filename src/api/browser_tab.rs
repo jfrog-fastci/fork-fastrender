@@ -13503,6 +13503,36 @@ html, body { margin: 0; padding: 0; }
   }
 
   #[test]
+  fn module_top_level_await_resumes_after_fetch_task() -> Result<()> {
+    let mut js_options = JsExecutionOptions::default();
+    js_options.supports_module_scripts = true;
+
+    let mut tab = BrowserTab::from_html_with_js_execution_options(
+      r#"<!doctype html><body>
+        <script type="module">
+          const res = await fetch("data:text/plain,hello");
+          const text = await res.text();
+          document.body.setAttribute("data-fetch", text);
+        </script>
+      </body>"#,
+      RenderOptions::default(),
+      crate::api::VmJsBrowserTabExecutor::default(),
+      js_options,
+    )?;
+    tab.run_event_loop_until_idle(RunLimits::unbounded())?;
+
+    let dom = tab.dom();
+    let body = dom.body().expect("body should exist");
+    assert_eq!(
+      dom
+        .get_attribute(body, "data-fetch")
+        .expect("get_attribute should succeed"),
+      Some("hello")
+    );
+    Ok(())
+  }
+
+  #[test]
   fn module_top_level_await_blocks_later_ordered_module_scripts_and_domcontentloaded() -> Result<()> {
     let mut js_options = JsExecutionOptions::default();
     js_options.supports_module_scripts = true;
