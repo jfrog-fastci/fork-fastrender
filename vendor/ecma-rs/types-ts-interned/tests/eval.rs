@@ -4450,6 +4450,29 @@ fn intersection_with_empty_object_removes_nullish() {
 }
 
 #[test]
+fn intersection_distributes_over_union_to_elide_null_branch() {
+  let store = TypeStore::new();
+  let primitives = store.primitive_ids();
+
+  let union = store.union(vec![primitives.string, primitives.null]);
+  let intersection = store.intern_type(TypeKind::Intersection(vec![union, primitives.string]));
+
+  assert_eq!(store.evaluate(intersection), primitives.string);
+}
+
+#[test]
+fn intersection_distributes_over_unions_to_elide_nullish_branches() {
+  let store = TypeStore::new();
+  let primitives = store.primitive_ids();
+
+  let a = store.union(vec![primitives.string, primitives.null]);
+  let b = store.union(vec![primitives.string, primitives.undefined]);
+  let intersection = store.intern_type(TypeKind::Intersection(vec![a, b]));
+
+  assert_eq!(store.evaluate(intersection), primitives.string);
+}
+
+#[test]
 fn null_and_undefined_intersection_is_never() {
   let store = TypeStore::new();
   let primitives = store.primitive_ids();

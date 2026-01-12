@@ -970,6 +970,39 @@ impl<'a, E: TypeExpander> TypeEvaluator<'a, E> {
       has_empty_object = false;
     }
 
+    if options.strict_null_checks {
+      // Under `strictNullChecks`, `null`/`undefined`/`void` are disjoint from
+      // definitely-non-nullish types (e.g. `string`, `object`, arrays, callables).
+      // Collapse such intersections to `never` so union distribution can narrow.
+      let mut has_nullish = false;
+      let mut has_definitely_non_nullish = false;
+      for member in &base_members {
+        match self.store.type_kind(*member) {
+          TypeKind::Null | TypeKind::Undefined | TypeKind::Void => has_nullish = true,
+          TypeKind::Boolean
+          | TypeKind::Number
+          | TypeKind::String
+          | TypeKind::BigInt
+          | TypeKind::Symbol
+          | TypeKind::UniqueSymbol
+          | TypeKind::BooleanLiteral(_)
+          | TypeKind::NumberLiteral(_)
+          | TypeKind::StringLiteral(_)
+          | TypeKind::BigIntLiteral(_)
+          | TypeKind::TemplateLiteral(_)
+          | TypeKind::EmptyObject
+          | TypeKind::Array { .. }
+          | TypeKind::Tuple(_)
+          | TypeKind::Object(_)
+          | TypeKind::Callable { .. } => has_definitely_non_nullish = true,
+          _ => {}
+        }
+      }
+      if has_nullish && has_definitely_non_nullish {
+        return primitives.never;
+      }
+    }
+
     if has_empty_object
       && base_members.iter().any(|member| {
         matches!(
