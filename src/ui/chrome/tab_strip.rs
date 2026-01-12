@@ -64,6 +64,31 @@ fn paint_tab_status_badges(
   }
 }
 
+fn paint_tab_strip_edge_fade(painter: &egui::Painter, rect: Rect, color: Color32, left: bool) {
+  let width = rect.width().max(0.0);
+  if width <= 0.0 || rect.height() <= 0.0 {
+    return;
+  }
+  // Approximate a horizontal gradient using a small stack of solid rectangles so we don't need
+  // mesh/gradient primitives.
+  let steps: usize = 10;
+  let seg_w = (width / steps as f32).max(0.5);
+  for i in 0..steps {
+    let t = i as f32 / (steps as f32);
+    // Non-linear falloff so the fade is subtle near the inside edge.
+    let alpha = (1.0 - t).powf(2.2);
+    let fill = with_alpha(color, alpha);
+    let x0 = if left {
+      rect.left() + (i as f32) * seg_w
+    } else {
+      rect.right() - ((i + 1) as f32) * seg_w
+    };
+    let x1 = x0 + seg_w;
+    let seg = Rect::from_min_max(Pos2::new(x0, rect.top()), Pos2::new(x1, rect.bottom()));
+    painter.rect_filled(seg, 0.0, fill);
+  }
+}
+
 fn lerp(a: f32, b: f32, t: f32) -> f32 {
   a + (b - a) * t
 }
@@ -683,6 +708,35 @@ pub(super) fn tab_strip_ui(
   }
 
   // Micro-interaction: animate the active tab underline position/width.
+  if sizing.overflow && unpinned_viewport_rect.width() > 0.0 {
+    let max_scroll_x = (sizing.total_content_width - unpinned_viewport_width).max(0.0);
+    let show_left = scroll_offset_x > 0.5;
+    let show_right = scroll_offset_x + 0.5 < max_scroll_x;
+    if show_left || show_right {
+      let fade_w = 18.0_f32.min(unpinned_viewport_rect.width() * 0.5);
+      let fade_rect = Rect::from_min_max(
+        unpinned_viewport_rect.min,
+        Pos2::new(unpinned_viewport_rect.max.x, unpinned_viewport_rect.max.y - 1.0),
+      );
+      let painter = ui.painter().with_clip_rect(unpinned_viewport_rect);
+      let fade_color = ui.visuals().panel_fill;
+      if show_left {
+        let left_rect = Rect::from_min_max(
+          fade_rect.min,
+          Pos2::new(fade_rect.min.x + fade_w, fade_rect.max.y),
+        );
+        paint_tab_strip_edge_fade(&painter, left_rect, fade_color, true);
+      }
+      if show_right {
+        let right_rect = Rect::from_min_max(
+          Pos2::new(fade_rect.max.x - fade_w, fade_rect.min.y),
+          fade_rect.max,
+        );
+        paint_tab_strip_edge_fade(&painter, right_rect, fade_color, false);
+      }
+    }
+  }
+
   if let Some(active_rect) = active_tab_rect {
     let underline_id = ui.make_persistent_id("tab_strip_active_underline");
     let pinned_offset = unpinned_viewport_rect.min.x - tabs_rect.min.x;
