@@ -1419,6 +1419,51 @@ export function main(): number {
 }
 
 #[test]
+fn renamed_local_reexported_import_resolves_and_initializers_run_in_order() {
+  let tmp = TempDir::new().unwrap();
+
+  let dep = tmp.path().join("dep.ts");
+  fs::write(
+    &dep,
+    r#"print(1);
+export function value(a: number, b: number): number { return a + b; }
+"#,
+  )
+  .unwrap();
+
+  let reexport = tmp.path().join("reexport.ts");
+  fs::write(
+    &reexport,
+    r#"import { value } from "./dep";
+print(2);
+export { value as other };
+"#,
+  )
+  .unwrap();
+
+  let entry = tmp.path().join("entry.ts");
+  fs::write(
+    &entry,
+    r#"import { other } from "./reexport";
+print(3);
+export function main(): number {
+  print(other(20, 22));
+  return 0;
+}
+"#,
+  )
+  .unwrap();
+
+  native_js()
+    .timeout(CLI_TIMEOUT)
+    .arg("run")
+    .arg(&entry)
+    .assert()
+    .success()
+    .stdout(predicate::eq("1\n2\n3\n42\n"));
+}
+
+#[test]
 fn side_effect_only_reexport_runs() {
   let tmp = TempDir::new().unwrap();
 
