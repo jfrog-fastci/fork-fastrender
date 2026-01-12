@@ -398,7 +398,7 @@ There is a self-contained WPT-style runner under `tests/wpt/` for local “rende
   - `<link rel="match" | rel="mismatch">` inside HTML declares reftest references without touching the manifest.
   - The legacy `tests/wpt/manifest.toml` is still honored; set `HarnessConfig::with_discovery_mode(DiscoveryMode::MetadataOnly)` to ignore it when adding new offline WPT dumps.
 - The `wpt_local_suite_passes` smoke-test suite is strict by default: visual tests compare against checked-in PNGs under `tests/wpt/expected/` and fail on diffs. Set `UPDATE_WPT_EXPECTED=1` (or run `bash scripts/cargo_agent.sh xtask update-goldens --suite wpt`) to regenerate/update those goldens. (Optional: `WPT_EXPECTED_DIR` overrides the baseline directory for local experimentation.)
-- Artifacts always land in `target/wpt-output/<id>/{actual,expected,diff}.png` with a filterable `report.html`.
+- Artifacts always land in `target/wpt-output/<id>/{actual,expected,diff}.png` with `report.html` + `report.json` for debugging and tooling.
 - Viewport/DPR are fixed per-test from metadata. CI can pin fonts for deterministic renders via `HarnessConfig::with_font_dir`/`WptRunnerBuilder::font_dir` (for example, point at `tests/fonts/`).
 - The runner supports parallel execution and per-test timeouts (see `HarnessConfig`).
   - Each render is executed with a per-document timeout via `RenderOptions::with_timeout(...)`, derived from the manifest/INI metadata (falling back to `HarnessConfig::default_timeout_ms`).
