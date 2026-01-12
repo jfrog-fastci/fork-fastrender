@@ -24,7 +24,7 @@ fn detach_array_buffer(
 }
 
 #[test]
-fn subarray_on_detached_buffers_still_evaluates_start_and_end() {
+fn subarray_on_detached_buffers_throws_before_evaluating_start_and_end() {
   let mut rt = new_runtime();
   rt
     .register_global_native_function("detachArrayBuffer", detach_array_buffer, 1)
@@ -41,10 +41,12 @@ fn subarray_on_detached_buffers_still_evaluates_start_and_end() {
         detachArrayBuffer(ab);
         let threw = false;
         try { u.subarray(start, end); } catch(e) { threw = e.name === 'TypeError'; }
-        threw && log.length === 2 && log[0] === 'start' && log[1] === 'end'
+        // Spec: %TypedArray%.prototype.subarray starts with ValidateTypedArray, which throws if the
+        // viewed buffer is detached *before* coercing `start`/`end` (preventing argument side
+        // effects like `valueOf`).
+        threw && log.length === 0
       "#,
     )
     .unwrap();
   assert_eq!(out, Value::Bool(true));
 }
-

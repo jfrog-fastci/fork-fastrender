@@ -144,12 +144,15 @@ fn iterator_close_on_error(
     return err;
   }
 
-  // `IteratorClose` precedence rules (ECMA-262):
-  // - Errors thrown while getting/calling `iterator.return` override the incoming completion (even
-  //   when the incoming completion is a throw completion).
-  // - Only the non-object return-result TypeError check is skipped for throw completions.
-  // - vm-js also has non-catchable VM failures (termination, OOM, etc) which must never be
-  //   replaced by a catchable close-time throw.
+  // `IteratorClose` error precedence (ECMA-262):
+  // - Errors thrown while getting/calling `iterator.return` override the incoming completion, even
+  //   when the incoming completion is a throw completion.
+  // - The only special-case for throw completions is that the non-object return-result TypeError
+  //   check is skipped (handled inside `crate::iterator::iterator_close` via
+  //   `CloseCompletionKind::Throw`).
+  //
+  // `vm-js` also has non-catchable VM failures (termination, OOM, etc) which must never be
+  // replaced by a JavaScript catchable exception from iterator closing.
   let original_is_throw = err.is_throw_completion();
 
   // Root the pending thrown value across `IteratorClose`, which can allocate and trigger GC.
@@ -718,10 +721,10 @@ pub fn object_define_properties(
 }
 
 pub fn object_create(
-  _vm: &mut Vm,
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   _this: Value,
   args: &[Value],
@@ -747,12 +750,11 @@ pub fn object_create(
 
   if let Some(properties_object) = args.get(1).copied() {
     if !matches!(properties_object, Value::Undefined) {
-      // FastRender currently does not support `Object.create(proto, propertiesObject)` because it
-      // pulls in the full `DefineProperties` + `ToPropertyDescriptor` surface area.
+      // https://tc39.es/ecma262/#sec-object.create
       //
-      // Keep it explicitly unimplemented so embedders can surface stable telemetry and so we avoid
-      // subtly diverging from browser semantics in partially-implemented descriptor handling.
-      return Err(VmError::Unimplemented("Object.create propertiesObject"));
+      // Object.create(proto, propertiesObject) defines properties via `ObjectDefineProperties`.
+      scope.push_root(properties_object)?;
+      define_properties(vm, scope, host, hooks, obj, properties_object)?;
     }
   }
 
@@ -2160,6 +2162,7 @@ pub fn reflect_set_prototype_of(
 
   let target_val = args.get(0).copied().unwrap_or(Value::Undefined);
   let target = require_object(target_val)?;
+  // Root `target` and `proto` across Proxy trap invocations.
   scope.push_root(Value::Object(target))?;
 
   let proto_val = args.get(1).copied().unwrap_or(Value::Undefined);
@@ -2172,21 +2175,10 @@ pub fn reflect_set_prototype_of(
       ))
     }
   };
-  let current_proto = scope.object_get_prototype(target)?;
-  if current_proto == proto {
-    return Ok(Value::Bool(true));
-  }
-
-  if !scope.object_is_extensible(target)? {
-    return Ok(Value::Bool(false));
-  }
-
-  match scope.object_set_prototype(target, proto) {
-    Ok(()) => Ok(Value::Bool(true)),
-    // A cycle (or hostile prototype chain) rejects the mutation.
-    Err(VmError::PrototypeCycle | VmError::PrototypeChainTooDeep) => Ok(Value::Bool(false)),
-    Err(e) => Err(e),
-  }
+  scope.push_root(proto_val)?;
+  Ok(Value::Bool(
+    scope.set_prototype_of_with_host_and_hooks(vm, host, hooks, target, proto)?,
+  ))
 }
 fn create_array_object(vm: &mut Vm, scope: &mut Scope<'_>, len: u32) -> Result<GcObject, VmError> {
   let intr = require_intrinsics(vm)?;
@@ -3454,12 +3446,17 @@ pub fn typed_array_prototype_subarray(
     .heap()
     .typed_array_buffer(obj)
     .map_err(|_| VmError::TypeError("TypedArray.prototype.subarray called on incompatible receiver"))?;
+  if scope
+    .heap()
+    .is_detached_array_buffer(buffer)
+    .map_err(|_| VmError::TypeError("TypedArray.prototype.subarray called on incompatible receiver"))?
+  {
+    return Err(VmError::TypeError("ArrayBuffer is detached"));
+  }
 
-  // Spec: `%TypedArray%.prototype.subarray` performs `ToIntegerOrInfinity` conversions on `start`
-  // and `end` even if the typed array is out-of-bounds/detached.
-  //
-  // Any eventual detached-buffer TypeError comes later (during typed array creation), *after*
-  // argument conversions (which can have user-observable side effects).
+  // Spec: `%TypedArray%.prototype.subarray` starts with `ValidateTypedArray`, which throws if the
+  // viewed ArrayBuffer is detached/out-of-bounds *before* converting `start`/`end` (which can
+  // invoke user code).
   let (start, end) = slice_range_from_args(vm, scope, host, hooks, len, args)?;
   let bytes_per_element = kind.bytes_per_element();
 
@@ -8836,6 +8833,17 @@ pub fn object_prototype_to_string(
     b'e' as u16,
     b't' as u16,
   ];
+  const TAG_GENERATOR: [u16; 9] = [
+    b'G' as u16,
+    b'e' as u16,
+    b'n' as u16,
+    b'e' as u16,
+    b'r' as u16,
+    b'a' as u16,
+    b't' as u16,
+    b'o' as u16,
+    b'r' as u16,
+  ];
   const TAG_FUNCTION: [u16; 8] = [
     b'F' as u16,
     b'u' as u16,
@@ -8923,6 +8931,8 @@ pub fn object_prototype_to_string(
     &TAG_WEAK_MAP
   } else if scope.heap().is_weak_set_object(o) {
     &TAG_WEAK_SET
+  } else if scope.heap().is_generator_object(o) {
+    &TAG_GENERATOR
   } else {
     &TAG_OBJECT
   };

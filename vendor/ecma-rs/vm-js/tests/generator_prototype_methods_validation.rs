@@ -165,7 +165,7 @@ fn generator_prototype_methods_validate_this_and_resume_generator() -> Result<()
       .heap_mut()
       .object_set_prototype(gen, Some(generator_prototype))?;
 
-    // Define the internal slot marker as an own symbol-keyed data property.
+    // Define the internal slot markers as own symbol-keyed data properties.
     let marker_s = scope.alloc_string("vm-js.internal.GeneratorState")?;
     scope.push_root(Value::String(marker_s))?;
     let marker_sym = scope.heap_mut().symbol_for(marker_s)?;

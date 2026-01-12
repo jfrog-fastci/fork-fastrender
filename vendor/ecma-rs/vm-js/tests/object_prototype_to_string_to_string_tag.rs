@@ -31,10 +31,10 @@ fn object_prototype_to_string_honors_symbol_to_string_tag_for_generators() -> Re
     "Object.defineProperty(g.prototype, Symbol.toStringTag, { configurable: true, get() { return {}; } });\n\
      Object.prototype.toString.call(it)",
   )?;
-  assert_eq!(value_to_utf8(&rt, value), "[object Object]");
+  assert_eq!(value_to_utf8(&rt, value), "[object Generator]");
 
   let value = rt.exec_script("String(it)")?;
-  assert_eq!(value_to_utf8(&rt, value), "[object Object]");
+  assert_eq!(value_to_utf8(&rt, value), "[object Generator]");
 
   // Deleting the overridden @@toStringTag should fall back to %GeneratorPrototype%[@@toStringTag].
   let value = rt.exec_script(

@@ -35,21 +35,21 @@ fn for_in_includes_prototype_enumerable_props() {
 }
 
 #[test]
-fn for_in_null_throws_type_error() {
+fn for_in_null_does_not_throw() {
   let mut rt = new_runtime();
   let value = rt
     .exec_script(r#"try { for (var k in null) {} "no"; } catch(e) { e.name }"#)
     .unwrap();
-  assert_value_is_utf8(&rt, value, "TypeError");
+  assert_value_is_utf8(&rt, value, "no");
 }
 
 #[test]
-fn for_in_undefined_throws_type_error() {
+fn for_in_undefined_does_not_throw() {
   let mut rt = new_runtime();
   let value = rt
     .exec_script(r#"try { for (var k in undefined) {} "no"; } catch(e) { e.name }"#)
     .unwrap();
-  assert_value_is_utf8(&rt, value, "TypeError");
+  assert_value_is_utf8(&rt, value, "no");
 }
 
 #[test]

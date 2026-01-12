@@ -731,7 +731,9 @@ fn async_from_sync_iterator_continuation(
         // where `valueWrapper` is a throw completion (`PromiseResolve` failed). Closing errors
         // override the incoming completion, but must never replace fatal VM failures
         // (OOM/termination/etc).
-        if let Err(close_err) = iterator_close(vm, host, hooks, &mut scope, &record, CloseCompletionKind::Throw) {
+        if let Err(close_err) =
+          iterator_close(vm, host, hooks, &mut scope, &record, CloseCompletionKind::Throw)
+        {
           if original_is_throw {
             return if_abrupt_reject_promise(
               vm,

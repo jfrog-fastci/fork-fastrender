@@ -65,19 +65,31 @@ impl TestContext {
   }
 
   fn run_jobs(&mut self, host: &mut TestHost) -> Result<(), VmError> {
-    // Keep draining even if a job fails so we don't drop queued jobs with leaked persistent roots.
+    // Like an HTML microtask checkpoint, keep draining queued jobs even if one fails; tests that
+    // care about errors can assert on the returned `VmError`.
+    //
+    // We must never drop queued `Job`s without running/discarding them: they can own persistent GC
+    // roots (and `Job`'s Drop asserts on leaked roots).
     let mut first_err: Option<VmError> = None;
     while let Some(job) = host.queue.pop_front() {
-      let result = job.run(self, host);
-      if first_err.is_none() {
-        if let Err(e) = result {
-          first_err = Some(e);
+      if let Err(err) = job.run(self, host) {
+        let is_termination = matches!(err, VmError::Termination(_));
+        if first_err.is_none() {
+          first_err = Some(err);
+        }
+        if is_termination {
+          // Termination is a hard stop: discard any remaining queued jobs so we don't leak roots.
+          while let Some(job) = host.queue.pop_front() {
+            job.discard(self);
+          }
+          break;
         }
       }
     }
+
     match first_err {
+      Some(err) => Err(err),
       None => Ok(()),
-      Some(e) => Err(e),
     }
   }
 
@@ -466,7 +478,8 @@ fn basic_fulfillment_then_schedules_microtask_and_fulfills_derived() -> Result<(
       (promise_obj, derived_obj)
     };
 
-    // Keep promises alive across job execution (jobs/microtasks can allocate and trigger GC).
+    // Keep promises alive across the job run: jobs and microtask execution can allocate and trigger
+    // GC.
     let promise_root = ctx.heap.add_root(Value::Object(promise_obj))?;
     let derived_root = ctx.heap.add_root(Value::Object(derived_obj))?;
 

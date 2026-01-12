@@ -26,9 +26,10 @@ fn object_prototype_to_string_generator_falls_back_when_to_string_tag_deleted() 
         if (proto2 !== null) {
           delete proto2[Symbol.toStringTag];
         }
- 
         if (proto1[Symbol.toStringTag] !== undefined) return false;
-        return Object.prototype.toString.call(it) === "[object Object]";
+        // When @@toStringTag is absent, Object.prototype.toString must fall back to the
+        // built-in tag for generator objects ("Generator"), not "[object Object]".
+        return Object.prototype.toString.call(it) === "[object Generator]";
       })()
     "#,
   )?;
@@ -51,9 +52,10 @@ fn object_prototype_to_string_generator_falls_back_when_to_string_tag_non_string
           get: function () { return 1; },
           configurable: true
         });
- 
         if (it[Symbol.toStringTag] !== 1) return false;
-        return Object.prototype.toString.call(it) === "[object Object]";
+        // When @@toStringTag is present but not a string, Object.prototype.toString must fall back
+        // to the built-in tag for generator objects ("Generator").
+        return Object.prototype.toString.call(it) === "[object Generator]";
       })()
     "#,
   )?;

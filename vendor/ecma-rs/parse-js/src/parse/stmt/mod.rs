@@ -819,13 +819,6 @@ impl<'a> Parser<'a> {
       p.require(TT::KeywordFor)?;
       let await_token = p.consume_if(TT::KeywordAwait);
       let await_ = await_token.is_match();
-      if await_ && p.is_strict_ecmascript() && !ctx.rules.await_expr_allowed {
-        // `for await (...)` is only permitted in async functions and modules.
-        return Err(await_token.match_loc().unwrap().error(
-          SyntaxErrorType::ExpectedSyntax("for-await-of not allowed outside async contexts"),
-          Some(TT::KeywordAwait),
-        ));
-      }
       p.require(TT::ParenthesisOpen)?;
       // In strict ECMAScript, `for-of` does not allow a left-hand-side expression that starts
       // with `let` unless it is parsed as a lexical declaration.

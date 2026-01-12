@@ -763,7 +763,6 @@ impl<'a> Scope<'a> {
         },
       }));
     }
-
     if let Some(desc) = self
       .heap()
       .object_get_own_property_with_tick(obj, &key, &mut tick)?
@@ -1264,102 +1263,8 @@ impl<'a> Scope<'a> {
     obj: GcObject,
     key: PropertyKey,
   ) -> Result<bool, VmError> {
-    // Root inputs so Proxy traps can allocate freely.
-    let key_value = match key {
-      PropertyKey::String(s) => Value::String(s),
-      PropertyKey::Symbol(s) => Value::Symbol(s),
-    };
-    self.push_roots(&[Value::Object(obj), key_value])?;
-
-    // Fast path: ordinary object.
-    if !self.heap().is_proxy_object(obj) {
-      return self.ordinary_has_property_with_tick(vm, obj, key, Vm::tick);
-    }
-
-    // Follow Proxy chains iteratively to avoid recursion.
-    let mut current = obj;
-    let mut steps = 0usize;
-    let mut has_trap_key: Option<PropertyKey> = None;
-
-    loop {
-      const TICK_EVERY: usize = 1024;
-      if steps != 0 && steps % TICK_EVERY == 0 {
-        vm.tick()?;
-      }
-      if steps >= crate::MAX_PROTOTYPE_CHAIN {
-        return Err(VmError::PrototypeChainTooDeep);
-      }
-      steps += 1;
-
-      if !self.heap().is_proxy_object(current) {
-        return self.ordinary_has_property_with_tick(vm, current, key, Vm::tick);
-      }
-
-      let Some(target) = self.heap().proxy_target(current)? else {
-        return Err(VmError::TypeError("Cannot perform 'has' on a revoked Proxy"));
-      };
-      let Some(handler) = self.heap().proxy_handler(current)? else {
-        return Err(VmError::TypeError("Cannot perform 'has' on a revoked Proxy"));
-      };
-
-      // Root the Proxy's `[[ProxyTarget]]` and `[[ProxyHandler]]` while we look up and invoke the
-      // trap. `GetMethod(handler, "has")` can run user code via accessors which can revoke the
-      // Proxy and trigger a GC; the operation must still use the original `target` afterwards.
-      self.push_roots(&[Value::Object(target), Value::Object(handler)])?;
-
-      // trap = ? GetMethod(handler, "has")
-      let trap_key = match has_trap_key {
-        Some(k) => k,
-        None => {
-          let s = self.alloc_string("has")?;
-          self.push_root(Value::String(s))?;
-          let k = PropertyKey::from_string(s);
-          has_trap_key = Some(k);
-          k
-        }
-      };
-      let trap =
-        vm.get_method_with_host_and_hooks(host, self, hooks, Value::Object(handler), trap_key)?;
-
-      // If the trap is undefined, forward to the target.
-      let Some(trap) = trap else {
-        current = target;
-        continue;
-      };
-      self.push_root(trap)?;
-
-      let trap_args = [Value::Object(target), key_value];
-      let trap_result = vm.call_with_host_and_hooks(
-        host,
-        self,
-        hooks,
-        trap,
-        Value::Object(handler),
-        &trap_args,
-      )?;
-      let trap_bool = self.heap().to_boolean(trap_result)?;
-      // Proxy invariants (ECMA-262 `Proxy.[[HasProperty]]`):
-      // If the trap reports `false`, the property must not exist as a non-configurable property on
-      // the target, and must not exist at all when the target is non-extensible.
-      if !trap_bool {
-        let target_desc =
-          self.object_get_own_property_with_host_and_hooks(vm, host, hooks, target, key)?;
-        if let Some(target_desc) = target_desc {
-          if !target_desc.configurable {
-            return Err(VmError::TypeError(
-              "Proxy has trap reported a non-configurable property as absent",
-            ));
-          }
-          if !self.is_extensible_with_host_and_hooks(vm, host, hooks, target)? {
-            return Err(VmError::TypeError(
-              "Proxy has trap reported an existing property as absent on a non-extensible target",
-            ));
-          }
-        }
-      }
-
-      return Ok(trap_bool);
-    }
+    let mut tick = |vm: &mut Vm| vm.tick();
+    self.has_property_with_host_and_hooks_with_tick(vm, host, hooks, obj, key, &mut tick)
   }
 
   pub fn ordinary_has_property_with_tick(

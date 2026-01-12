@@ -1955,7 +1955,7 @@ impl Heap {
       .checked_add(max_write)
       .ok_or(VmError::InvariantViolation("Uint8Array byte offset overflow"))?;
 
-    // Validate the backing buffer is attached and compute its length.
+    // Validate the view is in-bounds and the backing buffer is attached.
     let buf = self.get_array_buffer(buffer)?;
     let Some(data) = buf.data.as_deref() else {
       return Ok(0);

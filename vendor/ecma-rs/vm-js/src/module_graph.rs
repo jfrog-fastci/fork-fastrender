@@ -1066,6 +1066,15 @@ impl ModuleGraph {
       .map(|loaded| loaded.module)
   }
 
+  /// Marks cached SCC (cycle) structure as dirty.
+  ///
+  /// SCC membership and dependency edges are computed over the `[[LoadedModules]]` graph. Any time a
+  /// host updates a module's `[[LoadedModules]]` list (e.g. during `FinishLoadingImportedModule`),
+  /// the SCC cache must be recomputed before module evaluation so dependency ordering is correct.
+  pub(crate) fn mark_scc_dirty(&mut self) {
+    self.scc_dirty = true;
+  }
+
   fn resolve_host_module(&self, request: &ModuleRequest) -> Option<ModuleId> {
     self
       .host_resolve
@@ -1162,6 +1171,7 @@ impl ModuleGraph {
     }
 
     let exports_boxed = export_entries.into_boxed_slice();
+
     // Allocate the namespace object.
     //
     // Root it before any further allocations (e.g. the `toStringTag` value string) in case those
@@ -1527,8 +1537,8 @@ impl ModuleGraph {
     // If async module evaluation is already in progress for this module, return the existing
     // (spec-visible) evaluation promise.
     //
-    // Spec: `Evaluate()` must be idempotent for in-progress top-level await evaluation: callers
-    // observe the same Promise rather than a new Promise that could settle inconsistently.
+    // Spec: `Evaluate()` must be idempotent for in-progress async module evaluation: callers observe
+    // the same Promise rather than a new Promise that could settle inconsistently.
     let idx = module_index(module);
     if let Some(record) = self.modules.get(idx) {
       if record.status == ModuleStatus::EvaluatingAsync {
@@ -1761,7 +1771,12 @@ impl ModuleGraph {
         let id = ModuleId::from_raw(idx as u64);
         members.push(id);
       }
-      members.sort_by_key(|m| m.to_raw());
+      // Preserve the SCC member order produced by the DFS-based Tarjan walk. This matches the
+      // spec-observable execution order for synchronous cyclic module evaluation (dependencies that
+      // are discovered deeper in the DFS should execute before their parents). Sorting by module id
+      // would be deterministic but can be observably wrong: a module may read an imported lexical
+      // binding before the exporter has executed and initialized it, causing an unintended TDZ
+      // ReferenceError.
 
       // Record the SCC membership on the cycle root.
       self.scc_members[root_idx] = members.clone();
@@ -2926,11 +2941,17 @@ fn module_request_from_specifier(specifier: &str) -> ModuleRequest {
   ModuleRequest::new(specifier, Vec::new())
 }
 
-/// Implements `ModuleNamespaceCreate` (ECMA-262 `#sec-modulenamespacecreate`) – MVP version.
+/// Accessor getter for Module Namespace export properties.
 ///
-/// This creates an ordinary object with the correct `[[Prototype]]` and `%Symbol.toStringTag%`
-/// property. A real module namespace is an *exotic object* with virtual string-keyed export
-/// properties backed by live bindings; that behaviour will be added once module environments exist.
+/// Module namespace objects expose each export as a non-configurable, enumerable accessor property
+/// with this native function as the getter (`ModuleNamespaceExoticObject.[[GetOwnProperty]]`,
+/// ECMA-262 §9.4.6).
+///
+/// The function captures:
+/// - native slot 0: either a binding-name string (for live bindings) or a namespace object (for
+///   namespace exports),
+/// - native slot 1: the exported name string (used for error messages),
+/// - closure environment: the module environment for live bindings.
 pub(crate) fn module_namespace_getter(
   vm: &mut Vm,
   scope: &mut Scope<'_>,

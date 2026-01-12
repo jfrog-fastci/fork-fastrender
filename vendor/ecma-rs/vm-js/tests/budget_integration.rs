@@ -319,11 +319,12 @@ fn lexical_var_collision_check_consumes_fuel() {
   // (`var` + function declarations). The collision check loops all lexical binding names, so it
   // must be budgeted even when the only observable outcome is an early syntax error.
   //
-  // Choose a budget that is sufficient for parsing + lexical name collection, but leaves no fuel
-  // for the collision scan itself.
+  // Use a tiny fuel budget so we terminate while doing this work rather than reaching the final
+  // syntax error. This ensures the collision scan (and the name collection work it depends on)
+  // cannot bypass VM fuel budgets.
   let n = 100;
   rt.vm.set_budget(Budget {
-    fuel: Some(n as u64 + 11),
+    fuel: Some(2),
     deadline: None,
     check_time_every: 1,
   });

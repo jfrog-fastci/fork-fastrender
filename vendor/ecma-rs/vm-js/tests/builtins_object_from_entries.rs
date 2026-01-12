@@ -830,7 +830,7 @@ fn object_from_entries_iterator_close_error_does_not_override_thrown_entry_error
 }
 
 #[test]
-fn object_from_entries_return_throw_is_suppressed_when_already_throwing() -> Result<(), VmError> {
+fn object_from_entries_iterator_close_return_throw_overrides_original_throw() -> Result<(), VmError> {
   let mut rt = new_runtime()?;
 
   let value = rt.exec_script(
@@ -845,7 +845,9 @@ fn object_from_entries_return_throw_is_suppressed_when_already_throwing() -> Res
             next: function() {
               if (!done) {
                 done = true;
-                // Non-object entry triggers the entry-processing TypeError inside Object.fromEntries.
+                // Non-object entry triggers the entry-processing TypeError inside Object.fromEntries,
+                // then `IteratorClose` is performed. Per ECMA-262 `IteratorClose`, errors thrown while
+                // calling `iterator.return` override the incoming completion.
                 return { done: false, value: 1 };
               }
               return { done: true };
@@ -869,7 +871,7 @@ fn object_from_entries_return_throw_is_suppressed_when_already_throwing() -> Res
 
   assert_eq!(
     as_utf8_lossy(&rt, value),
-    "true|TypeError:Object.fromEntries: iterator value is not an object"
+    "true|return"
   );
   Ok(())
 }

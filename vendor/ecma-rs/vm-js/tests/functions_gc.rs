@@ -14,9 +14,33 @@ fn gc_collects_unreachable_functions() -> Result<(), VmError> {
     assert!(scope.heap().used_bytes() > 0);
   }
 
+  let used_before_gc = heap.used_bytes();
   heap.collect_garbage();
   assert!(!heap.is_valid_object(func));
-  assert_eq!(heap.used_bytes(), 0);
+
+  // Function allocation interns a small set of common property key strings (e.g. "name"/"length")
+  // that are kept alive by the heap. Ensure GC reclaimed the function allocation itself by
+  // checking that used bytes decrease, and that repeated allocations return to the same baseline.
+  let used_after_gc = heap.used_bytes();
+  assert!(
+    used_after_gc < used_before_gc,
+    "expected GC to reclaim unreachable function payload bytes (before={used_before_gc}, after={used_after_gc})"
+  );
+
+  let baseline = used_after_gc;
+
+  // Allocate and collect again: used_bytes should return to the same post-GC baseline.
+  let func2;
+  {
+    let mut scope = heap.scope();
+    let name = scope.alloc_string("g")?;
+    func2 = scope.alloc_native_function(NativeFunctionId(1), None, name, 0)?;
+    assert!(scope.heap().is_valid_object(func2));
+  }
+
+  heap.collect_garbage();
+  assert!(!heap.is_valid_object(func2));
+  assert_eq!(heap.used_bytes(), baseline);
   Ok(())
 }
 

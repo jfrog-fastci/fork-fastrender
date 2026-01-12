@@ -1819,7 +1819,7 @@ impl JsRuntime {
       dialect: Dialect::Ecma,
       source_type: SourceType::Script,
     };
-    let top = self.vm.parse_top_level_with_budget(&source.text, opts)?;
+    let top = Arc::new(self.vm.parse_top_level_with_budget(&source.text, opts)?);
 
     let global_object = self.realm.global_object();
     self.env.set_source_info(source.clone(), 0, 0);
@@ -2151,6 +2151,7 @@ impl JsRuntime {
             env: env.clone(),
             strict,
             exec_ctx: None,
+            script_ast: Some(top.clone()),
             this_root,
             new_target_root,
             promise_root,
@@ -2250,7 +2251,7 @@ impl JsRuntime {
       dialect: Dialect::Ecma,
       source_type: SourceType::Script,
     };
-    let top = self.vm.parse_top_level_with_budget(&source.text, opts)?;
+    let top = Arc::new(self.vm.parse_top_level_with_budget(&source.text, opts)?);
 
     let global_object = self.realm.global_object();
     self.env.set_source_info(source.clone(), 0, 0);
@@ -2577,6 +2578,7 @@ impl JsRuntime {
             env: env.clone(),
             strict,
             exec_ctx: None,
+            script_ast: Some(top.clone()),
             this_root,
             new_target_root,
             promise_root,
@@ -2824,12 +2826,12 @@ impl<'a> Evaluator<'a> {
   /// Implements `IteratorClose` error precedence for operations that return `Result<_, VmError>`.
   ///
   /// Per ECMA-262 `IteratorClose(iteratorRecord, completion)`, errors thrown while getting/calling
-  /// `iterator.return` override the incoming completion (even when the incoming completion is
-  /// itself a throw completion). Only the non-object return-result TypeError check is skipped for
-  /// throw completions.
+  /// `iterator.return` override the incoming completion **even when the incoming completion is a
+  /// throw completion**. The only special-case for throw completions is that the non-object
+  /// return-result TypeError check is skipped when the incoming completion is a throw completion.
   ///
   /// `vm-js` also has non-catchable VM failures (termination, OOM, etc) which must never be
-  /// replaced by a catchable close-time throw.
+  /// replaced by a JavaScript catchable exception from iterator closing.
   fn iterator_close_on_error(
     &mut self,
     scope: &mut Scope<'_>,
@@ -2856,7 +2858,11 @@ impl<'a> Evaluator<'a> {
     ) {
       Ok(_) => err,
       Err(close_err) => {
-        if original_is_throw { close_err } else { err }
+        if original_is_throw {
+          close_err
+        } else {
+          err
+        }
       }
     }
   }
@@ -6668,7 +6674,10 @@ impl<'a> Evaluator<'a> {
 
       let mut iter_env: Option<GcEnv> = None;
       if let ForInOfLhs::Decl((mode, _)) = &stmt.lhs {
-        if *mode == VarDeclMode::Let || *mode == VarDeclMode::Const {
+        if matches!(
+          *mode,
+          VarDeclMode::Let | VarDeclMode::Const | VarDeclMode::Using | VarDeclMode::AwaitUsing
+        ) {
           let env = iter_scope.env_create(Some(outer_lex))?;
           self.env.set_lexical_env(iter_scope.heap_mut(), env);
           iter_env = Some(env);
@@ -6683,6 +6692,7 @@ impl<'a> Evaluator<'a> {
             VarDeclMode::Var => BindingKind::Var,
             VarDeclMode::Let => BindingKind::Let,
             VarDeclMode::Const => BindingKind::Const,
+            VarDeclMode::Using | VarDeclMode::AwaitUsing => BindingKind::Const,
             _ => {
               return Err(VmError::Unimplemented(
                 "for-in loop variable declaration kind",
@@ -6818,7 +6828,10 @@ impl<'a> Evaluator<'a> {
 
       let mut iter_env: Option<GcEnv> = None;
       if let ForInOfLhs::Decl((mode, _)) = &stmt.lhs {
-        if *mode == VarDeclMode::Let || *mode == VarDeclMode::Const {
+        if matches!(
+          *mode,
+          VarDeclMode::Let | VarDeclMode::Const | VarDeclMode::Using | VarDeclMode::AwaitUsing
+        ) {
           let env = iter_scope.env_create(Some(outer_lex))?;
           self.env.set_lexical_env(iter_scope.heap_mut(), env);
           iter_env = Some(env);
@@ -6831,6 +6844,7 @@ impl<'a> Evaluator<'a> {
             VarDeclMode::Var => BindingKind::Var,
             VarDeclMode::Let => BindingKind::Let,
             VarDeclMode::Const => BindingKind::Const,
+            VarDeclMode::Using | VarDeclMode::AwaitUsing => BindingKind::Const,
             _ => {
               return Err(VmError::Unimplemented(
                 "for-of loop variable declaration kind",
@@ -11705,6 +11719,13 @@ pub(crate) struct AsyncContinuation {
   /// active `ScriptOrModule::Module` so `import.meta` and dynamic `import()` can observe the active
   /// module during each resumed execution segment (ECMA-262 `AsyncBlockStart` behaviour).
   exec_ctx: Option<ExecutionContext>,
+  /// Keeps the parsed script AST alive when resuming an async classic script (top-level
+  /// `for await...of`).
+  ///
+  /// Async frames store raw pointers into the parsed `TopLevel` AST; classic scripts normally parse
+  /// and evaluate synchronously so dropping the AST is fine, but async classic scripts return a
+  /// Promise and continue execution from microtasks after this entrypoint returns.
+  script_ast: Option<Arc<Node<parse_js::ast::stx::TopLevel>>>,
   this_root: RootId,
   new_target_root: RootId,
   promise_root: RootId,
@@ -11831,7 +11852,6 @@ fn async_handle_body_result(
           // Note: many VM operations use internal helper errors (e.g. `VmError::TypeError`) that are
           // coerced into JS throw completions at evaluator boundaries. `await` is such a boundary:
           // an abrupt completion must become a promise rejection, not a host error.
-          let err = coerce_error_to_throw_for_async(vm, &mut await_scope, err);
           let reason = match err {
             VmError::Throw(reason) => reason,
             VmError::ThrowWithStack { value: reason, .. } => reason,
@@ -11840,7 +11860,6 @@ fn async_handle_body_result(
               return Err(other);
             }
           };
-
           let mut call_scope = await_scope.reborrow();
           if let Err(err) = call_scope.push_roots(&[reject, reason]) {
             async_teardown_continuation(&mut call_scope, cont);
@@ -15599,7 +15618,10 @@ fn async_for_in_loop_from(
 
     let mut iter_env_created = false;
     if let ForInOfLhs::Decl((mode, _)) = &stmt.lhs {
-      if *mode == VarDeclMode::Let || *mode == VarDeclMode::Const {
+      if matches!(
+        *mode,
+        VarDeclMode::Let | VarDeclMode::Const | VarDeclMode::Using | VarDeclMode::AwaitUsing
+      ) {
         let env = match scope.env_create(Some(outer_lex)) {
           Ok(env) => env,
           Err(err) => {
@@ -15634,6 +15656,7 @@ fn async_for_in_loop_from(
           VarDeclMode::Var => BindingKind::Var,
           VarDeclMode::Let => BindingKind::Let,
           VarDeclMode::Const => BindingKind::Const,
+          VarDeclMode::Using | VarDeclMode::AwaitUsing => BindingKind::Const,
           _ => return Err(VmError::Unimplemented("for-in loop variable declaration kind")),
         };
         async_bind_pattern(evaluator, scope, &pat_decl.stx.pat.stx, value, kind)
@@ -16061,7 +16084,10 @@ fn async_for_await_of_handle_iter_value(
   // Per-iteration lexical environments for `let`/`const` loop bindings.
   let mut iter_env_created = false;
   if let ForInOfLhs::Decl((mode, _)) = &stmt.lhs {
-    if *mode == VarDeclMode::Let || *mode == VarDeclMode::Const {
+    if matches!(
+      *mode,
+      VarDeclMode::Let | VarDeclMode::Const | VarDeclMode::Using | VarDeclMode::AwaitUsing
+    ) {
       let env = match bind_scope.env_create(Some(outer_lex)) {
         Ok(env) => env,
         Err(err) => {
@@ -16080,6 +16106,7 @@ fn async_for_await_of_handle_iter_value(
         VarDeclMode::Var => BindingKind::Var,
         VarDeclMode::Let => BindingKind::Let,
         VarDeclMode::Const => BindingKind::Const,
+        VarDeclMode::Using | VarDeclMode::AwaitUsing => BindingKind::Const,
         _ => return Err(VmError::Unimplemented("for-await-of loop variable declaration kind")),
       };
       async_bind_pattern(evaluator, &mut bind_scope, &pat_decl.stx.pat.stx, value, kind)
@@ -16573,14 +16600,17 @@ fn async_for_of_loop(
       return Ok(AsyncEval::Complete(Completion::normal(v)));
     };
 
-    let mut iter_env_created = false;
-    if let ForInOfLhs::Decl((mode, _)) = &stmt.lhs {
-      if *mode == VarDeclMode::Let || *mode == VarDeclMode::Const {
-        let env = match scope.env_create(Some(outer_lex)) {
-          Ok(env) => env,
-          Err(err) => {
-            let err = {
-              let mut close_scope = scope.reborrow();
+      let mut iter_env_created = false;
+      if let ForInOfLhs::Decl((mode, _)) = &stmt.lhs {
+        if matches!(
+          *mode,
+          VarDeclMode::Let | VarDeclMode::Const | VarDeclMode::Using | VarDeclMode::AwaitUsing
+        ) {
+          let env = match scope.env_create(Some(outer_lex)) {
+            Ok(env) => env,
+            Err(err) => {
+              let err = {
+                let mut close_scope = scope.reborrow();
               async_iterator_close_on_error(evaluator, &mut close_scope, &iterator_record, err)
             };
             async_for_of_cleanup(scope, iterator_root, next_method_root, v_root);
@@ -16598,6 +16628,7 @@ fn async_for_of_loop(
           VarDeclMode::Var => BindingKind::Var,
           VarDeclMode::Let => BindingKind::Let,
           VarDeclMode::Const => BindingKind::Const,
+          VarDeclMode::Using | VarDeclMode::AwaitUsing => BindingKind::Const,
           _ => return Err(VmError::Unimplemented("for-of loop variable declaration kind")),
         };
         async_bind_pattern(evaluator, scope, &pat_decl.stx.pat.stx, value, kind)
@@ -20439,12 +20470,14 @@ fn async_iterator_close_on_error(
     return err;
   }
 
-  // `IteratorClose` precedence rules:
-  // - Per ECMA-262 `IteratorClose`, errors thrown while getting/calling `iterator.return` override
-  //   the incoming completion (even when the incoming completion is a throw completion).
-  // - Only the non-object return-result TypeError check is skipped for throw completions.
-  // - vm-js also has non-catchable VM failures (OOM/termination/etc); those must never be replaced
-  //   by a catchable close-time throw.
+  // `IteratorClose` error precedence (ECMA-262):
+  // - Errors thrown while getting/calling `iterator.return` override the incoming completion, even
+  //   when the incoming completion is a throw completion.
+  // - The only special-case for throw completions is that the non-object return-result TypeError
+  //   check is skipped (since we close with `CloseCompletionKind::Throw`).
+  //
+  // `vm-js` also has non-catchable VM failures (OOM/termination/etc); those are never replaced by a
+  // JavaScript catchable exception from iterator closing.
   let original_is_throw = err.is_throw_completion();
 
   // Root the thrown value across `IteratorClose`, which can allocate and trigger GC.
@@ -20469,7 +20502,11 @@ fn async_iterator_close_on_error(
     Ok(()) => err,
     Err(close_err) => {
       let close_err = coerce_error_to_throw_for_async(evaluator.vm, scope, close_err);
-      if original_is_throw { close_err } else { err }
+      if original_is_throw {
+        close_err
+      } else {
+        err
+      }
     }
   }
 }
@@ -26424,7 +26461,10 @@ fn gen_for_of_loop(
 
     let mut iter_env_created = false;
     if let ForInOfLhs::Decl((mode, _)) = &stmt.lhs {
-      if *mode == VarDeclMode::Let || *mode == VarDeclMode::Const {
+      if matches!(
+        *mode,
+        VarDeclMode::Let | VarDeclMode::Const | VarDeclMode::Using | VarDeclMode::AwaitUsing
+      ) {
         let env = scope.env_create(Some(outer_lex))?;
         evaluator.env.set_lexical_env(scope.heap_mut(), env);
         iter_env_created = true;
@@ -26437,6 +26477,7 @@ fn gen_for_of_loop(
           VarDeclMode::Var => BindingKind::Var,
           VarDeclMode::Let => BindingKind::Let,
           VarDeclMode::Const => BindingKind::Const,
+          VarDeclMode::Using | VarDeclMode::AwaitUsing => BindingKind::Const,
           _ => return Err(VmError::Unimplemented("for-of loop variable declaration kind")),
         };
         bind_pattern(
@@ -28831,7 +28872,6 @@ pub(crate) fn run_ecma_function(
             // etc), and vm-js represents many of those cases as internal helper errors (e.g.
             // `VmError::TypeError`). Coerce to a JS throw completion so the rejection reason is a
             // proper Error object.
-            let err = coerce_error_to_throw_for_async(evaluator.vm, &mut root_scope, err);
             let reason = match err {
               VmError::Throw(reason) => reason,
               VmError::ThrowWithStack { value: reason, .. } => reason,
@@ -28840,8 +28880,13 @@ pub(crate) fn run_ecma_function(
                 return Err(other);
               }
             };
-
-            let reason = root_scope.push_root(reason)?;
+            let reason = match root_scope.push_root(reason) {
+              Ok(v) => v,
+              Err(err) => {
+                evaluator.env.teardown(root_scope.heap_mut());
+                return Err(err);
+              }
+            };
             let reject_result = evaluator.vm.call_with_host_and_hooks(
               &mut *evaluator.host,
               &mut root_scope,
@@ -28901,6 +28946,7 @@ pub(crate) fn run_ecma_function(
           env: evaluator.env.clone(),
           strict,
           exec_ctx: None,
+          script_ast: None,
           this_root,
           new_target_root,
           promise_root,
@@ -29343,6 +29389,7 @@ pub(crate) fn start_module_tla_evaluation(
         env: env.clone(),
         strict: true,
         exec_ctx: Some(exec_ctx),
+        script_ast: None,
         this_root: roots[0],
         new_target_root: roots[1],
         promise_root: roots[2],

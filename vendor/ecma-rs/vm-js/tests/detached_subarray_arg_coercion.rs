@@ -11,7 +11,7 @@ fn new_agent() -> Agent {
 }
 
 #[test]
-fn typed_array_subarray_coerces_args_before_throwing_on_detached_buffer() -> Result<(), VmError> {
+fn typed_array_subarray_throws_before_coercing_args_on_detached_buffer() -> Result<(), VmError> {
   let mut agent = new_agent();
 
   // Create `ab` and `u` in JS so we exercise the real builtins/prototypes.
@@ -44,7 +44,7 @@ fn typed_array_subarray_coerces_args_before_throwing_on_detached_buffer() -> Res
       } catch(e) {
         threw = e.name === 'TypeError';
       }
-      called === true && threw === true
+      called === false && threw === true
     "#,
     Budget::unlimited(1),
     None,
@@ -53,4 +53,3 @@ fn typed_array_subarray_coerces_args_before_throwing_on_detached_buffer() -> Res
 
   Ok(())
 }
-

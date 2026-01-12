@@ -179,6 +179,13 @@ fn tla_basic_module_evaluation_promise_is_pending_until_microtasks_run() -> Resu
   graph.teardown(&mut vm, &mut heap);
   teardown_jobs(&mut vm, &mut heap, &mut hooks);
   realm.teardown(&mut heap);
+  // Ensure we don't leak persistent roots from queued jobs if a test exits early or if the VM
+  // enqueues internal Promise jobs onto either the host-owned microtask queue or the VM-owned one.
+  {
+    let mut ctx = JobCtx { vm: &mut vm, heap: &mut heap };
+    hooks.teardown(&mut ctx);
+  }
+  vm.teardown_microtasks(&mut heap);
   result
 }
 
@@ -481,6 +488,15 @@ fn tla_evaluation_promise_is_cached_per_scc() -> Result<(), VmError> {
   graph.teardown(&mut vm, &mut heap);
   teardown_jobs(&mut vm, &mut heap, &mut hooks);
   realm.teardown(&mut heap);
+  // The host-owned `MicrotaskQueue` contains `Job`s which may hold persistent roots. Ensure any
+  // remaining jobs are discarded before dropping the queue, and also tear down the VM-owned queue.
+  // This keeps debug assertions in `Job::drop` from firing even if the test doesn't fully drain
+  // microtasks.
+  {
+    let mut ctx = JobCtx { vm: &mut vm, heap: &mut heap };
+    hooks.teardown(&mut ctx);
+  }
+  vm.teardown_microtasks(&mut heap);
   result
 }
 
