@@ -1913,16 +1913,33 @@ pub fn chrome_ui_with_bookmarks(
                 egui::Sense::click(),
               );
 
-              let hovered = response.hovered();
-                if is_selected || hovered {
-                  let visuals = ui.visuals();
-                  let bg = if is_selected {
-                    with_alpha(visuals.selection.bg_fill, open_opacity)
-                  } else {
-                    with_alpha(visuals.widgets.hovered.bg_fill, open_opacity)
-                  };
-                  ui.painter().rect_filled(rect, 0.0, bg);
-                }
+              let row_id = id.with(("row", idx));
+              let hover_t = motion.animate_bool(
+                ctx,
+                row_id.with("hover"),
+                response.hovered(),
+                motion.durations.hover_fade,
+              );
+              let selected_t = motion.animate_bool(
+                ctx,
+                row_id.with("selected"),
+                is_selected,
+                motion.durations.hover_fade,
+              );
+              if hover_t > 0.0 {
+                ui.painter().rect_filled(
+                  rect,
+                  0.0,
+                  with_alpha(ui.visuals().widgets.hovered.bg_fill, hover_t * open_opacity),
+                );
+              }
+              if selected_t > 0.0 {
+                ui.painter().rect_filled(
+                  rect,
+                  0.0,
+                  with_alpha(ui.visuals().selection.bg_fill, selected_t * open_opacity),
+                );
+              }
 
               ui.allocate_ui_at_rect(rect, |ui| {
                 ui.spacing_mut().item_spacing.x = 8.0;
