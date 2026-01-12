@@ -526,4 +526,43 @@ status = "xfail"
       "unexpected error: {err}"
     );
   }
+
+  #[test]
+  fn upstream_manifest_includes_metadata_for_skips_and_glob_xfails() {
+    let path =
+      Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/conformance-upstream/manifest.toml");
+    let raw = std::fs::read_to_string(&path).expect("read upstream manifest");
+    let value: toml::Value = toml::from_str(&raw).expect("manifest parses as TOML");
+    let entries = value
+      .get("expectations")
+      .and_then(|v| v.as_array())
+      .expect("manifest has expectations array");
+
+    for entry in entries {
+      let table = entry.as_table().expect("expectation is a table");
+      let status = table
+        .get("status")
+        .and_then(|v| v.as_str())
+        .expect("expectation has status");
+      let is_skip = status == "skip";
+      let is_glob_xfail = status == "xfail" && table.contains_key("glob");
+      if !(is_skip || is_glob_xfail) {
+        continue;
+      }
+      assert!(
+        table
+          .get("reason")
+          .and_then(|v| v.as_str())
+          .is_some_and(|s| !s.trim().is_empty()),
+        "upstream manifest entries with status={status} must include reason: {table:?}"
+      );
+      assert!(
+        table
+          .get("tracking_issue")
+          .and_then(|v| v.as_str())
+          .is_some_and(|s| !s.trim().is_empty()),
+        "upstream manifest entries with status={status} must include tracking_issue: {table:?}"
+      );
+    }
+  }
 }
