@@ -261,6 +261,34 @@ fn array_destructuring_elision_does_not_access_iterator_value() {
 }
 
 #[test]
+fn array_destructuring_closes_iterator_when_iterator_value_throws() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      var returnCalls = 0;
+      var err = "";
+      var iter = {};
+      iter[Symbol.iterator] = function () {
+        return {
+          next() {
+            return {
+              get value() { throw "boom"; },
+              done: false,
+            };
+          },
+          return() { returnCalls++; return {}; },
+        };
+      };
+      try { var [x] = iter; } catch (e) { err = e; }
+      err === "boom" && returnCalls === 1
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn array_destructuring_supports_defaults() {
   let mut rt = new_runtime();
   let value = rt.exec_script(r#"var [x=1] = []; x===1"#).unwrap();

@@ -457,7 +457,7 @@ fn bind_array_pattern(
       // `IteratorStepValue`. This avoids observable access to the iterator result's `value`
       // property (e.g. a throwing getter) when the element is skipped.
       if let Err(err) = crate::iterator::iterator_step(vm, host, hooks, scope, &mut iterator_record) {
-        return Err(err);
+        return iterator_close_on_err(vm, host, hooks, scope, &iterator_record, err);
       }
       continue;
     };
@@ -471,7 +471,7 @@ fn bind_array_pattern(
     ) {
       Ok(Some(v)) => v,
       Ok(None) => Value::Undefined,
-      Err(err) => return Err(err),
+      Err(err) => return iterator_close_on_err(vm, host, hooks, scope, &iterator_record, err),
     };
 
     if matches!(item, Value::Undefined) {
@@ -609,7 +609,7 @@ fn bind_array_pattern(
       &mut iterator_record,
     ) {
       Ok(v) => v,
-      Err(err) => return Err(err),
+      Err(err) => return iterator_close_on_err(vm, host, hooks, scope, &iterator_record, err),
     };
     let Some(v) = next else {
       break;
