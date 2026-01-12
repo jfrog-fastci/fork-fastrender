@@ -7719,6 +7719,10 @@ enum AsyncFrame {
   Return,
   /// Finish an `export default <expr>` statement after the default expression is evaluated.
   ExportDefaultExpr,
+  /// Finish a throw statement after its thrown value expression is evaluated.
+  Throw {
+    stmt: *const Node<ThrowStmt>,
+  },
 
   /// Continue a `var`/`let`/`const` declaration after a declarator initializer completes.
   VarDecl {
@@ -7888,6 +7892,11 @@ enum AsyncFrame {
     discriminant_root: RootId,
     v_root: RootId,
     next_branch_index: usize,
+  },
+
+  /// Continue a labelled statement after evaluating its wrapped statement.
+  LabelAfterStmt {
+    label: String,
   },
 
   /// Continue a `try` statement after evaluating the wrapped block.
@@ -8665,6 +8674,7 @@ fn stmt_contains_await(stmt: &Node<Stmt>) -> bool {
             || branch.stx.body.iter().any(stmt_contains_await)
         })
     }
+    Stmt::Label(label) => stmt_contains_await(&label.stx.statement),
     // Conservatively assume unsupported statement kinds do not contain await so we preserve the
     // existing synchronous evaluator behaviour for them.
     _ => false,
@@ -9074,6 +9084,7 @@ fn async_eval_stmt_labelled(
       },
       None => Ok(AsyncEval::Complete(Completion::Return(Value::Undefined))),
     },
+    Stmt::Throw(stmt) => async_eval_throw_stmt(evaluator, scope, stmt),
     Stmt::VarDecl(decl) => async_eval_var_decl(evaluator, scope, &decl.stx, 0),
     Stmt::Debugger(_) => Ok(AsyncEval::Complete(Completion::empty())),
     Stmt::Block(block) => async_eval_block_stmt(evaluator, scope, &block.stx),
@@ -9116,6 +9127,7 @@ fn async_eval_stmt_labelled(
     }
     Stmt::ForOf(for_stmt) => async_eval_for_of(evaluator, scope, &for_stmt.stx, label_set),
     Stmt::Switch(switch_stmt) => async_eval_switch(evaluator, scope, &switch_stmt.stx),
+    Stmt::Label(label_stmt) => async_eval_label(evaluator, scope, &label_stmt.stx, label_set),
     Stmt::Break(break_stmt) => Ok(AsyncEval::Complete(Completion::Break(break_stmt.stx.label.clone(), None))),
     Stmt::Continue(cont_stmt) => Ok(AsyncEval::Complete(Completion::Continue(cont_stmt.stx.label.clone(), None))),
     _ => Err(VmError::Unimplemented("await in statement type")),
@@ -9130,6 +9142,80 @@ fn async_eval_stmt_labelled(
       Ok(AsyncEval::Complete(completion_from_expr_result(Err(err))?))
     }
     Err(err) => Err(err),
+  }
+}
+
+fn async_throw_completion(
+  evaluator: &mut Evaluator<'_>,
+  stmt: &Node<ThrowStmt>,
+  value: Value,
+) -> Completion {
+  // Capture a stack trace at the throw site. Mirrors `Evaluator::eval_throw`.
+  let source = evaluator.env.source();
+  let rel_start = stmt.loc.start_u32().saturating_sub(evaluator.env.prefix_len());
+  let abs_offset = evaluator.env.base_offset().saturating_add(rel_start);
+  let (line, col) = source.line_col(abs_offset);
+
+  let mut stack = evaluator.vm.capture_stack();
+  if let Some(top) = stack.first_mut() {
+    top.source = source.name.clone();
+    top.line = line;
+    top.col = col;
+  } else {
+    stack.push(StackFrame {
+      function: None,
+      source: source.name.clone(),
+      line,
+      col,
+    });
+  }
+
+  Completion::Throw(Thrown { value, stack })
+}
+
+fn async_eval_throw_stmt(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  stmt: &Node<ThrowStmt>,
+) -> Result<AsyncEval<Completion>, VmError> {
+  match async_eval_expr(evaluator, scope, &stmt.stx.value) {
+    Ok(AsyncEval::Complete(v)) => Ok(AsyncEval::Complete(async_throw_completion(evaluator, stmt, v))),
+    Ok(AsyncEval::Suspend(mut suspend)) => {
+      async_frames_push(
+        &mut suspend.frames,
+        AsyncFrame::Throw {
+          stmt: stmt as *const Node<ThrowStmt>,
+        },
+      )?;
+      Ok(AsyncEval::Suspend(suspend))
+    }
+    Err(err) => Ok(AsyncEval::Complete(completion_from_expr_result(Err(err))?)),
+  }
+}
+
+fn async_eval_label(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  stmt: &LabelStmt,
+  label_set: &[String],
+) -> Result<AsyncEval<Completion>, VmError> {
+  let mut new_label_set = label_set.to_vec();
+  new_label_set.push(stmt.name.clone());
+
+  match async_eval_stmt_labelled(evaluator, scope, &stmt.statement, &new_label_set)? {
+    AsyncEval::Complete(result) => Ok(AsyncEval::Complete(match result {
+      Completion::Break(Some(target), value) if target == stmt.name => Completion::Normal(value),
+      other => other,
+    })),
+    AsyncEval::Suspend(mut suspend) => {
+      async_frames_push(
+        &mut suspend.frames,
+        AsyncFrame::LabelAfterStmt {
+          label: stmt.name.clone(),
+        },
+      )?;
+      Ok(AsyncEval::Suspend(suspend))
+    }
   }
 }
 
@@ -12915,6 +13001,21 @@ fn async_resume_from_frames(
         }
       },
 
+      AsyncFrame::Throw { stmt } => match state {
+        AsyncState::Expr(expr_res) => match expr_res {
+          Ok(v) => {
+            let stmt = unsafe { &*stmt };
+            state = AsyncState::Completion(async_throw_completion(evaluator, stmt, v));
+          }
+          Err(err) => state = AsyncState::Completion(completion_from_expr_result(Err(err))?),
+        },
+        AsyncState::Completion(_) => {
+          return Err(VmError::InvariantViolation(
+            "throw frame received completion state",
+          ))
+        }
+      },
+
       AsyncFrame::VarDecl {
         decl,
         next_declarator_index,
@@ -14146,6 +14247,20 @@ fn async_resume_from_frames(
         AsyncState::Expr(_) => {
           return Err(VmError::InvariantViolation(
             "switch body frame received expression state",
+          ))
+        }
+      },
+
+      AsyncFrame::LabelAfterStmt { label } => match state {
+        AsyncState::Completion(completion) => {
+          state = AsyncState::Completion(match completion {
+            Completion::Break(Some(target), value) if target == label => Completion::Normal(value),
+            other => other,
+          })
+        }
+        AsyncState::Expr(_) => {
+          return Err(VmError::InvariantViolation(
+            "label frame received expression state",
           ))
         }
       },
