@@ -1653,6 +1653,47 @@ mod tests {
       .sum()
   }
 
+  fn count_drawn_meshes_in_rect(output: &egui::FullOutput, rect: egui::Rect) -> usize {
+    fn mesh_bounds(mesh: &egui::epaint::Mesh) -> Option<egui::Rect> {
+      let mut min_x = f32::INFINITY;
+      let mut min_y = f32::INFINITY;
+      let mut max_x = f32::NEG_INFINITY;
+      let mut max_y = f32::NEG_INFINITY;
+
+      for v in &mesh.vertices {
+        min_x = min_x.min(v.pos.x);
+        min_y = min_y.min(v.pos.y);
+        max_x = max_x.max(v.pos.x);
+        max_y = max_y.max(v.pos.y);
+      }
+
+      if !min_x.is_finite() || !min_y.is_finite() || !max_x.is_finite() || !max_y.is_finite() {
+        return None;
+      }
+
+      Some(egui::Rect::from_min_max(
+        egui::pos2(min_x, min_y),
+        egui::pos2(max_x, max_y),
+      ))
+    }
+
+    fn count_in_shape(shape: &egui::epaint::Shape, rect: egui::Rect) -> usize {
+      match shape {
+        egui::epaint::Shape::Mesh(mesh) => mesh_bounds(mesh)
+          .map(|mesh_rect| usize::from(rect.contains(mesh_rect.center())))
+          .unwrap_or(0),
+        egui::epaint::Shape::Vec(shapes) => shapes.iter().map(|s| count_in_shape(s, rect)).sum(),
+        _ => 0,
+      }
+    }
+
+    output
+      .shapes
+      .iter()
+      .map(|clipped| count_in_shape(&clipped.shape, rect))
+      .sum()
+  }
+
   #[test]
   fn omnibox_suggests_bookmarked_urls() {
     let mut app = BrowserAppState::new();
@@ -2860,12 +2901,24 @@ mod tests {
     let ctx = egui::Context::default();
     begin_frame(&ctx, Vec::new());
     let _actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
-    let (strip_rect, _tab_rects) =
+    let (_strip_rect, tab_rects) =
       super::tab_strip::load_test_layout(&ctx).expect("missing tab strip layout metrics");
     let output = ctx.end_frame();
 
-    // Only the unpinned tab should render a close button ("×").
-    assert_eq!(count_drawn_glyph_in_rect(&output, "×", strip_rect), 1);
+    let pinned_rect = tab_rects
+      .iter()
+      .find(|r| r.width() < 100.0)
+      .copied()
+      .expect("expected a pinned tab rect");
+    let unpinned_rect = tab_rects
+      .iter()
+      .find(|r| r.width() > 100.0)
+      .copied()
+      .expect("expected an unpinned tab rect");
+
+    // The pinned tab does not render an explicit close button; the unpinned tab does.
+    assert_eq!(count_drawn_meshes_in_rect(&output, pinned_rect), 0);
+    assert_eq!(count_drawn_meshes_in_rect(&output, unpinned_rect), 1);
   }
 
   #[test]
