@@ -1810,7 +1810,6 @@ pub fn reflect_define_property(
 
   // Spec: `ToPropertyDescriptor` reads properties via `HasProperty`/`Get`, so use the shared helper.
   let patch = crate::to_property_descriptor_with_host_and_hooks(vm, &mut scope, host, hooks, desc_obj)?;
-
   // Root any descriptor values for the duration of `DefineOwnProperty` in case they were computed
   // by accessors and are not otherwise reachable.
   let mut roots = [Value::Undefined; 3];

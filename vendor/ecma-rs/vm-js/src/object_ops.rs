@@ -1626,6 +1626,14 @@ impl<'a> Scope<'a> {
         ));
       };
 
+      // Root the Proxy's `[[ProxyTarget]]` and `[[ProxyHandler]]` while we look up and invoke the
+      // trap.
+      //
+      // `GetMethod(handler, "defineProperty")` can run user code via accessors. That user code can
+      // revoke `current` (clearing its internal slots) and trigger a GC, but the operation must
+      // still use the original `target` afterwards.
+      self.push_roots(&[Value::Object(target), Value::Object(handler)])?;
+
       let trap_key = match define_trap_key {
         Some(k) => k,
         None => {
@@ -1675,6 +1683,23 @@ impl<'a> Scope<'a> {
         return Err(VmError::TypeError(
           "Proxy defineProperty trap returned true for an incompatible property descriptor",
         ));
+      }
+
+      // Additional non-configurable invariants:
+      //
+      // If the caller requested `configurable: false`, the trap cannot report success unless the
+      // target now has a non-configurable property.
+      if desc.configurable == Some(false) {
+        let Some(target_desc) = target_desc else {
+          return Err(VmError::TypeError(
+            "Proxy defineProperty trap returned true for a missing non-configurable property",
+          ));
+        };
+        if target_desc.configurable {
+          return Err(VmError::TypeError(
+            "Proxy defineProperty trap returned true for a configurable target property when defining non-configurable",
+          ));
+        }
       }
 
       return Ok(true);
@@ -3421,43 +3446,10 @@ fn proxy_define_own_property_with_tick(
   // descriptor argument object.
   scope.push_root(trap)?;
 
-  // `FromPropertyDescriptor(desc)` (partial): create a fresh descriptor object with only present fields.
-  let intr = vm
-    .intrinsics()
-    .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
-
-  let desc_obj = scope.alloc_object()?;
+  // `descObj = FromPropertyDescriptor(desc)` (partial): create a fresh descriptor object with only
+  // present fields.
+  let desc_obj = property_descriptor_ops::from_property_descriptor_patch(&mut scope, desc)?;
   scope.push_root(Value::Object(desc_obj))?;
-  scope
-    .heap_mut()
-    .object_set_prototype(desc_obj, Some(intr.object_prototype()))?;
-
-  macro_rules! maybe_define {
-    ($name:literal, $value:expr) => {{
-      let key_s = scope.alloc_string($name)?;
-      scope.push_root(Value::String(key_s))?;
-      scope.define_property(desc_obj, PropertyKey::from_string(key_s), data_desc($value))?;
-    }};
-  }
-
-  if let Some(enumerable) = desc.enumerable {
-    maybe_define!("enumerable", Value::Bool(enumerable));
-  }
-  if let Some(configurable) = desc.configurable {
-    maybe_define!("configurable", Value::Bool(configurable));
-  }
-  if let Some(value) = desc.value {
-    maybe_define!("value", value);
-  }
-  if let Some(writable) = desc.writable {
-    maybe_define!("writable", Value::Bool(writable));
-  }
-  if let Some(get) = desc.get {
-    maybe_define!("get", get);
-  }
-  if let Some(set) = desc.set {
-    maybe_define!("set", set);
-  }
 
   let trap_result = vm.call_with_host_and_hooks(
     host,
@@ -3468,7 +3460,47 @@ fn proxy_define_own_property_with_tick(
     &[Value::Object(target), key_val, Value::Object(desc_obj)],
   )?;
 
-  Ok(scope.heap().to_boolean(trap_result)?)
+  let trap_ok = scope.heap().to_boolean(trap_result)?;
+  if !trap_ok {
+    return Ok(false);
+  }
+
+  // Spec invariant checks:
+  // - the trap cannot report success when the target is non-extensible and the property does not
+  //   exist,
+  // - it cannot violate non-configurable/non-writable constraints,
+  // - and if the caller requested `configurable: false`, the target must now have a non-configurable
+  //   property.
+  let mut tick = Vm::tick;
+  let target_desc =
+    scope.get_own_property_with_host_and_hooks_with_tick(vm, host, hooks, target, key, &mut tick)?;
+  let extensible_target = scope.object_is_extensible(target)?;
+  let compatible = property_descriptor_ops::is_compatible_property_descriptor(
+    extensible_target,
+    desc,
+    target_desc,
+    scope.heap(),
+  );
+  if !compatible {
+    return Err(VmError::TypeError(
+      "Proxy defineProperty trap returned an incompatible property descriptor",
+    ));
+  }
+
+  if desc.configurable == Some(false) {
+    let Some(target_desc) = target_desc else {
+      return Err(VmError::TypeError(
+        "Proxy defineProperty trap returned true for a missing non-configurable property",
+      ));
+    };
+    if target_desc.configurable {
+      return Err(VmError::TypeError(
+        "Proxy defineProperty trap returned true for a configurable target property when defining non-configurable",
+      ));
+    }
+  }
+
+  Ok(true)
 }
 
 fn proxy_has_property_with_tick(
