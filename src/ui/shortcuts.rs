@@ -7,6 +7,7 @@
 pub enum ShortcutAction {
   /// Focus the address bar and select all contents.
   FocusAddressBar,
+  FindInPage,
   NewWindow,
   NewTab,
   CloseTab,
@@ -57,6 +58,7 @@ pub enum Key {
   A,
   C,
   D,
+  F,
   K,
   L,
   N,
@@ -176,6 +178,8 @@ pub fn map_shortcut_with_platform(event: KeyEvent, platform: Platform) -> Option
         meta: false,
       },
     ) => Some(ShortcutAction::FocusAddressBar),
+
+    (Key::F, Modifiers { shift: false, .. }) if cmd => Some(ShortcutAction::FindInPage),
 
     // Tabs.
     (Key::N, Modifiers { shift: false, .. }) if cmd => Some(ShortcutAction::NewWindow),
@@ -362,6 +366,39 @@ mod tests {
         Platform::Other
       ),
       Some(ShortcutAction::FocusAddressBar)
+    );
+  }
+
+  #[test]
+  fn ctrl_f_finds_in_page() {
+    assert_eq!(
+      map_shortcut_with_platform(
+        KeyEvent::new(Key::F, Modifiers::new(true, false, false, false)),
+        Platform::Other
+      ),
+      Some(ShortcutAction::FindInPage)
+    );
+  }
+
+  #[test]
+  fn mac_cmd_f_finds_in_page() {
+    assert_eq!(
+      map_shortcut_with_platform(
+        KeyEvent::new(Key::F, Modifiers::new(false, false, false, true)),
+        Platform::Mac
+      ),
+      Some(ShortcutAction::FindInPage)
+    );
+  }
+
+  #[test]
+  fn ctrl_alt_f_does_not_trigger_find_in_page() {
+    assert_eq!(
+      map_shortcut_with_platform(
+        KeyEvent::new(Key::F, Modifiers::new(true, false, true, false)),
+        Platform::Other
+      ),
+      None
     );
   }
 

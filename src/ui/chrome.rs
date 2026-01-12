@@ -26,6 +26,7 @@ pub enum ChromeAction {
   /// Front-ends are expected to translate this into UI state changes (e.g. setting
   /// `ChromeState::request_focus_address_bar` / `request_select_all_address_bar`).
   FocusAddressBar,
+  OpenFindInPage,
   NewTab,
   CloseTab(TabId),
   ReopenClosedTab,
@@ -63,6 +64,7 @@ fn egui_key_to_shortcuts_key(key: egui::Key) -> Option<Key> {
     egui::Key::A => Key::A,
     egui::Key::C => Key::C,
     egui::Key::D => Key::D,
+    egui::Key::F => Key::F,
     egui::Key::K => Key::K,
     egui::Key::L => Key::L,
     egui::Key::N => Key::N,
@@ -140,6 +142,7 @@ pub fn chrome_ui(
   };
   let (
     focus_address_bar,
+    open_find_in_page,
     new_tab,
     close_tab,
     reopen_closed_tab,
@@ -153,6 +156,7 @@ pub fn chrome_ui(
     // Use the key event's modifier snapshot rather than `i.modifiers`: the winit integration feeds
     // modifiers via events, and using the event snapshot keeps this robust in unit tests as well.
     let mut focus_address_bar = false;
+    let mut open_find_in_page = false;
     let mut new_tab = false;
     let mut close_tab = false;
     let mut reopen_closed_tab = false;
@@ -186,6 +190,7 @@ pub fn chrome_ui(
         ShortcutAction::FocusAddressBar if allow_focus_address_bar => {
           focus_address_bar = true;
         }
+        ShortcutAction::FindInPage => open_find_in_page = true,
         ShortcutAction::NewTab => new_tab = true,
         ShortcutAction::CloseTab => close_tab = true,
         ShortcutAction::ReopenClosedTab => reopen_closed_tab = true,
@@ -204,6 +209,7 @@ pub fn chrome_ui(
 
     (
       focus_address_bar,
+      open_find_in_page,
       new_tab,
       close_tab,
       reopen_closed_tab,
@@ -260,6 +266,9 @@ pub fn chrome_ui(
     // consume them when it's built below.
     app.chrome.request_focus_address_bar = true;
     app.chrome.request_select_all_address_bar = true;
+  }
+  if open_find_in_page {
+    actions.push(ChromeAction::OpenFindInPage);
   }
   if new_tab {
     actions.push(ChromeAction::NewTab);
@@ -1026,6 +1035,25 @@ mod tests {
         .iter()
         .any(|action| matches!(action, ChromeAction::FocusAddressBar)),
       "expected ChromeAction::FocusAddressBar, got {actions:?}"
+    );
+  }
+
+  #[test]
+  fn ctrl_f_emits_open_find_in_page_action() {
+    let mut app = BrowserAppState::new();
+    let modifiers = egui::Modifiers {
+      command: true,
+      ..Default::default()
+    };
+    let ctx = new_context_with_key(egui::Key::F, modifiers);
+    let actions = chrome_ui(&ctx, &mut app, |_| None);
+    let _ = ctx.end_frame();
+
+    assert!(
+      actions
+        .iter()
+        .any(|action| matches!(action, ChromeAction::OpenFindInPage)),
+      "expected ChromeAction::OpenFindInPage, got {actions:?}"
     );
   }
 

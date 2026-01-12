@@ -4702,6 +4702,7 @@ impl App {
               // Chrome-level shortcuts are evaluated inside the egui frame (`ui::chrome_ui`) so we
               // can respect its editing focus rules. Ensure they never reach page input.
               ShortcutAction::FocusAddressBar
+              | ShortcutAction::FindInPage
               | ShortcutAction::NewWindow
               | ShortcutAction::NewTab
               | ShortcutAction::CloseTab
@@ -5052,6 +5053,7 @@ impl App {
           // Request another redraw so egui can apply the focus/select-all request.
           self.window.request_redraw();
         }
+        ChromeAction::OpenFindInPage => {}
         ChromeAction::AddressBarFocusChanged(has_focus) => {
           // Treat address bar focus as the only "chrome text input" focus surface for now.
           //
@@ -6148,6 +6150,7 @@ fn map_winit_key_to_shortcuts_key(
     VirtualKeyCode::A => ShortcutKey::A,
     VirtualKeyCode::C => ShortcutKey::C,
     VirtualKeyCode::D => ShortcutKey::D,
+    VirtualKeyCode::F => ShortcutKey::F,
     VirtualKeyCode::K => ShortcutKey::K,
     VirtualKeyCode::L => ShortcutKey::L,
     VirtualKeyCode::N => ShortcutKey::N,
