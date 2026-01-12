@@ -1327,6 +1327,23 @@ fn native_strict_bans_define_property_of_prototype_key_via_function_prototype_ca
 }
 
 #[test]
+fn native_strict_bans_define_property_of_prototype_key_via_function_prototype_bind_bind() {
+  let source = "declare const Foo: { prototype: object };\nFunction.prototype.bind.bind(Object.defineProperty, Object, Foo, \"prototype\", {});";
+  let (diagnostics, file_id) = check(source, true);
+  let needle = "Function.prototype.bind.bind(Object.defineProperty, Object, Foo, \"prototype\", {})";
+  let start = source.find(needle).expect("call") as u32;
+  let span = TextRange::new(start, start + needle.len() as u32);
+  assert!(
+    diagnostics.iter().any(|diag| {
+      diag.code.as_str() == codes::NATIVE_STRICT_PROTOTYPE_MUTATION.as_str()
+        && diag.primary.file == file_id
+        && diag.primary.range == span
+    }),
+    "expected prototype mutation diagnostic at {span:?}, got {diagnostics:?}"
+  );
+}
+
+#[test]
 fn native_strict_bans_define_property_of_prototype_key_via_reflect_apply_bind() {
   let source = "declare const Foo: { prototype: object };\nReflect.apply.bind(Reflect, Object.defineProperty, Object, [Foo, \"prototype\", {}])();";
   let (diagnostics, file_id) = check(source, true);

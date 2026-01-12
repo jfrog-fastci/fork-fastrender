@@ -1155,6 +1155,9 @@ pub fn validate_native_strict_body(
                             args_for_target = Some(out);
                           }
                         }
+                      } else if prop_is_bind && !call.args.iter().any(|arg| arg.spread) {
+                        // `Function.prototype.bind.bind(target, thisArg, ...args)`
+                        args_for_target = Some(call.args.iter().skip(2).map(|arg| arg.expr).collect());
                       }
                     }
 
