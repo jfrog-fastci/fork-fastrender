@@ -5,7 +5,7 @@ use selectors::context::QuirksMode;
 use std::collections::HashMap;
 
 #[test]
-fn remap_node_ids_updates_queued_records_and_observed_targets() {
+fn remap_node_ids_updates_queued_records_and_observer_node_list() {
   let mut doc = Document::new(QuirksMode::NoQuirks);
   let root = doc.root();
 
