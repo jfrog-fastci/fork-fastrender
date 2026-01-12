@@ -6,12 +6,10 @@ use crate::style::display::Display;
 use crate::tree::fragment_tree::{FragmentContent, FragmentNode};
 
 fn ensure_rayon_threads() {
-  let threads = std::env::var("RAYON_NUM_THREADS")
-    .ok()
-    .and_then(|value| value.parse::<usize>().ok())
-    .unwrap_or(4)
-    .max(1);
-  crate::testing::init_rayon_for_tests(threads);
+  // Tests should not depend on process environment variables (`std::env::var`) because other tests
+  // may mutate env vars under the harness, and `std::env::set_var/remove_var` is not thread-safe
+  // with concurrent env access.
+  crate::testing::init_rayon_for_tests(2);
 }
 #[derive(Debug, Clone)]
 struct CellInfo {
