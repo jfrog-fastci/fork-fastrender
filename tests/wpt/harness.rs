@@ -41,9 +41,6 @@ use std::collections::HashMap;
 use std::fmt;
 use std::path::Path;
 use std::path::PathBuf;
-use std::sync::Mutex;
-use std::sync::MutexGuard;
-use std::sync::OnceLock;
 use std::time::Duration;
 use std::time::Instant;
 
@@ -728,8 +725,11 @@ impl HarnessConfig {
   /// - `WPT_MAX_DIFFERENT_PERCENT=<f64>`
   /// - `WPT_IGNORE_ALPHA=1`
   /// - `WPT_MAX_PERCEPTUAL_DISTANCE=<f64>`
-  pub fn compare_config_from_env(&self) -> Result<CompareConfig, String> {
-    let mut config = if std::env::var_os("WPT_FUZZY").is_some() {
+  pub fn compare_config_from_lookup<'a, F>(&self, get: F) -> Result<CompareConfig, String>
+  where
+    F: Fn(&str) -> Option<&'a str>,
+  {
+    let mut config = if get("WPT_FUZZY").is_some() {
       CompareConfig::fuzzy()
     } else {
       CompareConfig::strict()
@@ -739,25 +739,25 @@ impl HarnessConfig {
         .with_max_perceptual_distance(self.max_perceptual_distance)
     };
 
-    if let Ok(tolerance) = std::env::var("WPT_TOLERANCE") {
+    if let Some(tolerance) = get("WPT_TOLERANCE") {
       let parsed = tolerance
         .parse::<u8>()
         .map_err(|e| format!("Invalid WPT_TOLERANCE '{}': {}", tolerance, e))?;
       config = config.with_channel_tolerance(parsed);
     }
 
-    if let Ok(percent) = std::env::var("WPT_MAX_DIFFERENT_PERCENT") {
+    if let Some(percent) = get("WPT_MAX_DIFFERENT_PERCENT") {
       let parsed = percent
         .parse::<f64>()
         .map_err(|e| format!("Invalid WPT_MAX_DIFFERENT_PERCENT '{}': {}", percent, e))?;
       config = config.with_max_different_percent(parsed);
     }
 
-    if std::env::var_os("WPT_IGNORE_ALPHA").is_some() {
+    if get("WPT_IGNORE_ALPHA").is_some() {
       config = config.with_compare_alpha(false);
     }
 
-    if let Ok(distance) = std::env::var("WPT_MAX_PERCEPTUAL_DISTANCE") {
+    if let Some(distance) = get("WPT_MAX_PERCEPTUAL_DISTANCE") {
       let parsed = distance.parse::<f64>().map_err(|e| {
         format!(
           "Invalid WPT_MAX_PERCEPTUAL_DISTANCE '{}': {}",
@@ -771,6 +771,32 @@ impl HarnessConfig {
     config.generate_diff_image = true;
 
     Ok(config)
+  }
+
+  pub fn compare_config_from_env(&self) -> Result<CompareConfig, String> {
+    let mut vars = HashMap::<&'static str, String>::new();
+
+    if std::env::var_os("WPT_FUZZY").is_some() {
+      vars.insert("WPT_FUZZY", String::new());
+    }
+
+    if let Ok(tolerance) = std::env::var("WPT_TOLERANCE") {
+      vars.insert("WPT_TOLERANCE", tolerance);
+    }
+
+    if let Ok(percent) = std::env::var("WPT_MAX_DIFFERENT_PERCENT") {
+      vars.insert("WPT_MAX_DIFFERENT_PERCENT", percent);
+    }
+
+    if std::env::var_os("WPT_IGNORE_ALPHA").is_some() {
+      vars.insert("WPT_IGNORE_ALPHA", String::new());
+    }
+
+    if let Ok(distance) = std::env::var("WPT_MAX_PERCEPTUAL_DISTANCE") {
+      vars.insert("WPT_MAX_PERCEPTUAL_DISTANCE", distance);
+    }
+
+    self.compare_config_from_lookup(|key| vars.get(key).map(|value| value.as_str()))
   }
 
   /// Enables fail-fast mode
@@ -823,19 +849,6 @@ impl HarnessConfig {
   }
 }
 
-/// Serialises tests that mutate process-wide state (environment variables).
-///
-/// The WPT harness supports env var overrides for comparison settings. Unit tests that validate
-/// this behaviour must avoid racing with each other (or with other tests in the same binary) by
-/// taking this lock.
-pub(crate) fn global_env_lock() -> MutexGuard<'static, ()> {
-  static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-  LOCK
-    .get_or_init(|| Mutex::new(()))
-    .lock()
-    .unwrap_or_else(|poisoned| poisoned.into_inner())
-}
-
 /// Compare two PNG byte buffers using the shared image comparison module.
 pub fn compare_images(
   rendered: &[u8],
@@ -876,6 +889,7 @@ mod tests {
   use super::*;
   use image::codecs::png::PngEncoder;
   use image::{ColorType, ImageEncoder, Rgba, RgbaImage};
+  use std::collections::HashMap;
 
   #[test]
   fn test_assertion_result_pass() {
@@ -1135,141 +1149,83 @@ mod tests {
     assert!(config.update_expected);
   }
 
-  struct ScopedEnv {
-    saved: Vec<(String, Option<std::ffi::OsString>)>,
-  }
-
-  impl ScopedEnv {
-    fn apply(vars: &[(&str, Option<&str>)]) -> Self {
-      let saved = vars
-        .iter()
-        .map(|(key, _)| ((*key).to_string(), std::env::var_os(key)))
-        .collect();
-      for (key, value) in vars {
-        match value {
-          Some(value) => std::env::set_var(key, value),
-          None => std::env::remove_var(key),
-        }
-      }
-      Self { saved }
-    }
-  }
-
-  impl Drop for ScopedEnv {
-    fn drop(&mut self) {
-      for (key, value) in self.saved.drain(..) {
-        match value {
-          Some(value) => std::env::set_var(&key, value),
-          None => std::env::remove_var(&key),
-        }
-      }
-    }
-  }
-
-  fn with_wpt_env<T>(vars: &[(&str, Option<&str>)], f: impl FnOnce() -> T) -> T {
-    let _lock = super::global_env_lock();
-    let _env = ScopedEnv::apply(vars);
-    f()
-  }
-
   #[test]
   fn test_compare_config_from_env_defaults_to_harness_fields() {
-    with_wpt_env(
-      &[
-        ("WPT_FUZZY", None),
-        ("WPT_TOLERANCE", None),
-        ("WPT_MAX_DIFFERENT_PERCENT", None),
-        ("WPT_IGNORE_ALPHA", None),
-        ("WPT_MAX_PERCEPTUAL_DISTANCE", None),
-      ],
-      || {
-        let harness = HarnessConfig::default()
-          .with_tolerance(7)
-          .with_max_diff(0.25)
-          .with_compare_alpha(false)
-          .with_max_perceptual_distance(Some(0.123));
+    let harness = HarnessConfig::default()
+      .with_tolerance(7)
+      .with_max_diff(0.25)
+      .with_compare_alpha(false)
+      .with_max_perceptual_distance(Some(0.123));
 
-        let config = harness.compare_config_from_env().unwrap();
-        assert_eq!(config.channel_tolerance, 7);
-        assert_eq!(config.max_different_percent, 0.25);
-        assert!(!config.compare_alpha);
-        assert_eq!(config.max_perceptual_distance, Some(0.123));
-        assert!(config.generate_diff_image);
-      },
-    )
+    let env: HashMap<&'static str, &'static str> = HashMap::new();
+    let config = harness
+      .compare_config_from_lookup(|key| env.get(key).copied())
+      .unwrap();
+
+    assert_eq!(config.channel_tolerance, 7);
+    assert_eq!(config.max_different_percent, 0.25);
+    assert!(!config.compare_alpha);
+    assert_eq!(config.max_perceptual_distance, Some(0.123));
+    assert!(config.generate_diff_image);
   }
 
   #[test]
   fn test_compare_config_from_env_fuzzy_preset() {
-    with_wpt_env(
-      &[
-        ("WPT_FUZZY", Some("1")),
-        ("WPT_TOLERANCE", None),
-        ("WPT_MAX_DIFFERENT_PERCENT", None),
-        ("WPT_IGNORE_ALPHA", None),
-        ("WPT_MAX_PERCEPTUAL_DISTANCE", None),
-      ],
-      || {
-        let harness = HarnessConfig::default()
-          .with_tolerance(1)
-          .with_max_diff(0.0)
-          .with_compare_alpha(true);
-        let config = harness.compare_config_from_env().unwrap();
-        assert_eq!(config.channel_tolerance, CompareConfig::fuzzy().channel_tolerance);
-        assert_eq!(
-          config.max_different_percent,
-          CompareConfig::fuzzy().max_different_percent
-        );
-        assert_eq!(config.compare_alpha, CompareConfig::fuzzy().compare_alpha);
-        assert_eq!(
-          config.max_perceptual_distance,
-          CompareConfig::fuzzy().max_perceptual_distance
-        );
-      },
-    )
+    let harness = HarnessConfig::default()
+      .with_tolerance(1)
+      .with_max_diff(0.0)
+      .with_compare_alpha(true);
+
+    let env = HashMap::from([("WPT_FUZZY", "1")]);
+    let config = harness
+      .compare_config_from_lookup(|key| env.get(key).copied())
+      .unwrap();
+
+    assert_eq!(config.channel_tolerance, CompareConfig::fuzzy().channel_tolerance);
+    assert_eq!(
+      config.max_different_percent,
+      CompareConfig::fuzzy().max_different_percent
+    );
+    assert_eq!(config.compare_alpha, CompareConfig::fuzzy().compare_alpha);
+    assert_eq!(
+      config.max_perceptual_distance,
+      CompareConfig::fuzzy().max_perceptual_distance
+    );
   }
 
   #[test]
   fn test_compare_config_from_env_overrides() {
-    with_wpt_env(
-      &[
-        ("WPT_FUZZY", None),
-        ("WPT_TOLERANCE", Some("5")),
-        ("WPT_MAX_DIFFERENT_PERCENT", Some("2.5")),
-        ("WPT_IGNORE_ALPHA", Some("1")),
-        ("WPT_MAX_PERCEPTUAL_DISTANCE", Some("0.42")),
-      ],
-      || {
-        let harness = HarnessConfig::default()
-          .with_tolerance(0)
-          .with_max_diff(0.0)
-          .with_compare_alpha(true)
-          .with_max_perceptual_distance(None);
-        let config = harness.compare_config_from_env().unwrap();
-        assert_eq!(config.channel_tolerance, 5);
-        assert_eq!(config.max_different_percent, 2.5);
-        assert!(!config.compare_alpha);
-        assert_eq!(config.max_perceptual_distance, Some(0.42));
-      },
-    )
+    let harness = HarnessConfig::default()
+      .with_tolerance(0)
+      .with_max_diff(0.0)
+      .with_compare_alpha(true)
+      .with_max_perceptual_distance(None);
+
+    let env = HashMap::from([
+      ("WPT_TOLERANCE", "5"),
+      ("WPT_MAX_DIFFERENT_PERCENT", "2.5"),
+      ("WPT_IGNORE_ALPHA", "1"),
+      ("WPT_MAX_PERCEPTUAL_DISTANCE", "0.42"),
+    ]);
+
+    let config = harness
+      .compare_config_from_lookup(|key| env.get(key).copied())
+      .unwrap();
+
+    assert_eq!(config.channel_tolerance, 5);
+    assert_eq!(config.max_different_percent, 2.5);
+    assert!(!config.compare_alpha);
+    assert_eq!(config.max_perceptual_distance, Some(0.42));
   }
 
   #[test]
   fn test_compare_config_from_env_rejects_invalid_values() {
-    with_wpt_env(
-      &[
-        ("WPT_FUZZY", None),
-        ("WPT_TOLERANCE", Some("not-a-number")),
-        ("WPT_MAX_DIFFERENT_PERCENT", None),
-        ("WPT_IGNORE_ALPHA", None),
-        ("WPT_MAX_PERCEPTUAL_DISTANCE", None),
-      ],
-      || {
-        let harness = HarnessConfig::default();
-        let err = harness.compare_config_from_env().unwrap_err();
-        assert!(err.contains("Invalid WPT_TOLERANCE"));
-      },
-    )
+    let harness = HarnessConfig::default();
+    let env = HashMap::from([("WPT_TOLERANCE", "not-a-number")]);
+    let err = harness
+      .compare_config_from_lookup(|key| env.get(key).copied())
+      .unwrap_err();
+    assert!(err.contains("Invalid WPT_TOLERANCE"));
   }
 
   fn encode_png(image: &RgbaImage) -> Vec<u8> {

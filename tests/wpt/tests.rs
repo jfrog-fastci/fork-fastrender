@@ -758,77 +758,24 @@ mod wpt_runner_tests {
     assert_eq!(result.expected_dimensions, Some((10, 20)));
   }
 
-  struct ScopedEnv {
-    saved: Vec<(String, Option<std::ffi::OsString>)>,
-  }
-
-  impl ScopedEnv {
-    fn apply(vars: &[(&str, Option<&str>)]) -> Self {
-      let saved = vars
-        .iter()
-        .map(|(key, _)| ((*key).to_string(), std::env::var_os(key)))
-        .collect();
-      for (key, value) in vars {
-        match value {
-          Some(value) => std::env::set_var(key, value),
-          None => std::env::remove_var(key),
-        }
-      }
-      Self { saved }
-    }
-  }
-
-  impl Drop for ScopedEnv {
-    fn drop(&mut self) {
-      for (key, value) in self.saved.drain(..) {
-        match value {
-          Some(value) => std::env::set_var(&key, value),
-          None => std::env::remove_var(&key),
-        }
-      }
-    }
-  }
-
-  fn with_wpt_env<T>(vars: &[(&str, Option<&str>)], f: impl FnOnce() -> T) -> T {
-    let _lock = super::harness::global_env_lock();
-    let _env = ScopedEnv::apply(vars);
-    f()
-  }
-
   #[test]
   fn test_wpt_env_ignore_alpha_is_reflected_in_config() {
-    with_wpt_env(
-      &[
-        ("WPT_IGNORE_ALPHA", Some("1")),
-        ("WPT_MAX_PERCEPTUAL_DISTANCE", None),
-        ("WPT_FUZZY", None),
-        ("WPT_TOLERANCE", None),
-        ("WPT_MAX_DIFFERENT_PERCENT", None),
-      ],
-      || {
-        let harness = HarnessConfig::default();
-        let compare = harness.compare_config_from_env().unwrap();
-        assert!(!compare.compare_alpha);
-      },
-    )
+    let harness = HarnessConfig::default();
+    let env = HashMap::from([("WPT_IGNORE_ALPHA", "1")]);
+    let compare = harness
+      .compare_config_from_lookup(|key| env.get(key).copied())
+      .unwrap();
+    assert!(!compare.compare_alpha);
   }
 
   #[test]
   fn test_wpt_env_max_perceptual_distance_is_reflected_in_config() {
-    with_wpt_env(
-      &[
-        ("WPT_IGNORE_ALPHA", None),
-        ("WPT_MAX_PERCEPTUAL_DISTANCE", Some("0.123")),
-        ("WPT_FUZZY", None),
-        ("WPT_TOLERANCE", None),
-        ("WPT_MAX_DIFFERENT_PERCENT", None),
-      ],
-      || {
-        let harness = HarnessConfig::default();
-        let compare = harness.compare_config_from_env().unwrap();
-        assert_eq!(compare.max_perceptual_distance, Some(0.123));
-      },
-    )
+    let harness = HarnessConfig::default();
+    let env = HashMap::from([("WPT_MAX_PERCEPTUAL_DISTANCE", "0.123")]);
+    let compare = harness
+      .compare_config_from_lookup(|key| env.get(key).copied())
+      .unwrap();
+    assert_eq!(compare.max_perceptual_distance, Some(0.123));
   }
 
   // =========================================================================
