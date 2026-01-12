@@ -2,9 +2,9 @@
   "schema_version": 2,
   "metadata": {
     "typescript_version": "5.9.3",
+    "bundled_typescript_version": "5.9.3",
     "options": {
       "exactOptionalPropertyTypes": false,
-      "moduleResolution": 2,
       "noEmit": true,
       "noImplicitAny": false,
       "noUncheckedIndexedAccess": false,
@@ -16,5 +16,14 @@
       "useDefineForClassFields": true
     }
   },
-  "diagnostics": []
+  "diagnostics": [
+    {
+      "code": 2792,
+      "file": "use_pkg.ts",
+      "start": 24,
+      "end": 29,
+      "category": "error",
+      "message": "Cannot find module 'pkg'. Did you mean to set the 'moduleResolution' option to 'nodenext', or to add aliases to the 'paths' option?"
+    }
+  ]
 }
