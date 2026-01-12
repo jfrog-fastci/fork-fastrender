@@ -17,7 +17,7 @@ construction.
   - `compile_project_to_llvm_ir` (multi-file ES module subset; used by `native-js-cli --pipeline project`)
 - an early **HIR-driven** backend used by the typechecked `native-js` binary
   (`native-js-cli --pipeline checked` and `native-js-cli --bin native-js`)
-  - note: cyclic module dependencies are currently rejected (`NJS0146`)
+  - note: cyclic **runtime** module dependencies are currently rejected (`NJS0146`)
 
 This crate is not a general-purpose JavaScript engine and it does not try to
 support the full JavaScript/TypeScript language.

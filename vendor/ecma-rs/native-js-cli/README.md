@@ -135,7 +135,7 @@ Select which compilation pipeline to use:
   - enforces the `native_js::validate::validate_strict_subset` checks (`NJS0009` / `NJS0010`)
   - expects the entry module to export `main()` (like the `native-js` binary)
   - does **not** support `--entry-fn`
-  - rejects cyclic module dependencies (`NJS0146`)
+  - rejects cyclic **runtime** module dependencies (`NJS0146`)
   - see below (`native-js` section) for the current checked/HIR backend subset
  
 ### `--entry-fn <name>`
