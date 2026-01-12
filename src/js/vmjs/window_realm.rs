@@ -11301,16 +11301,20 @@ fn parse_add_event_listener_options(
   let mut opts = web_events::AddEventListenerOptions::default();
   match value {
     Value::Object(obj) => {
-      let capture_key = alloc_key(scope, "capture")?;
-      let v = vm.get_with_host_and_hooks(host, scope, hooks, obj, capture_key)?;
+      // Root the object during key allocations: `alloc_key` can allocate and trigger GC.
+      let mut scope = scope.reborrow();
+      scope.push_root(Value::Object(obj))?;
+
+      let capture_key = alloc_key(&mut scope, "capture")?;
+      let v = vm.get_with_host_and_hooks(host, &mut scope, hooks, obj, capture_key)?;
       opts.capture = scope.heap().to_boolean(v)?;
 
-      let once_key = alloc_key(scope, "once")?;
-      let v = vm.get_with_host_and_hooks(host, scope, hooks, obj, once_key)?;
+      let once_key = alloc_key(&mut scope, "once")?;
+      let v = vm.get_with_host_and_hooks(host, &mut scope, hooks, obj, once_key)?;
       opts.once = scope.heap().to_boolean(v)?;
 
-      let passive_key = alloc_key(scope, "passive")?;
-      let v = vm.get_with_host_and_hooks(host, scope, hooks, obj, passive_key)?;
+      let passive_key = alloc_key(&mut scope, "passive")?;
+      let v = vm.get_with_host_and_hooks(host, &mut scope, hooks, obj, passive_key)?;
       opts.passive = scope.heap().to_boolean(v)?;
 
       Ok(opts)
@@ -11343,6 +11347,54 @@ fn parse_event_listener_capture(
     }
     other => scope.heap().to_boolean(other),
   }
+}
+
+fn parse_event_listener_callback_interface(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  value: Value,
+) -> Result<Option<GcObject>, VmError> {
+  match value {
+    Value::Undefined | Value::Null => return Ok(None),
+    _ => {}
+  }
+
+  // WebIDL callback interface: accept callable values.
+  if scope.heap().is_callable(value)? {
+    let Value::Object(obj) = value else {
+      return Err(VmError::TypeError(
+        "EventTarget listener callback is callable but not an object",
+      ));
+    };
+    return Ok(Some(obj));
+  }
+
+  let Value::Object(obj) = value else {
+    return Err(VmError::TypeError(
+      "EventTarget listener callback is not callable and not an object",
+    ));
+  };
+
+  // Root `value` across key allocation and `Get`, both of which can allocate and/or invoke user
+  // code (accessors / Proxy traps).
+  let mut scope = scope.reborrow();
+  scope.push_root(value)?;
+
+  let handle_event_key = alloc_key(&mut scope, "handleEvent")?;
+  let handle_event = vm.get_with_host_and_hooks(host, &mut scope, hooks, obj, handle_event_key)?;
+
+  if matches!(handle_event, Value::Undefined | Value::Null) {
+    return Err(VmError::TypeError(
+      "Callback interface object is missing a callable handleEvent method",
+    ));
+  }
+  if !scope.heap().is_callable(handle_event)? {
+    return Err(VmError::TypeError("GetMethod: target is not callable"));
+  }
+
+  Ok(Some(obj))
 }
 
 fn get_or_create_event_listener_roots(
@@ -13343,7 +13395,8 @@ fn event_target_add_event_listener_native(
   } = resolved;
 
   let type_arg = args.get(0).copied().unwrap_or(Value::Undefined);
-  let type_string = scope.heap_mut().to_string(type_arg)?;
+  scope.push_root(type_arg)?;
+  let type_string = scope.to_string(vm, host, hooks, type_arg)?;
   scope.push_root(Value::String(type_string))?;
   let type_name = scope
     .heap()
@@ -13352,33 +13405,34 @@ fn event_target_add_event_listener_native(
     .unwrap_or_default();
 
   let callback = args.get(1).copied().unwrap_or(Value::Undefined);
-  let callback_obj = match callback {
+  let Some(callback_obj) =
+    parse_event_listener_callback_interface(vm, scope, host, hooks, callback)?
+  else {
     // Per WebIDL/DOM, `EventListener?` converts `null`/`undefined` to `null`, and `null` listeners
     // are treated as no-ops.
-    Value::Undefined | Value::Null => return Ok(Value::Undefined),
-    Value::Object(obj) => obj,
-    _ => {
-      return Err(VmError::TypeError(
-        "EventTarget.addEventListener: callback must be an object or null",
-      ))
-    }
+    return Ok(Value::Undefined);
   };
 
   let options_value = args.get(2).copied().unwrap_or(Value::Undefined);
   let options = parse_add_event_listener_options(vm, scope, host, hooks, options_value)?;
   let mut signal_obj: Option<GcObject> = None;
   if let Value::Object(options_obj) = options_value {
-    let signal_key = alloc_key(scope, "signal")?;
-    let signal_value = vm.get_with_host_and_hooks(host, scope, hooks, options_obj, signal_key)?;
+    // Root the object during key allocation / `Get`: this can allocate and/or invoke user code.
+    let mut scope = scope.reborrow();
+    scope.push_root(Value::Object(options_obj))?;
+
+    let signal_key = alloc_key(&mut scope, "signal")?;
+    let signal_value =
+      vm.get_with_host_and_hooks(host, &mut scope, hooks, options_obj, signal_key)?;
     match signal_value {
       Value::Undefined | Value::Null => {}
       Value::Object(obj) => {
-        if !is_branded_abort_signal(scope, obj)? {
+        if !is_branded_abort_signal(&mut scope, obj)? {
           return Err(VmError::TypeError(
             "EventTarget.addEventListener: options.signal must be an AbortSignal",
           ));
         }
-        if abort_signal_is_aborted(scope, obj)? {
+        if abort_signal_is_aborted(&mut scope, obj)? {
           // Per spec, listeners added with an already-aborted signal are ignored.
           return Ok(Value::Undefined);
         }
@@ -13404,6 +13458,7 @@ fn event_target_add_event_listener_native(
   // Root the callback while it's registered so it survives GC.
   let roots = get_or_create_event_listener_roots(scope, listener_roots_owner)?;
   let listener_key = listener_id_property_key(scope, listener_id)?;
+  let callback = Value::Object(callback_obj);
   scope.push_root(callback)?;
   scope.define_property(roots, listener_key, data_desc(callback))?;
 
@@ -13506,7 +13561,8 @@ fn event_target_remove_event_listener_native(
   } = resolved;
 
   let type_arg = args.get(0).copied().unwrap_or(Value::Undefined);
-  let type_string = scope.heap_mut().to_string(type_arg)?;
+  scope.push_root(type_arg)?;
+  let type_string = scope.to_string(vm, host, hooks, type_arg)?;
   let type_name = scope
     .heap()
     .get_string(type_string)
@@ -13514,14 +13570,12 @@ fn event_target_remove_event_listener_native(
     .unwrap_or_default();
 
   let callback = args.get(1).copied().unwrap_or(Value::Undefined);
-  let callback_obj = match callback {
-    Value::Undefined | Value::Null => return Ok(Value::Undefined),
-    Value::Object(obj) => obj,
-    _ => {
-      return Err(VmError::TypeError(
-        "EventTarget.removeEventListener: callback must be an object or null",
-      ))
-    }
+  let Some(callback_obj) =
+    parse_event_listener_callback_interface(vm, scope, host, hooks, callback)?
+  else {
+    // Per WebIDL/DOM, `EventListener?` converts `null`/`undefined` to `null`, and `null` listeners
+    // are treated as no-ops.
+    return Ok(Value::Undefined);
   };
 
   let options_value = args.get(2).copied().unwrap_or(Value::Undefined);
