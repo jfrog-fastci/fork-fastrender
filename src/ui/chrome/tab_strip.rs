@@ -77,7 +77,11 @@ fn paint_tab_strip_edge_fade(painter: &egui::Painter, rect: Rect, color: Color32
   let steps: usize = 10;
   let seg_w = (width / steps as f32).max(0.5);
   for i in 0..steps {
-    let t = i as f32 / (steps as f32);
+    let t = if steps <= 1 {
+      1.0
+    } else {
+      i as f32 / ((steps - 1) as f32)
+    };
     // Non-linear falloff so the fade is subtle near the inside edge.
     let alpha = (1.0 - t).powf(2.2);
     let fill = with_alpha(color, alpha);
