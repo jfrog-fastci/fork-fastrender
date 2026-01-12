@@ -217,6 +217,15 @@ pub enum InstTyp {
   /// analyses/backends can reason about concatenation as a single allocation.
   StringConcat,
   VarAssign,  // tgts[0] = args[0]
+  /// Explicit null/undefined check.
+  ///
+  /// Semantics:
+  /// - If `args[0]` is `null` or `undefined`, traps/throws.
+  /// - Otherwise, it evaluates to `args[0]` unchanged.
+  ///
+  /// When `tgts` is non-empty, `tgts[0] = args[0]` (i.e. the checked value is forwarded).
+  /// When `tgts` is empty, this is a check-only instruction.
+  NullCheck,
   PropAssign, // args[0][args[1]] = args[2]
   /// Branch-local assertion/assumption used for analysis-driven optimizations.
   ///
@@ -496,6 +505,15 @@ impl Inst {
       tgts: vec![tgt],
       args: vec![arg],
       value_type,
+      ..Default::default()
+    }
+  }
+
+  pub fn null_check(tgt: impl Into<Option<u32>>, value: Arg) -> Self {
+    Self {
+      t: InstTyp::NullCheck,
+      tgts: tgt.into().into_iter().collect(),
+      args: vec![value],
       ..Default::default()
     }
   }
@@ -798,6 +816,11 @@ impl Inst {
       "ArrayChain convention requires args[0] to be the base array"
     );
     (self.tgts.get(0).copied(), &self.args[0], &self.array_chain)
+  }
+
+  pub fn as_null_check(&self) -> (Option<u32>, &Arg) {
+    assert_eq!(self.t, InstTyp::NullCheck);
+    (self.tgts.get(0).copied(), &self.args[0])
   }
 
   pub fn as_foreign_load(&self) -> (u32, SymbolId) {

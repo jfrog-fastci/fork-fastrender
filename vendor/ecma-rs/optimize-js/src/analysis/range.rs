@@ -1097,6 +1097,13 @@ impl ForwardEdgeDataFlowAnalysis for RangeAnalysis {
         let r = self.eval_arg(state, arg);
         self.set_var(state, tgt, r);
       }
+      InstTyp::NullCheck => {
+        let (tgt, value) = inst.as_null_check();
+        if let Some(tgt) = tgt {
+          let r = self.eval_arg(state, value);
+          self.set_var(state, tgt, r);
+        }
+      }
       InstTyp::Bin => {
         let (tgt, left, op, right) = inst.as_bin();
         let left = self.eval_arg(state, left);

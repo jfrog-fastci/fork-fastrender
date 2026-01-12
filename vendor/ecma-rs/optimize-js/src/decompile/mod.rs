@@ -598,6 +598,19 @@ impl<'a> FunctionDecompiler<'a> {
         let init = self.target_init_for(tgt);
         Ok(Some(self.binding_stmt(tgt, expr, init)))
       }
+      InstTyp::NullCheck => {
+        // Null checks are implicit in the JS operations that consume non-null receivers (e.g.
+        // property loads/calls). When they produce a value, they forward the checked value
+        // unchanged, so we can lower them as a simple assignment.
+        self.ensure_supported_args(inst.args.iter())?;
+        let (tgt, value) = inst.as_null_check();
+        let Some(tgt) = tgt else {
+          return Ok(None);
+        };
+        let expr = self.lower_arg(value)?;
+        let init = self.target_init_for(tgt);
+        Ok(Some(self.binding_stmt(tgt, expr, init)))
+      }
       InstTyp::Call => {
         self.ensure_supported_args(inst.args.iter())?;
         let (tgt, _, _, _, _) = inst.as_call();

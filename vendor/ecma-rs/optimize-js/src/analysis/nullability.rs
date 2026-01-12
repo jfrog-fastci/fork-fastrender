@@ -3,6 +3,7 @@ use crate::analysis::facts::{Edge, InstLoc};
 use crate::analysis::value_types::ValueTypeSummaries;
 use crate::cfg::cfg::Cfg;
 use crate::il::inst::{Arg, BinOp, Const, Inst, InstTyp, UnOp};
+use crate::types::ValueTypeSummary;
 use std::fmt;
 use std::fmt::Formatter;
 
@@ -408,6 +409,35 @@ struct NullabilityAnalysis {
 }
 
 impl NullabilityAnalysis {
+  fn mask_from_value_type(ty: ValueTypeSummary) -> NullabilityMask {
+    if ty.is_unknown() {
+      return NullabilityMask::TOP;
+    }
+    let mut out = NullabilityMask::BOTTOM;
+    if ty.contains(ValueTypeSummary::NULL) {
+      out |= NullabilityMask::NULL;
+    }
+    if ty.contains(ValueTypeSummary::UNDEFINED) {
+      out |= NullabilityMask::UNDEF;
+    }
+    if ty.contains(ValueTypeSummary::BOOLEAN)
+      || ty.contains(ValueTypeSummary::NUMBER)
+      || ty.contains(ValueTypeSummary::STRING)
+      || ty.contains(ValueTypeSummary::BIGINT)
+      || ty.contains(ValueTypeSummary::SYMBOL)
+      || ty.contains(ValueTypeSummary::FUNCTION)
+      || ty.contains(ValueTypeSummary::OBJECT)
+    {
+      out |= NullabilityMask::OTHER;
+    }
+    if out.is_bottom() {
+      // If we cannot map the type summary to a concrete nullability mask, stay conservative.
+      NullabilityMask::TOP
+    } else {
+      out
+    }
+  }
+
   fn arg_mask(&self, arg: &Arg, state: &State) -> NullabilityMask {
     match arg {
       Arg::Var(v) => state.mask_of_var(*v),
@@ -431,6 +461,13 @@ impl NullabilityAnalysis {
     // the target never includes `null`/`undefined`.
     if inst.meta.excludes_nullish || self.types.var(tgt).is_some_and(|ty| ty.excludes_nullish()) {
       mask &= NullabilityMask::OTHER;
+      if mask.is_bottom() {
+        state.set_unreachable();
+        return;
+      }
+    }
+    if let Some(ty) = self.types.var(tgt) {
+      mask &= Self::mask_from_value_type(ty);
       if mask.is_bottom() {
         state.set_unreachable();
         return;
@@ -636,6 +673,29 @@ impl ForwardEdgeDataFlowAnalysis for NullabilityAnalysis {
         let (tgt, arg) = inst.as_var_assign();
         let mask = self.arg_mask(arg, state);
         self.set_value_result(inst, state, tgt, mask);
+      }
+      InstTyp::NullCheck => {
+        let (tgt, value) = inst.as_null_check();
+        let mask = self.arg_mask(value, state) & NullabilityMask::OTHER;
+        if mask.is_bottom() {
+          state.set_unreachable();
+          return;
+        }
+
+        // A null check that succeeds proves the checked value is non-nullish.
+        if let Arg::Var(v) = value {
+          if let Some(slot) = state.masks.get_mut(*v as usize) {
+            *slot &= NullabilityMask::OTHER;
+            if slot.is_bottom() {
+              state.set_unreachable();
+              return;
+            }
+          }
+        }
+
+        if let Some(tgt) = tgt {
+          self.set_value_result(inst, state, tgt, mask);
+        }
       }
       InstTyp::Bin => {
         let (tgt, _left, op, _right) = inst.as_bin();

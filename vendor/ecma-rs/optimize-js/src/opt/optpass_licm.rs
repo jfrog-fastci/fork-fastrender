@@ -228,7 +228,8 @@ fn is_hoist_candidate(inst: &Inst) -> bool {
       inst.meta.callee_purity == Purity::Pure && inst.meta.effects.is_pure()
     }
     // Observable reads/writes or control flow / SSA.
-    InstTyp::ForeignLoad
+    InstTyp::NullCheck
+    | InstTyp::ForeignLoad
     | InstTyp::UnknownLoad
     | InstTyp::ForeignStore
     | InstTyp::UnknownStore

@@ -700,6 +700,41 @@ fn inst_local_effect_with_value_types(
   let mut effects = EffectSet::default();
 
   match inst.t {
+    InstTyp::NullCheck => {
+      // Null checks are read-only but may throw/trap when the value is `null` or `undefined`.
+      //
+      // Use value type information when available to avoid pessimistically marking checks on
+      // statically non-nullish values as throwing.
+      let value = inst.args.get(0);
+      let value_ty = match (value, value_types) {
+        (Some(arg), Some(types)) => types.arg(arg).unwrap_or(ValueTypeSummary::UNKNOWN),
+        (Some(Arg::Const(c)), _) => ValueTypeSummary::from_const(c),
+        (Some(Arg::Fn(_)), _) => ValueTypeSummary::FUNCTION,
+        _ => ValueTypeSummary::UNKNOWN,
+      };
+
+      if value_ty.is_unknown() {
+        effects.summary.throws = ThrowBehavior::Maybe;
+      } else {
+        let can_nullish =
+          value_ty.contains(ValueTypeSummary::NULL) || value_ty.contains(ValueTypeSummary::UNDEFINED);
+        let can_other = value_ty
+          .contains(ValueTypeSummary::BOOLEAN)
+          || value_ty.contains(ValueTypeSummary::NUMBER)
+          || value_ty.contains(ValueTypeSummary::STRING)
+          || value_ty.contains(ValueTypeSummary::BIGINT)
+          || value_ty.contains(ValueTypeSummary::SYMBOL)
+          || value_ty.contains(ValueTypeSummary::FUNCTION)
+          || value_ty.contains(ValueTypeSummary::OBJECT);
+        if can_nullish {
+          effects.summary.throws = if can_other {
+            ThrowBehavior::Maybe
+          } else {
+            ThrowBehavior::Always
+          };
+        }
+      }
+    }
     InstTyp::Bin => {
       if inst.bin_op == BinOp::GetProp {
         effects.reads.insert(EffectLocation::Heap);

@@ -8,6 +8,7 @@ pub mod optpass_licm;
 pub mod optpass_loop_opts;
 pub mod optpass_indvar_simplify;
 pub mod optpass_loop_unroll;
+pub mod optpass_nullcheck_elim;
 pub mod optpass_redundant_assigns;
 pub mod optpass_scalar_replace;
 pub mod optpass_trivial_dce;

@@ -1409,6 +1409,14 @@ pub fn decompile_function(func: &ProgramFunction) -> DecompileResult<Vec<Node<St
           let origin = origin_from_arg(arg, &env);
           env.insert(tgt, VarValue { expr, origin });
         }
+        InstTyp::NullCheck => {
+          let (tgt, value) = inst.as_null_check();
+          if let Some(tgt) = tgt {
+            let expr = expr_from_arg(value, &env);
+            let origin = origin_from_arg(value, &env);
+            env.insert(tgt, VarValue { expr, origin });
+          }
+        }
         InstTyp::Bin => {
           let (tgt, left, op, right) = inst.as_bin();
           if op == BinOp::GetProp {
@@ -1772,6 +1780,10 @@ pub enum LoweredInst {
     tgt: u32,
     value: LoweredArg,
   },
+  NullCheck {
+    tgt: Option<u32>,
+    value: LoweredArg,
+  },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1824,6 +1836,10 @@ fn lower_inst(inst: &Inst, bindings: &ForeignBindings) -> LoweredInst {
     },
     InstTyp::VarAssign => LoweredInst::VarAssign {
       tgt: inst.tgts[0],
+      value: lowered_arg(&inst.args[0]),
+    },
+    InstTyp::NullCheck => LoweredInst::NullCheck {
+      tgt: inst.tgts.get(0).copied(),
       value: lowered_arg(&inst.args[0]),
     },
     InstTyp::PropAssign => LoweredInst::PropAssign {

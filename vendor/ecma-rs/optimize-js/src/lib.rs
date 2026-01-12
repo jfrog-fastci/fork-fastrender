@@ -85,6 +85,7 @@ use opt::optpass_impossible_branches::optpass_impossible_branches;
 use opt::optpass_inline::optpass_inline;
 use opt::optpass_licm::optpass_licm;
 use opt::optpass_loop_opts::optpass_loop_opts;
+use opt::optpass_nullcheck_elim::optpass_nullcheck_elim;
 use opt::optpass_redundant_assigns::optpass_redundant_assigns;
 use opt::optpass_scalar_replace::optpass_scalar_replace;
 use opt::optpass_trivial_dce::optpass_trivial_dce;
@@ -755,6 +756,8 @@ pub(crate) fn build_program_function_with_options(
       // TODO Isn't this really const/copy propagation to child Phi insts?
       iteration_result.merge(optpass_redundant_assigns(&mut cfg));
       dbg_checkpoint(&format!("opt{}_redundant_assigns", i), &cfg);
+      iteration_result.merge(optpass_nullcheck_elim(&mut cfg));
+      dbg_checkpoint(&format!("opt{}_nullcheck_elim", i), &cfg);
       let impossible_result = optpass_impossible_branches(&mut cfg);
       dom_cache.maybe_invalidate(&impossible_result);
       iteration_result.merge(impossible_result);

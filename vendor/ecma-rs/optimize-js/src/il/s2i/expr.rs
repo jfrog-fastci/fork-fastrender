@@ -1671,6 +1671,16 @@ impl<'p> HirSourceToInst<'p> {
     let left_arg = self.compile_expr_with_chain(member.object, chain)?;
     let optional = member.optional && !self.expr_excludes_nullish(member.object);
     self.conditional_chain_jump(optional, &left_arg, chain);
+    #[cfg(feature = "typed")]
+    {
+      // When type information is available we materialize explicit null checks for
+      // non-optional property loads. This makes the implicit `null`/`undefined`
+      // traps in downstream lowering backends explicit and enables null-check
+      // elimination/hoisting in later optimization passes.
+      if !optional && self.program.types.program.is_some() {
+        self.out.push(Inst::null_check(None::<u32>, left_arg.clone()));
+      }
+    }
     let res_tmp_var = self.c_temp.bump();
     let right_arg = key_arg(self, &member.property)?;
     self.push_value_inst(
@@ -1857,6 +1867,12 @@ impl<'p> HirSourceToInst<'p> {
       }
     }
     let assumed_cond = is_assert_call.then(|| args.first().cloned()).flatten();
+    #[cfg(feature = "typed")]
+    {
+      if !optional && self.program.types.program.is_some() {
+        self.out.push(Inst::null_check(None::<u32>, callee_arg.clone()));
+      }
+    }
     self.push_value_inst(
       expr_id,
       Inst::call(res_tmp_var, callee_arg, this_arg, args, spreads),
