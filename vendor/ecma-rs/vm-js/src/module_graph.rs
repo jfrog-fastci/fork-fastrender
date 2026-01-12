@@ -652,7 +652,13 @@ impl ModuleGraph {
       | ModuleStatus::EvaluatingAsync
       | ModuleStatus::Evaluated => return Ok(()),
       ModuleStatus::Linking => return Ok(()),
-      ModuleStatus::Errored => return Err(VmError::Unimplemented("module is in an errored state")),
+      ModuleStatus::Errored => {
+        if let Some(root) = self.modules[idx].evaluation_error.clone() {
+          let value = root.get(scope.heap()).ok_or_else(|| VmError::invalid_handle())?;
+          return Err(VmError::Throw(value));
+        }
+        return Err(VmError::Unimplemented("module is in an errored state"));
+      }
       ModuleStatus::New | ModuleStatus::Unlinked => {}
     }
 
@@ -664,118 +670,159 @@ impl ModuleGraph {
     // Mark linking in progress (cycle-safe).
     self.modules[idx].status = ModuleStatus::Linking;
 
-    // Ensure the module has an environment root allocated early so cycles can create import bindings
-    // to it.
-    if self.modules[idx].environment.is_none() {
-      let env = scope.env_create(None)?;
-      scope.push_env_root(env)?;
-      let root = scope.heap_mut().add_env_root(env)?;
-      self.modules[idx].environment = Some(root);
-      self.torn_down = false;
-    }
-
-    let requested_modules = self.modules[idx].requested_modules.clone();
-    let import_entries = self.modules[idx].import_entries.clone();
-    let local_exports = self.modules[idx].local_export_entries.clone();
-    let source = self.modules[idx]
-      .source
-      .clone()
-      .ok_or(VmError::Unimplemented("module source missing"))?;
-    let ast = self.modules[idx]
-      .ast
-      .clone()
-      .ok_or(VmError::Unimplemented("module AST missing"))?;
-
-    // Link dependencies first.
-    const LINK_TICK_EVERY: usize = 32;
-    for (i, request) in requested_modules.into_iter().enumerate() {
-      if i % LINK_TICK_EVERY == 0 && i != 0 {
-        vm.tick()?;
+    let link_result = (|| -> Result<(), VmError> {
+      // Ensure the module has an environment root allocated early so cycles can create import bindings
+      // to it.
+      if self.modules[idx].environment.is_none() {
+        let env = scope.env_create(None)?;
+        scope.push_env_root(env)?;
+        let root = scope.heap_mut().add_env_root(env)?;
+        self.modules[idx].environment = Some(root);
+        self.torn_down = false;
       }
-      let imported = self
-        .get_imported_module(module, &request)
-        .ok_or(VmError::Unimplemented("unlinked module request"))?;
-      self.link_inner(vm, scope, global_object, imported)?;
-    }
 
-    let env_root = self.modules[idx]
-      .environment
-      .ok_or(VmError::InvariantViolation("module environment root missing"))?;
-    let module_env = scope
-      .heap()
-      .get_env_root(env_root)
-      .ok_or_else(|| VmError::invalid_handle())?;
+      let requested_modules = self.modules[idx].requested_modules.clone();
+      let import_entries = self.modules[idx].import_entries.clone();
+      let local_exports = self.modules[idx].local_export_entries.clone();
+      let source = self.modules[idx]
+        .source
+        .clone()
+        .ok_or(VmError::Unimplemented("module source missing"))?;
+      let ast = self.modules[idx]
+        .ast
+        .clone()
+        .ok_or(VmError::Unimplemented("module AST missing"))?;
 
-    // Create import bindings.
-    for (i, entry) in import_entries.into_iter().enumerate() {
-      if i % LINK_TICK_EVERY == 0 && i != 0 {
-        vm.tick()?;
-      }
-      let imported_module = self
-        .get_imported_module(module, &entry.module_request)
-        .ok_or(VmError::Unimplemented("unlinked module request"))?;
-
-      match entry.import_name {
-        crate::module_record::ImportName::All => {
-          let ns = self.get_module_namespace(imported_module, vm, scope)?;
-          let mut init_scope = scope.reborrow();
-          init_scope.push_root(Value::Object(ns))?;
-          init_scope.env_create_immutable_binding(module_env, &entry.local_name)?;
-          init_scope
-            .heap_mut()
-            .env_initialize_binding(module_env, &entry.local_name, Value::Object(ns))?;
+      // Link dependencies first.
+      const LINK_TICK_EVERY: usize = 32;
+      for (i, request) in requested_modules.into_iter().enumerate() {
+        if i % LINK_TICK_EVERY == 0 && i != 0 {
+          vm.tick()?;
         }
-        crate::module_record::ImportName::Name(import_name) => {
-          let resolution = self.modules[module_index(imported_module)]
-            .resolve_export_with_vm(vm, self, imported_module, &import_name)?;
-          let ResolveExportResult::Resolved(resolution) = resolution else {
-            return Err(VmError::Unimplemented("imported binding resolution failure"));
-          };
+        let imported = self
+          .get_imported_module(module, &request)
+          .ok_or(VmError::Unimplemented("unlinked module request"))?;
+        self.link_inner(vm, scope, global_object, imported)?;
+      }
 
-          match resolution.binding_name {
-            crate::module_record::BindingName::Namespace => {
-              let ns = self.get_module_namespace(resolution.module, vm, scope)?;
-              let mut init_scope = scope.reborrow();
-              init_scope.push_root(Value::Object(ns))?;
-              init_scope.env_create_immutable_binding(module_env, &entry.local_name)?;
-              init_scope
-                .heap_mut()
-                .env_initialize_binding(module_env, &entry.local_name, Value::Object(ns))?;
-            }
-            crate::module_record::BindingName::Name(target_name) => {
-              let target_env_root = self.modules[module_index(resolution.module)]
-                .environment
-                .ok_or(VmError::InvariantViolation(
-                  "resolved export module missing environment",
+      let env_root = self.modules[idx]
+        .environment
+        .ok_or(VmError::InvariantViolation("module environment root missing"))?;
+      let module_env = scope
+        .heap()
+        .get_env_root(env_root)
+        .ok_or_else(|| VmError::invalid_handle())?;
+
+      // Create import bindings.
+      for (i, entry) in import_entries.into_iter().enumerate() {
+        if i % LINK_TICK_EVERY == 0 && i != 0 {
+          vm.tick()?;
+        }
+        let imported_module = self
+          .get_imported_module(module, &entry.module_request)
+          .ok_or(VmError::Unimplemented("unlinked module request"))?;
+
+        match entry.import_name {
+          crate::module_record::ImportName::All => {
+            let ns = self.get_module_namespace(imported_module, vm, scope)?;
+            let mut init_scope = scope.reborrow();
+            init_scope.push_root(Value::Object(ns))?;
+            init_scope.env_create_immutable_binding(module_env, &entry.local_name)?;
+            init_scope
+              .heap_mut()
+              .env_initialize_binding(module_env, &entry.local_name, Value::Object(ns))?;
+          }
+          crate::module_record::ImportName::Name(import_name) => {
+            let resolution = self.modules[module_index(imported_module)]
+              .resolve_export_with_vm(vm, self, imported_module, &import_name)?;
+            let resolution = match resolution {
+              ResolveExportResult::Resolved(resolution) => resolution,
+              ResolveExportResult::NotFound => {
+                let intr = vm.intrinsics().ok_or(VmError::Unimplemented(
+                  "module linking requires intrinsics to create SyntaxError objects",
                 ))?;
-              let target_env = scope
-                .heap()
-                .get_env_root(target_env_root)
-                .ok_or_else(|| VmError::invalid_handle())?;
-              scope.env_create_import_binding(
-                module_env,
-                &entry.local_name,
-                target_env,
-                &target_name,
-              )?;
+                let message = format!(
+                  "The requested module '{}' does not provide an export named '{}'",
+                  entry.module_request.specifier, import_name
+                );
+                let err_obj =
+                  crate::error_object::new_syntax_error_object(scope, &intr, &message)?;
+                return Err(VmError::Throw(err_obj));
+              }
+              ResolveExportResult::Ambiguous => {
+                let intr = vm.intrinsics().ok_or(VmError::Unimplemented(
+                  "module linking requires intrinsics to create SyntaxError objects",
+                ))?;
+                let message = format!(
+                  "The requested module '{}' provides an ambiguous export named '{}'",
+                  entry.module_request.specifier, import_name
+                );
+                let err_obj =
+                  crate::error_object::new_syntax_error_object(scope, &intr, &message)?;
+                return Err(VmError::Throw(err_obj));
+              }
+            };
+
+            match resolution.binding_name {
+              crate::module_record::BindingName::Namespace => {
+                let ns = self.get_module_namespace(resolution.module, vm, scope)?;
+                let mut init_scope = scope.reborrow();
+                init_scope.push_root(Value::Object(ns))?;
+                init_scope.env_create_immutable_binding(module_env, &entry.local_name)?;
+                init_scope
+                  .heap_mut()
+                  .env_initialize_binding(module_env, &entry.local_name, Value::Object(ns))?;
+              }
+              crate::module_record::BindingName::Name(target_name) => {
+                let target_env_root = self.modules[module_index(resolution.module)]
+                  .environment
+                  .ok_or(VmError::InvariantViolation(
+                    "resolved export module missing environment",
+                  ))?;
+                let target_env = scope
+                  .heap()
+                  .get_env_root(target_env_root)
+                  .ok_or_else(|| VmError::invalid_handle())?;
+                scope.env_create_import_binding(
+                  module_env,
+                  &entry.local_name,
+                  target_env,
+                  &target_name,
+                )?;
+              }
             }
           }
         }
       }
-    }
 
-    // Ensure `*default*` exists for `export default <expr>`.
-    if local_exports.iter().any(|e| e.local_name == "*default*") {
-      if !scope.heap().env_has_binding(module_env, "*default*")? {
-        scope.env_create_immutable_binding(module_env, "*default*")?;
+      // Ensure `*default*` exists for `export default <expr>`.
+      if local_exports.iter().any(|e| e.local_name == "*default*") {
+        if !scope.heap().env_has_binding(module_env, "*default*")? {
+          scope.env_create_immutable_binding(module_env, "*default*")?;
+        }
+      }
+
+      // Instantiate local declarations (creates bindings + hoists function objects).
+      instantiate_module_decls(vm, scope, global_object, module_env, source, &ast.stx.body)?;
+      Ok(())
+    })();
+
+    match link_result {
+      Ok(()) => {
+        self.modules[idx].status = ModuleStatus::Linked;
+        Ok(())
+      }
+      Err(err) => {
+        self.modules[idx].status = ModuleStatus::Errored;
+        if self.modules[idx].evaluation_error.is_none() {
+          if let Some(thrown) = err.thrown_value() {
+            self.modules[idx].set_evaluation_error(scope, thrown)?;
+            self.torn_down = false;
+          }
+        }
+        Err(err)
       }
     }
-
-    // Instantiate local declarations (creates bindings + hoists function objects).
-    instantiate_module_decls(vm, scope, global_object, module_env, source, &ast.stx.body)?;
-
-    self.modules[idx].status = ModuleStatus::Linked;
-    Ok(())
   }
 
   /// Evaluates a module using an existing [`Scope`].
