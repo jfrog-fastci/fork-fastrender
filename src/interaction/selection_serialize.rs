@@ -465,7 +465,6 @@ mod tests {
   use super::*;
   use crate::style::display::FormattingContextType;
   use crate::style::types::TextCombineUpright;
-  use crate::style::display::FormattingContextType;
   use crate::style::ComputedStyle;
   use crate::tree::fragment_tree::{TextEmphasisOffset, TextSourceRange};
   use crate::Rect;
