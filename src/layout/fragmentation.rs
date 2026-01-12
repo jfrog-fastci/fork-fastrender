@@ -4134,20 +4134,27 @@ fn collect_forced_boundaries_with_axes_internal(
   struct BoundaryRequirement {
     forced: bool,
     side: Option<PageSide>,
+    side_conflict: bool,
   }
 
-  fn merge_boundary_side(current: &mut Option<PageSide>, incoming: Option<PageSide>) {
-    match (*current, incoming) {
-      (None, side) => *current = side,
-      (side, None) => *current = side,
-      (Some(a), Some(b)) if a == b => *current = Some(a),
-      (Some(_), Some(_)) => *current = None,
+  fn merge_boundary_side(requirement: &mut BoundaryRequirement, incoming: Option<PageSide>) {
+    if requirement.side_conflict {
+      return;
     }
+    match (requirement.side, incoming) {
+      (None, side) => requirement.side = side,
+      (Some(_), None) => {}
+      (Some(a), Some(b)) if a == b => {}
+      (Some(_), Some(_)) => {
+        requirement.side = None;
+        requirement.side_conflict = true;
+      }
+    };
   }
 
   fn record_boundary(requirement: &mut BoundaryRequirement, side: Option<PageSide>) {
     requirement.forced = true;
-    merge_boundary_side(&mut requirement.side, side);
+    merge_boundary_side(requirement, side);
   }
 
   fn collect(
@@ -5615,6 +5622,215 @@ mod tests {
     assert!(
       (first_break - 15.0).abs() < BREAK_EPSILON,
       "expected break before the grid row band, got {first_break} (boundaries={boundaries:?})"
+    );
+  }
+
+  #[test]
+  fn grid_item_page_side_breaks_map_to_track_boundaries() {
+    let mut grid_style = ComputedStyle::default();
+    grid_style.display = Display::Grid;
+    let grid_style = Arc::new(grid_style);
+
+    let mut first_style = ComputedStyle::default();
+    first_style.display = Display::Block;
+    first_style.break_after = BreakBetween::Left;
+    let first_style = Arc::new(first_style);
+
+    let mut second_style = ComputedStyle::default();
+    second_style.display = Display::Block;
+    second_style.break_before = BreakBetween::Left;
+    let second_style = Arc::new(second_style);
+
+    let mut grid = FragmentNode::new_block_styled(
+      Rect::from_xywh(0.0, 0.0, 100.0, 120.0),
+      vec![
+        FragmentNode::new_block_styled(Rect::from_xywh(0.0, 0.0, 100.0, 60.0), vec![], first_style),
+        FragmentNode::new_block_styled(
+          Rect::from_xywh(0.0, 60.0, 100.0, 60.0),
+          vec![],
+          second_style,
+        ),
+      ],
+      grid_style,
+    );
+    grid.grid_tracks = Some(Arc::new(GridTrackRanges {
+      rows: vec![(0.0, 60.0), (60.0, 120.0)],
+      columns: Vec::new(),
+    }));
+    grid.grid_fragmentation = Some(Arc::new(GridFragmentationInfo {
+      items: vec![
+        GridItemFragmentationData {
+          box_id: 1,
+          row_start: 1,
+          row_end: 2,
+          column_start: 1,
+          column_end: 2,
+        },
+        GridItemFragmentationData {
+          box_id: 2,
+          row_start: 2,
+          row_end: 3,
+          column_start: 1,
+          column_end: 2,
+        },
+      ],
+    }));
+
+    let forced = collect_forced_boundaries_for_pagination_with_axes_and_page_progression(
+      &grid,
+      0.0,
+      default_axes(),
+      true,
+    );
+    let Some(boundary) = forced
+      .iter()
+      .find(|boundary| (boundary.position - 60.0).abs() < BREAK_EPSILON)
+    else {
+      panic!("expected forced boundary at the 60px track edge, got {forced:?}");
+    };
+    assert_eq!(boundary.page_side, Some(PageSide::Left));
+  }
+
+  #[test]
+  fn row_flex_item_page_side_breaks_map_to_line_boundaries() {
+    let mut flex_style = ComputedStyle::default();
+    flex_style.display = Display::Flex;
+    flex_style.flex_direction = FlexDirection::Row;
+    let flex_style = Arc::new(flex_style);
+
+    let mut break_style = ComputedStyle::default();
+    break_style.display = Display::Block;
+    break_style.break_after = BreakBetween::Recto;
+    let break_style = Arc::new(break_style);
+
+    let flex = FragmentNode::new_block_styled(
+      Rect::from_xywh(0.0, 0.0, 100.0, 100.0),
+      vec![
+        // Line 1: full-width item.
+        FragmentNode::new_block_styled(
+          Rect::from_xywh(0.0, 0.0, 100.0, 40.0),
+          vec![],
+          break_style,
+        ),
+        // Line 2: wrap resets main-axis start to 0 (x=0).
+        FragmentNode::new_block(Rect::from_xywh(0.0, 40.0, 100.0, 60.0), vec![]),
+      ],
+      flex_style,
+    );
+
+    let forced = collect_forced_boundaries_for_pagination_with_axes_and_page_progression(
+      &flex,
+      0.0,
+      default_axes(),
+      true,
+    );
+    let Some(boundary) = forced
+      .iter()
+      .find(|boundary| (boundary.position - 40.0).abs() < BREAK_EPSILON)
+    else {
+      panic!("expected forced boundary at the first flex line end (40px), got {forced:?}");
+    };
+    assert_eq!(boundary.page_side, Some(PageSide::Right));
+
+    // Ensure recto/verso mapping respects page progression direction.
+    let forced_rtl = collect_forced_boundaries_for_pagination_with_axes_and_page_progression(
+      &flex,
+      0.0,
+      default_axes(),
+      false,
+    );
+    let Some(boundary_rtl) = forced_rtl
+      .iter()
+      .find(|boundary| (boundary.position - 40.0).abs() < BREAK_EPSILON)
+    else {
+      panic!("expected forced boundary at the first flex line end (40px), got {forced_rtl:?}");
+    };
+    assert_eq!(boundary_rtl.page_side, Some(PageSide::Left));
+  }
+
+  #[test]
+  fn conflicting_page_side_breaks_merge_to_unspecified() {
+    let mut grid_style = ComputedStyle::default();
+    grid_style.display = Display::Grid;
+    let grid_style = Arc::new(grid_style);
+
+    let mut left_style = ComputedStyle::default();
+    left_style.display = Display::Block;
+    left_style.break_after = BreakBetween::Left;
+    let left_style = Arc::new(left_style);
+
+    let mut right_style = ComputedStyle::default();
+    right_style.display = Display::Block;
+    right_style.break_before = BreakBetween::Right;
+    let right_style = Arc::new(right_style);
+
+    let mut left_again_style = ComputedStyle::default();
+    left_again_style.display = Display::Block;
+    left_again_style.break_before = BreakBetween::Left;
+    let left_again_style = Arc::new(left_again_style);
+
+    let mut grid = FragmentNode::new_block_styled(
+      Rect::from_xywh(0.0, 0.0, 100.0, 120.0),
+      vec![
+        FragmentNode::new_block_styled(Rect::from_xywh(0.0, 0.0, 100.0, 60.0), vec![], left_style),
+        FragmentNode::new_block_styled(
+          Rect::from_xywh(0.0, 60.0, 100.0, 60.0),
+          vec![],
+          right_style,
+        ),
+        FragmentNode::new_block_styled(
+          Rect::from_xywh(0.0, 60.0, 100.0, 60.0),
+          vec![],
+          left_again_style,
+        ),
+      ],
+      grid_style,
+    );
+    grid.grid_tracks = Some(Arc::new(GridTrackRanges {
+      rows: vec![(0.0, 60.0), (60.0, 120.0)],
+      columns: Vec::new(),
+    }));
+    grid.grid_fragmentation = Some(Arc::new(GridFragmentationInfo {
+      items: vec![
+        GridItemFragmentationData {
+          box_id: 1,
+          row_start: 1,
+          row_end: 2,
+          column_start: 1,
+          column_end: 2,
+        },
+        GridItemFragmentationData {
+          box_id: 2,
+          row_start: 2,
+          row_end: 3,
+          column_start: 1,
+          column_end: 2,
+        },
+        GridItemFragmentationData {
+          box_id: 3,
+          row_start: 2,
+          row_end: 3,
+          column_start: 1,
+          column_end: 2,
+        },
+      ],
+    }));
+
+    let forced = collect_forced_boundaries_for_pagination_with_axes_and_page_progression(
+      &grid,
+      0.0,
+      default_axes(),
+      true,
+    );
+    let Some(boundary) = forced
+      .iter()
+      .find(|boundary| (boundary.position - 60.0).abs() < BREAK_EPSILON)
+    else {
+      panic!("expected forced boundary at the 60px track edge, got {forced:?}");
+    };
+    assert_eq!(
+      boundary.page_side, None,
+      "conflicting side constraints should merge to no side requirement"
     );
   }
 
