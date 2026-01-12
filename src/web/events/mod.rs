@@ -995,7 +995,6 @@ fn build_event_path(
   // Spec-driven path construction, with a hard bound + cycle detection for host-defined parent
   // chains (e.g. `new EventTarget(self)`).
   let mut target_var = target;
-  let mut slot_in_closed_tree = false;
   let mut parent = event_target_parent(target_var, event, first_invocation_root, dom, registry);
 
   for _ in 0..1024 {
@@ -1006,6 +1005,25 @@ fn build_event_path(
     if !seen.insert(parent_target) {
       break;
     }
+
+    // DOM: If we're traversing from a slottable to its assigned slot, we must mark whether that
+    // slot is in a closed shadow tree so `Event.composedPath()` can hide closed shadow internals
+    // without hiding the slotted node itself.
+    //
+    // Spec term: `slot-in-closed-tree` (per-path-entry boolean).
+    let slot_in_closed_tree = match (path.last().map(|e| e.invocation_target), parent_target) {
+      (Some(EventTargetId::Node(slottable)), EventTargetId::Node(slot)) => {
+        if dom.find_slot_for_slottable(slottable, /* open */ false) == Some(slot) {
+          dom
+            .containing_shadow_root(slot)
+            .and_then(|sr| dom.shadow_root_mode(sr))
+            .is_some_and(|mode| mode == ShadowRootMode::Closed)
+        } else {
+          false
+        }
+      }
+      _ => false,
+    };
 
     // Shadow DOM retargeting only applies to node targets. For other parent chains (including
     // `EventTargetId::Opaque`), behave like a normal ancestor chain so there is only a single
@@ -1036,7 +1054,6 @@ fn build_event_path(
     }
 
     parent = event_target_parent(parent_target, event, first_invocation_root, dom, registry);
-    slot_in_closed_tree = false;
   }
 
   path

@@ -2569,6 +2569,116 @@ fn closed_shadow_root_composed_path_hides_internal_nodes_from_outside() {
 }
 
 #[test]
+fn slot_in_closed_tree_allows_composed_path_to_include_slotted_nodes() {
+  // When a slottable is assigned into a closed shadow tree, the event path includes internal nodes
+  // (slot + shadow root). `Event.composedPath()` must hide those internal nodes from outside
+  // listeners *without* hiding the slotted node itself.
+  let html = "<!doctype html>\
+    <div id=host>\
+      <template shadowroot=closed><slot id=slot></slot></template>\
+      <span id=slotted></span>\
+    </div>";
+  let doc = crate::dom2::parse_html(html).unwrap();
+  let host = find_node_by_id(&doc, doc.root(), "host").expect("host not found");
+  let shadow_root = find_shadow_root(&doc, host).expect("shadow root not found");
+  let slot = find_node_by_id(&doc, shadow_root, "slot").expect("slot not found");
+  let slotted = find_node_by_id(&doc, host, "slotted").expect("slotted node not found");
+
+  let registry = EventListenerRegistry::new();
+  let type_ = "x";
+  let id_document_capture = ListenerId::new(1);
+  let id_slot_bubble = ListenerId::new(2);
+
+  assert!(registry.add_event_listener(
+    EventTargetId::Document,
+    type_,
+    id_document_capture,
+    AddEventListenerOptions {
+      capture: true,
+      ..Default::default()
+    }
+  ));
+  assert!(registry.add_event_listener(
+    EventTargetId::Node(slot),
+    type_,
+    id_slot_bubble,
+    AddEventListenerOptions::default()
+  ));
+
+  let mut invoker = TraceInvoker {
+    labels: HashMap::from([
+      (id_document_capture, "document_capture"),
+      (id_slot_bubble, "slot_bubble"),
+    ]),
+    calls: Vec::new(),
+  };
+
+  let mut event = Event::new(
+    type_,
+    EventInit {
+      bubbles: true,
+      composed: true,
+      ..Default::default()
+    },
+  );
+  dispatch_event(
+    EventTargetId::Node(slotted),
+    &mut event,
+    &doc,
+    &registry,
+    &mut invoker,
+  )
+  .unwrap();
+
+  assert_eq!(
+    invoker.calls.iter().map(|c| c.label).collect::<Vec<_>>(),
+    vec!["document_capture", "slot_bubble"],
+    "expected document capture + slot bubble listeners to be invoked"
+  );
+
+  let document_call = invoker
+    .calls
+    .iter()
+    .find(|c| c.label == "document_capture")
+    .expect("document_capture should record composed path");
+  assert_eq!(document_call.target, Some(EventTargetId::Node(slotted)));
+  assert_eq!(document_call.event_phase, EventPhase::Capturing);
+  assert_eq!(document_call.current_target, Some(EventTargetId::Document));
+
+  // Outside listeners should not see closed shadow internals in composed_path(), but must still see
+  // the slotted node.
+  assert_eq!(
+    document_call.composed_path.first().copied(),
+    Some(EventTargetId::Node(slotted))
+  );
+  assert!(document_call.composed_path.contains(&EventTargetId::Node(host)));
+  assert!(document_call.composed_path.contains(&EventTargetId::Document));
+  assert!(document_call.composed_path.contains(&EventTargetId::Window));
+  assert!(
+    !document_call.composed_path.contains(&EventTargetId::Node(slot)),
+    "outside listeners must not observe nodes inside a closed shadow root"
+  );
+  assert!(
+    !document_call
+      .composed_path
+      .contains(&EventTargetId::Node(shadow_root)),
+    "outside listeners must not observe a closed shadow root node in composed_path()"
+  );
+
+  // Inside listeners (slot) should be able to see closed tree internals.
+  let slot_call = invoker
+    .calls
+    .iter()
+    .find(|c| c.label == "slot_bubble")
+    .expect("slot_bubble should record composed path");
+  assert_eq!(slot_call.current_target, Some(EventTargetId::Node(slot)));
+  assert_eq!(slot_call.event_phase, EventPhase::Bubbling);
+  assert!(slot_call.composed_path.contains(&EventTargetId::Node(slot)));
+  assert!(slot_call.composed_path.contains(&EventTargetId::Node(shadow_root)));
+  assert!(slot_call.composed_path.contains(&EventTargetId::Node(slotted)));
+}
+
+#[test]
 fn has_listeners_for_dispatch_respects_composed_shadow_boundary() {
   let html = "<!doctype html><div id=host><template shadowroot=open><span id=inner></span></template><p id=light></p></div>";
   let doc = crate::dom2::parse_html(html).unwrap();

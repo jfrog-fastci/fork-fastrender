@@ -133,7 +133,7 @@ impl Document {
   ///
   /// This implements the relevant subset of WHATWG DOM's `get the parent` algorithms for
   /// `Node`/`ShadowRoot`:
-  /// - For `Node`: parent (TODO: assigned slot), but stops at inert `<template>` boundaries.
+  /// - For `Node`: assigned slot (when assigned) or parent, but stops at inert `<template>` boundaries.
   /// - For `ShadowRoot`: returns null iff `!event.composed` and this shadow root is the tree root of
   ///   the first invocation target; otherwise returns the host element.
   pub fn get_parent_for_event(
@@ -153,7 +153,14 @@ impl Document {
       return self.shadow_root_host(node);
     }
 
-    // TODO: Handle slottables by returning the assigned slot when assigned.
+    // Slottables propagate events to their assigned slot when assigned (Shadow DOM slotting).
+    //
+    // For event dispatch we must traverse assigned slots regardless of shadow root mode (open/closed),
+    // so `open=false`.
+    if let Some(slot) = self.find_slot_for_slottable(node, /* open */ false) {
+      return Some(slot);
+    }
+
     let parent = self.parent_node(node)?;
     if self.node(parent).inert_subtree {
       return None;
