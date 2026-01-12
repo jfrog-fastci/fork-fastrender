@@ -3810,4 +3810,77 @@ mod tests {
       assert_eq!(v["len2Again"], 2);
     });
   }
+
+  #[test]
+  fn option_selected_property_affects_select_selection() {
+    let rt = Runtime::new().unwrap();
+    let context = Context::full(&rt).unwrap();
+    context.with(|ctx| {
+      install_dom_shims(ctx.clone(), &ctx.globals()).unwrap();
+
+      let v = eval_json(
+        ctx.clone(),
+        r#"
+        (function () {
+          var select = document.createElement("select");
+          var optA = document.createElement("option");
+          optA.textContent = "A";
+          select.appendChild(optA);
+
+          var optB = document.createElement("option");
+          optB.value = "b";
+          optB.textContent = "B";
+          select.appendChild(optB);
+
+          var optAValue = optA.value;
+          var optBValue = optB.value;
+          var defaultSelectedIndex = select.selectedIndex;
+          var defaultSelectValue = select.value;
+
+          optB.selected = true;
+          var afterSetSelectedIndex = select.selectedIndex;
+          var afterSetSelectValue = select.value;
+          var optBSelectedAfterTrue = optB.selected;
+          var optBSelectedAttrAfterTrue = optB.getAttribute("selected") !== null;
+
+          optB.selected = false;
+          var afterClearSelectedIndex = select.selectedIndex;
+          var afterClearSelectValue = select.value;
+          var optBSelectedAfterFalse = optB.selected;
+          var optBSelectedAttrAfterFalse = optB.getAttribute("selected") !== null;
+
+          return JSON.stringify({
+            optAValue: optAValue,
+            optBValue: optBValue,
+            defaultSelectedIndex: defaultSelectedIndex,
+            defaultSelectValue: defaultSelectValue,
+            afterSetSelectedIndex: afterSetSelectedIndex,
+            afterSetSelectValue: afterSetSelectValue,
+            optBSelectedAfterTrue: optBSelectedAfterTrue,
+            optBSelectedAttrAfterTrue: optBSelectedAttrAfterTrue,
+            afterClearSelectedIndex: afterClearSelectedIndex,
+            afterClearSelectValue: afterClearSelectValue,
+            optBSelectedAfterFalse: optBSelectedAfterFalse,
+            optBSelectedAttrAfterFalse: optBSelectedAttrAfterFalse,
+          });
+        })()
+        "#,
+      );
+
+      assert_eq!(v["optAValue"], "A");
+      assert_eq!(v["optBValue"], "b");
+      assert_eq!(v["defaultSelectedIndex"], 0);
+      assert_eq!(v["defaultSelectValue"], "A");
+
+      assert_eq!(v["afterSetSelectedIndex"], 1);
+      assert_eq!(v["afterSetSelectValue"], "b");
+      assert_eq!(v["optBSelectedAfterTrue"], true);
+      assert_eq!(v["optBSelectedAttrAfterTrue"], true);
+
+      assert_eq!(v["afterClearSelectedIndex"], 0);
+      assert_eq!(v["afterClearSelectValue"], "A");
+      assert_eq!(v["optBSelectedAfterFalse"], false);
+      assert_eq!(v["optBSelectedAttrAfterFalse"], false);
+    });
+  }
 }
