@@ -13,7 +13,7 @@ pub const ABOUT_TEST_FORM: &str = "about:test-form";
 use std::sync::{OnceLock, RwLock};
 use std::time::SystemTime;
 
-use crate::ui::{BookmarkNode, BookmarkStore, GlobalHistoryStore};
+use crate::ui::{BookmarkId, BookmarkNode, BookmarkStore, GlobalHistoryStore};
 
 #[derive(Debug, Clone, Default)]
 pub struct AboutPageSnapshot {
@@ -77,14 +77,23 @@ pub fn sync_about_page_snapshot_history_from_global_history_store(store: &Global
 }
 
 fn bookmark_snapshots_from_store(bookmarks: &BookmarkStore) -> Vec<BookmarkSnapshot> {
-  bookmarks
-    .roots
-    .iter()
-    .filter_map(|id| match bookmarks.nodes.get(id) {
-      Some(BookmarkNode::Bookmark(entry)) => {
+  let mut out = Vec::new();
+  let mut seen = std::collections::HashSet::<BookmarkId>::new();
+  // Use an explicit stack to keep ordering stable and avoid recursion.
+  let mut stack: Vec<BookmarkId> = bookmarks.roots.iter().rev().copied().collect();
+
+  while let Some(id) = stack.pop() {
+    if !seen.insert(id) {
+      continue;
+    }
+    let Some(node) = bookmarks.nodes.get(&id) else {
+      continue;
+    };
+    match node {
+      BookmarkNode::Bookmark(entry) => {
         let url = entry.url.trim();
         if url.is_empty() {
-          return None;
+          continue;
         }
         let title = entry
           .title
@@ -92,14 +101,21 @@ fn bookmark_snapshots_from_store(bookmarks: &BookmarkStore) -> Vec<BookmarkSnaps
           .map(str::trim)
           .filter(|t| !t.is_empty())
           .map(str::to_string);
-        Some(BookmarkSnapshot {
+        out.push(BookmarkSnapshot {
           title,
           url: url.to_string(),
-        })
+        });
       }
-      _ => None,
-    })
-    .collect()
+      BookmarkNode::Folder(folder) => {
+        // Maintain folder order by pushing children in reverse onto the LIFO stack.
+        for child in folder.children.iter().rev() {
+          stack.push(*child);
+        }
+      }
+    }
+  }
+
+  out
 }
 
 fn history_snapshots_from_global_history_store(store: &GlobalHistoryStore) -> Vec<HistorySnapshot> {
@@ -2093,6 +2109,44 @@ mod tests {
     let html_filtered = html_for_about_url("about:bookmarks?q=rust").unwrap();
     assert!(!html_filtered.contains("https://example.com/"));
     assert!(html_filtered.contains("https://www.rust-lang.org/"));
+
+    set_about_page_snapshot(before);
+  }
+
+  #[test]
+  fn about_snapshot_from_stores_includes_nested_bookmarks() {
+    let _lock = SNAPSHOT_TEST_LOCK
+      .lock()
+      .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let before = about_page_snapshot();
+
+    let mut bookmarks = BookmarkStore::default();
+    let folder = bookmarks.create_folder("Folder".to_string(), None).unwrap();
+    bookmarks
+      .add(
+        "https://example.com/nested".to_string(),
+        Some("Nested Bookmark".to_string()),
+        Some(folder),
+      )
+      .unwrap();
+
+    let history = GlobalHistoryStore::default();
+    set_about_snapshot_from_stores(&bookmarks, &history);
+
+    let snapshot = about_page_snapshot();
+    assert!(
+      snapshot
+        .bookmarks
+        .iter()
+        .any(|bookmark| bookmark.url == "https://example.com/nested"),
+      "expected nested bookmark to appear in about-page snapshot"
+    );
+
+    let html = html_for_about_url(ABOUT_BOOKMARKS).unwrap();
+    assert!(
+      html.contains("https://example.com/nested"),
+      "expected about:bookmarks HTML to include nested bookmark URL"
+    );
 
     set_about_page_snapshot(before);
   }
