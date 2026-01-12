@@ -2,6 +2,8 @@ use assert_cmd::Command;
 use std::fs;
 use std::time::Duration;
 use tempfile::tempdir;
+use typecheck_ts_harness::expectations::ExpectationKind;
+use typecheck_ts_harness::Expectations;
 
 const CLI_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -228,25 +230,6 @@ const EXPECTED_CONFORMANCE_TRIAGE: &str = r#"{
     }
   ]
 }
-"#;
-
-const EXPECTED_CONFORMANCE_MANIFEST_SNIPPET: &str = r#"[[expectations]]
-id = "checker/c.ts"
-status = "xfail"
-reason = "triage: rust_extra_diagnostics TS1111"
-tracking_issue = "TODO"
-
-[[expectations]]
-id = "checker/d.ts"
-status = "xfail"
-reason = "triage: rust_extra_diagnostics TS9999"
-tracking_issue = "TODO"
-
-[[expectations]]
-id = "compiler/a.ts"
-status = "xfail"
-reason = "triage: rust_missing_diagnostics TS1111"
-tracking_issue = "TODO"
 "#;
 
 const EXPECTED_CONFORMANCE_TRIAGE_WITH_BASELINE: &str = r#"{
@@ -646,7 +629,31 @@ fn triage_can_emit_manifest_suggestions_as_toml() {
     "expected human summary on stderr"
   );
   let stdout = String::from_utf8_lossy(&output.stdout);
-  assert_eq!(stdout, EXPECTED_CONFORMANCE_MANIFEST_SNIPPET);
+  let expectations = Expectations::from_str(&stdout).expect("manifest snippet should parse");
+
+  let c = expectations.lookup("checker/c.ts");
+  assert_eq!(c.expectation.kind, ExpectationKind::Xfail);
+  assert_eq!(
+    c.expectation.reason.as_deref(),
+    Some("triage: rust_extra_diagnostics TS1111")
+  );
+  assert_eq!(c.expectation.tracking_issue.as_deref(), Some("TODO"));
+
+  let d = expectations.lookup("checker/d.ts");
+  assert_eq!(d.expectation.kind, ExpectationKind::Xfail);
+  assert_eq!(
+    d.expectation.reason.as_deref(),
+    Some("triage: rust_extra_diagnostics TS9999")
+  );
+  assert_eq!(d.expectation.tracking_issue.as_deref(), Some("TODO"));
+
+  let a = expectations.lookup("compiler/a.ts");
+  assert_eq!(a.expectation.kind, ExpectationKind::Xfail);
+  assert_eq!(
+    a.expectation.reason.as_deref(),
+    Some("triage: rust_missing_diagnostics TS1111")
+  );
+  assert_eq!(a.expectation.tracking_issue.as_deref(), Some("TODO"));
 }
 
 #[test]
