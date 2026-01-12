@@ -1150,6 +1150,44 @@ mod tests {
   }
 
   #[test]
+  fn structured_clone_rejects_xml_http_request() -> Result<()> {
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+
+    let out = host.exec_script(
+      "(() => {\n\
+        try {\n\
+          structuredClone(new XMLHttpRequest());\n\
+          return false;\n\
+        } catch (e) {\n\
+          return !!(e && e.name === 'DataCloneError');\n\
+        }\n\
+      })()",
+    )?;
+    assert_eq!(out, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn structured_clone_rejects_web_socket() -> Result<()> {
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+
+    let out = host.exec_script(
+      "(() => {\n\
+        try {\n\
+          structuredClone(new WebSocket('ws://127.0.0.1:1/'));\n\
+          return false;\n\
+        } catch (e) {\n\
+          return !!(e && e.name === 'DataCloneError');\n\
+        }\n\
+      })()",
+    )?;
+    assert_eq!(out, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
   fn generated_vmjs_url_search_params_installer_is_idempotent_and_does_not_clobber_dom(
   ) -> Result<()> {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);

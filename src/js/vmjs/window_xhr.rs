@@ -32,7 +32,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 use std::{sync::mpsc, thread};
 use vm_js::{
-  GcObject, Heap, NativeConstructId, NativeFunctionId, PropertyDescriptor, PropertyKey,
+  GcObject, Heap, HostSlots, NativeConstructId, NativeFunctionId, PropertyDescriptor, PropertyKey,
   PropertyKind, Realm, RootId, Scope, Value, Vm, VmError, VmHost, VmHostHooks,
 };
 
@@ -45,6 +45,10 @@ const XHR_DONE: u8 = 4;
 const ENV_ID_KEY: &str = "__fastrender_xhr_env_id";
 const XHR_ID_KEY: &str = "__fastrender_xhr_id";
 const LISTENERS_KEY: &str = "__fastrender_xhr_listeners";
+
+// Brand `XMLHttpRequest` wrappers as platform objects via HostSlots so structuredClone rejects them.
+const XHR_HOST_TAG: u64 = 0x584D_4C48_5454_5052; // "XMLHTTPR"
+const XHR_UPLOAD_HOST_TAG: u64 = 0x5848_5255_504C_5F5F; // "XHRUPL__"
 
 // Conservative, defensive limits.
 const XHR_METHOD_MAX_BYTES: usize = 64;
@@ -448,6 +452,12 @@ fn xhr_info_from_this(scope: &mut Scope<'_>, this: Value) -> Result<(u64, u64, G
   let Value::Object(obj) = this else {
     return Err(VmError::TypeError("XMLHttpRequest: illegal invocation"));
   };
+  let Some(slots) = scope.heap().object_host_slots(obj)? else {
+    return Err(VmError::TypeError("XMLHttpRequest: illegal invocation"));
+  };
+  if slots.a != XHR_HOST_TAG {
+    return Err(VmError::TypeError("XMLHttpRequest: illegal invocation"));
+  }
   let env_id_val = get_data_prop(scope, obj, ENV_ID_KEY)?;
   let xhr_id_val = get_data_prop(scope, obj, XHR_ID_KEY)?;
   let env_id = number_to_u64(env_id_val)?;
@@ -521,6 +531,13 @@ fn xhr_constructor_construct(
   let obj = scope.alloc_object()?;
   scope.push_root(Value::Object(obj))?;
   scope.heap_mut().object_set_prototype(obj, Some(proto))?;
+  scope.heap_mut().object_set_host_slots(
+    obj,
+    HostSlots {
+      a: XHR_HOST_TAG,
+      b: 0,
+    },
+  )?;
 
   // Hidden association to Rust state.
   set_data_prop(scope, obj, ENV_ID_KEY, Value::Number(env_id as f64), false)?;
@@ -546,6 +563,13 @@ fn xhr_constructor_construct(
     .intrinsics()
     .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
   let upload = scope.alloc_object_with_prototype(Some(intr.object_prototype()))?;
+  scope.heap_mut().object_set_host_slots(
+    upload,
+    HostSlots {
+      a: XHR_UPLOAD_HOST_TAG,
+      b: 0,
+    },
+  )?;
   scope.push_root(Value::Object(upload))?;
 
   let add_name = scope.alloc_string("addEventListener")?;

@@ -26,8 +26,8 @@ use tungstenite::protocol::{CloseFrame, Message};
 use tungstenite::{client::IntoClientRequest, connect};
 use vm_js::iterator::{self, CloseCompletionKind};
 use vm_js::{
-  GcObject, GcString, Heap, NativeConstructId, NativeFunctionId, PropertyDescriptor, PropertyKey, PropertyKind, Realm,
-  Scope, Value, Vm, VmError, VmHost, VmHostHooks, WeakGcObject,
+  GcObject, GcString, Heap, HostSlots, NativeConstructId, NativeFunctionId, PropertyDescriptor,
+  PropertyKey, PropertyKind, Realm, Scope, Value, Vm, VmError, VmHost, VmHostHooks, WeakGcObject,
 };
 
 const SLOT_ENV_ID: usize = 0;
@@ -37,6 +37,9 @@ const WS_ID_KEY: &str = "__fastrender_websocket_id";
 
 // Must match the brand key used by `WindowRealm`'s `EventTarget` implementation.
 const EVENT_TARGET_BRAND_KEY: &str = "__fastrender_event_target";
+
+// Brand WebSocket wrappers as platform objects via HostSlots so structuredClone rejects them.
+const WEBSOCKET_HOST_TAG: u64 = 0x5745_4253_4F43_4B54; // "WEBSOCKT"
 
 pub const WS_CONNECTING: u16 = 0;
 pub const WS_OPEN: u16 = 1;
@@ -247,6 +250,12 @@ fn parse_env_and_ws_id(scope: &mut Scope<'_>, this: Value) -> Result<(u64, u64, 
     return Err(VmError::TypeError("Illegal invocation"));
   };
   if !scope.heap().is_valid_object(obj) {
+    return Err(VmError::TypeError("Illegal invocation"));
+  }
+  let Some(slots) = scope.heap().object_host_slots(obj)? else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+  if slots.a != WEBSOCKET_HOST_TAG {
     return Err(VmError::TypeError("Illegal invocation"));
   }
 
@@ -520,6 +529,13 @@ fn websocket_ctor_construct<Host: WindowRealmHost + 'static>(
   if let Some(proto) = proto {
     scope.heap_mut().object_set_prototype(obj, Some(proto))?;
   }
+  scope.heap_mut().object_set_host_slots(
+    obj,
+    HostSlots {
+      a: WEBSOCKET_HOST_TAG,
+      b: 0,
+    },
+  )?;
 
   // Brand the object as an EventTarget so `addEventListener` works.
   let brand_key = alloc_key(scope, EVENT_TARGET_BRAND_KEY)?;
