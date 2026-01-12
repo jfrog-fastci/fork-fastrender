@@ -347,6 +347,14 @@ impl SourceTextModuleRecord {
     };
     let top = parse_with_options(&source.text, opts)
       .map_err(|err| VmError::Syntax(vec![err.to_diagnostic(FileId(0))]))?;
+    {
+      let mut tick = || Ok(());
+      crate::early_errors::validate_top_level(
+        &top.stx.body,
+        crate::early_errors::EarlyErrorOptions::module(),
+        &mut tick,
+      )?;
+    }
     let mut cancel = || Ok(());
     let mut record = module_record_from_top_level(&top, &mut cancel)?;
     record.source = Some(source);
@@ -363,6 +371,11 @@ impl SourceTextModuleRecord {
     };
     let top = vm.parse_top_level_with_budget(&source.text, opts)?;
     let mut cancel = || vm.tick();
+    crate::early_errors::validate_top_level(
+      &top.stx.body,
+      crate::early_errors::EarlyErrorOptions::module(),
+      &mut cancel,
+    )?;
     let mut record = module_record_from_top_level(&top, &mut cancel)?;
     record.source = Some(source);
     record.ast = Some(Arc::new(top));
@@ -378,6 +391,11 @@ impl SourceTextModuleRecord {
     };
     let top = vm.parse_top_level_with_budget(&source.text, opts)?;
     let mut cancel = || vm.tick();
+    crate::early_errors::validate_top_level(
+      &top.stx.body,
+      crate::early_errors::EarlyErrorOptions::module(),
+      &mut cancel,
+    )?;
     let mut record = module_record_from_top_level(&top, &mut cancel)?;
     record.source = Some(source);
     record.ast = Some(Arc::new(top));

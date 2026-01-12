@@ -1106,6 +1106,14 @@ impl JsRuntime {
       vm_frame.tick()?;
 
       let strict = detect_use_strict_directive(&top.stx.body, || vm_frame.tick())?;
+      {
+        let mut tick = || vm_frame.tick();
+        crate::early_errors::validate_top_level(
+          &top.stx.body,
+          crate::early_errors::EarlyErrorOptions::script(strict),
+          &mut tick,
+        )?;
+      }
 
       let mut scope = self.heap.scope();
       // In classic scripts, top-level `this` is the global object (even in strict mode).
@@ -1129,9 +1137,15 @@ impl JsRuntime {
           value: thrown.value,
           stack: thrown.stack,
         }),
-        Completion::Return(_) => Err(VmError::Unimplemented("return outside of function")),
-        Completion::Break(..) => Err(VmError::Unimplemented("break outside of loop")),
-        Completion::Continue(..) => Err(VmError::Unimplemented("continue outside of loop")),
+        Completion::Return(_) => Err(VmError::InvariantViolation(
+          "script evaluation produced Return completion (early errors should prevent this)",
+        )),
+        Completion::Break(..) => Err(VmError::InvariantViolation(
+          "script evaluation produced Break completion (early errors should prevent this)",
+        )),
+        Completion::Continue(..) => Err(VmError::InvariantViolation(
+          "script evaluation produced Continue completion (early errors should prevent this)",
+        )),
       }
     })();
 
@@ -1191,6 +1205,14 @@ impl JsRuntime {
       vm_frame.tick()?;
 
       let strict = detect_use_strict_directive(&top.stx.body, || vm_frame.tick())?;
+      {
+        let mut tick = || vm_frame.tick();
+        crate::early_errors::validate_top_level(
+          &top.stx.body,
+          crate::early_errors::EarlyErrorOptions::script(strict),
+          &mut tick,
+        )?;
+      }
 
       let mut scope = self.heap.scope();
       // In classic scripts, top-level `this` is the global object (even in strict mode).
@@ -1214,9 +1236,15 @@ impl JsRuntime {
           value: thrown.value,
           stack: thrown.stack,
         }),
-        Completion::Return(_) => Err(VmError::Unimplemented("return outside of function")),
-        Completion::Break(..) => Err(VmError::Unimplemented("break outside of loop")),
-        Completion::Continue(..) => Err(VmError::Unimplemented("continue outside of loop")),
+        Completion::Return(_) => Err(VmError::InvariantViolation(
+          "script evaluation produced Return completion (early errors should prevent this)",
+        )),
+        Completion::Break(..) => Err(VmError::InvariantViolation(
+          "script evaluation produced Break completion (early errors should prevent this)",
+        )),
+        Completion::Continue(..) => Err(VmError::InvariantViolation(
+          "script evaluation produced Continue completion (early errors should prevent this)",
+        )),
       }
     })();
 
@@ -4618,7 +4646,11 @@ impl<'a> Evaluator<'a> {
       Expr::IdPat(id) => Ok(Reference::Binding(&id.stx.name)),
       Expr::Member(member) => {
         if member.stx.optional_chaining {
-          return Err(VmError::Unimplemented("optional chaining member access"));
+          // Optional chaining is never a valid assignment/update target; this should be rejected by
+          // an early error pass before evaluation begins.
+          return Err(VmError::InvariantViolation(
+            "optional chaining used in reference position",
+          ));
         }
         let base = self.eval_expr(scope, &member.stx.left)?;
         if is_nullish(base) {
@@ -4638,8 +4670,8 @@ impl<'a> Evaluator<'a> {
       }
       Expr::ComputedMember(member) => {
         if member.stx.optional_chaining {
-          return Err(VmError::Unimplemented(
-            "optional chaining computed member access",
+          return Err(VmError::InvariantViolation(
+            "optional chaining used in reference position",
           ));
         }
         let base = self.eval_expr(scope, &member.stx.object)?;
@@ -6372,8 +6404,47 @@ impl<'a> Evaluator<'a> {
       dialect: Dialect::Ecma,
       source_type: SourceType::Script,
     };
-    let top = self.vm.parse_top_level_with_budget(&source.text, opts)?;
+    // Like the Function constructor, `eval("...")` parse/early errors are JS-catchable.
+    let top = match self.vm.parse_top_level_with_budget(&source.text, opts) {
+      Ok(top) => top,
+      Err(VmError::Syntax(diags)) => {
+        let intr = self
+          .vm
+          .intrinsics()
+          .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+        let message = diags
+          .first()
+          .map(|d| d.message.as_str())
+          .unwrap_or("Invalid or unexpected token");
+        let err_obj = crate::error_object::new_syntax_error_object(scope, &intr, message)?;
+        return Err(VmError::Throw(err_obj));
+      }
+      Err(err) => return Err(err),
+    };
     let strict = self.strict || detect_use_strict_directive(&top.stx.body, || self.tick())?;
+    {
+      let mut tick = || self.tick();
+      match crate::early_errors::validate_top_level(
+        &top.stx.body,
+        crate::early_errors::EarlyErrorOptions::script(strict),
+        &mut tick,
+      ) {
+        Ok(()) => {}
+        Err(VmError::Syntax(diags)) => {
+          let intr = self
+            .vm
+            .intrinsics()
+            .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+          let message = diags
+            .first()
+            .map(|d| d.message.as_str())
+            .unwrap_or("Invalid or unexpected token");
+          let err_obj = crate::error_object::new_syntax_error_object(scope, &intr, message)?;
+          return Err(VmError::Throw(err_obj));
+        }
+        Err(err) => return Err(err),
+      }
+    }
 
     // Save and restore the runtime's source and lexical environment while running eval code. This
     // keeps nested function source spans aligned with the eval input.
@@ -6398,9 +6469,15 @@ impl<'a> Evaluator<'a> {
           value: thrown.value,
           stack: thrown.stack,
         }),
-        Completion::Return(_) => Err(VmError::Unimplemented("return in eval")),
-        Completion::Break(..) => Err(VmError::Unimplemented("break in eval")),
-        Completion::Continue(..) => Err(VmError::Unimplemented("continue in eval")),
+        Completion::Return(_) => Err(VmError::InvariantViolation(
+          "eval produced Return completion (early errors should prevent this)",
+        )),
+        Completion::Break(..) => Err(VmError::InvariantViolation(
+          "eval produced Break completion (early errors should prevent this)",
+        )),
+        Completion::Continue(..) => Err(VmError::InvariantViolation(
+          "eval produced Continue completion (early errors should prevent this)",
+        )),
       }
     })();
 
@@ -11307,8 +11384,12 @@ fn async_start_body(
         Completion::Normal(_) => Ok(AsyncBodyResult::CompleteOk(Value::Undefined)),
         Completion::Return(v) => Ok(AsyncBodyResult::CompleteOk(v)),
         Completion::Throw(thrown) => Ok(AsyncBodyResult::CompleteThrow(thrown.value)),
-        Completion::Break(..) => Err(VmError::Unimplemented("break outside of loop")),
-        Completion::Continue(..) => Err(VmError::Unimplemented("continue outside of loop")),
+        Completion::Break(..) => Err(VmError::InvariantViolation(
+          "async function body produced Break completion (early errors should prevent this)",
+        )),
+        Completion::Continue(..) => Err(VmError::InvariantViolation(
+          "async function body produced Continue completion (early errors should prevent this)",
+        )),
       },
       Ok(AsyncEval::Suspend(mut suspend)) => {
         async_frames_push(&mut suspend.frames, AsyncFrame::RootBlockBody)?;
@@ -11369,8 +11450,16 @@ fn async_resume_from_frames(
           Completion::Normal(_) => return Ok(AsyncBodyResult::CompleteOk(Value::Undefined)),
           Completion::Return(v) => return Ok(AsyncBodyResult::CompleteOk(v)),
           Completion::Throw(thrown) => return Ok(AsyncBodyResult::CompleteThrow(thrown.value)),
-          Completion::Break(..) => return Err(VmError::Unimplemented("break outside of loop")),
-          Completion::Continue(..) => return Err(VmError::Unimplemented("continue outside of loop")),
+          Completion::Break(..) => {
+            return Err(VmError::InvariantViolation(
+              "async function body produced Break completion (early errors should prevent this)",
+            ))
+          }
+          Completion::Continue(..) => {
+            return Err(VmError::InvariantViolation(
+              "async function body produced Continue completion (early errors should prevent this)",
+            ))
+          }
         },
         AsyncState::Expr(_) => {
           return Err(VmError::InvariantViolation(
@@ -13213,8 +13302,12 @@ pub(crate) fn run_ecma_function(
           value: thrown.value,
           stack: thrown.stack,
         }),
-        Completion::Break(..) => Err(VmError::Unimplemented("break outside of loop")),
-        Completion::Continue(..) => Err(VmError::Unimplemented("continue outside of loop")),
+        Completion::Break(..) => Err(VmError::InvariantViolation(
+          "function body produced Break completion (early errors should prevent this)",
+        )),
+        Completion::Continue(..) => Err(VmError::InvariantViolation(
+          "function body produced Continue completion (early errors should prevent this)",
+        )),
       }
     }
   }
@@ -13306,9 +13399,15 @@ pub(crate) fn run_module(
           value: thrown.value,
           stack: thrown.stack,
         }),
-        Completion::Return(_) => Err(VmError::Unimplemented("return from module")),
-        Completion::Break(..) => Err(VmError::Unimplemented("break outside of loop")),
-        Completion::Continue(..) => Err(VmError::Unimplemented("continue outside of loop")),
+        Completion::Return(_) => Err(VmError::InvariantViolation(
+          "module evaluation produced Return completion (early errors should prevent this)",
+        )),
+        Completion::Break(..) => Err(VmError::InvariantViolation(
+          "module evaluation produced Break completion (early errors should prevent this)",
+        )),
+        Completion::Continue(..) => Err(VmError::InvariantViolation(
+          "module evaluation produced Continue completion (early errors should prevent this)",
+        )),
       }
     })();
 
@@ -13543,15 +13642,21 @@ pub(crate) fn run_module_until_await(
           }
           Completion::Return(_) => {
             scope.heap_mut().remove_root(last_root);
-            return Err(VmError::Unimplemented("return from module"));
+            return Err(VmError::InvariantViolation(
+              "module evaluation produced Return completion (early errors should prevent this)",
+            ));
           }
           Completion::Break(..) => {
             scope.heap_mut().remove_root(last_root);
-            return Err(VmError::Unimplemented("break outside of loop"));
+            return Err(VmError::InvariantViolation(
+              "module evaluation produced Break completion (early errors should prevent this)",
+            ));
           }
           Completion::Continue(..) => {
             scope.heap_mut().remove_root(last_root);
-            return Err(VmError::Unimplemented("continue outside of loop"));
+            return Err(VmError::InvariantViolation(
+              "module evaluation produced Continue completion (early errors should prevent this)",
+            ));
           }
         }
       }

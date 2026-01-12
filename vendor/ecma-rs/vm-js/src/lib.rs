@@ -129,6 +129,7 @@ mod code;
 mod conversion_ops;
 mod destructure;
 mod env;
+mod early_errors;
 mod error;
 mod error_object;
 mod fallible_format;

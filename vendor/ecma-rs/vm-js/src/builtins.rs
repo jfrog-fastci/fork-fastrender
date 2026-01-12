@@ -1915,6 +1915,25 @@ pub fn function_constructor_construct(
     }
     Err(err) => return Err(err),
   };
+  {
+    let mut tick = || vm.tick();
+    match crate::early_errors::validate_top_level(
+      &parsed.stx.body,
+      crate::early_errors::EarlyErrorOptions::script(false),
+      &mut tick,
+    ) {
+      Ok(()) => {}
+      Err(VmError::Syntax(diags)) => {
+        let message = diags
+          .first()
+          .map(|d| d.message.as_str())
+          .unwrap_or("Invalid or unexpected token");
+        let err_obj = crate::error_object::new_syntax_error_object(scope, &intr, message)?;
+        return Err(VmError::Throw(err_obj));
+      }
+      Err(err) => return Err(err),
+    }
+  }
 
   // Derive strictness and length from the parsed function node.
   let mut is_strict = false;
