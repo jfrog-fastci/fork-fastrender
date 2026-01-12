@@ -419,7 +419,6 @@ fn with_embedder_state_from_hooks<Host: 'static, R>(
 
   f(host)
 }
-
 fn js_string_to_rust_string(scope: &Scope<'_>, value: Value) -> Result<String, VmError> {
   let Value::String(s) = value else {
     return Err(VmError::TypeError("expected string"));

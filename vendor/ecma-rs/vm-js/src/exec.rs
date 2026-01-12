@@ -27743,10 +27743,10 @@ fn gen_resume_from_frames(
             ) {
               Ok(v) => v,
               Err(err) => {
-              state = gen_error_to_completion(evaluator, scope, err)?;
-              continue;
-            }
-          };
+                state = gen_error_to_completion(evaluator, scope, err)?;
+                continue;
+              }
+            };
             state = if returning {
               Completion::Return(value)
             } else {
