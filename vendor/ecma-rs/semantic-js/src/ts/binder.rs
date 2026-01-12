@@ -679,8 +679,8 @@ impl<'a, HP: Fn(FileId) -> Arc<HirFile>> Binder<'a, HP> {
               &aug.module.type_imports,
               &[],
               &aug.module.import_equals,
-              &aug.module.exports,
-              &aug.module.export_as_namespace,
+              &[],
+              &[],
               &aug.module.ambient_modules,
               &mut deps,
             );

@@ -2166,7 +2166,7 @@ fn export_modifier_on_ambient_module_reports_ts2668() {
 }
 
 #[test]
-fn ambient_module_in_dts_script_does_not_report_ts2395_for_namespace_merge() {
+fn ambient_module_in_dts_script_reports_ts2395_for_namespace_merge() {
   // Mirrors TypeScript's `tests/cases/compiler/namespaceNotMergedWithFunctionDefaultExport.ts`
   // (`replace-in-file/types/index.d.ts`).
   let source = r#"
@@ -2191,7 +2191,10 @@ fn ambient_module_in_dts_script_does_not_report_ts2395_for_namespace_merge() {
   let (_semantics, diags) =
     bind_ts_program(&[file], &resolver, |f| files.get(&f).unwrap().clone());
 
-  assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+  assert!(
+    diags.iter().any(|d| d.code == "TS2395"),
+    "expected TS2395, got diagnostics: {diags:?}"
+  );
 }
 
 #[test]

@@ -314,15 +314,46 @@ fn lower_block(
           }));
         }
       },
-      Stmt::ExportDefaultExpr(_) => {
-        mark_defs_in_span(
-          &result.local_defs,
-          lower,
-          stmt_range,
-          Some(DefKind::ExportAlias),
-          Exported::Default,
-          &mut result.exported,
-        );
+      Stmt::ExportDefaultExpr(expr) => {
+        // `export default foo;` contributes an exported declaration for `foo`
+        // (not a separate `default` binding), which affects merge diagnostics
+        // like TS2395. If the exported expression is a simple identifier, mark
+        // the referenced value declaration(s) as default-exported.
+        //
+        // Otherwise, fall back to tracking the synthetic `ExportAlias`
+        // definition so the module still has a default export.
+        let exported_path = entity_name_path(&expr.stx.expression);
+        let mut handled = false;
+        if let Some(path) = exported_path {
+          if path.len() == 1 {
+            let name = &path[0];
+            if let Some(defs) = defs_by_name.get(name) {
+              for def_id in defs {
+                let def = def_by_id(*def_id, &lower.defs, &lower.def_index);
+                match def.path.kind {
+                  DefKind::Function | DefKind::Class | DefKind::Var | DefKind::Enum | DefKind::ImportBinding => {
+                    result
+                      .exported
+                      .entry(*def_id)
+                      .or_insert(Exported::Default);
+                    handled = true;
+                  }
+                  _ => {}
+                }
+              }
+            }
+          }
+        }
+        if !handled {
+          mark_defs_in_span(
+            &result.local_defs,
+            lower,
+            stmt_range,
+            Some(DefKind::ExportAlias),
+            Exported::Default,
+            &mut result.exported,
+          );
+        }
       }
       Stmt::ExportAssignmentDecl(assign) => {
         let expr_span = to_range(assign.stx.expression.loc);
