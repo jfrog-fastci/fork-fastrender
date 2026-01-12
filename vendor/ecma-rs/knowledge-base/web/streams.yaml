@@ -40,3 +40,81 @@
     allocates: true
     may_throw: true
   purity: Allocating
+
+- name: TextEncoderStream
+  kind: constructor
+  aliases:
+    - TextEncoderStream
+    - window.TextEncoderStream
+    - globalThis.TextEncoderStream
+    - self.TextEncoderStream
+  since: "baseline"
+  effects:
+    allocates: true
+    may_throw: true
+  purity: Allocating
+
+- name: TextDecoderStream
+  kind: constructor
+  aliases:
+    - TextDecoderStream
+    - window.TextDecoderStream
+    - globalThis.TextDecoderStream
+    - self.TextDecoderStream
+  since: "baseline"
+  effects:
+    allocates: true
+    may_throw: true
+  purity: Allocating
+
+- name: ByteLengthQueuingStrategy
+  kind: constructor
+  aliases:
+    - ByteLengthQueuingStrategy
+    - window.ByteLengthQueuingStrategy
+    - globalThis.ByteLengthQueuingStrategy
+    - self.ByteLengthQueuingStrategy
+  since: "baseline"
+  effects:
+    allocates: true
+    may_throw: true
+  purity: Allocating
+
+- name: CountQueuingStrategy
+  kind: constructor
+  aliases:
+    - CountQueuingStrategy
+    - window.CountQueuingStrategy
+    - globalThis.CountQueuingStrategy
+    - self.CountQueuingStrategy
+  since: "baseline"
+  effects:
+    allocates: true
+    may_throw: true
+  purity: Allocating
+
+- name: CompressionStream
+  kind: constructor
+  aliases:
+    - CompressionStream
+    - window.CompressionStream
+    - globalThis.CompressionStream
+    - self.CompressionStream
+  since: "baseline"
+  effects:
+    allocates: true
+    may_throw: true
+  purity: Allocating
+
+- name: DecompressionStream
+  kind: constructor
+  aliases:
+    - DecompressionStream
+    - window.DecompressionStream
+    - globalThis.DecompressionStream
+    - self.DecompressionStream
+  since: "baseline"
+  effects:
+    allocates: true
+    may_throw: true
+  purity: Allocating

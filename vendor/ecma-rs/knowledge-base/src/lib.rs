@@ -2644,6 +2644,15 @@ properties:
       Some("node/web_streams.yaml")
     );
 
+    let encoder_stream = kb
+      .api_for_target("TextEncoderStream", &node_20)
+      .expect("TextEncoderStream should resolve for Node targets >= 18");
+    assert_eq!(encoder_stream.name, "TextEncoderStream");
+    assert_eq!(
+      kb.source_for_target("TextEncoderStream", &node_20),
+      Some("node/web_streams.yaml")
+    );
+
     let node_16 = TargetEnv::Node {
       version: Version::parse("16.0.0").unwrap(),
     };
@@ -2654,6 +2663,10 @@ properties:
     assert!(
       kb.api_for_target("ReadableStream", &node_16).is_none(),
       "ReadableStream should not resolve for Node < 18"
+    );
+    assert!(
+      kb.api_for_target("TextEncoderStream", &node_16).is_none(),
+      "TextEncoderStream should not resolve for Node < 18"
     );
   }
 
@@ -2965,6 +2978,15 @@ properties:
       Some("node/web_storage.yaml")
     );
 
+    let compression = kb
+      .api_for_target("CompressionStream", &node_25)
+      .expect("CompressionStream should resolve for Node 25+");
+    assert_eq!(compression.name, "CompressionStream");
+    assert_eq!(
+      kb.source_for_target("CompressionStream", &node_25),
+      Some("node/web_streams.yaml")
+    );
+
     let node_20 = TargetEnv::Node {
       version: Version::parse("20.0.0").unwrap(),
     };
@@ -2995,6 +3017,10 @@ properties:
     assert!(
       kb.api_for_target("localStorage.getItem", &node_20).is_none(),
       "localStorage.getItem should not resolve for Node < 25"
+    );
+    assert!(
+      kb.api_for_target("CompressionStream", &node_20).is_none(),
+      "CompressionStream should not resolve for Node < 25"
     );
   }
 

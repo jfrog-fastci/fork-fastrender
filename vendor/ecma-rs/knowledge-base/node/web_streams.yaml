@@ -30,3 +30,51 @@
     allocates: true
     may_throw: true
   purity: Allocating
+
+- name: TextEncoderStream
+  kind: constructor
+  since: "v18.0.0"
+  effects:
+    allocates: true
+    may_throw: true
+  purity: Allocating
+
+- name: TextDecoderStream
+  kind: constructor
+  since: "v18.0.0"
+  effects:
+    allocates: true
+    may_throw: true
+  purity: Allocating
+
+- name: ByteLengthQueuingStrategy
+  kind: constructor
+  since: "v18.0.0"
+  effects:
+    allocates: true
+    may_throw: true
+  purity: Allocating
+
+- name: CountQueuingStrategy
+  kind: constructor
+  since: "v18.0.0"
+  effects:
+    allocates: true
+    may_throw: true
+  purity: Allocating
+
+- name: CompressionStream
+  kind: constructor
+  since: "v25.0.0"
+  effects:
+    allocates: true
+    may_throw: true
+  purity: Allocating
+
+- name: DecompressionStream
+  kind: constructor
+  since: "v25.0.0"
+  effects:
+    allocates: true
+    may_throw: true
+  purity: Allocating
