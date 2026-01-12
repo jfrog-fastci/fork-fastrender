@@ -1616,6 +1616,10 @@ fn inline_svg_use_references<'a>(
       continue;
     }
 
+    if svg_node_has_display_none(node) {
+      continue;
+    }
+
     let mut href = None;
     for attr in node.attributes() {
       let name = attr.name();
@@ -2471,6 +2475,10 @@ fn inline_svg_image_references<'a>(
     let is_image = name.eq_ignore_ascii_case("image");
     let is_fe_image = name.eq_ignore_ascii_case("feimage");
     if !is_image && !is_fe_image {
+      continue;
+    }
+
+    if svg_node_has_display_none(node) {
       continue;
     }
 
@@ -15532,7 +15540,6 @@ mod tests_inline {
         <rect width="1" height="1" fill="url(#g)"/>
       </symbol>
     </svg>"#;
-
     let mut sprite_res = FetchedResource::new(
       sprite_svg.as_bytes().to_vec(),
       Some("image/svg+xml".to_string()),
@@ -15559,6 +15566,25 @@ mod tests_inline {
       (255, 0, 0, 255),
       "expected gradient-painted icon to render red after <use> expansion"
     );
+  }
+
+  #[test]
+  fn inline_svg_use_skips_display_none() {
+    let sprite_url = "https://example.test/sprite.svg";
+    let main_url = "https://example.test/main.svg";
+    let sprite_svg = r#"<svg xmlns="http://www.w3.org/2000/svg"><symbol id="icon"><rect width="1" height="1" fill="red"/></symbol></svg>"#;
+    let mut sprite_res = FetchedResource::new(
+      sprite_svg.as_bytes().to_vec(),
+      Some("image/svg+xml".to_string()),
+    );
+    sprite_res.status = Some(200);
+    sprite_res.final_url = Some(sprite_url.to_string());
+    let fetcher = MapFetcher::with_entries([(sprite_url.to_string(), sprite_res)]);
+
+    let main_svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"><use href="https://example.test/sprite.svg#icon" style="display:none" /></svg>"#;
+    let expanded = inline_svg_use_references(main_svg, main_url, &fetcher, None).expect("expand");
+    assert_eq!(expanded.as_ref(), main_svg);
+    assert!(fetcher.requests().is_empty(), "expected no fetches for display:none <use>");
   }
 
   #[test]
@@ -16210,7 +16236,7 @@ mod tests_inline {
     let main_url = "https://example.test/main.svg";
     let img_url = "https://example.test/img.png";
 
-    let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"><image src="https://example.test/img.png" width="1" height="1"/></svg>"#;
+    let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"><image src="https://example.test/img.png" width="1" height="1" /></svg>"#;
 
     let mut img_res = FetchedResource::new(
       encode_single_pixel_png([255, 0, 0, 255]),
@@ -16242,6 +16268,35 @@ mod tests_inline {
     assert_eq!(
       (pixel.red(), pixel.green(), pixel.blue(), pixel.alpha()),
       (255, 0, 0, 255)
+    );
+  }
+
+  #[test]
+  fn inline_svg_image_skips_display_none() {
+    let main_url = "https://example.test/main.svg";
+    let img_url = "https://example.test/img.png";
+
+    let svg = r#"<svg xmlns="http://www.w3.org/2000/svg"><image href="https://example.test/img.png" style="display:none" width="1" height="1" /></svg>"#;
+
+    let mut img_res = FetchedResource::new(
+      encode_single_pixel_png([255, 0, 0, 255]),
+      Some("image/png".to_string()),
+    );
+    img_res.status = Some(200);
+    img_res.final_url = Some(img_url.to_string());
+
+    let fetcher = MapFetcher::with_entries([(img_url.to_string(), img_res)]);
+
+    let inlined = inline_svg_image_references(svg, main_url, &fetcher, None).expect("inlined svg");
+    assert_eq!(inlined.as_ref(), svg);
+    assert!(
+      !inlined.as_ref().contains("data:image/"),
+      "expected no data URL rewrite for display:none <image>, got: {}",
+      inlined.as_ref()
+    );
+    assert!(
+      fetcher.requests().is_empty(),
+      "expected no fetches for display:none <image>"
     );
   }
 
