@@ -133,6 +133,45 @@ pub fn perform_promise_then_no_capability_with_host_and_hooks(
   crate::builtins::perform_promise_then_no_capability(vm, scope, hooks, promise, on_fulfilled, on_rejected)
 }
 
+/// `PerformPromiseThen(promise, onFulfilled, onRejected, resultCapability)`.
+///
+/// This is used by spec algorithms that must attach reactions to `promise` while wiring the result
+/// into an **explicit PromiseCapability** record (and therefore must not create a derived promise
+/// or trigger Promise species/constructor side effects).
+///
+/// Returns `capability.promise` (the passed-in capability's promise).
+pub fn perform_promise_then_with_capability_with_host_and_hooks(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host_ctx: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  promise: Value,
+  on_fulfilled: Value,
+  on_rejected: Value,
+  capability: PromiseCapability,
+) -> Result<Value, VmError> {
+  // `PerformPromiseThen` does not currently need the host context, but accept it so embeddings can
+  // thread it through spec-shaped helper APIs consistently.
+  let _ = host_ctx;
+
+  let Value::Object(promise_obj) = promise else {
+    return Err(VmError::TypeError("expected Promise object"));
+  };
+  if !scope.heap().is_promise_object(promise_obj) {
+    return Err(VmError::TypeError("expected Promise object"));
+  }
+
+  crate::builtins::perform_promise_then_with_capability(
+    vm,
+    scope,
+    hooks,
+    promise_obj,
+    on_fulfilled,
+    on_rejected,
+    capability,
+  )
+}
+
 /// Convenience wrapper around [`perform_promise_then_with_host_and_hooks`] that passes a dummy host
 /// context (`()`).
 ///

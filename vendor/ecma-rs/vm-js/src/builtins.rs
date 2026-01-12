@@ -5643,7 +5643,7 @@ pub fn promise_reject(
   Ok(capability.promise)
 }
 
-fn perform_promise_then_with_capability(
+pub(crate) fn perform_promise_then_with_capability(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
   host: &mut dyn VmHostHooks,
