@@ -4601,6 +4601,78 @@ error: {err}",
           return;
         }
 
+        let command = if cfg!(target_os = "macos") {
+          (self.modifiers.logo() || self.modifiers.ctrl()) && !self.modifiers.alt()
+        } else {
+          self.modifiers.ctrl() && !self.modifiers.alt()
+        };
+
+        if command && matches!(key, VirtualKeyCode::Z) {
+          self.send_worker_msg(fastrender::ui::UiToWorker::KeyAction {
+            tab_id,
+            key: if self.modifiers.shift() {
+              fastrender::interaction::KeyAction::Redo
+            } else {
+              fastrender::interaction::KeyAction::Undo
+            },
+          });
+          return;
+        }
+        if !cfg!(target_os = "macos")
+          && self.modifiers.ctrl()
+          && !self.modifiers.alt()
+          && !self.modifiers.shift()
+          && matches!(key, VirtualKeyCode::Y)
+        {
+          self.send_worker_msg(fastrender::ui::UiToWorker::KeyAction {
+            tab_id,
+            key: fastrender::interaction::KeyAction::Redo,
+          });
+          return;
+        }
+
+        if !self.modifiers.shift() {
+          let word_mod = if cfg!(target_os = "macos") {
+            alt_only
+          } else {
+            self.modifiers.ctrl() && !self.modifiers.alt()
+          };
+          if word_mod && matches!(key, VirtualKeyCode::Left) {
+            self.send_worker_msg(fastrender::ui::UiToWorker::KeyAction {
+              tab_id,
+              key: fastrender::interaction::KeyAction::WordLeft,
+            });
+            return;
+          }
+          if word_mod && matches!(key, VirtualKeyCode::Right) {
+            self.send_worker_msg(fastrender::ui::UiToWorker::KeyAction {
+              tab_id,
+              key: fastrender::interaction::KeyAction::WordRight,
+            });
+            return;
+          }
+        }
+
+        let word_delete_mod = if cfg!(target_os = "macos") {
+          alt_only
+        } else {
+          self.modifiers.ctrl() && !self.modifiers.alt()
+        };
+        if word_delete_mod && matches!(key, VirtualKeyCode::Back) {
+          self.send_worker_msg(fastrender::ui::UiToWorker::KeyAction {
+            tab_id,
+            key: fastrender::interaction::KeyAction::WordBackspace,
+          });
+          return;
+        }
+        if word_delete_mod && matches!(key, VirtualKeyCode::Delete) {
+          self.send_worker_msg(fastrender::ui::UiToWorker::KeyAction {
+            tab_id,
+            key: fastrender::interaction::KeyAction::WordDelete,
+          });
+          return;
+        }
+
         let key_action = match key {
           VirtualKeyCode::Back => Some(fastrender::interaction::KeyAction::Backspace),
           VirtualKeyCode::Delete => Some(fastrender::interaction::KeyAction::Delete),

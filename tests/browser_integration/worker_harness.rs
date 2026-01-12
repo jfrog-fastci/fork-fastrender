@@ -273,6 +273,22 @@ fn split_message(msg: WorkerToUi) -> (WorkerToUiEvent, Option<RenderedFrame>) {
       },
       None,
     ),
+    WorkerToUi::FindResult {
+      tab_id,
+      query,
+      case_sensitive,
+      match_count,
+      active_match_index,
+    } => (
+      WorkerToUiEvent::FindResult {
+        tab_id,
+        query,
+        case_sensitive,
+        match_count,
+        active_match_index,
+      },
+      None,
+    ),
   }
 }
 

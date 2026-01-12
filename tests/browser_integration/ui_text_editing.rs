@@ -314,3 +314,190 @@ def</textarea>
 
   Ok(())
 }
+
+#[test]
+fn word_left_moves_by_word_and_typing_inserts_at_word_boundary() -> Result<()> {
+  let _lock = super::stage_listener_test_lock();
+  let tab_id = TabId(1);
+  let viewport_css = (400, 120);
+  let url = "https://example.com/index.html";
+
+  let html = r#"<!doctype html>
+    <html>
+      <head>
+        <meta charset="utf-8">
+        <style>
+          html, body { margin: 0; padding: 0; }
+          #txt { position: absolute; left: 0; top: 0; width: 280px; height: 40px; font-family: "Noto Sans Mono"; font-size: 20px; }
+        </style>
+      </head>
+      <body>
+        <input id="txt" value="hello world">
+      </body>
+    </html>
+  "#;
+
+  let mut controller = BrowserTabController::from_html_with_renderer(
+    support::deterministic_renderer(),
+    tab_id,
+    html,
+    url,
+    viewport_css,
+    1.0,
+  )?;
+  let _ = controller.handle_message(support::request_repaint(tab_id, RepaintReason::Explicit))?;
+
+  let click = (10.0, 20.0);
+  let _ =
+    controller.handle_message(support::pointer_down(tab_id, click, PointerButton::Primary))?;
+  let _ = controller.handle_message(support::pointer_up(tab_id, click, PointerButton::Primary))?;
+  let _ = controller.handle_message(support::key_action(tab_id, KeyAction::End))?;
+
+  let _ = controller.handle_message(support::key_action(tab_id, KeyAction::WordLeft))?;
+  let _ = controller.handle_message(support::text_input(tab_id, "X"))?;
+
+  let input = find_element_by_id(controller.document().dom(), "txt");
+  assert_eq!(input.get_attribute_ref("value"), Some("hello Xworld"));
+  Ok(())
+}
+
+#[test]
+fn word_backspace_deletes_word_left_of_caret() -> Result<()> {
+  let _lock = super::stage_listener_test_lock();
+  let tab_id = TabId(1);
+  let viewport_css = (400, 120);
+  let url = "https://example.com/index.html";
+
+  let html = r#"<!doctype html>
+    <html>
+      <head>
+        <meta charset="utf-8">
+        <style>
+          html, body { margin: 0; padding: 0; }
+          #txt { position: absolute; left: 0; top: 0; width: 280px; height: 40px; font-family: "Noto Sans Mono"; font-size: 20px; }
+        </style>
+      </head>
+      <body>
+        <input id="txt" value="hello world">
+      </body>
+    </html>
+  "#;
+
+  let mut controller = BrowserTabController::from_html_with_renderer(
+    support::deterministic_renderer(),
+    tab_id,
+    html,
+    url,
+    viewport_css,
+    1.0,
+  )?;
+  let _ = controller.handle_message(support::request_repaint(tab_id, RepaintReason::Explicit))?;
+
+  let click = (10.0, 20.0);
+  let _ =
+    controller.handle_message(support::pointer_down(tab_id, click, PointerButton::Primary))?;
+  let _ = controller.handle_message(support::pointer_up(tab_id, click, PointerButton::Primary))?;
+  let _ = controller.handle_message(support::key_action(tab_id, KeyAction::End))?;
+  let _ = controller.handle_message(support::key_action(tab_id, KeyAction::WordBackspace))?;
+
+  let input = find_element_by_id(controller.document().dom(), "txt");
+  assert_eq!(input.get_attribute_ref("value"), Some("hello "));
+  Ok(())
+}
+
+#[test]
+fn backspace_deletes_grapheme_cluster_emoji_sequence() -> Result<()> {
+  let _lock = super::stage_listener_test_lock();
+  let tab_id = TabId(1);
+  let viewport_css = (400, 120);
+  let url = "https://example.com/index.html";
+
+  let html = r#"<!doctype html>
+    <html>
+      <head>
+        <meta charset="utf-8">
+        <style>
+          html, body { margin: 0; padding: 0; }
+          #txt { position: absolute; left: 0; top: 0; width: 280px; height: 40px; font-family: "Noto Sans Mono"; font-size: 20px; }
+        </style>
+      </head>
+      <body>
+        <input id="txt" value="👨‍👩‍👧‍👦">
+      </body>
+    </html>
+  "#;
+
+  let mut controller = BrowserTabController::from_html_with_renderer(
+    support::deterministic_renderer(),
+    tab_id,
+    html,
+    url,
+    viewport_css,
+    1.0,
+  )?;
+  let _ = controller.handle_message(support::request_repaint(tab_id, RepaintReason::Explicit))?;
+
+  let click = (10.0, 20.0);
+  let _ =
+    controller.handle_message(support::pointer_down(tab_id, click, PointerButton::Primary))?;
+  let _ = controller.handle_message(support::pointer_up(tab_id, click, PointerButton::Primary))?;
+  let _ = controller.handle_message(support::key_action(tab_id, KeyAction::End))?;
+  let _ = controller.handle_message(support::key_action(tab_id, KeyAction::Backspace))?;
+
+  let input = find_element_by_id(controller.document().dom(), "txt");
+  assert_eq!(input.get_attribute_ref("value"), Some(""));
+  Ok(())
+}
+
+#[test]
+fn undo_redo_restores_text_input_value() -> Result<()> {
+  let _lock = super::stage_listener_test_lock();
+  let tab_id = TabId(1);
+  let viewport_css = (400, 120);
+  let url = "https://example.com/index.html";
+
+  let html = r#"<!doctype html>
+    <html>
+      <head>
+        <meta charset="utf-8">
+        <style>
+          html, body { margin: 0; padding: 0; }
+          #txt { position: absolute; left: 0; top: 0; width: 280px; height: 40px; font-family: "Noto Sans Mono"; font-size: 20px; }
+        </style>
+      </head>
+      <body>
+        <input id="txt" value="">
+      </body>
+    </html>
+  "#;
+
+  let mut controller = BrowserTabController::from_html_with_renderer(
+    support::deterministic_renderer(),
+    tab_id,
+    html,
+    url,
+    viewport_css,
+    1.0,
+  )?;
+  let _ = controller.handle_message(support::request_repaint(tab_id, RepaintReason::Explicit))?;
+
+  let click = (10.0, 20.0);
+  let _ =
+    controller.handle_message(support::pointer_down(tab_id, click, PointerButton::Primary))?;
+  let _ = controller.handle_message(support::pointer_up(tab_id, click, PointerButton::Primary))?;
+
+  let _ = controller.handle_message(support::text_input(tab_id, "a"))?;
+  let _ = controller.handle_message(support::text_input(tab_id, "b"))?;
+  let input = find_element_by_id(controller.document().dom(), "txt");
+  assert_eq!(input.get_attribute_ref("value"), Some("ab"));
+
+  let _ = controller.handle_message(support::key_action(tab_id, KeyAction::Undo))?;
+  let input = find_element_by_id(controller.document().dom(), "txt");
+  assert_eq!(input.get_attribute_ref("value"), Some("a"));
+
+  let _ = controller.handle_message(support::key_action(tab_id, KeyAction::Redo))?;
+  let input = find_element_by_id(controller.document().dom(), "txt");
+  assert_eq!(input.get_attribute_ref("value"), Some("ab"));
+
+  Ok(())
+}

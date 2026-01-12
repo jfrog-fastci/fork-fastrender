@@ -20,6 +20,7 @@ use crate::ui::messages::{PointerButton, PointerModifiers};
 use crate::interaction::selection_serialize::{serialize_document_selection, DocumentSelection};
 use std::collections::HashMap;
 use std::sync::Arc;
+use unicode_segmentation::UnicodeSegmentation;
 
 use super::dom_mutation;
 use super::form_submit::{
@@ -63,6 +64,8 @@ pub enum InteractionAction {
 pub enum KeyAction {
   Backspace,
   Delete,
+  WordBackspace,
+  WordDelete,
   Enter,
   Tab,
   ShiftTab,
@@ -70,6 +73,8 @@ pub enum KeyAction {
   ShiftSpace,
   ArrowLeft,
   ArrowRight,
+  WordLeft,
+  WordRight,
   ShiftArrowLeft,
   ShiftArrowRight,
   ArrowUp,
@@ -79,6 +84,8 @@ pub enum KeyAction {
   ShiftHome,
   ShiftEnd,
   SelectAll,
+  Undo,
+  Redo,
 }
 
 #[derive(Debug, Clone)]
@@ -89,6 +96,7 @@ pub struct InteractionEngine {
   number_spin: Option<NumberSpinState>,
   text_drag: Option<TextDragState>,
   text_edit: Option<TextEditState>,
+  text_undo: HashMap<usize, TextUndoHistory>,
   document_selection: Option<DocumentSelection>,
   modality: InputModality,
   last_click_target: Option<usize>,
@@ -184,6 +192,74 @@ impl TextEditState {
       CaretAffinity::Downstream,
       extend_selection,
     );
+  }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TextUndoEntry {
+  value: String,
+  caret: usize,
+  caret_affinity: CaretAffinity,
+  selection_anchor: Option<usize>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct TextUndoHistory {
+  undo: Vec<TextUndoEntry>,
+  redo: Vec<TextUndoEntry>,
+  undo_bytes: usize,
+  redo_bytes: usize,
+}
+
+impl TextUndoHistory {
+  const MAX_ENTRIES: usize = 128;
+  const MAX_BYTES: usize = 1_048_576;
+
+  fn clear_redo(&mut self) {
+    self.redo.clear();
+    self.redo_bytes = 0;
+  }
+
+  fn push_undo(&mut self, entry: TextUndoEntry) {
+    self.undo_bytes = self.undo_bytes.saturating_add(entry.value.len());
+    self.undo.push(entry);
+    self.truncate_undo();
+  }
+
+  fn push_redo(&mut self, entry: TextUndoEntry) {
+    self.redo_bytes = self.redo_bytes.saturating_add(entry.value.len());
+    self.redo.push(entry);
+    self.truncate_redo();
+  }
+
+  fn pop_undo(&mut self) -> Option<TextUndoEntry> {
+    let entry = self.undo.pop()?;
+    self.undo_bytes = self.undo_bytes.saturating_sub(entry.value.len());
+    Some(entry)
+  }
+
+  fn pop_redo(&mut self) -> Option<TextUndoEntry> {
+    let entry = self.redo.pop()?;
+    self.redo_bytes = self.redo_bytes.saturating_sub(entry.value.len());
+    Some(entry)
+  }
+
+  fn truncate_undo(&mut self) {
+    while self.undo.len() > Self::MAX_ENTRIES || self.undo_bytes > Self::MAX_BYTES {
+      if let Some(removed) = self.undo.first() {
+        self.undo_bytes = self.undo_bytes.saturating_sub(removed.value.len());
+      }
+      self.undo.remove(0);
+    }
+  }
+
+  fn truncate_redo(&mut self) {
+    while self.redo.len() > Self::MAX_ENTRIES || self.redo_bytes > Self::MAX_BYTES {
+      if let Some(removed) = self.redo.first() {
+        self.redo_bytes = self.redo_bytes.saturating_sub(removed.value.len());
+      }
+      self.redo.remove(0);
+    }
   }
 }
 
@@ -1068,6 +1144,115 @@ mod tests {
   }
 
   #[test]
+  fn backspace_deletes_single_grapheme_cluster() {
+    let emoji = "👨‍👩‍👧‍👦";
+    let mut dom = crate::dom::parse_html(&format!(
+      "<html><body><input value=\"{emoji}\"></body></html>"
+    ))
+    .expect("parse");
+    let input_id = find_element_node_id(&mut dom, "input");
+
+    let mut engine = InteractionEngine::new();
+    engine.focus_node_id(&mut dom, Some(input_id), true);
+
+    set_text_selection_caret(&mut engine, &mut dom, input_id, emoji.chars().count());
+    assert!(engine.key_action(&mut dom, KeyAction::Backspace));
+    assert_eq!(input_value(&mut dom, input_id), "");
+    assert_eq!(engine.text_edit.as_ref().unwrap().caret, 0);
+  }
+
+  #[test]
+  fn delete_deletes_single_grapheme_cluster() {
+    let emoji = "👨‍👩‍👧‍👦";
+    let value = format!("{emoji}a");
+    let mut dom = crate::dom::parse_html(&format!(
+      "<html><body><input value=\"{value}\"></body></html>"
+    ))
+    .expect("parse");
+    let input_id = find_element_node_id(&mut dom, "input");
+
+    let mut engine = InteractionEngine::new();
+    engine.focus_node_id(&mut dom, Some(input_id), true);
+
+    set_text_selection_caret(&mut engine, &mut dom, input_id, 0);
+    assert!(engine.key_action(&mut dom, KeyAction::Delete));
+    assert_eq!(input_value(&mut dom, input_id), "a");
+    assert_eq!(engine.text_edit.as_ref().unwrap().caret, 0);
+  }
+
+  #[test]
+  fn word_left_right_move_over_words() {
+    let value = "hello world";
+    let mut dom = crate::dom::parse_html(&format!(
+      "<html><body><input value=\"{value}\"></body></html>"
+    ))
+    .expect("parse");
+    let input_id = find_element_node_id(&mut dom, "input");
+
+    let mut engine = InteractionEngine::new();
+    engine.focus_node_id(&mut dom, Some(input_id), true);
+
+    let len = value.chars().count();
+    set_text_selection_caret(&mut engine, &mut dom, input_id, len);
+    assert!(engine.key_action(&mut dom, KeyAction::WordLeft));
+    assert_eq!(engine.text_edit.as_ref().unwrap().caret, 6);
+    assert!(engine.key_action(&mut dom, KeyAction::WordLeft));
+    assert_eq!(engine.text_edit.as_ref().unwrap().caret, 0);
+
+    assert!(engine.key_action(&mut dom, KeyAction::WordRight));
+    assert_eq!(engine.text_edit.as_ref().unwrap().caret, 6);
+    assert!(engine.key_action(&mut dom, KeyAction::WordRight));
+    assert_eq!(engine.text_edit.as_ref().unwrap().caret, len);
+  }
+
+  #[test]
+  fn word_backspace_delete_remove_words_and_respect_unicode() {
+    let value = "hello 世界";
+    let mut dom = crate::dom::parse_html(&format!(
+      "<html><body><input value=\"{value}\"></body></html>"
+    ))
+    .expect("parse");
+    let input_id = find_element_node_id(&mut dom, "input");
+
+    let mut engine = InteractionEngine::new();
+    engine.focus_node_id(&mut dom, Some(input_id), true);
+
+    let len = value.chars().count();
+    set_text_selection_caret(&mut engine, &mut dom, input_id, len);
+    assert!(engine.key_action(&mut dom, KeyAction::WordBackspace));
+    assert_eq!(input_value(&mut dom, input_id), "hello ");
+
+    set_text_selection_caret(&mut engine, &mut dom, input_id, 0);
+    assert!(engine.key_action(&mut dom, KeyAction::WordDelete));
+    assert_eq!(input_value(&mut dom, input_id), " ");
+    assert!(engine.key_action(&mut dom, KeyAction::WordDelete));
+    assert_eq!(input_value(&mut dom, input_id), "");
+  }
+
+  #[test]
+  fn undo_redo_restores_value_and_selection() {
+    let mut dom =
+      crate::dom::parse_html("<html><body><input value=\"abcd\"></body></html>").expect("parse");
+    let input_id = find_element_node_id(&mut dom, "input");
+
+    let mut engine = InteractionEngine::new();
+    engine.focus_node_id(&mut dom, Some(input_id), true);
+
+    set_text_selection_range(&mut engine, &mut dom, input_id, 1, 3);
+    assert!(engine.text_input(&mut dom, "X"));
+    assert_eq!(input_value(&mut dom, input_id), "aXd");
+
+    assert!(engine.key_action(&mut dom, KeyAction::Undo));
+    assert_eq!(input_value(&mut dom, input_id), "abcd");
+    let edit = engine.text_edit.as_ref().unwrap();
+    assert_eq!(edit.selection(), Some((1, 3)));
+
+    assert!(engine.key_action(&mut dom, KeyAction::Redo));
+    assert_eq!(input_value(&mut dom, input_id), "aXd");
+    assert_eq!(engine.text_edit.as_ref().unwrap().selection(), None);
+  }
+
+  #[test]
   fn text_input_replaces_selection_and_updates_caret() {
     let mut dom =
       crate::dom::parse_html("<html><body><input value=\"hello\"></body></html>").expect("parse");
@@ -1916,6 +2101,135 @@ fn byte_offset_for_char_idx(text: &str, char_idx: usize) -> usize {
   text.len()
 }
 
+fn char_boundary_bytes(text: &str) -> Vec<usize> {
+  let mut out = Vec::with_capacity(text.chars().count().saturating_add(1));
+  for (byte_idx, _) in text.char_indices() {
+    out.push(byte_idx);
+  }
+  out.push(text.len());
+  out
+}
+
+fn char_idx_at_byte(boundary_bytes: &[usize], byte_idx: usize) -> usize {
+  match boundary_bytes.binary_search(&byte_idx) {
+    Ok(idx) => idx,
+    Err(idx) => idx,
+  }
+}
+
+fn is_word_char(ch: char) -> bool {
+  ch.is_alphanumeric() || ch == '_'
+}
+
+fn word_char_classes(text: &str) -> Vec<bool> {
+  let mut out = Vec::with_capacity(text.chars().count());
+  for segment in text.split_word_bounds() {
+    for ch in segment.chars() {
+      out.push(is_word_char(ch));
+    }
+  }
+  out
+}
+
+fn word_left_char_idx(word_chars: &[bool], caret: usize) -> usize {
+  let mut i = caret.min(word_chars.len());
+  while i > 0 && !word_chars[i - 1] {
+    i -= 1;
+  }
+  while i > 0 && word_chars[i - 1] {
+    i -= 1;
+  }
+  i
+}
+
+fn word_right_char_idx(word_chars: &[bool], caret: usize) -> usize {
+  let mut i = caret.min(word_chars.len());
+  while i < word_chars.len() && word_chars[i] {
+    i += 1;
+  }
+  while i < word_chars.len() && !word_chars[i] {
+    i += 1;
+  }
+  i
+}
+
+fn word_backspace_range(word_chars: &[bool], caret: usize) -> Option<(usize, usize)> {
+  let caret = caret.min(word_chars.len());
+  if caret == 0 {
+    return None;
+  }
+  let mut start = caret;
+  if word_chars[start - 1] {
+    while start > 0 && word_chars[start - 1] {
+      start -= 1;
+    }
+  } else {
+    while start > 0 && !word_chars[start - 1] {
+      start -= 1;
+    }
+  }
+  (start != caret).then_some((start, caret))
+}
+
+fn word_delete_range(word_chars: &[bool], caret: usize) -> Option<(usize, usize)> {
+  let caret = caret.min(word_chars.len());
+  if caret >= word_chars.len() {
+    return None;
+  }
+  let mut end = caret;
+  if word_chars[end] {
+    while end < word_chars.len() && word_chars[end] {
+      end += 1;
+    }
+  } else {
+    while end < word_chars.len() && !word_chars[end] {
+      end += 1;
+    }
+  }
+  (end != caret).then_some((caret, end))
+}
+
+fn grapheme_cluster_boundaries_char_idx(text: &str) -> Vec<usize> {
+  if text.is_empty() {
+    return vec![0];
+  }
+  let boundary_bytes = char_boundary_bytes(text);
+  let mut out = Vec::with_capacity(boundary_bytes.len());
+  for (byte_idx, _) in text.grapheme_indices(true) {
+    out.push(char_idx_at_byte(&boundary_bytes, byte_idx));
+  }
+  out.push(boundary_bytes.len().saturating_sub(1));
+  out
+}
+
+fn prev_grapheme_cluster(text: &str, caret: usize) -> Option<(usize, usize)> {
+  if caret == 0 {
+    return None;
+  }
+  let boundaries = grapheme_cluster_boundaries_char_idx(text);
+  if boundaries.len() < 2 {
+    return None;
+  }
+  let idx = boundaries
+    .partition_point(|&b| b < caret)
+    .saturating_sub(1)
+    .min(boundaries.len().saturating_sub(2));
+  Some((boundaries[idx], boundaries[idx + 1]))
+}
+
+fn next_grapheme_cluster(text: &str, caret: usize) -> Option<(usize, usize)> {
+  let boundaries = grapheme_cluster_boundaries_char_idx(text);
+  let len = *boundaries.last().unwrap_or(&0);
+  if caret >= len || boundaries.len() < 2 {
+    return None;
+  }
+  let idx = boundaries
+    .partition_point(|&b| b <= caret)
+    .saturating_sub(1)
+    .min(boundaries.len().saturating_sub(2));
+  Some((boundaries[idx], boundaries[idx + 1]))
+}
+
 fn shape_text_runs_for_interaction(
   text: &str,
   style: &ComputedStyle,
@@ -2736,6 +3050,7 @@ impl InteractionEngine {
       number_spin: None,
       text_drag: None,
       text_edit: None,
+      text_undo: HashMap::new(),
       document_selection: None,
       modality: InputModality::Pointer,
       last_click_target: None,
@@ -2887,6 +3202,22 @@ impl InteractionEngine {
 
   fn mark_user_validity(&mut self, node_id: usize) -> bool {
     self.state.user_validity.insert(node_id)
+  }
+
+  fn record_text_undo_snapshot(&mut self, node_id: usize, value: &str, edit: &TextEditState) {
+    let entry = TextUndoEntry {
+      value: value.to_string(),
+      caret: edit.caret,
+      caret_affinity: edit.caret_affinity,
+      selection_anchor: edit.selection_anchor,
+    };
+    let history = self.text_undo.entry(node_id).or_default();
+    if history.undo.last().is_some_and(|prev| prev == &entry) {
+      history.clear_redo();
+      return;
+    }
+    history.clear_redo();
+    history.push_undo(entry);
   }
 
   fn mark_form_user_validity(&mut self, index: &DomIndexMut, control_node_id: usize) -> bool {
@@ -4038,6 +4369,9 @@ impl InteractionEngine {
     let Some(node_mut) = index.node_mut(focused) else {
       return changed;
     };
+    if next != current {
+      self.record_text_undo_snapshot(focused, &current, &edit);
+    }
     let changed_value = if focused_is_text_input {
       set_node_attr(node_mut, "value", &next)
     } else {
@@ -4388,6 +4722,7 @@ impl InteractionEngine {
       return (dom_changed, selected);
     }
 
+    self.record_text_undo_snapshot(focused, &current, &edit);
     dom_changed |= self.ime_cancel_internal();
 
     let mut next = String::with_capacity(
@@ -4428,111 +4763,7 @@ impl InteractionEngine {
 
   /// Paste text into the focused text control (`<input>`/`<textarea>`), replacing any selection.
   pub fn clipboard_paste(&mut self, dom: &mut DomNode, text: &str) -> bool {
-    self.modality = InputModality::Keyboard;
-    let Some(focused) = self.state.focused else {
-      return false;
-    };
-
-    let mut index = DomIndexMut::new(dom);
-    // Ensure focus-visible when the keyboard is used.
-    let mut changed = self.set_focus(&mut index, Some(focused), true);
-
-    let focused_is_text_input = index.node(focused).is_some_and(is_text_input);
-    let focused_is_textarea = index.node(focused).is_some_and(is_textarea);
-    if !(focused_is_text_input || focused_is_textarea) {
-      return changed;
-    }
-
-    if node_or_ancestor_is_inert(&index, focused)
-      || node_is_disabled(&index, focused)
-      || node_is_readonly(&index, focused)
-    {
-      return changed;
-    }
-    if text.is_empty() {
-      return changed;
-    }
-
-    let current = if focused_is_textarea {
-      index
-        .node(focused)
-        .map(textarea_value_for_editing)
-        .unwrap_or_default()
-    } else {
-      index
-        .node(focused)
-        .and_then(|node| node.get_attribute_ref("value"))
-        .unwrap_or("")
-        .to_string()
-    };
-    let current_len = current.chars().count();
-
-    changed |= self.ime_cancel_internal();
-
-    let mut edit = self.text_edit.unwrap_or(TextEditState {
-      node_id: focused,
-      caret: current_len,
-      caret_affinity: CaretAffinity::Downstream,
-      selection_anchor: None,
-      preferred_column: None,
-    });
-    if edit.node_id != focused {
-      edit = TextEditState {
-        node_id: focused,
-        caret: current_len,
-        caret_affinity: CaretAffinity::Downstream,
-        selection_anchor: None,
-        preferred_column: None,
-      };
-    }
-    edit.caret = edit.caret.min(current_len);
-    edit.selection_anchor = edit.selection_anchor.map(|a| a.min(current_len));
-
-    let selection = edit.selection();
-    let (replace_start, replace_end) = selection.unwrap_or((edit.caret, edit.caret));
-    let start_byte = byte_offset_for_char_idx(&current, replace_start);
-    let end_byte = byte_offset_for_char_idx(&current, replace_end);
-
-    let mut next = String::with_capacity(
-      current
-        .len()
-        .saturating_sub(end_byte.saturating_sub(start_byte))
-        .saturating_add(text.len()),
-    );
-    next.push_str(&current[..start_byte]);
-    next.push_str(text);
-    next.push_str(&current[end_byte..]);
-
-    let next_len = next.chars().count();
-    let inserted_chars = text.chars().count();
-    let next_caret = replace_start.saturating_add(inserted_chars).min(next_len);
-
-    let Some(node_mut) = index.node_mut(focused) else {
-      return changed;
-    };
-    let changed_value = if focused_is_text_input {
-      set_node_attr(node_mut, "value", &next)
-    } else {
-      set_node_attr(node_mut, "data-fastr-value", &next)
-    };
-    changed |= changed_value;
-    if changed_value {
-      changed |= self.mark_user_validity(focused);
-    }
-
-    self.text_edit = Some(TextEditState {
-      node_id: focused,
-      caret: next_caret,
-      // After inserting text, keep the caret attached to the inserted content. This matters at
-      // split-caret bidi boundaries where the same logical caret position maps to multiple visual
-      // x positions.
-      caret_affinity: CaretAffinity::Upstream,
-      selection_anchor: None,
-      preferred_column: None,
-    });
-    changed |= self.sync_text_edit_paint_state();
-
-    changed
+    self.text_input(dom, text)
   }
 
   /// Handle keyboard actions that mutate the DOM without performing navigation.
@@ -4639,26 +4870,56 @@ impl InteractionEngine {
       let original = edit;
 
       match key {
-        KeyAction::Backspace | KeyAction::Delete => {
+        KeyAction::Backspace
+        | KeyAction::Delete
+        | KeyAction::WordBackspace
+        | KeyAction::WordDelete => {
           if !can_edit_value {
             return changed;
           }
           let prev_caret = edit.caret;
           let prev_affinity = edit.caret_affinity;
           let selection = edit.selection();
+
           let (delete_start, delete_end, next_caret) = if let Some((start, end)) = selection {
             (start, end, start)
-          } else if matches!(key, KeyAction::Backspace) {
-            if edit.caret == 0 {
-              return changed;
-            }
-            (edit.caret - 1, edit.caret, edit.caret - 1)
           } else {
-            if edit.caret >= current_len {
-              return changed;
+            match key {
+              KeyAction::Backspace => {
+                let Some((start, end)) = prev_grapheme_cluster(&current, edit.caret) else {
+                  return changed;
+                };
+                (start, end, start)
+              }
+              KeyAction::Delete => {
+                let Some((start, end)) = next_grapheme_cluster(&current, edit.caret) else {
+                  return changed;
+                };
+                (start, end, start)
+              }
+              KeyAction::WordBackspace => {
+                let word_chars = word_char_classes(&current);
+                let Some((start, end)) = word_backspace_range(&word_chars, edit.caret) else {
+                  return changed;
+                };
+                (start, end, start)
+              }
+              KeyAction::WordDelete => {
+                let word_chars = word_char_classes(&current);
+                let Some((start, end)) = word_delete_range(&word_chars, edit.caret) else {
+                  return changed;
+                };
+                (start, end, start)
+              }
+              _ => unreachable!(),
             }
-            (edit.caret, edit.caret + 1, edit.caret)
           };
+
+          if delete_start >= delete_end {
+            return changed;
+          }
+
+          self.record_text_undo_snapshot(focused, &current, &edit);
 
           // Any direct text mutation cancels an in-progress IME preedit string.
           changed |= self.ime_cancel_internal();
@@ -4692,6 +4953,92 @@ impl InteractionEngine {
             changed |= changed_value;
             if changed_value {
               changed |= self.mark_user_validity(focused);
+            }
+          }
+        }
+        KeyAction::Undo | KeyAction::Redo => {
+          if !can_edit_value {
+            return changed;
+          }
+          let history = self.text_undo.entry(focused).or_default();
+          let current_snapshot = TextUndoEntry {
+            value: current.clone(),
+            caret: edit.caret,
+            caret_affinity: edit.caret_affinity,
+            selection_anchor: edit.selection_anchor,
+          };
+          let target = if matches!(key, KeyAction::Undo) {
+            let Some(entry) = history.pop_undo() else {
+              return changed;
+            };
+            history.push_redo(current_snapshot);
+            entry
+          } else {
+            let Some(entry) = history.pop_redo() else {
+              return changed;
+            };
+            history.push_undo(current_snapshot);
+            entry
+          };
+
+          changed |= self.ime_cancel_internal();
+
+          let TextUndoEntry {
+            value: next_value,
+            caret: target_caret,
+            caret_affinity: target_affinity,
+            selection_anchor: target_selection_anchor,
+          } = target;
+          let next_len = next_value.chars().count();
+          edit.caret = target_caret.min(next_len);
+          edit.caret_affinity = target_affinity;
+          edit.selection_anchor = target_selection_anchor.map(|a| a.min(next_len));
+          edit.preferred_column = None;
+
+          if let Some(node_mut) = index.node_mut(focused) {
+            let changed_value = if focused_is_text_input {
+              set_node_attr(node_mut, "value", &next_value)
+            } else {
+              set_node_attr(node_mut, "data-fastr-value", &next_value)
+            };
+            changed |= changed_value;
+            if changed_value {
+              changed |= self.mark_user_validity(focused);
+            }
+          }
+        }
+        KeyAction::WordLeft | KeyAction::WordRight => {
+          let move_left = matches!(key, KeyAction::WordLeft);
+          if let Some((start, end)) = edit.selection() {
+            let (next, next_affinity) = if move_left {
+              (start, CaretAffinity::Downstream)
+            } else {
+              (end, CaretAffinity::Upstream)
+            };
+            if next == edit.caret {
+              edit.set_caret_with_affinity_and_maybe_extend_selection(
+                next,
+                edit.caret_affinity,
+                false,
+              );
+            } else {
+              edit.set_caret_with_affinity_and_maybe_extend_selection(next, next_affinity, false);
+            }
+          } else {
+            let word_chars = word_char_classes(&current);
+            let next = if move_left {
+              word_left_char_idx(&word_chars, edit.caret)
+            } else {
+              word_right_char_idx(&word_chars, edit.caret)
+            };
+            if next == edit.caret {
+              edit.set_caret_with_affinity_and_maybe_extend_selection(
+                next,
+                edit.caret_affinity,
+                false,
+              );
+            } else {
+              edit.set_caret_and_maybe_extend_selection(next, false);
             }
           }
         }
@@ -5210,13 +5557,19 @@ impl InteractionEngine {
     match key {
       KeyAction::Backspace
       | KeyAction::Delete
+      | KeyAction::WordBackspace
+      | KeyAction::WordDelete
       | KeyAction::ArrowLeft
       | KeyAction::ArrowRight
+      | KeyAction::WordLeft
+      | KeyAction::WordRight
       | KeyAction::ShiftArrowLeft
       | KeyAction::ShiftArrowRight
       | KeyAction::ShiftHome
       | KeyAction::ShiftEnd
-      | KeyAction::SelectAll => {
+      | KeyAction::SelectAll
+      | KeyAction::Undo
+      | KeyAction::Redo => {
         return (
           self.key_action_with_box_tree(dom, box_tree, key),
           InteractionAction::None,
