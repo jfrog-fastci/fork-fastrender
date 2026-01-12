@@ -1199,6 +1199,7 @@ struct FnCodegen<'ctx, 'p, 'a> {
   mode: CodegenMode,
   return_kind: TsAbiKind,
   debug_subprogram: Option<inkwell::debug_info::DISubprogram<'ctx>>,
+  debug_vars: HashMap<BindingId, inkwell::debug_info::DILocalVariable<'ctx>>,
   /// Stack of nested spans used to drive `!dbg` locations on emitted LLVM instructions.
   ///
   /// When debug info is enabled, we maintain a simple stack discipline:
@@ -1259,6 +1260,7 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
       mode,
       return_kind,
       debug_subprogram: None,
+      debug_vars: HashMap::new(),
       debug_span_stack: Vec::new(),
     }
   }
@@ -1375,15 +1377,32 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
     slot: PointerValue<'ctx>,
     span: TextRange,
   ) {
-    // NOTE: Intentionally omitted.
-    //
-    // `llvm.dbg.*` intrinsics are calls. In practice LLVM's GC/statepoint pipeline
-    // (`place-safepoints` + `rewrite-statepoints-for-gc`) can segfault when these calls are
-    // present in GC-managed functions (which includes TS-generated native-js functions).
-    //
-    // Until the pipeline is robust in the presence of debug intrinsics, native-js focuses on
-    // source-level line tables (`!dbg` locations) and function/subprogram metadata.
-    let _ = (binding, name, arg_no, kind, slot, span);
+    let Some(debug) = self.cg.debug.as_mut() else {
+      return;
+    };
+    let Some(scope) = self.debug_subprogram else {
+      return;
+    };
+    if matches!(kind, TsAbiKind::Void) {
+      return;
+    }
+
+    let (line, col) = debuginfo::line_col(self.cg.program, self.file, span.start);
+    let di_file = debug.file(self.cg.program, self.file);
+    let ty = debug.basic_type(kind);
+    let var = debug.declare_parameter(
+      self.cg.context,
+      &self.builder,
+      scope,
+      di_file,
+      line,
+      col,
+      name,
+      arg_no,
+      ty,
+      slot,
+    );
+    self.debug_vars.insert(binding, var);
   }
 
   fn dbg_declare_local(
@@ -1394,18 +1413,110 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
     slot: PointerValue<'ctx>,
     span: TextRange,
   ) {
-    // NOTE: Intentionally omitted. See `dbg_declare_param` for rationale.
-    let _ = (binding, name, kind, slot, span);
+    let Some(debug) = self.cg.debug.as_mut() else {
+      return;
+    };
+    let Some(scope) = self.debug_subprogram else {
+      return;
+    };
+    if matches!(kind, TsAbiKind::Void) {
+      return;
+    }
+
+    let (line, col) = debuginfo::line_col(self.cg.program, self.file, span.start);
+    let di_file = debug.file(self.cg.program, self.file);
+    let ty = debug.basic_type(kind);
+    let var = debug.declare_local(
+      self.cg.context,
+      &self.builder,
+      scope,
+      di_file,
+      line,
+      col,
+      name,
+      ty,
+      slot,
+    );
+    self.debug_vars.insert(binding, var);
   }
 
   fn dbg_value(&self, binding: BindingId, value: NativeValue<'ctx>, span: TextRange) {
-    // NOTE: Intentionally omitted. See `dbg_declare_param` for rationale.
-    let _ = (binding, value, span);
+    let Some(value) = value.as_basic_value() else {
+      return;
+    };
+    let Some(debug) = self.cg.debug.as_ref() else {
+      return;
+    };
+    if !debug.optimized() {
+      return;
+    }
+    let Some(scope) = self.debug_subprogram else {
+      return;
+    };
+    let Some(var) = self.debug_vars.get(&binding).copied() else {
+      return;
+    };
+    let (line, col) = debuginfo::line_col(self.cg.program, self.file, span.start);
+    debug.insert_value(self.cg.context, &self.builder, &self.cg.module, scope, var, value, line, col);
+
+    // `insert_value` uses the raw LLVM builder API and resets the current debug location to null;
+    // restore whatever location the caller established via `debug_location_guard`.
+    if let Some(restore_span) = self.debug_span_stack.last().copied() {
+      let (restore_line, restore_col) = debuginfo::line_col(self.cg.program, self.file, restore_span.start);
+      let restore_loc = debug.location(self.cg.context, restore_line, restore_col, scope);
+      self.builder.set_current_debug_location(restore_loc);
+    }
   }
 
   fn dbg_value_locals_from_slots(&self, span: TextRange) {
-    // NOTE: Intentionally omitted. See `dbg_declare_param` for rationale.
-    let _ = span;
+    let Some(debug) = self.cg.debug.as_ref() else {
+      return;
+    };
+    if !debug.optimized() {
+      return;
+    }
+    // Emit `dbg.value` only for currently visible locals (per lexical scopes in `self.env`), to
+    // avoid producing debug loads for out-of-scope variables.
+    //
+    // NOTE: Keep emission order deterministic by sorting on `NameId`. The underlying `HashMap`
+    // iteration order is intentionally randomized and would otherwise produce unstable IR.
+    let mut seen_names: HashSet<NameId> = HashSet::new();
+    let mut visible: Vec<(NameId, BindingId)> = Vec::new();
+    for scope in self.env.scopes.iter().rev() {
+      for (&name, &binding) in scope.iter() {
+        if seen_names.insert(name) {
+          visible.push((name, binding));
+        }
+      }
+    }
+    visible.sort_by_key(|(name, _binding)| *name);
+
+    for (_name, binding) in visible {
+      if !self.debug_vars.contains_key(&binding) {
+        continue;
+      }
+      let Some(slot) = self.locals.get(&binding).copied() else {
+        continue;
+      };
+      let loaded = match slot.kind {
+        TsAbiKind::Number => NativeValue::Number(
+          self
+            .builder
+            .build_load(self.cg.f64_ty, slot.ptr, "dbg.load")
+            .expect("failed to build dbg load")
+            .into_float_value(),
+        ),
+        TsAbiKind::Boolean => NativeValue::Boolean(
+          self
+            .builder
+            .build_load(self.cg.i1_ty, slot.ptr, "dbg.load")
+            .expect("failed to build dbg load")
+            .into_int_value(),
+        ),
+        TsAbiKind::Void => continue,
+      };
+      self.dbg_value(binding, loaded, span);
+    }
   }
 
   fn with_body<R>(

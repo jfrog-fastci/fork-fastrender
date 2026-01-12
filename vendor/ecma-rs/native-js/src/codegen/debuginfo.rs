@@ -28,10 +28,14 @@ use super::TsAbiKind;
 /// - function/subprogram metadata
 /// - instruction-level `!dbg` locations for line tables
 ///
-/// NOTE: We currently do *not* emit local/parameter variable locations via `llvm.dbg.declare`/
-/// `llvm.dbg.value` because LLVM's GC/statepoint pipeline (`place-safepoints` +
-/// `rewrite-statepoints-for-gc`) has been observed to segfault when these debug intrinsics are
-/// present in GC-managed functions.
+/// NOTE: We do emit `llvm.dbg.declare`/`llvm.dbg.value` intrinsics when debug info is enabled so the
+/// **textual LLVM IR** contains variable debug metadata, but LLVM 18's GC/statepoint pipeline
+/// (`place-safepoints` + `rewrite-statepoints-for-gc`) has been observed to segfault when these
+/// intrinsics are present in GC-managed functions.
+///
+/// As a temporary workaround, `native-js` strips `llvm.dbg.*` *call instructions* immediately before
+/// running the GC/statepoint pass pipeline (see `llvm::passes`). This keeps line tables and
+/// subprogram/file mapping usable end-to-end while variable debug info remains best-effort.
 pub(crate) struct CodegenDebug<'ctx> {
   // NOTE: This is currently unused because native-js intentionally omits `llvm.dbg.value`
   // emission (see module docs). Keep it around for future variable-level debug work.
