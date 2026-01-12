@@ -423,14 +423,6 @@ impl FloatRangeCache {
     }
   }
 
-  fn invalidate(&mut self) {
-    // Keep capacity so repeated insert/query cycles reuse allocated storage.
-    self.float_count = 0;
-    self.events_len = 0;
-    self.segments.clear();
-    self.sweep_state = FloatSweepState::new(0, &[]);
-  }
-
   fn ensure_current(&mut self, float_count: usize, events: &[FloatEvent]) {
     if self.float_count == float_count && self.events_len == events.len() {
       return;
