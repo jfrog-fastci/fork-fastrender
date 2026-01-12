@@ -138,7 +138,8 @@ See: `docs/resource-limits.md`
 #   -k 10 = send SIGKILL 10s after SIGTERM if process ignores SIGTERM
 timeout -k 10 600 bash scripts/cargo_agent.sh build --release
 timeout -k 10 600 bash scripts/cargo_agent.sh test --quiet --lib
-timeout -k 10 600 bash scripts/cargo_agent.sh test --test layout_tests
+timeout -k 10 600 bash scripts/cargo_agent.sh test --test integration
+timeout -k 10 600 bash scripts/cargo_agent.sh test --test allocation_failure
 timeout -k 10 600 bash scripts/cargo_agent.sh check -p fastrender
 
 # WRONG — no SIGKILL fallback (process can ignore SIGTERM forever):
@@ -146,7 +147,7 @@ timeout 600 bash scripts/cargo_agent.sh test --quiet --lib
 
 # WRONG — CAN HANG FOREVER:
 bash scripts/cargo_agent.sh test --quiet --lib
-bash scripts/cargo_agent.sh test --test layout_tests
+bash scripts/cargo_agent.sh test --test integration
 
 # WRONG — WILL DESTROY HOST:
 cargo test
@@ -203,53 +204,59 @@ fi
 
 Live pages motivate fixes, but regressions keep them fixed:
 
-- Prefer **unit tests** for parsing/cascade/value computation.
-- Use **`tests/layout/`** / **`tests/paint/`** when feasible.
-- Use a **tiny offline fixture** only when necessary to reproduce real-world interactions.
+- Prefer **unit tests** in `src/` for parsing/cascade/value computation and internal algorithms.
+- Use **integration tests** in `tests/` only for public API coverage and data-driven runners (fixtures, WPT).
+- Use an **offline fixture** only when necessary to reproduce real-world interactions end-to-end.
 
 When uncertain, add the regression first, then implement the fix.
 
 ## Test organization (mandatory)
 
-**NEVER create loose `tests/*.rs` files for individual tests.** Each `.rs` file directly in `tests/`
-becomes a separate integration-test binary that must be compiled and linked. This repo previously had
-~80+ standalone `tests/*.rs` binaries and made accidental `cargo test` runs extremely slow and
-memory-hungry. The suite is now consolidated into category harnesses (a few dozen top-level test
-crates); keep it that way.
+### Unit tests: `src/`
 
-**Always add tests to an existing harness subdirectory:**
+Unit tests live in `src/` alongside the code they test:
 
-```
-tests/
-├── layout_tests.rs      ← harness (auto-discovered, compiles as ONE binary)
-├── layout/              ← subdirectory (NOT auto-discovered)
-│   ├── mod.rs
-│   └── your_new_test.rs ← ADD YOUR TEST HERE
-├── allocation_failure_tests.rs ← special harness (custom global allocator)
-├── allocation_failure/
-│   ├── mod.rs
-│   └── ...
-├── paint_tests.rs      ← harness (includes `paint/` and `backdrop/`)
-├── paint/
-├── backdrop/           ← modules included by `paint_tests.rs`
-├── style_tests.rs
-├── style/
-├── integration.rs
-├── regression/
-├── determinism_tests.rs
-├── determinism/
-└── ...
+```rust
+// src/layout/flex.rs
+pub fn compute_flex(...) { /* ... */ }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_flex_wrap() { /* ... */ }
+}
 ```
 
-**To add a new test:**
+Run with: `cargo test --lib`
 
-1. Find the appropriate category (`layout/`, `paint/`, `style/`, `regression/`, etc.)
-2. Create your test file in that subdirectory
-3. Add `mod your_new_test;` to the subdirectory's `mod.rs`
+### Integration tests: `tests/`
 
-**If no category fits**, add to `tests/misc/` and update `tests/misc/mod.rs`.
+Integration tests in `tests/` are ONLY for:
+- Public API tests (testing `FastRender` as an external consumer would)
+- Data-driven runners (fixtures, WPT)
+- The allocation-failure harness (custom allocator)
 
-**NEVER** create a new top-level `tests/foo.rs` file unless you are creating a new harness (requires approval).
+If you find yourself importing internal modules in `tests/`, stop — that test belongs in `src/`.
+
+There are exactly 2 integration test binaries:
+- `tests/integration.rs` — all normal integration tests
+- `tests/allocation_failure.rs` — custom allocator tests
+
+**NEVER create new `tests/*.rs` files.** Every extra file becomes a separate test binary and will be rejected.
+
+**NEVER use `#[path = ...]` shims.** Run individual tests using the standard test filter instead.
+
+Run with:
+- `cargo test --test integration`
+- `cargo test --test allocation_failure`
+
+Run a single test via filter:
+- `cargo test --lib <filter>`
+- `cargo test --test integration <filter>`
+
+(See "Cargo builds/tests" above for the required `scripts/cargo_agent.sh` wrapper + `timeout -k`.)
 
 ## Archived workstreams
 
