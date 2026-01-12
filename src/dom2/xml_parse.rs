@@ -25,6 +25,18 @@ fn import_roxmltree_subtree(doc: &mut Document, parent: NodeId, root: roxmltree:
   fn push_from_roxmltree(doc: &mut Document, parent: NodeId, node: roxmltree::Node<'_, '_>) -> Option<NodeId> {
     if node.is_element() {
       let tag = node.tag_name();
+      let (mut prefix, local_name) = match tag.name().split_once(':') {
+        Some((prefix, local_name)) => (Some(prefix.to_string()), local_name.to_string()),
+        None => (None, tag.name().to_string()),
+      };
+      let namespace = match tag.namespace() {
+        None => super::NULL_NAMESPACE.to_string(),
+        Some(ns) if ns == crate::dom::HTML_NAMESPACE => String::new(),
+        Some(ns) => ns.to_string(),
+      };
+      if namespace == super::NULL_NAMESPACE {
+        prefix = None;
+      }
       let mut attributes: Vec<(String, String)> = Vec::new();
       attributes.reserve(node.attributes().len());
       for attr in node.attributes() {
@@ -32,10 +44,9 @@ fn import_roxmltree_subtree(doc: &mut Document, parent: NodeId, root: roxmltree:
       }
       let id = doc.push_node(
         NodeKind::Element {
-          tag_name: tag.name().to_string(),
-          namespace: tag.namespace().unwrap_or("").to_string(),
-          // `roxmltree` resolves namespaces but does not preserve the original namespace prefix.
-          prefix: None,
+          tag_name: local_name,
+          namespace,
+          prefix,
           attributes,
         },
         Some(parent),
