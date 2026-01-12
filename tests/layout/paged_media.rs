@@ -6211,6 +6211,60 @@ fn footnote_body_in_multicol_uses_page_width_in_footnote_area() {
 }
 
 #[test]
+fn footnote_area_orders_multicol_footnotes_in_reading_order() {
+  let mut lines = String::new();
+  for idx in 0..18 {
+    lines.push_str(&format!(r#"<div class="line">Line {idx}</div>"#));
+  }
+  lines.push_str(r#"<div class="line">A<span class="note">FootnoteA</span></div>"#);
+  lines.push_str(r#"<div class="line">Fill</div>"#);
+  lines.push_str(r#"<div class="line">B<span class="note">FootnoteB</span></div>"#);
+
+  let html = format!(
+    r#"
+    <html>
+      <head>
+        <style>
+          @page {{ size: 200px 400px; margin: 0; }}
+          body {{ margin: 0; font-size: 10px; line-height: 10px; }}
+          .multi {{ column-count: 2; column-gap: 0; column-fill: auto; height: 200px; }}
+          .line {{ height: 10px; }}
+          .note {{ float: footnote; }}
+        </style>
+      </head>
+      <body>
+        <div class="multi">{lines}</div>
+      </body>
+    </html>
+  "#
+  );
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(&html).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 200, 400, MediaType::Print)
+    .unwrap();
+  let page_roots = pages(&tree);
+  assert!(!page_roots.is_empty());
+
+  let page1 = page_roots[0];
+  let wrapper = page_document_wrapper(page1);
+  assert_eq!(wrapper.children.len(), 2);
+  let footnote_area = wrapper.children.get(1).expect("footnote area");
+
+  let a_y = find_text_position(footnote_area, "FootnoteA", (0.0, 0.0))
+    .expect("FootnoteA in footnote area")
+    .1;
+  let b_y = find_text_position(footnote_area, "FootnoteB", (0.0, 0.0))
+    .expect("FootnoteB in footnote area")
+    .1;
+  assert!(
+    a_y < b_y,
+    "expected FootnoteA to appear before FootnoteB in the page footnote area (a_y={a_y}, b_y={b_y})"
+  );
+}
+
+#[test]
 fn footnote_overflow_defers_later_calls_to_next_page() {
   let html = r#"
     <html>

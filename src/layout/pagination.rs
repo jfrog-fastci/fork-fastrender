@@ -2448,7 +2448,6 @@ fn collect_footnotes_for_page(
   let mut occurrences: Vec<FootnoteOccurrence> = Vec::new();
   let root_block_size = axis.block_size(&root.bounds);
   collect_footnote_occurrences(root, 0.0, root_block_size, axis, None, &mut occurrences);
-  occurrences.sort_by(|a, b| a.pos.partial_cmp(&b.pos).unwrap_or(Ordering::Equal));
   occurrences
 }
 
