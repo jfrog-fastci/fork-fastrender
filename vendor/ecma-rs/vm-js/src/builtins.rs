@@ -10111,7 +10111,10 @@ pub fn array_prototype_concat(
             Value::Object(source_obj),
           )?;
 
-          let to_s = alloc_string_from_usize(&mut iter_scope, *n)?;
+          let to_s = alloc_string_from_usize(
+            &mut iter_scope,
+            usize::try_from(*n).map_err(|_| VmError::OutOfMemory)?,
+          )?;
           iter_scope.push_root(Value::String(to_s))?;
           let to_key = PropertyKey::from_string(to_s);
           iter_scope.create_data_property_or_throw(out, to_key, value)?;
@@ -10128,7 +10131,10 @@ pub fn array_prototype_concat(
       ));
     }
     let mut iter_scope = scope.reborrow();
-    let to_s = alloc_string_from_usize(&mut iter_scope, *n)?;
+    let to_s = alloc_string_from_usize(
+      &mut iter_scope,
+      usize::try_from(*n).map_err(|_| VmError::OutOfMemory)?,
+    )?;
     iter_scope.push_root(Value::String(to_s))?;
     let to_key = PropertyKey::from_string(to_s);
     iter_scope.create_data_property_or_throw(out, to_key, item)?;
