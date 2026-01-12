@@ -32,6 +32,7 @@ use crate::resource::{
   ReferrerPolicy, ResourceFetcher,
 };
 use crate::style::media::MediaContext;
+use crate::Rect;
 use crate::web::events as web_events;
 use base64::engine::general_purpose;
 use base64::Engine as _;
@@ -32095,7 +32096,6 @@ fn document_cookie_set_native(
   data.cookie_jar.set_cookie_string(&cookie_string);
   Ok(Value::Undefined)
 }
-
 
 fn document_text_content_get_native(
   _vm: &mut Vm,
