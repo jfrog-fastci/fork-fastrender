@@ -14,12 +14,34 @@ if [[ "${OSTYPE:-}" != linux* ]]; then
   exit 0
 fi
 
-for tool in clang-18 llvm-objcopy-18 readelf; do
-  if ! command -v "${tool}" >/dev/null 2>&1; then
-    echo "skipping: missing ${tool} in PATH" >&2
-    exit 0
-  fi
-done
+pick_cmd() {
+  for c in "$@"; do
+    if command -v "${c}" >/dev/null 2>&1; then
+      echo "${c}"
+      return 0
+    fi
+  done
+  return 1
+}
+
+clang="$(pick_cmd clang-18 clang || true)"
+if [[ -z "${clang}" ]]; then
+  echo "skipping: missing clang in PATH (need clang-18 or clang)" >&2
+  exit 0
+fi
+objcopy="$(pick_cmd llvm-objcopy-18 llvm-objcopy || true)"
+if [[ -z "${objcopy}" ]]; then
+  echo "skipping: missing llvm-objcopy in PATH (need llvm-objcopy-18 or llvm-objcopy)" >&2
+  exit 0
+fi
+if ! command -v readelf >/dev/null 2>&1; then
+  echo "skipping: missing readelf in PATH" >&2
+  exit 0
+fi
+if ! (command -v ld.lld-18 >/dev/null 2>&1 || command -v ld.lld >/dev/null 2>&1); then
+  echo "skipping: missing lld in PATH (need ld.lld-18 or ld.lld)" >&2
+  exit 0
+fi
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 tmpdir="$(mktemp -d)"
@@ -97,11 +119,13 @@ int main(void) {
 }
 EOF
 
-clang-18 -c "${tmpdir}/codegen.ll" -o "${tmpdir}/codegen.o"
-clang-18 -c "${tmpdir}/main.c" -o "${tmpdir}/main.o"
+"${clang}" -c "${tmpdir}/codegen.ll" -o "${tmpdir}/codegen.o"
+"${clang}" -c "${tmpdir}/main.c" -o "${tmpdir}/main.o"
 
 out="${tmpdir}/app"
-bash "${repo_root}/scripts/native_js_link_linux.sh" --out "${out}" -- "${tmpdir}/main.o" "${tmpdir}/codegen.o"
+NATIVE_JS_CLANG="${clang}" \
+NATIVE_JS_OBJCOPY="${objcopy}" \
+  bash "${repo_root}/scripts/native_js_link_linux.sh" --out "${out}" -- "${tmpdir}/main.o" "${tmpdir}/codegen.o"
 
 # Ensure output is PIE (ET_DYN).
 readelf -h "${out}" | grep -E 'Type:[[:space:]]+DYN' >/dev/null || {
