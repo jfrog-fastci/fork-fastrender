@@ -3261,15 +3261,10 @@ fn window_scroll_to_native(
   _this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
-  if !host.as_any().is::<BrowserDocumentDom2>() {
-    return Ok(Value::Undefined);
-  }
   let (x, y) = parse_scroll_offsets_from_args(vm, scope, host, hooks, args)?;
-
-  let document = host
-    .as_any_mut()
-    .downcast_mut::<BrowserDocumentDom2>()
-    .expect("VmHost type checked as BrowserDocumentDom2");
+  let Some(document) = host.as_any_mut().downcast_mut::<BrowserDocumentDom2>() else {
+    return Ok(Value::Undefined);
+  };
 
   let desired = crate::geometry::Point::new(x, y);
   let Ok(clamped) = document.clamp_viewport_scroll_offset(desired) else {
@@ -3288,15 +3283,10 @@ fn window_scroll_by_native(
   _this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
-  if !host.as_any().is::<BrowserDocumentDom2>() {
-    return Ok(Value::Undefined);
-  }
   let (dx, dy) = parse_scroll_offsets_from_args(vm, scope, host, hooks, args)?;
-
-  let document = host
-    .as_any_mut()
-    .downcast_mut::<BrowserDocumentDom2>()
-    .expect("VmHost type checked as BrowserDocumentDom2");
+  let Some(document) = host.as_any_mut().downcast_mut::<BrowserDocumentDom2>() else {
+    return Ok(Value::Undefined);
+  };
   let current = document.viewport_scroll_offset();
   let desired = crate::geometry::Point::new(
     sanitize_scroll_coord(current.x as f64 + dx as f64),
@@ -20627,36 +20617,6 @@ fn document_hidden_get_native(
 
   let state = document_visibility_state_from_vm_host(host);
   Ok(Value::Bool(state.hidden()))
-}
-
-fn window_scroll_x_get_native(
-  _vm: &mut Vm,
-  _scope: &mut Scope<'_>,
-  host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
-  _callee: GcObject,
-  _this: Value,
-  _args: &[Value],
-) -> Result<Value, VmError> {
-  if let Some(document) = host.as_any_mut().downcast_mut::<BrowserDocumentDom2>() {
-    return Ok(Value::Number(document.options().scroll_x as f64));
-  }
-  Ok(Value::Number(0.0))
-}
-
-fn window_scroll_y_get_native(
-  _vm: &mut Vm,
-  _scope: &mut Scope<'_>,
-  host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
-  _callee: GcObject,
-  _this: Value,
-  _args: &[Value],
-) -> Result<Value, VmError> {
-  if let Some(document) = host.as_any_mut().downcast_mut::<BrowserDocumentDom2>() {
-    return Ok(Value::Number(document.options().scroll_y as f64));
-  }
-  Ok(Value::Number(0.0))
 }
 
 fn document_base_uri_get_native(

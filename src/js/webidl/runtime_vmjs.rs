@@ -11,6 +11,7 @@ use webidl_vm_js::bindings_runtime::DataPropertyAttributes;
 use webidl_vm_js::CallbackHandle;
 use webidl_vm_js::VmJsHostHooksPayload;
 
+#[derive(Default)]
 struct NoopVmHostHooks;
 
 impl VmHostHooks for NoopVmHostHooks {
@@ -1753,13 +1754,6 @@ impl<Host: 'static> WebIdlBindingsRuntime<Host> for VmJsWebIdlBindingsCx<'_, Hos
 
     scope.define_property(obj, key, make_data_descriptor(value, attrs))
   }
-}
-
-#[derive(Default)]
-struct NoopVmHostHooks;
-
-impl VmHostHooks for NoopVmHostHooks {
-  fn host_enqueue_promise_job(&mut self, _job: vm_js::Job, _realm: Option<vm_js::RealmId>) {}
 }
 
 impl<Host> webidl_js_runtime::JsRuntime for VmJsWebIdlBindingsCx<'_, Host> {

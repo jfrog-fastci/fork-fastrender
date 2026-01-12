@@ -261,48 +261,6 @@ fn is_html_element_kind(kind: &NodeKind) -> bool {
 }
 
 impl Document {
-  pub(crate) fn mutation_observer_move_registrations(&mut self, old: NodeId, new: NodeId) {
-    if old == new {
-      return;
-    }
-    let old_idx = old.index();
-    let new_idx = new.index();
-    if old_idx >= self.nodes.len() || new_idx >= self.nodes.len() {
-      return;
-    }
-    if old_idx == new_idx {
-      return;
-    }
-
-    let (old_list, new_list) = if old_idx < new_idx {
-      let (left, right) = self.nodes.split_at_mut(new_idx);
-      (
-        &mut left[old_idx].registered_observers,
-        &mut right[0].registered_observers,
-      )
-    } else {
-      let (left, right) = self.nodes.split_at_mut(old_idx);
-      (
-        &mut right[0].registered_observers,
-        &mut left[new_idx].registered_observers,
-      )
-    };
-
-    if old_list.is_empty() {
-      return;
-    }
-
-    let moved = std::mem::take(old_list);
-    for reg in moved {
-      new_list.retain(|r| r.observer != reg.observer);
-      new_list.push(reg);
-    }
-  }
-
-  pub(crate) fn mutation_observer_remap_node_ids(&mut self, mapping: &HashMap<NodeId, NodeId>) {
-    self.mutation_observer_agent.borrow_mut().remap_node_ids(mapping);
-  }
-
   pub fn mutation_observer_limits(&self) -> MutationObserverLimits {
     self.mutation_observer_agent.borrow().limits()
   }
@@ -410,26 +368,29 @@ impl Document {
   }
 
   pub fn mutation_observer_take_deliveries(&mut self) -> Vec<(MutationObserverId, Vec<MutationRecord>)> {
-    let mut agent = self.mutation_observer_agent.borrow_mut();
-    agent.microtask_queued = false;
-    agent.microtask_needs_queueing = false;
-
-    let pending = std::mem::take(&mut agent.pending);
+    let pending = {
+      let mut agent = self.mutation_observer_agent.borrow_mut();
+      agent.microtask_queued = false;
+      agent.microtask_needs_queueing = false;
+      std::mem::take(&mut agent.pending)
+    };
     let mut out: Vec<(MutationObserverId, Vec<MutationRecord>)> = Vec::new();
     for observer in pending {
       let (node_list, records) = {
+        let mut agent = self.mutation_observer_agent.borrow_mut();
         let Some(state) = agent.observers.get_mut(&observer) else {
           continue;
         };
         state.in_pending = false;
+        let node_list = state.node_list.clone();
         let records = std::mem::take(&mut state.records);
         let record_count = records.len();
         agent.total_records = agent.total_records.saturating_sub(record_count);
-        (state.node_list.clone(), records)
+        (node_list, records)
       };
 
       // DOM: notify mutation observers removes all transient registered observers for `observer`.
-      self.mutation_observer_cleanup_transient_registrations(&mut agent, observer, &node_list);
+      self.mutation_observer_cleanup_transient_registrations(observer, &node_list);
 
       if !records.is_empty() {
         out.push((observer, records));
@@ -514,7 +475,6 @@ impl Document {
 
   fn mutation_observer_cleanup_transient_registrations(
     &mut self,
-    agent: &mut MutationObserverAgent,
     observer: MutationObserverId,
     node_list: &[NodeId],
   ) {
@@ -540,6 +500,7 @@ impl Document {
       }
     }
 
+    let mut agent = self.mutation_observer_agent.borrow_mut();
     if let Some(state) = agent.observers.get_mut(&observer) {
       state.node_list = keep_nodes;
     }
