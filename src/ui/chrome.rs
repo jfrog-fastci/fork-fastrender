@@ -467,7 +467,7 @@ pub fn chrome_ui_with_bookmarks(
         actions.push(ChromeAction::Forward);
       }
       if loading {
-        if icon_button(ui, BrowserIcon::CloseTab, "Stop loading (Esc)", true).clicked() {
+        if icon_button(ui, BrowserIcon::StopLoading, "Stop loading (Esc)", true).clicked() {
           actions.push(ChromeAction::StopLoading);
         }
       } else if icon_button(ui, BrowserIcon::Reload, "Reload (Ctrl/Cmd+R)", true).clicked() {
@@ -614,9 +614,10 @@ pub fn chrome_ui_with_bookmarks(
           ui.close_menu();
         }
       });
-      let _menu_button = menu.response.on_hover_text("Menu");
+      let menu_button = menu.response.on_hover_text("Menu");
+      menu_button.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, "Menu"));
       #[cfg(test)]
-      store_test_rect(ctx, "chrome_menu_button_rect", _menu_button.rect);
+      store_test_rect(ctx, "chrome_menu_button_rect", menu_button.rect);
 
       let bar_height = ui.spacing().interact_size.y;
       let (bar_rect, bar_response) = ui.allocate_exact_size(

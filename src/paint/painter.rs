@@ -13201,6 +13201,113 @@ impl Painter {
     }
   }
 
+  fn paint_inside_border_rect(&mut self, rect: Rect, color: Rgba, clip_mask: Option<&Mask>) {
+    let device_rect = self.device_rect(rect);
+
+    let Some(fill_rect) = SkiaRect::from_xywh(
+      device_rect.x(),
+      device_rect.y(),
+      device_rect.width(),
+      device_rect.height(),
+    ) else {
+      return;
+    };
+
+    let mut paint = Paint::default();
+    paint.set_color_rgba8(color.r, color.g, color.b, color.alpha_u8());
+    paint.anti_alias = true;
+    self
+      .pixmap
+      .fill_rect(fill_rect, &paint, Transform::identity(), clip_mask);
+
+    let stroke_width = 1.0 * self.scale;
+    let half = stroke_width / 2.0;
+    let Some(border_rect) = SkiaRect::from_xywh(
+      device_rect.x() + half,
+      device_rect.y() + half,
+      (device_rect.width() - stroke_width).max(0.0),
+      (device_rect.height() - stroke_width).max(0.0),
+    ) else {
+      return;
+    };
+    let path = PathBuilder::from_rect(border_rect);
+    let mut stroke_paint = Paint::default();
+    stroke_paint.set_color_rgba8(150, 150, 150, 255);
+    stroke_paint.anti_alias = true;
+    let stroke = Stroke {
+      width: stroke_width,
+      ..Default::default()
+    };
+    self.pixmap.stroke_path(
+      &path,
+      &stroke_paint,
+      &stroke,
+      Transform::identity(),
+      clip_mask,
+    );
+  }
+
+  fn missing_image_icon_size(content_rect: Rect) -> f32 {
+    let min_side = content_rect.width().min(content_rect.height());
+    if !(min_side.is_finite() && min_side > 0.0) {
+      return 0.0;
+    }
+    let available = (min_side - 4.0).max(0.0);
+    let size = available.min(24.0);
+    if size >= 8.0 { size } else { 0.0 }
+  }
+
+  fn paint_broken_image_icon(&mut self, rect: Rect, clip_mask: Option<&Mask>) {
+    let device_rect = self.device_rect(rect);
+    let stroke_width = 1.0 * self.scale;
+    let half = stroke_width / 2.0;
+    let Some(outline_rect) = SkiaRect::from_xywh(
+      device_rect.x() + half,
+      device_rect.y() + half,
+      (device_rect.width() - stroke_width).max(0.0),
+      (device_rect.height() - stroke_width).max(0.0),
+    ) else {
+      return;
+    };
+
+    let mut paint = Paint::default();
+    paint.set_color_rgba8(120, 120, 120, 255);
+    paint.anti_alias = true;
+    let stroke = Stroke {
+      width: stroke_width,
+      ..Default::default()
+    };
+
+    let outline_path = PathBuilder::from_rect(outline_rect);
+    self.pixmap.stroke_path(
+      &outline_path,
+      &paint,
+      &stroke,
+      Transform::identity(),
+      clip_mask,
+    );
+
+    let x0 = outline_rect.left();
+    let y0 = outline_rect.top();
+    let x1 = outline_rect.right();
+    let y1 = outline_rect.bottom();
+
+    let mut builder = PathBuilder::new();
+    builder.move_to(x0, y0);
+    builder.line_to(x1, y1);
+    builder.move_to(x0, y1);
+    builder.line_to(x1, y0);
+    if let Some(path) = builder.finish() {
+      self.pixmap.stroke_path(
+        &path,
+        &paint,
+        &stroke,
+        Transform::identity(),
+        clip_mask,
+      );
+    }
+  }
+
   fn paint_missing_image_placeholder(&mut self, content_rect: Rect, clip_mask: Option<&Mask>) {
     self.paint_solid_rect_simple(content_rect, Rgba::rgb(192, 192, 192), clip_mask);
 
