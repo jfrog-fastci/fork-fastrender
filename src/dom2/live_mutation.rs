@@ -112,7 +112,10 @@ impl LiveMutation {
   }
 
   pub(crate) fn register_live_range(&mut self, heap: &Heap, wrapper: GcObject) -> LiveRangeId {
-    let _ = self.sweep_dead_if_needed(heap);
+    // Note: sweeping is performed by `Document::sweep_dead_live_traversals_if_needed` so the
+    // document can also clean up any Rust-side traversal state (e.g. NodeIterator state) associated
+    // with collected wrappers.
+    let _ = heap;
     let id = LiveRangeId(self.next_live_range_id);
     self.next_live_range_id = self.next_live_range_id.wrapping_add(1);
     self.live_ranges.insert(id, WeakGcObject::from(wrapper));
@@ -130,7 +133,8 @@ impl LiveMutation {
     id: NodeIteratorId,
     wrapper: GcObject,
   ) {
-    let _ = self.sweep_dead_if_needed(heap);
+    // See `register_live_range` for why we don't sweep here.
+    let _ = heap;
     self.node_iterators.insert(id, WeakGcObject::from(wrapper));
   }
 
@@ -236,6 +240,8 @@ impl Document {
   }
 
   pub(crate) fn register_live_range(&mut self, heap: &Heap, wrapper: GcObject) -> LiveRangeId {
+    // Ensure we don't accumulate stale weak entries or traversal state across GC cycles.
+    self.sweep_dead_live_traversals_if_needed(heap);
     self.live_mutation.register_live_range(heap, wrapper)
   }
 
