@@ -722,7 +722,340 @@ fn rewrite_css(
     &mut seen,
   )?;
 
+  rewritten = apply_image_set_rewrite(
+    &rewritten,
+    config,
+    src_dir,
+    dest_dir,
+    &mut references,
+    &mut seen,
+  )?;
+
   Ok((rewritten, references, None))
+}
+
+fn apply_image_set_rewrite(
+  input: &str,
+  config: &ImportConfig,
+  src_dir: &Path,
+  dest_dir: &Path,
+  references: &mut Vec<Reference>,
+  seen: &mut HashSet<PathBuf>,
+) -> Result<String> {
+  const IMAGE_SET: &[u8] = b"image-set(";
+  const WEBKIT_IMAGE_SET: &[u8] = b"-webkit-image-set(";
+
+  fn matches_ascii_case_insensitive_at(haystack: &[u8], at: usize, needle_lower: &[u8]) -> bool {
+    if at + needle_lower.len() > haystack.len() {
+      return false;
+    }
+    haystack[at..at + needle_lower.len()]
+      .iter()
+      .zip(needle_lower)
+      .all(|(a, b)| a.to_ascii_lowercase() == *b)
+  }
+
+  fn is_ident_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'-' || b == b'_'
+  }
+
+  fn find_matching_paren(content: &[u8], open_idx: usize) -> Option<usize> {
+    let mut i = open_idx + 1;
+    let mut depth = 1usize;
+    let mut in_comment = false;
+    let mut in_string: Option<u8> = None;
+    while i < content.len() {
+      let b = content[i];
+      if in_comment {
+        if b == b'*' && content.get(i + 1) == Some(&b'/') {
+          in_comment = false;
+          i += 2;
+          continue;
+        }
+        i += 1;
+        continue;
+      }
+      if let Some(quote) = in_string {
+        if b == b'\\' {
+          i += 2;
+          continue;
+        }
+        if b == quote {
+          in_string = None;
+        }
+        i += 1;
+        continue;
+      }
+
+      if b == b'/' && content.get(i + 1) == Some(&b'*') {
+        in_comment = true;
+        i += 2;
+        continue;
+      }
+      if b == b'\'' || b == b'"' {
+        in_string = Some(b);
+        i += 1;
+        continue;
+      }
+      if b == b'(' {
+        depth += 1;
+        i += 1;
+        continue;
+      }
+      if b == b')' {
+        depth -= 1;
+        if depth == 0 {
+          return Some(i);
+        }
+        i += 1;
+        continue;
+      }
+      i += 1;
+    }
+    None
+  }
+
+  fn rewrite_image_set_body(
+    body: &str,
+    config: &ImportConfig,
+    src_dir: &Path,
+    dest_dir: &Path,
+    references: &mut Vec<Reference>,
+    seen: &mut HashSet<PathBuf>,
+  ) -> Result<String> {
+    fn rewrite_option(
+      option: &str,
+      config: &ImportConfig,
+      src_dir: &Path,
+      dest_dir: &Path,
+      references: &mut Vec<Reference>,
+      seen: &mut HashSet<PathBuf>,
+    ) -> Result<String> {
+      let bytes = option.as_bytes();
+      let mut i = 0;
+
+      // Skip leading whitespace and comments before the image token.
+      while i < bytes.len() {
+        if bytes[i].is_ascii_whitespace() {
+          i += 1;
+          continue;
+        }
+        if bytes[i] == b'/' && bytes.get(i + 1) == Some(&b'*') {
+          i += 2;
+          while i + 1 < bytes.len() {
+            if bytes[i] == b'*' && bytes[i + 1] == b'/' {
+              i += 2;
+              break;
+            }
+            i += 1;
+          }
+          continue;
+        }
+        break;
+      }
+
+      if i >= bytes.len() {
+        return Ok(option.to_string());
+      }
+
+      let quote = bytes[i];
+      if quote != b'\'' && quote != b'"' {
+        return Ok(option.to_string());
+      }
+
+      let value_start = i + 1;
+      let mut j = value_start;
+      while j < bytes.len() {
+        if bytes[j] == b'\\' {
+          j += 2;
+          continue;
+        }
+        if bytes[j] == quote {
+          break;
+        }
+        j += 1;
+      }
+      if j >= bytes.len() {
+        return Ok(option.to_string());
+      }
+
+      let value = &option[value_start..j];
+      let Some(new_value) =
+        rewrite_reference(config, src_dir, dest_dir, value, references, seen)?
+      else {
+        return Ok(option.to_string());
+      };
+
+      let mut out =
+        String::with_capacity(option.len() - value.len().saturating_sub(new_value.len()));
+      out.push_str(&option[..value_start]);
+      out.push_str(&new_value);
+      out.push_str(&option[j..]);
+      Ok(out)
+    }
+
+    let bytes = body.as_bytes();
+    let mut out = String::with_capacity(body.len());
+
+    let mut seg_start = 0usize;
+    let mut depth = 0usize;
+    let mut in_comment = false;
+    let mut in_string: Option<u8> = None;
+    let mut i = 0usize;
+
+    while i < bytes.len() {
+      let b = bytes[i];
+      if in_comment {
+        if b == b'*' && bytes.get(i + 1) == Some(&b'/') {
+          in_comment = false;
+          i += 2;
+          continue;
+        }
+        i += 1;
+        continue;
+      }
+      if let Some(quote) = in_string {
+        if b == b'\\' {
+          i += 2;
+          continue;
+        }
+        if b == quote {
+          in_string = None;
+        }
+        i += 1;
+        continue;
+      }
+
+      if b == b'/' && bytes.get(i + 1) == Some(&b'*') {
+        in_comment = true;
+        i += 2;
+        continue;
+      }
+      if b == b'\'' || b == b'"' {
+        in_string = Some(b);
+        i += 1;
+        continue;
+      }
+      if b == b'(' {
+        depth += 1;
+        i += 1;
+        continue;
+      }
+      if b == b')' {
+        depth = depth.saturating_sub(1);
+        i += 1;
+        continue;
+      }
+      if b == b',' && depth == 0 {
+        out.push_str(&rewrite_option(
+          &body[seg_start..i],
+          config,
+          src_dir,
+          dest_dir,
+          references,
+          seen,
+        )?);
+        out.push(',');
+        seg_start = i + 1;
+        i += 1;
+        continue;
+      }
+
+      i += 1;
+    }
+
+    out.push_str(&rewrite_option(
+      &body[seg_start..],
+      config,
+      src_dir,
+      dest_dir,
+      references,
+      seen,
+    )?);
+    Ok(out)
+  }
+
+  let bytes = input.as_bytes();
+  let mut out = String::with_capacity(input.len());
+
+  let mut last_copied = 0usize;
+  let mut in_comment = false;
+  let mut in_string: Option<u8> = None;
+  let mut i = 0usize;
+  while i < bytes.len() {
+    let b = bytes[i];
+    if in_comment {
+      if b == b'*' && bytes.get(i + 1) == Some(&b'/') {
+        in_comment = false;
+        i += 2;
+        continue;
+      }
+      i += 1;
+      continue;
+    }
+    if let Some(quote) = in_string {
+      if b == b'\\' {
+        i += 2;
+        continue;
+      }
+      if b == quote {
+        in_string = None;
+      }
+      i += 1;
+      continue;
+    }
+
+    if b == b'/' && bytes.get(i + 1) == Some(&b'*') {
+      in_comment = true;
+      i += 2;
+      continue;
+    }
+    if b == b'\'' || b == b'"' {
+      in_string = Some(b);
+      i += 1;
+      continue;
+    }
+
+    let (pattern, matched) =
+      if matches_ascii_case_insensitive_at(bytes, i, WEBKIT_IMAGE_SET) {
+        (WEBKIT_IMAGE_SET, true)
+      } else if matches_ascii_case_insensitive_at(bytes, i, IMAGE_SET) {
+        (IMAGE_SET, true)
+      } else {
+        (IMAGE_SET, false)
+      };
+
+    if matched {
+      if i > 0 && is_ident_byte(bytes[i - 1]) {
+        i += 1;
+        continue;
+      }
+
+      let open_idx = i + pattern.len() - 1;
+      let Some(close_idx) = find_matching_paren(bytes, open_idx) else {
+        // Malformed CSS; stop attempting rewrites.
+        break;
+      };
+
+      out.push_str(&input[last_copied..i]);
+      out.push_str(&input[i..open_idx + 1]);
+
+      let body = &input[open_idx + 1..close_idx];
+      out.push_str(&rewrite_image_set_body(
+        body, config, src_dir, dest_dir, references, seen,
+      )?);
+      out.push(')');
+
+      i = close_idx + 1;
+      last_copied = i;
+      continue;
+    }
+
+    i += 1;
+  }
+
+  out.push_str(&input[last_copied..]);
+  Ok(out)
 }
 
 fn apply_rewrite(
@@ -1446,6 +1779,12 @@ fn find_network_urls(content: &str) -> Result<Vec<String>> {
     }
   }
 
+  urls.extend(
+    find_network_urls_in_image_set(content)
+      .into_iter()
+      .filter(|url| is_network_url(url)),
+  );
+
   const MAX_SRCSET_CANDIDATES: usize = 64;
   for regex in [
     &srcset_double,
@@ -1470,6 +1809,274 @@ fn find_network_urls(content: &str) -> Result<Vec<String>> {
   urls.sort();
   urls.dedup();
   Ok(urls)
+}
+
+fn find_network_urls_in_image_set(content: &str) -> Vec<String> {
+  const IMAGE_SET: &[u8] = b"image-set(";
+  const WEBKIT_IMAGE_SET: &[u8] = b"-webkit-image-set(";
+
+  fn matches_ascii_case_insensitive_at(haystack: &[u8], at: usize, needle_lower: &[u8]) -> bool {
+    if at + needle_lower.len() > haystack.len() {
+      return false;
+    }
+    haystack[at..at + needle_lower.len()]
+      .iter()
+      .zip(needle_lower)
+      .all(|(a, b)| a.to_ascii_lowercase() == *b)
+  }
+
+  fn is_ident_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'-' || b == b'_'
+  }
+
+  fn find_matching_paren(content: &[u8], open_idx: usize) -> Option<usize> {
+    let mut i = open_idx + 1;
+    let mut depth = 1usize;
+    let mut in_comment = false;
+    let mut in_string: Option<u8> = None;
+    while i < content.len() {
+      let b = content[i];
+      if in_comment {
+        if b == b'*' && content.get(i + 1) == Some(&b'/') {
+          in_comment = false;
+          i += 2;
+          continue;
+        }
+        i += 1;
+        continue;
+      }
+      if let Some(quote) = in_string {
+        if b == b'\\' {
+          i += 2;
+          continue;
+        }
+        if b == quote {
+          in_string = None;
+        }
+        i += 1;
+        continue;
+      }
+
+      if b == b'/' && content.get(i + 1) == Some(&b'*') {
+        in_comment = true;
+        i += 2;
+        continue;
+      }
+      if b == b'\'' || b == b'"' {
+        in_string = Some(b);
+        i += 1;
+        continue;
+      }
+      if b == b'(' {
+        depth += 1;
+        i += 1;
+        continue;
+      }
+      if b == b')' {
+        depth -= 1;
+        if depth == 0 {
+          return Some(i);
+        }
+        i += 1;
+        continue;
+      }
+      i += 1;
+    }
+    None
+  }
+
+  fn extract_urls_from_body(body: &str) -> Vec<String> {
+    fn extract_option_url(option: &str) -> Option<String> {
+      let bytes = option.as_bytes();
+      let mut i = 0usize;
+
+      while i < bytes.len() {
+        if bytes[i].is_ascii_whitespace() {
+          i += 1;
+          continue;
+        }
+        if bytes[i] == b'/' && bytes.get(i + 1) == Some(&b'*') {
+          i += 2;
+          while i + 1 < bytes.len() {
+            if bytes[i] == b'*' && bytes[i + 1] == b'/' {
+              i += 2;
+              break;
+            }
+            i += 1;
+          }
+          continue;
+        }
+        break;
+      }
+
+      if i >= bytes.len() {
+        return None;
+      }
+
+      let quote = bytes[i];
+      if quote != b'\'' && quote != b'"' {
+        return None;
+      }
+
+      let value_start = i + 1;
+      let mut j = value_start;
+      while j < bytes.len() {
+        if bytes[j] == b'\\' {
+          j += 2;
+          continue;
+        }
+        if bytes[j] == quote {
+          break;
+        }
+        j += 1;
+      }
+      if j >= bytes.len() {
+        return None;
+      }
+
+      Some(option[value_start..j].to_string())
+    }
+
+    let bytes = body.as_bytes();
+    let mut urls = Vec::new();
+
+    let mut seg_start = 0usize;
+    let mut depth = 0usize;
+    let mut in_comment = false;
+    let mut in_string: Option<u8> = None;
+    let mut i = 0usize;
+
+    while i < bytes.len() {
+      let b = bytes[i];
+      if in_comment {
+        if b == b'*' && bytes.get(i + 1) == Some(&b'/') {
+          in_comment = false;
+          i += 2;
+          continue;
+        }
+        i += 1;
+        continue;
+      }
+      if let Some(quote) = in_string {
+        if b == b'\\' {
+          i += 2;
+          continue;
+        }
+        if b == quote {
+          in_string = None;
+        }
+        i += 1;
+        continue;
+      }
+
+      if b == b'/' && bytes.get(i + 1) == Some(&b'*') {
+        in_comment = true;
+        i += 2;
+        continue;
+      }
+      if b == b'\'' || b == b'"' {
+        in_string = Some(b);
+        i += 1;
+        continue;
+      }
+      if b == b'(' {
+        depth += 1;
+        i += 1;
+        continue;
+      }
+      if b == b')' {
+        depth = depth.saturating_sub(1);
+        i += 1;
+        continue;
+      }
+      if b == b',' && depth == 0 {
+        if let Some(url) = extract_option_url(&body[seg_start..i]) {
+          urls.push(url);
+        }
+        seg_start = i + 1;
+        i += 1;
+        continue;
+      }
+
+      i += 1;
+    }
+
+    if let Some(url) = extract_option_url(&body[seg_start..]) {
+      urls.push(url);
+    }
+
+    urls
+  }
+
+  let bytes = content.as_bytes();
+  let mut urls = Vec::new();
+
+  let mut in_comment = false;
+  let mut in_string: Option<u8> = None;
+  let mut i = 0usize;
+  while i < bytes.len() {
+    let b = bytes[i];
+    if in_comment {
+      if b == b'*' && bytes.get(i + 1) == Some(&b'/') {
+        in_comment = false;
+        i += 2;
+        continue;
+      }
+      i += 1;
+      continue;
+    }
+    if let Some(quote) = in_string {
+      if b == b'\\' {
+        i += 2;
+        continue;
+      }
+      if b == quote {
+        in_string = None;
+      }
+      i += 1;
+      continue;
+    }
+
+    if b == b'/' && bytes.get(i + 1) == Some(&b'*') {
+      in_comment = true;
+      i += 2;
+      continue;
+    }
+    if b == b'\'' || b == b'"' {
+      in_string = Some(b);
+      i += 1;
+      continue;
+    }
+
+    let (pattern, matched) =
+      if matches_ascii_case_insensitive_at(bytes, i, WEBKIT_IMAGE_SET) {
+        (WEBKIT_IMAGE_SET, true)
+      } else if matches_ascii_case_insensitive_at(bytes, i, IMAGE_SET) {
+        (IMAGE_SET, true)
+      } else {
+        (IMAGE_SET, false)
+      };
+
+    if matched {
+      if i > 0 && is_ident_byte(bytes[i - 1]) {
+        i += 1;
+        continue;
+      }
+
+      let open_idx = i + pattern.len() - 1;
+      let Some(close_idx) = find_matching_paren(bytes, open_idx) else {
+        break;
+      };
+
+      urls.extend(extract_urls_from_body(&content[open_idx + 1..close_idx]));
+      i = close_idx + 1;
+      continue;
+    }
+
+    i += 1;
+  }
+
+  urls
 }
 
 fn link_rel_requires_fetch(rel: &str) -> bool {
@@ -1839,7 +2446,10 @@ mod tests {
     let manifest_path = out_dir.path().join("manifest.toml");
     let config = ImportConfig {
       wpt_root: fixture_root(),
-      suites: vec!["css/simple".to_string()],
+      suites: vec![
+        "css/simple/reftest.html".to_string(),
+        "css/simple/reftest-unquoted.html".to_string(),
+      ],
       out_dir: out_dir.path().join("wpt"),
       manifest_path: Some(manifest_path.clone()),
       dry_run: false,
@@ -2642,5 +3252,56 @@ mod tests {
       find_reftest_link_in_html(html_ok),
       Some((ReftestRelation::Match, "ref.html".to_string()))
     );
+  }
+
+  #[test]
+  fn rewrites_image_set_urls() {
+    let out_dir = TempDir::new().unwrap();
+    let config = ImportConfig {
+      wpt_root: fixture_root(),
+      suites: vec!["css/simple/image-set.html".to_string()],
+      out_dir: out_dir.path().join("out"),
+      manifest_path: None,
+      dry_run: false,
+      overwrite: false,
+      strict_offline: false,
+      allow_network: false,
+    };
+
+    run_import(config).expect("import should succeed");
+
+    let css =
+      fs::read_to_string(out_dir.path().join("out/css/simple/support/image-set.css")).unwrap();
+    assert!(css.contains("image-set("));
+    assert!(css.contains("-webkit-image-set("));
+    assert!(!css.contains("\"/resources/"));
+    assert!(!css.contains("'/resources/"));
+    assert!(!css.contains("url(\"/resources/"));
+    assert!(css.contains("resources/green.png"));
+    assert!(out_dir.path().join("out/resources/green.png").exists());
+  }
+
+  #[test]
+  fn offline_validation_rejects_network_urls_in_image_set() {
+    let out_dir = TempDir::new().unwrap();
+    let config = ImportConfig {
+      wpt_root: fixture_root(),
+      suites: vec!["css/simple/image-set-external.html".to_string()],
+      out_dir: out_dir.path().join("out"),
+      manifest_path: None,
+      dry_run: false,
+      overwrite: false,
+      strict_offline: false,
+      allow_network: false,
+    };
+
+    let err = run_import(config).unwrap_err();
+    match err {
+      ImportError::NetworkUrlsRemaining(path, urls) => {
+        assert!(path.to_string_lossy().contains("image-set-external.css"));
+        assert!(urls.contains("example.com"));
+      }
+      other => panic!("unexpected error: {other:?}"),
+    }
   }
 }

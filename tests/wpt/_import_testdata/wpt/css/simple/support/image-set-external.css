@@ -1,0 +1,4 @@
+.box {
+  background-image: image-set("https://example.com/image.png" 1x);
+  background-image: -webkit-image-set("https://example.com/image.png" 1x);
+}

@@ -1,0 +1,12 @@
+.box {
+  width: 10px;
+  height: 10px;
+  background-image: image-set(
+    "/resources/green.png" 1x,
+    url("/resources/green.png") 2x
+  );
+  background-image: -webkit-image-set(
+    "/resources/green.png" 1x,
+    url("/resources/green.png") 2x
+  );
+}
