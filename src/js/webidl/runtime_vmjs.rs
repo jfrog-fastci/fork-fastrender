@@ -2414,6 +2414,12 @@ impl<Host> webidl_js_runtime::WebIdlJsRuntime for VmJsWebIdlBindingsCx<'_, Host>
   }
 
   fn is_array_buffer(&self, value: Self::JsValue) -> bool {
+    if let Value::Object(obj) = value {
+      if self.cx.scope.heap().is_array_buffer_object(obj) {
+        return true;
+      }
+    }
+    // Allow embedder hooks to treat host objects as ArrayBuffers (e.g. external buffers).
     self.state.hooks.is_array_buffer(value)
   }
 
@@ -2423,13 +2429,17 @@ impl<Host> webidl_js_runtime::WebIdlJsRuntime for VmJsWebIdlBindingsCx<'_, Host>
   }
 
   fn is_data_view(&self, value: Self::JsValue) -> bool {
-    let _ = value;
-    false
+    let Value::Object(obj) = value else {
+      return false;
+    };
+    self.cx.scope.heap().is_data_view_object(obj)
   }
 
   fn typed_array_name(&self, value: Self::JsValue) -> Option<&'static str> {
-    let _ = value;
-    None
+    let Value::Object(obj) = value else {
+      return None;
+    };
+    self.cx.scope.heap().typed_array_name(obj)
   }
 
   fn platform_object_to_js_value(
@@ -3210,6 +3220,43 @@ mod tests {
     })?;
 
     assert_eq!(values, vec![Value::Number(1.0), Value::Number(2.0)]);
+    Ok(())
+  }
+
+  #[test]
+  fn vmjs_bindings_runtime_buffer_source_internal_slot_checks_use_vm_js_objects(
+  ) -> Result<(), VmError> {
+    let vm = Vm::new(VmOptions::default());
+    let heap = Heap::new(HeapLimits::new(16 * 1024 * 1024, 8 * 1024 * 1024));
+    let mut runtime = VmJsRuntime::new(vm, heap)?;
+
+    let state = Box::new(VmJsWebIdlBindingsState::<TestHost>::new(
+      runtime.realm().global_object(),
+      WebIdlLimits::default(),
+      Box::new(NoHooks),
+    ));
+
+    let (vm, heap, _realm) = webidl_vm_js::split_js_runtime(&mut runtime);
+    let mut scope = heap.scope();
+    let mut hooks = MicrotaskQueue::new();
+    let mut rt = VmJsWebIdlBindingsCx::from_native_call(vm, &mut scope, &mut hooks, &state);
+
+    // ArrayBuffer
+    let buf = rt.cx.scope.alloc_array_buffer(8)?;
+    rt.cx.scope.push_root(Value::Object(buf))?;
+    assert!(
+      webidl_js_runtime::WebIdlJsRuntime::is_array_buffer(&rt, Value::Object(buf)),
+      "expected vm-js ArrayBuffer objects to satisfy WebIDL is_array_buffer"
+    );
+
+    // TypedArrayName (Uint8Array)
+    let u8 = rt.cx.scope.alloc_uint8_array(buf, 0, 8)?;
+    rt.cx.scope.push_root(Value::Object(u8))?;
+    assert_eq!(
+      webidl_js_runtime::WebIdlJsRuntime::typed_array_name(&rt, Value::Object(u8)),
+      Some("Uint8Array")
+    );
+
     Ok(())
   }
 
