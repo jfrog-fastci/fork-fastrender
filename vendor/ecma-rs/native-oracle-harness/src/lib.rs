@@ -155,10 +155,13 @@ impl std::error::Error for TsToJsError {}
 /// This is intentionally a best-effort API:
 /// - It first attempts to parse TS/TSX, erase it via `ts-erase` (`StrictNative` mode), and emit JS
 ///   via `emit-js`.
-/// - If erasure/emission fails and the `optimize-js-fallback` feature is enabled, it falls back to
+/// - If emission fails and the `optimize-js-fallback` feature is enabled, it falls back to
 ///   `optimize-js`'s decompiler, which supports a wider range of syntax (but is significantly
 ///   heavier).
-pub fn erase_typescript_to_js(source: &str) -> Result<String, TsToJsError> {
+pub fn erase_typescript_to_js_with_source_type(
+  source: &str,
+  source_type: parse_js::SourceType,
+) -> Result<String, TsToJsError> {
   let file = FileId(0);
 
   // Prefer TS parsing; fall back to TSX for JSX-heavy inputs.
@@ -167,7 +170,7 @@ pub fn erase_typescript_to_js(source: &str) -> Result<String, TsToJsError> {
   for dialect in [Dialect::Ts, Dialect::Tsx] {
     let opts = ParseOptions {
       dialect,
-      source_type: SourceType::Script,
+      source_type,
     };
     match parse_with_options(source, opts) {
       Ok(ast) => {
@@ -183,28 +186,45 @@ pub fn erase_typescript_to_js(source: &str) -> Result<String, TsToJsError> {
     None => return Err(TsToJsError::Parse(last_error.expect("parse attempted"))),
   };
 
-  if let Err(diags) = ts_erase::erase_types_strict_native(file, SourceType::Script, &mut top_level) {
-    return erase_with_optimize_js_fallback(source, TsToJsError::Erase(diags));
+  if let Err(diags) = ts_erase::erase_types_strict_native(file, source_type, &mut top_level) {
+    return Err(TsToJsError::Erase(diags));
   }
 
   match emit_top_level_diagnostic(file, &top_level, EmitOptions::minified()) {
     Ok(output) => Ok(output),
-    Err(diag) => erase_with_optimize_js_fallback(source, TsToJsError::Emit(diag)),
+    Err(diag) => erase_with_optimize_js_fallback(source, source_type, TsToJsError::Emit(diag)),
   }
 }
 
+/// Backward-compatible wrapper for erasing TypeScript parsed as a classic (non-module) script.
+pub fn erase_typescript_to_js(source: &str) -> Result<String, TsToJsError> {
+  erase_typescript_to_js_with_source_type(source, SourceType::Script)
+}
+
 #[cfg(feature = "optimize-js-fallback")]
-fn erase_with_optimize_js_fallback(source: &str, _original: TsToJsError) -> Result<String, TsToJsError> {
+fn erase_with_optimize_js_fallback(
+  source: &str,
+  source_type: SourceType,
+  _original: TsToJsError,
+) -> Result<String, TsToJsError> {
   use optimize_js::{compile_source, program_to_js, DecompileOptions, TopLevelMode};
 
-  let program = compile_source(source, TopLevelMode::Script, false).map_err(TsToJsError::Optimize)?;
+  let mode = match source_type {
+    SourceType::Script => TopLevelMode::Script,
+    SourceType::Module => TopLevelMode::Module,
+  };
+  let program = compile_source(source, mode, false).map_err(TsToJsError::Optimize)?;
   let bytes = program_to_js(&program, &DecompileOptions::default(), EmitOptions::minified())
     .map_err(TsToJsError::OptimizeEmit)?;
   Ok(String::from_utf8(bytes).expect("optimize-js emits UTF-8"))
 }
 
 #[cfg(not(feature = "optimize-js-fallback"))]
-fn erase_with_optimize_js_fallback(_source: &str, original: TsToJsError) -> Result<String, TsToJsError> {
+fn erase_with_optimize_js_fallback(
+  _source: &str,
+  _source_type: SourceType,
+  original: TsToJsError,
+) -> Result<String, TsToJsError> {
   Err(original)
 }
 
@@ -802,7 +822,7 @@ pub fn run_fixture_ts_with_name(name: &str, source: &str) -> Result<String, Diag
 
 #[cfg(test)]
 mod tests {
-  use super::{erase_typescript_to_js, TsToJsError};
+  use super::{erase_typescript_to_js, erase_typescript_to_js_with_source_type, TsToJsError};
   use std::path::{Path, PathBuf};
 
   fn fixtures_dir() -> PathBuf {
@@ -859,6 +879,26 @@ mod tests {
   }
 
   #[test]
+  fn module_erasure_emits_parseable_ecma_module_js() {
+    for source in [
+      "export const x: number = 1;",
+      "import { x } from './dep.ts'; export const y = x + 1;",
+    ] {
+      let js = erase_typescript_to_js_with_source_type(source, parse_js::SourceType::Module)
+        .unwrap_or_else(|err| panic!("failed to erase module source {source:?}: {err}"));
+
+      parse_js::parse_with_options(
+        &js,
+        parse_js::ParseOptions {
+          dialect: parse_js::Dialect::Ecma,
+          source_type: parse_js::SourceType::Module,
+        },
+      )
+      .unwrap_or_else(|err| panic!("erased JS should parse as an ECMAScript module: {err}\nJS:\n{js}"));
+    }
+  }
+
+  #[test]
   fn strict_native_erasure_rejects_runtime_ts_constructs() {
     // The harness erases TypeScript using `ts-erase` in strict-native mode, which intentionally
     // rejects runtime TS constructs like enums and namespaces. This keeps the oracle path aligned
@@ -892,6 +932,7 @@ mod tests {
     let source = "switch(1){case 1:break;}";
     let js = super::erase_with_optimize_js_fallback(
       source,
+      parse_js::SourceType::Script,
       super::TsToJsError::Optimize(Vec::new()),
     )
     .expect("erase via optimize-js fallback");
