@@ -17,6 +17,7 @@ mod no_path_env_mutation;
 mod no_fastr_use_bundled_fonts_env_mutation;
 mod no_process_global_env_mutation;
 mod no_merge_markers;
+mod no_orphan_test_modules;
 mod no_path_shims_in_tests;
 mod no_production_panics;
 mod scroll_unit_tests_live_in_src;
