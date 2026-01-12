@@ -341,7 +341,8 @@ impl<'a> StackRootEnumerator<'a> {
   /// - We currently assume LLVM 18 statepoint lowering, where the stackmap record's `locations`
   ///   are: a prefix of constant header entries (metadata), followed by `(base, derived)` pairs for
   ///   each `gc.relocate` in the frame. Deopt operands (if any) are skipped.
-  /// - Root locations may be either stack slots (`Location::Indirect`) or registers (`Location::Register`).
+  /// - Root locations must be addressable stack slots (`Location::Indirect`) relative to SP/FP
+  ///   (no `Register` / `Direct` roots). This is enforced by the runtime statepoint verifier.
   pub fn visit_reloc_pairs(
     &self,
     top_callee_fp: usize,
