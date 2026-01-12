@@ -229,6 +229,71 @@ fn array_prototype_includes_works() {
 }
 
 #[test]
+fn array_prototype_methods_are_proxy_aware() {
+  // Proxy traps can allocate (creating call frames, temporary strings like `"get"`, etc). Use a
+  // larger heap budget than the other smoke tests so we don't fail due to current engine
+  // allocation patterns.
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(16 * 1024 * 1024, 16 * 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap).unwrap();
+  let value = rt
+    .exec_script(
+      r#"
+        var seen = { has0:false, get0:false, getLen:false, setLen:false, del2:false };
+        var target = [1,2];
+        var p;
+        p = new Proxy(target, {
+          has(t, k) {
+            if (k === "0") seen.has0 = true;
+            return (k in t);
+          },
+          get(t, k, r) {
+            if (k === "0" && r === p) seen.get0 = true;
+            if (k === "length" && r === p) seen.getLen = true;
+            return t[k];
+          },
+          set(t, k, v, r) {
+            if (k === "length" && r === p) seen.setLen = true;
+            t[k] = v;
+            return true;
+          },
+          deleteProperty(t, k) {
+            if (k === "2") seen.del2 = true;
+            return delete t[k];
+          },
+        });
+        var mapped = Array.prototype.map.call(p, function(x) { return x + 1; });
+        var inc = Array.prototype.includes.call(p, 2);
+        var idx = Array.prototype.indexOf.call(p, 2);
+        Array.prototype.push.call(p, 3);
+        var popped = Array.prototype.pop.call(p);
+        Array.prototype.unshift.call(p, 0);
+        var shifted = Array.prototype.shift.call(p);
+        var removed = Array.prototype.splice.call(p, 1, 1, 9);
+        mapped.length === 2
+          && mapped[0] === 2
+          && mapped[1] === 3
+          && inc === true
+          && idx === 1
+          && popped === 3
+          && shifted === 0
+          && removed.length === 1
+          && removed[0] === 2
+          && target.length === 2
+          && target[0] === 1
+          && target[1] === 9
+          && seen.has0
+          && seen.get0
+          && seen.getLen
+          && seen.setLen
+          && seen.del2
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn array_prototype_filter_works() {
   let mut rt = new_runtime();
   let value = rt

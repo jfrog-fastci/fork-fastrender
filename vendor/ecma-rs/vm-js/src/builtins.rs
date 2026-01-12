@@ -9230,7 +9230,7 @@ pub fn array_prototype_map(
     iter_scope.push_root(Value::String(key_s))?;
     let key = PropertyKey::from_string(key_s);
 
-    if !crate::spec_ops::internal_has_property_with_host_and_hooks(vm, &mut iter_scope, host, hooks, obj, key)? {
+    if !iter_scope.has_property_with_host_and_hooks(vm, host, hooks, obj, key)? {
       continue;
     }
     let value = iter_scope.get_with_host_and_hooks(vm, host, hooks, obj, key, Value::Object(obj))?;
@@ -9278,8 +9278,9 @@ pub fn array_prototype_for_each(
 
     let mut iter_scope = scope.reborrow();
     let key_s = iter_scope.alloc_string(&k.to_string())?;
+    iter_scope.push_root(Value::String(key_s))?;
     let key = PropertyKey::from_string(key_s);
-    if !crate::spec_ops::internal_has_property_with_host_and_hooks(vm, &mut iter_scope, host, hooks, obj, key)? {
+    if !iter_scope.has_property_with_host_and_hooks(vm, host, hooks, obj, key)? {
       continue;
     }
     let value = iter_scope.get_with_host_and_hooks(vm, host, hooks, obj, key, Value::Object(obj))?;
@@ -9327,8 +9328,9 @@ pub fn array_prototype_index_of(
 
     let mut iter_scope = scope.reborrow();
     let key_s = iter_scope.alloc_string(&k.to_string())?;
+    iter_scope.push_root(Value::String(key_s))?;
     let key = PropertyKey::from_string(key_s);
-    if !crate::spec_ops::internal_has_property_with_host_and_hooks(vm, &mut iter_scope, host, hooks, obj, key)? {
+    if !iter_scope.has_property_with_host_and_hooks(vm, host, hooks, obj, key)? {
       continue;
     }
     let value = iter_scope.get_with_host_and_hooks(vm, host, hooks, obj, key, Value::Object(obj))?;
@@ -9392,6 +9394,7 @@ pub fn array_prototype_includes(
 
     let mut iter_scope = scope.reborrow();
     let key_s = iter_scope.alloc_string(&k.to_string())?;
+    iter_scope.push_root(Value::String(key_s))?;
     let key = PropertyKey::from_string(key_s);
     let value = iter_scope.get_with_host_and_hooks(vm, host, hooks, obj, key, Value::Object(obj))?;
 
@@ -9460,8 +9463,9 @@ pub fn array_prototype_filter(
 
     let mut iter_scope = scope.reborrow();
     let key_s = iter_scope.alloc_string(&k.to_string())?;
+    iter_scope.push_root(Value::String(key_s))?;
     let key = PropertyKey::from_string(key_s);
-    if !crate::spec_ops::internal_has_property_with_host_and_hooks(vm, &mut iter_scope, host, hooks, obj, key)? {
+    if !iter_scope.has_property_with_host_and_hooks(vm, host, hooks, obj, key)? {
       continue;
     }
 
@@ -9515,6 +9519,7 @@ pub fn array_prototype_reduce(
     .object_set_prototype(acc_holder, Some(intr.object_prototype()))?;
 
   let acc_sym = scope.alloc_symbol(Some("vm-js.internal.ArrayReduceAccumulator"))?;
+  scope.push_root(Value::Symbol(acc_sym))?;
   let acc_key = PropertyKey::from_symbol(acc_sym);
 
   let has_initial = args.len() > 1;
@@ -9537,8 +9542,9 @@ pub fn array_prototype_reduce(
 
       let mut iter_scope = scope.reborrow();
       let key_s = iter_scope.alloc_string(&k.to_string())?;
+      iter_scope.push_root(Value::String(key_s))?;
       let key = PropertyKey::from_string(key_s);
-      if crate::spec_ops::internal_has_property_with_host_and_hooks(vm, &mut iter_scope, host, hooks, obj, key)? {
+      if iter_scope.has_property_with_host_and_hooks(vm, host, hooks, obj, key)? {
         accumulator =
           iter_scope.get_with_host_and_hooks(vm, host, hooks, obj, key, Value::Object(obj))?;
         k = k.checked_add(1).ok_or(VmError::OutOfMemory)?;
@@ -9563,8 +9569,9 @@ pub fn array_prototype_reduce(
 
     let mut iter_scope = scope.reborrow();
     let key_s = iter_scope.alloc_string(&idx.to_string())?;
+    iter_scope.push_root(Value::String(key_s))?;
     let key = PropertyKey::from_string(key_s);
-    if !crate::spec_ops::internal_has_property_with_host_and_hooks(vm, &mut iter_scope, host, hooks, obj, key)? {
+    if !iter_scope.has_property_with_host_and_hooks(vm, host, hooks, obj, key)? {
       continue;
     }
 
@@ -9629,8 +9636,9 @@ pub fn array_prototype_some(
 
     let mut iter_scope = scope.reborrow();
     let key_s = iter_scope.alloc_string(&k.to_string())?;
+    iter_scope.push_root(Value::String(key_s))?;
     let key = PropertyKey::from_string(key_s);
-    if !crate::spec_ops::internal_has_property_with_host_and_hooks(vm, &mut iter_scope, host, hooks, obj, key)? {
+    if !iter_scope.has_property_with_host_and_hooks(vm, host, hooks, obj, key)? {
       continue;
     }
     let value = iter_scope.get_with_host_and_hooks(vm, host, hooks, obj, key, Value::Object(obj))?;
@@ -9679,8 +9687,9 @@ pub fn array_prototype_every(
 
     let mut iter_scope = scope.reborrow();
     let key_s = iter_scope.alloc_string(&k.to_string())?;
+    iter_scope.push_root(Value::String(key_s))?;
     let key = PropertyKey::from_string(key_s);
-    if !crate::spec_ops::internal_has_property_with_host_and_hooks(vm, &mut iter_scope, host, hooks, obj, key)? {
+    if !iter_scope.has_property_with_host_and_hooks(vm, host, hooks, obj, key)? {
       continue;
     }
     let value = iter_scope.get_with_host_and_hooks(vm, host, hooks, obj, key, Value::Object(obj))?;
@@ -9729,8 +9738,9 @@ pub fn array_prototype_find(
 
     let mut iter_scope = scope.reborrow();
     let key_s = iter_scope.alloc_string(&k.to_string())?;
+    iter_scope.push_root(Value::String(key_s))?;
     let key = PropertyKey::from_string(key_s);
-    if !crate::spec_ops::internal_has_property_with_host_and_hooks(vm, &mut iter_scope, host, hooks, obj, key)? {
+    if !iter_scope.has_property_with_host_and_hooks(vm, host, hooks, obj, key)? {
       continue;
     }
     let value = iter_scope.get_with_host_and_hooks(vm, host, hooks, obj, key, Value::Object(obj))?;
@@ -9779,8 +9789,9 @@ pub fn array_prototype_find_index(
 
     let mut iter_scope = scope.reborrow();
     let key_s = iter_scope.alloc_string(&k.to_string())?;
+    iter_scope.push_root(Value::String(key_s))?;
     let key = PropertyKey::from_string(key_s);
-    if !crate::spec_ops::internal_has_property_with_host_and_hooks(vm, &mut iter_scope, host, hooks, obj, key)? {
+    if !iter_scope.has_property_with_host_and_hooks(vm, host, hooks, obj, key)? {
       continue;
     }
     let value = iter_scope.get_with_host_and_hooks(vm, host, hooks, obj, key, Value::Object(obj))?;
@@ -9948,11 +9959,11 @@ pub fn array_prototype_reverse(
     let lower_key = PropertyKey::from_string(lower_s);
     let upper_key = PropertyKey::from_string(upper_s);
 
-    let lower_exists = iter_scope.ordinary_has_property_with_tick(obj, lower_key, || vm.tick())?;
-    let upper_exists = iter_scope.ordinary_has_property_with_tick(obj, upper_key, || vm.tick())?;
+    let lower_exists = iter_scope.has_property_with_host_and_hooks(vm, host, hooks, obj, lower_key)?;
+    let upper_exists = iter_scope.has_property_with_host_and_hooks(vm, host, hooks, obj, upper_key)?;
 
     let lower_value = if lower_exists {
-      Some(iter_scope.ordinary_get_with_host_and_hooks(
+      Some(iter_scope.get_with_host_and_hooks(
         vm,
         host,
         hooks,
@@ -9964,7 +9975,7 @@ pub fn array_prototype_reverse(
       None
     };
     let upper_value = if upper_exists {
-      Some(iter_scope.ordinary_get_with_host_and_hooks(
+      Some(iter_scope.get_with_host_and_hooks(
         vm,
         host,
         hooks,
@@ -9978,7 +9989,7 @@ pub fn array_prototype_reverse(
 
     match (lower_value, upper_value) {
       (Some(lower_value), Some(upper_value)) => {
-        let ok = iter_scope.ordinary_set_with_host_and_hooks(
+        let ok = iter_scope.set_with_host_and_hooks(
           vm,
           host,
           hooks,
@@ -9990,7 +10001,7 @@ pub fn array_prototype_reverse(
         if !ok {
           return Err(VmError::TypeError("Array.prototype.reverse failed"));
         }
-        let ok = iter_scope.ordinary_set_with_host_and_hooks(
+        let ok = iter_scope.set_with_host_and_hooks(
           vm,
           host,
           hooks,
@@ -10004,7 +10015,7 @@ pub fn array_prototype_reverse(
         }
       }
       (None, Some(upper_value)) => {
-        let ok = iter_scope.ordinary_set_with_host_and_hooks(
+        let ok = iter_scope.set_with_host_and_hooks(
           vm,
           host,
           hooks,
@@ -10016,17 +10027,17 @@ pub fn array_prototype_reverse(
         if !ok {
           return Err(VmError::TypeError("Array.prototype.reverse failed"));
         }
-        let ok = iter_scope.ordinary_delete_with_host_and_hooks(vm, host, hooks, obj, upper_key)?;
+        let ok = iter_scope.delete_with_host_and_hooks(vm, host, hooks, obj, upper_key)?;
         if !ok {
           return Err(VmError::TypeError("Array.prototype.reverse failed"));
         }
       }
       (Some(lower_value), None) => {
-        let ok = iter_scope.ordinary_delete_with_host_and_hooks(vm, host, hooks, obj, lower_key)?;
+        let ok = iter_scope.delete_with_host_and_hooks(vm, host, hooks, obj, lower_key)?;
         if !ok {
           return Err(VmError::TypeError("Array.prototype.reverse failed"));
         }
-        let ok = iter_scope.ordinary_set_with_host_and_hooks(
+        let ok = iter_scope.set_with_host_and_hooks(
           vm,
           host,
           hooks,
@@ -10072,7 +10083,7 @@ pub fn array_prototype_sort(
 
   let length_key = string_key(&mut scope, "length")?;
   let len_value =
-    scope.ordinary_get_with_host_and_hooks(vm, host, hooks, obj, length_key, Value::Object(obj))?;
+    scope.get_with_host_and_hooks(vm, host, hooks, obj, length_key, Value::Object(obj))?;
   let len = to_length_usize(vm, &mut scope, host, hooks, len_value)?;
 
   #[derive(Clone, Copy)]
@@ -10096,10 +10107,10 @@ pub fn array_prototype_sort(
       iter_scope.push_root(Value::String(key_s))?;
       let key = PropertyKey::from_string(key_s);
 
-      if !iter_scope.ordinary_has_property_with_tick(obj, key, || vm.tick())? {
+      if !iter_scope.has_property_with_host_and_hooks(vm, host, hooks, obj, key)? {
         None
       } else {
-        Some(iter_scope.ordinary_get_with_host_and_hooks(
+        Some(iter_scope.get_with_host_and_hooks(
           vm,
           host,
           hooks,
@@ -10221,7 +10232,7 @@ pub fn array_prototype_sort(
     let key_s = iter_scope.alloc_string(&j.to_string())?;
     iter_scope.push_root(Value::String(key_s))?;
     let key = PropertyKey::from_string(key_s);
-    let ok = iter_scope.ordinary_set_with_host_and_hooks(
+    let ok = iter_scope.set_with_host_and_hooks(
       vm,
       host,
       hooks,
@@ -10243,7 +10254,10 @@ pub fn array_prototype_sort(
     let key_s = iter_scope.alloc_string(&j.to_string())?;
     iter_scope.push_root(Value::String(key_s))?;
     let key = PropertyKey::from_string(key_s);
-    iter_scope.delete_property_or_throw(obj, key)?;
+    let ok = iter_scope.delete_with_host_and_hooks(vm, host, hooks, obj, key)?;
+    if !ok {
+      return Err(VmError::TypeError("Array.prototype.sort failed"));
+    }
   }
 
   Ok(Value::Object(obj))
@@ -10347,14 +10361,7 @@ pub fn array_prototype_to_string(
   scope.push_root(Value::Object(array))?;
 
   let join_key = string_key(&mut scope, "join")?;
-  let func = scope.get_with_host_and_hooks(
-    vm,
-    host,
-    hooks,
-    array,
-    join_key,
-    Value::Object(array),
-  )?;
+  let func = scope.get_with_host_and_hooks(vm, host, hooks, array, join_key, Value::Object(array))?;
   scope.push_root(func)?;
 
   if scope.heap().is_callable(func)? {
@@ -10412,14 +10419,7 @@ pub fn array_prototype_slice(
     let from_key = PropertyKey::from_string(from_s);
     let to_key = PropertyKey::from_string(to_s);
 
-    if !crate::spec_ops::internal_has_property_with_host_and_hooks(
-      vm,
-      &mut iter_scope,
-      host,
-      hooks,
-      obj,
-      from_key,
-    )? {
+    if !iter_scope.has_property_with_host_and_hooks(vm, host, hooks, obj, from_key)? {
       continue;
     }
 
@@ -10446,8 +10446,7 @@ pub fn array_prototype_push(
   scope.push_root(Value::Object(obj))?;
 
   let length_key = string_key(&mut scope, "length")?;
-  let len_value =
-    scope.ordinary_get_with_host_and_hooks(vm, host, hooks, obj, length_key, Value::Object(obj))?;
+  let len_value = scope.get_with_host_and_hooks(vm, host, hooks, obj, length_key, Value::Object(obj))?;
   let mut len = to_length_usize(vm, &mut scope, host, hooks, len_value)?;
 
   for (i, value) in args.iter().copied().enumerate() {
@@ -10459,7 +10458,7 @@ pub fn array_prototype_push(
     let idx_s = iter_scope.alloc_string(&len.to_string())?;
     iter_scope.push_root(Value::String(idx_s))?;
     let key = PropertyKey::from_string(idx_s);
-    let ok = iter_scope.ordinary_set_with_host_and_hooks(
+    let ok = iter_scope.set_with_host_and_hooks(
       vm,
       host,
       hooks,
@@ -10475,7 +10474,7 @@ pub fn array_prototype_push(
   }
 
   // Per spec, set the final length even though array index writes already extend length.
-  let ok = scope.ordinary_set_with_host_and_hooks(
+  let ok = scope.set_with_host_and_hooks(
     vm,
     host,
     hooks,
@@ -10507,12 +10506,11 @@ pub fn array_prototype_pop(
   scope.push_root(Value::Object(obj))?;
 
   let length_key = string_key(&mut scope, "length")?;
-  let len_value =
-    scope.ordinary_get_with_host_and_hooks(vm, host, hooks, obj, length_key, Value::Object(obj))?;
+  let len_value = scope.get_with_host_and_hooks(vm, host, hooks, obj, length_key, Value::Object(obj))?;
   let len = to_length_usize(vm, &mut scope, host, hooks, len_value)?;
 
   if len == 0 {
-    let ok = scope.ordinary_set_with_host_and_hooks(
+    let ok = scope.set_with_host_and_hooks(
       vm,
       host,
       hooks,
@@ -10534,13 +10532,13 @@ pub fn array_prototype_pop(
   let key = PropertyKey::from_string(idx_s);
 
   let element =
-    idx_scope.ordinary_get_with_host_and_hooks(vm, host, hooks, obj, key, Value::Object(obj))?;
-  let ok = idx_scope.ordinary_delete_with_host_and_hooks(vm, host, hooks, obj, key)?;
+    idx_scope.get_with_host_and_hooks(vm, host, hooks, obj, key, Value::Object(obj))?;
+  let ok = idx_scope.delete_with_host_and_hooks(vm, host, hooks, obj, key)?;
   if !ok {
     return Err(VmError::TypeError("Array.prototype.pop failed"));
   }
 
-  let ok = idx_scope.ordinary_set_with_host_and_hooks(
+  let ok = idx_scope.set_with_host_and_hooks(
     vm,
     host,
     hooks,
@@ -10572,12 +10570,11 @@ pub fn array_prototype_shift(
   scope.push_root(Value::Object(obj))?;
 
   let length_key = string_key(&mut scope, "length")?;
-  let len_value =
-    scope.ordinary_get_with_host_and_hooks(vm, host, hooks, obj, length_key, Value::Object(obj))?;
+  let len_value = scope.get_with_host_and_hooks(vm, host, hooks, obj, length_key, Value::Object(obj))?;
   let len = to_length_usize(vm, &mut scope, host, hooks, len_value)?;
 
   if len == 0 {
-    let ok = scope.ordinary_set_with_host_and_hooks(
+    let ok = scope.set_with_host_and_hooks(
       vm,
       host,
       hooks,
@@ -10595,7 +10592,7 @@ pub fn array_prototype_shift(
   // Get the first element before shifting.
   let first_key = string_key(&mut scope, "0")?;
   let first =
-    scope.ordinary_get_with_host_and_hooks(vm, host, hooks, obj, first_key, Value::Object(obj))?;
+    scope.get_with_host_and_hooks(vm, host, hooks, obj, first_key, Value::Object(obj))?;
 
   // Shift existing elements down by one (holes preserved via HasProperty/Delete).
   for k in 1..len {
@@ -10615,10 +10612,10 @@ pub fn array_prototype_shift(
     let from_key = PropertyKey::from_string(from_s);
     let to_key = PropertyKey::from_string(to_s);
 
-    if iter_scope.ordinary_has_property_with_tick(obj, from_key, || vm.tick())? {
+    if iter_scope.has_property_with_host_and_hooks(vm, host, hooks, obj, from_key)? {
       let value =
-        iter_scope.ordinary_get_with_host_and_hooks(vm, host, hooks, obj, from_key, Value::Object(obj))?;
-      let ok = iter_scope.ordinary_set_with_host_and_hooks(
+        iter_scope.get_with_host_and_hooks(vm, host, hooks, obj, from_key, Value::Object(obj))?;
+      let ok = iter_scope.set_with_host_and_hooks(
         vm,
         host,
         hooks,
@@ -10631,7 +10628,7 @@ pub fn array_prototype_shift(
         return Err(VmError::TypeError("Array.prototype.shift failed"));
       }
     } else {
-      let ok = iter_scope.ordinary_delete_with_host_and_hooks(vm, host, hooks, obj, to_key)?;
+      let ok = iter_scope.delete_with_host_and_hooks(vm, host, hooks, obj, to_key)?;
       if !ok {
         return Err(VmError::TypeError("Array.prototype.shift failed"));
       }
@@ -10645,12 +10642,12 @@ pub fn array_prototype_shift(
     let last_s = del_scope.alloc_string(&last.to_string())?;
     del_scope.push_root(Value::String(last_s))?;
     let last_key = PropertyKey::from_string(last_s);
-    let ok = del_scope.ordinary_delete_with_host_and_hooks(vm, host, hooks, obj, last_key)?;
+    let ok = del_scope.delete_with_host_and_hooks(vm, host, hooks, obj, last_key)?;
     if !ok {
       return Err(VmError::TypeError("Array.prototype.shift failed"));
     }
 
-    let ok = del_scope.ordinary_set_with_host_and_hooks(
+    let ok = del_scope.set_with_host_and_hooks(
       vm,
       host,
       hooks,
@@ -10683,8 +10680,7 @@ pub fn array_prototype_unshift(
   scope.push_root(Value::Object(obj))?;
 
   let length_key = string_key(&mut scope, "length")?;
-  let len_value =
-    scope.ordinary_get_with_host_and_hooks(vm, host, hooks, obj, length_key, Value::Object(obj))?;
+  let len_value = scope.get_with_host_and_hooks(vm, host, hooks, obj, length_key, Value::Object(obj))?;
   let len = to_length_usize(vm, &mut scope, host, hooks, len_value)?;
 
   let insert_count = args.len();
@@ -10716,10 +10712,10 @@ pub fn array_prototype_unshift(
     let from_key = PropertyKey::from_string(from_s);
     let to_key = PropertyKey::from_string(to_s);
 
-    if iter_scope.ordinary_has_property_with_tick(obj, from_key, || vm.tick())? {
+    if iter_scope.has_property_with_host_and_hooks(vm, host, hooks, obj, from_key)? {
       let value =
-        iter_scope.ordinary_get_with_host_and_hooks(vm, host, hooks, obj, from_key, Value::Object(obj))?;
-      let ok = iter_scope.ordinary_set_with_host_and_hooks(
+        iter_scope.get_with_host_and_hooks(vm, host, hooks, obj, from_key, Value::Object(obj))?;
+      let ok = iter_scope.set_with_host_and_hooks(
         vm,
         host,
         hooks,
@@ -10732,7 +10728,7 @@ pub fn array_prototype_unshift(
         return Err(VmError::TypeError("Array.prototype.unshift failed"));
       }
     } else {
-      let ok = iter_scope.ordinary_delete_with_host_and_hooks(vm, host, hooks, obj, to_key)?;
+      let ok = iter_scope.delete_with_host_and_hooks(vm, host, hooks, obj, to_key)?;
       if !ok {
         return Err(VmError::TypeError("Array.prototype.unshift failed"));
       }
@@ -10748,7 +10744,7 @@ pub fn array_prototype_unshift(
     let idx_s = set_scope.alloc_string(&i.to_string())?;
     set_scope.push_root(Value::String(idx_s))?;
     let key = PropertyKey::from_string(idx_s);
-    let ok = set_scope.ordinary_set_with_host_and_hooks(
+    let ok = set_scope.set_with_host_and_hooks(
       vm,
       host,
       hooks,
@@ -10762,7 +10758,7 @@ pub fn array_prototype_unshift(
     }
   }
 
-  let ok = scope.ordinary_set_with_host_and_hooks(
+  let ok = scope.set_with_host_and_hooks(
     vm,
     host,
     hooks,
@@ -10797,8 +10793,7 @@ pub fn array_prototype_splice(
   scope.push_root(Value::Object(obj))?;
 
   let length_key = string_key(&mut scope, "length")?;
-  let len_value =
-    scope.ordinary_get_with_host_and_hooks(vm, host, hooks, obj, length_key, Value::Object(obj))?;
+  let len_value = scope.get_with_host_and_hooks(vm, host, hooks, obj, length_key, Value::Object(obj))?;
   let len = to_length_usize(vm, &mut scope, host, hooks, len_value)?;
 
   let start = args.get(0).copied().unwrap_or(Value::Undefined);
@@ -10859,10 +10854,10 @@ pub fn array_prototype_splice(
     let from_key = PropertyKey::from_string(from_s);
     let to_key = PropertyKey::from_string(to_s);
 
-    if !iter_scope.ordinary_has_property_with_tick(obj, from_key, || vm.tick())? {
+    if !iter_scope.has_property_with_host_and_hooks(vm, host, hooks, obj, from_key)? {
       continue;
     }
-    let value = iter_scope.ordinary_get_with_host_and_hooks(
+    let value = iter_scope.get_with_host_and_hooks(
       vm,
       host,
       hooks,
@@ -10897,8 +10892,8 @@ pub fn array_prototype_splice(
       let from_key = PropertyKey::from_string(from_s);
       let to_key = PropertyKey::from_string(to_s);
 
-      if iter_scope.ordinary_has_property_with_tick(obj, from_key, || vm.tick())? {
-        let value = iter_scope.ordinary_get_with_host_and_hooks(
+      if iter_scope.has_property_with_host_and_hooks(vm, host, hooks, obj, from_key)? {
+        let value = iter_scope.get_with_host_and_hooks(
           vm,
           host,
           hooks,
@@ -10906,7 +10901,7 @@ pub fn array_prototype_splice(
           from_key,
           Value::Object(obj),
         )?;
-        let ok = iter_scope.ordinary_set_with_host_and_hooks(
+        let ok = iter_scope.set_with_host_and_hooks(
           vm,
           host,
           hooks,
@@ -10919,7 +10914,7 @@ pub fn array_prototype_splice(
           return Err(VmError::TypeError("Array.prototype.splice failed"));
         }
       } else {
-        let ok = iter_scope.ordinary_delete_with_host_and_hooks(vm, host, hooks, obj, to_key)?;
+        let ok = iter_scope.delete_with_host_and_hooks(vm, host, hooks, obj, to_key)?;
         if !ok {
           return Err(VmError::TypeError("Array.prototype.splice failed"));
         }
@@ -10935,8 +10930,9 @@ pub fn array_prototype_splice(
       let idx = k - 1;
       let mut del_scope = scope.reborrow();
       let idx_s = del_scope.alloc_string(&idx.to_string())?;
+      del_scope.push_root(Value::String(idx_s))?;
       let key = PropertyKey::from_string(idx_s);
-      let ok = del_scope.ordinary_delete_with_host_and_hooks(vm, host, hooks, obj, key)?;
+      let ok = del_scope.delete_with_host_and_hooks(vm, host, hooks, obj, key)?;
       if !ok {
         return Err(VmError::TypeError("Array.prototype.splice failed"));
       }
@@ -10969,8 +10965,8 @@ pub fn array_prototype_splice(
       let from_key = PropertyKey::from_string(from_s);
       let to_key = PropertyKey::from_string(to_s);
 
-      if iter_scope.ordinary_has_property_with_tick(obj, from_key, || vm.tick())? {
-        let value = iter_scope.ordinary_get_with_host_and_hooks(
+      if iter_scope.has_property_with_host_and_hooks(vm, host, hooks, obj, from_key)? {
+        let value = iter_scope.get_with_host_and_hooks(
           vm,
           host,
           hooks,
@@ -10978,7 +10974,7 @@ pub fn array_prototype_splice(
           from_key,
           Value::Object(obj),
         )?;
-        let ok = iter_scope.ordinary_set_with_host_and_hooks(
+        let ok = iter_scope.set_with_host_and_hooks(
           vm,
           host,
           hooks,
@@ -10991,7 +10987,7 @@ pub fn array_prototype_splice(
           return Err(VmError::TypeError("Array.prototype.splice failed"));
         }
       } else {
-        let ok = iter_scope.ordinary_delete_with_host_and_hooks(vm, host, hooks, obj, to_key)?;
+        let ok = iter_scope.delete_with_host_and_hooks(vm, host, hooks, obj, to_key)?;
         if !ok {
           return Err(VmError::TypeError("Array.prototype.splice failed"));
         }
@@ -11009,16 +11005,17 @@ pub fn array_prototype_splice(
     let to = actual_start.checked_add(j).ok_or(VmError::OutOfMemory)?;
     let mut set_scope = scope.reborrow();
     let to_s = set_scope.alloc_string(&to.to_string())?;
+    set_scope.push_root(Value::String(to_s))?;
     let key = PropertyKey::from_string(to_s);
     let ok =
-      set_scope.ordinary_set_with_host_and_hooks(vm, host, hooks, obj, key, item, Value::Object(obj))?;
+      set_scope.set_with_host_and_hooks(vm, host, hooks, obj, key, item, Value::Object(obj))?;
     if !ok {
       return Err(VmError::TypeError("Array.prototype.splice failed"));
     }
   }
 
   // Update length.
-  let ok = scope.ordinary_set_with_host_and_hooks(
+  let ok = scope.set_with_host_and_hooks(
     vm,
     host,
     hooks,
