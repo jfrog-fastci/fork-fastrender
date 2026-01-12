@@ -2312,10 +2312,17 @@ pub mod body_check {
           if !seen.insert(name.clone()) {
             return;
           }
-          bindings.insert(name.clone(), ty);
           if let Some(def_id) = ctx.def_spans.get(&(file, pat.span)).copied() {
-            binding_defs.insert(name, def_id);
+            // Parent bindings are used to seed nested body environments. When the parent pattern
+            // refers to the *same* definition already seeded from file/global bindings, keep the
+            // existing binding type instead of overwriting it with whatever the parent body checker
+            // inferred for the pattern (which may be `unknown`).
+            if binding_defs.get(&name) == Some(&def_id) {
+              return;
+            }
+            binding_defs.insert(name.clone(), def_id);
           }
+          bindings.insert(name, ty);
         }
       }
       HirPatKind::Array(arr) => {

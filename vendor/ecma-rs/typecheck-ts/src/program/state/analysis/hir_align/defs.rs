@@ -105,6 +105,7 @@ impl ProgramState {
     let Some(file_state) = self.files.get(&file).cloned() else {
       return HashMap::new();
     };
+    let freshly_bound_defs: HashSet<DefId> = file_state.defs.iter().copied().collect();
     let mut resolved_defs = Vec::new();
     let mut bindings = file_state.bindings.clone();
     let mut exports = file_state.exports.clone();
@@ -117,6 +118,7 @@ impl ProgramState {
     // vs ambient modules).
     let mut lowered_defs: Vec<_> = lowered.defs.iter().collect();
     lowered_defs.sort_by_key(|def| (def.span.start, def.span.end, def.id.0));
+    let mut lowered_match_spans: HashSet<(String, DefMatchKind, TextRange)> = HashSet::new();
     for def in lowered_defs {
       let raw_name = lowered
         .names
@@ -135,6 +137,7 @@ impl ProgramState {
         raw_name.clone()
       };
       let match_kind = match_kind_from_hir(def.path.kind);
+      lowered_match_spans.insert((name.clone(), match_kind, def.span));
       // `hir-js` models variable declarations as a `VarDeclarator` node that owns the initializer
       // body plus one or more child `Var` defs for the bindings (to support destructuring).
       //
@@ -160,6 +163,13 @@ impl ProgramState {
         match &mut data.kind {
           DefKind::Function(func) => func.body = def.body,
           DefKind::Var(var) => {
+            // Variable initializer locations are derived from the lowered HIR and
+            // depend on expression/body IDs that can change across edits (even
+            // when the declaration surface is unchanged). Clear any previously
+            // cached initializer metadata so `map_hir_bodies` can repopulate it
+            // from the freshly-lowered bodies.
+            var.body = MISSING_BODY;
+            var.init = None;
             if let Some(body) = def.body {
               var.body = body;
             }
@@ -346,8 +356,30 @@ impl ProgramState {
     // edits elsewhere in the program.
     let mut unmatched_defs: Vec<(DefId, DefData)> = Vec::new();
     for leftovers in by_name_kind.values_mut() {
-      unmatched_defs.extend(leftovers.drain(..));
+      for (old_id, data) in leftovers.drain(..) {
+        // Drop stale leftover defs from previous analyses: their spans can be
+        // invalid after edits and cause ambiguous `(file, span)` lookups.
+        if !freshly_bound_defs.contains(&old_id) {
+          continue;
+        }
+
+        // If this definition still matches a lowered `hir-js` def by its match
+        // key and span, then it's a redundant duplicate from the fresh bind
+        // pass and should be dropped. Keeping it would make later `(file, span)`
+        // lookups nondeterministic.
+        let key = (
+          data.name.clone(),
+          match_kind_from_def(&data.kind),
+          data.span,
+        );
+        if lowered_match_spans.contains(&key) {
+          continue;
+        }
+
+        unmatched_defs.push((old_id, data));
+      }
     }
+
     // Ensure deterministic allocation independent of the source hash map order.
     let match_kind_sort_key = |kind: DefMatchKind| -> u8 {
       match kind {
@@ -406,19 +438,47 @@ impl ProgramState {
       id_mapping.insert(old_id, new_id);
       new_def_data.insert(new_id, data.clone());
 
-      if let Some(ty) = self.interned_def_types.get(&old_id).copied() {
+      // Prefer copying metadata keyed by the old sequential id, but also
+      // preserve any previously-interned tables keyed by the synthetic id (e.g.
+      // when a previous analysis pass already assigned a deterministic id).
+      if let Some(ty) = self
+        .interned_def_types
+        .get(&old_id)
+        .copied()
+        .or_else(|| self.interned_def_types.get(&new_id).copied())
+      {
         new_interned_def_types.insert(new_id, ty);
       }
-      if let Some(params) = self.interned_type_params.get(&old_id).cloned() {
+      if let Some(params) = self
+        .interned_type_params
+        .get(&old_id)
+        .cloned()
+        .or_else(|| self.interned_type_params.get(&new_id).cloned())
+      {
         new_interned_type_params.insert(new_id, params);
       }
-      if let Some(decls) = self.interned_type_param_decls.get(&old_id).cloned() {
+      if let Some(decls) = self
+        .interned_type_param_decls
+        .get(&old_id)
+        .cloned()
+        .or_else(|| self.interned_type_param_decls.get(&new_id).cloned())
+      {
         new_interned_type_param_decls.insert(new_id, decls);
       }
-      if let Some(kind) = self.interned_intrinsics.get(&old_id).copied() {
+      if let Some(kind) = self
+        .interned_intrinsics
+        .get(&old_id)
+        .copied()
+        .or_else(|| self.interned_intrinsics.get(&new_id).copied())
+      {
         new_interned_intrinsics.insert(new_id, kind);
       }
-      if let Some(ty) = self.interned_class_instances.get(&old_id).copied() {
+      if let Some(ty) = self
+        .interned_class_instances
+        .get(&old_id)
+        .copied()
+        .or_else(|| self.interned_class_instances.get(&new_id).copied())
+      {
         new_interned_class_instances.insert(new_id, ty);
       }
     }
