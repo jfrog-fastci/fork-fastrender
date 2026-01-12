@@ -10,6 +10,11 @@ impl ProgramState {
       .compiler_options_override
       .clone()
       .unwrap_or_else(|| host.compiler_options());
+    // `strict_native` is a legacy alias for `native_strict`. Treat them as
+    // fully synonymous even when only one is explicitly set by the host API.
+    let native_strict = options.native_strict || options.strict_native;
+    options.native_strict = native_strict;
+    options.strict_native = native_strict;
     if !options.no_default_lib && options.libs.is_empty() && !roots.is_empty() {
       for key in roots {
         let text = if let Some(text) = self.file_overrides.get(key) {

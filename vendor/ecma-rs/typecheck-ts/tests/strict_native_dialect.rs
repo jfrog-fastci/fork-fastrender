@@ -16,6 +16,19 @@ fn strict_host() -> MemoryHost {
   host
 }
 
+fn native_strict_host() -> MemoryHost {
+  // `native_strict` is the canonical option name; ensure it behaves identically
+  // even if the legacy `strict_native` alias is left unset.
+  let mut host = MemoryHost::with_options(CompilerOptions {
+    no_default_lib: true,
+    native_strict: true,
+    strict_native: false,
+    ..CompilerOptions::default()
+  });
+  host.add_lib(common::core_globals_lib());
+  host
+}
+
 #[test]
 fn rejects_explicit_any_type_annotation() {
   let mut host = strict_host();
@@ -29,6 +42,22 @@ fn rejects_explicit_any_type_annotation() {
       .iter()
       .any(|diag| diag.code.as_str() == codes::FORBIDDEN_ANY.as_str()),
     "expected TC4000, got {diagnostics:?}",
+  );
+}
+
+#[test]
+fn native_strict_enables_no_implicit_any_checks() {
+  let mut host = native_strict_host();
+  let key = FileKey::new("main.ts");
+  host.insert(key.clone(), "function f(x) { return x; }\n");
+
+  let program = Program::new(host, vec![key]);
+  let diagnostics = program.check();
+  assert!(
+    diagnostics
+      .iter()
+      .any(|diag| diag.code.as_str() == codes::IMPLICIT_ANY.as_str()),
+    "expected TC3000 (implicit any) under native_strict, got {diagnostics:?}",
   );
 }
 
