@@ -1,5 +1,7 @@
 use super::foreign::ForeignBindings;
 use crate::il::inst::{Arg, BinOp, Const, Inst, InstTyp, UnOp};
+#[cfg(feature = "native-fusion")]
+use crate::il::inst::ArrayChainOp;
 use crate::symbol::semantics::SymbolId;
 use crate::{Program, ProgramFunction};
 use derive_visitor::{Drive, DriveMut};
@@ -725,6 +727,57 @@ pub fn lower_call_inst<V: VarNamer, F: FnEmitter>(
   }
 }
 
+#[cfg(feature = "native-fusion")]
+pub fn lower_array_chain_inst<V: VarNamer, F: FnEmitter>(
+  var_namer: &V,
+  fn_emitter: &F,
+  inst: &Inst,
+  target_init: VarInit,
+) -> Option<Node<Stmt>> {
+  if inst.t != InstTyp::ArrayChain {
+    return None;
+  }
+
+  let (tgt, base_array, ops) = inst.as_array_chain();
+  let mut current = lower_arg(var_namer, fn_emitter, base_array);
+
+  for op in ops {
+    let (builtin, callback_idx, init_idx) = match *op {
+      ArrayChainOp::Map { callback } => ("Array.prototype.map", callback, None),
+      ArrayChainOp::Filter { callback } => ("Array.prototype.filter", callback, None),
+      ArrayChainOp::Reduce { callback, init } => ("Array.prototype.reduce", callback, init),
+      ArrayChainOp::Find { callback } => ("Array.prototype.find", callback, None),
+      ArrayChainOp::Every { callback } => ("Array.prototype.every", callback, None),
+      ArrayChainOp::Some { callback } => ("Array.prototype.some", callback, None),
+    };
+
+    let callee_expr = lower_arg(var_namer, fn_emitter, &Arg::Builtin(builtin.to_string()));
+    let callee = node(Expr::Member(node(MemberExpr {
+      optional_chaining: false,
+      left: callee_expr,
+      right: "call".to_string(),
+    })));
+
+    let mut args = Vec::new();
+    args.push(current);
+    args.push(lower_arg(var_namer, fn_emitter, &inst.args[callback_idx]));
+    if let Some(init_idx) = init_idx {
+      args.push(lower_arg(var_namer, fn_emitter, &inst.args[init_idx]));
+    }
+
+    current = node(Expr::Call(node(CallExpr {
+      optional_chaining: false,
+      callee,
+      arguments: call_args(args, &[]),
+    })));
+  }
+
+  match tgt {
+    Some(tgt) => Some(var_binding(var_namer, tgt, current, target_init)),
+    None => Some(node(Stmt::Expr(node(ExprStmt { expr: current })))),
+  }
+}
+
 #[cfg(feature = "semantic-ops")]
 pub fn lower_known_api_call_inst<V: VarNamer, F: FnEmitter>(
   var_namer: &V,
@@ -1209,6 +1262,49 @@ fn handle_known_api_call(inst: &Inst, env: &BTreeMap<u32, VarValue>) -> (FlatExp
   )
 }
 
+#[cfg(feature = "native-fusion")]
+fn handle_array_chain(inst: &Inst, env: &BTreeMap<u32, VarValue>) -> (FlatExpr, Option<u32>) {
+  let (tgt, base_array, ops) = inst.as_array_chain();
+  let mut current = expr_from_arg(base_array, env);
+  for op in ops {
+    let (builtin, callback_idx, init_idx) = match *op {
+      ArrayChainOp::Map { callback } => ("Array.prototype.map", callback, None),
+      ArrayChainOp::Filter { callback } => ("Array.prototype.filter", callback, None),
+      ArrayChainOp::Reduce { callback, init } => ("Array.prototype.reduce", callback, init),
+      ArrayChainOp::Find { callback } => ("Array.prototype.find", callback, None),
+      ArrayChainOp::Every { callback } => ("Array.prototype.every", callback, None),
+      ArrayChainOp::Some { callback } => ("Array.prototype.some", callback, None),
+    };
+
+    let callee_expr = builtin_to_expr(builtin);
+    let call_callee = FlatExpr::Member {
+      object: Box::new(callee_expr),
+      property: "call".to_string(),
+    };
+    let mut call_args = Vec::new();
+    call_args.push(FlatCallArg {
+      expr: current,
+      spread: false,
+    });
+    call_args.push(FlatCallArg {
+      expr: expr_from_arg(&inst.args[callback_idx], env),
+      spread: false,
+    });
+    if let Some(init_idx) = init_idx {
+      call_args.push(FlatCallArg {
+        expr: expr_from_arg(&inst.args[init_idx], env),
+        spread: false,
+      });
+    }
+    current = FlatExpr::Call {
+      callee: Box::new(call_callee),
+      args: call_args,
+    };
+  }
+
+  (current, tgt)
+}
+
 /// Decompiles IL into a flat list of JS statements.
 ///
 /// This is intentionally limited today: it only supports straight-line control
@@ -1400,6 +1496,23 @@ pub fn decompile_function(func: &ProgramFunction) -> DecompileResult<Vec<Node<St
             );
           } else {
             stmts.push(expr_stmt(call_expr));
+          }
+        }
+        #[cfg(feature = "native-fusion")]
+        InstTyp::ArrayChain => {
+          let (expr, tgt) = handle_array_chain(inst, &env);
+          if let Some(tgt) = tgt {
+            let lhs = FlatExpr::Identifier(temp_name(tgt));
+            stmts.push(assignment_stmt(lhs.clone(), expr));
+            env.insert(
+              tgt,
+              VarValue {
+                expr: lhs,
+                origin: ValueOrigin::Other,
+              },
+            );
+          } else {
+            stmts.push(expr_stmt(expr));
           }
         }
         InstTyp::PropAssign => {
@@ -1670,6 +1783,49 @@ fn lower_inst(inst: &Inst, bindings: &ForeignBindings) -> LoweredInst {
       tgt: inst.tgts.get(0).copied(),
       promises: inst.args.iter().map(lowered_arg).collect(),
     },
+    #[cfg(feature = "native-fusion")]
+    InstTyp::ArrayChain => {
+      let (tgt, base_array, ops) = inst.as_array_chain();
+      let mut args = Vec::new();
+      for op in ops {
+        match *op {
+          ArrayChainOp::Map { callback } => {
+            args.push(LoweredArg::Const(Const::Str("map".to_string())));
+            args.push(lowered_arg(&inst.args[callback]));
+          }
+          ArrayChainOp::Filter { callback } => {
+            args.push(LoweredArg::Const(Const::Str("filter".to_string())));
+            args.push(lowered_arg(&inst.args[callback]));
+          }
+          ArrayChainOp::Reduce { callback, init } => {
+            args.push(LoweredArg::Const(Const::Str("reduce".to_string())));
+            args.push(lowered_arg(&inst.args[callback]));
+            if let Some(init) = init {
+              args.push(lowered_arg(&inst.args[init]));
+            }
+          }
+          ArrayChainOp::Find { callback } => {
+            args.push(LoweredArg::Const(Const::Str("find".to_string())));
+            args.push(lowered_arg(&inst.args[callback]));
+          }
+          ArrayChainOp::Every { callback } => {
+            args.push(LoweredArg::Const(Const::Str("every".to_string())));
+            args.push(lowered_arg(&inst.args[callback]));
+          }
+          ArrayChainOp::Some { callback } => {
+            args.push(LoweredArg::Const(Const::Str("some".to_string())));
+            args.push(lowered_arg(&inst.args[callback]));
+          }
+        }
+      }
+      LoweredInst::Call {
+        tgt,
+        callee: LoweredArg::Builtin("__optimize_js_array_chain".to_string()),
+        this_: lowered_arg(base_array),
+        args,
+        spreads: Vec::new(),
+      }
+    }
     InstTyp::Throw => LoweredInst::Throw {
       value: {
         let [value] = inst.args.as_slice() else {

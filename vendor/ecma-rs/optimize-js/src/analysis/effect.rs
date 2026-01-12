@@ -603,6 +603,13 @@ fn inst_local_effect_with_value_types(
       // Native backends can use the structured instruction kind to implement these precisely.
       effects.mark_unknown();
     }
+    #[cfg(feature = "native-fusion")]
+    InstTyp::ArrayChain => {
+      // `ArrayChain` represents a fused `map`/`filter`/`reduce`/... pipeline and can invoke user
+      // callbacks for each element. Until we have a dedicated effect model for array iteration and
+      // callback invocation counts, stay conservative and treat this as an unknown call.
+      effects.mark_unknown();
+    }
     InstTyp::CondGoto
     | InstTyp::Assume
     | InstTyp::Return

@@ -1,6 +1,8 @@
 use super::stmt::key_arg;
 use super::{Chain, HirSourceToInst, VarType, DUMMY_LABEL};
 use crate::il::inst::{Arg, BinOp, Const, Inst, InstTyp, UnOp, ValueTypeSummary};
+#[cfg(feature = "native-fusion")]
+use crate::il::inst::ArrayChainOpData;
 use crate::symbol::semantics::SymbolId;
 use crate::unsupported_syntax;
 use crate::unsupported_syntax_range;
@@ -9,7 +11,7 @@ use hir_js::{
   AssignOp, BinaryOp, CallExpr, ExprId, ExprKind, MemberExpr, NameId, PatId, UnaryOp, UpdateOp,
 };
 #[cfg(feature = "semantic-ops")]
-use hir_js::ArrayChainOp;
+use hir_js::ArrayChainOp as HirArrayChainOp;
 use num_bigint::BigInt;
 use parse_js::loc::Loc;
 use parse_js::num::JsNumber;
@@ -2166,53 +2168,90 @@ impl<'p> HirSourceToInst<'p> {
       }
       #[cfg(feature = "semantic-ops")]
       ExprKind::ArrayChain { array, ops } => {
-        let mut current = self.compile_expr(*array)?;
-        for (pos, op) in ops.iter().enumerate() {
-          let (builtin, args) = match op {
-            ArrayChainOp::Map(callback) => (
-              "Array.prototype.map",
-              vec![self.compile_expr(*callback)?],
-            ),
-            ArrayChainOp::Filter(callback) => (
-              "Array.prototype.filter",
-              vec![self.compile_expr(*callback)?],
-            ),
-            ArrayChainOp::Find(callback) => (
-              "Array.prototype.find",
-              vec![self.compile_expr(*callback)?],
-            ),
-            ArrayChainOp::Every(callback) => (
-              "Array.prototype.every",
-              vec![self.compile_expr(*callback)?],
-            ),
-            ArrayChainOp::Some(callback) => (
-              "Array.prototype.some",
-              vec![self.compile_expr(*callback)?],
-            ),
-            ArrayChainOp::Reduce(callback, init) => {
-              let mut args = vec![self.compile_expr(*callback)?];
-              if let Some(init) = init {
-                args.push(self.compile_expr(*init)?);
-              }
-              ("Array.prototype.reduce", args)
+        #[cfg(feature = "native-fusion")]
+        {
+          let base_array = self.compile_expr(*array)?;
+          let mut compiled_ops = Vec::with_capacity(ops.len());
+          for op in ops {
+            match op {
+              HirArrayChainOp::Map(callback) => compiled_ops.push(ArrayChainOpData::Map {
+                callback: self.compile_expr(*callback)?,
+              }),
+              HirArrayChainOp::Filter(callback) => compiled_ops.push(ArrayChainOpData::Filter {
+                callback: self.compile_expr(*callback)?,
+              }),
+              HirArrayChainOp::Find(callback) => compiled_ops.push(ArrayChainOpData::Find {
+                callback: self.compile_expr(*callback)?,
+              }),
+              HirArrayChainOp::Every(callback) => compiled_ops.push(ArrayChainOpData::Every {
+                callback: self.compile_expr(*callback)?,
+              }),
+              HirArrayChainOp::Some(callback) => compiled_ops.push(ArrayChainOpData::Some {
+                callback: self.compile_expr(*callback)?,
+              }),
+              HirArrayChainOp::Reduce(callback, init) => compiled_ops.push(ArrayChainOpData::Reduce {
+                callback: self.compile_expr(*callback)?,
+                init: match init {
+                  Some(init) => Some(self.compile_expr(*init)?),
+                  None => None,
+                },
+              }),
             }
-          };
-          let tmp = self.c_temp.bump();
-          let inst = Inst::call(
-            tmp,
-            Arg::Builtin(builtin.to_string()),
-            current,
-            args,
-            Vec::new(),
-          );
-          if pos == ops.len().saturating_sub(1) {
-            self.push_value_inst(expr_id, inst);
-          } else {
-            self.out.push(inst);
           }
-          current = Arg::Var(tmp);
+          let tmp = self.c_temp.bump();
+          self.push_value_inst(expr_id, Inst::array_chain(tmp, base_array, compiled_ops));
+          Ok(Arg::Var(tmp))
         }
-        Ok(current)
+        #[cfg(not(feature = "native-fusion"))]
+        {
+          let mut current = self.compile_expr(*array)?;
+          for (pos, op) in ops.iter().enumerate() {
+            let (builtin, args) = match op {
+              HirArrayChainOp::Map(callback) => (
+                "Array.prototype.map",
+                vec![self.compile_expr(*callback)?],
+              ),
+              HirArrayChainOp::Filter(callback) => (
+                "Array.prototype.filter",
+                vec![self.compile_expr(*callback)?],
+              ),
+              HirArrayChainOp::Find(callback) => (
+                "Array.prototype.find",
+                vec![self.compile_expr(*callback)?],
+              ),
+              HirArrayChainOp::Every(callback) => (
+                "Array.prototype.every",
+                vec![self.compile_expr(*callback)?],
+              ),
+              HirArrayChainOp::Some(callback) => (
+                "Array.prototype.some",
+                vec![self.compile_expr(*callback)?],
+              ),
+              HirArrayChainOp::Reduce(callback, init) => {
+                let mut args = vec![self.compile_expr(*callback)?];
+                if let Some(init) = init {
+                  args.push(self.compile_expr(*init)?);
+                }
+                ("Array.prototype.reduce", args)
+              }
+            };
+            let tmp = self.c_temp.bump();
+            let inst = Inst::call(
+              tmp,
+              Arg::Builtin(builtin.to_string()),
+              current,
+              args,
+              Vec::new(),
+            );
+            if pos == ops.len().saturating_sub(1) {
+              self.push_value_inst(expr_id, inst);
+            } else {
+              self.out.push(inst);
+            }
+            current = Arg::Var(tmp);
+          }
+          Ok(current)
+        }
       }
       #[cfg(feature = "semantic-ops")]
       ExprKind::PromiseAll { promises } | ExprKind::PromiseRace { promises } => {

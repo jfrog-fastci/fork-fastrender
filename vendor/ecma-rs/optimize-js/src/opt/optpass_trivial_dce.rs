@@ -10,6 +10,12 @@ fn is_call_like(inst: &crate::il::inst::Inst) -> bool {
   if inst.t == InstTyp::Call {
     return true;
   }
+  #[cfg(feature = "native-fusion")]
+  {
+    if inst.t == InstTyp::ArrayChain {
+      return true;
+    }
+  }
   #[cfg(feature = "semantic-ops")]
   {
     if matches!(&inst.t, InstTyp::KnownApiCall { .. }) {

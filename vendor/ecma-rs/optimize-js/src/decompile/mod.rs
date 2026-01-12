@@ -639,8 +639,18 @@ impl<'a> FunctionDecompiler<'a> {
         let init = tgt
           .map(|t| self.target_init_for(t))
           .unwrap_or(VarInit::Assign);
+        let stmt = il::lower_promise_race_inst(self, self, inst, init).expect("promise race should lower");
+        Ok(Some(stmt))
+      }
+      #[cfg(feature = "native-fusion")]
+      InstTyp::ArrayChain => {
+        self.ensure_supported_args(inst.args.iter())?;
+        let (tgt, _, _) = inst.as_array_chain();
+        let init = tgt
+          .map(|t| self.target_init_for(t))
+          .unwrap_or(VarInit::Assign);
         let stmt =
-          il::lower_promise_race_inst(self, self, inst, init).expect("promise race should lower");
+          il::lower_array_chain_inst(self, self, inst, init).expect("array chain inst should lower");
         Ok(Some(stmt))
       }
       InstTyp::PropAssign => {

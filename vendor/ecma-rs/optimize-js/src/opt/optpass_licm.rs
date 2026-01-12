@@ -212,6 +212,12 @@ fn is_hoist_candidate(inst: &Inst) -> bool {
     InstTyp::Assume => false,
     #[cfg(feature = "native-async-ops")]
     InstTyp::Await | InstTyp::PromiseAll | InstTyp::PromiseRace => false,
+    #[cfg(feature = "native-fusion")]
+    InstTyp::ArrayChain => {
+      // A fused array pipeline may execute user callbacks; only hoist when downstream analysis
+      // proved it is pure (and the local effect summary is pure).
+      inst.meta.callee_purity == Purity::Pure && inst.meta.effects.is_pure()
+    }
     // Observable reads/writes or control flow / SSA.
     InstTyp::ForeignLoad
     | InstTyp::UnknownLoad

@@ -175,6 +175,29 @@ impl Debug for UnOp {
   }
 }
 
+#[cfg(feature = "native-fusion")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+pub enum ArrayChainOp {
+  Map { callback: usize },
+  Filter { callback: usize },
+  Reduce { callback: usize, init: Option<usize> },
+  Find { callback: usize },
+  Every { callback: usize },
+  Some { callback: usize },
+}
+
+#[cfg(feature = "native-fusion")]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ArrayChainOpData {
+  Map { callback: Arg },
+  Filter { callback: Arg },
+  Reduce { callback: Arg, init: Option<Arg> },
+  Find { callback: Arg },
+  Every { callback: Arg },
+  Some { callback: Arg },
+}
+
 #[derive(PartialEq, Eq, Clone, Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub enum InstTyp {
@@ -223,6 +246,14 @@ pub enum InstTyp {
   /// When `tgts` is non-empty, `tgts[0] = Promise.race(args...)`.
   #[cfg(feature = "native-async-ops")]
   PromiseRace,
+  #[cfg(feature = "native-fusion")]
+  /// Fused array pipeline suitable for native backends to lower as a single loop.
+  ///
+  /// Convention:
+  /// - `args[0]` is the base array value.
+  /// - Callback/init values referenced by [`ArrayChainOp`] indices are stored in `args`.
+  /// - `tgts.at(0)?` is the final result (array for `map`/`filter`, scalar for `reduce`/`find`/`every`/`some`).
+  ArrayChain,
   // A foreign variable is one in an ancestor scope, all the way up to and including the global scope.
   // We don't simply add another Target variant (e.g. Target::Foreign) as it makes analyses and optimisations more tedious. Consider that standard SSA doesn't really have a concept of nonlocal memory locations. In LLVM such vars are covered using ordinary memory location read/write instructions.
   // NOTE: It still violates SSA if we only have ForeignStore but not ForeignLoad (and instead use another enum variant for Arg). Consider: `%a0 = foreign(3); %a1 = %a0 + 42; foreign(3) = %a1; %a2 = foreign(3);` but `%a0` and `%a2` are not identical.
@@ -266,6 +297,9 @@ pub struct Inst {
   pub args: Vec<Arg>,
   pub spreads: Vec<usize>, // Indices into `args` that are spread, for Call. Cannot have values less than 2 as the first two args are `callee` and `this`.
   pub labels: Vec<u32>,
+  #[cfg(feature = "native-fusion")]
+  #[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "Vec::is_empty"))]
+  pub array_chain: Vec<ArrayChainOp>,
   #[cfg_attr(feature = "serde", serde(skip))]
   pub value_type: ValueTypeSummary,
   #[cfg_attr(feature = "serde", serde(skip))]
@@ -303,6 +337,16 @@ impl PartialEq for Inst {
       && self.args == other.args
       && self.spreads == other.spreads
       && self.labels == other.labels
+      && {
+        #[cfg(feature = "native-fusion")]
+        {
+          self.array_chain == other.array_chain
+        }
+        #[cfg(not(feature = "native-fusion"))]
+        {
+          true
+        }
+      }
       && self.bin_op == other.bin_op
       && self.un_op == other.un_op
       && self.foreign == other.foreign
@@ -315,13 +359,19 @@ impl Eq for Inst {}
 impl Debug for Inst {
   fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
     // Keep the debug output stable (tests assert on it) by not including `meta`.
-    f.debug_struct("Inst")
-      .field("t", &self.t)
+    let mut s = f.debug_struct("Inst");
+    s.field("t", &self.t)
       .field("tgts", &self.tgts)
       .field("args", &self.args)
       .field("spreads", &self.spreads)
-      .field("labels", &self.labels)
-      .field("bin_op", &self.bin_op)
+      .field("labels", &self.labels);
+    #[cfg(feature = "native-fusion")]
+    {
+      if self.t == InstTyp::ArrayChain {
+        s.field("array_chain", &self.array_chain);
+      }
+    }
+    s.field("bin_op", &self.bin_op)
       .field("un_op", &self.un_op)
       .field("foreign", &self.foreign)
       .field("unknown", &self.unknown)
@@ -359,6 +409,8 @@ impl Default for Inst {
       args: Default::default(),
       spreads: Default::default(),
       labels: Default::default(),
+      #[cfg(feature = "native-fusion")]
+      array_chain: Default::default(),
       value_type: ValueTypeSummary::UNKNOWN,
       meta: Default::default(),
       bin_op: BinOp::_Dummy,
@@ -534,6 +586,67 @@ impl Inst {
     }
   }
 
+  #[cfg(feature = "native-fusion")]
+  pub fn array_chain(tgt: u32, base_array: Arg, ops: Vec<ArrayChainOpData>) -> Self {
+    // Keep all SSA values in `args` so existing passes (SSA renaming, DCE, etc) that walk
+    // `inst.args` continue to see the full def-use surface area.
+    //
+    // We store the structure (op kind + indices) separately so we don't duplicate `Arg`s that may
+    // be rewritten in-place by later passes (e.g. const propagation).
+    let mut args = Vec::new();
+    args.push(base_array);
+    let mut array_chain = Vec::with_capacity(ops.len());
+    for op in ops {
+      match op {
+        ArrayChainOpData::Map { callback } => {
+          let callback_idx = args.len();
+          args.push(callback);
+          array_chain.push(ArrayChainOp::Map { callback: callback_idx });
+        }
+        ArrayChainOpData::Filter { callback } => {
+          let callback_idx = args.len();
+          args.push(callback);
+          array_chain.push(ArrayChainOp::Filter { callback: callback_idx });
+        }
+        ArrayChainOpData::Reduce { callback, init } => {
+          let callback_idx = args.len();
+          args.push(callback);
+          let init_idx = init.map(|init| {
+            let idx = args.len();
+            args.push(init);
+            idx
+          });
+          array_chain.push(ArrayChainOp::Reduce {
+            callback: callback_idx,
+            init: init_idx,
+          });
+        }
+        ArrayChainOpData::Find { callback } => {
+          let callback_idx = args.len();
+          args.push(callback);
+          array_chain.push(ArrayChainOp::Find { callback: callback_idx });
+        }
+        ArrayChainOpData::Every { callback } => {
+          let callback_idx = args.len();
+          args.push(callback);
+          array_chain.push(ArrayChainOp::Every { callback: callback_idx });
+        }
+        ArrayChainOpData::Some { callback } => {
+          let callback_idx = args.len();
+          args.push(callback);
+          array_chain.push(ArrayChainOp::Some { callback: callback_idx });
+        }
+      }
+    }
+    Self {
+      t: InstTyp::ArrayChain,
+      tgts: vec![tgt],
+      args,
+      array_chain,
+      ..Default::default()
+    }
+  }
+
   pub fn foreign_load(tgt: u32, foreign: SymbolId) -> Self {
     Self {
       t: InstTyp::ForeignLoad,
@@ -647,6 +760,16 @@ impl Inst {
       panic!("not a known api call");
     };
     (self.tgts.get(0).copied(), *api, &self.args)
+  }
+
+  #[cfg(feature = "native-fusion")]
+  pub fn as_array_chain(&self) -> (Option<u32>, &Arg, &[ArrayChainOp]) {
+    assert_eq!(self.t, InstTyp::ArrayChain);
+    assert!(
+      !self.args.is_empty(),
+      "ArrayChain convention requires args[0] to be the base array"
+    );
+    (self.tgts.get(0).copied(), &self.args[0], &self.array_chain)
   }
 
   pub fn as_foreign_load(&self) -> (u32, SymbolId) {
