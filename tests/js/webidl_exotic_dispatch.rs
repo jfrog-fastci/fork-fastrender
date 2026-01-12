@@ -8,7 +8,9 @@ fn vmjs_host_exotic_get_delegates_to_webidl_bindings_host() -> Result<(), VmErro
   struct DummyWindowRealmHost;
 
   impl WindowRealmHost for DummyWindowRealmHost {
-    fn vm_host_and_window_realm(&mut self) -> (&mut dyn VmHost, &mut WindowRealm) {
+    fn vm_host_and_window_realm(
+      &mut self,
+    ) -> fastrender::Result<(&mut dyn VmHost, &mut WindowRealm)> {
       unreachable!("DummyWindowRealmHost is only used as a type parameter in this test")
     }
   }

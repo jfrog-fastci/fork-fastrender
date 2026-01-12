@@ -30,7 +30,7 @@ fn install_vm_js_microtask_checkpoint_hook<Host: WindowRealmHost>(
     host: &mut Host,
     _event_loop: &mut EventLoop<Host>,
   ) -> Result<()> {
-    let realm = host.window_realm();
+    let realm = host.window_realm()?;
     realm
       .perform_microtask_checkpoint()
       .map_err(|err| Error::Other(err.to_string()))?;
@@ -80,9 +80,12 @@ fn exec_script_in_window_host(
   // Provide a temporary `EventLoop` so Promise jobs can be queued/discarded safely even though this
   // helper doesn't drive the event loop.
   let mut event_loop = EventLoop::<WindowHostState>::new();
-  let mut hooks = VmJsEventLoopHooks::<WindowHostState>::new_with_host(host);
+  let mut hooks = VmJsEventLoopHooks::<WindowHostState>::new_with_host(host)
+    .unwrap_or_else(|e| panic!("exec_script_in_window_host: failed to create hooks: {e}"));
   hooks.set_event_loop(&mut event_loop);
-  let (vm_host, window) = host.vm_host_and_window_realm();
+  let (vm_host, window) = host
+    .vm_host_and_window_realm()
+    .unwrap_or_else(|e| panic!("exec_script_in_window_host: failed to split host: {e}"));
   let result = window.exec_script_with_host_and_hooks(vm_host, &mut hooks, source);
   if let Some(err) = hooks.finish(window.heap_mut()) {
     panic!("exec_script_in_window_host: VmHostHooks finish returned error: {err}");
@@ -563,7 +566,7 @@ fn document_current_script_tracks_sequential_classic_scripts() -> Result<()> {
       _script: NodeId,
       _script_type: ScriptType,
     ) -> Result<()> {
-      let (vm_host, realm) = host.vm_host_and_window_realm();
+      let (vm_host, realm) = host.vm_host_and_window_realm()?;
       let mut hooks = NoopHostHooks::default();
       let value = realm
         .exec_script_with_host_and_hooks(
@@ -599,7 +602,7 @@ fn document_current_script_tracks_sequential_classic_scripts() -> Result<()> {
 
   // Outside execution, currentScript should be null.
   {
-    let (vm_host, realm) = host.vm_host_and_window_realm();
+    let (vm_host, realm) = host.vm_host_and_window_realm()?;
     let mut hooks = NoopHostHooks::default();
     let value = realm
       .exec_script_with_host_and_hooks(vm_host, &mut hooks, "document.currentScript")
@@ -609,7 +612,7 @@ fn document_current_script_tracks_sequential_classic_scripts() -> Result<()> {
 
   orchestrator.execute_script_element(&mut host, scripts[0], ScriptType::Classic, &mut executor)?;
   {
-    let (vm_host, realm) = host.vm_host_and_window_realm();
+    let (vm_host, realm) = host.vm_host_and_window_realm()?;
     let mut hooks = NoopHostHooks::default();
     let value = realm
       .exec_script_with_host_and_hooks(vm_host, &mut hooks, "document.currentScript")
@@ -619,7 +622,7 @@ fn document_current_script_tracks_sequential_classic_scripts() -> Result<()> {
 
   orchestrator.execute_script_element(&mut host, scripts[1], ScriptType::Classic, &mut executor)?;
   {
-    let (vm_host, realm) = host.vm_host_and_window_realm();
+    let (vm_host, realm) = host.vm_host_and_window_realm()?;
     let mut hooks = NoopHostHooks::default();
     let value = realm
       .exec_script_with_host_and_hooks(vm_host, &mut hooks, "document.currentScript")
@@ -3201,7 +3204,7 @@ fn document_current_script_is_visible_to_js_execution() -> Result<()> {
       _script_type: ScriptType,
     ) -> Result<()> {
       let stable = {
-        let (vm_host, realm) = host.vm_host_and_window_realm();
+        let (vm_host, realm) = host.vm_host_and_window_realm()?;
         let mut hooks = NoopHostHooks::default();
         realm
           .exec_script_with_host_and_hooks(
@@ -3219,7 +3222,7 @@ fn document_current_script_is_visible_to_js_execution() -> Result<()> {
       self.wrapper_identity_ok.push(stable);
 
       let node_id = {
-        let (vm_host, realm) = host.vm_host_and_window_realm();
+        let (vm_host, realm) = host.vm_host_and_window_realm()?;
         let mut hooks = NoopHostHooks::default();
         realm
           .exec_script_with_host_and_hooks(
@@ -3452,8 +3455,8 @@ struct FetchOnlyHost {
 }
 
 impl WindowRealmHost for FetchOnlyHost {
-  fn vm_host_and_window_realm(&mut self) -> (&mut dyn VmHost, &mut WindowRealm) {
-    (&mut self.host_ctx, &mut self.window)
+  fn vm_host_and_window_realm(&mut self) -> Result<(&mut dyn VmHost, &mut WindowRealm)> {
+    Ok((&mut self.host_ctx, &mut self.window))
   }
 }
 
@@ -4431,9 +4434,9 @@ fn window_fetch_rejects_when_response_body_exceeds_limit() -> Result<()> {
   };
 
   event_loop.queue_task(TaskSource::Script, |host, event_loop| {
-    let mut hooks = VmJsEventLoopHooks::<FetchOnlyHost>::new_with_host(host);
+    let mut hooks = VmJsEventLoopHooks::<FetchOnlyHost>::new_with_host(host)?;
     hooks.set_event_loop(event_loop);
-    let (host_ctx, realm) = host.vm_host_and_window_realm();
+    let (host_ctx, realm) = host.vm_host_and_window_realm()?;
     realm.reset_interrupt();
     let res = realm.exec_script_with_host_and_hooks(
       host_ctx,
@@ -4465,7 +4468,7 @@ fn window_fetch_rejects_when_response_body_exceeds_limit() -> Result<()> {
   );
 
   let (name, msg) = {
-    let realm = host.window_realm();
+    let realm = host.window_realm()?;
     let global = realm.global_object();
     let (_vm, heap) = realm.vm_and_heap_mut();
     let mut scope = heap.scope();

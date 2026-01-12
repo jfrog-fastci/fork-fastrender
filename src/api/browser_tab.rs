@@ -5914,13 +5914,14 @@ mod tests {
 
     fn execute_module_script(
       &mut self,
+      _script_id: HtmlScriptId,
       _script_text: &str,
       _spec: &ScriptElementSpec,
       _current_script: Option<NodeId>,
       _document: &mut BrowserDocumentDom2,
       _event_loop: &mut EventLoop<BrowserTabHost>,
-    ) -> Result<()> {
-      Ok(())
+    ) -> Result<ModuleScriptExecutionStatus> {
+      Ok(ModuleScriptExecutionStatus::Completed)
     }
 
     fn after_microtask_checkpoint(
@@ -5993,15 +5994,16 @@ mod tests {
 
     fn execute_module_script(
       &mut self,
+      script_id: HtmlScriptId,
       script_text: &str,
       spec: &ScriptElementSpec,
       current_script: Option<NodeId>,
       document: &mut BrowserDocumentDom2,
       event_loop: &mut EventLoop<BrowserTabHost>,
-    ) -> Result<()> {
+    ) -> Result<ModuleScriptExecutionStatus> {
       self
         .inner
-        .execute_module_script(script_text, spec, current_script, document, event_loop)
+        .execute_module_script(script_id, script_text, spec, current_script, document, event_loop)
     }
 
     fn supports_module_graph_fetch(&self) -> bool {

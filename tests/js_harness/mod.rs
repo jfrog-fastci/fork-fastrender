@@ -65,7 +65,7 @@ impl HostState {
     event_loop: &mut EventLoop<HostState>,
     source: &str,
   ) -> Result<Value> {
-    let (vm_host, window) = self.vm_host_and_window_realm();
+    let (vm_host, window) = self.vm_host_and_window_realm()?;
     window.reset_interrupt();
     let mut hooks = VmJsEventLoopHooks::<HostState>::new(&mut *vm_host);
     hooks.set_event_loop(event_loop);
@@ -113,7 +113,7 @@ impl DomHost for HostState {
 }
 
 impl WindowRealmHost for HostState {
-  fn vm_host_and_window_realm(&mut self) -> (&mut dyn vm_js::VmHost, &mut WindowRealm) {
+  fn vm_host_and_window_realm(&mut self) -> Result<(&mut dyn vm_js::VmHost, &mut WindowRealm)> {
     self.window.vm_host_and_window_realm()
   }
 }
