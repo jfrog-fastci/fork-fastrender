@@ -30166,8 +30166,18 @@ fn init_window_globals(
   }
 
   if config.dom_bindings_backend == DomBindingsBackend::WebIdl {
+    // Install WebIDL-generated interface objects early so the DOM platform can adopt the
+    // JS-visible prototypes for correct `instanceof` behavior.
+    //
+    // Note: installers are non-clobbering and safe to call even if another initializer already
+    // installed the interface.
     crate::js::bindings::install_event_target_bindings_vm_js(vm, heap, realm)?;
     crate::js::bindings::install_node_bindings_vm_js(vm, heap, realm)?;
+    crate::js::bindings::install_character_data_bindings_vm_js(vm, heap, realm)?;
+    crate::js::bindings::install_text_bindings_vm_js(vm, heap, realm)?;
+    crate::js::bindings::install_element_bindings_vm_js(vm, heap, realm)?;
+    crate::js::bindings::install_document_bindings_vm_js(vm, heap, realm)?;
+    crate::js::bindings::install_document_fragment_bindings_vm_js(vm, heap, realm)?;
   }
 
   let mut scope = heap.scope();
@@ -33054,6 +33064,9 @@ fn init_window_globals(
     };
 
     // Node constructor + constants.
+    //
+    // In the WebIDL backend, core DOM interface objects are installed via generated bindings; avoid
+    // redefining them here.
     let node_ctor = if config.dom_bindings_backend == DomBindingsBackend::Handwritten {
       let node_ctor = make_illegal_ctor(&mut scope, "Node")?;
       scope.push_root(Value::Object(node_ctor))?;
@@ -33142,21 +33155,6 @@ fn init_window_globals(
       data_desc(Value::Object(document_type_ctor)),
     )?;
 
-    let element_ctor = make_illegal_ctor(&mut scope, "Element")?;
-    scope.push_root(Value::Object(element_ctor))?;
-    scope.define_property(
-      element_ctor,
-      prototype_key,
-      ctor_link_desc(Value::Object(element_proto)),
-    )?;
-    scope.define_property(
-      element_proto,
-      constructor_key,
-      ctor_link_desc(Value::Object(element_ctor)),
-    )?;
-    let element_key = alloc_key(&mut scope, "Element")?;
-    scope.define_property(global, element_key, data_desc(Value::Object(element_ctor)))?;
-
     // HTML element constructors + prototypes.
     //
     // These are needed for `instanceof HTMLElement` / `instanceof HTMLInputElement` checks in WPT
@@ -33209,25 +33207,6 @@ fn init_window_globals(
     let html_script_element_ctor =
       install_illegal_dom_ctor(&mut scope, "HTMLScriptElement", html_script_element_proto)?;
 
-    let document_ctor = make_illegal_ctor(&mut scope, "Document")?;
-    scope.push_root(Value::Object(document_ctor))?;
-    scope.define_property(
-      document_ctor,
-      prototype_key,
-      ctor_link_desc(Value::Object(document_proto)),
-    )?;
-    scope.define_property(
-      document_proto,
-      constructor_key,
-      ctor_link_desc(Value::Object(document_ctor)),
-    )?;
-    let document_key = alloc_key(&mut scope, "Document")?;
-    scope.define_property(
-      global,
-      document_key,
-      data_desc(Value::Object(document_ctor)),
-    )?;
-
     // Document.doctype (readonly DocumentType?)
     let doctype_get_call_id = vm.register_native_call(document_doctype_get_native)?;
     let doctype_get_name = scope.alloc_string("get doctype")?;
@@ -33252,40 +33231,6 @@ fn init_window_globals(
         },
       },
     )?;
-
-    let document_fragment_ctor = make_illegal_ctor(&mut scope, "DocumentFragment")?;
-    scope.push_root(Value::Object(document_fragment_ctor))?;
-    scope.define_property(
-      document_fragment_ctor,
-      prototype_key,
-      ctor_link_desc(Value::Object(document_fragment_proto)),
-    )?;
-    scope.define_property(
-      document_fragment_proto,
-      constructor_key,
-      ctor_link_desc(Value::Object(document_fragment_ctor)),
-    )?;
-    let document_fragment_key = alloc_key(&mut scope, "DocumentFragment")?;
-    scope.define_property(
-      global,
-      document_fragment_key,
-      data_desc(Value::Object(document_fragment_ctor)),
-    )?;
-
-    let text_ctor = make_illegal_ctor(&mut scope, "Text")?;
-    scope.push_root(Value::Object(text_ctor))?;
-    scope.define_property(
-      text_ctor,
-      prototype_key,
-      ctor_link_desc(Value::Object(text_proto)),
-    )?;
-    scope.define_property(
-      text_proto,
-      constructor_key,
-      ctor_link_desc(Value::Object(text_ctor)),
-    )?;
-    let text_key = alloc_key(&mut scope, "Text")?;
-    scope.define_property(global, text_key, data_desc(Value::Object(text_ctor)))?;
 
     let comment_ctor = make_illegal_ctor(&mut scope, "Comment")?;
     scope.push_root(Value::Object(comment_ctor))?;
@@ -33321,49 +33266,45 @@ fn init_window_globals(
       data_desc(Value::Object(processing_instruction_ctor)),
     )?;
 
-    let event_target_key = alloc_key(&mut scope, "EventTarget")?;
-    let event_target_ctor = match scope
-      .heap()
-      .object_get_own_data_property_value(global, &event_target_key)?
-      .unwrap_or(Value::Undefined)
-    {
-      Value::Object(obj) => Some(obj),
-      _ => None,
-    };
-    let node_key = alloc_key(&mut scope, "Node")?;
-    let node_ctor = match scope
-      .heap()
-      .object_get_own_data_property_value(global, &node_key)?
-      .unwrap_or(Value::Undefined)
-    {
-      Value::Object(obj) => Some(obj),
-      _ => None,
-    };
-
     // WebIDL interface object inheritance chain.
     //
     // This makes `Object.getPrototypeOf(Node) === EventTarget` and ensures interface objects inherit
     // static members/constants from their parent interface (e.g. `Element.ELEMENT_NODE` via Node).
-    if let (Some(node_ctor), Some(event_target_ctor)) = (node_ctor, event_target_ctor) {
-      scope
-        .heap_mut()
-        .object_set_prototype(node_ctor, Some(event_target_ctor))?;
-    }
-    if let Some(node_ctor) = node_ctor {
-      scope
-        .heap_mut()
-        .object_set_prototype(document_type_ctor, Some(node_ctor))?;
-      scope.heap_mut().object_set_prototype(element_ctor, Some(node_ctor))?;
-      scope.heap_mut().object_set_prototype(document_ctor, Some(node_ctor))?;
-      scope
-        .heap_mut()
-        .object_set_prototype(document_fragment_ctor, Some(node_ctor))?;
-      scope.heap_mut().object_set_prototype(text_ctor, Some(node_ctor))?;
-      scope.heap_mut().object_set_prototype(comment_ctor, Some(node_ctor))?;
-      scope
-        .heap_mut()
-        .object_set_prototype(processing_instruction_ctor, Some(node_ctor))?;
-    }
+    let require_global_ctor = |scope: &mut Scope<'_>, name: &str| -> Result<GcObject, VmError> {
+      let key = alloc_key(scope, name)?;
+      match scope
+        .heap()
+        .object_get_own_data_property_value(global, &key)?
+      {
+        Some(Value::Object(obj)) => Ok(obj),
+        _ => Err(VmError::InvariantViolation(
+          "missing DOM interface constructor on global object",
+        )),
+      }
+    };
+
+    let event_target_ctor = require_global_ctor(&mut scope, "EventTarget")?;
+    let element_ctor = require_global_ctor(&mut scope, "Element")?;
+    let document_ctor = require_global_ctor(&mut scope, "Document")?;
+    let document_fragment_ctor = require_global_ctor(&mut scope, "DocumentFragment")?;
+    let text_ctor = require_global_ctor(&mut scope, "Text")?;
+
+    scope
+      .heap_mut()
+      .object_set_prototype(node_ctor, Some(event_target_ctor))?;
+    scope
+      .heap_mut()
+      .object_set_prototype(document_type_ctor, Some(node_ctor))?;
+    scope.heap_mut().object_set_prototype(element_ctor, Some(node_ctor))?;
+    scope.heap_mut().object_set_prototype(document_ctor, Some(node_ctor))?;
+    scope
+      .heap_mut()
+      .object_set_prototype(document_fragment_ctor, Some(node_ctor))?;
+    scope.heap_mut().object_set_prototype(text_ctor, Some(node_ctor))?;
+    scope.heap_mut().object_set_prototype(comment_ctor, Some(node_ctor))?;
+    scope
+      .heap_mut()
+      .object_set_prototype(processing_instruction_ctor, Some(node_ctor))?;
     scope
       .heap_mut()
       .object_set_prototype(html_element_ctor, Some(element_ctor))?;
@@ -33428,7 +33369,6 @@ fn init_window_globals(
         Value::Object(text_area_value_set_func),
       ),
     )?;
-
     // HTMLCollection constructor + prototype.
     //
     // This is needed for `ParentNode.children` (`instanceof HTMLCollection`).
@@ -39779,8 +39719,10 @@ mod tests {
         const ok1 = document instanceof EventTarget;\n\
         const ok2 = document.body instanceof EventTarget;\n\
         const ok3 = document.createElement('div') instanceof EventTarget;\n\
-        const ok4 = new EventTarget() instanceof EventTarget;\n\
-        return ok1 && ok2 && ok3 && ok4;\n\
+        const ok4 = document.createTextNode('x') instanceof EventTarget;\n\
+        const ok5 = document.createDocumentFragment() instanceof EventTarget;\n\
+        const ok6 = new EventTarget() instanceof EventTarget;\n\
+        return ok1 && ok2 && ok3 && ok4 && ok5 && ok6;\n\
       })()",
     )?;
     assert_eq!(ok, Value::Bool(true));
