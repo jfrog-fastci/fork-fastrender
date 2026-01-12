@@ -584,6 +584,10 @@ Contract:
 - `data` must remain valid for the duration of the task and must be safe to access from a blocking
   worker thread.
 - Blocking tasks execute in a GC-safe ("NativeSafe") region and must not touch the GC heap.
+- There is intentionally no rooted `rt_spawn_blocking_*` API: blocking tasks may block for long
+  periods and must therefore always run NativeSafe. If a blocking operation needs GC-managed state,
+  copy it out of the GC heap before spawning the task (or resume on the event-loop thread to touch
+  the GC).
 
 Pool sizing:
 

@@ -873,6 +873,10 @@ PromiseRef rt_parallel_spawn_promise_with_shape_rooted_h(
 // - `data` must remain valid until `task` runs.
 // - `data` must point to non-GC-managed memory: blocking tasks run in a GC-safe ("NativeSafe")
 //   region and must not dereference GC pointers.
+// - There is intentionally no rooted `rt_spawn_blocking_*` API: blocking tasks may block in syscalls
+//   or long waits, so they must always run NativeSafe and therefore cannot safely dereference GC
+//   pointers. If GC-managed state is required, copy it out of the GC heap before spawning the task
+//   (or arrange for a GC-unsafe continuation to run on the event-loop thread).
 //
 // Blocking tasks execute in a GC-safe ("NativeSafe") region: they must not touch the GC heap (no
 // GC allocations, no write barriers, and no dereferencing GC-managed pointers).

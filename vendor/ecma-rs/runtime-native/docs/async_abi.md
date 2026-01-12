@@ -581,6 +581,12 @@ Contract:
 
 - `rt_spawn_blocking(task: extern "C" fn(*mut u8, LegacyPromiseRef), data: *mut u8) -> LegacyPromiseRef`
 
+Blocking tasks execute in a GC-safe ("NativeSafe") region and must not touch the GC heap (no GC
+allocations, no write barriers, and no dereferencing GC-managed pointers). There is intentionally no
+rooted `rt_spawn_blocking_*` API: blocking tasks may block in syscalls or long waits and must
+therefore always run NativeSafe. If GC-managed state is required, copy it out of the GC heap before
+spawning the task (or resume on the event-loop thread).
+
 `PromiseRef`, `LegacyPromiseRef`, `ValueRef`, `CoroutineId`, `CoroutineRef`, `RtCoroutineHeader`,
 `TimerId`, and `IoWatcherId` are ABI-level opaque types; their layout is defined in
 `include/runtime_native.h`.
