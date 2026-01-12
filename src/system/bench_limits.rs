@@ -18,14 +18,33 @@ pub struct BenchLimits {
 
 impl BenchLimits {
   pub fn from_env() -> Self {
+    let max_fixture_bytes = std::env::var("FASTR_BENCH_MAX_FIXTURE_BYTES").ok();
+    let max_threads = std::env::var("FASTR_BENCH_MAX_THREADS").ok();
+    let max_dom_nodes = std::env::var("FASTR_BENCH_MAX_DOM_NODES").ok();
+    let max_display_list_items = std::env::var("FASTR_BENCH_MAX_DISPLAY_LIST_ITEMS").ok();
+    let max_depth = std::env::var("FASTR_BENCH_MAX_DEPTH").ok();
+
+    Self::from_lookup(|name| match name {
+      "FASTR_BENCH_MAX_FIXTURE_BYTES" => max_fixture_bytes.as_deref(),
+      "FASTR_BENCH_MAX_THREADS" => max_threads.as_deref(),
+      "FASTR_BENCH_MAX_DOM_NODES" => max_dom_nodes.as_deref(),
+      "FASTR_BENCH_MAX_DISPLAY_LIST_ITEMS" => max_display_list_items.as_deref(),
+      "FASTR_BENCH_MAX_DEPTH" => max_depth.as_deref(),
+      _ => None,
+    })
+  }
+
+  pub fn from_lookup<'a>(mut get: impl FnMut(&str) -> Option<&'a str>) -> Self {
     Self {
-      max_fixture_bytes: env_byte_limit("FASTR_BENCH_MAX_FIXTURE_BYTES").unwrap_or(8 * 1024 * 1024),
-      max_threads: env_usize("FASTR_BENCH_MAX_THREADS")
+      max_fixture_bytes: lookup_byte_limit(&mut get, "FASTR_BENCH_MAX_FIXTURE_BYTES")
+        .unwrap_or(8 * 1024 * 1024),
+      max_threads: lookup_usize(&mut get, "FASTR_BENCH_MAX_THREADS")
         .map(|v| v.max(1))
         .unwrap_or(8),
-      max_dom_nodes: env_usize("FASTR_BENCH_MAX_DOM_NODES").unwrap_or(100_000),
-      max_display_list_items: env_usize("FASTR_BENCH_MAX_DISPLAY_LIST_ITEMS").unwrap_or(200_000),
-      max_depth: env_usize("FASTR_BENCH_MAX_DEPTH").unwrap_or(256),
+      max_dom_nodes: lookup_usize(&mut get, "FASTR_BENCH_MAX_DOM_NODES").unwrap_or(100_000),
+      max_display_list_items: lookup_usize(&mut get, "FASTR_BENCH_MAX_DISPLAY_LIST_ITEMS")
+        .unwrap_or(200_000),
+      max_depth: lookup_usize(&mut get, "FASTR_BENCH_MAX_DEPTH").unwrap_or(256),
     }
   }
 }
@@ -36,7 +55,15 @@ pub fn bench_limits() -> &'static BenchLimits {
 }
 
 pub fn bench_verbose() -> bool {
-  env_flag("FASTR_BENCH_VERBOSE")
+  let verbose = std::env::var("FASTR_BENCH_VERBOSE").ok();
+  bench_verbose_from_lookup(|name| match name {
+    "FASTR_BENCH_VERBOSE" => verbose.as_deref(),
+    _ => None,
+  })
+}
+
+pub fn bench_verbose_from_lookup<'a>(mut get: impl FnMut(&str) -> Option<&'a str>) -> bool {
+  lookup_flag(&mut get, "FASTR_BENCH_VERBOSE")
 }
 
 pub fn bench_print_config_once(bench_name: &str, extras: &[(&str, String)]) {
@@ -99,29 +126,54 @@ pub fn read_fixture_bytes_truncate(
 pub fn env_flag(name: &str) -> bool {
   std::env::var(name)
     .ok()
-    .map(|value| {
-      let trimmed = value.trim();
-      !(trimmed.is_empty()
-        || trimmed == "0"
-        || trimmed.eq_ignore_ascii_case("false")
-        || trimmed.eq_ignore_ascii_case("no"))
-    })
+    .map(|value| parse_flag_value(&value))
     .unwrap_or(false)
 }
 
 pub fn env_usize(name: &str) -> Option<usize> {
   let raw = std::env::var(name).ok()?;
+  parse_usize_value(&raw)
+}
+
+pub fn env_byte_limit(name: &str) -> Option<usize> {
+  let raw = std::env::var(name).ok()?;
+  parse_byte_size(raw.trim())
+}
+
+fn lookup_flag<'a>(get: &mut impl FnMut(&str) -> Option<&'a str>, name: &str) -> bool {
+  get(name)
+    .map(|value| parse_flag_value(value))
+    .unwrap_or(false)
+}
+
+fn lookup_usize<'a>(get: &mut impl FnMut(&str) -> Option<&'a str>, name: &str) -> Option<usize> {
+  let raw = get(name)?;
+  parse_usize_value(raw)
+}
+
+fn lookup_byte_limit<'a>(
+  get: &mut impl FnMut(&str) -> Option<&'a str>,
+  name: &str,
+) -> Option<usize> {
+  let raw = get(name)?;
+  parse_byte_size(raw.trim())
+}
+
+fn parse_flag_value(raw: &str) -> bool {
+  let trimmed = raw.trim();
+  !(trimmed.is_empty()
+    || trimmed == "0"
+    || trimmed.eq_ignore_ascii_case("false")
+    || trimmed.eq_ignore_ascii_case("no"))
+}
+
+fn parse_usize_value(raw: &str) -> Option<usize> {
   let trimmed = raw.trim();
   if trimmed.is_empty() {
     return None;
   }
   let cleaned: String = trimmed.chars().filter(|ch| *ch != '_').collect();
   cleaned.parse().ok()
-}
-
-pub fn env_byte_limit(name: &str) -> Option<usize> {
-  let raw = std::env::var(name).ok()?;
-  parse_byte_size(raw.trim())
 }
 
 pub fn parse_byte_size(raw: &str) -> Option<usize> {
@@ -150,54 +202,22 @@ pub fn parse_byte_size(raw: &str) -> Option<usize> {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use std::ffi::OsString;
-  use std::sync::{Mutex, MutexGuard};
-
-  fn test_lock() -> MutexGuard<'static, ()> {
-    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    LOCK
-      .get_or_init(|| Mutex::new(()))
-      .lock()
-      .unwrap_or_else(|poisoned| poisoned.into_inner())
-  }
-
-  struct EnvGuard {
-    name: &'static str,
-    prev: Option<OsString>,
-  }
-
-  impl EnvGuard {
-    fn set(name: &'static str, value: &str) -> Self {
-      let prev = std::env::var_os(name);
-      std::env::set_var(name, value);
-      Self { name, prev }
-    }
-  }
-
-  impl Drop for EnvGuard {
-    fn drop(&mut self) {
-      if let Some(value) = self.prev.take() {
-        std::env::set_var(self.name, value);
-      } else {
-        std::env::remove_var(self.name);
-      }
-    }
-  }
+  use std::collections::HashMap;
 
   #[test]
   fn bench_limits_parse_env_and_apply_defaults() {
-    let _lock = test_lock();
+    let env = HashMap::from([
+      ("FASTR_BENCH_VERBOSE", "1"),
+      ("FASTR_BENCH_MAX_THREADS", "0"),
+      ("FASTR_BENCH_MAX_DOM_NODES", "10_000"),
+      ("FASTR_BENCH_MAX_DISPLAY_LIST_ITEMS", "2000"),
+      ("FASTR_BENCH_MAX_DEPTH", "64"),
+      ("FASTR_BENCH_MAX_FIXTURE_BYTES", "1MiB"),
+    ]);
 
-    let _verbose = EnvGuard::set("FASTR_BENCH_VERBOSE", "1");
-    assert!(bench_verbose());
+    assert!(bench_verbose_from_lookup(|name| env.get(name).copied()));
 
-    let _max_threads = EnvGuard::set("FASTR_BENCH_MAX_THREADS", "0");
-    let _max_dom = EnvGuard::set("FASTR_BENCH_MAX_DOM_NODES", "10_000");
-    let _max_items = EnvGuard::set("FASTR_BENCH_MAX_DISPLAY_LIST_ITEMS", "2000");
-    let _max_depth = EnvGuard::set("FASTR_BENCH_MAX_DEPTH", "64");
-    let _max_fixture = EnvGuard::set("FASTR_BENCH_MAX_FIXTURE_BYTES", "1MiB");
-
-    let limits = BenchLimits::from_env();
+    let limits = BenchLimits::from_lookup(|name| env.get(name).copied());
     assert_eq!(
       limits.max_threads, 1,
       "max_threads should clamp to at least 1"
@@ -208,8 +228,14 @@ mod tests {
     assert_eq!(limits.max_fixture_bytes, 1024 * 1024);
 
     // Invalid values fall back to defaults.
-    let _invalid_fixture = EnvGuard::set("FASTR_BENCH_MAX_FIXTURE_BYTES", "nope");
-    let limits = BenchLimits::from_env();
+    let env = HashMap::from([
+      ("FASTR_BENCH_MAX_THREADS", "0"),
+      ("FASTR_BENCH_MAX_DOM_NODES", "10_000"),
+      ("FASTR_BENCH_MAX_DISPLAY_LIST_ITEMS", "2000"),
+      ("FASTR_BENCH_MAX_DEPTH", "64"),
+      ("FASTR_BENCH_MAX_FIXTURE_BYTES", "nope"),
+    ]);
+    let limits = BenchLimits::from_lookup(|name| env.get(name).copied());
     assert_eq!(limits.max_fixture_bytes, 8 * 1024 * 1024);
   }
 }
