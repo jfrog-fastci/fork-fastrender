@@ -7,8 +7,8 @@ use std::{
 };
 
 use vm_js::{
-  GcObject, Heap, PropertyDescriptor, PropertyKey, PropertyKind, Realm, Scope, Value, Vm, VmError,
-  VmHost, VmHostHooks,
+  GcObject, Heap, HostSlots, PropertyDescriptor, PropertyKey, PropertyKind, Realm, Scope, Value, Vm,
+  VmError, VmHost, VmHostHooks,
 };
 
 /// Deterministic web time model for JavaScript APIs.
@@ -115,6 +115,13 @@ fn readonly_data_desc(value: Value) -> PropertyDescriptor {
 fn readonly_num_desc(value: f64) -> PropertyDescriptor {
   readonly_data_desc(Value::Number(value))
 }
+
+// HostSlots tags for platform objects installed by this module.
+//
+// These are only used for branding: structuredClone must reject them as platform objects.
+const PERFORMANCE_HOST_TAG: u64 = 0x5045_5246_4F52_4D5F; // "PERFORM_"
+const PERFORMANCE_TIMING_HOST_TAG: u64 = 0x5045_5246_5449_4D5F; // "PERFTIM_"
+const PERFORMANCE_NAVIGATION_HOST_TAG: u64 = 0x5045_5246_4E41_565F; // "PERFNAV_"
 
 /// Installs `Date.now()` and `performance.now()` into a `vm-js` realm.
 ///
@@ -277,6 +284,13 @@ pub fn install_time_bindings(
     // --- performance.now() ---
     let performance = scope.alloc_object()?;
     scope.push_root(Value::Object(performance))?;
+    scope.heap_mut().object_set_host_slots(
+      performance,
+      HostSlots {
+        a: PERFORMANCE_HOST_TAG,
+        b: 0,
+      },
+    )?;
 
     let perf_now_id = vm.register_native_call(performance_now_native)?;
     let perf_now_name = scope.alloc_string("now")?;
@@ -323,6 +337,13 @@ pub fn install_time_bindings(
     // MVP deterministic model (durations become 0).
     let timing = scope.alloc_object()?;
     scope.push_root(Value::Object(timing))?;
+    scope.heap_mut().object_set_host_slots(
+      timing,
+      HostSlots {
+        a: PERFORMANCE_TIMING_HOST_TAG,
+        b: 0,
+      },
+    )?;
     let navigation_start_ms = web_time.time_origin_unix_ms as f64;
 
     let timing_fields: [(&str, f64); 21] = [
@@ -371,6 +392,13 @@ pub fn install_time_bindings(
     // Minimal stub for libraries that still read `performance.navigation.type`.
     let navigation = scope.alloc_object()?;
     scope.push_root(Value::Object(navigation))?;
+    scope.heap_mut().object_set_host_slots(
+      navigation,
+      HostSlots {
+        a: PERFORMANCE_NAVIGATION_HOST_TAG,
+        b: 0,
+      },
+    )?;
 
     let nav_type_key_s = scope.alloc_string("type")?;
     scope.push_root(Value::String(nav_type_key_s))?;

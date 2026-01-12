@@ -2265,6 +2265,11 @@ mod tests {
       "console",
       "localStorage",
       "sessionStorage",
+      "navigator",
+      "screen",
+      "matchMedia('(min-width: 1px)')",
+      "crypto",
+      "performance",
     ] {
       let script = format!("try {{ structuredClone({expr}); 'no' }} catch (e) {{ e.name }}");
       let v = realm.exec_script(&script)?;

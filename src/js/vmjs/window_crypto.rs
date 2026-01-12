@@ -22,11 +22,17 @@ use sha1::Sha1;
 use sha2::{Digest, Sha256, Sha384, Sha512};
 use vm_js::{
   new_promise_capability_with_host_and_hooks, new_type_error_object, GcObject, Heap,
-  PromiseCapability, PropertyDescriptor, PropertyKey, PropertyKind, Realm, Scope, Value, Vm,
-  VmError, VmHost, VmHostHooks,
+  HostSlots, PromiseCapability, PropertyDescriptor, PropertyKey, PropertyKind, Realm, Scope, Value,
+  Vm, VmError, VmHost, VmHostHooks,
 };
 
 const MAX_GET_RANDOM_VALUES_BYTES: usize = 65_536;
+
+// HostSlots tags for platform objects installed by this module.
+//
+// These are only used for branding: structuredClone must reject them as platform objects.
+const CRYPTO_HOST_TAG: u64 = 0x4352_5950_544F_5F5F; // "CRYPTO__"
+const SUBTLE_CRYPTO_HOST_TAG: u64 = 0x5355_4254_4C45_5F5F; // "SUBTLE__"
 
 fn data_desc(value: Value, writable: bool) -> PropertyDescriptor {
   PropertyDescriptor {
@@ -537,10 +543,24 @@ pub(crate) fn install_window_crypto_bindings(
   // --- crypto instance -----------------------------------------------------------------------
   let crypto_obj = scope.alloc_object_with_prototype(Some(crypto_proto))?;
   scope.push_root(Value::Object(crypto_obj))?;
+  scope.heap_mut().object_set_host_slots(
+    crypto_obj,
+    HostSlots {
+      a: CRYPTO_HOST_TAG,
+      b: 0,
+    },
+  )?;
 
   // Optional stub: crypto.subtle
   let subtle_obj = scope.alloc_object_with_prototype(Some(intr.object_prototype()))?;
   scope.push_root(Value::Object(subtle_obj))?;
+  scope.heap_mut().object_set_host_slots(
+    subtle_obj,
+    HostSlots {
+      a: SUBTLE_CRYPTO_HOST_TAG,
+      b: 0,
+    },
+  )?;
 
   let subtle_unimpl_id = vm.register_native_call(subtle_unimplemented_native)?;
   let subtle_digest_id = vm.register_native_call(subtle_digest_native)?;

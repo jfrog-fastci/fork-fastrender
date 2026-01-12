@@ -5,8 +5,8 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::OnceLock;
 use vm_js::{
-  GcObject, NativeFunctionId, PropertyDescriptor, PropertyKey, PropertyKind, Realm, Scope, Value, Vm,
-  VmError, VmHost, VmHostHooks, WeakGcObject,
+  GcObject, HostSlots, NativeFunctionId, PropertyDescriptor, PropertyKey, PropertyKind, Realm,
+  Scope, Value, Vm, VmError, VmHost, VmHostHooks, WeakGcObject,
 };
 use webidl_js_runtime::JsRuntime as _;
 
@@ -24,6 +24,13 @@ pub const FASTRENDER_USER_AGENT: &str = crate::resource::DEFAULT_USER_AGENT;
 /// `MediaQueryList.media` string is truncated to this length.
 const MAX_MATCH_MEDIA_QUERY_CODE_UNITS: usize = 4096;
 const MAX_SEND_BEACON_URL_CODE_UNITS: usize = 8192;
+
+// HostSlots tags for platform objects installed by this module.
+//
+// These are only used for branding: structuredClone must reject them as platform objects.
+const NAVIGATOR_HOST_TAG: u64 = 0x4E41_5649_4741_5452; // "NAVIGATR"
+const SCREEN_HOST_TAG: u64 = 0x5343_5245_454E_5F5F; // "SCREEN__"
+const MEDIA_QUERY_LIST_HOST_TAG: u64 = 0x4D45_4449_4151_5259; // "MEDIAQRY"
 
 const MATCH_MEDIA_SLOT_ENV_ID: usize = 0;
 const MATCH_MEDIA_SLOT_MQL_MATCHES_GET_CALL_ID: usize = 1;
@@ -756,6 +763,13 @@ fn match_media_native(
 
   let mql = scope.alloc_object()?;
   scope.push_root(Value::Object(mql))?;
+  scope.heap_mut().object_set_host_slots(
+    mql,
+    HostSlots {
+      a: MEDIA_QUERY_LIST_HOST_TAG,
+      b: 0,
+    },
+  )?;
   define_read_only_vm_js(&mut scope, mql, "media", media_value)?;
 
   // `matches` is readonly but dynamic: implement as an accessor that re-evaluates against the
@@ -1258,6 +1272,13 @@ pub(crate) fn install_window_shims_vm_js(
 
   let screen = scope.alloc_object()?;
   scope.push_root(Value::Object(screen))?;
+  scope.heap_mut().object_set_host_slots(
+    screen,
+    HostSlots {
+      a: SCREEN_HOST_TAG,
+      b: 0,
+    },
+  )?;
   define_read_only_vm_js(scope, screen, "width", Value::Number(device_width))?;
   define_read_only_vm_js(scope, screen, "height", Value::Number(device_height))?;
   define_read_only_vm_js(scope, screen, "availWidth", Value::Number(device_width))?;
@@ -1266,6 +1287,13 @@ pub(crate) fn install_window_shims_vm_js(
 
   let navigator = scope.alloc_object()?;
   scope.push_root(Value::Object(navigator))?;
+  scope.heap_mut().object_set_host_slots(
+    navigator,
+    HostSlots {
+      a: NAVIGATOR_HOST_TAG,
+      b: 0,
+    },
+  )?;
   let user_agent_s = scope.alloc_string(env.user_agent)?;
   scope.push_root(Value::String(user_agent_s))?;
   define_read_only_vm_js(scope, navigator, "userAgent", Value::String(user_agent_s))?;
