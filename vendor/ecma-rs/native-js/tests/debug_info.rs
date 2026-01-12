@@ -38,6 +38,39 @@ fn debug_sections_contain<'data>(file: &object::File<'data>, needle: &str) -> bo
   false
 }
 
+fn debug_str_contains_nul_terminated<'data>(file: &object::File<'data>, s: &str) -> bool {
+  let bytes = s.as_bytes();
+  let mut needle = Vec::with_capacity(bytes.len() + 2);
+  needle.push(0);
+  needle.extend_from_slice(bytes);
+  needle.push(0);
+
+  for section in file.sections() {
+    let Ok(name) = section.name() else {
+      continue;
+    };
+    // Most strings live in `.debug_str`. Some toolchains emit `.zdebug_str`.
+    if name != ".debug_str" && name != ".zdebug_str" {
+      continue;
+    }
+
+    let Ok(data) = section.uncompressed_data() else {
+      continue;
+    };
+    let data = data.as_ref();
+
+    // `.debug_str` is a NUL-terminated string table; the first entry may start at offset 0.
+    if data.starts_with(bytes) && data.get(bytes.len()) == Some(&0) {
+      return true;
+    }
+    if contains_subslice(data, &needle) {
+      return true;
+    }
+  }
+
+  false
+}
+
 #[test]
 fn debug_single_file_emits_dwarf_and_references_ts_filename() {
   let mut host = es5_host();
@@ -80,6 +113,17 @@ export function main(): number {
   assert!(
     debug_sections_contain(&file, "main.ts"),
     "expected DWARF debug sections to reference original TypeScript filename `main.ts`"
+  );
+
+  // The compile directory should be something useful (not hardcoded to ".") so debuggers can find
+  // relative source files more reliably.
+  let cwd = std::env::current_dir()
+    .expect("std::env::current_dir")
+    .to_string_lossy()
+    .into_owned();
+  assert!(
+    debug_sections_contain(&file, &cwd),
+    "expected DWARF debug sections to reference the host cwd `{cwd}` as a compile directory hint"
   );
 }
 
@@ -143,6 +187,29 @@ export function main(): number {
   assert!(
     debug_sections_contain(&file, "math.ts"),
     "expected DWARF debug sections to reference original TypeScript filename `math.ts`"
+  );
+
+  // Ensure TS subprograms have user-facing names (e.g. "main"/"add") as *separate* NUL-terminated
+  // `.debug_str` entries, not only embedded in mangled LLVM linkage names.
+  assert!(
+    debug_str_contains_nul_terminated(&file, "main"),
+    "expected `.debug_str` to contain a standalone NUL-terminated string `main` for DISubprogram.name"
+  );
+  assert!(
+    debug_str_contains_nul_terminated(&file, "add"),
+    "expected `.debug_str` to contain a standalone NUL-terminated string `add` for DISubprogram.name"
+  );
+  assert!(
+    debug_str_contains_nul_terminated(&file, "<module init>"),
+    "expected `.debug_str` to contain a readable module-init function name"
+  );
+  assert!(
+    debug_sections_contain(&file, "__nativejs_def_"),
+    "expected DWARF debug sections to reference stable TS function linkage names (`__nativejs_def_*`)"
+  );
+  assert!(
+    debug_sections_contain(&file, "__nativejs_file_init_"),
+    "expected DWARF debug sections to reference stable module init linkage names (`__nativejs_file_init_*`)"
   );
 }
 
@@ -218,6 +285,41 @@ export function main(): number {
   assert!(
     debug_sections_contain(&file, "local_debug_info"),
     "expected DWARF debug sections to contain local variable name `local_debug_info`"
+  );
+}
+
+#[test]
+fn debug_info_splits_nested_file_key_paths_into_filename_and_directory() {
+  let mut host = es5_host();
+  let key = FileKey::new("src/main.ts");
+  host.insert(key.clone(), "export function main(): number { return 0; }\n");
+
+  let program = Program::new(host, vec![key.clone()]);
+  let diags = program.check();
+  assert!(diags.is_empty(), "{diags:#?}");
+  let entry = program.file_id(&key).unwrap();
+
+  let mut opts = CompilerOptions::default();
+  opts.emit = EmitKind::Object;
+  opts.debug = true;
+  opts.opt_level = OptLevel::O0;
+
+  let artifact = compile_program(&program, entry, &opts).unwrap();
+  let bytes = std::fs::read(&artifact.path).unwrap();
+  let _ = std::fs::remove_file(&artifact.path);
+
+  let file = object::File::parse(&*bytes).unwrap();
+  assert!(
+    debug_str_contains_nul_terminated(&file, "main.ts"),
+    "expected DWARF to store `main.ts` as a basename in `.debug_str`"
+  );
+  assert!(
+    debug_str_contains_nul_terminated(&file, "src"),
+    "expected DWARF to store `src` as a directory component in `.debug_str`"
+  );
+  assert!(
+    !debug_str_contains_nul_terminated(&file, "src/main.ts"),
+    "expected DWARF to store `src` and `main.ts` as separate directory/filename fields (not a single `src/main.ts` string)"
   );
 }
 

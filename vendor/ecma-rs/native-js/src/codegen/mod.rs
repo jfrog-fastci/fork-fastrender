@@ -1472,7 +1472,12 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
 
     let linkage_name = crate::llvm_symbol_for_def(self.cg.program, def);
     // Prefer a friendly TS name for debuggers, but still attach the stable symbol as `linkageName`.
-    let name = self.cg.program.def_name(def).unwrap_or_else(|| linkage_name.clone());
+    let name = self
+      .cg
+      .program
+      .def_name(def)
+      .filter(|s| !s.is_empty())
+      .unwrap_or_else(|| "<anonymous>".to_string());
     let is_local_to_unit = self.func.get_linkage() == Linkage::Internal;
 
     let sp = debug.create_subprogram(
@@ -1504,12 +1509,11 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
     };
 
     let linkage_name = crate::llvm_symbol_for_file_init(self.file);
-    let name = format!("<module init> {}", file_label(self.cg.program, self.file));
     let (line, _col) = debug.line_col(self.cg.program, self.file, TextRange::new(0, 0));
     let sp = debug.create_subprogram(
       self.cg.program,
       self.file,
-      &name,
+      "<module init>",
       Some(&linkage_name),
       line,
       TsAbiKind::Void,
