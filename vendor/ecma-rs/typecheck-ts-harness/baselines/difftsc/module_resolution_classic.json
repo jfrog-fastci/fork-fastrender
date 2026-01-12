@@ -1,0 +1,29 @@
+{
+  "schema_version": 2,
+  "metadata": {
+    "typescript_version": "5.9.3",
+    "options": {
+      "exactOptionalPropertyTypes": false,
+      "moduleResolution": 1,
+      "noEmit": true,
+      "noImplicitAny": false,
+      "noUncheckedIndexedAccess": false,
+      "pretty": false,
+      "skipLibCheck": true,
+      "strictFunctionTypes": true,
+      "strictNullChecks": true,
+      "target": 2,
+      "useDefineForClassFields": true
+    }
+  },
+  "diagnostics": [
+    {
+      "code": 2307,
+      "file": "main.ts",
+      "start": 7,
+      "end": 38,
+      "category": "error",
+      "message": "Cannot find module 'difftsc-module-resolution-pkg' or its corresponding type declarations."
+    }
+  ]
+}

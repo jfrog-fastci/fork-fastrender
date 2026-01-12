@@ -1,10 +1,57 @@
 use std::path::{Path, PathBuf};
 
 use diagnostics::paths::normalize_ts_path;
-use typecheck_ts::resolve::{ResolveFs, ResolveOptions, Resolver};
+use typecheck_ts::resolve::{ModuleResolutionMode, ResolveFs, ResolveOptions, Resolver};
 use typecheck_ts::FileKey;
 
 use crate::runner::HarnessFileSet;
+
+fn resolve_options_for_module_resolution(module_resolution: Option<&str>) -> ResolveOptions {
+  let normalized = module_resolution.map(|value| value.trim().to_ascii_lowercase());
+  match normalized.as_deref() {
+    None | Some("") | Some("classic") => ResolveOptions {
+      node_modules: false,
+      package_imports: false,
+      module_resolution: ModuleResolutionMode::Node10,
+      ..Default::default()
+    },
+    Some("node") | Some("nodejs") | Some("node10") => ResolveOptions {
+      node_modules: true,
+      package_imports: false,
+      module_resolution: ModuleResolutionMode::Node10,
+      ..Default::default()
+    },
+    // TypeScript's Node16/NodeNext/Bundler resolvers support `package.json` exports/imports
+    // maps. Keep the resolver configuration aligned so Rust and `tsc` observe the same
+    // resolution behaviour.
+    Some("node16") => ResolveOptions {
+      node_modules: true,
+      package_imports: true,
+      module_resolution: ModuleResolutionMode::Node16,
+      ..Default::default()
+    },
+    Some("nodenext") => ResolveOptions {
+      node_modules: true,
+      package_imports: true,
+      module_resolution: ModuleResolutionMode::NodeNext,
+      ..Default::default()
+    },
+    Some("bundler") => ResolveOptions {
+      node_modules: true,
+      package_imports: true,
+      module_resolution: ModuleResolutionMode::Bundler,
+      ..Default::default()
+    },
+    // Fall back to Classic semantics for unknown values so we don't accidentally
+    // enable `node_modules` lookups in misconfigured tests.
+    Some(_) => ResolveOptions {
+      node_modules: false,
+      package_imports: false,
+      module_resolution: ModuleResolutionMode::Node10,
+      ..Default::default()
+    },
+  }
+}
 
 fn starts_with_drive_letter(path: &str) -> bool {
   let bytes = path.as_bytes();
@@ -54,6 +101,7 @@ pub(crate) fn resolve_module_specifier(
   files: &HarnessFileSet,
   from: &FileKey,
   specifier: &str,
+  module_resolution: Option<&str>,
 ) -> Option<FileKey> {
   if specifier.starts_with('/') || specifier.starts_with('\\') || specifier.starts_with("./") {
     // `typecheck_ts::resolve` already handles absolute/relative specifiers.
@@ -87,11 +135,7 @@ pub(crate) fn resolve_module_specifier(
   };
   let resolver = Resolver::with_fs(
     fs,
-    ResolveOptions {
-      node_modules: true,
-      package_imports: true,
-      ..Default::default()
-    },
+    resolve_options_for_module_resolution(module_resolution),
   );
   let from_path = Path::new(from.as_str());
   let mut resolved = resolver.resolve(from_path, specifier);

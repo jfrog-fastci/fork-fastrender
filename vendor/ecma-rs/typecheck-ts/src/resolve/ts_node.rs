@@ -1419,6 +1419,26 @@ mod tests {
   }
 
   #[test]
+  fn classic_mode_does_not_resolve_bare_specifiers() {
+    let mut fs = FakeFs::default();
+    fs.insert("/src/app.ts", "");
+    fs.insert("/node_modules/pkg/index.d.ts", "export {};\n");
+
+    let resolver = Resolver::with_fs(
+      fs,
+      ResolveOptions {
+        node_modules: false,
+        package_imports: false,
+        ..ResolveOptions::default()
+      },
+    );
+    assert!(
+      resolver.resolve(Path::new("/src/app.ts"), "pkg").is_none(),
+      "Classic module resolution should not search node_modules for bare specifiers"
+    );
+  }
+
+  #[test]
   fn resolves_package_json_exports_types_entrypoints() {
     let mut fs = FakeFs::default();
     fs.insert("/src/app.ts", "");

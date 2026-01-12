@@ -20,7 +20,7 @@ fn resolves_package_json_types_entrypoints() {
   ];
 
   let file_set = HarnessFileSet::new(&files);
-  let resolved = file_set.resolve_import(&FileKey::new("/src/app.ts"), "pkg");
+  let resolved = file_set.resolve_import(&FileKey::new("/src/app.ts"), "pkg", Some("node16"));
   assert_eq!(
     resolved,
     Some(FileKey::new("/node_modules/pkg/dist/index.d.ts"))
@@ -45,7 +45,7 @@ fn resolves_package_json_exports_types_entrypoints() {
   ];
 
   let file_set = HarnessFileSet::new(&files);
-  let resolved = file_set.resolve_import(&FileKey::new("/src/app.ts"), "pkg");
+  let resolved = file_set.resolve_import(&FileKey::new("/src/app.ts"), "pkg", Some("node16"));
   assert_eq!(
     resolved,
     Some(FileKey::new("/node_modules/pkg/dist/index.d.ts"))

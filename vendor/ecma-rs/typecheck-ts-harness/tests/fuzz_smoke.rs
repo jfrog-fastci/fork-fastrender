@@ -172,14 +172,14 @@ fn fuzz_smoke_resolver() {
 
     let from = FileKey::new("/project/src/index.ts");
     let set = HarnessFileSet::new(&files);
-    let first = set.resolve_import(&from, &spec);
-    let second = set.resolve_import(&from, &spec);
+    let first = set.resolve_import(&from, &spec, Some("node16"));
+    let second = set.resolve_import(&from, &spec, Some("node16"));
     assert_eq!(first, second, "resolver output must be deterministic");
 
     let mut reversed = files.clone();
     reversed.reverse();
     let set2 = HarnessFileSet::new(&reversed);
-    let third = set2.resolve_import(&from, &spec);
+    let third = set2.resolve_import(&from, &spec, Some("node16"));
     assert_eq!(
       first, third,
       "resolver output must be stable across input ordering"
