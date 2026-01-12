@@ -192,3 +192,74 @@ fn lowers_bare_instantiation_expr() {
     "expected span map type expr at `string` offset"
   );
 }
+
+#[test]
+fn lowers_instantiation_expr_in_class_extends() {
+  let source = "class D extends Base<string> {}";
+  let lowered = lower_from_source_with_kind(FileKind::Ts, source).expect("lower");
+
+  let class_def = lowered
+    .defs
+    .iter()
+    .find(|def| def.path.kind == DefKind::Class && lowered.names.resolve(def.name) == Some("D"))
+    .expect("class D def");
+  let class_body_id = class_def.body.expect("class body id");
+  let class_body = lowered.body(class_body_id).expect("class body");
+
+  let extends_expr = class_body
+    .class
+    .as_ref()
+    .expect("class metadata")
+    .extends
+    .expect("extends expression");
+
+  let (inner_expr, type_arg) = match &class_body.exprs[extends_expr.0 as usize].kind {
+    ExprKind::Instantiation { expr, type_args } => {
+      assert_eq!(type_args.len(), 1, "expected exactly one explicit type argument");
+      (*expr, type_args[0])
+    }
+    other => panic!("expected instantiation extends expression, got {other:?}"),
+  };
+
+  match &class_body.exprs[inner_expr.0 as usize].kind {
+    ExprKind::Ident(name) => {
+      assert_eq!(lowered.names.resolve(*name), Some("Base"));
+    }
+    other => panic!("expected ident inner expression, got {other:?}"),
+  }
+
+  let arenas = lowered.type_arenas(class_def.id).expect("type arenas for class D");
+  assert!(
+    matches!(arenas.type_exprs[type_arg.0 as usize].kind, TypeExprKind::String),
+    "expected lowered type argument to be `string`"
+  );
+
+  // Span map should be able to land on the instantiation expression for offsets
+  // inside `<...>`.
+  let offset = source.find('<').expect("< in source") as u32;
+  let (mapped_body, mapped_expr) = lowered
+    .hir
+    .span_map
+    .expr_at_offset(offset)
+    .expect("expr at instantiation offset");
+  assert_eq!(mapped_body, class_body_id, "expected span map body to be class body");
+  let body = lowered.body(mapped_body).expect("mapped body");
+  assert!(
+    matches!(body.exprs[mapped_expr.0 as usize].kind, ExprKind::Instantiation { .. }),
+    "expected span map to return instantiation expr at `<` offset"
+  );
+
+  // Type argument nodes should also be indexed in the span map.
+  let type_offset = source.find("string").expect("string in source") as u32;
+  let (owner, type_expr_id) = lowered
+    .hir
+    .span_map
+    .type_expr_at_offset(type_offset)
+    .expect("type expr at offset");
+  assert_eq!(owner, class_def.id, "expected type arg owner to be class def");
+  let type_arenas = lowered.type_arenas(owner).expect("type arenas for type expr owner");
+  assert!(
+    matches!(type_arenas.type_exprs[type_expr_id.0 as usize].kind, TypeExprKind::String),
+    "expected span map type expr at `string` offset"
+  );
+}
