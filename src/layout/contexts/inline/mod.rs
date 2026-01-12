@@ -5961,6 +5961,9 @@ impl InlineFormattingContext {
         }
         let run_len = end - idx;
         let min_len = match style.text_combine_upright {
+          // Per CSS Writing Modes / MDN, `text-combine-upright: digits` forms a tate-chu-yoko
+          // composition only for 2–4 consecutive digits. A single digit should remain a normal
+          // (typically rotated) mixed-orientation glyph in vertical text.
           TextCombineUpright::Digits(_) => 2,
           TextCombineUpright::All => 1,
           TextCombineUpright::None => usize::MAX,
@@ -20445,6 +20448,7 @@ mod tests {
     let ifc = InlineFormattingContext::new();
     let mut style = ComputedStyle::default();
     style.writing_mode = WritingMode::VerticalRl;
+    style.text_orientation = crate::style::types::TextOrientation::Mixed;
     style.text_combine_upright = TextCombineUpright::Digits(3);
     style.font_size = 16.0;
     let bidi_stack = vec![(style.unicode_bidi, style.direction)];
@@ -20464,15 +20468,65 @@ mod tests {
       .expect("text items");
     assert!(!items.is_empty());
     if let InlineItem::Text(text) = &items[0] {
-      assert!(
-        text.runs.iter().all(|r| (r.scale - 1.0).abs() < 1e-6),
-        "single digits should not be compressed by text-combine-upright"
+      assert_eq!(
+        text.style.text_orientation,
+        crate::style::types::TextOrientation::Mixed,
+        "single digits should not form a tate-chu-yoko composition (orientation must remain mixed)"
       );
       assert!(
-        text.advance_for_layout < style.font_size * 0.9,
-        "single digits should not force a 1em combined cell; advance_for_layout={} font_size={}",
-        text.advance_for_layout,
-        style.font_size
+        text
+          .runs
+          .iter()
+          .all(|r| r.rotation == crate::text::pipeline::RunRotation::Cw90),
+        "single digits should remain sideways in mixed vertical text"
+      );
+    } else {
+      panic!("expected text item");
+    }
+  }
+
+  #[test]
+  fn text_combine_digits_combines_two_digits() {
+    let ifc = InlineFormattingContext::new();
+    let mut style = ComputedStyle::default();
+    style.writing_mode = WritingMode::VerticalRl;
+    style.text_orientation = crate::style::types::TextOrientation::Mixed;
+    style.text_combine_upright = TextCombineUpright::Digits(2);
+    style.font_size = 16.0;
+    let em = style.font_size;
+    let bidi_stack = vec![(style.unicode_bidi, style.direction)];
+    let style = Arc::new(style);
+    let normalized = normalize_text_for_white_space("12", style.white_space, style.text_wrap);
+    let items = ifc
+      .create_text_items_with_combine(
+        &style,
+        &normalized.text,
+        normalized.forced_breaks.clone(),
+        normalized.allow_soft_wrap,
+        false,
+        crate::style::types::Direction::Ltr,
+        &bidi_stack,
+        CombineBoundary::default(),
+      )
+      .expect("text items");
+    assert_eq!(items.len(), 1);
+    if let InlineItem::Text(text) = &items[0] {
+      assert!(
+        (text.advance_for_layout - em).abs() < 1e-6,
+        "combined two-digit composition should occupy exactly 1em; got {}",
+        text.advance_for_layout
+      );
+      assert_eq!(
+        text.style.text_orientation,
+        crate::style::types::TextOrientation::Upright,
+        "combined composition must force upright orientation"
+      );
+      assert!(
+        text
+          .runs
+          .iter()
+          .all(|r| r.rotation == crate::text::pipeline::RunRotation::None),
+        "combined digits should not be rotated"
       );
     } else {
       panic!("expected text item");
