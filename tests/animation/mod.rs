@@ -9,7 +9,6 @@ mod timeline_scope;
 // Consolidated from tests/animation_*.rs
 mod clip_path_reference_box_percentages;
 mod range_length_offsets_tests;
-mod range_strict_tests;
 mod shorthand_reset_tests;
 mod time_precision_test;
 mod time_sampling;

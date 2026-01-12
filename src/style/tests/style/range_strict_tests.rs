@@ -1,9 +1,9 @@
-use fastrender::css::parser::parse_stylesheet;
-use fastrender::dom;
-use fastrender::style::cascade::apply_styles_with_media;
-use fastrender::style::cascade::StyledNode;
-use fastrender::style::media::MediaContext;
-use fastrender::style::types::RangeOffset;
+use crate::css::parser::parse_stylesheet;
+use crate::dom;
+use crate::style::cascade::apply_styles_with_media;
+use crate::style::cascade::StyledNode;
+use crate::style::media::MediaContext;
+use crate::style::types::RangeOffset;
 
 fn find_by_tag<'a>(node: &'a StyledNode, tag: &str) -> Option<&'a StyledNode> {
   if let Some(name) = node.node.tag_name() {
@@ -34,14 +34,8 @@ fn animation_range_ignores_invalid_comma_list() {
   let div = find_by_tag(&styled, "div").expect("div present");
 
   assert_eq!(div.styles.animation_ranges.len(), 1);
-  assert_eq!(
-    div.styles.animation_ranges[0].start,
-    RangeOffset::Progress(0.2)
-  );
-  assert_eq!(
-    div.styles.animation_ranges[0].end,
-    RangeOffset::Progress(0.8)
-  );
+  assert_eq!(div.styles.animation_ranges[0].start, RangeOffset::Progress(0.2));
+  assert_eq!(div.styles.animation_ranges[0].end, RangeOffset::Progress(0.8));
 }
 
 #[test]
@@ -59,14 +53,8 @@ fn animation_range_start_ignores_invalid_comma_list() {
   let div = find_by_tag(&styled, "div").expect("div present");
 
   assert_eq!(div.styles.animation_ranges.len(), 1);
-  assert_eq!(
-    div.styles.animation_ranges[0].start,
-    RangeOffset::Progress(0.2)
-  );
-  assert_eq!(
-    div.styles.animation_ranges[0].end,
-    RangeOffset::Progress(0.8)
-  );
+  assert_eq!(div.styles.animation_ranges[0].start, RangeOffset::Progress(0.2));
+  assert_eq!(div.styles.animation_ranges[0].end, RangeOffset::Progress(0.8));
 }
 
 #[test]
@@ -84,14 +72,8 @@ fn animation_range_end_ignores_invalid_comma_list() {
   let div = find_by_tag(&styled, "div").expect("div present");
 
   assert_eq!(div.styles.animation_ranges.len(), 1);
-  assert_eq!(
-    div.styles.animation_ranges[0].start,
-    RangeOffset::Progress(0.2)
-  );
-  assert_eq!(
-    div.styles.animation_ranges[0].end,
-    RangeOffset::Progress(0.8)
-  );
+  assert_eq!(div.styles.animation_ranges[0].start, RangeOffset::Progress(0.2));
+  assert_eq!(div.styles.animation_ranges[0].end, RangeOffset::Progress(0.8));
 }
 
 #[test]
@@ -109,14 +91,8 @@ fn animation_range_rejects_cross_keyword() {
   let div = find_by_tag(&styled, "div").expect("div present");
 
   assert_eq!(div.styles.animation_ranges.len(), 1);
-  assert_eq!(
-    div.styles.animation_ranges[0].start,
-    RangeOffset::Progress(0.2)
-  );
-  assert_eq!(
-    div.styles.animation_ranges[0].end,
-    RangeOffset::Progress(0.8)
-  );
+  assert_eq!(div.styles.animation_ranges[0].start, RangeOffset::Progress(0.2));
+  assert_eq!(div.styles.animation_ranges[0].end, RangeOffset::Progress(0.8));
 }
 
 #[test]
@@ -134,14 +110,8 @@ fn animation_range_start_rejects_cross_keyword() {
   let div = find_by_tag(&styled, "div").expect("div present");
 
   assert_eq!(div.styles.animation_ranges.len(), 1);
-  assert_eq!(
-    div.styles.animation_ranges[0].start,
-    RangeOffset::Progress(0.2)
-  );
-  assert_eq!(
-    div.styles.animation_ranges[0].end,
-    RangeOffset::Progress(0.8)
-  );
+  assert_eq!(div.styles.animation_ranges[0].start, RangeOffset::Progress(0.2));
+  assert_eq!(div.styles.animation_ranges[0].end, RangeOffset::Progress(0.8));
 }
 
 #[test]
@@ -159,12 +129,7 @@ fn animation_range_end_rejects_cross_keyword() {
   let div = find_by_tag(&styled, "div").expect("div present");
 
   assert_eq!(div.styles.animation_ranges.len(), 1);
-  assert_eq!(
-    div.styles.animation_ranges[0].start,
-    RangeOffset::Progress(0.2)
-  );
-  assert_eq!(
-    div.styles.animation_ranges[0].end,
-    RangeOffset::Progress(0.8)
-  );
+  assert_eq!(div.styles.animation_ranges[0].start, RangeOffset::Progress(0.2));
+  assert_eq!(div.styles.animation_ranges[0].end, RangeOffset::Progress(0.8));
 }
+

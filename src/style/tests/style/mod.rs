@@ -111,6 +111,7 @@ mod position_try_supports_test;
 mod print_color_adjust_test;
 mod property_parser_no_panic_regression_test;
 mod radio_group_required_invalid_test;
+mod range_strict_tests;
 mod registered_custom_property_computed_value_substitution_test;
 mod relative_color_syntax_test;
 mod required_optional_pseudo_test;
