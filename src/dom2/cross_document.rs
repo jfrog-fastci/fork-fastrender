@@ -8,11 +8,27 @@ pub struct AdoptedSubtree {
   pub mapping: Vec<(NodeId, NodeId)>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CrossDocumentCloneSemantics {
+  /// Clone semantics as used by DOM `Node.cloneNode()` / `Document.importNode()`.
+  ///
+  /// This follows HTML's per-element cloning steps, including resetting some script internal slots.
+  Clone,
+  /// Adoption semantics as used by DOM `Document.adoptNode()`.
+  ///
+  /// Real adoption moves the same node instance into a new document without running cloning steps.
+  /// Since `dom2` represents each document as an independent node arena, we approximate adoption by
+  /// copying the subtree and returning an old→new mapping. In that approximation, we must preserve
+  /// node-internal state that would have stayed on the moved node.
+  Adopt,
+}
+
 fn clone_node_shallow_from_other_document(
   dst: &mut Document,
   src: &Document,
   src_id: NodeId,
   parent: Option<NodeId>,
+  semantics: CrossDocumentCloneSemantics,
 ) -> Result<NodeId, DomError> {
   src.node_checked(src_id)?;
 
@@ -20,6 +36,7 @@ fn clone_node_shallow_from_other_document(
     kind,
     inert_subtree,
     is_html_script,
+    script_parser_document,
     script_force_async,
     script_already_started,
     mathml_annotation_xml_integration_point,
@@ -34,15 +51,23 @@ fn clone_node_shallow_from_other_document(
       } if tag_name.eq_ignore_ascii_case("script")
         && (namespace.is_empty() || namespace == HTML_NAMESPACE)
     );
-    let script_force_async = if is_html_script {
-      let NodeKind::Element { attributes, .. } = &node.kind else {
-        unreachable!();
-      };
-      !attributes
-        .iter()
-        .any(|(name, _)| name.eq_ignore_ascii_case("async"))
-    } else {
-      false
+    let script_parser_document = node.script_parser_document;
+    let script_force_async = match semantics {
+      CrossDocumentCloneSemantics::Clone => {
+        if is_html_script {
+          let NodeKind::Element { attributes, .. } = &node.kind else {
+            unreachable!();
+          };
+          // HTML: script element cloning steps recompute the "force async" flag from the presence
+          // of an `async` content attribute.
+          !attributes
+            .iter()
+            .any(|(name, _)| name.eq_ignore_ascii_case("async"))
+        } else {
+          false
+        }
+      }
+      CrossDocumentCloneSemantics::Adopt => node.script_force_async,
     };
 
     let kind = match &node.kind {
@@ -114,6 +139,7 @@ fn clone_node_shallow_from_other_document(
       kind,
       node.inert_subtree,
       is_html_script,
+      script_parser_document,
       script_force_async,
       node.script_already_started,
       node.mathml_annotation_xml_integration_point,
@@ -126,12 +152,26 @@ fn clone_node_shallow_from_other_document(
   dst.nodes[dst_id.index()].mathml_annotation_xml_integration_point =
     mathml_annotation_xml_integration_point;
 
-  if is_html_script {
-    // HTML: script element cloning steps copy the "already started" flag only.
-    //
-    // https://html.spec.whatwg.org/multipage/scripting.html#script-processing-model
-    dst.nodes[dst_id.index()].script_force_async = script_force_async;
-    dst.nodes[dst_id.index()].script_already_started = script_already_started;
+  match semantics {
+    CrossDocumentCloneSemantics::Clone => {
+      if is_html_script {
+        // HTML: script element cloning steps copy the "already started" flag only.
+        //
+        // https://html.spec.whatwg.org/multipage/scripting.html#script-processing-model
+        dst.nodes[dst_id.index()].script_force_async = script_force_async;
+        dst.nodes[dst_id.index()].script_already_started = script_already_started;
+      }
+    }
+    CrossDocumentCloneSemantics::Adopt => {
+      // Adoption moves the node without running per-element cloning steps; preserve node-internal
+      // state exactly.
+      dst.nodes[dst_id.index()].inert_subtree = inert_subtree;
+      dst.nodes[dst_id.index()].script_parser_document = script_parser_document;
+      dst.nodes[dst_id.index()].script_force_async = script_force_async;
+      dst.nodes[dst_id.index()].script_already_started = script_already_started;
+      dst.input_states[dst_id.index()] = src.input_states[src_id.index()].clone();
+      dst.textarea_states[dst_id.index()] = src.textarea_states[src_id.index()].clone();
+    }
   }
 
   Ok(dst_id)
@@ -144,13 +184,15 @@ fn clone_subtree_from_other_document(
   dst_parent: Option<NodeId>,
   deep: bool,
   mut mapping: Option<&mut Vec<(NodeId, NodeId)>>,
+  semantics: CrossDocumentCloneSemantics,
 ) -> Result<NodeId, DomError> {
   src.node_checked(src_root)?;
   if let Some(parent) = dst_parent {
     dst.node_checked(parent)?;
   }
 
-  let dst_root = clone_node_shallow_from_other_document(dst, src, src_root, dst_parent)?;
+  let dst_root =
+    clone_node_shallow_from_other_document(dst, src, src_root, dst_parent, semantics)?;
   if let Some(mapping) = mapping.as_mut() {
     mapping.push((src_root, dst_root));
   }
@@ -175,6 +217,7 @@ fn clone_subtree_from_other_document(
       .children
       .get(frame.next_child)
       .copied();
+
     let Some(child_src) = child_src else {
       continue;
     };
@@ -183,7 +226,8 @@ fn clone_subtree_from_other_document(
     let parent_dst = frame.dst;
     stack.push(frame);
 
-    let child_dst = clone_node_shallow_from_other_document(dst, src, child_src, Some(parent_dst))?;
+    let child_dst =
+      clone_node_shallow_from_other_document(dst, src, child_src, Some(parent_dst), semantics)?;
     if let Some(mapping) = mapping.as_mut() {
       mapping.push((child_src, child_dst));
     }
@@ -204,7 +248,12 @@ impl Document {
   /// The returned node is always detached (`parent == None`) and belongs to `self`.
   ///
   /// Deep cloning is implemented iteratively to avoid recursion overflow on degenerate trees.
-  pub fn clone_node_from(&mut self, src: &Document, node: NodeId, deep: bool) -> Result<NodeId, DomError> {
+  pub fn clone_node_from(
+    &mut self,
+    src: &Document,
+    node: NodeId,
+    deep: bool,
+  ) -> Result<NodeId, DomError> {
     clone_subtree_from_other_document(
       self,
       src,
@@ -212,6 +261,7 @@ impl Document {
       /* dst_parent */ None,
       deep,
       /* mapping */ None,
+      CrossDocumentCloneSemantics::Clone,
     )
   }
 
@@ -253,7 +303,13 @@ impl Document {
     src: &mut Document,
     node: NodeId,
   ) -> Result<AdoptedSubtree, DomError> {
-    src.node_checked(node)?;
+    let src_node = src.node_checked(node)?;
+    if node == src.root() || matches!(&src_node.kind, NodeKind::Document { .. }) {
+      return Err(DomError::NotSupportedError);
+    }
+    if matches!(&src_node.kind, NodeKind::ShadowRoot { .. }) {
+      return Err(DomError::HierarchyRequestError);
+    }
 
     // Detach the root using existing mutation APIs so mutation logs are recorded.
     if let Some(old_parent) = src.nodes[node.index()].parent {
@@ -270,6 +326,7 @@ impl Document {
         /* dst_parent */ None,
         /* deep */ true,
         Some(&mut mapping),
+        CrossDocumentCloneSemantics::Adopt,
       )?
     };
 
@@ -282,3 +339,4 @@ impl Document {
     Ok(AdoptedSubtree { new_root, mapping })
   }
 }
+

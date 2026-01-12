@@ -387,8 +387,17 @@ fn adopt_node_from_mapping_is_complete_and_preserves_node_kinds_for_shadow_dom_s
   );
 
   let src_script = find_in_subtree_by_id(&src, host, "s").expect("source script not found");
+  src.set_script_already_started(src_script, true).unwrap();
+  let src_script_flags = {
+    let node = src.node(src_script);
+    (
+      node.script_parser_document,
+      node.script_force_async,
+      node.script_already_started,
+    )
+  };
   assert!(
-    src.node(src_script).script_parser_document,
+    src_script_flags.0,
     "expected parser-inserted script in source document"
   );
 
@@ -445,9 +454,17 @@ fn adopt_node_from_mapping_is_complete_and_preserves_node_kinds_for_shadow_dom_s
 
   let adopted_script =
     find_in_subtree_by_id(&dst, adopted.new_root, "s").expect("adopted script not found");
-  assert!(
-    !dst.node(adopted_script).script_parser_document,
-    "adopted scripts must not be parser-inserted"
+  let adopted_flags = {
+    let node = dst.node(adopted_script);
+    (
+      node.script_parser_document,
+      node.script_force_async,
+      node.script_already_started,
+    )
+  };
+  assert_eq!(
+    adopted_flags, src_script_flags,
+    "adopted scripts should preserve internal slot state"
   );
 }
 
@@ -689,5 +706,99 @@ fn import_shadow_host_element_deep_clones_shadow_root_descendants() {
       .copied()
       .any(|child| matches!(dst.node(child).kind, NodeKind::ShadowRoot { .. })),
     "expected imported host subtree to contain a ShadowRoot child"
+  );
+}
+
+#[test]
+fn adopt_preserves_html_script_internal_state() {
+  // Unlike `cloneNode`/`importNode`, `adoptNode` moves the same node to a new document without
+  // running per-element cloning steps. In our cross-document approximation, that means copying
+  // per-node internal state as-is.
+  let html = "<!doctype html><html><head><script id=s></script></head></html>";
+  let mut src = crate::dom2::parse_html(html).unwrap();
+  let script = find_first_html_script(&src);
+  src.set_script_already_started(script, true).unwrap();
+
+  let src_flags = {
+    let node = src.node(script);
+    (
+      node.script_parser_document,
+      node.script_force_async,
+      node.script_already_started,
+    )
+  };
+  assert!(
+    src_flags.0,
+    "expected parser-inserted script to have script_parser_document=true"
+  );
+
+  let mut dst = Document::new(QuirksMode::NoQuirks);
+  let adopted = dst.adopt_node_from(&mut src, script).unwrap();
+
+  assert_eq!(
+    src.parent(script).unwrap(),
+    None,
+    "adoptNode should remove the node from its old parent"
+  );
+
+  assert_eq!(dst.parent(adopted.new_root).unwrap(), None);
+  assert!(
+    adopted
+      .mapping
+      .iter()
+      .any(|(old, new)| *old == script && *new == adopted.new_root),
+    "expected mapping to include adopted root"
+  );
+
+  let adopted_node = dst.node(adopted.new_root);
+  assert_eq!(
+    (
+      adopted_node.script_parser_document,
+      adopted_node.script_force_async,
+      adopted_node.script_already_started,
+    ),
+    src_flags
+  );
+  assert_eq!(dst.get_attribute(adopted.new_root, "id").unwrap(), Some("s"));
+}
+
+#[test]
+fn adopt_resets_slot_assignment_state() {
+  // Slot assignment is derived from being connected. `adoptNode` removes the node first, so the
+  // adopted copy should be detached with `assigned=false`.
+  let mut src = Document::new(QuirksMode::NoQuirks);
+  let slot = src.create_element("slot", HTML_NAMESPACE);
+  src.append_child(src.root(), slot).unwrap();
+  match &mut src.node_mut(slot).kind {
+    NodeKind::Slot { assigned, .. } => *assigned = true,
+    _ => panic!("expected a Slot node"),
+  }
+
+  let mut dst = Document::new(QuirksMode::NoQuirks);
+  let adopted = dst.adopt_node_from(&mut src, slot).unwrap();
+
+  assert_eq!(dst.parent(adopted.new_root).unwrap(), None);
+  match &dst.node(adopted.new_root).kind {
+    NodeKind::Slot { assigned, .. } => assert!(!assigned),
+    _ => panic!("expected a Slot node"),
+  }
+}
+
+#[test]
+fn adopt_shadow_root_throws_hierarchy_request_error() {
+  let html = concat!(
+    "<!doctype html>",
+    "<div id=host>",
+    "<template shadowroot=open><span>shadow</span></template>",
+    "<p>light</p>",
+    "</div>",
+  );
+  let mut src = crate::dom2::parse_html(html).unwrap();
+  let shadow_root = find_first_shadow_root(&src);
+
+  let mut dst = Document::new(QuirksMode::NoQuirks);
+  assert_eq!(
+    dst.adopt_node_from(&mut src, shadow_root).unwrap_err(),
+    DomError::HierarchyRequestError
   );
 }
