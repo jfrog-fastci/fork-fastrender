@@ -107,6 +107,45 @@ fn native_ready_populates_inst_meta_escape_and_ownership() {
   );
 }
 
+#[test]
+fn native_ready_verifies_strict_native_by_default() {
+  let source = r#"
+    const obj: any = { x: 1 };
+    function get(key: string) {
+      return obj[key];
+    }
+    get("x");
+  "#;
+
+  let (tc_program, file_id) = build_type_program(source);
+
+  let err = compile_file_native_ready(
+    Arc::clone(&tc_program),
+    file_id,
+    TopLevelMode::Module,
+    false,
+    NativeReadyOptions::default(),
+  )
+  .expect_err("expected strict-native validation to reject computed property access");
+
+  assert!(
+    err.iter().any(|d| d.code == "OPTN0004"),
+    "expected OPTN0004 diagnostic, got {err:?}"
+  );
+
+  compile_file_native_ready(
+    tc_program,
+    file_id,
+    TopLevelMode::Module,
+    false,
+    NativeReadyOptions {
+      verify_strict_native: false,
+      ..NativeReadyOptions::default()
+    },
+  )
+  .expect("expected strict-native validation to be skipped when disabled");
+}
+
 #[cfg(feature = "serde")]
 #[test]
 fn native_ready_program_analyses_are_deterministic() {
@@ -135,6 +174,7 @@ fn native_ready_program_analyses_are_deterministic() {
     false,
     NativeReadyOptions {
       run_opt_passes: true,
+      ..NativeReadyOptions::default()
     },
   )
   .expect("compile native-ready");
@@ -145,6 +185,7 @@ fn native_ready_program_analyses_are_deterministic() {
     false,
     NativeReadyOptions {
       run_opt_passes: true,
+      ..NativeReadyOptions::default()
     },
   )
   .expect("compile native-ready");

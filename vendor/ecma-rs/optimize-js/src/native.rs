@@ -7,6 +7,7 @@
 //! - returns both the annotated IR and side-table summaries used by native backends.
 
 use crate::analysis;
+use crate::strict_native;
 use crate::types;
 use crate::{CompileCfgOptions, Diagnostic, OptimizeResult, Program, Span, TextRange, TopLevelMode};
 use hir_js::FileKind as HirFileKind;
@@ -16,11 +17,21 @@ use std::sync::Arc;
 pub struct NativeReadyOptions {
   /// Run optimization passes after SSA construction (enabled by default).
   pub run_opt_passes: bool,
+  /// Validate the generated IL against the strict-native subset required by native backends.
+  ///
+  /// Enabled by default.
+  pub verify_strict_native: bool,
+  /// Options for the strict-native IL verifier.
+  pub strict_native_opts: strict_native::StrictNativeOpts,
 }
 
 impl Default for NativeReadyOptions {
   fn default() -> Self {
-    Self { run_opt_passes: true }
+    Self {
+      run_opt_passes: true,
+      verify_strict_native: true,
+      strict_native_opts: strict_native::StrictNativeOpts::default(),
+    }
   }
 }
 
@@ -95,6 +106,10 @@ pub fn compile_file_native_ready(
 
   // Populate per-instruction metadata and return side-table analyses for native backends.
   let analyses = analysis::driver::annotate_program_typed(&mut program, &types);
+
+  if opts.verify_strict_native {
+    strict_native::validate_program(&program, opts.strict_native_opts)?;
+  }
 
   Ok(NativeReadyProgram {
     program,
