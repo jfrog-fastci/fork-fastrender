@@ -164,6 +164,39 @@ fn dom_rect_proto_from_realm(scope: &mut Scope<'_>, realm: &Realm) -> Result<vm_
   }
 }
 
+fn dom_rect_ro_proto_from_global(
+  scope: &mut Scope<'_>,
+  global: vm_js::GcObject,
+) -> Result<vm_js::GcObject, VmError> {
+  let mut scope = scope.reborrow();
+  scope.push_root(Value::Object(global))?;
+  let key = alloc_key(&mut scope, INTERNAL_DOMRECT_RO_PROTO_KEY)?;
+  match scope
+    .heap()
+    .object_get_own_data_property_value(global, &key)?
+  {
+    Some(Value::Object(proto)) => Ok(proto),
+    _ => Err(VmError::InvariantViolation(
+      "DOMRectReadOnly bindings missing cached prototype on global object",
+    )),
+  }
+}
+
+fn dom_rect_proto_from_global(scope: &mut Scope<'_>, global: vm_js::GcObject) -> Result<vm_js::GcObject, VmError> {
+  let mut scope = scope.reborrow();
+  scope.push_root(Value::Object(global))?;
+  let key = alloc_key(&mut scope, INTERNAL_DOMRECT_PROTO_KEY)?;
+  match scope
+    .heap()
+    .object_get_own_data_property_value(global, &key)?
+  {
+    Some(Value::Object(proto)) => Ok(proto),
+    _ => Err(VmError::InvariantViolation(
+      "DOMRect bindings missing cached prototype on global object",
+    )),
+  }
+}
+
 #[allow(dead_code)]
 pub(crate) fn alloc_dom_rect_read_only(
   scope: &mut Scope<'_>,
@@ -177,6 +210,18 @@ pub(crate) fn alloc_dom_rect_read_only(
   alloc_dom_rect_with_proto(scope, proto, x, y, width, height)
 }
 
+pub(crate) fn alloc_dom_rect_read_only_from_global(
+  scope: &mut Scope<'_>,
+  global: vm_js::GcObject,
+  x: f64,
+  y: f64,
+  width: f64,
+  height: f64,
+) -> Result<vm_js::GcObject, VmError> {
+  let proto = dom_rect_ro_proto_from_global(scope, global)?;
+  alloc_dom_rect_with_proto(scope, proto, x, y, width, height)
+}
+
 #[allow(dead_code)]
 pub(crate) fn alloc_dom_rect(
   scope: &mut Scope<'_>,
@@ -187,6 +232,19 @@ pub(crate) fn alloc_dom_rect(
   height: f64,
 ) -> Result<vm_js::GcObject, VmError> {
   let proto = dom_rect_proto_from_realm(scope, realm)?;
+  alloc_dom_rect_with_proto(scope, proto, x, y, width, height)
+}
+
+#[allow(dead_code)]
+pub(crate) fn alloc_dom_rect_from_global(
+  scope: &mut Scope<'_>,
+  global: vm_js::GcObject,
+  x: f64,
+  y: f64,
+  width: f64,
+  height: f64,
+) -> Result<vm_js::GcObject, VmError> {
+  let proto = dom_rect_proto_from_global(scope, global)?;
   alloc_dom_rect_with_proto(scope, proto, x, y, width, height)
 }
 
@@ -913,7 +971,7 @@ mod tests {
       // plumbing will construct entries).
       let entry = alloc_intersection_observer_entry_object(
         &mut scope,
-        realm,
+        global,
         None,
         (1.0, 2.0, 3.0, 4.0),
         (5.0, 6.0, 7.0, 8.0),

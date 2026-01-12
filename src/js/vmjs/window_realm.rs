@@ -12230,24 +12230,22 @@ fn alloc_mutation_records_array(
 #[allow(dead_code)]
 pub(crate) fn alloc_intersection_observer_entry_object(
   scope: &mut Scope<'_>,
-  realm: &Realm,
+  global: GcObject,
   root_bounds: Option<(f64, f64, f64, f64)>,
   bounding_client_rect: (f64, f64, f64, f64),
   intersection_rect: (f64, f64, f64, f64),
 ) -> Result<GcObject, VmError> {
   let mut scope = scope.reborrow();
+  scope.push_root(Value::Object(global))?;
   let obj = scope.alloc_object()?;
   scope.push_root(Value::Object(obj))?;
 
   let root_bounds_value = match root_bounds {
-    Some((x, y, width, height)) => Value::Object(crate::js::window_dom_rect::alloc_dom_rect_read_only(
-      &mut scope,
-      realm,
-      x,
-      y,
-      width,
-      height,
-    )?),
+    Some((x, y, width, height)) => Value::Object(
+      crate::js::window_dom_rect::alloc_dom_rect_read_only_from_global(
+        &mut scope, global, x, y, width, height,
+      )?,
+    ),
     None => Value::Null,
   };
   scope.push_root(root_bounds_value)?;
@@ -12255,7 +12253,9 @@ pub(crate) fn alloc_intersection_observer_entry_object(
   scope.define_property(obj, root_bounds_key, data_desc(root_bounds_value))?;
 
   let (x, y, width, height) = bounding_client_rect;
-  let bounding_rect = crate::js::window_dom_rect::alloc_dom_rect_read_only(&mut scope, realm, x, y, width, height)?;
+  let bounding_rect = crate::js::window_dom_rect::alloc_dom_rect_read_only_from_global(
+    &mut scope, global, x, y, width, height,
+  )?;
   scope.push_root(Value::Object(bounding_rect))?;
   let bounding_client_rect_key = alloc_key(&mut scope, "boundingClientRect")?;
   scope.define_property(
@@ -12265,8 +12265,9 @@ pub(crate) fn alloc_intersection_observer_entry_object(
   )?;
 
   let (x, y, width, height) = intersection_rect;
-  let intersection_rect =
-    crate::js::window_dom_rect::alloc_dom_rect_read_only(&mut scope, realm, x, y, width, height)?;
+  let intersection_rect = crate::js::window_dom_rect::alloc_dom_rect_read_only_from_global(
+    &mut scope, global, x, y, width, height,
+  )?;
   scope.push_root(Value::Object(intersection_rect))?;
   let intersection_rect_key = alloc_key(&mut scope, "intersectionRect")?;
   scope.define_property(
@@ -12282,15 +12283,18 @@ pub(crate) fn alloc_intersection_observer_entry_object(
 #[allow(dead_code)]
 pub(crate) fn alloc_resize_observer_entry_object(
   scope: &mut Scope<'_>,
-  realm: &Realm,
+  global: GcObject,
   content_rect: (f64, f64, f64, f64),
 ) -> Result<GcObject, VmError> {
   let mut scope = scope.reborrow();
+  scope.push_root(Value::Object(global))?;
   let obj = scope.alloc_object()?;
   scope.push_root(Value::Object(obj))?;
 
   let (x, y, width, height) = content_rect;
-  let rect = crate::js::window_dom_rect::alloc_dom_rect_read_only(&mut scope, realm, x, y, width, height)?;
+  let rect = crate::js::window_dom_rect::alloc_dom_rect_read_only_from_global(
+    &mut scope, global, x, y, width, height,
+  )?;
   scope.push_root(Value::Object(rect))?;
   let content_rect_key = alloc_key(&mut scope, "contentRect")?;
   scope.define_property(obj, content_rect_key, data_desc(Value::Object(rect)))?;
@@ -13182,45 +13186,30 @@ fn intersection_observer_disconnect_native(
   Ok(Value::Undefined)
 }
 
-fn alloc_dom_rect_like_object(
-  scope: &mut Scope<'_>,
-  rect: crate::geometry::Rect,
-) -> Result<GcObject, VmError> {
-  let obj = scope.alloc_object()?;
-  scope.push_root(Value::Object(obj))?;
-
-  let x = rect.origin.x as f64;
-  let y = rect.origin.y as f64;
-  let width = rect.size.width as f64;
-  let height = rect.size.height as f64;
-  let right = x + width;
-  let bottom = y + height;
-
-  for (name, value) in [
-    ("x", x),
-    ("y", y),
-    ("width", width),
-    ("height", height),
-    ("top", y),
-    ("left", x),
-    ("right", right),
-    ("bottom", bottom),
-  ] {
-    let key = alloc_key(scope, name)?;
-    scope.define_property(obj, key, data_desc(Value::Number(value)))?;
-  }
-
-  Ok(obj)
-}
-
-fn alloc_intersection_observer_entry_object(
+fn alloc_intersection_observer_entry_object_from_dom(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
+  global: GcObject,
   document_obj: GcObject,
   dom: Option<&dom2::Document>,
   entry: &dom2::IntersectionObserverEntry,
 ) -> Result<GcObject, VmError> {
-  let obj = scope.alloc_object()?;
+  let rect_tuple = |rect: crate::geometry::Rect| {
+    (
+      rect.origin.x as f64,
+      rect.origin.y as f64,
+      rect.size.width as f64,
+      rect.size.height as f64,
+    )
+  };
+
+  let obj = alloc_intersection_observer_entry_object(
+    scope,
+    global,
+    entry.root_bounds.map(rect_tuple),
+    rect_tuple(entry.bounding_client_rect),
+    rect_tuple(entry.intersection_rect),
+  )?;
   scope.push_root(Value::Object(obj))?;
 
   let time_key = alloc_key(scope, "time")?;
@@ -13229,25 +13218,6 @@ fn alloc_intersection_observer_entry_object(
   let target_key = alloc_key(scope, "target")?;
   let target_wrapper = get_or_create_node_wrapper(vm, scope, document_obj, dom, entry.target)?;
   scope.define_property(obj, target_key, data_desc(target_wrapper))?;
-
-  let root_bounds_key = alloc_key(scope, "rootBounds")?;
-  let root_bounds_value = match entry.root_bounds {
-    Some(r) => Value::Object(alloc_dom_rect_like_object(scope, r)?),
-    None => Value::Null,
-  };
-  scope.define_property(obj, root_bounds_key, data_desc(root_bounds_value))?;
-
-  let bounding_key = alloc_key(scope, "boundingClientRect")?;
-  let bounding_rect = alloc_dom_rect_like_object(scope, entry.bounding_client_rect)?;
-  scope.define_property(obj, bounding_key, data_desc(Value::Object(bounding_rect)))?;
-
-  let intersection_rect_key = alloc_key(scope, "intersectionRect")?;
-  let intersection_rect = alloc_dom_rect_like_object(scope, entry.intersection_rect)?;
-  scope.define_property(
-    obj,
-    intersection_rect_key,
-    data_desc(Value::Object(intersection_rect)),
-  )?;
 
   let is_intersecting_key = alloc_key(scope, "isIntersecting")?;
   scope.define_property(
@@ -13273,6 +13243,13 @@ fn alloc_intersection_observer_entries_array(
   dom: Option<&dom2::Document>,
   entries: &[dom2::IntersectionObserverEntry],
 ) -> Result<GcObject, VmError> {
+  let global = vm
+    .user_data::<WindowRealmUserData>()
+    .and_then(|data| data.window_obj)
+    .ok_or(VmError::InvariantViolation(
+      "IntersectionObserver used without a WindowRealm global object",
+    ))?;
+
   let array = scope.alloc_array(0)?;
   scope.push_root(Value::Object(array))?;
   if let Some(intrinsics) = vm.intrinsics() {
@@ -13282,7 +13259,7 @@ fn alloc_intersection_observer_entries_array(
   }
   for (idx, entry) in entries.iter().enumerate() {
     let key = alloc_key(scope, &idx.to_string())?;
-    let obj = alloc_intersection_observer_entry_object(vm, scope, document_obj, dom, entry)?;
+    let obj = alloc_intersection_observer_entry_object_from_dom(vm, scope, global, document_obj, dom, entry)?;
     scope.define_property(array, key, data_desc(Value::Object(obj)))?;
   }
   let length_key = alloc_key(scope, "length")?;
@@ -13776,23 +13753,26 @@ fn alloc_resize_observer_size_array(
   Ok(array)
 }
 
-fn alloc_resize_observer_entry_object(
+fn alloc_resize_observer_entry_object_from_dom(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
+  global: GcObject,
   document_obj: GcObject,
   dom: Option<&dom2::Document>,
   entry: &dom2::ResizeObserverEntry,
 ) -> Result<GcObject, VmError> {
-  let obj = scope.alloc_object()?;
+  let content_rect = (
+    entry.content_rect.origin.x as f64,
+    entry.content_rect.origin.y as f64,
+    entry.content_rect.size.width as f64,
+    entry.content_rect.size.height as f64,
+  );
+  let obj = alloc_resize_observer_entry_object(scope, global, content_rect)?;
   scope.push_root(Value::Object(obj))?;
 
   let target_key = alloc_key(scope, "target")?;
   let target_wrapper = get_or_create_node_wrapper(vm, scope, document_obj, dom, entry.target)?;
   scope.define_property(obj, target_key, data_desc(target_wrapper))?;
-
-  let content_rect_key = alloc_key(scope, "contentRect")?;
-  let content_rect = alloc_dom_rect_like_object(scope, entry.content_rect)?;
-  scope.define_property(obj, content_rect_key, data_desc(Value::Object(content_rect)))?;
 
   let border_box_key = alloc_key(scope, "borderBoxSize")?;
   let border_box = alloc_resize_observer_size_array(vm, scope, &entry.border_box_size)?;
@@ -13816,6 +13796,13 @@ fn alloc_resize_observer_entries_array(
   dom: Option<&dom2::Document>,
   entries: &[dom2::ResizeObserverEntry],
 ) -> Result<GcObject, VmError> {
+  let global = vm
+    .user_data::<WindowRealmUserData>()
+    .and_then(|data| data.window_obj)
+    .ok_or(VmError::InvariantViolation(
+      "ResizeObserver used without a WindowRealm global object",
+    ))?;
+
   let array = scope.alloc_array(0)?;
   scope.push_root(Value::Object(array))?;
   if let Some(intrinsics) = vm.intrinsics() {
@@ -13825,7 +13812,7 @@ fn alloc_resize_observer_entries_array(
   }
   for (idx, entry) in entries.iter().enumerate() {
     let key = alloc_key(scope, &idx.to_string())?;
-    let obj = alloc_resize_observer_entry_object(vm, scope, document_obj, dom, entry)?;
+    let obj = alloc_resize_observer_entry_object_from_dom(vm, scope, global, document_obj, dom, entry)?;
     scope.define_property(array, key, data_desc(Value::Object(obj)))?;
   }
   let length_key = alloc_key(scope, "length")?;
