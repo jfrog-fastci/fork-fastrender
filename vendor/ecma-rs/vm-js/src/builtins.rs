@@ -8240,7 +8240,7 @@ pub fn function_prototype_symbol_has_instance(
   Ok(Value::Bool(false))
 }
 
-/// `Object.prototype.toString` (partial).
+/// `Object.prototype.toString`.
 pub fn object_prototype_to_string(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -8255,7 +8255,8 @@ pub fn object_prototype_to_string(
   // We keep the algorithm spec-shaped:
   // 1. Special-case `undefined` / `null`.
   // 2. `O = ToObject(this)`.
-  // 3. Compute a `builtinTag` (Array / Function / Object / primitive wrappers).
+  // 3. Compute a `builtinTag` (Array / Arguments / Function / Error / primitive wrappers / Date /
+  //    RegExp / Generator / Object).
   // 4. `tag = Get(O, @@toStringTag)` (prototype chain lookup; host-aware; Proxy-aware).
   // 5. If `tag` is a string, use it; otherwise use `builtinTag`.
   // 6. Return `[object ${tag}]`.
@@ -8285,20 +8286,6 @@ pub fn object_prototype_to_string(
     b'd' as u16,
   ];
   const TAG_NULL: [u16; 4] = [b'N' as u16, b'u' as u16, b'l' as u16, b'l' as u16];
-  const TAG_BOOLEAN: [u16; 7] = [
-    b'B' as u16,
-    b'o' as u16,
-    b'o' as u16,
-    b'l' as u16,
-    b'e' as u16,
-    b'a' as u16,
-    b'n' as u16,
-  ];
-  const TAG_NUMBER: [u16; 6] = [b'N' as u16, b'u' as u16, b'm' as u16, b'b' as u16, b'e' as u16, b'r' as u16];
-  const TAG_BIGINT: [u16; 6] = [b'B' as u16, b'i' as u16, b'g' as u16, b'I' as u16, b'n' as u16, b't' as u16];
-  const TAG_STRING: [u16; 6] = [b'S' as u16, b't' as u16, b'r' as u16, b'i' as u16, b'n' as u16, b'g' as u16];
-  const TAG_SYMBOL: [u16; 6] = [b'S' as u16, b'y' as u16, b'm' as u16, b'b' as u16, b'o' as u16, b'l' as u16];
-  const TAG_ARRAY: [u16; 5] = [b'A' as u16, b'r' as u16, b'r' as u16, b'a' as u16, b'y' as u16];
   const TAG_ARGUMENTS: [u16; 9] = [
     b'A' as u16,
     b'r' as u16,
@@ -8310,8 +8297,19 @@ pub fn object_prototype_to_string(
     b't' as u16,
     b's' as u16,
   ];
+  const TAG_BOOLEAN: [u16; 7] = [
+    b'B' as u16,
+    b'o' as u16,
+    b'o' as u16,
+    b'l' as u16,
+    b'e' as u16,
+    b'a' as u16,
+    b'n' as u16,
+  ];
+  const TAG_NUMBER: [u16; 6] = [b'N' as u16, b'u' as u16, b'm' as u16, b'b' as u16, b'e' as u16, b'r' as u16];
+  const TAG_STRING: [u16; 6] = [b'S' as u16, b't' as u16, b'r' as u16, b'i' as u16, b'n' as u16, b'g' as u16];
+  const TAG_ARRAY: [u16; 5] = [b'A' as u16, b'r' as u16, b'r' as u16, b'a' as u16, b'y' as u16];
   const TAG_DATE: [u16; 4] = [b'D' as u16, b'a' as u16, b't' as u16, b'e' as u16];
-  const TAG_ERROR: [u16; 5] = [b'E' as u16, b'r' as u16, b'r' as u16, b'o' as u16, b'r' as u16];
   const TAG_REGEXP: [u16; 6] = [b'R' as u16, b'e' as u16, b'g' as u16, b'E' as u16, b'x' as u16, b'p' as u16];
   const TAG_FUNCTION: [u16; 8] = [
     b'F' as u16,
@@ -8334,6 +8332,7 @@ pub fn object_prototype_to_string(
     b'o' as u16,
     b'r' as u16,
   ];
+  const TAG_ERROR: [u16; 5] = [b'E' as u16, b'r' as u16, b'r' as u16, b'o' as u16, b'r' as u16];
   const TAG_OBJECT: [u16; 6] = [b'O' as u16, b'b' as u16, b'j' as u16, b'e' as u16, b'c' as u16, b't' as u16];
 
   // 1. Handle `undefined` / `null` early.
@@ -8364,63 +8363,52 @@ pub fn object_prototype_to_string(
   // Root `O` while computing tags and allocating the output string.
   scope.push_root(receiver)?;
 
-  // `builtinTag`
-  let can_check_markers = !scope.heap().is_proxy_object(o);
-  let builtin_tag: &[u16] = match this {
-    Value::Bool(_) => &TAG_BOOLEAN,
-    Value::Number(_) => &TAG_NUMBER,
-    Value::BigInt(_) => &TAG_BIGINT,
-    Value::String(_) => &TAG_STRING,
-    Value::Symbol(_) => &TAG_SYMBOL,
-    Value::Object(_) => {
-      if crate::spec_ops::is_array_with_host_and_hooks(vm, &mut scope, host, hooks, receiver)? {
-        &TAG_ARRAY
-      } else if scope.heap().is_arguments_object(o) {
-        &TAG_ARGUMENTS
-      } else if scope.heap().is_callable(receiver)? {
-        // `IsCallable` follows Proxy chains (and is intentionally non-throwing for revoked proxies).
-        &TAG_FUNCTION
-      } else if scope.heap().is_error_object(o) {
-        &TAG_ERROR
-      } else if scope.heap().is_date_object(o) {
-        &TAG_DATE
-      } else if scope.heap().is_regexp_object(o) {
-        &TAG_REGEXP
-      } else if scope.heap().is_generator_object(o) {
-        &TAG_GENERATOR
-      } else if can_check_markers {
-        let heap = scope.heap();
-        let has_marker = |marker: Option<crate::GcSymbol>| -> Result<bool, VmError> {
-          let Some(marker_sym) = marker else {
-            return Ok(false);
-          };
-          let key = PropertyKey::from_symbol(marker_sym);
-          Ok(
-            heap
-              .object_get_own_property(o, &key)?
-              .map(|d| d.is_data_descriptor())
-              .unwrap_or(false),
-          )
-        };
+  // --- `builtinTag` (ECMA-262) ---
+  let is_array = crate::spec_ops::is_array_with_host_and_hooks(vm, &mut scope, host, hooks, receiver)?;
 
-        if has_marker(heap.internal_boolean_data_symbol())? {
-          &TAG_BOOLEAN
-        } else if has_marker(heap.internal_number_data_symbol())? {
-          &TAG_NUMBER
-        } else if has_marker(heap.internal_bigint_data_symbol())? {
-          &TAG_BIGINT
-        } else if has_marker(heap.internal_string_data_symbol())? {
-          &TAG_STRING
-        } else if has_marker(heap.internal_symbol_data_symbol())? {
-          &TAG_SYMBOL
-        } else {
-          &TAG_OBJECT
-        }
-      } else {
-        &TAG_OBJECT
-      }
-    }
-    _ => &TAG_OBJECT,
+  // vm-js models primitive wrapper internal slots (e.g. [[BooleanData]]) via hidden symbol marker
+  // properties stored as own data properties.
+  //
+  // Important: these internal slots are *not* present on Proxy objects, even when the target has
+  // them.
+  let can_check_markers = !scope.heap().is_proxy_object(o);
+  let heap = scope.heap();
+  let has_marker = |marker: Option<crate::GcSymbol>| -> Result<bool, VmError> {
+    let Some(marker_sym) = marker else {
+      return Ok(false);
+    };
+    let key = PropertyKey::from_symbol(marker_sym);
+    Ok(
+      heap
+        .object_get_own_property(o, &key)?
+        .map(|d| d.is_data_descriptor())
+        .unwrap_or(false),
+    )
+  };
+
+  let builtin_tag: &[u16] = if is_array {
+    &TAG_ARRAY
+  } else if scope.heap().is_arguments_object(o) {
+    &TAG_ARGUMENTS
+  } else if scope.heap().is_callable(receiver)? {
+    // `IsCallable` follows Proxy chains (and is intentionally non-throwing for revoked proxies).
+    &TAG_FUNCTION
+  } else if scope.heap().is_error_object(o) {
+    &TAG_ERROR
+  } else if can_check_markers && has_marker(heap.internal_boolean_data_symbol())? {
+    &TAG_BOOLEAN
+  } else if can_check_markers && has_marker(heap.internal_number_data_symbol())? {
+    &TAG_NUMBER
+  } else if can_check_markers && has_marker(heap.internal_string_data_symbol())? {
+    &TAG_STRING
+  } else if scope.heap().is_date_object(o) {
+    &TAG_DATE
+  } else if scope.heap().is_regexp_object(o) {
+    &TAG_REGEXP
+  } else if scope.heap().is_generator_object(o) {
+    &TAG_GENERATOR
+  } else {
+    &TAG_OBJECT
   };
 
   // `Get(O, @@toStringTag)`

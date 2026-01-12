@@ -106,6 +106,10 @@ fn object_prototype_to_string_tags() -> Result<(), VmError> {
   let out = rt.exec_script("Object.prototype.toString.call([1, 2, 3])")?;
   assert_eq!(expect_string(&rt, out), "[object Array]");
 
+  // Arguments objects.
+  let out = rt.exec_script("Object.prototype.toString.call((function(){ return arguments; })(1, 2))")?;
+  assert_eq!(expect_string(&rt, out), "[object Arguments]");
+
   // Iterators.
   let out = rt.exec_script("Object.prototype.toString.call([1, 2].values())")?;
   assert_eq!(expect_string(&rt, out), "[object Array Iterator]");
@@ -152,6 +156,10 @@ fn object_prototype_to_string_tags() -> Result<(), VmError> {
   // Date.
   let out = rt.exec_script("Object.prototype.toString.call(new Date(0))")?;
   assert_eq!(expect_string(&rt, out), "[object Date]");
+
+  // RegExp.
+  let out = rt.exec_script("Object.prototype.toString.call(new RegExp(\"a\"))")?;
+  assert_eq!(expect_string(&rt, out), "[object RegExp]");
 
   // Promise.
   let out = rt.exec_script("Object.prototype.toString.call(Promise.resolve(1))")?;
@@ -205,6 +213,36 @@ fn object_prototype_to_string_tags() -> Result<(), VmError> {
     msg.contains("revoked"),
     "expected revoked-proxy message, got {msg}"
   );
+
+  // --- builtinTag fallbacks ---
+  //
+  // Many built-in objects define `@@toStringTag`, but `Object.prototype.toString` has additional
+  // legacy fallback logic for certain internal-slot-bearing objects.
+
+  // Errors fall back to "Error" via [[ErrorData]] even when `@@toStringTag` is removed.
+  let out = rt.exec_script(
+    r#"delete Error.prototype[Symbol.toStringTag]; Object.prototype.toString.call(new Error("x"))"#,
+  )?;
+  assert_eq!(expect_string(&rt, out), "[object Error]");
+
+  // RegExp falls back to "RegExp" via [[RegExpMatcher]] even when `@@toStringTag` is removed.
+  let out =
+    rt.exec_script("delete RegExp.prototype[Symbol.toStringTag]; Object.prototype.toString.call(new RegExp(\"a\"))")?;
+  assert_eq!(expect_string(&rt, out), "[object RegExp]");
+
+  // Promise is not part of the legacy builtinTag table; removing `@@toStringTag` falls back to
+  // "Object".
+  let out = rt.exec_script(
+    "delete Promise.prototype[Symbol.toStringTag]; Object.prototype.toString.call(Promise.resolve(1))",
+  )?;
+  assert_eq!(expect_string(&rt, out), "[object Object]");
+
+  // Typed arrays are not part of the legacy builtinTag table; removing `@@toStringTag` falls back
+  // to "Object".
+  let out = rt.exec_script(
+    "delete Uint8Array.prototype[Symbol.toStringTag]; Object.prototype.toString.call(new Uint8Array(0))",
+  )?;
+  assert_eq!(expect_string(&rt, out), "[object Object]");
 
   Ok(())
 }
