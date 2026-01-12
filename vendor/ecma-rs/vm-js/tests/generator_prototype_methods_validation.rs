@@ -354,5 +354,58 @@ fn generator_prototype_methods_validate_this_and_resume_generator() -> Result<()
     );
   }
 
+  // `throw` on a suspended-start generator should immediately throw the provided value *without*
+  // executing the generator body.
+  rt.exec_script(r#"var ran = false; function* h() { ran = true; yield 1; }"#)?;
+  let gen_suspended_start = match rt.exec_script("h()")? {
+    Value::Object(o) => o,
+    other => panic!("expected generator object, got {other:?}"),
+  };
+  {
+    let mut scope = rt.heap.scope();
+    scope.push_root(Value::Object(gen_suspended_start))?;
+
+    let thrown = rt
+      .vm
+      .call_without_host(
+        &mut scope,
+        Value::Object(throw_),
+        Value::Object(gen_suspended_start),
+        &[Value::Number(42.0)],
+      )
+      .unwrap_err();
+    let thrown_value = match thrown {
+      VmError::Throw(v) => v,
+      VmError::ThrowWithStack { value, .. } => value,
+      other => panic!("expected thrown completion, got {other:?}"),
+    };
+    assert_eq!(thrown_value, Value::Number(42.0));
+  }
+  assert_eq!(rt.exec_script("ran")?, Value::Bool(false));
+  {
+    let mut scope = rt.heap.scope();
+    scope.push_root(Value::Object(gen_suspended_start))?;
+
+    let done_key = PropertyKey::from_string(scope.alloc_string("done")?);
+
+    // Once closed, subsequent `next` calls should return `done: true` without ever starting.
+    let result = rt.vm.call_without_host(
+      &mut scope,
+      Value::Object(next),
+      Value::Object(gen_suspended_start),
+      &[Value::Undefined],
+    )?;
+    let Value::Object(result_obj) = result else {
+      panic!("expected iterator result object");
+    };
+    scope.push_root(Value::Object(result_obj))?;
+    assert_eq!(
+      scope
+        .heap()
+        .object_get_own_data_property_value(result_obj, &done_key)?,
+      Some(Value::Bool(true))
+    );
+  }
+
   Ok(())
 }

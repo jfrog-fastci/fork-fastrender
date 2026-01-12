@@ -27669,10 +27669,11 @@ fn gen_resume_from_frames(
           };
 
           let Some(throw_method) = throw_method else {
-            // No `throw` method: close then throw TypeError (yield* protocol violation).
+            // No `throw` method:
+            // 1. IteratorClose(iteratorRecord, NormalCompletion(empty)) (non-throw)
+            // 2. Throw TypeError (yield* protocol violation).
             //
-            // Node/V8 throws a TypeError like "The iterator does not provide a 'throw' method." in
-            // this case (instead of propagating the original throw completion).
+            // If IteratorClose throws, that error overrides the protocol-violation TypeError.
             if let Err(close_err) = iterator::iterator_close(
               evaluator.vm,
               &mut *evaluator.host,

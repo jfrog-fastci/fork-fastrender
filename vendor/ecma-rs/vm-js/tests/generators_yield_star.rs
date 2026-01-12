@@ -86,27 +86,9 @@ fn yield_star_over_array_delegates_values() -> Result<(), VmError> {
     ok1 && ok2
   "#;
 
-  match rt.exec_script(script) {
-    Ok(v) => {
-      assert_eq!(v, Value::Bool(true));
-      Ok(())
-    }
-    // Generators are still under development in vm-js. Once generator functions/yield* land, this
-    // test will begin exercising delegation semantics (including array iterator acquisition).
-    Err(VmError::Unimplemented(
-      "generator functions"
-      | "async generator functions"
-      | "generator function call"
-      | "async generator function call"
-      | "Generator.prototype.next"
-      | "Generator.prototype.return"
-      | "Generator.prototype.throw"
-      | "GeneratorResume"
-      | "GeneratorResumeAbrupt"
-      | "yield*",
-    )) => Ok(()),
-    Err(err) => Err(err),
-  }
+  let v = rt.exec_script(script)?;
+  assert_eq!(v, Value::Bool(true));
+  Ok(())
 }
 
 #[test]
@@ -160,6 +142,46 @@ fn yield_star_yields_iterator_result_object_directly() -> Result<(), VmError> {
 }
 
 #[test]
+fn yield_star_delegate_next_is_always_called_with_one_argument() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  // SpiderMonkey test262 staging analogue: `delegating-yield-11.js`.
+  let script = r#"
+    var nextArgLens = [];
+    var nextArgs = [];
+
+    var iter = {
+      i: 0,
+      next: function (v) {
+        nextArgLens.push(arguments.length);
+        nextArgs.push(v);
+        if (this.i++ < 2) {
+          return { value: this.i, done: false };
+        }
+        return { value: 99, done: true };
+      }
+    };
+    iter[Symbol.iterator] = function () { return this; };
+
+    function* g() { return yield* iter; }
+    var it = g();
+
+    it.next("ignored");
+    it.next();
+    it.next(123);
+
+    nextArgLens.join(",") === "1,1,1" &&
+    nextArgs[0] === undefined && // first `next` arg is ignored by generator start
+    nextArgs[1] === undefined &&
+    nextArgs[2] === 123
+  "#;
+
+  let v = rt.exec_script(script)?;
+  assert_eq!(v, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
 fn yield_star_throw_delegates_to_iterator_throw() -> Result<(), VmError> {
   let mut rt = new_runtime();
 
@@ -198,15 +220,16 @@ fn yield_star_throw_delegates_to_iterator_throw() -> Result<(), VmError> {
 }
 
 #[test]
-fn yield_star_throw_without_throw_method_closes_iterator_and_rethrows() -> Result<(), VmError> {
+fn yield_star_throw_without_throw_method_closes_iterator_and_throws_type_error() -> Result<(), VmError> {
   let mut rt = new_runtime();
 
   let script = r#"
     var returnCalls = 0;
+    var returnArgsLen = null;
 
     var iterator = {
       next: function () { return { value: 1, done: false }; },
-      return: function () { returnCalls++; return {}; }
+      return: function () { returnCalls++; returnArgsLen = arguments.length; return {}; }
     };
     var iterable = {};
     iterable[Symbol.iterator] = function () { return iterator; };
@@ -220,10 +243,48 @@ fn yield_star_throw_without_throw_method_closes_iterator_and_rethrows() -> Resul
     try {
       it.throw('boom');
     } catch (e) {
-      caught = (e === 'boom');
+      caught = (e instanceof TypeError) && (e !== 'boom');
     }
 
-    caught && returnCalls === 1
+    caught && returnCalls === 1 && returnArgsLen === 0
+  "#;
+
+  let v = rt.exec_script(script)?;
+  assert_eq!(v, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn yield_star_throw_without_throw_method_propagates_iterator_close_error() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let script = r#"
+    var returnCalls = 0;
+    var returnArgsLen = null;
+
+    var iterator = {
+      next: function () { return { value: 1, done: false }; },
+      return: function () {
+        returnCalls++;
+        returnArgsLen = arguments.length;
+        throw "closeError";
+      }
+    };
+    var iterable = {};
+    iterable[Symbol.iterator] = function () { return iterator; };
+
+    function* g() { yield* iterable; }
+    var it = g();
+    it.next();
+
+    var caught = false;
+    try {
+      it.throw("boom");
+    } catch (e) {
+      caught = (e === "closeError");
+    }
+
+    caught && returnCalls === 1 && returnArgsLen === 0
   "#;
 
   let v = rt.exec_script(script)?;
@@ -252,6 +313,50 @@ fn yield_star_return_delegates_to_iterator_return() -> Result<(), VmError> {
     var r = it.return(42);
 
     r.done === true && r.value === 77 && log === 'nr42'
+  "#;
+
+  let v = rt.exec_script(script)?;
+  assert_eq!(v, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn yield_star_return_done_false_yields_iterator_result_object() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let script = r#"
+    var valueGets = 0;
+    var innerReturnResult = {};
+    Object.defineProperty(innerReturnResult, "done", { value: false });
+    Object.defineProperty(innerReturnResult, "value", {
+      get: function () { valueGets++; return "continue"; }
+    });
+
+    var returnArgsLen = null;
+    var iter = {
+      i: 0,
+      next: function () {
+        if (this.i++ === 0) return { value: 1, done: false };
+        return { value: 123, done: true };
+      },
+      return: function (v) {
+        returnArgsLen = arguments.length;
+        return innerReturnResult;
+      }
+    };
+    iter[Symbol.iterator] = function () { return this; };
+
+    function* g() { return yield* iter; }
+    var it = g();
+    it.next();
+
+    var r1 = it.return("x");
+    var ok1 = (r1 === innerReturnResult) && (valueGets === 0) && (returnArgsLen === 1);
+
+    var r2 = it.next();
+    var ok2 = r2.value === 123 && r2.done === true;
+
+    ok1 && ok2
   "#;
 
   let v = rt.exec_script(script)?;
