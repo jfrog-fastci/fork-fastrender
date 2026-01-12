@@ -5429,7 +5429,7 @@ pub fn object_prototype_has_own_property(
   root_property_key(&mut scope, key)?;
 
   let has = scope
-    .ordinary_get_own_property_with_tick(obj, key, || vm.tick())?
+    .object_get_own_property_with_host_and_hooks(vm, host, hooks, obj, key)?
     .is_some();
   Ok(Value::Bool(has))
 }

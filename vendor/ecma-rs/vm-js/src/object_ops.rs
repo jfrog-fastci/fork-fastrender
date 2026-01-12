@@ -58,6 +58,85 @@ impl<'a> Scope<'a> {
     }))
   }
 
+  /// ECMAScript `[[GetOwnProperty]]` internal method dispatch.
+  ///
+  /// This is a spec-shaped wrapper around `OrdinaryGetOwnProperty` that routes Proxy objects
+  /// through the `getOwnPropertyDescriptor` trap (when present).
+  pub fn object_get_own_property_with_host_and_hooks(
+    &mut self,
+    vm: &mut Vm,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    obj: GcObject,
+    key: PropertyKey,
+  ) -> Result<Option<PropertyDescriptor>, VmError> {
+    // Root inputs so a Proxy trap can allocate freely.
+    let mut scope = self.reborrow();
+    let key_root = match key {
+      PropertyKey::String(s) => Value::String(s),
+      PropertyKey::Symbol(s) => Value::Symbol(s),
+    };
+    scope.push_roots(&[Value::Object(obj), key_root])?;
+
+    // --- Proxy [[GetOwnProperty]] dispatch (partial) ---
+    if let Some(proxy) = scope.heap().get_proxy_data(obj)? {
+      vm.tick()?;
+
+      let (Some(target), Some(handler)) = (proxy.target, proxy.handler) else {
+        return Err(VmError::TypeError(
+          "Cannot perform 'getOwnPropertyDescriptor' on a proxy that has been revoked",
+        ));
+      };
+
+      // Root target/handler for the duration of trap lookup + invocation.
+      scope.push_roots(&[Value::Object(target), Value::Object(handler)])?;
+
+      let trap_key_s = scope.alloc_string("getOwnPropertyDescriptor")?;
+      scope.push_root(Value::String(trap_key_s))?;
+      let trap_key = PropertyKey::from_string(trap_key_s);
+
+      let trap = vm.get_method_with_host_and_hooks(
+        host,
+        &mut scope,
+        hooks,
+        Value::Object(handler),
+        trap_key,
+      )?;
+
+      // If the trap is undefined, forward to the target's `[[GetOwnProperty]]`.
+      let Some(trap) = trap else {
+        return scope.object_get_own_property_with_host_and_hooks(vm, host, hooks, target, key);
+      };
+
+      // Call the trap with `(target, key)`.
+      let trap_args = [Value::Object(target), key_root];
+      let trap_result = vm.call_with_host_and_hooks(
+        host,
+        &mut scope,
+        hooks,
+        trap,
+        Value::Object(handler),
+        &trap_args,
+      )?;
+
+      // Per spec, `undefined` means "no own property".
+      if matches!(trap_result, Value::Undefined) {
+        return Ok(None);
+      }
+
+      let Value::Object(desc_obj) = trap_result else {
+        return Err(VmError::TypeError(
+          "Proxy getOwnPropertyDescriptor trap returned non-object",
+        ));
+      };
+
+      scope.push_root(Value::Object(desc_obj))?;
+      return Ok(Some(to_complete_property_descriptor_from_object(&mut scope, desc_obj)?));
+    }
+
+    scope.ordinary_get_own_property_with_tick(obj, key, || vm.tick())
+  }
+
   /// ECMAScript `[[DefineOwnProperty]]` for ordinary objects.
   pub fn ordinary_define_own_property(
     &mut self,
@@ -1112,6 +1191,74 @@ impl<'a> Scope<'a> {
 
     Ok(true)
   }
+}
+
+fn to_complete_property_descriptor_from_object(
+  scope: &mut Scope<'_>,
+  obj: GcObject,
+) -> Result<PropertyDescriptor, VmError> {
+  // Minimal `ToPropertyDescriptor` support: read own *data* properties only (mirroring
+  // `Reflect.defineProperty` in `builtins.rs`).
+  // Allocate keys up-front so we don't hold an immutable heap borrow across allocations.
+  let value_key = PropertyKey::from_string(scope.alloc_string("value")?);
+  let writable_key = PropertyKey::from_string(scope.alloc_string("writable")?);
+  let enumerable_key = PropertyKey::from_string(scope.alloc_string("enumerable")?);
+  let configurable_key = PropertyKey::from_string(scope.alloc_string("configurable")?);
+  let get_key = PropertyKey::from_string(scope.alloc_string("get")?);
+  let set_key = PropertyKey::from_string(scope.alloc_string("set")?);
+
+  let value = scope
+    .heap()
+    .object_get_own_data_property_value(obj, &value_key)?;
+  let writable = scope
+    .heap()
+    .object_get_own_data_property_value(obj, &writable_key)?
+    .map(|v| scope.heap().to_boolean(v))
+    .transpose()?;
+  let enumerable = scope
+    .heap()
+    .object_get_own_data_property_value(obj, &enumerable_key)?
+    .map(|v| scope.heap().to_boolean(v))
+    .transpose()?;
+  let configurable = scope
+    .heap()
+    .object_get_own_data_property_value(obj, &configurable_key)?
+    .map(|v| scope.heap().to_boolean(v))
+    .transpose()?;
+  let get = scope.heap().object_get_own_data_property_value(obj, &get_key)?;
+  let set = scope.heap().object_get_own_data_property_value(obj, &set_key)?;
+
+  let patch = PropertyDescriptorPatch {
+    enumerable,
+    configurable,
+    value,
+    writable,
+    get,
+    set,
+  };
+  patch.validate()?;
+
+  let enumerable = patch.enumerable.unwrap_or(false);
+  let configurable = patch.configurable.unwrap_or(false);
+
+  let kind = if patch.is_accessor_descriptor() {
+    PropertyKind::Accessor {
+      get: patch.get.unwrap_or(Value::Undefined),
+      set: patch.set.unwrap_or(Value::Undefined),
+    }
+  } else {
+    // Generic descriptors are completed as data descriptors per spec.
+    PropertyKind::Data {
+      value: patch.value.unwrap_or(Value::Undefined),
+      writable: patch.writable.unwrap_or(false),
+    }
+  };
+
+  Ok(PropertyDescriptor {
+    enumerable,
+    configurable,
+    kind,
+  })
 }
 
 fn array_length_from_value(value: Value) -> Option<u32> {
