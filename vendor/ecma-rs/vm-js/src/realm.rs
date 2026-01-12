@@ -60,6 +60,12 @@ impl Realm {
       }
     };
 
+    // Ensure objects created as `F.prototype` for functions/classes allocated in this realm inherit
+    // from `%Object.prototype%`.
+    scope
+      .heap_mut()
+      .set_default_object_prototype(Some(intrinsics.object_prototype()));
+
     // Any error after this point should also unregister roots to avoid leaks.
     if let Err(err) = (|| -> Result<(), VmError> {
       // Make the global object spec-shaped:
@@ -352,6 +358,11 @@ impl Realm {
     for root in self.roots.drain(..) {
       heap.remove_root(root);
     }
+
+    // Clear the heap-level default `Object.prototype` pointer. After teardown the realm's GC
+    // handles may become invalid, and the embedding must not execute scripts without constructing a
+    // fresh realm.
+    heap.set_default_object_prototype(None);
   }
 
   /// Alias for [`Realm::teardown`].

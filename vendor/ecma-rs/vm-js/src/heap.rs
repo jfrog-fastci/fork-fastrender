@@ -78,6 +78,17 @@ struct SymbolRegistryEntry {
 pub struct Heap {
   limits: HeapLimits,
 
+  /// Default `[[Prototype]]` used for objects created as `F.prototype` by
+  /// [`crate::function_properties::make_constructor`].
+  ///
+  /// When a realm is initialized, this is set to that realm's `%Object.prototype%` so that objects
+  /// constructed via user-defined functions/classes inherit `Object.prototype` methods like
+  /// `toString`/`hasOwnProperty` by default.
+  ///
+  /// When no realm has been initialized (e.g. unit tests that use the heap/VM without creating a
+  /// realm), this remains `None` and `F.prototype` objects are created with a null `[[Prototype]]`.
+  default_object_prototype: Option<GcObject>,
+
   /// Bytes used by live heap object payloads.
   ///
   /// This intentionally excludes heap metadata overhead (slot table, mark bits, roots, etc) which
@@ -182,6 +193,7 @@ impl Heap {
 
     Self {
       limits,
+      default_object_prototype: None,
       used_bytes: 0,
       external_bytes: 0,
       gc_runs: 0,
@@ -198,6 +210,14 @@ impl Heap {
       persistent_env_roots_free: Vec::new(),
       symbol_registry: Vec::new(),
     }
+  }
+
+  pub(crate) fn set_default_object_prototype(&mut self, proto: Option<GcObject>) {
+    self.default_object_prototype = proto;
+  }
+
+  pub(crate) fn default_object_prototype(&self) -> Option<GcObject> {
+    self.default_object_prototype
   }
 
   /// Enters a stack-rooting scope.

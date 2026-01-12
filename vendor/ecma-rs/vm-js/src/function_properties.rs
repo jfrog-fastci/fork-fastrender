@@ -85,6 +85,17 @@ pub fn make_constructor(scope: &mut Scope<'_>, func: GcObject) -> Result<GcObjec
   let prototype = scope.alloc_object()?;
   scope.push_root(Value::Object(prototype))?;
 
+  // Per ECMA-262, ordinary constructor `.prototype` objects inherit from `%Object.prototype%`.
+  //
+  // `vm-js` stores this as a heap-level "default object prototype" set by `Realm::new`. When the
+  // heap is used without an initialized realm (some low-level unit tests), this is `None` and the
+  // prototype object remains "dictionary object with null prototype" shaped.
+  if let Some(object_prototype) = scope.heap().default_object_prototype() {
+    scope
+      .heap_mut()
+      .object_set_prototype(prototype, Some(object_prototype))?;
+  }
+
   let constructor_key = scope.alloc_string("constructor")?;
   scope.define_property(
     prototype,

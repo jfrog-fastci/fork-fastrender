@@ -49,6 +49,21 @@ fn new_and_prototype_lookup() {
 }
 
 #[test]
+fn constructed_objects_inherit_object_prototype() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        function C() {}
+        var o = new C();
+        typeof o.toString === "function" && typeof o.hasOwnProperty === "function"
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn try_catch_with_thrown_object() {
   let mut rt = new_runtime();
   let value = rt
