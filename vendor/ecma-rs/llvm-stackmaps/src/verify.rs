@@ -221,6 +221,7 @@ pub fn verify_stackmaps_bytes(bytes: &[u8], opts: VerifyOptions) -> Verification
     verify_callsites_sorted_and_unique(&maps, &mut report, &record_metas);
     verify_callsite_record_linkage(&maps, &mut report, &record_metas, &record_function_info);
     verify_record_callsite_pc_dedup_invariant(&maps, &mut report, &record_metas, &record_function_info);
+    verify_record_meta_consistency(&maps, &mut report, &record_metas, &record_function_info);
 
     // Statepoint-specific invariants.
     verify_statepoints(
@@ -507,6 +508,68 @@ fn verify_record_callsite_pc_dedup_invariant(
             function_address: None,
             record_index: None,
         });
+    }
+}
+
+fn verify_record_meta_consistency(
+    maps: &StackMaps,
+    report: &mut VerificationReport,
+    record_metas: &Option<Vec<RecordMeta>>,
+    record_function_info: &[Option<RecordFunctionInfo>],
+) {
+    let Some(metas) = record_metas.as_ref() else {
+        return;
+    };
+
+    // `scan_record_offsets` mirrors the parser's record iteration order. If these ever diverge, we
+    // could attach incorrect offsets/PCs to diagnostics. Treat mismatches as verifier failures so
+    // they get noticed early.
+    for (idx, rec) in maps.records.iter().enumerate() {
+        let Some(meta) = metas.get(idx) else {
+            report.failures.push(VerificationFailure {
+                kind: "record_meta_missing",
+                message: format!("missing record meta for records[{idx}]"),
+                offset: None,
+                pc: Some(rec.callsite_pc),
+                function_address: record_function_info
+                    .get(idx)
+                    .and_then(|v| v.map(|i| i.address)),
+                record_index: Some(idx),
+            });
+            continue;
+        };
+
+        if meta.callsite_pc != rec.callsite_pc {
+            report.failures.push(VerificationFailure {
+                kind: "record_callsite_pc_mismatch_scanner",
+                message: format!(
+                    "records[{idx}].callsite_pc mismatch: parser=0x{:x}, scanner=0x{:x}",
+                    rec.callsite_pc, meta.callsite_pc
+                ),
+                offset: Some(meta.offset),
+                pc: Some(rec.callsite_pc),
+                function_address: record_function_info
+                    .get(idx)
+                    .and_then(|v| v.map(|i| i.address)),
+                record_index: Some(idx),
+            });
+        }
+
+        if let Some(info) = record_function_info.get(idx).and_then(|v| *v) {
+            if info.address != meta.function_address {
+                report.failures.push(VerificationFailure {
+                    kind: "record_function_address_mismatch_scanner",
+                    message: format!(
+                        "records[{idx}] function address mismatch: parser=0x{:x}, scanner=0x{:x}",
+                        info.address, meta.function_address
+                    ),
+                    offset: Some(meta.offset),
+                    pc: Some(rec.callsite_pc),
+                    function_address: Some(info.address),
+                    record_index: Some(idx),
+                });
+            }
+        }
     }
 }
 
