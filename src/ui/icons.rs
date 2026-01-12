@@ -129,7 +129,7 @@ impl Default for IconCache {
   fn default() -> Self {
     Self {
       textures: LruCache::new(
-        NonZeroUsize::new(ICON_CACHE_CAPACITY).expect("ICON_CACHE_CAPACITY must be non-zero"),
+        NonZeroUsize::new(ICON_CACHE_CAPACITY).unwrap_or(NonZeroUsize::MIN),
       ),
       rasterize_calls: 0,
     }
