@@ -150,6 +150,62 @@ type U = { a: number } | { b: boolean };
   assert_eq!(store.gc_ptr_offsets(layout_id), vec![0]);
 }
 
+#[test]
+fn tagged_union_layout_variants_follow_type_store_order() {
+  let mut host = aot_host();
+  let file = FileKey::new("main.ts");
+  host.insert(
+    file.clone(),
+    r#"
+type U = number | boolean;
+"#,
+  );
+
+  let program = Program::new(host, vec![file.clone()]);
+  let file_id = program.file_id(&file).expect("file id");
+  let union_def = def_in_file(&program, file_id, "U");
+
+  let store = program.interned_type_store();
+  let union_ref = program.type_of_def_interned(union_def);
+  let members = program.union_members_interned(union_ref);
+  assert_eq!(members.len(), 2, "expected two union members");
+
+  let layout_id = program.layout_of_interned(union_ref);
+  let layout = store.layout(layout_id);
+  let Layout::TaggedUnion {
+    tag,
+    payload_offset,
+    variants,
+    size,
+    align,
+  } = layout
+  else {
+    panic!("expected tagged union layout, got {layout:?}");
+  };
+
+  assert_eq!(tag.abi, AbiScalar::U8);
+  assert_eq!(tag.offset, 0);
+  assert_eq!(payload_offset, 8);
+  assert_eq!(size, 16);
+  assert_eq!(align, 8);
+  assert_eq!(variants.len(), 2);
+
+  for (idx, variant) in variants.iter().enumerate() {
+    assert_eq!(variant.ty, members[idx]);
+    assert_eq!(variant.discriminant, idx as u32);
+    // `types-ts-interned` stores per-variant payload offsets *relative* to the
+    // union's `payload_offset`, which is shared by all variants in the current
+    // layout model.
+    assert_eq!(variant.payload_offset, 0);
+    assert_eq!(variant.layout, store.layout_of(variant.ty));
+    match (store.type_kind(variant.ty), store.layout(variant.layout)) {
+      (TypeKind::Boolean, Layout::Scalar { abi: AbiScalar::Bool }) => {}
+      (TypeKind::Number, Layout::Scalar { abi: AbiScalar::F64 }) => {}
+      (ty, layout) => panic!("unexpected tagged-union variant: ty={ty:?} layout={layout:?}"),
+    }
+  }
+}
+
 
 #[test]
 fn layout_of_interned_for_callable_is_gc_object_with_closure_header() {
