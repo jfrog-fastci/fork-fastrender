@@ -1608,6 +1608,29 @@ impl Heap {
   }
   /// Gets an object's `[[Prototype]]`.
   pub fn object_prototype(&self, obj: GcObject) -> Result<Option<GcObject>, VmError> {
+    if self.is_proxy_object(obj) {
+      let mut current = obj;
+      let mut steps = 0usize;
+      let mut visited: HashSet<GcObject> = HashSet::new();
+      while self.is_proxy_object(current) {
+        if steps >= MAX_PROTOTYPE_CHAIN {
+          return Err(VmError::PrototypeChainTooDeep);
+        }
+        steps += 1;
+        if !visited.insert(current) {
+          return Err(VmError::PrototypeCycle);
+        }
+        let Some(target) = self.proxy_target(current)? else {
+          return Err(VmError::TypeError(
+            "Cannot perform 'getPrototypeOf' on a revoked Proxy",
+          ));
+        };
+        current = target;
+      }
+
+      return Ok(self.get_object_base(current)?.prototype);
+    }
+
     Ok(self.get_object_base(obj)?.prototype)
   }
 

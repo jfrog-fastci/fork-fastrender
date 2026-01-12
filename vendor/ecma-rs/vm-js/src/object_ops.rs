@@ -702,27 +702,10 @@ impl<'a> Scope<'a> {
       return Ok(value);
     }
 
-    // Fall back to prototype chain lookup.
-    let Some(desc) = scope
-      .heap()
-      .get_property_from_prototype_with_tick(obj, &key, || vm.tick())?
-    else {
+    let Some(parent) = scope.heap().object_prototype(obj)? else {
       return Ok(Value::Undefined);
     };
-
-    match desc.kind {
-      PropertyKind::Data { value, .. } => Ok(value),
-      PropertyKind::Accessor { get, .. } => {
-        if matches!(get, Value::Undefined) {
-          Ok(Value::Undefined)
-        } else {
-          if !scope.heap().is_callable(get)? {
-            return Err(VmError::TypeError("accessor getter is not callable"));
-          }
-          vm.call_with_host_and_hooks(host, &mut scope, hooks, get, receiver, &[])
-        }
-      }
-    }
+    scope.get_with_host_and_hooks(vm, host, hooks, parent, key, receiver)
   }
 
   /// ECMAScript `[[Get]]` for ordinary objects using a custom host hook implementation.
