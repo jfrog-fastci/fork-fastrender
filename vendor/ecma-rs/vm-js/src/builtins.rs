@@ -9395,13 +9395,12 @@ pub fn array_prototype_at(
   let obj = scope.to_object(vm, host, hooks, this)?;
   scope.push_root(Value::Object(obj))?;
 
+  let len = length_of_array_like_usize(vm, &mut scope, host, hooks, obj)?;
   let index_val = args.get(0).copied().unwrap_or(Value::Undefined);
   let relative = scope.to_integer_or_infinity(vm, host, hooks, index_val)?;
   if !relative.is_finite() {
     return Ok(Value::Undefined);
   }
-
-  let len = length_of_array_like_usize(vm, &mut scope, host, hooks, obj)?;
   let k = if relative >= 0.0 {
     relative
   } else {
