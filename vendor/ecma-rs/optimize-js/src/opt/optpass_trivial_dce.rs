@@ -25,25 +25,36 @@ pub fn optpass_trivial_dce(cfg: &mut Cfg) -> PassResult {
       let should_delete =
         !bblock[i].tgts.is_empty() && bblock[i].tgts.iter().all(|var| !used.contains(var));
       if should_delete {
-        if bblock[i].t == InstTyp::Call {
-          // Calls are only removable when we know the callee has no observable effects.
-          //
-          // When purity metadata is present (via `analysis::purity::annotate_cfg_purity`), we can
-          // eliminate unused pure calls. Otherwise stay conservative and only remove the unused
-          // target.
-          if matches!(
-            bblock[i].meta.callee_purity,
-            Purity::Pure | Purity::ReadOnly | Purity::Allocating
-          ) {
-            bblock.remove(i);
-          } else {
+        match bblock[i].t.clone() {
+          InstTyp::Call => {
+            // Calls are only removable when we know the callee has no observable effects.
+            //
+            // When purity metadata is present (via `analysis::purity::annotate_cfg_purity`), we can
+            // eliminate unused pure calls. Otherwise stay conservative and only remove the unused
+            // target.
+            if matches!(
+              bblock[i].meta.callee_purity,
+              Purity::Pure | Purity::ReadOnly | Purity::Allocating
+            ) {
+              bblock.remove(i);
+            } else {
+              bblock[i].tgts.clear();
+              // The call still executes for side effects, but it no longer produces an SSA value, so
+              // clear any result-only metadata (type/ownership/etc).
+              bblock[i].meta.clear_result_var_metadata();
+            }
+          }
+          #[cfg(feature = "native-async-ops")]
+          InstTyp::Await | InstTyp::PromiseAll | InstTyp::PromiseRace => {
+            // Async semantic ops are always treated as potentially effectful, even when their
+            // result is unused (e.g. `await p;` must still suspend, and `Promise.all([...])` can
+            // observe unhandled rejections). Drop the SSA target but keep the instruction.
             bblock[i].tgts.clear();
-            // The call still executes for side effects, but it no longer produces an SSA value, so
-            // clear any result-only metadata (type/ownership/etc).
             bblock[i].meta.clear_result_var_metadata();
           }
-        } else {
-          bblock.remove(i);
+          _ => {
+            bblock.remove(i);
+          }
         };
         result.mark_changed();
       };

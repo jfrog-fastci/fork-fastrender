@@ -34,6 +34,7 @@ impl<'p> HirSourceToInst<'p> {
   const INTERNAL_OBJECT_SPREAD_MARKER: &'static str = "__optimize_js_object_spread";
   const INTERNAL_TEMPLATE_CALLEE: &'static str = "__optimize_js_template";
   const INTERNAL_TAGGED_TEMPLATE_CALLEE: &'static str = "__optimize_js_tagged_template";
+  #[cfg(not(feature = "native-async-ops"))]
   const INTERNAL_AWAIT_CALLEE: &'static str = "__optimize_js_await";
 
   pub fn temp_var_arg(&mut self, f: impl FnOnce(u32) -> Inst) -> Arg {
@@ -1903,34 +1904,56 @@ impl<'p> HirSourceToInst<'p> {
       }
       ExprKind::Await { expr } => {
         let arg = self.compile_expr(*expr)?;
-        let tmp = self.c_temp.bump();
-        self.push_value_inst(
-          expr_id,
-          Inst::call(
-            tmp,
-            Arg::Builtin(Self::INTERNAL_AWAIT_CALLEE.to_string()),
-            Arg::Const(Const::Undefined),
-            vec![arg],
-            Vec::new(),
-          ),
-        );
-        Ok(Arg::Var(tmp))
+        #[cfg(feature = "native-async-ops")]
+        {
+          let tmp = self.c_temp.bump();
+          self.push_value_inst(expr_id, Inst::await_(tmp, arg, false));
+          Ok(Arg::Var(tmp))
+        }
+        #[cfg(not(feature = "native-async-ops"))]
+        {
+          let tmp = self.c_temp.bump();
+          self.push_value_inst(
+            expr_id,
+            Inst::call(
+              tmp,
+              Arg::Builtin(Self::INTERNAL_AWAIT_CALLEE.to_string()),
+              Arg::Const(Const::Undefined),
+              vec![arg],
+              Vec::new(),
+            ),
+          );
+          Ok(Arg::Var(tmp))
+        }
       }
       #[cfg(feature = "semantic-ops")]
-      ExprKind::AwaitExpr { value: expr, .. } => {
+      ExprKind::AwaitExpr {
+        value: expr,
+        known_resolved,
+      } => {
         let arg = self.compile_expr(*expr)?;
-        let tmp = self.c_temp.bump();
-        self.push_value_inst(
-          expr_id,
-          Inst::call(
-            tmp,
-            Arg::Builtin(Self::INTERNAL_AWAIT_CALLEE.to_string()),
-            Arg::Const(Const::Undefined),
-            vec![arg],
-            Vec::new(),
-          ),
-        );
-        Ok(Arg::Var(tmp))
+        #[cfg(feature = "native-async-ops")]
+        {
+          let tmp = self.c_temp.bump();
+          self.push_value_inst(expr_id, Inst::await_(tmp, arg, *known_resolved));
+          Ok(Arg::Var(tmp))
+        }
+        #[cfg(not(feature = "native-async-ops"))]
+        {
+          let _ = known_resolved;
+          let tmp = self.c_temp.bump();
+          self.push_value_inst(
+            expr_id,
+            Inst::call(
+              tmp,
+              Arg::Builtin(Self::INTERNAL_AWAIT_CALLEE.to_string()),
+              Arg::Const(Const::Undefined),
+              vec![arg],
+              Vec::new(),
+            ),
+          );
+          Ok(Arg::Var(tmp))
+        }
       }
       #[cfg(feature = "semantic-ops")]
       ExprKind::ArrayMap { array, callback } => {
@@ -2098,32 +2121,46 @@ impl<'p> HirSourceToInst<'p> {
         for promise in promises {
           args.push(self.compile_expr(*promise)?);
         }
-        let array_tmp = self.c_temp.bump();
-        self.out.push(Inst::call(
-          array_tmp,
-          Arg::Builtin(Self::INTERNAL_ARRAY_CALLEE.to_string()),
-          Arg::Const(Const::Undefined),
-          args,
-          Vec::new(),
-        ));
-
-        let tmp = self.c_temp.bump();
-        self.push_value_inst(
-          expr_id,
-          Inst::call(
-            tmp,
-            Arg::Builtin(match &expr.kind {
-              ExprKind::PromiseAll { .. } => "Promise.all",
-              ExprKind::PromiseRace { .. } => "Promise.race",
-              _ => unreachable!(),
-            }
-            .to_string()),
+        #[cfg(feature = "native-async-ops")]
+        {
+          let tmp = self.c_temp.bump();
+          let inst = match &expr.kind {
+            ExprKind::PromiseAll { .. } => Inst::promise_all(tmp, args),
+            ExprKind::PromiseRace { .. } => Inst::promise_race(tmp, args),
+            _ => unreachable!(),
+          };
+          self.push_value_inst(expr_id, inst);
+          Ok(Arg::Var(tmp))
+        }
+        #[cfg(not(feature = "native-async-ops"))]
+        {
+          let array_tmp = self.c_temp.bump();
+          self.out.push(Inst::call(
+            array_tmp,
+            Arg::Builtin(Self::INTERNAL_ARRAY_CALLEE.to_string()),
             Arg::Const(Const::Undefined),
-            vec![Arg::Var(array_tmp)],
+            args,
             Vec::new(),
-          ),
-        );
-        Ok(Arg::Var(tmp))
+          ));
+
+          let tmp = self.c_temp.bump();
+          self.push_value_inst(
+            expr_id,
+            Inst::call(
+              tmp,
+              Arg::Builtin(match &expr.kind {
+                ExprKind::PromiseAll { .. } => "Promise.all",
+                ExprKind::PromiseRace { .. } => "Promise.race",
+                _ => unreachable!(),
+              }
+              .to_string()),
+              Arg::Const(Const::Undefined),
+              vec![Arg::Var(array_tmp)],
+              Vec::new(),
+            ),
+          );
+          Ok(Arg::Var(tmp))
+        }
       }
       #[cfg(feature = "semantic-ops")]
       ExprKind::KnownApiCall { api, args } => {

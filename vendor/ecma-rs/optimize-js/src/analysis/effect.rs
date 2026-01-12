@@ -364,6 +364,14 @@ fn inst_local_effect_with_value_types(inst: &Inst, value_types: Option<&ValueTyp
         }
       }
     }
+    #[cfg(feature = "native-async-ops")]
+    InstTyp::Await | InstTyp::PromiseAll | InstTyp::PromiseRace => {
+      // Async semantic ops are modeled conservatively for now: they may allocate (promises), may
+      // throw, and may run user code (thenables / unhandled rejection tracking).
+      //
+      // Native backends can use the structured instruction kind to implement these precisely.
+      effects.mark_unknown();
+    }
     InstTyp::CondGoto
     | InstTyp::Return
     | InstTyp::Un

@@ -872,6 +872,12 @@ impl ForwardEdgeDataFlowAnalysis for RangeAnalysis {
           self.set_var(state, tgt, IntRange::Unknown);
         }
       }
+      #[cfg(feature = "native-async-ops")]
+      InstTyp::Await | InstTyp::PromiseAll | InstTyp::PromiseRace => {
+        if let Some(&tgt) = inst.tgts.get(0) {
+          self.set_var(state, tgt, IntRange::Unknown);
+        }
+      }
       InstTyp::ForeignLoad => {
         let (tgt, _foreign) = inst.as_foreign_load();
         self.set_var(state, tgt, IntRange::Unknown);

@@ -180,6 +180,14 @@ fn collect_local_summary_facts(cfg: &Cfg) -> LocalSummaryFacts {
             first_spread_arg: spreads.iter().copied().min().map(|idx| idx.saturating_sub(2)),
           });
         }
+        #[cfg(feature = "native-async-ops")]
+        InstTyp::Await | InstTyp::PromiseAll | InstTyp::PromiseRace => {
+          // These ops conceptually go through builtin/VM machinery (thenables / promises), so treat
+          // their results as external values for summary purposes.
+          if let Some(&tgt) = inst.tgts.get(0) {
+            facts.external_defs.insert(tgt);
+          }
+        }
         _ => {}
       }
     }
@@ -561,6 +569,18 @@ fn compute_cfg_escape_summary(
               for idx in params_for_arg(&var_params, arg) {
                 summary.param_escape[idx] = summary.param_escape[idx].join(EscapeState::GlobalEscape);
               }
+            }
+          }
+        }
+        #[cfg(feature = "native-async-ops")]
+        InstTyp::Await | InstTyp::PromiseAll | InstTyp::PromiseRace => {
+          // Async semantic ops may retain references to their inputs (e.g. awaiting thenables or
+          // Promise.all attaching handlers), so conservatively treat any parameter passed as
+          // escaping.
+          for arg in inst.args.iter() {
+            for idx in params_for_arg(&var_params, arg) {
+              summary.param_escape[idx] =
+                summary.param_escape[idx].join(EscapeState::GlobalEscape);
             }
           }
         }

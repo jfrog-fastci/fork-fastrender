@@ -190,6 +190,21 @@ pub enum InstTyp {
   /// Throw from the current body (function or top-level). `args[0]` is the thrown value.
   Throw,
   Call,       // tgts.at(0)? = args[0](this=args[1], ...args[2..])
+  /// Await a promise-like value.
+  ///
+  /// When `tgts` is non-empty, `tgts[0] = await(args[0])`.
+  #[cfg(feature = "native-async-ops")]
+  Await,
+  /// `Promise.all([args...])` lowered as a first-class semantic op.
+  ///
+  /// When `tgts` is non-empty, `tgts[0] = Promise.all(args...)`.
+  #[cfg(feature = "native-async-ops")]
+  PromiseAll,
+  /// `Promise.race([args...])` lowered as a first-class semantic op.
+  ///
+  /// When `tgts` is non-empty, `tgts[0] = Promise.race(args...)`.
+  #[cfg(feature = "native-async-ops")]
+  PromiseRace,
   // A foreign variable is one in an ancestor scope, all the way up to and including the global scope.
   // We don't simply add another Target variant (e.g. Target::Foreign) as it makes analyses and optimisations more tedious. Consider that standard SSA doesn't really have a concept of nonlocal memory locations. In LLVM such vars are covered using ordinary memory location read/write instructions.
   // NOTE: It still violates SSA if we only have ForeignStore but not ForeignLoad (and instead use another enum variant for Arg). Consider: `%a0 = foreign(3); %a1 = %a0 + 42; foreign(3) = %a1; %a2 = foreign(3);` but `%a0` and `%a2` are not identical.
@@ -447,6 +462,38 @@ impl Inst {
       tgts: tgt.into().into_iter().collect(),
       args: [callee, this].into_iter().chain(args).collect(),
       spreads,
+      ..Default::default()
+    }
+  }
+
+  #[cfg(feature = "native-async-ops")]
+  pub fn await_(tgt: impl Into<Option<u32>>, value: Arg, known_resolved: bool) -> Self {
+    let mut inst = Self {
+      t: InstTyp::Await,
+      tgts: tgt.into().into_iter().collect(),
+      args: vec![value],
+      ..Default::default()
+    };
+    inst.meta.await_known_resolved = known_resolved;
+    inst
+  }
+
+  #[cfg(feature = "native-async-ops")]
+  pub fn promise_all(tgt: impl Into<Option<u32>>, promises: Vec<Arg>) -> Self {
+    Self {
+      t: InstTyp::PromiseAll,
+      tgts: tgt.into().into_iter().collect(),
+      args: promises,
+      ..Default::default()
+    }
+  }
+
+  #[cfg(feature = "native-async-ops")]
+  pub fn promise_race(tgt: impl Into<Option<u32>>, promises: Vec<Arg>) -> Self {
+    Self {
+      t: InstTyp::PromiseRace,
+      tgts: tgt.into().into_iter().collect(),
+      args: promises,
       ..Default::default()
     }
   }

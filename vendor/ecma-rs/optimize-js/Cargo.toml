@@ -8,6 +8,7 @@ repository.workspace = true
 [features]
 default = []
 semantic-ops = ["hir-js/semantic-ops", "emit-js/semantic-ops", "typecheck-ts?/semantic-ops"]
+native-async-ops = []
 typed = ["dep:typecheck-ts", "dep:types-ts-interned"]
 serde = [
   "dep:serde",

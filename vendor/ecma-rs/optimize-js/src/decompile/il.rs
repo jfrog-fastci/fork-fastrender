@@ -765,6 +765,109 @@ pub fn lower_throw_inst<V: VarNamer, F: FnEmitter>(
   }))))
 }
 
+#[cfg(feature = "native-async-ops")]
+pub fn lower_await_inst<V: VarNamer, F: FnEmitter>(
+  var_namer: &V,
+  fn_emitter: &F,
+  inst: &Inst,
+  init: VarInit,
+) -> Option<Node<Stmt>> {
+  if inst.t != InstTyp::Await {
+    return None;
+  }
+  debug_assert_eq!(
+    inst.args.len(),
+    1,
+    "Await inst expects exactly 1 arg, got {}",
+    inst.args.len()
+  );
+  let arg = inst.args.get(0)?;
+  let expr = node(Expr::Unary(node(UnaryExpr {
+    operator: OperatorName::Await,
+    argument: lower_arg(var_namer, fn_emitter, arg),
+  })));
+  match inst.tgts.get(0).copied() {
+    Some(tgt) => Some(var_binding(var_namer, tgt, expr, init)),
+    None => Some(node(Stmt::Expr(node(ExprStmt { expr })))),
+  }
+}
+
+#[cfg(feature = "native-async-ops")]
+pub fn lower_promise_all_inst<V: VarNamer, F: FnEmitter>(
+  var_namer: &V,
+  fn_emitter: &F,
+  inst: &Inst,
+  init: VarInit,
+) -> Option<Node<Stmt>> {
+  if inst.t != InstTyp::PromiseAll {
+    return None;
+  }
+
+  let elements = inst
+    .args
+    .iter()
+    .map(|arg| LitArrElem::Single(lower_arg(var_namer, fn_emitter, arg)))
+    .collect();
+  let array_expr = node(Expr::LitArr(node(LitArrExpr { elements })));
+
+  let callee = lower_arg(
+    var_namer,
+    fn_emitter,
+    &Arg::Builtin("Promise.all".to_string()),
+  );
+  let expr = node(Expr::Call(node(CallExpr {
+    optional_chaining: false,
+    callee,
+    arguments: vec![node(CallArg {
+      spread: false,
+      value: array_expr,
+    })],
+  })));
+
+  match inst.tgts.get(0).copied() {
+    Some(tgt) => Some(var_binding(var_namer, tgt, expr, init)),
+    None => Some(node(Stmt::Expr(node(ExprStmt { expr })))),
+  }
+}
+
+#[cfg(feature = "native-async-ops")]
+pub fn lower_promise_race_inst<V: VarNamer, F: FnEmitter>(
+  var_namer: &V,
+  fn_emitter: &F,
+  inst: &Inst,
+  init: VarInit,
+) -> Option<Node<Stmt>> {
+  if inst.t != InstTyp::PromiseRace {
+    return None;
+  }
+
+  let elements = inst
+    .args
+    .iter()
+    .map(|arg| LitArrElem::Single(lower_arg(var_namer, fn_emitter, arg)))
+    .collect();
+  let array_expr = node(Expr::LitArr(node(LitArrExpr { elements })));
+
+  let callee = lower_arg(
+    var_namer,
+    fn_emitter,
+    &Arg::Builtin("Promise.race".to_string()),
+  );
+  let expr = node(Expr::Call(node(CallExpr {
+    optional_chaining: false,
+    callee,
+    arguments: vec![node(CallArg {
+      spread: false,
+      value: array_expr,
+    })],
+  })));
+
+  match inst.tgts.get(0).copied() {
+    Some(tgt) => Some(var_binding(var_namer, tgt, expr, init)),
+    None => Some(node(Stmt::Expr(node(ExprStmt { expr })))),
+  }
+}
+
 pub fn lower_effect_inst<V: VarNamer, F: FnEmitter>(
   var_namer: &V,
   fn_emitter: &F,
@@ -777,6 +880,12 @@ pub fn lower_effect_inst<V: VarNamer, F: FnEmitter>(
     InstTyp::ForeignStore => lower_foreign_store_inst(var_namer, fn_emitter, inst),
     InstTyp::UnknownStore => lower_unknown_store_inst(var_namer, fn_emitter, inst),
     InstTyp::Call => lower_call_inst(var_namer, fn_emitter, inst, None, None, None, init),
+    #[cfg(feature = "native-async-ops")]
+    InstTyp::Await => lower_await_inst(var_namer, fn_emitter, inst, init),
+    #[cfg(feature = "native-async-ops")]
+    InstTyp::PromiseAll => lower_promise_all_inst(var_namer, fn_emitter, inst, init),
+    #[cfg(feature = "native-async-ops")]
+    InstTyp::PromiseRace => lower_promise_race_inst(var_namer, fn_emitter, inst, init),
     InstTyp::Return => lower_return_inst(var_namer, fn_emitter, inst),
     InstTyp::Throw => lower_throw_inst(var_namer, fn_emitter, inst),
     _ => None,
@@ -807,6 +916,10 @@ enum FlatExpr {
   Call {
     callee: Box<FlatExpr>,
     args: Vec<FlatCallArg>,
+  },
+  #[cfg(feature = "native-async-ops")]
+  Array {
+    elements: Vec<FlatExpr>,
   },
   Binary {
     op: OperatorName,
@@ -923,6 +1036,13 @@ fn to_ast_expr(expr: &FlatExpr) -> Node<Expr> {
         arguments,
       })))
     }
+    #[cfg(feature = "native-async-ops")]
+    FlatExpr::Array { elements } => node(Expr::LitArr(node(LitArrExpr {
+      elements: elements
+        .iter()
+        .map(|expr| LitArrElem::Single(to_ast_expr(expr)))
+        .collect(),
+    }))),
     FlatExpr::Binary { op, left, right } => node(Expr::Binary(node(BinaryExpr {
       operator: *op,
       left: to_ast_expr(left),
@@ -1151,6 +1271,68 @@ pub fn decompile_function(func: &ProgramFunction) -> DecompileResult<Vec<Node<St
             stmts.push(expr_stmt(call_expr));
           }
         }
+        #[cfg(feature = "native-async-ops")]
+        InstTyp::Await => {
+          let awaited = match inst.args.as_slice() {
+            [value] => expr_from_arg(value, &env),
+            _ => {
+              return Err(DecompileError::Unsupported(
+                "await with multiple args not supported".to_string(),
+              ));
+            }
+          };
+          let await_expr = FlatExpr::Unary {
+            op: OperatorName::Await,
+            arg: Box::new(awaited),
+          };
+          if let Some(&tgt) = inst.tgts.get(0) {
+            let lhs = FlatExpr::Identifier(temp_name(tgt));
+            stmts.push(assignment_stmt(lhs.clone(), await_expr));
+            env.insert(
+              tgt,
+              VarValue {
+                expr: lhs,
+                origin: ValueOrigin::Other,
+              },
+            );
+          } else {
+            stmts.push(expr_stmt(await_expr));
+          }
+        }
+        #[cfg(feature = "native-async-ops")]
+        InstTyp::PromiseAll | InstTyp::PromiseRace => {
+          let promises = inst
+            .args
+            .iter()
+            .map(|arg| expr_from_arg(arg, &env))
+            .collect::<Vec<_>>();
+          let array_expr = FlatExpr::Array { elements: promises };
+          let callee = builtin_to_expr(if inst.t == InstTyp::PromiseAll {
+            "Promise.all"
+          } else {
+            "Promise.race"
+          });
+          let call_expr = FlatExpr::Call {
+            callee: Box::new(callee),
+            args: vec![FlatCallArg {
+              expr: array_expr,
+              spread: false,
+            }],
+          };
+          if let Some(&tgt) = inst.tgts.get(0) {
+            let lhs = FlatExpr::Identifier(temp_name(tgt));
+            stmts.push(assignment_stmt(lhs.clone(), call_expr));
+            env.insert(
+              tgt,
+              VarValue {
+                expr: lhs,
+                origin: ValueOrigin::Other,
+              },
+            );
+          } else {
+            stmts.push(expr_stmt(call_expr));
+          }
+        }
         InstTyp::PropAssign => {
           let (obj, prop, value) = inst.as_prop_assign();
           let object_expr = expr_from_arg(obj, &env);
@@ -1248,12 +1430,28 @@ pub enum LoweredInst {
     op: BinOp,
     right: LoweredArg,
   },
+  #[cfg(feature = "native-async-ops")]
+  Await {
+    tgt: Option<u32>,
+    value: LoweredArg,
+    known_resolved: bool,
+  },
   Call {
     tgt: Option<u32>,
     callee: LoweredArg,
     this_: LoweredArg,
     args: Vec<LoweredArg>,
     spreads: Vec<usize>,
+  },
+  #[cfg(feature = "native-async-ops")]
+  PromiseAll {
+    tgt: Option<u32>,
+    promises: Vec<LoweredArg>,
+  },
+  #[cfg(feature = "native-async-ops")]
+  PromiseRace {
+    tgt: Option<u32>,
+    promises: Vec<LoweredArg>,
   },
   CondGoto {
     cond: LoweredArg,
@@ -1361,12 +1559,33 @@ fn lower_inst(inst: &Inst, bindings: &ForeignBindings) -> LoweredInst {
         inst.args.get(0).map(lowered_arg)
       },
     },
+    #[cfg(feature = "native-async-ops")]
+    InstTyp::Await => LoweredInst::Await {
+      tgt: inst.tgts.get(0).copied(),
+      value: {
+        let [value] = inst.args.as_slice() else {
+          panic!("await expects exactly 1 arg");
+        };
+        lowered_arg(value)
+      },
+      known_resolved: inst.meta.await_known_resolved,
+    },
     InstTyp::Call => LoweredInst::Call {
       tgt: inst.tgts.get(0).copied(),
       callee: lowered_arg(&inst.args[0]),
       this_: lowered_arg(&inst.args[1]),
       args: inst.args[2..].iter().map(lowered_arg).collect(),
       spreads: inst.spreads.clone(),
+    },
+    #[cfg(feature = "native-async-ops")]
+    InstTyp::PromiseAll => LoweredInst::PromiseAll {
+      tgt: inst.tgts.get(0).copied(),
+      promises: inst.args.iter().map(lowered_arg).collect(),
+    },
+    #[cfg(feature = "native-async-ops")]
+    InstTyp::PromiseRace => LoweredInst::PromiseRace {
+      tgt: inst.tgts.get(0).copied(),
+      promises: inst.args.iter().map(lowered_arg).collect(),
     },
     InstTyp::Throw => LoweredInst::Throw {
       value: {

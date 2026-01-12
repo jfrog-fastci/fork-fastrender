@@ -598,6 +598,38 @@ impl<'a> FunctionDecompiler<'a> {
           .expect("call inst should lower");
         Ok(Some(stmt))
       }
+      #[cfg(feature = "native-async-ops")]
+      InstTyp::Await => {
+        self.ensure_supported_args(inst.args.iter())?;
+        let tgt = inst.tgts.get(0).copied();
+        let init = tgt
+          .map(|t| self.target_init_for(t))
+          .unwrap_or(VarInit::Assign);
+        let stmt = il::lower_await_inst(self, self, inst, init).expect("await inst should lower");
+        Ok(Some(stmt))
+      }
+      #[cfg(feature = "native-async-ops")]
+      InstTyp::PromiseAll => {
+        self.ensure_supported_args(inst.args.iter())?;
+        let tgt = inst.tgts.get(0).copied();
+        let init = tgt
+          .map(|t| self.target_init_for(t))
+          .unwrap_or(VarInit::Assign);
+        let stmt =
+          il::lower_promise_all_inst(self, self, inst, init).expect("promise all should lower");
+        Ok(Some(stmt))
+      }
+      #[cfg(feature = "native-async-ops")]
+      InstTyp::PromiseRace => {
+        self.ensure_supported_args(inst.args.iter())?;
+        let tgt = inst.tgts.get(0).copied();
+        let init = tgt
+          .map(|t| self.target_init_for(t))
+          .unwrap_or(VarInit::Assign);
+        let stmt =
+          il::lower_promise_race_inst(self, self, inst, init).expect("promise race should lower");
+        Ok(Some(stmt))
+      }
       InstTyp::PropAssign => {
         self.ensure_supported_args(inst.args.iter())?;
         Ok(lower_prop_assign_inst(self, self, inst))

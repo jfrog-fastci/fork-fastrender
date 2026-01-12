@@ -402,6 +402,14 @@ pub struct InstMeta {
   /// explicit defining instruction).
   #[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "is_false"))]
   pub preserve_var_assign: bool,
+  /// For `InstTyp::Await`, records whether the awaited value is known to be
+  /// already resolved (i.e. the await point is guaranteed not to suspend).
+  ///
+  /// This is currently only populated by the `native-async-ops` lowering; most
+  /// analyses treat `Await` conservatively regardless of this flag.
+  #[cfg(feature = "native-async-ops")]
+  #[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "is_false"))]
+  pub await_known_resolved: bool,
   #[cfg_attr(
     feature = "serde",
     serde(default, skip_serializing_if = "OwnershipState::is_default")
@@ -505,7 +513,7 @@ impl InstMeta {
   }
 
   pub fn is_default(&self) -> bool {
-    self.effects.is_default()
+    let base = self.effects.is_default()
       && self.result_type.is_default()
       && self.type_id.is_none()
       && {
@@ -528,7 +536,17 @@ impl InstMeta {
       && self.result_escape.is_none()
       && self.callee_purity.is_default()
       && self.nullability_narrowing.is_none()
-      && self.value.is_none()
+      && self.value.is_none();
+
+    #[cfg(feature = "native-async-ops")]
+    {
+      return base && !self.await_known_resolved;
+    }
+
+    #[cfg(not(feature = "native-async-ops"))]
+    {
+      return base;
+    }
   }
 
   pub fn is_pure(&self) -> bool {
