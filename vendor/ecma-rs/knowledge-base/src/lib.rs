@@ -2699,6 +2699,15 @@ properties:
       Some("node/web_abort.yaml")
     );
 
+    let event_target = kb
+      .api_for_target("EventTarget", &node_20)
+      .expect("EventTarget should resolve for modern Node targets");
+    assert_eq!(event_target.name, "EventTarget");
+    assert_eq!(
+      kb.source_for_target("EventTarget", &node_20),
+      Some("node/web_events.yaml")
+    );
+
     let add_listener = kb
       .api_for_target("EventTarget.prototype.addEventListener", &node_20)
       .expect("EventTarget.prototype.addEventListener should resolve for modern Node targets");

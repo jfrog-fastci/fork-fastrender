@@ -1,5 +1,22 @@
 # Web events / task cancellation helpers.
 
+- name: EventTarget
+  kind: constructor
+  aliases:
+    - EventTarget
+    - window.EventTarget
+    - globalThis.EventTarget
+    - self.EventTarget
+  since: "baseline"
+  effects:
+    allocates: true
+    may_throw: false
+  purity: Allocating
+  async: false
+  parallelizable: true
+  idempotent: false
+  deterministic: true
+
 - name: EventTarget.prototype.addEventListener
   kind: function
   aliases:

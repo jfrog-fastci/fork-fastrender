@@ -3,6 +3,18 @@
 # These entries are duplicated from `web/events.yaml` so that `TargetEnv::Node` lookups can resolve
 # them without matching DOM-specific event APIs.
 
+- name: EventTarget
+  kind: constructor
+  since: "v15.0.0"
+  effects:
+    allocates: true
+    may_throw: false
+  purity: Allocating
+  async: false
+  parallelizable: true
+  idempotent: false
+  deterministic: true
+
 - name: EventTarget.prototype.addEventListener
   kind: function
   since: "v15.0.0"
