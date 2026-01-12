@@ -158,6 +158,7 @@ fn with_realm_state_mut<R>(
 ) -> Result<R, VmError> {
   let realm_id = realm_id_for_binding_call(vm, scope, callee)?;
 
+  let heap = scope.heap();
   let mut registry = registry()
     .lock()
     .unwrap_or_else(|err| err.into_inner());
@@ -169,7 +170,6 @@ fn with_realm_state_mut<R>(
     ))?;
 
   // Opportunistically sweep dead objects when GC has run.
-  let heap = scope.heap();
   let gc_runs = heap.gc_runs();
   if gc_runs != state.last_gc_runs {
     state.last_gc_runs = gc_runs;

@@ -635,6 +635,14 @@ impl BrowserAppState {
     self.visited.clear();
   }
 
+  /// Populate [`BrowserAppState::visited`] from the persisted [`BrowserAppState::history`].
+  ///
+  /// This is intended for browser startup so omnibox suggestions are immediately useful after a
+  /// restart, before any new navigation commits are observed.
+  pub fn seed_visited_from_history(&mut self) {
+    self.visited.seed_from_global_history(&self.history);
+  }
+
   /// Removes a tab, returning the new active tab if the active tab changed.
   ///
   /// Invariant: closing the last remaining tab is a no-op.

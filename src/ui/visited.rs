@@ -97,7 +97,7 @@ impl VisitedUrlStore {
   /// - Deduplicates by URL using the same logic as [`VisitedUrlStore::record_visit`].
   /// - Filters `about:` URLs so internal pages like `about:newtab` do not pollute omnibox history.
   /// - Enforces the store's configured capacity.
-  pub fn extend_from_global_history(&mut self, history: &GlobalHistoryStore) {
+  pub fn seed_from_global_history(&mut self, history: &GlobalHistoryStore) {
     if self.capacity == 0 || history.entries.is_empty() {
       return;
     }
@@ -117,17 +117,26 @@ impl VisitedUrlStore {
 
     for (_ts, idx) in ordered {
       let entry = &history.entries[idx];
-      if about_pages::is_about_url(&entry.url) {
+      let url = entry.url.trim();
+      if url.is_empty() {
+        continue;
+      }
+      if about_pages::is_about_url(url) {
         continue;
       }
 
-      let visited_at_ms = entry.visited_at_ms.unwrap_or(idx as u64);
+      let visited_at_ms = entry.visited_at_ms.unwrap_or(0);
       let visited_at = UNIX_EPOCH
         .checked_add(Duration::from_millis(visited_at_ms))
         .unwrap_or(UNIX_EPOCH);
 
-      self.record_visit_at(entry.url.clone(), entry.title.clone(), visited_at);
+      self.record_visit_at(url.to_string(), entry.title.clone(), visited_at);
     }
+  }
+
+  /// Backwards-compatible alias for [`VisitedUrlStore::seed_from_global_history`].
+  pub fn extend_from_global_history(&mut self, history: &GlobalHistoryStore) {
+    self.seed_from_global_history(history);
   }
 
   /// Search visited URLs for omnibox suggestions.
@@ -295,7 +304,7 @@ mod tests {
     };
 
     let mut store = VisitedUrlStore::new();
-    store.extend_from_global_history(&history);
+    store.seed_from_global_history(&history);
 
     assert_eq!(store.len(), 3);
 
@@ -333,10 +342,131 @@ mod tests {
     };
 
     let mut store = VisitedUrlStore::new();
-    store.extend_from_global_history(&history);
+    store.seed_from_global_history(&history);
 
     assert_eq!(store.len(), 1);
     let record = store.iter_recent().next().unwrap();
     assert_eq!(record.url, "https://example.com/");
+  }
+
+  #[test]
+  fn seed_from_global_history_populates_search_results() {
+    let history = GlobalHistoryStore {
+      entries: vec![
+        super::super::GlobalHistoryEntry {
+          url: "https://example.com/".to_string(),
+          title: Some("Example Domain".to_string()),
+          visited_at_ms: Some(1_000),
+          visit_count: 1,
+        },
+        super::super::GlobalHistoryEntry {
+          url: "https://www.rust-lang.org/".to_string(),
+          title: Some("Rust".to_string()),
+          visited_at_ms: Some(2_000),
+          visit_count: 1,
+        },
+        super::super::GlobalHistoryEntry {
+          url: "https://example.org/other".to_string(),
+          title: None,
+          visited_at_ms: Some(3_000),
+          visit_count: 1,
+        },
+      ],
+    };
+
+    let mut store = VisitedUrlStore::new();
+    store.seed_from_global_history(&history);
+
+    let urls: Vec<&str> = store.iter_recent().map(|r| r.url.as_str()).collect();
+    assert_eq!(
+      urls,
+      vec![
+        "https://example.org/other",
+        "https://www.rust-lang.org/",
+        "https://example.com/"
+      ]
+    );
+
+    let hits = store.search("example", 10);
+    assert_eq!(hits.len(), 2);
+    assert_eq!(hits[0].url, "https://example.org/other");
+    assert_eq!(hits[1].url, "https://example.com/");
+
+    let rust = store.search("rust", 10);
+    assert_eq!(rust.len(), 1);
+    assert_eq!(rust[0].url, "https://www.rust-lang.org/");
+
+    let example_com = store
+      .iter_recent()
+      .find(|r| r.url == "https://example.com/")
+      .unwrap();
+    assert_eq!(
+      example_com.last_visited,
+      std::time::UNIX_EPOCH + Duration::from_millis(1_000)
+    );
+  }
+
+  #[test]
+  fn seed_from_global_history_skips_empty_urls() {
+    let history = GlobalHistoryStore {
+      entries: vec![
+        super::super::GlobalHistoryEntry {
+          url: "   ".to_string(),
+          title: Some("Whitespace".to_string()),
+          visited_at_ms: Some(1_000),
+          visit_count: 1,
+        },
+        super::super::GlobalHistoryEntry {
+          url: "".to_string(),
+          title: Some("Empty".to_string()),
+          visited_at_ms: Some(2_000),
+          visit_count: 1,
+        },
+        super::super::GlobalHistoryEntry {
+          url: "https://example.com/".to_string(),
+          title: None,
+          visited_at_ms: Some(3_000),
+          visit_count: 1,
+        },
+      ],
+    };
+
+    let mut store = VisitedUrlStore::new();
+    store.seed_from_global_history(&history);
+
+    assert_eq!(store.len(), 1);
+    assert_eq!(store.iter_recent().next().unwrap().url, "https://example.com/");
+  }
+
+  #[test]
+  fn seed_from_global_history_respects_capacity() {
+    let history = GlobalHistoryStore {
+      entries: vec![
+        super::super::GlobalHistoryEntry {
+          url: "https://a.example/".to_string(),
+          title: None,
+          visited_at_ms: Some(1_000),
+          visit_count: 1,
+        },
+        super::super::GlobalHistoryEntry {
+          url: "https://b.example/".to_string(),
+          title: None,
+          visited_at_ms: Some(2_000),
+          visit_count: 1,
+        },
+        super::super::GlobalHistoryEntry {
+          url: "https://c.example/".to_string(),
+          title: None,
+          visited_at_ms: Some(3_000),
+          visit_count: 1,
+        },
+      ],
+    };
+
+    let mut store = VisitedUrlStore::with_capacity(2);
+    store.seed_from_global_history(&history);
+
+    let urls: Vec<&str> = store.iter_recent().map(|r| r.url.as_str()).collect();
+    assert_eq!(urls, vec!["https://c.example/", "https://b.example/"]);
   }
 }
