@@ -560,6 +560,9 @@ pub extern "C" fn rt_gc_set_config(cfg: *const crate::abi::RtGcConfig) -> bool {
     let config = crate::gc::config::HeapConfig {
       nursery_size_bytes: core::ptr::addr_of!((*cfg).nursery_size_bytes).read(),
       los_threshold_bytes: core::ptr::addr_of!((*cfg).los_threshold_bytes).read(),
+      // The public C ABI config does not currently expose mark-thread tuning. Use the runtime
+      // default unless configured programmatically via `HeapConfig`.
+      major_gc_mark_threads: 0,
       minor_gc_nursery_used_percent: core::ptr::addr_of!((*cfg).minor_gc_nursery_used_percent).read(),
       major_gc_old_bytes_threshold: core::ptr::addr_of!((*cfg).major_gc_old_bytes_threshold).read(),
       major_gc_old_blocks_threshold: core::ptr::addr_of!((*cfg).major_gc_old_blocks_threshold).read(),
