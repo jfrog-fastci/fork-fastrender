@@ -590,6 +590,10 @@ fn xhr_response_type_set(
       .xhrs
       .get_mut(&xhr_id)
       .ok_or(VmError::TypeError("XMLHttpRequest: invalid backing state"))?;
+    // XHR spec: responseType can only be set in UNSENT/OPENED with send() not in progress.
+    if xhr.send_in_progress || !matches!(xhr.ready_state, XHR_UNSENT | XHR_OPENED) {
+      return Err(VmError::TypeError("XMLHttpRequest.responseType invalid state"));
+    }
     xhr.response_type = normalized.to_string();
     Ok(())
   })?;
@@ -1676,20 +1680,25 @@ fn xhr_abort_native<Host: WindowRealmHost + 'static>(
 ) -> Result<Value, VmError> {
   let (env_id, xhr_id, _) = xhr_info_from_this(scope, this)?;
 
-  let Some(event_loop) = event_loop_mut_from_hooks::<Host>(hooks) else {
-    return Err(VmError::TypeError(
-      "XMLHttpRequest.abort called without an active EventLoop",
-    ));
-  };
-
   // Mark as aborted synchronously so any queued networking task can observe the flag and skip work.
-  let (request_seq, should_dispatch) = with_env_state_mut(env_id, |state| {
+  let (request_seq, should_dispatch, old_root) = with_env_state_mut(env_id, |state| {
     let xhr = state
       .xhrs
       .get_mut(&xhr_id)
       .ok_or(VmError::TypeError("XMLHttpRequest: invalid backing state"))?;
     if !xhr.send_in_progress {
-      return Ok((xhr.request_seq, false));
+      let old_root = xhr.root.take();
+      xhr.request_seq = xhr.request_seq.saturating_add(1);
+      xhr.aborted = true;
+      xhr.send_in_progress = false;
+      xhr.ready_state = XHR_UNSENT;
+      xhr.status = 0;
+      xhr.status_text.clear();
+      xhr.response_bytes.clear();
+      xhr.response_text.clear();
+      xhr.response_headers.clear();
+      xhr.request = None;
+      return Ok((xhr.request_seq, false, old_root));
     }
     xhr.aborted = true;
     xhr.send_in_progress = false;
@@ -1700,12 +1709,22 @@ fn xhr_abort_native<Host: WindowRealmHost + 'static>(
     xhr.response_text.clear();
     xhr.response_headers.clear();
     xhr.request_seq = xhr.request_seq.saturating_add(1);
-    Ok((xhr.request_seq, true))
+    Ok((xhr.request_seq, true, None))
   })?;
+
+  if let Some(root) = old_root {
+    scope.heap_mut().remove_root(root);
+  }
 
   if !should_dispatch {
     return Ok(Value::Undefined);
   }
+
+  let Some(event_loop) = event_loop_mut_from_hooks::<Host>(hooks) else {
+    return Err(VmError::TypeError(
+      "XMLHttpRequest.abort called without an active EventLoop",
+    ));
+  };
 
   let events = ["readystatechange", "abort", "loadend"];
   let queue_result = event_loop.queue_task(TaskSource::Networking, move |host, event_loop| {
@@ -3071,6 +3090,77 @@ mod tests {
     let log = read_log(vm, &mut scope, arr);
     assert!(log.iter().any(|s| s == "abort"), "log={log:?}");
     assert!(!log.iter().any(|s| s == "load"), "log={log:?}");
+    Ok(())
+  }
+
+  #[test]
+  fn xhr_abort_without_send_resets_to_unsent() -> crate::Result<()> {
+    let fetcher = Arc::new(MockFetcher::default());
+    let mut host = Host::new(fetcher);
+    let mut event_loop = EventLoop::<Host>::new();
+
+    event_loop.queue_task(TaskSource::Script, |host, event_loop| {
+      let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host);
+      hooks.set_event_loop(event_loop);
+      let (vm_host, window) = host.vm_host_and_window_realm();
+      window.reset_interrupt();
+      let result = window.exec_script_with_host_and_hooks(
+        vm_host,
+        &mut hooks,
+        "var xhr = new XMLHttpRequest();\n\
+         xhr.open('GET', '/ok', true);\n\
+         xhr.abort();\n\
+         globalThis.__rs = xhr.readyState;",
+      );
+      if let Some(err) = hooks.finish(window.heap_mut()) {
+        return Err(err);
+      }
+      result.map(|_| ()).map_err(|e| vm_error_to_event_loop_error(window.heap_mut(), e))
+    })?;
+
+    let outcome = event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;
+    assert_eq!(outcome, RunUntilIdleOutcome::Idle);
+
+    let (_vm, realm, heap) = host.window.vm_realm_and_heap_mut();
+    let mut scope = heap.scope();
+    let global = realm.global_object();
+    assert_eq!(get_prop(&mut scope, global, "__rs"), Value::Number(0.0));
+    Ok(())
+  }
+
+  #[test]
+  fn xhr_response_type_set_after_send_throws() -> crate::Result<()> {
+    let fetcher = Arc::new(MockFetcher::default());
+    let mut host = Host::new(fetcher);
+    let mut event_loop = EventLoop::<Host>::new();
+
+    event_loop.queue_task(TaskSource::Script, |host, event_loop| {
+      let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host);
+      hooks.set_event_loop(event_loop);
+      let (vm_host, window) = host.vm_host_and_window_realm();
+      window.reset_interrupt();
+      let result = window.exec_script_with_host_and_hooks(
+        vm_host,
+        &mut hooks,
+        "globalThis.__threw = false;\n\
+         var xhr = new XMLHttpRequest();\n\
+         xhr.open('GET', '/ok', true);\n\
+         xhr.send();\n\
+         try { xhr.responseType = 'json'; } catch (e) { globalThis.__threw = true; }",
+      );
+      if let Some(err) = hooks.finish(window.heap_mut()) {
+        return Err(err);
+      }
+      result.map(|_| ()).map_err(|e| vm_error_to_event_loop_error(window.heap_mut(), e))
+    })?;
+
+    let outcome = event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;
+    assert_eq!(outcome, RunUntilIdleOutcome::Idle);
+
+    let (_vm, realm, heap) = host.window.vm_realm_and_heap_mut();
+    let mut scope = heap.scope();
+    let global = realm.global_object();
+    assert_eq!(get_prop(&mut scope, global, "__threw"), Value::Bool(true));
     Ok(())
   }
 } 
