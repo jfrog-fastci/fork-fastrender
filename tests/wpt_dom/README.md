@@ -9,6 +9,10 @@ It is intended to be run by FastRender's `xtask` harness:
 bash scripts/cargo_agent.sh xtask js wpt-dom
 ```
 
+The underlying runner (`crates/js-wpt-dom-runner`) also supports an optional QuickJS backend. To run
+with QuickJS, build the `wpt_dom` binary with `--features quickjs` and select the backend via
+`--backend quickjs` (or `FASTERENDER_WPT_DOM_BACKEND=quickjs`).
+
 By default, this writes a JSON report to:
 
 ```text

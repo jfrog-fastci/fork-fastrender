@@ -1674,7 +1674,7 @@ dependencies = [
  "vm-js",
  "walkdir",
  "webidl",
- "webidl-runtime",
+ "webidl-js-runtime",
  "webidl-vm-js",
  "wgpu",
  "winit",
@@ -5689,7 +5689,7 @@ name = "webidl"
 version = "0.1.0"
 
 [[package]]
-name = "webidl-runtime"
+name = "webidl-js-runtime"
 version = "0.1.0"
 dependencies = [
  "vm-js",

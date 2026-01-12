@@ -45,7 +45,26 @@ Run `bash scripts/cargo_agent.sh xtask js wpt-dom --help` for the full CLI. Comm
 - `--filter <GLOB|REGEX>`
   - Filter tests by id (e.g. `smoke/**` or `event_loop/**`).
 - `--backend <auto|vmjs>`
-  - Choose which JS backend to execute with (`vm-js` is currently the only available backend).
+  - Choose which JS backend to execute with.
+  - Note: `xtask js wpt-dom` currently builds the runner with the `vmjs` backend only.
+
+## QuickJS backend (optional)
+
+`js-wpt-dom-runner` also supports an optional `quickjs` backend feature. This backend runs the corpus
+using a lightweight JS DOM/EventTarget shim embedded in:
+
+- `crates/js-wpt-dom-runner/src/dom_shims.rs` (`DOM_SHIM`)
+
+It is primarily useful for comparison/debugging; strict DOM/EventTarget semantics are validated on
+the `vmjs` backend.
+
+To run the corpus with QuickJS, invoke the `wpt_dom` binary directly and select the backend via
+`--backend quickjs` (or `FASTERENDER_WPT_DOM_BACKEND=quickjs`):
+
+```bash
+timeout -k 10 600 bash scripts/cargo_agent.sh run -p js-wpt-dom-runner --features quickjs --bin wpt_dom -- \
+  --backend quickjs --filter 'events/**'
+```
 
 ## What gets executed
 

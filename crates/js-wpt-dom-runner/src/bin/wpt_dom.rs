@@ -50,8 +50,10 @@ impl SuitePreset {
 #[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
 #[clap(rename_all = "lowercase")]
 enum Backend {
-  /// Let the runner pick (currently only vm-js).
+  /// Let the runner pick (prefer vm-js when available).
   Auto,
+  /// Force the QuickJS backend (requires `--features quickjs`).
+  Quickjs,
   /// Force the vm-js backend.
   Vmjs,
 }
@@ -60,6 +62,7 @@ impl Backend {
   fn as_env_value(self) -> &'static str {
     match self {
       Backend::Auto => "auto",
+      Backend::Quickjs => "quickjs",
       Backend::Vmjs => "vmjs",
     }
   }
