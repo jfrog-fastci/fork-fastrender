@@ -267,3 +267,125 @@ fn object_destructuring_uses_getv_receiver_for_accessors_on_primitives() {
     .unwrap();
   assert_eq!(value, Value::Bool(true));
 }
+
+#[test]
+fn array_destructuring_calls_iterator_return_on_empty_pattern() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      var nextCount = 0;
+      var returnCount = 0;
+      var iterable = {};
+      iterable[Symbol.iterator] = function() {
+        return {
+          next() { nextCount++; return { done: true }; },
+          return() { returnCount++; return {}; },
+        };
+      };
+      var [] = iterable;
+      returnCount === 1 && nextCount === 0
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn array_destructuring_calls_iterator_return_when_not_done() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      var nextCount = 0;
+      var returnCount = 0;
+      var iterable = {};
+      iterable[Symbol.iterator] = function() {
+        var i = 0;
+        return {
+          next() { nextCount++; return { value: i++, done: false }; },
+          return() { returnCount++; return {}; },
+        };
+      };
+      var [a,b] = iterable;
+      a === 0 && b === 1 && nextCount === 2 && returnCount === 1
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn array_destructuring_assignment_closes_iterator_on_lhs_abrupt() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      var returnCount = 0;
+      var iterable = {};
+      iterable[Symbol.iterator] = function() {
+        var i = 0;
+        return {
+          next() { return { value: i++, done: false }; },
+          return() { returnCount++; return {}; },
+        };
+      };
+      var target = {};
+      function boom() { throw new Error("boom"); }
+      try {
+        ([target[boom()]] = iterable);
+      } catch (e) {}
+      returnCount === 1
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn array_destructuring_does_not_close_iterator_when_next_throws() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      var nextCount = 0;
+      var returnCount = 0;
+      var iterable = {};
+      iterable[Symbol.iterator] = function() {
+        return {
+          next() { nextCount++; throw new Error("boom"); },
+          return() { returnCount++; return {}; },
+        };
+      };
+      try { var [a] = iterable; } catch (e) {}
+      nextCount === 1 && returnCount === 0
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn array_destructuring_iterator_return_must_return_object() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      var iterable = {};
+      iterable[Symbol.iterator] = function() {
+        return {
+          next() { return { done: false, value: 1 }; },
+          return() { return 123; },
+        };
+      };
+      try {
+        var [] = iterable;
+        false;
+      } catch (e) {
+        e instanceof TypeError
+      }
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}

@@ -450,15 +450,11 @@ fn bind_array_pattern(
 
     let Some(elem) = elem else {
       // Elision: still advance the iterator and discard the value.
-      if let Err(err) = crate::iterator::iterator_step_value(
-        vm,
-        host,
-        hooks,
-        scope,
-        &mut iterator_record,
-      ) {
-        return iterator_close_on_err(vm, host, hooks, scope, &iterator_record, err);
-      }
+      if let Err(err) =
+        crate::iterator::iterator_step_value(vm, host, hooks, scope, &mut iterator_record)
+      {
+        return Err(err);
+      };
       continue;
     };
 
@@ -471,7 +467,7 @@ fn bind_array_pattern(
     ) {
       Ok(Some(v)) => v,
       Ok(None) => Value::Undefined,
-      Err(err) => return iterator_close_on_err(vm, host, hooks, scope, &iterator_record, err),
+      Err(err) => return Err(err),
     };
 
     if matches!(item, Value::Undefined) {
@@ -544,7 +540,7 @@ fn bind_array_pattern(
       &mut iterator_record,
     ) {
       Ok(v) => v,
-      Err(err) => return iterator_close_on_err(vm, host, hooks, scope, &iterator_record, err),
+      Err(err) => return Err(err),
     };
     let Some(v) = next else {
       break;
