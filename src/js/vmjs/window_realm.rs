@@ -18083,7 +18083,7 @@ mod tests {
     let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
 
     let ready_state = realm.exec_script("document.readyState")?;
-    assert_eq!(get_string(realm.heap(), ready_state), "complete");
+    assert_eq!(get_string(realm.heap(), ready_state), "loading");
 
     let visibility = realm.exec_script("document.visibilityState")?;
     assert_eq!(get_string(realm.heap(), visibility), "visible");
