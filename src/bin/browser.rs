@@ -4423,10 +4423,7 @@ impl App {
             ui.allocate_ui_at_rect(rect, |ui| {
               ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                 ui.add_space(10.0);
-                let (icon_rect, _) = ui.allocate_exact_size(
-                  egui::vec2(16.0, MENU_ITEM_HEIGHT),
-                  egui::Sense::hover(),
-                );
+                let (_id, icon_rect) = ui.allocate_space(egui::vec2(16.0, MENU_ITEM_HEIGHT));
                 fastrender::ui::paint_icon_in_rect(
                   ui,
                   icon_rect,
