@@ -2924,30 +2924,25 @@ impl InteractionEngine {
           )
           .unwrap_or((0, CaretAffinity::Downstream));
 
-          let mut text_edit_changed = false;
-          match self
+          let text_edit_changed = if let Some(state) = self
             .text_edit
             .as_mut()
             .filter(|state| state.node_id == hit.dom_node_id)
           {
-            Some(state) => {
-              let prev = (state.caret, state.caret_affinity, state.selection_anchor);
-              state.set_caret_with_affinity(caret, caret_affinity);
-              state.clear_selection();
-              text_edit_changed =
-                (state.caret, state.caret_affinity, state.selection_anchor) != prev;
-            }
-            None => {
-              self.text_edit = Some(TextEditState {
-                node_id: hit.dom_node_id,
-                caret,
-                caret_affinity,
-                selection_anchor: None,
-                preferred_column: None,
-              });
-              text_edit_changed = true;
-            }
-          }
+            let prev = (state.caret, state.caret_affinity, state.selection_anchor);
+            state.set_caret_with_affinity(caret, caret_affinity);
+            state.clear_selection();
+            (state.caret, state.caret_affinity, state.selection_anchor) != prev
+          } else {
+            self.text_edit = Some(TextEditState {
+              node_id: hit.dom_node_id,
+              caret,
+              caret_affinity,
+              selection_anchor: None,
+              preferred_column: None,
+            });
+            true
+          };
 
           if text_edit_changed {
             dom_changed = true;

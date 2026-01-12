@@ -2711,7 +2711,7 @@ impl BlockFormattingContext {
         );
       }
 
-      let (frags, relayout_height, positioned, info) = if use_columns {
+      let (frags, _relayout_height, positioned, info) = if use_columns {
         let (frags, height, positioned, info) = self.layout_multicolumn(
           child,
           &child_constraints,
@@ -2736,38 +2736,8 @@ impl BlockFormattingContext {
       };
 
       child_fragments = frags;
-      content_height = relayout_height;
       positioned_children = positioned;
       column_info = info;
-
-      if style.containment.size {
-        let axis_is_width = block_axis_is_horizontal(style.writing_mode);
-        let axis = if axis_is_width {
-          style.contain_intrinsic_width
-        } else {
-          style.contain_intrinsic_height
-        };
-        let remembered = axis
-          .auto
-          .then(|| {
-            remembered_size_cache_lookup(child).map(|size| {
-              if axis_is_width {
-                size.width
-              } else {
-                size.height
-              }
-            })
-          })
-          .flatten();
-        content_height = crate::layout::utils::resolve_contain_intrinsic_size_axis(
-          axis,
-          remembered,
-          containing_height,
-          self.viewport_size,
-          style.font_size,
-          style.root_font_size,
-        );
-      }
 
       if content_origin.x != 0.0 || content_origin.y != 0.0 {
         for fragment in child_fragments.iter_mut() {
@@ -10700,10 +10670,9 @@ impl FormattingContext for BlockFormattingContext {
           Arc::new(InlineFormattingContext::with_factory(relayout_ctx.factory.clone()));
       }
 
-      let (frags, relayout_height, positioned, info) =
+      let (frags, _relayout_height, positioned, info) =
         layout_contents(&relayout_ctx, &relayout_nearest_cb, &relayout_nearest_fixed_cb)?;
       child_fragments = frags;
-      content_height = relayout_height;
       positioned_children = positioned;
       column_info = info;
     }
