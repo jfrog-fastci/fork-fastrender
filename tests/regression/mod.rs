@@ -19,10 +19,6 @@ mod content_visibility_vertical_writing_mode;
 mod content_visibility_writing_mode;
 mod fixed_cb_propagation;
 mod inline_abspos_padding_edge;
-#[cfg(feature = "quickjs")]
-mod js_fetch_bindings;
-#[cfg(feature = "quickjs")]
-mod js_url_bindings;
 mod pages;
 mod rayon_global_thread_pool;
 mod stretch_sizing_inline_block;
