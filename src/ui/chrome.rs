@@ -181,6 +181,59 @@ fn omnibox_suggestion_icon(suggestion: &OmniboxSuggestion) -> OmniboxSuggestionI
   }
 }
 
+fn omnibox_suggestion_a11y_label(suggestion: &OmniboxSuggestion) -> String {
+  let title = suggestion
+    .title
+    .as_deref()
+    .map(str::trim)
+    .filter(|s| !s.is_empty());
+  let url = suggestion
+    .url
+    .as_deref()
+    .map(str::trim)
+    .filter(|s| !s.is_empty());
+
+  match &suggestion.action {
+    OmniboxAction::Search(query) => {
+      let query = query.trim();
+      if query.is_empty() {
+        "Search".to_string()
+      } else {
+        format!("Search: {query}")
+      }
+    }
+    OmniboxAction::ActivateTab(_) => {
+      if let Some(title) = title {
+        if let Some(url) = url {
+          format!("Switch to tab: {title} ({url})")
+        } else {
+          format!("Switch to tab: {title}")
+        }
+      } else if let Some(url) = url {
+        format!("Switch to tab: {url}")
+      } else {
+        "Switch to tab".to_string()
+      }
+    }
+    OmniboxAction::NavigateToUrl(url_action) => {
+      let url_action = url_action.trim();
+      if let Some(title) = title {
+        if let Some(url) = url {
+          format!("Go to: {title} ({url})")
+        } else {
+          format!("Go to: {title}")
+        }
+      } else if let Some(url) = url {
+        format!("Go to: {url}")
+      } else if url_action.is_empty() {
+        "Go to URL".to_string()
+      } else {
+        format!("Go to: {url_action}")
+      }
+    }
+  }
+}
+
 fn omnibox_suggestion_fill_text(suggestion: &OmniboxSuggestion) -> Option<&str> {
   match &suggestion.action {
     OmniboxAction::NavigateToUrl(url) => Some(url),
@@ -1968,6 +2021,10 @@ pub fn chrome_ui_with_bookmarks(
                 egui::vec2(ui.available_width(), row_height),
                 egui::Sense::click(),
               );
+              response.widget_info({
+                let label = omnibox_suggestion_a11y_label(suggestion);
+                move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label)
+              });
 
               let row_id = id.with(("row", idx));
               let hover_t = motion.animate_bool(
