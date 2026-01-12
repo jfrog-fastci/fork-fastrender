@@ -10583,6 +10583,7 @@ impl<'a> FlowBodyChecker<'a> {
       }
       ExprKind::TypeAssertion { expr, .. }
       | ExprKind::NonNull { expr }
+      | ExprKind::Instantiation { expr, .. }
       | ExprKind::Satisfies { expr, .. } => {
         self.optional_chain_base_exprs(*expr, out);
       }
@@ -10610,6 +10611,7 @@ impl<'a> FlowBodyChecker<'a> {
       }
       ExprKind::TypeAssertion { expr, .. }
       | ExprKind::NonNull { expr }
+      | ExprKind::Instantiation { expr, .. }
       | ExprKind::Satisfies { expr, .. } => {
         self.optional_chain_base_keys(*expr, out);
       }
@@ -10715,6 +10717,7 @@ impl<'a> FlowBodyChecker<'a> {
       ExprKind::Ident(_) => self.ident_binding(expr_id),
       ExprKind::TypeAssertion { expr, .. }
       | ExprKind::NonNull { expr }
+      | ExprKind::Instantiation { expr, .. }
       | ExprKind::Satisfies { expr, .. } => self.nullish_coalesce_binding(*expr),
       _ => None,
     }
@@ -10755,6 +10758,7 @@ impl<'a> FlowBodyChecker<'a> {
       ExprKind::Member(mem) => self.assignment_target_root_expr(mem.object),
       ExprKind::TypeAssertion { expr, .. }
       | ExprKind::NonNull { expr }
+      | ExprKind::Instantiation { expr, .. }
       | ExprKind::Satisfies { expr, .. }
       | ExprKind::Await { expr }
       | ExprKind::Yield {
@@ -11103,6 +11107,7 @@ impl<'a> FlowBodyChecker<'a> {
       }
       ExprKind::TypeAssertion { expr, .. }
       | ExprKind::NonNull { expr }
+      | ExprKind::Instantiation { expr, .. }
       | ExprKind::Satisfies { expr, .. } => self.assignment_expr_info(*expr, env),
       _ => (prim.unknown, None, false),
     }
@@ -11467,6 +11472,7 @@ impl<'a> FlowBodyChecker<'a> {
       }
       ExprKind::TypeAssertion { expr, .. }
       | ExprKind::NonNull { expr }
+      | ExprKind::Instantiation { expr, .. }
       | ExprKind::Satisfies { expr, .. } => {
         self.write_assign_target_expr(*expr, value_ty, env, mode);
       }

@@ -1627,6 +1627,7 @@ fn expr_prec(ctx: &HirContext<'_>, body: &Body, expr_id: ExprId) -> Result<Prec,
     ExprKind::Literal(Literal::Undefined) => Prec::new(OPERATORS[&OperatorName::Void].precedence),
     ExprKind::ImportCall { .. } => CALL_MEMBER_PRECEDENCE,
     ExprKind::TypeAssertion { expr, .. }
+    | ExprKind::Instantiation { expr, .. }
     | ExprKind::NonNull { expr }
     | ExprKind::Satisfies { expr, .. } => return expr_prec(ctx, body, *expr),
     ExprKind::Missing => return Err(EmitError::unsupported("missing expression")),
@@ -1917,6 +1918,7 @@ fn emit_expr_no_parens(
     }
     // TypeScript-only expression wrappers. These are erased when emitting JS.
     ExprKind::TypeAssertion { expr, .. }
+    | ExprKind::Instantiation { expr, .. }
     | ExprKind::NonNull { expr }
     | ExprKind::Satisfies { expr, .. } => {
       emit_expr_no_parens(em, ctx, body, *expr)?;
@@ -2539,6 +2541,7 @@ fn expr_is_arrow_function(ctx: &HirContext<'_>, body: &Body, expr_id: ExprId) ->
   match &ctx.expr(body, expr_id).kind {
     ExprKind::FunctionExpr { is_arrow: true, .. } => true,
     ExprKind::TypeAssertion { expr, .. }
+    | ExprKind::Instantiation { expr, .. }
     | ExprKind::NonNull { expr }
     | ExprKind::Satisfies { expr, .. } => expr_is_arrow_function(ctx, body, *expr),
     _ => false,
@@ -2685,6 +2688,7 @@ fn expr_stmt_tokens(ctx: &HirContext<'_>, body: &Body, expr_id: ExprId) -> StmtS
     ),
     ExprKind::Yield { expr: None, .. } => prefix(StmtStartToken::Other, None),
     ExprKind::TypeAssertion { expr, .. }
+    | ExprKind::Instantiation { expr, .. }
     | ExprKind::NonNull { expr }
     | ExprKind::Satisfies { expr, .. } => expr_stmt_tokens(ctx, body, *expr),
     ExprKind::Assignment { target, .. } => pat_stmt_tokens(ctx, body, *target),
@@ -2763,6 +2767,7 @@ fn starts_with_optional_chaining(ctx: &HirContext<'_>, body: &Body, expr_id: Exp
     }
     ExprKind::Call(call) => call.optional || starts_with_optional_chaining(ctx, body, call.callee),
     ExprKind::TypeAssertion { expr, .. }
+    | ExprKind::Instantiation { expr, .. }
     | ExprKind::NonNull { expr }
     | ExprKind::Satisfies { expr, .. } => starts_with_optional_chaining(ctx, body, *expr),
     _ => false,
@@ -2903,6 +2908,7 @@ fn contextual_keyword_start_from_expr(
       propagate_keyword_start(ctx, body, *test, NextTokenAfterKeyword::Other)
     }
     ExprKind::TypeAssertion { expr, .. }
+    | ExprKind::Instantiation { expr, .. }
     | ExprKind::NonNull { expr }
     | ExprKind::Satisfies { expr, .. } => {
       propagate_keyword_start(ctx, body, *expr, NextTokenAfterKeyword::Other)

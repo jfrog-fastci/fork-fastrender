@@ -173,6 +173,7 @@ fn resolve_expr_path_segments(
   match &expr.kind {
     ExprKind::TypeAssertion { expr, .. }
     | ExprKind::NonNull { expr }
+    | ExprKind::Instantiation { expr, .. }
     | ExprKind::Satisfies { expr, .. } => {
       resolve_expr_path_segments(file, body, *expr, allow_instance, in_member, names)
     }
@@ -451,6 +452,7 @@ fn strip_transparent_wrappers(body: &Body, mut expr: ExprId) -> ExprId {
     match &node.kind {
       ExprKind::TypeAssertion { expr: inner, .. }
       | ExprKind::NonNull { expr: inner }
+      | ExprKind::Instantiation { expr: inner, .. }
       | ExprKind::Satisfies { expr: inner, .. } => expr = *inner,
       _ => return expr,
     }

@@ -333,6 +333,7 @@ fn strip_value_wrappers(body: &hir_js::Body, mut expr: ExprId) -> ExprId {
     match &node.kind {
       ExprKind::TypeAssertion { expr: inner, .. }
       | ExprKind::NonNull { expr: inner }
+      | ExprKind::Instantiation { expr: inner, .. }
       | ExprKind::Satisfies { expr: inner, .. } => expr = *inner,
       _ => return expr,
     }

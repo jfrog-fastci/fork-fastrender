@@ -375,6 +375,7 @@ fn strip_value_wrappers(body: &Body, mut expr: ExprId) -> ExprId {
     match &node.kind {
       ExprKind::TypeAssertion { expr: inner, .. }
       | ExprKind::NonNull { expr: inner }
+      | ExprKind::Instantiation { expr: inner, .. }
       | ExprKind::Satisfies { expr: inner, .. } => expr = *inner,
       _ => return expr,
     }
@@ -1046,6 +1047,7 @@ impl CallbackAnalyzer<'_> {
     match &expr.kind {
       ExprKind::TypeAssertion { expr, .. }
       | ExprKind::NonNull { expr }
+      | ExprKind::Instantiation { expr, .. }
       | ExprKind::Satisfies { expr, .. } => self.visit_assign_target_expr(body, *expr),
 
       ExprKind::Ident(name) => self.record_ident(*name),
@@ -1332,7 +1334,9 @@ impl CallbackAnalyzer<'_> {
         }
       }
 
-      ExprKind::TypeAssertion { expr, .. } | ExprKind::Satisfies { expr, .. } => {
+      ExprKind::TypeAssertion { expr, .. }
+      | ExprKind::Instantiation { expr, .. }
+      | ExprKind::Satisfies { expr, .. } => {
         self.visit_expr(body, *expr);
       }
 

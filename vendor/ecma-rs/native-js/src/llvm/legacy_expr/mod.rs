@@ -470,6 +470,7 @@ impl<'a, 'ctx> FunctionCodegen<'a, 'ctx> {
       } => self.codegen_conditional(expr, *test, *consequent, *alternate),
       ExprKind::Call(call) => self.codegen_call(expr, call),
       ExprKind::TypeAssertion { expr: inner, .. }
+      | ExprKind::Instantiation { expr: inner, .. }
       | ExprKind::NonNull { expr: inner }
       | ExprKind::Satisfies { expr: inner, .. } => self.codegen_expr(*inner),
       _ => {
@@ -816,4 +817,3 @@ impl<'a, 'ctx> FunctionCodegen<'a, 'ctx> {
     callsite.try_as_basic_value().left()
   }
 }
-

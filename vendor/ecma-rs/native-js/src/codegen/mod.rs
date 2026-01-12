@@ -2510,6 +2510,7 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
     match kind {
       ExprKind::TypeAssertion { expr, .. }
       | ExprKind::NonNull { expr }
+      | ExprKind::Instantiation { expr, .. }
       | ExprKind::Satisfies { expr, .. } => self.codegen_expr(expr),
 
       ExprKind::Literal(Literal::Number(raw)) => {

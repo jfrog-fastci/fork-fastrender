@@ -172,6 +172,7 @@ impl<O: TypeOracle> BodyAnalyzer<'_, O> {
 
       // Pure wrappers around the underlying expression value.
       ExprKind::TypeAssertion { expr, .. } => self.encoding_of(*expr),
+      ExprKind::Instantiation { expr, .. } => self.encoding_of(*expr),
       ExprKind::NonNull { expr } => self.encoding_of(*expr),
       ExprKind::Satisfies { expr, .. } => self.encoding_of(*expr),
 
@@ -367,6 +368,7 @@ fn strip_transparent_wrappers(body: &hir_js::Body, mut expr: ExprId) -> ExprId {
     match &node.kind {
       ExprKind::TypeAssertion { expr: inner, .. }
       | ExprKind::NonNull { expr: inner }
+      | ExprKind::Instantiation { expr: inner, .. }
       | ExprKind::Satisfies { expr: inner, .. } => expr = *inner,
       _ => return expr,
     }

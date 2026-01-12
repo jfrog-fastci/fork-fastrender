@@ -2274,6 +2274,7 @@ impl<'p> HirSourceToInst<'p> {
       ExprKind::ImportMeta => Ok(Arg::Builtin("import.meta".to_string())),
       ExprKind::NewTarget => Ok(Arg::Builtin("new.target".to_string())),
       ExprKind::TypeAssertion { expr, .. }
+      | ExprKind::Instantiation { expr, .. }
       | ExprKind::NonNull { expr }
       | ExprKind::Satisfies { expr, .. } => self.compile_expr(*expr),
       ExprKind::Unary { op, expr } => self.compile_unary_expr(expr_id, span, *op, *expr),

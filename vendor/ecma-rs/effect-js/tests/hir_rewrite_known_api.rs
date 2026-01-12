@@ -13,6 +13,7 @@ fn strip_transparent_wrappers(body: &hir_js::Body, mut expr: ExprId) -> ExprId {
     match &node.kind {
       ExprKind::TypeAssertion { expr: inner, .. }
       | ExprKind::NonNull { expr: inner }
+      | ExprKind::Instantiation { expr: inner, .. }
       | ExprKind::Satisfies { expr: inner, .. } => expr = *inner,
       _ => return expr,
     }
@@ -51,6 +52,7 @@ fn static_callee_path(lowered: &LowerResult, body: &hir_js::Body, expr_id: ExprI
     }
     ExprKind::TypeAssertion { expr: inner, .. }
     | ExprKind::NonNull { expr: inner }
+    | ExprKind::Instantiation { expr: inner, .. }
     | ExprKind::Satisfies { expr: inner, .. } => static_callee_path(lowered, body, *inner),
     _ => None,
   }

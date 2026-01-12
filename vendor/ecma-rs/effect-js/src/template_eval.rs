@@ -206,6 +206,7 @@ fn strip_transparent_wrappers(body: &Body, mut expr: ExprId) -> ExprId {
     match &node.kind {
       ExprKind::TypeAssertion { expr: inner, .. }
       | ExprKind::NonNull { expr: inner }
+      | ExprKind::Instantiation { expr: inner, .. }
       | ExprKind::Satisfies { expr: inner, .. } => expr = *inner,
       _ => return expr,
     }
@@ -226,6 +227,7 @@ fn callee_root_ident(body: &Body, mut expr: ExprId) -> Option<NameId> {
       }
       ExprKind::TypeAssertion { expr: inner, .. }
       | ExprKind::NonNull { expr: inner }
+      | ExprKind::Instantiation { expr: inner, .. }
       | ExprKind::Satisfies { expr: inner, .. } => expr = *inner,
       _ => return None,
     }
@@ -420,6 +422,7 @@ fn static_callee_path(lowered: &LowerResult, body: &Body, expr_id: ExprId) -> Op
     }
     ExprKind::TypeAssertion { expr: inner, .. }
     | ExprKind::NonNull { expr: inner }
+    | ExprKind::Instantiation { expr: inner, .. }
     | ExprKind::Satisfies { expr: inner, .. } => static_callee_path(lowered, body, *inner),
     _ => None,
   }
