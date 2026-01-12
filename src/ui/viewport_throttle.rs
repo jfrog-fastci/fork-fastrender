@@ -1,109 +1,284 @@
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-/// Deterministic rate limiter for high-frequency viewport updates.
-///
-/// The windowed browser UI can produce a burst of resize/scale updates (especially during window
-/// drags). Forwarding every intermediate viewport to the render worker is wasteful and can make the
-/// UI feel janky. `ViewportThrottle` implements a leading+trailing throttle:
-/// - the first update is emitted immediately,
-/// - subsequent updates within `interval` are coalesced (only the latest is kept),
-/// - once `interval` has elapsed, the latest pending update is emitted ("final update sent").
-///
-/// This type is **time-source agnostic**: callers provide a monotonic `now` value (typically a
-/// `Duration` since startup). This makes it easy to unit test without sleeping.
-#[derive(Debug, Clone)]
-pub struct ViewportThrottle<T> {
-  interval: Duration,
-  last_sent_at: Option<Duration>,
-  pending: Option<T>,
+/// Configuration knobs for [`ViewportThrottle`].
+#[derive(Debug, Clone, Copy)]
+pub struct ViewportThrottleConfig {
+  /// Maximum number of `ViewportChanged` updates allowed per second while the viewport is changing.
+  pub max_hz: u32,
+  /// Debounce window used to detect the end of a resize/viewport-change burst.
+  ///
+  /// When no new viewport value arrives for `debounce`, the throttle will emit the latest pending
+  /// viewport.
+  pub debounce: Duration,
 }
 
-impl<T> ViewportThrottle<T> {
-  /// Create a new throttle with the given minimum spacing between emissions.
-  pub fn new(interval: Duration) -> Self {
+impl Default for ViewportThrottleConfig {
+  fn default() -> Self {
     Self {
-      interval,
-      last_sent_at: None,
-      pending: None,
+      // 30Hz keeps the worker fed without spamming it during window drags.
+      max_hz: 30,
+      // ~50-100ms feels responsive while still avoiding "render every intermediate pixel" during
+      // resize.
+      debounce: Duration::from_millis(80),
+    }
+  }
+}
+
+/// A `(viewport_css, dpr)` pair suitable for emission to the render worker.
+///
+/// We store the DPR as raw bits so the type can be `Eq` and used in deterministic unit tests.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ViewportUpdate {
+  pub viewport_css: (u32, u32),
+  dpr_bits: u32,
+}
+
+impl ViewportUpdate {
+  pub fn new(viewport_css: (u32, u32), dpr: f32) -> Self {
+    Self {
+      viewport_css,
+      dpr_bits: dpr.to_bits(),
     }
   }
 
-  pub fn interval(&self) -> Duration {
-    self.interval
+  pub fn dpr(self) -> f32 {
+    f32::from_bits(self.dpr_bits)
+  }
+}
+
+/// A small time-based coalescer for viewport updates.
+///
+/// Callers feed it successive desired viewport values and then emit at most `max_hz` updates per
+/// second, with a final debounce emission shortly after the viewport settles.
+#[derive(Debug)]
+pub struct ViewportThrottle {
+  config: ViewportThrottleConfig,
+  min_interval: Duration,
+
+  last_sent: Option<ViewportUpdate>,
+  last_sent_at: Option<Instant>,
+
+  pending: Option<ViewportUpdate>,
+  pending_updated_at: Option<Instant>,
+}
+
+impl Default for ViewportThrottle {
+  fn default() -> Self {
+    Self::new()
+  }
+}
+
+impl ViewportThrottle {
+  pub fn new() -> Self {
+    Self::with_config(ViewportThrottleConfig::default())
   }
 
-  /// Returns true when an update is pending and will be emitted once the throttle interval elapses.
-  pub fn has_pending(&self) -> bool {
-    self.pending.is_some()
+  pub fn with_config(config: ViewportThrottleConfig) -> Self {
+    let max_hz = config.max_hz.max(1) as u64;
+    // Use ceiling division so we never exceed `max_hz` due to rounding.
+    let nanos_per_tick = (1_000_000_000u64 + max_hz - 1) / max_hz;
+    let min_interval = Duration::from_nanos(nanos_per_tick.max(1));
+
+    Self {
+      config,
+      min_interval,
+      last_sent: None,
+      last_sent_at: None,
+      pending: None,
+      pending_updated_at: None,
+    }
   }
 
-  /// If an update is pending, return the earliest time at which it can be emitted.
-  pub fn next_due_at(&self) -> Option<Duration> {
+  pub fn config(&self) -> ViewportThrottleConfig {
+    self.config
+  }
+
+  /// Drop all internal state so the next viewport is emitted immediately.
+  pub fn reset(&mut self) {
+    self.last_sent = None;
+    self.last_sent_at = None;
+    self.pending = None;
+    self.pending_updated_at = None;
+  }
+
+  /// Feed a new desired viewport value.
+  ///
+  /// Returns `Some(update)` when the caller should emit an immediate `ViewportChanged`.
+  pub fn push_desired(
+    &mut self,
+    now: Instant,
+    viewport_css: (u32, u32),
+    dpr: f32,
+  ) -> Option<ViewportUpdate> {
+    self.push_desired_update(now, ViewportUpdate::new(viewport_css, dpr))
+  }
+
+  fn push_desired_update(&mut self, now: Instant, desired: ViewportUpdate) -> Option<ViewportUpdate> {
+    // If the viewport is back to the last-sent value, clear any pending update.
+    if self.last_sent == Some(desired) {
+      self.pending = None;
+      self.pending_updated_at = None;
+      return None;
+    }
+
+    self.pending = Some(desired);
+    self.pending_updated_at = Some(now);
+
+    // First emission is immediate.
+    let Some(last_sent_at) = self.last_sent_at else {
+      return self.emit_pending(now);
+    };
+
+    // During a continuous resize, rate-limit emissions to `max_hz`.
+    if now.duration_since(last_sent_at) >= self.min_interval {
+      return self.emit_pending(now);
+    }
+
+    None
+  }
+
+  /// Poll for a pending debounced emission.
+  ///
+  /// Callers should call this periodically (e.g. when a `ControlFlow::WaitUntil` deadline fires).
+  pub fn poll(&mut self, now: Instant) -> Option<ViewportUpdate> {
+    let Some(_) = self.pending else {
+      return None;
+    };
+    let updated_at = self.pending_updated_at?;
+
+    if now < updated_at + self.config.debounce {
+      return None;
+    }
+
+    if let Some(last_sent_at) = self.last_sent_at {
+      if now.duration_since(last_sent_at) < self.min_interval {
+        return None;
+      }
+    }
+
+    self.emit_pending(now)
+  }
+
+  /// Force an immediate emission of the latest pending viewport value (if any).
+  pub fn force_send_now(&mut self, now: Instant) -> Option<ViewportUpdate> {
     if self.pending.is_none() {
       return None;
     }
-    // If we have never emitted, allow immediate flush.
-    Some(
-      self
-        .last_sent_at
-        .unwrap_or(Duration::ZERO)
-        .saturating_add(self.interval),
-    )
+    self.emit_pending(now)
   }
 
-  /// Offer a new viewport update at time `now`.
-  ///
-  /// Returns `Some(value)` when the caller should emit the update immediately, or `None` when the
-  /// update was throttled and stored as "pending".
-  pub fn push(&mut self, now: Duration, value: T) -> Option<T> {
-    match self.last_sent_at {
-      None => {
-        self.last_sent_at = Some(now);
-        self.pending = None;
-        Some(value)
+  /// Return the next timestamp at which [`Self::poll`] might emit.
+  pub fn next_deadline(&self) -> Option<Instant> {
+    let updated_at = self.pending_updated_at?;
+    let mut deadline = updated_at + self.config.debounce;
+
+    if let Some(last_sent_at) = self.last_sent_at {
+      let rate_limit_deadline = last_sent_at + self.min_interval;
+      if rate_limit_deadline > deadline {
+        deadline = rate_limit_deadline;
       }
-      Some(last) => {
-        let due = last.saturating_add(self.interval);
-        if now >= due {
-          // It's been long enough; emit the latest value immediately. Any older pending update is
-          // obsolete, so drop it.
-          self.last_sent_at = Some(now);
-          self.pending = None;
-          Some(value)
-        } else {
-          // Within the throttle interval; keep only the latest pending update.
-          self.pending = Some(value);
-          None
-        }
-      }
+    }
+
+    Some(deadline)
+  }
+
+  fn emit_pending(&mut self, now: Instant) -> Option<ViewportUpdate> {
+    let update = self.pending.take()?;
+    self.pending_updated_at = None;
+    self.last_sent = Some(update);
+    self.last_sent_at = Some(now);
+    Some(update)
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  fn cfg_for_tests() -> ViewportThrottleConfig {
+    ViewportThrottleConfig {
+      max_hz: 10,
+      debounce: Duration::from_millis(200),
     }
   }
 
-  /// Flush a pending update if the throttle interval has elapsed.
-  ///
-  /// Returns `Some(value)` when a pending update becomes eligible, otherwise `None`.
-  pub fn poll(&mut self, now: Duration) -> Option<T> {
-    let Some(value) = self.pending.take() else {
-      return None;
-    };
+  #[test]
+  fn emits_first_update_immediately() {
+    let mut throttle = ViewportThrottle::with_config(cfg_for_tests());
+    let t0 = Instant::now();
 
-    match self.last_sent_at {
-      None => {
-        self.last_sent_at = Some(now);
-        Some(value)
-      }
-      Some(last) => {
-        let due = last.saturating_add(self.interval);
-        if now >= due {
-          self.last_sent_at = Some(now);
-          Some(value)
-        } else {
-          // Not yet due; re-store.
-          self.pending = Some(value);
-          None
-        }
-      }
-    }
+    let out = throttle.push_desired(t0, (800, 600), 2.0);
+    assert_eq!(out, Some(ViewportUpdate::new((800, 600), 2.0)));
+    assert!(throttle.next_deadline().is_none());
+  }
+
+  #[test]
+  fn rate_limits_intermediate_updates() {
+    let mut throttle = ViewportThrottle::with_config(ViewportThrottleConfig {
+      max_hz: 2,
+      debounce: Duration::from_millis(600),
+    });
+    let t0 = Instant::now();
+
+    assert_eq!(
+      throttle.push_desired(t0, (100, 100), 1.0),
+      Some(ViewportUpdate::new((100, 100), 1.0))
+    );
+
+    // Within the 500ms interval, nothing should be emitted.
+    assert_eq!(throttle.push_desired(t0 + Duration::from_millis(100), (101, 100), 1.0), None);
+    assert_eq!(throttle.push_desired(t0 + Duration::from_millis(200), (102, 100), 1.0), None);
+
+    // Once the interval elapses, the next update emits immediately.
+    assert_eq!(
+      throttle.push_desired(t0 + Duration::from_millis(500), (103, 100), 1.0),
+      Some(ViewportUpdate::new((103, 100), 1.0))
+    );
+  }
+
+  #[test]
+  fn emits_final_update_after_debounce() {
+    let mut throttle = ViewportThrottle::with_config(cfg_for_tests());
+    let t0 = Instant::now();
+
+    assert_eq!(
+      throttle.push_desired(t0, (100, 100), 1.0),
+      Some(ViewportUpdate::new((100, 100), 1.0))
+    );
+
+    // New desired value arrives within the rate-limit interval: it's queued.
+    assert_eq!(throttle.push_desired(t0 + Duration::from_millis(10), (200, 100), 1.0), None);
+
+    let expected_deadline = t0 + Duration::from_millis(10) + cfg_for_tests().debounce;
+    assert_eq!(throttle.next_deadline(), Some(expected_deadline));
+
+    // Before the debounce window: nothing.
+    assert_eq!(throttle.poll(expected_deadline - Duration::from_millis(1)), None);
+    // After the debounce window: emit the final value.
+    assert_eq!(
+      throttle.poll(expected_deadline),
+      Some(ViewportUpdate::new((200, 100), 1.0))
+    );
+    assert!(throttle.next_deadline().is_none());
+  }
+
+  #[test]
+  fn handles_rapid_oscillation_deterministically() {
+    let mut throttle = ViewportThrottle::with_config(cfg_for_tests());
+    let t0 = Instant::now();
+
+    assert_eq!(
+      throttle.push_desired(t0, (100, 100), 1.0),
+      Some(ViewportUpdate::new((100, 100), 1.0))
+    );
+
+    // Oscillate values rapidly inside the rate limit; only the *last* desired should win.
+    assert_eq!(throttle.push_desired(t0 + Duration::from_millis(10), (120, 100), 1.0), None);
+    assert_eq!(throttle.push_desired(t0 + Duration::from_millis(20), (140, 100), 1.0), None);
+    assert_eq!(throttle.push_desired(t0 + Duration::from_millis(30), (120, 100), 1.0), None);
+
+    let deadline = t0 + Duration::from_millis(30) + cfg_for_tests().debounce;
+    assert_eq!(throttle.poll(deadline), Some(ViewportUpdate::new((120, 100), 1.0)));
   }
 }
 

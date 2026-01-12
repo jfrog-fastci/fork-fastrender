@@ -3,7 +3,6 @@ pub mod browser_app;
 pub mod browser_limits;
 pub mod browser_tab_controller;
 pub mod chrome_loading_progress;
-pub mod viewport_throttle;
 pub mod theme_parsing;
 // UI↔worker messaging lives in `messages.rs`.
 //
@@ -29,6 +28,10 @@ pub mod url;
 pub mod worker;
 pub mod zoom;
 pub mod motion;
+// Viewport-change throttling is used only by the windowed browser UI, but we compile it for unit
+// tests even without `browser_ui` so it stays cheap to validate.
+#[cfg(any(test, feature = "browser_ui"))]
+pub mod viewport_throttle;
 
 // `chrome` depends on egui, so keep it behind the `browser_ui` feature gate.
 #[cfg(feature = "browser_ui")]
@@ -86,6 +89,8 @@ pub use zoom::{
 };
 
 pub use frame_upload::FrameUploadCoalescer;
+#[cfg(any(test, feature = "browser_ui"))]
+pub use viewport_throttle::{ViewportThrottle, ViewportThrottleConfig, ViewportUpdate};
 
 pub use crate::select_dropdown;
 pub use crate::select_dropdown::{SelectDropdown, SelectDropdownChoice};

@@ -681,6 +681,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     // Drive periodic worker ticks for animated documents and keep the event loop armed for the next
     // tick deadline when needed.
     app.drive_animation_tick();
+    app.drive_viewport_throttle();
     app.update_control_flow_for_animation_ticks(control_flow);
   });
 }
@@ -1108,6 +1109,8 @@ struct App {
   viewport_cache_tab: Option<fastrender::ui::TabId>,
   viewport_cache_css: (u32, u32),
   viewport_cache_dpr: f32,
+  viewport_throttle: fastrender::ui::ViewportThrottle,
+  viewport_throttle_tab: Option<fastrender::ui::TabId>,
   modifiers: winit::event::ModifiersState,
   /// Clipboard text received from the worker that should be forwarded to the OS clipboard on the
   /// next egui frame.
@@ -1387,6 +1390,8 @@ error: {err}",
       viewport_cache_tab: None,
       viewport_cache_css: (0, 0),
       viewport_cache_dpr: 0.0,
+      viewport_throttle: fastrender::ui::ViewportThrottle::new(),
+      viewport_throttle_tab: None,
       modifiers: winit::event::ModifiersState::default(),
       pending_clipboard_text: None,
       suppress_paste_events: false,
@@ -1537,6 +1542,14 @@ error: {err}",
       deadline = Some(match deadline {
         Some(existing) => existing.min(sb_deadline),
         None => sb_deadline,
+      });
+    }
+
+    // Viewport debounce wakeups (resize settling).
+    if let Some(vp_deadline) = self.viewport_throttle.next_deadline() {
+      deadline = Some(match deadline {
+        Some(existing) => existing.min(vp_deadline),
+        None => vp_deadline,
       });
     }
 
@@ -2094,22 +2107,12 @@ error: {err}",
     }
   }
 
-  fn send_viewport_changed_if_needed(&mut self, viewport_css: (u32, u32), dpr: f32) {
-    let Some(tab_id) = self.browser_state.active_tab_id() else {
-      return;
-    };
-
-    // Clamp *before* sending to the worker so we never request an absurd RGBA pixmap allocation.
-    let clamp = self
-      .browser_limits
-      .clamp_viewport_and_dpr(viewport_css, dpr);
-    let viewport_css = clamp.viewport_css;
-    let dpr = clamp.dpr;
-
-    if let Some(tab) = self.browser_state.tab_mut(tab_id) {
-      tab.warning = clamp.warning_text(&self.browser_limits);
-    }
-
+  fn send_viewport_changed_clamped_if_needed(
+    &mut self,
+    tab_id: fastrender::ui::TabId,
+    viewport_css: (u32, u32),
+    dpr: f32,
+  ) {
     if self.viewport_cache_tab == Some(tab_id)
       && self.viewport_cache_css == viewport_css
       && (self.viewport_cache_dpr - dpr).abs() < f32::EPSILON
@@ -2126,6 +2129,70 @@ error: {err}",
       viewport_css,
       dpr,
     });
+  }
+
+  fn update_viewport_throttled(&mut self, viewport_css: (u32, u32), dpr: f32) {
+    let Some(tab_id) = self.browser_state.active_tab_id() else {
+      self.viewport_throttle_tab = None;
+      self.viewport_throttle.reset();
+      return;
+    };
+
+    // Keep the throttle state scoped to the active tab so tab switches don't inherit the previous
+    // tab's rate-limit window.
+    if self.viewport_throttle_tab != Some(tab_id) {
+      self.viewport_throttle_tab = Some(tab_id);
+      self.viewport_throttle.reset();
+    }
+
+    // Clamp *before* sending to the worker so we never request an absurd RGBA pixmap allocation.
+    let clamp = self.browser_limits.clamp_viewport_and_dpr(viewport_css, dpr);
+    let viewport_css = clamp.viewport_css;
+    let dpr = clamp.dpr;
+
+    if let Some(tab) = self.browser_state.tab_mut(tab_id) {
+      tab.warning = clamp.warning_text(&self.browser_limits);
+    }
+
+    let now = std::time::Instant::now();
+    if let Some(update) = self.viewport_throttle.push_desired(now, viewport_css, dpr) {
+      self.send_viewport_changed_clamped_if_needed(tab_id, update.viewport_css, update.dpr());
+    }
+  }
+
+  fn drive_viewport_throttle(&mut self) {
+    let Some(tab_id) = self.browser_state.active_tab_id() else {
+      return;
+    };
+
+    if self.viewport_throttle_tab != Some(tab_id) {
+      // The active tab changed without giving us a chance to reset state via `update_viewport_throttled`.
+      // Drop any pending viewport update so we don't emit it against the wrong tab.
+      self.viewport_throttle_tab = Some(tab_id);
+      self.viewport_throttle.reset();
+      return;
+    }
+
+    let now = std::time::Instant::now();
+    if let Some(update) = self.viewport_throttle.poll(now) {
+      self.send_viewport_changed_clamped_if_needed(tab_id, update.viewport_css, update.dpr());
+    }
+  }
+
+  fn force_send_viewport_now(&mut self) {
+    let Some(tab_id) = self.browser_state.active_tab_id() else {
+      return;
+    };
+
+    if self.viewport_throttle_tab != Some(tab_id) {
+      self.viewport_throttle_tab = Some(tab_id);
+      self.viewport_throttle.reset();
+    }
+
+    let now = std::time::Instant::now();
+    if let Some(update) = self.viewport_throttle.force_send_now(now) {
+      self.send_viewport_changed_clamped_if_needed(tab_id, update.viewport_css, update.dpr());
+    }
   }
 
   fn render_hud(&mut self, ctx: &egui::Context) {
@@ -2939,10 +3006,7 @@ error: {err}",
           self.window.request_redraw();
         }
 
-        let drag_update = {
-          let Some(drag) = self.scrollbar_drag.as_mut() else {
-            None
-          };
+        let drag_update = if let Some(drag) = self.scrollbar_drag.as_mut() {
           let delta_points = pos_points - drag.last_cursor_points;
           drag.last_cursor_points = pos_points;
           let axis_delta_points = match drag.axis {
@@ -2950,6 +3014,8 @@ error: {err}",
             fastrender::ui::scrollbars::ScrollbarAxis::Horizontal => delta_points.x,
           };
           Some((drag.tab_id, drag.axis, drag.scrollbar, axis_delta_points))
+        } else {
+          None
         };
 
         if let Some((tab_id, axis, scrollbar, axis_delta_points)) = drag_update {
@@ -3826,6 +3892,9 @@ error: {err}",
           }
         }
         ChromeAction::NavigateTo(raw) => {
+          // If we're in the middle of a debounced resize burst, flush the final viewport now so
+          // the navigation lays out at the correct size.
+          self.force_send_viewport_now();
           let Some(tab_id) = self.browser_state.active_tab_id() else {
             continue;
           };
@@ -3848,6 +3917,9 @@ error: {err}",
           self.send_worker_msg(msg);
         }
         ChromeAction::Reload => {
+          // Ensure the worker has the latest viewport before starting a navigation-affecting
+          // operation.
+          self.force_send_viewport_now();
           let Some(tab_id) = self.browser_state.active_tab_id() else {
             continue;
           };
@@ -3861,6 +3933,7 @@ error: {err}",
           self.send_worker_msg(UiToWorker::Reload { tab_id });
         }
         ChromeAction::Back => {
+          self.force_send_viewport_now();
           let Some(tab_id) = self.browser_state.active_tab_id() else {
             continue;
           };
@@ -3877,6 +3950,7 @@ error: {err}",
           self.send_worker_msg(UiToWorker::GoBack { tab_id });
         }
         ChromeAction::Forward => {
+          self.force_send_viewport_now();
           let Some(tab_id) = self.browser_state.active_tab_id() else {
             continue;
           };
@@ -4030,7 +4104,7 @@ error: {err}",
         self.pixels_per_point,
         zoom,
       );
-      self.send_viewport_changed_if_needed(viewport_css, dpr);
+      self.update_viewport_throttled(viewport_css, dpr);
 
       self.page_rect_points = None;
       self.page_viewport_css = None;
