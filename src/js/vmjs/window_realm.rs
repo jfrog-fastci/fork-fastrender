@@ -432,6 +432,7 @@ impl WindowRealm {
         crate::js::window_file::teardown_window_file_bindings_for_realm(realm_id);
         crate::js::window_file_reader::teardown_window_file_reader_bindings_for_realm(realm_id);
         crate::js::window_form_data::teardown_window_form_data_bindings_for_realm(realm_id);
+        crate::js::window_broadcast_channel::teardown_window_broadcast_channel_bindings_for_realm(realm_id);
         return Err(err);
       }
     };
@@ -584,6 +585,7 @@ impl WindowRealm {
     crate::js::window_file_reader::teardown_window_file_reader_bindings_for_realm(realm_id);
     crate::js::window_form_data::teardown_window_form_data_bindings_for_realm(realm_id);
     crate::js::window_url::teardown_window_url_bindings_for_realm(realm_id, &mut self.runtime.heap);
+    crate::js::window_broadcast_channel::teardown_window_broadcast_channel_bindings_for_realm(realm_id);
   }
 
   pub(crate) fn enable_module_loader(
@@ -22609,6 +22611,7 @@ fn init_window_globals(
   crate::js::window_file::install_window_file_bindings(vm, realm, heap)?;
   crate::js::window_file_reader::install_window_file_reader_bindings(vm, realm, heap)?;
   crate::js::window_form_data::install_window_form_data_bindings(vm, realm, heap)?;
+  crate::js::window_broadcast_channel::install_window_broadcast_channel_bindings(vm, realm, heap)?;
   crate::js::window_worker::install_window_worker_bindings(vm, realm, heap)?;
   crate::js::window_streams::install_window_streams_bindings(vm, realm, heap)?;
 

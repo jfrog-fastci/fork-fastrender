@@ -121,6 +121,8 @@ pub mod window_realm;
 pub mod window_timers;
 #[path = "vmjs/window_url.rs"]
 pub mod window_url;
+#[path = "vmjs/window_broadcast_channel.rs"]
+pub mod window_broadcast_channel;
 #[path = "vmjs/window_websocket.rs"]
 pub mod window_websocket;
 #[path = "vmjs/window_worker.rs"]
