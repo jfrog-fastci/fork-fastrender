@@ -9979,6 +9979,7 @@ fn async_handle_body_result(
           await_value,
         )
       })();
+      let resolve_res = resolve_res.map_err(|err| coerce_error_to_throw_for_async(vm, &mut await_scope, err));
 
       let awaited_promise = match resolve_res {
         Ok(p) => p,
@@ -23187,6 +23188,8 @@ pub(crate) fn run_ecma_function(
             )
           }
         })();
+        let resolve_res =
+          resolve_res.map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut root_scope, err));
 
         let awaited_promise = match resolve_res {
           Ok(p) => p,

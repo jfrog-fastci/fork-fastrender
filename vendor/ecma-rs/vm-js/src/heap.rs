@@ -1555,18 +1555,15 @@ impl Heap {
   /// `index` is out of bounds or `bytes` is empty, this returns `Ok(0)` (mirroring typed array
   /// out-of-bounds write semantics).
   ///
-  /// If the view is out of bounds for its backing `ArrayBuffer`, this performs a safe no-op and
-  /// returns `Ok(0)` (mirroring the fact that out-of-bounds typed array views have length `0`).
+  /// If the backing `ArrayBuffer` is detached, this returns `Ok(0)`.
   ///
-  /// Returns a `TypeError` if the backing `ArrayBuffer` is detached.
-  ///
-  /// If the backing `ArrayBuffer` is detached or the view is out of bounds, this also returns
-  /// `Ok(0)` and does not write.
+  /// If the view is out of bounds (e.g. due to internal corruption or a resizable `ArrayBuffer`
+  /// shrinking), this returns `Ok(0)` to mirror out-of-bounds write semantics while avoiding host
+  /// panics/invariant violations.
   ///
   /// # Errors
   ///
-  /// Returns an error if `obj` is not a live `Uint8Array` object or if its backing `ArrayBuffer` is
-  /// detached.
+  /// Returns an error if `obj` is not a live `Uint8Array` object.
   pub fn uint8_array_write(&mut self, obj: GcObject, index: usize, bytes: &[u8]) -> Result<usize, VmError> {
     // Extract view fields without holding a mutable borrow across ArrayBuffer access.
     let (buffer, byte_offset, length) = {
@@ -1596,22 +1593,19 @@ impl Heap {
     // Validate the backing buffer is attached and compute its length.
     let buf_len = {
       let buf = self.get_array_buffer(buffer)?;
-      let data = buf
-        .data
-        .as_deref()
-        .ok_or(VmError::TypeError("ArrayBuffer is detached"))?;
+      let Some(data) = buf.data.as_deref() else {
+        return Ok(0);
+      };
       data.len()
     };
     if view_end > buf_len {
-      // Out-of-bounds views behave like out-of-bounds indices: writes are ignored.
       return Ok(0);
     }
 
     let buf = self.get_array_buffer_mut(buffer)?;
-    let data = buf
-      .data
-      .as_deref_mut()
-      .ok_or(VmError::TypeError("ArrayBuffer is detached"))?;
+    let Some(data) = buf.data.as_deref_mut() else {
+      return Ok(0);
+    };
     data[abs_start..abs_end].copy_from_slice(&bytes[..max_write]);
     Ok(max_write)
   }
@@ -7991,9 +7985,9 @@ mod detached_array_buffer_tests {
     }
 
     match scope.heap_mut().uint8_array_write(view, 0, &[1, 2, 3]) {
-      Err(VmError::TypeError(_)) => {}
-      Err(other) => panic!("expected TypeError, got {other:?}"),
-      Ok(wrote) => panic!("expected TypeError for detached Uint8Array write, got Ok({wrote})"),
+      Ok(0) => {}
+      Ok(n) => panic!("expected Ok(0) for detached Uint8Array write, got Ok({n})"),
+      Err(other) => panic!("expected Ok(0), got {other:?}"),
     }
 
     Ok(())
