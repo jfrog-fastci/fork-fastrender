@@ -8574,7 +8574,13 @@ pub fn object_prototype_is_prototype_of(
       vm.tick()?;
     }
 
-    let Some(p) = scope.heap().object_prototype(v_obj)? else {
+    // Spec uses `[[GetPrototypeOf]]`, which is Proxy-aware (trap + revoked proxy errors).
+    let p = {
+      let mut step_scope = scope.reborrow();
+      step_scope.push_root(Value::Object(v_obj))?;
+      step_scope.get_prototype_of_with_host_and_hooks(vm, host, hooks, v_obj)?
+    };
+    let Some(p) = p else {
       return Ok(Value::Bool(false));
     };
     if p == o {
@@ -8583,6 +8589,21 @@ pub fn object_prototype_is_prototype_of(
     v_obj = p;
     steps += 1;
   }
+}
+
+/// `Object.prototype.valueOf()` (ECMA-262).
+pub fn object_prototype_value_of(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  // Spec: https://tc39.es/ecma262/#sec-object.prototype.valueof
+  let obj = scope.to_object(vm, host, hooks, this)?;
+  Ok(Value::Object(obj))
 }
 
 /// `Object.prototype.propertyIsEnumerable(V)` (ECMA-262).

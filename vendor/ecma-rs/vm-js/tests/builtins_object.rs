@@ -793,6 +793,7 @@ fn object_prototype_methods_work() -> Result<(), VmError> {
   let mut rt = TestRealm::new()?;
   let object = rt.realm.intrinsics().object_constructor();
   let object_proto = rt.realm.intrinsics().object_prototype();
+  let number_proto = rt.realm.intrinsics().number_prototype();
 
   let mut scope = rt.heap.scope();
 
@@ -810,6 +811,10 @@ fn object_prototype_methods_work() -> Result<(), VmError> {
     get_own_data_property(&mut scope, object_proto, "toLocaleString")?.expect("exists");
   let Value::Object(to_locale_string) = to_locale_string else {
     panic!("Object.prototype.toLocaleString should be a function object");
+  };
+  let value_of = get_own_data_property(&mut scope, object_proto, "valueOf")?.expect("exists");
+  let Value::Object(value_of) = value_of else {
+    panic!("Object.prototype.valueOf should be a function object");
   };
 
   // isPrototypeOf
@@ -909,6 +914,20 @@ fn object_prototype_methods_work() -> Result<(), VmError> {
     panic!("expected toLocaleString() result to be a string, got {out:?}");
   };
   assert_eq!(scope.heap().get_string(out_s)?.to_utf8_lossy(), "ok");
+
+  // valueOf returns the object itself, and boxes primitives.
+  let out = rt
+    .vm
+    .call_without_host(&mut scope, Value::Object(value_of), Value::Object(o), &[])?;
+  assert_eq!(out, Value::Object(o));
+
+  let out = rt
+    .vm
+    .call_without_host(&mut scope, Value::Object(value_of), Value::Number(1.0), &[])?;
+  let Value::Object(number_obj) = out else {
+    panic!("expected boxed object from valueOf on primitive");
+  };
+  assert_eq!(scope.heap().object_prototype(number_obj)?, Some(number_proto));
 
   // Sanity: `toLocaleString` is installed on Object.prototype (not on Object).
   assert!(get_own_data_property(&mut scope, object, "toLocaleString")?.is_none());

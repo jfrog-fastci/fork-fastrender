@@ -776,6 +776,7 @@ impl Intrinsics {
     let object_prototype_to_string = vm.register_native_call(builtins::object_prototype_to_string)?;
     let object_prototype_has_own_property =
       vm.register_native_call(builtins::object_prototype_has_own_property)?;
+    let object_prototype_value_of = vm.register_native_call(builtins::object_prototype_value_of)?;
     let object_prototype_proto_get =
       vm.register_native_call(builtins::object_prototype___proto___get)?;
     let object_prototype_proto_set =
@@ -1059,11 +1060,28 @@ impl Intrinsics {
           .heap_mut()
           .object_set_prototype(func, Some(function_prototype))?;
        scope.define_property(
-         object_prototype,
-         key,
-         data_desc(Value::Object(func), true, false, true),
-       )?;
-     }
+          object_prototype,
+          key,
+          data_desc(Value::Object(func), true, false, true),
+        )?;
+      }
+
+      // Object.prototype.valueOf
+      {
+        let value_of_s = scope.alloc_string("valueOf")?;
+        scope.push_root(Value::String(value_of_s))?;
+        let key = PropertyKey::from_string(value_of_s);
+        let func = scope.alloc_native_function(object_prototype_value_of, None, value_of_s, 0)?;
+        scope.push_root(Value::Object(func))?;
+        scope
+          .heap_mut()
+          .object_set_prototype(func, Some(function_prototype))?;
+        scope.define_property(
+          object_prototype,
+          key,
+          data_desc(Value::Object(func), true, false, true),
+        )?;
+      }
 
       // Annex B `Object.prototype.__proto__` (getter/setter).
       {
