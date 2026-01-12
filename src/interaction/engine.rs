@@ -3042,6 +3042,16 @@ fn apply_select_keyboard_action(
   dom_mutation::activate_select_option(dom, select_id, option_id, false)
 }
 impl InteractionEngine {
+  /// Update the active document selection (used for clipboard copy when no text control is focused)
+  /// and keep the publicly exported interaction-state flags in sync.
+  fn set_document_selection(&mut self, selection: Option<DocumentSelection>) -> bool {
+    let prev_selection = self.document_selection;
+    let prev_has = self.state.document_has_selection;
+    self.document_selection = selection;
+    self.state.document_has_selection = self.document_selection.is_some();
+    prev_selection != self.document_selection || prev_has != self.state.document_has_selection
+  }
+
   pub fn new() -> Self {
     Self {
       state: InteractionState::default(),
@@ -3358,7 +3368,7 @@ impl InteractionEngine {
       self.text_edit = None;
       self.text_drag = None;
       // Focus changes collapse any existing document selection (e.g. a prior Ctrl+A selection).
-      self.document_selection = None;
+      let _ = self.set_document_selection(None);
     }
 
     self.state.focused = new_focused;
@@ -3690,7 +3700,7 @@ impl InteractionEngine {
     self.number_spin = None;
     self.text_drag = None;
     // Pointer interaction collapses any active document selection.
-    self.document_selection = None;
+    let selection_changed = self.set_document_selection(None);
 
     let page_point = viewport_point.translate(scroll.viewport);
 
@@ -3705,7 +3715,7 @@ impl InteractionEngine {
     self.state.active_chain = new_chain;
     self.pointer_down_target = down_target;
 
-    let mut dom_changed = changed;
+    let mut dom_changed = changed || selection_changed;
     if let Some(hit) = down_hit.as_ref() {
       if index.node(hit.dom_node_id).is_some_and(is_range_input) {
         self.range_drag = Some(RangeDragState {
@@ -3923,6 +3933,7 @@ impl InteractionEngine {
     }
 
     // Remap document selection endpoints (used for clipboard copy of document text).
+    let mut clear_doc_selection = false;
     if let Some(selection) = &mut self.document_selection {
       if let DocumentSelection::Range(range) = selection {
         let mut ok = true;
@@ -3943,9 +3954,12 @@ impl InteractionEngine {
           point.node_id = new_id;
         }
         if !ok {
-          self.document_selection = None;
+          clear_doc_selection = true;
         }
       }
+    }
+    if clear_doc_selection {
+      let _ = self.set_document_selection(None);
     }
 
     // Ensure the paint-only caret/selection state stays in sync with the remapped internal edit
@@ -4559,10 +4573,7 @@ impl InteractionEngine {
             changed |= self.sync_text_edit_paint_state();
 
             // Text-control selection is distinct from document selection.
-            if self.document_selection.is_some() {
-              self.document_selection = None;
-              changed = true;
-            }
+            changed |= self.set_document_selection(None);
           }
         }
       }
@@ -4573,11 +4584,7 @@ impl InteractionEngine {
     }
 
     // No focused text control: fall back to document selection.
-    let prev_doc = self.document_selection;
-    self.document_selection = Some(DocumentSelection::All);
-    if prev_doc != self.document_selection {
-      changed = true;
-    }
+    changed |= self.set_document_selection(Some(DocumentSelection::All));
 
     if self.text_edit.is_some() {
       self.text_edit = None;

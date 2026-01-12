@@ -7817,6 +7817,9 @@ impl<'a> Element for ElementRef<'a> {
       },
       PseudoClass::Empty => self.is_empty(),
       PseudoClass::Blank => {
+        if !self.is_html_element() {
+          return false;
+        }
         let Some(tag) = self.node.tag_name() else {
           return false;
         };
