@@ -65,7 +65,28 @@ fn text_encoder_stream_pipe_through_encodes_to_utf8() -> Result<()> {
       // Minimal ReadableStream/TransformStream polyfill for this test binary. When FastRender gains
       // native stream support, these branches will not run and the test will exercise the real
       // implementations.
-      if (typeof g.ReadableStream !== "function") {
+      var needReadableStream = true;
+      if (typeof g.ReadableStream === "function") {
+        try {
+          // Detect whether the host ReadableStream supports the `underlyingSource.start` hook, which
+          // is required by this test (and by many real-world stream producers).
+          //
+          // The fetch bindings currently expose a minimal ReadableStream that does not support
+          // custom underlying sources, so treat that as unsupported and fall back to the polyfill.
+          var __rs_start_called = false;
+          new g.ReadableStream({
+            start: function (c) {
+              __rs_start_called = true;
+              c.close();
+            },
+          });
+          if (__rs_start_called && typeof g.ReadableStream.prototype.pipeThrough === "function") {
+            needReadableStream = false;
+          }
+        } catch (_) {}
+      }
+
+      if (needReadableStream) {
         function ReadableStream(underlyingSource) {
           this._queue = [];
           this._queueHead = 0;
@@ -240,4 +261,3 @@ fn text_encoder_stream_pipe_through_encodes_to_utf8() -> Result<()> {
   assert_eq!(ok, Value::Bool(true));
   Ok(())
 }
-
