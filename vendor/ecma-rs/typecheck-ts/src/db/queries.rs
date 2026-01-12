@@ -1841,6 +1841,38 @@ pub mod body_check {
       } else {
         Some(&expr_value_overrides)
       };
+      let current_class_def = {
+        let mut current = Some(body_id);
+        let mut seen: HashSet<BodyId> = HashSet::new();
+        let mut found = None;
+        while let Some(id) = current {
+          if !seen.insert(id) {
+            break;
+          }
+          let owner = if id == body_id {
+            Some(body.owner)
+          } else {
+            ctx
+              .body_info
+              .get(&id)
+              .and_then(|info| ctx.lowered.get(&info.file).map(|lowered| (info, lowered)))
+              .and_then(|(info, lowered)| info.hir.and_then(|hir_id| lowered.body(hir_id)))
+              .map(|body| body.owner)
+          };
+          if let Some(owner) = owner {
+            if ctx
+              .def_kinds
+              .get(&owner)
+              .is_some_and(|kind| matches!(kind, crate::DefKind::Class(_)))
+            {
+              found = Some(owner);
+              break;
+            }
+          }
+          current = ctx.body_parents.get(&id).copied();
+        }
+        found
+      };
       let mut result = check_body_with_expander(
         body_id,
         body,
@@ -1859,6 +1891,7 @@ pub mod body_check {
         contextual_fn_ty,
         this_super_context,
         expr_value_overrides,
+        current_class_def,
         strict_native,
         no_implicit_any,
         ctx.jsx_mode,

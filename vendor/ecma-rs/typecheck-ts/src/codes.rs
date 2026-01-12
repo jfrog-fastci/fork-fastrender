@@ -290,6 +290,32 @@ pub const PROPERTY_DOES_NOT_EXIST: Code = Code::new(
   &[],
 );
 
+/// TS2341: Property is private and only accessible within class.
+///
+/// - Primary span: the property name within a member expression.
+/// - Labels: primary only.
+/// - Notes: none.
+pub const PRIVATE_MEMBER_ACCESS: Code = Code::new(
+  "TS2341",
+  "property is private and only accessible within class",
+  "property name within a member expression",
+  &["primary: property name"],
+  &[],
+);
+
+/// TS2445: Property is protected and only accessible within class and subclasses.
+///
+/// - Primary span: the property name within a member expression.
+/// - Labels: primary only.
+/// - Notes: none.
+pub const PROTECTED_MEMBER_ACCESS: Code = Code::new(
+  "TS2445",
+  "property is protected and only accessible within class and subclasses",
+  "property name within a member expression",
+  &["primary: property name"],
+  &[],
+);
+
 /// TS2395: Merged declarations must be all exported or all local.
 ///
 /// - Primary span: the identifier name of the declaration participating in the merge.

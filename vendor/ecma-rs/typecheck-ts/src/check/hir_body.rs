@@ -28,9 +28,10 @@ use parse_js::loc::Loc;
 use parse_js::operator::OperatorName;
 use semantic_js::ts::SymbolId;
 use types_ts_interned::{
-  EvaluatorCaches, ExpandedType, NameId as TsNameId, ObjectType, Param as SigParam, PredicateParam,
-  PropData, PropKey, RelateCtx, Shape, Signature, SignatureId, TypeDisplay, TypeEvaluator,
-  TypeExpander, TypeId, TypeKind, TypeParamDecl, TypeParamId, TypeParamVariance, TypeStore,
+  Accessibility, EvaluatorCaches, ExpandedType, NameId as TsNameId, ObjectType, Param as SigParam,
+  PredicateParam, PropData, PropKey, RelateCtx, Shape, Signature, SignatureId, TypeDisplay,
+  TypeEvaluator, TypeExpander, TypeId, TypeKind, TypeParamDecl, TypeParamId, TypeParamVariance,
+  TypeStore,
 };
 
 use super::cfg::{BlockId, BlockKind, ControlFlowGraph};
@@ -1153,6 +1154,7 @@ pub fn check_body(
     None,
     BodyThisSuperContext::default(),
     expr_value_overrides,
+    None,
     false,
     false,
     None,
@@ -1182,6 +1184,7 @@ pub fn check_body_with_expander(
   contextual_fn_ty: Option<TypeId>,
   this_super_context: BodyThisSuperContext,
   expr_value_overrides: Option<&HashMap<TextRange, TypeId>>,
+  current_class_def: Option<DefId>,
   strict_native: bool,
   no_implicit_any: bool,
   jsx_mode: Option<JsxMode>,
@@ -1322,6 +1325,7 @@ pub fn check_body_with_expander(
     current_super_ctor_ty: prim.unknown,
     current_class_field_param_props: None,
     class_field_initializer: None,
+    current_class_def,
     file,
     ref_expander: relate_expander,
     def_type_param_decls: type_param_decls,
@@ -1486,6 +1490,7 @@ struct Checker<'a> {
   current_super_ctor_ty: TypeId,
   current_class_field_param_props: Option<&'a [String]>,
   class_field_initializer: Option<ClassFieldInitializerContext>,
+  current_class_def: Option<DefId>,
   file: FileId,
   ref_expander: Option<&'a dyn types_ts_interned::RelateTypeExpander>,
   def_type_param_decls: Option<&'a HashMap<DefId, Arc<[TypeParamDecl]>>>,
@@ -3479,6 +3484,9 @@ impl<'a> Checker<'a> {
           &mem.stx.right,
           full_range,
         );
+        let name_len = mem.stx.right.len() as u32;
+        let start = full_range.end.saturating_sub(name_len);
+        let prop_range = TextRange::new(start, full_range.end);
         let prim = self.store.primitive_ids();
         let obj_ty = self.check_expr(&mem.stx.left);
         let chain_optional =
@@ -3489,6 +3497,9 @@ impl<'a> Checker<'a> {
         } else {
           obj_ty
         };
+        if let Some(prop_data) = self.member_prop_data(base_obj_ty, &mem.stx.right) {
+          self.check_member_access(&mem.stx.right, &prop_data, prop_range);
+        }
         let prop_ty = if chain_optional && base_obj_ty == prim.never {
           prim.undefined
         } else {
@@ -3499,16 +3510,13 @@ impl<'a> Checker<'a> {
                 self.store.type_kind(base_obj_ty),
                 TypeKind::Any | TypeKind::Unknown | TypeKind::Never
               ) {
-                let name_len = mem.stx.right.len() as u32;
-                let start = full_range.end.saturating_sub(name_len);
-                let range = TextRange::new(start, full_range.end);
                 self.diagnostics.push(codes::PROPERTY_DOES_NOT_EXIST.error(
                   format!(
                     "Property '{}' does not exist on type '{}'.",
                     mem.stx.right,
                     TypeDisplay::new(self.store.as_ref(), base_obj_ty)
                   ),
-                  Span::new(self.file, range),
+                  Span::new(self.file, prop_range),
                 ));
               }
               prim.any
@@ -3564,6 +3572,12 @@ impl<'a> Checker<'a> {
             _ => None,
           },
         };
+        if let Some(key) = literal_key.as_deref() {
+          let key_range = loc_to_range(self.file, mem.stx.member.loc);
+          if let Some(prop_data) = self.member_prop_data(base_obj_ty, key) {
+            self.check_member_access(key, &prop_data, key_range);
+          }
+        }
 
         let key_is_string_or_number = matches!(
           mem.stx.member.stx.as_ref(),
@@ -7540,6 +7554,146 @@ impl<'a> Checker<'a> {
         }
       }
       _ => Some(prim.unknown),
+    }
+  }
+
+  fn member_prop_data(&mut self, obj: TypeId, prop: &str) -> Option<PropData> {
+    let obj = self.expand_ref(obj);
+    match self.store.type_kind(obj) {
+      TypeKind::Ref { .. } => None,
+      TypeKind::Object(obj_id) => {
+        let shape = self.store.shape(self.store.object(obj_id).shape);
+        for candidate in shape.properties.iter() {
+          match &candidate.key {
+            PropKey::String(name_id) => {
+              if self.store.name(*name_id) == prop {
+                return Some(candidate.data.clone());
+              }
+            }
+            PropKey::Number(num) => {
+              if prop.parse::<i64>().ok() == Some(*num) {
+                return Some(candidate.data.clone());
+              }
+            }
+            _ => {}
+          }
+        }
+        None
+      }
+      TypeKind::Union(members) => members
+        .iter()
+        .filter_map(|member| self.member_prop_data(*member, prop))
+        .next(),
+      TypeKind::Intersection(members) => members
+        .iter()
+        .filter_map(|member| self.member_prop_data(*member, prop))
+        .next(),
+      _ => None,
+    }
+  }
+
+  fn is_subclass_of(&self, derived: DefId, base: DefId) -> bool {
+    if derived == base {
+      return true;
+    }
+    // Without the ref expander, we cannot reliably walk the class `extends` chain.
+    if self.ref_expander.is_none() {
+      return false;
+    }
+    let mut queue: VecDeque<DefId> = VecDeque::new();
+    let mut seen: HashSet<DefId> = HashSet::new();
+    queue.push_back(derived);
+    while let Some(next) = queue.pop_front() {
+      if !seen.insert(next) {
+        continue;
+      }
+      if next == base {
+        return true;
+      }
+      let ref_ty = self.store.intern_type(TypeKind::Ref {
+        def: next,
+        args: Vec::new(),
+      });
+      let expanded = self.expand_ref(ref_ty);
+      if let TypeKind::Intersection(parts) = self.store.type_kind(expanded) {
+        for part in parts {
+          if let TypeKind::Ref { def, .. } = self.store.type_kind(part) {
+            if def == base {
+              return true;
+            }
+            queue.push_back(def);
+          }
+        }
+      }
+    }
+    false
+  }
+
+  fn check_member_access(&mut self, prop: &str, prop_data: &PropData, span: TextRange) {
+    let accessibility = prop_data.accessibility.or_else(|| {
+      if prop.starts_with('#') {
+        Some(Accessibility::Private)
+      } else {
+        None
+      }
+    });
+
+    let Some(accessibility) = accessibility else {
+      return;
+    };
+
+    let (is_private, is_protected) = match accessibility {
+      Accessibility::Private => (true, false),
+      Accessibility::Protected => (false, true),
+      Accessibility::Public => (false, false),
+    };
+
+    if !is_private && !is_protected {
+      return;
+    }
+
+    let Some(current_class) = self.current_class_def else {
+      if is_private {
+        self.diagnostics.push(codes::PRIVATE_MEMBER_ACCESS.error(
+          format!("Property '{prop}' is private and only accessible within class."),
+          Span::new(self.file, span),
+        ));
+      } else {
+        self
+          .diagnostics
+          .push(codes::PROTECTED_MEMBER_ACCESS.error(
+            format!("Property '{prop}' is protected and only accessible within class and its subclasses."),
+            Span::new(self.file, span),
+          ));
+      }
+      return;
+    };
+
+    let declaring = prop_data.declared_on;
+    let allowed = if is_private {
+      declaring.is_none() || declaring == Some(current_class)
+    } else {
+      declaring.is_none()
+        || declaring == Some(current_class)
+        || declaring.is_some_and(|decl| self.is_subclass_of(current_class, decl))
+    };
+
+    if allowed {
+      return;
+    }
+
+    if is_private {
+      self.diagnostics.push(codes::PRIVATE_MEMBER_ACCESS.error(
+        format!("Property '{prop}' is private and only accessible within class."),
+        Span::new(self.file, span),
+      ));
+    } else {
+      self
+        .diagnostics
+        .push(codes::PROTECTED_MEMBER_ACCESS.error(
+          format!("Property '{prop}' is protected and only accessible within class and its subclasses."),
+          Span::new(self.file, span),
+        ));
     }
   }
 
