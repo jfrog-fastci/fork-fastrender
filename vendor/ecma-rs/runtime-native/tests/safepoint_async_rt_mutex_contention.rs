@@ -2,7 +2,7 @@ use runtime_native::test_util::TestRuntimeGuard;
 use runtime_native::threading;
 use runtime_native::threading::ThreadKind;
 use runtime_native::io::IoRuntime;
-use runtime_native::abi::PromiseRef;
+use runtime_native::abi::LegacyPromiseRef;
 use runtime_native::promise_api::{Promise, PromiseExt};
 use runtime_native::TypeDescriptor;
 use std::future::Future;
@@ -264,7 +264,7 @@ fn stop_the_world_does_not_wait_for_thread_blocked_on_io_registry_mutex() {
   threading::unregister_current_thread();
 }
 
-extern "C" fn spawn_blocking_noop(data: *mut u8, promise: PromiseRef) {
+extern "C" fn spawn_blocking_noop(data: *mut u8, promise: LegacyPromiseRef) {
   let done = unsafe { &*(data as *const AtomicBool) };
   done.store(true, Ordering::Release);
   runtime_native::rt_promise_resolve_legacy(promise, core::ptr::null_mut());
@@ -524,8 +524,10 @@ fn stop_the_world_does_not_wait_for_thread_blocked_on_pending_promise_reactions_
   threading::register_current_thread(ThreadKind::Main);
 
   let promise = runtime_native::rt_promise_new();
+  // Raw pointers are `!Send` on newer Rust versions; pass as an integer across threads.
+  let promise_bits = promise as usize;
 
-  let handle = runtime_native::async_rt::debug_with_pending_reactions_lock(|| {
+  let handle = runtime_native::async_rt::debug_with_pending_reactions_lock(move || {
     let (tx_id, rx_id) = mpsc::channel();
     let started = Arc::new(Barrier::new(2));
     let started_worker = started.clone();
@@ -538,7 +540,7 @@ fn stop_the_world_does_not_wait_for_thread_blocked_on_pending_promise_reactions_
 
       // This calls into `async_rt::promise::promise_register_reaction`, which tracks pending
       // reactions in a process-global set.
-      runtime_native::rt_promise_then(promise, noop_task, core::ptr::null_mut());
+      runtime_native::rt_promise_then(promise_bits as LegacyPromiseRef, noop_task, core::ptr::null_mut());
 
       threading::unregister_current_thread();
     });

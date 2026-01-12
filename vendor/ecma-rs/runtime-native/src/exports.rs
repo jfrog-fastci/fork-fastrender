@@ -1,4 +1,5 @@
 use crate::abi::Microtask;
+use crate::abi::LegacyPromiseRef;
 use crate::abi::PromiseRef;
 use crate::abi::PromiseResolveInput;
 use crate::abi::RtCoroutineHeader;
@@ -100,6 +101,11 @@ fn promise_is_pending(p: PromiseRef) -> bool {
   // internal transient settling states. Treat any non-(FULFILLED|REJECTED) state as pending.
   let state = unsafe { &(*header).state }.load(Ordering::Acquire);
   state != PromiseHeader::FULFILLED && state != PromiseHeader::REJECTED
+}
+
+#[inline]
+fn promise_ref_from_legacy(p: LegacyPromiseRef) -> PromiseRef {
+  PromiseRef(p.cast())
 }
 
 #[repr(C)]
@@ -1620,9 +1626,9 @@ pub extern "C" fn rt_parallel_spawn_rooted(task: extern "C" fn(*mut u8), data: *
 
 #[no_mangle]
 pub extern "C" fn rt_parallel_spawn_promise_legacy(
-  task: extern "C" fn(*mut u8, PromiseRef),
+  task: extern "C" fn(*mut u8, LegacyPromiseRef),
   data: *mut u8,
-) -> PromiseRef {
+) -> LegacyPromiseRef {
   abort_on_panic(|| {
     let _ = crate::rt_ensure_init();
     ensure_current_thread_registered();
@@ -1643,9 +1649,9 @@ pub extern "C" fn rt_parallel_spawn_promise_legacy(
 
     #[repr(C)]
     struct WorkItem {
-      task: extern "C" fn(*mut u8, PromiseRef),
+      task: extern "C" fn(*mut u8, LegacyPromiseRef),
       data: *mut u8,
-      promise: PromiseRef,
+      promise: LegacyPromiseRef,
     }
 
     // Raw pointers are not `Send` by default; in the runtime ABI the caller is responsible for
@@ -1657,12 +1663,16 @@ pub extern "C" fn rt_parallel_spawn_promise_legacy(
       let work = unsafe { Box::from_raw(data as *mut WorkItem) };
       // `work.task` is typed as `extern "C"`. If it panics we must not unwind across the FFI
       // boundary (UB); abort deterministically instead.
-      crate::ffi::invoke_cb2_promise(work.task, work.data, work.promise);
+      crate::ffi::invoke_cb2_legacy_promise(work.task, work.data, work.promise);
     }
 
-    let work = Box::new(WorkItem { task, data, promise });
+    let work = Box::new(WorkItem {
+      task,
+      data,
+      promise: promise.0.cast(),
+    });
     crate::rt_parallel().spawn_detached(run_work_item, Box::into_raw(work) as *mut u8);
-    promise
+    promise.0.cast()
   })
 }
 
@@ -1895,9 +1905,9 @@ pub unsafe extern "C" fn rt_parallel_spawn_promise_with_shape_rooted_h(
 
 #[no_mangle]
 pub extern "C" fn rt_spawn_blocking(
-  task: extern "C" fn(*mut u8, PromiseRef),
+  task: extern "C" fn(*mut u8, LegacyPromiseRef),
   data: *mut u8,
-) -> PromiseRef {
+) -> LegacyPromiseRef {
   abort_on_panic(|| {
     ensure_event_loop_thread_registered();
     crate::blocking_pool::spawn(task, data)
@@ -1905,7 +1915,7 @@ pub extern "C" fn rt_spawn_blocking(
 }
 
 #[no_mangle]
-pub extern "C" fn rt_async_spawn_legacy(coro: *mut RtCoroutineHeader) -> PromiseRef {
+pub extern "C" fn rt_async_spawn_legacy(coro: *mut RtCoroutineHeader) -> LegacyPromiseRef {
   abort_on_panic(|| {
     ensure_event_loop_thread_registered();
     async_rt::coroutine::async_spawn(coro)
@@ -1917,7 +1927,7 @@ pub extern "C" fn rt_async_spawn_legacy(coro: *mut RtCoroutineHeader) -> Promise
 ///
 /// This is required for Web-style microtask semantics (e.g. `queueMicrotask`).
 #[no_mangle]
-pub extern "C" fn rt_async_spawn_deferred_legacy(coro: *mut RtCoroutineHeader) -> PromiseRef {
+pub extern "C" fn rt_async_spawn_deferred_legacy(coro: *mut RtCoroutineHeader) -> LegacyPromiseRef {
   abort_on_panic(|| {
     ensure_event_loop_thread_registered();
     async_rt::coroutine::async_spawn_deferred(coro)
@@ -2280,8 +2290,8 @@ pub extern "C" fn rt_async_sleep(delay_ms: u64) -> PromiseRef {
 }
 
 #[no_mangle]
-pub extern "C" fn rt_async_sleep_legacy(delay_ms: u64) -> PromiseRef {
-  abort_on_panic(|| rt_async_sleep_legacy_impl(delay_ms))
+pub extern "C" fn rt_async_sleep_legacy(delay_ms: u64) -> LegacyPromiseRef {
+  abort_on_panic(|| rt_async_sleep_legacy_impl(delay_ms).0.cast())
 }
 
 // -----------------------------------------------------------------------------
@@ -3803,28 +3813,36 @@ pub extern "C" fn rt_clear_timer(id: TimerId) {
 // link against a stable name while the async ABI evolves.
 
 #[no_mangle]
-pub extern "C" fn rt_promise_new() -> PromiseRef {
+pub extern "C" fn rt_promise_new() -> LegacyPromiseRef {
   abort_on_panic(|| rt_promise_new_legacy())
 }
 
 #[no_mangle]
-pub extern "C" fn rt_promise_resolve(p: PromiseRef, value: ValueRef) {
+pub extern "C" fn rt_promise_resolve(p: LegacyPromiseRef, value: ValueRef) {
   abort_on_panic(|| rt_promise_resolve_legacy(p, value))
 }
 
 #[no_mangle]
-pub extern "C" fn rt_promise_then(p: PromiseRef, on_settle: extern "C" fn(*mut u8), data: *mut u8) {
+pub extern "C" fn rt_promise_then(
+  p: LegacyPromiseRef,
+  on_settle: extern "C" fn(*mut u8),
+  data: *mut u8,
+) {
   abort_on_panic(|| rt_promise_then_legacy(p, on_settle, data))
 }
 
 #[no_mangle]
-pub extern "C" fn rt_promise_then_rooted(p: PromiseRef, on_settle: extern "C" fn(*mut u8), data: *mut u8) {
+pub extern "C" fn rt_promise_then_rooted(
+  p: LegacyPromiseRef,
+  on_settle: extern "C" fn(*mut u8),
+  data: *mut u8,
+) {
   abort_on_panic(|| rt_promise_then_rooted_legacy(p, on_settle, data))
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn rt_promise_then_rooted_h(
-  p: PromiseRef,
+  p: LegacyPromiseRef,
   on_settle: extern "C" fn(*mut u8),
   data: crate::roots::GcHandle,
 ) {
@@ -3832,15 +3850,19 @@ pub unsafe extern "C" fn rt_promise_then_rooted_h(
 }
 
 #[no_mangle]
-pub extern "C" fn rt_coro_await(coro: *mut RtCoroutineHeader, awaited: PromiseRef, next_state: u32) {
+pub extern "C" fn rt_coro_await(
+  coro: *mut RtCoroutineHeader,
+  awaited: LegacyPromiseRef,
+  next_state: u32,
+) {
   abort_on_panic(|| rt_coro_await_legacy(coro, awaited, next_state))
 }
 
 #[no_mangle]
-pub extern "C" fn rt_promise_new_legacy() -> PromiseRef {
+pub extern "C" fn rt_promise_new_legacy() -> LegacyPromiseRef {
   abort_on_panic(|| {
     ensure_current_thread_registered();
-    async_rt::promise::promise_new()
+    async_rt::promise::promise_new().0.cast()
   })
 }
 
@@ -3903,34 +3925,37 @@ pub extern "C" fn rt_promise_payload_ptr(p: PromiseRef) -> *mut u8 {
 }
 
 #[no_mangle]
-pub extern "C" fn rt_promise_resolve_legacy(p: PromiseRef, value: ValueRef) {
+pub extern "C" fn rt_promise_resolve_legacy(p: LegacyPromiseRef, value: ValueRef) {
   abort_on_panic(|| {
     ensure_current_thread_registered();
-    async_rt::promise::promise_resolve(p, value)
+    async_rt::promise::promise_resolve(promise_ref_from_legacy(p), value)
   })
 }
 
 #[no_mangle]
-pub extern "C" fn rt_promise_reject_legacy(p: PromiseRef, err: ValueRef) {
+pub extern "C" fn rt_promise_reject_legacy(p: LegacyPromiseRef, err: ValueRef) {
   abort_on_panic(|| {
     ensure_current_thread_registered();
-    async_rt::promise::promise_reject(p, err)
+    async_rt::promise::promise_reject(promise_ref_from_legacy(p), err)
   })
 }
 
 #[no_mangle]
-pub extern "C" fn rt_promise_resolve_into_legacy(p: PromiseRef, value: PromiseResolveInput) {
+pub extern "C" fn rt_promise_resolve_into_legacy(p: LegacyPromiseRef, value: PromiseResolveInput) {
   abort_on_panic(|| {
     ensure_event_loop_thread_registered();
-    async_rt::promise::promise_resolve_into(p, value)
+    async_rt::promise::promise_resolve_into(promise_ref_from_legacy(p), value)
   })
 }
 
 #[no_mangle]
-pub extern "C" fn rt_promise_resolve_promise_legacy(p: PromiseRef, other: PromiseRef) {
+pub extern "C" fn rt_promise_resolve_promise_legacy(p: LegacyPromiseRef, other: LegacyPromiseRef) {
   abort_on_panic(|| {
     ensure_event_loop_thread_registered();
-    async_rt::promise::promise_resolve_promise(p, other)
+    async_rt::promise::promise_resolve_promise(
+      promise_ref_from_legacy(p),
+      promise_ref_from_legacy(other),
+    )
   })
 }
 
@@ -3939,10 +3964,10 @@ pub extern "C" fn rt_promise_resolve_promise_legacy(p: PromiseRef, other: Promis
 /// If `p` refers to a non-legacy promise allocation (e.g. a native async-ABI promise or a GC-managed
 /// payload promise), this is a no-op.
 #[no_mangle]
-pub extern "C" fn rt_promise_drop_legacy(p: PromiseRef) {
+pub extern "C" fn rt_promise_drop_legacy(p: LegacyPromiseRef) {
   abort_on_panic(|| {
     ensure_current_thread_registered();
-    async_rt::promise::promise_drop(p);
+    async_rt::promise::promise_drop(promise_ref_from_legacy(p));
   })
 }
 
@@ -3959,57 +3984,69 @@ pub fn rt_debug_promise_outcome(p: PromiseRef) -> (u8, ValueRef) {
 }
 
 #[no_mangle]
-pub extern "C" fn rt_promise_resolve_thenable_legacy(p: PromiseRef, thenable: ThenableRef) {
+pub extern "C" fn rt_promise_resolve_thenable_legacy(p: LegacyPromiseRef, thenable: ThenableRef) {
   abort_on_panic(|| {
     ensure_event_loop_thread_registered();
-    async_rt::promise::promise_resolve_thenable(p, thenable)
+    async_rt::promise::promise_resolve_thenable(promise_ref_from_legacy(p), thenable)
   })
 }
 
 #[no_mangle]
-pub extern "C" fn rt_promise_then_legacy(p: PromiseRef, on_settle: extern "C" fn(*mut u8), data: *mut u8) {
+pub extern "C" fn rt_promise_then_legacy(
+  p: LegacyPromiseRef,
+  on_settle: extern "C" fn(*mut u8),
+  data: *mut u8,
+) {
   abort_on_panic(|| {
     ensure_current_thread_registered();
-    async_rt::promise::promise_then(p, on_settle, data)
+    async_rt::promise::promise_then(promise_ref_from_legacy(p), on_settle, data)
   })
 }
 
 #[no_mangle]
-pub extern "C" fn rt_promise_then_rooted_legacy(p: PromiseRef, on_settle: extern "C" fn(*mut u8), data: *mut u8) {
+pub extern "C" fn rt_promise_then_rooted_legacy(
+  p: LegacyPromiseRef,
+  on_settle: extern "C" fn(*mut u8),
+  data: *mut u8,
+) {
   abort_on_panic(|| {
     ensure_current_thread_registered();
-    async_rt::promise::promise_then_rooted(p, on_settle, data)
+    async_rt::promise::promise_then_rooted(promise_ref_from_legacy(p), on_settle, data)
   })
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn rt_promise_then_rooted_h_legacy(
-  p: PromiseRef,
+  p: LegacyPromiseRef,
   on_settle: extern "C" fn(*mut u8),
   data: crate::roots::GcHandle,
 ) {
   abort_on_panic(|| {
     ensure_current_thread_registered();
     // Safety: caller contract.
-    unsafe { async_rt::promise::promise_then_rooted_h(p, on_settle, data) }
+    unsafe { async_rt::promise::promise_then_rooted_h(promise_ref_from_legacy(p), on_settle, data) }
   })
 }
 
 #[no_mangle]
 pub extern "C" fn rt_promise_then_with_drop_legacy(
-  p: PromiseRef,
+  p: LegacyPromiseRef,
   on_settle: extern "C" fn(*mut u8),
   data: *mut u8,
   drop_data: extern "C" fn(*mut u8),
 ) {
   abort_on_panic(|| {
     ensure_current_thread_registered();
-    async_rt::promise::promise_then_with_drop(p, on_settle, data, drop_data)
+    async_rt::promise::promise_then_with_drop(promise_ref_from_legacy(p), on_settle, data, drop_data)
   })
 }
 
 #[no_mangle]
-pub extern "C" fn rt_coro_await_legacy(coro: *mut RtCoroutineHeader, awaited: PromiseRef, next_state: u32) {
+pub extern "C" fn rt_coro_await_legacy(
+  coro: *mut RtCoroutineHeader,
+  awaited: LegacyPromiseRef,
+  next_state: u32,
+) {
   abort_on_panic(|| {
     ensure_event_loop_thread_registered();
     async_rt::coroutine::coro_await(coro, awaited, next_state)

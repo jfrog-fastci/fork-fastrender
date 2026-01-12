@@ -1,8 +1,8 @@
 mod pool;
 
-use crate::abi::PromiseRef;
+use crate::abi::LegacyPromiseRef;
 
-pub(crate) fn spawn(task: extern "C" fn(*mut u8, PromiseRef), data: *mut u8) -> PromiseRef {
+pub(crate) fn spawn(task: extern "C" fn(*mut u8, LegacyPromiseRef), data: *mut u8) -> LegacyPromiseRef {
   pool::global().spawn(task, data)
 }
 

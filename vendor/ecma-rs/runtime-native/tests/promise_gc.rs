@@ -1,7 +1,7 @@
 use std::mem;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
-use runtime_native::abi::{PromiseRef, RtCoroStatus, RtCoroutineHeader, ValueRef};
+use runtime_native::abi::{LegacyPromiseRef, RtCoroStatus, RtCoroutineHeader, ValueRef};
 use runtime_native::gc::{ObjHeader, RememberedSet, RootSet, TypeDescriptor};
 use runtime_native::test_util::TestRuntimeGuard;
 use runtime_native::GcHeap;
@@ -61,7 +61,7 @@ fn collect_minor_from_world_roots(heap: &mut GcHeap) {
 #[repr(C)]
 struct AwaitValueCoro {
   header: RtCoroutineHeader,
-  awaited: PromiseRef,
+  awaited: LegacyPromiseRef,
   observed: *mut u8,
 }
 

@@ -1,4 +1,6 @@
-use runtime_native::abi::{PromiseRef, RtCoroStatus, RtCoroutineHeader, RtShapeDescriptor, RtShapeId, ValueRef};
+use runtime_native::abi::{
+  LegacyPromiseRef, RtCoroStatus, RtCoroutineHeader, RtShapeDescriptor, RtShapeId, ValueRef,
+};
 use runtime_native::gc::ObjHeader;
 use runtime_native::shape_table;
 use runtime_native::test_util::TestRuntimeGuard;
@@ -39,7 +41,7 @@ unsafe fn alloc_pinned<T>(shape: RtShapeId) -> *mut GcBox<T> {
 struct AwaitOnceCoroutine {
   header: RtCoroutineHeader,
   counter: *const AtomicUsize,
-  awaited: PromiseRef,
+  awaited: LegacyPromiseRef,
 }
 
 extern "C" fn resume_await_once(coro: *mut RtCoroutineHeader) -> RtCoroStatus {
@@ -88,9 +90,11 @@ fn cross_thread_promise_resolve_wakes_waiter_via_rt_async_wait() {
   runtime_native::rt_async_spawn_legacy(&mut coro.header);
   assert_eq!(counter.load(Ordering::SeqCst), 0);
 
+  // Raw pointers are `!Send` on newer Rust versions; pass as an integer across threads.
+  let awaited_bits = awaited as usize;
   let resolver = std::thread::spawn(move || {
     std::thread::sleep(Duration::from_millis(50));
-    runtime_native::rt_promise_resolve_legacy(awaited, 0xCAFE_BABEusize as ValueRef);
+    runtime_native::rt_promise_resolve_legacy(awaited_bits as LegacyPromiseRef, 0xCAFE_BABEusize as ValueRef);
   });
 
   runtime_native::rt_async_wait();
@@ -125,9 +129,11 @@ fn many_waiters_are_all_woken() {
     runtime_native::rt_async_spawn_legacy(&mut coro.header);
   }
 
+  // Raw pointers are `!Send` on newer Rust versions; pass as an integer across threads.
+  let awaited_bits = awaited as usize;
   let resolver = std::thread::spawn(move || {
     std::thread::sleep(Duration::from_millis(50));
-    runtime_native::rt_promise_resolve_legacy(awaited, 0xCAFE_BABEusize as ValueRef);
+    runtime_native::rt_promise_resolve_legacy(awaited_bits as LegacyPromiseRef, 0xCAFE_BABEusize as ValueRef);
   });
 
   runtime_native::rt_async_wait();

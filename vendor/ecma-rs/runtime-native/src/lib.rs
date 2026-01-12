@@ -1097,7 +1097,10 @@ mod tests {
       rt_string_lookup_pinned;
     let _spawn: extern "C" fn(extern "C" fn(*mut u8), *mut u8) -> abi::TaskId = rt_parallel_spawn;
     let _spawn_rooted: extern "C" fn(extern "C" fn(*mut u8), *mut u8) -> abi::TaskId = rt_parallel_spawn_rooted;
-    let _spawn_promise_legacy: extern "C" fn(extern "C" fn(*mut u8, abi::PromiseRef), *mut u8) -> abi::PromiseRef =
+    let _spawn_promise_legacy: extern "C" fn(
+      extern "C" fn(*mut u8, abi::LegacyPromiseRef),
+      *mut u8,
+    ) -> abi::LegacyPromiseRef =
       rt_parallel_spawn_promise_legacy;
     let _join: extern "C" fn(*const abi::TaskId, usize) = rt_parallel_join;
     let _for: extern "C" fn(usize, usize, extern "C" fn(usize, *mut u8), *mut u8) = rt_parallel_for;
@@ -1134,7 +1137,10 @@ mod tests {
       usize,
       abi::RtShapeId,
     ) -> abi::PromiseRef = rt_parallel_spawn_promise_with_shape_rooted_h;
-    let _spawn_blocking: extern "C" fn(extern "C" fn(*mut u8, abi::PromiseRef), *mut u8) -> abi::PromiseRef =
+    let _spawn_blocking: extern "C" fn(
+      extern "C" fn(*mut u8, abi::LegacyPromiseRef),
+      *mut u8,
+    ) -> abi::LegacyPromiseRef =
       rt_spawn_blocking;
     let _promise_init: unsafe extern "C" fn(PromiseRef) = rt_promise_init;
     let _promise_fulfill: unsafe extern "C" fn(PromiseRef) = rt_promise_fulfill;
@@ -1152,30 +1158,37 @@ mod tests {
     let _async_run_until_idle: unsafe extern "C" fn() -> bool = rt_async_run_until_idle_abi;
     let _async_block_on: unsafe extern "C" fn(PromiseRef) = rt_async_block_on;
     let _async_sleep: extern "C" fn(u64) -> abi::PromiseRef = rt_async_sleep;
-    let _promise_new: extern "C" fn() -> abi::PromiseRef = rt_promise_new;
-    let _promise_resolve: extern "C" fn(abi::PromiseRef, abi::ValueRef) = rt_promise_resolve;
-    let _promise_then: extern "C" fn(abi::PromiseRef, extern "C" fn(*mut u8), *mut u8) = rt_promise_then;
-    let _promise_new_legacy: extern "C" fn() -> abi::PromiseRef = rt_promise_new_legacy;
-    let _promise_resolve_legacy: extern "C" fn(abi::PromiseRef, abi::ValueRef) = rt_promise_resolve_legacy;
-    let _promise_resolve_into_legacy: extern "C" fn(abi::PromiseRef, abi::PromiseResolveInput) = rt_promise_resolve_into_legacy;
-    let _promise_resolve_promise_legacy: extern "C" fn(abi::PromiseRef, abi::PromiseRef) = rt_promise_resolve_promise_legacy;
-    let _promise_resolve_thenable_legacy: extern "C" fn(abi::PromiseRef, abi::ThenableRef) = rt_promise_resolve_thenable_legacy;
-    let _promise_reject_legacy: extern "C" fn(abi::PromiseRef, abi::ValueRef) = rt_promise_reject_legacy;
-    let _promise_then_legacy: extern "C" fn(abi::PromiseRef, extern "C" fn(*mut u8), *mut u8) = rt_promise_then_legacy;
-    let _promise_then_rooted_legacy: extern "C" fn(abi::PromiseRef, extern "C" fn(*mut u8), *mut u8) =
+    let _promise_new: extern "C" fn() -> abi::LegacyPromiseRef = rt_promise_new;
+    let _promise_resolve: extern "C" fn(abi::LegacyPromiseRef, abi::ValueRef) = rt_promise_resolve;
+    let _promise_then: extern "C" fn(abi::LegacyPromiseRef, extern "C" fn(*mut u8), *mut u8) =
+      rt_promise_then;
+    let _promise_new_legacy: extern "C" fn() -> abi::LegacyPromiseRef = rt_promise_new_legacy;
+    let _promise_resolve_legacy: extern "C" fn(abi::LegacyPromiseRef, abi::ValueRef) =
+      rt_promise_resolve_legacy;
+    let _promise_resolve_into_legacy: extern "C" fn(abi::LegacyPromiseRef, abi::PromiseResolveInput) =
+      rt_promise_resolve_into_legacy;
+    let _promise_resolve_promise_legacy: extern "C" fn(abi::LegacyPromiseRef, abi::LegacyPromiseRef) =
+      rt_promise_resolve_promise_legacy;
+    let _promise_resolve_thenable_legacy: extern "C" fn(abi::LegacyPromiseRef, abi::ThenableRef) =
+      rt_promise_resolve_thenable_legacy;
+    let _promise_reject_legacy: extern "C" fn(abi::LegacyPromiseRef, abi::ValueRef) = rt_promise_reject_legacy;
+    let _promise_then_legacy: extern "C" fn(abi::LegacyPromiseRef, extern "C" fn(*mut u8), *mut u8) =
+      rt_promise_then_legacy;
+    let _promise_then_rooted_legacy: extern "C" fn(abi::LegacyPromiseRef, extern "C" fn(*mut u8), *mut u8) =
       rt_promise_then_rooted_legacy;
     let _promise_then_with_drop_legacy: extern "C" fn(
-      abi::PromiseRef,
+      abi::LegacyPromiseRef,
       extern "C" fn(*mut u8),
       *mut u8,
       extern "C" fn(*mut u8),
     ) = rt_promise_then_with_drop_legacy;
-    let _promise_drop_legacy: extern "C" fn(abi::PromiseRef) = rt_promise_drop_legacy;
-    let _async_spawn_legacy: extern "C" fn(*mut abi::RtCoroutineHeader) -> abi::PromiseRef = rt_async_spawn_legacy;
-    let _async_spawn_deferred_legacy: extern "C" fn(*mut abi::RtCoroutineHeader) -> abi::PromiseRef =
+    let _promise_drop_legacy: extern "C" fn(abi::LegacyPromiseRef) = rt_promise_drop_legacy;
+    let _async_spawn_legacy: extern "C" fn(*mut abi::RtCoroutineHeader) -> abi::LegacyPromiseRef =
+      rt_async_spawn_legacy;
+    let _async_spawn_deferred_legacy: extern "C" fn(*mut abi::RtCoroutineHeader) -> abi::LegacyPromiseRef =
       rt_async_spawn_deferred_legacy;
     let _async_poll_legacy: extern "C" fn() -> bool = rt_async_poll_legacy;
-    let _async_sleep_legacy: extern "C" fn(u64) -> abi::PromiseRef = rt_async_sleep_legacy;
+    let _async_sleep_legacy: extern "C" fn(u64) -> abi::LegacyPromiseRef = rt_async_sleep_legacy;
     let _async_set_limits: extern "C" fn(usize, usize) = rt_async_set_limits;
     let _async_take_last_error: extern "C" fn() -> *mut core::ffi::c_char = rt_async_take_last_error;
     let _async_free_c_string: unsafe extern "C" fn(*mut core::ffi::c_char) = rt_async_free_c_string;
@@ -1224,8 +1237,9 @@ mod tests {
     ) -> abi::IoWatcherId = rt_io_register_handle_with_drop;
     let _io_update: extern "C" fn(abi::IoWatcherId, u32) = rt_io_update;
     let _io_unregister: extern "C" fn(abi::IoWatcherId) = rt_io_unregister;
-    let _coro_await_legacy: extern "C" fn(*mut abi::RtCoroutineHeader, abi::PromiseRef, u32) = rt_coro_await_legacy;
-    let _coro_await: extern "C" fn(*mut abi::RtCoroutineHeader, abi::PromiseRef, u32) = rt_coro_await;
+    let _coro_await_legacy: extern "C" fn(*mut abi::RtCoroutineHeader, abi::LegacyPromiseRef, u32) =
+      rt_coro_await_legacy;
+    let _coro_await: extern "C" fn(*mut abi::RtCoroutineHeader, abi::LegacyPromiseRef, u32) = rt_coro_await;
     let _coro_await_value_legacy: extern "C" fn(*mut abi::RtCoroutineHeader, abi::PromiseResolveInput, u32) =
       rt_coro_await_value_legacy;
 

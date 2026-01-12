@@ -1,4 +1,6 @@
-use runtime_native::abi::{PromiseRef, RtCoroStatus, RtCoroutineHeader, RtShapeDescriptor, RtShapeId, ValueRef};
+use runtime_native::abi::{
+  LegacyPromiseRef, PromiseRef, RtCoroStatus, RtCoroutineHeader, RtShapeDescriptor, RtShapeId, ValueRef,
+};
 use runtime_native::gc::ObjHeader;
 use runtime_native::shape_table;
 use runtime_native::test_util::{promise_waiters_is_empty, PromiseWaiterRaceGuard, TestRuntimeGuard};
@@ -40,7 +42,7 @@ unsafe fn alloc_pinned<T>(shape: RtShapeId) -> *mut GcBox<T> {
 struct TestCoroutine {
   header: RtCoroutineHeader,
   completed: *const AtomicBool,
-  awaited: PromiseRef,
+  awaited: LegacyPromiseRef,
 }
 
 extern "C" fn test_resume(coro: *mut RtCoroutineHeader) -> RtCoroStatus {
@@ -99,14 +101,14 @@ fn promise_waiter_race_does_not_lose_wakeup_or_retain_waiters() {
 
   // Avoid relying on `Send` impls for raw pointers/ABI handles in this regression test.
   let coro_ptr = (&mut coro.header as *mut RtCoroutineHeader) as usize;
-  let awaited_raw = awaited.0 as usize;
+  let awaited_raw = awaited as usize;
 
   let spawn_thread = std::thread::spawn(move || {
     let coro_ptr = coro_ptr as *mut RtCoroutineHeader;
     let _promise = runtime_native::rt_async_spawn_legacy(coro_ptr);
   });
   let resolve_thread = std::thread::spawn(move || {
-    let awaited = PromiseRef(awaited_raw as *mut AbiPromiseHeader);
+    let awaited = awaited_raw as LegacyPromiseRef;
     runtime_native::rt_promise_resolve_legacy(awaited, 0xDEAD_BEEF as ValueRef);
   });
 
@@ -117,7 +119,7 @@ fn promise_waiter_race_does_not_lose_wakeup_or_retain_waiters() {
 
   // The promise should not retain stale waiters: the waiter list must be empty even before the
   // coroutine runs its microtask.
-  assert!(promise_waiters_is_empty(awaited));
+  assert!(promise_waiters_is_empty(PromiseRef(awaited.cast::<AbiPromiseHeader>())));
 
   let deadline = Instant::now() + Duration::from_secs(1);
   while !completed.load(Ordering::SeqCst) {
@@ -125,6 +127,6 @@ fn promise_waiter_race_does_not_lose_wakeup_or_retain_waiters() {
     runtime_native::rt_async_poll_legacy();
   }
 
-  assert!(promise_waiters_is_empty(awaited));
+  assert!(promise_waiters_is_empty(PromiseRef(awaited.cast::<AbiPromiseHeader>())));
   assert!(!runtime_native::rt_async_poll_legacy());
 }

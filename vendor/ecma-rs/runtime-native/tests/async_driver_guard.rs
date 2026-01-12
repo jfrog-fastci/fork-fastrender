@@ -143,9 +143,12 @@ fn rt_async_driver_concurrent_block_on_aborts() {
     })));
 
     let p = runtime_native::rt_promise_new_legacy();
+    // Raw pointers are `!Send` on newer Rust versions; pass as an integer across threads.
+    let p_bits = p as usize;
 
     std::thread::spawn(move || unsafe {
-      runtime_native::rt_async_block_on(p);
+      let p = p_bits as runtime_native::abi::LegacyPromiseRef;
+      runtime_native::rt_async_block_on(runtime_native::abi::PromiseRef(p.cast()));
     });
 
     let deadline = Instant::now() + Duration::from_secs(2);

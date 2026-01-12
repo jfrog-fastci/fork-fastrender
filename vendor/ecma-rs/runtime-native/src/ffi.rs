@@ -96,6 +96,18 @@ pub(crate) fn invoke_cb2_promise(
 }
 
 #[inline]
+pub(crate) fn invoke_cb2_legacy_promise(
+  cb: extern "C" fn(*mut u8, crate::abi::LegacyPromiseRef),
+  data: *mut u8,
+  promise: crate::abi::LegacyPromiseRef,
+) {
+  abort_on_callback_panic(|| unsafe {
+    let cb: extern "C-unwind" fn(*mut u8, crate::abi::LegacyPromiseRef) = std::mem::transmute(cb);
+    cb(data, promise);
+  });
+}
+
+#[inline]
 pub(crate) fn invoke_coro_resume(
   cb: extern "C" fn(*mut crate::abi::RtCoroutineHeader) -> crate::abi::RtCoroStatus,
   coro: *mut crate::abi::RtCoroutineHeader,

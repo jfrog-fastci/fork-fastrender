@@ -1,4 +1,4 @@
-use runtime_native::abi::{PromiseRef, RtCoroStatus, RtCoroutineHeader};
+use runtime_native::abi::{LegacyPromiseRef, RtCoroStatus, RtCoroutineHeader};
 use runtime_native::test_util::TestRuntimeGuard;
 use runtime_native::{
   rt_async_cancel_all,
@@ -17,7 +17,7 @@ use std::ffi::CStr;
 #[repr(C)]
 struct RunawayCoro {
   header: RtCoroutineHeader,
-  awaited: PromiseRef,
+  awaited: LegacyPromiseRef,
 }
 
 extern "C" fn runaway_resume(coro: *mut RtCoroutineHeader) -> RtCoroStatus {

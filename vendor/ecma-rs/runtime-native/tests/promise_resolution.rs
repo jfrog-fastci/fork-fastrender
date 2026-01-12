@@ -1,6 +1,6 @@
 use runtime_native::abi::{
-  PromiseRef, PromiseResolveInput, RtCoroStatus, RtCoroutineHeader, RtShapeDescriptor, RtShapeId, ThenableRef,
-  ThenableRejectCallback, ThenableResolveCallback, ThenableVTable, ValueRef,
+  LegacyPromiseRef, PromiseResolveInput, RtCoroStatus, RtCoroutineHeader, RtShapeDescriptor, RtShapeId,
+  ThenableRef, ThenableRejectCallback, ThenableResolveCallback, ThenableVTable, ValueRef,
 };
 use runtime_native::gc::ObjHeader;
 use runtime_native::shape_table;
@@ -53,7 +53,7 @@ fn drain_event_loop() {
 #[repr(C)]
 struct AwaitPromiseCoroutine {
   header: RtCoroutineHeader,
-  awaited: PromiseRef,
+  awaited: LegacyPromiseRef,
   out_is_error: *mut u32,
   out_value: *mut ValueRef,
   out_error: *mut ValueRef,
@@ -233,7 +233,7 @@ fn resolving_with_pending_promise_adopts_rejection() {
 
 #[repr(C)]
 struct ResolveTwiceThenable {
-  src: PromiseRef,
+  src: LegacyPromiseRef,
 }
 
 unsafe extern "C" fn call_then_resolve_twice(
@@ -304,7 +304,7 @@ fn thenable_calling_resolve_twice_only_resolves_once() {
 
 #[repr(C)]
 struct ResolveThenRejectThenable {
-  src: PromiseRef,
+  src: LegacyPromiseRef,
   reject_reason: ValueRef,
 }
 

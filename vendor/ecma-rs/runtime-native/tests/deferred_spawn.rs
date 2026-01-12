@@ -1,4 +1,6 @@
-use runtime_native::abi::{PromiseRef, RtCoroStatus, RtCoroutineHeader, RtShapeDescriptor, RtShapeId, ValueRef};
+use runtime_native::abi::{
+  LegacyPromiseRef, RtCoroStatus, RtCoroutineHeader, RtShapeDescriptor, RtShapeId, ValueRef,
+};
 use runtime_native::gc::ObjHeader;
 use runtime_native::shape_table;
 use runtime_native::test_util::TestRuntimeGuard;
@@ -113,7 +115,7 @@ struct YieldOnceCoro {
   header: RtCoroutineHeader,
   started: *mut bool,
   completed: *mut bool,
-  awaited: PromiseRef,
+  awaited: LegacyPromiseRef,
 }
 
 extern "C" fn yield_once_resume(coro: *mut RtCoroutineHeader) -> RtCoroStatus {

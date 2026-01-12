@@ -1,4 +1,4 @@
-use runtime_native::abi::{Microtask, PromiseRef, RtCoroStatus, RtCoroutineHeader, ValueRef};
+use runtime_native::abi::{LegacyPromiseRef, Microtask, RtCoroStatus, RtCoroutineHeader, ValueRef};
 use runtime_native::test_util::TestRuntimeGuard;
 use std::sync::Mutex;
 
@@ -16,7 +16,7 @@ extern "C" fn log_c(data: *mut u8) {
 struct AwaitCoro {
   header: RtCoroutineHeader,
   log: *const Mutex<Vec<u8>>,
-  awaited: PromiseRef,
+  awaited: LegacyPromiseRef,
 }
 
 extern "C" fn await_resume(coro: *mut RtCoroutineHeader) -> RtCoroStatus {
@@ -122,7 +122,7 @@ fn promise_wakeup_then_queue_microtask_runs_in_fifo_order() {
 #[repr(C)]
 struct ResolveCtx {
   log: *const Mutex<Vec<u8>>,
-  awaited: PromiseRef,
+  awaited: LegacyPromiseRef,
 }
 
 extern "C" fn microtask_a_resolve_promise_and_queue_c(data: *mut u8) {

@@ -292,9 +292,9 @@ fn runtime_native_exports_match_expected_abi_signatures() {
 
   // Parallel → Promise bridge.
   let _parallel_spawn_promise: extern "C" fn(
-    extern "C" fn(*mut u8, runtime_native::abi::PromiseRef),
+    extern "C" fn(*mut u8, runtime_native::abi::LegacyPromiseRef),
     *mut u8,
-  ) -> runtime_native::abi::PromiseRef = runtime_native::rt_parallel_spawn_promise_legacy;
+  ) -> runtime_native::abi::LegacyPromiseRef = runtime_native::rt_parallel_spawn_promise_legacy;
 
   // Stable native promise + coroutine ABI.
   let _promise_init: unsafe extern "C" fn(runtime_native::PromiseRef) = runtime_native::rt_promise_init;
@@ -455,11 +455,11 @@ fn runtime_native_exports_match_expected_abi_signatures() {
   let _io_unregister: extern "C" fn(runtime_native::abi::IoWatcherId) = runtime_native::rt_io_unregister;
 
   // Promise resolution helpers (legacy promises).
-  let _promise_resolve_into_legacy: extern "C" fn(runtime_native::abi::PromiseRef, runtime_native::abi::PromiseResolveInput) =
+  let _promise_resolve_into_legacy: extern "C" fn(runtime_native::abi::LegacyPromiseRef, runtime_native::abi::PromiseResolveInput) =
     runtime_native::rt_promise_resolve_into_legacy;
-  let _promise_resolve_promise_legacy: extern "C" fn(runtime_native::abi::PromiseRef, runtime_native::abi::PromiseRef) =
+  let _promise_resolve_promise_legacy: extern "C" fn(runtime_native::abi::LegacyPromiseRef, runtime_native::abi::LegacyPromiseRef) =
     runtime_native::rt_promise_resolve_promise_legacy;
-  let _promise_resolve_thenable_legacy: extern "C" fn(runtime_native::abi::PromiseRef, runtime_native::abi::ThenableRef) =
+  let _promise_resolve_thenable_legacy: extern "C" fn(runtime_native::abi::LegacyPromiseRef, runtime_native::abi::ThenableRef) =
     runtime_native::rt_promise_resolve_thenable_legacy;
   let _coro_await_value_legacy: extern "C" fn(
     *mut runtime_native::abi::RtCoroutineHeader,

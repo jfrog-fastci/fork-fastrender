@@ -1,4 +1,6 @@
-use runtime_native::abi::{PromiseRef, RtCoroStatus, RtCoroutineHeader, RtShapeDescriptor, RtShapeId, ValueRef};
+use runtime_native::abi::{
+  LegacyPromiseRef, RtCoroStatus, RtCoroutineHeader, RtShapeDescriptor, RtShapeId, ValueRef,
+};
 use runtime_native::gc::ObjHeader;
 use runtime_native::shape_table;
 use runtime_native::test_util::TestRuntimeGuard;
@@ -99,7 +101,7 @@ struct TestCoroutine {
   header: RtCoroutineHeader,
   side_effect: *mut bool,
   completed: *mut bool,
-  awaited: PromiseRef,
+  awaited: LegacyPromiseRef,
 }
 
 extern "C" fn test_resume(coro: *mut RtCoroutineHeader) -> RtCoroStatus {
@@ -181,7 +183,7 @@ struct OrderCoroutine {
   header: RtCoroutineHeader,
   id: u32,
   log: *const Mutex<Vec<u32>>,
-  awaited: PromiseRef,
+  awaited: LegacyPromiseRef,
 }
 
 extern "C" fn order_resume(coro: *mut RtCoroutineHeader) -> RtCoroStatus {
@@ -257,7 +259,7 @@ fn promise_waiters_resume_in_fifo_order() {
 struct SettledAwaitCoroutine {
   header: RtCoroutineHeader,
   completed: *mut bool,
-  awaited: PromiseRef,
+  awaited: LegacyPromiseRef,
 }
 
 extern "C" fn settled_await_resume(coro: *mut RtCoroutineHeader) -> RtCoroStatus {
@@ -418,12 +420,12 @@ fn coroutine_yield_is_rooted_while_enqueued_as_macrotask() {
 // spawn_blocking integration
 // -----------------------------------------------------------------------------
 
-extern "C" fn blocking_resolve_value(_data: *mut u8, promise: PromiseRef) {
+extern "C" fn blocking_resolve_value(_data: *mut u8, promise: LegacyPromiseRef) {
   std::thread::sleep(Duration::from_millis(20));
   runtime_native::rt_promise_resolve_legacy(promise, 0xCAFE_BABEusize as ValueRef);
 }
 
-extern "C" fn blocking_reject_value(_data: *mut u8, promise: PromiseRef) {
+extern "C" fn blocking_reject_value(_data: *mut u8, promise: LegacyPromiseRef) {
   std::thread::sleep(Duration::from_millis(20));
   runtime_native::rt_promise_reject_legacy(promise, 0xDEAD_BEEFusize as ValueRef);
 }
@@ -432,7 +434,7 @@ extern "C" fn blocking_reject_value(_data: *mut u8, promise: PromiseRef) {
 struct SpawnBlockingCoroutine {
   header: RtCoroutineHeader,
   completed: *mut bool,
-  awaited: PromiseRef,
+  awaited: LegacyPromiseRef,
 }
 
 extern "C" fn spawn_blocking_resume(coro: *mut RtCoroutineHeader) -> RtCoroStatus {
@@ -477,7 +479,7 @@ fn coroutine_can_await_spawn_blocking_promise() {
     await_error: core::ptr::null_mut(),
   };
   coro.completed = &mut completed;
-  coro.awaited = PromiseRef::null();
+  coro.awaited = core::ptr::null_mut();
 
   runtime_native::rt_async_spawn_legacy(&mut coro.header);
   assert!(
@@ -500,7 +502,7 @@ fn coroutine_can_await_spawn_blocking_promise() {
 struct SpawnBlockingRejectCoroutine {
   header: RtCoroutineHeader,
   completed: *mut bool,
-  awaited: PromiseRef,
+  awaited: LegacyPromiseRef,
 }
 
 extern "C" fn spawn_blocking_reject_resume(coro: *mut RtCoroutineHeader) -> RtCoroStatus {
@@ -545,7 +547,7 @@ fn coroutine_can_await_spawn_blocking_rejection() {
     await_error: core::ptr::null_mut(),
   };
   coro.completed = &mut completed;
-  coro.awaited = PromiseRef::null();
+  coro.awaited = core::ptr::null_mut();
 
   runtime_native::rt_async_spawn_legacy(&mut coro.header);
   assert!(!completed);

@@ -116,6 +116,8 @@ fn promise_then_rooted_h_legacy_reads_slot_after_lock_acquired() {
   let new_ptr = runtime_native::rt_alloc_pinned(mem::size_of::<GcBox<u8>>(), shape);
 
   let promise = runtime_native::rt_promise_new_legacy();
+  // Raw pointers are `!Send` on newer Rust versions; pass as an integer across threads.
+  let promise_bits = promise as usize;
 
   let base_roots = runtime_native::roots::global_persistent_handle_table().live_count();
 
@@ -155,6 +157,7 @@ fn promise_then_rooted_h_legacy_reads_slot_after_lock_acquired() {
 
       c_start_rx.recv().unwrap();
 
+      let promise = promise_bits as runtime_native::abi::LegacyPromiseRef;
       let slot_ptr = slot_ptr as runtime_native::roots::GcHandle;
       // Safety: `slot_ptr` points at a writable `GcPtr` slot that outlives this call.
       unsafe {

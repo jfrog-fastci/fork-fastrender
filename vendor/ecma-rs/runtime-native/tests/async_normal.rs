@@ -1,4 +1,4 @@
-use runtime_native::abi::{PromiseRef, RtCoroStatus, RtCoroutineHeader};
+use runtime_native::abi::{LegacyPromiseRef, RtCoroStatus, RtCoroutineHeader};
 use runtime_native::test_util::TestRuntimeGuard;
 use runtime_native::{
   rt_async_poll_legacy as rt_async_poll,
@@ -14,7 +14,7 @@ use runtime_native::{
 #[repr(C)]
 struct CountedCoro {
   header: RtCoroutineHeader,
-  awaited: PromiseRef,
+  awaited: LegacyPromiseRef,
   remaining: u32,
   resumes: u32,
 }

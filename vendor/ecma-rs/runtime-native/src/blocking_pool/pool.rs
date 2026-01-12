@@ -1,5 +1,5 @@
 use crate::async_rt;
-use crate::abi::PromiseRef;
+use crate::abi::LegacyPromiseRef;
 use crate::sync::GcAwareMutex;
 use crate::threading;
 use crate::threading::ThreadKind;
@@ -11,7 +11,7 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 struct WorkItem {
-  task: extern "C" fn(*mut u8, PromiseRef),
+  task: extern "C" fn(*mut u8, LegacyPromiseRef),
   data: *mut u8,
   // `rt_spawn_blocking` currently returns a **legacy** `async_rt::promise::RtPromise` allocated on
   // the Rust heap (not GC-managed and therefore not relocatable). Storing the raw pointer across
@@ -20,7 +20,7 @@ struct WorkItem {
   // If `rt_spawn_blocking` is ever changed to return a GC-managed promise, this field must store a
   // GC-stable handle/root (e.g. a persistent handle) instead of a raw pointer: blocking worker
   // threads are plain Rust frames and are not covered by LLVM stackmaps.
-  promise: PromiseRef,
+  promise: LegacyPromiseRef,
 }
 
 // Raw pointers are not `Send` by default; in the runtime ABI the caller is responsible for
@@ -100,11 +100,15 @@ impl BlockingPool {
     }
   }
 
-  pub(crate) fn spawn(&self, task: extern "C" fn(*mut u8, PromiseRef), data: *mut u8) -> PromiseRef {
+  pub(crate) fn spawn(
+    &self,
+    task: extern "C" fn(*mut u8, LegacyPromiseRef),
+    data: *mut u8,
+  ) -> LegacyPromiseRef {
     // Ensure the async runtime is initialized so promise settlement can wake a thread blocked in the
     // platform reactor wait syscall (`epoll_wait`/`kevent`).
     let _ = async_rt::global();
-    let promise = async_rt::promise::promise_new();
+    let promise = async_rt::promise::promise_new().0.cast();
 
     {
       let mut q = self.shared.queue.lock();
@@ -157,7 +161,7 @@ fn worker_loop(shared: Arc<Shared>) {
 
     // The task is responsible for settling the promise. If it panics we abort the process
     // deterministically instead of unwinding into the runtime.
-    crate::ffi::invoke_cb2_promise(work.task, work.data, work.promise);
+    crate::ffi::invoke_cb2_legacy_promise(work.task, work.data, work.promise);
 
     drop(gc_safe);
   }

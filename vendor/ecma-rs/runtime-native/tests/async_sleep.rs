@@ -38,7 +38,11 @@ fn async_sleep_fulfills_promise() {
   assert!(!p.is_null(), "rt_async_sleep returned a null promise");
 
   let settled = AtomicBool::new(false);
-  runtime_native::rt_promise_then_legacy(p, set_bool, (&settled as *const AtomicBool).cast::<u8>().cast_mut());
+  runtime_native::rt_promise_then_legacy(
+    p.0.cast(),
+    set_bool,
+    (&settled as *const AtomicBool).cast::<u8>().cast_mut(),
+  );
 
   // Drive the runtime until the timer callback settles the promise.
   let start = Instant::now();

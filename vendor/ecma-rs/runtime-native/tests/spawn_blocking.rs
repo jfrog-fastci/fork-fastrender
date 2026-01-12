@@ -1,4 +1,4 @@
-use runtime_native::abi::PromiseRef;
+use runtime_native::abi::LegacyPromiseRef;
 use runtime_native::test_util::TestRuntimeGuard;
 use runtime_native::{
   rt_async_poll_legacy as rt_async_poll,
@@ -13,20 +13,20 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 use std::time::Instant;
 
-extern "C" fn task_set_flag(data: *mut u8, promise: PromiseRef) {
+extern "C" fn task_set_flag(data: *mut u8, promise: LegacyPromiseRef) {
   let flag = unsafe { &*(data as *const AtomicBool) };
   flag.store(true, Ordering::SeqCst);
   rt_promise_resolve(promise, core::ptr::null_mut());
 }
 
-extern "C" fn task_sleep_and_inc(data: *mut u8, promise: PromiseRef) {
+extern "C" fn task_sleep_and_inc(data: *mut u8, promise: LegacyPromiseRef) {
   std::thread::sleep(Duration::from_millis(20));
   let counter = unsafe { &*(data as *const AtomicUsize) };
   counter.fetch_add(1, Ordering::SeqCst);
   rt_promise_resolve(promise, core::ptr::null_mut());
 }
 
-extern "C" fn task_long_sleep_and_inc(data: *mut u8, promise: PromiseRef) {
+extern "C" fn task_long_sleep_and_inc(data: *mut u8, promise: LegacyPromiseRef) {
   std::thread::sleep(Duration::from_millis(300));
   let counter = unsafe { &*(data as *const AtomicUsize) };
   counter.fetch_add(1, Ordering::SeqCst);

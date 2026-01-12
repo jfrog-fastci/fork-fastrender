@@ -1,4 +1,4 @@
-use runtime_native::abi::PromiseRef;
+use runtime_native::abi::LegacyPromiseRef;
 use runtime_native::test_util::TestRuntimeGuard;
 use runtime_native::threading;
 use runtime_native::threading::ThreadKind;
@@ -13,7 +13,7 @@ struct SleepTaskCtx {
   done: AtomicBool,
 }
 
-extern "C" fn sleep_task(data: *mut u8, promise: PromiseRef) {
+extern "C" fn sleep_task(data: *mut u8, promise: LegacyPromiseRef) {
   let ctx = unsafe { &*(data as *const SleepTaskCtx) };
   ctx.started.store(true, Ordering::Release);
   std::thread::sleep(Duration::from_millis(300));
@@ -68,4 +68,3 @@ fn stop_the_world_completes_while_spawn_blocking_task_is_blocked() {
 
   threading::unregister_current_thread();
 }
-

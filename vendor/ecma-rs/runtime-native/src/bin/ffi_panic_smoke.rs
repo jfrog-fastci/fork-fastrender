@@ -88,12 +88,15 @@ fn scenario_parallel_promise() {
 }
 
 fn scenario_blocking() {
-  extern "C-unwind" fn panic_task(_data: *mut u8, _promise: runtime_native::PromiseRef) {
+  extern "C-unwind" fn panic_task(_data: *mut u8, _promise: runtime_native::abi::LegacyPromiseRef) {
     panic!("intentional panic from blocking pool task callback");
   }
 
-  let cb: extern "C" fn(*mut u8, runtime_native::PromiseRef) =
-    unsafe { std::mem::transmute(panic_task as extern "C-unwind" fn(*mut u8, runtime_native::PromiseRef)) };
+  let cb: extern "C" fn(*mut u8, runtime_native::abi::LegacyPromiseRef) = unsafe {
+    std::mem::transmute(
+      panic_task as extern "C-unwind" fn(*mut u8, runtime_native::abi::LegacyPromiseRef),
+    )
+  };
   let _promise = runtime_native::rt_spawn_blocking(cb, std::ptr::null_mut());
 
   // Keep the main thread alive until the worker thread aborts the process.

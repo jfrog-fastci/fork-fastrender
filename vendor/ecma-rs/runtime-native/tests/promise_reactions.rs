@@ -1,4 +1,6 @@
-use runtime_native::abi::{PromiseRef, RtCoroStatus, RtCoroutineHeader, RtShapeDescriptor, RtShapeId, ValueRef};
+use runtime_native::abi::{
+  LegacyPromiseRef, PromiseRef, RtCoroStatus, RtCoroutineHeader, RtShapeDescriptor, RtShapeId, ValueRef,
+};
 use runtime_native::async_abi::{
   Coroutine, CoroutineStep, CoroutineVTable, PromiseHeader, CORO_FLAG_RUNTIME_OWNS_FRAME, RT_ASYNC_ABI_VERSION,
 };
@@ -54,7 +56,7 @@ struct LogCoroutine {
   header: RtCoroutineHeader,
   id: u32,
   log: *const Mutex<Vec<u32>>,
-  awaited: PromiseRef,
+  awaited: LegacyPromiseRef,
 }
 
 extern "C" fn log_resume(coro: *mut RtCoroutineHeader) -> RtCoroStatus {
@@ -143,6 +145,8 @@ fn concurrent_registrations_do_not_lose_reactions() {
   let barrier = std::sync::Arc::new(std::sync::Barrier::new(THREADS + 1));
   let half_ready = std::sync::Arc::new(AtomicUsize::new(0));
   let settled = std::sync::Arc::new(AtomicBool::new(false));
+  // Raw pointers are `!Send` on newer Rust versions; pass as an integer across threads.
+  let promise_bits = promise as usize;
   let mut joins = Vec::new();
   for _ in 0..THREADS {
     let b = barrier.clone();
@@ -151,7 +155,7 @@ fn concurrent_registrations_do_not_lose_reactions() {
     joins.push(std::thread::spawn(move || {
       b.wait();
       for i in 0..PER_THREAD {
-        runtime_native::rt_promise_then_legacy(promise, inc, fired as *const AtomicUsize as *mut u8);
+        runtime_native::rt_promise_then_legacy(promise_bits as LegacyPromiseRef, inc, fired as *const AtomicUsize as *mut u8);
         if i + 1 == HALF {
           half_ready.fetch_add(1, Ordering::SeqCst);
           while !settled.load(Ordering::SeqCst) {
@@ -191,7 +195,7 @@ fn reentrant_then_handlers_observe_microtask_checkpoint_ordering() {
 
   #[repr(C)]
   struct ReentrantCtx {
-    promise: PromiseRef,
+    promise: LegacyPromiseRef,
     log: *const Mutex<Vec<u32>>,
   }
 
@@ -247,7 +251,7 @@ fn promise_fulfill_abi_drains_then_reactions() {
     flag.store(true, Ordering::SeqCst);
   }
 
-  runtime_native::rt_promise_then_legacy(promise, set_fired, fired as *const AtomicBool as *mut u8);
+  runtime_native::rt_promise_then_legacy(promise.0.cast(), set_fired, fired as *const AtomicBool as *mut u8);
   unsafe {
     runtime_native::rt_promise_fulfill(promise);
   }
@@ -324,7 +328,7 @@ fn async_spawn_abi_resumes_on_awaited_promise_settlement() {
   ensure_shape_table();
 
   let awaited = runtime_native::rt_promise_new_legacy();
-  let awaited_header = awaited.0.cast::<PromiseHeader>();
+  let awaited_header = awaited.cast::<PromiseHeader>();
 
   let completed: &'static AtomicBool = Box::leak(Box::new(AtomicBool::new(false)));
   let then_ran: &'static AtomicBool = Box::leak(Box::new(AtomicBool::new(false)));
@@ -349,7 +353,11 @@ fn async_spawn_abi_resumes_on_awaited_promise_settlement() {
     let flag = unsafe { &*(data as *const AtomicBool) };
     flag.store(true, Ordering::SeqCst);
   }
-  runtime_native::rt_promise_then_legacy(result_promise, set_then, then_ran as *const AtomicBool as *mut u8);
+  runtime_native::rt_promise_then_legacy(
+    result_promise.0.cast(),
+    set_then,
+    then_ran as *const AtomicBool as *mut u8,
+  );
 
   runtime_native::rt_promise_resolve_legacy(awaited, core::ptr::null_mut());
   while runtime_native::rt_async_poll() {}

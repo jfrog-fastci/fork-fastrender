@@ -1,4 +1,7 @@
-use runtime_native::abi::{Microtask, PromiseRef, RtCoroStatus, RtCoroutineHeader, RtShapeDescriptor, RtShapeId, ValueRef};
+use runtime_native::abi::{
+  LegacyPromiseRef, Microtask, PromiseRef, RtCoroStatus, RtCoroutineHeader, RtShapeDescriptor, RtShapeId,
+  ValueRef,
+};
 use runtime_native::async_abi::PromiseHeader;
 use runtime_native::gc::ObjHeader;
 use runtime_native::shape_table;
@@ -124,7 +127,7 @@ fn run_until_idle_drains_deferred_coroutines() {
 struct AwaitCoroutine {
   header: RtCoroutineHeader,
   done: *const AtomicBool,
-  awaited: PromiseRef,
+  awaited: LegacyPromiseRef,
 }
 
 extern "C" fn await_resume(coro: *mut RtCoroutineHeader) -> RtCoroStatus {
@@ -172,15 +175,17 @@ fn block_on_waits_for_promise_settlement() {
 
   let promise = runtime_native::rt_async_spawn_legacy(&mut coro.header);
 
+  // Raw pointers are `!Send` on newer Rust versions; pass as an integer across threads.
+  let awaited_bits = awaited as usize;
   let t = std::thread::spawn(move || {
     std::thread::sleep(Duration::from_millis(20));
-    runtime_native::rt_promise_resolve_legacy(awaited, 0xCAFE_BABE as ValueRef);
+    runtime_native::rt_promise_resolve_legacy(awaited_bits as LegacyPromiseRef, 0xCAFE_BABE as ValueRef);
   });
 
   let start = Instant::now();
   // Safety: ABI call.
   unsafe {
-    runtime_native::rt_async_block_on(promise);
+    runtime_native::rt_async_block_on(PromiseRef(promise.cast()));
   }
   let elapsed = start.elapsed();
 
@@ -230,7 +235,7 @@ fn block_on_returns_immediately_when_promise_already_settled() {
   let start = Instant::now();
   // Safety: ABI call.
   unsafe {
-    runtime_native::rt_async_block_on(p);
+    runtime_native::rt_async_block_on(PromiseRef(p.cast()));
   }
   let elapsed = start.elapsed();
 

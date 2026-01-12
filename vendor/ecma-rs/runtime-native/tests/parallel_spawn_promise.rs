@@ -1,4 +1,4 @@
-use runtime_native::abi::PromiseRef;
+use runtime_native::abi::{LegacyPromiseRef, PromiseRef};
 use runtime_native::async_abi::PromiseHeader;
 use runtime_native::test_util::TestRuntimeGuard;
 use runtime_native::PromiseLayout;
@@ -236,7 +236,7 @@ fn parallel_spawn_promise_legacy_runs_task_on_worker_and_continuation_on_event_l
     settled: AtomicBool,
   }
 
-  extern "C" fn task(data: *mut u8, promise: PromiseRef) {
+  extern "C" fn task(data: *mut u8, promise: LegacyPromiseRef) {
     let data = unsafe { &*(data as *const Data) };
     data
       .ran_on_other_thread

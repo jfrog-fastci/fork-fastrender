@@ -1,5 +1,5 @@
 use runtime_native::abi::{
-  PromiseRef, RtCoroStatus, RtCoroutineHeader, RtShapeDescriptor, RtShapeId, ValueRef,
+  LegacyPromiseRef, PromiseRef, RtCoroStatus, RtCoroutineHeader, RtShapeDescriptor, RtShapeId, ValueRef,
 };
 use runtime_native::async_abi::PromiseHeader;
 use runtime_native::gc::ObjHeader;
@@ -52,7 +52,7 @@ extern "C" fn noop(_data: *mut u8) {}
 #[repr(C)]
 struct PropagatingAwaitCoroutine {
   header: RtCoroutineHeader,
-  awaited: PromiseRef,
+  awaited: LegacyPromiseRef,
 }
 
 extern "C" fn propagating_await_resume(coro: *mut RtCoroutineHeader) -> RtCoroStatus {
@@ -122,7 +122,9 @@ fn awaiting_after_unhandled_rejection_reports_rejectionhandled() {
   while runtime_native::rt_async_poll_legacy() {}
   assert_eq!(
     runtime_native::test_util::drain_promise_rejection_events(),
-    vec![PromiseRejectionEvent::UnhandledRejection { promise: p }]
+    vec![PromiseRejectionEvent::UnhandledRejection {
+      promise: PromiseRef(p.cast())
+    }]
   );
 
   let coro_obj = unsafe { alloc_pinned::<PropagatingAwaitCoroutine>(RtShapeId(1)) };
@@ -144,7 +146,9 @@ fn awaiting_after_unhandled_rejection_reports_rejectionhandled() {
   while runtime_native::rt_async_poll_legacy() {}
   assert_eq!(
     runtime_native::test_util::drain_promise_rejection_events(),
-    vec![PromiseRejectionEvent::RejectionHandled { promise: p }]
+    vec![PromiseRejectionEvent::RejectionHandled {
+      promise: PromiseRef(p.cast())
+    }]
   );
 }
 
