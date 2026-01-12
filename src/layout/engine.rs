@@ -92,7 +92,9 @@ static LAYOUT_THREAD_POOL_CACHE: OnceLock<Mutex<LruCache<usize, Result<Arc<Threa
   OnceLock::new();
 
 pub(crate) fn default_layout_thread_budget() -> usize {
-  crate::rayon_init::ensure_global_rayon_pool();
+  if crate::rayon_global::ensure_global_pool().is_err() {
+    return 1;
+  }
   // `rayon::current_num_threads()` reflects the installed pool when we're already executing inside
   // a scoped thread pool (e.g. `render_pages --in-process`). Clamp it by the process CPU budget so
   // we don't oversubscribe in cgroup quota environments where Rayon may still see the host CPU
@@ -1151,16 +1153,23 @@ impl LayoutEngine {
     font_context: FontContext,
     image_cache: ImageCache,
   ) -> Self {
-    crate::rayon_init::ensure_global_rayon_pool();
-    if config.parallelism.mode == LayoutParallelismMode::Auto
+    if crate::rayon_global::ensure_global_pool().is_ok() {
+      if config.parallelism.mode == LayoutParallelismMode::Auto
+        && config.parallelism.max_threads.is_none()
+      {
+        let cap = crate::system::cpu_budget()
+          .min(DEFAULT_LAYOUT_AUTO_MAX_THREADS)
+          .max(1);
+        if rayon::current_num_threads() > cap {
+          config.parallelism.max_threads = Some(cap);
+        }
+      }
+    } else if config.parallelism.mode == LayoutParallelismMode::Auto
       && config.parallelism.max_threads.is_none()
     {
-      let cap = crate::system::cpu_budget()
-        .min(DEFAULT_LAYOUT_AUTO_MAX_THREADS)
-        .max(1);
-      if rayon::current_num_threads() > cap {
-        config.parallelism.max_threads = Some(cap);
-      }
+      // If we cannot initialize Rayon at all, force serial layout to avoid panicking when Rayon is
+      // first used.
+      config.parallelism.max_threads = Some(1);
     }
     // Keep viewport-relative units (`vw`/`vh`) and media queries based on the *outer* viewport,
     // while using the initial containing block as the root percentage base (e.g.

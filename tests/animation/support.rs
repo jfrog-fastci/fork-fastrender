@@ -13,6 +13,7 @@ pub fn ensure_test_env() {
       .and_then(|value| value.parse::<usize>().ok())
       .unwrap_or(1)
       .max(1);
+    // Do not mutate process environment variables here; integration tests run in a shared process.
     crate::common::rayon_test_util::init_rayon_for_tests(threads);
   });
 }

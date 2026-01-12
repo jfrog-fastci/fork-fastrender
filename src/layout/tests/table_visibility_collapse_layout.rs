@@ -11,7 +11,7 @@ fn ensure_rayon_threads() {
     .and_then(|value| value.parse::<usize>().ok())
     .unwrap_or(4)
     .max(1);
-  crate::common::rayon_test_util::init_rayon_for_tests(threads);
+  crate::testing::init_rayon_for_tests(threads);
 }
 
 #[derive(Debug, Clone)]

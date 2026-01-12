@@ -1414,8 +1414,8 @@ fn rasterize_linear_gradient_with_phase(
     let deadline = active_deadline();
     if pixels_len >= GRADIENT_PARALLEL_THRESHOLD_PIXELS
       && gradient_allow_parallel(deadline.as_ref())
+      && crate::rayon_global::ensure_global_pool().is_ok()
     {
-      crate::rayon_init::ensure_global_rayon_pool();
       pixels
         .par_chunks_mut(DEADLINE_PIXELS_STRIDE)
         .try_for_each(|chunk| {
@@ -1604,9 +1604,10 @@ fn rasterize_linear_gradient_with_phase(
   };
 
   let deadline = active_deadline();
-  if pixels_len >= GRADIENT_PARALLEL_THRESHOLD_PIXELS && gradient_allow_parallel(deadline.as_ref())
+  if pixels_len >= GRADIENT_PARALLEL_THRESHOLD_PIXELS
+    && gradient_allow_parallel(deadline.as_ref())
+    && crate::rayon_global::ensure_global_pool().is_ok()
   {
-    crate::rayon_init::ensure_global_rayon_pool();
     pixels
       .par_chunks_mut(stride)
       .enumerate()
@@ -2150,8 +2151,8 @@ pub fn paint_linear_gradient_src_over(
   let deadline = active_deadline();
   if total_pixels >= GRADIENT_PARALLEL_THRESHOLD_PIXELS
     && gradient_allow_parallel(deadline.as_ref())
+    && crate::rayon_global::ensure_global_pool().is_ok()
   {
-    crate::rayon_init::ensure_global_rayon_pool();
     pixels
       .par_chunks_mut(stride)
       .enumerate()
@@ -2317,9 +2318,10 @@ pub fn rasterize_conic_gradient(
   };
 
   let deadline = active_deadline();
-  if pixels_len >= GRADIENT_PARALLEL_THRESHOLD_PIXELS && gradient_allow_parallel(deadline.as_ref())
+  if pixels_len >= GRADIENT_PARALLEL_THRESHOLD_PIXELS
+    && gradient_allow_parallel(deadline.as_ref())
+    && crate::rayon_global::ensure_global_pool().is_ok()
   {
-    crate::rayon_init::ensure_global_rayon_pool();
     pixels
       .par_chunks_mut(stride)
       .enumerate()
@@ -2585,8 +2587,8 @@ pub fn rasterize_radial_gradient(
   let deadline = active_deadline();
   if total_pixels >= GRADIENT_PARALLEL_THRESHOLD_PIXELS
     && gradient_allow_parallel(deadline.as_ref())
+    && crate::rayon_global::ensure_global_pool().is_ok()
   {
-    crate::rayon_init::ensure_global_rayon_pool();
     pixels
       .par_chunks_mut(stride)
       .enumerate()

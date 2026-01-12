@@ -93,11 +93,15 @@ fn parse_paint_threads_env() -> Result<Option<usize>, String> {
 /// When `FASTR_PAINT_THREADS` is set to a value greater than 1, a lazily-initialised dedicated
 /// thread pool is returned. Otherwise, callers should use the current/global Rayon pool.
 pub(crate) fn paint_pool() -> PaintPoolSelection {
-  crate::rayon_init::ensure_global_rayon_pool();
   // Rayon may still observe the host CPU count inside cgroup-quotad containers. Clamp the reported
   // pool size by our process CPU budget so default paint fan-out doesn't oversubscribe CI runs.
-  let current_threads = rayon::current_num_threads().max(1);
-  let current_threads = current_threads.min(crate::system::cpu_budget().max(1));
+  let current_threads = if crate::rayon_global::ensure_global_pool().is_ok() {
+    rayon::current_num_threads()
+      .max(1)
+      .min(crate::system::cpu_budget().max(1))
+  } else {
+    1
+  };
 
   match parse_paint_threads_env() {
     Ok(None) => PaintPoolSelection {

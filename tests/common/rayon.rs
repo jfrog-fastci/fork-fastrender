@@ -1,5 +1,16 @@
 use std::sync::Once;
 
+/// Default Rayon thread count for integration tests that do not care about the exact parallelism.
+///
+/// Keep this small so it stays within typical CI sandbox thread limits, while still exercising
+/// basic parallel paths when enabled.
+const DEFAULT_TEST_RAYON_THREADS: usize = 2;
+
+/// Initialize the Rayon global pool with the default thread count for tests.
+pub fn init_rayon_for_tests_default() {
+  init_rayon_for_tests(DEFAULT_TEST_RAYON_THREADS);
+}
+
 /// Initialize the Rayon global pool with a conservative thread count for tests.
 ///
 /// Many CI runners report very high CPU counts, but run tests under strict thread/address-space
@@ -17,19 +28,32 @@ pub fn init_rayon_for_tests(num_threads: usize) {
     // thread-safe with concurrent `std::env::*` access. Setting `RAYON_NUM_THREADS` could race with
     // other tests (or FastRender initialization) that read environment variables, leading to flaky
     // behavior.
-    if let Err(err) = rayon::ThreadPoolBuilder::new()
-      .num_threads(num_threads)
-      .build_global()
-    {
-      // `ThreadPoolBuildError` does not expose its underlying kind publicly; the only non-fatal
-      // failure is when another test has already initialized the global pool.
-      //
-      // Detect that case by checking whether querying the pool succeeds without panicking.
-      let already_initialized = std::panic::catch_unwind(|| rayon::current_num_threads()).is_ok();
-      if !already_initialized {
-        panic!("failed to initialize Rayon global pool for tests: {err}");
+    let mut threads = num_threads;
+    loop {
+      match rayon::ThreadPoolBuilder::new()
+        .num_threads(threads)
+        .build_global()
+      {
+        Ok(()) => break,
+        Err(err) => {
+          // `ThreadPoolBuildError` does not expose its underlying kind publicly; the only non-fatal
+          // failure is when another test has already initialized the global pool.
+          //
+          // Detect that case by checking whether querying the pool succeeds without panicking.
+          let already_initialized =
+            std::panic::catch_unwind(|| rayon::current_num_threads()).is_ok();
+          if already_initialized {
+            break;
+          }
+
+          // If initialization fails due to OS thread-spawn limits (EAGAIN/WouldBlock), retry with a
+          // smaller pool size. This keeps the suite stable under constrained CI.
+          if threads <= 1 {
+            panic!("failed to initialize Rayon global pool for tests: {err}");
+          }
+          threads = (threads / 2).max(1);
+        }
       }
     }
   });
 }
-
