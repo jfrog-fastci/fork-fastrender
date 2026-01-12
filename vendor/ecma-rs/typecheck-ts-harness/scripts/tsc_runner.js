@@ -16,10 +16,19 @@ const SCHEMA_VERSION = 2;
 
 function normalizePath(fileName) {
   const normalized = path.posix.normalize(fileName.replace(/\\/g, "/"));
-  if (normalized.length > 1 && normalized.endsWith("/")) {
-    return normalized.slice(0, -1);
+  // Canonicalize Windows drive letter casing so comparisons work on
+  // case-insensitive file systems (and to keep paths stable across callers).
+  const canonical = normalized.replace(
+    /^(\/?)([A-Za-z]):/,
+    (_match, leadingSlash, drive) => `${leadingSlash}${drive.toLowerCase()}:`,
+  );
+
+  // Preserve drive roots like `c:/` / `/c:/`.
+  const isDriveRoot = /^[a-z]:\/$/i.test(canonical) || /^\/[a-z]:\/$/i.test(canonical);
+  if (!isDriveRoot && canonical.length > 1 && canonical.endsWith("/")) {
+    return canonical.slice(0, -1);
   }
-  return normalized;
+  return canonical;
 }
 
 function isWithinRoot(candidate, root) {
@@ -27,7 +36,7 @@ function isWithinRoot(candidate, root) {
 }
 
 function computeAllowedDiskRoots() {
-  const libPath = normalizePath(ts.getDefaultLibFilePath({}));
+  const libPath = toAbsolute(ts.getDefaultLibFilePath({}));
   const libDir = normalizePath(path.posix.dirname(libPath));
   const packageRoot = normalizePath(path.posix.join(libDir, ".."));
   return new Set([libDir, packageRoot]);
@@ -42,6 +51,16 @@ function isAllowedDiskPath(absolutePath) {
     }
   }
   return false;
+}
+
+function toDiskPath(virtualAbsolutePath) {
+  // `toAbsolute` uses POSIX rules so Windows rooted paths like `c:/x/y` become
+  // `/c:/x/y` in the virtual FS. When delegating to the real disk-backed host,
+  // strip the leading `/` so Node/TypeScript can open the file on Windows.
+  if (virtualAbsolutePath.startsWith("/") && /^[a-z]:\//i.test(virtualAbsolutePath.slice(1))) {
+    return virtualAbsolutePath.slice(1);
+  }
+  return virtualAbsolutePath;
 }
 
 function utf16ToUtf8ByteOffset(text, utf16Pos) {
@@ -371,7 +390,7 @@ function createInMemoryHost(files, options) {
       return undefined;
     }
 
-    const diskText = defaultHost.readFile(normalized);
+    const diskText = defaultHost.readFile(toDiskPath(normalized));
     if (diskText === undefined) {
       if (onError) {
         onError(`File not found: ${normalized}`);
@@ -391,7 +410,7 @@ function createInMemoryHost(files, options) {
       const absolute = toAbsolute(fileName);
       return (
         normalizedFiles.has(absolute) ||
-        (isAllowedDiskPath(absolute) && defaultHost.fileExists(absolute))
+        (isAllowedDiskPath(absolute) && defaultHost.fileExists(toDiskPath(absolute)))
       );
     },
     readFile: (fileName) => {
@@ -402,19 +421,20 @@ function createInMemoryHost(files, options) {
       if (!isAllowedDiskPath(absolute)) {
         return undefined;
       }
-      return defaultHost.readFile(absolute);
+      return defaultHost.readFile(toDiskPath(absolute));
     },
     directoryExists: (dirName) => {
       const absolute = toAbsolute(dirName);
       return (
         virtualDirectories.has(absolute) ||
-        (isAllowedDiskPath(absolute) && (defaultHost.directoryExists?.(absolute) ?? false))
+        (isAllowedDiskPath(absolute) &&
+          (defaultHost.directoryExists?.(toDiskPath(absolute)) ?? false))
       );
     },
     getDirectories: (dirName) => {
       const absolute = toAbsolute(dirName);
       const fromDefault = isAllowedDiskPath(absolute)
-        ? defaultHost.getDirectories?.(absolute) ?? []
+        ? defaultHost.getDirectories?.(toDiskPath(absolute)) ?? []
         : [];
       const virtual = listVirtualSubdirectories(absolute, virtualDirectories);
       return Array.from(new Set([...fromDefault, ...virtual]));
@@ -424,14 +444,24 @@ function createInMemoryHost(files, options) {
       if (!isAllowedDiskPath(absolute)) {
         return [];
       }
-      return defaultHost.readDirectory?.(absolute, extensions, excludes, includes, depth) ?? [];
+      const results =
+        defaultHost.readDirectory?.(
+          toDiskPath(absolute),
+          extensions,
+          excludes,
+          includes,
+          depth,
+        ) ?? [];
+      return results.map(toAbsolute);
     },
     realpath: (p) => {
       const absolute = toAbsolute(p);
       if (!isAllowedDiskPath(absolute)) {
         return absolute;
       }
-      return defaultHost.realpath ? defaultHost.realpath(absolute) : absolute;
+      const diskPath = toDiskPath(absolute);
+      const real = defaultHost.realpath ? defaultHost.realpath(diskPath) : diskPath;
+      return toAbsolute(real);
     },
     getSourceFileByPath: (fileName, filePath, languageVersion, onError) =>
       // Ignore the cache key and treat it as the resolved file name.
