@@ -1133,6 +1133,7 @@ pub fn check_body(
   bindings: &HashMap<String, TypeId>,
   value_defs: &HashMap<DefId, DefId>,
   resolver: Option<Arc<dyn TypeResolver>>,
+  expr_value_overrides: Option<&HashMap<TextRange, TypeId>>,
 ) -> BodyCheckResult {
   check_body_with_expander(
     body_id,
@@ -1151,6 +1152,7 @@ pub fn check_body(
     None,
     None,
     BodyThisSuperContext::default(),
+    expr_value_overrides,
     false,
     false,
     None,
@@ -1178,6 +1180,7 @@ pub fn check_body_with_expander(
   type_param_decls: Option<&HashMap<DefId, Arc<[TypeParamDecl]>>>,
   contextual_fn_ty: Option<TypeId>,
   this_super_context: BodyThisSuperContext,
+  expr_value_overrides: Option<&HashMap<TextRange, TypeId>>,
   strict_native: bool,
   no_implicit_any: bool,
   jsx_mode: Option<JsxMode>,
@@ -1302,6 +1305,7 @@ pub fn check_body_with_expander(
     def_type_param_decls: type_param_decls,
     contextual_fn_ty,
     this_super_context,
+    expr_value_overrides,
     cancelled,
     _names: names,
     _bump: Bump::new(),
@@ -1462,6 +1466,7 @@ struct Checker<'a> {
   def_type_param_decls: Option<&'a HashMap<DefId, Arc<[TypeParamDecl]>>>,
   contextual_fn_ty: Option<TypeId>,
   this_super_context: BodyThisSuperContext,
+  expr_value_overrides: Option<&'a HashMap<TextRange, TypeId>>,
   cancelled: Option<&'a Arc<AtomicBool>>,
   _names: &'a NameInterner,
   _bump: Bump,
@@ -3528,8 +3533,18 @@ impl<'a> Checker<'a> {
       }
       AstExpr::LitArr(arr) => self.array_literal_type(arr),
       AstExpr::LitObj(obj) => self.object_literal_type(obj),
-      AstExpr::Func(func) => self.function_type(&func.stx.func),
-      AstExpr::ArrowFunc(func) => self.function_type(&func.stx.func),
+      AstExpr::Func(func) => self
+        .expr_value_overrides
+        .and_then(|overrides| overrides.get(&loc_to_range(self.file, expr.loc)).copied())
+        .unwrap_or_else(|| self.function_type(&func.stx.func)),
+      AstExpr::ArrowFunc(func) => self
+        .expr_value_overrides
+        .and_then(|overrides| overrides.get(&loc_to_range(self.file, expr.loc)).copied())
+        .unwrap_or_else(|| self.function_type(&func.stx.func)),
+      AstExpr::Class(_) => self
+        .expr_value_overrides
+        .and_then(|overrides| overrides.get(&loc_to_range(self.file, expr.loc)).copied())
+        .unwrap_or(self.store.primitive_ids().unknown),
       AstExpr::JsxElem(elem) => self.check_jsx_elem(elem),
       AstExpr::IdPat(_) | AstExpr::ArrPat(_) | AstExpr::ObjPat(_) => {
         self.store.primitive_ids().unknown

@@ -50,6 +50,7 @@ fn records_pattern_types_for_params_and_vars() {
     &bindings,
     &HashMap::new(),
     None,
+    None,
   );
   let prim = store.primitive_ids();
 

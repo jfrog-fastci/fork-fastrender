@@ -56,6 +56,7 @@ fn check_top_level(
     bindings,
     &HashMap::new(),
     None,
+    None,
   )
 }
 

@@ -1762,6 +1762,60 @@ pub mod body_check {
 
         ctx_super
       })();
+      let mut expr_value_overrides: HashMap<TextRange, TypeId> = HashMap::new();
+      if !body.exprs.is_empty() {
+        let mut cached_def_types: HashMap<DefId, TypeId> = HashMap::new();
+        for (idx, expr) in body.exprs.iter().enumerate() {
+          if idx % 4096 == 0 && ctx.cancelled.load(Ordering::Relaxed) {
+            panic_any(crate::FatalError::Cancelled);
+          }
+          match expr.kind {
+            hir_js::ExprKind::FunctionExpr { def, .. } => {
+              let ty = if let Some(ty) = cached_def_types.get(&def).copied() {
+                ty
+              } else {
+                let raw = ctx.interned_def_types.get(&def).copied().unwrap_or(prim.unknown);
+                let ty = if ctx.store.contains_type_id(raw) {
+                  ctx.store.canon(raw)
+                } else {
+                  prim.unknown
+                };
+                cached_def_types.insert(def, ty);
+                ty
+              };
+              expr_value_overrides.insert(expr.span, ty);
+            }
+            hir_js::ExprKind::ClassExpr { def, .. } => {
+              let Some(value_def) = ctx.value_defs.get(&def).copied() else {
+                continue;
+              };
+              let ty = if let Some(ty) = cached_def_types.get(&value_def).copied() {
+                ty
+              } else {
+                let raw = ctx
+                  .interned_def_types
+                  .get(&value_def)
+                  .copied()
+                  .unwrap_or(prim.unknown);
+                let ty = if ctx.store.contains_type_id(raw) {
+                  ctx.store.canon(raw)
+                } else {
+                  prim.unknown
+                };
+                cached_def_types.insert(value_def, ty);
+                ty
+              };
+              expr_value_overrides.insert(expr.span, ty);
+            }
+            _ => {}
+          }
+        }
+      }
+      let expr_value_overrides = if expr_value_overrides.is_empty() {
+        None
+      } else {
+        Some(&expr_value_overrides)
+      };
       let mut result = check_body_with_expander(
         body_id,
         body,
@@ -1779,6 +1833,7 @@ pub mod body_check {
         Some(&ctx.interned_type_param_decls),
         contextual_fn_ty,
         this_super_context,
+        expr_value_overrides,
         strict_native,
         no_implicit_any,
         ctx.jsx_mode,

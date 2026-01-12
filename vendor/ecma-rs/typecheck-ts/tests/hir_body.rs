@@ -71,6 +71,7 @@ fn infers_basic_literals_and_identifiers() {
     &bindings,
     &HashMap::new(),
     None,
+    None,
   );
 
   // parameter, const binding, return expression
@@ -119,6 +120,7 @@ fn object_literal_methods_have_checkable_bodies() {
     &caches,
     &HashMap::new(),
     &HashMap::new(),
+    None,
     None,
   );
 
@@ -195,6 +197,7 @@ fn local_variable_widening_respects_decl_mode() {
     &bindings,
     &HashMap::new(),
     None,
+    None,
   );
 
   let mut x_ty = None;
@@ -267,6 +270,7 @@ fn expression_spans_match_body_indices() {
     &bindings,
     &HashMap::new(),
     None,
+    None,
   );
 
   for (idx, expr) in body.exprs.iter().enumerate() {
@@ -314,6 +318,7 @@ fn expr_at_returns_innermost_type() {
     &caches,
     &bindings,
     &HashMap::new(),
+    None,
     None,
   );
 
@@ -416,6 +421,7 @@ fn diagnostics_are_stably_sorted() {
     &bindings,
     &HashMap::new(),
     None,
+    None,
   );
   let starts: Vec<u32> = result
     .diagnostics()
@@ -463,6 +469,7 @@ fn call_with_missing_arguments_types_arguments_once() {
     &caches,
     &HashMap::new(),
     &HashMap::new(),
+    None,
     None,
   );
 
