@@ -1491,54 +1491,24 @@ fn illegal_dom_constructor_construct_native(
   illegal_dom_constructor_native(vm, scope, host, hooks, ctor, Value::Undefined, args)
 }
 
-fn storage_slots_from_callee(
-  scope: &Scope<'_>,
-  callee: GcObject,
-) -> Result<(GcObject, web_storage::StorageKind), VmError> {
-  let slots = scope.heap().get_function_native_slots(callee)?;
-  let this_slot = slots
-    .get(STORAGE_METHOD_THIS_SLOT)
-    .copied()
-    .unwrap_or(Value::Undefined);
-  let kind_slot = slots
-    .get(STORAGE_METHOD_KIND_SLOT)
-    .copied()
-    .unwrap_or(Value::Undefined);
-  let Value::Object(expected_this) = this_slot else {
-    return Err(VmError::InvariantViolation(
-      "Storage native missing expected this slot",
-    ));
+fn storage_require_this(scope: &Scope<'_>, this: Value) -> Result<web_storage::StorageKind, VmError> {
+  let Value::Object(obj) = this else {
+    return Err(VmError::TypeError(STORAGE_ILLEGAL_INVOCATION_ERROR));
   };
-  let Value::Number(kind_n) = kind_slot else {
-    return Err(VmError::InvariantViolation(
-      "Storage native missing kind slot",
-    ));
+  let slots = match scope.heap().object_host_slots(obj) {
+    Ok(slots) => slots,
+    Err(VmError::InvalidHandle { .. }) if scope.heap().is_valid_object(obj) => None,
+    Err(err) => return Err(err),
   };
-  if !kind_n.is_finite() || kind_n.is_nan() {
-    return Err(VmError::InvariantViolation(
-      "Storage native kind slot must be a finite number",
-    ));
+  let Some(slots) = slots else {
+    return Err(VmError::TypeError(STORAGE_ILLEGAL_INVOCATION_ERROR));
+  };
+  if slots.b != STORAGE_HOST_KIND {
+    return Err(VmError::TypeError(STORAGE_ILLEGAL_INVOCATION_ERROR));
   }
-  let kind = match kind_n as i32 {
-    0 => web_storage::StorageKind::Local,
-    1 => web_storage::StorageKind::Session,
-    _ => {
-      return Err(VmError::InvariantViolation(
-        "Storage native kind slot must be 0 or 1",
-      ))
-    }
-  };
-  Ok((expected_this, kind))
-}
-
-fn storage_require_this(
-  scope: &Scope<'_>,
-  callee: GcObject,
-  this: Value,
-) -> Result<web_storage::StorageKind, VmError> {
-  let (expected_this, kind) = storage_slots_from_callee(scope, callee)?;
-  match this {
-    Value::Object(obj) if obj == expected_this => Ok(kind),
+  match slots.a {
+    0 => Ok(web_storage::StorageKind::Local),
+    1 => Ok(web_storage::StorageKind::Session),
     _ => Err(VmError::TypeError(STORAGE_ILLEGAL_INVOCATION_ERROR)),
   }
 }
@@ -1587,11 +1557,11 @@ fn storage_length_get_native(
   scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
   _hooks: &mut dyn VmHostHooks,
-  callee: GcObject,
+  _callee: GcObject,
   this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
-  let kind = storage_require_this(scope, callee, this)?;
+  let kind = storage_require_this(scope, this)?;
   let area = storage_area_from_kind(vm, kind)?;
   let len = area.lock().len();
   Ok(Value::Number(len as f64))
@@ -1602,11 +1572,11 @@ fn storage_get_item_native(
   scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
   _hooks: &mut dyn VmHostHooks,
-  callee: GcObject,
+  _callee: GcObject,
   this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
-  let kind = storage_require_this(scope, callee, this)?;
+  let kind = storage_require_this(scope, this)?;
   let area = storage_area_from_kind(vm, kind)?;
   let key_v = args.get(0).copied().unwrap_or(Value::Undefined);
   let key_s = storage_to_string(scope, key_v)?;
@@ -1624,11 +1594,11 @@ fn storage_set_item_native(
   scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
   _hooks: &mut dyn VmHostHooks,
-  callee: GcObject,
+  _callee: GcObject,
   this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
-  let kind = storage_require_this(scope, callee, this)?;
+  let kind = storage_require_this(scope, this)?;
   let area = storage_area_from_kind(vm, kind)?;
   let key_v = args.get(0).copied().unwrap_or(Value::Undefined);
   let value_v = args.get(1).copied().unwrap_or(Value::Undefined);
@@ -1652,11 +1622,11 @@ fn storage_remove_item_native(
   scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
   _hooks: &mut dyn VmHostHooks,
-  callee: GcObject,
+  _callee: GcObject,
   this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
-  let kind = storage_require_this(scope, callee, this)?;
+  let kind = storage_require_this(scope, this)?;
   let area = storage_area_from_kind(vm, kind)?;
   let key_v = args.get(0).copied().unwrap_or(Value::Undefined);
   let key_s = storage_to_string(scope, key_v)?;
@@ -1670,11 +1640,11 @@ fn storage_clear_native(
   scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
   _hooks: &mut dyn VmHostHooks,
-  callee: GcObject,
+  _callee: GcObject,
   this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
-  let kind = storage_require_this(scope, callee, this)?;
+  let kind = storage_require_this(scope, this)?;
   let area = storage_area_from_kind(vm, kind)?;
   area.lock().clear();
   Ok(Value::Undefined)
@@ -1685,11 +1655,11 @@ fn storage_key_native(
   scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
   _hooks: &mut dyn VmHostHooks,
-  callee: GcObject,
+  _callee: GcObject,
   this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
-  let kind = storage_require_this(scope, callee, this)?;
+  let kind = storage_require_this(scope, this)?;
   let area = storage_area_from_kind(vm, kind)?;
   let idx_v = args.get(0).copied().unwrap_or(Value::Undefined);
   let Some(idx) = storage_to_index(scope, idx_v)? else {
@@ -1704,101 +1674,26 @@ fn storage_key_native(
 }
 
 fn install_storage_object(
-  _vm: &mut Vm,
   scope: &mut Scope<'_>,
-  realm: &Realm,
   global: GcObject,
   global_key: PropertyKey,
   storage_proto: GcObject,
-  label: &str,
   kind: web_storage::StorageKind,
-  length_get_call_id: vm_js::NativeFunctionId,
-  get_item_call_id: vm_js::NativeFunctionId,
-  set_item_call_id: vm_js::NativeFunctionId,
-  remove_item_call_id: vm_js::NativeFunctionId,
-  clear_call_id: vm_js::NativeFunctionId,
-  key_call_id: vm_js::NativeFunctionId,
-  length_key: PropertyKey,
-  get_item_key: PropertyKey,
-  set_item_key: PropertyKey,
-  remove_item_key: PropertyKey,
-  clear_key: PropertyKey,
-  key_key: PropertyKey,
 ) -> Result<(), VmError> {
   let storage_obj = scope.alloc_object()?;
   scope.push_root(Value::Object(storage_obj))?;
   scope
     .heap_mut()
     .object_set_prototype(storage_obj, Some(storage_proto))?;
-
-  let kind_slot = match kind {
-    web_storage::StorageKind::Local => 0.0,
-    web_storage::StorageKind::Session => 1.0,
+  let kind_host_slot = match kind {
+    web_storage::StorageKind::Local => 0,
+    web_storage::StorageKind::Session => 1,
   };
-  let slots = [Value::Object(storage_obj), Value::Number(kind_slot)];
-
-  let make_method = |scope: &mut Scope<'_>,
-                     call_id: vm_js::NativeFunctionId,
-                     name: &str,
-                     length: u32|
-   -> Result<GcObject, VmError> {
-    let name_s = scope.alloc_string(name)?;
-    scope.push_root(Value::String(name_s))?;
-    let func = scope.alloc_native_function_with_slots(call_id, None, name_s, length, &slots)?;
-    scope
-      .heap_mut()
-      .object_set_prototype(func, Some(realm.intrinsics().function_prototype()))?;
-    scope.push_root(Value::Object(func))?;
-    Ok(func)
-  };
-
-  let get_item_func = make_method(scope, get_item_call_id, "getItem", 1)?;
-  scope.define_property(
+  scope.heap_mut().object_set_host_slots(
     storage_obj,
-    get_item_key,
-    data_desc(Value::Object(get_item_func)),
-  )?;
-
-  let set_item_func = make_method(scope, set_item_call_id, "setItem", 2)?;
-  scope.define_property(
-    storage_obj,
-    set_item_key,
-    data_desc(Value::Object(set_item_func)),
-  )?;
-
-  let remove_item_func = make_method(scope, remove_item_call_id, "removeItem", 1)?;
-  scope.define_property(
-    storage_obj,
-    remove_item_key,
-    data_desc(Value::Object(remove_item_func)),
-  )?;
-
-  let clear_func = make_method(scope, clear_call_id, "clear", 0)?;
-  scope.define_property(storage_obj, clear_key, data_desc(Value::Object(clear_func)))?;
-
-  let key_func = make_method(scope, key_call_id, "key", 1)?;
-  scope.define_property(storage_obj, key_key, data_desc(Value::Object(key_func)))?;
-
-  // Read-only `length` accessor.
-  let length_get_name = scope.alloc_string(&format!("get {label}.length"))?;
-  scope.push_root(Value::String(length_get_name))?;
-  let length_get_func =
-    scope.alloc_native_function_with_slots(length_get_call_id, None, length_get_name, 0, &slots)?;
-  scope.heap_mut().object_set_prototype(
-    length_get_func,
-    Some(realm.intrinsics().function_prototype()),
-  )?;
-  scope.push_root(Value::Object(length_get_func))?;
-  scope.define_property(
-    storage_obj,
-    length_key,
-    PropertyDescriptor {
-      enumerable: false,
-      configurable: true,
-      kind: PropertyKind::Accessor {
-        get: Value::Object(length_get_func),
-        set: Value::Undefined,
-      },
+    HostSlots {
+      a: kind_host_slot,
+      b: STORAGE_HOST_KIND,
     },
   )?;
 
@@ -1889,8 +1784,6 @@ const HISTORY_TRAVERSE_LOCATION_OBJ_SLOT: usize = 2;
 const HISTORY_TRAVERSE_DOCUMENT_OBJ_SLOT: usize = 3;
 const DOM_RECT_FROM_RECT_CTOR_SLOT: usize = 0;
 const DOM_RECT_FROM_RECT_READ_ONLY_SLOT: usize = 1;
-const STORAGE_METHOD_THIS_SLOT: usize = 0;
-const STORAGE_METHOD_KIND_SLOT: usize = 1;
 const STORAGE_ILLEGAL_INVOCATION_ERROR: &str = "Illegal invocation";
 const EVENT_TARGET_DEFAULT_THIS_SLOT: usize = 0;
 const EVENT_TARGET_CONTEXT_GLOBAL_SLOT: usize = 1;
@@ -1904,6 +1797,7 @@ const NODE_ID_KEY: &str = "__fastrender_node_id";
 const DOM_TOKEN_LIST_HOST_TAG: u64 = 3;
 const DOM_STRING_MAP_HOST_KIND: u64 = 4;
 const CSS_STYLE_DECL_HOST_TAG: u64 = 5;
+const STORAGE_HOST_KIND: u64 = 6;
 const WRAPPER_DOCUMENT_KEY: &str = "__fastrender_wrapper_document";
 const DOCUMENT_WINDOW_KEY: &str = "__fastrender_document_window";
 const EVENT_BRAND_KEY: &str = "__fastrender_event";
@@ -25322,6 +25216,80 @@ fn init_window_globals(
   let storage_proto = scope.alloc_object()?;
   scope.push_root(Value::Object(storage_proto))?;
 
+  let make_method = |scope: &mut Scope<'_>,
+                     call_id: vm_js::NativeFunctionId,
+                     name: &str,
+                     length: u32|
+   -> Result<GcObject, VmError> {
+    let name_s = scope.alloc_string(name)?;
+    scope.push_root(Value::String(name_s))?;
+    let func = scope.alloc_native_function(call_id, None, name_s, length)?;
+    scope
+      .heap_mut()
+      .object_set_prototype(func, Some(realm.intrinsics().function_prototype()))?;
+    scope.push_root(Value::Object(func))?;
+    Ok(func)
+  };
+
+  let storage_get_item_func = make_method(&mut scope, storage_get_item_call_id, "getItem", 1)?;
+  scope.define_property(
+    storage_proto,
+    storage_get_item_key,
+    data_desc(Value::Object(storage_get_item_func)),
+  )?;
+
+  let storage_set_item_func = make_method(&mut scope, storage_set_item_call_id, "setItem", 2)?;
+  scope.define_property(
+    storage_proto,
+    storage_set_item_key,
+    data_desc(Value::Object(storage_set_item_func)),
+  )?;
+
+  let storage_remove_item_func =
+    make_method(&mut scope, storage_remove_item_call_id, "removeItem", 1)?;
+  scope.define_property(
+    storage_proto,
+    storage_remove_item_key,
+    data_desc(Value::Object(storage_remove_item_func)),
+  )?;
+
+  let storage_clear_func = make_method(&mut scope, storage_clear_call_id, "clear", 0)?;
+  scope.define_property(
+    storage_proto,
+    storage_clear_key,
+    data_desc(Value::Object(storage_clear_func)),
+  )?;
+
+  let storage_key_func = make_method(&mut scope, storage_key_call_id, "key", 1)?;
+  scope.define_property(
+    storage_proto,
+    storage_key_key,
+    data_desc(Value::Object(storage_key_func)),
+  )?;
+
+  // Read-only `length` accessor.
+  let storage_length_get_name = scope.alloc_string("get length")?;
+  scope.push_root(Value::String(storage_length_get_name))?;
+  let storage_length_get_func =
+    scope.alloc_native_function(storage_length_get_call_id, None, storage_length_get_name, 0)?;
+  scope.heap_mut().object_set_prototype(
+    storage_length_get_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(storage_length_get_func))?;
+  scope.define_property(
+    storage_proto,
+    storage_length_key,
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: true,
+      kind: PropertyKind::Accessor {
+        get: Value::Object(storage_length_get_func),
+        set: Value::Undefined,
+      },
+    },
+  )?;
+
   // `Storage` constructor is an illegal DOM constructor in browsers.
   let storage_ctor_call_id = vm.register_native_call(illegal_dom_constructor_native)?;
   let storage_ctor_construct_id =
@@ -25357,48 +25325,18 @@ fn init_window_globals(
   )?;
 
   install_storage_object(
-    vm,
     &mut scope,
-    realm,
     global,
     local_storage_key,
     storage_proto,
-    "localStorage",
     web_storage::StorageKind::Local,
-    storage_length_get_call_id,
-    storage_get_item_call_id,
-    storage_set_item_call_id,
-    storage_remove_item_call_id,
-    storage_clear_call_id,
-    storage_key_call_id,
-    storage_length_key,
-    storage_get_item_key,
-    storage_set_item_key,
-    storage_remove_item_key,
-    storage_clear_key,
-    storage_key_key,
   )?;
   install_storage_object(
-    vm,
     &mut scope,
-    realm,
     global,
     session_storage_key,
     storage_proto,
-    "sessionStorage",
     web_storage::StorageKind::Session,
-    storage_length_get_call_id,
-    storage_get_item_call_id,
-    storage_set_item_call_id,
-    storage_remove_item_call_id,
-    storage_clear_call_id,
-    storage_key_call_id,
-    storage_length_key,
-    storage_get_item_key,
-    storage_set_item_key,
-    storage_remove_item_key,
-    storage_clear_key,
-    storage_key_key,
   )?;
 
   // --- WindowOrWorkerGlobalScope primitives ---------------------------------
@@ -26268,6 +26206,14 @@ mod tests {
     let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
 
     assert_eq!(realm.exec_script("typeof Storage === 'function'")?, Value::Bool(true));
+    assert_eq!(
+      realm.exec_script("typeof Storage.prototype.getItem === 'function'")?,
+      Value::Bool(true)
+    );
+    assert_eq!(
+      realm.exec_script("localStorage.getItem === Storage.prototype.getItem")?,
+      Value::Bool(true)
+    );
     assert_eq!(
       realm.exec_script("localStorage instanceof Storage && sessionStorage instanceof Storage")?,
       Value::Bool(true)
