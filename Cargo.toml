@@ -47,6 +47,7 @@ browser_ui = [
   "dep:pollster",
   "dep:arboard",
   "dep:directories",
+  "fs2",
 ]
 browser_ui_wayland = [
   # Wayland backend support for the `browser` UI on Linux.

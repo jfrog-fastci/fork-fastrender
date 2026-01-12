@@ -6,7 +6,10 @@ use crate::ui::about_pages;
 use crate::ui::browser_app::BrowserAppState;
 use crate::ui::validate_user_navigation_url_scheme;
 use crate::ui::zoom;
+use fs2::FileExt;
 use serde::{Deserialize, Serialize};
+use std::fs::{File, OpenOptions};
+use std::io;
 use std::path::{Path, PathBuf};
 
 const SESSION_ENV_PATH: &str = "FASTR_BROWSER_SESSION_PATH";
@@ -459,6 +462,29 @@ mod tests {
     assert!(value.get("tabs").is_none());
     assert!(value.get("active_tab_index").is_none());
   }
+
+  #[test]
+  fn session_lock_fails_when_already_held() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let session_path = dir.path().join("session.json");
+    let lock_path = session_path.with_extension("lock");
+
+    let lock = acquire_session_lock(&session_path).expect("acquire first lock");
+    assert!(
+      lock_path.exists(),
+      "expected lock file to exist at {}",
+      lock_path.display()
+    );
+
+    let err = acquire_session_lock(&session_path).expect_err("second lock should fail");
+    assert!(
+      matches!(err, SessionLockError::AlreadyLocked { .. }),
+      "expected AlreadyLocked error, got {err:?}"
+    );
+
+    drop(lock);
+    acquire_session_lock(&session_path).expect("lock should be acquirable after drop");
+  }
 }
 
 /// Determine the on-disk session file location.
@@ -591,4 +617,90 @@ pub fn parse_session_json(raw: &str) -> Result<BrowserSession, String> {
     BrowserSessionFile::V1(v1) => v1_into_v2(v1),
   };
   Ok(session.sanitized())
+}
+
+/// A best-effort advisory file lock used to ensure only one `browser` process writes a session file.
+///
+/// This prevents multiple instances from racing and clobbering each other's autosaved session state.
+#[derive(Debug)]
+pub struct SessionFileLock {
+  _file: File,
+  path: PathBuf,
+}
+
+impl SessionFileLock {
+  pub fn path(&self) -> &Path {
+    &self.path
+  }
+}
+
+impl Drop for SessionFileLock {
+  fn drop(&mut self) {
+    let _ = self._file.unlock();
+  }
+}
+
+#[derive(Debug)]
+pub enum SessionLockError {
+  AlreadyLocked { lock_path: PathBuf },
+  Io { lock_path: PathBuf, error: io::Error },
+}
+
+impl std::fmt::Display for SessionLockError {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    match self {
+      Self::AlreadyLocked { lock_path } => {
+        write!(f, "session lock already held: {}", lock_path.display())
+      }
+      Self::Io { lock_path, error } => {
+        write!(f, "failed to acquire session lock {}: {error}", lock_path.display())
+      }
+    }
+  }
+}
+
+impl std::error::Error for SessionLockError {
+  fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+    match self {
+      Self::AlreadyLocked { .. } => None,
+      Self::Io { error, .. } => Some(error),
+    }
+  }
+}
+
+/// Acquire an exclusive advisory lock for a session file.
+///
+/// The lock is held for as long as the returned [`SessionFileLock`] value is kept alive.
+pub fn acquire_session_lock(session_path: &Path) -> Result<SessionFileLock, SessionLockError> {
+  let lock_path = session_path.with_extension("lock");
+
+  let parent_dir = session_path
+    .parent()
+    .filter(|p| !p.as_os_str().is_empty())
+    .unwrap_or_else(|| Path::new("."));
+  std::fs::create_dir_all(parent_dir).map_err(|error| SessionLockError::Io {
+    lock_path: lock_path.clone(),
+    error,
+  })?;
+
+  let file = match OpenOptions::new()
+    .create(true)
+    .read(true)
+    .write(true)
+    .open(&lock_path)
+  {
+    Ok(file) => file,
+    Err(error) => return Err(SessionLockError::Io { lock_path, error }),
+  };
+
+  match file.try_lock_exclusive() {
+    Ok(()) => Ok(SessionFileLock {
+      _file: file,
+      path: lock_path,
+    }),
+    Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+      Err(SessionLockError::AlreadyLocked { lock_path })
+    }
+    Err(error) => Err(SessionLockError::Io { lock_path, error }),
+  }
 }

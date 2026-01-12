@@ -467,6 +467,29 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
   }
 
   let session_path = fastrender::ui::session::session_path();
+  let session_lock = match fastrender::ui::session::acquire_session_lock(&session_path) {
+    Ok(lock) => lock,
+    Err(fastrender::ui::session::SessionLockError::AlreadyLocked { lock_path }) => {
+      return Err(
+        format!(
+          "refusing to start: session file {} is already in use by another `browser` process (lock file: {})",
+          session_path.display(),
+          lock_path.display()
+        )
+        .into(),
+      );
+    }
+    Err(fastrender::ui::session::SessionLockError::Io { lock_path, error }) => {
+      return Err(
+        format!(
+          "failed to acquire session lock file {} (session {}): {error}",
+          lock_path.display(),
+          session_path.display(),
+        )
+        .into(),
+      );
+    }
+  };
 
   // Test/CI hook: run a minimal end-to-end wiring smoke test without creating a window or
   // initialising winit/wgpu.
@@ -665,6 +688,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
   let mut bridge_join = Some(bridge_join);
 
   event_loop.run(move |event, _, control_flow| {
+    // Keep the session lock alive for the duration of the winit event loop.
+    let _ = &session_lock;
     // Keep the event loop idle when there is no work to do.
     *control_flow = ControlFlow::Wait;
 
