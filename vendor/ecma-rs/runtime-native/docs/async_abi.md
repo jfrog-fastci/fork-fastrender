@@ -243,7 +243,9 @@ Drive the runtime's async/event-loop queues for one turn.
 - May block waiting for timer deadlines or I/O readiness when the runtime has pending work but
   nothing is immediately runnable.
 - Returns `true` iff there is still pending work after this turn (queued microtasks/macrotasks,
-  active timers, or I/O watchers). Returns `false` when the runtime is fully idle.
+  active timers, I/O watchers, or outstanding external work such as a promise returned by
+  `rt_parallel_spawn_promise` that has not yet settled). Returns `false` when the runtime is fully
+  idle.
 
 `rt_async_poll_legacy` is a compatibility alias with identical behavior.
 For a non-blocking microtask-only checkpoint, use `rt_drain_microtasks`.

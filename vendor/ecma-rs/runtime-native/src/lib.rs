@@ -391,7 +391,8 @@ pub unsafe extern "C" fn rt_async_spawn_deferred(coro: CoroutineId) -> PromiseRe
 ///   immediately runnable
 ///
 /// Returns `true` if there is still pending work after this poll turn (queued tasks, active timers,
-/// or I/O watchers). Returns `false` when the runtime is fully idle.
+/// I/O watchers, or outstanding external work like a promise returned by `rt_parallel_spawn_promise`
+/// that has not yet settled). Returns `false` when the runtime is fully idle.
 ///
 /// Note: [`rt_async_poll_legacy`] is a compatibility alias with identical behavior.
 /// To drain only microtasks without running timers/I/O/macrotasks, use [`rt_drain_microtasks`].

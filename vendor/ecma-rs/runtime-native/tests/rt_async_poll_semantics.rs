@@ -1,10 +1,33 @@
 use runtime_native::test_util::TestRuntimeGuard;
+use runtime_native::PromiseLayout;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 extern "C" fn inc(data: *mut u8) {
   let counter = unsafe { &*(data as *const AtomicUsize) };
   counter.fetch_add(1, Ordering::SeqCst);
+}
+
+extern "C" fn noop(_data: *mut u8) {}
+
+struct ParallelPromiseCtx {
+  allow_finish: Arc<std::sync::atomic::AtomicBool>,
+}
+
+extern "C" fn parallel_promise_task(data: *mut u8, promise: runtime_native::PromiseRef) {
+  if data.is_null() {
+    return;
+  }
+  // Safety: allocated by `Box::into_raw(Box::new(ParallelPromiseCtx { .. }))` in the test.
+  let ctx = unsafe { Box::from_raw(data.cast::<ParallelPromiseCtx>()) };
+  while !ctx.allow_finish.load(Ordering::Acquire) {
+    std::thread::yield_now();
+  }
+  unsafe {
+    runtime_native::rt_promise_fulfill(promise);
+  }
+  // `ctx` dropped here.
 }
 
 fn drive_two_macrotasks(poll: extern "C" fn() -> bool) -> (bool, usize, bool, usize) {
@@ -116,6 +139,48 @@ fn rt_async_poll_returns_true_when_timer_is_pending_after_turn() {
   // Cancel the timer and verify the runtime becomes idle.
   assert!(runtime_native::async_rt::global().cancel_timer(timer));
   assert!(!runtime_native::rt_async_poll());
+}
+
+#[test]
+fn rt_async_poll_returns_true_when_parallel_promise_is_pending_after_turn() {
+  let _rt = TestRuntimeGuard::new();
+
+  let allow_finish = Arc::new(std::sync::atomic::AtomicBool::new(false));
+  let ctx = Box::new(ParallelPromiseCtx {
+    allow_finish: allow_finish.clone(),
+  });
+  let _promise = runtime_native::rt_parallel_spawn_promise(
+    parallel_promise_task,
+    Box::into_raw(ctx).cast::<u8>(),
+    PromiseLayout::of::<u8>(),
+  );
+
+  // Ensure there is ready work so the poll turn doesn't block in the reactor wait syscall while
+  // the parallel task is still running.
+  runtime_native::async_rt::enqueue_macrotask(noop, std::ptr::null_mut());
+
+  assert!(
+    runtime_native::rt_async_poll(),
+    "rt_async_poll should report pending work while a parallel promise is still outstanding"
+  );
+
+  allow_finish.store(true, Ordering::Release);
+
+  // Keep `rt_async_poll` non-blocking while waiting for the parallel task to complete by ensuring
+  // there is always at least one macrotask ready each poll turn.
+  let deadline = std::time::Instant::now() + Duration::from_secs(2);
+  loop {
+    assert!(
+      std::time::Instant::now() < deadline,
+      "timed out waiting for parallel promise to settle and runtime to become idle"
+    );
+    runtime_native::async_rt::enqueue_macrotask(noop, std::ptr::null_mut());
+    if !runtime_native::rt_async_poll() {
+      return;
+    }
+    // Be polite: allow the worker thread to observe `allow_finish` and settle the promise.
+    std::thread::yield_now();
+  }
 }
 
 #[test]

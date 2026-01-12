@@ -771,11 +771,12 @@ void rt_async_cancel_all(void);
 // - runs a microtask checkpoint
 //
 // This call may block in the platform reactor wait syscall (`epoll_wait`/`kevent`) when there is no
-// ready work but there are pending timers or I/O watchers.
+// ready work but there are pending timers, I/O watchers, or outstanding "external" work (e.g. a
+// parallel task spawned via `rt_parallel_spawn_promise` that has not yet settled its promise).
 //
 // Return value:
 // - true  iff there is still pending work after this poll turn (queued microtasks/macrotasks,
-//          active timers, or I/O watchers).
+//          active timers, I/O watchers, or outstanding external work).
 // - false when the runtime is fully idle.
 //
 // Note: `rt_async_poll_legacy` is a compatibility alias with identical behavior.

@@ -1521,7 +1521,8 @@ pub extern "C" fn rt_async_cancel_all() {
 /// - Re-entrant calls on the same thread are treated as a no-op and return `false`.
 ///
 /// Returns `true` if there is still pending work after this poll turn (queued tasks, active
-/// timers, or I/O watchers). Returns `false` when the runtime is quiescent.
+/// timers, I/O watchers, or outstanding external work). Returns `false` when the runtime is
+/// quiescent.
 ///
 /// Note: This is a compatibility alias for [`crate::rt_async_poll`].
 #[no_mangle]
