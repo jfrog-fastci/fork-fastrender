@@ -371,3 +371,36 @@ fn node_iterator_registry_is_gc_safe_and_prunes_rust_state() -> Result<(), vm_js
   assert_eq!(doc.node_iterator_root(id), None);
   Ok(())
 }
+
+#[test]
+fn node_iterator_state_is_pruned_on_subsequent_registration() -> Result<(), vm_js::VmError> {
+  use vm_js::{Heap, HeapLimits, Value, WeakGcObject};
+
+  let mut heap = Heap::new(HeapLimits::new(4 * 1024 * 1024, 2 * 1024 * 1024));
+  let mut scope = heap.scope();
+
+  let mut doc = Document::new(QuirksMode::NoQuirks);
+
+  // Register a first NodeIterator wrapper.
+  let obj1 = scope.alloc_object()?;
+  let weak1 = WeakGcObject::from(obj1);
+  let root1 = scope.heap_mut().add_root(Value::Object(obj1))?;
+  let id1 = doc.create_node_iterator(doc.root());
+  doc.register_node_iterator_wrapper(scope.heap(), id1, obj1);
+  assert_eq!(doc.node_iterator_root(id1), Some(doc.root()));
+
+  // Drop wrapper 1 and GC it.
+  scope.heap_mut().remove_root(root1);
+  scope.heap_mut().collect_garbage();
+  assert!(weak1.upgrade(scope.heap()).is_none());
+
+  // Registering a *new* wrapper should sweep dead entries and prune the stale NodeIterator state.
+  let obj2 = scope.alloc_object()?;
+  let _root2 = scope.heap_mut().add_root(Value::Object(obj2))?;
+  let id2 = doc.create_node_iterator(doc.root());
+  doc.register_node_iterator_wrapper(scope.heap(), id2, obj2);
+
+  assert_eq!(doc.node_iterator_root(id1), None);
+  assert_eq!(doc.node_iterator_root(id2), Some(doc.root()));
+  Ok(())
+}

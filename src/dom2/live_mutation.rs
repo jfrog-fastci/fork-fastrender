@@ -235,6 +235,10 @@ impl Document {
     id: NodeIteratorId,
     wrapper: GcObject,
   ) {
+    // Registration is a convenient point to prune any previously collected wrappers and their
+    // associated Rust-side traversal state, without requiring callers to explicitly call the sweep
+    // API first.
+    self.sweep_dead_live_traversals_if_needed(heap);
     self.live_mutation.register_node_iterator(heap, id, wrapper);
   }
 
