@@ -7,6 +7,7 @@ use runtime_native::threading::ThreadKind;
 use runtime_native::PromiseLayout;
 use std::ptr;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicUsize;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
@@ -14,11 +15,13 @@ use std::time::{Duration, Instant};
 struct TaskCtx {
   started: AtomicBool,
   finished: AtomicBool,
+  out_payload_ptr: AtomicUsize,
 }
 
 extern "C" fn write_u64_sleep(data: *mut u8, out_payload: *mut u8) -> u8 {
   let ctx = unsafe { &*(data as *const TaskCtx) };
   ctx.started.store(true, Ordering::Release);
+  ctx.out_payload_ptr.store(out_payload as usize, Ordering::Release);
   unsafe {
     *(out_payload as *mut u64) = 0x1122_3344_5566_7788u64;
   }
@@ -71,6 +74,7 @@ fn spawn_blocking_promise_is_gc_managed_and_gc_safe() {
   let ctx = Box::new(TaskCtx {
     started: AtomicBool::new(false),
     finished: AtomicBool::new(false),
+    out_payload_ptr: AtomicUsize::new(0),
   });
   let ctx_ptr = Box::into_raw(ctx);
 
@@ -145,6 +149,15 @@ fn spawn_blocking_promise_is_gc_managed_and_gc_safe() {
   let mut current_promise = PromiseRef(promise_root.get().cast());
   let mut payload_ptr = runtime_native::rt_promise_payload_ptr(current_promise);
   assert!(!payload_ptr.is_null());
+  let out_payload_ptr = unsafe { &*ctx_ptr }
+    .out_payload_ptr
+    .load(Ordering::Acquire) as *mut u8;
+  assert!(!out_payload_ptr.is_null());
+  assert_ne!(
+    out_payload_ptr,
+    payload_ptr,
+    "blocking task out_payload must be a temporary buffer distinct from the promise payload buffer"
+  );
   let value = unsafe { *(payload_ptr as *const u64) };
   assert_eq!(value, 0x1122_3344_5566_7788u64);
 

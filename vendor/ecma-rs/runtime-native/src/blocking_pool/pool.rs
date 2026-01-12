@@ -250,17 +250,20 @@ impl BlockingPool {
     // `epoll_wait`.
     let _ = async_rt::global();
 
-    // Allocate a GC-managed payload promise (out-of-line payload buffer). The external-pending flag
-    // is cleared and the counter decremented by `rt_promise_{fulfill,reject}`.
-    let promise = crate::payload_promise::alloc_payload_promise(layout, true);
-
     // Keep the promise object alive (and relocatable) while the blocking task is outstanding. Even
     // if the caller drops the returned `PromiseRef` immediately, the blocking task still needs to
     // produce the payload bytes and the runtime needs to settle the promise.
     //
     // Use a temporary handle-stack root so `alloc_from_slot` reads the promise pointer after
     // acquiring its lock (moving-GC safe under lock contention).
+    //
+    // Keep the raw `PromiseRef` in a narrow scope so it is not live across any potentially
+    // blocking operations (e.g. a contended queue lock acquisition that may enter a GC-safe region).
     let promise_handle = {
+      // Allocate a GC-managed payload promise (out-of-line payload buffer). The external-pending
+      // flag is cleared and the counter decremented by `rt_promise_{fulfill,reject}`.
+      let promise = crate::payload_promise::alloc_payload_promise(layout, true);
+
       let tmp = crate::roots::Root::<u8>::new(promise.0.cast::<u8>());
       // Safety: `tmp.handle()` is a valid pointer-to-slot (`GcHandle`) containing a GC object base
       // pointer.
