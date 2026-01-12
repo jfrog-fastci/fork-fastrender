@@ -16,7 +16,7 @@
     "layout": 15.006694595375723,
     "paint": 197.08792235260117
   },
-  "notes": "",
+  "notes": "High diff_percent but very low perceptual distance: remaining diffs are dominated by pixel-level box-shadow blur rasterization/rounding differences vs Chrome/Skia (paint diagnostics show a single blur call covering ~217k px, roughly matching total diff pixels), not structural layout issues.",
   "accuracy": {
     "baseline": "chrome",
     "diff_pixels": 223630,
