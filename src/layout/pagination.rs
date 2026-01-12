@@ -70,6 +70,16 @@ impl Default for PaginateOptions {
 
 const EPSILON: f32 = 0.01;
 
+fn snapshot_running_elements_for_non_content_page(
+  state: &mut crate::layout::running_elements::RunningElementState,
+) -> HashMap<String, RunningElementValues> {
+  // Blank pages and footnote-only continuation pages still resolve `element()` in @page margin
+  // boxes by carrying the last running element snapshot from the previous in-flow content page.
+  // No running element events should be consumed for these pages.
+  let mut idx = 0usize;
+  running_elements_for_page(&[], &mut idx, state, 0.0, 0.0)
+}
+
 fn html_and_body_box_ids(node: &FragmentNode) -> (Option<usize>, Option<usize>) {
   // Renderer-produced fragment trees use the root element (`<html>`) as the tree root, but
   // pagination can introduce synthetic wrappers (e.g. the per-page document wrapper). Those
@@ -301,7 +311,10 @@ fn flow_start_for_token_in_layout(
   // when multiple fragments overlap due to rounding or when the offset lands exactly on a slice
   // boundary.
   match token {
-    BreakToken::Block { box_id, offset_bits } => {
+    BreakToken::Block {
+      box_id,
+      offset_bits,
+    } => {
       let mut offset = f32::from_bits(*offset_bits);
       if !offset.is_finite() || offset < 0.0 {
         offset = 0.0;
@@ -364,7 +377,10 @@ fn flow_start_for_token_in_layout(
       );
       return best.map(|(_, pos)| pos);
     }
-    BreakToken::Replaced { box_id, offset_bits } => {
+    BreakToken::Replaced {
+      box_id,
+      offset_bits,
+    } => {
       let mut offset = f32::from_bits(*offset_bits);
       if !offset.is_finite() || offset < 0.0 {
         offset = 0.0;
@@ -383,7 +399,8 @@ fn flow_start_for_token_in_layout(
           let node_block_size = axis.block_size(&node.bounds);
           let (node_abs_start, _node_abs_end) =
             axis.flow_range(abs_start, parent_block_size, &node.bounds);
-          if matches!(node.content, FragmentContent::Line { .. }) && line_contains_replaced(node, box_id)
+          if matches!(node.content, FragmentContent::Line { .. })
+            && line_contains_replaced(node, box_id)
           {
             return Some(node_abs_start);
           }
@@ -468,7 +485,10 @@ fn flow_start_for_token_in_layout(
   match token {
     BreakToken::Start => return Some(0.0),
     BreakToken::End => return None,
-    BreakToken::Block { box_id, offset_bits } => {
+    BreakToken::Block {
+      box_id,
+      offset_bits,
+    } => {
       if matches!(node.content, FragmentContent::Block { box_id: Some(id) } if id == *box_id) {
         let mut offset = f32::from_bits(*offset_bits);
         if !offset.is_finite() {
@@ -486,7 +506,10 @@ fn flow_start_for_token_in_layout(
         return Some(node_abs_start);
       }
     }
-    BreakToken::Replaced { box_id, offset_bits } => {
+    BreakToken::Replaced {
+      box_id,
+      offset_bits,
+    } => {
       let zero_bits = 0.0f32.to_bits();
       if *offset_bits == zero_bits
         && matches!(node.content, FragmentContent::Line { .. })
@@ -562,7 +585,9 @@ fn next_break_token_after_pos(
         },
       );
     }
-    FragmentContent::Replaced { box_id: Some(id), .. } => {
+    FragmentContent::Replaced {
+      box_id: Some(id), ..
+    } => {
       let mut slice_offset = node.slice_info.slice_offset;
       if !slice_offset.is_finite() || slice_offset < 0.0 {
         slice_offset = 0.0;
@@ -614,7 +639,15 @@ fn line_start_containing_pos(
   }
 
   for child in node.children.iter() {
-    line_start_containing_pos(child, pos, node_abs_start, node_block_size, axis, best, under_column);
+    line_start_containing_pos(
+      child,
+      pos,
+      node_abs_start,
+      node_block_size,
+      axis,
+      best,
+      under_column,
+    );
   }
 }
 
@@ -673,7 +706,9 @@ fn continuation_token_for_pos(
             },
           );
         }
-        FragmentContent::Replaced { box_id: Some(id), .. } => {
+        FragmentContent::Replaced {
+          box_id: Some(id), ..
+        } => {
           let mut offset = (pos - node_abs_start).max(0.0);
           let slice_offset = node.slice_info.slice_offset;
           if slice_offset.is_finite() && slice_offset > 0.0 {
@@ -1395,6 +1430,8 @@ pub fn paginate_fragment_tree(
         // When a footnote body overflows the page, render continuation pages that contain only the
         // remaining footnote content. This ensures pagination makes forward progress instead of
         // endlessly deferring the overflowing footnote call.
+        page_running_elements =
+          snapshot_running_elements_for_non_content_page(&mut running_element_state);
         let content_bounds = Rect::from_xywh(
           content_offset.x,
           content_offset.y,
@@ -1878,9 +1915,8 @@ pub fn paginate_fragment_tree(
             flow_start_for_token_in_layout(&layout.root, &next_token, 0.0, root_block_size, &axis)
               .unwrap_or(total_height);
           if next_start <= start + EPSILON {
-            next_token =
-              continuation_token_for_pos(&layout.root, end, 0.0, root_block_size, &axis)
-                .unwrap_or(BreakToken::End);
+            next_token = continuation_token_for_pos(&layout.root, end, 0.0, root_block_size, &axis)
+              .unwrap_or(BreakToken::End);
           }
         }
       }
@@ -1910,9 +1946,8 @@ pub fn paginate_fragment_tree(
     if is_blank_page {
       // Blank pages still participate in margin box running element resolution by carrying the last
       // running element seen so far.
-      let mut idx = 0usize;
       page_running_elements =
-        running_elements_for_page(&[], &mut idx, &mut running_element_state, 0.0, 0.0);
+        snapshot_running_elements_for_non_content_page(&mut running_element_state);
     }
 
     pages.push((
@@ -3799,6 +3834,39 @@ mod tests {
     assert!(
       !contains_running_anchor(snapshot),
       "running anchors should be stripped from snapshots"
+    );
+  }
+
+  #[test]
+  fn running_elements_carry_to_non_content_pages() {
+    let mut state = crate::layout::running_elements::RunningElementState::default();
+    let snapshot = FragmentNode::new_text(Rect::from_xywh(0.0, 0.0, 10.0, 10.0), "Header", 0.0);
+    state.last.insert("header".to_string(), snapshot.clone());
+
+    let values = snapshot_running_elements_for_non_content_page(&mut state);
+    let header = values
+      .get("header")
+      .expect("expected carried header running element values");
+    let start = header
+      .start
+      .as_ref()
+      .expect("expected carried running element snapshot");
+    assert_eq!(start.content.text(), Some("Header"));
+    assert_eq!(start.bounds.width(), 10.0);
+    assert_eq!(start.bounds.height(), 10.0);
+    assert!(header.first.is_none());
+    assert!(header.last.is_none());
+
+    assert!(
+      state.first.is_empty(),
+      "non-content page snapshot should not advance running element state"
+    );
+    assert!(
+      state
+        .last
+        .get("header")
+        .is_some_and(|node| node.content.text() == Some("Header")),
+      "running element state should be preserved"
     );
   }
 
