@@ -1,5 +1,3 @@
-#![cfg(feature = "browser_ui")]
-
 use fastrender::ui::about_pages;
 use fastrender::ui::session::{load_session, save_session_atomic};
 use fastrender::ui::{BrowserSession, SessionAutosave};
@@ -86,4 +84,3 @@ fn drop_does_not_mark_session_clean() {
     "dropping SessionAutosave should not mark the session as clean"
   );
 }
-
