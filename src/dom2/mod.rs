@@ -552,6 +552,8 @@ impl Document {
     &mut self.nodes[id.0]
   }
 
+  pub(crate) fn node_iterator_pre_remove_steps(&mut self, _target: NodeId) {}
+
   pub fn script_already_started(&self, node: NodeId) -> Result<bool, DomError> {
     let node = self.node_checked(node)?;
     if !kind_is_html_script(&node.kind) {

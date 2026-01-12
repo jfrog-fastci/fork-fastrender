@@ -93,6 +93,7 @@ fn promote_template_to_shadow_root(
   delegates_focus: bool,
 ) {
   // Detach the template from the host.
+  doc.node_iterator_pre_remove_steps(template);
   doc.nodes[host.index()].children.remove(template_idx);
   doc.nodes[template.index()].parent = None;
 
@@ -107,6 +108,12 @@ fn promote_template_to_shadow_root(
   );
 
   // Move template children to shadow root.
+  let template_children = doc.nodes[template.index()].children.clone();
+  for &child in &template_children {
+    if doc.nodes[child.index()].parent == Some(template) {
+      doc.node_iterator_pre_remove_steps(child);
+    }
+  }
   let moved_children = std::mem::take(&mut doc.nodes[template.index()].children);
   for &child in &moved_children {
     doc.nodes[child.index()].parent = Some(shadow_root);

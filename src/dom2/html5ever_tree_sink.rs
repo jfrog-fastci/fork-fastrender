@@ -222,6 +222,7 @@ impl Dom2TreeSink {
     let Some(old_parent) = doc.node(target).parent else {
       return;
     };
+    doc.node_iterator_pre_remove_steps(target);
     let Some(pos) = doc
       .node(old_parent)
       .children
