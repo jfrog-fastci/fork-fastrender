@@ -1,6 +1,7 @@
-use crate::image_compare::{compare_png, CompareConfig};
+use crate::image_compare::CompareConfig;
 use crate::image_output::{encode_image, OutputFormat};
 use crate::style::color::Rgba;
+use crate::testing::{compare_pixmaps, compare_pngs};
 use crate::text::color_fonts::ColorFontRenderer;
 use crate::text::font_db::FontDatabase;
 use crate::text::font_instance::FontInstance;
@@ -54,25 +55,25 @@ fn svg_context_paint_uses_text_color() {
 
   let golden_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
     .join("tests/fixtures/golden/svg_context_paint_font.png");
+  let rendered_png = encode_image(colored.image.as_ref(), OutputFormat::Png).expect("encode png");
   if std::env::var("UPDATE_GOLDEN").is_ok() {
-    let colored_png = encode_image(colored.image.as_ref(), OutputFormat::Png).expect("encode png");
-    std::fs::write(&golden_path, colored_png).expect("write golden");
-    return;
+    std::fs::write(&golden_path, &rendered_png).expect("write golden");
   }
 
-  let colored_png = encode_image(colored.image.as_ref(), OutputFormat::Png).expect("encode png");
-  let expected_png = std::fs::read(&golden_path).expect("load golden");
-  let diff =
-    compare_png(&colored_png, &expected_png, &CompareConfig::strict()).expect("compare pngs");
-  assert!(
-    diff.is_match(),
-    "context-fill/stroke should resolve to text color: {}",
-    diff.summary()
-  );
+  let expected = std::fs::read(&golden_path).expect("load golden");
+  let diff_dir =
+    crate::testing::manifest_dir().join("target/test-artifacts/paint/svg_context_paint_font");
+  compare_pngs(
+    "svg_context_paint_font",
+    &rendered_png,
+    &expected,
+    &CompareConfig::strict(),
+    &diff_dir,
+  )
+  .unwrap_or_else(|e| panic!("{e}"));
 
-  let black_png = encode_image(black.image.as_ref(), OutputFormat::Png).expect("encode png");
   let color_diff =
-    compare_png(&colored_png, &black_png, &CompareConfig::strict()).expect("compare pngs");
+    compare_pixmaps(colored.image.as_ref(), black.image.as_ref(), &CompareConfig::strict());
   assert!(
     !color_diff.is_match(),
     "context paint should change when text color changes"

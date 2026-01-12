@@ -5,6 +5,7 @@
 //! and tiny-skia.
 
 use crate::image_compare::{compare_png, encode_png, CompareConfig};
+use crate::testing::compare_pngs;
 use crate::text::color_fonts::{ColorFontRenderer, ColorGlyphRaster};
 use crate::text::font_db::{FontStretch, FontStyle, FontWeight, LoadedFont};
 use crate::text::font_instance::{glyph_transform, FontInstance};
@@ -980,21 +981,23 @@ fn colrv1_color_glyph_respects_variations_in_rasterizer() {
   let varied_golden_bytes = std::fs::read(&varied_golden_path).expect("missing wght=1 golden");
 
   let config = CompareConfig::strict();
-  let base_diff = compare_png(&base_actual_bytes, &base_golden_bytes, &config)
-    .expect("compare default variation png with golden");
-  assert!(
-    base_diff.is_match(),
-    "default COLRv1 variation did not match golden: {:?}",
-    base_diff.statistics
-  );
-
-  let varied_diff = compare_png(&varied_actual_bytes, &varied_golden_bytes, &config)
-    .expect("compare wght=1 variation png with golden");
-  assert!(
-    varied_diff.is_match(),
-    "wght=1 COLRv1 variation did not match golden: {:?}",
-    varied_diff.statistics
-  );
+  let diff_dir = crate::testing::manifest_dir().join("target/test-artifacts/paint/text_rasterize");
+  compare_pngs(
+    "colrv1_var_default",
+    &base_actual_bytes,
+    &base_golden_bytes,
+    &config,
+    &diff_dir,
+  )
+  .unwrap_or_else(|e| panic!("{e}"));
+  compare_pngs(
+    "colrv1_var_wght1",
+    &varied_actual_bytes,
+    &varied_golden_bytes,
+    &config,
+    &diff_dir,
+  )
+  .unwrap_or_else(|e| panic!("{e}"));
 
   let diff = compare_png(&base_actual_bytes, &varied_actual_bytes, &config)
     .expect("compare default variation png with wght=1 variation png");

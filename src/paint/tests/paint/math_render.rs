@@ -1,9 +1,10 @@
-use crate::image_compare::{compare_png, CompareConfig};
+use crate::image_compare::CompareConfig;
 use crate::math::{
   layout_mathml, ColumnAlign, MathFragment, MathLengthOrKeyword, MathNode, MathVariant,
 };
 use crate::paint::display_list::DisplayItem;
 use crate::paint::display_list_builder::DisplayListBuilder;
+use crate::testing::compare_pngs;
 use crate::text::font_db::FontConfig;
 use crate::text::font_loader::FontContext;
 use crate::tree::box_tree::ReplacedType;
@@ -637,13 +638,8 @@ fn compare_golden(name: &str, rendered_png: &[u8], config: &CompareConfig) {
     std::fs::write(&golden, rendered_png).expect("write golden");
   }
   let expected = std::fs::read(&golden).expect("golden image");
-  let diff = compare_png(rendered_png, &expected, config).expect("compare pngs");
-  assert!(
-    diff.is_match(),
-    "golden {} mismatch: {}",
-    name,
-    diff.summary()
-  );
+  let diff_dir = crate::testing::manifest_dir().join("target/test-artifacts/paint/math_render");
+  compare_pngs(name, rendered_png, &expected, config, &diff_dir).unwrap_or_else(|e| panic!("{e}"));
 }
 
 #[test]

@@ -64,7 +64,7 @@ section in sync with `ls tests/*.rs`.
 | `tests/layout_tests.rs` | delete | delete | Top-level harness removed; suite now lives under `tests/layout/**` and is pulled into `tests/integration.rs`. | DONE |
 | `tests/legacy_tests.rs` | unit | `src/paint/tests/legacy/**` | Migrated the legacy paint backend regression suite into unit tests and removed the standalone test binary + legacy harness modules. | DONE |
 | `tests/misc_tests.rs` | delete | delete | Top-level harness removed; suite now lives under `tests/misc/**` and is pulled into `tests/integration.rs`. | DONE |
-| `tests/paint_tests.rs` | delete | delete | Top-level harness removed; suite now lives under `tests/paint/**` (and friends) and is pulled into `tests/integration.rs`. | DONE |
+| `tests/paint_tests.rs` | unit | `src/paint/tests/**` | Migrated the paint/backdrop suite into unit tests under `src/paint/tests/{paint,backdrop}/**`, removed `tests/paint_tests.rs` plus the old `tests/paint` and `tests/backdrop` module trees. | DONE |
 | `tests/progress_tests.rs` | delete | delete | Top-level harness removed; suite now lives under `tests/progress/**` and is pulled into `tests/integration.rs`. | DONE |
 | `tests/ref_tests.rs` | delete | delete | Top-level harness removed; suite now lives under `tests/ref/**` and is pulled into `tests/integration.rs`. | DONE |
 | `tests/render_tests.rs` | delete | delete | Top-level harness removed; suite now lives under `tests/render/**` and is pulled into `tests/integration.rs`. | DONE |
@@ -128,7 +128,7 @@ migrations.
 | `tests/js/` | JS subsystem integration tests | `tests/integration.rs::js` | Consolidated into the shared integration binary. |
 | `tests/layout/` | layout regressions, paging, flex/grid/table, etc | `src/layout/**` | Unit tests (bulk of migration). |
 | `tests/misc/` | grab-bag integration tests (legacy bucket) | `tests/integration.rs::misc` + migrate unit tests into `src/**` | Some internal/unit tests have been migrated out already (e.g. composed DOM snapshotting + exportparts algorithm tests are now unit tests in `src/dom.rs`; old files are stubs). |
-| `tests/paint/` + `tests/backdrop/` | paint/backdrop filter/render pipeline tests | `src/paint/**` | Unit tests; move shared Rayon init helper to `src/test_utils` or `tests/common`. |
+| (removed) paint/backdrop module trees | migrated to `src/paint/tests/**` | `src/paint/tests/**` | Paint/backdrop suite now lives under `src/paint/tests/{paint,backdrop}/**` as unit tests. |
 | `tests/progress/` | guardrails for committed `progress/` artifacts | `tests/integration.rs::progress` | Not library tests; keep in integration. |
 | `tests/ref/` | image diff + ref-test harness utilities | `tests/common/` | Not a binary; used by fixtures/determinism/etc. (may be renamed/moved). |
 | `tests/regression/` | cross-cutting regressions | `src/**` (split) | Many unit tests; some may remain fixture-driven integration tests. |

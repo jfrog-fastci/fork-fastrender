@@ -104,7 +104,8 @@ fn vertical_text_decoration_skip_ink_auto_carves_underline_segments() {
 
 #[test]
 fn display_list_vertical_skip_ink_dashed_preserves_dash_phase_across_segments() {
-  // Equivalent to `tests/paint/display_list_skip_ink_test.rs` but for vertical underlines.
+  // Equivalent to the horizontal underline regression in `display_list_skip_ink_test.rs`, but for
+  // vertical underlines.
   let mut list = DisplayList::new();
   list.push(DisplayItem::TextDecoration(TextDecorationItem {
     bounds: Rect::from_xywh(0.0, 0.0, 20.0, 90.0),

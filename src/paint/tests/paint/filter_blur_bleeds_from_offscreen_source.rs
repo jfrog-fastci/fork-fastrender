@@ -4,7 +4,6 @@ use crate::{FastRender, FastRenderConfig, FontConfig, LayoutParallelism};
 use std::collections::HashMap;
 
 fn create_stacking_context_bounds_renderer() -> FastRender {
-  crate::testing::init_rayon_for_tests(2);
   let toggles = RuntimeToggles::from_map(HashMap::from([(
     "FASTR_PAINT_BACKEND".to_string(),
     "display_list".to_string(),

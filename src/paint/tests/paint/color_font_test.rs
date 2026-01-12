@@ -23,7 +23,7 @@ fn golden_dir() -> PathBuf {
 }
 
 fn diff_dir() -> PathBuf {
-  PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/color_font_diffs")
+  PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/test-artifacts/paint/color_font")
 }
 
 fn font_path(name: &str) -> PathBuf {
