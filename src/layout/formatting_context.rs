@@ -2492,6 +2492,41 @@ mod tests {
   }
 
   #[test]
+  fn intrinsic_cache_reuses_inline_formatting_context_results() {
+    let _guard = intrinsic_cache_test_lock();
+    intrinsic_cache_use_epoch(1, true);
+
+    let ifc = crate::layout::contexts::inline::InlineFormattingContext::new();
+    let style = Arc::new(ComputedStyle::default());
+    let mut text = BoxNode::new_text(style.clone(), "Hello world hello world".to_string());
+    text.id = 2;
+    let mut root = BoxNode::new_inline(style, vec![text]);
+    root.id = 1;
+
+    ifc
+      .compute_intrinsic_inline_size(&root, IntrinsicSizingMode::MinContent)
+      .expect("min-content intrinsic width should compute");
+
+    intrinsic_cache_reset_counters();
+
+    ifc
+      .compute_intrinsic_inline_size(&root, IntrinsicSizingMode::MaxContent)
+      .expect("max-content intrinsic width should be cached");
+
+    let (_lookups, hits, stores, _block_calls, _flex_calls, _inline_calls) = intrinsic_cache_stats();
+    assert!(
+      hits > 0,
+      "expected intrinsic sizing cache hits after repeating inline FC measurement"
+    );
+    assert_eq!(
+      stores, 0,
+      "expected no new intrinsic cache stores when repeating inline FC measurement"
+    );
+
+    intrinsic_cache_use_epoch(1, true);
+  }
+
+  #[test]
   fn fragmentation_fingerprint_canonicalizes_negative_zero() {
     let options_zero = FragmentationOptions {
       fragmentainer_size: 0.0,

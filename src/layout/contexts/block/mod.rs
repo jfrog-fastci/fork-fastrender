@@ -6352,40 +6352,39 @@ impl BlockFormattingContext {
           .formatting_context()
           .unwrap_or(FormattingContextType::Block);
         let child_bfc = BlockFormattingContext::with_factory(factory.clone());
-        let (preferred_min_content, preferred_content) =
-          if fc_type == FormattingContextType::Block {
-            match child_bfc.compute_intrinsic_inline_sizes(child) {
-              Ok(values) => values,
-              Err(err @ LayoutError::Timeout { .. }) => return Err(err),
-              Err(_) => {
-                let preferred_content = match child_bfc
-                  .compute_intrinsic_inline_size(child, IntrinsicSizingMode::MaxContent)
-                {
+        let (preferred_min_content, preferred_content) = if fc_type == FormattingContextType::Block {
+          match child_bfc.compute_intrinsic_inline_sizes(child) {
+            Ok(values) => values,
+            Err(err @ LayoutError::Timeout { .. }) => return Err(err),
+            Err(_) => {
+              let preferred_content = match child_bfc
+                .compute_intrinsic_inline_size(child, IntrinsicSizingMode::MaxContent)
+              {
+                Ok(value) => value,
+                Err(err @ LayoutError::Timeout { .. }) => return Err(err),
+                Err(_) => 0.0,
+              };
+              (0.0, preferred_content)
+            }
+          }
+        } else {
+          let fc = factory.get(fc_type);
+          match fc.compute_intrinsic_inline_sizes(child) {
+            Ok(values) => values,
+            Err(err @ LayoutError::Timeout { .. }) => return Err(err),
+            Err(_) => {
+              // Preserve legacy semantics for non-timeout intrinsic sizing failures: treat
+              // the min-content width as 0 but still attempt the max-content measurement.
+              let preferred_content =
+                match fc.compute_intrinsic_inline_size(child, IntrinsicSizingMode::MaxContent) {
                   Ok(value) => value,
                   Err(err @ LayoutError::Timeout { .. }) => return Err(err),
                   Err(_) => 0.0,
                 };
-                (0.0, preferred_content)
-              }
+              (0.0, preferred_content)
             }
-          } else {
-            let fc = factory.get(fc_type);
-            match fc.compute_intrinsic_inline_sizes(child) {
-              Ok(values) => values,
-              Err(err @ LayoutError::Timeout { .. }) => return Err(err),
-              Err(_) => {
-                // Preserve legacy semantics for non-timeout intrinsic sizing failures: treat
-                // the min-content width as 0 but still attempt the max-content measurement.
-                let preferred_content =
-                  match fc.compute_intrinsic_inline_size(child, IntrinsicSizingMode::MaxContent) {
-                    Ok(value) => value,
-                    Err(err @ LayoutError::Timeout { .. }) => return Err(err),
-                    Err(_) => 0.0,
-                  };
-                (0.0, preferred_content)
-              }
-            }
-          };
+          }
+        };
 
         let edges_base0 = horizontal_padding_and_borders(
           &child.style,

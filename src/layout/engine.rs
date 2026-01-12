@@ -37,24 +37,27 @@ use crate::layout::formatting_context::LayoutError;
 use crate::layout::fragmentation;
 use crate::layout::fragmentation::FragmentationOptions;
 use crate::render_control::{
-  active_allocation_budget, active_stage, active_stage_heartbeat, check_active,
-  deadline_stack_snapshot, DeadlineGuard, DeadlineStackGuard, RenderDeadline,
-  StageAllocationBudgetGuard, StageGuard, StageHeartbeatGuard,
+  active_allocation_budget, active_stage, active_stage_heartbeat, check_active, deadline_stack_snapshot,
+  check_active_periodic, DeadlineGuard, DeadlineStackGuard, RenderDeadline, StageAllocationBudgetGuard,
+  StageGuard, StageHeartbeatGuard,
 };
 use crate::style::display::FormattingContextType;
 use crate::style::{block_axis_is_horizontal, inline_axis_is_horizontal};
 use crate::text::font_loader::FontContext;
 use crate::tree::box_tree::BoxNode;
+use crate::tree::box_tree::BoxType;
 use crate::tree::box_tree::BoxTree;
 use crate::tree::fragment_tree::FragmentNode;
 use crate::tree::fragment_tree::FragmentTree;
 use lru::LruCache;
 use rayon::ThreadPool;
 use rayon::ThreadPoolBuilder;
+use rustc_hash::FxHasher;
 use selectors::context::QuirksMode;
 use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
+use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -717,6 +720,13 @@ pub struct LayoutStats {
 struct LayoutCache {
   epoch: AtomicUsize,
   runs: AtomicUsize,
+  /// Fingerprint of the last box tree + font/viewport context this cache epoch was computed for.
+  ///
+  /// When layout reuses caches across runs (`layout_tree_reuse_caches` / incremental mode),
+  /// box/tree IDs may be reused for different trees (box ids are assigned from 1 on every
+  /// `BoxTree::new`). Tracking a per-run fingerprint lets us conservatively invalidate caches when
+  /// the box tree structure/content changes while the caller requests cache reuse.
+  run_fingerprint: std::sync::atomic::AtomicU64,
 }
 
 /// Global epoch generator shared across all `LayoutEngine` instances.
@@ -733,28 +743,323 @@ struct LayoutCache {
 ///   cross-thread clear.
 static GLOBAL_LAYOUT_CACHE_EPOCH: AtomicUsize = AtomicUsize::new(0);
 
+#[inline]
+fn f32_to_canonical_bits(value: f32) -> u32 {
+  if value == 0.0 {
+    0.0f32.to_bits()
+  } else {
+    value.to_bits()
+  }
+}
+
+fn hash_option_root_font_metrics(
+  metrics: Option<crate::style::RootFontMetrics>,
+  hasher: &mut FxHasher,
+) {
+  match metrics {
+    Some(m) => {
+      1u8.hash(hasher);
+      f32_to_canonical_bits(m.root_font_size_px).hash(hasher);
+      f32_to_canonical_bits(m.root_x_height_px).hash(hasher);
+      f32_to_canonical_bits(m.root_cap_height_px).hash(hasher);
+      f32_to_canonical_bits(m.root_ch_advance_px).hash(hasher);
+      f32_to_canonical_bits(m.root_ic_advance_px).hash(hasher);
+      f32_to_canonical_bits(m.root_used_line_height_px).hash(hasher);
+    }
+    None => {
+      0u8.hash(hasher);
+    }
+  }
+}
+
+fn hash_replaced_box(replaced: &crate::tree::box_tree::ReplacedBox, hasher: &mut FxHasher) {
+  std::mem::discriminant(&replaced.replaced_type).hash(hasher);
+  replaced.no_intrinsic_ratio.hash(hasher);
+  match replaced.intrinsic_size {
+    Some(size) => {
+      1u8.hash(hasher);
+      f32_to_canonical_bits(size.width).hash(hasher);
+      f32_to_canonical_bits(size.height).hash(hasher);
+    }
+    None => {
+      0u8.hash(hasher);
+    }
+  }
+  match replaced.aspect_ratio {
+    Some(ratio) => {
+      1u8.hash(hasher);
+      f32_to_canonical_bits(ratio).hash(hasher);
+    }
+    None => {
+      0u8.hash(hasher);
+    }
+  }
+
+  if let crate::tree::box_tree::ReplacedType::FormControl(control) = &replaced.replaced_type {
+    1u8.hash(hasher);
+    hash_form_control(control, hasher);
+  } else {
+    0u8.hash(hasher);
+  }
+}
+
+fn hash_form_control(control: &crate::tree::box_tree::FormControl, hasher: &mut FxHasher) {
+  std::mem::discriminant(&control.appearance).hash(hasher);
+  control.disabled.hash(hasher);
+  control.focused.hash(hasher);
+  control.focus_visible.hash(hasher);
+  control.required.hash(hasher);
+  control.invalid.hash(hasher);
+  control.ime_preedit.hash(hasher);
+
+  match &control.control {
+    crate::tree::box_tree::FormControlKind::Text {
+      value,
+      placeholder,
+      size_attr,
+      kind,
+      ..
+    } => {
+      0u8.hash(hasher);
+      value.hash(hasher);
+      placeholder.hash(hasher);
+      size_attr.hash(hasher);
+      std::mem::discriminant(kind).hash(hasher);
+    }
+    crate::tree::box_tree::FormControlKind::TextArea {
+      value,
+      placeholder,
+      rows,
+      cols,
+      ..
+    } => {
+      1u8.hash(hasher);
+      value.hash(hasher);
+      placeholder.hash(hasher);
+      rows.hash(hasher);
+      cols.hash(hasher);
+    }
+    crate::tree::box_tree::FormControlKind::Button { label } => {
+      2u8.hash(hasher);
+      label.hash(hasher);
+    }
+    crate::tree::box_tree::FormControlKind::Select(select) => {
+      3u8.hash(hasher);
+      select.multiple.hash(hasher);
+      select.size.hash(hasher);
+      select.selected.hash(hasher);
+      select.items.len().hash(hasher);
+      for item in select.items.iter() {
+        match item {
+          crate::tree::box_tree::SelectItem::OptGroupLabel { label, disabled } => {
+            0u8.hash(hasher);
+            label.hash(hasher);
+            disabled.hash(hasher);
+          }
+          crate::tree::box_tree::SelectItem::Option {
+            node_id,
+            label,
+            value,
+            selected,
+            disabled,
+            in_optgroup,
+          } => {
+            1u8.hash(hasher);
+            node_id.hash(hasher);
+            label.hash(hasher);
+            value.hash(hasher);
+            selected.hash(hasher);
+            disabled.hash(hasher);
+            in_optgroup.hash(hasher);
+          }
+        }
+      }
+    }
+    crate::tree::box_tree::FormControlKind::Checkbox {
+      is_radio,
+      checked,
+      indeterminate,
+    } => {
+      4u8.hash(hasher);
+      is_radio.hash(hasher);
+      checked.hash(hasher);
+      indeterminate.hash(hasher);
+    }
+    crate::tree::box_tree::FormControlKind::Range { value, min, max } => {
+      5u8.hash(hasher);
+      f32_to_canonical_bits(*value).hash(hasher);
+      f32_to_canonical_bits(*min).hash(hasher);
+      f32_to_canonical_bits(*max).hash(hasher);
+    }
+    crate::tree::box_tree::FormControlKind::Progress { value, max } => {
+      6u8.hash(hasher);
+      f32_to_canonical_bits(*value).hash(hasher);
+      f32_to_canonical_bits(*max).hash(hasher);
+    }
+    crate::tree::box_tree::FormControlKind::Meter {
+      value,
+      min,
+      max,
+      low,
+      high,
+      optimum,
+    } => {
+      7u8.hash(hasher);
+      f32_to_canonical_bits(*value).hash(hasher);
+      f32_to_canonical_bits(*min).hash(hasher);
+      f32_to_canonical_bits(*max).hash(hasher);
+      low.map(f32_to_canonical_bits).hash(hasher);
+      high.map(f32_to_canonical_bits).hash(hasher);
+      optimum.map(f32_to_canonical_bits).hash(hasher);
+    }
+    crate::tree::box_tree::FormControlKind::Color { raw, .. } => {
+      8u8.hash(hasher);
+      raw.hash(hasher);
+    }
+    crate::tree::box_tree::FormControlKind::File { value } => {
+      9u8.hash(hasher);
+      value.hash(hasher);
+    }
+    crate::tree::box_tree::FormControlKind::Unknown { label } => {
+      10u8.hash(hasher);
+      label.hash(hasher);
+    }
+  }
+}
+
+fn layout_run_fingerprint(
+  factory: &FormattingContextFactory,
+  box_tree: &BoxTree,
+) -> Result<u64, LayoutError> {
+  let mut h = FxHasher::default();
+  let viewport_size = factory.viewport_size();
+  f32_to_canonical_bits(viewport_size.width).hash(&mut h);
+  f32_to_canonical_bits(viewport_size.height).hash(&mut h);
+  factory.font_context().font_generation().hash(&mut h);
+  hash_option_root_font_metrics(factory.root_font_metrics(), &mut h);
+  hash_option_root_font_metrics(factory.font_context().root_font_metrics(), &mut h);
+
+  let mut stack: Vec<&BoxNode> = vec![&box_tree.root];
+  let mut deadline_counter = 0usize;
+  while let Some(node) = stack.pop() {
+    if let Err(RenderError::Timeout { elapsed, .. }) =
+      check_active_periodic(&mut deadline_counter, 256, RenderStage::Layout)
+    {
+      return Err(LayoutError::Timeout { elapsed });
+    }
+
+    node.children.len().hash(&mut h);
+    node.footnote_body.is_some().hash(&mut h);
+    node.styled_node_id.hash(&mut h);
+    node.generated_pseudo.hash(&mut h);
+    node.original_display.hash(&mut h);
+
+    match node.table_cell_span {
+      Some(span) => {
+        1u8.hash(&mut h);
+        span.colspan.hash(&mut h);
+        span.rowspan.hash(&mut h);
+      }
+      None => {
+        0u8.hash(&mut h);
+      }
+    }
+    node.table_column_span.hash(&mut h);
+    node.implicit_anchor_box_id.hash(&mut h);
+
+    match node.form_control.as_deref() {
+      Some(control) => {
+        1u8.hash(&mut h);
+        hash_form_control(control, &mut h);
+      }
+      None => {
+        0u8.hash(&mut h);
+      }
+    }
+
+    match &node.box_type {
+      BoxType::Block(block) => {
+        0u8.hash(&mut h);
+        block.formatting_context.hash(&mut h);
+      }
+      BoxType::Inline(inline) => {
+        1u8.hash(&mut h);
+        inline.formatting_context.hash(&mut h);
+      }
+      BoxType::LineBreak(_) => {
+        2u8.hash(&mut h);
+      }
+      BoxType::Text(text) => {
+        3u8.hash(&mut h);
+        text.text.hash(&mut h);
+      }
+      BoxType::Marker(marker) => {
+        4u8.hash(&mut h);
+        match &marker.content {
+          crate::tree::box_tree::MarkerContent::Text(text) => {
+            0u8.hash(&mut h);
+            text.hash(&mut h);
+          }
+          crate::tree::box_tree::MarkerContent::Image(image) => {
+            1u8.hash(&mut h);
+            hash_replaced_box(image, &mut h);
+          }
+        }
+      }
+      BoxType::Replaced(replaced) => {
+        5u8.hash(&mut h);
+        hash_replaced_box(replaced, &mut h);
+      }
+      BoxType::Anonymous(anon) => {
+        6u8.hash(&mut h);
+        std::mem::discriminant(&anon.anonymous_type).hash(&mut h);
+      }
+    }
+
+    if let Some(body) = node.footnote_body.as_deref() {
+      stack.push(body);
+    }
+    for child in node.children.iter().rev() {
+      stack.push(child);
+    }
+  }
+
+  let fingerprint = h.finish();
+  Ok(if fingerprint == 0 { 1 } else { fingerprint })
+}
+
 impl LayoutCache {
   fn new() -> Self {
     Self {
       epoch: AtomicUsize::new(0),
       runs: AtomicUsize::new(0),
+      run_fingerprint: std::sync::atomic::AtomicU64::new(0),
     }
   }
 
-  fn start_run(&self, reset: bool) -> usize {
+  fn start_run(&self, reset: bool, run_fingerprint: u64) -> (usize, bool) {
     // When `reset` is true (the common case for full layout runs), bump the global epoch so each
     // render gets a fresh cache namespace. When `reset` is false we reuse the last epoch assigned
     // to this engine instance (enabling container query relayout passes to share memoized work).
     let current = self.epoch.load(Ordering::Relaxed);
-    let epoch = if reset || current == 0 {
+    let previous_fingerprint = self.run_fingerprint.load(Ordering::Relaxed);
+    let fingerprint_changed =
+      run_fingerprint != 0 && previous_fingerprint != run_fingerprint;
+    let bumped = reset || current == 0 || fingerprint_changed;
+    let epoch = if bumped {
       let next = GLOBAL_LAYOUT_CACHE_EPOCH.fetch_add(1, Ordering::Relaxed) + 1;
       self.epoch.store(next, Ordering::Relaxed);
       next
     } else {
       current
     };
+    if run_fingerprint != 0 {
+      self
+        .run_fingerprint
+        .store(run_fingerprint, Ordering::Relaxed);
+    }
     self.runs.fetch_add(1, Ordering::Relaxed);
-    epoch
+    (epoch, bumped)
   }
 
   fn run_count(&self) -> usize {
@@ -1051,25 +1356,6 @@ impl LayoutEngine {
     let use_cache = self.config.enable_cache;
     let reset_for_run = reset_caches || !use_cache;
 
-    let epoch = self.cache.start_run(reset_for_run);
-    layout_cache_use_epoch(
-      epoch,
-      use_cache,
-      reset_for_run,
-      self.config.fragmentation,
-      layout_cache_entry_limit_for_box_tree(box_tree_nodes),
-    );
-    intrinsic_cache_use_epoch(epoch, reset_for_run);
-    crate::layout::taffy_integration::taffy_style_fingerprint_cache_use_epoch(epoch);
-    if reset_for_run {
-      crate::layout::flex_profile::reset_layout_cache_clones();
-    }
-
-    if reset_for_run {
-      // Reset any per-run caches so a fresh layout starts from a clean slate.
-      factory.reset_caches();
-    }
-
     // Cache root element font metrics once per layout run so root-relative font units
     // (`rex`/`rch`/`rcap`/`ric`/`rlh`) can resolve against the actual root font.
     let viewport_size = factory.viewport_size();
@@ -1079,7 +1365,34 @@ impl LayoutEngine {
       viewport_size,
       font_context,
     );
+    factory.set_root_font_metrics(root_metrics);
     font_context.set_root_font_metrics(root_metrics);
+
+    let run_fingerprint = if reset_for_run {
+      0
+    } else {
+      layout_run_fingerprint(factory, box_tree)?
+    };
+
+    let (epoch, bumped) = self.cache.start_run(reset_for_run, run_fingerprint);
+    let reset_shared = reset_for_run || bumped;
+    layout_cache_use_epoch(
+      epoch,
+      use_cache,
+      reset_shared,
+      self.config.fragmentation,
+      layout_cache_entry_limit_for_box_tree(box_tree_nodes),
+    );
+    intrinsic_cache_use_epoch(epoch, reset_shared);
+    crate::layout::taffy_integration::taffy_style_fingerprint_cache_use_epoch(epoch);
+    if reset_shared {
+      crate::layout::flex_profile::reset_layout_cache_clones();
+    }
+
+    if reset_shared {
+      // Reset any per-run caches so a fresh layout starts from a clean slate.
+      factory.reset_caches();
+    }
 
     // Create root constraints from initial containing block, preferring explicit
     // fragmentainer size when pagination is enabled.

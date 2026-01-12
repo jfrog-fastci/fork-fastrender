@@ -61,6 +61,8 @@ use crate::layout::float_shape::build_float_shape;
 use crate::layout::formatting_context::count_inline_intrinsic_call;
 use crate::layout::formatting_context::footnote_area_inline_size_hint;
 use crate::layout::formatting_context::intrinsic_cache_epoch;
+use crate::layout::formatting_context::intrinsic_cache_lookup;
+use crate::layout::formatting_context::intrinsic_cache_store;
 use crate::layout::formatting_context::layout_cache_lookup;
 use crate::layout::formatting_context::layout_cache_store;
 use crate::layout::formatting_context::FormattingContext;
@@ -11806,17 +11808,50 @@ impl FormattingContext for InlineFormattingContext {
     box_node: &BoxNode,
     mode: IntrinsicSizingMode,
   ) -> Result<f32, LayoutError> {
-    count_inline_intrinsic_call();
-    // Inline intrinsic widths can vary subtly with inline formatting context construction
-    // (e.g., cached fragments from prior layout passes). Recompute each time instead of
-    // using the shared intrinsic cache to avoid reusing layout-sized results.
-    self.calculate_intrinsic_width(box_node, mode)
+    if let Some(cached) = intrinsic_cache_lookup(box_node, mode) {
+      count_inline_intrinsic_call();
+      return Ok(cached);
+    }
+
+    // When we're missing a single intrinsic mode, compute and cache both to avoid an immediate
+    // second pass from grid/flex track sizing.
+    let (min, max) = self.compute_intrinsic_inline_sizes(box_node)?;
+    Ok(match mode {
+      IntrinsicSizingMode::MinContent => min,
+      IntrinsicSizingMode::MaxContent => max,
+    })
   }
 
   fn compute_intrinsic_inline_sizes(&self, box_node: &BoxNode) -> Result<(f32, f32), LayoutError> {
     count_inline_intrinsic_call();
-    // Match `compute_intrinsic_inline_size`: recompute each time (no shared intrinsic cache).
-    self.calculate_intrinsic_widths(box_node)
+    let min_cached = intrinsic_cache_lookup(box_node, IntrinsicSizingMode::MinContent);
+    let max_cached = intrinsic_cache_lookup(box_node, IntrinsicSizingMode::MaxContent);
+    if let (Some(min), Some(max)) = (min_cached, max_cached) {
+      return Ok((min, max));
+    }
+
+    // Avoid recomputing the already-cached mode when only one is missing.
+    let (min, max) = match (min_cached, max_cached) {
+      (Some(min), None) => {
+        let max = self.calculate_intrinsic_width(box_node, IntrinsicSizingMode::MaxContent)?;
+        intrinsic_cache_store(box_node, IntrinsicSizingMode::MaxContent, max);
+        (min, max)
+      }
+      (None, Some(max)) => {
+        let min = self.calculate_intrinsic_width(box_node, IntrinsicSizingMode::MinContent)?;
+        intrinsic_cache_store(box_node, IntrinsicSizingMode::MinContent, min);
+        (min, max)
+      }
+      (None, None) => {
+        let (min, max) = self.calculate_intrinsic_widths(box_node)?;
+        intrinsic_cache_store(box_node, IntrinsicSizingMode::MinContent, min);
+        intrinsic_cache_store(box_node, IntrinsicSizingMode::MaxContent, max);
+        (min, max)
+      }
+      (Some(_), Some(_)) => unreachable!("handled by early return"),
+    };
+
+    Ok((min, max))
   }
 }
 

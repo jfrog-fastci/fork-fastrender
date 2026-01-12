@@ -13,6 +13,7 @@ mod grid_column_shorthand_longhand_merge;
 mod html_body_percent_height;
 mod image_missing_placeholder_does_not_scale_to_width;
 mod image_percent_height_missing_uses_alt_intrinsic;
+mod intrinsic_memoization_stress;
 mod legacy_webkit_box_flex;
 mod padding_offsets;
 mod parallel_stats;
