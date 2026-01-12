@@ -8468,6 +8468,10 @@ pub fn object_prototype___proto___set(
     _ => return Ok(Value::Undefined),
   };
 
+  // Root `obj`/`proto` across Proxy trap invocations.
+  let mut scope = scope.reborrow();
+  scope.push_roots(&[Value::Object(obj), proto_arg])?;
+
   // `[[SetPrototypeOf]]` returns a boolean; per spec we return `undefined` regardless of success.
   let _ = scope.set_prototype_of_with_host_and_hooks(vm, host, hooks, obj, proto)?;
   Ok(Value::Undefined)
