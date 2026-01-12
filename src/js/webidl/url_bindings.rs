@@ -1754,6 +1754,41 @@ mod tests {
   }
 
   #[test]
+  fn url_constructor_getters_and_setters() {
+    let mut rt = VmJsRuntime::new();
+    let global = rt.alloc_object_value().unwrap();
+    install_url_bindings(&mut rt, global).unwrap();
+
+    let url_ctor = get(&mut rt, global, "URL");
+    let arg = str_val(&mut rt, "https://example.com/path?x=1#y");
+    let url = call(&mut rt, url_ctor, Value::Undefined, &[arg]);
+
+    let href = get(&mut rt, url, "href");
+    assert_eq!(as_rust_string(&rt, href), "https://example.com/path?x=1#y");
+    let origin = get(&mut rt, url, "origin");
+    assert_eq!(as_rust_string(&rt, origin), "https://example.com");
+    let protocol = get(&mut rt, url, "protocol");
+    assert_eq!(as_rust_string(&rt, protocol), "https:");
+    let host = get(&mut rt, url, "host");
+    assert_eq!(as_rust_string(&rt, host), "example.com");
+    let hostname = get(&mut rt, url, "hostname");
+    assert_eq!(as_rust_string(&rt, hostname), "example.com");
+    let port = get(&mut rt, url, "port");
+    assert_eq!(as_rust_string(&rt, port), "");
+    let pathname = get(&mut rt, url, "pathname");
+    assert_eq!(as_rust_string(&rt, pathname), "/path");
+    let search = get(&mut rt, url, "search");
+    assert_eq!(as_rust_string(&rt, search), "?x=1");
+    let hash = get(&mut rt, url, "hash");
+    assert_eq!(as_rust_string(&rt, hash), "#y");
+
+    let new_search = str_val(&mut rt, "?q=a+b");
+    set_accessor(&mut rt, url, "search", new_search);
+    let search = get(&mut rt, url, "search");
+    assert_eq!(as_rust_string(&rt, search), "?q=a+b");
+  }
+
+  #[test]
   fn url_setters_update_href() {
     let mut rt = VmJsRuntime::new();
     let global = rt.alloc_object_value().unwrap();
@@ -1776,6 +1811,46 @@ mod tests {
       as_rust_string(&rt, href),
       "http://user:pass@example.org:8080/a/b"
     );
+  }
+
+  #[test]
+  fn url_searchparams_is_live() {
+    let mut rt = VmJsRuntime::new();
+    let global = rt.alloc_object_value().unwrap();
+    install_url_bindings(&mut rt, global).unwrap();
+
+    let url_ctor = get(&mut rt, global, "URL");
+    let arg = str_val(&mut rt, "https://example.com/?a=b%20~");
+    let url = call(&mut rt, url_ctor, Value::Undefined, &[arg]);
+
+    let search = get(&mut rt, url, "search");
+    assert_eq!(as_rust_string(&rt, search), "?a=b%20~");
+
+    let params = get(&mut rt, url, "searchParams");
+
+    let a = str_val(&mut rt, "a");
+    let got = call_method(&mut rt, params, "get", &[a]);
+    assert_eq!(as_rust_string(&rt, got), "b ~");
+
+    // `toString()` should not mutate `url.search` unless a mutation method is called.
+    let s = call_method(&mut rt, params, "toString", &[]);
+    assert_eq!(as_rust_string(&rt, s), "a=b+%7E");
+    let search = get(&mut rt, url, "search");
+    assert_eq!(as_rust_string(&rt, search), "?a=b%20~");
+
+    let c = str_val(&mut rt, "c");
+    let d = str_val(&mut rt, "d");
+    call_method(&mut rt, params, "append", &[c, d]);
+
+    let href = get(&mut rt, url, "href");
+    assert_eq!(
+      as_rust_string(&rt, href),
+      "https://example.com/?a=b+%7E&c=d"
+    );
+    let search = get(&mut rt, url, "search");
+    assert_eq!(as_rust_string(&rt, search), "?a=b+%7E&c=d");
+    let s = call_method(&mut rt, params, "toString", &[]);
+    assert_eq!(as_rust_string(&rt, s), "a=b+%7E&c=d");
   }
 
   #[test]
@@ -1902,6 +1977,93 @@ mod tests {
 
     rt.heap_mut().remove_root(url_root);
     rt.heap_mut().remove_root(global_root);
+  }
+
+  #[test]
+  fn boundedness_throws_type_error() {
+    let mut rt = VmJsRuntime::new();
+    let global = rt.alloc_object_value().unwrap();
+
+    let mut limits = UrlLimits::default();
+    limits.max_input_bytes = 8;
+    limits.max_query_pairs = 4;
+    limits.max_total_query_bytes = 16;
+    install_url_bindings_with_limits(&mut rt, global, limits).unwrap();
+
+    let url_ctor = get(&mut rt, global, "URL");
+    let arg = str_val(&mut rt, "https://example.com/");
+    let err = rt
+      .call_function(url_ctor, Value::Undefined, &[arg])
+      .unwrap_err();
+
+    let Some(thrown) = err.thrown_value() else {
+      panic!("expected Throw, got {err:?}");
+    };
+
+    let name = get(&mut rt, thrown, "name");
+    assert_eq!(as_rust_string(&rt, name), "TypeError");
+
+    let message = get(&mut rt, thrown, "message");
+    assert!(
+      as_rust_string(&rt, message).contains("URL constructor input exceeded max bytes"),
+      "unexpected error message: {}",
+      as_rust_string(&rt, message)
+    );
+  }
+
+  #[test]
+  fn urlsearchparams_pair_limit_is_enforced() {
+    let mut rt = VmJsRuntime::new();
+    let global = rt.alloc_object_value().unwrap();
+
+    let mut limits = UrlLimits::default();
+    limits.max_input_bytes = 1024;
+    limits.max_query_pairs = 1;
+    limits.max_total_query_bytes = 1024;
+    install_url_bindings_with_limits(&mut rt, global, limits).unwrap();
+
+    let url_ctor = get(&mut rt, global, "URL");
+    let arg = str_val(&mut rt, "https://example.com/");
+    let url = call(&mut rt, url_ctor, Value::Undefined, &[arg]);
+    let params = get(&mut rt, url, "searchParams");
+
+    let a = str_val(&mut rt, "a");
+    let one = str_val(&mut rt, "1");
+    call_method(&mut rt, params, "append", &[a, one]);
+
+    let b = str_val(&mut rt, "b");
+    let two = str_val(&mut rt, "2");
+    let append = get(&mut rt, params, "append");
+    let err = rt.call_function(append, params, &[b, two]).unwrap_err();
+
+    let Some(thrown) = err.thrown_value() else {
+      panic!("expected Throw");
+    };
+    let name = get(&mut rt, thrown, "name");
+    assert_eq!(as_rust_string(&rt, name), "TypeError");
+  }
+
+  #[test]
+  fn urlsearchparams_to_string_enforces_output_limit() {
+    let mut rt = VmJsRuntime::new();
+    let global = rt.alloc_object_value().unwrap();
+
+    let mut limits = UrlLimits::default();
+    // "a=~" fits, but "a=%7E" does not.
+    limits.max_input_bytes = 3;
+    install_url_bindings_with_limits(&mut rt, global, limits).unwrap();
+
+    let params_ctor = get(&mut rt, global, "URLSearchParams");
+    let init = str_val(&mut rt, "a=~");
+    let params = call(&mut rt, params_ctor, Value::Undefined, &[init]);
+
+    let to_string = get(&mut rt, params, "toString");
+    let err = rt.call_function(to_string, params, &[]).unwrap_err();
+    let Some(thrown) = err.thrown_value() else {
+      panic!("expected Throw");
+    };
+    let name = get(&mut rt, thrown, "name");
+    assert_eq!(as_rust_string(&rt, name), "TypeError");
   }
 
   #[test]
