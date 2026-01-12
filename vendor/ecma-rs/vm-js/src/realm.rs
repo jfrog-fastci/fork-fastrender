@@ -1,5 +1,6 @@
 use crate::property::{PropertyDescriptor, PropertyKey, PropertyKind};
 use crate::{GcEnv, GcObject, Heap, Intrinsics, RealmId, RootId, Value, Vm, VmError, WellKnownSymbols};
+use crate::Scope;
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -110,6 +111,38 @@ fn global_data_desc(value: Value) -> PropertyDescriptor {
   }
 }
 
+fn define_global_property_once(
+  scope: &mut Scope<'_>,
+  global_object: GcObject,
+  installed: &mut Vec<&'static str>,
+  name: &'static str,
+  desc: PropertyDescriptor,
+) -> Result<(), VmError> {
+  // Realm initialization is engine-controlled: duplicate globals indicate a bug (often from a bad
+  // merge) and should fail fast rather than silently replacing the existing property.
+  if installed.iter().any(|&n| n == name) {
+    return Err(VmError::InvariantViolation(
+      "duplicate global binding during realm initialization",
+    ));
+  }
+  // Avoid `Vec` growth panics on allocator OOM.
+  installed.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
+  installed.push(name);
+
+  let key = PropertyKey::from_string(scope.alloc_string(name)?);
+  scope.define_property(global_object, key, desc)
+}
+
+fn define_global_data_property_once(
+  scope: &mut Scope<'_>,
+  global_object: GcObject,
+  installed: &mut Vec<&'static str>,
+  name: &'static str,
+  value: Value,
+) -> Result<(), VmError> {
+  define_global_property_once(scope, global_object, installed, name, global_data_desc(value))
+}
+
 impl Realm {
   /// Returns the host-facing [`RealmId`] token for this realm.
   ///
@@ -177,20 +210,24 @@ impl Realm {
         Some(intrinsics.object_prototype()),
       )?;
 
+      let mut installed_globals: Vec<&'static str> = Vec::new();
+
       // `globalThis` is a writable, configurable, non-enumerable data property whose value is the
       // global object itself.
-      let global_this_key = PropertyKey::from_string(scope.alloc_string("globalThis")?);
-      scope.define_property(
+      define_global_property_once(
+        &mut scope,
         global_object,
-        global_this_key,
+        &mut installed_globals,
+        "globalThis",
         global_data_desc(Value::Object(global_object)),
       )?;
 
       // --- Global value properties ---
-      let infinity_key = PropertyKey::from_string(scope.alloc_string("Infinity")?);
-      scope.define_property(
+      define_global_property_once(
+        &mut scope,
         global_object,
-        infinity_key,
+        &mut installed_globals,
+        "Infinity",
         PropertyDescriptor {
           enumerable: false,
           configurable: false,
@@ -201,10 +238,11 @@ impl Realm {
         },
       )?;
 
-      let nan_key = PropertyKey::from_string(scope.alloc_string("NaN")?);
-      scope.define_property(
+      define_global_property_once(
+        &mut scope,
         global_object,
-        nan_key,
+        &mut installed_globals,
+        "NaN",
         PropertyDescriptor {
           enumerable: false,
           configurable: false,
@@ -217,10 +255,11 @@ impl Realm {
 
       // (Optional but useful) Define a global `undefined` binding. In the spec this property is
       // non-writable, non-enumerable, non-configurable.
-      let undefined_key = PropertyKey::from_string(scope.alloc_string("undefined")?);
-      scope.define_property(
+      define_global_property_once(
+        &mut scope,
         global_object,
-        undefined_key,
+        &mut installed_globals,
+        "undefined",
         PropertyDescriptor {
           enumerable: false,
           configurable: false,
@@ -232,326 +271,366 @@ impl Realm {
       )?;
 
       // Install baseline global bindings as non-enumerable global properties.
-      let object_key = PropertyKey::from_string(scope.alloc_string("Object")?);
-      scope.define_property(
+      define_global_data_property_once(
+        &mut scope,
         global_object,
-        object_key,
-        global_data_desc(Value::Object(intrinsics.object_constructor())),
+        &mut installed_globals,
+        "Object",
+        Value::Object(intrinsics.object_constructor()),
       )?;
 
-      let function_key = PropertyKey::from_string(scope.alloc_string("Function")?);
-      scope.define_property(
+      define_global_data_property_once(
+        &mut scope,
         global_object,
-        function_key,
-        global_data_desc(Value::Object(intrinsics.function_constructor())),
+        &mut installed_globals,
+        "Function",
+        Value::Object(intrinsics.function_constructor()),
       )?;
 
-      let proxy_key = PropertyKey::from_string(scope.alloc_string("Proxy")?);
-      scope.define_property(
+      define_global_data_property_once(
+        &mut scope,
         global_object,
-        proxy_key,
-        global_data_desc(Value::Object(intrinsics.proxy_constructor())),
+        &mut installed_globals,
+        "Proxy",
+        Value::Object(intrinsics.proxy_constructor()),
       )?;
 
-      let array_key = PropertyKey::from_string(scope.alloc_string("Array")?);
-      scope.define_property(
+      define_global_data_property_once(
+        &mut scope,
         global_object,
-        array_key,
-        global_data_desc(Value::Object(intrinsics.array_constructor())),
+        &mut installed_globals,
+        "Array",
+        Value::Object(intrinsics.array_constructor()),
       )?;
 
-      let string_key = PropertyKey::from_string(scope.alloc_string("String")?);
-      scope.define_property(
+      define_global_data_property_once(
+        &mut scope,
         global_object,
-        string_key,
-        global_data_desc(Value::Object(intrinsics.string_constructor())),
+        &mut installed_globals,
+        "String",
+        Value::Object(intrinsics.string_constructor()),
       )?;
 
-      let regexp_key = PropertyKey::from_string(scope.alloc_string("RegExp")?);
-      scope.define_property(
+      define_global_data_property_once(
+        &mut scope,
         global_object,
-        regexp_key,
-        global_data_desc(Value::Object(intrinsics.regexp_constructor())),
+        &mut installed_globals,
+        "RegExp",
+        Value::Object(intrinsics.regexp_constructor()),
       )?;
 
-      let number_key = PropertyKey::from_string(scope.alloc_string("Number")?);
-      scope.define_property(
+      define_global_data_property_once(
+        &mut scope,
         global_object,
-        number_key,
-        global_data_desc(Value::Object(intrinsics.number_constructor())),
+        &mut installed_globals,
+        "Number",
+        Value::Object(intrinsics.number_constructor()),
       )?;
 
-      let boolean_key = PropertyKey::from_string(scope.alloc_string("Boolean")?);
-      scope.define_property(
+      define_global_data_property_once(
+        &mut scope,
         global_object,
-        boolean_key,
-        global_data_desc(Value::Object(intrinsics.boolean_constructor())),
+        &mut installed_globals,
+        "Boolean",
+        Value::Object(intrinsics.boolean_constructor()),
       )?;
 
-      let bigint_key = PropertyKey::from_string(scope.alloc_string("BigInt")?);
-      scope.define_property(
+      define_global_data_property_once(
+        &mut scope,
         global_object,
-        bigint_key,
-        global_data_desc(Value::Object(intrinsics.bigint_constructor())),
+        &mut installed_globals,
+        "BigInt",
+        Value::Object(intrinsics.bigint_constructor()),
       )?;
 
-      let date_key = PropertyKey::from_string(scope.alloc_string("Date")?);
-      scope.define_property(
+      define_global_data_property_once(
+        &mut scope,
         global_object,
-        date_key,
-        global_data_desc(Value::Object(intrinsics.date_constructor())),
+        &mut installed_globals,
+        "Date",
+        Value::Object(intrinsics.date_constructor()),
       )?;
 
-      let symbol_key = PropertyKey::from_string(scope.alloc_string("Symbol")?);
-      scope.define_property(
+      define_global_data_property_once(
+        &mut scope,
         global_object,
-        symbol_key,
-        global_data_desc(Value::Object(intrinsics.symbol_constructor())),
+        &mut installed_globals,
+        "Symbol",
+        Value::Object(intrinsics.symbol_constructor()),
       )?;
 
-      let array_buffer_key = PropertyKey::from_string(scope.alloc_string("ArrayBuffer")?);
-      scope.define_property(
+      define_global_data_property_once(
+        &mut scope,
         global_object,
-        array_buffer_key,
-        global_data_desc(Value::Object(intrinsics.array_buffer())),
+        &mut installed_globals,
+        "ArrayBuffer",
+        Value::Object(intrinsics.array_buffer()),
       )?;
 
-      let uint8_array_key = PropertyKey::from_string(scope.alloc_string("Uint8Array")?);
-      scope.define_property(
+      define_global_data_property_once(
+        &mut scope,
         global_object,
-        uint8_array_key,
-        global_data_desc(Value::Object(intrinsics.uint8_array())),
+        &mut installed_globals,
+        "Uint8Array",
+        Value::Object(intrinsics.uint8_array()),
       )?;
 
-      let int8_array_key = PropertyKey::from_string(scope.alloc_string("Int8Array")?);
-      scope.define_property(
+      define_global_data_property_once(
+        &mut scope,
         global_object,
-        int8_array_key,
-        global_data_desc(Value::Object(intrinsics.int8_array())),
+        &mut installed_globals,
+        "Int8Array",
+        Value::Object(intrinsics.int8_array()),
       )?;
 
-      let uint8_clamped_array_key =
-        PropertyKey::from_string(scope.alloc_string("Uint8ClampedArray")?);
-      scope.define_property(
+      define_global_data_property_once(
+        &mut scope,
         global_object,
-        uint8_clamped_array_key,
-        global_data_desc(Value::Object(intrinsics.uint8_clamped_array())),
+        &mut installed_globals,
+        "Uint8ClampedArray",
+        Value::Object(intrinsics.uint8_clamped_array()),
       )?;
 
-      let int16_array_key = PropertyKey::from_string(scope.alloc_string("Int16Array")?);
-      scope.define_property(
+      define_global_data_property_once(
+        &mut scope,
         global_object,
-        int16_array_key,
-        global_data_desc(Value::Object(intrinsics.int16_array())),
+        &mut installed_globals,
+        "Int16Array",
+        Value::Object(intrinsics.int16_array()),
       )?;
 
-      let uint16_array_key = PropertyKey::from_string(scope.alloc_string("Uint16Array")?);
-      scope.define_property(
+      define_global_data_property_once(
+        &mut scope,
         global_object,
-        uint16_array_key,
-        global_data_desc(Value::Object(intrinsics.uint16_array())),
+        &mut installed_globals,
+        "Uint16Array",
+        Value::Object(intrinsics.uint16_array()),
       )?;
 
-      let int32_array_key = PropertyKey::from_string(scope.alloc_string("Int32Array")?);
-      scope.define_property(
+      define_global_data_property_once(
+        &mut scope,
         global_object,
-        int32_array_key,
-        global_data_desc(Value::Object(intrinsics.int32_array())),
+        &mut installed_globals,
+        "Int32Array",
+        Value::Object(intrinsics.int32_array()),
       )?;
 
-      let uint32_array_key = PropertyKey::from_string(scope.alloc_string("Uint32Array")?);
-      scope.define_property(
+      define_global_data_property_once(
+        &mut scope,
         global_object,
-        uint32_array_key,
-        global_data_desc(Value::Object(intrinsics.uint32_array())),
+        &mut installed_globals,
+        "Uint32Array",
+        Value::Object(intrinsics.uint32_array()),
       )?;
 
-      let float32_array_key = PropertyKey::from_string(scope.alloc_string("Float32Array")?);
-      scope.define_property(
+      define_global_data_property_once(
+        &mut scope,
         global_object,
-        float32_array_key,
-        global_data_desc(Value::Object(intrinsics.float32_array())),
+        &mut installed_globals,
+        "Float32Array",
+        Value::Object(intrinsics.float32_array()),
       )?;
 
-      let float64_array_key = PropertyKey::from_string(scope.alloc_string("Float64Array")?);
-      scope.define_property(
+      define_global_data_property_once(
+        &mut scope,
         global_object,
-        float64_array_key,
-        global_data_desc(Value::Object(intrinsics.float64_array())),
+        &mut installed_globals,
+        "Float64Array",
+        Value::Object(intrinsics.float64_array()),
       )?;
 
-      let data_view_key = PropertyKey::from_string(scope.alloc_string("DataView")?);
-      scope.define_property(
+      define_global_data_property_once(
+        &mut scope,
         global_object,
-        data_view_key,
-        global_data_desc(Value::Object(intrinsics.data_view())),
+        &mut installed_globals,
+        "DataView",
+        Value::Object(intrinsics.data_view()),
       )?;
 
-      let eval_key = PropertyKey::from_string(scope.alloc_string("eval")?);
-      scope.define_property(
+      define_global_data_property_once(
+        &mut scope,
         global_object,
-        eval_key,
-        global_data_desc(Value::Object(intrinsics.eval())),
+        &mut installed_globals,
+        "eval",
+        Value::Object(intrinsics.eval()),
       )?;
 
-      let is_nan_key = PropertyKey::from_string(scope.alloc_string("isNaN")?);
-      scope.define_property(
+      define_global_data_property_once(
+        &mut scope,
         global_object,
-        is_nan_key,
-        global_data_desc(Value::Object(intrinsics.is_nan())),
+        &mut installed_globals,
+        "isNaN",
+        Value::Object(intrinsics.is_nan()),
       )?;
 
-      let is_finite_key = PropertyKey::from_string(scope.alloc_string("isFinite")?);
-      scope.define_property(
+      define_global_data_property_once(
+        &mut scope,
         global_object,
-        is_finite_key,
-        global_data_desc(Value::Object(intrinsics.is_finite())),
+        &mut installed_globals,
+        "isFinite",
+        Value::Object(intrinsics.is_finite()),
       )?;
 
-      let parse_int_key = PropertyKey::from_string(scope.alloc_string("parseInt")?);
-      scope.define_property(
+      define_global_data_property_once(
+        &mut scope,
         global_object,
-        parse_int_key,
-        global_data_desc(Value::Object(intrinsics.parse_int())),
+        &mut installed_globals,
+        "parseInt",
+        Value::Object(intrinsics.parse_int()),
       )?;
 
-      let parse_float_key = PropertyKey::from_string(scope.alloc_string("parseFloat")?);
-      scope.define_property(
+      define_global_data_property_once(
+        &mut scope,
         global_object,
-        parse_float_key,
-        global_data_desc(Value::Object(intrinsics.parse_float())),
+        &mut installed_globals,
+        "parseFloat",
+        Value::Object(intrinsics.parse_float()),
       )?;
 
-      let encode_uri_key = PropertyKey::from_string(scope.alloc_string("encodeURI")?);
-      scope.define_property(
+      define_global_data_property_once(
+        &mut scope,
         global_object,
-        encode_uri_key,
-        global_data_desc(Value::Object(intrinsics.encode_uri())),
+        &mut installed_globals,
+        "encodeURI",
+        Value::Object(intrinsics.encode_uri()),
       )?;
 
-      let encode_uri_component_key =
-        PropertyKey::from_string(scope.alloc_string("encodeURIComponent")?);
-      scope.define_property(
+      define_global_data_property_once(
+        &mut scope,
         global_object,
-        encode_uri_component_key,
-        global_data_desc(Value::Object(intrinsics.encode_uri_component())),
+        &mut installed_globals,
+        "encodeURIComponent",
+        Value::Object(intrinsics.encode_uri_component()),
       )?;
 
-      let decode_uri_key = PropertyKey::from_string(scope.alloc_string("decodeURI")?);
-      scope.define_property(
+      define_global_data_property_once(
+        &mut scope,
         global_object,
-        decode_uri_key,
-        global_data_desc(Value::Object(intrinsics.decode_uri())),
+        &mut installed_globals,
+        "decodeURI",
+        Value::Object(intrinsics.decode_uri()),
       )?;
 
-      let decode_uri_component_key =
-        PropertyKey::from_string(scope.alloc_string("decodeURIComponent")?);
-      scope.define_property(
+      define_global_data_property_once(
+        &mut scope,
         global_object,
-        decode_uri_component_key,
-        global_data_desc(Value::Object(intrinsics.decode_uri_component())),
+        &mut installed_globals,
+        "decodeURIComponent",
+        Value::Object(intrinsics.decode_uri_component()),
       )?;
 
-      let math_key = PropertyKey::from_string(scope.alloc_string("Math")?);
-      scope.define_property(
+      define_global_data_property_once(
+        &mut scope,
         global_object,
-        math_key,
-        global_data_desc(Value::Object(intrinsics.math())),
+        &mut installed_globals,
+        "Math",
+        Value::Object(intrinsics.math()),
       )?;
 
-      let json_key = PropertyKey::from_string(scope.alloc_string("JSON")?);
-      scope.define_property(
+      define_global_data_property_once(
+        &mut scope,
         global_object,
-        json_key,
-        global_data_desc(Value::Object(intrinsics.json())),
+        &mut installed_globals,
+        "JSON",
+        Value::Object(intrinsics.json()),
       )?;
 
-      let reflect_key = PropertyKey::from_string(scope.alloc_string("Reflect")?);
-      scope.define_property(
+      define_global_data_property_once(
+        &mut scope,
         global_object,
-        reflect_key,
-        global_data_desc(Value::Object(intrinsics.reflect())),
+        &mut installed_globals,
+        "Reflect",
+        Value::Object(intrinsics.reflect()),
       )?;
 
-      let error_key = PropertyKey::from_string(scope.alloc_string("Error")?);
-      scope.define_property(
+      define_global_data_property_once(
+        &mut scope,
         global_object,
-        error_key,
-        global_data_desc(Value::Object(intrinsics.error())),
+        &mut installed_globals,
+        "Error",
+        Value::Object(intrinsics.error()),
       )?;
 
-      let type_error_key = PropertyKey::from_string(scope.alloc_string("TypeError")?);
-      scope.define_property(
+      define_global_data_property_once(
+        &mut scope,
         global_object,
-        type_error_key,
-        global_data_desc(Value::Object(intrinsics.type_error())),
+        &mut installed_globals,
+        "TypeError",
+        Value::Object(intrinsics.type_error()),
       )?;
 
-      let range_error_key = PropertyKey::from_string(scope.alloc_string("RangeError")?);
-      scope.define_property(
+      define_global_data_property_once(
+        &mut scope,
         global_object,
-        range_error_key,
-        global_data_desc(Value::Object(intrinsics.range_error())),
+        &mut installed_globals,
+        "RangeError",
+        Value::Object(intrinsics.range_error()),
       )?;
 
-      let reference_error_key =
-        PropertyKey::from_string(scope.alloc_string("ReferenceError")?);
-      scope.define_property(
+      define_global_data_property_once(
+        &mut scope,
         global_object,
-        reference_error_key,
-        global_data_desc(Value::Object(intrinsics.reference_error())),
+        &mut installed_globals,
+        "ReferenceError",
+        Value::Object(intrinsics.reference_error()),
       )?;
 
-      let syntax_error_key = PropertyKey::from_string(scope.alloc_string("SyntaxError")?);
-      scope.define_property(
+      define_global_data_property_once(
+        &mut scope,
         global_object,
-        syntax_error_key,
-        global_data_desc(Value::Object(intrinsics.syntax_error())),
+        &mut installed_globals,
+        "SyntaxError",
+        Value::Object(intrinsics.syntax_error()),
       )?;
 
-      let eval_error_key = PropertyKey::from_string(scope.alloc_string("EvalError")?);
-      scope.define_property(
+      define_global_data_property_once(
+        &mut scope,
         global_object,
-        eval_error_key,
-        global_data_desc(Value::Object(intrinsics.eval_error())),
+        &mut installed_globals,
+        "EvalError",
+        Value::Object(intrinsics.eval_error()),
       )?;
 
-      let uri_error_key = PropertyKey::from_string(scope.alloc_string("URIError")?);
-      scope.define_property(
+      define_global_data_property_once(
+        &mut scope,
         global_object,
-        uri_error_key,
-        global_data_desc(Value::Object(intrinsics.uri_error())),
+        &mut installed_globals,
+        "URIError",
+        Value::Object(intrinsics.uri_error()),
       )?;
 
-      let aggregate_error_key =
-        PropertyKey::from_string(scope.alloc_string("AggregateError")?);
-      scope.define_property(
+      define_global_data_property_once(
+        &mut scope,
         global_object,
-        aggregate_error_key,
-        global_data_desc(Value::Object(intrinsics.aggregate_error())),
+        &mut installed_globals,
+        "AggregateError",
+        Value::Object(intrinsics.aggregate_error()),
       )?;
 
       // Promise
-      let promise_key = PropertyKey::from_string(scope.alloc_string("Promise")?);
-      scope.define_property(
+      define_global_data_property_once(
+        &mut scope,
         global_object,
-        promise_key,
-        global_data_desc(Value::Object(intrinsics.promise())),
+        &mut installed_globals,
+        "Promise",
+        Value::Object(intrinsics.promise()),
       )?;
 
       // WeakMap / WeakSet
-      let weak_map_key = PropertyKey::from_string(scope.alloc_string("WeakMap")?);
-      scope.define_property(
+      define_global_data_property_once(
+        &mut scope,
         global_object,
-        weak_map_key,
-        global_data_desc(Value::Object(intrinsics.weak_map())),
+        &mut installed_globals,
+        "WeakMap",
+        Value::Object(intrinsics.weak_map()),
       )?;
 
-      let weak_set_key = PropertyKey::from_string(scope.alloc_string("WeakSet")?);
-      scope.define_property(
+      define_global_data_property_once(
+        &mut scope,
         global_object,
-        weak_set_key,
-        global_data_desc(Value::Object(intrinsics.weak_set())),
+        &mut installed_globals,
+        "WeakSet",
+        Value::Object(intrinsics.weak_set()),
       )?;
 
       Ok(())
