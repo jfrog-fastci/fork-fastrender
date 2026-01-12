@@ -4958,9 +4958,29 @@ pub enum OverflowWrap {
 /// CSS: `background-image`
 /// Reference: CSS Backgrounds and Borders Module Level 3
 #[derive(Debug, Clone, PartialEq)]
+pub struct BackgroundImageUrl {
+  pub url: String,
+  /// Optional override for the image's resolution (image pixels per CSS px, dppx).
+  ///
+  /// This is primarily sourced from `image-set()` density selection (e.g. `2x`), and is used when
+  /// computing the image's natural size in CSS px (`background-size: auto`, border-image/mask-border
+  /// slicing, etc).
+  pub override_resolution: Option<f32>,
+}
+
+impl BackgroundImageUrl {
+  pub fn new(url: String) -> Self {
+    Self {
+      url,
+      override_resolution: None,
+    }
+  }
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub enum BackgroundImage {
   None,
-  Url(String),
+  Url(BackgroundImageUrl),
   LinearGradient {
     angle: f32,
     stops: Vec<ColorStop>,

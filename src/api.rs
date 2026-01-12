@@ -17789,7 +17789,13 @@ fn hash_shape_outside_image(
     BackgroundImage::None => 0u8.hash(hasher),
     BackgroundImage::Url(url) => {
       1u8.hash(hasher);
-      url.hash(hasher);
+      url.url.hash(hasher);
+      if let Some(override_resolution) = url.override_resolution {
+        1u8.hash(hasher);
+        hash_f32(override_resolution, hasher);
+      } else {
+        0u8.hash(hasher);
+      }
     }
     BackgroundImage::LinearGradient { angle, stops } => {
       2u8.hash(hasher);
@@ -23626,7 +23632,9 @@ mod tests {
     float_style.display = crate::style::display::Display::Block;
     float_style.float = crate::style::float::Float::Left;
     float_style.shape_outside =
-      crate::style::types::ShapeOutside::Image(BackgroundImage::Url("mask.png".to_string()));
+      crate::style::types::ShapeOutside::Image(BackgroundImage::Url(
+        crate::style::types::BackgroundImageUrl::new("mask.png".to_string()),
+      ));
     let float_node =
       BoxNode::new_block(Arc::new(float_style), FormattingContextType::Block, vec![]);
     let root_node = BoxNode::new_block(
@@ -31925,7 +31933,7 @@ mod tests {
       .first()
       .and_then(|layer| layer.image.clone());
     let url = match image {
-      Some(BackgroundImage::Url(url)) => url,
+      Some(BackgroundImage::Url(url)) => url.url,
       other => panic!("unexpected background image: {:?}", other),
     };
 

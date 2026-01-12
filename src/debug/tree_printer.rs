@@ -1148,7 +1148,7 @@ fn style_summary(style: &ComputedStyle) -> Value {
     entries.push((
       "background_image",
       Value::String(match &bg.image {
-        Some(crate::style::types::BackgroundImage::Url(url)) => format!("url({})", url),
+        Some(crate::style::types::BackgroundImage::Url(url)) => format!("url({})", url.url),
         Some(crate::style::types::BackgroundImage::None) => "none".into(),
         Some(_) => "gradient".into(),
         None => "none".into(),

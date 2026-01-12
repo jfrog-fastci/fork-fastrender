@@ -4525,7 +4525,7 @@ impl Painter {
 
       let url_tile = match image {
         BackgroundImage::Url(src) => {
-          let trimmed = src.trim_matches(|c: char| {
+          let trimmed = src.url.trim_matches(|c: char| {
             matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' ')
           });
           if let Some(id) = trimmed.strip_prefix('#').filter(|id| !id.is_empty()) {
@@ -4561,7 +4561,7 @@ impl Painter {
               render_h,
             })
           } else {
-            let resolved_src = self.image_cache.resolve_url(src);
+            let resolved_src = self.image_cache.resolve_url(&src.url);
             let image = match self.image_cache.load(&resolved_src) {
               Ok(img) => img,
               Err(_) => continue,
@@ -4569,13 +4569,18 @@ impl Painter {
             let orientation = style.image_orientation.resolve(image.orientation, true);
             intrinsic_ratio = image.intrinsic_ratio(orientation);
             let (w, h) =
-              image.css_natural_dimensions(orientation, &style.image_resolution, self.scale, None);
+              image.css_natural_dimensions(
+                orientation,
+                &style.image_resolution,
+                self.scale,
+                src.override_resolution,
+              );
             img_w = w.unwrap_or(0.0);
             img_h = h.unwrap_or(0.0);
 
             resolved_mode = match layer.mode {
               MaskMode::MatchSource => {
-                let trimmed = src.trim_start_matches(|c: char| {
+                let trimmed = src.url.trim_start_matches(|c: char| {
                   matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' ')
                 });
                 if trimmed.starts_with('<') {
@@ -4989,7 +4994,7 @@ impl Painter {
     // access to the original image metadata.
     let (source_pixmap, img_w, img_h, target_widths, outer_rect_css, mode) = match bg.as_ref() {
       BackgroundImage::Url(src) => {
-        let resolved_src = self.image_cache.resolve_url(src);
+        let resolved_src = self.image_cache.resolve_url(&src.url);
         let image = match self.image_cache.load(&resolved_src) {
           Ok(img) => img,
           Err(_) => return Ok(None),
@@ -5007,7 +5012,7 @@ impl Painter {
         };
         let orientation = style.image_orientation.resolve(image.orientation, true);
         let intrinsic_css_size =
-          image.css_dimensions(orientation, &style.image_resolution, self.scale, None);
+          image.css_dimensions(orientation, &style.image_resolution, self.scale, src.override_resolution);
 
         let pixmap = if image.is_vector {
           let Some(svg) = &image.svg_content else {
@@ -6178,7 +6183,7 @@ impl Painter {
         return;
       }
       BackgroundImage::Url(src) => {
-        let resolved_src = self.image_cache.resolve_url(src);
+        let resolved_src = self.image_cache.resolve_url(&src.url);
         let image = match self.image_cache.load(&resolved_src) {
           Ok(img) => img,
           Err(_) => return,
@@ -6187,7 +6192,12 @@ impl Painter {
         let orientation = style.image_orientation.resolve(image.orientation, true);
         let (img_w_raw, img_h_raw) = image.oriented_dimensions(orientation);
         let (img_w_opt, img_h_opt) =
-          image.css_natural_dimensions(orientation, &style.image_resolution, self.scale, None);
+          image.css_natural_dimensions(
+            orientation,
+            &style.image_resolution,
+            self.scale,
+            src.override_resolution,
+          );
         let img_w = img_w_opt.unwrap_or(0.0);
         let img_h = img_h_opt.unwrap_or(0.0);
         let intrinsic_ratio = image.intrinsic_ratio(orientation);
@@ -7425,7 +7435,7 @@ impl Painter {
 
     let (pixmap, img_w, img_h) = match bg.as_ref() {
       BackgroundImage::Url(src) => {
-        let resolved_src = self.image_cache.resolve_url(src);
+        let resolved_src = self.image_cache.resolve_url(&src.url);
         let image = match self.image_cache.load(&resolved_src) {
           Ok(img) => img,
           Err(_) => return false,
@@ -20669,6 +20679,7 @@ mod tests {
   use crate::style::types::BackgroundAttachment;
   use crate::style::types::BackgroundBox;
   use crate::style::types::BackgroundImage;
+  use crate::style::types::BackgroundImageUrl;
   use crate::style::types::BackgroundPosition;
   use crate::style::types::BackgroundPositionComponent;
   use crate::style::types::BackgroundRepeat;
@@ -21285,7 +21296,7 @@ mod tests {
     style.image_rendering = ImageRendering::Pixelated;
     style.background_color = Rgba::WHITE;
     style.background_layers = smallvec::smallvec![BackgroundLayer {
-      image: Some(BackgroundImage::Url(url)),
+      image: Some(BackgroundImage::Url(BackgroundImageUrl::new(url))),
       size: BackgroundSize::Explicit(
         BackgroundSizeComponent::Length(Length::px(5.0)),
         BackgroundSizeComponent::Length(Length::px(1.0)),
@@ -21312,7 +21323,7 @@ mod tests {
     style.image_rendering = ImageRendering::CrispEdges;
     style.background_color = Rgba::WHITE;
     style.background_layers = smallvec::smallvec![BackgroundLayer {
-      image: Some(BackgroundImage::Url(url)),
+      image: Some(BackgroundImage::Url(BackgroundImageUrl::new(url))),
       size: BackgroundSize::Explicit(
         BackgroundSizeComponent::Length(Length::px(5.0)),
         BackgroundSizeComponent::Length(Length::px(1.0)),
@@ -25048,7 +25059,9 @@ mod tests {
     style.border_bottom_style = CssBorderStyle::Solid;
     style.border_left_style = CssBorderStyle::Solid;
     style.border_image = BorderImage {
-      source: BorderImageSource::Image(Box::new(BackgroundImage::Url(data_url))),
+      source: BorderImageSource::Image(Box::new(BackgroundImage::Url(BackgroundImageUrl::new(
+        data_url,
+      )))),
       slice: BorderImageSlice {
         top: BorderImageSliceValue::Number(1.0),
         right: BorderImageSliceValue::Number(1.0),
@@ -25153,7 +25166,9 @@ mod tests {
     style.border_bottom_style = CssBorderStyle::Solid;
     style.border_left_style = CssBorderStyle::Solid;
     style.border_image = BorderImage {
-      source: BorderImageSource::Image(Box::new(BackgroundImage::Url(data_url))),
+      source: BorderImageSource::Image(Box::new(BackgroundImage::Url(BackgroundImageUrl::new(
+        data_url,
+      )))),
       slice: BorderImageSlice {
         top: BorderImageSliceValue::Number(1.0),
         right: BorderImageSliceValue::Number(1.0),

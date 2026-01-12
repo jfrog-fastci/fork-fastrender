@@ -5011,7 +5011,7 @@ impl DisplayListBuilder {
           ResolvedMaskImage::Generated(Box::new(image.clone()))
         }
         BackgroundImage::Url(src) => {
-          let Some(image) = self.decode_mask_image_url(src, style, bounds) else {
+          let Some(image) = self.decode_mask_image_url(&src.url, style, bounds) else {
             continue;
           };
           ResolvedMaskImage::Raster((*image).clone())
@@ -5025,7 +5025,7 @@ impl DisplayListBuilder {
       let resolved_mode = match layer.mode {
         MaskMode::MatchSource => match image {
           BackgroundImage::Url(src) => {
-            let trimmed = trim_ascii_whitespace_start(src);
+            let trimmed = trim_ascii_whitespace_start(&src.url);
             if trimmed.starts_with('#') {
               // Fragment-only URLs are resolved via `svg_id_defs` (see `decode_mask_image_url`).
               // They do not correspond to fetchable external images, so skip probing the network
@@ -5035,7 +5035,7 @@ impl DisplayListBuilder {
               // Inline SVG is rasterized to RGBA; treat it as alpha-masked.
               MaskMode::Alpha
             } else if let Some(image_cache) = self.image_cache.as_ref() {
-              let resolved_src = image_cache.resolve_url(src);
+              let resolved_src = image_cache.resolve_url(&src.url);
               match image_cache.load_with_crossorigin(&resolved_src, CrossOriginAttribute::None) {
                 Ok(cached) => {
                   if cached.is_vector || cached.has_alpha {
@@ -5097,7 +5097,7 @@ impl DisplayListBuilder {
     let resolved_mode = match style.mask_border.mode {
       MaskBorderMode::MatchSource => match bg.as_ref() {
         BackgroundImage::Url(src) => {
-          let trimmed = trim_ascii_whitespace_start(src);
+          let trimmed = trim_ascii_whitespace_start(&src.url);
           if trimmed.starts_with('#') {
             // Fragment-only URLs are resolved via `svg_id_defs` (see `decode_image`).
             MaskBorderMode::Alpha
@@ -5105,7 +5105,7 @@ impl DisplayListBuilder {
             // Inline SVG is rasterized to RGBA; treat it as alpha-masked.
             MaskBorderMode::Alpha
           } else if let Some(image_cache) = self.image_cache.as_ref() {
-            let resolved_src = image_cache.resolve_url(src);
+            let resolved_src = image_cache.resolve_url(&src.url);
             match image_cache.load_with_crossorigin(&resolved_src, CrossOriginAttribute::None) {
               Ok(cached) => {
                 if cached.is_vector || cached.has_alpha {
@@ -5129,13 +5129,13 @@ impl DisplayListBuilder {
     let source = match bg.as_ref() {
       BackgroundImage::Url(src) => self
         .decode_image(
-          src,
+          &src.url,
           Some(style),
           true,
           CrossOriginAttribute::None,
           None,
           false,
-          None,
+          src.override_resolution,
         )
         .map(|image| BorderImageSourceItem::Raster((*image).clone())),
       BackgroundImage::LinearGradient { .. }
@@ -9338,7 +9338,7 @@ impl DisplayListBuilder {
             break 'paint_url;
           };
 
-          let trimmed = trim_ascii_whitespace_start(src);
+          let trimmed = trim_ascii_whitespace_start(&src.url);
           let inline_svg = trimmed.starts_with('<');
 
           let (resolved_src, cached) = if inline_svg {
@@ -9353,7 +9353,7 @@ impl DisplayListBuilder {
             };
             (cache_key, image)
           } else {
-            let resolved_src = image_cache.resolve_url(src);
+            let resolved_src = image_cache.resolve_url(&src.url);
             let image = match image_cache.load_with_crossorigin_and_referrer_policy(
               &resolved_src,
               CrossOriginAttribute::None,
@@ -9384,7 +9384,7 @@ impl DisplayListBuilder {
               orientation,
               &style.image_resolution,
               self.device_pixel_ratio,
-              None,
+              src.override_resolution,
             ) else {
               break 'paint_url;
             };
@@ -9606,13 +9606,13 @@ impl DisplayListBuilder {
             }
           } else {
             let Some(image) = self.decode_image(
-              src,
+              &src.url,
               Some(style),
               true,
               CrossOriginAttribute::None,
               None,
               false,
-              None,
+              src.override_resolution,
             ) else {
               break 'paint_url;
             };
@@ -9945,13 +9945,13 @@ impl DisplayListBuilder {
         let source = match bg.as_ref() {
           BackgroundImage::Url(src) => self
             .decode_image(
-              src,
+              &src.url,
               Some(style),
               true,
               CrossOriginAttribute::None,
               None,
               false,
-              None,
+              src.override_resolution,
             )
             .map(|image| BorderImageSourceItem::Raster((*image).clone())),
           BackgroundImage::LinearGradient { .. }
@@ -15691,6 +15691,7 @@ mod tests {
   use crate::style::properties::apply_declaration;
   use crate::style::properties::with_image_set_dpr;
   use crate::style::types::BackgroundImage;
+  use crate::style::types::BackgroundImageUrl;
   use crate::style::types::BackgroundLayer;
   use crate::style::types::BackgroundRepeat;
   use crate::style::types::BackgroundRepeatKeyword;
@@ -16833,7 +16834,7 @@ mod tests {
 
     let mut child_style = ComputedStyle::default();
     let mut layer = crate::style::types::MaskLayer::default();
-    layer.image = Some(BackgroundImage::Url("#missing".into()));
+    layer.image = Some(BackgroundImage::Url(BackgroundImageUrl::new("#missing".into())));
     child_style.set_mask_layers(vec![layer]);
     let child_style = Arc::new(child_style);
 
@@ -17442,7 +17443,9 @@ mod tests {
   fn stacking_context_resolves_mask_images() {
     let mut style = ComputedStyle::default();
     let mut layer = crate::style::types::MaskLayer::default();
-    layer.image = Some(BackgroundImage::Url(data_url_for_color([0, 0, 0, 0])));
+    layer.image = Some(BackgroundImage::Url(BackgroundImageUrl::new(
+      data_url_for_color([0, 0, 0, 0]),
+    )));
     layer.repeat = BackgroundRepeat::no_repeat();
     style.set_mask_layers(vec![layer]);
 
@@ -18781,9 +18784,9 @@ mod tests {
 
     let mut style = ComputedStyle::default();
     style.set_background_layers(vec![BackgroundLayer {
-      image: Some(BackgroundImage::Url(
+      image: Some(BackgroundImage::Url(BackgroundImageUrl::new(
         path.file_name().unwrap().to_str().unwrap().to_string(),
-      )),
+      ))),
       repeat: BackgroundRepeat::no_repeat(),
       ..BackgroundLayer::default()
     }]);
@@ -18814,7 +18817,7 @@ mod tests {
     let mut style = ComputedStyle::default();
     style.background_color = Rgba::TRANSPARENT;
     style.set_background_layers(vec![BackgroundLayer {
-      image: Some(BackgroundImage::Url(svg.into())),
+      image: Some(BackgroundImage::Url(BackgroundImageUrl::new(svg.into()))),
       size: BackgroundSize::Explicit(
         BackgroundSizeComponent::Length(Length::px(20.0)),
         BackgroundSizeComponent::Length(Length::px(20.0)),
@@ -18856,7 +18859,7 @@ mod tests {
     let mut style = ComputedStyle::default();
     style.background_color = Rgba::TRANSPARENT;
     style.set_background_layers(vec![BackgroundLayer {
-      image: Some(BackgroundImage::Url(svg.into())),
+      image: Some(BackgroundImage::Url(BackgroundImageUrl::new(svg.into()))),
       ..BackgroundLayer::default()
     }]);
 
@@ -20168,7 +20171,7 @@ mod tests {
     style.image_rendering = ImageRendering::CrispEdges;
     style.background_color = Rgba::TRANSPARENT;
     style.background_layers = smallvec::smallvec![BackgroundLayer {
-      image: Some(BackgroundImage::Url(url)),
+      image: Some(BackgroundImage::Url(BackgroundImageUrl::new(url))),
       repeat: BackgroundRepeat::no_repeat(),
       ..BackgroundLayer::default()
     }];
@@ -20200,7 +20203,7 @@ mod tests {
     style.image_rendering = ImageRendering::Pixelated;
     style.background_color = Rgba::TRANSPARENT;
     style.background_layers = smallvec::smallvec![BackgroundLayer {
-      image: Some(BackgroundImage::Url(url)),
+      image: Some(BackgroundImage::Url(BackgroundImageUrl::new(url))),
       repeat: BackgroundRepeat::no_repeat(),
       ..BackgroundLayer::default()
     }];
@@ -21269,7 +21272,7 @@ mod tests {
     let mut style = ComputedStyle::default();
     style.background_color = Rgba::TRANSPARENT;
     style.set_background_layers(vec![BackgroundLayer {
-      image: Some(BackgroundImage::Url(url)),
+      image: Some(BackgroundImage::Url(BackgroundImageUrl::new(url))),
       repeat: BackgroundRepeat {
         x: BackgroundRepeatKeyword::Repeat,
         y: BackgroundRepeatKeyword::NoRepeat,
@@ -21309,7 +21312,7 @@ mod tests {
     let mut style = ComputedStyle::default();
     style.background_color = Rgba::TRANSPARENT;
     style.set_background_layers(vec![BackgroundLayer {
-      image: Some(BackgroundImage::Url(url)),
+      image: Some(BackgroundImage::Url(BackgroundImageUrl::new(url))),
       repeat: BackgroundRepeat {
         x: BackgroundRepeatKeyword::Repeat,
         y: BackgroundRepeatKeyword::NoRepeat,
@@ -21359,7 +21362,7 @@ mod tests {
     let mut style = ComputedStyle::default();
     style.background_color = Rgba::TRANSPARENT;
     style.set_background_layers(vec![BackgroundLayer {
-      image: Some(BackgroundImage::Url(url)),
+      image: Some(BackgroundImage::Url(BackgroundImageUrl::new(url))),
       repeat: BackgroundRepeat {
         x: BackgroundRepeatKeyword::Repeat,
         y: BackgroundRepeatKeyword::Repeat,

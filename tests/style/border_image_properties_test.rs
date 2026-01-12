@@ -104,7 +104,10 @@ fn border_image_shorthand_splits_segments() {
 
   match &styles.border_image.source {
     BorderImageSource::Image(img) => match &**img {
-      BackgroundImage::Url(url) => assert_eq!(url, "a"),
+      BackgroundImage::Url(url) => {
+        assert_eq!(url.url, "a");
+        assert!(url.override_resolution.is_none());
+      }
       other => panic!("unexpected background image variant: {:?}", other),
     },
     other => panic!("unexpected border image source: {:?}", other),
@@ -197,7 +200,10 @@ fn border_image_shorthand_source_only_uses_initial_slice_and_width() {
 
   match &styles.border_image.source {
     BorderImageSource::Image(img) => match &**img {
-      BackgroundImage::Url(url) => assert_eq!(url, "a"),
+      BackgroundImage::Url(url) => {
+        assert_eq!(url.url, "a");
+        assert!(url.override_resolution.is_none());
+      }
       other => panic!("unexpected background image variant: {:?}", other),
     },
     other => panic!("unexpected border image source: {:?}", other),

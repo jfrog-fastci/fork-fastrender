@@ -686,7 +686,7 @@ fn parse_background_image_value(value: &PropertyValue) -> Option<BackgroundImage
       if trim_ascii_whitespace(url).is_empty() {
         Some(BackgroundImage::None)
       } else {
-        Some(BackgroundImage::Url(url.clone()))
+        Some(BackgroundImage::Url(BackgroundImageUrl::new(url.clone())))
       }
     }
     PropertyValue::LinearGradient { angle, stops } => Some(BackgroundImage::LinearGradient {
@@ -1103,7 +1103,7 @@ pub(crate) fn parse_image_set(text: &str) -> Option<BackgroundImage> {
       if trim_ascii_whitespace(&inner).is_empty() {
         None
       } else {
-        Some(BackgroundImage::Url(inner))
+        Some(BackgroundImage::Url(BackgroundImageUrl::new(inner)))
       }
     } else if (image_token.starts_with('"') && image_token.ends_with('"'))
       || (image_token.starts_with('\'') && image_token.ends_with('\''))
@@ -1114,7 +1114,7 @@ pub(crate) fn parse_image_set(text: &str) -> Option<BackgroundImage> {
       if trim_ascii_whitespace(&inner).is_empty() {
         None
       } else {
-        Some(BackgroundImage::Url(inner))
+        Some(BackgroundImage::Url(BackgroundImageUrl::new(inner)))
       }
     } else {
       crate::css::properties::parse_property_value("background-image", image_token)
@@ -1186,13 +1186,17 @@ pub(crate) fn parse_image_set(text: &str) -> Option<BackgroundImage> {
     }
   }
 
-  if let Some((image, _)) = best_ge {
-    Some(image)
-  } else if let Some((image, _)) = best_lt {
-    Some(image)
+  let (mut selected, density) = if let Some(best) = best_ge {
+    best
+  } else if let Some(best) = best_lt {
+    best
   } else {
-    None
+    return None;
+  };
+  if let BackgroundImage::Url(url) = &mut selected {
+    url.override_resolution = Some(density);
   }
+  Some(selected)
 }
 
 fn tokenize_image_set_candidate(value_str: &str) -> Vec<String> {
@@ -1473,7 +1477,7 @@ fn parse_cursor(value: &PropertyValue) -> Option<(Vec<CursorImage>, CursorKeywor
               idx += 2;
             }
           }
-          images.push(CursorImage { url, hotspot });
+          images.push(CursorImage { url: url.url, hotspot });
         }
       }
       PropertyValue::Keyword(kw) => {
@@ -23991,10 +23995,10 @@ fn parse_list_style_image(value: &PropertyValue) -> Option<ListStyleImage> {
     {
       parse_image_set(kw).and_then(|img| match img {
         BackgroundImage::Url(url) => {
-          if trim_ascii_whitespace(&url).is_empty() {
+          if trim_ascii_whitespace(&url.url).is_empty() {
             Some(ListStyleImage::None)
           } else {
-            Some(ListStyleImage::Url(url))
+            Some(ListStyleImage::Url(url.url))
           }
         }
         BackgroundImage::None => Some(ListStyleImage::None),
@@ -24502,6 +24506,7 @@ mod tests {
   use crate::style::types::AnimationTimeline;
   use crate::style::types::AspectRatio;
   use crate::style::types::BackgroundImage;
+  use crate::style::types::BackgroundImageUrl;
   use crate::style::types::BackgroundPosition;
   use crate::style::types::BackgroundRepeatKeyword;
   use crate::style::types::BasicShape;
@@ -24598,7 +24603,10 @@ mod tests {
     let image = parse_background_image_value(&PropertyValue::Url(nbsp.to_string()))
       .expect("expected background image");
     match image {
-      BackgroundImage::Url(url) => assert_eq!(url, nbsp),
+      BackgroundImage::Url(url) => {
+        assert_eq!(url.url, nbsp);
+        assert_eq!(url.override_resolution, None);
+      }
       other => panic!("expected URL background image, got {other:?}"),
     }
   }
@@ -33983,19 +33991,37 @@ mod tests {
   fn image_set_parses_url_with_close_paren_in_string() {
     let parsed = parse_image_set("image-set(url(\"foo).png\") 1x, url(\"bar.png\") 2x)")
       .expect("image-set");
-    assert_eq!(parsed, BackgroundImage::Url("foo).png".to_string()));
+    assert_eq!(
+      parsed,
+      BackgroundImage::Url(BackgroundImageUrl {
+        url: "foo).png".to_string(),
+        override_resolution: Some(1.0),
+      })
+    );
   }
 
   #[test]
   fn image_set_unescapes_string_url_literals() {
     let parsed = parse_image_set("image-set(\"a\\29.png\" 1x)").expect("image-set");
-    assert_eq!(parsed, BackgroundImage::Url("a).png".to_string()));
+    assert_eq!(
+      parsed,
+      BackgroundImage::Url(BackgroundImageUrl {
+        url: "a).png".to_string(),
+        override_resolution: Some(1.0),
+      })
+    );
   }
 
   #[test]
   fn image_set_parses_unquoted_url_with_escaped_paren() {
     let parsed = parse_image_set("image-set(url(foo\\(bar.png) 1x)").expect("image-set");
-    assert_eq!(parsed, BackgroundImage::Url("foo(bar.png".to_string()));
+    assert_eq!(
+      parsed,
+      BackgroundImage::Url(BackgroundImageUrl {
+        url: "foo(bar.png".to_string(),
+        override_resolution: Some(1.0),
+      })
+    );
   }
 
   #[test]
@@ -34003,7 +34029,13 @@ mod tests {
     with_image_set_dpr(2.0, || {
       let parsed =
         parse_image_set("image-set(url(\"low.png\")1x,url(\"hi.png\")2x)").expect("image-set");
-      assert_eq!(parsed, BackgroundImage::Url("hi.png".to_string()));
+      assert_eq!(
+        parsed,
+        BackgroundImage::Url(BackgroundImageUrl {
+          url: "hi.png".to_string(),
+          override_resolution: Some(2.0),
+        })
+      );
     });
   }
 
@@ -34011,7 +34043,13 @@ mod tests {
   fn image_set_treats_comments_as_whitespace() {
     let parsed =
       parse_image_set("image-set(url(\"a.png\")/*comment*/1x, url(\"b.png\")2x)").expect("image-set");
-    assert_eq!(parsed, BackgroundImage::Url("a.png".to_string()));
+    assert_eq!(
+      parsed,
+      BackgroundImage::Url(BackgroundImageUrl {
+        url: "a.png".to_string(),
+        override_resolution: Some(1.0),
+      })
+    );
   }
 
   #[test]
@@ -34025,7 +34063,13 @@ mod tests {
       "image-set(url(\"bad.png\") 1x type(image/png), url(\"good.png\") 1x)",
     )
     .expect("image-set");
-    assert_eq!(parsed, BackgroundImage::Url("good.png".to_string()));
+    assert_eq!(
+      parsed,
+      BackgroundImage::Url(BackgroundImageUrl {
+        url: "good.png".to_string(),
+        override_resolution: Some(1.0),
+      })
+    );
   }
 
   #[test]
@@ -34033,7 +34077,13 @@ mod tests {
     with_image_set_dpr(2.0, || {
       let parsed = parse_image_set("image-set(url(\"bad.png\") 1x 2x, url(\"ok.png\") 1x)")
         .expect("image-set");
-      assert_eq!(parsed, BackgroundImage::Url("ok.png".to_string()));
+      assert_eq!(
+        parsed,
+        BackgroundImage::Url(BackgroundImageUrl {
+          url: "ok.png".to_string(),
+          override_resolution: Some(1.0),
+        })
+      );
     });
   }
 
@@ -34505,7 +34555,11 @@ mod tests {
 
     assert_eq!(style.background_color, Rgba::RED);
     let layer = &style.background_layers[0];
-    assert!(matches!(layer.image, Some(BackgroundImage::Url(ref s)) if s == "example.png"));
+    assert!(matches!(
+      layer.image,
+      Some(BackgroundImage::Url(ref src))
+        if src.url == "example.png" && src.override_resolution.is_none()
+    ));
     assert_eq!(layer.repeat, BackgroundRepeat::no_repeat());
     let BackgroundPosition::Position { x, y } = layer.position;
     assert!((x.alignment - 1.0).abs() < 0.01);
@@ -34673,7 +34727,8 @@ mod tests {
     assert!(style.background_layers[0].image.is_none());
     assert!(matches!(
       style.background_layers[1].image,
-      Some(BackgroundImage::Url(ref url)) if url == "b.png"
+      Some(BackgroundImage::Url(ref url))
+        if url.url == "b.png" && url.override_resolution.is_none()
     ));
   }
 
@@ -34835,8 +34890,9 @@ mod tests {
 
     let layer = &style.background_layers[0];
     assert!(matches!(
-        layer.image,
-        Some(BackgroundImage::Url(ref url)) if url == "low.png"
+      layer.image,
+      Some(BackgroundImage::Url(ref url))
+        if url.url == "low.png" && url.override_resolution == Some(1.0)
     ));
   }
 
@@ -34862,8 +34918,9 @@ mod tests {
     });
 
     assert!(matches!(
-        style.background_layers[0].image,
-        Some(BackgroundImage::Url(ref url)) if url == "retina.png"
+      style.background_layers[0].image,
+      Some(BackgroundImage::Url(ref url))
+        if url.url == "retina.png" && url.override_resolution == Some(2.0)
     ));
   }
 
@@ -34884,8 +34941,9 @@ mod tests {
       16.0,
     );
     assert!(matches!(
-        style.background_layers[0].image,
-        Some(BackgroundImage::Url(ref url)) if url == "hi.png"
+      style.background_layers[0].image,
+      Some(BackgroundImage::Url(ref url))
+        if url.url == "hi.png" && url.override_resolution == Some(2.0)
     ));
 
     apply_declaration(
@@ -34904,8 +34962,9 @@ mod tests {
       16.0,
     );
     assert!(matches!(
-        style.background_layers[0].image,
-        Some(BackgroundImage::Url(ref url)) if url == "bigger.png"
+      style.background_layers[0].image,
+      Some(BackgroundImage::Url(ref url))
+        if url.url == "bigger.png" && url.override_resolution == Some(0.75)
     ));
   }
 
@@ -34933,8 +34992,9 @@ mod tests {
 
     let layer = &style.background_layers[0];
     assert!(matches!(
-        layer.image,
-        Some(BackgroundImage::Url(ref url)) if url == "one-x.png"
+      layer.image,
+      Some(BackgroundImage::Url(ref url))
+        if url.url == "one-x.png" && url.override_resolution == Some(1.0)
     ));
     assert_eq!(layer.repeat, BackgroundRepeat::no_repeat());
   }
@@ -34956,8 +35016,9 @@ mod tests {
     assert_eq!(style.background_layers.len(), 1);
     let layer = &style.background_layers[0];
     assert!(matches!(
-        layer.image,
-        Some(BackgroundImage::Url(ref url)) if url == "a"
+      layer.image,
+      Some(BackgroundImage::Url(ref url))
+        if url.url == "a" && url.override_resolution.is_none()
     ));
     let BackgroundPosition::Position { x, y } = layer.position;
     assert!((x.alignment - 0.5).abs() < 0.01);
@@ -34991,8 +35052,9 @@ mod tests {
     assert_eq!(style.background_layers.len(), 2);
     let first = &style.background_layers[0];
     assert!(matches!(
-        first.image,
-        Some(BackgroundImage::Url(ref url)) if url == "a"
+      first.image,
+      Some(BackgroundImage::Url(ref url))
+        if url.url == "a" && url.override_resolution.is_none()
     ));
     let BackgroundPosition::Position { x: x0, y: y0 } = first.position;
     assert!(x0.offset.is_zero() && (x0.alignment - 0.0).abs() < 0.01);
@@ -35195,7 +35257,7 @@ mod tests {
     let mut style = ComputedStyle::default();
     style.background_color = Rgba::RED;
     style.set_background_layers(vec![BackgroundLayer {
-      image: Some(BackgroundImage::Url("foo.png".to_string())),
+      image: Some(BackgroundImage::Url(BackgroundImageUrl::new("foo.png".to_string()))),
       repeat: BackgroundRepeat::repeat_x(),
       origin: BackgroundBox::ContentBox,
       ..BackgroundLayer::default()
@@ -38027,7 +38089,7 @@ mod tests {
 
     assert_eq!(
       style.shape_outside,
-      ShapeOutside::Image(BackgroundImage::Url("a.png".to_string()))
+      ShapeOutside::Image(BackgroundImage::Url(BackgroundImageUrl::new("a.png".to_string())))
     );
 
     apply_declaration(

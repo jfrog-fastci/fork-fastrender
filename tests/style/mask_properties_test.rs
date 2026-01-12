@@ -75,7 +75,10 @@ fn mask_shorthand_parses_position_size_and_repeat() {
   let styled = apply_styles_with_media(&dom, &stylesheet, &MediaContext::screen(800.0, 600.0));
 
   let layer = &find_first(&styled, "div").expect("div").styles.mask_layers[0];
-  assert!(matches!(layer.image, Some(BackgroundImage::Url(ref url)) if url == "a"));
+  assert!(matches!(
+    layer.image,
+    Some(BackgroundImage::Url(ref url)) if url.url == "a" && url.override_resolution.is_none()
+  ));
   let BackgroundPosition::Position { x, y } = &layer.position;
   assert!((x.alignment - 0.5).abs() < 1e-6);
   assert_eq!(x.offset, Length::percent(0.0));
@@ -112,11 +115,11 @@ fn mask_layers_repeat_longhands_to_match_images() {
   assert_eq!(style.mask_layers.len(), 2);
   assert!(matches!(
     style.mask_layers[0].image,
-    Some(BackgroundImage::Url(ref url)) if url == "a"
+    Some(BackgroundImage::Url(ref url)) if url.url == "a" && url.override_resolution.is_none()
   ));
   assert!(matches!(
     style.mask_layers[1].image,
-    Some(BackgroundImage::Url(ref url)) if url == "b"
+    Some(BackgroundImage::Url(ref url)) if url.url == "b" && url.override_resolution.is_none()
   ));
   for layer in &style.mask_layers {
     assert_eq!(layer.repeat.x, BackgroundRepeatKeyword::Repeat);

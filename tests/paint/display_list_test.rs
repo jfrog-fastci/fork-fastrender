@@ -20,6 +20,7 @@ use fastrender::style::types::BackfaceVisibility;
 use fastrender::style::types::BackgroundAttachment;
 use fastrender::style::types::BackgroundBox;
 use fastrender::style::types::BackgroundImage;
+use fastrender::style::types::BackgroundImageUrl;
 use fastrender::style::types::BackgroundLayer;
 use fastrender::style::types::BackgroundRepeat;
 use fastrender::style::types::BorderCornerRadius;
@@ -375,10 +376,10 @@ fn background_attachment_local_anchors_to_padding_box() {
 
   let mut style = ComputedStyle::default();
   style.set_background_layers(vec![BackgroundLayer {
-        image: Some(BackgroundImage::Url(
+        image: Some(BackgroundImage::Url(BackgroundImageUrl::new(
             "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='1' height='2'%3E%3Crect width='1' height='1' fill='red'/%3E%3Crect y='1' width='1' height='1' fill='blue'/%3E%3C/svg%3E"
                 .into(),
-        )),
+        ))),
         attachment: BackgroundAttachment::Local,
         repeat: BackgroundRepeat::repeat_y(),
         ..BackgroundLayer::default()
@@ -460,10 +461,10 @@ fn fragment_background_image_emits_image_item() {
   let mut style = fastrender::ComputedStyle::default();
   style.background_color = Rgba::TRANSPARENT;
   style.set_background_layers(vec![BackgroundLayer {
-        image: Some(BackgroundImage::Url(
+        image: Some(BackgroundImage::Url(BackgroundImageUrl::new(
             "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"1\" height=\"1\"><rect width=\"1\" height=\"1\" fill=\"blue\"/></svg>"
                 .into(),
-        )),
+        ))),
         repeat: BackgroundRepeat::no_repeat(),
         ..Default::default()
     }]);
@@ -611,7 +612,7 @@ fn background_repeat_space_centers_single_tile_in_display_list() {
   let mut style = ComputedStyle::default();
   style.background_color = Rgba::TRANSPARENT;
   style.set_background_layers(vec![BackgroundLayer {
-    image: Some(BackgroundImage::Url(data_url)),
+    image: Some(BackgroundImage::Url(BackgroundImageUrl::new(data_url))),
     repeat: BackgroundRepeat {
       x: fastrender::style::types::BackgroundRepeatKeyword::Space,
       y: fastrender::style::types::BackgroundRepeatKeyword::Space,
@@ -659,7 +660,7 @@ fn background_attachment_fixed_anchors_to_viewport() {
   let mut style = ComputedStyle::default();
   style.background_color = Rgba::TRANSPARENT;
   style.set_background_layers(vec![BackgroundLayer {
-    image: Some(BackgroundImage::Url(data_url)),
+    image: Some(BackgroundImage::Url(BackgroundImageUrl::new(data_url))),
     attachment: fastrender::style::types::BackgroundAttachment::Fixed,
     repeat: BackgroundRepeat::no_repeat(),
     size: fastrender::style::types::BackgroundSize::Explicit(
@@ -1932,7 +1933,8 @@ fn preserve_3d_flattens_with_grouping_effects() {
       .mask_layers
       .push(fastrender::style::types::MaskLayer::default());
   }
-  mask_style.mask_layers[0].image = Some(BackgroundImage::Url("mask.png".into()));
+  mask_style.mask_layers[0].image =
+    Some(BackgroundImage::Url(BackgroundImageUrl::new("mask.png".into())));
   assert_eq!(
     stacking_context_transform_style(mask_style),
     TransformStyle::Flat

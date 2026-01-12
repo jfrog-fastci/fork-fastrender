@@ -899,7 +899,7 @@ fn style_summary(style: &fastrender::style::ComputedStyle) -> String {
       .background_layers
       .iter()
       .map(|layer| match &layer.image {
-        Some(fastrender::style::types::BackgroundImage::Url(url)) => format!("url({})", url),
+        Some(fastrender::style::types::BackgroundImage::Url(url)) => format!("url({})", url.url),
         Some(fastrender::style::types::BackgroundImage::None) => "none".to_string(),
         Some(_) => "gradient".to_string(),
         None => "(none)".to_string(),

@@ -24,7 +24,8 @@ fn background_layer_lists_reject_empty_items() {
   );
   assert!(matches!(
     style.background_layers[0].image,
-    Some(BackgroundImage::Url(ref url)) if url == "before.png"
+    Some(BackgroundImage::Url(ref url))
+      if url.url == "before.png" && url.override_resolution.is_none()
   ));
 
   // Trailing commas are invalid in CSS comma-separated lists; ensure we do not treat them as
@@ -45,7 +46,8 @@ fn background_layer_lists_reject_empty_items() {
   );
   assert!(matches!(
     style.background_layers[0].image,
-    Some(BackgroundImage::Url(ref url)) if url == "before.png"
+    Some(BackgroundImage::Url(ref url))
+      if url.url == "before.png" && url.override_resolution.is_none()
   ));
 
   // A well-formed list should still apply.
@@ -66,11 +68,11 @@ fn background_layer_lists_reject_empty_items() {
   assert_eq!(style.background_layers.len(), 2);
   assert!(matches!(
     style.background_layers[0].image,
-    Some(BackgroundImage::Url(ref url)) if url == "a.png"
+    Some(BackgroundImage::Url(ref url)) if url.url == "a.png" && url.override_resolution.is_none()
   ));
   assert!(matches!(
     style.background_layers[1].image,
-    Some(BackgroundImage::Url(ref url)) if url == "b.png"
+    Some(BackgroundImage::Url(ref url)) if url.url == "b.png" && url.override_resolution.is_none()
   ));
 
   // Empty middle items are also invalid and should not clobber the previous valid value.
@@ -91,10 +93,10 @@ fn background_layer_lists_reject_empty_items() {
   assert_eq!(style.background_layers.len(), 2);
   assert!(matches!(
     style.background_layers[0].image,
-    Some(BackgroundImage::Url(ref url)) if url == "a.png"
+    Some(BackgroundImage::Url(ref url)) if url.url == "a.png" && url.override_resolution.is_none()
   ));
   assert!(matches!(
     style.background_layers[1].image,
-    Some(BackgroundImage::Url(ref url)) if url == "b.png"
+    Some(BackgroundImage::Url(ref url)) if url.url == "b.png" && url.override_resolution.is_none()
   ));
 }

@@ -30331,7 +30331,8 @@ slot[name=\"s\"]::slotted(.assigned) { color: rgb(4, 5, 6); }"
 
     assert!(matches!(
         styled.styles.background_layers.first().and_then(|l| l.image.as_ref()),
-        Some(crate::style::types::BackgroundImage::Url(url)) if url == "hi.png"
+        Some(crate::style::types::BackgroundImage::Url(url))
+          if url.url == "hi.png" && url.override_resolution == Some(2.0)
     ));
   }
 

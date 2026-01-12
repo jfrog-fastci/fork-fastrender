@@ -2199,7 +2199,9 @@ mod tests {
   fn reset_background_to_initial_resets_mask_border() {
     let mut style = ComputedStyle::default();
     style.mask_border.source = crate::style::types::BorderImageSource::Image(Box::new(
-      crate::style::types::BackgroundImage::Url("https://example.invalid/mask.png".to_string()),
+      crate::style::types::BackgroundImage::Url(crate::style::types::BackgroundImageUrl::new(
+        "https://example.invalid/mask.png".to_string(),
+      )),
     ));
     style.reset_background_to_initial();
     assert_eq!(style.mask_border, MaskBorder::default());

@@ -13,7 +13,9 @@ use crate::layout::formatting_context::LayoutError;
 use crate::paint::clip_path::{resolve_basic_shape, ResolvedClipPath};
 use crate::paint::pixmap::{new_pixmap, reserve_buffer};
 use crate::style::color::Rgba;
-use crate::style::types::{BackgroundImage, BackgroundPosition, ReferenceBox, ShapeOutside};
+use crate::style::types::{
+  BackgroundImage, BackgroundPosition, ReferenceBox, ShapeOutside,
+};
 use crate::style::values::Length;
 use crate::style::ComputedStyle;
 use crate::text::font_loader::FontContext;
@@ -440,7 +442,7 @@ fn image_mask(
 ) -> Option<AlphaBitmap> {
   match image {
     BackgroundImage::Url(url) => {
-      let cached = image_cache.load(url).ok()?;
+      let cached = image_cache.load(&url.url).ok()?;
       let transform = style.image_orientation.resolve(cached.orientation, true);
       let (dst_w, dst_h, _) = image_size(reference_rect);
       if dst_w == 0 || dst_h == 0 {
@@ -477,7 +479,7 @@ fn image_mask(
           (dst_w, dst_h)
         };
         let pixmap = image_cache
-          .render_svg_pixmap_at_size(svg, render_w, render_h, url, 1.0)
+          .render_svg_pixmap_at_size(svg, render_w, render_h, &url.url, 1.0)
           .ok()?;
         let w0 = pixmap.width();
         let h0 = pixmap.height();
@@ -723,6 +725,7 @@ fn alpha_from_pixmap(pixmap: Pixmap, _origin: Point) -> AlphaBitmap {
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::style::types::BackgroundImageUrl;
   use crate::style::values::LengthUnit;
   use base64::engine::general_purpose::STANDARD;
   use base64::Engine;
@@ -744,7 +747,9 @@ mod tests {
     let svg = "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' width='2' height='2'><rect width='2' height='2' fill='black'/></svg>";
 
     let mut style = ComputedStyle::default();
-    style.shape_outside = ShapeOutside::Image(BackgroundImage::Url(svg.to_string()));
+    style.shape_outside = ShapeOutside::Image(BackgroundImage::Url(BackgroundImageUrl::new(
+      svg.to_string(),
+    )));
 
     let margin_box = Rect::from_xywh(0.0, 0.0, 10.0, 10.0);
     let border_box = margin_box;
@@ -801,7 +806,7 @@ mod tests {
     );
 
     let mut style = ComputedStyle::default();
-    style.shape_outside = ShapeOutside::Image(BackgroundImage::Url(png));
+    style.shape_outside = ShapeOutside::Image(BackgroundImage::Url(BackgroundImageUrl::new(png)));
 
     let margin_box = Rect::from_xywh(0.0, 0.0, 10.0, 10.0);
     let border_box = margin_box;
@@ -838,7 +843,9 @@ mod tests {
     let svg = "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 2 1'><rect width='2' height='1' fill='black'/></svg>";
 
     let mut style = ComputedStyle::default();
-    style.shape_outside = ShapeOutside::Image(BackgroundImage::Url(svg.to_string()));
+    style.shape_outside = ShapeOutside::Image(BackgroundImage::Url(BackgroundImageUrl::new(
+      svg.to_string(),
+    )));
 
     let margin_box = Rect::from_xywh(0.0, 0.0, 8.0, 8.0);
     let border_box = margin_box;

@@ -2157,7 +2157,7 @@ fn svg_mask_style(style: &ComputedStyle) -> Option<String> {
   let BackgroundImage::Url(src) = image else {
     return None;
   };
-  let id = trim_ascii_whitespace(src)
+  let id = trim_ascii_whitespace(&src.url)
     .strip_prefix('#')
     .filter(|id| !id.is_empty())?;
   Some(format!("mask: url(#{id})"))
@@ -3036,7 +3036,7 @@ pub fn collect_svg_id_defs(styled: &StyledNode) -> HashMap<String, String> {
       let BackgroundImage::Url(src) = image else {
         continue;
       };
-      if let Some(id) = trim_ascii_whitespace(src)
+      if let Some(id) = trim_ascii_whitespace(&src.url)
         .strip_prefix('#')
         .filter(|id| !id.is_empty())
       {

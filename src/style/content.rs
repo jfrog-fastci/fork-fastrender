@@ -1790,7 +1790,7 @@ fn parse_function(name: &str, args: &str) -> Option<ContentItem> {
     "image-set" => {
       let full = format!("image-set({})", args);
       match crate::style::properties::parse_image_set(&full) {
-        Some(crate::style::types::BackgroundImage::Url(url)) => Some(ContentItem::Url(url)),
+        Some(crate::style::types::BackgroundImage::Url(url)) => Some(ContentItem::Url(url.url)),
         _ => None,
       }
     }

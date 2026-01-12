@@ -4,7 +4,7 @@ use fastrender::style::cascade::apply_styles_with_media_target_and_imports;
 use fastrender::style::cascade::StyledNode;
 use fastrender::style::color::Rgba;
 use fastrender::style::media::MediaContext;
-use fastrender::style::types::{BackgroundImage, CalcSizeBasis, IntrinsicSizeKeyword};
+use fastrender::style::types::{BackgroundImage, BackgroundImageUrl, CalcSizeBasis, IntrinsicSizeKeyword};
 use fastrender::style::values::Length;
 
 fn find_by_id<'a>(node: &'a StyledNode, id: &str) -> Option<&'a StyledNode> {
@@ -111,9 +111,9 @@ fn typed_attr_url() {
 
   assert_eq!(
     t1.styles.background_images.as_ref(),
-    &[Some(BackgroundImage::Url(
+    &[Some(BackgroundImage::Url(BackgroundImageUrl::new(
       "data:text/plain,foo'bar\"baz\\qux".to_string()
-    ))],
+    )))],
   );
   assert_eq!(t2.styles.background_images.as_ref(), &[None]);
 }
@@ -138,15 +138,21 @@ fn typed_attr_url_uses_fallback_url_for_missing_or_empty_value() {
 
   assert_eq!(
     t1.styles.background_images.as_ref(),
-    &[Some(BackgroundImage::Url("foo.png".to_string()))],
+    &[Some(BackgroundImage::Url(BackgroundImageUrl::new(
+      "foo.png".to_string()
+    )))],
   );
   assert_eq!(
     t2.styles.background_images.as_ref(),
-    &[Some(BackgroundImage::Url("fallback.png".to_string()))],
+    &[Some(BackgroundImage::Url(BackgroundImageUrl::new(
+      "fallback.png".to_string()
+    )))],
   );
   assert_eq!(
     t3.styles.background_images.as_ref(),
-    &[Some(BackgroundImage::Url("fallback.png".to_string()))],
+    &[Some(BackgroundImage::Url(BackgroundImageUrl::new(
+      "fallback.png".to_string()
+    )))],
   );
 }
 

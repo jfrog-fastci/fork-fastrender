@@ -41,6 +41,7 @@ use fastrender::paint::painter::scale_pixmap_for_dpr;
 use fastrender::style::color::Color;
 use fastrender::style::types::BackfaceVisibility;
 use fastrender::style::types::BackgroundImage;
+use fastrender::style::types::BackgroundImageUrl;
 use fastrender::style::types::BackgroundLayer;
 use fastrender::style::types::BackgroundPosition;
 use fastrender::style::types::BackgroundPositionComponent;
@@ -1989,7 +1990,9 @@ fn display_list_border_image_nine_slice() {
   style.border_bottom_style = BorderStyle::Solid;
   style.border_left_style = BorderStyle::Solid;
   style.border_image = BorderImage {
-    source: BorderImageSource::Image(Box::new(BackgroundImage::Url(data_url))),
+    source: BorderImageSource::Image(Box::new(BackgroundImage::Url(BackgroundImageUrl::new(
+      data_url,
+    )))),
     slice: BorderImageSlice {
       top: BorderImageSliceValue::Number(1.0),
       right: BorderImageSliceValue::Number(1.0),
@@ -2147,7 +2150,7 @@ fn display_list_background_pixelated_uses_nearest_sampling() {
   style.image_rendering = ImageRendering::Pixelated;
   style.background_color = Rgba::WHITE;
   style.background_layers = smallvec::smallvec![BackgroundLayer {
-    image: Some(BackgroundImage::Url(url)),
+    image: Some(BackgroundImage::Url(BackgroundImageUrl::new(url))),
     size: BackgroundSize::Explicit(
       BackgroundSizeComponent::Length(Length::px(5.0)),
       BackgroundSizeComponent::Length(Length::px(1.0)),
@@ -2178,7 +2181,7 @@ fn display_list_background_smooth_blends_when_upscaled() {
   style.image_rendering = ImageRendering::Auto;
   style.background_color = Rgba::WHITE;
   style.background_layers = smallvec::smallvec![BackgroundLayer {
-    image: Some(BackgroundImage::Url(url)),
+    image: Some(BackgroundImage::Url(BackgroundImageUrl::new(url))),
     size: BackgroundSize::Explicit(
       BackgroundSizeComponent::Length(Length::px(5.0)),
       BackgroundSizeComponent::Length(Length::px(1.0)),
