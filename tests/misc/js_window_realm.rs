@@ -81,11 +81,11 @@ fn exec_script_in_window_host(
   // helper doesn't drive the event loop.
   let mut event_loop = EventLoop::<WindowHostState>::new();
   let mut hooks = VmJsEventLoopHooks::<WindowHostState>::new_with_host(host)
-    .unwrap_or_else(|e| panic!("exec_script_in_window_host: failed to create hooks: {e}"));
+    .expect("exec_script_in_window_host: create VmJsEventLoopHooks");
   hooks.set_event_loop(&mut event_loop);
   let (vm_host, window) = host
     .vm_host_and_window_realm()
-    .unwrap_or_else(|e| panic!("exec_script_in_window_host: failed to split host: {e}"));
+    .expect("exec_script_in_window_host: vm_host_and_window_realm");
   let result = window.exec_script_with_host_and_hooks(vm_host, &mut hooks, source);
   if let Some(err) = hooks.finish(window.heap_mut()) {
     panic!("exec_script_in_window_host: VmHostHooks finish returned error: {err}");

@@ -32,6 +32,7 @@ mod document;
 mod document2;
 mod console_formatting;
 mod element_from_point;
+mod layout_style_dom_apis;
 mod dynamic_script_insertion;
 mod csp_script_enforcement;
 mod script_crossorigin_cors;

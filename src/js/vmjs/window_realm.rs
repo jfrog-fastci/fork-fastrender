@@ -2569,6 +2569,18 @@ const SLOT_ASSIGNED_NODES_KEY: &str = "__fastrender_slot_assigned_nodes";
 const SLOT_ASSIGNED_ELEMENTS_KEY: &str = "__fastrender_slot_assigned_elements";
 const SLOT_ASSIGN_KEY: &str = "__fastrender_slot_assign";
 const ELEMENT_GET_BOUNDING_CLIENT_RECT_KEY: &str = "__fastrender_element_get_bounding_client_rect";
+const ELEMENT_OFFSET_WIDTH_GET_KEY: &str = "__fastrender_element_offset_width_get";
+const ELEMENT_OFFSET_HEIGHT_GET_KEY: &str = "__fastrender_element_offset_height_get";
+const ELEMENT_OFFSET_LEFT_GET_KEY: &str = "__fastrender_element_offset_left_get";
+const ELEMENT_OFFSET_TOP_GET_KEY: &str = "__fastrender_element_offset_top_get";
+const ELEMENT_CLIENT_WIDTH_GET_KEY: &str = "__fastrender_element_client_width_get";
+const ELEMENT_CLIENT_HEIGHT_GET_KEY: &str = "__fastrender_element_client_height_get";
+const ELEMENT_SCROLL_WIDTH_GET_KEY: &str = "__fastrender_element_scroll_width_get";
+const ELEMENT_SCROLL_HEIGHT_GET_KEY: &str = "__fastrender_element_scroll_height_get";
+const ELEMENT_SCROLL_TOP_GET_KEY: &str = "__fastrender_element_scroll_top_get";
+const ELEMENT_SCROLL_TOP_SET_KEY: &str = "__fastrender_element_scroll_top_set";
+const ELEMENT_SCROLL_LEFT_GET_KEY: &str = "__fastrender_element_scroll_left_get";
+const ELEMENT_SCROLL_LEFT_SET_KEY: &str = "__fastrender_element_scroll_left_set";
 const INPUT_VALUE_GET_KEY: &str = "__fastrender_input_value_get";
 const INPUT_VALUE_SET_KEY: &str = "__fastrender_input_value_set";
 const INPUT_CHECKED_GET_KEY: &str = "__fastrender_input_checked_get";
@@ -4347,11 +4359,15 @@ fn window_scroll_x_get_native(
   _this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
-  let Some(document) = host.as_any_mut().downcast_mut::<BrowserDocumentDom2>() else {
-    return Ok(Value::Number(0.0));
-  };
-  let offset = document.viewport_scroll_offset();
-  Ok(Value::Number(offset.x as f64))
+  if let Some(document) = host.as_any_mut().downcast_mut::<BrowserDocumentDom2>() {
+    let offset = document.viewport_scroll_offset();
+    return Ok(Value::Number(if offset.x.is_finite() {
+      offset.x as f64
+    } else {
+      0.0
+    }));
+  }
+  Ok(Value::Number(0.0))
 }
 
 fn window_scroll_y_get_native(
@@ -4363,11 +4379,15 @@ fn window_scroll_y_get_native(
   _this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
-  let Some(document) = host.as_any_mut().downcast_mut::<BrowserDocumentDom2>() else {
-    return Ok(Value::Number(0.0));
-  };
-  let offset = document.viewport_scroll_offset();
-  Ok(Value::Number(offset.y as f64))
+  if let Some(document) = host.as_any_mut().downcast_mut::<BrowserDocumentDom2>() {
+    let offset = document.viewport_scroll_offset();
+    return Ok(Value::Number(if offset.y.is_finite() {
+      offset.y as f64
+    } else {
+      0.0
+    }));
+  }
+  Ok(Value::Number(0.0))
 }
 
 fn viewport_height_for_scroll_by_pages(
@@ -6845,6 +6865,78 @@ fn get_or_create_node_wrapper(
     let key = alloc_key(scope, ELEMENT_GET_BOUNDING_CLIENT_RECT_KEY)?;
     object_get_data_property_value(scope.heap(), document_obj, &key)?
   };
+  let element_offset_width_get = {
+    let key = alloc_key(scope, ELEMENT_OFFSET_WIDTH_GET_KEY)?;
+    scope
+      .heap()
+      .object_get_own_data_property_value(document_obj, &key)?
+  };
+  let element_offset_height_get = {
+    let key = alloc_key(scope, ELEMENT_OFFSET_HEIGHT_GET_KEY)?;
+    scope
+      .heap()
+      .object_get_own_data_property_value(document_obj, &key)?
+  };
+  let element_offset_left_get = {
+    let key = alloc_key(scope, ELEMENT_OFFSET_LEFT_GET_KEY)?;
+    scope
+      .heap()
+      .object_get_own_data_property_value(document_obj, &key)?
+  };
+  let element_offset_top_get = {
+    let key = alloc_key(scope, ELEMENT_OFFSET_TOP_GET_KEY)?;
+    scope
+      .heap()
+      .object_get_own_data_property_value(document_obj, &key)?
+  };
+  let element_client_width_get = {
+    let key = alloc_key(scope, ELEMENT_CLIENT_WIDTH_GET_KEY)?;
+    scope
+      .heap()
+      .object_get_own_data_property_value(document_obj, &key)?
+  };
+  let element_client_height_get = {
+    let key = alloc_key(scope, ELEMENT_CLIENT_HEIGHT_GET_KEY)?;
+    scope
+      .heap()
+      .object_get_own_data_property_value(document_obj, &key)?
+  };
+  let element_scroll_width_get = {
+    let key = alloc_key(scope, ELEMENT_SCROLL_WIDTH_GET_KEY)?;
+    scope
+      .heap()
+      .object_get_own_data_property_value(document_obj, &key)?
+  };
+  let element_scroll_height_get = {
+    let key = alloc_key(scope, ELEMENT_SCROLL_HEIGHT_GET_KEY)?;
+    scope
+      .heap()
+      .object_get_own_data_property_value(document_obj, &key)?
+  };
+  let element_scroll_top_get = {
+    let key = alloc_key(scope, ELEMENT_SCROLL_TOP_GET_KEY)?;
+    scope
+      .heap()
+      .object_get_own_data_property_value(document_obj, &key)?
+  };
+  let element_scroll_top_set = {
+    let key = alloc_key(scope, ELEMENT_SCROLL_TOP_SET_KEY)?;
+    scope
+      .heap()
+      .object_get_own_data_property_value(document_obj, &key)?
+  };
+  let element_scroll_left_get = {
+    let key = alloc_key(scope, ELEMENT_SCROLL_LEFT_GET_KEY)?;
+    scope
+      .heap()
+      .object_get_own_data_property_value(document_obj, &key)?
+  };
+  let element_scroll_left_set = {
+    let key = alloc_key(scope, ELEMENT_SCROLL_LEFT_SET_KEY)?;
+    scope
+      .heap()
+      .object_get_own_data_property_value(document_obj, &key)?
+  };
 
   let input_value_get = {
     let key = alloc_key(scope, INPUT_VALUE_GET_KEY)?;
@@ -7792,6 +7884,186 @@ fn get_or_create_node_wrapper(
       )?;
 
       scope.define_property(wrapper, dataset_key, data_desc(Value::Object(dataset)))?;
+    }
+
+    // CSSOM View / layout metrics.
+    //
+    // These are intentionally installed directly onto wrapper objects (instead of via WebIDL
+    // prototypes) so the vm-js DOM shim can provide basic layout APIs even without full generated
+    // bindings.
+    if let Some(Value::Object(get)) = element_offset_width_get {
+      let key = alloc_key(scope, "offsetWidth")?;
+      if !proto_chain_has_own_property(scope.heap(), wrapper, &key)? {
+        scope.define_property(
+          wrapper,
+          key,
+          PropertyDescriptor {
+            enumerable: false,
+            configurable: true,
+            kind: PropertyKind::Accessor {
+              get: Value::Object(get),
+              set: Value::Undefined,
+            },
+          },
+        )?;
+      }
+    }
+    if let Some(Value::Object(get)) = element_offset_height_get {
+      let key = alloc_key(scope, "offsetHeight")?;
+      if !proto_chain_has_own_property(scope.heap(), wrapper, &key)? {
+        scope.define_property(
+          wrapper,
+          key,
+          PropertyDescriptor {
+            enumerable: false,
+            configurable: true,
+            kind: PropertyKind::Accessor {
+              get: Value::Object(get),
+              set: Value::Undefined,
+            },
+          },
+        )?;
+      }
+    }
+    if let Some(Value::Object(get)) = element_offset_left_get {
+      let key = alloc_key(scope, "offsetLeft")?;
+      if !proto_chain_has_own_property(scope.heap(), wrapper, &key)? {
+        scope.define_property(
+          wrapper,
+          key,
+          PropertyDescriptor {
+            enumerable: false,
+            configurable: true,
+            kind: PropertyKind::Accessor {
+              get: Value::Object(get),
+              set: Value::Undefined,
+            },
+          },
+        )?;
+      }
+    }
+    if let Some(Value::Object(get)) = element_offset_top_get {
+      let key = alloc_key(scope, "offsetTop")?;
+      if !proto_chain_has_own_property(scope.heap(), wrapper, &key)? {
+        scope.define_property(
+          wrapper,
+          key,
+          PropertyDescriptor {
+            enumerable: false,
+            configurable: true,
+            kind: PropertyKind::Accessor {
+              get: Value::Object(get),
+              set: Value::Undefined,
+            },
+          },
+        )?;
+      }
+    }
+    if let Some(Value::Object(get)) = element_client_width_get {
+      let key = alloc_key(scope, "clientWidth")?;
+      if !proto_chain_has_own_property(scope.heap(), wrapper, &key)? {
+        scope.define_property(
+          wrapper,
+          key,
+          PropertyDescriptor {
+            enumerable: false,
+            configurable: true,
+            kind: PropertyKind::Accessor {
+              get: Value::Object(get),
+              set: Value::Undefined,
+            },
+          },
+        )?;
+      }
+    }
+    if let Some(Value::Object(get)) = element_client_height_get {
+      let key = alloc_key(scope, "clientHeight")?;
+      if !proto_chain_has_own_property(scope.heap(), wrapper, &key)? {
+        scope.define_property(
+          wrapper,
+          key,
+          PropertyDescriptor {
+            enumerable: false,
+            configurable: true,
+            kind: PropertyKind::Accessor {
+              get: Value::Object(get),
+              set: Value::Undefined,
+            },
+          },
+        )?;
+      }
+    }
+    if let Some(Value::Object(get)) = element_scroll_width_get {
+      let key = alloc_key(scope, "scrollWidth")?;
+      if !proto_chain_has_own_property(scope.heap(), wrapper, &key)? {
+        scope.define_property(
+          wrapper,
+          key,
+          PropertyDescriptor {
+            enumerable: false,
+            configurable: true,
+            kind: PropertyKind::Accessor {
+              get: Value::Object(get),
+              set: Value::Undefined,
+            },
+          },
+        )?;
+      }
+    }
+    if let Some(Value::Object(get)) = element_scroll_height_get {
+      let key = alloc_key(scope, "scrollHeight")?;
+      if !proto_chain_has_own_property(scope.heap(), wrapper, &key)? {
+        scope.define_property(
+          wrapper,
+          key,
+          PropertyDescriptor {
+            enumerable: false,
+            configurable: true,
+            kind: PropertyKind::Accessor {
+              get: Value::Object(get),
+              set: Value::Undefined,
+            },
+          },
+        )?;
+      }
+    }
+    if let (Some(Value::Object(get)), Some(Value::Object(set))) =
+      (element_scroll_top_get, element_scroll_top_set)
+    {
+      let key = alloc_key(scope, "scrollTop")?;
+      if !proto_chain_has_own_property(scope.heap(), wrapper, &key)? {
+        scope.define_property(
+          wrapper,
+          key,
+          PropertyDescriptor {
+            enumerable: false,
+            configurable: true,
+            kind: PropertyKind::Accessor {
+              get: Value::Object(get),
+              set: Value::Object(set),
+            },
+          },
+        )?;
+      }
+    }
+    if let (Some(Value::Object(get)), Some(Value::Object(set))) =
+      (element_scroll_left_get, element_scroll_left_set)
+    {
+      let key = alloc_key(scope, "scrollLeft")?;
+      if !proto_chain_has_own_property(scope.heap(), wrapper, &key)? {
+        scope.define_property(
+          wrapper,
+          key,
+          PropertyDescriptor {
+            enumerable: false,
+            configurable: true,
+            kind: PropertyKind::Accessor {
+              get: Value::Object(get),
+              set: Value::Object(set),
+            },
+          },
+        )?;
+      }
     }
 
     // Form controls (minimal): input.value/input.checked/textarea.value/form.reset.
@@ -10642,6 +10914,510 @@ fn element_get_bounding_client_rect_native(
     rect.height() as f64,
   )?;
   Ok(Value::Object(rect_obj))
+}
+
+fn element_wrapper_node_index(scope: &mut Scope<'_>, obj: GcObject) -> Result<Option<usize>, VmError> {
+  let node_id_key = alloc_key(scope, NODE_ID_KEY)?;
+  Ok(
+    match scope
+      .heap()
+      .object_get_own_data_property_value(obj, &node_id_key)?
+    {
+      Some(Value::Number(n)) if n.is_finite() && n >= 0.0 => Some(n as usize),
+      _ => None,
+    },
+  )
+}
+
+fn finite_f64_to_f32_or_zero(n: f64) -> f32 {
+  if !n.is_finite() {
+    return 0.0;
+  }
+  let min = f32::MIN as f64;
+  let max = f32::MAX as f64;
+  n.clamp(min, max) as f32
+}
+
+fn layout_metric_f32_to_f64_or_zero(n: f32) -> f64 {
+  if n.is_finite() { n as f64 } else { 0.0 }
+}
+
+fn layout_metric_nonneg_f32_to_f64_or_zero(n: f32) -> f64 {
+  if n.is_finite() { n.max(0.0) as f64 } else { 0.0 }
+}
+
+fn find_fragment_node_for_box_id<'a>(
+  fragment_tree: &'a crate::tree::fragment_tree::FragmentTree,
+  box_id: usize,
+) -> Option<(&'a crate::tree::fragment_tree::FragmentNode, bool)> {
+  struct Frame<'a> {
+    node: &'a crate::tree::fragment_tree::FragmentNode,
+    has_fixed_cb_ancestor: bool,
+  }
+
+  let mut stack: Vec<Frame<'_>> = Vec::new();
+  for root in fragment_tree.additional_fragments.iter().rev() {
+    stack.push(Frame {
+      node: root,
+      has_fixed_cb_ancestor: false,
+    });
+  }
+  stack.push(Frame {
+    node: &fragment_tree.root,
+    has_fixed_cb_ancestor: false,
+  });
+
+  while let Some(frame) = stack.pop() {
+    if frame.node.box_id() == Some(box_id) {
+      return Some((frame.node, frame.has_fixed_cb_ancestor));
+    }
+    let establishes_fixed_cb = frame
+      .node
+      .style
+      .as_deref()
+      .is_some_and(|style| style.establishes_fixed_containing_block());
+    let has_fixed_cb_ancestor_for_children = frame.has_fixed_cb_ancestor || establishes_fixed_cb;
+    for child in frame.node.children.iter().rev() {
+      stack.push(Frame {
+        node: child,
+        has_fixed_cb_ancestor: has_fixed_cb_ancestor_for_children,
+      });
+    }
+  }
+
+  None
+}
+
+fn element_scroll_container_metrics_for_box_id(
+  prepared: &crate::api::PreparedDocument,
+  box_id: usize,
+) -> Option<(f32, f32, f32, f32)> {
+  let (node, has_fixed_cb_ancestor) = find_fragment_node_for_box_id(prepared.fragment_tree(), box_id)?;
+  let style = node.style.as_deref()?;
+  let (client_w, client_h) = crate::scroll::client_width_height_for_fragment(node, style);
+  let bounds = crate::scroll::scroll_bounds_for_fragment(
+    node,
+    crate::geometry::Point::ZERO,
+    node.bounds.size,
+    prepared.layout_viewport(),
+    false,
+    has_fixed_cb_ancestor,
+  );
+  let scroll_w = client_w + bounds.max_x;
+  let scroll_h = client_h + bounds.max_y;
+  Some((client_w, client_h, scroll_w, scroll_h))
+}
+
+fn element_offset_width_get_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(obj) = this else {
+    return Ok(Value::Number(0.0));
+  };
+  let Some(document) = host.as_any_mut().downcast_mut::<BrowserDocumentDom2>() else {
+    return Ok(Value::Number(0.0));
+  };
+  let Some(node_index) = element_wrapper_node_index(scope, obj)? else {
+    return Ok(Value::Number(0.0));
+  };
+  let node_id = match document.dom().node_id_from_index(node_index) {
+    Ok(id) => id,
+    Err(_) => return Ok(Value::Number(0.0)),
+  };
+  let rect = match document.border_box_rect_page(node_id) {
+    Ok(Some(rect)) => rect,
+    _ => return Ok(Value::Number(0.0)),
+  };
+  Ok(Value::Number(layout_metric_nonneg_f32_to_f64_or_zero(rect.width())))
+}
+
+fn element_offset_height_get_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(obj) = this else {
+    return Ok(Value::Number(0.0));
+  };
+  let Some(document) = host.as_any_mut().downcast_mut::<BrowserDocumentDom2>() else {
+    return Ok(Value::Number(0.0));
+  };
+  let Some(node_index) = element_wrapper_node_index(scope, obj)? else {
+    return Ok(Value::Number(0.0));
+  };
+  let node_id = match document.dom().node_id_from_index(node_index) {
+    Ok(id) => id,
+    Err(_) => return Ok(Value::Number(0.0)),
+  };
+  let rect = match document.border_box_rect_page(node_id) {
+    Ok(Some(rect)) => rect,
+    _ => return Ok(Value::Number(0.0)),
+  };
+  Ok(Value::Number(layout_metric_nonneg_f32_to_f64_or_zero(rect.height())))
+}
+
+fn element_offset_left_get_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(obj) = this else {
+    return Ok(Value::Number(0.0));
+  };
+  let Some(document) = host.as_any_mut().downcast_mut::<BrowserDocumentDom2>() else {
+    return Ok(Value::Number(0.0));
+  };
+  let Some(node_index) = element_wrapper_node_index(scope, obj)? else {
+    return Ok(Value::Number(0.0));
+  };
+  let node_id = match document.dom().node_id_from_index(node_index) {
+    Ok(id) => id,
+    Err(_) => return Ok(Value::Number(0.0)),
+  };
+  let rect = match document.border_box_rect_page(node_id) {
+    Ok(Some(rect)) => rect,
+    _ => return Ok(Value::Number(0.0)),
+  };
+  Ok(Value::Number(layout_metric_f32_to_f64_or_zero(rect.x())))
+}
+
+fn element_offset_top_get_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(obj) = this else {
+    return Ok(Value::Number(0.0));
+  };
+  let Some(document) = host.as_any_mut().downcast_mut::<BrowserDocumentDom2>() else {
+    return Ok(Value::Number(0.0));
+  };
+  let Some(node_index) = element_wrapper_node_index(scope, obj)? else {
+    return Ok(Value::Number(0.0));
+  };
+  let node_id = match document.dom().node_id_from_index(node_index) {
+    Ok(id) => id,
+    Err(_) => return Ok(Value::Number(0.0)),
+  };
+  let rect = match document.border_box_rect_page(node_id) {
+    Ok(Some(rect)) => rect,
+    _ => return Ok(Value::Number(0.0)),
+  };
+  Ok(Value::Number(layout_metric_f32_to_f64_or_zero(rect.y())))
+}
+
+fn element_client_width_get_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(obj) = this else {
+    return Ok(Value::Number(0.0));
+  };
+  let Some(document) = host.as_any_mut().downcast_mut::<BrowserDocumentDom2>() else {
+    return Ok(Value::Number(0.0));
+  };
+  let Some(node_index) = element_wrapper_node_index(scope, obj)? else {
+    return Ok(Value::Number(0.0));
+  };
+  let node_id = match document.dom().node_id_from_index(node_index) {
+    Ok(id) => id,
+    Err(_) => return Ok(Value::Number(0.0)),
+  };
+  let box_id = match document.principal_box_id_for_node(node_id) {
+    Ok(Some(id)) => id,
+    _ => return Ok(Value::Number(0.0)),
+  };
+  let prepared = match document.prepared_layout() {
+    Ok(prepared) => prepared,
+    Err(_) => return Ok(Value::Number(0.0)),
+  };
+  let Some((client_w, _, _, _)) = element_scroll_container_metrics_for_box_id(prepared, box_id) else {
+    return Ok(Value::Number(0.0));
+  };
+  Ok(Value::Number(layout_metric_nonneg_f32_to_f64_or_zero(client_w)))
+}
+
+fn element_client_height_get_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(obj) = this else {
+    return Ok(Value::Number(0.0));
+  };
+  let Some(document) = host.as_any_mut().downcast_mut::<BrowserDocumentDom2>() else {
+    return Ok(Value::Number(0.0));
+  };
+  let Some(node_index) = element_wrapper_node_index(scope, obj)? else {
+    return Ok(Value::Number(0.0));
+  };
+  let node_id = match document.dom().node_id_from_index(node_index) {
+    Ok(id) => id,
+    Err(_) => return Ok(Value::Number(0.0)),
+  };
+  let box_id = match document.principal_box_id_for_node(node_id) {
+    Ok(Some(id)) => id,
+    _ => return Ok(Value::Number(0.0)),
+  };
+  let prepared = match document.prepared_layout() {
+    Ok(prepared) => prepared,
+    Err(_) => return Ok(Value::Number(0.0)),
+  };
+  let Some((_, client_h, _, _)) = element_scroll_container_metrics_for_box_id(prepared, box_id) else {
+    return Ok(Value::Number(0.0));
+  };
+  Ok(Value::Number(layout_metric_nonneg_f32_to_f64_or_zero(client_h)))
+}
+
+fn element_scroll_width_get_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(obj) = this else {
+    return Ok(Value::Number(0.0));
+  };
+  let Some(document) = host.as_any_mut().downcast_mut::<BrowserDocumentDom2>() else {
+    return Ok(Value::Number(0.0));
+  };
+  let Some(node_index) = element_wrapper_node_index(scope, obj)? else {
+    return Ok(Value::Number(0.0));
+  };
+  let node_id = match document.dom().node_id_from_index(node_index) {
+    Ok(id) => id,
+    Err(_) => return Ok(Value::Number(0.0)),
+  };
+  let box_id = match document.principal_box_id_for_node(node_id) {
+    Ok(Some(id)) => id,
+    _ => return Ok(Value::Number(0.0)),
+  };
+  let prepared = match document.prepared_layout() {
+    Ok(prepared) => prepared,
+    Err(_) => return Ok(Value::Number(0.0)),
+  };
+  let Some((_, _, scroll_w, _)) = element_scroll_container_metrics_for_box_id(prepared, box_id) else {
+    return Ok(Value::Number(0.0));
+  };
+  Ok(Value::Number(layout_metric_nonneg_f32_to_f64_or_zero(scroll_w)))
+}
+
+fn element_scroll_height_get_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(obj) = this else {
+    return Ok(Value::Number(0.0));
+  };
+  let Some(document) = host.as_any_mut().downcast_mut::<BrowserDocumentDom2>() else {
+    return Ok(Value::Number(0.0));
+  };
+  let Some(node_index) = element_wrapper_node_index(scope, obj)? else {
+    return Ok(Value::Number(0.0));
+  };
+  let node_id = match document.dom().node_id_from_index(node_index) {
+    Ok(id) => id,
+    Err(_) => return Ok(Value::Number(0.0)),
+  };
+  let box_id = match document.principal_box_id_for_node(node_id) {
+    Ok(Some(id)) => id,
+    _ => return Ok(Value::Number(0.0)),
+  };
+  let prepared = match document.prepared_layout() {
+    Ok(prepared) => prepared,
+    Err(_) => return Ok(Value::Number(0.0)),
+  };
+  let Some((_, _, _, scroll_h)) = element_scroll_container_metrics_for_box_id(prepared, box_id) else {
+    return Ok(Value::Number(0.0));
+  };
+  Ok(Value::Number(layout_metric_nonneg_f32_to_f64_or_zero(scroll_h)))
+}
+
+fn element_scroll_top_get_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(obj) = this else {
+    return Ok(Value::Number(0.0));
+  };
+  let Some(document) = host.as_any_mut().downcast_mut::<BrowserDocumentDom2>() else {
+    return Ok(Value::Number(0.0));
+  };
+  let Some(node_index) = element_wrapper_node_index(scope, obj)? else {
+    return Ok(Value::Number(0.0));
+  };
+  let node_id = match document.dom().node_id_from_index(node_index) {
+    Ok(id) => id,
+    Err(_) => return Ok(Value::Number(0.0)),
+  };
+  let box_id = match document.principal_box_id_for_node(node_id) {
+    Ok(Some(id)) => id,
+    _ => return Ok(Value::Number(0.0)),
+  };
+  Ok(Value::Number(layout_metric_f32_to_f64_or_zero(
+    document.element_scroll_offset(box_id).y,
+  )))
+}
+
+fn element_scroll_top_set_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(obj) = this else {
+    return Ok(Value::Undefined);
+  };
+
+  let value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let mut y = scope.to_number(vm, host, hooks, value)?;
+  if !y.is_finite() {
+    y = 0.0;
+  }
+  let y = finite_f64_to_f32_or_zero(y);
+
+  let Some(document) = host.as_any_mut().downcast_mut::<BrowserDocumentDom2>() else {
+    return Ok(Value::Undefined);
+  };
+  let Some(node_index) = element_wrapper_node_index(scope, obj)? else {
+    return Ok(Value::Undefined);
+  };
+  let node_id = match document.dom().node_id_from_index(node_index) {
+    Ok(id) => id,
+    Err(_) => return Ok(Value::Undefined),
+  };
+  let box_id = match document.principal_box_id_for_node(node_id) {
+    Ok(Some(id)) => id,
+    _ => return Ok(Value::Undefined),
+  };
+
+  let old = document.element_scroll_offset(box_id);
+  let desired = crate::geometry::Point::new(old.x, y);
+  let clamped = match document.clamp_element_scroll_offset(box_id, desired) {
+    Ok(v) => v,
+    Err(_) => desired,
+  };
+  document.set_element_scroll_offset(box_id, clamped);
+  Ok(Value::Undefined)
+}
+
+fn element_scroll_left_get_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(obj) = this else {
+    return Ok(Value::Number(0.0));
+  };
+  let Some(document) = host.as_any_mut().downcast_mut::<BrowserDocumentDom2>() else {
+    return Ok(Value::Number(0.0));
+  };
+  let Some(node_index) = element_wrapper_node_index(scope, obj)? else {
+    return Ok(Value::Number(0.0));
+  };
+  let node_id = match document.dom().node_id_from_index(node_index) {
+    Ok(id) => id,
+    Err(_) => return Ok(Value::Number(0.0)),
+  };
+  let box_id = match document.principal_box_id_for_node(node_id) {
+    Ok(Some(id)) => id,
+    _ => return Ok(Value::Number(0.0)),
+  };
+  Ok(Value::Number(layout_metric_f32_to_f64_or_zero(
+    document.element_scroll_offset(box_id).x,
+  )))
+}
+
+fn element_scroll_left_set_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(obj) = this else {
+    return Ok(Value::Undefined);
+  };
+
+  let value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let mut x = scope.to_number(vm, host, hooks, value)?;
+  if !x.is_finite() {
+    x = 0.0;
+  }
+  let x = finite_f64_to_f32_or_zero(x);
+
+  let Some(document) = host.as_any_mut().downcast_mut::<BrowserDocumentDom2>() else {
+    return Ok(Value::Undefined);
+  };
+  let Some(node_index) = element_wrapper_node_index(scope, obj)? else {
+    return Ok(Value::Undefined);
+  };
+  let node_id = match document.dom().node_id_from_index(node_index) {
+    Ok(id) => id,
+    Err(_) => return Ok(Value::Undefined),
+  };
+  let box_id = match document.principal_box_id_for_node(node_id) {
+    Ok(Some(id)) => id,
+    _ => return Ok(Value::Undefined),
+  };
+
+  let old = document.element_scroll_offset(box_id);
+  let desired = crate::geometry::Point::new(x, old.y);
+  let clamped = match document.clamp_element_scroll_offset(box_id, desired) {
+    Ok(v) => v,
+    Err(_) => desired,
+  };
+  document.set_element_scroll_offset(box_id, clamped);
+  Ok(Value::Undefined)
 }
 
 fn document_create_element_native(
@@ -35535,6 +36311,246 @@ fn init_window_globals(
     data_desc(Value::Object(slot_assign_func)),
   )?;
 
+  // Store shared element layout metric accessors on `document` so wrappers can reuse them.
+  let element_offset_width_get_call_id = vm.register_native_call(element_offset_width_get_native)?;
+  let element_offset_width_get_name = scope.alloc_string("get offsetWidth")?;
+  scope.push_root(Value::String(element_offset_width_get_name))?;
+  let element_offset_width_get_func = scope.alloc_native_function(
+    element_offset_width_get_call_id,
+    None,
+    element_offset_width_get_name,
+    0,
+  )?;
+  scope.heap_mut().object_set_prototype(
+    element_offset_width_get_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(element_offset_width_get_func))?;
+  let element_offset_width_get_key = alloc_key(&mut scope, ELEMENT_OFFSET_WIDTH_GET_KEY)?;
+  scope.define_property(
+    document_obj,
+    element_offset_width_get_key,
+    data_desc(Value::Object(element_offset_width_get_func)),
+  )?;
+
+  let element_offset_height_get_call_id =
+    vm.register_native_call(element_offset_height_get_native)?;
+  let element_offset_height_get_name = scope.alloc_string("get offsetHeight")?;
+  scope.push_root(Value::String(element_offset_height_get_name))?;
+  let element_offset_height_get_func = scope.alloc_native_function(
+    element_offset_height_get_call_id,
+    None,
+    element_offset_height_get_name,
+    0,
+  )?;
+  scope.heap_mut().object_set_prototype(
+    element_offset_height_get_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(element_offset_height_get_func))?;
+  let element_offset_height_get_key = alloc_key(&mut scope, ELEMENT_OFFSET_HEIGHT_GET_KEY)?;
+  scope.define_property(
+    document_obj,
+    element_offset_height_get_key,
+    data_desc(Value::Object(element_offset_height_get_func)),
+  )?;
+
+  let element_offset_left_get_call_id = vm.register_native_call(element_offset_left_get_native)?;
+  let element_offset_left_get_name = scope.alloc_string("get offsetLeft")?;
+  scope.push_root(Value::String(element_offset_left_get_name))?;
+  let element_offset_left_get_func = scope.alloc_native_function(
+    element_offset_left_get_call_id,
+    None,
+    element_offset_left_get_name,
+    0,
+  )?;
+  scope.heap_mut().object_set_prototype(
+    element_offset_left_get_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(element_offset_left_get_func))?;
+  let element_offset_left_get_key = alloc_key(&mut scope, ELEMENT_OFFSET_LEFT_GET_KEY)?;
+  scope.define_property(
+    document_obj,
+    element_offset_left_get_key,
+    data_desc(Value::Object(element_offset_left_get_func)),
+  )?;
+
+  let element_offset_top_get_call_id = vm.register_native_call(element_offset_top_get_native)?;
+  let element_offset_top_get_name = scope.alloc_string("get offsetTop")?;
+  scope.push_root(Value::String(element_offset_top_get_name))?;
+  let element_offset_top_get_func = scope.alloc_native_function(
+    element_offset_top_get_call_id,
+    None,
+    element_offset_top_get_name,
+    0,
+  )?;
+  scope.heap_mut().object_set_prototype(
+    element_offset_top_get_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(element_offset_top_get_func))?;
+  let element_offset_top_get_key = alloc_key(&mut scope, ELEMENT_OFFSET_TOP_GET_KEY)?;
+  scope.define_property(
+    document_obj,
+    element_offset_top_get_key,
+    data_desc(Value::Object(element_offset_top_get_func)),
+  )?;
+
+  let element_client_width_get_call_id = vm.register_native_call(element_client_width_get_native)?;
+  let element_client_width_get_name = scope.alloc_string("get clientWidth")?;
+  scope.push_root(Value::String(element_client_width_get_name))?;
+  let element_client_width_get_func = scope.alloc_native_function(
+    element_client_width_get_call_id,
+    None,
+    element_client_width_get_name,
+    0,
+  )?;
+  scope.heap_mut().object_set_prototype(
+    element_client_width_get_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(element_client_width_get_func))?;
+  let element_client_width_get_key = alloc_key(&mut scope, ELEMENT_CLIENT_WIDTH_GET_KEY)?;
+  scope.define_property(
+    document_obj,
+    element_client_width_get_key,
+    data_desc(Value::Object(element_client_width_get_func)),
+  )?;
+
+  let element_client_height_get_call_id =
+    vm.register_native_call(element_client_height_get_native)?;
+  let element_client_height_get_name = scope.alloc_string("get clientHeight")?;
+  scope.push_root(Value::String(element_client_height_get_name))?;
+  let element_client_height_get_func = scope.alloc_native_function(
+    element_client_height_get_call_id,
+    None,
+    element_client_height_get_name,
+    0,
+  )?;
+  scope.heap_mut().object_set_prototype(
+    element_client_height_get_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(element_client_height_get_func))?;
+  let element_client_height_get_key = alloc_key(&mut scope, ELEMENT_CLIENT_HEIGHT_GET_KEY)?;
+  scope.define_property(
+    document_obj,
+    element_client_height_get_key,
+    data_desc(Value::Object(element_client_height_get_func)),
+  )?;
+
+  let element_scroll_width_get_call_id = vm.register_native_call(element_scroll_width_get_native)?;
+  let element_scroll_width_get_name = scope.alloc_string("get scrollWidth")?;
+  scope.push_root(Value::String(element_scroll_width_get_name))?;
+  let element_scroll_width_get_func = scope.alloc_native_function(
+    element_scroll_width_get_call_id,
+    None,
+    element_scroll_width_get_name,
+    0,
+  )?;
+  scope.heap_mut().object_set_prototype(
+    element_scroll_width_get_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(element_scroll_width_get_func))?;
+  let element_scroll_width_get_key = alloc_key(&mut scope, ELEMENT_SCROLL_WIDTH_GET_KEY)?;
+  scope.define_property(
+    document_obj,
+    element_scroll_width_get_key,
+    data_desc(Value::Object(element_scroll_width_get_func)),
+  )?;
+
+  let element_scroll_height_get_call_id =
+    vm.register_native_call(element_scroll_height_get_native)?;
+  let element_scroll_height_get_name = scope.alloc_string("get scrollHeight")?;
+  scope.push_root(Value::String(element_scroll_height_get_name))?;
+  let element_scroll_height_get_func = scope.alloc_native_function(
+    element_scroll_height_get_call_id,
+    None,
+    element_scroll_height_get_name,
+    0,
+  )?;
+  scope.heap_mut().object_set_prototype(
+    element_scroll_height_get_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(element_scroll_height_get_func))?;
+  let element_scroll_height_get_key = alloc_key(&mut scope, ELEMENT_SCROLL_HEIGHT_GET_KEY)?;
+  scope.define_property(
+    document_obj,
+    element_scroll_height_get_key,
+    data_desc(Value::Object(element_scroll_height_get_func)),
+  )?;
+
+  let element_scroll_top_get_call_id = vm.register_native_call(element_scroll_top_get_native)?;
+  let element_scroll_top_get_name = scope.alloc_string("get scrollTop")?;
+  scope.push_root(Value::String(element_scroll_top_get_name))?;
+  let element_scroll_top_get_func =
+    scope.alloc_native_function(element_scroll_top_get_call_id, None, element_scroll_top_get_name, 0)?;
+  scope.heap_mut().object_set_prototype(
+    element_scroll_top_get_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(element_scroll_top_get_func))?;
+  let element_scroll_top_get_key = alloc_key(&mut scope, ELEMENT_SCROLL_TOP_GET_KEY)?;
+  scope.define_property(
+    document_obj,
+    element_scroll_top_get_key,
+    data_desc(Value::Object(element_scroll_top_get_func)),
+  )?;
+
+  let element_scroll_top_set_call_id = vm.register_native_call(element_scroll_top_set_native)?;
+  let element_scroll_top_set_name = scope.alloc_string("set scrollTop")?;
+  scope.push_root(Value::String(element_scroll_top_set_name))?;
+  let element_scroll_top_set_func =
+    scope.alloc_native_function(element_scroll_top_set_call_id, None, element_scroll_top_set_name, 1)?;
+  scope.heap_mut().object_set_prototype(
+    element_scroll_top_set_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(element_scroll_top_set_func))?;
+  let element_scroll_top_set_key = alloc_key(&mut scope, ELEMENT_SCROLL_TOP_SET_KEY)?;
+  scope.define_property(
+    document_obj,
+    element_scroll_top_set_key,
+    data_desc(Value::Object(element_scroll_top_set_func)),
+  )?;
+
+  let element_scroll_left_get_call_id = vm.register_native_call(element_scroll_left_get_native)?;
+  let element_scroll_left_get_name = scope.alloc_string("get scrollLeft")?;
+  scope.push_root(Value::String(element_scroll_left_get_name))?;
+  let element_scroll_left_get_func =
+    scope.alloc_native_function(element_scroll_left_get_call_id, None, element_scroll_left_get_name, 0)?;
+  scope.heap_mut().object_set_prototype(
+    element_scroll_left_get_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(element_scroll_left_get_func))?;
+  let element_scroll_left_get_key = alloc_key(&mut scope, ELEMENT_SCROLL_LEFT_GET_KEY)?;
+  scope.define_property(
+    document_obj,
+    element_scroll_left_get_key,
+    data_desc(Value::Object(element_scroll_left_get_func)),
+  )?;
+
+  let element_scroll_left_set_call_id = vm.register_native_call(element_scroll_left_set_native)?;
+  let element_scroll_left_set_name = scope.alloc_string("set scrollLeft")?;
+  scope.push_root(Value::String(element_scroll_left_set_name))?;
+  let element_scroll_left_set_func =
+    scope.alloc_native_function(element_scroll_left_set_call_id, None, element_scroll_left_set_name, 1)?;
+  scope.heap_mut().object_set_prototype(
+    element_scroll_left_set_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(element_scroll_left_set_func))?;
+  let element_scroll_left_set_key = alloc_key(&mut scope, ELEMENT_SCROLL_LEFT_SET_KEY)?;
+  scope.define_property(
+    document_obj,
+    element_scroll_left_set_key,
+    data_desc(Value::Object(element_scroll_left_set_func)),
+  )?;
+
   // Store shared Element.getAttribute/setAttribute functions on `document` so wrappers can reuse them.
   let get_attribute_call_id = vm.register_native_call(element_get_attribute_native)?;
   let get_attribute_name = scope.alloc_string("getAttribute")?;
@@ -41205,9 +42221,7 @@ mod tests {
       fn vm_host_and_window_realm(
         &mut self,
       ) -> crate::error::Result<(&mut dyn VmHost, &mut WindowRealm)> {
-        Err(crate::error::Error::Other(
-          "DummyHost is only used as a type parameter for VmJsEventLoopHooks".to_string(),
-        ))
+        unreachable!("DummyHost is only used as a type parameter for VmJsEventLoopHooks");
       }
     }
 
@@ -42485,9 +43499,7 @@ mod tests {
       fn vm_host_and_window_realm(
         &mut self,
       ) -> crate::error::Result<(&mut dyn VmHost, &mut WindowRealm)> {
-        Err(crate::error::Error::Other(
-          "DummyHost is only used as a type parameter for VmJsEventLoopHooks".to_string(),
-        ))
+        unreachable!("DummyHost is only used as a type parameter for VmJsEventLoopHooks");
       }
     }
 
