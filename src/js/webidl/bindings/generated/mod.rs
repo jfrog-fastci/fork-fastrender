@@ -329,7 +329,7 @@ pub mod window {
     host: &mut dyn VmHost,
     hooks: &mut dyn VmHostHooks,
     callee: GcObject,
-    _args: &[Value],
+    args: &[Value],
     new_target: Value,
   ) -> Result<Value, VmError> {
     let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
@@ -340,19 +340,47 @@ pub mod window {
       rt.derive_prototype_from_new_target(host, hooks, default_proto, new_target)?;
     let obj = rt.alloc_object_with_prototype(Some(wrapper_proto))?;
 
-    {
-      let converted_args: Vec<Value> = Vec::new();
-      let bindings_host = host_from_hooks(hooks)?;
-      let _ = bindings_host.call_operation(
-        &mut *rt.vm,
-        &mut rt.scope,
-        Some(Value::Object(obj)),
-        "EventTarget",
-        "constructor",
-        0,
-        &converted_args,
-      )?;
-      Ok(Value::Object(obj))
+    let args = if args.len() > 1 { &args[..1] } else { args };
+    if args.len() == 0 {
+      {
+        let converted_args: Vec<Value> = Vec::new();
+        let bindings_host = host_from_hooks(hooks)?;
+        let _ = bindings_host.call_operation(
+          &mut *rt.vm,
+          &mut rt.scope,
+          Some(Value::Object(obj)),
+          "EventTarget",
+          "constructor",
+          0,
+          &converted_args,
+        )?;
+        Ok(Value::Object(obj))
+      }
+    } else if args.len() == 1 {
+      {
+        let mut converted_args: Vec<Value> = Vec::new();
+        let v0 = if args.len() > 0 {
+          args[0]
+        } else {
+          Value::Undefined
+        };
+        let converted = v0;
+        let converted = rt.scope.push_root(converted)?;
+        converted_args.push(converted);
+        let bindings_host = host_from_hooks(hooks)?;
+        let _ = bindings_host.call_operation(
+          &mut *rt.vm,
+          &mut rt.scope,
+          Some(Value::Object(obj)),
+          "EventTarget",
+          "constructor",
+          1,
+          &converted_args,
+        )?;
+        Ok(Value::Object(obj))
+      }
+    } else {
+      Err(rt.throw_type_error("no matching overload for EventTarget constructor"))
     }
   }
 
@@ -2667,7 +2695,7 @@ pub mod worker {
     host: &mut dyn VmHost,
     hooks: &mut dyn VmHostHooks,
     callee: GcObject,
-    _args: &[Value],
+    args: &[Value],
     new_target: Value,
   ) -> Result<Value, VmError> {
     let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
@@ -2678,19 +2706,47 @@ pub mod worker {
       rt.derive_prototype_from_new_target(host, hooks, default_proto, new_target)?;
     let obj = rt.alloc_object_with_prototype(Some(wrapper_proto))?;
 
-    {
-      let converted_args: Vec<Value> = Vec::new();
-      let bindings_host = host_from_hooks(hooks)?;
-      let _ = bindings_host.call_operation(
-        &mut *rt.vm,
-        &mut rt.scope,
-        Some(Value::Object(obj)),
-        "EventTarget",
-        "constructor",
-        0,
-        &converted_args,
-      )?;
-      Ok(Value::Object(obj))
+    let args = if args.len() > 1 { &args[..1] } else { args };
+    if args.len() == 0 {
+      {
+        let converted_args: Vec<Value> = Vec::new();
+        let bindings_host = host_from_hooks(hooks)?;
+        let _ = bindings_host.call_operation(
+          &mut *rt.vm,
+          &mut rt.scope,
+          Some(Value::Object(obj)),
+          "EventTarget",
+          "constructor",
+          0,
+          &converted_args,
+        )?;
+        Ok(Value::Object(obj))
+      }
+    } else if args.len() == 1 {
+      {
+        let mut converted_args: Vec<Value> = Vec::new();
+        let v0 = if args.len() > 0 {
+          args[0]
+        } else {
+          Value::Undefined
+        };
+        let converted = v0;
+        let converted = rt.scope.push_root(converted)?;
+        converted_args.push(converted);
+        let bindings_host = host_from_hooks(hooks)?;
+        let _ = bindings_host.call_operation(
+          &mut *rt.vm,
+          &mut rt.scope,
+          Some(Value::Object(obj)),
+          "EventTarget",
+          "constructor",
+          1,
+          &converted_args,
+        )?;
+        Ok(Value::Object(obj))
+      }
+    } else {
+      Err(rt.throw_type_error("no matching overload for EventTarget constructor"))
     }
   }
 

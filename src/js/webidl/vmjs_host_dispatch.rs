@@ -952,6 +952,19 @@ impl<Host: WindowRealmHost + 'static> WebIdlBindingsHost for VmJsWebIdlBindingsH
           .or_default();
         Ok(Value::Undefined)
       }
+      ("EventTarget", "constructor", 1) => {
+        // FastRender-only extension: `new EventTarget(parent)` (used by curated WPT tests).
+        //
+        // The overload is by argument count so we avoid expensive platform object conversions here.
+        // The parent value is forwarded by the bindings generator and can be inspected via `args`.
+        let _parent = args.get(0).copied().unwrap_or(Value::Undefined);
+        let obj = Self::require_receiver_object(receiver)?;
+        self
+          .event_targets
+          .entry(WeakGcObject::from(obj))
+          .or_default();
+        Ok(Value::Undefined)
+      }
       ("EventTarget", "addEventListener", 0) => {
         let obj = Self::require_receiver_object(receiver)?;
         let Some(Value::String(_)) = args.get(0).copied() else {

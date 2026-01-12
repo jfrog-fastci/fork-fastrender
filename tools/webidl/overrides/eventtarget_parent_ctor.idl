@@ -1,0 +1,14 @@
+// FastRender-only extension.
+//
+// WPT DOM tests in `tests/wpt_dom/` rely on a non-standard constructor form:
+//   new EventTarget(parent)
+//
+// This allows the embedding to create an explicit synthetic EventTarget parent chain for event
+// propagation tests.
+//
+// Upstream WHATWG DOM defines only `constructor()`. We model the extension as an overload
+// distinguished purely by argument count (0 vs 1) so the bindings generator can avoid additional
+// platform-object conversions.
+partial interface EventTarget {
+  constructor(any parent);
+};

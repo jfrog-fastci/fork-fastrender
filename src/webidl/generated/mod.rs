@@ -3653,6 +3653,12 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
         ],
         raw: "boolean dispatchEvent(Event event)",
       },
+      WebIdlInterfaceMember {
+        name: Some("constructor"),
+        ext_attrs: &[
+        ],
+        raw: "constructor(any parent)",
+      },
     ],
   },
   WebIdlInterface {
