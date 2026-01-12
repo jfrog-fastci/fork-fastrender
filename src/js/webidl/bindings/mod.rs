@@ -27,18 +27,11 @@ pub use document::install_document_query_selector_bindings;
 pub use dom_exception::DomExceptionClass;
 pub use dom_exception_vmjs::{dom_exception_from_rust, throw_dom_exception, DomExceptionClassVmJs};
 pub use generated::{
-  install_character_data_bindings_vm_js,
-  install_document_bindings_vm_js,
-  install_document_fragment_bindings_vm_js,
-  install_element_bindings_vm_js,
-  install_event_target_bindings_vm_js,
-  install_node_bindings_vm_js,
-  install_text_bindings_vm_js,
-  install_url_bindings_vm_js,
-  install_url_search_params_bindings_vm_js,
-  install_window_bindings_vm_js,
-  install_window_ops_bindings_vm_js,
-  install_worker_bindings_vm_js,
+  install_character_data_bindings_vm_js, install_document_bindings_vm_js,
+  install_document_fragment_bindings_vm_js, install_element_bindings_vm_js,
+  install_event_target_bindings_vm_js, install_node_bindings_vm_js, install_text_bindings_vm_js,
+  install_url_bindings_vm_js, install_url_search_params_bindings_vm_js,
+  install_window_bindings_vm_js, install_window_ops_bindings_vm_js, install_worker_bindings_vm_js,
 };
 pub use generated_legacy::{install_window_bindings, install_worker_bindings};
 pub use host::{binding_value_to_js, BindingValue, WebHostBindings};
@@ -53,11 +46,11 @@ mod webidl_bindings_codegen_toy_generated_vmjs {
 }
 
 #[cfg(test)]
+mod legacy_vmjs_generated_tests;
+#[cfg(test)]
 mod regression_tests;
 #[cfg(test)]
 mod webidl_union_record_tests;
-#[cfg(test)]
-mod legacy_vmjs_generated_tests;
 #[cfg(test)]
 mod window_host_installer_tests;
 
@@ -382,7 +375,9 @@ mod tests {
       return Err(VmError::TypeError("Element.prototype should be an object"));
     };
     let Value::Object(document_fragment_proto_obj) = document_fragment_proto else {
-      return Err(VmError::TypeError("DocumentFragment.prototype should be an object"));
+      return Err(VmError::TypeError(
+        "DocumentFragment.prototype should be an object",
+      ));
     };
 
     assert_eq!(
@@ -451,6 +446,110 @@ mod tests {
         ))
       }
     }
+
+    drop(scope);
+    realm.teardown(&mut heap);
+    Ok(())
+  }
+
+  #[test]
+  fn vmjs_bindings_constructor_uses_new_target_prototype() -> Result<(), VmError> {
+    fn dummy_call(
+      _vm: &mut Vm,
+      _scope: &mut Scope<'_>,
+      _host: &mut dyn VmHost,
+      _hooks: &mut dyn VmHostHooks,
+      _callee: GcObject,
+      _this: Value,
+      _args: &[Value],
+    ) -> Result<Value, VmError> {
+      Ok(Value::Undefined)
+    }
+
+    fn dummy_construct(
+      _vm: &mut Vm,
+      _scope: &mut Scope<'_>,
+      _host: &mut dyn VmHost,
+      _hooks: &mut dyn VmHostHooks,
+      _callee: GcObject,
+      _args: &[Value],
+      _new_target: Value,
+    ) -> Result<Value, VmError> {
+      Ok(Value::Undefined)
+    }
+
+    let mut heap = Heap::new(HeapLimits::new(64 * 1024 * 1024, 64 * 1024 * 1024));
+    let mut vm = Vm::new(VmOptions::default());
+    let mut realm = Realm::new(&mut vm, &mut heap)?;
+
+    install_window_bindings_vm_js(&mut vm, &mut heap, &realm)?;
+
+    let global = realm.global_object();
+    let intr = *realm.intrinsics();
+
+    let mut host_impl = ConstructorDispatchHost::default();
+    let mut hooks = HostHooksWithBindingsHost::new(&mut host_impl);
+    let mut dummy_host = ();
+    let mut scope = heap.scope();
+
+    scope.push_root(Value::Object(global))?;
+    let ctor_key = alloc_key(&mut scope, "URLSearchParams")?;
+    let ctor = scope
+      .heap()
+      .object_get_own_data_property_value(global, &ctor_key)?
+      .expect("globalThis.URLSearchParams should be defined");
+    scope.push_root(ctor)?;
+
+    // Use a custom prototype to ensure we observe `new_target` handling.
+    let custom_proto = scope.alloc_object_with_prototype(Some(intr.object_prototype()))?;
+    scope.push_root(Value::Object(custom_proto))?;
+
+    let call_id = vm.register_native_call(dummy_call)?;
+    let construct_id = vm.register_native_construct(dummy_construct)?;
+
+    let new_target_name = scope.alloc_string("SubURLSearchParams")?;
+    scope.push_root(Value::String(new_target_name))?;
+    let new_target_obj =
+      scope.alloc_native_function(call_id, Some(construct_id), new_target_name, 0)?;
+    scope.push_root(Value::Object(new_target_obj))?;
+    scope
+      .heap_mut()
+      .object_set_prototype(new_target_obj, Some(intr.function_prototype()))?;
+
+    // Set `new_target.prototype` so `GetPrototypeFromConstructor` resolves to our custom object.
+    let proto_key = alloc_key(&mut scope, "prototype")?;
+    scope.define_property(
+      new_target_obj,
+      proto_key,
+      vm_js::PropertyDescriptor {
+        enumerable: false,
+        configurable: false,
+        kind: PropertyKind::Data {
+          value: Value::Object(custom_proto),
+          writable: false,
+        },
+      },
+    )?;
+
+    let params_val = vm.construct_with_host_and_hooks(
+      &mut dummy_host,
+      &mut scope,
+      &mut hooks,
+      ctor,
+      &[],
+      Value::Object(new_target_obj),
+    )?;
+    scope.push_root(params_val)?;
+    let Value::Object(params_obj) = params_val else {
+      return Err(VmError::TypeError(
+        "URLSearchParams constructor should return an object",
+      ));
+    };
+    assert_eq!(
+      scope.object_get_prototype(params_obj)?,
+      Some(custom_proto),
+      "expected constructed wrapper to use new_target.prototype",
+    );
 
     drop(scope);
     realm.teardown(&mut heap);
