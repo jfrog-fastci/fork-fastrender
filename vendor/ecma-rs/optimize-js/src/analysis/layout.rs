@@ -260,16 +260,18 @@ pub fn validate_layouts_with_file(
             let declared = inst.meta.native_layout;
             if let Some(layout) = declared {
               changed |= set_layout(&mut map, file, mode, tgt, layout, inst);
+            } else if let Some(rhs) = inst.args.get(0) {
+              // VarAssign can be both a copy (`%t = %x`) and an actual definition
+              // (`%t = 123`, `%t = Fn0`, `%t = undefined`). When lowering did not
+              // attach `InstMeta.native_layout`, we can still infer the layout
+              // from the RHS for most cases.
+              if let Some(rhs_layout) = arg_layout(rhs, &map, unknown_layout) {
+                changed |= set_layout(&mut map, file, mode, tgt, rhs_layout, inst);
+              } else if mode == LayoutValidationMode::BestEffort {
+                changed |= set_layout(&mut map, file, mode, tgt, unknown_layout, inst);
+              }
             } else if mode == LayoutValidationMode::BestEffort {
               changed |= set_layout(&mut map, file, mode, tgt, unknown_layout, inst);
-            } else {
-              map.diagnostics.push(diagnostic_for_inst(
-                file,
-                mode,
-                "OPT0100",
-                format!("missing InstMeta.native_layout for VarAssign result %{tgt}"),
-                inst,
-              ));
             }
 
             // Validate copy assignments (`%tgt = %src`) preserve layouts. We only

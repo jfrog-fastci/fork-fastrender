@@ -616,8 +616,8 @@ fn validate_cfg(program: &Program, cfg: &Cfg, scopes: &SymbolScopes, opts: Stric
 
       #[cfg(feature = "typed")]
       {
-        if opts.require_type_ids && inst.tgts.get(0).is_some() {
-          if inst.meta.hir_expr.is_some() && inst.meta.type_id.is_none() {
+        if opts.require_type_ids && inst.tgts.get(0).is_some() && inst.meta.hir_expr.is_some() {
+          if inst.meta.type_id.is_none() {
             diagnostics.push(diag(
               program,
               inst,
@@ -676,6 +676,38 @@ fn validate_cfg(program: &Program, cfg: &Cfg, scopes: &SymbolScopes, opts: Stric
             }
             _ => {}
           }
+        }
+      }
+    }
+  }
+
+  // Typed native backends require a single, unambiguous `LayoutId` for each SSA
+  // variable. Run the dedicated verifier when we have any layout metadata; this
+  // is more robust than the lightweight per-instruction checks above because it
+  // validates layout consistency across SSA temporaries and control flow.
+  #[cfg(feature = "typed")]
+  {
+    if opts.require_type_ids {
+      let mut has_any_layout = false;
+      for label in cfg.graph.labels_sorted() {
+        for inst in cfg.bblocks.get(label).iter() {
+          if inst.meta.native_layout.is_some() {
+            has_any_layout = true;
+            break;
+          }
+        }
+        if has_any_layout {
+          break;
+        }
+      }
+
+      if has_any_layout {
+        if let Err(mut diags) = crate::analysis::validate_layouts_with_file(
+          cfg,
+          program.source_file,
+          crate::analysis::LayoutValidationMode::Strict,
+        ) {
+          diagnostics.append(&mut diags);
         }
       }
     }
