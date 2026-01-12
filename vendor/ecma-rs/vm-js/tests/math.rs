@@ -89,6 +89,76 @@ fn max_min_and_sign_handle_negative_zero() -> Result<(), VmError> {
 }
 
 #[test]
+fn unary_math_functions_preserve_negative_zero() -> Result<(), VmError> {
+  // Many `%Math%` unary methods are specified to preserve the sign of zero.
+  //
+  // Examples (test262):
+  // - Math.asin(-0) === -0
+  // - Math.expm1(-0) === -0
+  // - Math.log1p(-0) === -0
+  let mut rt = TestRt::new(VmOptions::default())?;
+  let intr = *rt.realm.intrinsics();
+
+  let mut scope = rt.heap.scope();
+  let math = intr.math();
+
+  let names = [
+    "asin", "atan", "asinh", "atanh", "cbrt", "expm1", "log1p", "sin", "sinh", "tan", "tanh",
+  ];
+
+  for name in names {
+    let func = get_data_property(&mut scope, math, name)?.unwrap();
+    let out = rt.vm.call_without_host(
+      &mut scope,
+      func,
+      Value::Object(math),
+      &[Value::Number(-0.0)],
+    )?;
+    let Value::Number(n) = out else {
+      return Err(VmError::Unimplemented("Math method did not return number"));
+    };
+    assert_is_neg_zero(n);
+  }
+
+  Ok(())
+}
+
+#[test]
+fn atan2_preserves_signed_zero() -> Result<(), VmError> {
+  // test262: built-ins/Math/atan2/S15.8.2.5_A5.js / A9.js
+  let mut rt = TestRt::new(VmOptions::default())?;
+  let intr = *rt.realm.intrinsics();
+
+  let mut scope = rt.heap.scope();
+  let math = intr.math();
+  let atan2 = get_data_property(&mut scope, math, "atan2")?.unwrap();
+
+  let out = rt.vm.call_without_host(
+    &mut scope,
+    atan2,
+    Value::Object(math),
+    &[Value::Number(0.0), Value::Number(0.0)],
+  )?;
+  let Value::Number(n) = out else {
+    return Err(VmError::Unimplemented("Math.atan2 did not return number"));
+  };
+  assert_is_pos_zero(n);
+
+  let out = rt.vm.call_without_host(
+    &mut scope,
+    atan2,
+    Value::Object(math),
+    &[Value::Number(-0.0), Value::Number(0.0)],
+  )?;
+  let Value::Number(n) = out else {
+    return Err(VmError::Unimplemented("Math.atan2 did not return number"));
+  };
+  assert_is_neg_zero(n);
+
+  Ok(())
+}
+
+#[test]
 fn hypot_infinity_overrides_nan() -> Result<(), VmError> {
   let mut rt = TestRt::new(VmOptions::default())?;
   let intr = *rt.realm.intrinsics();
