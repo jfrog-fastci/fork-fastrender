@@ -8,6 +8,7 @@ use fastrender::ui::BookmarkStore;
 
 #[test]
 fn context_menu_bookmark_link_toggles_bookmark_store() {
+  let _lock = super::stage_listener_test_lock();
   let mut bookmarks = BookmarkStore::default();
   let mut history_panel_open = false;
   let mut bookmarks_panel_open = false;

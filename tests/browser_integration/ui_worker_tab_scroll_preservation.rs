@@ -8,6 +8,7 @@ use fastrender::ui::messages::{NavigationReason, RepaintReason, TabId, UiToWorke
 
 #[test]
 fn tab_switching_preserves_per_tab_scroll_position() {
+  let _lock = super::stage_listener_test_lock();
   let h = WorkerHarness::spawn();
 
   let viewport = (240, 180);
@@ -112,4 +113,3 @@ fn tab_switching_preserves_per_tab_scroll_position() {
     "expected tab A scroll_y to be preserved across tab switching (before={scrolled_y}, after={restored_y})"
   );
 }
-
