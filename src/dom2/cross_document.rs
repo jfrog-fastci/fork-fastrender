@@ -152,6 +152,7 @@ fn clone_node_shallow_from_other_document(
         mode,
         delegates_focus,
         slot_assignment,
+        ..
       } => NodeKind::ShadowRoot {
         mode: *mode,
         delegates_focus: *delegates_focus,

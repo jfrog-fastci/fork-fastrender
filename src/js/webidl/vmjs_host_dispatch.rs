@@ -4296,6 +4296,9 @@ mod dom_dispatch_tests {
   use std::any::Any;
   use vm_js::{Job, RealmId, VmHostHooks};
 
+  // Must match `window_realm::WRAPPER_DOCUMENT_KEY`.
+  const WRAPPER_DOCUMENT_KEY: &str = "__fastrender_wrapper_document";
+
   struct TestHooks {
     payload: VmJsHostHooksPayload,
   }
@@ -4371,6 +4374,49 @@ mod dom_dispatch_tests {
         },
       },
     )?;
+    Ok(())
+  }
+
+  #[test]
+  fn delegate_helpers_do_not_delegate_to_browser_document_dom2() -> Result<(), VmError> {
+    let mut dom_host = BrowserDocumentDom2::from_html(
+      "<!doctype html><html></html>",
+      crate::api::RenderOptions::default(),
+    )
+    .expect("BrowserDocumentDom2::from_html");
+
+    struct Hooks {
+      payload: VmJsHostHooksPayload,
+    }
+
+    impl VmHostHooks for Hooks {
+      fn host_enqueue_promise_job(&mut self, _job: Job, _realm: Option<RealmId>) {}
+
+      fn as_any_mut(&mut self) -> Option<&mut dyn Any> {
+        Some(&mut self.payload)
+      }
+    }
+
+    let mut payload = VmJsHostHooksPayload::default();
+    payload.set_vm_host(&mut dom_host);
+    let mut hooks = Hooks { payload };
+
+    let mut vm = Vm::new(vm_js::VmOptions::default());
+    let mut heap = vm_js::Heap::new(vm_js::HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut scope = heap.scope();
+
+    let mut dispatch = VmJsWebIdlBindingsHostDispatch::<WindowHostState>::new_without_global();
+
+    let delegated = vm.with_host_hooks_override(&mut hooks, |vm| {
+      dispatch.try_delegate_dom_call_operation(vm, &mut scope, None, "Node", "parentNode", 0, &[])
+    })?;
+    assert!(delegated.is_none());
+
+    let delegated = vm.with_host_hooks_override(&mut hooks, |vm| {
+      dispatch.try_delegate_dom_iterable_snapshot(vm, &mut scope, None, "Node", IterableKind::Keys)
+    })?;
+    assert!(delegated.is_none());
+
     Ok(())
   }
 
