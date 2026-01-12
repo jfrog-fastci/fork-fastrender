@@ -198,6 +198,74 @@ enum StartupSessionSource {
   HeadlessOverride,
 }
 
+#[cfg(any(test, feature = "browser_ui"))]
+const APP_ICON_PNG: &[u8] = include_bytes!("../../assets/app_icon/fastrender.png");
+
+#[cfg(any(test, feature = "browser_ui"))]
+#[derive(Debug, Clone)]
+struct DecodedRgbaIcon {
+  width: u32,
+  height: u32,
+  rgba: Vec<u8>,
+}
+
+#[cfg(any(test, feature = "browser_ui"))]
+fn decode_rgba_icon(png_bytes: &[u8]) -> Result<DecodedRgbaIcon, String> {
+  let image = image::load_from_memory(png_bytes).map_err(|err| format!("image decode error: {err}"))?;
+  let rgba = image.to_rgba8();
+  let (width, height) = rgba.dimensions();
+  let rgba = rgba.into_raw();
+  let expected_len = (width as usize)
+    .checked_mul(height as usize)
+    .and_then(|v| v.checked_mul(4))
+    .ok_or_else(|| "icon dimensions overflowed".to_string())?;
+  if rgba.len() != expected_len {
+    return Err(format!(
+      "unexpected RGBA length: got {}, expected {} for {}x{}",
+      rgba.len(),
+      expected_len,
+      width,
+      height
+    ));
+  }
+  Ok(DecodedRgbaIcon {
+    width,
+    height,
+    rgba,
+  })
+}
+
+#[cfg(feature = "browser_ui")]
+fn load_window_icon() -> Option<winit::window::Icon> {
+  let decoded = match decode_rgba_icon(APP_ICON_PNG) {
+    Ok(icon) => icon,
+    Err(err) => {
+      eprintln!("failed to decode app icon: {err}");
+      return None;
+    }
+  };
+
+  match winit::window::Icon::from_rgba(decoded.rgba, decoded.width, decoded.height) {
+    Ok(icon) => Some(icon),
+    Err(err) => {
+      eprintln!("failed to create winit window icon: {err:?}");
+      None
+    }
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn app_icon_decodes_into_rgba() {
+    let icon = decode_rgba_icon(APP_ICON_PNG).expect("app icon should decode");
+    assert_eq!((icon.width, icon.height), (256, 256));
+    assert_eq!(icon.rgba.len(), (256 * 256 * 4) as usize);
+  }
+}
+
 #[cfg(feature = "browser_ui")]
 fn determine_startup_session(
   cli_url: Option<String>,
@@ -315,6 +383,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
   let (startup_session, _source) = determine_startup_session(cli_url, restore, &session_path);
 
+  use winit::dpi::LogicalSize;
   use winit::event::Event;
   use winit::event::StartCause;
   use winit::event::WindowEvent;
@@ -324,8 +393,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
   let event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
   let event_loop_proxy = event_loop.create_proxy();
+  let window_icon = load_window_icon();
   let window = WindowBuilder::new()
     .with_title("FastRender")
+    .with_inner_size(LogicalSize::new(1200.0, 800.0))
+    .with_min_inner_size(LogicalSize::new(480.0, 320.0))
+    .with_window_icon(window_icon)
     .build(&event_loop)?;
 
   let (ui_to_worker_tx, worker_to_ui_rx, worker_join) =
@@ -467,6 +540,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             app.window_minimized = new_inner_size.width == 0 || new_inner_size.height == 0;
             app.set_pixels_per_point(scale_factor as f32);
             app.resize(*new_inner_size);
+            app.window.request_redraw();
+          }
+          WindowEvent::ThemeChanged(theme) => {
+            app.apply_system_theme(theme);
             app.window.request_redraw();
           }
           _ => {}
@@ -988,6 +1065,13 @@ impl App {
 
     let egui_ctx = egui::Context::default();
     egui_ctx.set_pixels_per_point(pixels_per_point);
+    if let Some(theme) = window.theme() {
+      let visuals = match theme {
+        winit::window::Theme::Dark => egui::Visuals::dark(),
+        winit::window::Theme::Light => egui::Visuals::light(),
+      };
+      egui_ctx.set_visuals(visuals);
+    }
     let egui_state = egui_winit::State::new(event_loop);
 
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
@@ -1362,6 +1446,14 @@ error: {err}",
     // Invalidate the cached viewport so the worker receives the new DPR: changing the DPI scale
     // factor affects the effective device pixel ratio used for rendering.
     self.viewport_cache_tab = None;
+  }
+
+  fn apply_system_theme(&mut self, theme: winit::window::Theme) {
+    let visuals = match theme {
+      winit::window::Theme::Dark => egui::Visuals::dark(),
+      winit::window::Theme::Light => egui::Visuals::light(),
+    };
+    self.egui_ctx.set_visuals(visuals);
   }
 
   fn resize(&mut self, new_size: winit::dpi::PhysicalSize<u32>) {

@@ -109,6 +109,21 @@ CI note: the main GitHub Actions workflow (`ci.yml`) compiles the `browser` bina
 
 Note: the windowed `browser` app currently starts by navigating to `about:newtab`.
 
+## Platform polish (window icon, sizing, system theme)
+
+The `browser` window attempts to behave like a “real” native app instead of a prototype:
+
+- **Window icon**: the window icon is loaded from [`assets/app_icon/fastrender.png`](../assets/app_icon/fastrender.png)
+  and passed to `winit` via `WindowBuilder::with_window_icon`.
+  - Expected behaviour:
+    - **Windows/Linux**: icon should appear in the title bar and task switcher / taskbar.
+    - **macOS**: the window icon may be ignored by the platform (this is normal); the code path is
+      still exercised and should not crash.
+- **Default window size**: the window opens at **1200×800** logical pixels, with a minimum size of
+  **480×320**, so the chrome remains usable when resized.
+- **System theme changes**: when `winit` emits `WindowEvent::ThemeChanged`, the egui visuals are
+  updated to match (light/dark). Platform support for live theme change notifications varies.
+
 ## Keyboard / mouse shortcuts
 
 | Shortcut | Action |
