@@ -4480,6 +4480,10 @@ impl<'a> Checker<'a> {
               found_type_param = true;
               break;
             }
+            TypeKind::Infer { .. } => {
+              found_type_param = true;
+              break;
+            }
             TypeKind::Tuple(elems) => {
               for elem in elems {
                 queue.push_back(elem.ty);
@@ -4487,6 +4491,34 @@ impl<'a> Checker<'a> {
             }
             TypeKind::Array { ty, .. } => {
               queue.push_back(ty);
+            }
+            TypeKind::Ref { args, .. } => {
+              queue.extend(args);
+            }
+            TypeKind::Object(obj_id) => {
+              let shape = self.store.shape(self.store.object(obj_id).shape);
+              for prop in shape.properties.iter() {
+                queue.push_back(prop.data.ty);
+              }
+              for idx in shape.indexers.iter() {
+                queue.push_back(idx.key_type);
+                queue.push_back(idx.value_type);
+              }
+              for sig_id in shape
+                .call_signatures
+                .iter()
+                .copied()
+                .chain(shape.construct_signatures.iter().copied())
+              {
+                let sig = self.store.signature(sig_id);
+                for param in sig.params.iter() {
+                  queue.push_back(param.ty);
+                }
+                if let Some(this_param) = sig.this_param {
+                  queue.push_back(this_param);
+                }
+                queue.push_back(sig.ret);
+              }
             }
             TypeKind::Callable { overloads } => {
               for sig_id in overloads {
@@ -4500,6 +4532,48 @@ impl<'a> Checker<'a> {
             TypeKind::Union(members) | TypeKind::Intersection(members) => {
               for member in members {
                 queue.push_back(member);
+              }
+            }
+            TypeKind::Mapped(mapped) => {
+              queue.push_back(mapped.source);
+              queue.push_back(mapped.value);
+              if let Some(name_type) = mapped.name_type {
+                queue.push_back(name_type);
+              }
+              if let Some(as_type) = mapped.as_type {
+                queue.push_back(as_type);
+              }
+            }
+            TypeKind::TemplateLiteral(tpl) => {
+              for span in tpl.spans {
+                queue.push_back(span.ty);
+              }
+            }
+            TypeKind::Intrinsic { ty, .. } => {
+              queue.push_back(ty);
+            }
+            TypeKind::IndexedAccess { obj, index } => {
+              queue.push_back(obj);
+              queue.push_back(index);
+            }
+            TypeKind::KeyOf(inner) => {
+              queue.push_back(inner);
+            }
+            TypeKind::Conditional {
+              check,
+              extends,
+              true_ty,
+              false_ty,
+              ..
+            } => {
+              queue.push_back(check);
+              queue.push_back(extends);
+              queue.push_back(true_ty);
+              queue.push_back(false_ty);
+            }
+            TypeKind::Predicate { asserted, .. } => {
+              if let Some(asserted) = asserted {
+                queue.push_back(asserted);
               }
             }
             _ => {}
