@@ -27513,6 +27513,7 @@ fn gen_resume_from_frames(
             continue;
           }
 
+          returning = true;
           let mut out_frames: VecDeque<GenFrame> = VecDeque::new();
           gen_frames_push(
             &mut out_frames,
