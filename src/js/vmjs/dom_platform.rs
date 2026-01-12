@@ -1,4 +1,5 @@
 use crate::dom2::{NodeId, NodeKind};
+use crate::dom::HTML_NAMESPACE;
 use crate::web::events::EventTargetId;
 use std::collections::HashMap;
 use vm_js::{
@@ -48,6 +49,18 @@ pub enum DomInterface {
   Node,
   Text,
   Element,
+  HTMLElement,
+  HTMLInputElement,
+  HTMLSelectElement,
+  HTMLTextAreaElement,
+  HTMLOptionElement,
+  HTMLFormElement,
+  HTMLDivElement,
+  HTMLSpanElement,
+  HTMLParagraphElement,
+  HTMLAnchorElement,
+  HTMLImageElement,
+  HTMLLinkElement,
   Document,
   DocumentFragment,
 }
@@ -58,25 +71,85 @@ impl DomInterface {
       NodeKind::Document { .. } => Self::Document,
       NodeKind::DocumentFragment => Self::DocumentFragment,
       NodeKind::Text { .. } => Self::Text,
-      NodeKind::Element { .. } | NodeKind::Slot { .. } => Self::Element,
+      NodeKind::Element {
+        tag_name, namespace, ..
+      } => {
+        let is_html_ns = namespace.is_empty() || namespace == HTML_NAMESPACE;
+        if !is_html_ns {
+          return Self::Element;
+        }
+
+        if tag_name.eq_ignore_ascii_case("input") {
+          return Self::HTMLInputElement;
+        }
+        if tag_name.eq_ignore_ascii_case("select") {
+          return Self::HTMLSelectElement;
+        }
+        if tag_name.eq_ignore_ascii_case("textarea") {
+          return Self::HTMLTextAreaElement;
+        }
+        if tag_name.eq_ignore_ascii_case("option") {
+          return Self::HTMLOptionElement;
+        }
+        if tag_name.eq_ignore_ascii_case("form") {
+          return Self::HTMLFormElement;
+        }
+
+        if tag_name.eq_ignore_ascii_case("div") {
+          return Self::HTMLDivElement;
+        }
+        if tag_name.eq_ignore_ascii_case("span") {
+          return Self::HTMLSpanElement;
+        }
+        if tag_name.eq_ignore_ascii_case("p") {
+          return Self::HTMLParagraphElement;
+        }
+        if tag_name.eq_ignore_ascii_case("a") {
+          return Self::HTMLAnchorElement;
+        }
+        if tag_name.eq_ignore_ascii_case("img") {
+          return Self::HTMLImageElement;
+        }
+        if tag_name.eq_ignore_ascii_case("link") {
+          return Self::HTMLLinkElement;
+        }
+
+        Self::HTMLElement
+      }
+      NodeKind::Slot { .. } => Self::Element,
       _ => Self::Node,
     }
   }
 
-  pub fn implements(self, interface: DomInterface) -> bool {
-    match (self, interface) {
-      (a, b) if a == b => true,
-      // Inheritance:
-      // - Document/Element/DocumentFragment all inherit from Node
-      // - Text inherits from Node
-      // - Node inherits from EventTarget
-      (Self::Document | Self::Element | Self::DocumentFragment | Self::Text, Self::Node) => true,
-      (
-        Self::Document | Self::Element | Self::DocumentFragment | Self::Text | Self::Node,
-        Self::EventTarget,
-      ) => true,
-      _ => false,
+  fn parent(self) -> Option<Self> {
+    match self {
+      Self::EventTarget => None,
+      Self::Node => Some(Self::EventTarget),
+      Self::Text | Self::Element | Self::Document | Self::DocumentFragment => Some(Self::Node),
+      Self::HTMLElement => Some(Self::Element),
+      Self::HTMLInputElement
+      | Self::HTMLSelectElement
+      | Self::HTMLTextAreaElement
+      | Self::HTMLOptionElement
+      | Self::HTMLFormElement
+      | Self::HTMLDivElement
+      | Self::HTMLSpanElement
+      | Self::HTMLParagraphElement
+      | Self::HTMLAnchorElement
+      | Self::HTMLImageElement
+      | Self::HTMLLinkElement => Some(Self::HTMLElement),
     }
+  }
+
+  pub fn implements(self, interface: DomInterface) -> bool {
+    let mut current = Some(self);
+    while let Some(cur) = current {
+      if cur == interface {
+        return true;
+      }
+      current = cur.parent();
+    }
+    false
   }
 }
 
@@ -94,6 +167,18 @@ struct DomPrototypes {
   node: GcObject,
   text: GcObject,
   element: GcObject,
+  html_element: GcObject,
+  html_input_element: GcObject,
+  html_select_element: GcObject,
+  html_text_area_element: GcObject,
+  html_option_element: GcObject,
+  html_form_element: GcObject,
+  html_div_element: GcObject,
+  html_span_element: GcObject,
+  html_paragraph_element: GcObject,
+  html_anchor_element: GcObject,
+  html_image_element: GcObject,
+  html_link_element: GcObject,
   document: GcObject,
   document_fragment: GcObject,
 }
@@ -125,7 +210,7 @@ impl DomPlatform {
     // Root each object immediately after allocation. Under a tight heap limit, subsequent
     // allocations can trigger GC, and unrooted prototypes would be collected (turning their
     // handles into stale values).
-    let mut prototype_roots: Vec<RootId> = Vec::with_capacity(6);
+    let mut prototype_roots: Vec<RootId> = Vec::with_capacity(18);
 
     // Prototype objects.
     let proto_event_target = scope.alloc_object()?;
@@ -140,6 +225,30 @@ impl DomPlatform {
     prototype_roots.push(scope.heap_mut().add_root(Value::Object(proto_text))?);
     let proto_element = scope.alloc_object()?;
     prototype_roots.push(scope.heap_mut().add_root(Value::Object(proto_element))?);
+    let proto_html_element = scope.alloc_object()?;
+    prototype_roots.push(scope.heap_mut().add_root(Value::Object(proto_html_element))?);
+    let proto_html_input_element = scope.alloc_object()?;
+    prototype_roots.push(scope.heap_mut().add_root(Value::Object(proto_html_input_element))?);
+    let proto_html_select_element = scope.alloc_object()?;
+    prototype_roots.push(scope.heap_mut().add_root(Value::Object(proto_html_select_element))?);
+    let proto_html_text_area_element = scope.alloc_object()?;
+    prototype_roots.push(scope.heap_mut().add_root(Value::Object(proto_html_text_area_element))?);
+    let proto_html_option_element = scope.alloc_object()?;
+    prototype_roots.push(scope.heap_mut().add_root(Value::Object(proto_html_option_element))?);
+    let proto_html_form_element = scope.alloc_object()?;
+    prototype_roots.push(scope.heap_mut().add_root(Value::Object(proto_html_form_element))?);
+    let proto_html_div_element = scope.alloc_object()?;
+    prototype_roots.push(scope.heap_mut().add_root(Value::Object(proto_html_div_element))?);
+    let proto_html_span_element = scope.alloc_object()?;
+    prototype_roots.push(scope.heap_mut().add_root(Value::Object(proto_html_span_element))?);
+    let proto_html_paragraph_element = scope.alloc_object()?;
+    prototype_roots.push(scope.heap_mut().add_root(Value::Object(proto_html_paragraph_element))?);
+    let proto_html_anchor_element = scope.alloc_object()?;
+    prototype_roots.push(scope.heap_mut().add_root(Value::Object(proto_html_anchor_element))?);
+    let proto_html_image_element = scope.alloc_object()?;
+    prototype_roots.push(scope.heap_mut().add_root(Value::Object(proto_html_image_element))?);
+    let proto_html_link_element = scope.alloc_object()?;
+    prototype_roots.push(scope.heap_mut().add_root(Value::Object(proto_html_link_element))?);
     let proto_document = scope.alloc_object()?;
     prototype_roots.push(scope.heap_mut().add_root(Value::Object(proto_document))?);
     let proto_document_fragment = scope.alloc_object()?;
@@ -150,9 +259,12 @@ impl DomPlatform {
     );
 
     // WebIDL / WHATWG DOM inheritance chain:
-    //   Node -> EventTarget -> Object
+    //   EventTarget -> Object
+    //   Node -> EventTarget
     //   Text -> Node
     //   Element -> Node
+    //   HTMLElement -> Element
+    //   HTML*Element -> HTMLElement
     //   Document -> Node
     //   DocumentFragment -> Node
     scope.heap_mut().object_set_prototype(
@@ -170,6 +282,26 @@ impl DomPlatform {
       .object_set_prototype(proto_element, Some(proto_node))?;
     scope
       .heap_mut()
+      .object_set_prototype(proto_html_element, Some(proto_element))?;
+    for proto in [
+      proto_html_input_element,
+      proto_html_select_element,
+      proto_html_text_area_element,
+      proto_html_option_element,
+      proto_html_form_element,
+      proto_html_div_element,
+      proto_html_span_element,
+      proto_html_paragraph_element,
+      proto_html_anchor_element,
+      proto_html_image_element,
+      proto_html_link_element,
+    ] {
+      scope
+        .heap_mut()
+        .object_set_prototype(proto, Some(proto_html_element))?;
+    }
+    scope
+      .heap_mut()
       .object_set_prototype(proto_document, Some(proto_node))?;
     scope
       .heap_mut()
@@ -182,6 +314,18 @@ impl DomPlatform {
         node: proto_node,
         text: proto_text,
         element: proto_element,
+        html_element: proto_html_element,
+        html_input_element: proto_html_input_element,
+        html_select_element: proto_html_select_element,
+        html_text_area_element: proto_html_text_area_element,
+        html_option_element: proto_html_option_element,
+        html_form_element: proto_html_form_element,
+        html_div_element: proto_html_div_element,
+        html_span_element: proto_html_span_element,
+        html_paragraph_element: proto_html_paragraph_element,
+        html_anchor_element: proto_html_anchor_element,
+        html_image_element: proto_html_image_element,
+        html_link_element: proto_html_link_element,
         document: proto_document,
         document_fragment: proto_document_fragment,
       },
@@ -208,6 +352,18 @@ impl DomPlatform {
       DomInterface::Node => self.prototypes.node,
       DomInterface::Text => self.prototypes.text,
       DomInterface::Element => self.prototypes.element,
+      DomInterface::HTMLElement => self.prototypes.html_element,
+      DomInterface::HTMLInputElement => self.prototypes.html_input_element,
+      DomInterface::HTMLSelectElement => self.prototypes.html_select_element,
+      DomInterface::HTMLTextAreaElement => self.prototypes.html_text_area_element,
+      DomInterface::HTMLOptionElement => self.prototypes.html_option_element,
+      DomInterface::HTMLFormElement => self.prototypes.html_form_element,
+      DomInterface::HTMLDivElement => self.prototypes.html_div_element,
+      DomInterface::HTMLSpanElement => self.prototypes.html_span_element,
+      DomInterface::HTMLParagraphElement => self.prototypes.html_paragraph_element,
+      DomInterface::HTMLAnchorElement => self.prototypes.html_anchor_element,
+      DomInterface::HTMLImageElement => self.prototypes.html_image_element,
+      DomInterface::HTMLLinkElement => self.prototypes.html_link_element,
       DomInterface::Document => self.prototypes.document,
       DomInterface::DocumentFragment => self.prototypes.document_fragment,
     }
@@ -597,6 +753,19 @@ mod tests {
       key
     );
 
+    let input_key = DomNodeKey::new(1, NodeId::from_index(2));
+    let input_wrapper =
+      platform.get_or_create_wrapper(&mut scope, input_key, DomInterface::HTMLInputElement)?;
+    let _input_root = scope.heap_mut().add_root(Value::Object(input_wrapper))?;
+    assert_eq!(
+      platform.require_node_handle(scope.heap(), Value::Object(input_wrapper))?,
+      input_key
+    );
+    assert_eq!(
+      platform.require_element_handle(scope.heap(), Value::Object(input_wrapper))?,
+      input_key
+    );
+
     let err = platform.require_document_handle(scope.heap(), Value::Object(wrapper));
     assert!(matches!(err, Err(VmError::TypeError("Illegal invocation"))));
 
@@ -649,6 +818,28 @@ mod tests {
     assert_eq!(value, Value::Number(new_id.index() as f64));
 
     scope.heap_mut().remove_root(root);
+    Ok(())
+  }
+
+  #[test]
+  fn html_element_prototype_chain() -> Result<(), VmError> {
+    let mut runtime = make_runtime()?;
+    let (realm, heap) = split_runtime_realm(&mut runtime);
+    let mut scope = heap.scope();
+    let platform = DomPlatform::new(&mut scope, realm)?;
+
+    let element_proto = platform.prototype_for(DomInterface::Element);
+    let html_element_proto = platform.prototype_for(DomInterface::HTMLElement);
+    let html_input_proto = platform.prototype_for(DomInterface::HTMLInputElement);
+
+    assert_eq!(
+      scope.heap().object_prototype(html_element_proto)?,
+      Some(element_proto)
+    );
+    assert_eq!(
+      scope.heap().object_prototype(html_input_proto)?,
+      Some(html_element_proto)
+    );
     Ok(())
   }
 }
