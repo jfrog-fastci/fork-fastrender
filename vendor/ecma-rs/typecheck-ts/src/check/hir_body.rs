@@ -12194,7 +12194,11 @@ impl<'a> FlowBodyChecker<'a> {
       match prop {
         ObjectProperty::KeyValue { key, value, .. } => {
           let prop_key = match key {
-            ObjectKey::Ident(id) => PropKey::String(self.store.intern_name(self.hir_name(*id))),
+            ObjectKey::Ident(id) => PropKey::String(
+              self
+                .store
+                .intern_name_ref(self.names.resolve(*id).unwrap_or("")),
+            ),
             ObjectKey::String(s) => PropKey::String(self.store.intern_name_ref(s)),
             ObjectKey::Number(n) => PropKey::Number(n.parse::<i64>().unwrap_or(0)),
             ObjectKey::Computed(expr) => {
@@ -12224,7 +12228,11 @@ impl<'a> FlowBodyChecker<'a> {
         }
         ObjectProperty::Getter { key, .. } | ObjectProperty::Setter { key, .. } => {
           let prop_key = match key {
-            ObjectKey::Ident(id) => PropKey::String(self.store.intern_name(self.hir_name(*id))),
+            ObjectKey::Ident(id) => PropKey::String(
+              self
+                .store
+                .intern_name_ref(self.names.resolve(*id).unwrap_or("")),
+            ),
             ObjectKey::String(s) => PropKey::String(self.store.intern_name_ref(s)),
             ObjectKey::Number(n) => PropKey::Number(n.parse::<i64>().unwrap_or(0)),
             ObjectKey::Computed(expr) => {
