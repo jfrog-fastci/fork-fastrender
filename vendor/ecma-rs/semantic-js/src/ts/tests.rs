@@ -2852,6 +2852,83 @@ fn duplicate_export_has_two_labels() {
 }
 
 #[test]
+fn export_star_collision_between_value_and_type_exports_reports_bind1001_and_keeps_first() {
+  // Mirrors TypeScript's `exportNamespace9` TS2308 behavior:
+  // `export * from "./e"` followed by `export type * from "./a"` where both
+  // export the same name should:
+  // - report TS2308 (BIND1001 in our binder) on the *later* export-star, and
+  // - keep the first export-star's symbol (do not merge across namespaces).
+  let file_a = FileId(301);
+  let file_e = FileId(302);
+  let file_f = FileId(303);
+
+  let source_a = "export type A = number;\n";
+  let ast_a = parse(source_a).expect("parse a.ts");
+  let lowered_a = lower_file(file_a, HirFileKind::Ts, &ast_a);
+  let hir_a = lower_to_ts_hir(&ast_a, &lowered_a, source_a);
+
+  let source_e = "export const A = 1;\n";
+  let ast_e = parse(source_e).expect("parse e.ts");
+  let lowered_e = lower_file(file_e, HirFileKind::Ts, &ast_e);
+  let hir_e = lower_to_ts_hir(&ast_e, &lowered_e, source_e);
+
+  let source_f = "export * from \"./e\";\nexport type * from \"./a\";\n";
+  let ast_f = parse(source_f).expect("parse f.ts");
+  let lowered_f = lower_file(file_f, HirFileKind::Ts, &ast_f);
+  let hir_f = lower_to_ts_hir(&ast_f, &lowered_f, source_f);
+
+  let files: HashMap<FileId, Arc<HirFile>> = maplit::hashmap! {
+    file_a => Arc::new(hir_a),
+    file_e => Arc::new(hir_e),
+    file_f => Arc::new(hir_f),
+  };
+  let resolver = StaticResolver::new(maplit::hashmap! {
+    "./a".to_string() => file_a,
+    "./e".to_string() => file_e,
+  });
+
+  let (semantics, diags) = bind_ts_program(&[file_f], &resolver, |f| {
+    files.get(&f).unwrap().clone()
+  });
+
+  let bind_1001: Vec<_> = diags.iter().filter(|d| d.code == "BIND1001").collect();
+  assert_eq!(
+    bind_1001.len(),
+    1,
+    "expected one export-star ambiguity diagnostic, got {diags:?}"
+  );
+  let diag = bind_1001[0];
+  assert_eq!(diag.primary.file, file_f);
+
+  let needle = "export type * from \"./a\";";
+  let start = source_f.find(needle).expect("needle in f.ts") as u32;
+  let end = start + needle.len() as u32;
+  assert_eq!(diag.primary.range, TextRange::new(start, end));
+
+  let symbols = semantics.symbols();
+  let exports_f = semantics.exports_of(file_f);
+  let group = exports_f.get("A").expect("A exported from f.ts");
+  assert!(
+    group.symbol_for(Namespace::VALUE, symbols).is_some(),
+    "expected A to remain exported as a value"
+  );
+  assert!(
+    group.symbol_for(Namespace::TYPE, symbols).is_none(),
+    "expected A type export to be dropped due to export-star collision"
+  );
+
+  let exports_e = semantics.exports_of(file_e);
+  let a_e = exports_e
+    .get("A")
+    .and_then(|group| group.symbol_for(Namespace::VALUE, symbols))
+    .expect("A value export in e.ts");
+  let a_f = group
+    .symbol_for(Namespace::VALUE, symbols)
+    .expect("A value export in f.ts");
+  assert_eq!(a_e, a_f, "f.ts should keep the first export-star symbol");
+}
+
+#[test]
 fn duplicate_import_binding_reports_previous_span() {
   let file_main = FileId(62);
   let file_a = FileId(63);

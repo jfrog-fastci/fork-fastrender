@@ -3,6 +3,7 @@ use diagnostics::{sort_diagnostics, Diagnostic, Label, Span, TextRange};
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -2384,6 +2385,7 @@ impl<'a, HP: Fn(FileId) -> Arc<HirFile>> Binder<'a, HP> {
       .insert(file, ExportStatus::Computing(base.clone()));
 
     let mut map = base;
+    let mut star_exported_names: HashSet<String> = HashSet::new();
     if let Some(module) = self.modules.get(&file).cloned() {
       let mut export_spans = module.export_spans.clone();
       let mut export_alls: Vec<&ExportSpec> = module
@@ -2415,6 +2417,7 @@ impl<'a, HP: Fn(FileId) -> Arc<HirFile>> Binder<'a, HP> {
           *span,
           &mut map,
           &mut export_spans,
+          &mut star_exported_names,
         );
       }
 
@@ -2479,6 +2482,7 @@ impl<'a, HP: Fn(FileId) -> Arc<HirFile>> Binder<'a, HP> {
     );
 
     let mut map = base;
+    let mut star_exported_names: HashSet<String> = HashSet::new();
     if let Some(module) = self.ambient_modules.get(name).cloned() {
       let mut export_spans = module.export_spans.clone();
       let mut export_alls: Vec<&ExportSpec> = module
@@ -2512,6 +2516,7 @@ impl<'a, HP: Fn(FileId) -> Arc<HirFile>> Binder<'a, HP> {
           *span,
           &mut map,
           &mut export_spans,
+          &mut star_exported_names,
         );
       }
 
@@ -2727,7 +2732,11 @@ impl<'a, HP: Fn(FileId) -> Arc<HirFile>> Binder<'a, HP> {
           .unwrap_or_default(),
       };
 
-      for spec in export_specs.iter() {
+      // `export *` declarations are order-sensitive: earlier exports win and
+      // later exports may trigger TS2308 ambiguity diagnostics. Maintain the
+      // same "first wins" traversal order as the main export computation by
+      // pushing in reverse when using an explicit stack.
+      for spec in export_specs.iter().rev() {
         let ExportSpec::ExportAll {
           from, type_only, ..
         } = spec
@@ -2907,6 +2916,7 @@ impl<'a, HP: Fn(FileId) -> Arc<HirFile>> Binder<'a, HP> {
     origin_span: Span,
     map: &mut ExportMap,
     export_spans: &mut BTreeMap<String, ExportNamespaceSpans>,
+    star_exported_names: &mut HashSet<String>,
   ) {
     if let Some(target_exports) = self.star_exports_for_ref(from) {
       for (name, entry) in target_exports.iter() {
@@ -2919,15 +2929,32 @@ impl<'a, HP: Fn(FileId) -> Arc<HirFile>> Binder<'a, HP> {
           },
           &self.symbols,
         ) {
-          insert_export(
-            map,
-            export_spans,
-            name,
-            origin_span,
-            group,
-            &mut self.symbols,
-            &mut self.diagnostics,
-          );
+          if let Some(existing) = map.get(name) {
+            // TypeScript's TS2308 (`Module_0_has_already_exported_a_member_named_1...`)
+            // only reports ambiguities between `export *` declarations when the
+            // module does *not* explicitly export that name itself. We model
+            // this by tracking which names were introduced via export-star and
+            // only diagnosing collisions against those.
+            if star_exported_names.contains(name)
+              && symbol_group_symbol_ids(existing) != symbol_group_symbol_ids(&group)
+            {
+              self.diagnostics.push(Diagnostic::error(
+                "BIND1001",
+                format!("ambiguous export-star for '{}'", name),
+                origin_span,
+              ));
+            }
+            continue;
+          }
+
+          let namespaces = group.namespaces(&self.symbols);
+          map.insert(name.clone(), group);
+          star_exported_names.insert(name.clone());
+
+          let entry = export_spans.entry(name.clone()).or_default();
+          for bit in namespaces.iter_bits() {
+            entry.set_if_empty(bit, origin_span);
+          }
         }
       }
     }
@@ -3165,13 +3192,21 @@ fn export_spec_sort_key(spec: &ExportSpec) -> (FileId, u32, u32, u8, ModuleRef, 
   )
 }
 
-fn insert_export_silent(map: &mut ExportMap, name: &str, group: SymbolGroup, symbols: &mut SymbolTable) {
-  if let Some(existing) = map.remove(name) {
-    let merged = merge_groups(existing, group, symbols);
-    map.insert(name.to_string(), merged);
-  } else {
-    map.insert(name.to_string(), group);
+fn insert_export_silent(
+  map: &mut ExportMap,
+  name: &str,
+  group: SymbolGroup,
+  _symbols: &mut SymbolTable,
+) {
+  // When merging exports via `export *`, TypeScript keeps the first exported
+  // symbol and reports TS2308 for later `export *` declarations that contribute
+  // the same name from a different symbol. For cycle-breaking snapshots we
+  // don't emit diagnostics, but we must still keep the first symbol to avoid
+  // spuriously merging unrelated exports.
+  if map.contains_key(name) {
+    return;
   }
+  map.insert(name.to_string(), group);
 }
 
 fn star_filter_special(map: &ExportMap) -> ExportMap {
