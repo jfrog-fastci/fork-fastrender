@@ -38,6 +38,42 @@ fn find_background_position_logical_test_in_src(root: &Path) -> Option<PathBuf> 
   None
 }
 
+fn find_background_position_logical_test_in_tests(root: &Path) -> Option<PathBuf> {
+  let tests_dir = root.join("tests");
+  if !tests_dir.exists() {
+    return None;
+  }
+
+  fn find_in_dir(dir: &Path) -> Option<PathBuf> {
+    for entry in fs::read_dir(dir).expect("read_dir tests/") {
+      let entry = entry.expect("read_dir entry");
+      let path = entry.path();
+      if path.is_dir() {
+        if let Some(found) = find_in_dir(&path) {
+          return Some(found);
+        }
+        continue;
+      }
+      if !path.extension().is_some_and(|ext| ext == "rs") {
+        continue;
+      }
+      let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
+        continue;
+      };
+      if !file_name.contains("background_position_logical") {
+        continue;
+      }
+      let contents = fs::read_to_string(&path).expect("read candidate regression test source");
+      if contents.contains(NEEDLE) {
+        return Some(path);
+      }
+    }
+    None
+  }
+
+  find_in_dir(&tests_dir)
+}
+
 #[test]
 fn background_position_logical_regression_is_present() {
   let root = Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -53,21 +89,19 @@ fn background_position_logical_regression_is_present() {
     return;
   }
 
-  // Legacy location (pre-cleanup).
-  let legacy_path = root
-    .join("tests")
-    .join("style")
-    .join("background_position_logical_test.rs");
-  assert!(
-    legacy_path.exists(),
+  // Transitional location: an integration test module under `tests/`.
+  if let Some(path) = find_background_position_logical_test_in_tests(root) {
+    let contents = fs::read_to_string(&path).expect("read integration test source");
+    assert!(
+      contents.contains(NEEDLE),
+      "expected {:?} to contain the background_position_logical regression test ({NEEDLE})",
+      path
+    );
+    return;
+  }
+
+  panic!(
     "background_position_logical regression must be present either as a unit test under src/style/ \
-     (containing {NEEDLE}) or in the legacy integration test file at {:?}",
-    legacy_path
-  );
-  let contents = fs::read_to_string(&legacy_path).expect("read legacy background_position_logical test");
-  assert!(
-    contents.contains(NEEDLE),
-    "expected {:?} to contain the background_position_logical regression test ({NEEDLE})",
-    legacy_path
+     (containing {NEEDLE}) or as an integration test module under tests/"
   );
 }
