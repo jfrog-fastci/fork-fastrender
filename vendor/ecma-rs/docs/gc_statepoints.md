@@ -444,23 +444,29 @@ In LLVM IR, this means ensuring safepointing functions are compiled with frame p
 
 - `"frame-pointer"="all"` (preferred)
 
-### GC roots must be spilled to addressable stack slots (no register roots)
+### GC roots must be addressable (stack slots preferred)
 
 LLVM can legally keep some statepoint GC roots in registers and describe them as `Location::Register` in `.llvm_stackmaps`.
 
-`runtime-native`'s current stack-walking implementation for GC statepoints only supports **addressable spill slots** (`Location::Indirect`), so `native-js` codegen must ensure LLVM spills all `"gc-live"` values to the stack at safepoints.
+`runtime-native` supports `Location::Register` roots by capturing a full register file at safepoints and treating each register as a mutable lvalue inside that saved `RegContext`.
+
+However, `native-js` still prefers emitting **addressable spill slots** (`Location::Indirect`) for GC roots:
+
+- stack slots are easier to inspect/debug in `llvm-readobj --stackmap`,
+- and they reduce reliance on register preservation across deep call stacks / LLVM backend changes.
 
 Mitigation:
 
-- Ensure LLVM codegen is configured to disallow register GC roots at statepoints:
+- Encourage LLVM codegen to spill GC roots out of registers at statepoints:
   - `llc-18 --fixup-allow-gcptr-in-csr=false` (preferred)
   - `llc-18 --fixup-max-csr-statepoints=0` (fallback / defense-in-depth)
   - When embedding LLVM, set the equivalent global options via `LLVMParseCommandLineOptions`
     (`native-js/src/llvm/mod.rs`, `init_native_target`).
   - When codegen happens inside `clang-18 -flto`, pass the equivalent `-mllvm` flags
     (`native-js/src/link.rs`).
-  - See `runtime-native/tests/statepoint_register_roots_codegen.rs` (tooling matrix) and
-    `native-js/tests/stackmaps_no_register_roots.rs` (embedded LLVM) for regression coverage.
+  - Regression coverage:
+    - `runtime-native/tests/statepoint_register_roots_codegen.rs` (tooling matrix)
+    - `native-js/tests/stackmaps_no_register_roots.rs` (embedded LLVM)
 
 ### Safepoints must not be tail calls
 
@@ -607,14 +613,19 @@ locations =
 
 Current runtime contract (v1):
 
-- Root locations must be **addressable spill slots**:
-  - stackmap location kind must be `Location::Indirect`
-  - base register must be either the caller-frame stack pointer (SP) or frame pointer (FP):
-    - x86_64: DWARF reg 7 (`RSP`) or 6 (`RBP`)
-    - AArch64: DWARF reg 31 (`SP`) or 29 (`X29`)
-  - slot size must be pointer-sized (8 bytes on our supported 64-bit targets)
-- Root locations in registers (`Location::Register`) or non-addressable expressions (`Location::Direct`) are currently **rejected**.
-- Derived pointers (where the `(base, derived)` locations differ) are supported when both locations satisfy the spill-slot rules above:
+- Root locations must be **addressable**:
+  - **Spill slots**: stackmap location kind `Location::Indirect`
+    - base register must be either the caller-frame stack pointer (SP) or frame pointer (FP):
+      - x86_64: DWARF reg 7 (`RSP`) or 6 (`RBP`)
+      - AArch64: DWARF reg 31 (`SP`) or 29 (`X29`)
+    - slot size must be pointer-sized (8 bytes on our supported 64-bit targets)
+  - **Register roots**: stackmap location kind `Location::Register`
+    - slot size must be pointer-sized
+    - location `offset` must be `0`
+    - SP/FP/IP DWARF registers are rejected (they are not GC roots under our frame-pointer policy)
+    - the DWARF register number must be supported by the runtime's saved `RegContext`
+- Non-addressable expressions (`Location::Direct`) are currently **rejected**.
+- Derived pointers (where the `(base, derived)` locations differ) are supported when both locations satisfy the rules above:
   - The **base** slot is the GC root (traced/relocated).
   - The derived slot is updated after the base is relocated by preserving the interior offset:
     `derived_new = base_new + (derived_old - base_old)`.
@@ -624,7 +635,7 @@ Current runtime contract (v1):
 Operationally, within a frame:
 
 - For each `(base, derived)` pair:
-  - Evaluate the stack slots for both locations (`base_slot`, `derived_slot`).
+  - Evaluate the slot addresses for both locations (`base_slot`, `derived_slot`).
   - Treat `base_slot` as a GC root slot to visit (deduped within the frame).
   - If `base_slot != derived_slot`, read both slot values before relocating anything:
     - If `base_old == 0` or `derived_old == 0`, record a fixup that forces the derived slot to `0`.

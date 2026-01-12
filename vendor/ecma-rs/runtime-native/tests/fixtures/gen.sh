@@ -98,9 +98,9 @@ opt-18 -mtriple=x86_64-unknown-linux-gnu -passes=rewrite-statepoints-for-gc -S \
   "${IR_DIR}/statepoint_gcroot2.ll" \
   -o "${TMP}/statepoint_x86_64_rewritten.ll"
 
-# Note: runtime-native requires statepoint GC roots to be spilled to addressable stack slots
-# (never `Location::Register`), so force the backend spill convention when generating statepoint
-# fixtures.
+# Note: runtime-native supports register roots, but these fixtures are used by tests that assume
+# addressable spill slots and stable stack-slot offsets. Force the backend spill convention when
+# generating statepoint fixtures.
 llc-18 -O0 -filetype=obj \
   --fixup-allow-gcptr-in-csr=false \
   --fixup-max-csr-statepoints=0 \

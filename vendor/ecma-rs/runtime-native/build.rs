@@ -546,8 +546,10 @@ entry:
       "-O0",
       "-filetype=obj",
       "-frame-pointer=all",
-      // runtime-native requires statepoint GC roots to be spilled to addressable stack slots
-      // (no stackmap `Register` locations).
+      // Prefer statepoint GC roots in addressable stack slots for this build-script-generated
+      // fixture. `runtime-native` supports register roots, but the offset parser below expects at
+      // least one `Indirect [SP + off]` location to exist so it can validate callsite-SP semantics
+      // deterministically.
       "--fixup-allow-gcptr-in-csr=false",
       "--fixup-max-csr-statepoints=0",
       "-relocation-model=pic",
