@@ -533,7 +533,20 @@ impl<'a, HP: Fn(FileId) -> Arc<HirFile>> Binder<'a, HP> {
       self.pending_augmentations = remaining;
     } else {
       // No progress was made; any remaining augmentations target modules that are
-      // not present in this program. Drop them to prevent an infinite loop.
+      // not present in this program. Report them deterministically, then drop
+      // them to prevent an infinite loop.
+      let mut seen = BTreeSet::new();
+      for aug in &remaining {
+        let key = (aug.origin, aug.module.name_span);
+        if !seen.insert(key) {
+          continue;
+        }
+        self.diagnostics.push(Diagnostic::error(
+          "BIND1005",
+          format!("unresolved module augmentation target: {}", &aug.module.name),
+          Span::new(aug.origin, aug.module.name_span),
+        ));
+      }
       self.pending_augmentations.clear();
     }
 

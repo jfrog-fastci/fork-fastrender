@@ -3279,6 +3279,41 @@ fn module_augmentation_exports_new_names_and_merges_with_class() {
 }
 
 #[test]
+fn unresolved_module_augmentation_reports_diagnostic() {
+  let file = FileId(170);
+  let module_name_span = span(10);
+
+  let mut hir = HirFile::module(file);
+  hir.file_kind = FileKind::Dts;
+  hir.ambient_modules.push(AmbientModule {
+    name: "./missing".to_string(),
+    name_span: module_name_span,
+    decls: Vec::new(),
+    imports: Vec::new(),
+    type_imports: Vec::new(),
+    import_equals: Vec::new(),
+    exports: Vec::new(),
+    export_as_namespace: Vec::new(),
+    ambient_modules: Vec::new(),
+  });
+
+  let files: HashMap<FileId, Arc<HirFile>> = maplit::hashmap! { file => Arc::new(hir) };
+  let resolver = StaticResolver::new(HashMap::new());
+
+  let (_semantics, diags) = bind_ts_program(&[file], &resolver, |f| files.get(&f).unwrap().clone());
+  assert_eq!(diags.len(), 1, "expected exactly one diagnostic, got {:?}", diags);
+  let diag = &diags[0];
+  assert_eq!(diag.code, "BIND1005");
+  assert!(
+    diag.message.contains("module augmentation"),
+    "expected diagnostic message to mention module augmentation, got {:?}",
+    diag.message
+  );
+  assert_eq!(diag.primary.file, file);
+  assert_eq!(diag.primary.range, module_name_span);
+}
+
+#[test]
 fn imports_use_ambient_modules_when_file_missing() {
   let file_import = FileId(130);
   let file_ambient = FileId(131);

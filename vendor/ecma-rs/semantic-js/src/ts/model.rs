@@ -37,6 +37,7 @@
 //! - `BIND1003`: unsupported export assignment expression or exports in a script
 //!   module
 //! - `BIND1004`: duplicate import binding
+//! - `BIND1005`: unresolved module augmentation target
 //! - `TS2300`: duplicate identifier
 //! - `TS2395`: merged declarations must be all exported or all local
 //! - `TS2434`: namespace declaration cannot appear before the class/function it merges with
