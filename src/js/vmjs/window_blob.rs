@@ -847,22 +847,32 @@ mod tests {
     return "transfer did not detach";
   }
 
-  try {
-    new Blob([buf]);
-    return true;
-  } catch (e) {
-    return e && e.name ? e.name : String(e);
-  }
+  const results = [];
+  const run = (name, f) => {
+    try {
+      f();
+      results.push(name + ":ok");
+    } catch (e) {
+      results.push(name + ":" + (e && e.name ? e.name : String(e)));
+    }
+  };
+
+  // Exercise a few high-level host bindings that call Heap::array_buffer_data.
+  run("Blob", () => new Blob([buf]));
+  run("TextDecoder", () => new TextDecoder().decode(buf));
+  run("Request", () => new Request("https://example.com", { method: "POST", body: buf }));
+
+  return results.join(",");
 })()
 "#,
     )?;
 
     match result {
-      Value::Bool(true) => {}
       Value::String(s) => {
         let name = realm.heap().get_string(s)?.to_utf8_lossy();
         if name != "skip" {
           assert_ne!(name, "transfer did not detach");
+          assert!(name.contains("Blob:"), "expected Blob result, got {name:?}");
           // Allow any JS-catchable error; the invariant is that detached buffers must not abort the
           // VM with a non-catchable `InvariantViolation`.
           assert!(!name.is_empty());
