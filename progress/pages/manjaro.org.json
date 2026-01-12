@@ -14,7 +14,7 @@
     "layout": 15.03846866197183,
     "paint": 32.08206647887324
   },
-  "notes": "",
+  "notes": "Remaining pixel diffs are mostly minor OKLCH (CSS Color 4) color conversion rounding and text rasterization differences (hinting/AA) vs Chrome; layout and images match closely.",
   "accuracy": {
     "baseline": "chrome",
     "diff_pixels": 89599,
