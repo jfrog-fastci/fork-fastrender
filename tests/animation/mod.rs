@@ -21,5 +21,5 @@ mod browser_document_transition_state;
 mod transitions_dynamic_engine_test;
 mod transitions_dynamic_value_pair_discrete_test;
 
-// Legacy tests pulled in from the former top-level `tests/animation_tests.rs` crate.
+// Formerly `tests/animation_tests.rs` (top-level integration-test binary).
 mod animation_tests;

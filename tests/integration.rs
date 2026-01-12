@@ -7,6 +7,7 @@ mod common;
 mod api;
 mod accessibility;
 mod interaction;
+mod animation;
 mod fixtures;
 mod browser_integration;
 mod layout;
