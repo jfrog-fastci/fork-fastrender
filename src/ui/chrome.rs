@@ -623,7 +623,7 @@ pub fn chrome_ui(
           .rounding(egui::Rounding::same(3.0))
           .inner_margin(egui::Margin::same(2.0))
           .show(ui, |ui| {
-            let _ = icon_tinted(ui, BrowserIcon::CloseTab, ui.spacing().icon_width, egui::Color32::WHITE);
+            let _ = icon_tinted(ui, BrowserIcon::Error, ui.spacing().icon_width, egui::Color32::WHITE);
           })
           .response;
         let _ = resp.on_hover_text(err);

@@ -16,6 +16,7 @@ pub enum BrowserIcon {
   NewTab,
   LockSecure,
   WarningInsecure,
+  Error,
   Spinner,
 }
 
@@ -29,6 +30,7 @@ impl BrowserIcon {
       Self::NewTab => "new_tab",
       Self::LockSecure => "lock_secure",
       Self::WarningInsecure => "warning_insecure",
+      Self::Error => "error",
       Self::Spinner => "spinner",
     }
   }
@@ -42,6 +44,7 @@ impl BrowserIcon {
       Self::NewTab => include_bytes!("../../assets/browser_icons/new_tab.svg"),
       Self::LockSecure => include_bytes!("../../assets/browser_icons/lock_secure.svg"),
       Self::WarningInsecure => include_bytes!("../../assets/browser_icons/warning_insecure.svg"),
+      Self::Error => include_bytes!("../../assets/browser_icons/error.svg"),
       Self::Spinner => include_bytes!("../../assets/browser_icons/spinner.svg"),
     }
   }
@@ -128,6 +131,16 @@ fn record_rasterize(ctx: &egui::Context) {
   });
 }
 
+fn panic_payload_to_reason(panic: &(dyn std::any::Any + Send)) -> String {
+  if let Some(s) = panic.downcast_ref::<&'static str>() {
+    return (*s).to_string();
+  }
+  if let Some(s) = panic.downcast_ref::<String>() {
+    return s.clone();
+  }
+  "unknown panic payload".to_string()
+}
+
 fn rasterize_svg_icon(
   icon: BrowserIcon,
   side_px: u32,
@@ -140,8 +153,18 @@ fn rasterize_svg_icon(
   }
 
   let options = resvg::usvg::Options::default();
-  let tree = resvg::usvg::Tree::from_data(icon.svg_bytes(), &options)
-    .map_err(|err| format!("failed to parse SVG: {err}"))?;
+  let tree = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    resvg::usvg::Tree::from_data(icon.svg_bytes(), &options)
+  })) {
+    Ok(Ok(tree)) => tree,
+    Ok(Err(err)) => return Err(format!("failed to parse SVG: {err}")),
+    Err(panic) => {
+      return Err(format!(
+        "SVG parse panicked: {}",
+        panic_payload_to_reason(&*panic)
+      ));
+    }
+  };
 
   let size = tree.size();
   let source_width = size.width();
@@ -157,7 +180,14 @@ fn rasterize_svg_icon(
   let scale_y = side_px as f32 / source_height;
   let transform = tiny_skia::Transform::from_scale(scale_x, scale_y);
 
-  resvg::render(&tree, transform, &mut pixmap.as_mut());
+  if let Err(panic) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    resvg::render(&tree, transform, &mut pixmap.as_mut());
+  })) {
+    return Err(format!(
+      "SVG render panicked: {}",
+      panic_payload_to_reason(&*panic)
+    ));
+  }
   Ok(pixmap)
 }
 
@@ -167,12 +197,13 @@ fn load_icon_texture(
   side_px: u32,
   dark_mode: bool,
 ) -> egui::TextureHandle {
-  let pixmap = rasterize_svg_icon(icon, side_px, dark_mode).unwrap_or_else(|_err| {
-    tiny_skia::Pixmap::new(1, 1).expect("1x1 pixmap should always succeed")
-  });
-
-  let (w, h) = (pixmap.width() as usize, pixmap.height() as usize);
-  let image = egui::ColorImage::from_rgba_premultiplied([w, h], pixmap.data());
+  let image = match rasterize_svg_icon(icon, side_px, dark_mode) {
+    Ok(pixmap) => {
+      let (w, h) = (pixmap.width() as usize, pixmap.height() as usize);
+      egui::ColorImage::from_rgba_premultiplied([w, h], pixmap.data())
+    }
+    Err(_err) => egui::ColorImage::new([1, 1], egui::Color32::TRANSPARENT),
+  };
   ctx.load_texture(
     format!("browser_icon_{}_{}_{}", icon.name(), side_px, dark_mode),
     image,
