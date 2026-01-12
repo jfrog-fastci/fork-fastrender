@@ -413,9 +413,7 @@ fn eval_default_numeric_literal(
     NumericType::Float => eval_default_float(n),
     NumericType::UnrestrictedFloat => eval_default_unrestricted_float(n),
     NumericType::Double => eval_default_double(n),
-    NumericType::UnrestrictedDouble => {
-      Ok(WebIdlValue::UnrestrictedDouble(canonicalize_nan_f64(n)))
-    }
+    NumericType::UnrestrictedDouble => Ok(WebIdlValue::UnrestrictedDouble(canonicalize_nan_f64(n))),
   }
 }
 

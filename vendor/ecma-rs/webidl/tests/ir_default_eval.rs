@@ -1,4 +1,7 @@
-use webidl::ir::*;
+use webidl::ir::{
+  eval_default_value, parse_default_value, parse_idl_type_complete, DictionaryMemberSchema,
+  DictionarySchema, IdlType, NamedType, NamedTypeKind, TypeContext, WebIdlException, WebIdlValue,
+};
 
 #[test]
 fn optional_long_default_5() {

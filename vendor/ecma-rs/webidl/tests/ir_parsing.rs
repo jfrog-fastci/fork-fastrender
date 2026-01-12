@@ -1,4 +1,7 @@
-use webidl::ir::*;
+use webidl::ir::{
+  parse_default_value, parse_idl_type_complete, DefaultValue, IdlType, NamedType, NamedTypeKind,
+  NumericLiteral, NumericType, StringType, TypeAnnotation,
+};
 
 #[test]
 fn parse_nested_types() {
