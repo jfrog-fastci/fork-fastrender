@@ -2,45 +2,22 @@
 #[allow(dead_code)]
 mod bench_common;
 
-use std::ffi::OsString;
-
-struct EnvGuard {
-  name: &'static str,
-  prev: Option<OsString>,
-}
-
-impl EnvGuard {
-  fn set(name: &'static str, value: &str) -> Self {
-    let prev = std::env::var_os(name);
-    std::env::set_var(name, value);
-    Self { name, prev }
-  }
-}
-
-impl Drop for EnvGuard {
-  fn drop(&mut self) {
-    if let Some(value) = self.prev.take() {
-      std::env::set_var(self.name, value);
-    } else {
-      std::env::remove_var(self.name);
-    }
-  }
-}
+use std::collections::HashMap;
 
 #[test]
 fn bench_limits_parse_env_and_apply_defaults() {
-  let _lock = super::global_test_lock();
+  let env = HashMap::from([
+    ("FASTR_BENCH_VERBOSE", "1"),
+    ("FASTR_BENCH_MAX_THREADS", "0"),
+    ("FASTR_BENCH_MAX_DOM_NODES", "10_000"),
+    ("FASTR_BENCH_MAX_DISPLAY_LIST_ITEMS", "2000"),
+    ("FASTR_BENCH_MAX_DEPTH", "64"),
+    ("FASTR_BENCH_MAX_FIXTURE_BYTES", "1MiB"),
+  ]);
 
-  let _verbose = EnvGuard::set("FASTR_BENCH_VERBOSE", "1");
-  assert!(bench_common::bench_verbose());
+  assert!(bench_common::bench_verbose_from_lookup(|name| env.get(name).copied()));
 
-  let _max_threads = EnvGuard::set("FASTR_BENCH_MAX_THREADS", "0");
-  let _max_dom = EnvGuard::set("FASTR_BENCH_MAX_DOM_NODES", "10_000");
-  let _max_items = EnvGuard::set("FASTR_BENCH_MAX_DISPLAY_LIST_ITEMS", "2000");
-  let _max_depth = EnvGuard::set("FASTR_BENCH_MAX_DEPTH", "64");
-  let _max_fixture = EnvGuard::set("FASTR_BENCH_MAX_FIXTURE_BYTES", "1MiB");
-
-  let limits = bench_common::BenchLimits::from_env();
+  let limits = bench_common::BenchLimits::from_lookup(|name| env.get(name).copied());
   assert_eq!(
     limits.max_threads, 1,
     "max_threads should clamp to at least 1"
@@ -51,7 +28,13 @@ fn bench_limits_parse_env_and_apply_defaults() {
   assert_eq!(limits.max_fixture_bytes, 1024 * 1024);
 
   // Invalid values fall back to defaults.
-  let _invalid_fixture = EnvGuard::set("FASTR_BENCH_MAX_FIXTURE_BYTES", "nope");
-  let limits = bench_common::BenchLimits::from_env();
+  let env = HashMap::from([
+    ("FASTR_BENCH_MAX_THREADS", "0"),
+    ("FASTR_BENCH_MAX_DOM_NODES", "10_000"),
+    ("FASTR_BENCH_MAX_DISPLAY_LIST_ITEMS", "2000"),
+    ("FASTR_BENCH_MAX_DEPTH", "64"),
+    ("FASTR_BENCH_MAX_FIXTURE_BYTES", "nope"),
+  ]);
+  let limits = bench_common::BenchLimits::from_lookup(|name| env.get(name).copied());
   assert_eq!(limits.max_fixture_bytes, 8 * 1024 * 1024);
 }
