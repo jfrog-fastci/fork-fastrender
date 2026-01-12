@@ -21,6 +21,7 @@ pub mod context_menu;
 pub mod frame_upload;
 pub mod history;
 pub mod visited;
+pub mod omnibox;
 pub mod messages;
 pub mod render_worker;
 pub mod scrollbars;
@@ -95,6 +96,12 @@ pub use url::{normalize_user_url, resolve_link_url, validate_user_navigation_url
 #[cfg(feature = "browser_ui")]
 pub use wgpu_pixmap_texture::WgpuPixmapTexture;
 
+pub use omnibox::{
+  build_omnibox_suggestions, BookmarkEntry, BookmarksProvider, BrowserBookmarks, ClosedTabsProvider,
+  OmniboxAction, OmniboxContext, OmniboxProvider, OmniboxSearchSource, OmniboxSuggestion,
+  OmniboxSuggestionSource, OmniboxUrlSource, OpenTabsProvider, RemoteSearchSuggestCache,
+  RemoteSearchSuggestProvider, VisitedProvider,
+};
 pub use browser_app::{
   AppUpdate, BrowserAppState, BrowserTabState, ChromeState, ClosedTabState, FrameReadyUpdate,
   FindInPageState, LatestFrameMeta, OpenSelectDropdownUpdate,
