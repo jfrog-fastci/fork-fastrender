@@ -615,6 +615,123 @@ fn dynamic_import_tla_module_works_with_sync_host_completion_without_attached_gr
 }
 
 #[test]
+fn dynamic_import_uses_callback_module_as_referrer_in_promise_job() -> Result<(), VmError> {
+  let mut vm = Vm::new(VmOptions::default());
+  let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut realm = Realm::new(&mut vm, &mut heap)?;
+
+  let mut modules = ModuleGraph::new();
+  let dep = modules.add_module(SourceTextModuleRecord::parse("export const x = 1;")?);
+  let m = modules.add_module(SourceTextModuleRecord::parse(
+    "export const p = Promise.resolve().then(() => import('./dep.js'));",
+  )?);
+
+  let mut host_hooks = TestHostHooks::new();
+  host_hooks.register_module("./dep.js", dep);
+
+  let mut dummy_host = ();
+
+  let result: Result<(), VmError> = (|| {
+    let _eval_promise = modules.evaluate(
+      &mut vm,
+      &mut heap,
+      realm.global_object(),
+      realm.id(),
+      m,
+      &mut dummy_host,
+      &mut host_hooks,
+    )?;
+
+    // `import()` inside Promise jobs requires the VM's module graph pointer to be available after the
+    // module has finished evaluating. In `JsRuntime` this is installed for the runtime-owned module
+    // graph; in this low-level test we install it explicitly.
+    vm.set_module_graph(&mut modules);
+
+    // Read `p` from the module namespace.
+    let promise_root = {
+      let mut scope = heap.scope();
+      let ns_m = modules.get_module_namespace(m, &mut vm, &mut scope)?;
+      let p_key = PropertyKey::from_string(scope.alloc_string("p")?);
+      let p_value = scope.ordinary_get_with_host_and_hooks(
+        &mut vm,
+        &mut dummy_host,
+        &mut host_hooks,
+        ns_m,
+        p_key,
+        Value::Object(ns_m),
+      )?;
+
+      let Value::Object(promise_obj) = p_value else {
+        return Err(VmError::InvariantViolation(
+          "module export p should be a promise object",
+        ));
+      };
+      let root = scope.heap_mut().add_root(p_value)?;
+      assert_eq!(scope.heap().promise_state(promise_obj)?, PromiseState::Pending);
+      root
+    };
+
+    assert_eq!(host_hooks.pending.len(), 0);
+    assert!(vm.current_realm().is_none());
+
+    // Drain microtasks so the Promise reaction job runs. This should execute the dynamic `import()`
+    // call inside the callback, resulting in a host module load request whose `referrer` reflects the
+    // callback's defining module (`m`).
+    host_hooks.perform_microtask_checkpoint(&mut vm, &mut heap)?;
+
+    assert_eq!(host_hooks.pending.len(), 1);
+    assert_eq!(host_hooks.pending[0].request.specifier, "./dep.js");
+    assert_eq!(host_hooks.pending[0].referrer, ModuleReferrer::Module(m));
+
+    // Complete the dynamic import module load.
+    host_hooks.complete_load_for(&mut vm, &mut heap, &mut modules, "./dep.js")?;
+    host_hooks.perform_microtask_checkpoint(&mut vm, &mut heap)?;
+
+    // The promise stored in `p` should now be fulfilled to the imported module namespace.
+    let mut scope = heap.scope();
+    let p_value = scope
+      .heap()
+      .get_root(promise_root)
+      .ok_or_else(|| VmError::invalid_handle())?;
+    let Value::Object(promise_obj) = p_value else {
+      return Err(VmError::InvariantViolation(
+        "promise root should reference an object",
+      ));
+    };
+    assert_eq!(scope.heap().promise_state(promise_obj)?, PromiseState::Fulfilled);
+    let ns_value = scope
+      .heap()
+      .promise_result(promise_obj)?
+      .expect("fulfilled promise should have a result");
+    let Value::Object(ns_obj) = ns_value else {
+      return Err(VmError::InvariantViolation(
+        "dynamic import promise should fulfill to a namespace object",
+      ));
+    };
+
+    // Verify the namespace exports are readable and reflect evaluated module state.
+    let x_key = PropertyKey::from_string(scope.alloc_string("x")?);
+    let x_value = scope.ordinary_get_with_host_and_hooks(
+      &mut vm,
+      &mut dummy_host,
+      &mut host_hooks,
+      ns_obj,
+      x_key,
+      Value::Object(ns_obj),
+    )?;
+    assert!(matches!(x_value, Value::Number(n) if n == 1.0));
+
+    scope.heap_mut().remove_root(promise_root);
+    Ok(())
+  })();
+
+  modules.teardown(&mut vm, &mut heap);
+  host_hooks.teardown_jobs(&mut vm, &mut heap);
+  realm.teardown(&mut heap);
+  result
+}
+
+#[test]
 fn dynamic_import_works_after_tla_resumption_without_attached_graph() -> Result<(), VmError> {
   let mut vm = Vm::new(VmOptions::default());
   let mut heap = Heap::new(HeapLimits::new(8 * 1024 * 1024, 8 * 1024 * 1024));

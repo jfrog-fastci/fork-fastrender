@@ -320,12 +320,18 @@ fn slice_range_from_args(
 }
 
 fn set_function_job_realm_to_current(
-  vm: &Vm,
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
   func: GcObject,
 ) -> Result<(), VmError> {
   if let Some(realm) = vm.current_realm() {
     scope.heap_mut().set_function_job_realm(func, realm)?;
+  }
+  if let Some(script_or_module) = vm.get_active_script_or_module() {
+    let token = vm.intern_script_or_module(script_or_module)?;
+    scope
+      .heap_mut()
+      .set_function_script_or_module_token(func, Some(token))?;
   }
   Ok(())
 }
@@ -4484,6 +4490,12 @@ pub fn function_constructor_construct(
   if let Some(job_realm) = job_realm {
     scope.heap_mut().set_function_job_realm(func_obj, job_realm)?;
   }
+  if let Some(script_or_module) = vm.get_active_script_or_module() {
+    let token = vm.intern_script_or_module(script_or_module)?;
+    scope
+      .heap_mut()
+      .set_function_script_or_module_token(func_obj, Some(token))?;
+  }
 
   Ok(Value::Object(func_obj))
 }
@@ -4728,6 +4740,12 @@ pub fn generator_function_constructor_construct(
     .or(vm.current_realm());
   if let Some(job_realm) = job_realm {
     scope.heap_mut().set_function_job_realm(func_obj, job_realm)?;
+  }
+  if let Some(script_or_module) = vm.get_active_script_or_module() {
+    let token = vm.intern_script_or_module(script_or_module)?;
+    scope
+      .heap_mut()
+      .set_function_script_or_module_token(func_obj, Some(token))?;
   }
 
   Ok(Value::Object(func_obj))
@@ -8292,6 +8310,19 @@ pub fn function_prototype_bind(
     .or(vm.current_realm());
   if let Some(job_realm) = job_realm {
     scope.heap_mut().set_function_job_realm(func, job_realm)?;
+  }
+
+  let script_or_module_token = match scope.heap().get_function_script_or_module_token(target) {
+    Some(t) => Some(t),
+    None => match vm.get_active_script_or_module() {
+      Some(sm) => Some(vm.intern_script_or_module(sm)?),
+      None => None,
+    },
+  };
+  if script_or_module_token.is_some() {
+    scope
+      .heap_mut()
+      .set_function_script_or_module_token(func, script_or_module_token)?;
   }
 
   Ok(Value::Object(func))

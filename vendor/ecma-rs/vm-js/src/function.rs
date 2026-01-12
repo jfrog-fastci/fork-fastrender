@@ -1,7 +1,8 @@
 use crate::heap::{ObjectBase, Trace, Tracer};
 use crate::CompiledFunctionRef;
-use crate::{GcEnv, GcObject, GcString, RealmId, Value};
+use crate::{GcEnv, GcObject, GcString, Value};
 use core::mem;
+use core::num::NonZeroU32;
 
 /// Identifier for a host/native `[[Call]]` implementation.
 ///
@@ -138,7 +139,30 @@ pub(crate) struct JsFunction {
   ///
   /// This is separate from `realm` because jobs need an opaque host-facing [`RealmId`] token,
   /// whereas `realm` is used internally for `this` binding and other semantics.
-  pub(crate) job_realm: Option<RealmId>,
+  ///
+  /// Stored as a raw `u64` to avoid inflating heap slot size: `Option<RealmId>` is 16 bytes.
+  ///
+  /// Encoding:
+  /// - `0` represents "unset".
+  /// - Otherwise, the stored value is `RealmId::to_raw() + 1` (so realm ids with raw `0` remain
+  ///   representable).
+  pub(crate) job_realm: u64,
+  /// Token representing the function's `[[ScriptOrModule]]` internal slot (ECMA-262).
+  ///
+  /// This is required so host work (Promise jobs / callbacks) can establish a minimal
+  /// `ExecutionContext` that preserves module identity for `GetActiveScriptOrModule()` (and
+  /// therefore dynamic `import()` relative resolution) even when the original script/module has
+  /// finished running.
+  ///
+  /// ## Why a token instead of `Option<ScriptOrModule>`?
+  ///
+  /// Heap objects are stored inline in the slot table, so increasing the size of function objects
+  /// increases the slot-table accounting charged against `HeapLimits`. A direct
+  /// `Option<ScriptOrModule>` field (which is 16 bytes) significantly increases slot size.
+  ///
+  /// Instead, functions store a compact token (4 bytes) into a VM-managed table of interned
+  /// `ScriptOrModule` identities.
+  pub(crate) script_or_module_token: Option<NonZeroU32>,
   pub(crate) closure_env: Option<GcEnv>,
 }
 
@@ -174,7 +198,8 @@ impl JsFunction {
       bound_args: None,
       native_slots: None,
       realm: None,
-      job_realm: None,
+      job_realm: 0,
+      script_or_module_token: None,
       closure_env: None,
     }
   }
@@ -218,7 +243,8 @@ impl JsFunction {
       bound_args: None,
       native_slots,
       realm: None,
-      job_realm: None,
+      job_realm: 0,
+      script_or_module_token: None,
       closure_env,
     }
   }
@@ -251,7 +277,8 @@ impl JsFunction {
       bound_args: None,
       native_slots: None,
       realm: None,
-      job_realm: None,
+      job_realm: 0,
+      script_or_module_token: None,
       closure_env,
     }
   }
@@ -279,7 +306,8 @@ impl JsFunction {
       bound_args: None,
       native_slots: None,
       realm: None,
-      job_realm: None,
+      job_realm: 0,
+      script_or_module_token: None,
       closure_env,
     }
   }

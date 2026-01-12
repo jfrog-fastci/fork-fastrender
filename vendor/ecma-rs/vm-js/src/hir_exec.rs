@@ -244,6 +244,12 @@ impl<'vm> HirEvaluator<'vm> {
     if let Some(realm) = self.vm.current_realm() {
       scope.heap_mut().set_function_job_realm(func_obj, realm)?;
     }
+    if let Some(script_or_module) = self.vm.get_active_script_or_module() {
+      let token = self.vm.intern_script_or_module(script_or_module)?;
+      scope
+        .heap_mut()
+        .set_function_script_or_module_token(func_obj, Some(token))?;
+    }
 
     Ok(func_obj)
   }

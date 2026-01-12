@@ -40,6 +40,7 @@ use parse_js::error::SyntaxErrorType;
 use parse_js::{parse_with_options_cancellable_by_with_init, Dialect, ParseOptions, SourceType};
 use std::any::Any;
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::num::NonZeroU32;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -275,6 +276,12 @@ pub struct Vm {
   module_async_evaluation_count: u64,
   stack: Vec<StackFrame>,
   execution_context_stack: Vec<ExecutionContext>,
+  /// Intern table for `ScriptOrModule` identities stored on function objects.
+  ///
+  /// Functions store `[[ScriptOrModule]]` as a compact token rather than an inline
+  /// `Option<ScriptOrModule>` to avoid inflating the heap slot table size (which is charged against
+  /// `HeapLimits`).
+  script_or_module_table: Vec<ScriptOrModule>,
   native_calls: Vec<NativeCall>,
   native_constructs: Vec<NativeConstruct>,
   /// Optional host/embedding state associated with this VM.
@@ -545,6 +552,7 @@ impl Vm {
       module_async_evaluation_count: 0,
       stack: Vec::new(),
       execution_context_stack: Vec::new(),
+      script_or_module_table: Vec::new(),
       native_calls: Vec::new(),
       native_constructs: Vec::new(),
       user_data: None,
@@ -1869,6 +1877,52 @@ impl Vm {
       .find_map(|ctx| ctx.script_or_module)
   }
 
+  pub(crate) fn intern_script_or_module(
+    &mut self,
+    script_or_module: ScriptOrModule,
+  ) -> Result<NonZeroU32, VmError> {
+    if let Some(idx) = self
+      .script_or_module_table
+      .iter()
+      .position(|&v| v == script_or_module)
+    {
+      if idx >= u32::MAX as usize {
+        return Err(VmError::OutOfMemory);
+      }
+      // Index is offset by 1 so `0` can represent "no script/module".
+      let n = (idx as u32) + 1;
+      return Ok(NonZeroU32::new(n).expect("idx + 1 is non-zero"));
+    }
+
+    // `Vec::push` can abort the process on allocator OOM; reserve fallibly first.
+    self
+      .script_or_module_table
+      .try_reserve(1)
+      .map_err(|_| VmError::OutOfMemory)?;
+
+    let idx = self.script_or_module_table.len();
+    if idx >= u32::MAX as usize {
+      return Err(VmError::OutOfMemory);
+    }
+    self.script_or_module_table.push(script_or_module);
+
+    let n = (idx as u32).wrapping_add(1);
+    NonZeroU32::new(n).ok_or(VmError::OutOfMemory)
+  }
+
+  pub(crate) fn resolve_script_or_module_token(&self, token: NonZeroU32) -> Option<ScriptOrModule> {
+    let idx = token.get().wrapping_sub(1) as usize;
+    self.script_or_module_table.get(idx).copied()
+  }
+
+  #[inline]
+  pub(crate) fn resolve_script_or_module_token_opt(
+    &self,
+    token: Option<NonZeroU32>,
+  ) -> Option<ScriptOrModule> {
+    token.and_then(|t| self.resolve_script_or_module_token(t))
+  }
+
   pub(crate) fn get_or_create_import_meta_object(
     &mut self,
     scope: &mut Scope<'_>,
@@ -2374,9 +2428,11 @@ impl Vm {
     if self.current_realm().is_none() {
       if let Value::Object(obj) = callee {
         if let Some(realm) = scope.heap().get_function_job_realm(obj) {
+          let script_or_module_token = scope.heap().get_function_script_or_module_token(obj);
+          let script_or_module = self.resolve_script_or_module_token_opt(script_or_module_token);
           let ctx = ExecutionContext {
             realm,
-            script_or_module: None,
+            script_or_module,
           };
           let mut vm_ctx = self.execution_context_guard(ctx);
           return vm_ctx.call_impl_inner(host, scope, hooks, callee, this, args, call_site);
@@ -2931,9 +2987,11 @@ impl Vm {
     if self.current_realm().is_none() {
       if let Value::Object(obj) = callee {
         if let Some(realm) = scope.heap().get_function_job_realm(obj) {
+          let script_or_module_token = scope.heap().get_function_script_or_module_token(obj);
+          let script_or_module = self.resolve_script_or_module_token_opt(script_or_module_token);
           let ctx = ExecutionContext {
             realm,
-            script_or_module: None,
+            script_or_module,
           };
           let mut vm_ctx = self.execution_context_guard(ctx);
           return vm_ctx.construct_impl_inner(host, scope, hooks, callee, args, new_target, call_site);

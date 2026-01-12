@@ -4268,6 +4268,12 @@ impl<'a> Evaluator<'a> {
     if let Some(realm) = self.vm.current_realm() {
       scope.heap_mut().set_function_job_realm(func_obj, realm)?;
     }
+    if let Some(script_or_module) = self.vm.get_active_script_or_module() {
+      let token = self.vm.intern_script_or_module(script_or_module)?;
+      scope
+        .heap_mut()
+        .set_function_script_or_module_token(func_obj, Some(token))?;
+    }
     if is_generator {
       crate::function_properties::make_generator_function_instance_prototype(
         scope,
@@ -4325,6 +4331,12 @@ impl<'a> Evaluator<'a> {
       init_scope
         .heap_mut()
         .set_function_job_realm(func_obj, realm)?;
+    }
+    if let Some(script_or_module) = self.vm.get_active_script_or_module() {
+      let token = self.vm.intern_script_or_module(script_or_module)?;
+      init_scope
+        .heap_mut()
+        .set_function_script_or_module_token(func_obj, Some(token))?;
     }
     Ok(func_obj)
   }
@@ -5482,6 +5494,12 @@ impl<'a> Evaluator<'a> {
       if let Some(realm) = self.vm.current_realm() {
         ctor_scope.heap_mut().set_function_job_realm(func_obj, realm)?;
       }
+      if let Some(script_or_module) = self.vm.get_active_script_or_module() {
+        let token = self.vm.intern_script_or_module(script_or_module)?;
+        ctor_scope
+          .heap_mut()
+          .set_function_script_or_module_token(func_obj, Some(token))?;
+      }
       Some(func_obj)
     } else {
       None
@@ -5674,6 +5692,12 @@ impl<'a> Evaluator<'a> {
               .heap_mut()
               .set_function_job_realm(func_obj, realm)?;
           }
+          if let Some(script_or_module) = self.vm.get_active_script_or_module() {
+            let token = self.vm.intern_script_or_module(script_or_module)?;
+            member_scope
+              .heap_mut()
+              .set_function_script_or_module_token(func_obj, Some(token))?;
+          }
           if func_node.stx.generator {
             crate::function_properties::make_generator_function_instance_prototype(
               &mut member_scope,
@@ -5754,6 +5778,12 @@ impl<'a> Evaluator<'a> {
               .heap_mut()
               .set_function_job_realm(func_obj, realm)?;
           }
+          if let Some(script_or_module) = self.vm.get_active_script_or_module() {
+            let token = self.vm.intern_script_or_module(script_or_module)?;
+            member_scope
+              .heap_mut()
+              .set_function_script_or_module_token(func_obj, Some(token))?;
+          }
           member_scope.push_root(Value::Object(func_obj))?;
 
           crate::function_properties::set_function_name(
@@ -5827,6 +5857,12 @@ impl<'a> Evaluator<'a> {
             member_scope
               .heap_mut()
               .set_function_job_realm(func_obj, realm)?;
+          }
+          if let Some(script_or_module) = self.vm.get_active_script_or_module() {
+            let token = self.vm.intern_script_or_module(script_or_module)?;
+            member_scope
+              .heap_mut()
+              .set_function_script_or_module_token(func_obj, Some(token))?;
           }
           member_scope.push_root(Value::Object(func_obj))?;
 
@@ -7392,6 +7428,12 @@ impl<'a> Evaluator<'a> {
     if let Some(realm) = self.vm.current_realm() {
       scope.heap_mut().set_function_job_realm(func_obj, realm)?;
     }
+    if let Some(script_or_module) = self.vm.get_active_script_or_module() {
+      let token = self.vm.intern_script_or_module(script_or_module)?;
+      scope
+        .heap_mut()
+        .set_function_script_or_module_token(func_obj, Some(token))?;
+    }
     if is_generator {
       crate::function_properties::make_generator_function_instance_prototype(
         &mut scope,
@@ -7477,6 +7519,12 @@ impl<'a> Evaluator<'a> {
       alloc_scope
         .heap_mut()
         .set_function_job_realm(func_obj, realm)?;
+    }
+    if let Some(script_or_module) = self.vm.get_active_script_or_module() {
+      let token = self.vm.intern_script_or_module(script_or_module)?;
+      alloc_scope
+        .heap_mut()
+        .set_function_script_or_module_token(func_obj, Some(token))?;
     }
     alloc_scope
       .heap_mut()
@@ -7966,6 +8014,12 @@ impl<'a> Evaluator<'a> {
                   .heap_mut()
                   .set_function_job_realm(func_obj, realm)?;
               }
+              if let Some(script_or_module) = self.vm.get_active_script_or_module() {
+                let token = self.vm.intern_script_or_module(script_or_module)?;
+                member_scope
+                  .heap_mut()
+                  .set_function_script_or_module_token(func_obj, Some(token))?;
+              }
               if func_node.stx.generator {
                 crate::function_properties::make_generator_function_instance_prototype(
                   &mut member_scope,
@@ -8056,6 +8110,12 @@ impl<'a> Evaluator<'a> {
                 member_scope
                   .heap_mut()
                   .set_function_job_realm(func_obj, realm)?;
+              }
+              if let Some(script_or_module) = self.vm.get_active_script_or_module() {
+                let token = self.vm.intern_script_or_module(script_or_module)?;
+                member_scope
+                  .heap_mut()
+                  .set_function_script_or_module_token(func_obj, Some(token))?;
               }
               if func_node.stx.arrow {
                 member_scope
@@ -8148,6 +8208,12 @@ impl<'a> Evaluator<'a> {
                 member_scope
                   .heap_mut()
                   .set_function_job_realm(func_obj, realm)?;
+              }
+              if let Some(script_or_module) = self.vm.get_active_script_or_module() {
+                let token = self.vm.intern_script_or_module(script_or_module)?;
+                member_scope
+                  .heap_mut()
+                  .set_function_script_or_module_token(func_obj, Some(token))?;
               }
               if func_node.stx.arrow {
                 member_scope
@@ -11554,6 +11620,10 @@ fn async_handle_body_result(
           .intrinsics()
           .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
         let job_realm = vm.current_realm();
+        let script_or_module_token = match vm.get_active_script_or_module() {
+          Some(sm) => Some(vm.intern_script_or_module(sm)?),
+          None => None,
+        };
 
         let name = await_scope.alloc_string("")?;
         let slots_fulfill = [Value::Number(id as f64), Value::Bool(false)];
@@ -11576,6 +11646,11 @@ fn async_handle_body_result(
             .set_function_realm(cb, global_object)?;
           if let Some(realm) = job_realm {
             await_scope.heap_mut().set_function_job_realm(cb, realm)?;
+          }
+          if let Some(token) = script_or_module_token {
+            await_scope
+              .heap_mut()
+              .set_function_script_or_module_token(cb, Some(token))?;
           }
         }
 
@@ -17462,6 +17537,12 @@ fn async_eval_lit_obj_apply_valued_member(
           .heap_mut()
           .set_function_job_realm(func_obj, realm)?;
       }
+      if let Some(script_or_module) = evaluator.vm.get_active_script_or_module() {
+        let token = evaluator.vm.intern_script_or_module(script_or_module)?;
+        member_scope
+          .heap_mut()
+          .set_function_script_or_module_token(func_obj, Some(token))?;
+      }
       if func_node.stx.arrow {
         member_scope
           .heap_mut()
@@ -17547,6 +17628,12 @@ fn async_eval_lit_obj_apply_valued_member(
         member_scope
           .heap_mut()
           .set_function_job_realm(func_obj, realm)?;
+      }
+      if let Some(script_or_module) = evaluator.vm.get_active_script_or_module() {
+        let token = evaluator.vm.intern_script_or_module(script_or_module)?;
+        member_scope
+          .heap_mut()
+          .set_function_script_or_module_token(func_obj, Some(token))?;
       }
       if func_node.stx.arrow {
         member_scope
@@ -17645,6 +17732,12 @@ fn async_eval_lit_obj_apply_valued_member(
         member_scope
           .heap_mut()
           .set_function_job_realm(func_obj, realm)?;
+      }
+      if let Some(script_or_module) = evaluator.vm.get_active_script_or_module() {
+        let token = evaluator.vm.intern_script_or_module(script_or_module)?;
+        member_scope
+          .heap_mut()
+          .set_function_script_or_module_token(func_obj, Some(token))?;
       }
       if func_node.stx.arrow {
         member_scope
@@ -27957,12 +28050,16 @@ pub(crate) fn run_ecma_function(
 
         let schedule_res = (|| -> Result<(), VmError> {
           let call_id = evaluator.vm.async_resume_call_id()?;
-          let intr = evaluator
-            .vm
-            .intrinsics()
-            .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
-          let global_object = evaluator.env.global_object();
-          let job_realm = evaluator.vm.current_realm();
+           let intr = evaluator
+             .vm
+             .intrinsics()
+             .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+           let global_object = evaluator.env.global_object();
+           let job_realm = evaluator.vm.current_realm();
+           let script_or_module_token = match evaluator.vm.get_active_script_or_module() {
+             Some(sm) => Some(evaluator.vm.intern_script_or_module(sm)?),
+             None => None,
+           };
 
           let name = root_scope.alloc_string("")?;
           let slots_fulfill = [Value::Number(id as f64), Value::Bool(false)];
@@ -27983,10 +28080,15 @@ pub(crate) fn run_ecma_function(
             root_scope
               .heap_mut()
               .set_function_realm(cb, global_object)?;
-            if let Some(realm) = job_realm {
-              root_scope.heap_mut().set_function_job_realm(cb, realm)?;
-            }
-          }
+             if let Some(realm) = job_realm {
+               root_scope.heap_mut().set_function_job_realm(cb, realm)?;
+             }
+             if let Some(token) = script_or_module_token {
+               root_scope
+                 .heap_mut()
+                 .set_function_script_or_module_token(cb, Some(token))?;
+             }
+           }
 
           let _ = crate::promise_ops::perform_promise_then_with_result_capability_with_host_and_hooks(
             evaluator.vm,

@@ -17,6 +17,7 @@ use crate::{
 };
 use std::cell::Cell;
 use core::mem;
+use core::num::NonZeroU32;
 use parse_js::ast::func::Func;
 use parse_js::ast::node::Node;
 use semantic_js::js::SymbolId;
@@ -6602,9 +6603,46 @@ impl Heap {
       .estimated_total_bytes()
       .saturating_add(additional_bytes(self));
     if after > self.limits.max_bytes {
+      // If we're over budget even after GC, try releasing reserved-but-unused vector capacity before
+      // failing. This can matter for small heaps because `Vec` growth is exponential but capacity is
+      // charged against `HeapLimits`.
+      self.shrink_excess_capacity();
+
+      let after = self
+        .estimated_total_bytes()
+        .saturating_add(additional_bytes(self));
+      if after <= self.limits.max_bytes {
+        return Ok(());
+      }
       return Err(VmError::OutOfMemory);
     }
     Ok(())
+  }
+
+  fn shrink_excess_capacity(&mut self) {
+    // Slot table + mark bits.
+    self.slots.shrink_to_fit();
+    self.marks.shrink_to_fit();
+
+    let slot_len = self.slots.len();
+    // Keep enough capacity so GC can never allocate while pushing onto these vectors.
+    self.free_list.shrink_to(slot_len);
+    self.gc_worklist.shrink_to(slot_len);
+
+    // Root stacks.
+    self.root_stack.shrink_to_fit();
+    self.env_root_stack.shrink_to_fit();
+
+    // Persistent roots. Keep enough capacity in the free lists so `remove_root` cannot allocate.
+    self.persistent_roots.shrink_to_fit();
+    self.persistent_roots_free.shrink_to(self.persistent_roots.len());
+    self.persistent_env_roots.shrink_to_fit();
+    self
+      .persistent_env_roots_free
+      .shrink_to(self.persistent_env_roots.len());
+
+    // Global symbol registry.
+    self.symbol_registry.shrink_to_fit();
   }
 
   fn update_slot_bytes(&mut self, idx: usize, new_bytes: usize) {
@@ -6968,7 +7006,27 @@ impl Heap {
     let mut obj = func;
     for _ in 0..MAX_PROTOTYPE_CHAIN {
       match self.get_heap_object(obj.0) {
-        Ok(HeapObject::Function(f)) => return f.job_realm,
+        Ok(HeapObject::Function(f)) => {
+          return (f.job_realm != 0).then(|| RealmId::from_raw(f.job_realm - 1));
+        }
+        Ok(HeapObject::Proxy(p)) => {
+          let (Some(target), Some(_handler)) = (p.target, p.handler) else {
+            return None;
+          };
+          obj = target;
+        }
+        _ => return None,
+      }
+    }
+    None
+  }
+
+  pub(crate) fn get_function_script_or_module_token(&self, func: GcObject) -> Option<NonZeroU32> {
+    // Promise job callbacks may be Proxy objects; follow the proxy chain to the underlying target.
+    let mut obj = func;
+    for _ in 0..MAX_PROTOTYPE_CHAIN {
+      match self.get_heap_object(obj.0) {
+        Ok(HeapObject::Function(f)) => return f.script_or_module_token,
         Ok(HeapObject::Proxy(p)) => {
           let (Some(target), Some(_handler)) = (p.target, p.handler) else {
             return None;
@@ -7029,7 +7087,21 @@ impl Heap {
   pub(crate) fn set_function_job_realm(&mut self, func: GcObject, realm: RealmId) -> Result<(), VmError> {
     match self.get_heap_object_mut(func.0)? {
       HeapObject::Function(f) => {
-        f.job_realm = Some(realm);
+        f.job_realm = realm.to_raw().checked_add(1).ok_or(VmError::OutOfMemory)?;
+        Ok(())
+      }
+      _ => Err(VmError::invalid_handle()),
+    }
+  }
+
+  pub(crate) fn set_function_script_or_module_token(
+    &mut self,
+    func: GcObject,
+    token: Option<NonZeroU32>,
+  ) -> Result<(), VmError> {
+    match self.get_heap_object_mut(func.0)? {
+      HeapObject::Function(f) => {
+        f.script_or_module_token = token;
         Ok(())
       }
       _ => Err(VmError::invalid_handle()),
