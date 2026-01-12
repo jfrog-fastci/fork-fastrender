@@ -1016,6 +1016,23 @@ mod tests {
   }
 
   #[test]
+  fn handwritten_window_realm_aligns_dom_event_target_prototype() -> Result<()> {
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+
+    let out = host.exec_script("Object.getPrototypeOf(Node.prototype) === EventTarget.prototype")?;
+    assert_eq!(out, Value::Bool(true));
+
+    let out = host.exec_script("document instanceof EventTarget")?;
+    assert_eq!(out, Value::Bool(true));
+
+    let out = host.exec_script("document.createElement('div') instanceof EventTarget")?;
+    assert_eq!(out, Value::Bool(true));
+
+    Ok(())
+  }
+
+  #[test]
   fn generated_vmjs_node_installer_can_patch_prototype_chain_after_event_target_install(
   ) -> Result<()> {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
