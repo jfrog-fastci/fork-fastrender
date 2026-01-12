@@ -248,6 +248,26 @@ fn main() {
     assert!(status.success(), "nested build failed");
 
     let exe_path = target_dir.join("debug/stackmaps_statepoint_rt");
+
+    // Also validate the linked executable via the offline verifier (ELF extraction + parse).
+    let verifier = env!("CARGO_BIN_EXE_verify_stackmaps");
+    let out = Command::new(verifier)
+        .arg("--elf")
+        .arg(&exe_path)
+        .output()?;
+    assert!(
+        out.status.success(),
+        "verify_stackmaps failed (status={})\nstdout={}\nstderr={}",
+        out.status,
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("\"ok\":true"),
+        "expected ok=true in verifier JSON output, got: {stdout}"
+    );
+
     let status = Command::new(&exe_path).status()?;
     assert!(status.success(), "stackmaps_statepoint_rt failed");
     Ok(())
