@@ -8144,9 +8144,7 @@ impl<'a> Element for ElementRef<'a> {
     };
     let has_href = self.node.get_attribute_ref("href").is_some();
     has_href
-      && (tag.eq_ignore_ascii_case("a")
-        || tag.eq_ignore_ascii_case("area")
-        || tag.eq_ignore_ascii_case("link"))
+      && (tag.eq_ignore_ascii_case("a") || tag.eq_ignore_ascii_case("area"))
   }
 
   fn is_html_slot_element(&self) -> bool {
@@ -12290,6 +12288,21 @@ mod tests {
       !selector_matches(&ElementRef::with_ancestors(&popover_open, &[]), &selector),
       "popover open state should match :popover-open, not :open"
     );
+  }
+
+  #[test]
+  fn link_pseudo_classes_only_match_a_and_area_elements() {
+    let link = element_with_attrs("link", vec![("href", "https://example.com")], vec![]);
+    let link_ref = ElementRef::with_ancestors(&link, &[]);
+
+    let selector = parse_selector(":any-link");
+    assert!(!selector_matches(&link_ref, &selector));
+
+    let selector = parse_selector(":link");
+    assert!(!selector_matches(&link_ref, &selector));
+
+    let selector = parse_selector(":visited");
+    assert!(!selector_matches(&link_ref, &selector));
   }
 
   #[test]
