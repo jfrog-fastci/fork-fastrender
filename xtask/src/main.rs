@@ -577,15 +577,18 @@ struct TestArgs {
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
 enum TestSuite {
-  /// Full default test suite (`bash scripts/cargo_agent.sh test --quiet`)
+  /// Unit + integration tests (lib + integration binaries).
+  ///
+  /// - `bash scripts/cargo_agent.sh test --quiet -p fastrender --lib`
+  /// - `bash scripts/cargo_agent.sh test --quiet -p fastrender --test integration`
   Core,
-  /// Style regression harness (`bash scripts/cargo_agent.sh test --quiet --test style_tests`)
+  /// Style-focused unit tests (`bash scripts/cargo_agent.sh test --quiet -p fastrender --lib style::`)
   Style,
-  /// Visual fixtures (`bash scripts/cargo_agent.sh test --quiet fixtures`)
+  /// Visual fixtures (`bash scripts/cargo_agent.sh test --quiet -p fastrender --test integration fixtures::`)
   Fixtures,
-  /// Local WPT harness (`bash scripts/cargo_agent.sh test --quiet wpt_local_suite_passes -- --exact`)
+  /// Local WPT harness (`bash scripts/cargo_agent.sh test --quiet -p fastrender --test integration wpt::wpt_local_suite_passes -- --exact`)
   Wpt,
-  /// Run all of the above sequentially
+  /// Run the full test suite sequentially (core + allocation-failure harness).
   All,
 }
 
@@ -868,50 +871,70 @@ fn run_tests(args: TestArgs) -> Result<()> {
   // consistently even when `bash scripts/cargo_agent.sh xtask ...` is invoked from a subdirectory.
   let repo_root = repo_root();
 
-  let suites = match args.suite {
-    TestSuite::All => vec![
-      TestSuite::Core,
-      TestSuite::Style,
-      TestSuite::Fixtures,
-      TestSuite::Wpt,
-    ],
-    suite => vec![suite],
-  };
-
   if args.suite == TestSuite::All && !args.extra.is_empty() {
     bail!("extra arguments are not supported with the \"all\" suite");
   }
 
-  for suite in suites {
+  let run = |label: &str, extra: &[String], cargo_args: &[&str]| -> Result<()> {
     let mut cmd = xtask::cmd::cargo_agent_command(&repo_root);
     cmd.arg("test").arg("--quiet");
     if args.release {
       cmd.arg("--release");
     }
+    cmd.arg("-p").arg("fastrender");
+    cmd.args(cargo_args);
+    cmd.args(extra);
 
-    match suite {
-      TestSuite::Core => {}
-      TestSuite::Style => {
-        cmd.args(["--test", "style_tests"]);
-      }
-      TestSuite::Fixtures => {
-        cmd.arg("fixtures");
-      }
-      TestSuite::Wpt => {
-        // Scope to the WPT integration-test harness (`--test wpt_test`) so the suite can be
-        // filtered via `WPT_FILTER` while still using libtest (`cargo test ...`).
-        cmd.args(["-p", "fastrender", "--test", "wpt_test", "wpt_local_suite_passes"]);
-        cmd.arg("--");
-        cmd.arg("--exact");
-      }
-      TestSuite::All => unreachable!("expanded above"),
-    }
-
-    cmd.args(&args.extra);
-
-    println!("Running {suite:?} tests...");
+    println!("Running {label}...");
     cmd.current_dir(&repo_root);
-    run_command(cmd)?;
+    run_command(cmd)
+  };
+
+  match args.suite {
+    TestSuite::Core => {
+      run("core unit tests (--lib)", &args.extra, &["--lib"])?;
+      run(
+        "core integration tests (--test integration)",
+        &args.extra,
+        &["--test", "integration"],
+      )?;
+    }
+    TestSuite::Style => {
+      run("style unit tests (--lib style::)", &args.extra, &["--lib", "style::"])?;
+    }
+    TestSuite::Fixtures => {
+      run(
+        "fixtures integration tests (--test integration fixtures::)",
+        &args.extra,
+        &["--test", "integration", "fixtures::"],
+      )?;
+    }
+    TestSuite::Wpt => {
+      run(
+        "WPT integration tests (--test integration wpt::wpt_local_suite_passes -- --exact)",
+        &args.extra,
+        &[
+          "--test",
+          "integration",
+          "wpt::wpt_local_suite_passes",
+          "--",
+          "--exact",
+        ],
+      )?;
+    }
+    TestSuite::All => {
+      run("core unit tests (--lib)", &[], &["--lib"])?;
+      run(
+        "core integration tests (--test integration)",
+        &[],
+        &["--test", "integration"],
+      )?;
+      run(
+        "allocation-failure harness (--test allocation_failure)",
+        &[],
+        &["--test", "allocation_failure"],
+      )?;
+    }
   }
 
   Ok(())
@@ -937,29 +960,26 @@ fn run_update_goldens(args: UpdateGoldensArgs) -> Result<()> {
     if args.release {
       cmd.arg("--release");
     }
+    cmd.arg("-p").arg("fastrender");
 
     match suite {
       GoldenSuite::Fixtures => {
         cmd.env("UPDATE_GOLDEN", "1");
-        cmd.arg("fixtures");
+        cmd.args(["--test", "integration", "fixtures::"]);
       }
       GoldenSuite::Reference => {
         cmd.env("UPDATE_GOLDEN", "1");
-        cmd.args([
-          "--test",
-          "ref_tests",
-          "form_controls_reference_image_matches_golden",
-        ]);
-        cmd.arg("--");
-        cmd.arg("--exact");
+        cmd.args(["--test", "integration", "form_controls_reference_image_matches_golden"]);
       }
       GoldenSuite::Wpt => {
         cmd.env("UPDATE_WPT_EXPECTED", "1");
-        // Like the test suite, scope to `--test wpt_test` so the WPT smoke test runs through
-        // libtest and can be controlled via env vars like `WPT_FILTER`.
-        cmd.args(["-p", "fastrender", "--test", "wpt_test", "wpt_local_suite_passes"]);
-        cmd.arg("--");
-        cmd.arg("--exact");
+        cmd.args([
+          "--test",
+          "integration",
+          "wpt::wpt_local_suite_passes",
+          "--",
+          "--exact",
+        ]);
       }
       GoldenSuite::All => unreachable!("expanded above"),
     }
