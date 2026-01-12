@@ -2508,16 +2508,13 @@ fn console_count_reset_native(
   args: &[Value],
 ) -> Result<Value, VmError> {
   let sink = console_sink_from_callee_and_this(scope, callee, this)?;
-  let label = if args.is_empty() {
-    "default".to_string()
-  } else {
-    crate::js::vm_error_format::format_console_arguments_limited(scope.heap_mut(), &args[..1])
-  };
+  let label = console_label_from_args(scope, args, "default");
 
   let Some(user_data) = vm.user_data_mut::<WindowRealmUserData>() else {
     return Ok(Value::Undefined);
   };
 
+  let label = console_label_for_map_lookup(&user_data.console_counts, label);
   let existed = user_data.console_counts.remove(&label).is_some();
   if !existed {
     if let Some(sink) = sink {
@@ -2582,16 +2579,13 @@ fn console_time_log_native(
   args: &[Value],
 ) -> Result<Value, VmError> {
   let sink = console_sink_from_callee_and_this(scope, callee, this)?;
-  let label = if args.is_empty() {
-    "default".to_string()
-  } else {
-    crate::js::vm_error_format::format_console_arguments_limited(scope.heap_mut(), &args[..1])
-  };
+  let label = console_label_from_args(scope, args, "default");
 
   let Some(user_data) = vm.user_data_mut::<WindowRealmUserData>() else {
     return Ok(Value::Undefined);
   };
 
+  let label = console_label_for_map_lookup(&user_data.console_timers, label);
   let Some(&start) = user_data.console_timers.get(&label) else {
     if let Some(sink) = sink {
       let msg = format!("Timer '{label}' does not exist");
@@ -2603,7 +2597,7 @@ fn console_time_log_native(
     return Ok(Value::Undefined);
   };
 
-  let end = crate::js::time::clock_now(scope)?;
+  let end = crate::js::time::clock_now(scope).unwrap_or(Duration::ZERO);
   let delta = end.checked_sub(start).unwrap_or(Duration::from_secs(0));
   let ms = crate::js::time::duration_to_ms_f64(delta);
   if let Some(sink) = sink {
