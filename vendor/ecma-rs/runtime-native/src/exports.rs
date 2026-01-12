@@ -1785,14 +1785,14 @@ extern "C" fn run_microtask_with_drop(data: *mut u8) {
   // by `drop_microtask_with_drop`.
   let task = unsafe { &mut *(data as *mut MicrotaskWithDrop) };
   task.ran = true;
-  (task.func)(task.data);
+  crate::ffi::invoke_cb1(task.func, task.data);
 }
 
 extern "C" fn drop_microtask_with_drop(data: *mut u8) {
   // Safety: allocated by `Box::into_raw(MicrotaskWithDrop)` in the queueing helpers below.
   let task = unsafe { Box::from_raw(data as *mut MicrotaskWithDrop) };
   if !task.ran {
-    (task.drop)(task.data);
+    crate::ffi::invoke_cb1(task.drop, task.data);
   }
 }
 
