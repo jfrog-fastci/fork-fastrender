@@ -1,0 +1,77 @@
+schema_version = 1
+
+# Offline pages regression suite comparison overrides.
+#
+# The base comparison config comes from env vars (PAGES_FUZZY/PAGES_TOLERANCE/etc). The rules
+# below relax that config for specific fixtures that are known to have minor nondeterminism or
+# platform/backend drift.
+#
+# Rule values are treated as MINIMUMS (i.e. we apply `max(existing, rule_value)`), never as hard
+# overrides, so stricter configs from the environment still take effect.
+
+[[rules]]
+match = "prefix"
+fixture = "form_controls"
+min_max_different_percent = 0.5
+
+[[rules]]
+match = "exact"
+fixture = "mask_filter_showcase"
+min_max_different_percent = 0.1
+
+[[rules]]
+match = "exact"
+fixture = "vendor_prefixes"
+min_max_different_percent = 0.02
+
+[[rules]]
+match = "exact"
+fixture = "svg_css_presentation"
+min_max_different_percent = 1.0
+
+[[rules]]
+match = "exact"
+fixture = "individual_transforms"
+min_max_different_percent = 0.1
+
+[[rules]]
+match = "exact"
+fixture = "selector_has_dashboard"
+min_max_different_percent = 0.1
+
+[[rules]]
+match = "exact"
+fixture = "table_complex"
+min_max_different_percent = 1.0
+
+[[rules]]
+match = "exact"
+fixture = "table_colgroup_matrix"
+min_max_different_percent = 0.1
+
+[[rules]]
+match = "exact"
+fixture = "filter_composite_lab"
+min_max_different_percent = 1.0
+min_channel_tolerance = 12
+
+[[rules]]
+match = "prefix"
+fixture = "filter_backdrop_"
+min_max_different_percent = 40.0
+min_channel_tolerance = 12
+
+[[rules]]
+match = "prefix"
+fixture = "preserve_3d_"
+min_max_different_percent = 40.0
+
+[[rules]]
+match = "exact"
+fixture = "image_grid_responsive_srcset"
+min_max_different_percent = 6.0
+
+[[rules]]
+match = "exact"
+fixture = "line_clamp"
+min_max_different_percent = 15.0

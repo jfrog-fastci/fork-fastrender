@@ -119,7 +119,20 @@ New columns/transform/form fixtures ship with checked-in goldens; keep these up 
 
 This suite renders a curated set of realistic pages under `tests/pages/fixtures/` (flex/grid/table, multicol, pagination, masks/filters, SVG, writing modes, form controls, plus a positioned-child regression) and compares them against goldens in `tests/pages/golden/`.
 
-Artifacts for failures land in `target/pages_diffs/<page>_{actual,expected,diff}.png`. Comparison defaults to strict pixel matching but respects the same knobs as the fixture harness with `PAGES_TOLERANCE`, `PAGES_MAX_DIFFERENT_PERCENT`, `PAGES_FUZZY=1`, `PAGES_IGNORE_ALPHA=1`, and `PAGES_MAX_PERCEPTUAL_DISTANCE=0.05`.
+Artifacts and reports for failures land in `target/pages-output/`:
+
+- Per-failure PNGs: `<golden_name>_{actual,expected,diff}.png`
+- Aggregated report: `report.html` + `report.json`
+
+Comparison defaults to strict pixel matching but respects the same knobs as the fixture harness with `PAGES_TOLERANCE`, `PAGES_MAX_DIFFERENT_PERCENT`, `PAGES_FUZZY=1`, `PAGES_IGNORE_ALPHA=1`, and `PAGES_MAX_PERCEPTUAL_DISTANCE=0.05`.
+
+Per-fixture tolerance overrides live in `tests/pages/overrides.toml` (values are treated as minimums, i.e. `max(existing, override)`).
+
+The suite is fail-fast by default. To collect a richer aggregated report:
+
+- `PAGES_REPORT=1` — always write `target/pages-output/report.{html,json}` (even if there are no failures)
+- `PAGES_FAIL_FAST=0` — keep going after failures (still fails at the end)
+- `PAGES_MAX_FAILURES=<N>` — stop after N failures and write a report (still fails at the end)
 
 ### Chrome baselines + evidence reports (offline fixtures)
 

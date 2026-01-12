@@ -1,15 +1,18 @@
 use crate::r#ref;
 
+use chrono::Utc;
 use fastrender::api::DiagnosticsLevel;
 use fastrender::image_output::{encode_image, OutputFormat};
 use fastrender::paint::display_list_renderer::PaintParallelism;
 use fastrender::style::media::MediaType;
 use fastrender::{FastRender, FontConfig, RenderOptions, RenderStageTimings, ResourcePolicy};
-use r#ref::image_compare::{compare_config_from_env, compare_pngs, CompareEnvVars};
-use r#ref::CompareConfig;
-use serde::Deserialize;
+use r#ref::image_compare::{compare_config_from_env, save_artifacts, CompareEnvVars};
+use r#ref::{compare_images, load_png_from_bytes, CompareConfig};
+use serde::{Deserialize, Serialize};
+use std::fmt::Write;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use std::thread;
 use std::time::Instant;
 use url::Url;
@@ -563,8 +566,12 @@ fn golden_dir() -> PathBuf {
   PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/pages/golden")
 }
 
-fn diff_dir() -> PathBuf {
-  PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/pages_diffs")
+fn pages_overrides_path() -> PathBuf {
+  PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/pages/overrides.toml")
+}
+
+fn pages_output_dir() -> PathBuf {
+  PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/pages-output")
 }
 
 fn golden_path(name: &str) -> PathBuf {
@@ -585,6 +592,466 @@ fn fixture_filter() -> Option<Vec<String>> {
     .filter(|part| !part.is_empty())
     .collect::<Vec<_>>();
   (!parts.is_empty()).then_some(parts)
+}
+
+const PAGES_OVERRIDES_SCHEMA_VERSION: u32 = 1;
+
+#[derive(Debug, Deserialize)]
+struct PagesOverrides {
+  schema_version: u32,
+  #[serde(default)]
+  rules: Vec<PagesOverrideRule>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+enum PagesOverrideMatch {
+  Exact,
+  Prefix,
+}
+
+#[derive(Debug, Deserialize)]
+struct PagesOverrideRule {
+  #[serde(rename = "match")]
+  match_kind: PagesOverrideMatch,
+  fixture: String,
+  #[serde(default)]
+  min_max_different_percent: Option<f64>,
+  #[serde(default)]
+  min_channel_tolerance: Option<u8>,
+  #[serde(default)]
+  ignore_alpha: Option<bool>,
+  #[serde(default)]
+  min_max_perceptual_distance: Option<f64>,
+}
+
+impl PagesOverrides {
+  fn apply_to(&self, fixture_name: &str, config: &mut CompareConfig) {
+    for rule in &self.rules {
+      if rule.matches(fixture_name) {
+        rule.apply(config);
+      }
+    }
+  }
+}
+
+impl PagesOverrideRule {
+  fn matches(&self, fixture_name: &str) -> bool {
+    match self.match_kind {
+      PagesOverrideMatch::Exact => fixture_name == self.fixture,
+      PagesOverrideMatch::Prefix => fixture_name.starts_with(&self.fixture),
+    }
+  }
+
+  fn apply(&self, config: &mut CompareConfig) {
+    if let Some(min_percent) = self.min_max_different_percent {
+      config.max_different_percent = config.max_different_percent.max(min_percent);
+    }
+    if let Some(min_tolerance) = self.min_channel_tolerance {
+      config.channel_tolerance = config.channel_tolerance.max(min_tolerance);
+    }
+    if self.ignore_alpha.unwrap_or(false) {
+      config.compare_alpha = false;
+    }
+    if let Some(min_distance) = self.min_max_perceptual_distance {
+      if let Some(existing) = config.max_perceptual_distance {
+        config.max_perceptual_distance = Some(existing.max(min_distance));
+      }
+    }
+  }
+}
+
+static PAGES_OVERRIDES: OnceLock<Result<PagesOverrides, String>> = OnceLock::new();
+
+fn load_pages_overrides() -> Result<&'static PagesOverrides, String> {
+  match PAGES_OVERRIDES.get_or_init(|| {
+    let path = pages_overrides_path();
+    let raw = fs::read_to_string(&path)
+      .map_err(|e| format!("Failed to read pages overrides {}: {e}", path.display()))?;
+    let overrides: PagesOverrides = toml::from_str(&raw)
+      .map_err(|e| format!("Failed to parse pages overrides {}: {e}", path.display()))?;
+    if overrides.schema_version != PAGES_OVERRIDES_SCHEMA_VERSION {
+      return Err(format!(
+        "Unexpected pages overrides schema_version {} (expected {}) in {}",
+        overrides.schema_version,
+        PAGES_OVERRIDES_SCHEMA_VERSION,
+        path.display()
+      ));
+    }
+    Ok(overrides)
+  }) {
+    Ok(overrides) => Ok(overrides),
+    Err(err) => Err(err.clone()),
+  }
+}
+
+const PAGES_REPORT_SCHEMA_VERSION: u32 = 1;
+
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum PagesReportStatus {
+  Pass,
+  Fail,
+  Error,
+}
+
+impl PagesReportStatus {
+  fn is_failure(self) -> bool {
+    matches!(self, PagesReportStatus::Fail | PagesReportStatus::Error)
+  }
+
+  fn label(self) -> &'static str {
+    match self {
+      PagesReportStatus::Pass => "PASS",
+      PagesReportStatus::Fail => "FAIL",
+      PagesReportStatus::Error => "ERROR",
+    }
+  }
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct PagesCompareConfigSummary {
+  channel_tolerance: u8,
+  max_different_percent: f64,
+  compare_alpha: bool,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  max_perceptual_distance: Option<f64>,
+}
+
+impl From<&CompareConfig> for PagesCompareConfigSummary {
+  fn from(config: &CompareConfig) -> Self {
+    Self {
+      channel_tolerance: config.channel_tolerance,
+      max_different_percent: config.max_different_percent,
+      compare_alpha: config.compare_alpha,
+      max_perceptual_distance: config.max_perceptual_distance,
+    }
+  }
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct PagesCompareMetrics {
+  different_pixels: u64,
+  total_pixels: u64,
+  different_percent: f64,
+  max_channel_diff: u8,
+  perceptual_distance: f64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct PagesCompareArtifacts {
+  #[serde(skip_serializing_if = "Option::is_none")]
+  actual: Option<String>,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  expected: Option<String>,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  diff: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct PagesReportEntry {
+  fixture: String,
+  shot: String,
+  golden_name: String,
+  status: PagesReportStatus,
+  compare_config: PagesCompareConfigSummary,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  metrics: Option<PagesCompareMetrics>,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  artifacts: Option<PagesCompareArtifacts>,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  message: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct PagesReportTotals {
+  total: usize,
+  passed: usize,
+  failed: usize,
+  errors: usize,
+}
+
+#[derive(Debug, Serialize)]
+struct PagesReport {
+  schema_version: u32,
+  generated_at: String,
+  totals: PagesReportTotals,
+  results: Vec<PagesReportEntry>,
+}
+
+fn pages_report_enabled() -> bool {
+  std::env::var_os("PAGES_REPORT").is_some()
+}
+
+fn pages_max_failures_from_env() -> Result<usize, String> {
+  if let Ok(raw) = std::env::var("PAGES_MAX_FAILURES") {
+    let parsed = raw
+      .parse::<usize>()
+      .map_err(|e| format!("Invalid PAGES_MAX_FAILURES '{raw}': {e}"))?;
+    if parsed == 0 {
+      return Err("PAGES_MAX_FAILURES must be >= 1".to_string());
+    }
+    return Ok(parsed);
+  }
+
+  let fail_fast = std::env::var("PAGES_FAIL_FAST")
+    .ok()
+    .map(|v| v != "0")
+    .unwrap_or(true);
+  Ok(if fail_fast { 1 } else { usize::MAX })
+}
+
+fn pages_report_paths(output_dir: &Path) -> (PathBuf, PathBuf) {
+  (output_dir.join("report.html"), output_dir.join("report.json"))
+}
+
+fn report_rel_path(output_dir: &Path, path: &Path) -> String {
+  let rel = path.strip_prefix(output_dir).unwrap_or(path);
+  rel.to_string_lossy().replace('\\', "/")
+}
+
+fn write_pages_report(output_dir: &Path, results: Vec<PagesReportEntry>) -> Result<(), String> {
+  fs::create_dir_all(output_dir)
+    .map_err(|e| format!("Failed to create pages output dir {}: {e}", output_dir.display()))?;
+
+  let mut passed = 0usize;
+  let mut failed = 0usize;
+  let mut errors = 0usize;
+  for entry in &results {
+    match entry.status {
+      PagesReportStatus::Pass => passed += 1,
+      PagesReportStatus::Fail => failed += 1,
+      PagesReportStatus::Error => errors += 1,
+    }
+  }
+
+  let totals = PagesReportTotals {
+    total: results.len(),
+    passed,
+    failed,
+    errors,
+  };
+
+  let report = PagesReport {
+    schema_version: PAGES_REPORT_SCHEMA_VERSION,
+    generated_at: Utc::now().to_rfc3339(),
+    totals,
+    results,
+  };
+
+  let (html_path, json_path) = pages_report_paths(output_dir);
+  let json = serde_json::to_vec_pretty(&report)
+    .map_err(|e| format!("Failed to serialize pages report JSON: {e}"))?;
+  fs::write(&json_path, json)
+    .map_err(|e| format!("Failed to write {}: {e}", json_path.display()))?;
+
+  let mut rows = String::new();
+  for entry in &report.results {
+    let diff_pct = entry.metrics.as_ref().map(|m| m.different_percent).unwrap_or(0.0);
+    let max_diff = entry.metrics.as_ref().map(|m| m.max_channel_diff).unwrap_or(0);
+    let perceptual = entry
+      .metrics
+      .as_ref()
+      .map(|m| m.perceptual_distance)
+      .unwrap_or(0.0);
+    let message = entry
+      .message
+      .as_deref()
+      .unwrap_or("")
+      .replace('&', "&amp;")
+      .replace('<', "&lt;")
+      .replace('>', "&gt;");
+
+    let links = if let Some(artifacts) = entry.artifacts.as_ref() {
+      let mut parts = Vec::new();
+      if let Some(expected) = artifacts.expected.as_deref() {
+        parts.push(format!(
+          r#"<a href="{p}">expected</a>"#,
+          p = fastrender::cli_utils::report::escape_html(expected)
+        ));
+      }
+      if let Some(actual) = artifacts.actual.as_deref() {
+        parts.push(format!(
+          r#"<a href="{p}">actual</a>"#,
+          p = fastrender::cli_utils::report::escape_html(actual)
+        ));
+      }
+      if let Some(diff) = artifacts.diff.as_deref() {
+        parts.push(format!(
+          r#"<a href="{p}">diff</a>"#,
+          p = fastrender::cli_utils::report::escape_html(diff)
+        ));
+      }
+      parts.join(" | ")
+    } else {
+      String::new()
+    };
+
+    let _ = writeln!(
+      rows,
+      "<tr data-status=\"{}\" data-diff=\"{:.4}\" data-maxdiff=\"{}\" data-perceptual=\"{:.6}\">\
+         <td>{}</td>\
+         <td>{}</td>\
+         <td>{}</td>\
+         <td>{:.4}</td>\
+         <td>{}</td>\
+         <td>{:.4}</td>\
+         <td>{}</td>\
+         <td>{}</td>\
+       </tr>",
+      entry.status.label(),
+      diff_pct,
+      max_diff,
+      perceptual,
+      fastrender::cli_utils::report::escape_html(&entry.fixture),
+      fastrender::cli_utils::report::escape_html(&entry.shot),
+      entry.status.label(),
+      diff_pct,
+      max_diff,
+      perceptual,
+      links,
+      message
+    );
+  }
+
+  let report_html = format!(
+    r#"<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>pages regression report</title>
+  <style>
+    body {{ font-family: sans-serif; margin: 16px; }}
+    table {{ border-collapse: collapse; width: 100%; }}
+    th, td {{ border: 1px solid #ccc; padding: 6px; font-size: 14px; }}
+    thead {{ background: #f6f6f6; position: sticky; top: 0; }}
+    th.sortable {{ cursor: pointer; }}
+    .controls label {{ margin-right: 12px; }}
+  </style>
+</head>
+<body>
+  <h1>Offline pages regression report</h1>
+  <p>Total: {total}. Passed: {passed}. Failed: {failed}. Errors: {errors}. JSON: <a href="{json_name}">{json_name}</a></p>
+  <div class="controls">
+    <label><input type="checkbox" name="status" value="PASS" checked>Pass</label>
+    <label><input type="checkbox" name="status" value="FAIL" checked>Fail</label>
+    <label><input type="checkbox" name="status" value="ERROR" checked>Error</label>
+    <label style="margin-left:16px;">Min diff % <input type="number" id="min-diff" value="0" step="0.01" style="width:90px;"></label>
+  </div>
+  <table>
+    <thead>
+      <tr>
+        <th class="sortable" data-sort="fixture">Fixture</th>
+        <th class="sortable" data-sort="shot">Shot</th>
+        <th class="sortable" data-sort="status">Status</th>
+        <th class="sortable" data-sort="diff">Diff %</th>
+        <th class="sortable" data-sort="maxdiff">Max Δ</th>
+        <th class="sortable" data-sort="perceptual">Perceptual</th>
+        <th>Links</th>
+        <th>Message</th>
+      </tr>
+    </thead>
+    <tbody id="results">
+      {rows}
+    </tbody>
+  </table>
+  <script>
+    const tbody = document.getElementById('results');
+    const statusWeight = (status) => {{
+      switch (status) {{
+        case 'ERROR': return 3;
+        case 'FAIL': return 2;
+        case 'PASS': return 1;
+        default: return 0;
+      }}
+    }};
+    let currentSort = {{ key: 'diff', asc: false }};
+
+    const applyFilters = () => {{
+      const statuses = Array.from(document.querySelectorAll('input[name="status"]:checked')).map(el => el.value);
+      const minDiff = parseFloat(document.getElementById('min-diff').value || '0');
+      Array.from(tbody.querySelectorAll('tr')).forEach(row => {{
+        const status = row.dataset.status;
+        const diff = parseFloat(row.dataset.diff || '0');
+        row.style.display = (statuses.includes(status) && diff >= minDiff) ? '' : 'none';
+      }});
+    }};
+
+    const sortRows = () => {{
+      const rows = Array.from(tbody.querySelectorAll('tr'));
+      const key = currentSort.key;
+      const asc = currentSort.asc;
+      rows.sort((a, b) => {{
+        if (key === 'status') {{
+          const aw = statusWeight(a.dataset.status);
+          const bw = statusWeight(b.dataset.status);
+          return asc ? (aw - bw) : (bw - aw);
+        }}
+        if (key === 'diff') {{
+          const av = parseFloat(a.dataset.diff || '0');
+          const bv = parseFloat(b.dataset.diff || '0');
+          return asc ? (av - bv) : (bv - av);
+        }}
+        if (key === 'maxdiff') {{
+          const av = parseInt(a.dataset.maxdiff || '0', 10);
+          const bv = parseInt(b.dataset.maxdiff || '0', 10);
+          return asc ? (av - bv) : (bv - av);
+        }}
+        if (key === 'perceptual') {{
+          const av = parseFloat(a.dataset.perceptual || '0');
+          const bv = parseFloat(b.dataset.perceptual || '0');
+          return asc ? (av - bv) : (bv - av);
+        }}
+        const aText = a.children[key === 'fixture' ? 0 : 1].textContent || '';
+        const bText = b.children[key === 'fixture' ? 0 : 1].textContent || '';
+        return asc ? aText.localeCompare(bText) : bText.localeCompare(aText);
+      }});
+      rows.forEach(row => tbody.appendChild(row));
+    }};
+
+    document.querySelectorAll('input[name="status"]').forEach(el => el.addEventListener('change', applyFilters));
+    document.getElementById('min-diff').addEventListener('input', applyFilters);
+    document.querySelectorAll('th.sortable').forEach(th => {{
+      th.addEventListener('click', () => {{
+        const key = th.dataset.sort;
+        if (!key) return;
+        if (currentSort.key === key) {{
+          currentSort.asc = !currentSort.asc;
+        }} else {{
+          currentSort.key = key;
+          currentSort.asc = (key === 'fixture' || key === 'shot');
+        }}
+        sortRows();
+        applyFilters();
+      }});
+    }});
+
+    sortRows();
+    applyFilters();
+  </script>
+</body>
+</html>
+"#,
+    total = report.totals.total,
+    passed = report.totals.passed,
+    failed = report.totals.failed,
+    errors = report.totals.errors,
+    json_name = html_escape("report.json"),
+    rows = rows
+  );
+
+  fs::write(&html_path, report_html)
+    .map_err(|e| format!("Failed to write {}: {e}", html_path.display()))?;
+  Ok(())
+}
+
+fn html_escape(input: &str) -> String {
+  input
+    .replace('&', "&amp;")
+    .replace('<', "&lt;")
+    .replace('>', "&gt;")
+    .replace('"', "&quot;")
+    .replace('\'', "&#39;")
 }
 
 fn base_url_for(html_path: &Path) -> Result<String, String> {
@@ -616,71 +1083,7 @@ fn render_page(renderer: &mut FastRender, html: &str, shot: &PageShot) -> Result
   encode_image(&pixmap, OutputFormat::Png).map_err(|e| format!("Encode failed: {:?}", e))
 }
 
-fn run_fixture(fixture: &PageFixture, compare_config: &CompareConfig) -> Result<(), String> {
-  let mut compare_config = compare_config.clone();
-  // Explicit per-fixture overrides.
-  //
-  // Most fixtures run fully strict comparisons. A few scenes are still prone to minor
-  // nondeterminism (e.g. hash-seed-dependent ordering) or backend/platform drift and need
-  // targeted tolerances so the suite remains stable.
-  if fixture.name == "form_controls" || fixture.name.starts_with("form_controls_") {
-    // Form controls can have small AA / box-shadow drift across platforms and SIMD backends.
-    compare_config.max_different_percent = compare_config.max_different_percent.max(0.5);
-  }
-
-  const MIN_MAX_DIFFERENT_PERCENT_OVERRIDES: &[(&str, f64)] = &[
-    // This scene exercises mask + filter compositing where tiny edge AA differences can show up.
-    ("mask_filter_showcase", 0.1),
-    // Some vendor-prefix rendering differences are noisy at the single-pixel level across runs.
-    ("vendor_prefixes", 0.02),
-    // SVG presentation attributes can still differ slightly based on internal ordering.
-    ("svg_css_presentation", 1.0),
-    // Transform AA can drift by a handful of pixels across runs/backends.
-    ("individual_transforms", 0.1),
-    // Selector-heavy fixture has a tiny amount of raster drift in text AA.
-    ("selector_has_dashboard", 0.1),
-    // Complex table fixture exhibits minor (< 1%) border/AA drift across hash seeds.
-    ("table_complex", 1.0),
-    // Table layout fixture has occasional 1px border drift (likely rounding).
-    ("table_colgroup_matrix", 0.1),
-    // Filter compositing still has some nondeterministic edge drift.
-    ("filter_composite_lab", 1.0),
-    // Srcset selection can still vary slightly across runs; keep this fixture permissive for now.
-    ("image_grid_responsive_srcset", 6.0),
-    // Line clamping is still evolving; the expected output can drift substantially.
-    ("line_clamp", 15.0),
-  ];
-  if let Some((_, min_percent)) = MIN_MAX_DIFFERENT_PERCENT_OVERRIDES
-    .iter()
-    .find(|(name, _)| *name == fixture.name)
-  {
-    compare_config.max_different_percent = compare_config.max_different_percent.max(*min_percent);
-  }
-
-  if fixture.name == "filter_composite_lab" {
-    // This scene relies on filter compositing where tiny per-channel rounding differences can
-    // accumulate across backends. Give it a little more channel tolerance so we still catch large
-    // regressions while remaining stable across platforms.
-    compare_config.channel_tolerance = compare_config.channel_tolerance.max(12);
-  }
-
-  // Filter/backdrop fixtures exercise blur-heavy effects where small per-channel rounding
-  // differences can accumulate across platforms and SIMD backends. Allow a modest tolerance
-  // there so the suite remains stable while still catching large regressions.
-  if fixture.name.starts_with("filter_backdrop_") {
-    compare_config.channel_tolerance = compare_config.channel_tolerance.max(12);
-    // These fixtures are also prone to nondeterministic ordering drift (e.g. backdrop + filter
-    // stacking), which can change large regions of the output. Keep a higher pixel-diff cap here
-    // until the underlying determinism issues are fully resolved.
-    compare_config.max_different_percent = compare_config.max_different_percent.max(40.0);
-  }
-
-  if fixture.name.starts_with("preserve_3d_") {
-    // Preserve-3d scenes can still exhibit nondeterministic z-ordering across hash seeds; keep a
-    // higher pixel-diff cap so the rest of the suite can remain strict.
-    compare_config.max_different_percent = compare_config.max_different_percent.max(40.0);
-  }
-
+fn update_fixture_goldens(fixture: &PageFixture) -> Result<(), String> {
   let html_path = fixtures_dir().join(fixture.html);
   let html = fs::read_to_string(&html_path)
     .map_err(|e| format!("Failed to read {}: {}", html_path.display(), e))?;
@@ -699,62 +1102,389 @@ fn run_fixture(fixture: &PageFixture, compare_config: &CompareConfig) -> Result<
     .build()
     .map_err(|e| format!("Failed to create renderer: {:?}", e))?;
 
+  fs::create_dir_all(golden_dir()).map_err(|e| {
+    format!(
+      "Failed to create golden dir {}: {}",
+      golden_dir().display(),
+      e
+    )
+  })?;
+
   for shot in fixture.shots {
     let rendered = render_page(&mut renderer, &html, shot)?;
     let golden_name = shot.golden_name(fixture.name);
     let golden_path = golden_path(&golden_name);
-
-    if should_update_goldens() {
-      fs::create_dir_all(golden_dir()).map_err(|e| {
-        format!(
-          "Failed to create golden dir {}: {}",
-          golden_dir().display(),
-          e
-        )
-      })?;
-      fs::write(&golden_path, &rendered)
-        .map_err(|e| format!("Failed to write golden {}: {}", golden_path.display(), e))?;
-      eprintln!("Updated golden for {}", golden_name);
-      continue;
-    }
-
-    let golden = fs::read(&golden_path).map_err(|e| {
-      format!(
-        "Missing golden {} ({}). Set UPDATE_PAGES_GOLDEN=1 to regenerate. Error: {}",
-        golden_name,
-        golden_path.display(),
-        e
-      )
-    })?;
-
-    compare_pngs(
-      &golden_name,
-      &rendered,
-      &golden,
-      &compare_config,
-      &diff_dir(),
-    )?;
+    fs::write(&golden_path, &rendered)
+      .map_err(|e| format!("Failed to write golden {}: {}", golden_path.display(), e))?;
+    eprintln!("Updated golden for {}", golden_name);
   }
 
   Ok(())
+}
+
+fn error_entry(
+  fixture: &str,
+  shot: &str,
+  golden_name: &str,
+  compare_config: &PagesCompareConfigSummary,
+  message: String,
+) -> PagesReportEntry {
+  PagesReportEntry {
+    fixture: fixture.to_string(),
+    shot: shot.to_string(),
+    golden_name: golden_name.to_string(),
+    status: PagesReportStatus::Error,
+    compare_config: compare_config.clone(),
+    metrics: None,
+    artifacts: None,
+    message: Some(message),
+  }
+}
+
+fn compare_entry(
+  fixture: &str,
+  shot: &str,
+  golden_name: &str,
+  compare_config: &CompareConfig,
+  compare_summary: &PagesCompareConfigSummary,
+  output_dir: &Path,
+  rendered_png: &[u8],
+  golden_png: &[u8],
+) -> PagesReportEntry {
+  let actual = match load_png_from_bytes(rendered_png) {
+    Ok(actual) => actual,
+    Err(e) => {
+      return error_entry(
+        fixture,
+        shot,
+        golden_name,
+        compare_summary,
+        format!("Failed to decode rendered PNG: {e}"),
+      )
+    }
+  };
+  let expected = match load_png_from_bytes(golden_png) {
+    Ok(expected) => expected,
+    Err(e) => {
+      return error_entry(
+        fixture,
+        shot,
+        golden_name,
+        compare_summary,
+        format!("Failed to decode golden PNG: {e}"),
+      )
+    }
+  };
+
+  let diff = compare_images(&actual, &expected, compare_config);
+  let metrics = diff.dimensions_match.then(|| PagesCompareMetrics {
+    different_pixels: diff.statistics.different_pixels,
+    total_pixels: diff.statistics.total_pixels,
+    different_percent: diff.statistics.different_percent,
+    max_channel_diff: diff.statistics.max_channel_diff(diff.config.compare_alpha),
+    perceptual_distance: diff.statistics.perceptual_distance,
+  });
+
+  if diff.is_match() {
+    return PagesReportEntry {
+      fixture: fixture.to_string(),
+      shot: shot.to_string(),
+      golden_name: golden_name.to_string(),
+      status: PagesReportStatus::Pass,
+      compare_config: compare_summary.clone(),
+      metrics,
+      artifacts: None,
+      message: None,
+    };
+  }
+
+  let artifacts_result = save_artifacts(golden_name, rendered_png, golden_png, &diff, output_dir);
+  let (artifacts, message) = match artifacts_result {
+    Ok(paths) => (
+      Some(PagesCompareArtifacts {
+        actual: Some(report_rel_path(output_dir, &paths.actual)),
+        expected: Some(report_rel_path(output_dir, &paths.expected)),
+        diff: paths.diff.map(|p| report_rel_path(output_dir, &p)),
+      }),
+      Some(diff.summary()),
+    ),
+    Err(e) => (None, Some(format!("{} (failed to save artifacts: {e})", diff.summary()))),
+  };
+
+  PagesReportEntry {
+    fixture: fixture.to_string(),
+    shot: shot.to_string(),
+    golden_name: golden_name.to_string(),
+    status: PagesReportStatus::Fail,
+    compare_config: compare_summary.clone(),
+    metrics,
+    artifacts,
+    message,
+  }
+}
+
+fn compare_fixture(
+  fixture: &PageFixture,
+  base_compare_config: &CompareConfig,
+  overrides: &PagesOverrides,
+  output_dir: &Path,
+) -> Vec<PagesReportEntry> {
+  let mut compare_config = base_compare_config.clone();
+  overrides.apply_to(fixture.name, &mut compare_config);
+  let compare_summary = PagesCompareConfigSummary::from(&compare_config);
+
+  let html_path = fixtures_dir().join(fixture.html);
+  let html = match fs::read_to_string(&html_path) {
+    Ok(html) => html,
+    Err(e) => {
+      return fixture
+        .shots
+        .iter()
+        .map(|shot| {
+          let golden_name = shot.golden_name(fixture.name);
+          error_entry(
+            fixture.name,
+            shot.label,
+            &golden_name,
+            &compare_summary,
+            format!("Failed to read {}: {}", html_path.display(), e),
+          )
+        })
+        .collect();
+    }
+  };
+
+  let base_url = match base_url_for(&html_path) {
+    Ok(url) => url,
+    Err(e) => {
+      return fixture
+        .shots
+        .iter()
+        .map(|shot| {
+          let golden_name = shot.golden_name(fixture.name);
+          error_entry(fixture.name, shot.label, &golden_name, &compare_summary, e.clone())
+        })
+        .collect();
+    }
+  };
+
+  let policy = ResourcePolicy::default()
+    .allow_http(false)
+    .allow_https(false)
+    .allow_file(true)
+    .allow_data(true);
+
+  let mut renderer = match FastRender::builder()
+    .base_url(base_url)
+    .font_sources(FontConfig::bundled_only())
+    .resource_policy(policy)
+    .build()
+  {
+    Ok(renderer) => renderer,
+    Err(e) => {
+      return fixture
+        .shots
+        .iter()
+        .map(|shot| {
+          let golden_name = shot.golden_name(fixture.name);
+          error_entry(
+            fixture.name,
+            shot.label,
+            &golden_name,
+            &compare_summary,
+            format!("Failed to create renderer: {:?}", e),
+          )
+        })
+        .collect();
+    }
+  };
+
+  let mut entries = Vec::new();
+  for shot in fixture.shots {
+    let golden_name = shot.golden_name(fixture.name);
+    let rendered = match render_page(&mut renderer, &html, shot) {
+      Ok(png) => png,
+      Err(e) => {
+        entries.push(error_entry(
+          fixture.name,
+          shot.label,
+          &golden_name,
+          &compare_summary,
+          e,
+        ));
+        continue;
+      }
+    };
+
+    let golden_path = golden_path(&golden_name);
+    let golden = match fs::read(&golden_path) {
+      Ok(png) => png,
+      Err(e) => {
+        entries.push(error_entry(
+          fixture.name,
+          shot.label,
+          &golden_name,
+          &compare_summary,
+          format!(
+            "Missing golden {} ({}). Set UPDATE_PAGES_GOLDEN=1 to regenerate. Error: {}",
+            golden_name,
+            golden_path.display(),
+            e
+          ),
+        ));
+        continue;
+      }
+    };
+
+    entries.push(compare_entry(
+      fixture.name,
+      shot.label,
+      &golden_name,
+      &compare_config,
+      &compare_summary,
+      output_dir,
+      &rendered,
+      &golden,
+    ));
+  }
+
+  entries
+}
+
+#[test]
+fn pages_overrides_validate_rules() {
+  let overrides = load_pages_overrides().expect("failed to load pages overrides");
+  let fixture_names: Vec<&str> = PAGE_FIXTURES.iter().map(|f| f.name).collect();
+
+  let mut unknown_exact = Vec::new();
+  let mut unmatched_prefix = Vec::new();
+
+  for rule in &overrides.rules {
+    match rule.match_kind {
+      PagesOverrideMatch::Exact => {
+        if !fixture_names.iter().any(|name| *name == rule.fixture) {
+          unknown_exact.push(rule.fixture.clone());
+        }
+      }
+      PagesOverrideMatch::Prefix => {
+        if !fixture_names.iter().any(|name| name.starts_with(&rule.fixture)) {
+          unmatched_prefix.push(rule.fixture.clone());
+        }
+      }
+    }
+  }
+
+  unknown_exact.sort();
+  unmatched_prefix.sort();
+
+  let mut problems = Vec::new();
+  if !unknown_exact.is_empty() {
+    problems.push(format!(
+      "Exact-match rules reference unknown fixtures:\n{}",
+      unknown_exact.join("\n")
+    ));
+  }
+  if !unmatched_prefix.is_empty() {
+    problems.push(format!(
+      "Prefix-match rules did not match any fixtures:\n{}",
+      unmatched_prefix.join("\n")
+    ));
+  }
+
+  assert!(
+    problems.is_empty(),
+    "Invalid pages overrides in {}:\n{}",
+    pages_overrides_path().display(),
+    problems.join("\n\n")
+  );
 }
 
 #[test]
 fn pages_regression_suite() {
   let compare_config =
     compare_config_from_env(CompareEnvVars::pages()).expect("invalid comparison configuration");
+  let overrides = load_pages_overrides().unwrap_or_else(|e| panic!("Pages overrides: {e}"));
   let filter = fixture_filter();
+  let update_goldens = should_update_goldens();
+  let output_dir = pages_output_dir();
+  let write_report = pages_report_enabled();
+  let max_failures =
+    pages_max_failures_from_env().unwrap_or_else(|e| panic!("Pages failure policy: {e}"));
+
   thread::Builder::new()
     .stack_size(64 * 1024 * 1024)
     .spawn(move || {
+      if update_goldens {
+        for fixture in PAGE_FIXTURES {
+          if let Some(filter) = filter.as_ref() {
+            if !filter.iter().any(|name| name == fixture.name) {
+              continue;
+            }
+          }
+          update_fixture_goldens(fixture)
+            .unwrap_or_else(|e| panic!("Page '{}' failed: {}", fixture.name, e));
+        }
+        return;
+      }
+
+      let mut entries = Vec::new();
+      let mut failures = 0usize;
+      let mut first_failure = None::<PagesReportEntry>;
+
       for fixture in PAGE_FIXTURES {
         if let Some(filter) = filter.as_ref() {
           if !filter.iter().any(|name| name == fixture.name) {
             continue;
           }
         }
-        run_fixture(fixture, &compare_config)
-          .unwrap_or_else(|e| panic!("Page '{}' failed: {}", fixture.name, e));
+
+        let fixture_entries = compare_fixture(fixture, &compare_config, overrides, &output_dir);
+        for entry in fixture_entries {
+          if entry.status.is_failure() {
+            failures += 1;
+            if first_failure.is_none() {
+              first_failure = Some(entry.clone());
+            }
+          }
+          entries.push(entry);
+        }
+
+        if failures >= max_failures {
+          break;
+        }
+      }
+
+      let should_write_report = write_report || failures > 0;
+      if should_write_report {
+        write_pages_report(&output_dir, entries).unwrap_or_else(|e| {
+          panic!(
+            "Failed to write pages report under {}: {e}",
+            output_dir.display()
+          )
+        });
+      }
+
+      if failures > 0 {
+        let (html_path, json_path) = pages_report_paths(&output_dir);
+        let mut message = format!(
+          "{} pages regression failures. Artifacts under {}. Report: {} (JSON: {}).",
+          failures,
+          output_dir.display(),
+          html_path.display(),
+          json_path.display()
+        );
+        if let Some(first) = first_failure {
+          if let Some(detail) = first.message {
+            message.push_str(&format!(
+              "\nFirst failure: {} ({}) - {}",
+              first.fixture, first.shot, detail
+            ));
+          }
+        }
+        message.push_str(
+          "\nSet PAGES_MAX_FAILURES=<N> or PAGES_FAIL_FAST=0 to keep going and collect more failures.",
+        );
+        panic!("{}", message);
       }
     })
     .unwrap()
