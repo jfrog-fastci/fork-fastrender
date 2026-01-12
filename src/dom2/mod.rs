@@ -23,6 +23,7 @@ pub(crate) use qualified_name::{
 };
 
 mod dom_parsing;
+mod form_controls;
 mod html;
 mod html5ever_tree_sink;
 mod html_parse;
@@ -180,6 +181,9 @@ impl MutationLog {
 
 pub struct Document {
   nodes: Vec<Node>,
+  // Form control state slots keyed by `NodeId` index.
+  input_states: Vec<Option<form_controls::InputState>>,
+  textarea_states: Vec<Option<form_controls::TextareaState>>,
   root: NodeId,
   ready_state: DocumentReadyState,
   events: web_events::EventListenerRegistry,
@@ -194,6 +198,8 @@ impl Clone for Document {
   fn clone(&self) -> Self {
     Self {
       nodes: self.nodes.clone(),
+      input_states: self.input_states.clone(),
+      textarea_states: self.textarea_states.clone(),
       root: self.root,
       ready_state: self.ready_state,
       // Cloning a DOM tree should not implicitly clone active event listeners. Start with an empty
@@ -364,6 +370,8 @@ impl Document {
   pub fn clone_with_events(&self) -> Self {
     Self {
       nodes: self.nodes.clone(),
+      input_states: self.input_states.clone(),
+      textarea_states: self.textarea_states.clone(),
       root: self.root,
       ready_state: self.ready_state,
       events: self.events.clone(),
@@ -431,6 +439,8 @@ impl Document {
   pub fn new_with_scripting(quirks_mode: QuirksMode, scripting_enabled: bool) -> Self {
     let mut doc = Self {
       nodes: Vec::new(),
+      input_states: Vec::new(),
+      textarea_states: Vec::new(),
       root: NodeId(0),
       ready_state: DocumentReadyState::Loading,
       events: web_events::EventListenerRegistry::new(),
@@ -783,6 +793,7 @@ impl Document {
   fn push_node(&mut self, kind: NodeKind, parent: Option<NodeId>, inert_subtree: bool) -> NodeId {
     let id = NodeId(self.nodes.len());
     let inert_subtree = inert_subtree || kind_implies_inert_subtree(&kind);
+    let (input_state, textarea_state) = self.init_form_control_state_for_node_kind(&kind);
     self.nodes.push(Node {
       kind,
       parent,
@@ -793,6 +804,8 @@ impl Document {
       script_force_async: false,
       mathml_annotation_xml_integration_point: false,
     });
+    self.input_states.push(input_state);
+    self.textarea_states.push(textarea_state);
     self.mutation_observers.on_node_added();
     if let Some(parent_id) = parent {
       self.nodes[parent_id.0].children.push(id);

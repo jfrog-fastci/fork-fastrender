@@ -1929,6 +1929,13 @@ const ELEMENT_QUERY_SELECTOR_KEY: &str = "__fastrender_element_query_selector";
 const ELEMENT_QUERY_SELECTOR_ALL_KEY: &str = "__fastrender_element_query_selector_all";
 const ELEMENT_MATCHES_KEY: &str = "__fastrender_element_matches";
 const ELEMENT_CLOSEST_KEY: &str = "__fastrender_element_closest";
+const INPUT_VALUE_GET_KEY: &str = "__fastrender_input_value_get";
+const INPUT_VALUE_SET_KEY: &str = "__fastrender_input_value_set";
+const INPUT_CHECKED_GET_KEY: &str = "__fastrender_input_checked_get";
+const INPUT_CHECKED_SET_KEY: &str = "__fastrender_input_checked_set";
+const TEXTAREA_VALUE_GET_KEY: &str = "__fastrender_textarea_value_get";
+const TEXTAREA_VALUE_SET_KEY: &str = "__fastrender_textarea_value_set";
+const FORM_RESET_KEY: &str = "__fastrender_form_reset";
 
 // Must match `window_timers::INTERNAL_QUEUE_MICROTASK_KEY`, but duplicated here to avoid a module
 // dependency cycle (`window_timers` depends on `window_realm`).
@@ -3575,6 +3582,48 @@ fn get_or_create_node_wrapper(
       .heap()
       .object_get_own_data_property_value(document_obj, &key)?
   };
+  let input_value_get = {
+    let key = alloc_key(scope, INPUT_VALUE_GET_KEY)?;
+    scope
+      .heap()
+      .object_get_own_data_property_value(document_obj, &key)?
+  };
+  let input_value_set = {
+    let key = alloc_key(scope, INPUT_VALUE_SET_KEY)?;
+    scope
+      .heap()
+      .object_get_own_data_property_value(document_obj, &key)?
+  };
+  let input_checked_get = {
+    let key = alloc_key(scope, INPUT_CHECKED_GET_KEY)?;
+    scope
+      .heap()
+      .object_get_own_data_property_value(document_obj, &key)?
+  };
+  let input_checked_set = {
+    let key = alloc_key(scope, INPUT_CHECKED_SET_KEY)?;
+    scope
+      .heap()
+      .object_get_own_data_property_value(document_obj, &key)?
+  };
+  let textarea_value_get = {
+    let key = alloc_key(scope, TEXTAREA_VALUE_GET_KEY)?;
+    scope
+      .heap()
+      .object_get_own_data_property_value(document_obj, &key)?
+  };
+  let textarea_value_set = {
+    let key = alloc_key(scope, TEXTAREA_VALUE_SET_KEY)?;
+    scope
+      .heap()
+      .object_get_own_data_property_value(document_obj, &key)?
+  };
+  let form_reset = {
+    let key = alloc_key(scope, FORM_RESET_KEY)?;
+    scope
+      .heap()
+      .object_get_own_data_property_value(document_obj, &key)?
+  };
 
   let class_name_get = {
     let key = alloc_key(scope, ELEMENT_CLASS_NAME_GET_KEY)?;
@@ -4345,6 +4394,80 @@ fn get_or_create_node_wrapper(
 
     let key = alloc_key(scope, "dataset")?;
     scope.define_property(wrapper, key, data_desc(Value::Object(dataset)))?;
+
+    // Form controls (minimal): input.value/input.checked/textarea.value/form.reset.
+    if let Some(dom) = dom {
+      if let dom2::NodeKind::Element {
+        tag_name,
+        namespace,
+        ..
+      } = &dom.node(node_id).kind
+      {
+        let is_html = namespace.is_empty() || namespace == crate::dom::HTML_NAMESPACE;
+        if is_html && tag_name.eq_ignore_ascii_case("input") {
+          if let (Some(Value::Object(get)), Some(Value::Object(set))) = (input_value_get, input_value_set) {
+            let key = alloc_key(scope, "value")?;
+            scope.define_property(
+              wrapper,
+              key,
+              PropertyDescriptor {
+                enumerable: false,
+                configurable: true,
+                kind: PropertyKind::Accessor {
+                  get: Value::Object(get),
+                  set: Value::Object(set),
+                },
+              },
+            )?;
+          }
+
+          if let (Some(Value::Object(get)), Some(Value::Object(set))) =
+            (input_checked_get, input_checked_set)
+          {
+            let key = alloc_key(scope, "checked")?;
+            scope.define_property(
+              wrapper,
+              key,
+              PropertyDescriptor {
+                enumerable: false,
+                configurable: true,
+                kind: PropertyKind::Accessor {
+                  get: Value::Object(get),
+                  set: Value::Object(set),
+                },
+              },
+            )?;
+          }
+        }
+
+        if is_html && tag_name.eq_ignore_ascii_case("textarea") {
+          if let (Some(Value::Object(get)), Some(Value::Object(set))) =
+            (textarea_value_get, textarea_value_set)
+          {
+            let key = alloc_key(scope, "value")?;
+            scope.define_property(
+              wrapper,
+              key,
+              PropertyDescriptor {
+                enumerable: false,
+                configurable: true,
+                kind: PropertyKind::Accessor {
+                  get: Value::Object(get),
+                  set: Value::Object(set),
+                },
+              },
+            )?;
+          }
+        }
+
+        if is_html && tag_name.eq_ignore_ascii_case("form") {
+          if let Some(Value::Object(func)) = form_reset {
+            let key = alloc_key(scope, "reset")?;
+            scope.define_property(wrapper, key, data_desc(Value::Object(func)))?;
+          }
+        }
+      }
+    }
 
     if let (
       Some(Value::Object(get_property_value)),
@@ -12737,6 +12860,190 @@ fn element_reflected_bool_set_native(
   Ok(Value::Undefined)
 }
 
+fn input_value_get_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(obj) = this else {
+    return Ok(Value::Undefined);
+  };
+  let Some(dom) = dom_from_vm_host(host) else {
+    return Ok(Value::Undefined);
+  };
+  let Some(node_id) = dom_node_id_from_obj(scope, dom, obj)? else {
+    return Ok(Value::Undefined);
+  };
+
+  let Ok(value) = dom.input_value(node_id) else {
+    return Ok(Value::Undefined);
+  };
+  Ok(Value::String(scope.alloc_string(value)?))
+}
+
+fn input_value_set_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(obj) = this else {
+    return Ok(Value::Undefined);
+  };
+  let Some(dom) = dom_from_vm_host_mut(host) else {
+    return Ok(Value::Undefined);
+  };
+  let Some(node_id) = dom_node_id_from_obj(scope, dom, obj)? else {
+    return Ok(Value::Undefined);
+  };
+
+  let new_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let new_value = scope.heap_mut().to_string(new_value)?;
+  let new_value = scope
+    .heap()
+    .get_string(new_value)
+    .map(|s| s.to_utf8_lossy())
+    .unwrap_or_default();
+
+  let _ = dom.set_input_value(node_id, &new_value);
+  Ok(Value::Undefined)
+}
+
+fn input_checked_get_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(obj) = this else {
+    return Ok(Value::Undefined);
+  };
+  let Some(dom) = dom_from_vm_host(host) else {
+    return Ok(Value::Undefined);
+  };
+  let Some(node_id) = dom_node_id_from_obj(scope, dom, obj)? else {
+    return Ok(Value::Undefined);
+  };
+
+  let Ok(checked) = dom.input_checked(node_id) else {
+    return Ok(Value::Undefined);
+  };
+  Ok(Value::Bool(checked))
+}
+
+fn input_checked_set_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(obj) = this else {
+    return Ok(Value::Undefined);
+  };
+  let Some(dom) = dom_from_vm_host_mut(host) else {
+    return Ok(Value::Undefined);
+  };
+  let Some(node_id) = dom_node_id_from_obj(scope, dom, obj)? else {
+    return Ok(Value::Undefined);
+  };
+
+  let checked_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let checked = scope.heap().to_boolean(checked_value)?;
+  let _ = dom.set_input_checked(node_id, checked);
+  Ok(Value::Undefined)
+}
+
+fn textarea_value_get_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(obj) = this else {
+    return Ok(Value::Undefined);
+  };
+  let Some(dom) = dom_from_vm_host(host) else {
+    return Ok(Value::Undefined);
+  };
+  let Some(node_id) = dom_node_id_from_obj(scope, dom, obj)? else {
+    return Ok(Value::Undefined);
+  };
+
+  let Ok(value) = dom.textarea_value(node_id) else {
+    return Ok(Value::Undefined);
+  };
+  Ok(Value::String(scope.alloc_string(&value)?))
+}
+
+fn textarea_value_set_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(obj) = this else {
+    return Ok(Value::Undefined);
+  };
+  let Some(dom) = dom_from_vm_host_mut(host) else {
+    return Ok(Value::Undefined);
+  };
+  let Some(node_id) = dom_node_id_from_obj(scope, dom, obj)? else {
+    return Ok(Value::Undefined);
+  };
+
+  let new_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let new_value = scope.heap_mut().to_string(new_value)?;
+  let new_value = scope
+    .heap()
+    .get_string(new_value)
+    .map(|s| s.to_utf8_lossy())
+    .unwrap_or_default();
+
+  let _ = dom.set_textarea_value(node_id, &new_value);
+  Ok(Value::Undefined)
+}
+
+fn form_reset_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(obj) = this else {
+    return Ok(Value::Undefined);
+  };
+  let Some(dom) = dom_from_vm_host_mut(host) else {
+    return Ok(Value::Undefined);
+  };
+  let Some(node_id) = dom_node_id_from_obj(scope, dom, obj)? else {
+    return Ok(Value::Undefined);
+  };
+  let _ = dom.form_reset(node_id);
+  Ok(Value::Undefined)
+}
+
 fn is_html_script_element(dom: &dom2::Document, node_id: NodeId) -> bool {
   match &dom.node(node_id).kind {
     dom2::NodeKind::Element {
@@ -19580,6 +19887,125 @@ fn init_window_globals(
     let set_key = alloc_key(&mut scope, set_key_name)?;
     scope.define_property(document_obj, set_key, data_desc(Value::Object(set_func)))?;
   }
+
+  // Form controls: store shared accessors on `document` so wrappers can reuse them.
+  let input_value_get_call_id = vm.register_native_call(input_value_get_native)?;
+  let input_value_get_name = scope.alloc_string("get value")?;
+  scope.push_root(Value::String(input_value_get_name))?;
+  let input_value_get_func =
+    scope.alloc_native_function(input_value_get_call_id, None, input_value_get_name, 0)?;
+  scope.heap_mut().object_set_prototype(
+    input_value_get_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(input_value_get_func))?;
+  let input_value_get_key = alloc_key(&mut scope, INPUT_VALUE_GET_KEY)?;
+  scope.define_property(
+    document_obj,
+    input_value_get_key,
+    data_desc(Value::Object(input_value_get_func)),
+  )?;
+
+  let input_value_set_call_id = vm.register_native_call(input_value_set_native)?;
+  let input_value_set_name = scope.alloc_string("set value")?;
+  scope.push_root(Value::String(input_value_set_name))?;
+  let input_value_set_func =
+    scope.alloc_native_function(input_value_set_call_id, None, input_value_set_name, 1)?;
+  scope.heap_mut().object_set_prototype(
+    input_value_set_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(input_value_set_func))?;
+  let input_value_set_key = alloc_key(&mut scope, INPUT_VALUE_SET_KEY)?;
+  scope.define_property(
+    document_obj,
+    input_value_set_key,
+    data_desc(Value::Object(input_value_set_func)),
+  )?;
+
+  let input_checked_get_call_id = vm.register_native_call(input_checked_get_native)?;
+  let input_checked_get_name = scope.alloc_string("get checked")?;
+  scope.push_root(Value::String(input_checked_get_name))?;
+  let input_checked_get_func =
+    scope.alloc_native_function(input_checked_get_call_id, None, input_checked_get_name, 0)?;
+  scope.heap_mut().object_set_prototype(
+    input_checked_get_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(input_checked_get_func))?;
+  let input_checked_get_key = alloc_key(&mut scope, INPUT_CHECKED_GET_KEY)?;
+  scope.define_property(
+    document_obj,
+    input_checked_get_key,
+    data_desc(Value::Object(input_checked_get_func)),
+  )?;
+
+  let input_checked_set_call_id = vm.register_native_call(input_checked_set_native)?;
+  let input_checked_set_name = scope.alloc_string("set checked")?;
+  scope.push_root(Value::String(input_checked_set_name))?;
+  let input_checked_set_func =
+    scope.alloc_native_function(input_checked_set_call_id, None, input_checked_set_name, 1)?;
+  scope.heap_mut().object_set_prototype(
+    input_checked_set_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(input_checked_set_func))?;
+  let input_checked_set_key = alloc_key(&mut scope, INPUT_CHECKED_SET_KEY)?;
+  scope.define_property(
+    document_obj,
+    input_checked_set_key,
+    data_desc(Value::Object(input_checked_set_func)),
+  )?;
+
+  let textarea_value_get_call_id = vm.register_native_call(textarea_value_get_native)?;
+  let textarea_value_get_name = scope.alloc_string("get textarea value")?;
+  scope.push_root(Value::String(textarea_value_get_name))?;
+  let textarea_value_get_func =
+    scope.alloc_native_function(textarea_value_get_call_id, None, textarea_value_get_name, 0)?;
+  scope.heap_mut().object_set_prototype(
+    textarea_value_get_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(textarea_value_get_func))?;
+  let textarea_value_get_key = alloc_key(&mut scope, TEXTAREA_VALUE_GET_KEY)?;
+  scope.define_property(
+    document_obj,
+    textarea_value_get_key,
+    data_desc(Value::Object(textarea_value_get_func)),
+  )?;
+
+  let textarea_value_set_call_id = vm.register_native_call(textarea_value_set_native)?;
+  let textarea_value_set_name = scope.alloc_string("set textarea value")?;
+  scope.push_root(Value::String(textarea_value_set_name))?;
+  let textarea_value_set_func =
+    scope.alloc_native_function(textarea_value_set_call_id, None, textarea_value_set_name, 1)?;
+  scope.heap_mut().object_set_prototype(
+    textarea_value_set_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(textarea_value_set_func))?;
+  let textarea_value_set_key = alloc_key(&mut scope, TEXTAREA_VALUE_SET_KEY)?;
+  scope.define_property(
+    document_obj,
+    textarea_value_set_key,
+    data_desc(Value::Object(textarea_value_set_func)),
+  )?;
+
+  let form_reset_call_id = vm.register_native_call(form_reset_native)?;
+  let form_reset_name = scope.alloc_string("reset")?;
+  scope.push_root(Value::String(form_reset_name))?;
+  let form_reset_func = scope.alloc_native_function(form_reset_call_id, None, form_reset_name, 0)?;
+  scope.heap_mut().object_set_prototype(
+    form_reset_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(form_reset_func))?;
+  let form_reset_key = alloc_key(&mut scope, FORM_RESET_KEY)?;
+  scope.define_property(
+    document_obj,
+    form_reset_key,
+    data_desc(Value::Object(form_reset_func)),
+  )?;
 
   // Store shared CSSStyleDeclaration methods on `document` so wrappers can reuse them.
   let style_get_property_value_call_id =
