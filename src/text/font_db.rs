@@ -1565,9 +1565,32 @@ impl FontDatabase {
   }
   fn set_generic_fallbacks(&mut self) {
     let faces: Vec<&fontdb::FaceInfo> = self.faces().collect();
+    let bundled_ids = self.bundled_face_ids();
+
+    // Prefer selecting generic fallbacks from non-bundled faces when system/user fonts are
+    // available.
+    //
+    // This matters whenever we load bundled fonts alongside system fonts (e.g. `render_fixtures
+    // --patch-html-for-chrome-baseline --system-fonts`): Chrome's generic families (`sans-serif`,
+    // `serif`, etc.) resolve through the host's system font configuration, while FastRender always
+    // has bundled Noto families available. Without preferring non-bundled faces, `sans-serif` would
+    // map to the bundled Noto Sans even on systems where Chrome would pick e.g. DejaVu Sans,
+    // producing widespread wrap/layout drift on text-heavy pages.
+
+    let is_bundled_face = |face: &fontdb::FaceInfo| bundled_ids.contains(&face.id);
+    let is_non_emoji_non_bundled = |face: &fontdb::FaceInfo| {
+      !Self::face_is_emoji_font(face) && !is_bundled_face(face)
+    };
+
     let Some(primary_family) = faces
       .iter()
-      .find(|face| !Self::face_is_emoji_font(face) && self.face_has_basic_latin(face.id))
+      .find(|face| is_non_emoji_non_bundled(face) && self.face_has_basic_latin(face.id))
+      .or_else(|| faces.iter().find(|face| is_non_emoji_non_bundled(face)))
+      .or_else(|| {
+        faces
+          .iter()
+          .find(|face| !Self::face_is_emoji_font(face) && self.face_has_basic_latin(face.id))
+      })
       .or_else(|| faces.iter().find(|face| !Self::face_is_emoji_font(face)))
       .or_else(|| faces.first())
       .and_then(|face| face.families.first().map(|(name, _)| name.clone()))
@@ -1584,6 +1607,11 @@ impl FontDatabase {
       .copied()
       .filter(|face| !Self::face_is_emoji_font(face))
       .collect();
+    let non_emoji_non_bundled_faces: Vec<&fontdb::FaceInfo> = non_emoji_faces
+      .iter()
+      .copied()
+      .filter(|face| !is_bundled_face(face))
+      .collect();
     let find_candidate = |candidate: &str, faces: &[&fontdb::FaceInfo]| -> Option<String> {
       for face in faces {
         for (name, _) in &face.families {
@@ -1595,6 +1623,11 @@ impl FontDatabase {
       None
     };
     let first_matching_family = |candidates: &[&str]| -> Option<String> {
+      for candidate in candidates {
+        if let Some(name) = find_candidate(candidate, &non_emoji_non_bundled_faces) {
+          return Some(name);
+        }
+      }
       for candidate in candidates {
         if let Some(name) = find_candidate(candidate, &non_emoji_faces) {
           return Some(name);
@@ -2948,6 +2981,44 @@ mod tests {
       liberation < noto && liberation < dejavu,
       "expected Liberation Sans to precede other common Linux sans-serif fallbacks"
     );
+  }
+
+  #[test]
+  fn generic_fallbacks_prefer_non_bundled_faces_when_both_available() {
+    // Regression for `FontDatabase::set_generic_fallbacks`: when bundled fonts are loaded alongside
+    // non-bundled fonts, generic family mapping should prefer non-bundled candidates so fixture
+    // renders in `--system-fonts` mode align with browser/system font resolution.
+    //
+    // In particular, the `SansSerif` fallback list includes "Noto Sans" before "DejaVu Sans"
+    // (matching many modern Linux fontconfig defaults). If the host system doesn't have Noto Sans
+    // installed but FastRender loads its bundled Noto Sans, selecting the bundled face would cause
+    // large wrap/layout drift vs Chrome. Prefer the non-bundled DejaVu Sans when present.
+    let mut db = FontDatabase::empty();
+    db.load_font_data(include_bytes!("../../tests/fixtures/fonts/NotoSans-subset.ttf").to_vec())
+      .expect("load Noto Sans");
+    db.load_font_data(include_bytes!("../../tests/fixtures/fonts/DejaVuSans-subset.ttf").to_vec())
+      .expect("load DejaVu Sans");
+
+    let noto_ids: Vec<ID> = db
+      .faces()
+      .filter(|face| {
+        face
+          .families
+          .iter()
+          .any(|(name, _)| name.eq_ignore_ascii_case("Noto Sans"))
+      })
+      .map(|face| face.id)
+      .collect();
+    assert!(!noto_ids.is_empty(), "expected a Noto Sans face in fontdb");
+    Arc::make_mut(&mut db.bundled_face_ids).extend(noto_ids);
+
+    db.refresh_generic_fallbacks();
+
+    let id = db
+      .query("sans-serif", FontWeight::NORMAL, FontStyle::Normal)
+      .expect("expected sans-serif match");
+    let font = db.load_font(id).expect("load selected font");
+    assert_eq!(font.family, "DejaVu Sans");
   }
 
   #[test]
