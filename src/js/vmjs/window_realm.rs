@@ -3316,7 +3316,7 @@ fn dispatch_hashchange_event_task<Host: WindowRealmHost + 'static>(
 
     let event_proto = {
       scope.push_root(Value::Object(document_obj))?;
-      let key = alloc_key(&mut scope, EVENT_PROTOTYPE_KEY)?;
+      let key = alloc_key(&mut scope, HASH_CHANGE_EVENT_PROTOTYPE_KEY)?;
       scope
         .heap()
         .object_get_own_data_property_value(document_obj, &key)?
@@ -3343,10 +3343,8 @@ fn dispatch_hashchange_event_task<Host: WindowRealmHost + 'static>(
     scope.define_property(event_obj, cancelable_key, data_desc(Value::Bool(false)))?;
     let composed_key = alloc_key(&mut scope, "composed")?;
     scope.define_property(event_obj, composed_key, data_desc(Value::Bool(false)))?;
-    let default_prevented_key = alloc_key(&mut scope, "defaultPrevented")?;
-    scope.define_property(event_obj, default_prevented_key, data_desc(Value::Bool(false)))?;
-    let cancel_bubble_key = alloc_key(&mut scope, "cancelBubble")?;
-    scope.define_property(event_obj, cancel_bubble_key, data_desc(Value::Bool(false)))?;
+
+    define_event_default_properties(&mut scope, event_obj)?;
 
     let old_url_key = alloc_key(&mut scope, "oldURL")?;
     let old_url_s = scope.alloc_string(&old_url)?;
@@ -3364,6 +3362,8 @@ fn dispatch_hashchange_event_task<Host: WindowRealmHost + 'static>(
       new_url_key,
       read_only_data_desc(Value::String(new_url_s)),
     )?;
+
+    brand_event_object(&mut scope, event_obj, BrandedEventKind::HashChangeEvent)?;
 
     let global = realm.global_object();
     vm.call_with_host_and_hooks(

@@ -51,7 +51,6 @@ const HEADERS_OWNER_KEY: &str = "__fastrender_headers_owner";
 
 const REQUEST_ID_KEY: &str = "__fastrender_request_id";
 const RESPONSE_ID_KEY: &str = "__fastrender_response_id";
-const REQUEST_BODY_STREAM_KEY: &str = "__fastrender_request_body_stream";
 
 // Hidden per-instance properties for stream wrappers.
 const RESPONSE_BODY_STREAM_KEY: &str = "__fastrender_response_body_stream";
@@ -2924,6 +2923,16 @@ fn request_clone_native(
     Value::Undefined => Value::Null,
     other => other,
   };
+  if request_body_stream_locked(env_id, request_id, scope.heap())? {
+    return Err(throw_type_error(
+      vm,
+      scope,
+      &mut *host,
+      host_hooks,
+      "Request body is locked",
+    ));
+  }
+
   if request_body_stream_locked(env_id, request_id, scope.heap())? {
     return Err(throw_type_error(
       vm,
