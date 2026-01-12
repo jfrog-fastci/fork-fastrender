@@ -36310,7 +36310,13 @@ mod tests {
         const p = document.createElement('p');\n\
         const script = document.createElement('script');\n\
         const input = document.createElement('input');\n\
+        const textarea = document.createElement('textarea');\n\
+        const select = document.createElement('select');\n\
+        const option = document.createElement('option');\n\
         const form = document.createElement('form');\n\
+        const img = document.createElement('img');\n\
+        const a = document.createElement('a');\n\
+        const link = document.createElement('link');\n\
         const ok1 = div instanceof HTMLElement;\n\
         const ok2 = div instanceof Element;\n\
         const ok3 = div instanceof HTMLDivElement;\n\
@@ -36318,16 +36324,22 @@ mod tests {
         const ok5 = p instanceof HTMLParagraphElement;\n\
         const ok6 = script instanceof HTMLScriptElement;\n\
         const ok7 = input instanceof HTMLInputElement;\n\
-        const ok8 = form instanceof HTMLFormElement;\n\
-        const ok9 = Object.getPrototypeOf(HTMLElement.prototype) === Element.prototype;\n\
-        const ok10 = Object.getPrototypeOf(HTMLInputElement.prototype) === HTMLElement.prototype;\n\
-        const ok11 = Object.getPrototypeOf(HTMLDivElement.prototype) === HTMLElement.prototype;\n\
-        const ok12 = Object.getPrototypeOf(HTMLScriptElement.prototype) === HTMLElement.prototype;\n\
+        const ok8 = textarea instanceof HTMLTextAreaElement;\n\
+        const ok9 = select instanceof HTMLSelectElement;\n\
+        const ok10 = option instanceof HTMLOptionElement;\n\
+        const ok11 = form instanceof HTMLFormElement;\n\
+        const ok12 = img instanceof HTMLImageElement;\n\
+        const ok13 = a instanceof HTMLAnchorElement;\n\
+        const ok14 = link instanceof HTMLLinkElement;\n\
+        const ok15 = Object.getPrototypeOf(HTMLElement.prototype) === Element.prototype;\n\
+        const ok16 = Object.getPrototypeOf(HTMLInputElement.prototype) === HTMLElement.prototype;\n\
+        const ok17 = Object.getPrototypeOf(HTMLDivElement.prototype) === HTMLElement.prototype;\n\
+        const ok18 = Object.getPrototypeOf(HTMLScriptElement.prototype) === HTMLElement.prototype;\n\
         let illegalOk = false;\n\
         try { new HTMLInputElement(); } catch (e) {\n\
           illegalOk = e && e.name === 'TypeError' && String(e.message).includes('Illegal constructor');\n\
         }\n\
-        return ok1 && ok2 && ok3 && ok4 && ok5 && ok6 && ok7 && ok8 && ok9 && ok10 && ok11 && ok12 && illegalOk;\n\
+        return ok1 && ok2 && ok3 && ok4 && ok5 && ok6 && ok7 && ok8 && ok9 && ok10 && ok11 && ok12 && ok13 && ok14 && ok15 && ok16 && ok17 && ok18 && illegalOk;\n\
       })()",
     )?;
     assert_eq!(ok, Value::Bool(true));
