@@ -7458,8 +7458,8 @@ pub fn array_prototype_entries(
 pub fn array_iterator_next(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   this: Value,
   _args: &[Value],
@@ -7475,8 +7475,16 @@ pub fn array_iterator_next(
   scope.push_root(Value::Object(this_obj))?;
 
   let array_key = internal_symbol_key(&mut scope, ARRAY_ITERATOR_ARRAY_MARKER)?;
-  let array_value = get_data_property_value(vm, &mut scope, this_obj, &array_key)?
-    .ok_or(VmError::TypeError("Array iterator missing internal array"))?;
+  let array_value = match get_data_property_value(vm, &mut scope, this_obj, &array_key) {
+    Ok(Some(v)) => v,
+    Ok(None) => return Err(VmError::TypeError("Array iterator missing internal array")),
+    Err(VmError::PropertyNotData) => {
+      return Err(VmError::TypeError(
+        "Array iterator internal array is not a data property",
+      ));
+    }
+    Err(err) => return Err(err),
+  };
   let array_obj = match array_value {
     // Per spec, once the iterator is exhausted its internal `[[IteratedObject]]` is set to
     // `undefined`.
@@ -7498,16 +7506,30 @@ pub fn array_iterator_next(
   scope.push_root(Value::Object(array_obj))?;
 
   let index_key = internal_symbol_key(&mut scope, ARRAY_ITERATOR_INDEX_MARKER)?;
-  let index_value = get_data_property_value(vm, &mut scope, this_obj, &index_key)?
-    .unwrap_or(Value::Number(0.0));
+  let index_value = match get_data_property_value(vm, &mut scope, this_obj, &index_key) {
+    Ok(v) => v.unwrap_or(Value::Number(0.0)),
+    Err(VmError::PropertyNotData) => {
+      return Err(VmError::TypeError(
+        "Array iterator internal index is not a data property",
+      ));
+    }
+    Err(err) => return Err(err),
+  };
   let idx = match index_value {
     Value::Number(n) if n.is_finite() && n >= 0.0 => n as usize,
     _ => 0usize,
   };
 
   let kind_key = internal_symbol_key(&mut scope, ARRAY_ITERATOR_KIND_MARKER)?;
-  let kind_value = get_data_property_value(vm, &mut scope, this_obj, &kind_key)?
-    .unwrap_or(Value::Number(ArrayIteratorKind::Values as u8 as f64));
+  let kind_value = match get_data_property_value(vm, &mut scope, this_obj, &kind_key) {
+    Ok(v) => v.unwrap_or(Value::Number(ArrayIteratorKind::Values as u8 as f64)),
+    Err(VmError::PropertyNotData) => {
+      return Err(VmError::TypeError(
+        "Array iterator internal kind is not a data property",
+      ));
+    }
+    Err(err) => return Err(err),
+  };
   let kind = match kind_value {
     Value::Number(n) if n.is_finite() && n.fract() == 0.0 => match n as u8 {
       0 => ArrayIteratorKind::Keys,
@@ -7556,14 +7578,14 @@ pub fn array_iterator_next(
       scope.push_root(Value::String(idx_s))?;
       let key = PropertyKey::from_string(idx_s);
       let value =
-        get_data_property_value(vm, &mut scope, array_obj, &key)?.unwrap_or(Value::Undefined);
+        scope.ordinary_get_with_host_and_hooks(vm, host, hooks, array_obj, key, Value::Object(array_obj))?;
+      // Root the retrieved value across subsequent allocations/GC. This matters in particular for
+      // accessors that return freshly allocated objects/strings.
+      scope.push_root(value)?;
 
       match kind {
         ArrayIteratorKind::Values => value,
         ArrayIteratorKind::Entries => {
-          // Root `value` across allocation of the entry array.
-          scope.push_root(value)?;
-
           let entry = scope.alloc_array(0)?;
           scope.push_root(Value::Object(entry))?;
           scope

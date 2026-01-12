@@ -72,6 +72,24 @@ fn array_spread() {
 }
 
 #[test]
+fn array_spread_invokes_prototype_accessors_for_holes() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        var called = 0;
+        Object.defineProperty(Array.prototype, "1", { get: function(){ called++; return 99; }, configurable: true });
+        var a = [1];
+        a.length = 2;
+        var out = [...a];
+        called === 1 && out.length === 2 && out[0] === 1 && out[1] === 99
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn string_spread_iterates_code_points() {
   let mut rt = new_runtime();
   let value = rt
