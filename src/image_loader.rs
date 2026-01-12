@@ -17262,6 +17262,55 @@ mod tests_inline {
   }
 
   #[test]
+  fn svg_style_import_policy_checks_final_url_after_redirect() {
+    let doc_url = "https://example.test/page.html";
+    let main_url = "https://example.test/main.svg";
+    let requested_url = "https://example.test/style.css";
+    let final_url = "https://cross.test/style.css";
+
+    let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"><style>@import url("style.css");</style><rect class="r" width="1" height="1" fill="blue"/></svg>"#;
+
+    // Redirect to a cross-origin final URL; strict same-origin policy should block after fetch.
+    let mut css_res = FetchedResource::new(
+      b".r{fill:red !important;}".to_vec(),
+      Some("text/css".to_string()),
+    );
+    css_res.status = Some(200);
+    css_res.final_url = Some(final_url.to_string());
+
+    let fetcher = MapFetcher::with_entries([(requested_url.to_string(), css_res)]);
+    let mut cache = ImageCache::with_fetcher(Arc::new(fetcher.clone()));
+    let doc_origin = origin_from_url(doc_url).expect("document origin");
+    let mut ctx = ResourceContext::default();
+    ctx.document_url = Some(doc_url.to_string());
+    ctx.policy.document_origin = Some(doc_origin);
+    ctx.policy.same_origin_only = true;
+    cache.set_resource_context(Some(ctx));
+
+    let err = cache
+      .render_svg_pixmap_at_size(svg, 1, 1, main_url, 1.0)
+      .expect_err("expected redirect-to-cross-origin stylesheet to be blocked");
+    match err {
+      Error::Image(ImageError::LoadFailed { url, reason }) => {
+        assert_eq!(url, requested_url);
+        assert!(
+          reason.contains("Blocked cross-origin subresource") && reason.contains(final_url),
+          "unexpected policy reason: {reason}"
+        );
+      }
+      other => panic!("expected ImageError::LoadFailed, got {other:?}"),
+    }
+
+    let requests = fetcher.requests();
+    assert!(
+      requests
+        .iter()
+        .any(|(url, dest, _)| url == requested_url && *dest == FetchDestination::Style),
+      "expected stylesheet fetch for {requested_url} before final-url policy check, got: {requests:?}"
+    );
+  }
+
+  #[test]
   fn svg_style_import_policy_injected_style_respects_xml_base_for_cache_safety() {
     let doc_url = "https://doc.test/page.html";
     let svg_url = "inline-svg";
