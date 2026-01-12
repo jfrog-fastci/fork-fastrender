@@ -1,0 +1,185 @@
+use optimize_js::analysis::find_loops::find_loops;
+use optimize_js::cfg::cfg::{Cfg, CfgBBlocks, CfgGraph};
+use optimize_js::dom::Dom;
+use optimize_js::il::inst::{Arg, BinOp, Const, Inst};
+use optimize_js::opt::optpass_loop_opts::optpass_loop_opts;
+use parse_js::num::JsNumber;
+
+#[test]
+fn constant_trip_count_loop_is_fully_unrolled() {
+  // CFG:
+  //
+  //   0: preheader
+  //   1: header
+  //       i = phi { 0: 0, 2: i_next }
+  //       cond = i < 4
+  //       if cond goto 2 else 3
+  //   2: body/latch
+  //       unknown_store("x", i)
+  //       t = i + 42
+  //       i_next = i + 1
+  //       goto 1
+  //   3: exit
+  //       unknown_store("y", i)  // should observe final i == 4 after unrolling
+
+  let mut graph = CfgGraph::default();
+  graph.connect(0, 1);
+  graph.connect(1, 2);
+  graph.connect(1, 3);
+  graph.connect(2, 1);
+  graph.ensure_label(3);
+
+  let mut bblocks = CfgBBlocks::default();
+  bblocks.add(0, vec![]);
+
+  let mut phi = Inst::phi_empty(0);
+  phi.insert_phi(0, Arg::Const(Const::Num(JsNumber(0.0))));
+  phi.insert_phi(2, Arg::Var(2));
+  bblocks.add(
+    1,
+    vec![
+      phi,
+      Inst::bin(
+        1,
+        Arg::Var(0),
+        BinOp::Lt,
+        Arg::Const(Const::Num(JsNumber(4.0))),
+      ),
+      Inst::cond_goto(Arg::Var(1), 2, 3),
+    ],
+  );
+
+  bblocks.add(
+    2,
+    vec![
+      Inst::unknown_store("x".to_string(), Arg::Var(0)),
+      Inst::bin(
+        4,
+        Arg::Var(0),
+        BinOp::Add,
+        Arg::Const(Const::Num(JsNumber(42.0))),
+      ),
+      // Induction update.
+      Inst::bin(
+        2,
+        Arg::Var(0),
+        BinOp::Add,
+        Arg::Const(Const::Num(JsNumber(1.0))),
+      ),
+    ],
+  );
+
+  bblocks.add(3, vec![Inst::unknown_store("y".to_string(), Arg::Var(0))]);
+
+  let mut cfg = Cfg {
+    graph,
+    bblocks,
+    entry: 0,
+  };
+
+  let pass = optpass_loop_opts(&mut cfg);
+  assert!(pass.changed, "expected loop opts to unroll the loop");
+  assert!(pass.cfg_changed, "expected unrolling to change the CFG");
+
+  // The loop should be gone.
+  let dom = Dom::calculate(&cfg);
+  let loops = find_loops(&cfg, &dom);
+  assert!(
+    loops.is_empty(),
+    "expected unrolled CFG to have no natural loops, got {loops:?}"
+  );
+
+  // The unrolled block should contain four stores with constants 0..3.
+  let unrolled_label = 4;
+  let unrolled = cfg.bblocks.get(unrolled_label);
+  let stores = unrolled
+    .iter()
+    .filter(|inst| inst.t == optimize_js::il::inst::InstTyp::UnknownStore)
+    .collect::<Vec<_>>();
+  assert_eq!(
+    stores.len(),
+    4,
+    "expected 4 unrolled stores to `x`, got {stores:?}"
+  );
+  for (idx, inst) in stores.iter().enumerate() {
+    assert_eq!(&inst.unknown, "x");
+    assert!(
+      matches!(
+        inst.args.as_slice(),
+        [Arg::Const(Const::Num(JsNumber(n)))] if *n == idx as f64
+      ),
+      "expected store {idx} to write constant {idx}, got {inst:?}"
+    );
+  }
+
+  // The exit store should see the final i == 4.
+  let exit = cfg.bblocks.get(3);
+  assert!(
+    matches!(
+      exit[0].args.as_slice(),
+      [Arg::Const(Const::Num(JsNumber(n)))] if *n == 4.0
+    ),
+    "expected exit store to observe i == 4, got {exit:?}"
+  );
+}
+
+#[test]
+fn non_constant_trip_count_loop_is_not_unrolled() {
+  // Same loop shape as the unrolling test, but the upper bound is unknown.
+  let mut graph = CfgGraph::default();
+  graph.connect(0, 1);
+  graph.connect(1, 2);
+  graph.connect(1, 3);
+  graph.connect(2, 1);
+  graph.ensure_label(3);
+
+  let mut bblocks = CfgBBlocks::default();
+  // Preheader loads the unknown upper bound `n`.
+  bblocks.add(0, vec![Inst::unknown_load(5, "n".to_string())]);
+
+  let mut phi = Inst::phi_empty(0);
+  phi.insert_phi(0, Arg::Const(Const::Num(JsNumber(0.0))));
+  phi.insert_phi(2, Arg::Var(2));
+  bblocks.add(
+    1,
+    vec![
+      phi,
+      Inst::bin(1, Arg::Var(0), BinOp::Lt, Arg::Var(5)),
+      Inst::cond_goto(Arg::Var(1), 2, 3),
+    ],
+  );
+
+  bblocks.add(
+    2,
+    vec![
+      Inst::unknown_store("x".to_string(), Arg::Var(0)),
+      Inst::bin(
+        2,
+        Arg::Var(0),
+        BinOp::Add,
+        Arg::Const(Const::Num(JsNumber(1.0))),
+      ),
+    ],
+  );
+
+  bblocks.add(3, vec![]);
+
+  let mut cfg = Cfg {
+    graph,
+    bblocks,
+    entry: 0,
+  };
+
+  let pass = optpass_loop_opts(&mut cfg);
+  assert!(
+    !pass.changed,
+    "expected loop opts to leave non-constant-trip loop unchanged"
+  );
+
+  let dom = Dom::calculate(&cfg);
+  let loops = find_loops(&cfg, &dom);
+  assert!(
+    loops.contains_key(&1),
+    "expected CFG to still contain the loop header, got {loops:?}"
+  );
+}

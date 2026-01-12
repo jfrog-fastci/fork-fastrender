@@ -81,6 +81,7 @@ use opt::optpass_dvn::optpass_dvn;
 use opt::optpass_impossible_branches::optpass_impossible_branches;
 use opt::optpass_inline::optpass_inline;
 use opt::optpass_licm::optpass_licm;
+use opt::optpass_loop_opts::optpass_loop_opts;
 use opt::optpass_redundant_assigns::optpass_redundant_assigns;
 use opt::optpass_trivial_dce::optpass_trivial_dce;
 use opt::PassResult;
@@ -143,6 +144,12 @@ pub struct CompileCfgOptions {
   /// Default off. When enabled, LICM runs as part of the optimization fixpoint
   /// loop after DVN/DCE and CFG pruning.
   pub enable_licm: bool,
+  /// Enable additional loop optimizations (induction variable analysis, strength reduction,
+  /// conservative unrolling).
+  ///
+  /// This is disabled by default because the transformations are intentionally conservative and
+  /// still evolving; enabling it is primarily intended for native AOT consumers.
+  pub enable_loop_opts: bool,
 }
 
 /// Options controlling the SSA inliner (`optpass_inline`).
@@ -177,6 +184,7 @@ impl Default for CompileCfgOptions {
       enable_licm: false,
       inline: InlineOptions::default(),
       enable_licm: false,
+      enable_loop_opts: false,
     }
   }
 }
@@ -741,6 +749,24 @@ pub(crate) fn build_program_function_with_options(
         // `optpass_licm` may create new CFG blocks with fresh labels. SSA deconstruction allocates
         // more labels using `c_label`, so keep the counter in sync to avoid collisions.
         if licm_result.cfg_changed {
+          let next = cfg
+            .graph
+            .labels()
+            .max()
+            .unwrap_or(cfg.entry)
+            .checked_add(1)
+            .expect("label overflow in build_program_function");
+          c_label = Counter::new(next);
+        }
+      }
+
+      if options.enable_loop_opts {
+        let loop_opts_result = optpass_loop_opts(&mut cfg);
+        dom_cache.maybe_invalidate(&loop_opts_result);
+        iteration_result.merge(loop_opts_result);
+        dbg_checkpoint(&format!("opt{}_loop_opts", i), &cfg);
+
+        if loop_opts_result.cfg_changed {
           let next = cfg
             .graph
             .labels()

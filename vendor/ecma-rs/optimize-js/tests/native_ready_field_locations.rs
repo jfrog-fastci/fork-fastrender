@@ -31,10 +31,10 @@ fn compile_native_ready(source: &str, native_strict: bool) -> optimize_js::Nativ
     false,
     NativeReadyOptions {
       run_opt_passes: false,
-      // When optimizations are disabled, the SSA graph can still contain
-      // redundant copy `VarAssign`s without full typed metadata. The strict-native
-      // verifier is intended for the optimized native pipeline, so disable it
-      // here to focus this test on field-level effect modeling.
+      // This test intentionally exercises both strict-native and non-strict-native compilation.
+      // When optimization passes are disabled, the SSA graph can contain redundant copy
+      // `VarAssign`s without full typed metadata; strict-native verification is intended for the
+      // optimized native pipeline, so disable it here.
       verify_strict_native: false,
       ..NativeReadyOptions::default()
     },
