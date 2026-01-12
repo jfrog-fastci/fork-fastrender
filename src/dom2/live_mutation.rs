@@ -84,6 +84,15 @@ impl Default for LiveMutation {
 }
 
 impl LiveMutation {
+  /// Whether any live traversal state is currently subscribed to mutations.
+  ///
+  /// This can be used by high-frequency mutation sources (e.g. HTML parsing) to avoid doing extra
+  /// work (like computing UTF-16 code unit lengths) when no live objects exist.
+  #[inline]
+  pub(crate) fn has_subscribers(&self) -> bool {
+    self.hook.is_some() || !self.live_ranges.is_empty() || !self.node_iterators.is_empty()
+  }
+
   pub(crate) fn set_hook(&mut self, hook: Option<Box<dyn LiveMutationHook>>) {
     self.hook = hook;
   }

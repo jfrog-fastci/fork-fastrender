@@ -233,6 +233,7 @@ impl Dom2TreeSink {
       return;
     };
 
+    doc.live_mutation.pre_remove(target, old_parent, pos);
     doc.node_mut(old_parent).children.remove(pos);
     doc.node_mut(target).parent = None;
   }
@@ -264,6 +265,7 @@ impl Dom2TreeSink {
       return false;
     }
 
+    doc.live_mutation.pre_insert(parent, insertion_idx, 1);
     doc.node_mut(parent).children.insert(insertion_idx, child);
     doc.node_mut(child).parent = Some(parent);
     true
@@ -283,13 +285,29 @@ impl Dom2TreeSink {
     if reference.is_none() {
       if !break_text_merge {
         if let Some(last_child) = doc.node(parent).children.last().copied() {
-          if let NodeKind::Text { content } = &mut doc.node_mut(last_child).kind {
-            content.push_str(text);
+          if matches!(&doc.node(last_child).kind, NodeKind::Text { .. }) {
+            if doc.live_mutation.has_subscribers() {
+              let offset = match &doc.node(last_child).kind {
+                NodeKind::Text { content } => content.encode_utf16().count(),
+                _ => 0,
+              };
+              doc.live_mutation.replace_data(
+                last_child,
+                offset,
+                /* removed_len */ 0,
+                /* inserted_len */ text.encode_utf16().count(),
+              );
+            }
+            if let NodeKind::Text { content } = &mut doc.node_mut(last_child).kind {
+              content.push_str(text);
+            }
             return;
           }
         }
       }
 
+      let insertion_idx = doc.node(parent).children.len();
+      doc.live_mutation.pre_insert(parent, insertion_idx, 1);
       doc.push_node(
         NodeKind::Text {
           content: text.to_string(),
@@ -327,6 +345,28 @@ impl Dom2TreeSink {
         debug_assert!(false, "can_merge_prev implies a previous sibling exists");
         return;
       };
+      if doc.live_mutation.has_subscribers() {
+        let offset = match &doc.node(prev_id).kind {
+          NodeKind::Text { content } => content.encode_utf16().count(),
+          _ => 0,
+        };
+        let inserted_len = text.encode_utf16().count();
+        doc
+          .live_mutation
+          .replace_data(prev_id, offset, /* removed_len */ 0, inserted_len);
+        if can_merge_next {
+          let next_len = match &doc.node(reference).kind {
+            NodeKind::Text { content } => content.encode_utf16().count(),
+            _ => 0,
+          };
+          doc.live_mutation.replace_data(
+            prev_id,
+            offset + inserted_len,
+            /* removed_len */ 0,
+            next_len,
+          );
+        }
+      }
       if let NodeKind::Text { content } = &mut doc.node_mut(prev_id).kind {
         content.push_str(text);
       }
@@ -347,6 +387,14 @@ impl Dom2TreeSink {
     }
 
     if can_merge_next {
+      if doc.live_mutation.has_subscribers() {
+        doc.live_mutation.replace_data(
+          reference,
+          /* offset */ 0,
+          /* removed_len */ 0,
+          /* inserted_len */ text.encode_utf16().count(),
+        );
+      }
       if let NodeKind::Text { content } = &mut doc.node_mut(reference).kind {
         content.insert_str(0, text);
       }
@@ -361,6 +409,7 @@ impl Dom2TreeSink {
       /* inert_subtree */ false,
     );
     doc.node_mut(text_id).parent = Some(parent);
+    doc.live_mutation.pre_insert(parent, insert_pos, 1);
     doc.node_mut(parent).children.insert(insert_pos, text_id);
   }
 
@@ -864,6 +913,8 @@ impl TreeSink for Dom2TreeSink {
       IgnoredNodeHandling::Materialize => {
         let mut doc = self.document.borrow_mut();
         let root = doc.root();
+        let insertion_idx = doc.node(root).children.len();
+        doc.live_mutation.pre_insert(root, insertion_idx, 1);
         doc.push_node(
           NodeKind::Doctype {
             name: name.to_string(),
@@ -900,13 +951,21 @@ impl TreeSink for Dom2TreeSink {
     if node.index() >= doc.nodes_len() || new_parent.index() >= doc.nodes_len() {
       return;
     }
-    let moved_children = std::mem::take(&mut doc.node_mut(*node).children);
+    let old_len = doc.node(*new_parent).children.len();
+    let moved_children_snapshot = doc.node(*node).children.clone();
+    if !moved_children_snapshot.is_empty() {
+      for (idx, &child) in moved_children_snapshot.iter().enumerate() {
+        doc.live_mutation.pre_remove(child, *node, idx);
+      }
+      doc
+        .live_mutation
+        .pre_insert(*new_parent, old_len, moved_children_snapshot.len());
+    }
 
+    let moved_children = std::mem::take(&mut doc.node_mut(*node).children);
     if moved_children.is_empty() {
       return;
     }
-
-    let old_len = doc.node(*new_parent).children.len();
     for &child in &moved_children {
       doc.node_mut(child).parent = Some(*new_parent);
     }
@@ -930,6 +989,18 @@ impl TreeSink for Dom2TreeSink {
           }
         };
         if let Some(next_content) = next_content {
+          if doc.live_mutation.has_subscribers() {
+            let offset = match &doc.node(prev).kind {
+              NodeKind::Text { content } => content.encode_utf16().count(),
+              _ => 0,
+            };
+            doc.live_mutation.replace_data(
+              prev,
+              offset,
+              /* removed_len */ 0,
+              /* inserted_len */ next_content.encode_utf16().count(),
+            );
+          }
           if let NodeKind::Text { content } = &mut doc.node_mut(prev).kind {
             content.push_str(&next_content);
           } else {

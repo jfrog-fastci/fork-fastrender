@@ -665,3 +665,55 @@ fn declarative_shadow_dom_insertion_emits_live_pre_insert_hook() {
     }]
   );
 }
+
+#[test]
+fn append_text_emits_live_replace_data_hook() {
+  use html5ever::tendril::StrTendril;
+  use html5ever::tree_builder::NodeOrText;
+  use html5ever::tree_builder::TreeSink;
+
+  let sink = Dom2TreeSink::new(None);
+  let recorder = LiveMutationTestRecorder::default();
+
+  let parent = {
+    let mut doc = sink.document_mut();
+    doc.set_live_mutation_hook(Some(Box::new(recorder.clone())));
+
+    let root = doc.root();
+    doc.push_node(
+      NodeKind::Element {
+        tag_name: "div".to_string(),
+        namespace: String::new(),
+        prefix: None,
+        attributes: Vec::new(),
+      },
+      Some(root),
+      /* inert_subtree */ false,
+    )
+  };
+  let _ = recorder.take();
+
+  sink.append(&parent, NodeOrText::AppendText(StrTendril::from("hi")));
+  let text_id = {
+    let doc = sink.document();
+    doc.node(parent).children[0]
+  };
+  sink.append(&parent, NodeOrText::AppendText(StrTendril::from("bye")));
+
+  assert_eq!(
+    recorder.take(),
+    vec![
+      LiveMutationEvent::PreInsert {
+        parent,
+        index: 0,
+        count: 1,
+      },
+      LiveMutationEvent::ReplaceData {
+        node: text_id,
+        offset: 2,
+        removed_len: 0,
+        inserted_len: 3,
+      },
+    ]
+  );
+}
