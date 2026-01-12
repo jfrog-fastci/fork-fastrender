@@ -266,82 +266,84 @@ pub fn clone_node<Host: DomHost + ?Sized>(
 // -----------------------------------------------------------------------------------------------
 // Node.textContent.
 
-/// `Node.textContent` getter.
-///
-/// Returns `None` for node types that produce `null` in the web platform (`Document`, `Doctype`).
-pub fn text_content_get<Host: DomHost + ?Sized>(host: &Host, node_id: NodeId) -> Option<String> {
-  host.with_dom(|dom| {
-    let root_node = dom.nodes().get(node_id.index())?;
-    match &root_node.kind {
-      NodeKind::Document { .. } | NodeKind::Doctype { .. } => None,
-      NodeKind::Text { content } => Some(content.clone()),
-      NodeKind::Comment { content } => Some(content.clone()),
-      NodeKind::ProcessingInstruction { data, .. } => Some(data.clone()),
-      NodeKind::Element { .. }
-      | NodeKind::Slot { .. }
-      | NodeKind::DocumentFragment
-      | NodeKind::ShadowRoot { .. } => {
-        let mut out = String::new();
+pub(crate) fn text_content_get_from_dom(dom: &crate::dom2::Document, node_id: NodeId) -> Option<String> {
+  let root_node = dom.nodes().get(node_id.index())?;
+  match &root_node.kind {
+    NodeKind::Document { .. } | NodeKind::Doctype { .. } => None,
+    NodeKind::Text { content } => Some(content.clone()),
+    NodeKind::Comment { content } => Some(content.clone()),
+    NodeKind::ProcessingInstruction { data, .. } => Some(data.clone()),
+    NodeKind::Element { .. }
+    | NodeKind::Slot { .. }
+    | NodeKind::DocumentFragment
+    | NodeKind::ShadowRoot { .. } => {
+      let mut out = String::new();
 
-        let mut remaining = dom.nodes_len().saturating_add(1);
-        let mut stack: Vec<NodeId> = Vec::new();
+      let mut remaining = dom.nodes_len().saturating_add(1);
+      let mut stack: Vec<NodeId> = Vec::new();
 
-        // Seed traversal with children in reverse so we pop in tree order.
-        for &child in root_node.children.iter().rev() {
+      // Seed traversal with children in reverse so we pop in tree order.
+      for &child in root_node.children.iter().rev() {
+        if child.index() >= dom.nodes_len() {
+          continue;
+        }
+        let Some(child_node) = dom.nodes().get(child.index()) else {
+          continue;
+        };
+        if child_node.parent != Some(node_id) {
+          continue;
+        }
+        // `ShadowRoot` is not part of the light DOM tree for `textContent` semantics.
+        if matches!(&root_node.kind, NodeKind::Element { .. } | NodeKind::Slot { .. })
+          && matches!(&child_node.kind, NodeKind::ShadowRoot { .. })
+        {
+          continue;
+        }
+        stack.push(child);
+      }
+
+      while let Some(id) = stack.pop() {
+        if remaining == 0 {
+          break;
+        }
+        remaining -= 1;
+
+        let Some(node) = dom.nodes().get(id.index()) else {
+          continue;
+        };
+        if let NodeKind::Text { content } = &node.kind {
+          out.push_str(content);
+        }
+
+        for &child in node.children.iter().rev() {
           if child.index() >= dom.nodes_len() {
             continue;
           }
           let Some(child_node) = dom.nodes().get(child.index()) else {
             continue;
           };
-          if child_node.parent != Some(node_id) {
+          if child_node.parent != Some(id) {
             continue;
           }
-          // `ShadowRoot` is not part of the light DOM tree for `textContent` semantics.
-          if matches!(&root_node.kind, NodeKind::Element { .. } | NodeKind::Slot { .. })
+          if matches!(&node.kind, NodeKind::Element { .. } | NodeKind::Slot { .. })
             && matches!(&child_node.kind, NodeKind::ShadowRoot { .. })
           {
             continue;
           }
           stack.push(child);
         }
-
-        while let Some(id) = stack.pop() {
-          if remaining == 0 {
-            break;
-          }
-          remaining -= 1;
-
-          let Some(node) = dom.nodes().get(id.index()) else {
-            continue;
-          };
-          if let NodeKind::Text { content } = &node.kind {
-            out.push_str(content);
-          }
-
-          for &child in node.children.iter().rev() {
-            if child.index() >= dom.nodes_len() {
-              continue;
-            }
-            let Some(child_node) = dom.nodes().get(child.index()) else {
-              continue;
-            };
-            if child_node.parent != Some(id) {
-              continue;
-            }
-            if matches!(&node.kind, NodeKind::Element { .. } | NodeKind::Slot { .. })
-              && matches!(&child_node.kind, NodeKind::ShadowRoot { .. })
-            {
-              continue;
-            }
-            stack.push(child);
-          }
-        }
-
-        Some(out)
       }
+
+      Some(out)
     }
-  })
+  }
+}
+
+/// `Node.textContent` getter.
+///
+/// Returns `None` for node types that produce `null` in the web platform (`Document`, `Doctype`).
+pub fn text_content_get<Host: DomHost + ?Sized>(host: &Host, node_id: NodeId) -> Option<String> {
+  host.with_dom(|dom| text_content_get_from_dom(dom, node_id))
 }
 
 /// `Node.textContent` setter.

@@ -23794,73 +23794,6 @@ fn node_text_content_get_native(
 
   let node_id = handle.node_id;
 
-  let compute = |scope: &mut Scope<'_>, dom: &dom2::Document, node_id: NodeId| -> Result<Value, VmError> {
-    match &dom.node(node_id).kind {
-      NodeKind::Document { .. } | NodeKind::Doctype { .. } => Ok(Value::Null),
-      NodeKind::Text { content } => Ok(Value::String(scope.alloc_string(content)?)),
-      NodeKind::Comment { content } => Ok(Value::String(scope.alloc_string(content)?)),
-      NodeKind::ProcessingInstruction { data, .. } => Ok(Value::String(scope.alloc_string(data)?)),
-      NodeKind::Element { .. }
-      | NodeKind::Slot { .. }
-      | NodeKind::DocumentFragment
-      | NodeKind::ShadowRoot { .. } => {
-        let mut out = String::new();
-
-        let mut remaining = dom.nodes_len().saturating_add(1);
-        let mut stack: Vec<NodeId> = Vec::new();
-
-        // Seed traversal with children in reverse so we pop in tree order.
-        let root_node = dom.node(node_id);
-        for &child in root_node.children.iter().rev() {
-          if child.index() >= dom.nodes_len() {
-            continue;
-          }
-          if dom.node(child).parent != Some(node_id) {
-            continue;
-          }
-          // `ShadowRoot` is not part of the light DOM tree for `textContent` semantics.
-          if matches!(
-            &root_node.kind,
-            NodeKind::Element { .. } | NodeKind::Slot { .. }
-          ) && matches!(&dom.node(child).kind, NodeKind::ShadowRoot { .. })
-          {
-            continue;
-          }
-          stack.push(child);
-        }
-
-        while let Some(id) = stack.pop() {
-          if remaining == 0 {
-            break;
-          }
-          remaining -= 1;
-
-          let node = dom.node(id);
-          if let NodeKind::Text { content } = &node.kind {
-            out.push_str(content);
-          }
-
-          for &child in node.children.iter().rev() {
-            if child.index() >= dom.nodes_len() {
-              continue;
-            }
-            if dom.node(child).parent != Some(id) {
-              continue;
-            }
-            if matches!(&node.kind, NodeKind::Element { .. } | NodeKind::Slot { .. })
-              && matches!(&dom.node(child).kind, NodeKind::ShadowRoot { .. })
-            {
-              continue;
-            }
-            stack.push(child);
-          }
-        }
-
-        Ok(Value::String(scope.alloc_string(&out)?))
-      }
-    }
-  };
-
   let Some(dom_ptr) = dom_ptr_for_document_id_read(vm, host, handle.document_id) else {
     return Err(VmError::TypeError(
       "Node.textContent requires a DOM-backed document",
@@ -23868,7 +23801,10 @@ fn node_text_content_get_native(
   };
   // SAFETY: `dom_ptr` is valid for the duration of this native call.
   let dom = unsafe { dom_ptr.as_ref() };
-  compute(scope, dom, node_id)
+  match crate::js::dom2_bindings::text_content_get_from_dom(dom, node_id) {
+    None => Ok(Value::Null),
+    Some(text) => Ok(Value::String(scope.alloc_string(&text)?)),
+  }
 }
 
 fn node_text_content_set_native(
