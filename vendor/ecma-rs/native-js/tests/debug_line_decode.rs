@@ -5,6 +5,8 @@ use gimli::read::{Dwarf, EndianSlice};
 use gimli::{RunTimeEndian, SectionId};
 use native_js::{compile_program, CompilerOptions, EmitKind, OptLevel};
 use object::{Object, ObjectSection};
+use std::collections::BTreeSet;
+use std::path::{Path, PathBuf};
 use typecheck_ts::lib_support::{CompilerOptions as TsCompilerOptions, LibName};
 use typecheck_ts::{FileKey, MemoryHost, Program};
 
@@ -60,15 +62,81 @@ fn compile_unit_language(unit: &gimli::read::Unit<Reader<'_>, usize>) -> Option<
   }
 }
 
+fn compile_unit_comp_dir(
+  dwarf: &Dwarf<Reader<'_>>,
+  unit: &gimli::read::Unit<Reader<'_>, usize>,
+) -> Option<String> {
+  let mut entries = unit.entries();
+  let (_, entry) = entries.next_dfs().ok()??;
+  let attr = entry.attr(gimli::DW_AT_comp_dir).ok()??;
+  attr_string(dwarf, attr.value())
+}
+
+fn compile_unit_producer(
+  dwarf: &Dwarf<Reader<'_>>,
+  unit: &gimli::read::Unit<Reader<'_>, usize>,
+) -> Option<String> {
+  let mut entries = unit.entries();
+  let (_, entry) = entries.next_dfs().ok()??;
+  let attr = entry.attr(gimli::DW_AT_producer).ok()??;
+  attr_string(dwarf, attr.value())
+}
+
+fn attr_string(dwarf: &Dwarf<Reader<'_>>, attr: gimli::read::AttributeValue<Reader<'_>>) -> Option<String> {
+  match attr {
+    gimli::read::AttributeValue::String(s) => Some(s.to_string_lossy().to_string()),
+    gimli::read::AttributeValue::DebugStrRef(off) => Some(
+      dwarf
+        .debug_str
+        .get_str(off)
+        .ok()?
+        .to_string_lossy()
+        .to_string(),
+    ),
+    gimli::read::AttributeValue::DebugLineStrRef(off) => Some(
+      dwarf
+        .debug_line_str
+        .get_str(off)
+        .ok()?
+        .to_string_lossy()
+        .to_string(),
+    ),
+    _ => None,
+  }
+}
+
 fn row_file_name(
   dwarf: &Dwarf<Reader<'_>>,
   unit: &gimli::read::Unit<Reader<'_>, usize>,
   header: &gimli::read::LineProgramHeader<Reader<'_>>,
   row: &gimli::read::LineRow,
 ) -> Option<String> {
+  let comp_dir = compile_unit_comp_dir(dwarf, unit);
   let file = row.file(header)?;
-  let path = dwarf.attr_string(unit, file.path_name()).ok()?;
-  Some(path.to_string_lossy().into_owned())
+  let file_name = attr_string(dwarf, file.path_name())?;
+  if Path::new(&file_name).is_absolute() {
+    return Some(file_name);
+  }
+
+  let dir = file.directory(header).and_then(|dir| attr_string(dwarf, dir));
+  if let Some(dir) = dir {
+    if !dir.is_empty() && dir != "." {
+      let joined = if Path::new(&dir).is_absolute() {
+        PathBuf::from(dir).join(&file_name)
+      } else if let Some(comp_dir) = comp_dir.as_deref().filter(|d| !d.is_empty() && *d != ".") {
+        PathBuf::from(comp_dir).join(dir).join(&file_name)
+      } else {
+        PathBuf::from(dir).join(&file_name)
+      };
+      return Some(joined.to_string_lossy().to_string());
+    }
+  }
+
+  if let Some(comp_dir) = comp_dir.as_deref().filter(|d| !d.is_empty() && *d != ".") {
+    return Some(PathBuf::from(comp_dir).join(file_name).to_string_lossy().to_string());
+  }
+
+  Some(file_name)
 }
 
 fn compile_to_obj(program: &Program, entry: typecheck_ts::FileId) -> Vec<u8> {
@@ -285,5 +353,75 @@ export function main(): number {
   assert!(
     addr2line_location_matches(&addr_ctx, math_return_addr, "math.ts", 2),
     "addr2line could not map the decoded line-row address {math_return_addr:#x} back to math.ts:2"
+  );
+}
+
+#[test]
+fn dwarf_paths_respect_debug_prefix_map() {
+  let mut host = es5_host();
+  let main_key = FileKey::new("/tmp/proj/main.ts");
+
+  // Line numbers here are part of the test: keep each statement on its own line.
+  let main_src = r#"export function main(): number {
+  let x = 1;
+  return x;
+}"#;
+  host.insert(main_key.clone(), main_src);
+
+  let program = Program::new(host, vec![main_key.clone()]);
+  let entry = program.file_id(&main_key).expect("entry file id");
+  let entry_key = program
+    .file_key(entry)
+    .map(|k| k.to_string())
+    .unwrap_or_else(|| "<missing file key>".to_string());
+
+  let mut opts = CompilerOptions::default();
+  opts.emit = EmitKind::Object;
+  opts.debug = true;
+  opts.opt_level = OptLevel::O0;
+  opts.debug_path_prefix_map = vec![(PathBuf::from("/tmp/proj"), PathBuf::from("/src"))];
+
+  let artifact = compile_program(&program, entry, &opts).expect("compile_program");
+  let obj = std::fs::read(&artifact.path).expect("read object bytes");
+  let _ = std::fs::remove_file(&artifact.path);
+
+  let dwarf = load_dwarf(&obj);
+
+  let mut units = dwarf.units();
+  let mut found_row = false;
+  let mut seen_files: BTreeSet<String> = BTreeSet::new();
+  let mut seen_comp_dirs: BTreeSet<String> = BTreeSet::new();
+  let mut seen_units: BTreeSet<String> = BTreeSet::new();
+  let mut seen_producers: BTreeSet<String> = BTreeSet::new();
+  while let Some(header) = units.next().expect("iterate units") {
+    let unit = dwarf.unit(header).expect("parse unit");
+    if let Some(name) = compile_unit_name(&dwarf, &unit) {
+      seen_units.insert(name);
+    }
+    if let Some(dir) = compile_unit_comp_dir(&dwarf, &unit) {
+      seen_comp_dirs.insert(dir);
+    }
+    if let Some(prod) = compile_unit_producer(&dwarf, &unit) {
+      seen_producers.insert(prod);
+    }
+    let Some(program) = unit.line_program.clone() else {
+      continue;
+    };
+    let mut rows = program.rows();
+    while let Some((header, row)) = rows.next_row().expect("next_row") {
+      let Some(file_name) = row_file_name(&dwarf, &unit, header, row) else {
+        continue;
+      };
+      seen_files.insert(file_name.clone());
+      if file_name == "/src/main.ts" {
+        found_row = true;
+        break;
+      }
+    }
+  }
+
+  assert!(
+    found_row,
+    "expected a DWARF line-table row referencing `/src/main.ts`; entry_key={entry_key:?} units={seen_units:?} comp_dir={seen_comp_dirs:?} producer={seen_producers:?} seen_files={seen_files:?}"
   );
 }

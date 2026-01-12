@@ -2,6 +2,29 @@ use clap::{ArgAction, Args, Parser, Subcommand};
 use std::ffi::OsString;
 use std::path::PathBuf;
 
+#[derive(Clone, Debug)]
+pub struct DebugPrefixMap {
+  pub from: PathBuf,
+  pub to: PathBuf,
+}
+
+impl std::str::FromStr for DebugPrefixMap {
+  type Err = String;
+
+  fn from_str(s: &str) -> Result<Self, Self::Err> {
+    let (from, to) = s
+      .split_once('=')
+      .ok_or_else(|| format!("invalid --debug-prefix-map value `{s}` (expected FROM=TO)"))?;
+    if from.is_empty() {
+      return Err("invalid --debug-prefix-map: FROM must not be empty".to_string());
+    }
+    Ok(Self {
+      from: PathBuf::from(from),
+      to: PathBuf::from(to),
+    })
+  }
+}
+
 #[derive(Parser, Debug)]
 #[command(
   author,
@@ -44,6 +67,12 @@ pub struct Cli {
   /// artifacts where possible.
   #[arg(long, global = true)]
   pub debug: bool,
+
+  /// Remap path prefixes embedded in emitted DWARF debug info.
+  ///
+  /// Repeatable. Format: `FROM=TO` (similar to `clang -fdebug-prefix-map` and `rustc --remap-path-prefix`).
+  #[arg(long, value_name = "FROM=TO", global = true)]
+  pub debug_prefix_map: Vec<DebugPrefixMap>,
 
   /// Optimization level (0-3).
   ///

@@ -72,6 +72,7 @@ use inkwell::values::{
 use inkwell::{AddressSpace, FloatPredicate, IntPredicate};
 use parse_js::num::JsNumber;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
+use std::path::PathBuf;
 use typecheck_ts::{DefId, FileId, Program, TypeKindSummary};
 use types_ts_interned as tti;
 
@@ -81,6 +82,10 @@ pub struct CodegenOptions {
   ///
   /// This is primarily used by the typechecked/native pipeline (`native-js-cli`, `native-js`).
   pub debug: bool,
+  /// Remap source paths embedded in emitted debug info (DWARF).
+  ///
+  /// Deterministic precedence: the first matching mapping wins.
+  pub debug_path_prefix_map: Vec<(PathBuf, PathBuf)>,
   /// The optimization level the final artifact will be built with.
   ///
   /// This is used as a heuristic for emitting "optimized debug info" (variable tracking via
@@ -93,6 +98,7 @@ impl Default for CodegenOptions {
     Self {
       module_name: "native_js".to_string(),
       debug: false,
+      debug_path_prefix_map: Vec::new(),
       opt_level: crate::OptLevel::O0,
     }
   }
@@ -348,7 +354,15 @@ impl<'ctx, 'p> ProgramCodegen<'ctx, 'p> {
     let module = context.create_module(&options.module_name);
     let debug = options
       .debug
-      .then(|| debuginfo::CodegenDebug::new(&module, program, entry_file, options.opt_level));
+      .then(|| {
+        debuginfo::CodegenDebug::new(
+          &module,
+          program,
+          entry_file,
+          options.opt_level,
+          &options.debug_path_prefix_map,
+        )
+      });
     Self {
       context,
       module,

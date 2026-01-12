@@ -139,6 +139,13 @@ pub struct CompilerOptions {
   pub target: Option<Triple>,
   /// Whether to emit debug info.
   pub debug: bool,
+  /// Remap source paths embedded in emitted debug info (DWARF).
+  ///
+  /// Each entry is a `(from, to)` prefix mapping. When `debug` is `true`, any
+  /// file path that starts with `from` is rewritten to start with `to` instead.
+  ///
+  /// Deterministic precedence: the first matching mapping wins.
+  pub debug_path_prefix_map: Vec<(PathBuf, PathBuf)>,
   /// Optional override for the external toolchain used for linking.
   ///
   /// When `None`, native-js will attempt to auto-detect tools in PATH (preferring LLVM 18 tools).
@@ -177,6 +184,7 @@ impl Default for CompilerOptions {
       emit: EmitKind::Object,
       target: None,
       debug: false,
+      debug_path_prefix_map: Vec::new(),
       toolchain: None,
       print_commands: false,
       keep_temp: false,

@@ -317,6 +317,12 @@ fn cmd_build(
 
   let mut base_opts = native_js::CompilerOptions::default();
   base_opts.debug = cli.debug;
+  base_opts.debug_path_prefix_map = cli
+    .debug_prefix_map
+    .iter()
+    .cloned()
+    .map(|m| (m.from, m.to))
+    .collect();
   base_opts.print_commands = cli.verbose;
   base_opts.keep_temp = cli.keep_temp;
   base_opts.pie = cli.pie;
@@ -459,6 +465,12 @@ fn cmd_emit(
 
   let mut base_opts = native_js::CompilerOptions::default();
   base_opts.debug = cli.debug;
+  base_opts.debug_path_prefix_map = cli
+    .debug_prefix_map
+    .iter()
+    .cloned()
+    .map(|m| (m.from, m.to))
+    .collect();
   base_opts.print_commands = cli.verbose;
   base_opts.keep_temp = cli.keep_temp;
   base_opts.pie = cli.pie;
@@ -735,6 +747,12 @@ fn cmd_bench(
   opts.output = Some(exe.clone());
   opts.target = target.clone();
   opts.debug = cli.debug;
+  opts.debug_path_prefix_map = cli
+    .debug_prefix_map
+    .iter()
+    .cloned()
+    .map(|m| (m.from, m.to))
+    .collect();
   opts.print_commands = cli.verbose;
   opts.keep_temp = cli.keep_temp;
   opts.pie = cli.pie;
@@ -1426,6 +1444,12 @@ fn cmd_compile(
   opts.emit_ir = emit_ir.map(|p| p.to_path_buf());
   opts.target = target.clone();
   opts.debug = cli.debug;
+  opts.debug_path_prefix_map = cli
+    .debug_prefix_map
+    .iter()
+    .cloned()
+    .map(|m| (m.from, m.to))
+    .collect();
   opts.print_commands = cli.verbose;
   opts.keep_temp = cli.keep_temp;
   opts.pie = cli.pie;

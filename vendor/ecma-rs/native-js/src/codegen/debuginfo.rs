@@ -13,9 +13,10 @@ use llvm_sys::core::{
   LLVMValueAsMetadata, LLVMVoidTypeInContext,
 };
 use llvm_sys::prelude::{LLVMMetadataRef, LLVMTypeRef, LLVMValueRef};
-use std::ffi::CString;
 use std::collections::HashMap;
+use std::ffi::CString;
 use std::os::raw::c_uint;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use typecheck_ts::Program;
 
@@ -81,6 +82,7 @@ pub(crate) struct CodegenDebug<'ctx> {
   compile_unit: DICompileUnit<'ctx>,
   files: HashMap<FileId, DIFile<'ctx>>,
   types: DebugTypes<'ctx>,
+  path_prefix_map: Vec<(PathBuf, PathBuf)>,
   line_index: HashMap<FileId, LineIndex>,
 }
 
@@ -92,7 +94,13 @@ struct DebugTypes<'ctx> {
 }
 
 impl<'ctx> CodegenDebug<'ctx> {
-  pub(crate) fn new(module: &Module<'ctx>, program: &Program, entry_file: FileId, opt_level: OptLevel) -> Self {
+  pub(crate) fn new(
+    module: &Module<'ctx>,
+    program: &Program,
+    entry_file: FileId,
+    opt_level: OptLevel,
+    path_prefix_map: &[(PathBuf, PathBuf)],
+  ) -> Self {
     let optimized = !matches!(opt_level, OptLevel::O0);
     // `inkwell` bundles compile-unit creation into `Module::create_debug_info_builder` and returns
     // both the `DebugInfoBuilder` and the newly created `DICompileUnit`.
@@ -103,12 +111,18 @@ impl<'ctx> CodegenDebug<'ctx> {
       .file_key(entry_file)
       .map(|k| k.to_string())
       .unwrap_or_else(|| "entry.ts".to_string());
+    let entry_name = remap_prefix(Path::new(&entry_name), path_prefix_map)
+      .to_string_lossy()
+      .into_owned();
     let (entry_filename, entry_parent) = split_file_key(&entry_name);
     let compile_dir = entry_parent.unwrap_or_else(|| {
       std::env::current_dir()
         .map(|p| p.to_string_lossy().into_owned())
         .unwrap_or_else(|_| ".".to_string())
     });
+    let compile_dir = remap_prefix(Path::new(&compile_dir), path_prefix_map)
+      .to_string_lossy()
+      .into_owned();
     // Keep the module-level `source_filename` in sync with the DWARF compile-unit file so tools
     // that inspect LLVM IR (or fall back to the module header) see a meaningful entry filename.
     module.set_source_file_name(&entry_name);
@@ -174,6 +188,7 @@ impl<'ctx> CodegenDebug<'ctx> {
       compile_unit,
       files: HashMap::new(),
       types,
+      path_prefix_map: path_prefix_map.to_vec(),
       line_index: HashMap::new(),
     }
   }
@@ -195,9 +210,13 @@ impl<'ctx> CodegenDebug<'ctx> {
       .file_key(file)
       .map(|k| k.to_string())
       .unwrap_or_else(|| format!("file{}.ts", file.0));
-    let (filename, parent) = split_file_key(&key);
-    let directory = parent.unwrap_or_else(|| ".".to_string());
-    let di_file = self.builder.create_file(&filename, &directory);
+    let file_name = remap_prefix(Path::new(&key), &self.path_prefix_map)
+      .to_string_lossy()
+      .into_owned();
+    // Note: `llvm::DIFile::directory` is not always reflected consistently in the final DWARF line
+    // table, while `DIFile::filename` is. Use the full remapped path as the filename to make
+    // debug-prefix-map behavior observable in downstream tooling.
+    let di_file = self.builder.create_file(&file_name, ".");
     self.files.insert(file, di_file);
     di_file
   }
@@ -492,4 +511,13 @@ fn split_file_key(file_key: &str) -> (String, Option<String>) {
   }
 
   (filename, Some(directory))
+}
+
+fn remap_prefix(path: &Path, map: &[(PathBuf, PathBuf)]) -> PathBuf {
+  for (from, to) in map {
+    if let Ok(rest) = path.strip_prefix(from) {
+      return to.join(rest);
+    }
+  }
+  path.to_path_buf()
 }

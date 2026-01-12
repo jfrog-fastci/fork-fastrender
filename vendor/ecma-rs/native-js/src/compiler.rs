@@ -541,13 +541,14 @@ impl<'a> Compiler<'a> {
         self.program,
         self.entry,
         loaded.entrypoint,
-      crate::codegen::CodegenOptions {
-        module_name: "native-js".to_string(),
-        debug: self.opts.debug,
-        opt_level: self.opts.opt_level,
-      },
-    )
-    .map_err(|diagnostics| NativeJsError::Rejected { diagnostics }),
+        crate::codegen::CodegenOptions {
+          module_name: "native-js".to_string(),
+          debug: self.opts.debug,
+          debug_path_prefix_map: self.opts.debug_path_prefix_map.clone(),
+          opt_level: self.opts.opt_level,
+        },
+      )
+      .map_err(|diagnostics| NativeJsError::Rejected { diagnostics }),
       crate::BackendKind::Ssa => crate::backend_ssa::codegen(
         context,
         self.program,
