@@ -622,6 +622,10 @@ void rt_parallel_for_rooted(size_t start, size_t end, void (*body)(size_t, uint8
 
 // Spawn CPU-bound work on the parallel worker pool and return a promise that can
 // be awaited by the async runtime.
+//
+// While the worker task is outstanding, the runtime will treat the promise as "external pending"
+// work: `rt_async_poll` / `rt_async_poll_legacy` will continue to report pending work (and may
+// block) until the promise settles.
 PromiseRef rt_parallel_spawn_promise(void (*task)(uint8_t*, PromiseRef), uint8_t* data, PromiseLayout layout);
 // Like `rt_parallel_spawn_promise`, but `data` is a GC-managed object that the runtime will keep
 // alive until the worker task finishes executing.

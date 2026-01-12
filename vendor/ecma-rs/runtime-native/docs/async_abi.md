@@ -569,6 +569,11 @@ results through a runtime promise:
 - A worker thread writes the payload and settles the promise.
 - Settlement wakes the awaiting coroutine back onto the async event loop.
 
+While a `rt_parallel_spawn_promise` task is outstanding, the runtime counts the returned promise as
+**external pending** work. This ensures `rt_async_poll` / `rt_async_poll_legacy` do not report the
+runtime as fully idle while background worker tasks are still running (and allows the event loop to
+block in the reactor wait syscall until the promise settles).
+
 ### Relevant C ABI (parallel → promise)
 
 ```c
