@@ -3797,116 +3797,6 @@ impl<'a> Checker<'a> {
     }
   }
 
-  fn check_super_call_expr(
-    &mut self,
-    call: &Node<parse_js::ast::expr::CallExpr>,
-    contextual_return: Option<TypeId>,
-  ) -> TypeId {
-    let prim = self.store.primitive_ids();
-    let callee_ty = self.expand_callable_type(self.current_super_ctor_ty);
-    let candidate_sigs =
-      construct_signatures_with_expander(self.store.as_ref(), callee_ty, self.ref_expander);
-
-    let mut arg_types = Vec::with_capacity(call.stx.arguments.len());
-    let mut const_arg_types = Vec::with_capacity(call.stx.arguments.len());
-    for (idx, arg) in call.stx.arguments.iter().enumerate() {
-      if arg.stx.spread {
-        let spread_ty = self.check_expr(&arg.stx.value);
-        arg_types.push(CallArgType::spread(spread_ty));
-        const_arg_types.push(spread_ty);
-        continue;
-      }
-
-      let mut expected_tys = Vec::new();
-      for sig_id in candidate_sigs.iter().copied() {
-        let sig = self.store.signature(sig_id);
-        if let Some(param_ty) = expected_arg_type_at(self.store.as_ref(), &sig, idx) {
-          expected_tys.push(param_ty);
-        }
-      }
-      let expected = if expected_tys.is_empty() {
-        prim.unknown
-      } else {
-        self.store.union(expected_tys)
-      };
-      let ty = self.check_expr_with_expected(&arg.stx.value, expected);
-      arg_types.push(CallArgType::new(ty));
-      const_arg_types.push(self.const_inference_type(&arg.stx.value));
-    }
-
-    let span = Span {
-      file: self.file,
-      range: loc_to_range(self.file, call.loc),
-    };
-    let resolution = resolve_construct(
-      &self.store,
-      &self.relate,
-      &self.instantiation_cache,
-      callee_ty,
-      &arg_types,
-      Some(&const_arg_types),
-      None,
-      contextual_return,
-      span,
-      self.ref_expander,
-    );
-
-    let allow_assignable_fallback = resolution.diagnostics.len() == 1
-      && resolution.diagnostics[0].code.as_str() == codes::NO_OVERLOAD.as_str()
-      && candidate_sigs.len() == 1;
-    let mut reported_assignability = false;
-    if allow_assignable_fallback {
-      if let Some(sig_id) = resolution
-        .contextual_signature
-        .or_else(|| candidate_sigs.first().copied())
-      {
-        let sig = self.store.signature(sig_id);
-        let before = self.diagnostics.len();
-        for (idx, arg) in call.stx.arguments.iter().enumerate() {
-          if arg.stx.spread {
-            continue;
-          }
-          let Some(param_ty) = expected_arg_type_at(self.store.as_ref(), &sig, idx) else {
-            continue;
-          };
-          let arg_ty = arg_types.get(idx).map(|arg| arg.ty).unwrap_or(prim.unknown);
-          let expected = match self.store.type_kind(param_ty) {
-            TypeKind::TypeParam(id) => sig
-              .type_params
-              .iter()
-              .find(|tp| tp.id == id)
-              .and_then(|tp| tp.constraint)
-              .unwrap_or(param_ty),
-            _ => param_ty,
-          };
-          self.check_assignable_with_code(
-            &arg.stx.value,
-            arg_ty,
-            expected,
-            None,
-            &codes::ARGUMENT_TYPE_MISMATCH,
-          );
-        }
-        reported_assignability = self.diagnostics.len() > before;
-      }
-    }
-
-    if !reported_assignability {
-      for diag in &resolution.diagnostics {
-        self.diagnostics.push(diag.clone());
-      }
-    }
-    self.record_call_signature(call.loc, resolution.signature.or(resolution.contextual_signature));
-
-    if resolution.diagnostics.is_empty() {
-      // `super()` evaluates to the derived instance (`this`), not the base
-      // constructor's instance type.
-      self.current_this_ty
-    } else {
-      prim.unknown
-    }
-  }
-
   fn check_call_expr(
     &mut self,
     call: &Node<parse_js::ast::expr::CallExpr>,
@@ -4850,7 +4740,12 @@ impl<'a> Checker<'a> {
       }
     }
     self.record_call_signature(call.loc, resolution.signature.or(resolution.contextual_signature));
-    resolution.return_type
+
+    if self.store.canon(self.current_this_ty) != prim.unknown {
+      self.current_this_ty
+    } else {
+      resolution.return_type
+    }
   }
   fn check_new_expr(
     &mut self,
