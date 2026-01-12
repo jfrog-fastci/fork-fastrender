@@ -9,6 +9,7 @@ use crate::js::{TimerId, Url, UrlLimits, UrlSearchParams, WindowRealmHost};
 use crate::js::window_realm::{
   abort_signal_listener_cleanup_native, event_target_add_event_listener_dom2,
   event_target_dispatch_event_dom2, event_target_remove_event_listener_dom2, WindowRealmUserData,
+  EVENT_TARGET_HOST_TAG,
 };
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -16,8 +17,8 @@ use std::marker::PhantomData;
 use std::rc::Rc;
 use std::time::Duration;
 use vm_js::{
-  GcObject, NativeFunctionId, PropertyDescriptor, PropertyKey, PropertyKind, RootId, Scope, Value,
-  Vm, VmError, VmHost, VmHostHooks, WeakGcObject,
+  GcObject, HostSlots, NativeFunctionId, PropertyDescriptor, PropertyKey, PropertyKind, RootId,
+  Scope, Value, Vm, VmError, VmHost, VmHostHooks, WeakGcObject,
 };
 use webidl_vm_js::bindings_runtime::BindingValue;
 use webidl_vm_js::{IterableKind, VmJsHostHooksPayload, WebIdlBindingsHost};
@@ -27,7 +28,6 @@ const URLSP_ITER_VALUES_SLOT: &str = "__fastrender_urlsp_iter_values";
 const URLSP_ITER_INDEX_SLOT: &str = "__fastrender_urlsp_iter_index";
 const URLSP_ITER_LEN_SLOT: &str = "__fastrender_urlsp_iter_len";
 const URL_SEARCH_PARAMS_SLOT: &str = "__fastrender_url_searchParams";
-const EVENT_TARGET_BRAND_KEY: &str = "__fastrender_event_target";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum UrlSearchParamsIteratorKind {
@@ -567,11 +567,18 @@ impl<Host: WindowRealmHost + 'static> VmJsWebIdlBindingsHostDispatch<Host> {
       }
     }
 
-    // AbortSignal and `new EventTarget()` instances share a private-ish brand property.
-    let brand_key = key_from_str(scope, EVENT_TARGET_BRAND_KEY)?;
+    // AbortSignal and `new EventTarget()` instances are branded via host slots.
+    //
+    // Some host objects use `slots.a` for their own kind tag (e.g. AbortSignal), so we accept the
+    // EventTarget tag in either slot.
+    let slots = match scope.heap().object_host_slots(obj) {
+      Ok(slots) => slots,
+      Err(VmError::InvalidHandle { .. }) if scope.heap().is_valid_object(obj) => None,
+      Err(err) => return Err(err),
+    };
     if matches!(
-      scope.heap().object_get_own_data_property_value(obj, &brand_key)?,
-      Some(Value::Bool(true))
+      slots,
+      Some(slots) if slots.a == EVENT_TARGET_HOST_TAG || slots.b == EVENT_TARGET_HOST_TAG
     ) {
       return Ok(obj);
     }
@@ -1064,19 +1071,9 @@ impl<Host: WindowRealmHost + 'static> WebIdlBindingsHost for VmJsWebIdlBindingsH
     match (interface, operation, overload) {
       ("EventTarget", "constructor", 0) => {
         let obj = Self::require_receiver_object(receiver)?;
-        let brand_key = key_from_str(scope, EVENT_TARGET_BRAND_KEY)?;
-        scope.define_property(
-          obj,
-          brand_key,
-          PropertyDescriptor {
-            enumerable: false,
-            configurable: false,
-            kind: PropertyKind::Data {
-              value: Value::Bool(true),
-              writable: false,
-            },
-          },
-        )?;
+        scope
+          .heap_mut()
+          .object_set_host_slots(obj, HostSlots { a: EVENT_TARGET_HOST_TAG, b: 0 })?;
         self
           .event_targets
           .entry(WeakGcObject::from(obj))
@@ -1090,6 +1087,9 @@ impl<Host: WindowRealmHost + 'static> WebIdlBindingsHost for VmJsWebIdlBindingsH
         // The parent value is forwarded by the bindings generator and can be inspected via `args`.
         let _parent = args.get(0).copied().unwrap_or(Value::Undefined);
         let obj = Self::require_receiver_object(receiver)?;
+        scope
+          .heap_mut()
+          .object_set_host_slots(obj, HostSlots { a: EVENT_TARGET_HOST_TAG, b: 0 })?;
         self
           .event_targets
           .entry(WeakGcObject::from(obj))
