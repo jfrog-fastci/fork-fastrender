@@ -30,11 +30,10 @@ mod has_argument_validation_test;
 mod inspect_api;
 mod integration_test;
 mod is_alias_matches_test;
-#[cfg(feature = "quickjs")]
-mod js_current_script;
+mod js_diagnostics;
+mod js_dom_events;
 mod js_dom_exception;
-#[cfg(feature = "quickjs")]
-mod js_dom_quickjs_bindings;
+mod js_dom_integration_export;
 mod js_dom_realm_selectors;
 mod js_css_supports;
 mod js_dom_wrapper_identity;
@@ -43,8 +42,7 @@ mod js_execution_budgets;
 mod js_fetch_tests;
 mod js_intersection_observer;
 mod js_time_determinism;
-#[cfg(feature = "quickjs")]
-mod js_timers;
+mod js_trace_spans_test;
 mod js_url_bindings;
 mod js_vm_budget_tests;
 mod js_webidl_binding_value_array_return;

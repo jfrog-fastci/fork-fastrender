@@ -679,7 +679,7 @@ pub fn install_fetch_bindings<'js>(
 
 #[cfg(test)]
 mod tests {
-  use super::{install_fetch_bindings, QuickjsFetchEnv};
+  use super::*;
 
   use std::collections::HashMap;
   use std::sync::{Arc, Mutex};
@@ -713,13 +713,17 @@ mod tests {
       self
         .responses
         .get_mut()
-        .unwrap()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
         .insert(url.to_string(), resource);
       self
     }
 
     fn take_last(&self) -> Option<CapturedHttpRequest> {
-      self.last.lock().unwrap().take()
+      self
+        .last
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .take()
     }
   }
 
@@ -729,7 +733,7 @@ mod tests {
         self
           .responses
           .lock()
-          .unwrap()
+          .unwrap_or_else(|poisoned| poisoned.into_inner())
           .get(url)
           .cloned()
           .unwrap_or_else(|| FetchedResource::new(Vec::new(), None)),
@@ -746,7 +750,10 @@ mod tests {
         headers: req.headers.to_vec(),
         body: req.body.map(<[u8]>::to_vec),
       };
-      *self.last.lock().unwrap() = Some(captured);
+      *self
+        .last
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(captured);
       self.fetch(req.fetch.url)
     }
   }
