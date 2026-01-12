@@ -213,7 +213,10 @@ pub struct Event {
   pub event_phase: EventPhase,
   /// The computed dispatch path for this event.
   ///
-  /// This is populated by [`dispatch_event`] and reused by `Event.composedPath()`.
+  /// This is populated by [`dispatch_event`] while dispatch is in progress so that
+  /// `Event.composedPath()` can observe the current propagation path.
+  ///
+  /// Per WHATWG DOM, the path is cleared (set to the empty list) once dispatch finishes.
   pub path: Vec<EventPathEntry>,
   pub is_trusted: bool,
   /// `CustomEvent.detail` payload.
@@ -718,51 +721,59 @@ pub fn dispatch_event(
   event.in_passive_listener = false;
 
   event.path = build_event_path(target, dom, registry);
-  if event.path.is_empty() {
-    return Ok(!event.default_prevented);
-  }
-
-  let target_index = event.path.len() - 1;
-
-  // Capturing phase: Window → ... → parent
-  for idx in 0..target_index {
-    if event.propagation_stopped {
-      break;
+  let dispatch_res = (|| {
+    if event.path.is_empty() {
+      return Ok(());
     }
-    let target = event.path[idx].target;
-    event.event_phase = EventPhase::Capturing;
-    event.current_target = Some(target);
-    invoke_listeners(target, event, registry, invoker, /* capture */ true)?;
-  }
 
-  // At-target phase: capture listeners then bubble listeners.
-  if !event.propagation_stopped {
-    let target = event.path[target_index].target;
-    event.event_phase = EventPhase::AtTarget;
-    event.current_target = Some(target);
+    let target_index = event.path.len() - 1;
 
-    invoke_listeners(target, event, registry, invoker, /* capture */ true)?;
-
-    if !event.propagation_stopped && !event.immediate_propagation_stopped {
-      invoke_listeners(target, event, registry, invoker, /* capture */ false)?;
-    }
-  }
-
-  // Bubbling phase: parent → ... → Window (only if bubbles)
-  if event.bubbles && !event.propagation_stopped {
-    for idx in (0..target_index).rev() {
+    // Capturing phase: Window → ... → parent
+    for idx in 0..target_index {
       if event.propagation_stopped {
         break;
       }
       let target = event.path[idx].target;
-      event.event_phase = EventPhase::Bubbling;
+      event.event_phase = EventPhase::Capturing;
       event.current_target = Some(target);
-      invoke_listeners(target, event, registry, invoker, /* capture */ false)?;
+      invoke_listeners(target, event, registry, invoker, /* capture */ true)?;
     }
-  }
+
+    // At-target phase: capture listeners then bubble listeners.
+    if !event.propagation_stopped {
+      let target = event.path[target_index].target;
+      event.event_phase = EventPhase::AtTarget;
+      event.current_target = Some(target);
+
+      invoke_listeners(target, event, registry, invoker, /* capture */ true)?;
+
+      if !event.propagation_stopped && !event.immediate_propagation_stopped {
+        invoke_listeners(target, event, registry, invoker, /* capture */ false)?;
+      }
+    }
+
+    // Bubbling phase: parent → ... → Window (only if bubbles)
+    if event.bubbles && !event.propagation_stopped {
+      for idx in (0..target_index).rev() {
+        if event.propagation_stopped {
+          break;
+        }
+        let target = event.path[idx].target;
+        event.event_phase = EventPhase::Bubbling;
+        event.current_target = Some(target);
+        invoke_listeners(target, event, registry, invoker, /* capture */ false)?;
+      }
+    }
+
+    Ok(())
+  })();
 
   event.event_phase = EventPhase::None;
   event.current_target = None;
+  // The DOM dispatch algorithm clears the computed path at the end of dispatch.
+  event.path.clear();
+
+  dispatch_res?;
 
   Ok(!event.default_prevented)
 }

@@ -1623,3 +1623,53 @@ fn dispatch_event_returns_false_if_prevent_default_called() {
   assert!(event.default_prevented);
   assert_eq!(invoker.calls.as_slice(), &["document_listener"]);
 }
+
+#[test]
+fn dispatch_event_clears_event_path_after_dispatch() {
+  let doc = Document::new(QuirksMode::NoQuirks);
+  let registry = EventListenerRegistry::new();
+
+  let type_ = "x";
+  let listener_id = ListenerId::new(1);
+  assert!(registry.add_event_listener(
+    EventTargetId::Document,
+    type_,
+    listener_id,
+    AddEventListenerOptions::default(),
+  ));
+
+  struct PathAssertingInvoker {
+    invoked: bool,
+  }
+
+  impl EventListenerInvoker for PathAssertingInvoker {
+    fn invoke(&mut self, expected_id: ListenerId, event: &mut Event) -> Result<(), DomError> {
+      assert_eq!(expected_id, ListenerId::new(1));
+      assert!(
+        !event.path.is_empty(),
+        "event.path must be populated during listener invocation"
+      );
+      self.invoked = true;
+      Ok(())
+    }
+  }
+
+  let mut invoker = PathAssertingInvoker { invoked: false };
+  let mut event = Event::new(type_, EventInit::default());
+  assert!(
+    dispatch_event(
+      EventTargetId::Document,
+      &mut event,
+      &doc,
+      &registry,
+      &mut invoker
+    )
+    .unwrap(),
+    "dispatchEvent should return true when not canceled"
+  );
+  assert!(invoker.invoked, "expected the listener to be invoked");
+  assert!(
+    event.path.is_empty(),
+    "event.path must be cleared after dispatch returns"
+  );
+}
