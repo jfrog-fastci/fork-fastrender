@@ -1510,6 +1510,8 @@ pub struct RenderDiagnostics {
   pub failure_stage: Option<RenderStage>,
   /// Optional structured statistics gathered during rendering.
   pub stats: Option<RenderStats>,
+  #[serde(skip)]
+  js_failure: JsFailureDiagnostics,
   /// Layout parallelism decision and observed worker usage.
   #[serde(default, skip_serializing_if = "Option::is_none")]
   pub layout_parallelism: Option<LayoutParallelismDiagnostics>,
@@ -1614,10 +1616,11 @@ impl RenderDiagnostics {
 
   /// Record an uncaught JavaScript exception.
   pub fn record_js_exception(&mut self, message: impl Into<String>, stack: Option<String>) {
-    self.js_exceptions.push(JsException {
-      message: message.into(),
-      stack,
-    });
+    let message = message.into();
+    self.record_js_exception_telemetry(message.as_str());
+    if self.js_exceptions.try_reserve(1).is_ok() {
+      self.js_exceptions.push(JsException { message, stack });
+    }
     self.note_failure_stage(RenderStage::Script);
   }
 
@@ -1627,6 +1630,26 @@ impl RenderDiagnostics {
       level,
       message: message.into(),
     });
+  }
+
+  fn js_failure_diagnostics_mut(&mut self) -> &mut JsFailureDiagnostics {
+    &mut self.js_failure
+  }
+
+  fn record_js_exception_telemetry(&mut self, message: &str) {
+    let js = self.js_failure_diagnostics_mut();
+    js.record_exception_from_message(message);
+  }
+
+  pub(crate) fn record_js_script_executed(&mut self) {
+    let js = self.js_failure_diagnostics_mut();
+    js.record_script_executed();
+  }
+
+  pub(crate) fn record_js_vm_error(&mut self, err: &vm_js::VmError) {
+    let js = self.js_failure_diagnostics_mut();
+    js.record_vm_error(err);
+    self.note_failure_stage(RenderStage::Script);
   }
 }
 
@@ -1917,6 +1940,18 @@ impl SharedRenderDiagnostics {
   pub fn record_js_exception(&self, message: impl Into<String>, stack: Option<String>) {
     if let Ok(mut guard) = self.inner.lock() {
       guard.record_js_exception(message, stack);
+    }
+  }
+
+  pub(crate) fn record_js_script_executed(&self) {
+    if let Ok(mut guard) = self.inner.lock() {
+      guard.record_js_script_executed();
+    }
+  }
+
+  pub(crate) fn record_js_vm_error(&self, err: &vm_js::VmError) {
+    if let Ok(mut guard) = self.inner.lock() {
+      guard.record_js_vm_error(err);
     }
   }
 
@@ -3106,6 +3141,296 @@ pub struct ResourceDiagnostics {
   pub image_decode_ms: Option<f64>,
 }
 
+fn is_zero_u64(value: &u64) -> bool {
+  *value == 0
+}
+
+/// Bounded failure telemetry captured during JavaScript execution.
+///
+/// This data is intended to stay compact enough to embed into per-page progress artifacts while
+/// still surfacing the most common missing engine features in real-world runs.
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct JsFailureDiagnostics {
+  /// Number of script entrypoints executed (classic/module script evaluation, lifecycle dispatch,
+  /// etc).
+  #[serde(default, skip_serializing_if = "is_zero_u64")]
+  pub scripts_executed: u64,
+  /// Number of uncaught JS exceptions observed by the host.
+  #[serde(default, skip_serializing_if = "is_zero_u64")]
+  pub exceptions_thrown: u64,
+  /// Number of non-catchable VM terminations observed by the host.
+  #[serde(default, skip_serializing_if = "is_zero_u64")]
+  pub terminations_observed: u64,
+  /// Breakdown of termination reasons.
+  #[serde(default, skip_serializing_if = "JsTerminationDiagnostics::is_empty")]
+  pub termination: JsTerminationDiagnostics,
+  /// Top `VmError::Unimplemented` reasons seen in this run (bounded).
+  #[serde(default, skip_serializing_if = "Vec::is_empty")]
+  pub top_unimplemented: Vec<JsUnimplementedDiagnostic>,
+  /// Top uncaught exception types/messages seen in this run (bounded).
+  #[serde(default, skip_serializing_if = "Vec::is_empty")]
+  pub top_exceptions: Vec<JsExceptionDiagnostic>,
+  #[serde(skip)]
+  collection_disabled: bool,
+}
+
+#[derive(Debug, Default, Clone, Copy, Serialize, Deserialize)]
+#[serde(default)]
+pub struct JsTerminationDiagnostics {
+  #[serde(default, skip_serializing_if = "is_zero_u64")]
+  pub out_of_fuel: u64,
+  #[serde(default, skip_serializing_if = "is_zero_u64")]
+  pub deadline_exceeded: u64,
+  #[serde(default, skip_serializing_if = "is_zero_u64")]
+  pub interrupted: u64,
+  #[serde(default, skip_serializing_if = "is_zero_u64")]
+  pub stack_overflow: u64,
+  #[serde(default, skip_serializing_if = "is_zero_u64")]
+  pub out_of_memory: u64,
+}
+
+impl JsTerminationDiagnostics {
+  pub fn is_empty(&self) -> bool {
+    self.out_of_fuel == 0
+      && self.deadline_exceeded == 0
+      && self.interrupted == 0
+      && self.stack_overflow == 0
+      && self.out_of_memory == 0
+  }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JsUnimplementedDiagnostic {
+  pub message: String,
+  pub count: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JsExceptionDiagnostic {
+  #[serde(rename = "type")]
+  pub type_: String,
+  pub message: String,
+  pub count: u64,
+}
+
+impl JsFailureDiagnostics {
+  const MAX_STRING_BYTES: usize = 240;
+  const MAX_EXCEPTION_TYPE_BYTES: usize = 64;
+  const MAX_TOP_UNIMPLEMENTED: usize = 32;
+  const MAX_TOP_EXCEPTIONS: usize = 32;
+
+  fn is_empty(&self) -> bool {
+    self.scripts_executed == 0
+      && self.exceptions_thrown == 0
+      && self.terminations_observed == 0
+      && self.termination.is_empty()
+      && self.top_unimplemented.is_empty()
+      && self.top_exceptions.is_empty()
+  }
+
+  fn record_script_executed(&mut self) {
+    self.scripts_executed = self.scripts_executed.saturating_add(1);
+  }
+
+  fn record_vm_error(&mut self, err: &vm_js::VmError) {
+    match err {
+      vm_js::VmError::Unimplemented(reason) => self.record_unimplemented(reason),
+      vm_js::VmError::Termination(term) => self.record_termination(term.reason),
+      // `VmError::OutOfMemory` is also non-catchable. Count it as a termination so it shows up in
+      // real-world telemetry alongside deadline/fuel failures.
+      vm_js::VmError::OutOfMemory => self.record_termination(vm_js::TerminationReason::OutOfMemory),
+      _ => {}
+    }
+  }
+
+  fn record_termination(&mut self, reason: vm_js::TerminationReason) {
+    self.terminations_observed = self.terminations_observed.saturating_add(1);
+    match reason {
+      vm_js::TerminationReason::OutOfFuel => {
+        self.termination.out_of_fuel = self.termination.out_of_fuel.saturating_add(1);
+      }
+      vm_js::TerminationReason::DeadlineExceeded => {
+        self.termination.deadline_exceeded = self.termination.deadline_exceeded.saturating_add(1);
+      }
+      vm_js::TerminationReason::Interrupted => {
+        self.termination.interrupted = self.termination.interrupted.saturating_add(1);
+      }
+      vm_js::TerminationReason::StackOverflow => {
+        self.termination.stack_overflow = self.termination.stack_overflow.saturating_add(1);
+      }
+      vm_js::TerminationReason::OutOfMemory => {
+        self.termination.out_of_memory = self.termination.out_of_memory.saturating_add(1);
+      }
+    }
+  }
+
+  fn record_exception_from_message(&mut self, message: &str) {
+    let (type_, message) = Self::classify_exception_message(message);
+    self.record_exception(type_, message);
+  }
+
+  fn record_exception(&mut self, type_: &str, message: &str) {
+    self.exceptions_thrown = self.exceptions_thrown.saturating_add(1);
+    if self.collection_disabled {
+      return;
+    }
+
+    let type_ = type_.trim();
+    let message = message.trim();
+    let type_key = Self::truncate_utf8(type_, Self::MAX_EXCEPTION_TYPE_BYTES);
+    let message_key = Self::truncate_utf8(message, Self::MAX_STRING_BYTES);
+
+    if let Some(entry) = self
+      .top_exceptions
+      .iter_mut()
+      .find(|e| e.type_.as_str() == type_key && e.message.as_str() == message_key)
+    {
+      entry.count = entry.count.saturating_add(1);
+      self.sort_exceptions();
+      return;
+    }
+
+    if self.top_exceptions.len() >= Self::MAX_TOP_EXCEPTIONS {
+      return;
+    }
+
+    if self.top_exceptions.try_reserve(1).is_err() {
+      self.collection_disabled = true;
+      return;
+    }
+    let Some(type_owned) = Self::make_capped_string(type_key, Self::MAX_EXCEPTION_TYPE_BYTES) else {
+      self.collection_disabled = true;
+      return;
+    };
+    let Some(message_owned) = Self::make_capped_string(message_key, Self::MAX_STRING_BYTES) else {
+      self.collection_disabled = true;
+      return;
+    };
+    self.top_exceptions.push(JsExceptionDiagnostic {
+      type_: type_owned,
+      message: message_owned,
+      count: 1,
+    });
+    self.sort_exceptions();
+  }
+
+  fn record_unimplemented(&mut self, message: &str) {
+    if self.collection_disabled {
+      return;
+    }
+    let message = message.trim();
+    let key = Self::truncate_utf8(message, Self::MAX_STRING_BYTES);
+
+    if let Some(entry) = self.top_unimplemented.iter_mut().find(|e| e.message == key) {
+      entry.count = entry.count.saturating_add(1);
+      self.sort_unimplemented();
+      return;
+    }
+
+    if self.top_unimplemented.len() >= Self::MAX_TOP_UNIMPLEMENTED {
+      return;
+    }
+
+    if self.top_unimplemented.try_reserve(1).is_err() {
+      self.collection_disabled = true;
+      return;
+    }
+    let Some(message_owned) = Self::make_capped_string(key, Self::MAX_STRING_BYTES) else {
+      self.collection_disabled = true;
+      return;
+    };
+    self.top_unimplemented.push(JsUnimplementedDiagnostic {
+      message: message_owned,
+      count: 1,
+    });
+    self.sort_unimplemented();
+  }
+
+  fn sort_unimplemented(&mut self) {
+    self.top_unimplemented.sort_by(|a, b| {
+      b.count
+        .cmp(&a.count)
+        .then_with(|| a.message.cmp(&b.message))
+    });
+  }
+
+  fn sort_exceptions(&mut self) {
+    self.top_exceptions.sort_by(|a, b| {
+      b.count
+        .cmp(&a.count)
+        .then_with(|| a.type_.cmp(&b.type_))
+        .then_with(|| a.message.cmp(&b.message))
+    });
+  }
+
+  fn truncate_utf8(s: &str, max_bytes: usize) -> &str {
+    if s.len() <= max_bytes {
+      return s;
+    }
+    let mut end = max_bytes;
+    while end > 0 && !s.is_char_boundary(end) {
+      end -= 1;
+    }
+    &s[..end]
+  }
+
+  fn make_capped_string(s: &str, max_bytes: usize) -> Option<String> {
+    let s = Self::truncate_utf8(s, max_bytes);
+    let mut out = String::new();
+    out.try_reserve(s.len()).ok()?;
+    out.push_str(s);
+    Some(out)
+  }
+
+  fn is_probable_error_name(candidate: &str) -> bool {
+    if candidate.is_empty() || candidate.len() > Self::MAX_EXCEPTION_TYPE_BYTES {
+      return false;
+    }
+    let mut chars = candidate.chars();
+    let Some(first) = chars.next() else {
+      return false;
+    };
+    if !first.is_ascii_uppercase() {
+      return false;
+    }
+    if candidate.chars().any(|c| c.is_whitespace()) {
+      return false;
+    }
+    candidate.ends_with("Error")
+  }
+
+  fn classify_exception_message(message: &str) -> (&str, &str) {
+    let message = message.trim();
+    if message.is_empty() {
+      return ("throw", "");
+    }
+
+    if let Some(rest) = message.strip_prefix("type error:") {
+      return ("TypeError", rest.trim());
+    }
+    if message == "value is not callable" || message == "value is not a constructor" {
+      return ("TypeError", message);
+    }
+
+    // `vm_error_format` emits lowercase `syntax error` strings for parse-time diagnostics.
+    if let Some(rest) = message.strip_prefix("syntax error") {
+      let rest = rest.strip_prefix(':').unwrap_or(rest).trim();
+      return ("SyntaxError", rest);
+    }
+
+    if let Some((prefix, rest)) = message.split_once(':') {
+      let prefix = prefix.trim();
+      if Self::is_probable_error_name(prefix) {
+        let rest = rest.strip_prefix(' ').unwrap_or(rest).trim();
+        return (prefix, rest);
+      }
+    }
+
+    ("throw", message)
+  }
+}
+
 /// Structured report describing a render.
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -3126,6 +3451,8 @@ pub struct RenderStats {
   pub paint: PaintDiagnostics,
   #[serde(default)]
   pub resources: ResourceDiagnostics,
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  pub js: Option<JsFailureDiagnostics>,
 }
 
 fn diagnostics_level_from_env() -> DiagnosticsLevel {
@@ -6190,6 +6517,12 @@ impl FastRender {
         merge_image_cache_diagnostics(&mut stats);
         merge_resource_cache_diagnostics(&mut stats);
         if let Ok(mut guard) = diagnostics.lock() {
+          if stats.js.is_none() {
+            let js = std::mem::take(&mut guard.js_failure);
+            if !js.is_empty() {
+              stats.js = Some(js);
+            }
+          }
           guard.stats = Some(stats);
         }
       }
@@ -8987,6 +9320,12 @@ impl FastRender {
                     merge_image_cache_diagnostics(&mut stats);
                     merge_resource_cache_diagnostics(&mut stats);
                     let _ = crate::paint::painter::take_paint_diagnostics();
+                    if stats.js.is_none() {
+                      let js = std::mem::take(&mut guard.js_failure);
+                      if !js.is_empty() {
+                        stats.js = Some(js);
+                      }
+                    }
                     guard.stats = Some(stats);
                   }
                 }
@@ -9045,6 +9384,12 @@ impl FastRender {
           merge_image_cache_diagnostics(&mut stats);
           merge_resource_cache_diagnostics(&mut stats);
           if let Ok(mut guard) = diagnostics.lock() {
+            if stats.js.is_none() {
+              let js = std::mem::take(&mut guard.js_failure);
+              if !js.is_empty() {
+                stats.js = Some(js);
+              }
+            }
             guard.stats = Some(stats);
           }
         }
@@ -9230,6 +9575,12 @@ impl FastRender {
       merge_inline_reshape_cache_diagnostics(&mut finished);
       merge_image_cache_diagnostics(&mut finished);
       merge_resource_cache_diagnostics(&mut finished);
+      if finished.js.is_none() {
+        let js = std::mem::take(&mut report.diagnostics.js_failure);
+        if !js.is_empty() {
+          finished.js = Some(js);
+        }
+      }
       report.diagnostics.stats = Some(finished);
     }
     Ok(report)
@@ -9341,6 +9692,12 @@ impl FastRender {
             merge_image_cache_diagnostics(&mut stats);
             merge_resource_cache_diagnostics(&mut stats);
             if let Ok(mut guard) = diagnostics.lock() {
+              if stats.js.is_none() {
+                let js = std::mem::take(&mut guard.js_failure);
+                if !js.is_empty() {
+                  stats.js = Some(js);
+                }
+              }
               guard.stats = Some(stats.clone());
             }
             report.diagnostics.stats = Some(stats);

@@ -304,6 +304,9 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
       ));
     };
     let diagnostics = self.diagnostics.clone();
+    if let Some(diag) = diagnostics.as_ref() {
+      diag.record_js_script_executed();
+    }
     let clock = event_loop.clock();
     let webidl_bindings_host = self.webidl_bindings_host;
     let name: Arc<str> = if let Some(url) = spec.src.as_deref() {
@@ -358,6 +361,9 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
           }
           Ok(())
         } else {
+          if let Some(diag) = diagnostics.as_ref() {
+            diag.record_js_vm_error(&err);
+          }
           Err(vm_error_format::vm_error_to_error(realm.heap_mut(), err))
         }
       }
@@ -465,7 +471,12 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
       let (vm, _realm_ref, heap) = realm.vm_realm_and_heap_mut();
       let mut vm = vm.push_budget(budget);
       vm.tick()
-        .map_err(|err| vm_error_format::vm_error_to_error(heap, err))?;
+        .map_err(|err| {
+          if let Some(diag) = diagnostics.as_ref() {
+            diag.record_js_vm_error(&err);
+          }
+          vm_error_format::vm_error_to_error(heap, err)
+        })?;
 
       let Some(modules_ptr) = vm.module_graph_ptr() else {
         return Err(Error::Other(
@@ -489,6 +500,9 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
             Error::Other(message)
           }
         } else {
+          if let Some(diag) = diagnostics.as_ref() {
+            diag.record_js_vm_error(&err);
+          }
           vm_error_format::vm_error_to_error(scope.heap_mut(), err)
         }
       };
@@ -589,6 +603,9 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
           .to_string(),
       ));
     };
+    if let Some(diag) = diagnostics.as_ref() {
+      diag.record_js_script_executed();
+    }
     let module_loader = realm.module_loader_handle();
 
     update_time_bindings_clock(realm.heap(), clock.clone())
@@ -629,7 +646,12 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
       let mut vm = vm.push_budget(budget);
       // Ensure immediate termination when no budget remains (deadline exceeded, interrupted, etc).
       vm.tick()
-        .map_err(|err| vm_error_format::vm_error_to_error(heap, err))?;
+        .map_err(|err| {
+          if let Some(diag) = diagnostics.as_ref() {
+            diag.record_js_vm_error(&err);
+          }
+          vm_error_format::vm_error_to_error(heap, err)
+        })?;
 
       let Some(modules_ptr) = vm.module_graph_ptr() else {
         return Err(Error::Other(
@@ -649,6 +671,9 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
                 diag.record_js_exception(message, stack);
               }
               return Ok(None);
+            }
+            if let Some(diag) = diagnostics.as_ref() {
+              diag.record_js_vm_error(&err);
             }
             return Err(vm_error_format::vm_error_to_error(heap, err));
           }
@@ -726,6 +751,9 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
             }
             Ok(None)
           } else {
+            if let Some(diag) = diagnostics.as_ref() {
+              diag.record_js_vm_error(&err);
+            }
             Err(vm_error_format::vm_error_to_error(scope.heap_mut(), err))
           }
         }
@@ -897,6 +925,9 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
       Err(err) => {
         // Preserve state so teardown can still abort/remove roots.
         self.pending_module_evaluation = Some(pending);
+        if let Some(diag) = diagnostics.as_ref() {
+          diag.record_js_vm_error(&err);
+        }
         return Err(vm_error_format::vm_error_to_error(heap, err));
       }
     };
@@ -911,6 +942,9 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
           Ok(reason) => reason.unwrap_or(Value::Undefined),
           Err(err) => {
             self.pending_module_evaluation = Some(pending);
+            if let Some(diag) = diagnostics.as_ref() {
+              diag.record_js_vm_error(&err);
+            }
             return Err(vm_error_format::vm_error_to_error(heap, err));
           }
         };
@@ -1028,6 +1062,9 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
     };
 
     let diagnostics = self.diagnostics.clone();
+    if let Some(diag) = diagnostics.as_ref() {
+      diag.record_js_script_executed();
+    }
     let webidl_bindings_host = self.webidl_bindings_host;
 
     let dispatch_expr = match target {
@@ -1103,6 +1140,9 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
           }
           Ok(())
         } else {
+          if let Some(diag) = diagnostics.as_ref() {
+            diag.record_js_vm_error(&err);
+          }
           Err(vm_error_format::vm_error_to_error(realm.heap_mut(), err))
         }
       }
@@ -1870,6 +1910,68 @@ mod tests {
       .get_attribute(document_element, "class")
       .expect("get class attribute");
     assert_eq!(class, Some("x"));
+    Ok(())
+  }
+
+  #[test]
+  fn vm_js_browser_tab_executor_records_unimplemented_failure_telemetry() -> Result<()> {
+    let diag = SharedRenderDiagnostics::new();
+    let mut document =
+      BrowserDocumentDom2::from_html("<!doctype html><html></html>", RenderOptions::default())?;
+    document
+      .renderer_mut()
+      .set_diagnostics_sink(Some(Arc::clone(&diag.inner)));
+
+    let current_script = CurrentScriptStateHandle::default();
+    let mut executor = VmJsBrowserTabExecutor::new();
+    let mut event_loop = crate::js::EventLoop::<BrowserTabHost>::new();
+    executor.reset_for_navigation(
+      Some("https://example.com/doc.html"),
+      &mut document,
+      &current_script,
+      JsExecutionOptions::default(),
+    )?;
+
+    let script_text = "Object.create(null, {});";
+    let spec = ScriptElementSpec {
+      base_url: Some("https://example.com/doc.html".to_string()),
+      src: None,
+      src_attr_present: false,
+      inline_text: script_text.to_string(),
+      async_attr: false,
+      force_async: false,
+      defer_attr: false,
+      nomodule_attr: false,
+      crossorigin: None,
+      integrity_attr_present: false,
+      integrity: None,
+      referrer_policy: None,
+      fetch_priority: None,
+      parser_inserted: true,
+      node_id: None,
+      script_type: crate::js::ScriptType::Classic,
+    };
+
+    let _err = executor
+      .execute_classic_script(script_text, &spec, None, &mut document, &mut event_loop)
+      .expect_err("expected Object.create propertiesObject to be unimplemented");
+
+    let snapshot = diag.into_inner();
+    assert!(
+      snapshot.stats.is_none(),
+      "expected diagnostics.stats to remain None without diagnostics stats recorder"
+    );
+    let js = snapshot.js_failure;
+    assert!(
+      js.scripts_executed > 0,
+      "expected scripts_executed > 0, got {js:?}"
+    );
+    assert!(
+      js.top_unimplemented
+        .iter()
+        .any(|entry| entry.message == "Object.create propertiesObject"),
+      "expected Object.create unimplemented reason in telemetry, got {js:?}"
+    );
     Ok(())
   }
 }

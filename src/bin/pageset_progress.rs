@@ -713,6 +713,13 @@ struct ReportArgs {
   #[arg(long = "verbose-stats", visible_alias = "show-counts")]
   verbose_stats: bool,
 
+  /// Aggregate and print JavaScript failure telemetry from `diagnostics.stats.js`.
+  ///
+  /// The per-page telemetry is bounded, so very large pages may omit less-frequent errors once the
+  /// per-page cap is reached.
+  #[arg(long, value_name = "N")]
+  top_js_errors: Option<usize>,
+
   /// Include machine-generated notes from the most recent run in per-page listings
   #[arg(long)]
   verbose: bool,
@@ -5606,6 +5613,153 @@ fn eprint_offending_stage_sum_exceeds_total(progresses: &[LoadedProgress], stems
   }
 }
 
+#[derive(Debug, Clone, Serialize)]
+struct PagesetJsFailureReport {
+  pages_total: usize,
+  pages_with_js: usize,
+  js: fastrender::api::JsFailureDiagnostics,
+}
+
+fn aggregate_js_failure_diagnostics<'a, I>(
+  pages_total: usize,
+  entries: I,
+  top_n: usize,
+) -> PagesetJsFailureReport
+where
+  I: IntoIterator<Item = &'a fastrender::api::JsFailureDiagnostics>,
+{
+  use fastrender::api::{JsExceptionDiagnostic, JsTerminationDiagnostics, JsUnimplementedDiagnostic};
+
+  let mut pages_with_js = 0usize;
+  let mut scripts_executed = 0u64;
+  let mut exceptions_thrown = 0u64;
+  let mut terminations_observed = 0u64;
+  let mut termination = JsTerminationDiagnostics::default();
+
+  let mut unimplemented: HashMap<String, u64> = HashMap::new();
+  let mut exceptions: HashMap<(String, String), u64> = HashMap::new();
+
+  for js in entries {
+    pages_with_js += 1;
+    scripts_executed = scripts_executed.saturating_add(js.scripts_executed);
+    exceptions_thrown = exceptions_thrown.saturating_add(js.exceptions_thrown);
+    terminations_observed = terminations_observed.saturating_add(js.terminations_observed);
+
+    termination.out_of_fuel = termination.out_of_fuel.saturating_add(js.termination.out_of_fuel);
+    termination.deadline_exceeded =
+      termination.deadline_exceeded.saturating_add(js.termination.deadline_exceeded);
+    termination.interrupted = termination.interrupted.saturating_add(js.termination.interrupted);
+    termination.stack_overflow =
+      termination.stack_overflow.saturating_add(js.termination.stack_overflow);
+    termination.out_of_memory = termination
+      .out_of_memory
+      .saturating_add(js.termination.out_of_memory);
+
+    for item in &js.top_unimplemented {
+      unimplemented
+        .entry(item.message.clone())
+        .and_modify(|c| *c = c.saturating_add(item.count))
+        .or_insert(item.count);
+    }
+    for item in &js.top_exceptions {
+      let key = (item.type_.clone(), item.message.clone());
+      exceptions
+        .entry(key)
+        .and_modify(|c| *c = c.saturating_add(item.count))
+        .or_insert(item.count);
+    }
+  }
+
+  let mut top_unimplemented: Vec<JsUnimplementedDiagnostic> = unimplemented
+    .into_iter()
+    .map(|(message, count)| JsUnimplementedDiagnostic { message, count })
+    .collect();
+  top_unimplemented.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.message.cmp(&b.message)));
+  top_unimplemented.truncate(top_n);
+
+  let mut top_exceptions: Vec<JsExceptionDiagnostic> = exceptions
+    .into_iter()
+    .map(|((type_, message), count)| JsExceptionDiagnostic {
+      type_,
+      message,
+      count,
+    })
+    .collect();
+  top_exceptions.sort_by(|a, b| {
+    b.count
+      .cmp(&a.count)
+      .then_with(|| a.type_.cmp(&b.type_))
+      .then_with(|| a.message.cmp(&b.message))
+  });
+  top_exceptions.truncate(top_n);
+
+  let mut js = fastrender::api::JsFailureDiagnostics::default();
+  js.scripts_executed = scripts_executed;
+  js.exceptions_thrown = exceptions_thrown;
+  js.terminations_observed = terminations_observed;
+  js.termination = termination;
+  js.top_unimplemented = top_unimplemented;
+  js.top_exceptions = top_exceptions;
+
+  PagesetJsFailureReport {
+    pages_total,
+    pages_with_js,
+    js,
+  }
+}
+
+fn pageset_js_failure_report_markdown(report: &PagesetJsFailureReport) -> String {
+  let mut out = String::new();
+  out.push_str("# pageset_progress JavaScript failure report\n\n");
+  out.push_str(&format!(
+    "- pages_total: {}\n- pages_with_js: {}\n",
+    report.pages_total, report.pages_with_js
+  ));
+  out.push_str(&format!(
+    "- scripts_executed: {}\n- exceptions_thrown: {}\n- terminations_observed: {}\n\n",
+    report.js.scripts_executed, report.js.exceptions_thrown, report.js.terminations_observed
+  ));
+
+  if !report.js.termination.is_empty() {
+    out.push_str("## Terminations\n\n");
+    out.push_str(&format!("- out_of_fuel: {}\n", report.js.termination.out_of_fuel));
+    out.push_str(&format!(
+      "- deadline_exceeded: {}\n",
+      report.js.termination.deadline_exceeded
+    ));
+    out.push_str(&format!("- interrupted: {}\n", report.js.termination.interrupted));
+    out.push_str(&format!(
+      "- stack_overflow: {}\n",
+      report.js.termination.stack_overflow
+    ));
+    out.push_str(&format!("- out_of_memory: {}\n\n", report.js.termination.out_of_memory));
+  }
+
+  out.push_str("## Top unimplemented\n\n");
+  if report.js.top_unimplemented.is_empty() {
+    out.push_str("(none)\n\n");
+  } else {
+    for entry in &report.js.top_unimplemented {
+      out.push_str(&format!("- {}: `{}`\n", entry.count, entry.message));
+    }
+    out.push('\n');
+  }
+
+  out.push_str("## Top exceptions\n\n");
+  if report.js.top_exceptions.is_empty() {
+    out.push_str("(none)\n");
+  } else {
+    for entry in &report.js.top_exceptions {
+      out.push_str(&format!(
+        "- {}: {}: `{}`\n",
+        entry.count, entry.type_, entry.message
+      ));
+    }
+  }
+
+  out
+}
+
 fn report(args: ReportArgs) -> io::Result<()> {
   if args.fail_on_regression && args.compare.is_none() {
     eprintln!("--fail-on-regression requires --compare");
@@ -5666,6 +5820,62 @@ fn report(args: ReportArgs) -> io::Result<()> {
   println!("  panic: {}", status_counts.panic);
   println!("  error: {}", status_counts.error);
   println!();
+
+  if let Some(top_n) = args.top_js_errors {
+    let report = aggregate_js_failure_diagnostics(
+      total_pages,
+      progresses
+        .iter()
+        .filter_map(|entry| entry.stats.as_ref().and_then(|stats| stats.js.as_ref())),
+      top_n,
+    );
+
+    println!("JavaScript failure telemetry:");
+    println!(
+      "  pages_with_js: {} of {}",
+      report.pages_with_js, report.pages_total
+    );
+    println!("  scripts_executed: {}", report.js.scripts_executed);
+    println!("  exceptions_thrown: {}", report.js.exceptions_thrown);
+    println!("  terminations_observed: {}", report.js.terminations_observed);
+
+    if !report.js.termination.is_empty() {
+      println!("  terminations:");
+      println!("    out_of_fuel: {}", report.js.termination.out_of_fuel);
+      println!(
+        "    deadline_exceeded: {}",
+        report.js.termination.deadline_exceeded
+      );
+      println!("    interrupted: {}", report.js.termination.interrupted);
+      println!("    stack_overflow: {}", report.js.termination.stack_overflow);
+      println!("    out_of_memory: {}", report.js.termination.out_of_memory);
+    }
+
+    println!("  top_unimplemented (top {top_n}):");
+    if report.js.top_unimplemented.is_empty() {
+      println!("    (none)");
+    } else {
+      for entry in &report.js.top_unimplemented {
+        println!("    {}: {}", entry.count, entry.message);
+      }
+    }
+
+    println!("  top_exceptions (top {top_n}):");
+    if report.js.top_exceptions.is_empty() {
+      println!("    (none)");
+    } else {
+      for entry in &report.js.top_exceptions {
+        println!("    {}: {}: {}", entry.count, entry.type_, entry.message);
+      }
+    }
+    println!();
+
+    let json = serde_json::to_string_pretty(&report)
+      .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+    atomic_write_fast(Path::new("target/pageset/js_report.json"), format!("{json}\n").as_bytes())?;
+    let md = pageset_js_failure_report_markdown(&report);
+    atomic_write_fast(Path::new("target/pageset/js_report.md"), format!("{md}\n").as_bytes())?;
+  }
 
   let mut cached_html_http_errors: Vec<(u16, &LoadedProgress)> = progresses
     .iter()
@@ -9855,6 +10065,7 @@ mod tests {
       trace_progress_dir: PathBuf::new(),
       trace_dir: PathBuf::new(),
       verbose_stats: false,
+      top_js_errors: None,
       verbose: false,
       fail_on_missing_stages: false,
       fail_on_missing_stage_timings: false,
@@ -10526,6 +10737,77 @@ mod tests {
       .expect("merge should create diagnostics.stats");
     assert_eq!(stats.cascade.nodes, Some(3));
     assert_eq!(stats.cascade.rule_candidates, Some(4));
+  }
+
+  #[test]
+  fn js_failure_report_aggregation_sums_and_sorts() {
+    use fastrender::api::{
+      JsExceptionDiagnostic, JsFailureDiagnostics, JsTerminationDiagnostics, JsUnimplementedDiagnostic,
+    };
+
+    let mut a = JsFailureDiagnostics::default();
+    a.scripts_executed = 2;
+    a.exceptions_thrown = 1;
+    a.terminations_observed = 1;
+    a.termination = JsTerminationDiagnostics {
+      out_of_fuel: 1,
+      ..JsTerminationDiagnostics::default()
+    };
+    a.top_unimplemented = vec![
+      JsUnimplementedDiagnostic {
+        message: "a".to_string(),
+        count: 2,
+      },
+      JsUnimplementedDiagnostic {
+        message: "b".to_string(),
+        count: 1,
+      },
+    ];
+    a.top_exceptions = vec![JsExceptionDiagnostic {
+      type_: "TypeError".to_string(),
+      message: "boom".to_string(),
+      count: 1,
+    }];
+
+    let mut b = JsFailureDiagnostics::default();
+    b.scripts_executed = 3;
+    b.exceptions_thrown = 2;
+    b.terminations_observed = 0;
+    b.termination = JsTerminationDiagnostics {
+      deadline_exceeded: 1,
+      ..JsTerminationDiagnostics::default()
+    };
+    b.top_unimplemented = vec![JsUnimplementedDiagnostic {
+      message: "a".to_string(),
+      count: 3,
+    }];
+    b.top_exceptions = vec![
+      JsExceptionDiagnostic {
+        type_: "TypeError".to_string(),
+        message: "boom".to_string(),
+        count: 2,
+      },
+      JsExceptionDiagnostic {
+        type_: "ReferenceError".to_string(),
+        message: "nope".to_string(),
+        count: 1,
+      },
+    ];
+
+    let report = aggregate_js_failure_diagnostics(2, [&a, &b], 10);
+    assert_eq!(report.pages_total, 2);
+    assert_eq!(report.pages_with_js, 2);
+    assert_eq!(report.js.scripts_executed, 5);
+    assert_eq!(report.js.exceptions_thrown, 3);
+    assert_eq!(report.js.terminations_observed, 1);
+    assert_eq!(report.js.termination.out_of_fuel, 1);
+    assert_eq!(report.js.termination.deadline_exceeded, 1);
+
+    assert_eq!(report.js.top_unimplemented[0].message, "a");
+    assert_eq!(report.js.top_unimplemented[0].count, 5);
+    assert_eq!(report.js.top_exceptions[0].type_, "TypeError");
+    assert_eq!(report.js.top_exceptions[0].message, "boom");
+    assert_eq!(report.js.top_exceptions[0].count, 3);
   }
 
   #[test]
