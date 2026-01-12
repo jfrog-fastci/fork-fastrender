@@ -459,8 +459,13 @@ fn pinned_tab_ui(
 
   if tab.loading {
     // Spinner overlay around the favicon.
-    ui.ctx().request_repaint();
-    let time = ui.input(|i| i.time);
+    let time = if motion.enabled {
+      ui.ctx().request_repaint();
+      ui.input(|i| i.time)
+    } else {
+      // Reduced-motion: keep the spinner static (and avoid continuous repaints).
+      0.0
+    };
     paint_spinner(ui.painter(), icon_rect.expand(2.0), time, visuals.text_color());
   }
 
