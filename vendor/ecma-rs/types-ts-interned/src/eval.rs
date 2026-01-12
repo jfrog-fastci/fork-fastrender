@@ -729,15 +729,15 @@ impl<'a, E: TypeExpander> TypeEvaluator<'a, E> {
         Some(mapped) => self.evaluate_with_subst(mapped, subst, depth + 1),
         None => ty,
       },
-      TypeKind::Infer { param, constraint } => match subst.get(param) {
-        Some(mapped) => self.evaluate_with_subst(mapped, subst, depth + 1),
-        None => {
-          let constraint = constraint.map(|c| self.evaluate_with_subst(c, subst, depth + 1));
-          self
-            .store
-            .intern_type(TypeKind::Infer { param, constraint })
-        }
-      },
+      TypeKind::Infer { param, constraint } => {
+        let constraint = constraint.map(|c| self.evaluate_with_subst(c, subst, depth + 1));
+        // `infer` introduces a fresh locally-bound type variable in conditional
+        // types, so it must not be substituted by an unrelated outer
+        // substitution. Only substitute inside the constraint.
+        self
+          .store
+          .intern_type(TypeKind::Infer { param, constraint })
+      }
       TypeKind::Union(members) => {
         let evaluated: Vec<_> = members
           .into_iter()
@@ -972,6 +972,32 @@ impl<'a, E: TypeExpander> TypeEvaluator<'a, E> {
     #[cfg(feature = "tracing")]
     let _enter = span.enter();
 
+    // `infer` placeholders in the `extends` operand introduce locally-bound
+    // type parameters. Since `TypeParamId` is not globally unique, we must
+    // ensure any bindings for these ids from an *outer* substitution are
+    // ignored while evaluating this conditional type.
+    let mut infer_params = AHashSet::new();
+    let mut visited = AHashSet::new();
+    self.collect_infer_params(extends, &mut infer_params, &mut visited, 0);
+    let masked_subst = if infer_params.is_empty()
+      || !subst
+        .bindings
+        .iter()
+        .any(|(param, _)| infer_params.contains(param))
+    {
+      None
+    } else {
+      Some(Substitution {
+        bindings: subst
+          .bindings
+          .iter()
+          .cloned()
+          .filter(|(param, _)| !infer_params.contains(param))
+          .collect(),
+      })
+    };
+    let subst = masked_subst.as_ref().unwrap_or(subst);
+
     let raw_check_param = match self.store.type_kind(check) {
       TypeKind::TypeParam(param) => Some(param),
       _ => None,
@@ -1143,6 +1169,136 @@ impl<'a, E: TypeExpander> TypeEvaluator<'a, E> {
       span.record("result", &tracing::field::debug(&result));
     }
     result
+  }
+
+  fn collect_infer_params(
+    &self,
+    ty: TypeId,
+    out: &mut AHashSet<TypeParamId>,
+    visited: &mut AHashSet<TypeId>,
+    depth: usize,
+  ) {
+    if depth >= self.limits.depth_limit {
+      return;
+    }
+    if !visited.insert(ty) {
+      return;
+    }
+
+    match self.store.type_kind(ty) {
+      TypeKind::Infer { param, constraint } => {
+        out.insert(param);
+        if let Some(constraint) = constraint {
+          self.collect_infer_params(constraint, out, visited, depth + 1);
+        }
+      }
+      TypeKind::Tuple(elems) => {
+        for elem in elems {
+          self.collect_infer_params(elem.ty, out, visited, depth + 1);
+        }
+      }
+      TypeKind::Array { ty, .. } => self.collect_infer_params(ty, out, visited, depth + 1),
+      TypeKind::Union(members) | TypeKind::Intersection(members) => {
+        for member in members {
+          self.collect_infer_params(member, out, visited, depth + 1);
+        }
+      }
+      TypeKind::Object(obj) => {
+        let shape = self.store.shape(self.store.object(obj).shape);
+        for prop in shape.properties {
+          self.collect_infer_params(prop.data.ty, out, visited, depth + 1);
+        }
+        for idx in shape.indexers {
+          self.collect_infer_params(idx.key_type, out, visited, depth + 1);
+          self.collect_infer_params(idx.value_type, out, visited, depth + 1);
+        }
+        for sig in shape.call_signatures {
+          self.collect_infer_params_signature(sig, out, visited, depth + 1);
+        }
+        for sig in shape.construct_signatures {
+          self.collect_infer_params_signature(sig, out, visited, depth + 1);
+        }
+      }
+      TypeKind::Callable { overloads } => {
+        for sig in overloads {
+          self.collect_infer_params_signature(sig, out, visited, depth + 1);
+        }
+      }
+      TypeKind::Ref { args, .. } => {
+        for arg in args {
+          self.collect_infer_params(arg, out, visited, depth + 1);
+        }
+      }
+      TypeKind::Predicate { asserted, .. } => {
+        if let Some(asserted) = asserted {
+          self.collect_infer_params(asserted, out, visited, depth + 1);
+        }
+      }
+      TypeKind::Conditional {
+        check,
+        extends,
+        true_ty,
+        false_ty,
+        ..
+      } => {
+        self.collect_infer_params(check, out, visited, depth + 1);
+        self.collect_infer_params(extends, out, visited, depth + 1);
+        self.collect_infer_params(true_ty, out, visited, depth + 1);
+        self.collect_infer_params(false_ty, out, visited, depth + 1);
+      }
+      TypeKind::Mapped(mapped) => {
+        self.collect_infer_params(mapped.source, out, visited, depth + 1);
+        self.collect_infer_params(mapped.value, out, visited, depth + 1);
+        if let Some(name_type) = mapped.name_type {
+          self.collect_infer_params(name_type, out, visited, depth + 1);
+        }
+        if let Some(as_type) = mapped.as_type {
+          self.collect_infer_params(as_type, out, visited, depth + 1);
+        }
+      }
+      TypeKind::TemplateLiteral(tpl) => {
+        for chunk in tpl.spans {
+          self.collect_infer_params(chunk.ty, out, visited, depth + 1);
+        }
+      }
+      TypeKind::Intrinsic { ty, .. } => self.collect_infer_params(ty, out, visited, depth + 1),
+      TypeKind::IndexedAccess { obj, index } => {
+        self.collect_infer_params(obj, out, visited, depth + 1);
+        self.collect_infer_params(index, out, visited, depth + 1);
+      }
+      TypeKind::KeyOf(inner) => self.collect_infer_params(inner, out, visited, depth + 1),
+      _ => {}
+    }
+
+    visited.remove(&ty);
+  }
+
+  fn collect_infer_params_signature(
+    &self,
+    sig: crate::SignatureId,
+    out: &mut AHashSet<TypeParamId>,
+    visited: &mut AHashSet<TypeId>,
+    depth: usize,
+  ) {
+    if depth >= self.limits.depth_limit {
+      return;
+    }
+    let sig = self.store.signature(sig);
+    for param in sig.params {
+      self.collect_infer_params(param.ty, out, visited, depth + 1);
+    }
+    self.collect_infer_params(sig.ret, out, visited, depth + 1);
+    if let Some(this) = sig.this_param {
+      self.collect_infer_params(this, out, visited, depth + 1);
+    }
+    for tp in sig.type_params {
+      if let Some(constraint) = tp.constraint {
+        self.collect_infer_params(constraint, out, visited, depth + 1);
+      }
+      if let Some(default) = tp.default {
+        self.collect_infer_params(default, out, visited, depth + 1);
+      }
+    }
   }
 
   fn infer_from_extends_pattern(

@@ -684,6 +684,102 @@ fn infer_constraint_failure_defers_conditional() {
 }
 
 #[test]
+fn conditional_infer_does_not_capture_outer_substitution_across_defs() {
+  let store = TypeStore::new();
+  let primitives = store.primitive_ids();
+
+  let def_a = DefId(0);
+  let def_b = DefId(1);
+
+  // Def A is generic over `T` (TypeParamId(0)) and just aliases Def B.
+  //
+  // The evaluator instantiates A with a substitution {0 -> string}. When it
+  // expands B under that substitution, we must *not* accidentally rewrite B's
+  // `infer` placeholder (also TypeParamId(0)) or its corresponding
+  // `TypeParam(0)` references in branches.
+  let a_param = TypeParamId(0);
+  let a_ty = store.intern_type(TypeKind::Ref {
+    def: def_b,
+    args: Vec::new(),
+  });
+
+  // Def B is non-generic but contains a conditional type with `infer R` where
+  // `R` was allocated as TypeParamId(0) (colliding with A's type param id).
+  //
+  // `string extends (() => infer R) ? R : never`
+  let infer_r = store.intern_type(TypeKind::Infer {
+    param: TypeParamId(0),
+    constraint: None,
+  });
+  let extends_sig = store.intern_signature(Signature::new(Vec::new(), infer_r));
+  let extends = store.intern_type(TypeKind::Callable {
+    overloads: vec![extends_sig],
+  });
+  let true_ty = store.intern_type(TypeKind::TypeParam(TypeParamId(0)));
+  let cond = store.intern_type(TypeKind::Conditional {
+    check: primitives.string,
+    extends,
+    true_ty,
+    false_ty: primitives.never,
+    distributive: false,
+  });
+
+  let mut expander = MockExpander::default();
+  expander.insert(
+    def_a,
+    ExpandedType {
+      params: vec![a_param],
+      ty: a_ty,
+    },
+  );
+  expander.insert(
+    def_b,
+    ExpandedType {
+      params: Vec::new(),
+      ty: cond,
+    },
+  );
+
+  let ref_a = store.intern_type(TypeKind::Ref {
+    def: def_a,
+    args: vec![primitives.string],
+  });
+
+  let mut eval = evaluator(store.clone(), &expander);
+  let result = eval.evaluate(ref_a);
+
+  let TypeKind::Conditional {
+    check,
+    extends,
+    true_ty,
+    false_ty,
+    distributive,
+  } = store.type_kind(result)
+  else {
+    panic!("expected conditional type, got {:?}", store.type_kind(result));
+  };
+
+  assert_eq!(check, primitives.string);
+  assert!(!distributive);
+  assert_eq!(false_ty, primitives.never);
+  assert_eq!(store.type_kind(true_ty), TypeKind::TypeParam(TypeParamId(0)));
+
+  let TypeKind::Callable { overloads } = store.type_kind(extends) else {
+    panic!("expected callable extends operand, got {:?}", store.type_kind(extends));
+  };
+  assert_eq!(overloads.len(), 1);
+  let sig = store.signature(overloads[0]);
+  assert_eq!(sig.params.len(), 0);
+  assert_eq!(
+    store.type_kind(sig.ret),
+    TypeKind::Infer {
+      param: TypeParamId(0),
+      constraint: None
+    }
+  );
+}
+
+#[test]
 fn distributive_conditional_instantiated_with_never_yields_never() {
   let store = TypeStore::new();
   let primitives = store.primitive_ids();
