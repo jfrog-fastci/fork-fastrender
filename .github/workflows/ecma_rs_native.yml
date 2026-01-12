@@ -24,6 +24,66 @@ env:
   RUST_BACKTRACE: 1
 
 jobs:
+  ecma-rs-vm-js-check:
+    name: ecma-rs vm-js compile check (Rust 1.92.0)
+    runs-on: ubuntu-latest
+    # Keep scheduled runs focused on the macOS reactor backend; this job exists primarily to fail
+    # fast on PRs that touch the vendored ecma-rs workspace.
+    if: github.event_name != 'schedule'
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # Keep CI lightweight: do not fetch heavyweight nested corpora submodules (test262,
+          # TypeScript, ...). This job is a pure `cargo check` compile gate.
+          submodules: false
+
+      - name: Install Rust toolchain (vendor/ecma-rs)
+        uses: dtolnay/rust-toolchain@master
+        with:
+          # Match `vendor/ecma-rs/rust-toolchain.toml`.
+          toolchain: "1.92.0"
+
+      - name: Init ecma-rs checkout (vendored/submodule compatibility)
+        run: bash scripts/ci_init_ecma_rs_submodule.sh
+
+      - name: Cache cargo registry (ecma-rs vm-js check)
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/registry
+          key: ${{ runner.os }}-ecma-rs-vm-js-cargo-registry-${{ hashFiles('vendor/ecma-rs/**/Cargo.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-ecma-rs-vm-js-cargo-registry-
+
+      - name: Cache cargo git (ecma-rs vm-js check)
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/git
+          key: ${{ runner.os }}-ecma-rs-vm-js-cargo-git-${{ hashFiles('vendor/ecma-rs/**/Cargo.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-ecma-rs-vm-js-cargo-git-
+
+      - name: Cache target dir (vendor/ecma-rs)
+        uses: actions/cache@v4
+        with:
+          path: vendor/ecma-rs/target
+          key: ${{ runner.os }}-ecma-rs-vm-js-target-1.92.0-${{ hashFiles('vendor/ecma-rs/**/Cargo.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-ecma-rs-vm-js-target-1.92.0-
+
+      - name: cargo check (vm-js, parse-js, test262-semantic)
+        env:
+          # Keep cargo_agent locks within the ecma-rs workspace target dir.
+          FASTR_CARGO_LOCK_DIR: target/.cargo_agent_locks
+        run: |
+          set -euo pipefail
+          timeout -k 10 600 bash vendor/ecma-rs/scripts/cargo_agent.sh check -p vm-js
+          timeout -k 10 600 bash vendor/ecma-rs/scripts/cargo_agent.sh check -p parse-js
+          timeout -k 10 600 bash vendor/ecma-rs/scripts/cargo_agent.sh check -p test262-semantic
+
   ecma-rs-native:
     name: ecma-rs native (Rust 1.92.0)
     runs-on: ubuntu-latest
