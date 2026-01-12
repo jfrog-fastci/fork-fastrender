@@ -1026,6 +1026,164 @@ fn capture_and_bubble_ordering_across_opaque_parent_chain() {
 }
 
 #[test]
+fn opaque_parent_chain_preserves_target_and_event_phase() {
+  let doc = Document::new(QuirksMode::NoQuirks);
+  let registry = EventListenerRegistry::new();
+
+  let type_ = "x";
+  let root = EventTargetId::Opaque(11);
+  let parent = EventTargetId::Opaque(12);
+  let target = EventTargetId::Opaque(13);
+
+  registry.set_opaque_parent(12, Some(root));
+  registry.set_opaque_parent(13, Some(parent));
+
+  let id_root_capture = ListenerId::new(1);
+  let id_parent_capture = ListenerId::new(2);
+  let id_target_capture = ListenerId::new(3);
+  let id_target_bubble = ListenerId::new(4);
+  let id_parent_bubble = ListenerId::new(5);
+  let id_root_bubble = ListenerId::new(6);
+
+  assert!(registry.add_event_listener(
+    root,
+    type_,
+    id_root_capture,
+    AddEventListenerOptions {
+      capture: true,
+      ..Default::default()
+    }
+  ));
+  assert!(registry.add_event_listener(
+    parent,
+    type_,
+    id_parent_capture,
+    AddEventListenerOptions {
+      capture: true,
+      ..Default::default()
+    }
+  ));
+  assert!(registry.add_event_listener(
+    target,
+    type_,
+    id_target_capture,
+    AddEventListenerOptions {
+      capture: true,
+      ..Default::default()
+    }
+  ));
+  assert!(registry.add_event_listener(
+    target,
+    type_,
+    id_target_bubble,
+    AddEventListenerOptions::default()
+  ));
+  assert!(registry.add_event_listener(
+    parent,
+    type_,
+    id_parent_bubble,
+    AddEventListenerOptions::default()
+  ));
+  assert!(registry.add_event_listener(
+    root,
+    type_,
+    id_root_bubble,
+    AddEventListenerOptions::default()
+  ));
+
+  struct Invoker {
+    calls: Vec<&'static str>,
+    root: EventTargetId,
+    parent: EventTargetId,
+    target: EventTargetId,
+    id_root_capture: ListenerId,
+    id_parent_capture: ListenerId,
+    id_target_capture: ListenerId,
+    id_target_bubble: ListenerId,
+    id_parent_bubble: ListenerId,
+    id_root_bubble: ListenerId,
+  }
+
+  impl EventListenerInvoker for Invoker {
+    fn invoke(&mut self, listener_id: ListenerId, event: &mut Event) -> Result<(), DomError> {
+      // Opaque parent chains must not participate in Shadow DOM retargeting: `event.target` should
+      // remain the original dispatch target for all listeners.
+      assert_eq!(event.target, Some(self.target));
+
+      match listener_id {
+        id if id == self.id_root_capture => {
+          assert_eq!(event.current_target, Some(self.root));
+          assert_eq!(event.event_phase, EventPhase::Capturing);
+          self.calls.push("root_capture");
+        }
+        id if id == self.id_parent_capture => {
+          assert_eq!(event.current_target, Some(self.parent));
+          assert_eq!(event.event_phase, EventPhase::Capturing);
+          self.calls.push("parent_capture");
+        }
+        id if id == self.id_target_capture => {
+          assert_eq!(event.current_target, Some(self.target));
+          assert_eq!(event.event_phase, EventPhase::AtTarget);
+          self.calls.push("target_capture");
+        }
+        id if id == self.id_target_bubble => {
+          assert_eq!(event.current_target, Some(self.target));
+          assert_eq!(event.event_phase, EventPhase::AtTarget);
+          self.calls.push("target_bubble");
+        }
+        id if id == self.id_parent_bubble => {
+          assert_eq!(event.current_target, Some(self.parent));
+          assert_eq!(event.event_phase, EventPhase::Bubbling);
+          self.calls.push("parent_bubble");
+        }
+        id if id == self.id_root_bubble => {
+          assert_eq!(event.current_target, Some(self.root));
+          assert_eq!(event.event_phase, EventPhase::Bubbling);
+          self.calls.push("root_bubble");
+        }
+        _ => panic!("unexpected listener_id: {listener_id:?}"),
+      }
+
+      Ok(())
+    }
+  }
+
+  let mut invoker = Invoker {
+    calls: Vec::new(),
+    root,
+    parent,
+    target,
+    id_root_capture,
+    id_parent_capture,
+    id_target_capture,
+    id_target_bubble,
+    id_parent_bubble,
+    id_root_bubble,
+  };
+
+  let mut event = Event::new(
+    type_,
+    EventInit {
+      bubbles: true,
+      ..Default::default()
+    },
+  );
+  dispatch_event(target, &mut event, &doc, &registry, &mut invoker).unwrap();
+
+  assert_eq!(
+    invoker.calls.as_slice(),
+    &[
+      "root_capture",
+      "parent_capture",
+      "target_capture",
+      "target_bubble",
+      "parent_bubble",
+      "root_bubble"
+    ]
+  );
+}
+
+#[test]
 fn stop_propagation_prevents_subsequent_targets() {
   let (doc, a, b, c) = make_dom_abc();
   let registry = EventListenerRegistry::new();
