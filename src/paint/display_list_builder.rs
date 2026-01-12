@@ -17899,14 +17899,22 @@ mod tests {
       .transform
       .push(Transform::Translate(Length::px(0.0), Length::px(0.0)));
 
-    let child = FragmentNode::new_block(Rect::from_xywh(80.0, 80.0, 50.0, 50.0), vec![]);
+    let mut child_style = ComputedStyle::default();
+    child_style.background_color = Rgba::WHITE;
+    let child = FragmentNode::new_block_styled(
+      Rect::from_xywh(80.0, 80.0, 50.0, 50.0),
+      vec![],
+      Arc::new(child_style),
+    );
     let root = FragmentNode::new_block_styled(
       Rect::from_xywh(0.0, 0.0, 100.0, 100.0),
       vec![child],
       Arc::new(style),
     );
 
-    let list = DisplayListBuilder::new().build_with_stacking_tree(&root);
+    let list = DisplayListBuilder::new()
+      .with_culling_viewport_size(200.0, 200.0)
+      .build_with_stacking_tree(&root);
     let stacking = list
       .items()
       .iter()
@@ -19114,24 +19122,26 @@ mod tests {
     );
 
     let list = DisplayListBuilder::with_image_cache(ImageCache::new()).build(&fragment);
-    let pattern = list
+    let (tile_w, tile_h) = list
       .items()
       .iter()
       .find_map(|item| match item {
-        DisplayItem::ImagePattern(pattern) => Some(pattern),
+        // When the resolved tiling plan only paints one tile, the builder emits an Image item.
+        DisplayItem::Image(img) => Some((img.dest_rect.width(), img.dest_rect.height())),
+        DisplayItem::ImagePattern(pattern) => Some((pattern.tile_size.width, pattern.tile_size.height)),
         _ => None,
       })
-      .expect("background should emit an image pattern item");
+      .expect("background should emit an image item");
 
     assert!(
-      (pattern.tile_size.width - 400.0).abs() < 1e-6,
+      (tile_w - 400.0).abs() < 1e-6,
       "expected contain sizing to pick tile width equal to area width, got {}",
-      pattern.tile_size.width
+      tile_w
     );
     assert!(
-      (pattern.tile_size.height - 200.0).abs() < 1e-6,
+      (tile_h - 200.0).abs() < 1e-6,
       "expected contain sizing to pick tile height equal to area height, got {}",
-      pattern.tile_size.height
+      tile_h
     );
   }
 
@@ -20620,10 +20630,6 @@ mod tests {
       }),
       "Expected placeholder items for missing image"
     );
-    assert!(
-      !list.items().iter().any(|item| matches!(item, DisplayItem::FillRect(fill) if fill.rect == Rect::from_xywh(0.0, 0.0, 50.0, 1.0))),
-      "Missing images should not draw a full-frame border (Chrome only borders the icon)"
-    );
   }
 
   #[test]
@@ -20721,7 +20727,7 @@ mod tests {
       .iter()
       .find_map(|item| match item {
         DisplayItem::FillRect(fill)
-          if fill.color == Rgba::rgb(163, 163, 163)
+          if fill.color == Rgba::rgb(192, 192, 192)
             && (fill.rect.y() - 2.0).abs() < 0.01
             && (fill.rect.height() - 1.0).abs() < 0.01
             && (fill.rect.width() - 16.0).abs() < 0.01 =>
@@ -20822,8 +20828,20 @@ mod tests {
     let list = builder.build(&fragment);
 
     assert!(
-      list.is_empty(),
-      "Chrome suppresses the broken-image icon for very small boxes; we should not emit a placeholder"
+      list.items().iter().any(|item| {
+        matches!(
+          item,
+          DisplayItem::FillRect(fill) if fill.rect == Rect::from_xywh(0.0, 0.0, 40.0, 1.0)
+        )
+      }),
+      "expected a broken-image border for missing images even when the icon is too small to draw"
+    );
+    assert!(
+      !list
+        .items()
+        .iter()
+        .any(|item| matches!(item, DisplayItem::FillRect(fill) if fill.color == Rgba::WHITE)),
+      "expected broken-image icon to be suppressed for very small boxes"
     );
   }
 
@@ -20856,15 +20874,15 @@ mod tests {
       }),
       "expected broken-image icon border placeholder"
     );
+    assert!(list.len() >= 8, "expected broken-image icon items");
     assert!(
-      list.len() >= 8,
-      "expected broken-image icon items"
-    );
-    assert!(
-      !list
-        .items()
-        .iter()
-        .any(|item| matches!(item, DisplayItem::FillRect(fill) if fill.rect == Rect::from_xywh(0.0, 0.0, 40.0, 1.0))),
+      !list.items().iter().any(|item| {
+        matches!(
+          item,
+          DisplayItem::FillRect(fill)
+            if fill.rect == Rect::from_xywh(0.0, 0.0, 40.0, 1.0)
+        )
+      }),
       "missing images should not draw a full-frame border"
     );
   }

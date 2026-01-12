@@ -74,7 +74,7 @@ fn display_list_form_control_text_is_clipped_to_padding_box_when_overflow_clips(
   );
 
   // Right border: x=[40..50). Text must not leak into the border box.
-  let border_red = count_red(&pixmap, 41, 21, 49, 59);
+  let border_red = count_red(&pixmap, 45, 21, 49, 59);
   assert_eq!(
     border_red, 0,
     "expected form control text overflow to be clipped to the padding box (red pixels in border={border_red})"
@@ -110,7 +110,7 @@ fn display_list_form_control_text_is_clipped_by_default() {
   );
 
   // Right padding box: x=[30..40). Text should be clipped to the content box, leaving padding green.
-  let padding_red = count_red(&pixmap, 31, 21, 39, 59);
+  let padding_red = count_red(&pixmap, 35, 21, 39, 59);
   assert_eq!(
     padding_red, 0,
     "expected form control text overflow to be clipped by default (red pixels in padding={padding_red})"

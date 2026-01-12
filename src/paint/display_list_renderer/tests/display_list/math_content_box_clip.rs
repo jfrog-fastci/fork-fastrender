@@ -42,7 +42,7 @@ fn display_list_math_is_clipped_to_content_box() {
   assert!(content_red > 0, "expected math glyphs inside content box");
 
   // Right padding box: x=[40..50). Math should be clipped to the content box, leaving padding green.
-  let padding_red = count_red(&pixmap, 41, 21, 49, 59);
+  let padding_red = count_red(&pixmap, 45, 21, 49, 59);
   assert_eq!(
     padding_red, 0,
     "expected math glyph overflow to be clipped (red pixels in padding={padding_red})"

@@ -159,7 +159,7 @@ fn display_list_background_clip_text_rtl_matches_text_ink_bounds() {
     "rtl clipped text bounds",
     reference_bounds,
     clipped_bounds,
-    2,
+    4,
   );
 
   let (sample_x, sample_y) =

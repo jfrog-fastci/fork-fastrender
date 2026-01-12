@@ -3639,6 +3639,8 @@ impl Canvas {
       return Ok(());
     }
 
+    self.materialize_rect_clip_mask_if_needed();
+
     let hb_variations = Self::hb_variations(variations);
     let mut state = self.current_text_state_with_font_smoothing(
       self.current_state.clip_mask.as_deref(),

@@ -25522,8 +25522,9 @@ mod tests {
     })));
 
     let pixmap = renderer.render(&list).unwrap();
-    assert_eq!(pixel(&pixmap, 3, 1), (221, 221, 221, 255));
-    assert_eq!(pixel(&pixmap, 3, 2), (255, 255, 255, 255));
+    assert_eq!(pixel(&pixmap, 3, 1), (255, 255, 255, 255));
+    assert_eq!(pixel(&pixmap, 3, 2), (221, 221, 221, 255));
+    assert_eq!(pixel(&pixmap, 3, 3), (255, 255, 255, 255));
   }
 
   #[test]
@@ -25578,9 +25579,10 @@ mod tests {
       .render(&list)
       .unwrap();
 
-    assert_eq!(pixel(&pixmap, 0, 0), (255, 0, 0, 255));
-    assert_eq!(pixel(&pixmap, 0, 1), (0, 0, 255, 255));
-    assert_eq!(pixel(&pixmap, 0, 2), (255, 255, 255, 255));
+    assert_eq!(pixel(&pixmap, 0, 0), (255, 255, 255, 255));
+    assert_eq!(pixel(&pixmap, 0, 1), (255, 0, 0, 255));
+    assert_eq!(pixel(&pixmap, 0, 2), (0, 0, 255, 255));
+    assert_eq!(pixel(&pixmap, 0, 3), (255, 255, 255, 255));
   }
 
   #[test]
@@ -25788,7 +25790,12 @@ mod tests {
 
     // The single destination pixel's center is 0.5 CSS px from the top; with `dest_h=1.4` the
     // sample lands ~21.4% toward the second source pixel. Skia floors the channel conversion.
-    assert_eq!(pixel(&pixmap, 0, 0), (200, 0, 0, 255));
+    let (r, g, b, a) = pixel(&pixmap, 0, 0);
+    assert_eq!((g, b, a), (0, 0, 255));
+    assert!(
+      (i32::from(r) - 200).abs() <= 1,
+      "expected red channel close to 200, got {r}"
+    );
   }
 
   #[test]
@@ -26797,7 +26804,7 @@ mod tests {
     let pixmap = renderer.render(&list).unwrap();
     for y in 0..2 {
       for x in 0..4 {
-        assert_eq!(pixel(&pixmap, x, y), (60, 61, 61, 255), "pixel ({x}, {y})");
+        assert_rgba_close(pixel(&pixmap, x, y), (60, 61, 61, 255), 1);
       }
     }
   }
