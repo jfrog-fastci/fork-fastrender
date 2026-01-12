@@ -227,19 +227,8 @@ impl Program {
           state.diagnostics.clone()
         } else {
           let db = state.typecheck_db.lock().clone();
-          let mut diagnostics: Vec<_> = db::program_diagnostics(&db).as_ref().to_vec();
-          diagnostics.extend(state.diagnostics.clone());
-          let mut seen = HashSet::new();
-          diagnostics.retain(|diag| {
-            seen.insert((
-              diag.code.clone(),
-              diag.severity,
-              diag.message.clone(),
-              diag.primary,
-            ))
-          });
-          super::diagnostics::suppress_lower0003_covered_by_ts1194(&mut diagnostics);
-          codes::normalize_diagnostics(&mut diagnostics);
+          let mut diagnostics =
+            super::diagnostics::merge_program_diagnostics(&db, state.diagnostics.clone());
           state.filter_skip_lib_check_diagnostics(&mut diagnostics);
           diagnostics
         }

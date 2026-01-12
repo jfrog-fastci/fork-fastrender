@@ -72,26 +72,14 @@ impl Program {
             state.analysis_revision = Some(revision);
           }
 
-          let (db, mut diagnostics) = {
+          let (db, diagnostics) = {
             let state = self.read_state();
             let db = state.typecheck_db.lock().clone();
             let diagnostics = state.diagnostics.clone();
             (db, diagnostics)
           };
 
-          let mut merged: Vec<_> = db::program_diagnostics(&db).as_ref().to_vec();
-          merged.append(&mut diagnostics);
-          let mut seen = std::collections::HashSet::new();
-          merged.retain(|diag| {
-            seen.insert((
-              diag.code.clone(),
-              diag.severity,
-              diag.message.clone(),
-              diag.primary,
-            ))
-          });
-          super::super::diagnostics::suppress_lower0003_covered_by_ts1194(&mut merged);
-          crate::codes::normalize_diagnostics(&mut merged);
+          let mut merged = super::super::diagnostics::merge_program_diagnostics(&db, diagnostics);
           {
             let state = self.read_state();
             state.filter_skip_lib_check_diagnostics(&mut merged);

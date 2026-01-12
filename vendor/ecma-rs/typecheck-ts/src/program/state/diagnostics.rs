@@ -132,6 +132,26 @@ pub(super) fn suppress_lower0003_covered_by_ts1194(diagnostics: &mut Vec<Diagnos
   });
 }
 
+pub(super) fn merge_program_diagnostics(
+  db: &db::TypecheckDb,
+  mut extra_diagnostics: Vec<Diagnostic>,
+) -> Vec<Diagnostic> {
+  let mut merged: Vec<_> = db::program_diagnostics(db).as_ref().to_vec();
+  merged.append(&mut extra_diagnostics);
+  let mut seen = HashSet::new();
+  merged.retain(|diag| {
+    seen.insert((
+      diag.code.clone(),
+      diag.severity,
+      diag.message.clone(),
+      diag.primary,
+    ))
+  });
+  suppress_lower0003_covered_by_ts1194(&mut merged);
+  codes::normalize_diagnostics(&mut merged);
+  merged
+}
+
 impl ProgramState {
   pub(super) fn filter_skip_lib_check_diagnostics(&self, diagnostics: &mut Vec<Diagnostic>) {
     if !self.compiler_options.skip_lib_check {
