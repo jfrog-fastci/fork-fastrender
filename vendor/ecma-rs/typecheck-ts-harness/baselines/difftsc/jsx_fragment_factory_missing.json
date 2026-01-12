@@ -1,0 +1,30 @@
+{
+  "schema_version": 2,
+  "metadata": {
+    "typescript_version": "5.9.3",
+    "options": {
+      "exactOptionalPropertyTypes": false,
+      "jsx": 2,
+      "moduleResolution": 2,
+      "noEmit": true,
+      "noImplicitAny": false,
+      "noUncheckedIndexedAccess": false,
+      "pretty": false,
+      "skipLibCheck": true,
+      "strictFunctionTypes": true,
+      "strictNullChecks": true,
+      "target": 2,
+      "useDefineForClassFields": true
+    }
+  },
+  "diagnostics": [
+    {
+      "code": 2879,
+      "file": "main.tsx",
+      "start": 26,
+      "end": 28,
+      "category": "error",
+      "message": "Using JSX fragments requires fragment factory 'React' to be in scope, but it could not be found."
+    }
+  ]
+}

@@ -867,6 +867,23 @@ pub const JSX_SPREAD_ATTR_MUST_BE_OBJECT: Code = Code::new(
   &[],
 );
 
+/// TS2879: JSX fragments require a fragment factory to be in scope.
+///
+/// TypeScript emits this diagnostic when using `<>...</>` in classic React or
+/// preserve JSX modes and the default fragment factory namespace (`React`) is
+/// not available.
+///
+/// - Primary span: the opening fragment tag (`<>`).
+/// - Labels: primary only.
+/// - Notes: none.
+pub const JSX_FRAGMENT_FACTORY_MISSING: Code = Code::new(
+  "TS2879",
+  "jsx fragment factory missing",
+  "JSX fragment opening tag (`<>`)",
+  &["primary: JSX fragment opening tag"],
+  &[],
+);
+
 /// TC3004: Variance annotation on a type parameter does not match its usage
 /// within the declaring type.
 ///

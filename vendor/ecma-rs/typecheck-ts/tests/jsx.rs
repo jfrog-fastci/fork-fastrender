@@ -2325,3 +2325,83 @@ const bad = <Comp x={1} y={2} />;
     "expected EXCESS_PROPERTY, got {diagnostics:?}"
   );
 }
+
+#[test]
+fn fragment_in_react_mode_requires_react_binding() {
+  let mut options = CompilerOptions::default();
+  options.no_default_lib = true;
+  options.jsx = Some(JsxMode::React);
+
+  let jsx = LibFile {
+    key: FileKey::new("jsx.d.ts"),
+    name: Arc::from("jsx.d.ts"),
+    kind: FileKind::Dts,
+    text: Arc::from(
+      r#"
+declare namespace JSX {
+  interface Element {}
+}
+"#,
+    ),
+  };
+
+  let entry = FileKey::new("entry.tsx");
+  let host = TestHost::new(options)
+    .with_lib(jsx)
+    .with_file(entry.clone(), "const el = <></>;");
+  let program = Program::new(host, vec![entry]);
+  let diagnostics = program.check();
+
+  assert_eq!(
+    diagnostics.len(),
+    1,
+    "expected one diagnostic, got {diagnostics:?}"
+  );
+  assert_eq!(
+    diagnostics[0].code.as_str(),
+    codes::JSX_FRAGMENT_FACTORY_MISSING.as_str(),
+    "expected JSX_FRAGMENT_FACTORY_MISSING, got {diagnostics:?}"
+  );
+}
+
+#[test]
+fn fragment_children_are_checked_against_fragment_props_when_react_fragment_typed() {
+  let mut options = CompilerOptions::default();
+  options.no_default_lib = true;
+  options.jsx = Some(JsxMode::React);
+
+  let jsx = LibFile {
+    key: FileKey::new("jsx.d.ts"),
+    name: Arc::from("jsx.d.ts"),
+    kind: FileKind::Dts,
+    text: Arc::from(
+      r#"
+declare namespace JSX {
+  interface Element {}
+}
+"#,
+    ),
+  };
+
+  let entry = FileKey::new("entry.tsx");
+  let source = r#"
+declare const React: { Fragment: (props: { children?: string }) => JSX.Element };
+const el = <>{123}</>;
+"#;
+  let host = TestHost::new(options)
+    .with_lib(jsx)
+    .with_file(entry.clone(), source);
+  let program = Program::new(host, vec![entry]);
+  let diagnostics = program.check();
+
+  assert_eq!(
+    diagnostics.len(),
+    1,
+    "expected one diagnostic, got {diagnostics:?}"
+  );
+  assert_eq!(
+    diagnostics[0].code.as_str(),
+    codes::TYPE_MISMATCH.as_str(),
+    "expected TYPE_MISMATCH, got {diagnostics:?}"
+  );
+}

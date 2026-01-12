@@ -1,0 +1,2 @@
+// @jsx: react
+const el = <></>;

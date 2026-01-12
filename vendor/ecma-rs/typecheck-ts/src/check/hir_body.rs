@@ -3883,8 +3883,49 @@ impl<'a> Checker<'a> {
 
     match &elem.stx.name {
       None => {
-        // Fragment; no attributes, but still typecheck children.
-        let _ = self.jsx_actual_props(elem.loc, &elem.stx.attributes, &elem.stx.children, None);
+        match self.jsx_mode {
+          Some(JsxMode::React) | Some(JsxMode::Preserve) => {
+            let Some(react_binding) = self.lookup("React") else {
+              let elem_range = loc_to_range(self.file, elem.loc);
+              let opening_range =
+                TextRange::new(elem_range.start, (elem_range.start + 2).min(elem_range.end));
+              self
+                .diagnostics
+                .push(codes::JSX_FRAGMENT_FACTORY_MISSING.error(
+                  "Using JSX fragments requires fragment factory 'React' to be in scope, but it could not be found.",
+                  Span::new(self.file, opening_range),
+                ));
+              let _ = self.jsx_actual_props(elem.loc, &elem.stx.attributes, &elem.stx.children, None);
+              self.record_expr_type(elem.loc, element_ty);
+              return element_ty;
+            };
+
+            let fragment_ty = self.member_type(react_binding.ty, "Fragment");
+            if matches!(
+              self.store.type_kind(fragment_ty),
+              TypeKind::Any | TypeKind::Unknown
+            ) {
+              let _ =
+                self.jsx_actual_props(elem.loc, &elem.stx.attributes, &elem.stx.children, None);
+            } else {
+              let expected_props_ty = self
+                .jsx_expected_props_for_value_tag(fragment_ty, elem.loc)
+                .map(|expected| self.jsx_apply_intrinsic_attributes(expected));
+              let actual_props = self.jsx_actual_props(
+                elem.loc,
+                &elem.stx.attributes,
+                &elem.stx.children,
+                expected_props_ty,
+              );
+              if let Some(expected_props_ty) = expected_props_ty {
+                self.check_jsx_props(elem.loc, &actual_props, expected_props_ty);
+              }
+            }
+          }
+          _ => {
+            let _ = self.jsx_actual_props(elem.loc, &elem.stx.attributes, &elem.stx.children, None);
+          }
+        }
       }
       Some(JsxElemName::Name(name)) => {
         let tag_buf = name
@@ -5403,8 +5444,10 @@ impl<'a> Checker<'a> {
     }
 
     let Some(children_attr_ty) = self.resolve_type_ref(&["JSX", "ElementChildrenAttribute"]) else {
-      self.jsx_children_prop_name = Some(None);
-      return None;
+      let children = self.store.intern_name_ref("children");
+      let selected = Some(children);
+      self.jsx_children_prop_name = Some(selected);
+      return selected;
     };
     let container_span = match self.store.type_kind(children_attr_ty) {
       TypeKind::Ref { def, args } if args.is_empty() => self
