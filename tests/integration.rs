@@ -22,6 +22,7 @@ mod progress;
 mod render;
 mod resource;
 mod scroll;
+mod ui;
 mod wpt;
 
 // Keep the reference image comparison helpers available for fixture-style tests.
