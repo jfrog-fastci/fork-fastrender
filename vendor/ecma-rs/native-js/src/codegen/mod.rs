@@ -2793,26 +2793,31 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
           }
         };
 
-        match slot.kind {
-          TsAbiKind::Number => Ok(NativeValue::Number(
+        let out = match slot.kind {
+          TsAbiKind::Number => NativeValue::Number(
             self
               .builder
               .build_load(self.cg.f64_ty, slot.ptr, "load")
               .expect("failed to build load")
               .into_float_value(),
-          )),
-          TsAbiKind::Boolean => Ok(NativeValue::Boolean(
+          ),
+          TsAbiKind::Boolean => NativeValue::Boolean(
             self
               .builder
               .build_load(self.cg.i1_ty, slot.ptr, "load")
               .expect("failed to build load")
               .into_int_value(),
-          )),
-          TsAbiKind::Void => Err(vec![codes::UNSUPPORTED_NATIVE_TYPE.error(
-            "`void` values are not supported in this context",
-            span,
-          )]),
-        }
+          ),
+          TsAbiKind::Void => {
+            return Err(vec![codes::UNSUPPORTED_NATIVE_TYPE.error(
+              "`void` values are not supported in this context",
+              span,
+            )]);
+          }
+        };
+
+        self.dbg_value(binding, out, span.range);
+        Ok(out)
       }
 
       ExprKind::Assignment { op, target, value } => {
