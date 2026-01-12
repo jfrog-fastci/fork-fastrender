@@ -2418,6 +2418,12 @@ const HOST_EXOTIC_DOM_STRING_MAP: u64 = u64::from_be_bytes(*b"FRDOMDSM");
 const HOST_EXOTIC_COMPUTED_STYLE: u64 = u64::from_be_bytes(*b"FRCOMPUT");
 const CSS_STYLE_DECL_HOST_TAG: u64 = 5;
 const WRAPPER_DOCUMENT_KEY: &str = "__fastrender_wrapper_document";
+/// Internal-only indirection used when a JS `Document` wrapper is backed by a different "platform"
+/// document for DOM wrapper identity / `dom2::Document` selection.
+///
+/// This is currently used by `DOMParser.parseFromString()` documents, which are represented as
+/// detached `NodeKind::Document` subtrees inside the host `dom2::Document`.
+const PLATFORM_DOCUMENT_KEY: &str = "__fastrender_platform_document";
 const DOCUMENT_WINDOW_KEY: &str = "__fastrender_document_window";
 const DOCUMENT_SELECTION_KEY: &str = "__fastrender_document_selection";
 const EVENT_BRAND_KEY: &str = "__fastrender_event";
@@ -6793,13 +6799,31 @@ fn get_or_create_node_wrapper(
   dom: Option<&dom2::Document>,
   node_id: NodeId,
 ) -> Result<Value, VmError> {
-  if node_id.index() == 0 {
-    // `dom2`'s document node is always index 0; the canonical wrapper is `window.document`.
-    return Ok(Value::Object(document_obj));
-  }
-
-  let document_key = vm_js::WeakGcObject::from(document_obj);
   let wrapper = if let Some(platform) = dom_platform_mut(vm) {
+    // Most wrappers use their own `Document` as the `DomPlatform` key. However, some document-like
+    // wrappers (e.g. `DOMParser.parseFromString()` documents) are represented as detached subtrees
+    // inside the host `dom2::Document`. In those cases, wrappers must still be registered under the
+    // host document ID so `dom_ptr_for_document_id_*` resolves to the correct DOM arena.
+    let platform_document_obj = {
+      let mut scope = scope.reborrow();
+      scope.push_root(Value::Object(document_obj))?;
+      let key = alloc_key(&mut scope, PLATFORM_DOCUMENT_KEY)?;
+      match scope
+        .heap()
+        .object_get_own_data_property_value(document_obj, &key)?
+      {
+        Some(Value::Object(obj)) => obj,
+        _ => document_obj,
+      }
+    };
+
+    if node_id.index() == 0 {
+      // `dom2`'s document node is always index 0; return the platform document wrapper so wrapper
+      // identity remains stable even when called from an alias document.
+      return Ok(Value::Object(platform_document_obj));
+    }
+
+    let document_key = vm_js::WeakGcObject::from(platform_document_obj);
     if let Some(existing) = platform.get_existing_wrapper(scope.heap(), document_key, node_id) {
       return Ok(Value::Object(existing));
     }
@@ -6811,6 +6835,9 @@ fn get_or_create_node_wrapper(
 
     platform.get_or_create_wrapper(scope, document_key, node_id, primary)?
   } else {
+    if node_id.index() == 0 {
+      return Ok(Value::Object(document_obj));
+    }
     scope.alloc_object()?
   };
   scope.push_root(Value::Object(wrapper))?;
@@ -11193,19 +11220,25 @@ fn dom_parser_parse_from_string_native(
     _ => return Err(VmError::TypeError("Illegal invocation")),
   };
 
-  // Slot 0: host `window.document` wrapper object.
-  let slots = scope.heap().get_function_native_slots(callee)?;
-  let host_document_obj = match slots
-    .get(DOM_PARSER_PARSE_FROM_STRING_DOCUMENT_SLOT)
-    .copied()
-    .unwrap_or(Value::Undefined)
-  {
-    Value::Object(obj) => obj,
-    _ => {
-      return Err(VmError::InvariantViolation(
-        "DOMParser.parseFromString native missing host document slot",
-      ))
+  // Host `window.document` wrapper object.
+  //
+  // Some call sites install `DOMParser.prototype.parseFromString` with a native slot containing the
+  // canonical `window.document` wrapper; older installers may omit slots. Support both so WPT and
+  // embedders stay resilient to constructor installer refactors.
+  let host_document_obj = {
+    let slots = scope.heap().get_function_native_slots(callee)?;
+    match slots
+      .get(DOM_PARSER_PARSE_FROM_STRING_DOCUMENT_SLOT)
+      .copied()
+      .unwrap_or(Value::Undefined)
+    {
+      Value::Object(obj) => Some(obj),
+      _ => None,
     }
+    .or_else(|| vm.user_data::<WindowRealmUserData>().and_then(|data| data.document_obj))
+    .ok_or(VmError::InvariantViolation(
+      "DOMParser.parseFromString requires window.document",
+    ))?
   };
 
   let html_value = args.get(0).copied().unwrap_or(Value::Undefined);
@@ -11270,8 +11303,6 @@ fn dom_parser_parse_from_string_native(
   )?;
 
   // Detached documents have no associated window.
-  let about_blank_s = scope.alloc_string(ABOUT_BLANK_URL)?;
-  scope.push_root(Value::String(about_blank_s))?;
   let default_view_key = alloc_key(scope, "defaultView")?;
   scope.define_property(
     document_obj,
@@ -11285,8 +11316,6 @@ fn dom_parser_parse_from_string_native(
       },
     },
   )?;
-  let url_key = alloc_key(scope, "URL")?;
-  scope.define_property(document_obj, url_key, data_desc(Value::String(about_blank_s)))?;
   let location_key = alloc_key(scope, "location")?;
   scope.define_property(
     document_obj,
@@ -11306,11 +11335,11 @@ fn dom_parser_parse_from_string_native(
   let platform = dom_platform_mut(vm).ok_or(VmError::TypeError(
     "DOMParser.parseFromString requires a DOM-backed realm",
   ))?;
-  let document_key = vm_js::WeakGcObject::from(document_obj);
+  let host_document_key = vm_js::WeakGcObject::from(host_document_obj);
   platform.register_wrapper(
     scope.heap(),
     document_obj,
-    document_key,
+    host_document_key,
     document_id,
     DomInterface::Document,
   );
@@ -11332,6 +11361,23 @@ fn dom_parser_parse_from_string_native(
       configurable: false,
       kind: PropertyKind::Data {
         value: Value::Object(document_obj),
+        writable: false,
+      },
+    },
+  )?;
+
+  // Ensure node wrappers created from this detached document use the host document key for wrapper
+  // identity / DOM selection.
+  scope.push_root(Value::Object(host_document_obj))?;
+  let platform_document_key = alloc_key(scope, PLATFORM_DOCUMENT_KEY)?;
+  scope.define_property(
+    document_obj,
+    platform_document_key,
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: false,
+      kind: PropertyKind::Data {
+        value: Value::Object(host_document_obj),
         writable: false,
       },
     },
