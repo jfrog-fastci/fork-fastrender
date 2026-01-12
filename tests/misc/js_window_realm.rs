@@ -648,6 +648,58 @@ fn location_href_setter_requests_navigation_and_interrupts() -> Result<()> {
 }
 
 #[test]
+fn location_pathname_setter_requests_navigation_and_interrupts() -> Result<()> {
+  for source in ["location.pathname = '/next'", "location.pathname = 'next'"] {
+    let mut realm =
+      WindowRealm::new_with_js_execution_options(WindowRealmConfig::new("https://example.com/"), js_opts_for_test())
+      .map_err(|e| Error::Other(e.to_string()))?;
+
+    let err = realm
+      .exec_script(source)
+      .expect_err("expected location.pathname setter to interrupt execution");
+    assert!(
+      matches!(err, VmError::Termination(ref term) if term.reason == TerminationReason::Interrupted),
+      "unexpected error: {err:?}"
+    );
+    realm.reset_interrupt();
+
+    let req = realm
+      .take_pending_navigation_request()
+      .expect("expected pending navigation request");
+    assert_eq!(req.url, "https://example.com/next");
+    assert!(!req.replace);
+    assert!(realm.take_pending_navigation_request().is_none());
+  }
+  Ok(())
+}
+
+#[test]
+fn location_search_setter_requests_navigation_and_interrupts() -> Result<()> {
+  for source in ["location.search = '?q=1'", "location.search = 'q=1'"] {
+    let mut realm =
+      WindowRealm::new_with_js_execution_options(WindowRealmConfig::new("https://example.com/"), js_opts_for_test())
+      .map_err(|e| Error::Other(e.to_string()))?;
+
+    let err = realm
+      .exec_script(source)
+      .expect_err("expected location.search setter to interrupt execution");
+    assert!(
+      matches!(err, VmError::Termination(ref term) if term.reason == TerminationReason::Interrupted),
+      "unexpected error: {err:?}"
+    );
+    realm.reset_interrupt();
+
+    let req = realm
+      .take_pending_navigation_request()
+      .expect("expected pending navigation request");
+    assert_eq!(req.url, "https://example.com/?q=1");
+    assert!(!req.replace);
+    assert!(realm.take_pending_navigation_request().is_none());
+  }
+  Ok(())
+}
+
+#[test]
 fn location_assign_and_replace_request_navigation() -> Result<()> {
   let mut realm = WindowRealm::new_with_js_execution_options(
     WindowRealmConfig::new("https://example.com/"),

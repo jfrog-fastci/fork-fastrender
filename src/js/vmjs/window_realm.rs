@@ -2989,6 +2989,96 @@ fn location_replace_native(
   request_location_navigation(vm, scope, host, hooks, Some(location_obj), url_value, true)
 }
 
+fn location_pathname_set_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(location_obj) = this else {
+    return Ok(Value::Undefined);
+  };
+
+  let pathname_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let pathname_value = match pathname_value {
+    Value::String(s) => s,
+    other => scope.heap_mut().to_string(other)?,
+  };
+  scope.push_root(Value::String(pathname_value))?;
+  let mut pathname = scope
+    .heap()
+    .get_string(pathname_value)?
+    .to_utf8_lossy();
+  if !pathname.is_empty() && !pathname.starts_with('/') {
+    pathname = format!("/{pathname}");
+  }
+
+  let Some(mut url) = parse_location_url(scope, location_obj)? else {
+    return Ok(Value::Undefined);
+  };
+  url.set_path(&pathname);
+  let new_href = url.to_string();
+  let new_href_s = scope.alloc_string(&new_href)?;
+  request_location_navigation(
+    vm,
+    scope,
+    host,
+    hooks,
+    Some(location_obj),
+    Value::String(new_href_s),
+    false,
+  )
+}
+
+fn location_search_set_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(location_obj) = this else {
+    return Ok(Value::Undefined);
+  };
+
+  let search_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let search_value = match search_value {
+    Value::String(s) => s,
+    other => scope.heap_mut().to_string(other)?,
+  };
+  scope.push_root(Value::String(search_value))?;
+  let mut search = scope.heap().get_string(search_value)?.to_utf8_lossy();
+  let query = if search.is_empty() {
+    None
+  } else {
+    if !search.starts_with('?') {
+      search = format!("?{search}");
+    }
+    Some(search[1..].to_string())
+  };
+
+  let Some(mut url) = parse_location_url(scope, location_obj)? else {
+    return Ok(Value::Undefined);
+  };
+  url.set_query(query.as_deref());
+  let new_href = url.to_string();
+  let new_href_s = scope.alloc_string(&new_href)?;
+  request_location_navigation(
+    vm,
+    scope,
+    host,
+    hooks,
+    Some(location_obj),
+    Value::String(new_href_s),
+    false,
+  )
+}
+
 fn location_set_unimplemented_native(
   _vm: &mut Vm,
   _scope: &mut Scope<'_>,
@@ -16977,6 +17067,18 @@ fn init_window_globals(
     Some(realm.intrinsics().function_prototype()),
   )?;
   scope.push_root(Value::Object(pathname_get_func))?;
+
+  let pathname_set_call_id = vm.register_native_call(location_pathname_set_native)?;
+  let pathname_set_name = scope.alloc_string("set pathname")?;
+  scope.push_root(Value::String(pathname_set_name))?;
+  let pathname_set_func =
+    scope.alloc_native_function(pathname_set_call_id, None, pathname_set_name, 1)?;
+  scope.heap_mut().object_set_prototype(
+    pathname_set_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(pathname_set_func))?;
+
   scope.define_property(
     location_obj,
     pathname_key,
@@ -16985,7 +17087,7 @@ fn init_window_globals(
       configurable: true,
       kind: PropertyKind::Accessor {
         get: Value::Object(pathname_get_func),
-        set: Value::Object(location_set_func),
+        set: Value::Object(pathname_set_func),
       },
     },
   )?;
@@ -17000,6 +17102,17 @@ fn init_window_globals(
     Some(realm.intrinsics().function_prototype()),
   )?;
   scope.push_root(Value::Object(search_get_func))?;
+
+  let search_set_call_id = vm.register_native_call(location_search_set_native)?;
+  let search_set_name = scope.alloc_string("set search")?;
+  scope.push_root(Value::String(search_set_name))?;
+  let search_set_func = scope.alloc_native_function(search_set_call_id, None, search_set_name, 1)?;
+  scope.heap_mut().object_set_prototype(
+    search_set_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(search_set_func))?;
+
   scope.define_property(
     location_obj,
     search_key,
@@ -17008,7 +17121,7 @@ fn init_window_globals(
       configurable: true,
       kind: PropertyKind::Accessor {
         get: Value::Object(search_get_func),
-        set: Value::Object(location_set_func),
+        set: Value::Object(search_set_func),
       },
     },
   )?;
