@@ -224,6 +224,12 @@ const DOM_SHIM: &str = r##"
   function Document() { illegal(); }
   function DocumentFragment() { illegal(); }
   function Element() { illegal(); }
+  function HTMLElement() { illegal(); }
+  function HTMLInputElement() { illegal(); }
+  function HTMLTextAreaElement() { illegal(); }
+  function HTMLSelectElement() { illegal(); }
+  function HTMLFormElement() { illegal(); }
+  function HTMLOptionElement() { illegal(); }
   function Text() { illegal(); }
   function HTMLCollection() { illegal(); }
 
@@ -231,6 +237,12 @@ const DOM_SHIM: &str = r##"
   Object.setPrototypeOf(Document.prototype, Node.prototype);
   Object.setPrototypeOf(DocumentFragment.prototype, Node.prototype);
   Object.setPrototypeOf(Element.prototype, Node.prototype);
+  Object.setPrototypeOf(HTMLElement.prototype, Element.prototype);
+  Object.setPrototypeOf(HTMLInputElement.prototype, HTMLElement.prototype);
+  Object.setPrototypeOf(HTMLTextAreaElement.prototype, HTMLElement.prototype);
+  Object.setPrototypeOf(HTMLSelectElement.prototype, HTMLElement.prototype);
+  Object.setPrototypeOf(HTMLFormElement.prototype, HTMLElement.prototype);
+  Object.setPrototypeOf(HTMLOptionElement.prototype, HTMLElement.prototype);
   Object.setPrototypeOf(Text.prototype, Node.prototype);
 
   // Node type constants.
@@ -319,10 +331,30 @@ const DOM_SHIM: &str = r##"
     return o;
   }
 
+  function elementPrototypeForTag(tagNameLower) {
+    // The shim only needs a small subset of element interfaces for WPT and common scripts.
+    // Default to `HTMLElement` for all HTML tags.
+    switch (String(tagNameLower).toLowerCase()) {
+      case "input":
+        return HTMLInputElement.prototype;
+      case "textarea":
+        return HTMLTextAreaElement.prototype;
+      case "select":
+        return HTMLSelectElement.prototype;
+      case "form":
+        return HTMLFormElement.prototype;
+      case "option":
+        return HTMLOptionElement.prototype;
+      default:
+        return HTMLElement.prototype;
+    }
+  }
+
   function elementFromId(id) {
     id = Number(id);
     var tag = g.__fastrender_dom_get_tag_name(id);
-    return makeNode(Element.prototype, id, String(tag).toUpperCase());
+    var lower = String(tag).toLowerCase();
+    return makeNode(elementPrototypeForTag(lower), id, String(tag).toUpperCase());
   }
 
   function nodeFromId(id) {
@@ -627,8 +659,9 @@ const DOM_SHIM: &str = r##"
   }
 
   Document.prototype.createElement = function (tagName) {
-    var id = g.__fastrender_dom_create_element(String(tagName));
-    return makeNode(Element.prototype, id, String(tagName).toUpperCase());
+    var raw = String(tagName);
+    var id = g.__fastrender_dom_create_element(raw);
+    return makeNode(elementPrototypeForTag(raw.toLowerCase()), id, raw.toUpperCase());
   };
 
   Document.prototype.createDocumentFragment = function () {
@@ -1144,14 +1177,14 @@ const DOM_SHIM: &str = r##"
 
   // Provide `document.head`/`document.body` for smoke tests.
   if (typeof g.__fastrender_dom_head_id === "number") {
-    g.document.head = makeNode(Element.prototype, g.__fastrender_dom_head_id, "HEAD");
+    g.document.head = makeNode(elementPrototypeForTag("head"), g.__fastrender_dom_head_id, "HEAD");
   }
   if (typeof g.__fastrender_dom_body_id === "number") {
-    g.document.body = makeNode(Element.prototype, g.__fastrender_dom_body_id, "BODY");
+    g.document.body = makeNode(elementPrototypeForTag("body"), g.__fastrender_dom_body_id, "BODY");
   }
   if (typeof g.__fastrender_dom_document_element_id === "number") {
     g.document.documentElement = makeNode(
-      Element.prototype,
+      elementPrototypeForTag("html"),
       g.__fastrender_dom_document_element_id,
       "HTML"
     );
@@ -1212,6 +1245,12 @@ const DOM_SHIM: &str = r##"
   Object.defineProperty(g, "Document", { value: Document, configurable: true, writable: true });
   Object.defineProperty(g, "DocumentFragment", { value: DocumentFragment, configurable: true, writable: true });
   Object.defineProperty(g, "Element", { value: Element, configurable: true, writable: true });
+  Object.defineProperty(g, "HTMLElement", { value: HTMLElement, configurable: true, writable: true });
+  Object.defineProperty(g, "HTMLInputElement", { value: HTMLInputElement, configurable: true, writable: true });
+  Object.defineProperty(g, "HTMLTextAreaElement", { value: HTMLTextAreaElement, configurable: true, writable: true });
+  Object.defineProperty(g, "HTMLSelectElement", { value: HTMLSelectElement, configurable: true, writable: true });
+  Object.defineProperty(g, "HTMLFormElement", { value: HTMLFormElement, configurable: true, writable: true });
+  Object.defineProperty(g, "HTMLOptionElement", { value: HTMLOptionElement, configurable: true, writable: true });
   Object.defineProperty(g, "Text", { value: Text, configurable: true, writable: true });
   Object.defineProperty(g, "HTMLCollection", { value: HTMLCollection, configurable: true, writable: true });
   Object.defineProperty(g, "EventTarget", { value: EventTarget, configurable: true, writable: true });
@@ -2920,6 +2959,94 @@ mod tests {
       assert_eq!(v["first"], "a");
       assert_eq!(v["len2"], 1);
       assert_eq!(v["first2"], "a");
+    });
+  }
+
+  #[test]
+  fn html_element_constructors_and_tag_name_mapping() {
+    let rt = Runtime::new().unwrap();
+    let context = Context::full(&rt).unwrap();
+    context.with(|ctx| {
+      install_dom_shims(ctx.clone(), &ctx.globals()).unwrap();
+
+      let v = eval_json(
+        ctx.clone(),
+        r#"
+        (function () {
+          function throwsIllegalConstructor(ctor) {
+            try {
+              new ctor();
+              return false;
+            } catch (e) {
+              return e && e.name === "TypeError" && String(e.message) === "Illegal constructor";
+            }
+          }
+
+          var div = document.createElement("div");
+          var input = document.createElement("input");
+          var textarea = document.createElement("textarea");
+          var select = document.createElement("select");
+          var form = document.createElement("form");
+          var option = document.createElement("option");
+
+          return JSON.stringify({
+            divIsHTMLElement: div instanceof HTMLElement,
+            divIsElement: div instanceof Element,
+            divIsNode: div instanceof Node,
+
+            inputIsHTMLInputElement: input instanceof HTMLInputElement,
+            inputIsHTMLElement: input instanceof HTMLElement,
+            inputIsElement: input instanceof Element,
+            inputIsNode: input instanceof Node,
+            inputProtoIsHTMLInput: Object.getPrototypeOf(input) === HTMLInputElement.prototype,
+
+            textareaIsHTMLTextAreaElement: textarea instanceof HTMLTextAreaElement,
+            selectIsHTMLSelectElement: select instanceof HTMLSelectElement,
+            formIsHTMLFormElement: form instanceof HTMLFormElement,
+            optionIsHTMLOptionElement: option instanceof HTMLOptionElement,
+
+            headIsHTMLElement: document.head instanceof HTMLElement,
+            bodyIsHTMLElement: document.body instanceof HTMLElement,
+            documentElementIsHTMLElement: document.documentElement instanceof HTMLElement,
+
+            ctorIllegal: {
+              HTMLElement: throwsIllegalConstructor(HTMLElement),
+              HTMLInputElement: throwsIllegalConstructor(HTMLInputElement),
+              HTMLTextAreaElement: throwsIllegalConstructor(HTMLTextAreaElement),
+              HTMLSelectElement: throwsIllegalConstructor(HTMLSelectElement),
+              HTMLFormElement: throwsIllegalConstructor(HTMLFormElement),
+              HTMLOptionElement: throwsIllegalConstructor(HTMLOptionElement),
+            }
+          });
+        })()
+        "#,
+      );
+
+      assert_eq!(v["divIsHTMLElement"], true);
+      assert_eq!(v["divIsElement"], true);
+      assert_eq!(v["divIsNode"], true);
+
+      assert_eq!(v["inputIsHTMLInputElement"], true);
+      assert_eq!(v["inputIsHTMLElement"], true);
+      assert_eq!(v["inputIsElement"], true);
+      assert_eq!(v["inputIsNode"], true);
+      assert_eq!(v["inputProtoIsHTMLInput"], true);
+
+      assert_eq!(v["textareaIsHTMLTextAreaElement"], true);
+      assert_eq!(v["selectIsHTMLSelectElement"], true);
+      assert_eq!(v["formIsHTMLFormElement"], true);
+      assert_eq!(v["optionIsHTMLOptionElement"], true);
+
+      assert_eq!(v["headIsHTMLElement"], true);
+      assert_eq!(v["bodyIsHTMLElement"], true);
+      assert_eq!(v["documentElementIsHTMLElement"], true);
+
+      assert_eq!(v["ctorIllegal"]["HTMLElement"], true);
+      assert_eq!(v["ctorIllegal"]["HTMLInputElement"], true);
+      assert_eq!(v["ctorIllegal"]["HTMLTextAreaElement"], true);
+      assert_eq!(v["ctorIllegal"]["HTMLSelectElement"], true);
+      assert_eq!(v["ctorIllegal"]["HTMLFormElement"], true);
+      assert_eq!(v["ctorIllegal"]["HTMLOptionElement"], true);
     });
   }
 }
