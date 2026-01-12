@@ -208,6 +208,12 @@ fn crypto_get_random_values_native(
   let mut scope = scope.reborrow();
   scope.push_root(Value::Object(array_obj))?;
 
+  // Reject non-typed arrays (plain objects, ArrayBuffer, DataView, etc). The WebCrypto spec only
+  // accepts integer TypedArray variants.
+  if !scope.heap().is_typed_array_object(array_obj) {
+    return Err(VmError::TypeError(TYPE_ERROR_MSG));
+  }
+
   // WebCrypto spec: fill the **bytes** of the passed TypedArray view, respecting `byteOffset` and
   // `byteLength`, and return the same object.
   //
@@ -696,6 +702,7 @@ mod tests {
     )
     .expect("create realm");
 
+    // Primitive input.
     let v = realm
       .exec_script(
         r#"
@@ -707,6 +714,26 @@ mod tests {
       )
       .expect("script should catch and return");
 
+    assert_eq!(js_value_to_utf8(realm.heap(), v), "TypeError");
+
+    // Plain object with TypedArray-like shape should still be rejected (brand check).
+    let v = realm
+      .exec_script(
+        r#"
+        (() => {
+          const fake = {
+            constructor: { name: "Uint8Array" },
+            buffer: new ArrayBuffer(4),
+            byteOffset: 0,
+            byteLength: 4,
+            length: 4,
+          };
+          try { crypto.getRandomValues(fake); return "no-error"; }
+          catch (e) { return e && e.name || String(e); }
+        })()
+        "#,
+      )
+      .expect("script should catch and return");
     assert_eq!(js_value_to_utf8(realm.heap(), v), "TypeError");
   }
 
