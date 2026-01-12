@@ -4,7 +4,9 @@ use crate::dom::MATHML_NAMESPACE;
 use selectors::context::QuirksMode;
 
 use super::live_mutation::{LiveMutationEvent, LiveMutationTestRecorder};
-use super::{Document, DomError, MutationObserverInit, MutationRecordType, NodeId, NodeKind};
+use super::{
+  Document, DomError, MutationObserverInit, MutationRecordType, NodeId, NodeKind, SlotAssignmentMode,
+};
 
 fn find_element_by_id(doc: &Document, id: &str) -> NodeId {
   doc
@@ -961,6 +963,7 @@ fn set_inner_html_removals_and_insertions_use_structured_mutation_apis() {
     NodeKind::ShadowRoot {
       mode: ShadowRootMode::Open,
       delegates_focus: false,
+      slot_assignment: SlotAssignmentMode::Named,
     },
     Some(host),
     /* inert_subtree */ false,
