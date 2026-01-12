@@ -2,7 +2,7 @@ use hir_js::ExprId;
 use optimize_js::analysis::annotate_program;
 use optimize_js::cfg::cfg::{Cfg, CfgBBlocks, CfgGraph};
 use optimize_js::il::inst::{Arg, Const, Inst, ValueTypeSummary};
-use optimize_js::{OptimizationStats, Program, ProgramFunction, TopLevelMode};
+use optimize_js::{OptimizationStats, Program, ProgramFunction, TextRange, TopLevelMode};
 
 fn some_type_id() -> Option<optimize_js::types::TypeId> {
   #[cfg(feature = "typed")]
@@ -24,6 +24,7 @@ fn annotate_program_preserves_lowering_metadata_fields() {
   // Seed fields that would normally be populated during lowering/type checking.
   inst.meta.type_id = some_type_id();
   inst.meta.hir_expr = Some(ExprId(7));
+  inst.meta.span = Some(TextRange::new(2, 5));
   inst.meta.type_summary = Some(ValueTypeSummary::NUMBER);
   inst.meta.excludes_nullish = true;
   inst.meta.preserve_var_assign = true;
@@ -40,7 +41,7 @@ fn annotate_program_preserves_lowering_metadata_fields() {
 
   let mut program = Program {
     source_file: optimize_js::FileId(0),
-    source_len: 0,
+    source_len: 10,
     functions: Vec::new(),
     top_level: ProgramFunction {
       debug: None,
@@ -74,6 +75,11 @@ fn annotate_program_preserves_lowering_metadata_fields() {
       meta.hir_expr,
       Some(ExprId(7)),
       "expected hir_expr to be preserved ({name})"
+    );
+    assert_eq!(
+      meta.span,
+      Some(TextRange::new(2, 5)),
+      "expected span to be preserved ({name})"
     );
     assert_eq!(
       meta.type_summary,

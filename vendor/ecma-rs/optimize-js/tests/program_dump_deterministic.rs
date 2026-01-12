@@ -1,10 +1,12 @@
 #![cfg(all(feature = "serde", feature = "typed"))]
 
+use optimize_js::analysis::annotate_program;
 use optimize_js::dump::{dump_program, DumpOptions};
 use optimize_js::{compile_source_typed, TopLevelMode};
 
 fn dump_json(source: &str) -> String {
-  let program = compile_source_typed(source, TopLevelMode::Module, false).expect("compile");
+  let mut program = compile_source_typed(source, TopLevelMode::Module, false).expect("compile");
+  annotate_program(&mut program);
   dump_program(
     &program,
     DumpOptions {

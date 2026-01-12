@@ -1,11 +1,12 @@
 #![cfg(all(feature = "serde", feature = "typed"))]
 
+use optimize_js::analysis::annotate_program;
 use optimize_js::dump::{dump_program, DumpOptions, DUMP_VERSION};
 use optimize_js::{compile_source_typed, TopLevelMode};
 
 #[test]
 fn program_dump_smoke_contains_expected_fields() {
-  let program = compile_source_typed(
+  let mut program = compile_source_typed(
     r#"
       function add1(x: number): number {
         return x + 1;
@@ -19,6 +20,8 @@ fn program_dump_smoke_contains_expected_fields() {
     false,
   )
   .expect("compile typed source");
+
+  annotate_program(&mut program);
 
   let dump = dump_program(
     &program,

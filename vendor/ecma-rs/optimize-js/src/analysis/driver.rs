@@ -261,6 +261,7 @@ fn reset_cfg_meta(cfg: &mut Cfg) {
       #[cfg(feature = "typed")]
       let native_layout = inst.meta.native_layout;
       let hir_expr = inst.meta.hir_expr;
+      let span = inst.meta.span;
       let type_summary = inst.meta.type_summary;
       let excludes_nullish = inst.meta.excludes_nullish;
       let preserve_var_assign = inst.meta.preserve_var_assign;
@@ -271,6 +272,7 @@ fn reset_cfg_meta(cfg: &mut Cfg) {
         inst.meta.native_layout = native_layout;
       }
       inst.meta.hir_expr = hir_expr;
+      inst.meta.span = span;
       inst.meta.type_summary = type_summary;
       inst.meta.excludes_nullish = excludes_nullish;
       inst.meta.preserve_var_assign = preserve_var_assign;
