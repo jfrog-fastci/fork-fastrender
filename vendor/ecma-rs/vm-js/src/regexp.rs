@@ -589,8 +589,9 @@ impl RegExpProgram {
         },
         Inst::Match => Inst::Match,
       };
-      // `insts` was reserved to `self.insts.len()` above; pushing within that bound is infallible.
-      insts.push(cloned);
+      // `insts` was reserved to `self.insts.len()` above; pushing within that bound should not need
+      // to grow the Vec, but keep the push fallible to uphold the `try_clone` contract.
+      vec_try_push_vm(&mut insts, cloned)?;
     }
 
     Ok(Self {
