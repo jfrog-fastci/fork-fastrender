@@ -3893,7 +3893,7 @@ impl<'a> Checker<'a> {
         let tag = tag_buf.as_deref().unwrap_or_else(|| name.stx.name.as_str());
         if let Some(constraint) = element_type_constraint {
           let tag_ty = self.store.intern_type(TypeKind::StringLiteral(
-            self.store.intern_name(tag.to_string()),
+            self.store.intern_name_ref(tag),
           ));
           if !self.relate.is_assignable(tag_ty, constraint) {
             self.diagnostics.push(codes::JSX_INVALID_ELEMENT_TYPE.error(
@@ -3937,7 +3937,7 @@ impl<'a> Checker<'a> {
         if name.contains(':') || name.contains('-') {
           if let Some(constraint) = element_type_constraint {
             let tag_ty = self.store.intern_type(TypeKind::StringLiteral(
-              self.store.intern_name(name.to_string()),
+              self.store.intern_name_ref(name),
             ));
             if !self.relate.is_assignable(tag_ty, constraint) {
               self.diagnostics.push(codes::JSX_INVALID_ELEMENT_TYPE.error(
@@ -4019,7 +4019,7 @@ impl<'a> Checker<'a> {
           }
           if let Some(constraint) = element_type_constraint {
             let tag_ty = self.store.intern_type(TypeKind::StringLiteral(
-              self.store.intern_name(tag.clone()),
+              self.store.intern_name_ref(&tag),
             ));
             if !self.relate.is_assignable(tag_ty, constraint) {
               self.diagnostics.push(codes::JSX_INVALID_ELEMENT_TYPE.error(
@@ -5362,9 +5362,9 @@ impl<'a> Checker<'a> {
     candidates.sort();
     candidates.dedup();
 
-    let resolved = match candidates.len() {
-      0 => JsxAttributesPropertyName::Empty,
-      1 => JsxAttributesPropertyName::Name(self.store.intern_name(candidates[0].clone())),
+    let resolved = match candidates.as_slice() {
+      [] => JsxAttributesPropertyName::Empty,
+      [only] => JsxAttributesPropertyName::Name(self.store.intern_name_ref(only)),
       _ => {
         self.diagnostics.push(
           codes::JSX_GLOBAL_TYPE_MAY_NOT_HAVE_MORE_THAN_ONE_PROPERTY.error(
@@ -5402,10 +5402,9 @@ impl<'a> Checker<'a> {
     self.jsx_collect_children_attribute_keys(children_attr_ty, &mut candidates, &mut seen);
     candidates.sort();
     candidates.dedup();
- 
-    let selected = match candidates.len() {
-      0 => None,
-      1 => Some(self.store.intern_name_ref(&candidates[0])),
+    let selected = match candidates.as_slice() {
+      [] => None,
+      [only] => Some(self.store.intern_name_ref(only)),
       _ => {
         self.diagnostics.push(
           codes::JSX_GLOBAL_TYPE_MAY_NOT_HAVE_MORE_THAN_ONE_PROPERTY.error(

@@ -147,7 +147,7 @@ fn prop_key_from_const(
   use crate::il::inst::Const;
   match key {
     Arg::Const(Const::Str(s)) => Some(types_ts_interned::PropKey::String(
-      store.intern_name(s.clone()),
+      store.intern_name_ref(s),
     )),
     Arg::Const(Const::Num(n)) => {
       let value = n.0;

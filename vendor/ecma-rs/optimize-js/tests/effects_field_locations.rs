@@ -98,8 +98,8 @@ fn two_writes_to_different_fields_produce_distinct_field_locations() {
   );
 
   let store = type_program.interned_type_store();
-  let expected_x = types_ts_interned::PropKey::String(store.intern_name("x"));
-  let expected_y = types_ts_interned::PropKey::String(store.intern_name("y"));
+  let expected_x = types_ts_interned::PropKey::String(store.intern_name_ref("x"));
+  let expected_y = types_ts_interned::PropKey::String(store.intern_name_ref("y"));
 
   let mut fields = Vec::new();
   for inst in prop_assigns {
