@@ -7662,7 +7662,19 @@ impl App {
     let mut history_open_in_new_tab: Option<String> = None;
     let mut history_delete_index: Option<usize> = None;
 
-    if self.bookmarks_panel_open {
+    if !self.clear_browsing_data_dialog_open
+      && (self.bookmarks_panel_open || self.history_panel_open)
+      && ctx.input(|i| i.key_pressed(egui::Key::Escape))
+      && (!ctx.wants_keyboard_input()
+        || (!self.browser_state.chrome.address_bar_has_focus
+          && !self.browser_state.chrome.tab_search.open
+          && !self.browser_state.active_tab().is_some_and(|tab| tab.find.open)))
+    {
+      close_bookmarks_panel |= self.bookmarks_panel_open;
+      close_history_panel |= self.history_panel_open;
+    }
+
+    if self.bookmarks_panel_open && !close_bookmarks_panel {
       let output = fastrender::ui::bookmarks_manager::bookmarks_manager_side_panel(
         &ctx,
         &mut self.bookmarks_manager,
@@ -7695,7 +7707,7 @@ impl App {
           }
         }
       }
-    } else if self.history_panel_open {
+    } else if self.history_panel_open && !close_history_panel {
       egui::SidePanel::right("fastr_history_panel")
         .resizable(true)
         .default_width(360.0)
@@ -7810,11 +7822,17 @@ impl App {
     if close_bookmarks_panel {
       self.bookmarks_panel_open = false;
       self.bookmarks_manager.clear_transient();
-      self.page_has_focus = !self.browser_state.chrome.address_bar_has_focus;
+      self.page_has_focus = !self.browser_state.chrome.address_bar_has_focus
+        && !self.history_panel_open
+        && !self.browser_state.chrome.tab_search.open
+        && !self.browser_state.active_tab().is_some_and(|tab| tab.find.open);
     }
     if close_history_panel {
       self.history_panel_open = false;
-      self.page_has_focus = !self.browser_state.chrome.address_bar_has_focus;
+      self.page_has_focus = !self.browser_state.chrome.address_bar_has_focus
+        && !self.bookmarks_panel_open
+        && !self.browser_state.chrome.tab_search.open
+        && !self.browser_state.active_tab().is_some_and(|tab| tab.find.open);
     }
     if !panel_actions.is_empty() {
       session_dirty |= self.handle_chrome_actions(panel_actions);
