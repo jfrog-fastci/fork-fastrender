@@ -434,6 +434,11 @@ The `_h` ("handle") variant is preferred under a moving GC: it accepts a pointer
 the runtime can reload `data` after any potentially blocking lock acquisition while registering the
 persistent root.
 
+Note: the raw-pointer `rt_queue_microtask_rooted` entrypoint is moving-GC safe when called from a
+thread that is registered with the runtime thread registry (the runtime will internally root/reload
+the pointer before acquiring GC-aware locks). For embedders that may call from unregistered threads,
+`rt_queue_microtask_rooted_h` remains the recommended option.
+
 ### Persistent-handle microtask payloads (`rt_queue_microtask_handle`)
 
 For embedders that already represent GC-managed objects as persistent handles (`HandleId`/`u64`,

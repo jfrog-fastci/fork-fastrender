@@ -34,6 +34,21 @@ as arguments *unless* they are:
 
 - passed as **handles** (pointer-to-slot, see below), or
 - passed as **pinned** pointers (only as an explicit, well-documented fallback)
+  (e.g. objects allocated via `rt_alloc_pinned`), or
+- explicitly documented as **moving-GC safe on registered threads** by internally
+  rooting/reloading the raw pointer argument (typically via the per-thread shadow
+  stack) before any potentially blocking lock acquisition.
+
+The last case exists for some convenience/legacy exports such as:
+
+- `rt_gc_pin` / `rt_gc_root_set`
+- `rt_handle_alloc` / `rt_handle_store`
+- `rt_weak_add`
+
+These functions are safe for movable GC pointers only when the calling thread is
+registered with the runtime thread registry (so it participates in stop-the-world
+coordination and has a shadow stack). For unregistered threads, prefer the `_h`
+(`GcHandle`) variants or pinned pointers.
 
 ### `no_gc`
 
