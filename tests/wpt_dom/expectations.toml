@@ -293,3 +293,13 @@ reason = "Range is not implemented yet (live updates on CharacterData replacemen
 id = "dom/range_create_contextual_fragment.window.js"
 status = "xfail"
 reason = "Range is not implemented yet (createContextualFragment)."
+
+[[expectations]]
+id = "dom/intersection-observer-basic.window.js"
+status = "xfail"
+reason = "IntersectionObserver is not implemented yet."
+
+[[expectations]]
+id = "dom/resize-observer-basic.window.js"
+status = "xfail"
+reason = "ResizeObserver is not implemented yet."

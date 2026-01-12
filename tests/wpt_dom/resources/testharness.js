@@ -247,6 +247,22 @@ function assert_equals(actual, expected, message) {
   }
 }
 //
+function assert_greater_than_equal(actual, expected, message) {
+  if (!(actual >= expected)) {
+    throw Error(
+      __format_assertion_message(
+        message,
+        [
+          "assert_greater_than_equal: expected ",
+          __safe_string(actual),
+          " to be >= ",
+          __safe_string(expected),
+        ].join("")
+      )
+    );
+  }
+}
+//
 function assert_not_equals(actual, expected, message) {
   if (__same_value(actual, expected)) {
     throw Error(
