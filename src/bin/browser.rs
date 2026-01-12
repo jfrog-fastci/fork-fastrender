@@ -2253,24 +2253,24 @@ impl App {
     };
   }
 
-  fn next_wakeup_deadline(&mut self, now: std::time::Instant) -> Option<std::time::Instant> {
+  fn next_wakeup_deadline(&self, now: std::time::Instant) -> Option<std::time::Instant> {
     let mut deadline: Option<std::time::Instant> = None;
 
     // Worker-driven animation ticks (CSS animations/transitions).
     if let Some(tab_id) = self.desired_animation_tick_tab() {
-      if self.animation_tick_tab != Some(tab_id) || self.next_animation_tick.is_none() {
-        self.animation_tick_tab = Some(tab_id);
-        self.next_animation_tick = Some(now + Self::ANIMATION_TICK_INTERVAL);
-      }
-      if let Some(tick_deadline) = self.next_animation_tick {
-        deadline = Some(match deadline {
-          Some(existing) => existing.min(tick_deadline),
-          None => tick_deadline,
-        });
-      }
-    } else {
-      self.animation_tick_tab = None;
-      self.next_animation_tick = None;
+      // `drive_animation_tick` is responsible for keeping `next_animation_tick` in sync, but be
+      // defensive: if the schedule isn't primed yet, fall back to a "first tick" interval.
+      let tick_deadline = if self.animation_tick_tab == Some(tab_id) {
+        self
+          .next_animation_tick
+          .unwrap_or(now + Self::ANIMATION_TICK_INTERVAL)
+      } else {
+        now + Self::ANIMATION_TICK_INTERVAL
+      };
+      deadline = Some(match deadline {
+        Some(existing) => existing.min(tick_deadline),
+        None => tick_deadline,
+      });
     }
 
     // Egui repaint scheduling (focus changes, animated widgets like spinners, etc).
