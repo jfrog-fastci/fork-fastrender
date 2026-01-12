@@ -1,9 +1,313 @@
 use crate::property::{PropertyDescriptor, PropertyDescriptorPatch, PropertyKey, PropertyKind};
+use crate::property_descriptor_ops;
 use crate::{GcObject, GcString, Scope, Value, Vm, VmError, VmHost, VmHostHooks};
+
+fn proxy_own_keys_result_to_property_keys(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  array_like: GcObject,
+) -> Result<Vec<PropertyKey>, VmError> {
+  // Mirror `CreateListFromArrayLike(trapResult, « String, Symbol »)` closely:
+  // - read `length` (ToLength)
+  // - read indices 0..len-1 via `Get`
+  // - require each element to be a String or Symbol
+  //
+  // This is host-aware because `Get` can invoke user code via accessors.
+  let mut scope = scope.reborrow();
+  scope.push_root(Value::Object(array_like))?;
+
+  let length_key_s = scope.alloc_string("length")?;
+  scope.push_root(Value::String(length_key_s))?;
+  let length_key = PropertyKey::from_string(length_key_s);
+
+  let length_value = scope.ordinary_get_with_host_and_hooks(
+    vm,
+    host,
+    hooks,
+    array_like,
+    length_key,
+    Value::Object(array_like),
+  )?;
+  let len = scope.to_length(vm, host, hooks, length_value)?;
+
+  let mut out: Vec<PropertyKey> = Vec::new();
+  out
+    .try_reserve_exact(len)
+    .map_err(|_| VmError::OutOfMemory)?;
+
+  const TICK_EVERY: usize = 1024;
+  for idx in 0..len {
+    if idx % TICK_EVERY == 0 {
+      vm.tick()?;
+    }
+    let idx_s = scope.alloc_string(&idx.to_string())?;
+    let key = PropertyKey::from_string(idx_s);
+    let value = scope.ordinary_get_with_host_and_hooks(
+      vm,
+      host,
+      hooks,
+      array_like,
+      key,
+      Value::Object(array_like),
+    )?;
+    match value {
+      Value::String(s) => out.push(PropertyKey::from_string(s)),
+      Value::Symbol(sym) => out.push(PropertyKey::from_symbol(sym)),
+      _ => {
+        return Err(VmError::TypeError(
+          "Proxy ownKeys trap returned a key that is not a String or Symbol",
+        ))
+      }
+    }
+  }
+
+  Ok(out)
+}
 
 impl<'a> Scope<'a> {
   pub fn object_get_prototype(&self, obj: GcObject) -> Result<Option<GcObject>, VmError> {
     self.heap().object_prototype(obj)
+  }
+
+  /// ECMAScript `[[OwnPropertyKeys]]` internal method dispatch.
+  ///
+  /// This is Proxy-aware: Proxy objects observe the `ownKeys` trap and throw on revoked proxies.
+  pub(crate) fn own_property_keys_with_host_and_hooks(
+    &mut self,
+    vm: &mut Vm,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    obj: GcObject,
+  ) -> Result<Vec<PropertyKey>, VmError> {
+    let mut current = obj;
+    let mut steps = 0usize;
+    loop {
+      if steps != 0 && steps % 1024 == 0 {
+        vm.tick()?;
+      }
+      steps = steps.saturating_add(1);
+
+      let proxy = self.heap().get_proxy_data(current)?;
+      let Some(proxy) = proxy else {
+        return self.ordinary_own_property_keys_with_tick(current, || vm.tick());
+      };
+
+      let (Some(target), Some(handler)) = (proxy.target, proxy.handler) else {
+        return Err(VmError::TypeError(
+          "Cannot perform 'ownKeys' on a proxy that has been revoked",
+        ));
+      };
+
+      let mut scope = self.reborrow();
+      scope.push_roots(&[
+        Value::Object(current),
+        Value::Object(target),
+        Value::Object(handler),
+      ])?;
+
+      let own_keys_s = scope.alloc_string("ownKeys")?;
+      scope.push_root(Value::String(own_keys_s))?;
+      let own_keys_key = PropertyKey::from_string(own_keys_s);
+
+      let trap = vm.get_method_with_host_and_hooks(
+        host,
+        &mut scope,
+        hooks,
+        Value::Object(handler),
+        own_keys_key,
+      )?;
+      let Some(trap) = trap else {
+        // No trap: forward to the target's `[[OwnPropertyKeys]]`.
+        current = target;
+        continue;
+      };
+
+      let trap_result = vm.call_with_host_and_hooks(
+        host,
+        &mut scope,
+        hooks,
+        trap,
+        Value::Object(handler),
+        &[Value::Object(target)],
+      )?;
+      scope.push_root(trap_result)?;
+      let Value::Object(array_like) = trap_result else {
+        return Err(VmError::TypeError(
+          "Proxy ownKeys trap returned a non-object value",
+        ));
+      };
+
+      return proxy_own_keys_result_to_property_keys(vm, &mut scope, host, hooks, array_like);
+    }
+  }
+
+  /// ECMAScript `[[GetOwnProperty]]` internal method dispatch.
+  ///
+  /// This is Proxy-aware: Proxy objects observe the `getOwnPropertyDescriptor` trap and throw on
+  /// revoked proxies.
+  pub(crate) fn get_own_property_with_host_and_hooks(
+    &mut self,
+    vm: &mut Vm,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    obj: GcObject,
+    key: PropertyKey,
+  ) -> Result<Option<PropertyDescriptor>, VmError> {
+    let mut current = obj;
+    let mut steps = 0usize;
+    loop {
+      if steps != 0 && steps % 1024 == 0 {
+        vm.tick()?;
+      }
+      steps = steps.saturating_add(1);
+
+      let proxy = self.heap().get_proxy_data(current)?;
+      let Some(proxy) = proxy else {
+        return self.ordinary_get_own_property_with_tick(current, key, || vm.tick());
+      };
+
+      let (Some(target), Some(handler)) = (proxy.target, proxy.handler) else {
+        return Err(VmError::TypeError(
+          "Cannot perform 'getOwnPropertyDescriptor' on a proxy that has been revoked",
+        ));
+      };
+
+      let mut scope = self.reborrow();
+      let key_root = match key {
+        PropertyKey::String(s) => Value::String(s),
+        PropertyKey::Symbol(sym) => Value::Symbol(sym),
+      };
+      scope.push_roots(&[
+        Value::Object(current),
+        Value::Object(target),
+        Value::Object(handler),
+        key_root,
+      ])?;
+
+      let gopd_s = scope.alloc_string("getOwnPropertyDescriptor")?;
+      scope.push_root(Value::String(gopd_s))?;
+      let gopd_key = PropertyKey::from_string(gopd_s);
+
+      let trap = vm.get_method_with_host_and_hooks(
+        host,
+        &mut scope,
+        hooks,
+        Value::Object(handler),
+        gopd_key,
+      )?;
+      let Some(trap) = trap else {
+        // No trap: forward to the target's `[[GetOwnProperty]]`.
+        current = target;
+        continue;
+      };
+
+      let trap_args = [Value::Object(target), key_root];
+      let trap_result = vm.call_with_host_and_hooks(
+        host,
+        &mut scope,
+        hooks,
+        trap,
+        Value::Object(handler),
+        &trap_args,
+      )?;
+      scope.push_root(trap_result)?;
+
+      if matches!(trap_result, Value::Undefined) {
+        return Ok(None);
+      }
+
+      let Value::Object(desc_obj) = trap_result else {
+        return Err(VmError::TypeError(
+          "Proxy getOwnPropertyDescriptor trap returned a non-object value",
+        ));
+      };
+
+      let desc = property_descriptor_ops::to_property_descriptor_with_host_and_hooks(
+        vm,
+        &mut scope,
+        host,
+        hooks,
+        desc_obj,
+      )?;
+      let desc = property_descriptor_ops::complete_property_descriptor(desc);
+      return Ok(Some(desc));
+    }
+  }
+
+  /// ECMAScript `[[GetPrototypeOf]]` internal method dispatch.
+  ///
+  /// This is Proxy-aware: Proxy objects observe the `getPrototypeOf` trap and throw on revoked
+  /// proxies.
+  pub(crate) fn get_prototype_of_with_host_and_hooks(
+    &mut self,
+    vm: &mut Vm,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    obj: GcObject,
+  ) -> Result<Option<GcObject>, VmError> {
+    let mut current = obj;
+    let mut steps = 0usize;
+    loop {
+      if steps != 0 && steps % 1024 == 0 {
+        vm.tick()?;
+      }
+      steps = steps.saturating_add(1);
+
+      let proxy = self.heap().get_proxy_data(current)?;
+      let Some(proxy) = proxy else {
+        return self.heap().object_prototype(current);
+      };
+
+      let (Some(target), Some(handler)) = (proxy.target, proxy.handler) else {
+        return Err(VmError::TypeError(
+          "Cannot perform 'getPrototypeOf' on a proxy that has been revoked",
+        ));
+      };
+
+      let mut scope = self.reborrow();
+      scope.push_roots(&[
+        Value::Object(current),
+        Value::Object(target),
+        Value::Object(handler),
+      ])?;
+
+      let get_proto_s = scope.alloc_string("getPrototypeOf")?;
+      scope.push_root(Value::String(get_proto_s))?;
+      let get_proto_key = PropertyKey::from_string(get_proto_s);
+
+      let trap = vm.get_method_with_host_and_hooks(
+        host,
+        &mut scope,
+        hooks,
+        Value::Object(handler),
+        get_proto_key,
+      )?;
+      let Some(trap) = trap else {
+        // No trap: forward to the target's `[[GetPrototypeOf]]`.
+        current = target;
+        continue;
+      };
+
+      let trap_result = vm.call_with_host_and_hooks(
+        host,
+        &mut scope,
+        hooks,
+        trap,
+        Value::Object(handler),
+        &[Value::Object(target)],
+      )?;
+      scope.push_root(trap_result)?;
+
+      return match trap_result {
+        Value::Null => Ok(None),
+        Value::Object(o) => Ok(Some(o)),
+        _ => Err(VmError::TypeError(
+          "Proxy getPrototypeOf trap returned a non-object value",
+        )),
+      };
+    }
   }
 
   pub fn object_set_prototype(

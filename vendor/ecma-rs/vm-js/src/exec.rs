@@ -4410,12 +4410,12 @@ impl<'a> Evaluator<'a> {
     let outer_lex = self.env.lexical_env;
 
     loop {
-      let next_key = {
-        // `tick` is passed into the enumerator so prototype/key scanning work is budgeted even when
-        // the loop body is empty.
-        let mut tick = || self.tick();
-        enumerator.next_key(&mut iter_scope, &mut tick)?
-      };
+      let next_key = enumerator.next_key(
+        self.vm,
+        &mut iter_scope,
+        &mut *self.host,
+        &mut *self.hooks,
+      )?;
 
       let Some(key_s) = next_key else {
         break;

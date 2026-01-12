@@ -1,5 +1,5 @@
 use crate::property::PropertyKey;
-use crate::{GcObject, GcString, Heap, Scope, Value, VmError};
+use crate::{GcObject, GcString, Heap, Scope, Value, Vm, VmError, VmHost, VmHostHooks};
 use std::collections::HashMap;
 
 /// Internal iterator state for `for..in` enumeration.
@@ -32,8 +32,10 @@ impl ForInEnumerator {
   /// Returns the next enumerable string key, or `None` if enumeration is complete.
   pub(crate) fn next_key(
     &mut self,
+    vm: &mut Vm,
     scope: &mut Scope<'_>,
-    tick: &mut impl FnMut() -> Result<(), VmError>,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
   ) -> Result<Option<GcString>, VmError> {
     // Budget scanning work even when the loop body is empty.
     const KEY_SCAN_TICK_EVERY: usize = 1024;
@@ -44,22 +46,60 @@ impl ForInEnumerator {
         return Ok(None);
       };
 
+      // If we've already snapshotted keys for this object (i.e. `current_keys` is non-empty) and
+      // exhausted them in a previous `next_key` call, advance to the next prototype.
+      //
+      // This ensures we only snapshot `[[OwnPropertyKeys]]` once per object as required by the
+      // spec-shaped `EnumerateObjectProperties` model, and (critically) prevents observable
+      // re-entry into Proxy `ownKeys` traps after yielding the last key from an object.
+      if self.next_key_index >= self.current_keys.len() && !self.current_keys.is_empty() {
+        vm.tick()?;
+        self.current_obj = scope.get_prototype_of_with_host_and_hooks(vm, host, hooks, obj)?;
+        self.current_keys.clear();
+        self.next_key_index = 0;
+
+        if let Some(proto) = self.current_obj {
+          // Root visited prototypes so a `__proto__` mutation during iteration cannot invalidate
+          // the iterator's internal object handle before we finish scanning it.
+          scope.push_root(Value::Object(proto))?;
+        }
+        continue;
+      }
+
       if self.next_key_index >= self.current_keys.len() {
         // Snapshot `[[OwnPropertyKeys]]` for the current object.
-        self.current_keys = scope.ordinary_own_property_keys_with_tick(obj, &mut *tick)?;
+        self.current_keys =
+          scope.own_property_keys_with_host_and_hooks(vm, host, hooks, obj)?;
 
         // Root string keys while they are held in `current_keys` so a key handle cannot be
         // invalidated by GC if the property is deleted before we reach it.
-        let mut rooted: usize = 0;
+        //
+        // Important: root them in chunks using `push_roots_with_extra_roots` so that if growing the
+        // root stack triggers a GC, *all* collected keys are treated as roots. This matters for
+        // Proxy `ownKeys` trap results, where keys are not necessarily reachable from any other
+        // heap object once the trap returns.
+        let mut key_roots: Vec<Value> = Vec::new();
+        key_roots
+          .try_reserve_exact(self.current_keys.len())
+          .map_err(|_| VmError::OutOfMemory)?;
         for key in &self.current_keys {
           let PropertyKey::String(s) = key else {
             continue;
           };
-          rooted = rooted.wrapping_add(1);
-          if (rooted & (KEY_ROOT_TICK_EVERY - 1)) == 0 {
-            tick()?;
+          key_roots.push(Value::String(*s));
+        }
+        let mut start = 0usize;
+        while start < key_roots.len() {
+          let end = key_roots
+            .len()
+            .min(start.saturating_add(KEY_ROOT_TICK_EVERY));
+          let chunk = &key_roots[start..end];
+          let remaining = &key_roots[end..];
+          scope.push_roots_with_extra_roots(chunk, remaining, &[])?;
+          start = end;
+          if start < key_roots.len() {
+            vm.tick()?;
           }
-          scope.push_root(Value::String(*s))?;
         }
 
         self.next_key_index = 0;
@@ -68,7 +108,7 @@ impl ForInEnumerator {
       while self.next_key_index < self.current_keys.len() {
         self.scanned_key_count = self.scanned_key_count.wrapping_add(1);
         if (self.scanned_key_count & (KEY_SCAN_TICK_EVERY - 1)) == 0 {
-          tick()?;
+          vm.tick()?;
         }
 
         let key = self.current_keys[self.next_key_index];
@@ -81,7 +121,7 @@ impl ForInEnumerator {
         // keys.
         if self
           .visited
-          .check_and_mark_visited(scope.heap(), key_s, &mut *tick)?
+          .check_and_mark_visited(vm, scope.heap(), key_s)?
         {
           continue;
         }
@@ -89,7 +129,7 @@ impl ForInEnumerator {
         // Re-check the property descriptor at yield time so deletions and enumerability changes are
         // observable during iteration.
         let Some(desc) =
-          scope.ordinary_get_own_property_with_tick(obj, key, &mut *tick)?
+          scope.get_own_property_with_host_and_hooks(vm, host, hooks, obj, key)?
         else {
           continue;
         };
@@ -101,8 +141,8 @@ impl ForInEnumerator {
       }
 
       // Exhausted this object's keys; move to its prototype.
-      tick()?;
-      self.current_obj = scope.object_get_prototype(obj)?;
+      vm.tick()?;
+      self.current_obj = scope.get_prototype_of_with_host_and_hooks(vm, host, hooks, obj)?;
       self.current_keys.clear();
       self.next_key_index = 0;
 
@@ -125,9 +165,9 @@ struct VisitedStringKeys {
 impl VisitedStringKeys {
   fn check_and_mark_visited(
     &mut self,
+    vm: &mut Vm,
     heap: &Heap,
     key: GcString,
-    tick: &mut impl FnMut() -> Result<(), VmError>,
   ) -> Result<bool, VmError> {
     const BUCKET_SCAN_TICK_EVERY: usize = 256;
 
@@ -137,7 +177,7 @@ impl VisitedStringKeys {
       let needle = heap.get_string(key)?.as_code_units();
       for (i, existing) in bucket.iter().enumerate() {
         if i % BUCKET_SCAN_TICK_EVERY == 0 {
-          tick()?;
+          vm.tick()?;
         }
         let existing_units = heap.get_string(*existing)?.as_code_units();
         if existing_units == needle {
@@ -160,4 +200,3 @@ impl VisitedStringKeys {
     Ok(false)
   }
 }
-
