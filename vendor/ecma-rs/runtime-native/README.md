@@ -595,6 +595,42 @@ Pool sizing:
 - Override: set `ECMA_RS_RUNTIME_NATIVE_BLOCKING_THREADS` to a positive integer before first use
   (`RT_BLOCKING_THREADS` is also supported as a legacy alias).
 
+## GC-managed blocking promises (`rt_spawn_blocking_promise*`)
+
+`rt_spawn_blocking_promise*` is the GC-managed alternative to `rt_spawn_blocking`: it returns a
+GC-managed `PromiseRef` allocation (collectible by GC) instead of a legacy `RtPromise` allocation on
+the Rust heap.
+
+```c
+PromiseRef rt_spawn_blocking_promise(
+  uint8_t (*task)(uint8_t* data, uint8_t* out_payload),
+  uint8_t* data,
+  PromiseLayout layout
+);
+PromiseRef rt_spawn_blocking_promise_rooted(
+  uint8_t (*task)(uint8_t* data, uint8_t* out_payload),
+  uint8_t* data,
+  PromiseLayout layout
+);
+PromiseRef rt_spawn_blocking_promise_rooted_h(
+  uint8_t (*task)(uint8_t* data, uint8_t* out_payload),
+  GcHandle data,
+  PromiseLayout layout
+);
+```
+
+Contract:
+
+- The task runs in a GC-safe ("NativeSafe") region and must not touch the GC heap.
+- The task writes its result bytes into `out_payload` and returns:
+  - `0` => fulfill
+  - `1` => reject
+  - any other value => reject
+- `out_payload` points to a temporary non-GC buffer owned by the runtime and is only valid for the
+  duration of the callback.
+- After the callback returns, the runtime copies the bytes into the promise payload buffer
+  (`rt_promise_payload_ptr(promise)`) and settles the promise on the event-loop thread.
+
 ## C ABI notes
 
 The stable C ABI surface is declared in [`include/runtime_native.h`](include/runtime_native.h).

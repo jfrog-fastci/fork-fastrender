@@ -6,8 +6,10 @@ use crate::gc::HandleId;
 use crate::sync::GcAwareMutex;
 use crate::threading;
 use crate::threading::ThreadKind;
+use crate::trap;
 use once_cell::sync::OnceCell;
 use parking_lot::Condvar;
+use std::alloc::Layout;
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -30,7 +32,8 @@ enum WorkKind {
   Promise {
     task: extern "C" fn(*mut u8, *mut u8) -> u8,
     promise: HandleId,
-    out_payload: *mut u8,
+    tmp_payload: *mut u8,
+    layout: PromiseLayout,
   },
 }
 
@@ -78,6 +81,8 @@ fn maybe_clear_external_pending(promise: *mut PromiseHeader) {
 struct BlockingPromiseMicrotask {
   promise: HandleId,
   tag: u8,
+  tmp_payload: *mut u8,
+  layout: PromiseLayout,
   ran: bool,
 }
 
@@ -95,11 +100,34 @@ extern "C" fn run_blocking_promise_microtask(data: *mut u8) {
     .unwrap_or_else(|| std::process::abort());
   let promise = PromiseRef(promise_ptr.cast());
 
+  // Copy the result bytes from the temporary out-of-GC buffer into the promise's payload buffer.
+  let dst = async_rt::promise::promise_payload_ptr(promise);
+  if task.layout.size != 0 {
+    if dst.is_null() || task.tmp_payload.is_null() {
+      std::process::abort();
+    }
+    unsafe {
+      std::ptr::copy_nonoverlapping(task.tmp_payload, dst, task.layout.size);
+    }
+  }
+
   unsafe {
     if task.tag == 0 {
       crate::rt_promise_fulfill(promise);
     } else {
       crate::rt_promise_reject(promise);
+    }
+  }
+
+  // Free the temporary payload buffer.
+  if task.layout.size != 0 && !task.tmp_payload.is_null() {
+    let align = task.layout.align.max(1);
+    if !align.is_power_of_two() {
+      std::process::abort();
+    }
+    let layout = Layout::from_size_align(task.layout.size, align).unwrap_or_else(|_| std::process::abort());
+    unsafe {
+      std::alloc::dealloc(task.tmp_payload, layout);
     }
   }
 }
@@ -117,6 +145,18 @@ extern "C" fn drop_blocking_promise_microtask(data: *mut u8) {
     // the external-pending flag and decrement the global count so the runtime can report idle.
     if let Some(promise_ptr) = crate::roots::global_persistent_handle_table().get(task.promise) {
       maybe_clear_external_pending(promise_ptr.cast::<PromiseHeader>());
+    }
+
+    // Free the temporary payload buffer.
+    if task.layout.size != 0 && !task.tmp_payload.is_null() {
+      let align = task.layout.align.max(1);
+      if !align.is_power_of_two() {
+        std::process::abort();
+      }
+      let layout = Layout::from_size_align(task.layout.size, align).unwrap_or_else(|_| std::process::abort());
+      unsafe {
+        std::alloc::dealloc(task.tmp_payload, layout);
+      }
     }
   }
 
@@ -208,11 +248,10 @@ impl BlockingPool {
     // Allocate a GC-managed payload promise (out-of-line payload buffer). The external-pending flag
     // is cleared and the counter decremented by `rt_promise_{fulfill,reject}`.
     let promise = crate::payload_promise::alloc_payload_promise(layout, true);
-    let out_payload = async_rt::promise::promise_payload_ptr(promise);
 
     // Keep the promise object alive (and relocatable) while the blocking task is outstanding. Even
     // if the caller drops the returned `PromiseRef` immediately, the blocking task still needs to
-    // write into the payload buffer and the runtime needs to settle the promise.
+    // produce the payload bytes and the runtime needs to settle the promise.
     //
     // Use a temporary handle-stack root so `alloc_from_slot` reads the promise pointer after
     // acquiring its lock (moving-GC safe under lock contention).
@@ -225,6 +264,25 @@ impl BlockingPool {
       // operations (e.g. queue lock acquisition).
     };
 
+    // Allocate a temporary non-GC payload buffer for the blocking task to write into.
+    //
+    // The buffer is copied into the promise payload on the event-loop thread when settling.
+    let tmp_payload = if layout.size == 0 {
+      core::ptr::null_mut()
+    } else {
+      let align = layout.align.max(1);
+      if !align.is_power_of_two() {
+        trap::rt_trap_invalid_arg("promise payload align must be a power of two");
+      }
+      let buf_layout =
+        Layout::from_size_align(layout.size, align).unwrap_or_else(|_| trap::rt_trap_invalid_arg("promise payload layout"));
+      let ptr = unsafe { std::alloc::alloc_zeroed(buf_layout) };
+      if ptr.is_null() {
+        trap::rt_trap_oom(layout.size, "blocking promise temp payload");
+      }
+      ptr
+    };
+
     {
       let mut q = self.shared.queue.lock();
       q.push_back(WorkItem {
@@ -232,7 +290,8 @@ impl BlockingPool {
         kind: WorkKind::Promise {
           task,
           promise: promise_handle,
-          out_payload,
+          tmp_payload,
+          layout,
         },
       });
     }
@@ -332,7 +391,8 @@ fn worker_loop(shared: Arc<Shared>) {
       WorkKind::Promise {
         task,
         promise,
-        out_payload,
+        tmp_payload,
+        layout,
       } => {
         let data = match &data {
           WorkData::Unrooted(ptr) => *ptr,
@@ -341,12 +401,14 @@ fn worker_loop(shared: Arc<Shared>) {
 
         let gc_safe = threading::enter_gc_safe_region();
 
-        let tag = crate::ffi::invoke_cb2_blocking_promise_task(task, data, out_payload);
+        let tag = crate::ffi::invoke_cb2_blocking_promise_task(task, data, tmp_payload);
 
         // Hop back to the event-loop thread to settle the GC-managed promise.
         let micro = Box::new(BlockingPromiseMicrotask {
           promise,
           tag,
+          tmp_payload,
+          layout,
           ran: false,
         });
         async_rt::global().enqueue_microtask(async_rt::Task::new_with_drop(

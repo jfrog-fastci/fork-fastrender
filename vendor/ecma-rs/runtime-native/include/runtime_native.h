@@ -953,6 +953,8 @@ LegacyPromiseRef rt_spawn_blocking(void (*task)(uint8_t*, LegacyPromiseRef), uin
 // - The task runs in a GC-safe ("NativeSafe") region and must not touch the GC heap.
 // - `out_payload` points to a temporary, non-GC buffer owned by the runtime (described by
 //   `layout`). It is only valid for the duration of the callback; do not store it.
+// - After the task returns, the runtime copies `layout.size` bytes from `out_payload` into the
+//   promise payload buffer (`rt_promise_payload_ptr(promise)`) and frees the temporary buffer.
 // - After the task returns, the runtime schedules a microtask on the event-loop thread to settle
 //   the promise. The payload buffer is accessible via `rt_promise_payload_ptr(promise)`.
 PromiseRef rt_spawn_blocking_promise(

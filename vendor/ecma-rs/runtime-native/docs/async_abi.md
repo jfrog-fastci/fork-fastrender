@@ -743,7 +743,7 @@ Contract:
 
 - `rt_spawn_blocking(task: extern "C" fn(*mut u8, LegacyPromiseRef), data: *mut u8) -> LegacyPromiseRef`
 - `rt_spawn_blocking_promise(task: extern "C" fn(*mut u8, *mut u8) -> u8, data: *mut u8, layout: PromiseLayout) -> PromiseRef`
-- `rt_spawn_blocking_promise_rooted(task: extern "C" fn(*mut u8, *mut u8) -> u8, data: *mut u8, layout: PromiseLayout) -> PromiseRef`
+- `rt_spawn_blocking_promise_rooted(task: extern "C" fn(*mut u8, *mut u8) -> u8, data: GcPtr, layout: PromiseLayout) -> PromiseRef`
 - `rt_spawn_blocking_promise_rooted_h(task: extern "C" fn(*mut u8, *mut u8) -> u8, data: GcHandle, layout: PromiseLayout) -> PromiseRef`
 
 `rt_spawn_blocking` returns legacy promises (`LegacyPromiseRef`), but legacy promises embed a
@@ -752,15 +752,23 @@ bridging to the native waiter/await machinery.
 
 `rt_spawn_blocking_promise*` return GC-managed payload promises (`PromiseRef`) whose payload storage
 is out-of-line (see `PromiseLayout` + `rt_promise_payload_ptr`). The blocking callback writes into
-`out_payload` and returns a status tag; the runtime settles the promise via a microtask hop on the
-event-loop thread.
+`out_payload` (a temporary non-GC buffer) and returns a status tag:
+
+- `0` => fulfill
+- `1` => reject
+- any other value => reject
+
+After the callback returns, the runtime copies the payload bytes into the promise payload buffer
+(`rt_promise_payload_ptr(promise)`) and schedules a microtask on the event-loop thread to settle the
+promise.
 
 Blocking tasks execute in a GC-safe ("NativeSafe") region and must not touch the GC heap (no GC
 allocations, no write barriers, and no dereferencing GC-managed pointers). There is intentionally no
 rooted variant of `rt_spawn_blocking`: blocking tasks may block in syscalls or long waits and must
 therefore always run NativeSafe. Rooted variants exist only for `rt_spawn_blocking_promise*` and do
-not make the task GC-unsafe; if GC-managed state is required, copy it out of the GC heap before
-spawning the task (or resume on the event-loop thread).
+not make the task GC-unsafe; `data` must not be dereferenced unless it is a pinned/stable address.
+If GC-managed state is required, copy it out of the GC heap before spawning the task (or resume on
+the event-loop thread).
 
 `PromiseRef`, `LegacyPromiseRef`, `ValueRef`, `CoroutineId`, `CoroutineRef`, `RtCoroutineHeader`,
 `TimerId`, and `IoWatcherId` are ABI-level opaque types; their layout is defined in
