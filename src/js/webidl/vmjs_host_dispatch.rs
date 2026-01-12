@@ -38,6 +38,7 @@ struct EventListenerEntry {
   event_type: String,
   callback: RootedCallback,
   capture: bool,
+  once: bool,
 }
 
 #[derive(Debug, Default)]
@@ -330,6 +331,17 @@ fn get_capture_option(scope: &mut Scope<'_>, value: Value) -> Result<bool, VmErr
     }
     _ => Ok(false),
   }
+}
+
+fn get_once_option(scope: &mut Scope<'_>, value: Value) -> Result<bool, VmError> {
+  let Value::Object(obj) = value else {
+    return Ok(false);
+  };
+  let key = key_from_str(scope, "once")?;
+  let Some(v) = scope.heap().object_get_own_data_property_value(obj, &key)? else {
+    return Ok(false);
+  };
+  Ok(scope.heap().to_boolean(v)?)
 }
 
 pub struct VmJsWebIdlBindingsHostDispatch<Host: WindowRealmHost + 'static> {
@@ -899,6 +911,7 @@ impl<Host: WindowRealmHost + 'static> WebIdlBindingsHost for VmJsWebIdlBindingsH
         };
 
         let capture = get_capture_option(scope, args.get(2).copied().unwrap_or(Value::Undefined))?;
+        let once = get_once_option(scope, args.get(2).copied().unwrap_or(Value::Undefined))?;
 
         let state = self
           .event_targets
@@ -918,6 +931,7 @@ impl<Host: WindowRealmHost + 'static> WebIdlBindingsHost for VmJsWebIdlBindingsH
             root,
           },
           capture,
+          once,
         });
         Ok(Value::Undefined)
       }
@@ -981,17 +995,38 @@ impl<Host: WindowRealmHost + 'static> WebIdlBindingsHost for VmJsWebIdlBindingsH
           scope.push_roots(&callback_values)?;
         }
 
-        // Resolve event.type (best-effort).
-        let event_type = match event_val {
+        // Resolve `event.type` (best-effort).
+        //
+        // We first attempt to read an *own data property* named "type" so we can implement
+        // `{ once: true }` without risking re-entrancy: reading a data property cannot invoke user
+        // code, while `vm.get` can trigger getters/Proxy traps.
+        let (event_type, type_is_own_data_property) = match event_val {
           Value::Object(ev_obj) => {
             let key = key_from_str(scope, "type")?;
-            let value = get_with_active_vm_host_and_hooks(vm, scope, ev_obj, key)?;
-            if let Value::String(_) = value {
-              js_string_to_rust_string(scope, value)?
-            } else {
-              return Err(VmError::TypeError(
-                "EventTarget.dispatchEvent: event.type is not a string",
-              ));
+            let own_type = match scope.heap().object_get_own_data_property_value(ev_obj, &key) {
+              Ok(value) => value,
+              // Accessor `type` (or non-data) is not safe to read without invoking user code; fall
+              // back to `Get` below.
+              Err(VmError::PropertyNotData) => None,
+              Err(err) => return Err(err),
+            };
+            match own_type {
+              Some(value @ Value::String(_)) => (js_string_to_rust_string(scope, value)?, true),
+              Some(_value) => {
+                return Err(VmError::TypeError(
+                  "EventTarget.dispatchEvent: event.type is not a string",
+                ))
+              }
+              None => {
+                let value = get_with_active_vm_host_and_hooks(vm, scope, ev_obj, key)?;
+                if let Value::String(_) = value {
+                  (js_string_to_rust_string(scope, value)?, false)
+                } else {
+                  return Err(VmError::TypeError(
+                    "EventTarget.dispatchEvent: event.type is not a string",
+                  ));
+                }
+              }
             }
           }
           _ => {
@@ -1001,10 +1036,31 @@ impl<Host: WindowRealmHost + 'static> WebIdlBindingsHost for VmJsWebIdlBindingsH
           }
         };
 
+        // Implement `{ once: true }` by removing matching listeners *before* invoking callbacks.
+        //
+        // Safety note: `dispatchEvent` can call into user JS while invoking callbacks, and that JS
+        // can re-enter WebIDL dispatch. For soundness we must not touch `self` after any operation
+        // that could invoke user code. We therefore only perform the `{ once: true }` removal when
+        // we resolved `event.type` via an own data property lookup (no user code).
+        if type_is_own_data_property {
+          if let Some(state) = self.event_targets.get_mut(&WeakGcObject::from(obj)) {
+            let heap = scope.heap_mut();
+            state.listeners.retain(|listener| {
+              if listener.once && listener.event_type == event_type {
+                heap.remove_root(listener.callback.root);
+                false
+              } else {
+                true
+              }
+            });
+          }
+        }
+
         // Invoke listeners synchronously in registration order.
         //
-        // NOTE: Calling into JS here can re-enter WebIDL dispatch through `host_from_hooks()`. This
-        // implementation intentionally does not touch `self` after taking the snapshot above.
+        // NOTE: Calling into JS here can re-enter WebIDL dispatch through `host_from_hooks()`. For
+        // soundness we must not touch `self` after any JS call, so all state mutations must happen
+        // before entering this loop.
         let handle_event_key = key_from_str(scope, "handleEvent")?;
         for listener in listeners_snapshot.into_iter() {
           if listener.event_type != event_type {

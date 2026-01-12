@@ -1100,6 +1100,25 @@ mod tests {
 
     let got = {
       let (host_state, event_loop) = (&mut host.host, &mut host.event_loop);
+      host_state.exec_script_in_event_loop(
+        event_loop,
+        r#"
+        (() => {
+          let t = new EventTarget();
+          let n = 0;
+          function f() { n++; }
+          t.addEventListener('x', f, { once: true });
+          t.dispatchEvent({ type: 'x' });
+          t.dispatchEvent({ type: 'x' });
+          return n;
+        })()
+        "#,
+      )?
+    };
+    assert!(matches!(got, Value::Number(n) if n == 1.0));
+
+    let got = {
+      let (host_state, event_loop) = (&mut host.host, &mut host.event_loop);
       host_state.exec_script_with_name_in_event_loop(
         event_loop,
         "<test>",
