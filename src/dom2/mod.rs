@@ -67,6 +67,8 @@ pub use resize_observer::{
 pub use scripting_parser::parse_html_with_scripting_dom2;
 pub use live_mutation::NodeIteratorId;
 pub(crate) use live_mutation::LiveRangeId;
+#[cfg(test)]
+pub(crate) use live_mutation::{LiveMutationEvent, LiveMutationTestRecorder};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct NodeId(usize);

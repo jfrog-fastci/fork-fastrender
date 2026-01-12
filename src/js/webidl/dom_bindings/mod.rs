@@ -668,28 +668,21 @@ fn set_text_content(
   node: NodeId,
   value: &str,
 ) -> Result<(), dom2::DomError> {
-  match &mut dom.node_mut(node).kind {
-    NodeKind::Text { content } | NodeKind::Comment { content } => {
-      content.clear();
-      content.push_str(value);
-      return Ok(());
-    }
-    NodeKind::ProcessingInstruction { data, .. } => {
-      data.clear();
-      data.push_str(value);
-      return Ok(());
-    }
-    NodeKind::Doctype { .. } => {
-      // `DocumentType.textContent` is `null` in the DOM spec; setting it is a no-op.
-      return Ok(());
-    }
-    NodeKind::Document { .. }
-    | NodeKind::DocumentFragment
-    | NodeKind::Element { .. }
-    | NodeKind::Slot { .. }
-    | NodeKind::ShadowRoot { .. } => {
-      // Replace children.
-    }
+  if matches!(&dom.node(node).kind, NodeKind::Text { .. }) {
+    let _ = dom.set_text_data(node, value)?;
+    return Ok(());
+  }
+  if matches!(&dom.node(node).kind, NodeKind::Comment { .. }) {
+    let _ = dom.set_comment_data(node, value)?;
+    return Ok(());
+  }
+  if matches!(&dom.node(node).kind, NodeKind::ProcessingInstruction { .. }) {
+    let _ = dom.set_processing_instruction_data(node, value)?;
+    return Ok(());
+  }
+  if matches!(&dom.node(node).kind, NodeKind::Doctype { .. }) {
+    // `DocumentType.textContent` is `null` in the DOM spec; setting it is a no-op.
+    return Ok(());
   }
 
   let children: Vec<NodeId> = dom.children(node)?.to_vec();
@@ -2599,18 +2592,23 @@ fn install_constructors(
       };
 
       let mut dom_mut = dom_for_node_value_set.borrow_mut();
-      match &mut dom_mut.node_mut(node_id).kind {
-        NodeKind::Text { content } | NodeKind::Comment { content } => {
-          content.clear();
-          content.push_str(&text);
-        }
-        NodeKind::ProcessingInstruction { data, .. } => {
-          data.clear();
-          data.push_str(&text);
-        }
-        _ => {
-          // Per DOM, setting nodeValue on non-character-data nodes is a no-op.
-        }
+      if matches!(&dom_mut.node(node_id).kind, NodeKind::Text { .. }) {
+        let _ = dom_mut
+          .set_text_data(node_id, &text)
+          .map_err(|e| throw_dom_error(rt, dom_exception_proto, e))?;
+      } else if matches!(&dom_mut.node(node_id).kind, NodeKind::Comment { .. }) {
+        let _ = dom_mut
+          .set_comment_data(node_id, &text)
+          .map_err(|e| throw_dom_error(rt, dom_exception_proto, e))?;
+      } else if matches!(
+        &dom_mut.node(node_id).kind,
+        NodeKind::ProcessingInstruction { .. }
+      ) {
+        let _ = dom_mut
+          .set_processing_instruction_data(node_id, &text)
+          .map_err(|e| throw_dom_error(rt, dom_exception_proto, e))?;
+      } else {
+        // Per DOM, setting nodeValue on non-character-data nodes is a no-op.
       }
       Ok(Value::Undefined)
     })?;
@@ -6358,6 +6356,126 @@ mod tests {
     assert_eq!(realm.rt.get(div, node_value_key).unwrap(), Value::Null);
     realm.rt.call_function(set, div, &[world]).unwrap();
     assert_eq!(realm.rt.get(div, node_value_key).unwrap(), Value::Null);
+  }
+
+  #[test]
+  fn nodevalue_and_textcontent_setters_trigger_live_replace_data_hooks() {
+    fn assert_replace_data(events: &[dom2::LiveMutationEvent], expected: NodeId) {
+      assert!(
+        events.iter().any(|event| matches!(
+          event,
+          dom2::LiveMutationEvent::ReplaceData { node, .. } if *node == expected
+        )),
+        "expected replace_data hook for {expected:?}, got {events:?}",
+      );
+    }
+
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut realm = DomJsRealm::new(dom).unwrap();
+    let document = realm.document();
+
+    let recorder = dom2::LiveMutationTestRecorder::default();
+    realm
+      .dom
+      .borrow_mut()
+      .set_live_mutation_hook(Some(Box::new(recorder.clone())));
+
+    // Text node via JS.
+    let create_text_key = pk(&mut realm.rt, "createTextNode");
+    let create_text = realm.rt.get(document, create_text_key).unwrap();
+    let text0 = realm.rt.alloc_string_value("a").unwrap();
+    let text_node = realm
+      .rt
+      .call_function(create_text, document, &[text0])
+      .unwrap();
+    let text_id = extract_node_id(&mut realm.rt, &realm.platform_objects, text_node).unwrap();
+
+    // Comment node via JS.
+    let create_comment_key = pk(&mut realm.rt, "createComment");
+    let create_comment = realm.rt.get(document, create_comment_key).unwrap();
+    let comment0 = realm.rt.alloc_string_value("b").unwrap();
+    let comment_node = realm
+      .rt
+      .call_function(create_comment, document, &[comment0])
+      .unwrap();
+    let comment_id =
+      extract_node_id(&mut realm.rt, &realm.platform_objects, comment_node).unwrap();
+
+    // ProcessingInstruction node created directly in dom2 (no JS constructor yet).
+    let pi_id = realm
+      .dom
+      .borrow_mut()
+      .create_processing_instruction("pi", "c");
+    let pi_node = realm.wrap_node(pi_id).unwrap();
+
+    let node_value_key = pk(&mut realm.rt, "nodeValue");
+    let desc = realm
+      .rt
+      .get_own_property(realm.prototypes.node, node_value_key)
+      .unwrap()
+      .expect("expected Node.prototype.nodeValue");
+    let node_value_set = match desc.kind {
+      JsPropertyKind::Accessor { set, .. } => set,
+      other => panic!("expected accessor property, got {other:?}"),
+    };
+
+    let text_content_key = pk(&mut realm.rt, "textContent");
+    let desc = realm
+      .rt
+      .get_own_property(realm.prototypes.node, text_content_key)
+      .unwrap()
+      .expect("expected Node.prototype.textContent");
+    let text_content_set = match desc.kind {
+      JsPropertyKind::Accessor { set, .. } => set,
+      other => panic!("expected accessor property, got {other:?}"),
+    };
+
+    // --- Node.nodeValue -------------------------------------------------------
+    recorder.take();
+    let v = realm.rt.alloc_string_value("nodeValue text").unwrap();
+    realm
+      .rt
+      .call_function(node_value_set, text_node, &[v])
+      .unwrap();
+    assert_replace_data(&recorder.take(), text_id);
+
+    recorder.take();
+    let v = realm.rt.alloc_string_value("nodeValue comment").unwrap();
+    realm
+      .rt
+      .call_function(node_value_set, comment_node, &[v])
+      .unwrap();
+    assert_replace_data(&recorder.take(), comment_id);
+
+    recorder.take();
+    let v = realm.rt.alloc_string_value("nodeValue pi").unwrap();
+    realm.rt.call_function(node_value_set, pi_node, &[v]).unwrap();
+    assert_replace_data(&recorder.take(), pi_id);
+
+    // --- Node.textContent -----------------------------------------------------
+    recorder.take();
+    let v = realm.rt.alloc_string_value("textContent text").unwrap();
+    realm
+      .rt
+      .call_function(text_content_set, text_node, &[v])
+      .unwrap();
+    assert_replace_data(&recorder.take(), text_id);
+
+    recorder.take();
+    let v = realm.rt.alloc_string_value("textContent comment").unwrap();
+    realm
+      .rt
+      .call_function(text_content_set, comment_node, &[v])
+      .unwrap();
+    assert_replace_data(&recorder.take(), comment_id);
+
+    recorder.take();
+    let v = realm.rt.alloc_string_value("textContent pi").unwrap();
+    realm
+      .rt
+      .call_function(text_content_set, pi_node, &[v])
+      .unwrap();
+    assert_replace_data(&recorder.take(), pi_id);
   }
 
   #[test]
