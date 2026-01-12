@@ -113,10 +113,19 @@ fn serialize_node(doc: &Document, node: NodeId) -> Result<String, DomException> 
           NodeKind::Element {
             tag_name,
             namespace,
+            prefix,
             ..
           } => {
             let is_html = is_html_namespace(namespace);
             out.push_str("</");
+            if let Some(prefix) = prefix.as_deref() {
+              if is_html {
+                push_lowercase_ascii(&mut out, prefix);
+              } else {
+                out.push_str(prefix);
+              }
+              out.push(':');
+            }
             if is_html {
               push_lowercase_ascii(&mut out, tag_name);
             } else {
@@ -199,7 +208,7 @@ fn serialize_node(doc: &Document, node: NodeId) -> Result<String, DomException> 
           NodeKind::Element {
             tag_name,
             namespace,
-            prefix: _,
+            prefix,
             attributes,
             ..
           } => {
@@ -220,8 +229,28 @@ fn serialize_node(doc: &Document, node: NodeId) -> Result<String, DomException> 
               }
             }
 
+            let prefix_xmlns_name = prefix.as_deref().map(|p| format!("xmlns:{p}"));
+            let explicit_prefix_xmlns = prefix
+              .as_deref()
+              .and_then(|_| prefix_xmlns_name.as_deref())
+              .and_then(|expected| {
+                attributes.iter().find_map(|(name, value)| {
+                  if is_html {
+                    name.eq_ignore_ascii_case(expected).then_some(value.as_str())
+                  } else {
+                    (name == expected).then_some(value.as_str())
+                  }
+                })
+              });
+            if let Some(explicit) = explicit_prefix_xmlns {
+              if explicit != ns_uri {
+                return Err(invalid_state());
+              }
+            }
+
             let needs_xmlns = inherited_ns != Some(ns_uri);
             let inject_xmlns = needs_xmlns && explicit_xmlns.is_none();
+            let inject_prefix_xmlns = prefix.is_some() && explicit_prefix_xmlns.is_none();
 
             // Determine whether we will serialize any children before deciding whether to emit
             // `<tag/>` or `<tag>..</tag>`.
@@ -234,6 +263,14 @@ fn serialize_node(doc: &Document, node: NodeId) -> Result<String, DomException> 
             }
 
             out.push('<');
+            if let Some(prefix) = prefix.as_deref() {
+              if is_html {
+                push_lowercase_ascii(&mut out, prefix);
+              } else {
+                out.push_str(prefix);
+              }
+              out.push(':');
+            }
             if is_html {
               push_lowercase_ascii(&mut out, tag_name);
             } else {
@@ -242,6 +279,20 @@ fn serialize_node(doc: &Document, node: NodeId) -> Result<String, DomException> 
 
             if inject_xmlns {
               out.push_str(" xmlns=\"");
+              escape_attr_value(&mut out, ns_uri);
+              out.push('"');
+            }
+            if inject_prefix_xmlns {
+              let Some(prefix) = prefix.as_deref() else {
+                return Err(invalid_state());
+              };
+              out.push_str(" xmlns:");
+              if is_html {
+                push_lowercase_ascii(&mut out, prefix);
+              } else {
+                out.push_str(prefix);
+              }
+              out.push_str("=\"");
               escape_attr_value(&mut out, ns_uri);
               out.push('"');
             }

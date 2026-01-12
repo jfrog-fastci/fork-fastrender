@@ -9038,7 +9038,10 @@ fn find_inline_svg_content(node: &BoxNode) -> Option<&SvgContent> {
   None
 }
 
-fn serialized_inline_svg(svg_markup: &str, stylesheet: &crate::css::types::StyleSheet) -> String {
+fn serialized_inline_svg_with_stylesheet(
+  svg_markup: &str,
+  stylesheet: &crate::css::types::StyleSheet,
+) -> String {
   let html = format!("<html><body>{}</body></html>", svg_markup);
   let dom = dom::parse_html(&html).expect("parse html");
   let styled = crate::style::cascade::apply_styles(&dom, stylesheet);
@@ -9061,7 +9064,7 @@ fn css_transform_overrides_svg_transform_attribute_in_serialized_svg() {
   </svg>
 "#;
   let stylesheet = parse_stylesheet("g { transform: translate(100px, 0px); }").unwrap();
-  let serialized = serialized_inline_svg(svg_markup, &stylesheet);
+  let serialized = serialized_inline_svg_with_stylesheet(svg_markup, &stylesheet);
   let doc = roxmltree::Document::parse(&serialized).expect("parse serialized svg");
   let g = doc
     .descendants()
@@ -9082,7 +9085,7 @@ fn css_transform_none_removes_svg_transform_attribute_in_serialized_svg() {
   </svg>
 "#;
   let stylesheet = parse_stylesheet("g { transform: none; }").unwrap();
-  let serialized = serialized_inline_svg(svg_markup, &stylesheet);
+  let serialized = serialized_inline_svg_with_stylesheet(svg_markup, &stylesheet);
   let doc = roxmltree::Document::parse(&serialized).expect("parse serialized svg");
   let g = doc
     .descendants()

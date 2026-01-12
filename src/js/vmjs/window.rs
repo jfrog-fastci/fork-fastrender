@@ -355,7 +355,7 @@ impl WindowHost {
 
       let mut hooks = VmJsEventLoopHooks::<WindowHostState>::new_with_host(host_state)?;
       hooks.set_event_loop(event_loop);
-
+ 
       let result: Result<()> = {
         let (vm_host, window) = host_state.vm_host_and_window_realm()?;
         let (vm, _realm, heap) = window.vm_realm_and_heap_mut();

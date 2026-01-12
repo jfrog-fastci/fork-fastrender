@@ -3391,6 +3391,38 @@ fn parse_scroll_offsets_from_args(
   Ok((x, y))
 }
 
+fn window_scroll_x_get_native(
+  _vm: &mut Vm,
+  _scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Some(document) = host.as_any_mut().downcast_mut::<BrowserDocumentDom2>() else {
+    return Ok(Value::Number(0.0));
+  };
+  let offset = document.viewport_scroll_offset();
+  Ok(Value::Number(offset.x as f64))
+}
+
+fn window_scroll_y_get_native(
+  _vm: &mut Vm,
+  _scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Some(document) = host.as_any_mut().downcast_mut::<BrowserDocumentDom2>() else {
+    return Ok(Value::Number(0.0));
+  };
+  let offset = document.viewport_scroll_offset();
+  Ok(Value::Number(offset.y as f64))
+}
+
 fn window_scroll_to_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -14362,6 +14394,8 @@ fn parse_add_event_listener_options(
   }
 }
 
+/// Variant of [`parse_add_event_listener_options`] for contexts that do not have a host+hooks pair
+/// available (notably: the standalone `WindowRealm` WebIDL host).
 fn parse_add_event_listener_options_without_host(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -14418,6 +14452,7 @@ fn parse_event_listener_capture(
   }
 }
 
+/// Variant of [`parse_event_listener_capture`] for contexts without host+hooks.
 fn parse_event_listener_capture_without_host(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -29072,12 +29107,18 @@ fn init_window_globals(
     data_desc(Value::Object(remove_attribute_func)),
   )?;
 
-  // Element attribute helpers: install on `document` for wrapper reuse, and also on `Element.prototype`
-  // for WebIDL / WPT conformance.
+  // Element helpers: install on `document` for wrapper reuse, and also on `Element.prototype` for
+  // WebIDL / WPT conformance.
   let element_proto = dom_platform
     .as_ref()
     .map(|platform| platform.prototype_for(DomInterface::Element));
   if let Some(element_proto) = element_proto {
+    let key = alloc_key(&mut scope, "getBoundingClientRect")?;
+    scope.define_property(
+      element_proto,
+      key,
+      data_desc(Value::Object(element_get_bounding_client_rect_func)),
+    )?;
     let key = alloc_key(&mut scope, "getAttribute")?;
     scope.define_property(
       element_proto,
@@ -34738,6 +34779,20 @@ mod tests {
     )?;
     assert_eq!(get_string(realm.heap(), add_null_is_noop), "ok");
 
+    Ok(())
+  }
+
+  #[test]
+  fn element_get_bounding_client_rect_is_available_on_element_prototype() -> Result<(), VmError> {
+    let renderer_dom = crate::dom::parse_html("<!doctype html><html></html>").unwrap();
+    let mut host = crate::js::HostDocumentState::from_renderer_dom(&renderer_dom);
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+    let ok = exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      "typeof Element.prototype.getBoundingClientRect === 'function'",
+    )?;
+    assert_eq!(ok, Value::Bool(true));
     Ok(())
   }
 

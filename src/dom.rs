@@ -18775,18 +18775,6 @@ mod tests {
     );
   }
 
-  fn find_by_id<'a>(node: &'a DomNode, id: &str) -> Option<&'a DomNode> {
-    if node.get_attribute_ref("id") == Some(id) {
-      return Some(node);
-    }
-    for child in node.children.iter() {
-      if let Some(found) = find_by_id(child, id) {
-        return Some(found);
-      }
-    }
-    None
-  }
-
   fn find_first_slot<'a>(node: &'a DomNode) -> Option<&'a DomNode> {
     match node.node_type {
       DomNodeType::Slot { .. } => Some(node),
@@ -18807,19 +18795,6 @@ mod tests {
       count += count_shadow_roots(child);
     }
     count
-  }
-
-  fn build_id_lookup<'a>(
-    node: &'a DomNode,
-    ids: &std::collections::HashMap<*const DomNode, usize>,
-    out: &mut std::collections::HashMap<usize, &'a DomNode>,
-  ) {
-    if let Some(id) = ids.get(&(node as *const DomNode)) {
-      out.insert(*id, node);
-    }
-    for child in node.children.iter() {
-      build_id_lookup(child, ids, out);
-    }
   }
 
   #[test]
