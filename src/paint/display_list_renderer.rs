@@ -15244,27 +15244,6 @@ impl DisplayListRenderer {
             }
           }
 
-          // When an affine transform makes the border-radius clip non-axis-aligned, apply the
-          // transformed rounded-rect mask *before* filters run. This ensures filters that generate
-          // pixels outside the element bounds (e.g. drop-shadow) are computed from the correctly
-          // clipped source graphic, while still allowing the filter outsets to remain visible.
-          if !record.filters.is_empty() && !record.radii.is_zero() {
-            if let Some(clip) = record.clip {
-              if let Some(local_shape_bounds) =
-                self.layer_space_bounds(record.mask_bounds, origin, &layer)
-              {
-                apply_clip_mask_rect_transformed(
-                  &mut layer,
-                  local_shape_bounds,
-                  record.radii,
-                  clip.rect,
-                  clip.transform,
-                  self.clip_mask_diagnostics.as_ref(),
-                )?;
-              }
-            }
-          }
-
           if !record.filters.is_empty() {
             let bbox = Rect::from_xywh(
               record.mask_bounds.x() - origin.0 as f32,
@@ -15294,7 +15273,12 @@ impl DisplayListRenderer {
             )?;
           }
 
-          if !record.radii.is_zero() || !record.filters.is_empty() {
+          // Clamp filtered output to the filter region (expanded by `filter_outset_with_bounds`) to
+          // avoid bleed from pixels that landed outside the intended output bounds.
+          //
+          // This must be an axis-aligned rect clamp: `border-radius` does *not* create an implicit
+          // clip for stacking-context descendants when `overflow` is visible.
+          if !record.filters.is_empty() {
             let clip_rect = Rect::from_xywh(
               record.mask_bounds.x() - out_l,
               record.mask_bounds.y() - out_t,
@@ -15302,35 +15286,20 @@ impl DisplayListRenderer {
               record.mask_bounds.height() + out_t + out_b,
             );
             if let Some(local_clip) = self.layer_space_bounds(clip_rect, origin, &layer) {
-              // If filters were applied, we already clipped the source graphic above (when needed).
-              // At this point we only need to clamp the final filtered output to the filter region
-              // (expanded by `filter_outset_with_bounds`) to avoid bleed; using the transformed
-              // rounded-rect here would incorrectly clip filter outsets like drop shadows.
-              if record.filters.is_empty() {
-                if let Some(clip) = record.clip {
-                  apply_clip_mask_rect_transformed(
-                    &mut layer,
-                    local_clip,
-                    record.radii,
-                    clip.rect,
-                    clip.transform,
-                    self.clip_mask_diagnostics.as_ref(),
-                  )?;
-                } else {
-                  apply_clip_mask_rect(
-                    &mut layer,
-                    local_clip,
-                    record.radii,
-                    self.clip_mask_diagnostics.as_ref(),
-                  )?;
-                }
+              hard_clip_pixmap_outside_rect_rgba(&mut layer, local_clip)?;
+            }
+          }
+
+          // Ancestor clips (`overflow:hidden`, etc.) are applied after filter effects, but the
+          // canvas can represent rectangular clips as bounds-only (no per-pixel mask) for
+          // performance. `Canvas::composite_layer` only applies the mask, so explicitly hard-clip
+          // the layer output to the active clip bounds in that case.
+          if self.canvas.clip_mask().is_none() {
+            if let Some(clip_bounds) = self.canvas.clip_bounds() {
+              if let Some(local_clip) = self.layer_space_bounds(clip_bounds, origin, &layer) {
+                hard_clip_pixmap_outside_rect_rgba(&mut layer, local_clip)?;
               } else {
-                apply_clip_mask_rect(
-                  &mut layer,
-                  local_clip,
-                  record.radii,
-                  self.clip_mask_diagnostics.as_ref(),
-                )?;
+                return Ok(());
               }
             }
           }

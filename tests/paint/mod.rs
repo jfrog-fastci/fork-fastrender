@@ -19,6 +19,7 @@ mod border_solid_device_snapping;
 mod border_solid_pixel_snapping;
 mod border_solid_rounded_device_snapping;
 mod border_triangle;
+mod border_radius_does_not_clip_opacity_group;
 mod box_shadow_blur_falloff;
 mod box_shadow_blur_radius_to_sigma;
 mod box_shadow_display_list_builder_semantics;
