@@ -2171,11 +2171,16 @@ mod tests {
   fn null_body_status_204_has_no_body() {
     let mut resource = FetchedResource::new(b"should-be-ignored".to_vec(), None);
     resource.status = Some(204);
+    resource.response_headers = Some(vec![("Content-Type".to_string(), "text/plain".to_string())]);
     let fetcher = StaticFetcher { resource };
     let request = Request::new("GET", "https://example.com/a");
     let response = execute_web_fetch(&fetcher, &request, WebFetchExecutionContext::default())
       .expect("expected response");
     assert_eq!(response.status, 204);
+    assert_eq!(
+      response.headers.get("content-type").unwrap().as_deref(),
+      Some("text/plain")
+    );
     assert!(response.body.is_none());
   }
 
@@ -2183,11 +2188,16 @@ mod tests {
   fn null_body_status_304_has_no_body() {
     let mut resource = FetchedResource::new(b"should-be-ignored".to_vec(), None);
     resource.status = Some(304);
+    resource.response_headers = Some(vec![("Content-Type".to_string(), "text/plain".to_string())]);
     let fetcher = StaticFetcher { resource };
     let request = Request::new("GET", "https://example.com/a");
     let response = execute_web_fetch(&fetcher, &request, WebFetchExecutionContext::default())
       .expect("expected response");
     assert_eq!(response.status, 304);
+    assert_eq!(
+      response.headers.get("content-type").unwrap().as_deref(),
+      Some("text/plain")
+    );
     assert!(response.body.is_none());
   }
 
