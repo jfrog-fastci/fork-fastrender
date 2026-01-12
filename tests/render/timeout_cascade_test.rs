@@ -8,27 +8,24 @@ use std::time::{Duration, Instant};
 
 #[test]
 fn cascade_selector_matching_obeys_timeout() {
-  let cascade_active = Arc::new(AtomicBool::new(false));
   let cascade_checks = Arc::new(AtomicUsize::new(0));
-  let render_thread = std::thread::current().id();
 
   // Use stage heartbeats to only trip the cancel callback once cascade begins. This avoids relying
   // on fragile wall-clock thresholds and makes the test independent of HTML parse speed.
-  let cascade_active_listener = Arc::clone(&cascade_active);
+  let saw_cascade_heartbeat = Arc::new(AtomicBool::new(false));
+  let saw_cascade_heartbeat_listener = Arc::clone(&saw_cascade_heartbeat);
   let _stage_listener_guard = GlobalStageListenerGuard::new(Arc::new(move |stage| {
-    if std::thread::current().id() != render_thread {
-      return;
+    if stage == StageHeartbeat::Cascade {
+      saw_cascade_heartbeat_listener.store(true, Ordering::Relaxed);
     }
-    cascade_active_listener.store(stage == StageHeartbeat::Cascade, Ordering::Relaxed);
   }));
 
   // Cancel on the *second* deadline check observed during the cascade stage. This ensures that at
   // least one deadline check happened within cascade selector matching (not only at stage
   // boundaries).
-  let cascade_active_cancel = Arc::clone(&cascade_active);
   let cascade_checks_cancel = Arc::clone(&cascade_checks);
   let cancel_callback: Arc<fastrender::CancelCallback> = Arc::new(move || {
-    if !cascade_active_cancel.load(Ordering::Relaxed) {
+    if fastrender::render_control::active_stage() != Some(RenderStage::Cascade) {
       return false;
     }
     let seen = cascade_checks_cancel.fetch_add(1, Ordering::Relaxed) + 1;
@@ -72,6 +69,10 @@ fn cascade_selector_matching_obeys_timeout() {
   assert!(
     cascade_checks.load(Ordering::Relaxed) >= 2,
     "expected at least 2 cascade deadline checks before cancellation"
+  );
+  assert!(
+    saw_cascade_heartbeat.load(Ordering::Relaxed),
+    "expected to observe cascade stage heartbeat"
   );
 
   match err {

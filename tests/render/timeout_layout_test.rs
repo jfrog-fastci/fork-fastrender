@@ -16,28 +16,20 @@ fn heavy_inline_html(count: usize) -> String {
 
 #[test]
 fn layout_loops_respect_timeout() {
-  let layout_active = Arc::new(AtomicBool::new(false));
   let layout_checks = Arc::new(AtomicUsize::new(0));
-  let render_thread = std::thread::current().id();
-  let layout_active_listener = Arc::clone(&layout_active);
-  let layout_checks_listener = Arc::clone(&layout_checks);
+  let saw_layout_heartbeat = Arc::new(AtomicBool::new(false));
+  let saw_layout_heartbeat_listener = Arc::clone(&saw_layout_heartbeat);
   let _stage_guard = GlobalStageListenerGuard::new(Arc::new(move |stage| {
-    if std::thread::current().id() != render_thread {
-      return;
-    }
-    let active = stage == StageHeartbeat::Layout;
-    layout_active_listener.store(active, Ordering::Relaxed);
-    if active {
-      layout_checks_listener.store(0, Ordering::Relaxed);
+    if stage == StageHeartbeat::Layout {
+      saw_layout_heartbeat_listener.store(true, Ordering::Relaxed);
     }
   }));
 
   // Cancel on the second deadline check observed during layout. This exercises layout's periodic
   // deadline checks while avoiding fragile wall-clock thresholds (DOM parse speed varies).
-  let layout_active_cancel = Arc::clone(&layout_active);
   let layout_checks_cancel = Arc::clone(&layout_checks);
   let cancel_callback: Arc<fastrender::CancelCallback> = Arc::new(move || {
-    if !layout_active_cancel.load(Ordering::Relaxed) {
+    if fastrender::render_control::active_stage() != Some(RenderStage::Layout) {
       return false;
     }
     let seen = layout_checks_cancel.fetch_add(1, Ordering::Relaxed) + 1;
@@ -61,6 +53,10 @@ fn layout_loops_respect_timeout() {
     layout_checks.load(Ordering::Relaxed) >= 2,
     "expected at least 2 layout deadline checks before cancellation"
   );
+  assert!(
+    saw_layout_heartbeat.load(Ordering::Relaxed),
+    "expected to observe layout stage heartbeat"
+  );
 
   match err {
     Error::Render(RenderError::Timeout { stage, .. }) => assert_eq!(stage, RenderStage::Layout),
@@ -70,26 +66,18 @@ fn layout_loops_respect_timeout() {
 
 #[test]
 fn layout_timeout_records_diagnostics() {
-  let layout_active = Arc::new(AtomicBool::new(false));
   let layout_checks = Arc::new(AtomicUsize::new(0));
-  let render_thread = std::thread::current().id();
-  let layout_active_listener = Arc::clone(&layout_active);
-  let layout_checks_listener = Arc::clone(&layout_checks);
+  let saw_layout_heartbeat = Arc::new(AtomicBool::new(false));
+  let saw_layout_heartbeat_listener = Arc::clone(&saw_layout_heartbeat);
   let _stage_guard = GlobalStageListenerGuard::new(Arc::new(move |stage| {
-    if std::thread::current().id() != render_thread {
-      return;
-    }
-    let active = stage == StageHeartbeat::Layout;
-    layout_active_listener.store(active, Ordering::Relaxed);
-    if active {
-      layout_checks_listener.store(0, Ordering::Relaxed);
+    if stage == StageHeartbeat::Layout {
+      saw_layout_heartbeat_listener.store(true, Ordering::Relaxed);
     }
   }));
 
-  let layout_active_cancel = Arc::clone(&layout_active);
   let layout_checks_cancel = Arc::clone(&layout_checks);
   let cancel_callback: Arc<fastrender::CancelCallback> = Arc::new(move || {
-    if !layout_active_cancel.load(Ordering::Relaxed) {
+    if fastrender::render_control::active_stage() != Some(RenderStage::Layout) {
       return false;
     }
     let seen = layout_checks_cancel.fetch_add(1, Ordering::Relaxed) + 1;
@@ -111,6 +99,10 @@ fn layout_timeout_records_diagnostics() {
   assert!(
     layout_checks.load(Ordering::Relaxed) >= 2,
     "expected at least 2 layout deadline checks before cancellation"
+  );
+  assert!(
+    saw_layout_heartbeat.load(Ordering::Relaxed),
+    "expected to observe layout stage heartbeat"
   );
 
   assert_eq!(result.diagnostics.timeout_stage, Some(RenderStage::Layout));
