@@ -751,6 +751,36 @@ mod tests {
   }
 
   #[test]
+  fn bidi_delete_preserves_split_caret_affinity() {
+    let mut dom =
+      crate::dom::parse_html("<html><body><input dir=\"ltr\" value=\"ABC אבג\"></body></html>")
+        .expect("parse");
+    let input_id = find_element_node_id(&mut dom, "input");
+
+    let mut engine = InteractionEngine::new();
+    engine.focus_node_id(&mut dom, Some(input_id), true);
+
+    // Move to the split-caret boundary at char_idx=4 on the upstream (LTR) side.
+    set_text_selection_caret(&mut engine, &mut dom, input_id, 0);
+    for _ in 0..4 {
+      assert!(engine.key_action(&mut dom, KeyAction::ArrowRight));
+    }
+
+    let edit = engine.text_edit.as_ref().unwrap();
+    assert_eq!(edit.caret, 4);
+    assert_eq!(edit.caret_affinity, CaretAffinity::Upstream);
+
+    // Deleting the following character should not reset the caret affinity (otherwise the caret
+    // would jump to the other split-caret stop).
+    assert!(engine.key_action(&mut dom, KeyAction::Delete));
+    assert_eq!(input_value(&mut dom, input_id), "ABC בג");
+
+    let edit = engine.text_edit.as_ref().unwrap();
+    assert_eq!(edit.caret, 4);
+    assert_eq!(edit.caret_affinity, CaretAffinity::Upstream);
+  }
+
+  #[test]
   fn bidi_arrow_down_selection_collapse_preserves_split_caret_affinity() {
     let mut dom =
       crate::dom::parse_html("<html><body><textarea dir=\"ltr\">ABC אבג</textarea></body></html>")
@@ -4075,6 +4105,8 @@ impl InteractionEngine {
           if !can_edit_value {
             return changed;
           }
+          let prev_caret = edit.caret;
+          let prev_affinity = edit.caret_affinity;
           let selection = edit.selection();
           let (delete_start, delete_end, next_caret) = if let Some((start, end)) = selection {
             (start, end, start)
@@ -4105,7 +4137,11 @@ impl InteractionEngine {
 
           let next_len = next.chars().count();
           edit.caret = next_caret.min(next_len);
-          edit.caret_affinity = CaretAffinity::Downstream;
+          edit.caret_affinity = if edit.caret == prev_caret {
+            prev_affinity
+          } else {
+            CaretAffinity::Downstream
+          };
           edit.selection_anchor = None;
           edit.preferred_column = None;
 
