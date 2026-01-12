@@ -15,7 +15,9 @@ static VM_JS_SMOKE_LOCK: Mutex<()> = Mutex::new(());
 
 #[test]
 fn vm_js_executor_smoke_pass_and_timeout() {
-  let _guard = VM_JS_SMOKE_LOCK.lock().unwrap();
+  let _guard = VM_JS_SMOKE_LOCK
+    .lock()
+    .unwrap_or_else(|poisoned| poisoned.into_inner());
   let temp = tempdir().unwrap();
 
   // Minimal fake test262 checkout: harness + test directories.
@@ -53,7 +55,9 @@ fn vm_js_executor_smoke_pass_and_timeout() {
     &cases,
     &expectations,
     executor.as_ref(),
-    Duration::from_millis(100),
+    // Keep this small to stay fast while leaving enough headroom that a cold CI machine doesn't
+    // spuriously time out `pass.js` during parsing/runtime initialization.
+    Duration::from_millis(500),
     &timeout_manager,
   );
 
@@ -82,7 +86,9 @@ fn vm_js_executor_smoke_pass_and_timeout() {
 
 #[test]
 fn vm_js_executor_module_smoke_imports_and_harness_globals() {
-  let _guard = VM_JS_SMOKE_LOCK.lock().unwrap();
+  let _guard = VM_JS_SMOKE_LOCK
+    .lock()
+    .unwrap_or_else(|poisoned| poisoned.into_inner());
   let temp = tempdir().unwrap();
 
   // Minimal fake test262 checkout: harness + test directories.
@@ -107,7 +113,14 @@ assert.sameValue = function (actual, expected) {
   fs::create_dir_all(&test_dir).unwrap();
 
   // Module dependency imported via a relative path.
-  fs::write(test_dir.join("dep.js"), "export const y = 1;\n").unwrap();
+  //
+  // It also calls `assert.sameValue` to ensure the harness prelude created a *global* `assert`
+  // binding visible from all modules (not just the entry module).
+  fs::write(
+    test_dir.join("dep.js"),
+    "assert.sameValue(1, 1);\nexport const y = 1;\n",
+  )
+  .unwrap();
 
   // Module test case that:
   // - imports `./dep.js` (exercises file-based module resolution), and
