@@ -212,7 +212,7 @@ mod imp {
 
     let size = align_up(size, align).unwrap_or_else(|| trap::rt_trap_invalid_arg("allocation size overflow"));
 
-    LOCAL_BUMP.with(|cell| {
+    match LOCAL_BUMP.try_with(|cell| {
       let mut local = cell.get();
 
       if let Some(ptr) = local.try_alloc(size, align) {
@@ -226,7 +226,26 @@ mod imp {
         .expect("refill must provide enough space for allocation");
       cell.set(local);
       ptr as *mut u8
-    })
+    }) {
+      Ok(ptr) => ptr,
+      Err(_) => {
+        // `alloc_bytes` can be called from other thread-local destructors during TLS teardown. If
+        // this thread-local bump cursor has already been destroyed, `LocalKey::with`/`try_with`
+        // would return `AccessError` (`abort_on_dtor_unwind` would otherwise abort the process).
+        //
+        // Fall back to allocating directly from the global arena without caching per-thread state.
+        let needed = size
+          .checked_add(align - 1)
+          .unwrap_or_else(|| trap::rt_trap_invalid_arg("allocation size overflow"));
+        let (start, end) = ARENA.reserve(needed, context);
+        let ptr = align_up(start, align).unwrap_or_else(|| trap::rt_trap_invalid_arg("allocation size overflow"));
+        debug_assert!(
+          ptr.checked_add(size).map(|end_ptr| end_ptr <= end).unwrap_or(false),
+          "arena reserve must provide enough space for allocation"
+        );
+        ptr as *mut u8
+      }
+    }
   }
 
   #[inline]
