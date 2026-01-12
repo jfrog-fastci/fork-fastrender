@@ -15,6 +15,15 @@ fn tool_available(tool: &str) -> bool {
     .is_ok_and(|s| s.success())
 }
 
+fn find_tool(candidates: &[&'static str]) -> Option<&'static str> {
+  for &cand in candidates {
+    if tool_available(cand) {
+      return Some(cand);
+    }
+  }
+  None
+}
+
 fn run_success(mut cmd: Command) -> String {
   let cmd_str = format!("{cmd:?}");
   let out = cmd.output().unwrap_or_else(|e| panic!("failed to run {cmd_str}: {e}"));
@@ -83,12 +92,16 @@ fn parse_call_return_offsets_from_objdump(objdump: &str, fn_name: &str, call_pre
 
 #[test]
 fn llvm18_statepoint_stackmaps_codegen_aarch64() {
-  for tool in ["opt-18", "llc-18", "llvm-objdump-18"] {
+  for tool in ["opt-18", "llc-18"] {
     if !tool_available(tool) {
       eprintln!("skipping: {tool} not available in PATH");
       return;
     }
   }
+  let Some(objdump) = find_tool(&["llvm-objdump-18", "llvm-objdump"]) else {
+    eprintln!("skipping: llvm-objdump not available in PATH (need llvm-objdump-18 or llvm-objdump)");
+    return;
+  };
 
   let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
   let ir = manifest_dir.join("tests/fixtures/ir/statepoint_gcroot2.ll");
@@ -167,9 +180,9 @@ fn llvm18_statepoint_stackmaps_codegen_aarch64() {
   }
 
   // 5) Validate instruction_offset corresponds to the call return address.
-  let mut objdump = Command::new("llvm-objdump-18");
-  objdump.arg("-d").arg("--no-show-raw-insn").arg(&obj);
-  let disasm = run_success(objdump);
+  let mut disasm_cmd = Command::new(objdump);
+  disasm_cmd.arg("-d").arg("--no-show-raw-insn").arg(&obj);
+  let disasm = run_success(disasm_cmd);
 
   let expected_return_offsets = parse_call_return_offsets_from_objdump(&disasm, "statepoint_gcroot2", "bl")
     .into_iter()
