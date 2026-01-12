@@ -96,6 +96,60 @@ static void io_check_rooted(uint32_t events, uint8_t* data) {
   io_watcher = 0;
 }
 
+static IoWatcherId io_watcher_with_drop = 0;
+static int io_watcher_with_drop_ran = 0;
+static int io_watcher_with_drop_drop_count = 0;
+static uint8_t io_watcher_with_drop_user = 0;
+
+static void io_check_with_drop(uint32_t events, uint8_t* data) {
+  if ((events & RT_IO_READABLE) == 0) {
+    return;
+  }
+  if (data != &io_watcher_with_drop_user) {
+    io_watcher_with_drop_ran = 2;
+  } else if (io_watcher_with_drop_drop_count != 0) {
+    io_watcher_with_drop_ran = 3;
+  } else {
+    io_watcher_with_drop_ran = 1;
+  }
+  rt_io_unregister(io_watcher_with_drop);
+  io_watcher_with_drop = 0;
+}
+
+static void io_with_drop_drop(uint8_t* data) {
+  if (data != &io_watcher_with_drop_user) {
+    io_watcher_with_drop_drop_count = -1;
+    return;
+  }
+  io_watcher_with_drop_drop_count += 1;
+}
+
+static IoWatcherId io_watcher_handle = 0;
+static int io_watcher_handle_ran = 0;
+static GcPtr io_watcher_handle_expected = NULL;
+static int io_watcher_handle_drop_count = 0;
+static GcPtr io_watcher_handle_dropped = NULL;
+
+static void io_check_handle(uint32_t events, GcPtr data) {
+  if ((events & RT_IO_READABLE) == 0) {
+    return;
+  }
+  if (data != io_watcher_handle_expected) {
+    io_watcher_handle_ran = 2;
+  } else if (io_watcher_handle_drop_count != 0) {
+    io_watcher_handle_ran = 3;
+  } else {
+    io_watcher_handle_ran = 1;
+  }
+  rt_io_unregister(io_watcher_handle);
+  io_watcher_handle = 0;
+}
+
+static void io_handle_drop(GcPtr data) {
+  io_watcher_handle_drop_count += 1;
+  io_watcher_handle_dropped = data;
+}
+
 static int set_nonblocking(int fd) {
   int flags = fcntl(fd, F_GETFL);
   if (flags < 0) {
@@ -405,7 +459,7 @@ int main(void) {
   rt_root_push(&slot);
   io_watcher_ran = 0;
   io_watcher = rt_io_register_rooted_h(io_fds[0], RT_IO_READABLE, io_check_rooted, &slot);
-  if (check(io_watcher != 0)) { rc = 55; goto done; }
+  if (check(io_watcher != 0)) { rt_root_pop(&slot); rc = 55; goto done; }
 
   rt_gc_collect();
   io_watcher_expected = slot;
@@ -425,6 +479,81 @@ int main(void) {
 
   (void)close(io_fds[0]);
   (void)close(io_fds[1]);
+
+  // I/O watcher with drop-hook API: the watcher consumes `data` and calls `drop_data` exactly once
+  // when the watcher is torn down. Drops must not run while the readiness callback is still
+  // executing, even if the callback calls `rt_io_unregister` itself.
+  int io_fds_drop[2];
+  if (pipe(io_fds_drop) != 0) { rc = 58; goto done; }
+  if (set_nonblocking(io_fds_drop[0]) != 0) { rc = 59; goto done; }
+  if (set_nonblocking(io_fds_drop[1]) != 0) { rc = 60; goto done; }
+
+  io_watcher_with_drop_ran = 0;
+  io_watcher_with_drop_drop_count = 0;
+  io_watcher_with_drop = rt_io_register_with_drop(
+    io_fds_drop[0],
+    RT_IO_READABLE,
+    io_check_with_drop,
+    &io_watcher_with_drop_user,
+    io_with_drop_drop
+  );
+  if (check(io_watcher_with_drop != 0)) { rc = 61; goto done; }
+
+  uint8_t io_drop_byte = 1;
+  if (write(io_fds_drop[1], &io_drop_byte, 1) != 1) { rc = 62; goto done; }
+
+  // Drive until the readiness callback fires.
+  for (int i = 0; i < 8 && io_watcher_with_drop_ran == 0; i++) {
+    (void)rt_async_poll();
+    rt_drain_microtasks();
+  }
+  if (check(io_watcher_with_drop_ran == 1)) { rc = 63; goto done; }
+  if (check(io_watcher_with_drop_drop_count == 1)) { rc = 64; goto done; }
+
+  (void)close(io_fds_drop[0]);
+  (void)close(io_fds_drop[1]);
+
+  // Handle-based I/O watcher API: like `rt_io_register_with_drop`, but the callback userdata is a
+  // consumed `HandleId` (kept alive and relocated by the GC). The handle must be freed exactly once
+  // when the watcher is torn down.
+  int io_fds_handle[2];
+  if (pipe(io_fds_handle) != 0) { rc = 65; goto done; }
+  if (set_nonblocking(io_fds_handle[0]) != 0) { rc = 66; goto done; }
+  if (set_nonblocking(io_fds_handle[1]) != 0) { rc = 67; goto done; }
+
+  GcPtr io_handle_obj = rt_alloc_pinned(16, shape);
+  if (check(io_handle_obj != NULL)) { rc = 68; goto done; }
+  rt_root_push(&io_handle_obj);
+  HandleId io_handle = rt_handle_alloc(io_handle_obj);
+  rt_root_pop(&io_handle_obj);
+
+  io_watcher_handle_expected = io_handle_obj;
+  io_watcher_handle_ran = 0;
+  io_watcher_handle_drop_count = 0;
+  io_watcher_handle_dropped = NULL;
+  io_watcher_handle = rt_io_register_handle_with_drop(
+    io_fds_handle[0],
+    RT_IO_READABLE,
+    io_check_handle,
+    io_handle,
+    io_handle_drop
+  );
+  if (check(io_watcher_handle != 0)) { rc = 69; goto done; }
+
+  uint8_t io_handle_byte = 1;
+  if (write(io_fds_handle[1], &io_handle_byte, 1) != 1) { rc = 70; goto done; }
+
+  for (int i = 0; i < 8 && io_watcher_handle_ran == 0; i++) {
+    (void)rt_async_poll();
+    rt_drain_microtasks();
+  }
+  if (check(io_watcher_handle_ran == 1)) { rc = 71; goto done; }
+  if (check(io_watcher_handle_drop_count == 1)) { rc = 72; goto done; }
+  if (check(io_watcher_handle_dropped == io_handle_obj)) { rc = 73; goto done; }
+  if (check(rt_handle_load(io_handle) == NULL)) { rc = 74; goto done; }
+
+  (void)close(io_fds_handle[0]);
+  (void)close(io_fds_handle[1]);
 
   // Cross-thread enqueue should wake an event loop thread blocked in `rt_async_wait`.
   int wake_microtask_ran = 0;
