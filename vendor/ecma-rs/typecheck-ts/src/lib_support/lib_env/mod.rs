@@ -180,11 +180,13 @@ fn fallback_core_globals_lib() -> LibFile {
 
   use crate::FileKey;
 
+  let key = FileKey::new("lib:core_globals.d.ts");
+  let text = prepared::bundled_lib_text_arc(&key, FileKind::Dts, FALLBACK_CORE_GLOBAL_TYPES);
   LibFile {
-    key: FileKey::new("lib:core_globals.d.ts"),
+    key,
     name: Arc::from("core_globals.d.ts"),
     kind: FileKind::Dts,
-    text: Arc::from(FALLBACK_CORE_GLOBAL_TYPES),
+    text,
   }
 }
 
@@ -229,11 +231,15 @@ mod bundled {
   }
 
   fn lib_file_by_filename(filename: &str) -> Option<LibFile> {
-    bundled_lib_text(filename).map(|text| LibFile {
-      key: FileKey::new(format!("lib:{filename}")),
-      name: Arc::from(filename),
-      kind: FileKind::Dts,
-      text: Arc::from(text),
+    bundled_lib_text(filename).map(|text| {
+      let key = FileKey::new(format!("lib:{filename}"));
+      let text = super::prepared::bundled_lib_text_arc(&key, FileKind::Dts, text);
+      LibFile {
+        key,
+        name: Arc::from(filename),
+        kind: FileKind::Dts,
+        text,
+      }
     })
   }
 

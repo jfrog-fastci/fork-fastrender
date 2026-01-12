@@ -1,4 +1,4 @@
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 
 use dashmap::DashMap;
 use diagnostics::FileId;
@@ -22,6 +22,13 @@ use crate::FileKey;
 ///
 /// Host-provided `.d.ts` files (including `Host::lib_files`) are therefore not cached here,
 /// avoiding an unbounded cache keyed by arbitrary user inputs.
+///
+/// # Safety
+/// Bundled libs are immutable within a process. We also rely on deterministic `FileId`
+/// allocation for lib files (see `files.rs`) because the cached AST/HIR structures embed
+/// file IDs and stable `DefId`/`BodyId`s derived from them. Finally, `typecheck-ts` treats
+/// the `parse-js` AST as immutable (it does not mutate `NodeAssocData`), so sharing parsed
+/// ASTs across `Program` instances is safe.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct PreparedLibKey {
   pub file_id: FileId,
@@ -32,6 +39,7 @@ pub(crate) struct PreparedLibKey {
 
 static PARSE_CACHE: OnceLock<DashMap<PreparedLibKey, ParseResult>> = OnceLock::new();
 static LOWER_CACHE: OnceLock<DashMap<PreparedLibKey, LowerResultWithDiagnostics>> = OnceLock::new();
+static TEXT_CACHE: OnceLock<DashMap<(FileKey, FileKind), Arc<str>>> = OnceLock::new();
 
 fn parse_cache() -> &'static DashMap<PreparedLibKey, ParseResult> {
   PARSE_CACHE.get_or_init(DashMap::new)
@@ -39,6 +47,28 @@ fn parse_cache() -> &'static DashMap<PreparedLibKey, ParseResult> {
 
 fn lower_cache() -> &'static DashMap<PreparedLibKey, LowerResultWithDiagnostics> {
   LOWER_CACHE.get_or_init(DashMap::new)
+}
+
+fn text_cache() -> &'static DashMap<(FileKey, FileKind), Arc<str>> {
+  TEXT_CACHE.get_or_init(DashMap::new)
+}
+
+/// Return a canonical `Arc<str>` for a bundled lib's source text.
+///
+/// This is used when constructing `LibFile` values so repeated `Program` instances
+/// do not repeatedly allocate/copy the large embedded `.d.ts` strings.
+pub(crate) fn bundled_lib_text_arc(file_key: &FileKey, file_kind: FileKind, text: &'static str) -> Arc<str> {
+  let cache_key = (file_key.clone(), file_kind);
+  if let Some(found) = text_cache().get(&cache_key) {
+    return found.clone();
+  }
+
+  // Avoid allocating while holding a DashMap shard lock.
+  let arc: Arc<str> = Arc::from(text);
+  text_cache()
+    .entry(cache_key)
+    .or_insert(Arc::clone(&arc))
+    .clone()
 }
 
 /// Compute a stable hash of the file text for cache keys.
