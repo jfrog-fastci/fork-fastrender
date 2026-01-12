@@ -4715,15 +4715,28 @@ impl InlineFormattingContext {
         margin_right,
         margin_top,
         margin_bottom,
-        // CSS 2.1: Inline-block baselines use the last in-flow line box only when overflow is
+        // CSS 2.1: Inline-block baselines use the last in-flow line box only when `overflow` is
         // visible; otherwise they fall back to the bottom margin edge.
         //
-        // Browsers special-case form controls: even when `appearance:none` disables native
+        // However, other atomic inline formatting contexts (notably `inline-flex` / `inline-grid`)
+        // participate in baseline alignment via their own baseline sets and do **not** inherit the
+        // inline-block overflow rule. Treat those as having a line baseline so baseline alignment
+        // doesn't degrade to the "bottom edge" fallback (which creates an extra descender gap under
+        // `display:inline-flex` in inline formatting contexts).
+        //
+        // Browsers also special-case form controls: even when `appearance:none` disables native
         // replacement, UA styles often set `overflow: clip`, but baseline alignment still follows
         // the internal text baseline. This matches rust-lang.org's language selector in the nav.
-        (matches!(style.overflow_x, crate::style::types::Overflow::Visible)
-          && matches!(style.overflow_y, crate::style::types::Overflow::Visible))
-          || matches!(style.appearance, crate::style::types::Appearance::None),
+        match fc_type {
+          FormattingContextType::Flex | FormattingContextType::Grid | FormattingContextType::Table => {
+            true
+          }
+          _ => {
+            (matches!(style.overflow_x, crate::style::types::Overflow::Visible)
+              && matches!(style.overflow_y, crate::style::types::Overflow::Visible))
+              || matches!(style.appearance, crate::style::types::Appearance::None)
+          }
+        },
       )
       .with_intrinsic_widths(intrinsic_min_width, intrinsic_max_width)
       .with_vertical_align(va),
@@ -17404,6 +17417,90 @@ mod tests {
       Some(Size::new(width, height)),
       None,
     )
+  }
+
+  #[test]
+  fn inline_flex_baseline_does_not_fall_back_to_bottom_edge_when_overflow_auto() {
+    // When an `inline-flex` box participates in an inline formatting context, its baseline should
+    // come from its flex items (baseline set), not the bottom edge fallback used by CSS2.1
+    // inline-blocks when `overflow` is not visible.
+    //
+    // If we incorrectly fall back to the bottom edge, the line box gains an extra descender gap
+    // under the flex container (classic "inline image gap" symptom), which can shift the entire
+    // page layout vertically.
+    let ifc = InlineFormattingContext::new().with_parallelism(LayoutParallelism::disabled());
+
+    let mut flex_item_style = ComputedStyle::default();
+    flex_item_style.display = Display::Block;
+    flex_item_style.font_size = 16.0;
+    let flex_item = BoxNode::new_block(
+      Arc::new(flex_item_style),
+      FormattingContextType::Inline,
+      vec![make_text_box("Hello")],
+    );
+
+    let mut inline_flex_style = ComputedStyle::default();
+    inline_flex_style.display = Display::InlineFlex;
+    inline_flex_style.font_size = 16.0;
+    inline_flex_style.overflow_x = crate::style::types::Overflow::Auto;
+    inline_flex_style.overflow_y = crate::style::types::Overflow::Auto;
+    let inline_flex = BoxNode::new_inline_block(
+      Arc::new(inline_flex_style),
+      FormattingContextType::Flex,
+      vec![flex_item],
+    );
+
+    let mut root_style = ComputedStyle::default();
+    root_style.display = Display::Block;
+    root_style.font_size = 16.0;
+    let mut root = BoxNode::new_block(
+      Arc::new(root_style),
+      FormattingContextType::Inline,
+      vec![inline_flex],
+    );
+    root.id = 1;
+
+    let constraints = LayoutConstraints::definite_width(500.0);
+    let fragment = ifc.layout(&root, &constraints).expect("layout");
+
+    fn find_line<'a>(node: &'a FragmentNode) -> Option<&'a FragmentNode> {
+      if matches!(node.content, FragmentContent::Line { .. }) {
+        return Some(node);
+      }
+      for child in node.children.iter() {
+        if let Some(found) = find_line(child) {
+          return Some(found);
+        }
+      }
+      None
+    }
+
+    fn find_inline_flex<'a>(node: &'a FragmentNode) -> Option<&'a FragmentNode> {
+      if node
+        .style
+        .as_deref()
+        .map(|s| s.display)
+        .is_some_and(|d| d == Display::InlineFlex)
+      {
+        return Some(node);
+      }
+      for child in node.children.iter() {
+        if let Some(found) = find_inline_flex(child) {
+          return Some(found);
+        }
+      }
+      None
+    }
+
+    let line = find_line(&fragment).expect("line fragment");
+    let inline_flex_fragment = find_inline_flex(&fragment).expect("inline-flex fragment");
+
+    assert!(
+      (line.bounds.height() - inline_flex_fragment.bounds.height()).abs() < 0.5,
+      "expected inline-flex baseline alignment to avoid extra descender gap (line_h={:.2}, inline_flex_h={:.2})",
+      line.bounds.height(),
+      inline_flex_fragment.bounds.height()
+    );
   }
 
   #[test]
