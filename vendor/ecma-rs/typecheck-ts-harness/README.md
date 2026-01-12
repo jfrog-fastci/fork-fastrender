@@ -8,6 +8,10 @@ against `tsc`.
 > - From `vendor/ecma-rs/`: `bash scripts/cargo_agent.sh <subcommand> …`
 > - From this directory (`typecheck-ts-harness/`): `bash ../scripts/cargo_agent.sh <subcommand> …`
 
+## Docs
+
+- [Bumping the pinned TypeScript version](docs/bumping_typescript.md)
+
 ## Quick start
 
 ```
