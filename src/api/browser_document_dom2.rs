@@ -20,9 +20,6 @@ use webidl_vm_js::WebIdlBindingsHost;
 use super::browser_document::prepare_dom_inner;
 use super::{PreparedDocument, PreparedPaintOptions, RenderOptions};
 
-use vm_js::{Scope, Value, Vm, VmError};
-use webidl_vm_js::WebIdlBindingsHost;
-
 /// Counters describing how `BrowserDocumentDom2` satisfied invalidations over time.
 ///
 /// These are intended for tests and performance diagnostics; they are conservative and prioritize
