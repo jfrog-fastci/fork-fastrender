@@ -161,6 +161,139 @@ impl Program {
     })
   }
 
+  /// Evaluate an interned type by expanding `TypeKind::Ref` nodes and reducing
+  /// type operators (conditional/mapped/template/indexed/keyof).
+  ///
+  /// This is primarily intended for ahead-of-time backends (e.g. native codegen)
+  /// that need to compute deterministic layouts for concrete types.
+  ///
+  /// If `ty` is not a valid [`TypeId`] for this program's interned
+  /// [`types_ts_interned::TypeStore`], `unknown` is returned.
+  pub fn evaluate_type_interned(&self, ty: TypeId) -> TypeId {
+    match self.evaluate_type_interned_fallible(ty) {
+      Ok(ty) => ty,
+      Err(fatal) => {
+        self.record_fatal(fatal);
+        let state = self.lock_state();
+        state.store.primitive_ids().unknown
+      }
+    }
+  }
+
+  pub fn evaluate_type_interned_fallible(&self, ty: TypeId) -> Result<TypeId, FatalError> {
+    self.with_interned_state(|state| {
+      let store = Arc::clone(&state.store);
+      let ty = if store.contains_type_id(ty) {
+        store.canon(ty)
+      } else {
+        store.primitive_ids().unknown
+      };
+      let expander = ProgramTypeExpander {
+        def_types: &state.interned_def_types,
+        type_params: &state.interned_type_params,
+        intrinsics: &state.interned_intrinsics,
+      };
+      let caches = state.checker_caches.for_body();
+      let queries = TypeQueries::with_caches(Arc::clone(&store), &expander, caches.eval.clone());
+      let evaluated = store.canon(queries.evaluate(ty));
+      if matches!(state.compiler_options.cache.mode, CacheMode::PerBody) {
+        state.cache_stats.merge(&caches.stats());
+      }
+      Ok(evaluated)
+    })
+  }
+
+  /// Deterministic list of union member types for `ty` after evaluation.
+  ///
+  /// The input is first evaluated via [`Program::evaluate_type_interned`]. If
+  /// the evaluated type is a union, the canonicalized member `TypeId`s are
+  /// returned in stable order. Otherwise this returns an empty list.
+  ///
+  /// If `ty` is not a valid [`TypeId`] for this program's interned
+  /// [`types_ts_interned::TypeStore`], an empty list is returned.
+  pub fn union_members_interned(&self, ty: TypeId) -> Vec<TypeId> {
+    match self.union_members_interned_fallible(ty) {
+      Ok(members) => members,
+      Err(fatal) => {
+        self.record_fatal(fatal);
+        Vec::new()
+      }
+    }
+  }
+
+  pub fn union_members_interned_fallible(&self, ty: TypeId) -> Result<Vec<TypeId>, FatalError> {
+    self.with_interned_state(|state| {
+      let store = Arc::clone(&state.store);
+      let ty = if store.contains_type_id(ty) {
+        store.canon(ty)
+      } else {
+        store.primitive_ids().unknown
+      };
+      let expander = ProgramTypeExpander {
+        def_types: &state.interned_def_types,
+        type_params: &state.interned_type_params,
+        intrinsics: &state.interned_intrinsics,
+      };
+      let caches = state.checker_caches.for_body();
+      let queries = TypeQueries::with_caches(Arc::clone(&store), &expander, caches.eval.clone());
+      let evaluated = store.canon(queries.evaluate(ty));
+      let members = match store.type_kind(evaluated) {
+        tti::TypeKind::Union(members) => members.into_iter().map(|ty| store.canon(ty)).collect(),
+        _ => Vec::new(),
+      };
+      if matches!(state.compiler_options.cache.mode, CacheMode::PerBody) {
+        state.cache_stats.merge(&caches.stats());
+      }
+      Ok(members)
+    })
+  }
+
+  /// Compute the deterministic native runtime [`types_ts_interned::LayoutId`] for
+  /// an interned type.
+  ///
+  /// Unlike [`types_ts_interned::TypeStore::layout_of`], this method first
+  /// evaluates `ty` (expanding `TypeKind::Ref` and reducing type operators) so
+  /// callers do not need to remember to expand references before asking for
+  /// layouts.
+  ///
+  /// If `ty` is not a valid [`TypeId`] for this program's interned
+  /// [`types_ts_interned::TypeStore`], the layout for `unknown` is returned.
+  pub fn layout_of_interned(&self, ty: TypeId) -> tti::LayoutId {
+    match self.layout_of_interned_fallible(ty) {
+      Ok(layout) => layout,
+      Err(fatal) => {
+        self.record_fatal(fatal);
+        let state = self.lock_state();
+        let unknown = state.store.primitive_ids().unknown;
+        state.store.layout_of(unknown)
+      }
+    }
+  }
+
+  pub fn layout_of_interned_fallible(&self, ty: TypeId) -> Result<tti::LayoutId, FatalError> {
+    self.with_interned_state(|state| {
+      let store = Arc::clone(&state.store);
+      let ty = if store.contains_type_id(ty) {
+        store.canon(ty)
+      } else {
+        store.primitive_ids().unknown
+      };
+      let expander = ProgramTypeExpander {
+        def_types: &state.interned_def_types,
+        type_params: &state.interned_type_params,
+        intrinsics: &state.interned_intrinsics,
+      };
+      let caches = state.checker_caches.for_body();
+      let queries = TypeQueries::with_caches(Arc::clone(&store), &expander, caches.eval.clone());
+      let evaluated = store.canon(queries.evaluate(ty));
+      let layout = store.layout_of(evaluated);
+      if matches!(state.compiler_options.cache.mode, CacheMode::PerBody) {
+        state.cache_stats.merge(&caches.stats());
+      }
+      Ok(layout)
+    })
+  }
+
   /// Explain why `src` is not assignable to `dst`.
   ///
   /// Returns `None` if `src` is assignable to `dst`.
