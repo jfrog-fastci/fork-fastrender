@@ -1186,6 +1186,95 @@ mod tests {
       "label chains should include the associated control (descendant)"
     );
   }
+
+  #[test]
+  fn disabled_fieldset_allows_controls_in_first_legend() {
+    let mut dom = crate::dom::parse_html(
+      "<html><body><fieldset disabled><legend><input></legend><input></fieldset></body></html>",
+    )
+    .expect("parse");
+    let index = DomIndexMut::new(&mut dom);
+
+    let mut inputs = Vec::new();
+    for node_id in 1..index.id_to_node.len() {
+      if index
+        .node(node_id)
+        .and_then(|node| node.tag_name())
+        .is_some_and(|tag| tag.eq_ignore_ascii_case("input"))
+      {
+        inputs.push(node_id);
+      }
+    }
+    assert_eq!(inputs.len(), 2);
+    let in_legend = inputs[0];
+    let outside_legend = inputs[1];
+
+    assert!(
+      is_focusable_interactive_element(&index, in_legend),
+      "input inside the first <legend> of a disabled <fieldset> should remain focusable"
+    );
+    assert!(
+      !is_focusable_interactive_element(&index, outside_legend),
+      "input outside the first <legend> should be disabled by the <fieldset>"
+    );
+
+    let focusables = collect_tab_stops(&index);
+    assert!(
+      focusables.contains(&in_legend),
+      "Tab focusables should include the input inside the first <legend>"
+    );
+    assert!(
+      !focusables.contains(&outside_legend),
+      "Tab focusables should not include disabled controls"
+    );
+  }
+
+  #[test]
+  fn disabled_fieldset_does_not_disable_non_controls() {
+    let mut dom = crate::dom::parse_html(
+      "<html><body><fieldset disabled><div tabindex=\"0\"></div></fieldset></body></html>",
+    )
+    .expect("parse");
+    let div_id = find_element_node_id(&mut dom, "div");
+    let index = DomIndexMut::new(&mut dom);
+
+    assert!(
+      is_focusable_interactive_element(&index, div_id),
+      "tabindex elements should remain focusable inside a disabled <fieldset>"
+    );
+    let focusables = collect_tab_stops(&index);
+    assert!(
+      focusables.contains(&div_id),
+      "tabindex elements should remain reachable via Tab inside a disabled <fieldset>"
+    );
+  }
+
+  #[test]
+  fn form_submission_includes_first_legend_controls_in_disabled_fieldset() {
+    let mut dom = crate::dom::parse_html(
+      "<html><body><form action=\"https://example.com/submit\">\
+       <fieldset disabled>\
+         <legend><input name=\"a\" value=\"1\"></legend>\
+         <input name=\"b\" value=\"2\">\
+       </fieldset>\
+     </form></body></html>",
+    )
+    .expect("parse");
+    let form_id = find_element_node_id(&mut dom, "form");
+
+    let submission = form_submission_without_submitter(
+      &dom,
+      form_id,
+      "https://example.com/page",
+      "https://example.com/page",
+    )
+    .expect("submission");
+    assert_eq!(
+      submission.url,
+      "https://example.com/submit?a=1",
+      "controls in the first <legend> should not be considered disabled when collecting form data"
+    );
+  }
 }
 
 fn nearest_element_ancestor(index: &DomIndexMut, mut node_id: usize) -> Option<usize> {
@@ -1430,23 +1519,8 @@ fn is_text_input(node: &DomNode) -> bool {
     && !t.eq_ignore_ascii_case("image")
 }
 
-fn is_disabled_or_inert(index: &DomIndexMut, mut node_id: usize) -> bool {
-  while node_id != 0 {
-    let Some(node) = index.node(node_id) else {
-      return false;
-    };
-
-    if node.get_attribute_ref("disabled").is_some() {
-      return true;
-    }
-    if node_is_inert_like(node) {
-      return true;
-    }
-
-    node_id = *index.parent.get(node_id).unwrap_or(&0);
-  }
-
-  false
+fn is_disabled_or_inert(index: &DomIndexMut, node_id: usize) -> bool {
+  node_or_ancestor_is_inert(index, node_id) || node_is_disabled(index, node_id)
 }
 
 /// MVP focusable predicate for pointer focus / blur decisions.
@@ -1523,13 +1597,7 @@ fn node_or_ancestor_is_inert(index: &DomIndexMut, mut node_id: usize) -> bool {
 
 fn node_self_is_tab_inert(node: &DomNode) -> bool {
   // `<template>` contents are inert and should not be reachable via Tab.
-  node_is_inert_like(node)
-    // MVP: treat `disabled` as making the subtree unreachable via Tab, matching our other
-    // interaction pruning which skips disabled ancestors.
-    || node.get_attribute_ref("disabled").is_some()
-    // `hidden` is render- and interaction-suppressing; hidden subtrees should not participate in
-    // sequential focus navigation.
-    || node.get_attribute_ref("hidden").is_some()
+  node_is_inert_like(node) || node.get_attribute_ref("hidden").is_some()
 }
 
 fn parse_tabindex(node: &DomNode) -> Option<i32> {
@@ -1542,8 +1610,9 @@ fn parse_tabindex(node: &DomNode) -> Option<i32> {
 }
 
 fn collect_inert_subtree_flags(index: &DomIndexMut) -> Vec<bool> {
-  // Stack-safe derived state: `inert[id]` is true if this node is in an inert subtree, driven by
-  // `inert`/`data-fastr-inert=true` or a `<template>` ancestor.
+  // Stack-safe derived state: `inert[id]` is true if this node is in a subtree excluded from
+  // sequential focus navigation (Tab order), driven by `inert`/`hidden`/`data-fastr-inert=true` or a
+  // `<template>` ancestor.
   let mut inert = vec![false; index.id_to_node.len()];
   for node_id in 1..index.id_to_node.len() {
     let parent_id = index.parent.get(node_id).copied().unwrap_or(0);
@@ -1569,9 +1638,6 @@ fn tab_stop_tabindex(index: &DomIndexMut, inert: &[bool], node_id: usize) -> Opt
   if !node.is_element() {
     return None;
   }
-  if node.get_attribute_ref("disabled").is_some() {
-    return None;
-  }
   if node.get_attribute_ref("hidden").is_some() {
     return None;
   }
@@ -1595,10 +1661,16 @@ fn tab_stop_tabindex(index: &DomIndexMut, inert: &[bool], node_id: usize) -> Opt
     return None;
   }
 
-  match tabindex.unwrap_or(0) {
-    t if t < 0 => None,
-    t => Some(t),
+  let tabindex = tabindex.unwrap_or(0);
+  if tabindex < 0 {
+    return None;
   }
+
+  if node_is_disabled(index, node_id) {
+    return None;
+  }
+
+  Some(tabindex)
 }
 
 fn collect_tab_stops(index: &DomIndexMut) -> Vec<usize> {
@@ -1655,10 +1727,42 @@ fn prev_tab_focus(current: Option<usize>, focusables: &[usize]) -> Option<usize>
 }
 
 fn node_is_disabled(index: &DomIndexMut, node_id: usize) -> bool {
-  index
-    .node(node_id)
-    .and_then(|node| node.get_attribute_ref("disabled"))
-    .is_some()
+  let Some(node) = index.node(node_id) else {
+    return false;
+  };
+
+  if !matches!(
+    node.namespace(),
+    Some(ns) if ns.is_empty() || ns == crate::dom::HTML_NAMESPACE
+  ) {
+    return false;
+  }
+  let Some(tag) = node.tag_name() else {
+    return false;
+  };
+  if !(tag.eq_ignore_ascii_case("button")
+    || tag.eq_ignore_ascii_case("input")
+    || tag.eq_ignore_ascii_case("select")
+    || tag.eq_ignore_ascii_case("textarea")
+    || tag.eq_ignore_ascii_case("option")
+    || tag.eq_ignore_ascii_case("optgroup")
+    || tag.eq_ignore_ascii_case("fieldset"))
+  {
+    return false;
+  }
+
+  let mut ancestors_rev: Vec<&DomNode> = Vec::new();
+  let mut current = *index.parent.get(node_id).unwrap_or(&0);
+  while current != 0 {
+    let Some(ancestor) = index.node(current) else {
+      break;
+    };
+    ancestors_rev.push(ancestor);
+    current = *index.parent.get(current).unwrap_or(&0);
+  }
+  ancestors_rev.reverse();
+
+  crate::dom::ElementRef::with_ancestors(node, &ancestors_rev).accessibility_disabled()
 }
 
 fn node_is_readonly(index: &DomIndexMut, node_id: usize) -> bool {
