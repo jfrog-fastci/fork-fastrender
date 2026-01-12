@@ -1851,11 +1851,15 @@ impl JsRuntime {
       vm_frame.tick()?;
 
       let strict = detect_use_strict_directive(&top.stx.body, || vm_frame.tick())?;
+      let has_await = top.stx.body.iter().any(stmt_contains_await);
       {
         let mut tick = || vm_frame.tick();
         crate::early_errors::validate_top_level(
           &top.stx.body,
-          crate::early_errors::EarlyErrorOptions::script(strict),
+          crate::early_errors::EarlyErrorOptions {
+            strict,
+            allow_top_level_await: has_await,
+          },
           &mut tick,
         )?;
       }
@@ -1863,34 +1867,357 @@ impl JsRuntime {
       let mut scope = self.heap.scope();
       // In classic scripts, top-level `this` is the global object (even in strict mode).
       let global_this = Value::Object(global_object);
-      let mut evaluator = Evaluator {
-        vm: &mut *vm_frame,
+
+      if !has_await {
+        let mut evaluator = Evaluator {
+          vm: &mut *vm_frame,
+          host,
+          hooks: &mut hooks,
+          env: &mut self.env,
+          strict,
+          this: global_this,
+          new_target: Value::Undefined,
+        };
+
+        evaluator.instantiate_script(&mut scope, &top.stx.body)?;
+
+        let completion = evaluator.eval_stmt_list(&mut scope, &top.stx.body)?;
+        return match completion {
+          Completion::Normal(v) => Ok(v.unwrap_or(Value::Undefined)),
+          Completion::Throw(thrown) => Err(VmError::ThrowWithStack {
+            value: thrown.value,
+            stack: thrown.stack,
+          }),
+          Completion::Return(_) => Err(VmError::InvariantViolation(
+            "script evaluation produced Return completion (early errors should prevent this)",
+          )),
+          Completion::Break(..) => Err(VmError::InvariantViolation(
+            "script evaluation produced Break completion (early errors should prevent this)",
+          )),
+          Completion::Continue(..) => Err(VmError::InvariantViolation(
+            "script evaluation produced Continue completion (early errors should prevent this)",
+          )),
+        };
+      }
+
+      // Async classic script execution: evaluate the statement list using the async evaluator and
+      // return a Promise representing completion.
+      let cap = crate::promise_ops::new_promise_capability_with_host_and_hooks(
+        &mut *vm_frame,
+        &mut scope,
         host,
-        hooks: &mut hooks,
-        env: &mut self.env,
-        strict,
-        this: global_this,
-        new_target: Value::Undefined,
+        &mut hooks,
+      )?;
+      let promise = cap.promise;
+
+      // Use a distinct `RuntimeEnv` for async script evaluation. Async continuations tear down their
+      // env roots on completion; classic scripts must not tear down the runtime's global env.
+      let mut env = RuntimeEnv::new_with_lexical_env(scope.heap_mut(), global_object, self.env.lexical_env())?;
+      env.set_source_info(source.clone(), 0, 0);
+
+      let body_eval = {
+        let mut evaluator = Evaluator {
+          vm: &mut *vm_frame,
+          host,
+          hooks: &mut hooks,
+          env: &mut env,
+          strict,
+          this: global_this,
+          new_target: Value::Undefined,
+        };
+
+        evaluator.instantiate_script(&mut scope, &top.stx.body)?;
+        async_eval_stmt_list(&mut evaluator, &mut scope, &top.stx.body)
       };
 
-      evaluator.instantiate_script(&mut scope, &top.stx.body)?;
+      match body_eval {
+        Ok(AsyncEval::Complete(completion)) => {
+          let promise_result = match completion {
+            Completion::Normal(v) => {
+              let v = v.unwrap_or(Value::Undefined);
+              let mut call_scope = scope.reborrow();
+              if let Err(err) = call_scope.push_roots(&[cap.resolve, v]) {
+                env.teardown(call_scope.heap_mut());
+                return Err(err);
+              }
+              let res = vm_frame.call_with_host_and_hooks(
+                host,
+                &mut call_scope,
+                &mut hooks,
+                cap.resolve,
+                Value::Undefined,
+                &[v],
+              );
+              env.teardown(call_scope.heap_mut());
+              res.map(|_| promise)
+            }
+            Completion::Throw(thrown) => {
+              let reason = thrown.value;
+              let mut call_scope = scope.reborrow();
+              if let Err(err) = call_scope.push_roots(&[cap.reject, reason]) {
+                env.teardown(call_scope.heap_mut());
+                return Err(err);
+              }
+              let res = vm_frame.call_with_host_and_hooks(
+                host,
+                &mut call_scope,
+                &mut hooks,
+                cap.reject,
+                Value::Undefined,
+                &[reason],
+              );
+              env.teardown(call_scope.heap_mut());
+              res.map(|_| promise)
+            }
+            Completion::Return(_) => Err(VmError::InvariantViolation(
+              "script evaluation produced Return completion (early errors should prevent this)",
+            )),
+            Completion::Break(..) => Err(VmError::InvariantViolation(
+              "script evaluation produced Break completion (early errors should prevent this)",
+            )),
+            Completion::Continue(..) => Err(VmError::InvariantViolation(
+              "script evaluation produced Continue completion (early errors should prevent this)",
+            )),
+          };
+          promise_result
+        }
+        Ok(AsyncEval::Suspend(mut suspend)) => {
+          if let Err(err) = async_frames_push(&mut suspend.frames, AsyncFrame::RootScriptBody) {
+            env.teardown(scope.heap_mut());
+            for mut frame in suspend.frames {
+              async_teardown_frame(scope.heap_mut(), &mut frame);
+            }
+            return Err(err);
+          }
 
-      let completion = evaluator.eval_stmt_list(&mut scope, &top.stx.body)?;
-      match completion {
-        Completion::Normal(v) => Ok(v.unwrap_or(Value::Undefined)),
-        Completion::Throw(thrown) => Err(VmError::ThrowWithStack {
-          value: thrown.value,
-          stack: thrown.stack,
-        }),
-        Completion::Return(_) => Err(VmError::InvariantViolation(
-          "script evaluation produced Return completion (early errors should prevent this)",
-        )),
-        Completion::Break(..) => Err(VmError::InvariantViolation(
-          "script evaluation produced Break completion (early errors should prevent this)",
-        )),
-        Completion::Continue(..) => Err(VmError::InvariantViolation(
-          "script evaluation produced Continue completion (early errors should prevent this)",
-        )),
+          let await_value = suspend.await_value;
+          let frames = suspend.frames;
+
+          // Root all GC-managed values while we create persistent roots and schedule the resumption.
+          let mut root_scope = scope.reborrow();
+          if let Err(err) = root_scope.push_roots(&[
+            promise,
+            cap.resolve,
+            cap.reject,
+            global_this,
+            Value::Undefined,
+            await_value,
+          ]) {
+            env.teardown(root_scope.heap_mut());
+            for mut frame in frames {
+              async_teardown_frame(root_scope.heap_mut(), &mut frame);
+            }
+            return Err(err);
+          }
+
+          let resolve_res = (|| -> Result<Value, VmError> {
+            if let Value::Object(obj) = await_value {
+              if root_scope.heap().is_promise_object(obj) {
+                let ctor_key_s = root_scope.alloc_string("constructor")?;
+                root_scope.push_root(Value::String(ctor_key_s))?;
+                let ctor_key = PropertyKey::from_string(ctor_key_s);
+                let _ = root_scope.ordinary_get_with_host_and_hooks(
+                  &mut *vm_frame,
+                  host,
+                  &mut hooks,
+                  obj,
+                  ctor_key,
+                  Value::Object(obj),
+                )?;
+                Ok(await_value)
+              } else {
+                crate::promise_ops::promise_resolve_with_host_and_hooks(
+                  &mut *vm_frame,
+                  &mut root_scope,
+                  host,
+                  &mut hooks,
+                  await_value,
+                )
+              }
+            } else {
+              crate::promise_ops::promise_resolve_with_host_and_hooks(
+                &mut *vm_frame,
+                &mut root_scope,
+                host,
+                &mut hooks,
+                await_value,
+              )
+            }
+          })();
+          let resolve_res =
+            resolve_res.map_err(|err| coerce_error_to_throw_for_async(&mut *vm_frame, &mut root_scope, err));
+
+          let awaited_promise = match resolve_res {
+            Ok(p) => p,
+            Err(VmError::Throw(reason) | VmError::ThrowWithStack { value: reason, .. }) => {
+              let reason = match root_scope.push_root(reason) {
+                Ok(v) => v,
+                Err(err) => {
+                  env.teardown(root_scope.heap_mut());
+                  for mut frame in frames {
+                    async_teardown_frame(root_scope.heap_mut(), &mut frame);
+                  }
+                  return Err(err);
+                }
+              };
+
+              let reject_result = vm_frame.call_with_host_and_hooks(
+                host,
+                &mut root_scope,
+                &mut hooks,
+                cap.reject,
+                Value::Undefined,
+                &[reason],
+              );
+
+              env.teardown(root_scope.heap_mut());
+              for mut frame in frames {
+                async_teardown_frame(root_scope.heap_mut(), &mut frame);
+              }
+              return reject_result.map(|_| promise);
+            }
+            Err(err) => {
+              env.teardown(root_scope.heap_mut());
+              for mut frame in frames {
+                async_teardown_frame(root_scope.heap_mut(), &mut frame);
+              }
+              return Err(err);
+            }
+          };
+
+          if let Err(err) = root_scope.push_root(awaited_promise) {
+            env.teardown(root_scope.heap_mut());
+            for mut frame in frames {
+              async_teardown_frame(root_scope.heap_mut(), &mut frame);
+            }
+            return Err(err);
+          }
+
+          // Create persistent roots for the async continuation.
+          let values = [
+            global_this,
+            Value::Undefined,
+            promise,
+            cap.resolve,
+            cap.reject,
+            awaited_promise,
+          ];
+          let mut roots: Vec<RootId> = Vec::new();
+          if let Err(_) = roots.try_reserve_exact(values.len()) {
+            env.teardown(root_scope.heap_mut());
+            for mut frame in frames {
+              async_teardown_frame(root_scope.heap_mut(), &mut frame);
+            }
+            return Err(VmError::OutOfMemory);
+          }
+          for &value in &values {
+            match root_scope.heap_mut().add_root(value) {
+              Ok(id) => roots.push(id),
+              Err(e) => {
+                for id in roots.drain(..) {
+                  root_scope.heap_mut().remove_root(id);
+                }
+                env.teardown(root_scope.heap_mut());
+                for mut frame in frames {
+                  async_teardown_frame(root_scope.heap_mut(), &mut frame);
+                }
+                return Err(e);
+              }
+            }
+          }
+
+          let this_root = roots[0];
+          let new_target_root = roots[1];
+          let promise_root = roots[2];
+          let resolve_root = roots[3];
+          let reject_root = roots[4];
+          let awaited_root = roots[5];
+
+          // Reserve continuation capacity before moving `frames` into `cont` so insertion cannot fail
+          // and leak any rooted async frames.
+          if let Err(err) = vm_frame.reserve_async_continuations(1) {
+            for id in roots.drain(..) {
+              root_scope.heap_mut().remove_root(id);
+            }
+            env.teardown(root_scope.heap_mut());
+            for mut frame in frames {
+              async_teardown_frame(root_scope.heap_mut(), &mut frame);
+            }
+            return Err(err);
+          }
+
+          let cont = AsyncContinuation {
+            env: env.clone(),
+            strict,
+            exec_ctx: None,
+            this_root,
+            new_target_root,
+            promise_root,
+            resolve_root,
+            reject_root,
+            awaited_promise_root: Some(awaited_root),
+            frames,
+          };
+          let id = vm_frame.insert_async_continuation_reserved(cont);
+
+          let schedule_res = (|| -> Result<(), VmError> {
+            let call_id = vm_frame.async_resume_call_id()?;
+            let intr = vm_frame
+              .intrinsics()
+              .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+            let job_realm = vm_frame.current_realm();
+
+            let name = root_scope.alloc_string("")?;
+            let slots_fulfill = [Value::Number(id as f64), Value::Bool(false)];
+            let on_fulfilled =
+              root_scope.alloc_native_function_with_slots(call_id, None, name, 1, &slots_fulfill)?;
+            root_scope.push_root(Value::Object(on_fulfilled))?;
+
+            let name = root_scope.alloc_string("")?;
+            let slots_reject = [Value::Number(id as f64), Value::Bool(true)];
+            let on_rejected =
+              root_scope.alloc_native_function_with_slots(call_id, None, name, 1, &slots_reject)?;
+            root_scope.push_root(Value::Object(on_rejected))?;
+
+            for cb in [on_fulfilled, on_rejected] {
+              root_scope
+                .heap_mut()
+                .object_set_prototype(cb, Some(intr.function_prototype()))?;
+              root_scope
+                .heap_mut()
+                .set_function_realm(cb, global_object)?;
+              if let Some(realm) = job_realm {
+                root_scope.heap_mut().set_function_job_realm(cb, realm)?;
+              }
+            }
+
+            crate::promise_ops::perform_promise_then_no_capability_with_host_and_hooks(
+              &mut *vm_frame,
+              &mut root_scope,
+              host,
+              &mut hooks,
+              awaited_promise,
+              Value::Object(on_fulfilled),
+              Value::Object(on_rejected),
+            )?;
+            Ok(())
+          })();
+
+          if let Err(err) = schedule_res {
+            // Best-effort cleanup: take the continuation back out and tear down its persistent roots
+            // (including any roots held by async frames).
+            if let Some(cont) = vm_frame.take_async_continuation(id) {
+              async_teardown_continuation(&mut root_scope, cont);
+            }
+            return Err(err);
+          }
+
+          Ok(promise)
+        }
+        Err(err) => {
+          env.teardown(scope.heap_mut());
+          Err(err)
+        }
       }
     })();
 
@@ -1950,11 +2277,15 @@ impl JsRuntime {
       vm_frame.tick()?;
 
       let strict = detect_use_strict_directive(&top.stx.body, || vm_frame.tick())?;
+      let has_await = top.stx.body.iter().any(stmt_contains_await);
       {
         let mut tick = || vm_frame.tick();
         crate::early_errors::validate_top_level(
           &top.stx.body,
-          crate::early_errors::EarlyErrorOptions::script(strict),
+          crate::early_errors::EarlyErrorOptions {
+            strict,
+            allow_top_level_await: has_await,
+          },
           &mut tick,
         )?;
       }
@@ -1962,34 +2293,357 @@ impl JsRuntime {
       let mut scope = self.heap.scope();
       // In classic scripts, top-level `this` is the global object (even in strict mode).
       let global_this = Value::Object(global_object);
-      let mut evaluator = Evaluator {
-        vm: &mut *vm_frame,
+
+      if !has_await {
+        let mut evaluator = Evaluator {
+          vm: &mut *vm_frame,
+          host,
+          hooks,
+          env: &mut self.env,
+          strict,
+          this: global_this,
+          new_target: Value::Undefined,
+        };
+
+        evaluator.instantiate_script(&mut scope, &top.stx.body)?;
+
+        let completion = evaluator.eval_stmt_list(&mut scope, &top.stx.body)?;
+        return match completion {
+          Completion::Normal(v) => Ok(v.unwrap_or(Value::Undefined)),
+          Completion::Throw(thrown) => Err(VmError::ThrowWithStack {
+            value: thrown.value,
+            stack: thrown.stack,
+          }),
+          Completion::Return(_) => Err(VmError::InvariantViolation(
+            "script evaluation produced Return completion (early errors should prevent this)",
+          )),
+          Completion::Break(..) => Err(VmError::InvariantViolation(
+            "script evaluation produced Break completion (early errors should prevent this)",
+          )),
+          Completion::Continue(..) => Err(VmError::InvariantViolation(
+            "script evaluation produced Continue completion (early errors should prevent this)",
+          )),
+        };
+      }
+
+      // Async classic script execution: evaluate the statement list using the async evaluator and
+      // return a Promise representing completion.
+      let cap = crate::promise_ops::new_promise_capability_with_host_and_hooks(
+        &mut *vm_frame,
+        &mut scope,
         host,
         hooks,
-        env: &mut self.env,
-        strict,
-        this: global_this,
-        new_target: Value::Undefined,
+      )?;
+      let promise = cap.promise;
+
+      // Use a distinct `RuntimeEnv` for async script evaluation. Async continuations tear down their
+      // env roots on completion; classic scripts must not tear down the runtime's global env.
+      let mut env = RuntimeEnv::new_with_lexical_env(scope.heap_mut(), global_object, self.env.lexical_env())?;
+      env.set_source_info(source.clone(), 0, 0);
+
+      let body_eval = {
+        let mut evaluator = Evaluator {
+          vm: &mut *vm_frame,
+          host,
+          hooks,
+          env: &mut env,
+          strict,
+          this: global_this,
+          new_target: Value::Undefined,
+        };
+
+        evaluator.instantiate_script(&mut scope, &top.stx.body)?;
+        async_eval_stmt_list(&mut evaluator, &mut scope, &top.stx.body)
       };
 
-      evaluator.instantiate_script(&mut scope, &top.stx.body)?;
+      match body_eval {
+        Ok(AsyncEval::Complete(completion)) => {
+          let promise_result = match completion {
+            Completion::Normal(v) => {
+              let v = v.unwrap_or(Value::Undefined);
+              let mut call_scope = scope.reborrow();
+              if let Err(err) = call_scope.push_roots(&[cap.resolve, v]) {
+                env.teardown(call_scope.heap_mut());
+                return Err(err);
+              }
+              let res = vm_frame.call_with_host_and_hooks(
+                host,
+                &mut call_scope,
+                hooks,
+                cap.resolve,
+                Value::Undefined,
+                &[v],
+              );
+              env.teardown(call_scope.heap_mut());
+              res.map(|_| promise)
+            }
+            Completion::Throw(thrown) => {
+              let reason = thrown.value;
+              let mut call_scope = scope.reborrow();
+              if let Err(err) = call_scope.push_roots(&[cap.reject, reason]) {
+                env.teardown(call_scope.heap_mut());
+                return Err(err);
+              }
+              let res = vm_frame.call_with_host_and_hooks(
+                host,
+                &mut call_scope,
+                hooks,
+                cap.reject,
+                Value::Undefined,
+                &[reason],
+              );
+              env.teardown(call_scope.heap_mut());
+              res.map(|_| promise)
+            }
+            Completion::Return(_) => Err(VmError::InvariantViolation(
+              "script evaluation produced Return completion (early errors should prevent this)",
+            )),
+            Completion::Break(..) => Err(VmError::InvariantViolation(
+              "script evaluation produced Break completion (early errors should prevent this)",
+            )),
+            Completion::Continue(..) => Err(VmError::InvariantViolation(
+              "script evaluation produced Continue completion (early errors should prevent this)",
+            )),
+          };
+          promise_result
+        }
+        Ok(AsyncEval::Suspend(mut suspend)) => {
+          if let Err(err) = async_frames_push(&mut suspend.frames, AsyncFrame::RootScriptBody) {
+            env.teardown(scope.heap_mut());
+            for mut frame in suspend.frames {
+              async_teardown_frame(scope.heap_mut(), &mut frame);
+            }
+            return Err(err);
+          }
 
-      let completion = evaluator.eval_stmt_list(&mut scope, &top.stx.body)?;
-      match completion {
-        Completion::Normal(v) => Ok(v.unwrap_or(Value::Undefined)),
-        Completion::Throw(thrown) => Err(VmError::ThrowWithStack {
-          value: thrown.value,
-          stack: thrown.stack,
-        }),
-        Completion::Return(_) => Err(VmError::InvariantViolation(
-          "script evaluation produced Return completion (early errors should prevent this)",
-        )),
-        Completion::Break(..) => Err(VmError::InvariantViolation(
-          "script evaluation produced Break completion (early errors should prevent this)",
-        )),
-        Completion::Continue(..) => Err(VmError::InvariantViolation(
-          "script evaluation produced Continue completion (early errors should prevent this)",
-        )),
+          let await_value = suspend.await_value;
+          let frames = suspend.frames;
+
+          // Root all GC-managed values while we create persistent roots and schedule the resumption.
+          let mut root_scope = scope.reborrow();
+          if let Err(err) = root_scope.push_roots(&[
+            promise,
+            cap.resolve,
+            cap.reject,
+            global_this,
+            Value::Undefined,
+            await_value,
+          ]) {
+            env.teardown(root_scope.heap_mut());
+            for mut frame in frames {
+              async_teardown_frame(root_scope.heap_mut(), &mut frame);
+            }
+            return Err(err);
+          }
+
+          let resolve_res = (|| -> Result<Value, VmError> {
+            if let Value::Object(obj) = await_value {
+              if root_scope.heap().is_promise_object(obj) {
+                let ctor_key_s = root_scope.alloc_string("constructor")?;
+                root_scope.push_root(Value::String(ctor_key_s))?;
+                let ctor_key = PropertyKey::from_string(ctor_key_s);
+                let _ = root_scope.ordinary_get_with_host_and_hooks(
+                  &mut *vm_frame,
+                  host,
+                  hooks,
+                  obj,
+                  ctor_key,
+                  Value::Object(obj),
+                )?;
+                Ok(await_value)
+              } else {
+                crate::promise_ops::promise_resolve_with_host_and_hooks(
+                  &mut *vm_frame,
+                  &mut root_scope,
+                  host,
+                  hooks,
+                  await_value,
+                )
+              }
+            } else {
+              crate::promise_ops::promise_resolve_with_host_and_hooks(
+                &mut *vm_frame,
+                &mut root_scope,
+                host,
+                hooks,
+                await_value,
+              )
+            }
+          })();
+          let resolve_res =
+            resolve_res.map_err(|err| coerce_error_to_throw_for_async(&mut *vm_frame, &mut root_scope, err));
+
+          let awaited_promise = match resolve_res {
+            Ok(p) => p,
+            Err(VmError::Throw(reason) | VmError::ThrowWithStack { value: reason, .. }) => {
+              let reason = match root_scope.push_root(reason) {
+                Ok(v) => v,
+                Err(err) => {
+                  env.teardown(root_scope.heap_mut());
+                  for mut frame in frames {
+                    async_teardown_frame(root_scope.heap_mut(), &mut frame);
+                  }
+                  return Err(err);
+                }
+              };
+
+              let reject_result = vm_frame.call_with_host_and_hooks(
+                host,
+                &mut root_scope,
+                hooks,
+                cap.reject,
+                Value::Undefined,
+                &[reason],
+              );
+
+              env.teardown(root_scope.heap_mut());
+              for mut frame in frames {
+                async_teardown_frame(root_scope.heap_mut(), &mut frame);
+              }
+              return reject_result.map(|_| promise);
+            }
+            Err(err) => {
+              env.teardown(root_scope.heap_mut());
+              for mut frame in frames {
+                async_teardown_frame(root_scope.heap_mut(), &mut frame);
+              }
+              return Err(err);
+            }
+          };
+
+          if let Err(err) = root_scope.push_root(awaited_promise) {
+            env.teardown(root_scope.heap_mut());
+            for mut frame in frames {
+              async_teardown_frame(root_scope.heap_mut(), &mut frame);
+            }
+            return Err(err);
+          }
+
+          // Create persistent roots for the async continuation.
+          let values = [
+            global_this,
+            Value::Undefined,
+            promise,
+            cap.resolve,
+            cap.reject,
+            awaited_promise,
+          ];
+          let mut roots: Vec<RootId> = Vec::new();
+          if let Err(_) = roots.try_reserve_exact(values.len()) {
+            env.teardown(root_scope.heap_mut());
+            for mut frame in frames {
+              async_teardown_frame(root_scope.heap_mut(), &mut frame);
+            }
+            return Err(VmError::OutOfMemory);
+          }
+          for &value in &values {
+            match root_scope.heap_mut().add_root(value) {
+              Ok(id) => roots.push(id),
+              Err(e) => {
+                for id in roots.drain(..) {
+                  root_scope.heap_mut().remove_root(id);
+                }
+                env.teardown(root_scope.heap_mut());
+                for mut frame in frames {
+                  async_teardown_frame(root_scope.heap_mut(), &mut frame);
+                }
+                return Err(e);
+              }
+            }
+          }
+
+          let this_root = roots[0];
+          let new_target_root = roots[1];
+          let promise_root = roots[2];
+          let resolve_root = roots[3];
+          let reject_root = roots[4];
+          let awaited_root = roots[5];
+
+          // Reserve continuation capacity before moving `frames` into `cont` so insertion cannot fail
+          // and leak any rooted async frames.
+          if let Err(err) = vm_frame.reserve_async_continuations(1) {
+            for id in roots.drain(..) {
+              root_scope.heap_mut().remove_root(id);
+            }
+            env.teardown(root_scope.heap_mut());
+            for mut frame in frames {
+              async_teardown_frame(root_scope.heap_mut(), &mut frame);
+            }
+            return Err(err);
+          }
+
+          let cont = AsyncContinuation {
+            env: env.clone(),
+            strict,
+            exec_ctx: None,
+            this_root,
+            new_target_root,
+            promise_root,
+            resolve_root,
+            reject_root,
+            awaited_promise_root: Some(awaited_root),
+            frames,
+          };
+          let id = vm_frame.insert_async_continuation_reserved(cont);
+
+          let schedule_res = (|| -> Result<(), VmError> {
+            let call_id = vm_frame.async_resume_call_id()?;
+            let intr = vm_frame
+              .intrinsics()
+              .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+            let job_realm = vm_frame.current_realm();
+
+            let name = root_scope.alloc_string("")?;
+            let slots_fulfill = [Value::Number(id as f64), Value::Bool(false)];
+            let on_fulfilled =
+              root_scope.alloc_native_function_with_slots(call_id, None, name, 1, &slots_fulfill)?;
+            root_scope.push_root(Value::Object(on_fulfilled))?;
+
+            let name = root_scope.alloc_string("")?;
+            let slots_reject = [Value::Number(id as f64), Value::Bool(true)];
+            let on_rejected =
+              root_scope.alloc_native_function_with_slots(call_id, None, name, 1, &slots_reject)?;
+            root_scope.push_root(Value::Object(on_rejected))?;
+
+            for cb in [on_fulfilled, on_rejected] {
+              root_scope
+                .heap_mut()
+                .object_set_prototype(cb, Some(intr.function_prototype()))?;
+              root_scope
+                .heap_mut()
+                .set_function_realm(cb, global_object)?;
+              if let Some(realm) = job_realm {
+                root_scope.heap_mut().set_function_job_realm(cb, realm)?;
+              }
+            }
+
+            crate::promise_ops::perform_promise_then_no_capability_with_host_and_hooks(
+              &mut *vm_frame,
+              &mut root_scope,
+              host,
+              hooks,
+              awaited_promise,
+              Value::Object(on_fulfilled),
+              Value::Object(on_rejected),
+            )?;
+            Ok(())
+          })();
+
+          if let Err(err) = schedule_res {
+            // Best-effort cleanup: take the continuation back out and tear down its persistent roots
+            // (including any roots held by async frames).
+            if let Some(cont) = vm_frame.take_async_continuation(id) {
+              async_teardown_continuation(&mut root_scope, cont);
+            }
+            return Err(err);
+          }
+
+          Ok(promise)
+        }
+        Err(err) => {
+          env.teardown(scope.heap_mut());
+          Err(err)
+        }
       }
     })();
 
@@ -9638,6 +10292,8 @@ enum AsyncFrame {
   RootExprBody,
   /// Root frame for async module evaluation (`run_module_async` / top-level await).
   RootModuleBody,
+  /// Root frame for async classic script evaluation (top-level await / `for await...of` in scripts).
+  RootScriptBody,
 
   /// Resume statement-list evaluation after a suspended statement completes.
   StmtList {
@@ -19630,6 +20286,33 @@ fn async_resume_from_frames(
         AsyncState::Expr(_) => {
           return Err(VmError::InvariantViolation(
             "async module evaluation resumed with expression state",
+          ))
+        }
+      },
+
+      AsyncFrame::RootScriptBody => match state {
+        AsyncState::Completion(completion) => match completion {
+          Completion::Normal(v) => return Ok(AsyncBodyResult::CompleteOk(v.unwrap_or(Value::Undefined))),
+          Completion::Throw(thrown) => return Ok(AsyncBodyResult::CompleteThrow(thrown.value)),
+          Completion::Return(_) => {
+            return Err(VmError::InvariantViolation(
+              "script evaluation produced Return completion (early errors should prevent this)",
+            ))
+          }
+          Completion::Break(..) => {
+            return Err(VmError::InvariantViolation(
+              "script evaluation produced Break completion (early errors should prevent this)",
+            ))
+          }
+          Completion::Continue(..) => {
+            return Err(VmError::InvariantViolation(
+              "script evaluation produced Continue completion (early errors should prevent this)",
+            ))
+          }
+        },
+        AsyncState::Expr(_) => {
+          return Err(VmError::InvariantViolation(
+            "script body resumed with expression state",
           ))
         }
       },

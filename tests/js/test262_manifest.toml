@@ -152,6 +152,35 @@ reason = "vm-js: ECMAScript semantics are still incomplete; tracked via curated 
 glob = "language/statements/generators/**"
 status = "pass"
 
+# --- for-await-of (async iteration) ---
+[[expectations]]
+id = "language/statements/for-await-of/async-from-sync-iterator-continuation-abrupt-completion-get-constructor.js"
+status = "pass"
+
+[[expectations]]
+id = "language/statements/for-await-of/async-func-dstr-const-ary-init-iter-close.js"
+status = "pass"
+
+[[expectations]]
+id = "language/statements/for-await-of/iterator-close-non-throw-get-method-is-null.js"
+status = "pass"
+
+[[expectations]]
+id = "language/statements/for-await-of/iterator-close-non-throw-get-method-non-callable.js"
+status = "pass"
+
+[[expectations]]
+id = "language/statements/for-await-of/iterator-close-non-throw-get-method-abrupt.js"
+status = "pass"
+
+[[expectations]]
+id = "language/statements/for-await-of/iterator-close-throw-get-method-non-callable.js"
+status = "pass"
+
+[[expectations]]
+id = "language/statements/for-await-of/iterator-close-throw-get-method-abrupt.js"
+status = "pass"
+
 # --- Additional curated suites (statements + built-ins) ---
 [[expectations]]
 glob = "language/statements/**"

@@ -19,6 +19,14 @@ include = [
   # Keep `for-of` limited for now; the full directory is large and tends to pull in many
   # iteration/destructuring edge cases.
   "language/statements/for-of/*.js",
+  # Targeted `for await...of` coverage (async iterator protocol). The full directory is large.
+  "language/statements/for-await-of/async-from-sync-iterator-continuation-abrupt-completion-get-constructor.js",
+  "language/statements/for-await-of/async-func-dstr-const-ary-init-iter-close.js",
+  "language/statements/for-await-of/iterator-close-non-throw-get-method-is-null.js",
+  "language/statements/for-await-of/iterator-close-non-throw-get-method-non-callable.js",
+  "language/statements/for-await-of/iterator-close-non-throw-get-method-abrupt.js",
+  "language/statements/for-await-of/iterator-close-throw-get-method-non-callable.js",
+  "language/statements/for-await-of/iterator-close-throw-get-method-abrupt.js",
   "language/statements/if/**/*.js",
   "language/statements/labeled/**/*.js",
   "language/statements/return/**/*.js",

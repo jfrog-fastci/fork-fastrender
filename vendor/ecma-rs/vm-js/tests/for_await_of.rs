@@ -1,4 +1,4 @@
-use vm_js::{Heap, HeapLimits, JsRuntime, Value, Vm, VmError, VmOptions};
+use vm_js::{Heap, HeapLimits, JsRuntime, PromiseState, Value, Vm, VmError, VmOptions};
 
 fn new_runtime() -> JsRuntime {
   let vm = Vm::new(VmOptions::default());
@@ -47,6 +47,123 @@ fn for_await_over_array_awaits_values() -> Result<(), VmError> {
 
   let value = rt.exec_script("out")?;
   assert_eq!(value_to_string(&rt, value), "ab");
+  Ok(())
+}
+
+#[test]
+fn top_level_for_await_of_script_returns_promise_and_resolves() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(
+    r#"
+      var sum = 0;
+      for await (const x of [Promise.resolve(1), 2]) {
+        sum += x;
+      }
+      sum
+    "#,
+  )?;
+
+  let Value::Object(promise) = value else {
+    panic!("expected Promise, got {value:?}");
+  };
+  assert_eq!(rt.heap.promise_state(promise)?, PromiseState::Pending);
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  assert_eq!(rt.heap.promise_state(promise)?, PromiseState::Fulfilled);
+  assert_eq!(rt.heap.promise_result(promise)?, Some(Value::Number(3.0)));
+  Ok(())
+}
+
+#[test]
+fn top_level_for_await_break_awaits_iterator_return() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(
+    r#"
+      var closed = false;
+      const iterable = {};
+      iterable[Symbol.asyncIterator] = function () {
+        return {
+          next() {
+            return Promise.resolve({ value: 1, done: false });
+          },
+          return() {
+            return Promise.resolve().then(function () {
+              closed = true;
+              return { done: true };
+            });
+          },
+        };
+      };
+
+      for await (const x of iterable) {
+        break;
+      }
+      closed
+    "#,
+  )?;
+
+  let Value::Object(promise) = value else {
+    panic!("expected Promise, got {value:?}");
+  };
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  assert_eq!(rt.heap.promise_state(promise)?, PromiseState::Fulfilled);
+  assert_eq!(rt.heap.promise_result(promise)?, Some(Value::Bool(true)));
+  Ok(())
+}
+
+#[test]
+fn top_level_for_await_throw_awaits_iterator_close_before_catch() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(
+    r#"
+      var closed = false;
+      const iterable = {};
+      iterable[Symbol.asyncIterator] = function () {
+        return {
+          next() {
+            return Promise.resolve({ value: 1, done: false });
+          },
+          return() {
+            return Promise.resolve().then(function () {
+              closed = true;
+              return { done: true };
+            });
+          },
+        };
+      };
+
+      var out = "unset";
+      try {
+        for await (const x of iterable) {
+          throw "boom";
+        }
+        out = "bad";
+      } catch (e) {
+        out = closed ? "closed" : "not closed";
+      }
+
+      out
+    "#,
+  )?;
+
+  let Value::Object(promise) = value else {
+    panic!("expected Promise, got {value:?}");
+  };
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  assert_eq!(rt.heap.promise_state(promise)?, PromiseState::Fulfilled);
+  let out = rt
+    .heap
+    .promise_result(promise)?
+    .expect("expected promise result");
+  assert_eq!(value_to_string(&rt, out), "closed");
   Ok(())
 }
 

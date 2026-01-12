@@ -872,6 +872,16 @@ impl Vm {
     Ok(id)
   }
 
+  pub(crate) fn insert_async_continuation_reserved(&mut self, cont: AsyncContinuation) -> u32 {
+    let id = self.next_async_continuation_id;
+    self.next_async_continuation_id = self.next_async_continuation_id.wrapping_add(1);
+    // Callers are expected to call `reserve_async_continuations` before inserting so this does not
+    // allocate (and therefore cannot abort the process). See also
+    // `insert_generator_continuation_reserved`.
+    self.async_continuations.insert(id, cont);
+    id
+  }
+
   pub(crate) fn take_async_continuation(&mut self, id: u32) -> Option<AsyncContinuation> {
     self.async_continuations.remove(&id)
   }
