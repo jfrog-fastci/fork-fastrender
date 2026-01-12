@@ -65,17 +65,7 @@ unsafe impl GlobalAlloc for CountingAlloc {
   }
 }
 
-#[test]
-fn rt_gc_collect_does_not_allocate_after_thread_init() {
-  let _rt = TestRuntimeGuard::new();
-
-  // Registering a thread should eagerly parse and index stackmaps so stop-the-world GC doesn't do
-  // any lazy allocation work while the world is stopped.
-  rt_thread_init(3);
-
-  // Sanity: the stackmap-test artifact must contain at least one statepoint record with a non-zero
-  // gc-pair count. This is required for this test to catch any accidental Vec allocations in
-  // per-frame root enumeration.
+fn assert_stackmap_test_has_gc_pairs() {
   let expected_ip = (test_fn as usize as u64).wrapping_add(STACKMAP_INSTRUCTION_OFFSET as u64);
   let stackmaps = runtime_native::stackmap::try_stackmaps().expect("expected stackmaps to be available");
   let callsite = stackmaps
@@ -88,22 +78,78 @@ fn rt_gc_collect_does_not_allocate_after_thread_init() {
     "stackmap_test artifact unexpectedly has gc_pair_count=0; \
      this would not exercise per-frame stack root enumeration allocation paths"
   );
+}
+
+fn trigger_gc_via_stackmap_test() {
+  // Triggers `safepoint` above, which calls into `rt_gc_collect`.
+  let mut obj = 0u64;
+  let ptr = core::ptr::addr_of_mut!(obj).cast::<u8>();
+  let ret = unsafe { test_fn(ptr) };
+  assert_eq!(ret, ptr);
+}
+
+#[test]
+fn rt_gc_collect_does_not_allocate_after_thread_init() {
+  let _rt = TestRuntimeGuard::new();
+
+  // Registering a thread should eagerly parse and index stackmaps so stop-the-world GC doesn't do
+  // any lazy allocation work while the world is stopped.
+  rt_thread_init(3);
+
+  // Sanity: the stackmap-test artifact must contain at least one statepoint record with a non-zero
+  // gc-pair count. This is required for this test to catch any accidental Vec allocations in
+  // per-frame root enumeration.
+  assert_stackmap_test_has_gc_pairs();
 
   // Ensure the safepoint coordinator singleton is initialized outside the measured section.
   let _ = runtime_native::threading::safepoint::threads_waiting_at_safepoint();
 
   ALLOC_CALLS.store(0, Ordering::SeqCst);
 
-  // Triggers `safepoint` above, which calls into `rt_gc_collect`.
-  let mut obj = 0u64;
-  let ptr = core::ptr::addr_of_mut!(obj).cast::<u8>();
-  let ret = unsafe { test_fn(ptr) };
-  assert_eq!(ret, ptr);
+  trigger_gc_via_stackmap_test();
 
   let allocs = ALLOC_CALLS.load(Ordering::SeqCst);
   assert_eq!(
     allocs, 0,
     "rt_gc_collect performed unexpected allocations after thread init (alloc calls={allocs})"
+  );
+
+  rt_thread_deinit();
+}
+
+#[test]
+fn rt_gc_collect_does_not_allocate_after_thread_init_with_card_tables() {
+  let _rt = TestRuntimeGuard::new();
+  rt_thread_init(3);
+
+  // Ensure stackmaps are available and contain roots so stop-the-world enumeration exercises the
+  // non-trivial statepoint path.
+  assert_stackmap_test_has_gc_pairs();
+
+  // Install a couple of per-object card tables in the old generation before the measured section.
+  //
+  // Without care, `rt_gc_collect` will try to `reserve` additional capacity for the card-table
+  // registry *during* GC, which would call the Rust global allocator while the world is stopped.
+  let ptr_size = core::mem::size_of::<*mut u8>();
+  let ptr_elem_size = runtime_native::array::RT_ARRAY_ELEM_PTR_FLAG | ptr_size;
+  let len = (runtime_native::gc::heap::IMMIX_MAX_OBJECT_SIZE / ptr_size) + 1;
+
+  let a = runtime_native::rt_alloc_array(len, ptr_elem_size);
+  let b = runtime_native::rt_alloc_array(len, ptr_elem_size);
+  assert!(!a.is_null());
+  assert!(!b.is_null());
+
+  // Ensure the safepoint coordinator singleton is initialized outside the measured section.
+  let _ = runtime_native::threading::safepoint::threads_waiting_at_safepoint();
+
+  ALLOC_CALLS.store(0, Ordering::SeqCst);
+
+  trigger_gc_via_stackmap_test();
+
+  let allocs = ALLOC_CALLS.load(Ordering::SeqCst);
+  assert_eq!(
+    allocs, 0,
+    "rt_gc_collect performed unexpected allocations after installing card tables (alloc calls={allocs})"
   );
 
   rt_thread_deinit();

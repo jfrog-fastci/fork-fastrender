@@ -761,7 +761,8 @@ impl GcHeap {
     }
 
     let obj = header as *mut ObjHeader as *mut u8;
-    if super::gc_in_progress() && self.card_table_objects.len() == self.card_table_objects.capacity() {
+    let in_gc = super::gc_in_progress();
+    if in_gc && self.card_table_objects.len() == self.card_table_objects.capacity() {
       // Card table installation can occur during GC (e.g. promotion); growing
       // this registry would call the global allocator, which is forbidden.
       trap::rt_trap_oom(
@@ -770,6 +771,11 @@ impl GcHeap {
       );
     }
     self.card_table_objects.push(obj);
+    if !in_gc {
+      // Keep enough headroom for the next minor GC: card table installation can happen while a GC
+      // is running (promotion), but growing this Vec during GC would call the global allocator.
+      self.reserve_card_table_objects_for_minor_gc();
+    }
   }
 
   pub(super) fn reserve_card_table_objects_for_minor_gc(&mut self) {
