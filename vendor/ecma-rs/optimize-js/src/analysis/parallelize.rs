@@ -325,16 +325,16 @@ pub fn annotate_cfg_parallelize(
     for inst in cfg.bblocks.get_mut(label).iter_mut() {
       #[cfg(feature = "native-async-ops")]
       match inst.t {
+        InstTyp::Await => {
+          inst.meta.parallel = Some(ParallelPlan::NotParallelizable(ParallelReason::Await));
+          continue;
+        }
         InstTyp::PromiseAll => {
           inst.meta.parallel = Some(ParallelPlan::SpawnAll);
           continue;
         }
         InstTyp::PromiseRace => {
           inst.meta.parallel = Some(ParallelPlan::SpawnAllButRaceResult);
-          continue;
-        }
-        InstTyp::Await => {
-          inst.meta.parallel = Some(ParallelPlan::NotParallelizable(ParallelReason::Await));
           continue;
         }
         _ => {}

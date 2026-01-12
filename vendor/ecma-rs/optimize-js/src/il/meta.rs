@@ -671,6 +671,8 @@ pub struct InstMeta {
   ///
   /// This field is currently consumed by native backends that choose to elide
   /// yielding for "ready" values (see [`AwaitBehavior`]).
+  ///
+  /// When unset (`None`), the default semantics is [`AwaitBehavior::MustYield`].
   #[cfg_attr(
     feature = "serde",
     serde(default, skip_serializing_if = "Option::is_none")
