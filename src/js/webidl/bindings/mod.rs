@@ -27,6 +27,7 @@ pub use host::{binding_value_to_js, BindingValue, WebHostBindings};
 pub use crate::js::vm_dom::{install_dom_bindings, install_dom_bindings_with_limits};
 
 #[cfg(test)]
+#[allow(unused_imports)]
 mod webidl_bindings_codegen_toy_generated_vmjs {
   include!(concat!(
     env!("CARGO_MANIFEST_DIR"),
