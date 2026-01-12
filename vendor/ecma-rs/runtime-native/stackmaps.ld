@@ -38,7 +38,9 @@ SECTIONS {
     . = ALIGN(8);
     __llvm_faultmaps_end = .;
   }
-/* Anchor at `.got` so the fragment can be injected even for minimal lld links
- * (lld may omit optional output sections like `.dynamic` entirely). `.got` is
- * also inside the RELRO block, keeping lld happy about relro contiguity. */
-} INSERT BEFORE .got;
+/* Keep the insertion outside lld's RELRO range: lld enforces that RELRO sections
+ * remain contiguous, and injecting custom `.data.rel.ro.*` output sections
+ * inside RELRO can trigger:
+ *   "section: .got is not contiguous with other relro sections"
+ */
+} INSERT BEFORE .bss;
