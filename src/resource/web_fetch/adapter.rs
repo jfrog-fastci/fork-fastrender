@@ -357,7 +357,20 @@ pub fn execute_web_fetch<'a>(
   let referrer_policy = effective_referrer_policy(request, ctx);
   let credentials_mode = FetchCredentialsMode::from(request.credentials);
 
-  let destination = ctx.destination;
+  // `FetchDestination` encodes both the request "destination" and a coarse request mode via
+  // `sec_fetch_mode()`. For Fetch API requests, `FetchDestination::Fetch` represents the typical
+  // `mode: "cors"` behavior, while `FetchDestination::Other` matches `no-cors` subresource
+  // semantics.
+  //
+  // When the Web Fetch `Request.mode` is `no-cors`, ensure we use the `Other` profile so the
+  // underlying HTTP layer:
+  // - emits `Sec-Fetch-Mode: no-cors`
+  // - omits `Origin` (consistent with other no-cors fetches)
+  // - skips CORS preflight logic that is specific to CORS-mode requests
+  let destination = match (ctx.destination, request.mode) {
+    (FetchDestination::Fetch, RequestMode::NoCors) => FetchDestination::Other,
+    (other, _) => other,
+  };
   let fetch_request = FetchRequest {
     url: requested_url,
     destination,
@@ -2045,6 +2058,37 @@ mod tests {
       err.to_string().contains("no-cors") && err.to_string().contains("CORS-safelisted"),
       "unexpected error: {err}"
     );
+  }
+
+  #[test]
+  fn no_cors_fetch_uses_other_destination_profile() {
+    struct DestinationInspectFetcher;
+
+    impl ResourceFetcher for DestinationInspectFetcher {
+      fn fetch(&self, _url: &str) -> Result<FetchedResource> {
+        unreachable!("execute_web_fetch should call fetch_http_request");
+      }
+
+      fn fetch_http_request(&self, req: HttpRequest<'_>) -> Result<FetchedResource> {
+        assert_eq!(req.fetch.destination, FetchDestination::Other);
+        assert_eq!(req.method, "GET");
+        assert!(req.body.is_none());
+        assert!(
+          req.headers.iter().any(|(name, _)| name.eq_ignore_ascii_case("accept")),
+          "expected Accept header to be passed through as a user header"
+        );
+        Ok(FetchedResource::new(b"ok".to_vec(), None))
+      }
+    }
+
+    let fetcher = DestinationInspectFetcher;
+    let mut request = Request::new("GET", "https://example.com/a");
+    // Add a safelisted header so `execute_web_fetch` must use the `fetch_http_request` path.
+    request.headers.append("Accept", "text/plain").unwrap();
+    request.set_mode(RequestMode::NoCors);
+    let response = execute_web_fetch(&fetcher, &request, WebFetchExecutionContext::default())
+      .expect("expected response");
+    assert_eq!(response.r#type, ResponseType::Opaque);
   }
 
   #[test]
