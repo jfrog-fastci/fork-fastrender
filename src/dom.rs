@@ -53,6 +53,15 @@ use unicode_bidi::bidi_class;
 pub const HTML_NAMESPACE: &str = "http://www.w3.org/1999/xhtml";
 pub const SVG_NAMESPACE: &str = "http://www.w3.org/2000/svg";
 pub const MATHML_NAMESPACE: &str = "http://www.w3.org/1998/Math/MathML";
+pub const XML_NAMESPACE: &str = "http://www.w3.org/XML/1998/namespace";
+pub const XMLNS_NAMESPACE: &str = "http://www.w3.org/2000/xmlns/";
+
+/// Internal sentinel namespace string representing "no namespace" (`null` in DOM terms).
+///
+/// `dom2` uses this value so it can distinguish between the HTML namespace (stored as `""` for
+/// compatibility with the renderer DOM) and a `null` namespace, which are distinct in the DOM
+/// Standard.
+pub const NULL_NAMESPACE: &str = "\u{0000}";
 
 const RELATIVE_SELECTOR_DEADLINE_STRIDE: usize = 64;
 // Upper bound on how deep we track ancestor hashes in the counting bloom filter used while
@@ -7643,12 +7652,14 @@ impl<'a> Element for ElementRef<'a> {
       DomNodeType::Element { namespace, .. } | DomNodeType::Slot { namespace, .. } => {
         // Namespace semantics:
         // - selectors uses an empty namespace URL to represent the explicit "no namespace" selector
-        //   form (`|E`), which must *not* match HTML/SVG/MathML elements.
+        //   form (`|E`). In FastRender, `dom2` represents a `null` namespace using the internal
+        //   `NULL_NAMESPACE` sentinel, so `|E` matches only elements whose namespace string is that
+        //   sentinel.
         // - FastRender stores HTML elements with an empty string namespace to save memory; treat
         //   that empty element namespace as equivalent to `HTML_NAMESPACE` (some constructed DOMs
         //   may use the literal HTML namespace URL) for non-empty namespace selectors.
         if ns.is_empty() {
-          return false;
+          return namespace == NULL_NAMESPACE;
         }
         if namespace == ns {
           return true;
@@ -7697,25 +7708,124 @@ impl<'a> Element for ElementRef<'a> {
     local_name: &CssString,
     operation: &AttrSelectorOperation<&CssString>,
   ) -> bool {
-    // Namespace check: we only support HTML namespace/none.
-    match ns {
-      selectors::attr::NamespaceConstraint::Any => {}
-      selectors::attr::NamespaceConstraint::Specific(url) => {
-        let url: &str = (*url).borrow();
-        if !(url.is_empty() || url == HTML_NAMESPACE) {
-          return false;
+    let selector_local_name = local_name.as_str();
+
+    // When the selector carries an explicit non-empty namespace URL, resolve each attribute's
+    // namespace URI using in-scope XML namespace declarations (`xmlns:*`) on the element and its
+    // ancestors.
+    //
+    // This is needed for DOM selector APIs in XML documents (e.g. `[x|href]` matching `x:href="..."`).
+    //
+    // NOTE: Some existing selector usage in HTML documents targets qualified attribute names with
+    // escaped colons (e.g. `[xlink\\:href]`); those selectors surface here with `local_name`
+    // containing `:`, so we keep the legacy "match the full attribute name string" behavior for
+    // that case.
+    let explicit_ns_url: Option<&str> = match ns {
+      selectors::attr::NamespaceConstraint::Any => None,
+      selectors::attr::NamespaceConstraint::Specific(url) => Some((*url).borrow()),
+    };
+    let needs_namespace_resolution =
+      explicit_ns_url.is_some_and(|url| !url.is_empty()) && !selector_local_name.contains(':');
+
+    if needs_namespace_resolution {
+      // Build the in-scope prefix -> namespace URL map.
+      let mut prefixes_seen: HashSet<&str> = HashSet::new();
+      let mut prefixes: HashMap<&str, &str> = HashMap::new();
+
+      // Reserved `xml` prefix always maps to the XML namespace.
+      prefixes.insert("xml", XML_NAMESPACE);
+      prefixes_seen.insert("xml");
+
+      for node in std::iter::once(self.node).chain(self.all_ancestors.iter().rev().copied()) {
+        for (name, value) in node.attributes_iter() {
+          let Some(prefix) = name.strip_prefix("xmlns:") else {
+            continue;
+          };
+          // Ignore malformed namespace declarations (empty prefix or multiple colons).
+          if prefix.is_empty() || prefix.contains(':') {
+            continue;
+          }
+          // `xml` prefix is reserved and cannot be redeclared.
+          if prefix == "xml" {
+            continue;
+          }
+          // `xmlns` is reserved for namespace declaration attributes.
+          if prefix == "xmlns" {
+            continue;
+          }
+
+          if prefixes_seen.contains(prefix) {
+            continue;
+          }
+          prefixes_seen.insert(prefix);
+
+          // `xmlns:prefix=""` unbinds the prefix; treat it as shadowing any ancestor binding.
+          if value.is_empty() {
+            continue;
+          }
+          prefixes.insert(prefix, value);
         }
+      }
+
+      let expected_ns_url = explicit_ns_url.unwrap_or("");
+      for (name, attr_value) in self.node.attributes_iter() {
+        let (attr_prefix, attr_local) = name.split_once(':').map_or((None, name), |(p, l)| {
+          (Some(p), l)
+        });
+
+        if attr_local != selector_local_name {
+          continue;
+        }
+
+        let actual_ns_url = match attr_prefix {
+          None => "",
+          Some("xml") => XML_NAMESPACE,
+          Some("xmlns") => XMLNS_NAMESPACE,
+          Some(prefix) => match prefixes.get(prefix) {
+            Some(url) => *url,
+            None => continue,
+          },
+        };
+        if actual_ns_url != expected_ns_url {
+          continue;
+        }
+
+        match operation {
+          AttrSelectorOperation::Exists => return true,
+          AttrSelectorOperation::WithValue {
+            operator,
+            case_sensitivity,
+            value,
+          } => {
+            let value_str: &str = std::borrow::Borrow::borrow(&**value);
+            if operator.eval_str(attr_value, value_str, *case_sensitivity) {
+              return true;
+            }
+          }
+        }
+      }
+      return false;
+    }
+
+    // Legacy non-namespaced attribute matching: for performance, use the attribute cache when
+    // available and treat the selector's local name as the full attribute name string.
+    //
+    // For compatibility we accept both `""` and `HTML_NAMESPACE` as the "no namespace" URL, since
+    // selector parsing for HTML documents historically treated those values interchangeably.
+    if let Some(url) = explicit_ns_url {
+      if !(url.is_empty() || url == HTML_NAMESPACE) {
+        return false;
       }
     }
 
     let attr_value = if let Some(cache) = self.attr_cache {
-      cache.attr_value(self.node, local_name.as_str())
+      cache.attr_value(self.node, selector_local_name)
     } else {
       let is_html = self.is_html_element();
       self
         .node
         .attributes_iter()
-        .find(|(name, _)| element_attr_cache_name_matches(name, local_name.as_str(), is_html))
+        .find(|(name, _)| element_attr_cache_name_matches(name, selector_local_name, is_html))
         .map(|(_, value)| value)
     };
     let attr_value = match attr_value {

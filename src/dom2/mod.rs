@@ -1,7 +1,7 @@
 use crate::css::selectors::FastRenderSelectorImpl;
 use crate::dom::HTML_NAMESPACE;
 use crate::dom::{DomNode, DomNodeType, ShadowRootMode};
-use crate::web::dom::selectors::{node_matches_selector_list, parse_selector_list};
+use crate::web::dom::selectors::{node_matches_selector_list, parse_selector_list_for_dom};
 use crate::web::dom::DocumentReadyState;
 use crate::web::dom::DomException;
 use crate::web::events as web_events;
@@ -11,6 +11,7 @@ use selectors::matching::SelectorCaches;
 use selectors::parser::SelectorList;
 use selectors::OpaqueElement;
 use std::cell::RefCell;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -1514,6 +1515,132 @@ impl Document {
     }
   }
 
+  fn is_html_document_for_dom_selectors(&self) -> bool {
+    // DOM's notion of an "HTML document" is ultimately driven by how the document was created /
+    // parsed (HTML parser vs XML parser). `dom2` currently does not have a full XML parser, so we
+    // approximate by treating documents whose document element is an HTML `<html>` element as HTML
+    // documents for selector parsing.
+    let Some(document_element) = self.document_element() else {
+      return true;
+    };
+    match &self.node(document_element).kind {
+      NodeKind::Element {
+        tag_name,
+        namespace,
+        ..
+      } => (namespace.is_empty() || namespace == HTML_NAMESPACE) && tag_name.eq_ignore_ascii_case("html"),
+      NodeKind::Slot { namespace, .. } => namespace.is_empty() || namespace == HTML_NAMESPACE,
+      _ => false,
+    }
+  }
+
+  fn compute_in_scope_namespace_prefix_map_for_dom_selectors(
+    &self,
+    element: NodeId,
+  ) -> (Option<String>, Vec<(String, String)>) {
+    // In-scope namespace declarations are defined by the `xmlns` / `xmlns:*` attributes on the
+    // element and its ancestors. Declarations are case-sensitive and the nearest ancestor wins.
+    let mut default_ns_seen = false;
+    let mut default_ns: Option<String> = None;
+    let mut prefixes_seen: HashSet<String> = HashSet::new();
+    let mut prefixes: HashMap<String, String> = HashMap::new();
+
+    // Reserved `xml` prefix always maps to the XML namespace.
+    prefixes.insert("xml".to_string(), XML_NAMESPACE.to_string());
+    prefixes_seen.insert("xml".to_string());
+
+    let mut current = Some(element);
+    // Defensive bound to avoid infinite loops on corrupted trees.
+    let mut remaining = self.nodes.len() + 1;
+    while let Some(node_id) = current {
+      if remaining == 0 {
+        break;
+      }
+      remaining -= 1;
+
+      let node = self.node(node_id);
+      let attrs: &[(String, String)] = match &node.kind {
+        NodeKind::Element { attributes, .. } | NodeKind::Slot { attributes, .. } => attributes,
+        _ => {
+          current = node.parent;
+          continue;
+        }
+      };
+
+      for (name, value) in attrs {
+        if name == "xmlns" {
+          if !default_ns_seen {
+            default_ns_seen = true;
+            // `xmlns=""` unbinds the default namespace.
+            if value.is_empty() {
+              default_ns = None;
+            } else {
+              default_ns = Some(value.clone());
+            }
+          }
+          continue;
+        }
+
+        let Some(prefix) = name.strip_prefix("xmlns:") else {
+          continue;
+        };
+        // Ignore malformed namespace declarations (empty prefix or multiple colons).
+        if prefix.is_empty() || prefix.contains(':') {
+          continue;
+        }
+        // `xml` prefix is reserved and cannot be redeclared.
+        if prefix == "xml" {
+          continue;
+        }
+        // `xmlns` is reserved for namespace declaration attributes.
+        if prefix == "xmlns" {
+          continue;
+        }
+
+        if prefixes_seen.contains(prefix) {
+          continue;
+        }
+        prefixes_seen.insert(prefix.to_string());
+
+        // `xmlns:prefix=""` unbinds the prefix; treat it as shadowing any ancestor binding.
+        if value.is_empty() {
+          continue;
+        }
+        prefixes.insert(prefix.to_string(), value.clone());
+      }
+
+      current = node.parent;
+    }
+
+    (default_ns, prefixes.into_iter().collect())
+  }
+
+  fn namespace_context_for_dom_selector_parsing(
+    &self,
+    scope: Option<NodeId>,
+  ) -> (Option<String>, Vec<(String, String)>) {
+    if self.is_html_document_for_dom_selectors() {
+      return (None, Vec::new());
+    }
+
+    // Per DOM, namespace prefix maps are derived from the selector scope node:
+    // - Document: documentElement.
+    // - Element: the element itself.
+    // - DocumentFragment / ShadowRoot: empty (acceptable MVP).
+    let scope_element = match scope {
+      None => self.document_element(),
+      Some(node_id) => match &self.node(node_id).kind {
+        NodeKind::Element { .. } | NodeKind::Slot { .. } => Some(node_id),
+        _ => None,
+      },
+    };
+
+    match scope_element {
+      Some(element) => self.compute_in_scope_namespace_prefix_map_for_dom_selectors(element),
+      None => (None, vec![("xml".to_string(), XML_NAMESPACE.to_string())]),
+    }
+  }
+
   pub fn to_renderer_dom_with_mapping(&self) -> RendererDomSnapshot {
     RendererDomSnapshot {
       dom: self.to_renderer_dom(),
@@ -1526,7 +1653,14 @@ impl Document {
     selectors: &str,
     scope: Option<NodeId>,
   ) -> Result<Option<NodeId>, DomException> {
-    let selector_list = parse_selector_list(selectors)?;
+    let dom_is_html = self.is_html_document_for_dom_selectors();
+    let (default_ns, prefixes) = self.namespace_context_for_dom_selector_parsing(scope);
+    let selector_list = parse_selector_list_for_dom(
+      dom_is_html,
+      default_ns.as_deref(),
+      &prefixes,
+      selectors,
+    )?;
     let quirks_mode = match &self.node(self.root()).kind {
       NodeKind::Document { quirks_mode } => *quirks_mode,
       _ => QuirksMode::NoQuirks,
@@ -1759,7 +1893,14 @@ impl Document {
     selectors: &str,
     scope: Option<NodeId>,
   ) -> Result<Vec<NodeId>, DomException> {
-    let selector_list = parse_selector_list(selectors)?;
+    let dom_is_html = self.is_html_document_for_dom_selectors();
+    let (default_ns, prefixes) = self.namespace_context_for_dom_selector_parsing(scope);
+    let selector_list = parse_selector_list_for_dom(
+      dom_is_html,
+      default_ns.as_deref(),
+      &prefixes,
+      selectors,
+    )?;
     let quirks_mode = match &self.node(self.root()).kind {
       NodeKind::Document { quirks_mode } => *quirks_mode,
       _ => QuirksMode::NoQuirks,
@@ -1978,7 +2119,14 @@ impl Document {
     element: NodeId,
     selectors: &str,
   ) -> Result<bool, DomException> {
-    let selector_list = parse_selector_list(selectors)?;
+    let dom_is_html = self.is_html_document_for_dom_selectors();
+    let (default_ns, prefixes) = self.namespace_context_for_dom_selector_parsing(Some(element));
+    let selector_list = parse_selector_list_for_dom(
+      dom_is_html,
+      default_ns.as_deref(),
+      &prefixes,
+      selectors,
+    )?;
     Ok(self.matches_selector_list(element, &selector_list))
   }
 
@@ -2125,7 +2273,14 @@ impl Document {
       _ => return Ok(None),
     }
 
-    let selector_list = parse_selector_list(selectors)?;
+    let dom_is_html = self.is_html_document_for_dom_selectors();
+    let (default_ns, prefixes) = self.namespace_context_for_dom_selector_parsing(Some(element));
+    let selector_list = parse_selector_list_for_dom(
+      dom_is_html,
+      default_ns.as_deref(),
+      &prefixes,
+      selectors,
+    )?;
 
     let mut current = element;
     loop {
@@ -2206,6 +2361,8 @@ mod script_internal_slots_tests;
 mod selector_query_tests;
 #[cfg(test)]
 mod selectors_detached_tests;
+#[cfg(test)]
+mod xml_namespace_selector_tests;
 #[cfg(test)]
 mod shadow_boundary_tests;
 #[cfg(test)]
