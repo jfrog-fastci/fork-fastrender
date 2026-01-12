@@ -1,7 +1,7 @@
-use fastrender::layout::contexts::inline::InlineFormattingContext;
-use fastrender::layout::formatting_context::FormattingContext;
-use fastrender::style::display::Display;
-use fastrender::{BoxNode, ComputedStyle, IntrinsicSizingMode, LayoutParallelism};
+use crate::layout::contexts::inline::InlineFormattingContext;
+use crate::layout::formatting_context::FormattingContext;
+use crate::style::display::Display;
+use crate::{BoxNode, ComputedStyle, IntrinsicSizingMode, LayoutParallelism};
 use std::sync::Arc;
 
 fn make_inline_container_with_text(
@@ -31,7 +31,7 @@ fn make_inline_container_with_text(
 
 #[test]
 fn text_item_cache_hits_on_repeated_intrinsic_sizing() {
-  let _lock = super::layout_profile_lock();
+  let _lock = super::test_locks::layout_profile_lock();
 
   InlineFormattingContext::debug_enable_text_item_cache_diagnostics();
   InlineFormattingContext::debug_clear_text_item_cache_current_thread();
@@ -67,7 +67,7 @@ fn text_item_cache_hits_on_repeated_intrinsic_sizing() {
 
 #[test]
 fn text_item_cache_style_override_produces_distinct_entries() {
-  let _lock = super::layout_profile_lock();
+  let _lock = super::test_locks::layout_profile_lock();
 
   InlineFormattingContext::debug_enable_text_item_cache_diagnostics();
   InlineFormattingContext::debug_clear_text_item_cache_current_thread();

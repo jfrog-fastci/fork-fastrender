@@ -1,20 +1,20 @@
-use fastrender::layout::float_context::FloatContext;
-use fastrender::layout::formatting_context::LayoutError;
-use fastrender::render_control::{with_deadline, RenderDeadline};
+use crate::layout::float_context::FloatContext;
+use crate::layout::formatting_context::LayoutError;
+use crate::render_control::{with_deadline, RenderDeadline};
 use std::time::Duration;
 
 struct TestRenderDelayGuard;
 
 impl TestRenderDelayGuard {
   fn set(ms: Option<u64>) -> Self {
-    fastrender::render_control::set_test_render_delay_ms(ms);
+    crate::render_control::set_test_render_delay_ms(ms);
     Self
   }
 }
 
 impl Drop for TestRenderDelayGuard {
   fn drop(&mut self) {
-    fastrender::render_control::set_test_render_delay_ms(None);
+    crate::render_control::set_test_render_delay_ms(None);
   }
 }
 
@@ -45,7 +45,7 @@ fn float_context_range_queries_complete_before_deadline() {
   let mut ctx = FloatContext::new(CONTAINING_WIDTH);
 
   ctx.add_float_at(
-    fastrender::layout::float_context::FloatSide::Left,
+    crate::layout::float_context::FloatSide::Left,
     0.0,
     0.0,
     CONSTRAINING_FLOAT_WIDTH,
@@ -54,7 +54,7 @@ fn float_context_range_queries_complete_before_deadline() {
 
   for i in 0..NON_CONSTRAINING_FLOAT_COUNT {
     ctx.add_float_at(
-      fastrender::layout::float_context::FloatSide::Left,
+      crate::layout::float_context::FloatSide::Left,
       0.0,
       0.0,
       NON_CONSTRAINING_FLOAT_WIDTH,
