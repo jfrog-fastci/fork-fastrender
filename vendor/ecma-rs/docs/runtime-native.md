@@ -952,7 +952,8 @@ GC object pointer and keep it alive while queued:
   - `data` must be the base pointer of a GC-managed object (start of `ObjHeader`).
   - The runtime registers a strong GC root for `data` until the timer fires or is cleared.
 - `rt_io_register_rooted(fd, interests, cb, data)` / `rt_io_register_rooted_h(fd, interests, cb, data)`
-  - `fd` must be set to `O_NONBLOCK` before registration (edge-triggered reactor contract).
+  - `fd` must be set to `O_NONBLOCK` before registration and must remain `O_NONBLOCK` for the
+    lifetime of the registration (edge-triggered reactor contract).
   - `interests` must include `RT_IO_READABLE` and/or `RT_IO_WRITABLE` (it must not be 0).
   - `data` must be the base pointer of a GC-managed object (start of `ObjHeader`).
   - The runtime registers a strong GC root for `data` until the watcher is unregistered.
@@ -985,7 +986,8 @@ Entry points:
   - `rt_set_interval_handle(cb, data, interval_ms)` / `rt_set_interval_handle_with_drop(cb, data, drop_data, interval_ms)`
 - I/O watchers:
   - `rt_io_register_handle(fd, interests, cb, data)` / `rt_io_register_handle_with_drop(fd, interests, cb, data, drop_data)`
-    - `fd` must be set to `O_NONBLOCK` before registration (edge-triggered reactor contract).
+    - `fd` must be set to `O_NONBLOCK` before registration and must remain `O_NONBLOCK` for the
+      lifetime of the registration (edge-triggered reactor contract).
     - `interests` must include `RT_IO_READABLE` and/or `RT_IO_WRITABLE` (it must not be 0).
 
 ---
