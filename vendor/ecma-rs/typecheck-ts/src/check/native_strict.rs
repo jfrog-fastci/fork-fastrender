@@ -4418,7 +4418,7 @@ pub fn validate_native_strict_body(
                   "Object",
                   define_property_name,
                   "defineProperty",
-                );
+                ) || matches!(member_object_alias_kind, Some(DestructuredAliasKind::ObjectDefineProperty));
                 let obj_is_reflect_define_property = expr_is_builtin_member(
                   resolver,
                   &const_aliases,
@@ -4431,7 +4431,7 @@ pub fn validate_native_strict_body(
                   "Reflect",
                   define_property_name,
                   "defineProperty",
-                );
+                ) || matches!(member_object_alias_kind, Some(DestructuredAliasKind::ReflectDefineProperty));
                 let obj_is_object_define_properties = expr_is_builtin_member(
                   resolver,
                   &const_aliases,
@@ -4444,6 +4444,9 @@ pub fn validate_native_strict_body(
                   "Object",
                   define_properties_name,
                   "defineProperties",
+                ) || matches!(
+                  member_object_alias_kind,
+                  Some(DestructuredAliasKind::ObjectDefineProperties)
                 );
                 let obj_is_object_assign = expr_is_builtin_member(
                   resolver,
@@ -4457,7 +4460,7 @@ pub fn validate_native_strict_body(
                   "Object",
                   assign_name,
                   "assign",
-                );
+                ) || matches!(member_object_alias_kind, Some(DestructuredAliasKind::ObjectAssign));
 
                 let mut mark_proto_mutation = |is_proto_mutation: bool| {
                   if is_proto_mutation {

@@ -737,6 +737,58 @@ dp(Foo, "prototype", {});
 }
 
 #[test]
+fn strict_native_reports_prototype_mutation_via_destructuring_define_property_call() {
+  let tmp = tempdir().expect("temp dir");
+  let entry = tmp.path().join("main.ts");
+  fs::write(
+    &entry,
+    r#"
+class Foo {}
+const { defineProperty: dp } = Object;
+dp.call(null, Foo, "prototype", {});
+"#,
+  )
+  .expect("write main.ts");
+
+  typecheck_cli()
+    .timeout(CLI_TIMEOUT)
+    .args(["typecheck", "--lib", "es5"])
+    .arg("--strict-native")
+    .arg(entry.as_os_str())
+    .assert()
+    .failure()
+    .stdout(contains(
+      codes::NATIVE_STRICT_PROTOTYPE_MUTATION.as_str(),
+    ));
+}
+
+#[test]
+fn strict_native_reports_prototype_mutation_via_destructuring_define_property_apply() {
+  let tmp = tempdir().expect("temp dir");
+  let entry = tmp.path().join("main.ts");
+  fs::write(
+    &entry,
+    r#"
+class Foo {}
+const { defineProperty: dp } = Object;
+dp.apply(null, [Foo, "prototype", {}]);
+"#,
+  )
+  .expect("write main.ts");
+
+  typecheck_cli()
+    .timeout(CLI_TIMEOUT)
+    .args(["typecheck", "--lib", "es5"])
+    .arg("--strict-native")
+    .arg(entry.as_os_str())
+    .assert()
+    .failure()
+    .stdout(contains(
+      codes::NATIVE_STRICT_PROTOTYPE_MUTATION.as_str(),
+    ));
+}
+
+#[test]
 fn strict_native_reports_prototype_mutation_via_reflect_apply_with_destructuring_alias_target() {
   let tmp = tempdir().expect("temp dir");
   let entry = tmp.path().join("main.ts");
