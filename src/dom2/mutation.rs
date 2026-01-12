@@ -675,6 +675,7 @@ impl Document {
     };
 
     self.live_mutation.pre_remove(child, old_parent, pos);
+    self.live_range_pre_remove_steps(child, old_parent, pos);
     self.node_iterator_pre_remove_steps(child);
     self.nodes[old_parent.index()].children.remove(pos);
     let _ = self.mutation_observer_add_transient_observers_on_remove(child, old_parent);
@@ -1083,6 +1084,7 @@ impl Document {
 
       let mut children_to_move: Vec<NodeId> = Vec::with_capacity(moved_children.len());
       while let Some(child) = self.nodes[new_child.index()].children.first().copied() {
+        self.live_range_pre_remove_steps(child, new_child, 0);
         self.node_iterator_pre_remove_steps(child);
         self.nodes[new_child.index()].children.remove(0);
         let _ = self.mutation_observer_add_transient_observers_on_remove(child, new_child);
@@ -1195,6 +1197,7 @@ impl Document {
     };
 
     self.live_mutation.pre_remove(child, parent, idx);
+    self.live_range_pre_remove_steps(child, parent, idx);
     self.node_iterator_pre_remove_steps(child);
     self.nodes[parent.index()].children.remove(idx);
     let _ = self.mutation_observer_add_transient_observers_on_remove(child, parent);
@@ -1270,6 +1273,7 @@ impl Document {
       )?;
 
       self.live_mutation.pre_remove(old_child, parent, old_child_idx);
+      self.live_range_pre_remove_steps(old_child, parent, old_child_idx);
       self.node_iterator_pre_remove_steps(old_child);
       self.nodes[parent.index()].children.remove(old_child_idx);
       let _ = self.mutation_observer_add_transient_observers_on_remove(old_child, parent);
@@ -1287,6 +1291,7 @@ impl Document {
 
       let mut children_to_move: Vec<NodeId> = Vec::with_capacity(moved_children.len());
       while let Some(child) = self.nodes[new_child.index()].children.first().copied() {
+        self.live_range_pre_remove_steps(child, new_child, 0);
         self.node_iterator_pre_remove_steps(child);
         self.nodes[new_child.index()].children.remove(0);
         let _ = self.mutation_observer_add_transient_observers_on_remove(child, new_child);
@@ -1343,6 +1348,7 @@ impl Document {
     }
 
     self.live_mutation.pre_remove(old_child, parent, old_child_idx);
+    self.live_range_pre_remove_steps(old_child, parent, old_child_idx);
     self.node_iterator_pre_remove_steps(old_child);
     self.nodes[parent.index()].children.remove(old_child_idx);
     let _ = self.mutation_observer_add_transient_observers_on_remove(old_child, parent);

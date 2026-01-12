@@ -40,6 +40,7 @@ mod mutation;
 mod mutation_observer;
 mod intersection_observer;
 mod resize_observer;
+mod range;
 mod scripting_parser;
 mod xml_parse;
 mod serialization;
@@ -51,6 +52,7 @@ pub use html5ever_tree_sink::Dom2TreeSink;
 pub use html_parse::{parse_html, parse_html_with_options};
 pub use cross_document::{clone_node_into_document, clone_node_into_document_deep, AdoptedSubtree};
 pub use xml_parse::parse_xml;
+pub use range::{BoundaryPoint, RangeId};
 
 pub use mutation_observer::{
   MutationObserverAgent, MutationObserverId, MutationObserverInit, MutationObserverLimits, MutationRecord,
@@ -250,6 +252,7 @@ pub struct Document {
   resize_observers: resize_observer::ResizeObserverRegistry,
   node_iterators: FxHashMap<NodeIteratorId, NodeIteratorState>,
   next_node_iterator_id: u64,
+  ranges: Vec<range::Range>,
 }
 
 impl Clone for Document {
@@ -277,6 +280,7 @@ impl Clone for Document {
       resize_observers: resize_observer::ResizeObserverRegistry::new(self.nodes.len()),
       node_iterators: FxHashMap::default(),
       next_node_iterator_id: 1,
+      ranges: Vec::new(),
     }
   }
 }
@@ -428,6 +432,7 @@ impl Document {
       resize_observers: resize_observer::ResizeObserverRegistry::new(self.nodes.len()),
       node_iterators: FxHashMap::default(),
       next_node_iterator_id: 1,
+      ranges: Vec::new(),
     }
   }
 
@@ -519,6 +524,7 @@ impl Document {
       resize_observers: resize_observer::ResizeObserverRegistry::new(0),
       node_iterators: FxHashMap::default(),
       next_node_iterator_id: 1,
+      ranges: Vec::new(),
     };
     let root = doc.push_node(
       NodeKind::Document { quirks_mode },
@@ -556,6 +562,7 @@ impl Document {
       resize_observers: resize_observer::ResizeObserverRegistry::new(0),
       node_iterators: FxHashMap::default(),
       next_node_iterator_id: 1,
+      ranges: Vec::new(),
     };
     let root = doc.push_node(
       NodeKind::Document {
@@ -2440,6 +2447,7 @@ mod shadow_boundary_tests;
 mod shadow_root_boundary_tests;
 #[cfg(test)]
 mod xml_parse_tests;
+mod range_tests;
 #[cfg(test)]
 mod wbr_tests;
 #[cfg(test)]
