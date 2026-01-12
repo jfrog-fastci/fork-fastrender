@@ -28,12 +28,17 @@ use diagnostics::{Diagnostic, FileId, Span, TextRange};
 use emit_js::{emit_top_level_diagnostic, EmitOptions};
 use parse_js::{parse_with_options, Dialect, ParseOptions, SourceType};
 use vm_js::{
-  format_stack_trace, format_termination, Budget, Heap, HeapLimits, JsRuntime, MicrotaskQueue,
-  PromiseState, RootId, SourceText, Value, Vm, VmError, VmHostHooks, VmJobContext, VmOptions,
+  format_stack_trace, format_termination, Budget, GcObject, Heap, HeapLimits, JsRuntime,
+  MicrotaskQueue, PromiseState, RootId, Scope, SourceText, Value, Vm, VmError, VmHost, VmHostHooks,
+  VmJobContext, VmOptions,
 };
 
 const OBSERVE_SCRIPT: &str = "String(globalThis.__native_result)";
 const OBSERVE_SOURCE_NAME: &str = "<native-oracle-observe>";
+
+const CONSOLE_PRELUDE_SCRIPT: &str = "globalThis.console = { log: __native_print };";
+const CONSOLE_PRELUDE_SOURCE_NAME: &str = "<native-oracle-console-prelude>";
+const NATIVE_PRINT_NAME: &str = "__native_print";
 
 const HEAP_MAX_BYTES: usize = 8 * 1024 * 1024;
 const HEAP_GC_THRESHOLD_BYTES: usize = 4 * 1024 * 1024;
@@ -261,6 +266,41 @@ pub enum OracleHarnessError {
   Vm { message: String },
 }
 
+#[derive(Default)]
+struct StdoutCapture {
+  buf: String,
+}
+
+fn native_print(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  // `Scope::to_string` requires `&mut Vm`, so we must not hold a mutable borrow of
+  // `vm.user_data_mut()` across the conversion loop.
+  let mut line = String::new();
+  for (idx, value) in args.iter().copied().enumerate() {
+    if idx > 0 {
+      line.push(' ');
+    }
+
+    let s = scope.to_string(vm, host, hooks, value)?;
+    let js = scope.heap().get_string(s)?;
+    line.push_str(&js.to_utf8_lossy());
+  }
+  line.push('\n');
+
+  let Some(capture) = vm.user_data_mut::<StdoutCapture>() else {
+    return Err(VmError::Unimplemented("stdout capture buffer missing"));
+  };
+  capture.buf.push_str(&line);
+  Ok(Value::Undefined)
+}
+
 /// Execute a fixture file (TypeScript or JavaScript) and return its output string.
 pub fn run_fixture(path: impl AsRef<Path>) -> Result<String, OracleHarnessError> {
   run_fixture_with_options(path, &OracleHarnessOptions::default())
@@ -319,6 +359,102 @@ pub fn run_js_source_with_options(
   // `vm-js` jobs can hold persistent roots; never drop a runtime with queued jobs still pending.
   teardown_microtasks(&mut rt);
   out
+}
+
+/// Execute already-erased JavaScript source, capturing `console.log` output.
+///
+/// ## `console.log` contract
+///
+/// `vm-js` intentionally has no `console` global. For output-based oracle comparisons, this harness
+/// injects a minimal `console.log` before evaluating `source_text`:
+///
+/// - `globalThis.console = { log: __native_print }`
+/// - each `console.log(a, b, ...)` call appends `String(a) + " " + String(b) + ... + "\n"` to an
+///   internal host-owned buffer (arguments are joined with a single ASCII space).
+///
+/// The returned string is the concatenated buffer with a single trailing `\n` removed (if present),
+/// matching the common “captured stdout” convention used by this repository's fixture runners.
+pub fn run_js_source_capture_stdout_with_options(
+  source_name: impl Into<Arc<str>>,
+  source_text: impl Into<Arc<str>>,
+  options: &OracleHarnessOptions,
+) -> Result<String, OracleHarnessError> {
+  let mut vm = Vm::new(options.vm_options.clone());
+  vm.set_user_data(StdoutCapture::default());
+
+  let heap = Heap::new(options.heap_limits);
+  let mut rt = JsRuntime::new(vm, heap).map_err(|e| OracleHarnessError::Vm {
+    message: e.to_string(),
+  })?;
+
+  let out = (|| {
+    rt.register_global_native_function(NATIVE_PRINT_NAME, native_print, 0)
+      .map_err(|err| map_vm_error(&mut rt, err))?;
+
+    rt.exec_script_source(Arc::new(SourceText::new(
+      CONSOLE_PRELUDE_SOURCE_NAME,
+      CONSOLE_PRELUDE_SCRIPT,
+    )))
+    .map_err(|err| map_vm_error(&mut rt, err))?;
+
+    rt.exec_script_source(Arc::new(SourceText::new(source_name, source_text)))
+      .map_err(|err| map_vm_error(&mut rt, err))?;
+
+    rt.vm
+      .perform_microtask_checkpoint(&mut rt.heap)
+      .map_err(|err| map_vm_error(&mut rt, err))?;
+
+    let capture = rt
+      .vm
+      .take_user_data::<StdoutCapture>()
+      .ok_or_else(|| OracleHarnessError::Vm {
+        message: "stdout capture buffer missing".to_string(),
+      })?;
+
+    let mut out = capture.buf;
+    if out.ends_with('\n') {
+      out.pop();
+    }
+    Ok(out)
+  })();
+
+  // `vm-js` jobs can hold persistent roots; never drop a runtime with queued jobs still pending.
+  teardown_microtasks(&mut rt);
+  out
+}
+
+/// Execute a TypeScript snippet in the oracle VM, capturing `console.log` output.
+pub fn run_typescript_source_capture_stdout_with_options(
+  source_name: impl Into<Arc<str>>,
+  source_text: &str,
+  options: &OracleHarnessOptions,
+) -> Result<String, OracleHarnessError> {
+  let js = erase_typescript_to_js(source_text)?;
+  run_js_source_capture_stdout_with_options(source_name, Arc::<str>::from(js), options)
+}
+
+/// Execute a fixture file (TypeScript or JavaScript) and return captured `console.log` output.
+pub fn run_fixture_capture_stdout(path: impl AsRef<Path>) -> Result<String, OracleHarnessError> {
+  run_fixture_capture_stdout_with_options(path, &OracleHarnessOptions::default())
+}
+
+pub fn run_fixture_capture_stdout_with_options(
+  path: impl AsRef<Path>,
+  options: &OracleHarnessOptions,
+) -> Result<String, OracleHarnessError> {
+  let path = path.as_ref();
+  let source_name: Arc<str> = path
+    .file_name()
+    .and_then(|s| s.to_str())
+    .unwrap_or("<fixture>")
+    .into();
+  let source_text = fs::read_to_string(path)?;
+  let ext = path.extension().and_then(|ext| ext.to_str());
+  if matches!(ext, Some("ts") | Some("tsx")) {
+    run_typescript_source_capture_stdout_with_options(source_name, &source_text, options)
+  } else {
+    run_js_source_capture_stdout_with_options(source_name, Arc::<str>::from(source_text), options)
+  }
 }
 
 fn value_to_fixture_string(

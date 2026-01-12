@@ -10716,14 +10716,16 @@ fn async_apply_binary_operator(
     OperatorName::Equality => {
       let mut op_scope = scope.reborrow();
       op_scope.push_roots(&[left, right])?;
-      let ok = abstract_equality(op_scope.heap_mut(), left, right)
+      let ok = evaluator
+        .abstract_equality_comparison(&mut op_scope, left, right)
         .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut op_scope, err))?;
       Ok(Value::Bool(ok))
     }
     OperatorName::Inequality => {
       let mut op_scope = scope.reborrow();
       op_scope.push_roots(&[left, right])?;
-      let ok = abstract_equality(op_scope.heap_mut(), left, right)
+      let ok = evaluator
+        .abstract_equality_comparison(&mut op_scope, left, right)
         .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut op_scope, err))?;
       Ok(Value::Bool(!ok))
     }

@@ -3126,11 +3126,33 @@ fn if_abrupt_reject_promise(
   capability: PromiseCapability,
   completion: VmError,
 ) -> Result<Value, VmError> {
-  // `IfAbruptRejectPromise` (ECMA-262) (partial): only catchable `throw` values are converted into
-  // rejections. VM-internal errors (OOM, unimplemented, etc.) are propagated.
-  let Some(reason) = completion.thrown_value() else {
-    return Err(completion);
+  // `IfAbruptRejectPromise` (ECMA-262): abrupt completions become promise rejections.
+  //
+  // `vm-js` represents spec "throw completion" errors in two ways:
+  // - `VmError::Throw*` for already-allocated JS throw values, and
+  // - internal helper errors like `VmError::TypeError`/`NotCallable`, which need to be coerced into
+  //   real JS `TypeError` objects when intrinsics are available.
+  //
+  // VM-internal errors (OOM, unimplemented, etc.) are still propagated.
+  let reason = match completion {
+    VmError::Throw(value) => value,
+    VmError::ThrowWithStack { value, .. } => value,
+    VmError::TypeError(msg) => create_type_error(vm, scope, hooks, msg)?,
+    VmError::NotCallable => create_type_error(vm, scope, hooks, "value is not callable")?,
+    VmError::NotConstructable => create_type_error(vm, scope, hooks, "value is not a constructor")?,
+    VmError::PrototypeCycle => create_type_error(vm, scope, hooks, "prototype cycle")?,
+    VmError::PrototypeChainTooDeep => create_type_error(vm, scope, hooks, "prototype chain too deep")?,
+    VmError::InvalidPropertyDescriptorPatch => create_type_error(
+      vm,
+      scope,
+      hooks,
+      "invalid property descriptor patch: cannot mix data and accessor fields",
+    )?,
+    other => return Err(other),
   };
+
+  // Root the rejection reason across the host call: `reject` can be user code that allocates/GCs.
+  scope.push_root(reason)?;
   let _ = vm.call_with_host_and_hooks(
     host,
     scope,
