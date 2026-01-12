@@ -28,9 +28,9 @@ use std::sync::{Mutex, OnceLock};
 use vm_js::{
   new_promise_capability_with_host_and_hooks, new_type_error_object,
   perform_promise_then_with_host_and_hooks, promise_resolve_with_host_and_hooks, GcObject, Heap,
-  HostSlots, Intrinsics, NativeConstructId, NativeFunctionId, PromiseCapability,
-  PropertyDescriptor, PropertyKey, PropertyKind, Realm, RealmId, RootId, Scope, Value, Vm, VmError,
-  VmHost, VmHostHooks, WeakGcObject,
+  HostSlots, Intrinsics, NativeConstructId, NativeFunctionId, PromiseCapability, PropertyDescriptor,
+  PropertyKey, PropertyKind, Realm, RealmId, RootId, Scope, Value, Vm, VmError, VmHost, VmHostHooks,
+  WeakGcObject,
 };
 
 const STREAM_REALM_ID_SLOT: usize = 0;
@@ -1522,7 +1522,8 @@ fn readable_stream_pipe_through_native(
   };
 
   // pipeThrough pipes the current stream to `transform.writable` and returns `transform.readable`.
-  // It intentionally ignores the returned Promise from pipeTo.
+  // It intentionally ignores the returned Promise from pipeTo, but must still mark it as handled
+  // so internal piping failures don't trigger `unhandledrejection`.
   scope.push_root(Value::Object(writable_obj))?;
   scope.push_root(Value::Object(readable_obj))?;
 

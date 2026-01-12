@@ -2350,12 +2350,12 @@ fn readable_stream_pipe_through_internal_promises_do_not_trigger_unhandledreject
   host.exec_script_in_event_loop(
     &mut event_loop,
     r#"
-window.__unhandled = false;
-addEventListener('unhandledrejection', () => { window.__unhandled = true; });
-
-let ctrl;
-const rs = new ReadableStream({
-  start(controller) { ctrl = controller; },
+ window.__unhandled = false;
+ window.addEventListener('unhandledrejection', () => { window.__unhandled = true; });
+ 
+ let ctrl;
+ const rs = new ReadableStream({
+   start(controller) { ctrl = controller; },
 });
 
 // Force the internal pipeThrough pump to throw inside its promise reaction callback by
@@ -2394,6 +2394,67 @@ ctrl.enqueue("x");
     let mut scope = heap.scope();
     get_data_prop(&mut scope, global, "__unhandled")
   };
+  assert_eq!(unhandled, Value::Bool(false));
+  Ok(())
+}
+
+#[test]
+fn readable_stream_pipe_through_marks_internal_pipe_to_promise_handled() -> Result<()> {
+  let renderer_dom =
+    fastrender::dom::parse_html("<!doctype html><html><head></head><body></body></html>")?;
+  let mut host = WindowHostState::from_renderer_dom(&renderer_dom, "https://example.com/")?;
+  let mut event_loop = EventLoop::<WindowHostState>::new();
+
+  host.exec_script_in_event_loop(
+    &mut event_loop,
+    r#"
+globalThis.__unhandled = false;
+globalThis.__pipe_called = false;
+globalThis.__same_return = false;
+
+window.addEventListener('unhandledrejection', () => { globalThis.__unhandled = true; });
+
+ReadableStream.prototype.pipeTo = function (_dest, _options) {
+  globalThis.__pipe_called = true;
+  // Keep the rejected promise alive so the host can still dispatch a notification task if the
+  // Promise is not marked as handled.
+  globalThis.__pipe_promise = Promise.reject('boom');
+  return globalThis.__pipe_promise;
+};
+
+const rs = new ReadableStream();
+const transform = { writable: {}, readable: {} };
+const out = rs.pipeThrough(transform);
+globalThis.__same_return = (out === transform.readable);
+"#,
+  )?;
+
+  event_loop.perform_microtask_checkpoint(&mut host)?;
+  assert_eq!(
+    event_loop.run_until_idle(
+      &mut host,
+      RunLimits {
+        max_tasks: 10,
+        max_microtasks: 100,
+        max_wall_time: None,
+      },
+    )?,
+    RunUntilIdleOutcome::Idle
+  );
+
+  let (pipe_called, same_return, unhandled) = {
+    let window = host.window_mut();
+    let global = window.global_object();
+    let (_vm, heap) = window.vm_and_heap_mut();
+    let mut scope = heap.scope();
+    let pipe_called = get_data_prop(&mut scope, global, "__pipe_called");
+    let same_return = get_data_prop(&mut scope, global, "__same_return");
+    let unhandled = get_data_prop(&mut scope, global, "__unhandled");
+    (pipe_called, same_return, unhandled)
+  };
+
+  assert_eq!(pipe_called, Value::Bool(true));
+  assert_eq!(same_return, Value::Bool(true));
   assert_eq!(unhandled, Value::Bool(false));
   Ok(())
 }
@@ -5210,7 +5271,7 @@ fn window_xhr_supports_sync_send_and_with_credentials() -> Result<()> {
     )
   };
 
-  assert_eq!(events, "rs:1,rs:4,load,loadend,");
+  assert_eq!(events, "rs:1,rs:2,rs:3,rs:4,load,loadend,");
   assert_eq!(status, Value::Number(200.0));
   assert_eq!(text, "hello");
   assert_eq!(

@@ -26522,10 +26522,12 @@ fn html_slot_element_assigned_nodes_native(
     .ok_or(VmError::TypeError(
       "HTMLSlotElement.assignedNodes requires a DOM-backed document",
     ))?;
-  // SAFETY: `dom_ptr` is valid for the duration of this native call.
-  let dom = unsafe { dom_ptr.as_ref() };
-  if !matches!(dom.node(handle.node_id).kind, NodeKind::Slot { .. }) {
-    return Err(VmError::TypeError("Illegal invocation"));
+  {
+    // SAFETY: `dom_ptr` is valid for the duration of this native call.
+    let dom = unsafe { dom_ptr.as_ref() };
+    if !matches!(dom.node(handle.node_id).kind, NodeKind::Slot { .. }) {
+      return Err(VmError::TypeError("Illegal invocation"));
+    }
   }
 
   let flatten = match args.get(0).copied().unwrap_or(Value::Undefined) {
@@ -26548,9 +26550,8 @@ fn html_slot_element_assigned_nodes_native(
     }
   };
 
-  let dom = dom_from_vm_host(host).ok_or(VmError::TypeError(
-    "HTMLSlotElement.assignedNodes requires a DOM-backed document",
-  ))?;
+  // SAFETY: `dom_ptr` is valid for the duration of this native call.
+  let dom = unsafe { dom_ptr.as_ref() };
   let assigned = if flatten {
     dom.find_flattened_slottables_for_slot(handle.node_id)
   } else {
@@ -26605,10 +26606,12 @@ fn html_slot_element_assigned_elements_native(
     .ok_or(VmError::TypeError(
       "HTMLSlotElement.assignedElements requires a DOM-backed document",
     ))?;
-  // SAFETY: `dom_ptr` is valid for the duration of this native call.
-  let dom = unsafe { dom_ptr.as_ref() };
-  if !matches!(dom.node(handle.node_id).kind, NodeKind::Slot { .. }) {
-    return Err(VmError::TypeError("Illegal invocation"));
+  {
+    // SAFETY: `dom_ptr` is valid for the duration of this native call.
+    let dom = unsafe { dom_ptr.as_ref() };
+    if !matches!(dom.node(handle.node_id).kind, NodeKind::Slot { .. }) {
+      return Err(VmError::TypeError("Illegal invocation"));
+    }
   }
 
   let flatten = match args.get(0).copied().unwrap_or(Value::Undefined) {
@@ -26631,9 +26634,8 @@ fn html_slot_element_assigned_elements_native(
     }
   };
 
-  let dom = dom_from_vm_host(host).ok_or(VmError::TypeError(
-    "HTMLSlotElement.assignedElements requires a DOM-backed document",
-  ))?;
+  // SAFETY: `dom_ptr` is valid for the duration of this native call.
+  let dom = unsafe { dom_ptr.as_ref() };
   let assigned = if flatten {
     dom.find_flattened_slottables_for_slot(handle.node_id)
   } else {
@@ -34441,6 +34443,155 @@ fn init_window_globals(
       };
       scope.push_root(Value::Object(node_ctor))?;
       node_ctor
+    };
+
+    // Element/Document/DocumentFragment/Text constructors.
+    //
+    // Like Node, these interface objects exist for `instanceof` checks and interface object
+    // inheritance, but are not constructible in practice. When using WebIDL bindings, the generated
+    // constructors are expected to already exist on the global object.
+    let _element_ctor = if config.dom_bindings_backend == DomBindingsBackend::Handwritten {
+      let element_ctor = make_illegal_ctor(&mut scope, "Element")?;
+      scope.push_root(Value::Object(element_ctor))?;
+      scope.define_property(
+        element_ctor,
+        prototype_key,
+        ctor_link_desc(Value::Object(element_proto)),
+      )?;
+      scope.define_property(
+        element_proto,
+        constructor_key,
+        ctor_link_desc(Value::Object(element_ctor)),
+      )?;
+      let element_key = alloc_key(&mut scope, "Element")?;
+      scope.define_property(global, element_key, data_desc(Value::Object(element_ctor)))?;
+      element_ctor
+    } else {
+      let element_key = alloc_key(&mut scope, "Element")?;
+      let Some(element_val) = scope
+        .heap()
+        .object_get_own_data_property_value(global, &element_key)?
+      else {
+        return Err(VmError::InvariantViolation(
+          "WindowRealm expected globalThis.Element to be installed by WebIDL bindings",
+        ));
+      };
+      let Value::Object(element_ctor) = element_val else {
+        return Err(VmError::InvariantViolation(
+          "WindowRealm expected globalThis.Element to be an object",
+        ));
+      };
+      scope.push_root(Value::Object(element_ctor))?;
+      element_ctor
+    };
+
+    let _document_ctor = if config.dom_bindings_backend == DomBindingsBackend::Handwritten {
+      let document_ctor = make_illegal_ctor(&mut scope, "Document")?;
+      scope.push_root(Value::Object(document_ctor))?;
+      scope.define_property(
+        document_ctor,
+        prototype_key,
+        ctor_link_desc(Value::Object(document_proto)),
+      )?;
+      scope.define_property(
+        document_proto,
+        constructor_key,
+        ctor_link_desc(Value::Object(document_ctor)),
+      )?;
+      let document_key = alloc_key(&mut scope, "Document")?;
+      scope.define_property(global, document_key, data_desc(Value::Object(document_ctor)))?;
+      document_ctor
+    } else {
+      let document_key = alloc_key(&mut scope, "Document")?;
+      let Some(document_val) = scope
+        .heap()
+        .object_get_own_data_property_value(global, &document_key)?
+      else {
+        return Err(VmError::InvariantViolation(
+          "WindowRealm expected globalThis.Document to be installed by WebIDL bindings",
+        ));
+      };
+      let Value::Object(document_ctor) = document_val else {
+        return Err(VmError::InvariantViolation(
+          "WindowRealm expected globalThis.Document to be an object",
+        ));
+      };
+      scope.push_root(Value::Object(document_ctor))?;
+      document_ctor
+    };
+
+    let _document_fragment_ctor = if config.dom_bindings_backend == DomBindingsBackend::Handwritten {
+      let document_fragment_ctor = make_illegal_ctor(&mut scope, "DocumentFragment")?;
+      scope.push_root(Value::Object(document_fragment_ctor))?;
+      scope.define_property(
+        document_fragment_ctor,
+        prototype_key,
+        ctor_link_desc(Value::Object(document_fragment_proto)),
+      )?;
+      scope.define_property(
+        document_fragment_proto,
+        constructor_key,
+        ctor_link_desc(Value::Object(document_fragment_ctor)),
+      )?;
+      let document_fragment_key = alloc_key(&mut scope, "DocumentFragment")?;
+      scope.define_property(
+        global,
+        document_fragment_key,
+        data_desc(Value::Object(document_fragment_ctor)),
+      )?;
+      document_fragment_ctor
+    } else {
+      let document_fragment_key = alloc_key(&mut scope, "DocumentFragment")?;
+      let Some(document_fragment_val) = scope
+        .heap()
+        .object_get_own_data_property_value(global, &document_fragment_key)?
+      else {
+        return Err(VmError::InvariantViolation(
+          "WindowRealm expected globalThis.DocumentFragment to be installed by WebIDL bindings",
+        ));
+      };
+      let Value::Object(document_fragment_ctor) = document_fragment_val else {
+        return Err(VmError::InvariantViolation(
+          "WindowRealm expected globalThis.DocumentFragment to be an object",
+        ));
+      };
+      scope.push_root(Value::Object(document_fragment_ctor))?;
+      document_fragment_ctor
+    };
+
+    let _text_ctor = if config.dom_bindings_backend == DomBindingsBackend::Handwritten {
+      let text_ctor = make_illegal_ctor(&mut scope, "Text")?;
+      scope.push_root(Value::Object(text_ctor))?;
+      scope.define_property(
+        text_ctor,
+        prototype_key,
+        ctor_link_desc(Value::Object(text_proto)),
+      )?;
+      scope.define_property(
+        text_proto,
+        constructor_key,
+        ctor_link_desc(Value::Object(text_ctor)),
+      )?;
+      let text_key = alloc_key(&mut scope, "Text")?;
+      scope.define_property(global, text_key, data_desc(Value::Object(text_ctor)))?;
+      text_ctor
+    } else {
+      let text_key = alloc_key(&mut scope, "Text")?;
+      let Some(text_val) = scope
+        .heap()
+        .object_get_own_data_property_value(global, &text_key)?
+      else {
+        return Err(VmError::InvariantViolation(
+          "WindowRealm expected globalThis.Text to be installed by WebIDL bindings",
+        ));
+      };
+      let Value::Object(text_ctor) = text_val else {
+        return Err(VmError::InvariantViolation(
+          "WindowRealm expected globalThis.Text to be an object",
+        ));
+      };
+      scope.push_root(Value::Object(text_ctor))?;
+      text_ctor
     };
 
     let document_type_ctor = make_illegal_ctor(&mut scope, "DocumentType")?;
