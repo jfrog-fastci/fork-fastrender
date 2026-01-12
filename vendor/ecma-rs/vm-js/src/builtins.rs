@@ -9656,11 +9656,16 @@ pub fn string_constructor_construct(
   };
   scope.push_root(Value::String(prim))?;
 
-  let obj = scope.alloc_object()?;
+  let proto = crate::spec_ops::get_prototype_from_constructor_with_host_and_hooks(
+    vm,
+    scope,
+    host,
+    hooks,
+    new_target,
+    intr.string_prototype(),
+  )?;
+  let obj = scope.alloc_object_with_prototype(Some(proto))?;
   scope.push_root(Value::Object(obj))?;
-  scope
-    .heap_mut()
-    .object_set_prototype(obj, Some(intr.string_prototype()))?;
 
   // Store the primitive value on an internal symbol so `String.prototype.toString` can recover it.
   let marker = scope.alloc_string("vm-js.internal.StringData")?;
@@ -9679,14 +9684,6 @@ pub fn string_constructor_construct(
     length_key,
     data_desc(Value::Number(len as f64), false, false, false),
   )?;
-
-  // Best-effort: if `new_target.prototype` is an object, use it.
-  if let Value::Object(nt) = new_target {
-    let proto_key = string_key(scope, "prototype")?;
-    if let Ok(Value::Object(p)) = scope.heap().get(nt, &proto_key) {
-      scope.heap_mut().object_set_prototype(obj, Some(p))?;
-    }
-  }
 
   Ok(Value::Object(obj))
 }
@@ -11576,11 +11573,16 @@ pub fn number_constructor_construct(
     Some(v) => scope.to_number(vm, host, hooks, v)?,
   };
 
-  let obj = scope.alloc_object()?;
+  let proto = crate::spec_ops::get_prototype_from_constructor_with_host_and_hooks(
+    vm,
+    scope,
+    host,
+    hooks,
+    new_target,
+    intr.number_prototype(),
+  )?;
+  let obj = scope.alloc_object_with_prototype(Some(proto))?;
   scope.push_root(Value::Object(obj))?;
-  scope
-    .heap_mut()
-    .object_set_prototype(obj, Some(intr.number_prototype()))?;
 
   // Store the primitive value on an internal symbol so `Number.prototype.valueOf` can recover it.
   let marker = scope.alloc_string("vm-js.internal.NumberData")?;
@@ -11591,14 +11593,6 @@ pub fn number_constructor_construct(
     marker_key,
     data_desc(Value::Number(prim), true, false, false),
   )?;
-
-  // Best-effort: if `new_target.prototype` is an object, use it.
-  if let Value::Object(nt) = new_target {
-    let proto_key = string_key(scope, "prototype")?;
-    if let Ok(Value::Object(p)) = scope.heap().get(nt, &proto_key) {
-      scope.heap_mut().object_set_prototype(obj, Some(p))?;
-    }
-  }
 
   Ok(Value::Object(obj))
 }
@@ -11656,8 +11650,8 @@ pub fn boolean_constructor_call(
 pub fn boolean_constructor_construct(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   args: &[Value],
   new_target: Value,
@@ -11668,11 +11662,16 @@ pub fn boolean_constructor_construct(
     Some(v) => scope.heap().to_boolean(v)?,
   };
 
-  let obj = scope.alloc_object()?;
+  let proto = crate::spec_ops::get_prototype_from_constructor_with_host_and_hooks(
+    vm,
+    scope,
+    host,
+    hooks,
+    new_target,
+    intr.boolean_prototype(),
+  )?;
+  let obj = scope.alloc_object_with_prototype(Some(proto))?;
   scope.push_root(Value::Object(obj))?;
-  scope
-    .heap_mut()
-    .object_set_prototype(obj, Some(intr.boolean_prototype()))?;
 
   // Store the primitive value on an internal symbol so `Boolean.prototype.valueOf` can recover it.
   let marker = scope.alloc_string("vm-js.internal.BooleanData")?;
@@ -11683,14 +11682,6 @@ pub fn boolean_constructor_construct(
     marker_key,
     data_desc(Value::Bool(prim), true, false, false),
   )?;
-
-  // Best-effort: if `new_target.prototype` is an object, use it.
-  if let Value::Object(nt) = new_target {
-    let proto_key = string_key(scope, "prototype")?;
-    if let Ok(Value::Object(p)) = scope.heap().get(nt, &proto_key) {
-      scope.heap_mut().object_set_prototype(obj, Some(p))?;
-    }
-  }
 
   Ok(Value::Object(obj))
 }
@@ -14023,19 +14014,17 @@ pub fn date_constructor_construct(
     }
   };
 
-  let obj = scope.alloc_date(time)?;
-  scope.push_root(Value::Object(obj))?;
-  scope
-    .heap_mut()
-    .object_set_prototype(obj, Some(intr.date_prototype()))?;
-
-  // Best-effort: if `new_target.prototype` is an object, use it.
-  if let Value::Object(nt) = new_target {
-    let proto_key = string_key(scope, "prototype")?;
-    if let Ok(Value::Object(p)) = scope.heap().get(nt, &proto_key) {
-      scope.heap_mut().object_set_prototype(obj, Some(p))?;
-    }
-  }
+  // OrdinaryCreateFromConstructor(newTarget, %Date.prototype%).
+  let obj = crate::spec_ops::ordinary_create_from_constructor_with_host_and_hooks(
+    vm,
+    scope,
+    host,
+    hooks,
+    new_target,
+    intr.date_prototype(),
+    &[],
+    |scope| scope.alloc_date(time),
+  )?;
 
   Ok(Value::Object(obj))
 }

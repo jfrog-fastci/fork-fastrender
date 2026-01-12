@@ -547,14 +547,9 @@ pub fn get_prototype_from_constructor_with_host_and_hooks(
   scope.push_root(Value::String(key_s))?;
   let key = PropertyKey::from_string(key_s);
 
-  let proto = scope.get_with_host_and_hooks(
-    vm,
-    host,
-    hooks,
-    constructor_obj,
-    key,
-    Value::Object(constructor_obj),
-  )?;
+  // `Get(constructor, "prototype")` (Proxy-aware).
+  let proto =
+    scope.get_with_host_and_hooks(vm, host, hooks, constructor_obj, key, Value::Object(constructor_obj))?;
   match proto {
     Value::Object(o) => Ok(o),
     _ => Ok(intrinsic_default_proto),

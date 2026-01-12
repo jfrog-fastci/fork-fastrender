@@ -1,0 +1,156 @@
+use vm_js::{
+  get_prototype_from_constructor, GcObject, Heap, HeapLimits, JsRuntime, PropertyDescriptor,
+  PropertyKey, PropertyKind, Scope, Value, Vm, VmError, VmOptions,
+};
+
+fn new_runtime() -> JsRuntime {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  JsRuntime::new(vm, heap).unwrap()
+}
+
+fn global_var_desc(value: Value) -> PropertyDescriptor {
+  PropertyDescriptor {
+    enumerable: true,
+    configurable: true,
+    kind: PropertyKind::Data {
+      value,
+      writable: true,
+    },
+  }
+}
+
+fn define_global(
+  scope: &mut Scope<'_>,
+  global: GcObject,
+  name: &str,
+  value: Value,
+) -> Result<(), VmError> {
+  scope.push_root(Value::Object(global))?;
+  scope.push_root(value)?;
+  let key_s = scope.alloc_string(name)?;
+  scope.push_root(Value::String(key_s))?;
+  let key = PropertyKey::from_string(key_s);
+  scope.define_property(global, key, global_var_desc(value))
+}
+
+#[test]
+fn proxy_get_trap_observed_for_new_target_prototype_in_ecma_function_construct() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let global = rt.realm().global_object();
+
+  // Create:
+  // - an ECMAScript constructor `F`
+  // - a proxy handler with a `"get"` trap that logs keys and overrides `.prototype`
+  rt.exec_script(
+    r#"
+      var sawPrototype = false;
+      function F() {}
+      var proto = { marker: 1 };
+      function getTrap(t, k, r) {
+        if (k === "prototype") { sawPrototype = true; return proto; }
+        return Reflect.get(t, k, r);
+      }
+      var handler = { get: getTrap };
+    "#,
+  )?;
+
+  let target = rt.exec_script("F")?;
+  let handler = rt.exec_script("handler")?;
+  let Value::Object(target_obj) = target else {
+    panic!("expected F to be an object, got {target:?}");
+  };
+  let Value::Object(handler_obj) = handler else {
+    panic!("expected handler to be an object, got {handler:?}");
+  };
+
+  // Install proxy constructor as global `P`.
+  {
+    let (_vm, _realm, heap) = rt.vm_realm_and_heap_mut();
+    let mut scope = heap.scope();
+    let proxy = scope.alloc_proxy(Some(target_obj), Some(handler_obj))?;
+    define_global(&mut scope, global, "P", Value::Object(proxy))?;
+  }
+
+  let value = rt.exec_script(
+    r#"
+      var o = new P();
+      o.marker === 1 && sawPrototype
+    "#,
+  )?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn proxy_get_trap_observed_for_new_target_prototype_in_string_construct() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let global = rt.realm().global_object();
+
+  rt.exec_script(
+    r#"
+      var sawPrototype = false;
+      var proto = { marker: 2 };
+      function getTrap(t, k, r) {
+        if (k === "prototype") { sawPrototype = true; return proto; }
+        return Reflect.get(t, k, r);
+      }
+      var handler = { get: getTrap };
+    "#,
+  )?;
+
+  let target = rt.exec_script("String")?;
+  let handler = rt.exec_script("handler")?;
+  let Value::Object(target_obj) = target else {
+    panic!("expected String to be an object, got {target:?}");
+  };
+  let Value::Object(handler_obj) = handler else {
+    panic!("expected handler to be an object, got {handler:?}");
+  };
+
+  // Install proxy constructor as global `P`.
+  {
+    let (_vm, _realm, heap) = rt.vm_realm_and_heap_mut();
+    let mut scope = heap.scope();
+    let proxy = scope.alloc_proxy(Some(target_obj), Some(handler_obj))?;
+    define_global(&mut scope, global, "P", Value::Object(proxy))?;
+  }
+
+  let value = rt.exec_script(
+    r#"
+      var o = new P("hi");
+      o.marker === 2 && sawPrototype
+    "#,
+  )?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn get_prototype_from_constructor_throws_on_revoked_proxy() -> Result<(), VmError> {
+  let mut vm = Vm::new(VmOptions::default());
+  let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut scope = heap.scope();
+
+  let target = scope.alloc_object()?;
+  let handler = scope.alloc_object()?;
+  let proxy = scope.alloc_proxy(Some(target), Some(handler))?;
+  scope.revoke_proxy(proxy)?;
+
+  let default_proto = scope.alloc_object()?;
+
+  let err =
+    get_prototype_from_constructor(&mut vm, &mut scope, Value::Object(proxy), default_proto)
+      .unwrap_err();
+  match err {
+    VmError::TypeError(msg) => {
+      assert!(
+        msg.contains("revoked"),
+        "expected revoked-proxy TypeError, got {msg}"
+      );
+    }
+    other => panic!("expected VmError::TypeError, got {other:?}"),
+  }
+
+  Ok(())
+}
