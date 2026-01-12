@@ -3592,6 +3592,15 @@ mod tests {
           var selectSelectedIndexAfterValue = select.selectedIndex;
           var selectValueAfterValue = select.value;
 
+          // Ensure options collection is live when nodes are removed (remove the non-selected option).
+          select.removeChild(optB);
+          var optionsLenAfterRemove = options.length;
+          var options0IsOptAAfterRemove = options[0] === optA;
+          var optionsItem0IsOptAAfterRemove = options.item(0) === optA;
+          var optionsItemNeg = options.item(-1);
+          var optionsItem99 = options.item(99);
+          var selectValueAfterRemove = select.value;
+
           var form = document.createElement("form");
           var elements = form.elements;
           var elementsSame = elements === form.elements;
@@ -3606,6 +3615,15 @@ mod tests {
           var elements1IsTextarea = elements[1] === textarea;
           var elements2IsSelect = elements[2] === select;
           var elementsOrder = Array.from(elements).map(function (n) { return n.tagName; }).join(",");
+
+          form.removeChild(textarea);
+          var formLen2AfterRemove = elements.length;
+          var elements0IsInputAfterRemove = elements[0] === input;
+          var elements1IsSelectAfterRemove = elements[1] === select;
+          var elementsOrderAfterRemove = Array.from(elements).map(function (n) { return n.tagName; }).join(",");
+          var elementsItem0IsInput = elements.item(0) === input;
+          var elementsItemNeg = elements.item(-1);
+          var elementsItem99 = elements.item(99);
 
           return JSON.stringify({
             inputValue: input.value,
@@ -3624,6 +3642,12 @@ mod tests {
             optionsLen2: optionsLen2,
             options0IsOptA: options0IsOptA,
             options1IsOptB: options1IsOptB,
+            optionsLenAfterRemove: optionsLenAfterRemove,
+            options0IsOptAAfterRemove: options0IsOptAAfterRemove,
+            optionsItem0IsOptAAfterRemove: optionsItem0IsOptAAfterRemove,
+            optionsItemNeg: optionsItemNeg,
+            optionsItem99: optionsItem99,
+            selectValueAfterRemove: selectValueAfterRemove,
 
             selectSelectedIndexAfterSelectedIndex: selectSelectedIndexAfterSelectedIndex,
             selectValueAfterSelectedIndex: selectValueAfterSelectedIndex,
@@ -3639,6 +3663,13 @@ mod tests {
             elements1IsTextarea: elements1IsTextarea,
             elements2IsSelect: elements2IsSelect,
             elementsOrder: elementsOrder,
+            formLen2AfterRemove: formLen2AfterRemove,
+            elements0IsInputAfterRemove: elements0IsInputAfterRemove,
+            elements1IsSelectAfterRemove: elements1IsSelectAfterRemove,
+            elementsOrderAfterRemove: elementsOrderAfterRemove,
+            elementsItem0IsInput: elementsItem0IsInput,
+            elementsItemNeg: elementsItemNeg,
+            elementsItem99: elementsItem99,
           });
         })()
         "#,
@@ -3660,6 +3691,12 @@ mod tests {
       assert_eq!(v["optionsLen2"], 2);
       assert_eq!(v["options0IsOptA"], true);
       assert_eq!(v["options1IsOptB"], true);
+      assert_eq!(v["optionsLenAfterRemove"], 1);
+      assert_eq!(v["options0IsOptAAfterRemove"], true);
+      assert_eq!(v["optionsItem0IsOptAAfterRemove"], true);
+      assert!(v["optionsItemNeg"].is_null(), "options.item(-1) should return null");
+      assert!(v["optionsItem99"].is_null(), "options.item(99) should return null");
+      assert_eq!(v["selectValueAfterRemove"], "a");
 
       assert_eq!(v["selectSelectedIndexAfterSelectedIndex"], 1);
       assert_eq!(v["selectValueAfterSelectedIndex"], "b");
@@ -3675,6 +3712,13 @@ mod tests {
       assert_eq!(v["elements1IsTextarea"], true);
       assert_eq!(v["elements2IsSelect"], true);
       assert_eq!(v["elementsOrder"], "INPUT,TEXTAREA,SELECT");
+      assert_eq!(v["formLen2AfterRemove"], 2);
+      assert_eq!(v["elements0IsInputAfterRemove"], true);
+      assert_eq!(v["elements1IsSelectAfterRemove"], true);
+      assert_eq!(v["elementsOrderAfterRemove"], "INPUT,SELECT");
+      assert_eq!(v["elementsItem0IsInput"], true);
+      assert!(v["elementsItemNeg"].is_null(), "elements.item(-1) should return null");
+      assert!(v["elementsItem99"].is_null(), "elements.item(99) should return null");
     });
   }
 }
