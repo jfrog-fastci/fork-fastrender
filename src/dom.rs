@@ -7816,6 +7816,31 @@ impl<'a> Element for ElementRef<'a> {
           .any(|ancestor| ancestor.is_element()),
       },
       PseudoClass::Empty => self.is_empty(),
+      PseudoClass::Blank => {
+        let Some(tag) = self.node.tag_name() else {
+          return false;
+        };
+
+        if tag.eq_ignore_ascii_case("textarea") {
+          return trim_ascii_whitespace_html(&textarea_current_value(self.node)).is_empty();
+        }
+
+        if tag.eq_ignore_ascii_case("select") {
+          let value = self.select_value().unwrap_or_default();
+          return trim_ascii_whitespace_html(&value).is_empty();
+        }
+
+        if tag.eq_ignore_ascii_case("input") {
+          if !self.is_text_editable_input() {
+            return false;
+          }
+
+          let value = self.control_value().unwrap_or_default();
+          return trim_ascii_whitespace_html(&value).is_empty();
+        }
+
+        false
+      }
       PseudoClass::Disabled => self.supports_disabled() && self.is_disabled(),
       PseudoClass::Enabled => self.supports_disabled() && !self.is_disabled(),
       // `:required`/`:optional` are about the element's requiredness flag, not whether it is
