@@ -1281,10 +1281,7 @@ fn check_and_build_allow_string_literal() {
     output.status
   );
   let stdout = String::from_utf8_lossy(&output.stdout);
-  assert!(
-    stdout.trim().parse::<u32>().is_ok(),
-    "expected string literal print to produce a numeric intern id, got: {stdout:?}"
-  );
+  assert_eq!(stdout.as_ref(), "hi\n");
 }
 
 #[test]
