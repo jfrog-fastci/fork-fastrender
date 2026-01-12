@@ -59,6 +59,7 @@ use crate::layout::float_context::ClearSide;
 use crate::layout::float_context::FloatContext;
 use crate::layout::float_shape::build_float_shape;
 use crate::layout::formatting_context::count_inline_intrinsic_call;
+use crate::layout::formatting_context::intrinsic_cache_epoch;
 use crate::layout::formatting_context::layout_cache_lookup;
 use crate::layout::formatting_context::layout_cache_store;
 use crate::layout::formatting_context::FormattingContext;
@@ -108,6 +109,7 @@ use crate::text::line_break::find_break_opportunities;
 use crate::text::line_break::BreakType;
 use crate::text::pipeline::compute_adjusted_font_size;
 use crate::text::pipeline::preferred_font_aspect;
+use crate::text::pipeline::shaping_style_hash;
 use crate::text::pipeline::ExplicitBidiContext;
 use crate::text::pipeline::ShapedRun;
 use crate::text::pipeline::ShapingPipeline;
@@ -141,12 +143,18 @@ use line_builder::RunningInfo;
 use line_builder::StaticPositionAnchor;
 use line_builder::TabItem;
 use line_builder::TextItem;
+use parking_lot::RwLock;
 use rayon::prelude::*;
+use rustc_hash::FxHashMap;
+use rustc_hash::FxHasher;
 use smallvec::SmallVec;
 use std::borrow::Cow;
 use std::cell::Cell;
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::hash::Hash;
+use std::hash::Hasher;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -222,6 +230,574 @@ fn enter_inline_intrinsic_percentage_base_none() -> InlineIntrinsicPercentageBas
 #[inline]
 fn inline_intrinsic_percentage_base_is_none() -> bool {
   INLINE_INTRINSIC_PERCENTAGE_BASE_NONE.with(|flag| flag.get())
+}
+
+// === Text inline-item cache ==================================================
+//
+// Inline layout and intrinsic sizing frequently rebuild the same `InlineItem` streams for text
+// boxes (normalization, break opportunity scanning, shaping, metrics). These operations are
+// expensive and show up prominently in profiling.
+//
+// Cache the processed inline items per text/marker box within the active intrinsic cache epoch.
+// The cache key includes:
+// - box id (stable for DOM nodes; falls back to an ephemeral id in tests)
+// - style override variant (so temporary overrides don't collide with base layout)
+// - paragraph base direction and bidi stack signature (affects shaping and bidi resolution)
+// - marker flag and text-combine boundary flags
+//
+// Entries are validated with a style hash and the active font generation so the cache is safe when
+// styles or fonts change within a run.
+
+const TEXT_INLINE_ITEM_CACHE_SHARDS: usize = 64;
+// Per-shard entry cap (total cap = SHARDS * PER_SHARD).
+const TEXT_INLINE_ITEM_CACHE_MAX_ENTRIES_PER_SHARD: usize = 128;
+// Hysteresis window for eviction to avoid thrash when the cache is at capacity.
+const TEXT_INLINE_ITEM_CACHE_EVICTION_BATCH_PER_SHARD: usize = 32;
+
+// Thread-local fast path mirrors `INTRINSIC_*_CACHE_TL`: it avoids taking a global shard lock once
+// an entry has been observed by a given worker.
+const TEXT_INLINE_ITEM_CACHE_TL_MAX_ENTRIES: usize = 256;
+const TEXT_INLINE_ITEM_CACHE_TL_EVICTION_BATCH: usize = 64;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct TextInlineItemCacheKey {
+  box_id: usize,
+  style_variant: u64,
+  base_direction_rtl: bool,
+  bidi_signature: u64,
+  flags: u8,
+}
+
+impl TextInlineItemCacheKey {
+  fn new(
+    box_id: usize,
+    style_variant: u64,
+    base_direction: Direction,
+    bidi_stack: &[(UnicodeBidi, Direction)],
+    is_marker: bool,
+    boundary: CombineBoundary,
+  ) -> Self {
+    let mut flags = 0u8;
+    if is_marker {
+      flags |= 1 << 0;
+    }
+    if boundary.prev {
+      flags |= 1 << 1;
+    }
+    if boundary.next {
+      flags |= 1 << 2;
+    }
+    Self {
+      box_id,
+      style_variant,
+      base_direction_rtl: matches!(base_direction, Direction::Rtl),
+      bidi_signature: text_inline_item_cache_bidi_signature(bidi_stack),
+      flags,
+    }
+  }
+}
+
+#[derive(Debug, Clone)]
+struct TextInlineItemCacheValue {
+  leading_collapsible: bool,
+  trailing_collapsible: bool,
+  allow_soft_wrap: bool,
+  items: Arc<Vec<InlineItem>>,
+}
+
+#[derive(Debug, Clone)]
+struct TextInlineItemCacheEntry {
+  epoch: usize,
+  style_hash: u64,
+  font_generation: u64,
+  value: TextInlineItemCacheValue,
+}
+
+struct ShardedTextInlineItemCache {
+  shards: [RwLock<FxHashMap<TextInlineItemCacheKey, TextInlineItemCacheEntry>>;
+    TEXT_INLINE_ITEM_CACHE_SHARDS],
+}
+
+impl ShardedTextInlineItemCache {
+  fn new() -> Self {
+    Self {
+      shards: std::array::from_fn(|_| RwLock::new(FxHashMap::default())),
+    }
+  }
+
+  #[inline]
+  fn shard_index_for_box_id(box_id: usize) -> usize {
+    box_id % TEXT_INLINE_ITEM_CACHE_SHARDS
+  }
+
+  fn get(
+    &self,
+    key: &TextInlineItemCacheKey,
+    epoch: usize,
+    style_hash: u64,
+    font_generation: u64,
+  ) -> Option<TextInlineItemCacheEntry> {
+    let shard = &self.shards[Self::shard_index_for_box_id(key.box_id)];
+    {
+      let map = shard.read();
+      if let Some(entry) = map.get(key) {
+        if entry.epoch == epoch
+          && entry.style_hash == style_hash
+          && entry.font_generation == font_generation
+        {
+          return Some(entry.clone());
+        }
+      }
+    }
+
+    // Slow path: remove stale entries under a write lock.
+    let mut map = shard.write();
+    if let Some(entry) = map.get(key) {
+      if entry.epoch != epoch
+        || entry.style_hash != style_hash
+        || entry.font_generation != font_generation
+      {
+        map.remove(key);
+      } else {
+        return Some(entry.clone());
+      }
+    }
+    None
+  }
+
+  fn insert(&self, key: TextInlineItemCacheKey, entry: TextInlineItemCacheEntry) -> usize {
+    let shard = &self.shards[Self::shard_index_for_box_id(key.box_id)];
+    let mut map = shard.write();
+    map.insert(key, entry);
+
+    if map.len()
+      <= TEXT_INLINE_ITEM_CACHE_MAX_ENTRIES_PER_SHARD
+        + TEXT_INLINE_ITEM_CACHE_EVICTION_BATCH_PER_SHARD
+    {
+      return 0;
+    }
+
+    let epoch = intrinsic_cache_epoch();
+    map.retain(|_, entry| entry.epoch == epoch);
+
+    let cap = TEXT_INLINE_ITEM_CACHE_MAX_ENTRIES_PER_SHARD;
+    if map.len() <= cap {
+      return 0;
+    }
+
+    // Evict in a batch to avoid churn.
+    let mut to_remove = map.len().saturating_sub(cap);
+    if to_remove == 0 {
+      return 0;
+    }
+
+    // Prefer evicting entries other than the most recently inserted one. If the shard contains only
+    // the new key this will naturally fall back to evicting whatever is present.
+    let mut removed = 0usize;
+    let keys: Vec<TextInlineItemCacheKey> = map
+      .keys()
+      .filter(|k| **k != key)
+      .take(to_remove)
+      .cloned()
+      .collect();
+    for k in keys {
+      if map.remove(&k).is_some() {
+        removed += 1;
+      }
+    }
+    to_remove = map.len().saturating_sub(cap);
+    if to_remove > 0 {
+      let more: Vec<TextInlineItemCacheKey> = map.keys().take(to_remove).cloned().collect();
+      for k in more {
+        if map.remove(&k).is_some() {
+          removed += 1;
+        }
+      }
+    }
+
+    removed
+  }
+}
+
+static TEXT_INLINE_ITEM_CACHE: OnceLock<ShardedTextInlineItemCache> = OnceLock::new();
+
+fn global_text_inline_item_cache() -> &'static ShardedTextInlineItemCache {
+  TEXT_INLINE_ITEM_CACHE.get_or_init(ShardedTextInlineItemCache::new)
+}
+
+thread_local! {
+  static TEXT_INLINE_ITEM_CACHE_TL: RefCell<FxHashMap<TextInlineItemCacheKey, TextInlineItemCacheEntry>> =
+    RefCell::new(FxHashMap::default());
+  static TEXT_INLINE_ITEM_CACHE_TL_EPOCH: Cell<usize> = const { Cell::new(0) };
+}
+
+static TEXT_INLINE_ITEM_CACHE_PROFILE_LOOKUPS: AtomicUsize = AtomicUsize::new(0);
+static TEXT_INLINE_ITEM_CACHE_PROFILE_HITS: AtomicUsize = AtomicUsize::new(0);
+static TEXT_INLINE_ITEM_CACHE_PROFILE_MISSES: AtomicUsize = AtomicUsize::new(0);
+static TEXT_INLINE_ITEM_CACHE_PROFILE_STORES: AtomicUsize = AtomicUsize::new(0);
+static TEXT_INLINE_ITEM_CACHE_PROFILE_EVICTIONS: AtomicUsize = AtomicUsize::new(0);
+
+fn text_inline_item_cache_profile_enabled() -> bool {
+  static ENABLED: OnceLock<bool> = OnceLock::new();
+  *ENABLED.get_or_init(|| {
+    crate::debug::runtime::runtime_toggles().truthy("FASTR_LAYOUT_PROFILE")
+      || crate::debug::runtime::runtime_toggles().truthy("FASTR_TEXT_ITEM_CACHE_PROFILE")
+  })
+}
+
+#[allow(dead_code)]
+pub(crate) fn text_inline_item_cache_profile_stats() -> Option<(usize, usize, usize, usize, usize)>
+{
+  if !text_inline_item_cache_profile_enabled() {
+    return None;
+  }
+  Some((
+    TEXT_INLINE_ITEM_CACHE_PROFILE_LOOKUPS.load(Ordering::Relaxed),
+    TEXT_INLINE_ITEM_CACHE_PROFILE_HITS.load(Ordering::Relaxed),
+    TEXT_INLINE_ITEM_CACHE_PROFILE_MISSES.load(Ordering::Relaxed),
+    TEXT_INLINE_ITEM_CACHE_PROFILE_STORES.load(Ordering::Relaxed),
+    TEXT_INLINE_ITEM_CACHE_PROFILE_EVICTIONS.load(Ordering::Relaxed),
+  ))
+}
+
+#[cfg(any(test, debug_assertions))]
+thread_local! {
+  static TEXT_INLINE_ITEM_CACHE_DIAGNOSTICS_ENABLED: Cell<bool> = const { Cell::new(false) };
+  static TEXT_INLINE_ITEM_CACHE_DIAGNOSTICS_LOOKUPS: Cell<usize> = const { Cell::new(0) };
+  static TEXT_INLINE_ITEM_CACHE_DIAGNOSTICS_HITS: Cell<usize> = const { Cell::new(0) };
+  static TEXT_INLINE_ITEM_CACHE_DIAGNOSTICS_MISSES: Cell<usize> = const { Cell::new(0) };
+  static TEXT_INLINE_ITEM_CACHE_DIAGNOSTICS_STORES: Cell<usize> = const { Cell::new(0) };
+}
+
+#[cfg(any(test, debug_assertions))]
+pub(crate) fn enable_text_inline_item_cache_diagnostics() {
+  TEXT_INLINE_ITEM_CACHE_DIAGNOSTICS_LOOKUPS.with(|c| c.set(0));
+  TEXT_INLINE_ITEM_CACHE_DIAGNOSTICS_HITS.with(|c| c.set(0));
+  TEXT_INLINE_ITEM_CACHE_DIAGNOSTICS_MISSES.with(|c| c.set(0));
+  TEXT_INLINE_ITEM_CACHE_DIAGNOSTICS_STORES.with(|c| c.set(0));
+  TEXT_INLINE_ITEM_CACHE_DIAGNOSTICS_ENABLED.with(|enabled| enabled.set(true));
+}
+
+#[cfg(any(test, debug_assertions))]
+pub(crate) fn take_text_inline_item_cache_diagnostics() -> Option<(usize, usize, usize, usize)> {
+  let was_enabled = TEXT_INLINE_ITEM_CACHE_DIAGNOSTICS_ENABLED.with(|enabled| {
+    let prev = enabled.get();
+    enabled.set(false);
+    prev
+  });
+  if !was_enabled {
+    return None;
+  }
+  Some((
+    TEXT_INLINE_ITEM_CACHE_DIAGNOSTICS_LOOKUPS.with(|c| c.get()),
+    TEXT_INLINE_ITEM_CACHE_DIAGNOSTICS_HITS.with(|c| c.get()),
+    TEXT_INLINE_ITEM_CACHE_DIAGNOSTICS_MISSES.with(|c| c.get()),
+    TEXT_INLINE_ITEM_CACHE_DIAGNOSTICS_STORES.with(|c| c.get()),
+  ))
+}
+
+#[cfg(any(test, debug_assertions))]
+fn text_inline_item_cache_diagnostics_enabled() -> bool {
+  TEXT_INLINE_ITEM_CACHE_DIAGNOSTICS_ENABLED.with(|enabled| enabled.get())
+}
+
+#[inline]
+fn record_text_inline_item_cache_lookup() {
+  if text_inline_item_cache_profile_enabled() {
+    TEXT_INLINE_ITEM_CACHE_PROFILE_LOOKUPS.fetch_add(1, Ordering::Relaxed);
+  }
+  #[cfg(any(test, debug_assertions))]
+  if text_inline_item_cache_diagnostics_enabled() {
+    TEXT_INLINE_ITEM_CACHE_DIAGNOSTICS_LOOKUPS.with(|c| c.set(c.get() + 1));
+  }
+}
+
+#[inline]
+fn record_text_inline_item_cache_hit() {
+  if text_inline_item_cache_profile_enabled() {
+    TEXT_INLINE_ITEM_CACHE_PROFILE_HITS.fetch_add(1, Ordering::Relaxed);
+  }
+  #[cfg(any(test, debug_assertions))]
+  if text_inline_item_cache_diagnostics_enabled() {
+    TEXT_INLINE_ITEM_CACHE_DIAGNOSTICS_HITS.with(|c| c.set(c.get() + 1));
+  }
+}
+
+#[inline]
+fn record_text_inline_item_cache_miss() {
+  if text_inline_item_cache_profile_enabled() {
+    TEXT_INLINE_ITEM_CACHE_PROFILE_MISSES.fetch_add(1, Ordering::Relaxed);
+  }
+  #[cfg(any(test, debug_assertions))]
+  if text_inline_item_cache_diagnostics_enabled() {
+    TEXT_INLINE_ITEM_CACHE_DIAGNOSTICS_MISSES.with(|c| c.set(c.get() + 1));
+  }
+}
+
+#[inline]
+fn record_text_inline_item_cache_store(evicted: usize) {
+  if text_inline_item_cache_profile_enabled() {
+    TEXT_INLINE_ITEM_CACHE_PROFILE_STORES.fetch_add(1, Ordering::Relaxed);
+    if evicted > 0 {
+      TEXT_INLINE_ITEM_CACHE_PROFILE_EVICTIONS.fetch_add(evicted, Ordering::Relaxed);
+    }
+  }
+  #[cfg(any(test, debug_assertions))]
+  if text_inline_item_cache_diagnostics_enabled() {
+    TEXT_INLINE_ITEM_CACHE_DIAGNOSTICS_STORES.with(|c| c.set(c.get() + 1));
+  }
+}
+
+fn hash_enum_discriminant<T>(value: &T, hasher: &mut FxHasher) {
+  std::mem::discriminant(value).hash(hasher);
+}
+
+fn hash_calc_length(calc: &crate::style::values::CalcLength, hasher: &mut FxHasher) {
+  calc.kind_id().hash(hasher);
+  let terms = calc.terms();
+  (terms.len() as u8).hash(hasher);
+  for term in terms {
+    term.unit.hash(hasher);
+    f32_to_canonical_bits(term.value).hash(hasher);
+  }
+}
+
+fn hash_length(len: &Length, hasher: &mut FxHasher) {
+  hash_enum_discriminant(&len.unit, hasher);
+  f32_to_canonical_bits(len.value).hash(hasher);
+  match &len.calc {
+    Some(calc) => {
+      1u8.hash(hasher);
+      match calc {
+        crate::style::values::LengthCalc::Linear(calc) => {
+          0u8.hash(hasher);
+          hash_calc_length(calc, hasher);
+        }
+        crate::style::values::LengthCalc::Expr(id) => {
+          1u8.hash(hasher);
+          id.index().hash(hasher);
+        }
+      }
+    }
+    None => 0u8.hash(hasher),
+  }
+}
+
+fn hash_option_length(len: &Option<Length>, hasher: &mut FxHasher) {
+  match len {
+    Some(len) => {
+      1u8.hash(hasher);
+      hash_length(len, hasher);
+    }
+    None => 0u8.hash(hasher),
+  }
+}
+
+fn hash_line_height(value: &crate::style::types::LineHeight, hasher: &mut FxHasher) {
+  match value {
+    crate::style::types::LineHeight::Normal => 0u8.hash(hasher),
+    crate::style::types::LineHeight::Number(n) => {
+      1u8.hash(hasher);
+      f32_to_canonical_bits(*n).hash(hasher);
+    }
+    crate::style::types::LineHeight::Length(len) => {
+      2u8.hash(hasher);
+      hash_length(len, hasher);
+    }
+    crate::style::types::LineHeight::Percentage(p) => {
+      3u8.hash(hasher);
+      f32_to_canonical_bits(*p).hash(hasher);
+    }
+  }
+}
+
+fn hash_vertical_align(value: &crate::style::types::VerticalAlign, hasher: &mut FxHasher) {
+  match value {
+    crate::style::types::VerticalAlign::Baseline => 0u8.hash(hasher),
+    crate::style::types::VerticalAlign::Sub => 1u8.hash(hasher),
+    crate::style::types::VerticalAlign::Super => 2u8.hash(hasher),
+    crate::style::types::VerticalAlign::TextTop => 3u8.hash(hasher),
+    crate::style::types::VerticalAlign::TextBottom => 4u8.hash(hasher),
+    crate::style::types::VerticalAlign::Middle => 5u8.hash(hasher),
+    crate::style::types::VerticalAlign::Top => 6u8.hash(hasher),
+    crate::style::types::VerticalAlign::Bottom => 7u8.hash(hasher),
+    crate::style::types::VerticalAlign::Length(len) => {
+      8u8.hash(hasher);
+      hash_length(len, hasher);
+    }
+    crate::style::types::VerticalAlign::Percentage(p) => {
+      9u8.hash(hasher);
+      f32_to_canonical_bits(*p).hash(hasher);
+    }
+  }
+}
+
+fn hash_tab_size(value: &TabSize, hasher: &mut FxHasher) {
+  match value {
+    TabSize::Number(n) => {
+      0u8.hash(hasher);
+      f32_to_canonical_bits(*n).hash(hasher);
+    }
+    TabSize::Length(len) => {
+      1u8.hash(hasher);
+      hash_length(len, hasher);
+    }
+  }
+}
+
+fn hash_text_transform(value: &TextTransform, hasher: &mut FxHasher) {
+  hash_enum_discriminant(&value.case, hasher);
+  (value.full_width as u8).hash(hasher);
+  (value.full_size_kana as u8).hash(hasher);
+}
+
+fn hash_text_emphasis_style(value: &crate::style::types::TextEmphasisStyle, hasher: &mut FxHasher) {
+  match value {
+    crate::style::types::TextEmphasisStyle::None => 0u8.hash(hasher),
+    crate::style::types::TextEmphasisStyle::Mark { fill, shape } => {
+      1u8.hash(hasher);
+      hash_enum_discriminant(fill, hasher);
+      match shape {
+        Some(shape) => {
+          1u8.hash(hasher);
+          hash_enum_discriminant(shape, hasher);
+        }
+        None => 0u8.hash(hasher),
+      }
+    }
+    crate::style::types::TextEmphasisStyle::String(s) => {
+      2u8.hash(hasher);
+      s.hash(hasher);
+    }
+  }
+}
+
+fn text_inline_item_cache_style_hash(style: &ComputedStyle) -> u64 {
+  let mut hasher = FxHasher::default();
+  shaping_style_hash(style).hash(&mut hasher);
+  f32_to_canonical_bits(style.root_font_size).hash(&mut hasher);
+  f32_to_canonical_bits(style.word_spacing).hash(&mut hasher);
+  hash_line_height(&style.line_height, &mut hasher);
+  hash_text_transform(&style.text_transform, &mut hasher);
+  hash_enum_discriminant(&style.white_space, &mut hasher);
+  hash_enum_discriminant(&style.text_wrap, &mut hasher);
+  hash_enum_discriminant(&style.line_break, &mut hasher);
+  hash_enum_discriminant(&style.hyphens, &mut hasher);
+  hash_enum_discriminant(&style.word_break, &mut hasher);
+  hash_enum_discriminant(&style.overflow_wrap, &mut hasher);
+  hash_vertical_align(&style.vertical_align, &mut hasher);
+  hash_tab_size(&style.tab_size, &mut hasher);
+  hash_text_emphasis_style(&style.text_emphasis_style, &mut hasher);
+  hash_enum_discriminant(&style.text_emphasis_position, &mut hasher);
+  hash_enum_discriminant(&style.text_combine_upright, &mut hasher);
+  match style.text_combine_upright {
+    TextCombineUpright::Digits(n) => (n as u8).hash(&mut hasher),
+    _ => 0u8.hash(&mut hasher),
+  }
+  hash_enum_discriminant(&style.list_style_position, &mut hasher);
+  hash_option_length(&style.margin_left, &mut hasher);
+  hash_option_length(&style.margin_right, &mut hasher);
+  hash_option_length(&style.margin_top, &mut hasher);
+  hash_option_length(&style.margin_bottom, &mut hasher);
+  hasher.finish()
+}
+
+fn text_inline_item_cache_bidi_signature(stack: &[(UnicodeBidi, Direction)]) -> u64 {
+  let mut hasher = FxHasher::default();
+  (stack.len() as u8).hash(&mut hasher);
+  for (ub, dir) in stack {
+    hash_enum_discriminant(ub, &mut hasher);
+    hash_enum_discriminant(dir, &mut hasher);
+  }
+  hasher.finish()
+}
+
+fn text_inline_item_cache_style_variant(node_id: usize) -> u64 {
+  crate::layout::style_override::style_override_fingerprint_for(node_id)
+    .map(|fp| fp | (1u64 << 63))
+    .unwrap_or(0)
+}
+
+fn text_inline_item_cache_get(
+  key: TextInlineItemCacheKey,
+  epoch: usize,
+  style_hash: u64,
+  font_generation: u64,
+) -> Option<TextInlineItemCacheValue> {
+  record_text_inline_item_cache_lookup();
+
+  let tl_hit = TEXT_INLINE_ITEM_CACHE_TL_EPOCH.with(|tl_epoch| {
+    if tl_epoch.get() != epoch {
+      tl_epoch.set(epoch);
+      TEXT_INLINE_ITEM_CACHE_TL.with(|cache| cache.borrow_mut().clear());
+      return None;
+    }
+
+    TEXT_INLINE_ITEM_CACHE_TL.with(|cache| {
+      let mut cache = cache.borrow_mut();
+      match cache.get(&key).cloned() {
+        Some(entry) => {
+          if entry.epoch == epoch
+            && entry.style_hash == style_hash
+            && entry.font_generation == font_generation
+          {
+            Some(entry.value)
+          } else {
+            cache.remove(&key);
+            None
+          }
+        }
+        None => None,
+      }
+    })
+  });
+
+  if let Some(value) = tl_hit {
+    record_text_inline_item_cache_hit();
+    return Some(value);
+  }
+
+  if let Some(entry) = global_text_inline_item_cache().get(&key, epoch, style_hash, font_generation)
+  {
+    let value = entry.value.clone();
+    TEXT_INLINE_ITEM_CACHE_TL.with(|cache| {
+      let mut cache = cache.borrow_mut();
+      cache.insert(key, entry.clone());
+      if cache.len()
+        > TEXT_INLINE_ITEM_CACHE_TL_MAX_ENTRIES + TEXT_INLINE_ITEM_CACHE_TL_EVICTION_BATCH
+      {
+        cache.clear();
+        cache.insert(key, entry);
+      }
+    });
+    record_text_inline_item_cache_hit();
+    return Some(value);
+  }
+
+  record_text_inline_item_cache_miss();
+  None
+}
+
+fn text_inline_item_cache_store(key: TextInlineItemCacheKey, entry: TextInlineItemCacheEntry) {
+  let evicted = global_text_inline_item_cache().insert(key, entry.clone());
+  record_text_inline_item_cache_store(evicted);
+
+  TEXT_INLINE_ITEM_CACHE_TL_EPOCH.with(|tl_epoch| {
+    if tl_epoch.get() != entry.epoch {
+      tl_epoch.set(entry.epoch);
+      TEXT_INLINE_ITEM_CACHE_TL.with(|cache| cache.borrow_mut().clear());
+    }
+  });
+  TEXT_INLINE_ITEM_CACHE_TL.with(|cache| {
+    let mut cache = cache.borrow_mut();
+    cache.insert(key, entry.clone());
+    if cache.len()
+      > TEXT_INLINE_ITEM_CACHE_TL_MAX_ENTRIES + TEXT_INLINE_ITEM_CACHE_TL_EVICTION_BATCH
+    {
+      cache.clear();
+      cache.insert(key, entry);
+    }
+  });
 }
 
 /// Inline Formatting Context implementation
@@ -967,20 +1543,52 @@ impl InlineFormattingContext {
           } else {
             inherited_boundary
           };
-          let normalized = normalize_text_for_white_space(
-            &apply_text_transform(
-              &text_box.text,
-              child.style.text_transform,
-              child.style.white_space,
-              &child.style.language,
-            ),
-            child.style.white_space,
-            child.style.text_wrap,
+          let style_override = crate::layout::style_override::style_override_for(child.id);
+          let style_arc = style_override.unwrap_or_else(|| child.style.clone());
+          let style = style_arc.as_ref();
+          let epoch = intrinsic_cache_epoch();
+          let style_hash = text_inline_item_cache_style_hash(style);
+          let font_generation = self.font_context.font_generation();
+          let cache_key = TextInlineItemCacheKey::new(
+            ensure_box_id(child),
+            text_inline_item_cache_style_variant(child.id),
+            base_direction,
+            bidi_stack,
+            false,
+            boundary,
           );
-          if normalized.leading_collapsible {
-            whitespace.note_collapsible_whitespace(child.style.clone(), normalized.allow_soft_wrap);
+
+          if let Some(cached) =
+            text_inline_item_cache_get(cache_key, epoch, style_hash, font_generation)
+          {
+            if cached.leading_collapsible {
+              whitespace.note_collapsible_whitespace(style_arc.clone(), cached.allow_soft_wrap);
+            }
+            if !cached.items.is_empty() {
+              let produced = cached.items.as_ref().clone();
+              self.append_inline_items_with_whitespace(whitespace, &mut current_items, produced)?;
+            }
+            if cached.trailing_collapsible {
+              whitespace.note_collapsible_whitespace(style_arc.clone(), cached.allow_soft_wrap);
+            }
+            continue;
           }
-          if !normalized.text.is_empty() || !normalized.forced_breaks.is_empty() {
+
+          let transformed = apply_text_transform(
+            &text_box.text,
+            style.text_transform,
+            style.white_space,
+            &style.language,
+          );
+          let normalized =
+            normalize_text_for_white_space(&transformed, style.white_space, style.text_wrap);
+
+          if normalized.leading_collapsible {
+            whitespace.note_collapsible_whitespace(style_arc.clone(), normalized.allow_soft_wrap);
+          }
+
+          let cached_items = if !normalized.text.is_empty() || !normalized.forced_breaks.is_empty()
+          {
             let produced = self.create_inline_items_from_normalized_with_base(
               child,
               normalized.clone(),
@@ -989,11 +1597,31 @@ impl InlineFormattingContext {
               bidi_stack,
               boundary,
             )?;
+            let cached_items = Arc::new(produced.clone());
             self.append_inline_items_with_whitespace(whitespace, &mut current_items, produced)?;
-          }
+            cached_items
+          } else {
+            Arc::new(Vec::new())
+          };
+
           if normalized.trailing_collapsible {
-            whitespace.note_collapsible_whitespace(child.style.clone(), normalized.allow_soft_wrap);
+            whitespace.note_collapsible_whitespace(style_arc.clone(), normalized.allow_soft_wrap);
           }
+
+          text_inline_item_cache_store(
+            cache_key,
+            TextInlineItemCacheEntry {
+              epoch,
+              style_hash,
+              font_generation,
+              value: TextInlineItemCacheValue {
+                leading_collapsible: normalized.leading_collapsible,
+                trailing_collapsible: normalized.trailing_collapsible,
+                allow_soft_wrap: normalized.allow_soft_wrap,
+                items: cached_items,
+              },
+            },
+          );
         }
         BoxType::Marker(marker_box) => match &marker_box.content {
           MarkerContent::Text(text) => {
@@ -1023,18 +1651,54 @@ impl InlineFormattingContext {
               trailing_collapsible: false,
             };
             self.flush_pending_collapsible_space(whitespace, &mut current_items)?;
-            let mut produced = self.create_inline_items_from_normalized_with_base(
-              child,
-              normalized.clone(),
-              true,
+            let style_override = crate::layout::style_override::style_override_for(child.id);
+            let style_arc = style_override.unwrap_or_else(|| child.style.clone());
+            let style = style_arc.as_ref();
+            let epoch = intrinsic_cache_epoch();
+            let style_hash = text_inline_item_cache_style_hash(style);
+            let font_generation = self.font_context.font_generation();
+            let cache_key = TextInlineItemCacheKey::new(
+              ensure_box_id(child),
+              text_inline_item_cache_style_variant(child.id),
               base_direction,
               bidi_stack,
+              true,
               boundary,
-            )?;
-            current_items.append(&mut produced);
+            );
+
+            if let Some(cached) =
+              text_inline_item_cache_get(cache_key, epoch, style_hash, font_generation)
+            {
+              current_items.extend(cached.items.as_ref().clone());
+            } else {
+              let mut produced = self.create_inline_items_from_normalized_with_base(
+                child,
+                normalized.clone(),
+                true,
+                base_direction,
+                bidi_stack,
+                boundary,
+              )?;
+              let cached_items = Arc::new(produced.clone());
+              current_items.append(&mut produced);
+              text_inline_item_cache_store(
+                cache_key,
+                TextInlineItemCacheEntry {
+                  epoch,
+                  style_hash,
+                  font_generation,
+                  value: TextInlineItemCacheValue {
+                    leading_collapsible: false,
+                    trailing_collapsible: false,
+                    allow_soft_wrap: false,
+                    items: cached_items,
+                  },
+                },
+              );
+            }
             // Outside markers have zero advance-for-layout; treat them as ignorable so indentation
             // whitespace between the marker and first content does not introduce an extra space.
-            if matches!(child.style.list_style_position, ListStylePosition::Outside) {
+            if matches!(style.list_style_position, ListStylePosition::Outside) {
               whitespace.note_ignorable();
             } else {
               whitespace.note_content();
@@ -2222,31 +2886,63 @@ impl InlineFormattingContext {
           } else {
             inherited_boundary
           };
-          let normalized = normalize_text_for_white_space(
-            &apply_text_transform(
-              &text_box.text,
-              child.style.text_transform,
-              child.style.white_space,
-              &child.style.language,
-            ),
-            child.style.white_space,
-            child.style.text_wrap,
+          let style_override = crate::layout::style_override::style_override_for(child.id);
+          let style_arc = style_override.unwrap_or_else(|| child.style.clone());
+          let style = style_arc.as_ref();
+          let epoch = intrinsic_cache_epoch();
+          let style_hash = text_inline_item_cache_style_hash(style);
+          let font_generation = self.font_context.font_generation();
+          let cache_key = TextInlineItemCacheKey::new(
+            ensure_box_id(child),
+            text_inline_item_cache_style_variant(child.id),
+            base_direction,
+            bidi_stack,
+            false,
+            boundary,
           );
+
+          if let Some(cached) =
+            text_inline_item_cache_get(cache_key, epoch, style_hash, font_generation)
+          {
+            if cached.leading_collapsible {
+              whitespace.note_collapsible_whitespace(style_arc.clone(), cached.allow_soft_wrap);
+            }
+            if !cached.items.is_empty() {
+              let produced = cached.items.as_ref().clone();
+              self.append_inline_items_with_whitespace(whitespace, &mut items, produced)?;
+            }
+            if cached.trailing_collapsible {
+              whitespace.note_collapsible_whitespace(style_arc.clone(), cached.allow_soft_wrap);
+            }
+            continue;
+          }
+
+          let transformed = apply_text_transform(
+            &text_box.text,
+            style.text_transform,
+            style.white_space,
+            &style.language,
+          );
+          let normalized =
+            normalize_text_for_white_space(&transformed, style.white_space, style.text_wrap);
+
           if dump_text_enabled() && normalized.text.is_empty() && !text_box.text.is_empty() {
             eprintln!(
               "ifc normalized empty box_id={} raw_len={} ws={:?} transform={:?} text={:?}",
               child.id,
               text_box.text.len(),
-              child.style.white_space,
-              child.style.text_transform,
+              style.white_space,
+              style.text_transform,
               truncate_text(&text_box.text, 80)
             );
           }
 
           if normalized.leading_collapsible {
-            whitespace.note_collapsible_whitespace(child.style.clone(), normalized.allow_soft_wrap);
+            whitespace.note_collapsible_whitespace(style_arc.clone(), normalized.allow_soft_wrap);
           }
-          if !normalized.text.is_empty() || !normalized.forced_breaks.is_empty() {
+
+          let cached_items = if !normalized.text.is_empty() || !normalized.forced_breaks.is_empty()
+          {
             let produced = self.create_inline_items_from_normalized_with_base(
               child,
               normalized.clone(),
@@ -2255,11 +2951,31 @@ impl InlineFormattingContext {
               bidi_stack,
               boundary,
             )?;
+            let cached_items = Arc::new(produced.clone());
             self.append_inline_items_with_whitespace(whitespace, &mut items, produced)?;
-          }
+            cached_items
+          } else {
+            Arc::new(Vec::new())
+          };
+
           if normalized.trailing_collapsible {
-            whitespace.note_collapsible_whitespace(child.style.clone(), normalized.allow_soft_wrap);
+            whitespace.note_collapsible_whitespace(style_arc.clone(), normalized.allow_soft_wrap);
           }
+
+          text_inline_item_cache_store(
+            cache_key,
+            TextInlineItemCacheEntry {
+              epoch,
+              style_hash,
+              font_generation,
+              value: TextInlineItemCacheValue {
+                leading_collapsible: normalized.leading_collapsible,
+                trailing_collapsible: normalized.trailing_collapsible,
+                allow_soft_wrap: normalized.allow_soft_wrap,
+                items: cached_items,
+              },
+            },
+          );
         }
         BoxType::Marker(marker_box) => match &marker_box.content {
           MarkerContent::Text(text) => {
@@ -2293,15 +3009,51 @@ impl InlineFormattingContext {
               trailing_collapsible: false,
             };
             self.flush_pending_collapsible_space(whitespace, &mut items)?;
-            let mut produced = self.create_inline_items_from_normalized_with_base(
-              child,
-              normalized.clone(),
-              true,
+            let style_override = crate::layout::style_override::style_override_for(child.id);
+            let style_arc = style_override.unwrap_or_else(|| child.style.clone());
+            let style = style_arc.as_ref();
+            let epoch = intrinsic_cache_epoch();
+            let style_hash = text_inline_item_cache_style_hash(style);
+            let font_generation = self.font_context.font_generation();
+            let cache_key = TextInlineItemCacheKey::new(
+              ensure_box_id(child),
+              text_inline_item_cache_style_variant(child.id),
               base_direction,
               bidi_stack,
+              true,
               boundary,
-            )?;
-            items.append(&mut produced);
+            );
+
+            if let Some(cached) =
+              text_inline_item_cache_get(cache_key, epoch, style_hash, font_generation)
+            {
+              items.extend(cached.items.as_ref().clone());
+            } else {
+              let mut produced = self.create_inline_items_from_normalized_with_base(
+                child,
+                normalized.clone(),
+                true,
+                base_direction,
+                bidi_stack,
+                boundary,
+              )?;
+              let cached_items = Arc::new(produced.clone());
+              items.append(&mut produced);
+              text_inline_item_cache_store(
+                cache_key,
+                TextInlineItemCacheEntry {
+                  epoch,
+                  style_hash,
+                  font_generation,
+                  value: TextInlineItemCacheValue {
+                    leading_collapsible: false,
+                    trailing_collapsible: false,
+                    allow_soft_wrap: false,
+                    items: cached_items,
+                  },
+                },
+              );
+            }
             // `::marker` boxes participate in the inline item stream, but when the marker is
             // `list-style-position: outside` its advance-for-layout is zero and it behaves like a
             // placeholder that should not prevent leading whitespace from being suppressed.
@@ -2312,7 +3064,7 @@ impl InlineFormattingContext {
             //   </li>
             // where the indentation whitespace should not introduce an extra space between the
             // marker and the first inline content.
-            if matches!(child.style.list_style_position, ListStylePosition::Outside) {
+            if matches!(style.list_style_position, ListStylePosition::Outside) {
               whitespace.note_ignorable();
             } else {
               whitespace.note_content();
@@ -4557,12 +5309,14 @@ impl InlineFormattingContext {
     normalized: NormalizedText,
     is_marker: bool,
   ) -> Result<Vec<InlineItem>, LayoutError> {
-    let stack = [(box_node.style.unicode_bidi, box_node.style.direction)];
+    let style_override = crate::layout::style_override::style_override_for(box_node.id);
+    let style = style_override.unwrap_or_else(|| box_node.style.clone());
+    let stack = [(style.unicode_bidi, style.direction)];
     self.create_inline_items_from_normalized_with_base(
       box_node,
       normalized,
       is_marker,
-      box_node.style.direction,
+      style.direction,
       &stack,
       CombineBoundary::default(),
     )
@@ -4584,7 +5338,9 @@ impl InlineFormattingContext {
       ..
     } = normalized;
 
-    let style = &box_node.style;
+    let style_override = crate::layout::style_override::style_override_for(box_node.id);
+    let style_arc = style_override.unwrap_or_else(|| box_node.style.clone());
+    let style = &style_arc;
     let is_plaintext = matches!(style.unicode_bidi, UnicodeBidi::Plaintext);
 
     let base_direction_for_segment = |segment: &str| {
@@ -5553,7 +6309,9 @@ impl InlineFormattingContext {
     box_node: &BoxNode,
     allow_wrap: bool,
   ) -> Result<InlineItem, LayoutError> {
-    let style = &box_node.style;
+    let style_override = crate::layout::style_override::style_override_for(box_node.id);
+    let style_arc = style_override.unwrap_or_else(|| box_node.style.clone());
+    let style = style_arc.as_ref();
     let root_font_metrics = self.factory.root_font_metrics();
     let metrics = self.compute_strut_metrics(style);
     let space_advance = self.space_advance(style)?;
@@ -5577,7 +6335,7 @@ impl InlineFormattingContext {
       style.writing_mode,
     );
     Ok(InlineItem::Tab(
-      TabItem::new(style.clone(), metrics, tab_interval, allow_wrap).with_vertical_align(va),
+      TabItem::new(style_arc, metrics, tab_interval, allow_wrap).with_vertical_align(va),
     ))
   }
 
@@ -29160,5 +29918,451 @@ mod tests {
     let ex_adjusted =
       resolve_font_relative_length(Length::new(1.0, LengthUnit::Ex), &style, &font_context);
     assert!((ex_adjusted - adj_x).abs() < 1e-3);
+  }
+
+  fn inline_items_text(items: &[InlineItem]) -> String {
+    let mut out = String::new();
+    for item in items {
+      append_text_content(item, &mut out);
+    }
+    out
+  }
+
+  #[test]
+  fn text_inline_item_cache_hits_within_epoch() {
+    let ifc = InlineFormattingContext::new();
+    let container_style = default_style();
+    let mut node = make_text_box("Hello world");
+    node.id = 20001;
+
+    let children = [&node];
+    let mut positioned = Vec::new();
+
+    enable_text_inline_item_cache_diagnostics();
+    let first = ifc
+      .collect_inline_items_for_children_with_base(
+        &container_style,
+        children.as_slice(),
+        1000.0,
+        None,
+        Direction::Ltr,
+        &mut positioned,
+      )
+      .expect("collect inline items");
+    let second = ifc
+      .collect_inline_items_for_children_with_base(
+        &container_style,
+        children.as_slice(),
+        1000.0,
+        None,
+        Direction::Ltr,
+        &mut positioned,
+      )
+      .expect("collect inline items");
+
+    assert_eq!(inline_items_text(&first), "Hello world");
+    assert_eq!(inline_items_text(&second), "Hello world");
+
+    let (lookups, hits, misses, stores) =
+      take_text_inline_item_cache_diagnostics().expect("diagnostics");
+    assert_eq!((lookups, hits, misses, stores), (2, 1, 1, 1));
+  }
+
+  #[test]
+  fn text_inline_item_cache_key_includes_base_direction() {
+    let ifc = InlineFormattingContext::new();
+    let container_style = default_style();
+    let mut node = make_text_box("abc");
+    node.id = 20002;
+
+    let children = [&node];
+    let mut positioned = Vec::new();
+
+    enable_text_inline_item_cache_diagnostics();
+    ifc
+      .collect_inline_items_for_children_with_base(
+        &container_style,
+        children.as_slice(),
+        1000.0,
+        None,
+        Direction::Ltr,
+        &mut positioned,
+      )
+      .expect("collect ltr");
+    ifc
+      .collect_inline_items_for_children_with_base(
+        &container_style,
+        children.as_slice(),
+        1000.0,
+        None,
+        Direction::Ltr,
+        &mut positioned,
+      )
+      .expect("collect ltr");
+    ifc
+      .collect_inline_items_for_children_with_base(
+        &container_style,
+        children.as_slice(),
+        1000.0,
+        None,
+        Direction::Rtl,
+        &mut positioned,
+      )
+      .expect("collect rtl");
+    ifc
+      .collect_inline_items_for_children_with_base(
+        &container_style,
+        children.as_slice(),
+        1000.0,
+        None,
+        Direction::Rtl,
+        &mut positioned,
+      )
+      .expect("collect rtl");
+
+    let (lookups, hits, misses, stores) =
+      take_text_inline_item_cache_diagnostics().expect("diagnostics");
+    assert_eq!((lookups, hits, misses, stores), (4, 2, 2, 2));
+  }
+
+  #[test]
+  fn text_inline_item_cache_key_includes_bidi_context_signature() {
+    let ifc = InlineFormattingContext::new();
+    let mut container_a = ComputedStyle::default();
+    container_a.font_size = 16.0;
+    container_a.direction = Direction::Ltr;
+    container_a.unicode_bidi = UnicodeBidi::Normal;
+    let container_a = Arc::new(container_a);
+
+    let mut container_b = (*container_a).clone();
+    container_b.direction = Direction::Rtl;
+    container_b.unicode_bidi = UnicodeBidi::Isolate;
+    let container_b = Arc::new(container_b);
+
+    let mut node = make_text_box("abc");
+    node.id = 20003;
+
+    let children = [&node];
+    let mut positioned = Vec::new();
+
+    enable_text_inline_item_cache_diagnostics();
+    ifc
+      .collect_inline_items_for_children_with_base(
+        &container_a,
+        children.as_slice(),
+        1000.0,
+        None,
+        Direction::Ltr,
+        &mut positioned,
+      )
+      .expect("collect a");
+    ifc
+      .collect_inline_items_for_children_with_base(
+        &container_a,
+        children.as_slice(),
+        1000.0,
+        None,
+        Direction::Ltr,
+        &mut positioned,
+      )
+      .expect("collect a");
+    ifc
+      .collect_inline_items_for_children_with_base(
+        &container_b,
+        children.as_slice(),
+        1000.0,
+        None,
+        Direction::Ltr,
+        &mut positioned,
+      )
+      .expect("collect b");
+    ifc
+      .collect_inline_items_for_children_with_base(
+        &container_b,
+        children.as_slice(),
+        1000.0,
+        None,
+        Direction::Ltr,
+        &mut positioned,
+      )
+      .expect("collect b");
+
+    let (lookups, hits, misses, stores) =
+      take_text_inline_item_cache_diagnostics().expect("diagnostics");
+    assert_eq!((lookups, hits, misses, stores), (4, 2, 2, 2));
+  }
+
+  #[test]
+  fn text_inline_item_cache_respects_text_transform() {
+    let ifc = InlineFormattingContext::new();
+    let container_style = default_style();
+    let mut node = make_text_box("abc");
+    node.id = 20004;
+
+    let mut positioned = Vec::new();
+
+    enable_text_inline_item_cache_diagnostics();
+    let base_items = {
+      let children = [&node];
+      ifc
+        .collect_inline_items_for_children_with_base(
+          &container_style,
+          children.as_slice(),
+          1000.0,
+          None,
+          Direction::Ltr,
+          &mut positioned,
+        )
+        .expect("collect base")
+    };
+    assert_eq!(inline_items_text(&base_items), "abc");
+
+    let mut upper = (*node.style).clone();
+    upper.text_transform = TextTransform::with_case(CaseTransform::Uppercase);
+    node.style = Arc::new(upper);
+
+    let upper_items = {
+      let children = [&node];
+      ifc
+        .collect_inline_items_for_children_with_base(
+          &container_style,
+          children.as_slice(),
+          1000.0,
+          None,
+          Direction::Ltr,
+          &mut positioned,
+        )
+        .expect("collect uppercase")
+    };
+    let upper_items2 = {
+      let children = [&node];
+      ifc
+        .collect_inline_items_for_children_with_base(
+          &container_style,
+          children.as_slice(),
+          1000.0,
+          None,
+          Direction::Ltr,
+          &mut positioned,
+        )
+        .expect("collect uppercase")
+    };
+    assert_eq!(inline_items_text(&upper_items), "ABC");
+    assert_eq!(inline_items_text(&upper_items2), "ABC");
+
+    let (lookups, hits, misses, stores) =
+      take_text_inline_item_cache_diagnostics().expect("diagnostics");
+    assert_eq!((lookups, hits, misses, stores), (3, 1, 2, 2));
+  }
+
+  #[test]
+  fn text_inline_item_cache_respects_white_space_normalization() {
+    let ifc = InlineFormattingContext::new();
+    let container_style = default_style();
+    let mut node = make_text_box("A  B");
+    node.id = 20005;
+
+    let mut positioned = Vec::new();
+
+    enable_text_inline_item_cache_diagnostics();
+    let normal_items = {
+      let children = [&node];
+      ifc
+        .collect_inline_items_for_children_with_base(
+          &container_style,
+          children.as_slice(),
+          1000.0,
+          None,
+          Direction::Ltr,
+          &mut positioned,
+        )
+        .expect("collect normal")
+    };
+    assert_eq!(inline_items_text(&normal_items), "A B");
+
+    let mut pre = (*node.style).clone();
+    pre.white_space = WhiteSpace::Pre;
+    node.style = Arc::new(pre);
+
+    let pre_items = {
+      let children = [&node];
+      ifc
+        .collect_inline_items_for_children_with_base(
+          &container_style,
+          children.as_slice(),
+          1000.0,
+          None,
+          Direction::Ltr,
+          &mut positioned,
+        )
+        .expect("collect pre")
+    };
+    let pre_items2 = {
+      let children = [&node];
+      ifc
+        .collect_inline_items_for_children_with_base(
+          &container_style,
+          children.as_slice(),
+          1000.0,
+          None,
+          Direction::Ltr,
+          &mut positioned,
+        )
+        .expect("collect pre")
+    };
+    assert_eq!(inline_items_text(&pre_items), "A  B");
+    assert_eq!(inline_items_text(&pre_items2), "A  B");
+
+    let (lookups, hits, misses, stores) =
+      take_text_inline_item_cache_diagnostics().expect("diagnostics");
+    assert_eq!((lookups, hits, misses, stores), (3, 1, 2, 2));
+  }
+
+  #[test]
+  fn text_inline_item_cache_uses_style_override_variant_key() {
+    let ifc = InlineFormattingContext::new();
+    let container_style = default_style();
+    let mut node = make_text_box("abc");
+    node.id = 20006;
+
+    let children = [&node];
+    let mut positioned = Vec::new();
+
+    enable_text_inline_item_cache_diagnostics();
+    let base_1 = ifc
+      .collect_inline_items_for_children_with_base(
+        &container_style,
+        children.as_slice(),
+        1000.0,
+        None,
+        Direction::Ltr,
+        &mut positioned,
+      )
+      .expect("collect base");
+    let base_2 = ifc
+      .collect_inline_items_for_children_with_base(
+        &container_style,
+        children.as_slice(),
+        1000.0,
+        None,
+        Direction::Ltr,
+        &mut positioned,
+      )
+      .expect("collect base");
+    assert_eq!(inline_items_text(&base_1), "abc");
+    assert_eq!(inline_items_text(&base_2), "abc");
+
+    let mut override_style = (*node.style).clone();
+    override_style.text_transform = TextTransform::with_case(CaseTransform::Uppercase);
+    let override_style = Arc::new(override_style);
+
+    let (override_1, override_2) =
+      crate::layout::style_override::with_style_override(node.id, override_style, || {
+        let first = ifc
+          .collect_inline_items_for_children_with_base(
+            &container_style,
+            children.as_slice(),
+            1000.0,
+            None,
+            Direction::Ltr,
+            &mut positioned,
+          )
+          .expect("collect override");
+        let second = ifc
+          .collect_inline_items_for_children_with_base(
+            &container_style,
+            children.as_slice(),
+            1000.0,
+            None,
+            Direction::Ltr,
+            &mut positioned,
+          )
+          .expect("collect override");
+        (first, second)
+      });
+
+    assert_eq!(inline_items_text(&override_1), "ABC");
+    assert_eq!(inline_items_text(&override_2), "ABC");
+
+    let base_3 = ifc
+      .collect_inline_items_for_children_with_base(
+        &container_style,
+        children.as_slice(),
+        1000.0,
+        None,
+        Direction::Ltr,
+        &mut positioned,
+      )
+      .expect("collect base");
+    assert_eq!(inline_items_text(&base_3), "abc");
+
+    let (lookups, hits, misses, stores) =
+      take_text_inline_item_cache_diagnostics().expect("diagnostics");
+    assert_eq!((lookups, hits, misses, stores), (5, 3, 2, 2));
+  }
+
+  #[test]
+  fn text_inline_item_cache_invalidates_on_epoch_change() {
+    let _guard = crate::layout::formatting_context::intrinsic_cache_test_lock();
+    crate::layout::formatting_context::intrinsic_cache_use_epoch(1, true);
+
+    let ifc = InlineFormattingContext::new();
+    let container_style = default_style();
+    let mut node = make_text_box("Hello");
+    node.id = 20007;
+
+    let children = [&node];
+    let mut positioned = Vec::new();
+
+    enable_text_inline_item_cache_diagnostics();
+    ifc
+      .collect_inline_items_for_children_with_base(
+        &container_style,
+        children.as_slice(),
+        1000.0,
+        None,
+        Direction::Ltr,
+        &mut positioned,
+      )
+      .expect("collect epoch 1");
+    ifc
+      .collect_inline_items_for_children_with_base(
+        &container_style,
+        children.as_slice(),
+        1000.0,
+        None,
+        Direction::Ltr,
+        &mut positioned,
+      )
+      .expect("collect epoch 1");
+
+    crate::layout::formatting_context::intrinsic_cache_use_epoch(2, false);
+
+    ifc
+      .collect_inline_items_for_children_with_base(
+        &container_style,
+        children.as_slice(),
+        1000.0,
+        None,
+        Direction::Ltr,
+        &mut positioned,
+      )
+      .expect("collect epoch 2");
+    ifc
+      .collect_inline_items_for_children_with_base(
+        &container_style,
+        children.as_slice(),
+        1000.0,
+        None,
+        Direction::Ltr,
+        &mut positioned,
+      )
+      .expect("collect epoch 2");
+
+    let (lookups, hits, misses, stores) =
+      take_text_inline_item_cache_diagnostics().expect("diagnostics");
+    assert_eq!((lookups, hits, misses, stores), (4, 2, 2, 2));
+
+    crate::layout::formatting_context::intrinsic_cache_use_epoch(1, true);
   }
 }
