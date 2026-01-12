@@ -101,11 +101,22 @@ fn is_forbidden_marker_builtin(name: &str) -> bool {
   // When structured IL instructions exist for a feature, the marker builtin must not appear in
   // strict-native mode.
   #[cfg(feature = "native-async-ops")]
-  {
-    if name == "__optimize_js_await" {
-      return true;
-    }
+  if name == "__optimize_js_await" {
+    return true;
   }
+
+  #[cfg(any(feature = "native-fusion", feature = "native-array-ops"))]
+  if name == "__optimize_js_array_chain" {
+    return true;
+  }
+
+  // Typed lowering uses `InstTyp::StringConcat` for template literals. The legacy lowering uses
+  // `Call(__optimize_js_template, ...)`.
+  #[cfg(feature = "typed")]
+  if name == "__optimize_js_template" {
+    return true;
+  }
+
   let _ = name;
   false
 }
@@ -213,6 +224,28 @@ fn verify_function(program: &Program, fn_id: FunctionId, function: &ProgramFunct
               inst,
               loc,
             ));
+          } else {
+            // Ensure the Phi maps exactly one incoming value per predecessor block.
+            //
+            // Note: `Inst::insert_phi` rejects duplicate labels (in debug builds), but we still
+            // validate here because `optimize-js` can be built without debug assertions and because
+            // mismatches can lead to silent miscompiles in SSA-based consumers.
+            let mut phi_labels = inst.labels.clone();
+            phi_labels.sort_unstable();
+            let mut preds = parents.clone();
+            preds.sort_unstable();
+            if phi_labels != preds {
+              diagnostics.push(diagnostic_for_inst(
+                "OPTN0007",
+                format!(
+                  "strict-native: Phi incoming labels do not match CFG predecessors (preds={preds:?}, labels={phi_labels:?}) ({})",
+                  inst_loc_suffix(loc)
+                ),
+                opts,
+                inst,
+                loc,
+              ));
+            }
           }
 
           // Dominance for phi arguments is on the predecessor edge.
