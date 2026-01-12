@@ -9,6 +9,11 @@ This document is the contributor-facing “where does this live?” reference fo
 stack (and the boundary between `vendor/ecma-rs/` vs `src/`; see also:
 [`instructions/ecma_rs_ownership.md`](../instructions/ecma_rs_ownership.md)).
 
+Note: WebIDL *consolidation* is complete: generic JS/WebIDL infrastructure lives in the vendored
+`vendor/ecma-rs/` workspace. FastRender may still carry compatibility shims (e.g.
+`crates/webidl-js-runtime`) while migration off legacy backends is in progress, but **new**
+infrastructure should follow the rules below.
+
 ## Crate / code layout
 
 ### `vendor/ecma-rs/webidl` (crate: `webidl`)
@@ -19,10 +24,15 @@ Runtime-independent WebIDL implementation:
 - WebIDL conversions (JS ↔ IDL) and helpers (`DOMString`/`USVString`, numeric conversions,
   sequences/records/unions, etc.)
 - Overload resolution (the WebIDL overload selection algorithm)
-- Runtime boundary traits that conversions/overload resolution are defined against:
-  - `webidl::JsRuntime` / `webidl::WebIdlJsRuntime`
-  - `webidl::WebIdlHooks` (platform object checks)
-  - `webidl::WebIdlLimits` (resource limits)
+- Runtime boundary traits that the **spec-shaped** conversions/overload resolution are defined
+  against:
+  - `webidl::runtime::{JsRuntime, WebIdlJsRuntime}`
+  - `webidl::{WebIdlHooks, WebIdlLimits}` (platform object checks + resource limits)
+
+Note: the `webidl` crate also still exposes a legacy pre-consolidation API at `webidl::*`
+(e.g. `webidl::convert_js_to_idl`, `webidl::resolve_overload`, `webidl::JsRuntime`). New bindings
+code should target the spec-shaped modules (`webidl::runtime`, `webidl::conversions`,
+`webidl::overload_resolution`).
 
 If you need a new WebIDL spec algorithm, or want to improve correctness/perf of an existing one, it
 belongs here.
