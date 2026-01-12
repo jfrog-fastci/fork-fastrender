@@ -88,9 +88,11 @@ const formatMaybeStableId = (id: unknown): string => {
 export const InstMetaPanel = ({
   inst,
   source,
+  pinned,
 }: {
   inst?: GraphInst;
   source?: string;
+  pinned?: boolean;
 }) => {
   const [showEffects, setShowEffects] = useState(true);
   const [showOwnership, setShowOwnership] = useState(true);
@@ -156,6 +158,7 @@ export const InstMetaPanel = ({
         ) : (
           <span className="inst-summary"> • Hover an instruction</span>
         )}
+        {pinned && <span className="badge">pinned</span>}
       </header>
 
       <div className="toggles">
@@ -202,7 +205,9 @@ export const InstMetaPanel = ({
       </div>
 
       {!inst ? (
-        <p className="empty">Hover an instruction in the graph to view analysis metadata.</p>
+        <p className="empty">
+          Hover an instruction in the graph to view analysis metadata (click to pin).
+        </p>
       ) : !meta ? (
         <p className="empty">No analysis metadata available for this instruction.</p>
       ) : (

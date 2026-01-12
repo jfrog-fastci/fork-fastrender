@@ -473,8 +473,11 @@ export const Graph = ({
 
   useEffect(() => {
     onHoverInst?.(undefined);
-    onSelectInst?.(undefined);
   }, [step, query, onlyUnknownEffects, onlyEscapingAllocs]);
+
+  useEffect(() => {
+    onSelectInst?.(undefined);
+  }, [step]);
 
   const visible = useMemo(() => new Set(filteredBlocks.map((b) => b.label)), [filteredBlocks]);
   const initNodes = useMemo(

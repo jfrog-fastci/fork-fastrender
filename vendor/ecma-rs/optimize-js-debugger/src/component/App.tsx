@@ -240,6 +240,10 @@ export const App = () => {
 
   useEffect(() => {
     const listener = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        setSelectedInst(undefined);
+        return;
+      }
       if (view !== "steps" || debugSteps.length === 0) {
         return;
       }
@@ -433,7 +437,11 @@ export const App = () => {
               </p>
             )}
           </div>
-          <InstMetaPanel inst={activeInst} source={source} />
+          <InstMetaPanel
+            inst={activeInst}
+            source={source}
+            pinned={selectedInst != undefined}
+          />
           <div className="editor">
             <div className="controls">
               <label>

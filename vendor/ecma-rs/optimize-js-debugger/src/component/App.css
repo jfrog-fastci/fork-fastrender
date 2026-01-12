@@ -32,6 +32,7 @@
 .BBlocksExplorer .insts .inst {
   display: table-row;
   color: #333;
+  cursor: pointer;
 }
 
 .BBlocksExplorer .insts .inst.selected > div {
@@ -249,6 +250,14 @@
   gap: 0.5rem;
   align-items: baseline;
   margin-bottom: 0.25rem;
+}
+
+.InstMetaPanel .badge {
+  background: #e9f5ff;
+  color: #0c4a6e;
+  padding: 0.1rem 0.35rem;
+  border-radius: 6px;
+  font-size: 0.75rem;
 }
 
 .InstMetaPanel .inst-summary {
