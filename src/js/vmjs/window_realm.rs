@@ -31787,12 +31787,12 @@ fn init_window_globals(
   scope.define_property(
     dom_parser_ctor_func,
     prototype_key,
-    data_desc(Value::Object(dom_parser_proto)),
+    ctor_link_desc(Value::Object(dom_parser_proto)),
   )?;
   scope.define_property(
     dom_parser_proto,
     constructor_key,
-    data_desc(Value::Object(dom_parser_ctor_func)),
+    ctor_link_desc(Value::Object(dom_parser_ctor_func)),
   )?;
   let dom_parser_key = alloc_key(&mut scope, "DOMParser")?;
   scope.define_property(
@@ -31819,12 +31819,12 @@ fn init_window_globals(
   scope.define_property(
     event_ctor_func,
     prototype_key,
-    data_desc(Value::Object(event_proto)),
+    ctor_link_desc(Value::Object(event_proto)),
   )?;
   scope.define_property(
     event_proto,
     constructor_key,
-    data_desc(Value::Object(event_ctor_func)),
+    ctor_link_desc(Value::Object(event_ctor_func)),
   )?;
   let event_ctor_key = alloc_key(&mut scope, "Event")?;
   scope.define_property(
@@ -31834,7 +31834,7 @@ fn init_window_globals(
   )?;
 
   // DOM Event phase constants (Event.NONE .. Event.BUBBLING_PHASE). These are WebIDL `const`s and
-  // must be non-writable/non-configurable.
+  // must be enumerable + non-writable/non-configurable.
   for (name, value) in [
     ("NONE", 0.0),
     ("CAPTURING_PHASE", 1.0),
@@ -31842,16 +31842,13 @@ fn init_window_globals(
     ("BUBBLING_PHASE", 3.0),
   ] {
     let key = alloc_key(&mut scope, name)?;
+    let desc = const_desc(Value::Number(value));
     scope.define_property(
       event_ctor_func,
       key,
-      non_configurable_read_only_data_desc(Value::Number(value)),
+      desc.clone(),
     )?;
-    scope.define_property(
-      event_proto,
-      key,
-      non_configurable_read_only_data_desc(Value::Number(value)),
-    )?;
+    scope.define_property(event_proto, key, desc)?;
   }
 
   let ui_event_ctor_call_id = vm.register_native_call(ui_event_constructor_native)?;
@@ -31872,12 +31869,12 @@ fn init_window_globals(
   scope.define_property(
     ui_event_ctor_func,
     prototype_key,
-    data_desc(Value::Object(ui_event_proto)),
+    ctor_link_desc(Value::Object(ui_event_proto)),
   )?;
   scope.define_property(
     ui_event_proto,
     constructor_key,
-    data_desc(Value::Object(ui_event_ctor_func)),
+    ctor_link_desc(Value::Object(ui_event_ctor_func)),
   )?;
   let ui_event_ctor_key = alloc_key(&mut scope, "UIEvent")?;
   scope.define_property(
@@ -31905,12 +31902,12 @@ fn init_window_globals(
   scope.define_property(
     keyboard_event_ctor_func,
     prototype_key,
-    data_desc(Value::Object(keyboard_event_proto)),
+    ctor_link_desc(Value::Object(keyboard_event_proto)),
   )?;
   scope.define_property(
     keyboard_event_proto,
     constructor_key,
-    data_desc(Value::Object(keyboard_event_ctor_func)),
+    ctor_link_desc(Value::Object(keyboard_event_ctor_func)),
   )?;
   let keyboard_event_ctor_key = alloc_key(&mut scope, "KeyboardEvent")?;
   scope.define_property(
@@ -31938,12 +31935,12 @@ fn init_window_globals(
   scope.define_property(
     focus_event_ctor_func,
     prototype_key,
-    data_desc(Value::Object(focus_event_proto)),
+    ctor_link_desc(Value::Object(focus_event_proto)),
   )?;
   scope.define_property(
     focus_event_proto,
     constructor_key,
-    data_desc(Value::Object(focus_event_ctor_func)),
+    ctor_link_desc(Value::Object(focus_event_ctor_func)),
   )?;
   let focus_event_ctor_key = alloc_key(&mut scope, "FocusEvent")?;
   scope.define_property(
@@ -31971,12 +31968,12 @@ fn init_window_globals(
   scope.define_property(
     input_event_ctor_func,
     prototype_key,
-    data_desc(Value::Object(input_event_proto)),
+    ctor_link_desc(Value::Object(input_event_proto)),
   )?;
   scope.define_property(
     input_event_proto,
     constructor_key,
-    data_desc(Value::Object(input_event_ctor_func)),
+    ctor_link_desc(Value::Object(input_event_ctor_func)),
   )?;
   let input_event_ctor_key = alloc_key(&mut scope, "InputEvent")?;
   scope.define_property(
@@ -32004,12 +32001,12 @@ fn init_window_globals(
   scope.define_property(
     custom_event_ctor_func,
     prototype_key,
-    data_desc(Value::Object(custom_event_proto)),
+    ctor_link_desc(Value::Object(custom_event_proto)),
   )?;
   scope.define_property(
     custom_event_proto,
     constructor_key,
-    data_desc(Value::Object(custom_event_ctor_func)),
+    ctor_link_desc(Value::Object(custom_event_ctor_func)),
   )?;
   let custom_event_ctor_key = alloc_key(&mut scope, "CustomEvent")?;
   scope.define_property(
@@ -32037,12 +32034,12 @@ fn init_window_globals(
   scope.define_property(
     mouse_event_ctor_func,
     prototype_key,
-    data_desc(Value::Object(mouse_event_proto)),
+    ctor_link_desc(Value::Object(mouse_event_proto)),
   )?;
   scope.define_property(
     mouse_event_proto,
     constructor_key,
-    data_desc(Value::Object(mouse_event_ctor_func)),
+    ctor_link_desc(Value::Object(mouse_event_ctor_func)),
   )?;
   let mouse_event_ctor_key = alloc_key(&mut scope, "MouseEvent")?;
   scope.define_property(
@@ -32070,12 +32067,12 @@ fn init_window_globals(
   scope.define_property(
     storage_event_ctor_func,
     prototype_key,
-    data_desc(Value::Object(storage_event_proto)),
+    ctor_link_desc(Value::Object(storage_event_proto)),
   )?;
   scope.define_property(
     storage_event_proto,
     constructor_key,
-    data_desc(Value::Object(storage_event_ctor_func)),
+    ctor_link_desc(Value::Object(storage_event_ctor_func)),
   )?;
   let storage_event_ctor_key = alloc_key(&mut scope, "StorageEvent")?;
   scope.define_property(
@@ -32103,12 +32100,12 @@ fn init_window_globals(
   scope.define_property(
     pop_state_event_ctor_func,
     prototype_key,
-    data_desc(Value::Object(pop_state_event_proto)),
+    ctor_link_desc(Value::Object(pop_state_event_proto)),
   )?;
   scope.define_property(
     pop_state_event_proto,
     constructor_key,
-    data_desc(Value::Object(pop_state_event_ctor_func)),
+    ctor_link_desc(Value::Object(pop_state_event_ctor_func)),
   )?;
   let pop_state_event_ctor_key = alloc_key(&mut scope, "PopStateEvent")?;
   scope.define_property(
@@ -32137,12 +32134,12 @@ fn init_window_globals(
   scope.define_property(
     hash_change_event_ctor_func,
     prototype_key,
-    data_desc(Value::Object(hash_change_event_proto)),
+    ctor_link_desc(Value::Object(hash_change_event_proto)),
   )?;
   scope.define_property(
     hash_change_event_proto,
     constructor_key,
-    data_desc(Value::Object(hash_change_event_ctor_func)),
+    ctor_link_desc(Value::Object(hash_change_event_ctor_func)),
   )?;
   let hash_change_event_ctor_key = alloc_key(&mut scope, "HashChangeEvent")?;
   scope.define_property(
@@ -32171,12 +32168,12 @@ fn init_window_globals(
   scope.define_property(
     promise_rejection_event_ctor_func,
     prototype_key,
-    data_desc(Value::Object(promise_rejection_event_proto)),
+    ctor_link_desc(Value::Object(promise_rejection_event_proto)),
   )?;
   scope.define_property(
     promise_rejection_event_proto,
     constructor_key,
-    data_desc(Value::Object(promise_rejection_event_ctor_func)),
+    ctor_link_desc(Value::Object(promise_rejection_event_ctor_func)),
   )?;
   let promise_rejection_event_ctor_key = alloc_key(&mut scope, "PromiseRejectionEvent")?;
   scope.define_property(
@@ -32204,12 +32201,12 @@ fn init_window_globals(
   scope.define_property(
     error_event_ctor_func,
     prototype_key,
-    data_desc(Value::Object(error_event_proto)),
+    ctor_link_desc(Value::Object(error_event_proto)),
   )?;
   scope.define_property(
     error_event_proto,
     constructor_key,
-    data_desc(Value::Object(error_event_ctor_func)),
+    ctor_link_desc(Value::Object(error_event_ctor_func)),
   )?;
   let error_event_ctor_key = alloc_key(&mut scope, "ErrorEvent")?;
   scope.define_property(
@@ -32238,12 +32235,12 @@ fn init_window_globals(
   scope.define_property(
     before_unload_event_ctor_func,
     prototype_key,
-    data_desc(Value::Object(before_unload_event_proto)),
+    ctor_link_desc(Value::Object(before_unload_event_proto)),
   )?;
   scope.define_property(
     before_unload_event_proto,
     constructor_key,
-    data_desc(Value::Object(before_unload_event_ctor_func)),
+    ctor_link_desc(Value::Object(before_unload_event_ctor_func)),
   )?;
   let before_unload_event_ctor_key = alloc_key(&mut scope, "BeforeUnloadEvent")?;
   scope.define_property(
@@ -32272,12 +32269,12 @@ fn init_window_globals(
   scope.define_property(
     page_transition_event_ctor_func,
     prototype_key,
-    data_desc(Value::Object(page_transition_event_proto)),
+    ctor_link_desc(Value::Object(page_transition_event_proto)),
   )?;
   scope.define_property(
     page_transition_event_proto,
     constructor_key,
-    data_desc(Value::Object(page_transition_event_ctor_func)),
+    ctor_link_desc(Value::Object(page_transition_event_ctor_func)),
   )?;
   let page_transition_event_ctor_key = alloc_key(&mut scope, "PageTransitionEvent")?;
   scope.define_property(
@@ -32830,12 +32827,12 @@ fn init_window_globals(
     scope.define_property(
       document_type_ctor,
       prototype_key,
-      data_desc(Value::Object(document_type_proto)),
+      ctor_link_desc(Value::Object(document_type_proto)),
     )?;
     scope.define_property(
       document_type_proto,
       constructor_key,
-      data_desc(Value::Object(document_type_ctor)),
+      ctor_link_desc(Value::Object(document_type_ctor)),
     )?;
     let document_type_key = alloc_key(&mut scope, "DocumentType")?;
     scope.define_property(
@@ -32994,12 +32991,12 @@ fn init_window_globals(
     scope.define_property(
       comment_ctor,
       prototype_key,
-      data_desc(Value::Object(comment_proto)),
+      ctor_link_desc(Value::Object(comment_proto)),
     )?;
     scope.define_property(
       comment_proto,
       constructor_key,
-      data_desc(Value::Object(comment_ctor)),
+      ctor_link_desc(Value::Object(comment_ctor)),
     )?;
     let comment_key = alloc_key(&mut scope, "Comment")?;
     scope.define_property(global, comment_key, data_desc(Value::Object(comment_ctor)))?;
@@ -33009,12 +33006,12 @@ fn init_window_globals(
     scope.define_property(
       processing_instruction_ctor,
       prototype_key,
-      data_desc(Value::Object(processing_instruction_proto)),
+      ctor_link_desc(Value::Object(processing_instruction_proto)),
     )?;
     scope.define_property(
       processing_instruction_proto,
       constructor_key,
-      data_desc(Value::Object(processing_instruction_ctor)),
+      ctor_link_desc(Value::Object(processing_instruction_ctor)),
     )?;
     let processing_instruction_key = alloc_key(&mut scope, "ProcessingInstruction")?;
     scope.define_property(
@@ -33146,12 +33143,12 @@ fn init_window_globals(
     scope.define_property(
       html_collection_ctor,
       prototype_key,
-      data_desc(Value::Object(html_collection_proto)),
+      ctor_link_desc(Value::Object(html_collection_proto)),
     )?;
     scope.define_property(
       html_collection_proto,
       constructor_key,
-      data_desc(Value::Object(html_collection_ctor)),
+      ctor_link_desc(Value::Object(html_collection_ctor)),
     )?;
     let html_collection_key = alloc_key(&mut scope, "HTMLCollection")?;
     scope.define_property(
@@ -33262,12 +33259,12 @@ fn init_window_globals(
     scope.define_property(
       node_list_ctor,
       prototype_key,
-      data_desc(Value::Object(node_list_proto)),
+      ctor_link_desc(Value::Object(node_list_proto)),
     )?;
     scope.define_property(
       node_list_proto,
       constructor_key,
-      data_desc(Value::Object(node_list_ctor)),
+      ctor_link_desc(Value::Object(node_list_ctor)),
     )?;
     let node_list_key = alloc_key(&mut scope, "NodeList")?;
     scope.define_property(global, node_list_key, data_desc(Value::Object(node_list_ctor)))?;
@@ -33302,12 +33299,12 @@ fn init_window_globals(
     scope.define_property(
       css_style_decl_ctor,
       prototype_key,
-      data_desc(Value::Object(css_style_decl_proto)),
+      ctor_link_desc(Value::Object(css_style_decl_proto)),
     )?;
     scope.define_property(
       css_style_decl_proto,
       constructor_key,
-      data_desc(Value::Object(css_style_decl_ctor)),
+      ctor_link_desc(Value::Object(css_style_decl_ctor)),
     )?;
     let css_style_decl_key = alloc_key(&mut scope, "CSSStyleDeclaration")?;
     scope.define_property(
@@ -33343,12 +33340,12 @@ fn init_window_globals(
     scope.define_property(
       mutation_record_ctor,
       prototype_key,
-      data_desc(Value::Object(mutation_record_proto)),
+      ctor_link_desc(Value::Object(mutation_record_proto)),
     )?;
     scope.define_property(
       mutation_record_proto,
       constructor_key,
-      data_desc(Value::Object(mutation_record_ctor)),
+      ctor_link_desc(Value::Object(mutation_record_ctor)),
     )?;
     let mutation_record_key = alloc_key(&mut scope, "MutationRecord")?;
     scope.define_property(
@@ -34229,12 +34226,12 @@ fn init_window_globals(
   scope.define_property(
     mutation_observer_ctor_func,
     prototype_key,
-    data_desc(Value::Object(mutation_observer_proto)),
+    ctor_link_desc(Value::Object(mutation_observer_proto)),
   )?;
   scope.define_property(
     mutation_observer_proto,
     constructor_key,
-    data_desc(Value::Object(mutation_observer_ctor_func)),
+    ctor_link_desc(Value::Object(mutation_observer_ctor_func)),
   )?;
   let mutation_observer_key = alloc_key(&mut scope, "MutationObserver")?;
   scope.define_property(
@@ -34328,12 +34325,12 @@ fn init_window_globals(
   scope.define_property(
     dom_rect_read_only_ctor_func,
     prototype_key,
-    data_desc(Value::Object(dom_rect_read_only_proto)),
+    ctor_link_desc(Value::Object(dom_rect_read_only_proto)),
   )?;
   scope.define_property(
     dom_rect_read_only_proto,
     constructor_key,
-    data_desc(Value::Object(dom_rect_read_only_ctor_func)),
+    ctor_link_desc(Value::Object(dom_rect_read_only_ctor_func)),
   )?;
   let dom_rect_read_only_ctor_key = alloc_key(&mut scope, "DOMRectReadOnly")?;
   scope.define_property(
@@ -34360,12 +34357,12 @@ fn init_window_globals(
   scope.define_property(
     dom_rect_ctor_func,
     prototype_key,
-    data_desc(Value::Object(dom_rect_proto)),
+    ctor_link_desc(Value::Object(dom_rect_proto)),
   )?;
   scope.define_property(
     dom_rect_proto,
     constructor_key,
-    data_desc(Value::Object(dom_rect_ctor_func)),
+    ctor_link_desc(Value::Object(dom_rect_ctor_func)),
   )?;
   let dom_rect_ctor_key = alloc_key(&mut scope, "DOMRect")?;
   scope.define_property(global, dom_rect_ctor_key, data_desc(Value::Object(dom_rect_ctor_func)))?;
@@ -34506,12 +34503,12 @@ fn init_window_globals(
   scope.define_property(
     intersection_observer_ctor_func,
     prototype_key,
-    data_desc(Value::Object(intersection_observer_proto)),
+    ctor_link_desc(Value::Object(intersection_observer_proto)),
   )?;
   scope.define_property(
     intersection_observer_proto,
     constructor_key,
-    data_desc(Value::Object(intersection_observer_ctor_func)),
+    ctor_link_desc(Value::Object(intersection_observer_ctor_func)),
   )?;
   let intersection_observer_key = alloc_key(&mut scope, "IntersectionObserver")?;
   scope.define_property(
@@ -34629,12 +34626,12 @@ fn init_window_globals(
   scope.define_property(
     resize_observer_ctor_func,
     prototype_key,
-    data_desc(Value::Object(resize_observer_proto)),
+    ctor_link_desc(Value::Object(resize_observer_proto)),
   )?;
   scope.define_property(
     resize_observer_proto,
     constructor_key,
-    data_desc(Value::Object(resize_observer_ctor_func)),
+    ctor_link_desc(Value::Object(resize_observer_ctor_func)),
   )?;
   let resize_observer_key = alloc_key(&mut scope, "ResizeObserver")?;
   scope.define_property(
@@ -36575,12 +36572,12 @@ fn init_window_globals(
   scope.define_property(
     history_ctor_func,
     prototype_key,
-    data_desc(Value::Object(history_proto)),
+    ctor_link_desc(Value::Object(history_proto)),
   )?;
   scope.define_property(
     history_proto,
     constructor_key,
-    data_desc(Value::Object(history_ctor_func)),
+    ctor_link_desc(Value::Object(history_ctor_func)),
   )?;
   let history_ctor_key = alloc_key(&mut scope, "History")?;
   scope.define_property(
@@ -36610,12 +36607,12 @@ fn init_window_globals(
   scope.define_property(
     location_ctor_func,
     prototype_key,
-    data_desc(Value::Object(location_proto)),
+    ctor_link_desc(Value::Object(location_proto)),
   )?;
   scope.define_property(
     location_proto,
     constructor_key,
-    data_desc(Value::Object(location_ctor_func)),
+    ctor_link_desc(Value::Object(location_ctor_func)),
   )?;
   let location_ctor_key = alloc_key(&mut scope, "Location")?;
   scope.define_property(
@@ -36919,12 +36916,12 @@ fn init_window_globals(
   scope.define_property(
     storage_ctor_func,
     prototype_key,
-    data_desc(Value::Object(storage_proto)),
+    ctor_link_desc(Value::Object(storage_proto)),
   )?;
   scope.define_property(
     storage_proto,
     constructor_key,
-    data_desc(Value::Object(storage_ctor_func)),
+    ctor_link_desc(Value::Object(storage_ctor_func)),
   )?;
   let storage_ctor_key = alloc_key(&mut scope, "Storage")?;
   scope.define_property(

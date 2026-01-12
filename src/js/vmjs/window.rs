@@ -1302,28 +1302,62 @@ mod tests {
     let ok = host.exec_script(
       r#"
       (() => {
-        const nodeProtoDesc = Object.getOwnPropertyDescriptor(Node, 'prototype');
-        const nodeCtorDesc = Object.getOwnPropertyDescriptor(Node.prototype, 'constructor');
+        const ctors = [
+          DOMParser,
+          EventTarget,
+          Node,
+          Event,
+          DocumentType,
+          HTMLElement,
+          Comment,
+          ProcessingInstruction,
+          HTMLCollection,
+          NodeList,
+          CSSStyleDeclaration,
+          MutationRecord,
+          MutationObserver,
+          DOMRectReadOnly,
+          DOMRect,
+          IntersectionObserver,
+          ResizeObserver,
+          History,
+          Location,
+          Storage,
+        ];
+
+        for (const Ctor of ctors) {
+          const protoDesc = Object.getOwnPropertyDescriptor(Ctor, 'prototype');
+          if (
+            !protoDesc ||
+            protoDesc.writable !== false ||
+            protoDesc.enumerable !== false ||
+            protoDesc.configurable !== false
+          ) {
+            return false;
+          }
+          const ctorDesc = Object.getOwnPropertyDescriptor(Ctor.prototype, 'constructor');
+          if (
+            !ctorDesc ||
+            ctorDesc.writable !== false ||
+            ctorDesc.enumerable !== false ||
+            ctorDesc.configurable !== false
+          ) {
+            return false;
+          }
+        }
+
         const nodeElementNodeDesc = Object.getOwnPropertyDescriptor(Node, 'ELEMENT_NODE');
-        const eventTargetProtoDesc = Object.getOwnPropertyDescriptor(EventTarget, 'prototype');
-        const eventTargetCtorDesc = Object.getOwnPropertyDescriptor(EventTarget.prototype, 'constructor');
+        const eventNoneDesc = Object.getOwnPropertyDescriptor(Event, 'NONE');
 
         return (
-          nodeProtoDesc &&
-            nodeProtoDesc.writable === false &&
-            nodeProtoDesc.configurable === false &&
-          nodeCtorDesc &&
-            nodeCtorDesc.writable === false &&
-            nodeCtorDesc.configurable === false &&
           nodeElementNodeDesc &&
             nodeElementNodeDesc.enumerable === true &&
+            nodeElementNodeDesc.writable === false &&
             nodeElementNodeDesc.configurable === false &&
-          eventTargetProtoDesc &&
-            eventTargetProtoDesc.writable === false &&
-            eventTargetProtoDesc.configurable === false &&
-          eventTargetCtorDesc &&
-            eventTargetCtorDesc.writable === false &&
-            eventTargetCtorDesc.configurable === false
+          eventNoneDesc &&
+            eventNoneDesc.enumerable === true &&
+            eventNoneDesc.writable === false &&
+            eventNoneDesc.configurable === false
         );
       })()
       "#,
