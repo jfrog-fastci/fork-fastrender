@@ -124,6 +124,7 @@ impl ProgramState {
       self.lib_texts.insert(file_id, lib.text.clone());
 
       let directives = scan_triple_slash_directives(lib.text.as_ref());
+      let mut triple_slash_types: Vec<&str> = Vec::new();
       for reference in directives.references.iter() {
         let value = reference.value(lib.text.as_ref());
         if value.is_empty() {
@@ -158,6 +159,7 @@ impl ProgramState {
             }
           }
           TripleSlashReferenceKind::Types => {
+            triple_slash_types.push(value);
             if let Some(target) = self.record_type_package_resolution(file_id, value, host) {
               queue.push_back(target);
             } else {
@@ -171,6 +173,35 @@ impl ProgramState {
       }
 
       let parsed = self.parse_via_salsa(file_id, FileKind::Dts, Arc::clone(&lib.text));
+
+      // Keep module resolution edges in sync with the lib's current set of
+      // module specifiers, including `@types` fallback behaviour for
+      // triple-slash `reference types`.
+      let current_specifiers = db::module_specifiers(&self.typecheck_db, file_id);
+      let mut keep_specifiers: AHashSet<&str> = AHashSet::new();
+      for specifier in current_specifiers.iter() {
+        keep_specifiers.insert(specifier.as_ref());
+      }
+      self
+        .typecheck_db
+        .retain_module_resolutions_for_file(file_id, |specifier| keep_specifiers.contains(specifier));
+      let mut type_package_specifiers: AHashSet<&str> = AHashSet::new();
+      for specifier in triple_slash_types.iter().copied() {
+        type_package_specifiers.insert(specifier);
+      }
+      for specifier in current_specifiers.iter() {
+        self.check_cancelled()?;
+        let specifier = specifier.as_ref();
+        let target = if type_package_specifiers.contains(specifier) {
+          self.record_type_package_resolution(file_id, specifier, host)
+        } else {
+          self.record_module_resolution(file_id, specifier, host)
+        };
+        if let Some(target) = target {
+          queue.push_back(target);
+        }
+      }
+
       match parsed {
         Ok(ast) => {
           self.check_cancelled()?;
