@@ -49,6 +49,7 @@ struct MarkerSymbols {
   number_data: GcSymbol,
   string_data: GcSymbol,
   bigint_data: GcSymbol,
+  symbol_data: GcSymbol,
 }
 
 impl MarkerSymbols {
@@ -69,11 +70,16 @@ impl MarkerSymbols {
     scope.push_root(Value::String(bigint_key))?;
     let bigint_data = scope.heap_mut().symbol_for(bigint_key)?;
 
+    let symbol_key = scope.alloc_string("vm-js.internal.SymbolData")?;
+    scope.push_root(Value::String(symbol_key))?;
+    let symbol_data = scope.heap_mut().symbol_for(symbol_key)?;
+
     Ok(Self {
       boolean_data,
       number_data,
       string_data,
       bigint_data,
+      symbol_data,
     })
   }
 }
@@ -1080,6 +1086,25 @@ fn serialize_object(
     return Ok(encoded);
   }
 
+  // Boxed Symbol objects.
+  //
+  // `vm-js` represents `Object(Symbol('x'))` using a non-enumerable internal marker symbol property
+  // holding the primitive Symbol value. HTML structured cloning rejects Symbols, including boxed
+  // wrapper objects.
+  let symbol_marker_key = PropertyKey::from_symbol(state.markers.symbol_data);
+  if scope
+    .heap()
+    .object_get_own_data_property_value(obj, &symbol_marker_key)?
+    .is_some()
+  {
+    return Err(throw_data_clone_error(
+      vm,
+      scope,
+      state.global,
+      "structuredClone: cannot clone Symbol object",
+    ));
+  }
+
   // Boxed primitives.
   let boolean_marker_key = PropertyKey::from_symbol(state.markers.boolean_data);
   if let Some(Value::Bool(b)) = scope
@@ -2079,6 +2104,16 @@ mod tests {
     )?;
     assert_eq!(fun_ok, Value::Bool(true));
 
+    Ok(())
+  }
+
+  #[test]
+  fn structured_clone_rejects_boxed_symbol() -> Result<(), VmError> {
+    let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
+    let ok = realm.exec_script(
+      "try { structuredClone(Object(Symbol('x'))); 'no' } catch (e) { e.name } === 'DataCloneError'",
+    )?;
+    assert_eq!(ok, Value::Bool(true));
     Ok(())
   }
 
