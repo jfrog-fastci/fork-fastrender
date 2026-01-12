@@ -953,6 +953,30 @@ impl Codegen {
           self.emit(format!("{end_label}:"));
           Ok(())
         }
+        Stmt::DoWhile(do_while_stmt) => {
+          // Minimal `do { body } while (cond);` support.
+          let body_label = self.fresh_block("do.body");
+          let cond_label = self.fresh_block("do.cond");
+          let end_label = self.fresh_block("do.end");
+
+          self.emit(format!("  br label %{body_label}"));
+
+          self.emit(format!("{body_label}:"));
+          self.compile_stmt(&do_while_stmt.stx.body)?;
+          if !self.block_terminated {
+            self.emit(format!("  br label %{cond_label}"));
+          }
+
+          self.emit(format!("{cond_label}:"));
+          let cond = self.compile_expr(&do_while_stmt.stx.condition)?;
+          let cond_bool = self.emit_truthy_to_bool(cond, do_while_stmt.stx.condition.loc)?;
+          self.emit(format!(
+            "  br i1 {cond_bool}, label %{body_label}, label %{end_label}"
+          ));
+
+          self.emit(format!("{end_label}:"));
+          Ok(())
+        }
         Stmt::ForTriple(for_stmt) => {
           // Minimal `for(init; cond; post) { body }` support.
           //
