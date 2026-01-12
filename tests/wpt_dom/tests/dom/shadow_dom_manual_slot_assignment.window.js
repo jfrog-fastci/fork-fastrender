@@ -41,6 +41,13 @@ test(() => {
   assert_equals(b.assignedSlot, slot2);
   assert_array_equals(slot1.assignedNodes(), []);
   assert_array_equals(slot2.assignedNodes(), [a, b]);
+
+  // assignedNodes/assignedElements take a WebIDL dictionary; non-objects should throw.
+  assert_throws_js(TypeError, () => slot2.assignedNodes(true));
+  assert_throws_js(TypeError, () => slot2.assignedElements(true));
+  // null is treated as an empty dictionary.
+  assert_array_equals(slot2.assignedNodes(null), [a, b]);
+  assert_array_equals(slot2.assignedElements(null), [a, b]);
 }, "Manual slot assignment distributes nodes via HTMLSlotElement.assign()");
 
 test(() => {

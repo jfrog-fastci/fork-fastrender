@@ -25076,7 +25076,7 @@ fn html_slot_element_assigned_nodes_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
   host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
+  hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   this: Value,
   args: &[Value],
@@ -25097,18 +25097,23 @@ fn html_slot_element_assigned_nodes_native(
   }
 
   let flatten = match args.get(0).copied().unwrap_or(Value::Undefined) {
-    Value::Undefined => false,
+    Value::Undefined | Value::Null => false,
     Value::Object(options_obj) => {
+      // WebIDL dictionary conversion: options must be an object (or null/undefined).
+      scope.push_root(Value::Object(options_obj))?;
       let flatten_key = alloc_key(scope, "flatten")?;
-      match scope
-        .heap()
-        .object_get_own_data_property_value(options_obj, &flatten_key)?
-      {
-        Some(v) => scope.heap().to_boolean(v)?,
-        None => false,
+      let value = vm.get_with_host_and_hooks(host, scope, hooks, options_obj, flatten_key)?;
+      if matches!(value, Value::Undefined) {
+        false
+      } else {
+        scope.heap().to_boolean(value)?
       }
     }
-    other => scope.heap().to_boolean(other)?,
+    _ => {
+      return Err(VmError::TypeError(
+        "HTMLSlotElement.assignedNodes: options must be an object",
+      ));
+    }
   };
 
   let assigned = if flatten {
@@ -25151,7 +25156,7 @@ fn html_slot_element_assigned_elements_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
   host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
+  hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   this: Value,
   args: &[Value],
@@ -25172,18 +25177,23 @@ fn html_slot_element_assigned_elements_native(
   }
 
   let flatten = match args.get(0).copied().unwrap_or(Value::Undefined) {
-    Value::Undefined => false,
+    Value::Undefined | Value::Null => false,
     Value::Object(options_obj) => {
+      // WebIDL dictionary conversion: options must be an object (or null/undefined).
+      scope.push_root(Value::Object(options_obj))?;
       let flatten_key = alloc_key(scope, "flatten")?;
-      match scope
-        .heap()
-        .object_get_own_data_property_value(options_obj, &flatten_key)?
-      {
-        Some(v) => scope.heap().to_boolean(v)?,
-        None => false,
+      let value = vm.get_with_host_and_hooks(host, scope, hooks, options_obj, flatten_key)?;
+      if matches!(value, Value::Undefined) {
+        false
+      } else {
+        scope.heap().to_boolean(value)?
       }
     }
-    other => scope.heap().to_boolean(other)?,
+    _ => {
+      return Err(VmError::TypeError(
+        "HTMLSlotElement.assignedElements: options must be an object",
+      ));
+    }
   };
 
   let assigned = if flatten {
