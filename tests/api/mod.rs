@@ -12,4 +12,5 @@ mod prepared_document_geometry_tree;
 mod root_font_size_percent;
 mod svg_document_css;
 mod svg_mask_image;
+mod csp_img_data_url;
 mod render_control;

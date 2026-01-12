@@ -3,15 +3,6 @@ use fastrender::{FastRender, RenderOptions, ResourceKind};
 use image::codecs::png::PngEncoder;
 use image::{ColorType, ImageEncoder};
 
-fn run_with_large_stack(f: impl FnOnce() + Send + 'static) {
-  std::thread::Builder::new()
-    .stack_size(8 * 1024 * 1024)
-    .spawn(f)
-    .expect("spawn thread")
-    .join()
-    .expect("join thread");
-}
-
 fn solid_color_png_data_url(width: u32, height: u32, rgba: [u8; 4]) -> String {
   let mut buf = Vec::new();
   let mut pixels = vec![0u8; (width * height * 4) as usize];
@@ -31,7 +22,7 @@ fn rgba_at(pixmap: &fastrender::Pixmap, x: u32, y: u32) -> (u8, u8, u8, u8) {
 
 #[test]
 fn csp_img_src_wildcard_blocks_data_url_images() {
-  run_with_large_stack(|| {
+  crate::common::with_large_stack(|| {
     let green_png = solid_color_png_data_url(20, 20, [0, 255, 0, 255]);
     let html = format!(
       r#"<!doctype html>
@@ -74,7 +65,7 @@ fn csp_img_src_wildcard_blocks_data_url_images() {
 
 #[test]
 fn csp_img_src_data_allows_data_url_images() {
-  run_with_large_stack(|| {
+  crate::common::with_large_stack(|| {
     let green_png = solid_color_png_data_url(20, 20, [0, 255, 0, 255]);
     let html = format!(
       r#"<!doctype html>

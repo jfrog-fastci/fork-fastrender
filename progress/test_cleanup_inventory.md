@@ -33,7 +33,6 @@ section in sync with `ls tests/*.rs`.
 | `tests/animation_tests.rs` | unit | `src/animation/mod.rs` | Not just a harness (large file). Also uses `#[path]` to include `tests/animation/mod.rs`; migrate all to `src/animation/**`. | TODO |
 | `tests/border_tests.rs` | unit | `src/style/` | Border parsing + cascade expectations (e.g. `src/style/types.rs`, `src/style/cascade.rs`). | TODO |
 | `tests/cascade_tests.rs` | unit | `src/style/cascade.rs` | Harness for `tests/cascade/**`. | TODO |
-| `tests/csp_img_data_url.rs` | integration | `tests/integration.rs::api::csp_img_data_url` | End-to-end CSP behavior (data: images). Fold into `tests/api/` + `tests/integration.rs`. | TODO |
 | `tests/css_font_feature_values_test.rs` | unit | `src/style/font_feature_values.rs` | Parser-level tests for `@font-feature-values`. | TODO |
 | `tests/css_integration_tests.rs` | unit | `src/css/loader.rs` | “Integration” in name only; tests internal CSS loading/URL rewrite/import logic. | TODO |
 | `tests/determinism_tests.rs` | integration | `tests/integration.rs::fixtures::determinism` | Renders fixtures repeatedly + compares PNG output. Uses env vars (`FASTR_IN_PROCESS_DETERMINISM_*`) and Rayon scheduling. | TODO |
@@ -92,6 +91,7 @@ section in sync with `ls tests/*.rs`.
 | `tests/overflow_tests.rs` | unit | `src/paint/stacking.rs` | Migrated into `src/paint/stacking/tests/**`. | DONE |
 | `tests/pipeline_churn_guardrail.rs` | unit | `src/layout/tests/pipeline_churn_guardrail.rs` | Migrated into unit tests under `src/layout/tests/**`; uses `crate::testing::global_test_lock()` to keep counter-reset assertions deterministic, so a dedicated binary is no longer required. | DONE |
 | `tests/regression_tests.rs` | integration | `tests/integration.rs::regression` | Top-level harness removed; suite now lives under `tests/regression/**`. | DONE |
+| `tests/csp_img_data_url.rs` | integration | `tests/integration.rs::api::csp_img_data_url` | Moved into `tests/api/csp_img_data_url.rs` and included from `tests/api/mod.rs`. | DONE |
 | `tests/render_control_test_render_delay_smoke.rs` | integration | `tests/integration.rs::api::render_control` | Moved into `tests/api/render_control.rs`. | DONE |
 | `tests/resource_tests.rs` | integration | `tests/integration.rs::resource` | Top-level harness removed; suite now lives under `tests/resource/**` and is pulled into `tests/integration.rs`. | DONE |
 | `tests/shadow_tests.rs` | unit | `src/dom2/shadow_dom.rs` | Migrated to unit tests for declarative shadow DOM + slotting. | DONE |
