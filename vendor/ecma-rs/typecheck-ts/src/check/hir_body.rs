@@ -7301,6 +7301,10 @@ impl<'a> Checker<'a> {
         let _ = self.check_expr(arg);
         self.store.primitive_ids().boolean
       }
+      OperatorName::Delete => {
+        let _ = self.check_expr(arg);
+        self.store.primitive_ids().boolean
+      }
       OperatorName::UnaryPlus | OperatorName::UnaryNegation | OperatorName::BitwiseNot => {
         let _ = self.check_expr(arg);
         self.store.primitive_ids().number
