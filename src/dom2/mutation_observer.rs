@@ -458,7 +458,6 @@ impl Document {
       agent.total_records = agent.total_records.saturating_sub(record_count);
 
       // DOM: notify mutation observers removes all transient registered observers for `observer`.
-      Self::mutation_observer_cleanup_transient_registrations(nodes, &mut agent, observer, &node_list);
       Self::mutation_observer_cleanup_transient_registrations(
         nodes,
         &mut agent,
