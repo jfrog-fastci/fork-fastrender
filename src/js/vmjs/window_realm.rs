@@ -42,7 +42,7 @@ use std::sync::Arc;
 use std::sync::OnceLock;
 use url::Url;
 use vm_js::{
-  GcObject, GcString, Heap, HeapLimits, HostSlots, JsRuntime as VmJsRuntime, ModuleGraph, ModuleId,
+  GcObject, GcString, Heap, HeapLimits, HostSlots, JsRuntime as VmJsRuntime, ModuleGraph,
   PropertyDescriptor, PropertyKey, PropertyKind, Realm, RealmId, Scope, SourceText, Value, Vm,
   VmError, VmHost, VmHostHooks, VmOptions,
 };
@@ -451,31 +451,18 @@ impl WindowRealm {
     // If module support was enabled for this realm, `Vm::module_graph_ptr` points into the
     // realm-owned module graph allocation.
     //
-    // Module evaluation with top-level await stores persistent roots inside `ModuleGraph`. Ensure
-    // those roots are always cleaned up during teardown, even if a test (or embedding) left an
-    // `import()` promise pending. Without this, dropping the module graph trips `vm-js` debug
-    // assertions about leaked persistent roots.
+    // `vm-js` module graphs store persistent GC roots (module environments/namespaces, cached
+    // `import.meta`, and top-level await evaluation state). Dropping a graph without tearing it
+    // down leaks those roots when the heap is reused.
     let module_graph = self
       .runtime
       .vm
       .user_data_mut::<WindowRealmUserData>()
       .and_then(|data| data.module_graph.take());
     if let Some(mut module_graph) = module_graph {
-      let module_count = module_graph.module_count();
-      for raw in 0..module_count {
-        module_graph.abort_tla_evaluation(
-          &mut self.runtime.vm,
-          &mut self.runtime.heap,
-          ModuleId::from_raw(raw as u64),
-        );
-      }
-
-      // Clear the VM's pointer before dropping the module graph so it cannot dangle.
-      self.runtime.vm.clear_module_graph();
-      drop(module_graph);
-    } else {
-      self.runtime.vm.clear_module_graph();
+      module_graph.teardown(&mut self.runtime.vm, &mut self.runtime.heap);
     }
+    self.runtime.vm.clear_module_graph();
     self.time_bindings.take();
     if let Some(id) = self.console_sink_id.take() {
       unregister_console_sink(id);

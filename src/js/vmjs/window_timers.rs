@@ -986,8 +986,12 @@ impl<Host: WindowRealmHost + 'static> VmHostHooks for VmJsEventLoopHooks<Host> {
 
     // Ensure we have a microtask checkpoint hook installed so we can dispatch events after the
     // microtask queue is drained (HTML "notify about rejected promises").
-    event_loop
-      .set_microtask_checkpoint_hook(Some(promise_rejection_microtask_checkpoint_hook::<Host>));
+    // Note: this hook may be installed multiple times over the document lifetime (every time a
+    // promise rejection transition is observed). Use the multiplexed hook registration API so we do
+    // not clobber other checkpoint consumers (module TLA settling, etc).
+    let _ = event_loop.register_microtask_checkpoint_hook(
+      promise_rejection_microtask_checkpoint_hook::<Host>,
+    );
 
     let cap = event_loop.queue_limits().max_pending_tasks;
     let tracker = &mut event_loop.promise_rejection_tracker;
