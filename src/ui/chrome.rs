@@ -894,69 +894,122 @@ pub fn chrome_ui_with_bookmarks(
         None => "Loading…".to_string(),
       };
 
-      let menu = ui.menu_button("≡", |ui| {
-        ui.set_min_width(220.0);
+      // Toolbar menu (hamburger) button.
+      //
+      // We can't use `ui.menu_button` here because it only accepts text, but we want to use the
+      // repo-owned SVG icon set for consistent chrome iconography.
+      let menu_id = ui.make_persistent_id("chrome_menu");
+      let menu_open_id = menu_id.with("open");
+      let menu_popup_id = menu_id.with("popup");
+      let mut menu_open = ctx
+        .data(|d| d.get_temp::<bool>(menu_open_id))
+        .unwrap_or(false);
 
-        if ui.input_mut(|i| i.consume_key(Default::default(), egui::Key::Escape)) {
-          ui.close_menu();
-        }
-
-        ui.label(egui::RichText::new("Bookmarks").strong());
-        let toggle_bookmark_label = if active_url_is_bookmarked {
-          "Remove bookmark"
-        } else {
-          "Bookmark this page"
-        };
-        let toggle_bookmark = ui.add_enabled(
-          !active_url_trim.is_empty(),
-          egui::Button::new(toggle_bookmark_label),
-        );
-        #[cfg(test)]
-        store_test_rect(ctx, "chrome_menu_item_toggle_bookmark_rect", toggle_bookmark.rect);
-        if toggle_bookmark.clicked() {
-          actions.push(ChromeAction::ToggleBookmarkForActiveTab);
-          ui.close_menu();
-        }
-
-        let bookmarks_mgr = ui.button("Show bookmarks manager");
-        #[cfg(test)]
-        store_test_rect(
-          ctx,
-          "chrome_menu_item_toggle_bookmarks_manager_rect",
-          bookmarks_mgr.rect,
-        );
-        if bookmarks_mgr.clicked() {
-          actions.push(ChromeAction::ToggleBookmarksManager);
-          ui.close_menu();
-        }
-
-        ui.separator();
-
-        ui.label(egui::RichText::new("History").strong());
-        let history = ui.button("Show history");
-        #[cfg(test)]
-        store_test_rect(ctx, "chrome_menu_item_toggle_history_rect", history.rect);
-        if history.clicked() {
-          actions.push(ChromeAction::ToggleHistoryPanel);
-          ui.close_menu();
-        }
-
-        let clear = ui.button("Clear browsing data…");
-        #[cfg(test)]
-        store_test_rect(
-          ctx,
-          "chrome_menu_item_open_clear_browsing_data_rect",
-          clear.rect,
-        );
-        if clear.clicked() {
-          actions.push(ChromeAction::OpenClearBrowsingDataDialog);
-          ui.close_menu();
-        }
-      });
-      let menu_button = menu.response.on_hover_text("Menu");
-      menu_button.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, "Menu"));
+      let menu_button = icon_button(ui, BrowserIcon::Menu, "Menu", true);
       #[cfg(test)]
       store_test_rect(ctx, "chrome_menu_button_rect", menu_button.rect);
+
+      if menu_button.clicked() {
+        menu_open = !menu_open;
+      }
+
+      let mut menu_rect: Option<egui::Rect> = None;
+      if menu_open {
+        let mut close_menu = false;
+        // Anchor the popup menu below the menu button.
+        let pos = egui::pos2(menu_button.rect.left(), menu_button.rect.bottom());
+        let area = egui::Area::new(menu_popup_id)
+          .order(egui::Order::Foreground)
+          .fixed_pos(pos)
+          .constrain_to(ctx.screen_rect());
+        let inner = area.show(ctx, |ui| {
+          egui::Frame::popup(ui.style()).show(ui, |ui| {
+            ui.set_min_width(220.0);
+
+            if ui.input_mut(|i| i.consume_key(Default::default(), egui::Key::Escape)) {
+              close_menu = true;
+            }
+
+            ui.label(egui::RichText::new("Bookmarks").strong());
+            let toggle_bookmark_label = if active_url_is_bookmarked {
+              "Remove bookmark"
+            } else {
+              "Bookmark this page"
+            };
+            let toggle_bookmark = ui.add_enabled(
+              !active_url_trim.is_empty(),
+              egui::Button::new(toggle_bookmark_label),
+            );
+            #[cfg(test)]
+            store_test_rect(ctx, "chrome_menu_item_toggle_bookmark_rect", toggle_bookmark.rect);
+            if toggle_bookmark.clicked() {
+              actions.push(ChromeAction::ToggleBookmarkForActiveTab);
+              close_menu = true;
+            }
+
+            let bookmarks_mgr = ui.button("Show bookmarks manager");
+            #[cfg(test)]
+            store_test_rect(
+              ctx,
+              "chrome_menu_item_toggle_bookmarks_manager_rect",
+              bookmarks_mgr.rect,
+            );
+            if bookmarks_mgr.clicked() {
+              actions.push(ChromeAction::ToggleBookmarksManager);
+              close_menu = true;
+            }
+
+            ui.separator();
+
+            ui.label(egui::RichText::new("History").strong());
+            let history = ui.button("Show history");
+            #[cfg(test)]
+            store_test_rect(ctx, "chrome_menu_item_toggle_history_rect", history.rect);
+            if history.clicked() {
+              actions.push(ChromeAction::ToggleHistoryPanel);
+              close_menu = true;
+            }
+
+            let clear = ui.button("Clear browsing data…");
+            #[cfg(test)]
+            store_test_rect(
+              ctx,
+              "chrome_menu_item_open_clear_browsing_data_rect",
+              clear.rect,
+            );
+            if clear.clicked() {
+              actions.push(ChromeAction::OpenClearBrowsingDataDialog);
+              close_menu = true;
+            }
+          })
+        });
+        menu_rect = Some(inner.response.rect);
+        if close_menu {
+          menu_open = false;
+        }
+      }
+
+      // Best-effort: close the menu when clicking outside the popup and button.
+      if menu_open {
+        let clicked_outside = ctx.input(|i| {
+          i.pointer.any_pressed()
+            && i
+              .pointer
+              .interact_pos()
+              .or_else(|| i.pointer.latest_pos())
+              .is_some_and(|pos| {
+                !menu_button.rect.contains(pos)
+                  && menu_rect.is_some_and(|rect| !rect.contains(pos))
+              })
+        });
+        if clicked_outside {
+          menu_open = false;
+        }
+      }
+
+      ctx.data_mut(|d| {
+        d.insert_temp(menu_open_id, menu_open);
+      });
 
       let bar_height = ui.spacing().interact_size.y;
       let (bar_rect, bar_response) = ui.allocate_exact_size(
