@@ -1,5 +1,5 @@
 use vm_js::{Value, VmError};
-use webidl_runtime::{JsRuntime, VmJsRuntime, WebIdlJsRuntime};
+use webidl_js_runtime::{JsRuntime, VmJsRuntime, WebIdlJsRuntime};
 
 fn assert_type_error(rt: &mut VmJsRuntime, err: VmError) {
   let Some(thrown) = err.thrown_value() else {

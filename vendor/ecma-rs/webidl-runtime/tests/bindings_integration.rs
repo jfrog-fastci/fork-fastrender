@@ -3,7 +3,7 @@ use std::rc::Rc;
 
 use vm_js::{PropertyKey, Value, VmError};
 
-use webidl_runtime::{JsRuntime as _, VmJsRuntime, WebIdlJsRuntime as _};
+use webidl_js_runtime::{JsRuntime as _, VmJsRuntime, WebIdlJsRuntime as _};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum OptionsSource {

@@ -1,9 +1,9 @@
 use vm_js::Value;
 use webidl::ir::{IdlType, NamedType, NamedTypeKind, TypeAnnotation};
-use webidl_runtime::conversions::{
+use webidl_js_runtime::conversions::{
   convert_to_callback, invoke_callback_interface, to_callback_function,
 };
-use webidl_runtime::{JsRuntime, VmJsRuntime};
+use webidl_js_runtime::{JsRuntime, VmJsRuntime};
 
 fn callback_interface_type(name: &str) -> IdlType {
   IdlType::Named(NamedType {

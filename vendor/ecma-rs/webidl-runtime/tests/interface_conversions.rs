@@ -1,9 +1,9 @@
 use vm_js::Value;
 use webidl::ir::{IdlType, NamedType, NamedTypeKind};
-use webidl_runtime::conversions::{
+use webidl_js_runtime::conversions::{
   convert_to_interface, convert_to_interface_opaque, to_interface_opaque,
 };
-use webidl_runtime::{VmJsRuntime, WebIdlJsRuntime};
+use webidl_js_runtime::{VmJsRuntime, WebIdlJsRuntime};
 
 fn interface_type(name: &str) -> IdlType {
   IdlType::Named(NamedType {
@@ -55,7 +55,7 @@ fn interface_conversion_rejects_non_platform_objects() {
   assert!(!WebIdlJsRuntime::implements_interface(
     &rt,
     obj,
-    webidl_runtime::interface_id_from_name("Node")
+    webidl_js_runtime::interface_id_from_name("Node")
   ));
 }
 

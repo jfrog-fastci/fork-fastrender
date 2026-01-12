@@ -6,7 +6,7 @@ use webidl::ir::{
   parse_default_value, DictionaryMemberSchema, DictionarySchema, IdlType, NamedType, NamedTypeKind,
   NumericType, StringType, TypeAnnotation, TypeContext,
 };
-use webidl_runtime::{
+use webidl_js_runtime::{
   convert_arguments, convert_to_idl, ArgumentSchema, ConvertedValue, JsRuntime, VmJsRuntime,
   WebIdlJsRuntime, WebIdlLimits,
 };

@@ -2,7 +2,7 @@ use std::rc::Rc;
 
 use vm_js::{HeapLimits, Value};
 use webidl::{convert_js_to_idl, IdlType, IdlValue};
-use webidl_runtime::{
+use webidl_js_runtime::{
   JsRuntime as LegacyJsRuntime, VmJsRuntime, WebIdlJsRuntime as LegacyWebIdlJsRuntime,
 };
 
