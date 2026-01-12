@@ -1251,11 +1251,27 @@ fn parse_cursor(value: &PropertyValue) -> Option<(Vec<CursorImage>, CursorKeywor
           });
         }
       }
-      PropertyValue::Keyword(kw) if starts_with_ignore_ascii_case(kw, "image-set(") => {
-        if let Some(BackgroundImage::Url(url)) = parse_image_set(kw) {
-          if !trim_ascii_whitespace(&url).is_empty() {
-            images.push(CursorImage { url, hotspot: None });
+      PropertyValue::Keyword(kw)
+        if starts_with_ignore_ascii_case(kw, "image-set(")
+          || starts_with_ignore_ascii_case(kw, "-webkit-image-set(") =>
+      {
+        let normalized = if starts_with_ignore_ascii_case(kw, "-webkit-image-set(") {
+          kw.get("-webkit-".len()..).unwrap_or(kw)
+        } else {
+          kw.as_str()
+        };
+        if let Some(BackgroundImage::Url(url)) = parse_image_set(normalized) {
+          let mut hotspot = None;
+          if idx + 2 < tokens.len() {
+            if let (Some(x), Some(y)) = (
+              cursor_hotspot_value(&tokens[idx + 1]),
+              cursor_hotspot_value(&tokens[idx + 2]),
+            ) {
+              hotspot = Some((x, y));
+              idx += 2;
+            }
           }
+          images.push(CursorImage { url, hotspot });
         }
       }
       PropertyValue::Keyword(kw) => {
@@ -33670,6 +33686,92 @@ mod tests {
     assert_eq!(style.cursor, CursorKeyword::Crosshair);
     assert_eq!(style.cursor_images.len(), 1);
     assert_eq!(style.cursor_images[0].url, "hi.cur");
+  }
+
+  #[test]
+  fn cursor_image_set_allows_hotspot() {
+    let mut style = ComputedStyle::default();
+    let value = parse_property_value(
+      "cursor",
+      "image-set(url(\"c1.cur\") 1x, url(\"c2.cur\") 2x) 4 12, pointer",
+    )
+    .expect("cursor image-set");
+    apply_declaration(
+      &mut style,
+      &Declaration {
+        property: "cursor".into(),
+        value,
+        contains_var: false,
+        raw_value: String::new(),
+        important: false,
+      },
+      &ComputedStyle::default(),
+      16.0,
+      16.0,
+    );
+
+    assert_eq!(style.cursor, CursorKeyword::Pointer);
+    assert_eq!(style.cursor_images.len(), 1);
+    assert_eq!(style.cursor_images[0].url, "c1.cur");
+    assert_eq!(style.cursor_images[0].hotspot, Some((4.0, 12.0)));
+  }
+
+  #[test]
+  fn cursor_webkit_image_set_allows_hotspot() {
+    let mut style = ComputedStyle::default();
+    let value = parse_property_value(
+      "cursor",
+      "-webkit-image-set(url(\"c1.cur\") 1x, url(\"c2.cur\") 2x) 4 12, pointer",
+    )
+    .expect("cursor -webkit-image-set");
+    apply_declaration(
+      &mut style,
+      &Declaration {
+        property: "cursor".into(),
+        value,
+        contains_var: false,
+        raw_value: String::new(),
+        important: false,
+      },
+      &ComputedStyle::default(),
+      16.0,
+      16.0,
+    );
+
+    assert_eq!(style.cursor, CursorKeyword::Pointer);
+    assert_eq!(style.cursor_images.len(), 1);
+    assert_eq!(style.cursor_images[0].url, "c1.cur");
+    assert_eq!(style.cursor_images[0].hotspot, Some((4.0, 12.0)));
+  }
+
+  #[test]
+  fn cursor_image_set_hotspot_respects_device_pixel_ratio() {
+    let mut style = ComputedStyle::default();
+    with_image_set_dpr(2.0, || {
+      let value = parse_property_value(
+        "cursor",
+        "image-set(url(\"low.cur\") 1x, url(\"hi.cur\") 2x) 4 12, crosshair",
+      )
+      .expect("cursor image-set");
+      apply_declaration(
+        &mut style,
+        &Declaration {
+          property: "cursor".into(),
+          value,
+          contains_var: false,
+          raw_value: String::new(),
+          important: false,
+        },
+        &ComputedStyle::default(),
+        16.0,
+        16.0,
+      );
+    });
+
+    assert_eq!(style.cursor, CursorKeyword::Crosshair);
+    assert_eq!(style.cursor_images.len(), 1);
+    assert_eq!(style.cursor_images[0].url, "hi.cur");
+    assert_eq!(style.cursor_images[0].hotspot, Some((4.0, 12.0)));
   }
 
   #[test]
