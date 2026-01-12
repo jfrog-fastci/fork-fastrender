@@ -7496,7 +7496,14 @@ impl DisplayListRenderer {
           let mut bottom_y = y + h - bottom.width;
           let single_edge_bottom =
             top.width <= 0.0 && right.width <= 0.0 && left.width <= 0.0 && bottom.width > 0.0;
-          if single_edge_bottom && Self::is_near_integer(bottom.width) {
+          // Only apply the Chrome-matching bias when the border's top edge lands on a fractional
+          // device pixel. If the edge is already aligned to an integer pixel, shifting the border
+          // down by half a pixel can move it outside the element's border box and allow later
+          // siblings to paint over it (regression: MDN sticky header divider).
+          if single_edge_bottom
+            && Self::is_near_integer(bottom.width)
+            && !Self::is_near_integer(bottom_y)
+          {
             bottom_y += 0.5;
           }
           self
@@ -25226,6 +25233,48 @@ mod tests {
     assert_eq!(pixel(&pixmap, 2, 0), (255, 255, 255, 255));
     // Border still paints along the edges of the box.
     assert_eq!(pixel(&pixmap, 3, 2), (0, 0, 0, 255));
+  }
+
+  #[test]
+  fn border_fast_path_single_bottom_border_does_not_shift_when_integer_aligned() {
+    // Regression test for bottom border pixel snapping.
+    //
+    // Our border fast path historically biased single-edge bottom borders down by 0.5px even when
+    // the border's top edge was already on an integer pixel. That could move the border outside
+    // the element's border box and let later siblings paint over it (e.g. MDN sticky header
+    // divider).
+    let renderer = DisplayListRenderer::new(10, 100, Rgba::WHITE, FontContext::new()).unwrap();
+    let mut list = DisplayList::new();
+
+    let zero_side = BorderSide {
+      width: 0.0,
+      style: CssBorderStyle::Solid,
+      color: Rgba::BLACK,
+    };
+    let bottom = BorderSide {
+      width: 1.0,
+      style: CssBorderStyle::Solid,
+      color: Rgba::BLACK,
+    };
+
+    list.push(DisplayItem::Border(Box::new(BorderItem {
+      rect: Rect::from_xywh(0.0, 0.0, 10.0, 91.0),
+      top: zero_side.clone(),
+      right: zero_side.clone(),
+      bottom,
+      left: zero_side,
+      image: None,
+      radii: BorderRadii::ZERO,
+      gap: None,
+    })));
+
+    let pixmap = renderer.render(&list).unwrap();
+
+    // The bottom border should land on y=90 (0 + 91 - 1) rather than being shifted down into
+    // y=91.
+    assert_eq!(pixel(&pixmap, 5, 89), (255, 255, 255, 255));
+    assert_eq!(pixel(&pixmap, 5, 90), (0, 0, 0, 255));
+    assert_eq!(pixel(&pixmap, 5, 91), (255, 255, 255, 255));
   }
 
   #[test]

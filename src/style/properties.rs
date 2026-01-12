@@ -24325,8 +24325,40 @@ fn parse_border_side_shorthand(
         }
         if kw.eq_ignore_ascii_case("currentcolor") {
           color = Some(current_color);
-        } else {
+          continue;
+        }
+
+        // Border side shorthands accept a `<line-style>` *or* a `<color>` keyword. Do not treat
+        // unknown keywords as a border style, or we'll incorrectly override e.g. `solid` with
+        // `none` when the author uses `var(--my-color)` or `#fff` in the shorthand.
+        let lower = kw.to_ascii_lowercase();
+        let is_border_style_keyword = matches!(
+          lower.as_str(),
+          "none"
+            | "hidden"
+            | "solid"
+            | "dashed"
+            | "dotted"
+            | "double"
+            | "groove"
+            | "ridge"
+            | "inset"
+            | "outset"
+        );
+        if is_border_style_keyword {
           style_val = Some(parse_border_style(kw));
+          continue;
+        }
+
+        // Attempt to parse CSS color keywords (`transparent`, named colors, `rgb(...)`, `#...`,
+        // etc). This covers the common case where variable substitution leaves the token as a raw
+        // string.
+        if let Ok(parsed_color) = Color::parse(kw) {
+          color = Some(parsed_color.to_rgba_with_scheme_and_forced_colors(
+            current_color,
+            is_dark_color_scheme,
+            forced_colors,
+          ));
         }
       }
       PropertyValue::Color(c) => {
@@ -24599,6 +24631,26 @@ mod tests {
     let (h, v) = extract_length_pair(&num_zero).expect("number zero should be accepted");
     assert_eq!(h, Length::px(0.0));
     assert_eq!(v, Length::px(0.0));
+  }
+
+  #[test]
+  fn parse_border_side_shorthand_does_not_treat_color_as_border_style() {
+    // Regression test: keyword color tokens (including values produced by variable substitution)
+    // must not override a valid border style token.
+    //
+    // Previously, an unrecognized keyword such as `#c3c7cb` (or `var(--color)`) would be treated as
+    // a border style token, causing `solid` to be overwritten with `none` and the border to
+    // disappear entirely.
+    let values = vec![
+      PropertyValue::Length(Length::px(1.0)),
+      PropertyValue::Keyword("solid".to_string()),
+      PropertyValue::Keyword("#c3c7cb".to_string()),
+    ];
+    let parsed = parse_border_side_shorthand(&values, Rgba::BLACK, false, false)
+      .expect("expected border side shorthand to parse");
+    assert_eq!(parsed.width, Some(Length::px(1.0)));
+    assert_eq!(parsed.style, BorderStyle::Solid);
+    assert_eq!(parsed.color, Rgba::rgb(195, 199, 203));
   }
 
   #[test]
