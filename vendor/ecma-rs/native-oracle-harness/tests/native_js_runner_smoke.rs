@@ -56,4 +56,11 @@ fn native_js_runner_smoke() {
 
   let oracle_out = NativeRunner::compile_and_run(&oracle, "console.log(true);").expect("oracle boolean");
   assert_eq!(oracle_out, "true");
+
+  // Regression: ensure we preserve trailing spaces (only the trailing newline is stripped).
+  let out = NativeRunner::compile_and_run(&runner, r#"console.log("x ");"#).expect("compile_and_run trailing space");
+  assert_eq!(out, "x ");
+  let oracle_out =
+    NativeRunner::compile_and_run(&oracle, r#"console.log("x ");"#).expect("oracle trailing space");
+  assert_eq!(oracle_out, "x ");
 }
