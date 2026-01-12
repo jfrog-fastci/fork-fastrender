@@ -3371,11 +3371,7 @@ pub fn generator_function_constructor_construct(
   scope
     .heap_mut()
     .object_set_prototype(func_obj, Some(intr.generator_function_prototype()))?;
-  crate::function_properties::make_generator_function_instance_prototype(
-    scope,
-    func_obj,
-    intr.generator_prototype(),
-  )?;
+  crate::function_properties::make_generator(scope, func_obj, intr.generator_prototype())?;
   scope
     .heap_mut()
     .set_function_realm(func_obj, global_object)?;
@@ -9562,15 +9558,15 @@ fn require_generator_object(
   Ok(this_obj)
 }
 
-/// `%GeneratorPrototype%.next` (validation + stub).
+/// `%GeneratorPrototype%.next` (validation + minimal implementation).
 pub fn generator_prototype_next(
-  _vm: &mut Vm,
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
-  _callee: GcObject,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
   this: Value,
-  _args: &[Value],
+  args: &[Value],
 ) -> Result<Value, VmError> {
   let _ = require_generator_object(
     scope,
@@ -9578,7 +9574,7 @@ pub fn generator_prototype_next(
     "Generator.prototype.next called on non-object",
     "Generator.prototype.next called on incompatible receiver",
   )?;
-  Err(VmError::Unimplemented("GeneratorResume"))
+  crate::exec::generator_prototype_next(vm, scope, host, hooks, callee, this, args)
 }
 
 /// `%GeneratorPrototype%.return` (validation + stub).

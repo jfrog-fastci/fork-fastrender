@@ -146,7 +146,6 @@ pub fn make_generator_function_instance_prototype(
 
   let prototype = scope.alloc_object_with_prototype(Some(generator_prototype))?;
   scope.push_root(Value::Object(prototype))?;
-
   let prototype_key = scope.alloc_string("prototype")?;
   scope.define_property(
     func,
@@ -156,6 +155,46 @@ pub fn make_generator_function_instance_prototype(
       configurable: false,
       kind: PropertyKind::Data {
         value: Value::Object(prototype),
+        writable: true,
+      },
+    },
+  )?;
+
+  Ok(prototype)
+}
+
+/// Helper for creating a generator function's `.prototype` object and wiring
+/// `.prototype.constructor`.
+///
+/// Generator functions are not constructable (`[[Construct]]` is absent), but they still have a
+/// `.prototype` property which is used as the `[[Prototype]]` of generator instances created by
+/// calling the function.
+///
+/// This defines:
+/// - `F.prototype` as a writable, non-enumerable, non-configurable data property
+/// - `F.prototype.constructor` as a writable, non-enumerable, configurable data property
+pub fn make_generator(
+  scope: &mut Scope<'_>,
+  func: GcObject,
+  generator_prototype: GcObject,
+) -> Result<GcObject, VmError> {
+  let mut scope = scope.reborrow();
+  scope.push_root(Value::Object(func))?;
+  scope.push_root(Value::Object(generator_prototype))?;
+
+  let prototype =
+    make_generator_function_instance_prototype(&mut scope, func, generator_prototype)?;
+  scope.push_root(Value::Object(prototype))?;
+
+  let constructor_key = scope.alloc_string("constructor")?;
+  scope.define_property(
+    prototype,
+    PropertyKey::String(constructor_key),
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: true,
+      kind: PropertyKind::Data {
+        value: Value::Object(func),
         writable: true,
       },
     },

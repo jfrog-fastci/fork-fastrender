@@ -1,7 +1,7 @@
 use crate::error::Termination;
 use crate::error::TerminationReason;
 use crate::error::VmError;
-use crate::exec::{AsyncContinuation, RuntimeEnv};
+use crate::exec::{AsyncContinuation, GeneratorContinuation, RuntimeEnv};
 use crate::execution_context::ExecutionContext;
 use crate::execution_context::ModuleId;
 use crate::execution_context::ScriptOrModule;
@@ -310,6 +310,8 @@ pub struct Vm {
   async_iterator_close_on_rejected_call: Option<NativeFunctionId>,
   next_async_continuation_id: u32,
   async_continuations: HashMap<u32, AsyncContinuation>,
+  next_generator_continuation_id: u32,
+  generator_continuations: HashMap<u32, GeneratorContinuation>,
   /// Optional pointer to an embedding-owned [`ModuleGraph`].
   ///
   /// This enables dynamic `import()` expressions evaluated from the AST interpreter (`exec.rs`) to
@@ -351,6 +353,10 @@ impl std::fmt::Debug for Vm {
     ds.field("import_meta_cache", &self.import_meta_cache.len());
     ds.field("template_registry", &self.template_registry.len());
     ds.field("async_continuations", &self.async_continuations.len());
+    ds.field(
+      "generator_continuations",
+      &self.generator_continuations.len(),
+    );
     ds.field("module_graph", &self.module_graph.is_some());
     ds.field("intrinsics", &self.intrinsics);
     #[cfg(test)]
@@ -551,6 +557,8 @@ impl Vm {
       async_iterator_close_on_rejected_call: None,
       next_async_continuation_id: 0,
       async_continuations: HashMap::new(),
+      next_generator_continuation_id: 0,
+      generator_continuations: HashMap::new(),
       module_graph: None,
       intrinsics: None,
       #[cfg(test)]
@@ -602,6 +610,16 @@ impl Vm {
   pub(crate) fn reserve_async_continuations(&mut self, additional: usize) -> Result<(), VmError> {
     self
       .async_continuations
+      .try_reserve(additional)
+      .map_err(|_| VmError::OutOfMemory)
+  }
+
+  pub(crate) fn reserve_generator_continuations(
+    &mut self,
+    additional: usize,
+  ) -> Result<(), VmError> {
+    self
+      .generator_continuations
       .try_reserve(additional)
       .map_err(|_| VmError::OutOfMemory)
   }
@@ -765,6 +783,29 @@ impl Vm {
 
   pub(crate) fn take_async_continuation(&mut self, id: u32) -> Option<AsyncContinuation> {
     self.async_continuations.remove(&id)
+  }
+
+  pub(crate) fn insert_generator_continuation_reserved(&mut self, cont: GeneratorContinuation) -> u32 {
+    let id = self.next_generator_continuation_id;
+    self.next_generator_continuation_id = self.next_generator_continuation_id.wrapping_add(1);
+    // `create_generator_object` calls `reserve_generator_continuations` up-front to ensure the
+    // insertion is infallible (avoiding process-aborting allocations).
+    self.generator_continuations.insert(id, cont);
+    id
+  }
+
+  pub(crate) fn take_generator_continuation(&mut self, id: u32) -> Option<GeneratorContinuation> {
+    self.generator_continuations.remove(&id)
+  }
+
+  pub(crate) fn replace_generator_continuation_reserved(
+    &mut self,
+    id: u32,
+    cont: GeneratorContinuation,
+  ) {
+    // Callers are expected to call `reserve_generator_continuations` before taking a continuation
+    // out of the table so reinsertion cannot allocate (and therefore cannot abort the process).
+    self.generator_continuations.insert(id, cont);
   }
 
   pub(crate) fn replace_async_continuation(
@@ -3144,61 +3185,22 @@ impl Vm {
       if func_ast.stx.async_ {
         return Err(VmError::Unimplemented("async generator functions"));
       }
-
-      let intr = self
-        .intrinsics()
-        .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
-      let default_proto = intr.generator_prototype();
-
-      // GetPrototypeFromConstructor(callee, %GeneratorPrototype%) (subset):
-      // - read `callee.prototype` (ordinary Get with receiver = callee)
-      // - use it if it's an object
-      // - otherwise fall back to `%GeneratorPrototype%`.
-      let mut gen_scope = scope.reborrow();
-      gen_scope.push_root(Value::Object(callee))?;
-
-      let prototype_key_s = gen_scope.alloc_string("prototype")?;
-      gen_scope.push_root(Value::String(prototype_key_s))?;
-      let prototype_key = PropertyKey::from_string(prototype_key_s);
-      let receiver = Value::Object(callee);
-      let value = gen_scope.ordinary_get_with_host_and_hooks(
+      return crate::exec::create_generator_object(
         self,
+        scope,
         host,
         hooks,
         callee,
-        prototype_key,
-        receiver,
-      )?;
-      let proto = match value {
-        Value::Object(o) => o,
-        _ => default_proto,
-      };
-
-      let gen_obj = gen_scope.alloc_object_with_prototype(Some(proto))?;
-      gen_scope.push_root(Value::Object(gen_obj))?;
-
-      // Internal-slot-like marker used by `%GeneratorPrototype%` methods to validate receivers.
-      let marker_s = gen_scope.alloc_string("vm-js.internal.GeneratorState")?;
-      gen_scope.push_root(Value::String(marker_s))?;
-      let marker_sym = gen_scope.heap_mut().symbol_for(marker_s)?;
-      let marker_key = PropertyKey::from_symbol(marker_sym);
-
-      let state_s = gen_scope.alloc_string("suspendedStart")?;
-      gen_scope.push_root(Value::String(state_s))?;
-      gen_scope.define_property(
-        gen_obj,
-        marker_key,
-        PropertyDescriptor {
-          enumerable: false,
-          configurable: false,
-          kind: PropertyKind::Data {
-            value: Value::String(state_s),
-            writable: true,
-          },
-        },
-      )?;
-
-      return Ok(Value::Object(gen_obj));
+        this,
+        args,
+        func_ast.clone(),
+        code_meta.source.clone(),
+        code_meta.span_start,
+        code_meta.prefix_len,
+        is_strict,
+        global_object,
+        outer,
+      );
     }
 
     let func_env = scope.env_create(outer)?;

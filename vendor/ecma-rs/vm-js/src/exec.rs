@@ -1720,6 +1720,60 @@ impl<'a> Evaluator<'a> {
     Ok(len)
   }
 
+  fn object_member_span_start(
+    &self,
+    member_loc_start: u32,
+    key_loc_start: u32,
+    func: &parse_js::ast::func::Func,
+  ) -> u32 {
+    let prefix_len = self.env.prefix_len();
+    let base_offset = self.env.base_offset();
+    let key_span_start = base_offset.saturating_add(key_loc_start.saturating_sub(prefix_len));
+
+    // For non-async, non-generator methods, the key's start location is sufficient (and avoids
+    // including class-only modifiers like `static` that are not valid in the object literal wrapper
+    // used by `Vm::ecma_function_ast` for `EcmaFunctionKind::ObjectMember`).
+    if !func.async_ && !func.generator {
+      return key_span_start;
+    }
+
+    // For async/generator methods, the `async`/`*` modifiers appear before the key. `parse-js` does
+    // not include these modifiers in the key's `Loc`, so slicing from the key would cause the VM's
+    // lazy function reparse to lose the async/generator flags and reject `await`/`yield` in the
+    // body.
+    //
+    // Scan the original source between the full member start and the key start to find the
+    // modifier token(s), skipping class-only modifiers like `static` which occur before them.
+    let member_span_start = base_offset.saturating_add(member_loc_start.saturating_sub(prefix_len));
+
+    let source = self.env.source();
+    let text = source.text.as_bytes();
+    let start = (member_span_start as usize).min(text.len());
+    let end = (key_span_start as usize).min(text.len());
+    if start >= end {
+      return key_span_start;
+    }
+    let slice = &text[start..end];
+
+    let mut best = key_span_start;
+    if func.async_ {
+      let async_bytes = b"async";
+      if let Some(pos) = slice
+        .windows(async_bytes.len())
+        .rposition(|w| w == async_bytes)
+      {
+        best = best.min(member_span_start.saturating_add(pos as u32));
+      }
+    }
+    if func.generator {
+      if let Some(pos) = slice.iter().rposition(|&b| b == b'*') {
+        best = best.min(member_span_start.saturating_add(pos as u32));
+      }
+    }
+
+    best
+  }
+
   fn instantiate_script(
     &mut self,
     scope: &mut Scope<'_>,
@@ -2682,7 +2736,7 @@ impl<'a> Evaluator<'a> {
     use crate::vm::EcmaFunctionKind;
 
     let func = &decl.stx.function.stx;
-    if func.async_ && func.generator {
+    if func.generator && func.async_ {
       return Err(VmError::Unimplemented("async generator functions"));
     }
     let is_generator = func.generator;
@@ -2717,7 +2771,8 @@ impl<'a> Evaluator<'a> {
     )?;
     let func_obj = scope.alloc_ecma_function(
       code_id,
-      /* is_constructable */ if is_generator { false } else { !func.async_ },
+      // Async and generator functions are not constructable.
+      /* is_constructable */ !func.async_ && !is_generator,
       name_s,
       length,
       this_mode,
@@ -2738,18 +2793,14 @@ impl<'a> Evaluator<'a> {
           intr.function_prototype()
         }),
       )?;
-    if is_generator {
-      crate::function_properties::make_generator_function_instance_prototype(
-        scope,
-        func_obj,
-        intr.generator_prototype(),
-      )?;
-    }
     scope
       .heap_mut()
       .set_function_realm(func_obj, self.env.global_object())?;
     if let Some(realm) = self.vm.current_realm() {
       scope.heap_mut().set_function_job_realm(func_obj, realm)?;
+    }
+    if is_generator {
+      crate::function_properties::make_generator(scope, func_obj, intr.generator_prototype())?;
     }
     Ok(func_obj)
   }
@@ -3789,14 +3840,17 @@ impl<'a> Evaluator<'a> {
       match &member.stx.val {
         ClassOrObjVal::Method(method) => {
           let func_node = &method.stx.func;
+          if func_node.stx.generator && func_node.stx.async_ {
+            return Err(VmError::Unimplemented("async generator functions"));
+          }
           let length = self.function_length(&func_node.stx)?;
 
-          let rel_start = key_loc_start.saturating_sub(self.env.prefix_len());
+          let span_start =
+            self.object_member_span_start(member.loc.start_u32(), key_loc_start, &func_node.stx);
           let rel_end = func_node
             .loc
             .end_u32()
             .saturating_sub(self.env.prefix_len());
-          let span_start = self.env.base_offset().saturating_add(rel_start);
           let span_end = self.env.base_offset().saturating_add(rel_end);
 
           let code = self.vm.register_ecma_function(
@@ -3836,7 +3890,14 @@ impl<'a> Evaluator<'a> {
             .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
           member_scope
             .heap_mut()
-            .object_set_prototype(func_obj, Some(intr.function_prototype()))?;
+            .object_set_prototype(
+              func_obj,
+              Some(if func_node.stx.generator {
+                intr.generator_function_prototype()
+              } else {
+                intr.function_prototype()
+              }),
+            )?;
           member_scope
             .heap_mut()
             .set_function_realm(func_obj, self.env.global_object())?;
@@ -3844,6 +3905,13 @@ impl<'a> Evaluator<'a> {
             member_scope
               .heap_mut()
               .set_function_job_realm(func_obj, realm)?;
+          }
+          if func_node.stx.generator {
+            crate::function_properties::make_generator(
+              &mut member_scope,
+              func_obj,
+              intr.generator_prototype(),
+            )?;
           }
           member_scope.push_root(Value::Object(func_obj))?;
 
@@ -5438,7 +5506,7 @@ impl<'a> Evaluator<'a> {
     use crate::function::ThisMode;
     use crate::vm::EcmaFunctionKind;
 
-    if func.async_ && func.generator {
+    if func.generator && func.async_ {
       return Err(VmError::Unimplemented("async generator functions"));
     }
     let is_generator = func.generator;
@@ -5475,7 +5543,8 @@ impl<'a> Evaluator<'a> {
     )?;
     let func_obj = scope.alloc_ecma_function(
       code_id,
-      /* is_constructable */ if is_generator { false } else { !func.async_ },
+      // Async and generator functions are not constructable.
+      /* is_constructable */ !func.async_ && !is_generator,
       name_s,
       length,
       this_mode,
@@ -5496,18 +5565,14 @@ impl<'a> Evaluator<'a> {
           intr.function_prototype()
         }),
       )?;
-    if is_generator {
-      crate::function_properties::make_generator_function_instance_prototype(
-        scope,
-        func_obj,
-        intr.generator_prototype(),
-      )?;
-    }
     scope
       .heap_mut()
       .set_function_realm(func_obj, self.env.global_object())?;
     if let Some(realm) = self.vm.current_realm() {
       scope.heap_mut().set_function_job_realm(func_obj, realm)?;
+    }
+    if is_generator {
+      crate::function_properties::make_generator(scope, func_obj, intr.generator_prototype())?;
     }
     if func.arrow {
       scope
@@ -5880,6 +5945,7 @@ impl<'a> Evaluator<'a> {
       self.tick()?;
 
       let mut member_scope = obj_scope.reborrow();
+      let member_loc_start = member.loc.start_u32();
       let member = &member.stx.typ;
 
       match member {
@@ -5927,14 +5993,17 @@ impl<'a> Evaluator<'a> {
             }
             ClassOrObjVal::Method(method) => {
               let func_node = &method.stx.func;
+              if func_node.stx.generator && func_node.stx.async_ {
+                return Err(VmError::Unimplemented("async generator functions"));
+              }
               let length = self.function_length(&func_node.stx)?;
 
-              let rel_start = key_loc_start.saturating_sub(self.env.prefix_len());
+              let span_start =
+                self.object_member_span_start(member_loc_start, key_loc_start, &func_node.stx);
               let rel_end = func_node
                 .loc
                 .end_u32()
                 .saturating_sub(self.env.prefix_len());
-              let span_start = self.env.base_offset().saturating_add(rel_start);
               let span_end = self.env.base_offset().saturating_add(rel_end);
               let code = self.vm.register_ecma_function(
                 self.env.source(),
@@ -5982,7 +6051,14 @@ impl<'a> Evaluator<'a> {
                 .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
               member_scope
                 .heap_mut()
-                .object_set_prototype(func_obj, Some(intr.function_prototype()))?;
+                .object_set_prototype(
+                  func_obj,
+                  Some(if func_node.stx.generator {
+                    intr.generator_function_prototype()
+                  } else {
+                    intr.function_prototype()
+                  }),
+                )?;
               member_scope
                 .heap_mut()
                 .set_function_realm(func_obj, self.env.global_object())?;
@@ -5990,6 +6066,13 @@ impl<'a> Evaluator<'a> {
                 member_scope
                   .heap_mut()
                   .set_function_job_realm(func_obj, realm)?;
+              }
+              if func_node.stx.generator {
+                crate::function_properties::make_generator(
+                  &mut member_scope,
+                  func_obj,
+                  intr.generator_prototype(),
+                )?;
               }
               if func_node.stx.arrow {
                 member_scope
@@ -9002,6 +9085,429 @@ pub(crate) fn async_teardown_continuation(scope: &mut Scope<'_>, mut cont: Async
   }
 }
 
+const GENERATOR_CONTINUATION_ID_MARKER: &str = "vm-js.internal.GeneratorContinuationId";
+const GENERATOR_STATE_MARKER: &str = "vm-js.internal.GeneratorState";
+
+#[derive(Debug)]
+pub(crate) struct GeneratorContinuation {
+  env: RuntimeEnv,
+  strict: bool,
+  this_root: RootId,
+  new_target_root: RootId,
+  // Rooted arguments passed to the generator function call (bound on first `.next()`).
+  arg_roots: Vec<RootId>,
+  // Cached parsed function AST for this generator function's body.
+  func: Arc<Node<Func>>,
+  started: bool,
+  frames: VecDeque<AsyncFrame>,
+}
+
+fn generator_teardown_continuation(scope: &mut Scope<'_>, mut cont: GeneratorContinuation) {
+  cont.env.teardown(scope.heap_mut());
+  scope.heap_mut().remove_root(cont.this_root);
+  scope.heap_mut().remove_root(cont.new_target_root);
+  for id in cont.arg_roots.drain(..) {
+    scope.heap_mut().remove_root(id);
+  }
+  for mut frame in cont.frames {
+    async_teardown_frame(scope.heap_mut(), &mut frame);
+  }
+}
+
+fn internal_symbol_key(scope: &mut Scope<'_>, s: &str) -> Result<PropertyKey, VmError> {
+  let marker = scope.alloc_string(s)?;
+  scope.push_root(Value::String(marker))?;
+  let marker_sym = scope.heap_mut().symbol_for(marker)?;
+  Ok(PropertyKey::from_symbol(marker_sym))
+}
+
+fn create_iterator_result_object(
+  scope: &mut Scope<'_>,
+  proto: GcObject,
+  value: Value,
+  done: bool,
+) -> Result<GcObject, VmError> {
+  let mut scope = scope.reborrow();
+  scope.push_root(Value::Object(proto))?;
+  scope.push_root(value)?;
+
+  let out = scope.alloc_object()?;
+  scope.push_root(Value::Object(out))?;
+  scope.heap_mut().object_set_prototype(out, Some(proto))?;
+
+  let value_key = PropertyKey::from_string(scope.alloc_string("value")?);
+  let done_key = PropertyKey::from_string(scope.alloc_string("done")?);
+
+  scope.define_property(
+    out,
+    value_key,
+    PropertyDescriptor {
+      enumerable: true,
+      configurable: true,
+      kind: PropertyKind::Data {
+        value,
+        writable: true,
+      },
+    },
+  )?;
+  scope.define_property(
+    out,
+    done_key,
+    PropertyDescriptor {
+      enumerable: true,
+      configurable: true,
+      kind: PropertyKind::Data {
+        value: Value::Bool(done),
+        writable: true,
+      },
+    },
+  )?;
+  Ok(out)
+}
+
+pub(crate) fn create_generator_object(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  this: Value,
+  args: &[Value],
+  func_ast: Arc<Node<Func>>,
+  source: Arc<SourceText>,
+  base_offset: u32,
+  prefix_len: u32,
+  strict: bool,
+  global_object: GcObject,
+  outer: Option<GcEnv>,
+) -> Result<Value, VmError> {
+  let intr = vm
+    .intrinsics()
+    .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+  vm.reserve_generator_continuations(1)?;
+
+  // Root the callee, `this`, and argument list while allocating the generator object and rooting
+  // continuation state.
+  let mut gen_scope = scope.reborrow();
+  gen_scope.push_root(Value::Object(callee))?;
+  gen_scope.push_root(this)?;
+  gen_scope.push_roots(args)?;
+
+  // `OrdinaryCreateFromConstructor(F, "%GeneratorPrototype%")` shape:
+  // generator instances use `F.prototype` when it is an object, otherwise fall back to
+  // `%GeneratorPrototype%`.
+  let proto_key_s = gen_scope.alloc_string("prototype")?;
+  gen_scope.push_root(Value::String(proto_key_s))?;
+  let proto_key = PropertyKey::from_string(proto_key_s);
+  let proto_value = gen_scope.ordinary_get_with_host_and_hooks(
+    vm,
+    host,
+    hooks,
+    callee,
+    proto_key,
+    Value::Object(callee),
+  )?;
+  gen_scope.push_root(proto_value)?;
+  let proto_obj = match proto_value {
+    Value::Object(o) => o,
+    _ => intr.generator_prototype(),
+  };
+  gen_scope.push_root(Value::Object(proto_obj))?;
+
+  let gen_obj = gen_scope.alloc_object_with_prototype(Some(proto_obj))?;
+  gen_scope.push_root(Value::Object(gen_obj))?;
+
+  // Allocate the generator function environment now (without instantiating bindings) so the outer
+  // environment is kept alive even if the generator function object becomes unreachable.
+  let func_env = gen_scope.env_create(outer)?;
+  let mut env =
+    RuntimeEnv::new_with_var_env(gen_scope.heap_mut(), global_object, func_env, func_env)?;
+  env.set_source_info(source, base_offset, prefix_len);
+
+  // Root captured `this`/`new.target` and argument list for later instantiation/resumption.
+  let mut roots: Vec<RootId> = Vec::new();
+  roots
+    .try_reserve_exact(args.len().saturating_add(2))
+    .map_err(|_| VmError::OutOfMemory)?;
+  for &value in [this, Value::Undefined].iter() {
+    match gen_scope.heap_mut().add_root(value) {
+      Ok(id) => roots.push(id),
+      Err(e) => {
+        for id in roots.drain(..) {
+          gen_scope.heap_mut().remove_root(id);
+        }
+        env.teardown(gen_scope.heap_mut());
+        return Err(e);
+      }
+    }
+  }
+  let this_root = roots[0];
+  let new_target_root = roots[1];
+
+  let mut arg_roots: Vec<RootId> = Vec::new();
+  arg_roots
+    .try_reserve_exact(args.len())
+    .map_err(|_| VmError::OutOfMemory)?;
+  for &value in args {
+    match gen_scope.heap_mut().add_root(value) {
+      Ok(id) => arg_roots.push(id),
+      Err(e) => {
+        for id in roots.drain(..) {
+          gen_scope.heap_mut().remove_root(id);
+        }
+        for id in arg_roots.drain(..) {
+          gen_scope.heap_mut().remove_root(id);
+        }
+        env.teardown(gen_scope.heap_mut());
+        return Err(e);
+      }
+    }
+  }
+
+  let cont = GeneratorContinuation {
+    env,
+    strict,
+    this_root,
+    new_target_root,
+    arg_roots,
+    func: func_ast,
+    started: false,
+    frames: VecDeque::new(),
+  };
+  let id = vm.insert_generator_continuation_reserved(cont);
+
+  // Store the continuation id on the generator instance object.
+  //
+  // If this fails, tear down the continuation we just inserted to avoid leaking env/roots.
+  let res = (|| {
+    let id_key = internal_symbol_key(&mut gen_scope, GENERATOR_CONTINUATION_ID_MARKER)?;
+    gen_scope.define_property(
+      gen_obj,
+      id_key,
+      PropertyDescriptor {
+        enumerable: false,
+        configurable: true,
+        kind: PropertyKind::Data {
+          value: Value::Number(id as f64),
+          writable: true,
+        },
+      },
+    )?;
+
+    // Internal-slot-like marker used by `%GeneratorPrototype%` methods to validate receivers.
+    let state_key = internal_symbol_key(&mut gen_scope, GENERATOR_STATE_MARKER)?;
+    let state_s = gen_scope.alloc_string("suspendedStart")?;
+    gen_scope.push_root(Value::String(state_s))?;
+    gen_scope.define_property(
+      gen_obj,
+      state_key,
+      PropertyDescriptor {
+        enumerable: false,
+        configurable: false,
+        kind: PropertyKind::Data {
+          value: Value::String(state_s),
+          writable: true,
+        },
+      },
+    )?;
+    Ok::<(), VmError>(())
+  })();
+  if let Err(err) = res {
+    if let Some(cont) = vm.take_generator_continuation(id) {
+      generator_teardown_continuation(&mut gen_scope, cont);
+    }
+    return Err(err);
+  }
+
+  Ok(Value::Object(gen_obj))
+}
+
+/// `%GeneratorPrototype%.next` (minimal).
+pub(crate) fn generator_prototype_next(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let intr = vm
+    .intrinsics()
+    .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+
+  let this_obj = match this {
+    Value::Object(o) => o,
+    _ => {
+      return Err(throw_type_error(
+        vm,
+        scope,
+        "Generator.prototype.next called on non-object",
+      )?)
+    }
+  };
+
+  let mut gen_scope = scope.reborrow();
+  gen_scope.push_root(Value::Object(this_obj))?;
+
+  let id_key = internal_symbol_key(&mut gen_scope, GENERATOR_CONTINUATION_ID_MARKER)?;
+  let id_desc = gen_scope
+    .heap()
+    .object_get_own_property_with_tick(this_obj, &id_key, || vm.tick())?;
+  let id_value = match id_desc {
+    Some(PropertyDescriptor {
+      kind: PropertyKind::Data { value, .. },
+      ..
+    }) => value,
+    Some(PropertyDescriptor {
+      kind: PropertyKind::Accessor { .. },
+      ..
+    }) => return Err(VmError::PropertyNotData),
+    None => {
+      return Err(throw_type_error(
+        vm,
+        &mut gen_scope,
+        "Generator.prototype.next called on incompatible receiver",
+      )?)
+    }
+  };
+
+  if matches!(id_value, Value::Undefined) {
+    let result = create_iterator_result_object(
+      &mut gen_scope,
+      intr.object_prototype(),
+      Value::Undefined,
+      true,
+    )?;
+    return Ok(Value::Object(result));
+  }
+
+  let id = match id_value {
+    Value::Number(n) => n as u32,
+    _ => {
+      return Err(throw_type_error(
+        vm,
+        &mut gen_scope,
+        "Generator.prototype.next missing continuation id",
+      )?)
+    }
+  };
+
+  let Some(mut cont) = vm.take_generator_continuation(id) else {
+    return Err(VmError::InvariantViolation(
+      "generator continuation missing for id",
+    ));
+  };
+
+  let this_binding = gen_scope.heap().get_root(cont.this_root).ok_or(
+    VmError::InvariantViolation("generator continuation missing this root"),
+  )?;
+  let new_target = gen_scope.heap().get_root(cont.new_target_root).ok_or(
+    VmError::InvariantViolation("generator continuation missing new.target root"),
+  )?;
+
+  let mut evaluator = Evaluator {
+    vm,
+    host,
+    hooks,
+    env: &mut cont.env,
+    strict: cont.strict,
+    this: this_binding,
+    new_target,
+  };
+
+  let result = if !cont.started {
+    cont.started = true;
+
+    let mut call_args: Vec<Value> = Vec::new();
+    call_args
+      .try_reserve_exact(cont.arg_roots.len())
+      .map_err(|_| VmError::OutOfMemory)?;
+    for id in cont.arg_roots.iter().copied() {
+      let v = gen_scope.heap().get_root(id).ok_or(VmError::InvariantViolation(
+        "generator continuation missing argument root",
+      ))?;
+      call_args.push(v);
+    }
+
+    evaluator.instantiate_function(&mut gen_scope, cont.func.as_ref(), &call_args)?;
+    async_start_body(&mut evaluator, &mut gen_scope, &cont.func)
+  } else {
+    let resume_value = args.get(0).copied().unwrap_or(Value::Undefined);
+    let frames = mem::take(&mut cont.frames);
+    async_resume_from_frames(&mut evaluator, &mut gen_scope, frames, Ok(resume_value))
+  };
+
+  match result {
+    Ok(AsyncBodyResult::Await { await_value, frames }) => {
+      cont.frames = frames;
+      if let Err(err) = vm.reserve_generator_continuations(1) {
+        generator_teardown_continuation(&mut gen_scope, cont);
+        // Best-effort mark as completed.
+        let _ = gen_scope.define_property(
+          this_obj,
+          id_key,
+          PropertyDescriptor {
+            enumerable: false,
+            configurable: true,
+            kind: PropertyKind::Data {
+              value: Value::Undefined,
+              writable: true,
+            },
+          },
+        );
+        return Err(err);
+      }
+      vm.replace_generator_continuation_reserved(id, cont);
+
+      let result =
+        create_iterator_result_object(&mut gen_scope, intr.object_prototype(), await_value, false)?;
+      Ok(Value::Object(result))
+    }
+    Ok(AsyncBodyResult::CompleteOk(v)) => {
+      generator_teardown_continuation(&mut gen_scope, cont);
+      // Mark as completed by setting the continuation id to `undefined` (keeping the property so
+      // subsequent `.next()` calls return `{ value: undefined, done: true }` instead of throwing).
+      gen_scope.define_property(
+        this_obj,
+        id_key,
+        PropertyDescriptor {
+          enumerable: false,
+          configurable: true,
+          kind: PropertyKind::Data {
+            value: Value::Undefined,
+            writable: true,
+          },
+        },
+      )?;
+
+      let result = create_iterator_result_object(&mut gen_scope, intr.object_prototype(), v, true)?;
+      Ok(Value::Object(result))
+    }
+    Ok(AsyncBodyResult::CompleteThrow(reason)) => {
+      generator_teardown_continuation(&mut gen_scope, cont);
+      gen_scope.define_property(
+        this_obj,
+        id_key,
+        PropertyDescriptor {
+          enumerable: false,
+          configurable: true,
+          kind: PropertyKind::Data {
+            value: Value::Undefined,
+            writable: true,
+          },
+        },
+      )?;
+      Err(VmError::Throw(reason))
+    }
+    Err(err) => {
+      // Fatal error during resumption: clean up roots/env to avoid leaks.
+      generator_teardown_continuation(&mut gen_scope, cont);
+      Err(err)
+    }
+  }
+}
+
 fn async_handle_body_result(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -9290,7 +9796,10 @@ fn coerce_error_to_throw_for_async(vm: &Vm, scope: &mut Scope<'_>, err: VmError)
 fn expr_contains_await(expr: &Node<Expr>) -> bool {
   match &*expr.stx {
     Expr::Unary(unary) => {
-      unary.stx.operator == OperatorName::Await || expr_contains_await(&unary.stx.argument)
+      matches!(
+        unary.stx.operator,
+        OperatorName::Await | OperatorName::Yield | OperatorName::YieldDelegated
+      ) || expr_contains_await(&unary.stx.argument)
     }
     Expr::UnaryPostfix(unary) => expr_contains_await(&unary.stx.argument),
     Expr::Binary(binary) => {
@@ -13089,18 +13598,54 @@ fn async_eval_expr(
       Err(err) => Err(coerce_error_to_throw_for_async(evaluator.vm, scope, err)),
     };
   }
-
+ 
   match &*expr.stx {
-    Expr::Unary(unary) if unary.stx.operator == OperatorName::Await => {
-      match async_eval_expr(evaluator, scope, &unary.stx.argument)? {
-        AsyncEval::Complete(v) => Ok(AsyncEval::Suspend(AsyncSuspend {
-          await_value: v,
-          frames: VecDeque::new(),
-        })),
-        AsyncEval::Suspend(mut suspend) => {
-          async_frames_push(&mut suspend.frames, AsyncFrame::AwaitAfterOperand)?;
-          Ok(AsyncEval::Suspend(suspend))
+    Expr::Unary(unary)
+      if matches!(
+        unary.stx.operator,
+        OperatorName::Await | OperatorName::Yield | OperatorName::YieldDelegated
+      ) =>
+    {
+      match unary.stx.operator {
+        OperatorName::YieldDelegated => Err(VmError::Unimplemented("yield*")),
+        OperatorName::Yield => {
+          // `parse-js` currently represents `yield;` as `yield undefined` with a synthetic
+          // `IdExpr("undefined")`. That is incorrect if `undefined` is shadowed. Detect this shape
+          // and treat it as a true `undefined` value.
+          let is_synthetic_undefined = unary.stx.argument.loc == unary.loc
+            && matches!(
+              unary.stx.argument.stx.as_ref(),
+              Expr::Id(id) if id.stx.name == "undefined"
+            );
+          if is_synthetic_undefined {
+            return Ok(AsyncEval::Suspend(AsyncSuspend {
+              await_value: Value::Undefined,
+              frames: VecDeque::new(),
+            }));
+          }
+
+          match async_eval_expr(evaluator, scope, &unary.stx.argument)? {
+            AsyncEval::Complete(v) => Ok(AsyncEval::Suspend(AsyncSuspend {
+              await_value: v,
+              frames: VecDeque::new(),
+            })),
+            AsyncEval::Suspend(mut suspend) => {
+              async_frames_push(&mut suspend.frames, AsyncFrame::AwaitAfterOperand)?;
+              Ok(AsyncEval::Suspend(suspend))
+            }
+          }
         }
+        OperatorName::Await => match async_eval_expr(evaluator, scope, &unary.stx.argument)? {
+          AsyncEval::Complete(v) => Ok(AsyncEval::Suspend(AsyncSuspend {
+            await_value: v,
+            frames: VecDeque::new(),
+          })),
+          AsyncEval::Suspend(mut suspend) => {
+            async_frames_push(&mut suspend.frames, AsyncFrame::AwaitAfterOperand)?;
+            Ok(AsyncEval::Suspend(suspend))
+          }
+        },
+        _ => unreachable!(),
       }
     }
     Expr::Unary(unary)
