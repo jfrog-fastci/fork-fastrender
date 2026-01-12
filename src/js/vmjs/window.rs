@@ -2425,6 +2425,72 @@ mod tests {
   }
 
   #[test]
+  fn mutation_observer_delivers_for_dataset_classlist_style_via_domhostvmjs_fast_path() -> Result<()> {
+    let renderer_dom = crate::dom::parse_html("<!doctype html><html><body><div id=target></div></body></html>")
+      .expect("parse_html");
+    let mut host = WindowHost::from_renderer_dom(&renderer_dom, "https://example.invalid/")?;
+ 
+    host.exec_script(
+      "var g = this;\n\
+       g.__calls = 0;\n\
+       g.__len = 0;\n\
+       g.__attr0 = null;\n\
+       g.__attr1 = null;\n\
+       g.__attr2 = null;\n\
+       g.__attr3 = null;\n\
+       const target = document.getElementById('target');\n\
+       const obs = new MutationObserver(function (records) {\n\
+         g.__calls++;\n\
+         g.__len = records.length;\n\
+         g.__attr0 = records[0].attributeName;\n\
+         g.__attr1 = records[1].attributeName;\n\
+         g.__attr2 = records[2].attributeName;\n\
+         g.__attr3 = records[3].attributeName;\n\
+       });\n\
+       obs.observe(target, { attributes: true });\n\
+       target.dataset.foo = 'a';\n\
+       target.classList.add('x');\n\
+       target.style.setProperty('color', 'red');\n\
+       target.style.width = '1px';\n",
+    )?;
+ 
+    assert!(matches!(get_global_prop(&mut host, "__calls"), Value::Number(n) if n == 0.0));
+    host.perform_microtask_checkpoint()?;
+ 
+    assert!(matches!(get_global_prop(&mut host, "__calls"), Value::Number(n) if n == 1.0));
+    assert!(matches!(get_global_prop(&mut host, "__len"), Value::Number(n) if n == 4.0));
+    assert_eq!(
+      get_global_prop_utf8(&mut host, "__attr0").as_deref(),
+      Some("data-foo")
+    );
+    assert_eq!(
+      get_global_prop_utf8(&mut host, "__attr1").as_deref(),
+      Some("class")
+    );
+    assert_eq!(
+      get_global_prop_utf8(&mut host, "__attr2").as_deref(),
+      Some("style")
+    );
+    assert_eq!(
+      get_global_prop_utf8(&mut host, "__attr3").as_deref(),
+      Some("style")
+    );
+ 
+    // No-op writes must not enqueue MutationObserver delivery.
+    host.exec_script(
+      "const el = document.getElementById('target');\n\
+       el.dataset.foo = 'a';\n\
+       el.classList.add('x');\n\
+       el.style.setProperty('color', 'red');\n\
+       el.style.width = '1px';\n",
+    )?;
+    host.perform_microtask_checkpoint()?;
+    assert!(matches!(get_global_prop(&mut host, "__calls"), Value::Number(n) if n == 1.0));
+ 
+    Ok(())
+  }
+ 
+  #[test]
   fn queue_microtask_callback_runs_with_real_vm_host() -> Result<()> {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
     let mut host = WindowHost::new(dom, "https://example.invalid/")?;

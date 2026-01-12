@@ -68,6 +68,7 @@ pub trait DomHostVmJs {
     name: &str,
     value: &str,
   ) -> Result<bool, DomError>;
+  fn take_mutation_observer_microtask_needed(&mut self) -> bool;
 }
 
 /// Downcast a `vm-js` [`VmHost`] into a dyn-compatible [`DomHostVmJs`] implementation.
@@ -201,5 +202,9 @@ where
       Ok(changed) => (Ok(changed), changed),
       Err(err) => (Err(err), false),
     })
+  }
+
+  fn take_mutation_observer_microtask_needed(&mut self) -> bool {
+    self.mutate_dom(|dom| (dom.take_mutation_observer_microtask_needed(), false))
   }
 }

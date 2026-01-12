@@ -10718,14 +10718,28 @@ fn element_class_name_set_native(
     .map(|s| s.to_utf8_lossy())
     .unwrap_or_default();
 
-  if let Some(host_dom) = crate::js::dom_host::dom_host_vmjs(host) {
+  let host_dom_result: Option<(bool, bool)> = (|| -> Result<_, VmError> {
+    let Some(host_dom) = crate::js::dom_host::dom_host_vmjs(host) else {
+      return Ok(None);
+    };
     let node_id = match host_dom.node_id_from_index(node_index) {
       Ok(id) => id,
-      Err(_) => return Ok(Value::Undefined),
+      Err(_) => return Ok(Some((false, false))),
     };
-    host_dom
+    let changed = host_dom
       .set_element_class_name(node_id, &new_value)
       .map_err(|_| VmError::TypeError("failed to set Element.className"))?;
+    let needs_microtask = if changed {
+      host_dom.take_mutation_observer_microtask_needed()
+    } else {
+      false
+    };
+    Ok(Some((changed, needs_microtask)))
+  })()?;
+  if let Some((changed, needs_microtask)) = host_dom_result {
+    if changed {
+      maybe_queue_mutation_observer_microtask(vm, scope, host, hooks, document_obj, needs_microtask)?;
+    }
     return Ok(Value::Undefined);
   }
 
@@ -11901,13 +11915,28 @@ fn css_style_set_property_native(
     .map(|s| s.to_utf8_lossy())
     .unwrap_or_default();
 
-  if let Some(host_dom) = crate::js::dom_host::dom_host_vmjs(host) {
+  let host_dom_result: Option<(bool, bool)> = (|| -> Result<_, VmError> {
+    let Some(host_dom) = crate::js::dom_host::dom_host_vmjs(host) else {
+      return Ok(None);
+    };
     let node_id = match host_dom.node_id_from_index(node_index) {
       Ok(id) => id,
-      Err(_) => return Ok(Value::Undefined),
+      Err(_) => return Ok(Some((false, false))),
     };
-    if let Err(err) = host_dom.style_set_property(node_id, &name, &value) {
-      return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
+    let changed = match host_dom.style_set_property(node_id, &name, &value) {
+      Ok(changed) => changed,
+      Err(err) => return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?)),
+    };
+    let needs_microtask = if changed {
+      host_dom.take_mutation_observer_microtask_needed()
+    } else {
+      false
+    };
+    Ok(Some((changed, needs_microtask)))
+  })()?;
+  if let Some((changed, needs_microtask)) = host_dom_result {
+    if changed {
+      maybe_queue_mutation_observer_microtask(vm, scope, host, hooks, document_obj, needs_microtask)?;
     }
     return Ok(Value::Undefined);
   }
@@ -11970,16 +11999,35 @@ fn css_style_remove_property_native(
     .map(|s| s.to_utf8_lossy())
     .unwrap_or_default();
 
-  if let Some(host_dom) = crate::js::dom_host::dom_host_vmjs(host) {
+  let host_dom_result: Option<(Value, bool, bool)> = (|| -> Result<_, VmError> {
+    let Some(host_dom) = crate::js::dom_host::dom_host_vmjs(host) else {
+      return Ok(None);
+    };
     let node_id = match host_dom.node_id_from_index(node_index) {
       Ok(id) => id,
-      Err(_) => return Ok(Value::String(scope.alloc_string("")?)),
+      Err(_) => return Ok(Some((Value::String(scope.alloc_string("")?), false, false))),
     };
     let prev = host_dom.style_get_property_value(node_id, &name);
-    if let Err(err) = host_dom.style_set_property(node_id, &name, "") {
-      return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
+    let changed = match host_dom.style_set_property(node_id, &name, "") {
+      Ok(changed) => changed,
+      Err(err) => return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?)),
+    };
+    let needs_microtask = if changed {
+      host_dom.take_mutation_observer_microtask_needed()
+    } else {
+      false
+    };
+    Ok(Some((
+      Value::String(scope.alloc_string(&prev)?),
+      changed,
+      needs_microtask,
+    )))
+  })()?;
+  if let Some((value, changed, needs_microtask)) = host_dom_result {
+    if changed {
+      maybe_queue_mutation_observer_microtask(vm, scope, host, hooks, document_obj, needs_microtask)?;
     }
-    return Ok(Value::String(scope.alloc_string(&prev)?));
+    return Ok(value);
   }
 
   let Some(dom) = dom_from_vm_host_mut(host) else {
@@ -12068,13 +12116,28 @@ fn css_style_named_set_native(
     .map(|s| s.to_utf8_lossy())
     .unwrap_or_default();
 
-  if let Some(host_dom) = crate::js::dom_host::dom_host_vmjs(host) {
+  let host_dom_result: Option<(bool, bool)> = (|| -> Result<_, VmError> {
+    let Some(host_dom) = crate::js::dom_host::dom_host_vmjs(host) else {
+      return Ok(None);
+    };
     let node_id = match host_dom.node_id_from_index(node_index) {
       Ok(id) => id,
-      Err(_) => return Ok(Value::Undefined),
+      Err(_) => return Ok(Some((false, false))),
     };
-    if let Err(err) = host_dom.style_set_property(node_id, &prop, &value) {
-      return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
+    let changed = match host_dom.style_set_property(node_id, &prop, &value) {
+      Ok(changed) => changed,
+      Err(err) => return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?)),
+    };
+    let needs_microtask = if changed {
+      host_dom.take_mutation_observer_microtask_needed()
+    } else {
+      false
+    };
+    Ok(Some((changed, needs_microtask)))
+  })()?;
+  if let Some((changed, needs_microtask)) = host_dom_result {
+    if changed {
+      maybe_queue_mutation_observer_microtask(vm, scope, host, hooks, document_obj, needs_microtask)?;
     }
     return Ok(Value::Undefined);
   }
@@ -12153,7 +12216,10 @@ fn element_class_list_add_native(
   }
   let token_refs: Vec<&str> = tokens.iter().map(String::as_str).collect();
 
-  if let Some(host_dom) = crate::js::dom_host::dom_host_vmjs(host) {
+  let host_dom_result: Option<(bool, bool)> = (|| -> Result<_, VmError> {
+    let Some(host_dom) = crate::js::dom_host::dom_host_vmjs(host) else {
+      return Ok(None);
+    };
     let node_id = match host_dom.node_id_from_index(node_index) {
       Ok(id) => id,
       Err(_) => {
@@ -12162,10 +12228,22 @@ fn element_class_list_add_native(
         ));
       }
     };
-    return match host_dom.class_list_add(node_id, &token_refs) {
-      Ok(_changed) => Ok(Value::Undefined),
-      Err(err) => Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?)),
+    let changed = match host_dom.class_list_add(node_id, &token_refs) {
+      Ok(changed) => changed,
+      Err(err) => return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?)),
     };
+    let needs_microtask = if changed {
+      host_dom.take_mutation_observer_microtask_needed()
+    } else {
+      false
+    };
+    Ok(Some((changed, needs_microtask)))
+  })()?;
+  if let Some((changed, needs_microtask)) = host_dom_result {
+    if changed {
+      maybe_queue_mutation_observer_microtask(vm, scope, host, hooks, document_obj, needs_microtask)?;
+    }
+    return Ok(Value::Undefined);
   }
 
   let dom = dom_from_vm_host_mut(host).ok_or(VmError::TypeError(
@@ -12249,7 +12327,10 @@ fn element_class_list_remove_native(
   }
   let token_refs: Vec<&str> = tokens.iter().map(String::as_str).collect();
 
-  if let Some(host_dom) = crate::js::dom_host::dom_host_vmjs(host) {
+  let host_dom_result: Option<(bool, bool)> = (|| -> Result<_, VmError> {
+    let Some(host_dom) = crate::js::dom_host::dom_host_vmjs(host) else {
+      return Ok(None);
+    };
     let node_id = match host_dom.node_id_from_index(node_index) {
       Ok(id) => id,
       Err(_) => {
@@ -12258,10 +12339,22 @@ fn element_class_list_remove_native(
         ));
       }
     };
-    return match host_dom.class_list_remove(node_id, &token_refs) {
-      Ok(_changed) => Ok(Value::Undefined),
-      Err(err) => Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?)),
+    let changed = match host_dom.class_list_remove(node_id, &token_refs) {
+      Ok(changed) => changed,
+      Err(err) => return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?)),
     };
+    let needs_microtask = if changed {
+      host_dom.take_mutation_observer_microtask_needed()
+    } else {
+      false
+    };
+    Ok(Some((changed, needs_microtask)))
+  })()?;
+  if let Some((changed, needs_microtask)) = host_dom_result {
+    if changed {
+      maybe_queue_mutation_observer_microtask(vm, scope, host, hooks, document_obj, needs_microtask)?;
+    }
+    return Ok(Value::Undefined);
   }
 
   let dom = dom_from_vm_host_mut(host).ok_or(VmError::TypeError(
@@ -12391,7 +12484,25 @@ fn element_class_list_toggle_native(
     other => Some(scope.heap().to_boolean(other)?),
   };
 
-  if let Some(host_dom) = crate::js::dom_host::dom_host_vmjs(host) {
+  let host_dom_result: Option<(bool, bool, bool)> = (|| -> Result<_, VmError> {
+    let before_present = if force.is_some() {
+      let dom = dom_from_vm_host(host).ok_or(VmError::TypeError(
+        "DOMTokenList.toggle requires a DOM-backed document",
+      ))?;
+      let node_id = dom
+        .node_id_from_index(node_index)
+        .map_err(|_| VmError::TypeError("DOMTokenList.toggle must be called on a classList object"))?;
+      match dom.class_list_contains(node_id, &token) {
+        Ok(v) => v,
+        Err(err) => return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?)),
+      }
+    } else {
+      false
+    };
+ 
+    let Some(host_dom) = crate::js::dom_host::dom_host_vmjs(host) else {
+      return Ok(None);
+    };
     let node_id = match host_dom.node_id_from_index(node_index) {
       Ok(id) => id,
       Err(_) => {
@@ -12400,10 +12511,23 @@ fn element_class_list_toggle_native(
         ));
       }
     };
-    match host_dom.class_list_toggle(node_id, &token, force) {
-      Ok(result) => return Ok(Value::Bool(result)),
+    let result = match host_dom.class_list_toggle(node_id, &token, force) {
+      Ok(result) => result,
       Err(err) => return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?)),
+    };
+    let changed = if force.is_some() { result != before_present } else { true };
+    let needs_microtask = if changed {
+      host_dom.take_mutation_observer_microtask_needed()
+    } else {
+      false
+    };
+    Ok(Some((result, changed, needs_microtask)))
+  })()?;
+  if let Some((result, changed, needs_microtask)) = host_dom_result {
+    if changed {
+      maybe_queue_mutation_observer_microtask(vm, scope, host, hooks, document_obj, needs_microtask)?;
     }
+    return Ok(Value::Bool(result));
   }
 
   let dom = dom_from_vm_host_mut(host).ok_or(VmError::TypeError(
@@ -12481,7 +12605,10 @@ fn element_class_list_replace_native(
     .map(|s| s.to_utf8_lossy())
     .unwrap_or_default();
 
-  if let Some(host_dom) = crate::js::dom_host::dom_host_vmjs(host) {
+  let host_dom_result: Option<(bool, bool, bool)> = (|| -> Result<_, VmError> {
+    let Some(host_dom) = crate::js::dom_host::dom_host_vmjs(host) else {
+      return Ok(None);
+    };
     let node_id = match host_dom.node_id_from_index(node_index) {
       Ok(id) => id,
       Err(_) => {
@@ -12490,10 +12617,23 @@ fn element_class_list_replace_native(
         ));
       }
     };
-    match host_dom.class_list_replace(node_id, &token, &new_token) {
-      Ok(result) => return Ok(Value::Bool(result)),
+    let result = match host_dom.class_list_replace(node_id, &token, &new_token) {
+      Ok(result) => result,
       Err(err) => return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?)),
+    };
+    let changed = result && token != new_token;
+    let needs_microtask = if changed {
+      host_dom.take_mutation_observer_microtask_needed()
+    } else {
+      false
+    };
+    Ok(Some((result, changed, needs_microtask)))
+  })()?;
+  if let Some((result, changed, needs_microtask)) = host_dom_result {
+    if changed {
+      maybe_queue_mutation_observer_microtask(vm, scope, host, hooks, document_obj, needs_microtask)?;
     }
+    return Ok(Value::Bool(result));
   }
 
   let dom = dom_from_vm_host_mut(host).ok_or(VmError::TypeError(

@@ -44,6 +44,7 @@ const TIMER_REGISTRY_KEY: &str = "__fastrender_timer_registry";
 pub(crate) const INTERNAL_QUEUE_MICROTASK_KEY: &str = "__fastrender_queue_microtask";
 const TIMER_RECORD_CALLBACK_KEY: &str = "__callback";
 const TIMER_RECORD_ARG_PREFIX: &str = "__arg";
+const MUTATION_OBSERVER_NOTIFY_KEY: &str = "__fastrender_mutation_observer_notify";
 
 // Native slot index on timer host functions that stores the owning global object.
 const TIMER_GLOBAL_SLOT: usize = 0;
@@ -445,6 +446,28 @@ impl<Host: WindowRealmHost + 'static> VmJsEventLoopHooks<Host> {
     self.any.set_event_loop(event_loop);
   }
 
+  fn maybe_queue_mutation_observer_notify_microtask(&mut self) {
+    if self.any.event_loop_mut::<EventLoop<Host>>().is_none() {
+      return;
+    }
+    let needs_microtask = {
+      let Some(vm_host) = self.any.vm_host_mut() else {
+        return;
+      };
+      let Some(host_dom) = crate::js::dom_host::dom_host_vmjs(vm_host) else {
+        return;
+      };
+      host_dom.take_mutation_observer_microtask_needed()
+    };
+    if !needs_microtask {
+      return;
+    }
+    let Some(event_loop) = self.any.event_loop_mut::<EventLoop<Host>>() else {
+      return;
+    };
+    let _ = event_loop.queue_microtask(mutation_observer_notify_microtask::<Host>);
+  }
+
   pub fn finish(mut self, heap: &mut Heap) -> Option<crate::error::Error> {
     if !self.pending_discard.is_empty() {
       let mut ctx = HeapRootContext { heap };
@@ -454,6 +477,56 @@ impl<Host: WindowRealmHost + 'static> VmJsEventLoopHooks<Host> {
     }
     self.enqueue_error.take()
   }
+}
+
+fn mutation_observer_notify_microtask<Host: WindowRealmHost + 'static>(
+  host: &mut Host,
+  event_loop: &mut EventLoop<Host>,
+) -> crate::error::Result<()> {
+  let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host);
+  hooks.set_event_loop(event_loop);
+  let (vm_host, window_realm) = host.vm_host_and_window_realm();
+  let global_obj = window_realm.global_object();
+  window_realm.reset_interrupt();
+  let budget = window_realm.vm_budget_now();
+  let (vm, heap) = window_realm.vm_and_heap_mut();
+
+  let mut vm = vm.push_budget(budget);
+  let tick_result = vm.tick();
+  let call_result = tick_result.and_then(|_| {
+    let mut scope = heap.scope();
+    scope.push_root(Value::Object(global_obj))?;
+    let document_key = alloc_key(&mut scope, "document")?;
+    let document_value = scope
+      .heap()
+      .object_get_own_data_property_value(global_obj, &document_key)?
+      .unwrap_or(Value::Undefined);
+    let Value::Object(document_obj) = document_value else {
+      return Ok(());
+    };
+    scope.push_root(Value::Object(document_obj))?;
+    let notify_key = alloc_key(&mut scope, MUTATION_OBSERVER_NOTIFY_KEY)?;
+    let notify = scope
+      .heap()
+      .object_get_own_data_property_value(document_obj, &notify_key)?
+      .unwrap_or(Value::Undefined);
+    if !matches!(notify, Value::Object(_)) || !scope.heap().is_callable(notify)? {
+      return Ok(());
+    }
+    let _ = vm.call_with_host_and_hooks(vm_host, &mut scope, &mut hooks, notify, Value::Undefined, &[]);
+    Ok(())
+  });
+
+  let result: crate::error::Result<()> = call_result
+    .map_err(|err| vm_error_to_event_loop_error(heap, err))
+    .map(|_| ());
+
+  let finish_err = hooks.finish(&mut *heap);
+  if let Some(err) = finish_err {
+    return Err(err);
+  }
+
+  result
 }
 
 impl<Host: WindowRealmHost + 'static> VmHostHooks for VmJsEventLoopHooks<Host> {
@@ -866,7 +939,11 @@ impl<Host: WindowRealmHost + 'static> VmHostHooks for VmJsEventLoopHooks<Host> {
     receiver: vm_js::Value,
   ) -> Result<Option<bool>, VmError> {
     let _ = receiver;
-    dataset_exotic_set(scope, self.any.vm_host_mut(), obj, key, value)
+    let result = dataset_exotic_set(scope, self.any.vm_host_mut(), obj, key, value)?;
+    if result.is_some() {
+      self.maybe_queue_mutation_observer_notify_microtask();
+    }
+    Ok(result)
   }
 
   fn host_exotic_delete(
@@ -875,7 +952,11 @@ impl<Host: WindowRealmHost + 'static> VmHostHooks for VmJsEventLoopHooks<Host> {
     obj: vm_js::GcObject,
     key: vm_js::PropertyKey,
   ) -> Result<Option<bool>, VmError> {
-    dataset_exotic_delete(scope, self.any.vm_host_mut(), obj, key)
+    let result = dataset_exotic_delete(scope, self.any.vm_host_mut(), obj, key)?;
+    if result.is_some() {
+      self.maybe_queue_mutation_observer_notify_microtask();
+    }
+    Ok(result)
   }
 
   fn host_call_job_callback(
