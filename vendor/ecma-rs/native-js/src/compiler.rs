@@ -232,18 +232,10 @@ fn parse_ir<'ctx>(
     .map_err(|e| NativeJsError::Llvm(e.to_string()))
 }
 
-fn effective_opt_level(opts: &CompileOptions) -> OptLevel {
-  if opts.debug && opts.opt_level == CompilerOptions::default().opt_level {
-    OptLevel::O0
-  } else {
-    opts.opt_level
-  }
-}
-
 fn target_config_from_opts(opts: &CompileOptions) -> TargetConfig {
   let mut cfg = TargetConfig::default();
 
-  cfg.opt_level = match effective_opt_level(opts) {
+  cfg.opt_level = match opts.opt_level {
     OptLevel::O0 => OptimizationLevel::None,
     OptLevel::O1 => OptimizationLevel::Less,
     OptLevel::O2 => OptimizationLevel::Default,
@@ -549,13 +541,13 @@ impl<'a> Compiler<'a> {
         self.program,
         self.entry,
         loaded.entrypoint,
-        crate::codegen::CodegenOptions {
-          module_name: "native-js".to_string(),
-          debug: self.opts.debug,
-          opt_level: effective_opt_level(self.opts),
-        },
-      )
-      .map_err(|diagnostics| NativeJsError::Rejected { diagnostics }),
+      crate::codegen::CodegenOptions {
+        module_name: "native-js".to_string(),
+        debug: self.opts.debug,
+        opt_level: self.opts.opt_level,
+      },
+    )
+    .map_err(|diagnostics| NativeJsError::Rejected { diagnostics }),
       crate::BackendKind::Ssa => crate::backend_ssa::codegen(
         context,
         self.program,
@@ -821,20 +813,18 @@ mod tests {
   use super::*;
 
   #[test]
-  fn debug_build_defaults_opt_level_to_o0() {
+  fn debug_build_does_not_override_opt_level() {
     let mut opts = CompileOptions::default();
     assert_eq!(opts.opt_level, CompilerOptions::default().opt_level);
     assert_eq!(target_config_from_opts(&opts).opt_level, OptimizationLevel::Default);
 
     opts.debug = true;
-    assert_eq!(effective_opt_level(&opts), OptLevel::O0);
+    assert_eq!(target_config_from_opts(&opts).opt_level, OptimizationLevel::Default);
+
+    opts.opt_level = OptLevel::O0;
     assert_eq!(target_config_from_opts(&opts).opt_level, OptimizationLevel::None);
 
     opts.opt_level = OptLevel::O3;
-    assert_eq!(effective_opt_level(&opts), OptLevel::O3);
-    assert_eq!(
-      target_config_from_opts(&opts).opt_level,
-      OptimizationLevel::Aggressive
-    );
+    assert_eq!(target_config_from_opts(&opts).opt_level, OptimizationLevel::Aggressive);
   }
 }
