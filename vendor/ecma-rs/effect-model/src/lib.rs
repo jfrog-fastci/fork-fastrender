@@ -157,7 +157,7 @@ mod effect_set_serde {
     match normalize_token(raw).as_str() {
       "" | "0" | "EMPTY" | "NONE" => Ok(EffectSet::empty()),
       "ALLOCATES" | "ALLOC" => Ok(EffectSet::ALLOCATES),
-      "MAY_THROW" | "MAYTHROW" => Ok(EffectSet::MAY_THROW),
+      "MAY_THROW" | "MAYTHROW" | "THROWS" => Ok(EffectSet::MAY_THROW),
       "IO" => Ok(EffectSet::IO),
       "NETWORK" => Ok(EffectSet::NETWORK),
       "NONDETERMINISTIC" | "NON_DETERMINISTIC" => Ok(EffectSet::NONDETERMINISTIC),
@@ -165,6 +165,7 @@ mod effect_set_serde {
       "WRITES_GLOBAL" | "WRITE_GLOBAL" | "WRITESGLOBAL" | "WRITEGLOBAL" => {
         Ok(EffectSet::WRITES_GLOBAL)
       }
+      "UNKNOWN_CALL" | "UNKNOWNCALL" => Ok(EffectSet::UNKNOWN_CALL),
       "UNKNOWN" => Ok(EffectSet::UNKNOWN),
       other => Err(E::custom(format!("unknown effect flag `{other}`"))),
     }
@@ -773,5 +774,19 @@ mod tests {
   fn effect_set_deserialize_accepts_alloc_alias() {
     let flags: EffectSet = serde_json::from_str(r#""alloc | mayThrow""#).unwrap();
     assert_eq!(flags, EffectSet::ALLOCATES | EffectSet::MAY_THROW);
+  }
+
+  #[cfg(feature = "serde")]
+  #[test]
+  fn effect_set_deserialize_accepts_unknown_call_alias() {
+    let flags: EffectSet = serde_json::from_str(r#""unknownCall""#).unwrap();
+    assert_eq!(flags, EffectSet::UNKNOWN_CALL);
+  }
+
+  #[cfg(feature = "serde")]
+  #[test]
+  fn effect_set_deserialize_accepts_throws_alias() {
+    let flags: EffectSet = serde_json::from_str(r#""io | throws""#).unwrap();
+    assert_eq!(flags, EffectSet::IO | EffectSet::MAY_THROW);
   }
 }
