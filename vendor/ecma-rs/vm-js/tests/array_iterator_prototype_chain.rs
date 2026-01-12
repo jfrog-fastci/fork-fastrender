@@ -53,6 +53,18 @@ fn array_iterator_prototype_chain_includes_iterator_prototype() -> Result<(), Vm
   )?;
   assert_eq!(array_iter_is_iterable, Value::Bool(true));
 
+  // Generator tests in test262 compute `%IteratorPrototype%` from an Array iterator and compare it
+  // to `Object.getPrototypeOf(%GeneratorPrototype%)`.
+  let generator_iterator_proto_match = rt.exec_script(
+    r#"
+      const IteratorProto = Object.getPrototypeOf(Object.getPrototypeOf([][Symbol.iterator]()));
+      function* g() {}
+      const GeneratorProto = Object.getPrototypeOf(g.prototype);
+      Object.getPrototypeOf(GeneratorProto) === IteratorProto
+    "#,
+  )?;
+  assert_eq!(generator_iterator_proto_match, Value::Bool(true));
+
   let it = rt.exec_script("[][Symbol.iterator]()")?;
   let array_iter_proto_v = rt.exec_script("Object.getPrototypeOf([][Symbol.iterator]())")?;
   let iterator_proto_v =
