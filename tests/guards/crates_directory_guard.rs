@@ -2,15 +2,9 @@
 //!
 //! See `instructions/webidl_consolidation.md`.
 //!
-//! WebIDL stack consolidation is nearly complete: shared JS/WebIDL infrastructure should live in
-//! the vendored `vendor/ecma-rs/` workspace and `crates/` should be reserved for FastRender-specific
+//! WebIDL stack consolidation is complete: shared JS/WebIDL infrastructure should live in the
+//! vendored `vendor/ecma-rs/` workspace and `crates/` should be reserved for FastRender-specific
 //! tooling.
-//!
-//! The only remaining legacy crate under `crates/` is the temporary `webidl-js-runtime`
-//! compatibility crate. (The legacy WebIDL crates `webidl-ir` and `webidl-bindings-core` have
-//! already been removed.)
-//!
-//! Once the migration completes, remove the `webidl-js-runtime` entry from the allowlist below.
 
 use std::collections::BTreeSet;
 use std::fs;
