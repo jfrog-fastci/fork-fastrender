@@ -2946,7 +2946,6 @@ fn request_clone_native(
       Ok(Some(req.clone()))
     }
   })?;
-
   let Some(cloned) = cloned else {
     return Err(throw_type_error(
       vm,
