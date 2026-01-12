@@ -1,8 +1,56 @@
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use criterion::{
+  black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput,
+};
 use fastrender::image_compare::{compare_images, CompareConfig};
 use image::{Rgba, RgbaImage};
+use std::alloc::{GlobalAlloc, Layout, System};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::time::Instant;
 
 mod common;
+
+// -----------------------------------------------------------------------------
+// Allocation tracking
+// -----------------------------------------------------------------------------
+
+struct CountingAllocator;
+
+static ALLOC_CALLS: AtomicUsize = AtomicUsize::new(0);
+static ALLOC_BYTES: AtomicUsize = AtomicUsize::new(0);
+
+unsafe impl GlobalAlloc for CountingAllocator {
+  unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+    ALLOC_CALLS.fetch_add(1, Ordering::Relaxed);
+    ALLOC_BYTES.fetch_add(layout.size(), Ordering::Relaxed);
+    System.alloc(layout)
+  }
+
+  unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+    ALLOC_CALLS.fetch_add(1, Ordering::Relaxed);
+    ALLOC_BYTES.fetch_add(layout.size(), Ordering::Relaxed);
+    System.alloc_zeroed(layout)
+  }
+
+  unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+    ALLOC_CALLS.fetch_add(1, Ordering::Relaxed);
+    ALLOC_BYTES.fetch_add(new_size, Ordering::Relaxed);
+    System.realloc(ptr, layout, new_size)
+  }
+
+  unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+    System.dealloc(ptr, layout)
+  }
+}
+
+#[global_allocator]
+static GLOBAL: CountingAllocator = CountingAllocator;
+
+fn allocation_counts() -> (usize, usize) {
+  (
+    ALLOC_CALLS.load(Ordering::Relaxed),
+    ALLOC_BYTES.load(Ordering::Relaxed),
+  )
+}
 
 /// Keep sizes modest but non-trivial so this bench catches accidental O(N^2) scaling in the
 /// perceptual distance implementation (e.g. if a downsampled/windowed SSIM path regresses).
@@ -96,43 +144,146 @@ fn bench_compare_images(c: &mut Criterion) {
 
   // Measure metric computation only; avoid diff image generation / PNG encoding.
   let config = CompareConfig::strict().with_generate_diff_image(false);
+  let config = &config;
 
   let mut group = c.benchmark_group("compare_images");
   for case in &cases {
-    let size_label = format!("{}x{}", case.width, case.height);
-    let pixels = u64::from(case.width) * u64::from(case.height);
+    let width = case.width;
+    let height = case.height;
+    let pixels = u64::from(width) * u64::from(height);
     group.throughput(Throughput::Elements(pixels));
 
-    group.bench_function(BenchmarkId::new("identical", &size_label), |b| {
-      b.iter(|| {
-        let diff = compare_images(black_box(&case.base), black_box(&case.base), black_box(&config));
-        black_box(diff.statistics.perceptual_distance);
-      })
+    let base = &case.base;
+    let few_pixels = &case.few_pixels;
+    let inverted = &case.inverted;
+    let mismatch = &case.mismatch;
+
+    let printed_identical = AtomicBool::new(false);
+    group.bench_function(BenchmarkId::new("identical", format!("{width}x{height}")), move |b| {
+      b.iter_custom(|iters| {
+        let (calls_start, bytes_start) = allocation_counts();
+        let start = Instant::now();
+        for _ in 0..iters {
+          let diff = compare_images(black_box(base), black_box(base), black_box(config));
+          black_box(diff.statistics.perceptual_distance);
+        }
+        let duration = start.elapsed();
+        let (calls_end, bytes_end) = allocation_counts();
+        let calls = calls_end.saturating_sub(calls_start);
+        let bytes = bytes_end.saturating_sub(bytes_start);
+        black_box((calls, bytes));
+
+        if !printed_identical.swap(true, Ordering::Relaxed) {
+          let iters_usize = iters as usize;
+          let per_call_calls = calls / iters_usize.max(1);
+          let per_call_bytes = bytes / iters_usize.max(1);
+          eprintln!(
+            "compare_images/identical/{width}x{height} allocations/call: calls={per_call_calls} bytes={per_call_bytes}"
+          );
+        }
+
+        duration
+      });
     });
 
-    group.bench_function(BenchmarkId::new("few_pixels", &size_label), |b| {
-      b.iter(|| {
-        let diff =
-          compare_images(black_box(&case.few_pixels), black_box(&case.base), black_box(&config));
-        black_box(diff.statistics.perceptual_distance);
-      })
+    let printed_few_pixels = AtomicBool::new(false);
+    group.bench_function(BenchmarkId::new("few_pixels", format!("{width}x{height}")), move |b| {
+      b.iter_custom(|iters| {
+        let (calls_start, bytes_start) = allocation_counts();
+        let start = Instant::now();
+        for _ in 0..iters {
+          let diff = compare_images(
+            black_box(few_pixels),
+            black_box(base),
+            black_box(config),
+          );
+          black_box(diff.statistics.perceptual_distance);
+        }
+        let duration = start.elapsed();
+        let (calls_end, bytes_end) = allocation_counts();
+        let calls = calls_end.saturating_sub(calls_start);
+        let bytes = bytes_end.saturating_sub(bytes_start);
+        black_box((calls, bytes));
+
+        if !printed_few_pixels.swap(true, Ordering::Relaxed) {
+          let iters_usize = iters as usize;
+          let per_call_calls = calls / iters_usize.max(1);
+          let per_call_bytes = bytes / iters_usize.max(1);
+          eprintln!(
+            "compare_images/few_pixels/{width}x{height} allocations/call: calls={per_call_calls} bytes={per_call_bytes}"
+          );
+        }
+
+        duration
+      });
     });
 
-    group.bench_function(BenchmarkId::new("inverted", &size_label), |b| {
-      b.iter(|| {
-        let diff =
-          compare_images(black_box(&case.inverted), black_box(&case.base), black_box(&config));
-        black_box(diff.statistics.perceptual_distance);
-      })
+    let printed_inverted = AtomicBool::new(false);
+    group.bench_function(BenchmarkId::new("inverted", format!("{width}x{height}")), move |b| {
+      b.iter_custom(|iters| {
+        let (calls_start, bytes_start) = allocation_counts();
+        let start = Instant::now();
+        for _ in 0..iters {
+          let diff = compare_images(
+            black_box(inverted),
+            black_box(base),
+            black_box(config),
+          );
+          black_box(diff.statistics.perceptual_distance);
+        }
+        let duration = start.elapsed();
+        let (calls_end, bytes_end) = allocation_counts();
+        let calls = calls_end.saturating_sub(calls_start);
+        let bytes = bytes_end.saturating_sub(bytes_start);
+        black_box((calls, bytes));
+
+        if !printed_inverted.swap(true, Ordering::Relaxed) {
+          let iters_usize = iters as usize;
+          let per_call_calls = calls / iters_usize.max(1);
+          let per_call_bytes = bytes / iters_usize.max(1);
+          eprintln!(
+            "compare_images/inverted/{width}x{height} allocations/call: calls={per_call_calls} bytes={per_call_bytes}"
+          );
+        }
+
+        duration
+      });
     });
 
-    group.bench_function(BenchmarkId::new("dimension_mismatch", &size_label), |b| {
-      b.iter(|| {
-        let diff =
-          compare_images(black_box(&case.mismatch), black_box(&case.base), black_box(&config));
-        black_box(diff.dimensions_match);
-      })
-    });
+    let printed_mismatch = AtomicBool::new(false);
+    group.bench_function(
+      BenchmarkId::new("dimension_mismatch", format!("{width}x{height}")),
+      move |b| {
+      b.iter_custom(|iters| {
+        let (calls_start, bytes_start) = allocation_counts();
+        let start = Instant::now();
+        for _ in 0..iters {
+          let diff = compare_images(
+            black_box(mismatch),
+            black_box(base),
+            black_box(config),
+          );
+          black_box(diff.dimensions_match);
+        }
+        let duration = start.elapsed();
+        let (calls_end, bytes_end) = allocation_counts();
+        let calls = calls_end.saturating_sub(calls_start);
+        let bytes = bytes_end.saturating_sub(bytes_start);
+        black_box((calls, bytes));
+
+        if !printed_mismatch.swap(true, Ordering::Relaxed) {
+          let iters_usize = iters as usize;
+          let per_call_calls = calls / iters_usize.max(1);
+          let per_call_bytes = bytes / iters_usize.max(1);
+          eprintln!(
+            "compare_images/dimension_mismatch/{width}x{height} allocations/call: calls={per_call_calls} bytes={per_call_bytes}"
+          );
+        }
+
+        duration
+      });
+    },
+    );
   }
 
   group.finish();
