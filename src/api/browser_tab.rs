@@ -257,6 +257,12 @@ struct PendingParserBlockingScript {
   source_text: String,
 }
 
+#[derive(Debug, Clone)]
+struct ImageLoadState {
+  url: String,
+  request_id: u64,
+}
+
 #[derive(Clone)]
 struct ScriptSourceOverrideFetcher {
   overrides: Arc<Mutex<HashMap<String, String>>>,
@@ -389,8 +395,9 @@ pub struct BrowserTabHost {
   deferred_scripts: HashSet<HtmlScriptId>,
   executed: HashSet<HtmlScriptId>,
   pending_script_load_blockers: HashSet<HtmlScriptId>,
-  pending_image_load_blockers: HashSet<NodeId>,
-  started_image_loads: HashSet<NodeId>,
+  pending_image_load_blockers: HashSet<(NodeId, u64)>,
+  image_load_state: HashMap<NodeId, ImageLoadState>,
+  next_image_load_request_id: u64,
   parser_blocked_on: Option<HtmlScriptId>,
   document_url: Option<String>,
   /// Current document base URL used for resolving *JS-visible* relative URLs.
@@ -475,7 +482,8 @@ impl BrowserTabHost {
       executed: HashSet::new(),
       pending_script_load_blockers: HashSet::new(),
       pending_image_load_blockers: HashSet::new(),
-      started_image_loads: HashSet::new(),
+      image_load_state: HashMap::new(),
+      next_image_load_request_id: 1,
       parser_blocked_on: None,
       document_url: None,
       base_url: None,
@@ -664,7 +672,8 @@ impl BrowserTabHost {
     self.executed.clear();
     self.pending_script_load_blockers.clear();
     self.pending_image_load_blockers.clear();
-    self.started_image_loads.clear();
+    self.image_load_state.clear();
+    self.next_image_load_request_id = 1;
     self.parser_blocked_on = None;
     self.document_url = document_url.clone();
     self.base_url = document_url;
@@ -1779,9 +1788,10 @@ impl BrowserTabHost {
     }
 
     let base_url = self.base_url.clone();
-    let discovered: Vec<(NodeId, String, Option<crate::resource::CorsMode>)> = {
+    let (discovered, clear_state): (Vec<(NodeId, String, Option<crate::resource::CorsMode>)>, Vec<NodeId>) = {
       let dom = self.document.dom();
       let mut out = Vec::new();
+      let mut clear_state = Vec::new();
       for node_id in dom.dom_connected_preorder() {
         let node = dom.node(node_id);
         let NodeKind::Element {
@@ -1795,20 +1805,25 @@ impl BrowserTabHost {
         if !tag_name.eq_ignore_ascii_case("img") || !is_html_namespace(namespace) {
           continue;
         }
-        if self.started_image_loads.contains(&node_id) {
+        let maybe_url = dom
+          .get_attribute(node_id, "src")
+          .ok()
+          .flatten()
+          .map(super::trim_ascii_whitespace)
+          .filter(|src| !src.is_empty())
+          .and_then(|src| resolve_href_with_base(base_url.as_deref(), src))
+          .filter(|url| !crate::resource::is_data_url(url));
+        let Some(url) = maybe_url else {
+          if self.image_load_state.contains_key(&node_id) {
+            clear_state.push(node_id);
+          }
           continue;
-        }
-        let src = match dom.get_attribute(node_id, "src") {
-          Ok(Some(v)) => super::trim_ascii_whitespace(v),
-          _ => continue,
         };
-        if src.is_empty() {
-          continue;
-        }
-        let Some(url) = resolve_href_with_base(base_url.as_deref(), src) else {
-          continue;
-        };
-        if crate::resource::is_data_url(&url) {
+        if self
+          .image_load_state
+          .get(&node_id)
+          .is_some_and(|state| state.url == url)
+        {
           continue;
         }
 
@@ -1828,9 +1843,12 @@ impl BrowserTabHost {
 
         out.push((node_id, url, cors_mode));
       }
-      out
+      (out, clear_state)
     };
 
+    for node_id in clear_state {
+      self.image_load_state.remove(&node_id);
+    }
     for (node_id, url, cors_mode) in discovered {
       self.start_image_load(node_id, url, cors_mode, event_loop)?;
     }
@@ -1845,7 +1863,11 @@ impl BrowserTabHost {
     cors_mode: Option<crate::resource::CorsMode>,
     event_loop: &mut EventLoop<Self>,
   ) -> Result<()> {
-    if self.started_image_loads.contains(&node_id) {
+    if self
+      .image_load_state
+      .get(&node_id)
+      .is_some_and(|state| state.url == url)
+    {
       return Ok(());
     }
 
@@ -1856,30 +1878,52 @@ impl BrowserTabHost {
     };
 
     // Track as a load blocker before the fetch runs so `load` cannot be queued prematurely.
-    self.started_image_loads.insert(node_id);
-    self.pending_image_load_blockers.insert(node_id);
+    let request_id = {
+      let id = self.next_image_load_request_id;
+      self.next_image_load_request_id = self.next_image_load_request_id.wrapping_add(1);
+      if self.next_image_load_request_id == 0 {
+        self.next_image_load_request_id = 1;
+      }
+      id
+    };
+    let prev_state = self.image_load_state.insert(
+      node_id,
+      ImageLoadState {
+        url: url.clone(),
+        request_id,
+      },
+    );
+    let pending_key = (node_id, request_id);
+    self.pending_image_load_blockers.insert(pending_key);
     self
       .lifecycle
       .register_pending_load_blocker(LoadBlockerKind::Other);
 
     let queued = event_loop.queue_task(TaskSource::Networking, move |host, event_loop| {
-      let fetcher = host.document.fetcher();
+      let is_current = host
+        .image_load_state
+        .get(&node_id)
+        .is_some_and(|state| state.request_id == request_id);
 
-      let mut req = FetchRequest::new(&url, destination);
-      if let Some(referrer) = host.document_url.as_deref() {
-        req = req.with_referrer_url(referrer);
-      }
-      if let Some(origin) = host.document_origin.as_ref() {
-        req = req.with_client_origin(origin);
-      }
-      req = req.with_referrer_policy(host.document_referrer_policy);
-      if let Some(cors_mode) = cors_mode {
-        req = req.with_credentials_mode(cors_mode.credentials_mode());
+      if is_current {
+        let fetcher = host.document.fetcher();
+
+        let mut req = FetchRequest::new(&url, destination);
+        if let Some(referrer) = host.document_url.as_deref() {
+          req = req.with_referrer_url(referrer);
+        }
+        if let Some(origin) = host.document_origin.as_ref() {
+          req = req.with_client_origin(origin);
+        }
+        req = req.with_referrer_policy(host.document_referrer_policy);
+        if let Some(cors_mode) = cors_mode {
+          req = req.with_credentials_mode(cors_mode.credentials_mode());
+        }
+
+        let _ = fetcher.fetch_with_request(req);
       }
 
-      let _ = fetcher.fetch_with_request(req);
-
-      if host.pending_image_load_blockers.remove(&node_id) {
+      if host.pending_image_load_blockers.remove(&pending_key) {
         host
           .lifecycle
           .load_blocker_completed(LoadBlockerKind::Other, event_loop)?;
@@ -1891,8 +1935,15 @@ impl BrowserTabHost {
     if let Err(err) = queued {
       // Avoid wedging `load`: if we can't queue the fetch task, treat the image as completed (as if
       // it immediately errored) and unwind our bookkeeping.
-      self.pending_image_load_blockers.remove(&node_id);
-      self.started_image_loads.remove(&node_id);
+      self.pending_image_load_blockers.remove(&pending_key);
+      match prev_state {
+        Some(prev) => {
+          self.image_load_state.insert(node_id, prev);
+        }
+        None => {
+          self.image_load_state.remove(&node_id);
+        }
+      }
       self
         .lifecycle
         .load_blocker_completed(LoadBlockerKind::Other, event_loop)?;
@@ -10284,6 +10335,88 @@ html, body { margin: 0; padding: 0; }
         .get_attribute(body, "data-load")
         .expect("get_attribute"),
       Some("1")
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn window_load_waits_for_images_loaded_after_dom_content_loaded_via_src_mutation() -> Result<()> {
+    #[derive(Debug, Default, Clone)]
+    struct RecordingFetcher {
+      urls: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl ResourceFetcher for RecordingFetcher {
+      fn fetch(&self, _url: &str) -> Result<FetchedResource> {
+        Err(Error::Other("RecordingFetcher::fetch should not be used".to_string()))
+      }
+
+      fn fetch_with_request(&self, req: FetchRequest<'_>) -> Result<FetchedResource> {
+        if !matches!(req.destination, FetchDestination::Image | FetchDestination::ImageCors) {
+          return Err(Error::Other(format!(
+            "unexpected fetch destination {:?} for url={}",
+            req.destination, req.url
+          )));
+        }
+        self
+          .urls
+          .lock()
+          .unwrap_or_else(|poisoned| poisoned.into_inner())
+          .push(req.url.to_string());
+        Ok(FetchedResource::new(
+          b"fake-png-bytes".to_vec(),
+          Some("image/png".to_string()),
+        ))
+      }
+    }
+
+    let fetcher = Arc::new(RecordingFetcher::default());
+    let html = r#"<!doctype html><body>
+      <img id="i" src="https://example.com/a.png">
+      <script>
+        document.addEventListener('DOMContentLoaded', function () {
+          document.body.setAttribute('data-dom', '1');
+          queueMicrotask(function () {
+            document.getElementById('i').setAttribute('src', 'https://example.com/b.png');
+          });
+        });
+        window.addEventListener('load', function () {
+          document.body.setAttribute('data-load', '1');
+        });
+      </script>
+    </body>"#;
+
+    let mut tab = BrowserTab::from_html_with_vmjs_and_document_url_and_fetcher(
+      html,
+      "https://example.com/",
+      RenderOptions::default(),
+      Arc::clone(&fetcher) as Arc<dyn ResourceFetcher>,
+    )?;
+
+    tab.run_event_loop_until_idle(RunLimits::unbounded())?;
+
+    let dom = tab.dom();
+    let body = dom.body().expect("body should exist");
+    assert_eq!(
+      dom.get_attribute(body, "data-dom")
+        .expect("get_attribute"),
+      Some("1")
+    );
+    assert_eq!(
+      dom.get_attribute(body, "data-load")
+        .expect("get_attribute"),
+      Some("1")
+    );
+
+    let urls = fetcher
+      .urls
+      .lock()
+      .unwrap_or_else(|poisoned| poisoned.into_inner())
+      .clone();
+    assert_eq!(
+      urls,
+      vec!["https://example.com/b.png".to_string()],
+      "expected only the final src URL to be fetched"
     );
     Ok(())
   }
