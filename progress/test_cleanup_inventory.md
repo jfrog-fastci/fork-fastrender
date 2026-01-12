@@ -55,6 +55,7 @@ section in sync with `ls tests/*.rs`.
 | `tests/css_integration_tests.rs` | delete | delete | Top-level harness removed; suite now lives under `tests/css_integration/**` and is pulled into `tests/integration.rs`. | DONE |
 | `tests/determinism_tests.rs` | delete | delete | Top-level harness removed; suite now lives under `tests/determinism/**` and is pulled into `tests/integration.rs`. | DONE |
 | `tests/dom_integration_tests.rs` | delete | delete | Top-level harness removed; suite now lives under `tests/dom_integration/**` and is pulled into `tests/integration.rs`. | DONE |
+| `tests/image_integration_tests.rs` | delete | delete | Redundant top-level harness removed; suite already runs via `tests/integration.rs::image_integration`. | DONE |
 | `tests/font_tests.rs` | delete | delete | Top-level harness removed; suite now lives under `tests/font/**` and is pulled into `tests/integration.rs`. | DONE |
 | `tests/js_harness_tests.rs` | delete | delete | Top-level harness removed; suite now lives under `tests/js_harness/**` and is pulled into `tests/integration.rs`. | DONE |
 | `tests/layout_tests.rs` | delete | delete | Top-level harness removed; suite now lives under `tests/layout/**` and is pulled into `tests/integration.rs`. | DONE |
@@ -93,6 +94,7 @@ section in sync with `ls tests/*.rs`.
 | `tests/resource_tests.rs` | integration | `tests/integration.rs::resource` | Top-level harness removed; suite now lives under `tests/resource/**` and is pulled into `tests/integration.rs`. | DONE |
 | `tests/shadow_tests.rs` | unit | `src/dom2/shadow_dom.rs` | Migrated to unit tests for declarative shadow DOM + slotting. | DONE |
 | `tests/svg_integration_tests.rs` | unit | `src/image_loader/tests.rs` + `src/paint/svg_filter/tests/**` | Migrated SVG rasterization + filter tests into unit tests and removed the standalone test binary. | DONE |
+| `tests/svg_integration.rs` | delete | delete | Empty placeholder crate; not referenced from `tests/integration.rs` anymore. | DONE |
 | `tests/taffy_cache_tests.rs` | unit | `src/layout/taffy_integration.rs` | Migrated to unit tests; old `tests/taffy_cache/**` directory removed. | DONE |
 | `tests/wpt_test.rs` | integration | `tests/wpt/tests.rs` | Top-level harness removed; runner tests now live under `tests/wpt/**` (must be wired into `tests/integration.rs`). | DONE |
 | `tests/wpt_offline_invariants_test.rs` | delete | delete | Top-level harness removed; offline invariants now live under `tests/wpt/offline_invariants.rs` and run via `tests/integration.rs::wpt`. | DONE |
