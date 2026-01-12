@@ -54,6 +54,7 @@ const RESPONSE_ID_KEY: &str = "__fastrender_response_id";
 const REQUEST_BODY_STREAM_KEY: &str = "__fastrender_request_body_stream";
 
 // Hidden per-instance properties for stream wrappers.
+const REQUEST_BODY_STREAM_KEY: &str = "__fastrender_request_body_stream";
 const RESPONSE_BODY_STREAM_KEY: &str = "__fastrender_response_body_stream";
 
 // Internal helper keys for Promise capability construction via `new Promise(executor)`.
