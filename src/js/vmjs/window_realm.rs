@@ -9468,12 +9468,25 @@ impl<Host: WindowRealmHost + 'static> WindowRealmDomEventListenerInvoker<Host> {
     Some(unsafe { ptr.as_mut() })
   }
 
-  pub(crate) fn invoke_event_handler_property(
+  fn invoke_event_handler_property_impl(
     &mut self,
     target: web_events::EventTargetId,
     event: &mut web_events::Event,
   ) -> std::result::Result<(), web_events::DomError> {
     let target = target.normalize();
+    // Host-driven event dispatch should invoke handler properties on:
+    // - `Window` (`window.onload`, etc)
+    // - `Document`
+    // - DOM-backed nodes (`node.onclick`)
+    //
+    // For non-DOM `EventTargetId::Opaque` targets, we currently do not implement EventHandler IDL
+    // attribute plumbing; treat as a no-op.
+    match target {
+      web_events::EventTargetId::Window
+      | web_events::EventTargetId::Document
+      | web_events::EventTargetId::Node(_) => {}
+      web_events::EventTargetId::Opaque(_) => return Ok(()),
+    }
 
     // SAFETY: `BrowserTabHost` stores the returned invoker alongside the owning executor, so the
     // pointer remains valid for the lifetime of the host. Dispatch is single-threaded and
@@ -9954,6 +9967,7 @@ impl<Host: WindowRealmHost + 'static> WindowRealmDomEventListenerInvoker<Host> {
 
     Ok(())
   }
+
 }
 
 fn sync_rust_event_from_js_event_object(
@@ -10002,6 +10016,14 @@ impl<Host: WindowRealmHost + 'static> web_events::EventListenerInvoker
 {
   fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
     Some(self)
+  }
+
+  fn invoke_event_handler_property(
+    &mut self,
+    target: web_events::EventTargetId,
+    event: &mut web_events::Event,
+  ) -> std::result::Result<(), web_events::DomError> {
+    self.invoke_event_handler_property_impl(target, event)
   }
 
   fn invoke(
@@ -10226,6 +10248,7 @@ impl<Host: WindowRealmHost + 'static> web_events::EventListenerInvoker
 
     Ok(())
   }
+
 }
 
 struct VmJsDomEventInvoker<'a, 'hooks> {
@@ -10399,6 +10422,103 @@ impl<'a, 'hooks> VmJsDomEventInvoker<'a, 'hooks> {
 }
 
 impl web_events::EventListenerInvoker for VmJsDomEventInvoker<'_, '_> {
+  fn invoke_event_handler_property(
+    &mut self,
+    target: web_events::EventTargetId,
+    event: &mut web_events::Event,
+  ) -> std::result::Result<(), web_events::DomError> {
+    let target = target.normalize();
+    let web_events::EventTargetId::Node(_) = target else {
+      return Ok(());
+    };
+
+    let scope = unsafe { &mut *self.scope };
+    let vm = unsafe { &mut *self.vm };
+    let vm_host = unsafe { &mut *self.vm_host };
+    let hooks = unsafe { &mut *self.hooks };
+
+    // Update JS-visible event fields for this invocation.
+    self
+      .sync_event_object(event)
+      .map_err(|e| web_events::DomError::new(e.to_string()))?;
+
+    let target_value = self
+      .js_value_for_target(Some(target))
+      .map_err(|e| web_events::DomError::new(e.to_string()))?;
+    let Value::Object(target_obj) = target_value else {
+      return Ok(());
+    };
+
+    // Look up `on{type}` on the target object. This intentionally only checks own data properties:
+    // we do not yet have IDL EventHandler attribute plumbing for nodes.
+    let handler_name = format!("on{}", event.type_);
+    scope
+      .push_root(Value::Object(target_obj))
+      .map_err(|e| web_events::DomError::new(e.to_string()))?;
+    let handler_key =
+      alloc_key(scope, &handler_name).map_err(|e| web_events::DomError::new(e.to_string()))?;
+    let Some(handler) = scope
+      .heap()
+      .object_get_own_data_property_value(target_obj, &handler_key)
+      .map_err(|e| web_events::DomError::new(e.to_string()))?
+    else {
+      return Ok(());
+    };
+    if !scope
+      .heap()
+      .is_callable(handler)
+      .map_err(|e| web_events::DomError::new(e.to_string()))?
+    {
+      return Ok(());
+    }
+
+    // Install the active Rust `Event` pointer so Event.prototype methods can mutate it.
+    let event_id = NEXT_ACTIVE_EVENT_ID.fetch_add(1, Ordering::Relaxed);
+    let _active_guard = push_active_event_for_host(vm_host, event_id, event);
+    let event_id_key =
+      alloc_key(scope, EVENT_ID_KEY).map_err(|e| web_events::DomError::new(e.to_string()))?;
+    scope
+      .define_property(
+        self.event_obj,
+        event_id_key,
+        PropertyDescriptor {
+          enumerable: false,
+          configurable: true,
+          kind: PropertyKind::Data {
+            value: Value::Number(event_id as f64),
+            writable: true,
+          },
+        },
+      )
+      .map_err(|e| web_events::DomError::new(e.to_string()))?;
+
+    // Invoke callback, swallowing exceptions (matching web platform behaviour).
+    let call_result = vm.call_with_host_and_hooks(
+      vm_host,
+      scope,
+      hooks,
+      handler,
+      Value::Object(target_obj),
+      &[Value::Object(self.event_obj)],
+    );
+    match call_result {
+      Ok(ret) => {
+        // HTML EventHandler semantics: returning `false` cancels the event.
+        if matches!(ret, Value::Bool(false)) {
+          event.prevent_default();
+        }
+      }
+      Err(err) => {
+        self.report_listener_exception(err);
+      }
+    }
+
+    sync_rust_event_from_js_event_object(scope, self.event_obj, event)
+      .map_err(|e| web_events::DomError::new(e.to_string()))?;
+
+    Ok(())
+  }
+
   fn invoke(
     &mut self,
     listener_id: web_events::ListenerId,
@@ -23674,13 +23794,15 @@ mod tests {
 
   #[test]
   fn host_dispatched_storage_event_exposes_storage_event_fields() -> Result<(), VmError> {
-    let renderer_dom = crate::dom::parse_html("<!doctype html><html></html>").unwrap();
-    let mut host = crate::js::HostDocumentState::from_renderer_dom(&renderer_dom);
-
     let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
-    exec_script_with_dom_host(
-      &mut realm,
-      &mut host,
+    // StorageEvent dispatch does not require a host DOM. Execute the listener installation with a
+    // dummy `VmHost` so the realm uses its internal fallback event registry; this keeps the test
+    // borrow-safe while still exercising host-driven dispatch.
+    let mut vm_host_ctx = ();
+    let mut hooks = NoopHostHooks::default();
+    realm.exec_script_with_host_and_hooks(
+      &mut vm_host_ctx,
+      &mut hooks,
       "globalThis.__has_storage_event_ctor = (typeof StorageEvent === 'function');\n\
        globalThis.__storage_events = [];\n\
        addEventListener('storage', (e) => {\n\
@@ -23705,7 +23827,18 @@ mod tests {
     }
 
     let mut realm_slot = Some(realm);
-    let mut vm_host_ctx = ();
+    let dom_ptr = {
+      // SAFETY: `events_dom_fallback` is owned by the realm's VM user data and outlives this test.
+      let realm = realm_slot.as_mut().expect("expected realm slot");
+      let data = realm
+        .vm_mut()
+        .user_data_mut::<WindowRealmUserData>()
+        .expect("window realm missing user data");
+      NonNull::from(&mut data.events_dom_fallback)
+    };
+    // SAFETY: `dom_ptr` points into `realm_slot` and remains valid for the duration of this test.
+    let dom = unsafe { dom_ptr.as_ref() };
+
     let mut vm_host_slot: Option<NonNull<dyn VmHost>> =
       Some(NonNull::from(&mut vm_host_ctx as &mut dyn VmHost));
     let mut webidl_bindings_host_slot: Option<NonNull<dyn WebIdlBindingsHost>> = None;
@@ -23733,8 +23866,8 @@ mod tests {
     web_events::dispatch_event(
       web_events::EventTargetId::Window,
       &mut set_item_event,
-      host.dom(),
-      host.dom().events(),
+      dom,
+      dom.events(),
       &mut invoker,
     )
     .expect("dispatch_event should succeed");
@@ -23757,8 +23890,8 @@ mod tests {
     web_events::dispatch_event(
       web_events::EventTargetId::Window,
       &mut remove_item_event,
-      host.dom(),
-      host.dom().events(),
+      dom,
+      dom.events(),
       &mut invoker,
     )
     .expect("dispatch_event should succeed");
@@ -23781,8 +23914,8 @@ mod tests {
     web_events::dispatch_event(
       web_events::EventTargetId::Window,
       &mut clear_event,
-      host.dom(),
-      host.dom().events(),
+      dom,
+      dom.events(),
       &mut invoker,
     )
     .expect("dispatch_event should succeed");

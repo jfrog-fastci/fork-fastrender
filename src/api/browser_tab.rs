@@ -654,25 +654,9 @@ impl BrowserTabHost {
         );
         event_for_event_obj.detail = event.detail.clone();
         event_for_event_obj.storage = event.storage.clone();
-        invoker
-          .with_dispatch_event_object(&event_for_event_obj, |invoker| {
-            crate::web::events::dispatch_event(target, &mut event, dom, dom.events(), invoker)?;
-
-            // Mirror the dispatchEvent() behavior for host-driven dispatch: after listener dispatch,
-            // invoke `target["on" + type]` (if callable) so Window/Document handler properties like
-            // `document.onvisibilitychange` are observable for platform-triggered events.
-            //
-            // Note: this intentionally only invokes the EventHandler property on the *dispatch target*,
-            // not on ancestors in the propagation path.
-            if matches!(
-              target,
-              EventTargetId::Window | EventTargetId::Document | EventTargetId::Node(_)
-            ) {
-              invoker.invoke_event_handler_property(target, &mut event)?;
-            }
-
-            Ok(!event.default_prevented)
-          })
+        invoker.with_dispatch_event_object(&event_for_event_obj, |invoker| {
+          crate::web::events::dispatch_event(target, &mut event, dom, dom.events(), invoker)
+        })
           .map_err(|err| Error::Other(err.to_string()))
       });
     }

@@ -181,6 +181,22 @@ pub trait EventListenerInvoker {
     event: &mut Event,
   ) -> std::result::Result<(), DomError>;
 
+  /// Optional hook for invoking the `on{type}` EventHandler property on the dispatch target.
+  ///
+  /// This is used by embeddings that synthesize JS event objects externally (e.g. FastRender's
+  /// `vm-js` integration) and therefore cannot rely on full IDL EventHandler attribute plumbing for
+  /// DOM-backed nodes yet.
+  ///
+  /// The default implementation is a no-op.
+  #[inline]
+  fn invoke_event_handler_property(
+    &mut self,
+    _target: EventTargetId,
+    _event: &mut Event,
+  ) -> std::result::Result<(), DomError> {
+    Ok(())
+  }
+
   /// Optional downcasting hook for embeddings that need invoker-specific dynamic context.
   ///
   /// Most invokers are lightweight stack values (and may contain non-`'static` references), so the
@@ -748,7 +764,6 @@ pub fn dispatch_event(
     }
 
     let target_index = event.path.len() - 1;
-
     // Capturing phase: Window → ... → parent
     for idx in 0..target_index {
       if event.propagation_stopped {
@@ -770,6 +785,15 @@ pub fn dispatch_event(
 
       if !event.propagation_stopped && !event.immediate_propagation_stopped {
         invoke_listeners(target, event, registry, invoker, /* capture */ false)?;
+
+        // EventHandler IDL attribute / handler property (e.g. `node.onclick = fn`).
+        //
+        // This runs after the regular at-target bubble listeners so:
+        // - it participates in propagation control (`stopPropagation` / `stopImmediatePropagation`), and
+        // - it can observe state changes made by `addEventListener` callbacks.
+        if !event.immediate_propagation_stopped {
+          invoker.invoke_event_handler_property(target, event)?;
+        }
       }
     }
 
