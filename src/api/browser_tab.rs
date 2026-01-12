@@ -1393,7 +1393,7 @@ impl BrowserTabHost {
               }
               return exec_result;
             }
-
+ 
             let microtask_err = if self.js_execution_depth.get() == 0 {
               self
                 .perform_microtask_checkpoint_and_notify_executor(event_loop)
@@ -2754,7 +2754,7 @@ impl BrowserTabHost {
             }
             return exec_result.map(|_| ());
           }
-
+ 
           let microtask_err = if should_checkpoint && self.js_execution_depth.get() == 0 {
             self
               .perform_microtask_checkpoint_and_notify_executor(event_loop)
@@ -2922,7 +2922,7 @@ impl BrowserTabHost {
               }
               return result.map(|_| ());
             }
-
+ 
             let microtask_err = if host.js_execution_depth.get() == 0 {
               host
                 .perform_microtask_checkpoint_and_notify_executor(event_loop)
@@ -5186,12 +5186,14 @@ impl BrowserTab {
           event_loop.clear_all_pending_work();
           return Ok(());
         }
-        // Notify the JS executor after every microtask checkpoint so it can observe Promise-job
-        // side effects that span multiple event loop turns (e.g. module top-level await resuming
-        // after timers/network tasks).
+        let executor_hook: fn(&mut BrowserTabHost, &mut EventLoop<BrowserTabHost>) -> Result<()> =
+          BrowserTabHost::executor_microtask_checkpoint_hook;
+        if !event_loop
+          .microtask_checkpoint_hooks()
+          .iter()
+          .any(|&hook| std::ptr::fn_addr_eq(hook, executor_hook))
         {
-          let (executor, document) = (&mut host.executor, &mut host.document);
-          executor.after_microtask_checkpoint(document.as_mut(), event_loop)?;
+          BrowserTabHost::executor_microtask_checkpoint_hook(host, event_loop)?;
         }
         if render_between_turns && host.document.is_dirty() {
           if let Some(frame) = host.document.render_if_needed()? {
@@ -5869,6 +5871,176 @@ mod tests {
         Ok(())
       })?;
       Ok(ModuleScriptExecutionStatus::Completed)
+    }
+  }
+
+  #[derive(Clone)]
+  struct AfterMicrotaskCheckpointCountingExecutor {
+    calls: Rc<Cell<usize>>,
+  }
+
+  impl BrowserTabJsExecutor for AfterMicrotaskCheckpointCountingExecutor {
+    fn execute_classic_script(
+      &mut self,
+      _script_text: &str,
+      _spec: &ScriptElementSpec,
+      _current_script: Option<NodeId>,
+      _document: &mut BrowserDocumentDom2,
+      _event_loop: &mut EventLoop<BrowserTabHost>,
+    ) -> Result<()> {
+      Ok(())
+    }
+
+    fn execute_module_script(
+      &mut self,
+      _script_text: &str,
+      _spec: &ScriptElementSpec,
+      _current_script: Option<NodeId>,
+      _document: &mut BrowserDocumentDom2,
+      _event_loop: &mut EventLoop<BrowserTabHost>,
+    ) -> Result<()> {
+      Ok(())
+    }
+
+    fn after_microtask_checkpoint(
+      &mut self,
+      _document: &mut BrowserDocumentDom2,
+      _event_loop: &mut EventLoop<BrowserTabHost>,
+    ) -> Result<()> {
+      self.calls.set(self.calls.get().saturating_add(1));
+      Ok(())
+    }
+  }
+
+  struct CountingVmJsExecutor {
+    inner: crate::api::VmJsBrowserTabExecutor,
+    after_microtask_checkpoint_calls: Arc<AtomicUsize>,
+  }
+
+  impl CountingVmJsExecutor {
+    fn new(after_microtask_checkpoint_calls: Arc<AtomicUsize>) -> Self {
+      Self {
+        inner: crate::api::VmJsBrowserTabExecutor::default(),
+        after_microtask_checkpoint_calls,
+      }
+    }
+  }
+
+  impl BrowserTabJsExecutor for CountingVmJsExecutor {
+    fn set_webidl_bindings_host(&mut self, host: &mut dyn webidl_vm_js::WebIdlBindingsHost) {
+      self.inner.set_webidl_bindings_host(host);
+    }
+
+    fn event_listener_invoker(
+      &self,
+    ) -> Option<Box<dyn crate::web::events::EventListenerInvoker>> {
+      self.inner.event_listener_invoker()
+    }
+
+    fn on_document_base_url_updated(&mut self, base_url: Option<&str>) {
+      self.inner.on_document_base_url_updated(base_url);
+    }
+
+    fn on_navigation_committed(&mut self, document_url: Option<&str>) {
+      self.inner.on_navigation_committed(document_url);
+    }
+
+    fn reset_for_navigation(
+      &mut self,
+      document_url: Option<&str>,
+      document: &mut BrowserDocumentDom2,
+      current_script: &CurrentScriptStateHandle,
+      js_execution_options: JsExecutionOptions,
+    ) -> Result<()> {
+      self
+        .inner
+        .reset_for_navigation(document_url, document, current_script, js_execution_options)
+    }
+
+    fn execute_classic_script(
+      &mut self,
+      script_text: &str,
+      spec: &ScriptElementSpec,
+      current_script: Option<NodeId>,
+      document: &mut BrowserDocumentDom2,
+      event_loop: &mut EventLoop<BrowserTabHost>,
+    ) -> Result<()> {
+      self
+        .inner
+        .execute_classic_script(script_text, spec, current_script, document, event_loop)
+    }
+
+    fn execute_module_script(
+      &mut self,
+      script_text: &str,
+      spec: &ScriptElementSpec,
+      current_script: Option<NodeId>,
+      document: &mut BrowserDocumentDom2,
+      event_loop: &mut EventLoop<BrowserTabHost>,
+    ) -> Result<()> {
+      self
+        .inner
+        .execute_module_script(script_text, spec, current_script, document, event_loop)
+    }
+
+    fn supports_module_graph_fetch(&self) -> bool {
+      self.inner.supports_module_graph_fetch()
+    }
+
+    fn fetch_module_graph(
+      &mut self,
+      spec: &ScriptElementSpec,
+      fetcher: Arc<dyn ResourceFetcher>,
+      document: &mut BrowserDocumentDom2,
+      event_loop: &mut EventLoop<BrowserTabHost>,
+    ) -> Result<()> {
+      self
+        .inner
+        .fetch_module_graph(spec, fetcher, document, event_loop)
+    }
+
+    fn execute_import_map_script(
+      &mut self,
+      script_text: &str,
+      spec: &ScriptElementSpec,
+      current_script: Option<NodeId>,
+      document: &mut BrowserDocumentDom2,
+      event_loop: &mut EventLoop<BrowserTabHost>,
+    ) -> Result<()> {
+      self
+        .inner
+        .execute_import_map_script(script_text, spec, current_script, document, event_loop)
+    }
+
+    fn after_microtask_checkpoint(
+      &mut self,
+      document: &mut BrowserDocumentDom2,
+      event_loop: &mut EventLoop<BrowserTabHost>,
+    ) -> Result<()> {
+      self
+        .after_microtask_checkpoint_calls
+        .fetch_add(1, Ordering::SeqCst);
+      self.inner.after_microtask_checkpoint(document, event_loop)
+    }
+
+    fn take_navigation_request(&mut self) -> Option<LocationNavigationRequest> {
+      self.inner.take_navigation_request()
+    }
+
+    fn dispatch_lifecycle_event(
+      &mut self,
+      target: EventTargetId,
+      event: &Event,
+      document: &mut BrowserDocumentDom2,
+      event_loop: &mut EventLoop<BrowserTabHost>,
+    ) -> Result<()> {
+      self
+        .inner
+        .dispatch_lifecycle_event(target, event, document, event_loop)
+    }
+
+    fn window_realm_mut(&mut self) -> Option<&mut crate::js::WindowRealm> {
+      self.inner.window_realm_mut()
     }
   }
 
@@ -8091,6 +8263,111 @@ mod tests {
       &[false],
       "expected parser-inserted <script> to have force_async=false"
     );
+    Ok(())
+  }
+
+  #[test]
+  fn executor_after_microtask_checkpoint_runs_after_explicit_and_post_task_checkpoints() -> Result<()> {
+    let calls = Rc::new(Cell::new(0));
+    let executor = AfterMicrotaskCheckpointCountingExecutor {
+      calls: Rc::clone(&calls),
+    };
+    let mut tab = BrowserTab::from_html("", RenderOptions::default(), executor)?;
+
+    // Discard any parsing/lifecycle work queued while constructing the tab so this test only
+    // observes checkpoints we trigger explicitly below.
+    calls.set(0);
+    tab.event_loop.clear_all_pending_work();
+
+    tab.event_loop.perform_microtask_checkpoint(&mut tab.host)?;
+    assert_eq!(
+      calls.get(),
+      1,
+      "expected after_microtask_checkpoint to run after explicit microtask checkpoints"
+    );
+
+    tab
+      .event_loop
+      .queue_task(TaskSource::Script, |_host, _event_loop| Ok(()))?;
+    assert!(
+      tab.event_loop.run_next_task(&mut tab.host)?,
+      "expected queued task to run"
+    );
+    assert_eq!(
+      calls.get(),
+      2,
+      "expected after_microtask_checkpoint to run after the implicit post-task checkpoint"
+    );
+
+    Ok(())
+  }
+
+  #[test]
+  fn promise_rejection_tracker_coexists_with_executor_microtask_checkpoint_hook() -> Result<()> {
+    let after_checkpoint_calls = Arc::new(AtomicUsize::new(0));
+    let executor = CountingVmJsExecutor::new(Arc::clone(&after_checkpoint_calls));
+    let mut tab = BrowserTab::from_html("", RenderOptions::default(), executor)?;
+
+    after_checkpoint_calls.store(0, Ordering::SeqCst);
+    // Ensure we only run tasks queued by this test.
+    tab.event_loop.clear_all_pending_work();
+
+    let spec = ScriptElementSpec {
+      base_url: tab.host.base_url.clone(),
+      src: None,
+      src_attr_present: false,
+      inline_text: String::new(),
+      async_attr: false,
+      force_async: false,
+      defer_attr: false,
+      nomodule_attr: false,
+      crossorigin: None,
+      integrity_attr_present: false,
+      integrity: None,
+      referrer_policy: None,
+      fetch_priority: None,
+      parser_inserted: false,
+      node_id: None,
+      script_type: ScriptType::Classic,
+    };
+
+    tab.host.executor.execute_classic_script(
+      r#"
+      globalThis.__unhandled = false;
+      globalThis.addEventListener('unhandledrejection', () => { globalThis.__unhandled = true; });
+      Promise.reject('boom');
+      "#,
+      &spec,
+      None,
+      tab.host.document.as_mut(),
+      &mut tab.event_loop,
+    )?;
+
+    // Run the rejection-tracker microtask-checkpoint hook, which should queue the unhandledrejection
+    // event task.
+    tab.event_loop.perform_microtask_checkpoint(&mut tab.host)?;
+    tab
+      .event_loop
+      .run_until_idle(&mut tab.host, RunLimits::unbounded())?;
+
+    assert!(
+      after_checkpoint_calls.load(Ordering::SeqCst) > 0,
+      "expected executor after_microtask_checkpoint hook to run during checkpoints"
+    );
+
+    let realm = tab
+      .host
+      .executor
+      .window_realm_mut()
+      .expect("expected vm-js WindowRealm to be active");
+    let unhandled = realm
+      .exec_script("globalThis.__unhandled")
+      .map_err(|err| Error::Other(err.to_string()))?;
+    assert!(
+      matches!(unhandled, Value::Bool(true)),
+      "expected unhandledrejection listener to run, got {unhandled:?}"
+    );
+
     Ok(())
   }
 

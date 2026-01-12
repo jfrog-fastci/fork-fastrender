@@ -380,6 +380,25 @@ impl<Host: 'static> EventLoop<Host> {
     }
   }
 
+  pub fn add_microtask_checkpoint_hook(
+    &mut self,
+    hook: MicrotaskCheckpointHook<Host>,
+  ) -> Result<()> {
+    self.register_microtask_checkpoint_hook(hook)
+  }
+
+  pub fn remove_microtask_checkpoint_hook(&mut self, hook: MicrotaskCheckpointHook<Host>) -> bool {
+    let Some(idx) = self
+      .microtask_checkpoint_hooks
+      .iter()
+      .position(|existing| std::ptr::fn_addr_eq(*existing, hook))
+    else {
+      return false;
+    };
+    self.microtask_checkpoint_hooks.remove(idx);
+    true
+  }
+
   pub fn microtask_checkpoint_hook(&self) -> Option<MicrotaskCheckpointHook<Host>> {
     self.microtask_checkpoint_hooks.first().copied()
   }
@@ -392,7 +411,11 @@ impl<Host: 'static> EventLoop<Host> {
     &mut self,
     hook: MicrotaskCheckpointHook<Host>,
   ) -> Result<()> {
-    if self.microtask_checkpoint_hooks.contains(&hook) {
+    if self
+      .microtask_checkpoint_hooks
+      .iter()
+      .any(|existing| std::ptr::fn_addr_eq(*existing, hook))
+    {
       return Ok(());
     }
     if self.microtask_checkpoint_hooks.len() >= MAX_MICROTASK_CHECKPOINT_HOOKS {
@@ -738,7 +761,6 @@ impl<Host: 'static> EventLoop<Host> {
     trace_span.arg_u64("drain_limit", drain_limit);
     let stage_for_deadline = render_control::active_stage().unwrap_or(self.default_deadline_stage);
     let mut deadline_counter: usize = 0;
-    let hooks = self.microtask_checkpoint_hooks.clone();
     let result = (|| {
       let mut first_err: Option<Error> = None;
       loop {
@@ -774,6 +796,7 @@ impl<Host: 'static> EventLoop<Host> {
           drained = drained.saturating_add(1);
         }
 
+        let hooks = self.microtask_checkpoint_hooks.clone();
         for hook in hooks.iter().copied() {
           if let Err(err) = hook(host, self) {
             if first_err.is_none() {
@@ -1275,8 +1298,6 @@ impl<Host: 'static> EventLoop<Host> {
     let mut trace_span = self.trace.span("js.microtask_checkpoint", "js");
     trace_span.arg_u64("queued_at_start", self.microtask_queue.len() as u64);
     let mut drained: u64 = 0;
-
-    let hooks = self.microtask_checkpoint_hooks.clone();
     let result = (|| -> RunStepResult<()> {
       let mut first_err: Option<Error> = None;
 
@@ -1313,6 +1334,7 @@ impl<Host: 'static> EventLoop<Host> {
           drained = drained.saturating_add(1);
         }
 
+        let hooks = self.microtask_checkpoint_hooks.clone();
         for hook in hooks.iter().copied() {
           // Respect deadlines even when the event loop microtask queue is empty: hooks may perform
           // additional microtask work (e.g. draining JS engine Promise job queues).
@@ -1363,7 +1385,6 @@ impl<Host: 'static> EventLoop<Host> {
     self.performing_microtask_checkpoint = true;
     let previous_running_task = self.currently_running_task.take();
 
-    let hooks = self.microtask_checkpoint_hooks.clone();
     let result = (|| -> RunStepResult<()> {
       loop {
         while !self.microtask_queue.is_empty() {
@@ -1382,6 +1403,7 @@ impl<Host: 'static> EventLoop<Host> {
           }
         }
 
+        let hooks = self.microtask_checkpoint_hooks.clone();
         for hook in hooks.iter().copied() {
           run_state.check_deadline()?;
           if let Err(err) = hook(host, self) {
@@ -1894,6 +1916,61 @@ mod tests {
   struct TestHost {
     log: Vec<&'static str>,
     count: usize,
+  }
+
+  #[test]
+  fn microtask_checkpoint_hooks_are_multiplexed_in_insertion_order() -> Result<()> {
+    #[derive(Default)]
+    struct Host {
+      log: Vec<&'static str>,
+    }
+
+    fn hook_a(host: &mut Host, _event_loop: &mut EventLoop<Host>) -> Result<()> {
+      host.log.push("hook_a");
+      Ok(())
+    }
+
+    fn hook_b(host: &mut Host, _event_loop: &mut EventLoop<Host>) -> Result<()> {
+      host.log.push("hook_b");
+      Ok(())
+    }
+
+    let mut host = Host::default();
+    let mut event_loop = EventLoop::<Host>::new();
+    event_loop.add_microtask_checkpoint_hook(hook_a)?;
+    event_loop.add_microtask_checkpoint_hook(hook_b)?;
+
+    event_loop.queue_microtask(|host, _event_loop| {
+      host.log.push("microtask");
+      Ok(())
+    })?;
+
+    event_loop.perform_microtask_checkpoint(&mut host)?;
+
+    assert_eq!(host.log, vec!["microtask", "hook_a", "hook_b"]);
+    Ok(())
+  }
+
+  #[test]
+  fn add_microtask_checkpoint_hook_dedupes_duplicate_registrations() -> Result<()> {
+    #[derive(Default)]
+    struct Host {
+      calls: usize,
+    }
+
+    fn hook(host: &mut Host, _event_loop: &mut EventLoop<Host>) -> Result<()> {
+      host.calls += 1;
+      Ok(())
+    }
+
+    let mut host = Host::default();
+    let mut event_loop = EventLoop::<Host>::new();
+    event_loop.add_microtask_checkpoint_hook(hook)?;
+    event_loop.add_microtask_checkpoint_hook(hook)?;
+
+    event_loop.perform_microtask_checkpoint(&mut host)?;
+    assert_eq!(host.calls, 1);
+    Ok(())
   }
 
   #[test]

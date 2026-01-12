@@ -2167,7 +2167,6 @@ pub fn reflect_set_prototype_of(
   let ok = scope.set_prototype_of_with_host_and_hooks(vm, host, hooks, target, proto)?;
   Ok(Value::Bool(ok))
 }
-
 fn create_array_object(vm: &mut Vm, scope: &mut Scope<'_>, len: u32) -> Result<GcObject, VmError> {
   let intr = require_intrinsics(vm)?;
 

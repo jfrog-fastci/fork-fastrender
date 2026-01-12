@@ -1046,7 +1046,7 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
     // Additionally, `window.onbeforeunload = () => "..."` is supported via `EventTarget.dispatchEvent`
     // EventHandler invocation.
     let source = r#"(function(){
-      const e = new BeforeUnloadEvent("beforeunload", { cancelable: true });
+      const e = new Event("beforeunload", { cancelable: true });
       dispatchEvent(e);
       const rv = e.returnValue;
       return e.defaultPrevented || (typeof rv === "string" && rv.length > 0);
@@ -1126,28 +1126,16 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
     };
 
     let type_lit = serde_json::to_string(&event.type_).unwrap_or_else(|_| "\"\"".to_string());
-    let (ctor_name, init_lit) = match event.type_.as_str() {
+    let (ctor_name, init_lit, post_init) = match event.type_.as_str() {
       "pagehide" | "pageshow" => (
-        "PageTransitionEvent",
-        serde_json::json!({
-          "bubbles": event.bubbles,
-          "cancelable": event.cancelable,
-          "composed": event.composed,
-          "persisted": false,
-        })
-        .to_string(),
-      ),
-      // `beforeunload` is primarily dispatched via `dispatch_beforeunload_event` so the host can
-      // observe cancellation. Still construct a `BeforeUnloadEvent` here so JS can inspect
-      // `event.returnValue` when `BrowserTabHost` dispatches it as a generic lifecycle event.
-      "beforeunload" => (
-        "BeforeUnloadEvent",
+        "Event",
         serde_json::json!({
           "bubbles": event.bubbles,
           "cancelable": event.cancelable,
           "composed": event.composed,
         })
         .to_string(),
+        "try { e.persisted = false; } catch (_) {};",
       ),
       _ => (
         "Event",
@@ -1157,11 +1145,17 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
           "composed": event.composed,
         })
         .to_string(),
+        "",
       ),
     };
-    let source = format!(
-      "(function(){{const e=new {ctor_name}({type_lit},{init_lit});{dispatch_expr}}})();",
-    );
+
+    let source = if ctor_name == "Event" {
+      format!("(function(){{const e=new Event({type_lit},{init_lit});{post_init}{dispatch_expr}}})();")
+    } else {
+      format!(
+        "(function(){{let e;try{{e=new {ctor_name}({type_lit},{init_lit});}}catch(_){{e=new Event({type_lit},{init_lit});}};{post_init}{dispatch_expr}}})();",
+      )
+    };
 
     let clock = event_loop.clock();
 
@@ -1749,6 +1743,7 @@ mod tests {
   #[test]
   fn vm_js_browser_tab_executor_supports_dynamic_import_in_classic_scripts() -> Result<()> {
     let dep_url = "https://example.com/dep.js";
+    let document_url = "https://example.com/doc.html";
 
     let mut map = HashMap::<String, FetchedResource>::new();
     map.insert(
@@ -1760,32 +1755,45 @@ mod tests {
     );
     let fetcher: Arc<dyn ResourceFetcher> = Arc::new(MapFetcher::new(map));
 
-    // Dynamic import resolution runs via Promise jobs/microtasks. Exercise this behavior through the
-    // full BrowserTab host pipeline so we also cover the microtask checkpoint integration.
-    let html = "<!doctype html><html><head><script>\
-      import('./dep.js').then(function (ns) {\
-        document.documentElement.setAttribute('data-value', ns.value);\
-      });\
-      </script></head><body></body></html>";
+    let mut js_options = JsExecutionOptions::default();
+    js_options.supports_module_scripts = true;
 
-    let mut options = JsExecutionOptions::default();
-    options.supports_module_scripts = true;
+    let html = r#"<!doctype html><html><body>
+      <script>
+        import('./dep.js')
+          .then((ns) => {
+            document.body.setAttribute('data-value', String(ns.value));
+          })
+          .catch((err) => {
+            document.body.setAttribute('data-error', String(err));
+          });
+      </script>
+    </body></html>"#;
 
-    let tab = BrowserTab::from_html_with_vmjs_and_document_url_and_fetcher_and_js_execution_options(
+    let mut tab = BrowserTab::from_html_with_vmjs_and_document_url_and_fetcher_and_js_execution_options(
       html,
-      "https://example.com/doc.html",
+      document_url,
       RenderOptions::default(),
       fetcher,
-      options,
+      js_options,
     )?;
+    tab.run_event_loop_until_idle(crate::js::RunLimits::unbounded())?;
 
     let dom = tab.dom();
-    let document_element = dom.document_element().expect("document element");
+    let body = dom.body().expect("body should exist");
     assert_eq!(
-      dom.get_attribute(document_element, "data-value")
-        .expect("get attribute"),
+      dom
+        .get_attribute(body, "data-error")
+        .expect("get_attribute should succeed"),
+      None,
+      "expected dynamic import to succeed"
+    );
+    assert_eq!(
+      dom
+        .get_attribute(body, "data-value")
+        .expect("get_attribute should succeed"),
       Some("7"),
-      "expected dynamic import to resolve and expose module namespace exports",
+      "expected imported module namespace value to be observable"
     );
 
     Ok(())
