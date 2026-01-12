@@ -2401,6 +2401,48 @@ fn generate_bindings_module_for_target_vmjs_unformatted(
           length = length,
         ));
       }
+      for attr in iface.attributes.values() {
+        out.push_str(&format!(
+          "  {{\n    let key = rt.property_key({attr_lit})?;\n    if rt.scope.heap().object_get_own_property(global, &key)?.is_none() {{\n      let get = rt.alloc_native_function({getter}, None, {get_name_lit}, 0)?;\n",
+          attr_lit = rust_string_literal(&attr.name),
+          getter = attr_getter_fn_name(&iface.name, &attr.name, false),
+          get_name_lit = rust_string_literal(&format!("get {}", attr.name)),
+        ));
+        if attr.readonly {
+          out.push_str("      let set = Value::Undefined;\n");
+        } else {
+          out.push_str(&format!(
+            "      let set = Value::Object(rt.alloc_native_function({setter}, None, {set_name_lit}, 1)?);\n",
+            setter = attr_setter_fn_name(&iface.name, &attr.name, false),
+            set_name_lit = rust_string_literal(&format!("set {}", attr.name)),
+          ));
+        }
+        out.push_str(&format!(
+          "      rt.define_accessor_property_str(global, {attr_lit}, Value::Object(get), set, AccessorPropertyAttributes::ATTRIBUTE)?;\n    }}\n  }}\n",
+          attr_lit = rust_string_literal(&attr.name),
+        ));
+      }
+      for attr in iface.static_attributes.values() {
+        out.push_str(&format!(
+          "  {{\n    let key = rt.property_key({attr_lit})?;\n    if rt.scope.heap().object_get_own_property(global, &key)?.is_none() {{\n      let get = rt.alloc_native_function({getter}, None, {get_name_lit}, 0)?;\n",
+          attr_lit = rust_string_literal(&attr.name),
+          getter = attr_getter_fn_name(&iface.name, &attr.name, true),
+          get_name_lit = rust_string_literal(&format!("get {}", attr.name)),
+        ));
+        if attr.readonly {
+          out.push_str("      let set = Value::Undefined;\n");
+        } else {
+          out.push_str(&format!(
+            "      let set = Value::Object(rt.alloc_native_function({setter}, None, {set_name_lit}, 1)?);\n",
+            setter = attr_setter_fn_name(&iface.name, &attr.name, true),
+            set_name_lit = rust_string_literal(&format!("set {}", attr.name)),
+          ));
+        }
+        out.push_str(&format!(
+          "      rt.define_accessor_property_str(global, {attr_lit}, Value::Object(get), set, AccessorPropertyAttributes::ATTRIBUTE)?;\n    }}\n  }}\n",
+          attr_lit = rust_string_literal(&attr.name),
+        ));
+      }
       out.push_str("  Ok(())\n");
       out.push_str("}\n\n");
       continue;

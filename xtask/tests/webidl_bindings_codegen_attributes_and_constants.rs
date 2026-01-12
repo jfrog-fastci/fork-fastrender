@@ -116,6 +116,48 @@ fn generated_vmjs_webidl_bindings_include_attributes_and_constants() {
 }
 
 #[test]
+fn webidl_bindings_codegen_vmjs_installs_global_interface_attributes_on_global_object() {
+  let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+    .parent()
+    .expect("xtask has a parent dir");
+  let rustfmt_config = repo_root.join(".rustfmt.toml");
+
+  let idl = r#"
+    [Exposed=Window]
+    interface Window {
+      readonly attribute long foo;
+    };
+  "#;
+
+  let config = WebIdlBindingsCodegenConfig {
+    mode: WebIdlBindingsGenerationMode::AllMembers,
+    allow_interfaces: ["Window".to_string()].into_iter().collect(),
+    interface_allowlist: BTreeMap::new(),
+    prototype_chains: true,
+  };
+
+  let out = generate_bindings_module_from_idl_with_config(
+    idl,
+    &rustfmt_config,
+    ExposureTarget::Window,
+    config,
+    WebIdlBindingsBackend::Vmjs,
+  )
+  .unwrap();
+
+  let compact: String = out.chars().filter(|c| !c.is_whitespace()).collect();
+
+  assert!(
+    compact.contains("pubfninstall_window_ops_bindings_vm_js"),
+    "expected vm-js backend to emit a global interface installer"
+  );
+  assert!(
+    compact.contains("define_accessor_property_str(global,\"foo\""),
+    "expected global interface attribute to define accessor property on global object"
+  );
+}
+
+#[test]
 fn generated_vmjs_webidl_bindings_emits_symbol_iterator_for_iterables() {
   let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
     .parent()
