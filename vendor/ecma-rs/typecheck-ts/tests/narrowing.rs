@@ -104,8 +104,19 @@ fn check_body_with_env(
   initial: &HashMap<NameId, TypeId>,
 ) -> typecheck_ts::BodyCheckResult {
   let relate = RelateCtx::new(Arc::clone(&store), store.options());
+  let prim = store.primitive_ids();
   check_body_with_env_impl(
-    body_id, body, names, file, src, store, initial, relate, None,
+    body_id,
+    body,
+    names,
+    file,
+    src,
+    store,
+    initial,
+    relate,
+    None,
+    prim.unknown,
+    prim.unknown,
   )
 }
 
@@ -120,6 +131,7 @@ fn run_flow(
   expander: Option<&dyn RelateTypeExpander>,
 ) -> typecheck_ts::BodyCheckResult {
   let relate = RelateCtx::new(Arc::clone(store), store.options());
+  let prim = store.primitive_ids();
   check_body_with_env_impl(
     body_id,
     body,
@@ -130,6 +142,8 @@ fn run_flow(
     initial,
     relate,
     expander,
+    prim.unknown,
+    prim.unknown,
   )
 }
 

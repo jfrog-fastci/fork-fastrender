@@ -205,6 +205,70 @@ export const str = id(s);
 }
 
 #[test]
+fn this_method_call_signature_is_retained() {
+  let source = r#"
+class C {
+  m(x: number): string { return ""; }
+  f() { return this.m(123); }
+}
+"#;
+  let mut host = MemoryHost::new();
+  let key = FileKey::new("entry.ts");
+  host.insert(key.clone(), source);
+  let program = Program::new(host, vec![key.clone()]);
+  let diagnostics = program.check();
+  assert!(
+    diagnostics.is_empty(),
+    "unexpected diagnostics: {diagnostics:?}"
+  );
+
+  let file = program.file_id(&key).expect("entry.ts file id");
+  let call_start = source
+    .find("this.m(123)")
+    .expect("expected this.m(123) call") as u32;
+  let call_offset = call_start + "this.m".len() as u32; // points at `(` in `this.m(123)`
+  let sig_id = program
+    .call_signature_at(file, call_offset)
+    .expect("call signature recorded");
+  let sig = program.signature(sig_id).expect("signature in store");
+
+  assert_eq!(sig.params.len(), 1);
+  assert_eq!(program.display_type(sig.params[0].ty).to_string(), "number");
+  assert_eq!(program.display_type(sig.ret).to_string(), "string");
+}
+
+#[test]
+fn super_method_call_signature_is_retained() {
+  let source = r#"
+class B { foo(x: number): string { return ""; } }
+class C extends B { bar() { return super.foo(1); } }
+"#;
+  let mut host = MemoryHost::new();
+  let key = FileKey::new("entry.ts");
+  host.insert(key.clone(), source);
+  let program = Program::new(host, vec![key.clone()]);
+  let diagnostics = program.check();
+  assert!(
+    diagnostics.is_empty(),
+    "unexpected diagnostics: {diagnostics:?}"
+  );
+
+  let file = program.file_id(&key).expect("entry.ts file id");
+  let call_start = source
+    .find("super.foo(1)")
+    .expect("expected super.foo(1) call") as u32;
+  let call_offset = call_start + "super.foo".len() as u32; // points at `(` in `super.foo(1)`
+  let sig_id = program
+    .call_signature_at(file, call_offset)
+    .expect("call signature recorded");
+  let sig = program.signature(sig_id).expect("signature in store");
+
+  assert_eq!(sig.params.len(), 1);
+  assert_eq!(program.display_type(sig.params[0].ty).to_string(), "number");
+  assert_eq!(program.display_type(sig.ret).to_string(), "string");
+}
+
+#[test]
 fn program_check_body_does_not_drop_unreachable_call_signatures() {
   let source = r#"
 declare function foo(x: string): string;

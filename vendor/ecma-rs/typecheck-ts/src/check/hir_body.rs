@@ -11445,6 +11445,8 @@ pub fn check_body_with_env(
   initial: &HashMap<NameId, TypeId>,
   relate: RelateCtx,
   ref_expander: Option<&dyn types_ts_interned::RelateTypeExpander>,
+  this_ty: TypeId,
+  super_ty: TypeId,
 ) -> BodyCheckResult {
   check_body_with_env_with_bindings(
     body_id,
@@ -11457,6 +11459,8 @@ pub fn check_body_with_env(
     None,
     relate,
     ref_expander,
+    this_ty,
+    super_ty,
   )
 }
 
@@ -11471,6 +11475,8 @@ pub fn check_body_with_env_with_bindings(
   flow_bindings: Option<&FlowBindings>,
   relate: RelateCtx,
   ref_expander: Option<&dyn types_ts_interned::RelateTypeExpander>,
+  this_ty: TypeId,
+  super_ty: TypeId,
 ) -> BodyCheckResult {
   check_body_with_env_with_bindings_strict_native(
     body_id,
@@ -11483,6 +11489,8 @@ pub fn check_body_with_env_with_bindings(
     flow_bindings,
     relate,
     ref_expander,
+    this_ty,
+    super_ty,
     false,
   )
 }
@@ -11498,8 +11506,14 @@ pub fn check_body_with_env_with_bindings_strict_native(
   flow_bindings: Option<&FlowBindings>,
   relate: RelateCtx,
   ref_expander: Option<&dyn types_ts_interned::RelateTypeExpander>,
+  this_ty: TypeId,
+  super_ty: TypeId,
   strict_native: bool,
 ) -> BodyCheckResult {
+  let this_super_context = BodyThisSuperContext {
+    super_instance_ty: store.contains_type_id(super_ty).then_some(store.canon(super_ty)),
+    super_value_ty: None,
+  };
   let expr_def_types = HashMap::new();
   let mut checker = FlowBodyChecker::new(
     body_id,
@@ -11508,12 +11522,13 @@ pub fn check_body_with_env_with_bindings_strict_native(
     Arc::clone(&store),
     None,
     file,
-    BodyThisSuperContext::default(),
+    this_super_context,
     initial,
     &expr_def_types,
     flow_bindings,
     relate,
     ref_expander,
+    this_ty,
     strict_native,
     false,
   );
@@ -11528,11 +11543,11 @@ pub(crate) struct FlowBodyCheckTables {
   pub(crate) return_types: Vec<TypeId>,
   pub(crate) diagnostics: Vec<Diagnostic>,
   /// Call/construct expressions evaluated by the flow checker, along with the
-  /// final resolved signature (if any).
+  /// final signature selection state.
   ///
   /// Expressions not present in this list were not evaluated by the flow checker
   /// (e.g. unreachable blocks) and should not overwrite the base checker output.
-  pub(crate) call_signatures: Vec<(ExprId, Option<SignatureId>)>,
+  pub(crate) call_signatures: Vec<(ExprId, CallSignatureState)>,
 }
 
 pub(crate) fn check_body_with_env_tables_with_bindings(
@@ -11549,6 +11564,7 @@ pub(crate) fn check_body_with_env_tables_with_bindings(
   relate: RelateCtx,
   ref_expander: Option<&dyn types_ts_interned::RelateTypeExpander>,
   this_super_context: BodyThisSuperContext,
+  this_ty: TypeId,
   strict_native: bool,
   is_derived_constructor: bool,
 ) -> FlowBodyCheckTables {
@@ -11565,6 +11581,7 @@ pub(crate) fn check_body_with_env_tables_with_bindings(
     flow_bindings,
     relate,
     ref_expander,
+    this_ty,
     strict_native,
     is_derived_constructor,
   );
@@ -11617,6 +11634,7 @@ struct FlowBodyChecker<'a> {
   type_resolver: Option<Arc<dyn TypeResolver>>,
   promise_def: Option<DefId>,
   promise_any: TypeId,
+  this_ty: TypeId,
   file: FileId,
   this_super_context: BodyThisSuperContext,
   relate: RelateCtx<'a>,
@@ -11641,7 +11659,7 @@ struct FlowBodyChecker<'a> {
 }
 
 #[derive(Clone, Copy, Debug)]
-enum CallSignatureState {
+pub(crate) enum CallSignatureState {
   /// No signature has been recorded yet.
   Unresolved,
   /// A single signature was selected for all evaluated paths so far.
@@ -12347,6 +12365,7 @@ impl<'a> FlowBodyChecker<'a> {
     flow_bindings: Option<&'a FlowBindings>,
     relate: RelateCtx<'a>,
     ref_expander: Option<&'a dyn types_ts_interned::RelateTypeExpander>,
+    this_ty: TypeId,
     _strict_native: bool,
     is_derived_constructor: bool,
   ) -> Self {
@@ -12399,7 +12418,18 @@ impl<'a> FlowBodyChecker<'a> {
 
     let expr_spans: Vec<TextRange> = body.exprs.iter().map(|e| e.span).collect();
     let pat_spans: Vec<TextRange> = body.pats.iter().map(|p| p.span).collect();
-
+    let this_ty = if store.contains_type_id(this_ty) {
+      store.canon(this_ty)
+    } else {
+      prim.unknown
+    };
+    let this_super_context = {
+      let canon = |ty: TypeId| store.contains_type_id(ty).then_some(store.canon(ty));
+      BodyThisSuperContext {
+        super_instance_ty: this_super_context.super_instance_ty.and_then(canon),
+        super_value_ty: this_super_context.super_value_ty.and_then(canon),
+      }
+    };
     let promise_def = type_resolver
       .as_ref()
       .and_then(|resolver| resolver.resolve_type_name(&["Promise".to_string()]));
@@ -12419,6 +12449,7 @@ impl<'a> FlowBodyChecker<'a> {
       type_resolver,
       promise_def,
       promise_any,
+      this_ty,
       file,
       this_super_context,
       relate,
@@ -12465,21 +12496,12 @@ impl<'a> FlowBodyChecker<'a> {
   }
 
   fn into_tables(self) -> FlowBodyCheckTables {
-    let call_signatures = self
-      .call_signatures
-      .into_iter()
-      .filter_map(|(expr, state)| match state {
-        CallSignatureState::Resolved(sig) => Some((expr, Some(sig))),
-        CallSignatureState::Conflict => Some((expr, None)),
-        CallSignatureState::Unresolved => None,
-      })
-      .collect();
     FlowBodyCheckTables {
       expr_types: self.expr_types,
       pat_types: self.pat_types,
       return_types: self.return_types,
       diagnostics: self.diagnostics,
-      call_signatures,
+      call_signatures: self.call_signatures.into_iter().collect(),
     }
   }
 
@@ -12942,6 +12964,7 @@ impl<'a> FlowBodyChecker<'a> {
         }
         ty
       }
+      ExprKind::Super => self.this_super_context.super_instance_ty.unwrap_or(prim.unknown),
       ExprKind::Literal(lit) => match lit {
         hir_js::Literal::Number(num) => self.store.intern_type(TypeKind::NumberLiteral(
           num.parse::<f64>().unwrap_or(0.0).into(),
@@ -13522,8 +13545,10 @@ impl<'a> FlowBodyChecker<'a> {
               Span::new(self.file, expr.span),
             ),
           );
+          prim.unknown
+        } else {
+          self.this_ty
         }
-        prim.unknown
       }
       ExprKind::Jsx(elem) => {
         for attr in elem.attributes.iter() {

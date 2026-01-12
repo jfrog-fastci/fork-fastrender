@@ -2322,6 +2322,14 @@ pub mod body_check {
           Some(extends_in_type_info || extends_in_body)
         })()
         .unwrap_or(false);
+        let this_ty = body
+          .exprs
+          .iter()
+          .position(|expr| matches!(expr.kind, hir_js::ExprKind::This))
+          .and_then(|idx| result.expr_types.get(idx).copied())
+          .filter(|ty| ctx.store.contains_type_id(*ty))
+          .map(|ty| ctx.store.canon(ty))
+          .unwrap_or(prim.unknown);
         let flow_result = check_body_with_env_tables_with_bindings(
           body_id,
           body,
@@ -2336,6 +2344,7 @@ pub mod body_check {
           flow_relate,
           Some(&expander),
           this_super_context,
+          this_ty,
           strict_native,
           is_derived_constructor,
         );
@@ -2381,8 +2390,14 @@ pub mod body_check {
           if idx < result.call_signatures.len()
             && matches!(body.exprs[idx].kind, hir_js::ExprKind::Call(_))
           {
-            if sig.is_some() || result.call_signatures[idx].is_none() {
-              result.call_signatures[idx] = *sig;
+            match *sig {
+              crate::check::hir_body::CallSignatureState::Resolved(sig) => {
+                result.call_signatures[idx] = Some(sig);
+              }
+              crate::check::hir_body::CallSignatureState::Conflict => {
+                result.call_signatures[idx] = None;
+              }
+              crate::check::hir_body::CallSignatureState::Unresolved => {}
             }
           }
         }

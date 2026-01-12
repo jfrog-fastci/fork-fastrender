@@ -74,6 +74,8 @@ function f(x: string | null) {
     Some(&bindings),
     relate,
     None,
+    prim.unknown,
+    prim.unknown,
   );
 
   let ret_ty = res.return_types()[0];
@@ -116,6 +118,8 @@ function f(x: string | null) {
     Some(&bindings),
     relate,
     None,
+    prim.unknown,
+    prim.unknown,
   );
 
   let ret_ty = res.return_types()[0];
