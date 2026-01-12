@@ -16,7 +16,7 @@
     "layout": 2.0033051617647057,
     "paint": 44.07271355882352
   },
-  "notes": "",
+  "notes": "Visually good. Fixture page-loop (`tests/pages/fixtures/bing.com`) shows correct overall layout/structure; the ~24% pixel diff at tolerance=0 is dominated by tiny per-channel differences (often ±1) across large background gradients/shaders (dither/rounding) plus minor blur/shadow rounding (perceptual distance ~0.004). No missing layout or paint primitives identified.",
   "accuracy": {
     "baseline": "chrome",
     "diff_pixels": 234473,
