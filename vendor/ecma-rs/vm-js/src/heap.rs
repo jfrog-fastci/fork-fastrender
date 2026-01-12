@@ -1252,12 +1252,13 @@ impl Heap {
   /// round-tripping through JS property sets.
   ///
   /// Returns the number of bytes written, which is `min(bytes.len(), view.length - index)`. If
-  /// `index` is out of bounds, or if the backing buffer is detached (or the view is out of bounds),
-  /// this returns `Ok(0)` (mirroring typed array out-of-bounds write semantics).
+  /// `index` is out of bounds, this returns `Ok(0)` (mirroring typed array out-of-bounds write
+  /// semantics).
   ///
   /// # Errors
   ///
-  /// Returns an error if `obj` is not a live `Uint8Array` object.
+  /// Returns an error if `obj` is not a live `Uint8Array` object, if its backing `ArrayBuffer` is
+  /// detached, or if the view is out of bounds.
   pub fn uint8_array_write(&mut self, obj: GcObject, index: usize, bytes: &[u8]) -> Result<usize, VmError> {
     // Extract view fields without holding a mutable borrow across ArrayBuffer access.
     let (buffer, byte_offset, length) = {
@@ -1286,15 +1287,21 @@ impl Heap {
 
     let buf_len = {
       let buf = self.get_array_buffer(buffer)?;
-      let Some(data) = buf.data.as_deref() else { return Ok(0) };
+      let data = buf
+        .data
+        .as_deref()
+        .ok_or(VmError::TypeError("ArrayBuffer is detached"))?;
       data.len()
     };
     if view_end > buf_len {
-      return Ok(0);
+      return Err(VmError::TypeError("Uint8Array view out of bounds"));
     }
 
     let buf = self.get_array_buffer_mut(buffer)?;
-    let Some(data) = buf.data.as_deref_mut() else { return Ok(0) };
+    let data = buf
+      .data
+      .as_deref_mut()
+      .ok_or(VmError::TypeError("ArrayBuffer is detached"))?;
     data[abs_start..abs_end].copy_from_slice(&bytes[..max_write]);
     Ok(max_write)
   }
