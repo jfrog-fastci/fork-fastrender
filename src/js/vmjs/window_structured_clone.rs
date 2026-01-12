@@ -50,6 +50,9 @@ struct MarkerSymbols {
   string_data: GcSymbol,
   bigint_data: GcSymbol,
   symbol_data: GcSymbol,
+  regexp_string_iterator_iterating_regexp: GcSymbol,
+  regexp_string_iterator_iterated_string: GcSymbol,
+  regexp_string_iterator_done: GcSymbol,
 }
 
 impl MarkerSymbols {
@@ -73,6 +76,21 @@ impl MarkerSymbols {
     let symbol_key = scope.alloc_string("vm-js.internal.SymbolData")?;
     scope.push_root(Value::String(symbol_key))?;
     let symbol_data = scope.heap_mut().symbol_for(symbol_key)?;
+    let regexp_string_iterator_iterating_regexp_key =
+      scope.alloc_string("vm-js.internal.RegExpStringIteratorIteratingRegExp")?;
+    scope.push_root(Value::String(regexp_string_iterator_iterating_regexp_key))?;
+    let regexp_string_iterator_iterating_regexp =
+      scope.heap_mut().symbol_for(regexp_string_iterator_iterating_regexp_key)?;
+
+    let regexp_string_iterator_iterated_string_key =
+      scope.alloc_string("vm-js.internal.RegExpStringIteratorIteratedString")?;
+    scope.push_root(Value::String(regexp_string_iterator_iterated_string_key))?;
+    let regexp_string_iterator_iterated_string =
+      scope.heap_mut().symbol_for(regexp_string_iterator_iterated_string_key)?;
+
+    let regexp_string_iterator_done_key = scope.alloc_string("vm-js.internal.RegExpStringIteratorDone")?;
+    scope.push_root(Value::String(regexp_string_iterator_done_key))?;
+    let regexp_string_iterator_done = scope.heap_mut().symbol_for(regexp_string_iterator_done_key)?;
 
     Ok(Self {
       boolean_data,
@@ -80,6 +98,9 @@ impl MarkerSymbols {
       string_data,
       bigint_data,
       symbol_data,
+      regexp_string_iterator_iterating_regexp,
+      regexp_string_iterator_iterated_string,
+      regexp_string_iterator_done,
     })
   }
 }
@@ -1190,6 +1211,34 @@ fn serialize_object(
     }
   }
 
+  // RegExp String Iterator (from `RegExp.prototype[@@matchAll]`) is not structured-cloneable.
+  // `vm-js` represents the iterator's internal slots as `Symbol.for(..)`-keyed data properties.
+  let regexp_iterating_regexp_key =
+    PropertyKey::from_symbol(state.markers.regexp_string_iterator_iterating_regexp);
+  let regexp_iterated_string_key =
+    PropertyKey::from_symbol(state.markers.regexp_string_iterator_iterated_string);
+  let regexp_done_key = PropertyKey::from_symbol(state.markers.regexp_string_iterator_done);
+  if scope
+    .heap()
+    .object_get_own_data_property_value(obj, &regexp_iterating_regexp_key)?
+    .is_some()
+    || scope
+      .heap()
+      .object_get_own_data_property_value(obj, &regexp_iterated_string_key)?
+      .is_some()
+    || scope
+      .heap()
+      .object_get_own_data_property_value(obj, &regexp_done_key)?
+      .is_some()
+  {
+    return Err(throw_data_clone_error(
+      vm,
+      scope,
+      state.global,
+      "structuredClone: cannot clone RegExp String Iterator",
+    ));
+  }
+
   // Array / ordinary object.
   let is_array = scope.heap().object_is_array(obj)?;
 
@@ -2255,6 +2304,20 @@ mod tests {
     )?;
     assert_eq!(get_string(&realm, generator), "DataCloneError");
 
+    Ok(())
+  }
+
+  #[test]
+  fn structured_clone_rejects_regexp_string_iterator() -> Result<(), VmError> {
+    let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
+    let v = realm.exec_script(
+      "(() => {\
+         const it = /a/g[Symbol.matchAll]('aa');\
+         try { structuredClone(it); return 'no'; }\
+         catch (e) { return e.name; }\
+       })()",
+    )?;
+    assert_eq!(get_string(&realm, v), "DataCloneError");
     Ok(())
   }
 
