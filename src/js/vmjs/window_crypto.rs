@@ -648,6 +648,31 @@ mod tests {
 
     assert_eq!(js_value_to_utf8(realm.heap(), v), "TypeError");
 
+    // ArrayBuffer and DataView are not accepted.
+    let v = realm
+      .exec_script(
+        r#"
+        (() => {
+          try { crypto.getRandomValues(new ArrayBuffer(4)); return "no-error"; }
+          catch (e) { return e && e.name || String(e); }
+        })()
+        "#,
+      )
+      .expect("script should catch and return");
+    assert_eq!(js_value_to_utf8(realm.heap(), v), "TypeError");
+
+    let v = realm
+      .exec_script(
+        r#"
+        (() => {
+          try { crypto.getRandomValues(new DataView(new ArrayBuffer(4))); return "no-error"; }
+          catch (e) { return e && e.name || String(e); }
+        })()
+        "#,
+      )
+      .expect("script should catch and return");
+    assert_eq!(js_value_to_utf8(realm.heap(), v), "TypeError");
+
     // Plain object with TypedArray-like shape should still be rejected (brand check).
     let v = realm
       .exec_script(
