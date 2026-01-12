@@ -1,4 +1,21 @@
-use super::util::create_stacking_context_bounds_renderer;
+use crate::debug::runtime::RuntimeToggles;
+use crate::paint::display_list_renderer::PaintParallelism;
+use crate::{FastRender, FastRenderConfig, FontConfig, LayoutParallelism};
+use std::collections::HashMap;
+
+fn create_stacking_context_bounds_renderer() -> FastRender {
+  crate::testing::init_rayon_for_tests(2);
+  let toggles = RuntimeToggles::from_map(HashMap::from([(
+    "FASTR_PAINT_BACKEND".to_string(),
+    "display_list".to_string(),
+  )]));
+  let config = FastRenderConfig::new()
+    .with_runtime_toggles(toggles)
+    .with_font_sources(FontConfig::bundled_only())
+    .with_layout_parallelism(LayoutParallelism::disabled())
+    .with_paint_parallelism(PaintParallelism::disabled());
+  FastRender::with_config(config).expect("renderer")
+}
 
 #[test]
 fn filter_blur_bleeds_from_offscreen_source() {
