@@ -8538,6 +8538,13 @@ pub fn object_prototype___proto___set(
     current = target;
   }
 
+  // Ordinary `[[SetPrototypeOf]]` semantics: if the target is not extensible and the requested
+  // prototype differs, the operation fails silently (returns `undefined`, no change).
+  let current_proto = scope.object_get_prototype(current)?;
+  if current_proto != proto && !scope.object_is_extensible(current)? {
+    return Ok(Value::Undefined);
+  }
+
   // Spec: `Object.prototype.__proto__` returns `undefined` even when setting the prototype fails.
   // We swallow known prototype mutation failures and only propagate unexpected VM errors.
   match scope.heap_mut().object_set_prototype(current, proto) {
