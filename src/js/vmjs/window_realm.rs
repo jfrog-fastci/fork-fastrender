@@ -9272,6 +9272,29 @@ fn document_body_get_native(
   get_or_create_node_wrapper(vm, scope, document_obj, Some(dom), node_id)
 }
 
+fn document_doctype_get_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(document_obj) = this else {
+    return Ok(Value::Null);
+  };
+
+  let Some(dom) = dom_from_vm_host(host) else {
+    return Ok(Value::Null);
+  };
+  let Some(node_id) = dom.doctype() else {
+    return Ok(Value::Null);
+  };
+
+  get_or_create_node_wrapper(vm, scope, document_obj, Some(dom), node_id)
+}
+
 fn document_scrolling_element_get_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -15939,7 +15962,7 @@ fn mutation_observer_notify_native(
     if !matches!(callback, Value::Object(_)) || !scope.heap().is_callable(callback)? {
       continue;
     }
-  
+ 
     let records_array = {
       // SAFETY: `dom_ptr_for_wrappers` is only used to create wrappers. The reference must not live
       // across the callback invocation (callbacks can mutate the DOM), so keep it scoped to this
@@ -31557,6 +31580,31 @@ fn init_window_globals(
       configurable: true,
       kind: PropertyKind::Accessor {
         get: Value::Object(document_body_func),
+        set: Value::Undefined,
+      },
+    },
+  )?;
+
+  // document.doctype
+  let document_doctype_key = alloc_key(&mut scope, "doctype")?;
+  let document_doctype_call_id = vm.register_native_call(document_doctype_get_native)?;
+  let document_doctype_name = scope.alloc_string("get doctype")?;
+  scope.push_root(Value::String(document_doctype_name))?;
+  let document_doctype_func =
+    scope.alloc_native_function(document_doctype_call_id, None, document_doctype_name, 0)?;
+  scope.heap_mut().object_set_prototype(
+    document_doctype_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(document_doctype_func))?;
+  scope.define_property(
+    document_obj,
+    document_doctype_key,
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: true,
+      kind: PropertyKind::Accessor {
+        get: Value::Object(document_doctype_func),
         set: Value::Undefined,
       },
     },

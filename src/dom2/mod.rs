@@ -128,9 +128,8 @@ pub enum NodeKind {
   },
   /// A document type node.
   ///
-  /// Note: our html5ever-backed HTML parser does not currently materialize doctype nodes in `dom2`
-  /// (it only records the document's quirks mode), matching the renderer DOM which also drops
-  /// doctypes.
+  /// Note: the renderer DOM snapshot format (`crate::dom::DomNode`) currently drops doctypes (and
+  /// comments), so `Document::to_renderer_dom` will not include these nodes.
   Doctype {
     name: String,
     public_id: String,
@@ -907,6 +906,23 @@ impl Document {
           NodeKind::Element { .. } | NodeKind::Slot { .. }
         )
     })
+  }
+
+  /// Returns the document type node, if any.
+  ///
+  /// This is the first child of the document root that is a doctype node, in tree order.
+  pub fn doctype_for(&self, document: NodeId) -> Option<NodeId> {
+    let root_node = self.nodes.get(document.index())?;
+    root_node.children.iter().copied().find(|&child| {
+      self.nodes.get(child.index()).is_some_and(|node| {
+        node.parent == Some(document) && matches!(&node.kind, NodeKind::Doctype { .. })
+      })
+    })
+  }
+
+  /// Returns the document type node for the primary document, if any.
+  pub fn doctype(&self) -> Option<NodeId> {
+    self.doctype_for(self.root())
   }
 
   pub fn document_element(&self) -> Option<NodeId> {

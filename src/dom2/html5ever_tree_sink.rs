@@ -17,23 +17,11 @@ use std::rc::Rc;
 use super::{live_mutation::utf16_len, Document, NodeId, NodeKind, SlotAssignmentMode};
 
 /// Sentinel handle returned by TreeSink hooks for node types that are intentionally ignored during
-/// parsing (comments, doctypes, processing instructions).
+/// parsing (currently: processing instructions).
 ///
 /// This handle is never inserted into the document tree. TreeSink insertion methods detect it via
 /// `id.index() >= doc.nodes_len()` and treat it as a no-op.
 const IGNORED_HANDLE: NodeId = NodeId(usize::MAX);
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum IgnoredNodeHandling {
-  /// Drop ignored nodes (comments, doctypes, processing instructions) but preserve their effect on
-  /// text node merging.
-  Ignore,
-  /// Materialize ignored nodes as real `dom2` nodes.
-  ///
-  /// This is used for fragment parsing (`innerHTML`, `createContextualFragment`, ...) where comment
-  /// nodes must be preserved.
-  Materialize,
-}
 
 #[derive(Debug, Clone)]
 pub struct Dom2ElemName {
@@ -54,47 +42,41 @@ impl ElemName for Dom2ElemName {
 /// html5ever [`TreeSink`] that incrementally builds a live [`Document`].
 ///
 /// Notes:
-/// - By default (`Dom2TreeSink::new`), comments, processing instructions, and doctypes are
-///   intentionally **not** materialized as `dom2` nodes during HTML parsing. This matches the
-///   renderer DOM (`crate::dom::parse_html`), which drops these nodes entirely and only exposes the
-///   document quirks mode.
-///   - Doctype tokens are handled exclusively via [`TreeSink::set_quirks_mode`].
-/// - Fragment parsing (`Dom2TreeSink::new_for_fragment`) materializes these nodes so `innerHTML`
-///   and other DOM Parsing APIs can preserve comment nodes.
+/// - Comments and doctypes are materialized as `dom2` nodes so `innerHTML`/`outerHTML` and
+///   `document.doctype` can observe them (matching the web platform).
+/// - Processing instructions are ignored (HTML treats them as parse errors and they are not
+///   surfaced by our JS bindings today).
 /// - HTML namespace elements store `namespace=""` for compatibility with existing selector logic.
 /// - The sink performs parse-time `<base href>` tracking via an internal [`BaseUrlTracker`].
 pub struct Dom2TreeSink {
   document: RefCell<Document>,
   base_url_tracker: Rc<RefCell<BaseUrlTracker>>,
   pending_stylesheet_links: RefCell<Vec<(NodeId, String)>>,
-  /// Insertion points where an ignored node (comment/doctype/PI) occurred.
+  /// Insertion points where an ignored node (currently: processing instruction) occurred.
   ///
-  /// Even though these node types are not materialized, they must still act as boundaries for text
-  /// node merging. The legacy parser (html5ever → RcDom → conversion) dropped comment/doctype nodes
-  /// but preserved the resulting text node splits.
+  /// Even though processing instructions are ignored, they must still act as boundaries for text
+  /// node merging so HTML tokenization boundaries still affect the produced DOM text node splits.
   ignored_insertion_points: RefCell<FxHashSet<(NodeId, Option<NodeId>)>>,
   declarative_shadow_templates: RefCell<HashMap<NodeId, NodeId>>,
-  ignored_node_handling: IgnoredNodeHandling,
 }
 
 impl Dom2TreeSink {
-  fn new_with_handling(document_url: Option<&str>, ignored_node_handling: IgnoredNodeHandling) -> Self {
+  pub fn new(document_url: Option<&str>) -> Self {
     Self {
       document: RefCell::new(Document::new(SelectorQuirksMode::NoQuirks)),
       base_url_tracker: Rc::new(RefCell::new(BaseUrlTracker::new(document_url))),
       pending_stylesheet_links: RefCell::new(Vec::new()),
       ignored_insertion_points: RefCell::new(FxHashSet::default()),
       declarative_shadow_templates: RefCell::new(HashMap::new()),
-      ignored_node_handling,
     }
   }
 
-  pub fn new(document_url: Option<&str>) -> Self {
-    Self::new_with_handling(document_url, IgnoredNodeHandling::Ignore)
-  }
-
+  /// Create a tree sink for HTML fragment parsing.
+  ///
+  /// Today this is equivalent to `Dom2TreeSink::new`, but we keep it as a distinct constructor so
+  /// fragment parsing call sites stay explicit.
   pub(crate) fn new_for_fragment(document_url: Option<&str>) -> Self {
-    Self::new_with_handling(document_url, IgnoredNodeHandling::Materialize)
+    Self::new(document_url)
   }
 
   pub fn base_url_tracker_rc(&self) -> Rc<RefCell<BaseUrlTracker>> {
@@ -791,36 +773,19 @@ impl TreeSink for Dom2TreeSink {
   }
 
   fn create_comment(&self, text: StrTendril) -> NodeId {
-    match self.ignored_node_handling {
-      IgnoredNodeHandling::Ignore => IGNORED_HANDLE,
-      IgnoredNodeHandling::Materialize => {
-        let mut doc = self.document.borrow_mut();
-        doc.push_node(
-          NodeKind::Comment {
-            content: text.to_string(),
-          },
-          None,
-          /* inert_subtree */ false,
-        )
-      }
-    }
+    let mut doc = self.document.borrow_mut();
+    doc.push_node(
+      NodeKind::Comment {
+        content: text.to_string(),
+      },
+      None,
+      /* inert_subtree */ false,
+    )
   }
 
   fn create_pi(&self, target: StrTendril, data: StrTendril) -> NodeId {
-    match self.ignored_node_handling {
-      IgnoredNodeHandling::Ignore => IGNORED_HANDLE,
-      IgnoredNodeHandling::Materialize => {
-        let mut doc = self.document.borrow_mut();
-        doc.push_node(
-          NodeKind::ProcessingInstruction {
-            target: target.to_string(),
-            data: data.to_string(),
-          },
-          None,
-          /* inert_subtree */ false,
-        )
-      }
-    }
+    let _ = (target, data);
+    IGNORED_HANDLE
   }
 
   fn append(&self, parent: &NodeId, child: NodeOrText<NodeId>) {
@@ -910,30 +875,19 @@ impl TreeSink for Dom2TreeSink {
     public_id: StrTendril,
     system_id: StrTendril,
   ) {
-    match self.ignored_node_handling {
-      IgnoredNodeHandling::Ignore => {
-        let _ = (name, public_id, system_id);
-        // Do not materialize doctype nodes in dom2 for now; rely on `set_quirks_mode` instead.
-        let doc = self.document.borrow();
-        let root = doc.root();
-        self.record_ignored_insertion_point(&doc, root, None);
-      }
-      IgnoredNodeHandling::Materialize => {
-        let mut doc = self.document.borrow_mut();
-        let root = doc.root();
-        let insertion_idx = doc.node(root).children.len();
-        doc.live_mutation.pre_insert(root, insertion_idx, 1);
-        doc.push_node(
-          NodeKind::Doctype {
-            name: name.to_string(),
-            public_id: public_id.to_string(),
-            system_id: system_id.to_string(),
-          },
-          Some(root),
-          /* inert_subtree */ false,
-        );
-      }
-    }
+    let mut doc = self.document.borrow_mut();
+    let root = doc.root();
+    let insertion_idx = doc.node(root).children.len();
+    doc.live_mutation.pre_insert(root, insertion_idx, 1);
+    doc.push_node(
+      NodeKind::Doctype {
+        name: name.to_string(),
+        public_id: public_id.to_string(),
+        system_id: system_id.to_string(),
+      },
+      Some(root),
+      /* inert_subtree */ false,
+    );
   }
 
   fn get_template_contents(&self, target: &NodeId) -> NodeId {
@@ -1390,7 +1344,7 @@ mod tests {
   }
 
   #[test]
-  fn ignores_doctype_and_comment_nodes_in_dom2() {
+  fn materializes_doctype_and_comment_nodes_in_dom2() {
     let html = "<!doctype html><!--x--><div id=a><!--c--></div>";
     let expected = crate::dom::parse_html(html).unwrap();
 
@@ -1399,18 +1353,18 @@ mod tests {
     assert_eq!(snapshot_dom(&expected), snapshot_dom(&snapshot));
 
     assert!(
-      !doc
+      doc
         .nodes()
         .iter()
         .any(|node| matches!(node.kind, NodeKind::Doctype { .. })),
-      "doctype nodes should not be materialized in dom2 HTML parsing"
+      "expected doctype nodes to be materialized in dom2 HTML parsing"
     );
     assert!(
-      !doc
+      doc
         .nodes()
         .iter()
         .any(|node| matches!(node.kind, NodeKind::Comment { .. })),
-      "comment nodes should not be materialized in dom2 HTML parsing"
+      "expected comment nodes to be materialized in dom2 HTML parsing"
     );
     assert!(
       !doc

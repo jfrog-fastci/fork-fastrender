@@ -166,6 +166,33 @@ fn serialize_nodes(
             out.push_str("-->");
           }
 
+          NodeKind::Doctype {
+            name,
+            public_id,
+            system_id,
+          } => {
+            out.push_str("<!DOCTYPE");
+            if !name.is_empty() {
+              out.push(' ');
+              out.push_str(name);
+            }
+            if !public_id.is_empty() {
+              out.push_str(" PUBLIC \"");
+              out.push_str(public_id);
+              out.push('"');
+              if !system_id.is_empty() {
+                out.push_str(" \"");
+                out.push_str(system_id);
+                out.push('"');
+              }
+            } else if !system_id.is_empty() {
+              out.push_str(" SYSTEM \"");
+              out.push_str(system_id);
+              out.push('"');
+            }
+            out.push('>');
+          }
+
           NodeKind::Element {
             tag_name,
             namespace,
