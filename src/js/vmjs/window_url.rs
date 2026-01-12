@@ -8,6 +8,8 @@
 //! The registry is swept opportunistically whenever the heap's GC run counter changes.
 
 use crate::js::{Url, UrlError, UrlLimits, UrlSearchParams};
+use crate::js::{window_blob, window_object_url};
+use crate::js::window_realm::WindowRealmUserData;
 use std::char::decode_utf16;
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
@@ -23,6 +25,13 @@ const URL_INPUT_TOO_LONG_ERROR: &str = "URL constructor input exceeded max bytes
 const URL_BASE_TOO_LONG_ERROR: &str = "URL constructor base exceeded max bytes";
 const URLSP_INIT_TOO_LONG_ERROR: &str = "URLSearchParams constructor init exceeded max bytes";
 const URLSP_ARG_TOO_LONG_ERROR: &str = "URLSearchParams argument exceeded max bytes";
+
+// Object URL (blob:) errors.
+//
+// Note: we currently surface quota failures as `TypeError` to avoid threading a `DOMException`
+// constructor handle through these bindings.
+const OBJECT_URL_BLOB_REQUIRED_ERROR: &str = "URL.createObjectURL requires a Blob";
+const OBJECT_URL_QUOTA_EXCEEDED_ERROR: &str = "URL.createObjectURL exceeded object URL limits";
 
 /// Symbol description for the hidden `URL` → cached `URLSearchParams` object slot.
 ///
@@ -237,6 +246,23 @@ fn value_to_limited_string(
 ) -> Result<String, VmError> {
   let s: GcString = scope.to_string(vm, host, hooks, value)?;
   js_string_to_rust_string_limited(scope, s, max_bytes, err)
+}
+
+fn serialized_origin_for_document_url(url: &str) -> String {
+  let Ok(url) = ::url::Url::parse(url) else {
+    return "null".to_string();
+  };
+  match url.scheme() {
+    "http" | "https" => url.origin().ascii_serialization(),
+    _ => "null".to_string(),
+  }
+}
+
+fn current_realm_serialized_origin(vm: &mut Vm) -> String {
+  let Some(data) = vm.user_data_mut::<WindowRealmUserData>() else {
+    return "null".to_string();
+  };
+  serialized_origin_for_document_url(data.document_url())
 }
 
 fn map_url_error(err: UrlError) -> VmError {
@@ -510,6 +536,43 @@ fn url_can_parse_native(
     Err(UrlError::OutOfMemory) => Err(VmError::OutOfMemory),
     Err(_) => Ok(Value::Bool(false)),
   }
+}
+
+fn url_create_object_url_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let blob_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let Some(blob) = window_blob::clone_blob_data_for_fetch(vm, scope.heap(), blob_value)? else {
+    return Err(VmError::TypeError(OBJECT_URL_BLOB_REQUIRED_ERROR));
+  };
+
+  let origin = current_realm_serialized_origin(vm);
+  let url = window_object_url::create_object_url(&origin, blob.bytes, blob.r#type)
+    .map_err(|_| VmError::TypeError(OBJECT_URL_QUOTA_EXCEEDED_ERROR))?;
+  let s = scope.alloc_string(&url)?;
+  Ok(Value::String(s))
+}
+
+fn url_revoke_object_url_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let url_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let s: GcString = scope.to_string(vm, host, hooks, url_value)?;
+  let url = scope.heap().get_string(s)?.to_utf8_lossy();
+  window_object_url::revoke_object_url(&url);
+  Ok(Value::Undefined)
 }
 
 fn url_href_get_native(
@@ -1987,6 +2050,26 @@ pub fn install_window_url_bindings(
     url_ctor,
     "parse",
     url_parse_native,
+    1,
+    realm_slot,
+  )?;
+  install_method(
+    vm,
+    &mut scope,
+    realm,
+    url_ctor,
+    "createObjectURL",
+    url_create_object_url_native,
+    1,
+    realm_slot,
+  )?;
+  install_method(
+    vm,
+    &mut scope,
+    realm,
+    url_ctor,
+    "revokeObjectURL",
+    url_revoke_object_url_native,
     1,
     realm_slot,
   )?;

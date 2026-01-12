@@ -95,6 +95,8 @@ pub mod window_abort;
 pub mod window_animation_frame;
 #[path = "vmjs/window_blob.rs"]
 pub mod window_blob;
+#[path = "vmjs/window_object_url.rs"]
+pub mod window_object_url;
 #[path = "vmjs/window_crypto.rs"]
 pub mod window_crypto;
 #[path = "vmjs/window_css.rs"]

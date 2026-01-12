@@ -14,6 +14,7 @@ use crate::js::event_loop::TaskSource;
 use crate::js::url_resolve::{resolve_url, UrlResolveError};
 use crate::js::window_blob;
 use crate::js::window_form_data;
+use crate::js::window_object_url;
 use crate::js::window_realm::{WindowRealmHost, WindowRealmUserData};
 use crate::js::window_streams;
 use crate::js::window_timers::{
@@ -276,6 +277,80 @@ fn current_document_base_url(vm: &mut Vm, env_id: u64) -> Result<Option<String>,
     ));
   }
   with_env_state(env_id, |state| Ok(state.env.document_url.clone()))
+}
+
+fn serialized_origin_for_document_url(url: &str) -> String {
+  let Ok(url) = ::url::Url::parse(url) else {
+    return "null".to_string();
+  };
+  match url.scheme() {
+    "http" | "https" => url.origin().ascii_serialization(),
+    _ => "null".to_string(),
+  }
+}
+
+fn current_document_origin_for_object_urls(vm: &mut Vm, env_id: u64) -> Result<String, VmError> {
+  if let Some(data) = vm.user_data_mut::<WindowRealmUserData>() {
+    return Ok(serialized_origin_for_document_url(data.document_url()));
+  }
+  with_env_state(env_id, |state| {
+    Ok(
+      state
+        .env
+        .document_url
+        .as_deref()
+        .map(serialized_origin_for_document_url)
+        .unwrap_or_else(|| "null".to_string()),
+    )
+  })
+}
+
+fn execute_blob_url_fetch(
+  request: &CoreRequest,
+  current_origin: &str,
+) -> crate::error::Result<CoreResponse> {
+  if !(request.method.eq_ignore_ascii_case("GET") || request.method.eq_ignore_ascii_case("HEAD")) {
+    return Err(crate::error::Error::Other(
+      "blob: URL fetch only supports GET/HEAD".to_string(),
+    ));
+  }
+
+  let Some(entry) = window_object_url::get_object_url(&request.url) else {
+    return Err(crate::error::Error::Other(
+      "blob: URL not found (revoked?)".to_string(),
+    ));
+  };
+
+  if entry.origin != current_origin {
+    return Err(crate::error::Error::Other(
+      "blob: URL origin does not match current origin".to_string(),
+    ));
+  }
+
+  let mut response = CoreResponse::new(200);
+  response.r#type = ResponseType::Basic;
+  response.url = request.url.clone();
+  response.headers =
+    CoreHeaders::new_with_guard_and_limits(HeadersGuard::Response, request.headers.limits());
+
+  if !entry.content_type.is_empty() {
+    response
+      .headers
+      .append("Content-Type", &entry.content_type)
+      .map_err(|e| crate::error::Error::Other(e.to_string()))?;
+  }
+
+  if request.method.eq_ignore_ascii_case("HEAD") {
+    response.body = None;
+    return Ok(response);
+  }
+
+  response.body = Some(
+    Body::new_response(entry.bytes, response.headers.limits())
+      .map_err(|e| crate::error::Error::Other(e.to_string()))?,
+  );
+
+  Ok(response)
 }
 
 fn get_data_prop(scope: &mut Scope<'_>, obj: GcObject, name: &str) -> Result<Value, VmError> {
@@ -4883,6 +4958,10 @@ fn fetch_call<Host: WindowRealmHost + 'static>(
     }
   }
 
+  // `blob:` object URLs are origin-scoped. Capture the current origin so the networking task can
+  // enforce same-origin access without needing to touch the JS heap.
+  let object_url_origin = current_document_origin_for_object_urls(vm, env_id)?;
+
   // Create a Promise capability for the returned Promise.
   let cap = new_promise_capability_for_env(vm, scope, &mut *host, host_hooks, env_id)?;
   let promise = cap.promise;
@@ -5108,15 +5187,19 @@ fn fetch_call<Host: WindowRealmHost + 'static>(
       }
     }
 
-    let exec_ctx = WebFetchExecutionContext {
-      destination: FetchDestination::Fetch,
-      referrer_url: document_url.as_deref(),
-      client_origin: document_origin.as_ref(),
-      referrer_policy,
-      csp: None,
-    };
+    let result = if request.url.starts_with("blob:") {
+      execute_blob_url_fetch(&request, &object_url_origin)
+    } else {
+      let exec_ctx = WebFetchExecutionContext {
+        destination: FetchDestination::Fetch,
+        referrer_url: document_url.as_deref(),
+        client_origin: document_origin.as_ref(),
+        referrer_policy,
+        csp: None,
+      };
 
-    let result = execute_web_fetch(fetcher.as_ref(), &request, exec_ctx);
+      execute_web_fetch(fetcher.as_ref(), &request, exec_ctx)
+    };
 
     match result {
       Ok(mut response) => {
@@ -10230,6 +10313,137 @@ mod tests {
       "body={:?}",
       captured.body.as_deref()
     );
+
+    Ok(())
+  }
+
+  fn value_to_utf8_string(heap: &Heap, value: Value) -> String {
+    let Value::String(s) = value else {
+      panic!("expected string value, got {value:?}");
+    };
+    heap.get_string(s).unwrap().to_utf8_lossy()
+  }
+
+  fn object_url_id(url: &str) -> u64 {
+    let (_, id_str) = url
+      .rsplit_once('/')
+      .unwrap_or_else(|| panic!("expected object URL to contain '/' separator: {url:?}"));
+    id_str
+      .parse::<u64>()
+      .unwrap_or_else(|_| panic!("expected object URL id to be u64: {url:?}"))
+  }
+
+  #[test]
+  fn fetch_blob_object_url_round_trip_and_revoke() -> crate::error::Result<()> {
+    let clock = Arc::new(VirtualClock::new());
+    let mut event_loop = EventLoop::<EventLoopHost>::with_clock(clock);
+    let mut host = EventLoopHost::new_with_js_execution_options(JsExecutionOptions::default());
+
+    // Fetcher should be bypassed for `blob:` object URLs.
+    let fetcher: Arc<dyn ResourceFetcher> = Arc::new(StaticOkFetcher);
+    let env = WindowFetchEnv::for_document(fetcher, Some("https://example.invalid/".to_string()));
+    let _bindings = {
+      let (vm, realm, heap) = host.window.vm_realm_and_heap_mut();
+      install_window_fetch_bindings_with_guard::<EventLoopHost>(vm, realm, heap, env)
+        .map_err(|e| crate::error::Error::Other(e.to_string()))?
+    };
+
+    {
+      let mut hooks = VmJsEventLoopHooks::<EventLoopHost>::new_with_host(&mut host);
+      hooks.set_event_loop(&mut event_loop);
+      let EventLoopHost { host_ctx, window } = &mut host;
+      window
+        .exec_script_with_host_and_hooks(
+          host_ctx,
+          &mut hooks,
+          r#"
+            globalThis.__u1 = URL.createObjectURL(new Blob(['hi'], { type: 'text/plain' }));
+            globalThis.__u2 = URL.createObjectURL(new Blob(['bye']));
+            globalThis.__p1 = fetch(globalThis.__u1).then((r) => {
+              globalThis.__ct = r.headers.get('content-type');
+              return r.text();
+            });
+          "#,
+        )
+        .unwrap();
+    }
+
+    assert_eq!(
+      event_loop.run_until_idle(&mut host, RunLimits::unbounded())?,
+      RunUntilIdleOutcome::Idle
+    );
+
+    let u1_val = host.window.exec_script("globalThis.__u1").unwrap();
+    let u1 = value_to_utf8_string(host.window.heap(), u1_val);
+    let u2_val = host.window.exec_script("globalThis.__u2").unwrap();
+    let u2 = value_to_utf8_string(host.window.heap(), u2_val);
+
+    assert!(u1.starts_with("blob:https://example.invalid/"), "u1={u1:?}");
+    assert!(u2.starts_with("blob:https://example.invalid/"), "u2={u2:?}");
+    assert!(object_url_id(&u2) > object_url_id(&u1));
+
+    let ct_val = host.window.exec_script("globalThis.__ct").unwrap();
+    let ct = value_to_utf8_string(host.window.heap(), ct_val);
+    assert_eq!(ct, "text/plain");
+
+    let promise_value = host.window.exec_script("globalThis.__p1").unwrap();
+    let Value::Object(promise_obj) = promise_value else {
+      panic!("expected promise object, got {promise_value:?}");
+    };
+    assert_eq!(
+      host.window.heap().promise_state(promise_obj).unwrap(),
+      PromiseState::Fulfilled
+    );
+    let Some(result_value) = host.window.heap().promise_result(promise_obj).unwrap() else {
+      panic!("fetch promise missing result");
+    };
+    assert_eq!(value_to_utf8_string(host.window.heap(), result_value), "hi");
+
+    // Revoke + verify subsequent fetch rejects.
+    {
+      let mut hooks = VmJsEventLoopHooks::<EventLoopHost>::new_with_host(&mut host);
+      hooks.set_event_loop(&mut event_loop);
+      let EventLoopHost { host_ctx, window } = &mut host;
+      window
+        .exec_script_with_host_and_hooks(
+          host_ctx,
+          &mut hooks,
+          r#"
+            URL.revokeObjectURL(globalThis.__u1);
+            globalThis.__p2 = fetch(globalThis.__u1);
+            // Avoid leaking the second URL in the process-global registry.
+            URL.revokeObjectURL(globalThis.__u2);
+          "#,
+        )
+        .unwrap();
+    }
+
+    assert_eq!(
+      event_loop.run_until_idle(&mut host, RunLimits::unbounded())?,
+      RunUntilIdleOutcome::Idle
+    );
+
+    let promise_value = host.window.exec_script("globalThis.__p2").unwrap();
+    let Value::Object(promise_obj) = promise_value else {
+      panic!("expected promise object, got {promise_value:?}");
+    };
+    assert_eq!(
+      host.window.heap().promise_state(promise_obj).unwrap(),
+      PromiseState::Rejected
+    );
+    let Some(err_value) = host.window.heap().promise_result(promise_obj).unwrap() else {
+      panic!("fetch rejection missing reason");
+    };
+    let Value::Object(err_obj) = err_value else {
+      panic!("expected rejection reason object, got {err_value:?}");
+    };
+
+    // Assert the rejection reason is a TypeError.
+    let (vm, _realm, heap) = host.window.vm_realm_and_heap_mut();
+    let mut scope = heap.scope();
+    let name_key = alloc_key(&mut scope, "name").unwrap();
+    let name_val = vm.get(&mut scope, err_obj, name_key).unwrap();
+    assert_eq!(value_to_utf8_string(scope.heap(), name_val), "TypeError");
 
     Ok(())
   }
