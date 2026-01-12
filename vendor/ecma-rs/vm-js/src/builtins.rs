@@ -9382,7 +9382,9 @@ pub fn array_prototype_at(
 
   let mut key_scope = scope.reborrow();
   key_scope.push_root(Value::Object(obj))?;
-  let key_s = key_scope.alloc_string(&idx.to_string())?;
+  // Avoid intermediate Rust `String` allocations (which are infallible and can abort the process on
+  // allocator OOM).
+  let key_s = alloc_string_from_usize(&mut key_scope, idx)?;
   key_scope.push_root(Value::String(key_s))?;
   let key = PropertyKey::from_string(key_s);
   key_scope.get_with_host_and_hooks(vm, host, hooks, obj, key, Value::Object(obj))
