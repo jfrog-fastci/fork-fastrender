@@ -26,8 +26,8 @@ use std::collections::HashMap;
 use std::ptr::NonNull;
 use std::sync::Arc;
 use vm_js::{
-  GcObject, HostDefined, ModuleGraph, ModuleId, PromiseState, RootId, SourceText, Value, VmError,
-  VmHost,
+  GcObject, HostDefined, ModuleGraph, ModuleId, PromiseState, PropertyDescriptor, PropertyKey,
+  PropertyKind, RootId, Scope, SourceText, StackFrame, Value, VmError, VmHost,
 };
 use webidl_vm_js::WebIdlBindingsHost;
 
@@ -118,6 +118,256 @@ impl VmJsBrowserTabExecutor {
   ) {
     let (message, stack) = vm_error_format::vm_error_to_message_and_stack(realm.heap_mut(), err);
     diag.record_js_exception(message, stack);
+  }
+
+  fn report_js_exception_as_window_error_event(
+    diagnostics: Option<&SharedRenderDiagnostics>,
+    webidl_bindings_host: Option<NonNull<dyn WebIdlBindingsHost>>,
+    realm: &mut WindowRealm,
+    document: &mut BrowserDocumentDom2,
+    event_loop: &mut crate::js::EventLoop<BrowserTabHost>,
+    err: VmError,
+    filename_hint: Option<&str>,
+  ) -> Result<()> {
+    let mut thrown_value = err.thrown_value();
+    // Root the thrown value while we format the exception + construct the ErrorEvent.
+    //
+    // `VmError::Throw*` stores the thrown JS `Value` by handle only; it is not a GC root. Creating
+    // strings/objects below can trigger GC, so keep the value alive until the event has captured it
+    // via `ErrorEventInit.error`.
+    //
+    // Best-effort: if we fail to root (e.g. due to OOM), continue without surfacing `event.error`.
+    let thrown_value_root: Option<RootId> = if let Some(value) = thrown_value {
+      match realm.heap_mut().add_root(value) {
+        Ok(root) => Some(root),
+        Err(_) => {
+          thrown_value = None;
+          None
+        }
+      }
+    } else {
+      None
+    };
+    let first_frame = err
+      .thrown_stack()
+      .and_then(|stack| stack.first())
+      .cloned();
+    let (message, stack) = vm_error_format::vm_error_to_message_and_stack(realm.heap_mut(), err);
+
+    let (filename, lineno, colno) =
+      resolve_error_event_location(filename_hint, first_frame.as_ref());
+
+    // Best-effort: dispatching the error event should not prevent script execution from continuing.
+    let dispatch_result = Self::dispatch_window_error_event(
+      diagnostics,
+      webidl_bindings_host,
+      realm,
+      document,
+      event_loop,
+      &message,
+      &filename,
+      lineno,
+      colno,
+      thrown_value,
+    );
+    let not_canceled = dispatch_result.unwrap_or(true);
+
+    // Preserve existing behavior: record uncaught exceptions to renderer diagnostics. If the error
+    // event is canceled (e.g. `window.onerror` returns true), treat it as handled and skip the
+    // default diagnostics record (matches browser console behavior).
+    if not_canceled {
+      if let Some(diag) = diagnostics {
+        diag.record_js_exception(message, stack);
+      }
+    }
+
+    if let Some(root) = thrown_value_root {
+      realm.heap_mut().remove_root(root);
+    }
+
+    Ok(())
+  }
+
+  fn dispatch_window_error_event(
+    diagnostics: Option<&SharedRenderDiagnostics>,
+    webidl_bindings_host: Option<NonNull<dyn WebIdlBindingsHost>>,
+    realm: &mut WindowRealm,
+    document: &mut BrowserDocumentDom2,
+    event_loop: &mut crate::js::EventLoop<BrowserTabHost>,
+    message: &str,
+    filename: &str,
+    lineno: u32,
+    colno: u32,
+    error_value: Option<Value>,
+  ) -> Result<bool> {
+    let webidl_bindings_host = match webidl_bindings_host {
+      Some(mut host_ptr) => Some(unsafe { host_ptr.as_mut() }),
+      None => None,
+    };
+
+    let mut hooks = VmJsEventLoopHooks::<BrowserTabHost>::new_with_vm_host_and_window_realm(
+      document,
+      realm,
+      webidl_bindings_host,
+    );
+    hooks.set_event_loop(event_loop);
+
+    realm.reset_interrupt();
+    let global_obj = realm.global_object();
+    let budget = realm.vm_budget_now();
+
+    let result: std::result::Result<bool, VmError> = (|| {
+      let (vm, heap) = realm.vm_and_heap_mut();
+      let mut vm = vm.push_budget(budget);
+      vm.tick()?;
+
+      let mut scope = heap.scope();
+      scope.push_root(Value::Object(global_obj))?;
+
+      let type_s = scope.alloc_string("error")?;
+      scope.push_root(Value::String(type_s))?;
+
+      // Build the init dict.
+      let init_obj = scope.alloc_object()?;
+      scope.push_root(Value::Object(init_obj))?;
+
+      let cancelable_key = alloc_key(&mut scope, "cancelable")?;
+      scope.define_property(init_obj, cancelable_key, data_desc(Value::Bool(true)))?;
+
+      // ErrorEventInit:
+      let message_s = scope.alloc_string(message)?;
+      scope.push_root(Value::String(message_s))?;
+      let message_key = alloc_key(&mut scope, "message")?;
+      scope.define_property(init_obj, message_key, data_desc(Value::String(message_s)))?;
+
+      let filename_s = scope.alloc_string(filename)?;
+      scope.push_root(Value::String(filename_s))?;
+      let filename_key = alloc_key(&mut scope, "filename")?;
+      scope.define_property(init_obj, filename_key, data_desc(Value::String(filename_s)))?;
+
+      let lineno_key = alloc_key(&mut scope, "lineno")?;
+      scope.define_property(
+        init_obj,
+        lineno_key,
+        data_desc(Value::Number(lineno as f64)),
+      )?;
+
+      let colno_key = alloc_key(&mut scope, "colno")?;
+      scope.define_property(
+        init_obj,
+        colno_key,
+        data_desc(Value::Number(colno as f64)),
+      )?;
+
+      let error_key = alloc_key(&mut scope, "error")?;
+      let error_value = error_value.unwrap_or(Value::Null);
+      scope.push_root(error_value)?;
+      scope.define_property(init_obj, error_key, data_desc(error_value))?;
+
+      let error_event_ctor_key = alloc_key(&mut scope, "ErrorEvent")?;
+      let error_event_ctor = vm.get_with_host_and_hooks(
+        document,
+        &mut scope,
+        &mut hooks,
+        global_obj,
+        error_event_ctor_key,
+      )?;
+      scope.push_root(error_event_ctor)?;
+
+      let (event_value, needs_payload_define) = if scope
+        .heap()
+        .is_constructor(error_event_ctor)
+        .unwrap_or(false)
+      {
+        (
+          vm.construct_with_host_and_hooks(
+            document,
+            &mut scope,
+            &mut hooks,
+            error_event_ctor,
+            &[Value::String(type_s), Value::Object(init_obj)],
+            error_event_ctor,
+          )?,
+          false,
+        )
+      } else {
+        let event_ctor_key = alloc_key(&mut scope, "Event")?;
+        let event_ctor =
+          vm.get_with_host_and_hooks(document, &mut scope, &mut hooks, global_obj, event_ctor_key)?;
+        scope.push_root(event_ctor)?;
+        (
+          vm.construct_with_host_and_hooks(
+            document,
+            &mut scope,
+            &mut hooks,
+            event_ctor,
+            &[Value::String(type_s), Value::Object(init_obj)],
+            event_ctor,
+          )?,
+          true,
+        )
+      };
+
+      let Value::Object(event_obj) = event_value else {
+        return Err(VmError::Unimplemented(
+          "ErrorEvent/Event constructor returned non-object",
+        ));
+      };
+      scope.push_root(Value::Object(event_obj))?;
+
+      if needs_payload_define {
+        scope.define_property(event_obj, message_key, read_only_data_desc(Value::String(message_s)))?;
+        scope.define_property(
+          event_obj,
+          filename_key,
+          read_only_data_desc(Value::String(filename_s)),
+        )?;
+        scope.define_property(
+          event_obj,
+          lineno_key,
+          read_only_data_desc(Value::Number(lineno as f64)),
+        )?;
+        scope.define_property(
+          event_obj,
+          colno_key,
+          read_only_data_desc(Value::Number(colno as f64)),
+        )?;
+        scope.define_property(event_obj, error_key, read_only_data_desc(error_value))?;
+      }
+
+      let dispatch_key = alloc_key(&mut scope, "dispatchEvent")?;
+      let dispatch =
+        vm.get_with_host_and_hooks(document, &mut scope, &mut hooks, global_obj, dispatch_key)?;
+      let dispatch_result = vm.call_with_host_and_hooks(
+        document,
+        &mut scope,
+        &mut hooks,
+        dispatch,
+        Value::Object(global_obj),
+        &[Value::Object(event_obj)],
+      )?;
+
+      Ok(matches!(dispatch_result, Value::Bool(true)))
+    })();
+
+    let finish_err = hooks.finish(realm.heap_mut());
+    if let Some(err) = finish_err {
+      return Err(err);
+    }
+
+    match result {
+      Ok(not_canceled) => Ok(not_canceled),
+      Err(err) => {
+        // Don't rethrow: we're already reporting an uncaught exception.
+        if let Some(diag) = diagnostics {
+          diag.record_console_message(
+            ConsoleMessageLevel::Error,
+            format!("failed to dispatch window error event: {err}"),
+          );
+        }
+        Ok(true)
+      }
+    }
   }
 
   fn abort_pending_module_evaluation(&mut self) {
@@ -354,7 +604,7 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
       diag.record_js_script_executed();
     }
     let clock = event_loop.clock();
-    let webidl_bindings_host = self.webidl_bindings_host;
+    let webidl_bindings_host_ptr = self.webidl_bindings_host;
     let name: Arc<str> = if let Some(url) = spec.src.as_deref() {
       Arc::from(url)
     } else if let Some(node_id) = current_script {
@@ -382,7 +632,7 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
       loader.set_entry_module_integrity_override(None);
       loader.set_js_execution_options(js_execution_options);
     }
-    let webidl_bindings_host = match webidl_bindings_host {
+    let webidl_bindings_host = match webidl_bindings_host_ptr {
       Some(mut host_ptr) => Some(unsafe { host_ptr.as_mut() }),
       None => None,
     };
@@ -402,9 +652,18 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
       Ok(_) => Ok(()),
       Err(err) => {
         if vm_error_format::vm_error_is_js_exception(&err) {
-          if let Some(diag) = diagnostics.as_ref() {
-            Self::record_js_exception(diag, realm, err);
-          }
+          Self::report_js_exception_as_window_error_event(
+            diagnostics.as_ref(),
+            webidl_bindings_host_ptr,
+            realm,
+            document,
+            event_loop,
+            err,
+            spec
+              .src
+              .as_deref()
+              .or_else(|| Some(self.document_url.as_str())),
+          )?;
           Ok(())
         } else {
           if let Some(diag) = diagnostics.as_ref() {
@@ -634,9 +893,9 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
       synthesize_inline_module_url(base_url, &inline_id)
     };
 
-    let diagnostics = self.diagnostics.clone();
     let clock = event_loop.clock();
-    let webidl_bindings_host = self.webidl_bindings_host;
+    let diagnostics = self.diagnostics.as_ref();
+    let webidl_bindings_host_ptr = self.webidl_bindings_host;
     let js_execution_options = self.js_execution_options;
     let effective_referrer_policy = spec.referrer_policy.unwrap_or(self.document_referrer_policy);
     let entry_key = ModuleKey {
@@ -672,7 +931,7 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
 
     // Route Promise jobs (including module-loading promise reactions) through FastRender's
     // microtask queue.
-    let webidl_bindings_host = match webidl_bindings_host {
+    let webidl_bindings_host = match webidl_bindings_host_ptr {
       Some(mut host_ptr) => Some(unsafe { host_ptr.as_mut() }),
       None => None,
     };
@@ -682,7 +941,12 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
       webidl_bindings_host,
     );
 
-    let exec_result: Result<Option<PendingModuleEvaluation>> = (|| {
+    enum ModuleScriptOutcome {
+      Success(Option<PendingModuleEvaluation>),
+      JsException(VmError),
+    }
+
+    let exec_result: Result<ModuleScriptOutcome> = (|| {
       // Apply a fresh per-run VM budget (fuel + deadline) for module parsing/loading/evaluation.
       //
       // Module scripts are executed from event loop tasks (like classic scripts) and must be
@@ -709,21 +973,18 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
 
       let entry_module = {
         let mut loader = module_loader.borrow_mut();
-        match loader.get_or_parse_inline_module(module_graph, entry_key.clone(), script_text) {
-          Ok(id) => id,
-          Err(err) => {
-            if vm_error_format::vm_error_is_js_exception(&err) {
-              if let Some(diag) = diagnostics.as_ref() {
-                let (message, stack) = vm_error_format::vm_error_to_message_and_stack(heap, err);
-                diag.record_js_exception(message, stack);
-              }
-              return Ok(None);
-            }
-            if let Some(diag) = diagnostics.as_ref() {
-              diag.record_js_vm_error(&err);
-            }
-            return Err(vm_error_format::vm_error_to_error(heap, err));
+        loader.get_or_parse_inline_module(module_graph, entry_key.clone(), script_text)
+      };
+      let entry_module = match entry_module {
+        Ok(id) => id,
+        Err(err) => {
+          if vm_error_format::vm_error_is_js_exception(&err) {
+            return Ok(ModuleScriptOutcome::JsException(err));
           }
+          if let Some(diag) = diagnostics.as_ref() {
+            diag.record_js_vm_error(&err);
+          }
+          return Err(vm_error_format::vm_error_to_error(heap, err));
         }
       };
 
@@ -788,15 +1049,10 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
       }
 
       match module_result {
-        Ok(pending) => Ok(pending),
+        Ok(pending) => Ok(ModuleScriptOutcome::Success(pending)),
         Err(err) => {
           if vm_error_format::vm_error_is_js_exception(&err) {
-            if let Some(diag) = diagnostics.as_ref() {
-              let (message, stack) =
-                vm_error_format::vm_error_to_message_and_stack(scope.heap_mut(), err);
-              diag.record_js_exception(message, stack);
-            }
-            Ok(None)
+            Ok(ModuleScriptOutcome::JsException(err))
           } else {
             if let Some(diag) = diagnostics.as_ref() {
               diag.record_js_vm_error(&err);
@@ -807,23 +1063,33 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
       }
     })();
 
-    if let Some(realm) = self.realm.as_mut() {
-      if let Some(req) = realm.take_pending_navigation_request() {
-        realm.reset_interrupt();
-        self.pending_navigation = Some(req);
-        return Ok(ModuleScriptExecutionStatus::Completed);
-      }
+    if let Some(req) = realm.take_pending_navigation_request() {
+      realm.reset_interrupt();
+      self.pending_navigation = Some(req);
+      return Ok(ModuleScriptExecutionStatus::Completed);
     }
 
     match exec_result {
-      Ok(pending) => {
-        match pending {
-          Some(pending) => {
-            self.pending_module_evaluations.insert(script_id, pending);
-            Ok(ModuleScriptExecutionStatus::Pending)
-          }
-          None => Ok(ModuleScriptExecutionStatus::Completed),
+      Ok(ModuleScriptOutcome::Success(pending)) => match pending {
+        Some(pending) => {
+          self.pending_module_evaluations.insert(script_id, pending);
+          Ok(ModuleScriptExecutionStatus::Pending)
         }
+        None => Ok(ModuleScriptExecutionStatus::Completed),
+      },
+      Ok(ModuleScriptOutcome::JsException(err)) => {
+        // HTML: module errors are reported as exceptions for the global object (observable via
+        // `window.addEventListener("error")` / `window.onerror`).
+        Self::report_js_exception_as_window_error_event(
+          diagnostics,
+          webidl_bindings_host_ptr,
+          realm,
+          document,
+          event_loop,
+          err,
+          Some(&entry_specifier),
+        )?;
+        Ok(ModuleScriptExecutionStatus::Completed)
       }
       Err(err) => Err(err),
     }
@@ -959,7 +1225,7 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
 
   fn after_microtask_checkpoint(
     &mut self,
-    _document: &mut BrowserDocumentDom2,
+    document: &mut BrowserDocumentDom2,
     event_loop: &mut crate::js::EventLoop<BrowserTabHost>,
   ) -> Result<()> {
     if self.pending_module_evaluations.is_empty() {
@@ -968,51 +1234,65 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
     let Some(realm) = self.realm.as_mut() else {
       return Ok(());
     };
+    let webidl_bindings_host_ptr = self.webidl_bindings_host;
 
     let diagnostics = self.diagnostics.clone();
-    let (_vm, _realm_ref, heap) = realm.vm_realm_and_heap_mut();
-    let mut completed: Vec<(HtmlScriptId, RootId)> = Vec::new();
-    for (script_id, pending) in &self.pending_module_evaluations {
-      let state = match heap.promise_state(pending.promise) {
-        Ok(state) => state,
-        Err(err) => {
-          if let Some(diag) = diagnostics.as_ref() {
-            diag.record_js_vm_error(&err);
-          }
-          return Err(vm_error_format::vm_error_to_error(heap, err));
-        }
-      };
-
-      match state {
-        PromiseState::Fulfilled => {
-          completed.push((*script_id, pending.promise_root));
-        }
-        PromiseState::Rejected => {
-          let reason = match heap.promise_result(pending.promise) {
-            Ok(reason) => reason.unwrap_or(Value::Undefined),
-            Err(err) => {
-              if let Some(diag) = diagnostics.as_ref() {
-                diag.record_js_vm_error(&err);
-              }
-              return Err(vm_error_format::vm_error_to_error(heap, err));
+    // Collect settled module evaluation promises without holding an active JS borrow while we
+    // dispatch error events (dispatch can allocate/GC).
+    let mut completed: Vec<(HtmlScriptId, RootId, Option<Value>)> = Vec::new();
+    {
+      let (_vm, _realm_ref, heap) = realm.vm_realm_and_heap_mut();
+      for (script_id, pending) in &self.pending_module_evaluations {
+        let state = match heap.promise_state(pending.promise) {
+          Ok(state) => state,
+          Err(err) => {
+            if let Some(diag) = diagnostics.as_ref() {
+              diag.record_js_vm_error(&err);
             }
-          };
-          if let Some(diag) = diagnostics.as_ref() {
-            let (message, stack) =
-              vm_error_format::vm_error_to_message_and_stack(heap, VmError::Throw(reason));
-            diag.record_js_exception(message, stack);
+            return Err(vm_error_format::vm_error_to_error(heap, err));
           }
-          completed.push((*script_id, pending.promise_root));
+        };
+
+        match state {
+          PromiseState::Fulfilled => {
+            completed.push((*script_id, pending.promise_root, None));
+          }
+          PromiseState::Rejected => {
+            let reason = match heap.promise_result(pending.promise) {
+              Ok(reason) => reason.unwrap_or(Value::Undefined),
+              Err(err) => {
+                if let Some(diag) = diagnostics.as_ref() {
+                  diag.record_js_vm_error(&err);
+                }
+                return Err(vm_error_format::vm_error_to_error(heap, err));
+              }
+            };
+            completed.push((*script_id, pending.promise_root, Some(reason)));
+          }
+          PromiseState::Pending => {}
         }
-        PromiseState::Pending => {}
       }
     }
 
-    for (script_id, root_id) in completed {
+    for (script_id, root_id, rejection_reason) in completed {
+      if let Some(reason) = rejection_reason {
+        // Propagate top-level await rejections as global `error` events (per HTML module script
+        // evaluation error reporting) and record them into diagnostics when not handled.
+        Self::report_js_exception_as_window_error_event(
+          diagnostics.as_ref(),
+          webidl_bindings_host_ptr,
+          realm,
+          document,
+          event_loop,
+          VmError::Throw(reason),
+          Some(&self.document_url),
+        )?;
+      }
+
       event_loop.queue_task(TaskSource::Script, move |host, event_loop| {
         host.on_module_script_evaluation_complete(script_id, event_loop)
       })?;
-      heap.remove_root(root_id);
+      realm.heap_mut().remove_root(root_id);
       self.pending_module_evaluations.remove(&script_id);
     }
 
@@ -1048,7 +1328,13 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
     // Additionally, `window.onbeforeunload = () => "..."` is supported via `EventTarget.dispatchEvent`
     // EventHandler invocation.
     let source = r#"(function(){
-      const e = new Event("beforeunload", { cancelable: true });
+      let e;
+      try {
+        e = new BeforeUnloadEvent("beforeunload", { cancelable: true });
+      } catch (_) {
+        e = new Event("beforeunload", { cancelable: true });
+        try { e.returnValue = ""; } catch (_) {}
+      }
       dispatchEvent(e);
       const rv = e.returnValue;
       return e.defaultPrevented || (typeof rv === "string" && rv.length > 0);
@@ -1130,14 +1416,25 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
     let type_lit = serde_json::to_string(&event.type_).unwrap_or_else(|_| "\"\"".to_string());
     let (ctor_name, init_lit, post_init) = match event.type_.as_str() {
       "pagehide" | "pageshow" => (
-        "Event",
+        "PageTransitionEvent",
+        serde_json::json!({
+          "bubbles": event.bubbles,
+          "cancelable": event.cancelable,
+          "composed": event.composed,
+          "persisted": false,
+        })
+        .to_string(),
+        "try { e.persisted = false; } catch (_) {};",
+      ),
+      "beforeunload" => (
+        "BeforeUnloadEvent",
         serde_json::json!({
           "bubbles": event.bubbles,
           "cancelable": event.cancelable,
           "composed": event.composed,
         })
         .to_string(),
-        "try { e.persisted = false; } catch (_) {};",
+        "try { e.returnValue = \"\"; } catch (_) {};",
       ),
       _ => (
         "Event",
@@ -1207,6 +1504,53 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
 
   fn window_realm_mut(&mut self) -> Option<&mut WindowRealm> {
     self.realm.as_mut()
+  }
+}
+
+fn alloc_key(scope: &mut Scope<'_>, name: &str) -> std::result::Result<PropertyKey, VmError> {
+  let s = scope.alloc_string(name)?;
+  scope.push_root(Value::String(s))?;
+  Ok(PropertyKey::from_string(s))
+}
+
+fn data_desc(value: Value) -> PropertyDescriptor {
+  PropertyDescriptor {
+    enumerable: false,
+    configurable: true,
+    kind: PropertyKind::Data {
+      value,
+      writable: true,
+    },
+  }
+}
+
+fn read_only_data_desc(value: Value) -> PropertyDescriptor {
+  PropertyDescriptor {
+    enumerable: false,
+    configurable: true,
+    kind: PropertyKind::Data {
+      value,
+      writable: false,
+    },
+  }
+}
+
+fn resolve_error_event_location(
+  filename_hint: Option<&str>,
+  first_frame: Option<&StackFrame>,
+) -> (String, u32, u32) {
+  if let Some(frame) = first_frame {
+    let from_stack = frame.source.as_ref();
+    // vm-js uses synthetic `<inline>` names for unnamed scripts; prefer a real document/script URL
+    // when available so `window.onerror` gets a useful filename.
+    let filename = if from_stack.starts_with('<') {
+      filename_hint.unwrap_or(from_stack)
+    } else {
+      from_stack
+    };
+    (filename.to_string(), frame.line, frame.col)
+  } else {
+    (filename_hint.unwrap_or("").to_string(), 0, 0)
   }
 }
 
@@ -1549,6 +1893,81 @@ mod tests {
     assert_eq!(
       get_global_prop_utf8(realm, "__metaUrl").as_deref(),
       Some("https://example.com/doc.html#inline-module-0")
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn vm_js_browser_tab_executor_dispatches_error_event_for_uncaught_exception() -> Result<()> {
+    let mut document =
+      BrowserDocumentDom2::from_html("<!doctype html><html></html>", RenderOptions::default())?;
+    let current_script = CurrentScriptStateHandle::default();
+    let mut executor = VmJsBrowserTabExecutor::new();
+    let mut event_loop = crate::js::EventLoop::<BrowserTabHost>::new();
+    executor.reset_for_navigation(
+      Some("https://example.com/doc.html"),
+      &mut document,
+      &current_script,
+      JsExecutionOptions::default(),
+    )?;
+
+    let script_text = "globalThis.__called = false;\n\
+      globalThis.__message = '';\n\
+      globalThis.__lineno = 0;\n\
+      globalThis.__colno = 0;\n\
+      globalThis.__error_message = null;\n\
+      globalThis.__is_error_event = false;\n\
+      addEventListener('error', function (e) {\n\
+        globalThis.__called = true;\n\
+        globalThis.__message = String(e && e.message);\n\
+        globalThis.__lineno = e && e.lineno;\n\
+        globalThis.__colno = e && e.colno;\n\
+        globalThis.__error_message = e && e.error && e.error.message;\n\
+        globalThis.__is_error_event = (e instanceof ErrorEvent);\n\
+      });\n\
+      throw new Error('boom');\n";
+
+    let spec = ScriptElementSpec {
+      base_url: Some("https://example.com/doc.html".to_string()),
+      src: None,
+      src_attr_present: false,
+      inline_text: script_text.to_string(),
+      async_attr: false,
+      force_async: false,
+      defer_attr: false,
+      nomodule_attr: false,
+      crossorigin: None,
+      integrity_attr_present: false,
+      integrity: None,
+      referrer_policy: None,
+      fetch_priority: None,
+      parser_inserted: true,
+      node_id: None,
+      script_type: crate::js::ScriptType::Classic,
+    };
+
+    executor.execute_classic_script(script_text, &spec, None, &mut document, &mut event_loop)?;
+
+    let realm = executor.realm.as_mut().expect("realm initialized");
+    assert!(matches!(get_global_prop(realm, "__called"), Value::Bool(true)));
+    assert!(
+      get_global_prop_utf8(realm, "__message")
+        .unwrap_or_default()
+        .contains("boom"),
+      "expected ErrorEvent.message to mention the thrown error"
+    );
+    assert_eq!(get_global_prop_utf8(realm, "__error_message").as_deref(), Some("boom"));
+    assert!(matches!(
+      get_global_prop(realm, "__is_error_event"),
+      Value::Bool(true)
+    ));
+    assert!(
+      matches!(get_global_prop(realm, "__lineno"), Value::Number(_)),
+      "expected ErrorEvent.lineno to be a number"
+    );
+    assert!(
+      matches!(get_global_prop(realm, "__colno"), Value::Number(_)),
+      "expected ErrorEvent.colno to be a number"
     );
     Ok(())
   }

@@ -31925,6 +31925,24 @@ mod tests {
   }
 
   #[test]
+  fn error_event_can_be_dispatched_and_observed_by_listeners() -> Result<(), VmError> {
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+
+    let result = realm.exec_script(
+      "(() => {\n\
+        let seen = '';\n\
+        addEventListener('error', (e) => {\n\
+          seen = e.message + '|' + (e instanceof ErrorEvent);\n\
+        });\n\
+        dispatchEvent(new ErrorEvent('error', { message: 'boom', cancelable: true }));\n\
+        return seen;\n\
+      })()",
+    )?;
+    assert_eq!(get_string(realm.heap(), result), "boom|true");
+    Ok(())
+  }
+
+  #[test]
   fn before_unload_event_constructor_exists_and_is_cancelable() -> Result<(), VmError> {
     let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
 
@@ -31998,6 +32016,69 @@ mod tests {
       realm.exec_script("new CustomEvent('x')")?,
       Value::Object(_)
     ));
+
+    let err = realm.exec_script("ErrorEvent('error')");
+    let err = err.expect_err("expected ErrorEvent('error') to throw");
+    match err {
+      VmError::TypeError(msg) => {
+        assert_eq!(msg, "ErrorEvent constructor cannot be invoked without 'new'")
+      }
+      other => {
+        let obj = unwrap_thrown_object(other);
+        let (vm, heap) = realm.vm_and_heap_mut();
+        let mut scope = heap.scope();
+        scope.push_root(Value::Object(obj))?;
+        let name = get_prop(vm, &mut scope, obj, "name")?;
+        assert_eq!(get_string(scope.heap(), name), "TypeError");
+        let message = get_prop(vm, &mut scope, obj, "message")?;
+        assert_eq!(
+          get_string(scope.heap(), message),
+          "ErrorEvent constructor cannot be invoked without 'new'"
+        );
+      }
+    }
+
+    let err = realm.exec_script("BeforeUnloadEvent('beforeunload')");
+    let err = err.expect_err("expected BeforeUnloadEvent('beforeunload') to throw");
+    match err {
+      VmError::TypeError(msg) => {
+        assert_eq!(msg, "BeforeUnloadEvent constructor cannot be invoked without 'new'")
+      }
+      other => {
+        let obj = unwrap_thrown_object(other);
+        let (vm, heap) = realm.vm_and_heap_mut();
+        let mut scope = heap.scope();
+        scope.push_root(Value::Object(obj))?;
+        let name = get_prop(vm, &mut scope, obj, "name")?;
+        assert_eq!(get_string(scope.heap(), name), "TypeError");
+        let message = get_prop(vm, &mut scope, obj, "message")?;
+        assert_eq!(
+          get_string(scope.heap(), message),
+          "BeforeUnloadEvent constructor cannot be invoked without 'new'"
+        );
+      }
+    }
+
+    let err = realm.exec_script("PageTransitionEvent('pagehide')");
+    let err = err.expect_err("expected PageTransitionEvent('pagehide') to throw");
+    match err {
+      VmError::TypeError(msg) => {
+        assert_eq!(msg, "PageTransitionEvent constructor cannot be invoked without 'new'")
+      }
+      other => {
+        let obj = unwrap_thrown_object(other);
+        let (vm, heap) = realm.vm_and_heap_mut();
+        let mut scope = heap.scope();
+        scope.push_root(Value::Object(obj))?;
+        let name = get_prop(vm, &mut scope, obj, "name")?;
+        assert_eq!(get_string(scope.heap(), name), "TypeError");
+        let message = get_prop(vm, &mut scope, obj, "message")?;
+        assert_eq!(
+          get_string(scope.heap(), message),
+          "PageTransitionEvent constructor cannot be invoked without 'new'"
+        );
+      }
+    }
 
     // DOM constants should be present and numeric.
     assert_eq!(realm.exec_script("Event.NONE")?, Value::Number(0.0));
