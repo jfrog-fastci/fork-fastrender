@@ -200,6 +200,7 @@ pub use crate::function::NativeConstructId;
 pub use crate::function::NativeFunctionId;
 pub use crate::function::ThisMode;
 pub use crate::function_properties::make_constructor;
+pub use crate::function_properties::make_generator_function_instance_prototype;
 pub use crate::function_properties::set_function_length;
 pub use crate::function_properties::set_function_name;
 pub use crate::handle::GcEnv;
