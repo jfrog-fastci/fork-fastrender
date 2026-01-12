@@ -107,7 +107,7 @@ fn float_context_many_range_queries_complete_before_deadline() {
     let y = i as f32;
     if i % 2 == 0 {
       ctx.add_float_at(
-        fastrender::layout::float_context::FloatSide::Left,
+        crate::layout::float_context::FloatSide::Left,
         0.0,
         y,
         FLOAT_WIDTH,
@@ -115,7 +115,7 @@ fn float_context_many_range_queries_complete_before_deadline() {
       );
     } else {
       ctx.add_float_at(
-        fastrender::layout::float_context::FloatSide::Right,
+        crate::layout::float_context::FloatSide::Right,
         CONTAINING_WIDTH - FLOAT_WIDTH,
         y,
         FLOAT_WIDTH,
