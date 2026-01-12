@@ -4147,6 +4147,10 @@ mod tests {
     let media_ctx = MediaContext::screen(800.0, 600.0);
     let faces = sheet.collect_font_face_rules(&media_ctx);
     assert_eq!(faces.len(), 1);
+    assert!(
+      faces[0].source_stylesheet_url.is_none(),
+      "expected inline styles to have no source stylesheet URL"
+    );
 
     let ctx = FontContext::empty();
     let report = ctx
