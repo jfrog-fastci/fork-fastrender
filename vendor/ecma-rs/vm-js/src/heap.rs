@@ -1322,19 +1322,18 @@ impl Heap {
   ///
   /// # Errors
   ///
-  /// If the backing `ArrayBuffer` is detached, this returns an empty slice.
-  ///
-  /// Returns a `TypeError` if the view is out of bounds.
+  /// Returns a `TypeError` if the backing `ArrayBuffer` is detached or if the view is out of
+  /// bounds.
   pub fn uint8_array_data(&self, obj: GcObject) -> Result<&[u8], VmError> {
     let view = self.get_typed_array(obj)?;
     if view.kind != TypedArrayKind::Uint8 {
       return Err(VmError::invalid_handle());
     }
     let buf = self.get_array_buffer(view.viewed_array_buffer)?;
-    let Some(data) = buf.data.as_deref() else {
-      // Detached buffers behave like out-of-bounds views.
-      return Ok(&[]);
-    };
+    let data = buf
+      .data
+      .as_deref()
+      .ok_or(VmError::TypeError("ArrayBuffer is detached"))?;
     let start = view.byte_offset;
     let end = start
       .checked_add(view.byte_length()?)
@@ -1353,12 +1352,15 @@ impl Heap {
   /// `index` is out of bounds or `bytes` is empty, this returns `Ok(0)` (mirroring typed array
   /// out-of-bounds write semantics).
   ///
-  /// Returns a `TypeError` if the backing `ArrayBuffer` is detached or if the view is out of
-  /// bounds.
+  /// If the view is out of bounds for its backing `ArrayBuffer`, this performs a safe no-op and
+  /// returns `Ok(0)` (mirroring the fact that out-of-bounds typed array views have length `0`).
+  ///
+  /// Returns a `TypeError` if the backing `ArrayBuffer` is detached.
   ///
   /// # Errors
   ///
-  /// Returns an error if `obj` is not a live `Uint8Array` object.
+  /// Returns an error if `obj` is not a live `Uint8Array` object or if its backing `ArrayBuffer` is
+  /// detached.
   pub fn uint8_array_write(&mut self, obj: GcObject, index: usize, bytes: &[u8]) -> Result<usize, VmError> {
     // Extract view fields without holding a mutable borrow across ArrayBuffer access.
     let (buffer, byte_offset, length) = {
@@ -1395,7 +1397,7 @@ impl Heap {
       data.len()
     };
     if view_end > buf_len {
-      return Err(VmError::TypeError("Uint8Array view out of bounds"));
+      return Ok(0);
     }
 
     let buf = self.get_array_buffer_mut(buffer)?;
@@ -7715,11 +7717,16 @@ mod detached_array_buffer_tests {
     }
 
     match scope.heap().uint8_array_data(view) {
-      Ok(data) => assert!(data.is_empty(), "detached Uint8Array should read as empty"),
-      Err(other) => panic!("expected Ok(empty), got {other:?}"),
+      Err(VmError::TypeError(_)) => {}
+      Err(other) => panic!("expected TypeError, got {other:?}"),
+      Ok(_) => panic!("expected error for Uint8Array backed by a detached ArrayBuffer"),
     }
 
-    assert_eq!(scope.heap_mut().uint8_array_write(view, 0, &[1, 2, 3])?, 0);
+    match scope.heap_mut().uint8_array_write(view, 0, &[1, 2, 3]) {
+      Err(VmError::TypeError(_)) => {}
+      Err(other) => panic!("expected TypeError, got {other:?}"),
+      Ok(wrote) => panic!("expected TypeError for detached Uint8Array write, got Ok({wrote})"),
+    }
 
     Ok(())
   }
@@ -7749,7 +7756,11 @@ mod detached_array_buffer_tests {
     }
 
     // Out-of-bounds views behave like empty typed arrays for host byte writes.
-    assert_eq!(scope.heap_mut().uint8_array_write(view, 0, &[1])?, 0);
+    match scope.heap_mut().uint8_array_write(view, 0, &[1]) {
+      Ok(0) => {}
+      Ok(n) => panic!("expected out-of-bounds Uint8Array write to be a no-op, got Ok({n})"),
+      Err(other) => panic!("expected Ok(0), got {other:?}"),
+    }
 
     Ok(())
   }

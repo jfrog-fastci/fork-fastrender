@@ -53,6 +53,10 @@ fn heap_byte_access_helpers_throw_type_error_on_detached_and_writes_are_noop() -
   let ab = scope.alloc_array_buffer(4)?;
   scope.push_root(Value::Object(ab))?;
   let view = scope.alloc_uint8_array(ab, 0, 4)?;
+  scope.push_root(Value::Object(view))?;
+
+  // Preserve index-out-of-bounds behaviour (no-op write).
+  assert_eq!(scope.heap_mut().uint8_array_write(view, 4, &[1, 2])?, 0);
 
   scope.heap_mut().detach_array_buffer(ab)?;
 
@@ -61,16 +65,15 @@ fn heap_byte_access_helpers_throw_type_error_on_detached_and_writes_are_noop() -
     other => panic!("expected TypeError, got {other:?}"),
   }
 
-  assert!(
-    scope.heap().uint8_array_data(view)?.is_empty(),
-    "detached Uint8Array should read as empty",
-  );
+  match scope.heap().uint8_array_data(view).unwrap_err() {
+    VmError::TypeError(msg) => assert_eq!(msg, "ArrayBuffer is detached"),
+    other => panic!("expected TypeError, got {other:?}"),
+  }
 
-  // Writes are ignored on detached typed arrays.
-  assert_eq!(scope.heap_mut().uint8_array_write(view, 0, &[1])?, 0);
-
-  // Preserve out-of-bounds behaviour (no-op write).
-  assert_eq!(scope.heap_mut().uint8_array_write(view, 4, &[1, 2])?, 0);
+  match scope.heap_mut().uint8_array_write(view, 0, &[1]) {
+    Err(VmError::TypeError(msg)) => assert_eq!(msg, "ArrayBuffer is detached"),
+    other => panic!("expected TypeError, got {other:?}"),
+  }
 
   Ok(())
 }
