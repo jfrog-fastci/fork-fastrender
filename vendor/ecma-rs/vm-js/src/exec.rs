@@ -13254,11 +13254,9 @@ fn async_for_of_loop(
     ) {
       Ok(v) => v,
       Err(err) => {
+        // Spec: `ForIn/OfBodyEvaluation` does not perform `IteratorClose` on errors produced while
+        // stepping the iterator (`next`/`done`/`value`).
         let err = coerce_error_to_throw_for_async(evaluator.vm, scope, err);
-        let err = {
-          let mut close_scope = scope.reborrow();
-          async_iterator_close_on_error(evaluator, &mut close_scope, &iterator_record, err)
-        };
         async_for_of_cleanup(scope, iterator_root, next_method_root, v_root);
         return Err(err);
       }
