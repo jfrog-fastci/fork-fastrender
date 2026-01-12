@@ -83,6 +83,52 @@ dict["x"];
 }
 
 #[test]
+fn strict_native_allows_wrapped_constant_computed_keys() {
+  let mut options = CompilerOptions::default();
+  options.strict_native = true;
+
+  let mut host = MemoryHost::with_options(options);
+  let file = FileKey::new("main.ts");
+  host.insert(
+    file.clone(),
+    r#"
+const dict: { [k: string]: number } = { x: 1 };
+
+// TypeScript-only expression wrappers must not affect strict-native "constant computed key"
+// detection.
+dict["x" as const];
+dict["x" as string];
+dict["x"!];
+dict[("x") satisfies string];
+
+const obj = { ["x" as const]: 1 };
+const y = obj["x" as const];
+void y;
+const { ["x" as const]: z } = obj;
+void z;
+
+class C {
+  ["x" as const](): number {
+    return 1;
+  }
+}
+
+const c = new C();
+void c["x" as const]();
+"#,
+  );
+
+  let program = Program::new(host, vec![file]);
+  let diagnostics = program.check();
+  let seen = diagnostics_codes(&diagnostics);
+
+  assert!(
+    !seen.contains(&codes::NATIVE_STRICT_COMPUTED_PROPERTY_KEY.as_str()),
+    "did not expect strict_native computed-key diagnostic, got {seen:?}",
+  );
+}
+
+#[test]
 fn strict_native_disabled_suppresses_bans() {
   let mut host = MemoryHost::new();
   let file = FileKey::new("main.ts");

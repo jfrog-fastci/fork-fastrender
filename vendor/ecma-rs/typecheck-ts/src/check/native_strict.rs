@@ -242,9 +242,32 @@ pub fn validate_native_strict_body(
     matches!(key, ObjectKey::String(s) if s == value)
   }
 
+  fn expr_unwrap_ts_noop(body: &Body, mut expr_id: hir_js::ExprId) -> hir_js::ExprId {
+    // Unwrap TypeScript-only "no-op" wrappers that do not affect runtime behavior.
+    //
+    // This matters for strict-native enforcement because these wrappers can:
+    // - legitimately appear around constant expressions (e.g. `obj["x" as const]`), and
+    // - be used to hide banned constructs if we only inspect the outer node.
+    loop {
+      let Some(expr) = body.exprs.get(expr_id.0 as usize) else {
+        return expr_id;
+      };
+      match &expr.kind {
+        ExprKind::TypeAssertion { expr: inner, .. }
+        | ExprKind::Instantiation { expr: inner, .. }
+        | ExprKind::NonNull { expr: inner }
+        | ExprKind::Satisfies { expr: inner, .. } => {
+          expr_id = *inner;
+        }
+        _ => return expr_id,
+      }
+    }
+  }
+
   fn object_key_is_literal_string(body: &Body, key: &ObjectKey, value: &str) -> bool {
     match key {
       ObjectKey::Computed(expr_id) => {
+        let expr_id = expr_unwrap_ts_noop(body, *expr_id);
         let Some(expr) = body.exprs.get(expr_id.0 as usize) else {
           return false;
         };
@@ -337,6 +360,7 @@ pub fn validate_native_strict_body(
   }
 
   fn expr_is_const_string(body: &Body, expr_id: hir_js::ExprId, value: &str) -> bool {
+    let expr_id = expr_unwrap_ts_noop(body, expr_id);
     let Some(expr) = body.exprs.get(expr_id.0 as usize) else {
       return false;
     };
@@ -6977,7 +7001,11 @@ pub fn validate_native_strict_body(
           let ObjectKey::Computed(key_expr) = key else {
             continue;
           };
-          let Some(key) = body.exprs.get(key_expr.0 as usize) else {
+          let Some(key_outer) = body.exprs.get(key_expr.0 as usize) else {
+            continue;
+          };
+          let key_expr_unwrapped = expr_unwrap_ts_noop(body, *key_expr);
+          let Some(key) = body.exprs.get(key_expr_unwrapped.0 as usize) else {
             continue;
           };
 
@@ -6993,7 +7021,7 @@ pub fn validate_native_strict_body(
             .expr_spans
             .get(key_expr.0 as usize)
             .copied()
-            .unwrap_or(key.span);
+            .unwrap_or(key_outer.span);
           diagnostics.push(codes::NATIVE_STRICT_COMPUTED_PROPERTY_KEY.error(
             "computed property access requires a constant key when `native_strict` is enabled",
             Span::new(file, span),
@@ -7047,7 +7075,11 @@ pub fn validate_native_strict_body(
       }
       ExprKind::Member(member) => {
         if let ObjectKey::Computed(key_expr) = &member.property {
-          let Some(key) = body.exprs.get(key_expr.0 as usize) else {
+          let Some(key_outer) = body.exprs.get(key_expr.0 as usize) else {
+            continue;
+          };
+          let key_expr_unwrapped = expr_unwrap_ts_noop(body, *key_expr);
+          let Some(key) = body.exprs.get(key_expr_unwrapped.0 as usize) else {
             continue;
           };
           let key_is_const = matches!(
@@ -7079,7 +7111,7 @@ pub fn validate_native_strict_body(
             .expr_spans
             .get(key_expr.0 as usize)
             .copied()
-            .unwrap_or(key.span);
+            .unwrap_or(key_outer.span);
           diagnostics.push(codes::NATIVE_STRICT_COMPUTED_PROPERTY_KEY.error(
             "computed property access requires a constant key when `native_strict` is enabled",
             Span::new(file, span),
@@ -7112,7 +7144,11 @@ pub fn validate_native_strict_body(
       let ClassMemberKey::Computed(key_expr) = key else {
         continue;
       };
-      let Some(key) = body.exprs.get(key_expr.0 as usize) else {
+      let Some(key_outer) = body.exprs.get(key_expr.0 as usize) else {
+        continue;
+      };
+      let key_expr_unwrapped = expr_unwrap_ts_noop(body, *key_expr);
+      let Some(key) = body.exprs.get(key_expr_unwrapped.0 as usize) else {
         continue;
       };
       let key_is_const = matches!(
@@ -7126,7 +7162,7 @@ pub fn validate_native_strict_body(
         .expr_spans
         .get(key_expr.0 as usize)
         .copied()
-        .unwrap_or(key.span);
+        .unwrap_or(key_outer.span);
       diagnostics.push(codes::NATIVE_STRICT_COMPUTED_PROPERTY_KEY.error(
         "computed property access requires a constant key when `native_strict` is enabled",
         Span::new(file, span),
@@ -7149,7 +7185,11 @@ pub fn validate_native_strict_body(
           let ObjectKey::Computed(key_expr) = &prop.key else {
             continue;
           };
-          let Some(key) = body.exprs.get(key_expr.0 as usize) else {
+          let Some(key_outer) = body.exprs.get(key_expr.0 as usize) else {
+            continue;
+          };
+          let key_expr_unwrapped = expr_unwrap_ts_noop(body, *key_expr);
+          let Some(key) = body.exprs.get(key_expr_unwrapped.0 as usize) else {
             continue;
           };
           let key_is_const = matches!(
@@ -7163,7 +7203,7 @@ pub fn validate_native_strict_body(
             .expr_spans
             .get(key_expr.0 as usize)
             .copied()
-            .unwrap_or(key.span);
+            .unwrap_or(key_outer.span);
           diagnostics.push(codes::NATIVE_STRICT_COMPUTED_PROPERTY_KEY.error(
             "computed property access requires a constant key when `native_strict` is enabled",
             Span::new(file, span),
