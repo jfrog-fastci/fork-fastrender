@@ -57,14 +57,26 @@ fn wpt_local_suite_passes() {
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("tests/wpt/expected"));
       config.update_expected = std::env::var_os("UPDATE_WPT_EXPECTED").is_some();
-      config.filter = std::env::var("WPT_FILTER")
+      let filter = std::env::var("WPT_FILTER")
         .ok()
-        .and_then(|v| (!v.is_empty()).then_some(v));
+        .map(|value| value.trim().to_string())
+        .and_then(|value| (!value.is_empty()).then_some(value));
+      config.filter = filter.clone();
 
       let mut runner = WptRunner::with_config(renderer, config);
 
       let results = runner.run_suite(Path::new("tests/wpt/tests"));
       assert!(!results.is_empty());
+
+      let runnable = results
+        .iter()
+        .filter(|result| result.status != TestStatus::Skip)
+        .count();
+      assert!(
+        runnable > 0,
+        "WPT filter matched no runnable tests (WPT_FILTER={})",
+        filter.as_deref().unwrap_or("<unset>")
+      );
 
       for result in &results {
         assert!(

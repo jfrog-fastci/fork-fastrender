@@ -202,11 +202,6 @@ opt-level = 3
 [profile.dev.package.tiny-skia-path]
 opt-level = 3
 
-[[test]]
-name = "wpt_tests"
-path = "tests/bin/wpt_tests.rs"
-harness = false
-
 [[bench]]
 name = "perf_regressions"
 harness = false
