@@ -354,18 +354,14 @@ pub fn chrome_ui(
       // Zoom controls (optional, but useful for discoverability and as a fallback on platforms with
       // non-US keyboard layouts).
       if !is_compact {
-        if ui
-          .small_button("−")
-          .on_hover_text("Zoom out (Ctrl/Cmd+-)")
-          .clicked()
-        {
+        if icon_button(ui, BrowserIcon::ZoomOut, "Zoom out (Ctrl/Cmd+-)", true).clicked() {
           if let Some(tab) = app.active_tab_mut() {
             tab.zoom = zoom::zoom_out(tab.zoom);
           }
         }
         let percent = zoom::zoom_percent(zoom_factor);
         if ui
-          .small_button(format!("{percent}%"))
+          .button(format!("{percent}%"))
           .on_hover_text("Reset zoom (Ctrl/Cmd+0)")
           .clicked()
         {
@@ -373,11 +369,7 @@ pub fn chrome_ui(
             tab.zoom = zoom::zoom_reset();
           }
         }
-        if ui
-          .small_button("+")
-          .on_hover_text("Zoom in (Ctrl/Cmd++)")
-          .clicked()
-        {
+        if icon_button(ui, BrowserIcon::ZoomIn, "Zoom in (Ctrl/Cmd++)", true).clicked() {
           if let Some(tab) = app.active_tab_mut() {
             tab.zoom = zoom::zoom_in(tab.zoom);
           }
