@@ -622,6 +622,7 @@ fn serialize_object(
             scope,
             state.global,
             INVALID_BACKING_STORE_MSG,
+            INVALID_BACKING_STORE_MSG,
           ));
         }
       };

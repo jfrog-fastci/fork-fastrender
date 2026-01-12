@@ -3305,8 +3305,8 @@ mod tests {
     let (_vm, realm, heap) = host.window.vm_realm_and_heap_mut();
     let mut scope = heap.scope();
     let global = realm.global_object();
-    let url_val = get_prop(&mut scope, global, "__url");
-    let url = get_string(scope.heap(), url_val);
+    let url_value = get_prop(&mut scope, global, "__url");
+    let url = get_string(scope.heap(), url_value);
     assert_eq!(url, "https://example.invalid/ok");
     Ok(())
   }
