@@ -277,8 +277,8 @@ fn maybe_enable_stackmaps_linker_symbols() {
   // directory Cargo uses for the link step.
   //
   // Note: We always inject this script for this crate's *tests* so stackmap-driven stack walking
-  // integration tests can load stackmaps (typically via `.data.rel.ro.llvm_stackmaps`) even when
-  // the linker uses `--gc-sections`.
+  // integration tests can load stackmaps via linker-defined start/stop symbols even when the
+  // linker uses `--gc-sections` (the lld fragment may append the payload into `.data.rel.ro`).
   //
   // Consumers can opt in to the same behavior for their final binaries with feature
   // `llvm_stackmaps_linker`.
