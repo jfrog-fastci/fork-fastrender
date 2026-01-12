@@ -1108,12 +1108,31 @@ pub fn chrome_ui_with_bookmarks(
               40,
             );
             let err_bg = with_alpha(err_bg_base, err_t);
+            let a11y_label = err_msg
+              .map(|err| {
+                let first_line = err.lines().next().unwrap_or(err).trim();
+                if first_line.chars().count() > 160 {
+                  format!(
+                    "Error: {}…",
+                    first_line.chars().take(160).collect::<String>()
+                  )
+                } else {
+                  format!("Error: {first_line}")
+                }
+              })
+              // The badge can still be visible while fading out (err_msg already cleared).
+              .unwrap_or_else(|| "Error".to_string());
             let resp = egui::Frame::none()
               .fill(err_bg)
               .rounding(badge_rounding)
               .inner_margin(badge_margin)
               .show(ui, |ui| {
-                let _ = icon_tinted(ui, BrowserIcon::Error, ui.spacing().icon_width, err_fg);
+                let icon_resp =
+                  icon_tinted(ui, BrowserIcon::Error, ui.spacing().icon_width, err_fg);
+                icon_resp.widget_info({
+                  let label = a11y_label.clone();
+                  move || egui::WidgetInfo::labeled(egui::WidgetType::Label, label)
+                });
               })
               .response;
             if let Some(err) = err_msg {
@@ -1137,17 +1156,35 @@ pub fn chrome_ui_with_bookmarks(
               40,
             );
             let warn_bg = with_alpha(warn_bg_base, warn_t);
+            let a11y_label = warn_msg
+              .map(|warn| {
+                let first_line = warn.lines().next().unwrap_or(warn).trim();
+                if first_line.chars().count() > 160 {
+                  format!(
+                    "Warning: {}…",
+                    first_line.chars().take(160).collect::<String>()
+                  )
+                } else {
+                  format!("Warning: {first_line}")
+                }
+              })
+              // The badge can still be visible while fading out (warn_msg already cleared).
+              .unwrap_or_else(|| "Warning".to_string());
             let resp = egui::Frame::none()
               .fill(warn_bg)
               .rounding(badge_rounding)
               .inner_margin(badge_margin)
               .show(ui, |ui| {
-                let _ = icon_tinted(
+                let icon_resp = icon_tinted(
                   ui,
                   BrowserIcon::WarningInsecure,
                   ui.spacing().icon_width,
                   warn_fg,
                 );
+                icon_resp.widget_info({
+                  let label = a11y_label.clone();
+                  move || egui::WidgetInfo::labeled(egui::WidgetType::Label, label)
+                });
               })
               .response;
             if let Some(warn) = warn_msg {
@@ -1260,31 +1297,37 @@ pub fn chrome_ui_with_bookmarks(
 
           match indicator {
             security_indicator::SecurityIndicator::Secure => {
-              let _ = icon_tinted(
+              let label = indicator.tooltip();
+              let resp = icon_tinted(
                 ui,
                 BrowserIcon::LockSecure,
                 ui.spacing().icon_width,
                 ui.visuals().text_color(),
               )
-              .on_hover_text(indicator.tooltip());
+              .on_hover_text(label);
+              resp.widget_info(move || egui::WidgetInfo::labeled(egui::WidgetType::Label, label));
             }
             security_indicator::SecurityIndicator::Insecure => {
-              let _ = icon_tinted(
+              let label = indicator.tooltip();
+              let resp = icon_tinted(
                 ui,
                 BrowserIcon::WarningInsecure,
                 ui.spacing().icon_width,
                 ui.visuals().text_color(),
               )
-              .on_hover_text(indicator.tooltip());
+              .on_hover_text(label);
+              resp.widget_info(move || egui::WidgetInfo::labeled(egui::WidgetType::Label, label));
             }
             security_indicator::SecurityIndicator::Neutral => {
-              let _ = icon_tinted(
+              let label = indicator.tooltip();
+              let resp = icon_tinted(
                 ui,
                 BrowserIcon::Info,
                 ui.spacing().icon_width,
                 ui.visuals().weak_text_color(),
               )
-              .on_hover_text(indicator.tooltip());
+              .on_hover_text(label);
+              resp.widget_info(move || egui::WidgetInfo::labeled(egui::WidgetType::Label, label));
             }
           }
         });

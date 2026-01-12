@@ -3544,12 +3544,15 @@ impl App {
 
           ui.horizontal(|ui| {
             let icon_side = ui.spacing().icon_width;
-            let _ = fastrender::ui::icon_tinted(
+            let icon_resp = fastrender::ui::icon_tinted(
               ui,
               fastrender::ui::BrowserIcon::WarningInsecure,
               icon_side,
               theme_colors.warn,
             );
+            icon_resp.widget_info(|| {
+              egui::WidgetInfo::labeled(egui::WidgetType::Label, "Warning: Viewport clamped")
+            });
 
             let title = ui
               .add(
@@ -3672,12 +3675,15 @@ impl App {
           ui.vertical(|ui| {
             ui.horizontal_wrapped(|ui| {
               let icon_side = ui.spacing().icon_width;
-              let _ = fastrender::ui::icon_tinted(
+              let icon_resp = fastrender::ui::icon_tinted(
                 ui,
                 fastrender::ui::BrowserIcon::Error,
                 icon_side,
                 theme_colors.danger,
               );
+              icon_resp.widget_info(|| {
+                egui::WidgetInfo::labeled(egui::WidgetType::Label, "Navigation failed")
+              });
 
               ui.label(
                 egui::RichText::new("Navigation failed")
