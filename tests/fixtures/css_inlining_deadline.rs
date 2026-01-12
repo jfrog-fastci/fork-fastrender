@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use fastrender::api::{FastRender, RenderOptions};
+use fastrender::error::RenderStage;
 use fastrender::render_control::{GlobalStageListenerGuard, StageHeartbeat};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -15,8 +16,9 @@ fn css_inlining_respects_deadline() {
   let cancel_fired = Arc::new(AtomicBool::new(false));
   let saw_css_inline_heartbeat = Arc::new(AtomicBool::new(false));
 
-  // Use stage heartbeats to trip cancellation while CSS inlining/parsing is active, avoiding
-  // fragile wall-clock thresholds.
+  // Use stage heartbeats to ensure we reach the CSS inlining phase, while using the deadline's
+  // stage hint (`render_control::active_stage()`) to deterministically cancel only during CSS work
+  // (avoiding fragile wall-clock thresholds).
   let saw_css_inline_heartbeat_listener = Arc::clone(&saw_css_inline_heartbeat);
   let _stage_listener_guard = GlobalStageListenerGuard::new(Arc::new(move |stage| {
     if stage == StageHeartbeat::CssInline {
@@ -27,7 +29,9 @@ fn css_inlining_respects_deadline() {
   let css_checks_cancel = Arc::clone(&css_checks);
   let cancel_fired = Arc::clone(&cancel_fired);
   let cancel_callback: Arc<fastrender::CancelCallback> = Arc::new(move || {
-    if fastrender::render_control::active_heartbeat() != Some(StageHeartbeat::CssInline) {
+    // Cancellation should only trigger during CSS fetch/inline/parse work, not earlier DOM parsing
+    // or later cascade/layout/paint stages.
+    if fastrender::render_control::active_stage() != Some(RenderStage::Css) {
       return false;
     }
     if cancel_fired.swap(true, Ordering::Relaxed) {
