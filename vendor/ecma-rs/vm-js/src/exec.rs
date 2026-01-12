@@ -1394,7 +1394,8 @@ impl<'a> Evaluator<'a> {
 
   /// Implements `IteratorClose` error precedence for operations that return `Result<_, VmError>`.
   ///
-  /// - If the original error is a JS-throw completion, a closing error overrides it.
+  /// - If the original error is a JS-throw completion, iterator closing is best-effort and any
+  ///   *catchable* closing error is suppressed (ECMA-262 `IteratorClose`).
   /// - For fatal/non-catchable errors (termination, OOM, etc), iterator closing is best-effort and
   ///   the original error is preserved.
   fn iterator_close_on_error(
@@ -1408,7 +1409,6 @@ impl<'a> Evaluator<'a> {
     }
  
     let original_is_throw = err.is_throw_completion();
-  
     // Root the thrown value across `IteratorClose`, which can allocate and trigger GC.
     if original_is_throw {
       if let Some(thrown) = err.thrown_value() {
@@ -1417,7 +1417,7 @@ impl<'a> Evaluator<'a> {
         }
       }
     }
- 
+
     match iterator::iterator_close(
       self.vm,
       &mut *self.host,
@@ -1427,7 +1427,13 @@ impl<'a> Evaluator<'a> {
     ) {
       Ok(()) => err,
       Err(close_err) => {
-        if original_is_throw {
+        // `IteratorClose` suppression rules:
+        // - If the original completion is a throw completion, suppress errors from
+        //   `GetMethod("return")` / `Call(return)`.
+        // - Never suppress fatal VM errors (OOM/termination).
+        if original_is_throw && close_err.is_throw_completion() {
+          err
+        } else if original_is_throw {
           close_err
         } else {
           err
@@ -1438,7 +1444,8 @@ impl<'a> Evaluator<'a> {
 
   /// Implements `IteratorClose` for operations that return a `Completion` record.
   ///
-  /// Any iterator-closing error overrides the provided completion (ECMA-262 `IteratorClose`).
+  /// Iterator closing errors override non-throw completions, but are suppressed for throw
+  /// completions (ECMA-262 `IteratorClose`).
   fn iterator_close_on_completion(
     &mut self,
     scope: &mut Scope<'_>,
@@ -1448,6 +1455,8 @@ impl<'a> Evaluator<'a> {
     if record.done {
       return Ok(completion);
     }
+
+    let completion_is_throw = matches!(&completion, Completion::Throw(_));
 
     // Root the completion value across `IteratorClose`, which can allocate and trigger GC.
     if let Some(v) = completion.value() {
@@ -1462,7 +1471,13 @@ impl<'a> Evaluator<'a> {
       record,
     ) {
       Ok(()) => Ok(completion),
-      Err(close_err) => Err(close_err),
+      Err(close_err) => {
+        if completion_is_throw && close_err.is_throw_completion() {
+          Ok(completion)
+        } else {
+          Err(close_err)
+        }
+      }
     }
   }
 
@@ -4327,7 +4342,9 @@ impl<'a> Evaluator<'a> {
         &mut iterator_record,
       ) {
         Ok(v) => v,
-        Err(err) => return Err(self.iterator_close_on_error(&mut iter_scope, &iterator_record, err)),
+        // Spec: `ForIn/OfBodyEvaluation` does not perform `IteratorClose` on errors produced while
+        // stepping the iterator (`next`/`done`/`value`).
+        Err(err) => return Err(err),
       };
 
       let Some(value) = next_value else {
