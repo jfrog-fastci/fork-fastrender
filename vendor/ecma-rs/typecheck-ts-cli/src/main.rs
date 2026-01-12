@@ -333,6 +333,10 @@ fn run_typecheck(args: TypecheckArgs) -> ExitCode {
     options.types = effective_type_packages(cfg, &options, &type_roots);
   }
 
+  if project.is_none() && !args.node_resolve && options.module_resolution.is_none() {
+    options.module_resolution = Some("classic".to_string());
+  }
+
   // Canonicalize casing/ordering so CLI outputs are deterministic regardless of
   // how options were specified. Note: option diagnostics (TS5053, TS6046, etc)
   // are emitted by `typecheck-ts` core during `Program::check()`, not here.
@@ -1458,11 +1462,18 @@ mod tests {
   fn cli_node_resolve_flag_overrides_resolve_options_flags() {
     let options = CompilerOptions::default();
     let resolve_options = resolve_options_for_cli(&options, false);
-    assert_eq!(resolve_options.module_resolution, ModuleResolutionMode::Node10);
+    assert_eq!(resolve_options.module_resolution, ModuleResolutionMode::Bundler);
     assert!(
       resolve_options.node_modules,
-      "Node10 defaults should enable node_modules resolution"
+      "Bundler defaults should enable node_modules resolution"
     );
+    assert!(resolve_options.package_imports, "Bundler defaults should enable imports");
+
+    let mut options = CompilerOptions::default();
+    options.module_resolution = Some("node".to_string());
+    let resolve_options = resolve_options_for_cli(&options, false);
+    assert_eq!(resolve_options.module_resolution, ModuleResolutionMode::Node10);
+    assert!(resolve_options.node_modules);
     assert!(
       !resolve_options.package_imports,
       "Node10 defaults should not enable package.json imports"

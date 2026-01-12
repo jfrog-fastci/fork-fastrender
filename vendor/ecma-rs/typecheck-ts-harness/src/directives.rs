@@ -3,7 +3,10 @@ use serde::Deserialize;
 use serde::Serialize;
 use serde_json::{Map, Value};
 use std::collections::{BTreeMap, BTreeSet};
-use typecheck_ts::lib_support::{CompilerOptions, JsxMode, LibName, ModuleKind, ScriptTarget};
+use typecheck_ts::lib_support::{
+  parse_jsx_mode, parse_module_kind, parse_script_target, CompilerOptions, JsxMode, LibName,
+  ScriptTarget,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -681,7 +684,13 @@ impl HarnessOptions {
         Value::String(module.option_name().to_string()),
       );
     } else if let Some(module) = &self.module {
+      // Preserve the raw directive value so `tsc` can report invalid entries.
       map.insert("module".to_string(), Value::String(module.clone()));
+    } else {
+      map.insert(
+        "module".to_string(),
+        Value::String(compiler.effective_module_kind().option_name().to_string()),
+      );
     }
     if let Some(mode) = compiler.jsx {
       let jsx_value = if mode == JsxMode::Preserve
@@ -729,7 +738,13 @@ impl HarnessOptions {
       map.insert("declaration".to_string(), Value::Bool(value));
     }
     if let Some(value) = compiler.module_resolution.as_ref() {
+      // Directive specified (or invalid value preserved by `CompilerOptions`).
       map.insert("moduleResolution".to_string(), Value::String(value.clone()));
+    } else {
+      map.insert(
+        "moduleResolution".to_string(),
+        Value::String(compiler.effective_module_resolution().as_str().to_string()),
+      );
     }
     if !compiler.types.is_empty() {
       map.insert(
@@ -775,6 +790,11 @@ impl HarnessOptions {
     }
     if let Some(value) = self.module_detection.as_ref() {
       map.insert("moduleDetection".to_string(), Value::String(value.clone()));
+    } else {
+      map.insert(
+        "moduleDetection".to_string(),
+        Value::String(compiler.effective_module_detection().as_str().to_string()),
+      );
     }
 
     map
@@ -808,23 +828,6 @@ fn parse_list(raw: Option<&str>) -> Vec<String> {
     .collect()
 }
 
-fn parse_script_target(raw: &str) -> Option<ScriptTarget> {
-  match normalize_scalar(raw).to_ascii_lowercase().as_str() {
-    "es3" => Some(ScriptTarget::Es3),
-    "es5" => Some(ScriptTarget::Es5),
-    "es6" | "es2015" => Some(ScriptTarget::Es2015),
-    "es2016" => Some(ScriptTarget::Es2016),
-    "es2017" => Some(ScriptTarget::Es2017),
-    "es2018" => Some(ScriptTarget::Es2018),
-    "es2019" => Some(ScriptTarget::Es2019),
-    "es2020" => Some(ScriptTarget::Es2020),
-    "es2021" => Some(ScriptTarget::Es2021),
-    "es2022" => Some(ScriptTarget::Es2022),
-    "esnext" => Some(ScriptTarget::EsNext),
-    _ => None,
-  }
-}
-
 fn script_target_str(target: ScriptTarget) -> &'static str {
   match target {
     ScriptTarget::Es3 => "ES3",
@@ -841,39 +844,12 @@ fn script_target_str(target: ScriptTarget) -> &'static str {
   }
 }
 
-fn parse_jsx_mode(raw: &str) -> Option<JsxMode> {
-  match normalize_scalar(raw).to_ascii_lowercase().as_str() {
-    "preserve" | "react-native" => Some(JsxMode::Preserve),
-    "react" => Some(JsxMode::React),
-    "react-jsx" => Some(JsxMode::ReactJsx),
-    "react-jsxdev" => Some(JsxMode::ReactJsxdev),
-    _ => None,
-  }
-}
-
 fn jsx_mode_str(mode: JsxMode) -> &'static str {
   match mode {
     JsxMode::Preserve => "preserve",
     JsxMode::React => "react",
     JsxMode::ReactJsx => "react-jsx",
     JsxMode::ReactJsxdev => "react-jsxdev",
-  }
-}
-
-fn parse_module_kind(raw: &str) -> Option<ModuleKind> {
-  match normalize_scalar(raw).to_ascii_lowercase().as_str() {
-    "none" => Some(ModuleKind::None),
-    "commonjs" => Some(ModuleKind::CommonJs),
-    "amd" => Some(ModuleKind::Amd),
-    "system" => Some(ModuleKind::System),
-    "umd" => Some(ModuleKind::Umd),
-    "es6" | "es2015" => Some(ModuleKind::Es2015),
-    "es2020" => Some(ModuleKind::Es2020),
-    "es2022" => Some(ModuleKind::Es2022),
-    "esnext" => Some(ModuleKind::EsNext),
-    "node16" => Some(ModuleKind::Node16),
-    "nodenext" => Some(ModuleKind::NodeNext),
-    _ => None,
   }
 }
 
@@ -959,6 +935,7 @@ fn tsc_only_option_notes(options: &HarnessOptions) -> Vec<String> {
 #[cfg(test)]
 mod tests {
   use super::*;
+  use typecheck_ts::lib_support::{ModuleKind, ModuleResolutionKind};
 
   fn dir(name: &str, value: Option<&str>) -> HarnessDirective {
     HarnessDirective {
@@ -1184,9 +1161,9 @@ mod tests {
       tsc.get("target"),
       Some(&Value::String("ES2015".to_string()))
     );
-    assert!(
-      tsc.get("moduleResolution").is_none(),
-      "expected moduleResolution to be omitted unless explicitly specified"
+    assert_eq!(
+      tsc.get("moduleResolution"),
+      Some(&Value::String(ModuleResolutionKind::Bundler.as_str().to_string()))
     );
   }
 

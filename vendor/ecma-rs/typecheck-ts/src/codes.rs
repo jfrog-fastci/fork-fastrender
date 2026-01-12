@@ -392,6 +392,22 @@ pub const LIB_OPTION_CANNOT_BE_SPECIFIED_WITH_NOLIB: Code = Code::new(
   &[],
 );
 
+/// TS5110: `moduleResolution` requires a compatible `module` setting.
+///
+/// TypeScript reports this diagnostic when `moduleResolution` is explicitly set
+/// to `Node16`/`NodeNext` but `module` is not set to a Node16-era module kind.
+///
+/// - Primary span: placeholder span (tsc reports `file: null` with `0..0` range).
+/// - Labels: primary only.
+/// - Notes: none.
+pub const MODULE_OPTION_REQUIRED_FOR_NODE16_RESOLUTION: Code = Code::new(
+  "TS5110",
+  "incompatible module and moduleResolution options",
+  "placeholder span when moduleResolution requires a matching module setting",
+  &["primary: placeholder span"],
+  &[],
+);
+
 /// TS2454: Variable is used before it has been assigned.
 ///
 /// - Primary span: the identifier token being read.
@@ -608,19 +624,23 @@ pub const FILE_NOT_FOUND: Code = Code::new(
 
 /// TS6046: Invalid value supplied for a compiler option.
 ///
-/// TypeScript emits this diagnostic when `--lib` / `compilerOptions.lib`
-/// contains an unknown entry.
+/// TypeScript emits this diagnostic when a compiler option (for example
+/// `--lib` / `compilerOptions.lib` or `--moduleResolution`) contains an unknown
+/// value.
 ///
 /// - Primary span: placeholder span (tsc reports `file: null` with `0..0` range).
 /// - Labels: primary only.
 /// - Notes: none.
-pub const INVALID_LIB_OPTION: Code = Code::new(
+pub const INVALID_OPTION_VALUE: Code = Code::new(
   "TS6046",
-  "invalid `--lib` option value",
-  "placeholder span when compilerOptions.lib contains an invalid value",
+  "invalid compiler option value",
+  "placeholder span when a compiler option contains an invalid value",
   &["primary: placeholder span"],
   &[],
 );
+
+/// Backwards-compatible alias for [`INVALID_OPTION_VALUE`].
+pub const INVALID_LIB_OPTION: Code = INVALID_OPTION_VALUE;
 
 /// TS2688: Triple-slash `reference types` package could not be resolved.
 ///

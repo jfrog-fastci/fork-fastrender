@@ -1,6 +1,6 @@
 use assert_cmd::Command;
 use diagnostics::paths::{normalize_fs_path, normalize_ts_path};
-use predicates::str::is_empty;
+use predicates::str::{contains, is_empty};
 use serde_json::Value;
 use std::fs;
 use std::io::Write;
@@ -158,7 +158,7 @@ fn resolves_relative_modules_and_index_files() {
 }
 
 #[test]
-fn node_modules_resolution_defaults_to_node10() {
+fn node_modules_resolution_is_opt_in() {
   let tmp = tempdir().expect("temp dir");
   let path = tmp.path().join("src/main.ts");
   write_file(
@@ -175,8 +175,8 @@ fn node_modules_resolution_defaults_to_node10() {
     .args(["typecheck", "--lib", "es5"])
     .arg(path.as_os_str())
     .assert()
-    .success()
-    .stdout(is_empty());
+    .failure()
+    .stdout(contains("unresolved module specifier"));
 
   typecheck_cli()
     .timeout(CLI_TIMEOUT)

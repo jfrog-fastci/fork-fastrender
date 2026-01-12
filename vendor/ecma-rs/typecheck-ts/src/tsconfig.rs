@@ -5,7 +5,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use walkdir::{DirEntry, WalkDir};
 
-use crate::lib_support::{CompilerOptions, JsxMode, LibName, ModuleKind, ScriptTarget};
+use crate::lib_support::{
+  parse_jsx_mode, parse_module_kind, parse_script_target, CompilerOptions, LibName,
+};
 
 #[derive(Debug, Clone)]
 pub struct ProjectConfig {
@@ -403,8 +405,8 @@ fn compiler_options_from_raw(raw: &RawCompilerOptions) -> Result<CompilerOptions
   let mut options = CompilerOptions::default();
 
   if let Some(raw) = raw.target.as_deref() {
-    options.target =
-      parse_script_target(raw).ok_or_else(|| format!("unknown compilerOptions.target '{raw}'"))?;
+    options.target = parse_script_target(raw)
+      .ok_or_else(|| format!("unknown compilerOptions.target '{raw}'"))?;
   }
 
   if let Some(raw) = raw.module.as_deref() {
@@ -433,9 +435,9 @@ fn compiler_options_from_raw(raw: &RawCompilerOptions) -> Result<CompilerOptions
   }
 
   if let Some(module_resolution) = raw.module_resolution.as_deref() {
-    let normalized = module_resolution.trim().to_ascii_lowercase();
-    if !normalized.is_empty() {
-      options.module_resolution = Some(normalized);
+    let module_resolution = module_resolution.trim();
+    if !module_resolution.is_empty() {
+      options.module_resolution = Some(module_resolution.to_string());
     }
   }
   if let Some(value) = raw.skip_lib_check {
@@ -486,7 +488,9 @@ fn compiler_options_from_raw(raw: &RawCompilerOptions) -> Result<CompilerOptions
   }
 
   if let Some(raw) = raw.jsx.as_deref() {
-    options.jsx = Some(parse_jsx_mode(raw)?);
+    options.jsx = Some(
+      parse_jsx_mode(raw).ok_or_else(|| format!("unknown compilerOptions.jsx '{raw}'"))?,
+    );
   }
 
   if let Some(raw) = raw.jsx_import_source.as_deref() {
@@ -496,7 +500,7 @@ fn compiler_options_from_raw(raw: &RawCompilerOptions) -> Result<CompilerOptions
     }
   }
 
-  Ok(options)
+  Ok(options.normalize())
 }
 
 fn normalize_string_list(list: &[String]) -> Vec<String> {
@@ -509,53 +513,6 @@ fn normalize_string_list(list: &[String]) -> Vec<String> {
   out.sort();
   out.dedup();
   out
-}
-
-fn parse_script_target(raw: &str) -> Option<ScriptTarget> {
-  let normalized = raw.trim().to_ascii_lowercase();
-  match normalized.as_str() {
-    "es3" => Some(ScriptTarget::Es3),
-    "es5" => Some(ScriptTarget::Es5),
-    "es2015" | "es6" => Some(ScriptTarget::Es2015),
-    "es2016" => Some(ScriptTarget::Es2016),
-    "es2017" => Some(ScriptTarget::Es2017),
-    "es2018" => Some(ScriptTarget::Es2018),
-    "es2019" => Some(ScriptTarget::Es2019),
-    "es2020" => Some(ScriptTarget::Es2020),
-    "es2021" => Some(ScriptTarget::Es2021),
-    "es2022" => Some(ScriptTarget::Es2022),
-    "esnext" => Some(ScriptTarget::EsNext),
-    _ => None,
-  }
-}
-
-fn parse_module_kind(raw: &str) -> Option<ModuleKind> {
-  let normalized = raw.trim().to_ascii_lowercase();
-  match normalized.as_str() {
-    "none" => Some(ModuleKind::None),
-    "commonjs" => Some(ModuleKind::CommonJs),
-    "amd" => Some(ModuleKind::Amd),
-    "umd" => Some(ModuleKind::Umd),
-    "system" => Some(ModuleKind::System),
-    "es2015" | "es6" => Some(ModuleKind::Es2015),
-    "es2020" => Some(ModuleKind::Es2020),
-    "es2022" => Some(ModuleKind::Es2022),
-    "esnext" => Some(ModuleKind::EsNext),
-    "node16" => Some(ModuleKind::Node16),
-    "nodenext" => Some(ModuleKind::NodeNext),
-    _ => None,
-  }
-}
-
-fn parse_jsx_mode(raw: &str) -> Result<JsxMode, String> {
-  let normalized = raw.trim().to_ascii_lowercase();
-  match normalized.as_str() {
-    "preserve" | "react-native" => Ok(JsxMode::Preserve),
-    "react" => Ok(JsxMode::React),
-    "react-jsx" => Ok(JsxMode::ReactJsx),
-    "react-jsxdev" => Ok(JsxMode::ReactJsxdev),
-    other => Err(format!("unknown compilerOptions.jsx '{other}'")),
-  }
 }
 
 fn discover_root_files(root_dir: &Path, raw: &RawTsConfig) -> Result<Vec<PathBuf>, String> {

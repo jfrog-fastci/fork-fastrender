@@ -8,8 +8,9 @@ mod compiler_options;
 pub mod lib_env;
 
 pub use compiler_options::{
-  effective_module_kind, CacheMode, CacheOptions, CompilerOptions, JsxMode, LibName, LibSet,
-  ModuleKind, ScriptTarget,
+  effective_module_kind, parse_jsx_mode, parse_module_detection_kind, parse_module_kind,
+  parse_module_resolution_kind, parse_script_target, CacheMode, CacheOptions, CompilerOptions,
+  JsxMode, LibName, LibSet, ModuleDetectionKind, ModuleKind, ModuleResolutionKind, ScriptTarget,
 };
 #[cfg(feature = "resolve")]
 pub use compiler_options::{effective_module_resolution_mode, resolve_options_for_node_resolver};

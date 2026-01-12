@@ -2,8 +2,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use serde_json::{Map, Value};
-use typecheck_ts::lib_support::{CompilerOptions, ModuleKind};
 use typecheck_ts::FileKey;
+use typecheck_ts::lib_support::{CompilerOptions, ModuleKind};
 use typecheck_ts_harness::runner::HarnessFileSet;
 use typecheck_ts_harness::VirtualFile;
 
@@ -120,6 +120,10 @@ fn fuzz_smoke_resolver() {
   let mut rng = Lcg(0xc2b2_ae3d_27d4_eb4f);
   let start = Instant::now();
   let mut iters = 0usize;
+  let mut options = CompilerOptions::default();
+  options.module = Some(ModuleKind::Node16);
+  options.module_resolution = Some("node16".to_string());
+  let options = options.normalize();
 
   while iters < 10_000 && start.elapsed() < Duration::from_secs(3) {
     let root_pkg_value = root_package_json_with_imports(&mut rng);
@@ -173,16 +177,14 @@ fn fuzz_smoke_resolver() {
  
     let from = FileKey::new("/project/src/index.ts");
     let set = HarnessFileSet::new(&files);
-    let mut opts = CompilerOptions::default();
-    opts.module = Some(ModuleKind::Node16);
-    let first = set.resolve_import(&from, &spec, &opts);
-    let second = set.resolve_import(&from, &spec, &opts);
+    let first = set.resolve_import(&from, &spec, &options);
+    let second = set.resolve_import(&from, &spec, &options);
     assert_eq!(first, second, "resolver output must be deterministic");
 
     let mut reversed = files.clone();
     reversed.reverse();
     let set2 = HarnessFileSet::new(&reversed);
-    let third = set2.resolve_import(&from, &spec, &opts);
+    let third = set2.resolve_import(&from, &spec, &options);
     assert_eq!(
       first, third,
       "resolver output must be stable across input ordering"

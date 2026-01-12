@@ -18,6 +18,13 @@ impl Program {
     offset: u32,
   ) -> Result<Option<semantic_js::SymbolId>, FatalError> {
     self.with_analyzed_state(|state| {
+      // `ProgramState` records some symbol spans opportunistically (primarily
+      // for definition-like constructs), but the complete occurrence table is
+      // computed by the salsa query (`db::symbol_occurrences`) which includes
+      // expression/type reference resolutions.
+      //
+      // Snapshots already store the full salsa-derived table in
+      // `state.symbol_occurrences`, so we can reuse it there.
       if state.snapshot_loaded {
         if let Some(occurrences) = state.symbol_occurrences.get(&file) {
           return Ok(Self::symbol_from_occurrences(occurrences, offset));

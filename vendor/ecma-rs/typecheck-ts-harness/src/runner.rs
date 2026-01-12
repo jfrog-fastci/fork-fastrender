@@ -1994,7 +1994,7 @@ impl Host for HarnessHost {
         specifier,
         resolved.as_ref().map(|key| key.as_str()),
         None,
-        crate::resolve::harness_resolve_mode_for_options(&self.compiler_options),
+        crate::resolve::harness_resolve_mode(&self.compiler_options),
       );
     }
     resolved
@@ -2908,10 +2908,8 @@ mod tests {
 
     let mut compiler_options = CompilerOptions::default();
     compiler_options.no_default_lib = true;
-    // Ensure mode capture matches the resolver's effective behavior (including
-    // `tsc`-style defaults derived from the module kind).
-    compiler_options.module = Some(typecheck_ts::lib_support::ModuleKind::CommonJs);
-    let expected_mode = crate::resolve::harness_resolve_mode_for_options(&compiler_options);
+    let expected_mode =
+      crate::resolve::harness_resolve_mode(&compiler_options);
 
     let host_no_trace = HarnessHost::new(file_set.clone(), compiler_options.clone(), Vec::new());
     let program_no_trace = Program::new(host_no_trace, roots.clone());

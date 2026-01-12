@@ -72,6 +72,65 @@ impl ModuleKind {
   }
 }
 
+/// TypeScript `moduleResolution` mode that influences module specifier
+/// resolution.
+///
+/// This models the relevant subset of TypeScript's `ModuleResolutionKind` enum.
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ModuleResolutionKind {
+  Classic,
+  Node10,
+  Node16,
+  NodeNext,
+  Bundler,
+}
+
+impl ModuleResolutionKind {
+  /// Canonical string form accepted by `tsc` (`--moduleResolution`).
+  pub fn as_str(&self) -> &'static str {
+    match self {
+      ModuleResolutionKind::Classic => "classic",
+      // Prefer `node` rather than `node10` to avoid triggering TypeScript's
+      // deprecation warning for the `node10` spelling when explicitly set.
+      ModuleResolutionKind::Node10 => "node",
+      ModuleResolutionKind::Node16 => "node16",
+      ModuleResolutionKind::NodeNext => "nodenext",
+      ModuleResolutionKind::Bundler => "bundler",
+    }
+  }
+
+  /// Name used by TypeScript diagnostics (`ModuleResolutionKind[moduleResolution]`).
+  pub fn option_name(&self) -> &'static str {
+    match self {
+      ModuleResolutionKind::Classic => "Classic",
+      ModuleResolutionKind::Node10 => "Node10",
+      ModuleResolutionKind::Node16 => "Node16",
+      ModuleResolutionKind::NodeNext => "NodeNext",
+      ModuleResolutionKind::Bundler => "Bundler",
+    }
+  }
+}
+
+/// TypeScript `moduleDetection` mode (`--moduleDetection`).
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ModuleDetectionKind {
+  Auto,
+  Force,
+  Legacy,
+}
+
+impl ModuleDetectionKind {
+  pub fn as_str(&self) -> &'static str {
+    match self {
+      ModuleDetectionKind::Auto => "auto",
+      ModuleDetectionKind::Force => "force",
+      ModuleDetectionKind::Legacy => "legacy",
+    }
+  }
+}
+
 /// Compute the effective TypeScript `module` setting, applying `tsc`'s defaults
 /// when the option is unset.
 ///
@@ -79,10 +138,7 @@ impl ModuleKind {
 /// - ES3/ES5 -> CommonJS
 /// - otherwise -> ES2015
 pub fn effective_module_kind(options: &CompilerOptions) -> ModuleKind {
-  options.module.unwrap_or_else(|| match options.target {
-    ScriptTarget::Es3 | ScriptTarget::Es5 => ModuleKind::CommonJs,
-    _ => ModuleKind::Es2015,
-  })
+  options.effective_module_kind()
 }
 
 impl Default for ScriptTarget {
@@ -91,51 +147,15 @@ impl Default for ScriptTarget {
   }
 }
 
-#[cfg(any(feature = "resolve", test))]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum EffectiveModuleResolutionMode {
-  Classic,
-  Node10,
-  Node16,
-  NodeNext,
-  Bundler,
-}
-
-#[cfg(any(feature = "resolve", test))]
-fn compute_effective_module_resolution_mode(options: &CompilerOptions) -> EffectiveModuleResolutionMode {
-  let normalized = options
-    .module_resolution
-    .as_deref()
-    .map(|value| value.trim().to_ascii_lowercase());
-  match normalized.as_deref() {
-    Some("classic") => EffectiveModuleResolutionMode::Classic,
-    // TypeScript treats `node` as the legacy Node10 resolver.
-    Some("node") | Some("nodejs") | Some("node10") => EffectiveModuleResolutionMode::Node10,
-    Some("node16") => EffectiveModuleResolutionMode::Node16,
-    Some("nodenext") => EffectiveModuleResolutionMode::NodeNext,
-    Some("bundler") => EffectiveModuleResolutionMode::Bundler,
-    // Unknown values are treated as if the option was unset. This matches `tsc`'s
-    // behaviour of emitting an option diagnostic while proceeding with defaults.
-    Some(_) | None => match effective_module_kind(options) {
-      ModuleKind::None | ModuleKind::Amd | ModuleKind::Umd | ModuleKind::System => {
-        EffectiveModuleResolutionMode::Classic
-      }
-      ModuleKind::Node16 => EffectiveModuleResolutionMode::Node16,
-      ModuleKind::NodeNext => EffectiveModuleResolutionMode::NodeNext,
-      // All other module kinds (including CommonJS, ES*, etc) default to Node10.
-      _ => EffectiveModuleResolutionMode::Node10,
-    },
-  }
-}
-
 #[cfg(feature = "resolve")]
 pub fn effective_module_resolution_mode(options: &CompilerOptions) -> crate::resolve::ModuleResolutionMode {
-  match compute_effective_module_resolution_mode(options) {
-    EffectiveModuleResolutionMode::Classic => crate::resolve::ModuleResolutionMode::Classic,
-    EffectiveModuleResolutionMode::Node10 => crate::resolve::ModuleResolutionMode::Node10,
-    EffectiveModuleResolutionMode::Node16 => crate::resolve::ModuleResolutionMode::Node16,
-    EffectiveModuleResolutionMode::NodeNext => crate::resolve::ModuleResolutionMode::NodeNext,
-    EffectiveModuleResolutionMode::Bundler => crate::resolve::ModuleResolutionMode::Bundler,
+  use crate::resolve::ModuleResolutionMode;
+  match options.effective_module_resolution() {
+    ModuleResolutionKind::Classic => ModuleResolutionMode::Classic,
+    ModuleResolutionKind::Node10 => ModuleResolutionMode::Node10,
+    ModuleResolutionKind::Node16 => ModuleResolutionMode::Node16,
+    ModuleResolutionKind::NodeNext => ModuleResolutionMode::NodeNext,
+    ModuleResolutionKind::Bundler => ModuleResolutionMode::Bundler,
   }
 }
 
@@ -149,27 +169,7 @@ pub fn effective_module_resolution_mode(options: &CompilerOptions) -> crate::res
 pub fn resolve_options_for_node_resolver(
   options: &CompilerOptions,
 ) -> crate::resolve::ResolveOptions {
-  let module_resolution = effective_module_resolution_mode(options);
-  let (node_modules, package_imports) = match module_resolution {
-    crate::resolve::ModuleResolutionMode::Classic => (false, false),
-    // TypeScript's legacy `node` resolver does not support `package.json` imports maps.
-    crate::resolve::ModuleResolutionMode::Node10 => (true, false),
-    // Node16/NodeNext/Bundler support `package.json` exports/imports maps.
-    crate::resolve::ModuleResolutionMode::Node16
-    | crate::resolve::ModuleResolutionMode::NodeNext
-    | crate::resolve::ModuleResolutionMode::Bundler => (true, true),
-  };
-
-  crate::resolve::ResolveOptions {
-    node_modules,
-    package_imports,
-    module_resolution,
-    // `ResolveOptions.module_kind` influences import-vs-require context inference.
-    // Always provide the effective module kind so unset compiler options behave
-    // like `tsc`'s computed defaults.
-    module_kind: Some(effective_module_kind(options)),
-    ..Default::default()
-  }
+  options.effective_resolve_options()
 }
 
 /// Compiler configuration that materially affects lib selection and typing.
@@ -317,13 +317,17 @@ impl CompilerOptions {
     self.module_resolution = self
       .module_resolution
       .take()
-      .and_then(|raw| normalize_optional_string(raw, |s| s.to_ascii_lowercase()));
+      .and_then(|raw| {
+        normalize_optional_string(raw, |s| {
+          canonicalize_module_resolution_value(&s.to_ascii_lowercase())
+            .unwrap_or_else(|| s.to_ascii_lowercase())
+        })
+      });
 
     self.module_detection = self
       .module_detection
       .take()
       .and_then(|raw| normalize_optional_string(raw, |s| s.to_ascii_lowercase()));
-
     self.jsx_import_source = self
       .jsx_import_source
       .take()
@@ -358,6 +362,102 @@ impl CompilerOptions {
     let mut options = self.normalize();
     let diagnostics = validate_options(&mut options);
     (options, diagnostics)
+  }
+
+  /// Compute the effective `module` kind following TypeScript's computed
+  /// defaults (`getEmitModuleKind`).
+  ///
+  /// When `module` is unset, TypeScript defaults it based on `target`:
+  /// - `target >= ES2015` => `ES2015`
+  /// - otherwise => `CommonJS`
+  pub fn effective_module_kind(&self) -> ModuleKind {
+    self.module.unwrap_or_else(|| {
+      if self.target.is_es2015_or_later() {
+        ModuleKind::Es2015
+      } else {
+        ModuleKind::CommonJs
+      }
+    })
+  }
+
+  /// Compute the effective `moduleResolution` following TypeScript's computed
+  /// defaults (`getEmitModuleResolutionKind`).
+  pub fn effective_module_resolution(&self) -> ModuleResolutionKind {
+    if let Some(raw) = self.module_resolution.as_deref() {
+      if let Some(kind) = parse_module_resolution_kind(raw) {
+        return kind;
+      }
+    }
+
+    let module_kind = self.effective_module_kind();
+    match module_kind {
+      ModuleKind::None | ModuleKind::Amd | ModuleKind::Umd | ModuleKind::System => {
+        ModuleResolutionKind::Classic
+      }
+      ModuleKind::NodeNext => ModuleResolutionKind::NodeNext,
+      ModuleKind::Node16 => ModuleResolutionKind::Node16,
+      _ => ModuleResolutionKind::Bundler,
+    }
+  }
+
+  /// Compute the effective `moduleDetection` following TypeScript's computed
+  /// defaults (`getEmitModuleDetectionKind`).
+  pub fn effective_module_detection(&self) -> ModuleDetectionKind {
+    if let Some(raw) = self.module_detection.as_deref() {
+      if let Some(kind) = parse_module_detection_kind(raw) {
+        return kind;
+      }
+    }
+
+    match self.effective_module_kind() {
+      ModuleKind::Node16 | ModuleKind::NodeNext => ModuleDetectionKind::Force,
+      _ => ModuleDetectionKind::Auto,
+    }
+  }
+
+  /// Translate the effective compiler options into resolver settings for
+  /// `typecheck_ts::resolve`.
+  #[cfg(feature = "resolve")]
+  pub fn effective_resolve_options(&self) -> crate::resolve::ResolveOptions {
+    use crate::resolve::{ModuleResolutionMode, ResolveOptions};
+    let module_kind = self.effective_module_kind();
+    match self.effective_module_resolution() {
+      ModuleResolutionKind::Classic => ResolveOptions {
+        node_modules: false,
+        package_imports: false,
+        module_resolution: ModuleResolutionMode::Classic,
+        module_kind: Some(module_kind),
+        ..ResolveOptions::default()
+      },
+      ModuleResolutionKind::Node10 => ResolveOptions {
+        node_modules: true,
+        package_imports: false,
+        module_resolution: ModuleResolutionMode::Node10,
+        module_kind: Some(module_kind),
+        ..ResolveOptions::default()
+      },
+      ModuleResolutionKind::Node16 => ResolveOptions {
+        node_modules: true,
+        package_imports: true,
+        module_resolution: ModuleResolutionMode::Node16,
+        module_kind: Some(module_kind),
+        ..ResolveOptions::default()
+      },
+      ModuleResolutionKind::NodeNext => ResolveOptions {
+        node_modules: true,
+        package_imports: true,
+        module_resolution: ModuleResolutionMode::NodeNext,
+        module_kind: Some(module_kind),
+        ..ResolveOptions::default()
+      },
+      ModuleResolutionKind::Bundler => ResolveOptions {
+        node_modules: true,
+        package_imports: true,
+        module_resolution: ModuleResolutionMode::Bundler,
+        module_kind: Some(module_kind),
+        ..ResolveOptions::default()
+      },
+    }
   }
 }
 
@@ -502,6 +602,7 @@ fn validate_options(options: &mut CompilerOptions) -> Vec<Diagnostic> {
   use crate::codes;
 
   let mut diagnostics = Vec::new();
+  let placeholder = Span::new(FileId(u32::MAX), TextRange::new(0, 0));
 
   // Match tsc's TS5053 behaviour: `--noLib` conflicts with an explicit `--lib`
   // list. TypeScript emits the diagnostic and then proceeds as `--noLib`
@@ -509,12 +610,140 @@ fn validate_options(options: &mut CompilerOptions) -> Vec<Diagnostic> {
   if options.no_default_lib && !options.libs.is_empty() {
     diagnostics.push(codes::LIB_OPTION_CANNOT_BE_SPECIFIED_WITH_NOLIB.error(
       "Option 'lib' cannot be specified with option 'noLib'.",
-      Span::new(FileId(u32::MAX), TextRange::new(0, 0)),
+      placeholder,
     ));
     options.libs.clear();
   }
 
+  if let Some(raw) = options.module_resolution.as_deref() {
+    if parse_module_resolution_kind(raw).is_none() {
+      diagnostics.push(codes::INVALID_OPTION_VALUE.error(
+        "Argument for '--moduleResolution' option must be: 'classic', 'node', 'node16', 'nodenext', 'bundler'.",
+        placeholder,
+      ));
+      // Treat invalid values as if the option was unset.
+      options.module_resolution = None;
+    } else if let Some(canonical) = canonicalize_module_resolution_value(raw) {
+      if canonical != raw {
+        options.module_resolution = Some(canonical);
+      }
+    }
+  }
+
+  let module_kind = options.effective_module_kind();
+  if let Some(module_resolution) = options
+    .module_resolution
+    .as_deref()
+    .and_then(parse_module_resolution_kind)
+  {
+    if matches!(
+      module_resolution,
+      ModuleResolutionKind::Node16 | ModuleResolutionKind::NodeNext
+    ) && !matches!(module_kind, ModuleKind::Node16 | ModuleKind::NodeNext)
+    {
+      let name = module_resolution.option_name();
+      diagnostics.push(codes::MODULE_OPTION_REQUIRED_FOR_NODE16_RESOLUTION.error(
+        format!("Option 'module' must be set to '{name}' when option 'moduleResolution' is set to '{name}'."),
+        placeholder,
+      ));
+    }
+  }
+
   diagnostics
+}
+
+impl ScriptTarget {
+  fn is_es2015_or_later(&self) -> bool {
+    matches!(
+      self,
+      ScriptTarget::Es2015
+        | ScriptTarget::Es2016
+        | ScriptTarget::Es2017
+        | ScriptTarget::Es2018
+        | ScriptTarget::Es2019
+        | ScriptTarget::Es2020
+        | ScriptTarget::Es2021
+        | ScriptTarget::Es2022
+        | ScriptTarget::EsNext
+    )
+  }
+}
+
+/// Parse a TypeScript `target` option value.
+pub fn parse_script_target(raw: &str) -> Option<ScriptTarget> {
+  match raw.trim().to_ascii_lowercase().as_str() {
+    "es3" => Some(ScriptTarget::Es3),
+    "es5" => Some(ScriptTarget::Es5),
+    "es2015" | "es6" => Some(ScriptTarget::Es2015),
+    "es2016" => Some(ScriptTarget::Es2016),
+    "es2017" => Some(ScriptTarget::Es2017),
+    "es2018" => Some(ScriptTarget::Es2018),
+    "es2019" => Some(ScriptTarget::Es2019),
+    "es2020" => Some(ScriptTarget::Es2020),
+    "es2021" => Some(ScriptTarget::Es2021),
+    "es2022" => Some(ScriptTarget::Es2022),
+    "esnext" => Some(ScriptTarget::EsNext),
+    _ => None,
+  }
+}
+
+/// Parse a TypeScript `module` option value.
+pub fn parse_module_kind(raw: &str) -> Option<ModuleKind> {
+  match raw.trim().to_ascii_lowercase().as_str() {
+    "none" => Some(ModuleKind::None),
+    "commonjs" => Some(ModuleKind::CommonJs),
+    "amd" => Some(ModuleKind::Amd),
+    "umd" => Some(ModuleKind::Umd),
+    "system" => Some(ModuleKind::System),
+    "es2015" | "es6" => Some(ModuleKind::Es2015),
+    "es2020" => Some(ModuleKind::Es2020),
+    "es2022" => Some(ModuleKind::Es2022),
+    "esnext" => Some(ModuleKind::EsNext),
+    "node16" => Some(ModuleKind::Node16),
+    "nodenext" => Some(ModuleKind::NodeNext),
+    _ => None,
+  }
+}
+
+/// Parse a TypeScript `jsx` option value.
+pub fn parse_jsx_mode(raw: &str) -> Option<JsxMode> {
+  match raw.trim().to_ascii_lowercase().as_str() {
+    "preserve" | "react-native" => Some(JsxMode::Preserve),
+    "react" => Some(JsxMode::React),
+    "react-jsx" => Some(JsxMode::ReactJsx),
+    "react-jsxdev" => Some(JsxMode::ReactJsxdev),
+    _ => None,
+  }
+}
+
+pub fn parse_module_resolution_kind(raw: &str) -> Option<ModuleResolutionKind> {
+  match raw.trim().to_ascii_lowercase().as_str() {
+    "classic" => Some(ModuleResolutionKind::Classic),
+    "node" | "nodejs" | "node10" => Some(ModuleResolutionKind::Node10),
+    "node16" => Some(ModuleResolutionKind::Node16),
+    "nodenext" => Some(ModuleResolutionKind::NodeNext),
+    "bundler" => Some(ModuleResolutionKind::Bundler),
+    _ => None,
+  }
+}
+
+pub fn parse_module_detection_kind(raw: &str) -> Option<ModuleDetectionKind> {
+  match raw.trim().to_ascii_lowercase().as_str() {
+    "auto" => Some(ModuleDetectionKind::Auto),
+    "force" => Some(ModuleDetectionKind::Force),
+    "legacy" => Some(ModuleDetectionKind::Legacy),
+    _ => None,
+  }
+}
+
+fn canonicalize_module_resolution_value(raw: &str) -> Option<String> {
+  match raw.trim() {
+    "" => None,
+    raw => match raw.to_ascii_lowercase().as_str() {
+      "nodejs" | "node10" => Some("node".to_string()),
+      other => Some(other.to_string()),
+    },
+  }
 }
 
 fn canonicalize_lib_name(raw: &str) -> Option<String> {
@@ -1005,6 +1234,107 @@ mod tests {
   }
 
   #[test]
+  fn effective_module_kind_defaults_from_target() {
+    let mut options = CompilerOptions::default();
+    options.target = ScriptTarget::Es5;
+    options.module = None;
+    assert_eq!(options.effective_module_kind(), ModuleKind::CommonJs);
+
+    let mut options = CompilerOptions::default();
+    options.target = ScriptTarget::Es2015;
+    options.module = None;
+    assert_eq!(options.effective_module_kind(), ModuleKind::Es2015);
+
+    let mut options = CompilerOptions::default();
+    options.target = ScriptTarget::EsNext;
+    options.module = None;
+    assert_eq!(options.effective_module_kind(), ModuleKind::Es2015);
+
+    let mut options = CompilerOptions::default();
+    options.target = ScriptTarget::Es5;
+    options.module = Some(ModuleKind::EsNext);
+    assert_eq!(options.effective_module_kind(), ModuleKind::EsNext);
+  }
+
+  #[test]
+  fn effective_module_resolution_defaults_from_module_kind() {
+    let mut options = CompilerOptions::default();
+    options.module = Some(ModuleKind::None);
+    options.module_resolution = None;
+    assert_eq!(
+      options.effective_module_resolution(),
+      ModuleResolutionKind::Classic
+    );
+
+    let mut options = CompilerOptions::default();
+    options.module = Some(ModuleKind::Umd);
+    options.module_resolution = None;
+    assert_eq!(
+      options.effective_module_resolution(),
+      ModuleResolutionKind::Classic
+    );
+
+    let mut options = CompilerOptions::default();
+    options.module = Some(ModuleKind::Node16);
+    options.module_resolution = None;
+    assert_eq!(
+      options.effective_module_resolution(),
+      ModuleResolutionKind::Node16
+    );
+
+    let mut options = CompilerOptions::default();
+    options.module = Some(ModuleKind::NodeNext);
+    options.module_resolution = None;
+    assert_eq!(
+      options.effective_module_resolution(),
+      ModuleResolutionKind::NodeNext
+    );
+
+    let mut options = CompilerOptions::default();
+    options.module = Some(ModuleKind::EsNext);
+    options.module_resolution = None;
+    assert_eq!(
+      options.effective_module_resolution(),
+      ModuleResolutionKind::Bundler
+    );
+  }
+
+  #[test]
+  fn invalid_module_resolution_emits_ts6046_and_is_fixed_up() {
+    let mut options = CompilerOptions::default();
+    options.module_resolution = Some("definitely-not-a-mode".to_string());
+
+    let (normalized, diagnostics) = options.normalize_and_validate();
+    assert_eq!(
+      diagnostics
+        .iter()
+        .map(|d| d.code.as_str())
+        .collect::<Vec<_>>(),
+      vec!["TS6046"]
+    );
+    assert!(normalized.module_resolution.is_none());
+
+    let (normalized2, diagnostics2) = normalized.clone().normalize_and_validate();
+    assert_eq!(normalized, normalized2);
+    assert!(diagnostics2.is_empty());
+  }
+
+  #[test]
+  fn incompatible_module_and_module_resolution_emits_ts5110() {
+    let mut options = CompilerOptions::default();
+    options.module = Some(ModuleKind::EsNext);
+    options.module_resolution = Some("node16".to_string());
+
+    let (normalized, diagnostics) = options.normalize_and_validate();
+    assert!(
+      diagnostics.iter().any(|d| d.code.as_str() == "TS5110"),
+      "expected TS5110 diagnostic, got: {diagnostics:?}"
+    );
+    assert_eq!(normalized.module, Some(ModuleKind::EsNext));
+    assert_eq!(normalized.module_resolution.as_deref(), Some("node16"));
+  }
+
+  #[test]
   fn invalid_libs_produce_deduped_ts6046_diagnostics() {
     let mut options = CompilerOptions::default();
     options.libs = vec![
@@ -1065,45 +1395,45 @@ mod tests {
     let mut options = CompilerOptions::default();
     options.target = ScriptTarget::Es5;
     assert_eq!(
-      compute_effective_module_resolution_mode(&options),
-      EffectiveModuleResolutionMode::Node10
+      options.effective_module_resolution(),
+      ModuleResolutionKind::Bundler
     );
 
     let mut options = CompilerOptions::default();
     options.target = ScriptTarget::Es2015;
     assert_eq!(
-      compute_effective_module_resolution_mode(&options),
-      EffectiveModuleResolutionMode::Node10
+      options.effective_module_resolution(),
+      ModuleResolutionKind::Bundler
     );
 
     let mut options = CompilerOptions::default();
     options.module = Some(ModuleKind::None);
     assert_eq!(
-      compute_effective_module_resolution_mode(&options),
-      EffectiveModuleResolutionMode::Classic
+      options.effective_module_resolution(),
+      ModuleResolutionKind::Classic
     );
 
     for module in [ModuleKind::Amd, ModuleKind::Umd, ModuleKind::System] {
       let mut options = CompilerOptions::default();
       options.module = Some(module);
       assert_eq!(
-        compute_effective_module_resolution_mode(&options),
-        EffectiveModuleResolutionMode::Classic
+        options.effective_module_resolution(),
+        ModuleResolutionKind::Classic
       );
     }
 
     let mut options = CompilerOptions::default();
     options.module = Some(ModuleKind::Node16);
     assert_eq!(
-      compute_effective_module_resolution_mode(&options),
-      EffectiveModuleResolutionMode::Node16
+      options.effective_module_resolution(),
+      ModuleResolutionKind::Node16
     );
 
     let mut options = CompilerOptions::default();
     options.module = Some(ModuleKind::NodeNext);
     assert_eq!(
-      compute_effective_module_resolution_mode(&options),
-      EffectiveModuleResolutionMode::NodeNext
+      options.effective_module_resolution(),
+      ModuleResolutionKind::NodeNext
     );
   }
 
@@ -1112,16 +1442,16 @@ mod tests {
     let mut options = CompilerOptions::default();
     options.module_resolution = Some(" classic ".to_string());
     assert_eq!(
-      compute_effective_module_resolution_mode(&options),
-      EffectiveModuleResolutionMode::Classic
+      options.effective_module_resolution(),
+      ModuleResolutionKind::Classic
     );
 
     for raw in ["node", "Node", "nodejs", "NODEJS", "node10", " NODE10 "] {
       let mut options = CompilerOptions::default();
       options.module_resolution = Some(raw.to_string());
       assert_eq!(
-        compute_effective_module_resolution_mode(&options),
-        EffectiveModuleResolutionMode::Node10,
+        options.effective_module_resolution(),
+        ModuleResolutionKind::Node10,
         "expected {raw:?} to map to Node10"
       );
     }
@@ -1129,22 +1459,22 @@ mod tests {
     let mut options = CompilerOptions::default();
     options.module_resolution = Some("Node16".to_string());
     assert_eq!(
-      compute_effective_module_resolution_mode(&options),
-      EffectiveModuleResolutionMode::Node16
+      options.effective_module_resolution(),
+      ModuleResolutionKind::Node16
     );
 
     let mut options = CompilerOptions::default();
     options.module_resolution = Some("NodeNext".to_string());
     assert_eq!(
-      compute_effective_module_resolution_mode(&options),
-      EffectiveModuleResolutionMode::NodeNext
+      options.effective_module_resolution(),
+      ModuleResolutionKind::NodeNext
     );
 
     let mut options = CompilerOptions::default();
     options.module_resolution = Some("bundler".to_string());
     assert_eq!(
-      compute_effective_module_resolution_mode(&options),
-      EffectiveModuleResolutionMode::Bundler
+      options.effective_module_resolution(),
+      ModuleResolutionKind::Bundler
     );
   }
 
@@ -1154,8 +1484,8 @@ mod tests {
     options.module = Some(ModuleKind::NodeNext);
     options.module_resolution = Some("not-a-real-mode".to_string());
     assert_eq!(
-      compute_effective_module_resolution_mode(&options),
-      EffectiveModuleResolutionMode::NodeNext,
+      options.effective_module_resolution(),
+      ModuleResolutionKind::NodeNext,
       "unknown values should fall back to computed defaults derived from module kind"
     );
 
@@ -1163,8 +1493,8 @@ mod tests {
     options.module = Some(ModuleKind::None);
     options.module_resolution = Some("not-a-real-mode".to_string());
     assert_eq!(
-      compute_effective_module_resolution_mode(&options),
-      EffectiveModuleResolutionMode::Classic,
+      options.effective_module_resolution(),
+      ModuleResolutionKind::Classic,
       "unknown values should fall back to computed defaults derived from module kind"
     );
   }

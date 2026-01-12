@@ -2,9 +2,7 @@ use std::path::{Path, PathBuf};
 
 use diagnostics::paths::normalize_ts_path;
 use serde_json::Value;
-use typecheck_ts::lib_support::{
-  effective_module_resolution_mode, resolve_options_for_node_resolver, CompilerOptions,
-};
+use typecheck_ts::lib_support::{CompilerOptions, ModuleResolutionKind};
 use typecheck_ts::resolve::{ModuleResolutionMode, ResolveFs, Resolver};
 use typecheck_ts::FileKey;
 
@@ -83,13 +81,13 @@ impl ResolveFs for HarnessResolveFs {
   }
 }
 
-pub(crate) fn harness_resolve_mode_for_options(options: &CompilerOptions) -> ResolutionTraceMode {
-  match effective_module_resolution_mode(options) {
-    ModuleResolutionMode::Classic => ResolutionTraceMode::Classic,
-    ModuleResolutionMode::Node10 => ResolutionTraceMode::Node10,
-    ModuleResolutionMode::Node16 => ResolutionTraceMode::Node16,
-    ModuleResolutionMode::NodeNext => ResolutionTraceMode::NodeNext,
-    ModuleResolutionMode::Bundler => ResolutionTraceMode::Bundler,
+pub(crate) fn harness_resolve_mode(compiler_options: &CompilerOptions) -> ResolutionTraceMode {
+  match compiler_options.effective_module_resolution() {
+    ModuleResolutionKind::Classic => ResolutionTraceMode::Classic,
+    ModuleResolutionKind::Node10 => ResolutionTraceMode::Node10,
+    ModuleResolutionKind::Node16 => ResolutionTraceMode::Node16,
+    ModuleResolutionKind::NodeNext => ResolutionTraceMode::NodeNext,
+    ModuleResolutionKind::Bundler => ResolutionTraceMode::Bundler,
   }
 }
 
@@ -129,20 +127,15 @@ pub(crate) fn resolve_module_specifier(
   let fs = HarnessResolveFs {
     files: files.clone(),
   };
-  let mut resolve_options = resolve_options_for_node_resolver(compiler_options);
+  let mut resolve_options = compiler_options.effective_resolve_options();
   // TypeScript resolves `/// <reference types="..." />` and `compilerOptions.types`
   // through the `@types/*` lookup regardless of the `moduleResolution` setting.
   //
-  // `typecheck-ts` owns the `@types/*` fallback mapping, but hosts still need to
-  // resolve `@types/*` specifiers via node_modules. Enable that narrow case even
-  // when running in Classic module resolution mode.
+  // `typecheck-ts` core models that by mapping type packages to explicit
+  // `@types/*` specifiers. Allow those `@types/*` specifiers to be resolved via
+  // `node_modules/` even when running in Classic module resolution mode.
   if specifier.starts_with("@types/") && resolve_options.module_resolution == ModuleResolutionMode::Classic {
     resolve_options.node_modules = true;
-    // Classic mode bypasses node_modules/package.json logic entirely, so forcing
-    // `node_modules=true` isn't enough. Switch to the legacy Node10 resolver for
-    // `@types/*` packages so `compilerOptions.types` / triple-slash type refs
-    // behave like `tsc`.
-    resolve_options.module_resolution = ModuleResolutionMode::Node10;
   }
   let resolver = Resolver::with_fs(fs, resolve_options);
   let from_path = Path::new(from.as_str());
@@ -244,7 +237,7 @@ pub(crate) fn resolve_at_types_entry(
 
 #[cfg(test)]
 mod tests {
-  use super::harness_resolve_mode_for_options;
+  use super::harness_resolve_mode;
   use crate::resolution_trace::ResolutionTraceMode;
   use typecheck_ts::lib_support::{CompilerOptions, ModuleKind, ScriptTarget};
 
@@ -253,18 +246,18 @@ mod tests {
     let mut options = CompilerOptions::default();
     options.target = ScriptTarget::Es5;
     options.module = None;
-    assert_eq!(harness_resolve_mode_for_options(&options), ResolutionTraceMode::Node10);
+    assert_eq!(harness_resolve_mode(&options), ResolutionTraceMode::Bundler);
 
     let mut options = CompilerOptions::default();
     options.target = ScriptTarget::Es2015;
     options.module = None;
-    assert_eq!(harness_resolve_mode_for_options(&options), ResolutionTraceMode::Node10);
+    assert_eq!(harness_resolve_mode(&options), ResolutionTraceMode::Bundler);
 
     for module in [ModuleKind::None, ModuleKind::Amd, ModuleKind::Umd, ModuleKind::System] {
       let mut options = CompilerOptions::default();
       options.module = Some(module);
       assert_eq!(
-        harness_resolve_mode_for_options(&options),
+        harness_resolve_mode(&options),
         ResolutionTraceMode::Classic,
         "expected module={module:?} to default to Classic resolution"
       );
@@ -272,12 +265,12 @@ mod tests {
 
     let mut options = CompilerOptions::default();
     options.module = Some(ModuleKind::Node16);
-    assert_eq!(harness_resolve_mode_for_options(&options), ResolutionTraceMode::Node16);
+    assert_eq!(harness_resolve_mode(&options), ResolutionTraceMode::Node16);
 
     let mut options = CompilerOptions::default();
     options.module = Some(ModuleKind::NodeNext);
     assert_eq!(
-      harness_resolve_mode_for_options(&options),
+      harness_resolve_mode(&options),
       ResolutionTraceMode::NodeNext
     );
   }

@@ -1,0 +1,49 @@
+{
+  "schema_version": 2,
+  "metadata": {
+    "typescript_version": "5.9.3",
+    "bundled_typescript_version": "5.9.3",
+    "options": {
+      "exactOptionalPropertyTypes": false,
+      "lib": [
+        "lib.es5.d.ts"
+      ],
+      "module": 99,
+      "moduleDetection": 2,
+      "moduleResolution": 100,
+      "noEmit": true,
+      "noImplicitAny": false,
+      "noUncheckedIndexedAccess": false,
+      "pretty": false,
+      "skipLibCheck": true,
+      "strictFunctionTypes": true,
+      "strictNullChecks": true,
+      "target": 2,
+      "useDefineForClassFields": true
+    }
+  },
+  "diagnostics": [],
+  "type_facts": {
+    "exports": [
+      {
+        "file": "main.ts",
+        "name": "resolved",
+        "type": "\"default\""
+      },
+      {
+        "file": "node_modules/pkg/dist/default.d.ts",
+        "name": "mode",
+        "type": "\"default\""
+      }
+    ],
+    "markers": [
+      {
+        "file": "main.ts",
+        "offset": 197,
+        "line": 6,
+        "column": 3,
+        "type": "\"default\""
+      }
+    ]
+  }
+}
