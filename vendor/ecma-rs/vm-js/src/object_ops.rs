@@ -2649,7 +2649,11 @@ impl<'a> Scope<'a> {
           return Ok(false);
         };
 
-        let existing_desc = self.ordinary_get_own_property_with_tick(receiver_obj, key, || vm.tick())?;
+        // `receiver` can be a Proxy object; use internal-method dispatch for the receiver's
+        // `[[GetOwnProperty]]` / `[[DefineOwnProperty]]` operations so traps are observed and we do
+        // not attempt to treat proxies as ordinary objects.
+        let existing_desc =
+          self.get_own_property_with_host_and_hooks(vm, host, hooks, receiver_obj, key)?;
         if let Some(existing_desc) = existing_desc {
           if existing_desc.is_accessor_descriptor() {
             return Ok(false);
@@ -2662,18 +2666,38 @@ impl<'a> Scope<'a> {
             return Ok(false);
           }
 
-          return self.define_own_property_with_tick(
+          let mut tick0 = |vm: &mut Vm| vm.tick();
+          return self.define_own_property_with_host_and_hooks_with_tick(
+            vm,
+            host,
+            hooks,
             receiver_obj,
             key,
             PropertyDescriptorPatch {
               value: Some(value),
               ..Default::default()
             },
-            || vm.tick(),
+            &mut tick0,
           );
         }
 
-        self.create_data_property(receiver_obj, key, value)
+        // `CreateDataProperty(receiver, key, value)`
+        let mut tick0 = |vm: &mut Vm| vm.tick();
+        self.define_own_property_with_host_and_hooks_with_tick(
+          vm,
+          host,
+          hooks,
+          receiver_obj,
+          key,
+          PropertyDescriptorPatch {
+            value: Some(value),
+            writable: Some(true),
+            enumerable: Some(true),
+            configurable: Some(true),
+            ..Default::default()
+          },
+          &mut tick0,
+        )
       }
       PropertyKind::Accessor { set, .. } => {
         if matches!(set, Value::Undefined) {
