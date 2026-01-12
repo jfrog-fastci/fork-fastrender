@@ -38,7 +38,6 @@ mod dl_default_margins;
 mod docs_conformance_presence;
 mod docs_presence;
 mod dom2_closest;
-mod dom2_js_events;
 mod ecma_rs_workspace_exclude_guard;
 mod embed_object_html_renders_document;
 mod error_format_snapshot;
@@ -56,7 +55,7 @@ mod integration_test;
 mod is_alias_matches_test;
 #[cfg(feature = "quickjs")]
 mod js_current_script;
-mod js_dom_events;
+mod js_diagnostics;
 mod js_dom_exception;
 mod js_dom_integration_export;
 #[cfg(feature = "quickjs")]
