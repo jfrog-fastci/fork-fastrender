@@ -118,9 +118,9 @@ Comparisons are strict by default. To allow small local differences (fonts, GPU,
 
 - `FIXTURE_TOLERANCE=5` (per-channel tolerance)
 - `FIXTURE_MAX_DIFFERENT_PERCENT=0.5` (percent of pixels allowed to differ)
-- `FIXTURE_FUZZY=1` (preset: tolerance 10, up to 1% different, no alpha compare, max perceptual distance 0.05)
+- `FIXTURE_FUZZY=1` (preset: tolerance 10, up to 1% different, no alpha compare, max perceptual distance 0.05; thresholds are empirical)
 - `FIXTURE_IGNORE_ALPHA=1` (ignore alpha differences even without fuzzy)
-- `FIXTURE_MAX_PERCEPTUAL_DISTANCE=0.05` (allow minor perceptual differences using SSIM-style scoring)
+- `FIXTURE_MAX_PERCEPTUAL_DISTANCE=0.05` (allow minor perceptual differences using a windowed-SSIM distance over downsampled luminance; thresholds are empirical)
 
 New columns/transform/form fixtures ship with checked-in goldens; keep these up to date when adjusting layouts.
 
@@ -417,9 +417,9 @@ There is a self-contained WPT-style runner under `tests/wpt/` for local “rende
   - Local overrides (env vars):
     - `WPT_TOLERANCE=5` (per-channel tolerance)
     - `WPT_MAX_DIFFERENT_PERCENT=0.5` (percent of pixels allowed to differ)
-    - `WPT_FUZZY=1` (preset: tolerance 10, up to 1% different, no alpha compare, max perceptual distance 0.05)
+    - `WPT_FUZZY=1` (preset: tolerance 10, up to 1% different, no alpha compare, max perceptual distance 0.05; thresholds are empirical)
     - `WPT_IGNORE_ALPHA=1` (ignore alpha differences even without fuzzy)
-    - `WPT_MAX_PERCEPTUAL_DISTANCE=0.05` (allow minor perceptual differences using SSIM-style scoring)
+    - `WPT_MAX_PERCEPTUAL_DISTANCE=0.05` (allow minor perceptual differences using a windowed-SSIM distance over downsampled luminance; thresholds are empirical)
 
 ### WPT importer (offline)
 

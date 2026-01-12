@@ -30,10 +30,14 @@ This directory contains the **committed pageset scoreboard**: one tiny JSON file
   - `baseline`: baseline renderer label (currently `chrome`).
   - `diff_pixels`: number of pixels that differ (after applying `tolerance`).
   - `diff_percent`: percent of pixels that differ (0-100, after applying `tolerance`).
-  - `perceptual`: SSIM-derived perceptual distance (0.0 = identical, 1.0 = maximally different).
+  - `perceptual`: perceptual distance derived from a **windowed SSIM** computed over **downsampled luminance (Y)** (0.0 = identical, 1.0 = maximally different).
   - `tolerance`: per-channel tolerance used for pixel comparisons (0-255).
   - `max_diff_percent`: threshold used to classify diffs as acceptable/unacceptable (0-100).
   - `computed_at_commit`: git SHA captured when the metrics were computed (omitted when unknown).
+- Migration note (perceptual metric evolution):
+  - `accuracy.perceptual` values computed on different commits may not be directly comparable, since the underlying perceptual metric implementation can change (for example: global SSIM → windowed SSIM over downsampled luminance).
+  - `accuracy.computed_at_commit` records the git SHA of the run so you can tell which implementation produced the stored number.
+  - To avoid massive churn in `progress/pages/*.json`, prefer re-running `bash scripts/cargo_agent.sh xtask refresh-progress-accuracy` **only for the pages you care about** (and use sharded refresh for parallelism), rather than doing a repo-wide refresh immediately after each metric tweak.
 - To seed initial `accuracy` values for pages that have offline fixtures under `tests/pages/fixtures/<stem>/index.html`, diff those fixtures against Chrome and sync the metrics into `progress/pages/*.json`:
   - Recommended starter set: `tests/pages/pageset_guardrails.json` (curated high-signal pages).
   - Commands:
