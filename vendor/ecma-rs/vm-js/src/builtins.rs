@@ -8554,6 +8554,205 @@ pub fn object_prototype___proto___set(
   }
 }
 
+/// `Object.prototype.__defineGetter__(P, getter)` (Annex B).
+#[allow(non_snake_case)]
+pub fn object_prototype___define_getter__(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  // Spec: https://tc39.es/ecma262/#sec-object.prototype.__definegetter__
+  let mut scope = scope.reborrow();
+
+  let obj = scope.to_object(vm, host, hooks, this)?;
+  scope.push_root(Value::Object(obj))?;
+
+  let prop = args.get(0).copied().unwrap_or(Value::Undefined);
+  let key = scope.to_property_key(vm, host, hooks, prop)?;
+  root_property_key(&mut scope, key)?;
+
+  let getter = args.get(1).copied().unwrap_or(Value::Undefined);
+  if !scope.heap().is_callable(getter)? {
+    return Err(VmError::TypeError("__defineGetter__ requires a callable getter"));
+  }
+  scope.push_root(getter)?;
+
+  let ok = scope.define_own_property_with_tick(
+    obj,
+    key,
+    PropertyDescriptorPatch {
+      enumerable: Some(true),
+      configurable: Some(true),
+      get: Some(getter),
+      ..Default::default()
+    },
+    || vm.tick(),
+  )?;
+  if !ok {
+    return Err(VmError::TypeError("DefineOwnProperty rejected"));
+  }
+  Ok(Value::Undefined)
+}
+
+/// `Object.prototype.__defineSetter__(P, setter)` (Annex B).
+#[allow(non_snake_case)]
+pub fn object_prototype___define_setter__(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  // Spec: https://tc39.es/ecma262/#sec-object.prototype.__definesetter__
+  let mut scope = scope.reborrow();
+
+  let obj = scope.to_object(vm, host, hooks, this)?;
+  scope.push_root(Value::Object(obj))?;
+
+  let prop = args.get(0).copied().unwrap_or(Value::Undefined);
+  let key = scope.to_property_key(vm, host, hooks, prop)?;
+  root_property_key(&mut scope, key)?;
+
+  let setter = args.get(1).copied().unwrap_or(Value::Undefined);
+  if !scope.heap().is_callable(setter)? {
+    return Err(VmError::TypeError("__defineSetter__ requires a callable setter"));
+  }
+  scope.push_root(setter)?;
+
+  let ok = scope.define_own_property_with_tick(
+    obj,
+    key,
+    PropertyDescriptorPatch {
+      enumerable: Some(true),
+      configurable: Some(true),
+      set: Some(setter),
+      ..Default::default()
+    },
+    || vm.tick(),
+  )?;
+  if !ok {
+    return Err(VmError::TypeError("DefineOwnProperty rejected"));
+  }
+  Ok(Value::Undefined)
+}
+
+/// `Object.prototype.__lookupGetter__(P)` (Annex B).
+#[allow(non_snake_case)]
+pub fn object_prototype___lookup_getter__(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  // Spec: https://tc39.es/ecma262/#sec-object.prototype.__lookupgetter__
+  let mut scope = scope.reborrow();
+
+  let mut obj = scope.to_object(vm, host, hooks, this)?;
+  scope.push_root(Value::Object(obj))?;
+
+  let prop = args.get(0).copied().unwrap_or(Value::Undefined);
+  let key = scope.to_property_key(vm, host, hooks, prop)?;
+  root_property_key(&mut scope, key)?;
+
+  let mut steps = 0usize;
+  loop {
+    if steps >= crate::heap::MAX_PROTOTYPE_CHAIN {
+      return Err(VmError::PrototypeChainTooDeep);
+    }
+    if steps % 1024 == 0 {
+      vm.tick()?;
+    }
+
+    let desc = {
+      // Root `obj` for trap lookups + allocations.
+      let mut step_scope = scope.reborrow();
+      step_scope.push_root(Value::Object(obj))?;
+      step_scope.object_get_own_property_with_host_and_hooks(vm, host, hooks, obj, key)?
+    };
+    if let Some(desc) = desc {
+      return Ok(match desc.kind {
+        PropertyKind::Accessor { get, .. } => get,
+        _ => Value::Undefined,
+      });
+    }
+
+    let proto = {
+      let mut step_scope = scope.reborrow();
+      step_scope.push_root(Value::Object(obj))?;
+      step_scope.get_prototype_of_with_host_and_hooks(vm, host, hooks, obj)?
+    };
+    let Some(proto) = proto else {
+      return Ok(Value::Undefined);
+    };
+    obj = proto;
+    steps += 1;
+  }
+}
+
+/// `Object.prototype.__lookupSetter__(P)` (Annex B).
+#[allow(non_snake_case)]
+pub fn object_prototype___lookup_setter__(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  // Spec: https://tc39.es/ecma262/#sec-object.prototype.__lookupsetter__
+  let mut scope = scope.reborrow();
+
+  let mut obj = scope.to_object(vm, host, hooks, this)?;
+  scope.push_root(Value::Object(obj))?;
+
+  let prop = args.get(0).copied().unwrap_or(Value::Undefined);
+  let key = scope.to_property_key(vm, host, hooks, prop)?;
+  root_property_key(&mut scope, key)?;
+
+  let mut steps = 0usize;
+  loop {
+    if steps >= crate::heap::MAX_PROTOTYPE_CHAIN {
+      return Err(VmError::PrototypeChainTooDeep);
+    }
+    if steps % 1024 == 0 {
+      vm.tick()?;
+    }
+
+    let desc = {
+      let mut step_scope = scope.reborrow();
+      step_scope.push_root(Value::Object(obj))?;
+      step_scope.object_get_own_property_with_host_and_hooks(vm, host, hooks, obj, key)?
+    };
+    if let Some(desc) = desc {
+      return Ok(match desc.kind {
+        PropertyKind::Accessor { set, .. } => set,
+        _ => Value::Undefined,
+      });
+    }
+
+    let proto = {
+      let mut step_scope = scope.reborrow();
+      step_scope.push_root(Value::Object(obj))?;
+      step_scope.get_prototype_of_with_host_and_hooks(vm, host, hooks, obj)?
+    };
+    let Some(proto) = proto else {
+      return Ok(Value::Undefined);
+    };
+    obj = proto;
+    steps += 1;
+  }
+}
+
 /// `Object.prototype.isPrototypeOf(V)` (ECMA-262).
 pub fn object_prototype_is_prototype_of(
   vm: &mut Vm,

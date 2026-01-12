@@ -777,6 +777,14 @@ impl Intrinsics {
     let object_prototype_has_own_property =
       vm.register_native_call(builtins::object_prototype_has_own_property)?;
     let object_prototype_value_of = vm.register_native_call(builtins::object_prototype_value_of)?;
+    let object_prototype_define_getter =
+      vm.register_native_call(builtins::object_prototype___define_getter__)?;
+    let object_prototype_define_setter =
+      vm.register_native_call(builtins::object_prototype___define_setter__)?;
+    let object_prototype_lookup_getter =
+      vm.register_native_call(builtins::object_prototype___lookup_getter__)?;
+    let object_prototype_lookup_setter =
+      vm.register_native_call(builtins::object_prototype___lookup_setter__)?;
     let object_prototype_proto_get =
       vm.register_native_call(builtins::object_prototype___proto___get)?;
     let object_prototype_proto_set =
@@ -1134,6 +1142,69 @@ impl Intrinsics {
           object_prototype,
           key,
           data_desc(Value::Object(func), true, false, true),
+        )?;
+      }
+
+      // Annex B accessors: __defineGetter__ / __defineSetter__ / __lookupGetter__ / __lookupSetter__
+      {
+        let define_getter_s = scope.alloc_string("__defineGetter__")?;
+        scope.push_root(Value::String(define_getter_s))?;
+        let define_getter_key = PropertyKey::from_string(define_getter_s);
+        let define_getter_func =
+          scope.alloc_native_function(object_prototype_define_getter, None, define_getter_s, 2)?;
+        scope.push_root(Value::Object(define_getter_func))?;
+        scope
+          .heap_mut()
+          .object_set_prototype(define_getter_func, Some(function_prototype))?;
+        scope.define_property(
+          object_prototype,
+          define_getter_key,
+          data_desc(Value::Object(define_getter_func), true, false, true),
+        )?;
+
+        let define_setter_s = scope.alloc_string("__defineSetter__")?;
+        scope.push_root(Value::String(define_setter_s))?;
+        let define_setter_key = PropertyKey::from_string(define_setter_s);
+        let define_setter_func =
+          scope.alloc_native_function(object_prototype_define_setter, None, define_setter_s, 2)?;
+        scope.push_root(Value::Object(define_setter_func))?;
+        scope
+          .heap_mut()
+          .object_set_prototype(define_setter_func, Some(function_prototype))?;
+        scope.define_property(
+          object_prototype,
+          define_setter_key,
+          data_desc(Value::Object(define_setter_func), true, false, true),
+        )?;
+
+        let lookup_getter_s = scope.alloc_string("__lookupGetter__")?;
+        scope.push_root(Value::String(lookup_getter_s))?;
+        let lookup_getter_key = PropertyKey::from_string(lookup_getter_s);
+        let lookup_getter_func =
+          scope.alloc_native_function(object_prototype_lookup_getter, None, lookup_getter_s, 1)?;
+        scope.push_root(Value::Object(lookup_getter_func))?;
+        scope
+          .heap_mut()
+          .object_set_prototype(lookup_getter_func, Some(function_prototype))?;
+        scope.define_property(
+          object_prototype,
+          lookup_getter_key,
+          data_desc(Value::Object(lookup_getter_func), true, false, true),
+        )?;
+
+        let lookup_setter_s = scope.alloc_string("__lookupSetter__")?;
+        scope.push_root(Value::String(lookup_setter_s))?;
+        let lookup_setter_key = PropertyKey::from_string(lookup_setter_s);
+        let lookup_setter_func =
+          scope.alloc_native_function(object_prototype_lookup_setter, None, lookup_setter_s, 1)?;
+        scope.push_root(Value::Object(lookup_setter_func))?;
+        scope
+          .heap_mut()
+          .object_set_prototype(lookup_setter_func, Some(function_prototype))?;
+        scope.define_property(
+          object_prototype,
+          lookup_setter_key,
+          data_desc(Value::Object(lookup_setter_func), true, false, true),
         )?;
       }
 

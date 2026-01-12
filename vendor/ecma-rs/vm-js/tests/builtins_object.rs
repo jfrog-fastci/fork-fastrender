@@ -968,6 +968,162 @@ fn object_keys_returns_enumerable_string_keys() -> Result<(), VmError> {
 }
 
 #[test]
+fn object_prototype_annex_b_getter_setter_helpers_work() -> Result<(), VmError> {
+  let mut rt = TestRealm::new()?;
+  let object_proto = rt.realm.intrinsics().object_prototype();
+  let type_error_proto = rt.realm.intrinsics().type_error_prototype();
+
+  let getter_call_id = rt.vm.register_native_call(return_two_native)?;
+  let setter_call_id = rt.vm.register_native_call(return_two_native)?;
+
+  let mut scope = rt.heap.scope();
+
+  let define_getter = get_own_data_property(&mut scope, object_proto, "__defineGetter__")?
+    .expect("Object.prototype.__defineGetter__ exists");
+  let Value::Object(define_getter) = define_getter else {
+    panic!("Object.prototype.__defineGetter__ should be a function object");
+  };
+  let define_setter = get_own_data_property(&mut scope, object_proto, "__defineSetter__")?
+    .expect("Object.prototype.__defineSetter__ exists");
+  let Value::Object(define_setter) = define_setter else {
+    panic!("Object.prototype.__defineSetter__ should be a function object");
+  };
+  let lookup_getter = get_own_data_property(&mut scope, object_proto, "__lookupGetter__")?
+    .expect("Object.prototype.__lookupGetter__ exists");
+  let Value::Object(lookup_getter) = lookup_getter else {
+    panic!("Object.prototype.__lookupGetter__ should be a function object");
+  };
+  let lookup_setter = get_own_data_property(&mut scope, object_proto, "__lookupSetter__")?
+    .expect("Object.prototype.__lookupSetter__ exists");
+  let Value::Object(lookup_setter) = lookup_setter else {
+    panic!("Object.prototype.__lookupSetter__ should be a function object");
+  };
+
+  let getter_name = scope.alloc_string("")?;
+  let getter = scope.alloc_native_function(getter_call_id, None, getter_name, 0)?;
+  scope.push_root(Value::Object(getter))?;
+  let setter_name = scope.alloc_string("")?;
+  let setter = scope.alloc_native_function(setter_call_id, None, setter_name, 1)?;
+  scope.push_root(Value::Object(setter))?;
+
+  let x_s = scope.alloc_string("x")?;
+  scope.push_root(Value::String(x_s))?;
+  let y_s = scope.alloc_string("y")?;
+  scope.push_root(Value::String(y_s))?;
+  let z_s = scope.alloc_string("z")?;
+  scope.push_root(Value::String(z_s))?;
+
+  let o = scope.alloc_object()?;
+  scope.push_root(Value::Object(o))?;
+
+  // Define setter first, then getter: should preserve the setter.
+  let args = [Value::String(x_s), Value::Object(setter)];
+  let out = rt.vm.call_without_host(
+    &mut scope,
+    Value::Object(define_setter),
+    Value::Object(o),
+    &args,
+  )?;
+  assert_eq!(out, Value::Undefined);
+
+  let args = [Value::String(x_s), Value::Object(getter)];
+  let out = rt.vm.call_without_host(
+    &mut scope,
+    Value::Object(define_getter),
+    Value::Object(o),
+    &args,
+  )?;
+  assert_eq!(out, Value::Undefined);
+
+  let x_key = PropertyKey::from_string(x_s);
+  let desc = scope
+    .heap()
+    .object_get_own_property(o, &x_key)?
+    .expect("x should be defined");
+  assert!(desc.enumerable);
+  assert!(desc.configurable);
+  let PropertyKind::Accessor { get, set } = desc.kind else {
+    panic!("expected accessor descriptor");
+  };
+  assert_eq!(get, Value::Object(getter));
+  assert_eq!(set, Value::Object(setter));
+
+  // Lookup on own property.
+  let args = [Value::String(x_s)];
+  let out = rt.vm.call_without_host(
+    &mut scope,
+    Value::Object(lookup_getter),
+    Value::Object(o),
+    &args,
+  )?;
+  assert_eq!(out, Value::Object(getter));
+  let out = rt.vm.call_without_host(
+    &mut scope,
+    Value::Object(lookup_setter),
+    Value::Object(o),
+    &args,
+  )?;
+  assert_eq!(out, Value::Object(setter));
+
+  // Lookup through prototype chain.
+  let child = scope.alloc_object()?;
+  scope.push_root(Value::Object(child))?;
+  scope.heap_mut().object_set_prototype(child, Some(o))?;
+  let out = rt.vm.call_without_host(
+    &mut scope,
+    Value::Object(lookup_getter),
+    Value::Object(child),
+    &args,
+  )?;
+  assert_eq!(out, Value::Object(getter));
+  let out = rt.vm.call_without_host(
+    &mut scope,
+    Value::Object(lookup_setter),
+    Value::Object(child),
+    &args,
+  )?;
+  assert_eq!(out, Value::Object(setter));
+
+  // Lookups return undefined for data properties.
+  define_enumerable_data_property(&mut scope, o, "y", Value::Number(1.0))?;
+  let args = [Value::String(y_s)];
+  let out = rt.vm.call_without_host(
+    &mut scope,
+    Value::Object(lookup_getter),
+    Value::Object(o),
+    &args,
+  )?;
+  assert_eq!(out, Value::Undefined);
+  let out = rt.vm.call_without_host(
+    &mut scope,
+    Value::Object(lookup_setter),
+    Value::Object(o),
+    &args,
+  )?;
+  assert_eq!(out, Value::Undefined);
+
+  // __defineGetter__ requires a callable function.
+  let args = [Value::String(z_s), Value::Number(1.0)];
+  let err = rt.vm.call_without_host(
+    &mut scope,
+    Value::Object(define_getter),
+    Value::Object(o),
+    &args,
+  );
+  let thrown = match err {
+    Ok(v) => panic!("expected __defineGetter__ to throw, got {v:?}"),
+    Err(VmError::Throw(v) | VmError::ThrowWithStack { value: v, .. }) => v,
+    Err(e) => return Err(e),
+  };
+  let Value::Object(err_obj) = thrown else {
+    panic!("expected thrown value to be an object, got {thrown:?}");
+  };
+  assert_eq!(scope.heap().object_prototype(err_obj)?, Some(type_error_proto));
+
+  Ok(())
+}
+
+#[test]
 fn object_keys_boxes_primitive_target() -> Result<(), VmError> {
   let mut rt = TestRealm::new()?;
   let object = rt.realm.intrinsics().object_constructor();
