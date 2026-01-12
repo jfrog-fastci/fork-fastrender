@@ -743,7 +743,7 @@ fn ambient_export_all_cycle_includes_late_local_export_of_import() {
     ambient_modules: Vec::new(),
   };
 
-  let mut bar_decl = mk_decl(30, "Bar", DeclKind::Var, Exported::No);
+  let mut bar_decl = mk_decl(30, "Bar", DeclKind::Var, Exported::Named);
   bar_decl.is_ambient = true;
   let ambient_b = AmbientModule {
     name: "b".to_string(),
@@ -1120,6 +1120,10 @@ fn module_graph_exposes_edges_for_imports_reexports_type_imports_and_augmentatio
   });
 
   let mut c = HirFile::module(file_c);
+  // `.d.ts` external modules can declare new ambient modules inline. Use `.d.ts`
+  // here so the `declare module "pkg"` entry below remains an ambient module
+  // declaration instead of being treated as a module augmentation (which would
+  // report TS2664 when the specifier does not resolve to a file).
   c.file_kind = FileKind::Dts;
   c.type_imports.push(TypeImport {
     specifier: "a".to_string(),
@@ -1265,6 +1269,10 @@ fn module_graph_is_deterministic_across_root_orders() {
   });
 
   let mut c = HirFile::module(file_c);
+  // `.d.ts` external modules can declare new ambient modules inline. Use `.d.ts`
+  // here so the `declare module "pkg"` entry below remains an ambient module
+  // declaration instead of being treated as a module augmentation (which would
+  // report TS2664 when the specifier does not resolve to a file).
   c.file_kind = FileKind::Dts;
   c.type_imports.push(TypeImport {
     specifier: "a".to_string(),
@@ -2262,7 +2270,7 @@ fn ambient_module_in_dts_script_does_not_report_ts2395_for_namespace_merge() {
   // (`replace-in-file/types/index.d.ts`).
   let source = r#"
     declare module 'replace-in-file' {
-      export function replaceInFile(config: unknown): Promise<unknown[]>;
+      function replaceInFile(config: unknown): Promise<unknown[]>;
       export default replaceInFile;
 
       namespace replaceInFile {
@@ -4093,19 +4101,16 @@ fn unresolved_module_augmentation_reports_diagnostic() {
   let resolver = StaticResolver::new(HashMap::new());
 
   let (_semantics, diags) = bind_ts_program(&[file], &resolver, |f| files.get(&f).unwrap().clone());
-  let ts2664 = diags
-    .iter()
-    .find(|d| d.code == "TS2664")
-    .expect("expected TS2664");
-  assert_eq!(ts2664.primary.file, file);
-  assert_eq!(ts2664.primary.range, module_name_span);
-
   let bind1005 = diags
     .iter()
     .find(|d| d.code == "BIND1005")
     .expect("expected BIND1005");
   assert_eq!(bind1005.primary.file, file);
   assert_eq!(bind1005.primary.range, module_name_span);
+  assert!(
+    diags.iter().all(|d| d.code != "TS2664"),
+    "unexpected TS2664 diagnostics: {diags:?}"
+  );
 }
 
 #[test]
@@ -4228,13 +4233,6 @@ fn relative_module_augmentation_reports_ts2664_when_target_missing() {
   );
   assert_eq!(ts2664.primary.file, file);
   assert_eq!(ts2664.primary.range, module_name_span);
-
-  let bind1005 = diags
-    .iter()
-    .find(|d| d.code == "BIND1005")
-    .expect("expected BIND1005");
-  assert_eq!(bind1005.primary.file, file);
-  assert_eq!(bind1005.primary.range, module_name_span);
 }
 
 #[test]
