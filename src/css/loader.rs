@@ -3566,6 +3566,40 @@ mod tests {
   }
 
   #[test]
+  fn absolutizes_css_urls_cow_rewrites_image_set_string_urls_without_url_tokens() {
+    reset_absolutize_css_urls_tokenize_count();
+    let css = "body { background-image: image-set(\"foo.png\" 1x); }";
+    let out = absolutize_css_urls_cow(css, "https://example.com/styles/main.css").unwrap();
+    assert!(matches!(out, Cow::Owned(_)));
+    assert_eq!(
+      out.as_ref(),
+      "body { background-image: image-set(\"https://example.com/styles/foo.png\" 1x); }"
+    );
+    assert_eq!(
+      absolutize_css_urls_tokenize_count(),
+      1,
+      "expected tokenizer to run for image-set() string URL candidates"
+    );
+  }
+
+  #[test]
+  fn absolutizes_css_urls_cow_rewrites_webkit_image_set_string_urls_without_url_tokens() {
+    reset_absolutize_css_urls_tokenize_count();
+    let css = "body { background-image: -webkit-image-set(\"foo.png\" 1x); }";
+    let out = absolutize_css_urls_cow(css, "https://example.com/styles/main.css").unwrap();
+    assert!(matches!(out, Cow::Owned(_)));
+    assert_eq!(
+      out.as_ref(),
+      "body { background-image: -webkit-image-set(\"https://example.com/styles/foo.png\" 1x); }"
+    );
+    assert_eq!(
+      absolutize_css_urls_tokenize_count(),
+      1,
+      "expected tokenizer to run for -webkit-image-set() string URL candidates"
+    );
+  }
+
+  #[test]
   fn absolutizes_css_urls_cow_leaves_absolute_urls_unchanged() {
     let css = "body { background: URL(https://example.com/images/bg.png); }";
     let out = absolutize_css_urls_cow(css, "https://example.com/styles/main.css").unwrap();
