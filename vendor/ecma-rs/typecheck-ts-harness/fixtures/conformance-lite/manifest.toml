@@ -128,8 +128,3 @@ reason = "Flow narrowing for `in` checks is not implemented yet."
 id = "match/unions/case_025.ts"
 status = "xfail"
 reason = "Flow narrowing for `in` checks is not implemented yet."
-
-[[expectations]]
-id = "mismatch/contextual_overload_return.ts"
-status = "xfail"
-reason = "Rust emits an extra ambiguity diagnostic (TC2001) compared to tsc."
