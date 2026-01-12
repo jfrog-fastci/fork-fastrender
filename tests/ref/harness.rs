@@ -297,8 +297,8 @@ impl RefTestHarness {
     // Keep reference renders deterministic across machines.
     //
     // Avoid mutating process environment variables (e.g. `FASTR_USE_BUNDLED_FONTS=1`) here because
-    // the Rust test harness runs tests in parallel and `std::env::set_var` is not thread-safe with
-    // concurrent environment access.
+    // the Rust test harness runs tests in parallel and mutating the process environment is not
+    // thread-safe with concurrent environment access.
     let config = FastRenderConfig::default().with_font_sources(FontConfig::bundled_only());
     FastRender::with_config(config).expect("Failed to create renderer")
   }

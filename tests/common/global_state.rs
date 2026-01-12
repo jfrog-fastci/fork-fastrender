@@ -18,7 +18,6 @@ pub fn global_test_lock() -> GlobalTestLockGuard {
   static LOCK: ReentrantMutex<()> = ReentrantMutex::new(());
   LOCK.lock()
 }
-
 /// Run `f` while holding the process-global test lock.
 pub(crate) fn with_global_lock<R>(f: impl FnOnce() -> R) -> R {
   let _lock = global_test_lock();

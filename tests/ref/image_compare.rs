@@ -254,11 +254,50 @@ mod tests {
   use std::collections::HashMap;
 
   #[test]
+  fn compare_config_from_env_map_selects_fuzzy_preset() {
+    for env in [CompareEnvVars::fixtures(), CompareEnvVars::pages()] {
+      let strict = compare_config_from_env_map(env, &HashMap::new()).expect("config");
+      assert_eq!(strict.channel_tolerance, 0);
+      assert_eq!(strict.max_different_percent, 0.0);
+      assert!(strict.compare_alpha);
+      assert!(strict.max_perceptual_distance.is_none());
+      assert!(strict.generate_diff_image);
+
+      let config =
+        compare_config_from_env_map(env, &HashMap::from([(env.fuzzy, "1")])).expect("config");
+      let fuzzy = CompareConfig::fuzzy();
+      assert_eq!(config.channel_tolerance, fuzzy.channel_tolerance);
+      assert!((config.max_different_percent - fuzzy.max_different_percent).abs() < 1e-12);
+      assert_eq!(config.compare_alpha, fuzzy.compare_alpha);
+      assert_eq!(config.max_perceptual_distance, fuzzy.max_perceptual_distance);
+      assert!(config.generate_diff_image);
+    }
+  }
+
+  #[test]
+  fn compare_config_from_env_map_supports_tolerance_and_max_different_percent_overrides() {
+    for env in [CompareEnvVars::fixtures(), CompareEnvVars::pages()] {
+      let config = compare_config_from_env_map(
+        env,
+        &HashMap::from([(env.tolerance, "7"), (env.max_diff_percent, "2.5")]),
+      )
+      .expect("config");
+
+      assert_eq!(config.channel_tolerance, 7);
+      assert!((config.max_different_percent - 2.5).abs() < 1e-12);
+      assert!(config.compare_alpha);
+      assert!(config.max_perceptual_distance.is_none());
+      assert!(config.generate_diff_image);
+    }
+  }
+
+  #[test]
   fn compare_config_from_env_map_supports_ignore_alpha_and_perceptual_distance() {
     for env in [CompareEnvVars::fixtures(), CompareEnvVars::pages()] {
       let config = compare_config_from_env_map(env, &HashMap::new()).expect("config");
       assert!(config.compare_alpha);
       assert!(config.max_perceptual_distance.is_none());
+      assert!(config.generate_diff_image);
 
       let config =
         compare_config_from_env_map(env, &HashMap::from([(env.ignore_alpha, "1")])).expect("config");
@@ -273,29 +312,6 @@ mod tests {
         .max_perceptual_distance
         .expect("max perceptual distance");
       assert!((parsed - 0.123).abs() < 1e-12);
-    }
-  }
-
-  #[test]
-  fn compare_config_from_env_map_selects_fuzzy_mode() {
-    for env in [CompareEnvVars::fixtures(), CompareEnvVars::pages()] {
-      let strict = compare_config_from_env_map(env, &HashMap::new()).expect("config");
-      assert_eq!(strict.channel_tolerance, 0);
-      assert_eq!(strict.max_different_percent, 0.0);
-
-      let config = compare_config_from_env_map(
-        env,
-        &HashMap::from([(env.fuzzy, "1"), (env.max_perceptual_distance, "0.01")]),
-      )
-      .expect("config");
-      assert_eq!(config.channel_tolerance, 10);
-      assert_eq!(config.max_different_percent, 1.0);
-      assert!(!config.compare_alpha);
-
-      let parsed = config
-        .max_perceptual_distance
-        .expect("max perceptual distance");
-      assert!((parsed - 0.01).abs() < 1e-12);
     }
   }
 

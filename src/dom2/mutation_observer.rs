@@ -482,11 +482,11 @@ impl Document {
           state.in_pending = false;
           let records = std::mem::take(&mut state.records);
           let record_count = records.len();
-          let node_list = state.node_list.clone();
-          (node_list, records, record_count)
-        })
-      else {
-        continue;
+           let node_list = state.node_list.clone();
+           (node_list, records, record_count)
+         })
+       else {
+         continue;
       };
       agent.total_records = agent.total_records.saturating_sub(record_count);
 
