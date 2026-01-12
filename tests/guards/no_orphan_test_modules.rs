@@ -84,7 +84,7 @@ fn list_top_level_test_crates(tests_dir: &Path) -> Vec<PathBuf> {
 
 fn collect_reachable_module_files(roots: &[PathBuf]) -> HashSet<PathBuf> {
   let mod_decl = Regex::new(
-    r"^\s*(?:pub(?:\([^)]*\))?\s+)?mod\s+([A-Za-z_][A-Za-z0-9_]*)\s*;",
+    r"^\s*(?:pub(?:\([^)]*\))?\s+)?mod\s+(?:r#)?([A-Za-z_][A-Za-z0-9_]*)\s*;",
   )
   .expect("mod declaration regex should compile");
   let include_decl =
@@ -176,4 +176,3 @@ Wire them into the appropriate `mod ...;` tree (or delete the dead file).",
     orphans.join("\n")
   );
 }
-

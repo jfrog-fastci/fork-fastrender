@@ -87,7 +87,7 @@ section in sync with `ls tests/*.rs`.
 | `tests/grid_tests.rs` | unit | `src/layout/contexts/grid.rs` | Migrated to grid context unit tests (and `tests/grid/**` directory removed). | DONE |
 | `tests/headless_chrome_media_features_test.rs` | integration | `tests/integration.rs::browser_integration::headless_chrome_media_features` | Moved into `tests/browser_integration/headless_chrome_media_features.rs`. | DONE |
 | `tests/html_script_processing.rs` | unit | `src/js/html_classic_scripts.rs` | Migrated to unit tests for `parse_and_run_classic_scripts`. | DONE |
-| interaction harness (removed) | delete | delete | Standalone interaction harness removed. Interaction tests migrated into unit tests under `src/interaction/**` and the legacy integration directory deleted. | DONE |
+| `tests/interaction.rs` | delete | delete | Standalone interaction harness removed. Interaction regressions migrated into unit tests under `src/interaction/**` and the legacy integration directory deleted. | DONE |
 | `tests/js_webidl_union_record_enum.rs` | unit | `src/js/webidl/bindings/webidl_union_record_tests.rs` | Migrated to unit tests alongside WebIDL bindings. | DONE |
 | `tests/llvm_statepoint_stackmap_llvm18.rs` | integration | `tests/integration.rs::tooling::llvm_stackmaps` | Moved into `tests/tooling/llvm_stackmaps.rs` (requires LLVM 18 tools; skips when missing). | DONE |
 | `tests/overflow_tests.rs` | unit | `src/paint/stacking.rs` | Migrated into `src/paint/stacking/tests/**`. | DONE |
@@ -124,7 +124,7 @@ migrations.
 | `tests/fixtures/` | HTML + golden-image fixtures | `tests/integration.rs::fixtures` | Stays in `tests/` (data-driven integration). |
 | `tests/guards/` | repo invariants / consolidation guards | `tests/integration.rs::guards` | Integration-style checks for repo structure. |
 | `tests/` `image_integration/` | image loading/output integration tests | `tests/integration.rs::image_integration` | Network/CORS/streaming output; stays integration. |
-| `interaction/` (deleted) | removed | `src/interaction/**` (unit tests) | All interaction tests migrated into unit tests under `src/interaction/**` and the legacy integration directory removed. |
+| `tests/interaction/` | migrated (directory removed) | `src/interaction/**` | All interaction tests migrated into unit tests under `src/interaction/**` and the legacy integration directory removed. |
 | `tests/js/` | JS subsystem integration tests | `tests/integration.rs::js` | Consolidated into the shared integration binary. |
 | `tests/layout/` | layout regressions, paging, flex/grid/table, etc | `src/layout/**` | Unit tests (bulk of migration). |
 | `tests/misc/` | grab-bag integration tests (legacy bucket) | `tests/integration.rs::misc` + migrate unit tests into `src/**` | Some internal/unit tests have been migrated out already (e.g. composed DOM snapshotting + exportparts algorithm tests are now unit tests in `src/dom.rs`; old files are stubs). |

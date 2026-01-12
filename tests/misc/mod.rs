@@ -25,8 +25,6 @@ mod js_dom_realm_selectors;
 mod js_css_supports;
 mod js_dom_wrapper_identity;
 mod js_execution_budgets;
-#[cfg(feature = "quickjs")]
-mod js_fetch_bindings;
 mod js_intersection_observer;
 mod js_time_determinism;
 mod js_url_bindings;
