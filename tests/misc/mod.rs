@@ -35,7 +35,6 @@ mod js_webidl_sequence_conversion;
 mod js_webidl_window_alert;
 mod js_window_host_base_url_update;
 mod js_window_realm;
-mod logical_shorthand_parsing_test;
 mod part_export_map_test;
 mod preserve3d_env_var_disable_warp_test;
 mod rayon_global_pool_test;
