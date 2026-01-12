@@ -12,10 +12,8 @@ default-run = "native-js-cli"
 addr2line = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
 diagnostics = { workspace = true, features = ["serde"] }
-gimli = { workspace = true }
 inkwell = { workspace = true }
 native-js = { workspace = true }
-object = { workspace = true }
 parse-js = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -26,6 +24,7 @@ wait-timeout = { workspace = true }
 
 [dev-dependencies]
 assert_cmd = { workspace = true }
+object = { workspace = true }
 predicates = { workspace = true }
 tempfile = { workspace = true }
 # Ensure `libruntime_native.a` is built so `native-js` can link and run native executables in

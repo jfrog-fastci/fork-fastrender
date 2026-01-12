@@ -20,6 +20,8 @@ native-js bench input.ts --warmup 1 --iters 10
 native-js addr2line /tmp/out 0x401234 0x4012ab
 # Machine-readable timing output:
 native-js --json bench input.ts --warmup 1 --iters 10
+# Machine-readable symbolization output:
+native-js --json addr2line /tmp/out 0x401234
 ```
 
 Note: `native-js build`/`run`/`bench` emit and link native executables. This requires the
@@ -423,9 +425,12 @@ bash vendor/ecma-rs/scripts/cargo_llvm.sh run -p native-js-cli --bin native-js -
 - `--project/-p <tsconfig.json>`: load a TypeScript project and apply `baseUrl`/`paths`
   for module resolution.
  - `--json`: emit versioned JSON diagnostics to stdout (`schema_version = 1`).
-   - not supported with `run` (it would mix with program stdout)
- - `build --emit-ir <PATH.ll>`: also write the emitted LLVM IR (for debugging).
- - `emit-ir -o <PATH.ll>`: write LLVM IR without producing an executable.
+    - `check`/`build`/`emit-ir`: diagnostics JSON (`command` omitted)
+    - `bench`: benchmark JSON (`command = "bench"`)
+    - `addr2line`: symbolization JSON (`command = "addr2line"`)
+    - not supported with `run` (it would mix with program stdout)
+  - `build --emit-ir <PATH.ll>`: also write the emitted LLVM IR (for debugging).
+  - `emit-ir -o <PATH.ll>`: write LLVM IR without producing an executable.
  - `--opt=0|1|2|3`: set the LLVM target machine optimization level.
    - default: `2`
    - when `--debug` is set and `--opt` is not explicitly provided, defaults to `0`
