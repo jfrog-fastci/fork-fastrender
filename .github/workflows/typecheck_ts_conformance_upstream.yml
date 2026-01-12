@@ -36,7 +36,34 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       matrix: ${{ steps.compute.outputs.matrix }}
+      run_enabled: ${{ steps.manifest.outputs.run_enabled }}
     steps:
+      - name: Checkout (no submodules)
+        uses: actions/checkout@v4
+        with:
+          submodules: false
+
+      - name: Ensure upstream expectations manifest exists
+        id: manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          manifest="vendor/ecma-rs/typecheck-ts-harness/fixtures/conformance-upstream/manifest.toml"
+          if [[ -f "${manifest}" ]]; then
+            echo "run_enabled=true" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+
+          echo "::warning::Upstream conformance expectations manifest is missing (${manifest})." >&2
+          echo "::warning::Task 28 is expected to add this file; skipping upstream conformance on PR/push until then." >&2
+
+          if [[ "${GITHUB_EVENT_NAME}" == "schedule" || "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
+            echo "::error::Refusing to run scheduled/manual upstream conformance without a checked-in manifest." >&2
+            exit 1
+          fi
+
+          echo "run_enabled=false" >> "${GITHUB_OUTPUT}"
+
       - name: Compute matrix
         id: compute
         shell: bash
@@ -73,6 +100,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     needs: upstream-conformance-matrix
+    if: needs.upstream-conformance-matrix.outputs.run_enabled == 'true'
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.upstream-conformance-matrix.outputs.matrix) }}
