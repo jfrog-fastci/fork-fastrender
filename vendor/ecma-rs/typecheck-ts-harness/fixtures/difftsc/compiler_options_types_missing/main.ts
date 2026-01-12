@@ -1,2 +1,4 @@
-// @types: definitely_missing_type_pkg
+// @lib: es5
+// @types: definitely_missing_pkg
+// @moduleResolution: node
 export {};

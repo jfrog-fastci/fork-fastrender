@@ -4,6 +4,9 @@
     "typescript_version": "5.9.3",
     "options": {
       "exactOptionalPropertyTypes": false,
+      "lib": [
+        "lib.es5.d.ts"
+      ],
       "moduleResolution": 2,
       "noEmit": true,
       "noImplicitAny": false,
@@ -14,7 +17,7 @@
       "strictNullChecks": true,
       "target": 2,
       "types": [
-        "definitely_missing_type_pkg"
+        "definitely_missing_pkg"
       ],
       "useDefineForClassFields": true
     }
@@ -26,7 +29,7 @@
       "start": 0,
       "end": 0,
       "category": "error",
-      "message": "Cannot find type definition file for 'definitely_missing_type_pkg'."
+      "message": "Cannot find type definition file for 'definitely_missing_pkg'."
     }
   ]
 }
