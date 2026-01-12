@@ -15,7 +15,33 @@ const VIRTUAL_ROOT = "/";
 const SCHEMA_VERSION = 2;
 
 function normalizePath(fileName) {
-  return path.posix.normalize(fileName.replace(/\\/g, "/"));
+  const normalized = path.posix.normalize(fileName.replace(/\\/g, "/"));
+  if (normalized.length > 1 && normalized.endsWith("/")) {
+    return normalized.slice(0, -1);
+  }
+  return normalized;
+}
+
+function isWithinRoot(candidate, root) {
+  return candidate === root || candidate.startsWith(`${root}/`);
+}
+
+function computeAllowedDiskRoots() {
+  const libPath = normalizePath(ts.getDefaultLibFilePath({}));
+  const libDir = normalizePath(path.posix.dirname(libPath));
+  const packageRoot = normalizePath(path.posix.join(libDir, ".."));
+  return new Set([libDir, packageRoot]);
+}
+
+const ALLOWED_DISK_ROOTS = computeAllowedDiskRoots();
+
+function isAllowedDiskPath(absolutePath) {
+  for (const root of ALLOWED_DISK_ROOTS) {
+    if (isWithinRoot(absolutePath, root)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function utf16ToUtf8ByteOffset(text, utf16Pos) {
@@ -333,45 +359,87 @@ function createInMemoryHost(files, options) {
   }
   const virtualDirectories = collectVirtualDirectories(normalizedFiles.keys());
 
-  return {
+  const getSourceFile = (fileName, languageVersion, onError) => {
+    const normalized = toAbsolute(fileName);
+    const text = normalizedFiles.get(normalized);
+    if (text !== undefined) {
+      const scriptKind = ts.getScriptKindFromFileName(normalized);
+      const target = languageVersion ?? options.target ?? ts.ScriptTarget.Latest;
+      return ts.createSourceFile(normalized, text, target, true, scriptKind);
+    }
+    if (!isAllowedDiskPath(normalized)) {
+      return undefined;
+    }
+
+    const diskText = defaultHost.readFile(normalized);
+    if (diskText === undefined) {
+      if (onError) {
+        onError(`File not found: ${normalized}`);
+      }
+      return undefined;
+    }
+    const scriptKind = ts.getScriptKindFromFileName(normalized);
+    const target = languageVersion ?? options.target ?? ts.ScriptTarget.Latest;
+    return ts.createSourceFile(normalized, diskText, target, true, scriptKind);
+  };
+
+  const host = {
     ...defaultHost,
     getCurrentDirectory: () => VIRTUAL_ROOT,
     getCanonicalFileName: (fileName) => normalizePath(fileName),
     fileExists: (fileName) => {
       const absolute = toAbsolute(fileName);
-      return normalizedFiles.has(absolute) || defaultHost.fileExists(absolute);
+      return (
+        normalizedFiles.has(absolute) ||
+        (isAllowedDiskPath(absolute) && defaultHost.fileExists(absolute))
+      );
     },
     readFile: (fileName) => {
       const absolute = toAbsolute(fileName);
-      return normalizedFiles.get(absolute) ?? defaultHost.readFile(absolute);
+      if (normalizedFiles.has(absolute)) {
+        return normalizedFiles.get(absolute);
+      }
+      if (!isAllowedDiskPath(absolute)) {
+        return undefined;
+      }
+      return defaultHost.readFile(absolute);
     },
     directoryExists: (dirName) => {
       const absolute = toAbsolute(dirName);
-      return virtualDirectories.has(absolute) || (defaultHost.directoryExists?.(absolute) ?? false);
+      return (
+        virtualDirectories.has(absolute) ||
+        (isAllowedDiskPath(absolute) && (defaultHost.directoryExists?.(absolute) ?? false))
+      );
     },
     getDirectories: (dirName) => {
       const absolute = toAbsolute(dirName);
-      const fromDefault = defaultHost.getDirectories?.(absolute) ?? [];
+      const fromDefault = isAllowedDiskPath(absolute)
+        ? defaultHost.getDirectories?.(absolute) ?? []
+        : [];
       const virtual = listVirtualSubdirectories(absolute, virtualDirectories);
       return Array.from(new Set([...fromDefault, ...virtual]));
     },
-    getSourceFile: (fileName, languageVersion, onError, shouldCreateNewSourceFile) => {
-      const normalized = toAbsolute(fileName);
-      const text = normalizedFiles.get(normalized);
-      if (text !== undefined) {
-        const scriptKind = ts.getScriptKindFromFileName(normalized);
-        const target = languageVersion ?? options.target ?? ts.ScriptTarget.Latest;
-        return ts.createSourceFile(normalized, text, target, true, scriptKind);
+    readDirectory: (rootDir, extensions, excludes, includes, depth) => {
+      const absolute = toAbsolute(rootDir);
+      if (!isAllowedDiskPath(absolute)) {
+        return [];
       }
-      return defaultHost.getSourceFile(
-        normalized,
-        languageVersion,
-        onError,
-        shouldCreateNewSourceFile,
-      );
+      return defaultHost.readDirectory?.(absolute, extensions, excludes, includes, depth) ?? [];
     },
+    realpath: (p) => {
+      const absolute = toAbsolute(p);
+      if (!isAllowedDiskPath(absolute)) {
+        return absolute;
+      }
+      return defaultHost.realpath ? defaultHost.realpath(absolute) : absolute;
+    },
+    getSourceFileByPath: (fileName, filePath, languageVersion, onError) =>
+      // Ignore the cache key and treat it as the resolved file name.
+      getSourceFile(fileName, languageVersion, onError),
+    getSourceFile,
     writeFile: () => {},
   };
+  return host;
 }
 
 function runRequest(request) {
