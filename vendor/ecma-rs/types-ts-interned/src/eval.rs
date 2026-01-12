@@ -661,6 +661,18 @@ impl<'a, E: TypeExpander> TypeEvaluator<'a, E> {
         self.store.intern_type(TypeKind::Callable { overloads })
       }
       TypeKind::Ref { def, args } => self.evaluate_ref(def, args, subst, depth + 1),
+      TypeKind::Predicate {
+        parameter,
+        asserted,
+        asserts,
+      } => {
+        let asserted = asserted.map(|ty| self.evaluate_with_subst(ty, subst, depth + 1));
+        self.store.intern_type(TypeKind::Predicate {
+          parameter,
+          asserted,
+          asserts,
+        })
+      }
       TypeKind::Conditional {
         check,
         extends,

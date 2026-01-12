@@ -4,7 +4,7 @@ use std::sync::Arc;
 use ordered_float::OrderedFloat;
 use types_ts_interned::{
   Accessibility, DefId, EvaluatorLimits, ExpandedType, Indexer, MappedModifier, MappedType,
-  ObjectType, Param, PropData, PropKey, Property, Shape, Signature, TemplateChunk,
+  ObjectType, Param, PredicateParam, PropData, PropKey, Property, Shape, Signature, TemplateChunk,
   TemplateLiteralType, TupleElem, TypeEvaluator, TypeExpander, TypeId, TypeKind, TypeOptions,
   TypeParamId, TypeStore,
 };
@@ -28,6 +28,49 @@ impl TypeExpander for MockExpander {
 
 fn evaluator(store: Arc<TypeStore>, expander: &MockExpander) -> TypeEvaluator<'_, MockExpander> {
   TypeEvaluator::new(store, expander)
+}
+
+#[test]
+fn predicate_asserted_type_param_is_substituted() {
+  let store = TypeStore::new();
+  let primitives = store.primitive_ids();
+
+  let t = store.intern_type(TypeKind::TypeParam(TypeParamId(0)));
+  let predicate = store.intern_type(TypeKind::Predicate {
+    parameter: Some(PredicateParam::Param(0)),
+    asserted: Some(t),
+    asserts: false,
+  });
+
+  let default_expander = MockExpander::default();
+  let mut eval = evaluator(store.clone(), &default_expander);
+  let result = eval.evaluate_with_bindings(predicate, vec![(TypeParamId(0), primitives.number)]);
+
+  assert_eq!(
+    store.type_kind(result),
+    TypeKind::Predicate {
+      parameter: Some(PredicateParam::Param(0)),
+      asserted: Some(primitives.number),
+      asserts: false,
+    }
+  );
+}
+
+#[test]
+fn predicate_without_asserted_type_is_unchanged() {
+  let store = TypeStore::new();
+
+  let predicate = store.intern_type(TypeKind::Predicate {
+    parameter: Some(PredicateParam::Param(0)),
+    asserted: None,
+    asserts: false,
+  });
+
+  let default_expander = MockExpander::default();
+  let mut eval = evaluator(store.clone(), &default_expander);
+  let result = eval.evaluate_with_bindings(predicate, vec![(TypeParamId(0), store.primitive_ids().number)]);
+
+  assert_eq!(result, predicate);
 }
 
 #[test]
