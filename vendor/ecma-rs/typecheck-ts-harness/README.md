@@ -129,6 +129,8 @@ bash ../scripts/cargo_agent.sh run -p typecheck-ts-harness --release -- conforma
   - `--node /path/to/node` overrides the Node.js executable used for `tsc`
   - `--span-tolerance <bytes>` allows small span drift when diffing
 - `--json` prints the machine-readable conformance report to stdout.
+  - When `--fail-on new|all` triggers a non-zero exit, the report is still
+    emitted first (so CI can upload artifacts for triage).
 - `--trace` enables structured tracing logs on stderr (JSONL), keeping stdout
   parseable when `--json` is enabled. Redirect with `2> trace.jsonl`.
 - `--profile` is forwarded to the checker.
@@ -441,7 +443,6 @@ bash ../scripts/cargo_agent.sh run -p typecheck-ts-harness --release -- conforma
   --shard-strategy hash \
   --timeout-secs 20 \
   --jobs 2 \
-  --allow-mismatches \
   --json \
   > upstream-es2020-shard0.json
 ```

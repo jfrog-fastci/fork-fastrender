@@ -390,37 +390,8 @@ jobs:
             --shard-strategy hash \
             --timeout-secs 20 \
             --jobs 2 \
-            --allow-mismatches \
             --json \
             > "${report}"
-
-          # `conformance` exits non-zero on uncovered mismatches, which would stop
-          # CI from uploading the JSON report artifact. Instead, always emit the
-          # report and enforce "no new failures" by inspecting the summary.
-          python - <<'PY'
-          import json
-          import os
-          import sys
-
-          shard_index = os.environ["SHARD_INDEX"]
-          shard_total = os.environ["SHARD_TOTAL"]
-          report_path = f"typecheck-upstream-es2020-shard-{shard_index}-of-{shard_total}.json"
-          with open(report_path, "r", encoding="utf-8") as f:
-            report = json.load(f)
-
-          mismatches = report.get("summary", {}).get("mismatches") or {}
-          unexpected = int(mismatches.get("unexpected", 0) or 0)
-          xpass = int(mismatches.get("xpass", 0) or 0)
-          expected = int(mismatches.get("expected", 0) or 0)
-          flaky = int(mismatches.get("flaky", 0) or 0)
-
-          if unexpected or xpass:
-            print(
-              f"upstream conformance shard failed: unexpected={unexpected} xpass={xpass} expected={expected} flaky={flaky}",
-              file=sys.stderr,
-            )
-            sys.exit(1)
-          PY
 
       - name: Upload upstream conformance report
         if: always()

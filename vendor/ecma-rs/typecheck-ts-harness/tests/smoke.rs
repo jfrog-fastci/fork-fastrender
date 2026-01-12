@@ -200,6 +200,68 @@ fn cli_requires_suite_unless_allowed_to_be_empty() {
 }
 
 #[test]
+fn cli_emits_json_report_even_when_failing() {
+  let dir = tempdir().expect("tempdir");
+  let root = dir.path();
+
+  // A no-lib fixture that should typecheck cleanly under Rust.
+  fs::write(root.join("a.ts"), "// @noLib: true\nexport const a = 1;\n").expect("write fixture");
+
+  // Create a deliberately-wrong snapshot baseline so `--compare snapshot` produces a mismatch.
+  // Snapshot baselines are stored under `baselines/<suite_name>/...`, where `suite_name` is the
+  // final path component of `--root`.
+  let suite_name = root
+    .file_name()
+    .expect("tempdir has final path component")
+    .to_string_lossy()
+    .to_string();
+  let baseline_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+    .join("baselines")
+    .join(&suite_name);
+  fs::create_dir_all(&baseline_dir).expect("create baselines dir");
+  let baseline_path = baseline_dir.join("a.ts.json");
+  fs::write(
+    &baseline_path,
+    format!(
+      "{{\n  \"schemaVersion\": {},\n  \"metadata\": {{}},\n  \"diagnostics\": [\n    {{\n      \"code\": 9999,\n      \"file\": \"a.ts\",\n      \"start\": 0,\n      \"end\": 1,\n      \"category\": \"error\"\n    }}\n  ]\n}}\n",
+      typecheck_ts_harness::tsc::TSC_BASELINE_SCHEMA_VERSION
+    ),
+  )
+  .expect("write baseline");
+
+  let mut cmd = harness_cli();
+  cmd.timeout(CLI_TIMEOUT);
+  cmd
+    .arg("conformance")
+    .arg("--root")
+    .arg(root)
+    .arg("--compare")
+    .arg("snapshot")
+    .arg("--json")
+    .arg("--timeout-secs")
+    .arg("5")
+    .arg("--node")
+    .arg("__typecheck_ts_harness_missing_node__");
+
+  let assert = cmd.assert().code(1);
+  let stdout = assert.get_output().stdout.clone();
+  let report: JsonReport = serde_json::from_slice(&stdout).expect("conformance json report");
+  assert_eq!(report.summary.total, 1);
+  assert_eq!(
+    report
+      .summary
+      .mismatches
+      .as_ref()
+      .map(|m| m.unexpected)
+      .unwrap_or_default(),
+    1
+  );
+
+  // Best-effort cleanup so we don't leave a junk baseline directory when running tests locally.
+  let _ = fs::remove_dir_all(baseline_dir);
+}
+
+#[test]
 fn cli_runs_with_filter_and_json() {
   let (_dir, root) = write_fixtures();
 

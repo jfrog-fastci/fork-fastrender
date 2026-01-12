@@ -293,7 +293,10 @@ fn main() -> ExitCode {
       options.compare = compare.into();
       options.node_path = node;
       options.span_tolerance = span_tolerance;
-      options.allow_mismatches = allow_mismatches;
+      // Always collect a full report (and optionally emit JSON) even when
+      // mismatches are present. Exit status is decided below so CI can both
+      // upload reports and still fail the job on uncovered regressions.
+      options.allow_mismatches = true;
       options.manifest = manifest;
       options.fail_on = fail_on;
       options.extensions = extensions;
