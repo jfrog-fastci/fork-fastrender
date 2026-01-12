@@ -121,10 +121,16 @@ fn current_thread_id_u64() -> u64 {
 
   #[cfg(not(any(target_os = "linux", target_os = "android")))]
   {
-    DRIVER_GUARD_THREAD_TOKEN.with(|token| {
-      let id = token as *const u8 as usize as u64;
-      if id != 0 { id } else { 1 }
-    })
+    // Driving entrypoints can be invoked from other thread-local destructors during TLS teardown.
+    // If this TLS key has already been destroyed, `LocalKey::with` would panic with `AccessError`
+    // and abort the process (`abort_on_dtor_unwind`). Treat an inaccessible key as a best-effort
+    // fallback id.
+    DRIVER_GUARD_THREAD_TOKEN
+      .try_with(|token| {
+        let id = token as *const u8 as usize as u64;
+        if id != 0 { id } else { 1 }
+      })
+      .unwrap_or(1)
   }
 }
 
