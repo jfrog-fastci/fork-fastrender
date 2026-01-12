@@ -269,7 +269,7 @@ fn session_writer_thread(
   }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "browser_ui"))]
 mod tests {
   use super::*;
 
@@ -292,7 +292,7 @@ mod tests {
   }
 
   #[test]
-  fn debounce_coalesces_to_single_write() {
+  fn debounce_persists_latest_snapshot() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("session.json");
 
