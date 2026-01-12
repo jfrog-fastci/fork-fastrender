@@ -608,6 +608,11 @@ FastRender CI configuration (see `<repo-root>/.github/workflows/typecheck_ts_con
 - timeout: 20s per case
 - workers: `--jobs 4`
 - expectations: `typecheck-ts-harness/fixtures/conformance-upstream/manifest.toml` (gates only new mismatches)
+- schedule/manual runs additionally produce a merged report + triage artifact
+  (`typecheck_ts_conformance_upstream_merged`) containing:
+  - merged JSON report
+  - triage JSON + stderr
+  - `triage --emit-manifest` TOML snippet for updating expectations
 
 To reproduce shard `0/16` locally:
 
