@@ -2018,7 +2018,7 @@ impl DisplayListBuilder {
 
   /// Builds display items for a fragment subtree.
   fn build_fragment(&mut self, fragment: &FragmentNode, offset: Point, visibility: Visibility) {
-    self.build_fragment_internal(fragment, offset, true, false, visibility);
+    self.build_fragment_internal(fragment, offset, true, false, visibility, false);
   }
 
   /// Builds display items for a fragment without descending into children.
@@ -2027,8 +2027,16 @@ impl DisplayListBuilder {
     fragment: &FragmentNode,
     offset: Point,
     visibility: Visibility,
+    clip_rect_already_pushed: bool,
   ) {
-    self.build_fragment_internal(fragment, offset, false, false, visibility);
+    self.build_fragment_internal(
+      fragment,
+      offset,
+      false,
+      false,
+      visibility,
+      clip_rect_already_pushed,
+    );
   }
 
   fn build_fragment_internal(
@@ -2038,6 +2046,7 @@ impl DisplayListBuilder {
     recurse_children: bool,
     suppress_opacity: bool,
     visibility: Visibility,
+    clip_rect_already_pushed: bool,
   ) {
     // This used to recurse directly on `fragment.children`, which meant adversarially deep fragment
     // trees could stack overflow (crash) before paint-time limits/stacking-context logic had a
@@ -2065,6 +2074,7 @@ impl DisplayListBuilder {
       skip_contents: bool,
       child_visibility: Visibility,
       pushed_clips: usize,
+      root_clip_pushed: bool,
 
       // Child traversal state (only used when `recurse_children == true` and contents are not
       // skipped).
@@ -2088,6 +2098,7 @@ impl DisplayListBuilder {
       recurse_children: bool,
       suppress_opacity: bool,
       visibility: Visibility,
+      clip_rect_already_pushed: bool,
       data: Option<FrameData<'a>>,
     }
 
@@ -2098,6 +2109,7 @@ impl DisplayListBuilder {
         recurse_children: bool,
         suppress_opacity: bool,
         visibility: Visibility,
+        clip_rect_already_pushed: bool,
       ) -> Self {
         Self {
           stage: Stage::Enter,
@@ -2106,6 +2118,7 @@ impl DisplayListBuilder {
           recurse_children,
           suppress_opacity,
           visibility,
+          clip_rect_already_pushed,
           data: None,
         }
       }
@@ -2118,6 +2131,7 @@ impl DisplayListBuilder {
       recurse_children,
       suppress_opacity,
       visibility,
+      clip_rect_already_pushed,
     ));
 
     'work: while let Some(mut frame) = stack.pop() {
@@ -2287,6 +2301,19 @@ impl DisplayListBuilder {
             self.push_opacity(opacity);
           }
 
+          // CSS 2.1 `clip` applies to the element's entire rendering (background/border/shadow,
+          // contents, and descendants).
+          //
+          // In the stacking-context-aware path, the stacking context builder pushes `clip_rect`
+          // immediately after `PushStackingContext`, so avoid double-pushing here.
+          let mut root_clip_pushed = false;
+          if !frame.clip_rect_already_pushed {
+            if let Some(clip) = clip_rect.as_ref() {
+              self.list.push(DisplayItem::PushClip(clip.clone()));
+              root_clip_pushed = true;
+            }
+          }
+
           if paint_self {
             if let Some(style) = style_opt {
               let suppress_background = self
@@ -2314,12 +2341,6 @@ impl DisplayListBuilder {
               } else {
                 None
               };
-
-              // CSS 2.1 `clip` applies to the element's own border/background in addition to its
-              // descendants. We intentionally keep this scoped to the element itself (the content
-              // traversal below still pushes `clip_rect` again) so outer effects like box shadows and
-              // outlines remain unaffected.
-              let mut clip_rect_pushed = false;
 
               if !style.box_shadow.is_empty() {
                 let mut decoration_rects: Option<BackgroundRects> = None;
@@ -2366,10 +2387,6 @@ impl DisplayListBuilder {
                     false,
                   );
                 }
-                if let Some(clip) = clip_rect.as_ref() {
-                  self.list.push(DisplayItem::PushClip(clip.clone()));
-                  clip_rect_pushed = true;
-                }
                 if !suppress_background {
                   self.emit_background_from_style_with_rects_and_text_clip_and_culling_rect(
                     rects,
@@ -2388,10 +2405,6 @@ impl DisplayListBuilder {
                   );
                 }
               } else if decoration_rect == absolute_rect {
-                if let Some(clip) = clip_rect.as_ref() {
-                  self.list.push(DisplayItem::PushClip(clip.clone()));
-                  clip_rect_pushed = true;
-                }
                 if !suppress_background {
                   if let Some(rects) = absolute_rects.as_ref() {
                     self.emit_background_from_style_with_rects_and_text_clip_and_culling_rect(
@@ -2410,13 +2423,6 @@ impl DisplayListBuilder {
                   }
                 }
               } else {
-                if let Some(clip) = clip_rect
-                  .as_ref()
-                  .filter(|_| !suppress_background || !suppress_border)
-                {
-                  self.list.push(DisplayItem::PushClip(clip.clone()));
-                  clip_rect_pushed = true;
-                }
                 if !suppress_background {
                   self.emit_background_from_style_with_text_clip_and_culling_rect(
                     decoration_rect,
@@ -2432,9 +2438,6 @@ impl DisplayListBuilder {
                   self.fieldset_legend_border_gap(frame.fragment, decoration_rect, style);
                 self.emit_border_from_style(decoration_rect, style, gap);
               }
-              if clip_rect_pushed {
-                self.list.push(DisplayItem::PopClip);
-              }
               if decoration_clip_pushed {
                 self.list.push(DisplayItem::PopClip);
               }
@@ -2447,15 +2450,10 @@ impl DisplayListBuilder {
           // 3. Content (text, images)
           // 4. Children
 
-          // Clip descendant/content painting but leave outer effects (e.g., box shadows, outlines)
-          // unaffected.
+          // Clip descendant/content painting to the padding box when `overflow` clips.
           let mut pushed_clips = 0usize;
           if !skip_contents {
             if let Some(clip) = overflow_clip {
-              self.list.push(DisplayItem::PushClip(clip));
-              pushed_clips += 1;
-            }
-            if let Some(clip) = clip_rect {
               self.list.push(DisplayItem::PushClip(clip));
               pushed_clips += 1;
             }
@@ -2475,6 +2473,7 @@ impl DisplayListBuilder {
             skip_contents,
             child_visibility,
             pushed_clips,
+            root_clip_pushed,
             child_offset: Point::ZERO,
             prev_line_decoration_ctx: None,
             before_children: 0,
@@ -2615,7 +2614,7 @@ impl DisplayListBuilder {
 
           if let Some(idx) = child_idx {
             let child = &frame.fragment.children[idx];
-            let child_frame = Frame::new(child, child_offset, true, false, child_visibility);
+            let child_frame = Frame::new(child, child_offset, true, false, child_visibility, false);
             stack.push(frame);
             stack.push(child_frame);
             continue 'work;
@@ -2649,7 +2648,7 @@ impl DisplayListBuilder {
 
           if let Some(idx) = child_idx {
             let child = &frame.fragment.children[idx];
-            let child_frame = Frame::new(child, child_offset, true, false, child_visibility);
+            let child_frame = Frame::new(child, child_offset, true, false, child_visibility, false);
             stack.push(frame);
             stack.push(child_frame);
             continue 'work;
@@ -2706,7 +2705,7 @@ impl DisplayListBuilder {
 
           if let Some(idx) = child_idx {
             let child = &frame.fragment.children[idx];
-            let child_frame = Frame::new(child, child_offset, true, false, child_visibility);
+            let child_frame = Frame::new(child, child_offset, true, false, child_visibility, false);
             stack.push(frame);
             stack.push(child_frame);
             continue 'work;
@@ -2754,7 +2753,7 @@ impl DisplayListBuilder {
 
           if let Some(idx) = child_idx {
             let child = &frame.fragment.children[idx];
-            let child_frame = Frame::new(child, child_offset, true, false, child_visibility);
+            let child_frame = Frame::new(child, child_offset, true, false, child_visibility, false);
             stack.push(frame);
             stack.push(child_frame);
             continue 'work;
@@ -2835,6 +2834,10 @@ impl DisplayListBuilder {
             for _ in 0..data.pushed_clips {
               self.list.push(DisplayItem::PopClip);
             }
+          }
+
+          if data.root_clip_pushed {
+            self.list.push(DisplayItem::PopClip);
           }
 
           if data.paint_self {
@@ -3873,6 +3876,7 @@ impl DisplayListBuilder {
         root_fragment_offset,
         has_opacity,
         local_child_visibility,
+        false,
       );
       if skip_contents {
         if is_paged_media_page_root {
@@ -4032,6 +4036,7 @@ impl DisplayListBuilder {
       }));
       pushed_clips += 1;
     }
+    let clip_rect_pushed_for_root = clip_rect.is_some();
     if let Some(clip) = clip_rect {
       self.list.push(DisplayItem::PushClip(clip));
       pushed_clips += 1;
@@ -4049,6 +4054,7 @@ impl DisplayListBuilder {
       root_fragment_offset,
       has_opacity,
       local_child_visibility,
+      clip_rect_pushed_for_root,
     );
     if skip_contents {
       if is_paged_media_page_root {
@@ -6282,6 +6288,7 @@ impl DisplayListBuilder {
     offset: Point,
     suppress_opacity: bool,
     visibility: Visibility,
+    clip_rect_already_pushed: bool,
   ) {
     let len = fragments.len();
     let total = self.estimated_fragments.unwrap_or(len);
@@ -6322,9 +6329,21 @@ impl DisplayListBuilder {
                         break;
                       }
                       if suppress_opacity {
-                        builder.build_fragment_internal(fragment, offset, false, true, visibility);
+                        builder.build_fragment_internal(
+                          fragment,
+                          offset,
+                          false,
+                          true,
+                          visibility,
+                          clip_rect_already_pushed,
+                        );
                       } else {
-                        builder.build_fragment_shallow(fragment, offset, visibility);
+                        builder.build_fragment_shallow(
+                          fragment,
+                          offset,
+                          visibility,
+                          clip_rect_already_pushed,
+                        );
                       }
                     }
                     (chunk_offset, builder.list, std::thread::current().id())
@@ -6361,9 +6380,16 @@ impl DisplayListBuilder {
         break;
       }
       if suppress_opacity {
-        self.build_fragment_internal(fragment, offset, false, true, visibility);
+        self.build_fragment_internal(
+          fragment,
+          offset,
+          false,
+          true,
+          visibility,
+          clip_rect_already_pushed,
+        );
       } else {
-        self.build_fragment_shallow(fragment, offset, visibility);
+        self.build_fragment_shallow(fragment, offset, visibility, clip_rect_already_pushed);
       }
     }
     if let (Some(stats), Some(start)) = (self.parallel_stats.as_ref(), serial_start) {

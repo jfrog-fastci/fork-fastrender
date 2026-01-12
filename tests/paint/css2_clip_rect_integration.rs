@@ -66,4 +66,3 @@ fn css2_clip_rect_is_applied_in_final_paint_output() {
   // `clip` should not apply to non-abspos elements; this probe would be clipped otherwise.
   assert_pixel_rgba_approx(&pixmap, 30, 70, (0, 0, 255, 255), TOL);
 }
-
