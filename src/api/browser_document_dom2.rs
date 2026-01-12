@@ -7,6 +7,7 @@ use crate::js::CurrentScriptStateHandle;
 use crate::resource::ReferrerPolicy;
 use crate::scroll::ScrollState;
 use crate::tree::box_tree::{BoxNode, BoxType};
+use crate::web::dom::DocumentVisibilityState;
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::ptr::NonNull;
 use std::sync::Arc;
@@ -42,6 +43,7 @@ pub struct BrowserDocumentDom2 {
   renderer: super::FastRender,
   dom: Box<crate::dom2::Document>,
   active_events: ActiveEventStack,
+  visibility_state: DocumentVisibilityState,
   /// Host-side `Document.currentScript` bookkeeping shared with JS bindings.
   ///
   /// `BrowserTabHost` owns the authoritative current-script state, but `vm-js` native handlers see
@@ -94,6 +96,7 @@ impl BrowserDocumentDom2 {
       renderer,
       dom,
       active_events: ActiveEventStack::default(),
+      visibility_state: DocumentVisibilityState::Visible,
       current_script: CurrentScriptStateHandle::default(),
       options,
       prepared: None,
@@ -136,6 +139,14 @@ impl BrowserDocumentDom2 {
 
   pub(crate) fn set_current_script_handle(&mut self, handle: CurrentScriptStateHandle) {
     self.current_script = handle;
+  }
+
+  pub(crate) fn visibility_state(&self) -> DocumentVisibilityState {
+    self.visibility_state
+  }
+
+  pub(crate) fn set_visibility_state(&mut self, state: DocumentVisibilityState) {
+    self.visibility_state = state;
   }
 
   /// Fetches and prepares a URL using the internal renderer, replacing the live `dom2` document

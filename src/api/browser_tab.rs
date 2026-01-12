@@ -27,6 +27,7 @@ use crate::resource::ResourceFetcher;
 use crate::resource::{origin_from_url, FetchDestination, FetchRequest, ReferrerPolicy};
 use crate::style::media::{MediaContext, MediaQuery, MediaQueryCache, MediaType};
 use crate::ui::TabHistory;
+use crate::web::dom::DocumentVisibilityState;
 use crate::web::events::{Event, EventInit, EventTargetId};
 
 use encoding_rs::{Encoding, UTF_8};
@@ -4175,6 +4176,39 @@ impl BrowserTab {
     self.host.set_event_invoker(invoker);
   }
 
+  pub fn set_visibility(&mut self, state: DocumentVisibilityState) -> Result<()> {
+    if self.host.document.visibility_state() == state {
+      return Ok(());
+    }
+
+    self.host.document.set_visibility_state(state);
+    // Page visibility changes are observed via `visibilitychange`, dispatched as a DOM manipulation
+    // task (not synchronously), matching browser task ordering.
+    self.event_loop.queue_task(TaskSource::DOMManipulation, |host, event_loop| {
+      let mut event = Event::new(
+        "visibilitychange",
+        EventInit {
+          bubbles: false,
+          cancelable: false,
+          composed: false,
+        },
+      );
+      event.is_trusted = true;
+      let _default_not_prevented =
+        host.dispatch_dom_event_in_event_loop(EventTargetId::Document, event, event_loop)?;
+      Ok(())
+    })?;
+    Ok(())
+  }
+
+  pub fn set_hidden(&mut self, hidden: bool) -> Result<()> {
+    self.set_visibility(if hidden {
+      DocumentVisibilityState::Hidden
+    } else {
+      DocumentVisibilityState::Visible
+    })
+  }
+
   pub fn write_trace(&self) -> Result<()> {
     let Some(path) = self.trace_output.as_deref() else {
       return Ok(());
@@ -7363,6 +7397,120 @@ mod tests {
       panic!("expected string, got {value:?}");
     };
     realm.heap().get_string(s).unwrap().to_utf8_lossy()
+  }
+
+  #[test]
+  fn browser_tab_document_visibility_state_and_visibilitychange_event() -> Result<()> {
+    let html = r#"<!doctype html>
+      <html>
+        <body>
+          <script>
+            globalThis.__initialVisibility = document.visibilityState;
+            globalThis.__initialHidden = document.hidden;
+            globalThis.__visibilityChangeCount = 0;
+            globalThis.__lastVisibility = null;
+            globalThis.__lastHidden = null;
+            document.addEventListener('visibilitychange', () => {
+              globalThis.__visibilityChangeCount++;
+              globalThis.__lastVisibility = document.visibilityState;
+              globalThis.__lastHidden = document.hidden;
+            });
+          </script>
+        </body>
+      </html>"#;
+    let mut tab = BrowserTab::from_html_with_vmjs_executor(html, RenderOptions::default())?;
+
+    {
+      let realm = tab
+        .host
+        .executor
+        .window_realm_mut()
+        .expect("expected vm-js WindowRealm");
+      let initial_visibility = realm
+        .exec_script("globalThis.__initialVisibility")
+        .map_err(|err| Error::Other(err.to_string()))?;
+      assert_eq!(value_to_string(realm, initial_visibility), "visible");
+
+      let initial_hidden = realm
+        .exec_script("globalThis.__initialHidden")
+        .map_err(|err| Error::Other(err.to_string()))?;
+      assert_eq!(initial_hidden, Value::Bool(false));
+    }
+
+    tab.set_visibility(DocumentVisibilityState::Hidden)?;
+    // Event must be queued as a DOM manipulation task, not dispatched synchronously.
+    {
+      let realm = tab
+        .host
+        .executor
+        .window_realm_mut()
+        .expect("expected vm-js WindowRealm");
+      let count = realm
+        .exec_script("globalThis.__visibilityChangeCount")
+        .map_err(|err| Error::Other(err.to_string()))?;
+      assert_eq!(count, Value::Number(0.0));
+    }
+
+    tab.run_event_loop_until_idle(RunLimits::unbounded())?;
+    {
+      let realm = tab
+        .host
+        .executor
+        .window_realm_mut()
+        .expect("expected vm-js WindowRealm");
+      let count = realm
+        .exec_script("globalThis.__visibilityChangeCount")
+        .map_err(|err| Error::Other(err.to_string()))?;
+      assert_eq!(count, Value::Number(1.0));
+
+      let last_visibility = realm
+        .exec_script("globalThis.__lastVisibility")
+        .map_err(|err| Error::Other(err.to_string()))?;
+      assert_eq!(value_to_string(realm, last_visibility), "hidden");
+
+      let last_hidden = realm
+        .exec_script("globalThis.__lastHidden")
+        .map_err(|err| Error::Other(err.to_string()))?;
+      assert_eq!(last_hidden, Value::Bool(true));
+    }
+
+    tab.set_visibility(DocumentVisibilityState::Visible)?;
+    {
+      let realm = tab
+        .host
+        .executor
+        .window_realm_mut()
+        .expect("expected vm-js WindowRealm");
+      let count = realm
+        .exec_script("globalThis.__visibilityChangeCount")
+        .map_err(|err| Error::Other(err.to_string()))?;
+      assert_eq!(count, Value::Number(1.0));
+    }
+
+    tab.run_event_loop_until_idle(RunLimits::unbounded())?;
+    {
+      let realm = tab
+        .host
+        .executor
+        .window_realm_mut()
+        .expect("expected vm-js WindowRealm");
+      let count = realm
+        .exec_script("globalThis.__visibilityChangeCount")
+        .map_err(|err| Error::Other(err.to_string()))?;
+      assert_eq!(count, Value::Number(2.0));
+
+      let last_visibility = realm
+        .exec_script("globalThis.__lastVisibility")
+        .map_err(|err| Error::Other(err.to_string()))?;
+      assert_eq!(value_to_string(realm, last_visibility), "visible");
+
+      let last_hidden = realm
+        .exec_script("globalThis.__lastHidden")
+        .map_err(|err| Error::Other(err.to_string()))?;
+      assert_eq!(last_hidden, Value::Bool(false));
+    }
+
+    Ok(())
   }
 
   static NEXT_QUEUE_MICROTASK_HOOK_ID: AtomicU64 = AtomicU64::new(1);

@@ -12615,6 +12615,61 @@ fn document_ready_state_get_native(
   ))
 }
 
+fn document_visibility_state_from_vm_host(
+  host: &mut dyn VmHost,
+) -> crate::web::dom::DocumentVisibilityState {
+  use std::any::TypeId;
+
+  let any = host.as_any_mut();
+  let ty = any.type_id();
+  let ptr = any as *mut dyn std::any::Any;
+
+  // SAFETY: we only cast the erased `Any` pointer back to a concrete type after checking its
+  // runtime `TypeId`.
+  unsafe {
+    if ty == TypeId::of::<BrowserDocumentDom2>() {
+      let host = &mut *(ptr as *mut BrowserDocumentDom2);
+      return host.visibility_state();
+    }
+  }
+
+  crate::web::dom::DocumentVisibilityState::Visible
+}
+
+fn document_visibility_state_get_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(_document_obj) = this else {
+    return Ok(Value::String(scope.alloc_string("visible")?));
+  };
+
+  let state = document_visibility_state_from_vm_host(host);
+  Ok(Value::String(scope.alloc_string(state.as_str())?))
+}
+
+fn document_hidden_get_native(
+  _vm: &mut Vm,
+  _scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(_document_obj) = this else {
+    return Ok(Value::Bool(false));
+  };
+
+  let state = document_visibility_state_from_vm_host(host);
+  Ok(Value::Bool(state.hidden()))
+}
+
 fn document_base_uri_get_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -13400,31 +13455,47 @@ fn init_window_globals(
   )?;
 
   let visibility_state_key = alloc_key(&mut scope, "visibilityState")?;
-  let visibility_state_s = scope.alloc_string("visible")?;
-  scope.push_root(Value::String(visibility_state_s))?;
+  let visibility_state_call_id = vm.register_native_call(document_visibility_state_get_native)?;
+  let visibility_state_name = scope.alloc_string("get visibilityState")?;
+  scope.push_root(Value::String(visibility_state_name))?;
+  let visibility_state_func =
+    scope.alloc_native_function(visibility_state_call_id, None, visibility_state_name, 0)?;
+  scope.heap_mut().object_set_prototype(
+    visibility_state_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(visibility_state_func))?;
   scope.define_property(
     document_obj,
     visibility_state_key,
     PropertyDescriptor {
       enumerable: false,
       configurable: true,
-      kind: PropertyKind::Data {
-        value: Value::String(visibility_state_s),
-        writable: false,
+      kind: PropertyKind::Accessor {
+        get: Value::Object(visibility_state_func),
+        set: Value::Undefined,
       },
     },
   )?;
 
   let hidden_key = alloc_key(&mut scope, "hidden")?;
+  let hidden_call_id = vm.register_native_call(document_hidden_get_native)?;
+  let hidden_name = scope.alloc_string("get hidden")?;
+  scope.push_root(Value::String(hidden_name))?;
+  let hidden_func = scope.alloc_native_function(hidden_call_id, None, hidden_name, 0)?;
+  scope
+    .heap_mut()
+    .object_set_prototype(hidden_func, Some(realm.intrinsics().function_prototype()))?;
+  scope.push_root(Value::Object(hidden_func))?;
   scope.define_property(
     document_obj,
     hidden_key,
     PropertyDescriptor {
       enumerable: false,
       configurable: true,
-      kind: PropertyKind::Data {
-        value: Value::Bool(false),
-        writable: false,
+      kind: PropertyKind::Accessor {
+        get: Value::Object(hidden_func),
+        set: Value::Undefined,
       },
     },
   )?;
