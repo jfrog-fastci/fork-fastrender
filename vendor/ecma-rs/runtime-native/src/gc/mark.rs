@@ -23,6 +23,18 @@ use crate::gc::heap::IMMIX_LINES_PER_BLOCK;
 use crate::gc::heap::IMMIX_MAX_OBJECT_SIZE;
 use crate::immix::BumpCursor;
 
+// -----------------------------------------------------------------------------
+// Debug/test hooks
+// -----------------------------------------------------------------------------
+
+#[cfg(any(debug_assertions, feature = "gc_debug"))]
+static LAST_MAJOR_MARK_THREADS_USED: AtomicUsize = AtomicUsize::new(0);
+
+#[cfg(any(debug_assertions, feature = "gc_debug"))]
+pub(super) fn debug_last_major_mark_threads_used() -> usize {
+  LAST_MAJOR_MARK_THREADS_USED.load(Ordering::Relaxed)
+}
+
 impl GcHeap {
   /// Perform a full-heap major collection using a mark-region algorithm over
   /// Immix blocks plus sweeping of the large-object space.
@@ -86,11 +98,15 @@ impl GcHeap {
       if cfg == 0 { parallel_marker_pool().max_workers } else { cfg }
     });
     let mark_workers = mark_workers.max(1);
-    if mark_workers == 1 {
+    let threads_used = if mark_workers == 1 {
       mark_major_single_thread(self, epoch, roots);
+      1
     } else {
-      parallel_mark_major(self, epoch, roots, mark_workers);
-    }
+      parallel_mark_major(self, epoch, roots, mark_workers)
+    };
+
+    #[cfg(any(debug_assertions, feature = "gc_debug"))]
+    LAST_MAJOR_MARK_THREADS_USED.store(threads_used, Ordering::Relaxed);
 
     let cfg = self.major_compaction;
     if cfg.enabled && cfg.max_live_ratio_percent <= 100 {
@@ -401,10 +417,12 @@ impl ParallelMarkPool {
       let _ = thread::Builder::new()
         .name(name)
         .spawn(move || {
-          if let Some(ready) = ready {
-            let _ = ready.wait();
-          }
-          crate::ffi::abort_on_panic(|| mark_worker_loop(worker_id, pool, local))
+          crate::ffi::abort_on_panic(|| {
+            if let Some(ready) = ready {
+              let _ = ready.wait();
+            }
+            mark_worker_loop(worker_id, pool, local)
+          })
         })
         .unwrap_or_else(|_| std::process::abort());
     }
@@ -435,7 +453,7 @@ fn parallel_mark_worker_count() -> usize {
   n.max(1)
 }
 
-fn parallel_mark_major(heap: &mut GcHeap, epoch: u8, roots: &mut dyn RootSet, mark_workers: usize) {
+fn parallel_mark_major(heap: &mut GcHeap, epoch: u8, roots: &mut dyn RootSet, mark_workers: usize) -> usize {
   let pool = parallel_marker_pool();
   let workers = mark_workers.clamp(1, pool.max_workers);
 
@@ -515,6 +533,8 @@ fn parallel_mark_major(heap: &mut GcHeap, epoch: u8, roots: &mut dyn RootSet, ma
     0,
     "parallel major GC marking ended with pending work"
   );
+
+  workers
 }
 
 fn mark_worker_loop(worker_id: usize, pool: Arc<ParallelMarkPool>, mut local: WorkStack) -> ! {

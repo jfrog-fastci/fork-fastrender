@@ -789,5 +789,17 @@ pub(crate) fn is_known_type_descriptor(_desc: *const TypeDescriptor) -> bool {
   false
 }
 
+// -----------------------------------------------------------------------------
+// Debug/test hooks
+// -----------------------------------------------------------------------------
+
+/// Debug/test hook: number of threads (coordinator + GC helpers) used for the most recent major GC
+/// mark phase.
+#[cfg(any(debug_assertions, feature = "gc_debug"))]
+#[doc(hidden)]
+pub fn debug_last_major_mark_threads_used() -> usize {
+  mark::debug_last_major_mark_threads_used()
+}
+
 #[cfg(test)]
 mod tests;

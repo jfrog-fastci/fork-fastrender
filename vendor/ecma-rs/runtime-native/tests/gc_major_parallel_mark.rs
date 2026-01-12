@@ -125,4 +125,23 @@ fn major_gc_parallel_mark_keeps_live_and_collects_dead() {
   for h in dead_handles {
     assert!(heap.weak_get(h).is_none());
   }
+
+  #[cfg(any(debug_assertions, feature = "gc_debug"))]
+  {
+    let used = runtime_native::gc::debug_last_major_mark_threads_used();
+    let max_workers = std::env::var("ECMA_RS_RUNTIME_NATIVE_GC_THREADS")
+      .ok()
+      .or_else(|| std::env::var("ECMA_RS_RUNTIME_NATIVE_THREADS").ok())
+      .or_else(|| std::env::var("RT_NUM_THREADS").ok())
+      .and_then(|v| v.parse::<usize>().ok())
+      .filter(|&n| n > 0)
+      .unwrap_or_else(|| std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1));
+    let max_workers = if cfg!(debug_assertions) { max_workers.min(32) } else { max_workers };
+    if max_workers > 1 {
+      assert!(
+        used >= 2,
+        "expected parallel major marking to use at least 2 threads (used={used}, max_workers={max_workers})"
+      );
+    }
+  }
 }

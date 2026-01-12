@@ -317,26 +317,26 @@ fn alloc_old_with_cursor(
       // allocated into, ensure the additional lines are still free. This keeps
       // `alloc_old_with_cursor` safe to use with multiple interleaved cursors
       // in a single `ImmixSpace`.
-       if end_line > bump.claimed_line_limit {
-         let check_start = bump.claimed_line_limit.max(start_line);
-         if let Some(conflict_line) = (check_start..end_line)
-           .find(|&line| bitmap::is_line_marked(&block.line_map, line))
-         {
-           if let Some((hole_start, hole_end)) =
-             bitmap::find_hole(&block.line_map, conflict_line + 1, min_lines)
-           {
-             let start = block_start + (hole_start * LINE_SIZE);
-             let limit = block_start + (hole_end * LINE_SIZE);
-             bump.cursor = start as *mut u8;
-             bump.limit = limit as *mut u8;
-             bump.claimed_line_limit = hole_start;
-             continue;
-           }
-           release_block(blocks, available_by_hole, bump);
-           bump.reset();
-           continue;
-         }
-       }
+      if end_line > bump.claimed_line_limit {
+        let check_start = bump.claimed_line_limit.max(start_line);
+        if let Some(conflict_line) = (check_start..end_line)
+          .find(|&line| bitmap::is_line_marked(&block.line_map, line))
+        {
+          if let Some((hole_start, hole_end)) =
+            bitmap::find_hole(&block.line_map, conflict_line + 1, min_lines)
+          {
+            let start = block_start + (hole_start * LINE_SIZE);
+            let limit = block_start + (hole_end * LINE_SIZE);
+            bump.cursor = start as *mut u8;
+            bump.limit = limit as *mut u8;
+            bump.claimed_line_limit = hole_start;
+            continue;
+          }
+          release_block(blocks, available_by_hole, bump);
+          bump.reset();
+          continue;
+        }
+      }
 
       // Mark all lines consumed by the allocation, including alignment padding.
       let block = &mut blocks[block_id];
