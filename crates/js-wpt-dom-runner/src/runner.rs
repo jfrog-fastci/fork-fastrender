@@ -207,6 +207,20 @@ impl Runner {
           ));
         }
       }
+      BackendKind::VmJsRendered => {
+        #[cfg(feature = "vmjs")]
+        {
+          Box::new(crate::backend_vmjs_rendered::VmJsRenderedBackend::new(
+            self.fs.clone(),
+          ))
+        }
+        #[cfg(not(feature = "vmjs"))]
+        {
+          return Err(RunError::Js(
+            "selected backend `vmjs-rendered` is not available in this build".to_string(),
+          ));
+        }
+      }
     };
 
     if let Err(err) = backend.init_realm(

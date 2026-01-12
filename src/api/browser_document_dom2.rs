@@ -830,6 +830,19 @@ impl BrowserDocumentDom2 {
     self.last_dom_mapping.as_ref()
   }
 
+  /// Returns the cached prepared document, if available.
+  ///
+  /// The returned [`PreparedDocument`] contains a renderer DOM snapshot, computed styles, box tree,
+  /// and fragment tree. It is updated when this document is rendered (see [`Self::render_frame`]).
+  pub fn prepared(&self) -> Option<&PreparedDocument> {
+    self.prepared.as_ref()
+  }
+
+  /// Returns a mutable reference to the cached prepared document, if available.
+  pub fn prepared_mut(&mut self) -> Option<&mut PreparedDocument> {
+    self.prepared.as_mut()
+  }
+
   /// Returns the renderer computed style for a `dom2` node using the latest prepared layout.
   ///
   /// This is intended for DOM query APIs like `getComputedStyle()`. It prefers the style attached

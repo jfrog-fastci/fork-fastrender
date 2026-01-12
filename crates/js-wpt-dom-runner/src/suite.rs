@@ -360,9 +360,12 @@ impl BackendConstraint {
       let normalized = raw.trim().to_ascii_lowercase();
       let kind = match normalized.as_str() {
         "vmjs" | "vm-js" | "vm_js" => BackendKind::VmJs,
+        "vmjs-rendered" | "vm-js-rendered" | "vm_js_rendered" | "vmjs_rendered" | "vmjsrendered" => {
+          BackendKind::VmJsRendered
+        }
         "quickjs" | "quick-js" | "quick_js" => BackendKind::QuickJs,
         other => {
-          bail!("unknown backend selector {other:?} (expected vmjs|quickjs)");
+          bail!("unknown backend selector {other:?} (expected vmjs|vmjs-rendered|quickjs)");
         }
       };
       Ok(kind == backend)

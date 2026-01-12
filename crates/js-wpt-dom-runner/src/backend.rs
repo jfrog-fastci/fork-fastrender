@@ -7,6 +7,9 @@ pub use crate::engine::{Backend, BackendInit};
 pub enum BackendKind {
   QuickJs,
   VmJs,
+  /// `vm-js` backend executed against a renderer-backed `BrowserDocumentDom2` so layout-sensitive
+  /// tests can observe real geometry.
+  VmJsRendered,
 }
 
 impl BackendKind {
@@ -14,6 +17,7 @@ impl BackendKind {
     match self {
       BackendKind::QuickJs => "quickjs",
       BackendKind::VmJs => "vmjs",
+      BackendKind::VmJsRendered => "vmjs-rendered",
     }
   }
 
@@ -30,12 +34,25 @@ impl BackendKind {
           false
         }
       }
+      BackendKind::VmJsRendered => {
+        #[cfg(feature = "vmjs")]
+        {
+          crate::backend_vmjs_rendered::is_available()
+        }
+        #[cfg(not(feature = "vmjs"))]
+        {
+          false
+        }
+      }
     }
   }
 
   pub fn preferred() -> Self {
     if BackendKind::VmJs.is_available() {
       return BackendKind::VmJs;
+    }
+    if BackendKind::VmJsRendered.is_available() {
+      return BackendKind::VmJsRendered;
     }
     if BackendKind::QuickJs.is_available() {
       return BackendKind::QuickJs;
@@ -50,6 +67,9 @@ impl BackendKind {
     }
     if BackendKind::VmJs.is_available() {
       out.push(BackendKind::VmJs);
+    }
+    if BackendKind::VmJsRendered.is_available() {
+      out.push(BackendKind::VmJsRendered);
     }
     out
   }
@@ -67,6 +87,7 @@ pub enum BackendSelection {
   Auto,
   QuickJs,
   VmJs,
+  VmJsRendered,
 }
 
 impl BackendSelection {
@@ -75,12 +96,13 @@ impl BackendSelection {
       BackendSelection::Auto => BackendKind::preferred(),
       BackendSelection::QuickJs => BackendKind::QuickJs,
       BackendSelection::VmJs => BackendKind::VmJs,
+      BackendSelection::VmJsRendered => BackendKind::VmJsRendered,
     }
   }
 
   /// Reads `FASTERENDER_WPT_DOM_BACKEND` if set.
   ///
-  /// Accepted values: `auto` | `quickjs` | `vmjs`.
+  /// Accepted values: `auto` | `quickjs` | `vmjs` | `vmjs-rendered`.
   pub fn from_env() -> Result<Option<Self>, RunError> {
     let Ok(raw) = env::var("FASTERENDER_WPT_DOM_BACKEND") else {
       return Ok(None);
@@ -90,9 +112,10 @@ impl BackendSelection {
       "" | "auto" => BackendSelection::Auto,
       "quickjs" => BackendSelection::QuickJs,
       "vmjs" => BackendSelection::VmJs,
+      "vmjs-rendered" | "vmjs_rendered" | "vmjsrendered" => BackendSelection::VmJsRendered,
       other => {
         return Err(RunError::Js(format!(
-          "invalid FASTERENDER_WPT_DOM_BACKEND={other:?} (expected auto|quickjs|vmjs)"
+          "invalid FASTERENDER_WPT_DOM_BACKEND={other:?} (expected auto|quickjs|vmjs|vmjs-rendered)"
         )))
       }
     };

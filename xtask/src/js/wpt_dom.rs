@@ -19,6 +19,9 @@ pub enum WptDomBackend {
   Auto,
   /// vm-js backend (FastRender in-tree JS runtime).
   VmJs,
+  /// vm-js backend executed against a renderer-backed `BrowserDocumentDom2` for layout-sensitive tests.
+  #[value(name = "vmjs-rendered")]
+  VmJsRendered,
 }
 
 impl WptDomBackend {
@@ -26,6 +29,7 @@ impl WptDomBackend {
     match self {
       WptDomBackend::Auto => BackendSelection::Auto,
       WptDomBackend::VmJs => BackendSelection::VmJs,
+      WptDomBackend::VmJsRendered => BackendSelection::VmJsRendered,
     }
   }
 }

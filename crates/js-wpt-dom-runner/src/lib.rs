@@ -14,6 +14,8 @@
 mod backend;
 #[cfg(feature = "vmjs")]
 mod backend_vmjs;
+#[cfg(feature = "vmjs")]
+mod backend_vmjs_rendered;
 mod cookie_jar;
 mod discover;
 #[cfg(feature = "quickjs")]

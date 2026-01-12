@@ -687,7 +687,7 @@ impl WindowRealm {
     crate::js::window_broadcast_channel::teardown_window_broadcast_channel_bindings_for_realm(realm_id);
   }
 
-  pub(crate) fn enable_module_loader(
+  pub fn enable_module_loader(
     &mut self,
     fetcher: Arc<dyn ResourceFetcher>,
     document_origin: Option<crate::resource::DocumentOrigin>,
@@ -887,6 +887,26 @@ impl WindowRealm {
       host,
       hooks,
       Arc::new(SourceText::new("<inline>", source)),
+    )
+  }
+
+  /// Execute a classic script in this window realm with an explicit source name, embedder host
+  /// context, and host hook implementation.
+  ///
+  /// This is the named counterpart to [`WindowRealm::exec_script_with_host_and_hooks`]. Embeddings
+  /// should prefer this when they have a URL-like source name so dynamic `import()` expressions can
+  /// resolve relative to the active script rather than the document base URL.
+  pub fn exec_script_with_name_and_host_and_hooks(
+    &mut self,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    source_name: impl Into<Arc<str>>,
+    source_text: impl Into<Arc<str>>,
+  ) -> Result<Value, VmError> {
+    self.exec_script_source_with_host_and_hooks(
+      host,
+      hooks,
+      Arc::new(SourceText::new(source_name, source_text)),
     )
   }
 

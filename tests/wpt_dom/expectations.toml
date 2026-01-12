@@ -4,7 +4,7 @@
 # - Each `[[expectations]]` entry matches `id` (exact), `glob`, or `regex`.
 # - `status` can be: "pass" | "skip" | "xfail" | "flaky".
 # - `reason` is recommended for anything other than `pass`.
-# - `backend` (optional) limits an entry to a specific JS backend: "vmjs" | "quickjs".
+# - `backend` (optional) limits an entry to a specific JS backend: "vmjs" | "vmjs-rendered" | "quickjs".
 #
 # If this file is empty, all tests are treated as expected `pass`.
 
@@ -340,3 +340,9 @@ id = "modules/dynamic_import_microtask_order.window.js"
 backend = "vmjs"
 status = "xfail"
 reason = "Dynamic import promise reactions are not yet scheduled via the microtask queue."
+
+[[expectations]]
+glob = "observers_layout/**"
+backend = ["vmjs", "quickjs"]
+status = "skip"
+reason = "Requires the renderer-backed backend (`vmjs-rendered`) so layout/geometry exist."
