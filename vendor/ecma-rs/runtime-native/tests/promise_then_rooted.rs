@@ -5,7 +5,7 @@ use runtime_native::test_util::TestRuntimeGuard;
 use std::mem;
 use std::sync::mpsc;
 use std::sync::Once;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 #[repr(C)]
@@ -33,10 +33,19 @@ fn ensure_shape_table() {
 
 static FIRED: AtomicUsize = AtomicUsize::new(0);
 static OBSERVED_DATA: AtomicUsize = AtomicUsize::new(0);
+static PARALLEL_TASK_RELEASE: AtomicBool = AtomicBool::new(false);
 
 extern "C" fn on_settle(data: *mut u8) {
   FIRED.fetch_add(1, Ordering::SeqCst);
   OBSERVED_DATA.store(data as usize, Ordering::SeqCst);
+}
+
+extern "C" fn on_parallel_task(data: *mut u8) {
+  OBSERVED_DATA.store(data as usize, Ordering::SeqCst);
+  while !PARALLEL_TASK_RELEASE.load(Ordering::Acquire) {
+    std::thread::yield_now();
+  }
+  FIRED.fetch_add(1, Ordering::SeqCst);
 }
 
 #[test]
@@ -458,6 +467,144 @@ fn set_timeout_rooted_h_reads_slot_after_lock_acquired() {
     runtime_native::roots::global_persistent_handle_table().live_count(),
     base_roots,
     "rooted-h timeout should release its persistent handle after the callback runs"
+  );
+
+  runtime_native::rt_thread_deinit();
+}
+
+#[test]
+fn parallel_spawn_rooted_h_reads_slot_after_lock_acquired() {
+  let _rt = TestRuntimeGuard::new();
+  runtime_native::rt_thread_init(0);
+  ensure_shape_table();
+
+  FIRED.store(0, Ordering::SeqCst);
+  OBSERVED_DATA.store(0, Ordering::SeqCst);
+
+  struct ReleaseOnDrop;
+  impl Drop for ReleaseOnDrop {
+    fn drop(&mut self) {
+      PARALLEL_TASK_RELEASE.store(true, Ordering::Release);
+    }
+  }
+  let _release_on_drop = ReleaseOnDrop;
+  PARALLEL_TASK_RELEASE.store(false, Ordering::Release);
+
+  // Allocate pinned GC objects so we can safely pass their base pointers through the rooted-h ABI.
+  let shape = RtShapeId(1);
+  let old_ptr = runtime_native::rt_alloc_pinned(mem::size_of::<GcBox<u8>>(), shape);
+  let new_ptr = runtime_native::rt_alloc_pinned(mem::size_of::<GcBox<u8>>(), shape);
+
+  let base_roots = runtime_native::roots::global_persistent_handle_table().live_count();
+
+  // Slot is a GC-handle (pointer-to-slot) so a moving GC can update it in-place.
+  let mut slot = old_ptr;
+  // Raw pointers are `!Send` on newer Rust versions; pass as an integer across threads.
+  let slot_ptr: usize = runtime_native::roots::handle_from_slot(&mut slot) as usize;
+
+  const TIMEOUT: Duration = Duration::from_secs(2);
+
+  let task_id = std::thread::scope(|scope| {
+    // Thread A holds the persistent handle table lock.
+    let (a_locked_tx, a_locked_rx) = mpsc::channel::<()>();
+    let (a_release_tx, a_release_rx) = mpsc::channel::<()>();
+
+    // Thread C attempts to spawn a rooted-h parallel task while the lock is held.
+    let (c_registered_tx, c_registered_rx) = mpsc::channel::<runtime_native::threading::ThreadId>();
+    let (c_start_tx, c_start_rx) = mpsc::channel::<()>();
+    let (c_done_tx, c_done_rx) = mpsc::channel::<runtime_native::TaskId>();
+
+    scope.spawn(move || {
+      runtime_native::threading::register_current_thread(runtime_native::threading::ThreadKind::Worker);
+      runtime_native::roots::global_persistent_handle_table().debug_with_read_lock_for_tests(|| {
+        a_locked_tx.send(()).unwrap();
+        a_release_rx.recv().unwrap();
+      });
+      runtime_native::threading::unregister_current_thread();
+    });
+
+    a_locked_rx
+      .recv_timeout(TIMEOUT)
+      .expect("thread A should acquire the persistent handle table lock");
+
+    scope.spawn(move || {
+      let id = runtime_native::threading::register_current_thread(runtime_native::threading::ThreadKind::Worker);
+      c_registered_tx.send(id).unwrap();
+
+      c_start_rx.recv().unwrap();
+
+      let slot_ptr = slot_ptr as runtime_native::roots::GcHandle;
+      // Safety: `slot_ptr` points at a writable `GcPtr` slot that outlives this call.
+      let id = unsafe { runtime_native::rt_parallel_spawn_rooted_h(on_parallel_task, slot_ptr) };
+      c_done_tx.send(id).unwrap();
+
+      runtime_native::threading::unregister_current_thread();
+    });
+
+    let c_id = c_registered_rx
+      .recv_timeout(TIMEOUT)
+      .expect("thread C should register with the thread registry");
+
+    // Start thread C's spawn attempt (it should block on the handle table lock).
+    c_start_tx.send(()).unwrap();
+
+    // Wait until thread C is marked NativeSafe (meaning it's blocked on the GC-aware lock).
+    let start = Instant::now();
+    loop {
+      let mut native_safe = false;
+      runtime_native::threading::registry::for_each_thread(|t| {
+        if t.id() == c_id {
+          native_safe = t.is_native_safe();
+        }
+      });
+
+      if native_safe {
+        break;
+      }
+      if start.elapsed() > TIMEOUT {
+        panic!("thread C did not enter a GC-safe region while blocked on the persistent handle table lock");
+      }
+      std::thread::yield_now();
+    }
+
+    // Update the slot while thread C is blocked. If `rt_parallel_spawn_rooted_h` (or its internal
+    // plumbing) incorrectly reads the slot before acquiring the lock, it would still observe
+    // `old_ptr`.
+    slot = new_ptr;
+
+    // Release the lock so `alloc_from_slot` can proceed and read the updated slot value.
+    a_release_tx.send(()).unwrap();
+
+    c_done_rx
+      .recv_timeout(TIMEOUT)
+      .expect("task spawn should complete after lock is released")
+  });
+
+  assert_ne!(task_id.0, 0);
+
+  let pending_roots = runtime_native::roots::global_persistent_handle_table().live_count();
+
+  // Release the task callback so the worker can complete and free its persistent handle.
+  PARALLEL_TASK_RELEASE.store(true, Ordering::Release);
+  runtime_native::rt_parallel_join(&task_id as *const runtime_native::TaskId, 1);
+
+  assert_eq!(
+    pending_roots,
+    base_roots + 1,
+    "rooted-h parallel spawn should allocate exactly one persistent handle for the slot contents while pending"
+  );
+
+  assert_eq!(FIRED.load(Ordering::SeqCst), 1, "task should run exactly once");
+  assert_eq!(
+    OBSERVED_DATA.load(Ordering::SeqCst),
+    new_ptr as usize,
+    "task should observe the slot value that was read after lock acquisition"
+  );
+
+  assert_eq!(
+    runtime_native::roots::global_persistent_handle_table().live_count(),
+    base_roots,
+    "rooted-h parallel spawn should release its persistent handle after the task completes"
   );
 
   runtime_native::rt_thread_deinit();
