@@ -452,12 +452,21 @@ pub struct PageMarginRule {
   pub declarations: Vec<Declaration>,
 }
 
+/// Nested `@footnote { ... }` declarations inside `@page`.
+///
+/// This corresponds to the "footnote area" style in CSS GCPM.
+#[derive(Debug, Clone)]
+pub struct PageFootnoteRule {
+  pub declarations: Vec<Declaration>,
+}
+
 /// A @page rule (page selectors + declarations + margin boxes).
 #[derive(Debug, Clone)]
 pub struct PageRule {
   pub selectors: Vec<PageSelector>,
   pub declarations: Vec<Declaration>,
   pub margin_rules: Vec<PageMarginRule>,
+  pub footnote_rules: Vec<PageFootnoteRule>,
 }
 
 /// A @starting-style rule gating initial transition starting values.

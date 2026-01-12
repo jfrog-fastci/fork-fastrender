@@ -44,6 +44,7 @@ use super::types::KeyframeSelector;
 use super::types::KeyframesRule;
 use super::types::LayerRule;
 use super::types::MediaRule;
+use super::types::PageFootnoteRule;
 use super::types::PageMarginArea;
 use super::types::PageMarginRule;
 use super::types::PagePseudoClass;
@@ -3209,13 +3210,14 @@ fn parse_page_rule<'i, 't>(
     parser.new_custom_error(SelectorParseErrorKind::UnexpectedIdent("expected {".into()))
   })?;
 
-  let (declarations, margin_rules) =
+  let (declarations, margin_rules, footnote_rules) =
     parser.parse_nested_block(|nested| parse_page_block(nested))?;
 
   Ok(Some(CssRule::Page(PageRule {
     selectors,
     declarations,
     margin_rules,
+    footnote_rules,
   })))
 }
 
@@ -3308,11 +3310,12 @@ fn parse_page_selectors<'i, 't>(
 fn parse_page_block<'i, 't>(
   parser: &mut Parser<'i, 't>,
 ) -> std::result::Result<
-  (Vec<Declaration>, Vec<PageMarginRule>),
+  (Vec<Declaration>, Vec<PageMarginRule>, Vec<PageFootnoteRule>),
   ParseError<'i, SelectorParseErrorKind<'i>>,
 > {
   let mut declarations = Vec::new();
   let mut margin_rules = Vec::new();
+  let mut footnote_rules = Vec::new();
 
   while !parser.is_exhausted() {
     if !css_deadline_allows_progress() {
@@ -3343,6 +3346,31 @@ fn parse_page_block<'i, 't>(
           });
           continue;
         }
+        if kw.eq_ignore_ascii_case("footnote") {
+          // CSS GCPM footnote area: `@page { @footnote { ... } }`.
+          //
+          // Treat malformed `@footnote` blocks as unknown at-rules so we can continue parsing the
+          // rest of the `@page` block (e.g. page margins) without dropping the entire rule.
+          if parser
+            .try_parse(|p| p.expect_curly_bracket_block())
+            .is_err()
+          {
+            skip_at_rule(parser);
+            continue;
+          }
+
+          let decls = parser
+            .parse_nested_block(|nested| {
+              parse_declaration_list(nested, DeclarationContext::Style).map_err(|_| {
+                nested.new_custom_error(SelectorParseErrorKind::UnexpectedIdent(
+                  "declaration".into(),
+                ))
+              })
+            })
+            .unwrap_or_default();
+          footnote_rules.push(PageFootnoteRule { declarations: decls });
+          continue;
+        }
         skip_at_rule(parser);
       }
       Ok(_) | Err(_) => {
@@ -3354,7 +3382,7 @@ fn parse_page_block<'i, 't>(
     }
   }
 
-  Ok((declarations, margin_rules))
+  Ok((declarations, margin_rules, footnote_rules))
 }
 
 fn parse_margin_area(name: &str) -> Option<PageMarginArea> {
@@ -7824,6 +7852,43 @@ mod tests {
         assert_eq!(page.declarations.len(), 2);
         assert_eq!(page.declarations[0].property.as_str(), "size");
         assert_eq!(page.declarations[1].property.as_str(), "bleed");
+      }
+      other => panic!("expected page rule, got {:?}", other),
+    }
+  }
+
+  #[test]
+  fn page_rule_parses_nested_footnote_rule() {
+    let css = "@page { @footnote { max-height: 50px; border-top: 3px solid red; } }";
+    let stylesheet = parse_stylesheet(css).unwrap();
+    assert_eq!(stylesheet.rules.len(), 1);
+    match &stylesheet.rules[0] {
+      CssRule::Page(page) => {
+        assert_eq!(page.footnote_rules.len(), 1);
+        let footnote = &page.footnote_rules[0];
+        assert_eq!(footnote.declarations.len(), 2);
+        assert_eq!(footnote.declarations[0].property.as_str(), "max-height");
+        assert_eq!(footnote.declarations[1].property.as_str(), "border-top");
+      }
+      other => panic!("expected page rule, got {:?}", other),
+    }
+  }
+
+  #[test]
+  fn malformed_page_footnote_rule_is_skipped() {
+    let css = "@page { @footnote max-height: 50px; margin: 10px; }";
+    let stylesheet = parse_stylesheet(css).unwrap();
+    assert_eq!(stylesheet.rules.len(), 1);
+    match &stylesheet.rules[0] {
+      CssRule::Page(page) => {
+        assert!(page.footnote_rules.is_empty());
+        assert!(
+          page
+            .declarations
+            .iter()
+            .any(|decl| decl.property.as_str() == "margin"),
+          "expected page declarations to continue parsing after malformed @footnote"
+        );
       }
       other => panic!("expected page rule, got {:?}", other),
     }

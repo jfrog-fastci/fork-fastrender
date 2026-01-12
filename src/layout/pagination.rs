@@ -3717,6 +3717,7 @@ mod tests {
       bleed: 0.0,
       trim: 0.0,
       margin_boxes: BTreeMap::new(),
+      footnote_style: ComputedStyle::default(),
       page_style: ComputedStyle::default(),
     };
     let mut style_neg = style.clone();
@@ -3868,6 +3869,7 @@ mod tests {
         bleed: 0.0,
         trim: 0.0,
         margin_boxes,
+        footnote_style: ComputedStyle::default(),
         page_style: ComputedStyle::default(),
       };
 

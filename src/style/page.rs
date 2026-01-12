@@ -90,6 +90,7 @@ pub struct ResolvedPageStyle {
   pub bleed: f32,
   pub trim: f32,
   pub margin_boxes: BTreeMap<PageMarginArea, ComputedStyle>,
+  pub footnote_style: ComputedStyle,
   pub page_style: ComputedStyle,
 }
 
@@ -192,6 +193,38 @@ pub fn resolve_page_style(
     apply_page_rule_declarations(rule, true);
   }
 
+  let mut footnote_style = default_footnote_style(&page_context_style);
+  let mut apply_footnote_rule_declarations = |rule: &CollectedPageRule<'_>, important: bool| {
+    for footnote_rule in &rule.rule.footnote_rules {
+      for decl in &footnote_rule.declarations {
+        if decl.important != important {
+          continue;
+        }
+        if !footnote_area_property_allowed(decl.property.as_str()) {
+          continue;
+        }
+        apply_declaration_with_base(
+          &mut footnote_style,
+          decl,
+          &page_context_style,
+          &defaults,
+          None,
+          page_context_style.font_size,
+          root_font_size,
+          fallback_size,
+          false,
+        );
+      }
+    }
+  };
+
+  for (rule, _) in &normal_matching {
+    apply_footnote_rule_declarations(rule, false);
+  }
+  for (rule, _) in &important_matching {
+    apply_footnote_rule_declarations(rule, true);
+  }
+
   let mut apply_margin_rule_declarations = |rule: &CollectedPageRule<'_>, important: bool| {
     for margin_rule in &rule.rule.margin_rules {
       let style = margin_styles.entry(margin_rule.area).or_insert_with(|| {
@@ -236,6 +269,12 @@ pub fn resolve_page_style(
     style.display = Display::Block;
     style.position = Position::Static;
   }
+  resolve_pending_logical_properties(&mut footnote_style);
+  apply_container_type_implied_containment(&mut footnote_style);
+  apply_content_visibility_implied_containment(&mut footnote_style);
+  // The footnote area should behave like a block container. Leave positioning to pagination.
+  footnote_style.display = Display::Block;
+  footnote_style.position = Position::Static;
   resolve_pending_logical_properties(&mut page_style);
   apply_container_type_implied_containment(&mut page_style);
   apply_content_visibility_implied_containment(&mut page_style);
@@ -399,6 +438,7 @@ pub fn resolve_page_style(
     bleed,
     trim,
     margin_boxes: margin_styles,
+    footnote_style,
     page_style,
   }
 }
@@ -732,6 +772,36 @@ fn default_margin_style(page_context_style: &ComputedStyle) -> ComputedStyle {
   style
 }
 
+fn default_footnote_style(page_context_style: &ComputedStyle) -> ComputedStyle {
+  let mut style = ComputedStyle::default();
+  inherit_styles(&mut style, page_context_style);
+  style.display = Display::Block;
+  style
+}
+
+fn footnote_area_property_allowed(property: &str) -> bool {
+  // CSS GCPM's `@page { @footnote { ... } }` defines the styling/geometry of the footnote area.
+  //
+  // FastRender currently restricts this to a small, page-layout relevant subset:
+  // - Sizing: `max-height`
+  // - Box model: border/padding
+  // - Paint: background/color
+  // - Typography: `font-*` and `font`
+  //
+  // Other properties are ignored for now; pagination is responsible for positioning the footnote
+  // area and stacking its children.
+  property == "max-height"
+    || property == "color"
+    || property == "background"
+    || property.starts_with("background-")
+    || property == "border"
+    || property.starts_with("border-")
+    || property == "padding"
+    || property.starts_with("padding-")
+    || property == "font"
+    || property.starts_with("font-")
+}
+
 fn margin_box_property_allowed(property: &str) -> bool {
   // CSS Page 3: `display` and `position` do not apply to page-margin boxes.
   !matches!(property, "display" | "position")
@@ -904,6 +974,7 @@ mod tests {
       bleed: 0.0,
       trim: 0.0,
       margin_boxes,
+      footnote_style: ComputedStyle::default(),
       page_style: ComputedStyle::default(),
     };
 
