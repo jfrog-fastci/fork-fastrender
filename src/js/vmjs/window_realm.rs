@@ -2405,6 +2405,120 @@ const TEXTAREA_VALUE_GET_KEY: &str = "__fastrender_textarea_value_get";
 const TEXTAREA_VALUE_SET_KEY: &str = "__fastrender_textarea_value_set";
 const FORM_RESET_KEY: &str = "__fastrender_form_reset";
 
+/// List of internal (non-standard) document-owned `__fastrender_*` properties that store shared
+/// native function objects.
+///
+/// `get_or_create_node_wrapper(..)` installs many DOM APIs on newly created node wrappers by
+/// reading these hidden properties from the owning `Document` wrapper object. Detached documents
+/// created by APIs like `DOMParser.parseFromString()` must copy these keys from the canonical
+/// `window.document`, otherwise wrappers for nodes in the detached document will be missing core
+/// methods (e.g. `Element#getAttribute`).
+const WRAPPER_SHARED_METHOD_KEYS: &[&str] = &[
+  // Core Element attribute APIs.
+  ELEMENT_GET_ATTRIBUTE_KEY,
+  ELEMENT_SET_ATTRIBUTE_KEY,
+  ELEMENT_REMOVE_ATTRIBUTE_KEY,
+  ELEMENT_HAS_ATTRIBUTE_KEY,
+  ELEMENT_TOGGLE_ATTRIBUTE_KEY,
+  ELEMENT_GET_ATTRIBUTE_NAMES_KEY,
+  ELEMENT_GET_ATTRIBUTE_NS_KEY,
+  ELEMENT_SET_ATTRIBUTE_NS_KEY,
+  ELEMENT_REMOVE_ATTRIBUTE_NS_KEY,
+  // Selector APIs.
+  ELEMENT_QUERY_SELECTOR_KEY,
+  ELEMENT_QUERY_SELECTOR_ALL_KEY,
+  ELEMENT_MATCHES_KEY,
+  ELEMENT_CLOSEST_KEY,
+  // Layout APIs.
+  ELEMENT_GET_BOUNDING_CLIENT_RECT_KEY,
+  // HTML serialization APIs.
+  ELEMENT_INNER_HTML_GET_KEY,
+  ELEMENT_INNER_HTML_SET_KEY,
+  ELEMENT_OUTER_HTML_GET_KEY,
+  ELEMENT_OUTER_HTML_SET_KEY,
+  ELEMENT_INSERT_ADJACENT_HTML_KEY,
+  ELEMENT_INSERT_ADJACENT_ELEMENT_KEY,
+  ELEMENT_INSERT_ADJACENT_TEXT_KEY,
+  // Shared Node mutation helpers.
+  NODE_APPEND_CHILD_KEY,
+  NODE_INSERT_BEFORE_KEY,
+  NODE_REMOVE_CHILD_KEY,
+  NODE_REPLACE_CHILD_KEY,
+  NODE_CLONE_NODE_KEY,
+  // Node traversal helpers.
+  NODE_PARENT_NODE_GET_KEY,
+  NODE_FIRST_CHILD_GET_KEY,
+  NODE_PREVIOUS_SIBLING_GET_KEY,
+  NODE_NEXT_SIBLING_GET_KEY,
+  // Node conveniences.
+  NODE_REMOVE_KEY,
+  NODE_TEXT_CONTENT_GET_KEY,
+  NODE_TEXT_CONTENT_SET_KEY,
+  // EventTarget shared methods.
+  EVENT_TARGET_ADD_EVENT_LISTENER_KEY,
+  EVENT_TARGET_REMOVE_EVENT_LISTENER_KEY,
+  EVENT_TARGET_DISPATCH_EVENT_KEY,
+  // Element reflected attribute accessors.
+  ELEMENT_CLASS_NAME_GET_KEY,
+  ELEMENT_CLASS_NAME_SET_KEY,
+  ELEMENT_ID_GET_KEY,
+  ELEMENT_ID_SET_KEY,
+  ELEMENT_TITLE_GET_KEY,
+  ELEMENT_TITLE_SET_KEY,
+  ELEMENT_LANG_GET_KEY,
+  ELEMENT_LANG_SET_KEY,
+  ELEMENT_DIR_GET_KEY,
+  ELEMENT_DIR_SET_KEY,
+  ELEMENT_HIDDEN_GET_KEY,
+  ELEMENT_HIDDEN_SET_KEY,
+  ELEMENT_SRC_GET_KEY,
+  ELEMENT_SRC_SET_KEY,
+  ELEMENT_SRCSET_GET_KEY,
+  ELEMENT_SRCSET_SET_KEY,
+  ELEMENT_SIZES_GET_KEY,
+  ELEMENT_SIZES_SET_KEY,
+  ELEMENT_HREF_GET_KEY,
+  ELEMENT_HREF_SET_KEY,
+  ELEMENT_REL_GET_KEY,
+  ELEMENT_REL_SET_KEY,
+  ELEMENT_TYPE_GET_KEY,
+  ELEMENT_TYPE_SET_KEY,
+  ELEMENT_CHARSET_GET_KEY,
+  ELEMENT_CHARSET_SET_KEY,
+  ELEMENT_CROSS_ORIGIN_GET_KEY,
+  ELEMENT_CROSS_ORIGIN_SET_KEY,
+  ELEMENT_ASYNC_GET_KEY,
+  ELEMENT_ASYNC_SET_KEY,
+  ELEMENT_DEFER_GET_KEY,
+  ELEMENT_DEFER_SET_KEY,
+  ELEMENT_HEIGHT_GET_KEY,
+  ELEMENT_HEIGHT_SET_KEY,
+  ELEMENT_WIDTH_GET_KEY,
+  ELEMENT_WIDTH_SET_KEY,
+  // HTMLFormElement/HTMLInputElement/HTMLTextAreaElement helpers.
+  INPUT_VALUE_GET_KEY,
+  INPUT_VALUE_SET_KEY,
+  INPUT_CHECKED_GET_KEY,
+  INPUT_CHECKED_SET_KEY,
+  TEXTAREA_VALUE_GET_KEY,
+  TEXTAREA_VALUE_SET_KEY,
+  FORM_RESET_KEY,
+  // CSSStyleDeclaration helpers.
+  STYLE_GET_PROPERTY_VALUE_KEY,
+  STYLE_SET_PROPERTY_KEY,
+  STYLE_REMOVE_PROPERTY_KEY,
+  STYLE_CSS_TEXT_GET_KEY,
+  STYLE_CSS_TEXT_SET_KEY,
+  STYLE_DISPLAY_GET_KEY,
+  STYLE_DISPLAY_SET_KEY,
+  STYLE_CURSOR_GET_KEY,
+  STYLE_CURSOR_SET_KEY,
+  STYLE_HEIGHT_GET_KEY,
+  STYLE_HEIGHT_SET_KEY,
+  STYLE_WIDTH_GET_KEY,
+  STYLE_WIDTH_SET_KEY,
+];
+
 // Must match `window_timers::INTERNAL_QUEUE_MICROTASK_KEY`, but duplicated here to avoid a module
 // dependency cycle (`window_timers` depends on `window_realm`).
 const INTERNAL_QUEUE_MICROTASK_KEY: &str = "__fastrender_queue_microtask";
@@ -6146,6 +6260,31 @@ pub(crate) fn resolve_document_dom_ptr_for_events(
 fn dom_platform_mut(vm: &mut Vm) -> Option<&mut DomPlatform> {
   vm.user_data_mut::<WindowRealmUserData>()
     .and_then(|data| data.dom_platform_mut())
+}
+
+fn copy_wrapper_shared_methods(
+  scope: &mut Scope<'_>,
+  from_document_obj: GcObject,
+  to_document_obj: GcObject,
+) -> Result<(), VmError> {
+  // Root both documents while allocating keys: `alloc_key` can trigger GC.
+  scope.push_root(Value::Object(from_document_obj))?;
+  scope.push_root(Value::Object(to_document_obj))?;
+
+  for &key_name in WRAPPER_SHARED_METHOD_KEYS {
+    let key = alloc_key(scope, key_name)?;
+    let Some(mut desc) = scope.heap().object_get_own_property(from_document_obj, &key)? else {
+      continue;
+    };
+    if !desc.is_data_descriptor() {
+      continue;
+    }
+    // Ensure internal keys remain non-enumerable on detached documents.
+    desc.enumerable = false;
+    scope.define_property(to_document_obj, key, desc)?;
+  }
+
+  Ok(())
 }
 
 fn proto_chain_has_own_property(
@@ -12180,6 +12319,187 @@ fn mutation_observer_constructor_construct_native(
   )?;
 
   Ok(Value::Object(obj))
+}
+
+fn dom_parser_constructor_native(
+  _vm: &mut Vm,
+  _scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  Err(VmError::TypeError(
+    "DOMParser constructor cannot be invoked without 'new'",
+  ))
+}
+
+fn dom_parser_constructor_construct_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  _args: &[Value],
+  new_target: Value,
+) -> Result<Value, VmError> {
+  let ctor = match new_target {
+    Value::Object(obj) => obj,
+    _ => callee,
+  };
+
+  let prototype_key = alloc_key(scope, "prototype")?;
+  let proto = scope
+    .heap()
+    .object_get_own_data_property_value(ctor, &prototype_key)?
+    .and_then(|v| match v {
+      Value::Object(obj) => Some(obj),
+      _ => None,
+    });
+
+  let obj = scope.alloc_object()?;
+  scope.push_root(Value::Object(obj))?;
+  if let Some(proto) = proto {
+    scope.heap_mut().object_set_prototype(obj, Some(proto))?;
+  }
+
+  Ok(Value::Object(obj))
+}
+
+fn dom_parser_parse_from_string_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(_parser_obj) = this else {
+    return Err(VmError::TypeError(
+      "DOMParser.parseFromString must be called on a DOMParser object",
+    ));
+  };
+
+  // Note: DOMParser accepts `TrustedHTML | DOMString`; for now we treat everything as `DOMString`.
+  let html_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let html_value = scope.heap_mut().to_string(html_value)?;
+  let html = scope
+    .heap()
+    .get_string(html_value)
+    .map(|s| s.to_utf8_lossy())
+    .unwrap_or_default();
+
+  let ty_value = args.get(1).copied().unwrap_or(Value::Undefined);
+  let ty_value = scope.heap_mut().to_string(ty_value)?;
+  let ty = scope
+    .heap()
+    .get_string(ty_value)
+    .map(|s| s.to_utf8_lossy())
+    .unwrap_or_default();
+
+  if !ty.eq_ignore_ascii_case("text/html") {
+    return Err(VmError::Throw(make_dom_exception(
+      scope,
+      "NotSupportedError",
+      "DOMParser.parseFromString only supports type=\"text/html\"",
+    )?));
+  }
+
+  let dom = dom2::parse_html(&html).map_err(|_| {
+    VmError::TypeError("DOMParser.parseFromString failed to parse HTML")
+  })?;
+
+  let host_document_obj = vm
+    .user_data::<WindowRealmUserData>()
+    .and_then(|data| data.document_obj)
+    .ok_or(VmError::TypeError("DOMParser.parseFromString requires window.document"))?;
+
+  // Construct a detached Document wrapper. Use the canonical `window.document` as the prototype
+  // so the returned object continues to pass `instanceof Document` checks and inherits Document
+  // APIs (even if most of them are no-ops today).
+  let document_obj = scope.alloc_object_with_prototype(Some(host_document_obj))?;
+
+  let about_blank_s = scope.alloc_string(ABOUT_BLANK_URL)?;
+  scope.push_root(Value::Object(document_obj))?;
+  scope.push_root(Value::String(about_blank_s))?;
+
+  {
+    // Root while allocating property keys: string allocation can trigger GC.
+    let mut scope = scope.reborrow();
+    scope.push_root(Value::Object(document_obj))?;
+    scope.push_root(Value::String(about_blank_s))?;
+
+    let default_view_key = alloc_key(&mut scope, "defaultView")?;
+    scope.define_property(
+      document_obj,
+      default_view_key,
+      PropertyDescriptor {
+        enumerable: false,
+        configurable: true,
+        kind: PropertyKind::Data {
+          value: Value::Null,
+          writable: false,
+        },
+      },
+    )?;
+
+    let url_key = alloc_key(&mut scope, "URL")?;
+    scope.define_property(
+      document_obj,
+      url_key,
+      data_desc(Value::String(about_blank_s)),
+    )?;
+
+    let location_key = alloc_key(&mut scope, "location")?;
+    scope.define_property(
+      document_obj,
+      location_key,
+      PropertyDescriptor {
+        enumerable: false,
+        configurable: true,
+        kind: PropertyKind::Data {
+          value: Value::Null,
+          writable: false,
+        },
+      },
+    )?;
+  }
+
+  // `get_or_create_node_wrapper` installs many methods by reading internal keys from the owning
+  // document wrapper. Copy the canonical document's shared method objects so detached DOMParser
+  // documents behave like `window.document`.
+  copy_wrapper_shared_methods(scope, host_document_obj, document_obj)?;
+
+  // Populate `documentElement` as an eager data property (sufficient for DOMParser consumers).
+  if let Some(node_id) = dom.document_element() {
+    let wrapper = get_or_create_node_wrapper(vm, scope, document_obj, Some(&dom), node_id)?;
+    scope.push_root(wrapper)?;
+    let key = alloc_key(scope, "documentElement")?;
+    scope.define_property(
+      document_obj,
+      key,
+      PropertyDescriptor {
+        enumerable: false,
+        configurable: true,
+        kind: PropertyKind::Data {
+          value: wrapper,
+          writable: false,
+        },
+      },
+    )?;
+  }
+
+  let document_id = gc_object_id(document_obj);
+  let Some(data) = vm.user_data_mut::<WindowRealmUserData>() else {
+    return Err(VmError::InvariantViolation(
+      "WindowRealm missing WindowRealmUserData",
+    ));
+  };
+  data.owned_dom2_documents.insert(document_id, Box::new(dom));
+
+  Ok(Value::Object(document_obj))
 }
 
 fn mutation_observer_id_from_obj(scope: &mut Scope<'_>, obj: GcObject) -> Result<u64, VmError> {
@@ -29565,6 +29885,65 @@ fn init_window_globals(
     data_desc(Value::Object(mutation_observer_ctor_func)),
   )?;
 
+  // DOMParser constructor + prototype.
+  let dom_parser_proto = scope.alloc_object()?;
+  scope.push_root(Value::Object(dom_parser_proto))?;
+
+  let dom_parser_parse_from_string_call_id =
+    vm.register_native_call(dom_parser_parse_from_string_native)?;
+  let dom_parser_parse_from_string_name = scope.alloc_string("parseFromString")?;
+  scope.push_root(Value::String(dom_parser_parse_from_string_name))?;
+  let dom_parser_parse_from_string_func = scope.alloc_native_function(
+    dom_parser_parse_from_string_call_id,
+    None,
+    dom_parser_parse_from_string_name,
+    2,
+  )?;
+  scope.heap_mut().object_set_prototype(
+    dom_parser_parse_from_string_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(dom_parser_parse_from_string_func))?;
+  let dom_parser_parse_from_string_key = alloc_key(&mut scope, "parseFromString")?;
+  scope.define_property(
+    dom_parser_proto,
+    dom_parser_parse_from_string_key,
+    data_desc(Value::Object(dom_parser_parse_from_string_func)),
+  )?;
+
+  let dom_parser_ctor_call_id = vm.register_native_call(dom_parser_constructor_native)?;
+  let dom_parser_ctor_construct_id =
+    vm.register_native_construct(dom_parser_constructor_construct_native)?;
+  let dom_parser_ctor_name = scope.alloc_string("DOMParser")?;
+  scope.push_root(Value::String(dom_parser_ctor_name))?;
+  let dom_parser_ctor_func = scope.alloc_native_function(
+    dom_parser_ctor_call_id,
+    Some(dom_parser_ctor_construct_id),
+    dom_parser_ctor_name,
+    0,
+  )?;
+  scope.heap_mut().object_set_prototype(
+    dom_parser_ctor_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(dom_parser_ctor_func))?;
+  scope.define_property(
+    dom_parser_ctor_func,
+    prototype_key,
+    data_desc(Value::Object(dom_parser_proto)),
+  )?;
+  scope.define_property(
+    dom_parser_proto,
+    constructor_key,
+    data_desc(Value::Object(dom_parser_ctor_func)),
+  )?;
+  let dom_parser_key = alloc_key(&mut scope, "DOMParser")?;
+  scope.define_property(
+    global,
+    dom_parser_key,
+    data_desc(Value::Object(dom_parser_ctor_func)),
+  )?;
+
   // --- DOMRectReadOnly / DOMRect ------------------------------------------------
   //
   // These geometry types are used by layout APIs like `Element.getBoundingClientRect()`.
@@ -38814,6 +39193,27 @@ mod tests {
       assert_eq!(get_string(scope.heap(), name), "InvalidCharacterError");
     }
 
+    Ok(())
+  }
+
+  #[test]
+  fn domparser_detached_document_wrappers_have_shared_methods() -> Result<(), VmError> {
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+
+    realm.exec_script(
+      "globalThis.__doc = new DOMParser().parseFromString(\n\
+       '<!doctype html><html lang=\"en\"></html>',\n\
+       'text/html'\n\
+       );",
+    )?;
+
+    assert_eq!(
+      realm.exec_script("typeof __doc.documentElement.getAttribute === 'function'")?,
+      Value::Bool(true)
+    );
+
+    let lang = realm.exec_script("__doc.documentElement.getAttribute('lang')")?;
+    assert_eq!(get_string(realm.heap(), lang), "en");
     Ok(())
   }
 
