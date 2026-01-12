@@ -1228,9 +1228,11 @@ pub fn chrome_ui_with_bookmarks(
       #[cfg(test)]
       store_test_rect(ctx, "chrome_menu_button_rect", menu_button.rect);
 
-      if menu_button.clicked() {
+      let menu_clicked = menu_button.clicked();
+      if menu_clicked {
         menu_open = !menu_open;
       }
+      let menu_opened_now = menu_clicked && menu_open;
 
       let open_t = motion.animate_bool(
         ctx,
@@ -1275,6 +1277,9 @@ pub fn chrome_ui_with_bookmarks(
               !active_url_trim.is_empty(),
               egui::Button::new(toggle_bookmark_label),
             );
+            if menu_opened_now && !active_url_trim.is_empty() {
+              toggle_bookmark.request_focus();
+            }
             if menu_open {
               #[cfg(test)]
               store_test_rect(ctx, "chrome_menu_item_toggle_bookmark_rect", toggle_bookmark.rect);
@@ -1285,6 +1290,9 @@ pub fn chrome_ui_with_bookmarks(
             }
 
             let bookmarks_mgr = ui.button("Show bookmarks manager");
+            if menu_opened_now && active_url_trim.is_empty() {
+              bookmarks_mgr.request_focus();
+            }
             if menu_open {
               #[cfg(test)]
               store_test_rect(
