@@ -2638,13 +2638,15 @@ LLVM Integration:
 
 StackMap v3 invariant (LLVM 18, tested; required by our runtime):
   - LLVM StackMaps *can* encode roots in registers (`Register`) or as computed expressions (`Direct`).
-  - Our initial precise GC stack walking is frame-pointer-only and cannot update register roots in
-    arbitrary frames, so statepoint `gc-live` roots must be addressable spill slots:
-    `Indirect [SP + off]` and/or `Indirect [FP + off]` (no `Register`/`Direct` roots).
+  - `runtime-native` requires statepoint `gc-live` roots to be **addressable** so a moving GC can
+    update them in-place:
+    - `Indirect [SP + off]` and/or `Indirect [FP + off]` spill slots (preferred)
+    - `Register` roots (supported via safepoint register-file capture / rewrite)
+    `Direct` roots are rejected for GC roots because they are not addressable.
   - Stackmap `Indirect [SP + off]` uses the *caller* SP at the stackmap record PC (return address),
     not the safepoint callee-entry SP. On x86_64 `call` pushes an 8-byte return address, so the
     safepoint stub must publish a **post-call** SP for stackmap evaluation (`sp = sp_entry + 8`).
-  - We enforce this by:
+  - We enforce/validate this by:
     - codegen: `--fixup-allow-gcptr-in-csr=false` (preferred) / `--fixup-max-csr-statepoints=0` (fallback; see `native-js` emitter)
     - runtime: statepoint stackmap verifier (`runtime-native/src/statepoint_verify.rs`)
   - Empirically, on x86_64 SysV + aarch64 SysV, across -O0/-O2 and with/without `-frame-pointer=all`,
