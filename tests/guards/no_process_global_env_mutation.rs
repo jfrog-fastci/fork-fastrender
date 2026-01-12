@@ -32,7 +32,10 @@ fn tests_do_not_mutate_process_env_or_cwd_directly() {
     format!("{env}set_current_dir("),
   ];
 
-  for entry in WalkDir::new(&tests_root) {
+  for entry in WalkDir::new(&tests_root)
+    .into_iter()
+    .filter_entry(|entry| !super::should_skip_tests_entry(entry, &tests_root))
+  {
     let entry = entry.unwrap_or_else(|err| panic!("walk tests dir: {err}"));
     let path = entry.path();
     if !is_rust_file(path) {
@@ -56,4 +59,3 @@ fn tests_do_not_mutate_process_env_or_cwd_directly() {
     }
   }
 }
-

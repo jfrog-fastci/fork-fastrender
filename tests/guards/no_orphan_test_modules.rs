@@ -148,7 +148,11 @@ fn no_orphaned_test_modules() {
   let reachable = collect_reachable_module_files(&roots);
 
   let mut all_rs = BTreeSet::new();
-  for entry in WalkDir::new(&tests_dir).into_iter().filter_map(Result::ok) {
+  for entry in WalkDir::new(&tests_dir)
+    .into_iter()
+    .filter_entry(|entry| !super::should_skip_tests_entry(entry, &tests_dir))
+    .filter_map(Result::ok)
+  {
     let path = entry.path();
     if !path.is_file() {
       continue;

@@ -30,7 +30,10 @@ fn tests_do_not_mutate_fastr_use_bundled_fonts_env_var() {
     format!("with_env_vars(&[({var:?},"),
   ];
 
-  for entry in WalkDir::new(&tests_root) {
+  for entry in WalkDir::new(&tests_root)
+    .into_iter()
+    .filter_entry(|entry| !super::should_skip_tests_entry(entry, &tests_root))
+  {
     let entry = entry.unwrap_or_else(|err| panic!("walk tests dir: {err}"));
     let path = entry.path();
     if !is_rust_file(path) {

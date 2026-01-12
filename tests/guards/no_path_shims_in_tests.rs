@@ -5,32 +5,14 @@
 //! dedicated `cargo test --test ...` entry-point, but they silently create additional integration
 //! test crates and undo consolidation work.
 
+use std::ffi::OsStr;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
+
+use walkdir::WalkDir;
 
 fn repo_root() -> PathBuf {
   PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-}
-
-fn collect_rs_files(dir: &Path, out: &mut Vec<PathBuf>) {
-  let entries = fs::read_dir(dir).unwrap_or_else(|err| {
-    panic!(
-      "failed to read dir {} while scanning for #[path] shims: {err}",
-      dir.display()
-    )
-  });
-  for entry in entries {
-    let entry = entry.expect("read dir entry");
-    let path = entry.path();
-    if path.is_dir() {
-      collect_rs_files(&path, out);
-      continue;
-    }
-    if path.extension().and_then(|ext| ext.to_str()) != Some("rs") {
-      continue;
-    }
-    out.push(path);
-  }
 }
 
 #[test]
@@ -39,7 +21,21 @@ fn no_path_shims_in_tests_tree() {
   let tests_dir = root.join("tests");
 
   let mut files = Vec::new();
-  collect_rs_files(&tests_dir, &mut files);
+  for entry in WalkDir::new(&tests_dir)
+    .into_iter()
+    .filter_entry(|entry| !super::should_skip_tests_entry(entry, &tests_dir))
+  {
+    let entry =
+      entry.unwrap_or_else(|err| panic!("walk tests dir while scanning for #[path] shims: {err}"));
+    let path = entry.path();
+    if !path.is_file() {
+      continue;
+    }
+    if path.extension() != Some(OsStr::new("rs")) {
+      continue;
+    }
+    files.push(path.to_path_buf());
+  }
   files.sort();
 
   let mut offenders = Vec::new();

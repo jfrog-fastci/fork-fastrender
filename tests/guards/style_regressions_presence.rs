@@ -17,6 +17,7 @@ fn find_marker_in_src_style(root: &Path, needle: &str) -> Option<PathBuf> {
 
   for entry in WalkDir::new(&dir)
     .into_iter()
+    .filter_entry(|entry| !super::should_skip_tests_entry(entry, &dir))
     .filter_map(std::result::Result::ok)
     .filter(|entry| entry.file_type().is_file())
   {

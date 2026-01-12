@@ -43,7 +43,11 @@ fn no_deprecated_test_harness_names_in_tests_docs() {
     .expect("deprecated harness path regex should compile");
 
   let mut matches = Vec::new();
-  for entry in WalkDir::new(&tests_dir).into_iter().filter_map(Result::ok) {
+  for entry in WalkDir::new(&tests_dir)
+    .into_iter()
+    .filter_entry(|entry| !super::should_skip_tests_entry(entry, &tests_dir))
+    .filter_map(Result::ok)
+  {
     let path = entry.path();
     if !path.is_file() {
       continue;

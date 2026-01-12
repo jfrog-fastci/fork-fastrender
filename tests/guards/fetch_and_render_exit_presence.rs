@@ -1,5 +1,6 @@
 //! Guard against accidental deletion of the fetch_and_render exit regression.
 
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
 use walkdir::WalkDir;
@@ -23,9 +24,11 @@ fn find_marker_in_rust_sources(root: &Path, marker: &str) -> Option<PathBuf> {
     if !dir.exists() {
       continue;
     }
+    let is_tests_dir = dir.file_name() == Some(OsStr::new("tests"));
 
     for entry in WalkDir::new(&dir)
       .into_iter()
+      .filter_entry(|entry| !is_tests_dir || !super::should_skip_tests_entry(entry, &dir))
       .filter_map(std::result::Result::ok)
       .filter(|entry| entry.file_type().is_file())
     {

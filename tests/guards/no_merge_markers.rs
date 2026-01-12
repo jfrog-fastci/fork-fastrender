@@ -1,8 +1,11 @@
 //! Guard against committing unresolved merge-conflict markers.
 
+use std::ffi::OsStr;
 use std::fs;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
+
+use walkdir::WalkDir;
 
 const MERGE_MARKERS: [&str; 3] = [
   concat!("<<<", "<<", "<<"),
@@ -65,24 +68,15 @@ fn no_merge_conflict_markers_present() {
 
 fn rust_files(root: &Path) -> Vec<PathBuf> {
   let mut files = Vec::new();
-  let mut stack = vec![root.to_path_buf()];
-
-  while let Some(dir) = stack.pop() {
-    let entries = fs::read_dir(&dir).unwrap_or_else(|err| {
-      panic!("failed to read directory {}: {}", dir.display(), err);
-    });
-
-    for entry in entries {
-      let entry = entry.unwrap_or_else(|err| {
-        panic!("failed to read entry under {}: {}", dir.display(), err);
-      });
-      let path = entry.path();
-
-      if path.is_dir() {
-        stack.push(path);
-      } else if path.extension().map(|ext| ext == "rs").unwrap_or(false) {
-        files.push(path);
-      }
+  let is_tests_tree = root.file_name() == Some(OsStr::new("tests"));
+  for entry in WalkDir::new(root)
+    .into_iter()
+    .filter_entry(|entry| !is_tests_tree || !super::should_skip_tests_entry(entry, root))
+    .filter_map(Result::ok)
+  {
+    let path = entry.path();
+    if entry.file_type().is_file() && path.extension() == Some(OsStr::new("rs")) {
+      files.push(path.to_path_buf());
     }
   }
 
