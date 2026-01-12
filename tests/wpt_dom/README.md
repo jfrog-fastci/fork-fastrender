@@ -42,7 +42,7 @@ tests/wpt_dom/
     testharness.js
     testharnessreport.js
     fastrender_testharness_report.js
-    eventtarget_shim.js    # Temporary polyfill for the QuickJS backend
+    eventtarget_shim.js    # Legacy (unused): QuickJS DOM/Event shims are embedded in the runner
     LICENSE
   tests/                   # Served as /... in WPT
     smoke/                 # Tiny synthetic tests for harness bring-up
@@ -60,6 +60,10 @@ tests/wpt_dom/
     url/                   # Curated URL + URLSearchParams tests
       *.window.js
 ```
+
+Note: the optional QuickJS backend injects an inline DOM + Events polyfill via `DOM_SHIM` in
+[`crates/js-wpt-dom-runner/src/dom_shims.rs`](../../crates/js-wpt-dom-runner/src/dom_shims.rs).
+`resources/eventtarget_shim.js` is currently unused by the runner (kept only for historical reference).
 
 ## URL mapping (WPT origin → filesystem)
 

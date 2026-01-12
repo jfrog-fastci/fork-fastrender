@@ -141,3 +141,33 @@ id = "html/form_controls.window.js"
 backend = "quickjs"
 status = "skip"
 reason = "QuickJS backend uses a minimal DOM shim and does not yet implement HTML form control element interfaces/properties (input/textarea/select/form)."
+
+[[expectations]]
+id = "events/document_eventtarget_path.window.js"
+backend = "quickjs"
+status = "skip"
+reason = "QuickJS backend relies on a minimal DOM/EventTarget shim (embedded in js-wpt-dom-runner); strict Event/EventTarget semantics are validated on vm-js."
+
+[[expectations]]
+id = "events/eventtarget.window.js"
+backend = "quickjs"
+status = "skip"
+reason = "QuickJS backend relies on a minimal DOM/EventTarget shim (embedded in js-wpt-dom-runner); strict Event/EventTarget semantics are validated on vm-js."
+
+[[expectations]]
+id = "events/eventtarget_dispatch_order.window.js"
+backend = "quickjs"
+status = "skip"
+reason = "QuickJS backend relies on a minimal DOM/EventTarget shim (embedded in js-wpt-dom-runner); strict Event/EventTarget semantics are validated on vm-js."
+
+[[expectations]]
+id = "events/eventtarget_order.window.js"
+backend = "quickjs"
+status = "skip"
+reason = "QuickJS backend relies on a minimal DOM/EventTarget shim (embedded in js-wpt-dom-runner); strict Event/EventTarget semantics are validated on vm-js."
+
+[[expectations]]
+id = "events/passive_listener.window.js"
+backend = "quickjs"
+status = "skip"
+reason = "QuickJS backend relies on a minimal DOM/EventTarget shim (embedded in js-wpt-dom-runner); strict Event/EventTarget semantics are validated on vm-js."
