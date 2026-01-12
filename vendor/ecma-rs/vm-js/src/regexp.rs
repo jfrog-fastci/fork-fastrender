@@ -12,6 +12,7 @@
 //! Call sites must treat compilation failures as `SyntaxError`.
 
 use crate::VmError;
+use core::cell::Cell;
 use core::mem;
 
 #[derive(Debug, Clone)]
@@ -23,11 +24,22 @@ pub(crate) struct RegExpSyntaxError {
 pub(crate) enum RegExpCompileError {
   Syntax(RegExpSyntaxError),
   OutOfMemory,
+  /// VM termination / budget error observed during compilation.
+  Vm(VmError),
 }
 
 impl From<RegExpSyntaxError> for RegExpCompileError {
   fn from(value: RegExpSyntaxError) -> Self {
     Self::Syntax(value)
+  }
+}
+
+impl From<VmError> for RegExpCompileError {
+  fn from(value: VmError) -> Self {
+    match value {
+      VmError::OutOfMemory => Self::OutOfMemory,
+      other => Self::Vm(other),
+    }
   }
 }
 
@@ -48,14 +60,6 @@ fn boxed_slice_one<T>(value: T) -> Result<Box<[T]>, RegExpCompileError> {
     .map_err(|_| RegExpCompileError::OutOfMemory)?;
   buf.push(value);
   Ok(buf.into_boxed_slice())
-}
-
-fn vec_try_push_vm<T>(buf: &mut Vec<T>, value: T) -> Result<(), VmError> {
-  if buf.len() == buf.capacity() {
-    buf.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
-  }
-  buf.push(value);
-  Ok(())
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -169,6 +173,61 @@ pub struct RegExpProgram {
   pub(crate) repeat_count: usize,
 }
 
+/// Execution-time memory budget for the RegExp backtracking VM.
+///
+/// RegExp execution allocates per-backtracking-state `captures`/`repeats` buffers and grows a
+/// backtracking stack. These allocations live outside the GC heap, so they must be explicitly
+/// bounded to avoid bypassing [`crate::HeapLimits`].
+#[derive(Debug)]
+pub(crate) struct RegExpExecMemoryBudget {
+  max_bytes: usize,
+  used_bytes: Cell<usize>,
+}
+
+impl RegExpExecMemoryBudget {
+  #[inline]
+  pub(crate) fn new(max_bytes: usize) -> Self {
+    Self {
+      max_bytes,
+      used_bytes: Cell::new(0),
+    }
+  }
+
+  #[inline]
+  fn try_charge(&self, bytes: usize) -> Result<RegExpExecMemoryToken<'_>, VmError> {
+    let new_used = self
+      .used_bytes
+      .get()
+      .checked_add(bytes)
+      .ok_or(VmError::OutOfMemory)?;
+    if new_used > self.max_bytes {
+      return Err(VmError::OutOfMemory);
+    }
+    self.used_bytes.set(new_used);
+    Ok(RegExpExecMemoryToken {
+      budget: self,
+      bytes,
+    })
+  }
+}
+
+#[derive(Debug)]
+struct RegExpExecMemoryToken<'a> {
+  budget: &'a RegExpExecMemoryBudget,
+  bytes: usize,
+}
+
+impl Drop for RegExpExecMemoryToken<'_> {
+  fn drop(&mut self) {
+    if self.bytes == 0 {
+      return;
+    }
+    // Never panic in a destructor path; be conservative and saturate.
+    let used = self.budget.used_bytes.get();
+    self.budget.used_bytes.set(used.saturating_sub(self.bytes));
+  }
+}
+
 impl RegExpProgram {
   pub(crate) fn heap_size_bytes(&self) -> usize {
     let mut total = self.insts.len().saturating_mul(mem::size_of::<Inst>());
@@ -187,19 +246,48 @@ impl RegExpProgram {
     total
   }
 
-  pub(crate) fn exec_at(
+  pub(crate) fn exec_at<'a>(
     &self,
     input: &[u16],
     start: usize,
     flags: RegExpFlags,
     tick: &mut dyn FnMut() -> Result<(), VmError>,
+    exec_mem: &'a RegExpExecMemoryBudget,
     initial_captures: Option<&[usize]>,
   ) -> Result<Option<RegExpMatch>, VmError> {
-    let mut stack: Vec<ExecState> = Vec::new();
-    stack
-      .try_reserve(8)
-      .map_err(|_| VmError::OutOfMemory)?;
-    vec_try_push_vm(&mut stack, ExecState::new(self, start, initial_captures)?)?;
+    let mut stack: Vec<ExecState<'a>> = Vec::new();
+    let mut stack_mem: Vec<RegExpExecMemoryToken<'a>> = Vec::new();
+
+    fn stack_try_push<'a>(
+      stack: &mut Vec<ExecState<'a>>,
+      stack_mem: &mut Vec<RegExpExecMemoryToken<'a>>,
+      exec_mem: &'a RegExpExecMemoryBudget,
+      value: ExecState<'a>,
+    ) -> Result<(), VmError> {
+      if stack.len() == stack.capacity() {
+        let old_cap = stack.capacity();
+        let new_cap = if old_cap == 0 { 8 } else { old_cap.saturating_mul(2) };
+        let additional = new_cap.saturating_sub(old_cap);
+        let bytes = additional
+          .checked_mul(mem::size_of::<ExecState<'a>>())
+          .ok_or(VmError::OutOfMemory)?;
+        if stack_mem.len() == stack_mem.capacity() {
+          stack_mem
+            .try_reserve(1)
+            .map_err(|_| VmError::OutOfMemory)?;
+        }
+        let token = exec_mem.try_charge(bytes)?;
+        stack
+          .try_reserve_exact(additional)
+          .map_err(|_| VmError::OutOfMemory)?;
+        stack_mem.push(token);
+      }
+      stack.push(value);
+      Ok(())
+    }
+
+    let init = ExecState::new(self, start, initial_captures, exec_mem)?;
+    stack_try_push(&mut stack, &mut stack_mem, exec_mem, init)?;
 
     while let Some(mut state) = stack.pop() {
       loop {
@@ -334,9 +422,9 @@ impl RegExpProgram {
             state.pc += 1;
           }
           Inst::Split(a, b) => {
-            let mut other = state.try_clone()?;
+            let mut other = state.try_clone(exec_mem)?;
             other.pc = *b;
-            vec_try_push_vm(&mut stack, other)?;
+            stack_try_push(&mut stack, &mut stack_mem, exec_mem, other)?;
             state.pc = *a;
           }
           Inst::Jump(target) => {
@@ -381,9 +469,9 @@ impl RegExpProgram {
 
             if *greedy {
               // Try the body first, but keep the "stop" continuation on the backtracking stack.
-              let mut stop = state.try_clone()?;
+              let mut stop = state.try_clone(exec_mem)?;
               stop.pc = *exit;
-              vec_try_push_vm(&mut stack, stop)?;
+              stack_try_push(&mut stack, &mut stack_mem, exec_mem, stop)?;
               if let Some(rep) = state.repeats.get_mut(id) {
                 rep.last_pos = state.pos;
                 rep.count = rep.count.saturating_add(1);
@@ -391,13 +479,13 @@ impl RegExpProgram {
               state.pc += 1;
             } else {
               // Lazy: try stopping first, but keep the "take body" continuation on the stack.
-              let mut body = state.try_clone()?;
+              let mut body = state.try_clone(exec_mem)?;
               if let Some(body_rep) = body.repeats.get_mut(id) {
                 body_rep.last_pos = body.pos;
                 body_rep.count = body_rep.count.saturating_add(1);
               }
               body.pc += 1;
-              vec_try_push_vm(&mut stack, body)?;
+              stack_try_push(&mut stack, &mut stack_mem, exec_mem, body)?;
               state.pc = *exit;
             }
           }
@@ -406,7 +494,14 @@ impl RegExpProgram {
           }
           Inst::LookAhead { program, negative } => {
             // Run the nested program anchored at the current position.
-            let sub = program.exec_at(input, state.pos, flags, tick, Some(&state.captures))?;
+            let sub = program.exec_at(
+              input,
+              state.pos,
+              flags,
+              tick,
+              exec_mem,
+              Some(&state.captures),
+            )?;
             match (sub.is_some(), *negative) {
               (true, true) => {
                 // Negative lookahead matched => fail this branch.
@@ -502,7 +597,7 @@ impl RegExpProgram {
   }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub(crate) struct RegExpMatch {
   pub(crate) end: usize,
   /// Capture slots: index `2*i` is the start, `2*i+1` is the end. `usize::MAX` means "unset".
@@ -518,24 +613,36 @@ struct RepeatRuntime {
 }
 
 #[derive(Debug)]
-struct ExecState {
+struct ExecState<'a> {
   pc: usize,
   pos: usize,
   captures: Vec<usize>,
+  captures_mem: RegExpExecMemoryToken<'a>,
   repeats: Vec<RepeatRuntime>,
+  repeats_mem: RegExpExecMemoryToken<'a>,
 }
 
-impl ExecState {
+impl<'a> ExecState<'a> {
   fn new(
     program: &RegExpProgram,
     start: usize,
     initial_captures: Option<&[usize]>,
+    exec_mem: &'a RegExpExecMemoryBudget,
   ) -> Result<Self, VmError> {
+    let capture_len = program
+      .capture_count
+      .checked_mul(2)
+      .ok_or(VmError::OutOfMemory)?;
+    let capture_bytes = capture_len
+      .checked_mul(mem::size_of::<usize>())
+      .ok_or(VmError::OutOfMemory)?;
+    let captures_mem = exec_mem.try_charge(capture_bytes)?;
+
     let mut captures: Vec<usize> = Vec::new();
     captures
-      .try_reserve_exact(program.capture_count.saturating_mul(2))
+      .try_reserve_exact(capture_len)
       .map_err(|_| VmError::OutOfMemory)?;
-    captures.resize(program.capture_count.saturating_mul(2), UNSET);
+    captures.resize(capture_len, UNSET);
 
     if let Some(src) = initial_captures {
       let len = captures.len().min(src.len());
@@ -547,26 +654,49 @@ impl ExecState {
       *slot0 = start;
     }
 
+    let repeats_len = program.repeat_count;
+    let repeats_bytes = repeats_len
+      .checked_mul(mem::size_of::<RepeatRuntime>())
+      .ok_or(VmError::OutOfMemory)?;
+    let repeats_mem = exec_mem.try_charge(repeats_bytes)?;
+
     let mut repeats: Vec<RepeatRuntime> = Vec::new();
     repeats
-      .try_reserve_exact(program.repeat_count)
+      .try_reserve_exact(repeats_len)
       .map_err(|_| VmError::OutOfMemory)?;
-    repeats.resize(program.repeat_count, RepeatRuntime { count: 0, last_pos: UNSET });
+    repeats.resize(repeats_len, RepeatRuntime { count: 0, last_pos: UNSET });
 
     Ok(Self {
       pc: 0,
       pos: start,
       captures,
+      captures_mem,
       repeats,
+      repeats_mem,
     })
   }
 
-  fn try_clone(&self) -> Result<Self, VmError> {
+  fn try_clone(&self, exec_mem: &'a RegExpExecMemoryBudget) -> Result<Self, VmError> {
+    let capture_bytes = self
+      .captures
+      .len()
+      .checked_mul(mem::size_of::<usize>())
+      .ok_or(VmError::OutOfMemory)?;
+    let captures_mem = exec_mem.try_charge(capture_bytes)?;
+
     let mut captures: Vec<usize> = Vec::new();
     captures
       .try_reserve_exact(self.captures.len())
       .map_err(|_| VmError::OutOfMemory)?;
     captures.extend_from_slice(&self.captures);
+
+    let repeats_bytes = self
+      .repeats
+      .len()
+      .checked_mul(mem::size_of::<RepeatRuntime>())
+      .ok_or(VmError::OutOfMemory)?;
+    let repeats_mem = exec_mem.try_charge(repeats_bytes)?;
+
     let mut repeats: Vec<RepeatRuntime> = Vec::new();
     repeats
       .try_reserve_exact(self.repeats.len())
@@ -576,7 +706,9 @@ impl ExecState {
       pc: self.pc,
       pos: self.pos,
       captures,
+      captures_mem,
       repeats,
+      repeats_mem,
     })
   }
 
@@ -758,6 +890,12 @@ pub(crate) fn advance_string_index(input: &[u16], index: usize, unicode: bool) -
 
 // --- Parser + compiler ---
 
+/// Compilation tick cadence (in approximate UTF-16 code units consumed / IR steps).
+///
+/// This is used to ensure hostile RegExp patterns cannot monopolize the VM for long periods of
+/// time without observing fuel/deadline/interrupt budgets.
+const REGEXP_COMPILE_TICK_EVERY: usize = 1024;
+
 #[derive(Debug, Clone)]
 struct Disjunction {
   alts: Vec<Alternative>,
@@ -799,39 +937,92 @@ struct Quantifier {
   greedy: bool,
 }
 
-pub(crate) fn compile_regexp(
+/// Conservative upper bound estimate for memory allocated while compiling a RegExp of
+/// `pattern_len` UTF-16 code units.
+///
+/// This is used by call sites to consult `HeapLimits` **before** allocating potentially-large
+/// off-heap buffers during RegExp compilation, preventing heap-limit bypass via large patterns.
+pub(crate) fn estimated_regexp_compilation_bytes(pattern_len: usize) -> usize {
+  // The current compiler is linear in the input length; each code unit can contribute at most a
+  // small constant number of AST nodes and VM instructions (plus character-class items). Use a
+  // conservative estimate so this remains correct even if the compiler gains new features.
+  const INSTS_PER_UNIT: usize = 4;
+  const TERMS_PER_UNIT: usize = 2;
+  const ALTS_PER_UNIT: usize = 2;
+  const END_JUMPS_PER_UNIT: usize = 2;
+  const CLASS_ITEMS_PER_UNIT: usize = 2;
+  const PROGRAMS_PER_UNIT: usize = 1;
+  let per_unit = INSTS_PER_UNIT
+    .saturating_mul(mem::size_of::<Inst>())
+    .saturating_add(TERMS_PER_UNIT.saturating_mul(mem::size_of::<Term>()))
+    .saturating_add(ALTS_PER_UNIT.saturating_mul(mem::size_of::<Alternative>()))
+    .saturating_add(END_JUMPS_PER_UNIT.saturating_mul(mem::size_of::<usize>()))
+    .saturating_add(CLASS_ITEMS_PER_UNIT.saturating_mul(mem::size_of::<CharClassItem>()))
+    .saturating_add(PROGRAMS_PER_UNIT.saturating_mul(mem::size_of::<RegExpProgram>()));
+
+  // Fixed overhead for vector headers, builder state, etc.
+  const OVERHEAD_BYTES: usize = 8 * 1024;
+
+  pattern_len.saturating_mul(per_unit).saturating_add(OVERHEAD_BYTES)
+}
+
+pub(crate) fn compile_regexp_with_budget(
   pattern: &[u16],
   flags: RegExpFlags,
+  tick: &mut dyn FnMut() -> Result<(), VmError>,
 ) -> Result<RegExpProgram, RegExpCompileError> {
-  let mut parser = Parser::new(pattern, flags);
-  let disj = parser.parse_disjunction(None)?;
-  if parser.peek().is_some() {
-    return Err(RegExpSyntaxError {
-      message: "Invalid regular expression",
+  let (disj, capture_count) = {
+    let mut parser = Parser::new(pattern, flags, tick);
+    let disj = parser.parse_disjunction(None)?;
+    if parser.peek().is_some() {
+      return Err(RegExpSyntaxError {
+        message: "Invalid regular expression",
+      }
+      .into());
     }
-    .into());
-  }
-  let capture_count = parser.capture_count as usize + 1;
-  let mut builder = ProgramBuilder::new(capture_count);
+    // Capture 0 is the overall match.
+    let capture_count = parser.capture_count as usize + 1;
+    (disj, capture_count)
+  };
+
+  let mut builder = ProgramBuilder::new(capture_count, tick);
   builder.compile_disjunction(&disj)?;
   builder.emit(Inst::Match)?;
   Ok(builder.finish())
 }
 
-struct Parser<'a> {
+pub(crate) fn compile_regexp(
+  pattern: &[u16],
+  flags: RegExpFlags,
+) -> Result<RegExpProgram, RegExpCompileError> {
+  let mut tick = || Ok(());
+  compile_regexp_with_budget(pattern, flags, &mut tick)
+}
+
+struct Parser<'a, 't> {
   units: &'a [u16],
   idx: usize,
   flags: RegExpFlags,
   capture_count: u32,
+  tick: &'t mut dyn FnMut() -> Result<(), VmError>,
+  steps: usize,
+  next_tick: usize,
 }
 
-impl<'a> Parser<'a> {
-  fn new(units: &'a [u16], flags: RegExpFlags) -> Self {
+impl<'a, 't> Parser<'a, 't> {
+  fn new(
+    units: &'a [u16],
+    flags: RegExpFlags,
+    tick: &'t mut dyn FnMut() -> Result<(), VmError>,
+  ) -> Self {
     Self {
       units,
       idx: 0,
       flags,
       capture_count: 0,
+      tick,
+      steps: 0,
+      next_tick: REGEXP_COMPILE_TICK_EVERY,
     }
   }
 
@@ -839,19 +1030,30 @@ impl<'a> Parser<'a> {
     self.units.get(self.idx).copied()
   }
 
-  fn next(&mut self) -> Option<u16> {
-    let u = self.peek()?;
-    self.idx += 1;
-    Some(u)
+  fn bump(&mut self, n: usize) -> Result<(), RegExpCompileError> {
+    self.idx = self.idx.saturating_add(n);
+    self.steps = self.steps.saturating_add(n);
+    while self.steps >= self.next_tick {
+      (self.tick)().map_err(RegExpCompileError::from)?;
+      self.next_tick = self.next_tick.saturating_add(REGEXP_COMPILE_TICK_EVERY);
+    }
+    Ok(())
   }
 
-  fn eat(&mut self, ch: u16) -> bool {
-    if self.peek() == Some(ch) {
-      self.idx += 1;
-      true
-    } else {
-      false
+  fn next(&mut self) -> Result<Option<u16>, RegExpCompileError> {
+    let u = self.peek();
+    if u.is_some() {
+      self.bump(1)?;
     }
+    Ok(u)
+  }
+
+  fn eat(&mut self, ch: u16) -> Result<bool, RegExpCompileError> {
+    if self.peek() != Some(ch) {
+      return Ok(false);
+    }
+    self.bump(1)?;
+    Ok(true)
   }
 
   fn parse_disjunction(
@@ -860,7 +1062,7 @@ impl<'a> Parser<'a> {
   ) -> Result<Disjunction, RegExpCompileError> {
     let mut alts: Vec<Alternative> = Vec::new();
     vec_try_push(&mut alts, self.parse_alternative(terminator)?)?;
-    while self.eat(b'|' as u16) {
+    while self.eat(b'|' as u16)? {
       vec_try_push(&mut alts, self.parse_alternative(terminator)?)?;
     }
     Ok(Disjunction { alts })
@@ -903,9 +1105,9 @@ impl<'a> Parser<'a> {
         if let Some(kind) = self.units.get(self.idx + 2).copied() {
           if kind == (b'=' as u16) || kind == (b'!' as u16) {
             // Consume "(?=" / "(?!".
-            self.idx += 3;
+            self.bump(3)?;
             let disj = self.parse_disjunction(Some(b')' as u16))?;
-            if !self.eat(b')' as u16) {
+            if !self.eat(b')' as u16)? {
               return Err(RegExpSyntaxError {
                 message: "Unterminated group",
               }
@@ -923,18 +1125,18 @@ impl<'a> Parser<'a> {
     // Assertions.
     match u {
       x if x == (b'^' as u16) => {
-        self.next();
+        let _ = self.next()?;
         return Ok(Term::Assertion(Assertion::Start));
       }
       x if x == (b'$' as u16) => {
-        self.next();
+        let _ = self.next()?;
         return Ok(Term::Assertion(Assertion::End));
       }
       x if x == (b'\\' as u16) => {
         // Might be a boundary assertion.
         let save = self.idx;
-        self.next();
-        let Some(next) = self.next() else {
+        let _ = self.next()?;
+        let Some(next) = self.next()? else {
           return Err(RegExpSyntaxError {
             message: "Invalid escape",
           }
@@ -959,7 +1161,7 @@ impl<'a> Parser<'a> {
   }
 
   fn parse_atom(&mut self, terminator: Option<u16>) -> Result<Atom, RegExpCompileError> {
-    let Some(u) = self.next() else {
+    let Some(u) = self.next()? else {
       return Err(RegExpSyntaxError {
         message: "Invalid regular expression",
       }
@@ -1013,15 +1215,15 @@ impl<'a> Parser<'a> {
 
   fn parse_group(&mut self) -> Result<Atom, RegExpCompileError> {
     // `(` has already been consumed.
-    if self.eat(b'?' as u16) {
-      let Some(next) = self.next() else {
+    if self.eat(b'?' as u16)? {
+      let Some(next) = self.next()? else {
         return Err(RegExpSyntaxError { message: "Invalid group" }.into());
       };
       match next {
         x if x == (b':' as u16) => {
           // Non-capturing group.
           let disj = self.parse_disjunction(Some(b')' as u16))?;
-          if !self.eat(b')' as u16) {
+          if !self.eat(b')' as u16)? {
             return Err(RegExpSyntaxError {
               message: "Unterminated group",
             }
@@ -1032,7 +1234,7 @@ impl<'a> Parser<'a> {
         x if x == (b'<' as u16) => {
           // Named capturing group: `(?<name>...)`.
           while let Some(u) = self.peek() {
-            self.next();
+            let _ = self.next()?;
             if u == (b'>' as u16) {
               break;
             }
@@ -1043,7 +1245,7 @@ impl<'a> Parser<'a> {
           self.capture_count = self.capture_count.saturating_add(1);
           let idx = self.capture_count;
           let disj = self.parse_disjunction(Some(b')' as u16))?;
-          if !self.eat(b')' as u16) {
+          if !self.eat(b')' as u16)? {
             return Err(RegExpSyntaxError {
               message: "Unterminated group",
             }
@@ -1061,7 +1263,7 @@ impl<'a> Parser<'a> {
       self.capture_count = self.capture_count.saturating_add(1);
       let idx = self.capture_count;
       let disj = self.parse_disjunction(Some(b')' as u16))?;
-      if !self.eat(b')' as u16) {
+      if !self.eat(b')' as u16)? {
         return Err(RegExpSyntaxError {
           message: "Unterminated group",
         }
@@ -1077,7 +1279,7 @@ impl<'a> Parser<'a> {
   fn parse_class(&mut self) -> Result<Atom, RegExpCompileError> {
     // `[` has already been consumed.
     let mut negated = false;
-    if self.eat(b'^' as u16) {
+    if self.eat(b'^' as u16)? {
       negated = true;
     }
     let mut items: Vec<CharClassItem> = Vec::new();
@@ -1091,7 +1293,7 @@ impl<'a> Parser<'a> {
         .into());
       };
       if u == (b']' as u16) && !first {
-        self.next();
+        let _ = self.next()?;
         break;
       }
       first = false;
@@ -1101,11 +1303,11 @@ impl<'a> Parser<'a> {
       if self.peek() == Some(b'-' as u16) {
         // Only treat as range when there's a following atom before `]`.
         let save = self.idx;
-        self.next(); // consume '-'
+        let _ = self.next()?; // consume '-'
         if self.peek() == Some(b']' as u16) {
           // Literal '-' at end.
           self.idx = save;
-       } else {
+        } else {
           let atom2 = self.parse_class_atom()?;
           if let (CharClassItem::Char(a), CharClassItem::Char(b)) = (atom, atom2) {
             vec_try_push(&mut items, CharClassItem::Range(a, b))?;
@@ -1124,7 +1326,7 @@ impl<'a> Parser<'a> {
   }
 
   fn parse_class_atom(&mut self) -> Result<CharClassItem, RegExpCompileError> {
-    let Some(u) = self.next() else {
+    let Some(u) = self.next()? else {
       return Err(RegExpSyntaxError {
         message: "Invalid character class",
       }
@@ -1132,7 +1334,7 @@ impl<'a> Parser<'a> {
     };
     match u {
       x if x == (b'\\' as u16) => {
-        let Some(e) = self.next() else {
+        let Some(e) = self.next()? else {
           return Err(RegExpSyntaxError { message: "Invalid escape" }.into());
         };
         match e {
@@ -1158,7 +1360,7 @@ impl<'a> Parser<'a> {
   }
 
   fn parse_escape_atom(&mut self) -> Result<Atom, RegExpCompileError> {
-    let Some(e) = self.next() else {
+    let Some(e) = self.next()? else {
       return Err(RegExpSyntaxError { message: "Invalid escape" }.into());
     };
     match e {
@@ -1199,7 +1401,7 @@ impl<'a> Parser<'a> {
           if !(b'0' as u16..=b'9' as u16).contains(&d) {
             break;
           }
-          self.next();
+          let _ = self.next()?;
           n = n
             .saturating_mul(10)
             .saturating_add((d - (b'0' as u16)) as u32);
@@ -1213,12 +1415,16 @@ impl<'a> Parser<'a> {
   }
 
   fn parse_hex_escape_2(&mut self) -> Result<u16, RegExpCompileError> {
-    let h1 = self.next().ok_or(RegExpCompileError::Syntax(RegExpSyntaxError {
-      message: "Invalid escape",
-    }))?;
-    let h2 = self.next().ok_or(RegExpCompileError::Syntax(RegExpSyntaxError {
-      message: "Invalid escape",
-    }))?;
+    let h1 = self
+      .next()?
+      .ok_or(RegExpCompileError::Syntax(RegExpSyntaxError {
+        message: "Invalid escape",
+      }))?;
+    let h2 = self
+      .next()?
+      .ok_or(RegExpCompileError::Syntax(RegExpSyntaxError {
+        message: "Invalid escape",
+      }))?;
     let v1 = hex_value(h1).ok_or(RegExpCompileError::Syntax(RegExpSyntaxError {
       message: "Invalid escape",
     }))?;
@@ -1231,18 +1437,18 @@ impl<'a> Parser<'a> {
   fn parse_unicode_escape(&mut self) -> Result<u16, RegExpCompileError> {
     if self.flags.unicode && self.peek() == Some(b'{' as u16) {
       // \u{...}
-      self.next();
+      let _ = self.next()?;
       let mut value: u32 = 0;
       let mut saw_digit = false;
       while let Some(u) = self.peek() {
         if u == (b'}' as u16) {
-          self.next();
+          let _ = self.next()?;
           break;
         }
         let d = hex_value(u).ok_or(RegExpCompileError::Syntax(RegExpSyntaxError {
           message: "Invalid escape",
         }))?;
-        self.next();
+        let _ = self.next()?;
         saw_digit = true;
         value = value.saturating_mul(16).saturating_add(d);
         if value > 0x10FFFF {
@@ -1266,7 +1472,9 @@ impl<'a> Parser<'a> {
       // \uXXXX
       let mut value: u32 = 0;
       for _ in 0..4 {
-        let u = self.next().ok_or(RegExpCompileError::Syntax(RegExpSyntaxError {
+        let u = self
+          .next()?
+          .ok_or(RegExpCompileError::Syntax(RegExpSyntaxError {
           message: "Invalid escape",
         }))?;
         let d = hex_value(u).ok_or(RegExpCompileError::Syntax(RegExpSyntaxError {
@@ -1284,20 +1492,20 @@ impl<'a> Parser<'a> {
     };
     let (mut min, max): (u32, Option<u32>) = match u {
       x if x == (b'*' as u16) => {
-        self.next();
+        let _ = self.next()?;
         (0, None)
       }
       x if x == (b'+' as u16) => {
-        self.next();
+        let _ = self.next()?;
         (1, None)
       }
       x if x == (b'?' as u16) => {
-        self.next();
+        let _ = self.next()?;
         (0, Some(1))
       }
       x if x == (b'{' as u16) => {
         let save = self.idx;
-        self.next();
+        let _ = self.next()?;
         let Some(first) = self.peek() else {
           self.idx = save;
           return Ok(None);
@@ -1307,12 +1515,12 @@ impl<'a> Parser<'a> {
           self.idx = save;
           return Ok(None);
         }
-        let m = self.parse_decimal_u32();
+        let m = self.parse_decimal_u32()?;
         let mut n: Option<u32> = None;
-        if self.eat(b',' as u16) {
+        if self.eat(b',' as u16)? {
           if let Some(d) = self.peek() {
             if (b'0' as u16..=b'9' as u16).contains(&d) {
-              n = Some(self.parse_decimal_u32());
+              n = Some(self.parse_decimal_u32()?);
             } else {
               n = None;
             }
@@ -1320,7 +1528,7 @@ impl<'a> Parser<'a> {
         } else {
           n = Some(m);
         }
-        if !self.eat(b'}' as u16) {
+        if !self.eat(b'}' as u16)? {
           self.idx = save;
           return Ok(None);
         }
@@ -1347,7 +1555,7 @@ impl<'a> Parser<'a> {
     // Lazy quantifier suffix `?`.
     let mut greedy = true;
     if self.peek() == Some(b'?' as u16) {
-      self.next();
+      let _ = self.next()?;
       greedy = false;
     }
 
@@ -1359,16 +1567,16 @@ impl<'a> Parser<'a> {
     Ok(Some(Quantifier { min, max, greedy }))
   }
 
-  fn parse_decimal_u32(&mut self) -> u32 {
+  fn parse_decimal_u32(&mut self) -> Result<u32, RegExpCompileError> {
     let mut n: u32 = 0;
     while let Some(u) = self.peek() {
       if !(b'0' as u16..=b'9' as u16).contains(&u) {
         break;
       }
-      self.next();
+      let _ = self.next()?;
       n = n.saturating_mul(10).saturating_add((u - (b'0' as u16)) as u32);
     }
-    n
+    Ok(n)
   }
 }
 
@@ -1381,18 +1589,27 @@ fn hex_value(u: u16) -> Option<u32> {
   }
 }
 
-struct ProgramBuilder {
+struct ProgramBuilder<'t> {
   insts: Vec<Inst>,
   repeat_count: usize,
   capture_count: usize,
+  tick: &'t mut dyn FnMut() -> Result<(), VmError>,
+  steps: usize,
+  next_tick: usize,
 }
 
-impl ProgramBuilder {
-  fn new(capture_count: usize) -> Self {
+impl<'t> ProgramBuilder<'t> {
+  fn new(
+    capture_count: usize,
+    tick: &'t mut dyn FnMut() -> Result<(), VmError>,
+  ) -> Self {
     Self {
       insts: Vec::new(),
       repeat_count: 0,
       capture_count,
+      tick,
+      steps: 0,
+      next_tick: REGEXP_COMPILE_TICK_EVERY,
     }
   }
 
@@ -1404,7 +1621,17 @@ impl ProgramBuilder {
     }
   }
 
+  fn bump(&mut self, n: usize) -> Result<(), RegExpCompileError> {
+    self.steps = self.steps.saturating_add(n);
+    while self.steps >= self.next_tick {
+      (self.tick)().map_err(RegExpCompileError::from)?;
+      self.next_tick = self.next_tick.saturating_add(REGEXP_COMPILE_TICK_EVERY);
+    }
+    Ok(())
+  }
+
   fn emit(&mut self, inst: Inst) -> Result<usize, RegExpCompileError> {
+    self.bump(1)?;
     if self.insts.len() == self.insts.capacity() {
       self
         .insts
@@ -1445,7 +1672,10 @@ impl ProgramBuilder {
     }
 
     let end = self.insts.len();
-    for pc in end_jumps {
+    for (i, pc) in end_jumps.into_iter().enumerate() {
+      if i != 0 && i % REGEXP_COMPILE_TICK_EVERY == 0 {
+        self.bump(REGEXP_COMPILE_TICK_EVERY)?;
+      }
       let Inst::Jump(ref mut target) = self.insts[pc] else {
         unreachable!();
       };
@@ -1490,7 +1720,8 @@ impl ProgramBuilder {
       }
       Assertion::LookAhead { negative, disj } => {
         // Compile lookahead into a nested program that shares the outer capture slot numbering.
-        let mut nested = ProgramBuilder::new(self.capture_count);
+        let tick = &mut *self.tick;
+        let mut nested = ProgramBuilder::new(self.capture_count, tick);
         nested.compile_disjunction(disj)?;
         nested.emit(Inst::Match)?;
         let nested_prog = nested.finish();

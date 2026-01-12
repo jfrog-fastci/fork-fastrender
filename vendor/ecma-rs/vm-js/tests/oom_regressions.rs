@@ -77,3 +77,10 @@ fn parse_float_large_string_does_not_abort_on_oom() {
   // Large `parseFloat(string)` should not abort under memory pressure.
   run_oom_harness("parseFloat", 25_000_000);
 }
+
+#[test]
+fn regexp_compile_large_string_does_not_abort_on_oom() {
+  // Large RegExp compilation should use fallible allocations and report `VmError::OutOfMemory`
+  // rather than aborting the process under RLIMIT_AS pressure.
+  run_oom_harness("regexp_compile", 3_000_000);
+}

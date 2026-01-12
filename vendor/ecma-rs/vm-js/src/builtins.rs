@@ -1,6 +1,9 @@
 use crate::function::{CallHandler, FunctionData, ThisMode};
 use crate::property::{PropertyDescriptor, PropertyDescriptorPatch, PropertyKey, PropertyKind};
-use crate::regexp::{advance_string_index, compile_regexp, RegExpCompileError, RegExpFlags};
+use crate::regexp::{
+  advance_string_index, compile_regexp_with_budget, estimated_regexp_compilation_bytes,
+  RegExpCompileError, RegExpExecMemoryBudget, RegExpFlags,
+};
 use crate::string::{utf16_to_utf8_lossy_with_tick, JsString};
 use crate::{
   heap::TypedArrayKind,
@@ -7657,7 +7660,7 @@ fn regexp_set_last_index(
   Ok(())
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 struct RegExpExecRaw {
   m: crate::regexp::RegExpMatch,
   index: usize,
@@ -7713,7 +7716,12 @@ fn regexp_exec_raw(
     let m = {
       let s = scope.heap().get_string(input)?;
       let mut tick = || vm.tick();
-      program.exec_at(s.as_code_units(), k, flags, &mut tick, None)?
+      let exec_mem = {
+        let heap = scope.heap();
+        let headroom = heap.limits().max_bytes.saturating_sub(heap.estimated_total_bytes());
+        RegExpExecMemoryBudget::new(headroom)
+      };
+      program.exec_at(s.as_code_units(), k, flags, &mut tick, &exec_mem, None)?
     };
     if let Some(m) = m {
       let end = m.end;
@@ -11593,11 +11601,23 @@ fn regexp_constructor_impl(
 
   // Compile pattern.
   let program = {
+    // Preflight heap limits **before** allocating large off-heap compilation buffers.
+    let pat_len = {
+      let js = scope.heap().get_string(source_s)?;
+      js.len_code_units()
+    };
+    let estimated_bytes = estimated_regexp_compilation_bytes(pat_len);
+    // `Heap::ensure_can_allocate` is private; use an external-memory charge token to reserve
+    // compilation headroom against `HeapLimits` while building the off-heap regexp program.
+    let _compile_mem = scope.heap_mut().charge_external(estimated_bytes)?;
+
     let js = scope.heap().get_string(source_s)?;
-    match compile_regexp(js.as_code_units(), parsed_flags) {
+    let mut tick = || vm.tick();
+    match compile_regexp_with_budget(js.as_code_units(), parsed_flags, &mut tick) {
       Ok(p) => p,
       Err(RegExpCompileError::Syntax(e)) => return throw_syntax_error(vm, &mut scope, e.message),
       Err(RegExpCompileError::OutOfMemory) => return Err(VmError::OutOfMemory),
+      Err(RegExpCompileError::Vm(err)) => return Err(err),
     }
   };
 
@@ -12171,7 +12191,12 @@ pub fn regexp_prototype_symbol_split(
       }
       let matched = {
         let mut tick = || vm.tick();
-        program.exec_at(&input_units, k, flags, &mut tick, None)?
+        let exec_mem = {
+          let heap = scope.heap();
+          let headroom = heap.limits().max_bytes.saturating_sub(heap.estimated_total_bytes());
+          RegExpExecMemoryBudget::new(headroom)
+        };
+        program.exec_at(&input_units, k, flags, &mut tick, &exec_mem, None)?
       };
       if let Some(m) = matched {
         found = Some((k, m));

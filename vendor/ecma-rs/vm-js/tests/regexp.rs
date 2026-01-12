@@ -1,4 +1,7 @@
-use vm_js::{Budget, Heap, HeapLimits, JsRuntime, TerminationReason, Value, Vm, VmError, VmOptions};
+use vm_js::{
+  Budget, Heap, HeapLimits, JsRuntime, PropertyDescriptor, PropertyKey, PropertyKind,
+  TerminationReason, Value, Vm, VmError, VmOptions,
+};
 
 fn new_runtime() -> JsRuntime {
   let vm = Vm::new(VmOptions::default());
@@ -11,6 +14,22 @@ fn as_utf8_lossy(rt: &JsRuntime, value: Value) -> String {
     panic!("expected string, got {value:?}");
   };
   rt.heap().get_string(s).unwrap().to_utf8_lossy()
+}
+
+fn define_global(rt: &mut JsRuntime, key: &str, value: Value) {
+  let global = rt.realm().global_object();
+  let mut scope = rt.heap_mut().scope();
+  scope.push_roots(&[Value::Object(global), value]).unwrap();
+  let key_s = scope.alloc_string(key).unwrap();
+  scope.push_root(Value::String(key_s)).unwrap();
+  let desc = PropertyDescriptor {
+    enumerable: true,
+    configurable: true,
+    kind: PropertyKind::Data { value, writable: true },
+  };
+  scope
+    .define_property(global, PropertyKey::from_string(key_s), desc)
+    .unwrap();
 }
 
 #[test]
@@ -112,3 +131,83 @@ fn regexp_engine_catastrophic_backtracking_is_interruptible() {
   }
 }
 
+#[test]
+fn regexp_compilation_respects_heap_limits() {
+  // The runtime itself needs some headroom; use the default 4MiB heap limit but feed a large
+  // enough pattern that compilation would exceed it.
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(4 * 1024 * 1024, 4 * 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap).unwrap();
+
+  // Allocate a large pattern string on the GC heap; compilation should fail with `VmError::OutOfMemory`
+  // *before* allocating large off-heap compilation buffers.
+  let pattern = {
+    let mut units: Vec<u16> = Vec::new();
+    units.try_reserve_exact(200_000).unwrap();
+    units.resize(200_000, b'a' as u16);
+    let mut scope = rt.heap_mut().scope();
+    scope.alloc_string_from_u16_vec(units).unwrap()
+  };
+  define_global(&mut rt, "P", Value::String(pattern));
+
+  let err = rt.exec_script(r#"new RegExp(P)"#).unwrap_err();
+  assert!(matches!(err, VmError::OutOfMemory));
+}
+
+#[test]
+fn regexp_execution_backtracking_state_respects_heap_limits() {
+  let mut vm = Vm::new(VmOptions::default());
+  vm.set_budget(Budget {
+    fuel: Some(200_000),
+    deadline: None,
+    check_time_every: 1,
+  });
+  let heap = Heap::new(HeapLimits::new(4 * 1024 * 1024, 4 * 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap).unwrap();
+
+  // Build a pattern with a large number of `?` quantifiers. The backtracking VM stores one
+  // continuation per quantifier; each backtracking state allocates a `repeats` vector whose length
+  // is proportional to the total number of quantified atoms in the program. This makes the
+  // backtracking stack memory usage attacker-controlled.
+  const N: usize = 1000;
+  let pattern_src: String = {
+    let mut s = String::from("^");
+    for _ in 0..N {
+      s.push('a');
+      s.push('?');
+    }
+    s.push('$');
+    s
+  };
+  let input_src: String = {
+    let mut s = String::new();
+    s.reserve(N + 1);
+    for _ in 0..N {
+      s.push('a');
+    }
+    s.push('!');
+    s
+  };
+
+  let mut scope = rt.heap_mut().scope();
+  let pattern = scope.alloc_string(&pattern_src).unwrap();
+  let input = scope.alloc_string(&input_src).unwrap();
+  drop(scope);
+  define_global(&mut rt, "P", Value::String(pattern));
+  define_global(&mut rt, "S", Value::String(input));
+
+  let err = rt
+    .exec_script(
+      r#"
+        var r = new RegExp(P);
+        r.test(S);
+      "#,
+    )
+    .unwrap_err();
+
+  match err {
+    VmError::OutOfMemory => {}
+    VmError::Termination(term) => assert_eq!(term.reason, TerminationReason::OutOfFuel),
+    other => panic!("expected OOM/termination, got {other:?}"),
+  }
+}
