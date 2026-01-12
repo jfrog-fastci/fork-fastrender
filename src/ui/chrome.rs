@@ -493,10 +493,20 @@ pub fn chrome_ui_with_bookmarks(
         })
         .unwrap_or((false, false, false, None, None, zoom::DEFAULT_ZOOM));
 
-      if icon_button(ui, BrowserIcon::Back, "Back (Alt+Left)", can_back).clicked() {
+      let back_tooltip = if cfg!(target_os = "macos") {
+        "Back (Cmd+[)"
+      } else {
+        "Back (Alt+Left)"
+      };
+      if icon_button(ui, BrowserIcon::Back, back_tooltip, can_back).clicked() {
         actions.push(ChromeAction::Back);
       }
-      if icon_button(ui, BrowserIcon::Forward, "Forward (Alt+Right)", can_forward).clicked() {
+      let forward_tooltip = if cfg!(target_os = "macos") {
+        "Forward (Cmd+])"
+      } else {
+        "Forward (Alt+Right)"
+      };
+      if icon_button(ui, BrowserIcon::Forward, forward_tooltip, can_forward).clicked() {
         actions.push(ChromeAction::Forward);
       }
       if loading {
@@ -506,7 +516,12 @@ pub fn chrome_ui_with_bookmarks(
       } else if icon_button(ui, BrowserIcon::Reload, "Reload (Ctrl/Cmd+R)", true).clicked() {
         actions.push(ChromeAction::Reload);
       }
-      if ui.button("⌂").clicked() {
+      let home_tooltip = if cfg!(target_os = "macos") {
+        "Home (Cmd+Shift+H)"
+      } else {
+        "Home (Alt+Home)"
+      };
+      if icon_button(ui, BrowserIcon::Home, home_tooltip, true).clicked() {
         actions.push(ChromeAction::Home);
       }
 
