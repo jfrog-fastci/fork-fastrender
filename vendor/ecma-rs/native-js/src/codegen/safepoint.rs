@@ -27,7 +27,8 @@ use inkwell::values::BasicValue;
 use inkwell::values::{FunctionValue, IntValue};
 use inkwell::IntPredicate;
 use llvm_sys::core::{
-  LLVMGetIntTypeWidth, LLVMGetTypeKind, LLVMGlobalGetValueType, LLVMSetAlignment, LLVMSetOrdering,
+  LLVMGetIntTypeWidth, LLVMGetTypeKind, LLVMGlobalGetValueType, LLVMIsGlobalConstant, LLVMSetAlignment,
+  LLVMSetOrdering,
 };
 use llvm_sys::{LLVMAtomicOrdering, LLVMTypeKind};
 
@@ -42,6 +43,9 @@ fn get_or_declare_rt_gc_epoch<'ctx>(
       let ty = LLVMGlobalGetValueType(existing.as_value_ref());
       if LLVMGetTypeKind(ty) != LLVMTypeKind::LLVMIntegerTypeKind || LLVMGetIntTypeWidth(ty) != 64 {
         panic!("RT_GC_EPOCH must have type i64");
+      }
+      if LLVMIsGlobalConstant(existing.as_value_ref()) != 0 {
+        panic!("RT_GC_EPOCH must be a mutable global");
       }
     }
     return existing;

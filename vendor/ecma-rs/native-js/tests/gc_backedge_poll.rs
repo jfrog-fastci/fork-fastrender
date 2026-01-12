@@ -109,6 +109,28 @@ fn backedge_poll_panics_on_incompatible_rt_gc_epoch_type() {
 }
 
 #[test]
+#[should_panic(expected = "RT_GC_EPOCH must be a mutable global")]
+fn backedge_poll_panics_on_constant_rt_gc_epoch() {
+  let context = Context::create();
+  let module = context.create_module("gc_backedge_poll_const_epoch_codegen");
+  let builder = context.create_builder();
+
+  let epoch = module.add_global(context.i64_type(), None, "RT_GC_EPOCH");
+  epoch.set_initializer(&context.i64_type().const_zero());
+  unsafe {
+    LLVMSetGlobalConstant(epoch.as_value_ref(), 1);
+  }
+
+  let void_ty = context.void_type();
+  let fn_ty = void_ty.fn_type(&[], false);
+  let func = module.add_function("test", fn_ty, None);
+  let entry = context.append_basic_block(func, "entry");
+  builder.position_at_end(entry);
+
+  safepoint::emit_backedge_gc_poll(&context, &module, &builder, func);
+}
+
+#[test]
 fn rewrite_statepoints_rejects_constant_rt_gc_epoch() {
   let context = Context::create();
   let module = context.create_module("gc_backedge_poll_const_epoch");
@@ -129,7 +151,6 @@ fn rewrite_statepoints_rejects_constant_rt_gc_epoch() {
 
   let entry = context.append_basic_block(func, "entry");
   builder.position_at_end(entry);
-  safepoint::emit_backedge_gc_poll(&context, &module, &builder, func);
   builder.build_return(None).expect("ret void");
 
   if let Err(err) = module.verify() {
