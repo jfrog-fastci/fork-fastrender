@@ -13,7 +13,7 @@ semantic-ops = ["hir-js/semantic-ops"]
 serde = ["dep:serde", "diagnostics/serde", "hir-js/serde", "types-ts-interned/serde"]
 serde-json = ["dep:serde_json"]
 fuzzing = ["hir-js/fuzzing", "types-ts-interned/fuzzing", "types-ts-interned/serde-json"]
-resolve = ["serde-json"]
+resolve = ["serde-json", "dep:serde"]
 tsconfig = ["dep:globset", "dep:json5", "dep:walkdir", "dep:serde"]
 
 [dependencies]

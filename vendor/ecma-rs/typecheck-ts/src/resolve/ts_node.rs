@@ -5,9 +5,13 @@
 //! reused by real hosts (CLI/disk) and in-memory tests.
 
 use diagnostics::paths::normalize_ts_path_into;
+use serde::de::{MapAccess, SeqAccess, Visitor};
+use serde::Deserialize;
 use serde_json::{Map, Value};
 use std::borrow::Cow;
 use std::collections::HashMap;
+use std::fmt;
+use std::ops::Deref;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -136,13 +140,130 @@ impl ResolveFs for RealFs {
   }
 }
 
+#[derive(Clone, Debug)]
+struct PackageJson {
+  value: Value,
+  types_versions: Option<Vec<(String, Value)>>,
+}
+
+impl Deref for PackageJson {
+  type Target = Value;
+
+  fn deref(&self) -> &Self::Target {
+    &self.value
+  }
+}
+
+#[derive(Debug, Deserialize)]
+struct PackageJsonTypesVersions {
+  #[serde(
+    rename = "typesVersions",
+    default,
+    deserialize_with = "deserialize_optional_ordered_object",
+  )]
+  types_versions: Option<Vec<(String, Value)>>,
+}
+
+fn deserialize_optional_ordered_object<'de, D>(
+  deserializer: D,
+) -> Result<Option<Vec<(String, Value)>>, D::Error>
+where
+  D: serde::Deserializer<'de>,
+{
+  struct OrderedObjectVisitor;
+
+  impl<'de> Visitor<'de> for OrderedObjectVisitor {
+    type Value = Option<Vec<(String, Value)>>;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+      formatter.write_str("a JSON object")
+    }
+
+    fn visit_map<M>(self, mut map: M) -> Result<Self::Value, M::Error>
+    where
+      M: MapAccess<'de>,
+    {
+      let mut entries = Vec::new();
+      while let Some((key, value)) = map.next_entry::<String, Value>()? {
+        entries.push((key, value));
+      }
+      Ok(Some(entries))
+    }
+
+    fn visit_none<E>(self) -> Result<Self::Value, E>
+    where
+      E: serde::de::Error,
+    {
+      Ok(None)
+    }
+
+    fn visit_unit<E>(self) -> Result<Self::Value, E>
+    where
+      E: serde::de::Error,
+    {
+      Ok(None)
+    }
+
+    fn visit_bool<E>(self, _v: bool) -> Result<Self::Value, E>
+    where
+      E: serde::de::Error,
+    {
+      Ok(None)
+    }
+
+    fn visit_i64<E>(self, _v: i64) -> Result<Self::Value, E>
+    where
+      E: serde::de::Error,
+    {
+      Ok(None)
+    }
+
+    fn visit_u64<E>(self, _v: u64) -> Result<Self::Value, E>
+    where
+      E: serde::de::Error,
+    {
+      Ok(None)
+    }
+
+    fn visit_f64<E>(self, _v: f64) -> Result<Self::Value, E>
+    where
+      E: serde::de::Error,
+    {
+      Ok(None)
+    }
+
+    fn visit_str<E>(self, _v: &str) -> Result<Self::Value, E>
+    where
+      E: serde::de::Error,
+    {
+      Ok(None)
+    }
+
+    fn visit_string<E>(self, _v: String) -> Result<Self::Value, E>
+    where
+      E: serde::de::Error,
+    {
+      Ok(None)
+    }
+
+    fn visit_seq<A>(self, _seq: A) -> Result<Self::Value, A::Error>
+    where
+      A: SeqAccess<'de>,
+    {
+      Ok(None)
+    }
+  }
+
+  deserializer.deserialize_any(OrderedObjectVisitor)
+}
+
 /// Deterministic resolver implementing TypeScript's Node-style module resolution
 /// (package.json `exports` / `types` / `imports`, extension probing, node_modules).
 #[derive(Clone, Debug)]
 pub struct Resolver<F = RealFs> {
   fs: F,
   options: ResolveOptions,
-  package_json_cache: Arc<Mutex<HashMap<PathBuf, Option<Arc<Value>>>>>,
+  package_json_cache: Arc<Mutex<HashMap<PathBuf, Option<Arc<PackageJson>>>>>,
 }
 
 impl Resolver<RealFs> {
@@ -677,39 +798,32 @@ impl<F: ResolveFs> Resolver<F> {
   fn resolve_types_versions(
     &self,
     package_dir: &str,
-    package_json: &Value,
+    package_json: &PackageJson,
     subpath: &str,
     depth: usize,
     scratch: &mut String,
     resolve_scratch: &mut String,
     conditions: &[&str],
   ) -> Option<PathBuf> {
-    let types_versions = package_json.get("typesVersions")?.as_object()?;
+    let types_versions = package_json.types_versions.as_deref()?;
     if types_versions.is_empty() {
       return None;
     }
 
     let ts_version = self.options.typescript_version;
-    let mut best: Option<(&str, TypesVersionsRangeScore, &Value)> = None;
+    let mut selected: Option<&Value> = None;
     for (range, paths) in types_versions {
-      let Some(score) = types_versions_range_score(range, ts_version) else {
+      if !types_versions_range_matches(range, ts_version) {
         continue;
-      };
+      }
       if paths.as_object().is_none() {
         continue;
       }
-      let replace = match best {
-        None => true,
-        Some((best_range, best_score, _)) => {
-          score.is_better_than(&best_score) || (score == best_score && range.as_str() < best_range)
-        }
-      };
-      if replace {
-        best = Some((range.as_str(), score, paths));
-      }
+      selected = Some(paths);
+      break;
     }
 
-    let (_, _, paths) = best?;
+    let paths = selected?;
     let paths = paths.as_object()?;
     let (targets, star_match) = if let Some(target) = paths.get(subpath) {
       (target, None)
@@ -921,7 +1035,7 @@ impl<F: ResolveFs> Resolver<F> {
     })
   }
 
-  fn package_json(&self, path: &str) -> Option<Arc<Value>> {
+  fn package_json(&self, path: &str) -> Option<Arc<PackageJson>> {
     let path_buf = PathBuf::from(path);
     {
       let cache = self.package_json_cache.lock().unwrap();
@@ -932,7 +1046,14 @@ impl<F: ResolveFs> Resolver<F> {
 
     let parsed = if self.fs.is_file(Path::new(path)) {
       let raw = self.fs.read_to_string(Path::new(path))?;
-      serde_json::from_str::<Value>(&raw).ok().map(Arc::new)
+      let value = serde_json::from_str::<Value>(&raw).ok()?;
+      let types_versions = serde_json::from_str::<PackageJsonTypesVersions>(&raw)
+        .ok()
+        .and_then(|parsed| parsed.types_versions);
+      Some(Arc::new(PackageJson {
+        value,
+        types_versions,
+      }))
     } else {
       None
     };
@@ -954,63 +1075,14 @@ fn push_star_replaced(out: &mut String, template: &str, star: &str) {
   }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct TypesVersionsRangeScore {
-  min: TypeScriptVersion,
-  min_inclusive: bool,
-  max: Option<TypeScriptVersion>,
-  max_inclusive: bool,
-}
-
-impl TypesVersionsRangeScore {
-  fn is_better_than(&self, other: &Self) -> bool {
-    if self.min != other.min {
-      return self.min > other.min;
-    }
-    if self.min_inclusive != other.min_inclusive {
-      // Prefer exclusive lower bounds (`>`) over inclusive (`>=`) when equal.
-      return !self.min_inclusive;
-    }
-
-    match (self.max, other.max) {
-      (Some(_), None) => return true,
-      (None, Some(_)) => return false,
-      (Some(a), Some(b)) => {
-        if a != b {
-          // Prefer smaller upper bounds.
-          return a < b;
-        }
-        if self.max_inclusive != other.max_inclusive {
-          // Prefer exclusive upper bounds (`<`) over inclusive (`<=`) when equal.
-          return !self.max_inclusive;
-        }
-      }
-      (None, None) => {}
-    }
-
-    false
-  }
-}
-
-fn types_versions_range_score(
-  raw: &str,
-  current: TypeScriptVersion,
-) -> Option<TypesVersionsRangeScore> {
+fn types_versions_range_matches(raw: &str, current: TypeScriptVersion) -> bool {
   let raw = raw.trim();
   if raw.is_empty() || raw == "*" {
-    return Some(TypesVersionsRangeScore {
-      min: TypeScriptVersion::new(0, 0, 0),
-      min_inclusive: true,
-      max: None,
-      max_inclusive: false,
-    });
+    return true;
   }
   if raw.contains("||") {
-    return None;
+    return false;
   }
-
-  let mut min: Option<(TypeScriptVersion, bool)> = None;
-  let mut max: Option<(TypeScriptVersion, bool)> = None;
 
   for token in raw.split_whitespace() {
     let (op, version_str) = token
@@ -1021,7 +1093,9 @@ fn types_versions_range_score(
       .or_else(|| token.strip_prefix('<').map(|s| (RangeOp::Lt, s)))
       .or_else(|| token.strip_prefix('=').map(|s| (RangeOp::Eq, s)))
       .unwrap_or((RangeOp::Eq, token));
-    let version = parse_typescript_version(version_str)?;
+    let Some(version) = parse_typescript_version(version_str) else {
+      return false;
+    };
 
     let matches = match op {
       RangeOp::Lt => current < version,
@@ -1031,29 +1105,11 @@ fn types_versions_range_score(
       RangeOp::Eq => current == version,
     };
     if !matches {
-      return None;
-    }
-
-    match op {
-      RangeOp::Gt => update_min(&mut min, version, false),
-      RangeOp::Gte => update_min(&mut min, version, true),
-      RangeOp::Lt => update_max(&mut max, version, false),
-      RangeOp::Lte => update_max(&mut max, version, true),
-      RangeOp::Eq => {
-        update_min(&mut min, version, true);
-        update_max(&mut max, version, true);
-      }
+      return false;
     }
   }
 
-  let (min, min_inclusive) = min.unwrap_or((TypeScriptVersion::new(0, 0, 0), true));
-  let (max, max_inclusive) = max.map_or((None, false), |(v, inclusive)| (Some(v), inclusive));
-  Some(TypesVersionsRangeScore {
-    min,
-    min_inclusive,
-    max,
-    max_inclusive,
-  })
+  true
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1084,32 +1140,6 @@ fn parse_typescript_version(raw: &str) -> Option<TypeScriptVersion> {
     patch_digits.parse::<u32>().ok()?
   };
   Some(TypeScriptVersion::new(major, minor, patch))
-}
-
-fn update_min(min: &mut Option<(TypeScriptVersion, bool)>, next: TypeScriptVersion, inclusive: bool) {
-  match min {
-    None => {
-      *min = Some((next, inclusive));
-    }
-    Some((cur, cur_inclusive)) => {
-      if next > *cur || (next == *cur && !inclusive && *cur_inclusive) {
-        *min = Some((next, inclusive));
-      }
-    }
-  }
-}
-
-fn update_max(max: &mut Option<(TypeScriptVersion, bool)>, next: TypeScriptVersion, inclusive: bool) {
-  match max {
-    None => {
-      *max = Some((next, inclusive));
-    }
-    Some((cur, cur_inclusive)) => {
-      if next < *cur || (next == *cur && !inclusive && *cur_inclusive) {
-        *max = Some((next, inclusive));
-      }
-    }
-  }
 }
 
 fn select_exports_target<'a, 'b>(
@@ -1694,7 +1724,7 @@ mod tests {
     fs.insert("/src/app.ts", "");
     fs.insert(
       "/node_modules/pkg/package.json",
-      r#"{ "typesVersions": { ">=5.0": { "*": ["ts5.0/*"] }, ">=5.1": { "*": ["ts5.1/*"] } } }"#,
+      r#"{ "typesVersions": { ">=5.1": { "*": ["ts5.1/*"] }, ">=5.0": { "*": ["ts5.0/*"] } } }"#,
     );
     fs.insert("/node_modules/pkg/ts5.0/subpath.d.ts", "export {};\n");
     fs.insert("/node_modules/pkg/ts5.1/subpath.d.ts", "export {};\n");
@@ -1710,6 +1740,30 @@ mod tests {
       .resolve(Path::new("/src/app.ts"), "pkg/subpath")
       .expect("typesVersions subpath should resolve");
     assert_eq!(resolved, PathBuf::from("/node_modules/pkg/ts5.1/subpath.d.ts"));
+  }
+
+  #[test]
+  fn selects_first_matching_types_versions_range() {
+    let mut fs = FakeFs::default();
+    fs.insert("/src/app.ts", "");
+    fs.insert(
+      "/node_modules/pkg/package.json",
+      r#"{ "typesVersions": { ">=4.0": { "*": ["ts4/*"] }, ">=5.0": { "*": ["ts5/*"] } } }"#,
+    );
+    fs.insert("/node_modules/pkg/ts4/subpath.d.ts", "export {};\n");
+    fs.insert("/node_modules/pkg/ts5/subpath.d.ts", "export {};\n");
+
+    let resolver = Resolver::with_fs(
+      fs,
+      ResolveOptions {
+        node_modules: true,
+        ..ResolveOptions::default()
+      },
+    );
+    let resolved = resolver
+      .resolve(Path::new("/src/app.ts"), "pkg/subpath")
+      .expect("typesVersions subpath should resolve");
+    assert_eq!(resolved, PathBuf::from("/node_modules/pkg/ts4/subpath.d.ts"));
   }
 
   #[test]
