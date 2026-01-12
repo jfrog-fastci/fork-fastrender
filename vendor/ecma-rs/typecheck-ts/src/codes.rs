@@ -452,6 +452,40 @@ pub const JSX_CHILDREN_SPECIFIED_TWICE: Code = Code::new(
   &[],
 );
 
+/// TS2669: Global augmentations can only appear in specific declaration contexts.
+///
+/// TypeScript reports this diagnostic when a `global { ... }`/`declare global { ... }`
+/// augmentation is not directly nested in an external module or an ambient module
+/// declaration body.
+///
+/// - Primary span: the `global` keyword of the offending augmentation.
+/// - Labels: primary only.
+/// - Notes: none.
+pub const GLOBAL_AUGMENTATION_INVALID_CONTEXT: Code = Code::new(
+  "TS2669",
+  "global augmentation has invalid context",
+  "`global` keyword of the global augmentation",
+  &["primary: `global` keyword"],
+  &[],
+);
+
+/// TS2670: Global augmentations should use the `declare` modifier.
+///
+/// TypeScript reports this diagnostic when a `global { ... }` augmentation appears
+/// outside an already-ambient context. In those cases the augmentation must be
+/// written as `declare global { ... }`.
+///
+/// - Primary span: the `global` keyword of the augmentation.
+/// - Labels: primary only.
+/// - Notes: none.
+pub const GLOBAL_AUGMENTATION_MISSING_DECLARE: Code = Code::new(
+  "TS2670",
+  "global augmentation missing `declare` modifier",
+  "`global` keyword of the global augmentation",
+  &["primary: `global` keyword"],
+  &[],
+);
+
 /// TC1001: Module specifier could not be resolved.
 ///
 /// - Primary span: the module specifier in an import/export statement or a

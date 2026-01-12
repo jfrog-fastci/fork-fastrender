@@ -474,7 +474,9 @@ fn global_augmentation_diagnostics_for(db: &dyn Db, file: FileInput) -> Arc<[Dia
 
   let file_id = file.file_id(db);
   let source = file_text_for(db, file);
+  let file_kind = file.kind(db);
   let is_external_module = sem_ts::module_syntax::ast_has_module_syntax(ast);
+  let is_dts_script = matches!(file_kind, FileKind::Dts) && !is_external_module;
 
   use parse_js::ast::class_or_object::ClassOrObjVal;
   use parse_js::ast::func::FuncBody;
@@ -483,14 +485,22 @@ fn global_augmentation_diagnostics_for(db: &dyn Db, file: FileInput) -> Arc<[Dia
   use parse_js::ast::ts_stmt::{ModuleName, NamespaceBody};
   use parse_js::loc::Loc;
 
-  const MESSAGE: &str =
+  const MESSAGE_TS2669: &str =
     "Augmentations for the global scope can only be directly nested in external modules or ambient module declarations.";
+  const MESSAGE_TS2670: &str =
+    "Augmentations for the global scope should have 'declare' modifier unless they appear in already ambient context.";
 
   #[derive(Clone, Copy)]
   enum ParentKind {
     FileTopLevel,
     AmbientModuleBody,
     Nested,
+  }
+
+  #[derive(Clone, Copy)]
+  struct InspectResult {
+    global_range: TextRange,
+    has_declare: bool,
   }
 
   fn to_range(loc: Loc) -> TextRange {
@@ -500,14 +510,14 @@ fn global_augmentation_diagnostics_for(db: &dyn Db, file: FileInput) -> Arc<[Dia
   fn refine_global_keyword_span(source: &str, span: TextRange) -> TextRange {
     const NEEDLE: &str = "global";
 
-    if (span.end as usize) <= source.len() {
-      if let Some(segment) = source.get(span.start as usize..span.end as usize) {
-        if let Some(idx) = segment.find(NEEDLE) {
-          let start = span.start + idx as u32;
-          let end = start + NEEDLE.len() as u32;
-          if start < end && end <= span.end {
-            return TextRange::new(start, end);
-          }
+    let start = span.start as usize;
+    let end = span.end as usize;
+    if let Some(segment) = source.get(start..end.min(source.len())) {
+      if let Some(idx) = segment.find(NEEDLE) {
+        let start = span.start + idx as u32;
+        let end = start + NEEDLE.len() as u32;
+        if start < end && end <= span.end {
+          return TextRange::new(start, end);
         }
       }
     }
@@ -517,25 +527,155 @@ fn global_augmentation_diagnostics_for(db: &dyn Db, file: FileInput) -> Arc<[Dia
     TextRange::new(start, end)
   }
 
+  fn inspect_global_decl(source: &str, stmt_span: TextRange) -> InspectResult {
+    fn is_ident_start(b: u8) -> bool {
+      b.is_ascii_alphabetic() || b == b'_' || b == b'$'
+    }
+
+    fn is_ident_continue(b: u8) -> bool {
+      is_ident_start(b) || b.is_ascii_digit()
+    }
+
+    fn skip_ws_and_comments(bytes: &[u8], idx: &mut usize) {
+      loop {
+        while *idx < bytes.len() && bytes[*idx].is_ascii_whitespace() {
+          *idx += 1;
+        }
+
+        if *idx + 1 >= bytes.len() {
+          break;
+        }
+
+        // Line comment.
+        if bytes[*idx] == b'/' && bytes[*idx + 1] == b'/' {
+          *idx += 2;
+          while *idx < bytes.len() && bytes[*idx] != b'\n' {
+            *idx += 1;
+          }
+          continue;
+        }
+
+        // Block comment.
+        if bytes[*idx] == b'/' && bytes[*idx + 1] == b'*' {
+          *idx += 2;
+          while *idx + 1 < bytes.len() {
+            if bytes[*idx] == b'*' && bytes[*idx + 1] == b'/' {
+              *idx += 2;
+              break;
+            }
+            *idx += 1;
+          }
+          continue;
+        }
+
+        break;
+      }
+    }
+
+    fn read_ident(bytes: &[u8], idx: &mut usize) -> Option<(usize, usize)> {
+      let start = *idx;
+      if start >= bytes.len() {
+        return None;
+      }
+      if !is_ident_start(bytes[start]) {
+        return None;
+      }
+      let mut end = start + 1;
+      while end < bytes.len() && is_ident_continue(bytes[end]) {
+        end += 1;
+      }
+      *idx = end;
+      Some((start, end))
+    }
+
+    let mut global_range = refine_global_keyword_span(source, stmt_span);
+    let mut has_declare = false;
+
+    let start = stmt_span.start as usize;
+    let end = stmt_span.end as usize;
+    let Some(segment) = source.get(start..end.min(source.len())) else {
+      return InspectResult {
+        global_range,
+        has_declare,
+      };
+    };
+
+    let bytes = segment.as_bytes();
+    let mut idx = 0;
+    skip_ws_and_comments(bytes, &mut idx);
+    let Some((tok1_start, tok1_end)) = read_ident(bytes, &mut idx) else {
+      return InspectResult {
+        global_range,
+        has_declare,
+      };
+    };
+    let tok1 = &segment[tok1_start..tok1_end];
+
+    let mut global_start = tok1_start;
+    let mut global_end = tok1_end;
+
+    if tok1 == "declare" {
+      has_declare = true;
+      skip_ws_and_comments(bytes, &mut idx);
+      if let Some((tok2_start, tok2_end)) = read_ident(bytes, &mut idx) {
+        let tok2 = &segment[tok2_start..tok2_end];
+        if tok2 == "global" {
+          global_start = tok2_start;
+          global_end = tok2_end;
+        } else if let Some(pos) = segment.find("global") {
+          global_start = pos;
+          global_end = pos + "global".len();
+        }
+      }
+    } else if tok1 != "global" {
+      if let Some(pos) = segment.find("global") {
+        global_start = pos;
+        global_end = pos + "global".len();
+      }
+    }
+
+    let candidate = TextRange::new(
+      stmt_span.start + global_start as u32,
+      stmt_span.start + global_end as u32,
+    );
+    if candidate.start < candidate.end && candidate.end <= stmt_span.end {
+      global_range = candidate;
+    }
+
+    InspectResult {
+      global_range,
+      has_declare,
+    }
+  }
+
   fn walk_namespace_body(
     body: &NamespaceBody,
     parent: ParentKind,
     is_external_module: bool,
     file_id: FileId,
     source: &str,
+    ambient: bool,
     diags: &mut Vec<Diagnostic>,
   ) {
     match body {
-      NamespaceBody::Block(stmts) => {
-        walk_stmts(stmts, parent, is_external_module, file_id, source, diags);
-      }
+      NamespaceBody::Block(stmts) => walk_stmts(
+        stmts,
+        parent,
+        is_external_module,
+        file_id,
+        source,
+        ambient,
+        diags,
+      ),
       NamespaceBody::Namespace(inner) => {
+        let inner_ambient = ambient || inner.stx.declare;
         walk_namespace_body(
           &inner.stx.body,
           parent,
           is_external_module,
           file_id,
           source,
+          inner_ambient,
           diags,
         );
       }
@@ -547,6 +687,7 @@ fn global_augmentation_diagnostics_for(db: &dyn Db, file: FileInput) -> Arc<[Dia
     is_external_module: bool,
     file_id: FileId,
     source: &str,
+    ambient: bool,
     diags: &mut Vec<Diagnostic>,
   ) {
     match body {
@@ -556,6 +697,7 @@ fn global_augmentation_diagnostics_for(db: &dyn Db, file: FileInput) -> Arc<[Dia
         is_external_module,
         file_id,
         source,
+        ambient,
         diags,
       ),
       FuncBody::Expression(_) => {}
@@ -567,23 +709,24 @@ fn global_augmentation_diagnostics_for(db: &dyn Db, file: FileInput) -> Arc<[Dia
     is_external_module: bool,
     file_id: FileId,
     source: &str,
+    ambient: bool,
     diags: &mut Vec<Diagnostic>,
   ) {
     for member in members {
       match &member.stx.val {
         ClassOrObjVal::Getter(getter) => {
           if let Some(body) = getter.stx.func.stx.body.as_ref() {
-            walk_func_body(body, is_external_module, file_id, source, diags);
+            walk_func_body(body, is_external_module, file_id, source, ambient, diags);
           }
         }
         ClassOrObjVal::Setter(setter) => {
           if let Some(body) = setter.stx.func.stx.body.as_ref() {
-            walk_func_body(body, is_external_module, file_id, source, diags);
+            walk_func_body(body, is_external_module, file_id, source, ambient, diags);
           }
         }
         ClassOrObjVal::Method(method) => {
           if let Some(body) = method.stx.func.stx.body.as_ref() {
-            walk_func_body(body, is_external_module, file_id, source, diags);
+            walk_func_body(body, is_external_module, file_id, source, ambient, diags);
           }
         }
         ClassOrObjVal::StaticBlock(block) => {
@@ -593,6 +736,7 @@ fn global_augmentation_diagnostics_for(db: &dyn Db, file: FileInput) -> Arc<[Dia
             is_external_module,
             file_id,
             source,
+            ambient,
             diags,
           );
         }
@@ -607,6 +751,7 @@ fn global_augmentation_diagnostics_for(db: &dyn Db, file: FileInput) -> Arc<[Dia
     is_external_module: bool,
     file_id: FileId,
     source: &str,
+    ambient: bool,
     diags: &mut Vec<Diagnostic>,
   ) {
     for stmt in stmts {
@@ -617,12 +762,21 @@ fn global_augmentation_diagnostics_for(db: &dyn Db, file: FileInput) -> Arc<[Dia
             ParentKind::AmbientModuleBody => true,
             ParentKind::Nested => false,
           };
+
+          let stmt_range = to_range(stmt.loc);
+          let inspected = inspect_global_decl(source, stmt_range);
+          let global_range = inspected.global_range;
+
           if !allowed {
-            let stmt_range = to_range(stmt.loc);
-            let global_range = refine_global_keyword_span(source, stmt_range);
-            diags.push(Diagnostic::error(
-              "TS2669",
-              MESSAGE,
+            diags.push(codes::GLOBAL_AUGMENTATION_INVALID_CONTEXT.error(
+              MESSAGE_TS2669,
+              Span::new(file_id, global_range),
+            ));
+          }
+
+          if !inspected.has_declare && !ambient {
+            diags.push(codes::GLOBAL_AUGMENTATION_MISSING_DECLARE.error(
+              MESSAGE_TS2670,
               Span::new(file_id, global_range),
             ));
           }
@@ -633,6 +787,7 @@ fn global_augmentation_diagnostics_for(db: &dyn Db, file: FileInput) -> Arc<[Dia
             is_external_module,
             file_id,
             source,
+            true,
             diags,
           );
         }
@@ -642,12 +797,15 @@ fn global_augmentation_diagnostics_for(db: &dyn Db, file: FileInput) -> Arc<[Dia
               ModuleName::String(_) => ParentKind::AmbientModuleBody,
               ModuleName::Identifier(_) => ParentKind::Nested,
             };
+            let body_ambient =
+              ambient || module.stx.declare || matches!(&module.stx.name, ModuleName::String(_));
             walk_stmts(
               body,
               body_parent,
               is_external_module,
               file_id,
               source,
+              body_ambient,
               diags,
             );
           }
@@ -659,6 +817,7 @@ fn global_augmentation_diagnostics_for(db: &dyn Db, file: FileInput) -> Arc<[Dia
             is_external_module,
             file_id,
             source,
+            ambient || ns.stx.declare,
             diags,
           );
         }
@@ -669,6 +828,7 @@ fn global_augmentation_diagnostics_for(db: &dyn Db, file: FileInput) -> Arc<[Dia
             is_external_module,
             file_id,
             source,
+            ambient,
             diags,
           );
         }
@@ -679,6 +839,7 @@ fn global_augmentation_diagnostics_for(db: &dyn Db, file: FileInput) -> Arc<[Dia
             is_external_module,
             file_id,
             source,
+            ambient,
             diags,
           );
           if let Some(alt) = if_stmt.stx.alternate.as_ref() {
@@ -688,6 +849,7 @@ fn global_augmentation_diagnostics_for(db: &dyn Db, file: FileInput) -> Arc<[Dia
               is_external_module,
               file_id,
               source,
+              ambient,
               diags,
             );
           }
@@ -699,6 +861,7 @@ fn global_augmentation_diagnostics_for(db: &dyn Db, file: FileInput) -> Arc<[Dia
             is_external_module,
             file_id,
             source,
+            ambient,
             diags,
           );
         }
@@ -709,6 +872,7 @@ fn global_augmentation_diagnostics_for(db: &dyn Db, file: FileInput) -> Arc<[Dia
             is_external_module,
             file_id,
             source,
+            ambient,
             diags,
           );
         }
@@ -719,6 +883,7 @@ fn global_augmentation_diagnostics_for(db: &dyn Db, file: FileInput) -> Arc<[Dia
             is_external_module,
             file_id,
             source,
+            ambient,
             diags,
           );
         }
@@ -729,6 +894,7 @@ fn global_augmentation_diagnostics_for(db: &dyn Db, file: FileInput) -> Arc<[Dia
             is_external_module,
             file_id,
             source,
+            ambient,
             diags,
           );
         }
@@ -739,6 +905,7 @@ fn global_augmentation_diagnostics_for(db: &dyn Db, file: FileInput) -> Arc<[Dia
             is_external_module,
             file_id,
             source,
+            ambient,
             diags,
           );
         }
@@ -749,6 +916,7 @@ fn global_augmentation_diagnostics_for(db: &dyn Db, file: FileInput) -> Arc<[Dia
             is_external_module,
             file_id,
             source,
+            ambient,
             diags,
           );
         }
@@ -759,6 +927,7 @@ fn global_augmentation_diagnostics_for(db: &dyn Db, file: FileInput) -> Arc<[Dia
             is_external_module,
             file_id,
             source,
+            ambient,
             diags,
           );
         }
@@ -770,6 +939,7 @@ fn global_augmentation_diagnostics_for(db: &dyn Db, file: FileInput) -> Arc<[Dia
               is_external_module,
               file_id,
               source,
+              ambient,
               diags,
             );
           }
@@ -781,6 +951,7 @@ fn global_augmentation_diagnostics_for(db: &dyn Db, file: FileInput) -> Arc<[Dia
             is_external_module,
             file_id,
             source,
+            ambient,
             diags,
           );
           if let Some(catch) = try_stmt.stx.catch.as_ref() {
@@ -790,6 +961,7 @@ fn global_augmentation_diagnostics_for(db: &dyn Db, file: FileInput) -> Arc<[Dia
               is_external_module,
               file_id,
               source,
+              ambient,
               diags,
             );
           }
@@ -800,13 +972,14 @@ fn global_augmentation_diagnostics_for(db: &dyn Db, file: FileInput) -> Arc<[Dia
               is_external_module,
               file_id,
               source,
+              ambient,
               diags,
             );
           }
         }
         Stmt::FunctionDecl(func_decl) => {
           if let Some(body) = func_decl.stx.function.stx.body.as_ref() {
-            walk_func_body(body, is_external_module, file_id, source, diags);
+            walk_func_body(body, is_external_module, file_id, source, ambient, diags);
           }
         }
         Stmt::ClassDecl(class_decl) => {
@@ -815,6 +988,7 @@ fn global_augmentation_diagnostics_for(db: &dyn Db, file: FileInput) -> Arc<[Dia
             is_external_module,
             file_id,
             source,
+            ambient,
             diags,
           );
         }
@@ -830,6 +1004,7 @@ fn global_augmentation_diagnostics_for(db: &dyn Db, file: FileInput) -> Arc<[Dia
     is_external_module,
     file_id,
     source.as_ref(),
+    is_dts_script,
     &mut diagnostics,
   );
 

@@ -229,6 +229,20 @@ impl<'a> Parser<'a> {
         self.consume(); // skip 'accessor'
         self.stmt(ctx)?
       },
+      // TypeScript global augmentation: `global { ... }`.
+      //
+      // `global` is a contextual keyword, so it lexes as an identifier. Prefer
+      // parsing it as a global augmentation when we're in a top-level-like
+      // statement list (module block or source file) so downstream semantic
+      // passes can report TS2669/TS2670 correctly.
+      TT::Identifier
+        if self.is_typescript()
+          && ctx.top_level
+          && t1.typ == TT::BraceOpen
+          && self.string(t0.loc) == "global" =>
+      {
+        self.global_decl(ctx)?.into_wrapped()
+      }
       // Decorators can appear before class declarations.
       // For TypeScript-style recovery, if decorators are followed by non-class,
       // skip decorators and parse the statement.
@@ -253,12 +267,18 @@ impl<'a> Parser<'a> {
 
   /// Handle declare keyword
   fn declare_stmt(&mut self, ctx: ParseCtx) -> SyntaxResult<Node<Stmt>> {
+    // Keep a span that includes the `declare` keyword so downstream consumers
+    // can recover whether it was written (global augmentations share the same
+    // AST node shape regardless of `declare`).
+    let start = self.checkpoint();
     self.consume(); // consume 'declare'
 
     // Check for "declare global { }" - global is an identifier, not a keyword
     let peek_tok = self.peek();
     if peek_tok.typ == TT::Identifier && self.string(peek_tok.loc) == "global" {
-      return Ok(self.global_decl(ctx)?.wrap(Stmt::GlobalDecl));
+      let mut global = self.global_decl(ctx)?;
+      global.loc = self.since_checkpoint(&start);
+      return Ok(global.wrap(Stmt::GlobalDecl));
     }
 
     let t = self.peek().typ;
