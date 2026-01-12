@@ -113,7 +113,8 @@ fn proxy_typeof_call_and_construct() -> Result<(), VmError> {
     scope.push_root(Value::Object(non_callable_target))?;
     let non_callable_handler = scope.alloc_object()?;
     scope.push_root(Value::Object(non_callable_handler))?;
-    let non_callable_proxy = scope.alloc_proxy(Some(non_callable_target), Some(non_callable_handler))?;
+    let non_callable_proxy =
+      scope.alloc_proxy(Some(non_callable_target), Some(non_callable_handler))?;
     define_global(
       &mut scope,
       global,
@@ -139,7 +140,8 @@ fn proxy_typeof_call_and_construct() -> Result<(), VmError> {
     // Revoked proxies should throw on call/construct.
     let revoked_call_handler = scope.alloc_object()?;
     scope.push_root(Value::Object(revoked_call_handler))?;
-    let revoked_callable_proxy = scope.alloc_proxy(Some(callable_target), Some(revoked_call_handler))?;
+    let revoked_callable_proxy =
+      scope.alloc_proxy(Some(callable_target), Some(revoked_call_handler))?;
     scope.revoke_proxy(revoked_callable_proxy)?;
     define_global(
       &mut scope,
@@ -150,7 +152,8 @@ fn proxy_typeof_call_and_construct() -> Result<(), VmError> {
 
     let revoked_ctor_handler = scope.alloc_object()?;
     scope.push_root(Value::Object(revoked_ctor_handler))?;
-    let revoked_constructable_proxy = scope.alloc_proxy(Some(ctor_target), Some(revoked_ctor_handler))?;
+    let revoked_constructable_proxy =
+      scope.alloc_proxy(Some(ctor_target), Some(revoked_ctor_handler))?;
     scope.revoke_proxy(revoked_constructable_proxy)?;
     define_global(
       &mut scope,

@@ -207,6 +207,8 @@ pub mod pageset;
 pub mod process_limits;
 pub(crate) mod rayon_global;
 pub(crate) mod rayon_init;
+#[cfg(test)]
+pub(crate) mod testing;
 pub mod resource;
 #[path = "ui/select_dropdown.rs"]
 pub mod select_dropdown;

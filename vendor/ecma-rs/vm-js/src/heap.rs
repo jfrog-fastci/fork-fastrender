@@ -4323,7 +4323,6 @@ impl<'a> Scope<'a> {
     let obj = HeapObject::Proxy(JsProxy { target, handler });
     Ok(GcObject(scope.heap.alloc_unchecked(obj, new_bytes)?))
   }
-
   /// Revokes a Proxy exotic object by clearing its target and handler.
   pub fn revoke_proxy(&mut self, proxy: GcObject) -> Result<(), VmError> {
     self.heap.proxy_revoke(proxy)
