@@ -1232,24 +1232,26 @@ pub fn chrome_ui_with_bookmarks(
         menu_open = !menu_open;
       }
 
-      let mut menu_rect: Option<egui::Rect> = None;
-      if menu_open {
-        let open_t = motion.animate_bool(
-          ctx,
-          menu_id.with("popup_open"),
-          true,
-          motion.durations.popup_open,
-        );
-        let open_opacity = open_t.clamp(0.0, 1.0);
+      let open_t = motion.animate_bool(
+        ctx,
+        menu_id.with("popup_open"),
+        menu_open,
+        motion.durations.popup_open,
+      );
+      let open_opacity = open_t.clamp(0.0, 1.0);
 
+      let mut menu_rect: Option<egui::Rect> = None;
+      if menu_open || open_opacity > 0.0 {
         let mut close_menu = false;
         // Anchor the popup menu below the menu button.
         let pos = egui::pos2(menu_button.rect.left(), menu_button.rect.bottom());
         let area = egui::Area::new(menu_popup_id)
           .order(egui::Order::Foreground)
           .fixed_pos(pos)
-          .constrain_to(ctx.screen_rect());
+          .constrain_to(ctx.screen_rect())
+          .interactable(menu_open);
         let inner = area.show(ctx, |ui| {
+          ui.set_enabled(menu_open);
           ui.visuals_mut().override_text_color =
             Some(with_alpha(ui.visuals().text_color(), open_opacity));
           let mut frame = egui::Frame::popup(ui.style());
@@ -1259,7 +1261,7 @@ pub fn chrome_ui_with_bookmarks(
           frame.show(ui, |ui| {
             ui.set_min_width(220.0);
 
-            if ui.input_mut(|i| i.consume_key(Default::default(), egui::Key::Escape)) {
+            if menu_open && ui.input_mut(|i| i.consume_key(Default::default(), egui::Key::Escape)) {
               close_menu = true;
             }
 
@@ -1273,21 +1275,25 @@ pub fn chrome_ui_with_bookmarks(
               !active_url_trim.is_empty(),
               egui::Button::new(toggle_bookmark_label),
             );
-            #[cfg(test)]
-            store_test_rect(ctx, "chrome_menu_item_toggle_bookmark_rect", toggle_bookmark.rect);
-            if toggle_bookmark.clicked() {
+            if menu_open {
+              #[cfg(test)]
+              store_test_rect(ctx, "chrome_menu_item_toggle_bookmark_rect", toggle_bookmark.rect);
+            }
+            if menu_open && toggle_bookmark.clicked() {
               actions.push(ChromeAction::ToggleBookmarkForActiveTab);
               close_menu = true;
             }
 
             let bookmarks_mgr = ui.button("Show bookmarks manager");
-            #[cfg(test)]
-            store_test_rect(
-              ctx,
-              "chrome_menu_item_toggle_bookmarks_manager_rect",
-              bookmarks_mgr.rect,
-            );
-            if bookmarks_mgr.clicked() {
+            if menu_open {
+              #[cfg(test)]
+              store_test_rect(
+                ctx,
+                "chrome_menu_item_toggle_bookmarks_manager_rect",
+                bookmarks_mgr.rect,
+              );
+            }
+            if menu_open && bookmarks_mgr.clicked() {
               actions.push(ChromeAction::ToggleBookmarksManager);
               close_menu = true;
             }
@@ -1296,21 +1302,25 @@ pub fn chrome_ui_with_bookmarks(
 
             ui.label(egui::RichText::new("History").strong());
             let history = ui.button("Show history");
-            #[cfg(test)]
-            store_test_rect(ctx, "chrome_menu_item_toggle_history_rect", history.rect);
-            if history.clicked() {
+            if menu_open {
+              #[cfg(test)]
+              store_test_rect(ctx, "chrome_menu_item_toggle_history_rect", history.rect);
+            }
+            if menu_open && history.clicked() {
               actions.push(ChromeAction::ToggleHistoryPanel);
               close_menu = true;
             }
 
             let clear = ui.button("Clear browsing data…");
-            #[cfg(test)]
-            store_test_rect(
-              ctx,
-              "chrome_menu_item_open_clear_browsing_data_rect",
-              clear.rect,
-            );
-            if clear.clicked() {
+            if menu_open {
+              #[cfg(test)]
+              store_test_rect(
+                ctx,
+                "chrome_menu_item_open_clear_browsing_data_rect",
+                clear.rect,
+              );
+            }
+            if menu_open && clear.clicked() {
               actions.push(ChromeAction::OpenClearBrowsingDataDialog);
               close_menu = true;
             }
@@ -2472,34 +2482,36 @@ pub fn chrome_ui_with_bookmarks(
     }
   }
 
-  if app.chrome.appearance_popup_open {
+  let appearance_popup_id = egui::Id::new("fastr_appearance_popup");
+  let appearance_open_t = motion.animate_bool(
+    ctx,
+    appearance_popup_id.with("popup_open"),
+    app.chrome.appearance_popup_open,
+    motion.durations.popup_open,
+  );
+  let appearance_open_opacity = appearance_open_t.clamp(0.0, 1.0);
+
+  if app.chrome.appearance_popup_open || appearance_open_opacity > 0.0 {
     let Some(button_rect) = appearance_button_rect else {
       app.chrome.appearance_popup_open = false;
       return actions;
     };
 
     let anchor = button_rect.left_bottom() + egui::vec2(0.0, 4.0);
-    let popup_id = egui::Id::new("fastr_appearance_popup");
-    let open_t = motion.animate_bool(
-      ctx,
-      popup_id.with("popup_open"),
-      true,
-      motion.durations.popup_open,
-    );
-    let open_opacity = open_t.clamp(0.0, 1.0);
-
-    let area = egui::Area::new(popup_id)
+    let area = egui::Area::new(appearance_popup_id)
       .order(egui::Order::Foreground)
-      .fixed_pos(anchor);
+      .fixed_pos(anchor)
+      .interactable(app.chrome.appearance_popup_open);
 
     let mut popup_rect: Option<egui::Rect> = None;
     let inner = area.show(ctx, |ui| {
+      ui.set_enabled(app.chrome.appearance_popup_open);
       ui.visuals_mut().override_text_color =
-        Some(with_alpha(ui.visuals().text_color(), open_opacity));
+        Some(with_alpha(ui.visuals().text_color(), appearance_open_opacity));
       let mut frame = egui::Frame::popup(ui.style());
-      frame.fill = with_alpha(frame.fill, open_opacity);
-      frame.stroke.color = with_alpha(frame.stroke.color, open_opacity);
-      frame.shadow.color = with_alpha(frame.shadow.color, open_opacity);
+      frame.fill = with_alpha(frame.fill, appearance_open_opacity);
+      frame.stroke.color = with_alpha(frame.stroke.color, appearance_open_opacity);
+      frame.shadow.color = with_alpha(frame.shadow.color, appearance_open_opacity);
       frame.show(ui, |ui| {
         ui.set_min_width(260.0);
         ui.heading("Appearance");
@@ -2536,16 +2548,18 @@ pub fn chrome_ui_with_bookmarks(
 
     popup_rect = Some(inner.response.rect);
 
-    let clicked_outside = ctx.input(|i| {
-      i.pointer.any_pressed()
-        && i
-          .pointer
-          .interact_pos()
-          .or_else(|| i.pointer.latest_pos())
-          .is_some_and(|pos| !popup_rect.unwrap().contains(pos))
-    });
-    if clicked_outside {
-      app.chrome.appearance_popup_open = false;
+    if app.chrome.appearance_popup_open {
+      let clicked_outside = ctx.input(|i| {
+        i.pointer.any_pressed()
+          && i
+            .pointer
+            .interact_pos()
+            .or_else(|| i.pointer.latest_pos())
+            .is_some_and(|pos| !popup_rect.unwrap().contains(pos))
+      });
+      if clicked_outside {
+        app.chrome.appearance_popup_open = false;
+      }
     }
   }
 
