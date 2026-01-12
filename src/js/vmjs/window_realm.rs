@@ -12995,11 +12995,11 @@ fn alloc_mutation_records_array(
   Ok(array)
 }
 
-/// Allocates an `IntersectionObserverEntry`-shaped object.
+/// Allocates a minimal `IntersectionObserverEntry`-shaped object whose rect fields are real
+/// `DOMRectReadOnly` instances.
 ///
-/// FastRender currently models observer entries as plain objects; tests and future observer
-/// implementations rely on the rect fields being real `DOMRectReadOnly` instances rather than
-/// plain `{x,y,width,height}` objects.
+/// This helper is currently used by the `DOMRectReadOnly` unit tests while the full observer
+/// delivery pipeline is still being wired up.
 #[allow(dead_code)]
 pub(crate) fn alloc_intersection_observer_entry_object(
   scope: &mut Scope<'_>,
