@@ -4705,34 +4705,6 @@ pub(crate) fn new_promise_capability_with_host_and_hooks(
   })
 }
 
-fn get_property_value_with_host(
-  vm: &mut Vm,
-  scope: &mut Scope<'_>,
-  host: &mut dyn VmHost,
-  hooks: &mut dyn VmHostHooks,
-  obj: GcObject,
-  key: PropertyKey,
-  receiver: Value,
-) -> Result<Value, VmError> {
-  let Some(desc) = scope.heap().get_property_with_tick(obj, &key, || vm.tick())? else {
-    return Ok(Value::Undefined);
-  };
-
-  match desc.kind {
-    PropertyKind::Data { value, .. } => Ok(value),
-    PropertyKind::Accessor { get, .. } => {
-      if matches!(get, Value::Undefined) {
-        Ok(Value::Undefined)
-      } else {
-        if !scope.heap().is_callable(get)? {
-          return Err(VmError::TypeError("accessor getter is not callable"));
-        }
-        vm.call_with_host_and_hooks(host, scope, hooks, get, receiver, &[])
-      }
-    }
-  }
-}
-
 /// `SpeciesConstructor(O, defaultConstructor)` abstract operation (ECMA-262).
 ///
 /// Spec: <https://tc39.es/ecma262/#sec-speciesconstructor>
@@ -4754,15 +4726,7 @@ fn species_constructor_with_host_and_hooks(
   let ctor_key_s = scope.alloc_string("constructor")?;
   scope.push_root(Value::String(ctor_key_s))?;
   let ctor_key = PropertyKey::from_string(ctor_key_s);
-  let c = get_property_value_with_host(
-    vm,
-    &mut scope,
-    host,
-    hooks,
-    obj,
-    ctor_key,
-    Value::Object(obj),
-  )?;
+  let c = scope.get_with_host_and_hooks(vm, host, hooks, obj, ctor_key, Value::Object(obj))?;
   let c = scope.push_root(c)?;
 
   // 2. If C is undefined, return defaultConstructor.
@@ -4777,15 +4741,7 @@ fn species_constructor_with_host_and_hooks(
 
   // 4. Let S be ? Get(C, @@species).
   let species_key = PropertyKey::from_symbol(intr.well_known_symbols().species);
-  let s = get_property_value_with_host(
-    vm,
-    &mut scope,
-    host,
-    hooks,
-    c_obj,
-    species_key,
-    Value::Object(c_obj),
-  )?;
+  let s = scope.get_with_host_and_hooks(vm, host, hooks, c_obj, species_key, Value::Object(c_obj))?;
   let s = scope.push_root(s)?;
 
   // 5. If S is either undefined or null, return defaultConstructor.
