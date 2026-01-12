@@ -3,7 +3,8 @@ use inkwell::targets::TargetMachine;
 use llvm_sys::core::{
   LLVMAddFunction, LLVMAddGlobal, LLVMAddIncoming, LLVMAppendBasicBlockInContext, LLVMBuildAnd, LLVMBuildBr,
   LLVMBuildCall2, LLVMBuildCondBr, LLVMBuildICmp, LLVMBuildLoad2, LLVMBuildPhi, LLVMBuildRetVoid, LLVMConstInt,
-  LLVMCountBasicBlocks, LLVMCountIncoming, LLVMCountParamTypes, LLVMCreateBuilderInContext, LLVMDisposeBuilder,
+  LLVMCountBasicBlocks, LLVMCountIncoming, LLVMCountParamTypes, LLVMCreateBuilderInContext, LLVMDeleteBasicBlock,
+  LLVMDisposeBuilder,
   LLVMDisposeMessage, LLVMFunctionType, LLVMGetBasicBlockParent, LLVMGetBasicBlockTerminator, LLVMGetConstOpcode,
   LLVMGetFirstBasicBlock, LLVMGetFirstFunction, LLVMGetFirstInstruction, LLVMGetGC, LLVMGetIncomingBlock,
   LLVMGetIncomingValue, LLVMGetInitializer, LLVMGetInstructionOpcode, LLVMGetInstructionParent, LLVMGetIntTypeWidth,
@@ -117,6 +118,21 @@ pub fn ensure_gc_safepoint_poll_decl(module: &Module<'_>) -> Result<(), PassErro
           name: "gc.safepoint_poll".to_string(),
         });
       }
+
+      // `place-safepoints` only inserts polls when `gc.safepoint_poll` is a declaration (has no
+      // body). In debug builds/tests we may have defined a weak stub body after a previous run, so
+      // strip any existing blocks here to ensure poll insertion remains effective.
+      let mut bb = LLVMGetFirstBasicBlock(existing);
+      while !bb.is_null() {
+        let next = LLVMGetNextBasicBlock(bb);
+        LLVMDeleteBasicBlock(bb);
+        bb = next;
+      }
+
+      // If a previous run defined a weak stub body, it likely used a definition-only linkage
+      // (e.g. `weak`), which becomes invalid once we strip the body. Normalize to a plain external
+      // declaration.
+      LLVMSetLinkage(existing, LLVMLinkage::LLVMExternalLinkage);
     } else {
       let ctx = LLVMGetModuleContext(module.as_mut_ptr());
       let void_ty = LLVMVoidTypeInContext(ctx);

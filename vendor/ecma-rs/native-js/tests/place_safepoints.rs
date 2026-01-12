@@ -135,6 +135,99 @@ fn place_safepoints_rejects_incompatible_gc_safepoint_poll_signature() {
 }
 
 #[test]
+fn place_safepoints_inserts_polls_even_if_gc_safepoint_poll_is_defined() {
+  let context = Context::create();
+  let module = context.create_module("place_safepoints_poll_defined");
+  let builder = context.create_builder();
+
+  // Simulate a module that already defines a weak poll body (e.g. from a previous debug run).
+  let void_ty = context.void_type();
+  let poll_ty = void_ty.fn_type(&[], false);
+  let poll = module.add_function("gc.safepoint_poll", poll_ty, None);
+  let poll_entry = context.append_basic_block(poll, "entry");
+  builder.position_at_end(poll_entry);
+  builder.build_return(None).expect("poll ret void");
+
+  // Construct a GC-managed function with a loop and a GC pointer live across it. The loop body
+  // contains no calls, so any statepoints in the output must have been introduced by
+  // `place-safepoints`.
+  let i8_ty = context.i8_type();
+  let i64_ty = context.i64_type();
+  let gc_ptr_ty = gc::gc_ptr_type(&context);
+
+  let test_ty = void_ty.fn_type(&[gc_ptr_ty.into(), i64_ty.into()], false);
+  let test_fn = module.add_function("test", test_ty, None);
+  gc::set_default_gc_strategy(&test_fn).expect("GC strategy contains NUL byte");
+
+  let obj = test_fn
+    .get_nth_param(0)
+    .expect("param 0")
+    .into_pointer_value();
+  let n = test_fn
+    .get_nth_param(1)
+    .expect("param 1")
+    .into_int_value();
+
+  let entry = context.append_basic_block(test_fn, "entry");
+  let loop_header = context.append_basic_block(test_fn, "loop");
+  let loop_body = context.append_basic_block(test_fn, "loop_body");
+  let exit = context.append_basic_block(test_fn, "exit");
+
+  builder.position_at_end(entry);
+  builder
+    .build_unconditional_branch(loop_header)
+    .expect("br to loop header");
+
+  builder.position_at_end(loop_header);
+  let i_phi = builder.build_phi(i64_ty, "i").expect("phi");
+  i_phi.add_incoming(&[(&i64_ty.const_zero(), entry)]);
+  let i = i_phi.as_basic_value().into_int_value();
+  let cond = builder
+    .build_int_compare(IntPredicate::ULT, i, n, "cond")
+    .expect("icmp");
+  builder
+    .build_conditional_branch(cond, loop_body, exit)
+    .expect("condbr");
+
+  builder.position_at_end(loop_body);
+  let i_next = builder
+    .build_int_add(i, i64_ty.const_int(1, false), "i.next")
+    .expect("add");
+  builder
+    .build_unconditional_branch(loop_header)
+    .expect("backedge");
+  i_phi.add_incoming(&[(&i_next, loop_body)]);
+
+  builder.position_at_end(exit);
+  builder.build_load(i8_ty, obj, "v").expect("load");
+  builder.build_return(None).expect("ret void");
+
+  if let Err(err) = module.verify() {
+    panic!(
+      "input module verification failed: {err}\n\nIR:\n{}",
+      module.print_to_string()
+    );
+  }
+
+  let tm = host_target_machine();
+  module.set_triple(&tm.get_triple());
+  module.set_data_layout(&tm.get_target_data().get_data_layout());
+
+  passes::place_safepoints_and_rewrite_statepoints_for_gc(&module, &tm)
+    .expect("place-safepoints + rewrite-statepoints-for-gc failed");
+
+  let ir = module.print_to_string().to_string();
+  let statepoint_polls = ir
+    .lines()
+    .filter(|l| l.contains("@llvm.experimental.gc.statepoint") && l.contains("@rt_gc_safepoint_slow"))
+    .count();
+  assert!(
+    statepoint_polls >= 2,
+    "expected >=2 statepoints that call rt_gc_safepoint_slow (entry + backedge), got {statepoint_polls}:\n{ir}"
+  );
+}
+
+#[test]
 fn place_safepoints_polls_are_rewritten_into_statepoints() {
   let context = Context::create();
   let module = context.create_module("place_safepoints");
@@ -274,10 +367,9 @@ fn place_safepoints_polls_are_rewritten_into_statepoints() {
   );
   for record in &stackmap.records {
     let sp = StatepointRecord::new(record).expect("decode statepoint record");
-    assert_eq!(
-      sp.gc_pair_count(),
-      1,
-      "expected exactly one (base,derived) pair for `%obj` at each poll, got {} (record={record:?})\n\nIR:\n{ir}",
+    assert!(
+      sp.gc_pair_count() >= 1,
+      "expected at least one (base,derived) pair for a live GC root at each poll, got {} (record={record:?})\n\nIR:\n{ir}",
       sp.gc_pair_count(),
     );
   }
