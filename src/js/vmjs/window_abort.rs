@@ -43,6 +43,11 @@ const CONTROLLER_SIGNAL_INTERNAL_KEY: &str = "__fastrender_abort_controller_sign
 /// `EventTarget.dispatchEvent` becomes spec-correct (WebIDL conversion), the event argument must be
 /// a real `Event` object rather than a duck-typed `{ type: "abort" }` plain object.
 const SIGNAL_EVENT_CTOR_INTERNAL_KEY: &str = "__fastrender_abort_signal_event_ctor";
+/// Internal abort algorithm list used by `EventTarget.addEventListener(..., { signal })`.
+///
+/// This approximates the WHATWG DOM "abort algorithms" concept: when a signal is aborted, each
+/// stored algorithm is invoked *before* the `abort` event is dispatched.
+const SIGNAL_ABORT_ALGORITHMS_KEY: &str = "__fastrender_abort_algorithms";
 /// Hard cap on how many signals `AbortSignal.any(signals)` will consume from the provided iterable.
 ///
 /// This is a hostile-input guardrail: the `signals` argument is specified as a WebIDL `sequence`,
@@ -293,6 +298,59 @@ fn abort_signal(
     scope, signal_obj, "reason", reason, /* writable */ false,
   )?;
 
+  // Run abort algorithms *before* dispatching the `abort` event.
+  //
+  // This matches the WHATWG DOM ordering: the abort algorithms (which, for EventTarget listeners,
+  // remove `{ signal }` listeners) must run before user code observing the `abort` event.
+  let abort_algorithms = get_own_data_prop(scope, signal_obj, SIGNAL_ABORT_ALGORITHMS_KEY)?;
+  if let Value::Object(list_obj) = abort_algorithms {
+    // Read the stored list length. This is managed by the `addEventListener({signal})` integration.
+    let length = match get_own_data_prop(scope, list_obj, "length")? {
+      Value::Number(n) if n.is_finite() && n >= 0.0 => n as usize,
+      _ => 0,
+    };
+
+    for idx in 0..length {
+      let key = alloc_key(scope, &idx.to_string())?;
+      let Some(func) = scope
+        .heap()
+        .object_get_own_data_property_value(list_obj, &key)?
+      else {
+        continue;
+      };
+      if !scope.heap().is_callable(func).unwrap_or(false) {
+        continue;
+      }
+
+      // Abort algorithms must not make abort() throw; swallow ordinary exceptions. Termination is
+      // a host-enforced safety condition and must still propagate.
+      if let Err(err) = vm.call_with_host_and_hooks(host, scope, host_hooks, func, Value::Undefined, &[]) {
+        if matches!(err, VmError::Termination(_)) {
+          return Err(err);
+        }
+      }
+    }
+
+    // Clear the algorithm list to release references and ensure abort is one-shot.
+    for idx in 0..length {
+      let key = alloc_key(scope, &idx.to_string())?;
+      let _ = scope.ordinary_delete(list_obj, key)?;
+    }
+    let length_key = alloc_key(scope, "length")?;
+    scope.define_property(
+      list_obj,
+      length_key,
+      PropertyDescriptor {
+        enumerable: false,
+        configurable: false,
+        kind: PropertyKind::Data {
+          value: Value::Number(0.0),
+          writable: true,
+        },
+      },
+    )?;
+  }
+
   // Dispatch the `abort` event and call `onabort`.
   if dispatch_event {
     let ev = create_abort_event(vm, scope, host, host_hooks, signal_obj)?;
@@ -305,7 +363,7 @@ fn abort_signal(
     if scope.heap().is_callable(dispatch_fn).unwrap_or(false) {
       // Ignore the return value; for AbortSignal it is always used for notification, not for
       // cancelation.
-      let _ = vm.call_with_host_and_hooks(
+      let dispatch_res = vm.call_with_host_and_hooks(
         host,
         scope,
         host_hooks,
@@ -313,12 +371,17 @@ fn abort_signal(
         Value::Object(signal_obj),
         &[ev],
       );
+      if let Err(err) = dispatch_res {
+        if matches!(err, VmError::Termination(_)) {
+          return Err(err);
+        }
+      }
     }
 
     let onabort = get_own_data_prop(scope, signal_obj, "onabort")?;
     if scope.heap().is_callable(onabort).unwrap_or(false) {
       // Like DOM event dispatch, exceptions from event handlers should not make abort() throw.
-      let _ = vm.call_with_host_and_hooks(
+      let onabort_res = vm.call_with_host_and_hooks(
         host,
         scope,
         host_hooks,
@@ -326,6 +389,11 @@ fn abort_signal(
         Value::Object(signal_obj),
         &[ev],
       );
+      if let Err(err) = onabort_res {
+        if matches!(err, VmError::Termination(_)) {
+          return Err(err);
+        }
+      }
     }
   }
 

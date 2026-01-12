@@ -2379,6 +2379,17 @@ const EVENT_HANDLER_EVENT_TYPE_SLOT: usize = 3;
 pub(crate) const EVENT_TARGET_HOST_TAG: u64 = u64::from_be_bytes(*b"EVTARGET");
 const EVENT_TARGET_BRAND_KEY: &str = "__fastrender_event_target";
 const EVENT_TARGET_PARENT_KEY: &str = "__fastrender_event_target_parent";
+const ABORT_SIGNAL_BRAND_KEY: &str = "__fastrender_abort_signal";
+// Internal abort algorithm list used by `addEventListener(..., { signal })`.
+const ABORT_SIGNAL_ABORT_ALGORITHMS_KEY: &str = "__fastrender_abort_algorithms";
+const MAX_ABORT_SIGNAL_ABORT_ALGORITHMS: usize = 1024;
+
+// Internal mapping stored on EventTarget wrappers for `{ signal }`-registered listeners so
+// `removeEventListener` / `{ once: true }` cleanup can remove the associated abort algorithm.
+const SIGNAL_LISTENER_MAP_KEY: &str = "__fastrender_signal_listener_map";
+const SIGNAL_LISTENER_MAP_ENTRY_SIGNAL_ID_KEY: &str = "signal_id";
+const SIGNAL_LISTENER_MAP_ENTRY_ABORT_FUNC_KEY: &str = "abort_func";
+
 const DOM_PARSER_BRAND_KEY: &str = "__fastrender_dom_parser";
 const DOM_PARSER_PARSE_FROM_STRING_DOCUMENT_SLOT: usize = 0;
 const NODE_ID_KEY: &str = "__fastrender_node_id";
@@ -18367,6 +18378,314 @@ impl webidl_vm_js::WebIdlBindingsHost for WindowRealmWebIdlBindingsHost {
   ) -> Result<Value, VmError> {
     Err(VmError::Unimplemented("WebIDL host constructor dispatch not implemented"))
   }
+
+}
+struct SignalListenerMapEntry {
+  map_obj: GcObject,
+  entry_key: PropertyKey,
+  signal_id: u64,
+  abort_func: GcObject,
+}
+
+fn get_or_create_signal_listener_map(
+  scope: &mut Scope<'_>,
+  target_obj: GcObject,
+) -> Result<GcObject, VmError> {
+  let key = alloc_key(scope, SIGNAL_LISTENER_MAP_KEY)?;
+  if let Some(Value::Object(obj)) = scope.heap().object_get_own_data_property_value(target_obj, &key)?
+  {
+    return Ok(obj);
+  }
+
+  let map_obj = scope.alloc_object()?;
+  scope.push_root(Value::Object(map_obj))?;
+  scope.define_property(
+    target_obj,
+    key,
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: false,
+      kind: PropertyKind::Data {
+        value: Value::Object(map_obj),
+        writable: false,
+      },
+    },
+  )?;
+  Ok(map_obj)
+}
+
+fn signal_listener_map_entry_key(
+  scope: &mut Scope<'_>,
+  type_: &str,
+  listener_id: web_events::ListenerId,
+  capture: bool,
+) -> Result<PropertyKey, VmError> {
+  let key = format!("{type_}:{id}:{capture}", id = listener_id.get());
+  let key_s = scope.alloc_string(&key)?;
+  scope.push_root(Value::String(key_s))?;
+  Ok(PropertyKey::from_string(key_s))
+}
+
+fn signal_listener_map_set_entry(
+  scope: &mut Scope<'_>,
+  target_obj: GcObject,
+  type_: &str,
+  listener_id: web_events::ListenerId,
+  capture: bool,
+  signal_id: u64,
+  abort_func: GcObject,
+) -> Result<(), VmError> {
+  let map_obj = get_or_create_signal_listener_map(scope, target_obj)?;
+  scope.push_root(Value::Object(map_obj))?;
+
+  let entry_obj = scope.alloc_object()?;
+  scope.push_root(Value::Object(entry_obj))?;
+
+  let signal_id_s = scope.alloc_string(&signal_id.to_string())?;
+  scope.push_root(Value::String(signal_id_s))?;
+
+  let signal_id_key = alloc_key(scope, SIGNAL_LISTENER_MAP_ENTRY_SIGNAL_ID_KEY)?;
+  scope.define_property(entry_obj, signal_id_key, data_desc(Value::String(signal_id_s)))?;
+
+  let abort_func_key = alloc_key(scope, SIGNAL_LISTENER_MAP_ENTRY_ABORT_FUNC_KEY)?;
+  scope.define_property(entry_obj, abort_func_key, data_desc(Value::Object(abort_func)))?;
+
+  let entry_key = signal_listener_map_entry_key(scope, type_, listener_id, capture)?;
+  scope.define_property(map_obj, entry_key, data_desc(Value::Object(entry_obj)))?;
+  Ok(())
+}
+
+fn signal_listener_map_get_entry(
+  scope: &mut Scope<'_>,
+  target_obj: GcObject,
+  type_: &str,
+  listener_id: web_events::ListenerId,
+  capture: bool,
+) -> Result<Option<SignalListenerMapEntry>, VmError> {
+  let map_key = alloc_key(scope, SIGNAL_LISTENER_MAP_KEY)?;
+  let Some(Value::Object(map_obj)) = scope.heap().object_get_own_data_property_value(target_obj, &map_key)?
+  else {
+    return Ok(None);
+  };
+
+  let entry_key = signal_listener_map_entry_key(scope, type_, listener_id, capture)?;
+  let Some(Value::Object(entry_obj)) =
+    scope.heap().object_get_own_data_property_value(map_obj, &entry_key)?
+  else {
+    return Ok(None);
+  };
+
+  let signal_id_key = alloc_key(scope, SIGNAL_LISTENER_MAP_ENTRY_SIGNAL_ID_KEY)?;
+  let signal_id_v = scope
+    .heap()
+    .object_get_own_data_property_value(entry_obj, &signal_id_key)?
+    .unwrap_or(Value::Undefined);
+  let signal_id = match signal_id_v {
+    Value::Number(n) if n.is_finite() && n >= 0.0 => n as u64,
+    Value::String(s) => scope
+      .heap()
+      .get_string(s)?
+      .to_utf8_lossy()
+      .parse::<u64>()
+      .map_err(|_| VmError::InvariantViolation("signal listener map has invalid signal id"))?,
+    _ => return Ok(None),
+  };
+
+  let abort_func_key = alloc_key(scope, SIGNAL_LISTENER_MAP_ENTRY_ABORT_FUNC_KEY)?;
+  let abort_func_v = scope
+    .heap()
+    .object_get_own_data_property_value(entry_obj, &abort_func_key)?
+    .unwrap_or(Value::Undefined);
+  let Value::Object(abort_func) = abort_func_v else {
+    return Ok(None);
+  };
+
+  Ok(Some(SignalListenerMapEntry {
+    map_obj,
+    entry_key,
+    signal_id,
+    abort_func,
+  }))
+}
+
+fn signal_listener_map_delete_entry(
+  scope: &mut Scope<'_>,
+  target_obj: GcObject,
+  type_: &str,
+  listener_id: web_events::ListenerId,
+  capture: bool,
+) -> Result<(), VmError> {
+  let Some(entry) = signal_listener_map_get_entry(scope, target_obj, type_, listener_id, capture)? else {
+    return Ok(());
+  };
+  let _ = scope.ordinary_delete(entry.map_obj, entry.entry_key)?;
+  Ok(())
+}
+
+fn abort_signal_get_or_create_abort_algorithms_list(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  signal_obj: GcObject,
+) -> Result<GcObject, VmError> {
+  let key = alloc_key(scope, ABORT_SIGNAL_ABORT_ALGORITHMS_KEY)?;
+  if let Some(Value::Object(obj)) = scope.heap().object_get_own_data_property_value(signal_obj, &key)?
+  {
+    return Ok(obj);
+  }
+
+  let array = scope.alloc_array(0)?;
+  scope.push_root(Value::Object(array))?;
+  if let Some(intrinsics) = vm.intrinsics() {
+    scope
+      .heap_mut()
+      .object_set_prototype(array, Some(intrinsics.array_prototype()))?;
+  }
+
+  scope.define_property(
+    signal_obj,
+    key,
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: false,
+      kind: PropertyKind::Data {
+        value: Value::Object(array),
+        writable: false,
+      },
+    },
+  )?;
+
+  Ok(array)
+}
+
+fn abort_algorithms_list_len(scope: &mut Scope<'_>, list_obj: GcObject) -> Result<usize, VmError> {
+  let length_key = alloc_key(scope, "length")?;
+  Ok(
+    match scope
+      .heap()
+      .object_get_own_data_property_value(list_obj, &length_key)?
+    {
+      Some(Value::Number(n)) if n.is_finite() && n >= 0.0 => n as usize,
+      _ => 0,
+    },
+  )
+}
+
+fn abort_algorithms_list_set_len(
+  scope: &mut Scope<'_>,
+  list_obj: GcObject,
+  len: usize,
+) -> Result<(), VmError> {
+  let length_key = alloc_key(scope, "length")?;
+  scope.define_property(
+    list_obj,
+    length_key,
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: false,
+      kind: PropertyKind::Data {
+        value: Value::Number(len as f64),
+        writable: true,
+      },
+    },
+  )?;
+  Ok(())
+}
+
+fn abort_signal_push_abort_algorithm(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  signal_obj: GcObject,
+  abort_func: GcObject,
+) -> Result<bool, VmError> {
+  let list_obj = abort_signal_get_or_create_abort_algorithms_list(vm, scope, signal_obj)?;
+  let len = abort_algorithms_list_len(scope, list_obj)?;
+  if len >= MAX_ABORT_SIGNAL_ABORT_ALGORITHMS {
+    // Hostile-input guardrail: stop the list from growing without bound.
+    return Ok(false);
+  }
+
+  let key = alloc_key(scope, &len.to_string())?;
+  scope.define_property(list_obj, key, data_desc(Value::Object(abort_func)))?;
+  abort_algorithms_list_set_len(scope, list_obj, len + 1)?;
+  Ok(true)
+}
+
+fn abort_signal_remove_abort_algorithm(
+  scope: &mut Scope<'_>,
+  signal_obj: GcObject,
+  abort_func: GcObject,
+) -> Result<(), VmError> {
+  let key = alloc_key(scope, ABORT_SIGNAL_ABORT_ALGORITHMS_KEY)?;
+  let Some(Value::Object(list_obj)) = scope.heap().object_get_own_data_property_value(signal_obj, &key)?
+  else {
+    return Ok(());
+  };
+
+  let len = abort_algorithms_list_len(scope, list_obj)?;
+  if len == 0 {
+    return Ok(());
+  }
+
+  let mut found_idx: Option<usize> = None;
+  for idx in 0..len {
+    let idx_key = alloc_key(scope, &idx.to_string())?;
+    let value = scope
+      .heap()
+      .object_get_own_data_property_value(list_obj, &idx_key)?
+      .unwrap_or(Value::Undefined);
+    if value == Value::Object(abort_func) {
+      found_idx = Some(idx);
+      break;
+    }
+  }
+
+  let Some(found_idx) = found_idx else {
+    return Ok(());
+  };
+
+  // Preserve order: shift entries down and update length.
+  for idx in found_idx..(len - 1) {
+    let next_key = alloc_key(scope, &(idx + 1).to_string())?;
+    let next_value = scope
+      .heap()
+      .object_get_own_data_property_value(list_obj, &next_key)?
+      .unwrap_or(Value::Undefined);
+    let cur_key = alloc_key(scope, &idx.to_string())?;
+    scope.define_property(list_obj, cur_key, data_desc(next_value))?;
+  }
+
+  let last_key = alloc_key(scope, &(len - 1).to_string())?;
+  let _ = scope.ordinary_delete(list_obj, last_key)?;
+  abort_algorithms_list_set_len(scope, list_obj, len - 1)?;
+  Ok(())
+}
+
+fn cleanup_abort_algorithm_for_mapping_if_listener_removed(
+  scope: &mut Scope<'_>,
+  registry: &web_events::EventListenerRegistry,
+  target_id: web_events::EventTargetId,
+  target_obj: GcObject,
+  type_: &str,
+  listener_id: web_events::ListenerId,
+  capture: bool,
+) -> Result<(), VmError> {
+  let Some(entry) = signal_listener_map_get_entry(scope, target_obj, type_, listener_id, capture)? else {
+    return Ok(());
+  };
+
+  if registry.has_listener(target_id, type_, listener_id, capture) {
+    return Ok(());
+  }
+
+  let signal_obj = registry.opaque_target_object(scope.heap(), entry.signal_id);
+  if let Some(signal_obj) = signal_obj {
+    if is_branded_abort_signal(scope, signal_obj)? {
+      abort_signal_remove_abort_algorithm(scope, signal_obj, entry.abort_func)?;
+    }
+  }
+
+  let _ = scope.ordinary_delete(entry.map_obj, entry.entry_key)?;
+  Ok(())
 }
 
 /// [`web_events::EventListenerInvoker`] that calls `addEventListener` callbacks registered inside a
@@ -19656,6 +19975,29 @@ impl<Host: WindowRealmHost + 'static> web_events::EventListenerInvoker
       }
     }) {
       let _ = remove_listener_root_if_unused(&mut scope, document_obj, registry, listener_id, None);
+
+      // Best-effort cleanup: if this was a `{ once: true }` listener registered with `{ signal }`,
+      // remove its abort algorithm from the signal so it doesn't leak until abort.
+      if let (Some(target_id), Value::Object(target_obj)) = (event.current_target, current_target) {
+        let _ = cleanup_abort_algorithm_for_mapping_if_listener_removed(
+          &mut scope,
+          registry,
+          target_id,
+          target_obj,
+          &event.type_,
+          listener_id,
+          /* capture */ true,
+        );
+        let _ = cleanup_abort_algorithm_for_mapping_if_listener_removed(
+          &mut scope,
+          registry,
+          target_id,
+          target_obj,
+          &event.type_,
+          listener_id,
+          /* capture */ false,
+        );
+      }
     }
 
     Ok(())
@@ -20099,6 +20441,30 @@ impl web_events::EventListenerInvoker for VmJsDomEventInvoker<'_, '_> {
       self.report_listener_exception(err);
     }
 
+    // Best-effort cleanup: if this listener was removed during dispatch (`{ once: true }`) and was
+    // registered with `{ signal }`, remove its abort algorithm from the signal so it doesn't leak
+    // until abort.
+    if let (Some(target_id), Value::Object(target_obj)) = (event.current_target, current_target) {
+      let _ = cleanup_abort_algorithm_for_mapping_if_listener_removed(
+        scope,
+        registry,
+        target_id,
+        target_obj,
+        &event.type_,
+        listener_id,
+        /* capture */ true,
+      );
+      let _ = cleanup_abort_algorithm_for_mapping_if_listener_removed(
+        scope,
+        registry,
+        target_id,
+        target_obj,
+        &event.type_,
+        listener_id,
+        /* capture */ false,
+      );
+    }
+
     // Ensure cancellation/propagation flags set via the JS `Event` instance are reflected onto the
     // shared Rust `Event` so the dispatcher can observe them even when no host-side
     // `ActiveEventStack` is installed.
@@ -20214,6 +20580,7 @@ const ABORT_SIGNAL_CLEANUP_TARGET_ID_SLOT: usize = 1;
 const ABORT_SIGNAL_CLEANUP_TYPE_SLOT: usize = 2;
 const ABORT_SIGNAL_CLEANUP_LISTENER_ID_SLOT: usize = 3;
 const ABORT_SIGNAL_CLEANUP_CAPTURE_SLOT: usize = 4;
+const ABORT_SIGNAL_CLEANUP_SIGNAL_ID_SLOT: usize = 5;
 
 pub(crate) fn abort_signal_listener_cleanup_native(
   vm: &mut Vm,
@@ -20323,9 +20690,29 @@ pub(crate) fn abort_signal_listener_cleanup_native(
     _ => false,
   };
 
+  let signal_id = match slots
+    .get(ABORT_SIGNAL_CLEANUP_SIGNAL_ID_SLOT)
+    .copied()
+    .unwrap_or(Value::Undefined)
+  {
+    Value::Number(n) if n.is_finite() && n >= 0.0 => Some(n as u64),
+    Value::String(s) => scope
+      .heap()
+      .get_string(s)
+      .ok()
+      .map(|s| s.to_utf8_lossy())
+      .and_then(|raw| raw.parse::<u64>().ok()),
+    _ => None,
+  };
+
   let Some(data) = vm.user_data_mut::<WindowRealmUserData>() else {
     return Err(VmError::InvariantViolation(
       "AbortSignal cleanup missing WindowRealm user data",
+    ));
+  };
+  let Some(window_obj) = data.window_obj else {
+    return Err(VmError::InvariantViolation(
+      "AbortSignal cleanup missing window object",
     ));
   };
   let Some(document_obj) = data.document_obj else {
@@ -20344,7 +20731,40 @@ pub(crate) fn abort_signal_listener_cleanup_native(
     .events_mut()
     .remove_event_listener(target_id, &type_name, listener_id, capture);
   if removed {
-    remove_listener_root_if_unused(scope, document_obj, dom.events(), listener_id, None)?;
+    let (roots_owner_obj, target_for_owner) = match target_id {
+      web_events::EventTargetId::Opaque(id) => (
+        dom.events().opaque_target_object(scope.heap(), id).unwrap_or(document_obj),
+        Some(target_id),
+      ),
+      _ => (document_obj, None),
+    };
+    remove_listener_root_if_unused(scope, roots_owner_obj, dom.events(), listener_id, target_for_owner)?;
+  }
+
+  // Best-effort cleanup: delete the target's `{ signal }` mapping entry, if it still matches this
+  // abort algorithm's signal.
+  let target_obj: Option<GcObject> = match target_id {
+    web_events::EventTargetId::Window => Some(window_obj),
+    web_events::EventTargetId::Document => Some(document_obj),
+    web_events::EventTargetId::Node(node_id) => {
+      get_or_create_node_wrapper(vm, scope, document_obj, Some(&*dom), node_id)
+        .ok()
+        .and_then(|v| match v {
+          Value::Object(obj) => Some(obj),
+          _ => None,
+        })
+    }
+    web_events::EventTargetId::Opaque(id) => dom.events().opaque_target_object(scope.heap(), id),
+  };
+
+  if let (Some(target_obj), Some(expected_signal_id)) = (target_obj, signal_id) {
+    if let Some(entry) =
+      signal_listener_map_get_entry(scope, target_obj, &type_name, listener_id, capture)?
+    {
+      if entry.signal_id == expected_signal_id {
+        let _ = scope.ordinary_delete(entry.map_obj, entry.entry_key)?;
+      }
+    }
   }
 
   Ok(Value::Undefined)
@@ -20675,20 +21095,9 @@ pub(crate) fn event_target_add_event_listener_dom2(
     if let Some(signal_obj) = signal_obj {
       // Attach an abort algorithm that removes this listener when the signal is aborted.
       //
-      // We approximate the DOM abort-algorithm list by registering an internal `{ once: true }`
-      // capture listener on the signal's `abort` event. Capture ensures the cleanup runs before
-      // bubble listeners, closer to the spec's "run abort algorithms, then dispatch" ordering.
-
-      // Resolve the AbortSignal as an EventTarget so we register in the correct listener registry.
-      scope.push_root(Value::Object(signal_obj))?;
-      let signal_target = resolve_event_target(vm, scope, host, signal_obj)?;
-      let ResolvedEventTarget {
-        resolved: signal_resolved,
-        dom_ptr: mut signal_dom_ptr,
-        listener_roots_owner: signal_roots_owner,
-        ..
-      } = signal_target;
-
+      // This follows the WHATWG DOM model: the signal stores a list of abort algorithms that run
+      // *before* dispatching the `abort` event. This avoids order-dependent behavior and prevents
+      // leaking hidden `abort` listeners on the signal.
       let (target_kind_slot, target_id_slot) = match resolved.target_id {
         web_events::EventTargetId::Window => (Value::Number(0.0), Value::Undefined),
         web_events::EventTargetId::Document => (Value::Number(1.0), Value::Undefined),
@@ -20705,6 +21114,21 @@ pub(crate) fn event_target_add_event_listener_dom2(
       let listener_id_s = scope.alloc_string(&listener_id.get().to_string())?;
       scope.push_root(Value::String(listener_id_s))?;
 
+      // Ensure the signal is resolvable by opaque target ID later (used for cleanup when the target
+      // listener is removed without an explicit signal reference).
+      let signal_id = gc_object_id(signal_obj);
+      dom
+        .events()
+        .register_opaque_target(signal_id, vm_js::WeakGcObject::new(signal_obj));
+      if let web_events::EventTargetId::Opaque(id) = resolved.target_id {
+        dom
+          .events()
+          .register_opaque_target(id, vm_js::WeakGcObject::new(target_obj));
+      }
+
+      let signal_id_s = scope.alloc_string(&signal_id.to_string())?;
+      scope.push_root(Value::String(signal_id_s))?;
+
       let abort_func_name = scope.alloc_string("__fastrender_abort_signal_listener_cleanup")?;
       scope.push_root(Value::String(abort_func_name))?;
 
@@ -20714,6 +21138,7 @@ pub(crate) fn event_target_add_event_listener_dom2(
         Value::String(type_string),
         Value::String(listener_id_s),
         Value::Bool(options.capture),
+        Value::String(signal_id_s),
       ];
       let abort_func = scope.alloc_native_function_with_slots(
         abort_cleanup_call_id,
@@ -20722,28 +21147,22 @@ pub(crate) fn event_target_add_event_listener_dom2(
         0,
         &abort_slots,
       )?;
-
-      // Register the abort cleanup listener.
-      let abort_listener_id = web_events::ListenerId::from_gc_object(abort_func);
-      // SAFETY: `signal_dom_ptr` is derived from the current `VmHost` (or the realm's fallback
-      // document) and is only used for the duration of this native call.
-      let signal_dom = unsafe { signal_dom_ptr.as_mut() };
-      signal_dom.events_mut().add_event_listener(
-        signal_resolved.target_id,
-        "abort",
-        abort_listener_id,
-        web_events::AddEventListenerOptions {
-          capture: true,
-          once: true,
-          passive: false,
-        },
-      );
-
-      // Root the abort cleanup callback while it's registered.
-      let roots = get_or_create_event_listener_roots(scope, signal_roots_owner)?;
-      let key = listener_id_property_key(scope, abort_listener_id)?;
       scope.push_root(Value::Object(abort_func))?;
-      scope.define_property(roots, key, data_desc(Value::Object(abort_func)))?;
+
+      // Store the abort algorithm on the signal (run during AbortSignal.abort()) and keep a
+      // back-reference on the target so `removeEventListener` and `{ once: true }` cleanup can
+      // remove it without being passed the signal.
+      if abort_signal_push_abort_algorithm(vm, scope, signal_obj, abort_func)? {
+        signal_listener_map_set_entry(
+          scope,
+          target_obj,
+          &type_name,
+          listener_id,
+          options.capture,
+          signal_id,
+          abort_func,
+        )?;
+      }
     }
   }
 
@@ -20797,6 +21216,17 @@ pub(crate) fn event_target_remove_event_listener_dom2(
       .remove_event_listener(resolved.target_id, &type_name, listener_id, capture);
   if removed {
     remove_listener_root_if_unused(scope, listener_roots_owner, dom.events(), listener_id, None)?;
+  }
+
+  // If this listener was registered with `{ signal }`, ensure we also remove the corresponding
+  // abort algorithm from the signal so it doesn't leak until the signal is aborted.
+  if let Some(entry) = signal_listener_map_get_entry(scope, target_obj, &type_name, listener_id, capture)? {
+    if let Some(signal_obj) = dom.events().opaque_target_object(scope.heap(), entry.signal_id) {
+      if is_branded_abort_signal(scope, signal_obj)? {
+        abort_signal_remove_abort_algorithm(scope, signal_obj, entry.abort_func)?;
+      }
+    }
+    let _ = scope.ordinary_delete(entry.map_obj, entry.entry_key)?;
   }
 
   Ok(Value::Undefined)

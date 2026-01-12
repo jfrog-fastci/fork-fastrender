@@ -608,6 +608,30 @@ impl EventListenerRegistry {
       .is_some_and(|listeners| !listeners.is_empty())
   }
 
+  /// Returns `true` if an exact listener registration exists.
+  ///
+  /// This is a lightweight query helper used by integrations that need to detect whether a listener
+  /// has been removed (e.g. `{ once: true }` auto-removal) without mutating the registry.
+  pub(crate) fn has_listener(
+    &self,
+    target: EventTargetId,
+    type_: &str,
+    listener_id: ListenerId,
+    capture: bool,
+  ) -> bool {
+    let target = target.normalize();
+    self
+      .listeners
+      .borrow()
+      .get(&target)
+      .and_then(|by_type| by_type.get(type_))
+      .is_some_and(|listeners| {
+        listeners
+          .iter()
+          .any(|l| l.id == listener_id && l.options.capture == capture)
+      })
+  }
+
   /// Returns `true` if `dispatch_event` for an event with the given `target`, `type_`, `bubbles`,
   /// and `composed` flags would invoke any listeners.
   ///
