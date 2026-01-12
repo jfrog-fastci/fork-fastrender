@@ -317,3 +317,67 @@ fn closure_layout_ids_are_deterministic_across_stores() {
   let graph_b = collect_layout_graph(store_b.as_ref(), root_b);
   assert_eq!(graph_a, graph_b);
 }
+
+#[test]
+fn ref_types_can_lower_to_concrete_object_layouts_via_expansion() {
+  use types_ts_interned::{DefId, ExpandedType, TypeExpander};
+
+  let store = TypeStore::new();
+  let primitives = store.primitive_ids();
+
+  let def = DefId(1);
+  let ref_ty = store.intern_type(TypeKind::Ref {
+    def,
+    args: Vec::new(),
+  });
+
+  let name = store.intern_name("x");
+  let mut shape = Shape::new();
+  shape.properties.push(Property {
+    key: PropKey::String(name),
+    data: PropData {
+      ty: primitives.number,
+      optional: false,
+      readonly: false,
+      accessibility: None,
+      is_method: false,
+      origin: None,
+      declared_on: None,
+    },
+  });
+  let shape_id = store.intern_shape(shape);
+  let obj_id = store.intern_object(ObjectType { shape: shape_id });
+  let obj_ty = store.intern_type(TypeKind::Object(obj_id));
+
+  struct SingleDefExpander {
+    def: DefId,
+    ty: types_ts_interned::TypeId,
+  }
+
+  impl TypeExpander for SingleDefExpander {
+    fn expand(&self, _store: &TypeStore, def: DefId, _args: &[types_ts_interned::TypeId]) -> Option<ExpandedType> {
+      (def == self.def).then(|| ExpandedType {
+        params: Vec::new(),
+        ty: self.ty,
+      })
+    }
+  }
+
+  // Without expansion, refs are opaque.
+  let raw_layout = store.layout_of(ref_ty);
+  assert!(
+    matches!(store.layout(raw_layout), Layout::Ptr { to: types_ts_interned::PtrKind::Opaque }),
+    "expected unresolved ref to lower to opaque pointer layout"
+  );
+
+  let expander = SingleDefExpander { def, ty: obj_ty };
+  let layout = store.layout_of_evaluated(ref_ty, &expander);
+
+  let Layout::Ptr { to } = store.layout(layout) else {
+    panic!("expected expanded ref to lower to Ptr layout");
+  };
+  assert!(
+    !matches!(to, types_ts_interned::PtrKind::Opaque),
+    "expected expanded ref to lower to a non-opaque pointer kind, got {to:?}"
+  );
+}

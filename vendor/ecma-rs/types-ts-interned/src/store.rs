@@ -583,6 +583,25 @@ impl TypeStore {
     self.layouts.layout_of_type(self, ty)
   }
 
+  /// Compute the native runtime layout for a type after evaluating it with a
+  /// user-provided reference expander.
+  ///
+  /// This is primarily useful when `ty` contains [`TypeKind::Ref`] nodes that
+  /// can be expanded into concrete structural object/tuple/union types (e.g.
+  /// named class/interface/type-alias references) before layout computation.
+  ///
+  /// Unexpanded references are left in place and will typically lower to
+  /// opaque pointer layouts.
+  pub fn layout_of_evaluated<E: crate::TypeExpander>(
+    self: &Arc<Self>,
+    ty: TypeId,
+    expander: &E,
+  ) -> LayoutId {
+    let mut evaluator = crate::TypeEvaluator::new(Arc::clone(self), expander);
+    let evaluated = evaluator.evaluate(ty);
+    self.layout_of(evaluated)
+  }
+
   /// Fetch an already-interned [`Layout`] by [`LayoutId`].
   ///
   /// Panics if the ID was not produced by [`TypeStore::layout_of`] on this
