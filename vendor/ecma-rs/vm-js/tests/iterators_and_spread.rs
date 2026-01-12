@@ -99,3 +99,66 @@ fn call_spread_over_string() {
     .unwrap();
   assert_value_is_utf8(&rt, value, "ab");
 }
+
+#[test]
+fn array_spread_closes_iterator_on_throw() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        var closed = false;
+        var iterable = {
+          [Symbol.iterator]: function () {
+            return {
+              i: 0,
+              next: function () {
+                if (this.i++ === 0) return { value: 1, done: false };
+                throw "boom";
+              },
+              return: function () {
+                closed = true;
+                return { done: true };
+              },
+            };
+          },
+        };
+
+        try { [...iterable]; } catch (e) {}
+        closed
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn call_spread_closes_iterator_on_throw() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        var closed = false;
+        var iterable = {
+          [Symbol.iterator]: function () {
+            return {
+              i: 0,
+              next: function () {
+                if (this.i++ === 0) return { value: 1, done: false };
+                throw "boom";
+              },
+              return: function () {
+                closed = true;
+                return { done: true };
+              },
+            };
+          },
+        };
+
+        function f() {}
+        try { f(...iterable); } catch (e) {}
+        closed
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}

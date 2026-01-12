@@ -1374,10 +1374,7 @@ impl<'a> Evaluator<'a> {
           let key_s = elem_scope.alloc_string(&i.to_string())?;
           elem_scope.push_root(Value::String(key_s))?;
           let key = PropertyKey::from_string(key_s);
-          let ok = elem_scope.create_data_property(arr, key, v)?;
-          if !ok {
-            return Err(VmError::Unimplemented("CreateDataProperty returned false"));
-          }
+          elem_scope.create_data_property_or_throw(arr, key, v)?;
         }
 
         bind_pattern(
@@ -4939,14 +4936,8 @@ impl<'a> Evaluator<'a> {
       elem_scope.push_root(Value::String(key_s))?;
       let key = PropertyKey::from_string(key_s);
 
-      let ok = elem_scope.create_data_property(cooked, key, Value::String(cooked_s))?;
-      if !ok {
-        return Err(VmError::Unimplemented("CreateDataProperty returned false"));
-      }
-      let ok = elem_scope.create_data_property(raw, key, Value::String(cooked_s))?;
-      if !ok {
-        return Err(VmError::Unimplemented("CreateDataProperty returned false"));
-      }
+      elem_scope.create_data_property_or_throw(cooked, key, Value::String(cooked_s))?;
+      elem_scope.create_data_property_or_throw(raw, key, Value::String(cooked_s))?;
 
       idx = idx.saturating_add(1);
     }
@@ -5002,36 +4993,74 @@ impl<'a> Evaluator<'a> {
             &mut spread_scope,
             spread_value,
           )?;
-          spread_scope.push_roots(&[iter.iterator, iter.next_method])?;
+          spread_scope.push_root(iter.iterator)?;
+          if let Err(err) = spread_scope.push_root(iter.next_method) {
+            let _ = iterator::iterator_close(
+              self.vm,
+              &mut *self.host,
+              &mut *self.hooks,
+              &mut spread_scope,
+              &iter,
+            );
+            return Err(err);
+          }
 
-          while let Some(value) = iterator::iterator_step_value(
-            self.vm,
-            &mut *self.host,
-            &mut *self.hooks,
-            &mut spread_scope,
-            &mut iter,
-          )? {
-            // Per-spread-element tick: spreading large iterators should be budgeted even when the
-            // iterator's `next()` is native/cheap.
-            self.tick()?;
+          loop {
+            let next_value = match iterator::iterator_step_value(
+              self.vm,
+              &mut *self.host,
+              &mut *self.hooks,
+              &mut spread_scope,
+              &mut iter,
+            ) {
+              Ok(v) => v,
+              Err(err) => {
+                let _ = iterator::iterator_close(
+                  self.vm,
+                  &mut *self.host,
+                  &mut *self.hooks,
+                  &mut spread_scope,
+                  &iter,
+                );
+                return Err(err);
+              }
+            };
 
-            let idx = next_index;
-            next_index = next_index.saturating_add(1);
+            let Some(value) = next_value else {
+              break;
+            };
 
-            let mut elem_scope = spread_scope.reborrow();
-            elem_scope.push_root(value)?;
-            let key_s = elem_scope.alloc_string(&idx.to_string())?;
-            elem_scope.push_root(Value::String(key_s))?;
-            let key = PropertyKey::from_string(key_s);
-            let ok = elem_scope.create_data_property(arr, key, value)?;
-            if !ok {
-              return Err(VmError::Unimplemented("CreateDataProperty returned false"));
+            let step_res: Result<(), VmError> = (|| {
+              // Per-spread-element tick: spreading large iterators should be budgeted even when the
+              // iterator's `next()` is native/cheap.
+              self.tick()?;
+
+              let idx = next_index;
+
+              let mut elem_scope = spread_scope.reborrow();
+              elem_scope.push_root(value)?;
+              let key_s = elem_scope.alloc_string(&idx.to_string())?;
+              elem_scope.push_root(Value::String(key_s))?;
+              let key = PropertyKey::from_string(key_s);
+              elem_scope.create_data_property_or_throw(arr, key, value)?;
+
+              next_index = next_index.saturating_add(1);
+              Ok(())
+            })();
+            if let Err(err) = step_res {
+              let _ = iterator::iterator_close(
+                self.vm,
+                &mut *self.host,
+                &mut *self.hooks,
+                &mut spread_scope,
+                &iter,
+              );
+              return Err(err);
             }
           }
         }
         LitArrElem::Single(elem_expr) => {
           let idx = next_index;
-          next_index = next_index.saturating_add(1);
 
           let mut elem_scope = arr_scope.reborrow();
           let value = self.eval_expr(&mut elem_scope, elem_expr)?;
@@ -5039,10 +5068,9 @@ impl<'a> Evaluator<'a> {
           let key_s = elem_scope.alloc_string(&idx.to_string())?;
           elem_scope.push_root(Value::String(key_s))?;
           let key = PropertyKey::from_string(key_s);
-          let ok = elem_scope.create_data_property(arr, key, value)?;
-          if !ok {
-            return Err(VmError::Unimplemented("CreateDataProperty returned false"));
-          }
+          elem_scope.create_data_property_or_throw(arr, key, value)?;
+
+          next_index = next_index.saturating_add(1);
         }
       }
     }
@@ -5120,10 +5148,7 @@ impl<'a> Evaluator<'a> {
             ClassOrObjVal::Prop(Some(value_expr)) => {
               let value = self.eval_expr(&mut member_scope, value_expr)?;
               member_scope.push_root(value)?;
-              let ok = member_scope.create_data_property(obj, key, value)?;
-              if !ok {
-                return Err(VmError::Unimplemented("CreateDataProperty returned false"));
-              }
+              member_scope.create_data_property_or_throw(obj, key, value)?;
             }
             ClassOrObjVal::Prop(None) => {
               return Err(VmError::Unimplemented(
@@ -5216,10 +5241,7 @@ impl<'a> Evaluator<'a> {
                 )?;
               }
 
-              let ok = member_scope.create_data_property(obj, key, Value::Object(func_obj))?;
-              if !ok {
-                return Err(VmError::Unimplemented("CreateDataProperty returned false"));
-              }
+              member_scope.create_data_property_or_throw(obj, key, Value::Object(func_obj))?;
             }
             ClassOrObjVal::Getter(getter) => {
               let func_node = &getter.stx.func;
@@ -5419,10 +5441,7 @@ impl<'a> Evaluator<'a> {
           let key = PropertyKey::from_string(key_s);
           let value = self.eval_id(&mut member_scope, &id.stx)?;
           member_scope.push_root(value)?;
-          let ok = member_scope.create_data_property(obj, key, value)?;
-          if !ok {
-            return Err(VmError::Unimplemented("CreateDataProperty returned false"));
-          }
+          member_scope.create_data_property_or_throw(obj, key, value)?;
         }
         ObjMemberType::Rest { val } => {
           let src_value = self.eval_expr(&mut member_scope, val)?;
@@ -5808,6 +5827,9 @@ impl<'a> Evaluator<'a> {
 
         let mut args: Vec<Value> = Vec::new();
         if let Some(call_args) = call_args {
+          args
+            .try_reserve_exact(call_args.len())
+            .map_err(|_| VmError::OutOfMemory)?;
           for arg in call_args {
             if arg.stx.spread {
               let spread_value = self.eval_expr(&mut new_scope, &arg.stx.value)?;
@@ -5821,22 +5843,64 @@ impl<'a> Evaluator<'a> {
                 spread_value,
               )?;
               new_scope.push_root(iter.iterator)?;
-              new_scope.push_root(iter.next_method)?;
+              if let Err(err) = new_scope.push_root(iter.next_method) {
+                let _ = iterator::iterator_close(
+                  self.vm,
+                  &mut *self.host,
+                  &mut *self.hooks,
+                  &mut new_scope,
+                  &iter,
+                );
+                return Err(err);
+              }
 
-              while let Some(value) = iterator::iterator_step_value(
-                self.vm,
-                &mut *self.host,
-                &mut *self.hooks,
-                &mut new_scope,
-                &mut iter,
-              )? {
-                self.tick()?;
-                new_scope.push_root(value)?;
-                args.push(value);
+              loop {
+                let next_value = match iterator::iterator_step_value(
+                  self.vm,
+                  &mut *self.host,
+                  &mut *self.hooks,
+                  &mut new_scope,
+                  &mut iter,
+                ) {
+                  Ok(v) => v,
+                  Err(err) => {
+                    let _ = iterator::iterator_close(
+                      self.vm,
+                      &mut *self.host,
+                      &mut *self.hooks,
+                      &mut new_scope,
+                      &iter,
+                    );
+                    return Err(err);
+                  }
+                };
+
+                let Some(value) = next_value else {
+                  break;
+                };
+
+                let step_res: Result<(), VmError> = (|| {
+                  self.tick()?;
+                  new_scope.push_root(value)?;
+                  args.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
+                  args.push(value);
+                  Ok(())
+                })();
+                if let Err(err) = step_res {
+                  let _ = iterator::iterator_close(
+                    self.vm,
+                    &mut *self.host,
+                    &mut *self.hooks,
+                    &mut new_scope,
+                    &iter,
+                  );
+                  return Err(err);
+                }
               }
             } else {
               let value = self.eval_expr(&mut new_scope, &arg.stx.value)?;
               new_scope.push_root(value)?;
+              args.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
               args.push(value);
             }
           }
@@ -6034,23 +6098,65 @@ impl<'a> Evaluator<'a> {
           &mut call_scope,
           spread_value,
         )?;
-        call_scope.push_roots(&[iter.iterator, iter.next_method])?;
+        call_scope.push_root(iter.iterator)?;
+        if let Err(err) = call_scope.push_root(iter.next_method) {
+          let _ = iterator::iterator_close(
+            self.vm,
+            &mut *self.host,
+            &mut *self.hooks,
+            &mut call_scope,
+            &iter,
+          );
+          return Err(err);
+        }
 
-        while let Some(value) = iterator::iterator_step_value(
-          self.vm,
-          &mut *self.host,
-          &mut *self.hooks,
-          &mut call_scope,
-          &mut iter,
-        )? {
-          self.tick()?;
-          call_scope.push_root(value)?;
-          args.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
-          args.push(value);
+        loop {
+          let next_value = match iterator::iterator_step_value(
+            self.vm,
+            &mut *self.host,
+            &mut *self.hooks,
+            &mut call_scope,
+            &mut iter,
+          ) {
+            Ok(v) => v,
+            Err(err) => {
+              let _ = iterator::iterator_close(
+                self.vm,
+                &mut *self.host,
+                &mut *self.hooks,
+                &mut call_scope,
+                &iter,
+              );
+              return Err(err);
+            }
+          };
+
+          let Some(value) = next_value else {
+            break;
+          };
+
+          let step_res: Result<(), VmError> = (|| {
+            self.tick()?;
+            call_scope.push_root(value)?;
+            args.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
+            args.push(value);
+            Ok(())
+          })();
+          if let Err(err) = step_res {
+            let _ = iterator::iterator_close(
+              self.vm,
+              &mut *self.host,
+              &mut *self.hooks,
+              &mut call_scope,
+              &iter,
+            );
+            return Err(err);
+          }
         }
       } else {
         let value = self.eval_expr(&mut call_scope, &arg.stx.value)?;
         call_scope.push_root(value)?;
+        args.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
         args.push(value);
       }
     }
@@ -6089,23 +6195,65 @@ impl<'a> Evaluator<'a> {
           &mut call_scope,
           spread_value,
         )?;
-        call_scope.push_roots(&[iter.iterator, iter.next_method])?;
+        call_scope.push_root(iter.iterator)?;
+        if let Err(err) = call_scope.push_root(iter.next_method) {
+          let _ = iterator::iterator_close(
+            self.vm,
+            &mut *self.host,
+            &mut *self.hooks,
+            &mut call_scope,
+            &iter,
+          );
+          return Err(err);
+        }
 
-        while let Some(value) = iterator::iterator_step_value(
-          self.vm,
-          &mut *self.host,
-          &mut *self.hooks,
-          &mut call_scope,
-          &mut iter,
-        )? {
-          self.tick()?;
-          call_scope.push_root(value)?;
-          args.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
-          args.push(value);
+        loop {
+          let next_value = match iterator::iterator_step_value(
+            self.vm,
+            &mut *self.host,
+            &mut *self.hooks,
+            &mut call_scope,
+            &mut iter,
+          ) {
+            Ok(v) => v,
+            Err(err) => {
+              let _ = iterator::iterator_close(
+                self.vm,
+                &mut *self.host,
+                &mut *self.hooks,
+                &mut call_scope,
+                &iter,
+              );
+              return Err(err);
+            }
+          };
+
+          let Some(value) = next_value else {
+            break;
+          };
+
+          let step_res: Result<(), VmError> = (|| {
+            self.tick()?;
+            call_scope.push_root(value)?;
+            args.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
+            args.push(value);
+            Ok(())
+          })();
+          if let Err(err) = step_res {
+            let _ = iterator::iterator_close(
+              self.vm,
+              &mut *self.host,
+              &mut *self.hooks,
+              &mut call_scope,
+              &iter,
+            );
+            return Err(err);
+          }
         }
       } else {
         let value = self.eval_expr(&mut call_scope, &arg.stx.value)?;
         call_scope.push_root(value)?;
+        args.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
         args.push(value);
       }
     }
