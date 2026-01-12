@@ -8037,6 +8037,67 @@ impl<'a> Checker<'a> {
       // keyword).
       return self.store.intern_type(TypeKind::EmptyObject);
     }
+
+    fn f64_to_i64(num: f64) -> Option<i64> {
+      if !num.is_finite() {
+        return None;
+      }
+      if num.fract() != 0.0 {
+        return None;
+      }
+      let as_i64 = num as i64;
+      (as_i64 as f64 == num).then_some(as_i64)
+    }
+
+    let computed_key_as_prop_key = |checker: &mut Checker<'_>,
+                                    expr: &Node<AstExpr>,
+                                    key_ty: TypeId|
+     -> Option<(PropKey, String)> {
+      match expr.stx.as_ref() {
+        AstExpr::LitStr(s) => {
+          let name = s.stx.value.clone();
+          Some((PropKey::String(checker.store.intern_name_ref(&name)), name))
+        }
+        AstExpr::LitTemplate(tpl) => {
+          if tpl
+            .stx
+            .parts
+            .iter()
+            .all(|p| matches!(p, parse_js::ast::expr::lit::LitTemplatePart::String(_)))
+          {
+            let mut combined = String::new();
+            for part in tpl.stx.parts.iter() {
+              if let parse_js::ast::expr::lit::LitTemplatePart::String(s) = part {
+                combined.push_str(s);
+              }
+            }
+            Some((PropKey::String(checker.store.intern_name_ref(&combined)), combined))
+          } else {
+            None
+          }
+        }
+        AstExpr::LitNum(n) => {
+          let value = n.stx.value.0;
+          let int_key = f64_to_i64(value)?;
+          Some((PropKey::Number(int_key), int_key.to_string()))
+        }
+        AstExpr::LitBigInt(v) => {
+          let name = v.stx.value.trim_end_matches('n').to_string();
+          Some((PropKey::String(checker.store.intern_name_ref(&name)), name))
+        }
+        _ => match checker.store.type_kind(key_ty) {
+          TypeKind::StringLiteral(id) => {
+            Some((PropKey::String(id), checker.store.name(id).to_string()))
+          }
+          TypeKind::NumberLiteral(num) => {
+            let int_key = f64_to_i64(num.0)?;
+            Some((PropKey::Number(int_key), int_key.to_string()))
+          }
+          _ => None,
+        },
+      }
+    };
+
     let mut shape = Shape::new();
     for member in obj.stx.members.iter() {
       match &member.stx.typ {
@@ -8047,15 +8108,10 @@ impl<'a> Checker<'a> {
             }
             ClassOrObjKey::Computed(expr) => {
               let key_ty = self.check_expr(expr);
-              match self.store.type_kind(key_ty) {
-                TypeKind::StringLiteral(id) => Some(PropKey::String(id)),
-                TypeKind::NumberLiteral(num) => Some(PropKey::String(
-                  self.store.intern_name(num.0.to_string()),
-                )),
-                _ => None,
-              }
+              computed_key_as_prop_key(self, expr, key_ty).map(|(key, _)| key)
             }
           };
+
           match val {
             ClassOrObjVal::Prop(Some(expr)) => {
               let ty = self.check_expr(expr);
@@ -8100,6 +8156,14 @@ impl<'a> Checker<'a> {
                 });
               }
             }
+            ClassOrObjVal::Getter(getter) => {
+              let ty = self.function_type(&getter.stx.func);
+              self.record_expr_type(getter.loc, ty);
+            }
+            ClassOrObjVal::Setter(setter) => {
+              let ty = self.function_type(&setter.stx.func);
+              self.record_expr_type(setter.loc, ty);
+            }
             _ => {}
           }
         }
@@ -8138,32 +8202,94 @@ impl<'a> Checker<'a> {
     expected: TypeId,
   ) -> TypeId {
     let prim = self.store.primitive_ids();
+
+    fn f64_to_i64(num: f64) -> Option<i64> {
+      if !num.is_finite() {
+        return None;
+      }
+      if num.fract() != 0.0 {
+        return None;
+      }
+      let as_i64 = num as i64;
+      (as_i64 as f64 == num).then_some(as_i64)
+    }
+
+    let computed_key_as_prop_key = |checker: &mut Checker<'_>,
+                                    expr: &Node<AstExpr>,
+                                    key_ty: TypeId|
+     -> Option<(PropKey, String)> {
+      match expr.stx.as_ref() {
+        AstExpr::LitStr(s) => {
+          let name = s.stx.value.clone();
+          Some((PropKey::String(checker.store.intern_name_ref(&name)), name))
+        }
+        AstExpr::LitTemplate(tpl) => {
+          if tpl
+            .stx
+            .parts
+            .iter()
+            .all(|p| matches!(p, parse_js::ast::expr::lit::LitTemplatePart::String(_)))
+          {
+            let mut combined = String::new();
+            for part in tpl.stx.parts.iter() {
+              if let parse_js::ast::expr::lit::LitTemplatePart::String(s) = part {
+                combined.push_str(s);
+              }
+            }
+            Some((PropKey::String(checker.store.intern_name_ref(&combined)), combined))
+          } else {
+            None
+          }
+        }
+        AstExpr::LitNum(n) => {
+          let value = n.stx.value.0;
+          let int_key = f64_to_i64(value)?;
+          Some((PropKey::Number(int_key), int_key.to_string()))
+        }
+        AstExpr::LitBigInt(v) => {
+          let name = v.stx.value.trim_end_matches('n').to_string();
+          Some((PropKey::String(checker.store.intern_name_ref(&name)), name))
+        }
+        _ => match checker.store.type_kind(key_ty) {
+          TypeKind::StringLiteral(id) => {
+            Some((PropKey::String(id), checker.store.name(id).to_string()))
+          }
+          TypeKind::NumberLiteral(num) => {
+            let int_key = f64_to_i64(num.0)?;
+            Some((PropKey::Number(int_key), int_key.to_string()))
+          }
+          _ => None,
+        },
+      }
+    };
+
     let mut shape = Shape::new();
     for member in obj.stx.members.iter() {
       match &member.stx.typ {
         ObjMemberType::Valued { key, val } => {
-          let (prop_key, expected_prop) = match key {
-            ClassOrObjKey::Direct(direct) => (
-              Some(PropKey::String(self.store.intern_name_ref(&direct.stx.key))),
-              self.member_type(expected, &direct.stx.key),
-            ),
+          let (prop_key, expected_name) = match key {
+            ClassOrObjKey::Direct(direct) => {
+              let name = direct.stx.key.clone();
+              (
+                Some(PropKey::String(self.store.intern_name_ref(&name))),
+                Some(name),
+              )
+            }
             ClassOrObjKey::Computed(expr) => {
               let key_ty = self.check_expr(expr);
-              match self.store.type_kind(key_ty) {
-                TypeKind::StringLiteral(id) => {
-                  let name = self.store.name(id);
-                  (Some(PropKey::String(id)), self.member_type(expected, &name))
-                }
-                TypeKind::NumberLiteral(num) => {
-                  let name = num.0.to_string();
-                  let expected_prop = self.member_type(expected, &name);
-                  let prop_key = Some(PropKey::String(self.store.intern_name(name)));
-                  (prop_key, expected_prop)
-                }
-                _ => (None, prim.unknown),
+              if let Some((prop_key, name)) = computed_key_as_prop_key(self, expr, key_ty) {
+                (Some(prop_key), Some(name))
+              } else {
+                (None, None)
               }
             }
           };
+
+          let expected_prop = expected_name
+            .as_deref()
+            .map(|name| self.member_type(expected, name))
+            .unwrap_or(prim.unknown);
+
           match val {
             ClassOrObjVal::Prop(Some(expr)) => {
               let expr_ty = if expected_prop != prim.unknown {
@@ -8241,6 +8367,14 @@ impl<'a> Checker<'a> {
                   },
                 });
               }
+            }
+            ClassOrObjVal::Getter(getter) => {
+              let ty = self.function_type(&getter.stx.func);
+              self.record_expr_type(getter.loc, ty);
+            }
+            ClassOrObjVal::Setter(setter) => {
+              let ty = self.function_type(&setter.stx.func);
+              self.record_expr_type(setter.loc, ty);
             }
             _ => {}
           }
