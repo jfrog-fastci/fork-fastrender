@@ -79,7 +79,7 @@ Using `cargo_llvm.sh` is the easiest way to ensure the LLVM 18 toolchain is on
 If you are setting up LLVM locally, see [`native-js/README.md`](../native-js/README.md)
 for required packages and the `LLVM_SYS_180_PREFIX` environment variable.
 
-The CLI supports a small set of subcommands (`check`/`build`/`run`/`emit-ir`) and
+The CLI supports a small set of subcommands (`check`/`build`/`run`/`emit-ir`/`emit`) and
 also a default mode (no subcommand) that compiles + runs a project.
 
 In all modes, the entry file is a TypeScript module path:
@@ -399,11 +399,27 @@ bash vendor/ecma-rs/scripts/cargo_llvm.sh run -p native-js-cli --bin native-js -
   build path/to/entry.ts -o /tmp/out
 ```
 
-Also emit LLVM IR (for debugging):
+Also emit LLVM IR (for debugging, as a secondary output while building an executable):
 
 ```bash
 bash vendor/ecma-rs/scripts/cargo_llvm.sh run -p native-js-cli --bin native-js -- \
   build path/to/entry.ts -o /tmp/out --emit-ir /tmp/out.ll
+```
+
+Emit one or more artifacts into a directory (deterministic names):
+
+```bash
+# Writes /tmp/emit/out.ll and /tmp/emit/out.s
+bash vendor/ecma-rs/scripts/cargo_llvm.sh run -p native-js-cli --bin native-js -- \
+  build path/to/entry.ts --emit llvm --emit asm --out-dir /tmp/emit
+```
+
+Dump checked HIR for all reachable files:
+
+```bash
+# Writes /tmp/emit/out.hir.txt
+bash vendor/ecma-rs/scripts/cargo_llvm.sh run -p native-js-cli --bin native-js -- \
+  emit path/to/entry.ts --emit hir --out-dir /tmp/emit
 ```
 
 Run immediately:
@@ -424,19 +440,22 @@ bash vendor/ecma-rs/scripts/cargo_llvm.sh run -p native-js-cli --bin native-js -
 
 - `--project/-p <tsconfig.json>`: load a TypeScript project and apply `baseUrl`/`paths`
   for module resolution.
- - `--json`: emit versioned JSON diagnostics to stdout (`schema_version = 1`).
-    - `check`/`build`/`emit-ir`: diagnostics JSON (`command` omitted)
-    - `bench`: benchmark JSON (`command = "bench"`)
-    - `addr2line`: symbolization JSON (`command = "addr2line"`)
-    - not supported with `run` (it would mix with program stdout)
-  - `build --emit-ir <PATH.ll>`: also write the emitted LLVM IR (for debugging).
-  - `emit-ir -o <PATH.ll>`: write LLVM IR without producing an executable.
- - `--opt=0|1|2|3`: set the LLVM target machine optimization level.
-   - default: `2`
-   - when `--debug` is set and `--opt` is not explicitly provided, defaults to `0`
- - `--debug`: emit DWARF debug info in the generated executable (line tables / function names).
-   - as the backend grows, this will include more source-level information (e.g. local variables)
- - `--extra-strict`: also run the legacy strict validator (`native_js::strict::validate`).
+- `--json`: emit versioned JSON output to stdout (`schema_version = 1`).
+  - `check`/`build`/`emit`/`emit-ir`: diagnostics JSON (`command` omitted)
+  - `bench`: benchmark JSON (`command = "bench"`)
+  - `addr2line`: symbolization JSON (`command = "addr2line"`)
+  - not supported with `run` (it would mix with program stdout)
+- `build --emit-ir <PATH.ll>`: also write the emitted LLVM IR (for debugging).
+- `emit-ir -o <PATH.ll>`: write LLVM IR without producing an executable.
+- `build|emit --emit <KIND>`: emit one or more artifacts (`llvm`, `bc`, `obj`, `asm`, `exe`, `hir`).
+- `build|emit --out-dir <DIR>`: directory for outputs when emitting multiple artifacts (required for
+  multiple `--emit` kinds).
+- `--opt=0|1|2|3`: set the LLVM target machine optimization level.
+  - default: `2`
+  - when `--debug` is set and `--opt` is not explicitly provided, defaults to `0`
+- `--debug`: emit DWARF debug info in the generated executable (line tables / function names).
+  - as the backend grows, this will include more source-level information (e.g. local variables)
+- `--extra-strict`: also run the legacy strict validator (`native_js::strict::validate`).
 
 ### Debugging generated executables (gdb / lldb)
 

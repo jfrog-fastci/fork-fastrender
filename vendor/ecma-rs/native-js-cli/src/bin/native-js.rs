@@ -22,6 +22,8 @@ mod diag;
 #[path = "../output.rs"]
 mod output;
 
+#[path = "../emit.rs"]
+mod emit;
 #[path = "../type_libs.rs"]
 mod type_libs;
 
@@ -127,12 +129,14 @@ struct Cli {
 enum Commands {
   /// Type-check and validate the native-js strict subset.
   Check(CheckArgs),
-  /// Compile an entry file to a native executable.
+  /// Compile an entry file and emit compiler artifacts (defaults to an executable).
   Build(BuildArgs),
   /// Compile an entry file and run it immediately.
   Run(RunArgs),
   /// Compile an entry file and run it multiple times, reporting wall-clock timings.
   Bench(BenchArgs),
+  /// Emit one or more compiler artifacts for an entry file.
+  Emit(EmitArgs),
   /// Emit LLVM IR to a file.
   EmitIr(EmitIrArgs),
   /// Resolve instruction addresses to source locations using DWARF debug info.
@@ -153,13 +157,29 @@ struct BuildArgs {
   #[arg(value_name = "PATH")]
   entry: PathBuf,
 
-  /// Output executable path.
+  /// Output path for the emitted artifact.
+  ///
+  /// - When emitting a single kind without `--out-dir`, this is the full output path.
+  /// - When `--out-dir` is set, this is treated as the output *stem* (filename) used to name
+  ///   outputs in the directory.
   #[arg(short = 'o', long, value_name = "PATH")]
-  output: PathBuf,
+  output: Option<PathBuf>,
 
   /// Also emit LLVM IR (`.ll`) to the given path.
   #[arg(long, value_name = "PATH.ll")]
   emit_ir: Option<PathBuf>,
+
+  /// Which artifacts to emit (`llvm`, `bc`, `obj`, `asm`, `exe`, `hir`).
+  ///
+  /// If omitted, defaults to `exe` (the historical `build` behavior).
+  #[arg(long, value_enum, action = ArgAction::Append, value_name = "KIND")]
+  emit: Vec<emit::EmitKindArg>,
+
+  /// Output directory for emitted artifacts.
+  ///
+  /// Required when multiple `--emit` kinds are requested.
+  #[arg(long, value_name = "DIR")]
+  out_dir: Option<PathBuf>,
 }
 
 #[derive(Args, Debug)]
@@ -205,6 +225,28 @@ struct EmitIrArgs {
   /// Output path for the emitted LLVM IR.
   #[arg(short = 'o', long, value_name = "PATH.ll")]
   output: PathBuf,
+}
+
+#[derive(Args, Debug)]
+struct EmitArgs {
+  /// Entry TypeScript file (must export `main()`).
+  #[arg(value_name = "PATH")]
+  entry: PathBuf,
+
+  /// Which artifacts to emit (`llvm`, `bc`, `obj`, `asm`, `exe`, `hir`).
+  #[arg(long, value_enum, action = ArgAction::Append, required = true, value_name = "KIND")]
+  emit: Vec<emit::EmitKindArg>,
+
+  /// Output directory for emitted artifacts.
+  ///
+  /// Required when multiple `--emit` kinds are requested.
+  #[arg(long, value_name = "DIR")]
+  out_dir: Option<PathBuf>,
+
+  /// Output path for the emitted artifact (single-emit mode) or output stem (when `--out-dir` is
+  /// set).
+  #[arg(short = 'o', long, value_name = "PATH")]
+  output: Option<PathBuf>,
 }
 
 #[derive(Args, Debug)]
@@ -315,16 +357,10 @@ fn main() -> ExitCode {
   let render = output::render_options(cli.color, cli.no_color);
   match &cli.command {
     Commands::Check(args) => cmd_check(&cli, &args.entry, render),
-    Commands::Build(args) => cmd_build(
-      &cli,
-      &args.entry,
-      &args.output,
-      args.emit_ir.as_deref(),
-      &target,
-      render,
-    ),
+    Commands::Build(args) => cmd_build(&cli, args, &target, render),
     Commands::Run(args) => cmd_run(&cli, &args.entry, &args.args, &target, render),
     Commands::Bench(args) => cmd_bench(&cli, args, &target, render),
+    Commands::Emit(args) => cmd_emit(&cli, args, &target, render),
     Commands::EmitIr(args) => cmd_emit_ir(&cli, &args.entry, &args.output, &target, render),
     Commands::Addr2Line(args) => cmd_addr2line(&cli, args),
   }
@@ -353,15 +389,15 @@ fn cmd_check(cli: &Cli, entry: &Path, render: diagnostics::render::RenderOptions
 
 fn cmd_build(
   cli: &Cli,
-  entry: &Path,
-  output_exe: &Path,
-  emit_ir: Option<&Path>,
+  args: &BuildArgs,
   target: &Option<target_lexicon::Triple>,
   render: diagnostics::render::RenderOptions,
 ) -> ExitCode {
-  let (program, entry_file) =
-    match project_load::load_program(cli.project.as_deref(), entry, project_load::LoadMode::Checked)
-    {
+  let (program, entry_file) = match project_load::load_program(
+    cli.project.as_deref(),
+    &args.entry,
+    project_load::LoadMode::Checked,
+  ) {
     Ok(res) => res,
     Err(err) => return exit_internal_without_program(cli.json, err),
   };
@@ -377,48 +413,286 @@ fn cmd_build(
     }
   }
 
-  let mut opts = native_js::CompilerOptions::default();
-  opts.emit = native_js::EmitKind::Executable;
-  opts.output = Some(output_exe.to_path_buf());
-  opts.emit_ir = emit_ir.map(|p| p.to_path_buf());
-  opts.debug = cli.debug;
-  opts.print_commands = cli.verbose;
-  opts.keep_temp = cli.keep_temp;
-  opts.pie = cli.pie;
-  opts.target = target.clone();
+  let requested_emits: Vec<emit::EmitKindArg> = if args.emit.is_empty() {
+    vec![emit::EmitKindArg::Executable]
+  } else {
+    args.emit.clone()
+  };
+
+  if args.emit_ir.is_some() && !requested_emits.contains(&emit::EmitKindArg::Executable) {
+    return exit_internal(
+      &program,
+      cli.json,
+      render,
+      "`build --emit-ir <PATH.ll>` is only supported when emitting an executable; use `emit <ENTRY> --emit llvm -o <PATH.ll>` instead"
+        .to_string(),
+    );
+  }
+
+  let paths = match emit::compute_emit_paths(
+    &requested_emits,
+    args.out_dir.as_deref(),
+    args.output.as_deref(),
+    "out",
+  ) {
+    Ok(paths) => paths,
+    Err(err) => return exit_internal(&program, cli.json, render, err),
+  };
+
+  // Ensure output directories exist before writing any artifacts.
+  for path in paths.values() {
+    if let Some(parent) = path.parent() {
+      if !parent.as_os_str().is_empty() {
+        if let Err(err) = std::fs::create_dir_all(parent) {
+          return exit_internal(
+            &program,
+            cli.json,
+            render,
+            format!("failed to create {}: {err}", parent.display()),
+          );
+        }
+      }
+    }
+  }
+  if let Some(path) = args.emit_ir.as_deref() {
+    if let Some(parent) = path.parent() {
+      if !parent.as_os_str().is_empty() {
+        if let Err(err) = std::fs::create_dir_all(parent) {
+          return exit_internal(
+            &program,
+            cli.json,
+            render,
+            format!("failed to create {}: {err}", parent.display()),
+          );
+        }
+      }
+    }
+  }
+
+  // Emit HIR first so the dump is available even if LLVM emission fails later.
+  if let Some(hir_path) = paths.get(&emit::EmitKindArg::Hir) {
+    let diagnostics = program.check();
+    if diagnostics.iter().any(|d| d.severity == Severity::Error) {
+      let exit_code = ExitCode::from(diag::exit_code_for_diagnostics(&diagnostics));
+      let _ = output::emit_diagnostics(&program, diagnostics, cli.json, render);
+      return exit_code;
+    }
+
+    if let Err(err) = std::fs::write(hir_path, emit::format_hir_dump(&program)) {
+      return exit_internal(
+        &program,
+        cli.json,
+        render,
+        format!("failed to write {}: {err}", hir_path.display()),
+      );
+    }
+  }
+
   let opt_raw = cli.opt.unwrap_or(if cli.debug { 0 } else { 2 });
-  opts.opt_level = match opt_level(opt_raw) {
+  let opt = match opt_level(opt_raw) {
     Ok(level) => level,
     Err(err) => return exit_internal(&program, cli.json, render, err),
   };
-  if cli.clang.is_some()
-    || cli.llvm_objcopy.is_some()
-    || cli.llvm_objdump.is_some()
-    || cli.sysroot.is_some()
-    || !cli.link_arg.is_empty()
+
+  let wants_toolchain = paths.contains_key(&emit::EmitKindArg::Executable);
+  let toolchain = if wants_toolchain
+    && (cli.clang.is_some()
+      || cli.llvm_objcopy.is_some()
+      || cli.llvm_objdump.is_some()
+      || cli.sysroot.is_some()
+      || !cli.link_arg.is_empty())
   {
-    let toolchain = native_js::Toolchain::detect_with_overrides(
+    match native_js::Toolchain::detect_with_overrides(
       cli.clang.clone(),
       cli.llvm_objcopy.clone(),
       cli.llvm_objdump.clone(),
       cli.sysroot.clone(),
       cli.link_arg.clone(),
-    );
-    match toolchain {
-      Ok(tc) => opts.toolchain = Some(tc),
+    ) {
+      Ok(tc) => Some(tc),
       Err(err) => return exit_internal(&program, cli.json, render, err.to_string()),
     }
-  }
+  } else {
+    None
+  };
 
-  if let Err(err) = native_js::compile_program(&program, entry_file, &opts) {
-    if let Some(diags) = err.diagnostics() {
-      let _ = output::emit_diagnostics(&program, diags.to_vec(), cli.json, render);
-      return ExitCode::from(diag::exit_code_for_diagnostics(diags));
+  let mut base_opts = native_js::CompilerOptions::default();
+  base_opts.debug = cli.debug;
+  base_opts.print_commands = cli.verbose;
+  base_opts.keep_temp = cli.keep_temp;
+  base_opts.pie = cli.pie;
+  base_opts.target = target.clone();
+  base_opts.opt_level = opt;
+  base_opts.toolchain = toolchain;
+
+  // When `build --emit-ir <PATH>` is used, only write the extra `.ll` once even if multiple
+  // primary emits are requested.
+  let mut wrote_extra_ir = false;
+
+  for kind in paths.keys().copied() {
+    if kind == emit::EmitKindArg::Hir {
+      continue;
     }
-    return exit_internal(&program, cli.json, render, err.to_string());
+    let Some(native_kind) = kind.as_native_emit_kind() else {
+      continue;
+    };
+    let out_path = paths
+      .get(&kind)
+      .expect("emit output path for requested kind")
+      .to_path_buf();
+
+    let mut opts = base_opts.clone();
+    opts.emit = native_kind;
+    opts.output = Some(out_path);
+    if !wrote_extra_ir {
+      opts.emit_ir = args.emit_ir.clone();
+      wrote_extra_ir = opts.emit_ir.is_some();
+    }
+
+    if let Err(err) = native_js::compile_program(&program, entry_file, &opts) {
+      if let Some(diags) = err.diagnostics() {
+        let _ = output::emit_diagnostics(&program, diags.to_vec(), cli.json, render);
+        return ExitCode::from(diag::exit_code_for_diagnostics(diags));
+      }
+      return exit_internal(&program, cli.json, render, err.to_string());
+    }
   }
 
   // Emit JSON even on success so callers can depend on a stable output shape.
+  if cli.json {
+    let _ = output::emit_diagnostics(&program, Vec::new(), true, render);
+  }
+
+  ExitCode::SUCCESS
+}
+
+fn cmd_emit(
+  cli: &Cli,
+  args: &EmitArgs,
+  target: &Option<target_lexicon::Triple>,
+  render: diagnostics::render::RenderOptions,
+) -> ExitCode {
+  let (program, entry_file) = match project_load::load_program(
+    cli.project.as_deref(),
+    &args.entry,
+    project_load::LoadMode::Checked,
+  ) {
+    Ok(res) => res,
+    Err(err) => return exit_internal_without_program(cli.json, err),
+  };
+
+  if cli.extra_strict {
+    let diagnostics = collect_check_diagnostics(&program, entry_file, true);
+    let exit_code = ExitCode::from(diag::exit_code_for_diagnostics(&diagnostics));
+    if exit_code != ExitCode::SUCCESS {
+      let _ = output::emit_diagnostics(&program, diagnostics, cli.json, render);
+      return exit_code;
+    }
+  }
+
+  let paths =
+    match emit::compute_emit_paths(&args.emit, args.out_dir.as_deref(), args.output.as_deref(), "out") {
+      Ok(paths) => paths,
+      Err(err) => return exit_internal(&program, cli.json, render, err),
+    };
+
+  // Ensure output directories exist before writing any artifacts.
+  for path in paths.values() {
+    if let Some(parent) = path.parent() {
+      if !parent.as_os_str().is_empty() {
+        if let Err(err) = std::fs::create_dir_all(parent) {
+          return exit_internal(
+            &program,
+            cli.json,
+            render,
+            format!("failed to create {}: {err}", parent.display()),
+          );
+        }
+      }
+    }
+  }
+
+  // HIR dump does not require LLVM codegen; run it first.
+  if let Some(hir_path) = paths.get(&emit::EmitKindArg::Hir) {
+    let diagnostics = program.check();
+    if diagnostics.iter().any(|d| d.severity == Severity::Error) {
+      let exit_code = ExitCode::from(diag::exit_code_for_diagnostics(&diagnostics));
+      let _ = output::emit_diagnostics(&program, diagnostics, cli.json, render);
+      return exit_code;
+    }
+
+    if let Err(err) = std::fs::write(hir_path, emit::format_hir_dump(&program)) {
+      return exit_internal(
+        &program,
+        cli.json,
+        render,
+        format!("failed to write {}: {err}", hir_path.display()),
+      );
+    }
+  }
+
+  let opt_raw = cli.opt.unwrap_or(if cli.debug { 0 } else { 2 });
+  let opt = match opt_level(opt_raw) {
+    Ok(level) => level,
+    Err(err) => return exit_internal(&program, cli.json, render, err),
+  };
+
+  let wants_toolchain = paths.contains_key(&emit::EmitKindArg::Executable);
+  let toolchain = if wants_toolchain
+    && (cli.clang.is_some()
+      || cli.llvm_objcopy.is_some()
+      || cli.llvm_objdump.is_some()
+      || cli.sysroot.is_some()
+      || !cli.link_arg.is_empty())
+  {
+    match native_js::Toolchain::detect_with_overrides(
+      cli.clang.clone(),
+      cli.llvm_objcopy.clone(),
+      cli.llvm_objdump.clone(),
+      cli.sysroot.clone(),
+      cli.link_arg.clone(),
+    ) {
+      Ok(tc) => Some(tc),
+      Err(err) => return exit_internal(&program, cli.json, render, err.to_string()),
+    }
+  } else {
+    None
+  };
+
+  let mut base_opts = native_js::CompilerOptions::default();
+  base_opts.debug = cli.debug;
+  base_opts.print_commands = cli.verbose;
+  base_opts.keep_temp = cli.keep_temp;
+  base_opts.pie = cli.pie;
+  base_opts.target = target.clone();
+  base_opts.opt_level = opt;
+  base_opts.toolchain = toolchain;
+
+  for kind in paths.keys().copied() {
+    if kind == emit::EmitKindArg::Hir {
+      continue;
+    }
+    let Some(native_kind) = kind.as_native_emit_kind() else {
+      continue;
+    };
+    let out_path = paths
+      .get(&kind)
+      .expect("emit output path for requested kind")
+      .to_path_buf();
+
+    let mut opts = base_opts.clone();
+    opts.emit = native_kind;
+    opts.output = Some(out_path);
+
+    if let Err(err) = native_js::compile_program(&program, entry_file, &opts) {
+      if let Some(diags) = err.diagnostics() {
+        let _ = output::emit_diagnostics(&program, diags.to_vec(), cli.json, render);
+        return ExitCode::from(diag::exit_code_for_diagnostics(diags));
+      }
+      return exit_internal(&program, cli.json, render, err.to_string());
+    }
+  }
+
   if cli.json {
     let _ = output::emit_diagnostics(&program, Vec::new(), true, render);
   }
@@ -500,7 +774,14 @@ fn cmd_run(
   };
   let exe = exe_dir.join("out");
 
-  let build_exit = cmd_build(cli, entry, &exe, None, target, render);
+  let build_args = BuildArgs {
+    entry: entry.to_path_buf(),
+    output: Some(exe.clone()),
+    emit_ir: None,
+    emit: Vec::new(),
+    out_dir: None,
+  };
+  let build_exit = cmd_build(cli, &build_args, target, render);
   if build_exit != ExitCode::SUCCESS {
     return build_exit;
   }

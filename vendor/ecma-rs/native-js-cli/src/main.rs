@@ -3,6 +3,7 @@ mod output;
 mod project_load;
 mod type_libs;
 mod diag;
+mod emit;
 
 use clap::{ArgAction, CommandFactory, Parser, Subcommand, ValueEnum};
 use diagnostics::{host_error, Diagnostic, FileId};
@@ -121,6 +122,27 @@ enum Commands {
     /// Entry file.
     entry: PathBuf,
     /// Output path for the `.ll` file (defaults to stdout).
+    #[arg(short, long, value_name = "PATH")]
+    output: Option<PathBuf>,
+  },
+
+  /// Emit one or more compilation artifacts for the given entry file.
+  Emit {
+    /// Entry file.
+    entry: PathBuf,
+
+    /// Which artifacts to emit (`llvm`, `bc`, `obj`, `asm`, `exe`, `hir`).
+    #[arg(long, value_enum, action = ArgAction::Append, required = true, value_name = "KIND")]
+    emit: Vec<emit::EmitKindArg>,
+
+    /// Output directory for emitted artifacts.
+    ///
+    /// Required when multiple `--emit` kinds are requested.
+    #[arg(long, value_name = "DIR")]
+    out_dir: Option<PathBuf>,
+
+    /// Output path for the emitted artifact (single-emit mode) or output stem (when `--out-dir` is
+    /// set).
     #[arg(short, long, value_name = "PATH")]
     output: Option<PathBuf>,
   },
@@ -409,6 +431,198 @@ fn run(cli: &Cli) -> i32 {
           print!("{text}");
           0
         }
+      }
+    },
+    Some(Commands::Emit {
+      entry,
+      emit: emits,
+      out_dir,
+      output,
+    }) => match cli.pipeline {
+      Pipeline::Project => {
+        if emits.contains(&emit::EmitKindArg::Hir) {
+          let err = CliError::Source {
+            source: diag::SingleFileSource::default(),
+            diagnostics: vec![host_error(
+              None,
+              "`--emit hir` is only supported with --pipeline checked",
+            )],
+          };
+          return emit_cli_error(err, flags).into();
+        }
+
+        let ir = match compile_file_to_ir(cli, entry) {
+          Ok(ir) => ir,
+          Err(err) => return emit_cli_error(err, flags).into(),
+        };
+        if let Err(err) = write_ir_debug(cli, &ir) {
+          return emit_cli_error(err, flags).into();
+        }
+
+        let paths = match emit::compute_emit_paths(emits, out_dir.as_deref(), output.as_deref(), "out") {
+          Ok(paths) => paths,
+          Err(message) => {
+            let err = CliError::Source {
+              source: diag::SingleFileSource::default(),
+              diagnostics: vec![host_error(None, message)],
+            };
+            return emit_cli_error(err, flags).into();
+          }
+        };
+        for path in paths.values() {
+          if let Some(parent) = path.parent() {
+            if !parent.as_os_str().is_empty() {
+              if let Err(err) = fs::create_dir_all(parent) {
+                let err = CliError::Source {
+                  source: diag::SingleFileSource::default(),
+                  diagnostics: vec![host_error(
+                    None,
+                    format!("failed to create {}: {err}", parent.display()),
+                  )],
+                };
+                return emit_cli_error(err, flags).into();
+              }
+            }
+          }
+        }
+
+        for kind in emits.iter().copied() {
+          let Some(native_kind) = kind.as_native_emit_kind() else {
+            continue;
+          };
+          let out_path = paths.get(&kind).expect("output path for emit kind").to_path_buf();
+
+          let mut opts = CompileOptions::default();
+          opts.builtins = !cli.no_builtins;
+          // The `project` pipeline is intended for quick iteration and can emit LLVM IR that fails
+          // strict validation (it keeps compiling even with type errors). Keep compilation fast by
+          // disabling LLVM optimizations.
+          opts.opt_level = OptLevel::O0;
+          opts.emit = native_kind;
+          opts.pie = cli.pie;
+
+          if let Err(err) = compile_llvm_ir_to_artifact(&ir, opts, Some(out_path)) {
+            let diagnostics = diag::diagnostics_from_native_js_error(&err, FileId(0));
+            let err = CliError::Source {
+              source: diag::SingleFileSource::default(),
+              diagnostics,
+            };
+            return emit_cli_error(err, flags).into();
+          }
+        }
+
+        if flags.json {
+          diag::emit_success_json();
+        }
+        0
+      }
+      Pipeline::Checked => {
+        if let Err(code) = ensure_checked_pipeline_supported(cli, flags) {
+          return code.into();
+        }
+
+        let (program, entry_id) = match project_load::load_program(
+          cli.project.as_deref(),
+          entry,
+          project_load::LoadMode::Checked,
+        ) {
+          Ok(res) => res,
+          Err(message) => {
+            let err = CliError::Source {
+              source: diag::SingleFileSource::default(),
+              diagnostics: vec![host_error(None, message)],
+            };
+            return emit_cli_error(err, flags).into();
+          }
+        };
+
+        let paths = match emit::compute_emit_paths(emits, out_dir.as_deref(), output.as_deref(), "out") {
+          Ok(paths) => paths,
+          Err(message) => {
+            let err = CliError::Source {
+              source: diag::SingleFileSource::default(),
+              diagnostics: vec![host_error(None, message)],
+            };
+            return emit_cli_error(err, flags).into();
+          }
+        };
+        for path in paths.values() {
+          if let Some(parent) = path.parent() {
+            if !parent.as_os_str().is_empty() {
+              if let Err(err) = fs::create_dir_all(parent) {
+                let err = CliError::Source {
+                  source: diag::SingleFileSource::default(),
+                  diagnostics: vec![host_error(
+                    None,
+                    format!("failed to create {}: {err}", parent.display()),
+                  )],
+                };
+                return emit_cli_error(err, flags).into();
+              }
+            }
+          }
+        }
+
+        if emits.contains(&emit::EmitKindArg::Hir) {
+          let diagnostics = program.check();
+          if diagnostics
+            .iter()
+            .any(|d| d.severity == diagnostics::Severity::Error)
+          {
+            return diag::emit_diagnostics_for_program(&program, diagnostics, flags).into();
+          }
+
+          let hir_path = paths
+            .get(&emit::EmitKindArg::Hir)
+            .expect("output path for hir emit");
+          if let Err(err) = fs::write(hir_path, emit::format_hir_dump(&program)) {
+            let err = CliError::Source {
+              source: diag::SingleFileSource::default(),
+              diagnostics: vec![host_error(
+                None,
+                format!("failed to write {}: {err}", hir_path.display()),
+              )],
+            };
+            return emit_cli_error(err, flags).into();
+          }
+        }
+
+        // Avoid rewriting `--emit-llvm` multiple times when emitting multiple artifacts.
+        let mut wrote_extra_ir = false;
+
+        for kind in emits.iter().copied() {
+          if kind == emit::EmitKindArg::Hir {
+            continue;
+          }
+          let Some(native_kind) = kind.as_native_emit_kind() else {
+            continue;
+          };
+          let out_path = paths.get(&kind).expect("output path for emit kind").to_path_buf();
+
+          let mut opts = CompileOptions::default();
+          opts.builtins = !cli.no_builtins;
+          opts.emit = native_kind;
+          opts.output = Some(out_path);
+          opts.pie = cli.pie;
+
+          if !wrote_extra_ir
+            && !emits.contains(&emit::EmitKindArg::LlvmIr)
+            && native_kind != EmitKind::LlvmIr
+          {
+            opts.emit_ir = cli.emit_llvm.clone();
+            wrote_extra_ir = opts.emit_ir.is_some();
+          }
+
+          if let Err(err) = compile_program(&program, entry_id, &opts) {
+            let diagnostics = diag::diagnostics_from_native_js_error(&err, entry_id);
+            return diag::emit_diagnostics_for_program(&program, diagnostics, flags).into();
+          }
+        }
+
+        if flags.json {
+          diag::emit_success_json();
+        }
+        0
       }
     },
     None => {

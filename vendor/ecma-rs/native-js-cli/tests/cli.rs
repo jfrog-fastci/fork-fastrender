@@ -792,6 +792,72 @@ fn emit_llvm_ir_contains_symbols() {
 }
 
 #[test]
+fn emit_hir_writes_dump_file_containing_main() {
+  let tmp = TempDir::new().unwrap();
+  let entry = tmp.path().join("entry.ts");
+  fs::write(&entry, "export function main(): number { return 0; }\n").unwrap();
+
+  let out_dir = tmp.path().join("emit-out");
+  fs::create_dir_all(&out_dir).unwrap();
+
+  native_js()
+    .timeout(CLI_TIMEOUT)
+    .arg("emit")
+    .arg(&entry)
+    .arg("--emit")
+    .arg("hir")
+    .arg("--out-dir")
+    .arg(&out_dir)
+    .assert()
+    .success();
+
+  let hir = out_dir.join("out.hir.txt");
+  assert!(hir.is_file(), "expected HIR dump at {}", hir.display());
+  let text = fs::read_to_string(&hir).unwrap();
+  assert!(
+    text.contains("main"),
+    "expected HIR dump to contain `main`, got: {text}"
+  );
+}
+
+#[test]
+fn build_with_emit_llvm_and_asm_writes_both_files() {
+  let tmp = TempDir::new().unwrap();
+  let entry = tmp.path().join("entry.ts");
+  fs::write(&entry, "export function main(): number { return 0; }\n").unwrap();
+
+  let out_dir = tmp.path().join("emit-out");
+  fs::create_dir_all(&out_dir).unwrap();
+
+  native_js()
+    .timeout(CLI_TIMEOUT)
+    .arg("build")
+    .arg(&entry)
+    .arg("--emit")
+    .arg("llvm")
+    .arg("--emit")
+    .arg("asm")
+    .arg("--out-dir")
+    .arg(&out_dir)
+    .assert()
+    .success();
+
+  let ll = out_dir.join("out.ll");
+  let asm = out_dir.join("out.s");
+  assert!(ll.is_file(), "expected LLVM IR at {}", ll.display());
+  assert!(asm.is_file(), "expected assembly at {}", asm.display());
+
+  let ll_text = fs::read_to_string(&ll).unwrap();
+  assert!(
+    ll_text.contains("define i32 @main"),
+    "expected emitted IR to define a `main` function"
+  );
+
+  let asm_meta = fs::metadata(&asm).unwrap();
+  assert!(asm_meta.len() > 0, "expected assembly output to be non-empty");
+}
+
+#[test]
 fn run_exits_with_program_exit_code() {
   let tmp = TempDir::new().unwrap();
   let entry = tmp.path().join("entry.ts");
