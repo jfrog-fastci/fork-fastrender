@@ -5,7 +5,7 @@ use std::sync::Once;
 /// Many CI runners report very high CPU counts, but run tests under strict thread/address-space
 /// limits (e.g. `scripts/run_limited.sh`). Rayon defaults to spawning one worker per CPU when the
 /// global pool is first used, which can fail with `EAGAIN` and panic. Pre-initializing the global
-/// pool keeps paint regression tests stable under those constraints.
+/// pool keeps tests stable under those constraints.
 pub fn init_rayon_for_tests(num_threads: usize) {
   static INIT: Once = Once::new();
   let num_threads = num_threads.max(1);
