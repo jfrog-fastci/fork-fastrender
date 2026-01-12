@@ -8186,10 +8186,7 @@ pub fn function_prototype_symbol_has_instance(
   //   b. ReturnIfAbrupt(O).
   //   c. If O is null, return false.
   //   d. If SameValue(P, O) is true, return true.
-  //
-  // vm-js note: we currently approximate `[[GetPrototypeOf]]` via the stored `[[Prototype]]`
-  // pointer and do not yet implement Proxy `getPrototypeOf` traps here.
-  let mut current = scope.heap().object_prototype(object)?;
+  let mut current = scope.get_prototype_of_with_host_and_hooks(vm, host, hooks, object)?;
   let mut steps = 0usize;
   let mut visited: HashSet<GcObject> = HashSet::new();
   while let Some(obj) = current {
@@ -8217,7 +8214,7 @@ pub fn function_prototype_symbol_has_instance(
     if obj == prototype {
       return Ok(Value::Bool(true));
     }
-    current = scope.heap().object_prototype(obj)?;
+    current = scope.get_prototype_of_with_host_and_hooks(vm, host, hooks, obj)?;
   }
 
   Ok(Value::Bool(false))

@@ -7924,9 +7924,14 @@ impl<'a> Evaluator<'a> {
         "Function has non-object prototype in instanceof check",
       )?);
     };
-
+ 
     // Walk `object`'s prototype chain until we find `prototype` or reach the end.
-    let mut current = scope.heap().object_prototype(object)?;
+    let mut current = scope.get_prototype_of_with_host_and_hooks(
+      self.vm,
+      &mut *self.host,
+      &mut *self.hooks,
+      object,
+    )?;
     let mut steps = 0usize;
     let mut visited: HashSet<GcObject> = HashSet::new();
     while let Some(obj) = current {
@@ -7956,7 +7961,12 @@ impl<'a> Evaluator<'a> {
       if obj == prototype {
         return Ok(true);
       }
-      current = scope.heap().object_prototype(obj)?;
+      current = scope.get_prototype_of_with_host_and_hooks(
+        self.vm,
+        &mut *self.host,
+        &mut *self.hooks,
+        obj,
+      )?;
     }
 
     Ok(false)

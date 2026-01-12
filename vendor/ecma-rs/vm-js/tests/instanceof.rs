@@ -176,3 +176,23 @@ fn function_prototype_has_instance_returns_false_for_non_callable_this() {
     .unwrap();
   assert_eq!(value, Value::Bool(true));
 }
+
+#[test]
+fn function_prototype_has_instance_propagates_get_prototype_of_errors() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      function f() {}
+      var o = new Proxy({}, { getPrototypeOf: function () { throw 1; } });
+      var o2 = Object.create(o);
+      var ok1 = false;
+      var ok2 = false;
+      try { f[Symbol.hasInstance](o); } catch (e) { ok1 = (e === 1); }
+      try { f[Symbol.hasInstance](o2); } catch (e) { ok2 = (e === 1); }
+      ok1 && ok2
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
