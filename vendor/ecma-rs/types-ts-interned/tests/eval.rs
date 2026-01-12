@@ -3991,3 +3991,64 @@ fn keyof_tuple_deterministic_across_stores() {
     store_b.display(result_b).to_string()
   );
 }
+
+#[test]
+fn intersection_with_empty_object_removes_nullish_union_members() {
+  let store = TypeStore::new();
+  let primitives = store.primitive_ids();
+
+  let empty_object = store.intern_type(TypeKind::EmptyObject);
+
+  let t = store.union(vec![primitives.string, primitives.null]);
+  let nonnullable = store.intersection(vec![t, empty_object]);
+
+  let default_expander = MockExpander::default();
+  let mut eval = evaluator(store.clone(), &default_expander);
+  assert_eq!(eval.evaluate(nonnullable), primitives.string);
+
+  let nullish = store.union(vec![primitives.null, primitives.undefined]);
+  let nullish_nonnullable = store.intersection(vec![nullish, empty_object]);
+  assert_eq!(eval.evaluate(nullish_nonnullable), primitives.never);
+}
+
+#[test]
+fn intersection_of_unions_reduces_to_common_subset() {
+  let store = TypeStore::new();
+  let primitives = store.primitive_ids();
+
+  let a = store.union(vec![primitives.string, primitives.number]);
+  let b = store.union(vec![primitives.string, primitives.boolean]);
+  let inter = store.intersection(vec![a, b]);
+
+  let default_expander = MockExpander::default();
+  let mut eval = evaluator(store.clone(), &default_expander);
+  assert_eq!(eval.evaluate(inter), primitives.string);
+}
+
+#[test]
+fn intersection_distribution_respects_limit() {
+  let store = TypeStore::new();
+
+  let mk = |value: &str| store.intern_type(TypeKind::StringLiteral(store.intern_name(value)));
+  let u1 = store.union(vec![mk("a"), mk("b"), mk("c")]);
+  let u2 = store.union(vec![mk("d"), mk("e"), mk("f")]);
+  let u3 = store.union(vec![mk("g"), mk("h"), mk("i")]);
+
+  // 3×3×3 = 27 combinations, which exceeds the low cap below.
+  let inter = store.intersection(vec![u1, u2, u3]);
+
+  let default_expander = MockExpander::default();
+  let mut eval = evaluator(store.clone(), &default_expander).with_limits(EvaluatorLimits {
+    max_intersection_distribution: 4,
+    ..EvaluatorLimits::default()
+  });
+
+  let result = eval.evaluate(inter);
+  assert!(matches!(
+    store.type_kind(result),
+    TypeKind::Intersection(_) | TypeKind::Union(_)
+  ));
+
+  // Ensure termination is stable across repeated evaluations.
+  assert_eq!(result, eval.evaluate(inter));
+}

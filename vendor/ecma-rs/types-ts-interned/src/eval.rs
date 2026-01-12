@@ -278,6 +278,11 @@ pub struct EvaluatorLimits {
   /// Maximum cumulative size (in UTF-8 bytes) of all strings produced by a
   /// single template literal enumeration.
   pub max_template_total_bytes: usize,
+  /// Maximum number of union members to produce when distributing intersections
+  /// over unions (e.g. `(A | B) & (C | D)`).
+  ///
+  /// This avoids exponential blowups for intersections with many union members.
+  pub max_intersection_distribution: usize,
 }
 
 impl EvaluatorLimits {
@@ -285,6 +290,7 @@ impl EvaluatorLimits {
   pub const DEFAULT_MAX_TEMPLATE_STRINGS: usize = 1024;
   pub const DEFAULT_MAX_TEMPLATE_STRING_LEN: usize = 16 * 1024;
   pub const DEFAULT_MAX_TEMPLATE_TOTAL_BYTES: usize = 1024 * 1024;
+  pub const DEFAULT_MAX_INTERSECTION_DISTRIBUTION: usize = 1024;
   pub const DEFAULT_STEP_LIMIT: usize = usize::MAX;
 }
 
@@ -296,6 +302,7 @@ impl Default for EvaluatorLimits {
       max_template_strings: Self::DEFAULT_MAX_TEMPLATE_STRINGS,
       max_template_string_len: Self::DEFAULT_MAX_TEMPLATE_STRING_LEN,
       max_template_total_bytes: Self::DEFAULT_MAX_TEMPLATE_TOTAL_BYTES,
+      max_intersection_distribution: Self::DEFAULT_MAX_INTERSECTION_DISTRIBUTION,
     }
   }
 }
@@ -645,6 +652,11 @@ impl<'a, E: TypeExpander> TypeEvaluator<'a, E> {
     self
   }
 
+  pub fn with_max_intersection_distribution(mut self, limit: usize) -> Self {
+    self.limits.max_intersection_distribution = limit;
+    self
+  }
+
   pub fn step_count(&self) -> usize {
     self.steps
   }
@@ -795,13 +807,7 @@ impl<'a, E: TypeExpander> TypeEvaluator<'a, E> {
           .collect();
         self.store.union(evaluated)
       }
-      TypeKind::Intersection(members) => {
-        let evaluated: Vec<_> = members
-          .into_iter()
-          .map(|m| self.evaluate_with_subst(m, subst, depth + 1))
-          .collect();
-        self.store.intersection(evaluated)
-      }
+      TypeKind::Intersection(members) => self.evaluate_intersection(members, subst, depth),
       TypeKind::Array { ty, readonly } => {
         let elem = self.evaluate_with_subst(ty, subst, depth + 1);
         self
@@ -869,6 +875,176 @@ impl<'a, E: TypeExpander> TypeEvaluator<'a, E> {
     self.eval_in_progress.remove(&key);
     self.caches.eval.insert(key, result);
     result
+  }
+
+  fn evaluate_intersection(
+    &mut self,
+    members: Vec<TypeId>,
+    subst: &Substitution,
+    depth: usize,
+  ) -> TypeId {
+    if depth >= self.limits.depth_limit {
+      return self.store.intern_type(TypeKind::Intersection(members));
+    }
+
+    let evaluated: Vec<_> = members
+      .into_iter()
+      .map(|m| self.evaluate_with_subst(m, subst, depth + 1))
+      .collect();
+
+    // If evaluation has already hit the step limit, bail out conservatively
+    // rather than performing potentially expensive normalization.
+    if self.limits.step_limit != EvaluatorLimits::DEFAULT_STEP_LIMIT && self.steps >= self.limits.step_limit {
+      return self.store.intersection(evaluated);
+    }
+
+    self.reduce_intersection_evaluated(evaluated, depth + 1)
+  }
+
+  fn reduce_intersection_evaluated(&mut self, members: Vec<TypeId>, depth: usize) -> TypeId {
+    if depth >= self.limits.depth_limit {
+      return self.store.intersection(members);
+    }
+
+    let options = self.store.options();
+    let primitives = self.store.primitive_ids();
+    let empty_object = self.store.intern_type(TypeKind::EmptyObject);
+
+    let base = self.store.intersection(members);
+    let TypeKind::Intersection(mut base_members) = self.store.type_kind(base) else {
+      return base;
+    };
+
+    // Track `{}` (TypeKind::EmptyObject) separately so we can apply `NonNullable`
+    // semantics (`T & {}`) without leaving opaque intersections in common cases.
+    let mut has_empty_object = false;
+    base_members.retain(|member| {
+      if *member == empty_object {
+        has_empty_object = true;
+        false
+      } else {
+        true
+      }
+    });
+
+    // With `strictNullChecks: false`, `{}` acts as the top type, so intersecting
+    // with it is a no-op.
+    if !options.strict_null_checks {
+      if base_members.is_empty() && has_empty_object {
+        return empty_object;
+      }
+      has_empty_object = false;
+    }
+
+    let mut result = if base_members.is_empty() {
+      primitives.unknown
+    } else {
+      self.store.intersection(base_members)
+    };
+
+    // Distribute intersections over unions in small cases so that common
+    // narrowing patterns (like `(string|number) & (string|boolean)`) reduce.
+    result = self.distribute_intersection_over_unions(result, depth + 1);
+
+    if has_empty_object {
+      result = self.intersect_with_empty_object(result, depth + 1);
+    }
+
+    result
+  }
+
+  fn distribute_intersection_over_unions(&mut self, ty: TypeId, depth: usize) -> TypeId {
+    if depth >= self.limits.depth_limit {
+      return ty;
+    }
+    if self.limits.step_limit != EvaluatorLimits::DEFAULT_STEP_LIMIT && self.steps >= self.limits.step_limit {
+      return ty;
+    }
+
+    let TypeKind::Intersection(members) = self.store.type_kind(ty) else {
+      return ty;
+    };
+
+    let mut has_union = false;
+    let mut combos: usize = 1;
+    let mut choices: Vec<Vec<TypeId>> = Vec::with_capacity(members.len());
+
+    for member in members {
+      match self.store.type_kind(member) {
+        TypeKind::Union(inner) => {
+          has_union = true;
+          let Some(next_combos) = combos.checked_mul(inner.len()) else {
+            return ty;
+          };
+          combos = next_combos;
+          if combos > self.limits.max_intersection_distribution {
+            return ty;
+          }
+          choices.push(inner);
+        }
+        _ => choices.push(vec![member]),
+      }
+    }
+
+    if !has_union || self.limits.max_intersection_distribution == 0 {
+      return ty;
+    }
+
+    let primitives = self.store.primitive_ids();
+    let mut acc: Vec<TypeId> = vec![primitives.unknown];
+    for opts in choices {
+      let mut next = Vec::with_capacity(acc.len().saturating_mul(opts.len()));
+      for prev in acc {
+        for opt in &opts {
+          next.push(self.reduce_intersection_evaluated(vec![prev, *opt], depth + 1));
+        }
+      }
+      acc = next;
+    }
+
+    self.store.union(acc)
+  }
+
+  fn intersect_with_empty_object(&mut self, ty: TypeId, depth: usize) -> TypeId {
+    let options = self.store.options();
+    if !options.strict_null_checks {
+      return ty;
+    }
+
+    let primitives = self.store.primitive_ids();
+    let empty_object = self.store.intern_type(TypeKind::EmptyObject);
+
+    if depth >= self.limits.depth_limit {
+      // Preserve the `{}` constraint rather than dropping it when we can't
+      // reduce further.
+      return self.store.intersection(vec![ty, empty_object]);
+    }
+
+    match self.store.type_kind(ty) {
+      TypeKind::Never => primitives.never,
+      TypeKind::Any => primitives.any,
+      TypeKind::Null | TypeKind::Undefined => primitives.never,
+      TypeKind::Union(members) => {
+        let mapped: Vec<_> = members
+          .into_iter()
+          .map(|member| self.intersect_with_empty_object(member, depth + 1))
+          .collect();
+        self.store.union(mapped)
+      }
+      TypeKind::Unknown => empty_object,
+      // These types may still contain `null`/`undefined` values, so we must keep
+      // the `{}` constraint.
+      TypeKind::TypeParam(_)
+      | TypeKind::Infer { .. }
+      | TypeKind::Ref { .. }
+      | TypeKind::Conditional { .. }
+      | TypeKind::Mapped(_)
+      | TypeKind::IndexedAccess { .. }
+      | TypeKind::KeyOf(_)
+      | TypeKind::Intersection(_) => self.store.intersection(vec![ty, empty_object]),
+      // All other types are non-nullish and therefore already satisfy `{}`.
+      _ => ty,
+    }
   }
 
   fn evaluate_signature(
