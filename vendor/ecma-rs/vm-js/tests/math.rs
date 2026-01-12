@@ -165,6 +165,33 @@ fn bits_to_unit_double(x: u64) -> f64 {
 }
 
 #[test]
+fn math_has_to_string_tag() -> Result<(), VmError> {
+  let mut rt = TestRt::new(VmOptions::default())?;
+  let intr = *rt.realm.intrinsics();
+  let to_string_tag = rt.realm.well_known_symbols().to_string_tag;
+
+  let scope = rt.heap.scope();
+  let math = intr.math();
+
+  let key = PropertyKey::from_symbol(to_string_tag);
+  let desc = scope
+    .heap()
+    .get_property(math, &key)?
+    .expect("Math should have @@toStringTag");
+  assert!(!desc.enumerable);
+  assert!(desc.configurable);
+  let PropertyKind::Data { value, writable } = desc.kind else {
+    panic!("@@toStringTag should be a data property");
+  };
+  assert!(!writable);
+  let Value::String(s) = value else {
+    panic!("@@toStringTag value should be a string");
+  };
+  assert_eq!(scope.heap().get_string(s)?.to_utf8_lossy(), "Math");
+  Ok(())
+}
+
+#[test]
 fn math_methods_have_correct_length_properties() -> Result<(), VmError> {
   let mut rt = TestRt::new(VmOptions::default())?;
   let intr = *rt.realm.intrinsics();

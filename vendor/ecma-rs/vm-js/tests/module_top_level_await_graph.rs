@@ -152,9 +152,9 @@ fn tla_basic_module_evaluation_promise_is_pending_until_microtasks_run() -> Resu
   let mut hooks = MicrotaskQueue::new();
   let mut host = ();
   let mut promise_root: Option<RootId> = None;
+  let mut graph = ModuleGraph::new();
 
   let result = (|| -> Result<(), VmError> {
-    let mut graph = ModuleGraph::new();
     let m = graph.add_module_with_specifier(
       "m.js",
       SourceTextModuleRecord::parse("export const value = await Promise.resolve(42);")?,
@@ -210,6 +210,7 @@ fn tla_basic_module_evaluation_promise_is_pending_until_microtasks_run() -> Resu
   if let Some(root) = promise_root {
     heap.remove_root(root);
   }
+  graph.teardown(&mut vm, &mut heap);
   realm.teardown(&mut heap);
   result
 }
@@ -221,9 +222,9 @@ fn tla_in_dependency_makes_importer_evaluation_async() -> Result<(), VmError> {
   let mut hooks = MicrotaskQueue::new();
   let mut host = ();
   let mut promise_root: Option<RootId> = None;
+  let mut graph = ModuleGraph::new();
 
   let result = (|| -> Result<(), VmError> {
-    let mut graph = ModuleGraph::new();
     graph.add_module_with_specifier(
       "dep.js",
       SourceTextModuleRecord::parse("export const v = await Promise.resolve(1);")?,
@@ -280,6 +281,7 @@ fn tla_in_dependency_makes_importer_evaluation_async() -> Result<(), VmError> {
   if let Some(root) = promise_root {
     heap.remove_root(root);
   }
+  graph.teardown(&mut vm, &mut heap);
   realm.teardown(&mut heap);
   result
 }
@@ -291,9 +293,9 @@ fn tla_async_cycle_evaluates_without_deadlock() -> Result<(), VmError> {
   let mut hooks = MicrotaskQueue::new();
   let mut host = ();
   let mut promise_root: Option<RootId> = None;
+  let mut graph = ModuleGraph::new();
 
   let result = (|| -> Result<(), VmError> {
-    let mut graph = ModuleGraph::new();
     let a = graph.add_module_with_specifier(
       "a.js",
       SourceTextModuleRecord::parse(
@@ -374,6 +376,7 @@ fn tla_async_cycle_evaluates_without_deadlock() -> Result<(), VmError> {
   if let Some(root) = promise_root {
     heap.remove_root(root);
   }
+  graph.teardown(&mut vm, &mut heap);
   realm.teardown(&mut heap);
   result
 }
@@ -385,9 +388,9 @@ fn tla_evaluation_promise_is_cached_for_single_module() -> Result<(), VmError> {
   let mut hooks = MicrotaskQueue::new();
   let mut host = ();
   let mut promise_root: Option<RootId> = None;
+  let mut graph = ModuleGraph::new();
 
   let result = (|| -> Result<(), VmError> {
-    let mut graph = ModuleGraph::new();
     let m = graph.add_module_with_specifier(
       "m.js",
       SourceTextModuleRecord::parse("export const value = await Promise.resolve(42);")?,
@@ -446,6 +449,7 @@ fn tla_evaluation_promise_is_cached_for_single_module() -> Result<(), VmError> {
   if let Some(root) = promise_root {
     heap.remove_root(root);
   }
+  graph.teardown(&mut vm, &mut heap);
   realm.teardown(&mut heap);
   result
 }
@@ -457,9 +461,9 @@ fn tla_evaluation_promise_is_cached_per_scc() -> Result<(), VmError> {
   let mut hooks = MicrotaskQueue::new();
   let mut host = ();
   let mut promise_root: Option<RootId> = None;
+  let mut graph = ModuleGraph::new();
 
   let result = (|| -> Result<(), VmError> {
-    let mut graph = ModuleGraph::new();
     let a = graph.add_module_with_specifier(
       "a.js",
       SourceTextModuleRecord::parse(
@@ -533,6 +537,7 @@ fn tla_evaluation_promise_is_cached_per_scc() -> Result<(), VmError> {
   if let Some(root) = promise_root {
     heap.remove_root(root);
   }
+  graph.teardown(&mut vm, &mut heap);
   realm.teardown(&mut heap);
   result
 }
@@ -544,9 +549,9 @@ fn tla_error_propagates_through_async_parents() -> Result<(), VmError> {
   let mut hooks = MicrotaskQueue::new();
   let mut host = ();
   let mut promise_root: Option<RootId> = None;
+  let mut graph = ModuleGraph::new();
 
   let result = (|| -> Result<(), VmError> {
-    let mut graph = ModuleGraph::new();
     graph.add_module_with_specifier(
       "bad.js",
       SourceTextModuleRecord::parse("await Promise.resolve(); throw 'boom'; export const x = 1;")?,
@@ -603,6 +608,7 @@ fn tla_error_propagates_through_async_parents() -> Result<(), VmError> {
   if let Some(root) = promise_root {
     heap.remove_root(root);
   }
+  graph.teardown(&mut vm, &mut heap);
   realm.teardown(&mut heap);
   result
 }

@@ -4755,15 +4755,8 @@ impl Intrinsics {
       define_method("tanh", math_tanh, 1)?;
       define_method("random", math_random, 0)?;
     }
-
-    {
-      let to_string_tag_value = scope.alloc_string("Math")?;
-      scope.define_property(
-        math,
-        PropertyKey::Symbol(well_known_symbols.to_string_tag),
-        data_desc(Value::String(to_string_tag_value), false, false, true),
-      )?;
-    }
+    // Math[@@toStringTag]
+    install_to_string_tag(scope, math, well_known_symbols.to_string_tag, "Math")?;
 
     // `%JSON%`
     let json = alloc_rooted_object(scope, roots)?;
