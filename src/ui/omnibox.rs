@@ -304,6 +304,7 @@ impl OmniboxProvider for BookmarksProvider {
 
     let mut out = Vec::new();
     let mut scanned = 0usize;
+    let mut seen_urls: HashSet<String> = HashSet::new();
 
     // Traverse nodes in the user-defined store ordering (roots + folder children). This keeps
     // results deterministic even when we early-exit at `BOOKMARK_SCAN_LIMIT`.
@@ -338,6 +339,12 @@ impl OmniboxProvider for BookmarksProvider {
             {
               continue 'nodes;
             }
+          }
+
+          // Avoid suggesting the same URL multiple times when the bookmark store contains duplicates
+          // (possible via import).
+          if !seen_urls.insert(url.to_ascii_lowercase()) {
+            continue 'nodes;
           }
 
           let url_owned = url.to_string();
