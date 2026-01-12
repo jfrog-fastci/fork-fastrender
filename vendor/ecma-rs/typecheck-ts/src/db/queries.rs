@@ -1633,6 +1633,41 @@ pub mod body_check {
           flow_hooks,
           caches.relation.clone(),
         );
+
+        let mut expr_def_types: HashMap<DefId, TypeId> = HashMap::new();
+        for expr in body.exprs.iter() {
+          match expr.kind {
+            hir_js::ExprKind::FunctionExpr { def, .. } => {
+              if expr_def_types.contains_key(&def) {
+                continue;
+              }
+              let ty = ctx
+                .interned_def_types
+                .get(&def)
+                .copied()
+                .filter(|ty| ctx.store.contains_type_id(*ty))
+                .map(|ty| ctx.store.canon(ty))
+                .unwrap_or(prim.unknown);
+              expr_def_types.insert(def, ty);
+            }
+            hir_js::ExprKind::ClassExpr { def, .. } => {
+              if expr_def_types.contains_key(&def) {
+                continue;
+              }
+              let value_def = ctx.value_defs.get(&def).copied().unwrap_or(def);
+              let ty = ctx
+                .interned_def_types
+                .get(&value_def)
+                .copied()
+                .filter(|ty| ctx.store.contains_type_id(*ty))
+                .map(|ty| ctx.store.canon(ty))
+                .unwrap_or(prim.unknown);
+              expr_def_types.insert(def, ty);
+            }
+            _ => {}
+          }
+        }
+
         let flow_result = check_body_with_env_tables_with_bindings(
           body_id,
           body,
@@ -1641,6 +1676,7 @@ pub mod body_check {
           "",
           Arc::clone(&ctx.store),
           &initial_env,
+          &expr_def_types,
           None,
           flow_relate,
           Some(&expander),

@@ -9870,6 +9870,7 @@ pub fn check_body_with_env_with_bindings_strict_native(
   ref_expander: Option<&dyn types_ts_interned::RelateTypeExpander>,
   strict_native: bool,
 ) -> BodyCheckResult {
+  let expr_def_types = HashMap::new();
   let mut checker = FlowBodyChecker::new(
     body_id,
     body,
@@ -9877,6 +9878,7 @@ pub fn check_body_with_env_with_bindings_strict_native(
     Arc::clone(&store),
     file,
     initial,
+    &expr_def_types,
     flow_bindings,
     relate,
     ref_expander,
@@ -9908,6 +9910,7 @@ pub(crate) fn check_body_with_env_tables_with_bindings(
   _source: &str,
   store: Arc<TypeStore>,
   initial: &HashMap<NameId, TypeId>,
+  expr_def_types: &HashMap<DefId, TypeId>,
   flow_bindings: Option<&FlowBindings>,
   relate: RelateCtx,
   ref_expander: Option<&dyn types_ts_interned::RelateTypeExpander>,
@@ -9920,6 +9923,7 @@ pub(crate) fn check_body_with_env_tables_with_bindings(
     Arc::clone(&store),
     file,
     initial,
+    expr_def_types,
     flow_bindings,
     relate,
     ref_expander,
@@ -9986,6 +9990,7 @@ struct FlowBodyChecker<'a> {
   return_indices: HashMap<StmtId, usize>,
   widen_object_literals: bool,
   ref_expander: Option<&'a dyn types_ts_interned::RelateTypeExpander>,
+  expr_def_types: &'a HashMap<DefId, TypeId>,
   initial: HashMap<FlowBindingId, TypeId>,
   param_bindings: HashSet<BindingKey>,
   bindings: BindingTable,
@@ -10692,6 +10697,7 @@ impl<'a> FlowBodyChecker<'a> {
     store: Arc<TypeStore>,
     file: FileId,
     initial: &HashMap<NameId, TypeId>,
+    expr_def_types: &'a HashMap<DefId, TypeId>,
     flow_bindings: Option<&'a FlowBindings>,
     relate: RelateCtx<'a>,
     ref_expander: Option<&'a dyn types_ts_interned::RelateTypeExpander>,
@@ -10766,6 +10772,7 @@ impl<'a> FlowBodyChecker<'a> {
       return_indices,
       widen_object_literals: true,
       ref_expander,
+      expr_def_types,
       initial: initial_flow,
       param_bindings: bindings.param_bindings.clone(),
       bindings,
@@ -11715,8 +11722,16 @@ impl<'a> FlowBodyChecker<'a> {
         })
       }
       ExprKind::Object(obj) => self.object_type(obj, env),
-      ExprKind::FunctionExpr { .. } => prim.unknown,
-      ExprKind::ClassExpr { .. } => prim.unknown,
+      ExprKind::FunctionExpr { def, .. } => self
+        .expr_def_types
+        .get(def)
+        .copied()
+        .unwrap_or(prim.unknown),
+      ExprKind::ClassExpr { def, .. } => self
+        .expr_def_types
+        .get(def)
+        .copied()
+        .unwrap_or(prim.unknown),
       ExprKind::Template(template) => {
         for span in template.spans.iter() {
           let _ = self.eval_expr(span.expr, env);
