@@ -1509,7 +1509,12 @@ impl<'a, HP: Fn(FileId) -> Arc<HirFile>> Binder<'a, HP> {
 
     let (new_group, referenced_symbols) = self.build_symbol_group_from_decls(owner, name, &kept);
 
-    emit_default_export_merge_diagnostics(&mut self.diagnostics, &self.symbols, name, &kept);
+    emit_default_export_merge_diagnostics(
+      &mut self.diagnostics,
+      &self.symbols,
+      name,
+      &referenced_symbols,
+    );
     emit_merge_mismatch_diagnostics(
       &mut self.diagnostics,
       &self.symbols,
@@ -3477,52 +3482,58 @@ fn emit_default_export_merge_diagnostics(
   diags: &mut Vec<Diagnostic>,
   symbols: &SymbolTable,
   name: &str,
-  kept: &[DeclId],
+  symbol_ids: &[SymbolId],
 ) {
-  if kept.len() <= 1 {
-    return;
-  }
+  // TS2652 is only reported when a default-exported declaration participates in
+  // an actual declaration merge (i.e. when its merged symbol has multiple
+  // declarations). Declarations that merely share a name but remain in separate
+  // symbols (e.g. `export default function Foo` + `interface Foo`) do not
+  // trigger TS2652.
+  for sym in symbol_ids {
+    let sym_data = symbols.symbol(*sym);
+    let mut decls: Vec<DeclId> = sym_data
+      .namespaces
+      .iter_bits()
+      .flat_map(|ns| sym_data.decls_for(ns).iter().copied())
+      .collect();
+    decls.sort_by_key(|d| d.0);
+    decls.dedup();
+    if decls.len() <= 1 {
+      continue;
+    }
 
-  let mut default_exports: Vec<DeclId> = kept
-    .iter()
-    .copied()
-    .filter(|decl| {
+    decls.sort_by(|a, b| decl_sort_key(symbols, *a).cmp(&decl_sort_key(symbols, *b)));
+
+    let Some(default_export_decl) = decls.iter().copied().find(|decl| {
       let data = symbols.decl(*decl);
       matches!(data.exported, Exported::Default)
         && matches!(data.kind, DeclKind::Function | DeclKind::Class)
-    })
-    .collect();
-  if default_exports.is_empty() {
-    return;
-  }
+    }) else {
+      continue;
+    };
 
-  default_exports.sort_by(|a, b| decl_sort_key(symbols, *a).cmp(&decl_sort_key(symbols, *b)));
-  let default_export_decl = default_exports[0];
+    let Some(other_decl) = decls.iter().copied().find(|decl| *decl != default_export_decl) else {
+      continue;
+    };
 
-  let mut others: Vec<DeclId> = kept
-    .iter()
-    .copied()
-    .filter(|decl| *decl != default_export_decl)
-    .collect();
-  if others.is_empty() {
-    return;
-  }
+    let message = format!(
+      "Merged declaration '{}' cannot include a default export declaration. Consider adding a separate 'export default {}' declaration instead.",
+      name, name
+    );
 
-  others.sort_by(|a, b| decl_sort_key(symbols, *a).cmp(&decl_sort_key(symbols, *b)));
-  let other_decl = others[0];
+    for decl in [default_export_decl, other_decl] {
+      let data = symbols.decl(decl);
+      diags.push(Diagnostic::error(
+        "TS2652",
+        message.clone(),
+        Span::new(data.file, data.name_span),
+      ));
+    }
 
-  let message = format!(
-    "Merged declaration '{}' cannot include a default export declaration. Consider adding a separate 'export default {}' declaration instead.",
-    name, name
-  );
-
-  for decl in [default_export_decl, other_decl] {
-    let data = symbols.decl(decl);
-    diags.push(Diagnostic::error(
-      "TS2652",
-      message.clone(),
-      Span::new(data.file, data.name_span),
-    ));
+    // Only report TS2652 once per symbol group/name, matching `tsc` behavior
+    // (it reports on the default export and the first other merged declaration
+    // only).
+    break;
   }
 }
 

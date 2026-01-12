@@ -3273,6 +3273,86 @@ fn default_export_async_function_merge_reports_ts2652_on_name_span() {
 }
 
 #[test]
+fn default_export_class_interface_namespace_merge_reports_ts2652_on_class_and_interface() {
+  let file = FileId(5093);
+  let source = r#"
+    export default class Decl {}
+
+    export interface Decl {
+      p1: number;
+      p2: number;
+    }
+
+    export namespace Decl {
+      export var x = 10;
+    }
+  "#;
+
+  let ast = parse(source).expect("parse default export class merge fixture");
+  let lowered = lower_file(file, HirFileKind::Ts, &ast);
+  let hir = lower_to_ts_hir(&ast, &lowered, source);
+
+  let files: HashMap<FileId, Arc<HirFile>> = maplit::hashmap! { file => Arc::new(hir) };
+  let resolver = StaticResolver::new(HashMap::new());
+  let (_semantics, diags) = bind_ts_program(&[file], &resolver, |f| files.get(&f).unwrap().clone());
+
+  let ts2652: Vec<_> = diags.iter().filter(|d| d.code == "TS2652").collect();
+  assert_eq!(ts2652.len(), 2);
+
+  let positions = positions(source, "Decl");
+  assert_eq!(positions.len(), 3);
+  let expected: Vec<TextRange> = vec![
+    TextRange::new(positions[0], positions[0] + 4),
+    TextRange::new(positions[1], positions[1] + 4),
+  ];
+
+  let mut actual: Vec<TextRange> = ts2652.iter().map(|d| d.primary.range).collect();
+  actual.sort_by_key(|r| (r.start, r.end));
+  assert_eq!(actual, expected);
+}
+
+#[test]
+fn default_export_function_interface_namespace_merge_reports_ts2652_on_function_and_namespace() {
+  let file = FileId(5094);
+  let source = r#"
+    export default function Decl() {
+      return 0;
+    }
+
+    export interface Decl {
+      p1: number;
+      p2: number;
+    }
+
+    export namespace Decl {
+      export var x = 10;
+    }
+  "#;
+
+  let ast = parse(source).expect("parse default export function merge fixture");
+  let lowered = lower_file(file, HirFileKind::Ts, &ast);
+  let hir = lower_to_ts_hir(&ast, &lowered, source);
+
+  let files: HashMap<FileId, Arc<HirFile>> = maplit::hashmap! { file => Arc::new(hir) };
+  let resolver = StaticResolver::new(HashMap::new());
+  let (_semantics, diags) = bind_ts_program(&[file], &resolver, |f| files.get(&f).unwrap().clone());
+
+  let ts2652: Vec<_> = diags.iter().filter(|d| d.code == "TS2652").collect();
+  assert_eq!(ts2652.len(), 2);
+
+  let positions = positions(source, "Decl");
+  assert_eq!(positions.len(), 3);
+  let expected: Vec<TextRange> = vec![
+    TextRange::new(positions[0], positions[0] + 4),
+    TextRange::new(positions[2], positions[2] + 4),
+  ];
+
+  let mut actual: Vec<TextRange> = ts2652.iter().map(|d| d.primary.range).collect();
+  actual.sort_by_key(|r| (r.start, r.end));
+  assert_eq!(actual, expected);
+}
+
+#[test]
 fn binder_diagnostics_are_deterministic_across_orders_and_threads() {
   let file_a = FileId(6000);
   let file_b = FileId(6001);
