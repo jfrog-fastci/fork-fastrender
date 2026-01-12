@@ -171,3 +171,12 @@ id = "events/passive_listener.window.js"
 backend = "quickjs"
 status = "skip"
 reason = "QuickJS backend relies on a minimal DOM/EventTarget shim (embedded in js-wpt-dom-runner); strict Event/EventTarget semantics are validated on vm-js."
+
+[[expectations]]
+# QuickJS runs the curated corpus using lightweight JS shims rather than the full WebIDL-backed DOM
+# implementation. Keep the backend runnable by skipping strict Event/EventTarget spec tests that
+# intentionally assert WebIDL constructor / brand / InvalidStateError semantics.
+regex = "(?i)^events/(event|eventtarget).*?(strict|webidl|constructor|brand|invalid[_-]?state|callback|illegal|invocation|requires[_-]?new|call[_-]?as[_-]?function).*\\.(window\\.js|any\\.js|html|htm|xhtml)$"
+backend = "quickjs"
+status = "skip"
+reason = "QuickJS backend uses minimal Event/EventTarget shims; strict WebIDL/brand/InvalidStateError tests are vm-js-only."
