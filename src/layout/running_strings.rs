@@ -1,5 +1,6 @@
 use crate::layout::axis::FragmentAxes;
 use crate::style::content::{StringSetAssignment, StringSetValue};
+use crate::style::position::Position;
 use crate::style::ComputedStyle;
 use crate::tree::box_tree::{BoxNode, BoxTree, BoxType, MarkerContent};
 use crate::tree::fragment_tree::{FragmentContent, FragmentNode};
@@ -170,8 +171,24 @@ fn collect_string_set_events_inner(
   sequence: &mut usize,
 ) {
   let logical_bounds = node.logical_bounds();
-  let start = axes.abs_block_start(&logical_bounds, abs_start, parent_block_size);
-  let node_block_size = axes.block_size(&logical_bounds);
+  let abs_start = if abs_start.is_finite() { abs_start } else { 0.0 };
+  let parent_block_size = if parent_block_size.is_finite() {
+    parent_block_size
+  } else {
+    0.0
+  };
+  let start_raw = axes.abs_block_start(&logical_bounds, abs_start, parent_block_size);
+  let start = if start_raw.is_finite() { start_raw } else { abs_start };
+  let node_block_size_raw = axes.block_size(&logical_bounds);
+  let node_block_size = if node_block_size_raw.is_finite() {
+    node_block_size_raw
+  } else {
+    parent_block_size
+  };
+
+  if fragment_is_out_of_flow(node, styles_by_id, parent_by_id) {
+    return;
+  }
 
   let mut assignments: Option<&[StringSetAssignment]> = None;
   let mut assignments_in_flow = true;
@@ -247,6 +264,32 @@ fn collect_string_set_events_inner(
       sequence,
     );
   }
+}
+
+fn fragment_is_out_of_flow(
+  node: &FragmentNode,
+  styles_by_id: &HashMap<usize, Arc<ComputedStyle>>,
+  parent_by_id: &HashMap<usize, usize>,
+) -> bool {
+  if node
+    .style
+    .as_deref()
+    .is_some_and(|style| matches!(style.position, Position::Fixed | Position::Absolute))
+  {
+    return true;
+  }
+
+  let mut probe = fragment_box_id(node);
+  while let Some(box_id) = probe {
+    if let Some(style) = styles_by_id.get(&box_id) {
+      if matches!(style.position, Position::Fixed | Position::Absolute) {
+        return true;
+      }
+    }
+    probe = parent_by_id.get(&box_id).copied();
+  }
+
+  false
 }
 
 fn fragment_box_id(node: &FragmentNode) -> Option<usize> {
@@ -491,5 +534,80 @@ mod tests {
     });
     assert_eq!(reversed[0].name, "a");
     assert_eq!(reversed[1].name, "b");
+  }
+
+  #[test]
+  fn collect_string_set_events_ignores_out_of_flow_subtrees() {
+    let mut fixed_style = ComputedStyle::default();
+    fixed_style.position = Position::Fixed;
+    fixed_style.string_set = vec![StringSetAssignment {
+      name: "fixed".into(),
+      value: StringSetValue::Literal("bad".into()),
+    }];
+
+    let mut inner_style = ComputedStyle::default();
+    inner_style.string_set = vec![StringSetAssignment {
+      name: "inner".into(),
+      value: StringSetValue::Literal("also bad".into()),
+    }];
+
+    let fixed_inner_box = BoxNode::new_block(
+      Arc::new(inner_style),
+      FormattingContextType::Block,
+      vec![],
+    );
+    let fixed_box = BoxNode::new_block(
+      Arc::new(fixed_style),
+      FormattingContextType::Block,
+      vec![fixed_inner_box],
+    );
+
+    let mut normal_style = ComputedStyle::default();
+    normal_style.string_set = vec![StringSetAssignment {
+      name: "normal".into(),
+      value: StringSetValue::Literal("ok".into()),
+    }];
+    let normal_box = BoxNode::new_block(
+      Arc::new(normal_style),
+      FormattingContextType::Block,
+      vec![],
+    );
+
+    let root_box = BoxNode::new_block(
+      Arc::new(ComputedStyle::default()),
+      FormattingContextType::Block,
+      vec![fixed_box, normal_box],
+    );
+    let box_tree = BoxTree::new(root_box);
+
+    let fixed_box = &box_tree.root.children[0];
+    let fixed_inner_box = &fixed_box.children[0];
+    let normal_box = &box_tree.root.children[1];
+
+    let fixed_inner_frag = FragmentNode::new_block_with_id(
+      Rect::from_xywh(0.0, 0.0, 10.0, 0.0),
+      fixed_inner_box.id,
+      vec![],
+    );
+    let fixed_frag = FragmentNode::new_block_with_id(
+      Rect::from_xywh(0.0, 0.0, 10.0, 0.0),
+      fixed_box.id,
+      vec![fixed_inner_frag],
+    );
+    let normal_frag = FragmentNode::new_block_with_id(
+      Rect::from_xywh(0.0, 0.0, 10.0, 0.0),
+      normal_box.id,
+      vec![],
+    );
+    let root_frag = FragmentNode::new_block_with_id(
+      Rect::from_xywh(0.0, 0.0, 10.0, 10.0),
+      box_tree.root.id,
+      vec![fixed_frag, normal_frag],
+    );
+
+    let events = collect_string_set_events(&root_frag, &box_tree, FragmentAxes::default());
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].name, "normal");
+    assert_eq!(events[0].value, "ok");
   }
 }

@@ -974,6 +974,20 @@ struct CachedLayout {
   string_set_events: Vec<StringSetEvent>,
 }
 
+fn sort_string_set_events(events: &mut [StringSetEvent]) {
+  events.sort_by(|a, b| {
+    let a_pos = if a.abs_block.is_finite() { a.abs_block } else { 0.0 };
+    let b_pos = if b.abs_block.is_finite() { b.abs_block } else { 0.0 };
+    // Canonicalize `-0.0` to `0.0` so positions that compare equal also tie-break by `sequence`.
+    let a_pos = if a_pos == 0.0 { 0.0 } else { a_pos };
+    let b_pos = if b_pos == 0.0 { 0.0 } else { b_pos };
+    match a_pos.total_cmp(&b_pos) {
+      Ordering::Equal => a.sequence.cmp(&b.sequence),
+      other => other,
+    }
+  });
+}
+
 impl CachedLayout {
   fn from_root(
     mut root: FragmentNode,
@@ -1028,11 +1042,7 @@ impl CachedLayout {
     let forced = dedup_forced_boundaries(forced);
 
     let mut string_set_events = string_set_collector.collect(&root, axes);
-    string_set_events.sort_by(|a, b| {
-      a.abs_block
-        .total_cmp(&b.abs_block)
-        .then_with(|| a.sequence.cmp(&b.sequence))
-    });
+    sort_string_set_events(&mut string_set_events);
 
     Self {
       root,
@@ -3739,10 +3749,14 @@ fn compute_margin_box_bounds(
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::geometry::Rect;
+  use crate::layout::axis::FragmentAxes;
+  use crate::style::content::{StringSetAssignment, StringSetValue};
   use crate::style::content::RunningElementSelect;
-  use crate::style::display::Display;
+  use crate::style::display::{Display, FormattingContextType};
   use crate::style::ComputedStyle;
   use crate::text::font_db::FontDatabase;
+  use crate::tree::box_tree::{BoxNode, BoxTree};
   use crate::tree::fragment_tree::{FragmentContent, FragmentNode};
   use std::sync::Arc;
 
@@ -3774,6 +3788,57 @@ mod tests {
     let key = PageLayoutKey::new(&style, 1, 2);
     let key_neg = PageLayoutKey::new(&style_neg, 1, 2);
     assert_eq!(key, key_neg);
+  }
+
+  #[test]
+  fn string_set_event_sort_breaks_ties_by_traversal_sequence() {
+    let mut a_style = ComputedStyle::default();
+    a_style.string_set = vec![StringSetAssignment {
+      name: "a".into(),
+      value: StringSetValue::Literal("A".into()),
+    }];
+    let mut b_style = ComputedStyle::default();
+    b_style.string_set = vec![StringSetAssignment {
+      name: "b".into(),
+      value: StringSetValue::Literal("B".into()),
+    }];
+
+    let a_box = BoxNode::new_block(Arc::new(a_style), FormattingContextType::Block, vec![]);
+    let b_box = BoxNode::new_block(Arc::new(b_style), FormattingContextType::Block, vec![]);
+    let root_box = BoxNode::new_block(
+      Arc::new(ComputedStyle::default()),
+      FormattingContextType::Block,
+      vec![a_box, b_box],
+    );
+    let box_tree = BoxTree::new(root_box);
+    let a_id = box_tree.root.children[0].id;
+    let b_id = box_tree.root.children[1].id;
+
+    // Both children start at the same block position (0.0) to force a sort tie.
+    let a_frag =
+      FragmentNode::new_block_with_id(Rect::from_xywh(0.0, 0.0, 10.0, 0.0), a_id, vec![]);
+    let b_frag =
+      FragmentNode::new_block_with_id(Rect::from_xywh(0.0, 0.0, 10.0, 0.0), b_id, vec![]);
+    let root_frag = FragmentNode::new_block_with_id(
+      Rect::from_xywh(0.0, 0.0, 10.0, 0.0),
+      box_tree.root.id,
+      vec![a_frag, b_frag],
+    );
+
+    let collector = StringSetEventCollector::new(&box_tree);
+    let mut events = collector.collect(&root_frag, FragmentAxes::default());
+    assert_eq!(events.len(), 2);
+    assert_eq!(events[0].name, "a");
+    assert_eq!(events[1].name, "b");
+    assert!(events[0].sequence < events[1].sequence);
+
+    // Reverse the events to ensure the sort tie-break relies on `sequence`, not input order or sort
+    // stability.
+    events.reverse();
+    sort_string_set_events(&mut events);
+
+    assert_eq!(events[0].name, "a");
+    assert_eq!(events[1].name, "b");
   }
 
   #[test]
