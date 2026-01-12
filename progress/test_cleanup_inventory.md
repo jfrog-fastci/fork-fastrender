@@ -39,7 +39,7 @@ section in sync with `ls tests/*.rs`.
 | `tests/bin_tests.rs` | integration | `tests/integration.rs::bin` | Top-level harness removed; suite now lives under `tests/bin/**`. | DONE |
 | `tests/browser_integration_tests.rs` | integration | `tests/integration.rs::browser_integration` | Top-level harness removed and consolidated into `tests/integration.rs`. Browser integration no longer mutates process-wide env vars at init; tests needing serialization use `stage_listener_test_lock()` / `common::global_test_lock()`. | DONE |
 | `tests/browser_tab_render_interleaving.rs` | integration | `tests/integration.rs::browser_integration::browser_tab_render_interleaving` | Moved into `tests/browser_integration/browser_tab_render_interleaving.rs`. | DONE |
-| `tests/` `image_integration_tests.rs` | delete | delete | Backwards-compat harness for `tests/` `image_integration/**`; redundant with `tests/integration.rs::image_integration`. | DONE |
+| `tests/` `image_integration` `_tests.rs` | delete | delete | Backwards-compat harness for `tests/` `image_integration/**`; redundant with `tests/integration.rs::image_integration`. | DONE |
 | `tests/session_autosave.rs` | integration | `tests/integration.rs::ui::session_autosave` | Moved into `tests/ui/session_autosave.rs` (feature-gated: `browser_ui`). | DONE |
 | `tests/svg_integration.rs` | delete | delete | No-op placeholder integration-test crate; removed to avoid an extra test binary. | DONE |
 | `tests/bundle_vary_manifest_key_test.rs` | unit | `src/resource/bundle.rs` | Moved into bundle module unit tests. | DONE |
