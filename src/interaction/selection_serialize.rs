@@ -217,7 +217,7 @@ fn expand_visible_box_ids_for_text_combine_upright_groups(
       if !matches!(next.box_type, BoxType::Text(_)) {
         break;
       }
-      if !Arc::ptr_eq(&style_arc, &next.style) {
+      if !Arc::ptr_eq(&style_arc, &next.style) && style_arc.as_ref() != next.style.as_ref() {
         break;
       }
       if !is_vertical_typographic_mode(next.style.writing_mode)

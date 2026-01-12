@@ -1507,7 +1507,7 @@ impl InlineFormattingContext {
             };
             let next_override = crate::layout::style_override::style_override_for(next.id);
             let next_style = next_override.unwrap_or_else(|| next.style.clone());
-            if !Arc::ptr_eq(&style_arc, &next_style) {
+            if !Arc::ptr_eq(&style_arc, &next_style) && style_arc.as_ref() != next_style.as_ref() {
               break;
             }
             if !is_vertical_typographic_mode(next_style.writing_mode)
