@@ -128,6 +128,65 @@ fn object_define_property_defines_value() -> Result<(), VmError> {
 }
 
 #[test]
+fn object_define_property_reads_descriptor_fields_via_get() -> Result<(), VmError> {
+  let mut rt = TestRealm::new()?;
+  let object = rt.realm.intrinsics().object_constructor();
+
+  let getter_call_id = rt.vm.register_native_call(return_two_native)?;
+
+  let mut scope = rt.heap.scope();
+
+  let define_property = get_own_data_property(&mut scope, object, "defineProperty")?
+    .expect("Object.defineProperty should exist");
+  let Value::Object(define_property) = define_property else {
+    panic!("Object.defineProperty should be a function object");
+  };
+
+  let o = scope.alloc_object()?;
+  scope.push_root(Value::Object(o))?;
+
+  let desc = scope.alloc_object()?;
+  scope.push_root(Value::Object(desc))?;
+
+  // Define an accessor `value` property so ToPropertyDescriptor must use `Get` (not `GetOwn`).
+  let getter_name = scope.alloc_string("getValue")?;
+  let getter = scope.alloc_native_function(getter_call_id, None, getter_name, 0)?;
+  scope.push_root(Value::Object(getter))?;
+
+  let value_key = PropertyKey::from_string(scope.alloc_string("value")?);
+  scope.define_property(
+    desc,
+    value_key,
+    PropertyDescriptor {
+      enumerable: true,
+      configurable: true,
+      kind: PropertyKind::Accessor {
+        get: Value::Object(getter),
+        set: Value::Undefined,
+      },
+    },
+  )?;
+
+  let x = scope.alloc_string("x")?;
+  let args = [Value::Object(o), Value::String(x), Value::Object(desc)];
+
+  let _ = rt.vm.call_without_host(
+    &mut scope,
+    Value::Object(define_property),
+    Value::Object(object),
+    &args,
+  )?;
+
+  let x_key = PropertyKey::from_string(x);
+  assert_eq!(
+    scope.heap().object_get_own_data_property_value(o, &x_key)?,
+    Some(Value::Number(2.0))
+  );
+
+  Ok(())
+}
+
+#[test]
 fn object_define_property_boxes_primitive_target() -> Result<(), VmError> {
   let mut rt = TestRealm::new()?;
   let object = rt.realm.intrinsics().object_constructor();

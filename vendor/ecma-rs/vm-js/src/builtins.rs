@@ -1,5 +1,5 @@
 use crate::function::{CallHandler, FunctionData, ThisMode};
-use crate::property::{PropertyDescriptor, PropertyDescriptorPatch, PropertyKey, PropertyKind};
+use crate::property::{PropertyDescriptor, PropertyKey, PropertyKind};
 use crate::string::JsString;
 use crate::{
   heap::TypedArrayKind,
@@ -203,25 +203,6 @@ fn root_property_key(scope: &mut Scope<'_>, key: PropertyKey) -> Result<(), VmEr
     }
   }
   Ok(())
-}
-
-fn get_own_data_property_value_by_name(
-  scope: &mut Scope<'_>,
-  obj: GcObject,
-  name: &str,
-) -> Result<Option<Value>, VmError> {
-  let mut scope = scope.reborrow();
-  scope.push_root(Value::Object(obj))?;
-  let key = PropertyKey::from_string(scope.alloc_string(name)?);
-  let Some(desc) = scope.heap().object_get_own_property(obj, &key)? else {
-    return Ok(None);
-  };
-  match desc.kind {
-    PropertyKind::Data { value, .. } => Ok(Some(value)),
-    PropertyKind::Accessor { .. } => Err(VmError::Unimplemented(
-      "accessor properties are not yet supported",
-    )),
-  }
 }
 
 pub fn function_prototype_call(
@@ -440,29 +421,7 @@ pub fn object_define_property(
   let desc_obj = require_object(args.get(2).copied().unwrap_or(Value::Undefined))?;
   scope.push_root(Value::Object(desc_obj))?;
 
-  let value = get_own_data_property_value_by_name(&mut scope, desc_obj, "value")?;
-  let writable = get_own_data_property_value_by_name(&mut scope, desc_obj, "writable")?
-    .map(|v| scope.heap().to_boolean(v))
-    .transpose()?;
-  let enumerable = get_own_data_property_value_by_name(&mut scope, desc_obj, "enumerable")?
-    .map(|v| scope.heap().to_boolean(v))
-    .transpose()?;
-  let configurable = get_own_data_property_value_by_name(&mut scope, desc_obj, "configurable")?
-    .map(|v| scope.heap().to_boolean(v))
-    .transpose()?;
-  let get = get_own_data_property_value_by_name(&mut scope, desc_obj, "get")?;
-  let set = get_own_data_property_value_by_name(&mut scope, desc_obj, "set")?;
-
-  let patch = PropertyDescriptorPatch {
-    enumerable,
-    configurable,
-    value,
-    writable,
-    get,
-    set,
-  };
-  patch.validate()?;
-
+  let patch = crate::to_property_descriptor_with_host_and_hooks(vm, &mut scope, host, hooks, desc_obj)?;
   let ok = scope.define_own_property_with_tick(target, key, patch, || vm.tick())?;
   if !ok {
     return Err(VmError::TypeError("DefineOwnProperty rejected"));
@@ -1114,30 +1073,7 @@ pub fn reflect_define_property(
   let desc_obj = require_object(args.get(2).copied().unwrap_or(Value::Undefined))?;
   scope.push_root(Value::Object(desc_obj))?;
 
-  // Minimal `ToPropertyDescriptor` support: read own *data* properties only.
-  let value = get_own_data_property_value_by_name(&mut scope, desc_obj, "value")?;
-  let writable = get_own_data_property_value_by_name(&mut scope, desc_obj, "writable")?
-    .map(|v| scope.heap().to_boolean(v))
-    .transpose()?;
-  let enumerable = get_own_data_property_value_by_name(&mut scope, desc_obj, "enumerable")?
-    .map(|v| scope.heap().to_boolean(v))
-    .transpose()?;
-  let configurable = get_own_data_property_value_by_name(&mut scope, desc_obj, "configurable")?
-    .map(|v| scope.heap().to_boolean(v))
-    .transpose()?;
-  let get = get_own_data_property_value_by_name(&mut scope, desc_obj, "get")?;
-  let set = get_own_data_property_value_by_name(&mut scope, desc_obj, "set")?;
-
-  let patch = PropertyDescriptorPatch {
-    enumerable,
-    configurable,
-    value,
-    writable,
-    get,
-    set,
-  };
-  patch.validate()?;
-
+  let patch = crate::to_property_descriptor_with_host_and_hooks(vm, &mut scope, host, hooks, desc_obj)?;
   let ok = scope.define_own_property_with_tick(target, key, patch, || vm.tick())?;
   Ok(Value::Bool(ok))
 }
@@ -1216,7 +1152,7 @@ pub fn reflect_get_own_property_descriptor(
     return Ok(Value::Undefined);
   };
 
-  let desc_obj = crate::property_descriptor_ops::from_property_descriptor(&mut scope, desc)?;
+  let desc_obj = crate::from_property_descriptor(&mut scope, desc)?;
   Ok(Value::Object(desc_obj))
 }
 
