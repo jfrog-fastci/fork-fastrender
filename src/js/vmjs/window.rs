@@ -1293,6 +1293,34 @@ mod tests {
 
     let out = host.exec_script(
       "(() => {\n\
+        return Object.prototype.hasOwnProperty.call(document, 'removeEventListener');\n\
+      })()",
+    )?;
+    assert_eq!(out, Value::Bool(false));
+
+    let out = host.exec_script(
+      "(() => {\n\
+        return document.removeEventListener === EventTarget.prototype.removeEventListener;\n\
+      })()",
+    )?;
+    assert_eq!(out, Value::Bool(true));
+
+    let out = host.exec_script(
+      "(() => {\n\
+        return Object.prototype.hasOwnProperty.call(document, 'dispatchEvent');\n\
+      })()",
+    )?;
+    assert_eq!(out, Value::Bool(false));
+
+    let out = host.exec_script(
+      "(() => {\n\
+        return document.dispatchEvent === EventTarget.prototype.dispatchEvent;\n\
+      })()",
+    )?;
+    assert_eq!(out, Value::Bool(true));
+
+    let out = host.exec_script(
+      "(() => {\n\
         const el = document.createElement('div');\n\
         return Object.prototype.hasOwnProperty.call(el, 'addEventListener');\n\
       })()",
@@ -1303,6 +1331,38 @@ mod tests {
       "(() => {\n\
         const el = document.createElement('div');\n\
         return el.addEventListener === EventTarget.prototype.addEventListener;\n\
+      })()",
+    )?;
+    assert_eq!(out, Value::Bool(true));
+
+    let out = host.exec_script(
+      "(() => {\n\
+        const el = document.createElement('div');\n\
+        return Object.prototype.hasOwnProperty.call(el, 'removeEventListener');\n\
+      })()",
+    )?;
+    assert_eq!(out, Value::Bool(false));
+
+    let out = host.exec_script(
+      "(() => {\n\
+        const el = document.createElement('div');\n\
+        return el.removeEventListener === EventTarget.prototype.removeEventListener;\n\
+      })()",
+    )?;
+    assert_eq!(out, Value::Bool(true));
+
+    let out = host.exec_script(
+      "(() => {\n\
+        const el = document.createElement('div');\n\
+        return Object.prototype.hasOwnProperty.call(el, 'dispatchEvent');\n\
+      })()",
+    )?;
+    assert_eq!(out, Value::Bool(false));
+
+    let out = host.exec_script(
+      "(() => {\n\
+        const el = document.createElement('div');\n\
+        return el.dispatchEvent === EventTarget.prototype.dispatchEvent;\n\
       })()",
     )?;
     assert_eq!(out, Value::Bool(true));
@@ -1318,6 +1378,20 @@ mod tests {
       })()",
     )?;
     assert!(matches!(out, Value::Number(n) if n == 1.0));
+
+    // Ensure removeEventListener works via the inherited methods too.
+    let out = host.exec_script(
+      "(() => {\n\
+        const el = document.createElement('div');\n\
+        let n = 0;\n\
+        function handler() { n++; }\n\
+        el.addEventListener('x', handler);\n\
+        el.removeEventListener('x', handler);\n\
+        el.dispatchEvent(new Event('x'));\n\
+        return n;\n\
+      })()",
+    )?;
+    assert!(matches!(out, Value::Number(n) if n == 0.0));
 
     Ok(())
   }
