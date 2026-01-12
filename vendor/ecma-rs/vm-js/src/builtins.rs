@@ -7722,7 +7722,21 @@ fn get_data_property_value(
   obj: GcObject,
   key: &PropertyKey,
 ) -> Result<Option<Value>, VmError> {
-  let Some(desc) = scope.heap().get_property_with_tick(obj, key, || vm.tick())? else {
+  // These lookups are used for engine-private "internal slot" marker properties (stored under
+  // unreachable symbols). They are *not* full spec `Get` operations:
+  // - They only consult **own** properties (internal slots are not inherited).
+  // - Proxy objects are treated as lacking internal slots, even if their target would have them.
+  //
+  // This avoids `InvalidHandle` from heap-level property scans on Proxy objects and matches
+  // `RequireInternalSlot`-style brand checks from ECMA-262.
+  if scope.heap().is_proxy_object(obj) {
+    return Ok(None);
+  }
+
+  let Some(desc) = scope
+    .heap()
+    .object_get_own_property_with_tick(obj, key, || vm.tick())?
+  else {
     return Ok(None);
   };
   match desc.kind {

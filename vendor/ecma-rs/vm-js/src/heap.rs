@@ -4235,6 +4235,18 @@ impl Heap {
     obj: GcObject,
     key: &PropertyKey,
   ) -> Result<Option<Value>, VmError> {
+    // Proxy objects do not have an ordinary property table (`ObjectBase`) in the heap; the only
+    // correct way to query their properties is via `Scope` + `Vm` so Proxy traps can run.
+    //
+    // This helper is used by many built-ins for *internal slot* style checks (symbol-keyed marker
+    // properties that are unreachable from user code). Per spec, Proxy objects never have these
+    // internal slots, even when their target would.
+    //
+    // Treat Proxies as "missing property" instead of surfacing `InvalidHandle` so hostile JS like
+    // `new Proxy([].values(), {}).next()` throws a TypeError rather than tripping an engine bug.
+    if self.is_proxy_object(obj) {
+      return Ok(None);
+    }
     let Some(desc) = self.object_get_own_property(obj, key)? else {
       return Ok(None);
     };
