@@ -3567,22 +3567,32 @@ fn collect_break_opportunities(
   // Grid fragments may omit `grid_tracks` while retaining `grid_fragmentation` placement info. Use
   // the placement info alone to identify in-flow grid item children so we still suppress internal
   // forced breaks (which must not propagate to siblings; CSS Grid 2 §Fragmenting Grid Layout).
-  let grid_item_count = grid_items
+  let grid_item_count_parallel_flow = grid_items
     .as_ref()
     .map(|grid_items| grid_items.items.len().min(node.children.len()))
     .unwrap_or(0);
+  // Break hints (`break-before/after`) can only be remapped to grid line boundaries when we have
+  // physical track ranges for the fragmentation axis. When those ranges are missing (or empty),
+  // fall back to treating authored break hints as applying at the grid item's own fragment
+  // boundary so they still influence pagination.
+  let mut grid_item_count_break_hint_suppression = 0usize;
 
   let grid_tracks = node
     .grid_tracks
     .as_deref()
     .map(|tracks| grid_tracks_in_fragmentation_axis(tracks, axis));
-  let grid_item_break_hints_use_tracks =
-    grid_item_count > 0 && grid_tracks.is_some_and(|tracks| !tracks.is_empty());
-  let grid_item_break_hints_fallback_to_edges = grid_item_count > 0 && !grid_item_break_hints_use_tracks;
+  let grid_item_break_hints_use_tracks = grid_item_count_parallel_flow > 0
+    && grid_tracks.is_some_and(|tracks| !tracks.is_empty());
+  let grid_item_break_hints_fallback_to_edges =
+    grid_item_count_parallel_flow > 0 && !grid_item_break_hints_use_tracks;
+
+  if grid_item_break_hints_use_tracks {
+    grid_item_count_break_hint_suppression = grid_item_count_parallel_flow;
+  }
 
   if let (Some(tracks), Some(grid_items)) = (grid_tracks, grid_items) {
     if grid_item_break_hints_use_tracks {
-      let in_flow_count = grid_item_count;
+      let in_flow_count = grid_item_count_parallel_flow;
 
       // One slot per grid line (track_count + 1). Index `i` corresponds to the boundary at line
       // `i + 1` in the fragmentation axis.
@@ -3850,7 +3860,7 @@ fn collect_break_opportunities(
       });
     }
 
-    let child_break_before = if idx < grid_item_count && grid_item_break_hints_use_tracks {
+    let child_break_before = if idx < grid_item_count_break_hint_suppression {
       BreakBetween::Auto
     } else {
       child_style.break_before
@@ -3894,7 +3904,7 @@ fn collect_break_opportunities(
 
     if grid_item_break_hints_fallback_to_edges
       && idx > 0
-      && idx < grid_item_count
+      && idx < grid_item_count_parallel_flow
       && !matches!(child_style.break_before, BreakBetween::Auto)
     {
       let mut strength = combine_breaks(BreakBetween::Auto, child_style.break_before, context);
@@ -3920,7 +3930,7 @@ fn collect_break_opportunities(
     // In pagination, treat in-flow grid items as parallel fragmentation flows so their internal
     // break opportunities (including forced breaks) do not affect sibling items (CSS Grid 2
     // §Fragmenting Grid Layout).
-    let is_in_flow_grid_item = idx < grid_item_count && child_style.position.is_in_flow();
+    let is_in_flow_grid_item = idx < grid_item_count_parallel_flow && child_style.position.is_in_flow();
     let parallel_grid_item = grid_items
       .and_then(|info| info.items.get(idx))
       .is_some_and(|placement| grid_item_spans_single_track(placement, axis));
@@ -3939,7 +3949,7 @@ fn collect_break_opportunities(
       // those spanning multiple tracks), but still collect non-forced opportunities.
       let child_suppress_forced_breaks = suppress_forced_breaks
         || (is_row_flex_container_in_context && child_style.position.is_in_flow())
-        || (idx < grid_item_count && child_style.position.is_in_flow());
+        || (idx < grid_item_count_parallel_flow && child_style.position.is_in_flow());
       collect_break_opportunities(
         child,
         child_abs_start,
@@ -3954,12 +3964,12 @@ fn collect_break_opportunities(
       );
     }
 
-    let child_break_after = if idx < grid_item_count && grid_item_break_hints_use_tracks {
+    let child_break_after = if idx < grid_item_count_break_hint_suppression {
       BreakBetween::Auto
     } else {
       child_style.break_after
     };
-    let next_break_before = if idx + 1 < grid_item_count {
+    let next_break_before = if idx + 1 < grid_item_count_break_hint_suppression {
       BreakBetween::Auto
     } else {
       next_style.break_before
@@ -6472,6 +6482,81 @@ mod tests {
     assert!(
       (shifted_part2_start - 100.0).abs() < BREAK_EPSILON,
       "expected the continuation content to be shifted to the next fragmentainer boundary (x≈100), got x={shifted_part2_start}"
+    );
+  }
+
+  #[test]
+  fn grid_item_break_hints_are_honoured_without_grid_tracks() {
+    // Regression: some fragment trees carry only `grid_fragmentation` placement info (used to
+    // identify in-flow grid items) without physical `grid_tracks` ranges. In that case, the
+    // authored break hints on the grid items themselves must still be treated as break
+    // opportunities at the item boundaries.
+    let fragmentainer_size = 100.0;
+
+    let mut grid_style = ComputedStyle::default();
+    grid_style.display = Display::Grid;
+    let grid_style = Arc::new(grid_style);
+
+    let mut first_style = ComputedStyle::default();
+    first_style.display = Display::Block;
+    first_style.break_after = BreakBetween::Page;
+    let first_style = Arc::new(first_style);
+
+    let mut first =
+      FragmentNode::new_block_styled(Rect::from_xywh(0.0, 0.0, 100.0, 20.0), vec![], first_style);
+    first.content = FragmentContent::Block { box_id: Some(1) };
+
+    let mut second_style = ComputedStyle::default();
+    second_style.display = Display::Block;
+    let second_style = Arc::new(second_style);
+
+    let mut second =
+      FragmentNode::new_block_styled(Rect::from_xywh(0.0, 20.0, 100.0, 20.0), vec![], second_style);
+    second.content = FragmentContent::Block { box_id: Some(2) };
+
+    let mut grid = FragmentNode::new_block_styled(
+      Rect::from_xywh(0.0, 0.0, 100.0, 40.0),
+      vec![first, second],
+      grid_style,
+    );
+    grid.grid_fragmentation = Some(Arc::new(GridFragmentationInfo {
+      items: vec![
+        GridItemFragmentationData {
+          box_id: 1,
+          row_start: 1,
+          row_end: 2,
+          column_start: 1,
+          column_end: 2,
+        },
+        GridItemFragmentationData {
+          box_id: 2,
+          row_start: 2,
+          row_end: 3,
+          column_start: 1,
+          column_end: 2,
+        },
+      ],
+    }));
+
+    let mut analyzer = FragmentationAnalyzer::new(
+      &grid,
+      FragmentationContext::Page,
+      default_axes(),
+      true,
+      Some(fragmentainer_size),
+    );
+    let total_extent = analyzer.content_extent().max(fragmentainer_size);
+    let boundaries = analyzer.boundaries(fragmentainer_size, total_extent).unwrap();
+
+    assert!(
+      analyzer.is_forced_break_at(20.0),
+      "expected a forced break opportunity at the first grid item boundary (pos=20), got {boundaries:?}"
+    );
+    assert!(
+      boundaries
+        .iter()
+        .any(|b| (*b - 20.0).abs() < BREAK_EPSILON && *b > BREAK_EPSILON),
+      "expected pagination to include a boundary at the first grid item (pos=20), got {boundaries:?}"
     );
   }
 
