@@ -178,12 +178,12 @@ impl VmJsModuleLoader {
     let module_base_url_by_id = &mut self.module_base_url_by_id;
 
     let options = {
-      let (_, window_realm) = host.vm_host_and_window_realm();
+      let (_, window_realm) = host.vm_host_and_window_realm()?;
       window_realm.js_execution_options()
     };
 
     let mut hooks = VmJsModuleHooks::<Host> {
-      inner: VmJsEventLoopHooks::<Host>::new_with_host(host),
+      inner: VmJsEventLoopHooks::<Host>::new_with_host(host)?,
       fetcher,
       document_url: document_url.as_str(),
       document_origin,
@@ -218,7 +218,7 @@ impl VmJsModuleLoader {
     // Phase 1: fetch/parse the entry module and load its static dependency graph.
     if outcome.is_ok() {
       let load_result: std::result::Result<(), Error> = (|| {
-        let (_vm_host, window_realm) = host.vm_host_and_window_realm();
+        let (_vm_host, window_realm) = host.vm_host_and_window_realm()?;
         let budget = window_realm.vm_budget_now();
         let (vm, _realm, heap) = window_realm.vm_realm_and_heap_mut();
         let mut vm = vm.push_budget(budget);
@@ -327,7 +327,7 @@ impl VmJsModuleLoader {
           outcome = Err(err);
         }
 
-        let (_vm_host, window_realm) = host.vm_host_and_window_realm();
+        let (_vm_host, window_realm) = host.vm_host_and_window_realm()?;
         let heap = window_realm.heap_mut();
         let mut scope = heap.scope();
         if outcome.is_ok() {
@@ -342,7 +342,7 @@ impl VmJsModuleLoader {
     // Phase 2: link + evaluate.
     if let (Ok(_), Some(entry_id)) = (&outcome, entry_module) {
       let eval_result: std::result::Result<(), Error> = (|| {
-        let (vm_host, window_realm) = host.vm_host_and_window_realm();
+        let (vm_host, window_realm) = host.vm_host_and_window_realm()?;
         let budget = window_realm.vm_budget_now();
         let (vm, realm, heap) = window_realm.vm_realm_and_heap_mut();
         let mut vm = vm.push_budget(budget);
@@ -419,7 +419,7 @@ impl VmJsModuleLoader {
         }
 
         {
-          let (_vm_host, window_realm) = host.vm_host_and_window_realm();
+          let (_vm_host, window_realm) = host.vm_host_and_window_realm()?;
           let heap = window_realm.heap_mut();
           let mut scope = heap.scope();
           if outcome.is_ok() {
@@ -437,7 +437,7 @@ impl VmJsModuleLoader {
         }
 
         if abort_async_eval {
-          let (_vm_host, window_realm) = host.vm_host_and_window_realm();
+          let (_vm_host, window_realm) = host.vm_host_and_window_realm()?;
           let budget = window_realm.vm_budget_now();
           let (vm, _realm, heap) = window_realm.vm_realm_and_heap_mut();
           let mut vm = vm.push_budget(budget);
@@ -450,7 +450,7 @@ impl VmJsModuleLoader {
 
     // Final cleanup: ensure any promise roots are removed even on error.
     {
-      let (_vm_host, window_realm) = host.vm_host_and_window_realm();
+      let (_vm_host, window_realm) = host.vm_host_and_window_realm()?;
       let heap = window_realm.heap_mut();
       if let Some(root) = load_promise_root.take() {
         heap.remove_root(root);
@@ -461,7 +461,7 @@ impl VmJsModuleLoader {
     }
 
     let hooks_finish_err = {
-      let (_vm_host, window_realm) = host.vm_host_and_window_realm();
+      let (_vm_host, window_realm) = host.vm_host_and_window_realm()?;
       hooks.finish(window_realm.heap_mut())
     };
 
@@ -2079,8 +2079,10 @@ mod tests {
   }
 
   impl WindowRealmHost for DispatchHost {
-    fn vm_host_and_window_realm(&mut self) -> (&mut dyn VmHost, &mut WindowRealm) {
-      (&mut self.vm_host, &mut self.window)
+    fn vm_host_and_window_realm(
+      &mut self,
+    ) -> crate::error::Result<(&mut dyn VmHost, &mut WindowRealm)> {
+      Ok((&mut self.vm_host, &mut self.window))
     }
 
     fn webidl_bindings_host(&mut self) -> Option<&mut dyn WebIdlBindingsHost> {
@@ -2134,6 +2136,40 @@ mod tests {
     )?;
 
     Ok(())
+  }
+
+  #[test]
+  fn module_evaluation_fails_cleanly_when_window_realm_is_unavailable() {
+    struct NoRealmHost;
+
+    impl WindowRealmHost for NoRealmHost {
+      fn vm_host_and_window_realm(
+        &mut self,
+      ) -> crate::error::Result<(&mut dyn VmHost, &mut WindowRealm)> {
+        Err(crate::error::Error::Other(
+          "no WindowRealm available".to_string(),
+        ))
+      }
+    }
+
+    let fetcher: Arc<dyn ResourceFetcher> = Arc::new(MapFetcher::default());
+    let mut loader = VmJsModuleLoader::new(fetcher, "https://example.invalid/");
+    let mut host = NoRealmHost;
+    let mut event_loop = EventLoop::<NoRealmHost>::new();
+
+    let err = loader
+      .evaluate_inline_module(
+        &mut host,
+        &mut event_loop,
+        "https://example.invalid/inline.js",
+        "https://example.invalid/",
+        "export default 1;",
+      )
+      .expect_err("expected module evaluation to fail without a WindowRealm");
+    assert!(
+      err.to_string().contains("no WindowRealm available"),
+      "unexpected error: {err}"
+    );
   }
 
   #[test]

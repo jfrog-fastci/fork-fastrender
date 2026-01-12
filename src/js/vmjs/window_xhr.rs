@@ -1800,7 +1800,7 @@ fn xhr_send_native<Host: WindowRealmHost + 'static>(
         .ok()
         .flatten();
         if let Some(root) = root {
-          let window_realm = host.window_realm();
+          let window_realm = host.window_realm()?;
           window_realm.heap_mut().remove_root(root);
         }
         return Err(queue_err);
@@ -1832,7 +1832,7 @@ fn xhr_send_native<Host: WindowRealmHost + 'static>(
         .ok()
         .flatten();
         if let Some(root) = root {
-          let window_realm = host.window_realm();
+          let window_realm = host.window_realm()?;
           window_realm.heap_mut().remove_root(root);
         }
         return Err(queue_err);
@@ -1864,7 +1864,7 @@ fn xhr_send_native<Host: WindowRealmHost + 'static>(
         .ok()
         .flatten();
         if let Some(root) = root {
-          let window_realm = host.window_realm();
+          let window_realm = host.window_realm()?;
           window_realm.heap_mut().remove_root(root);
         }
         return Err(queue_err);
@@ -1907,7 +1907,7 @@ fn xhr_send_native<Host: WindowRealmHost + 'static>(
       .ok()
       .flatten();
       if let Some(root) = root {
-        let window_realm = host.window_realm();
+        let window_realm = host.window_realm()?;
         window_realm.heap_mut().remove_root(root);
       }
       return Err(queue_err);
@@ -2400,9 +2400,9 @@ fn dispatch_xhr_events<Host: WindowRealmHost + 'static>(
   events: &[&'static str],
   finalize: bool,
 ) -> crate::error::Result<()> {
-  let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host);
+  let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host)?;
   hooks.set_event_loop(event_loop);
-  let (vm_host, window_realm) = host.vm_host_and_window_realm();
+  let (vm_host, window_realm) = host.vm_host_and_window_realm()?;
   window_realm.reset_interrupt();
   let budget = window_realm.vm_budget_now();
   let (vm, heap) = window_realm.vm_and_heap_mut();
@@ -3012,8 +3012,10 @@ mod tests {
   }
 
   impl WindowRealmHost for Host {
-    fn vm_host_and_window_realm(&mut self) -> (&mut dyn VmHost, &mut WindowRealm) {
-      (&mut self.host_ctx, &mut self.window)
+    fn vm_host_and_window_realm(
+      &mut self,
+    ) -> crate::error::Result<(&mut dyn VmHost, &mut WindowRealm)> {
+      Ok((&mut self.host_ctx, &mut self.window))
     }
   }
 
@@ -3066,9 +3068,9 @@ mod tests {
     let mut event_loop = EventLoop::<Host>::new();
 
     event_loop.queue_task(TaskSource::Script, |host, event_loop| {
-      let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host);
+      let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host)?;
       hooks.set_event_loop(event_loop);
-      let (vm_host, window) = host.vm_host_and_window_realm();
+      let (vm_host, window) = host.vm_host_and_window_realm()?;
       window.reset_interrupt();
       let result = window.exec_script_with_host_and_hooks(
         vm_host,
@@ -3155,9 +3157,9 @@ mod tests {
     let mut event_loop = EventLoop::<Host>::new();
 
     event_loop.queue_task(TaskSource::Script, |host, event_loop| {
-      let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host);
+      let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host)?;
       hooks.set_event_loop(event_loop);
-      let (vm_host, window) = host.vm_host_and_window_realm();
+      let (vm_host, window) = host.vm_host_and_window_realm()?;
       window.reset_interrupt();
       let result = window.exec_script_with_host_and_hooks(
         vm_host,
@@ -3198,9 +3200,9 @@ mod tests {
     let mut event_loop = EventLoop::<Host>::new();
 
     event_loop.queue_task(TaskSource::Script, |host, event_loop| {
-      let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host);
+      let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host)?;
       hooks.set_event_loop(event_loop);
-      let (vm_host, window) = host.vm_host_and_window_realm();
+      let (vm_host, window) = host.vm_host_and_window_realm()?;
       window.reset_interrupt();
       let result = window.exec_script_with_host_and_hooks(
         vm_host,
@@ -3395,9 +3397,9 @@ mod tests {
     let mut event_loop = EventLoop::<Host>::new();
 
     event_loop.queue_task(TaskSource::Script, |host, event_loop| {
-      let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host);
+      let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host)?;
       hooks.set_event_loop(event_loop);
-      let (vm_host, window) = host.vm_host_and_window_realm();
+      let (vm_host, window) = host.vm_host_and_window_realm()?;
       window.reset_interrupt();
       let result = window.exec_script_with_host_and_hooks(
         vm_host,
@@ -3435,9 +3437,9 @@ mod tests {
     let mut event_loop = EventLoop::<Host>::new();
 
     event_loop.queue_task(TaskSource::Script, |host, event_loop| {
-      let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host);
+      let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host)?;
       hooks.set_event_loop(event_loop);
-      let (vm_host, window) = host.vm_host_and_window_realm();
+      let (vm_host, window) = host.vm_host_and_window_realm()?;
       window.reset_interrupt();
       let result = window.exec_script_with_host_and_hooks(
         vm_host,
@@ -3477,9 +3479,9 @@ mod tests {
     let mut event_loop = EventLoop::<Host>::new();
 
     event_loop.queue_task(TaskSource::Script, |host, event_loop| {
-      let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host);
+      let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host)?;
       hooks.set_event_loop(event_loop);
-      let (vm_host, window) = host.vm_host_and_window_realm();
+      let (vm_host, window) = host.vm_host_and_window_realm()?;
       window.reset_interrupt();
       let result = window.exec_script_with_host_and_hooks(
         vm_host,
@@ -3523,9 +3525,9 @@ mod tests {
     let mut event_loop = EventLoop::<Host>::new();
 
     event_loop.queue_task(TaskSource::Script, |host, event_loop| {
-      let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host);
+      let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host)?;
       hooks.set_event_loop(event_loop);
-      let (vm_host, window) = host.vm_host_and_window_realm();
+      let (vm_host, window) = host.vm_host_and_window_realm()?;
       window.reset_interrupt();
       let result = window.exec_script_with_host_and_hooks(
         vm_host,
@@ -3560,9 +3562,9 @@ mod tests {
     let mut event_loop = EventLoop::<Host>::new();
 
     event_loop.queue_task(TaskSource::Script, |host, event_loop| {
-      let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host);
+      let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host)?;
       hooks.set_event_loop(event_loop);
-      let (vm_host, window) = host.vm_host_and_window_realm();
+      let (vm_host, window) = host.vm_host_and_window_realm()?;
       window.reset_interrupt();
       let result = window.exec_script_with_host_and_hooks(
         vm_host,
@@ -3613,9 +3615,9 @@ mod tests {
     let mut event_loop = EventLoop::<Host>::new();
 
     event_loop.queue_task(TaskSource::Script, |host, event_loop| {
-      let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host);
+      let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host)?;
       hooks.set_event_loop(event_loop);
-      let (vm_host, window) = host.vm_host_and_window_realm();
+      let (vm_host, window) = host.vm_host_and_window_realm()?;
       window.reset_interrupt();
       let result = window.exec_script_with_host_and_hooks(
         vm_host,
@@ -3656,9 +3658,9 @@ mod tests {
     let mut event_loop = EventLoop::<Host>::new();
 
     event_loop.queue_task(TaskSource::Script, |host, event_loop| {
-      let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host);
+      let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host)?;
       hooks.set_event_loop(event_loop);
-      let (vm_host, window) = host.vm_host_and_window_realm();
+      let (vm_host, window) = host.vm_host_and_window_realm()?;
       window.reset_interrupt();
       let result = window.exec_script_with_host_and_hooks(
         vm_host,
@@ -3699,9 +3701,9 @@ mod tests {
     let mut event_loop = EventLoop::<Host>::new();
 
     event_loop.queue_task(TaskSource::Script, |host, event_loop| {
-      let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host);
+      let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host)?;
       hooks.set_event_loop(event_loop);
-      let (vm_host, window) = host.vm_host_and_window_realm();
+      let (vm_host, window) = host.vm_host_and_window_realm()?;
       window.reset_interrupt();
       let result = window.exec_script_with_host_and_hooks(
         vm_host,
@@ -3734,9 +3736,9 @@ mod tests {
     let mut event_loop = EventLoop::<Host>::new();
 
     event_loop.queue_task(TaskSource::Script, |host, event_loop| {
-      let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host);
+      let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host)?;
       hooks.set_event_loop(event_loop);
-      let (vm_host, window) = host.vm_host_and_window_realm();
+      let (vm_host, window) = host.vm_host_and_window_realm()?;
       window.reset_interrupt();
       let result = window.exec_script_with_host_and_hooks(
         vm_host,

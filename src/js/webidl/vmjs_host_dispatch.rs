@@ -661,9 +661,9 @@ impl<Host: WindowRealmHost + 'static> VmJsWebIdlBindingsHostDispatch<Host> {
         } = entry.callback;
         let arg_roots = entry.args;
 
-        let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host);
+        let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host)?;
         hooks.set_event_loop(event_loop);
-        let (vm_host, window_realm) = host.vm_host_and_window_realm();
+        let (vm_host, window_realm) = host.vm_host_and_window_realm()?;
         window_realm.reset_interrupt();
         let budget = window_realm.vm_budget_now();
         let global = window_realm.global_object();
@@ -791,9 +791,9 @@ impl<Host: WindowRealmHost + 'static> VmJsWebIdlBindingsHostDispatch<Host> {
             (entry.callback.value, entry.args.clone())
           };
 
-          let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host);
+          let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host)?;
           hooks.set_event_loop(event_loop);
-          let (vm_host, window_realm) = host.vm_host_and_window_realm();
+          let (vm_host, window_realm) = host.vm_host_and_window_realm()?;
           window_realm.reset_interrupt();
           let budget = window_realm.vm_budget_now();
           let global = window_realm.global_object();
@@ -930,9 +930,9 @@ impl<Host: WindowRealmHost + 'static> VmJsWebIdlBindingsHostDispatch<Host> {
     let root = scope.heap_mut().add_root(callback)?;
     event_loop
       .queue_microtask(move |host, event_loop| {
-        let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host);
+        let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host)?;
         hooks.set_event_loop(event_loop);
-        let (vm_host, window_realm) = host.vm_host_and_window_realm();
+        let (vm_host, window_realm) = host.vm_host_and_window_realm()?;
         window_realm.reset_interrupt();
         let budget = window_realm.vm_budget_now();
 

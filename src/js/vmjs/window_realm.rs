@@ -1371,20 +1371,22 @@ pub trait WindowRealmHost {
   /// - a mutable `WindowRealm` for script/job execution.
   ///
   /// Implementations must ensure these borrows do not alias.
-  fn vm_host_and_window_realm(&mut self) -> (&mut dyn VmHost, &mut WindowRealm);
+  fn vm_host_and_window_realm(
+    &mut self,
+  ) -> crate::error::Result<(&mut dyn VmHost, &mut WindowRealm)>;
 
   fn webidl_bindings_host(&mut self) -> Option<&mut dyn WebIdlBindingsHost> {
     None
   }
 
-  fn window_realm(&mut self) -> &mut WindowRealm {
-    let (_, realm) = self.vm_host_and_window_realm();
-    realm
+  fn window_realm(&mut self) -> crate::error::Result<&mut WindowRealm> {
+    let (_, realm) = self.vm_host_and_window_realm()?;
+    Ok(realm)
   }
 
-  fn vm_host(&mut self) -> &mut dyn VmHost {
-    let (host, _) = self.vm_host_and_window_realm();
-    host
+  fn vm_host(&mut self) -> crate::error::Result<&mut dyn VmHost> {
+    let (host, _) = self.vm_host_and_window_realm()?;
+    Ok(host)
   }
 }
 
@@ -28225,7 +28227,9 @@ mod tests {
 
     struct DummyHost;
     impl WindowRealmHost for DummyHost {
-      fn vm_host_and_window_realm(&mut self) -> (&mut dyn VmHost, &mut WindowRealm) {
+      fn vm_host_and_window_realm(
+        &mut self,
+      ) -> crate::error::Result<(&mut dyn VmHost, &mut WindowRealm)> {
         unreachable!("DummyHost is only used as a type parameter for VmJsEventLoopHooks");
       }
     }
@@ -28311,7 +28315,9 @@ mod tests {
 
     struct DummyHost;
     impl WindowRealmHost for DummyHost {
-      fn vm_host_and_window_realm(&mut self) -> (&mut dyn VmHost, &mut WindowRealm) {
+      fn vm_host_and_window_realm(
+        &mut self,
+      ) -> crate::error::Result<(&mut dyn VmHost, &mut WindowRealm)> {
         unreachable!("DummyHost is only used as a type parameter for VmJsEventLoopHooks");
       }
     }

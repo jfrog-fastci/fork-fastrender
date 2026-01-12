@@ -3957,7 +3957,9 @@ impl DocumentLifecycleHost for BrowserTabHost {
 }
 
 impl crate::js::window_realm::WindowRealmHost for BrowserTabHost {
-  fn vm_host_and_window_realm(&mut self) -> (&mut dyn vm_js::VmHost, &mut crate::js::WindowRealm) {
+  fn vm_host_and_window_realm(
+    &mut self,
+  ) -> crate::error::Result<(&mut dyn vm_js::VmHost, &mut crate::js::WindowRealm)> {
     let BrowserTabHost {
       document,
       executor,
@@ -3972,25 +3974,23 @@ impl crate::js::window_realm::WindowRealmHost for BrowserTabHost {
         if vmjs_fallback_realm.is_none() {
           let config = crate::js::WindowRealmConfig::new("about:blank")
             .with_current_script_state(current_script.clone());
-          let created = match crate::js::WindowRealm::new_with_js_execution_options(
-            config,
-            *js_execution_options,
-          ) {
-            Ok(realm) => realm,
-            // `WindowRealmHost::vm_host_and_window_realm` cannot return a `Result`, but downstream
-            // timer/microtask callbacks require a realm reference. If we cannot allocate even the
-            // fallback realm (typically: OOM), terminate immediately.
-            Err(_) => std::process::abort(),
-          };
+          let created =
+            crate::js::WindowRealm::new_with_js_execution_options(config, *js_execution_options)
+              .map_err(|err| {
+                crate::error::Error::Other(format!(
+                  "failed to create fallback vm-js WindowRealm for callbacks: {err}"
+                ))
+              })?;
           *vmjs_fallback_realm = Some(created);
         }
-        match vmjs_fallback_realm.as_mut() {
-          Some(realm) => realm,
-          None => std::process::abort(),
-        }
+        vmjs_fallback_realm.as_mut().ok_or_else(|| {
+          crate::error::Error::Other(
+            "missing fallback vm-js WindowRealm after initialization".to_string(),
+          )
+        })?
       }
     };
-    (document.as_mut(), realm)
+    Ok((document.as_mut(), realm))
   }
 
   fn webidl_bindings_host(&mut self) -> Option<&mut dyn webidl_vm_js::WebIdlBindingsHost> {
@@ -9159,9 +9159,9 @@ mod tests {
       let host = &mut tab.host;
       let event_loop = &mut tab.event_loop;
 
-      let mut hooks = VmJsEventLoopHooks::<BrowserTabHost>::new_with_host(host);
+      let mut hooks = VmJsEventLoopHooks::<BrowserTabHost>::new_with_host(host)?;
       hooks.set_event_loop(event_loop);
-      let (host_ctx, realm) = host.vm_host_and_window_realm();
+      let (host_ctx, realm) = host.vm_host_and_window_realm()?;
       realm
         .exec_script_with_host_and_hooks(
           host_ctx,
@@ -9210,7 +9210,7 @@ mod tests {
     // Execute a script in the host's fallback realm and enqueue a Promise job onto the host event
     // loop microtask queue.
     {
-      let (host_ctx, realm) = host.vm_host_and_window_realm();
+      let (host_ctx, realm) = host.vm_host_and_window_realm()?;
       let mut hooks = VmJsEventLoopHooks::<BrowserTabHost>::new_with_vm_host_and_window_realm(
         host_ctx,
         realm,
@@ -9235,7 +9235,7 @@ mod tests {
     );
 
     let x = {
-      let (_host_ctx, realm) = host.vm_host_and_window_realm();
+      let (_host_ctx, realm) = host.vm_host_and_window_realm()?;
       realm.exec_script("globalThis.__x").map_err(|err| Error::Other(err.to_string()))?
     };
     assert_eq!(x, Value::Number(1.0));
@@ -9264,9 +9264,9 @@ mod tests {
       let host = &mut tab.host;
       let event_loop = &mut tab.event_loop;
 
-      let mut hooks = VmJsEventLoopHooks::<BrowserTabHost>::new_with_host(host);
+      let mut hooks = VmJsEventLoopHooks::<BrowserTabHost>::new_with_host(host)?;
       hooks.set_event_loop(event_loop);
-      let (host_ctx, realm) = host.vm_host_and_window_realm();
+      let (host_ctx, realm) = host.vm_host_and_window_realm()?;
       realm
         .exec_script_with_host_and_hooks(
           host_ctx,

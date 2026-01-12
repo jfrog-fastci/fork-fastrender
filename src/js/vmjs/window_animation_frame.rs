@@ -188,9 +188,9 @@ fn request_animation_frame_native<Host: WindowRealmHost + 'static>(
         ));
       };
 
-      let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host);
+      let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host)?;
       hooks.set_event_loop(event_loop);
-      let (vm_host, window_realm) = host.vm_host_and_window_realm();
+      let (vm_host, window_realm) = host.vm_host_and_window_realm()?;
       window_realm.reset_interrupt();
       let budget = window_realm.vm_budget_now();
       let (vm, heap) = window_realm.vm_and_heap_mut();
@@ -377,9 +377,11 @@ mod tests {
   }
 
   impl WindowRealmHost for Host {
-    fn vm_host_and_window_realm(&mut self) -> (&mut dyn VmHost, &mut WindowRealm) {
+    fn vm_host_and_window_realm(
+      &mut self,
+    ) -> crate::error::Result<(&mut dyn VmHost, &mut WindowRealm)> {
       let Host { host_ctx, window } = self;
-      (host_ctx, window)
+      Ok((host_ctx, window))
     }
   }
 
@@ -601,7 +603,7 @@ mod tests {
     }
 
     event_loop.queue_task(TaskSource::Script, |host, event_loop| {
-      let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host);
+      let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host)?;
       hooks.set_event_loop(event_loop);
       let (vm, realm, heap) = host.window.vm_realm_and_heap_mut();
       let global = realm.global_object();
@@ -688,7 +690,7 @@ mod tests {
 
     // Schedule an animation frame callback that would set `__ran = true` if it ran.
     event_loop.queue_task(TaskSource::Script, |host, event_loop| {
-      let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host);
+      let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host)?;
       hooks.set_event_loop(event_loop);
       let result = host.window.exec_script_with_hooks(
         &mut hooks,
@@ -743,7 +745,7 @@ mod tests {
     }
 
     event_loop.queue_task(TaskSource::Script, |host, event_loop| {
-      let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host);
+      let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host)?;
       hooks.set_event_loop(event_loop);
       let result = host.window.exec_script_with_hooks(
         &mut hooks,
@@ -798,7 +800,7 @@ mod tests {
     }
 
     event_loop.queue_task(TaskSource::Script, |host, event_loop| {
-      let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host);
+      let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host)?;
       hooks.set_event_loop(event_loop);
       let (vm, realm, heap) = host.window.vm_realm_and_heap_mut();
       let global = realm.global_object();
@@ -870,7 +872,7 @@ mod tests {
     }
 
     event_loop.queue_task(TaskSource::Script, |host, event_loop| {
-      let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host);
+      let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host)?;
       hooks.set_event_loop(event_loop);
       let (vm, realm, heap) = host.window.vm_realm_and_heap_mut();
       let global = realm.global_object();
@@ -996,11 +998,13 @@ mod tests {
     }
 
     impl WindowRealmHost for DispatchHost {
-      fn vm_host_and_window_realm(&mut self) -> (&mut dyn VmHost, &mut WindowRealm) {
+      fn vm_host_and_window_realm(
+        &mut self,
+      ) -> crate::error::Result<(&mut dyn VmHost, &mut WindowRealm)> {
         let DispatchHost {
           host_ctx, window, ..
         } = self;
-        (host_ctx, window)
+        Ok((host_ctx, window))
       }
 
       fn webidl_bindings_host(&mut self) -> Option<&mut dyn WebIdlBindingsHost> {
@@ -1057,9 +1061,9 @@ mod tests {
     // Schedule a rAF callback that calls the native binding wrapper; the wrapper should be able to
     // retrieve the WebIDL bindings host via `host_from_hooks()` in the rAF execution boundary.
     event_loop.queue_task(TaskSource::Script, |host, event_loop| {
-      let mut hooks = VmJsEventLoopHooks::<DispatchHost>::new_with_host(host);
+      let mut hooks = VmJsEventLoopHooks::<DispatchHost>::new_with_host(host)?;
       hooks.set_event_loop(event_loop);
-      let (host_ctx, window_realm) = host.vm_host_and_window_realm();
+      let (host_ctx, window_realm) = host.vm_host_and_window_realm()?;
       window_realm.reset_interrupt();
       let result = window_realm.exec_script_with_host_and_hooks(
         host_ctx,

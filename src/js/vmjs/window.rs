@@ -279,9 +279,9 @@ impl WindowHost {
     use crate::js::window_timers::VmJsEventLoopHooks;
 
     let (host, event_loop) = (&mut self.host, &mut self.event_loop);
-    let mut hooks = VmJsEventLoopHooks::<WindowHostState>::new_with_host(host);
+    let mut hooks = VmJsEventLoopHooks::<WindowHostState>::new_with_host(host)?;
     hooks.set_event_loop(event_loop);
-    let (vm_host, window) = host.vm_host_and_window_realm();
+    let (vm_host, window) = host.vm_host_and_window_realm()?;
     let result = window.exec_script_with_host_and_hooks(vm_host, &mut hooks, source);
 
     if let Some(err) = hooks.finish(window.heap_mut()) {
@@ -703,9 +703,9 @@ impl WindowHostState {
   ) -> Result<vm_js::Value> {
     use crate::js::window_timers::VmJsEventLoopHooks;
 
-    let mut hooks = VmJsEventLoopHooks::<WindowHostState>::new_with_host(self);
+    let mut hooks = VmJsEventLoopHooks::<WindowHostState>::new_with_host(self)?;
     hooks.set_event_loop(event_loop);
-    let (vm_host, window) = self.vm_host_and_window_realm();
+    let (vm_host, window) = self.vm_host_and_window_realm()?;
     let result = window.exec_script_with_host_and_hooks(vm_host, &mut hooks, source);
 
     if let Some(err) = hooks.finish(window.heap_mut()) {
@@ -729,9 +729,9 @@ impl WindowHostState {
     use crate::js::window_timers::VmJsEventLoopHooks;
 
     let source = Arc::new(vm_js::SourceText::new(source_name, source_text));
-    let mut hooks = VmJsEventLoopHooks::<WindowHostState>::new_with_host(self);
+    let mut hooks = VmJsEventLoopHooks::<WindowHostState>::new_with_host(self)?;
     hooks.set_event_loop(event_loop);
-    let (vm_host, window) = self.vm_host_and_window_realm();
+    let (vm_host, window) = self.vm_host_and_window_realm()?;
     let result = window.exec_script_source_with_host_and_hooks(vm_host, &mut hooks, source);
 
     if let Some(err) = hooks.finish(window.heap_mut()) {
@@ -768,8 +768,10 @@ impl CurrentScriptHost for WindowHostState {
 }
 
 impl WindowRealmHost for WindowHostState {
-  fn vm_host_and_window_realm(&mut self) -> (&mut dyn vm_js::VmHost, &mut WindowRealm) {
-    (&mut self.document, &mut self.window)
+  fn vm_host_and_window_realm(
+    &mut self,
+  ) -> crate::error::Result<(&mut dyn vm_js::VmHost, &mut WindowRealm)> {
+    Ok((&mut self.document, &mut self.window))
   }
 
   fn webidl_bindings_host(&mut self) -> Option<&mut dyn webidl_vm_js::WebIdlBindingsHost> {
@@ -2314,9 +2316,9 @@ mod tests {
       use crate::js::window_timers::VmJsEventLoopHooks;
 
       let (host_state, event_loop) = (&mut host.host, &mut host.event_loop);
-      let mut hooks = VmJsEventLoopHooks::<WindowHostState>::new_with_host(host_state);
+      let mut hooks = VmJsEventLoopHooks::<WindowHostState>::new_with_host(host_state)?;
       hooks.set_event_loop(event_loop);
-      let (vm_host, window) = host_state.vm_host_and_window_realm();
+      let (vm_host, window) = host_state.vm_host_and_window_realm()?;
       let (vm, realm, heap) = window.vm_realm_and_heap_mut();
       let mut scope = heap.scope();
       let global = realm.global_object();
@@ -2899,8 +2901,10 @@ mod tests {
     }
 
     impl WindowRealmHost for NoTimersHostState {
-      fn vm_host_and_window_realm(&mut self) -> (&mut dyn vm_js::VmHost, &mut WindowRealm) {
-        (&mut self.document, &mut self.window)
+      fn vm_host_and_window_realm(
+        &mut self,
+      ) -> crate::error::Result<(&mut dyn vm_js::VmHost, &mut WindowRealm)> {
+        Ok((&mut self.document, &mut self.window))
       }
     }
 
@@ -2921,9 +2925,9 @@ mod tests {
       fn exec_script(&mut self, event_loop: &mut EventLoop<Self>, source: &str) -> Result<Value> {
         use crate::js::window_timers::VmJsEventLoopHooks;
 
-        let mut hooks = VmJsEventLoopHooks::<Self>::new_with_host(self);
+        let mut hooks = VmJsEventLoopHooks::<Self>::new_with_host(self)?;
         hooks.set_event_loop(event_loop);
-        let (vm_host, window) = self.vm_host_and_window_realm();
+        let (vm_host, window) = self.vm_host_and_window_realm()?;
         let result = window.exec_script_with_host_and_hooks(vm_host, &mut hooks, source);
 
         if let Some(err) = hooks.finish(window.heap_mut()) {
