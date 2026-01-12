@@ -370,11 +370,22 @@ fn gen_decl(
       gen_decl_kind(cursor)
     }
   });
+  let var_kind = match &kind {
+    ts::DeclKind::Var => Some(match cursor.next_usize(5) {
+      0 => ts::VarKind::Var,
+      1 => ts::VarKind::Let,
+      2 => ts::VarKind::Const,
+      3 => ts::VarKind::Using,
+      _ => ts::VarKind::AwaitUsing,
+    }),
+    _ => None,
+  };
   let span = spans.next_range(cursor);
   ts::Decl {
     def_id: ts::DefId::new(file_id, cursor.next_u32()),
     name: name_override.unwrap_or_else(|| maybe_pick_name(cursor, names, "d")),
     kind,
+    var_kind,
     is_ambient: cursor.next_bool(),
     is_global: cursor.next_bool(),
     exported: exported_override.unwrap_or_else(|| gen_exported(cursor)),

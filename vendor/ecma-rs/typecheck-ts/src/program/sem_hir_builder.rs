@@ -49,10 +49,15 @@ impl SemHirBuilder {
     exported: sem_ts::Exported,
     span: TextRange,
   ) {
+    let var_kind = match &kind {
+      sem_ts::DeclKind::Var => Some(sem_ts::VarKind::Var),
+      _ => None,
+    };
     self.decls.push(sem_ts::Decl {
       def_id: sem_ts::DefId(def.0),
       name,
       kind,
+      var_kind,
       is_ambient: self.is_ambient,
       is_global: false,
       exported,

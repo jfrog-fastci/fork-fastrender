@@ -34,11 +34,16 @@ impl Resolver for StaticResolver {
 }
 
 fn mk_decl(def: u32, name: &str, kind: DeclKind, exported: Exported) -> Decl {
+  let var_kind = match &kind {
+    DeclKind::Var => Some(VarKind::Var),
+    _ => None,
+  };
   let span = span(def);
   Decl {
     def_id: DefId::new(FileId(0), def),
     name: name.to_string(),
     kind,
+    var_kind,
     is_ambient: false,
     is_global: false,
     exported,
@@ -2735,6 +2740,7 @@ fn global_symbol_table_is_deterministic_across_root_orders() {
     def_id: DefId::new(file_a, 0),
     name: "Foo".to_string(),
     kind: DeclKind::Function,
+    var_kind: None,
     is_ambient: false,
     is_global: false,
     exported: Exported::No,
@@ -2748,6 +2754,7 @@ fn global_symbol_table_is_deterministic_across_root_orders() {
     def_id: DefId::new(file_b, 0),
     name: "Foo".to_string(),
     kind: DeclKind::Namespace,
+    var_kind: None,
     is_ambient: false,
     is_global: false,
     exported: Exported::No,
@@ -4633,6 +4640,52 @@ fn module_augmentation_export_equals_namespace_is_allowed() {
     "unexpected TS2671 diagnostics: {:?}",
     diags
   );
+}
+
+#[test]
+fn duplicate_identifier_related_spans_module_augmentation_emits_ts2451() {
+  let file_a = FileId(210);
+  let file_b = FileId(211);
+
+  let src_a = "export const x = 0;";
+  let ast_a = parse(src_a).expect("parse file a");
+  let lower_a = lower_file(file_a, HirFileKind::Ts, &ast_a);
+  let hir_a = lower_to_ts_hir(&ast_a, &lower_a, src_a);
+
+  let src_b = r#"
+    export {};
+    declare module "./a" { export const x = 0; }
+    declare module "../dir/a" { export const x = 0; }
+  "#;
+  let ast_b = parse(src_b).expect("parse file b");
+  let lower_b = lower_file(file_b, HirFileKind::Ts, &ast_b);
+  let hir_b = lower_to_ts_hir(&ast_b, &lower_b, src_b);
+
+  let files: HashMap<FileId, Arc<HirFile>> = maplit::hashmap! {
+    file_a => Arc::new(hir_a),
+    file_b => Arc::new(hir_b),
+  };
+  let resolver = StaticResolver::new(maplit::hashmap! {
+    "./a".to_string() => file_a,
+    "../dir/a".to_string() => file_a,
+  });
+
+  let (_semantics, diags) =
+    bind_ts_program(&[file_b], &resolver, |f| files.get(&f).unwrap().clone());
+
+  let ts2451: Vec<_> = diags.iter().filter(|d| d.code == "TS2451").collect();
+  assert!(
+    !ts2451.is_empty(),
+    "expected TS2451 diagnostics, got: {diags:?}"
+  );
+  for diag in ts2451 {
+    assert!(
+      diag.primary.range.len() == 1,
+      "TS2451 primary span should be the redeclared identifier, got {:?}",
+      diag.primary
+    );
+    assert_eq!(diag.labels.len(), 1, "expected previous-decl label");
+  }
 }
 
 #[test]

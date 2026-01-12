@@ -43,6 +43,7 @@
 //! - `TS2300`: duplicate identifier
 //! - `TS2395`: merged declarations must be all exported or all local
 //! - `TS2434`: namespace declaration cannot appear before the class/function it merges with
+//! - `TS2451`: cannot redeclare block-scoped variable
 //! - `TS2309`: `export =` combined with other exports
 //! - `BIND1006`: conflicting `export as namespace` declarations across modules
 //!
@@ -126,6 +127,20 @@ pub enum DeclKind {
   ImportBinding,
 }
 
+/// The syntactic kind of a `var`-like declaration (`var`, `let`, `const`, etc.).
+///
+/// This is tracked separately from [`DeclKind::Var`] because TypeScript's
+/// merging and duplicate identifier rules differ for `var` versus block-scoped
+/// declarations such as `let`/`const`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum VarKind {
+  Var,
+  Let,
+  Const,
+  Using,
+  AwaitUsing,
+}
+
 impl DeclKind {
   pub fn namespaces(&self) -> Namespace {
     match self {
@@ -180,6 +195,7 @@ pub struct Decl {
   pub def_id: DefId,
   pub name: String,
   pub kind: DeclKind,
+  pub var_kind: Option<VarKind>,
   pub is_ambient: bool,
   pub is_global: bool,
   pub exported: Exported,
@@ -375,6 +391,7 @@ pub struct DeclData {
   pub file: FileId,
   pub name: String,
   pub kind: DeclKind,
+  pub var_kind: Option<VarKind>,
   pub namespaces: Namespace,
   pub is_ambient: bool,
   pub is_global: bool,
@@ -657,6 +674,7 @@ impl SymbolTable {
     file: FileId,
     name: String,
     kind: DeclKind,
+    var_kind: Option<VarKind>,
     namespaces: Namespace,
     is_ambient: bool,
     is_global: bool,
@@ -682,6 +700,11 @@ impl SymbolTable {
         id
       );
       debug_assert_eq!(
+        existing.var_kind, var_kind,
+        "decl var kind mismatch for {:?}",
+        id
+      );
+      debug_assert_eq!(
         existing.exported, exported,
         "decl exported mismatch for {:?}",
         id
@@ -701,6 +724,7 @@ impl SymbolTable {
           file,
           name,
           kind,
+          var_kind,
           namespaces,
           is_ambient,
           is_global,

@@ -2,7 +2,7 @@ use crate::ts::module_syntax::ast_has_module_syntax;
 use crate::ts::{
   AmbientModule, Decl, DeclKind, Export, ExportAll, ExportAsNamespace, ExportSpecifier, Exported,
   FileKind, HirFile, Import, ImportDefault, ImportEquals, ImportEqualsTarget, ImportNamed,
-  ImportNamespace, ModuleKind, NamedExport, TypeImport as TsTypeImport,
+  ImportNamespace, ModuleKind, NamedExport, TypeImport as TsTypeImport, VarKind,
 };
 use diagnostics::TextRange;
 use hir_js::{DefId, DefKind, ExportKind, FileKind as HirFileKind, ImportKind, LowerResult};
@@ -13,6 +13,7 @@ use parse_js::ast::node::Node;
 use parse_js::ast::stmt::Stmt;
 use parse_js::ast::stx::TopLevel;
 use parse_js::ast::ts_stmt::{ImportEqualsRhs, ModuleName};
+use parse_js::ast::stmt::decl::VarDeclMode;
 use parse_js::loc::Loc;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
@@ -132,6 +133,7 @@ fn collect_type_imports(lower: &LowerResult) -> Vec<TsTypeImport> {
 struct BlockResult {
   local_defs: Vec<DefId>,
   exported: HashMap<DefId, Exported>,
+  var_kinds: HashMap<DefId, VarKind>,
   imports: Vec<Import>,
   import_equals: Vec<ImportEquals>,
   exports: Vec<Export>,
@@ -164,6 +166,7 @@ fn lower_block(
   let mut result = BlockResult {
     local_defs,
     exported: HashMap::new(),
+    var_kinds: HashMap::new(),
     imports: Vec::new(),
     import_equals: Vec::new(),
     exports: Vec::new(),
@@ -417,6 +420,21 @@ fn lower_block(
         }));
       }
       Stmt::VarDecl(var) => {
+        let kind = match var.stx.mode {
+          VarDeclMode::Var => VarKind::Var,
+          VarDeclMode::Let => VarKind::Let,
+          VarDeclMode::Const => VarKind::Const,
+          VarDeclMode::Using => VarKind::Using,
+          VarDeclMode::AwaitUsing => VarKind::AwaitUsing,
+        };
+        mark_var_kind_in_span(
+          &result.local_defs,
+          lower,
+          stmt_range,
+          Some(DefKind::Var),
+          kind,
+          &mut result.var_kinds,
+        );
         if var.stx.export {
           mark_defs_in_span(
             &result.local_defs,
@@ -576,6 +594,7 @@ fn lower_block(
         );
         result.local_defs.extend(nested.local_defs);
         result.exported.extend(nested.exported);
+        result.var_kinds.extend(nested.var_kinds);
         result.imports.extend(nested.imports);
         result.import_equals.extend(nested.import_equals);
         result.exports.extend(nested.exports);
@@ -585,6 +604,14 @@ fn lower_block(
         result.ambient_modules.extend(nested.ambient_modules);
       }
       Stmt::AmbientVarDecl(av) => {
+        mark_var_kind_in_span(
+          &result.local_defs,
+          lower,
+          stmt_range,
+          Some(DefKind::Var),
+          VarKind::Var,
+          &mut result.var_kinds,
+        );
         if av.stx.export {
           mark_defs_in_span(
             &result.local_defs,
@@ -633,10 +660,21 @@ fn finalize_block(
   _module_kind: ModuleKind,
   source: &str,
 ) -> LoweredBlock {
-  let exported = block.exported;
+  let BlockResult {
+    local_defs,
+    exported,
+    var_kinds,
+    imports,
+    import_equals,
+    exports,
+    export_as_namespace,
+    ambient_modules,
+  } = block;
+
+  let exported_map = exported;
 
   let mut decls = Vec::new();
-  for def_id in block.local_defs.iter().copied() {
+  for def_id in local_defs.iter().copied() {
     let def = def_by_id(def_id, &lower.defs, &lower.def_index);
     let kind = match def.path.kind {
       DefKind::Function => Some(DeclKind::Function),
@@ -648,7 +686,7 @@ fn finalize_block(
       DefKind::Namespace | DefKind::Module => Some(DeclKind::Namespace),
       DefKind::ImportBinding => Some(DeclKind::ImportBinding),
       DefKind::ExportAlias => {
-        if exported.get(&def_id) == Some(&Exported::Default) {
+        if exported_map.get(&def_id) == Some(&Exported::Default) {
           Some(DeclKind::Var)
         } else {
           None
@@ -662,12 +700,17 @@ fn finalize_block(
         .resolve(def.name)
         .unwrap_or("<anon>")
         .to_string();
-      let exported = exported.get(&def_id).cloned().unwrap_or(Exported::No);
+      let var_kind = match kind {
+        DeclKind::Var => Some(var_kinds.get(&def_id).copied().unwrap_or(VarKind::Var)),
+        _ => None,
+      };
+      let exported = exported_map.get(&def_id).cloned().unwrap_or(Exported::No);
       let name_span = find_name_span(source, &name, def.span);
       decls.push(Decl {
         def_id,
         name,
         kind,
+        var_kind,
         is_ambient: def.is_ambient,
         is_global: def.in_global,
         exported,
@@ -679,11 +722,11 @@ fn finalize_block(
 
   LoweredBlock {
     decls,
-    imports: block.imports,
-    import_equals: block.import_equals,
-    exports: block.exports,
-    export_as_namespace: block.export_as_namespace,
-    ambient_modules: block.ambient_modules,
+    imports,
+    import_equals,
+    exports,
+    export_as_namespace,
+    ambient_modules,
   }
 }
 
@@ -899,6 +942,27 @@ fn mark_defs_in_span(
         }
       }
       out.entry(def_id).or_insert(exported.clone());
+    }
+  }
+}
+
+fn mark_var_kind_in_span(
+  local_defs: &[DefId],
+  lower: &LowerResult,
+  span: TextRange,
+  kind: Option<DefKind>,
+  var_kind: VarKind,
+  out: &mut HashMap<DefId, VarKind>,
+) {
+  for def_id in local_defs.iter().copied() {
+    let def = def_by_id(def_id, &lower.defs, &lower.def_index);
+    if def.span.start >= span.start && def.span.end <= span.end {
+      if let Some(k) = kind {
+        if def.path.kind != k {
+          continue;
+        }
+      }
+      out.entry(def_id).or_insert(var_kind);
     }
   }
 }

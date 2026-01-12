@@ -888,6 +888,7 @@ impl<'a, HP: Fn(FileId) -> Arc<HirFile>> Binder<'a, HP> {
         file_id,
         decl.name.clone(),
         decl.kind.clone(),
+        decl.var_kind,
         namespaces,
         decl.is_ambient,
         decl.is_global,
@@ -1084,6 +1085,7 @@ impl<'a, HP: Fn(FileId) -> Arc<HirFile>> Binder<'a, HP> {
             file_id,
             import.local.clone(),
             DeclKind::ImportBinding,
+            None,
             namespaces,
             false,
             false,
@@ -1451,16 +1453,24 @@ impl<'a, HP: Fn(FileId) -> Arc<HirFile>> Binder<'a, HP> {
       }
       let winner = winner.or_else(|| kept.first().copied()).unwrap_or(*loser);
       let winner_data = self.symbols.decl(winner);
-      self.diagnostics.push(
-        Diagnostic::error(
-          "TS2300",
-          format!("Duplicate identifier '{}'.", name),
-          Span::new(loser_data.file, loser_data.span),
+      let use_ts2451 = matches!(loser_data.kind, DeclKind::Var)
+        && matches!(winner_data.kind, DeclKind::Var)
+        && (!matches!(loser_data.var_kind.unwrap_or(VarKind::Var), VarKind::Var)
+          || !matches!(winner_data.var_kind.unwrap_or(VarKind::Var), VarKind::Var));
+      let (code, message) = if use_ts2451 {
+        (
+          "TS2451",
+          format!("Cannot redeclare block-scoped variable '{}'.", name),
         )
-        .with_label(Label::secondary(
-          Span::new(winner_data.file, winner_data.span),
-          "previous declaration here",
-        )),
+      } else {
+        ("TS2300", format!("Duplicate identifier '{}'.", name))
+      };
+      self.diagnostics.push(
+        Diagnostic::error(code, message, Span::new(loser_data.file, loser_data.name_span))
+          .with_label(Label::secondary(
+            Span::new(winner_data.file, winner_data.name_span),
+            "previous declaration here",
+          )),
       );
     }
 
@@ -1907,6 +1917,7 @@ impl<'a, HP: Fn(FileId) -> Arc<HirFile>> Binder<'a, HP> {
       export.span.file,
       export.name.clone(),
       DeclKind::ImportBinding,
+      None,
       namespaces,
       true,
       true,
@@ -1965,6 +1976,7 @@ impl<'a, HP: Fn(FileId) -> Arc<HirFile>> Binder<'a, HP> {
       file,
       entry.local.clone(),
       DeclKind::ImportBinding,
+      None,
       namespaces,
       false,
       false,
@@ -2949,6 +2961,7 @@ impl<'a, HP: Fn(FileId) -> Arc<HirFile>> Binder<'a, HP> {
       stmt_span.file,
       synthetic_name.clone(),
       DeclKind::ImportBinding,
+      None,
       namespaces,
       false,
       false,
@@ -3301,8 +3314,15 @@ fn decls_are_compatible(a: &DeclData, b: &DeclData) -> bool {
       a.is_ambient && b.is_ambient
     }
     (DeclKind::Function, DeclKind::Function) => true,
-    (DeclKind::Function, DeclKind::Var) | (DeclKind::Var, DeclKind::Function) => true,
-    (DeclKind::Var, DeclKind::Var) => true,
+    (DeclKind::Function, DeclKind::Var) | (DeclKind::Var, DeclKind::Function) => {
+      let var = if matches!(a_kind, DeclKind::Var) { a } else { b };
+      matches!(var.var_kind.unwrap_or(VarKind::Var), VarKind::Var)
+    }
+    (DeclKind::Var, DeclKind::Var) => {
+      let a_kind = a.var_kind.unwrap_or(VarKind::Var);
+      let b_kind = b.var_kind.unwrap_or(VarKind::Var);
+      matches!(a_kind, VarKind::Var) && matches!(b_kind, VarKind::Var)
+    }
     (DeclKind::Interface, DeclKind::Interface) => true,
     _ => false,
   }
