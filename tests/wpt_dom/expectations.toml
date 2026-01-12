@@ -76,14 +76,33 @@ reason = "TODO(multi-document): implement Document.adoptNode (cross-document ado
 
 [[expectations]]
 id = "dom/cross-document-appendchild-adopts.window.js"
+backend = "quickjs"
 status = "xfail"
-reason = "TODO(multi-document): implement DOMImplementation.createHTMLDocument so the test can construct a foreign document (vm-js insertion adoption is implemented)."
+reason = "QuickJS WebIDL runtime brand-checks Document methods; `Object.create(document)` is not treated as a Document wrapper (vm-js shim supports this aliasing for adoption tests)."
 
 [[expectations]]
 id = "dom/cross-document-insertadjacentelement-adopts.window.js"
 backend = "quickjs"
 status = "xfail"
 reason = "Element.insertAdjacentElement is not implemented in the QuickJS WebIDL runtime yet (vm-js shim supports it)."
+
+[[expectations]]
+id = "dom/cross-document-insertbefore-adopts.window.js"
+backend = "quickjs"
+status = "xfail"
+reason = "QuickJS WebIDL runtime brand-checks Document methods; `Object.create(document)` is not treated as a Document wrapper (vm-js shim supports this aliasing for adoption tests)."
+
+[[expectations]]
+id = "dom/cross-document-replacechild-adopts.window.js"
+backend = "quickjs"
+status = "xfail"
+reason = "QuickJS WebIDL runtime brand-checks Document methods; `Object.create(document)` is not treated as a Document wrapper (vm-js shim supports this aliasing for adoption tests)."
+
+[[expectations]]
+id = "dom/cross-document-appendchild-fragment-adopts.window.js"
+backend = "quickjs"
+status = "xfail"
+reason = "QuickJS WebIDL runtime brand-checks Document methods; `Object.create(document)` is not treated as a Document wrapper (vm-js shim supports this aliasing for adoption tests)."
 
 [[expectations]]
 id = "dom/range_basics.window.js"
