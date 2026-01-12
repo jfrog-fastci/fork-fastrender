@@ -6623,21 +6623,6 @@ pub fn object_prototype_has_own_property(
   Ok(Value::Bool(has))
 }
 
-/// `%IteratorPrototype%[@@iterator]` (ECMA-262).
-///
-/// This built-in returns the `this` value verbatim (including primitives).
-pub fn iterator_prototype_symbol_iterator(
-  _vm: &mut Vm,
-  _scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
-  _callee: GcObject,
-  this: Value,
-  _args: &[Value],
-) -> Result<Value, VmError> {
-  Ok(this)
-}
-
 fn get_array_length(vm: &mut Vm, scope: &mut Scope<'_>, obj: GcObject) -> Result<usize, VmError> {
   let length_key = string_key(scope, "length")?;
   Ok(match get_data_property_value(vm, scope, obj, &length_key)? {

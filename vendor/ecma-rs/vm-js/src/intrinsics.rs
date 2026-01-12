@@ -567,8 +567,6 @@ impl Intrinsics {
     let object_prototype_to_string = vm.register_native_call(builtins::object_prototype_to_string)?;
     let object_prototype_has_own_property =
       vm.register_native_call(builtins::object_prototype_has_own_property)?;
-    let iterator_prototype_symbol_iterator =
-      vm.register_native_call(builtins::iterator_prototype_symbol_iterator)?;
     let function_prototype_call_method =
       vm.register_native_call(builtins::function_prototype_call_method)?;
     let function_prototype_apply_method =
@@ -817,22 +815,6 @@ impl Intrinsics {
          data_desc(Value::Object(func), true, false, true),
        )?;
      }
-
-    // `%IteratorPrototype%[@@iterator]`
-    {
-      let iter_s = scope.alloc_string("[Symbol.iterator]")?;
-      scope.push_root(Value::String(iter_s))?;
-      let func = scope.alloc_native_function(iterator_prototype_symbol_iterator, None, iter_s, 0)?;
-      scope.push_root(Value::Object(func))?;
-      scope
-        .heap_mut()
-        .object_set_prototype(func, Some(function_prototype))?;
-      scope.define_property(
-        iterator_prototype,
-        PropertyKey::Symbol(well_known_symbols.iterator),
-        data_desc(Value::Object(func), true, false, true),
-      )?;
-    }
 
     // `%Function%`
     let function_call = vm.register_native_call(builtins::function_constructor_call)?;
