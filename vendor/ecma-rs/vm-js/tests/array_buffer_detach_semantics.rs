@@ -40,7 +40,6 @@ fn uint8_array_over_detached_array_buffer_behaves_like_empty_view() -> Result<()
 
   Ok(())
 }
-
 #[test]
 fn typed_array_views_with_non_zero_offset_report_zero_length_and_offset_after_detach() -> Result<(), VmError> {
   let mut rt = new_runtime();

@@ -341,6 +341,28 @@ fn array_destructuring_rest_produces_real_array() {
 }
 
 #[test]
+fn array_destructuring_early_completion_closes_iterator() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      var done = 0;
+      var iter = {};
+      iter[Symbol["iterator"]] = function () {
+        return {
+          next: function () { return { value: 1, done: false }; },
+          "return": function () { done++; return {}; }
+        };
+      };
+      var [x] = iter;
+      done;
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Number(1.0));
+}
+
+#[test]
 fn array_destructuring_abrupt_completion_closes_iterator() {
   let mut rt = new_runtime();
   let value = rt
