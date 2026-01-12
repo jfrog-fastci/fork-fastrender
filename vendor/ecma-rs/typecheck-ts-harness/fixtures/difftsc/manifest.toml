@@ -38,26 +38,11 @@ status = "xfail"
 reason = "type narrowing + marker type-facts parity gap"
 
 [[expectations]]
-id = "difftsc/jsx_element_attributes_property_missing_member"
-status = "xfail"
-reason = "JSX attributes property span parity gap"
-
-[[expectations]]
 id = "difftsc/jsx_children_specified_twice"
 status = "xfail"
 reason = "JSX children specified twice span parity gap"
 
 [[expectations]]
-id = "difftsc/jsx_element_attributes_property_multiple_properties"
-status = "xfail"
-reason = "JSX ElementAttributesProperty diagnostic parity gap"
-
-[[expectations]]
 id = "difftsc/jsx_fragment_factory_missing"
 status = "xfail"
 reason = "JSX fragment factory diagnostic parity gap"
-
-[[expectations]]
-id = "difftsc/jsx_tuple_children"
-status = "xfail"
-reason = "JSX tuple children typing parity gap"
