@@ -17101,13 +17101,25 @@ impl DisplayListRenderer {
               } else {
                 (item.image.width, item.image.height)
               };
+              // `should_use_scaled_image_pixmap` is tuned for *cached* scaled pixmaps to avoid
+              // exploding memory usage for near-identity resizes. This phase-aware path is not
+              // cached, and exists primarily for fidelity: tiny-skia's bilinear sampling can drift
+              // from Skia/Chrome even for modest resizes when the destination rect is fractional
+              // (common with `object-fit: cover` crops).
+              //
+              // Be more aggressive than the cached path, but cap by output pixel count to keep the
+              // per-draw CPU/memory bounded.
+              let target_pixels = u64::from(out_w).saturating_mul(u64::from(out_h));
+              const PHASE_AWARE_RASTER_MAX_PIXELS: u64 = 1024 * 1024;
+              let should_phase_rasterize =
+                target_pixels > 0 && target_pixels <= PHASE_AWARE_RASTER_MAX_PIXELS;
               if Self::should_use_scaled_image_pixmap(
                 item.filter_quality,
                 src_w,
                 src_h,
                 out_w,
                 out_h,
-              ) {
+              ) || should_phase_rasterize {
                 let diag = self.image_pixmap_diagnostics.as_ref();
                 if let Some(diag) = diag {
                   diag.record_miss();
@@ -18615,6 +18627,147 @@ fn image_data_to_scaled_pixmap_with_phase_inner(
   let scale_y0 = src_h as f32 / dest_device.height();
   if !scale_x0.is_finite() || !scale_y0.is_finite() {
     return Ok(None);
+  }
+
+  // For magnification (no minification in either axis), Chrome/Skia's output appears to:
+  // - map into the integer output pixel grid (vs the exact float dest size),
+  // - quantize bilinear weights to 16 phases (4-bit precision),
+  // - and only floor-to-u8 once at the end (no truncation between axes).
+  //
+  // tiny-skia (and Skia's minification paths) truncate between axes, which can produce pervasive
+  // ±1 diffs across photo-heavy regions like hero images.
+  //
+  // Use a float bilinear path for pure upscales to match Chrome more closely. We keep the existing
+  // truncating fixed-point path for downscales to preserve Skia-aligned behaviour and mipmap
+  // sampling.
+  if scale_x0 <= 1.0 && scale_y0 <= 1.0 {
+    #[derive(Clone, Copy)]
+    struct AxisSampleF32 {
+      i0: u32,
+      i1: u32,
+      t: f32,
+    }
+
+    let build_axis = |out_len: u32, out_origin: f32, dest_origin: f32, src_len: u32|
+     -> Option<Vec<AxisSampleF32>> {
+      if out_len == 0 || src_len == 0 {
+        return None;
+      }
+      // Chrome's magnification path behaves closer to mapping the source image into the integer
+      // output pixel grid (rather than using the exact floating destination size). Use `out_len`
+      // for the scale so fractional destination sizes (e.g. 782.2222px) match Chrome more closely.
+      let scale = src_len as f32 / out_len as f32;
+      if !scale.is_finite() || !out_origin.is_finite() || !dest_origin.is_finite() {
+        return None;
+      }
+      let max = src_len as f32 - 1.0;
+      let mut samples = Vec::new();
+      if samples.try_reserve_exact(out_len as usize).is_err() {
+        return None;
+      }
+      for i in 0..out_len {
+        let device = out_origin + i as f32 + 0.5;
+        let mut s = (device - dest_origin) * scale - 0.5;
+        if !s.is_finite() || !max.is_finite() {
+          return None;
+        }
+        s = s.clamp(0.0, max);
+        let s0 = s.floor();
+        let i0 = s0 as u32;
+        let i1 = (i0 + 1).min(src_len.saturating_sub(1));
+        // Chrome's magnification path appears to quantize bilinear weights to 16 discrete phases
+        // (4-bit precision) while keeping the lerps full-precision (no truncation between axes).
+        //
+        // The low weight precision is counter-intuitive, but it significantly reduces fixture diffs
+        // for upscaled photos compared to using the full float fraction here.
+        let t = (s - s0).clamp(0.0, 1.0);
+        let t = (t * 16.0).floor() * (1.0 / 16.0);
+        samples.push(AxisSampleF32 { i0, i1, t });
+      }
+      Some(samples)
+    };
+
+    let Some(xs) = build_axis(
+      out_width,
+      out_origin_x_device,
+      dest_device.x(),
+      src_w,
+    ) else {
+      return Ok(None);
+    };
+    let Some(ys) = build_axis(
+      out_height,
+      out_origin_y_device,
+      dest_device.y(),
+      src_h,
+    ) else {
+      return Ok(None);
+    };
+
+    #[inline]
+    fn lerp(a: f32, b: f32, t: f32) -> f32 {
+      a + (b - a) * t
+    }
+
+    let src_w_usize = src_w as usize;
+    let mut pixel_counter = 0usize;
+    for (y, ysamp) in ys.iter().enumerate() {
+      let row0 = ysamp.i0 as usize * src_w_usize;
+      let row1 = ysamp.i1 as usize * src_w_usize;
+      let ty = ysamp.t;
+      for (x, xsamp) in xs.iter().enumerate() {
+        if (pixel_counter & 4095) == 0 {
+          check_active(RenderStage::Paint)?;
+        }
+        pixel_counter = pixel_counter.wrapping_add(1);
+
+        let col0 = xsamp.i0 as usize;
+        let col1 = xsamp.i1 as usize;
+        let tx = xsamp.t;
+
+        let idx00 = (row0 + col0) * 4;
+        let idx10 = (row0 + col1) * 4;
+        let idx01 = (row1 + col0) * 4;
+        let idx11 = (row1 + col1) * 4;
+
+        let (r00, g00, b00, a00) = read_image_pixel_premul(src_pixels, idx00, image.premultiplied);
+        let (r10, g10, b10, a10) = read_image_pixel_premul(src_pixels, idx10, image.premultiplied);
+        let (r01, g01, b01, a01) = read_image_pixel_premul(src_pixels, idx01, image.premultiplied);
+        let (r11, g11, b11, a11) = read_image_pixel_premul(src_pixels, idx11, image.premultiplied);
+
+        let top_r = lerp(r00, r10, tx);
+        let top_g = lerp(g00, g10, tx);
+        let top_b = lerp(b00, b10, tx);
+        let top_a = lerp(a00, a10, tx);
+
+        let bot_r = lerp(r01, r11, tx);
+        let bot_g = lerp(g01, g11, tx);
+        let bot_b = lerp(b01, b11, tx);
+        let bot_a = lerp(a01, a11, tx);
+
+        let r = lerp(top_r, bot_r, ty);
+        let g = lerp(top_g, bot_g, ty);
+        let b = lerp(top_b, bot_b, ty);
+        let a = lerp(top_a, bot_a, ty);
+
+        // Chrome/Skia rounds down when converting to 8-bit channels.
+        let a_u8 = a.floor().clamp(0.0, 255.0) as u8;
+        let mut r_u8 = r.floor().clamp(0.0, 255.0) as u8;
+        let mut g_u8 = g.floor().clamp(0.0, 255.0) as u8;
+        let mut b_u8 = b.floor().clamp(0.0, 255.0) as u8;
+        r_u8 = r_u8.min(a_u8);
+        g_u8 = g_u8.min(a_u8);
+        b_u8 = b_u8.min(a_u8);
+
+        let dst_idx = (y as u32 * out_width + x as u32) as usize * 4;
+        data[dst_idx] = r_u8;
+        data[dst_idx + 1] = g_u8;
+        data[dst_idx + 2] = b_u8;
+        data[dst_idx + 3] = a_u8;
+      }
+    }
+
+    return Ok(Pixmap::from_vec(data, size));
   }
 
   let (mut base_level, mut blend_t) = mipmap_lod_for_scale(scale_x0, scale_y0).unwrap_or((0, 0.0));
@@ -26296,6 +26449,55 @@ mod tests {
   }
 
   #[test]
+  fn moderate_upscale_with_fractional_dest_rect_uses_phase_aware_sampling() {
+    // 9x9 gradient so upscaling yields fractional intermediate values.
+    let mut pixels = Vec::new();
+    for y in 0..9u8 {
+      for x in 0..9u8 {
+        pixels.extend_from_slice(&[x * 28, y * 28, 0, 255]);
+      }
+    }
+    let image = Arc::new(ImageData::new_pixels(9, 9, pixels));
+
+    // Modest upscale (9 -> 12) with a fractional max edge. This is large enough to avoid the small
+    // image fast-paths, but small enough to be practical in unit tests.
+    let dest = Rect::from_xywh(0.0, 0.0, 12.1, 12.1);
+    let mut list = DisplayList::new();
+    list.push(DisplayItem::Image(ImageItem {
+      dest_rect: dest,
+      image: image.clone(),
+      filter_quality: ImageFilterQuality::Linear,
+      src_rect: None,
+    }));
+
+    let rendered = DisplayListRenderer::new(12, 12, Rgba::WHITE, FontContext::new())
+      .unwrap()
+      .render(&list)
+      .unwrap();
+
+    // The renderer should use the phase-aware Skia-aligned sampler (see
+    // `image_data_to_scaled_pixmap_with_phase_inner`) for this draw, so the final canvas should
+    // match the sampler output exactly.
+    let origin_x = (dest.x() - 0.5).ceil();
+    let origin_y = (dest.y() - 0.5).ceil();
+    let out_w = ((dest.x() + dest.width() - 0.5).ceil() - origin_x).round() as u32;
+    let out_h = ((dest.y() + dest.height() - 0.5).ceil() - origin_y).round() as u32;
+    let expected = super::image_data_to_scaled_pixmap_with_phase_inner(
+      image.as_ref(),
+      dest,
+      out_w,
+      out_h,
+      origin_x,
+      origin_y,
+    )
+    .unwrap()
+    .unwrap();
+
+    assert_eq!((rendered.width(), rendered.height()), (expected.width(), expected.height()));
+    assert_eq!(rendered.data(), expected.data());
+  }
+
+  #[test]
   fn scaled_image_resampling_uses_mipmapped_nearest_filtering() {
     // 8x1 red ramp (0..224).
     let mut pixels = Vec::new();
@@ -26347,6 +26549,66 @@ mod tests {
     .unwrap();
     assert_eq!((pixmap.width(), pixmap.height()), (1, 1));
     assert_eq!(pixel(&pixmap, 0, 0), (63, 0, 0, 255));
+  }
+
+  #[test]
+  fn scaled_image_resampling_does_not_truncate_between_axes_on_upscale() {
+    // Same 2x2 layout as `scaled_image_resampling_truncates_between_axes_like_skia`, but rendered
+    // through a magnification path. Chrome's bilinear magnification does not truncate between
+    // axes, and rounds down once at the end, yielding 64 (not 63). (Weight quantization to 16
+    // phases does not affect this particular sample because the weight is exactly 0.5.)
+    //
+    // Layout (red, alpha=255):
+    //   0   255
+    //   1     0
+    let pixels = vec![
+      0, 0, 0, 255, 255, 0, 0, 255, // first row
+      1, 0, 0, 255, 0, 0, 0, 255, // second row
+    ];
+    let image = ImageData::new_pixels(2, 2, pixels);
+
+    // Upscale to 3x3; the center output pixel maps to the source center (0.5, 0.5).
+    let dest = Rect::from_xywh(0.0, 0.0, 3.0, 3.0);
+    let origin_x = (dest.x() - 0.5).ceil();
+    let origin_y = (dest.y() - 0.5).ceil();
+    let out_w = ((dest.x() + dest.width() - 0.5).ceil() - origin_x).round() as u32;
+    let out_h = ((dest.y() + dest.height() - 0.5).ceil() - origin_y).round() as u32;
+    let pixmap = super::image_data_to_scaled_pixmap_with_phase_inner(
+      &image, dest, out_w, out_h, origin_x, origin_y,
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!((pixmap.width(), pixmap.height()), (3, 3));
+    assert_eq!(pixel(&pixmap, 1, 1), (64, 0, 0, 255));
+  }
+
+  #[test]
+  fn scaled_image_resampling_quantizes_upscale_weights_to_16_phases() {
+    // Chrome/Skia's magnification path appears to quantize bilinear weights to 16 phases (4-bit
+    // precision). This is observable on simple ramps where the exact weight would otherwise yield
+    // a different u8 result.
+    //
+    // 2x1 red ramp:
+    //   0 255
+    let pixels = vec![
+      0, 0, 0, 255, 255, 0, 0, 255, // row
+    ];
+    let image = ImageData::new_pixels(2, 1, pixels);
+
+    // Upscale to 5px wide; the pixel at x=1 maps to source x ~= 0.1, which quantizes to 1/16.
+    // Expected red = floor(255 * (1/16)) = 15.
+    let dest = Rect::from_xywh(0.0, 0.0, 5.0, 1.0);
+    let origin_x = (dest.x() - 0.5).ceil();
+    let origin_y = (dest.y() - 0.5).ceil();
+    let out_w = ((dest.x() + dest.width() - 0.5).ceil() - origin_x).round() as u32;
+    let out_h = ((dest.y() + dest.height() - 0.5).ceil() - origin_y).round() as u32;
+    let pixmap = super::image_data_to_scaled_pixmap_with_phase_inner(
+      &image, dest, out_w, out_h, origin_x, origin_y,
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!((pixmap.width(), pixmap.height()), (5, 1));
+    assert_eq!(pixel(&pixmap, 1, 0), (15, 0, 0, 255));
   }
 
   #[test]
