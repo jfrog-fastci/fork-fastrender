@@ -1494,6 +1494,79 @@ mod tests {
     .expect("write manifest");
   }
 
+  fn create_minimal_bundle_with_vary_manifest_key() -> (tempfile::TempDir, String, Vec<u8>) {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+
+    std::fs::write(root.join("doc.html"), b"<!doctype html><html></html>").expect("write doc");
+
+    let resource_bytes = vec![0x00, 0x01, 0x02, 0x03, 0x7f, 0xfe, 0xff];
+    std::fs::write(root.join("res.bin"), &resource_bytes).expect("write resource");
+
+    let base_url = "https://example.invalid/res.bin";
+    let synthetic_key = vary_partitioned_resource_key(base_url, "test-key");
+
+    let mut resources = BTreeMap::new();
+    resources.insert(
+      synthetic_key.clone(),
+      BundledResourceInfo {
+        path: "res.bin".to_string(),
+        content_type: Some("application/octet-stream".to_string()),
+        nosniff: false,
+        status: Some(200),
+        final_url: None,
+        etag: None,
+        last_modified: None,
+        response_referrer_policy: None,
+        response_headers: None,
+        vary: Some("user-agent".to_string()),
+        access_control_allow_origin: None,
+        timing_allow_origin: None,
+        access_control_allow_credentials: false,
+      },
+    );
+
+    let manifest = BundleManifest {
+      version: BUNDLE_VERSION,
+      original_url: "https://example.invalid/doc.html".to_string(),
+      document: BundledDocument {
+        path: "doc.html".to_string(),
+        content_type: Some("text/html".to_string()),
+        nosniff: false,
+        final_url: "https://example.invalid/doc.html".to_string(),
+        status: Some(200),
+        etag: None,
+        last_modified: None,
+        response_referrer_policy: None,
+        response_headers: None,
+        access_control_allow_origin: None,
+        timing_allow_origin: None,
+        vary: None,
+      },
+      render: BundleRenderConfig {
+        viewport: (800, 600),
+        device_pixel_ratio: 1.0,
+        scroll_x: 0.0,
+        scroll_y: 0.0,
+        full_page: false,
+        same_origin_subresources: false,
+        allowed_subresource_origins: Vec::new(),
+        compat_profile: CompatProfile::default(),
+        dom_compat_mode: DomCompatibilityMode::default(),
+      },
+      fetch_profile: BundleFetchProfile::default(),
+      resources,
+    };
+
+    std::fs::write(
+      root.join(BUNDLE_MANIFEST),
+      serde_json::to_vec_pretty(&manifest).expect("serialize manifest"),
+    )
+    .expect("write manifest");
+
+    (dir, synthetic_key, resource_bytes)
+  }
+
   #[test]
   fn bundled_fetcher_request_header_value_treats_missing_upgrade_insecure_requests_as_empty() {
     let tmp = tempfile::tempdir().expect("tempdir");
@@ -1861,79 +1934,52 @@ mod tests {
   }
 
   #[test]
-  fn bundled_fetcher_fetches_vary_partitioned_manifest_keys() {
-    let tmp = tempfile::tempdir().expect("tempdir");
-    std::fs::write(
-      tmp.path().join("document.html"),
-      "<!doctype html><html></html>",
-    )
-    .expect("write doc");
-    std::fs::write(tmp.path().join("style.css"), "body{color:red}").expect("write css");
-
-    let base_url = "https://example.com/style.css";
-    let vary_key = "abc";
-    let manifest_key = vary_partitioned_resource_key(base_url, vary_key);
-
-    let manifest = BundleManifest {
-      version: BUNDLE_VERSION,
-      original_url: "https://example.com/".to_string(),
-      document: BundledDocument {
-        path: "document.html".to_string(),
-        content_type: Some("text/html".to_string()),
-        nosniff: false,
-        final_url: "https://example.com/".to_string(),
-        status: Some(200),
-        etag: None,
-        last_modified: None,
-        response_referrer_policy: None,
-        response_headers: None,
-        access_control_allow_origin: None,
-        timing_allow_origin: None,
-        vary: None,
-      },
-      render: BundleRenderConfig {
-        viewport: (1200, 800),
-        device_pixel_ratio: 1.0,
-        scroll_x: 0.0,
-        scroll_y: 0.0,
-        full_page: false,
-        same_origin_subresources: false,
-        allowed_subresource_origins: Vec::new(),
-        compat_profile: CompatProfile::default(),
-        dom_compat_mode: DomCompatibilityMode::default(),
-      },
-      fetch_profile: BundleFetchProfile::default(),
-      resources: BTreeMap::from([(
-        manifest_key.clone(),
-        BundledResourceInfo {
-          path: "style.css".to_string(),
-          content_type: Some("text/css".to_string()),
-          nosniff: false,
-          status: Some(200),
-          final_url: Some(base_url.to_string()),
-          etag: None,
-          last_modified: None,
-          response_referrer_policy: None,
-          response_headers: None,
-          vary: Some("accept-encoding".to_string()),
-          access_control_allow_origin: None,
-          timing_allow_origin: None,
-          access_control_allow_credentials: false,
-        },
-      )]),
-    };
-    std::fs::write(
-      tmp.path().join(BUNDLE_MANIFEST),
-      serde_json::to_vec_pretty(&manifest).expect("serialize manifest"),
-    )
-    .expect("write manifest");
+  fn synthetic_vary_manifest_key_can_be_fetched() {
+    let (tmp, synthetic_key, expected_bytes) = create_minimal_bundle_with_vary_manifest_key();
 
     let bundle = Bundle::load(tmp.path()).expect("load bundle");
-    let fetcher = BundledFetcher::new(bundle);
 
-    let res = fetcher.fetch(&manifest_key).expect("fetch vary key");
-    assert_eq!(res.bytes, b"body{color:red}");
-    assert_eq!(res.content_type.as_deref(), Some("text/css"));
+    let fetched = bundle
+      .fetch_manifest_entry(&synthetic_key)
+      .expect("Bundle::fetch_manifest_entry resolves synthetic Vary key");
+    assert_eq!(
+      fetched.content_type.as_deref(),
+      Some("application/octet-stream")
+    );
+    assert_eq!(fetched.bytes, expected_bytes);
+
+    let fetcher = BundledFetcher::new(bundle);
+    let fetched = fetcher
+      .fetch(&synthetic_key)
+      .expect("BundledFetcher::fetch resolves synthetic Vary key");
+    assert_eq!(
+      fetched.content_type.as_deref(),
+      Some("application/octet-stream")
+    );
+    assert_eq!(fetched.bytes, expected_bytes);
+  }
+
+  #[test]
+  fn synthetic_vary_manifest_key_missing_variant_has_actionable_error() {
+    let (tmp, synthetic_key, _expected_bytes) = create_minimal_bundle_with_vary_manifest_key();
+    let missing_key = synthetic_key.replace("test-key", "missing-key");
+
+    let bundle = Bundle::load(tmp.path()).expect("load bundle");
+
+    let err = bundle
+      .fetch_manifest_entry(&missing_key)
+      .expect_err("missing Vary variant should error");
+    let message = err.to_string();
+    assert!(message.contains("Vary variant"), "unexpected error: {message}");
+    assert!(message.contains(&missing_key), "unexpected error: {message}");
+
+    let fetcher = BundledFetcher::new(bundle);
+    let err = fetcher
+      .fetch(&missing_key)
+      .expect_err("missing Vary variant should error");
+    let message = err.to_string();
+    assert!(message.contains("Vary variant"), "unexpected error: {message}");
+    assert!(message.contains(&missing_key), "unexpected error: {message}");
   }
 
   #[test]
