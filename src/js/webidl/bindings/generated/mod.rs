@@ -169,7 +169,7 @@ pub mod window {
             Value::Undefined
           } else if matches!(v, Value::Null | Value::Undefined) {
             js_to_dict_add_event_listener_options(rt, host, hooks, v)?
-          } else if let Value::Object(obj) = v {
+          } else if let Value::Object(_) = v {
             js_to_dict_add_event_listener_options(rt, host, hooks, v)?
           } else if matches!(v, Value::Bool(_)) {
             Value::Bool(rt.scope.heap().to_boolean(v)?)
@@ -283,7 +283,7 @@ pub mod window {
             Value::Undefined
           } else if matches!(v, Value::Null | Value::Undefined) {
             js_to_dict_event_listener_options(rt, host, hooks, v)?
-          } else if let Value::Object(obj) = v {
+          } else if let Value::Object(_) = v {
             js_to_dict_event_listener_options(rt, host, hooks, v)?
           } else if matches!(v, Value::Bool(_)) {
             Value::Bool(rt.scope.heap().to_boolean(v)?)
@@ -831,7 +831,7 @@ pub mod window {
       IterableKind::Entries,
     )?;
     for entry in snapshot {
-      let BindingValue::Sequence(mut pair) = entry else {
+      let BindingValue::Sequence(pair) = entry else {
         return Err(rt.throw_type_error("iterable forEach: expected [key, value] pair"));
       };
       if pair.len() != 2 {
@@ -2423,7 +2423,7 @@ pub mod worker {
             Value::Undefined
           } else if matches!(v, Value::Null | Value::Undefined) {
             js_to_dict_add_event_listener_options(rt, host, hooks, v)?
-          } else if let Value::Object(obj) = v {
+          } else if let Value::Object(_) = v {
             js_to_dict_add_event_listener_options(rt, host, hooks, v)?
           } else if matches!(v, Value::Bool(_)) {
             Value::Bool(rt.scope.heap().to_boolean(v)?)
@@ -2537,7 +2537,7 @@ pub mod worker {
             Value::Undefined
           } else if matches!(v, Value::Null | Value::Undefined) {
             js_to_dict_event_listener_options(rt, host, hooks, v)?
-          } else if let Value::Object(obj) = v {
+          } else if let Value::Object(_) = v {
             js_to_dict_event_listener_options(rt, host, hooks, v)?
           } else if matches!(v, Value::Bool(_)) {
             Value::Bool(rt.scope.heap().to_boolean(v)?)
@@ -3054,7 +3054,7 @@ pub mod worker {
       IterableKind::Entries,
     )?;
     for entry in snapshot {
-      let BindingValue::Sequence(mut pair) = entry else {
+      let BindingValue::Sequence(pair) = entry else {
         return Err(rt.throw_type_error("iterable forEach: expected [key, value] pair"));
       };
       if pair.len() != 2 {

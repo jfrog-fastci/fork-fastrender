@@ -6463,7 +6463,7 @@ fn write_operation_wrapper_vmjs(
           iface_lit = rust_string_literal(interface),
         ));
         out.push_str("  for entry in snapshot {\n");
-        out.push_str("    let BindingValue::Sequence(mut pair) = entry else {\n");
+        out.push_str("    let BindingValue::Sequence(pair) = entry else {\n");
         out.push_str(
           "      return Err(rt.throw_type_error(\"iterable forEach: expected [key, value] pair\"));\n",
         );
@@ -7322,7 +7322,11 @@ fn emit_union_conversion_expr_vmjs(
   }
 
   // Object branch: sequence/record/dictionary/object.
-  out.push_str(" else if let Value::Object(obj) = v {\n");
+  if seq_expr.is_some() {
+    out.push_str(" else if let Value::Object(obj) = v {\n");
+  } else {
+    out.push_str(" else if let Value::Object(_) = v {\n");
+  }
 
   if let Some(seq_expr) = &seq_expr {
     out.push_str(&format!(

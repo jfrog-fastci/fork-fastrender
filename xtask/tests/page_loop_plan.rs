@@ -229,7 +229,7 @@ fn page_loop_inspect_frag_runs_prebuilt_binary_under_run_limited() {
 }
 
 #[test]
-fn page_loop_inspect_frag_defaults_web_font_wait_ms_to_500() {
+fn page_loop_inspect_frag_defaults_web_font_wait_ms_to_1000() {
   let repo_root = repo_root();
   let fixture_html = repo_root.join("tests/pages/fixtures/example.com/index.html");
   let overlay_png = repo_root.join("target/page_loop_test_out/example.com.png");
@@ -261,7 +261,7 @@ fn page_loop_inspect_frag_defaults_web_font_wait_ms_to_500() {
   if std::env::var_os("FASTR_WEB_FONT_WAIT_MS").is_none() {
     assert_eq!(
       cmd_env(&cmd, "FASTR_WEB_FONT_WAIT_MS").as_deref(),
-      Some("500")
+      Some("1000")
     );
   } else {
     assert_eq!(cmd_env(&cmd, "FASTR_WEB_FONT_WAIT_MS"), None);
