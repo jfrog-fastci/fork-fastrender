@@ -41,8 +41,6 @@ use vm_js::{
 const OBSERVE_SCRIPT: &str = "String(globalThis.__native_result)";
 const OBSERVE_SOURCE_NAME: &str = "<native-oracle-observe>";
 
-const CONSOLE_PRELUDE_SCRIPT: &str = "globalThis.console = { log: __native_print };";
-const CONSOLE_PRELUDE_SOURCE_NAME: &str = "<native-oracle-console-prelude>";
 const NATIVE_PRINT_NAME: &str = "__native_print";
 const NATIVE_BUILTINS_PRELUDE_SOURCE_NAME: &str = "<native-oracle-builtins>";
 const NATIVE_BUILTINS_PRELUDE_SCRIPT: &str = r#"
@@ -391,6 +389,15 @@ fn take_captured_stdout(vm: &mut Vm) -> String {
   out
 }
 
+fn install_native_builtins(rt: &mut JsRuntime) -> Result<(), VmError> {
+  rt.register_global_native_function(NATIVE_PRINT_NAME, native_print, 0)?;
+  rt.exec_script_source(Arc::new(SourceText::new(
+    NATIVE_BUILTINS_PRELUDE_SOURCE_NAME,
+    NATIVE_BUILTINS_PRELUDE_SCRIPT,
+  )))?;
+  Ok(())
+}
+
 /// Structured result of executing a snippet under either the oracle VM or a native backend.
 ///
 /// This is intended for oracle-vs-native comparisons: it distinguishes between successful
@@ -668,8 +675,8 @@ pub fn run_typescript_source_outcome_with_options(
 
 /// Execute already-erased JavaScript source, returning a structured [`RunOutcome`].
 ///
-/// This captures `console.log` output into [`RunOutcome::stdout`] using the same console prelude as
-/// [`run_js_source_capture_stdout_with_options`].
+/// This captures `print(...)` / `console.log(...)` output into [`RunOutcome::stdout`] using the same
+/// native builtins prelude as [`run_js_source_capture_stdout_with_options`].
 pub fn run_js_source_outcome_with_options(
   source_name: impl Into<Arc<str>>,
   source_text: impl Into<Arc<str>>,
@@ -688,14 +695,7 @@ pub fn run_js_source_outcome_with_options(
   rt.vm.set_user_data(StdoutCapture::default());
 
   let outcome = (|| {
-    if let Err(err) = rt.register_global_native_function(NATIVE_PRINT_NAME, native_print, 0) {
-      return vm_error_to_outcome(&mut rt, err);
-    }
-
-    if let Err(err) = rt.exec_script_source(Arc::new(SourceText::new(
-      CONSOLE_PRELUDE_SOURCE_NAME,
-      CONSOLE_PRELUDE_SCRIPT,
-    ))) {
+    if let Err(err) = install_native_builtins(&mut rt) {
       return vm_error_to_outcome(&mut rt, err);
     }
 
@@ -752,16 +752,22 @@ pub fn run_js_source_with_options(
   out
 }
 
-/// Execute already-erased JavaScript source, capturing `console.log` output.
+/// Execute already-erased JavaScript source, capturing `print` / `console.log` output.
 ///
-/// ## `console.log` contract
+/// ## Native builtins contract
 ///
-/// `vm-js` intentionally has no `console` global. For output-based oracle comparisons, this harness
-/// injects a minimal `console.log` before evaluating `source_text`:
+/// `vm-js` intentionally has no `print`/`console` builtins. For output-based oracle comparisons,
+/// this harness injects a minimal native-js-style prelude before evaluating `source_text`:
 ///
-/// - `globalThis.console = { log: __native_print }`
-/// - each `console.log(a, b, ...)` call appends `String(a) + " " + String(b) + ... + "\n"` to an
-///   internal host-owned buffer (arguments are joined with a single ASCII space).
+/// - `globalThis.print = (...values) => __native_print(...values);`
+/// - `globalThis.console = { log: (...values) => __native_print(...values) };`
+/// - `globalThis.assert = (cond, msg?) => { if (!cond) throw new Error(...); }`
+/// - `globalThis.panic = (msg?) => { throw new Error(...); }`
+/// - `globalThis.trap = () => { throw new Error('trap'); }`
+///
+/// Each `print(...)` / `console.log(...)` call appends
+/// `String(a) + " " + String(b) + ... + "\n"` to an internal host-owned buffer (arguments are
+/// joined with a single ASCII space).
 ///
 /// The returned string is the concatenated buffer with a single trailing `\n` removed (if present),
 /// matching the common “captured stdout” convention used by this repository's fixture runners.
@@ -776,14 +782,7 @@ pub fn run_js_source_capture_stdout_with_options(
   rt.vm.set_user_data(StdoutCapture::default());
 
   let out = (|| {
-    rt.register_global_native_function(NATIVE_PRINT_NAME, native_print, 0)
-      .map_err(|err| map_vm_error(&mut rt, err))?;
-
-    rt.exec_script_source(Arc::new(SourceText::new(
-      CONSOLE_PRELUDE_SOURCE_NAME,
-      CONSOLE_PRELUDE_SCRIPT,
-    )))
-    .map_err(|err| map_vm_error(&mut rt, err))?;
+    install_native_builtins(&mut rt).map_err(|err| map_vm_error(&mut rt, err))?;
 
     rt.exec_script_source(Arc::new(SourceText::new(source_name, source_text)))
       .map_err(|err| map_vm_error(&mut rt, err))?;
@@ -1445,14 +1444,7 @@ pub fn run_fixture_ts_outcome_with_name_and_options(
   rt.vm.set_user_data(StdoutCapture::default());
 
   let outcome = (|| {
-    if let Err(err) = rt.register_global_native_function(NATIVE_PRINT_NAME, native_print, 0) {
-      return vm_error_to_outcome(&mut rt, err);
-    }
-
-    if let Err(err) = rt.exec_script_source(Arc::new(SourceText::new(
-      CONSOLE_PRELUDE_SOURCE_NAME,
-      CONSOLE_PRELUDE_SCRIPT,
-    ))) {
+    if let Err(err) = install_native_builtins(&mut rt) {
       return vm_error_to_outcome(&mut rt, err);
     }
 
