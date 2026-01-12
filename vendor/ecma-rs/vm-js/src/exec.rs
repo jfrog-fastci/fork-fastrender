@@ -1278,6 +1278,99 @@ impl<'a> Evaluator<'a> {
       .call_with_host_and_hooks(&mut *self.host, scope, &mut *self.hooks, callee, this, args)
   }
 
+  /// Returns `true` if `err` is treated as a JS `throw` completion by the statement evaluator.
+  ///
+  /// `VmError::Termination`/`VmError::OutOfMemory`/etc are **not** catchable from JS and must never
+  /// be replaced by iterator-closing errors (otherwise scripts could accidentally/hostilely
+  /// "catch" termination and continue).
+  fn error_is_throw_completion(err: &VmError) -> bool {
+    matches!(
+      err,
+      VmError::Throw(_)
+        | VmError::ThrowWithStack { .. }
+        | VmError::TypeError(_)
+        | VmError::NotCallable
+        | VmError::NotConstructable
+        | VmError::PrototypeCycle
+        | VmError::PrototypeChainTooDeep
+        | VmError::InvalidPropertyDescriptorPatch
+    )
+  }
+
+  /// Implements `IteratorClose` error precedence for operations that return `Result<_, VmError>`.
+  ///
+  /// - If the original error is a JS-throw completion, a closing error overrides it.
+  /// - For fatal/non-catchable errors (termination, OOM, etc), iterator closing is best-effort and
+  ///   the original error is preserved.
+  fn iterator_close_on_error(
+    &mut self,
+    scope: &mut Scope<'_>,
+    record: &iterator::IteratorRecord,
+    err: VmError,
+  ) -> VmError {
+    if record.done {
+      return err;
+    }
+ 
+    let original_is_throw = Self::error_is_throw_completion(&err);
+ 
+    // Root the thrown value across `IteratorClose`, which can allocate and trigger GC.
+    if original_is_throw {
+      if let Some(thrown) = err.thrown_value() {
+        if let Err(root_err) = scope.push_root(thrown) {
+          return root_err;
+        }
+      }
+    }
+ 
+    match iterator::iterator_close(
+      self.vm,
+      &mut *self.host,
+      &mut *self.hooks,
+      scope,
+      record,
+    ) {
+      Ok(()) => err,
+      Err(close_err) => {
+        if original_is_throw {
+          close_err
+        } else {
+          err
+        }
+      }
+    }
+  }
+
+  /// Implements `IteratorClose` for operations that return a `Completion` record.
+  ///
+  /// Any iterator-closing error overrides the provided completion (ECMA-262 `IteratorClose`).
+  fn iterator_close_on_completion(
+    &mut self,
+    scope: &mut Scope<'_>,
+    record: &iterator::IteratorRecord,
+    completion: Completion,
+  ) -> Result<Completion, VmError> {
+    if record.done {
+      return Ok(completion);
+    }
+
+    // Root the completion value across `IteratorClose`, which can allocate and trigger GC.
+    if let Some(v) = completion.value() {
+      scope.push_root(v)?;
+    }
+
+    match iterator::iterator_close(
+      self.vm,
+      &mut *self.host,
+      &mut *self.hooks,
+      scope,
+      record,
+    ) {
+      Ok(()) => Ok(completion),
+      Err(close_err) => Err(close_err),
+    }
+  }
+
   fn function_length(&mut self, func: &parse_js::ast::func::Func) -> Result<u32, VmError> {
     // ECMA-262 `length` is the number of parameters before the first one with a default/rest.
     //
@@ -4019,24 +4112,7 @@ impl<'a> Evaluator<'a> {
         &mut iterator_record,
       ) {
         Ok(v) => v,
-        Err(err) => {
-          // If iterator close throws, it overrides the original error (ECMA-262 `IteratorClose`).
-          let pending_root = err.thrown_value().map(|v| iter_scope.heap_mut().add_root(v)).transpose()?;
-          let close_res = iterator::iterator_close(
-            self.vm,
-            &mut *self.host,
-            &mut *self.hooks,
-            &mut iter_scope,
-            &iterator_record,
-          );
-          if let Some(root) = pending_root {
-            iter_scope.heap_mut().remove_root(root);
-          }
-          if let Err(close_err) = close_res {
-            return Err(close_err);
-          }
-          return Err(err);
-        }
+        Err(err) => return Err(self.iterator_close_on_error(&mut iter_scope, &iterator_record, err)),
       };
 
       let Some(value) = next_value else {
@@ -4095,22 +4171,7 @@ impl<'a> Evaluator<'a> {
         if iter_env.is_some() {
           self.env.set_lexical_env(iter_scope.heap_mut(), outer_lex);
         }
-        // If iterator close throws, it overrides the original error (ECMA-262 `IteratorClose`).
-        let pending_root = err.thrown_value().map(|v| iter_scope.heap_mut().add_root(v)).transpose()?;
-        let close_res = iterator::iterator_close(
-          self.vm,
-          &mut *self.host,
-          &mut *self.hooks,
-          &mut iter_scope,
-          &iterator_record,
-        );
-        if let Some(root) = pending_root {
-          iter_scope.heap_mut().remove_root(root);
-        }
-        if let Err(close_err) = close_res {
-          return Err(close_err);
-        }
-        return Err(err);
+        return Err(self.iterator_close_on_error(&mut iter_scope, &iterator_record, err));
       }
 
       let body_completion = match self.eval_for_body(&mut iter_scope, &stmt.body.stx) {
@@ -4119,22 +4180,7 @@ impl<'a> Evaluator<'a> {
           if iter_env.is_some() {
             self.env.set_lexical_env(iter_scope.heap_mut(), outer_lex);
           }
-          // If iterator close throws, it overrides the original error (ECMA-262 `IteratorClose`).
-          let pending_root = err.thrown_value().map(|v| iter_scope.heap_mut().add_root(v)).transpose()?;
-          let close_res = iterator::iterator_close(
-            self.vm,
-            &mut *self.host,
-            &mut *self.hooks,
-            &mut iter_scope,
-            &iterator_record,
-          );
-          if let Some(root) = pending_root {
-            iter_scope.heap_mut().remove_root(root);
-          }
-          if let Err(close_err) = close_res {
-            return Err(close_err);
-          }
-          return Err(err);
+          return Err(self.iterator_close_on_error(&mut iter_scope, &iterator_record, err));
         }
       };
 
@@ -4143,23 +4189,9 @@ impl<'a> Evaluator<'a> {
       }
 
       if !Self::loop_continues(&body_completion, label_set) {
-        // If iterator close throws, it overrides the original completion (ECMA-262 `IteratorClose`).
-        let pending_root =
-          body_completion.value().map(|v| iter_scope.heap_mut().add_root(v)).transpose()?;
-        let close_res = iterator::iterator_close(
-          self.vm,
-          &mut *self.host,
-          &mut *self.hooks,
-          &mut iter_scope,
-          &iterator_record,
-        );
-        if let Some(root) = pending_root {
-          iter_scope.heap_mut().remove_root(root);
-        }
-        if let Err(close_err) = close_res {
-          return Err(close_err);
-        }
-        return Ok(body_completion.update_empty(Some(v)));
+        let completion = body_completion.update_empty(Some(v));
+        let completion = self.iterator_close_on_completion(&mut iter_scope, &iterator_record, completion)?;
+        return Ok(completion);
       }
 
       if let Some(value) = body_completion.value() {
@@ -5058,14 +5090,7 @@ impl<'a> Evaluator<'a> {
           )?;
           spread_scope.push_root(iter.iterator)?;
           if let Err(err) = spread_scope.push_root(iter.next_method) {
-            let _ = iterator::iterator_close(
-              self.vm,
-              &mut *self.host,
-              &mut *self.hooks,
-              &mut spread_scope,
-              &iter,
-            );
-            return Err(err);
+            return Err(self.iterator_close_on_error(&mut spread_scope, &iter, err));
           }
 
           loop {
@@ -5075,19 +5100,10 @@ impl<'a> Evaluator<'a> {
               &mut *self.hooks,
               &mut spread_scope,
               &mut iter,
-            ) {
-              Ok(v) => v,
-              Err(err) => {
-                let _ = iterator::iterator_close(
-                  self.vm,
-                  &mut *self.host,
-                  &mut *self.hooks,
-                  &mut spread_scope,
-                  &iter,
-                );
-                return Err(err);
-              }
-            };
+              ) {
+                Ok(v) => v,
+                Err(err) => return Err(self.iterator_close_on_error(&mut spread_scope, &iter, err)),
+              };
 
             let Some(value) = next_value else {
               break;
@@ -5111,14 +5127,7 @@ impl<'a> Evaluator<'a> {
               Ok(())
             })();
             if let Err(err) = step_res {
-              let _ = iterator::iterator_close(
-                self.vm,
-                &mut *self.host,
-                &mut *self.hooks,
-                &mut spread_scope,
-                &iter,
-              );
-              return Err(err);
+              return Err(self.iterator_close_on_error(&mut spread_scope, &iter, err));
             }
           }
         }
@@ -5909,14 +5918,7 @@ impl<'a> Evaluator<'a> {
               )?;
               new_scope.push_root(iter.iterator)?;
               if let Err(err) = new_scope.push_root(iter.next_method) {
-                let _ = iterator::iterator_close(
-                  self.vm,
-                  &mut *self.host,
-                  &mut *self.hooks,
-                  &mut new_scope,
-                  &iter,
-                );
-                return Err(err);
+                return Err(self.iterator_close_on_error(&mut new_scope, &iter, err));
               }
 
               loop {
@@ -5929,14 +5931,7 @@ impl<'a> Evaluator<'a> {
                 ) {
                   Ok(v) => v,
                   Err(err) => {
-                    let _ = iterator::iterator_close(
-                      self.vm,
-                      &mut *self.host,
-                      &mut *self.hooks,
-                      &mut new_scope,
-                      &iter,
-                    );
-                    return Err(err);
+                    return Err(self.iterator_close_on_error(&mut new_scope, &iter, err));
                   }
                 };
 
@@ -5952,14 +5947,7 @@ impl<'a> Evaluator<'a> {
                   Ok(())
                 })();
                 if let Err(err) = step_res {
-                  let _ = iterator::iterator_close(
-                    self.vm,
-                    &mut *self.host,
-                    &mut *self.hooks,
-                    &mut new_scope,
-                    &iter,
-                  );
-                  return Err(err);
+                  return Err(self.iterator_close_on_error(&mut new_scope, &iter, err));
                 }
               }
             } else {
@@ -6165,14 +6153,7 @@ impl<'a> Evaluator<'a> {
         )?;
         call_scope.push_root(iter.iterator)?;
         if let Err(err) = call_scope.push_root(iter.next_method) {
-          let _ = iterator::iterator_close(
-            self.vm,
-            &mut *self.host,
-            &mut *self.hooks,
-            &mut call_scope,
-            &iter,
-          );
-          return Err(err);
+          return Err(self.iterator_close_on_error(&mut call_scope, &iter, err));
         }
 
         loop {
@@ -6185,14 +6166,7 @@ impl<'a> Evaluator<'a> {
           ) {
             Ok(v) => v,
             Err(err) => {
-              let _ = iterator::iterator_close(
-                self.vm,
-                &mut *self.host,
-                &mut *self.hooks,
-                &mut call_scope,
-                &iter,
-              );
-              return Err(err);
+              return Err(self.iterator_close_on_error(&mut call_scope, &iter, err));
             }
           };
 
@@ -6208,14 +6182,7 @@ impl<'a> Evaluator<'a> {
             Ok(())
           })();
           if let Err(err) = step_res {
-            let _ = iterator::iterator_close(
-              self.vm,
-              &mut *self.host,
-              &mut *self.hooks,
-              &mut call_scope,
-              &iter,
-            );
-            return Err(err);
+            return Err(self.iterator_close_on_error(&mut call_scope, &iter, err));
           }
         }
       } else {
@@ -6262,14 +6229,7 @@ impl<'a> Evaluator<'a> {
         )?;
         call_scope.push_root(iter.iterator)?;
         if let Err(err) = call_scope.push_root(iter.next_method) {
-          let _ = iterator::iterator_close(
-            self.vm,
-            &mut *self.host,
-            &mut *self.hooks,
-            &mut call_scope,
-            &iter,
-          );
-          return Err(err);
+          return Err(self.iterator_close_on_error(&mut call_scope, &iter, err));
         }
 
         loop {
@@ -6282,14 +6242,7 @@ impl<'a> Evaluator<'a> {
           ) {
             Ok(v) => v,
             Err(err) => {
-              let _ = iterator::iterator_close(
-                self.vm,
-                &mut *self.host,
-                &mut *self.hooks,
-                &mut call_scope,
-                &iter,
-              );
-              return Err(err);
+              return Err(self.iterator_close_on_error(&mut call_scope, &iter, err));
             }
           };
 
@@ -6305,14 +6258,7 @@ impl<'a> Evaluator<'a> {
             Ok(())
           })();
           if let Err(err) = step_res {
-            let _ = iterator::iterator_close(
-              self.vm,
-              &mut *self.host,
-              &mut *self.hooks,
-              &mut call_scope,
-              &iter,
-            );
-            return Err(err);
+            return Err(self.iterator_close_on_error(&mut call_scope, &iter, err));
           }
         }
       } else {
@@ -9823,13 +9769,10 @@ fn async_for_of_loop(
   loop {
     // Tick once per iteration so `for (x of xs) {}` is budgeted even when the body is empty.
     if let Err(err) = evaluator.tick() {
-      let _ = iterator::iterator_close(
-        evaluator.vm,
-        &mut *evaluator.host,
-        &mut *evaluator.hooks,
-        scope,
-        &iterator_record,
-      );
+      let err = {
+        let mut close_scope = scope.reborrow();
+        async_iterator_close_on_error(evaluator, &mut close_scope, &iterator_record, err)
+      };
       async_for_of_cleanup(scope, iterator_root, next_method_root, v_root);
       return Err(err);
     }
@@ -9843,15 +9786,13 @@ fn async_for_of_loop(
     ) {
       Ok(v) => v,
       Err(err) => {
-        let _ = iterator::iterator_close(
-          evaluator.vm,
-          &mut *evaluator.host,
-          &mut *evaluator.hooks,
-          scope,
-          &iterator_record,
-        );
+        let err = coerce_error_to_throw_for_async(evaluator.vm, scope, err);
+        let err = {
+          let mut close_scope = scope.reborrow();
+          async_iterator_close_on_error(evaluator, &mut close_scope, &iterator_record, err)
+        };
         async_for_of_cleanup(scope, iterator_root, next_method_root, v_root);
-        return Err(coerce_error_to_throw_for_async(evaluator.vm, scope, err));
+        return Err(err);
       }
     };
 
@@ -9874,13 +9815,10 @@ fn async_for_of_loop(
         let env = match scope.env_create(Some(outer_lex)) {
           Ok(env) => env,
           Err(err) => {
-            let _ = iterator::iterator_close(
-              evaluator.vm,
-              &mut *evaluator.host,
-              &mut *evaluator.hooks,
-              scope,
-              &iterator_record,
-            );
+            let err = {
+              let mut close_scope = scope.reborrow();
+              async_iterator_close_on_error(evaluator, &mut close_scope, &iterator_record, err)
+            };
             async_for_of_cleanup(scope, iterator_root, next_method_root, v_root);
             return Err(err);
           }
@@ -9929,13 +9867,10 @@ fn async_for_of_loop(
       if iter_env_created {
         evaluator.env.set_lexical_env(scope.heap_mut(), outer_lex);
       }
-      let _ = iterator::iterator_close(
-        evaluator.vm,
-        &mut *evaluator.host,
-        &mut *evaluator.hooks,
-        scope,
-        &iterator_record,
-      );
+      let err = {
+        let mut close_scope = scope.reborrow();
+        async_iterator_close_on_error(evaluator, &mut close_scope, &iterator_record, err)
+      };
       async_for_of_cleanup(scope, iterator_root, next_method_root, v_root);
       return Err(err);
     }
@@ -9946,13 +9881,10 @@ fn async_for_of_loop(
         if iter_env_created {
           evaluator.env.set_lexical_env(scope.heap_mut(), outer_lex);
         }
-        let _ = iterator::iterator_close(
-          evaluator.vm,
-          &mut *evaluator.host,
-          &mut *evaluator.hooks,
-          scope,
-          &iterator_record,
-        );
+        let err = {
+          let mut close_scope = scope.reborrow();
+          async_iterator_close_on_error(evaluator, &mut close_scope, &iterator_record, err)
+        };
         async_for_of_cleanup(scope, iterator_root, next_method_root, v_root);
         return Err(err);
       }
@@ -9967,29 +9899,42 @@ fn async_for_of_loop(
         let mut v = match scope.heap().get_root(v_root) {
           Some(v) => v,
           None => {
-            let _ = iterator::iterator_close(
-              evaluator.vm,
-              &mut *evaluator.host,
-              &mut *evaluator.hooks,
-              scope,
-              &iterator_record,
-            );
-            scope.heap_mut().remove_root(iterator_root);
-            scope.heap_mut().remove_root(next_method_root);
-            return Err(VmError::InvariantViolation("missing for-of loop value root"));
+            let err = {
+              let mut close_scope = scope.reborrow();
+              async_iterator_close_on_error(
+                evaluator,
+                &mut close_scope,
+                &iterator_record,
+                VmError::InvariantViolation("missing for-of loop value root"),
+              )
+            };
+            async_for_of_cleanup(scope, iterator_root, next_method_root, v_root);
+            return Err(err);
           }
         };
 
         if !Evaluator::loop_continues(&body_completion, &label_set) {
-          let _ = iterator::iterator_close(
-            evaluator.vm,
-            &mut *evaluator.host,
-            &mut *evaluator.hooks,
-            scope,
-            &iterator_record,
-          );
+          let completion = body_completion.update_empty(Some(v));
+          let close_res: Result<(), VmError> = (|| {
+            let mut close_scope = scope.reborrow();
+            if let Some(v) = completion.value() {
+              close_scope.push_root(v)?;
+            }
+            iterator::iterator_close(
+              evaluator.vm,
+              &mut *evaluator.host,
+              &mut *evaluator.hooks,
+              &mut close_scope,
+              &iterator_record,
+            )
+          })();
+
           async_for_of_cleanup(scope, iterator_root, next_method_root, v_root);
-          let result = Evaluator::normalise_iteration_break(body_completion.update_empty(Some(v)));
+          if let Err(close_err) = close_res {
+            return Err(coerce_error_to_throw_for_async(evaluator.vm, scope, close_err));
+          }
+
+          let result = Evaluator::normalise_iteration_break(completion);
           return Ok(AsyncEval::Complete(result));
         }
 
@@ -11045,7 +10990,7 @@ fn async_iterator_close_on_error(
   // Only replace the original error with a closing error when the original is a JS throw. For
   // fatal/non-catchable errors (OOM, termination, etc), attempt to close best-effort but preserve
   // the original error.
-  let original_is_throw = matches!(err, VmError::Throw(_) | VmError::ThrowWithStack { .. });
+  let original_is_throw = Evaluator::error_is_throw_completion(&err);
 
   // Root the thrown value across `IteratorClose`, which can allocate and trigger GC.
   if original_is_throw {
@@ -11056,48 +11001,13 @@ fn async_iterator_close_on_error(
     }
   }
 
-  let close_res: Result<(), VmError> = (|| {
-    let return_key = PropertyKey::from_string(scope.alloc_string("return")?);
-    let Some(return_method) = crate::spec_ops::get_method_with_host_and_hooks(
-      evaluator.vm,
-      scope,
-      &mut *evaluator.host,
-      &mut *evaluator.hooks,
-      iter.iterator,
-      return_key,
-    )?
-    else {
-      return Ok(());
-    };
-
-    // Root the method across the call in case it allocates/triggers GC.
-    scope.push_root(return_method)?;
-
-    // `Call(return, iterator, « »)`.
-    let return_result = evaluator.vm.call_with_host_and_hooks(
-      &mut *evaluator.host,
-      scope,
-      &mut *evaluator.hooks,
-      return_method,
-      iter.iterator,
-      &[],
-    )?;
-
-    // If we are already throwing, `IteratorClose` returns the original throw completion and does
-    // not validate the `return` result type.
-    if original_is_throw {
-      return Ok(());
-    }
-
-    // For non-throw completions, `IteratorClose` requires the `return` result to be an object.
-    if !matches!(return_result, Value::Object(_)) {
-      return Err(VmError::TypeError(
-        "IteratorClose: iterator.return did not return an object",
-      ));
-    }
-
-    Ok(())
-  })();
+  let close_res = iterator::iterator_close(
+    evaluator.vm,
+    &mut *evaluator.host,
+    &mut *evaluator.hooks,
+    scope,
+    iter,
+  );
 
   match close_res {
     Ok(()) => err,
@@ -12584,30 +12494,55 @@ fn async_resume_from_frames(
           let mut v = match scope.heap().get_root(v_root) {
             Some(v) => v,
             None => {
-              let _ = iterator::iterator_close(
-                evaluator.vm,
-                &mut *evaluator.host,
-                &mut *evaluator.hooks,
-                scope,
-                &iterator_record,
-              );
+              let err = {
+                let mut close_scope = scope.reborrow();
+                async_iterator_close_on_error(
+                  evaluator,
+                  &mut close_scope,
+                  &iterator_record,
+                  VmError::InvariantViolation("missing for-of loop value root"),
+                )
+              };
               async_for_of_cleanup(scope, iterator_root, next_method_root, v_root);
-              return Err(VmError::InvariantViolation("missing for-of loop value root"));
+              return Err(err);
             }
           };
 
           if !Evaluator::loop_continues(&body_completion, &label_set) {
-            let _ = iterator::iterator_close(
-              evaluator.vm,
-              &mut *evaluator.host,
-              &mut *evaluator.hooks,
-              scope,
-              &iterator_record,
-            );
-            let result = Evaluator::normalise_iteration_break(body_completion.update_empty(Some(v)));
+            let completion = body_completion.update_empty(Some(v));
+            let close_res: Result<(), VmError> = (|| {
+              let mut close_scope = scope.reborrow();
+              if let Some(v) = completion.value() {
+                close_scope.push_root(v)?;
+              }
+              iterator::iterator_close(
+                evaluator.vm,
+                &mut *evaluator.host,
+                &mut *evaluator.hooks,
+                &mut close_scope,
+                &iterator_record,
+              )
+            })();
+
             async_for_of_cleanup(scope, iterator_root, next_method_root, v_root);
-            state = AsyncState::Completion(result);
-            continue;
+
+            match close_res {
+              Ok(()) => {
+                let result = Evaluator::normalise_iteration_break(completion);
+                state = AsyncState::Completion(result);
+                continue;
+              }
+              Err(close_err) => {
+                let close_err = coerce_error_to_throw_for_async(evaluator.vm, scope, close_err);
+                match close_err {
+                  VmError::Throw(_) | VmError::ThrowWithStack { .. } => {
+                    state = AsyncState::Completion(completion_from_expr_result(Err(close_err))?);
+                    continue;
+                  }
+                  other => return Err(other),
+                }
+              }
+            }
           }
 
           if let Some(value) = body_completion.value() {
