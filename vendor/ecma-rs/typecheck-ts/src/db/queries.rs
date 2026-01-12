@@ -2011,10 +2011,11 @@ pub mod body_check {
 
         // Prefer deriving the base constructor type from the containing class's
         // value type: `lower_class_instance_and_value` models `class Derived
-        // extends Base<number> {}` as an intersection where one constituent is
-        // `typeof Base<number>`. This keeps the type arguments from the `extends`
-        // clause (and any class type parameters) intact for `super()` call
-        // checking.
+        // extends Base<number> {}` as an intersection that retains the base
+        // constructor value type (often wrapped in `OmitConstructSignatures` /
+        // `InheritConstructSignatures`). This keeps the type arguments from the
+        // `extends` clause (and any class type parameters) intact for `super()`
+        // call checking.
         let mut base_value_ty: Option<TypeId> = None;
         let class_value_def = ctx.value_defs.get(&class_def.id).copied().unwrap_or(class_def.id);
         let raw_class_value_ty = ctx
@@ -2028,12 +2029,23 @@ pub mod body_check {
           prim.unknown
         };
         if class_value_ty != prim.unknown {
-          if let types_ts_interned::TypeKind::Intersection(members) = ctx.store.type_kind(class_value_ty)
-          {
-            base_value_ty = members.iter().copied().find(|member| {
-              matches!(ctx.store.type_kind(*member), types_ts_interned::TypeKind::Ref { .. })
-            });
-          }
+          // The declared constructor value type for a derived class is modeled
+          // as an intersection that includes wrapper nodes around the base
+          // constructor value (e.g. `OmitConstructSignatures<typeof Base<T>>`).
+          // Peel those wrappers so we can recover `typeof Base<...>` with the
+          // `extends` clause type arguments intact for `super()` checking.
+          let pick_base = |member: TypeId| match ctx.store.type_kind(member) {
+            types_ts_interned::TypeKind::Ref { .. } => Some(member),
+            types_ts_interned::TypeKind::OmitConstructSignatures(inner) => Some(inner),
+            types_ts_interned::TypeKind::InheritConstructSignatures { base, .. } => Some(base),
+            _ => None,
+          };
+          base_value_ty = match ctx.store.type_kind(class_value_ty) {
+            types_ts_interned::TypeKind::Intersection(members) => {
+              members.iter().copied().find_map(pick_base)
+            }
+            _ => pick_base(class_value_ty),
+          };
         }
 
         // Fallback: derive the base constructor type from the syntactic `extends`
