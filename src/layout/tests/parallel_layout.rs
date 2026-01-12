@@ -18,6 +18,11 @@ use crate::{
 };
 use std::sync::Arc;
 
+fn layout_parallel_debug_lock() -> parking_lot::MutexGuard<'static, ()> {
+  static LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+  LOCK.lock()
+}
+
 fn available_threads() -> usize {
   // Keep test pools small even on beefy CI machines so we don't allocate excessive stacks or spawn
   // huge pools when `available_parallelism()` sees host CPUs outside a cgroup quota.
@@ -602,7 +607,7 @@ fn find_box_id_by_content_visibility(
 
 #[test]
 fn parallel_layout_matches_serial_fragments() {
-  let _guard = super::layout_parallel_debug_lock();
+  let _guard = layout_parallel_debug_lock();
   let box_tree = build_table(12, 8);
   let viewport = Size::new(1024.0, 768.0);
 
@@ -624,7 +629,7 @@ fn parallel_layout_matches_serial_fragments() {
 
 #[test]
 fn parallel_block_children_match_serial_fragments() {
-  let _guard = super::layout_parallel_debug_lock();
+  let _guard = layout_parallel_debug_lock();
   let box_tree = build_block_stack(48);
   let viewport = Size::new(1200.0, 900.0);
 
@@ -646,7 +651,7 @@ fn parallel_block_children_match_serial_fragments() {
 
 #[test]
 fn parallel_grid_children_match_serial_fragments() {
-  let _guard = super::layout_parallel_debug_lock();
+  let _guard = layout_parallel_debug_lock();
   let box_tree = build_grid(12, 10);
   let viewport = Size::new(1200.0, 960.0);
 
@@ -668,7 +673,7 @@ fn parallel_grid_children_match_serial_fragments() {
 
 #[test]
 fn parallel_snapshots_match_serial_snapshots() {
-  let _guard = super::layout_parallel_debug_lock();
+  let _guard = layout_parallel_debug_lock();
   let box_tree = build_mixed_layout();
   let viewport = Size::new(1180.0, 860.0);
 
@@ -722,7 +727,7 @@ fn parallel_snapshots_match_serial_snapshots() {
 
 #[test]
 fn parallel_block_children_preserve_viewport_fixed_fragments() {
-  let _guard = super::layout_parallel_debug_lock();
+  let _guard = layout_parallel_debug_lock();
   let (box_tree, fixed_box_id) = build_block_stack_with_viewport_fixed();
   let viewport = Size::new(800.0, 600.0);
 
@@ -767,7 +772,7 @@ fn parallel_block_children_preserve_viewport_fixed_fragments() {
 
 #[test]
 fn parallel_block_children_preserve_external_fixed_containing_blocks() {
-  let _guard = super::layout_parallel_debug_lock();
+  let _guard = layout_parallel_debug_lock();
   let (box_tree, fixed_box_id) = build_block_stack_with_fixed_cb_ancestor();
   let viewport = Size::new(800.0, 600.0);
 
@@ -821,7 +826,7 @@ fn parallel_block_children_preserve_external_fixed_containing_blocks() {
 
 #[test]
 fn parallel_block_children_respect_content_visibility_auto_in_descendants() {
-  let _guard = super::layout_parallel_debug_lock();
+  let _guard = layout_parallel_debug_lock();
   let (box_tree, auto_box_id) = build_block_stack_with_content_visibility_auto_descendant();
   let viewport = Size::new(300.0, 200.0);
 
@@ -871,7 +876,7 @@ fn parallel_block_children_respect_content_visibility_auto_in_descendants() {
 
 #[test]
 fn parallel_layout_is_reproducible() {
-  let _guard = super::layout_parallel_debug_lock();
+  let _guard = layout_parallel_debug_lock();
   let box_tree = build_table(10, 6);
   let viewport = Size::new(1024.0, 768.0);
 
@@ -904,7 +909,7 @@ fn parallel_layout_is_reproducible() {
 
 #[test]
 fn parallel_layout_respects_deadline() {
-  let _guard = super::layout_parallel_debug_lock();
+  let _guard = layout_parallel_debug_lock();
   let viewport = Size::new(800.0, 600.0);
   let box_tree = build_block_stack(0);
   let cancel = Arc::new(|| rayon::current_thread_index().is_some());
@@ -937,7 +942,7 @@ fn parallel_layout_respects_deadline() {
 
 #[test]
 fn parallel_layout_propagates_active_stage_into_workers() {
-  let _guard = super::layout_parallel_debug_lock();
+  let _guard = layout_parallel_debug_lock();
   let viewport = Size::new(800.0, 600.0);
   // A moderately sized tree so block-child layout work is parallelized across multiple workers.
   let box_tree = build_block_stack(256);
@@ -981,7 +986,7 @@ fn parallel_layout_propagates_active_stage_into_workers() {
 
 #[test]
 fn auto_parallel_layout_spawns_workers() {
-  let _guard = super::layout_parallel_debug_lock();
+  let _guard = layout_parallel_debug_lock();
   let box_tree = build_block_stack(1024);
   let viewport = Size::new(1200.0, 900.0);
   let threads = available_threads();

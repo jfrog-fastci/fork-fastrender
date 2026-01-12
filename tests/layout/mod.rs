@@ -1,185 +1,31 @@
-//! Layout integration tests.
+//! Layout integration tests (public API only).
 //!
-//! These tests exercise the public `FastRender` API or other end-to-end layout paths.
-//! Unit tests that do not mention `FastRender` live in `src/layout/tests/` to avoid building a
-//! separate test binary.
+//! These tests exercise the public `FastRender` API end-to-end.
+//! Layout regression/unit tests that import internal modules live in `src/layout/tests/` so they
+//! run under `cargo test --lib` and do not require a separate integration test binary.
 
 mod absolute_position_body;
-mod abspos_blockification;
 mod abspos_bottom_inset_auto_height_containing_block;
-mod abspos_percent_bases;
-mod appearance_none_form_control_strut;
-mod aria_hidden_layout;
-mod arxiv_lists_and_forms_regressions;
 mod box_shadow_outset_cutout;
-mod br_linebreak;
-mod bundled_serif_default_line_metrics;
-mod button_inline_flex_children;
-mod complex_script_wrap_test;
-mod container_query_border_calc;
-mod container_query_percentage_padding;
-mod container_query_replaced_style_refresh;
-mod container_query_scrollbar_gutter;
-mod details_open_state;
-mod display_contents;
-mod empty_inline_boxes;
-mod explicit_line_height_fallback_fonts;
-mod field_sizing_intrinsic_sizing;
-mod fieldset_legend;
 mod fixed_flex_auto_height_does_not_use_intrinsic_block_size;
-mod flex_align_content_gaps;
-mod flex_auto_min_size_form_controls;
-mod flex_column_cross_fit_content_width;
-mod flex_forced_breaks;
-mod flex_height_min_content_test;
-mod flex_intrinsic_inline_size_accounts_for_flex_item_snapping;
-mod flex_item_blockification;
-mod flex_item_float_ignored;
-mod flex_measured_fragment_reuse_positioned_containing_block;
-mod flex_nested_container_align_self_baseline_does_not_expand_height;
-mod flex_pseudo_element_zero_height;
-mod float_blockification;
 mod float_external_base_x;
-mod float_external_context_width;
-mod float_line_box_intrusion;
-mod float_line_boxes_do_not_spurious_clear;
-mod font_relative_units_test;
-mod form_control_pseudo_elements;
-mod fragmentation;
-mod grid_auto_placement_row_locked;
-mod grid_column_numeric;
 mod grid_column_shorthand_longhand_merge;
-mod grid_forced_breaks;
-mod grid_measured_fragment_reuse_cancels_out_of_flow_translation;
-mod grid_padding_inline_custom_property;
-mod grid_parallel_flow_fragmentation;
 mod html_body_percent_height;
 mod image_missing_placeholder_does_not_scale_to_width;
 mod image_percent_height_missing_uses_alt_intrinsic;
-mod inline_atomic_subpixel_overflow_does_not_wrap;
-mod inline_block_writing_mode;
-mod inline_border_padding_line_height;
-mod inline_box_baseline_uses_last_child;
-mod inline_box_baseline_uses_strut;
-mod inline_box_fragmentation_mid_line;
-mod inline_box_fragmentation_remaining_width;
-mod inline_box_replaced_line_height;
-mod inline_padding_does_not_affect_line_height;
-mod inline_padding_uses_content_area;
-mod input_height_includes_padding_with_content_box;
-mod input_submit_empty_value_uses_empty_label;
-mod input_submit_width_uses_border_box;
-mod layout_float_stress_fixture;
-mod layout_intrinsic_sizing_stress_fixture;
-mod layout_parallel_determinism;
 mod legacy_webkit_box_flex;
-mod line_height_normal_metrics;
-mod list_marker_outside_whitespace;
-mod manual_multicol_breaks;
-mod multicol;
-mod multicol_forced_page_breaks;
-mod nested_list_user_agent_margins;
-mod noscript_layout;
-mod noscript_render_pipeline;
-mod noscript_scripting_enabled_layout;
-mod nowrap_inline_box_overflow;
 mod padding_offsets;
-mod paged_media;
-mod parallel_api;
 mod parallel_stats;
-mod phoronix_float_layout;
 mod profile_diagnostics;
-mod progress_meter_intrinsic_sizing;
-mod quirks_margin_collapse;
 mod render_wrap;
-mod replaced_writing_mode;
-mod root_font_relative_units;
-mod root_relative_font_units;
-mod ruby;
-mod running_elements;
-mod scroll_container_offsets;
-mod search_input_width_100_percent_uses_border_box;
-mod shadow_dom;
-mod sticky_margin;
-mod sticky_nested;
-mod sticky_padding;
-mod submit_input_specified_size_uses_border_box;
-mod system_font_precedence_duplicate_family;
-mod table_auto_layout_fills_forced_width;
-mod table_baseline_padding;
-mod table_border_spacing_edges;
-mod table_caption_does_not_widen_table;
-mod table_caption_explicit_width_overflows_wrapper;
-mod table_caption_layout;
-mod table_caption_percentage_width_resolves_against_wrapper;
-mod table_caption_respects_explicit_width_and_auto_margins;
-mod table_caption_wrapper_baseline_uses_grid_baseline;
-mod table_caption_wrapper_resets_grid_only_properties;
-mod table_cell_height_is_min_height;
-mod table_cell_placement;
-mod table_colgroup_span_background;
-mod table_collapsed_border_conflict_resolution;
-mod table_collapsed_borders;
-mod table_column_span_backgrounds;
-mod table_direction_rtl;
-mod table_direction_rtl_colgroup_background;
-mod table_direction_rtl_column_order;
-mod table_empty_cells;
-mod table_fixed_layout_algorithm;
-mod table_fixed_layout_col_width_overrides_first_row_cell_width;
-mod table_fixed_layout_colgroup_width_applies_to_col_children;
-mod table_fixed_layout_colspan_cell_width_divides_columns;
-mod table_fixed_layout_colspan_percent_width_respects_col;
-mod table_fixed_layout_colspan_width_respects_existing_columns;
-mod table_fixed_layout_expands_to_width;
-mod table_fixed_layout_first_row_cell_width_respects_table_width;
-mod table_fixed_layout_unconstrained_columns_split_evenly;
-mod table_fixed_layout_width_auto_abspos;
-mod table_fixed_layout_width_auto_falls_back_to_auto;
-mod table_fixed_layout_width_auto_flex;
-mod table_fixed_layout_width_auto_float;
-mod table_fixed_layout_width_auto_grid;
-mod table_fixed_layout_width_auto_inline_table;
-mod table_fixed_layout_width_rem;
-mod table_fixup_box_generation;
-mod table_fixup_integration;
-mod table_fragmentation;
-mod table_intrinsic_padding_rem;
-mod table_large_layout;
-mod table_percentage_padding;
-mod table_row_break_before_after;
-mod table_row_group_breakable;
-mod table_row_group_breaks;
-mod table_row_group_reorder_rowspan;
-mod table_rowspan_zero;
-mod table_visibility_collapse_layout;
-mod taffy_usage_guards;
-mod template_inert;
-mod test_factory;
-mod text_combine_upright;
-mod text_emphasis_line_height;
-mod text_emphasis_line_height_vertical;
-mod text_justify_inter_word_no_fragment_churn;
 mod text_wrap_pretty_does_not_rebalance;
-mod ua_button_default_padding;
-mod vertical_align_baseline_relative_sign;
-mod vertical_align_middle_inline_box_uses_line_height_box;
-mod vertical_align_middle_inline_replaced;
-mod vertical_align_middle_inline_replaced_in_inline_box;
-mod vertical_align_middle_inline_replaced_margin_bottom;
-mod vertical_writing_mode_atomic_inline_margins;
-mod vertical_writing_mode_metrics;
-mod viewport_scrollbar_gutter;
-mod viewport_vw_units;
-mod web_font_swap_layout;
-mod word_break_auto_phrase;
+
+mod test_locks;
 
 fn layout_parallel_debug_lock() -> parking_lot::MutexGuard<'static, ()> {
-  static LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
-  LOCK.lock()
+  test_locks::layout_parallel_debug_lock()
 }
 
 fn layout_profile_lock() -> parking_lot::MutexGuard<'static, ()> {
-  static LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
-  LOCK.lock()
+  test_locks::layout_profile_lock()
 }

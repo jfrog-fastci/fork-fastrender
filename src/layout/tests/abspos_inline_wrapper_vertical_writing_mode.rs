@@ -7,11 +7,9 @@ use crate::style::types::{
   AnchorFunction, AnchorSide, BorderStyle, InsetValue, PositionAnchor, WritingMode,
 };
 use crate::style::values::Length;
-use crate::tree::box_tree::BoxNode;
-use crate::tree::box_tree::CrossOriginAttribute;
-use crate::tree::box_tree::ImageDecodingAttribute;
-use crate::tree::box_tree::ReplacedType;
-use crate::tree::box_tree::SrcsetCandidate;
+use crate::tree::box_tree::{
+  BoxNode, CrossOriginAttribute, ImageDecodingAttribute, ReplacedType, SrcsetCandidate,
+};
 use crate::tree::fragment_tree::FragmentContent;
 use crate::{Point, Rect, Size};
 use std::sync::Arc;
