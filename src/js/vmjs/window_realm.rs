@@ -2520,6 +2520,7 @@ const ELEMENT_CLASS_LIST_CONTAINS_KEY: &str = "__fastrender_element_class_list_c
 const ELEMENT_CLASS_LIST_REPLACE_KEY: &str = "__fastrender_element_class_list_replace";
 const ELEMENT_ID_GET_KEY: &str = "__fastrender_element_id_get";
 const ELEMENT_ID_SET_KEY: &str = "__fastrender_element_id_set";
+const ELEMENT_SCROLL_PARENT_GET_KEY: &str = "__fastrender_element_scroll_parent_get";
 const ELEMENT_TITLE_GET_KEY: &str = "__fastrender_element_title_get";
 const ELEMENT_TITLE_SET_KEY: &str = "__fastrender_element_title_set";
 const ELEMENT_LANG_GET_KEY: &str = "__fastrender_element_lang_get";
@@ -7255,6 +7256,10 @@ fn get_or_create_node_wrapper(
     let key = alloc_key(scope, ELEMENT_SLOT_SET_KEY)?;
     scope.heap().object_get_own_data_property_value(document_obj, &key)?
   };
+  let scroll_parent_get = {
+    let key = alloc_key(scope, ELEMENT_SCROLL_PARENT_GET_KEY)?;
+    object_get_data_property_value(scope.heap(), document_obj, &key)?
+  };
   let src_get = {
     let key = alloc_key(scope, ELEMENT_SRC_GET_KEY)?;
     object_get_data_property_value(scope.heap(), document_obj, &key)?
@@ -7952,6 +7957,24 @@ fn get_or_create_node_wrapper(
     .unwrap_or(false);
 
   if is_element_like {
+    if let Some(Value::Object(get)) = scroll_parent_get {
+      let key = alloc_key(scope, "scrollParent")?;
+      if !proto_chain_has_own_property(scope.heap(), wrapper, &key)? {
+        scope.define_property(
+          wrapper,
+          key,
+          PropertyDescriptor {
+            enumerable: false,
+            configurable: true,
+            kind: PropertyKind::Accessor {
+              get: Value::Object(get),
+              set: Value::Undefined,
+            },
+          },
+        )?;
+      }
+    }
+
     let class_list_key = alloc_key(scope, "classList")?;
     let should_define_class_list =
       !proto_chain_has_own_property(scope.heap(), wrapper, &class_list_key)?;
@@ -27041,6 +27064,53 @@ fn element_id_set_native(
   Ok(Value::Undefined)
 }
 
+fn element_scroll_parent_get_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(wrapper_obj) = this else {
+    return Ok(Value::Null);
+  };
+
+  let document_obj_key = alloc_key(scope, WRAPPER_DOCUMENT_KEY)?;
+  let document_obj = match scope
+    .heap()
+    .object_get_own_data_property_value(wrapper_obj, &document_obj_key)?
+  {
+    Some(Value::Object(obj)) => obj,
+    _ => return Ok(Value::Null),
+  };
+
+  let node_id_key = alloc_key(scope, NODE_ID_KEY)?;
+  let node_index = match scope
+    .heap()
+    .object_get_own_data_property_value(wrapper_obj, &node_id_key)?
+  {
+    Some(Value::Number(n)) if n.is_finite() && n >= 0.0 => n as usize,
+    _ => return Ok(Value::Null),
+  };
+
+  let Some(document) = host.as_any_mut().downcast_mut::<BrowserDocumentDom2>() else {
+    return Ok(Value::Null);
+  };
+
+  let node_id = match document.dom().node_id_from_index(node_index) {
+    Ok(id) => id,
+    Err(_) => return Ok(Value::Null),
+  };
+
+  let Some(scroll_parent) = document.element_scroll_parent(node_id) else {
+    return Ok(Value::Null);
+  };
+
+  get_or_create_node_wrapper(vm, scope, document_obj, Some(document.dom()), scroll_parent)
+}
+
 fn native_slot_string(scope: &Scope<'_>, callee: GcObject) -> Result<String, VmError> {
   let slots = scope.heap().get_function_native_slots(callee)?;
   let slot = slots.get(0).copied().unwrap_or(Value::Undefined);
@@ -37813,6 +37883,22 @@ fn init_window_globals(
     data_desc(Value::Object(id_set_func)),
   )?;
 
+  let scroll_parent_get_call_id = vm.register_native_call(element_scroll_parent_get_native)?;
+  let scroll_parent_get_name = scope.alloc_string("get scrollParent")?;
+  scope.push_root(Value::String(scroll_parent_get_name))?;
+  let scroll_parent_get_func =
+    scope.alloc_native_function(scroll_parent_get_call_id, None, scroll_parent_get_name, 0)?;
+  scope
+    .heap_mut()
+    .object_set_prototype(scroll_parent_get_func, Some(realm.intrinsics().function_prototype()))?;
+  scope.push_root(Value::Object(scroll_parent_get_func))?;
+  let scroll_parent_get_key = alloc_key(&mut scope, ELEMENT_SCROLL_PARENT_GET_KEY)?;
+  scope.define_property(
+    document_obj,
+    scroll_parent_get_key,
+    data_desc(Value::Object(scroll_parent_get_func)),
+  )?;
+
   // Store shared reflected attribute accessors on `document` so wrappers can reuse them.
   let reflected_string_get_call_id =
     vm.register_native_call(element_reflected_string_get_native)?;
@@ -39584,6 +39670,7 @@ fn test_unimplemented_native(
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::api::RenderOptions;
   use crate::js::clock::VirtualClock;
   use crate::js::window_env::FASTRENDER_USER_AGENT;
   use crate::js::RunLimits;
@@ -47806,6 +47893,50 @@ mod tests {
       Value::Bool(true)
     );
 
+    Ok(())
+  }
+
+  #[test]
+  fn element_scroll_parent_returns_nearest_scroll_container() -> Result<(), VmError> {
+    let html = r#"<!doctype html>
+      <html>
+        <head>
+          <style>
+            #scroller { overflow: scroll; height: 10px; }
+            #inner { height: 100px; }
+          </style>
+        </head>
+        <body>
+          <div id="scroller"><div id="inner"></div></div>
+        </body>
+      </html>"#;
+    let mut host = BrowserDocumentDom2::from_html(html, RenderOptions::new().with_viewport(64, 64))
+      .expect("BrowserDocumentDom2::from_html");
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+
+    let ok = exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      "document.getElementById('inner').scrollParent === document.getElementById('scroller')",
+    )?;
+    assert_eq!(ok, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn element_scroll_parent_falls_back_to_document_element() -> Result<(), VmError> {
+    let html =
+      r#"<!doctype html><html><head></head><body><div id="inner"></div></body></html>"#;
+    let mut host = BrowserDocumentDom2::from_html(html, RenderOptions::new().with_viewport(64, 64))
+      .expect("BrowserDocumentDom2::from_html");
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+
+    let ok = exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      "document.getElementById('inner').scrollParent === document.documentElement",
+    )?;
+    assert_eq!(ok, Value::Bool(true));
     Ok(())
   }
 

@@ -312,6 +312,106 @@ impl BrowserDocumentDom2 {
     self.dom.as_ref()
   }
 
+  /// Returns the nearest scroll container ancestor for `element`, approximating
+  /// `HTMLElement.scrollParent`.
+  pub(crate) fn element_scroll_parent(
+    &mut self,
+    element: crate::dom2::NodeId,
+  ) -> Option<crate::dom2::NodeId> {
+    if self.ensure_layout_for_dom_queries().is_err() {
+      return None;
+    }
+    let dom = self.dom();
+
+    match dom.node(element).kind {
+      crate::dom2::NodeKind::Element { .. } | crate::dom2::NodeKind::Slot { .. } => {}
+      _ => return None,
+    }
+
+    if dom.document_element() == Some(element) {
+      return None;
+    }
+    if dom.body() == Some(element) {
+      return None;
+    }
+
+    let prepared = self.prepared.as_ref()?;
+    let mapping = self.last_dom_mapping.as_ref()?;
+
+    let mut principal_styles: FxHashMap<usize, &crate::style::ComputedStyle> =
+      FxHashMap::default();
+    let mut stack: Vec<&BoxNode> = vec![&prepared.box_tree().root];
+    while let Some(node) = stack.pop() {
+      if node.generated_pseudo.is_none() {
+        if let Some(styled_id) = node.styled_node_id {
+          principal_styles.entry(styled_id).or_insert(node.style.as_ref());
+        }
+      }
+      if let Some(body) = node.footnote_body.as_deref() {
+        stack.push(body);
+      }
+      for child in node.children.iter().rev() {
+        stack.push(child);
+      }
+    }
+
+    let element_preorder = mapping.preorder_for_node_id(element)?;
+    let element_style = principal_styles.get(&element_preorder).copied()?;
+
+    if element_style.display.is_none() {
+      return None;
+    }
+
+    if matches!(element_style.position, crate::style::position::Position::Fixed) {
+      let mut current = element;
+      let mut has_fixed_cb = false;
+      while let Some(parent) = dom.parent_node(current) {
+        if matches!(
+          dom.node(parent).kind,
+          crate::dom2::NodeKind::Element { .. } | crate::dom2::NodeKind::Slot { .. }
+        ) {
+          if let Some(parent_preorder) = mapping.preorder_for_node_id(parent) {
+            if let Some(parent_style) = principal_styles.get(&parent_preorder).copied() {
+              if !parent_style.transform.is_empty() || parent_style.perspective.is_some() {
+                has_fixed_cb = true;
+                break;
+              }
+            }
+          }
+        }
+        current = parent;
+      }
+      if !has_fixed_cb {
+        return None;
+      }
+    }
+
+    let is_scroll_container = |style: &crate::style::ComputedStyle| -> bool {
+      use crate::style::types::Overflow;
+      matches!(style.overflow_x, Overflow::Auto | Overflow::Scroll | Overflow::Hidden)
+        || matches!(style.overflow_y, Overflow::Auto | Overflow::Scroll | Overflow::Hidden)
+    };
+
+    let mut current = element;
+    while let Some(parent) = dom.parent_node(current) {
+      if matches!(
+        dom.node(parent).kind,
+        crate::dom2::NodeKind::Element { .. } | crate::dom2::NodeKind::Slot { .. }
+      ) {
+        if let Some(parent_preorder) = mapping.preorder_for_node_id(parent) {
+          if let Some(parent_style) = principal_styles.get(&parent_preorder).copied() {
+            if is_scroll_container(parent_style) {
+              return Some(parent);
+            }
+          }
+        }
+      }
+      current = parent;
+    }
+
+    dom.document_element()
+  }
+
   /// Returns a monotonically increasing counter that changes whenever the DOM might have mutated.
   ///
   /// This is intended for host integrations that need to perform bounded whole-document scans (for

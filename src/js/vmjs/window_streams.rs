@@ -1843,7 +1843,10 @@ fn readable_stream_pipe_to_read_fulfilled_native(
       ))
     })?;
 
-  // Root captured values + promise across callback allocation.
+  let realm_id = realm_id_for_binding_call(vm, scope.heap(), callee)?;
+  let realm_slot = Value::Number(realm_id.to_raw() as f64);
+
+  // Root reader, writer, and promise across callback allocation.
   let mut scope = scope.reborrow();
   scope.push_root(Value::Object(reader_obj))?;
   scope.push_root(Value::Object(writer_obj))?;
