@@ -5961,7 +5961,7 @@ impl InlineFormattingContext {
         }
         let run_len = end - idx;
         let min_len = match style.text_combine_upright {
-          TextCombineUpright::Digits(_) => 1,
+          TextCombineUpright::Digits(_) => 2,
           TextCombineUpright::All => 1,
           TextCombineUpright::None => usize::MAX,
         };
@@ -20467,6 +20467,12 @@ mod tests {
       assert!(
         text.runs.iter().all(|r| (r.scale - 1.0).abs() < 1e-6),
         "single digits should not be compressed by text-combine-upright"
+      );
+      assert!(
+        text.advance_for_layout < style.font_size * 0.9,
+        "single digits should not force a 1em combined cell; advance_for_layout={} font_size={}",
+        text.advance_for_layout,
+        style.font_size
       );
     } else {
       panic!("expected text item");
