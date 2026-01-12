@@ -15,6 +15,7 @@ mod no_deprecated_test_harness_names;
 mod no_path_env_mutation;
 mod no_fastr_use_bundled_fonts_env_mutation;
 mod no_merge_markers;
+mod no_path_shims_in_tests;
 mod no_production_panics;
 mod stage_listener_guard_tests;
 mod style_regressions_presence;
