@@ -1646,7 +1646,7 @@ impl<'a, HP: Fn(FileId) -> Arc<HirFile>> Binder<'a, HP> {
     } else if is_namespace_import {
       Namespace::VALUE | Namespace::NAMESPACE | Namespace::TYPE
     } else {
-      Namespace::VALUE | Namespace::TYPE
+      Namespace::VALUE | Namespace::TYPE | Namespace::NAMESPACE
     };
     let order = entry.local_span.start;
     let decl_id = self.symbols.alloc_decl(

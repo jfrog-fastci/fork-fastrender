@@ -1513,6 +1513,111 @@ fn type_only_imports_skip_value_namespace() {
 }
 
 #[test]
+fn imported_named_binding_available_in_namespace_namespace() {
+  let file_a = FileId(64);
+  let file_b = FileId(65);
+
+  let mut a = HirFile::module(file_a);
+  a.decls
+    .push(mk_decl(0, "NS", DeclKind::Namespace, Exported::Named));
+
+  let mut b = HirFile::module(file_b);
+  b.imports.push(Import {
+    specifier: "a".to_string(),
+    specifier_span: span(100),
+    default: None,
+    namespace: None,
+    named: vec![ImportNamed {
+      imported: "NS".to_string(),
+      local: "NS".to_string(),
+      is_type_only: false,
+      imported_span: span(101),
+      local_span: span(102),
+    }],
+    is_type_only: false,
+  });
+
+  let files: HashMap<FileId, Arc<HirFile>> = maplit::hashmap! {
+    file_a => Arc::new(a),
+    file_b => Arc::new(b),
+  };
+  let resolver = StaticResolver::new(maplit::hashmap! {
+    "a".to_string() => file_a,
+  });
+
+  let (semantics, diags) =
+    bind_ts_program(&[file_b], &resolver, |f| files.get(&f).unwrap().clone());
+  assert!(diags.is_empty(), "unexpected diagnostics: {:?}", diags);
+
+  let namespace_symbol = semantics
+    .resolve_in_module(file_b, "NS", Namespace::NAMESPACE)
+    .expect("imported binding should be visible in namespace namespace");
+  let value_symbol = semantics
+    .resolve_in_module(file_b, "NS", Namespace::VALUE)
+    .expect("imported binding should be visible in value namespace");
+  assert_eq!(
+    namespace_symbol, value_symbol,
+    "imported bindings should use a single merged symbol across namespaces"
+  );
+
+  match &semantics.symbols().symbol(namespace_symbol).origin {
+    SymbolOrigin::Import { from, imported } => {
+      assert_eq!(from, &ModuleRef::File(file_a));
+      assert_eq!(imported, "NS");
+    }
+    other => panic!("expected import origin, got {:?}", other),
+  }
+}
+
+#[test]
+fn import_type_named_import_skips_namespace_namespace() {
+  let file_a = FileId(66);
+  let file_b = FileId(67);
+
+  let mut a = HirFile::module(file_a);
+  a.decls
+    .push(mk_decl(0, "Foo", DeclKind::Interface, Exported::Named));
+
+  let mut b = HirFile::module(file_b);
+  b.imports.push(Import {
+    specifier: "a".to_string(),
+    specifier_span: span(110),
+    default: None,
+    namespace: None,
+    named: vec![ImportNamed {
+      imported: "Foo".to_string(),
+      local: "Foo".to_string(),
+      is_type_only: false,
+      imported_span: span(111),
+      local_span: span(112),
+    }],
+    is_type_only: true,
+  });
+
+  let files: HashMap<FileId, Arc<HirFile>> = maplit::hashmap! {
+    file_a => Arc::new(a),
+    file_b => Arc::new(b),
+  };
+  let resolver = StaticResolver::new(maplit::hashmap! {
+    "a".to_string() => file_a,
+  });
+
+  let (semantics, diags) =
+    bind_ts_program(&[file_b], &resolver, |f| files.get(&f).unwrap().clone());
+  assert!(diags.is_empty(), "unexpected diagnostics: {:?}", diags);
+
+  assert!(semantics
+    .resolve_in_module(file_b, "Foo", Namespace::VALUE)
+    .is_none());
+  assert!(semantics
+    .resolve_in_module(file_b, "Foo", Namespace::NAMESPACE)
+    .is_none());
+  assert!(semantics
+    .resolve_in_module(file_b, "Foo", Namespace::TYPE)
+    .is_some());
+}
+
+#[test]
 fn type_only_namespace_import_includes_namespace_namespace() {
   let file_a = FileId(62);
   let file_b = FileId(63);
