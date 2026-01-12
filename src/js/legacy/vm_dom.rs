@@ -150,6 +150,7 @@ fn element_kind_parts(kind: &NodeKind) -> Option<(&str, &str, &Vec<(String, Stri
       tag_name,
       namespace,
       attributes,
+      ..
     } => Some((tag_name.as_str(), namespace.as_str(), attributes)),
     NodeKind::Slot {
       namespace,

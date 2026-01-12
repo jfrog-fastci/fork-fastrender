@@ -33,6 +33,7 @@ fn node_kind_from_dom_node_type(node_type: &DomNodeType) -> NodeKind {
     } => NodeKind::Element {
       tag_name: tag_name.clone(),
       namespace: namespace.clone(),
+      prefix: None,
       attributes: attributes.clone(),
     },
     DomNodeType::Text { content } => NodeKind::Text {
@@ -64,6 +65,7 @@ fn renderer_dom_mapping_aligns_with_enumerate_dom_ids_including_templates_and_sh
     NodeKind::Element {
       tag_name: "div".to_string(),
       namespace: "".to_string(),
+      prefix: None,
       attributes: Vec::new(),
     },
     None,

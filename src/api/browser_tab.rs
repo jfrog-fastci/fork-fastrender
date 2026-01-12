@@ -1625,6 +1625,7 @@ impl BrowserTabHost {
           tag_name,
           namespace,
           attributes,
+          ..
         } => {
           base_url_tracker.on_element_inserted(
             tag_name,
@@ -1745,6 +1746,7 @@ impl BrowserTabHost {
             tag_name,
             namespace,
             attributes,
+            ..
           } => {
             base_url_tracker.on_element_inserted(
               tag_name,

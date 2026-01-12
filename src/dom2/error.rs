@@ -10,6 +10,8 @@ pub enum DomError {
   HierarchyRequestError,
   #[error("InvalidCharacterError")]
   InvalidCharacterError,
+  #[error("NamespaceError")]
+  NamespaceError,
   #[error("NotFoundError")]
   NotFoundError,
   #[error("NotSupportedError")]
@@ -27,6 +29,7 @@ impl DomError {
     match self {
       Self::HierarchyRequestError => "HierarchyRequestError",
       Self::InvalidCharacterError => "InvalidCharacterError",
+      Self::NamespaceError => "NamespaceError",
       Self::NotFoundError => "NotFoundError",
       Self::NotSupportedError => "NotSupportedError",
       Self::InvalidNodeType => "InvalidNodeType",

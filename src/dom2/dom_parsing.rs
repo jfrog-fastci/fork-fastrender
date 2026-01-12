@@ -24,6 +24,7 @@ fn element_context(
       tag_name,
       namespace,
       attributes,
+      ..
     } => Ok((tag_name.as_str(), namespace.as_str(), attributes.as_slice())),
     // `NodeKind::Slot` does not store its tag name, but today it always represents `<slot>`.
     NodeKind::Slot {

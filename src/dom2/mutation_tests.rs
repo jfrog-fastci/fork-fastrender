@@ -803,6 +803,7 @@ fn clone_node_shallow_copies_element_kind_and_attributes_but_not_children() {
     NodeKind::Element {
       tag_name,
       namespace,
+      prefix: _,
       attributes,
     } => {
       assert_eq!(tag_name, "div");

@@ -89,10 +89,12 @@ impl Document {
         NodeKind::Element {
           tag_name,
           namespace,
+          prefix,
           attributes,
         } => NodeKind::Element {
           tag_name: tag_name.clone(),
           namespace: namespace.clone(),
+          prefix: prefix.clone(),
           attributes: attributes.clone(),
         },
         NodeKind::Text { content } => NodeKind::Text {
@@ -523,6 +525,15 @@ impl Document {
   }
 
   pub fn create_element(&mut self, tag_name: &str, namespace: &str) -> NodeId {
+    self.create_element_ns(tag_name, namespace, None)
+  }
+
+  pub fn create_element_ns(
+    &mut self,
+    tag_name: &str,
+    namespace: &str,
+    prefix: Option<&str>,
+  ) -> NodeId {
     let is_html_ns = namespace.is_empty() || namespace == HTML_NAMESPACE;
     // Normalise HTML namespace to the empty string, matching the renderer DOM representation.
     let namespace = if namespace == HTML_NAMESPACE {
@@ -532,7 +543,7 @@ impl Document {
     };
 
     let inert_subtree = is_html_ns && tag_name.eq_ignore_ascii_case("template");
-    let kind = if is_html_ns && tag_name.eq_ignore_ascii_case("slot") {
+    let kind = if is_html_ns && tag_name.eq_ignore_ascii_case("slot") && prefix.is_none() {
       NodeKind::Slot {
         namespace: namespace.to_string(),
         attributes: Vec::new(),
@@ -542,6 +553,7 @@ impl Document {
       NodeKind::Element {
         tag_name: tag_name.to_string(),
         namespace: namespace.to_string(),
+        prefix: prefix.map(|p| p.to_string()),
         attributes: Vec::new(),
       }
     };

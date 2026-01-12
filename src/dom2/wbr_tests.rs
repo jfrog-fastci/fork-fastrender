@@ -11,6 +11,7 @@ fn push_element(doc: &mut Document, parent: NodeId, tag_name: &str) -> NodeId {
     NodeKind::Element {
       tag_name: tag_name.to_string(),
       namespace: String::new(),
+      prefix: None,
       attributes: Vec::new(),
     },
     Some(parent),

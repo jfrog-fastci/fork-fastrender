@@ -54,6 +54,7 @@ fn parse_shadow_root_definition(kind: &NodeKind) -> Option<(ShadowRootMode, bool
   let NodeKind::Element {
     tag_name,
     namespace,
+    prefix: _,
     attributes,
   } = kind
   else {
@@ -458,6 +459,7 @@ mod tests {
       NodeKind::Element {
         tag_name: "div".to_string(),
         namespace: "".to_string(),
+        prefix: None,
         attributes: vec![("id".to_string(), "host".to_string())],
       },
       Some(root),
@@ -467,6 +469,7 @@ mod tests {
       NodeKind::Element {
         tag_name: "template".to_string(),
         namespace: "".to_string(),
+        prefix: None,
         attributes: vec![("shadowroot".to_string(), "open".to_string())],
       },
       Some(host),
@@ -476,6 +479,7 @@ mod tests {
       NodeKind::Element {
         tag_name: "span".to_string(),
         namespace: "".to_string(),
+        prefix: None,
         attributes: Vec::new(),
       },
       Some(template),

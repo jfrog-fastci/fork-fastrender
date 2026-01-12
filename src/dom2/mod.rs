@@ -16,6 +16,9 @@ mod attrs;
 mod class_list;
 mod error;
 pub use error::{DomError, Result as DomResult};
+mod qualified_name;
+pub use qualified_name::{ParsedQualifiedName, XMLNS_NAMESPACE, XML_NAMESPACE};
+pub(crate) use qualified_name::validate_and_extract;
 
 mod dom_parsing;
 mod html;
@@ -52,6 +55,16 @@ impl NodeId {
     self.0
   }
 }
+
+/// Internal sentinel namespace string representing "no namespace" (`null` in DOM terms).
+///
+/// `dom2` historically stores the HTML namespace as an empty string to match the renderer's DOM
+/// representation. Since the DOM Standard distinguishes between the HTML namespace and a `null`
+/// namespace, we need a third value that cannot collide with real namespace URIs.
+///
+/// This sentinel is never exposed directly to JS; bindings map it back to `null` for
+/// `namespaceURI`, and ensure it is not treated as the HTML namespace for case-insensitive matching.
+pub const NULL_NAMESPACE: &str = "\u{0000}";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NodeKind {
@@ -99,6 +112,7 @@ pub enum NodeKind {
   Element {
     tag_name: String,
     namespace: String,
+    prefix: Option<String>,
     attributes: Vec<(String, String)>,
   },
   Text {
@@ -831,6 +845,7 @@ impl Document {
         NodeKind::Element {
           tag_name,
           namespace,
+          prefix: _,
           attributes,
         } => DomNodeType::Element {
           tag_name: tag_name.clone(),
@@ -967,6 +982,7 @@ impl Document {
         NodeKind::Element {
           tag_name,
           namespace,
+          prefix: _,
           attributes,
         } => DomNodeType::Element {
           tag_name: tag_name.clone(),
@@ -1979,6 +1995,7 @@ mod helper_tests {
       NodeKind::Element {
         tag_name: "div".to_string(),
         namespace: String::new(),
+        prefix: None,
         attributes: Vec::new(),
       },
       Some(doc.root()),
@@ -2021,6 +2038,7 @@ mod helper_tests {
       NodeKind::Element {
         tag_name: "html".to_string(),
         namespace: HTML_NAMESPACE.to_string(),
+        prefix: None,
         attributes: Vec::new(),
       },
       Some(doc.root()),
@@ -2030,6 +2048,7 @@ mod helper_tests {
       NodeKind::Element {
         tag_name: "frameset".to_string(),
         namespace: HTML_NAMESPACE.to_string(),
+        prefix: None,
         attributes: vec![("id".to_string(), "fs".to_string())],
       },
       Some(html),
@@ -2039,6 +2058,7 @@ mod helper_tests {
       NodeKind::Element {
         tag_name: "body".to_string(),
         namespace: HTML_NAMESPACE.to_string(),
+        prefix: None,
         attributes: vec![("id".to_string(), "b".to_string())],
       },
       Some(html),

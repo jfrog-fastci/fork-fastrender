@@ -38,6 +38,7 @@ fn push_imported_node(doc: &mut Document, parent: NodeId, src: &DomNode) -> Node
     } => NodeKind::Element {
       tag_name: tag_name.clone(),
       namespace: namespace.clone(),
+      prefix: None,
       attributes: attributes.clone(),
     },
     DomNodeType::Text { content } => NodeKind::Text {

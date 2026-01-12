@@ -5526,6 +5526,241 @@ fn document_create_element_native(
   get_or_create_node_wrapper(vm, scope, document_obj, Some(dom), node_id)
 }
 
+fn value_to_rust_utf16_string(scope: &mut Scope<'_>, value: Value) -> Result<String, VmError> {
+  let value_s = match value {
+    Value::String(s) => s,
+    other => scope.heap_mut().to_string(other)?,
+  };
+  let units = scope.heap().get_string(value_s)?.as_code_units();
+  match String::from_utf16(units) {
+    Ok(s) => Ok(s),
+    Err(_) => Err(VmError::Throw(make_dom_exception(
+      scope,
+      "InvalidCharacterError",
+      "Invalid UTF-16 string.",
+    )?)),
+  }
+}
+
+fn document_create_element_ns_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(document_obj) = this else {
+    return Err(VmError::TypeError(
+      "document.createElementNS must be called on a document object",
+    ));
+  };
+
+  let namespace_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let namespace: Option<String> = match namespace_value {
+    Value::Null | Value::Undefined => None,
+    other => {
+      let ns = value_to_rust_utf16_string(scope, other)?;
+      (!ns.is_empty()).then_some(ns)
+    }
+  };
+
+  let qualified_name_value = args.get(1).copied().unwrap_or(Value::Undefined);
+  let qualified_name = value_to_rust_utf16_string(scope, qualified_name_value)?;
+
+  let dom = dom_from_vm_host_mut(host).ok_or(VmError::TypeError(
+    "document.createElementNS requires a DOM-backed document",
+  ))?;
+
+  let dom2::ParsedQualifiedName { prefix, mut local_name } =
+    match dom2::validate_and_extract(namespace.as_deref(), &qualified_name) {
+      Ok(v) => v,
+      Err(err) => return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?)),
+    };
+
+  // DOM: HTML namespace elements have an ASCII-lowercased localName in HTML documents.
+  if namespace.as_deref() == Some(crate::dom::HTML_NAMESPACE) {
+    local_name = local_name.to_ascii_lowercase();
+  }
+
+  let ns_for_dom2 = match namespace.as_deref() {
+    Some(ns) => ns,
+    None => dom2::NULL_NAMESPACE,
+  };
+
+  let node_id = dom.create_element_ns(&local_name, ns_for_dom2, prefix.as_deref());
+  get_or_create_node_wrapper(vm, scope, document_obj, Some(dom), node_id)
+}
+
+fn document_create_attribute_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(_document_obj) = this else {
+    return Err(VmError::TypeError(
+      "document.createAttribute must be called on a document object",
+    ));
+  };
+
+  let name_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let qualified_name = value_to_rust_utf16_string(scope, name_value)?;
+
+  let dom2::ParsedQualifiedName { prefix, mut local_name } =
+    match dom2::validate_and_extract(None, &qualified_name) {
+      Ok(v) => v,
+      Err(err) => return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?)),
+    };
+
+  // HTML documents lowercase attribute local names.
+  local_name = local_name.to_ascii_lowercase();
+
+  let attr_obj = scope.alloc_object()?;
+  scope.push_root(Value::Object(attr_obj))?;
+
+  // Basic Attr shape: name/localName/prefix/namespaceURI/value.
+  let name = match prefix.as_deref() {
+    Some(prefix) => format!("{prefix}:{local_name}"),
+    None => local_name.clone(),
+  };
+
+  let name_key = alloc_key(scope, "name")?;
+  let local_name_key = alloc_key(scope, "localName")?;
+  let prefix_key = alloc_key(scope, "prefix")?;
+  let namespace_uri_key = alloc_key(scope, "namespaceURI")?;
+  let value_key = alloc_key(scope, "value")?;
+
+  let name_s = scope.alloc_string(&name)?;
+  scope.push_root(Value::String(name_s))?;
+  let local_name_s = scope.alloc_string(&local_name)?;
+  scope.push_root(Value::String(local_name_s))?;
+  let empty_s = scope.alloc_string("")?;
+  scope.push_root(Value::String(empty_s))?;
+
+  scope.define_property(attr_obj, name_key, data_desc(Value::String(name_s)))?;
+  scope.define_property(
+    attr_obj,
+    local_name_key,
+    data_desc(Value::String(local_name_s)),
+  )?;
+  scope.define_property(attr_obj, prefix_key, data_desc(Value::Null))?;
+  scope.define_property(attr_obj, namespace_uri_key, data_desc(Value::Null))?;
+  scope.define_property(
+    attr_obj,
+    value_key,
+    data_desc(Value::String(empty_s)),
+  )?;
+
+  Ok(Value::Object(attr_obj))
+}
+
+fn document_create_attribute_ns_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(_document_obj) = this else {
+    return Err(VmError::TypeError(
+      "document.createAttributeNS must be called on a document object",
+    ));
+  };
+
+  let namespace_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let namespace: Option<String> = match namespace_value {
+    Value::Null | Value::Undefined => None,
+    other => {
+      let ns = value_to_rust_utf16_string(scope, other)?;
+      (!ns.is_empty()).then_some(ns)
+    }
+  };
+
+  let qualified_name_value = args.get(1).copied().unwrap_or(Value::Undefined);
+  let qualified_name = value_to_rust_utf16_string(scope, qualified_name_value)?;
+
+  let dom2::ParsedQualifiedName { prefix, mut local_name } =
+    match dom2::validate_and_extract(namespace.as_deref(), &qualified_name) {
+      Ok(v) => v,
+      Err(err) => return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?)),
+    };
+
+  // HTML documents lowercase attribute local names when the namespace is null.
+  if namespace.is_none() {
+    local_name = local_name.to_ascii_lowercase();
+  }
+
+  let attr_obj = scope.alloc_object()?;
+  scope.push_root(Value::Object(attr_obj))?;
+
+  let name = match prefix.as_deref() {
+    Some(prefix) => format!("{prefix}:{local_name}"),
+    None => local_name.clone(),
+  };
+
+  let name_key = alloc_key(scope, "name")?;
+  let local_name_key = alloc_key(scope, "localName")?;
+  let prefix_key = alloc_key(scope, "prefix")?;
+  let namespace_uri_key = alloc_key(scope, "namespaceURI")?;
+  let value_key = alloc_key(scope, "value")?;
+
+  let name_s = scope.alloc_string(&name)?;
+  scope.push_root(Value::String(name_s))?;
+  let local_name_s = scope.alloc_string(&local_name)?;
+  scope.push_root(Value::String(local_name_s))?;
+  let empty_s = scope.alloc_string("")?;
+  scope.push_root(Value::String(empty_s))?;
+
+  scope.define_property(attr_obj, name_key, data_desc(Value::String(name_s)))?;
+  scope.define_property(
+    attr_obj,
+    local_name_key,
+    data_desc(Value::String(local_name_s)),
+  )?;
+  match prefix.as_deref() {
+    Some(prefix) => {
+      let prefix_s = scope.alloc_string(prefix)?;
+      scope.push_root(Value::String(prefix_s))?;
+      scope.define_property(
+        attr_obj,
+        prefix_key,
+        data_desc(Value::String(prefix_s)),
+      )?;
+    }
+    None => {
+      scope.define_property(attr_obj, prefix_key, data_desc(Value::Null))?;
+    }
+  }
+  match namespace.as_deref() {
+    Some(ns) => {
+      let ns_s = scope.alloc_string(ns)?;
+      scope.push_root(Value::String(ns_s))?;
+      scope.define_property(
+        attr_obj,
+        namespace_uri_key,
+        data_desc(Value::String(ns_s)),
+      )?;
+    }
+    None => {
+      scope.define_property(attr_obj, namespace_uri_key, data_desc(Value::Null))?;
+    }
+  }
+  scope.define_property(
+    attr_obj,
+    value_key,
+    data_desc(Value::String(empty_s)),
+  )?;
+
+  Ok(Value::Object(attr_obj))
+}
+
 fn document_create_text_node_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -10735,8 +10970,31 @@ fn node_node_name_get_native(
   let dom = dom_from_vm_host(host).ok_or(VmError::TypeError("Illegal invocation"))?;
 
   let name = match &dom.node(node_id).kind {
-    NodeKind::Element { tag_name, .. } => tag_name.to_ascii_uppercase(),
-    NodeKind::Slot { .. } => "SLOT".to_string(),
+    NodeKind::Element {
+      tag_name,
+      namespace,
+      prefix,
+      ..
+    } => {
+      let qualified_name = match prefix.as_deref() {
+        Some(prefix) => format!("{prefix}:{tag_name}"),
+        None => tag_name.to_string(),
+      };
+      let is_html_namespace = namespace.is_empty() || namespace == crate::dom::HTML_NAMESPACE;
+      if is_html_namespace {
+        qualified_name.to_ascii_uppercase()
+      } else {
+        qualified_name
+      }
+    }
+    NodeKind::Slot { namespace, .. } => {
+      let is_html_namespace = namespace.is_empty() || namespace == crate::dom::HTML_NAMESPACE;
+      if is_html_namespace {
+        "SLOT".to_string()
+      } else {
+        "slot".to_string()
+      }
+    }
     NodeKind::Text { .. } => "#text".to_string(),
     NodeKind::ProcessingInstruction { target, .. } => target.to_string(),
     NodeKind::Comment { .. } => "#comment".to_string(),
@@ -11660,14 +11918,130 @@ fn element_tag_name_get_native(
     .require_element_id(scope.heap(), Value::Object(wrapper_obj))?;
   let dom = dom_from_vm_host(host).ok_or(VmError::TypeError("Illegal invocation"))?;
 
-  let tag = match &dom.node(node_id).kind {
-    NodeKind::Element { tag_name, .. } => tag_name.as_str(),
-    NodeKind::Slot { .. } => "slot",
+  let (local_name, namespace, prefix) = match &dom.node(node_id).kind {
+    NodeKind::Element {
+      tag_name,
+      namespace,
+      prefix,
+      ..
+    } => (tag_name.as_str(), namespace.as_str(), prefix.as_deref()),
+    NodeKind::Slot { namespace, .. } => ("slot", namespace.as_str(), None),
     _ => return Err(VmError::TypeError("Illegal invocation")),
   };
-  Ok(Value::String(
-    scope.alloc_string(&tag.to_ascii_uppercase())?,
-  ))
+
+  let qualified_name = match prefix {
+    Some(prefix) => format!("{prefix}:{local_name}"),
+    None => local_name.to_string(),
+  };
+
+  // In HTML documents, HTML namespace elements expose an ASCII-uppercased `tagName`.
+  let is_html_namespace = namespace.is_empty() || namespace == crate::dom::HTML_NAMESPACE;
+  let tag_name = if is_html_namespace {
+    qualified_name.to_ascii_uppercase()
+  } else {
+    qualified_name
+  };
+
+  Ok(Value::String(scope.alloc_string(&tag_name)?))
+}
+
+fn element_namespace_uri_get_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(wrapper_obj) = this else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+
+  let node_id = dom_platform_mut(vm)
+    .ok_or(VmError::TypeError("Illegal invocation"))?
+    .require_element_id(scope.heap(), Value::Object(wrapper_obj))?;
+  let dom = dom_from_vm_host(host).ok_or(VmError::TypeError("Illegal invocation"))?;
+
+  let namespace = match &dom.node(node_id).kind {
+    NodeKind::Element { namespace, .. } | NodeKind::Slot { namespace, .. } => namespace.as_str(),
+    _ => return Err(VmError::TypeError("Illegal invocation")),
+  };
+
+  if namespace == dom2::NULL_NAMESPACE {
+    return Ok(Value::Null);
+  }
+  let namespace = if namespace.is_empty() || namespace == crate::dom::HTML_NAMESPACE {
+    crate::dom::HTML_NAMESPACE
+  } else {
+    namespace
+  };
+  Ok(Value::String(scope.alloc_string(namespace)?))
+}
+
+fn element_local_name_get_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(wrapper_obj) = this else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+
+  let node_id = dom_platform_mut(vm)
+    .ok_or(VmError::TypeError("Illegal invocation"))?
+    .require_element_id(scope.heap(), Value::Object(wrapper_obj))?;
+  let dom = dom_from_vm_host(host).ok_or(VmError::TypeError("Illegal invocation"))?;
+
+  let (local_name, namespace) = match &dom.node(node_id).kind {
+    NodeKind::Element {
+      tag_name, namespace, ..
+    } => (tag_name.as_str(), namespace.as_str()),
+    NodeKind::Slot { namespace, .. } => ("slot", namespace.as_str()),
+    _ => return Err(VmError::TypeError("Illegal invocation")),
+  };
+
+  let is_html_namespace = namespace.is_empty() || namespace == crate::dom::HTML_NAMESPACE;
+  let local_name = if is_html_namespace {
+    local_name.to_ascii_lowercase()
+  } else {
+    local_name.to_string()
+  };
+  Ok(Value::String(scope.alloc_string(&local_name)?))
+}
+
+fn element_prefix_get_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(wrapper_obj) = this else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+
+  let node_id = dom_platform_mut(vm)
+    .ok_or(VmError::TypeError("Illegal invocation"))?
+    .require_element_id(scope.heap(), Value::Object(wrapper_obj))?;
+  let dom = dom_from_vm_host(host).ok_or(VmError::TypeError("Illegal invocation"))?;
+
+  let prefix = match &dom.node(node_id).kind {
+    NodeKind::Element { prefix, .. } => prefix.as_deref(),
+    NodeKind::Slot { .. } => None,
+    _ => return Err(VmError::TypeError("Illegal invocation")),
+  };
+
+  let Some(prefix) = prefix else {
+    return Ok(Value::Null);
+  };
+  Ok(Value::String(scope.alloc_string(prefix)?))
 }
 
 fn element_class_name_get_native(
@@ -16447,6 +16821,64 @@ fn init_window_globals(
     data_desc(Value::Object(create_element_func)),
   )?;
 
+  // document.createElementNS
+  let create_element_ns_key = alloc_key(&mut scope, "createElementNS")?;
+  let create_element_ns_call_id = vm.register_native_call(document_create_element_ns_native)?;
+  let create_element_ns_name = scope.alloc_string("createElementNS")?;
+  scope.push_root(Value::String(create_element_ns_name))?;
+  let create_element_ns_func =
+    scope.alloc_native_function(create_element_ns_call_id, None, create_element_ns_name, 2)?;
+  scope.heap_mut().object_set_prototype(
+    create_element_ns_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(create_element_ns_func))?;
+  scope.define_property(
+    document_obj,
+    create_element_ns_key,
+    data_desc(Value::Object(create_element_ns_func)),
+  )?;
+
+  // document.createAttribute
+  let create_attribute_key = alloc_key(&mut scope, "createAttribute")?;
+  let create_attribute_call_id = vm.register_native_call(document_create_attribute_native)?;
+  let create_attribute_name = scope.alloc_string("createAttribute")?;
+  scope.push_root(Value::String(create_attribute_name))?;
+  let create_attribute_func =
+    scope.alloc_native_function(create_attribute_call_id, None, create_attribute_name, 1)?;
+  scope.heap_mut().object_set_prototype(
+    create_attribute_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(create_attribute_func))?;
+  scope.define_property(
+    document_obj,
+    create_attribute_key,
+    data_desc(Value::Object(create_attribute_func)),
+  )?;
+
+  // document.createAttributeNS
+  let create_attribute_ns_key = alloc_key(&mut scope, "createAttributeNS")?;
+  let create_attribute_ns_call_id = vm.register_native_call(document_create_attribute_ns_native)?;
+  let create_attribute_ns_name = scope.alloc_string("createAttributeNS")?;
+  scope.push_root(Value::String(create_attribute_ns_name))?;
+  let create_attribute_ns_func = scope.alloc_native_function(
+    create_attribute_ns_call_id,
+    None,
+    create_attribute_ns_name,
+    2,
+  )?;
+  scope.heap_mut().object_set_prototype(
+    create_attribute_ns_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(create_attribute_ns_func))?;
+  scope.define_property(
+    document_obj,
+    create_attribute_ns_key,
+    data_desc(Value::Object(create_attribute_ns_func)),
+  )?;
+
   // document.createTextNode
   let create_text_node_key = alloc_key(&mut scope, "createTextNode")?;
   let create_text_node_call_id = vm.register_native_call(document_create_text_node_native)?;
@@ -17569,6 +18001,80 @@ fn init_window_globals(
       },
     )?;
 
+    // Element.namespaceURI
+    let namespace_uri_get_call_id = vm.register_native_call(element_namespace_uri_get_native)?;
+    let namespace_uri_get_name = scope.alloc_string("get namespaceURI")?;
+    scope.push_root(Value::String(namespace_uri_get_name))?;
+    let namespace_uri_get_func =
+      scope.alloc_native_function(namespace_uri_get_call_id, None, namespace_uri_get_name, 0)?;
+    scope.heap_mut().object_set_prototype(
+      namespace_uri_get_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(namespace_uri_get_func))?;
+    let namespace_uri_key = alloc_key(&mut scope, "namespaceURI")?;
+    scope.define_property(
+      element_proto,
+      namespace_uri_key,
+      PropertyDescriptor {
+        enumerable: false,
+        configurable: true,
+        kind: PropertyKind::Accessor {
+          get: Value::Object(namespace_uri_get_func),
+          set: Value::Undefined,
+        },
+      },
+    )?;
+
+    // Element.localName
+    let local_name_get_call_id = vm.register_native_call(element_local_name_get_native)?;
+    let local_name_get_name = scope.alloc_string("get localName")?;
+    scope.push_root(Value::String(local_name_get_name))?;
+    let local_name_get_func =
+      scope.alloc_native_function(local_name_get_call_id, None, local_name_get_name, 0)?;
+    scope.heap_mut().object_set_prototype(
+      local_name_get_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(local_name_get_func))?;
+    let local_name_key = alloc_key(&mut scope, "localName")?;
+    scope.define_property(
+      element_proto,
+      local_name_key,
+      PropertyDescriptor {
+        enumerable: false,
+        configurable: true,
+        kind: PropertyKind::Accessor {
+          get: Value::Object(local_name_get_func),
+          set: Value::Undefined,
+        },
+      },
+    )?;
+
+    // Element.prefix
+    let prefix_get_call_id = vm.register_native_call(element_prefix_get_native)?;
+    let prefix_get_name = scope.alloc_string("get prefix")?;
+    scope.push_root(Value::String(prefix_get_name))?;
+    let prefix_get_func = scope.alloc_native_function(prefix_get_call_id, None, prefix_get_name, 0)?;
+    scope.heap_mut().object_set_prototype(
+      prefix_get_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(prefix_get_func))?;
+    let prefix_key = alloc_key(&mut scope, "prefix")?;
+    scope.define_property(
+      element_proto,
+      prefix_key,
+      PropertyDescriptor {
+        enumerable: false,
+        configurable: true,
+        kind: PropertyKind::Accessor {
+          get: Value::Object(prefix_get_func),
+          set: Value::Undefined,
+        },
+      },
+    )?;
+
     // --- ParentNode (Element/Document/DocumentFragment): children + element-only traversal ------
 
     let parent_children_get_call_id = vm.register_native_call(parent_node_children_get_native)?;
@@ -17692,7 +18198,8 @@ fn init_window_globals(
 
     // --- Element: nextElementSibling / previousElementSibling --------------------------------
 
-    let next_element_sibling_get_call_id = vm.register_native_call(element_next_element_sibling_get_native)?;
+    let next_element_sibling_get_call_id =
+      vm.register_native_call(element_next_element_sibling_get_native)?;
     let next_element_sibling_get_name = scope.alloc_string("get nextElementSibling")?;
     scope.push_root(Value::String(next_element_sibling_get_name))?;
     let next_element_sibling_get_func = scope.alloc_native_function(

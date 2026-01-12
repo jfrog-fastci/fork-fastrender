@@ -167,6 +167,7 @@ fn serialize_nodes(
           NodeKind::Element {
             tag_name,
             namespace,
+            prefix: _,
             attributes,
           } => {
             let wrote_void = serialize_start_tag(out, tag_name, namespace, attributes);

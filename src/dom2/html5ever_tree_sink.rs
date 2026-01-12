@@ -181,6 +181,7 @@ impl Dom2TreeSink {
       NodeKind::Element {
         tag_name,
         namespace,
+        prefix: _,
         attributes,
       } => Some((tag_name.as_str(), namespace.as_str(), attributes.as_slice())),
       NodeKind::Slot {
@@ -688,6 +689,7 @@ impl TreeSink for Dom2TreeSink {
       NodeKind::Element {
         tag_name: name.local.to_string(),
         namespace,
+        prefix: None,
         attributes,
       }
     };

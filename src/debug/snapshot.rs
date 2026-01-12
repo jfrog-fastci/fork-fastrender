@@ -531,6 +531,7 @@ fn snapshot_dom2_kind(kind: &crate::dom2::NodeKind) -> Dom2NodeKindSnapshot {
       tag_name,
       namespace,
       attributes,
+      ..
     } => Dom2NodeKindSnapshot::Element {
       tag_name: tag_name.clone(),
       namespace: namespace.clone(),
