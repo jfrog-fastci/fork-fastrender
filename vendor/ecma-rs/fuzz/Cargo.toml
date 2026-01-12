@@ -12,6 +12,9 @@ libfuzzer-sys = "0.4"
 parse-js = { path = "../parse-js" }
 vm-js = { path = "../vm-js" }
 
+[dependencies.llvm-stackmaps]
+path = "../llvm-stackmaps"
+
 [dependencies.types-ts-interned]
 path = "../types-ts-interned"
 features = ["fuzzing", "serde-json"]
@@ -31,5 +34,17 @@ doc = false
 [[bin]]
 name = "vm_js_exec"
 path = "fuzz_targets/vm_js_exec.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "llvm_stackmaps_parse"
+path = "fuzz_targets/llvm_stackmaps_parse.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "llvm_stackmaps_statepoint_view"
+path = "fuzz_targets/llvm_stackmaps_statepoint_view.rs"
 test = false
 doc = false

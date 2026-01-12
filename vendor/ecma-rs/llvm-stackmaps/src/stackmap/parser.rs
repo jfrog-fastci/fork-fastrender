@@ -1,10 +1,68 @@
-use std::fmt;
+use std::{fmt, mem::size_of};
 
 use super::format::{Callsite, LiveOut, Location, StackMapRecord};
 use super::statepoint::StatepointRecordView;
 
 const STACKMAP_VERSION: u8 = 3;
 const STACKMAP_V3_HEADER_SIZE: usize = 16;
+
+// Stackmaps are trusted metadata in our own build pipeline, but `StackMaps::parse` is also used as
+// a general-purpose parser (e.g. in fuzz targets). Treat the input as hostile and cap how much
+// memory we are willing to reserve for parsed structures so corrupted sections can't trigger OOM.
+//
+// 64 MiB is comfortably above the size of stackmaps we expect in practice, while still preventing
+// pathological allocations on arbitrary input bytes.
+const MAX_PARSE_ALLOC_BYTES: usize = 64 * 1024 * 1024;
+// Also cap the input slice length so we don't spend unbounded time scanning long runs of padding.
+const MAX_STACKMAP_SECTION_BYTES: usize = 64 * 1024 * 1024;
+
+#[derive(Clone, Copy)]
+struct ParseBudget {
+    remaining: usize,
+}
+
+impl ParseBudget {
+    fn new() -> Self {
+        Self {
+            remaining: MAX_PARSE_ALLOC_BYTES,
+        }
+    }
+
+    fn charge_bytes(&mut self, bytes: usize, offset: usize, what: &'static str) -> Result<(), ParseError> {
+        if bytes > self.remaining {
+            return Err(ParseError::new(
+                offset,
+                format!(
+                    "{what} allocation would exceed parser budget: requested {bytes} bytes, remaining {}, cap {MAX_PARSE_ALLOC_BYTES}",
+                    self.remaining
+                ),
+            ));
+        }
+        self.remaining -= bytes;
+        Ok(())
+    }
+
+    fn charge_elems<T>(&mut self, count: usize, offset: usize, what: &'static str) -> Result<(), ParseError> {
+        let bytes = count
+            .checked_mul(size_of::<T>())
+            .ok_or_else(|| ParseError::new(offset, "allocation size overflow"))?;
+        self.charge_bytes(bytes, offset, what)
+    }
+}
+
+fn reserve_additional<T>(
+    vec: &mut Vec<T>,
+    additional: usize,
+    offset: usize,
+    what: &'static str,
+) -> Result<(), ParseError> {
+    vec.try_reserve_exact(additional).map_err(|e| {
+        ParseError::new(
+            offset,
+            format!("failed to reserve space for {what} ({additional} items): {e}"),
+        )
+    })
+}
 
 #[derive(Debug, Clone)]
 pub struct ParseError {
@@ -89,7 +147,12 @@ impl<'a> Cursor<'a> {
         if !align.is_power_of_two() {
             return Err(ParseError::new(self.pos, "align must be a power of two"));
         }
-        let new_pos = (self.pos + (align - 1)) & !(align - 1);
+        let add = align - 1;
+        let new_pos = self
+            .pos
+            .checked_add(add)
+            .ok_or_else(|| ParseError::new(self.pos, "offset overflow while aligning"))?
+            & !add;
         if new_pos > self.bytes.len() {
             return Err(ParseError::new(self.pos, "unexpected EOF while aligning"));
         }
@@ -132,6 +195,17 @@ pub struct StackMaps {
 
 impl StackMaps {
     pub fn parse(bytes: &[u8]) -> Result<Self, ParseError> {
+        if bytes.len() > MAX_STACKMAP_SECTION_BYTES {
+            return Err(ParseError::new(
+                0,
+                format!(
+                    ".llvm_stackmaps section too large to parse safely: {} bytes (cap {MAX_STACKMAP_SECTION_BYTES})",
+                    bytes.len()
+                ),
+            ));
+        }
+
+        let mut budget = ParseBudget::new();
         let mut functions: Vec<StackMapFunction> = Vec::new();
         let mut constants: Vec<u64> = Vec::new();
         let mut records: Vec<StackMapRecord> = Vec::new();
@@ -190,29 +264,27 @@ impl StackMaps {
                 .map_err(|_| ParseError::new(off, "constants table too large"))?;
             let record_base = records.len();
 
-            let blob = parse_blob(&bytes[off..], const_base, record_base).map_err(|mut e| {
+            let blob = parse_blob(
+                &bytes[off..],
+                const_base,
+                record_base,
+                &mut budget,
+                &mut functions,
+                &mut constants,
+                &mut records,
+                &mut callsites,
+            )
+            .map_err(|mut e| {
                 // Adjust blob-local errors to section offsets for clearer diagnostics.
                 e.offset = e.offset.saturating_add(off);
                 e
             })?;
-            let (
-                blob_header,
-                blob_functions,
-                blob_constants,
-                mut blob_records,
-                mut blob_callsites,
-                blob_len,
-            ) = blob;
+            let (blob_header, blob_len) = blob;
             let _ = blob_header;
 
             if blob_len == 0 {
                 return Err(ParseError::new(off, "parsed stackmap blob length is 0"));
             }
-
-            functions.extend(blob_functions);
-            constants.extend(blob_constants);
-            records.append(&mut blob_records);
-            callsites.append(&mut blob_callsites);
 
             off = off
                 .checked_add(blob_len)
@@ -246,22 +318,20 @@ impl StackMaps {
         // In that case, deduplicate so `lookup(pc)` stays unambiguous.
         callsites.sort_by_key(|e| e.pc);
         if callsites.len() > 1 {
-            let mut out: Vec<Callsite> = Vec::with_capacity(callsites.len());
-            let mut i: usize = 0;
-            while i < callsites.len() {
-                let base = callsites[i];
+            let mut write: usize = 0;
+            let mut read: usize = 0;
+            let len = callsites.len();
+            while read < len {
+                let base = callsites[read];
                 let base_rec = records
                     .get(base.record_index)
                     .ok_or_else(|| ParseError::new(0, "callsite record_index out of bounds"))?;
 
-                let mut j = i + 1;
-                while j < callsites.len() && callsites[j].pc == base.pc {
-                    let other = callsites[j];
+                let mut next = read + 1;
+                while next < len && callsites[next].pc == base.pc {
+                    let other = callsites[next];
                     if base.function_address != other.function_address || base.stack_size != other.stack_size {
-                        return Err(ParseError::new(
-                            0,
-                            format!("duplicate callsite pc 0x{:x}", base.pc),
-                        ));
+                        return Err(ParseError::new(0, format!("duplicate callsite pc 0x{:x}", base.pc)));
                     }
                     let other_rec = records
                         .get(other.record_index)
@@ -273,19 +343,17 @@ impl StackMaps {
                         && locations_semantically_equal(&base_rec.locations, &other_rec.locations)
                         && base_rec.live_outs == other_rec.live_outs;
                     if !same_record {
-                        return Err(ParseError::new(
-                            0,
-                            format!("duplicate callsite pc 0x{:x}", base.pc),
-                        ));
+                        return Err(ParseError::new(0, format!("duplicate callsite pc 0x{:x}", base.pc)));
                     }
-                    j += 1;
+                    next += 1;
                 }
 
-                out.push(base);
-                i = j;
+                callsites[write] = base;
+                write += 1;
+                read = next;
             }
 
-            callsites = out;
+            callsites.truncate(write);
         }
 
         Ok(Self {
@@ -385,17 +453,12 @@ fn parse_blob(
     bytes: &[u8],
     const_base: u32,
     record_base: usize,
-) -> Result<
-    (
-        StackMapHeader,
-        Vec<StackMapFunction>,
-        Vec<u64>,
-        Vec<StackMapRecord>,
-        Vec<Callsite>,
-        usize,
-    ),
-    ParseError,
-> {
+    budget: &mut ParseBudget,
+    functions: &mut Vec<StackMapFunction>,
+    constants: &mut Vec<u64>,
+    records: &mut Vec<StackMapRecord>,
+    callsites: &mut Vec<Callsite>,
+) -> Result<(StackMapHeader, usize), ParseError> {
     let mut c = Cursor::new(bytes);
 
     let version = c.read_u8()?;
@@ -418,6 +481,12 @@ fn parse_blob(
         num_constants,
         num_records,
     };
+
+    // These are indices into the *combined* tables across all concatenated blobs.
+    let functions_base = functions.len();
+    let constants_base = constants.len();
+    debug_assert_eq!(records.len(), record_base);
+    debug_assert_eq!(u32::try_from(constants_base).ok(), Some(const_base));
 
     let num_functions_usize =
         usize::try_from(num_functions).map_err(|_| ParseError::new(c.pos(), "num_functions does not fit in usize"))?;
@@ -442,7 +511,8 @@ fn parse_blob(
         ));
     }
 
-    let mut functions = Vec::with_capacity(num_functions_usize);
+    budget.charge_elems::<StackMapFunction>(num_functions_usize, c.pos(), "functions table")?;
+    reserve_additional(functions, num_functions_usize, c.pos(), "functions table")?;
     for _ in 0..num_functions_usize {
         functions.push(StackMapFunction {
             address: c.read_u64()?,
@@ -453,7 +523,10 @@ fn parse_blob(
 
     // The header's num_records should match the sum of per-function record_count.
     let mut expected_records: u64 = 0;
-    for f in &functions {
+    let functions_end = functions_base
+        .checked_add(num_functions_usize)
+        .ok_or_else(|| ParseError::new(c.pos(), "functions index overflow"))?;
+    for f in &functions[functions_base..functions_end] {
         expected_records = expected_records
             .checked_add(f.record_count)
             .ok_or_else(|| ParseError::new(c.pos(), "record_count overflow while summing functions"))?;
@@ -478,7 +551,8 @@ fn parse_blob(
         ));
     }
 
-    let mut constants = Vec::with_capacity(num_constants_usize);
+    budget.charge_elems::<u64>(num_constants_usize, c.pos(), "constants table")?;
+    reserve_additional(constants, num_constants_usize, c.pos(), "constants table")?;
     for _ in 0..num_constants_usize {
         constants.push(c.read_u64()?);
     }
@@ -495,11 +569,13 @@ fn parse_blob(
         ));
     }
 
-    let mut records = Vec::with_capacity(num_records_usize);
-    let mut callsites = Vec::with_capacity(num_records_usize);
+    budget.charge_elems::<StackMapRecord>(num_records_usize, c.pos(), "stackmap records")?;
+    budget.charge_elems::<Callsite>(num_records_usize, c.pos(), "callsite index")?;
+    reserve_additional(records, num_records_usize, c.pos(), "stackmap records")?;
+    reserve_additional(callsites, num_records_usize, c.pos(), "callsite index")?;
 
     let mut seen_records = 0usize;
-    for func in &functions {
+    for func in &functions[functions_base..functions_end] {
         let record_count = usize::try_from(func.record_count)
             .map_err(|_| ParseError::new(c.pos(), "record_count does not fit in usize"))?;
 
@@ -522,7 +598,9 @@ fn parse_blob(
                 ));
             }
 
-            let mut locations = Vec::with_capacity(num_locations);
+            budget.charge_elems::<Location>(num_locations, record_start, "record locations")?;
+            let mut locations: Vec<Location> = Vec::new();
+            reserve_additional(&mut locations, num_locations, record_start, "record locations")?;
             for _ in 0..num_locations {
                 let kind = c.read_u8()?;
                 let _reserved0 = c.read_u8()?;
@@ -557,12 +635,15 @@ fn parse_blob(
                         let idx_local = u32::try_from(offset_or_val).map_err(|_| {
                             ParseError::new(c.pos(), format!("ConstantIndex is negative: {offset_or_val}"))
                         })?;
-                        let value = *constants.get(idx_local as usize).ok_or_else(|| {
+                        let value_index = constants_base
+                            .checked_add(idx_local as usize)
+                            .ok_or_else(|| ParseError::new(c.pos(), "ConstantIndex offset overflow"))?;
+                        let value = *constants.get(value_index).ok_or_else(|| {
                             ParseError::new(
                                 c.pos(),
                                 format!(
                                     "ConstantIndex {idx_local} out of bounds (constants len={})",
-                                    constants.len()
+                                    num_constants_usize
                                 ),
                             )
                         })?;
@@ -601,7 +682,9 @@ fn parse_blob(
                 ));
             }
 
-            let mut live_outs = Vec::with_capacity(num_live_outs);
+            budget.charge_elems::<LiveOut>(num_live_outs, record_start, "record live outs")?;
+            let mut live_outs: Vec<LiveOut> = Vec::new();
+            reserve_additional(&mut live_outs, num_live_outs, record_start, "record live outs")?;
             for _ in 0..num_live_outs {
                 let dwarf_reg = c.read_u16()?;
                 let _reserved = c.read_u8()?;
@@ -618,7 +701,7 @@ fn parse_blob(
                 .ok_or_else(|| ParseError::new(record_start, "callsite_pc overflow"))?;
 
             let record_index = record_base
-                .checked_add(records.len())
+                .checked_add(seen_records)
                 .ok_or_else(|| ParseError::new(record_start, "record index overflow"))?;
             records.push(StackMapRecord {
                 id,
@@ -647,7 +730,7 @@ fn parse_blob(
         ));
     }
 
-    Ok((header, functions, constants, records, callsites, c.pos()))
+    Ok((header, c.pos()))
 }
 
 #[cfg(test)]
