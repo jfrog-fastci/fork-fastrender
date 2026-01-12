@@ -4787,13 +4787,13 @@ pub fn calculate_row_heights(structure: &mut TableStructure, available_height: O
     return;
   }
 
-  let spacing = if structure.border_collapse == BorderCollapse::Collapse {
+  let row_spacing = if structure.border_collapse == BorderCollapse::Collapse {
     0.0
   } else {
     structure.border_spacing.1
   };
   let content_available =
-    available_height.map(|h| (h - spacing * (structure.row_count as f32 + 1.0)).max(0.0));
+    available_height.map(|h| (h - row_spacing * (structure.row_count as f32 + 1.0)).max(0.0));
 
   let row_floor = |row: &RowInfo| -> f32 {
     let mut floor = row.min_height;
@@ -4825,8 +4825,9 @@ pub fn calculate_row_heights(structure: &mut TableStructure, available_height: O
       let span_start = cell.row;
       let span_end = (cell.row + cell.rowspan).min(structure.row_count);
 
-      let spacing = structure.border_spacing.1 * (cell.rowspan - 1) as f32;
-      let span_height = (cell.min_height - spacing).max(0.0);
+      // `border-spacing` is ignored when borders are collapsed (CSS 2.1 §17.6.1).
+      let span_spacing = row_spacing * (cell.rowspan - 1) as f32;
+      let span_height = (cell.min_height - span_spacing).max(0.0);
 
       let targets: Vec<usize> = (span_start..span_end).collect();
       if targets.is_empty() {
@@ -4997,15 +4998,14 @@ pub fn calculate_row_heights(structure: &mut TableStructure, available_height: O
   }
 
   // Phase 3: Apply specified/percentage heights when an available height is known.
-  let mut fixed_sum = 0.0;
   let mut percent_rows = Vec::new();
   let mut auto_rows = Vec::new();
 
   for (idx, row) in structure.rows.iter().enumerate() {
     match row.specified_height {
-      Some(SpecifiedHeight::Fixed(h)) => fixed_sum += h.max(row.min_height),
       Some(SpecifiedHeight::Percent(p)) => percent_rows.push((idx, p)),
       Some(SpecifiedHeight::Auto) | None => auto_rows.push(idx),
+      Some(SpecifiedHeight::Fixed(_)) => {}
     }
   }
 
@@ -5019,7 +5019,7 @@ pub fn calculate_row_heights(structure: &mut TableStructure, available_height: O
     }
 
     // Recompute the fixed budget (fixed + percentage rows) using specified heights where applicable.
-    fixed_sum = 0.0;
+    let mut fixed_sum = 0.0;
     for (idx, row) in structure.rows.iter().enumerate() {
       match row.specified_height {
         Some(SpecifiedHeight::Fixed(h)) => {
@@ -5087,12 +5087,12 @@ pub fn calculate_row_heights(structure: &mut TableStructure, available_height: O
   }
 
   // Phase 4: calculate positions using the computed heights.
-  let mut y = spacing;
+  let mut y = row_spacing;
   for (idx, row) in structure.rows.iter_mut().enumerate() {
     let h = computed.get(idx).copied().unwrap_or(0.0);
     row.computed_height = if h.is_finite() { h.max(0.0) } else { 0.0 };
     row.y_position = y;
-    y += row.computed_height + spacing;
+    y += row.computed_height + row_spacing;
   }
 }
 
@@ -17047,6 +17047,40 @@ mod tests {
 
     let total_height: f32 = structure.rows.iter().map(|r| r.computed_height).sum();
     assert!(total_height >= 100.0);
+  }
+
+  #[test]
+  fn test_row_height_spanning_cell_ignores_border_spacing_when_collapsed() {
+    let mut structure = TableStructure::new();
+    structure.row_count = 2;
+    structure.rows = vec![RowInfo::new(0), RowInfo::new(1)];
+    structure.cells = vec![CellInfo {
+      index: 0,
+      source_row: 0,
+      source_col: 0,
+      row: 0,
+      col: 0,
+      rowspan: 2,
+      colspan: 1,
+      box_index: 0,
+      min_width: 50.0,
+      max_width: 100.0,
+      min_height: 100.0,
+      bounds: Rect::ZERO,
+    }];
+    // `border-spacing` is ignored when borders are collapsed; it must not reduce the spanning
+    // cell's minimum height contribution.
+    structure.border_collapse = BorderCollapse::Collapse;
+    structure.border_spacing = (0.0, 10.0);
+
+    calculate_row_heights(&mut structure, None);
+
+    let total_height: f32 = structure.rows.iter().map(|r| r.computed_height).sum();
+    assert!(
+      (total_height - 100.0).abs() < 0.01,
+      "expected spanning cell to contribute full 100px height with collapsed borders (got {:.2})",
+      total_height
+    );
   }
 
   #[test]
