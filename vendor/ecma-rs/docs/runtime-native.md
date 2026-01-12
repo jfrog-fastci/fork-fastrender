@@ -321,6 +321,26 @@ pub fn rt_root_pop(slot: GcHandle);
 pub fn rt_global_root_register(slot: *mut usize);
 pub fn rt_global_root_unregister(slot: *mut usize);
 
+// Root-slot handles (stable u32 ids) for host/FFI code.
+pub fn rt_gc_register_root_slot(slot: GcHandle) -> u32;
+pub fn rt_gc_unregister_root_slot(handle: u32);
+pub fn rt_gc_pin(ptr: GcPtr) -> u32;
+pub fn rt_gc_unpin(handle: u32);
+pub fn rt_gc_root_get(handle: u32) -> GcPtr;
+pub fn rt_gc_root_set(handle: u32, ptr: GcPtr) -> bool;
+
+// Persistent handles (stable u64 ids).
+pub fn rt_handle_alloc(ptr: GcPtr) -> HandleId;
+pub fn rt_handle_alloc_h(ptr: GcHandle) -> HandleId;
+pub fn rt_handle_free(handle: HandleId);
+pub fn rt_handle_load(handle: HandleId) -> GcPtr;
+pub fn rt_handle_store(handle: HandleId, ptr: GcPtr);
+pub fn rt_handle_store_h(handle: HandleId, ptr: GcHandle);
+
+// Write-barrier young-range configuration (used by the runtime write barrier fast path).
+pub fn rt_gc_set_young_range(start: *mut u8, end: *mut u8);
+pub fn rt_gc_get_young_range(out_start: *mut GcPtr, out_end: *mut GcPtr);
+
 pub fn rt_gc_collect();
 
 // Strings
