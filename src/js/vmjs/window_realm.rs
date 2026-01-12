@@ -265,6 +265,7 @@ struct SessionHistory {
 pub(crate) struct WindowRealmUserData {
   pub(crate) window_id: u64,
   pub(crate) session_storage_namespace: u64,
+  _session_storage_guard: web_storage::StorageListenerGuard,
   pub(crate) local_storage_area: Arc<Mutex<web_storage::StorageArea>>,
   pub(crate) session_storage_area: Arc<Mutex<web_storage::StorageArea>>,
   document_url: String,
@@ -384,6 +385,11 @@ impl WindowRealmUserData {
     let window_id = alloc_window_id();
     let storage_origin_key = web_storage::origin_key_from_document_url(&document_url);
     let local_storage_area = web_storage::get_local_area(storage_origin_key.as_deref());
+    // Register this window with the thread-local storage hub so `sessionStorage` persists for this
+    // session namespace across realms (e.g. navigations in the same tab).
+    let session_storage_guard = web_storage::with_default_hub_mut(|hub| {
+      hub.register_window(web_storage::SessionNamespaceId(session_storage_namespace))
+    });
     let session_storage_area = web_storage::get_session_area(
       web_storage::SessionNamespaceId(session_storage_namespace),
       storage_origin_key.as_deref(),
@@ -397,6 +403,7 @@ impl WindowRealmUserData {
     Self {
       window_id,
       session_storage_namespace,
+      _session_storage_guard: session_storage_guard,
       local_storage_area,
       session_storage_area,
       base_url: Some(document_url.clone()),
@@ -1744,6 +1751,262 @@ fn storage_area_from_kind(
   })
 }
 
+#[derive(Clone)]
+struct WindowHostStorageEventListener {
+  window_id: u64,
+  local_storage_area_ptr: usize,
+  session_storage_area_ptr: usize,
+  task_queue: crate::js::event_loop::ExternalTaskQueueHandle<WindowHostState>,
+}
+
+static WINDOW_HOST_STORAGE_EVENT_LISTENERS: OnceLock<Mutex<Vec<WindowHostStorageEventListener>>> =
+  OnceLock::new();
+
+fn window_host_storage_event_listeners() -> &'static Mutex<Vec<WindowHostStorageEventListener>> {
+  WINDOW_HOST_STORAGE_EVENT_LISTENERS.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+#[derive(Debug)]
+pub(crate) struct WindowHostStorageEventListenerGuard {
+  window_id: u64,
+  active: bool,
+}
+
+impl Drop for WindowHostStorageEventListenerGuard {
+  fn drop(&mut self) {
+    if !self.active {
+      return;
+    }
+    window_host_storage_event_listeners()
+      .lock()
+      .retain(|entry| entry.window_id != self.window_id);
+  }
+}
+
+pub(crate) fn register_window_host_storage_event_listener(
+  window_id: u64,
+  local_storage_area_ptr: usize,
+  session_storage_area_ptr: usize,
+  task_queue: crate::js::event_loop::ExternalTaskQueueHandle<WindowHostState>,
+) -> WindowHostStorageEventListenerGuard {
+  window_host_storage_event_listeners()
+    .lock()
+    .push(WindowHostStorageEventListener {
+      window_id,
+      local_storage_area_ptr,
+      session_storage_area_ptr,
+      task_queue,
+    });
+  WindowHostStorageEventListenerGuard {
+    window_id,
+    active: true,
+  }
+}
+
+#[derive(Clone, Debug)]
+struct QueuedStorageEvent {
+  key: Option<String>,
+  old_value: Option<String>,
+  new_value: Option<String>,
+  url: String,
+  storage_kind: web_storage::StorageKind,
+}
+
+fn queue_storage_event_to_other_window_hosts(
+  source_window_id: u64,
+  storage_area_ptr: usize,
+  event: QueuedStorageEvent,
+) {
+  let queues: Vec<crate::js::event_loop::ExternalTaskQueueHandle<WindowHostState>> = {
+    let lock = window_host_storage_event_listeners().lock();
+    lock
+      .iter()
+      .filter(|entry| entry.window_id != source_window_id)
+      .filter(|entry| match event.storage_kind {
+        web_storage::StorageKind::Local => entry.local_storage_area_ptr == storage_area_ptr,
+        web_storage::StorageKind::Session => entry.session_storage_area_ptr == storage_area_ptr,
+      })
+      .map(|entry| entry.task_queue.clone())
+      .collect()
+  };
+
+  for queue in queues {
+    let event = event.clone();
+    // Best-effort: failing to enqueue should not break the initiating storage mutation.
+    let _ = queue.queue_task(TaskSource::DOMManipulation, move |host, event_loop| {
+      dispatch_storage_event_task(host, event_loop, event)
+    });
+  }
+}
+
+fn dispatch_storage_event_task<Host: WindowRealmHost + 'static>(
+  host: &mut Host,
+  event_loop: &mut EventLoop<Host>,
+  event: QueuedStorageEvent,
+) -> crate::error::Result<()> {
+  let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host)?;
+  hooks.set_event_loop(event_loop);
+
+  let (vm_host, window_realm) = host.vm_host_and_window_realm()?;
+  let realm_id = window_realm.realm_id;
+  let result = window_realm.with_vm_budget(|rt| {
+    let (vm, realm, heap) = rt.vm_realm_and_heap_mut();
+    let mut scope = heap.scope();
+    let mut vm = vm.execution_context_guard(vm_js::ExecutionContext {
+      realm: realm_id,
+      script_or_module: None,
+    });
+    let window_obj = realm.global_object();
+
+    // Root the window global while allocating keys: `alloc_key` can GC.
+    scope.push_root(Value::Object(window_obj))?;
+
+    let dispatch_key = alloc_key(&mut scope, "dispatchEvent")?;
+    let dispatch_event =
+      vm.get_with_host_and_hooks(vm_host, &mut scope, &mut hooks, window_obj, dispatch_key)?;
+    scope.push_root(dispatch_event)?;
+    if !scope.heap().is_callable(dispatch_event).unwrap_or(false) {
+      return Ok(());
+    }
+
+    let init_obj = scope.alloc_object()?;
+    scope.push_root(Value::Object(init_obj))?;
+
+    let bubbles_key = alloc_key(&mut scope, "bubbles")?;
+    scope.define_property(init_obj, bubbles_key, data_desc(Value::Bool(false)))?;
+    let cancelable_key = alloc_key(&mut scope, "cancelable")?;
+    scope.define_property(init_obj, cancelable_key, data_desc(Value::Bool(false)))?;
+    let composed_key = alloc_key(&mut scope, "composed")?;
+    scope.define_property(init_obj, composed_key, data_desc(Value::Bool(false)))?;
+
+    let key_v = match event.key.as_deref() {
+      Some(s) => {
+        let s = scope.alloc_string(s)?;
+        scope.push_root(Value::String(s))?;
+        Value::String(s)
+      }
+      None => Value::Null,
+    };
+    let key_key = alloc_key(&mut scope, "key")?;
+    scope.define_property(init_obj, key_key, data_desc(key_v))?;
+
+    let old_value_v = match event.old_value.as_deref() {
+      Some(s) => {
+        let s = scope.alloc_string(s)?;
+        scope.push_root(Value::String(s))?;
+        Value::String(s)
+      }
+      None => Value::Null,
+    };
+    let old_value_key = alloc_key(&mut scope, "oldValue")?;
+    scope.define_property(init_obj, old_value_key, data_desc(old_value_v))?;
+
+    let new_value_v = match event.new_value.as_deref() {
+      Some(s) => {
+        let s = scope.alloc_string(s)?;
+        scope.push_root(Value::String(s))?;
+        Value::String(s)
+      }
+      None => Value::Null,
+    };
+    let new_value_key = alloc_key(&mut scope, "newValue")?;
+    scope.define_property(init_obj, new_value_key, data_desc(new_value_v))?;
+
+    let url_key = alloc_key(&mut scope, "url")?;
+    let url_s = scope.alloc_string(&event.url)?;
+    scope.push_root(Value::String(url_s))?;
+    scope.define_property(init_obj, url_key, data_desc(Value::String(url_s)))?;
+
+    let storage_obj_key = match event.storage_kind {
+      web_storage::StorageKind::Local => alloc_key(&mut scope, "localStorage")?,
+      web_storage::StorageKind::Session => alloc_key(&mut scope, "sessionStorage")?,
+    };
+    let storage_obj =
+      vm.get_with_host_and_hooks(vm_host, &mut scope, &mut hooks, window_obj, storage_obj_key)?;
+    scope.push_root(storage_obj)?;
+    let storage_area_key = alloc_key(&mut scope, "storageArea")?;
+    scope.define_property(init_obj, storage_area_key, data_desc(storage_obj))?;
+
+    let (event_obj, needs_payload_define) = make_history_event_object(
+      &mut vm,
+      &mut scope,
+      vm_host,
+      &mut hooks,
+      window_obj,
+      "StorageEvent",
+      "storage",
+      init_obj,
+    )?;
+    scope.push_root(Value::Object(event_obj))?;
+
+    if needs_payload_define {
+      // `Event` does not expose storage-specific fields; populate them so listeners can observe the
+      // mutation even if `StorageEvent` was removed/overridden by user script.
+      let key_key = alloc_key(&mut scope, "key")?;
+      scope.define_property(event_obj, key_key, read_only_data_desc(key_v))?;
+      let old_value_key = alloc_key(&mut scope, "oldValue")?;
+      scope.define_property(event_obj, old_value_key, read_only_data_desc(old_value_v))?;
+      let new_value_key = alloc_key(&mut scope, "newValue")?;
+      scope.define_property(event_obj, new_value_key, read_only_data_desc(new_value_v))?;
+      let url_key = alloc_key(&mut scope, "url")?;
+      scope.define_property(event_obj, url_key, read_only_data_desc(Value::String(url_s)))?;
+      let storage_area_key = alloc_key(&mut scope, "storageArea")?;
+      scope.define_property(event_obj, storage_area_key, read_only_data_desc(storage_obj))?;
+    }
+
+    vm.call_with_host_and_hooks(
+      vm_host,
+      &mut scope,
+      &mut hooks,
+      dispatch_event,
+      Value::Object(window_obj),
+      &[Value::Object(event_obj)],
+    )?;
+
+    Ok(())
+  });
+
+  if let Some(err) = hooks.finish(window_realm.heap_mut()) {
+    return Err(err);
+  }
+
+  match result {
+    Ok(()) => Ok(()),
+    Err(err) => Err(crate::js::vm_error_format::vm_error_to_error(
+      window_realm.heap_mut(),
+      err,
+    )),
+  }
+}
+
+fn maybe_queue_storage_event_from_change(
+  vm: &Vm,
+  kind: web_storage::StorageKind,
+  change: web_storage::StorageChange,
+) {
+  if !change.did_mutate {
+    return;
+  }
+  let Some(user_data) = vm.user_data::<WindowRealmUserData>() else {
+    return;
+  };
+  let storage_area_ptr = match kind {
+    web_storage::StorageKind::Local => Arc::as_ptr(&user_data.local_storage_area) as usize,
+    web_storage::StorageKind::Session => Arc::as_ptr(&user_data.session_storage_area) as usize,
+  };
+  queue_storage_event_to_other_window_hosts(
+    user_data.window_id,
+    storage_area_ptr,
+    QueuedStorageEvent {
+      key: change.key,
+      old_value: change.old_value,
+      new_value: change.new_value,
+      url: user_data.document_url.clone(),
+      storage_kind: kind,
+    },
+  );
+}
+
 fn storage_length_get_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -1799,13 +2062,18 @@ fn storage_set_item_native(
   let key = scope.heap().get_string(key_s)?.to_utf8_lossy();
   let value = scope.heap().get_string(value_s)?.to_utf8_lossy();
 
-  if let Err(web_storage::StorageError::QuotaExceeded) = area.lock().set_item(&key, &value) {
-    return Err(VmError::Throw(make_dom_exception(
-      scope,
-      "QuotaExceededError",
-      "The quota has been exceeded.",
-    )?));
-  }
+  let change = match area.lock().set_item(&key, &value) {
+    Ok(change) => change,
+    Err(web_storage::StorageError::QuotaExceeded) => {
+      return Err(VmError::Throw(make_dom_exception(
+        scope,
+        "QuotaExceededError",
+        "The quota has been exceeded.",
+      )?));
+    }
+  };
+
+  maybe_queue_storage_event_from_change(vm, kind, change);
   Ok(Value::Undefined)
 }
 
@@ -1823,7 +2091,8 @@ fn storage_remove_item_native(
   let key_v = args.get(0).copied().unwrap_or(Value::Undefined);
   let key_s = storage_to_string(scope, key_v)?;
   let key = scope.heap().get_string(key_s)?.to_utf8_lossy();
-  area.lock().remove_item(&key);
+  let change = area.lock().remove_item(&key);
+  maybe_queue_storage_event_from_change(vm, kind, change);
   Ok(Value::Undefined)
 }
 
@@ -1838,7 +2107,8 @@ fn storage_clear_native(
 ) -> Result<Value, VmError> {
   let kind = storage_require_this(scope, this)?;
   let area = storage_area_from_kind(vm, kind)?;
-  area.lock().clear();
+  let change = area.lock().clear();
+  maybe_queue_storage_event_from_change(vm, kind, change);
   Ok(Value::Undefined)
 }
 
@@ -12765,15 +13035,16 @@ fn mutation_observer_notify_native(
   };
 
   let document_id = gc_object_id(document_obj);
-  let (deliveries, dom_for_wrappers, dom_for_wrappers_from_host) = if is_host_document_id(vm, document_id) {
-    let Some(dom_host) = crate::js::dom_host::dom_host_vmjs(host) else {
-      return Ok(Value::Undefined);
+  let (deliveries, dom_ptr_for_wrappers) = if is_host_document_id(vm, document_id) {
+    // Borrow the DOM host only long enough to drain deliveries. We must not hold a borrowed
+    // reference into the document while invoking JS callbacks, as callbacks may mutate the DOM.
+    let deliveries = {
+      let Some(dom_host) = crate::js::dom_host::dom_host_vmjs(host) else {
+        return Ok(Value::Undefined);
+      };
+      dom_host.mutation_observer_take_deliveries()
     };
-    (
-      dom_host.mutation_observer_take_deliveries(),
-      None,
-      true,
-    )
+    (deliveries, dom_ptr_for_event_registry(host))
   } else {
     let Some(mut dom_ptr) = (|| {
       let data = vm.user_data_mut::<WindowRealmUserData>()?;
@@ -12784,9 +13055,7 @@ fn mutation_observer_notify_native(
     };
     // SAFETY: `dom_ptr` is owned by the realm's document registry.
     let deliveries = unsafe { dom_ptr.as_mut() }.mutation_observer_take_deliveries();
-    // SAFETY: `dom_ptr` remains valid while the owning document stays registered.
-    let dom_for_wrappers = Some(unsafe { dom_ptr.as_ref() });
-    (deliveries, dom_for_wrappers, false)
+    (deliveries, Some(dom_ptr))
   };
   if deliveries.is_empty() {
     return Ok(Value::Undefined);
@@ -12819,11 +13088,10 @@ fn mutation_observer_notify_native(
     }
 
     let records_array = {
-      let dom_for_wrappers = if dom_for_wrappers_from_host {
-        dom_from_vm_host(host)
-      } else {
-        dom_for_wrappers
-      };
+      // SAFETY: `dom_ptr_for_wrappers` is only used to create wrappers. The reference must not live
+      // across the callback invocation (callbacks can mutate the DOM), so keep it scoped to this
+      // block.
+      let dom_for_wrappers = dom_ptr_for_wrappers.map(|ptr| unsafe { ptr.as_ref() });
       alloc_mutation_records_array(vm, scope, document_obj, dom_for_wrappers, &records)?
     };
     let args = [Value::Object(records_array), Value::Object(observer_obj)];
@@ -33271,6 +33539,10 @@ mod tests {
     let v = realm_b.exec_script("sessionStorage.getItem('k')")?;
     assert_eq!(get_string(realm_b.heap(), v), "v");
 
+    // A fresh session namespace should not observe data from the shared namespace.
+    let mut realm_c = new_realm(WindowRealmConfig::new("https://storage-session.test/c"))?;
+    assert_eq!(realm_c.exec_script("sessionStorage.getItem('k')")?, Value::Null);
+
     drop(tab_guard);
     crate::js::web_storage::reset_default_web_storage_hub_for_tests();
     Ok(())
@@ -35206,7 +35478,9 @@ mod tests {
 
     struct DummyHost;
     impl WindowRealmHost for DummyHost {
-      fn vm_host_and_window_realm(&mut self) -> (&mut dyn VmHost, &mut WindowRealm) {
+      fn vm_host_and_window_realm(
+        &mut self,
+      ) -> crate::error::Result<(&mut dyn VmHost, &mut WindowRealm)> {
         unreachable!("DummyHost is only used as a type parameter for VmJsEventLoopHooks");
       }
     }

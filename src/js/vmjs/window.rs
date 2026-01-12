@@ -160,6 +160,7 @@ const OBSERVER_SHIMS_JS: &str = r#"
 /// `document.currentScript` is observable during script execution via the embedder `VmHost` context
 /// passed to the `vm-js` runtime (for `WindowHost`, this is the [`DocumentHostState`]).
 pub struct WindowHost {
+  _storage_event_listener_guard: crate::js::window_realm::WindowHostStorageEventListenerGuard,
   host: WindowHostState,
   event_loop: EventLoop<WindowHostState>,
 }
@@ -293,7 +294,36 @@ impl WindowHost {
       clock,
       options,
     )?;
-    Ok(Self { host, event_loop })
+    let (window_id, local_ptr, session_ptr) = {
+      let Some(data) = host
+        .window()
+        .vm()
+        .user_data::<crate::js::window_realm::WindowRealmUserData>()
+      else {
+        return Err(Error::Other(
+          "window realm missing WindowRealmUserData".to_string(),
+        ));
+      };
+      (
+        data.window_id,
+        Arc::as_ptr(&data.local_storage_area) as usize,
+        Arc::as_ptr(&data.session_storage_area) as usize,
+      )
+    };
+
+    let storage_event_guard =
+      crate::js::window_realm::register_window_host_storage_event_listener(
+        window_id,
+        local_ptr,
+        session_ptr,
+        event_loop.external_task_queue_handle(),
+      );
+
+    Ok(Self {
+      _storage_event_listener_guard: storage_event_guard,
+      host,
+      event_loop,
+    })
   }
 
   pub fn from_renderer_dom(
@@ -3166,6 +3196,101 @@ mod tests {
   }
 
   #[test]
+  fn local_storage_mutations_dispatch_storage_events_to_other_window_hosts() -> Result<()> {
+    crate::js::web_storage::reset_default_web_storage_hub_for_tests();
+
+    let dom_a = dom2::Document::new(QuirksMode::NoQuirks);
+    let dom_b = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut host_a = WindowHost::new(dom_a, "https://storage-events.test/a")?;
+    let mut host_b = WindowHost::new(dom_b, "https://storage-events.test/b")?;
+
+    host_a.exec_script(
+      "globalThis.__events = [];\n\
+       addEventListener('storage', (e) => { __events.push(e.key); });",
+    )?;
+
+    host_b.exec_script(
+      "globalThis.__events = [];\n\
+       addEventListener('storage', (e) => {\n\
+         __events.push({\n\
+           key: e.key,\n\
+           oldValue: e.oldValue,\n\
+           newValue: e.newValue,\n\
+           url: e.url,\n\
+           area: (e.storageArea === localStorage) ? 'local' : 'other',\n\
+         });\n\
+       });",
+    )?;
+
+    host_a.exec_script(
+      "localStorage.setItem('k', '1');\n\
+       localStorage.setItem('k', '1');\n\
+       localStorage.setItem('k', '2');\n\
+       localStorage.removeItem('k');\n\
+       localStorage.setItem('x', 'y');\n\
+       localStorage.clear();",
+    )?;
+
+    host_b.run_until_idle(RunLimits {
+      max_tasks: 100,
+      max_microtasks: 100,
+      max_wall_time: None,
+    })?;
+
+    let got_a_v = host_a.exec_script("JSON.stringify(__events)")?;
+    let got_a = value_to_string(&host_a, got_a_v);
+    assert_eq!(got_a, "[]");
+
+    let got_b_v = host_b.exec_script("JSON.stringify(__events)")?;
+    let got_b = value_to_string(&host_b, got_b_v);
+    let got_b: serde_json::Value = serde_json::from_str(&got_b).expect("expected valid JSON");
+
+    assert_eq!(
+      got_b,
+      serde_json::json!([
+        {
+          "key": "k",
+          "oldValue": null,
+          "newValue": "1",
+          "url": "https://storage-events.test/a",
+          "area": "local",
+        },
+        {
+          "key": "k",
+          "oldValue": "1",
+          "newValue": "2",
+          "url": "https://storage-events.test/a",
+          "area": "local",
+        },
+        {
+          "key": "k",
+          "oldValue": "2",
+          "newValue": null,
+          "url": "https://storage-events.test/a",
+          "area": "local",
+        },
+        {
+          "key": "x",
+          "oldValue": null,
+          "newValue": "y",
+          "url": "https://storage-events.test/a",
+          "area": "local",
+        },
+        {
+          "key": null,
+          "oldValue": null,
+          "newValue": null,
+          "url": "https://storage-events.test/a",
+          "area": "local",
+        }
+      ])
+    );
+
+    crate::js::web_storage::reset_default_web_storage_hub_for_tests();
+    Ok(())
+  }
+
+  #[test]
   fn abort_signal_onabort_runs_with_real_vm_host() -> Result<()> {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
     let mut host = WindowHost::new(dom, "https://example.invalid/")?;
@@ -3505,6 +3630,7 @@ mod tests {
       let WindowHost {
         host: host_state,
         event_loop,
+        ..
       } = &mut host;
       let _ = event_loop.run_animation_frame(host_state)?;
     }
