@@ -7088,6 +7088,24 @@ pub fn object_prototype_to_string(
     b'y' as u16,
   ];
   const TAG_DATE: [u16; 4] = [b'D' as u16, b'a' as u16, b't' as u16, b'e' as u16];
+  const TAG_WEAK_MAP: [u16; 7] = [
+    b'W' as u16,
+    b'e' as u16,
+    b'a' as u16,
+    b'k' as u16,
+    b'M' as u16,
+    b'a' as u16,
+    b'p' as u16,
+  ];
+  const TAG_WEAK_SET: [u16; 7] = [
+    b'W' as u16,
+    b'e' as u16,
+    b'a' as u16,
+    b'k' as u16,
+    b'S' as u16,
+    b'e' as u16,
+    b't' as u16,
+  ];
   const TAG_PROMISE: [u16; 7] = [b'P' as u16, b'r' as u16, b'o' as u16, b'm' as u16, b'i' as u16, b's' as u16, b'e' as u16];
   const TAG_GENERATOR: [u16; 9] = [
     b'G' as u16,
@@ -7176,6 +7194,10 @@ pub fn object_prototype_to_string(
           TypedArrayKind::Float32 => &TAG_FLOAT32_ARRAY,
           TypedArrayKind::Float64 => &TAG_FLOAT64_ARRAY,
         }
+      } else if scope.heap().is_weak_map_object(o) {
+        &TAG_WEAK_MAP
+      } else if scope.heap().is_weak_set_object(o) {
+        &TAG_WEAK_SET
       } else if can_check_markers {
         let heap = scope.heap();
         let has_marker = |marker: Option<crate::GcSymbol>| -> Result<bool, VmError> {

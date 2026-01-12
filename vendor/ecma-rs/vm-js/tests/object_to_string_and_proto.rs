@@ -61,6 +61,54 @@ fn object_prototype_to_string_tags_and_proto_accessors() -> Result<(), VmError> 
   );
 
   assert_eq!(
+    eval_to_string(
+      &mut agent,
+      "tostring_weakmap.js",
+      "Object.prototype.toString.call(new WeakMap())",
+    )?,
+    "[object WeakMap]"
+  );
+  assert_eq!(
+    eval_to_string(
+      &mut agent,
+      "tostring_weakmap_fallback.js",
+      r#"(() => {
+        const desc = Object.getOwnPropertyDescriptor(WeakMap.prototype, Symbol.toStringTag);
+        delete WeakMap.prototype[Symbol.toStringTag];
+        const real = Object.prototype.toString.call(new WeakMap());
+        const fake = Object.prototype.toString.call(Object.create(WeakMap.prototype));
+        if (desc) Object.defineProperty(WeakMap.prototype, Symbol.toStringTag, desc);
+        return real + "|" + fake;
+      })()"#,
+    )?,
+    "[object WeakMap]|[object Object]"
+  );
+
+  assert_eq!(
+    eval_to_string(
+      &mut agent,
+      "tostring_weakset.js",
+      "Object.prototype.toString.call(new WeakSet())",
+    )?,
+    "[object WeakSet]"
+  );
+  assert_eq!(
+    eval_to_string(
+      &mut agent,
+      "tostring_weakset_fallback.js",
+      r#"(() => {
+        const desc = Object.getOwnPropertyDescriptor(WeakSet.prototype, Symbol.toStringTag);
+        delete WeakSet.prototype[Symbol.toStringTag];
+        const real = Object.prototype.toString.call(new WeakSet());
+        const fake = Object.prototype.toString.call(Object.create(WeakSet.prototype));
+        if (desc) Object.defineProperty(WeakSet.prototype, Symbol.toStringTag, desc);
+        return real + "|" + fake;
+      })()"#,
+    )?,
+    "[object WeakSet]|[object Object]"
+  );
+
+  assert_eq!(
     agent.run_script(
       "proto_get.js",
       "({}).__proto__ === Object.prototype",
