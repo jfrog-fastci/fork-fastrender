@@ -53,6 +53,14 @@ fn vec_try_push<T>(buf: &mut Vec<T>, value: T) -> Result<(), RegExpCompileError>
   Ok(())
 }
 
+fn vec_try_push_vm<T>(buf: &mut Vec<T>, value: T) -> Result<(), VmError> {
+  if buf.len() == buf.capacity() {
+    buf.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
+  }
+  buf.push(value);
+  Ok(())
+}
+
 fn boxed_slice_one<T>(value: T) -> Result<Box<[T]>, RegExpCompileError> {
   let mut buf = Vec::new();
   buf
@@ -557,7 +565,10 @@ impl RegExpProgram {
         Inst::Class(cls) => Inst::Class(cls.try_clone().map_err(|e| match e {
           RegExpCompileError::OutOfMemory => VmError::OutOfMemory,
           // Cloning an already-compiled class should never fail with a syntax error.
-          RegExpCompileError::Syntax(_) => VmError::InvariantViolation("RegExpProgram clone syntax error"),
+          RegExpCompileError::Syntax(_) => {
+            VmError::InvariantViolation("RegExpProgram clone syntax error")
+          }
+          RegExpCompileError::Vm(err) => err,
         })?),
         Inst::AssertStart => Inst::AssertStart,
         Inst::AssertEnd => Inst::AssertEnd,

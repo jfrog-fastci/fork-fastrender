@@ -359,25 +359,135 @@ fn bind_object_pattern(
     root_property_key(scope, key)?;
     excluded.push(key);
 
-    let mut prop_value = scope.get_with_host_and_hooks(vm, host, hooks, obj, key, src_value)?;
-    if matches!(prop_value, Value::Undefined) {
-      if let Some(default_expr) = &prop.stx.default_value {
-        prop_value = eval_expr(vm, host, hooks, env, strict, this, scope, default_expr)?;
+    // Keep temporary roots local to each property to avoid unbounded root-stack growth for large
+    // patterns.
+    let mut prop_scope = scope.reborrow();
+
+    // --- Assignment target evaluation order (ECMA-262 `KeyedDestructuringAssignmentEvaluation`) ---
+    //
+    // For destructuring *assignment* (not binding), the spec evaluates property-reference targets
+    // (base + key expression) before calling `GetV(value, propertyName)`. This ensures that an
+    // abrupt completion in the LHS (for example a throwing computed property key) does not access
+    // the source property.
+    //
+    // Additionally, for computed member targets (`obj[expr]`), the `ToPropertyKey` conversion is
+    // delayed until `PutValue`, after `GetV` / default evaluation. This matches test262:
+    // `language/expressions/assignment/destructuring/keyed-destructuring-property-reference-target-evaluation-order.js`
+    // and `...-with-bindings.js`.
+    enum PropertyAssignmentTarget<'a> {
+      Member { base: Value, key: &'a str },
+      ComputedMember { base: Value, key_value: Value },
+    }
+
+    let mut assignment_target: Option<PropertyAssignmentTarget<'_>> = None;
+    if matches!(kind, BindingKind::Assignment) {
+      if let Pat::AssignTarget(target) = &*prop.stx.target.stx {
+        let target_ref = (|| -> Result<Option<PropertyAssignmentTarget<'_>>, VmError> {
+          match &*target.stx {
+            Expr::Member(member) => {
+              if member.stx.optional_chaining {
+                return Err(VmError::Unimplemented("optional chaining assignment target"));
+              }
+
+              let base = eval_expr(
+                vm,
+                host,
+                hooks,
+                env,
+                strict,
+                this,
+                &mut prop_scope,
+                &member.stx.left,
+              )?;
+              let base = prop_scope.push_root(base)?;
+              Ok(Some(PropertyAssignmentTarget::Member {
+                base,
+                key: &member.stx.right,
+              }))
+            }
+            Expr::ComputedMember(member) => {
+              if member.stx.optional_chaining {
+                return Err(VmError::Unimplemented("optional chaining assignment target"));
+              }
+
+              let base = eval_expr(
+                vm,
+                host,
+                hooks,
+                env,
+                strict,
+                this,
+                &mut prop_scope,
+                &member.stx.object,
+              )?;
+              let base = prop_scope.push_root(base)?;
+              let key_value =
+                eval_expr(vm, host, hooks, env, strict, this, &mut prop_scope, &member.stx.member)?;
+              let key_value = prop_scope.push_root(key_value)?;
+              Ok(Some(PropertyAssignmentTarget::ComputedMember { base, key_value }))
+            }
+            _ => Ok(None),
+          }
+        })();
+        match target_ref {
+          Ok(v) => assignment_target = v,
+          Err(err) => return Err(err),
+        }
       }
     }
 
-    bind_pattern(
-      vm,
-      host,
-      hooks,
-      scope,
-      env,
-      &prop.stx.target.stx,
-      prop_value,
-      kind,
-      strict,
-      this,
-    )?;
+    let mut prop_value =
+      prop_scope.get_with_host_and_hooks(vm, host, hooks, obj, key, src_value)?;
+    if matches!(prop_value, Value::Undefined) {
+      if let Some(default_expr) = &prop.stx.default_value {
+        prop_value = eval_expr(vm, host, hooks, env, strict, this, &mut prop_scope, default_expr)?;
+      }
+    }
+
+    if let Some(target) = assignment_target {
+      // Root the property value across any allocations while constructing the property key and
+      // performing the assignment. `GetV` may return a freshly-allocated object that is only
+      // reachable from this local binding.
+      let prop_value = prop_scope.push_root(prop_value)?;
+
+      let res = match target {
+        PropertyAssignmentTarget::Member { base, key } => {
+          let key_s = prop_scope.alloc_string(key)?;
+          prop_scope.push_root(Value::String(key_s))?;
+          let key = PropertyKey::from_string(key_s);
+          assign_to_property_key(vm, host, hooks, &mut prop_scope, base, key, prop_value, strict)
+        }
+        PropertyAssignmentTarget::ComputedMember { base, key_value } => {
+          let key = match prop_scope.to_property_key(vm, host, hooks, key_value) {
+            Ok(key) => key,
+            Err(VmError::TypeError(msg)) => {
+              let err = match throw_type_error(vm, &mut prop_scope, msg) {
+                Ok(e) => e,
+                Err(e) => e,
+              };
+              return Err(err);
+            }
+            Err(err) => return Err(err),
+          };
+          root_property_key(&mut prop_scope, key)?;
+          assign_to_property_key(vm, host, hooks, &mut prop_scope, base, key, prop_value, strict)
+        }
+      };
+      res?;
+    } else {
+      bind_pattern(
+        vm,
+        host,
+        hooks,
+        &mut prop_scope,
+        env,
+        &prop.stx.target.stx,
+        prop_value,
+        kind,
+        strict,
+        this,
+      )?;
+    }
   }
 
   let Some(rest_pat) = &pat.rest else {

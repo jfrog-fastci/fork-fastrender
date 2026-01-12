@@ -326,6 +326,120 @@ fn object_destructuring_assignment_can_assign_to_member() {
 }
 
 #[test]
+fn object_destructuring_assignment_property_reference_evaluation_order() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      var log = [];
+
+      function source() {
+        log.push("source");
+        return {
+          get p() {
+            log.push("get");
+            return 0;
+          },
+        };
+      }
+
+      function target() {
+        log.push("target");
+        return {
+          set q(v) {
+            log.push("set");
+          },
+        };
+      }
+
+      function sourceKey() {
+        log.push("source-key");
+        return {
+          toString: function() {
+            log.push("source-key-tostring");
+            return "p";
+          },
+        };
+      }
+
+      function targetKey() {
+        log.push("target-key");
+        return {
+          toString: function() {
+            log.push("target-key-tostring");
+            return "q";
+          },
+        };
+      }
+
+      ({[sourceKey()]: target()[targetKey()]} = source());
+
+      log.join(",") ===
+        "source,source-key,source-key-tostring,target,target-key,get,target-key-tostring,set"
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn object_destructuring_assignment_property_reference_evaluation_order_with_bindings() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      var log = [];
+
+      var targetKey = {
+        toString: () => {
+          log.push("targetKey");
+          return "q";
+        }
+      };
+
+      var sourceKey = {
+        toString: () => {
+          log.push("sourceKey");
+          return "p";
+        }
+      };
+
+      var source = {
+        get p() {
+          log.push("get source");
+          return undefined;
+        }
+      };
+
+      var target = {
+        set q(v) {
+          log.push("set target");
+        },
+      };
+
+      var env = new Proxy({}, {
+        has(t, pk) {
+          log.push("binding::" + pk);
+        }
+      });
+
+      var defaultValue = 0;
+
+      with (env) {
+        ({
+          [sourceKey]: target[targetKey] = defaultValue
+        } = source);
+      }
+
+      log.join(",") ===
+        "binding::source,binding::sourceKey,sourceKey,binding::target,binding::targetKey,get source,binding::defaultValue,targetKey,set target"
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn object_destructuring_assignment_member_on_primitive_is_silent_in_sloppy_mode() {
   let mut rt = new_runtime();
   let value = rt
