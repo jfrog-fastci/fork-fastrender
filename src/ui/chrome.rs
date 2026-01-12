@@ -1563,16 +1563,61 @@ pub fn chrome_ui_with_bookmarks(
           }
 
           // Downloads button + progress indicator.
-          let downloads_button_text = if downloads.active_count > 0 {
-            format!("↓{}", downloads.active_count)
+          let (downloads_rect, downloads_resp) = ui.allocate_exact_size(
+            egui::vec2(ui.spacing().interact_size.y, ui.spacing().interact_size.y),
+            egui::Sense::click(),
+          );
+          let downloads_resp = downloads_resp.on_hover_text(downloads_hover.clone());
+          downloads_resp.widget_info({
+            let label = downloads_hover.clone();
+            move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label)
+          });
+          show_tooltip_on_focus(ui, &downloads_resp, &downloads_hover);
+          paint_focus_ring(ui, &downloads_resp, focus_ring);
+
+          let downloads_icon_color = if downloads.active_count > 0 {
+            ui.visuals().text_color()
           } else {
-            "↓".to_string()
+            ui.visuals().weak_text_color()
           };
-          if ui
-            .add(egui::Button::new(downloads_button_text).frame(false))
-            .on_hover_text(downloads_hover.clone())
-            .clicked()
-          {
+          paint_icon_in_rect(
+            ui,
+            downloads_rect,
+            BrowserIcon::Download,
+            ui.spacing().icon_width,
+            downloads_icon_color,
+          );
+
+          if downloads.active_count > 0 {
+            // Render a small count badge on the icon so multiple downloads are visible at a glance.
+            let count_text = if downloads.active_count > 99 {
+              "99+".to_string()
+            } else {
+              downloads.active_count.to_string()
+            };
+            let badge_fill = ui.visuals().selection.stroke.color;
+            let [r, g, b, _] = badge_fill.to_array();
+            let luma = (r as u32 * 299 + g as u32 * 587 + b as u32 * 114) / 1000;
+            let badge_text_color = if luma > 150 {
+              egui::Color32::BLACK
+            } else {
+              egui::Color32::WHITE
+            };
+
+            let radius = (downloads_rect.height() * 0.23).clamp(6.0, 9.0);
+            let center =
+              egui::pos2(downloads_rect.right() - radius, downloads_rect.top() + radius);
+            ui.painter().circle_filled(center, radius, badge_fill);
+            ui.painter().text(
+              center,
+              egui::Align2::CENTER_CENTER,
+              count_text,
+              egui::FontId::proportional((radius * 1.3).clamp(9.0, 12.0)),
+              badge_text_color,
+            );
+          }
+
+          if downloads_resp.clicked() {
             actions.push(ChromeAction::ToggleDownloadsPanel);
           }
           if downloads.active_count > 0 {
