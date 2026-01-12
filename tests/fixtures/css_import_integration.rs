@@ -11,6 +11,7 @@ use image::RgbaImage;
 use std::collections::HashMap;
 use std::fs;
 use std::io;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 struct RecordingFetcher {
@@ -71,7 +72,9 @@ fn sample(pixmap: &Pixmap, x: u32, y: u32) -> (u8, u8, u8, u8) {
 
 #[test]
 fn nested_imports_resolve_against_base_and_stylesheet_urls() {
-  let html = fs::read_to_string("tests/fixtures/html/import_base.html").unwrap();
+  let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+  let html = fs::read_to_string(root.join("tests/fixtures/html/import_base.html"))
+    .expect("fixture html");
   let base_hint = "https://example.com/site/index.html";
 
   let entry_url = "https://example.com/site/static/css/entry.css";

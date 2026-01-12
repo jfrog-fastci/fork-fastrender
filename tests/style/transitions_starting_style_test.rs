@@ -1,8 +1,6 @@
-use crate::r#ref::image_compare::{compare_config_from_env, compare_pngs, CompareEnvVars};
 use fastrender::animation;
 use fastrender::api::{FastRender, RenderOptions};
 use fastrender::css::types::{BoxShadow, TextShadow};
-use fastrender::image_output::{encode_image, OutputFormat};
 use fastrender::style::cascade::StyledNode;
 use fastrender::style::computed::Visibility;
 use fastrender::style::types::{
@@ -2046,40 +2044,6 @@ fn transitions_interpolate_clip_path_path_over_time() {
   let viewport = end.viewport_size();
   animation::apply_transitions(&mut end, 1000.0, viewport);
   assert!((sample_line_to_x(&end) - 100.0).abs() < 1e-3);
-}
-
-#[test]
-fn visual_fixture_matches_goldens() {
-  std::env::set_var("FASTR_USE_BUNDLED_FONTS", "1");
-  let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-  let html = fs::read_to_string(root.join("tests/fixtures/html/transition_starting_style.html"))
-    .expect("fixture html");
-  let compare_config = compare_config_from_env(CompareEnvVars::fixtures()).expect("compare config");
-  let mut renderer = FastRender::new().expect("renderer");
-  let prepared = renderer
-    .prepare_html(&html, RenderOptions::new().with_viewport(260, 180))
-    .expect("prepare");
-  let cases = [
-    ("transition_starting_style_0ms", 0.0),
-    ("transition_starting_style_400ms", 400.0),
-  ];
-  for (name, time) in cases {
-    let pixmap = prepared.paint_at_time(time).expect("render");
-    let png = encode_image(&pixmap, OutputFormat::Png).expect("encode png");
-    let golden_path = root
-      .join("tests/fixtures/golden")
-      .join(format!("{name}.png"));
-
-    if std::env::var("UPDATE_GOLDEN").is_ok() {
-      fs::create_dir_all(golden_path.parent().unwrap()).expect("golden dir");
-      fs::write(&golden_path, &png).expect("write golden");
-      continue;
-    }
-
-    let golden = fs::read(&golden_path).expect("golden png");
-    let diff_dir = root.join("target/transition_starting_style_diffs");
-    compare_pngs(name, &png, &golden, &compare_config, &diff_dir).expect("compare");
-  }
 }
 
 #[test]

@@ -1,3 +1,4 @@
+use crate::common::global_test_lock;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -17,6 +18,7 @@ impl Drop for StageListenerGuard {
 
 #[test]
 fn css_inlining_respects_deadline() {
+  let _lock = global_test_lock();
   let css_active = Arc::new(AtomicBool::new(false));
   let css_checks = Arc::new(AtomicUsize::new(0));
   let cancel_fired = Arc::new(AtomicBool::new(false));

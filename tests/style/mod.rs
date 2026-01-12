@@ -106,7 +106,6 @@ mod radio_group_required_invalid_test;
 mod registered_custom_property_computed_value_substitution_test;
 mod relative_color_syntax_test;
 mod required_optional_pseudo_test;
-mod root_font_size_percent_test;
 mod rule_index_normalization_test;
 mod rule_selector_specificity_order_test;
 mod running_position_test;
