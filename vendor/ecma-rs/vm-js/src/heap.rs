@@ -5000,7 +5000,52 @@ impl<'a> Scope<'a> {
     let mut scope = self.reborrow();
     scope.push_root(Value::String(name))?;
 
-    let func = JsFunction::new_user(func, name, length);
+    let func = JsFunction::new_user(
+      func,
+      name,
+      length,
+      ThisMode::Global,
+      /* is_strict */ false,
+      /* closure_env */ None,
+    );
+    let new_bytes = func.heap_size_bytes();
+    scope.heap.ensure_can_allocate(new_bytes)?;
+
+    let obj = HeapObject::Function(func);
+    let func = GcObject(scope.heap.alloc_unchecked(obj, new_bytes)?);
+
+    // Define standard function metadata properties (`name`, `length`).
+    crate::function_properties::set_function_name(
+      &mut scope,
+      func,
+      PropertyKey::String(name),
+      None,
+    )?;
+    crate::function_properties::set_function_length(&mut scope, func, length)?;
+
+    Ok(func)
+  }
+
+  pub(crate) fn alloc_user_function_with_env(
+    &mut self,
+    func: CompiledFunctionRef,
+    name: GcString,
+    length: u32,
+    this_mode: ThisMode,
+    is_strict: bool,
+    closure_env: Option<GcEnv>,
+  ) -> Result<GcObject, VmError> {
+    // Root inputs during allocation in case `ensure_can_allocate` triggers a GC.
+    let mut scope = self.reborrow();
+    if let Some(env) = closure_env {
+      let roots = [Value::String(name)];
+      scope.push_roots_with_extra_roots(&roots, &[], &[env])?;
+      scope.push_env_root(env)?;
+    } else {
+      scope.push_root(Value::String(name))?;
+    }
+
+    let func = JsFunction::new_user(func, name, length, this_mode, is_strict, closure_env);
     let new_bytes = func.heap_size_bytes();
     scope.heap.ensure_can_allocate(new_bytes)?;
 

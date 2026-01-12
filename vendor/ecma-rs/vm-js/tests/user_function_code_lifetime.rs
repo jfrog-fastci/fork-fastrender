@@ -39,10 +39,8 @@ fn user_function_keeps_compiled_script_alive_and_releases_on_gc() -> Result<(), 
     let root = scope.heap_mut().add_root(Value::Object(func_obj))?;
     assert!(weak.upgrade().is_some(), "function should keep script alive");
 
-    match vm.call_without_host(&mut scope, Value::Object(func_obj), Value::Undefined, &[]) {
-      Err(VmError::Unimplemented(msg)) => assert_eq!(msg, "user-defined function call"),
-      other => panic!("expected unimplemented user-defined call, got {other:?}"),
-    }
+    let result = vm.call_without_host(&mut scope, Value::Object(func_obj), Value::Undefined, &[])?;
+    assert_eq!(result, Value::Undefined);
 
     scope.heap_mut().remove_root(root);
     scope.heap_mut().collect_garbage();

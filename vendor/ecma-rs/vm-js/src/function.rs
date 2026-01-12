@@ -256,14 +256,21 @@ impl JsFunction {
     }
   }
 
-  pub(crate) fn new_user(func: CompiledFunctionRef, name: GcString, length: u32) -> Self {
+  pub(crate) fn new_user(
+    func: CompiledFunctionRef,
+    name: GcString,
+    length: u32,
+    this_mode: ThisMode,
+    is_strict: bool,
+    closure_env: Option<GcEnv>,
+  ) -> Self {
     Self {
       call: CallHandler::User(func),
       construct: None,
       name,
       length,
-      this_mode: ThisMode::Global,
-      is_strict: false,
+      this_mode,
+      is_strict,
       base: ObjectBase::new(None),
       data: FunctionData::None,
       bound_target: None,
@@ -273,7 +280,7 @@ impl JsFunction {
       native_slots: None,
       realm: None,
       job_realm: None,
-      closure_env: None,
+      closure_env,
     }
   }
   pub(crate) fn heap_size_bytes(&self) -> usize {

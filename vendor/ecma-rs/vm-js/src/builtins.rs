@@ -2798,6 +2798,19 @@ fn resolve_promise(
     return fulfill_promise(vm, hooks, scope, promise, resolution, current_realm);
   };
 
+  // Promise resolutions are common and can be handled without invoking the user-observable `then`
+  // method (which would in turn consult `constructor[Symbol.species]`). Attach reactions directly
+  // to avoid species side effects and match `PerformPromiseThen(..., resultCapability = undefined)`
+  // behaviour.
+  if scope.heap().is_promise_object(thenable_obj) {
+    // Root the thenable promise while creating fresh resolving functions (which can allocate/GC).
+    scope.push_root(Value::Object(thenable_obj))?;
+    let (resolve, reject) = create_promise_resolving_functions(vm, scope, promise)?;
+    scope.push_roots(&[resolve, reject])?;
+    perform_promise_then_no_capability(vm, scope, hooks, Value::Object(thenable_obj), resolve, reject)?;
+    return Ok(());
+  }
+
   // Get `thenable.then`.
   //
   // Spec: this must perform `Get(thenable, "then")`, which means it must:

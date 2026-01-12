@@ -1,24 +1,26 @@
 use crate::{GcString, Heap, Value, VmError};
 
 /// ECMAScript `ToNumber` for the supported value types.
-pub fn to_number(heap: &mut Heap, value: Value) -> Result<f64, VmError> {
-  match value {
-    Value::Undefined => Ok(f64::NAN),
-    Value::Null => Ok(0.0),
-    Value::Bool(b) => Ok(if b { 1.0 } else { 0.0 }),
-    Value::Number(n) => Ok(n),
-    Value::BigInt(_) => Err(VmError::TypeError(
-      "Cannot convert a BigInt value to a number",
-    )),
-    Value::String(s) => string_to_number(heap, s),
-    Value::Symbol(_) => Err(VmError::TypeError("Cannot convert a Symbol value to a number")),
-    // Per spec, `ToNumber` for objects requires `ToPrimitive`, which can invoke user code.
-    // Use `Scope::to_number` in evaluator/built-in call sites where a `Vm` + host context exists.
-    Value::Object(_) => Err(VmError::Unimplemented(
-      "ToNumber on objects requires ToPrimitive (use Scope::to_number)",
-    )),
+  pub fn to_number(heap: &mut Heap, value: Value) -> Result<f64, VmError> {
+    match value {
+      Value::Undefined => Ok(f64::NAN),
+      Value::Null => Ok(0.0),
+      Value::Bool(b) => Ok(if b { 1.0 } else { 0.0 }),
+      Value::Number(n) => Ok(n),
+      Value::BigInt(_) => Err(VmError::TypeError(
+        "Cannot convert a BigInt value to a number",
+      )),
+      Value::String(s) => string_to_number(heap, s),
+      Value::Symbol(_) => Err(VmError::TypeError("Cannot convert a Symbol value to a number")),
+      // This is the VM's minimal `ToNumber` used by heap-internal operations and WebIDL-style
+      // conversions. Full spec `ToNumber` for objects requires `ToPrimitive`, which can invoke user
+      // code; use `Scope::to_number` in evaluator/built-in call sites where a `Vm` + host context
+      // exists.
+      Value::Object(_) => Err(VmError::Unimplemented(
+        "ToNumber on objects requires ToPrimitive/built-ins",
+      )),
+    }
   }
-}
 
 fn string_to_number(heap: &Heap, s: GcString) -> Result<f64, VmError> {
   let raw = heap.get_string(s)?.to_utf8_lossy();

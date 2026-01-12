@@ -269,7 +269,7 @@ impl Heap {
   /// This covers the primitive cases needed by WebIDL conversions:
   /// - `undefined`, `null`, booleans, numbers, strings.
   ///
-  /// For `Object`, this is intentionally unimplemented because full `ToNumber` requires
+  /// For `Object`, this returns [`VmError::Unimplemented`]. Full spec `ToNumber` requires
   /// `ToPrimitive`, which can invoke user code (`@@toPrimitive`, `valueOf`, `toString`) and
   /// therefore requires a [`Vm`] + host context. Use [`Scope::to_number`] for the spec-shaped
   /// operation.

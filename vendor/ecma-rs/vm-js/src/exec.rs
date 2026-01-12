@@ -257,7 +257,7 @@ impl RuntimeEnv {
     heap.remove_env_root(self.lexical_root);
   }
 
-  fn set_lexical_env(&mut self, heap: &mut Heap, env: GcEnv) {
+  pub(crate) fn set_lexical_env(&mut self, heap: &mut Heap, env: GcEnv) {
     self.lexical_env = env;
     heap.set_env_root(self.lexical_root, env);
   }
@@ -449,7 +449,7 @@ impl RuntimeEnv {
     }
   }
 
-  fn get(
+  pub(crate) fn get(
     &self,
     vm: &mut Vm,
     host: &mut dyn VmHost,
@@ -908,6 +908,90 @@ impl JsRuntime {
   pub fn exec_script(&mut self, source: &str) -> Result<Value, VmError> {
     let mut host = ();
     self.exec_script_with_host(&mut host, source)
+  }
+
+  /// Execute a pre-compiled classic script (HIR) produced by [`crate::CompiledScript`].
+  ///
+  /// This uses the same VM budget/interrupt model as [`JsRuntime::exec_script`].
+  ///
+  /// ## Host context
+  ///
+  /// This convenience wrapper passes a **dummy host context** (`()`) to native call/construct
+  /// handlers.
+  pub fn exec_compiled_script(&mut self, script: Arc<crate::CompiledScript>) -> Result<Value, VmError> {
+    let mut host = ();
+    self.exec_compiled_script_with_host(&mut host, script)
+  }
+
+  /// Execute a pre-compiled classic script (HIR) produced by [`crate::CompiledScript`], using an
+  /// explicit embedder host context.
+  pub fn exec_compiled_script_with_host(
+    &mut self,
+    host: &mut dyn VmHost,
+    script: Arc<crate::CompiledScript>,
+  ) -> Result<Value, VmError> {
+    let source = Arc::new(script.source.clone());
+
+    let (line, col) = source.line_col(0);
+    let frame = StackFrame {
+      function: None,
+      source: source.name.clone(),
+      line,
+      col,
+    };
+
+    let exec_ctx = crate::ExecutionContext {
+      realm: self.realm.id(),
+      script_or_module: None,
+    };
+    let mut vm_ctx = self.vm.execution_context_guard(exec_ctx);
+
+    // Script evaluation needs a host hook implementation for Promise jobs. `Vm` stores a default
+    // microtask queue inside itself, but we need to hold `&mut Vm` and `&mut dyn VmHostHooks`
+    // simultaneously. Temporarily move the queue out so it can be passed as `hooks`.
+    let mut hooks = mem::take(vm_ctx.microtask_queue_mut());
+    let prev_hooks = vm_ctx.push_active_host_hooks(&mut hooks);
+
+    let result: Result<Value, VmError> = (|| {
+      let mut vm_frame = vm_ctx.enter_frame(frame)?;
+
+      // Charge at least one tick at script entry so even an empty script respects fuel/deadline /
+      // interrupt budgets.
+      vm_frame.tick()?;
+
+      let mut scope = self.heap.scope();
+      let res = crate::hir_exec::run_compiled_script(
+        &mut *vm_frame,
+        &mut scope,
+        host,
+        &mut hooks,
+        &mut self.env,
+        script,
+      );
+
+      match res {
+        Err(VmError::Throw(value)) => Err(VmError::ThrowWithStack {
+          value,
+          stack: vm_frame.capture_stack(),
+        }),
+        other => other,
+      }
+    })();
+
+    // Pop any host hooks override before restoring `hooks` back into the VM to avoid leaving the VM
+    // with a dangling pointer (the override stores a raw pointer to `hooks`).
+    vm_ctx.pop_active_host_hooks(prev_hooks);
+
+    // As a safety net, drain any Promise jobs that were enqueued onto the VM-owned microtask queue
+    // (for example by native handlers calling `vm.microtask_queue_mut()` while the queue was moved
+    // out) into `hooks` before restoring it.
+    while let Some((realm, job)) = vm_ctx.microtask_queue_mut().pop_front() {
+      hooks.enqueue_promise_job(job, realm);
+    }
+    // Restore the VM's microtask queue so the embedding can run a microtask checkpoint later.
+    *vm_ctx.microtask_queue_mut() = hooks;
+
+    result
   }
 
   /// Parse and execute a classic script (ECMAScript dialect, `SourceType::Script`) using an explicit

@@ -12,6 +12,7 @@ use crate::heap::ExternalMemoryToken;
 use crate::source::SourceText;
 use crate::Heap;
 use crate::VmError;
+use crate::Vm;
 use diagnostics::FileId;
 use parse_js::{parse_with_options, Dialect, ParseOptions, SourceType};
 use std::sync::Arc;
@@ -50,6 +51,33 @@ impl CompiledScript {
     .map_err(|_| VmError::InvariantViolation("hir-js panicked while lowering a script"))?;
     // HIR can be significantly larger than the source text; use a conservative estimate to ensure
     // heap limits apply to compiled code.
+    let estimated_hir_bytes = source.text.len().saturating_mul(8);
+    let external_memory = heap.charge_external(estimated_hir_bytes)?;
+    Ok(Arc::new(Self {
+      source,
+      hir: Arc::new(hir),
+      external_memory,
+    }))
+  }
+
+  /// Parse and lower a classic script using a VM's budget/interrupt checks.
+  ///
+  /// This is identical to [`CompiledScript::compile_script`], but parsing is performed through the
+  /// VM so fuel/deadline/interrupt budgets can be observed *during compilation*.
+  pub fn compile_script_with_budget(
+    heap: &mut Heap,
+    vm: &mut Vm,
+    name: impl Into<Arc<str>>,
+    text: impl Into<Arc<str>>,
+  ) -> Result<Arc<CompiledScript>, VmError> {
+    let source = SourceText::new_charged(heap, name, text)?;
+    let opts = ParseOptions {
+      dialect: Dialect::Ecma,
+      source_type: SourceType::Script,
+    };
+
+    let parsed = vm.parse_top_level_with_budget(&source.text, opts)?;
+    let hir = hir_js::lower_file(FileId(0), hir_js::FileKind::Js, &parsed);
     let estimated_hir_bytes = source.text.len().saturating_mul(8);
     let external_memory = heap.charge_external(estimated_hir_bytes)?;
     Ok(Arc::new(Self {

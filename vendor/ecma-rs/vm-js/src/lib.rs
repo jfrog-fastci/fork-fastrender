@@ -138,6 +138,7 @@ mod execution_context;
 mod function;
 mod function_properties;
 mod handle;
+mod hir_exec;
 mod heap;
 mod import_meta;
 mod interrupt;

@@ -2379,7 +2379,16 @@ impl Vm {
           }
           None => (Arc::<str>::from("<call>"), 0, 0),
         },
-        CallHandler::User(_) => (Arc::<str>::from("<user>"), 0, 0),
+        CallHandler::User(func) => {
+          let source = func.script.source.name.clone();
+          let (line, col) = func
+            .script
+            .hir
+            .body(func.body)
+            .map(|body| func.script.source.line_col(body.span.start))
+            .unwrap_or((0, 0));
+          (source, line, col)
+        }
       }
     };
     let frame = StackFrame {
@@ -2439,10 +2448,7 @@ impl Vm {
       CallHandler::Ecma(code_id) => {
         vm.call_ecma_function(&mut scope, host, hooks, code_id, callee_obj, this, args)
       }
-      CallHandler::User(func) => {
-        drop(func);
-        Err(VmError::Unimplemented("user-defined function call"))
-      }
+      CallHandler::User(func) => vm.call_user_function(&mut scope, host, hooks, func, callee_obj, this, args),
     };
 
     // Capture a stack trace for thrown exceptions before the current frame is popped.
@@ -3102,6 +3108,81 @@ impl Vm {
     if !is_async {
       env.teardown(scope.heap_mut());
     }
+    result
+  }
+
+  fn call_user_function(
+    &mut self,
+    scope: &mut Scope<'_>,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    func: crate::CompiledFunctionRef,
+    callee: crate::GcObject,
+    this: Value,
+    args: &[Value],
+  ) -> Result<Value, VmError> {
+    let (this_mode, is_strict, realm, outer, bound_this, bound_new_target) = {
+      let f = scope.heap().get_function(callee)?;
+      (
+        f.this_mode,
+        f.is_strict,
+        f.realm,
+        f.closure_env,
+        f.bound_this,
+        f.bound_new_target,
+      )
+    };
+
+    // User functions may be allocated without a realm in unit tests / low-level embeddings. To
+    // preserve sloppy-mode `this` semantics and allow identifier resolution to fall back to a global
+    // object, synthesize a minimal global object if needed.
+    let global_object = match realm {
+      Some(obj) => obj,
+      None => {
+        let mut init_scope = scope.reborrow();
+        init_scope.push_root(Value::Object(callee))?;
+        let global_object = init_scope.alloc_object()?;
+        init_scope.push_root(Value::Object(global_object))?;
+        init_scope.heap_mut().set_function_realm(callee, global_object)?;
+        global_object
+      }
+    };
+
+    let this = match this_mode {
+      ThisMode::Lexical => bound_this.ok_or(VmError::Unimplemented(
+        "arrow function missing captured lexical this",
+      ))?,
+      ThisMode::Strict => this,
+      ThisMode::Global => match this {
+        Value::Undefined | Value::Null => Value::Object(global_object),
+        other => other,
+      },
+    };
+
+    let new_target = match this_mode {
+      ThisMode::Lexical => bound_new_target.ok_or(VmError::Unimplemented(
+        "arrow function missing captured lexical new.target",
+      ))?,
+      ThisMode::Strict | ThisMode::Global => Value::Undefined,
+    };
+
+    let func_env = scope.env_create(outer)?;
+    let mut env = RuntimeEnv::new_with_var_env(scope.heap_mut(), global_object, func_env, func_env)?;
+
+    let result = crate::hir_exec::run_compiled_function(
+      self,
+      scope,
+      host,
+      hooks,
+      &mut env,
+      func,
+      is_strict,
+      this,
+      new_target,
+      args,
+    );
+
+    env.teardown(scope.heap_mut());
     result
   }
 
