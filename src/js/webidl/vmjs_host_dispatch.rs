@@ -4030,6 +4030,10 @@ mod element_dispatch_tests {
 
     let mut scope = heap.scope();
     let platform = DomPlatform::new(&mut scope, &realm)?;
+
+    // `DomPlatform` wrapper caching is keyed by a (weak) JS document wrapper identity. WebIDL
+    // dispatch tests don't need a full Document implementation, but they must supply a stable
+    // document key so wrapper identity remains consistent.
     let document_obj = scope.alloc_object()?;
     let document_key = WeakGcObject::from(document_obj);
     let _document_root = scope.heap_mut().add_root(Value::Object(document_obj))?;
@@ -4047,17 +4051,7 @@ mod element_dispatch_tests {
       .expect("append div to document");
     let mut host = DocumentHostState::new(dom);
 
-    // `DomPlatform` wrapper caching is keyed by a (weak) JS document wrapper identity.
-    // WebIDL dispatch tests don't need a full Document implementation; any rooted object can
-    // serve as a stable document key so wrapper identity remains consistent.
-    let document_obj = scope.alloc_object()?;
-    scope.push_root(Value::Object(document_obj))?;
-    let document_key = WeakGcObject::from(document_obj);
-
     let wrapper = {
-      let document_obj = scope.alloc_object()?;
-      scope.push_root(Value::Object(document_obj))?;
-      let document_key = WeakGcObject::from(document_obj);
       let data = vm.user_data_mut::<WindowRealmUserData>().expect("user data");
       let platform = data.dom_platform_mut().expect("platform");
       platform.get_or_create_wrapper(&mut scope, document_key, div, DomInterface::Element)?
