@@ -355,6 +355,65 @@ fn load_window_icon() -> Option<winit::window::Icon> {
   }
 }
 
+#[cfg(feature = "browser_ui")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProfileShortcutAction {
+  ToggleBookmarkForActiveTab,
+  ToggleHistoryPanel,
+  ToggleBookmarksManager,
+  ClearHistory,
+}
+
+#[cfg(feature = "browser_ui")]
+fn profile_shortcut_action(
+  modifiers: winit::event::ModifiersState,
+  key: winit::event::VirtualKeyCode,
+) -> Option<ProfileShortcutAction> {
+  // On macOS, prefer Cmd as the "command" modifier. Elsewhere, prefer Ctrl.
+  let cmd = if cfg!(target_os = "macos") {
+    (modifiers.logo() || modifiers.ctrl()) && !modifiers.alt()
+  } else {
+    modifiers.ctrl() && !modifiers.alt()
+  };
+
+  if cmd && !modifiers.shift() && matches!(key, winit::event::VirtualKeyCode::D) {
+    return Some(ProfileShortcutAction::ToggleBookmarkForActiveTab);
+  }
+
+  if cmd
+    && !modifiers.shift()
+    && ((cfg!(target_os = "macos") && matches!(key, winit::event::VirtualKeyCode::Y))
+      || (!cfg!(target_os = "macos") && matches!(key, winit::event::VirtualKeyCode::H)))
+  {
+    return Some(ProfileShortcutAction::ToggleHistoryPanel);
+  }
+
+  // Firefox-style history shortcut on macOS.
+  if cmd
+    && modifiers.shift()
+    && cfg!(target_os = "macos")
+    && matches!(key, winit::event::VirtualKeyCode::H)
+  {
+    return Some(ProfileShortcutAction::ToggleHistoryPanel);
+  }
+
+  if cmd && modifiers.shift() && matches!(key, winit::event::VirtualKeyCode::O) {
+    return Some(ProfileShortcutAction::ToggleBookmarksManager);
+  }
+
+  if cmd
+    && modifiers.shift()
+    && matches!(
+      key,
+      winit::event::VirtualKeyCode::Delete | winit::event::VirtualKeyCode::Back
+    )
+  {
+    return Some(ProfileShortcutAction::ClearHistory);
+  }
+
+  None
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;
@@ -364,6 +423,103 @@ mod tests {
     let icon = decode_rgba_icon(APP_ICON_PNG).expect("app icon should decode");
     assert_eq!((icon.width, icon.height), (256, 256));
     assert_eq!(icon.rgba.len(), (256 * 256 * 4) as usize);
+  }
+}
+
+#[cfg(all(test, feature = "browser_ui"))]
+mod profile_shortcut_tests {
+  use super::{profile_shortcut_action, ProfileShortcutAction};
+
+  use winit::event::{ModifiersState, VirtualKeyCode};
+
+  fn mods(ctrl: bool, shift: bool, alt: bool, logo: bool) -> ModifiersState {
+    let mut out = ModifiersState::empty();
+    if ctrl {
+      out.insert(ModifiersState::CTRL);
+    }
+    if shift {
+      out.insert(ModifiersState::SHIFT);
+    }
+    if alt {
+      out.insert(ModifiersState::ALT);
+    }
+    if logo {
+      out.insert(ModifiersState::LOGO);
+    }
+    out
+  }
+
+  fn cmd_mods() -> ModifiersState {
+    if cfg!(target_os = "macos") {
+      mods(false, false, false, true)
+    } else {
+      mods(true, false, false, false)
+    }
+  }
+
+  #[test]
+  fn cmd_d_toggles_bookmark() {
+    assert_eq!(
+      profile_shortcut_action(cmd_mods(), VirtualKeyCode::D),
+      Some(ProfileShortcutAction::ToggleBookmarkForActiveTab)
+    );
+  }
+
+  #[test]
+  fn altgr_d_does_not_toggle_bookmark() {
+    // Guard against AltGr being encoded as Ctrl+Alt.
+    let mut modifiers = cmd_mods();
+    modifiers.insert(ModifiersState::ALT);
+    assert_eq!(profile_shortcut_action(modifiers, VirtualKeyCode::D), None);
+  }
+
+  #[test]
+  fn cmd_shift_o_opens_bookmarks_manager() {
+    let mut modifiers = cmd_mods();
+    modifiers.insert(ModifiersState::SHIFT);
+    assert_eq!(
+      profile_shortcut_action(modifiers, VirtualKeyCode::O),
+      Some(ProfileShortcutAction::ToggleBookmarksManager)
+    );
+  }
+
+  #[test]
+  fn cmd_shift_delete_clears_history() {
+    let mut modifiers = cmd_mods();
+    modifiers.insert(ModifiersState::SHIFT);
+    assert_eq!(
+      profile_shortcut_action(modifiers, VirtualKeyCode::Delete),
+      Some(ProfileShortcutAction::ClearHistory)
+    );
+  }
+
+  #[cfg(target_os = "macos")]
+  #[test]
+  fn cmd_y_opens_history_panel_on_macos() {
+    assert_eq!(
+      profile_shortcut_action(cmd_mods(), VirtualKeyCode::Y),
+      Some(ProfileShortcutAction::ToggleHistoryPanel)
+    );
+  }
+
+  #[cfg(not(target_os = "macos"))]
+  #[test]
+  fn ctrl_h_opens_history_panel_on_other_platforms() {
+    assert_eq!(
+      profile_shortcut_action(cmd_mods(), VirtualKeyCode::H),
+      Some(ProfileShortcutAction::ToggleHistoryPanel)
+    );
+  }
+
+  #[cfg(target_os = "macos")]
+  #[test]
+  fn cmd_shift_h_opens_history_panel_on_macos() {
+    let mut modifiers = cmd_mods();
+    modifiers.insert(ModifiersState::SHIFT);
+    assert_eq!(
+      profile_shortcut_action(modifiers, VirtualKeyCode::H),
+      Some(ProfileShortcutAction::ToggleHistoryPanel)
+    );
   }
 }
 
@@ -4480,30 +4636,27 @@ impl App {
   }
 
   fn handle_profile_shortcuts(&mut self, key: winit::event::VirtualKeyCode) -> bool {
-    // On macOS, prefer Cmd as the "command" modifier. Elsewhere, prefer Ctrl.
-    let cmd = if cfg!(target_os = "macos") {
-      (self.modifiers.logo() || self.modifiers.ctrl()) && !self.modifiers.alt()
-    } else {
-      self.modifiers.ctrl() && !self.modifiers.alt()
-    };
+    use fastrender::ui::ChromeAction;
 
-    if cmd && !self.modifiers.shift() && matches!(key, winit::event::VirtualKeyCode::D) {
-      self.toggle_bookmark_for_active_tab();
-      return true;
+    match profile_shortcut_action(self.modifiers, key) {
+      Some(ProfileShortcutAction::ToggleBookmarkForActiveTab) => {
+        self.handle_chrome_actions(vec![ChromeAction::ToggleBookmarkForActiveTab]);
+        true
+      }
+      Some(ProfileShortcutAction::ToggleHistoryPanel) => {
+        self.handle_chrome_actions(vec![ChromeAction::ToggleHistoryPanel]);
+        true
+      }
+      Some(ProfileShortcutAction::ToggleBookmarksManager) => {
+        self.handle_chrome_actions(vec![ChromeAction::ToggleBookmarksManager]);
+        true
+      }
+      Some(ProfileShortcutAction::ClearHistory) => {
+        self.clear_history();
+        true
+      }
+      None => false,
     }
-
-    if cmd
-      && self.modifiers.shift()
-      && matches!(
-        key,
-        winit::event::VirtualKeyCode::Delete | winit::event::VirtualKeyCode::Back
-      )
-    {
-      self.clear_history();
-      return true;
-    }
-
-    false
   }
 
   fn autosave_bookmarks(&self) {
@@ -5673,6 +5826,24 @@ impl App {
           // When it loses focus (via Enter/Escape/clicking elsewhere), restore page focus so common
           // scrolling shortcuts work without requiring an extra click.
           self.page_has_focus = !has_focus;
+        }
+        ChromeAction::ToggleBookmarkForActiveTab => {
+          self.toggle_bookmark_for_active_tab();
+          self.window.request_redraw();
+        }
+        ChromeAction::ToggleHistoryPanel => {
+          self.history_panel_open = !self.history_panel_open;
+          if self.history_panel_open {
+            self.bookmarks_panel_open = false;
+          }
+          self.window.request_redraw();
+        }
+        ChromeAction::ToggleBookmarksManager => {
+          self.bookmarks_panel_open = !self.bookmarks_panel_open;
+          if self.bookmarks_panel_open {
+            self.history_panel_open = false;
+          }
+          self.window.request_redraw();
         }
         ChromeAction::NewTab => {
           session_dirty = true;

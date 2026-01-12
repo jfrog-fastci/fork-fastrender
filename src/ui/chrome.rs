@@ -44,6 +44,12 @@ pub enum ChromeAction {
   Reload,
   StopLoading,
   AddressBarFocusChanged(bool),
+  /// Toggle a bookmark for the currently active tab.
+  ToggleBookmarkForActiveTab,
+  /// Toggle visibility of the global history panel.
+  ToggleHistoryPanel,
+  /// Toggle visibility of the bookmarks manager UI.
+  ToggleBookmarksManager,
 }
 
 fn egui_modifiers_to_shortcuts_modifiers(modifiers: egui::Modifiers) -> Modifiers {
@@ -121,8 +127,8 @@ fn omnibox_suggestion_icon(suggestion: &OmniboxSuggestion) -> &'static str {
       OmniboxAction::NavigateToUrl(_) => "↵",
       OmniboxAction::ActivateTab(_) => "T",
     },
-    OmniboxSuggestionSource::Url(OmniboxUrlSource::About) => "ⓘ",
     OmniboxSuggestionSource::Url(OmniboxUrlSource::OpenTab) => "T",
+    OmniboxSuggestionSource::Url(OmniboxUrlSource::About) => "ⓘ",
     OmniboxSuggestionSource::Url(OmniboxUrlSource::Bookmark) => "★",
     OmniboxSuggestionSource::Url(OmniboxUrlSource::ClosedTab) => "↩",
     OmniboxSuggestionSource::Url(OmniboxUrlSource::Visited) => "H",
