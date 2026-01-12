@@ -261,6 +261,14 @@ pub struct WindowRealm {
   heap_alive: Arc<AtomicBool>,
   js_execution_options: JsExecutionOptions,
   module_loader: ModuleLoaderHandle,
+  /// Optional WebIDL bindings dispatch host for WindowRealm-owned hook shims.
+  ///
+  /// This is only used by `WindowRealm` convenience entry points that fabricate their own
+  /// `VmHostHooks` implementations (e.g. `exec_script_with_name`, `perform_microtask_checkpoint`).
+  ///
+  /// The pointer is installed via `WindowRealm::with_webidl_bindings_host` and must not outlive the
+  /// dynamic extent of that call.
+  webidl_bindings_host: Option<NonNull<dyn WebIdlBindingsHost>>,
   next_script_id_raw: u64,
 }
 
@@ -581,6 +589,7 @@ impl WindowRealm {
       heap_alive,
       js_execution_options,
       module_loader,
+      webidl_bindings_host: None,
       next_script_id_raw: 0,
     })
   }
@@ -617,6 +626,33 @@ impl WindowRealm {
       .borrow_mut()
       .set_js_execution_options(realm.js_execution_options);
     Ok(realm)
+  }
+
+  /// Temporarily installs a [`WebIdlBindingsHost`] for WindowRealm-owned `VmHostHooks` shims.
+  ///
+  /// This is used by `WindowRealm` convenience entrypoints (like `exec_script_with_name` and
+  /// `perform_microtask_checkpoint`) that fabricate their own `VmHostHooks` objects and therefore
+  /// cannot receive a WebIDL host through the embedding's event-loop hook adapters.
+  pub(crate) fn with_webidl_bindings_host<R>(
+    &mut self,
+    host: &mut dyn WebIdlBindingsHost,
+    f: impl FnOnce(&mut Self) -> R,
+  ) -> R {
+    struct Guard<'a> {
+      realm: &'a mut WindowRealm,
+      prev: Option<NonNull<dyn WebIdlBindingsHost>>,
+    }
+
+    impl Drop for Guard<'_> {
+      fn drop(&mut self) {
+        self.realm.webidl_bindings_host = self.prev;
+      }
+    }
+
+    let prev = self.webidl_bindings_host;
+    self.webidl_bindings_host = Some(NonNull::from(host));
+    let mut guard = Guard { realm: self, prev };
+    f(&mut *guard.realm)
   }
 
   pub fn reset_interrupt(&self) {
@@ -1177,6 +1213,8 @@ impl WindowRealm {
     source_name: impl Into<Arc<str>>,
     source_text: impl Into<Arc<str>>,
   ) -> Result<Value, VmError> {
+    let webidl_bindings_host = self.webidl_bindings_host;
+
     // The `vm-js` default `exec_script` path uses the VM-owned microtask queue as the active
     // `VmHostHooks` implementation. That queue does not provide FastRender's DOM shims (like
     // `Element.dataset`), which rely on `VmHostHooks::{host_exotic_get,host_exotic_set,host_exotic_delete}`.
@@ -1226,16 +1264,7 @@ impl WindowRealm {
         key: PropertyKey,
         receiver: Value,
       ) -> Result<Option<Value>, VmError> {
-        let _ = receiver;
-        if let Some(value) =
-          dataset_exotic_get(scope, self.any.vm_host_mut(), &self.dataset_ctx, obj, key)?
-        {
-          return Ok(Some(value));
-        }
-        if let Some(value) = dom_token_list_exotic_get(scope, self.any.vm_host_mut(), obj, key)? {
-          return Ok(Some(value));
-        }
-        computed_style_exotic_get(scope, self.any.vm_host_mut(), obj, key)
+        dispatch_host_exotic_get(scope, &mut self.any, &self.dataset_ctx, obj, key, receiver)
       }
 
       fn host_exotic_set(
@@ -1246,13 +1275,18 @@ impl WindowRealm {
         value: Value,
         receiver: Value,
       ) -> Result<Option<bool>, VmError> {
-        let _ = receiver;
-        if let Some(ok) =
-          dataset_exotic_set(scope, self.any.vm_host_mut(), &self.dataset_ctx, obj, key, value)?
-        {
-          return Ok(Some(ok));
-        }
-        dom_token_list_exotic_set(scope, self.any.vm_host_mut(), obj, key, value)
+        Ok(
+          dispatch_host_exotic_set(
+            scope,
+            &mut self.any,
+            &self.dataset_ctx,
+            obj,
+            key,
+            value,
+            receiver,
+          )?
+          .handled,
+        )
       }
 
       fn host_exotic_delete(
@@ -1261,12 +1295,9 @@ impl WindowRealm {
         obj: GcObject,
         key: PropertyKey,
       ) -> Result<Option<bool>, VmError> {
-        if let Some(ok) =
-          dataset_exotic_delete(scope, self.any.vm_host_mut(), &self.dataset_ctx, obj, key)?
-        {
-          return Ok(Some(ok));
-        }
-        dom_token_list_exotic_delete(scope, self.any.vm_host_mut(), obj, key)
+        Ok(
+          dispatch_host_exotic_delete(scope, &mut self.any, &self.dataset_ctx, obj, key)?.handled,
+        )
       }
 
       fn host_call_job_callback(
@@ -1311,10 +1342,17 @@ impl WindowRealm {
         .set_ready_state(crate::web::dom::DocumentReadyState::Complete);
       let mut any = VmJsHostHooksPayload::default();
       any.set_vm_host(&mut host_ctx);
-      let mut webidl_bindings_host = WindowRealmWebIdlBindingsHost::default();
-      any
-        .webidl_bindings_host_slot_mut()
-        .set(&mut webidl_bindings_host);
+      let mut fallback_webidl_bindings_host = WindowRealmWebIdlBindingsHost::default();
+      if let Some(mut host_ptr) = webidl_bindings_host {
+        // SAFETY: The pointer is only installed via `WindowRealm::with_webidl_bindings_host` for the
+        // dynamic extent of that call.
+        let bindings_host: &mut dyn WebIdlBindingsHost = unsafe { host_ptr.as_mut() };
+        any.webidl_bindings_host_slot_mut().set(bindings_host);
+      } else {
+        any
+          .webidl_bindings_host_slot_mut()
+          .set(&mut fallback_webidl_bindings_host);
+      }
       let dataset_ctx = DatasetExoticContext::for_vm(&rt.vm);
       let mut hooks = WindowRealmDomShimHooks {
         microtasks: &mut guard.queue,
@@ -1329,9 +1367,9 @@ impl WindowRealm {
       if result.is_ok() {
         drain_result?;
       }
-      // Ensure the bindings host outlives the JS execution boundary: the hooks payload stores a raw
-      // pointer to it.
-      let _ = &mut webidl_bindings_host;
+      // Ensure the locally-created fallback bindings host outlives the JS execution boundary: the
+      // hooks payload stores a raw pointer to it.
+      let _ = &mut fallback_webidl_bindings_host;
       result
     })
   }
@@ -1352,6 +1390,7 @@ impl WindowRealm {
   }
 
   pub fn perform_microtask_checkpoint(&mut self) -> Result<(), VmError> {
+    let webidl_bindings_host = self.webidl_bindings_host;
     self.with_vm_budget(|rt| {
       // `vm-js`'s built-in `Vm::perform_microtask_checkpoint` runs queued jobs using a lightweight
       // internal `VmHostHooks` implementation that only supports Promise job chaining. FastRender's
@@ -1401,16 +1440,7 @@ impl WindowRealm {
           key: PropertyKey,
           receiver: Value,
         ) -> Result<Option<Value>, VmError> {
-          let _ = receiver;
-          if let Some(value) =
-            dataset_exotic_get(scope, self.any.vm_host_mut(), &self.dataset_ctx, obj, key)?
-          {
-            return Ok(Some(value));
-          }
-          if let Some(value) = dom_token_list_exotic_get(scope, self.any.vm_host_mut(), obj, key)? {
-            return Ok(Some(value));
-          }
-          computed_style_exotic_get(scope, self.any.vm_host_mut(), obj, key)
+          dispatch_host_exotic_get(scope, &mut self.any, &self.dataset_ctx, obj, key, receiver)
         }
 
         fn host_exotic_set(
@@ -1421,13 +1451,18 @@ impl WindowRealm {
           value: Value,
           receiver: Value,
         ) -> Result<Option<bool>, VmError> {
-          let _ = receiver;
-          if let Some(ok) =
-            dataset_exotic_set(scope, self.any.vm_host_mut(), &self.dataset_ctx, obj, key, value)?
-          {
-            return Ok(Some(ok));
-          }
-          dom_token_list_exotic_set(scope, self.any.vm_host_mut(), obj, key, value)
+          Ok(
+            dispatch_host_exotic_set(
+              scope,
+              &mut self.any,
+              &self.dataset_ctx,
+              obj,
+              key,
+              value,
+              receiver,
+            )?
+            .handled,
+          )
         }
 
         fn host_exotic_delete(
@@ -1436,12 +1471,7 @@ impl WindowRealm {
           obj: GcObject,
           key: PropertyKey,
         ) -> Result<Option<bool>, VmError> {
-          if let Some(ok) =
-            dataset_exotic_delete(scope, self.any.vm_host_mut(), &self.dataset_ctx, obj, key)?
-          {
-            return Ok(Some(ok));
-          }
-          dom_token_list_exotic_delete(scope, self.any.vm_host_mut(), obj, key)
+          Ok(dispatch_host_exotic_delete(scope, &mut self.any, &self.dataset_ctx, obj, key)?.handled)
         }
 
         fn host_call_job_callback(
@@ -1577,11 +1607,21 @@ impl WindowRealm {
       let mut host_ctx = DocumentHostState::new(dom2::Document::new(QuirksMode::NoQuirks));
       let dataset_ctx = DatasetExoticContext::for_vm(&rt.vm);
       let mut hooks = DomShimMicrotaskHooks::new(&mut host_ctx, dataset_ctx);
-      let mut webidl_bindings_host = WindowRealmWebIdlBindingsHost::default();
-      hooks
-        .any
-        .webidl_bindings_host_slot_mut()
-        .set(&mut webidl_bindings_host);
+      let mut fallback_webidl_bindings_host = WindowRealmWebIdlBindingsHost::default();
+      if let Some(mut host_ptr) = webidl_bindings_host {
+        // SAFETY: The pointer is only installed via `WindowRealm::with_webidl_bindings_host` around
+        // this call boundary.
+        let bindings_host: &mut dyn WebIdlBindingsHost = unsafe { host_ptr.as_mut() };
+        hooks
+          .any
+          .webidl_bindings_host_slot_mut()
+          .set(bindings_host);
+      } else {
+        hooks
+          .any
+          .webidl_bindings_host_slot_mut()
+          .set(&mut fallback_webidl_bindings_host);
+      }
 
       let mut first_err: Option<VmError> = None;
       let mut termination_err: Option<VmError> = None;
@@ -1630,9 +1670,9 @@ impl WindowRealm {
       }
 
       rt.vm.microtask_queue_mut().end_checkpoint();
-      // Ensure the bindings host outlives the microtask checkpoint: the hooks payload stores a raw
-      // pointer to it.
-      let _ = &mut webidl_bindings_host;
+      // Ensure the locally-created fallback bindings host outlives the microtask checkpoint: the
+      // hooks payload stores a raw pointer to it.
+      let _ = &mut fallback_webidl_bindings_host;
       match first_err {
         Some(err) => Err(err),
         None => Ok(()),
@@ -2426,10 +2466,13 @@ const WINDOW_REALM_CONSOLE_HOST_TAG: u64 = u64::from_be_bytes(*b"CONSOLE_");
 // These hooks are invoked for *all* objects, including objects that use host slots for unrelated
 // purposes (e.g. WebIDL dispatch, `TextDecoder` state). Use collision-resistant tags so our DOM
 // shims do not accidentally treat other objects as platform shims.
+//
+// We use an 8-byte ASCII namespace ("FRDOM...") encoded as a big-endian `u64`. This makes collisions
+// across independent shims vanishingly unlikely.
 const HOST_EXOTIC_DOM_TOKEN_LIST: u64 = u64::from_be_bytes(*b"FRDOMDTL");
 const HOST_EXOTIC_DOM_STRING_MAP: u64 = u64::from_be_bytes(*b"FRDOMDSM");
 const HOST_EXOTIC_COMPUTED_STYLE: u64 = u64::from_be_bytes(*b"FRCOMPUT");
-const CSS_STYLE_DECL_HOST_TAG: u64 = 5;
+const CSS_STYLE_DECL_HOST_TAG: u64 = u64::from_be_bytes(*b"FRDOMCSS");
 const WRAPPER_DOCUMENT_KEY: &str = "__fastrender_wrapper_document";
 /// Internal-only indirection used when a JS `Document` wrapper is backed by a different "platform"
 /// document for DOM wrapper identity / `dom2::Document` selection.
@@ -2742,8 +2785,8 @@ const MUTATION_OBSERVER_CALLBACK_KEY: &str = "__fastrender_mutation_observer_cal
 const MUTATION_OBSERVER_DOCUMENT_KEY: &str = "__fastrender_mutation_observer_document";
 const MUTATION_OBSERVER_REGISTRY_KEY: &str = "__fastrender_mutation_observer_registry";
 const MUTATION_OBSERVER_NOTIFY_KEY: &str = "__fastrender_mutation_observer_notify";
-const MUTATION_OBSERVER_HOST_TAG: u64 = 6;
-const MUTATION_RECORD_HOST_TAG: u64 = 7;
+const MUTATION_OBSERVER_HOST_TAG: u64 = u64::from_be_bytes(*b"FRDOMMOB"); // MutationObserver
+const MUTATION_RECORD_HOST_TAG: u64 = u64::from_be_bytes(*b"FRDOMMRC"); // MutationRecord
 const NODE_LIST_PROTOTYPE_KEY: &str = "__fastrender_node_list_prototype";
 const MUTATION_RECORD_PROTOTYPE_KEY: &str = "__fastrender_mutation_record_prototype";
 
@@ -2905,6 +2948,131 @@ fn dataset_prop_is_valid(prop: &str) -> bool {
     return false;
   }
   prop.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ExoticDispatchHandledBy {
+  Dataset,
+  DomTokenList,
+  WebIdl,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ExoticDispatchOutcome<T> {
+  pub(crate) handled: Option<T>,
+  pub(crate) handled_by: Option<ExoticDispatchHandledBy>,
+}
+
+impl<T> ExoticDispatchOutcome<T> {
+  #[inline]
+  fn not_handled() -> Self {
+    Self {
+      handled: None,
+      handled_by: None,
+    }
+  }
+
+  #[inline]
+  fn handled(value: T, handled_by: ExoticDispatchHandledBy) -> Self {
+    Self {
+      handled: Some(value),
+      handled_by: Some(handled_by),
+    }
+  }
+}
+
+pub(crate) fn dispatch_host_exotic_get(
+  scope: &mut Scope<'_>,
+  payload: &mut VmJsHostHooksPayload,
+  dataset_ctx: &DatasetExoticContext,
+  obj: GcObject,
+  key: PropertyKey,
+  receiver: Value,
+) -> Result<Option<Value>, VmError> {
+  if let Some(value) = dataset_exotic_get(scope, payload.vm_host_mut(), dataset_ctx, obj, key)? {
+    return Ok(Some(value));
+  }
+
+  if let Some(value) = dom_token_list_exotic_get(scope, payload.vm_host_mut(), obj, key)? {
+    return Ok(Some(value));
+  }
+
+  if let Some(value) = computed_style_exotic_get(scope, payload.vm_host_mut(), obj, key)? {
+    return Ok(Some(value));
+  }
+
+  let Some(host) = payload.webidl_bindings_host_mut() else {
+    return Ok(None);
+  };
+  host.exotic_get(scope, obj, key, receiver)
+}
+
+pub(crate) fn dispatch_host_exotic_set(
+  scope: &mut Scope<'_>,
+  payload: &mut VmJsHostHooksPayload,
+  dataset_ctx: &DatasetExoticContext,
+  obj: GcObject,
+  key: PropertyKey,
+  value: Value,
+  receiver: Value,
+) -> Result<ExoticDispatchOutcome<bool>, VmError> {
+  if let Some(ok) = dataset_exotic_set(scope, payload.vm_host_mut(), dataset_ctx, obj, key, value)? {
+    return Ok(ExoticDispatchOutcome::handled(
+      ok,
+      ExoticDispatchHandledBy::Dataset,
+    ));
+  }
+
+  if let Some(ok) = dom_token_list_exotic_set(scope, payload.vm_host_mut(), obj, key, value)? {
+    return Ok(ExoticDispatchOutcome::handled(
+      ok,
+      ExoticDispatchHandledBy::DomTokenList,
+    ));
+  }
+
+  let Some(host) = payload.webidl_bindings_host_mut() else {
+    return Ok(ExoticDispatchOutcome::not_handled());
+  };
+  match host.exotic_set(scope, obj, key, value, receiver)? {
+    Some(ok) => Ok(ExoticDispatchOutcome::handled(
+      ok,
+      ExoticDispatchHandledBy::WebIdl,
+    )),
+    None => Ok(ExoticDispatchOutcome::not_handled()),
+  }
+}
+
+pub(crate) fn dispatch_host_exotic_delete(
+  scope: &mut Scope<'_>,
+  payload: &mut VmJsHostHooksPayload,
+  dataset_ctx: &DatasetExoticContext,
+  obj: GcObject,
+  key: PropertyKey,
+) -> Result<ExoticDispatchOutcome<bool>, VmError> {
+  if let Some(ok) = dataset_exotic_delete(scope, payload.vm_host_mut(), dataset_ctx, obj, key)? {
+    return Ok(ExoticDispatchOutcome::handled(
+      ok,
+      ExoticDispatchHandledBy::Dataset,
+    ));
+  }
+
+  if let Some(ok) = dom_token_list_exotic_delete(scope, payload.vm_host_mut(), obj, key)? {
+    return Ok(ExoticDispatchOutcome::handled(
+      ok,
+      ExoticDispatchHandledBy::DomTokenList,
+    ));
+  }
+
+  let Some(host) = payload.webidl_bindings_host_mut() else {
+    return Ok(ExoticDispatchOutcome::not_handled());
+  };
+  match host.exotic_delete(scope, obj, key)? {
+    Some(ok) => Ok(ExoticDispatchOutcome::handled(
+      ok,
+      ExoticDispatchHandledBy::WebIdl,
+    )),
+    None => Ok(ExoticDispatchOutcome::not_handled()),
+  }
 }
 
 pub(crate) fn dataset_exotic_get(
@@ -39231,6 +39399,10 @@ mod tests {
       any.set_vm_host(host_ctx);
       Self { any, dataset_ctx }
     }
+
+    fn set_webidl_bindings_host(&mut self, host: &mut dyn WebIdlBindingsHost) {
+      self.any.webidl_bindings_host_slot_mut().set(host);
+    }
   }
 
   impl vm_js::VmHostHooks for DomShimHostHooks {
@@ -39247,16 +39419,7 @@ mod tests {
       key: PropertyKey,
       receiver: Value,
     ) -> Result<Option<Value>, VmError> {
-      let _ = receiver;
-      if let Some(value) =
-        dataset_exotic_get(scope, self.any.vm_host_mut(), &self.dataset_ctx, obj, key)?
-      {
-        return Ok(Some(value));
-      }
-      if let Some(value) = dom_token_list_exotic_get(scope, self.any.vm_host_mut(), obj, key)? {
-        return Ok(Some(value));
-      }
-      computed_style_exotic_get(scope, self.any.vm_host_mut(), obj, key)
+      dispatch_host_exotic_get(scope, &mut self.any, &self.dataset_ctx, obj, key, receiver)
     }
 
     fn host_exotic_set(
@@ -39267,13 +39430,18 @@ mod tests {
       value: Value,
       receiver: Value,
     ) -> Result<Option<bool>, VmError> {
-      let _ = receiver;
-      if let Some(ok) =
-        dataset_exotic_set(scope, self.any.vm_host_mut(), &self.dataset_ctx, obj, key, value)?
-      {
-        return Ok(Some(ok));
-      }
-      dom_token_list_exotic_set(scope, self.any.vm_host_mut(), obj, key, value)
+      Ok(
+        dispatch_host_exotic_set(
+          scope,
+          &mut self.any,
+          &self.dataset_ctx,
+          obj,
+          key,
+          value,
+          receiver,
+        )?
+        .handled,
+      )
     }
 
     fn host_exotic_delete(
@@ -39282,12 +39450,7 @@ mod tests {
       obj: GcObject,
       key: PropertyKey,
     ) -> Result<Option<bool>, VmError> {
-      if let Some(ok) =
-        dataset_exotic_delete(scope, self.any.vm_host_mut(), &self.dataset_ctx, obj, key)?
-      {
-        return Ok(Some(ok));
-      }
-      dom_token_list_exotic_delete(scope, self.any.vm_host_mut(), obj, key)
+      Ok(dispatch_host_exotic_delete(scope, &mut self.any, &self.dataset_ctx, obj, key)?.handled)
     }
   }
 
@@ -39980,6 +40143,81 @@ mod tests {
 
     realm.perform_microtask_checkpoint()?;
     assert_eq!(realm.exec_script("globalThis.__x")?, Value::Number(1.0));
+    Ok(())
+  }
+
+  #[test]
+  fn window_realm_exec_script_and_microtask_checkpoint_delegate_to_webidl_exotic_get() -> Result<(), VmError> {
+    struct ExoticHost {
+      foo_gets: usize,
+    }
+
+    impl WebIdlBindingsHost for ExoticHost {
+      fn call_operation(
+        &mut self,
+        _vm: &mut Vm,
+        _scope: &mut Scope<'_>,
+        _receiver: Option<Value>,
+        _interface: &'static str,
+        _operation: &'static str,
+        _overload: usize,
+        _args: &[Value],
+      ) -> Result<Value, VmError> {
+        Err(VmError::Unimplemented("operation dispatch not used by this test"))
+      }
+
+      fn call_constructor(
+        &mut self,
+        _vm: &mut Vm,
+        _scope: &mut Scope<'_>,
+        _interface: &'static str,
+        _overload: usize,
+        _args: &[Value],
+        _new_target: Value,
+      ) -> Result<Value, VmError> {
+        Err(VmError::Unimplemented("constructor dispatch not used by this test"))
+      }
+
+      fn exotic_get(
+        &mut self,
+        scope: &mut Scope<'_>,
+        _obj: GcObject,
+        key: PropertyKey,
+        _receiver: Value,
+      ) -> Result<Option<Value>, VmError> {
+        let PropertyKey::String(s) = key else {
+          return Ok(None);
+        };
+        if scope.heap().get_string(s)?.to_utf8_lossy() != "foo" {
+          return Ok(None);
+        }
+        self.foo_gets += 1;
+        Ok(Some(Value::String(scope.alloc_string("webidl")?)))
+      }
+    }
+
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+    let mut host = ExoticHost { foo_gets: 0 };
+
+    realm.with_webidl_bindings_host(&mut host, |realm| -> Result<(), VmError> {
+      let direct = realm.exec_script("({}).foo")?;
+      assert_eq!(get_string(realm.heap(), direct), "webidl");
+
+      // Ensure `perform_microtask_checkpoint` uses the same exotic dispatch pipeline as
+      // `exec_script_with_name` so Promise jobs can delegate to WebIDL hosts too.
+      realm.exec_script(
+        "globalThis.__out = 'pending'; Promise.resolve().then(() => { __out = ({}).foo; });",
+      )?;
+      realm.perform_microtask_checkpoint()?;
+      let out = realm.exec_script("__out")?;
+      assert_eq!(get_string(realm.heap(), out), "webidl");
+      Ok(())
+    })?;
+
+    assert!(
+      host.foo_gets >= 2,
+      "expected WebIDL exotic_get to run for both direct eval and microtask callback"
+    );
     Ok(())
   }
 
@@ -44408,6 +44646,109 @@ mod tests {
       })()",
     )?;
     assert_eq!(ok, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn dom_shim_host_slots_tags_do_not_collide_with_small_b_values() -> Result<(), VmError> {
+    // Regression test: DOM shim kind tags used to be small integers stored in `HostSlots.b`, which
+    // could collide with unrelated shims that also store small state values in `HostSlots.b` (for
+    // example, TextDecoder flags/encoding ids).
+    //
+    // Construct a forged host-slots object with `b == 4` (a previous DOMStringMap/dataset tag) and
+    // ensure the dataset shim does **not** claim it; instead, dispatch should fall through to the
+    // WebIDL exotic hooks.
+    let dom = crate::dom2::parse_html(
+      "<!doctype html><html><body><div id=target data-foo=\"bar\"></div></body></html>",
+    )?;
+    let target = dom.get_element_by_id("target").expect("missing #target");
+    let mut host = crate::js::HostDocumentState::new(dom);
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+
+    let forged_obj = {
+      let (_vm, realm_ref, heap) = realm.vm_realm_and_heap_mut();
+      let mut scope = heap.scope();
+      let global = realm_ref.global_object();
+      scope.push_root(Value::Object(global))?;
+
+      let obj = scope.alloc_object()?;
+      scope.push_root(Value::Object(obj))?;
+      scope.heap_mut().object_set_host_slots(
+        obj,
+        HostSlots {
+          a: target.index() as u64,
+          b: 4,
+        },
+      )?;
+
+      let key = alloc_key(&mut scope, "forged")?;
+      scope.define_property(global, key, data_desc(Value::Object(obj)))?;
+      obj
+    };
+
+    struct ExoticHost {
+      target: GcObject,
+      foo_gets: usize,
+    }
+
+    impl WebIdlBindingsHost for ExoticHost {
+      fn call_operation(
+        &mut self,
+        _vm: &mut Vm,
+        _scope: &mut Scope<'_>,
+        _receiver: Option<Value>,
+        _interface: &'static str,
+        _operation: &'static str,
+        _overload: usize,
+        _args: &[Value],
+      ) -> Result<Value, VmError> {
+        Err(VmError::Unimplemented("operation dispatch not used by this test"))
+      }
+
+      fn call_constructor(
+        &mut self,
+        _vm: &mut Vm,
+        _scope: &mut Scope<'_>,
+        _interface: &'static str,
+        _overload: usize,
+        _args: &[Value],
+        _new_target: Value,
+      ) -> Result<Value, VmError> {
+        Err(VmError::Unimplemented("constructor dispatch not used by this test"))
+      }
+
+      fn exotic_get(
+        &mut self,
+        scope: &mut Scope<'_>,
+        obj: GcObject,
+        key: PropertyKey,
+        _receiver: Value,
+      ) -> Result<Option<Value>, VmError> {
+        if obj != self.target {
+          return Ok(None);
+        }
+        let PropertyKey::String(s) = key else {
+          return Ok(None);
+        };
+        if scope.heap().get_string(s)?.to_utf8_lossy() != "foo" {
+          return Ok(None);
+        }
+        self.foo_gets += 1;
+        Ok(Some(Value::String(scope.alloc_string("webidl")?)))
+      }
+    }
+
+    let mut webidl_host = ExoticHost {
+      target: forged_obj,
+      foo_gets: 0,
+    };
+
+    let dataset_ctx = realm.dataset_exotic_context();
+    let mut hooks = DomShimHostHooks::new(&mut host, dataset_ctx);
+    hooks.set_webidl_bindings_host(&mut webidl_host);
+    let value = realm.exec_script_with_host_and_hooks(&mut host, &mut hooks, "forged.foo")?;
+    assert_eq!(get_string(realm.heap(), value), "webidl");
+    assert_eq!(webidl_host.foo_gets, 1);
     Ok(())
   }
 

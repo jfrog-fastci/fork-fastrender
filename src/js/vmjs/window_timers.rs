@@ -12,11 +12,8 @@ use crate::js::event_loop::{EventLoop, TaskSource, TimerId};
 use crate::js::realm_module_loader::ModuleLoadOutcome;
 use crate::js::vm_error_format;
 use crate::js::window_realm::{
-  computed_style_exotic_get,
-  dataset_exotic_delete, dataset_exotic_get, dataset_exotic_set, dom_token_list_exotic_delete,
-  dom_token_list_exotic_get, dom_token_list_exotic_set,
-  drain_pending_dataset_mutation_observer_microtasks, DatasetExoticContext, WindowRealmHost,
-  WindowRealmUserData,
+  dispatch_host_exotic_delete, dispatch_host_exotic_get, dispatch_host_exotic_set,
+  DatasetExoticContext, ExoticDispatchHandledBy, WindowRealmHost, WindowRealmUserData,
 };
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -973,22 +970,7 @@ impl<Host: WindowRealmHost + 'static> VmHostHooks for VmJsEventLoopHooks<Host> {
     key: vm_js::PropertyKey,
     receiver: vm_js::Value,
   ) -> Result<Option<vm_js::Value>, VmError> {
-    if let Some(value) = dataset_exotic_get(scope, self.any.vm_host_mut(), &self.dataset_ctx, obj, key)? {
-      return Ok(Some(value));
-    }
-
-    if let Some(value) = dom_token_list_exotic_get(scope, self.any.vm_host_mut(), obj, key)? {
-      return Ok(Some(value));
-    }
-
-    if let Some(value) = computed_style_exotic_get(scope, self.any.vm_host_mut(), obj, key)? {
-      return Ok(Some(value));
-    }
-
-    let Some(host) = self.any.webidl_bindings_host_mut() else {
-      return Ok(None);
-    };
-    host.exotic_get(scope, obj, key, receiver)
+    dispatch_host_exotic_get(scope, &mut self.any, &self.dataset_ctx, obj, key, receiver)
   }
 
   fn host_exotic_set(
@@ -999,21 +981,19 @@ impl<Host: WindowRealmHost + 'static> VmHostHooks for VmJsEventLoopHooks<Host> {
     value: vm_js::Value,
     receiver: vm_js::Value,
   ) -> Result<Option<bool>, VmError> {
-    let result = dataset_exotic_set(scope, self.any.vm_host_mut(), &self.dataset_ctx, obj, key, value)?;
-    if result.is_some() {
+    let result = dispatch_host_exotic_set(
+      scope,
+      &mut self.any,
+      &self.dataset_ctx,
+      obj,
+      key,
+      value,
+      receiver,
+    )?;
+    if result.handled_by == Some(ExoticDispatchHandledBy::Dataset) {
       self.maybe_queue_mutation_observer_notify_microtask();
-      return Ok(result);
     }
-
-    let result = dom_token_list_exotic_set(scope, self.any.vm_host_mut(), obj, key, value)?;
-    if result.is_some() {
-      return Ok(result);
-    }
-
-    let Some(host) = self.any.webidl_bindings_host_mut() else {
-      return Ok(None);
-    };
-    host.exotic_set(scope, obj, key, value, receiver)
+    Ok(result.handled)
   }
 
   fn host_exotic_delete(
@@ -1022,21 +1002,11 @@ impl<Host: WindowRealmHost + 'static> VmHostHooks for VmJsEventLoopHooks<Host> {
     obj: vm_js::GcObject,
     key: vm_js::PropertyKey,
   ) -> Result<Option<bool>, VmError> {
-    let result = dataset_exotic_delete(scope, self.any.vm_host_mut(), &self.dataset_ctx, obj, key)?;
-    if result.is_some() {
+    let result = dispatch_host_exotic_delete(scope, &mut self.any, &self.dataset_ctx, obj, key)?;
+    if result.handled_by == Some(ExoticDispatchHandledBy::Dataset) {
       self.maybe_queue_mutation_observer_notify_microtask();
-      return Ok(result);
     }
-
-    let result = dom_token_list_exotic_delete(scope, self.any.vm_host_mut(), obj, key)?;
-    if result.is_some() {
-      return Ok(result);
-    }
-
-    let Some(host) = self.any.webidl_bindings_host_mut() else {
-      return Ok(None);
-    };
-    host.exotic_delete(scope, obj, key)
+    Ok(result.handled)
   }
 
   fn host_call_job_callback(
