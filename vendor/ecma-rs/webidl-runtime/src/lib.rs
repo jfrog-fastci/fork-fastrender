@@ -14,6 +14,8 @@
 //! `vm-js` GC handles are **not automatically rooted**, so this crate does **not** implement
 //! `webidl::JsRuntime` directly for [`VmJsRuntime`]. Instead, callers must run `webidl` conversions
 //! inside [`VmJsRuntime::with_webidl_cx`] using the provided [`VmJsWebIdlCx`] conversion context.
+//! Note that callers still need to ensure any input `vm-js` handles passed into WebIDL algorithms
+//! are rooted for the duration of the conversion (e.g. via [`VmJsRuntime::with_webidl_cx_rooted`]).
 //!
 //! Note: core WebIDL types like [`InterfaceId`], [`WebIdlHooks`], [`WebIdlLimits`], and
 //! [`WebIdlLimits`] are re-exported from `vendor/ecma-rs/webidl` so FastRender does not maintain

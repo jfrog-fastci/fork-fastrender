@@ -204,10 +204,30 @@ impl VmJsRuntime {
   /// handles alive across multiple allocations. Since this legacy runtime does not execute real JS
   /// code (and therefore has no VM stack), callers must use an explicit conversion context that
   /// roots produced/consumed values for the duration of the conversion.
+  ///
+  /// Note: some WebIDL algorithms allocate *before* they first pass the input value back into the
+  /// runtime (for example when fetching well-known symbols). If the caller is holding `vm-js` GC
+  /// handles that are not otherwise reachable from the GC root set, those values must be rooted for
+  /// the duration of the conversion (e.g. via [`VmJsRuntime::with_webidl_cx_rooted`] or the legacy
+  /// [`JsRuntime::with_stack_roots`] helper).
   #[inline]
   pub fn with_webidl_cx<R>(&mut self, f: impl FnOnce(&mut VmJsWebIdlCx<'_>) -> R) -> R {
     let mut cx = VmJsWebIdlCx::new(self);
     f(&mut cx)
+  }
+
+  /// Runs `f` with a `webidl::JsRuntime` conversion context while treating `roots` as stack GC roots.
+  ///
+  /// This is a convenience wrapper around [`JsRuntime::with_stack_roots`] and
+  /// [`VmJsRuntime::with_webidl_cx`]. It is typically what host code wants when calling into the
+  /// `webidl` crate with handles that are not otherwise reachable from the VM root set.
+  #[inline]
+  pub fn with_webidl_cx_rooted<R>(
+    &mut self,
+    roots: &[Value],
+    f: impl FnOnce(&mut VmJsWebIdlCx<'_>) -> R,
+  ) -> Result<R, VmError> {
+    <Self as JsRuntime>::with_stack_roots(self, roots, |rt| Ok(rt.with_webidl_cx(f)))
   }
 
   pub fn heap(&self) -> &Heap {
