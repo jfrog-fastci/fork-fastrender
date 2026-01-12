@@ -3152,6 +3152,7 @@ impl App {
       tab_id: new_tab_id,
       reason: RepaintReason::Explicit,
     });
+    self.window.request_redraw();
 
     true
   }

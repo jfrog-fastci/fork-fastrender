@@ -299,12 +299,28 @@ impl BookmarkStore {
     new_url: String,
     new_parent: Option<BookmarkId>,
   ) -> Result<(), BookmarkError> {
-    let old_parent = self
-      .nodes
-      .get(&id)
-      .map(BookmarkNode::parent)
-      .ok_or(BookmarkError::NotFound(id))?;
+    let old_parent = match self.nodes.get(&id) {
+      Some(BookmarkNode::Bookmark(entry)) => entry.parent,
+      Some(BookmarkNode::Folder(_)) => {
+        return Err(BookmarkError::InvalidStore(
+          "update: id is a folder".to_string(),
+        ))
+      }
+      None => return Err(BookmarkError::NotFound(id)),
+    };
 
+    let new_url = new_url.trim().to_string();
+    if new_url.is_empty() {
+      return Err(BookmarkError::InvalidStore(
+        "bookmark URL is empty".to_string(),
+      ));
+    }
+    validate_user_navigation_url_scheme(&new_url).map_err(BookmarkError::InvalidStore)?;
+
+    let new_title = normalize_optional_string(new_title);
+
+    // Perform the parent move after URL validation so `update` is "all or nothing" (we don't want a
+    // move to succeed and then URL validation to fail).
     if old_parent != new_parent {
       self.move_node(id, new_parent)?;
     }
@@ -313,13 +329,9 @@ impl BookmarkStore {
     match node {
       BookmarkNode::Bookmark(entry) => {
         entry.url = new_url;
-        entry.title = normalize_optional_string(new_title);
+        entry.title = new_title;
       }
-      BookmarkNode::Folder(_) => {
-        return Err(BookmarkError::InvalidStore(
-          "update: id is a folder".to_string(),
-        ))
-      }
+      BookmarkNode::Folder(_) => unreachable!("validated above"),
     }
     Ok(())
   }
@@ -394,6 +406,157 @@ impl BookmarkStore {
   /// Reorder the root list (bookmarks bar).
   pub fn reorder(&mut self, ids_in_new_order: &[BookmarkId]) -> Result<(), BookmarkError> {
     self.reorder_root(ids_in_new_order)
+  }
+
+  /// Return the human-facing folder path (a list of folder titles) for `folder_id`.
+  ///
+  /// The returned vector is ordered from root → leaf, and includes the folder itself.
+  pub fn folder_path_titles(&self, folder_id: BookmarkId) -> Result<Vec<String>, BookmarkError> {
+    let mut out: Vec<String> = Vec::new();
+    let mut cur = Some(folder_id);
+    for _ in 0..=self.nodes.len() {
+      let Some(id) = cur else {
+        break;
+      };
+
+      let Some(node) = self.nodes.get(&id) else {
+        return Err(BookmarkError::NotFound(id));
+      };
+      let BookmarkNode::Folder(folder) = node else {
+        return Err(BookmarkError::InvalidStore(format!(
+          "expected folder id {id:?}, got bookmark node"
+        )));
+      };
+      out.push(folder.title.clone());
+      cur = folder.parent;
+    }
+
+    if cur.is_some() {
+      return Err(BookmarkError::InvalidStore(
+        "cycle detected in bookmark folder ancestry".to_string(),
+      ));
+    }
+
+    out.reverse();
+    Ok(out)
+  }
+
+  /// Compute the folder path for a node's parent folder (`[]` for the root).
+  pub fn folder_path_titles_for_parent(
+    &self,
+    parent: Option<BookmarkId>,
+  ) -> Result<Vec<String>, BookmarkError> {
+    match parent {
+      Some(id) => self.folder_path_titles(id),
+      None => Ok(Vec::new()),
+    }
+  }
+
+  /// Enumerate all folders in a deterministic depth-first traversal order.
+  ///
+  /// The resulting list is suitable for UI dropdowns:
+  /// - ordering follows `roots` / `children` ordering
+  /// - each entry includes its full display path (root → leaf)
+  pub fn folders_in_display_order(&self) -> Vec<(BookmarkId, Vec<String>)> {
+    fn walk(
+      store: &BookmarkStore,
+      folder_id: BookmarkId,
+      path: &mut Vec<String>,
+      out: &mut Vec<(BookmarkId, Vec<String>)>,
+    ) {
+      let Some(node) = store.nodes.get(&folder_id) else {
+        return;
+      };
+      let BookmarkNode::Folder(folder) = node else {
+        return;
+      };
+
+      path.push(folder.title.clone());
+      out.push((folder_id, path.clone()));
+
+      for child in &folder.children {
+        if matches!(store.nodes.get(child), Some(BookmarkNode::Folder(_))) {
+          walk(store, *child, path, out);
+        }
+      }
+
+      path.pop();
+    }
+
+    let mut out = Vec::new();
+    for id in &self.roots {
+      if matches!(self.nodes.get(id), Some(BookmarkNode::Folder(_))) {
+        let mut path = Vec::new();
+        walk(self, *id, &mut path, &mut out);
+      }
+    }
+    out
+  }
+
+  /// Alias for [`Self::folders_in_display_order`].
+  pub fn folders(&self) -> Vec<(BookmarkId, Vec<String>)> {
+    self.folders_in_display_order()
+  }
+
+  /// Resolve a folder by its display path (root → leaf folder titles).
+  ///
+  /// If multiple folders share the same path (possible in a corrupted store), the first match in
+  /// display order is returned.
+  pub fn folder_id_by_path_titles(&self, folder_path_titles: &[String]) -> Option<BookmarkId> {
+    if folder_path_titles.is_empty() {
+      return None;
+    }
+    for (id, path) in self.folders_in_display_order() {
+      if path == folder_path_titles {
+        return Some(id);
+      }
+    }
+    None
+  }
+
+  /// Move all bookmarks matching `url` into the folder at `folder_path_titles`.
+  ///
+  /// This is primarily useful for importers that describe folder targets by name/path rather than
+  /// stable IDs.
+  ///
+  /// Returns the number of bookmarks moved.
+  pub fn move_to_folder(
+    &mut self,
+    url: &str,
+    folder_path_titles: &[String],
+  ) -> Result<usize, BookmarkError> {
+    let url = url.trim();
+    if url.is_empty() {
+      return Ok(0);
+    }
+
+    let new_parent = if folder_path_titles.is_empty() {
+      None
+    } else {
+      Some(self.folder_id_by_path_titles(folder_path_titles).ok_or_else(|| {
+        BookmarkError::InvalidStore(format!(
+          "folder path not found: {}",
+          folder_path_titles.join("/")
+        ))
+      })?)
+    };
+
+    let ids: Vec<BookmarkId> = self
+      .nodes
+      .iter()
+      .filter_map(|(&id, node)| match node {
+        BookmarkNode::Bookmark(entry) if entry.url == url => Some(id),
+        _ => None,
+      })
+      .collect();
+
+    let mut moved = 0usize;
+    for id in ids {
+      self.move_node(id, new_parent)?;
+      moved += 1;
+    }
+
+    Ok(moved)
   }
 
   pub fn from_json_str_migrating(
@@ -1140,6 +1303,120 @@ mod tests {
   }
 
   #[test]
+  fn update_can_change_title_url_and_parent() {
+    let mut store = BookmarkStore::default();
+    let folder_a = store.create_folder("A".to_string(), None).unwrap();
+    let folder_b = store.create_folder("B".to_string(), None).unwrap();
+    let bookmark = store
+      .add(
+        "https://example.com/".to_string(),
+        Some("Old".to_string()),
+        Some(folder_a),
+      )
+      .unwrap();
+
+    store
+      .update(
+        bookmark,
+        Some("New title".to_string()),
+        "https://example.com/new".to_string(),
+        Some(folder_b),
+      )
+      .unwrap();
+
+    let BookmarkNode::Bookmark(entry) = store.nodes.get(&bookmark).unwrap() else {
+      panic!("expected bookmark");
+    };
+    assert_eq!(entry.url, "https://example.com/new");
+    assert_eq!(entry.title.as_deref(), Some("New title"));
+    assert_eq!(entry.parent, Some(folder_b));
+
+    let BookmarkNode::Folder(a) = store.nodes.get(&folder_a).unwrap() else {
+      panic!("expected folder");
+    };
+    assert!(
+      !a.children.contains(&bookmark),
+      "expected bookmark to be detached from old parent"
+    );
+    let BookmarkNode::Folder(b) = store.nodes.get(&folder_b).unwrap() else {
+      panic!("expected folder");
+    };
+    assert!(
+      b.children.contains(&bookmark),
+      "expected bookmark to be attached to new parent"
+    );
+  }
+
+  #[test]
+  fn folder_paths_are_deterministic() {
+    let mut store = BookmarkStore::default();
+    let work = store.create_folder("Work".to_string(), None).unwrap();
+    let project = store
+      .create_folder("Project".to_string(), Some(work))
+      .unwrap();
+    let _bookmark = store
+      .add(
+        "https://example.com/".to_string(),
+        Some("Example".to_string()),
+        Some(project),
+      )
+      .unwrap();
+
+    assert_eq!(
+      store.folder_path_titles(project).unwrap(),
+      vec!["Work".to_string(), "Project".to_string()]
+    );
+    let folders = store.folders();
+    assert_eq!(
+      folders,
+      vec![
+        (work, vec!["Work".to_string()]),
+        (project, vec!["Work".to_string(), "Project".to_string()])
+      ]
+    );
+
+    assert_eq!(
+      store.folder_id_by_path_titles(&vec!["Work".to_string(), "Project".to_string()]),
+      Some(project)
+    );
+
+    // Convenience wrapper for importing/bookmarks-by-url workflows.
+    let moved = store
+      .add(
+        "https://move.example/".to_string(),
+        Some("Move".to_string()),
+        None,
+      )
+      .unwrap();
+    assert_eq!(
+      store.move_to_folder("https://move.example/", &vec!["Work".to_string()]),
+      Ok(1)
+    );
+    assert_eq!(
+      store.nodes.get(&moved).and_then(BookmarkNode::parent),
+      Some(work)
+    );
+  }
+
+  #[test]
+  fn json_export_is_stable_after_roundtrip() {
+    let mut store = BookmarkStore::default();
+    let folder = store.create_folder("Folder".to_string(), None).unwrap();
+    store
+      .add(
+        "https://example.com/".to_string(),
+        Some("Example".to_string()),
+        Some(folder),
+      )
+      .unwrap();
+
+    let json_a = serde_json::to_string_pretty(&store).unwrap();
+    let decoded: BookmarkStore = serde_json::from_str(&json_a).unwrap();
+    let json_b = serde_json::to_string_pretty(&decoded).unwrap();
+    assert_eq!(json_a, json_b);
+  }
+
+  #[test]
   fn migrate_from_legacy_urls_json() {
     let legacy = r#"{"urls":["https://a.example/","https://b.example/"]}"#;
     let (store, migration) = BookmarkStore::from_json_str_migrating(legacy).unwrap();
@@ -1238,5 +1515,41 @@ mod tests {
     let mut store = BookmarkStore::default();
     assert!(store.add("javascript:alert(1)".to_string(), None, None).is_err());
     assert!(!store.contains_url("javascript:alert(1)"));
+  }
+
+  #[test]
+  fn update_rejects_invalid_url_scheme_and_is_atomic() {
+    let mut store = BookmarkStore::default();
+    let folder = store.create_folder("Folder".to_string(), None).unwrap();
+    let bookmark = store
+      .add("https://example.com/".to_string(), Some("Example".to_string()), None)
+      .unwrap();
+
+    assert!(store
+      .update(
+        bookmark,
+        Some("Should not apply".to_string()),
+        "javascript:alert(1)".to_string(),
+        Some(folder),
+      )
+      .is_err());
+
+    // URL + title should be unchanged.
+    let BookmarkNode::Bookmark(entry) = store.nodes.get(&bookmark).unwrap() else {
+      panic!("expected bookmark");
+    };
+    assert_eq!(entry.url, "https://example.com/");
+    assert_eq!(entry.title.as_deref(), Some("Example"));
+
+    // Parent move should not have applied either.
+    assert_eq!(entry.parent, None);
+    assert!(store.roots.contains(&bookmark));
+    let BookmarkNode::Folder(folder_node) = store.nodes.get(&folder).unwrap() else {
+      panic!("expected folder");
+    };
+    assert!(
+      !folder_node.children.contains(&bookmark),
+      "bookmark should not have been moved when update failed"
+    );
   }
 }

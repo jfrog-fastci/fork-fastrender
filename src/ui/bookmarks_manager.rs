@@ -6,6 +6,7 @@
 //! (which keeps page hit-testing/pointer forwarding simple).
 
 use std::collections::HashMap;
+use std::path::Path;
 
 use super::{icon_button, BookmarkId, BookmarkNode, BookmarkStore, BrowserIcon};
 
@@ -19,6 +20,8 @@ pub enum BookmarksManagerAction {
 pub struct BookmarksManagerState {
   pub search: String,
   pub import_json: String,
+  pub import_path: String,
+  pub export_path: String,
   pub export_json: Option<String>,
   pub message: Option<String>,
   pub error: Option<String>,
@@ -144,6 +147,7 @@ pub fn bookmarks_manager_side_panel(
         ui.add_space(4.0);
         let mut create_clicked = false;
         let mut cancel_clicked = false;
+
         ui.group(|ui| {
           ui.label(egui::RichText::new("Create folder").strong());
           ui.horizontal(|ui| {
@@ -207,6 +211,13 @@ pub fn bookmarks_manager_side_panel(
       // Import / export
       // -----------------------------------------------------------------------
       ui.collapsing("Import / Export (JSON)", |ui| {
+        let profile_path = crate::ui::bookmarks_path();
+        ui.label(format!(
+          "Profile bookmarks file: {}",
+          profile_path.display()
+        ));
+        ui.add_space(4.0);
+
         ui.horizontal(|ui| {
           if ui.button("Export (copy to clipboard)").clicked() {
             match serde_json::to_string_pretty(store) {
@@ -228,6 +239,39 @@ pub fn bookmarks_manager_side_panel(
           }
         });
 
+        ui.horizontal(|ui| {
+          ui.label("Export path:");
+          let resp = ui.add(
+            egui::TextEdit::singleline(&mut state.export_path)
+              .hint_text(profile_path.display().to_string())
+              .desired_width(f32::INFINITY),
+          );
+          if resp.has_focus() || resp.clicked() {
+            out.unfocus_page = true;
+          }
+
+          if ui.button("Use profile path").clicked() {
+            state.export_path = profile_path.display().to_string();
+          }
+
+          if ui.button("Export file").clicked() {
+            let raw = state.export_path.trim();
+            if raw.is_empty() {
+              state.error = Some("Export path is empty.".to_string());
+            } else {
+              match crate::ui::save_bookmarks_atomic(Path::new(raw), store) {
+                Ok(()) => {
+                  state.error = None;
+                  state.message = Some(format!("Exported bookmarks to {}.", raw));
+                }
+                Err(err) => {
+                  state.error = Some(format!("Failed to export bookmarks: {err}"));
+                }
+              }
+            }
+          }
+        });
+
         if let Some(json) = state.export_json.as_mut() {
           let resp = ui.add(
             egui::TextEdit::multiline(json)
@@ -243,6 +287,50 @@ pub fn bookmarks_manager_side_panel(
 
         ui.add_space(8.0);
         ui.label("Import (replaces all bookmarks):");
+
+        ui.horizontal(|ui| {
+          ui.label("Import path:");
+          let resp = ui.add(
+            egui::TextEdit::singleline(&mut state.import_path)
+              .hint_text(profile_path.display().to_string())
+              .desired_width(f32::INFINITY),
+          );
+          if resp.has_focus() || resp.clicked() {
+            out.unfocus_page = true;
+          }
+
+          if ui.button("Use profile path").clicked() {
+            state.import_path = profile_path.display().to_string();
+          }
+
+          if ui.button("Import file").clicked() {
+            let raw = state.import_path.trim();
+            if raw.is_empty() {
+              state.error = Some("Import path is empty.".to_string());
+            } else {
+              match std::fs::read_to_string(raw) {
+                Ok(json) => match BookmarkStore::from_json_str_migrating(&json) {
+                  Ok((imported, migration)) => {
+                    *store = imported;
+                    out.changed = true;
+                    out.request_flush = true;
+                    state.error = None;
+                    state.message = Some(format!("Imported bookmarks from file ({migration:?})."));
+                    state.import_json.clear();
+                    state.clear_transient();
+                  }
+                  Err(err) => {
+                    state.error = Some(format!("Failed to import bookmarks: {err:?}"));
+                  }
+                },
+                Err(err) => {
+                  state.error = Some(format!("Failed to read {raw:?}: {err}"));
+                }
+              }
+            }
+          }
+        });
+
         let resp = ui.add(
           egui::TextEdit::multiline(&mut state.import_json)
             .code_editor()
@@ -493,27 +581,9 @@ fn folder_options(store: &BookmarkStore) -> Vec<(Option<BookmarkId>, String)> {
   let mut out = Vec::new();
   out.push((None, "Root".to_string()));
 
-  fn visit(
-    store: &BookmarkStore,
-    ids: &[BookmarkId],
-    prefix: &str,
-    out: &mut Vec<(Option<BookmarkId>, String)>,
-  ) {
-    for id in ids {
-      let Some(BookmarkNode::Folder(folder)) = store.nodes.get(id) else {
-        continue;
-      };
-      let path = if prefix.is_empty() {
-        folder.title.clone()
-      } else {
-        format!("{prefix}/{}", folder.title)
-      };
-      out.push((Some(folder.id), path.clone()));
-      visit(store, &folder.children, &path, out);
-    }
+  for (id, path) in store.folders_in_display_order() {
+    out.push((Some(id), path.join("/")));
   }
-
-  visit(store, &store.roots, "", &mut out);
   out
 }
 
