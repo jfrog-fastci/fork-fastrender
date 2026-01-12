@@ -135,24 +135,16 @@ fn cargo_lock_contains_only_one_webidl_stack() {
   let webidl_js_runtime_count = lockfile.matches("name = \"webidl-js-runtime\"").count();
   let webidl_runtime_count = lockfile.matches("name = \"webidl-runtime\"").count();
 
-  assert!(
-    webidl_js_runtime_count == 0 || webidl_runtime_count == 0,
-    "Cargo.lock must not contain both `webidl-js-runtime` and `webidl-runtime` packages.\n\
-     Found webidl-js-runtime={webidl_js_runtime_count}, webidl-runtime={webidl_runtime_count}"
+  assert_eq!(
+    webidl_runtime_count, 0,
+    "Cargo.lock must not contain the legacy `webidl-runtime` package name.\n\
+     The canonical package name is now `webidl-js-runtime`.\n\
+     Found webidl-runtime={webidl_runtime_count}"
   );
-
-  if webidl_js_runtime_count > 0 {
-    assert_eq!(
-      webidl_js_runtime_count, 1,
-      "expected at most one `webidl-js-runtime` package in Cargo.lock, found {webidl_js_runtime_count}"
-    );
-  }
-  if webidl_runtime_count > 0 {
-    assert_eq!(
-      webidl_runtime_count, 1,
-      "expected at most one `webidl-runtime` package in Cargo.lock, found {webidl_runtime_count}"
-    );
-  }
+  assert_eq!(
+    webidl_js_runtime_count, 1,
+    "expected exactly one `webidl-js-runtime` package in Cargo.lock, found {webidl_js_runtime_count}"
+  );
 }
 
 fn dep_path(dep: &toml::Value) -> Option<&str> {
