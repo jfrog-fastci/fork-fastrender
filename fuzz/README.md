@@ -24,6 +24,11 @@ bash scripts/cargo_agent.sh install cargo-fuzz
   samples them against a styled DOM tree.
 - `color_fonts`: Builds fonts from arbitrary bytes and exercises color glyph
   rendering (bitmaps, SVG-in-OT, COLR).
+- `text_shaping`: Exercises the text shaping pipeline (bidi analysis, script
+  itemization, font fallback, HarfBuzz shaping) with randomized font-related
+  `ComputedStyle` inputs. Uses bundled fonts only for determinism.
+- `text_line_break`: Exercises Unicode line breaking (UAX#14), hyphenation, and
+  justification routines on bounded UTF-8 text.
 - `render_pipeline`: Runs the full HTML+CSS → pixels pipeline (DOM parse →
   cascade → box tree → layout → paint) under strict timeouts with network
   fetching disabled.
@@ -47,6 +52,8 @@ Quick smoke runs:
 bash scripts/cargo_agent.sh fuzz run css_parser -- -runs=1000
 bash scripts/cargo_agent.sh fuzz run selectors fuzz/corpus/selectors tests/fuzz_corpus -- -max_total_time=10
 bash scripts/cargo_agent.sh fuzz run render_pipeline fuzz/corpus/render_pipeline tests/fuzz_corpus -- -runs=1000
+bash scripts/cargo_agent.sh fuzz run text_shaping -- -runs=1000
+bash scripts/cargo_agent.sh fuzz run text_line_break -- -runs=1000
 bash scripts/cargo_agent.sh fuzz run accessibility_tree fuzz/corpus/accessibility_tree tests/fuzz_corpus -- -runs=1000
 bash scripts/cargo_agent.sh fuzz run html_scanners -- -runs=1000
 bash scripts/cargo_agent.sh fuzz run image_decoding -- -runs=1000

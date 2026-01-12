@@ -13,6 +13,7 @@ fastrender = { path = ".." }
 libfuzzer-sys = "0.4"
 rustybuzz = "0.20"
 ttf-parser = "0.25"
+unicode-bidi = "0.3"
 
 [workspace]
 members = ["."]
@@ -98,6 +99,20 @@ bench = false
 [[bin]]
 name = "svg_glyph_sanitizer"
 path = "fuzz_targets/svg_glyph_sanitizer.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "text_shaping"
+path = "fuzz_targets/text_shaping.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "text_line_break"
+path = "fuzz_targets/text_line_break.rs"
 test = false
 doc = false
 bench = false
