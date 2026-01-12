@@ -102,7 +102,7 @@ pub fn validate_native_strict_body(
   fn expr_unwrap_comma_and_alias(
     body: &Body,
     mut expr_id: hir_js::ExprId,
-    aliases: &HashMap<hir_js::NameId, hir_js::ExprId>,
+    aliases: &HashMap<hir_js::ExprId, hir_js::ExprId>,
   ) -> hir_js::ExprId {
     // Keep this intentionally conservative: follow only simple `const x = <expr>` aliases recorded
     // in `aliases`. This is enough to prevent common "store builtins / prototype objects in locals"
@@ -122,7 +122,6 @@ pub fn validate_native_strict_body(
           ExprKind::TypeAssertion { expr: inner, .. }
           | ExprKind::Instantiation { expr: inner, .. }
           | ExprKind::NonNull { expr: inner }
-          | ExprKind::Instantiation { expr: inner, .. }
           | ExprKind::Satisfies { expr: inner, .. } => {
             expr_id = *inner;
           }
@@ -133,16 +132,16 @@ pub fn validate_native_strict_body(
       let Some(expr) = body.exprs.get(expr_id.0 as usize) else {
         return expr_id;
       };
-      let ExprKind::Ident(name) = &expr.kind else {
+      let ExprKind::Ident(_) = &expr.kind else {
         return expr_id;
       };
-      if visited.contains(name) {
+      if visited.contains(&expr_id) {
         return expr_id;
       }
-      let Some(next) = aliases.get(name).copied() else {
+      let Some(next) = aliases.get(&expr_id).copied() else {
         return expr_id;
       };
-      visited.push(*name);
+      visited.push(expr_id);
       expr_id = next;
     }
   }
@@ -212,7 +211,7 @@ pub fn validate_native_strict_body(
   fn expr_is_builtin_member(
     body: &Body,
     expr_id: hir_js::ExprId,
-    aliases: &HashMap<hir_js::NameId, hir_js::ExprId>,
+    aliases: &HashMap<hir_js::ExprId, hir_js::ExprId>,
     global_this_name: hir_js::NameId,
     base_name: hir_js::NameId,
     base_str: &str,
@@ -242,7 +241,7 @@ pub fn validate_native_strict_body(
   fn expr_is_function_prototype_member(
     body: &Body,
     expr_id: hir_js::ExprId,
-    aliases: &HashMap<hir_js::NameId, hir_js::ExprId>,
+    aliases: &HashMap<hir_js::ExprId, hir_js::ExprId>,
     global_this_name: hir_js::NameId,
     function_name: hir_js::NameId,
     prototype_name: hir_js::NameId,
@@ -273,7 +272,7 @@ pub fn validate_native_strict_body(
   fn expr_is_global_this(
     body: &Body,
     expr_id: hir_js::ExprId,
-    aliases: &HashMap<hir_js::NameId, hir_js::ExprId>,
+    aliases: &HashMap<hir_js::ExprId, hir_js::ExprId>,
     global_this_name: hir_js::NameId,
   ) -> bool {
     let expr_id = expr_unwrap_comma_and_alias(body, expr_id, aliases);
@@ -297,7 +296,7 @@ pub fn validate_native_strict_body(
   fn expr_is_ident_or_global_this_member(
     body: &Body,
     expr_id: hir_js::ExprId,
-    aliases: &HashMap<hir_js::NameId, hir_js::ExprId>,
+    aliases: &HashMap<hir_js::ExprId, hir_js::ExprId>,
     global_this_name: hir_js::NameId,
     target_name: hir_js::NameId,
     target_str: &str,
@@ -324,7 +323,7 @@ pub fn validate_native_strict_body(
     mut id: hir_js::ExprId,
     prototype_name: hir_js::NameId,
     proto_name: hir_js::NameId,
-    aliases: &HashMap<hir_js::NameId, hir_js::ExprId>,
+    aliases: &HashMap<hir_js::ExprId, hir_js::ExprId>,
   ) -> bool {
     loop {
       id = expr_unwrap_comma_and_alias(body, id, aliases);
@@ -355,7 +354,7 @@ pub fn validate_native_strict_body(
     pat: hir_js::PatId,
     prototype_name: hir_js::NameId,
     proto_name: hir_js::NameId,
-    aliases: &HashMap<hir_js::NameId, hir_js::ExprId>,
+    aliases: &HashMap<hir_js::ExprId, hir_js::ExprId>,
   ) -> bool {
     let Some(pat) = body.pats.get(pat.0 as usize) else {
       return false;
@@ -489,7 +488,7 @@ pub fn validate_native_strict_body(
   fn expr_is_function_constructor_via_constructor_access(
     body: &Body,
     expr_id: hir_js::ExprId,
-    aliases: &HashMap<hir_js::NameId, hir_js::ExprId>,
+    aliases: &HashMap<hir_js::ExprId, hir_js::ExprId>,
     result: &BodyCheckResult,
     store: &TypeStore,
     expander: Option<&dyn RelateTypeExpander>,
@@ -696,44 +695,671 @@ pub fn validate_native_strict_body(
     store.intern_type(TypeKind::Object(obj))
   };
 
-  // Track simple `const` aliases (`const x = expr;`) so `native_strict` bans cannot be bypassed via
-  // indirection (e.g. `const dp = Object.defineProperty; dp(...)`, `const p = Foo.prototype; p.x++`).
+  // Track `const` aliases and destructured builtin aliases so `native_strict` bans cannot be
+  // bypassed via indirection.
   //
-  // This is name-based (not scope-aware), which matches how this validator already treats global
-  // builtins by name. The rules are intentionally conservative: we only record aliases that are
-  // syntactically obvious and immutable (`const`).
-  let mut const_aliases: HashMap<hir_js::NameId, hir_js::ExprId> = HashMap::new();
-  for stmt in &body.stmts {
-    let StmtKind::Var(var) = &stmt.kind else {
-      continue;
-    };
-    if var.kind != hir_js::VarDeclKind::Const {
-      continue;
+  // - Simple aliases: `const x = expr;` (e.g. `const dp = Object.defineProperty; dp(...)`).
+  // - Destructured aliases: `const { eval: e } = globalThis; e("...")`.
+  //
+  // Both are tracked in a scope-aware way by recording alias targets per *identifier expression*,
+  // avoiding leaks across shadowing blocks.
+  #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+  enum DestructuredAliasKind {
+    Eval,
+    Function,
+    Proxy,
+    ReflectApply,
+    ReflectConstruct,
+    ObjectSetPrototypeOf,
+    ReflectSetPrototypeOf,
+    ObjectDefineProperty,
+    ReflectDefineProperty,
+    ObjectDefineProperties,
+    ObjectAssign,
+  }
+
+  #[derive(Clone, Copy, Debug)]
+  enum BindingKind {
+    ConstExpr(hir_js::ExprId),
+    ConstDestructured(DestructuredAliasKind),
+    Shadow,
+  }
+
+  struct AliasBuilder<'a> {
+    body: &'a Body,
+    scopes: Vec<HashMap<hir_js::NameId, BindingKind>>,
+    const_aliases: HashMap<hir_js::ExprId, hir_js::ExprId>,
+    destructured_aliases: HashMap<hir_js::ExprId, DestructuredAliasKind>,
+
+    eval_name: hir_js::NameId,
+    global_this_name: hir_js::NameId,
+    object_name: hir_js::NameId,
+    reflect_name: hir_js::NameId,
+    function_name: hir_js::NameId,
+    proxy_name: hir_js::NameId,
+    apply_name: hir_js::NameId,
+    construct_name: hir_js::NameId,
+    set_prototype_of_name: hir_js::NameId,
+    define_property_name: hir_js::NameId,
+    define_properties_name: hir_js::NameId,
+    assign_name: hir_js::NameId,
+  }
+
+  impl<'a> AliasBuilder<'a> {
+    fn new(
+      body: &'a Body,
+      eval_name: hir_js::NameId,
+      global_this_name: hir_js::NameId,
+      object_name: hir_js::NameId,
+      reflect_name: hir_js::NameId,
+      function_name: hir_js::NameId,
+      proxy_name: hir_js::NameId,
+      apply_name: hir_js::NameId,
+      construct_name: hir_js::NameId,
+      set_prototype_of_name: hir_js::NameId,
+      define_property_name: hir_js::NameId,
+      define_properties_name: hir_js::NameId,
+      assign_name: hir_js::NameId,
+    ) -> Self {
+      Self {
+        body,
+        scopes: vec![HashMap::new()],
+        const_aliases: HashMap::new(),
+        destructured_aliases: HashMap::new(),
+        eval_name,
+        global_this_name,
+        object_name,
+        reflect_name,
+        function_name,
+        proxy_name,
+        apply_name,
+        construct_name,
+        set_prototype_of_name,
+        define_property_name,
+        define_properties_name,
+        assign_name,
+      }
     }
-    for decl in &var.declarators {
-      let Some(init) = decl.init else {
-        continue;
-      };
-      let Some(pat) = body.pats.get(decl.pat.0 as usize) else {
-        continue;
-      };
-      match &pat.kind {
-        PatKind::Ident(name) => {
-          const_aliases.insert(*name, init);
+
+    fn current_scope_mut(&mut self) -> &mut HashMap<hir_js::NameId, BindingKind> {
+      self
+        .scopes
+        .last_mut()
+        .expect("AliasBuilder scope stack should never be empty")
+    }
+
+    fn lookup(&self, name: hir_js::NameId) -> Option<BindingKind> {
+      self
+        .scopes
+        .iter()
+        .rev()
+        .find_map(|scope| scope.get(&name).copied())
+    }
+
+    fn record_ident_use(&mut self, expr_id: hir_js::ExprId, name: hir_js::NameId) {
+      match self.lookup(name) {
+        Some(BindingKind::ConstExpr(target)) => {
+          self.const_aliases.insert(expr_id, target);
         }
+        Some(BindingKind::ConstDestructured(kind)) => {
+          self.destructured_aliases.insert(expr_id, kind);
+        }
+        Some(BindingKind::Shadow) | None => {}
+      }
+    }
+
+    fn simple_binding_name(&self, pat: hir_js::PatId) -> Option<hir_js::NameId> {
+      let pat = self.body.pats.get(pat.0 as usize)?;
+      match &pat.kind {
+        PatKind::Ident(name) => Some(*name),
         PatKind::Assign { target, .. } => {
-          let Some(target) = body.pats.get(target.0 as usize) else {
-            continue;
-          };
-          if let PatKind::Ident(name) = &target.kind {
-            const_aliases.insert(*name, init);
+          let target = self.body.pats.get(target.0 as usize)?;
+          match &target.kind {
+            PatKind::Ident(name) => Some(*name),
+            _ => None,
           }
         }
-        _ => {}
+        _ => None,
+      }
+    }
+
+    fn collect_bound_names(&self, pat: hir_js::PatId, out: &mut Vec<hir_js::NameId>) {
+      let Some(pat) = self.body.pats.get(pat.0 as usize) else {
+        return;
+      };
+      match &pat.kind {
+        PatKind::Ident(name) => out.push(*name),
+        PatKind::Array(arr) => {
+          for elem in &arr.elements {
+            let Some(elem) = elem else {
+              continue;
+            };
+            self.collect_bound_names(elem.pat, out);
+          }
+          if let Some(rest) = arr.rest {
+            self.collect_bound_names(rest, out);
+          }
+        }
+        PatKind::Object(obj) => {
+          for prop in &obj.props {
+            self.collect_bound_names(prop.value, out);
+          }
+          if let Some(rest) = obj.rest {
+            self.collect_bound_names(rest, out);
+          }
+        }
+        PatKind::Rest(inner) => self.collect_bound_names(**inner, out),
+        PatKind::Assign { target, .. } => self.collect_bound_names(*target, out),
+        PatKind::AssignTarget(_) => {}
+      }
+    }
+
+    fn bind_shadow(&mut self, pat: hir_js::PatId) {
+      let mut names = Vec::new();
+      self.collect_bound_names(pat, &mut names);
+      for name in names {
+        self.current_scope_mut().insert(name, BindingKind::Shadow);
+      }
+    }
+
+    fn bind_const_simple_alias(&mut self, pat: hir_js::PatId, init: hir_js::ExprId) -> bool {
+      let Some(name) = self.simple_binding_name(pat) else {
+        return false;
+      };
+      self
+        .current_scope_mut()
+        .insert(name, BindingKind::ConstExpr(init));
+      true
+    }
+
+    fn object_key_matches(&self, key: &ObjectKey, name: hir_js::NameId, value: &str) -> bool {
+      object_key_is_ident(key, name)
+        || object_key_is_string(key, value)
+        || object_key_is_literal_string(self.body, key, value)
+    }
+
+    fn bind_const_object_pat(&mut self, obj: &hir_js::ObjectPat, init: hir_js::ExprId) {
+      let init_is_global_this =
+        expr_is_global_this(self.body, init, &self.const_aliases, self.global_this_name);
+      let init_is_object = expr_is_ident_or_global_this_member(
+        self.body,
+        init,
+        &self.const_aliases,
+        self.global_this_name,
+        self.object_name,
+        "Object",
+      );
+      let init_is_reflect = expr_is_ident_or_global_this_member(
+        self.body,
+        init,
+        &self.const_aliases,
+        self.global_this_name,
+        self.reflect_name,
+        "Reflect",
+      );
+
+      for prop in &obj.props {
+        let mut kind = None;
+        if init_is_global_this {
+          if self.object_key_matches(&prop.key, self.eval_name, "eval") {
+            kind = Some(DestructuredAliasKind::Eval);
+          } else if self.object_key_matches(&prop.key, self.function_name, "Function") {
+            kind = Some(DestructuredAliasKind::Function);
+          } else if self.object_key_matches(&prop.key, self.proxy_name, "Proxy") {
+            kind = Some(DestructuredAliasKind::Proxy);
+          }
+        }
+        if init_is_object {
+          if self.object_key_matches(&prop.key, self.set_prototype_of_name, "setPrototypeOf") {
+            kind = Some(DestructuredAliasKind::ObjectSetPrototypeOf);
+          } else if self.object_key_matches(&prop.key, self.define_property_name, "defineProperty") {
+            kind = Some(DestructuredAliasKind::ObjectDefineProperty);
+          } else if self.object_key_matches(&prop.key, self.define_properties_name, "defineProperties") {
+            kind = Some(DestructuredAliasKind::ObjectDefineProperties);
+          } else if self.object_key_matches(&prop.key, self.assign_name, "assign") {
+            kind = Some(DestructuredAliasKind::ObjectAssign);
+          }
+        }
+        if init_is_reflect {
+          if self.object_key_matches(&prop.key, self.apply_name, "apply") {
+            kind = Some(DestructuredAliasKind::ReflectApply);
+          } else if self.object_key_matches(&prop.key, self.construct_name, "construct") {
+            kind = Some(DestructuredAliasKind::ReflectConstruct);
+          } else if self.object_key_matches(&prop.key, self.set_prototype_of_name, "setPrototypeOf") {
+            kind = Some(DestructuredAliasKind::ReflectSetPrototypeOf);
+          } else if self.object_key_matches(&prop.key, self.define_property_name, "defineProperty") {
+            kind = Some(DestructuredAliasKind::ReflectDefineProperty);
+          }
+        }
+
+        let Some(target_name) = self.simple_binding_name(prop.value) else {
+          // Still shadow any bindings this property introduces.
+          self.bind_shadow(prop.value);
+          continue;
+        };
+
+        let binding = kind
+          .map(BindingKind::ConstDestructured)
+          .unwrap_or(BindingKind::Shadow);
+        self.current_scope_mut().insert(target_name, binding);
+      }
+
+      if let Some(rest) = obj.rest {
+        self.bind_shadow(rest);
+      }
+    }
+
+    fn bind_var_decl(&mut self, var: &hir_js::VarDecl) {
+      for decl in &var.declarators {
+        if let Some(init) = decl.init {
+          self.visit_expr(init);
+        }
+
+        // Visit destructuring defaults / computed keys.
+        self.visit_pat(decl.pat);
+
+        match var.kind {
+          hir_js::VarDeclKind::Const => {
+            let Some(init) = decl.init else {
+              self.bind_shadow(decl.pat);
+              continue;
+            };
+
+            let Some(pat) = self.body.pats.get(decl.pat.0 as usize) else {
+              continue;
+            };
+
+            match &pat.kind {
+              PatKind::Ident(_) | PatKind::Assign { .. } => {
+                if !self.bind_const_simple_alias(decl.pat, init) {
+                  self.bind_shadow(decl.pat);
+                }
+              }
+              PatKind::Object(obj) => self.bind_const_object_pat(obj, init),
+              _ => self.bind_shadow(decl.pat),
+            }
+          }
+          // `let`/`var`/`using` are mutable; we don't treat them as aliases, but they must still
+          // shadow any outer aliases.
+          _ => self.bind_shadow(decl.pat),
+        }
+      }
+    }
+
+    fn visit_stmt(&mut self, stmt_id: hir_js::StmtId) {
+      let Some(stmt) = self.body.stmts.get(stmt_id.0 as usize) else {
+        return;
+      };
+      match &stmt.kind {
+        StmtKind::Expr(expr) => self.visit_expr(*expr),
+        StmtKind::Decl(_) => {}
+        StmtKind::Return(expr) => {
+          if let Some(expr) = expr {
+            self.visit_expr(*expr);
+          }
+        }
+        StmtKind::Block(stmts) => {
+          self.scopes.push(HashMap::new());
+          for stmt in stmts {
+            self.visit_stmt(*stmt);
+          }
+          self.scopes.pop();
+        }
+        StmtKind::If {
+          test,
+          consequent,
+          alternate,
+        } => {
+          self.visit_expr(*test);
+          self.visit_stmt(*consequent);
+          if let Some(alternate) = alternate {
+            self.visit_stmt(*alternate);
+          }
+        }
+        StmtKind::While { test, body } | StmtKind::DoWhile { test, body } => {
+          self.visit_expr(*test);
+          self.visit_stmt(*body);
+        }
+        StmtKind::For {
+          init,
+          test,
+          update,
+          body,
+        } => {
+          self.scopes.push(HashMap::new());
+          if let Some(init) = init {
+            match init {
+              hir_js::ForInit::Expr(expr) => self.visit_expr(*expr),
+              hir_js::ForInit::Var(var) => self.bind_var_decl(var),
+            }
+          }
+          if let Some(test) = test {
+            self.visit_expr(*test);
+          }
+          if let Some(update) = update {
+            self.visit_expr(*update);
+          }
+          self.visit_stmt(*body);
+          self.scopes.pop();
+        }
+        StmtKind::ForIn {
+          left,
+          right,
+          body,
+          ..
+        } => {
+          self.scopes.push(HashMap::new());
+          match left {
+            hir_js::ForHead::Pat(pat) => self.visit_pat(*pat),
+            hir_js::ForHead::Var(var) => self.bind_var_decl(var),
+          }
+          self.visit_expr(*right);
+          self.visit_stmt(*body);
+          self.scopes.pop();
+        }
+        StmtKind::Switch { discriminant, cases } => {
+          self.scopes.push(HashMap::new());
+          self.visit_expr(*discriminant);
+          for case in cases {
+            if let Some(test) = case.test {
+              self.visit_expr(test);
+            }
+            for stmt in &case.consequent {
+              self.visit_stmt(*stmt);
+            }
+          }
+          self.scopes.pop();
+        }
+        StmtKind::Try {
+          block,
+          catch,
+          finally_block,
+        } => {
+          self.visit_stmt(*block);
+          if let Some(catch) = catch {
+            self.scopes.push(HashMap::new());
+            if let Some(param) = catch.param {
+              self.bind_shadow(param);
+            }
+            self.visit_stmt(catch.body);
+            self.scopes.pop();
+          }
+          if let Some(finally) = finally_block {
+            self.visit_stmt(*finally);
+          }
+        }
+        StmtKind::Throw(expr) => self.visit_expr(*expr),
+        StmtKind::Break(_) | StmtKind::Continue(_) | StmtKind::Debugger | StmtKind::Empty => {}
+        StmtKind::Var(var) => self.bind_var_decl(var),
+        StmtKind::Labeled { body, .. } => self.visit_stmt(*body),
+        StmtKind::With { object, body } => {
+          self.visit_expr(*object);
+          self.visit_stmt(*body);
+        }
+      }
+    }
+
+    fn visit_pat(&mut self, pat_id: hir_js::PatId) {
+      let Some(pat) = self.body.pats.get(pat_id.0 as usize) else {
+        return;
+      };
+      match &pat.kind {
+        PatKind::Ident(_) => {}
+        PatKind::Array(arr) => {
+          for elem in &arr.elements {
+            let Some(elem) = elem else {
+              continue;
+            };
+            self.visit_pat(elem.pat);
+            if let Some(default) = elem.default_value {
+              self.visit_expr(default);
+            }
+          }
+          if let Some(rest) = arr.rest {
+            self.visit_pat(rest);
+          }
+        }
+        PatKind::Object(obj) => {
+          for prop in &obj.props {
+            if let ObjectKey::Computed(expr) = prop.key {
+              self.visit_expr(expr);
+            }
+            self.visit_pat(prop.value);
+            if let Some(default) = prop.default_value {
+              self.visit_expr(default);
+            }
+          }
+          if let Some(rest) = obj.rest {
+            self.visit_pat(rest);
+          }
+        }
+        PatKind::Rest(inner) => self.visit_pat(**inner),
+        PatKind::Assign {
+          target,
+          default_value,
+        } => {
+          self.visit_pat(*target);
+          self.visit_expr(*default_value);
+        }
+        PatKind::AssignTarget(expr) => self.visit_expr(*expr),
+      }
+    }
+
+    fn visit_expr(&mut self, expr_id: hir_js::ExprId) {
+      let Some(expr) = self.body.exprs.get(expr_id.0 as usize) else {
+        return;
+      };
+
+      match &expr.kind {
+        ExprKind::Ident(name) => self.record_ident_use(expr_id, *name),
+        ExprKind::Unary { expr, .. } => self.visit_expr(*expr),
+        ExprKind::Update { expr, .. } => self.visit_expr(*expr),
+        ExprKind::Binary { left, right, .. } => {
+          self.visit_expr(*left);
+          self.visit_expr(*right);
+        }
+        ExprKind::Assignment { target, value, .. } => {
+          self.visit_pat(*target);
+          self.visit_expr(*value);
+        }
+        ExprKind::Call(call) => {
+          self.visit_expr(call.callee);
+          for arg in &call.args {
+            self.visit_expr(arg.expr);
+          }
+        }
+        ExprKind::Member(mem) => {
+          self.visit_expr(mem.object);
+          if let ObjectKey::Computed(expr) = mem.property {
+            self.visit_expr(expr);
+          }
+        }
+        ExprKind::Conditional {
+          test,
+          consequent,
+          alternate,
+        } => {
+          self.visit_expr(*test);
+          self.visit_expr(*consequent);
+          self.visit_expr(*alternate);
+        }
+        ExprKind::Array(arr) => {
+          for elem in &arr.elements {
+            match elem {
+              hir_js::ArrayElement::Expr(expr) | hir_js::ArrayElement::Spread(expr) => {
+                self.visit_expr(*expr)
+              }
+              hir_js::ArrayElement::Empty => {}
+            }
+          }
+        }
+        ExprKind::Object(obj) => {
+          for prop in &obj.properties {
+            match prop {
+              hir_js::ObjectProperty::KeyValue { key, value, .. } => {
+                if let ObjectKey::Computed(expr) = key {
+                  self.visit_expr(*expr);
+                }
+                self.visit_expr(*value);
+              }
+              hir_js::ObjectProperty::Getter { key, .. }
+              | hir_js::ObjectProperty::Setter { key, .. } => {
+                if let ObjectKey::Computed(expr) = key {
+                  self.visit_expr(*expr);
+                }
+              }
+              hir_js::ObjectProperty::Spread(expr) => self.visit_expr(*expr),
+            }
+          }
+        }
+        ExprKind::Template(tpl) => {
+          for span in &tpl.spans {
+            self.visit_expr(span.expr);
+          }
+        }
+        ExprKind::TaggedTemplate { tag, template } => {
+          self.visit_expr(*tag);
+          for span in &template.spans {
+            self.visit_expr(span.expr);
+          }
+        }
+        ExprKind::Await { expr } => self.visit_expr(*expr),
+        ExprKind::Yield { expr, .. } => {
+          if let Some(expr) = expr {
+            self.visit_expr(*expr);
+          }
+        }
+        ExprKind::TypeAssertion { expr, .. }
+        | ExprKind::Instantiation { expr, .. }
+        | ExprKind::NonNull { expr }
+        | ExprKind::Satisfies { expr, .. } => self.visit_expr(*expr),
+        ExprKind::ImportCall {
+          argument,
+          attributes,
+        } => {
+          self.visit_expr(*argument);
+          if let Some(attributes) = attributes {
+            self.visit_expr(*attributes);
+          }
+        }
+        ExprKind::Jsx(jsx) => {
+          for attr in &jsx.attributes {
+            match attr {
+              hir_js::JsxAttr::Named { value, .. } => {
+                if let Some(value) = value {
+                  match value {
+                    hir_js::JsxAttrValue::Expression(expr) => {
+                      if let Some(expr) = expr.expr {
+                        self.visit_expr(expr);
+                      }
+                    }
+                    hir_js::JsxAttrValue::Element(expr) => self.visit_expr(*expr),
+                    hir_js::JsxAttrValue::Text(_) => {}
+                  }
+                }
+              }
+              hir_js::JsxAttr::Spread { expr } => self.visit_expr(*expr),
+            }
+          }
+          for child in &jsx.children {
+            match child {
+              hir_js::JsxChild::Element(expr) => self.visit_expr(*expr),
+              hir_js::JsxChild::Expr(expr) => {
+                if let Some(expr) = expr.expr {
+                  self.visit_expr(expr);
+                }
+              }
+              hir_js::JsxChild::Text(_) => {}
+            }
+          }
+        }
+        ExprKind::Literal(_)
+        | ExprKind::This
+        | ExprKind::Super
+        | ExprKind::Missing
+        | ExprKind::FunctionExpr { .. }
+        | ExprKind::ClassExpr { .. }
+        | ExprKind::ImportMeta
+        | ExprKind::NewTarget => {}
+        #[cfg(feature = "semantic-ops")]
+        ExprKind::ArrayMap { array, callback }
+        | ExprKind::ArrayFilter { array, callback }
+        | ExprKind::ArrayFind { array, callback }
+        | ExprKind::ArrayEvery { array, callback }
+        | ExprKind::ArraySome { array, callback } => {
+          self.visit_expr(*array);
+          self.visit_expr(*callback);
+        }
+        #[cfg(feature = "semantic-ops")]
+        ExprKind::ArrayReduce {
+          array,
+          callback,
+          init,
+        } => {
+          self.visit_expr(*array);
+          self.visit_expr(*callback);
+          if let Some(init) = init {
+            self.visit_expr(*init);
+          }
+        }
+        #[cfg(feature = "semantic-ops")]
+        ExprKind::ArrayChain { array, ops } => {
+          self.visit_expr(*array);
+          for op in ops {
+            match op {
+              hir_js::ArrayChainOp::Map(expr)
+              | hir_js::ArrayChainOp::Filter(expr)
+              | hir_js::ArrayChainOp::Find(expr)
+              | hir_js::ArrayChainOp::Every(expr)
+              | hir_js::ArrayChainOp::Some(expr) => self.visit_expr(*expr),
+              hir_js::ArrayChainOp::Reduce(expr, init) => {
+                self.visit_expr(*expr);
+                if let Some(init) = init {
+                  self.visit_expr(*init);
+                }
+              }
+            }
+          }
+        }
+        #[cfg(feature = "semantic-ops")]
+        ExprKind::PromiseAll { promises } | ExprKind::PromiseRace { promises } => {
+          for promise in promises {
+            self.visit_expr(*promise);
+          }
+        }
+        #[cfg(feature = "semantic-ops")]
+        ExprKind::AwaitExpr { value, .. } => self.visit_expr(*value),
+        #[cfg(feature = "semantic-ops")]
+        ExprKind::KnownApiCall { args, .. } => {
+          for arg in args {
+            self.visit_expr(*arg);
+          }
+        }
       }
     }
   }
 
+  let (const_aliases, destructured_aliases) = {
+    let mut builder = AliasBuilder::new(
+      body,
+      eval_name,
+      global_this_name,
+      object_name,
+      reflect_name,
+      function_name,
+      proxy_name,
+      apply_name,
+      construct_name,
+      set_prototype_of_name,
+      define_property_name,
+      define_properties_name,
+      assign_name,
+    );
+    for stmt in &body.root_stmts {
+      builder.visit_stmt(*stmt);
+    }
+    (builder.const_aliases, builder.destructured_aliases)
+  };
   let mut function_like_cache: HashMap<TypeId, bool> = HashMap::new();
 
   for (idx, expr) in body.exprs.iter().enumerate() {
@@ -752,6 +1378,326 @@ pub fn validate_native_strict_body(
             .copied()
             .or_else(|| body.exprs.get(callee_span_id.0 as usize).map(|expr| expr.span))
             .unwrap_or(callee.span);
+
+          if let Some(alias_kind) = destructured_aliases.get(&callee_check_id).copied() {
+            match alias_kind {
+              DestructuredAliasKind::Eval => {
+                if !call.is_new {
+                  diagnostics.push(codes::NATIVE_STRICT_EVAL.error(
+                    "`eval` is forbidden when `native_strict` is enabled",
+                    Span::new(file, callee_span),
+                  ));
+                }
+              }
+              DestructuredAliasKind::Function => {
+                diagnostics.push(codes::NATIVE_STRICT_NEW_FUNCTION.error(
+                  "`Function` constructor is forbidden when `native_strict` is enabled",
+                  Span::new(file, callee_span),
+                ));
+              }
+              DestructuredAliasKind::Proxy => {
+                if call.is_new {
+                  diagnostics.push(codes::NATIVE_STRICT_PROXY.error(
+                    "`Proxy` is forbidden when `native_strict` is enabled",
+                    Span::new(file, callee_span),
+                  ));
+                }
+              }
+              DestructuredAliasKind::ReflectApply => {
+                // Minimal direct `Reflect.apply(target, thisArg, argsList)` handling.
+                if !call.is_new {
+                  if let Some(target_arg) =
+                    call.args.first().filter(|arg| !arg.spread).map(|arg| arg.expr)
+                  {
+                    if expr_is_ident_or_global_this_member(
+                      body,
+                      target_arg,
+                      &const_aliases,
+                      global_this_name,
+                      eval_name,
+                      "eval",
+                    ) {
+                      diagnostics.push(codes::NATIVE_STRICT_EVAL.error(
+                        "`eval` is forbidden when `native_strict` is enabled",
+                        Span::new(file, callee_span),
+                      ));
+                    }
+                    if expr_is_ident_or_global_this_member(
+                      body,
+                      target_arg,
+                      &const_aliases,
+                      global_this_name,
+                      function_name,
+                      "Function",
+                    ) {
+                      diagnostics.push(codes::NATIVE_STRICT_NEW_FUNCTION.error(
+                        "`Function` constructor is forbidden when `native_strict` is enabled",
+                        Span::new(file, callee_span),
+                      ));
+                    }
+                    if expr_is_ident_or_global_this_member(
+                      body,
+                      target_arg,
+                      &const_aliases,
+                      global_this_name,
+                      proxy_name,
+                      "Proxy",
+                    ) || expr_is_builtin_member(
+                      body,
+                      target_arg,
+                      &const_aliases,
+                      global_this_name,
+                      proxy_name,
+                      "Proxy",
+                      revocable_name,
+                      "revocable",
+                    ) {
+                      diagnostics.push(codes::NATIVE_STRICT_PROXY.error(
+                        "`Proxy` is forbidden when `native_strict` is enabled",
+                        Span::new(file, callee_span),
+                      ));
+                    }
+
+                    if expr_is_builtin_member(
+                      body,
+                      target_arg,
+                      &const_aliases,
+                      global_this_name,
+                      object_name,
+                      "Object",
+                      set_prototype_of_name,
+                      "setPrototypeOf",
+                    ) || expr_is_builtin_member(
+                      body,
+                      target_arg,
+                      &const_aliases,
+                      global_this_name,
+                      reflect_name,
+                      "Reflect",
+                      set_prototype_of_name,
+                      "setPrototypeOf",
+                    ) {
+                      diagnostics.push(codes::NATIVE_STRICT_PROTOTYPE_MUTATION.error(
+                        "prototype mutation is forbidden when `native_strict` is enabled",
+                        Span::new(file, callee_span),
+                      ));
+                    }
+
+                    // Handle `Reflect.apply(Object.defineProperty, _, [obj, "prototype", ...])`.
+                    let target_is_object_define_property = expr_is_builtin_member(
+                      body,
+                      target_arg,
+                      &const_aliases,
+                      global_this_name,
+                      object_name,
+                      "Object",
+                      define_property_name,
+                      "defineProperty",
+                    );
+                    let target_is_reflect_define_property = expr_is_builtin_member(
+                      body,
+                      target_arg,
+                      &const_aliases,
+                      global_this_name,
+                      reflect_name,
+                      "Reflect",
+                      define_property_name,
+                      "defineProperty",
+                    );
+                    let target_is_object_define_properties = expr_is_builtin_member(
+                      body,
+                      target_arg,
+                      &const_aliases,
+                      global_this_name,
+                      object_name,
+                      "Object",
+                      define_properties_name,
+                      "defineProperties",
+                    );
+                    let target_is_object_assign = expr_is_builtin_member(
+                      body,
+                      target_arg,
+                      &const_aliases,
+                      global_this_name,
+                      object_name,
+                      "Object",
+                      assign_name,
+                      "assign",
+                    );
+
+                    if target_is_object_define_property
+                      || target_is_reflect_define_property
+                      || target_is_object_define_properties
+                      || target_is_object_assign
+                    {
+                      if let Some(args_list_expr) = call.args.get(2).filter(|arg| !arg.spread).map(|arg| arg.expr)
+                      {
+                        if let Some(args_list) = array_literal_exprs(body, args_list_expr) {
+                          if let Some(target_obj) = args_list.first().copied() {
+                            let mut is_proto_mutation = expr_chain_contains_proto_mutation(
+                              body,
+                              target_obj,
+                              prototype_name,
+                              proto_name,
+                              &const_aliases,
+                            );
+                            if !is_proto_mutation
+                              && (target_is_object_define_property || target_is_reflect_define_property)
+                            {
+                              if let Some(key_arg) = args_list.get(1).copied() {
+                                if expr_is_const_string(body, key_arg, "prototype")
+                                  || expr_is_const_string(body, key_arg, "__proto__")
+                                {
+                                  is_proto_mutation = true;
+                                }
+                              }
+                            }
+                            if !is_proto_mutation && target_is_object_define_properties {
+                              if let Some(props_arg) = args_list.get(1).copied() {
+                                if expr_is_object_literal_with_proto_key(
+                                  body,
+                                  props_arg,
+                                  prototype_name,
+                                  proto_name,
+                                ) {
+                                  is_proto_mutation = true;
+                                }
+                              }
+                            }
+                            if !is_proto_mutation && target_is_object_assign {
+                              for source_arg in args_list.iter().skip(1).copied() {
+                                if expr_is_object_literal_with_proto_key(
+                                  body,
+                                  source_arg,
+                                  prototype_name,
+                                  proto_name,
+                                ) {
+                                  is_proto_mutation = true;
+                                  break;
+                                }
+                              }
+                            }
+                            if is_proto_mutation {
+                              diagnostics.push(codes::NATIVE_STRICT_PROTOTYPE_MUTATION.error(
+                                "prototype mutation is forbidden when `native_strict` is enabled",
+                                Span::new(file, callee_span),
+                              ));
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+              DestructuredAliasKind::ReflectConstruct => {
+                // Minimal direct `Reflect.construct(target, argsList)` handling.
+                if !call.is_new {
+                  if let Some(target_arg) =
+                    call.args.first().filter(|arg| !arg.spread).map(|arg| arg.expr)
+                  {
+                    if expr_is_ident_or_global_this_member(
+                      body,
+                      target_arg,
+                      &const_aliases,
+                      global_this_name,
+                      function_name,
+                      "Function",
+                    ) {
+                      diagnostics.push(codes::NATIVE_STRICT_NEW_FUNCTION.error(
+                        "`Function` constructor is forbidden when `native_strict` is enabled",
+                        Span::new(file, callee_span),
+                      ));
+                    }
+                    if expr_is_ident_or_global_this_member(
+                      body,
+                      target_arg,
+                      &const_aliases,
+                      global_this_name,
+                      proxy_name,
+                      "Proxy",
+                    ) {
+                      diagnostics.push(codes::NATIVE_STRICT_PROXY.error(
+                        "`Proxy` is forbidden when `native_strict` is enabled",
+                        Span::new(file, callee_span),
+                      ));
+                    }
+                  }
+                }
+              }
+              DestructuredAliasKind::ObjectSetPrototypeOf | DestructuredAliasKind::ReflectSetPrototypeOf => {
+                diagnostics.push(codes::NATIVE_STRICT_PROTOTYPE_MUTATION.error(
+                  "prototype mutation is forbidden when `native_strict` is enabled",
+                  Span::new(file, callee_span),
+                ));
+              }
+              DestructuredAliasKind::ObjectDefineProperty
+              | DestructuredAliasKind::ReflectDefineProperty
+              | DestructuredAliasKind::ObjectDefineProperties
+              | DestructuredAliasKind::ObjectAssign => {
+                if let Some(first_arg) = call.args.first().map(|arg| arg.expr) {
+                  let mut is_proto_mutation = expr_chain_contains_proto_mutation(
+                    body,
+                    first_arg,
+                    prototype_name,
+                    proto_name,
+                    &const_aliases,
+                  );
+
+                  if !is_proto_mutation
+                    && matches!(
+                      alias_kind,
+                      DestructuredAliasKind::ObjectDefineProperty | DestructuredAliasKind::ReflectDefineProperty
+                    )
+                  {
+                    if let Some(key_arg) = call.args.get(1).map(|arg| arg.expr) {
+                      if expr_is_const_string(body, key_arg, "prototype")
+                        || expr_is_const_string(body, key_arg, "__proto__")
+                      {
+                        is_proto_mutation = true;
+                      }
+                    }
+                  }
+
+                  if !is_proto_mutation
+                    && matches!(alias_kind, DestructuredAliasKind::ObjectDefineProperties)
+                  {
+                    if let Some(props_arg) = call.args.get(1).map(|arg| arg.expr) {
+                      if expr_is_object_literal_with_proto_key(
+                        body,
+                        props_arg,
+                        prototype_name,
+                        proto_name,
+                      ) {
+                        is_proto_mutation = true;
+                      }
+                    }
+                  }
+
+                  if !is_proto_mutation && matches!(alias_kind, DestructuredAliasKind::ObjectAssign) {
+                    for source_arg in call.args.iter().skip(1).map(|arg| arg.expr) {
+                      if expr_is_object_literal_with_proto_key(
+                        body,
+                        source_arg,
+                        prototype_name,
+                        proto_name,
+                      ) {
+                        is_proto_mutation = true;
+                        break;
+                      }
+                    }
+                  }
+
+                  if is_proto_mutation {
+                    diagnostics.push(codes::NATIVE_STRICT_PROTOTYPE_MUTATION.error(
+                      "prototype mutation is forbidden when `native_strict` is enabled",
+                      Span::new(file, callee_span),
+                    ));
+                  }
+                }
+              }
+            }
+          }
 
           if !call.is_new {
           let direct_eval =

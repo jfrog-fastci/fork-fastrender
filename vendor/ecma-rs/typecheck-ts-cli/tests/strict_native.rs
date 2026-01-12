@@ -167,6 +167,117 @@ eval("1+1");
 }
 
 #[test]
+fn strict_native_reports_forbidden_eval_via_destructuring_alias() {
+  let tmp = tempdir().expect("temp dir");
+  let entry = tmp.path().join("main.ts");
+  fs::write(
+    &entry,
+    r#"
+declare const globalThis: { eval(code: string): unknown };
+const { eval: e } = globalThis;
+e("1");
+"#,
+  )
+  .expect("write main.ts");
+
+  typecheck_cli()
+    .timeout(CLI_TIMEOUT)
+    .args(["typecheck", "--lib", "es5"])
+    .arg("--strict-native")
+    .arg(entry.as_os_str())
+    .assert()
+    .failure()
+    .stdout(contains(codes::NATIVE_STRICT_EVAL.as_str()));
+}
+
+#[test]
+fn strict_native_reports_prototype_mutation_via_destructuring_define_property() {
+  let tmp = tempdir().expect("temp dir");
+  let entry = tmp.path().join("main.ts");
+  fs::write(
+    &entry,
+    r#"
+class Foo {}
+const { defineProperty: dp } = Object;
+dp(Foo, "prototype", {});
+"#,
+  )
+  .expect("write main.ts");
+
+  typecheck_cli()
+    .timeout(CLI_TIMEOUT)
+    .args(["typecheck", "--lib", "es5"])
+    .arg("--strict-native")
+    .arg(entry.as_os_str())
+    .assert()
+    .failure()
+    .stdout(contains(
+      codes::NATIVE_STRICT_PROTOTYPE_MUTATION.as_str(),
+    ));
+}
+
+#[test]
+fn strict_native_reports_prototype_mutation_via_destructuring_set_prototype_of() {
+  let tmp = tempdir().expect("temp dir");
+  let entry = tmp.path().join("main.ts");
+  fs::write(
+    &entry,
+    r#"
+const { setPrototypeOf: sp } = Object;
+sp({}, null);
+"#,
+  )
+  .expect("write main.ts");
+
+  typecheck_cli()
+    .timeout(CLI_TIMEOUT)
+    .args(["typecheck", "--lib", "es5"])
+    .arg("--strict-native")
+    .arg(entry.as_os_str())
+    .assert()
+    .failure()
+    .stdout(contains(
+      codes::NATIVE_STRICT_PROTOTYPE_MUTATION.as_str(),
+    ));
+}
+
+#[test]
+fn strict_native_destructuring_alias_respects_block_shadowing() {
+  let tmp = tempdir().expect("temp dir");
+  let entry = tmp.path().join("main.ts");
+  fs::write(
+    &entry,
+    r#"
+declare const globalThis: { eval(code: string): unknown };
+const { eval: e } = globalThis;
+{
+  const e = () => 1;
+  e();
+}
+"#,
+  )
+  .expect("write main.ts");
+
+  let output = typecheck_cli()
+    .timeout(CLI_TIMEOUT)
+    .args(["typecheck", "--lib", "es5"])
+    .arg("--strict-native")
+    .arg(entry.as_os_str())
+    .assert()
+    .success()
+    .get_output()
+    .stdout
+    .clone();
+
+  let stdout = String::from_utf8_lossy(&output);
+  assert!(
+    !stdout.contains(codes::NATIVE_STRICT_EVAL.as_str()),
+    "expected no {} diagnostics, got {stdout}",
+    codes::NATIVE_STRICT_EVAL.as_str()
+  );
+}
+
+#[test]
 fn strict_native_reports_non_constant_computed_key() {
   let tmp = tempdir().expect("temp dir");
   let entry = tmp.path().join("main.ts");
