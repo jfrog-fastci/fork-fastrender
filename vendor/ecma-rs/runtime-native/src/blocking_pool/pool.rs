@@ -13,10 +13,13 @@ use std::sync::Arc;
 struct WorkItem {
   task: extern "C" fn(*mut u8, PromiseRef),
   data: *mut u8,
-  // `PromiseRef` is currently an opaque pointer to a Rust-allocated `RtPromise` (outside the GC).
+  // `rt_spawn_blocking` currently returns a **legacy** `async_rt::promise::RtPromise` allocated on
+  // the Rust heap (not GC-managed and therefore not relocatable). Storing the raw pointer across
+  // the blocking queue is therefore safe today.
   //
-  // If promises ever become GC-managed in the future, this must be rooted/pinned here: blocking
-  // worker threads are Rust frames and are not stackmap-scanned.
+  // If `rt_spawn_blocking` is ever changed to return a GC-managed promise, this field must store a
+  // GC-stable handle/root (e.g. a persistent handle) instead of a raw pointer: blocking worker
+  // threads are plain Rust frames and are not covered by LLVM stackmaps.
   promise: PromiseRef,
 }
 

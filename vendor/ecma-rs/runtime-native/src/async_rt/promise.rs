@@ -1077,8 +1077,10 @@ pub(crate) fn debug_with_pending_reactions_lock<R>(f: impl FnOnce() -> R) -> R {
 /// Test-only helper: destroy a legacy `RtPromise` allocated by this module.
 ///
 /// # Safety
-/// `p` must be a promise handle previously returned by [`promise_new`]. Passing a non-`RtPromise`
-/// allocation (e.g. a native async-ABI `PromiseHeader`-backed promise) is UB.
+/// `p` must be a valid [`PromiseRef`] handle.
+///
+/// If `p` does not refer to a legacy `RtPromise` allocation (e.g. it is a native async-ABI promise
+/// or a payload promise), this is a no-op.
 #[doc(hidden)]
 pub(crate) unsafe fn debug_drop_promise(p: PromiseRef) {
   promise_drop(p);
@@ -1187,9 +1189,11 @@ pub(crate) fn promise_resolve_into(dst: PromiseRef, input: PromiseResolveInput) 
     }
     PromiseResolveKind::Promise => {
       let src: LegacyPromiseRef = unsafe { input.payload.promise };
-      // `LegacyPromiseRef` points at an `RtPromise`, which embeds a `PromiseHeader` at offset 0.
-      // Convert explicitly so we don't accidentally pass a native async-ABI `PromiseRef` into legacy
-      // promise adoption paths (which cast to `RtPromise`).
+      // `LegacyPromiseRef` is an ABI-level opaque promise pointer. By contract it points at a
+      // `PromiseHeader` prefix at offset 0, but the concrete promise layout may vary (legacy
+      // `RtPromise`, GC-managed payload promise, native async ABI promise, ...).
+      //
+      // Convert explicitly so we don't accidentally assume the underlying layout is `RtPromise`.
       promise_resolve_promise(dst, PromiseRef(src.cast()));
     }
     PromiseResolveKind::Thenable => {

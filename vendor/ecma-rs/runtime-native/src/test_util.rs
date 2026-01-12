@@ -277,7 +277,10 @@ pub fn legacy_promise_outcome(p: PromiseRef) -> LegacyPromiseOutcome {
 ///
 /// # Safety
 /// `p` must be a legacy promise created by `rt_promise_new_legacy` (or any other runtime API that
-/// returns a legacy `PromiseRef`). Passing a native async-ABI promise is UB.
+/// returns a legacy `PromiseRef`).
+///
+/// If `p` refers to a non-legacy promise allocation (e.g. a native async-ABI promise or a payload
+/// promise), this is a no-op.
 pub unsafe fn drop_legacy_promise(p: PromiseRef) {
   unsafe {
     async_rt::promise::debug_drop_promise(p);
