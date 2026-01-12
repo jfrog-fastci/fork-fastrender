@@ -134,7 +134,8 @@ Run:
 ```bash
 bash scripts/cargo_agent.sh run -p typecheck-ts-harness --release -- \
   verify-snapshots \
-  --root typecheck-ts-harness/fixtures/conformance-mini \
+  --root typecheck-ts-harness/fixtures/conformance-lite \
+  --node node \
   --jobs 2 \
   --timeout-secs 20
 ```
@@ -146,9 +147,11 @@ update them by rerunning `conformance` with `--update-snapshots`, then re-run
 ```bash
 bash scripts/cargo_agent.sh run -p typecheck-ts-harness --release -- \
   conformance \
-  --root typecheck-ts-harness/fixtures/conformance-mini \
-  --compare snapshot \
-  --update-snapshots
+  --root typecheck-ts-harness/fixtures/conformance-lite \
+  --update-snapshots \
+  --jobs 2 \
+  --manifest typecheck-ts-harness/fixtures/conformance-lite/manifest.toml \
+  --allow-mismatches
 ```
 
 ### 7) CI hygiene
