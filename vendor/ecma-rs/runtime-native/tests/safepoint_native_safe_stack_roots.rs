@@ -94,6 +94,7 @@ mod x86_64 {
         sp: sp_callsite,
         fp: managed_fp,
         ip: callsite_ra as usize,
+        regs: std::ptr::null_mut(),
       };
       runtime_native::test_util::set_current_thread_safepoint_context_for_tests(ctx);
  
@@ -248,6 +249,7 @@ mod aarch64 {
         sp: sp_callsite,
         fp: managed_fp,
         ip: callsite_ra as usize,
+        regs: std::ptr::null_mut(),
       };
       runtime_native::test_util::set_current_thread_safepoint_context_for_tests(ctx);
  
