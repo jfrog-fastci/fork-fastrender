@@ -1066,9 +1066,29 @@ impl Heap {
     Ok(self.get_typed_array(obj)?.kind)
   }
 
+  fn typed_array_view_is_out_of_bounds(&self, view: &JsTypedArray) -> Result<bool, VmError> {
+    // Detached buffers count as out-of-bounds.
+    let buf = self.get_array_buffer(view.viewed_array_buffer)?;
+    let Some(data) = buf.data.as_deref() else {
+      return Ok(true);
+    };
+    let buf_len = data.len();
+
+    let byte_len = match view.length.checked_mul(view.kind.bytes_per_element()) {
+      Some(n) => n,
+      None => return Ok(true),
+    };
+    let end = match view.byte_offset.checked_add(byte_len) {
+      Some(end) => end,
+      None => return Ok(true),
+    };
+
+    Ok(end > buf_len)
+  }
+
   pub(crate) fn typed_array_length(&self, obj: GcObject) -> Result<usize, VmError> {
     let view = self.get_typed_array(obj)?;
-    if self.get_array_buffer(view.viewed_array_buffer)?.data.is_none() {
+    if self.typed_array_view_is_out_of_bounds(view)? {
       return Ok(0);
     }
     Ok(view.length)
@@ -1915,12 +1935,11 @@ impl Heap {
     if let PropertyKey::String(s) = key {
       if let Some(index) = self.string_to_array_index(*s) {
         if let HeapObject::TypedArray(view) = self.get_heap_object(obj.0)? {
-          // If the backing buffer is detached, integer-indexed properties are treated as absent.
-          if self
-            .get_array_buffer(view.viewed_array_buffer)?
-            .data
-            .is_none()
-          {
+          // Integer-indexed properties are only present when the view is in-bounds (and the
+          // backing buffer is not detached).
+          //
+          // Spec: `IsValidIntegerIndex` / `TypedArrayGetElement`.
+          if self.typed_array_view_is_out_of_bounds(view)? {
             return Ok(None);
           }
           let idx = index as usize;
@@ -2912,6 +2931,34 @@ impl Heap {
       (view.viewed_array_buffer, view.byte_offset, view.length, view.kind)
     };
 
+    // Convert via ToNumber; supports string/boolean/null/undefined, throws on Symbol.
+    //
+    // Spec: `TypedArraySetElement` performs value conversion before checking `IsValidIntegerIndex`.
+    let n = self.to_number(value)?;
+
+    // If the backing buffer is detached or the view is out-of-bounds, writes are a silent no-op.
+    //
+    // Spec: `TypedArraySetElement` (no effect when `IsValidIntegerIndex` is false).
+    {
+      let buf = self.get_array_buffer(buffer)?;
+      let Some(data) = buf.data.as_deref() else {
+        return Ok(false);
+      };
+      let buf_len = data.len();
+
+      let byte_len = match length.checked_mul(kind.bytes_per_element()) {
+        Some(n) => n,
+        None => return Ok(false),
+      };
+      let end = match byte_offset.checked_add(byte_len) {
+        Some(end) => end,
+        None => return Ok(false),
+      };
+      if end > buf_len {
+        return Ok(false);
+      }
+    }
+
     if index >= length {
       return Ok(false);
     }
@@ -2926,21 +2973,6 @@ impl Heap {
     let abs_end = abs_start
       .checked_add(bytes_per_element)
       .ok_or(VmError::InvariantViolation("TypedArray byte offset overflow"))?;
-
-    // Detached buffers behave as though the typed array is out-of-bounds.
-    let buf = self.get_array_buffer(buffer)?;
-    let Some(data) = buf.data.as_deref() else {
-      return Ok(false);
-    };
-    let buf_len = data.len();
-    if abs_end > buf_len {
-      return Err(VmError::InvariantViolation(
-        "TypedArray view references out-of-bounds ArrayBuffer data",
-      ));
-    }
-
-    // Convert via ToNumber; supports string/boolean/null/undefined, throws on Symbol.
-    let n = self.to_number(value)?;
 
     fn to_uint8_clamp(n: f64) -> u8 {
       if n.is_nan() || n <= 0.0 {
@@ -2970,33 +3002,60 @@ impl Heap {
     let Some(data) = buf.data.as_deref_mut() else {
       return Ok(false);
     };
+    if abs_end > data.len() {
+      return Ok(false);
+    }
 
     match kind {
       TypedArrayKind::Int8 => {
-        let v = if !n.is_finite() { 0 } else { n.trunc().rem_euclid(256.0) as u8 as i8 };
+        let v = if !n.is_finite() {
+          0
+        } else {
+          n.trunc().rem_euclid(256.0) as u8 as i8
+        };
         data[abs_start] = v as u8;
       }
       TypedArrayKind::Uint8 => {
-        let v = if !n.is_finite() { 0 } else { n.trunc().rem_euclid(256.0) as u8 };
+        let v = if !n.is_finite() {
+          0
+        } else {
+          n.trunc().rem_euclid(256.0) as u8
+        };
         data[abs_start] = v;
       }
       TypedArrayKind::Uint8Clamped => {
         data[abs_start] = to_uint8_clamp(n);
       }
       TypedArrayKind::Int16 => {
-        let v = if !n.is_finite() { 0 } else { n.trunc().rem_euclid(65_536.0) as u16 as i16 };
+        let v = if !n.is_finite() {
+          0
+        } else {
+          n.trunc().rem_euclid(65_536.0) as u16 as i16
+        };
         data[abs_start..abs_end].copy_from_slice(&v.to_le_bytes());
       }
       TypedArrayKind::Uint16 => {
-        let v = if !n.is_finite() { 0 } else { n.trunc().rem_euclid(65_536.0) as u16 };
+        let v = if !n.is_finite() {
+          0
+        } else {
+          n.trunc().rem_euclid(65_536.0) as u16
+        };
         data[abs_start..abs_end].copy_from_slice(&v.to_le_bytes());
       }
       TypedArrayKind::Int32 => {
-        let v = if !n.is_finite() { 0 } else { n.trunc().rem_euclid(4_294_967_296.0) as u32 as i32 };
+        let v = if !n.is_finite() {
+          0
+        } else {
+          n.trunc().rem_euclid(4_294_967_296.0) as u32 as i32
+        };
         data[abs_start..abs_end].copy_from_slice(&v.to_le_bytes());
       }
       TypedArrayKind::Uint32 => {
-        let v = if !n.is_finite() { 0 } else { n.trunc().rem_euclid(4_294_967_296.0) as u32 };
+        let v = if !n.is_finite() {
+          0
+        } else {
+          n.trunc().rem_euclid(4_294_967_296.0) as u32
+        };
         data[abs_start..abs_end].copy_from_slice(&v.to_le_bytes());
       }
       TypedArrayKind::Float32 => {
