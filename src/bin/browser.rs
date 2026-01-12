@@ -662,6 +662,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
       Event::RedrawRequested(window_id) if window_id == app.window.id() => {
         app.render_frame(control_flow);
       }
+      Event::NewEvents(StartCause::ResumeTimeReached { .. }) => {
+        // Used for UI animations that need to progress even when there is no input/worker activity.
+        // Today this is used for overlay scrollbar fade-in/out.
+        app.maybe_request_redraw_for_ui_timers();
+      }
       Event::NewEvents(StartCause::Init) => {
         // Ensure we draw at least one frame on startup.
         app.window.request_redraw();
@@ -1098,6 +1103,7 @@ struct App {
   page_input_tab: Option<fastrender::ui::TabId>,
   page_input_mapping: Option<fastrender::ui::InputMapping>,
   overlay_scrollbars: fastrender::ui::scrollbars::OverlayScrollbars,
+  overlay_scrollbar_visibility: fastrender::ui::scrollbars::OverlayScrollbarVisibilityState,
   scrollbar_drag: Option<ScrollbarDrag>,
   viewport_cache_tab: Option<fastrender::ui::TabId>,
   viewport_cache_css: (u32, u32),
@@ -1170,6 +1176,31 @@ impl App {
         .overlay_scrollbars
         .horizontal
         .is_some_and(|sb| sb.track_rect_points.contains_point(pos))
+  }
+
+  fn cursor_near_overlay_scrollbars(&self, pos_points: egui::Pos2) -> bool {
+    const HOVER_INFLATE_POINTS: f32 = 10.0;
+    let pos = fastrender::Point::new(pos_points.x, pos_points.y);
+    self
+      .overlay_scrollbars
+      .vertical
+      .is_some_and(|sb| sb.track_rect_points.inflate(HOVER_INFLATE_POINTS).contains_point(pos))
+      || self
+        .overlay_scrollbars
+        .horizontal
+        .is_some_and(|sb| sb.track_rect_points.inflate(HOVER_INFLATE_POINTS).contains_point(pos))
+  }
+
+  fn overlay_scrollbars_force_visible(&self) -> bool {
+    let active_tab = self.browser_state.active_tab_id();
+    let dragging = self
+      .scrollbar_drag
+      .as_ref()
+      .is_some_and(|drag| Some(drag.tab_id) == active_tab);
+    let hovering = self
+      .last_cursor_pos_points
+      .is_some_and(|pos| self.cursor_near_overlay_scrollbars(pos));
+    dragging || hovering
   }
 
   async fn new<T: 'static>(
@@ -1351,6 +1382,7 @@ error: {err}",
       page_input_tab: None,
       page_input_mapping: None,
       overlay_scrollbars: fastrender::ui::scrollbars::OverlayScrollbars::default(),
+      overlay_scrollbar_visibility: fastrender::ui::scrollbars::OverlayScrollbarVisibilityState::default(),
       scrollbar_drag: None,
       viewport_cache_tab: None,
       viewport_cache_css: (0, 0),
@@ -1475,24 +1507,66 @@ error: {err}",
     &mut self,
     control_flow: &mut winit::event_loop::ControlFlow,
   ) {
-    let Some(tab_id) = self.desired_animation_tick_tab() else {
+    let now = std::time::Instant::now();
+    let mut deadline: Option<std::time::Instant> = None;
+
+    // Worker-driven animation ticks (CSS animations/transitions).
+    if let Some(tab_id) = self.desired_animation_tick_tab() {
+      if self.animation_tick_tab != Some(tab_id) || self.next_animation_tick.is_none() {
+        self.animation_tick_tab = Some(tab_id);
+        self.next_animation_tick = Some(now + Self::ANIMATION_TICK_INTERVAL);
+      }
+      if let Some(tick_deadline) = self.next_animation_tick {
+        deadline = Some(match deadline {
+          Some(existing) => existing.min(tick_deadline),
+          None => tick_deadline,
+        });
+      }
+    } else {
       self.animation_tick_tab = None;
       self.next_animation_tick = None;
-      return;
-    };
-
-    if self.animation_tick_tab != Some(tab_id) || self.next_animation_tick.is_none() {
-      self.animation_tick_tab = Some(tab_id);
-      self.next_animation_tick = Some(std::time::Instant::now() + Self::ANIMATION_TICK_INTERVAL);
     }
 
-    if let Some(deadline) = self.next_animation_tick {
+    // UI-only timers (e.g. overlay scrollbar fade).
+    let cfg = fastrender::ui::scrollbars::OverlayScrollbarVisibilityConfig::default();
+    let force_visible = self.overlay_scrollbars_force_visible();
+    if let Some(sb_deadline) = self
+      .overlay_scrollbar_visibility
+      .next_wakeup(now, cfg, force_visible)
+    {
+      deadline = Some(match deadline {
+        Some(existing) => existing.min(sb_deadline),
+        None => sb_deadline,
+      });
+    }
+
+    if let Some(deadline) = deadline {
       *control_flow = winit::event_loop::ControlFlow::WaitUntil(deadline);
+    }
+  }
+
+  fn maybe_request_redraw_for_ui_timers(&mut self) {
+    let cfg = fastrender::ui::scrollbars::OverlayScrollbarVisibilityConfig::default();
+    let force_visible = self.overlay_scrollbars_force_visible();
+    if self.overlay_scrollbar_visibility.needs_repaint(
+      std::time::Instant::now(),
+      cfg,
+      force_visible,
+    ) {
+      self.window.request_redraw();
     }
   }
 
   fn send_worker_msg(&mut self, msg: fastrender::ui::UiToWorker) {
     use fastrender::ui::UiToWorker;
+
+    // Keep overlay scrollbars visible when a scroll is initiated via any input path (wheel, track
+    // click, thumb drag, keyboard shortcuts that synthesize `ScrollTo`, etc).
+    if matches!(&msg, UiToWorker::Scroll { .. } | UiToWorker::ScrollTo { .. }) {
+      self
+        .overlay_scrollbar_visibility
+        .register_interaction(std::time::Instant::now());
+    }
 
     let tab_id = match &msg {
       UiToWorker::CreateTab { tab_id, .. }
@@ -2737,6 +2811,9 @@ error: {err}",
       return;
     }
     self.scrollbar_drag = None;
+    self
+      .overlay_scrollbar_visibility
+      .register_interaction(std::time::Instant::now());
 
     let cursor_inside_page = self.last_cursor_pos_points.is_some_and(|pos| {
       self
@@ -2806,12 +2883,20 @@ error: {err}",
         let had_pointer_capture = self.pointer_captured;
         let had_scrollbar_drag = self.scrollbar_drag.is_some();
         let had_cursor_in_page = self.cursor_in_page;
+        let had_cursor_near_scrollbars = self
+          .last_cursor_pos_points
+          .is_some_and(|pos| self.cursor_near_overlay_scrollbars(pos));
         let had_context_menu =
           self.open_context_menu.is_some() || self.pending_context_menu_request.is_some();
 
         // Winit does not provide cursor coordinates when leaving the window. Clear our cached
         // position so hover updates are not suppressed by stale dropdown rect checks.
         self.last_cursor_pos_points = None;
+        if had_cursor_near_scrollbars {
+          self
+            .overlay_scrollbar_visibility
+            .register_interaction(std::time::Instant::now());
+        }
 
         if had_context_menu {
           self.close_context_menu();
@@ -2827,16 +2912,34 @@ error: {err}",
         if had_cursor_in_page || had_pointer_capture {
           self.clear_page_hover();
         }
-        if had_cursor_in_page || had_pointer_capture || had_scrollbar_drag || had_context_menu {
+        if had_cursor_in_page
+          || had_pointer_capture
+          || had_scrollbar_drag
+          || had_context_menu
+          || had_cursor_near_scrollbars
+        {
           self.window.request_redraw();
         }
       }
       WindowEvent::CursorMoved { position, .. } => {
+        let was_cursor_near_scrollbars = self
+          .last_cursor_pos_points
+          .is_some_and(|pos| self.cursor_near_overlay_scrollbars(pos));
         let pos_points = egui::pos2(
           position.x as f32 / self.pixels_per_point,
           position.y as f32 / self.pixels_per_point,
         );
         self.last_cursor_pos_points = Some(pos_points);
+        let now_cursor_near_scrollbars = self.cursor_near_overlay_scrollbars(pos_points);
+        if was_cursor_near_scrollbars != now_cursor_near_scrollbars {
+          self
+            .overlay_scrollbar_visibility
+            .register_interaction(std::time::Instant::now());
+          // Egui doesn't necessarily request a repaint for pointer motion over the rendered page
+          // image. We need explicit redraws so overlay scrollbars can fade in/out when the cursor
+          // approaches the scrollbar area.
+          self.window.request_redraw();
+        }
 
         if self.scrollbar_drag.is_some() {
           let (tab_id, axis, scrollbar, axis_delta_points) = {
@@ -3036,6 +3139,9 @@ error: {err}",
                     .filter(|sb| sb.thumb_rect_points.contains_point(pos))
                 })
               {
+                self
+                  .overlay_scrollbar_visibility
+                  .register_interaction(std::time::Instant::now());
                 self.scrollbar_drag = Some(ScrollbarDrag {
                   tab_id,
                   axis: scrollbar.axis,
@@ -3996,52 +4102,180 @@ error: {err}",
               metrics.bounds_css,
             );
 
-            let painter = ui.painter();
-            let to_egui_rect = |rect: fastrender::Rect| {
-              egui::Rect::from_min_max(
-                egui::pos2(rect.min_x(), rect.min_y()),
-                egui::pos2(rect.max_x(), rect.max_y()),
-              )
+            // If a wheel scroll is happening this frame, register it before drawing so scrollbars
+            // become visible immediately (even if this is a single-tick wheel scroll).
+            if !wheel_events.is_empty() && !wheel_blocked_by_dropdown && response.hovered() {
+              let mut delta_css = (0.0, 0.0);
+              for (unit, delta) in &wheel_events {
+                let Some((dx, dy)) = mapping
+                  .wheel_delta_to_delta_css(fastrender::ui::WheelDelta::from_egui(*unit, *delta))
+                else {
+                  continue;
+                };
+                delta_css.0 += dx;
+                delta_css.1 += dy;
+              }
+              if delta_css.0 != 0.0 || delta_css.1 != 0.0 {
+                self
+                  .overlay_scrollbar_visibility
+                  .register_interaction(std::time::Instant::now());
+              }
+            }
+
+            let any_scrollbar_visible = self.overlay_scrollbars.vertical.is_some()
+              || self.overlay_scrollbars.horizontal.is_some();
+            if !any_scrollbar_visible {
+              self.overlay_scrollbar_visibility =
+                fastrender::ui::scrollbars::OverlayScrollbarVisibilityState::default();
+            } else if self.overlay_scrollbars_force_visible()
+              && self.overlay_scrollbar_visibility.visible_since.is_none()
+            {
+              // If the cursor is already near the scrollbar area (e.g. the page just became
+              // scrollable), ensure the scrollbars become visible without requiring another cursor
+              // move event.
+              self
+                .overlay_scrollbar_visibility
+                .register_interaction(std::time::Instant::now());
+            }
+
+            let cfg = fastrender::ui::scrollbars::OverlayScrollbarVisibilityConfig::default();
+            let force_visible = self.overlay_scrollbars_force_visible();
+            let now = std::time::Instant::now();
+            let dragging_any = self
+              .scrollbar_drag
+              .as_ref()
+              .is_some_and(|drag| drag.tab_id == active_tab);
+            let alpha = if dragging_any {
+              1.0
+            } else {
+              self.overlay_scrollbar_visibility.alpha(now, cfg, force_visible)
             };
+            if alpha > 0.0 {
+              let painter = ui.painter();
 
-            let dark = ui.visuals().dark_mode;
-            let (r, g, b) = if dark { (255, 255, 255) } else { (0, 0, 0) };
+              let to_egui_rect = |rect: fastrender::Rect| {
+                egui::Rect::from_min_max(
+                  egui::pos2(rect.min_x(), rect.min_y()),
+                  egui::pos2(rect.max_x(), rect.max_y()),
+                )
+              };
 
-            let draw_scrollbar = |scrollbar: fastrender::ui::scrollbars::OverlayScrollbar,
-                                  dragging: bool| {
-              let thickness_points = match scrollbar.axis {
-                fastrender::ui::scrollbars::ScrollbarAxis::Vertical => {
-                  scrollbar.track_rect_points.width()
-                }
-                fastrender::ui::scrollbars::ScrollbarAxis::Horizontal => {
-                  scrollbar.track_rect_points.height()
+              let shrink_rect = |rect: egui::Rect, dx: f32, dy: f32| {
+                let min = rect.min + egui::vec2(dx, dy);
+                let max = rect.max - egui::vec2(dx, dy);
+                if min.x >= max.x || min.y >= max.y {
+                  rect
+                } else {
+                  egui::Rect::from_min_max(min, max)
                 }
               };
-              let rounding = egui::Rounding::same((thickness_points * 0.5).max(0.0));
-              let track = to_egui_rect(scrollbar.track_rect_points);
-              let thumb = to_egui_rect(scrollbar.thumb_rect_points);
 
-              let track_color = egui::Color32::from_rgba_unmultiplied(r, g, b, 32);
-              let thumb_alpha = if dragging { 196 } else { 128 };
-              let thumb_color = egui::Color32::from_rgba_unmultiplied(r, g, b, thumb_alpha);
+              let clamp_alpha = |base: u8| {
+                ((base as f32) * alpha)
+                  .round()
+                  .clamp(0.0, 255.0) as u8
+              };
 
-              painter.rect_filled(track, rounding, track_color);
-              painter.rect_filled(thumb, rounding, thumb_color);
-            };
+              let dark = ui.visuals().dark_mode;
+              let (fill_r, fill_g, fill_b) = if dark { (240, 240, 240) } else { (0, 0, 0) };
+              let (stroke_r, stroke_g, stroke_b) = if dark { (0, 0, 0) } else { (255, 255, 255) };
 
-            if let Some(v) = self.overlay_scrollbars.vertical {
-              let dragging = self
-                .scrollbar_drag
-                .as_ref()
-                .is_some_and(|d| d.axis == v.axis && d.tab_id == active_tab);
-              draw_scrollbar(v, dragging);
-            }
-            if let Some(h) = self.overlay_scrollbars.horizontal {
-              let dragging = self
-                .scrollbar_drag
-                .as_ref()
-                .is_some_and(|d| d.axis == h.axis && d.tab_id == active_tab);
-              draw_scrollbar(h, dragging);
+              let cursor_pos = self.last_cursor_pos_points;
+              let cursor = cursor_pos.map(|pos| fastrender::Point::new(pos.x, pos.y));
+              const HOVER_INFLATE_POINTS: f32 = 10.0;
+
+              let draw_scrollbar = |scrollbar: fastrender::ui::scrollbars::OverlayScrollbar,
+                                    hovered: bool,
+                                    dragging: bool| {
+                let track = to_egui_rect(scrollbar.track_rect_points);
+                let mut thumb = to_egui_rect(scrollbar.thumb_rect_points);
+
+                // Modern overlay scrollbars are typically narrower by default, widening on hover.
+                let cross_inset = if dragging { 0.5 } else if hovered { 1.0 } else { 2.0 };
+                let length_inset = 1.0;
+                thumb = match scrollbar.axis {
+                  fastrender::ui::scrollbars::ScrollbarAxis::Vertical => {
+                    shrink_rect(thumb, cross_inset, length_inset)
+                  }
+                  fastrender::ui::scrollbars::ScrollbarAxis::Horizontal => {
+                    shrink_rect(thumb, length_inset, cross_inset)
+                  }
+                };
+
+                let thickness = match scrollbar.axis {
+                  fastrender::ui::scrollbars::ScrollbarAxis::Vertical => thumb.width(),
+                  fastrender::ui::scrollbars::ScrollbarAxis::Horizontal => thumb.height(),
+                };
+                let rounding = egui::Rounding::same((thickness * 0.5).max(0.0));
+
+                let track_alpha = if dragging { 60 } else if hovered { 40 } else { 0 };
+                if track_alpha > 0 {
+                  painter.rect_filled(
+                    track,
+                    egui::Rounding::same((thickness * 0.5).max(0.0)),
+                    egui::Color32::from_rgba_unmultiplied(
+                      fill_r,
+                      fill_g,
+                      fill_b,
+                      clamp_alpha(track_alpha),
+                    ),
+                  );
+                }
+
+                let thumb_alpha = if dragging { 220 } else if hovered { 180 } else { 140 };
+                painter.rect_filled(
+                  thumb,
+                  rounding,
+                  egui::Color32::from_rgba_unmultiplied(
+                    fill_r,
+                    fill_g,
+                    fill_b,
+                    clamp_alpha(thumb_alpha),
+                  ),
+                );
+                painter.rect_stroke(
+                  thumb,
+                  rounding,
+                  egui::Stroke::new(
+                    1.0,
+                    egui::Color32::from_rgba_unmultiplied(
+                      stroke_r,
+                      stroke_g,
+                      stroke_b,
+                      clamp_alpha(36),
+                    ),
+                  ),
+                );
+              };
+
+              if let Some(v) = self.overlay_scrollbars.vertical {
+                let dragging = self
+                  .scrollbar_drag
+                  .as_ref()
+                  .is_some_and(|d| d.axis == v.axis && d.tab_id == active_tab);
+                let hovered = cursor.is_some_and(|pos| {
+                  v.track_rect_points
+                    .inflate(HOVER_INFLATE_POINTS)
+                    .contains_point(pos)
+                });
+                draw_scrollbar(v, hovered, dragging);
+              }
+              if let Some(h) = self.overlay_scrollbars.horizontal {
+                let dragging = self
+                  .scrollbar_drag
+                  .as_ref()
+                  .is_some_and(|d| d.axis == h.axis && d.tab_id == active_tab);
+                let hovered = cursor.is_some_and(|pos| {
+                  h.track_rect_points
+                    .inflate(HOVER_INFLATE_POINTS)
+                    .contains_point(pos)
+                });
+                draw_scrollbar(h, hovered, dragging);
+              }
+            } else if !force_visible {
+              // Once fully hidden, clear state so the next interaction fades in again.
+              self.overlay_scrollbar_visibility =
+                fastrender::ui::scrollbars::OverlayScrollbarVisibilityState::default();
             }
           }
         }

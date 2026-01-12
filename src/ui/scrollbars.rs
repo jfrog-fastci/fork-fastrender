@@ -1,5 +1,6 @@
 use crate::geometry::{Point, Rect};
 use crate::scroll::{ScrollBounds, ScrollState};
+use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScrollbarAxis {
@@ -149,6 +150,180 @@ impl OverlayScrollbar {
 pub struct OverlayScrollbars {
   pub vertical: Option<OverlayScrollbar>,
   pub horizontal: Option<OverlayScrollbar>,
+}
+
+/// Timing configuration for overlay scrollbar visibility/fade behaviour.
+///
+/// This is used by the windowed UI (`src/bin/browser.rs`) to mimic modern browser overlay scrollbars
+/// (show on scroll/hover/drag, then fade out after a short idle period).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct OverlayScrollbarVisibilityConfig {
+  /// Duration of the fade-in animation once the scrollbar becomes visible.
+  pub fade_in_duration: Duration,
+  /// How long to stay fully visible after the most recent interaction (scroll/hover/drag).
+  pub idle_duration: Duration,
+  /// Duration of the fade-out animation after `idle_duration` expires.
+  pub fade_out_duration: Duration,
+  /// Target frame interval for fade animations (egui doesn't drive this automatically in our
+  /// windowed UI; we schedule winit wakeups manually).
+  pub frame_interval: Duration,
+  /// Minimum opacity applied during fade-in so the first frame is still visible.
+  ///
+  /// Without this, starting a fade-in at `t=0` would yield alpha=0.0, and the scrollbar might not
+  /// be visible at all for very short scroll interactions (single wheel tick).
+  pub fade_in_min_alpha: f32,
+}
+
+impl Default for OverlayScrollbarVisibilityConfig {
+  fn default() -> Self {
+    Self {
+      fade_in_duration: Duration::from_millis(120),
+      idle_duration: Duration::from_millis(600),
+      fade_out_duration: Duration::from_millis(240),
+      frame_interval: Duration::from_millis(16),
+      fade_in_min_alpha: 0.2,
+    }
+  }
+}
+
+/// Minimal UI state for overlay scrollbar visibility.
+///
+/// The windowed UI keeps this in `App` so scrollbars can fade in/out even when the page isn't
+/// actively repainting (requires scheduling winit wakeups).
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct OverlayScrollbarVisibilityState {
+  /// When the scrollbar became visible (for fade-in).
+  pub visible_since: Option<Instant>,
+  /// Last time the user interacted in a way that should keep scrollbars visible.
+  pub last_interaction: Option<Instant>,
+}
+
+impl OverlayScrollbarVisibilityState {
+  pub fn register_interaction(&mut self, now: Instant) {
+    if self.visible_since.is_none() {
+      self.visible_since = Some(now);
+    }
+    self.last_interaction = Some(now);
+  }
+
+  pub fn alpha(
+    self,
+    now: Instant,
+    config: OverlayScrollbarVisibilityConfig,
+    force_visible: bool,
+  ) -> f32 {
+    let Some(visible_since) = self.visible_since else {
+      return 0.0;
+    };
+
+    let elapsed_in = now.saturating_duration_since(visible_since);
+    let fade_in = if config.fade_in_duration.is_zero() {
+      1.0
+    } else {
+      let t = (elapsed_in.as_secs_f32() / config.fade_in_duration.as_secs_f32()).clamp(0.0, 1.0);
+      let min = config.fade_in_min_alpha.clamp(0.0, 1.0);
+      min + (1.0 - min) * t
+    };
+
+    let fade_out = if force_visible {
+      1.0
+    } else {
+      let Some(last) = self.last_interaction else {
+        return 0.0;
+      };
+      let elapsed_since_interaction = now.saturating_duration_since(last);
+      if elapsed_since_interaction <= config.idle_duration {
+        1.0
+      } else if config.fade_out_duration.is_zero() {
+        0.0
+      } else {
+        let fade_elapsed = elapsed_since_interaction - config.idle_duration;
+        if fade_elapsed >= config.fade_out_duration {
+          0.0
+        } else {
+          let t = (fade_elapsed.as_secs_f32() / config.fade_out_duration.as_secs_f32())
+            .clamp(0.0, 1.0);
+          1.0 - t
+        }
+      }
+    };
+
+    (fade_in * fade_out).clamp(0.0, 1.0)
+  }
+
+  /// Returns true when the caller should request a repaint at `now` to advance a fade animation.
+  pub fn needs_repaint(
+    self,
+    now: Instant,
+    config: OverlayScrollbarVisibilityConfig,
+    force_visible: bool,
+  ) -> bool {
+    let Some(visible_since) = self.visible_since else {
+      return false;
+    };
+
+    if !config.fade_in_duration.is_zero()
+      && now.saturating_duration_since(visible_since) < config.fade_in_duration
+    {
+      return true;
+    }
+
+    if force_visible {
+      return false;
+    }
+
+    let Some(last) = self.last_interaction else {
+      return false;
+    };
+
+    let elapsed = now.saturating_duration_since(last);
+    elapsed >= config.idle_duration && elapsed <= (config.idle_duration + config.fade_out_duration)
+  }
+
+  /// Returns the next winit wakeup deadline needed to advance overlay scrollbar animations.
+  pub fn next_wakeup(
+    self,
+    now: Instant,
+    config: OverlayScrollbarVisibilityConfig,
+    force_visible: bool,
+  ) -> Option<Instant> {
+    let mut next: Option<Instant> = None;
+    let mut consider = |candidate: Instant| {
+      next = Some(match next {
+        Some(existing) => existing.min(candidate),
+        None => candidate,
+      });
+    };
+
+    let Some(visible_since) = self.visible_since else {
+      return None;
+    };
+
+    // Fade-in needs periodic repaints until complete.
+    let fade_in_end = visible_since + config.fade_in_duration;
+    if !config.fade_in_duration.is_zero() && now < fade_in_end {
+      let candidate = (now + config.frame_interval).min(fade_in_end);
+      consider(candidate);
+    }
+
+    if !force_visible {
+      if let Some(last) = self.last_interaction {
+        let fade_out_start = last + config.idle_duration;
+        if now < fade_out_start {
+          // Wake at the moment fade-out starts so we can request a redraw even if the UI is idle.
+          consider(fade_out_start);
+        } else {
+          let fade_out_end = fade_out_start + config.fade_out_duration;
+          if now < fade_out_end {
+            let candidate = (now + config.frame_interval).min(fade_out_end);
+            consider(candidate);
+          }
+        }
+      }
+    }
+
+    next
+  }
 }
 
 fn sanitize_scroll_bounds(bounds: ScrollBounds) -> ScrollBounds {
@@ -378,6 +553,7 @@ pub fn overlay_scrollbars_for_viewport(
 #[cfg(test)]
 mod tests {
   use super::*;
+  use std::time::{Duration, Instant};
 
   fn assert_approx(actual: f32, expected: f32) {
     let eps = 1e-4;
@@ -538,5 +714,86 @@ mod tests {
     // - ratio = 100/1100 => thumb_len=9.0909, travel=90.9091
     // - scroll=0 => frac=(0 - -100)/1000 = 0.1 => offset=9.0909
     assert_approx(v.thumb_rect_points.y(), 9.090909);
+  }
+
+  fn visibility_test_config() -> OverlayScrollbarVisibilityConfig {
+    OverlayScrollbarVisibilityConfig {
+      fade_in_duration: Duration::from_millis(100),
+      idle_duration: Duration::from_millis(200),
+      fade_out_duration: Duration::from_millis(100),
+      frame_interval: Duration::from_millis(16),
+      fade_in_min_alpha: 0.2,
+    }
+  }
+
+  #[test]
+  fn overlay_scrollbar_visibility_alpha_fade_in_and_out() {
+    let cfg = visibility_test_config();
+    let t0 = Instant::now();
+    let mut state = OverlayScrollbarVisibilityState::default();
+
+    assert_eq!(state.alpha(t0, cfg, false), 0.0);
+
+    state.register_interaction(t0);
+    assert_approx(state.alpha(t0, cfg, false), cfg.fade_in_min_alpha);
+
+    // Halfway through fade-in: alpha should interpolate from `fade_in_min_alpha` → 1.0.
+    let a_half_in = state.alpha(t0 + Duration::from_millis(50), cfg, false);
+    assert_approx(a_half_in, 0.6);
+
+    // Fade-in complete: fully visible.
+    assert_approx(state.alpha(t0 + Duration::from_millis(100), cfg, false), 1.0);
+
+    // Still fully visible during idle.
+    assert_approx(state.alpha(t0 + Duration::from_millis(150), cfg, false), 1.0);
+
+    // Halfway through fade-out (starts at t0+200ms, lasts 100ms).
+    let a_half_out = state.alpha(t0 + Duration::from_millis(250), cfg, false);
+    assert_approx(a_half_out, 0.5);
+
+    // Fade-out complete.
+    assert_approx(state.alpha(t0 + Duration::from_millis(300), cfg, false), 0.0);
+  }
+
+  #[test]
+  fn overlay_scrollbar_visibility_schedules_wakeups() {
+    let cfg = visibility_test_config();
+    let t0 = Instant::now();
+    let mut state = OverlayScrollbarVisibilityState::default();
+
+    state.register_interaction(t0);
+
+    // During fade-in, schedule a near-future frame.
+    assert_eq!(state.next_wakeup(t0, cfg, false), Some(t0 + cfg.frame_interval));
+
+    // Once fade-in is done, the next wakeup should be the fade-out start.
+    assert_eq!(
+      state.next_wakeup(t0 + Duration::from_millis(120), cfg, false),
+      Some(t0 + cfg.idle_duration)
+    );
+
+    // During fade-out, schedule a near-future frame.
+    let during_fade_out = t0 + cfg.idle_duration + Duration::from_millis(10);
+    assert_eq!(
+      state.next_wakeup(during_fade_out, cfg, false),
+      Some(during_fade_out + cfg.frame_interval)
+    );
+  }
+
+  #[test]
+  fn overlay_scrollbar_visibility_force_visible_suppresses_fade_out() {
+    let cfg = visibility_test_config();
+    let t0 = Instant::now();
+    let mut state = OverlayScrollbarVisibilityState::default();
+
+    state.register_interaction(t0);
+
+    // Even after idle+fade_out, force_visible keeps the scrollbar visible.
+    assert_approx(state.alpha(t0 + Duration::from_millis(500), cfg, true), 1.0);
+    // With force_visible, we don't need to wake up once fade-in has completed.
+    assert_eq!(
+      state.next_wakeup(t0 + Duration::from_millis(200), cfg, true),
+      None
+    );
   }
 }
