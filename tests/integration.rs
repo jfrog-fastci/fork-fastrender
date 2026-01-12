@@ -11,6 +11,7 @@ mod browser_integration;
 mod guards;
 mod interaction;
 mod js;
+mod interaction;
 mod resource;
 
 // Keep the reference image comparison helpers available for fixture-style tests.
