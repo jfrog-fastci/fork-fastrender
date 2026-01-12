@@ -230,6 +230,37 @@ fn array_destructuring_binds_elements_and_holes() {
 }
 
 #[test]
+fn array_destructuring_elision_does_not_access_iterator_value() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      var valueGets = 0;
+      var returnCalls = 0;
+      var iter = {};
+      iter[Symbol.iterator] = function () {
+        var i = 0;
+        return {
+          next() {
+            i++;
+            const v = i;
+            return {
+              get value() { valueGets++; return v; },
+              done: false,
+            };
+          },
+          return() { returnCalls++; return {}; },
+        };
+      };
+      var [,x] = iter;
+      valueGets === 1 && x === 2 && returnCalls === 1
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn array_destructuring_supports_defaults() {
   let mut rt = new_runtime();
   let value = rt.exec_script(r#"var [x=1] = []; x===1"#).unwrap();

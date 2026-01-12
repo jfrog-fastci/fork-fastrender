@@ -451,12 +451,14 @@ fn bind_array_pattern(
     }
 
     let Some(elem) = elem else {
-      // Elision: still advance the iterator and discard the value.
-      if let Err(err) =
-        crate::iterator::iterator_step_value(vm, host, hooks, scope, &mut iterator_record)
-      {
+      // Elision: still advance the iterator but do not read `value`.
+      //
+      // Spec: `IteratorBindingInitialization` uses `IteratorStep` for elisions, *not*
+      // `IteratorStepValue`. This avoids observable access to the iterator result's `value`
+      // property (e.g. a throwing getter) when the element is skipped.
+      if let Err(err) = crate::iterator::iterator_step(vm, host, hooks, scope, &mut iterator_record) {
         return Err(err);
-      };
+      }
       continue;
     };
 
