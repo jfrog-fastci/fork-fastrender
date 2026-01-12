@@ -113,17 +113,17 @@ bash scripts/cargo_agent.sh xtask webidl-bindings --check
 Run the tests that correspond to what you changed:
 
 ```bash
-# webidl crate tests (vendored ecma-rs workspace; `cargo_agent.sh` will auto-scope it).
-bash scripts/cargo_agent.sh test -p webidl
+# webidl crate tests (vendored ecma-rs workspace).
+bash scripts/cargo_agent.sh test --manifest-path vendor/ecma-rs/Cargo.toml -p webidl
 
 # webidl-vm-js adapter tests.
-bash scripts/cargo_agent.sh test -p webidl-vm-js
+bash scripts/cargo_agent.sh test --manifest-path vendor/ecma-rs/Cargo.toml -p webidl-vm-js
 
 # Binding generator goldens / snapshot checks.
 bash scripts/cargo_agent.sh test -p xtask --test webidl_bindings_snapshots_up_to_date
 
 # FastRender integration tests that exercise WebIDL-driven bindings.
-bash scripts/cargo_agent.sh test -p fastrender --test misc -- js_webidl
+bash scripts/cargo_agent.sh test -p fastrender --test misc_tests -- js_webidl
 ```
 
 ## Related docs
