@@ -1529,7 +1529,7 @@ impl ModuleGraph {
         let Some(roots) = self
           .modules
           .get(root_idx)
-          .and_then(|m| m.top_level_capability.as_ref())
+          .and_then(|r| r.top_level_capability.as_ref())
         else {
           return Err(VmError::InvariantViolation(
             "module is evaluating-async but has no stored evaluation promise capability",
