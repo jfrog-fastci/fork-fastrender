@@ -4,7 +4,7 @@
 //! The types are `pub` so integration tests can exercise the database
 //! end-to-end, but consumers should treat them as unstable internals.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
@@ -35,12 +35,12 @@ pub use queries::{
   body_parents_in_file, body_to_file, cache_stats, cancelled, compiler_options, db_revision,
   decl_types, decl_types_fingerprint, def_file, def_to_file, expr_at, file_kind, file_span_index,
   file_text, global_bindings, local_symbol_info, lower_hir, module_dep_diagnostics, module_deps,
-  module_resolve, module_reverse_deps, module_specifiers, module_transitive_reverse_deps, parse,
-  parse_query_count, program_diagnostics, reachable_files, reset_parse_query_count, roots, sem_hir,
-  span_of_def, span_of_expr, symbol_occurrences, ts_semantics, type_at,
-  unresolved_module_diagnostics, var_initializer, DeclInfo, DeclKind, GlobalBindingsDb,
-  Initializer, LowerResultWithDiagnostics, SharedTypeStore, TsSemantics, TypeDatabase,
-  TypeSemantics, TypesDatabase, VarInit,
+  module_namespace_defs, module_resolve, module_reverse_deps, module_specifiers,
+  module_transitive_reverse_deps, parse, parse_query_count, program_diagnostics, reachable_files,
+  reset_parse_query_count, roots, sem_hir, span_of_def, span_of_expr, symbol_occurrences,
+  ts_semantics, type_at, unresolved_module_diagnostics, value_defs, var_initializer, DeclInfo,
+  DeclKind, GlobalBindingsDb, Initializer, LowerResultWithDiagnostics, SharedTypeStore, TsSemantics,
+  TypeDatabase, TypeSemantics, TypesDatabase, VarInit,
 };
 pub use spans::FileSpanIndex;
 
@@ -69,8 +69,6 @@ impl ModuleKey {
 pub trait Db: salsa::Database + Send + 'static {
   fn compiler_options_input(&self) -> inputs::CompilerOptionsInput;
   fn type_store_input(&self) -> inputs::TypeStoreInput;
-  fn value_defs_input(&self) -> inputs::ValueDefsInput;
-  fn module_namespace_defs_input(&self) -> inputs::ModuleNamespaceDefsInput;
   fn roots_input(&self) -> inputs::RootsInput;
   fn cancelled_input(&self) -> inputs::CancelledInput;
   fn file_input(&self, file: FileId) -> Option<inputs::FileInput>;
@@ -95,8 +93,6 @@ pub struct Database {
   storage: salsa::Storage<Self>,
   compiler_options_input: Option<inputs::CompilerOptionsInput>,
   type_store_input: Option<inputs::TypeStoreInput>,
-  value_defs_input: Option<inputs::ValueDefsInput>,
-  module_namespace_defs_input: Option<inputs::ModuleNamespaceDefsInput>,
   roots_input: Option<inputs::RootsInput>,
   cancelled_input: Option<inputs::CancelledInput>,
   files: BTreeMap<FileId, inputs::FileInput>,
@@ -114,8 +110,6 @@ impl Default for Database {
       storage: salsa::Storage::default(),
       compiler_options_input: None,
       type_store_input: None,
-      value_defs_input: None,
-      module_namespace_defs_input: None,
       roots_input: None,
       cancelled_input: None,
       files: BTreeMap::new(),
@@ -148,18 +142,6 @@ impl Db for Database {
     self
       .type_store_input
       .expect("type store must be initialized")
-  }
-
-  fn value_defs_input(&self) -> inputs::ValueDefsInput {
-    self
-      .value_defs_input
-      .expect("value defs must be initialized")
-  }
-
-  fn module_namespace_defs_input(&self) -> inputs::ModuleNamespaceDefsInput {
-    self
-      .module_namespace_defs_input
-      .expect("module namespace defs must be initialized")
   }
 
   fn roots_input(&self) -> inputs::RootsInput {
@@ -254,11 +236,6 @@ impl Database {
     self.type_store_input = Some(inputs::TypeStoreInput::new(
       self,
       crate::db::types::SharedTypeStore(store),
-    ));
-    self.value_defs_input = Some(inputs::ValueDefsInput::new(self, Arc::new(HashMap::new())));
-    self.module_namespace_defs_input = Some(inputs::ModuleNamespaceDefsInput::new(
-      self,
-      Arc::new(HashMap::new()),
     ));
     self.roots_input = Some(inputs::RootsInput::new(self, Arc::<[FileKey]>::from([])));
     self.cancelled_input = Some(inputs::CancelledInput::new(
@@ -381,7 +358,10 @@ impl Database {
   /// Snapshot module resolution inputs stored for a single `from` file.
   ///
   /// Returned entries are ordered deterministically by `specifier`.
-  pub fn module_resolutions_snapshot_for_file(&self, from: FileId) -> Vec<(String, Option<FileId>)> {
+  pub fn module_resolutions_snapshot_for_file(
+    &self,
+    from: FileId,
+  ) -> Vec<(String, Option<FileId>)> {
     self
       .module_resolutions
       .get(&from)
@@ -553,22 +533,6 @@ impl Database {
       handle.set_store(self).to(store);
     } else {
       self.type_store_input = Some(inputs::TypeStoreInput::new(self, store));
-    }
-  }
-
-  pub fn set_value_defs(&mut self, defs: Arc<HashMap<DefId, DefId>>) {
-    if let Some(handle) = self.value_defs_input {
-      handle.set_defs(self).to(defs);
-    } else {
-      self.value_defs_input = Some(inputs::ValueDefsInput::new(self, defs));
-    }
-  }
-
-  pub fn set_module_namespace_defs(&mut self, defs: Arc<HashMap<FileId, DefId>>) {
-    if let Some(handle) = self.module_namespace_defs_input {
-      handle.set_defs(self).to(defs);
-    } else {
-      self.module_namespace_defs_input = Some(inputs::ModuleNamespaceDefsInput::new(self, defs));
     }
   }
 

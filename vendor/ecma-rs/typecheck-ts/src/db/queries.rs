@@ -1,6 +1,7 @@
 use std::cmp::Reverse;
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::fmt;
+use std::hash::{Hash, Hasher};
 use std::panic::panic_any;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -488,6 +489,52 @@ fn deterministic_symbol_id(name: &str) -> SymbolId {
   }
   let folded = hash ^ (hash >> 32);
   SymbolId(folded)
+}
+
+fn stable_hash_u32<T: Hash>(value: &T) -> u32 {
+  struct StableHasher(u64);
+
+  impl StableHasher {
+    const OFFSET: u64 = 0xcbf29ce484222325;
+    const PRIME: u64 = 0x100000001b3;
+
+    fn new() -> Self {
+      StableHasher(Self::OFFSET)
+    }
+  }
+
+  impl Hasher for StableHasher {
+    fn finish(&self) -> u64 {
+      self.0
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+      for b in bytes {
+        self.0 ^= *b as u64;
+        self.0 = self.0.wrapping_mul(Self::PRIME);
+      }
+    }
+  }
+
+  let mut hasher = StableHasher::new();
+  value.hash(&mut hasher);
+  let hash = hasher.finish();
+  (hash ^ (hash >> 32)) as u32
+}
+
+fn alloc_synthetic_def_id<T: Hash>(file: FileId, taken: &mut HashSet<DefId>, seed: &T) -> DefId {
+  for salt in 0u32.. {
+    let candidate = if salt == 0 {
+      stable_hash_u32(seed)
+    } else {
+      stable_hash_u32(&(seed, salt))
+    };
+    let id = DefId::new(file, candidate);
+    if taken.insert(id) {
+      return id;
+    }
+  }
+  unreachable!("exhausted u32 space allocating synthetic def id")
 }
 
 /// Global value bindings derived from TS semantics, `.d.ts` files, and builtin
@@ -2153,6 +2200,92 @@ fn flat_defs_for(db: &dyn Db) -> Arc<HashMap<(FileId, String), DefId>> {
   Arc::new(map)
 }
 
+/// Mapping from type-side definition IDs (classes/enums) to their synthesized
+/// value-side definition IDs.
+#[salsa::tracked]
+fn value_defs_for(db: &dyn Db) -> Arc<HashMap<DefId, DefId>> {
+  panic_if_cancelled(db);
+  let files = all_files_for(db);
+  let mut file_ids: Vec<FileId> = files.iter().copied().collect();
+  file_ids.sort_by_key(|id| id.0);
+
+  let mut defs = HashMap::new();
+  for file_id in file_ids {
+    panic_if_cancelled(db);
+    let Some(input) = db.file_input(file_id) else {
+      continue;
+    };
+    let lowered = lower_hir_for(db, input);
+    let Some(lowered) = lowered.lowered.as_deref() else {
+      continue;
+    };
+
+    let mut taken: HashSet<DefId> = lowered.defs.iter().map(|def| def.id).collect();
+    let mut class_enum_type_defs: Vec<(DefId, u32)> = Vec::new();
+    for def in lowered.defs.iter() {
+      match def.path.kind {
+        DefKind::Class => class_enum_type_defs.push((def.id, 1)),
+        DefKind::Enum => class_enum_type_defs.push((def.id, 2)),
+        _ => {}
+      }
+    }
+    class_enum_type_defs.sort_by_key(|(def, tag)| (def.0, *tag));
+    for (type_def, tag) in class_enum_type_defs {
+      let value_def = alloc_synthetic_def_id(
+        file_id,
+        &mut taken,
+        &("ts_value_def", file_id.0, type_def.0, tag),
+      );
+      defs.insert(type_def, value_def);
+    }
+  }
+
+  Arc::new(defs)
+}
+
+/// Synthetic module namespace definitions keyed by file.
+///
+/// These defs back `typeof import("./mod")` queries and module namespace object
+/// types.
+#[salsa::tracked]
+fn module_namespace_defs_for(db: &dyn Db) -> Arc<HashMap<FileId, DefId>> {
+  panic_if_cancelled(db);
+  let files = all_files_for(db);
+  let mut file_ids: Vec<FileId> = files.iter().copied().collect();
+  file_ids.sort_by_key(|id| id.0);
+
+  let value_defs = value_defs_for(db);
+  let mut value_defs_by_file: HashMap<FileId, Vec<DefId>> = HashMap::new();
+  for (type_def, value_def) in value_defs.iter() {
+    value_defs_by_file
+      .entry(type_def.file())
+      .or_default()
+      .push(*value_def);
+  }
+
+  let mut defs = HashMap::new();
+  for file_id in file_ids {
+    panic_if_cancelled(db);
+    let Some(input) = db.file_input(file_id) else {
+      continue;
+    };
+    let key = input.key(db);
+    let lowered = lower_hir_for(db, input);
+    let mut taken: HashSet<DefId> = HashSet::new();
+    if let Some(lowered) = lowered.lowered.as_deref() {
+      taken.extend(lowered.defs.iter().map(|def| def.id));
+    }
+    if let Some(extra) = value_defs_by_file.get(&file_id) {
+      taken.extend(extra.iter().copied());
+    }
+    let namespace_def =
+      alloc_synthetic_def_id(file_id, &mut taken, &("ts_module_namespace", key.as_str()));
+    defs.insert(file_id, namespace_def);
+  }
+
+  Arc::new(defs)
+}
+
 fn decl_types_digest(decls: &DeclTypes) -> u64 {
   let mut hasher = StableHasher::new();
 
@@ -2266,8 +2399,8 @@ fn decl_types_for(db: &dyn Db, file: FileInput) -> SharedDeclTypes {
   let file_key = Some(file.key(db));
   let strict_native = compiler_options(db).strict_native && file.kind(db) != FileKind::Dts;
   let defs = flat_defs_for(db);
-  let module_namespace_defs = db.module_namespace_defs_input().defs(db).clone();
-  let value_defs = db.value_defs_input().defs(db).clone();
+  let module_namespace_defs = module_namespace_defs_for(db);
+  let value_defs = value_defs_for(db);
   let semantics = file_semantics_for(db, file);
   let decls = crate::db::decl::lower_decl_types(
     Arc::clone(&store),
@@ -2519,6 +2652,14 @@ pub fn unresolved_module_diagnostics(db: &dyn Db, file: FileId) -> Arc<[Diagnost
 
 pub fn reachable_files(db: &dyn Db) -> Arc<Vec<FileId>> {
   all_files_for(db)
+}
+
+pub fn value_defs(db: &dyn Db) -> Arc<HashMap<DefId, DefId>> {
+  value_defs_for(db)
+}
+
+pub fn module_namespace_defs(db: &dyn Db) -> Arc<HashMap<FileId, DefId>> {
+  module_namespace_defs_for(db)
 }
 
 pub fn sem_hir(db: &dyn Db, file: FileId) -> sem_ts::HirFile {

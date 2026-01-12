@@ -450,12 +450,6 @@ impl Program {
       state.next_body = snapshot.next_body;
       state.sync_typecheck_roots();
       state.rebuild_module_namespace_defs();
-      let module_namespace_defs = Arc::new(state.module_namespace_defs.clone());
-      let value_defs = Arc::new(state.value_defs.clone());
-      state
-        .typecheck_db
-        .set_module_namespace_defs(module_namespace_defs);
-      state.typecheck_db.set_value_defs(value_defs);
       state.rebuild_callable_overloads();
       state.merge_callable_overload_types();
       state.rebuild_interned_named_def_types();

@@ -336,12 +336,6 @@ impl ProgramState {
     self.resolve_reexports();
     self.rebuild_callable_overloads();
     self.rebuild_module_namespace_defs();
-    self
-      .typecheck_db
-      .set_module_namespace_defs(Arc::new(self.module_namespace_defs.clone()));
-    self
-      .typecheck_db
-      .set_value_defs(Arc::new(self.value_defs.clone()));
     self.recompute_global_bindings();
     self.rebuild_namespace_member_index()?;
     self.rebuild_body_owners();
