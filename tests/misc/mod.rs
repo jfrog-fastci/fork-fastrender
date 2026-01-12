@@ -5,7 +5,7 @@
 ///
 /// The implementation lives in `tests/common/` so the consolidated `tests/integration.rs` harness
 /// can share a single lock across modules.
-pub(crate) fn global_test_lock() -> std::sync::MutexGuard<'static, ()> {
+pub(crate) fn global_test_lock() -> crate::common::GlobalTestLockGuard {
   crate::common::global_test_lock()
 }
 mod audio_without_controls_hidden;

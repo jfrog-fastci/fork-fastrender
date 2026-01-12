@@ -7,16 +7,14 @@
 
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, MutexGuard, OnceLock};
+
+pub type GlobalTestLockGuard = parking_lot::ReentrantMutexGuard<'static, ()>;
 
 /// Serialises tests that mutate process-global state (environment variables, current directory,
 /// etc).
-pub fn global_test_lock() -> MutexGuard<'static, ()> {
-  static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-  LOCK
-    .get_or_init(|| Mutex::new(()))
-    .lock()
-    .unwrap_or_else(|poisoned| poisoned.into_inner())
+pub fn global_test_lock() -> GlobalTestLockGuard {
+  static LOCK: parking_lot::ReentrantMutex<()> = parking_lot::ReentrantMutex::new(());
+  LOCK.lock()
 }
 
 /// Run `f` while holding the process-global test lock.
@@ -29,7 +27,7 @@ pub(crate) fn with_global_lock<R>(f: impl FnOnce() -> R) -> R {
 /// test lock.
 #[must_use]
 pub(crate) struct EnvVarGuard {
-  _lock: MutexGuard<'static, ()>,
+  _lock: GlobalTestLockGuard,
   key: OsString,
   previous: Option<OsString>,
 }
@@ -89,7 +87,7 @@ impl Drop for EnvVarGuard {
 /// RAII guard that sets/removes multiple environment variables while holding the global test lock.
 #[must_use]
 pub(crate) struct EnvVarsGuard {
-  _lock: MutexGuard<'static, ()>,
+  _lock: GlobalTestLockGuard,
   // Restore in reverse order so repeated keys behave intuitively.
   saved: Vec<(OsString, Option<OsString>)>,
 }
@@ -142,7 +140,7 @@ impl Drop for EnvVarsGuard {
 /// RAII guard that changes the current working directory while holding the global test lock.
 #[must_use]
 pub(crate) struct CurrentDirGuard {
-  _lock: MutexGuard<'static, ()>,
+  _lock: GlobalTestLockGuard,
   previous: PathBuf,
 }
 
