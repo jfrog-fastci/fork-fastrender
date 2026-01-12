@@ -1,6 +1,8 @@
 #![cfg(feature = "native-js-runner")]
 
-use native_oracle_harness::{NativeJsRunner, NativeRunner, NativeRunner2, RunOutcome};
+use native_oracle_harness::{
+  NativeJsRunner, NativeRunner, NativeRunner2, RunOutcome, VmJsOracleRunner,
+};
 use std::process::{Command, Stdio};
 
 fn cmd_works(cmd: &str) -> bool {
@@ -21,6 +23,8 @@ fn llvm_toolchain_available() -> bool {
   (cmd_works("clang-18") || cmd_works("clang"))
     && (cmd_works("ld.lld-18") || cmd_works("ld.lld"))
     && (cmd_works("llvm-objcopy-18") || cmd_works("llvm-objcopy"))
+    && native_js::link::find_runtime_native_staticlib()
+      .is_some_and(|p| p.is_file())
 }
 
 #[test]
@@ -32,10 +36,14 @@ fn native_js_runner_smoke() {
   }
 
   let runner = NativeJsRunner::new();
+  let oracle = VmJsOracleRunner::new();
 
   let out = NativeRunner::compile_and_run(&runner, "console.log(1 + 2 * 3);")
     .expect("compile_and_run arithmetic");
   assert_eq!(out, "7");
+  let oracle_out = NativeRunner::compile_and_run(&oracle, "console.log(1 + 2 * 3);")
+    .expect("oracle arithmetic");
+  assert_eq!(oracle_out, "7");
 
   let out = NativeRunner2::compile_and_run(&runner, "console.log(true);");
   match out {
@@ -45,4 +53,7 @@ fn native_js_runner_smoke() {
     }
     other => panic!("expected Ok outcome, got {other:?}"),
   }
+
+  let oracle_out = NativeRunner::compile_and_run(&oracle, "console.log(true);").expect("oracle boolean");
+  assert_eq!(oracle_out, "true");
 }

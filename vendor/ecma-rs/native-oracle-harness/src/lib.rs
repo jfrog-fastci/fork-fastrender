@@ -1400,10 +1400,14 @@ fn vm_error_to_outcome(rt: &mut JsRuntime, err: VmError) -> RunOutcome {
   }
 }
 
-/// Future boundary for a native TS→native backend.
+/// Future boundary for a TS→native backend.
 ///
-/// The oracle harness can run TS through the `vm-js` reference engine today; once `native-js`
-/// exists, it can implement this trait so the same fixtures can be compared against native output.
+/// This trait is intentionally lightweight: it takes a TypeScript snippet and returns the
+/// **captured `console.log` output** (as a single string with trailing whitespace trimmed).
+///
+/// The `vm-js` oracle implements this by running the snippet under the interpreter with a minimal
+/// injected `console.log`, while the `native-js` runner implements it by compiling to a native
+/// executable and capturing its stdout.
 pub trait NativeRunner {
   fn compile_and_run(&self, ts: &str) -> Result<String, Diagnostic>;
 }
@@ -1433,7 +1437,42 @@ impl Default for VmJsOracleRunner {
 
 impl NativeRunner for VmJsOracleRunner {
   fn compile_and_run(&self, ts: &str) -> Result<String, Diagnostic> {
-    run_fixture_ts(ts)
+    match run_fixture_ts_outcome(ts) {
+      RunOutcome::Ok { stdout, .. } => Ok(stdout),
+      RunOutcome::CompileError { diagnostic } => Err(diagnostic),
+      RunOutcome::Throw {
+        message,
+        stack,
+        stdout,
+        stderr,
+      } => {
+        let mut diag = harness_error(format!("uncaught exception: {message}"));
+        if let Some(stack) = stack {
+          diag.push_note(stack);
+        }
+        if !stdout.is_empty() {
+          diag.push_note(format!("stdout:\n{stdout}"));
+        }
+        if !stderr.is_empty() {
+          diag.push_note(format!("stderr:\n{stderr}"));
+        }
+        Err(diag)
+      }
+      RunOutcome::Terminated {
+        message,
+        stdout,
+        stderr,
+      } => {
+        let mut diag = harness_error(format!("execution terminated: {message}"));
+        if !stdout.is_empty() {
+          diag.push_note(format!("stdout:\n{stdout}"));
+        }
+        if !stderr.is_empty() {
+          diag.push_note(format!("stderr:\n{stderr}"));
+        }
+        Err(diag)
+      }
+    }
   }
 }
 
