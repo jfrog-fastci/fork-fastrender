@@ -520,13 +520,10 @@ impl LayoutStore {
     collect_unconditional(self, layout).into_iter().collect()
   }
 
-  fn canonical_closure_payload_layout(&self) -> LayoutId {
-    let fn_ptr = self.intern_layout(Layout::Ptr {
-      to: PtrKind::Opaque,
-    });
+  fn closure_header_fields(&self) -> Vec<FieldLayout> {
+    let fn_ptr = self.intern_layout(Layout::Ptr { to: PtrKind::Opaque });
     let env = self.intern_layout(Layout::Ptr { to: PtrKind::GcAny });
-
-    let fields = vec![
+    vec![
       FieldLayout {
         key: FieldKey::Internal("fn_ptr".to_string()),
         offset: 0,
@@ -541,7 +538,11 @@ impl LayoutStore {
         align: PTR_ALIGN,
         layout: env,
       },
-    ];
+    ]
+  }
+
+  fn canonical_closure_payload_layout(&self) -> LayoutId {
+    let fields = self.closure_header_fields();
     let size = PTR_SIZE * 2;
     let align = PTR_ALIGN;
     self.intern_layout(Layout::Struct {
@@ -654,24 +655,7 @@ impl LayoutStore {
     let mut fields = Vec::with_capacity(properties.len().saturating_add(if is_callable_object { 2 } else { 0 }));
 
     if is_callable_object {
-      let fn_ptr = self.intern_layout(Layout::Ptr { to: PtrKind::Opaque });
-      let env = self.intern_layout(Layout::Ptr { to: PtrKind::GcAny });
-
-      fields.push(FieldLayout {
-        key: FieldKey::Internal("fn_ptr".to_string()),
-        offset: 0,
-        size: PTR_SIZE,
-        align: PTR_ALIGN,
-        layout: fn_ptr,
-      });
-      fields.push(FieldLayout {
-        key: FieldKey::Internal("env".to_string()),
-        offset: PTR_SIZE,
-        size: PTR_SIZE,
-        align: PTR_ALIGN,
-        layout: env,
-      });
-
+      fields.extend(self.closure_header_fields());
       offset = PTR_SIZE * 2;
       align = PTR_ALIGN;
     }
