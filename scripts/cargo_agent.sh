@@ -614,10 +614,14 @@ run_cargo() {
     if [[ -n "${jobs}" ]]; then
       build_cmd+=(-j "${jobs}")
     fi
+    local build_status=0
     if [[ -z "${limit_as}" || "${limit_as}" == "0" || "${limit_as}" == "off" ]]; then
-      (cd "${workdir}" && "${build_cmd[@]}")
+      (cd "${workdir}" && "${build_cmd[@]}") || build_status=$?
     else
-      (cd "${workdir}" && bash "${repo_root}/scripts/run_limited.sh" --as "${limit_as}" -- "${build_cmd[@]}")
+      (cd "${workdir}" && bash "${repo_root}/scripts/run_limited.sh" --as "${limit_as}" -- "${build_cmd[@]}") || build_status=$?
+    fi
+    if [[ "${build_status}" -ne 0 ]]; then
+      return "${build_status}"
     fi
 
     local target_dir="${CARGO_TARGET_DIR:-}"
