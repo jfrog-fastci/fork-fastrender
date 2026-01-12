@@ -308,6 +308,7 @@ mod imp {
 /// Notes:
 /// - The allocator is leak-only for now (no frees).
 /// - `align` must be a power of two. `align = 1` is allowed.
+#[allow(dead_code)]
 pub(crate) fn alloc_bytes(size: usize, align: usize, context: &str) -> *mut u8 {
   imp::alloc_bytes(size, align, context)
 }

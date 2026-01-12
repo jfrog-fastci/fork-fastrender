@@ -166,10 +166,19 @@ fn bytes_from_raw<'a>(ptr: *const u8, len: usize, context: &'static str) -> &'a 
   unsafe { std::slice::from_raw_parts(ptr, len) }
 }
 
+#[repr(C)]
+struct StringAllocHeader {
+  magic: u64,
+  size: usize,
+  align: usize,
+}
+
+const STRING_ALLOC_MAGIC: u64 = u64::from_ne_bytes(*b"RTSTRCON");
+
 /// Concatenate two UTF-8 byte strings into a new allocation.
 ///
-/// The returned bytes are allocated using the Rust global allocator and must be
-/// released by calling [`rt_stringref_free`].
+/// The returned bytes are allocated outside the GC heap (stable across GC) and must be freed by
+/// calling [`rt_string_free`] (or the legacy alias [`rt_stringref_free`]).
 #[no_mangle]
 pub extern "C" fn rt_string_concat(a: *const u8, a_len: usize, b: *const u8, b_len: usize) -> StringRef {
   abort_on_panic(|| {
@@ -199,44 +208,73 @@ pub extern "C" fn rt_string_concat(a: *const u8, a_len: usize, b: *const u8, b_l
       return StringRef::empty();
     }
 
-    let mut out = Vec::new();
-    out
-      .try_reserve_exact(len)
-      .unwrap_or_else(|_| trap::rt_trap_oom(len, "rt_string_concat"));
-    out.extend_from_slice(a_bytes);
-    out.extend_from_slice(b_bytes);
+    let header_size = core::mem::size_of::<StringAllocHeader>();
+    let align = core::mem::align_of::<StringAllocHeader>();
+    let alloc_size = header_size
+      .checked_add(len)
+      .unwrap_or_else(|| trap::rt_trap_invalid_arg("rt_string_concat: length overflow"));
+    let layout = std::alloc::Layout::from_size_align(alloc_size, align)
+      .unwrap_or_else(|_| trap::rt_trap_invalid_arg("rt_string_concat: invalid allocation layout"));
+    let base = unsafe { std::alloc::alloc(layout) };
+    if base.is_null() {
+      trap::rt_trap_oom(alloc_size, "rt_string_concat");
+    }
 
-    let boxed: Box<[u8]> = out.into_boxed_slice();
-    let ptr = Box::into_raw(boxed) as *mut u8;
+    unsafe {
+      // `base` points to a unique allocation of `alloc_size` bytes.
+      (base as *mut StringAllocHeader).write(StringAllocHeader {
+        magic: STRING_ALLOC_MAGIC,
+        size: alloc_size,
+        align,
+      });
 
-    StringRef {
-      ptr: ptr as *const u8,
-      len,
+      let out = base.add(header_size);
+      ptr::copy_nonoverlapping(a_bytes.as_ptr(), out, a_len);
+      ptr::copy_nonoverlapping(b_bytes.as_ptr(), out.add(a_len), b_len);
+      StringRef { ptr: out, len }
     }
   })
 }
 
-/// Free an owned [`StringRef`] allocated by [`rt_string_concat`] or
-/// [`rt_string_to_owned_utf8`].
+/// Free an owned [`StringRef`] allocated by [`rt_string_concat`] or [`rt_string_to_owned_utf8`].
 ///
-/// This is a no-op for empty string references (`len == 0`).
+/// This is a no-op for `len == 0` (including `{NULL, 0}`).
 #[no_mangle]
-pub extern "C" fn rt_stringref_free(s: StringRef) {
-  abort_on_panic(|| {
+pub extern "C" fn rt_string_free(s: StringRef) {
+  abort_on_panic(|| unsafe {
     if s.len == 0 {
       return;
     }
     if s.ptr.is_null() {
-      trap::rt_trap_invalid_arg("rt_stringref_free: `s.ptr` was null but `s.len` was non-zero");
+      trap::rt_trap_invalid_arg("rt_string_free: `s.ptr` was null but `s.len` was non-zero");
     }
 
-    // SAFETY: The pointer must originate from `Box::into_raw(Box<[u8]>)` in
-    // `rt_string_concat` or `rt_string_to_owned_utf8`.
-    unsafe {
-      let slice = core::ptr::slice_from_raw_parts_mut(s.ptr as *mut u8, s.len);
-      drop(Box::from_raw(slice));
+    let header_size = core::mem::size_of::<StringAllocHeader>();
+    let base = (s.ptr as *mut u8).sub(header_size);
+    let header = &*(base as *const StringAllocHeader);
+    if header.magic != STRING_ALLOC_MAGIC {
+      trap::rt_trap_invalid_arg("rt_string_free: buffer was not allocated by rt_string_concat");
     }
+    if header.size < header_size {
+      trap::rt_trap_invalid_arg("rt_string_free: invalid allocation header");
+    }
+    let payload_len = header.size - header_size;
+    if payload_len != s.len {
+      trap::rt_trap_invalid_arg("rt_string_free: length mismatch");
+    }
+    if header.align == 0 || !header.align.is_power_of_two() {
+      trap::rt_trap_invalid_arg("rt_string_free: invalid allocation alignment");
+    }
+    let layout = std::alloc::Layout::from_size_align(header.size, header.align)
+      .unwrap_or_else(|_| trap::rt_trap_invalid_arg("rt_string_free: invalid allocation layout"));
+    std::alloc::dealloc(base, layout);
   })
+}
+
+/// Compatibility alias for older codegen/tests. Prefer [`rt_string_free`].
+#[no_mangle]
+pub extern "C" fn rt_stringref_free(s: StringRef) {
+  rt_string_free(s)
 }
 
 /// Allocate a GC-managed UTF-8 string and copy `bytes`.
@@ -290,7 +328,7 @@ pub extern "C" fn rt_string_as_utf8(s: GcPtr) -> StringRef {
 
 /// Allocate and return an owned copy of the UTF-8 bytes of a GC-managed string.
 ///
-/// The returned [`StringRef`] must be freed via [`rt_stringref_free`].
+/// The returned [`StringRef`] must be freed via [`rt_string_free`] (or [`rt_stringref_free`]).
 #[no_mangle]
 pub extern "C" fn rt_string_to_owned_utf8(s: GcPtr) -> StringRef {
   abort_on_panic(|| {
@@ -303,18 +341,27 @@ pub extern "C" fn rt_string_to_owned_utf8(s: GcPtr) -> StringRef {
       }
       let bytes = core::slice::from_raw_parts(s.add(RT_STRING_DATA_OFFSET), len);
 
-      let mut out = Vec::new();
-      out
-        .try_reserve_exact(len)
-        .unwrap_or_else(|_| trap::rt_trap_oom(len, "rt_string_to_owned_utf8"));
-      out.extend_from_slice(bytes);
-
-      let boxed: Box<[u8]> = out.into_boxed_slice();
-      let ptr = Box::into_raw(boxed) as *mut u8;
-      StringRef {
-        ptr: ptr as *const u8,
-        len,
+      let header_size = core::mem::size_of::<StringAllocHeader>();
+      let align = core::mem::align_of::<StringAllocHeader>();
+      let alloc_size = header_size
+        .checked_add(len)
+        .unwrap_or_else(|| trap::rt_trap_invalid_arg("rt_string_to_owned_utf8: length overflow"));
+      let layout = std::alloc::Layout::from_size_align(alloc_size, align)
+        .unwrap_or_else(|_| trap::rt_trap_invalid_arg("rt_string_to_owned_utf8: invalid allocation layout"));
+      let base = std::alloc::alloc(layout);
+      if base.is_null() {
+        trap::rt_trap_oom(alloc_size, "rt_string_to_owned_utf8");
       }
+
+      (base as *mut StringAllocHeader).write(StringAllocHeader {
+        magic: STRING_ALLOC_MAGIC,
+        size: alloc_size,
+        align,
+      });
+
+      let out = base.add(header_size);
+      ptr::copy_nonoverlapping(bytes.as_ptr(), out, len);
+      StringRef { ptr: out, len }
     }
   })
 }

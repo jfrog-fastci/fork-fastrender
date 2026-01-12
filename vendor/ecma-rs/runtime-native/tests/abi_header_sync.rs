@@ -85,6 +85,9 @@ fn runtime_native_c_header_contains_expected_abi_symbols() {
     "rt_register_shape_table_append(",
     "rt_parallel_spawn_rooted(",
     "rt_parallel_spawn_rooted_h(",
+    // Strings.
+    "rt_string_concat(",
+    "rt_string_free(",
     "rt_parallel_for_rooted(",
     "rt_parallel_for_rooted_h(",
     "rt_parallel_spawn_promise_rooted(",
@@ -321,6 +324,11 @@ fn runtime_native_exports_match_expected_abi_signatures() {
     runtime_native::rt_queue_microtask_handle_with_drop;
   let _drain_microtasks: extern "C" fn() -> bool = runtime_native::rt_drain_microtasks_abi;
 
+  // Strings.
+  let _string_concat: extern "C" fn(*const u8, usize, *const u8, usize) -> runtime_native::StringRef =
+    runtime_native::rt_string_concat;
+  let _string_free: extern "C" fn(runtime_native::StringRef) = runtime_native::rt_string_free;
+
   // Per-thread shadow stack root push/pop.
   let _root_push: unsafe extern "C" fn(runtime_native::roots::GcHandle) = runtime_native::rt_root_push;
   let _root_pop: unsafe extern "C" fn(runtime_native::roots::GcHandle) = runtime_native::rt_root_pop;
@@ -513,6 +521,8 @@ fn runtime_native_exports_match_expected_abi_signatures() {
     _queue_microtask_handle,
     _queue_microtask_handle_with_drop,
     _drain_microtasks,
+    _string_concat,
+    _string_free,
     _root_push,
     _root_pop,
     _parallel_spawn_rooted,
