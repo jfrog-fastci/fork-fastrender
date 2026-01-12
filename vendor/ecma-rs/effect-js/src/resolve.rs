@@ -29,6 +29,7 @@ fn static_object_key_name<'a>(
         ExprKind::Literal(hir_js::Literal::String(s)) => Some(s.lossy.clone()),
         ExprKind::Literal(hir_js::Literal::Number(n)) => Some(crate::js_string::number_literal_to_js_string(n)),
         ExprKind::Literal(hir_js::Literal::BigInt(n)) => Some(n.clone()),
+        ExprKind::Template(tmpl) if tmpl.spans.is_empty() => Some(tmpl.head.clone()),
         _ => None,
       }
     }
@@ -737,6 +738,19 @@ mod tests {
     let fetch_id = db.id_of("fetch").expect("fetch in KB");
     let lowered =
       hir_js::lower_from_source_with_kind(FileKind::Js, r#"globalThis.fetch("x");"#).unwrap();
+    let (body_id, call_expr) = first_stmt_expr(&lowered);
+    assert_eq!(
+      resolve_api_call_untyped(&db, &lowered, body_id, call_expr),
+      Some(fetch_id)
+    );
+  }
+
+  #[test]
+  fn resolves_global_this_fetch_call_untyped_via_computed_template_key() {
+    let db = crate::load_default_api_database();
+    let fetch_id = db.id_of("fetch").expect("fetch in KB");
+    let lowered =
+      hir_js::lower_from_source_with_kind(FileKind::Js, r#"globalThis[`fetch`]("x");"#).unwrap();
     let (body_id, call_expr) = first_stmt_expr(&lowered);
     assert_eq!(
       resolve_api_call_untyped(&db, &lowered, body_id, call_expr),

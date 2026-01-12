@@ -651,6 +651,7 @@ fn object_key_to_static_string(lower: &LowerResult, body: &Body, key: &ObjectKey
         ExprKind::Literal(Literal::String(lit)) => Some(lit.lossy.clone()),
         ExprKind::Literal(Literal::Number(n)) => Some(crate::js_string::number_literal_to_js_string(n)),
         ExprKind::Literal(Literal::BigInt(n)) => Some(n.clone()),
+        ExprKind::Template(tmpl) if tmpl.spans.is_empty() => Some(tmpl.head.clone()),
         _ => None,
       }
     }
@@ -932,6 +933,17 @@ mod tests {
       r#"
         const fs = require('node:fs');
         fs['readFile']('x', () => {});
+      "#,
+    );
+    assert_eq!(calls, vec!["node:fs.readFile"]);
+  }
+
+  #[test]
+  fn resolves_namespace_require_via_computed_template_key() {
+    let calls = resolved_calls(
+      r#"
+        const fs = require('node:fs');
+        fs[`readFile`]('x', () => {});
       "#,
     );
     assert_eq!(calls, vec!["node:fs.readFile"]);

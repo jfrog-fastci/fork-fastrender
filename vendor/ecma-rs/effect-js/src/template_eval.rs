@@ -411,6 +411,7 @@ fn static_callee_path(lowered: &LowerResult, body: &Body, expr_id: ExprId) -> Op
             ExprKind::Literal(hir_js::Literal::String(lit)) => lit.lossy.clone(),
             ExprKind::Literal(hir_js::Literal::Number(n)) => crate::js_string::number_literal_to_js_string(n),
             ExprKind::Literal(hir_js::Literal::BigInt(n)) => n.clone(),
+            ExprKind::Template(tmpl) if tmpl.spans.is_empty() => tmpl.head.clone(),
             _ => return None,
           }
         }
@@ -527,6 +528,21 @@ mod tests {
     let lowered = hir_js::lower_from_source_with_kind(
       FileKind::Js,
       r#"globalThis["fetch"]("https://example.com");"#,
+    )
+    .unwrap();
+    let (body, call_expr) = first_stmt_expr(&lowered);
+
+    let sem = eval_call_expr(&kb, &lowered, body, call_expr);
+    assert!(sem.effects.contains(EffectSet::IO));
+    assert!(sem.effects.contains(EffectSet::NETWORK));
+  }
+
+  #[test]
+  fn global_this_fetch_resolves_via_computed_template_key() {
+    let kb = crate::load_default_api_database();
+    let lowered = hir_js::lower_from_source_with_kind(
+      FileKind::Js,
+      r#"globalThis[`fetch`]("https://example.com");"#,
     )
     .unwrap();
     let (body, call_expr) = first_stmt_expr(&lowered);

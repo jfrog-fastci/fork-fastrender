@@ -416,6 +416,7 @@ fn object_key_to_string(body: &Body, key: &ObjectKey, names: &NameInterner) -> O
         ExprKind::Literal(Literal::String(lit)) => Some(lit.lossy.clone()),
         ExprKind::Literal(Literal::Number(n)) => Some(crate::js_string::number_literal_to_js_string(n)),
         ExprKind::Literal(Literal::BigInt(n)) => Some(n.clone()),
+        ExprKind::Template(tmpl) if tmpl.spans.is_empty() => Some(tmpl.head.clone()),
         _ => None,
       }
     }
@@ -1366,6 +1367,43 @@ mod tests {
                   if matches!(
                     body.exprs.get(prop.0 as usize).map(|e| &e.kind),
                     Some(ExprKind::Literal(Literal::String(lit))) if lit.lossy == "sqrt"
+                  )
+              )
+          )
+      }
+      _ => false,
+    });
+
+    let kb = kb_for_tests();
+    assert_eq!(
+      resolve_api_use(file, body, call_expr, names, &kb),
+      Some(ResolvedApiUse {
+        api: ApiId::from_name("Math.sqrt"),
+        kind: ApiUseKind::Call,
+      })
+    );
+  }
+
+  #[test]
+  fn resolves_math_sqrt_call_via_computed_template_key() {
+    let source = r#"Math[`sqrt`](4);"#;
+    let lowered = hir_js::lower_from_source(source).expect("lower");
+    let file = lowered.hir.as_ref();
+    let names = &lowered.names;
+    let body = lowered.body(file.root_body).expect("root body");
+
+    let call_expr = find_expr(body, |kind| match kind {
+      ExprKind::Call(call) => {
+        !call.is_new
+          && matches!(
+            body.exprs.get(call.callee.0 as usize).map(|e| &e.kind),
+            Some(ExprKind::Member(member))
+              if matches!(
+                &member.property,
+                ObjectKey::Computed(prop)
+                  if matches!(
+                    body.exprs.get(prop.0 as usize).map(|e| &e.kind),
+                    Some(ExprKind::Template(tmpl)) if tmpl.spans.is_empty() && tmpl.head == "sqrt"
                   )
               )
           )
