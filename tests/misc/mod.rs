@@ -94,7 +94,6 @@ mod vm_js_object_builtins_smoke;
 mod vm_js_optional_chaining_this;
 mod vm_js_promise_job_rooting;
 mod vm_js_promise_smoke;
-mod vm_js_string_replace_all;
 mod vm_js_webidl_constructors;
 mod vm_js_webidl_generated_constructors;
 mod vm_js_webidl_generated_descriptors;
