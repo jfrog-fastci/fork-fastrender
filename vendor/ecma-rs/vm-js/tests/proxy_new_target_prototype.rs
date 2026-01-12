@@ -1,11 +1,15 @@
 use vm_js::{
   get_prototype_from_constructor, GcObject, Heap, HeapLimits, JsRuntime, PropertyDescriptor,
-  PropertyKey, PropertyKind, Scope, Value, Vm, VmError, VmOptions,
+  PropertyKey, PropertyKind, Scope, Value, Vm, VmError, VmOptions, MAX_PROTOTYPE_CHAIN,
 };
 
 fn new_runtime() -> JsRuntime {
+  new_runtime_with_heap_limit(2 * 1024 * 1024)
+}
+
+fn new_runtime_with_heap_limit(bytes: usize) -> JsRuntime {
   let vm = Vm::new(VmOptions::default());
-  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let heap = Heap::new(HeapLimits::new(bytes, bytes));
   JsRuntime::new(vm, heap).unwrap()
 }
 
@@ -129,7 +133,7 @@ fn proxy_get_trap_observed_for_new_target_prototype_in_string_construct() -> Res
 #[test]
 fn get_prototype_from_constructor_throws_on_revoked_proxy() -> Result<(), VmError> {
   let mut vm = Vm::new(VmOptions::default());
-  let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut heap = Heap::new(HeapLimits::new(2 * 1024 * 1024, 2 * 1024 * 1024));
   let mut scope = heap.scope();
 
   let target = scope.alloc_object()?;
@@ -624,6 +628,54 @@ fn proxy_get_prototype_of_trap_observed_for_reflect_get_prototype_of() -> Result
   let value = rt.exec_script(
     r#"
       Reflect.getPrototypeOf(P) === proto && sawGetProto
+    "#,
+  )?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn proxy_set_prototype_of_proxy_chain_too_deep_throws() -> Result<(), VmError> {
+  // This test allocates `MAX_PROTOTYPE_CHAIN` Proxy objects; use a larger heap budget so slot-table
+  // growth doesn't fail with OOM.
+  let mut rt = new_runtime_with_heap_limit(16 * 1024 * 1024);
+  let global = rt.realm().global_object();
+
+  // Create a handler with no `setPrototypeOf` trap so the Proxy `[[SetPrototypeOf]]` algorithm
+  // forwards to the target, walking the Proxy chain.
+  rt.exec_script(
+    r#"
+      var target = {};
+      var handler = {};
+    "#,
+  )?;
+
+  let target = rt.exec_script("target")?;
+  let handler = rt.exec_script("handler")?;
+  let Value::Object(target_obj) = target else {
+    panic!("expected target to be an object, got {target:?}");
+  };
+  let Value::Object(handler_obj) = handler else {
+    panic!("expected handler to be an object, got {handler:?}");
+  };
+
+  // Build a Proxy chain longer than `MAX_PROTOTYPE_CHAIN` so a naive recursive implementation
+  // would overflow the Rust stack.
+  {
+    let (_vm, _realm, heap) = rt.vm_realm_and_heap_mut();
+    let mut scope = heap.scope();
+    let mut current = target_obj;
+    for _ in 0..MAX_PROTOTYPE_CHAIN {
+      current = scope.alloc_proxy(Some(current), Some(handler_obj))?;
+    }
+    define_global(&mut scope, global, "P", Value::Object(current))?;
+  }
+
+  let value = rt.exec_script(
+    r#"
+      var ok = false;
+      try { Reflect.setPrototypeOf(P, null); } catch(e) { ok = e.name === "TypeError"; }
+      ok
     "#,
   )?;
   assert_eq!(value, Value::Bool(true));

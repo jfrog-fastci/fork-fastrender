@@ -3531,34 +3531,74 @@ fn proxy_set_prototype_of(
   proxy: GcObject,
   proto: Option<GcObject>,
 ) -> Result<bool, VmError> {
-  let (target, handler) = proxy_target_and_handler(scope, proxy)?;
-
   let proto_val = match proto {
     Some(p) => Value::Object(p),
     None => Value::Null,
   };
 
+  // Root `proxy` + `proto` across Proxy chain traversal and trap calls so `current` stays valid even
+  // if a `GetMethod`/trap call triggers GC.
   let mut scope = scope.reborrow();
-  scope.push_roots(&[
-    Value::Object(proxy),
-    Value::Object(target),
-    Value::Object(handler),
-    proto_val,
-  ])?;
+  scope.push_roots(&[Value::Object(proxy), proto_val])?;
 
-  let Some(trap) = proxy_get_method(vm, &mut scope, host, hooks, handler, "setPrototypeOf")? else {
-    return scope.set_prototype_of_with_host_and_hooks(vm, host, hooks, target, proto);
-  };
+  // Allocate the trap key once per operation (rather than once per proxy hop).
+  let trap_key_s = scope.alloc_string("setPrototypeOf")?;
+  scope.push_root(Value::String(trap_key_s))?;
+  let trap_key = PropertyKey::from_string(trap_key_s);
 
-  let result = vm.call_with_host_and_hooks(
-    host,
-    &mut scope,
-    hooks,
-    trap,
-    Value::Object(handler),
-    &[Value::Object(target), proto_val],
-  )?;
-  Ok(scope.heap().to_boolean(result)?)
+  // Follow Proxy chains iteratively to avoid recursion: attacker-controlled Proxy chains can be
+  // very deep and can otherwise overflow the Rust stack.
+  let mut current = proxy;
+  let mut steps = 0usize;
+
+  loop {
+    const TICK_EVERY: usize = 1024;
+    if steps != 0 && steps % TICK_EVERY == 0 {
+      vm.tick()?;
+    }
+    if steps >= crate::MAX_PROTOTYPE_CHAIN {
+      return Err(VmError::PrototypeChainTooDeep);
+    }
+    steps += 1;
+
+    if !scope.heap().is_proxy_object(current) {
+      // OrdinarySetPrototypeOf (ECMA-262).
+      let current_proto = scope.heap().object_prototype(current)?;
+      if current_proto == proto {
+        return Ok(true);
+      }
+      if !scope.heap().object_is_extensible(current)? {
+        return Ok(false);
+      }
+      return match scope.heap_mut().object_set_prototype(current, proto) {
+        Ok(()) => Ok(true),
+        Err(VmError::PrototypeCycle | VmError::PrototypeChainTooDeep) => Ok(false),
+        Err(e) => Err(e),
+      };
+    }
+
+    let (target, handler) = proxy_target_and_handler(&scope, current)?;
+    scope.push_roots(&[Value::Object(target), Value::Object(handler)])?;
+
+    let trap =
+      vm.get_method_with_host_and_hooks(host, &mut scope, hooks, Value::Object(handler), trap_key)?;
+    let Some(trap) = trap else {
+      // No trap: forward to the target's `[[SetPrototypeOf]]`.
+      current = target;
+      continue;
+    };
+    scope.push_root(trap)?;
+
+    let result = vm.call_with_host_and_hooks(
+      host,
+      &mut scope,
+      hooks,
+      trap,
+      Value::Object(handler),
+      &[Value::Object(target), proto_val],
+    )?;
+    return Ok(scope.heap().to_boolean(result)?);
+  }
 }
 
 fn proxy_own_property_keys_with_tick(
