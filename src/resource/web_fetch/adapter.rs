@@ -128,7 +128,9 @@ fn resolve_request_url<'a>(
     return None;
   }
   let normalized_candidate = normalize_http_url_for_resolution(candidate);
-  if let Ok(url) = Url::parse(candidate) {
+  if let Ok(mut url) = Url::parse(candidate) {
+    // Fetch strips URL fragments before issuing the network request.
+    url.set_fragment(None);
     // Fetch uses a parsed URL record; serialize it back to a string so callers observe a canonical
     // URL (e.g. "https://example.com" → "https://example.com/") and so redirect detection doesn't
     // treat pure serialization differences as a redirect.
@@ -146,7 +148,8 @@ fn resolve_request_url<'a>(
     if normalized_candidate.len() > max_url_bytes {
       return None;
     }
-    if let Ok(url) = Url::parse(normalized_candidate.as_ref()) {
+    if let Ok(mut url) = Url::parse(normalized_candidate.as_ref()) {
+      url.set_fragment(None);
       let canonical = url.as_str();
       if canonical.len() > max_url_bytes {
         return None;
@@ -175,7 +178,8 @@ fn resolve_request_url<'a>(
         if normalized_ref.len() > max_url_bytes {
           return None;
         }
-        if let Ok(joined) = base.join(normalized_ref.as_ref()) {
+        if let Ok(mut joined) = base.join(normalized_ref.as_ref()) {
+          joined.set_fragment(None);
           let joined = joined.as_str();
           if joined.len() > max_url_bytes {
             return None;
@@ -184,7 +188,8 @@ fn resolve_request_url<'a>(
           return storage.as_deref();
         }
       }
-      if let Ok(joined) = base.join(candidate) {
+      if let Ok(mut joined) = base.join(candidate) {
+        joined.set_fragment(None);
         let joined = joined.as_str();
         if joined.len() > max_url_bytes {
           return None;
@@ -200,7 +205,8 @@ fn resolve_request_url<'a>(
       if normalized_ref.len() > max_url_bytes {
         return None;
       }
-      if let Ok(joined) = origin.join(normalized_ref.as_ref()) {
+      if let Ok(mut joined) = origin.join(normalized_ref.as_ref()) {
+        joined.set_fragment(None);
         let joined = joined.as_str();
         if joined.len() > max_url_bytes {
           return None;
@@ -209,7 +215,8 @@ fn resolve_request_url<'a>(
         return storage.as_deref();
       }
     }
-    if let Ok(joined) = origin.join(candidate) {
+    if let Ok(mut joined) = origin.join(candidate) {
+      joined.set_fragment(None);
       let joined = joined.as_str();
       if joined.len() > max_url_bytes {
         return None;
@@ -982,6 +989,32 @@ mod tests {
       .expect("expected response");
     assert_eq!(response.url, "https://example.com/a%20b");
     assert!(!response.redirected);
+  }
+
+  #[test]
+  fn request_urls_strip_fragments() {
+    struct UrlAssertingFetcher;
+
+    impl ResourceFetcher for UrlAssertingFetcher {
+      fn fetch(&self, _url: &str) -> Result<FetchedResource> {
+        unreachable!("execute_web_fetch should call fetch_with_request");
+      }
+
+      fn fetch_with_request(&self, req: FetchRequest<'_>) -> Result<FetchedResource> {
+        assert_eq!(req.url, "https://example.com/a");
+        Ok(FetchedResource::new(b"ok".to_vec(), None))
+      }
+
+      fn fetch_http_request(&self, _req: HttpRequest<'_>) -> Result<FetchedResource> {
+        panic!("fetch_http_request should not be called for cacheable GET requests");
+      }
+    }
+
+    let fetcher = UrlAssertingFetcher;
+    let request = Request::new("GET", "https://example.com/a#frag");
+    let response = execute_web_fetch(&fetcher, &request, WebFetchExecutionContext::default())
+      .expect("expected response");
+    assert_eq!(response.url, "https://example.com/a");
   }
 
   #[test]

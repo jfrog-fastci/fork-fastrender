@@ -1977,6 +1977,74 @@ impl Transform3D {
     Transform3D { m: out }
   }
 
+  fn pure_perspective_params(&self) -> Option<(f32, f32, f32)> {
+    // `Transform3D::perspective(distance)` produces a matrix with only `m[11]` (m32) set in the 3D
+    // portion. `perspective-origin` / the `perspective` property wraps it in translations, which
+    // keeps the overall matrix sparse:
+    //
+    // - diagonal is identity
+    // - `m[8]`/`m[9]` encode the perspective origin (x/y) in combination with `m[11]`
+    // - `m[11]` is `-1/distance`
+    //
+    // This helper detects that shape and extracts `(distance, origin_x, origin_y)`.
+    const EPS: f32 = 1e-6;
+    let near = |a: f32, b: f32| (a - b).abs() <= EPS;
+
+    let m = &self.m;
+    if !near(m[0], 1.0) || !near(m[5], 1.0) || !near(m[10], 1.0) || !near(m[15], 1.0) {
+      return None;
+    }
+    for idx in [1usize, 2, 3, 4, 6, 7, 12, 13, 14] {
+      if m[idx].abs() > EPS {
+        return None;
+      }
+    }
+
+    let m32 = m[11];
+    if !m32.is_finite() || m32.abs() <= EPS {
+      return None;
+    }
+    let distance = (-1.0 / m32).abs();
+    if !distance.is_finite() || distance <= 0.0 {
+      return None;
+    }
+
+    let origin_x = m[8] / m32;
+    let origin_y = m[9] / m32;
+    (origin_x.is_finite() && origin_y.is_finite()).then_some((distance, origin_x, origin_y))
+  }
+
+  /// Multiply two transforms, preserving exactness for pure perspective matrices.
+  ///
+  /// When a `perspective-origin` matrix is multiplied with a child transform matrix, naive 4×4
+  /// multiplication can accumulate slightly different floating point rounding than resolving the
+  /// equivalent `perspective()` function inside a transform list. This matters for WPT reftests
+  /// that assert those representations are equivalent.
+  ///
+  /// If `self` is a pure perspective matrix (as produced by `ResolvedTransforms.child_perspective`)
+  /// we compute the product using an equivalent multiplication grouping that avoids those
+  /// rounding differences.
+  pub fn multiply_perspective_optimized(&self, other: &Transform3D) -> Transform3D {
+    let Some((distance, origin_x, origin_y)) = self.pure_perspective_params() else {
+      return self.multiply(other);
+    };
+
+    let translate = Transform3D::translate(origin_x, origin_y, 0.0);
+    let translate_inv = Transform3D::translate(-origin_x, -origin_y, 0.0);
+    let perspective = Transform3D::perspective(distance);
+
+    // Compute:
+    //   self * other
+    // = T(O) * P * T(-O) * other
+    // = T(O) * P * (T(-O) * other * T(O)) * T(-O)
+    //
+    // The re-grouping avoids the extra cancellation that would otherwise amplify rounding error.
+    let normalized = translate_inv.multiply(other).multiply(&translate);
+    translate
+      .multiply(&perspective.multiply(&normalized))
+      .multiply(&translate_inv)
+  }
+
   /// Create translation transform
   pub fn translate(x: f32, y: f32, z: f32) -> Self {
     let mut m = Self::IDENTITY.m;

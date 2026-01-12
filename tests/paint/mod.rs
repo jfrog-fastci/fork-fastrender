@@ -154,6 +154,7 @@ mod preserve_3d_root_opacity;
 mod preserve_3d_test;
 mod preserve_3d_text_clip_projected;
 mod preserve_3d_warp;
+mod perspective_property_equivalence;
 mod progress_meter_paint;
 mod projective_mapping;
 mod range_direction_rtl;

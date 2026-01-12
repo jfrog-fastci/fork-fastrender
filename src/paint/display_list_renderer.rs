@@ -4517,7 +4517,7 @@ fn collect_scene_items(
   backdrop_root_counter: &mut usize,
 ) -> Vec<Preserve3dSceneItem> {
   let local_transform = node.context.transform.unwrap_or_else(Transform3D::identity);
-  let combined_transform = parent_transform.multiply(&local_transform);
+  let combined_transform = parent_transform.multiply_perspective_optimized(&local_transform);
   let child_transform = node
     .context
     .child_perspective
@@ -14711,7 +14711,13 @@ impl DisplayListRenderer {
           return Ok(());
         }
 
-        let mut warp_candidate = parent_perspective.multiply(&local_transform);
+        // When an ancestor `perspective` / `perspective-origin` matrix is multiplied with a child
+        // transform matrix, naive 4×4 multiplication can accumulate slightly different floating
+        // point rounding than the equivalent `perspective()` function inside the transform list.
+        //
+        // This matters for WPT reftests like `transforms/perspective-preserve-3d-001` which assert
+        // those representations are equivalent.
+        let mut warp_candidate = parent_perspective.multiply_perspective_optimized(&local_transform);
         if self.projective_warp_depth > 0 {
           let parent_global = self
             .stacking_layers
