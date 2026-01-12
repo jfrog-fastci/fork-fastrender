@@ -143,7 +143,10 @@ fn generator_prototype_methods_validate_this_and_are_stubbed() -> Result<(), VmE
     assert_is_type_error(&mut scope, &intr, err)?;
 
     // Fake "generator object": has the internal [[GeneratorState]] marker and inherits from
-    // `%GeneratorPrototype%`. Receiver validation should pass and reach the stubbed resume path.
+    // `%GeneratorPrototype%` so builtin receiver validation passes.
+    //
+    // Since it has no continuation id, `%GeneratorPrototype%.next` should still treat it as an
+    // incompatible receiver (TypeError). `%GeneratorPrototype%.return` / `.throw` remain stubbed.
     let gen = scope.alloc_object()?;
     scope.push_root(Value::Object(gen))?;
     scope
@@ -176,7 +179,7 @@ fn generator_prototype_methods_validate_this_and_are_stubbed() -> Result<(), VmE
         &[Value::Undefined],
       )
       .unwrap_err();
-    assert!(matches!(err, VmError::Unimplemented("GeneratorResume")));
+    assert_is_type_error(&mut scope, &intr, err)?;
 
     let err = vm
       .call_without_host(
@@ -202,4 +205,3 @@ fn generator_prototype_methods_validate_this_and_are_stubbed() -> Result<(), VmE
   realm.teardown(&mut heap);
   Ok(())
 }
-
