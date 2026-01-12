@@ -9,6 +9,7 @@ mod accessibility;
 mod fixtures;
 mod browser_integration;
 mod guards;
+mod js;
 mod resource;
 
 // Keep the reference image comparison helpers available for fixture-style tests.

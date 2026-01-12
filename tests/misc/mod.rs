@@ -55,7 +55,6 @@ mod is_alias_matches_test;
 #[cfg(feature = "quickjs")]
 mod js_current_script;
 mod js_dom_exception;
-mod js_dom_integration_export;
 #[cfg(feature = "quickjs")]
 mod js_dom_quickjs_bindings;
 mod js_dom_realm_selectors;
@@ -66,12 +65,9 @@ mod js_event_loop_timers;
 mod js_execution_budgets;
 mod js_fetch_tests;
 mod js_intersection_observer;
-mod js_runtime_consolidation_guard;
-mod js_script_fetch_semantics;
 mod js_time_determinism;
 #[cfg(feature = "quickjs")]
 mod js_timers;
-mod js_trace_spans_test;
 mod js_url_bindings;
 mod js_vm_budget_tests;
 mod js_webidl_binding_value_array_return;

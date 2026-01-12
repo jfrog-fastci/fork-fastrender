@@ -7,6 +7,7 @@ mod clip_mask_diagnostics;
 mod css_double_fetch;
 mod css_empty_url_no_fetch;
 mod css_import_referrer_semantics;
+mod js_exports;
 mod root_font_size_percent;
 mod svg_document_css;
 mod svg_mask_image;
