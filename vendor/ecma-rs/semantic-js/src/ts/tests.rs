@@ -3146,7 +3146,7 @@ fn ambient_module_reexport_chain() {
 }
 
 #[test]
-fn external_module_augmentation_merges_without_new_exports() {
+fn external_module_augmentation_merges_and_exports_new_names() {
   let file_a = FileId(160);
   let mut a = HirFile::module(file_a);
   a.file_kind = FileKind::Dts;
@@ -3183,14 +3183,7 @@ fn external_module_augmentation_merges_without_new_exports() {
 
   let (semantics, diags) =
     bind_ts_program(&[file_aug], &resolver, |f| files.get(&f).unwrap().clone());
-  assert_eq!(diags.len(), 1);
-  let diag = &diags[0];
-  assert_eq!(diag.code, "TS2395");
-  assert_eq!(diag.primary.file, file_aug);
-  assert_eq!(diag.primary.range, span(1));
-  assert_eq!(diag.labels.len(), 1);
-  assert_eq!(diag.labels[0].span.file, file_a);
-  assert_eq!(diag.labels[0].span.range, span(0));
+  assert!(diags.is_empty(), "unexpected diagnostics: {:?}", diags);
 
   let request_symbol = semantics
     .resolve_export(file_a, "Request", Namespace::TYPE)
@@ -3206,13 +3199,83 @@ fn external_module_augmentation_merges_without_new_exports() {
     "merged declarations should include original and augmentation"
   );
 
+  let only_symbol = semantics
+    .resolve_export(file_a, "OnlyInAugmentation", Namespace::TYPE)
+    .expect("new name exported from module augmentation");
+  let only_decl_files: Vec<_> = semantics
+    .symbol_decls(only_symbol, Namespace::TYPE)
+    .iter()
+    .map(|d| semantics.symbols().decl(*d).file)
+    .collect();
+  assert_eq!(only_decl_files.len(), 1);
+  assert_eq!(only_decl_files[0], file_aug);
+}
+
+#[test]
+fn module_augmentation_exports_new_names_and_merges_with_class() {
+  let file_observable = FileId(170);
+  let mut observable = HirFile::module(file_observable);
+  observable.file_kind = FileKind::Dts;
+  let mut observable_class = mk_decl(0, "Observable", DeclKind::Class, Exported::Named);
+  observable_class.is_ambient = true;
+  observable.decls.push(observable_class);
+
+  let file_aug = FileId(171);
+  let mut aug = HirFile::module(file_aug);
+  aug.file_kind = FileKind::Dts;
+  let mut observable_iface = mk_decl(1, "Observable", DeclKind::Interface, Exported::No);
+  observable_iface.is_ambient = true;
+  let mut bar = mk_decl(2, "Bar", DeclKind::Class, Exported::No);
+  bar.is_ambient = true;
+  aug.ambient_modules.push(AmbientModule {
+    name: "./observable".to_string(),
+    name_span: span(10),
+    decls: vec![observable_iface, bar],
+    imports: Vec::new(),
+    type_imports: Vec::new(),
+    import_equals: Vec::new(),
+    exports: Vec::new(),
+    export_as_namespace: Vec::new(),
+    ambient_modules: Vec::new(),
+  });
+
+  let files: HashMap<FileId, Arc<HirFile>> =
+    maplit::hashmap! { file_observable => Arc::new(observable), file_aug => Arc::new(aug) };
+  let resolver = StaticResolver::new(maplit::hashmap! {
+    "./observable".to_string() => file_observable,
+  });
+
+  let (semantics, diags) =
+    bind_ts_program(&[file_aug], &resolver, |f| files.get(&f).unwrap().clone());
+  assert!(diags.is_empty(), "unexpected diagnostics: {:?}", diags);
+
+  let exports = semantics.exports_of(file_observable);
+  assert!(exports.contains_key("Observable"));
+  assert!(exports.contains_key("Bar"));
+
+  let observable_symbol = semantics
+    .resolve_export(file_observable, "Observable", Namespace::TYPE)
+    .expect("Observable exported");
+  let observable_decl_files: Vec<_> = semantics
+    .symbol_decls(observable_symbol, Namespace::TYPE)
+    .iter()
+    .map(|d| semantics.symbols().decl(*d).file)
+    .collect();
+  assert_eq!(observable_decl_files.len(), 2);
   assert!(
-    semantics
-      .exports_of(file_a)
-      .get("OnlyInAugmentation")
-      .is_none(),
-    "augmentation without export should not create a new export"
+    observable_decl_files.contains(&file_observable) && observable_decl_files.contains(&file_aug)
   );
+
+  let bar_symbol = semantics
+    .resolve_export(file_observable, "Bar", Namespace::VALUE)
+    .expect("Bar exported");
+  let bar_decl_files: Vec<_> = semantics
+    .symbol_decls(bar_symbol, Namespace::VALUE)
+    .iter()
+    .map(|d| semantics.symbols().decl(*d).file)
+    .collect();
+  assert_eq!(bar_decl_files.len(), 1);
+  assert_eq!(bar_decl_files[0], file_aug);
 }
 
 #[test]

@@ -474,7 +474,7 @@ impl<'a, HP: Fn(FileId) -> Arc<HirFile>> Binder<'a, HP> {
               aug.origin_file_kind,
               ModuleKind::Module,
               false,
-              false,
+              true,
               &aug.module.decls,
               &aug.module.type_imports,
               &aug.module.imports,
@@ -505,7 +505,7 @@ impl<'a, HP: Fn(FileId) -> Arc<HirFile>> Binder<'a, HP> {
               aug.origin_file_kind,
               ModuleKind::Module,
               false,
-              false,
+              true,
               &aug.module.decls,
               &aug.module.type_imports,
               &aug.module.imports,
@@ -618,6 +618,12 @@ impl<'a, HP: Fn(FileId) -> Arc<HirFile>> Binder<'a, HP> {
           .or_insert(decl.def_id);
         continue;
       }
+      let exported = if implicit_export && !decl.is_global && matches!(decl.exported, Exported::No)
+      {
+        Exported::Named
+      } else {
+        decl.exported.clone()
+      };
       let namespaces = decl.kind.namespaces();
       let order = decl.span.start;
       let decl_id = self.symbols.alloc_decl(
@@ -627,7 +633,7 @@ impl<'a, HP: Fn(FileId) -> Arc<HirFile>> Binder<'a, HP> {
         namespaces,
         decl.is_ambient,
         decl.is_global,
-        decl.exported.clone(),
+        exported.clone(),
         decl.span,
         order,
         Some(decl.def_id),
@@ -660,21 +666,8 @@ impl<'a, HP: Fn(FileId) -> Arc<HirFile>> Binder<'a, HP> {
           &SymbolOwner::Global,
         );
       }
-      match decl.exported {
-        Exported::No => {
-          if implicit_export {
-            has_exports = true;
-            has_non_assignment_exports = true;
-            let span = Span::new(file_id, decl.span);
-            first_export_span.get_or_insert(span);
-            state.export_specs.push(ExportSpec::Local {
-              name: decl.name.clone(),
-              exported_as: decl.name.clone(),
-              type_only: false,
-              span,
-            });
-          }
-        }
+      match exported {
+        Exported::No => {}
         Exported::Named => {
           has_exports = true;
           has_non_assignment_exports = true;
