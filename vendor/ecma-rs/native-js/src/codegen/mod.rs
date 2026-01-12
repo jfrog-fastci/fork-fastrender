@@ -323,7 +323,7 @@ fn ts_function_sig_kind(
     let Some(kind) = TsAbiKind::from_param_type_kind(&kind) else {
       return Err(vec![codes::UNSUPPORTED_NATIVE_TYPE.error(
         format!(
-          "unsupported parameter type for native-js ABI (expected number|boolean|string|gc pointer): {}",
+          "unsupported parameter type for native-js ABI (expected number|boolean|string|gc pointer (array/tuple/object)): {}",
           program.display_type(param.ty)
         ),
         span,
@@ -336,7 +336,7 @@ fn ts_function_sig_kind(
   let Some(ret) = TsAbiKind::from_return_type_kind(&ret_kind) else {
     return Err(vec![codes::UNSUPPORTED_NATIVE_TYPE.error(
       format!(
-        "unsupported return type for native-js ABI (expected number|boolean|string|void|gc pointer): {}",
+        "unsupported return type for native-js ABI (expected number|boolean|string|void|gc pointer (array/tuple/object)): {}",
         program.display_type(sig.ret)
       ),
       span,
@@ -1036,11 +1036,11 @@ impl<'ctx, 'p> ProgramCodegen<'ctx, 'p> {
             return Err(vec![codes::UNSUPPORTED_NATIVE_TYPE.error(
               format!(
                 "return type mismatch (expected {expected:?}, got {got:?})",
-                got = actual.kind()
-              ),
-              Span::new(file, hir_body.span),
-            )]);
-          }
+                 got = actual.kind()
+               ),
+               Span::new(file, hir_body.span),
+             )]);
+           }
         }
       }
       hir_js::FunctionBody::Block(ref stmts) => {

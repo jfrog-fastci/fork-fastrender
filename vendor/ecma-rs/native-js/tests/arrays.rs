@@ -160,3 +160,47 @@ fn array_oob_traps() {
   );
 }
 
+#[test]
+fn array_can_be_passed_across_function_boundary() {
+  if !require_executable_emission_or_skip() {
+    return;
+  }
+
+  let _permit = CodegenPermit::acquire();
+  let out = compile_and_run(
+    "function len(xs: number[]): number { return xs.length; }\n\
+     export function main(): number { return len([1,2,3]); }",
+  );
+  assert_eq!(out.status.code(), Some(3));
+  assert!(out.stdout.is_empty());
+}
+
+#[test]
+fn array_can_be_returned_across_function_boundary() {
+  if !require_executable_emission_or_skip() {
+    return;
+  }
+
+  let _permit = CodegenPermit::acquire();
+  let out = compile_and_run(
+    "function mk(): number[] { return [1,2]; }\n\
+     export function main(): number { return mk().length; }",
+  );
+  assert_eq!(out.status.code(), Some(2));
+  assert!(out.stdout.is_empty());
+}
+
+#[test]
+fn tuple_can_be_returned_across_function_boundary() {
+  if !require_executable_emission_or_skip() {
+    return;
+  }
+
+  let _permit = CodegenPermit::acquire();
+  let out = compile_and_run(
+    "function mk(): [number, number] { return [1,2]; }\n\
+     export function main(): number { const xs = mk(); return xs[0] + xs[1] + xs.length; }",
+  );
+  assert_eq!(out.status.code(), Some(5));
+  assert!(out.stdout.is_empty());
+}

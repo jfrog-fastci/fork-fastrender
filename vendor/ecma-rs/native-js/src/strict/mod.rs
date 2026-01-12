@@ -625,6 +625,24 @@ pub fn entrypoint(program: &Program, entry_file: FileId) -> Result<Entrypoint, V
     )]);
   }
 
+  let main_ty = program.type_of_def_interned(def);
+  let sigs = program.call_signatures(main_ty);
+  if let Some(sig) = sigs.first().map(|s| &s.signature).filter(|_| sigs.len() == 1) {
+    let ret_kind = program.type_kind(sig.ret);
+    if matches!(
+      ret_kind,
+      TypeKindSummary::Array { .. }
+        | TypeKindSummary::Tuple { .. }
+        | TypeKindSummary::Object
+        | TypeKindSummary::EmptyObject
+    ) {
+      return Err(vec![codes::ENTRYPOINT_MAIN_BAD_SIGNATURE.error(
+        "`main` must not return a GC-managed pointer value (array/tuple/object) in native-js strict mode",
+        span,
+      )]);
+    }
+  }
+
   Ok(Entrypoint {
     main_def: def,
     main_body: body,
