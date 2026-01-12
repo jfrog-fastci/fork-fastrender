@@ -314,7 +314,10 @@ jobs:
           if [[ ! -s "${report_path}" ]]; then
             echo "::error::typecheck-ts-harness did not emit a JSON report (stdout was empty). See ${stderr_path}." >&2
             echo "{\"error\":\"no_json_report\"}" > "${report_path}"
-            status=1
+            # Preserve the original exit status (e.g. timeout) if one was produced.
+            if [[ "${status}" -eq 0 ]]; then
+              status=1
+            fi
           else
             # Ensure the report is valid JSON so downstream triage tooling can rely on it.
             if ! REPORT_PATH="${report_path}" python3 - <<'PY'
