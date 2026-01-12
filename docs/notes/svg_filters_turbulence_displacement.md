@@ -267,10 +267,7 @@ In practice, `filterRes` is ignored for graphs containing `feDisplacementMap`, s
 
 Regression coverage:
 
-- `displacement_map_object_bounding_box_scale_is_resolved_against_bbox_width`
-  (`src/paint/svg_filter.rs`)
-- `displacement_map_applies_scale_without_extra_multiplier`
-  (`src/paint/svg_filter.rs`)
+- `displacement_map_scales_per_axis` (`src/paint/svg_filter.rs`)
 
 ### Displacement math + sampling (Chrome behavior)
 
@@ -356,10 +353,7 @@ When the step uses `sRGB`, no conversion is performed.
 
 Regression coverage:
 
-- `displacement_map_interprets_map_channels_as_unpremultiplied` (`src/paint/svg_filter.rs`)
-- `displacement_map_semitransparent_map_channels_differ_from_resvg` (`src/paint/svg_filter.rs`)
-- `displacement_map_interprets_map_channels_in_color_interpolation_space`
-  (`src/paint/svg_filter.rs`)
+- `displacement_map_honors_color_interpolation_filters_for_map_sampling` (`src/paint/svg_filter.rs`)
 
 ### `filterRes` interaction
 
@@ -368,7 +362,7 @@ For Chrome parity, `filterRes` is ignored whenever the filter graph contains `fe
 
 Regression coverage:
 
-- `displacement_map_ignores_filter_res` (`src/paint/svg_filter.rs`)
+- `svg_filter_turbulence_displacement_matches_golden` (fixture includes `filterRes` and `feDisplacementMap`)
 
 ## Regression coverage (tests + fixtures)
 
@@ -401,12 +395,15 @@ Regression coverage:
 ### `feDisplacementMap` tests + fixtures
 
 - `src/paint/svg_filter.rs`:
-  - `displacement_map_applies_scale_without_extra_multiplier`
-  - `displacement_map_interprets_map_channels_as_unpremultiplied`
-  - `displacement_map_semitransparent_map_channels_differ_from_resvg`
-  - `displacement_map_object_bounding_box_scale_is_resolved_against_bbox_width`
-  - `displacement_map_ignores_filter_res`
-  - `displacement_map_interprets_map_channels_in_color_interpolation_space`
+  - `displacement_map_rounds_half_ties_toward_negative_infinity`
+  - `displacement_map_honors_color_interpolation_filters_for_map_sampling`
+  - `displacement_map_scales_per_axis`
+  - `displacement_map_samples_primary_with_point_sampling`
+  - `displacement_map_out_of_bounds_samples_transparent`
+  - `displacement_map_negative_half_offset_samples_oob_as_transparent`
+  - `displacement_map_clamps_map_to_primitive_subregion`
+  - `displacement_map_region_inflates_by_half_scale_and_clips_to_filter_region`
+  - `displacement_map_region_respects_per_axis_scaling`
 - Semi-transparent map-channel semantics probe (validated against Chrome):
   - Fixture: `tests/pages/fixtures/svg_filter_displacement_map_alpha_semantics/index.html`
 - Displacement-map semantics golden (validated against Chrome):
