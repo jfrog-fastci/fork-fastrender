@@ -8032,3 +8032,99 @@ mod detached_array_buffer_tests {
     Ok(())
   }
 }
+
+#[cfg(test)]
+mod typed_array_helper_tests {
+  use super::*;
+
+  #[test]
+  fn typed_array_is_integer_kind_classifies_int_vs_float() -> Result<(), VmError> {
+    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut scope = heap.scope();
+
+    let ab = scope.alloc_array_buffer(8)?;
+    scope.push_root(Value::Object(ab))?;
+
+    for kind in [
+      TypedArrayKind::Int8,
+      TypedArrayKind::Uint8,
+      TypedArrayKind::Uint8Clamped,
+      TypedArrayKind::Int16,
+      TypedArrayKind::Uint16,
+      TypedArrayKind::Int32,
+      TypedArrayKind::Uint32,
+    ] {
+      let view = scope.alloc_typed_array(kind, ab, 0, 1)?;
+      scope.push_root(Value::Object(view))?;
+      assert!(
+        scope.heap().typed_array_is_integer_kind(view)?,
+        "expected {kind:?} to be an integer typed array"
+      );
+    }
+
+    for kind in [TypedArrayKind::Float32, TypedArrayKind::Float64] {
+      let view = scope.alloc_typed_array(kind, ab, 0, 1)?;
+      scope.push_root(Value::Object(view))?;
+      assert!(
+        !scope.heap().typed_array_is_integer_kind(view)?,
+        "expected {kind:?} to NOT be an integer typed array"
+      );
+    }
+
+    Ok(())
+  }
+
+  #[test]
+  fn typed_array_view_bytes_returns_internal_slots_and_rejects_detached() -> Result<(), VmError> {
+    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut scope = heap.scope();
+
+    let ab = scope.alloc_array_buffer(16)?;
+    scope.push_root(Value::Object(ab))?;
+
+    let view = scope.alloc_typed_array(TypedArrayKind::Uint32, ab, 4, 2)?;
+    scope.push_root(Value::Object(view))?;
+
+    let (buf, off, len) = scope.heap().typed_array_view_bytes(view)?;
+    assert_eq!(buf, ab);
+    assert_eq!(off, 4);
+    assert_eq!(len, 8);
+
+    assert!(scope.heap_mut().detach_array_buffer_take_data(ab)?.is_some());
+
+    match scope.heap().typed_array_view_bytes(view) {
+      Err(VmError::TypeError(msg)) => assert_eq!(msg, "ArrayBuffer is detached"),
+      Err(other) => panic!("expected TypeError, got {other:?}"),
+      Ok(_) => panic!("expected error for typed array backed by detached ArrayBuffer"),
+    }
+
+    Ok(())
+  }
+
+  #[test]
+  fn typed_array_view_bytes_rejects_out_of_bounds() -> Result<(), VmError> {
+    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut scope = heap.scope();
+
+    let ab = scope.alloc_array_buffer(2)?;
+    scope.push_root(Value::Object(ab))?;
+    let view = scope.alloc_uint8_array(ab, 0, 2)?;
+    scope.push_root(Value::Object(view))?;
+
+    match scope.heap_mut().get_heap_object_mut(view.0)? {
+      HeapObject::TypedArray(arr) => {
+        assert_eq!(arr.kind, TypedArrayKind::Uint8);
+        arr.length = 3;
+      }
+      _ => panic!("expected Uint8Array"),
+    }
+
+    match scope.heap().typed_array_view_bytes(view) {
+      Err(VmError::TypeError(msg)) => assert_eq!(msg, "TypedArray view out of bounds"),
+      Err(other) => panic!("expected TypeError, got {other:?}"),
+      Ok(_) => panic!("expected error for out-of-bounds typed array view"),
+    }
+
+    Ok(())
+  }
+}
