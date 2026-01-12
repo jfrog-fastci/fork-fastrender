@@ -7,7 +7,9 @@ use vm_js::{
 
 fn new_runtime() -> JsRuntime {
   let vm = Vm::new(VmOptions::default());
-  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  // Async/await and module loading tend to allocate more than simple synchronous scripts. Use a
+  // slightly larger heap than the minimal 1MiB used by some unit tests to avoid spurious OOMs.
+  let heap = Heap::new(HeapLimits::new(2 * 1024 * 1024, 2 * 1024 * 1024));
   JsRuntime::new(vm, heap).unwrap()
 }
 

@@ -1820,6 +1820,12 @@ impl JsRuntime {
 
 impl Drop for JsRuntime {
   fn drop(&mut self) {
+    // Discard any pending Promise jobs so we don't drop `Job`s that still own persistent roots.
+    //
+    // This matters in tests/embedders that early-return on errors (including OOM) without running a
+    // microtask checkpoint.
+    self.teardown_microtasks();
+
     // Unregister persistent roots created by the module graph, global lexical bindings, and the
     // realm. This keeps heap reuse in tests/embeddings from accumulating roots and satisfies
     // `Realm`'s debug assertion.
