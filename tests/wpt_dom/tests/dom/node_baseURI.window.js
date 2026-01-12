@@ -12,3 +12,8 @@ test(() => {
     assert_true(e instanceof TypeError);
   }
 }, "Node.baseURI reflects document.baseURI and enforces receiver branding");
+
+test(() => {
+  const doc2 = document.implementation.createHTMLDocument();
+  assert_equals(doc2.body.baseURI, doc2.baseURI);
+}, "Node.baseURI is per-owning-document (detached documents)");

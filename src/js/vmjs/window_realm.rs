@@ -17156,13 +17156,17 @@ fn node_base_uri_get_native(
   let Value::Object(wrapper_obj) = this else {
     return Err(VmError::TypeError("Illegal invocation"));
   };
-  let _ = dom_platform_mut(vm)
+  let node_key = dom_platform_mut(vm)
     .ok_or(VmError::TypeError("Illegal invocation"))?
-    .require_node_id(scope.heap(), Value::Object(wrapper_obj))?;
+    .require_node_handle(scope.heap(), Value::Object(wrapper_obj))?;
 
-  // `Node.baseURI` should reflect the document base URL for this single-document realm.
+  // `Node.baseURI` reflects the base URI of the node's owning document.
+  if node_key.document_id != 0 && !is_host_document_id(vm, node_key.document_id) {
+    return Ok(Value::String(scope.alloc_string("about:blank")?));
+  }
+
   let base_url = vm
-    .user_data_mut::<WindowRealmUserData>()
+    .user_data::<WindowRealmUserData>()
     .map(|data| data.base_url.clone().unwrap_or_else(|| data.document_url.clone()))
     .unwrap_or_default();
   Ok(Value::String(scope.alloc_string(&base_url)?))
