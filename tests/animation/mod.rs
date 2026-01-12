@@ -20,3 +20,6 @@ mod timeline_supports_test;
 mod browser_document_transition_state;
 mod transitions_dynamic_engine_test;
 mod transitions_dynamic_value_pair_discrete_test;
+
+// Legacy tests pulled in from the former top-level `tests/animation_tests.rs` crate.
+mod animation_tests;

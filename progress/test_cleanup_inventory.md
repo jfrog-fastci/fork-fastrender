@@ -29,11 +29,8 @@ section in sync with `ls tests/*.rs`.
 
 | File | Type | Destination (new architecture) | Notes | Status |
 |---|---|---|---|---|
-| `tests/allocation_failure_tests.rs` | special | `tests/allocation_failure.rs` | Contains `#[global_allocator]` (via `tests/allocation_failure/mod.rs`); must remain separate. Rename from `*_tests.rs`. | TODO |
-| `tests/animation_tests.rs` | unit | `src/animation/mod.rs` | Not just a harness (large file). Also uses `#[path]` to include `tests/animation/mod.rs`; migrate all to `src/animation/**`. | TODO |
-| `tests/fixtures_test.rs` | integration | `tests/integration.rs::fixtures::runner` | Reads `tests/fixtures/html/**` and compares against `tests/fixtures/golden/**`; mutates env (`FASTR_USE_BUNDLED_FONTS`, `UPDATE_GOLDEN`). | TODO |
+| `tests/allocation_failure.rs` | special | keep | Contains `#[global_allocator]` (via `tests/allocation_failure/mod.rs`); must remain separate. | DONE |
 | `tests/integration.rs` | integration | keep | Unified integration test binary. Should become the default home for remaining integration suites. | DONE |
-| `tests/svg_integration.rs` | delete | delete | Empty placeholder integration-test crate; delete to avoid a no-op extra test binary. | TODO |
 ### Completed (top-level crate removed)
 
 | File | Type | Destination (new architecture) | Notes | Status |

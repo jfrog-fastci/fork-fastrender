@@ -32,15 +32,11 @@
 //! ```bash
 //! UPDATE_GOLDEN=1 cargo test fixtures
 //! ```
-
-mod common;
-mod r#ref;
-
 use crate::common::with_large_stack;
 use fastrender::debug::runtime::RuntimeToggles;
 use fastrender::{FastRender, FontConfig};
-use r#ref::compare::load_png_from_bytes;
-use r#ref::image_compare::{compare_config_from_env, compare_pngs, CompareEnvVars};
+use crate::r#ref::compare::load_png_from_bytes;
+use crate::r#ref::image_compare::{compare_config_from_env, compare_pngs, CompareEnvVars};
 use std::fs;
 use std::path::PathBuf;
 
