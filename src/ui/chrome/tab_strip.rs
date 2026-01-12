@@ -82,9 +82,11 @@ fn paint_spinner(painter: &egui::Painter, rect: Rect, time: f64, color: Color32)
 
 fn placeholder_favicon(painter: &egui::Painter, rect: Rect, visuals: &egui::Visuals) {
   let fill = visuals.widgets.inactive.bg_fill;
-  let stroke = visuals.widgets.inactive.fg_stroke;
-  painter.rect_filled(rect, 3.0, fill);
-  painter.rect_stroke(rect, 3.0, stroke);
+  let stroke = visuals.widgets.inactive.bg_stroke;
+  // Keep favicon placeholders subtly rounded without looking fully pill-shaped.
+  let rounding = egui::Rounding::same((visuals.widgets.inactive.rounding.nw * 0.5).clamp(2.0, 4.0));
+  painter.rect_filled(rect, rounding, fill);
+  painter.rect_stroke(rect, rounding, stroke);
 }
 
 fn tab_ui(
@@ -111,7 +113,7 @@ fn tab_ui(
   } else {
     visuals.widgets.inactive.bg_fill
   };
-  let rounding = 8.0;
+  let rounding = visuals.widgets.inactive.rounding;
   {
     let painter = ui.painter();
     painter.rect_filled(tab_rect, rounding, bg);
@@ -123,7 +125,7 @@ fn tab_ui(
           Pos2::new(tab_rect.min.x + 10.0, y),
           Pos2::new(tab_rect.max.x - 10.0, y),
         ],
-        Stroke::new(ACTIVE_UNDERLINE_HEIGHT, visuals.widgets.active.fg_stroke.color),
+        Stroke::new(ACTIVE_UNDERLINE_HEIGHT, visuals.selection.stroke.color),
       );
     }
   }
@@ -170,9 +172,11 @@ fn tab_ui(
     close_clicked = close_resp.clicked();
 
     if close_resp.hovered() {
+      let close_rounding =
+        egui::Rounding::same((visuals.widgets.inactive.rounding.nw * 0.8).clamp(4.0, 6.0));
       ui.painter().rect_filled(
         close_rect,
-        6.0,
+        close_rounding,
         visuals.widgets.hovered.bg_fill.gamma_multiply(0.85),
       );
     }
@@ -196,9 +200,13 @@ fn tab_ui(
       Pos2::new(title_start_x, tab_rect.min.y),
       Pos2::new(title_end_x, tab_rect.max.y),
     );
-    let label = egui::Label::new(egui::RichText::new(title).strong())
-      .truncate(true)
-      .wrap(false);
+    let label = {
+      let mut text = egui::RichText::new(title);
+      if is_active {
+        text = text.strong();
+      }
+      egui::Label::new(text).truncate(true).wrap(false)
+    };
     let _ = ui.put(title_rect, label);
   }
 

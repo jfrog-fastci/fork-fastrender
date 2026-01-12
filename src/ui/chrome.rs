@@ -743,8 +743,13 @@ pub fn chrome_ui(
               let frame = egui::Frame::none()
                 .fill(visuals.widgets.inactive.bg_fill)
                 .stroke(visuals.widgets.inactive.bg_stroke)
-                .rounding(egui::Rounding::same(4.0))
-                .inner_margin(egui::Margin::symmetric(8.0, 2.0));
+                .rounding(egui::Rounding::same(
+                  (visuals.widgets.inactive.rounding.nw * 0.6).clamp(3.0, 6.0),
+                ))
+                .inner_margin({
+                  let pad = ui.spacing().button_padding;
+                  egui::Margin::symmetric(pad.x, pad.y * 0.4)
+                });
               frame.show(ui, |ui| {
                 // Use a read-only `TextEdit` so the hovered URL is selectable/copyable.
                 let mut url_owned = url.to_string();
