@@ -1,5 +1,6 @@
 use types_ts_interned::{
-  GcTraceLayout, ObjectType, PropData, PropKey, Property, Shape, TupleElem, TypeKind, TypeStore,
+  GcTraceLayout, Layout, ObjectType, Param, PropData, PropKey, Property, PtrKind, Shape, Signature,
+  TupleElem, TypeKind, TypeStore,
 };
 
 fn tuple_elem(ty: types_ts_interned::TypeId) -> TupleElem {
@@ -9,6 +10,76 @@ fn tuple_elem(ty: types_ts_interned::TypeId) -> TupleElem {
     rest: false,
     readonly: false,
   }
+}
+
+#[test]
+fn closure_payload_traces_env_ptr_via_gc_any() {
+  let store = TypeStore::new();
+  let prim = store.primitive_ids();
+
+  let sig = store.intern_signature(Signature::new(
+    vec![Param {
+      name: None,
+      ty: prim.number,
+      optional: false,
+      rest: false,
+    }],
+    prim.boolean,
+  ));
+  let callable = store.intern_type(TypeKind::Callable {
+    overloads: vec![sig],
+  });
+
+  let layout = store.layout(store.layout_of(callable));
+  let Layout::Ptr {
+    to: PtrKind::GcObject { layout: payload },
+  } = layout
+  else {
+    panic!("expected callable to lower to a GC object pointer layout");
+  };
+
+  let trace = store.gc_trace_layout(payload);
+  assert_eq!(trace.as_flat_ptr_offsets(), Some(&[8][..]));
+  assert!(!trace.requires_tag_dispatch());
+}
+
+#[test]
+fn callable_object_payload_traces_header_and_property_pointers() {
+  let store = TypeStore::new();
+  let prim = store.primitive_ids();
+
+  let sig = store.intern_signature(Signature::new(Vec::new(), prim.boolean));
+
+  let name_x = store.intern_name_ref("x");
+  let mut shape = Shape::new();
+  shape.call_signatures.push(sig);
+  shape.properties.push(Property {
+    key: PropKey::String(name_x),
+    data: PropData {
+      ty: prim.string,
+      optional: false,
+      readonly: false,
+      accessibility: None,
+      is_method: false,
+      origin: None,
+      declared_on: None,
+    },
+  });
+  let shape = store.intern_shape(shape);
+  let obj = store.intern_object(ObjectType { shape });
+  let obj_ty = store.intern_type(TypeKind::Object(obj));
+
+  let layout = store.layout(store.layout_of(obj_ty));
+  let Layout::Ptr {
+    to: PtrKind::GcObject { layout: payload },
+  } = layout
+  else {
+    panic!("expected callable object to lower to a GC object pointer layout");
+  };
+
+  let trace = store.gc_trace_layout(payload);
+  assert_eq!(trace.as_flat_ptr_offsets(), Some(&[8, 16][..]));
+  assert!(!trace.requires_tag_dispatch());
 }
 
 #[test]
