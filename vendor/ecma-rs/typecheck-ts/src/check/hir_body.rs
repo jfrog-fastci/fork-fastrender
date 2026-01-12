@@ -6899,7 +6899,18 @@ impl<'a> Checker<'a> {
     func: &Node<Func>,
     expected: TypeId,
   ) -> Option<TypeId> {
-    let expected_sig = self.first_callable_signature(expected)?;
+    let expected_sig = {
+      let mut param_count = func.stx.parameters.len();
+      if matches!(
+        func.stx.parameters.first().map(|p| p.stx.pattern.stx.pat.stx.as_ref()),
+        Some(AstPat::Id(id)) if id.stx.name == "this"
+      ) {
+        param_count = param_count.saturating_sub(1);
+      }
+      self
+        .contextual_signature_for_function_expr(expected, param_count)
+        .or_else(|| self.first_callable_signature(expected))?
+    };
 
     let saved_expected = self.expected_return;
     let saved_async = self.in_async_function;
@@ -6937,6 +6948,151 @@ impl<'a> Checker<'a> {
     Some(self.store.intern_type(TypeKind::Callable {
       overloads: vec![sig_id],
     }))
+  }
+
+  fn contextual_signature_for_function_expr(
+    &mut self,
+    expected: TypeId,
+    param_count: usize,
+  ) -> Option<Signature> {
+    fn collect_all_signatures(
+      checker: &Checker<'_>,
+      ty: TypeId,
+      out: &mut Vec<SignatureId>,
+      seen: &mut HashSet<TypeId>,
+    ) {
+      let ty = checker.expand_callable_type(ty);
+      if !seen.insert(ty) {
+        return;
+      }
+      match checker.store.type_kind(ty) {
+        TypeKind::Callable { overloads } => out.extend(overloads.iter().copied()),
+        TypeKind::Object(obj) => {
+          let shape = checker.store.shape(checker.store.object(obj).shape);
+          out.extend(shape.call_signatures.iter().copied());
+        }
+        TypeKind::Union(members) | TypeKind::Intersection(members) => {
+          for member in members {
+            collect_all_signatures(checker, member, out, seen);
+          }
+        }
+        _ => {}
+      }
+    }
+
+    let mut sigs = Vec::new();
+    collect_all_signatures(self, expected, &mut sigs, &mut HashSet::new());
+    sigs.sort();
+    sigs.dedup();
+
+    let mut matching: Vec<(SignatureId, Signature)> = sigs
+      .into_iter()
+      .filter_map(|sig_id| {
+        let sig = self.store.signature(sig_id);
+        signature_allows_arg_count(self.store.as_ref(), &sig, param_count).then_some((sig_id, sig))
+      })
+      .collect();
+
+    let Some((_, first)) = matching.first() else {
+      return None;
+    };
+
+    if matching.len() == 1 {
+      return Some(first.clone());
+    }
+
+    matching.retain(|(_, sig)| sig.type_params.is_empty());
+    if matching.is_empty() {
+      return None;
+    }
+    if matching.len() == 1 {
+      return Some(matching.pop().expect("single signature").1);
+    }
+
+    matching.sort_by_key(|(sig_id, _)| *sig_id);
+
+    let prim = self.store.primitive_ids();
+    let merged_len = matching
+      .iter()
+      .map(|(_, sig)| sig.params.len())
+      .max()
+      .unwrap_or(0);
+    let has_rest = matching
+      .iter()
+      .any(|(_, sig)| sig.params.iter().any(|p| p.rest));
+    let mut params = Vec::with_capacity(merged_len);
+
+    for idx in 0..merged_len {
+      let rest = has_rest && merged_len > 0 && idx == merged_len - 1;
+      let optional = matching
+        .iter()
+        .any(|(_, sig)| signature_allows_arg_count(self.store.as_ref(), sig, idx));
+
+      let mut member_tys: Vec<TypeId> = Vec::new();
+      for (_, sig) in matching.iter() {
+        if !signature_allows_arg_count(self.store.as_ref(), sig, idx + 1) {
+          continue;
+        }
+
+        if rest {
+          let rest_idx = sig.params.iter().position(|p| p.rest);
+          if let Some(rest_idx) = rest_idx {
+            if idx >= rest_idx {
+              member_tys.push(sig.params[rest_idx].ty);
+              continue;
+            }
+          }
+
+          if let Some(elem_ty) = expected_arg_type_at(self.store.as_ref(), sig, idx) {
+            member_tys.push(self.store.intern_type(TypeKind::Array {
+              ty: elem_ty,
+              readonly: false,
+            }));
+          }
+        } else if let Some(ty) = expected_arg_type_at(self.store.as_ref(), sig, idx) {
+          member_tys.push(ty);
+        }
+      }
+
+      member_tys.sort();
+      member_tys.dedup();
+      let ty = match member_tys.len() {
+        0 => prim.unknown,
+        1 => member_tys[0],
+        _ => self.store.union(member_tys),
+      };
+      params.push(SigParam {
+        name: None,
+        ty,
+        optional,
+        rest,
+      });
+    }
+
+    let mut ret_tys: Vec<TypeId> = matching.iter().map(|(_, sig)| sig.ret).collect();
+    ret_tys.sort();
+    ret_tys.dedup();
+    let ret = match ret_tys.len() {
+      0 => prim.unknown,
+      1 => ret_tys[0],
+      _ => self.store.union(ret_tys),
+    };
+
+    let mut this_tys: Vec<TypeId> = matching.iter().filter_map(|(_, sig)| sig.this_param).collect();
+    this_tys.sort();
+    this_tys.dedup();
+    let this_param = match this_tys.len() {
+      0 => None,
+      1 => Some(this_tys[0]),
+      _ => Some(self.store.union(this_tys)),
+    };
+
+    Some(Signature {
+      params,
+      ret,
+      type_params: Vec::new(),
+      this_param,
+    })
   }
 
   fn first_callable_signature(&self, ty: TypeId) -> Option<Signature> {
