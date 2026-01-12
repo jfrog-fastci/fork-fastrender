@@ -1367,3 +1367,99 @@ fn object_assign_throws_when_setting_non_writable_target_property() -> Result<()
 
   Ok(())
 }
+
+#[test]
+fn object_is_uses_same_value_semantics() -> Result<(), VmError> {
+  let mut rt = TestRealm::new()?;
+  let object = rt.realm.intrinsics().object_constructor();
+
+  let mut scope = rt.heap.scope();
+
+  let object_is = get_own_data_property(&mut scope, object, "is")?.expect("Object.is exists");
+  let Value::Object(object_is) = object_is else {
+    panic!("Object.is should be a function object");
+  };
+
+  // NaN is SameValue with NaN.
+  let args = [Value::Number(f64::NAN), Value::Number(f64::NAN)];
+  let out =
+    rt.vm
+      .call_without_host(&mut scope, Value::Object(object_is), Value::Object(object), &args)?;
+  assert_eq!(out, Value::Bool(true));
+
+  // +0 and -0 are distinct under SameValue.
+  let args = [Value::Number(0.0), Value::Number(-0.0)];
+  let out =
+    rt.vm
+      .call_without_host(&mut scope, Value::Object(object_is), Value::Object(object), &args)?;
+  assert_eq!(out, Value::Bool(false));
+
+  // Objects compare by identity.
+  let o1 = scope.alloc_object()?;
+  let o2 = scope.alloc_object()?;
+  let args = [Value::Object(o1), Value::Object(o2)];
+  let out =
+    rt.vm
+      .call_without_host(&mut scope, Value::Object(object_is), Value::Object(object), &args)?;
+  assert_eq!(out, Value::Bool(false));
+
+  let args = [Value::Object(o1), Value::Object(o1)];
+  let out =
+    rt.vm
+      .call_without_host(&mut scope, Value::Object(object_is), Value::Object(object), &args)?;
+  assert_eq!(out, Value::Bool(true));
+
+  Ok(())
+}
+
+#[test]
+fn object_has_own_reports_own_properties() -> Result<(), VmError> {
+  let mut rt = TestRealm::new()?;
+  let object = rt.realm.intrinsics().object_constructor();
+  let type_error_proto = rt.realm.intrinsics().type_error_prototype();
+
+  let mut scope = rt.heap.scope();
+
+  let has_own = get_own_data_property(&mut scope, object, "hasOwn")?.expect("Object.hasOwn exists");
+  let Value::Object(has_own) = has_own else {
+    panic!("Object.hasOwn should be a function object");
+  };
+
+  let p = scope.alloc_object()?;
+  scope.push_root(Value::Object(p))?;
+  define_enumerable_data_property(&mut scope, p, "y", Value::Number(2.0))?;
+
+  let o = scope.alloc_object()?;
+  scope.push_root(Value::Object(o))?;
+  scope.heap_mut().object_set_prototype(o, Some(p))?;
+  define_enumerable_data_property(&mut scope, o, "x", Value::Number(1.0))?;
+
+  let args = [Value::Object(o), Value::String(scope.alloc_string("x")?)];
+  let out = rt
+    .vm
+    .call_without_host(&mut scope, Value::Object(has_own), Value::Object(object), &args)?;
+  assert_eq!(out, Value::Bool(true));
+
+  let args = [Value::Object(o), Value::String(scope.alloc_string("y")?)];
+  let out = rt
+    .vm
+    .call_without_host(&mut scope, Value::Object(has_own), Value::Object(object), &args)?;
+  assert_eq!(out, Value::Bool(false));
+
+  // `ToObject(null)` throws.
+  let args = [Value::Null, Value::String(scope.alloc_string("x")?)];
+  let err =
+    rt.vm
+      .call_without_host(&mut scope, Value::Object(has_own), Value::Object(object), &args);
+  let thrown = match err {
+    Ok(v) => panic!("expected Object.hasOwn to throw, got {v:?}"),
+    Err(VmError::Throw(v) | VmError::ThrowWithStack { value: v, .. }) => v,
+    Err(e) => return Err(e),
+  };
+  let Value::Object(err_obj) = thrown else {
+    panic!("expected thrown value to be an object, got {thrown:?}");
+  };
+  assert_eq!(scope.heap().object_prototype(err_obj)?, Some(type_error_proto));
+
+  Ok(())
+}

@@ -744,6 +744,47 @@ pub fn object_create(
   Ok(Value::Object(obj))
 }
 
+/// `Object.is(value1, value2)` (ECMA-262).
+pub fn object_is(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  // https://tc39.es/ecma262/#sec-object.is
+  let value1 = args.get(0).copied().unwrap_or(Value::Undefined);
+  let value2 = args.get(1).copied().unwrap_or(Value::Undefined);
+  Ok(Value::Bool(value1.same_value(value2, scope.heap())))
+}
+
+/// `Object.hasOwn(O, P)` (ECMA-262).
+pub fn object_has_own(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  // https://tc39.es/ecma262/#sec-object.hasown
+  let obj_val = args.get(0).copied().unwrap_or(Value::Undefined);
+  let obj = scope.to_object(vm, host, hooks, obj_val)?;
+  scope.push_root(Value::Object(obj))?;
+
+  let prop_val = args.get(1).copied().unwrap_or(Value::Undefined);
+  let key = scope.to_property_key(vm, host, hooks, prop_val)?;
+  root_property_key(scope, key)?;
+
+  let has = scope
+    .object_get_own_property_with_host_and_hooks(vm, host, hooks, obj, key)?
+    .is_some();
+  Ok(Value::Bool(has))
+}
+
 /// `Object.getOwnPropertyDescriptor(O, P)` (ECMA-262).
 pub fn object_get_own_property_descriptor(
   vm: &mut Vm,
