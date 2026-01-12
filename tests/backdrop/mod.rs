@@ -1,9 +1,7 @@
 //! Backdrop filter / Backdrop Root integration tests.
 //!
-//! These tests are included by the main integration test harness (see `tests/integration.rs`).
-//!
-//! Historically some of these lived in their own `tests/*.rs` integration-test crates; keep them
-//! consolidated under this directory to avoid spawning dozens of separate test executables.
+//! Keep these tests consolidated under this directory so they can be pulled into the integration
+//! test suite without spawning dozens of separate `tests/*.rs` test binaries.
 
 mod backdrop_filter_clip_and_radius;
 mod backdrop_filter_clipped_negative_origin;

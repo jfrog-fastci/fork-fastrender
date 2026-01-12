@@ -251,9 +251,9 @@ fn cascade_handles_many_keyword_declarations_under_budget() {
   let dom = parse_html(&html).expect("html parses");
 
   let media = MediaContext::screen(1280.0, 720.0);
-  // This test runs inside the main integration test binary (`tests/integration.rs`), which
-  // executes many other style/layout checks in parallel. Keep the budget generous enough to avoid
-  // noisy multi-threaded CI/agent environments, but still low enough to catch gross regressions.
+  // This test runs inside a large integration test binary that executes many other style/layout
+  // checks in parallel. Keep the budget generous enough to avoid noisy multi-threaded CI/agent
+  // environments, but still low enough to catch gross regressions.
   let budget = Duration::from_millis(3000);
   let (elapsed, samples, styled) = apply_styles_best_of(budget, || {
     apply_styles_with_media(&dom, &stylesheet, &media)
