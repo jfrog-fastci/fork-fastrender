@@ -209,15 +209,17 @@ impl InlineItem {
 
   /// Returns baseline metrics used for line box height calculation.
   ///
-  /// For non-replaced inline elements, vertical padding/borders visually extend the ink overflow
-  /// area but do not participate in line box sizing. Parent line boxes should therefore size from
-  /// the inline box's line-height strut (plus any `vertical-align` adjustments of descendants),
-  /// rather than the painted border box. This matches Chromium behavior (notably `xkcd.com`'s
-  /// navigation buttons) and prevents inline borders/padding from incorrectly pushing subsequent
-  /// blocks down.
+  /// For non-replaced inline elements (`display: inline`), vertical padding/borders contribute to
+  /// ink overflow but do not participate in line box sizing in Chromium. Instead, those
+  /// decorations can overflow above/below the line-height strut (and may be clipped by
+  /// `overflow: hidden`).
+  ///
+  /// Parent line boxes should therefore size from the inline box's line-height strut / in-flow
+  /// inline children (including `vertical-align` adjustments of descendants), not from the painted
+  /// border box.
   pub fn line_metrics(&self) -> BaselineMetrics {
     match self {
-      InlineItem::InlineBox(b) => b.strut_metrics,
+      InlineItem::InlineBox(b) => b.metrics,
       _ => self.baseline_metrics(),
     }
   }

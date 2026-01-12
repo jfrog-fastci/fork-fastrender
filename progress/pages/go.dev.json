@@ -15,7 +15,7 @@
     "layout": 112.00824382608695,
     "paint": 27.00198735093168
   },
-  "notes": "",
+  "notes": "Fixed major layout shift: non-replaced inline padding/border must not expand line boxes (Chrome lets it overflow instead). Remaining diffs are mostly text rasterization/antialiasing (low perceptual distance).",
   "accuracy": {
     "baseline": "chrome",
     "diff_pixels": 241872,

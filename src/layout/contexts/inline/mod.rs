@@ -10075,56 +10075,20 @@ fn compute_inline_items_single_line_layout(
 
 fn compute_inline_box_metrics(
   children: &[InlineItem],
-  content_offset_y: f32,
-  bottom_inset: f32,
+  _content_offset_y: f32,
+  _bottom_inset: f32,
   fallback: BaselineMetrics,
 ) -> BaselineMetrics {
-  // Inline boxes can have vertical padding/borders that extend beyond the line-height strut.
+  // CSS 2.1 §10.8: line box height is computed from each inline-level box's *line-height* box.
   //
-  // For example, pill-style `<a>`/`<span>` elements often rely on `padding-top/bottom` to make the
-  // clickable area taller than the surrounding text. Chromium (and typical web content) expects
-  // those border boxes to contribute to the line box height so they don't get clipped by
-  // `overflow: hidden` containers (e.g. nav bars with snap sliders).
+  // Non-replaced inline elements (`display: inline`) can still have padding/border, but those
+  // decorations do **not** increase the line box height in Chromium; instead they may overflow
+  // above/below the line box (and get clipped by `overflow: hidden` if applicable).
   //
-  // We therefore compute the inline box's line contribution as the union of:
-  // - its in-flow children (taking `vertical-align` into account), and
-  // - its own border box derived from the element's content area (font metrics) plus
-  //   vertical padding/borders.
-  let child_metrics = compute_inline_box_line_metrics(children, fallback);
-  if content_offset_y <= 0.0 && bottom_inset <= 0.0 {
-    return child_metrics;
-  }
-
-  let content_height = (fallback.ascent + fallback.descent).max(0.0);
-  let border_box_height = content_height + content_offset_y + bottom_inset;
-
-  // `child_metrics.baseline_offset` is measured from the top of the inline box's line-height strut
-  // (the line box within the inline element, excluding padding/borders). Convert it to a baseline
-  // position relative to the inline border box. Per CSS 2.1 §10.6.1, vertical padding/borders are
-  // applied around the *content area* (font metrics), so the border box origin is shifted by
-  // `half-leading - padding_top`.
-  let half_leading = fallback.half_leading();
-  let border_ascent = child_metrics.baseline_offset + content_offset_y - half_leading;
-  let border_ascent = border_ascent.max(0.0).min(border_box_height.max(0.0));
-  let border_descent = (border_box_height - border_ascent).max(0.0);
-
-  let child_ascent = child_metrics.baseline_offset.max(0.0);
-  let child_descent = (child_metrics.height - child_metrics.baseline_offset).max(0.0);
-
-  let max_ascent = child_ascent.max(border_ascent);
-  let max_descent = child_descent.max(border_descent);
-  let height = max_ascent + max_descent;
-
-  BaselineMetrics {
-    baseline_offset: max_ascent,
-    height,
-    ascent: max_ascent,
-    descent: max_descent,
-    line_gap: fallback.line_gap,
-    // Preserve the authored line-height for vertical-align percentage/length resolution.
-    line_height: fallback.line_height,
-    x_height: fallback.x_height,
-  }
+  // Therefore the inline box's line contribution is derived solely from its in-flow inline
+  // children (including their `vertical-align` effects) and its own line-height strut, not from
+  // the element's border box.
+  compute_inline_box_line_metrics(children, fallback)
 }
 
 fn compute_inline_box_line_metrics(
@@ -17343,6 +17307,20 @@ mod tests {
       WritingMode::HorizontalTb,
     );
     assert_eq!(resolved_calc, baseline::VerticalAlign::Length(5.0));
+  }
+
+  #[test]
+  fn inline_box_padding_does_not_expand_line_box_metrics() {
+    // CSS 2.1 line box height is computed from the element's line-height strut. Padding/border on a
+    // non-replaced inline element may overflow, but must not inflate the line box.
+    let fallback = BaselineMetrics::new(12.0, 16.0, 12.0, 4.0);
+    let children: &[InlineItem] = &[];
+
+    // Even with large vertical padding/border (represented here by non-zero insets), the returned
+    // metrics must stay anchored to the fallback strut.
+    let metrics = compute_inline_box_metrics(children, 16.0, 16.0, fallback);
+    assert_eq!(metrics.height, fallback.height);
+    assert_eq!(metrics.baseline_offset, fallback.baseline_offset);
   }
 
   #[test]
