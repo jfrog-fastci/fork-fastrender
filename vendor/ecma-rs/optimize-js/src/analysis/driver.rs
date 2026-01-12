@@ -265,6 +265,11 @@ fn reset_cfg_meta(cfg: &mut Cfg) {
       let type_summary = inst.meta.type_summary;
       let excludes_nullish = inst.meta.excludes_nullish;
       let preserve_var_assign = inst.meta.preserve_var_assign;
+      let await_behavior = inst.meta.await_behavior;
+      let stack_alloc_candidate = inst.meta.stack_alloc_candidate;
+      let value = inst.meta.value.clone();
+      #[cfg(feature = "native-async-ops")]
+      let await_known_resolved = inst.meta.await_known_resolved;
       inst.meta = InstMeta::default();
       inst.meta.type_id = type_id;
       #[cfg(feature = "typed")]
@@ -276,6 +281,13 @@ fn reset_cfg_meta(cfg: &mut Cfg) {
       inst.meta.type_summary = type_summary;
       inst.meta.excludes_nullish = excludes_nullish;
       inst.meta.preserve_var_assign = preserve_var_assign;
+      inst.meta.await_behavior = await_behavior;
+      inst.meta.stack_alloc_candidate = stack_alloc_candidate;
+      inst.meta.value = value;
+      #[cfg(feature = "native-async-ops")]
+      {
+        inst.meta.await_known_resolved = await_known_resolved;
+      }
     }
   }
 }

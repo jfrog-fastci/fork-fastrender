@@ -1,7 +1,8 @@
 use hir_js::ExprId;
 use optimize_js::analysis::annotate_program;
 use optimize_js::cfg::cfg::{Cfg, CfgBBlocks, CfgGraph};
-use optimize_js::il::inst::{Arg, Const, Inst, ValueTypeSummary};
+use optimize_js::il::inst::{Arg, AwaitBehavior, Const, Inst, ValueTypeSummary};
+use optimize_js::il::meta::{EscapeState as ValueEscapeState, IntRange as ValueIntRange, Nullability, ValueFacts};
 use optimize_js::{OptimizationStats, Program, ProgramFunction, TextRange, TopLevelMode};
 
 fn some_type_id() -> Option<optimize_js::types::TypeId> {
@@ -28,6 +29,20 @@ fn annotate_program_preserves_lowering_metadata_fields() {
   inst.meta.type_summary = Some(ValueTypeSummary::NUMBER);
   inst.meta.excludes_nullish = true;
   inst.meta.preserve_var_assign = true;
+  inst.meta.await_behavior = Some(AwaitBehavior::MayNotYield);
+  inst.meta.stack_alloc_candidate = true;
+  let mut value_facts = ValueFacts::default();
+  value_facts.escape = Some(ValueEscapeState::NoEscape);
+  value_facts.int_range = Some(ValueIntRange {
+    min: Some(1),
+    max: Some(2),
+  });
+  value_facts.nullability = Some(Nullability::NonNullish);
+  inst.meta.value = Some(value_facts);
+  #[cfg(feature = "native-async-ops")]
+  {
+    inst.meta.await_known_resolved = true;
+  }
 
   let mut bblocks = CfgBBlocks::default();
   bblocks.add(0, vec![inst]);
@@ -93,6 +108,24 @@ fn annotate_program_preserves_lowering_metadata_fields() {
     assert!(
       meta.preserve_var_assign,
       "expected preserve_var_assign to be preserved ({name})"
+    );
+    assert_eq!(
+      meta.await_behavior,
+      Some(AwaitBehavior::MayNotYield),
+      "expected await_behavior to be preserved ({name})"
+    );
+    assert!(
+      meta.stack_alloc_candidate,
+      "expected stack_alloc_candidate to be preserved ({name})"
+    );
+    assert!(
+      meta.value.is_some(),
+      "expected value facts to be preserved ({name})"
+    );
+    #[cfg(feature = "native-async-ops")]
+    assert!(
+      meta.await_known_resolved,
+      "expected await_known_resolved to be preserved ({name})"
     );
   }
 }
