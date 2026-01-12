@@ -1,9 +1,9 @@
-use fastrender::animation::scroll_timeline_progress;
-use fastrender::css::types::{Declaration, PropertyValue};
-use fastrender::style::properties::{apply_declaration_with_base, DEFAULT_VIEWPORT};
-use fastrender::style::types::{AnimationRange, RangeOffset, ScrollTimeline};
-use fastrender::style::ComputedStyle;
-use fastrender::Length;
+use crate::animation::scroll_timeline_progress;
+use crate::css::types::{Declaration, PropertyValue};
+use crate::style::properties::{apply_declaration_with_base, DEFAULT_VIEWPORT};
+use crate::style::types::{AnimationRange, RangeOffset, ScrollTimeline};
+use crate::style::ComputedStyle;
+use crate::Length;
 
 #[test]
 fn animation_range_parses_length_offsets() {
@@ -48,3 +48,4 @@ fn scroll_timeline_progress_respects_length_animation_range() {
   let progress = scroll_timeline_progress(&timeline, 250.0, 1000.0, 100.0, &range).unwrap();
   assert!((progress - 0.5).abs() < 1e-6, "progress={progress}");
 }
+
