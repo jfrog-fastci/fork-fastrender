@@ -146,8 +146,8 @@ use crate::style::types::ContentVisibility;
 use crate::style::types::ImageOrientation;
 use crate::style::types::ImageRendering;
 use crate::style::types::Isolation;
-use crate::style::types::MaskBorderMode;
 use crate::style::types::MaskClip;
+use crate::style::types::MaskBorderMode;
 use crate::style::types::MaskMode;
 use crate::style::types::MixBlendMode;
 use crate::style::types::ObjectFit;
@@ -1022,39 +1022,10 @@ impl DisplayListBuilder {
   }
 
   fn element_scroll_offset(&self, fragment: &FragmentNode) -> Point {
-    let Some(style) = fragment.style.as_deref() else {
-      return Point::ZERO;
-    };
-
-    // Element scroll offsets apply only to scroll containers.
-    //
-    // CSS Overflow 3 defines `overflow: clip` as non-scrollable (scrolling is forbidden entirely),
-    // and `overflow: visible` as non-scrollable. Treat `hidden|scroll|auto` as scroll containers so
-    // programmatic scrolling of `overflow: hidden` works, while `overflow: clip` cannot be scrolled
-    // even if a caller provides an entry in `ScrollState::elements`.
-    let mut offset = fragment
+    fragment
       .box_id()
       .and_then(|id| self.scroll_state.elements.get(&id).copied())
-      .unwrap_or(Point::ZERO);
-
-    if !matches!(
-      style.overflow_x,
-      crate::style::types::Overflow::Hidden
-        | crate::style::types::Overflow::Scroll
-        | crate::style::types::Overflow::Auto
-    ) {
-      offset.x = 0.0;
-    }
-    if !matches!(
-      style.overflow_y,
-      crate::style::types::Overflow::Hidden
-        | crate::style::types::Overflow::Scroll
-        | crate::style::types::Overflow::Auto
-    ) {
-      offset.y = 0.0;
-    }
-
-    offset
+      .unwrap_or(Point::ZERO)
   }
 
   fn snap_form_control_caret_rect(&self, rect: Rect) -> Rect {
@@ -1437,8 +1408,7 @@ impl DisplayListBuilder {
     } else {
       parallel_min.saturating_mul(4)
     };
-    let (decoded_image_cache_entries, decoded_image_cache_bytes) =
-      decoded_image_cache_limits_from_env();
+    let (decoded_image_cache_entries, decoded_image_cache_bytes) = decoded_image_cache_limits_from_env();
     Self {
       list: DisplayList::new(),
       image_cache: Some(ImageCache::new()),
@@ -1485,8 +1455,7 @@ impl DisplayListBuilder {
     } else {
       parallel_min.saturating_mul(4)
     };
-    let (decoded_image_cache_entries, decoded_image_cache_bytes) =
-      decoded_image_cache_limits_from_env();
+    let (decoded_image_cache_entries, decoded_image_cache_bytes) = decoded_image_cache_limits_from_env();
     Self {
       list: DisplayList::new(),
       image_cache: Some(image_cache),
@@ -2047,7 +2016,7 @@ impl DisplayListBuilder {
     self.estimated_fragments = Some(tree.fragment_count());
   }
 
-  /// Recursively builds display items for a fragment
+  /// Builds display items for a fragment subtree.
   fn build_fragment(&mut self, fragment: &FragmentNode, offset: Point, visibility: Visibility) {
     self.build_fragment_internal(fragment, offset, true, false, visibility);
   }
@@ -2070,543 +2039,823 @@ impl DisplayListBuilder {
     suppress_opacity: bool,
     visibility: Visibility,
   ) {
-    if self.deadline_reached() {
-      return;
+    // This used to recurse directly on `fragment.children`, which meant adversarially deep fragment
+    // trees could stack overflow (crash) before paint-time limits/stacking-context logic had a
+    // chance to run. Use an explicit stack to guarantee traversal depth is bounded by heap memory,
+    // not the call stack.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum Stage {
+      Enter,
+      Blocks,
+      Floats,
+      SelectionOverlay,
+      Inlines,
+      CaretOverlay,
+      Positioned,
+      Exit,
     }
 
-    let style_opt = fragment.style.as_deref();
-    let paint_self = style_opt.map_or(true, |style| {
-      matches!(
-        style.visibility,
-        crate::style::computed::Visibility::Visible
-      )
-    });
-    if !paint_self && (!recurse_children || fragment.children.is_empty()) {
-      return;
+    struct FrameData<'a> {
+      style_opt: Option<&'a ComputedStyle>,
+      paint_self: bool,
+      list_start: usize,
+      push_opacity: bool,
+      push_backface_visibility: bool,
+      absolute_rect: Rect,
+      skip_contents: bool,
+      child_visibility: Visibility,
+      pushed_clips: usize,
+
+      // Child traversal state (only used when `recurse_children == true` and contents are not
+      // skipped).
+      child_offset: Point,
+      prev_line_decoration_ctx: Option<LineDecorationContext>,
+      before_children: usize,
+      children_painted: bool,
+      blocks: Vec<usize>,
+      floats: Vec<usize>,
+      inlines: Vec<usize>,
+      positioned: Vec<usize>,
+      child_pos: usize,
+      counter: usize,
+      overlays: Option<TextEditOverlays>,
     }
 
-    if matches!(
-      fragment.content,
-      FragmentContent::RunningAnchor { .. } | FragmentContent::FootnoteAnchor { .. }
-    ) {
-      return;
+    struct Frame<'a> {
+      stage: Stage,
+      fragment: &'a FragmentNode,
+      offset: Point,
+      recurse_children: bool,
+      suppress_opacity: bool,
+      visibility: Visibility,
+      data: Option<FrameData<'a>>,
     }
 
-    let list_start = self.list.len();
-    let opacity = style_opt.map(|s| s.opacity).unwrap_or(1.0);
-    if opacity <= f32::EPSILON {
-      return;
-    }
-    let push_opacity = !suppress_opacity && opacity < 1.0 - f32::EPSILON;
-
-    let absolute_rect = Rect::new(
-      Point::new(
-        fragment.bounds.origin.x + offset.x,
-        fragment.bounds.origin.y + offset.y,
-      ),
-      fragment.bounds.size,
-    );
-    let mut skip_contents = style_opt.is_some_and(|style| match style.content_visibility {
-      ContentVisibility::Hidden => true,
-      ContentVisibility::Auto => visibility
-        .rect
-        .is_some_and(|vis| !vis.intersects(absolute_rect)),
-      ContentVisibility::Visible => false,
-    });
-    let mut paint_bounds = self.fragment_paint_bounds(fragment, absolute_rect, style_opt);
-    // `fragment_paint_bounds` only accounts for effects on the fragment's own border box.
-    // Descendants can paint outside that box (e.g. absolutely positioned children with
-    // `overflow: visible`), so use the already-computed `scroll_overflow` to avoid culling away
-    // visible descendants.
-    paint_bounds = paint_bounds.union(fragment.scroll_overflow.translate(absolute_rect.origin));
-    if let Some(vis) = visibility.rect {
-      if !vis.intersects(paint_bounds) {
-        return;
+    impl<'a> Frame<'a> {
+      fn new(
+        fragment: &'a FragmentNode,
+        offset: Point,
+        recurse_children: bool,
+        suppress_opacity: bool,
+        visibility: Visibility,
+      ) -> Self {
+        Self {
+          stage: Stage::Enter,
+          fragment,
+          offset,
+          recurse_children,
+          suppress_opacity,
+          visibility,
+          data: None,
+        }
       }
-      if visibility.hard_clip {
-        paint_bounds = match paint_bounds.intersection(vis) {
-          Some(intersection) if intersection.width() > 0.0 && intersection.height() > 0.0 => {
-            intersection
+    }
+
+    let mut stack = Vec::new();
+    stack.push(Frame::new(
+      fragment,
+      offset,
+      recurse_children,
+      suppress_opacity,
+      visibility,
+    ));
+
+    'work: while let Some(mut frame) = stack.pop() {
+      match frame.stage {
+        Stage::Enter => {
+          if self.deadline_reached() {
+            continue;
           }
-          _ => return,
-        };
-      } else {
-        paint_bounds = paint_bounds.intersection(vis).unwrap_or(paint_bounds);
-      }
-    }
 
-    let mut absolute_rects: Option<BackgroundRects> = None;
-    let (overflow_clip, clip_rect) = if let Some(style) = style_opt {
-      // Replaced elements clip their own contents to the content box (see `replaced_content_clip_item`),
-      // so avoid applying the generic padding-box overflow clip here. (Form controls compute their
-      // own overflow clip in the replaced paint path.)
-      let is_replaced = matches!(&fragment.content, FragmentContent::Replaced { .. });
-      let clip_x = !is_replaced && Self::overflow_axis_clips(style.overflow_x);
-      let clip_y = !is_replaced && Self::overflow_axis_clips(style.overflow_y);
-      (
-        if clip_x || clip_y {
-          let overflow_bounds =
-            absolute_rect.union(fragment.scroll_overflow.translate(absolute_rect.origin));
-          let rects = absolute_rects
-            .get_or_insert_with(|| Self::background_rects(absolute_rect, style, self.viewport));
-          // `overflow: hidden` clips to the padding box. When the padding box has no area in a
-          // clipped axis (e.g. `width: 0; overflow: hidden`), no descendant pixels can be visible,
-          // so skip content painting rather than treating this as "no clip".
-          if (clip_x && rects.padding.width() <= 0.0) || (clip_y && rects.padding.height() <= 0.0) {
-            skip_contents = true;
-            None
-          } else {
-            Self::overflow_clip_from_style_with_rects(
-              style,
-              rects,
-              clip_x,
-              clip_y,
-              overflow_bounds,
-              self.viewport,
-              self.build_breakdown.as_deref(),
+          let style_opt = frame.fragment.style.as_deref();
+          let paint_self = style_opt.map_or(true, |style| {
+            matches!(
+              style.visibility,
+              crate::style::computed::Visibility::Visible
             )
+          });
+          if !paint_self && (!frame.recurse_children || frame.fragment.children.is_empty()) {
+            continue;
           }
-        } else {
-          None
-        },
-        Self::clip_rect_from_style(style, absolute_rect, self.viewport),
-      )
-    } else {
-      (None, None)
-    };
-    let mut child_visibility = visibility;
-    if let Some(clip) = overflow_clip.as_ref() {
-      child_visibility = child_visibility.intersect(Self::clip_bounds(clip), true);
-    }
-    if let Some(clip) = clip_rect.as_ref() {
-      child_visibility = child_visibility.intersect(Self::clip_bounds(clip), true);
-    }
-    if child_visibility.rect.is_none() && visibility.rect.is_some() {
-      return;
-    }
-    if let Some(vis) = child_visibility.rect {
-      if !vis.intersects(paint_bounds) {
-        return;
-      }
-      if child_visibility.hard_clip {
-        match paint_bounds.intersection(vis) {
-          Some(intersection) if intersection.width() > 0.0 && intersection.height() > 0.0 => {}
-          _ => return,
-        };
-      }
-    }
 
-    // `backface-visibility: hidden` establishes a stacking context. In the stacking-context-aware
-    // pipeline, the value is carried on `StackingContextItem` and culled by the renderer at
-    // `PushStackingContext`.
-    //
-    // When painting without stacking contexts, we still need to cull the element when an ancestor
-    // 3D transform flips it away from the viewer, so wrap only elements that would otherwise
-    // *not* create a stacking context.
-    let push_backface_visibility = style_opt.is_some_and(|style| {
-      matches!(style.backface_visibility, BackfaceVisibility::Hidden)
-        && !crate::paint::stacking::creates_stacking_context(style, None, false)
-    });
-    if push_backface_visibility {
-      self.list.push(DisplayItem::PushBackfaceVisibility(
-        BackfaceVisibility::Hidden,
-      ));
-    }
+          if matches!(
+            frame.fragment.content,
+            FragmentContent::RunningAnchor { .. } | FragmentContent::FootnoteAnchor { .. }
+          ) {
+            continue;
+          }
 
-    if push_opacity {
-      self.push_opacity(opacity);
-    }
+          let list_start = self.list.len();
+          let opacity = style_opt.map(|s| s.opacity).unwrap_or(1.0);
+          if opacity <= f32::EPSILON {
+            continue;
+          }
+          let push_opacity = !frame.suppress_opacity && opacity < 1.0 - f32::EPSILON;
 
-    if paint_self {
-      if let Some(style) = style_opt {
-        let suppress_background = self
-          .canvas_background_suppress_box_id
-          .is_some_and(|id| Self::get_box_id(fragment) == Some(id));
-        let suppress_border = self
-          .canvas_border_suppress_box_id
-          .is_some_and(|id| Self::get_box_id(fragment) == Some(id));
-        let (decoration_rect, decoration_clip) =
-          Self::decoration_rect_and_clip(fragment, absolute_rect, style);
-        let decoration_clip_pushed = decoration_clip.is_some();
-        if let Some(clip) = decoration_clip {
-          self.list.push(DisplayItem::PushClip(clip));
-        }
-
-        let text_clip = if !skip_contents
-          && !suppress_background
-          && Self::has_paintable_background(style)
-          && style
-            .background_layers
-            .iter()
-            .any(|layer| layer.clip == BackgroundBox::Text)
-        {
-          self.build_text_clip_runs(fragment, offset, child_visibility)
-        } else {
-          None
-        };
-
-        // CSS 2.1 `clip` applies to the element's own border/background in addition to its
-        // descendants. We intentionally keep this scoped to the element itself (the content
-        // traversal below still pushes `clip_rect` again) so outer effects like box shadows and
-        // outlines remain unaffected.
-        let mut clip_rect_pushed = false;
-
-        if !style.box_shadow.is_empty() {
-          let mut decoration_rects: Option<BackgroundRects> = None;
-          let rects = if decoration_rect == absolute_rect {
-            absolute_rects
-              .get_or_insert_with(|| Self::background_rects(absolute_rect, style, self.viewport))
-          } else {
-            decoration_rects
-              .get_or_insert_with(|| Self::background_rects(decoration_rect, style, self.viewport))
-          };
-
-          let has_outer = style.box_shadow.iter().any(|shadow| !shadow.inset);
-          let has_inset = style.box_shadow.iter().any(|shadow| shadow.inset);
-          let outer_radii = if has_outer {
-            Self::border_radii(decoration_rect, style)
-              .clamped(decoration_rect.width(), decoration_rect.height())
-          } else {
-            crate::paint::display_list::BorderRadii::ZERO
-          };
-          let inner_radii = if has_inset {
-            if Self::border_radius_is_zero(style) {
-              crate::paint::display_list::BorderRadii::ZERO
-            } else {
-              Self::resolve_clip_radii(
-                style,
-                rects,
-                BackgroundBox::PaddingBox,
-                self.viewport,
-                self.build_breakdown.as_deref(),
-              )
+          let absolute_rect = Rect::new(
+            Point::new(
+              frame.fragment.bounds.origin.x + frame.offset.x,
+              frame.fragment.bounds.origin.y + frame.offset.y,
+            ),
+            frame.fragment.bounds.size,
+          );
+          let mut skip_contents = style_opt.is_some_and(|style| match style.content_visibility {
+            ContentVisibility::Hidden => true,
+            ContentVisibility::Auto => frame
+              .visibility
+              .rect
+              .is_some_and(|vis| !vis.intersects(absolute_rect)),
+            ContentVisibility::Visible => false,
+          });
+          let mut paint_bounds =
+            self.fragment_paint_bounds(frame.fragment, absolute_rect, style_opt);
+          // `fragment_paint_bounds` only accounts for effects on the fragment's own border box.
+          // Descendants can paint outside that box (e.g. absolutely positioned children with
+          // `overflow: visible`), so use the already-computed `scroll_overflow` to avoid culling away
+          // visible descendants.
+          paint_bounds = paint_bounds.union(
+            frame
+              .fragment
+              .scroll_overflow
+              .translate(absolute_rect.origin),
+          );
+          if let Some(vis) = frame.visibility.rect {
+            if !vis.intersects(paint_bounds) {
+              continue;
             }
-          } else {
-            crate::paint::display_list::BorderRadii::ZERO
-          };
-
-          if has_outer {
-            self.emit_box_shadows_from_style_with_base(
-              rects.border,
-              outer_radii,
-              decoration_rect.width(),
-              style,
-              false,
-            );
-          }
-          if let Some(clip) = clip_rect.as_ref() {
-            self.list.push(DisplayItem::PushClip(clip.clone()));
-            clip_rect_pushed = true;
-          }
-          if !suppress_background {
-            self.emit_background_from_style_with_rects_and_text_clip_and_culling_rect(
-              rects,
-              style,
-              text_clip.as_ref(),
-              visibility.rect,
-            );
-          }
-          if has_inset {
-            self.emit_box_shadows_from_style_with_base(
-              rects.padding,
-              inner_radii,
-              decoration_rect.width(),
-              style,
-              true,
-            );
-          }
-        } else if decoration_rect == absolute_rect {
-          if let Some(clip) = clip_rect.as_ref() {
-            self.list.push(DisplayItem::PushClip(clip.clone()));
-            clip_rect_pushed = true;
-          }
-          if !suppress_background {
-            if let Some(rects) = absolute_rects.as_ref() {
-              self.emit_background_from_style_with_rects_and_text_clip_and_culling_rect(
-                rects,
-                style,
-                text_clip.as_ref(),
-                visibility.rect,
-              );
+            if frame.visibility.hard_clip {
+              paint_bounds = match paint_bounds.intersection(vis) {
+                Some(intersection)
+                  if intersection.width() > 0.0 && intersection.height() > 0.0 =>
+                {
+                  intersection
+                }
+                _ => continue,
+              };
             } else {
-              self.emit_background_from_style_with_text_clip_and_culling_rect(
-                decoration_rect,
-                style,
-                text_clip.as_ref(),
-                visibility.rect,
-              );
+              paint_bounds = paint_bounds.intersection(vis).unwrap_or(paint_bounds);
             }
           }
-        } else {
-          if let Some(clip) = clip_rect
-            .as_ref()
-            .filter(|_| !suppress_background || !suppress_border)
-          {
-            self.list.push(DisplayItem::PushClip(clip.clone()));
-            clip_rect_pushed = true;
+
+          let mut absolute_rects: Option<BackgroundRects> = None;
+          let (overflow_clip, clip_rect) = if let Some(style) = style_opt {
+            // Replaced elements clip their own contents to the content box (see `replaced_content_clip_item`),
+            // so avoid applying the generic padding-box overflow clip here. (Form controls compute their
+            // own overflow clip in the replaced paint path.)
+            let is_replaced = matches!(&frame.fragment.content, FragmentContent::Replaced { .. });
+            let clip_x = !is_replaced && Self::overflow_axis_clips(style.overflow_x);
+            let clip_y = !is_replaced && Self::overflow_axis_clips(style.overflow_y);
+            (
+              if clip_x || clip_y {
+                let overflow_bounds = absolute_rect.union(
+                  frame
+                    .fragment
+                    .scroll_overflow
+                    .translate(absolute_rect.origin),
+                );
+                let rects = absolute_rects.get_or_insert_with(|| {
+                  Self::background_rects(absolute_rect, style, self.viewport)
+                });
+                // `overflow: hidden` clips to the padding box. When the padding box has no area in a
+                // clipped axis (e.g. `width: 0; overflow: hidden`), no descendant pixels can be visible,
+                // so skip content painting rather than treating this as "no clip".
+                if (clip_x && rects.padding.width() <= 0.0)
+                  || (clip_y && rects.padding.height() <= 0.0)
+                {
+                  skip_contents = true;
+                  None
+                } else {
+                  Self::overflow_clip_from_style_with_rects(
+                    style,
+                    rects,
+                    clip_x,
+                    clip_y,
+                    overflow_bounds,
+                    self.viewport,
+                    self.build_breakdown.as_deref(),
+                  )
+                }
+              } else {
+                None
+              },
+              Self::clip_rect_from_style(style, absolute_rect, self.viewport),
+            )
+          } else {
+            (None, None)
+          };
+          let mut child_visibility = frame.visibility;
+          if let Some(clip) = overflow_clip.as_ref() {
+            child_visibility = child_visibility.intersect(Self::clip_bounds(clip), true);
           }
-          if !suppress_background {
-            self.emit_background_from_style_with_text_clip_and_culling_rect(
-              decoration_rect,
-              style,
-              text_clip.as_ref(),
-              visibility.rect,
-            );
+          if let Some(clip) = clip_rect.as_ref() {
+            child_visibility = child_visibility.intersect(Self::clip_bounds(clip), true);
           }
-        }
+          if child_visibility.rect.is_none() && frame.visibility.rect.is_some() {
+            continue;
+          }
+          if let Some(vis) = child_visibility.rect {
+            if !vis.intersects(paint_bounds) {
+              continue;
+            }
+            if child_visibility.hard_clip {
+              match paint_bounds.intersection(vis) {
+                Some(intersection)
+                  if intersection.width() > 0.0 && intersection.height() > 0.0 => {}
+                _ => continue,
+              };
+            }
+          }
 
-        if !suppress_border {
-          let gap = self.fieldset_legend_border_gap(fragment, decoration_rect, style);
-          self.emit_border_from_style(decoration_rect, style, gap);
-        }
-        if clip_rect_pushed {
-          self.list.push(DisplayItem::PopClip);
-        }
-        if decoration_clip_pushed {
-          self.list.push(DisplayItem::PopClip);
-        }
-      }
-    }
+          // `backface-visibility: hidden` establishes a stacking context. In the stacking-context-aware
+          // pipeline, the value is carried on `StackingContextItem` and culled by the renderer at
+          // `PushStackingContext`.
+          //
+          // When painting without stacking contexts, we still need to cull the element when an ancestor
+          // 3D transform flips it away from the viewer, so wrap only elements that would otherwise
+          // *not* create a stacking context.
+          let push_backface_visibility = style_opt.is_some_and(|style| {
+            matches!(style.backface_visibility, BackfaceVisibility::Hidden)
+              && !crate::paint::stacking::creates_stacking_context(style, None, false)
+          });
+          if push_backface_visibility {
+            self.list.push(DisplayItem::PushBackfaceVisibility(
+              BackfaceVisibility::Hidden,
+            ));
+          }
 
-    // CSS Paint Order:
-    // 1. Background (handled by caller if style available)
-    // 2. Border (handled by caller if style available)
-    // 3. Content (text, images)
-    // 4. Children
+          if push_opacity {
+            self.push_opacity(opacity);
+          }
 
-    // Clip descendant/content painting but leave outer effects (e.g., box shadows, outlines)
-    // unaffected.
-    let mut children_painted = false;
-    if !skip_contents {
-      let mut pushed_clips = 0;
-      if let Some(clip) = overflow_clip {
-        self.list.push(DisplayItem::PushClip(clip));
-        pushed_clips += 1;
-      }
-      if let Some(clip) = clip_rect {
-        self.list.push(DisplayItem::PushClip(clip));
-        pushed_clips += 1;
-      }
-
-      if paint_self {
-        self.emit_content(fragment, absolute_rect, child_visibility.rect);
-      }
-
-      if recurse_children {
-        let element_scroll = self.element_scroll_offset(fragment);
-        let child_offset = Point::new(
-          absolute_rect.origin.x - element_scroll.x,
-          absolute_rect.origin.y - element_scroll.y,
-        );
-        let prev_line_decoration_ctx = self.line_decoration_ctx;
-        if let FragmentContent::Line { baseline } = &fragment.content {
-          self.line_decoration_ctx =
-            Some(self.build_line_decoration_context(fragment, child_offset, *baseline));
-        } else if self.line_decoration_ctx.is_some()
-          && style_opt.is_some_and(|style| {
-            style.display.is_inline_level() && style.display.establishes_formatting_context()
-          })
-        {
-          // Decorations inside atomic inlines (inline-block/inline-table/etc) should be resolved
-          // against the atomic inline's own line boxes, not the ancestor line that positioned it.
-          self.line_decoration_ctx = None;
-        }
-        let before_children = self.list.len();
-        let mut blocks = Vec::new();
-        let mut floats = Vec::new();
-        let mut inlines = Vec::new();
-        let mut positioned = Vec::new();
-        for (idx, child) in fragment.children.iter().enumerate() {
-          if self.skip_stacking_context_children {
-            if let Some(child_style) = child.style.as_deref() {
-              if crate::paint::stacking::creates_stacking_context(child_style, style_opt, false) {
-                continue;
+          if paint_self {
+            if let Some(style) = style_opt {
+              let suppress_background = self
+                .canvas_background_suppress_box_id
+                .is_some_and(|id| Self::get_box_id(frame.fragment) == Some(id));
+              let suppress_border = self
+                .canvas_border_suppress_box_id
+                .is_some_and(|id| Self::get_box_id(frame.fragment) == Some(id));
+              let (decoration_rect, decoration_clip) =
+                Self::decoration_rect_and_clip(frame.fragment, absolute_rect, style);
+              let decoration_clip_pushed = decoration_clip.is_some();
+              if let Some(clip) = decoration_clip {
+                self.list.push(DisplayItem::PushClip(clip));
               }
-              if !matches!(child_style.position, Position::Static)
-                && !crate::paint::stacking::creates_stacking_context(child_style, None, false)
+
+              let text_clip = if !skip_contents
+                && !suppress_background
+                && Self::has_paintable_background(style)
+                && style
+                  .background_layers
+                  .iter()
+                  .any(|layer| layer.clip == BackgroundBox::Text)
               {
-                continue;
-              }
-            }
-          }
+                self.build_text_clip_runs(frame.fragment, frame.offset, child_visibility)
+              } else {
+                None
+              };
 
-          match child.style.as_deref() {
-            Some(child_style) if !matches!(child_style.position, Position::Static) => {
-              positioned.push(idx);
-            }
-            Some(child_style) if child_style.float.is_floating() => floats.push(idx),
-            Some(child_style)
-              if matches!(
-                child_style.display,
-                crate::style::display::Display::Inline
-                  | crate::style::display::Display::InlineBlock
-                  | crate::style::display::Display::InlineFlex
-                  | crate::style::display::Display::InlineGrid
-                  | crate::style::display::Display::InlineTable
-              ) =>
-            {
-              inlines.push(idx);
-            }
-            Some(_) => blocks.push(idx),
-            None => match child.content {
-              FragmentContent::Text { .. }
-              | FragmentContent::Inline { .. }
-              | FragmentContent::Line { .. } => inlines.push(idx),
-              _ => blocks.push(idx),
-            },
-          }
-        }
+              // CSS 2.1 `clip` applies to the element's own border/background in addition to its
+              // descendants. We intentionally keep this scoped to the element itself (the content
+              // traversal below still pushes `clip_rect` again) so outer effects like box shadows and
+              // outlines remain unaffected.
+              let mut clip_rect_pushed = false;
 
-        let appearance_none_control = Self::get_box_id(fragment).and_then(|box_id| {
-          self
-            .appearance_none_form_controls
-            .as_ref()
-            .and_then(|map| map.get(&box_id))
-            .cloned()
-        });
-        let scroll_delta = Point::new(-element_scroll.x, -element_scroll.y);
-        let overlays = match (appearance_none_control.as_deref(), style_opt) {
-          (Some(control), Some(style)) => {
-            self.appearance_none_text_edit_overlays(control, style, absolute_rect, scroll_delta)
-          }
-          _ => None,
-        };
+              if !style.box_shadow.is_empty() {
+                let mut decoration_rects: Option<BackgroundRects> = None;
+                let rects = if decoration_rect == absolute_rect {
+                  absolute_rects.get_or_insert_with(|| {
+                    Self::background_rects(absolute_rect, style, self.viewport)
+                  })
+                } else {
+                  decoration_rects.get_or_insert_with(|| {
+                    Self::background_rects(decoration_rect, style, self.viewport)
+                  })
+                };
 
-        let selection_color = Rgba {
-          r: 0,
-          g: 120,
-          b: 215,
-          a: 0.35,
-        };
-
-        // CSS2.1 stacking levels 3-6: blocks → floats → inlines → positioned.
-        let mut counter = 0usize;
-        for idx in blocks {
-          if self.deadline_reached_periodic(&mut counter, DEADLINE_STRIDE) {
-            break;
-          }
-          let child = &fragment.children[idx];
-          self.build_fragment_internal(child, child_offset, true, false, child_visibility);
-        }
-        for idx in floats {
-          if self.deadline_reached_periodic(&mut counter, DEADLINE_STRIDE) {
-            break;
-          }
-          let child = &fragment.children[idx];
-          self.build_fragment_internal(child, child_offset, true, false, child_visibility);
-        }
-
-        if let Some(overlays) = overlays.as_ref() {
-          for rect in &overlays.selection_rects {
-            self.list.push(DisplayItem::FillRect(FillRectItem {
-              rect: *rect,
-              color: selection_color,
-            }));
-          }
-        }
-
-        for idx in inlines {
-          if self.deadline_reached_periodic(&mut counter, DEADLINE_STRIDE) {
-            break;
-          }
-          let child = &fragment.children[idx];
-          self.build_fragment_internal(child, child_offset, true, false, child_visibility);
-        }
-
-        if let Some(overlays) = overlays.as_ref() {
-          if let Some((rect, color)) = overlays.caret_rect {
-            self
-              .list
-              .push(DisplayItem::FillRect(FillRectItem { rect, color }));
-          }
-        }
-
-        for idx in positioned {
-          if self.deadline_reached_periodic(&mut counter, DEADLINE_STRIDE) {
-            break;
-          }
-          let child = &fragment.children[idx];
-          self.build_fragment_internal(child, child_offset, true, false, child_visibility);
-        }
-        children_painted = self.list.len() != before_children;
-        self.line_decoration_ctx = prev_line_decoration_ctx;
-      }
-
-      if let Some(table_borders) = fragment.table_borders.as_ref() {
-        let mut origin = absolute_rect.origin;
-        let mut clip_to_slice = false;
-        if let Some(style) = style_opt {
-          if matches!(style.box_decoration_break, BoxDecorationBreak::Slice) {
-            let info = fragment.slice_info;
-            if !(info.is_first && info.is_last) {
-              clip_to_slice = true;
-              if !table_borders.fragment_local {
-                let original_block_size = info.original_block_size.max(0.0);
-                let slice_offset = info.slice_offset.clamp(0.0, original_block_size);
-                if block_axis_is_horizontal(style.writing_mode) {
-                  if block_axis_positive(style.writing_mode) {
-                    origin.x -= slice_offset;
+                let has_outer = style.box_shadow.iter().any(|shadow| !shadow.inset);
+                let has_inset = style.box_shadow.iter().any(|shadow| shadow.inset);
+                let outer_radii = if has_outer {
+                  Self::border_radii(decoration_rect, style)
+                    .clamped(decoration_rect.width(), decoration_rect.height())
+                } else {
+                  crate::paint::display_list::BorderRadii::ZERO
+                };
+                let inner_radii = if has_inset {
+                  if Self::border_radius_is_zero(style) {
+                    crate::paint::display_list::BorderRadii::ZERO
                   } else {
-                    origin.x = origin.x + slice_offset - original_block_size;
+                    Self::resolve_clip_radii(
+                      style,
+                      rects,
+                      BackgroundBox::PaddingBox,
+                      self.viewport,
+                      self.build_breakdown.as_deref(),
+                    )
                   }
                 } else {
-                  origin.y -= slice_offset;
+                  crate::paint::display_list::BorderRadii::ZERO
+                };
+
+                if has_outer {
+                  self.emit_box_shadows_from_style_with_base(
+                    rects.border,
+                    outer_radii,
+                    decoration_rect.width(),
+                    style,
+                    false,
+                  );
+                }
+                if let Some(clip) = clip_rect.as_ref() {
+                  self.list.push(DisplayItem::PushClip(clip.clone()));
+                  clip_rect_pushed = true;
+                }
+                if !suppress_background {
+                  self.emit_background_from_style_with_rects_and_text_clip_and_culling_rect(
+                    rects,
+                    style,
+                    text_clip.as_ref(),
+                    frame.visibility.rect,
+                  );
+                }
+                if has_inset {
+                  self.emit_box_shadows_from_style_with_base(
+                    rects.padding,
+                    inner_radii,
+                    decoration_rect.width(),
+                    style,
+                    true,
+                  );
+                }
+              } else if decoration_rect == absolute_rect {
+                if let Some(clip) = clip_rect.as_ref() {
+                  self.list.push(DisplayItem::PushClip(clip.clone()));
+                  clip_rect_pushed = true;
+                }
+                if !suppress_background {
+                  if let Some(rects) = absolute_rects.as_ref() {
+                    self.emit_background_from_style_with_rects_and_text_clip_and_culling_rect(
+                      rects,
+                      style,
+                      text_clip.as_ref(),
+                      frame.visibility.rect,
+                    );
+                  } else {
+                    self.emit_background_from_style_with_text_clip_and_culling_rect(
+                      decoration_rect,
+                      style,
+                      text_clip.as_ref(),
+                      frame.visibility.rect,
+                    );
+                  }
+                }
+              } else {
+                if let Some(clip) = clip_rect
+                  .as_ref()
+                  .filter(|_| !suppress_background || !suppress_border)
+                {
+                  self.list.push(DisplayItem::PushClip(clip.clone()));
+                  clip_rect_pushed = true;
+                }
+                if !suppress_background {
+                  self.emit_background_from_style_with_text_clip_and_culling_rect(
+                    decoration_rect,
+                    style,
+                    text_clip.as_ref(),
+                    frame.visibility.rect,
+                  );
+                }
+              }
+
+              if !suppress_border {
+                let gap =
+                  self.fieldset_legend_border_gap(frame.fragment, decoration_rect, style);
+                self.emit_border_from_style(decoration_rect, style, gap);
+              }
+              if clip_rect_pushed {
+                self.list.push(DisplayItem::PopClip);
+              }
+              if decoration_clip_pushed {
+                self.list.push(DisplayItem::PopClip);
+              }
+            }
+          }
+
+          // CSS Paint Order:
+          // 1. Background (handled by caller if style available)
+          // 2. Border (handled by caller if style available)
+          // 3. Content (text, images)
+          // 4. Children
+
+          // Clip descendant/content painting but leave outer effects (e.g., box shadows, outlines)
+          // unaffected.
+          let mut pushed_clips = 0usize;
+          if !skip_contents {
+            if let Some(clip) = overflow_clip {
+              self.list.push(DisplayItem::PushClip(clip));
+              pushed_clips += 1;
+            }
+            if let Some(clip) = clip_rect {
+              self.list.push(DisplayItem::PushClip(clip));
+              pushed_clips += 1;
+            }
+
+            if paint_self {
+              self.emit_content(frame.fragment, absolute_rect, child_visibility.rect);
+            }
+          }
+
+          let mut data = FrameData {
+            style_opt,
+            paint_self,
+            list_start,
+            push_opacity,
+            push_backface_visibility,
+            absolute_rect,
+            skip_contents,
+            child_visibility,
+            pushed_clips,
+            child_offset: Point::ZERO,
+            prev_line_decoration_ctx: None,
+            before_children: 0,
+            children_painted: false,
+            blocks: Vec::new(),
+            floats: Vec::new(),
+            inlines: Vec::new(),
+            positioned: Vec::new(),
+            child_pos: 0,
+            counter: 0,
+            overlays: None,
+          };
+
+          if frame.recurse_children && !skip_contents {
+            let element_scroll = self.element_scroll_offset(frame.fragment);
+            let child_offset = Point::new(
+              absolute_rect.origin.x - element_scroll.x,
+              absolute_rect.origin.y - element_scroll.y,
+            );
+
+            let prev_line_decoration_ctx = self.line_decoration_ctx;
+            if let FragmentContent::Line { baseline } = &frame.fragment.content {
+              self.line_decoration_ctx =
+                Some(self.build_line_decoration_context(frame.fragment, child_offset, *baseline));
+            } else if self.line_decoration_ctx.is_some()
+              && style_opt.is_some_and(|style| {
+                style.display.is_inline_level() && style.display.establishes_formatting_context()
+              })
+            {
+              // Decorations inside atomic inlines (inline-block/inline-table/etc) should be resolved
+              // against the atomic inline's own line boxes, not the ancestor line that positioned it.
+              self.line_decoration_ctx = None;
+            }
+
+            let before_children = self.list.len();
+            let mut blocks = Vec::new();
+            let mut floats = Vec::new();
+            let mut inlines = Vec::new();
+            let mut positioned = Vec::new();
+            for (idx, child) in frame.fragment.children.iter().enumerate() {
+              if self.skip_stacking_context_children {
+                if let Some(child_style) = child.style.as_deref() {
+                  if crate::paint::stacking::creates_stacking_context(child_style, style_opt, false)
+                  {
+                    continue;
+                  }
+                  if !matches!(child_style.position, Position::Static)
+                    && !crate::paint::stacking::creates_stacking_context(child_style, None, false)
+                  {
+                    continue;
+                  }
+                }
+              }
+
+              match child.style.as_deref() {
+                Some(child_style) if !matches!(child_style.position, Position::Static) => {
+                  positioned.push(idx);
+                }
+                Some(child_style) if child_style.float.is_floating() => floats.push(idx),
+                Some(child_style)
+                  if matches!(
+                    child_style.display,
+                    crate::style::display::Display::Inline
+                      | crate::style::display::Display::InlineBlock
+                      | crate::style::display::Display::InlineFlex
+                      | crate::style::display::Display::InlineGrid
+                      | crate::style::display::Display::InlineTable
+                  ) =>
+                {
+                  inlines.push(idx);
+                }
+                Some(_) => blocks.push(idx),
+                None => match child.content {
+                  FragmentContent::Text { .. }
+                  | FragmentContent::Inline { .. }
+                  | FragmentContent::Line { .. } => inlines.push(idx),
+                  _ => blocks.push(idx),
+                },
+              }
+            }
+
+            let appearance_none_control = Self::get_box_id(frame.fragment).and_then(|box_id| {
+              self
+                .appearance_none_form_controls
+                .as_ref()
+                .and_then(|map| map.get(&box_id))
+                .cloned()
+            });
+            let scroll_delta = Point::new(-element_scroll.x, -element_scroll.y);
+            let overlays = match (appearance_none_control.as_deref(), style_opt) {
+              (Some(control), Some(style)) => self.appearance_none_text_edit_overlays(
+                control,
+                style,
+                absolute_rect,
+                scroll_delta,
+              ),
+              _ => None,
+            };
+
+            data.child_offset = child_offset;
+            data.prev_line_decoration_ctx = prev_line_decoration_ctx;
+            data.before_children = before_children;
+            data.blocks = blocks;
+            data.floats = floats;
+            data.inlines = inlines;
+            data.positioned = positioned;
+            data.overlays = overlays;
+
+            frame.data = Some(data);
+            frame.stage = Stage::Blocks;
+            stack.push(frame);
+            continue 'work;
+          }
+
+          frame.data = Some(data);
+          frame.stage = Stage::Exit;
+          stack.push(frame);
+        }
+        Stage::Blocks => {
+          let (child_idx, child_offset, child_visibility) = {
+            let data = frame
+              .data
+              .as_mut()
+              .expect("entered fragment frame missing data");
+            loop {
+              if data.child_pos >= data.blocks.len() {
+                break (None, Point::ZERO, Visibility::none());
+              }
+              if self.deadline_reached_periodic(&mut data.counter, DEADLINE_STRIDE) {
+                data.child_pos = data.blocks.len();
+                break (None, Point::ZERO, Visibility::none());
+              }
+              let idx = data.blocks[data.child_pos];
+              data.child_pos += 1;
+              break (Some(idx), data.child_offset, data.child_visibility);
+            }
+          };
+
+          if let Some(idx) = child_idx {
+            let child = &frame.fragment.children[idx];
+            let child_frame = Frame::new(child, child_offset, true, false, child_visibility);
+            stack.push(frame);
+            stack.push(child_frame);
+            continue 'work;
+          }
+
+          if let Some(data) = frame.data.as_mut() {
+            data.child_pos = 0;
+          }
+          frame.stage = Stage::Floats;
+          stack.push(frame);
+        }
+        Stage::Floats => {
+          let (child_idx, child_offset, child_visibility) = {
+            let data = frame
+              .data
+              .as_mut()
+              .expect("entered fragment frame missing data");
+            loop {
+              if data.child_pos >= data.floats.len() {
+                break (None, Point::ZERO, Visibility::none());
+              }
+              if self.deadline_reached_periodic(&mut data.counter, DEADLINE_STRIDE) {
+                data.child_pos = data.floats.len();
+                break (None, Point::ZERO, Visibility::none());
+              }
+              let idx = data.floats[data.child_pos];
+              data.child_pos += 1;
+              break (Some(idx), data.child_offset, data.child_visibility);
+            }
+          };
+
+          if let Some(idx) = child_idx {
+            let child = &frame.fragment.children[idx];
+            let child_frame = Frame::new(child, child_offset, true, false, child_visibility);
+            stack.push(frame);
+            stack.push(child_frame);
+            continue 'work;
+          }
+
+          if let Some(data) = frame.data.as_mut() {
+            data.child_pos = 0;
+          }
+          frame.stage = Stage::SelectionOverlay;
+          stack.push(frame);
+        }
+        Stage::SelectionOverlay => {
+          let selection_color = Rgba {
+            r: 0,
+            g: 120,
+            b: 215,
+            a: 0.35,
+          };
+          if let Some(data) = frame.data.as_ref() {
+            if let Some(overlays) = data.overlays.as_ref() {
+              for rect in &overlays.selection_rects {
+                self.list.push(DisplayItem::FillRect(FillRectItem {
+                  rect: *rect,
+                  color: selection_color,
+                }));
+              }
+            }
+          }
+          if let Some(data) = frame.data.as_mut() {
+            data.child_pos = 0;
+          }
+          frame.stage = Stage::Inlines;
+          stack.push(frame);
+        }
+        Stage::Inlines => {
+          let (child_idx, child_offset, child_visibility) = {
+            let data = frame
+              .data
+              .as_mut()
+              .expect("entered fragment frame missing data");
+            loop {
+              if data.child_pos >= data.inlines.len() {
+                break (None, Point::ZERO, Visibility::none());
+              }
+              if self.deadline_reached_periodic(&mut data.counter, DEADLINE_STRIDE) {
+                data.child_pos = data.inlines.len();
+                break (None, Point::ZERO, Visibility::none());
+              }
+              let idx = data.inlines[data.child_pos];
+              data.child_pos += 1;
+              break (Some(idx), data.child_offset, data.child_visibility);
+            }
+          };
+
+          if let Some(idx) = child_idx {
+            let child = &frame.fragment.children[idx];
+            let child_frame = Frame::new(child, child_offset, true, false, child_visibility);
+            stack.push(frame);
+            stack.push(child_frame);
+            continue 'work;
+          }
+
+          if let Some(data) = frame.data.as_mut() {
+            data.child_pos = 0;
+          }
+          frame.stage = Stage::CaretOverlay;
+          stack.push(frame);
+        }
+        Stage::CaretOverlay => {
+          if let Some(data) = frame.data.as_ref() {
+            if let Some(overlays) = data.overlays.as_ref() {
+              if let Some((rect, color)) = overlays.caret_rect {
+                self.list.push(DisplayItem::FillRect(FillRectItem { rect, color }));
+              }
+            }
+          }
+          if let Some(data) = frame.data.as_mut() {
+            data.child_pos = 0;
+          }
+          frame.stage = Stage::Positioned;
+          stack.push(frame);
+        }
+        Stage::Positioned => {
+          let (child_idx, child_offset, child_visibility) = {
+            let data = frame
+              .data
+              .as_mut()
+              .expect("entered fragment frame missing data");
+            loop {
+              if data.child_pos >= data.positioned.len() {
+                break (None, Point::ZERO, Visibility::none());
+              }
+              if self.deadline_reached_periodic(&mut data.counter, DEADLINE_STRIDE) {
+                data.child_pos = data.positioned.len();
+                break (None, Point::ZERO, Visibility::none());
+              }
+              let idx = data.positioned[data.child_pos];
+              data.child_pos += 1;
+              break (Some(idx), data.child_offset, data.child_visibility);
+            }
+          };
+
+          if let Some(idx) = child_idx {
+            let child = &frame.fragment.children[idx];
+            let child_frame = Frame::new(child, child_offset, true, false, child_visibility);
+            stack.push(frame);
+            stack.push(child_frame);
+            continue 'work;
+          }
+
+          let prev_line_decoration_ctx = {
+            let data = frame
+              .data
+              .as_mut()
+              .expect("entered fragment frame missing data");
+            data.children_painted = self.list.len() != data.before_children;
+            data.prev_line_decoration_ctx
+          };
+          self.line_decoration_ctx = prev_line_decoration_ctx;
+          frame.stage = Stage::Exit;
+          stack.push(frame);
+        }
+        Stage::Exit => {
+          let Some(data) = frame.data.take() else {
+            continue;
+          };
+
+          if !data.skip_contents {
+            if let Some(table_borders) = frame.fragment.table_borders.as_ref() {
+              let mut origin = data.absolute_rect.origin;
+              let mut clip_to_slice = false;
+              if let Some(style) = data.style_opt {
+                if matches!(style.box_decoration_break, BoxDecorationBreak::Slice) {
+                  let info = frame.fragment.slice_info;
+                  if !(info.is_first && info.is_last) {
+                    clip_to_slice = true;
+                    if !table_borders.fragment_local {
+                      let original_block_size = info.original_block_size.max(0.0);
+                      let slice_offset = info.slice_offset.clamp(0.0, original_block_size);
+                      if block_axis_is_horizontal(style.writing_mode) {
+                        if block_axis_positive(style.writing_mode) {
+                          origin.x -= slice_offset;
+                        } else {
+                          origin.x = origin.x + slice_offset - original_block_size;
+                        }
+                      } else {
+                        origin.y -= slice_offset;
+                      }
+                    }
+                  }
+                }
+              }
+
+              let bounds = table_borders.paint_bounds.translate(origin);
+              let has_visible_borders = table_borders
+                .vertical_borders
+                .iter()
+                .chain(table_borders.horizontal_borders.iter())
+                .chain(table_borders.corner_borders.iter())
+                .any(|b| b.is_visible());
+              if data.paint_self && has_visible_borders {
+                if clip_to_slice {
+                  self.list.push(DisplayItem::PushClip(ClipItem {
+                    shape: ClipShape::Rect {
+                      rect: data.absolute_rect,
+                      radii: None,
+                    },
+                  }));
+                }
+                self.list.push(DisplayItem::TableCollapsedBorders(
+                  TableCollapsedBordersItem {
+                    origin,
+                    bounds,
+                    borders: table_borders.clone(),
+                  },
+                ));
+                if clip_to_slice {
+                  self.list.push(DisplayItem::PopClip);
                 }
               }
             }
-          }
-        }
 
-        let bounds = table_borders.paint_bounds.translate(origin);
-        let has_visible_borders = table_borders
-          .vertical_borders
-          .iter()
-          .chain(table_borders.horizontal_borders.iter())
-          .chain(table_borders.corner_borders.iter())
-          .any(|b| b.is_visible());
-        if paint_self && has_visible_borders {
-          if clip_to_slice {
-            self.list.push(DisplayItem::PushClip(ClipItem {
-              shape: ClipShape::Rect {
-                rect: absolute_rect,
-                radii: None,
-              },
-            }));
+            for _ in 0..data.pushed_clips {
+              self.list.push(DisplayItem::PopClip);
+            }
           }
-          self.list.push(DisplayItem::TableCollapsedBorders(
-            TableCollapsedBordersItem {
-              origin,
-              bounds,
-              borders: table_borders.clone(),
-            },
-          ));
-          if clip_to_slice {
-            self.list.push(DisplayItem::PopClip);
+
+          if data.paint_self {
+            if let Some(style) = data.style_opt {
+              self.emit_outline(data.absolute_rect, style);
+            }
+          }
+
+          if data.push_opacity {
+            self.pop_opacity();
+          }
+
+          if data.push_backface_visibility {
+            self.list.push(DisplayItem::PopBackfaceVisibility);
+          }
+
+          if !data.paint_self && !data.children_painted {
+            self.list.items_mut().truncate(data.list_start);
           }
         }
       }
-
-      for _ in 0..pushed_clips {
-        self.list.push(DisplayItem::PopClip);
-      }
-    }
-
-    if paint_self {
-      if let Some(style) = style_opt {
-        self.emit_outline(absolute_rect, style);
-      }
-    }
-
-    if push_opacity {
-      self.pop_opacity();
-    }
-
-    if push_backface_visibility {
-      self.list.push(DisplayItem::PopBackfaceVisibility);
-    }
-
-    if !paint_self && !children_painted {
-      self.list.items_mut().truncate(list_start);
     }
   }
 
@@ -3077,12 +3326,10 @@ impl DisplayListBuilder {
     };
 
     let mut mask = root_style.and_then(|style| self.resolve_mask(style, root_border_bounds));
-    if mask.as_ref().is_some_and(|mask| {
-      mask
-        .layers
-        .iter()
-        .any(|layer| matches!(layer.clip, MaskClip::Text))
-    }) {
+    if mask
+      .as_ref()
+      .is_some_and(|mask| mask.layers.iter().any(|layer| matches!(layer.clip, MaskClip::Text)))
+    {
       if let (Some(mask), Some(fragment)) = (mask.as_mut(), root_fragment) {
         mask.text_clip = self.build_text_clip_runs(fragment, root_fragment_offset, visibility);
       }
@@ -3688,9 +3935,7 @@ impl DisplayListBuilder {
       );
       if let Some(overlays) = appearance_none_overlays.as_ref() {
         if let Some((rect, color)) = overlays.caret_rect {
-          self
-            .list
-            .push(DisplayItem::FillRect(FillRectItem { rect, color }));
+          self.list.push(DisplayItem::FillRect(FillRectItem { rect, color }));
         }
       }
       for item in context.layer6_iter() {
@@ -3815,8 +4060,7 @@ impl DisplayListBuilder {
         self.list.push(DisplayItem::PopClip);
       }
       if needs_layer_bounds {
-        self
-          .expand_stacking_context_bounds_from_items(stacking_push_index, stacking_context_bounds);
+        self.expand_stacking_context_bounds_from_items(stacking_push_index, stacking_context_bounds);
       }
       self.list.push(DisplayItem::PopStackingContext);
       if let Some(DisplayItem::PushStackingContext(item)) =
@@ -3891,9 +4135,7 @@ impl DisplayListBuilder {
     );
     if let Some(overlays) = appearance_none_overlays.as_ref() {
       if let Some((rect, color)) = overlays.caret_rect {
-        self
-          .list
-          .push(DisplayItem::FillRect(FillRectItem { rect, color }));
+        self.list.push(DisplayItem::FillRect(FillRectItem { rect, color }));
       }
     }
     for item in context.layer6_iter() {
@@ -4607,7 +4849,6 @@ impl DisplayListBuilder {
         CrossOriginAttribute::None,
         None,
         false,
-        None,
       )?;
 
       // The mask image should keep its intrinsic size in CSS px (for `mask-size: auto`), but be
@@ -4625,7 +4866,6 @@ impl DisplayListBuilder {
       CrossOriginAttribute::None,
       None,
       false,
-      None,
     )
   }
 
@@ -4646,7 +4886,6 @@ impl DisplayListBuilder {
           CrossOriginAttribute::None,
           None,
           false,
-          None,
         );
       }
       // Fragment-only URLs (`url(#id)`) refer to in-document SVG resources. If we cannot resolve
@@ -4729,7 +4968,6 @@ impl DisplayListBuilder {
       CrossOriginAttribute::None,
       None,
       false,
-      None,
     )
   }
 
@@ -4882,7 +5120,6 @@ impl DisplayListBuilder {
           CrossOriginAttribute::None,
           None,
           false,
-          None,
         )
         .map(|image| BorderImageSourceItem::Raster((*image).clone())),
       BackgroundImage::LinearGradient { .. }
@@ -6954,7 +7191,6 @@ impl DisplayListBuilder {
               crossorigin,
               referrer_policy,
               reject_placeholder_image,
-              source.density,
             )
           });
           if let Some(image) = decoded {
@@ -7143,14 +7379,15 @@ impl DisplayListBuilder {
                             .checked_mul(u64::from(render_h_unoriented))
                             .and_then(|px| px.checked_mul(4))
                           {
-                            if let Err(err) =
-                              crate::render_control::reserve_allocation_with(bytes, || {
+                            if let Err(err) = crate::render_control::reserve_allocation_with(
+                              bytes,
+                              || {
                                 format!(
                                   "image data pixel buffer {}x{} url={}",
                                   render_w_unoriented, render_h_unoriented, render_url
                                 )
-                              })
-                            {
+                              },
+                            ) {
                               self.error.get_or_insert(err);
                               return;
                             }
@@ -9159,35 +9396,27 @@ impl DisplayListBuilder {
           //
           // This is especially common for `repeat-x` underline textures where the image is taller
           // than the element's background painting area, meaning only the bottom slice is visible.
-          let clip_within_origin_tile =
-            |clip_min: f32, clip_max: f32, origin: f32, tile: f32| -> bool {
-              if !clip_min.is_finite()
-                || !clip_max.is_finite()
-                || !origin.is_finite()
-                || !tile.is_finite()
-              {
-                return false;
-              }
-              if tile <= 0.0 {
-                return false;
-              }
-              if clip_max <= clip_min {
-                return false;
-              }
-              // Allow a small epsilon for float noise from layout/pixel snapping.
-              let eps = 1e-3;
-              clip_min + eps >= origin && clip_max <= origin + tile + eps
-            };
+          let clip_within_origin_tile = |clip_min: f32, clip_max: f32, origin: f32, tile: f32| -> bool {
+            if !clip_min.is_finite() || !clip_max.is_finite() || !origin.is_finite() || !tile.is_finite() {
+              return false;
+            }
+            if tile <= 0.0 {
+              return false;
+            }
+            if clip_max <= clip_min {
+              return false;
+            }
+            // Allow a small epsilon for float noise from layout/pixel snapping.
+            let eps = 1e-3;
+            clip_min + eps >= origin && clip_max <= origin + tile + eps
+          };
 
-          let repeats_x = matches!(
-            layer.repeat.x,
-            BackgroundRepeatKeyword::Repeat | BackgroundRepeatKeyword::Round
-          );
-          let repeats_y = matches!(
-            layer.repeat.y,
-            BackgroundRepeatKeyword::Repeat | BackgroundRepeatKeyword::Round
-          );
-          let repeat_both_axes = repeats_x && repeats_y
+          let repeats_x =
+            matches!(layer.repeat.x, BackgroundRepeatKeyword::Repeat | BackgroundRepeatKeyword::Round);
+          let repeats_y =
+            matches!(layer.repeat.y, BackgroundRepeatKeyword::Repeat | BackgroundRepeatKeyword::Round);
+          let repeat_both_axes = repeats_x
+            && repeats_y
             || (repeats_x
               && layer.repeat.y == BackgroundRepeatKeyword::NoRepeat
               && clip_within_origin_tile(
@@ -9318,7 +9547,6 @@ impl DisplayListBuilder {
               CrossOriginAttribute::None,
               None,
               false,
-              None,
             ) else {
               break 'paint_url;
             };
@@ -9657,7 +9885,6 @@ impl DisplayListBuilder {
               CrossOriginAttribute::None,
               None,
               false,
-              None,
             )
             .map(|image| BorderImageSourceItem::Raster((*image).clone())),
           BackgroundImage::LinearGradient { .. }
@@ -11374,11 +11601,7 @@ impl DisplayListBuilder {
     let icon_size = (available_w.min(available_h) * 0.5)
       .floor()
       .clamp(0.0, max_icon_size);
-    if icon_size >= 8.0 {
-      icon_size
-    } else {
-      0.0
-    }
+    if icon_size >= 8.0 { icon_size } else { 0.0 }
   }
 
   fn emit_inside_border_rect(&mut self, rect: Rect, color: Rgba) {
@@ -11525,18 +11748,16 @@ impl DisplayListBuilder {
       rect: Rect::from_xywh(track_x, progress_y, track_w, progress_h),
       color: Rgba::WHITE.with_alpha(0.35),
     }));
-    self
-      .list
-      .push(DisplayItem::FillRoundedRect(FillRoundedRectItem {
-        rect: Rect::from_xywh(
-          track_x - knob_r,
-          progress_y + progress_h * 0.5 - knob_r,
-          knob_r * 2.0,
-          knob_r * 2.0,
-        ),
-        color: Rgba::WHITE.with_alpha(0.9),
-        radii: BorderRadii::uniform(knob_r),
-      }));
+    self.list.push(DisplayItem::FillRoundedRect(FillRoundedRectItem {
+      rect: Rect::from_xywh(
+        track_x - knob_r,
+        progress_y + progress_h * 0.5 - knob_r,
+        knob_r * 2.0,
+        knob_r * 2.0,
+      ),
+      color: Rgba::WHITE.with_alpha(0.9),
+      radii: BorderRadii::uniform(knob_r),
+    }));
 
     // Play icon (triangle built from vertical strips so we don't need a path primitive).
     let play_rect = Rect::from_xywh(track_x, icon_y, icon_size, icon_size);
@@ -11626,7 +11847,12 @@ impl DisplayListBuilder {
     // For `<video controls>` without a poster/frame, browsers still paint a dark video surface and
     // chrome for the native controls. Emit a stable approximation rather than leaving the element
     // transparent.
-    if matches!(replaced_type, ReplacedType::Video { controls: true, .. }) {
+    if matches!(
+      replaced_type,
+      ReplacedType::Video {
+        controls: true, ..
+      }
+    ) {
       self.list.push(DisplayItem::FillRect(FillRectItem {
         rect: content_rect,
         color: Rgba::rgb(51, 51, 51),
@@ -11663,15 +11889,13 @@ impl DisplayListBuilder {
           position: 1.0,
           color: black(end_alpha),
         });
-        self
-          .list
-          .push(DisplayItem::LinearGradient(LinearGradientItem {
-            rect: content_rect,
-            start: Point::new(0.0, 0.0),
-            end: Point::new(0.0, content_rect.height()),
-            stops,
-            spread: GradientSpread::Pad,
-          }));
+        self.list.push(DisplayItem::LinearGradient(LinearGradientItem {
+          rect: content_rect,
+          start: Point::new(0.0, 0.0),
+          end: Point::new(0.0, content_rect.height()),
+          stops,
+          spread: GradientSpread::Pad,
+        }));
       }
 
       self.emit_video_controls_placeholder_ui(content_rect);
@@ -11686,12 +11910,7 @@ impl DisplayListBuilder {
       // image box itself transparent (so author-provided backgrounds show through). Chrome also
       // draws a thin border around the broken image box.
       ReplacedType::Image { .. } => {
-        // Keep the border from turning tiny (≤2px) broken images into a solid block of gray: a
-        // 1px border drawn *inside* a 1×1/2×2 box would cover the entire content rect and prevent
-        // author-provided backgrounds from showing through.
-        if content_rect.width() > 2.0 && content_rect.height() > 2.0 {
-          self.emit_inside_border_rect(content_rect, Rgba::rgb(192, 192, 192));
-        }
+        self.emit_inside_border_rect(content_rect, Rgba::rgb(192, 192, 192));
 
         // Draw a small icon in the top-left when there is enough room. Keep it from dominating
         // tiny boxes (e.g. 20×20) so author-provided backgrounds remain visible.
@@ -12024,9 +12243,8 @@ impl DisplayListBuilder {
                 (seg_end - seg_start).max(0.0),
                 (bottom - top).max(0.0),
               );
-              if let Some(clipped) = rect
-                .intersection(content_rect)
-                .filter(|r| r.width() > 0.0 && r.height() > 0.0)
+              if let Some(clipped) =
+                rect.intersection(content_rect).filter(|r| r.width() > 0.0 && r.height() > 0.0)
               {
                 overlays.selection_rects.push(clipped);
               }
@@ -12054,8 +12272,7 @@ impl DisplayListBuilder {
             *caret_affinity
           };
           let caret_x = start_x
-            + caret_x_for_position(&caret_stops, caret_idx, caret_affinity_for_paint)
-              .unwrap_or(0.0);
+            + caret_x_for_position(&caret_stops, caret_idx, caret_affinity_for_paint).unwrap_or(0.0);
           let max_caret_x = (text_rect.max_x() - 1.0).max(text_rect.x());
           let caret_x = caret_x.clamp(text_rect.x(), max_caret_x);
           let caret_rect_raw = Rect::from_xywh(caret_x, top, 1.0, (bottom - top).max(0.0));
@@ -12236,7 +12453,10 @@ impl DisplayListBuilder {
                 vec![(x1.min(x2), x1.max(x2))]
               } else {
                 crate::text::caret::selection_segments_for_char_range(
-                  line, &line_runs, start_col, end_col,
+                  line,
+                  &line_runs,
+                  start_col,
+                  end_col,
                 )
               };
               for (seg_start, seg_end) in segments {
@@ -12255,11 +12475,13 @@ impl DisplayListBuilder {
             }
           }
 
-          if caret_rect.is_none() && caret_idx <= line_end && !caret_color.is_transparent() {
+          if caret_rect.is_none()
+            && caret_idx <= line_end
+            && !caret_color.is_transparent()
+          {
             let caret_col = caret_idx.saturating_sub(line_start).min(line_len);
             let caret_x = start_x
-              + caret_x_for_position(&caret_stops, caret_col, caret_affinity_for_paint)
-                .unwrap_or(0.0);
+              + caret_x_for_position(&caret_stops, caret_col, caret_affinity_for_paint).unwrap_or(0.0);
             let max_caret_x = (line_rect.max_x() - 1.0).max(line_rect.x());
             let caret_x = caret_x.clamp(line_rect.x(), max_caret_x);
             let caret_rect_raw = Rect::from_xywh(caret_x, top, 1.0, (bottom - top).max(0.0));
@@ -12390,9 +12612,12 @@ impl DisplayListBuilder {
         builder.font_ctx.root_font_metrics(),
       );
       let metrics = match &style.line_height {
-        crate::style::types::LineHeight::Normal => {
-          InlineTextItem::metrics_from_runs(&builder.font_ctx, &runs, line_height, style.font_size)
-        }
+        crate::style::types::LineHeight::Normal => InlineTextItem::metrics_from_runs(
+          &builder.font_ctx,
+          &runs,
+          line_height,
+          style.font_size,
+        ),
         _ => InlineTextItem::metrics_from_first_available_font(
           metrics_scaled.as_ref(),
           line_height,
@@ -12739,9 +12964,8 @@ impl DisplayListBuilder {
                 (seg_end - seg_start).max(0.0),
                 1.0,
               );
-              if let Some(clipped) = underline_rect
-                .intersection(padding_rect)
-                .filter(|r| r.width() > 0.0 && r.height() > 0.0)
+              if let Some(clipped) =
+                underline_rect.intersection(padding_rect).filter(|r| r.width() > 0.0 && r.height() > 0.0)
               {
                 preedit_underline_rects.push(clipped);
               }
@@ -12771,9 +12995,8 @@ impl DisplayListBuilder {
                   (seg_end - seg_start).max(0.0),
                   (bottom - top).max(0.0),
                 );
-                if let Some(clipped) = rect
-                  .intersection(text_rect)
-                  .filter(|r| r.width() > 0.0 && r.height() > 0.0)
+                if let Some(clipped) =
+                  rect.intersection(text_rect).filter(|r| r.width() > 0.0 && r.height() > 0.0)
                 {
                   selection_rects.push(clipped);
                 }
@@ -13056,7 +13279,10 @@ impl DisplayListBuilder {
                   vec![(x1.min(x2), x1.max(x2))]
                 } else {
                   crate::text::caret::selection_segments_for_char_range(
-                    line, &line_runs, start_col, end_col,
+                    line,
+                    &line_runs,
+                    start_col,
+                    end_col,
                   )
                 };
                 for (seg_start, seg_end) in segments {
@@ -13085,15 +13311,15 @@ impl DisplayListBuilder {
 
           if control.focused && !control.disabled {
             if let Some((pre_start, pre_end)) = preedit_range {
-              let seg_start = pre_start.max(line_start).min(line_end);
-              let seg_end = pre_end.max(line_start).min(line_end);
-              if seg_start < seg_end && text_style.color.a > f32::EPSILON {
-                let start_col = seg_start - line_start;
-                let end_col = seg_end - line_start;
-                let underline_y = (bottom - 1.0).max(top);
-                let fallback_char_advance = if line_len > 0 {
-                  (fallback_advance / line_len as f32).max(0.0)
-                } else {
+                let seg_start = pre_start.max(line_start).min(line_end);
+                let seg_end = pre_end.max(line_start).min(line_end);
+                if seg_start < seg_end && text_style.color.a > f32::EPSILON {
+                  let start_col = seg_start - line_start;
+                  let end_col = seg_end - line_start;
+                  let underline_y = (bottom - 1.0).max(top);
+                  let fallback_char_advance = if line_len > 0 {
+                    (fallback_advance / line_len as f32).max(0.0)
+                  } else {
                   0.0
                 };
                 let segments = if line_runs.is_empty() {
@@ -13102,7 +13328,10 @@ impl DisplayListBuilder {
                   vec![(x1.min(x2), x1.max(x2))]
                 } else {
                   crate::text::caret::selection_segments_for_char_range(
-                    line, &line_runs, start_col, end_col,
+                    line,
+                    &line_runs,
+                    start_col,
+                    end_col,
                   )
                 };
                 for (seg_start, seg_end) in segments {
@@ -14272,10 +14501,7 @@ impl DisplayListBuilder {
           clone.text_align = crate::style::types::TextAlign::Start;
           clone
         });
-        let style_ref = override_style
-          .as_ref()
-          .map(|s| s as &ComputedStyle)
-          .or(style);
+        let style_ref = override_style.as_ref().map(|s| s as &ComputedStyle).or(style);
         self.emit_text_with_style(alt, style_ref, text_rect)
       } else {
         self.emit_text_with_style(alt, style, content_inner_rect)
@@ -15056,7 +15282,6 @@ impl DisplayListBuilder {
     crossorigin: CrossOriginAttribute,
     referrer_policy: Option<crate::resource::ReferrerPolicy>,
     reject_placeholder: bool,
-    override_resolution: Option<f32>,
   ) -> Option<Arc<ImageData>> {
     let image_cache = self.image_cache.as_ref()?;
     let trimmed = trim_ascii_whitespace_start(src);
@@ -15095,16 +15320,8 @@ impl DisplayListBuilder {
       .map(|s| s.image_orientation.resolve(image.orientation, decorative))
       .unwrap_or_else(|| ImageOrientation::default().resolve(image.orientation, decorative));
     let has_intrinsic_ratio = image.intrinsic_ratio(orientation).is_some();
-    let override_resolution = if image.is_vector {
-      None
-    } else {
-      override_resolution
-    };
-    let used_resolution = image_resolution.used_resolution(
-      override_resolution,
-      image.resolution,
-      self.device_pixel_ratio,
-    );
+    let used_resolution =
+      image_resolution.used_resolution(None, image.resolution, self.device_pixel_ratio);
     let key = ImageKey::new(
       resolved_src,
       crossorigin,
@@ -15131,7 +15348,7 @@ impl DisplayListBuilder {
         orientation,
         &image_resolution,
         self.device_pixel_ratio,
-        override_resolution,
+        None,
       );
       (w.unwrap_or(0.0), h.unwrap_or(0.0))
     } else {
@@ -15139,7 +15356,7 @@ impl DisplayListBuilder {
         orientation,
         &image_resolution,
         self.device_pixel_ratio,
-        override_resolution,
+        None,
       ) {
         Some(dimensions) => dimensions,
         None => {
@@ -15491,7 +15708,9 @@ mod tests {
     let err = builder.finish().unwrap_err();
     match err {
       Error::Render(RenderError::StageAllocationBudgetExceeded {
-        stage, heartbeat, ..
+        stage,
+        heartbeat,
+        ..
       }) => {
         assert_eq!(stage, RenderStage::Paint);
         assert_eq!(heartbeat, StageHeartbeat::PaintBuild);
@@ -15518,7 +15737,9 @@ mod tests {
     let err = builder.finish().unwrap_err();
     match err {
       Error::Render(RenderError::StageAllocationBudgetExceeded {
-        stage, heartbeat, ..
+        stage,
+        heartbeat,
+        ..
       }) => {
         assert_eq!(stage, RenderStage::Paint);
         assert_eq!(heartbeat, StageHeartbeat::PaintBuild);
@@ -19046,7 +19267,9 @@ mod tests {
     assert_eq!(img.image.height, 10);
     let pixels = img.image.pixels.as_ref();
     assert_eq!(pixels.len(), 10 * 10 * 4);
-    assert!(pixels.chunks_exact(4).all(|px| px == [255, 0, 0, 255]));
+    assert!(pixels
+      .chunks_exact(4)
+      .all(|px| px == [255, 0, 0, 255]));
   }
 
   #[test]
@@ -19054,7 +19277,7 @@ mod tests {
     let builder = DisplayListBuilder::new();
     let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><circle cx="5" cy="5" r="4" fill="black"/></svg>"#;
     let decoded = builder
-      .decode_image(svg, None, true, CrossOriginAttribute::None, None, false, None)
+      .decode_image(svg, None, true, CrossOriginAttribute::None, None, false)
       .expect("decoded viewBox-only svg");
 
     assert_eq!(decoded.css_width, 0.0);
@@ -19071,10 +19294,10 @@ mod tests {
     let mut builder = DisplayListBuilder::new();
 
     let first = builder
-      .decode_image(&src, None, false, CrossOriginAttribute::None, None, false, None)
+      .decode_image(&src, None, false, CrossOriginAttribute::None, None, false)
       .expect("first decode");
     let second = builder
-      .decode_image(&src, None, false, CrossOriginAttribute::None, None, false, None)
+      .decode_image(&src, None, false, CrossOriginAttribute::None, None, false)
       .expect("cached decode");
     assert!(Arc::ptr_eq(&first, &second));
 
@@ -19091,18 +19314,17 @@ mod tests {
         CrossOriginAttribute::None,
         None,
         false,
-        None,
       )
       .expect("rotated decode");
     assert!(!Arc::ptr_eq(&first, &rotated));
 
     builder.set_device_pixel_ratio(2.0);
     let hidpi = builder
-      .decode_image(&src, None, false, CrossOriginAttribute::None, None, false, None)
+      .decode_image(&src, None, false, CrossOriginAttribute::None, None, false)
       .expect("hi-dpi decode");
     assert!(!Arc::ptr_eq(&first, &hidpi));
     let hidpi_cached = builder
-      .decode_image(&src, None, false, CrossOriginAttribute::None, None, false, None)
+      .decode_image(&src, None, false, CrossOriginAttribute::None, None, false)
       .expect("cached hi-dpi decode");
     assert!(Arc::ptr_eq(&hidpi, &hidpi_cached));
   }
@@ -19182,7 +19404,7 @@ mod tests {
         // Baseline: no-cors loads should succeed and populate the decode cache.
         assert!(
           builder
-            .decode_image(url, None, false, CrossOriginAttribute::None, None, false, None)
+            .decode_image(url, None, false, CrossOriginAttribute::None, None, false)
             .is_some(),
           "expected no-cors decode to succeed"
         );
@@ -19197,8 +19419,7 @@ mod tests {
               false,
               CrossOriginAttribute::Anonymous,
               None,
-              false,
-              None
+              false
             )
             .is_none(),
           "expected crossorigin decode to fail without ACAO"
@@ -20073,10 +20294,9 @@ mod tests {
       .expect("Expected text item for alt fallback");
     assert!(text.advance_width > 0.0);
     assert!(
-      list
-        .items()
-        .iter()
-        .any(|item| { matches!(item, DisplayItem::FillRect(_)) }),
+      list.items().iter().any(|item| {
+        matches!(item, DisplayItem::FillRect(_))
+      }),
       "Expected placeholder items for missing image"
     );
     assert!(
@@ -20315,7 +20535,10 @@ mod tests {
       }),
       "expected broken-image icon border placeholder"
     );
-    assert!(list.len() >= 8, "expected broken-image icon items");
+    assert!(
+      list.len() >= 8,
+      "expected broken-image icon items"
+    );
     assert!(
       !list
         .items()
@@ -20358,10 +20581,7 @@ mod tests {
     let list = builder.build(&fragment);
 
     assert!(
-      list
-        .items()
-        .iter()
-        .any(|item| matches!(item, DisplayItem::FillRect(_))),
+      list.items().iter().any(|item| matches!(item, DisplayItem::FillRect(_))),
       "expected video surface fill"
     );
     assert!(
@@ -21010,16 +21230,10 @@ mod tests {
       .iter()
       .filter(|item| matches!(item, DisplayItem::ImagePattern(_)))
       .count();
-    let images = list
-      .iter()
-      .filter(|item| matches!(item, DisplayItem::Image(_)))
-      .count();
+    let images = list.iter().filter(|item| matches!(item, DisplayItem::Image(_))).count();
 
     assert_eq!(patterns, 1, "expected a single pattern fill");
-    assert_eq!(
-      images, 0,
-      "expected pattern fast path to avoid per-tile images"
-    );
+    assert_eq!(images, 0, "expected pattern fast path to avoid per-tile images");
   }
 
   #[test]
@@ -21066,16 +21280,10 @@ mod tests {
       .iter()
       .filter(|item| matches!(item, DisplayItem::ImagePattern(_)))
       .count();
-    let images = list
-      .iter()
-      .filter(|item| matches!(item, DisplayItem::Image(_)))
-      .count();
+    let images = list.iter().filter(|item| matches!(item, DisplayItem::Image(_))).count();
 
     assert_eq!(patterns, 0, "expected per-tile path (no ImagePattern)");
-    assert!(
-      images > 0,
-      "expected background to be emitted as Image tile(s)"
-    );
+    assert!(images > 0, "expected background to be emitted as Image tile(s)");
   }
 
   #[test]
@@ -21112,15 +21320,9 @@ mod tests {
       .iter()
       .filter(|item| matches!(item, DisplayItem::ImagePattern(_)))
       .count();
-    let images = list
-      .iter()
-      .filter(|item| matches!(item, DisplayItem::Image(_)))
-      .count();
+    let images = list.iter().filter(|item| matches!(item, DisplayItem::Image(_))).count();
 
-    assert_eq!(
-      patterns, 0,
-      "expected no ImagePattern for a single visible tile"
-    );
+    assert_eq!(patterns, 0, "expected no ImagePattern for a single visible tile");
     assert_eq!(images, 1, "expected exactly one Image item");
   }
 
