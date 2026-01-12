@@ -36,6 +36,24 @@ use walkdir as _;
 const DEFAULT_ROOT: &str = "parse-js/tests/TypeScript/tests/cases/conformance";
 const DEFAULT_TIMEOUT: u64 = 10;
 
+fn install_cancelled_panic_hook() {
+  let hook = std::panic::take_hook();
+  std::panic::set_hook(Box::new(move |info| {
+    let is_cancelled = info
+      .payload()
+      .downcast_ref::<typecheck_ts::FatalError>()
+      .is_some_and(|fatal| matches!(fatal, typecheck_ts::FatalError::Cancelled))
+      || info.payload().downcast_ref::<diagnostics::Cancelled>().is_some();
+    if is_cancelled {
+      // `typecheck-ts` uses panics for cooperative cancellation. Those are
+      // intentionally caught and converted into structured errors/diagnostics.
+      // Avoid printing scary "panicked at ..." messages for expected timeouts.
+      return;
+    }
+    hook(info);
+  }));
+}
+
 fn default_jobs() -> usize {
   // Keep defaults conservative to avoid excessive memory usage when many
   // independent programs are checked in parallel. Callers can override via
@@ -241,6 +259,7 @@ impl From<CompareArg> for CompareMode {
 }
 
 fn main() -> ExitCode {
+  install_cancelled_panic_hook();
   let cli = Cli::parse();
   match cli.command {
     Commands::Difftsc(args) => match difftsc::run(args) {
