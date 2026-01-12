@@ -138,6 +138,7 @@ impl Runner {
     self.run_scripts_in_window(test, &base_dir, scripts, timeout)
   }
 
+  #[cfg(any(feature = "vmjs", feature = "quickjs"))]
   fn run_scripts_in_window(
     &self,
     test: &TestCase,
@@ -269,6 +270,20 @@ impl Runner {
       outcome,
       wpt_report,
     })
+  }
+
+  #[cfg(not(any(feature = "vmjs", feature = "quickjs")))]
+  fn run_scripts_in_window(
+    &self,
+    _test: &TestCase,
+    _base_dir: &str,
+    _scripts: Vec<ScriptToEval>,
+    _timeout: Duration,
+  ) -> RunResultResult {
+    Err(RunError::Js(
+      "js-wpt-dom-runner was built without any JS backends; enable `vmjs` (recommended) or `quickjs`"
+        .to_string(),
+    ))
   }
 }
 

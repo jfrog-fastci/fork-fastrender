@@ -5,10 +5,15 @@ edition = "2021"
 publish = false
 
 [features]
-default = ["vmjs"]
+# Keep the default build of this crate lightweight so tooling/tests that only need corpus discovery
+# (e.g. `cargo test -p js-wpt-dom-runner --test corpus_validation`) do not have to compile the full
+# FastRender renderer + vm-js embedding.
+#
+# Consumers that need to actually *execute* the corpus (xtask + CI) should enable `vmjs`.
+default = []
 
 # `ecma-rs/vm-js` backend (default).
-vmjs = ["dep:vm-js", "dep:webidl-vm-js"]
+vmjs = ["dep:vm-js", "dep:webidl-vm-js", "dep:fastrender"]
 
 # QuickJS (`rquickjs`) backend (optional). Useful for comparison/debugging, but it is not
 # deterministic (timers are wall-clock based) and provides only minimal DOM shims.
@@ -19,10 +24,12 @@ anyhow = "1"
 base64 = "0.22"
 clap = { version = "4", features = ["derive"] }
 conformance-harness = { path = "../../vendor/ecma-rs/conformance-harness" }
-# `js-wpt-dom-runner` exercises the JS/DOM runtime and doesn't need renderer-only optional features
-# like AVIF decoding. Keep the dependency lean so `cargo test -p xtask` doesn't pull in heavy native
-# builds like `libaom-sys`.
-fastrender = { path = "../..", default-features = false }
+# Only needed for the `vm-js` backend. Keep it optional so non-execution tooling (like the offline
+# corpus validator) can stay lean.
+#
+# `default-features = false` avoids pulling in heavyweight renderer features (e.g. AVIF decoding via
+# libaom-sys) when running the offline conformance runner.
+fastrender = { path = "../..", default-features = false, optional = true }
 globset = "0.4"
 regex = "1"
 serde = { version = "1", features = ["derive"] }

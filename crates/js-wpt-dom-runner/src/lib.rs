@@ -28,8 +28,9 @@ mod suite;
 mod url_shims;
 mod window_or_worker_global_scope;
 pub mod wpt_fs;
-mod wpt_report;
+#[cfg(feature = "vmjs")]
 mod wpt_resource_fetcher;
+mod wpt_report;
 
 pub use backend::{BackendKind, BackendSelection};
 pub use conformance_harness::{FailOn, Shard};
@@ -41,5 +42,6 @@ pub use suite::{
   TestOutcome, TestResult, REPORT_SCHEMA_VERSION,
 };
 pub use wpt_fs::WptFs;
-pub use wpt_report::{WptReport, WptSubtest};
+#[cfg(feature = "vmjs")]
 pub use wpt_resource_fetcher::WptResourceFetcher;
+pub use wpt_report::{WptReport, WptSubtest};

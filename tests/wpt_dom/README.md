@@ -57,6 +57,8 @@ tests/wpt_dom/
       *.window.js
     events/                # Curated EventTarget/Event semantics tests
       *.window.js
+    observers/             # Curated observer API smoke tests (geometry-independent)
+      *.window.js
     url/                   # Curated URL + URLSearchParams tests
       *.window.js
 ```
@@ -64,6 +66,23 @@ tests/wpt_dom/
 Note: the optional QuickJS backend injects an inline DOM + Events polyfill via `DOM_SHIM` in
 [`crates/js-wpt-dom-runner/src/dom_shims.rs`](../../crates/js-wpt-dom-runner/src/dom_shims.rs).
 `resources/eventtarget_shim.js` is currently unused by the runner (kept only for historical reference).
+
+## Observers
+
+The `tests/observers/` directory contains **API-level** tests for observer-style Web APIs that are
+common in real-world scripts:
+
+- `IntersectionObserver`
+- `ResizeObserver`
+
+FastRender's offline WPT DOM runner uses `WindowHostState` and does **not** have a full renderer
+layout/geometry engine. As a result, these tests intentionally avoid asserting any specific
+geometry values (`boundingClientRect`, intersection ratios, box sizes, etc).
+
+When importing upstream WPT tests in the future, most geometry-dependent observer tests should be
+marked `skip` in `expectations.toml` with a reason like:
+
+> requires layout geometry; offline DOM runner uses WindowHostState
 
 ## URL mapping (WPT origin → filesystem)
 

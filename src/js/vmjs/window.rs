@@ -22,6 +22,120 @@ use crate::resource::{origin_from_url, HttpFetcher, ResourceFetcher};
 use crate::style::media::MediaContext;
 use std::sync::Arc;
 
+// Minimal observer shims (IntersectionObserver/ResizeObserver).
+//
+// FastRender does not currently have a full layout engine wired into the JS environment, so these
+// implementations intentionally avoid geometry. They exist primarily so real-world scripts (and the
+// offline WPT DOM runner) can depend on the constructor surface and async delivery shape.
+//
+// The shims are installed into every new `WindowHostState` realm, but are guarded so that a future
+// native implementation can replace them without churn.
+const OBSERVER_SHIMS_JS: &str = r#"
+  (function () {
+    var g = typeof globalThis !== "undefined" ? globalThis : this;
+
+    function isObject(x) {
+      return x !== null && (typeof x === "object" || typeof x === "function");
+    }
+
+    // -----------------------------------------------------------------------
+    // IntersectionObserver (geometry-independent stub)
+    // -----------------------------------------------------------------------
+    if (typeof g.IntersectionObserver !== "function") {
+      function IntersectionObserver(callback) {
+        if (!(this instanceof IntersectionObserver)) {
+          throw new TypeError("IntersectionObserver constructor cannot be invoked without 'new'");
+        }
+        if (typeof callback !== "function") {
+          throw new TypeError("IntersectionObserver callback must be a function");
+        }
+        this._callback = callback;
+        this._queue = [];
+        this._scheduled = false;
+      }
+
+      IntersectionObserver.prototype.observe = function (target) {
+        if (!isObject(target)) {
+          throw new TypeError("IntersectionObserver.observe: target must be an object");
+        }
+        this._queue.push({ target: target });
+        if (this._scheduled) return;
+        this._scheduled = true;
+        var self = this;
+        Promise.resolve().then(function () {
+          self._scheduled = false;
+          if (!self._queue || self._queue.length === 0) return;
+          var entries = self.takeRecords();
+          try {
+            self._callback.call(self, entries, self);
+          } catch (_e) {}
+        });
+      };
+
+      IntersectionObserver.prototype.takeRecords = function () {
+        var records = Array.isArray(this._queue) ? this._queue : [];
+        this._queue = [];
+        return records;
+      };
+
+      IntersectionObserver.prototype.disconnect = function () {
+        this._queue = [];
+        this._scheduled = false;
+      };
+
+      g.IntersectionObserver = IntersectionObserver;
+    }
+
+    // -----------------------------------------------------------------------
+    // ResizeObserver (geometry-independent stub)
+    // -----------------------------------------------------------------------
+    if (typeof g.ResizeObserver !== "function") {
+      function ResizeObserver(callback) {
+        if (!(this instanceof ResizeObserver)) {
+          throw new TypeError("ResizeObserver constructor cannot be invoked without 'new'");
+        }
+        if (typeof callback !== "function") {
+          throw new TypeError("ResizeObserver callback must be a function");
+        }
+        this._callback = callback;
+        this._queue = [];
+        this._scheduled = false;
+      }
+
+      ResizeObserver.prototype.observe = function (target) {
+        if (!isObject(target)) {
+          throw new TypeError("ResizeObserver.observe: target must be an object");
+        }
+        this._queue.push({ target: target });
+        if (this._scheduled) return;
+        this._scheduled = true;
+        var self = this;
+        Promise.resolve().then(function () {
+          self._scheduled = false;
+          if (!self._queue || self._queue.length === 0) return;
+          var entries = self.takeRecords();
+          try {
+            self._callback.call(self, entries, self);
+          } catch (_e) {}
+        });
+      };
+
+      ResizeObserver.prototype.takeRecords = function () {
+        var records = Array.isArray(this._queue) ? this._queue : [];
+        this._queue = [];
+        return records;
+      };
+
+      ResizeObserver.prototype.disconnect = function () {
+        this._queue = [];
+        this._scheduled = false;
+      };
+
+      g.ResizeObserver = ResizeObserver;
+    }
+  })();
+"#;
+
 /// Host-owned "window" state for executing scripts against a single DOM document.
 ///
 /// This is a convenience composition type that bundles:
@@ -465,6 +579,15 @@ impl WindowHostState {
 
       (fetch_bindings, xhr_bindings, websocket_bindings)
     };
+
+    // Install minimal observer API shims used by real-world scripts and the offline WPT DOM runner.
+    //
+    // These are geometry-independent and intentionally do not attempt to implement spec-accurate
+    // layout/box calculations. They mainly provide async delivery shape and `takeRecords`/`disconnect`
+    // semantics so codebases that feature-detect these APIs can proceed.
+    window
+      .exec_script_with_name("fastrender_observer_shims.js", OBSERVER_SHIMS_JS)
+      .map_err(|err| Error::Other(err.to_string()))?;
 
     let webidl_bindings_host =
       VmJsWebIdlBindingsHostDispatch::<WindowHostState>::new(window.global_object());
