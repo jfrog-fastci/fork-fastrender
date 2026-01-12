@@ -4340,7 +4340,7 @@ pub fn error_constructor_construct(
     new_target,
     default_proto,
     &[],
-    |scope| scope.alloc_object(),
+    |scope| scope.alloc_error(),
   )?;
 
   let mut scope = scope.reborrow();
@@ -8280,6 +8280,7 @@ pub fn object_prototype_to_string(
   const TAG_SYMBOL: [u16; 6] = [b'S' as u16, b'y' as u16, b'm' as u16, b'b' as u16, b'o' as u16, b'l' as u16];
   const TAG_ARRAY: [u16; 5] = [b'A' as u16, b'r' as u16, b'r' as u16, b'a' as u16, b'y' as u16];
   const TAG_DATE: [u16; 4] = [b'D' as u16, b'a' as u16, b't' as u16, b'e' as u16];
+  const TAG_ERROR: [u16; 5] = [b'E' as u16, b'r' as u16, b'r' as u16, b'o' as u16, b'r' as u16];
   const TAG_FUNCTION: [u16; 8] = [
     b'F' as u16,
     b'u' as u16,
@@ -8334,6 +8335,8 @@ pub fn object_prototype_to_string(
       } else if scope.heap().is_callable(receiver)? {
         // `IsCallable` follows Proxy chains (and is intentionally non-throwing for revoked proxies).
         &TAG_FUNCTION
+      } else if scope.heap().is_error_object(o) {
+        &TAG_ERROR
       } else if scope.heap().is_date_object(o) {
         &TAG_DATE
       } else if can_check_markers {

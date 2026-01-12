@@ -3,7 +3,9 @@ use vm_js::{Agent, Budget, HeapLimits, Value, VmError, VmOptions};
 fn new_agent() -> Agent {
   Agent::with_options(
     VmOptions::default(),
-    HeapLimits::new(1024 * 1024, 1024 * 1024),
+    // This test runs multiple small scripts in the same realm; allow enough heap headroom for
+    // per-script compilation/caching allocations.
+    HeapLimits::new(4 * 1024 * 1024, 4 * 1024 * 1024),
   )
   .expect("create agent")
 }
@@ -63,6 +65,61 @@ fn object_prototype_to_string_tags_and_proto_accessors() -> Result<(), VmError> 
   assert_eq!(
     eval_to_string(
       &mut agent,
+      "tostring_error.js",
+      "Object.prototype.toString.call(new Error())",
+    )?,
+    "[object Error]"
+  );
+  assert_eq!(
+    eval_to_string(
+      &mut agent,
+      "tostring_error_fallback.js",
+      r#"(() => {
+        // Force the builtinTag path by shadowing @@toStringTag with a non-string value.
+        const err = new Error();
+        Object.defineProperty(err, Symbol.toStringTag, { value: undefined });
+        const real = Object.prototype.toString.call(err);
+
+        const fakeObj = Object.create(Error.prototype);
+        Object.defineProperty(fakeObj, Symbol.toStringTag, { value: undefined });
+        const fake = Object.prototype.toString.call(fakeObj);
+
+        return real + "|" + fake;
+      })()"#,
+    )?,
+    "[object Error]|[object Object]"
+  );
+  assert_eq!(
+    eval_to_string(
+      &mut agent,
+      "tostring_typeerror.js",
+      "Object.prototype.toString.call(new TypeError())",
+    )?,
+    "[object Error]"
+  );
+  assert_eq!(
+    eval_to_string(
+      &mut agent,
+      "tostring_typeerror_fallback.js",
+      r#"(() => {
+        // Force the builtinTag path by shadowing @@toStringTag with a non-string value.
+        const err = new TypeError();
+        Object.defineProperty(err, Symbol.toStringTag, { value: undefined });
+        const real = Object.prototype.toString.call(err);
+
+        const fakeObj = Object.create(TypeError.prototype);
+        Object.defineProperty(fakeObj, Symbol.toStringTag, { value: undefined });
+        const fake = Object.prototype.toString.call(fakeObj);
+
+        return real + "|" + fake;
+      })()"#,
+    )?,
+    "[object Error]|[object Object]"
+  );
+
+  assert_eq!(
+    eval_to_string(
+      &mut agent,
       "tostring_weakmap.js",
       "Object.prototype.toString.call(new WeakMap())",
     )?,
@@ -81,7 +138,7 @@ fn object_prototype_to_string_tags_and_proto_accessors() -> Result<(), VmError> 
         return real + "|" + fake;
       })()"#,
     )?,
-    "[object WeakMap]|[object Object]"
+    "[object Object]|[object Object]"
   );
 
   assert_eq!(
@@ -105,7 +162,7 @@ fn object_prototype_to_string_tags_and_proto_accessors() -> Result<(), VmError> 
         return real + "|" + fake;
       })()"#,
     )?,
-    "[object WeakSet]|[object Object]"
+    "[object Object]|[object Object]"
   );
 
   assert_eq!(

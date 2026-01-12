@@ -15,7 +15,8 @@ fn data_desc(value: Value) -> PropertyDescriptor {
 /// Create a minimal native `Error` object instance.
 ///
 /// This is intentionally small and spec-shaped:
-/// - Allocate an ordinary object.
+/// - Allocate an Error object allocation (branded so `Object.prototype.toString` builtin-tag
+///   selection can distinguish real Error instances from `Object.create(Error.prototype)`).
 /// - Set its `[[Prototype]]` to the provided intrinsic prototype.
 /// - Define own non-enumerable `"name"` and `"message"` data properties.
 pub fn new_error(
@@ -24,7 +25,7 @@ pub fn new_error(
   name: &str,
   message: &str,
 ) -> Result<Value, VmError> {
-  let err = scope.alloc_object()?;
+  let err = scope.alloc_error()?;
   // Root the object for the remainder of construction. Subsequent property definition may
   // allocate and trigger GC.
   scope.push_root(Value::Object(err))?;

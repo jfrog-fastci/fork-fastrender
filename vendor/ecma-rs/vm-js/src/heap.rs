@@ -1067,6 +1067,18 @@ impl Heap {
     matches!(self.get_heap_object(obj.0), Ok(HeapObject::RegExp(_)))
   }
 
+  /// Returns `true` if `obj` currently points to a live Error object allocation.
+  ///
+  /// This is the `[[ErrorData]]` brand check used by `Object.prototype.toString` builtin-tag
+  /// selection. It must distinguish real Error instances from ordinary objects that merely inherit
+  /// from `%Error.prototype%` (e.g. `Object.create(Error.prototype)`).
+  pub fn is_error_object(&self, obj: GcObject) -> bool {
+    match self.get_heap_object(obj.0) {
+      Ok(HeapObject::Object(o)) => matches!(o.base.kind, ObjectKind::Error),
+      Ok(_) | Err(_) => false,
+    }
+  }
+
   /// Returns `true` if `obj` currently points to a live Date object allocation.
   pub fn is_date_object(&self, obj: GcObject) -> bool {
     matches!(self.date_value(obj), Ok(Some(_)))
@@ -5611,6 +5623,22 @@ impl<'a> Scope<'a> {
     Ok(GcObject(scope.heap.alloc_unchecked(obj, new_bytes)?))
   }
 
+  /// Allocates a JavaScript Error object on the heap.
+  pub fn alloc_error(&mut self) -> Result<GcObject, VmError> {
+    let new_bytes = JsObject::heap_size_bytes_for_property_count(0);
+    self.heap.ensure_can_allocate(new_bytes)?;
+
+    let obj = JsObject {
+      base: ObjectBase {
+        prototype: None,
+        extensible: true,
+        properties: Box::default(),
+        kind: ObjectKind::Error,
+      },
+    };
+    Ok(GcObject(self.heap.alloc_unchecked(HeapObject::Object(obj), new_bytes)?))
+  }
+
   /// Allocates a JavaScript Date object on the heap.
   pub fn alloc_date(&mut self, value: f64) -> Result<GcObject, VmError> {
     let new_bytes = JsObject::heap_size_bytes_for_property_count(0);
@@ -7005,7 +7033,7 @@ impl ObjectBase {
   fn array_length(&self) -> Option<u32> {
     match &self.kind {
       ObjectKind::Array(a) => Some(a.length),
-      ObjectKind::Ordinary | ObjectKind::Date(_) => None,
+      ObjectKind::Ordinary | ObjectKind::Date(_) | ObjectKind::Error => None,
     }
   }
 
@@ -7505,6 +7533,7 @@ enum ObjectKind {
   Ordinary,
   Array(ArrayObject),
   Date(DateObject),
+  Error,
 }
 
 #[derive(Debug)]
