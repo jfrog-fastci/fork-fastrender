@@ -37,6 +37,7 @@ mod css_nesting_scope_integration_test;
 mod css_nesting_test;
 mod css_numeric_functions;
 mod css_values_5_functions_test;
+mod calc_size_token_substitution_no_panic_test;
 mod custom_property_inheritance_test;
 mod custom_property_registration_primitives_test;
 mod custom_property_registration_test;

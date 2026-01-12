@@ -575,9 +575,7 @@ fn substitute_calc_size_tokens<'i, 't>(
         output.push('}');
       }
       other => {
-        other
-          .to_css(&mut output)
-          .expect("writing to String should be infallible");
+        other.to_css(&mut output).map_err(|_| parser.new_custom_error(()))?;
       }
     }
   }
@@ -587,7 +585,7 @@ fn substitute_calc_size_tokens<'i, 't>(
 /// Replace all `size` identifier tokens in a `calc-size()` calc-sum.
 ///
 /// Returns a raw calc-sum string (not wrapped in `calc(...)`).
-pub(crate) fn substitute_calc_size_expr(expr: &str, size_px: f32) -> Option<String> {
+pub fn substitute_calc_size_expr(expr: &str, size_px: f32) -> Option<String> {
   if !size_px.is_finite() {
     return None;
   }
@@ -601,7 +599,7 @@ pub(crate) fn substitute_calc_size_expr(expr: &str, size_px: f32) -> Option<Stri
 /// replaced by `<size_px>px`.
 ///
 /// The returned string is a raw calc-sum (not wrapped in `calc(...)`).
-pub(crate) fn calc_size_expr_with_size(id: CalcSizeExprId, size_px: f32) -> Option<String> {
+pub fn calc_size_expr_with_size(id: CalcSizeExprId, size_px: f32) -> Option<String> {
   let expr = calc_size_expr_css_text(id);
   substitute_calc_size_expr(&expr, size_px)
 }
