@@ -746,6 +746,26 @@ fn location_stringification_matches_href() -> Result<()> {
   let ok = realm
     .exec_script("String(location) === location.href && (location + '') === location.href && location.toString() === location.href")
     .map_err(|e| Error::Other(e.to_string()))?;
+
+  assert_eq!(ok, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn history_and_location_constructors_exist() -> Result<()> {
+  let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))
+    .map_err(|e| Error::Other(e.to_string()))?;
+
+  let ok = realm
+    .exec_script(
+      "typeof History === 'function' &&\n\
+       history instanceof History &&\n\
+       history.constructor === History &&\n\
+       typeof Location === 'function' &&\n\
+       location instanceof Location &&\n\
+       location.constructor === Location",
+    )
+    .map_err(|e| Error::Other(e.to_string()))?;
   assert_eq!(ok, Value::Bool(true));
   Ok(())
 }

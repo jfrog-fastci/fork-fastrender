@@ -19881,6 +19881,88 @@ fn init_window_globals(
     read_only_data_desc(Value::Number(1.0)),
   )?;
 
+  // --- History + Location interface objects ---------------------------------
+  //
+  // Many real-world scripts check `typeof window.History === "function"` (and similarly for
+  // `Location`) and rely on `history instanceof History` / `location instanceof Location`.
+  //
+  // FastRender historically exposed `window.history`/`window.location` as plain objects. Wire up
+  // minimal interface constructors + prototypes so those checks behave like browsers, while keeping
+  // existing method implementations on the instance objects.
+  let illegal_ctor_call_id = vm.register_native_call(illegal_dom_constructor_native)?;
+  let illegal_ctor_construct_id =
+    vm.register_native_construct(illegal_dom_constructor_construct_native)?;
+
+  let history_proto = scope.alloc_object()?;
+  scope.push_root(Value::Object(history_proto))?;
+  let history_ctor_name = scope.alloc_string("History")?;
+  scope.push_root(Value::String(history_ctor_name))?;
+  let history_ctor_func = scope.alloc_native_function(
+    illegal_ctor_call_id,
+    Some(illegal_ctor_construct_id),
+    history_ctor_name,
+    0,
+  )?;
+  scope.heap_mut().object_set_prototype(
+    history_ctor_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(history_ctor_func))?;
+  scope.define_property(
+    history_ctor_func,
+    prototype_key,
+    data_desc(Value::Object(history_proto)),
+  )?;
+  scope.define_property(
+    history_proto,
+    constructor_key,
+    data_desc(Value::Object(history_ctor_func)),
+  )?;
+  let history_ctor_key = alloc_key(&mut scope, "History")?;
+  scope.define_property(
+    global,
+    history_ctor_key,
+    data_desc(Value::Object(history_ctor_func)),
+  )?;
+  scope
+    .heap_mut()
+    .object_set_prototype(history_obj, Some(history_proto))?;
+
+  let location_proto = scope.alloc_object()?;
+  scope.push_root(Value::Object(location_proto))?;
+  let location_ctor_name = scope.alloc_string("Location")?;
+  scope.push_root(Value::String(location_ctor_name))?;
+  let location_ctor_func = scope.alloc_native_function(
+    illegal_ctor_call_id,
+    Some(illegal_ctor_construct_id),
+    location_ctor_name,
+    0,
+  )?;
+  scope.heap_mut().object_set_prototype(
+    location_ctor_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(location_ctor_func))?;
+  scope.define_property(
+    location_ctor_func,
+    prototype_key,
+    data_desc(Value::Object(location_proto)),
+  )?;
+  scope.define_property(
+    location_proto,
+    constructor_key,
+    data_desc(Value::Object(location_ctor_func)),
+  )?;
+  let location_ctor_key = alloc_key(&mut scope, "Location")?;
+  scope.define_property(
+    global,
+    location_ctor_key,
+    data_desc(Value::Object(location_ctor_func)),
+  )?;
+  scope
+    .heap_mut()
+    .object_set_prototype(location_obj, Some(location_proto))?;
+
   let history_state_call_id = vm.register_native_call(history_state_change_native)?;
   let history_go_call_id = vm.register_native_call(history_go_native)?;
   let history_noop_call_id = vm.register_native_call(history_noop_native)?;
