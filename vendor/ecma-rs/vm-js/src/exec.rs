@@ -9374,6 +9374,11 @@ pub(crate) enum GenFrame {
   /// Finish a return statement after its value expression is evaluated.
   Return,
 
+  /// Finish a throw statement after its value expression is evaluated.
+  Throw {
+    stmt: *const Node<ThrowStmt>,
+  },
+
   /// Continue a `var`/`let`/`const` declaration after a declarator initializer completes.
   VarDecl {
     decl: *const VarDecl,
@@ -24024,6 +24029,7 @@ fn gen_eval_stmt_labelled(
         }
       }
     }
+    Stmt::Throw(throw_stmt) => gen_eval_throw_stmt(evaluator, scope, throw_stmt),
     Stmt::VarDecl(decl) => gen_eval_var_decl(evaluator, scope, &decl.stx, 0),
     Stmt::Block(block) => gen_eval_block_stmt(evaluator, scope, &block.stx),
     Stmt::If(if_stmt) => match gen_eval_expr(evaluator, scope, &if_stmt.stx.test)? {
@@ -24074,6 +24080,60 @@ fn gen_eval_stmt_labelled(
         }
         other => Err(other),
       }
+    }
+  }
+}
+
+fn gen_throw_completion(
+  evaluator: &mut Evaluator<'_>,
+  stmt: &Node<ThrowStmt>,
+  value: Value,
+) -> Completion {
+  // Capture a stack trace at the throw site. Mirrors `Evaluator::eval_throw` and the async
+  // evaluator's `async_throw_completion`.
+  let source = evaluator.env.source();
+  let rel_start = stmt
+    .loc
+    .start_u32()
+    .saturating_sub(evaluator.env.prefix_len());
+  let abs_offset = evaluator.env.base_offset().saturating_add(rel_start);
+  let (line, col) = source.line_col(abs_offset);
+
+  let mut stack = evaluator.vm.capture_stack();
+  if let Some(top) = stack.first_mut() {
+    top.source = source.name.clone();
+    top.line = line;
+    top.col = col;
+  } else {
+    stack.push(StackFrame {
+      function: None,
+      source: source.name.clone(),
+      line,
+      col,
+    });
+  }
+
+  Completion::Throw(Thrown { value, stack })
+}
+
+fn gen_eval_throw_stmt(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  stmt: &Node<ThrowStmt>,
+) -> Result<GenEval<Completion>, VmError> {
+  match gen_eval_expr(evaluator, scope, &stmt.stx.value)? {
+    GenEval::Complete(c) => Ok(GenEval::Complete(match c {
+      Completion::Normal(v) => gen_throw_completion(evaluator, stmt, v.unwrap_or(Value::Undefined)),
+      abrupt => abrupt,
+    })),
+    GenEval::Suspend(mut suspend) => {
+      gen_frames_push(
+        &mut suspend.frames,
+        GenFrame::Throw {
+          stmt: stmt as *const Node<ThrowStmt>,
+        },
+      )?;
+      Ok(GenEval::Suspend(suspend))
     }
   }
 }
@@ -25261,6 +25321,14 @@ fn gen_resume_from_frames(
 
       GenFrame::Return => match state {
         Completion::Normal(v) => state = Completion::Return(v.unwrap_or(Value::Undefined)),
+        abrupt => state = abrupt,
+      },
+
+      GenFrame::Throw { stmt } => match state {
+        Completion::Normal(v) => {
+          let stmt = unsafe { &*stmt };
+          state = gen_throw_completion(evaluator, stmt, v.unwrap_or(Value::Undefined));
+        }
         abrupt => state = abrupt,
       },
 

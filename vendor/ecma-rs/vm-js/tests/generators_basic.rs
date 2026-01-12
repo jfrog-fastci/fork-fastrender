@@ -166,3 +166,21 @@ fn generator_yield_undefined_evaluates_operand_when_explicit() {
     .unwrap();
   assert_eq!(value, Value::Bool(true));
 }
+
+#[test]
+fn generator_throw_statement_value_can_yield() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      function* g() { throw (yield 1); }
+      var it = g();
+      var r1 = it.next();
+      var caught = false;
+      try { it.next("boom"); } catch (e) { caught = (e === "boom"); }
+      r1.value === 1 && r1.done === false && caught === true
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
