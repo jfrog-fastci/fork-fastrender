@@ -69,3 +69,15 @@ reason = "Comment node parsing/serialization is not implemented until dom2 mater
 id = "dom/document_doctype.window.js"
 status = "xfail"
 reason = "DocumentType node + document.doctype binding is not implemented until dom2 materializes the document doctype."
+
+[[expectations]]
+id = "html/htmlelement_reflection.window.js"
+backend = "quickjs"
+status = "skip"
+reason = "QuickJS backend uses a minimal DOM shim and does not yet implement HTMLElement reflected attributes or CSSStyleDeclaration."
+
+[[expectations]]
+id = "html/form_controls.window.js"
+backend = "quickjs"
+status = "skip"
+reason = "QuickJS backend uses a minimal DOM shim and does not yet implement HTML form control element interfaces/properties (input/textarea/select/form)."
