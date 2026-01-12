@@ -79,7 +79,7 @@ jobs:
           fi
 
           echo "::warning::Upstream conformance expectations manifest is missing (${manifest})." >&2
-          echo "::warning::Task 28 is expected to add this file; skipping upstream conformance on PR/push until then." >&2
+          echo "::warning::Skipping upstream conformance on PR/push; scheduled/manual runs require a checked-in manifest." >&2
 
           if [[ "${GITHUB_EVENT_NAME}" == "schedule" || "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
             echo "::error::Refusing to run scheduled/manual upstream conformance without a checked-in manifest." >&2
