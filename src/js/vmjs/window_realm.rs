@@ -20411,12 +20411,15 @@ fn node_node_type_get_native(
     return Err(VmError::TypeError("Illegal invocation"));
   };
 
-  let node_id = dom_platform_mut(vm)
+  let node_key = dom_platform_mut(vm)
     .ok_or(VmError::TypeError("Illegal invocation"))?
-    .require_node_id(scope.heap(), Value::Object(wrapper_obj))?;
-  let dom = dom_from_vm_host(host).ok_or(VmError::TypeError("Illegal invocation"))?;
+    .require_node_handle(scope.heap(), Value::Object(wrapper_obj))?;
+  let dom_ptr = dom_ptr_for_document_id_read(vm, host, node_key.document_id)
+    .ok_or(VmError::TypeError("Illegal invocation"))?;
+  // SAFETY: `dom_ptr` is valid for the duration of this native call.
+  let dom = unsafe { dom_ptr.as_ref() };
 
-  let node_type = match &dom.node(node_id).kind {
+  let node_type = match &dom.node(node_key.node_id).kind {
     NodeKind::Element { .. } | NodeKind::Slot { .. } => 1,
     NodeKind::Text { .. } => 3,
     NodeKind::ProcessingInstruction { .. } => 7,
@@ -20442,12 +20445,15 @@ fn node_node_name_get_native(
     return Err(VmError::TypeError("Illegal invocation"));
   };
 
-  let node_id = dom_platform_mut(vm)
+  let node_key = dom_platform_mut(vm)
     .ok_or(VmError::TypeError("Illegal invocation"))?
-    .require_node_id(scope.heap(), Value::Object(wrapper_obj))?;
-  let dom = dom_from_vm_host(host).ok_or(VmError::TypeError("Illegal invocation"))?;
+    .require_node_handle(scope.heap(), Value::Object(wrapper_obj))?;
+  let dom_ptr = dom_ptr_for_document_id_read(vm, host, node_key.document_id)
+    .ok_or(VmError::TypeError("Illegal invocation"))?;
+  // SAFETY: `dom_ptr` is valid for the duration of this native call.
+  let dom = unsafe { dom_ptr.as_ref() };
 
-  let name = match &dom.node(node_id).kind {
+  let name = match &dom.node(node_key.node_id).kind {
     NodeKind::Element {
       tag_name,
       namespace,
@@ -26192,6 +26198,42 @@ fn document_hidden_get_native(
   Ok(Value::Bool(state.hidden()))
 }
 
+fn document_doctype_get_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(document_obj) = this else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+
+  let document_key = dom_platform_mut(vm)
+    .ok_or(VmError::TypeError("Illegal invocation"))?
+    .require_document_handle(scope.heap(), Value::Object(document_obj))?;
+  let dom_ptr = dom_ptr_for_document_id_read(vm, host, document_key.document_id)
+    .ok_or(VmError::TypeError("Illegal invocation"))?;
+  // SAFETY: `dom_ptr` is valid for the duration of this native call.
+  let dom = unsafe { dom_ptr.as_ref() };
+
+  let root = dom.root();
+  let doctype_id = dom
+    .node(root)
+    .children
+    .iter()
+    .copied()
+    .find(|&child| matches!(dom.node(child).kind, NodeKind::Doctype { .. }));
+
+  let Some(doctype_id) = doctype_id else {
+    return Ok(Value::Null);
+  };
+
+  get_or_create_node_wrapper(vm, scope, document_obj, Some(dom), doctype_id)
+}
+
 fn document_base_uri_get_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -26371,13 +26413,13 @@ fn document_cookie_set_native(
 }
 
 fn dom_implementation_create_html_document_native(
-  _vm: &mut Vm,
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
   _hooks: &mut dyn VmHostHooks,
   callee: GcObject,
   _this: Value,
-  _args: &[Value],
+  args: &[Value],
 ) -> Result<Value, VmError> {
   let slots = scope.heap().get_function_native_slots(callee)?;
   let template_document_obj =
@@ -26390,17 +26432,61 @@ fn dom_implementation_create_html_document_native(
       }
     };
 
+  // DOMImplementation.createHTMLDocument(optional DOMString title)
+  let title = match args.get(0).copied() {
+    None | Some(Value::Undefined) => String::new(),
+    Some(Value::String(s)) => scope.heap().get_string(s)?.to_utf8_lossy(),
+    Some(other) => {
+      let s = scope.heap_mut().to_string(other)?;
+      scope.heap().get_string(s)?.to_utf8_lossy()
+    }
+  };
+
   let about_blank_s = scope.alloc_string(ABOUT_BLANK_URL)?;
   scope.push_root(Value::String(about_blank_s))?;
 
-  // Minimal owned-document semantics:
-  // - `defaultView` is `null`
-  // - `URL` is `about:blank`
-  // - `location` is `null`
-  //
-  // Keep the host document as the prototype so the returned object continues to pass `instanceof
-  // Document` checks and inherits Document APIs (even if most of them are no-ops today).
-  let document_obj = scope.alloc_object_with_prototype(Some(template_document_obj))?;
+  // Create an independent `dom2::Document` for the detached document.
+  let mut dom = dom2::Document::new(QuirksMode::NoQuirks);
+  {
+    let root = dom.root();
+
+    macro_rules! append_child_or_throw {
+      ($parent:expr, $child:expr) => {{
+        if let Err(err) = dom.append_child($parent, $child) {
+          return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
+        }
+      }};
+    }
+
+    let doctype = dom.create_doctype("html", "", "");
+    append_child_or_throw!(root, doctype);
+
+    let html = dom.create_element("html", "");
+    append_child_or_throw!(root, html);
+
+    let head = dom.create_element("head", "");
+    append_child_or_throw!(html, head);
+
+    if !title.is_empty() {
+      let title_el = dom.create_element("title", "");
+      append_child_or_throw!(head, title_el);
+      let text = dom.create_text(&title);
+      append_child_or_throw!(title_el, text);
+    }
+
+    let body = dom.create_element("body", "");
+    append_child_or_throw!(html, body);
+  }
+
+  let document_obj = scope.alloc_object()?;
+  scope.push_root(Value::Object(document_obj))?;
+  scope.heap_mut().object_set_host_slots(
+    document_obj,
+    HostSlots {
+      a: WINDOW_REALM_DOCUMENT_HOST_TAG,
+      b: 0,
+    },
+  )?;
 
   {
     // Root while allocating property keys: string allocation can trigger GC.
@@ -26439,6 +26525,33 @@ fn dom_implementation_create_html_document_native(
       },
     )?;
   }
+
+  // Brand this object as a real `Document` wrapper and register its backing `dom2::Document`.
+  let Some(data) = vm.user_data_mut::<WindowRealmUserData>() else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+  let Some(platform) = data.dom_platform_mut() else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+  scope.heap_mut().object_set_prototype(
+    document_obj,
+    Some(template_document_obj),
+  )?;
+  let document_key = vm_js::WeakGcObject::from(document_obj);
+  platform.register_wrapper(
+    scope.heap(),
+    document_obj,
+    document_key,
+    NodeId::from_index(0),
+    DomInterface::Document,
+  );
+
+  let document_id = gc_object_id(document_obj);
+  data.owned_dom2_documents.insert(document_id, Box::new(dom));
+
+  // Copy internal wrapper helper methods from the host document so node wrappers created for this
+  // document can reuse them.
+  copy_wrapper_shared_methods(scope, template_document_obj, document_obj)?;
 
   Ok(Value::Object(document_obj))
 }
@@ -29554,6 +29667,31 @@ fn init_window_globals(
       global,
       document_key,
       data_desc(Value::Object(document_ctor)),
+    )?;
+
+    // Document.doctype (readonly DocumentType?)
+    let doctype_get_call_id = vm.register_native_call(document_doctype_get_native)?;
+    let doctype_get_name = scope.alloc_string("get doctype")?;
+    scope.push_root(Value::String(doctype_get_name))?;
+    let doctype_get_func =
+      scope.alloc_native_function(doctype_get_call_id, None, doctype_get_name, 0)?;
+    scope.heap_mut().object_set_prototype(
+      doctype_get_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(doctype_get_func))?;
+    let doctype_key = alloc_key(&mut scope, "doctype")?;
+    scope.define_property(
+      document_proto,
+      doctype_key,
+      PropertyDescriptor {
+        enumerable: false,
+        configurable: true,
+        kind: PropertyKind::Accessor {
+          get: Value::Object(doctype_get_func),
+          set: Value::Undefined,
+        },
+      },
     )?;
 
     let document_fragment_ctor = make_illegal_ctor(&mut scope, "DocumentFragment")?;
@@ -35046,6 +35184,22 @@ mod tests {
       format!("null|{0}|{0}|null||complete", ABOUT_BLANK_URL)
     );
 
+    Ok(())
+  }
+
+  #[test]
+  fn create_html_document_exposes_doctype() -> Result<(), VmError> {
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+
+    realm.exec_script(
+      "globalThis.__doc2 = document.implementation.createHTMLDocument('x');\n\
+       globalThis.__dt = __doc2.doctype;",
+    )?;
+
+    assert_eq!(realm.exec_script("__dt !== null")?, Value::Bool(true));
+    assert_eq!(realm.exec_script("__dt.nodeType")?, Value::Number(10.0));
+    let name = realm.exec_script("__dt.name.toLowerCase()")?;
+    assert_eq!(get_string(realm.heap(), name), "html");
     Ok(())
   }
 
