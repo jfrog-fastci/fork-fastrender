@@ -25,6 +25,7 @@ fn readme_does_not_claim_checked_backend_lacks_reexport_support() {
 #[test]
 fn readme_documents_type_only_reexports_and_cycles() {
   let readme = readme_text();
+  let readme_lower = readme.to_lowercase();
 
   // Runtime re-exports participate in module initialization ordering.
   assert!(
@@ -46,5 +47,10 @@ fn readme_documents_type_only_reexports_and_cycles() {
   assert!(
     readme.contains("NJS0146"),
     "native-js-cli README should mention the cycle diagnostic code (NJS0146)"
+  );
+  let normalized = readme_lower.replace('*', "").replace('\n', " ");
+  assert!(
+    normalized.contains("cyclic runtime") && normalized.contains("njs0146"),
+    "native-js-cli README should clarify that NJS0146 is for cyclic *runtime* module dependencies"
   );
 }

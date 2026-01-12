@@ -38,4 +38,9 @@ fn readme_documents_reexports_type_only_edges_and_cycle_code() {
     readme.contains("NJS0146"),
     "native-js README should mention the current cycle diagnostic code (NJS0146)"
   );
+  let normalized = readme_lower.replace('*', "").replace('\n', " ");
+  assert!(
+    normalized.contains("cyclic runtime") && normalized.contains("njs0146"),
+    "native-js README should clarify that NJS0146 is for cyclic *runtime* module dependencies"
+  );
 }
