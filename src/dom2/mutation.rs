@@ -803,37 +803,64 @@ impl Document {
     data: &str,
   ) -> Result<bool, DomError> {
     let node_id = node;
-    let (changed, old_value) = {
-      let node = self.node_checked_mut(node_id)?;
-      let target: &mut String = match &mut node.kind {
-        NodeKind::Text { content } => content,
-        NodeKind::Comment { content } => content,
-        NodeKind::ProcessingInstruction { data, .. } => data,
-        _ => return Err(DomError::InvalidNodeType),
-      };
+    self.node_checked(node_id)?;
 
-      let old = target.clone();
-      let mut units: Vec<u16> = old.encode_utf16().collect();
-      let offset = offset.min(units.len());
-      let end = offset.saturating_add(count).min(units.len());
-      // `Vec::splice` applies its mutation when the returned iterator is dropped; we discard it.
-      let _ = units.splice(offset..end, data.encode_utf16());
-      let new_value = String::from_utf16_lossy(&units);
-      if new_value == old {
-        (false, None)
-      } else {
-        *target = new_value;
-        (true, Some(old))
-      }
-    };
-
-    if changed {
-      self.record_text_mutation(node_id);
-      self.bump_mutation_generation();
-      let _ = self.queue_mutation_record_character_data(node_id, old_value);
+    enum ReplaceTarget {
+      Text,
+      Comment,
+      ProcessingInstruction,
     }
 
-    Ok(changed)
+    let (target_kind, old_value) = match &self.node(node_id).kind {
+      NodeKind::Text { content } => (ReplaceTarget::Text, content.clone()),
+      NodeKind::Comment { content } => (ReplaceTarget::Comment, content.clone()),
+      NodeKind::ProcessingInstruction { data, .. } => (ReplaceTarget::ProcessingInstruction, data.clone()),
+      _ => return Err(DomError::InvalidNodeType),
+    };
+
+    let mut units: Vec<u16> = old_value.encode_utf16().collect();
+    let offset = offset.min(units.len());
+    let end = offset.saturating_add(count).min(units.len());
+    let removed_len = end.saturating_sub(offset);
+    let inserted_units: Vec<u16> = data.encode_utf16().collect();
+    let inserted_len = inserted_units.len();
+
+    // `Vec::splice` applies its mutation when the returned iterator is dropped; we discard it.
+    let _ = units.splice(offset..end, inserted_units);
+    let new_value = String::from_utf16_lossy(&units);
+    if new_value == old_value {
+      return Ok(false);
+    }
+
+    // Drive live Range/NodeIterator updates via the DOM "replace data" primitive. Call the hook
+    // after computing the final splice parameters, but before applying the mutation to the actual
+    // `dom2` node's string storage.
+    if self.live_mutation.has_subscribers() {
+      self
+        .live_mutation
+        .replace_data(node_id, offset, removed_len, inserted_len);
+    }
+
+    {
+      let node = self.node_checked_mut(node_id)?;
+      match (&mut node.kind, target_kind) {
+        (NodeKind::Text { content }, ReplaceTarget::Text) => *content = new_value,
+        (NodeKind::Comment { content }, ReplaceTarget::Comment) => *content = new_value,
+        (NodeKind::ProcessingInstruction { data, .. }, ReplaceTarget::ProcessingInstruction) => {
+          *data = new_value
+        }
+        _ => unreachable!("replace_data target kind changed unexpectedly"),
+      }
+    }
+
+    // Only text node mutations are render-affecting today; comments and processing instructions are
+    // ignored by renderer snapshots.
+    if matches!(target_kind, ReplaceTarget::Text) {
+      self.record_text_mutation(node_id);
+      self.bump_mutation_generation();
+    }
+    let _ = self.queue_mutation_record_character_data(node_id, Some(old_value));
+    Ok(true)
   }
 
   pub fn set_text_data(&mut self, node: NodeId, data: &str) -> Result<bool, DomError> {

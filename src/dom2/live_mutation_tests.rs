@@ -165,6 +165,33 @@ fn set_text_data_emits_replace_data() {
 }
 
 #[test]
+fn replace_data_emits_replace_data() {
+  let mut doc = Document::new(QuirksMode::NoQuirks);
+  let recorder = LiveMutationTestRecorder::default();
+  doc.set_live_mutation_hook(Some(Box::new(recorder.clone())));
+
+  let root = doc.root();
+  let parent = doc.create_element("div", "");
+  doc.append_child(root, parent).unwrap();
+
+  let text = doc.create_text("hi");
+  doc.append_child(parent, text).unwrap();
+  let _ = recorder.take();
+
+  assert!(doc.replace_data(text, 0, usize::MAX, "bye").unwrap());
+
+  assert_eq!(
+    recorder.take(),
+    vec![LiveMutationEvent::ReplaceData {
+      node: text,
+      offset: 0,
+      removed_len: 2,
+      inserted_len: 3,
+    }]
+  );
+}
+
+#[test]
 fn replace_data_uses_utf16_code_units() {
   let mut doc = Document::new(QuirksMode::NoQuirks);
   let recorder = LiveMutationTestRecorder::default();
