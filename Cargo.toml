@@ -14,8 +14,9 @@ members = [
   "crates/js-wpt-dom-runner",
   "crates/webidl-js-runtime",
 ]
-# NOTE: crates/webidl-* should be migrated into vendor/ecma-rs/ per instructions/ecma_rs_ownership.md
-# and instructions/webidl_consolidation.md. These are temporary until consolidation is complete.
+# NOTE: WebIDL/JS infrastructure should live in `vendor/ecma-rs/` per
+# instructions/ecma_rs_ownership.md and instructions/webidl_consolidation.md.
+# These workspace members are temporary until consolidation is complete.
 default-members = [
   ".",
   "xtask",

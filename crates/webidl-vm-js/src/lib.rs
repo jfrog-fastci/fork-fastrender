@@ -6,9 +6,8 @@
 //! context using a long-lived [`Scope`].
 //!
 //! FastRender vendors `ecma-rs` under `vendor/ecma-rs/`, which also contains an upstream crate named
-//! `webidl-vm-js`. FastRender keeps a workspace-local copy of that crate here so it can be used as a
-//! normal workspace member (and carry embedder-specific adjustments) without depending on the
-//! vendored `ecma-rs` workspace directly. See `crates/webidl-vm-js/README.md` for sync notes.
+//! `webidl-vm-js`. This crate is a legacy/workspace-local shim; prefer depending on the vendored
+//! crate directly for new code. See `README.md` for context.
 
 use std::any::{Any, TypeId};
 use std::ptr::NonNull;

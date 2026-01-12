@@ -1,7 +1,7 @@
 //! Runtime boundary required by Web IDL algorithms.
 //!
-//! The spec-shaped conversion and overload-resolution algorithms live in
-//! `crates/webidl-bindings-core`. This crate keeps a legacy `VmJsRuntime` implementation and
+//! The spec-shaped conversion and overload-resolution algorithms live in the
+//! `webidl-bindings-core` crate. This crate keeps a legacy `VmJsRuntime` implementation and
 //! additional helpers for bindings installation, so we re-export the core runtime traits here and
 //! layer the bindings-facing API on top.
 
