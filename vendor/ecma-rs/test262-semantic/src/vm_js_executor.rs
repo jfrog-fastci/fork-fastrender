@@ -456,17 +456,32 @@ impl Executor for VmJsExecutor {
     };
 
     if case.variant != Variant::Module {
+      let mut hooks = Test262ModuleHooks::new(&case.path);
       let source_text = Arc::new(SourceText::new(file_name, source));
-      let result = runtime.exec_script_source(source_text);
+      let result = runtime.exec_script_source_with_hooks(&mut hooks, source_text);
 
       // Cancellation should win over any other outcome (including parse/runtime errors).
       if cancel.load(Ordering::Relaxed) {
+        drain_microtasks_into_hooks(&mut runtime, &mut hooks);
+        hooks.microtasks.teardown(&mut runtime);
         return Err(ExecError::Cancelled);
       }
 
       return match result {
-        Ok(_) => Ok(()),
-        Err(err) => Err(map_vm_error(case, source, cancel, &mut runtime, err)),
+        Ok(_) => {
+          drain_microtasks_into_hooks(&mut runtime, &mut hooks);
+          if let Some(err) = handle_microtask_errors(case, source, cancel, &mut runtime, &mut hooks) {
+            Err(err)
+          } else {
+            Ok(())
+          }
+        }
+        Err(err) => {
+          // Discard queued jobs so persistent roots are cleaned up before dropping the runtime.
+          drain_microtasks_into_hooks(&mut runtime, &mut hooks);
+          hooks.microtasks.teardown(&mut runtime);
+          Err(map_vm_error(case, source, cancel, &mut runtime, err))
+        }
       };
     }
 
@@ -1322,5 +1337,36 @@ var assert = {
     let key = PropertyKey::from_string(scope.alloc_string("__import_ok").unwrap());
     let value = scope.heap().get(global, &key).unwrap();
     assert_eq!(value, Value::Bool(true));
+  }
+
+  #[test]
+  fn script_variant_drains_microtasks_and_supports_dynamic_import_in_promise_jobs() {
+    let temp = tempdir().unwrap();
+    let test_dir = temp.path().join("test");
+    fs::create_dir_all(&test_dir).unwrap();
+    let main_path = test_dir.join("main.js");
+    fs::write(&main_path, "/* placeholder */").unwrap();
+    fs::write(test_dir.join("dep.js"), "export const x = 1;\n").unwrap();
+
+    let case = TestCase {
+      id: "main.js".to_string(),
+      path: main_path,
+      variant: Variant::NonStrict,
+      expected: ExpectedOutcome::Pass,
+      metadata: Frontmatter::default(),
+      body: String::new(),
+    };
+
+    let source = r#"
+      Promise.resolve()
+        .then(() => import("./dep.js"))
+        .then(ns => {
+          if (ns.x !== 1) throw new Error("bad export");
+        });
+    "#;
+
+    let exec = VmJsExecutor::default();
+    let cancel = Arc::new(AtomicBool::new(false));
+    exec.execute(&case, source, &cancel).unwrap();
   }
 }
