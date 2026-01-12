@@ -2,8 +2,37 @@ use native_js::compiler::compile_typescript_to_artifact;
 use native_js::{CompileOptions, EmitKind};
 use std::io::Read;
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 use wait_timeout::ChildExt;
+
+const MAX_CONCURRENT_NATIVE_JS_AOT_TESTS: usize = 4;
+static NATIVE_JS_AOT_TESTS_IN_FLIGHT: AtomicUsize = AtomicUsize::new(0);
+
+struct CodegenPermit;
+
+impl CodegenPermit {
+  fn acquire() -> Self {
+    loop {
+      let current = NATIVE_JS_AOT_TESTS_IN_FLIGHT.load(Ordering::Acquire);
+      if current < MAX_CONCURRENT_NATIVE_JS_AOT_TESTS {
+        if NATIVE_JS_AOT_TESTS_IN_FLIGHT
+          .compare_exchange(current, current + 1, Ordering::AcqRel, Ordering::Acquire)
+          .is_ok()
+        {
+          return Self;
+        }
+      }
+      std::thread::sleep(Duration::from_millis(10));
+    }
+  }
+}
+
+impl Drop for CodegenPermit {
+  fn drop(&mut self) {
+    NATIVE_JS_AOT_TESTS_IN_FLIGHT.fetch_sub(1, Ordering::Release);
+  }
+}
 
 fn cmd_works(cmd: &str) -> bool {
   Command::new(cmd)
@@ -33,6 +62,8 @@ fn aot_smoke() {
     eprintln!("skipping: lld not found in PATH (expected `ld.lld-18` or `ld.lld`)");
     return;
   }
+
+  let _permit = CodegenPermit::acquire();
 
   let dir = tempfile::tempdir().unwrap();
   let exe_path = dir.path().join("aot_smoke");
@@ -94,6 +125,8 @@ fn aot_smoke_pie() {
     eprintln!("skipping: llvm-objcopy not found in PATH (needed for PIE stackmaps patching)");
     return;
   }
+
+  let _permit = CodegenPermit::acquire();
 
   let dir = tempfile::tempdir().unwrap();
   let exe_path = dir.path().join("aot_smoke_pie");
@@ -157,6 +190,8 @@ fn aot_smoke_debug_keeps_intermediates() {
     eprintln!("skipping: lld not found in PATH (expected `ld.lld-18` or `ld.lld`)");
     return;
   }
+
+  let _permit = CodegenPermit::acquire();
 
   let dir = tempfile::tempdir().unwrap();
   let exe_path = dir.path().join("aot_smoke_debug");

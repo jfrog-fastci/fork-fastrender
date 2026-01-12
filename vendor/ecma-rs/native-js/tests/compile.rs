@@ -2,10 +2,39 @@ use native_js::{compile_program, CompilerOptions, EmitKind, NativeJsError};
 use std::io::Read;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::Duration;
 use typecheck_ts::lib_support::{CompilerOptions as TsCompilerOptions, LibName};
 use typecheck_ts::{FileKey, MemoryHost, Program, Severity};
 
 static REL_OUT_COUNTER: AtomicUsize = AtomicUsize::new(0);
+static NATIVE_JS_EXEC_TESTS_IN_FLIGHT: AtomicUsize = AtomicUsize::new(0);
+
+const MAX_CONCURRENT_NATIVE_JS_EXEC_TESTS: usize = 4;
+
+struct CodegenPermit;
+
+impl CodegenPermit {
+  fn acquire() -> Self {
+    loop {
+      let current = NATIVE_JS_EXEC_TESTS_IN_FLIGHT.load(Ordering::Acquire);
+      if current < MAX_CONCURRENT_NATIVE_JS_EXEC_TESTS {
+        if NATIVE_JS_EXEC_TESTS_IN_FLIGHT
+          .compare_exchange(current, current + 1, Ordering::AcqRel, Ordering::Acquire)
+          .is_ok()
+        {
+          return Self;
+        }
+      }
+      std::thread::sleep(Duration::from_millis(10));
+    }
+  }
+}
+
+impl Drop for CodegenPermit {
+  fn drop(&mut self) {
+    NATIVE_JS_EXEC_TESTS_IN_FLIGHT.fetch_sub(1, Ordering::Release);
+  }
+}
 
 fn es5_host() -> MemoryHost {
   MemoryHost::with_options(TsCompilerOptions {
@@ -52,6 +81,8 @@ fn compile_emits_executable_and_runs() {
     eprintln!("skipping: lld not found in PATH");
     return;
   }
+
+  let _permit = CodegenPermit::acquire();
 
   let mut host = es5_host();
   let key = FileKey::new("main.ts");
@@ -134,6 +165,8 @@ fn compile_emits_pie_executable_and_runs() {
     return;
   }
 
+  let _permit = CodegenPermit::acquire();
+
   let mut host = es5_host();
   let key = FileKey::new("main.ts");
   host.insert(key.clone(), "export function main(): number { return 3; }");
@@ -211,6 +244,8 @@ fn compile_allows_executable_output_path_without_parent_dir() {
     eprintln!("skipping: lld not found in PATH");
     return;
   }
+
+  let _permit = CodegenPermit::acquire();
 
   let mut host = es5_host();
   let key = FileKey::new("main.ts");
