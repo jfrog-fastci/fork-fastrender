@@ -370,6 +370,14 @@ pub(crate) fn install_window_shims_vm_js(
   scope.push_root(Value::String(language_s))?;
   define_read_only_vm_js(scope, navigator, "language", Value::String(language_s))?;
 
+  // High-signal `Navigator` feature-detection fields that many real-world sites probe.
+  //
+  // Keep these deterministic (do not sniff the host machine), read-only, and non-throwing.
+  define_read_only_vm_js(scope, navigator, "onLine", Value::Bool(true))?;
+  define_read_only_vm_js(scope, navigator, "cookieEnabled", Value::Bool(true))?;
+  define_read_only_vm_js(scope, navigator, "hardwareConcurrency", Value::Number(4.0))?;
+  define_read_only_vm_js(scope, navigator, "deviceMemory", Value::Number(8.0))?;
+
   let languages = scope.alloc_object()?;
   scope.push_root(Value::Object(languages))?;
   for (idx, lang) in env.languages.iter().enumerate() {
@@ -447,7 +455,8 @@ pub(crate) fn install_window_shims_vm_js(
 /// The installed surface is intentionally minimal and deterministic:
 /// - `window.devicePixelRatio`
 /// - viewport geometry (`innerWidth`/`innerHeight`, `outerWidth`/`outerHeight`, `screen.*`)
-/// - `navigator` (`userAgent`, `platform`, `language`, `languages`)
+/// - `navigator` (`userAgent`, `platform`, `language`, `languages`, `onLine`, `cookieEnabled`,
+///   `hardwareConcurrency`, `deviceMemory`)
 /// - `matchMedia(query)` returning a `MediaQueryList`-like object (`matches`, `media`)
 pub fn install_window_shims(
   rt: &mut VmJsRuntime,
@@ -481,6 +490,10 @@ pub fn install_window_shims(
   define_read_only_string(rt, navigator, "userAgent", env.user_agent)?;
   define_read_only_string(rt, navigator, "platform", env.platform)?;
   define_read_only_string(rt, navigator, "language", env.language)?;
+  define_read_only_bool(rt, navigator, "onLine", true)?;
+  define_read_only_bool(rt, navigator, "cookieEnabled", true)?;
+  define_read_only_number(rt, navigator, "hardwareConcurrency", 4.0)?;
+  define_read_only_number(rt, navigator, "deviceMemory", 8.0)?;
 
   let send_beacon = rt.alloc_function_value(|rt, _this, args| {
     let url_value = match args.get(0).copied() {
@@ -622,6 +635,18 @@ mod tests {
 
     let platform = get_prop(&mut rt, navigator, "platform");
     assert_eq!(value_to_string(&rt, platform), "Win32");
+
+    let on_line = get_prop(&mut rt, navigator, "onLine");
+    assert_eq!(on_line, Value::Bool(true));
+
+    let cookie_enabled = get_prop(&mut rt, navigator, "cookieEnabled");
+    assert_eq!(cookie_enabled, Value::Bool(true));
+
+    let concurrency = get_prop(&mut rt, navigator, "hardwareConcurrency");
+    assert_eq!(concurrency, Value::Number(4.0));
+
+    let device_memory = get_prop(&mut rt, navigator, "deviceMemory");
+    assert_eq!(device_memory, Value::Number(8.0));
   }
 
   #[test]
@@ -675,4 +700,36 @@ mod tests {
       .unwrap();
     assert_eq!(with_url_object, Value::Bool(true));
   }
-}
+
+  #[test]
+  fn navigator_online_and_device_hints_are_present() {
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut host = WindowHost::new(dom, "https://example.invalid/").unwrap();
+
+    assert_eq!(host.exec_script("navigator.onLine").unwrap(), Value::Bool(true));
+    assert_eq!(
+      host.exec_script("navigator.cookieEnabled").unwrap(),
+      Value::Bool(true)
+    );
+    assert_eq!(
+      host.exec_script("navigator.hardwareConcurrency").unwrap(),
+      Value::Number(4.0)
+    );
+    assert_eq!(
+      host.exec_script("navigator.deviceMemory").unwrap(),
+      Value::Number(8.0)
+    );
+
+    // Ensure the fields are read-only in sloppy mode: assignments should not stick.
+    assert_eq!(
+      host.exec_script("navigator.onLine = false; navigator.onLine").unwrap(),
+      Value::Bool(true)
+    );
+    assert_eq!(
+      host
+        .exec_script("navigator.hardwareConcurrency = 1; navigator.hardwareConcurrency")
+        .unwrap(),
+      Value::Number(4.0)
+    );
+  }
+} 
