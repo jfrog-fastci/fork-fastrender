@@ -143,3 +143,33 @@ fn array_buffer_detach_take_data_is_idempotent_and_updates_external_bytes() -> R
   assert_eq!(heap.external_bytes(), 0);
   Ok(())
 }
+
+#[test]
+fn array_buffer_detach_take_data_validates_handle() -> Result<(), VmError> {
+  let mut heap = Heap::new(HeapLimits::new(1024 * 1024 * 1024, 1024 * 1024 * 1024));
+
+  // Non-ArrayBuffer object should be rejected.
+  {
+    let mut scope = heap.scope();
+    let obj = scope.alloc_object()?;
+    match scope.heap_mut().detach_array_buffer_take_data(obj) {
+      Err(VmError::InvalidHandle { .. }) => {}
+      Ok(_) => panic!("expected InvalidHandle for non-ArrayBuffer input"),
+      Err(e) => return Err(e),
+    }
+  }
+
+  // Stale handles (collected objects) should also be rejected.
+  let buf = {
+    let mut scope = heap.scope();
+    scope.alloc_array_buffer(8)?
+  };
+  heap.collect_garbage();
+  match heap.detach_array_buffer_take_data(buf) {
+    Err(VmError::InvalidHandle { .. }) => {}
+    Ok(_) => panic!("expected InvalidHandle for stale ArrayBuffer handle"),
+    Err(e) => return Err(e),
+  }
+
+  Ok(())
+}
