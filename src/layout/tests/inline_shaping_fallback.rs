@@ -39,7 +39,9 @@ fn find_first_text_fragment(node: &fastrender::FragmentNode) -> Option<&fastrend
 
 #[test]
 fn inline_layout_degrades_gracefully_when_shaping_fails() {
-  let font_bytes = include_bytes!("../fixtures/fonts/NotoSans-subset.ttf").to_vec();
+  let font_bytes =
+    include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/fonts/NotoSans-subset.ttf"))
+      .to_vec();
 
   let db = FontDatabase::empty();
   let fetcher = Arc::new(FixtureFontFetcher { font: font_bytes });

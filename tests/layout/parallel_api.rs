@@ -1,4 +1,3 @@
-use super::test_locks::layout_parallel_debug_lock;
 use fastrender::api::{FastRender, FastRenderConfig, RenderOptions};
 use fastrender::layout::engine::{
   enable_layout_parallel_debug_counters, layout_parallel_debug_counters,
