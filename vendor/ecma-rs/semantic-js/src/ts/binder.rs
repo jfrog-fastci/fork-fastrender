@@ -877,11 +877,22 @@ impl<'a, HP: Fn(FileId) -> Arc<HirFile>> Binder<'a, HP> {
     // Ambient module declarations and module augmentations implicitly export
     // their top-level declarations. However, `export =` assignments define the
     // module's exports explicitly and therefore disable implicit named exports.
+    let has_default_export = decls
+      .iter()
+      .any(|decl| matches!(decl.exported, Exported::Default))
+      || exports.iter().any(|export| match export {
+        Export::Named(named) => named.items.iter().any(|item| {
+          item.exported.as_deref() == Some("default")
+            || (item.exported.is_none() && item.local == "default")
+        }),
+        Export::All(all) => all.alias.as_deref() == Some("default"),
+        _ => false,
+      });
     let implicit_export = implicit_export
       && !exports
         .iter()
         .any(|export| matches!(export, Export::ExportAssignment { .. }))
-      && !decls.iter().any(|decl| matches!(decl.exported, Exported::Default));
+      && !has_default_export;
     let mut has_exports = false;
     let mut first_export_span: Option<Span> = None;
     let mut has_export_assignment = false;

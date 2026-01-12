@@ -335,6 +335,7 @@ fn lower_block(
         // definition so the module still has a default export.
         let exported_path = entity_name_path(&expr.stx.expression);
         let mut handled = false;
+        let mut inserted_default = false;
         if let Some(path) = exported_path {
           if path.len() == 1 {
             let name = &path[0];
@@ -343,22 +344,35 @@ fn lower_block(
                 let def = def_by_id(*def_id, &lower.defs, &lower.def_index);
                 match def.path.kind {
                   DefKind::Function | DefKind::Class | DefKind::Var | DefKind::Enum | DefKind::ImportBinding => {
-                    // If the target is already exported (e.g. `export function foo() {}`),
-                    // we cannot overwrite its export kind without losing the named export.
-                    // In that case, fall back to the synthetic `ExportAlias` definition so
-                    // the module still records a default export.
-                    match result.exported.get(def_id).cloned() {
-                      None | Some(Exported::No) => {
-                        result.exported.insert(*def_id, Exported::Default);
-                        handled = true;
-                      }
-                      Some(Exported::Default) => handled = true,
-                      Some(Exported::Named) => {}
+                    handled = true;
+                    if let std::collections::hash_map::Entry::Vacant(entry) =
+                      result.exported.entry(*def_id)
+                    {
+                      entry.insert(Exported::Default);
+                      inserted_default = true;
                     }
                   }
                   _ => {}
                 }
               }
+            }
+            // If the target declaration was already exported (e.g. via `export function foo`) we
+            // can't represent both the named and default export using a single `Decl::exported`
+            // flag. Record the default export as an explicit `export { foo as default }` spec so
+            // the binder can still produce a `default` export entry.
+            if handled && !inserted_default {
+              result.exports.push(Export::Named(NamedExport {
+                specifier: None,
+                specifier_span: None,
+                items: vec![ExportSpecifier {
+                  local: name.clone(),
+                  exported: Some("default".to_string()),
+                  is_type_only: false,
+                  local_span: to_range(expr.stx.expression.loc),
+                  exported_span: None,
+                }],
+                is_type_only: false,
+              }));
             }
           }
         }
