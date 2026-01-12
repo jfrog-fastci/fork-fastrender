@@ -258,6 +258,20 @@ fn module_transitive_reverse_deps_for(db: &dyn Db, file: FileInput) -> Arc<Vec<F
 }
 
 #[salsa::tracked]
+fn module_reverse_deps_transitive_for(db: &dyn Db, file: FileInput) -> Arc<[FileId]> {
+  panic_if_cancelled(db);
+  let start = file.file_id(db);
+  let files = module_transitive_reverse_deps_for(db, file);
+  let mut out: Vec<FileId> = Vec::with_capacity(files.len().saturating_sub(1));
+  for id in files.iter().copied() {
+    if id != start {
+      out.push(id);
+    }
+  }
+  Arc::from(out.into_boxed_slice())
+}
+
+#[salsa::tracked]
 fn module_dep_diagnostics_for(db: &dyn Db, file: FileInput) -> Arc<[Diagnostic]> {
   panic_if_cancelled(db);
   unresolved_module_diagnostics_for(db, file)
@@ -2632,6 +2646,13 @@ pub fn module_transitive_reverse_deps(db: &dyn Db, file: FileId) -> Arc<Vec<File
     .file_input(file)
     .expect("file must be seeded before querying transitive reverse module deps");
   module_transitive_reverse_deps_for(db, handle)
+}
+
+pub fn module_reverse_deps_transitive(db: &dyn Db, file: FileId) -> Arc<[FileId]> {
+  let handle = db
+    .file_input(file)
+    .expect("file must be seeded before querying module reverse deps transitive");
+  module_reverse_deps_transitive_for(db, handle)
 }
 
 pub fn module_dep_diagnostics(db: &dyn Db, file: FileId) -> Arc<[Diagnostic]> {
