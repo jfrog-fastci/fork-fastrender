@@ -242,6 +242,92 @@ fn array_assignable_to_number_like_intersection_indexer() {
 }
 
 #[test]
+fn object_with_number_indexer_assignable_to_array() {
+  let store = TypeStore::new();
+  let primitives = store.primitive_ids();
+  let ctx = RelateCtx::new(store.clone(), default_options());
+
+  let src = object_type(
+    &store,
+    Shape {
+      properties: vec![],
+      call_signatures: vec![],
+      construct_signatures: vec![],
+      indexers: vec![Indexer {
+        key_type: primitives.number,
+        value_type: primitives.string,
+        readonly: false,
+      }],
+    },
+  );
+  let dst = store.intern_type(TypeKind::Array {
+    ty: primitives.string,
+    readonly: false,
+  });
+
+  assert!(ctx.is_assignable(src, dst));
+}
+
+#[test]
+fn readonly_object_number_indexer_only_assignable_to_readonly_array() {
+  let store = TypeStore::new();
+  let primitives = store.primitive_ids();
+  let ctx = RelateCtx::new(store.clone(), default_options());
+
+  let src = object_type(
+    &store,
+    Shape {
+      properties: vec![],
+      call_signatures: vec![],
+      construct_signatures: vec![],
+      indexers: vec![Indexer {
+        key_type: primitives.number,
+        value_type: primitives.string,
+        readonly: true,
+      }],
+    },
+  );
+  let mutable_dst = store.intern_type(TypeKind::Array {
+    ty: primitives.string,
+    readonly: false,
+  });
+  let readonly_dst = store.intern_type(TypeKind::Array {
+    ty: primitives.string,
+    readonly: true,
+  });
+
+  assert!(!ctx.is_assignable(src, mutable_dst));
+  assert!(ctx.is_assignable(src, readonly_dst));
+}
+
+#[test]
+fn object_with_string_only_indexer_not_assignable_to_array() {
+  let store = TypeStore::new();
+  let primitives = store.primitive_ids();
+  let ctx = RelateCtx::new(store.clone(), default_options());
+
+  let src = object_type(
+    &store,
+    Shape {
+      properties: vec![],
+      call_signatures: vec![],
+      construct_signatures: vec![],
+      indexers: vec![Indexer {
+        key_type: primitives.string,
+        value_type: primitives.string,
+        readonly: false,
+      }],
+    },
+  );
+  let dst = store.intern_type(TypeKind::Array {
+    ty: primitives.string,
+    readonly: false,
+  });
+
+  assert!(!ctx.is_assignable(src, dst));
+}
+
+#[test]
 fn type_params_treated_as_unknown() {
   let store = TypeStore::new();
   let primitives = store.primitive_ids();

@@ -1513,6 +1513,62 @@ impl<'a> RelateCtx<'a> {
           ),
         }
       }
+      (TypeKind::Object(src_obj), TypeKind::Array { ty: dst_elem, readonly: dst_ro }) => {
+        let record = record && self.take_reason_slot();
+        let src_shape = self.store.shape(self.store.object(*src_obj).shape);
+        let number_key = self.store.primitive_ids().number;
+        if let Some(idx) = src_shape
+          .indexers
+          .iter()
+          .filter(|idx| self.indexer_key_covers(number_key, idx.key_type, mode, depth))
+          .min_by_key(|idx| self.indexer_key_specificity(idx.key_type, mode, depth))
+        {
+          if !*dst_ro && idx.readonly {
+            return RelationResult {
+              result: false,
+              reason: self.join_reasons(
+                record,
+                key,
+                Vec::new(),
+                false,
+                Some("readonly indexer".into()),
+                depth,
+              ),
+            };
+          }
+          let related = self.relate_internal(
+            idx.value_type,
+            *dst_elem,
+            RelationKind::Assignable,
+            mode,
+            record,
+            depth + 1,
+          );
+          let reason = self.join_reasons(
+            record,
+            key,
+            vec![related.reason],
+            related.result,
+            Some("object to array indexer".into()),
+            depth,
+          );
+          return RelationResult {
+            result: related.result,
+            reason,
+          };
+        }
+        RelationResult {
+          result: false,
+          reason: self.join_reasons(
+            record,
+            key,
+            Vec::new(),
+            false,
+            Some("object to array".into()),
+            depth,
+          ),
+        }
+      }
       (TypeKind::Tuple(_), TypeKind::Object(dst_obj)) => {
         let record = record && self.take_reason_slot();
         let dst_shape = self.store.shape(self.store.object(*dst_obj).shape);
