@@ -207,6 +207,7 @@ fn tla_basic_module_evaluation_promise_is_pending_until_microtasks_run() -> Resu
     Ok(())
   })();
 
+  graph.teardown(&mut vm, &mut heap);
   if let Some(root) = promise_root {
     heap.remove_root(root);
   }
@@ -278,6 +279,7 @@ fn tla_in_dependency_makes_importer_evaluation_async() -> Result<(), VmError> {
     Ok(())
   })();
 
+  graph.teardown(&mut vm, &mut heap);
   if let Some(root) = promise_root {
     heap.remove_root(root);
   }
@@ -373,6 +375,7 @@ fn tla_async_cycle_evaluates_without_deadlock() -> Result<(), VmError> {
     Ok(())
   })();
 
+  graph.teardown(&mut vm, &mut heap);
   if let Some(root) = promise_root {
     heap.remove_root(root);
   }
@@ -446,6 +449,7 @@ fn tla_evaluation_promise_is_cached_for_single_module() -> Result<(), VmError> {
     Ok(())
   })();
 
+  graph.teardown(&mut vm, &mut heap);
   if let Some(root) = promise_root {
     heap.remove_root(root);
   }
@@ -534,6 +538,7 @@ fn tla_evaluation_promise_is_cached_per_scc() -> Result<(), VmError> {
     Ok(())
   })();
 
+  graph.teardown(&mut vm, &mut heap);
   if let Some(root) = promise_root {
     heap.remove_root(root);
   }
@@ -605,6 +610,7 @@ fn tla_error_propagates_through_async_parents() -> Result<(), VmError> {
     Ok(())
   })();
 
+  graph.teardown(&mut vm, &mut heap);
   if let Some(root) = promise_root {
     heap.remove_root(root);
   }

@@ -124,7 +124,6 @@
 //! [`docs::webidl_host_objects`](crate::docs::webidl_host_objects).
 
 mod agent;
-mod async_iterator;
 mod builtins;
 mod code;
 mod conversion_ops;

@@ -16,6 +16,13 @@ fn value_to_string(rt: &JsRuntime, value: Value) -> String {
   rt.heap.get_string(s).unwrap().to_utf8_lossy()
 }
 
+fn assert_actual_join(rt: &mut JsRuntime, expected: &str) -> Result<(), VmError> {
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+  let value = rt.exec_script("actual.join(',')")?;
+  assert_eq!(value_to_string(rt, value), expected);
+  Ok(())
+}
+
 #[test]
 fn for_await_over_array_awaits_values() -> Result<(), VmError> {
   let mut rt = new_runtime();
@@ -1126,4 +1133,124 @@ fn for_await_over_sync_iterator_rejected_value_preserves_reason_and_closes_itera
     "expected iterator.return to be called at least once, got {return_calls}"
   );
   Ok(())
+}
+
+// test262:
+// - language/statements/for-await-of/ticks-with-sync-iter-resolved-promise-and-constructor-lookup.js
+// - language/statements/for-await-of/ticks-with-async-iter-resolved-promise-and-constructor-lookup.js
+// - language/statements/for-await-of/ticks-with-async-iter-resolved-promise-and-constructor-lookup-two.js
+
+#[test]
+fn ticks_with_sync_iter_resolved_promise_and_constructor_lookup() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  rt.exec_script(
+    r#"
+      var actual = [];
+      var value = Promise.resolve("a");
+      Object.defineProperty(value, "constructor", { get() { actual.push("constructor"); return Promise; } });
+
+      async function f() {
+        for await (var x of [value]) {
+          actual.push(x);
+        }
+        actual.push("done");
+      }
+
+      f();
+      actual.push("sync");
+      Promise.resolve().then(function () { actual.push("tick"); });
+    "#,
+  )?;
+
+  assert_actual_join(&mut rt, "constructor,sync,tick,a,done")
+}
+
+#[test]
+fn ticks_with_async_iter_resolved_promise_and_constructor_lookup() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  rt.exec_script(
+    r#"
+      var actual = [];
+      var value = Promise.resolve("a");
+      Object.defineProperty(value, "constructor", { get() { actual.push("value constructor"); return Promise; } });
+
+      var nextResult = Promise.resolve({ value: value, done: false });
+      Object.defineProperty(nextResult, "constructor", { get() { actual.push("next constructor"); return Promise; } });
+
+      var iterable = {};
+      iterable[Symbol.asyncIterator] = function () {
+        var i = 0;
+        return {
+          next() {
+            i++;
+            if (i === 1) return nextResult;
+            return Promise.resolve({ value: undefined, done: true });
+          }
+        };
+      };
+
+      async function f() {
+        for await (var x of iterable) {
+          actual.push(x === value ? "same" : "diff");
+        }
+        actual.push("done");
+      }
+
+      f();
+      actual.push("sync");
+      Promise.resolve().then(function () { actual.push("tick"); });
+    "#,
+  )?;
+
+  // For protocol async iterators, the loop awaits `nextResult` but does *not* await `value`.
+  // This must observe `nextResult.constructor` but must not touch `value.constructor`.
+  assert_actual_join(&mut rt, "next constructor,sync,same,tick,done")
+}
+
+#[test]
+fn ticks_with_async_iter_resolved_promise_and_constructor_lookup_two() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  rt.exec_script(
+    r#"
+      var actual = [];
+      var value1 = Promise.resolve("a");
+      var value2 = Promise.resolve("b");
+      Object.defineProperty(value1, "constructor", { get() { actual.push("value1 constructor"); return Promise; } });
+      Object.defineProperty(value2, "constructor", { get() { actual.push("value2 constructor"); return Promise; } });
+
+      var nextResult1 = Promise.resolve({ value: value1, done: false });
+      var nextResult2 = Promise.resolve({ value: value2, done: false });
+      Object.defineProperty(nextResult1, "constructor", { get() { actual.push("next1 constructor"); return Promise; } });
+      Object.defineProperty(nextResult2, "constructor", { get() { actual.push("next2 constructor"); return Promise; } });
+
+      var iterable = {};
+      iterable[Symbol.asyncIterator] = function () {
+        var i = 0;
+        return {
+          next() {
+            i++;
+            if (i === 1) return nextResult1;
+            if (i === 2) return nextResult2;
+            return Promise.resolve({ value: undefined, done: true });
+          }
+        };
+      };
+
+      async function f() {
+        for await (var x of iterable) {
+          actual.push(x === value1 ? "same1" : x === value2 ? "same2" : "diff");
+        }
+        actual.push("done");
+      }
+
+      f();
+      actual.push("sync");
+      Promise.resolve().then(function () { actual.push("tick"); });
+    "#,
+  )?;
+
+  assert_actual_join(&mut rt, "next1 constructor,sync,same1,next2 constructor,tick,same2,done")
 }

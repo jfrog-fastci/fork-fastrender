@@ -1,6 +1,5 @@
 use crate::destructure::{bind_assignment_target, bind_pattern, BindingKind};
 use crate::error_object::new_error;
-use crate::async_iterator;
 use crate::for_in::ForInEnumerator;
 use crate::heap::{GeneratorContinuation, GeneratorState, Trace, Tracer};
 use crate::iterator;
@@ -9002,7 +9001,7 @@ enum AsyncFrame {
     label_set: Vec<String>,
     v_root: RootId,
     outer_lex: GcEnv,
-    iterator_record: async_iterator::AsyncIteratorRecord,
+    iterator_record: iterator::AsyncIteratorRecord,
     iterator_root: RootId,
     next_method_root: RootId,
   },
@@ -9012,7 +9011,7 @@ enum AsyncFrame {
     label_set: Vec<String>,
     v_root: RootId,
     outer_lex: GcEnv,
-    iterator_record: async_iterator::AsyncIteratorRecord,
+    iterator_record: iterator::AsyncIteratorRecord,
     iterator_root: RootId,
     next_method_root: RootId,
     iter_env_created: bool,
@@ -9023,7 +9022,7 @@ enum AsyncFrame {
     label_set: Vec<String>,
     v_root: RootId,
     outer_lex: GcEnv,
-    iterator_record: async_iterator::AsyncIteratorRecord,
+    iterator_record: iterator::AsyncIteratorRecord,
     iterator_root: RootId,
     next_method_root: RootId,
   },
@@ -13911,7 +13910,7 @@ fn async_for_await_of_after_rhs(
     return Err(err);
   }
 
-  let iterator_record = match async_iterator::get_async_iterator(
+  let iterator_record = match iterator::get_async_iterator(
     evaluator.vm,
     &mut *evaluator.host,
     &mut *evaluator.hooks,
@@ -13927,8 +13926,8 @@ fn async_for_await_of_after_rhs(
   };
 
   // Root the iterator + next method for the duration of the loop so they're GC-safe across awaits.
-  let iterator_value = iterator_record.iterator();
-  let next_method_value = iterator_record.next_method();
+  let iterator_value = iterator_record.iterator;
+  let next_method_value = iterator_record.next_method;
 
   let (iterator_root, next_method_root) = match (|| -> Result<(RootId, RootId), VmError> {
     let mut root_scope = iter_scope.reborrow();
@@ -13964,7 +13963,7 @@ fn async_for_await_of_await_next(
   label_set: Vec<String>,
   v_root: RootId,
   outer_lex: GcEnv,
-  mut iterator_record: async_iterator::AsyncIteratorRecord,
+  iterator_record: iterator::AsyncIteratorRecord,
   iterator_root: RootId,
   next_method_root: RootId,
 ) -> Result<AsyncEval<Completion>, VmError> {
@@ -13974,12 +13973,12 @@ fn async_for_await_of_await_next(
     return Err(err);
   }
 
-  let next_value = match async_iterator::async_iterator_next(
+  let next_value = match iterator::async_iterator_next(
     evaluator.vm,
     &mut *evaluator.host,
     &mut *evaluator.hooks,
     scope,
-    &mut iterator_record,
+    &iterator_record,
   ) {
     Ok(v) => v,
     Err(err) => {
@@ -14030,7 +14029,7 @@ fn async_for_await_of_after_next(
   label_set: Vec<String>,
   v_root: RootId,
   outer_lex: GcEnv,
-  iterator_record: async_iterator::AsyncIteratorRecord,
+  iterator_record: iterator::AsyncIteratorRecord,
   iterator_root: RootId,
   next_method_root: RootId,
   next_result: Value,
@@ -14128,7 +14127,7 @@ fn async_for_await_of_handle_iter_value(
   label_set: Vec<String>,
   v_root: RootId,
   outer_lex: GcEnv,
-  iterator_record: async_iterator::AsyncIteratorRecord,
+  iterator_record: iterator::AsyncIteratorRecord,
   iterator_root: RootId,
   next_method_root: RootId,
   value: Value,
@@ -14316,7 +14315,7 @@ fn async_for_await_of_after_body(
   label_set: Vec<String>,
   v_root: RootId,
   outer_lex: GcEnv,
-  iterator_record: async_iterator::AsyncIteratorRecord,
+  iterator_record: iterator::AsyncIteratorRecord,
   iterator_root: RootId,
   next_method_root: RootId,
   body_completion: Completion,
@@ -14366,7 +14365,7 @@ fn async_for_await_of_close(
   v_root: RootId,
   iterator_root: RootId,
   next_method_root: RootId,
-  iterator_record: &async_iterator::AsyncIteratorRecord,
+  iterator_record: &iterator::AsyncIteratorRecord,
   completion: Completion,
 ) -> Result<AsyncEval<Completion>, VmError> {
   // We're exiting the loop, so `V` is no longer needed.
@@ -14381,14 +14380,52 @@ fn async_for_await_of_close(
       close_scope.push_root(v)?;
     }
 
-    async_iterator::async_iterator_close(
+    // `AsyncIteratorClose` (ECMA-262): GetMethod(iterator, "return").
+    let iterator_value = iterator_record.iterator;
+    close_scope.push_root(iterator_value)?;
+    let return_key_s = close_scope.alloc_string("return")?;
+    close_scope.push_root(Value::String(return_key_s))?;
+    let return_key = PropertyKey::from_string(return_key_s);
+    let return_method = crate::spec_ops::get_method_with_host_and_hooks(
       evaluator.vm,
+      &mut close_scope,
       &mut *evaluator.host,
       &mut *evaluator.hooks,
-      &mut close_scope,
-      iterator_record,
+      iterator_value,
+      return_key,
     )
-    .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut close_scope, err))
+    .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut close_scope, err))?;
+
+    let Some(return_method) = return_method else {
+      // No `return` method; close is a no-op.
+      return Ok(None);
+    };
+
+    close_scope.push_root(return_method)?;
+    let return_result = evaluator
+      .vm
+      .call_with_host_and_hooks(
+        &mut *evaluator.host,
+        &mut close_scope,
+        &mut *evaluator.hooks,
+        return_method,
+        iterator_value,
+        &[],
+      )
+      .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut close_scope, err))?;
+
+    // Await `return` result via `PromiseResolve(%Promise%, returnResult)`.
+    close_scope.push_root(return_result)?;
+    let awaited = crate::promise_ops::promise_resolve_with_host_and_hooks(
+      evaluator.vm,
+      &mut close_scope,
+      &mut *evaluator.host,
+      &mut *evaluator.hooks,
+      return_result,
+    )
+    .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut close_scope, err))?;
+
+    Ok(Some(awaited))
   })();
 
   let close_value = match close_value {
