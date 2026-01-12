@@ -1494,7 +1494,6 @@ mod tests {
         // GC-safe region. That transition is only valid when no raw GC pointers are live in
         // locals/registers (see `GcSafeGuard` contract). Drop the handle-stack root before
         // unregistering to keep this test deterministic under contention.
-        drop(scope);
         threading::unregister_current_thread();
       }));
     }

@@ -407,6 +407,10 @@ void rt_write_barrier_range(GcPtr obj, uint8_t* start_slot, size_t len);
 // - runtime/FFI code must root pointers via the handle stack (`rt_root_push` / `rt_root_pop`) or a
 //   stable handle (`HandleId`).
 void rt_gc_collect(void);
+// Trigger a stop-the-world **minor** GC (nursery evacuation only).
+void rt_gc_collect_minor(void);
+// Trigger a stop-the-world **major** GC (full heap). This is an alias for `rt_gc_collect`.
+void rt_gc_collect_major(void);
 // Bytes currently owned by non-moving `ArrayBuffer`/`TypedArray` backing stores (allocated outside
 // the GC heap).
 size_t rt_backing_store_external_bytes(void);
