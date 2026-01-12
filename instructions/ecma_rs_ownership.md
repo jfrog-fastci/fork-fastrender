@@ -111,24 +111,6 @@ All generic JS/WebIDL infrastructure lives in `vendor/ecma-rs/`. If you find you
 `crates/` to add WebIDL parsing/conversions/VM integration, that is almost certainly a design
 mistake: put it in ecma-rs instead.
 
-### Migration table (legacy `crates/` → target)
-
-The `crates/` directory previously contained parallel JS/WebIDL infrastructure that should be
-merged into ecma-rs (or deleted if legacy):
-
-| Current location | Target location |
-|-----------------|-----------------|
-| `webidl-ir` (legacy crate) | `vendor/ecma-rs/webidl/` (merge) |
-| `webidl-bindings-core` (legacy crate) | `vendor/ecma-rs/webidl/` (merge) |
-| `webidl-vm-js` (legacy crate) | `vendor/ecma-rs/webidl-vm-js/` (merge) |
-| `webidl-js-runtime` (legacy crate) | `vendor/ecma-rs/webidl-runtime/` (new crate) |
-| `js-dom-bindings` (legacy crate) | Delete (legacy QuickJS-era bindings; verify unused) |
-| `js-dom-bindings-quickjs` (legacy crate) | Delete (legacy QuickJS-era bindings; verify unused) |
-| `crates/js-wpt-dom-runner/` | Keep as FastRender-specific tool crate (NOT JS/WebIDL infra) |
-
-After migration, `crates/` must not contain any JS/WebIDL infrastructure crates.  
-`crates/js-wpt-dom-runner/` may remain as the only FastRender-specific tool crate (unless it is explicitly moved elsewhere).
-
 ---
 
 ## Checklist for new JS/WebIDL work
