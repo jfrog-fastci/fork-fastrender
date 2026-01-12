@@ -1647,13 +1647,56 @@ pub(crate) fn scroll_bounds_for_fragment(
   }
 
   // Scroll offsets are expressed relative to the scrollport start edge (the padding edge after
-  // accounting for borders/gutters). Browsers clamp scroll offsets to non-negative values; content
-  // that overflows to the left/top (e.g. `text-indent:-9999px` visually-hidden labels) does not
-  // expand the scrollable range.
+  // accounting for borders/gutters). Browsers clamp scroll offsets to non-negative values.
+  //
+  // Historically we ignored any content that overflowed to the left/top (e.g. `text-indent:-9999px`
+  // visually-hidden labels) when computing scrollable ranges. That matches typical LTR flow where
+  // the scroll origin is aligned to the top-left of the scrollport.
+  //
+  // However, in writing modes where the logical start edge for an axis is on the *opposite* side
+  // (e.g. `writing-mode: vertical-rl` has a right-to-left block axis), layout can legitimately
+  // position content at negative coordinates in order to align to that start edge. In those cases
+  // we still need a non-zero scroll range so scroll-state container queries (and scrolling itself)
+  // can observe overflow.
+  //
+  // To keep scroll offsets non-negative (matching our scroll state model), we fold negative
+  // overflow into the effective content extent only when the corresponding logical axis has a
+  // "negative" progression direction.
   let min_x = 0.0;
   let min_y = 0.0;
-  let max_x = (bounds.max_x - viewport.width).max(min_x);
-  let max_y = (bounds.max_y - viewport.height).max(min_y);
+  let mut content_min_x = 0.0;
+  let mut content_min_y = 0.0;
+  if let Some(style) = container.style.as_deref() {
+    let wm = style.writing_mode;
+    let dir = style.direction;
+    // Physical X is the horizontal axis; it corresponds to the inline axis in horizontal writing
+    // modes and the block axis in vertical writing modes.
+    let x_is_inline = crate::style::inline_axis_is_horizontal(wm);
+    let x_positive = if x_is_inline {
+      crate::style::inline_axis_positive(wm, dir)
+    } else {
+      crate::style::block_axis_positive(wm)
+    };
+    if !x_positive {
+      content_min_x = bounds.min_x.min(0.0);
+    }
+
+    // Physical Y is the vertical axis; it corresponds to the block axis in horizontal writing
+    // modes and the inline axis in vertical writing modes.
+    let y_is_inline = !x_is_inline;
+    let y_positive = if y_is_inline {
+      crate::style::inline_axis_positive(wm, dir)
+    } else {
+      crate::style::block_axis_positive(wm)
+    };
+    if !y_positive {
+      content_min_y = bounds.min_y.min(0.0);
+    }
+  }
+  let content_width = (bounds.max_x - content_min_x).max(0.0);
+  let content_height = (bounds.max_y - content_min_y).max(0.0);
+  let max_x = (content_width - viewport.width).max(min_x);
+  let max_y = (content_height - viewport.height).max(min_y);
 
   ScrollBounds {
     min_x,
