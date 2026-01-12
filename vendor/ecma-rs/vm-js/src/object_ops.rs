@@ -131,7 +131,14 @@ impl<'a> Scope<'a> {
       };
 
       scope.push_root(Value::Object(desc_obj))?;
-      return Ok(Some(to_complete_property_descriptor_from_object(&mut scope, desc_obj)?));
+      let patch = crate::property_descriptor_ops::to_property_descriptor_with_host_and_hooks(
+        vm,
+        &mut scope,
+        host,
+        hooks,
+        desc_obj,
+      )?;
+      return Ok(Some(crate::property_descriptor_ops::complete_property_descriptor(patch)));
     }
 
     scope.ordinary_get_own_property_with_tick(obj, key, || vm.tick())
@@ -1409,74 +1416,6 @@ impl<'a> Scope<'a> {
 
     Ok(true)
   }
-}
-
-fn to_complete_property_descriptor_from_object(
-  scope: &mut Scope<'_>,
-  obj: GcObject,
-) -> Result<PropertyDescriptor, VmError> {
-  // Minimal `ToPropertyDescriptor` support: read own *data* properties only (mirroring
-  // `Reflect.defineProperty` in `builtins.rs`).
-  // Allocate keys up-front so we don't hold an immutable heap borrow across allocations.
-  let value_key = PropertyKey::from_string(scope.alloc_string("value")?);
-  let writable_key = PropertyKey::from_string(scope.alloc_string("writable")?);
-  let enumerable_key = PropertyKey::from_string(scope.alloc_string("enumerable")?);
-  let configurable_key = PropertyKey::from_string(scope.alloc_string("configurable")?);
-  let get_key = PropertyKey::from_string(scope.alloc_string("get")?);
-  let set_key = PropertyKey::from_string(scope.alloc_string("set")?);
-
-  let value = scope
-    .heap()
-    .object_get_own_data_property_value(obj, &value_key)?;
-  let writable = scope
-    .heap()
-    .object_get_own_data_property_value(obj, &writable_key)?
-    .map(|v| scope.heap().to_boolean(v))
-    .transpose()?;
-  let enumerable = scope
-    .heap()
-    .object_get_own_data_property_value(obj, &enumerable_key)?
-    .map(|v| scope.heap().to_boolean(v))
-    .transpose()?;
-  let configurable = scope
-    .heap()
-    .object_get_own_data_property_value(obj, &configurable_key)?
-    .map(|v| scope.heap().to_boolean(v))
-    .transpose()?;
-  let get = scope.heap().object_get_own_data_property_value(obj, &get_key)?;
-  let set = scope.heap().object_get_own_data_property_value(obj, &set_key)?;
-
-  let patch = PropertyDescriptorPatch {
-    enumerable,
-    configurable,
-    value,
-    writable,
-    get,
-    set,
-  };
-  patch.validate()?;
-
-  let enumerable = patch.enumerable.unwrap_or(false);
-  let configurable = patch.configurable.unwrap_or(false);
-
-  let kind = if patch.is_accessor_descriptor() {
-    PropertyKind::Accessor {
-      get: patch.get.unwrap_or(Value::Undefined),
-      set: patch.set.unwrap_or(Value::Undefined),
-    }
-  } else {
-    // Generic descriptors are completed as data descriptors per spec.
-    PropertyKind::Data {
-      value: patch.value.unwrap_or(Value::Undefined),
-      writable: patch.writable.unwrap_or(false),
-    }
-  };
-
-  Ok(PropertyDescriptor {
-    enumerable,
-    configurable,
-    kind,
-  })
 }
 
 fn array_length_from_value(value: Value) -> Option<u32> {
