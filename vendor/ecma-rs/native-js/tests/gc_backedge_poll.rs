@@ -2,9 +2,10 @@ use inkwell::attributes::AttributeLoc;
 use inkwell::context::Context;
 use inkwell::targets::{CodeModel, FileType, RelocMode, Target, TargetMachine};
 use inkwell::values::AsValueRef as _;
+use inkwell::AddressSpace;
 use inkwell::IntPredicate;
 use inkwell::OptimizationLevel;
-use llvm_sys::core::{LLVMSetFunctionCallConv, LLVMSetGlobalConstant};
+use llvm_sys::core::{LLVMSetFunctionCallConv, LLVMSetGlobalConstant, LLVMSetThreadLocal};
 use llvm_sys::LLVMCallConv;
 use native_js::codegen::safepoint;
 use native_js::llvm::{gc, passes};
@@ -120,6 +121,51 @@ fn backedge_poll_panics_on_constant_rt_gc_epoch() {
   unsafe {
     LLVMSetGlobalConstant(epoch.as_value_ref(), 1);
   }
+
+  let void_ty = context.void_type();
+  let fn_ty = void_ty.fn_type(&[], false);
+  let func = module.add_function("test", fn_ty, None);
+  let entry = context.append_basic_block(func, "entry");
+  builder.position_at_end(entry);
+
+  safepoint::emit_backedge_gc_poll(&context, &module, &builder, func);
+}
+
+#[test]
+#[should_panic(expected = "RT_GC_EPOCH must not be thread-local")]
+fn backedge_poll_panics_on_thread_local_rt_gc_epoch() {
+  let context = Context::create();
+  let module = context.create_module("gc_backedge_poll_tl_epoch_codegen");
+  let builder = context.create_builder();
+
+  let epoch = module.add_global(context.i64_type(), None, "RT_GC_EPOCH");
+  epoch.set_initializer(&context.i64_type().const_zero());
+  unsafe {
+    LLVMSetThreadLocal(epoch.as_value_ref(), 1);
+  }
+
+  let void_ty = context.void_type();
+  let fn_ty = void_ty.fn_type(&[], false);
+  let func = module.add_function("test", fn_ty, None);
+  let entry = context.append_basic_block(func, "entry");
+  builder.position_at_end(entry);
+
+  safepoint::emit_backedge_gc_poll(&context, &module, &builder, func);
+}
+
+#[test]
+#[should_panic(expected = "RT_GC_EPOCH must be in addrspace(0)")]
+fn backedge_poll_panics_on_rt_gc_epoch_in_wrong_address_space() {
+  let context = Context::create();
+  let module = context.create_module("gc_backedge_poll_epoch_addrspace1_codegen");
+  let builder = context.create_builder();
+
+  let epoch = module.add_global(
+    context.i64_type(),
+    Some(AddressSpace::from(1u16)),
+    "RT_GC_EPOCH",
+  );
+  epoch.set_initializer(&context.i64_type().const_zero());
 
   let void_ty = context.void_type();
   let fn_ty = void_ty.fn_type(&[], false);

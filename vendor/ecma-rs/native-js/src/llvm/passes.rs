@@ -7,7 +7,7 @@ use llvm_sys::core::{
   LLVMDisposeBuilder,
   LLVMDisposeMessage, LLVMFunctionType, LLVMGetBasicBlockParent, LLVMGetBasicBlockTerminator, LLVMGetConstOpcode,
   LLVMGetFirstBasicBlock, LLVMGetFirstFunction, LLVMGetFirstInstruction, LLVMGetFunctionCallConv, LLVMGetGC,
-  LLVMGetIncomingBlock, LLVMIsGlobalConstant,
+  LLVMGetIncomingBlock, LLVMGetPointerAddressSpace, LLVMIsGlobalConstant, LLVMIsThreadLocal,
   LLVMGetIncomingValue, LLVMGetInitializer, LLVMGetInstructionOpcode, LLVMGetInstructionParent, LLVMGetIntTypeWidth,
   LLVMGetModuleContext, LLVMGetNamedFunction, LLVMGetNamedGlobal, LLVMGetNextBasicBlock, LLVMGetNextFunction,
   LLVMGetNextInstruction, LLVMGetTailCallKind,
@@ -77,6 +77,10 @@ pub enum PassError {
   IncompatibleSafepointEpochType { name: String },
   #[error("LLVM module defines `{name}` as a constant, but it must be a mutable global (AtomicU64)")]
   SafepointEpochIsConstant { name: String },
+  #[error("LLVM module defines `{name}` as thread-local, but it must be shared across threads")]
+  SafepointEpochIsThreadLocal { name: String },
+  #[error("LLVM module defines `{name}` in addrspace({addrspace}), but it must be in addrspace(0)")]
+  SafepointEpochInWrongAddressSpace { name: String, addrspace: u32 },
   #[error("LLVM module defines `{name}` with incompatible signature (expected `void (i64)`)")]
   IncompatibleSafepointSlowSignature { name: String },
   #[error(
@@ -374,6 +378,18 @@ fn ensure_rt_gc_safepoint_slow_decl(module: &Module<'_>) -> Result<LLVMValueRef,
 fn validate_rt_gc_epoch_global(existing: LLVMValueRef) -> Result<(), PassError> {
   assert!(!existing.is_null(), "validate_rt_gc_epoch_global: existing must be non-null");
   unsafe {
+    let addrspace = LLVMGetPointerAddressSpace(LLVMTypeOf(existing));
+    if addrspace != 0 {
+      return Err(PassError::SafepointEpochInWrongAddressSpace {
+        name: "RT_GC_EPOCH".to_string(),
+        addrspace,
+      });
+    }
+    if LLVMIsThreadLocal(existing) != 0 {
+      return Err(PassError::SafepointEpochIsThreadLocal {
+        name: "RT_GC_EPOCH".to_string(),
+      });
+    }
     let ty = LLVMGlobalGetValueType(existing);
     if LLVMGetTypeKind(ty) != LLVMTypeKind::LLVMIntegerTypeKind || LLVMGetIntTypeWidth(ty) != 64 {
       return Err(PassError::IncompatibleSafepointEpochType {

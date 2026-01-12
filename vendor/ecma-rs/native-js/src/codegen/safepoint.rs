@@ -27,8 +27,8 @@ use inkwell::values::BasicValue;
 use inkwell::values::{FunctionValue, IntValue};
 use inkwell::IntPredicate;
 use llvm_sys::core::{
-  LLVMGetIntTypeWidth, LLVMGetTypeKind, LLVMGlobalGetValueType, LLVMIsGlobalConstant, LLVMSetAlignment,
-  LLVMSetOrdering,
+  LLVMGetIntTypeWidth, LLVMGetPointerAddressSpace, LLVMGetTypeKind, LLVMGlobalGetValueType, LLVMIsGlobalConstant,
+  LLVMIsThreadLocal, LLVMSetAlignment, LLVMSetOrdering, LLVMTypeOf,
 };
 use llvm_sys::{LLVMAtomicOrdering, LLVMTypeKind};
 
@@ -40,6 +40,13 @@ fn get_or_declare_rt_gc_epoch<'ctx>(
 ) -> inkwell::values::GlobalValue<'ctx> {
   if let Some(existing) = module.get_global("RT_GC_EPOCH") {
     unsafe {
+      let addrspace = LLVMGetPointerAddressSpace(LLVMTypeOf(existing.as_value_ref()));
+      if addrspace != 0 {
+        panic!("RT_GC_EPOCH must be in addrspace(0)");
+      }
+      if LLVMIsThreadLocal(existing.as_value_ref()) != 0 {
+        panic!("RT_GC_EPOCH must not be thread-local");
+      }
       let ty = LLVMGlobalGetValueType(existing.as_value_ref());
       if LLVMGetTypeKind(ty) != LLVMTypeKind::LLVMIntegerTypeKind || LLVMGetIntTypeWidth(ty) != 64 {
         panic!("RT_GC_EPOCH must have type i64");

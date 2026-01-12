@@ -2,8 +2,8 @@ use inkwell::attributes::AttributeLoc;
 use inkwell::context::Context;
 use inkwell::targets::{CodeModel, FileType, RelocMode, Target, TargetMachine};
 use inkwell::values::AsValueRef as _;
-use inkwell::{IntPredicate, OptimizationLevel};
-use llvm_sys::core::{LLVMSetFunctionCallConv, LLVMSetGlobalConstant};
+use inkwell::{AddressSpace, IntPredicate, OptimizationLevel};
+use llvm_sys::core::{LLVMSetFunctionCallConv, LLVMSetGlobalConstant, LLVMSetThreadLocal};
 use llvm_sys::LLVMCallConv;
 use native_js::llvm::{gc, passes};
 use object::{Object, ObjectSection};
@@ -63,6 +63,88 @@ fn place_safepoints_rejects_incompatible_rt_gc_epoch_type() {
   assert!(
     matches!(err, passes::PassError::IncompatibleSafepointEpochType { .. }),
     "expected IncompatibleSafepointEpochType, got: {err}"
+  );
+}
+
+#[test]
+fn place_safepoints_rejects_thread_local_rt_gc_epoch() {
+  let context = Context::create();
+  let module = context.create_module("place_safepoints_tl_epoch");
+  let builder = context.create_builder();
+
+  let epoch = module.add_global(context.i64_type(), None, "RT_GC_EPOCH");
+  epoch.set_initializer(&context.i64_type().const_zero());
+  unsafe {
+    LLVMSetThreadLocal(epoch.as_value_ref(), 1);
+  }
+
+  let void_ty = context.void_type();
+  let test_ty = void_ty.fn_type(&[], false);
+  let test_fn = module.add_function("test", test_ty, None);
+  gc::set_default_gc_strategy(&test_fn).expect("GC strategy contains NUL byte");
+
+  let entry = context.append_basic_block(test_fn, "entry");
+  builder.position_at_end(entry);
+  builder.build_return(None).expect("ret void");
+
+  if let Err(err) = module.verify() {
+    panic!(
+      "input module verification failed: {err}\n\nIR:\n{}",
+      module.print_to_string()
+    );
+  }
+
+  let tm = host_target_machine();
+  module.set_triple(&tm.get_triple());
+  module.set_data_layout(&tm.get_target_data().get_data_layout());
+
+  let err = passes::place_safepoints_and_rewrite_statepoints_for_gc(&module, &tm).unwrap_err();
+  assert!(
+    matches!(err, passes::PassError::SafepointEpochIsThreadLocal { .. }),
+    "expected SafepointEpochIsThreadLocal, got: {err}"
+  );
+}
+
+#[test]
+fn place_safepoints_rejects_rt_gc_epoch_in_wrong_address_space() {
+  let context = Context::create();
+  let module = context.create_module("place_safepoints_epoch_addrspace1");
+  let builder = context.create_builder();
+
+  let epoch = module.add_global(
+    context.i64_type(),
+    Some(AddressSpace::from(1u16)),
+    "RT_GC_EPOCH",
+  );
+  epoch.set_initializer(&context.i64_type().const_zero());
+
+  let void_ty = context.void_type();
+  let test_ty = void_ty.fn_type(&[], false);
+  let test_fn = module.add_function("test", test_ty, None);
+  gc::set_default_gc_strategy(&test_fn).expect("GC strategy contains NUL byte");
+
+  let entry = context.append_basic_block(test_fn, "entry");
+  builder.position_at_end(entry);
+  builder.build_return(None).expect("ret void");
+
+  if let Err(err) = module.verify() {
+    panic!(
+      "input module verification failed: {err}\n\nIR:\n{}",
+      module.print_to_string()
+    );
+  }
+
+  let tm = host_target_machine();
+  module.set_triple(&tm.get_triple());
+  module.set_data_layout(&tm.get_target_data().get_data_layout());
+
+  let err = passes::place_safepoints_and_rewrite_statepoints_for_gc(&module, &tm).unwrap_err();
+  assert!(
+    matches!(
+      err,
+      passes::PassError::SafepointEpochInWrongAddressSpace { .. }
+    ),
+    "expected SafepointEpochInWrongAddressSpace, got: {err}"
   );
 }
 
