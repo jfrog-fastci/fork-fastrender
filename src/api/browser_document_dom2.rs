@@ -1813,6 +1813,37 @@ impl crate::js::DomHost for BrowserDocumentDom2 {
   }
 }
 
+impl webidl_vm_js::WebIdlBindingsHost for BrowserDocumentDom2 {
+  fn call_operation(
+    &mut self,
+    _vm: &mut vm_js::Vm,
+    _scope: &mut vm_js::Scope<'_>,
+    _receiver: Option<vm_js::Value>,
+    _interface: &'static str,
+    _operation: &'static str,
+    _overload: usize,
+    _args: &[vm_js::Value],
+  ) -> std::result::Result<vm_js::Value, vm_js::VmError> {
+    Err(vm_js::VmError::Unimplemented(
+      "WebIDL binding dispatch not implemented for operation",
+    ))
+  }
+
+  fn call_constructor(
+    &mut self,
+    _vm: &mut vm_js::Vm,
+    _scope: &mut vm_js::Scope<'_>,
+    _interface: &'static str,
+    _overload: usize,
+    _args: &[vm_js::Value],
+    _new_target: vm_js::Value,
+  ) -> std::result::Result<vm_js::Value, vm_js::VmError> {
+    Err(vm_js::VmError::Unimplemented(
+      "WebIDL binding dispatch not implemented for constructor",
+    ))
+  }
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;

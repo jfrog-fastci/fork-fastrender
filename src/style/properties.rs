@@ -14315,10 +14315,10 @@ fn apply_declaration_with_base_internal_with_order(
       if let PropertyValue::Keyword(kw) = resolved_value {
         let kw = kw.to_ascii_lowercase();
         styles.text_orientation = match kw.as_str() {
-          // Legacy keyword. MDN still documents this for compatibility; browsers treat it like
-          // `mixed` (the initial value). Historically, `use-glyph-orientation` interacted with the
-          // deprecated `glyph-orientation-*` properties. We do not implement those, so treat this as
-          // the safe fallback `mixed`.
+          // Legacy keyword (MDN compat). Browsers treat it like `mixed` (the initial value).
+          // Historically, `use-glyph-orientation` interacted with the deprecated
+          // `glyph-orientation-*` properties; FastRender does not implement those, so treat this as
+          // `mixed`.
           "use-glyph-orientation" => TextOrientation::Mixed,
           "mixed" => TextOrientation::Mixed,
           "upright" => TextOrientation::Upright,
