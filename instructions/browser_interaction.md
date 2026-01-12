@@ -199,7 +199,7 @@ The UI sends **viewport CSS coordinates** in messages. The worker adds scroll of
 ### Testing
 
 - Unit tests are colocated with the interaction engine in `src/interaction/**` (e.g. `src/interaction/hit_test.rs`, `src/interaction/engine.rs`)
-- End-to-end (public API) tests are integration tests under `tests/` (see `tests/integration.rs`); browser/UI scenarios live in `tests/browser_integration/`
+- End-to-end (public API) tests are integration tests under `tests/` (see `tests/integration.rs`); browser/UI scenarios live in `tests/browser_integration/` and are included by that harness
 - Manual testing for platform-specific input behavior
 
 ## Current limitations
