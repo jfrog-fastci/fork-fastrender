@@ -220,3 +220,66 @@ export function main(): number {
     "expected DWARF debug sections to contain local variable name `local_debug_info`"
   );
 }
+
+#[test]
+fn debug_optimized_object_emission_does_not_crash_with_dbg_value_in_ir() {
+  // This is a regression test for a crash observed in LLVM 18's GC/statepoint pipeline when
+  // `llvm.dbg.*` intrinsics are present. native-js strips those calls before running
+  // `place-safepoints` / `rewrite-statepoints-for-gc`, but should still be able to emit a debug
+  // object with working DWARF line tables.
+  let mut host = es5_host();
+  let key = FileKey::new("main.ts");
+  host.insert(
+    key.clone(),
+    r#"
+export function main(): number {
+  let x = 1;
+  x = x + 1;
+  return x;
+}
+"#,
+  );
+
+  let program = Program::new(host, vec![key.clone()]);
+  let diags = program.check();
+  assert!(diags.is_empty(), "{diags:#?}");
+  let entry = program.file_id(&key).unwrap();
+
+  let td = tempfile::tempdir().expect("tempdir");
+  let obj_path = td.path().join("out.o");
+  let ir_path = td.path().join("out.ll");
+
+  let mut opts = CompilerOptions::default();
+  opts.emit = EmitKind::Object;
+  opts.debug = true;
+  opts.opt_level = OptLevel::O2;
+  opts.output = Some(obj_path.clone());
+  opts.emit_ir = Some(ir_path.clone());
+
+  let artifact = compile_program(&program, entry, &opts).unwrap();
+
+  // Ensure the frontend actually produced dbg.value intrinsics (even though they are stripped
+  // before the GC/statepoint pipeline runs).
+  let ir = std::fs::read_to_string(&ir_path).expect("read IR");
+  assert!(
+    ir.contains("@llvm.dbg.value"),
+    "expected IR to contain llvm.dbg.value, got:\n{ir}"
+  );
+
+  let bytes = std::fs::read(&artifact.path).unwrap();
+  let _ = std::fs::remove_file(&artifact.path);
+
+  let file = object::File::parse(&*bytes).unwrap();
+  assert!(
+    file.section_by_name(".debug_info").is_some(),
+    "expected .debug_info section in debug object"
+  );
+  assert!(
+    file.section_by_name(".debug_line").is_some(),
+    "expected .debug_line section in debug object"
+  );
+  assert!(
+    debug_sections_contain(&file, "main.ts"),
+    "expected DWARF debug sections to reference original TypeScript filename `main.ts`"
+  );
+}
