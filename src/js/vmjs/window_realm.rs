@@ -6144,7 +6144,7 @@ fn get_or_create_node_wrapper(
       configurable: false,
       kind: PropertyKind::Data {
         value: Value::Object(document_obj),
-        writable: false,
+        writable: true,
       },
     },
   )?;
@@ -7138,6 +7138,117 @@ fn node_wrapper_document_obj(
   }
 }
 
+fn maybe_adopt_node_into_document(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  dest_document_obj: GcObject,
+  dest_dom_ptr: NonNull<dom2::Document>,
+  node: DomNodeKey,
+) -> Result<DomNodeKey, VmError> {
+  if node.node_id.index() == 0 {
+    return Ok(node);
+  }
+
+  let dest_document_id = gc_object_id(dest_document_obj);
+  if node.document_id == dest_document_id {
+    return Ok(node);
+  }
+
+  let Some(mut src_dom_ptr) = dom_ptr_for_document_id_mut(vm, host, node.document_id)
+    .or_else(|| dom_from_vm_host_mut(host).map(NonNull::from))
+  else {
+    return Err(VmError::TypeError(
+      "operation requires a DOM-backed source document",
+    ));
+  };
+
+  let (new_root, mapping) = if src_dom_ptr == dest_dom_ptr {
+    // Same underlying `dom2::Document` (e.g. legacy document wrapper aliases): no structural move is
+    // needed, but wrapper identity + ownerDocument must be remapped to the destination document.
+    //
+    // Collect the connected subtree rooted at `node_id` so we can update any existing wrappers.
+    // SAFETY: `dest_dom_ptr` is valid for the duration of this native call.
+    let dom = unsafe { dest_dom_ptr.as_ref() };
+
+    let mut mapping: HashMap<NodeId, NodeId> = HashMap::new();
+    let mut stack: Vec<NodeId> = vec![node.node_id];
+    let mut remaining = dom.nodes_len() + 1;
+    while let Some(id) = stack.pop() {
+      if remaining == 0 {
+        break;
+      }
+      remaining -= 1;
+
+      if id.index() >= dom.nodes_len() {
+        continue;
+      }
+      mapping.insert(id, id);
+
+      let n = dom.node(id);
+      for &child in n.children.iter().rev() {
+        if child.index() >= dom.nodes_len() {
+          continue;
+        }
+        if dom.node(child).parent != Some(id) {
+          continue;
+        }
+        stack.push(child);
+      }
+    }
+
+    (node.node_id, mapping)
+  } else {
+    // Cross-document adoption between distinct `dom2::Document` arenas.
+    //
+    // SAFETY: both pointers are valid for the duration of this native call, and `src_dom_ptr !=
+    // dest_dom_ptr` ensures the mutable borrows do not alias.
+    let adopted = match unsafe { dest_dom_ptr.as_mut() }
+      .adopt_node_from(unsafe { src_dom_ptr.as_mut() }, node.node_id)
+    {
+      Ok(adopted) => adopted,
+      Err(err) => return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?)),
+    };
+    let mapping: HashMap<NodeId, NodeId> = adopted.mapping.into_iter().collect();
+    (adopted.new_root, mapping)
+  };
+
+  let Some(platform) = dom_platform_mut(vm) else {
+    return Ok(DomNodeKey::new(dest_document_id, new_root));
+  };
+  platform.remap_node_ids_between_documents(
+    scope.heap_mut(),
+    node.document_id,
+    dest_document_id,
+    &mapping,
+  )?;
+
+  // Update wrapper `ownerDocument` for any existing wrappers in the adopted subtree.
+  scope.push_root(Value::Object(dest_document_obj))?;
+  let wrapper_document_key = alloc_key(scope, WRAPPER_DOCUMENT_KEY)?;
+  let desc = PropertyDescriptor {
+    enumerable: false,
+    configurable: false,
+    kind: PropertyKind::Data {
+      value: Value::Object(dest_document_obj),
+      writable: true,
+    },
+  };
+  for &new_id in mapping.values() {
+    if new_id.index() == 0 {
+      continue;
+    }
+    let Some(wrapper_obj) =
+      platform.get_existing_wrapper(scope.heap(), DomNodeKey::new(dest_document_id, new_id))
+    else {
+      continue;
+    };
+    scope.define_property(wrapper_obj, wrapper_document_key, desc)?;
+  }
+
+  Ok(DomNodeKey::new(dest_document_id, new_root))
+}
+
 fn sync_child_nodes_array(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -7321,6 +7432,7 @@ fn sync_cached_child_nodes_for_node_id(
   let Some(wrapper_obj) = wrapper_obj else {
     return Ok(());
   };
+  let document_obj = node_wrapper_document_obj(scope, wrapper_obj, node_id)?;
   sync_cached_child_nodes_for_wrapper(vm, scope, document_obj, dom, wrapper_obj, node_id)
 }
 
@@ -15957,19 +16069,6 @@ fn node_append_child_native(
     ));
   };
 
-  let node_id_key = alloc_key(scope, NODE_ID_KEY)?;
-  let parent_index = match scope
-    .heap()
-    .object_get_own_data_property_value(parent_obj, &node_id_key)?
-  {
-    Some(Value::Number(n)) if n.is_finite() && n >= 0.0 => n as usize,
-    _ => {
-      return Err(VmError::TypeError(
-        "Node.appendChild must be called on a node object",
-      ));
-    }
-  };
-
   let child_value = args.get(0).copied().unwrap_or(Value::Undefined);
   let Value::Object(child_obj) = child_value else {
     return Err(VmError::TypeError(
@@ -15977,69 +16076,150 @@ fn node_append_child_native(
     ));
   };
 
-  let child_index = match scope
-    .heap()
-    .object_get_own_data_property_value(child_obj, &node_id_key)?
-  {
-    Some(Value::Number(n)) if n.is_finite() && n >= 0.0 => n as usize,
-    _ => {
-      return Err(VmError::TypeError(
-        "Node.appendChild requires a node argument",
-      ));
-    }
-  };
-
-  let dom = dom_from_vm_host_mut(host).ok_or(VmError::TypeError(
+  let platform = dom_platform_mut(vm).ok_or(VmError::TypeError(
     "Node.appendChild requires a DOM-backed document",
   ))?;
-  let mut dom_ptr = NonNull::from(&mut *dom);
-
-  let parent_node_id = dom
-    .node_id_from_index(parent_index)
+  let parent_handle = platform
+    .require_node_handle(scope.heap(), Value::Object(parent_obj))
     .map_err(|_| VmError::TypeError("Node.appendChild must be called on a node object"))?;
-  let child_node_id = dom
-    .node_id_from_index(child_index)
+  let child_handle = platform
+    .require_node_handle(scope.heap(), Value::Object(child_obj))
     .map_err(|_| VmError::TypeError("Node.appendChild requires a node argument"))?;
 
-  let document_obj = node_wrapper_document_obj(scope, parent_obj, parent_node_id)?;
-  let child_document_obj = node_wrapper_document_obj(scope, child_obj, child_node_id)
-    .map_err(|_| VmError::TypeError("Node.appendChild requires a node argument"))?;
-  if child_document_obj != document_obj {
-    return Err(VmError::TypeError(
-      "Node.appendChild cannot move nodes between documents",
-    ));
-  }
+  let document_obj = node_wrapper_document_obj(scope, parent_obj, parent_handle.node_id)
+    .map_err(|_| VmError::TypeError("Node.appendChild must be called on a node object"))?;
 
-  let old_parent = dom.parent_node(child_node_id);
-  let child_is_fragment = matches!(&dom.node(child_node_id).kind, NodeKind::DocumentFragment);
-  let fragment_children = if child_is_fragment {
-    dom.node(child_node_id).children.clone()
+  let mut dom_ptr = dom_ptr_for_document_id_mut(vm, host, parent_handle.document_id)
+    .or_else(|| dom_from_vm_host_mut(host).map(NonNull::from))
+    .ok_or(VmError::TypeError(
+      "Node.appendChild requires a DOM-backed document",
+    ))?;
+
+  // Use the child's current document for fragment detection + old-parent cache syncing.
+  let child_document_obj = node_wrapper_document_obj(scope, child_obj, child_handle.node_id)
+    .map_err(|_| VmError::TypeError("Node.appendChild requires a node argument"))?;
+  let mut child_dom_ptr = dom_ptr_for_document_id_mut(vm, host, child_handle.document_id)
+    .or_else(|| dom_from_vm_host_mut(host).map(NonNull::from))
+    .ok_or(VmError::TypeError("Node.appendChild requires a node argument"))?;
+
+  // SAFETY: pointers returned by `dom_ptr_for_document_id_*` are valid for the duration of this
+  // native call.
+  let child_dom = unsafe { child_dom_ptr.as_ref() };
+  let child_is_fragment = matches!(
+    &child_dom.node(child_handle.node_id).kind,
+    NodeKind::DocumentFragment
+  );
+  let fragment_children: Vec<NodeId> = if child_is_fragment {
+    child_dom
+      .node(child_handle.node_id)
+      .children
+      .iter()
+      .copied()
+      .filter(|&child| {
+        child.index() < child_dom.nodes_len()
+          && child_dom.node(child).parent == Some(child_handle.node_id)
+      })
+      .collect()
   } else {
     Vec::new()
   };
+  let old_parent = (!child_is_fragment).then(|| child_dom.parent_node(child_handle.node_id)).flatten();
 
-  if let Err(err) = dom.append_child(parent_node_id, child_node_id) {
-    return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
-  }
+  let inserted_roots: Vec<NodeId> = if child_is_fragment && child_handle.document_id != parent_handle.document_id {
+    // Cross-document fragment insertion: fragment stays in its original document; its children are
+    // adopted and inserted into the destination.
+    if child_dom_ptr == dom_ptr {
+      if let Err(err) = unsafe { dom_ptr.as_mut() }.append_child(parent_handle.node_id, child_handle.node_id) {
+        return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
+      }
+      for &child_id in &fragment_children {
+        let _ = maybe_adopt_node_into_document(
+          vm,
+          scope,
+          host,
+          document_obj,
+          dom_ptr,
+          DomNodeKey::new(child_handle.document_id, child_id),
+        )
+        .map_err(|_| VmError::TypeError("Node.appendChild requires a node argument"))?;
+      }
+      fragment_children.clone()
+    } else {
+      let mut inserted: Vec<NodeId> = Vec::with_capacity(fragment_children.len());
+      for child_id in fragment_children.iter().copied() {
+        let adopted = maybe_adopt_node_into_document(
+          vm,
+          scope,
+          host,
+          document_obj,
+          dom_ptr,
+          DomNodeKey::new(child_handle.document_id, child_id),
+        )
+        .map_err(|_| VmError::TypeError("Node.appendChild requires a node argument"))?;
+        if let Err(err) = unsafe { dom_ptr.as_mut() }.append_child(parent_handle.node_id, adopted.node_id) {
+          return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
+        }
+        inserted.push(adopted.node_id);
+      }
+      inserted
+    }
+  } else {
+    let child_for_insert = if child_is_fragment {
+      child_handle.node_id
+    } else {
+      maybe_adopt_node_into_document(vm, scope, host, document_obj, dom_ptr, child_handle)
+        .map_err(|_| VmError::TypeError("Node.appendChild requires a node argument"))?
+        .node_id
+    };
 
-  sync_cached_child_nodes_for_wrapper(vm, scope, document_obj, dom, parent_obj, parent_node_id)?;
-  sync_cached_children_for_wrapper(vm, scope, document_obj, dom, parent_obj, parent_node_id)?;
+    if let Err(err) = unsafe { dom_ptr.as_mut() }.append_child(parent_handle.node_id, child_for_insert) {
+      return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
+    }
+
+    if child_is_fragment {
+      fragment_children.clone()
+    } else {
+      vec![child_for_insert]
+    }
+  };
+
+  // SAFETY: `dom_ptr` is valid for the duration of this native call.
+  let dom = unsafe { dom_ptr.as_ref() };
+
+  sync_cached_child_nodes_for_wrapper(vm, scope, document_obj, dom, parent_obj, parent_handle.node_id)?;
+  sync_cached_children_for_wrapper(vm, scope, document_obj, dom, parent_obj, parent_handle.node_id)?;
   if let Some(old_parent) = old_parent {
-    if old_parent != parent_node_id {
-      sync_cached_child_nodes_for_node_id(vm, scope, document_obj, dom, old_parent)?;
-      sync_cached_children_for_node_id(vm, scope, document_obj, dom, old_parent)?;
+    if !(child_handle.document_id == parent_handle.document_id && old_parent == parent_handle.node_id) {
+      let old_parent_document_obj = child_document_obj;
+      let old_parent_dom = if child_dom_ptr == dom_ptr { dom } else { unsafe { child_dom_ptr.as_ref() } };
+      sync_cached_child_nodes_for_node_id(vm, scope, old_parent_document_obj, old_parent_dom, old_parent)?;
+      sync_cached_children_for_node_id(vm, scope, old_parent_document_obj, old_parent_dom, old_parent)?;
     }
   }
   if child_is_fragment {
-    sync_cached_child_nodes_for_wrapper(vm, scope, document_obj, dom, child_obj, child_node_id)?;
-    sync_cached_children_for_wrapper(vm, scope, document_obj, dom, child_obj, child_node_id)?;
+    let fragment_document_obj = if child_handle.document_id == parent_handle.document_id {
+      document_obj
+    } else {
+      child_document_obj
+    };
+    let fragment_dom = if child_dom_ptr == dom_ptr { dom } else { unsafe { child_dom_ptr.as_ref() } };
+    sync_cached_child_nodes_for_wrapper(
+      vm,
+      scope,
+      fragment_document_obj,
+      fragment_dom,
+      child_obj,
+      child_handle.node_id,
+    )?;
+    sync_cached_children_for_wrapper(
+      vm,
+      scope,
+      fragment_document_obj,
+      fragment_dom,
+      child_obj,
+      child_handle.node_id,
+    )?;
   }
-
-  let inserted_roots: Vec<NodeId> = if child_is_fragment {
-    fragment_children
-  } else {
-    vec![child_node_id]
-  };
 
   run_dynamic_script_insertion_steps(
     vm,
@@ -16057,7 +16237,7 @@ fn node_append_child_native(
     hooks,
     document_obj,
     dom_ptr,
-    parent_node_id,
+    parent_handle.node_id,
   )?;
   let needs_microtask = unsafe { dom_ptr.as_mut() }.take_mutation_observer_microtask_needed();
   maybe_queue_mutation_observer_microtask(vm, scope, host, hooks, document_obj, needs_microtask)?;
@@ -16080,19 +16260,6 @@ fn node_insert_before_native(
     ));
   };
 
-  let node_id_key = alloc_key(scope, NODE_ID_KEY)?;
-  let parent_index = match scope
-    .heap()
-    .object_get_own_data_property_value(parent_obj, &node_id_key)?
-  {
-    Some(Value::Number(n)) if n.is_finite() && n >= 0.0 => n as usize,
-    _ => {
-      return Err(VmError::TypeError(
-        "Node.insertBefore must be called on a node object",
-      ));
-    }
-  };
-
   let new_child_value = args.get(0).copied().unwrap_or(Value::Undefined);
   let Value::Object(new_child_obj) = new_child_value else {
     return Err(VmError::TypeError(
@@ -16100,121 +16267,194 @@ fn node_insert_before_native(
     ));
   };
 
-  let new_child_index = match scope
-    .heap()
-    .object_get_own_data_property_value(new_child_obj, &node_id_key)?
-  {
-    Some(Value::Number(n)) if n.is_finite() && n >= 0.0 => n as usize,
-    _ => {
+  let reference_value = args.get(1).copied().unwrap_or(Value::Undefined);
+  let reference_obj = if matches!(reference_value, Value::Null | Value::Undefined) {
+    None
+  } else {
+    let Value::Object(reference_obj) = reference_value else {
       return Err(VmError::TypeError(
-        "Node.insertBefore requires a node argument",
+        "Node.insertBefore requires a reference node argument",
       ));
-    }
+    };
+    Some(reference_obj)
   };
 
-  let reference_value = args.get(1).copied().unwrap_or(Value::Undefined);
-  let (reference_obj, reference_index) =
-    if matches!(reference_value, Value::Null | Value::Undefined) {
-      (None, None)
-    } else {
-      let Value::Object(reference_obj) = reference_value else {
-        return Err(VmError::TypeError(
-          "Node.insertBefore requires a reference node argument",
-        ));
-      };
-      let index = match scope
-        .heap()
-        .object_get_own_data_property_value(reference_obj, &node_id_key)?
-      {
-        Some(Value::Number(n)) if n.is_finite() && n >= 0.0 => n as usize,
-        _ => {
-          return Err(VmError::TypeError(
-            "Node.insertBefore requires a reference node argument",
-          ));
-        }
-      };
-      (Some(reference_obj), Some(index))
-    };
-
-  let dom = dom_from_vm_host_mut(host).ok_or(VmError::TypeError(
+  let platform = dom_platform_mut(vm).ok_or(VmError::TypeError(
     "Node.insertBefore requires a DOM-backed document",
   ))?;
-  let mut dom_ptr = NonNull::from(&mut *dom);
-
-  let parent_node_id = dom
-    .node_id_from_index(parent_index)
+  let parent_handle = platform
+    .require_node_handle(scope.heap(), Value::Object(parent_obj))
     .map_err(|_| VmError::TypeError("Node.insertBefore must be called on a node object"))?;
-  let new_child_node_id = dom
-    .node_id_from_index(new_child_index)
+  let new_child_handle = platform
+    .require_node_handle(scope.heap(), Value::Object(new_child_obj))
     .map_err(|_| VmError::TypeError("Node.insertBefore requires a node argument"))?;
-  let reference_node_id = match reference_index {
-    Some(reference_index) => Some(
-      dom
-        .node_id_from_index(reference_index)
+  let reference_handle = match reference_obj {
+    Some(reference_obj) => Some(
+      platform
+        .require_node_handle(scope.heap(), Value::Object(reference_obj))
         .map_err(|_| VmError::TypeError("Node.insertBefore requires a reference node argument"))?,
     ),
     None => None,
   };
 
-  let document_obj = node_wrapper_document_obj(scope, parent_obj, parent_node_id)?;
-  let new_child_document_obj =
-    node_wrapper_document_obj(scope, new_child_obj, new_child_node_id)
-      .map_err(|_| VmError::TypeError("Node.insertBefore requires a node argument"))?;
-  if new_child_document_obj != document_obj {
-    return Err(VmError::TypeError(
-      "Node.insertBefore cannot move nodes between documents",
-    ));
-  }
-  if let (Some(reference_obj), Some(reference_node_id)) = (reference_obj, reference_node_id) {
-    let reference_document_obj = node_wrapper_document_obj(scope, reference_obj, reference_node_id)
-      .map_err(|_| VmError::TypeError("Node.insertBefore requires a reference node argument"))?;
-    if reference_document_obj != document_obj {
-      return Err(VmError::TypeError(
-        "Node.insertBefore cannot move nodes between documents",
-      ));
-    }
-  }
+  let document_obj = node_wrapper_document_obj(scope, parent_obj, parent_handle.node_id)
+    .map_err(|_| VmError::TypeError("Node.insertBefore must be called on a node object"))?;
 
-  let old_parent = dom.parent_node(new_child_node_id);
+  let mut dom_ptr = dom_ptr_for_document_id_mut(vm, host, parent_handle.document_id)
+    .or_else(|| dom_from_vm_host_mut(host).map(NonNull::from))
+    .ok_or(VmError::TypeError(
+      "Node.insertBefore requires a DOM-backed document",
+    ))?;
+
+  let new_child_document_obj = node_wrapper_document_obj(scope, new_child_obj, new_child_handle.node_id)
+    .map_err(|_| VmError::TypeError("Node.insertBefore requires a node argument"))?;
+
+  let mut new_child_dom_ptr = dom_ptr_for_document_id_mut(vm, host, new_child_handle.document_id)
+    .or_else(|| dom_from_vm_host_mut(host).map(NonNull::from))
+    .ok_or(VmError::TypeError("Node.insertBefore requires a node argument"))?;
+  // SAFETY: pointers are valid for the duration of this native call.
+  let new_child_dom = unsafe { new_child_dom_ptr.as_ref() };
   let new_child_is_fragment = matches!(
-    &dom.node(new_child_node_id).kind,
+    &new_child_dom.node(new_child_handle.node_id).kind,
     NodeKind::DocumentFragment
   );
-  let fragment_children = if new_child_is_fragment {
-    dom.node(new_child_node_id).children.clone()
+  let fragment_children: Vec<NodeId> = if new_child_is_fragment {
+    new_child_dom
+      .node(new_child_handle.node_id)
+      .children
+      .iter()
+      .copied()
+      .filter(|&child| {
+        child.index() < new_child_dom.nodes_len()
+          && new_child_dom.node(child).parent == Some(new_child_handle.node_id)
+      })
+      .collect()
   } else {
     Vec::new()
   };
+  let old_parent = (!new_child_is_fragment)
+    .then(|| new_child_dom.parent_node(new_child_handle.node_id))
+    .flatten();
 
-  if let Err(err) = dom.insert_before(parent_node_id, new_child_node_id, reference_node_id) {
-    return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
-  }
+  let reference_node_id = match reference_handle {
+    Some(reference_handle) => {
+      if reference_handle.document_id != parent_handle.document_id {
+        return Err(VmError::Throw(make_dom_exception(
+          scope,
+          "NotFoundError",
+          "",
+        )?));
+      }
+      Some(reference_handle.node_id)
+    }
+    None => None,
+  };
 
-  sync_cached_child_nodes_for_wrapper(vm, scope, document_obj, dom, parent_obj, parent_node_id)?;
-  sync_cached_children_for_wrapper(vm, scope, document_obj, dom, parent_obj, parent_node_id)?;
+  let inserted_roots: Vec<NodeId> = if new_child_is_fragment && new_child_handle.document_id != parent_handle.document_id {
+    // Cross-document fragment insertion: fragment stays in its original document; its children are
+    // adopted and inserted into the destination.
+    if new_child_dom_ptr == dom_ptr {
+      if let Err(err) = unsafe { dom_ptr.as_mut() }.insert_before(
+        parent_handle.node_id,
+        new_child_handle.node_id,
+        reference_node_id,
+      ) {
+        return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
+      }
+      for &child_id in &fragment_children {
+        let _ = maybe_adopt_node_into_document(
+          vm,
+          scope,
+          host,
+          document_obj,
+          dom_ptr,
+          DomNodeKey::new(new_child_handle.document_id, child_id),
+        )
+        .map_err(|_| VmError::TypeError("Node.insertBefore requires a node argument"))?;
+      }
+      fragment_children.clone()
+    } else {
+      let mut inserted: Vec<NodeId> = Vec::with_capacity(fragment_children.len());
+      for child_id in fragment_children.iter().copied() {
+        let adopted = maybe_adopt_node_into_document(
+          vm,
+          scope,
+          host,
+          document_obj,
+          dom_ptr,
+          DomNodeKey::new(new_child_handle.document_id, child_id),
+        )
+        .map_err(|_| VmError::TypeError("Node.insertBefore requires a node argument"))?;
+        if let Err(err) = unsafe { dom_ptr.as_mut() }.insert_before(
+          parent_handle.node_id,
+          adopted.node_id,
+          reference_node_id,
+        ) {
+          return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
+        }
+        inserted.push(adopted.node_id);
+      }
+      inserted
+    }
+  } else {
+    let new_child_for_insert = if new_child_is_fragment {
+      new_child_handle.node_id
+    } else {
+      maybe_adopt_node_into_document(vm, scope, host, document_obj, dom_ptr, new_child_handle)
+        .map_err(|_| VmError::TypeError("Node.insertBefore requires a node argument"))?
+        .node_id
+    };
+
+    if let Err(err) =
+      unsafe { dom_ptr.as_mut() }.insert_before(parent_handle.node_id, new_child_for_insert, reference_node_id)
+    {
+      return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
+    }
+
+    if new_child_is_fragment {
+      fragment_children.clone()
+    } else {
+      vec![new_child_for_insert]
+    }
+  };
+
+  // SAFETY: `dom_ptr` is valid for the duration of this native call.
+  let dom = unsafe { dom_ptr.as_ref() };
+
+  sync_cached_child_nodes_for_wrapper(vm, scope, document_obj, dom, parent_obj, parent_handle.node_id)?;
+  sync_cached_children_for_wrapper(vm, scope, document_obj, dom, parent_obj, parent_handle.node_id)?;
   if let Some(old_parent) = old_parent {
-    if old_parent != parent_node_id {
-      sync_cached_child_nodes_for_node_id(vm, scope, document_obj, dom, old_parent)?;
-      sync_cached_children_for_node_id(vm, scope, document_obj, dom, old_parent)?;
+    if !(new_child_handle.document_id == parent_handle.document_id && old_parent == parent_handle.node_id) {
+      let old_parent_document_obj = new_child_document_obj;
+      let old_parent_dom = if new_child_dom_ptr == dom_ptr { dom } else { unsafe { new_child_dom_ptr.as_ref() } };
+      sync_cached_child_nodes_for_node_id(vm, scope, old_parent_document_obj, old_parent_dom, old_parent)?;
+      sync_cached_children_for_node_id(vm, scope, old_parent_document_obj, old_parent_dom, old_parent)?;
     }
   }
   if new_child_is_fragment {
+    let fragment_document_obj = if new_child_handle.document_id == parent_handle.document_id {
+      document_obj
+    } else {
+      new_child_document_obj
+    };
+    let fragment_dom = if new_child_dom_ptr == dom_ptr { dom } else { unsafe { new_child_dom_ptr.as_ref() } };
     sync_cached_child_nodes_for_wrapper(
       vm,
       scope,
-      document_obj,
-      dom,
+      fragment_document_obj,
+      fragment_dom,
       new_child_obj,
-      new_child_node_id,
+      new_child_handle.node_id,
     )?;
-    sync_cached_children_for_wrapper(vm, scope, document_obj, dom, new_child_obj, new_child_node_id)?;
+    sync_cached_children_for_wrapper(
+      vm,
+      scope,
+      fragment_document_obj,
+      fragment_dom,
+      new_child_obj,
+      new_child_handle.node_id,
+    )?;
   }
-
-  let inserted_roots: Vec<NodeId> = if new_child_is_fragment {
-    fragment_children
-  } else {
-    vec![new_child_node_id]
-  };
 
   run_dynamic_script_insertion_steps(
     vm,
@@ -16232,7 +16472,7 @@ fn node_insert_before_native(
     hooks,
     document_obj,
     dom_ptr,
-    parent_node_id,
+    parent_handle.node_id,
   )?;
   let needs_microtask = unsafe { dom_ptr.as_mut() }.take_mutation_observer_microtask_needed();
   maybe_queue_mutation_observer_microtask(vm, scope, host, hooks, document_obj, needs_microtask)?;
@@ -16345,36 +16585,11 @@ fn node_replace_child_native(
     ));
   };
 
-  let node_id_key = alloc_key(scope, NODE_ID_KEY)?;
-  let parent_index = match scope
-    .heap()
-    .object_get_own_data_property_value(parent_obj, &node_id_key)?
-  {
-    Some(Value::Number(n)) if n.is_finite() && n >= 0.0 => n as usize,
-    _ => {
-      return Err(VmError::TypeError(
-        "Node.replaceChild must be called on a node object",
-      ));
-    }
-  };
-
   let new_child_value = args.get(0).copied().unwrap_or(Value::Undefined);
   let Value::Object(new_child_obj) = new_child_value else {
     return Err(VmError::TypeError(
       "Node.replaceChild requires a node argument",
     ));
-  };
-
-  let new_child_index = match scope
-    .heap()
-    .object_get_own_data_property_value(new_child_obj, &node_id_key)?
-  {
-    Some(Value::Number(n)) if n.is_finite() && n >= 0.0 => n as usize,
-    _ => {
-      return Err(VmError::TypeError(
-        "Node.replaceChild requires a node argument",
-      ));
-    }
   };
 
   let old_child_value = args.get(1).copied().unwrap_or(Value::Undefined);
@@ -16384,98 +16599,172 @@ fn node_replace_child_native(
     ));
   };
 
-  let old_child_index = match scope
-    .heap()
-    .object_get_own_data_property_value(old_child_obj, &node_id_key)?
-  {
-    Some(Value::Number(n)) if n.is_finite() && n >= 0.0 => n as usize,
-    _ => {
-      return Err(VmError::TypeError(
-        "Node.replaceChild requires a node argument",
-      ));
-    }
-  };
-
-  let dom = dom_from_vm_host_mut(host).ok_or(VmError::TypeError(
+  let platform = dom_platform_mut(vm).ok_or(VmError::TypeError(
     "Node.replaceChild requires a DOM-backed document",
   ))?;
-  let mut dom_ptr = NonNull::from(&mut *dom);
-
-  let parent_node_id = dom
-    .node_id_from_index(parent_index)
+  let parent_handle = platform
+    .require_node_handle(scope.heap(), Value::Object(parent_obj))
     .map_err(|_| VmError::TypeError("Node.replaceChild must be called on a node object"))?;
-  let new_child_node_id = dom
-    .node_id_from_index(new_child_index)
+  let new_child_handle = platform
+    .require_node_handle(scope.heap(), Value::Object(new_child_obj))
     .map_err(|_| VmError::TypeError("Node.replaceChild requires a node argument"))?;
-  let old_child_node_id = dom
-    .node_id_from_index(old_child_index)
+  let old_child_handle = platform
+    .require_node_handle(scope.heap(), Value::Object(old_child_obj))
     .map_err(|_| VmError::TypeError("Node.replaceChild requires a node argument"))?;
 
-  let document_obj = node_wrapper_document_obj(scope, parent_obj, parent_node_id)?;
-  let new_child_document_obj =
-    node_wrapper_document_obj(scope, new_child_obj, new_child_node_id)
-      .map_err(|_| VmError::TypeError("Node.replaceChild requires a node argument"))?;
-  if new_child_document_obj != document_obj {
-    return Err(VmError::TypeError(
-      "Node.replaceChild cannot move nodes between documents",
-    ));
-  }
-  let old_child_document_obj =
-    node_wrapper_document_obj(scope, old_child_obj, old_child_node_id)
-      .map_err(|_| VmError::TypeError("Node.replaceChild requires a node argument"))?;
-  if old_child_document_obj != document_obj {
-    return Err(VmError::TypeError(
-      "Node.replaceChild cannot move nodes between documents",
-    ));
+  if old_child_handle.document_id != parent_handle.document_id {
+    return Err(VmError::Throw(make_dom_exception(scope, "NotFoundError", "")?));
   }
 
-  let old_parent = dom.parent_node(new_child_node_id);
+  let document_obj = node_wrapper_document_obj(scope, parent_obj, parent_handle.node_id)
+    .map_err(|_| VmError::TypeError("Node.replaceChild must be called on a node object"))?;
+
+  let mut dom_ptr = dom_ptr_for_document_id_mut(vm, host, parent_handle.document_id)
+    .or_else(|| dom_from_vm_host_mut(host).map(NonNull::from))
+    .ok_or(VmError::TypeError(
+      "Node.replaceChild requires a DOM-backed document",
+    ))?;
+
+  let new_child_document_obj = node_wrapper_document_obj(scope, new_child_obj, new_child_handle.node_id)
+    .map_err(|_| VmError::TypeError("Node.replaceChild requires a node argument"))?;
+  let mut new_child_dom_ptr = dom_ptr_for_document_id_mut(vm, host, new_child_handle.document_id)
+    .or_else(|| dom_from_vm_host_mut(host).map(NonNull::from))
+    .ok_or(VmError::TypeError("Node.replaceChild requires a node argument"))?;
+  // SAFETY: pointers are valid for the duration of this native call.
+  let new_child_dom = unsafe { new_child_dom_ptr.as_ref() };
+
   let new_child_is_fragment = matches!(
-    &dom.node(new_child_node_id).kind,
+    &new_child_dom.node(new_child_handle.node_id).kind,
     NodeKind::DocumentFragment
   );
-  let fragment_children = if new_child_is_fragment {
-    dom.node(new_child_node_id).children.clone()
+  let fragment_children: Vec<NodeId> = if new_child_is_fragment {
+    new_child_dom
+      .node(new_child_handle.node_id)
+      .children
+      .iter()
+      .copied()
+      .filter(|&child| {
+        child.index() < new_child_dom.nodes_len()
+          && new_child_dom.node(child).parent == Some(new_child_handle.node_id)
+      })
+      .collect()
   } else {
     Vec::new()
   };
+  let old_parent = (!new_child_is_fragment)
+    .then(|| new_child_dom.parent_node(new_child_handle.node_id))
+    .flatten();
 
-  if let Err(err) = dom.replace_child(parent_node_id, new_child_node_id, old_child_node_id) {
-    return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
-  }
+  let inserted_roots: Vec<NodeId> = if new_child_is_fragment && new_child_handle.document_id != parent_handle.document_id {
+    // Cross-document fragment replacement: fragment stays in its original document; its children are
+    // adopted and inserted into the destination in place of `old_child`.
+    if new_child_dom_ptr == dom_ptr {
+      if let Err(err) = unsafe { dom_ptr.as_mut() }.replace_child(
+        parent_handle.node_id,
+        new_child_handle.node_id,
+        old_child_handle.node_id,
+      ) {
+        return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
+      }
+      for &child_id in &fragment_children {
+        let _ = maybe_adopt_node_into_document(
+          vm,
+          scope,
+          host,
+          document_obj,
+          dom_ptr,
+          DomNodeKey::new(new_child_handle.document_id, child_id),
+        )
+        .map_err(|_| VmError::TypeError("Node.replaceChild requires a node argument"))?;
+      }
+      fragment_children.clone()
+    } else {
+      let mut inserted: Vec<NodeId> = Vec::with_capacity(fragment_children.len());
+      for child_id in fragment_children.iter().copied() {
+        let adopted = maybe_adopt_node_into_document(
+          vm,
+          scope,
+          host,
+          document_obj,
+          dom_ptr,
+          DomNodeKey::new(new_child_handle.document_id, child_id),
+        )
+        .map_err(|_| VmError::TypeError("Node.replaceChild requires a node argument"))?;
+        if let Err(err) = unsafe { dom_ptr.as_mut() }.insert_before(
+          parent_handle.node_id,
+          adopted.node_id,
+          Some(old_child_handle.node_id),
+        ) {
+          return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
+        }
+        inserted.push(adopted.node_id);
+      }
+      if let Err(err) = unsafe { dom_ptr.as_mut() }.remove_child(parent_handle.node_id, old_child_handle.node_id) {
+        return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
+      }
+      inserted
+    }
+  } else {
+    let new_child_for_replace = if new_child_is_fragment {
+      new_child_handle.node_id
+    } else {
+      maybe_adopt_node_into_document(vm, scope, host, document_obj, dom_ptr, new_child_handle)
+        .map_err(|_| VmError::TypeError("Node.replaceChild requires a node argument"))?
+        .node_id
+    };
 
-  sync_cached_child_nodes_for_wrapper(vm, scope, document_obj, dom, parent_obj, parent_node_id)?;
-  sync_cached_children_for_wrapper(vm, scope, document_obj, dom, parent_obj, parent_node_id)?;
+    if let Err(err) = unsafe { dom_ptr.as_mut() }.replace_child(
+      parent_handle.node_id,
+      new_child_for_replace,
+      old_child_handle.node_id,
+    ) {
+      return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
+    }
+
+    if new_child_is_fragment {
+      fragment_children.clone()
+    } else {
+      vec![new_child_for_replace]
+    }
+  };
+
+  // SAFETY: `dom_ptr` is valid for the duration of this native call.
+  let dom = unsafe { dom_ptr.as_ref() };
+
+  sync_cached_child_nodes_for_wrapper(vm, scope, document_obj, dom, parent_obj, parent_handle.node_id)?;
+  sync_cached_children_for_wrapper(vm, scope, document_obj, dom, parent_obj, parent_handle.node_id)?;
   if let Some(old_parent) = old_parent {
-    if old_parent != parent_node_id {
-      sync_cached_child_nodes_for_node_id(vm, scope, document_obj, dom, old_parent)?;
-      sync_cached_children_for_node_id(vm, scope, document_obj, dom, old_parent)?;
+    if !(new_child_handle.document_id == parent_handle.document_id && old_parent == parent_handle.node_id) {
+      let old_parent_document_obj = new_child_document_obj;
+      let old_parent_dom = if new_child_dom_ptr == dom_ptr { dom } else { unsafe { new_child_dom_ptr.as_ref() } };
+      sync_cached_child_nodes_for_node_id(vm, scope, old_parent_document_obj, old_parent_dom, old_parent)?;
+      sync_cached_children_for_node_id(vm, scope, old_parent_document_obj, old_parent_dom, old_parent)?;
     }
   }
   if new_child_is_fragment {
+    let fragment_document_obj = if new_child_handle.document_id == parent_handle.document_id {
+      document_obj
+    } else {
+      new_child_document_obj
+    };
+    let fragment_dom = if new_child_dom_ptr == dom_ptr { dom } else { unsafe { new_child_dom_ptr.as_ref() } };
     sync_cached_child_nodes_for_wrapper(
       vm,
       scope,
-      document_obj,
-      dom,
+      fragment_document_obj,
+      fragment_dom,
       new_child_obj,
-      new_child_node_id,
+      new_child_handle.node_id,
     )?;
     sync_cached_children_for_wrapper(
       vm,
       scope,
-      document_obj,
-      dom,
+      fragment_document_obj,
+      fragment_dom,
       new_child_obj,
-      new_child_node_id,
+      new_child_handle.node_id,
     )?;
   }
-
-  let inserted_roots: Vec<NodeId> = if new_child_is_fragment {
-    fragment_children
-  } else {
-    vec![new_child_node_id]
-  };
 
   run_dynamic_script_insertion_steps(
     vm,
@@ -16493,7 +16782,7 @@ fn node_replace_child_native(
     hooks,
     document_obj,
     dom_ptr,
-    parent_node_id,
+    parent_handle.node_id,
   )?;
   let needs_microtask = unsafe { dom_ptr.as_mut() }.take_mutation_observer_microtask_needed();
   maybe_queue_mutation_observer_microtask(vm, scope, host, hooks, document_obj, needs_microtask)?;
@@ -21511,19 +21800,6 @@ fn element_insert_adjacent_element_native(
     }
   };
 
-  let node_id_key = alloc_key(scope, NODE_ID_KEY)?;
-  let node_index = match scope
-    .heap()
-    .object_get_own_data_property_value(wrapper_obj, &node_id_key)?
-  {
-    Some(Value::Number(n)) if n.is_finite() && n >= 0.0 => n as usize,
-    _ => {
-      return Err(VmError::TypeError(
-        "Element.insertAdjacentElement must be called on an element object",
-      ));
-    }
-  };
-
   let position_value = args.get(0).copied().unwrap_or(Value::Undefined);
   let position_value = scope.heap_mut().to_string(position_value)?;
   let position = scope
@@ -21539,52 +21815,33 @@ fn element_insert_adjacent_element_native(
     ));
   };
 
-  let child_document_obj = match scope
-    .heap()
-    .object_get_own_data_property_value(element_obj, &wrapper_document_key)?
-  {
-    Some(Value::Object(obj)) => obj,
-    _ => {
-      return Err(VmError::TypeError(
-        "Element.insertAdjacentElement requires an element argument",
-      ));
-    }
-  };
-  if child_document_obj != document_obj {
-    return Err(VmError::TypeError(
-      "Element.insertAdjacentElement cannot move nodes between documents",
-    ));
-  }
-
-  let child_index = match scope
-    .heap()
-    .object_get_own_data_property_value(element_obj, &node_id_key)?
-  {
-    Some(Value::Number(n)) if n.is_finite() && n >= 0.0 => n as usize,
-    _ => {
-      return Err(VmError::TypeError(
-        "Element.insertAdjacentElement requires an element argument",
-      ));
-    }
-  };
-
-  let dom = dom_from_vm_host_mut(host).ok_or(VmError::TypeError(
+  let platform = dom_platform_mut(vm).ok_or(VmError::TypeError(
     "Element.insertAdjacentElement requires a DOM-backed document",
   ))?;
-  let node_id = dom.node_id_from_index(node_index).map_err(|_| {
-    VmError::TypeError("Element.insertAdjacentElement must be called on an element object")
-  })?;
-  let child_node_id = dom.node_id_from_index(child_index).map_err(|_| {
-    VmError::TypeError("Element.insertAdjacentElement requires an element argument")
-  })?;
+  let target_handle = platform
+    .require_element_handle(scope.heap(), Value::Object(wrapper_obj))
+    .map_err(|_| VmError::TypeError("Element.insertAdjacentElement must be called on an element object"))?;
+  let element_handle = platform
+    .require_element_handle(scope.heap(), Value::Object(element_obj))
+    .map_err(|_| VmError::TypeError("Element.insertAdjacentElement requires an element argument"))?;
 
-  let result = match dom.insert_adjacent_element(node_id, &position, child_node_id) {
+  let mut dom_ptr = dom_ptr_for_document_id_mut(vm, host, target_handle.document_id)
+    .or_else(|| dom_from_vm_host_mut(host).map(NonNull::from))
+    .ok_or(VmError::TypeError(
+      "Element.insertAdjacentElement requires a DOM-backed document",
+    ))?;
+
+  let adopted = maybe_adopt_node_into_document(vm, scope, host, document_obj, dom_ptr, element_handle).map_err(
+    |_| VmError::TypeError("Element.insertAdjacentElement requires an element argument"),
+  )?;
+
+  let result = match unsafe { dom_ptr.as_mut() }.insert_adjacent_element(target_handle.node_id, &position, adopted.node_id) {
     Ok(Some(_)) => element_value,
     Ok(None) => Value::Null,
     Err(err) => return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?)),
   };
 
-  let needs_microtask = dom.take_mutation_observer_microtask_needed();
+  let needs_microtask = unsafe { dom_ptr.as_mut() }.take_mutation_observer_microtask_needed();
   maybe_queue_mutation_observer_microtask(vm, scope, host, hooks, document_obj, needs_microtask)?;
 
   Ok(result)
@@ -31957,6 +32214,34 @@ mod tests {
           && dt.systemId === 's'\n\
           && (dt instanceof DocumentType)\n\
           && (dt instanceof Node);\n\
+      })()",
+    )?;
+    assert_eq!(ok, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn element_insert_adjacent_element_adopts_cross_document_nodes() -> Result<(), VmError> {
+    let renderer_dom = crate::dom::parse_html("<!doctype html><html><body></body></html>").unwrap();
+    let mut host = crate::js::HostDocumentState::from_renderer_dom(&renderer_dom);
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+
+    let ok = exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      "(() => {\n\
+        const doc2 = Object.create(document);\n\
+        const el = doc2.createElement('b');\n\
+        if (el.ownerDocument !== doc2) return false;\n\
+        let inserted;\n\
+        try {\n\
+          inserted = document.body.insertAdjacentElement('beforeend', el);\n\
+        } catch (e) {\n\
+          return false;\n\
+        }\n\
+        if (inserted !== el) return false;\n\
+        if (el.ownerDocument !== document) return false;\n\
+        return true;\n\
       })()",
     )?;
     assert_eq!(ok, Value::Bool(true));
