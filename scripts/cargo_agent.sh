@@ -173,10 +173,11 @@ fi
 #   bash scripts/cargo_agent.sh test -p optimize-js --lib
 # from the repo root.
 #
-# If the requested package name matches a crate directory under `vendor/ecma-rs/`
+# If the requested package name matches a crate under `vendor/ecma-rs/` (usually
+# `vendor/ecma-rs/<package-name>/Cargo.toml`, but see the special-cases below)
 # and the caller did not explicitly provide `--manifest-path`, automatically
-# scope the cargo invocation to `vendor/ecma-rs/Cargo.toml` so the package can be
-# resolved.
+# scope the cargo invocation to `vendor/ecma-rs/Cargo.toml` so the package can
+# be resolved.
 #
 # If the monorepo workspace also contains a package with the same name, prefer
 # the monorepo package. To target the vendored workspace explicitly, use:
@@ -226,18 +227,32 @@ if [[ "${has_manifest_path}" -eq 0 ]]; then
       esac
       if [[ -n "${pkg}" ]]; then
         # Prefer monorepo workspace packages when there is a name collision with
-        # a crate directory under `vendor/ecma-rs/`.
+        # the nested `vendor/ecma-rs` workspace.
         #
-        # Example: FastRender keeps a workspace-local adapter at
-        # `crates/webidl-vm-js`, but `vendor/ecma-rs/` also contains a
-        # `webidl-vm-js` crate. In that case `scripts/cargo_agent.sh test -p
-        # webidl-vm-js` should target the monorepo crate by default.
+        # Example: During WebIDL consolidation, `webidl-js-runtime` existed both
+        # as a monorepo crate (`crates/webidl-js-runtime`) and as a vendored
+        # package (located at `vendor/ecma-rs/webidl-runtime/`, i.e. the package
+        # name intentionally does not match the directory name). In that case
+        # `scripts/cargo_agent.sh test -p webidl-js-runtime` should continue to
+        # target the monorepo crate until it is removed, and then seamlessly
+        # fall through to the vendored workspace.
         if [[ -f "${repo_root}/${pkg}/Cargo.toml" || -f "${repo_root}/crates/${pkg}/Cargo.toml" ]]; then
           continue
         fi
       fi
 
-      if [[ -n "${pkg}" && -f "${repo_root}/vendor/ecma-rs/${pkg}/Cargo.toml" ]]; then
+      vendored_pkg_dir="${pkg}"
+      # Some ecma-rs packages intentionally use a different on-disk directory
+      # name than their Cargo package name. Keep the mapping local to this
+      # vendored-workspace auto-detection so we do not change Cargo's package
+      # selection semantics (we still pass `-p <package>` through unchanged).
+      case "${pkg}" in
+        webidl-js-runtime)
+          vendored_pkg_dir="webidl-runtime"
+          ;;
+      esac
+
+      if [[ -n "${pkg}" && -f "${repo_root}/vendor/ecma-rs/${vendored_pkg_dir}/Cargo.toml" ]]; then
         insert_pos=$((subcmd_pos + 1))
         argv=(
           "${argv[@]:0:${insert_pos}}"
