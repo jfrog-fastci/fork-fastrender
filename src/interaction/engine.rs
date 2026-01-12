@@ -4350,6 +4350,11 @@ impl InteractionEngine {
           }
         }
       }
+    }
+    // Track the UI-facing click target for both primary ("click") and middle ("auxclick") presses
+    // so higher-level layers can dispatch JS DOM events and honor `preventDefault()` before
+    // committing default actions (e.g. link navigations).
+    if matches!(button, PointerButton::Primary | PointerButton::Middle) {
       self.last_click_target = click_target;
     }
 

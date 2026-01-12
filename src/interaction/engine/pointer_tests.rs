@@ -537,8 +537,8 @@ fn link_middle_click_opens_in_new_tab() {
   );
   assert_eq!(
     engine.take_last_click_target(),
-    None,
-    "middle-click should not populate last_click_target (used for dispatching click events)"
+    Some(link_dom_id),
+    "middle-click should populate last_click_target (used for dispatching auxclick events)"
   );
 }
 

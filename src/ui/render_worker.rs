@@ -3271,6 +3271,10 @@ impl BrowserRuntime {
           js_dom_node_for_preorder_id(js_tab, target_id, click_target_element_id.as_deref());
 
         if let Some(node_id) = target {
+          let click_type = match button {
+            PointerButton::Middle => "auxclick",
+            _ => "click",
+          };
           let mouse = web_events::MouseEvent {
             client_x: mouse_client_coord(pos_css.0),
             client_y: mouse_client_coord(pos_css.1),
@@ -3285,7 +3289,7 @@ impl BrowserRuntime {
           };
           match js_tab.dispatch_mouse_event(
             node_id,
-            "click",
+            click_type,
             web_events::EventInit {
               bubbles: true,
               cancelable: true,
@@ -3297,7 +3301,7 @@ impl BrowserRuntime {
             Err(err) => {
               let _ = self.ui_tx.send(WorkerToUi::DebugLog {
                 tab_id,
-                line: format!("js click event dispatch failed: {err}"),
+                line: format!("js {click_type} event dispatch failed: {err}"),
               });
             }
           }

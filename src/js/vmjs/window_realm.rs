@@ -27936,6 +27936,7 @@ fn init_window_globals(
     // Mouse events.
     ("onclick", "click"),
     ("ondblclick", "dblclick"),
+    ("onauxclick", "auxclick"),
     ("onmousedown", "mousedown"),
     ("onmouseup", "mouseup"),
     ("onmousemove", "mousemove"),
@@ -34776,11 +34777,12 @@ mod tests {
          target.addEventListener('mouseup', cap);\n\
          target.onmouseover = capRelated;\n\
          target.onmouseout = capRelated;\n\
-         target.onmouseenter = capRelated;\n\
-         target.onmouseleave = capRelated;\n\
-         target.onclick = cap;\n\
-         target.ondblclick = cap;\n\
-         target.oncontextmenu = cap;",
+          target.onmouseenter = capRelated;\n\
+          target.onmouseleave = capRelated;\n\
+          target.onclick = cap;\n\
+          target.onauxclick = cap;\n\
+          target.ondblclick = cap;\n\
+          target.oncontextmenu = cap;",
     )?;
 
     struct DummyHost;
@@ -35047,6 +35049,36 @@ mod tests {
     )
     .expect("click dispatch should succeed");
 
+    let mut auxclick = web_events::Event::new(
+      "auxclick",
+      web_events::EventInit {
+        bubbles: true,
+        cancelable: true,
+        composed: false,
+      },
+    );
+    auxclick.is_trusted = true;
+    auxclick.mouse = Some(web_events::MouseEvent {
+      client_x: 16.0,
+      client_y: 32.0,
+      button: 1,
+      buttons: 0,
+      detail: 1,
+      ctrl_key: false,
+      shift_key: true,
+      alt_key: true,
+      meta_key: false,
+      related_target: None,
+    });
+    web_events::dispatch_event(
+      web_events::EventTargetId::Node(target).normalize(),
+      &mut auxclick,
+      host.dom(),
+      host.dom().events(),
+      &mut invoker,
+    )
+    .expect("auxclick dispatch should succeed");
+
     let mut dblclick = web_events::Event::new(
       "dblclick",
       web_events::EventInit {
@@ -35110,7 +35142,7 @@ mod tests {
     let realm = realm_slot.as_mut().expect("expected realm slot");
     let ok = realm.exec_script(
       "(() => {\n\
-         return __log.length === 10 &&\n\
+         return __log.length === 11 &&\n\
            __log[0] === 'mousedown|true|10|20|0|1|1|true|false|true|false' &&\n\
            __log[1] === 'mousemove|true|11|22|0|1|0|false|true|false|true' &&\n\
            __log[2] === 'mouseup|true|12|24|0|0|1|false|false|false|false' &&\n\
@@ -35119,9 +35151,10 @@ mod tests {
            __log[5] === 'mouseenter|true|other' &&\n\
            __log[6] === 'mouseleave|true|other' &&\n\
            __log[7] === 'click|true|13|26|0|0|1|true|true|false|false' &&\n\
-           __log[8] === 'dblclick|true|15|30|0|0|2|false|false|false|false' &&\n\
-           __log[9] === 'contextmenu|true|14|28|2|0|0|false|false|true|false';\n\
-        })()",
+           __log[8] === 'auxclick|true|16|32|1|0|1|false|true|true|false' &&\n\
+           __log[9] === 'dblclick|true|15|30|0|0|2|false|false|false|false' &&\n\
+           __log[10] === 'contextmenu|true|14|28|2|0|0|false|false|true|false';\n\
+         })()",
     )?;
     assert_eq!(ok, Value::Bool(true));
     Ok(())
