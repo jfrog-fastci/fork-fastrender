@@ -10193,8 +10193,22 @@ pub fn array_prototype_reverse(
     let lower_key = PropertyKey::from_string(lower_s);
     let upper_key = PropertyKey::from_string(upper_s);
 
-    let lower_exists = iter_scope.has_property_with_host_and_hooks(vm, host, hooks, obj, lower_key)?;
-    let upper_exists = iter_scope.has_property_with_host_and_hooks(vm, host, hooks, obj, upper_key)?;
+    let lower_exists = crate::spec_ops::internal_has_property_with_host_and_hooks(
+      vm,
+      &mut iter_scope,
+      host,
+      hooks,
+      obj,
+      lower_key,
+    )?;
+    let upper_exists = crate::spec_ops::internal_has_property_with_host_and_hooks(
+      vm,
+      &mut iter_scope,
+      host,
+      hooks,
+      obj,
+      upper_key,
+    )?;
 
     let lower_value = if lower_exists {
       Some(iter_scope.get_with_host_and_hooks(
@@ -10341,7 +10355,14 @@ pub fn array_prototype_sort(
       iter_scope.push_root(Value::String(key_s))?;
       let key = PropertyKey::from_string(key_s);
 
-      if !iter_scope.has_property_with_host_and_hooks(vm, host, hooks, obj, key)? {
+      if !crate::spec_ops::internal_has_property_with_host_and_hooks(
+        vm,
+        &mut iter_scope,
+        host,
+        hooks,
+        obj,
+        key,
+      )? {
         None
       } else {
         Some(iter_scope.get_with_host_and_hooks(
@@ -10846,7 +10867,14 @@ pub fn array_prototype_shift(
     let from_key = PropertyKey::from_string(from_s);
     let to_key = PropertyKey::from_string(to_s);
 
-    if iter_scope.has_property_with_host_and_hooks(vm, host, hooks, obj, from_key)? {
+    if crate::spec_ops::internal_has_property_with_host_and_hooks(
+      vm,
+      &mut iter_scope,
+      host,
+      hooks,
+      obj,
+      from_key,
+    )? {
       let value =
         iter_scope.get_with_host_and_hooks(vm, host, hooks, obj, from_key, Value::Object(obj))?;
       let ok = iter_scope.set_with_host_and_hooks(
@@ -10946,7 +10974,14 @@ pub fn array_prototype_unshift(
     let from_key = PropertyKey::from_string(from_s);
     let to_key = PropertyKey::from_string(to_s);
 
-    if iter_scope.has_property_with_host_and_hooks(vm, host, hooks, obj, from_key)? {
+    if crate::spec_ops::internal_has_property_with_host_and_hooks(
+      vm,
+      &mut iter_scope,
+      host,
+      hooks,
+      obj,
+      from_key,
+    )? {
       let value =
         iter_scope.get_with_host_and_hooks(vm, host, hooks, obj, from_key, Value::Object(obj))?;
       let ok = iter_scope.set_with_host_and_hooks(
@@ -11088,7 +11123,14 @@ pub fn array_prototype_splice(
     let from_key = PropertyKey::from_string(from_s);
     let to_key = PropertyKey::from_string(to_s);
 
-    if !iter_scope.has_property_with_host_and_hooks(vm, host, hooks, obj, from_key)? {
+    if !crate::spec_ops::internal_has_property_with_host_and_hooks(
+      vm,
+      &mut iter_scope,
+      host,
+      hooks,
+      obj,
+      from_key,
+    )? {
       continue;
     }
     let value = iter_scope.get_with_host_and_hooks(
@@ -11126,7 +11168,14 @@ pub fn array_prototype_splice(
       let from_key = PropertyKey::from_string(from_s);
       let to_key = PropertyKey::from_string(to_s);
 
-      if iter_scope.has_property_with_host_and_hooks(vm, host, hooks, obj, from_key)? {
+      if crate::spec_ops::internal_has_property_with_host_and_hooks(
+        vm,
+        &mut iter_scope,
+        host,
+        hooks,
+        obj,
+        from_key,
+      )? {
         let value = iter_scope.get_with_host_and_hooks(
           vm,
           host,
@@ -11199,7 +11248,14 @@ pub fn array_prototype_splice(
       let from_key = PropertyKey::from_string(from_s);
       let to_key = PropertyKey::from_string(to_s);
 
-      if iter_scope.has_property_with_host_and_hooks(vm, host, hooks, obj, from_key)? {
+      if crate::spec_ops::internal_has_property_with_host_and_hooks(
+        vm,
+        &mut iter_scope,
+        host,
+        hooks,
+        obj,
+        from_key,
+      )? {
         let value = iter_scope.get_with_host_and_hooks(
           vm,
           host,

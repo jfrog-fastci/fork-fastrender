@@ -328,3 +328,49 @@ fn proxy_in_prototype_chain_uses_get_set_has_traps() {
     .unwrap();
   assert_eq!(value, Value::Bool(true));
 }
+
+#[test]
+fn array_reverse_calls_proxy_traps() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      var p;
+      var receiverOk = true;
+      var counts = { has: 0, get: 0, set: 0, del: 0 };
+      var target = { 0: "a", length: 2 };
+      p = new Proxy(target, {
+        has: function(t, prop) {
+          counts.has++;
+          return prop in t;
+        },
+        get: function(t, prop, receiver) {
+          if (receiver !== p) receiverOk = false;
+          counts.get++;
+          return t[prop];
+        },
+        set: function(t, prop, value, receiver) {
+          if (receiver !== p) receiverOk = false;
+          counts.set++;
+          t[prop] = value;
+          return true;
+        },
+        deleteProperty: function(t, prop) {
+          counts.del++;
+          delete t[prop];
+          return true;
+        }
+      });
+      Array.prototype.reverse.call(p);
+      receiverOk &&
+        counts.has >= 2 &&
+        counts.get >= 2 &&
+        counts.set >= 1 &&
+        counts.del >= 1 &&
+        target[1] === "a" &&
+        !("0" in target)
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}

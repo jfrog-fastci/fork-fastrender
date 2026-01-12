@@ -1664,6 +1664,9 @@ impl<'a> Scope<'a> {
           "Cannot perform 'getPrototypeOf' on a revoked Proxy",
         ));
       };
+      // Root `target`/`handler` across trap lookup + invocation. `GetMethod` can invoke user code
+      // via accessors, which can revoke this Proxy and trigger GC.
+      self.push_roots(&[Value::Object(target), Value::Object(handler)])?;
 
       // Root target/handler across trap lookup and invocation. `GetMethod(handler, "getPrototypeOf")`
       // can run user code via accessors which can revoke the Proxy and trigger a GC; the operation
@@ -1888,6 +1891,9 @@ impl<'a> Scope<'a> {
           "Cannot perform 'preventExtensions' on a revoked Proxy",
         ));
       };
+      // Root `target`/`handler` across trap lookup + invocation. `GetMethod` can invoke user code
+      // via accessors, which can revoke this Proxy and trigger GC.
+      self.push_roots(&[Value::Object(target), Value::Object(handler)])?;
 
       // Root target/handler across trap lookup and invocation. `GetMethod(handler, "preventExtensions")`
       // can run user code via accessors which can revoke the Proxy and trigger a GC; the operation
@@ -2176,6 +2182,13 @@ impl<'a> Scope<'a> {
     key: PropertyKey,
     receiver: Value,
   ) -> Result<Value, VmError> {
+    // Some built-ins historically call `ordinary_get_with_host_and_hooks` even when the receiver is
+    // a Proxy object. Rather than crashing with `InvalidHandle`, dispatch to the Proxy-aware
+    // `[[Get]]` implementation.
+    if self.heap().is_proxy_object(obj) {
+      return self.get_with_host_and_hooks(vm, host, hooks, obj, key, receiver);
+    }
+
     // Root the inputs so host hook implementations can allocate freely.
     //
     // This is particularly important for `host_exotic_get`, which can allocate new JS strings when
@@ -2635,6 +2648,13 @@ impl<'a> Scope<'a> {
     value: Value,
     receiver: Value,
   ) -> Result<bool, VmError> {
+    // Like `ordinary_get_with_host_and_hooks`, this is occasionally called with Proxy receivers.
+    // Delegate to the Proxy-aware `[[Set]]` implementation to avoid `InvalidHandle` and ensure
+    // traps are observed.
+    if self.heap().is_proxy_object(obj) {
+      return self.set_with_host_and_hooks(vm, host, hooks, obj, key, value, receiver);
+    }
+
     // Root inputs together so GC can't collect `key`/`value`/`receiver` while growing the root
     // stack.
     let roots = [
@@ -2875,12 +2895,18 @@ impl<'a> Scope<'a> {
   /// hook implementation.
   pub fn ordinary_delete_with_host_and_hooks(
     &mut self,
-    _vm: &mut Vm,
-    _host: &mut dyn VmHost,
+    vm: &mut Vm,
+    host: &mut dyn VmHost,
     hooks: &mut dyn VmHostHooks,
     obj: GcObject,
     key: PropertyKey,
   ) -> Result<bool, VmError> {
+    // Built-ins sometimes call `ordinary_delete_with_host_and_hooks` on Proxy receivers. Dispatch
+    // to the Proxy-aware `[[Delete]]` implementation so the `deleteProperty` trap is observed.
+    if self.heap().is_proxy_object(obj) {
+      return self.delete_with_host_and_hooks(vm, host, hooks, obj, key);
+    }
+
     // Root inputs together so GC cannot collect `key` while growing the root stack (important when
     // deleting a missing property).
     let roots = [
