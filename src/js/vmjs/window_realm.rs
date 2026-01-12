@@ -41959,13 +41959,38 @@ mod tests {
         let ownedDocCount = 0;\n\
         let hostDivCount = 0;\n\
         let ownedDivCount = 0;\n\
+        let ok = true;\n\
 \n\
-        hostEl.addEventListener('x', () => { hostElCount++; });\n\
-        ownedEl.addEventListener('x', () => { ownedElCount++; });\n\
-        document.addEventListener('x', () => { hostDocCount++; });\n\
-        doc2.addEventListener('x', () => { ownedDocCount++; });\n\
-        hostDiv.addEventListener('x', () => { hostDivCount++; });\n\
-        ownedDiv.addEventListener('x', () => { ownedDivCount++; });\n\
+        hostEl.addEventListener('x', function (e) {\n\
+          hostElCount++;\n\
+          if (e.target !== hostEl) ok = false;\n\
+          if (e.currentTarget !== hostEl) ok = false;\n\
+        });\n\
+        ownedEl.addEventListener('x', function (e) {\n\
+          ownedElCount++;\n\
+          if (e.target !== ownedEl) ok = false;\n\
+          if (e.currentTarget !== ownedEl) ok = false;\n\
+        });\n\
+        document.addEventListener('x', function (e) {\n\
+          hostDocCount++;\n\
+          if (e.target !== document) ok = false;\n\
+          if (e.currentTarget !== document) ok = false;\n\
+        });\n\
+        doc2.addEventListener('x', function (e) {\n\
+          ownedDocCount++;\n\
+          if (e.target !== doc2) ok = false;\n\
+          if (e.currentTarget !== doc2) ok = false;\n\
+        });\n\
+        hostDiv.addEventListener('x', function (e) {\n\
+          hostDivCount++;\n\
+          if (e.target !== hostDiv) ok = false;\n\
+          if (e.currentTarget !== hostDiv) ok = false;\n\
+        });\n\
+        ownedDiv.addEventListener('x', function (e) {\n\
+          ownedDivCount++;\n\
+          if (e.target !== ownedDiv) ok = false;\n\
+          if (e.currentTarget !== ownedDiv) ok = false;\n\
+        });\n\
 \n\
         hostEl.dispatchEvent(new Event('x'));\n\
         ownedEl.dispatchEvent(new Event('x'));\n\
@@ -41976,6 +42001,7 @@ mod tests {
 \n\
         const countKey = hostElCount + ',' + ownedElCount + ',' + hostDocCount + ',' + ownedDocCount + ',' + hostDivCount + ',' + ownedDivCount;\n\
         if (countKey !== '1,1,1,1,1,1') return 'bad-counts:' + countKey;\n\
+        if (!ok) return 'bad-event-target';\n\
 \n\
         // Regression test: removing a listener from the host node must NOT affect an owned-document\n\
         // node that happens to share the same internal NodeId index.\n\
