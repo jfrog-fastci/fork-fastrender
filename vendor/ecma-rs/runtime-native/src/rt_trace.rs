@@ -228,8 +228,7 @@ mod imp {
         }
 
         // Request a stop-the-world GC and ensure it can complete even though thread C is blocked.
-        let stop_epoch = crate::threading::safepoint::rt_gc_try_request_stop_the_world()
-          .expect("stop-the-world should not already be active");
+        let stop_epoch = crate::test_util::rt_gc_request_stop_the_world_for_tests(TIMEOUT);
         assert_eq!(stop_epoch & 1, 1, "stop-the-world epoch must be odd");
         struct ResumeOnDrop;
         impl Drop for ResumeOnDrop {

@@ -125,7 +125,6 @@ impl<T> GcAwareRwLock<T> {
         drop(guard);
         threading::safepoint::wait_while_stop_the_world();
         drop(gc_safe);
-        threading::safepoint::wait_while_stop_the_world();
         continue;
       }
 
@@ -213,7 +212,6 @@ impl<T> GcAwareRwLock<T> {
         drop(guard);
         threading::safepoint::wait_while_stop_the_world();
         drop(gc_safe);
-        threading::safepoint::wait_while_stop_the_world();
         continue;
       }
 

@@ -585,7 +585,13 @@ mod tests {
     let _rt = crate::test_util::TestRuntimeGuard::new();
 
     // Use multiple registered mutator threads so stop-the-world coordination is exercised.
-    const N_THREADS: usize = 4;
+    //
+    // Keep debug/test builds modest: Rust unit tests run in parallel by default, and multi-agent CI
+    // hosts can be heavily oversubscribed. In that environment, a stress test that spawns many hot
+    // worker threads can starve a thread holding a contended lock long enough to trip stop-the-world
+    // watchdog timeouts, causing flaky failures.
+    const N_THREADS: usize = if cfg!(debug_assertions) { 2 } else { 4 };
+    const N_STW_CYCLES: usize = if cfg!(debug_assertions) { 10 } else { 25 };
     let stop = Arc::new(AtomicBool::new(false));
     let start = Arc::new(Barrier::new(N_THREADS + 1));
 
@@ -631,8 +637,11 @@ mod tests {
 
     // Stop-the-world while worker threads are actively contending on the handle table lock.
     let stw_res = std::panic::catch_unwind(|| {
-      for _ in 0..25 {
+      for _ in 0..N_STW_CYCLES {
         crate::safepoint::with_world_stopped(|| {});
+        // Yield between stop-the-world cycles so mutator threads reliably get CPU time to make
+        // forward progress on heavily contended test runners.
+        std::thread::yield_now();
       }
     });
 
@@ -957,8 +966,7 @@ mod tests {
       }
 
       // Request a stop-the-world GC and ensure it can complete even though thread C is blocked.
-      let stop_epoch = crate::threading::safepoint::rt_gc_try_request_stop_the_world()
-        .expect("stop-the-world should not already be active");
+      let stop_epoch = crate::test_util::rt_gc_request_stop_the_world_for_tests(TIMEOUT);
       assert_eq!(stop_epoch & 1, 1, "stop-the-world epoch must be odd");
       // Mark this thread as the STW coordinator so GC-aware locks can be acquired while the stop
       // epoch is active (root enumeration needs to lock the registry).

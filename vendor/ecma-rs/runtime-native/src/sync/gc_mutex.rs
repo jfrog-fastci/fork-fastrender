@@ -172,9 +172,6 @@ impl<T> GcAwareMutex<T> {
         // coordinator doesn't wait for this thread to reach a cooperative safepoint while blocked.
         threading::safepoint::wait_while_stop_the_world();
         drop(gc_safe);
-        // `GcSafeGuard` is a no-op for unregistered threads; always block until the world is resumed
-        // to avoid a busy-spin loop.
-        threading::safepoint::wait_while_stop_the_world();
         continue;
       }
 

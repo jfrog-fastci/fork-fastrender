@@ -12,6 +12,7 @@
 use once_cell::sync::Lazy;
 use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 use std::time::Duration;
+use std::time::Instant;
 
 use crate::abi::{LegacyPromiseRef, PromiseRef, ValueRef};
 use crate::async_abi::PromiseHeader;
@@ -107,6 +108,30 @@ impl Drop for TestRuntimeGuard {
 pub fn with_test_runtime<T>(f: impl FnOnce() -> T) -> T {
   let _guard = TestRuntimeGuard::new();
   f()
+}
+
+/// Test-only helper: request a stop-the-world epoch, retrying if another stop-the-world cycle is
+/// already active.
+///
+/// Rust unit tests run in parallel by default, and the runtime may also initiate stop-the-world
+/// cycles indirectly (e.g. if an allocation triggers GC). Tests that need to act as the STW
+/// coordinator should tolerate these transient overlaps by waiting until the current epoch is
+/// resumed and then retrying.
+///
+/// This helper spins/yields until `rt_gc_try_request_stop_the_world` succeeds or `timeout` elapses.
+#[doc(hidden)]
+pub fn rt_gc_request_stop_the_world_for_tests(timeout: Duration) -> u64 {
+  let deadline = Instant::now() + timeout;
+  loop {
+    if let Some(epoch) = crate::threading::safepoint::rt_gc_try_request_stop_the_world() {
+      return epoch;
+    }
+    if Instant::now() >= deadline {
+      let epoch = crate::threading::safepoint::current_epoch();
+      panic!("stop-the-world already active (epoch={epoch}, waited {timeout:?})");
+    }
+    std::thread::yield_now();
+  }
 }
 
 /// Test-only helper: run `f` while holding the global string-interner test lock.
