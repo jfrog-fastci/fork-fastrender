@@ -756,7 +756,7 @@ pub struct FastRenderConfig {
 
 impl Default for FastRenderConfig {
   fn default() -> Self {
-    let runtime_toggles = Arc::new(RuntimeToggles::from_env());
+    let runtime_toggles = runtime::runtime_toggles();
     let mut paint_parallelism = match runtime_toggles
       .get("FASTR_PAINT_PARALLEL")
       .map(|raw| raw.trim().to_ascii_lowercase())

@@ -56,15 +56,16 @@ impl BrowserLimits {
   /// Invalid / empty values are ignored (defaults remain in effect). Underscore separators are
   /// accepted (e.g. `50_000_000`).
   pub fn from_env() -> Self {
+    let toggles = crate::debug::runtime::runtime_toggles();
     let mut out = Self::default();
 
-    if let Some(v) = parse_env_u64(ENV_MAX_PIXELS) {
+    if let Some(v) = parse_env_u64(toggles.get(ENV_MAX_PIXELS)) {
       out.max_pixels = v.max(1);
     }
-    if let Some(v) = parse_env_u64(ENV_MAX_DIM_PX) {
+    if let Some(v) = parse_env_u64(toggles.get(ENV_MAX_DIM_PX)) {
       out.max_dim_px = (v.min(u32::MAX as u64) as u32).max(1);
     }
-    if let Some(v) = parse_env_f32(ENV_MAX_DPR) {
+    if let Some(v) = parse_env_f32(toggles.get(ENV_MAX_DPR)) {
       // Clamp to the renderer's DPR range so UI/worker calculations match the renderer's behavior.
       out.max_dpr = v.clamp(RENDERER_MIN_DPR, RENDERER_MAX_DPR);
     }
@@ -255,8 +256,8 @@ fn pixmap_px_for(viewport_css: (u32, u32), dpr: f32) -> (u32, u32) {
   (w, h)
 }
 
-fn parse_env_u64(key: &str) -> Option<u64> {
-  let raw = std::env::var(key).ok()?;
+fn parse_env_u64(raw: Option<&str>) -> Option<u64> {
+  let raw = raw?;
   let raw = raw.trim();
   if raw.is_empty() {
     return None;
@@ -266,8 +267,8 @@ fn parse_env_u64(key: &str) -> Option<u64> {
   (value > 0).then_some(value)
 }
 
-fn parse_env_f32(key: &str) -> Option<f32> {
-  let raw = std::env::var(key).ok()?;
+fn parse_env_f32(raw: Option<&str>) -> Option<f32> {
+  let raw = raw?;
   let raw = raw.trim();
   if raw.is_empty() {
     return None;
