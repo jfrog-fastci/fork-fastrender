@@ -1266,11 +1266,20 @@ impl Document {
       });
     }
 
-    let cache = self
-      .selector_snapshot_cache
-      .as_ref()
-      .expect("selector snapshot cache populated");
-    (Arc::clone(&cache.dom), Arc::clone(&cache.mapping))
+    if let Some(cache) = self.selector_snapshot_cache.as_ref() {
+      (Arc::clone(&cache.dom), Arc::clone(&cache.mapping))
+    } else {
+      let dom = Arc::new(self.to_renderer_dom());
+      let mapping = Arc::new(self.build_selector_preorder_mapping());
+      self.selector_snapshot_cache = Some(SelectorSnapshotCache {
+        generation,
+        nodes_len,
+        scripting_enabled,
+        dom: Arc::clone(&dom),
+        mapping: Arc::clone(&mapping),
+      });
+      (dom, mapping)
+    }
   }
 
   pub fn to_renderer_dom_with_mapping(&self) -> RendererDomSnapshot {
@@ -2034,6 +2043,60 @@ mod helper_tests {
     );
 
     assert_eq!(doc.body(), Some(body));
+  }
+}
+
+#[cfg(test)]
+mod selector_snapshot_cache_tests {
+  use super::Document;
+  use selectors::context::QuirksMode;
+  use std::sync::Arc;
+
+  #[test]
+  fn selector_snapshot_cache_reuses_snapshot_when_document_is_unchanged() {
+    let mut doc = Document::new(QuirksMode::NoQuirks);
+    let root = doc.root();
+    let div = doc.create_element("div", "");
+    doc.append_child(root, div).unwrap();
+
+    let (dom1, mapping1) = doc.selector_snapshot();
+    let (dom2, mapping2) = doc.selector_snapshot();
+
+    assert!(Arc::ptr_eq(&dom1, &dom2));
+    assert!(Arc::ptr_eq(&mapping1, &mapping2));
+  }
+
+  #[test]
+  fn selector_snapshot_cache_rebuilds_when_mutation_generation_changes() {
+    let mut doc = Document::new(QuirksMode::NoQuirks);
+    let root = doc.root();
+    let div = doc.create_element("div", "");
+    doc.append_child(root, div).unwrap();
+
+    let (dom1, mapping1) = doc.selector_snapshot();
+
+    let span = doc.create_element("span", "");
+    doc.append_child(div, span).unwrap();
+
+    let (dom2, mapping2) = doc.selector_snapshot();
+    assert!(!Arc::ptr_eq(&dom1, &dom2));
+    assert!(!Arc::ptr_eq(&mapping1, &mapping2));
+  }
+
+  #[test]
+  fn selector_snapshot_cache_rebuilds_when_nodes_len_changes() {
+    let mut doc = Document::new(QuirksMode::NoQuirks);
+    let root = doc.root();
+    let div = doc.create_element("div", "");
+    doc.append_child(root, div).unwrap();
+
+    let (dom1, mapping1) = doc.selector_snapshot();
+
+    let _detached = doc.create_element("span", "");
+
+    let (dom2, mapping2) = doc.selector_snapshot();
+    assert!(!Arc::ptr_eq(&dom1, &dom2));
+    assert!(!Arc::ptr_eq(&mapping1, &mapping2));
   }
 }
 

@@ -30,12 +30,12 @@ impl Document {
           && (namespace.is_empty() || namespace == HTML_NAMESPACE)
       );
       let script_force_async = if is_html_script {
-        let NodeKind::Element { attributes, .. } = &node.kind else {
-          unreachable!();
-        };
-        !attributes
-          .iter()
-          .any(|(name, _)| name.eq_ignore_ascii_case("async"))
+        match &node.kind {
+          NodeKind::Element { attributes, .. } => !attributes
+            .iter()
+            .any(|(name, _)| name.eq_ignore_ascii_case("async")),
+          _ => false,
+        }
       } else {
         false
       };

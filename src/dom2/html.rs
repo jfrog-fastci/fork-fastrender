@@ -367,10 +367,9 @@ impl Document {
       _ => (None, false),
     };
 
-    let parse_context = if element.is_none() || element_is_html {
-      self.create_element("body", HTML_NAMESPACE)
-    } else {
-      element.expect("element checked above")
+    let parse_context = match (element, element_is_html) {
+      (Some(element), false) => element,
+      _ => self.create_element("body", HTML_NAMESPACE),
     };
 
     let fragment = super::dom_parsing::parse_html_fragment_as_fragment(self, parse_context, html)?;

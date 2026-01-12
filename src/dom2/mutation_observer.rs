@@ -156,24 +156,20 @@ impl MutationObserverRegistry {
       return Ok(());
     }
 
-    if !self.observers.contains_key(&observer) {
-      if self.observers.len() >= limits.max_observers {
-        return Err(DomError::NotSupportedError);
-      }
-      self.observers.insert(
-        observer,
-        ObserverState {
+    let observers_len = self.observers.len();
+    let state = match self.observers.entry(observer) {
+      std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
+      std::collections::hash_map::Entry::Vacant(entry) => {
+        if observers_len >= limits.max_observers {
+          return Err(DomError::NotSupportedError);
+        }
+        entry.insert(ObserverState {
           records: Vec::new(),
           observed_targets: Vec::new(),
           in_pending: false,
-        },
-      );
-    }
-
-    let state = self
-      .observers
-      .get_mut(&observer)
-      .expect("observer state should exist");
+        })
+      }
+    };
 
     if state.records.len() >= limits.max_records_per_observer {
       return Ok(());
@@ -474,5 +470,73 @@ impl Document {
     }
 
     Ok(())
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  fn record(target: NodeId) -> MutationRecord {
+    MutationRecord {
+      type_: MutationRecordType::Attributes,
+      target,
+      added_nodes: Vec::new(),
+      removed_nodes: Vec::new(),
+      previous_sibling: None,
+      next_sibling: None,
+      attribute_name: Some("id".to_string()),
+      old_value: None,
+    }
+  }
+
+  #[test]
+  fn queue_record_creates_state_and_schedules_delivery() {
+    let mut registry = MutationObserverRegistry::new(1);
+    registry.queue_record(1, record(NodeId::from_index(0))).unwrap();
+
+    assert!(registry.microtask_queued);
+    assert!(registry.microtask_needs_queueing);
+    assert_eq!(registry.pending, vec![1]);
+    assert_eq!(registry.total_records, 1);
+
+    let state = registry.observers.get(&1).unwrap();
+    assert_eq!(state.records.len(), 1);
+    assert!(state.in_pending);
+  }
+
+  #[test]
+  fn queue_record_is_bounded_per_observer() {
+    let mut registry = MutationObserverRegistry::new(1);
+    registry.set_limits(MutationObserverLimits {
+      max_observers: 10,
+      max_records_per_observer: 1,
+      max_total_records: 10,
+    });
+
+    registry.queue_record(1, record(NodeId::from_index(0))).unwrap();
+    registry.queue_record(1, record(NodeId::from_index(0))).unwrap();
+
+    assert_eq!(registry.total_records, 1);
+    assert_eq!(registry.pending, vec![1]);
+    assert_eq!(registry.observers.get(&1).unwrap().records.len(), 1);
+  }
+
+  #[test]
+  fn queue_record_is_bounded_globally() {
+    let mut registry = MutationObserverRegistry::new(1);
+    registry.set_limits(MutationObserverLimits {
+      max_observers: 10,
+      max_records_per_observer: 10,
+      max_total_records: 1,
+    });
+
+    registry.queue_record(1, record(NodeId::from_index(0))).unwrap();
+    registry.queue_record(2, record(NodeId::from_index(0))).unwrap();
+
+    assert_eq!(registry.total_records, 1);
+    assert!(registry.observers.contains_key(&1));
+    assert!(!registry.observers.contains_key(&2));
+    assert_eq!(registry.pending, vec![1]);
   }
 }
