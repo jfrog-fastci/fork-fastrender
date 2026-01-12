@@ -44,6 +44,8 @@ pub trait DomHostVmJs {
 
   fn set_element_class_name(&mut self, element: NodeId, value: &str) -> Result<bool, DomError>;
 
+  fn class_list_tokens(&self, element: NodeId) -> Result<Vec<String>, DomError>;
+
   fn class_list_add(&mut self, element: NodeId, tokens: &[&str]) -> Result<bool, DomError>;
   fn class_list_remove(&mut self, element: NodeId, tokens: &[&str]) -> Result<bool, DomError>;
   fn class_list_toggle(
@@ -141,6 +143,10 @@ where
       Ok(changed) => (Ok(changed), changed),
       Err(err) => (Err(err), false),
     })
+  }
+
+  fn class_list_tokens(&self, element: NodeId) -> Result<Vec<String>, DomError> {
+    self.with_dom(|dom| dom.class_list_tokens(element))
   }
 
   fn class_list_add(&mut self, element: NodeId, tokens: &[&str]) -> Result<bool, DomError> {

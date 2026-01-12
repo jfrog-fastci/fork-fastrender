@@ -1001,7 +1001,10 @@ impl WindowRealm {
         receiver: Value,
       ) -> Result<Option<Value>, VmError> {
         let _ = receiver;
-        dataset_exotic_get(scope, self.any.vm_host_mut(), obj, key)
+        if let Some(value) = dataset_exotic_get(scope, self.any.vm_host_mut(), obj, key)? {
+          return Ok(Some(value));
+        }
+        dom_token_list_exotic_get(scope, self.any.vm_host_mut(), obj, key)
       }
 
       fn host_exotic_set(
@@ -1013,7 +1016,10 @@ impl WindowRealm {
         receiver: Value,
       ) -> Result<Option<bool>, VmError> {
         let _ = receiver;
-        dataset_exotic_set(scope, self.any.vm_host_mut(), obj, key, value)
+        if let Some(ok) = dataset_exotic_set(scope, self.any.vm_host_mut(), obj, key, value)? {
+          return Ok(Some(ok));
+        }
+        dom_token_list_exotic_set(scope, self.any.vm_host_mut(), obj, key, value)
       }
 
       fn host_exotic_delete(
@@ -1022,7 +1028,10 @@ impl WindowRealm {
         obj: GcObject,
         key: PropertyKey,
       ) -> Result<Option<bool>, VmError> {
-        dataset_exotic_delete(scope, self.any.vm_host_mut(), obj, key)
+        if let Some(ok) = dataset_exotic_delete(scope, self.any.vm_host_mut(), obj, key)? {
+          return Ok(Some(ok));
+        }
+        dom_token_list_exotic_delete(scope, self.any.vm_host_mut(), obj, key)
       }
 
       fn host_call_job_callback(
@@ -1135,7 +1144,10 @@ impl WindowRealm {
           receiver: Value,
         ) -> Result<Option<Value>, VmError> {
           let _ = receiver;
-          dataset_exotic_get(scope, self.any.vm_host_mut(), obj, key)
+          if let Some(value) = dataset_exotic_get(scope, self.any.vm_host_mut(), obj, key)? {
+            return Ok(Some(value));
+          }
+          dom_token_list_exotic_get(scope, self.any.vm_host_mut(), obj, key)
         }
 
         fn host_exotic_set(
@@ -1147,7 +1159,10 @@ impl WindowRealm {
           receiver: Value,
         ) -> Result<Option<bool>, VmError> {
           let _ = receiver;
-          dataset_exotic_set(scope, self.any.vm_host_mut(), obj, key, value)
+          if let Some(ok) = dataset_exotic_set(scope, self.any.vm_host_mut(), obj, key, value)? {
+            return Ok(Some(ok));
+          }
+          dom_token_list_exotic_set(scope, self.any.vm_host_mut(), obj, key, value)
         }
 
         fn host_exotic_delete(
@@ -1156,7 +1171,10 @@ impl WindowRealm {
           obj: GcObject,
           key: PropertyKey,
         ) -> Result<Option<bool>, VmError> {
-          dataset_exotic_delete(scope, self.any.vm_host_mut(), obj, key)
+          if let Some(ok) = dataset_exotic_delete(scope, self.any.vm_host_mut(), obj, key)? {
+            return Ok(Some(ok));
+          }
+          dom_token_list_exotic_delete(scope, self.any.vm_host_mut(), obj, key)
         }
 
         fn host_call_job_callback(
@@ -1804,6 +1822,7 @@ const EVENT_TARGET_BRAND_KEY: &str = "__fastrender_event_target";
 const EVENT_TARGET_PARENT_KEY: &str = "__fastrender_event_target_parent";
 const ABORT_SIGNAL_BRAND_KEY: &str = "__fastrender_abort_signal";
 const NODE_ID_KEY: &str = "__fastrender_node_id";
+// Host-slot `b` tag for DOMTokenList wrappers (`Element.classList`).
 const DOM_TOKEN_LIST_HOST_TAG: u64 = 3;
 const DOM_STRING_MAP_HOST_KIND: u64 = 4;
 const CSS_STYLE_DECL_HOST_TAG: u64 = 5;
@@ -2161,6 +2180,153 @@ pub(crate) fn dataset_exotic_delete(
   }
 
   Ok(Some(true))
+}
+
+fn canonical_array_index(scope: &Scope<'_>, key: PropertyKey) -> Result<Option<u32>, VmError> {
+  let PropertyKey::String(s) = key else {
+    return Ok(None);
+  };
+  let s = scope.heap().get_string(s)?;
+  let units = s.as_code_units();
+  if units.is_empty() {
+    return Ok(None);
+  }
+
+  const U0: u16 = b'0' as u16;
+  const U9: u16 = b'9' as u16;
+
+  // `ToString(ToUint32(P)) === P` implies no leading zeros (except the single "0").
+  if units.len() > 1 && units[0] == U0 {
+    return Ok(None);
+  }
+
+  let mut value: u64 = 0;
+  for &u in units {
+    if !(U0..=U9).contains(&u) {
+      return Ok(None);
+    }
+    let digit = (u - U0) as u64;
+    value = match value.checked_mul(10).and_then(|v| v.checked_add(digit)) {
+      Some(v) => v,
+      None => return Ok(None),
+    };
+    if value > u32::MAX as u64 {
+      return Ok(None);
+    }
+  }
+
+  // Exclude 2^32-1.
+  if value == u32::MAX as u64 {
+    return Ok(None);
+  }
+
+  Ok(Some(value as u32))
+}
+
+pub(crate) fn dom_token_list_exotic_get(
+  scope: &mut Scope<'_>,
+  mut host: Option<&mut dyn VmHost>,
+  obj: GcObject,
+  key: PropertyKey,
+) -> Result<Option<Value>, VmError> {
+  // `host_exotic_get` is called for *all* objects, including VM-internal kinds like Promises and
+  // typed arrays. `Heap::object_host_slots` only supports ordinary objects/functions; for other
+  // object kinds, treat this as "no host slots" rather than failing the property access.
+  let slots = match scope.heap().object_host_slots(obj) {
+    Ok(slots) => slots,
+    Err(VmError::InvalidHandle { .. }) if scope.heap().is_valid_object(obj) => None,
+    Err(err) => return Err(err),
+  };
+  let Some(slots) = slots else {
+    return Ok(None);
+  };
+  if slots.b != DOM_TOKEN_LIST_HOST_TAG {
+    return Ok(None);
+  }
+
+  let Some(idx) = canonical_array_index(scope, key)? else {
+    return Ok(None);
+  };
+
+  let Some(host) = host.as_deref_mut() else {
+    return Ok(None);
+  };
+  let Some(host) = crate::js::dom_host::dom_host_vmjs(host) else {
+    return Ok(None);
+  };
+
+  let node_index = match usize::try_from(slots.a) {
+    Ok(v) => v,
+    Err(_) => return Ok(None),
+  };
+  let node_id = match host.node_id_from_index(node_index) {
+    Ok(id) => id,
+    Err(_) => return Ok(None),
+  };
+
+  let tokens = match host.class_list_tokens(node_id) {
+    Ok(tokens) => tokens,
+    Err(_) => return Ok(None),
+  };
+
+  let idx = idx as usize;
+  let Some(token) = tokens.get(idx) else {
+    return Ok(Some(Value::Undefined));
+  };
+  Ok(Some(Value::String(scope.alloc_string(token)?)))
+}
+
+pub(crate) fn dom_token_list_exotic_set(
+  scope: &mut Scope<'_>,
+  _host: Option<&mut dyn VmHost>,
+  obj: GcObject,
+  key: PropertyKey,
+  _value: Value,
+) -> Result<Option<bool>, VmError> {
+  let slots = match scope.heap().object_host_slots(obj) {
+    Ok(slots) => slots,
+    Err(VmError::InvalidHandle { .. }) if scope.heap().is_valid_object(obj) => None,
+    Err(err) => return Err(err),
+  };
+  let Some(slots) = slots else {
+    return Ok(None);
+  };
+  if slots.b != DOM_TOKEN_LIST_HOST_TAG {
+    return Ok(None);
+  }
+
+  if canonical_array_index(scope, key)?.is_some() {
+    // Indexed properties on DOMTokenList are read-only.
+    return Ok(Some(false));
+  }
+
+  Ok(None)
+}
+
+pub(crate) fn dom_token_list_exotic_delete(
+  scope: &mut Scope<'_>,
+  _host: Option<&mut dyn VmHost>,
+  obj: GcObject,
+  key: PropertyKey,
+) -> Result<Option<bool>, VmError> {
+  let slots = match scope.heap().object_host_slots(obj) {
+    Ok(slots) => slots,
+    Err(VmError::InvalidHandle { .. }) if scope.heap().is_valid_object(obj) => None,
+    Err(err) => return Err(err),
+  };
+  let Some(slots) = slots else {
+    return Ok(None);
+  };
+  if slots.b != DOM_TOKEN_LIST_HOST_TAG {
+    return Ok(None);
+  }
+
+  if canonical_array_index(scope, key)?.is_some() {
+    // Indexed properties on DOMTokenList are read-only.
+    return Ok(Some(false));
+  }
+
+  Ok(None)
 }
 
 const MAX_BASE64_INPUT_LEN: usize = 32 * 1024 * 1024;
@@ -6020,6 +6186,8 @@ fn get_or_create_node_wrapper(
       if should_define_class_list {
         let class_list = scope.alloc_object()?;
         scope.push_root(Value::Object(class_list))?;
+        // DOMTokenList-like object: implement numeric index access (`el.classList[0]`) via host exotic
+        // property hooks (see `dom_token_list_exotic_*`).
         scope.heap_mut().object_set_host_slots(
           class_list,
           HostSlots {
@@ -26078,7 +26246,10 @@ mod tests {
       receiver: Value,
     ) -> Result<Option<Value>, VmError> {
       let _ = receiver;
-      dataset_exotic_get(scope, self.any.vm_host_mut(), obj, key)
+      if let Some(value) = dataset_exotic_get(scope, self.any.vm_host_mut(), obj, key)? {
+        return Ok(Some(value));
+      }
+      dom_token_list_exotic_get(scope, self.any.vm_host_mut(), obj, key)
     }
 
     fn host_exotic_set(
@@ -26090,7 +26261,10 @@ mod tests {
       receiver: Value,
     ) -> Result<Option<bool>, VmError> {
       let _ = receiver;
-      dataset_exotic_set(scope, self.any.vm_host_mut(), obj, key, value)
+      if let Some(ok) = dataset_exotic_set(scope, self.any.vm_host_mut(), obj, key, value)? {
+        return Ok(Some(ok));
+      }
+      dom_token_list_exotic_set(scope, self.any.vm_host_mut(), obj, key, value)
     }
 
     fn host_exotic_delete(
@@ -26099,7 +26273,10 @@ mod tests {
       obj: GcObject,
       key: PropertyKey,
     ) -> Result<Option<bool>, VmError> {
-      dataset_exotic_delete(scope, self.any.vm_host_mut(), obj, key)
+      if let Some(ok) = dataset_exotic_delete(scope, self.any.vm_host_mut(), obj, key)? {
+        return Ok(Some(ok));
+      }
+      dom_token_list_exotic_delete(scope, self.any.vm_host_mut(), obj, key)
     }
   }
 
@@ -28626,6 +28803,53 @@ mod tests {
         const d = isDataCloneError(() => structuredClone(records[0]));\n\
 \n\
         return a && b && c && d;\n\
+      })()",
+    )?;
+    assert_eq!(ok, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn dom_token_list_indexed_property_access_reads_tokens() -> Result<(), VmError> {
+    let renderer_dom = crate::dom::parse_html("<!doctype html><html></html>").unwrap();
+    let mut host = crate::js::HostDocumentState::from_renderer_dom(&renderer_dom);
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+
+    let ok = exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      "(() => {\n\
+        const el = document.createElement('div');\n\
+        el.className = 'a b';\n\
+        return el.classList[0] === 'a'\n\
+          && el.classList['0'] === 'a'\n\
+          && el.classList[1] === 'b'\n\
+          && el.classList[2] === undefined;\n\
+      })()",
+    )?;
+    assert_eq!(ok, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn dom_token_list_indexed_properties_are_read_only() -> Result<(), VmError> {
+    let renderer_dom = crate::dom::parse_html("<!doctype html><html></html>").unwrap();
+    let mut host = crate::js::HostDocumentState::from_renderer_dom(&renderer_dom);
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+
+    let ok = exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      "(() => {\n\
+        const el = document.createElement('div');\n\
+        el.className = 'a b';\n\
+        let err = null;\n\
+        try {\n\
+          (() => { 'use strict'; el.classList[0] = 'x'; })();\n\
+        } catch (e) {\n\
+          err = e;\n\
+        }\n\
+        return err && err.name === 'TypeError' && el.classList[0] === 'a';\n\
       })()",
     )?;
     assert_eq!(ok, Value::Bool(true));
