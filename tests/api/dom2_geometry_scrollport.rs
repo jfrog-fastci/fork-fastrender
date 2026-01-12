@@ -1,4 +1,5 @@
 use fastrender::api::{BrowserDocumentDom2, RenderOptions};
+use fastrender::debug::runtime::RuntimeToggles;
 
 #[test]
 fn dom2_geometry_scrollport_accounts_for_scrollbar_gutter_reservation() {
@@ -19,7 +20,10 @@ fn dom2_geometry_scrollport_accounts_for_scrollbar_gutter_reservation() {
       </body>
     </html>"#;
 
-  let mut document = BrowserDocumentDom2::from_html(html, RenderOptions::default()).expect("document");
+  // Don't inherit host `FASTR_*` env vars; tests should be deterministic under the unified
+  // integration test binary.
+  let options = RenderOptions::default().with_runtime_toggles(RuntimeToggles::default());
+  let mut document = BrowserDocumentDom2::from_html(html, options).expect("document");
 
   let mut root_node = None;
   document.mutate_dom(|dom| {
@@ -38,8 +42,7 @@ fn dom2_geometry_scrollport_accounts_for_scrollbar_gutter_reservation() {
     .scrollport_box_in_viewport(root_node)
     .expect("scrollport box");
 
-  let hide_scrollbars = fastrender::debug::runtime::runtime_toggles().truthy("FASTR_HIDE_SCROLLBARS");
-  let expected_gutter = if hide_scrollbars { 0.0 } else { 15.0 };
+  let expected_gutter = 15.0;
 
   let delta_w = padding_box.width() - scrollport_box.width();
   let delta_h = padding_box.height() - scrollport_box.height();
@@ -53,4 +56,3 @@ fn dom2_geometry_scrollport_accounts_for_scrollbar_gutter_reservation() {
     "expected scrollport height to shrink by {expected_gutter}px, got {delta_h}px (padding={padding_box:?}, scrollport={scrollport_box:?})"
   );
 }
-
