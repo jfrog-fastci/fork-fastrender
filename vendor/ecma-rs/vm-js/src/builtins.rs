@@ -5476,7 +5476,7 @@ pub fn object_prototype_to_string(
   // 1. Special-case `undefined` / `null`.
   // 2. `O = ToObject(this)`.
   // 3. Compute a `builtinTag` (Array / Function / Object / primitive wrappers).
-  // 4. `tag = Get(O, @@toStringTag)` (prototype chain lookup; host-aware; minimal Proxy support).
+  // 4. `tag = Get(O, @@toStringTag)` (prototype chain lookup; host-aware; Proxy-aware).
   // 5. If `tag` is a string, use it; otherwise use `builtinTag`.
   // 6. Return `[object ${tag}]`.
   let mut scope = scope.reborrow();
@@ -5531,22 +5531,7 @@ pub fn object_prototype_to_string(
   ];
   const TAG_OBJECT: [u16; 6] = [b'O' as u16, b'b' as u16, b'j' as u16, b'e' as u16, b'c' as u16, b't' as u16];
 
-  fn unwrap_proxy_target(heap: &crate::Heap, mut obj: GcObject) -> Result<Option<GcObject>, VmError> {
-    // Follow Proxy chains iteratively to avoid recursion.
-    for _ in 0..crate::MAX_PROTOTYPE_CHAIN {
-      if !heap.is_proxy_object(obj) {
-        return Ok(Some(obj));
-      }
-      let Some(target) = heap.proxy_target(obj)? else {
-        // Revoked proxy.
-        return Ok(None);
-      };
-      obj = target;
-    }
-    Ok(None)
-  }
-
-  fn get_with_proxy_support(
+  fn get_proxy_aware(
     vm: &mut Vm,
     scope: &mut Scope<'_>,
     host: &mut dyn VmHost,
@@ -5555,10 +5540,26 @@ pub fn object_prototype_to_string(
     key: PropertyKey,
     receiver: Value,
   ) -> Result<Value, VmError> {
-    let Some(target) = unwrap_proxy_target(scope.heap(), obj)? else {
-      return Ok(Value::Undefined);
-    };
-    scope.ordinary_get_with_host_and_hooks(vm, host, hooks, target, key, receiver)
+    // Proxy-aware `[[Get]]` internal method dispatch.
+    //
+    // `vm-js` does not implement Proxy trap semantics yet, but Proxy objects can exist as
+    // host-created values. Per spec, any attempt to perform `[[Get]]` on a revoked Proxy must throw
+    // a TypeError.
+    let mut current = obj;
+    let mut steps = 0usize;
+    loop {
+      if steps != 0 && steps % 1024 == 0 {
+        vm.tick()?;
+      }
+      steps = steps.saturating_add(1);
+      if !scope.heap().is_proxy_object(current) {
+        return scope.ordinary_get_with_host_and_hooks(vm, host, hooks, current, key, receiver);
+      }
+      let Some(target) = scope.heap().proxy_target(current)? else {
+        return Err(VmError::TypeError("Cannot perform 'get' on a revoked Proxy"));
+      };
+      current = target;
+    }
   }
 
   // 1. Handle `undefined` / `null` early.
@@ -5597,23 +5598,13 @@ pub fn object_prototype_to_string(
     Value::String(_) => &TAG_STRING,
     Value::Symbol(_) => &TAG_SYMBOL,
     Value::Object(_) => {
-      let brand_obj = unwrap_proxy_target(scope.heap(), o)?;
-      if let Some(brand_obj) = brand_obj {
-        if scope.heap().object_is_array(brand_obj)? {
-          &TAG_ARRAY
-        } else if scope.heap().is_callable(Value::Object(o))? {
-          // `IsCallable` follows Proxy chains.
-          &TAG_FUNCTION
-        } else {
-          &TAG_OBJECT
-        }
+      if crate::spec_ops::is_array_with_host_and_hooks(vm, &mut scope, host, hooks, receiver)? {
+        &TAG_ARRAY
+      } else if scope.heap().is_callable(receiver)? {
+        // `IsCallable` follows Proxy chains (and is intentionally non-throwing for revoked proxies).
+        &TAG_FUNCTION
       } else {
-        // Revoked (or pathologically deep) Proxy: fall back to callability / object.
-        if scope.heap().is_callable(Value::Object(o))? {
-          &TAG_FUNCTION
-        } else {
-          &TAG_OBJECT
-        }
+        &TAG_OBJECT
       }
     }
     _ => &TAG_OBJECT,
@@ -5621,7 +5612,7 @@ pub fn object_prototype_to_string(
 
   // `Get(O, @@toStringTag)`
   let to_string_tag_key = PropertyKey::from_symbol(intr.well_known_symbols().to_string_tag);
-  let to_string_tag = get_with_proxy_support(vm, &mut scope, host, hooks, o, to_string_tag_key, receiver)?;
+  let to_string_tag = get_proxy_aware(vm, &mut scope, host, hooks, o, to_string_tag_key, receiver)?;
   let tag_override_units: Option<Vec<u16>> = match to_string_tag {
     Value::String(s) => Some(scope.heap().get_string(s)?.as_code_units().to_vec()),
     _ => None,

@@ -76,6 +76,18 @@ fn object_prototype_to_string_tags() -> Result<(), VmError> {
     let proxy = scope.alloc_proxy(Some(target), Some(handler))?;
     define_global(&mut scope, global, "callableProxy", Value::Object(proxy))?;
 
+    // Revoked callable Proxy: `Object.prototype.toString` must throw on `Get(O, @@toStringTag)`.
+    let revoked_handler = scope.alloc_object()?;
+    scope.push_root(Value::Object(revoked_handler))?;
+    let revoked_proxy = scope.alloc_proxy(Some(target), Some(revoked_handler))?;
+    scope.revoke_proxy(revoked_proxy)?;
+    define_global(
+      &mut scope,
+      global,
+      "revokedCallableProxy",
+      Value::Object(revoked_proxy),
+    )?;
+
     // WeakMap / WeakSet objects: ordinary objects with the intrinsic prototype.
     let weak_map = scope.alloc_object()?;
     scope
@@ -105,6 +117,15 @@ fn object_prototype_to_string_tags() -> Result<(), VmError> {
   let out = rt.exec_script("Object.prototype.toString.call(weakSet)")?;
   assert_eq!(expect_string(&rt, out), "[object WeakSet]");
 
+  // Revoked Proxies must throw when `Object.prototype.toString` performs `Get(O, @@toStringTag)`.
+  let out = rt.exec_script(
+    r#"try { Object.prototype.toString.call(revokedCallableProxy) } catch (e) { e.message }"#,
+  )?;
+  let msg = expect_string(&rt, out);
+  assert!(
+    msg.contains("revoked"),
+    "expected revoked-proxy message, got {msg}"
+  );
+
   Ok(())
 }
-
