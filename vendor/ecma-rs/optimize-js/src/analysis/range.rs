@@ -1118,6 +1118,7 @@ impl ForwardEdgeDataFlowAnalysis for RangeAnalysis {
         self.set_var(state, tgt, out);
       }
       InstTyp::Call
+      | InstTyp::Invoke
       | InstTyp::ArrayLit
       | InstTyp::ObjectLit
       | InstTyp::RegexLit
@@ -1128,12 +1129,6 @@ impl ForwardEdgeDataFlowAnalysis for RangeAnalysis {
       | InstTyp::In
       | InstTyp::Instanceof => {
         if let Some(&tgt) = inst.tgts.get(0) {
-          self.set_var(state, tgt, IntRange::Unknown);
-        }
-      }
-      InstTyp::Invoke => {
-        let (tgt, _callee, _this, _args, _spreads, _normal, _exception) = inst.as_invoke();
-        if let Some(tgt) = tgt {
           self.set_var(state, tgt, IntRange::Unknown);
         }
       }
@@ -1158,6 +1153,10 @@ impl ForwardEdgeDataFlowAnalysis for RangeAnalysis {
         let tgt = inst.tgts[0];
         self.set_var(state, tgt, IntRange::Unknown);
       }
+      InstTyp::Catch => {
+        let tgt = inst.as_catch();
+        self.set_var(state, tgt, IntRange::Unknown);
+      }
       #[cfg(feature = "native-async-ops")]
       InstTyp::Await | InstTyp::PromiseAll | InstTyp::PromiseRace => {
         if let Some(&tgt) = inst.tgts.get(0) {
@@ -1170,10 +1169,6 @@ impl ForwardEdgeDataFlowAnalysis for RangeAnalysis {
         if let Some(tgt) = tgt {
           self.set_var(state, tgt, IntRange::Unknown);
         }
-      }
-      InstTyp::Catch => {
-        let tgt = inst.as_catch();
-        self.set_var(state, tgt, IntRange::Unknown);
       }
       InstTyp::ForeignLoad => {
         let (tgt, _foreign) = inst.as_foreign_load();

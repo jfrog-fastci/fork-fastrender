@@ -426,11 +426,20 @@ impl DataFlowAnalysis for EncodingAnalysis {
         };
         self.transfer_template_call(state, tgt, &inst.args);
       }
-      InstTyp::Call => {
+      InstTyp::Call | InstTyp::Invoke => {
         let Some(tgt) = inst.tgts.get(0).copied() else {
           return;
         };
-        let (_, callee, _, args, _) = inst.as_call();
+        let callee = match inst.t {
+          InstTyp::Call => inst.as_call().1,
+          InstTyp::Invoke => inst.as_invoke().1,
+          _ => unreachable!(),
+        };
+        let args = match inst.t {
+          InstTyp::Call => inst.as_call().3,
+          InstTyp::Invoke => inst.as_invoke().3,
+          _ => unreachable!(),
+        };
         match callee {
           Arg::Builtin(path) if path == "__optimize_js_template" => {
             self.transfer_template_call(state, tgt, args);

@@ -252,11 +252,14 @@ fn build_var_defs(
         .unwrap_or(VarDef::Unknown),
       InstTyp::Phi => VarDef::Phi(inst.args.clone()),
       InstTyp::Call | InstTyp::Invoke => {
-        let (tgt, callee, _this, args, spreads) = match inst.t {
-          InstTyp::Call => inst.as_call(),
+        let (tgt, callee, args, spreads) = match inst.t {
+          InstTyp::Call => {
+            let (tgt, callee, _this, args, spreads) = inst.as_call();
+            (tgt, callee, args, spreads)
+          }
           InstTyp::Invoke => {
-            let (tgt, callee, this, args, spreads, _normal, _exception) = inst.as_invoke();
-            (tgt, callee, this, args, spreads)
+            let (tgt, callee, _this, args, spreads, _normal, _exceptional) = inst.as_invoke();
+            (tgt, callee, args, spreads)
           }
           _ => unreachable!(),
         };
@@ -418,11 +421,14 @@ fn summarize_function(
   for inst in collect_insts(cfg) {
     match inst.t {
       InstTyp::Call | InstTyp::Invoke => {
-        let (_tgt, callee, _this, args, spreads) = match inst.t {
-          InstTyp::Call => inst.as_call(),
+        let (callee, args, spreads) = match inst.t {
+          InstTyp::Call => {
+            let (_tgt, callee, _this, args, spreads) = inst.as_call();
+            (callee, args, spreads)
+          }
           InstTyp::Invoke => {
-            let (tgt, callee, this, args, spreads, _normal, _exception) = inst.as_invoke();
-            (tgt, callee, this, args, spreads)
+            let (_tgt, callee, _this, args, spreads, _normal, _exceptional) = inst.as_invoke();
+            (callee, args, spreads)
           }
           _ => unreachable!(),
         };

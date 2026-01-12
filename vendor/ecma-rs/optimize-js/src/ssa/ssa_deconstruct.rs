@@ -72,6 +72,10 @@ pub fn deconstruct_ssa(cfg: &mut Cfg, c_label: &mut Counter) {
   }
   new_bblocks.sort_by_key(|b| b.label);
   for b in new_bblocks {
+    let edge_kind = cfg
+      .graph
+      .edge_kind(b.parent, b.child)
+      .expect("phi deconstruction expected existing edge");
     // Detach parent from child.
     cfg.graph.disconnect(b.parent, b.child);
     // Update any terminator inst in parent that encodes the edge we're rewriting.
@@ -88,7 +92,7 @@ pub fn deconstruct_ssa(cfg: &mut Cfg, c_label: &mut Counter) {
       }
     };
     // Attach new bblock.
-    cfg.graph.connect(b.parent, b.label);
+    cfg.graph.connect_edge(b.parent, b.label, edge_kind);
     cfg.graph.connect(b.label, b.child);
     // Insert new bblock.
     cfg.bblocks.add(b.label, b.insts);

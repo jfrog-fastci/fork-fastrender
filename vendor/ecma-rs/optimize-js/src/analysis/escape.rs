@@ -354,14 +354,14 @@ fn collect_local_alloc_flow_facts(
           facts.external_defs.insert(tgt);
         }
         InstTyp::Call | InstTyp::Invoke => {
-          let (tgt, callee, _this, args, spreads) = match inst.t {
+          let (tgt, callee, args, spreads) = match inst.t {
             InstTyp::Call => {
-              let (tgt, callee, this, args, spreads) = inst.as_call();
-              (tgt, callee, this, args, spreads)
+              let (tgt, callee, _this, args, spreads) = inst.as_call();
+              (tgt, callee, args, spreads)
             }
             InstTyp::Invoke => {
-              let (tgt, callee, this, args, spreads, _normal, _exception) = inst.as_invoke();
-              (tgt, callee, this, args, spreads)
+              let (tgt, callee, _this, args, spreads, _normal, _exceptional) = inst.as_invoke();
+              (tgt, callee, args, spreads)
             }
             _ => unreachable!(),
           };
@@ -622,11 +622,14 @@ pub fn analyze_cfg_escapes_with_params_and_summaries(
         if !matches!(inst.t, InstTyp::Call | InstTyp::Invoke) {
           continue;
         }
-        let (tgt, callee, _this, args, spreads) = match inst.t {
-          InstTyp::Call => inst.as_call(),
+        let (tgt, callee, args, spreads) = match inst.t {
+          InstTyp::Call => {
+            let (tgt, callee, _this, args, spreads) = inst.as_call();
+            (tgt, callee, args, spreads)
+          }
           InstTyp::Invoke => {
-            let (tgt, callee, this, args, spreads, _normal, _exception) = inst.as_invoke();
-            (tgt, callee, this, args, spreads)
+            let (tgt, callee, _this, args, spreads, _normal, _exceptional) = inst.as_invoke();
+            (tgt, callee, args, spreads)
           }
           _ => unreachable!(),
         };
@@ -906,11 +909,14 @@ pub fn analyze_cfg_escapes_with_params_and_summaries(
           }
         }
         InstTyp::Call | InstTyp::Invoke => {
-          let (_tgt, callee, this, args, spreads) = match inst.t {
-            InstTyp::Call => inst.as_call(),
+          let (callee, this, args, spreads) = match inst.t {
+            InstTyp::Call => {
+              let (_tgt, callee, this, args, spreads) = inst.as_call();
+              (callee, this, args, spreads)
+            }
             InstTyp::Invoke => {
-              let (tgt, callee, this, args, spreads, _normal, _exception) = inst.as_invoke();
-              (tgt, callee, this, args, spreads)
+              let (_tgt, callee, this, args, spreads, _normal, _exceptional) = inst.as_invoke();
+              (callee, this, args, spreads)
             }
             _ => unreachable!(),
           };

@@ -656,6 +656,9 @@ impl<'a> FunctionDecompiler<'a> {
           .expect("known api call inst should lower");
         Ok(Some(stmt))
       }
+      InstTyp::Invoke | InstTyp::Catch => Err(il::DecompileError::Unsupported(
+        "exception-aware CFG instructions are not supported in decompiler output".into(),
+      )),
       #[cfg(feature = "native-async-ops")]
       InstTyp::Await => {
         self.ensure_supported_args(inst.args.iter())?;
@@ -698,9 +701,6 @@ impl<'a> FunctionDecompiler<'a> {
           il::lower_array_chain_inst(self, self, inst, init).expect("array chain inst should lower");
         Ok(Some(stmt))
       }
-      InstTyp::Invoke | InstTyp::Catch => Err(il::DecompileError::Unsupported(
-        "exception-aware control flow not supported in decompiler output".into(),
-      )),
       InstTyp::ArrayStore => {
         self.ensure_supported_args(inst.args.iter())?;
         Ok(lower_array_store_inst(self, self, inst))

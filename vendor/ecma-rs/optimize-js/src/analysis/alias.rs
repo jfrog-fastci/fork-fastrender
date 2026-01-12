@@ -233,8 +233,18 @@ fn points_to_of_inst(loc: InstLoc, inst: &Inst, result: &AliasResult) -> PointsT
       let (_, name) = inst.as_unknown_load();
       PointsToSet::singleton(AbstractLoc::UnknownGlobal(name.clone()))
     }
-    InstTyp::Call => {
-      let (tgt, callee, _, _, _) = inst.as_call();
+    InstTyp::Call | InstTyp::Invoke => {
+      let (tgt, callee) = match inst.t {
+        InstTyp::Call => {
+          let (tgt, callee, _, _, _) = inst.as_call();
+          (tgt, callee)
+        }
+        InstTyp::Invoke => {
+          let (tgt, callee, _, _, _, _normal, _exceptional) = inst.as_invoke();
+          (tgt, callee)
+        }
+        _ => unreachable!(),
+      };
       if tgt.is_none() {
         return PointsToSet::empty();
       }

@@ -50,7 +50,7 @@ fn cfg_labels_sorted(cfg: &Cfg) -> Vec<u32> {
 fn inst_defines_value(inst: &Inst) -> Option<u32> {
   inst.tgts.get(0).copied()
 }
- 
+  
 fn is_allocation_inst(inst: &Inst) -> bool {
   if inst.tgts.is_empty() {
     return false;
@@ -80,11 +80,11 @@ fn call_return_kind(inst: &Inst, call_summaries: Option<&[FnSummary]>) -> Return
   if !matches!(inst.t, InstTyp::Call | InstTyp::Invoke) {
     return ReturnKind::Unknown;
   }
- 
+
   let (_tgt, callee, _this, _args, spreads) = match inst.t {
     InstTyp::Call => inst.as_call(),
     InstTyp::Invoke => {
-      let (tgt, callee, this, args, spreads, _normal, _exception) = inst.as_invoke();
+      let (tgt, callee, this, args, spreads, _normal, _exceptional) = inst.as_invoke();
       (tgt, callee, this, args, spreads)
     }
     _ => unreachable!(),
@@ -183,15 +183,13 @@ fn collect_alloc_vars(cfg: &Cfg, call_summaries: Option<&[FnSummary]>) -> BTreeS
       continue;
     };
     for inst in block.iter() {
-      if let Some(tgt) = inst_defines_value(inst) {
-        if is_allocation_inst(inst)
-          || matches!(
-            call_return_kind(inst, call_summaries),
-            ReturnKind::FreshAlloc
-          )
-        {
-          allocs.insert(tgt);
-        }
+      let Some(tgt) = inst_defines_value(inst) else {
+        continue;
+      };
+      if is_allocation_inst(inst)
+        || matches!(call_return_kind(inst, call_summaries), ReturnKind::FreshAlloc)
+      {
+        allocs.insert(tgt);
       }
     }
   }
@@ -209,8 +207,16 @@ fn collect_borrowed_defs(cfg: &Cfg, call_summaries: Option<&[FnSummary]>) -> BTr
         continue;
       };
       match inst.t {
+        InstTyp::Catch => {
+          // Exception values flowing into catch/finally handlers are always conservative.
+          borrowed.insert(tgt);
+        }
         InstTyp::ArrayLit | InstTyp::ObjectLit | InstTyp::RegexLit | InstTyp::TemplateLit => {}
-        InstTyp::New | InstTyp::TaggedTemplateLit | InstTyp::Delete | InstTyp::In | InstTyp::Instanceof => {
+        InstTyp::New
+        | InstTyp::TaggedTemplateLit
+        | InstTyp::Delete
+        | InstTyp::In
+        | InstTyp::Instanceof => {
           borrowed.insert(tgt);
         }
         InstTyp::ForeignLoad | InstTyp::UnknownLoad => {
@@ -241,12 +247,9 @@ fn collect_borrowed_defs(cfg: &Cfg, call_summaries: Option<&[FnSummary]>) -> BTr
           match call_return_kind(inst, call_summaries) {
             ReturnKind::FreshAlloc | ReturnKind::Const => {}
             ReturnKind::AliasParam(i) => {
-              let (_tgt, _callee, _this, args, _spreads) = match inst.t {
-                InstTyp::Call => inst.as_call(),
-                InstTyp::Invoke => {
-                  let (tgt, callee, this, args, spreads, _normal, _exception) = inst.as_invoke();
-                  (tgt, callee, this, args, spreads)
-                }
+              let args = match inst.t {
+                InstTyp::Call => inst.as_call().3,
+                InstTyp::Invoke => inst.as_invoke().3,
                 _ => unreachable!(),
               };
               if !matches!(args.get(i), Some(Arg::Var(_))) {
@@ -348,14 +351,18 @@ fn collect_alias_facts(
             tgt_live_out,
           });
         }
-        InstTyp::Call => {
+        InstTyp::Call | InstTyp::Invoke => {
           let Some(tgt) = inst_defines_value(inst) else {
             continue;
           };
           let ReturnKind::AliasParam(i) = call_return_kind(inst, call_summaries) else {
             continue;
           };
-          let (_tgt, _callee, _this, args, _spreads) = inst.as_call();
+          let args = match inst.t {
+            InstTyp::Call => inst.as_call().3,
+            InstTyp::Invoke => inst.as_invoke().3,
+            _ => unreachable!(),
+          };
           let Some(Arg::Var(src)) = args.get(i) else {
             continue;
           };

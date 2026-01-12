@@ -1952,6 +1952,11 @@ pub fn decompile_function(func: &ProgramFunction) -> DecompileResult<Vec<Node<St
             stmts.push(expr_stmt(call_expr));
           }
         }
+        InstTyp::Invoke | InstTyp::Catch => {
+          return Err(DecompileError::Unsupported(
+            "exception-aware control flow not supported".to_string(),
+          ));
+        }
         #[cfg(feature = "native-async-ops")]
         InstTyp::Await => {
           let awaited = match inst.args.as_slice() {
@@ -2030,11 +2035,6 @@ pub fn decompile_function(func: &ProgramFunction) -> DecompileResult<Vec<Node<St
           } else {
             stmts.push(expr_stmt(expr));
           }
-        }
-        InstTyp::Invoke | InstTyp::Catch => {
-          return Err(DecompileError::Unsupported(
-            "exception-aware control flow not supported".to_string(),
-          ));
         }
         InstTyp::ArrayStore => {
           let (array, index, value, _elem_layout, _checked) = inst.as_array_store();
@@ -2123,6 +2123,11 @@ pub fn decompile_function(func: &ProgramFunction) -> DecompileResult<Vec<Node<St
           "control flow not supported".to_string(),
         ));
       }
+      crate::cfg::cfg::Terminator::Invoke { .. } => {
+        return Err(DecompileError::Unsupported(
+          "exception-aware control flow not supported".to_string(),
+        ));
+      }
     }
   }
 
@@ -2204,6 +2209,18 @@ pub enum LoweredInst {
     api: String,
     args: Vec<LoweredArg>,
   },
+  Invoke {
+    tgt: Option<u32>,
+    callee: LoweredArg,
+    this_: LoweredArg,
+    args: Vec<LoweredArg>,
+    spreads: Vec<usize>,
+    normal: u32,
+    exceptional: u32,
+  },
+  Catch {
+    tgt: u32,
+  },
   #[cfg(feature = "native-async-ops")]
   PromiseAll {
     tgt: Option<u32>,
@@ -2213,15 +2230,6 @@ pub enum LoweredInst {
   PromiseRace {
     tgt: Option<u32>,
     promises: Vec<LoweredArg>,
-  },
-  Invoke {
-    tgt: Option<u32>,
-    callee: LoweredArg,
-    this_: LoweredArg,
-    args: Vec<LoweredArg>,
-    spreads: Vec<usize>,
-    normal_label: u32,
-    exception_label: u32,
   },
   ArrayLit {
     tgt: Option<u32>,
@@ -2296,9 +2304,6 @@ pub enum LoweredInst {
     obj: LoweredArg,
     prop: LoweredArg,
     value: LoweredArg,
-  },
-  Catch {
-    tgt: u32,
   },
   Throw {
     value: LoweredArg,
@@ -2465,7 +2470,20 @@ fn lower_inst(inst: &Inst, bindings: &ForeignBindings) -> LoweredInst {
         api: format!("0x{:016x}", api.raw()),
         args: args.iter().map(lowered_arg).collect(),
       }
-    }
+    },
+    InstTyp::Invoke => {
+      let (tgt, callee, this_, args, spreads, normal, exceptional) = inst.as_invoke();
+      LoweredInst::Invoke {
+        tgt,
+        callee: lowered_arg(callee),
+        this_: lowered_arg(this_),
+        args: args.iter().map(lowered_arg).collect(),
+        spreads: spreads.to_vec(),
+        normal,
+        exceptional,
+      }
+    },
+    InstTyp::Catch => LoweredInst::Catch { tgt: inst.as_catch() },
     #[cfg(feature = "native-async-ops")]
     InstTyp::PromiseAll => LoweredInst::PromiseAll {
       tgt: inst.tgts.get(0).copied(),
@@ -2519,15 +2537,6 @@ fn lower_inst(inst: &Inst, bindings: &ForeignBindings) -> LoweredInst {
         spreads: Vec::new(),
       }
     }
-    InstTyp::Invoke => LoweredInst::Invoke {
-      tgt: inst.tgts.get(0).copied(),
-      callee: lowered_arg(&inst.args[0]),
-      this_: lowered_arg(&inst.args[1]),
-      args: inst.args[2..].iter().map(lowered_arg).collect(),
-      spreads: inst.spreads.clone(),
-      normal_label: inst.labels[0],
-      exception_label: inst.labels[1],
-    },
     InstTyp::ArrayLit => LoweredInst::ArrayLit {
       tgt: inst.tgts.get(0).copied(),
       args: inst.args.iter().map(lowered_arg).collect(),
@@ -2570,7 +2579,6 @@ fn lower_inst(inst: &Inst, bindings: &ForeignBindings) -> LoweredInst {
       left: lowered_arg(&inst.args[0]),
       right: lowered_arg(&inst.args[1]),
     },
-    InstTyp::Catch => LoweredInst::Catch { tgt: inst.tgts[0] },
     InstTyp::Throw => {
       let [value] = inst.args.as_slice() else {
         panic!("throw expects exactly 1 arg");

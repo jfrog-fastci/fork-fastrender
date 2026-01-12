@@ -10,6 +10,13 @@ use itertools::Itertools;
 use std::collections::VecDeque;
 use std::iter;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+pub enum CfgEdgeKind {
+  Normal,
+  Exceptional,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub enum Terminator {
@@ -19,28 +26,42 @@ pub enum Terminator {
   Goto(u32),
   /// Conditional branch represented explicitly by `InstTyp::CondGoto`.
   CondGoto { cond: Arg, t: u32, f: u32 },
+  /// Call that can throw represented explicitly by `InstTyp::Invoke`.
+  Invoke {
+    callee: Arg,
+    this: Arg,
+    normal: u32,
+    exceptional: u32,
+  },
   /// Multi-way branch not representable as a simple conditional.
   Multi { targets: Vec<u32> },
 }
 
-/// Wrapper over a Graph<u32> that provides owned types and better method names,
-/// as well as domain-specific methods.
+/// Control-flow graph edge store with exceptional edge tracking.
+///
+/// The underlying `Graph<u32>` stores the union of normal and exceptional edges so core graph
+/// algorithms (dominators, reachability, etc) can treat exceptions as ordinary control flow.
+/// `exceptional` tracks which of those edges are exceptional.
 #[derive(Clone, Debug, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
-pub struct CfgGraph(Graph<u32>);
+pub struct CfgGraph {
+  graph: Graph<u32>,
+  exceptional: Graph<u32>,
+}
 
 impl CfgGraph {
   pub fn labels(&self) -> impl Iterator<Item = u32> + '_ {
-    self.0.nodes().cloned()
+    self.graph.nodes().cloned()
   }
 
   /// Ensure `label` exists in the graph even if it has no edges.
   pub fn ensure_label(&mut self, label: u32) {
-    self.0.ensure_node(&label);
+    self.graph.ensure_node(&label);
+    self.exceptional.ensure_node(&label);
   }
 
   pub fn contains(&self, label: u32) -> bool {
-    self.0.contains(&label)
+    self.graph.contains(&label)
   }
 
   pub fn labels_sorted(&self) -> Vec<u32> {
@@ -54,19 +75,40 @@ impl CfgGraph {
   }
 
   pub fn clone_graph(&self) -> Graph<u32> {
-    self.0.clone()
+    self.graph.clone()
   }
 
   pub fn from_graph(graph: Graph<u32>) -> Self {
-    Self(graph)
+    let mut exceptional = Graph::new();
+    for node in graph.nodes() {
+      exceptional.ensure_node(node);
+    }
+    Self { graph, exceptional }
   }
 
   pub fn parents(&self, bblock: u32) -> iter::Cloned<GraphRelatedNodesIter<'_, u32>> {
-    self.0.parents(&bblock).cloned()
+    self.graph.parents(&bblock).cloned()
+  }
+
+  pub fn exceptional_parents(&self, bblock: u32) -> iter::Cloned<GraphRelatedNodesIter<'_, u32>> {
+    self.exceptional.parents(&bblock).cloned()
   }
 
   pub fn parents_sorted(&self, bblock: u32) -> Vec<u32> {
     let mut parents = self.parents(bblock).collect_vec();
+    parents.sort_unstable();
+    parents
+  }
+
+  pub fn exceptional_parents_sorted(&self, bblock: u32) -> Vec<u32> {
+    let mut parents = self.exceptional_parents(bblock).collect_vec();
+    parents.sort_unstable();
+    parents
+  }
+
+  pub fn normal_parents_sorted(&self, bblock: u32) -> Vec<u32> {
+    let exceptional: HashSet<u32> = self.exceptional_parents(bblock).collect();
+    let mut parents = self.parents(bblock).filter(|p| !exceptional.contains(p)).collect_vec();
     parents.sort_unstable();
     parents
   }
@@ -76,7 +118,11 @@ impl CfgGraph {
   }
 
   pub fn children(&self, bblock: u32) -> iter::Cloned<GraphRelatedNodesIter<'_, u32>> {
-    self.0.children(&bblock).cloned()
+    self.graph.children(&bblock).cloned()
+  }
+
+  pub fn exceptional_children(&self, bblock: u32) -> iter::Cloned<GraphRelatedNodesIter<'_, u32>> {
+    self.exceptional.children(&bblock).cloned()
   }
 
   pub fn children_sorted(&self, bblock: u32) -> Vec<u32> {
@@ -85,28 +131,77 @@ impl CfgGraph {
     children
   }
 
+  pub fn exceptional_children_sorted(&self, bblock: u32) -> Vec<u32> {
+    let mut children = self.exceptional_children(bblock).collect_vec();
+    children.sort_unstable();
+    children
+  }
+
+  pub fn normal_children_sorted(&self, bblock: u32) -> Vec<u32> {
+    let exceptional: HashSet<u32> = self.exceptional_children(bblock).collect();
+    let mut children = self
+      .children(bblock)
+      .filter(|c| !exceptional.contains(c))
+      .collect_vec();
+    children.sort_unstable();
+    children
+  }
+
   pub fn sorted_children(&self, bblock: u32) -> Vec<u32> {
     self.children_sorted(bblock)
   }
 
+  pub fn edge_kind(&self, parent: u32, child: u32) -> Option<CfgEdgeKind> {
+    let is_child = self.children(parent).any(|c| c == child);
+    if !is_child {
+      return None;
+    }
+    if self.exceptional_children(parent).any(|c| c == child) {
+      Some(CfgEdgeKind::Exceptional)
+    } else {
+      Some(CfgEdgeKind::Normal)
+    }
+  }
+
   pub fn connect(&mut self, parent: u32, child: u32) {
-    self.0.connect(&parent, &child);
+    self.connect_edge(parent, child, CfgEdgeKind::Normal);
+  }
+
+  pub fn connect_exception(&mut self, parent: u32, child: u32) {
+    self.connect_edge(parent, child, CfgEdgeKind::Exceptional);
+  }
+
+  pub fn connect_edge(&mut self, parent: u32, child: u32, kind: CfgEdgeKind) {
+    self.graph.connect(&parent, &child);
+    self.exceptional.ensure_node(&parent);
+    self.exceptional.ensure_node(&child);
+    match kind {
+      CfgEdgeKind::Normal => {
+        self.exceptional.disconnect(&parent, &child);
+      }
+      CfgEdgeKind::Exceptional => {
+        self.exceptional.connect(&parent, &child);
+      }
+    }
   }
 
   pub fn disconnect(&mut self, parent: u32, child: u32) {
-    self.0.disconnect(&parent, &child);
+    self.graph.disconnect(&parent, &child);
+    self.exceptional.disconnect(&parent, &child);
   }
 
   pub fn delete_many(&mut self, bblocks: impl IntoIterator<Item = u32>) {
     for bblock in bblocks {
-      self.0.contract(&bblock);
+      self.graph.contract(&bblock);
+      self.exceptional.contract(&bblock);
     }
   }
 
   /// Remove a disconnected bblock from the graph.
   /// Panics if still connected or doesn't exist.
   pub fn pop(&mut self, bblock: u32) {
-    self.0.pop(&bblock);
+    self.graph.pop(&bblock);
+    self.exceptional.pop(&bblock);
   }
 
   /**
@@ -135,7 +230,7 @@ impl CfgGraph {
   }
 
   pub fn calculate_postorder(&self, entry: u32) -> (Vec<u32>, HashMap<u32, usize>) {
-    let (postorder, label_to_postorder) = self.0.calculate_postorder(&entry);
+    let (postorder, label_to_postorder) = self.graph.calculate_postorder(&entry);
     (
       postorder.into_iter().map(|&n| n).collect_vec(),
       label_to_postorder
@@ -147,7 +242,7 @@ impl CfgGraph {
 
   /// WARNING: This is not the same as reverse postorder. This is the postorder of the reversed graph.
   pub fn calculate_reversed_graph_postorder(&self, entry: u32) -> (Vec<u32>, HashMap<u32, usize>) {
-    let (postorder, label_to_postorder) = self.0.calculate_reversed_graph_postorder(&entry);
+    let (postorder, label_to_postorder) = self.graph.calculate_reversed_graph_postorder(&entry);
     (
       postorder.into_iter().map(|&n| n).collect_vec(),
       label_to_postorder
@@ -235,9 +330,9 @@ impl Cfg {
     // We consume this because all subsequent analysis operations should use a well-defined order (e.g. reverse postorder) for safety/correctness, and not this rather arbitrary ordering.
     bblock_order: Vec<u32>,
   ) -> Self {
-    let mut graph = Graph::new();
-    for label in &bblock_order {
-      graph.ensure_node(label);
+    let mut graph = CfgGraph::default();
+    for &label in &bblock_order {
+      graph.ensure_label(label);
     }
     for i in 0..bblocks.len() {
       let parent = bblock_order[i];
@@ -250,7 +345,7 @@ impl Cfg {
             .labels
             .clone();
           let label = labels[0];
-          graph.connect(&parent, &label);
+          graph.connect(parent, label);
           // We don't want Goto insts after this point.
           bblocks.get_mut(&parent).unwrap().pop().unwrap();
         }
@@ -262,42 +357,49 @@ impl Cfg {
             if *label == DUMMY_LABEL {
               *label = bblock_order[i + 1];
             };
-            graph.connect(&parent, label);
+            graph.connect(parent, *label);
+          }
+        }
+        Some(InstTyp::Return) => {
+          // Terminators with no outgoing edges.
+        }
+        Some(InstTyp::Throw) => {
+          // Throws unwind to a catch/finally handler when one is present.
+          let labels = bblocks[&parent]
+            .last()
+            .expect("checked by match")
+            .labels
+            .clone();
+          if let Some(&handler) = labels.get(0) {
+            graph.connect_exception(parent, handler);
           }
         }
         Some(InstTyp::Invoke) => {
           let labels = &mut bblocks.get_mut(&parent).unwrap().last_mut().unwrap().labels;
-          assert_eq!(labels.len(), 2, "Invoke must have exactly two successor labels");
-          // Like CondGoto, we use DUMMY_LABEL for the normal continuation to represent fallthrough.
+          assert_eq!(
+            labels.len(),
+            2,
+            "Invoke must have [normal, exceptional] labels, got {labels:?}"
+          );
+          // Allow fallthrough for the normal successor.
           if labels[0] == DUMMY_LABEL {
             labels[0] = bblock_order[i + 1];
           }
-          graph.connect(&parent, &labels[0]);
-          graph.connect(&parent, &labels[1]);
-        }
-        Some(InstTyp::Return) => {
-          // Terminator with no outgoing edges.
-        }
-        Some(InstTyp::Throw) => {
-          // `throw` normally has no outgoing edges, but when it carries a single label it is
-          // treated as an exceptional edge to a handler within the current body.
-          let labels = bblocks[&parent].last().expect("checked by match").labels.clone();
-          if let Some(handler) = labels.get(0).copied() {
-            graph.connect(&parent, &handler);
-          }
+          graph.connect(parent, labels[0]);
+          graph.connect_exception(parent, labels[1]);
         }
         _ => {
           if i == bblocks.len() - 1 {
             // Last bblock, don't connect to anything.
           } else {
             // Implicit fallthrough.
-            graph.connect(&parent, &bblock_order[i + 1]);
+            graph.connect(parent, bblock_order[i + 1]);
           }
         }
       }
     }
     Self {
-      graph: CfgGraph(graph),
+      graph,
       bblocks: CfgBBlocks(bblocks),
       entry: 0,
     }
@@ -316,6 +418,15 @@ impl Cfg {
           cond: cond.clone(),
           t,
           f,
+        };
+      }
+      if inst.t == InstTyp::Invoke {
+        let (_, callee, this, _, _, normal, exceptional) = inst.as_invoke();
+        return Terminator::Invoke {
+          callee: callee.clone(),
+          this: this.clone(),
+          normal,
+          exceptional,
         };
       }
     }

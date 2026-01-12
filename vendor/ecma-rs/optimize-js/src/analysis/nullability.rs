@@ -721,8 +721,18 @@ impl ForwardEdgeDataFlowAnalysis for NullabilityAnalysis {
         };
         self.set_value_result(inst, state, tgt, NullabilityMask::OTHER);
       }
-      InstTyp::Call => {
-        let (tgt, callee, _this, _args, _spreads) = inst.as_call();
+      InstTyp::Call | InstTyp::Invoke => {
+        let (tgt, callee) = match inst.t {
+          InstTyp::Call => {
+            let (tgt, callee, _this, _args, _spreads) = inst.as_call();
+            (tgt, callee)
+          }
+          InstTyp::Invoke => {
+            let (tgt, callee, _this, _args, _spreads, _normal, _exceptional) = inst.as_invoke();
+            (tgt, callee)
+          }
+          _ => unreachable!(),
+        };
         if let Some(tgt) = tgt {
           let mask = self.call_result_mask(callee);
           self.set_value_result(inst, state, tgt, mask);
@@ -735,6 +745,10 @@ impl ForwardEdgeDataFlowAnalysis for NullabilityAnalysis {
           // Without an API database, treat known API calls as producing an unknown value.
           self.set_value_result(inst, state, tgt, NullabilityMask::TOP);
         }
+      }
+      InstTyp::Catch => {
+        let tgt = inst.as_catch();
+        self.set_value_result(inst, state, tgt, NullabilityMask::TOP);
       }
       InstTyp::ForeignLoad => {
         let (tgt, _foreign) = inst.as_foreign_load();

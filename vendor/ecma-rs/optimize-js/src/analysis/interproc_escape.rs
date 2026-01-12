@@ -177,13 +177,10 @@ fn collect_local_summary_facts(cfg: &Cfg) -> LocalSummaryFacts {
         }
         InstTyp::Call | InstTyp::Invoke => {
           let (tgt, callee, _this, args, spreads) = match inst.t {
-            InstTyp::Call => {
-              let (tgt, callee, this, args, spreads) = inst.as_call();
-              (tgt, callee, this, args, spreads)
-            }
+            InstTyp::Call => inst.as_call(),
             InstTyp::Invoke => {
-              let (tgt, callee, this, args, spreads, _normal, _exception) = inst.as_invoke();
-              (tgt, callee, this, args, spreads)
+              let (tgt, callee, this_, args, spreads, _normal, _exceptional) = inst.as_invoke();
+              (tgt, callee, this_, args, spreads)
             }
             _ => unreachable!(),
           };
@@ -505,12 +502,9 @@ fn compute_cfg_escape_summary(
         }
         InstTyp::Call | InstTyp::Invoke => {
           let (_tgt, callee, this, args, spreads) = match inst.t {
-            InstTyp::Call => {
-              let (tgt, callee, this, args, spreads) = inst.as_call();
-              (tgt, callee, this, args, spreads)
-            }
+            InstTyp::Call => inst.as_call(),
             InstTyp::Invoke => {
-              let (tgt, callee, this, args, spreads, _normal, _exception) = inst.as_invoke();
+              let (tgt, callee, this, args, spreads, _normal, _exceptional) = inst.as_invoke();
               (tgt, callee, this, args, spreads)
             }
             _ => unreachable!(),

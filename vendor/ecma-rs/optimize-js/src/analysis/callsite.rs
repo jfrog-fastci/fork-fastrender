@@ -104,12 +104,11 @@ pub fn analyze_callsites(cfg: &Cfg) -> CallSiteMap {
           let (_tgt, callee, this_arg, _args, _spreads) = match inst.t {
             InstTyp::Call => inst.as_call(),
             InstTyp::Invoke => {
-              let (tgt, callee, this, args, spreads, _normal, _exception) = inst.as_invoke();
-              (tgt, callee, this, args, spreads)
+              let (tgt, callee, this_arg, args, spreads, _normal, _exceptional) = inst.as_invoke();
+              (tgt, callee, this_arg, args, spreads)
             }
             _ => unreachable!(),
           };
-
           let callee = match callee {
             Arg::Builtin(path) => CallSiteCallee::DirectBuiltin(path.clone()),
             Arg::Fn(id) => CallSiteCallee::DirectFn(*id),

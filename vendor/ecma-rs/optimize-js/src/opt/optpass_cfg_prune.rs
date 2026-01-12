@@ -1,4 +1,5 @@
 use crate::cfg::cfg::Cfg;
+use crate::cfg::cfg::CfgEdgeKind;
 use crate::il::inst::InstTyp;
 use crate::opt::PassResult;
 use crate::ssa::phi_simplify::simplify_phis;
@@ -110,6 +111,14 @@ pub fn optpass_cfg_prune(cfg: &mut Cfg) -> PassResult {
         continue;
       };
 
+      // Do not prune blocks that participate in exceptional control flow. These blocks often serve
+      // as catch/finally landing pads, and merging/removing them would lose unwind structure.
+      if !cfg.graph.exceptional_parents_sorted(cur).is_empty()
+        || !cfg.graph.exceptional_children_sorted(cur).is_empty()
+      {
+        continue;
+      }
+
       let parents = cfg.graph.parents_sorted(cur);
       let children = cfg.graph.children_sorted(cur);
       let is_only_child_of_all_parents = parents
@@ -145,11 +154,15 @@ pub fn optpass_cfg_prune(cfg: &mut Cfg) -> PassResult {
       }
 
       for &c in children.iter() {
+        let kind = cfg
+          .graph
+          .edge_kind(cur, c)
+          .expect("expected existing edge kind in cfg prune");
         // Detach from children.
         cfg.graph.disconnect(cur, c);
         // Connect parents to children.
         for &parent in parents.iter() {
-          cfg.graph.connect(parent, c);
+          cfg.graph.connect_edge(parent, c, kind);
         }
       }
       // Detach from parents.
@@ -163,27 +176,39 @@ pub fn optpass_cfg_prune(cfg: &mut Cfg) -> PassResult {
       // Move insts to parents, before any CondGoto, and update that CondGoto.
       for &parent in parents.iter() {
         let p_bblock = cfg.bblocks.get_mut(parent);
-        let p_condgoto = if p_bblock.last().is_some_and(|i| i.t == InstTyp::CondGoto) {
-          Some(p_bblock.pop().unwrap())
-        } else {
-          None
-        };
+        let p_term = p_bblock
+          .last()
+          .is_some_and(|i| matches!(i.t, InstTyp::CondGoto | InstTyp::Invoke | InstTyp::Throw))
+          .then(|| p_bblock.pop().unwrap());
         p_bblock.extend(insts.clone());
-        if let Some(mut inst) = p_condgoto {
+        if let Some(mut inst) = p_term {
           let child = *children.iter().exactly_one().unwrap();
-          for l in inst.labels.iter_mut() {
-            if *l == cur {
-              *l = child;
-            };
+          match inst.t {
+            InstTyp::CondGoto | InstTyp::Invoke => {
+              for l in inst.labels.iter_mut() {
+                if *l == cur {
+                  *l = child;
+                };
+              }
+              if inst.t == InstTyp::CondGoto {
+                // Don't insert CondGoto if it's redundant now.
+                // (Other code, including within this function, assume CondGoto means 2 children.)
+                if inst.labels[0] == inst.labels[1] {
+                  continue;
+                }
+              }
+              p_bblock.push(inst);
+            }
+            InstTyp::Throw => {
+              if let Some(l) = inst.labels.get_mut(0) {
+                if *l == cur {
+                  *l = child;
+                }
+              }
+              p_bblock.push(inst);
+            }
+            _ => unreachable!(),
           }
-          // Don't insert CondGoto if it's redundant now.
-          // (Other code, including within this function, assume CondGoto means 2 children.)
-          if inst.labels[0] == inst.labels[1] {
-            continue;
-          };
-          p_bblock.push(inst);
-        } else if let Ok(child) = children.iter().copied().exactly_one() {
-          patch_terminator_label(cfg, parent, cur, child);
         }
       }
       // Update phi nodes in children.
@@ -209,10 +234,10 @@ pub fn optpass_cfg_prune(cfg: &mut Cfg) -> PassResult {
     }
 
     // Now that we've found all empty leaves, replace all CondGoto labels that go to any of them with one bblock label.
-    if empty_leaves.len() > 1 {
-      empty_leaves.sort_unstable();
-      empty_leaves.dedup();
-      let mut existing_labels = cfg.graph.labels().collect_vec();
+      if empty_leaves.len() > 1 {
+        empty_leaves.sort_unstable();
+        empty_leaves.dedup();
+        let mut existing_labels = cfg.graph.labels().collect_vec();
       existing_labels.sort_unstable();
       existing_labels.dedup();
       empty_leaves.retain(|label| existing_labels.binary_search(label).is_ok());
@@ -224,17 +249,21 @@ pub fn optpass_cfg_prune(cfg: &mut Cfg) -> PassResult {
           if inst.t != InstTyp::CondGoto {
             continue;
           }
-          let mut all_children_empty = true;
-          for child in inst.labels.iter_mut() {
-            if empty_leaves.contains(child) {
-              let new_child = empty_leaves[0];
-              cfg.graph.disconnect(label, *child);
-              cfg.graph.connect(label, new_child);
-              *child = new_child;
-              result.mark_cfg_changed();
-            } else {
-              all_children_empty = false;
-            };
+            let mut all_children_empty = true;
+            for child in inst.labels.iter_mut() {
+              if empty_leaves.contains(child) {
+                let new_child = empty_leaves[0];
+                let kind = cfg
+                  .graph
+                  .edge_kind(label, *child)
+                  .unwrap_or(CfgEdgeKind::Normal);
+                cfg.graph.disconnect(label, *child);
+                cfg.graph.connect_edge(label, new_child, kind);
+                *child = new_child;
+                result.mark_cfg_changed();
+              } else {
+                all_children_empty = false;
+              };
           }
           if all_children_empty {
             // Drop the CondGoto.
@@ -250,9 +279,48 @@ pub fn optpass_cfg_prune(cfg: &mut Cfg) -> PassResult {
         let merged_leaf = empty_leaves[0];
         for label in empty_leaves.into_iter().skip(1) {
           for parent in cfg.graph.parents_sorted(label) {
+            // Preserve edge kind (normal vs exceptional) on redirected edges.
+            let kind = cfg
+              .graph
+              .edge_kind(parent, label)
+              .unwrap_or(CfgEdgeKind::Normal);
+
+            // Patch any explicit terminator in the parent that still references the old label.
+            {
+              let bblock = cfg.bblocks.get_mut(parent);
+              let term = bblock
+                .last()
+                .is_some_and(|i| matches!(i.t, InstTyp::CondGoto | InstTyp::Invoke | InstTyp::Throw))
+                .then(|| bblock.pop().unwrap());
+              if let Some(mut term) = term {
+                match term.t {
+                  InstTyp::CondGoto | InstTyp::Invoke => {
+                    for l in term.labels.iter_mut() {
+                      if *l == label {
+                        *l = merged_leaf;
+                      }
+                    }
+                    if term.t == InstTyp::CondGoto && term.labels[0] == term.labels[1] {
+                      // Drop redundant CondGoto.
+                    } else {
+                      bblock.push(term);
+                    }
+                  }
+                  InstTyp::Throw => {
+                    if let Some(l) = term.labels.get_mut(0) {
+                      if *l == label {
+                        *l = merged_leaf;
+                      }
+                    }
+                    bblock.push(term);
+                  }
+                  _ => unreachable!(),
+                }
+              }
+            }
+
             cfg.graph.disconnect(parent, label);
-            cfg.graph.connect(parent, merged_leaf);
-            patch_terminator_label(cfg, parent, label, merged_leaf);
+            cfg.graph.connect_edge(parent, merged_leaf, kind);
           }
           if cfg.bblocks.maybe_get(label).is_some() {
             cfg.pop(label);

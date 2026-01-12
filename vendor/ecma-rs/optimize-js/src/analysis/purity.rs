@@ -291,11 +291,14 @@ pub fn annotate_cfg_purity(
           inst.meta.callee_purity = Purity::Impure;
         }
         InstTyp::Call | InstTyp::Invoke => {
-          let (_, callee, _, args, _) = match inst.t {
-            InstTyp::Call => inst.as_call(),
+          let (callee, args) = match inst.t {
+            InstTyp::Call => {
+              let (_tgt, callee, _this, args, _spreads) = inst.as_call();
+              (callee, args)
+            }
             InstTyp::Invoke => {
-              let (tgt, callee, this, args, spreads, _normal, _exception) = inst.as_invoke();
-              (tgt, callee, this, args, spreads)
+              let (_tgt, callee, _this, args, _spreads, _normal, _exceptional) = inst.as_invoke();
+              (callee, args)
             }
             _ => unreachable!(),
           };

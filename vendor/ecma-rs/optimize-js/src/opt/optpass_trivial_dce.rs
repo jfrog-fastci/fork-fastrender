@@ -40,56 +40,70 @@ pub fn optpass_trivial_dce(cfg: &mut Cfg) -> PassResult {
       // We should delete if all targets are unused. (There should only ever be zero or one targets.)
       let should_delete =
         !bblock[i].tgts.is_empty() && bblock[i].tgts.iter().all(|var| !used.contains(var));
-      if should_delete {
-        #[cfg(feature = "native-async-ops")]
-        let is_async_semantic_op = matches!(
-          &bblock[i].t,
-          InstTyp::Await | InstTyp::PromiseAll | InstTyp::PromiseRace
-        );
-        #[cfg(not(feature = "native-async-ops"))]
-        let is_async_semantic_op = false;
+      if !should_delete {
+        continue;
+      }
 
-        #[cfg(feature = "semantic-ops")]
-        let is_known_api_call = matches!(&bblock[i].t, InstTyp::KnownApiCall { .. });
-        #[cfg(not(feature = "semantic-ops"))]
-        let is_known_api_call = false;
+      // Invokes are terminators with exceptional control flow; even when their result is unused
+      // they must be preserved for their potential side effects / unwinding behavior. Drop the SSA
+      // target but keep the instruction.
+      if bblock[i].t == InstTyp::Invoke {
+        bblock[i].tgts.clear();
+        bblock[i].meta.clear_result_var_metadata();
+        result.mark_changed();
+        continue;
+      }
 
-        if is_async_semantic_op || is_known_api_call {
-          // Semantic ops are conservatively treated as potentially effectful even when their
-          // result is unused (e.g. `await p;` must still suspend). Drop the SSA target but keep the
-          // instruction.
-          //
-          // Known API calls are also kept even when purity metadata is present, since (until a
-          // knowledge-base integration exists) we cannot assume they are safe to remove.
-          bblock[i].tgts.clear();
-          bblock[i].meta.clear_result_var_metadata();
-        } else if is_call_like(&bblock[i]) {
-          // Calls are only removable when we know the callee has no observable effects.
-          //
-          // When purity metadata is present (via `analysis::purity::annotate_cfg_purity`), we can
-          // eliminate unused pure calls. Otherwise stay conservative and only remove the unused
-          // target.
-          if matches!(
-            bblock[i].meta.callee_purity,
-            Purity::Pure | Purity::ReadOnly | Purity::Allocating
-          ) {
-            bblock.remove(i);
-          } else {
-            bblock[i].tgts.clear();
-            // The call still executes for side effects, but it no longer produces an SSA value, so
-            // clear any result-only metadata (type/ownership/etc).
-            bblock[i].meta.clear_result_var_metadata();
-          }
-        } else if bblock[i].t == InstTyp::Invoke {
-          // Invoke is a terminator and encodes control flow, so it cannot be removed here without
-          // rewiring the CFG. We can still drop the unused assignment target.
-          bblock[i].tgts.clear();
-          bblock[i].meta.clear_result_var_metadata();
-        } else {
+      #[cfg(feature = "native-async-ops")]
+      let is_async_semantic_op = matches!(
+        &bblock[i].t,
+        InstTyp::Await | InstTyp::PromiseAll | InstTyp::PromiseRace
+      );
+      #[cfg(not(feature = "native-async-ops"))]
+      let is_async_semantic_op = false;
+
+      #[cfg(feature = "semantic-ops")]
+      let is_known_api_call = matches!(&bblock[i].t, InstTyp::KnownApiCall { .. });
+      #[cfg(not(feature = "semantic-ops"))]
+      let is_known_api_call = false;
+
+      if is_async_semantic_op || is_known_api_call {
+        // Semantic ops are conservatively treated as potentially effectful even when their result
+        // is unused (e.g. `await p;` must still suspend). Drop the SSA target but keep the
+        // instruction.
+        //
+        // Known API calls are also kept even when purity metadata is present, since (until a
+        // knowledge-base integration exists) we cannot assume they are safe to remove.
+        bblock[i].tgts.clear();
+        bblock[i].meta.clear_result_var_metadata();
+        result.mark_changed();
+        continue;
+      }
+
+      if is_call_like(&bblock[i]) {
+        // Calls are only removable when we know the callee has no observable effects.
+        //
+        // When purity metadata is present (via `analysis::purity::annotate_cfg_purity`), we can
+        // eliminate unused pure calls. Otherwise stay conservative and only remove the unused
+        // target.
+        if matches!(
+          bblock[i].meta.callee_purity,
+          Purity::Pure | Purity::ReadOnly | Purity::Allocating
+        ) {
           bblock.remove(i);
+        } else {
+          bblock[i].tgts.clear();
+          // The call still executes for side effects, but it no longer produces an SSA value, so
+          // clear any result-only metadata (type/ownership/etc).
+          bblock[i].meta.clear_result_var_metadata();
         }
         result.mark_changed();
-      };
+        continue;
+      }
+
+      // Pure instruction with an unused target.
+      bblock.remove(i);
+      result.mark_changed();
     }
   }
   result

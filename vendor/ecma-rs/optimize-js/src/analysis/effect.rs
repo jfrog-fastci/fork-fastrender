@@ -655,7 +655,7 @@ fn local_effect_for_tonumber_builtin(
 /// This excludes interprocedural callee summaries for direct `Arg::Fn` calls;
 /// those are incorporated by [`compute_program_effects`] (function summaries)
 /// and [`annotate_cfg_effects`] (per-instruction metadata).
-fn inst_local_effect_with_value_types(
+pub(crate) fn inst_local_effect_with_value_types(
   inst: &Inst,
   value_types: Option<&ValueTypeSummaries>,
 ) -> EffectSet {
@@ -791,7 +791,7 @@ fn inst_local_effect_with_value_types(
           (tgt, callee, this, args, spreads)
         }
         InstTyp::Invoke => {
-          let (tgt, callee, this, args, spreads, _normal, _exception) = inst.as_invoke();
+          let (tgt, callee, this, args, spreads, _normal, _exceptional) = inst.as_invoke();
           (tgt, callee, this, args, spreads)
         }
         _ => unreachable!(),
@@ -940,15 +940,9 @@ fn inst_total_effect(
     return inst_local_effect_with_value_types(inst, value_types);
   }
 
-  let (_, callee, _, _, _) = match inst.t {
-    InstTyp::Call => {
-      let (tgt, callee, this, args, spreads) = inst.as_call();
-      (tgt, callee, this, args, spreads)
-    }
-    InstTyp::Invoke => {
-      let (tgt, callee, this, args, spreads, _normal, _exception) = inst.as_invoke();
-      (tgt, callee, this, args, spreads)
-    }
+  let callee = match inst.t {
+    InstTyp::Call => inst.as_call().1,
+    InstTyp::Invoke => inst.as_invoke().1,
     _ => unreachable!(),
   };
   if matches!(callee, Arg::Builtin(_)) {
@@ -978,11 +972,15 @@ fn inst_total_effect_typed(
   value_types: Option<&ValueTypeSummaries>,
   ctx: &PreciseEffectCtx<'_>,
 ) -> EffectSet {
-  if inst.t != InstTyp::Call {
+  if !matches!(inst.t, InstTyp::Call | InstTyp::Invoke) {
     return inst_local_effect_with_value_types_typed(inst, value_types, ctx);
   }
 
-  let (_, callee, _, _, _) = inst.as_call();
+  let callee = match inst.t {
+    InstTyp::Call => inst.as_call().1,
+    InstTyp::Invoke => inst.as_invoke().1,
+    _ => unreachable!(),
+  };
   if matches!(callee, Arg::Builtin(_)) {
     return inst_local_effect_with_value_types_typed(inst, value_types, ctx);
   }
@@ -1019,15 +1017,9 @@ fn cfg_local_effects(cfg: &Cfg, foreign_fns: &BTreeMap<SymbolId, FnId>) -> Effec
       effects.merge(&inst_local_effect_with_value_types(inst, Some(&value_types)));
       continue;
     }
-    let (_, callee, _, _, _) = match inst.t {
-      InstTyp::Call => {
-        let (tgt, callee, this, args, spreads) = inst.as_call();
-        (tgt, callee, this, args, spreads)
-      }
-      InstTyp::Invoke => {
-        let (tgt, callee, this, args, spreads, _normal, _exception) = inst.as_invoke();
-        (tgt, callee, this, args, spreads)
-      }
+    let callee = match inst.t {
+      InstTyp::Call => inst.as_call().1,
+      InstTyp::Invoke => inst.as_invoke().1,
       _ => unreachable!(),
     };
     // Builtin calls have intrinsic local effects.
@@ -1061,7 +1053,7 @@ fn cfg_local_effects_typed(
   let ctx = PreciseEffectCtx::new(cfg, type_program);
   let mut effects = EffectSet::default();
   for inst in collect_insts(cfg) {
-    if inst.t != InstTyp::Call {
+    if !matches!(inst.t, InstTyp::Call | InstTyp::Invoke) {
       effects.merge(&inst_local_effect_with_value_types_typed(
         inst,
         Some(&value_types),
@@ -1069,7 +1061,11 @@ fn cfg_local_effects_typed(
       ));
       continue;
     }
-    let (_, callee, _, _, _) = inst.as_call();
+    let callee = match inst.t {
+      InstTyp::Call => inst.as_call().1,
+      InstTyp::Invoke => inst.as_invoke().1,
+      _ => unreachable!(),
+    };
     // Builtin calls have intrinsic local effects.
     if matches!(callee, Arg::Builtin(_)) {
       effects.merge(&inst_local_effect_with_value_types_typed(
@@ -1099,15 +1095,9 @@ fn cfg_direct_calls(cfg: &Cfg, foreign_fns: &BTreeMap<SymbolId, FnId>) -> BTreeS
     if !matches!(inst.t, InstTyp::Call | InstTyp::Invoke) {
       continue;
     }
-    let (_, callee, _, _, _) = match inst.t {
-      InstTyp::Call => {
-        let (tgt, callee, this, args, spreads) = inst.as_call();
-        (tgt, callee, this, args, spreads)
-      }
-      InstTyp::Invoke => {
-        let (tgt, callee, this, args, spreads, _normal, _exception) = inst.as_invoke();
-        (tgt, callee, this, args, spreads)
-      }
+    let callee = match inst.t {
+      InstTyp::Call => inst.as_call().1,
+      InstTyp::Invoke => inst.as_invoke().1,
       _ => unreachable!(),
     };
     if let Some(id) = resolve_fn_id(callee, &defs, &mut Vec::new()) {
