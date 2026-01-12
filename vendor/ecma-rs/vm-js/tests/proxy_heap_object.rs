@@ -46,7 +46,6 @@ fn proxy_heap_object_traces_target_and_handler_until_revoked() -> Result<(), VmE
   heap.remove_root(proxy_root);
   Ok(())
 }
-
 #[test]
 fn proxy_heap_object_alloc_proxy_roots_inputs_across_gc() -> Result<(), VmError> {
   // Force GC at every possible opportunity.
