@@ -43,3 +43,25 @@ test(() => {
   assert_array_equals(slot2.assignedNodes(), [a, b]);
 }, "Manual slot assignment distributes nodes via HTMLSlotElement.assign()");
 
+test(() => {
+  const body = document.body;
+  clear_children(body);
+
+  const host = document.createElement("div");
+  body.appendChild(host);
+
+  const shadow = host.attachShadow({ mode: "closed", slotAssignment: "manual" });
+  assert_equals(shadow.slotAssignment, "manual");
+
+  const slot = document.createElement("slot");
+  shadow.appendChild(slot);
+
+  const child = document.createElement("span");
+  host.appendChild(child);
+
+  slot.assign(child);
+
+  // `assignedSlot` uses the "open" find-a-slot variant, so closed shadow roots do not leak the slot.
+  assert_equals(child.assignedSlot, null);
+  assert_array_equals(slot.assignedNodes(), [child]);
+}, "assignedSlot is null when assigned to a slot in a closed shadow root");

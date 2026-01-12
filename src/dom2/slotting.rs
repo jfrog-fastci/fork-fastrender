@@ -1,5 +1,7 @@
 use rustc_hash::{FxHashMap, FxHashSet};
 
+use crate::dom::ShadowRootMode;
+
 use super::{Document, DomError, NodeId, NodeKind};
 
 /// ShadowRoot slot assignment mode.
@@ -108,7 +110,7 @@ impl Document {
   /// Implements HTML's "find a slot" algorithm.
   ///
   /// Returns the assigned slot element for `slottable`, if any.
-  pub fn find_slot_for_slottable(&self, slottable: NodeId) -> Option<NodeId> {
+  pub fn find_slot_for_slottable(&self, slottable: NodeId, open: bool) -> Option<NodeId> {
     let slottable_node = self.nodes.get(slottable.index())?;
     if !node_is_slottable(&slottable_node.kind) {
       return None;
@@ -116,6 +118,14 @@ impl Document {
 
     let host = slottable_node.parent?;
     let shadow_root = self.shadow_root_for_host(host)?;
+    if open {
+      let NodeKind::ShadowRoot { mode, .. } = &self.node(shadow_root).kind else {
+        return None;
+      };
+      if *mode == ShadowRootMode::Closed {
+        return None;
+      }
+    }
     let mode = shadow_root_slot_assignment(&self.node(shadow_root).kind).unwrap_or_default();
     match mode {
       SlotAssignmentMode::Manual => {

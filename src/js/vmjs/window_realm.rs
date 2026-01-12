@@ -24950,7 +24950,7 @@ fn slottable_assigned_slot_get_native(
     return Err(VmError::TypeError("Illegal invocation"));
   }
 
-  let Some(slot_id) = dom.find_slot_for_slottable(node_id) else {
+  let Some(slot_id) = dom.find_slot_for_slottable(node_id, /* open */ true) else {
     return Ok(Value::Null);
   };
 
