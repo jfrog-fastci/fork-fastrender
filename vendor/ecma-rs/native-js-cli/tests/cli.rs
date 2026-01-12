@@ -1247,12 +1247,12 @@ fn check_and_build_reject_eval() {
 }
 
 #[test]
-fn check_and_build_reject_string_literal() {
+fn check_and_build_allow_string_literal() {
   let tmp = TempDir::new().unwrap();
   let entry = tmp.path().join("entry.ts");
   fs::write(
     &entry,
-    "export function main(): number { const s = \"hi\"; return 0; }\n",
+    "export function main(): number { print(\"hi\"); return 0; }\n",
   )
   .unwrap();
 
@@ -1261,11 +1261,7 @@ fn check_and_build_reject_string_literal() {
     .arg("check")
     .arg(&entry)
     .assert()
-    .failure()
-    .stderr(predicates::str::contains("NJS0009"))
-    .stderr(predicates::str::contains(
-      "string literals are not supported",
-    ));
+    .success();
 
   let out = tmp.path().join("out-bin");
   native_js()
@@ -1275,13 +1271,20 @@ fn check_and_build_reject_string_literal() {
     .arg("-o")
     .arg(&out)
     .assert()
-    .failure()
-    .stderr(predicates::str::contains("NJS0009"))
-    .stderr(predicates::str::contains(
-      "string literals are not supported",
-    ))
-    // Ensure we don't fall through to the opaque backend errors (`NJS01xx`) at build time.
-    .stderr(predicates::str::contains("NJS010").not());
+    .success();
+
+  let output = StdCommand::new(&out).output().unwrap();
+  assert_eq!(
+    output.status.code(),
+    Some(0),
+    "unexpected status {:?}",
+    output.status
+  );
+  let stdout = String::from_utf8_lossy(&output.stdout);
+  assert!(
+    stdout.trim().parse::<u32>().is_ok(),
+    "expected string literal print to produce a numeric intern id, got: {stdout:?}"
+  );
 }
 
 #[test]
