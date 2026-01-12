@@ -73,6 +73,76 @@ fn make_pipe() -> (OwnedFd, OwnedFd) {
   (read, write)
 }
 
+fn make_pipe_blocking() -> (OwnedFd, OwnedFd) {
+  let mut fds = [0; 2];
+  let rc = unsafe { libc::pipe(fds.as_mut_ptr()) };
+  assert_eq!(rc, 0, "pipe failed: {}", std::io::Error::last_os_error());
+  // SAFETY: `pipe` returns owned fds on success.
+  let read = unsafe { OwnedFd::from_raw_fd(fds[0]) };
+  let write = unsafe { OwnedFd::from_raw_fd(fds[1]) };
+  (read, write)
+}
+
+#[test]
+fn async_rt_register_fd_requires_nonblocking() {
+  let _rt = TestRuntimeGuard::new();
+
+  let (read, write) = make_pipe_blocking();
+
+  let err = runtime_native::async_rt::register_fd(
+    read.as_raw_fd(),
+    Interest::READABLE,
+    noop_task,
+    std::ptr::null_mut(),
+  )
+  .expect_err("expected registering a blocking fd to fail");
+  assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput, "got {err:?}");
+  assert!(
+    err.to_string().contains("O_NONBLOCK"),
+    "expected error to mention O_NONBLOCK, got {err}"
+  );
+
+  // Ensure the failure did not leave a stale registration behind by setting O_NONBLOCK and
+  // re-registering.
+  set_nonblocking(read.as_raw_fd());
+  set_nonblocking(write.as_raw_fd());
+
+  let id = runtime_native::async_rt::register_fd(
+    read.as_raw_fd(),
+    Interest::READABLE,
+    noop_task,
+    std::ptr::null_mut(),
+  )
+  .expect("expected registration to succeed after setting O_NONBLOCK");
+  assert!(runtime_native::async_rt::global().deregister_fd(id));
+}
+
+#[test]
+fn async_rt_register_fd_rejects_empty_interest() {
+  let _rt = TestRuntimeGuard::new();
+
+  let (read, _write) = make_pipe();
+
+  let err = runtime_native::async_rt::register_fd(
+    read.as_raw_fd(),
+    Interest::empty(),
+    noop_task,
+    std::ptr::null_mut(),
+  )
+  .expect_err("expected empty interest to be rejected");
+  assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput, "got {err:?}");
+
+  // Ensure the failed registration does not leave a stale watcher behind by registering again.
+  let id = runtime_native::async_rt::register_fd(
+    read.as_raw_fd(),
+    Interest::READABLE,
+    noop_task,
+    std::ptr::null_mut(),
+  )
+  .expect("expected registration after empty-interest failure to succeed");
+  assert!(runtime_native::async_rt::global().deregister_fd(id));
+}
+
 #[test]
 fn readiness_and_wake_coalescing_via_async_rt_adapter() {
   let _rt = TestRuntimeGuard::new();

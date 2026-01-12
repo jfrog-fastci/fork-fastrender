@@ -490,6 +490,9 @@ impl AsyncRuntime {
   /// The provided fd **must already be set to `O_NONBLOCK`** and must remain `O_NONBLOCK` for the
   /// lifetime of the registration.
   ///
+  /// `interest` must include [`Interest::READABLE`] and/or [`Interest::WRITABLE`] (it must not be
+  /// empty). To stop watching, call [`AsyncRuntime::deregister_fd`].
+  ///
   /// The underlying reactor is **edge-triggered**, so tasks must drain reads/writes until they
   /// return `EAGAIN`/`WouldBlock` after being woken.
   pub fn register_fd(
@@ -507,6 +510,9 @@ impl AsyncRuntime {
   ///
   /// The provided fd **must already be set to `O_NONBLOCK`** and must remain `O_NONBLOCK` for the
   /// lifetime of the registration.
+  ///
+  /// `interests` must include `RT_IO_READABLE` and/or `RT_IO_WRITABLE` (it must not be 0). To stop
+  /// watching, call [`AsyncRuntime::deregister_fd`].
   ///
   /// Readiness notifications are **edge-triggered**; callbacks must drain reads/writes until they
   /// return `EAGAIN`/`WouldBlock`, otherwise no further readiness edges may be delivered.
@@ -551,6 +557,9 @@ impl AsyncRuntime {
   ///
   /// Returns `false` if the watcher id is invalid or the underlying fd no longer satisfies the
   /// nonblocking contract.
+  ///
+  /// `interests` must include `RT_IO_READABLE` and/or `RT_IO_WRITABLE` (it must not be 0). To stop
+  /// watching, call [`AsyncRuntime::deregister_fd`].
   pub fn update_io(&self, id: WatcherId, interests: u32) -> bool {
     self.loop_.update_io(id, interests)
   }
@@ -778,6 +787,9 @@ pub fn schedule_timer(deadline: Instant, callback: TaskFn, data: *mut u8) -> Tim
 ///
 /// The provided fd **must already be set to `O_NONBLOCK`** and must remain `O_NONBLOCK` for the
 /// lifetime of the registration.
+///
+/// `interest` must include [`Interest::READABLE`] and/or [`Interest::WRITABLE`] (it must not be
+/// empty). To stop watching, call [`AsyncRuntime::deregister_fd`].
 ///
 /// The underlying reactor is **edge-triggered**, so tasks must drain reads/writes until they return
 /// `EAGAIN`/`WouldBlock` after being woken.
