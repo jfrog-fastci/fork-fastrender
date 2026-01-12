@@ -135,15 +135,13 @@ impl ResolveFs for HarnessResolveFs {
   }
 }
 
-pub(crate) fn harness_resolve_mode(module_resolution: Option<&str>) -> ResolutionTraceMode {
-  let normalized = module_resolution.map(|value| value.trim().to_ascii_lowercase());
-  match normalized.as_deref() {
-    None | Some("") | Some("classic") => ResolutionTraceMode::Classic,
-    Some("node") | Some("nodejs") | Some("node10") => ResolutionTraceMode::Node10,
-    Some("node16") => ResolutionTraceMode::Node16,
-    Some("nodenext") => ResolutionTraceMode::NodeNext,
-    Some("bundler") => ResolutionTraceMode::Bundler,
-    Some(_) => ResolutionTraceMode::Classic,
+pub(crate) fn harness_resolve_mode_for_options(options: &CompilerOptions) -> ResolutionTraceMode {
+  match effective_module_resolution_mode(options) {
+    ModuleResolutionMode::Classic => ResolutionTraceMode::Classic,
+    ModuleResolutionMode::Node10 => ResolutionTraceMode::Node10,
+    ModuleResolutionMode::Node16 => ResolutionTraceMode::Node16,
+    ModuleResolutionMode::NodeNext => ResolutionTraceMode::NodeNext,
+    ModuleResolutionMode::Bundler => ResolutionTraceMode::Bundler,
   }
 }
 
