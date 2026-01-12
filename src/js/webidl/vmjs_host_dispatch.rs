@@ -2373,7 +2373,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
             Err(VmError::TypeError("DOM host not available"))
           }
         })?;
- 
+
         match result {
           Ok(_) => Ok(Value::Undefined),
           Err(err) => {
@@ -2397,7 +2397,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
             Err(VmError::TypeError("DOM host not available"))
           }
         })?;
- 
+
         match result {
           Ok(_) => Ok(Value::Undefined),
           Err(err) => {
