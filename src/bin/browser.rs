@@ -4086,7 +4086,7 @@ impl App {
         }
         PageContextMenuEntry::Action(item) => {
           let icon = match (&item.action, item.checked) {
-            (PageContextMenuAction::OpenLinkInNewTab(_), _) => BrowserIcon::NewTab,
+            (PageContextMenuAction::OpenLinkInNewTab(_), _) => BrowserIcon::OpenInNewTab,
             (PageContextMenuAction::CopyLinkAddress(_), _) => BrowserIcon::Copy,
             (PageContextMenuAction::BookmarkLink(_), true)
             | (PageContextMenuAction::BookmarkPage(_), true) => BrowserIcon::BookmarkFilled,
