@@ -4,7 +4,7 @@ mod x86_64 {
   use runtime_native::stackmaps::Location;
   use runtime_native::stackwalk::StackBounds;
   use runtime_native::stackwalk_fp::walk_gc_roots_from_safepoint_context;
-  use runtime_native::statepoints::{StatepointRecord, X86_64_DWARF_REG_SP};
+  use runtime_native::statepoints::{StatepointRecord, X86_64_DWARF_REG_FP, X86_64_DWARF_REG_SP};
   use runtime_native::test_util::TestRuntimeGuard;
   use runtime_native::StackMaps;
 
@@ -45,37 +45,38 @@ mod x86_64 {
     // `walk_gc_roots_from_*` yields only the *base* root slots. Derived slots (if any) are updated
     // in-place by the walker after the base slot has potentially been relocated.
     let mut expected_slots: Vec<usize> = Vec::new();
-    for pair in statepoint.gc_pairs() {
-      let (base_off, derived_off) = match (&pair.base, &pair.derived) {
+      for pair in statepoint.gc_pairs() {
+      let (base_reg, base_off, derived_reg, derived_off) = match (&pair.base, &pair.derived) {
         (
           Location::Indirect {
-            dwarf_reg: base_reg,
+            dwarf_reg: base_reg @ (X86_64_DWARF_REG_SP | X86_64_DWARF_REG_FP),
             offset: base_off,
             ..
           },
           Location::Indirect {
-            dwarf_reg: derived_reg,
+            dwarf_reg: derived_reg @ (X86_64_DWARF_REG_SP | X86_64_DWARF_REG_FP),
             offset: derived_off,
             ..
           },
         ) => {
-          assert_eq!(
-            *base_reg,
-            X86_64_DWARF_REG_SP,
-            "fixture roots must be [SP + off]"
-          );
-          assert_eq!(
-            *derived_reg,
-            X86_64_DWARF_REG_SP,
-            "fixture roots must be [SP + off]"
-          );
-          (*base_off, *derived_off)
+          (*base_reg, *base_off, *derived_reg, *derived_off)
         }
         other => panic!("unexpected root location kind in fixture: {other:?}"),
       };
 
-      let base_addr = add_signed_u64(caller_sp as u64, base_off).expect("slot addr");
-      let derived_addr = add_signed_u64(caller_sp as u64, derived_off).expect("slot addr");
+      let base_base = if base_reg == X86_64_DWARF_REG_SP {
+        caller_sp as u64
+      } else {
+        caller_fp as u64
+      };
+      let derived_base = if derived_reg == X86_64_DWARF_REG_SP {
+        caller_sp as u64
+      } else {
+        caller_fp as u64
+      };
+
+      let base_addr = add_signed_u64(base_base, base_off).expect("slot addr");
+      let derived_addr = add_signed_u64(derived_base, derived_off).expect("slot addr");
 
       for &addr in &[base_addr, derived_addr] {
         assert!(
@@ -134,7 +135,7 @@ mod aarch64 {
   use runtime_native::stackwalk::StackBounds;
   use runtime_native::stackwalk_fp::walk_gc_roots_from_safepoint_context;
   use runtime_native::test_util::TestRuntimeGuard;
-  use runtime_native::statepoints::{AARCH64_DWARF_REG_SP, StatepointRecord};
+  use runtime_native::statepoints::{AARCH64_DWARF_REG_FP, AARCH64_DWARF_REG_SP, StatepointRecord};
   use runtime_native::StackMaps;
 
   #[test]
@@ -174,37 +175,38 @@ mod aarch64 {
     // `walk_gc_roots_from_*` yields only the *base* root slots. Derived slots (if any) are updated
     // in-place by the walker after the base slot has potentially been relocated.
     let mut expected_slots: Vec<usize> = Vec::new();
-    for pair in statepoint.gc_pairs() {
-      let (base_off, derived_off) = match (&pair.base, &pair.derived) {
+      for pair in statepoint.gc_pairs() {
+      let (base_reg, base_off, derived_reg, derived_off) = match (&pair.base, &pair.derived) {
         (
           Location::Indirect {
-            dwarf_reg: base_reg,
+            dwarf_reg: base_reg @ (AARCH64_DWARF_REG_SP | AARCH64_DWARF_REG_FP),
             offset: base_off,
             ..
           },
           Location::Indirect {
-            dwarf_reg: derived_reg,
+            dwarf_reg: derived_reg @ (AARCH64_DWARF_REG_SP | AARCH64_DWARF_REG_FP),
             offset: derived_off,
             ..
           },
         ) => {
-          assert_eq!(
-            *base_reg,
-            AARCH64_DWARF_REG_SP,
-            "fixture roots must be [SP + off]"
-          );
-          assert_eq!(
-            *derived_reg,
-            AARCH64_DWARF_REG_SP,
-            "fixture roots must be [SP + off]"
-          );
-          (*base_off, *derived_off)
+          (*base_reg, *base_off, *derived_reg, *derived_off)
         }
         other => panic!("unexpected root location kind in fixture: {other:?}"),
       };
 
-      let base_addr = add_signed_u64(caller_sp as u64, base_off).expect("slot addr");
-      let derived_addr = add_signed_u64(caller_sp as u64, derived_off).expect("slot addr");
+      let base_base = if base_reg == AARCH64_DWARF_REG_SP {
+        caller_sp as u64
+      } else {
+        caller_fp as u64
+      };
+      let derived_base = if derived_reg == AARCH64_DWARF_REG_SP {
+        caller_sp as u64
+      } else {
+        caller_fp as u64
+      };
+
+      let base_addr = add_signed_u64(base_base, base_off).expect("slot addr");
+      let derived_addr = add_signed_u64(derived_base, derived_off).expect("slot addr");
 
       for &addr in &[base_addr, derived_addr] {
         assert!(
