@@ -1532,6 +1532,21 @@ fn escape_xml_attr_value(value: &str) -> Cow<'_, str> {
   Cow::Owned(out)
 }
 
+fn escape_xml_text_value(value: &str) -> Cow<'_, str> {
+  if !value.contains('&') && !value.contains('<') {
+    return Cow::Borrowed(value);
+  }
+  let mut out = String::with_capacity(value.len());
+  for ch in value.chars() {
+    match ch {
+      '&' => out.push_str("&amp;"),
+      '<' => out.push_str("&lt;"),
+      other => out.push(other),
+    }
+  }
+  Cow::Owned(out)
+}
+
 fn append_url_fragment_if_missing<'a>(base_url: &'a str, requested_url: &str) -> Cow<'a, str> {
   if base_url.contains('#') {
     return Cow::Borrowed(base_url);
@@ -1916,6 +1931,8 @@ fn inline_svg_use_references<'a>(
         subresource_cache,
       )?
       .into_owned();
+      sprite_text =
+        inline_svg_style_imports(&sprite_text, &sprite_base_url, fetcher, ctx)?.into_owned();
 
       let sprite_for_parse = svg_markup_for_roxmltree(&sprite_text);
       let sprite_doc = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -2470,6 +2487,47 @@ fn find_xml_start_tag_end(svg_content: &str, start: usize, limit: usize) -> Opti
       return Some(i + 1);
     }
     i += 1;
+  }
+  None
+}
+
+fn find_xml_end_tag_start(
+  svg_content: &str,
+  element_start: usize,
+  element_end: usize,
+  local_name: &str,
+) -> Option<usize> {
+  let bytes = svg_content.as_bytes();
+  let mut i = element_end.min(bytes.len());
+  while i > element_start {
+    i -= 1;
+    if bytes[i] != b'<' {
+      continue;
+    }
+    if bytes.get(i + 1).copied() != Some(b'/') {
+      continue;
+    }
+    let mut j = i + 2;
+    while j < bytes.len() && bytes[j].is_ascii_whitespace() {
+      j += 1;
+    }
+    let name_start = j;
+    while j < bytes.len() && !bytes[j].is_ascii_whitespace() && bytes[j] != b'>' {
+      j += 1;
+    }
+    if name_start == j {
+      continue;
+    }
+    let Ok(tag_name) = std::str::from_utf8(&bytes[name_start..j]) else {
+      continue;
+    };
+    let actual_local = tag_name
+      .rsplit_once(':')
+      .map(|(_, local)| local)
+      .unwrap_or(tag_name);
+    if actual_local.eq_ignore_ascii_case(local_name) {
+      return Some(i);
+    }
   }
   None
 }
@@ -3342,6 +3400,238 @@ fn css_contains_at_import(css: &str) -> bool {
   false
 }
 
+fn push_escaped_url_for_css(out: &mut String, url: &str) {
+  if !url
+    .as_bytes()
+    .iter()
+    .any(|b| matches!(*b, b'"' | b'\\' | b'\n' | b'\r' | b'\t'))
+  {
+    out.push_str(url);
+    return;
+  }
+
+  for ch in url.chars() {
+    match ch {
+      '"' => out.push_str("\\\""),
+      '\\' => out.push_str("\\\\"),
+      '\n' => out.push_str("\\0a "),
+      '\r' => out.push_str("\\0d "),
+      '\t' => out.push_str("\\09 "),
+      _ => out.push(ch),
+    }
+  }
+}
+
+fn css_url_looks_like_absolute(url: &str) -> bool {
+  let bytes = url.as_bytes();
+  if bytes.is_empty() || !bytes[0].is_ascii_alphabetic() {
+    return false;
+  }
+  let mut idx = 1usize;
+  while idx < bytes.len() {
+    match bytes[idx] {
+      b':' => return true,
+      b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'+' | b'-' | b'.' => idx += 1,
+      _ => return false,
+    }
+  }
+  false
+}
+
+fn should_absolutize_css_url_for_svg_style_import(url: &str) -> bool {
+  let trimmed = trim_ascii_whitespace(url);
+  if trimmed.is_empty()
+    || trimmed.starts_with('#')
+    || crate::resource::is_data_url(trimmed)
+    || is_about_url(trimmed)
+  {
+    return false;
+  }
+  // Avoid rewriting inline SVG markup (the image loader treats `<svg...>` strings as a renderable
+  // document; turning them into `https://.../%3Csvg` URLs is almost certainly incorrect).
+  if trimmed.starts_with('<')
+    || trimmed
+      .get(.."%3csvg".len())
+      .is_some_and(|prefix| prefix.eq_ignore_ascii_case("%3csvg"))
+  {
+    return false;
+  }
+  !css_url_looks_like_absolute(trimmed)
+}
+
+fn absolutize_css_urls_for_svg_style_import<'a>(css: &'a str, base_url: &str) -> Cow<'a, str> {
+  use cssparser::{Parser, ParserInput, Token};
+
+  fn css_may_contain_resolvable_url_tokens(css: &str) -> bool {
+    let bytes = css.as_bytes();
+    if bytes.len() < 4 {
+      return false;
+    }
+    let mut i = 0usize;
+    while i + 3 < bytes.len() {
+      if (bytes[i] == b'u' || bytes[i] == b'U')
+        && (bytes[i + 1] == b'r' || bytes[i + 1] == b'R')
+        && (bytes[i + 2] == b'l' || bytes[i + 2] == b'L')
+        && bytes[i + 3] == b'('
+      {
+        return true;
+      }
+      i += 1;
+    }
+    false
+  }
+
+  fn rewrite_urls_in_parser<'i, 't>(
+    parser: &mut Parser<'i, 't>,
+    base_url: &str,
+    capacity_hint: usize,
+    depth: usize,
+  ) -> Cow<'i, str> {
+    const MAX_DEPTH: usize = 32;
+    if depth > MAX_DEPTH {
+      return Cow::Borrowed(parser.slice_from(parser.position()));
+    }
+
+    let start_pos = parser.position();
+    let mut out: Option<String> = None;
+    let mut last_emitted = start_pos;
+
+    // `Parser::is_exhausted()` ignores trailing whitespace/comments, but this routine must preserve
+    // them verbatim when rewriting nested blocks. Drive the loop solely via
+    // `next_including_whitespace_and_comments()` so `parser.position()` advances to the true end
+    // of the input slice.
+    loop {
+      let token_start = parser.position();
+      let token = match parser.next_including_whitespace_and_comments() {
+        Ok(t) => t,
+        Err(_) => break,
+      };
+
+      match token {
+        Token::UnquotedUrl(url_value) => {
+          let url_value = url_value.as_ref();
+          if !should_absolutize_css_url_for_svg_style_import(url_value) {
+            continue;
+          }
+          let Some(resolved) = resolve_against_base(base_url, url_value) else {
+            continue;
+          };
+
+          let token_text = parser.slice_from(token_start);
+          let chunk = parser.slice_from(last_emitted);
+          let prefix_len = chunk.len().saturating_sub(token_text.len());
+          let out = out.get_or_insert_with(|| String::with_capacity(capacity_hint));
+          out.push_str(&chunk[..prefix_len]);
+
+          out.push_str("url(\"");
+          push_escaped_url_for_css(out, resolved.as_str());
+          out.push_str("\")");
+
+          last_emitted = parser.position();
+        }
+        Token::Function(ref name) if name.eq_ignore_ascii_case("url") => {
+          let parse_result = parser.parse_nested_block(|nested| {
+            let mut arg: Option<cssparser::CowRcStr<'i>> = None;
+            while !nested.is_exhausted() {
+              match nested.next_including_whitespace_and_comments() {
+                Ok(Token::WhiteSpace(_)) | Ok(Token::Comment(_)) => {}
+                Ok(Token::QuotedString(s)) | Ok(Token::UnquotedUrl(s)) | Ok(Token::Ident(s)) => {
+                  arg = Some(s.clone());
+                  break;
+                }
+                Ok(Token::BadUrl(_)) => {
+                  arg = None;
+                  break;
+                }
+                Ok(_) => {}
+                Err(_) => break,
+              }
+            }
+            Ok::<_, cssparser::ParseError<'i, ()>>(arg)
+          });
+
+          let Ok(Some(url_arg)) = parse_result else {
+            continue;
+          };
+          let url_arg = url_arg.as_ref();
+          if !should_absolutize_css_url_for_svg_style_import(url_arg) {
+            continue;
+          }
+          let Some(resolved) = resolve_against_base(base_url, url_arg) else {
+            continue;
+          };
+
+          let block_text = parser.slice_from(token_start);
+          let chunk = parser.slice_from(last_emitted);
+          let prefix_len = chunk.len().saturating_sub(block_text.len());
+          let out = out.get_or_insert_with(|| String::with_capacity(capacity_hint));
+          out.push_str(&chunk[..prefix_len]);
+
+          out.push_str("url(\"");
+          push_escaped_url_for_css(out, resolved.as_str());
+          out.push_str("\")");
+
+          last_emitted = parser.position();
+        }
+        Token::Function(_)
+        | Token::ParenthesisBlock
+        | Token::SquareBracketBlock
+        | Token::CurlyBracketBlock => {
+          let open_len = parser.slice_from(token_start).len();
+          let parse_result = parser.parse_nested_block(|nested| {
+            let rewritten = rewrite_urls_in_parser(nested, base_url, 0, depth + 1);
+            let changed = matches!(rewritten, Cow::Owned(_));
+            Ok::<_, cssparser::ParseError<'i, ()>>((rewritten, changed))
+          });
+
+          let Ok((inner_rewritten, changed)) = parse_result else {
+            continue;
+          };
+          if !changed {
+            continue;
+          }
+
+          let block_text = parser.slice_from(token_start);
+          const CLOSING_LEN: usize = 1;
+          if block_text.len() < open_len + CLOSING_LEN {
+            continue;
+          }
+
+          let chunk = parser.slice_from(last_emitted);
+          let prefix_len = chunk.len().saturating_sub(block_text.len());
+          let out = out.get_or_insert_with(|| String::with_capacity(capacity_hint));
+          out.push_str(&chunk[..prefix_len]);
+
+          let close_part = &block_text[block_text.len() - CLOSING_LEN..];
+          out.push_str(&block_text[..open_len]);
+          out.push_str(inner_rewritten.as_ref());
+          out.push_str(close_part);
+
+          last_emitted = parser.position();
+        }
+        _ => {}
+      }
+    }
+
+    let Some(mut out) = out else {
+      return Cow::Borrowed(parser.slice_from(start_pos));
+    };
+    out.push_str(parser.slice_from(last_emitted));
+    Cow::Owned(out)
+  }
+
+  if css.is_empty() {
+    return Cow::Borrowed(css);
+  }
+  if !css_may_contain_resolvable_url_tokens(css) {
+    return Cow::Borrowed(css);
+  }
+
+  let mut input = ParserInput::new(css);
+  let mut parser = Parser::new(&mut input);
+  rewrite_urls_in_parser(&mut parser, base_url, css.len(), 0)
+}
+
 fn resolve_svg_stylesheet_import_url(
   base_url: Option<&str>,
   ctx: Option<&ResourceContext>,
@@ -3521,8 +3811,8 @@ fn inline_css_imports_with_budget<'a>(
                     | Ok(Token::ParenthesisBlock)
                     | Ok(Token::SquareBracketBlock)
                     | Ok(Token::CurlyBracketBlock) => {
-                      let _ =
-                        nested.parse_nested_block(|_| Ok::<_, cssparser::ParseError<'a, ()>>(()));
+                      let _ = nested
+                        .parse_nested_block(|_| Ok::<_, cssparser::ParseError<'a, ()>>(()));
                     }
                     Ok(_) => {}
                     Err(_) => break,
@@ -3568,6 +3858,8 @@ fn inline_css_imports_with_budget<'a>(
           continue;
         };
 
+        let should_rewrite_url = should_absolutize_css_url_for_svg_style_import(&url_token);
+
         let Some(requested_url) = resolve_svg_stylesheet_import_url(base_url, ctx, &url_token) else {
           continue;
         };
@@ -3576,27 +3868,71 @@ fn inline_css_imports_with_budget<'a>(
         budget.spend_rule(svg_url)?;
         budget.check_next_depth(svg_url, depth.saturating_add(1))?;
 
+        let import_tail = media_start.map(|media_start| parser.slice_from(media_start));
+        let mut emit_import_rewrite = |resolved_url: &str| {
+          let mut replacement = String::new();
+          replacement.push_str("@import url(\"");
+          push_escaped_url_for_css(&mut replacement, resolved_url);
+          replacement.push_str("\")");
+          if let Some(tail) = import_tail {
+            replacement.push_str(tail);
+          } else {
+            replacement.push(';');
+          }
+
+          let import_text = parser.slice_from(import_start);
+          let chunk = parser.slice_from(last_emitted);
+          let prefix_len = chunk.len().saturating_sub(import_text.len());
+          let out = out
+            .get_or_insert_with(|| String::with_capacity(css.len().saturating_add(replacement.len())));
+          out.push_str(&chunk[..prefix_len]);
+          out.push_str(&replacement);
+          last_emitted = parser.position();
+        };
+
         // Break cycles by skipping inlining when the URL is already on the stack.
         if stack.iter().any(|u| u == &requested_url) {
+          if should_rewrite_url {
+            emit_import_rewrite(&requested_url);
+          }
           continue;
         }
 
         let fetched = fetch_svg_stylesheet_import(&requested_url, fetcher, ctx)?;
         let Some((final_url, fetched_css, fetched_bytes)) = fetched else {
+          if should_rewrite_url {
+            emit_import_rewrite(&requested_url);
+          }
           continue;
         };
 
         if stack.iter().any(|u| u == &final_url) {
+          if should_rewrite_url {
+            emit_import_rewrite(&requested_url);
+          }
           continue;
         }
 
         budget.spend_bytes(svg_url, fetched_bytes)?;
 
         stack.push(final_url.clone());
-        let nested =
-          inline_css_imports_with_budget(&fetched_css, Some(&final_url), fetcher, ctx, budget, stack, depth + 1, svg_url)?
-            .into_owned();
+        let mut nested =
+          inline_css_imports_with_budget(
+            &fetched_css,
+            Some(&final_url),
+            fetcher,
+            ctx,
+            budget,
+            stack,
+            depth + 1,
+            svg_url,
+          )?
+          .into_owned();
         stack.pop();
+
+        if let Cow::Owned(rewritten) = absolutize_css_urls_for_svg_style_import(&nested, &final_url) {
+          nested = rewritten;
+        }
 
         let media = media_start.map(|media_start| {
           if let Some(semi_start) = semicolon_start {
@@ -3629,7 +3965,8 @@ fn inline_css_imports_with_budget<'a>(
         let import_text = parser.slice_from(import_start);
         let chunk = parser.slice_from(last_emitted);
         let prefix_len = chunk.len().saturating_sub(import_text.len());
-        let out = out.get_or_insert_with(|| String::with_capacity(css.len().saturating_add(replacement.len())));
+        let out = out
+          .get_or_insert_with(|| String::with_capacity(css.len().saturating_add(replacement.len())));
         out.push_str(&chunk[..prefix_len]);
         out.push_str(&replacement);
         last_emitted = parser.position();
@@ -3654,6 +3991,10 @@ fn inline_css_imports_with_budget<'a>(
 
 /// Best-effort preprocessor that expands `@import` rules inside SVG `<style>` elements by fetching
 /// and inlining the referenced stylesheets before handing the SVG off to `usvg`.
+///
+/// When inlining, relative `url(...)` tokens inside imported stylesheets are rewritten to be
+/// absolute so they continue to resolve relative to the imported stylesheet's URL (not the parent
+/// SVG's URL).
 fn inline_svg_style_imports<'a>(
   svg_content: &'a str,
   svg_url: &str,
@@ -3690,7 +4031,8 @@ fn inline_svg_style_imports<'a>(
         .filter(|doc_url| Url::parse(doc_url).is_ok())
     });
 
-  let mut budget = SvgCssImportBudget::new(MAX_IMPORT_DEPTH, MAX_IMPORT_RULES, MAX_IMPORTED_CSS_BYTES);
+  let mut budget =
+    SvgCssImportBudget::new(MAX_IMPORT_DEPTH, MAX_IMPORT_RULES, MAX_IMPORTED_CSS_BYTES);
   let mut stack: Vec<String> = Vec::new();
   let mut deadline_counter = 0usize;
   let mut replacements: Vec<(std::ops::Range<usize>, String)> = Vec::new();
@@ -16368,6 +16710,40 @@ mod tests_inline {
       inlined.as_ref().contains("data:image/png;base64,"),
       "expected sprite-nested <image> to be inlined for file:// sprites, got: {}",
       inlined.as_ref()
+    );
+  }
+
+  #[test]
+  fn svg_style_import_rewrites_relative_url_tokens_to_absolute() {
+    let svg_url = "https://example.test/b/main.svg";
+    let css_url = "https://example.test/a/style.css";
+
+    let svg = r#"<svg xmlns="http://www.w3.org/2000/svg"><style>@import url("../a/style.css");</style><rect class="r" width="10" height="10"/></svg>"#;
+
+    let css = b".r{fill:url(img.svg#grad);}";
+    let mut css_res = FetchedResource::new(css.to_vec(), Some("text/css".to_string()));
+    css_res.status = Some(200);
+    css_res.final_url = Some(css_url.to_string());
+
+    let fetcher = MapFetcher::with_entries([(css_url.to_string(), css_res)]);
+
+    let processed =
+      inline_svg_style_imports(svg, svg_url, &fetcher, None).expect("inlined style imports");
+
+    assert!(
+      processed
+        .as_ref()
+        .contains("https://example.test/a/img.svg#grad"),
+      "expected imported CSS url() to be absolutized, got: {}",
+      processed.as_ref()
+    );
+
+    let requests = fetcher.requests();
+    assert!(
+      requests
+        .iter()
+        .any(|(url, dest, _)| url == css_url && *dest == FetchDestination::Style),
+      "expected stylesheet fetch for {css_url}, got: {requests:?}"
     );
   }
 
