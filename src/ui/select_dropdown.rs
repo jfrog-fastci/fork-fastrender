@@ -1,4 +1,4 @@
-use crate::geometry::Rect;
+use crate::geometry::{Point, Rect};
 use crate::interaction::KeyAction;
 use crate::tree::box_tree::{SelectControl, SelectItem};
 
@@ -6,6 +6,133 @@ use crate::tree::box_tree::{SelectControl, SelectItem};
 mod choice;
 
 pub use choice::SelectDropdownChoice;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SelectDropdownPopupDirection {
+  /// Dropdown opens below the `<select>` control (preferred when there is space).
+  Down,
+  /// Dropdown opens above the `<select>` control (used when there is more space above).
+  Up,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SelectDropdownPopupPlacement {
+  /// Popup rectangle in the same coordinate space as `screen_rect` and `anchor_rect`.
+  ///
+  /// Note: this represents the *maximum* rectangle we intend to occupy (e.g. when using a scroll
+  /// area). The actual UI may end up shorter if there are few options.
+  pub rect: Rect,
+  pub direction: SelectDropdownPopupDirection,
+}
+
+/// Compute a clamped `<select>` dropdown popup rectangle for a given screen/anchor configuration.
+///
+/// This is intended for windowed UIs: given a *screen* rectangle and an optional *anchor* rectangle
+/// (the `<select>` control's bounds), compute a popup rect that:
+/// - aligns to the anchor's left edge when possible,
+/// - prefers opening below the anchor,
+/// - flips above when there is more space above,
+/// - clamps width/height and keeps the popup inside the screen (with padding).
+///
+/// The returned rectangle uses the same coordinate space as the input (e.g. egui points).
+pub fn select_dropdown_popup_placement(
+  screen_rect: Rect,
+  anchor_rect: Option<Rect>,
+  fallback_anchor: Point,
+  preferred_width: f32,
+  min_width: f32,
+  max_width: f32,
+  max_height: f32,
+  edge_padding: f32,
+) -> SelectDropdownPopupPlacement {
+  let edge_padding = if edge_padding.is_finite() {
+    edge_padding.max(0.0)
+  } else {
+    0.0
+  };
+
+  let screen_left = screen_rect.min_x() + edge_padding;
+  let screen_top = screen_rect.min_y() + edge_padding;
+  let screen_right = screen_rect.max_x() - edge_padding;
+  let screen_bottom = screen_rect.max_y() - edge_padding;
+
+  let available_screen_width = (screen_right - screen_left).max(0.0);
+  let available_screen_height = (screen_bottom - screen_top).max(0.0);
+
+  let min_width = if min_width.is_finite() {
+    min_width.max(0.0)
+  } else {
+    0.0
+  };
+  let max_width = if max_width.is_finite() {
+    max_width.max(min_width)
+  } else {
+    min_width
+  };
+  let preferred_width = if preferred_width.is_finite() {
+    preferred_width.max(0.0)
+  } else {
+    0.0
+  };
+
+  let width = preferred_width
+    .clamp(min_width, max_width)
+    .min(available_screen_width);
+
+  let max_height = if max_height.is_finite() {
+    max_height.max(0.0)
+  } else {
+    0.0
+  };
+
+  let (anchor_left, anchor_top, anchor_bottom) = if let Some(anchor) = anchor_rect {
+    (anchor.min_x(), anchor.min_y(), anchor.max_y())
+  } else {
+    (fallback_anchor.x, fallback_anchor.y, fallback_anchor.y)
+  };
+
+  let avail_below = (screen_bottom - anchor_bottom).max(0.0);
+  let avail_above = (anchor_top - screen_top).max(0.0);
+
+  let direction = if avail_below >= avail_above {
+    SelectDropdownPopupDirection::Down
+  } else {
+    SelectDropdownPopupDirection::Up
+  };
+
+  let available_height = match direction {
+    SelectDropdownPopupDirection::Down => avail_below,
+    SelectDropdownPopupDirection::Up => avail_above,
+  };
+  let height = max_height
+    .min(available_height)
+    .min(available_screen_height);
+
+  let min_x = screen_left;
+  let max_x = (screen_right - width).max(min_x);
+  let x = if anchor_left.is_finite() {
+    anchor_left.clamp(min_x, max_x)
+  } else {
+    min_x
+  };
+
+  let min_y = screen_top;
+  let max_y = (screen_bottom - height).max(min_y);
+  let y_unclamped = match direction {
+    SelectDropdownPopupDirection::Down => anchor_bottom,
+    SelectDropdownPopupDirection::Up => anchor_top - height,
+  };
+  let y = if y_unclamped.is_finite() {
+    y_unclamped.clamp(min_y, max_y)
+  } else {
+    min_y
+  };
+
+  SelectDropdownPopupPlacement {
+    rect: Rect::from_xywh(x, y, width, height),
+    direction,
+  }
+}
 
 /// Compute the next selectable `<option>` row index for a dropdown `<select>` popup.
 ///
@@ -94,6 +221,107 @@ pub fn next_enabled_option_item_index(control: &SelectControl, key: KeyAction) -
   }
 
   Some(options[next].0)
+}
+
+/// Move the currently-selected `<option>` by a delta measured in **enabled options**.
+///
+/// For example:
+/// - `delta = 1` moves to the next enabled option (ArrowDown semantics).
+/// - `delta = -1` moves to the previous enabled option (ArrowUp semantics).
+/// - Larger deltas are useful for PageUp/PageDown-style navigation.
+///
+/// Returns the **item index** into [`SelectControl::items`] for the option that should become
+/// selected, or `None` when there are no enabled options.
+pub fn offset_enabled_option_item_index(control: &SelectControl, delta: isize) -> Option<usize> {
+  if delta == 0 {
+    // Treat "no movement" as a request for the current selection, falling back to the first enabled
+    // option.
+    return control
+      .selected
+      .last()
+      .copied()
+      .or_else(|| next_enabled_option_item_index(control, KeyAction::Home));
+  }
+
+  let options = control
+    .items
+    .iter()
+    .enumerate()
+    .filter_map(|(idx, item)| match item {
+      SelectItem::Option { disabled, .. } => Some((idx, *disabled)),
+      _ => None,
+    })
+    .collect::<Vec<_>>();
+
+  if options.is_empty() {
+    return None;
+  }
+
+  let selected_pos = control
+    .selected
+    .last()
+    .copied()
+    .and_then(|selected_item_idx| {
+      options
+        .iter()
+        .position(|(idx, _)| *idx == selected_item_idx)
+    });
+
+  let mut first_enabled: Option<usize> = None;
+  let mut last_enabled: Option<usize> = None;
+  for (pos, (_, disabled)) in options.iter().enumerate() {
+    if !*disabled {
+      if first_enabled.is_none() {
+        first_enabled = Some(pos);
+      }
+      last_enabled = Some(pos);
+    }
+  }
+  let first_enabled = first_enabled?;
+  let last_enabled = last_enabled.unwrap_or(first_enabled);
+
+  let anchor = selected_pos.unwrap_or(first_enabled);
+
+  let step_count = delta.unsigned_abs();
+  let mut pos = anchor;
+
+  if delta > 0 {
+    for _ in 0..step_count {
+      let mut found = None;
+      for next_pos in (pos + 1)..options.len() {
+        if !options[next_pos].1 {
+          found = Some(next_pos);
+          break;
+        }
+      }
+      match found {
+        Some(next_pos) => pos = next_pos,
+        None => {
+          pos = last_enabled;
+          break;
+        }
+      }
+    }
+  } else {
+    for _ in 0..step_count {
+      let mut found = None;
+      for next_pos in (0..pos).rev() {
+        if !options[next_pos].1 {
+          found = Some(next_pos);
+          break;
+        }
+      }
+      match found {
+        Some(next_pos) => pos = next_pos,
+        None => {
+          pos = first_enabled;
+          break;
+        }
+      }
+    }
+  }
+
+  Some(options[pos].0)
 }
 
 /// Returns the currently-selected `<option>` as a [`SelectDropdownChoice`].
@@ -370,6 +598,74 @@ mod tests {
   }
 
   #[test]
+  fn popup_placement_prefers_below_when_space_allows() {
+    let screen = Rect::from_xywh(0.0, 0.0, 800.0, 600.0);
+    let anchor = Rect::from_xywh(100.0, 100.0, 200.0, 20.0);
+
+    let placement = select_dropdown_popup_placement(
+      screen,
+      Some(anchor),
+      Point::new(0.0, 0.0),
+      240.0,
+      160.0,
+      600.0,
+      300.0,
+      8.0,
+    );
+
+    assert_eq!(placement.direction, SelectDropdownPopupDirection::Down);
+    assert!(placement.rect.min_x() >= 8.0);
+    assert!(placement.rect.min_y() >= anchor.max_y());
+    assert!(placement.rect.max_x() <= 800.0 - 8.0 + f32::EPSILON);
+    assert!(placement.rect.max_y() <= 600.0 - 8.0 + f32::EPSILON);
+    assert_eq!(placement.rect.width(), 240.0);
+    assert_eq!(placement.rect.height(), 300.0);
+  }
+
+  #[test]
+  fn popup_placement_flips_above_when_near_bottom() {
+    let screen = Rect::from_xywh(0.0, 0.0, 800.0, 600.0);
+    let anchor = Rect::from_xywh(100.0, 580.0, 200.0, 20.0);
+
+    let placement = select_dropdown_popup_placement(
+      screen,
+      Some(anchor),
+      Point::new(0.0, 0.0),
+      240.0,
+      160.0,
+      600.0,
+      300.0,
+      8.0,
+    );
+
+    assert_eq!(placement.direction, SelectDropdownPopupDirection::Up);
+    assert!((placement.rect.max_y() - anchor.min_y()).abs() < 1e-3);
+    assert!(placement.rect.min_y() >= 8.0 - 1e-3);
+  }
+
+  #[test]
+  fn popup_placement_clamps_x_and_width_to_screen() {
+    let screen = Rect::from_xywh(0.0, 0.0, 300.0, 200.0);
+    let anchor = Rect::from_xywh(280.0, 50.0, 30.0, 20.0);
+
+    let placement = select_dropdown_popup_placement(
+      screen,
+      Some(anchor),
+      Point::new(0.0, 0.0),
+      500.0,
+      160.0,
+      600.0,
+      300.0,
+      8.0,
+    );
+
+    // Screen width minus padding = 284, so the popup must clamp.
+    assert!(placement.rect.width() <= 284.0 + 1e-3);
+    assert!(placement.rect.max_x() <= 300.0 - 8.0 + 1e-3);
+    assert!(placement.rect.min_x() >= 8.0 - 1e-3);
+  }
+
+  #[test]
   fn selected_choice_returns_none_for_disabled_selected_option() {
     let control = sample_control();
     assert_eq!(selected_choice(10, &control), None);
@@ -474,5 +770,29 @@ mod tests {
       next_enabled_option_item_index(&control, KeyAction::ArrowDown),
       None
     );
+  }
+
+  #[test]
+  fn offset_enabled_option_item_index_moves_by_multiple_enabled_options() {
+    let control = nav_control();
+    assert_eq!(
+      offset_enabled_option_item_index(&control, 2),
+      Some(3),
+      "delta should skip disabled options and clamp if needed"
+    );
+    assert_eq!(
+      offset_enabled_option_item_index(&control, -1),
+      Some(0),
+      "delta up should clamp to first enabled option"
+    );
+  }
+
+  #[test]
+  fn offset_enabled_option_item_index_handles_disabled_anchor() {
+    let mut control = nav_control();
+    control.selected = vec![2];
+
+    assert_eq!(offset_enabled_option_item_index(&control, 1), Some(3));
+    assert_eq!(offset_enabled_option_item_index(&control, -1), Some(0));
   }
 }

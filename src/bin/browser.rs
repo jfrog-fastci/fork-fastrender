@@ -111,7 +111,6 @@ mod browser_hud_env_tests {
     assert!(parse_browser_hud_env(Some("maybe")).is_err());
   }
 }
-
 #[cfg(feature = "browser_ui")]
 use arboard::Clipboard;
 #[cfg(feature = "browser_ui")]
@@ -763,8 +762,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Drive periodic worker ticks for animated documents and keep the event loop armed for the next
+<<<<<<< HEAD
     // pending deadline (worker ticks, viewport throttling, egui repaint scheduling).
     app.drive_periodic_tasks_and_update_control_flow(control_flow);
+=======
+    // tick deadline when needed.
+    app.drive_animation_tick();
+    app.update_control_flow_for_animation_ticks(control_flow);
+>>>>>>> a61fb6fe (feat(browser): modernize <select> dropdown popup)
   });
 }
 
@@ -1044,6 +1049,7 @@ fn run_headless_smoke_mode(
       "failed to save session to {}: {err}",
       session_path.display()
     );
+<<<<<<< HEAD
   }
 
   if let Err(err) = fastrender::ui::bookmarks_persistence::save_bookmarks_atomic(
@@ -1063,6 +1069,8 @@ fn run_headless_smoke_mode(
       "failed to save history to {}: {err}",
       history_path.display()
     );
+=======
+>>>>>>> a61fb6fe (feat(browser): modernize <select> dropdown popup)
   }
 
   let active_url = session
@@ -1169,6 +1177,11 @@ struct OpenSelectDropdown {
   ///
   /// When both messages are emitted, prefer the control-anchored variant.
   anchored_to_control: bool,
+  /// When true, the next dropdown render should scroll the currently-selected option into view.
+  scroll_to_selected: bool,
+  /// Accumulated typeahead query (lowercased) for keyboard selection.
+  typeahead_query: String,
+  typeahead_last_input: Option<std::time::Instant>,
 }
 
 #[cfg(feature = "browser_ui")]
@@ -1394,6 +1407,13 @@ struct App {
 impl App {
   const DEBUG_LOG_MAX_LINES: usize = 200;
   const ANIMATION_TICK_INTERVAL: std::time::Duration = std::time::Duration::from_millis(16);
+  const SELECT_DROPDOWN_EDGE_PADDING_POINTS: f32 = 8.0;
+  const SELECT_DROPDOWN_MIN_WIDTH_POINTS: f32 = 180.0;
+  const SELECT_DROPDOWN_MAX_WIDTH_POINTS: f32 = 600.0;
+  const SELECT_DROPDOWN_MAX_HEIGHT_POINTS: f32 = 320.0;
+  const SELECT_DROPDOWN_PAGE_STEP: isize = 10;
+  const SELECT_DROPDOWN_TYPEAHEAD_TIMEOUT: std::time::Duration =
+    std::time::Duration::from_millis(1000);
 
   fn refresh_theme_from_system_theme(&mut self, system_theme: Option<winit::window::Theme>) -> bool {
     use fastrender::ui::theme::ThemeMode;
@@ -2149,23 +2169,31 @@ error: {err}",
     &mut self,
     key: fastrender::interaction::KeyAction,
   ) {
+    let selected_item_idx = self.open_select_dropdown.as_ref().and_then(|dropdown| {
+      fastrender::select_dropdown::next_enabled_option_item_index(&dropdown.control, key)
+    });
+    let Some(selected_item_idx) = selected_item_idx else {
+      return;
+    };
+    self.update_open_select_dropdown_selection_for_item_index(selected_item_idx, true);
+  }
+
+  fn update_open_select_dropdown_selection_for_item_index(
+    &mut self,
+    selected_item_idx: usize,
+    clear_typeahead: bool,
+  ) {
     use fastrender::tree::box_tree::SelectItem;
 
     let Some(dropdown) = self.open_select_dropdown.as_mut() else {
       return;
     };
 
-    let Some(selected_item_idx) =
-      fastrender::select_dropdown::next_enabled_option_item_index(&dropdown.control, key)
-    else {
-      return;
-    };
-
     // Update the local `SelectControl` snapshot so the popup highlights the same option that the
     // worker will select after handling the corresponding `UiToWorker::KeyAction`.
     //
-    // This keeps the dropdown open while navigating with arrow keys, without requiring additional
-    // worker→UI protocol messages.
+    // This keeps the dropdown open while navigating with keyboard input, without requiring
+    // additional worker→UI protocol messages.
     let mut items = (*dropdown.control.items).clone();
     let mut selected = Vec::new();
     for (idx, item) in items.iter_mut().enumerate() {
@@ -2192,6 +2220,94 @@ error: {err}",
 
     dropdown.control.items = std::sync::Arc::new(items);
     dropdown.control.selected = selected;
+    dropdown.scroll_to_selected = true;
+
+    if clear_typeahead {
+      dropdown.typeahead_query.clear();
+      dropdown.typeahead_last_input = None;
+    }
+  }
+
+  fn update_open_select_dropdown_selection_by_enabled_delta(&mut self, delta: isize) {
+    let selected_item_idx = self.open_select_dropdown.as_ref().and_then(|dropdown| {
+      fastrender::select_dropdown::offset_enabled_option_item_index(&dropdown.control, delta)
+    });
+    let Some(selected_item_idx) = selected_item_idx else {
+      return;
+    };
+    self.update_open_select_dropdown_selection_for_item_index(selected_item_idx, true);
+  }
+
+  fn handle_select_dropdown_typeahead(&mut self, ch: char) {
+    use fastrender::tree::box_tree::SelectItem;
+
+    if ch.is_control() || !ch.is_alphanumeric() {
+      return;
+    }
+
+    let matched_item_idx = {
+      let Some(dropdown) = self.open_select_dropdown.as_mut() else {
+        return;
+      };
+
+      let now = std::time::Instant::now();
+      let timed_out = dropdown
+        .typeahead_last_input
+        .is_none_or(|last| now.duration_since(last) > Self::SELECT_DROPDOWN_TYPEAHEAD_TIMEOUT);
+      if timed_out {
+        dropdown.typeahead_query.clear();
+      }
+      dropdown.typeahead_last_input = Some(now);
+
+      for lower in ch.to_lowercase() {
+        dropdown.typeahead_query.push(lower);
+      }
+
+      let query = dropdown.typeahead_query.as_str();
+      let total = dropdown.control.items.len();
+      if total == 0 || query.is_empty() {
+        return;
+      }
+
+      let start_item_idx = dropdown
+        .control
+        .selected
+        .last()
+        .copied()
+        .unwrap_or_else(|| total.saturating_sub(1));
+
+      let mut matched_item_idx = None;
+      for offset in 1..=total {
+        let idx = (start_item_idx + offset) % total;
+        let SelectItem::Option {
+          label,
+          value,
+          disabled,
+          ..
+        } = &dropdown.control.items[idx]
+        else {
+          continue;
+        };
+        if *disabled {
+          continue;
+        }
+        let base = if label.trim().is_empty() {
+          value
+        } else {
+          label
+        };
+        if base.trim_start().to_lowercase().starts_with(query) {
+          matched_item_idx = Some(idx);
+          break;
+        }
+      }
+
+      matched_item_idx
+    };
+
+    if let Some(item_idx) = matched_item_idx {
+      self.update_open_select_dropdown_selection_for_item_index(item_idx, false);
+    }
   }
 
   fn shutdown(&mut self) {
@@ -2452,6 +2568,9 @@ error: {err}",
             anchor_points,
             anchor_width_points,
             anchored_to_control: control_anchor.is_some(),
+            scroll_to_selected: true,
+            typeahead_query: String::new(),
+            typeahead_last_input: None,
           });
           self.open_select_dropdown_rect = None;
           request_redraw = true;
@@ -2490,12 +2609,31 @@ error: {err}",
     }
   }
 
+<<<<<<< HEAD
   fn send_viewport_changed_clamped_if_needed(
     &mut self,
     tab_id: fastrender::ui::TabId,
     viewport_css: (u32, u32),
     dpr: f32,
   ) {
+=======
+  fn send_viewport_changed_if_needed(&mut self, viewport_css: (u32, u32), dpr: f32) {
+    let Some(tab_id) = self.browser_state.active_tab_id() else {
+      return;
+    };
+
+    // Clamp *before* sending to the worker so we never request an absurd RGBA pixmap allocation.
+    let clamp = self
+      .browser_limits
+      .clamp_viewport_and_dpr(viewport_css, dpr);
+    let viewport_css = clamp.viewport_css;
+    let dpr = clamp.dpr;
+
+    if let Some(tab) = self.browser_state.tab_mut(tab_id) {
+      tab.warning = clamp.warning_text(&self.browser_limits);
+    }
+
+>>>>>>> a61fb6fe (feat(browser): modernize <select> dropdown popup)
     if self.viewport_cache_tab == Some(tab_id)
       && self.viewport_cache_css == viewport_css
       && (self.viewport_cache_dpr - dpr).abs() < f32::EPSILON
@@ -2521,12 +2659,23 @@ error: {err}",
       return;
     };
 
+<<<<<<< HEAD
     // Keep the throttle state scoped to the active tab so tab switches don't inherit the previous
     // tab's rate-limit window.
     if self.viewport_throttle_tab != Some(tab_id) {
       self.viewport_throttle_tab = Some(tab_id);
       self.viewport_throttle.reset();
     }
+=======
+    let overlay_intercepts = self.last_cursor_pos_points.is_some_and(|pos| {
+      self
+        .open_select_dropdown_rect
+        .is_some_and(|rect| rect.contains(pos))
+        || self
+          .open_context_menu_rect
+          .is_some_and(|rect| rect.contains(pos))
+    });
+>>>>>>> a61fb6fe (feat(browser): modernize <select> dropdown popup)
 
     // Clamp *before* sending to the worker so we never request an absurd RGBA pixmap allocation.
     let clamp = self.browser_limits.clamp_viewport_and_dpr(viewport_css, dpr);
@@ -3162,35 +3311,46 @@ error: {err}",
     use fastrender::tree::box_tree::SelectItem;
     use fastrender::ui::UiToWorker;
 
-    let (tab_id, select_node_id, control, anchor_css, fallback_anchor_points, anchor_width_points) =
-      match self.open_select_dropdown.as_ref() {
-        Some(dropdown) => (
-          dropdown.tab_id,
-          dropdown.select_node_id,
-          dropdown.control.clone(),
-          dropdown.anchor_css,
-          dropdown.anchor_points,
-          dropdown.anchor_width_points,
-        ),
-        None => {
-          self.open_select_dropdown_rect = None;
-          return;
-        }
-      };
+    let (
+      tab_id,
+      select_node_id,
+      control,
+      anchor_css,
+      fallback_anchor_points,
+      anchor_width_points,
+      scroll_to_selected,
+    ) = match self.open_select_dropdown.as_mut() {
+      Some(dropdown) => (
+        dropdown.tab_id,
+        dropdown.select_node_id,
+        dropdown.control.clone(),
+        dropdown.anchor_css,
+        dropdown.anchor_points,
+        dropdown.anchor_width_points,
+        std::mem::take(&mut dropdown.scroll_to_selected),
+      ),
+      None => {
+        self.open_select_dropdown_rect = None;
+        return;
+      }
+    };
 
-    let mut anchor_pos_points = fallback_anchor_points;
-    let mut min_width_points = anchor_width_points
+    let mut anchor_rect_points: Option<egui::Rect> = None;
+    let mut fallback_anchor_pos_points = fallback_anchor_points;
+    let mut preferred_width_points = anchor_width_points
       .filter(|w| w.is_finite() && *w > 0.0)
-      .unwrap_or(200.0);
+      .unwrap_or(Self::SELECT_DROPDOWN_MIN_WIDTH_POINTS);
 
     if let Some(anchor_css) = anchor_css {
       if let Some(mapping) = self.page_input_mapping {
         if let Some(rect_points) = mapping.rect_css_to_rect_points_clamped(anchor_css) {
-          anchor_pos_points = egui::pos2(rect_points.min.x, rect_points.max.y);
-          min_width_points = rect_points.width().max(min_width_points);
+          anchor_rect_points = Some(rect_points);
+          fallback_anchor_pos_points = egui::pos2(rect_points.min.x, rect_points.max.y);
+          preferred_width_points = rect_points.width().max(preferred_width_points);
         }
       }
     }
+    preferred_width_points = preferred_width_points.max(Self::SELECT_DROPDOWN_MIN_WIDTH_POINTS);
 
     if self.browser_state.active_tab_id() != Some(tab_id) {
       self.cancel_select_dropdown();
@@ -3204,30 +3364,129 @@ error: {err}",
       return;
     }
 
+    let screen_rect_points = ctx.screen_rect();
+    let screen_rect = fastrender::Rect::from_xywh(
+      screen_rect_points.min.x,
+      screen_rect_points.min.y,
+      screen_rect_points.width(),
+      screen_rect_points.height(),
+    );
+    let anchor_rect = anchor_rect_points
+      .map(|rect| fastrender::Rect::from_xywh(rect.min.x, rect.min.y, rect.width(), rect.height()));
+
+    let placement = fastrender::select_dropdown::select_dropdown_popup_placement(
+      screen_rect,
+      anchor_rect,
+      fastrender::Point::new(fallback_anchor_pos_points.x, fallback_anchor_pos_points.y),
+      preferred_width_points,
+      Self::SELECT_DROPDOWN_MIN_WIDTH_POINTS,
+      Self::SELECT_DROPDOWN_MAX_WIDTH_POINTS,
+      Self::SELECT_DROPDOWN_MAX_HEIGHT_POINTS,
+      Self::SELECT_DROPDOWN_EDGE_PADDING_POINTS,
+    );
+
+    let (popup_pos, popup_pivot) = match placement.direction {
+      fastrender::select_dropdown::SelectDropdownPopupDirection::Down => (
+        egui::pos2(placement.rect.min_x(), placement.rect.min_y()),
+        egui::Align2::LEFT_TOP,
+      ),
+      fastrender::select_dropdown::SelectDropdownPopupDirection::Up => (
+        egui::pos2(placement.rect.min_x(), placement.rect.max_y()),
+        egui::Align2::LEFT_BOTTOM,
+      ),
+    };
+
+    // Popup frame margin (used when translating from outer max size → inner scroll area max size).
+    let popup_margin = egui::Margin::same(4.0);
+    let inner_width = (placement.rect.width() - popup_margin.left - popup_margin.right).max(0.0);
+    let inner_max_height =
+      (placement.rect.height() - popup_margin.top - popup_margin.bottom).max(0.0);
+
     let popup = egui::Area::new(egui::Id::new((
       "fastr_select_dropdown_popup",
       tab_id.0,
       select_node_id,
     )))
     .order(egui::Order::Foreground)
-    .fixed_pos(anchor_pos_points)
+    .fixed_pos(popup_pos)
+    .pivot(popup_pivot)
     .show(ctx, |ui| {
-      let frame = egui::Frame::popup(ui.style()).show(ui, |ui| {
-        ui.set_min_width(min_width_points);
+      let mut frame = egui::Frame::popup(ui.style());
+      frame.inner_margin = popup_margin;
+      frame.rounding = egui::Rounding::same(8.0);
+      frame.shadow.extrusion = frame.shadow.extrusion.max(12.0);
+
+      let frame = frame.show(ui, |ui| {
+        ui.set_min_width(inner_width);
+
+        let mut clicked_item_idx: Option<usize> = None;
+        let mut scroll_to_selected = scroll_to_selected;
+
+        let visuals = ui.visuals().clone();
+        let hover_bg = if visuals.dark_mode {
+          egui::Color32::from_rgba_unmultiplied(255, 255, 255, 24)
+        } else {
+          egui::Color32::from_rgba_unmultiplied(0, 0, 0, 14)
+        };
+
+        let selection_base = visuals.selection.bg_fill;
+        let [sr, sg, sb, _] = selection_base.to_array();
+        let selection_bg = if visuals.dark_mode {
+          egui::Color32::from_rgba_unmultiplied(sr, sg, sb, 140)
+        } else {
+          egui::Color32::from_rgba_unmultiplied(sr, sg, sb, 72)
+        };
+        let selection_hover_bg = if visuals.dark_mode {
+          egui::Color32::from_rgba_unmultiplied(sr, sg, sb, 180)
+        } else {
+          egui::Color32::from_rgba_unmultiplied(sr, sg, sb, 104)
+        };
+
+        let body_font = ui
+          .style()
+          .text_styles
+          .get(&egui::TextStyle::Body)
+          .cloned()
+          .unwrap_or_else(|| egui::FontId::proportional(14.0));
+        let small_font = ui
+          .style()
+          .text_styles
+          .get(&egui::TextStyle::Small)
+          .cloned()
+          .unwrap_or_else(|| egui::FontId::proportional(12.0));
+
         egui::ScrollArea::vertical()
-          .max_height(240.0)
+          .max_height(inner_max_height)
+          .auto_shrink([false, false])
           .show(ui, |ui| {
-            let mut clicked_item_idx: Option<usize> = None;
+            ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
+
+            let row_height = 26.0;
+            let row_rounding = egui::Rounding::same(5.0);
+            let row_bg_inset_x = 4.0;
+            let check_col_width = 18.0;
+            let base_padding_x = 10.0;
 
             for (idx, item) in control.items.iter().enumerate() {
               match item {
                 SelectItem::OptGroupLabel { label, disabled } => {
-                  let text = egui::RichText::new(label).strong();
-                  if *disabled {
-                    ui.add_enabled(false, egui::Label::new(text));
-                  } else {
-                    ui.label(text);
-                  }
+                  ui.add_space(6.0);
+                  let (rect, _response) = ui.allocate_exact_size(
+                    egui::vec2(ui.available_width(), 18.0),
+                    egui::Sense::hover(),
+                  );
+                  ui.painter().text(
+                    egui::pos2(rect.min.x + base_padding_x, rect.center().y),
+                    egui::Align2::LEFT_CENTER,
+                    label,
+                    small_font.clone(),
+                    if *disabled {
+                      visuals.weak_text_color()
+                    } else {
+                      visuals.text_color()
+                    },
+                  );
+                  ui.add_space(2.0);
                 }
                 SelectItem::Option {
                   label,
@@ -3242,23 +3501,75 @@ error: {err}",
                   } else {
                     label
                   };
-                  let text = if *in_optgroup {
-                    format!("  {base}")
+                  let row_sense = if *disabled {
+                    egui::Sense::hover()
                   } else {
-                    base.to_string()
+                    egui::Sense::click()
                   };
+                  let (rect, response) =
+                    ui.allocate_exact_size(egui::vec2(ui.available_width(), row_height), row_sense);
 
-                  let response =
-                    ui.add_enabled(!*disabled, egui::SelectableLabel::new(*selected, text));
-                  if response.clicked() {
+                  if response.clicked() && !*disabled {
                     clicked_item_idx = Some(idx);
                   }
+
+                  if *selected && scroll_to_selected {
+                    response.scroll_to_me(Some(egui::Align::Center));
+                    scroll_to_selected = false;
+                  }
+
+                  let hovered = response.hovered();
+                  let mut bg = egui::Color32::TRANSPARENT;
+                  if *selected {
+                    bg = if hovered {
+                      selection_hover_bg
+                    } else {
+                      selection_bg
+                    };
+                  } else if hovered && !*disabled {
+                    bg = hover_bg;
+                  }
+
+                  let painter = ui.painter();
+                  if bg != egui::Color32::TRANSPARENT {
+                    let bg_rect = rect.shrink2(egui::vec2(row_bg_inset_x, 0.0));
+                    painter.rect_filled(bg_rect, row_rounding, bg);
+                  }
+
+                  let text_color = if *disabled {
+                    visuals.weak_text_color()
+                  } else {
+                    visuals.text_color()
+                  };
+
+                  let mut x = rect.min.x + base_padding_x;
+                  if *selected {
+                    painter.text(
+                      egui::pos2(x, rect.center().y),
+                      egui::Align2::LEFT_CENTER,
+                      "✓",
+                      body_font.clone(),
+                      selection_base,
+                    );
+                  }
+                  x += check_col_width;
+                  if *in_optgroup {
+                    x += 12.0;
+                  }
+
+                  painter.text(
+                    egui::pos2(x, rect.center().y),
+                    egui::Align2::LEFT_CENTER,
+                    base,
+                    body_font.clone(),
+                    text_color,
+                  );
                 }
               }
             }
-            clicked_item_idx
-          })
-          .inner
+          });
+
+        clicked_item_idx
       });
 
       (frame.response.rect, frame.inner)
@@ -3540,9 +3851,12 @@ error: {err}",
         let had_pointer_capture = self.pointer_captured;
         let had_scrollbar_drag = self.scrollbar_drag.is_some();
         let had_cursor_in_page = self.cursor_in_page;
+<<<<<<< HEAD
         let had_cursor_near_scrollbars = self
           .last_cursor_pos_points
           .is_some_and(|pos| self.cursor_near_overlay_scrollbars(pos));
+=======
+>>>>>>> a61fb6fe (feat(browser): modernize <select> dropdown popup)
         let had_context_menu =
           self.open_context_menu.is_some() || self.pending_context_menu_request.is_some();
 
@@ -4031,10 +4345,83 @@ error: {err}",
             self.update_open_select_dropdown_selection_for_key(nav_key);
             self.window.request_redraw();
             return;
+<<<<<<< HEAD
           } else {
             self.cancel_select_dropdown();
             self.window.request_redraw();
           }
+=======
+          }
+
+          if matches!(key, VirtualKeyCode::PageUp) {
+            self.update_open_select_dropdown_selection_by_enabled_delta(
+              -Self::SELECT_DROPDOWN_PAGE_STEP,
+            );
+            self.window.request_redraw();
+            return;
+          }
+          if matches!(key, VirtualKeyCode::PageDown) {
+            self.update_open_select_dropdown_selection_by_enabled_delta(
+              Self::SELECT_DROPDOWN_PAGE_STEP,
+            );
+            self.window.request_redraw();
+            return;
+          }
+
+          // Typeahead uses `WindowEvent::ReceivedCharacter` (so we get the actual typed character
+          // for the current keyboard layout). Do not dismiss the dropdown for plain alphanumeric key
+          // presses without modifiers.
+          let has_command_modifiers =
+            self.modifiers.ctrl() || self.modifiers.logo() || self.modifiers.alt();
+          if !has_command_modifiers
+            && matches!(
+              key,
+              VirtualKeyCode::Key0
+                | VirtualKeyCode::Key1
+                | VirtualKeyCode::Key2
+                | VirtualKeyCode::Key3
+                | VirtualKeyCode::Key4
+                | VirtualKeyCode::Key5
+                | VirtualKeyCode::Key6
+                | VirtualKeyCode::Key7
+                | VirtualKeyCode::Key8
+                | VirtualKeyCode::Key9
+                | VirtualKeyCode::A
+                | VirtualKeyCode::B
+                | VirtualKeyCode::C
+                | VirtualKeyCode::D
+                | VirtualKeyCode::E
+                | VirtualKeyCode::F
+                | VirtualKeyCode::G
+                | VirtualKeyCode::H
+                | VirtualKeyCode::I
+                | VirtualKeyCode::J
+                | VirtualKeyCode::K
+                | VirtualKeyCode::L
+                | VirtualKeyCode::M
+                | VirtualKeyCode::N
+                | VirtualKeyCode::O
+                | VirtualKeyCode::P
+                | VirtualKeyCode::Q
+                | VirtualKeyCode::R
+                | VirtualKeyCode::S
+                | VirtualKeyCode::T
+                | VirtualKeyCode::U
+                | VirtualKeyCode::V
+                | VirtualKeyCode::W
+                | VirtualKeyCode::X
+                | VirtualKeyCode::Y
+                | VirtualKeyCode::Z
+            )
+          {
+            return;
+          }
+
+          // For all other keys, close the dropdown so the key press can act on the page/chrome
+          // (e.g. Tab focus navigation, browser shortcuts).
+          self.cancel_select_dropdown();
+          self.window.request_redraw();
+>>>>>>> a61fb6fe (feat(browser): modernize <select> dropdown popup)
         }
 
         // Centralised shortcut handling: interpret as a browser shortcut first, and only forward
@@ -4312,8 +4699,9 @@ error: {err}",
           return;
         }
         if self.open_select_dropdown.is_some() {
-          self.cancel_select_dropdown();
+          self.handle_select_dropdown_typeahead(*ch);
           self.window.request_redraw();
+          return;
         }
         let Some(tab_id) = self.browser_state.active_tab_id() else {
           return;
@@ -4844,6 +5232,7 @@ error: {err}",
               metrics.bounds_css,
             );
 
+<<<<<<< HEAD
             // If a wheel scroll is happening this frame, register it before drawing so scrollbars
             // become visible immediately (even if this is a single-tick wheel scroll).
             if !wheel_events.is_empty() && !wheel_blocked_by_dropdown && response.hovered() {
@@ -4900,7 +5289,40 @@ error: {err}",
                   egui::pos2(rect.min_x(), rect.min_y()),
                   egui::pos2(rect.max_x(), rect.max_y()),
                 )
+=======
+            let painter = ui.painter();
+            let to_egui_rect = |rect: fastrender::Rect| {
+              egui::Rect::from_min_max(
+                egui::pos2(rect.min_x(), rect.min_y()),
+                egui::pos2(rect.max_x(), rect.max_y()),
+              )
+            };
+
+            let dark = ui.visuals().dark_mode;
+            let (r, g, b) = if dark { (255, 255, 255) } else { (0, 0, 0) };
+
+            let draw_scrollbar = |scrollbar: fastrender::ui::scrollbars::OverlayScrollbar,
+                                  dragging: bool| {
+              let thickness_points = match scrollbar.axis {
+                fastrender::ui::scrollbars::ScrollbarAxis::Vertical => {
+                  scrollbar.track_rect_points.width()
+                }
+                fastrender::ui::scrollbars::ScrollbarAxis::Horizontal => {
+                  scrollbar.track_rect_points.height()
+                }
+>>>>>>> a61fb6fe (feat(browser): modernize <select> dropdown popup)
               };
+              let rounding = egui::Rounding::same((thickness_points * 0.5).max(0.0));
+              let track = to_egui_rect(scrollbar.track_rect_points);
+              let thumb = to_egui_rect(scrollbar.thumb_rect_points);
+
+              let track_color = egui::Color32::from_rgba_unmultiplied(r, g, b, 32);
+              let thumb_alpha = if dragging { 196 } else { 128 };
+              let thumb_color = egui::Color32::from_rgba_unmultiplied(r, g, b, thumb_alpha);
+
+              painter.rect_filled(track, rounding, track_color);
+              painter.rect_filled(thumb, rounding, thumb_color);
+            };
 
               let shrink_rect = |rect: egui::Rect, dx: f32, dy: f32| {
                 let min = rect.min + egui::vec2(dx, dy);
