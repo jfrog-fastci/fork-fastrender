@@ -5972,11 +5972,14 @@ impl<'a> ElementRef<'a> {
   }
 
   fn is_disabled(&self) -> bool {
+    if !self.supports_disabled() {
+      return false;
+    }
     let Some(tag) = self.node.tag_name() else {
       return false;
     };
 
-    if self.supports_disabled() && self.node.get_attribute_ref("disabled").is_some() {
+    if self.node.get_attribute_ref("disabled").is_some() {
       return true;
     }
 
@@ -15861,6 +15864,22 @@ mod tests {
     };
     assert!(matches(&editable_div, &[], &PseudoClass::ReadWrite));
     assert!(!matches(&editable_div, &[], &PseudoClass::ReadOnly));
+  }
+
+  #[test]
+  fn read_write_does_not_treat_contenteditable_as_disabled_by_fieldset() {
+    let fieldset = element_with_attrs(
+      "fieldset",
+      vec![("disabled", "disabled")],
+      vec![element_with_attrs("div", vec![("contenteditable", "true")], vec![])],
+    );
+    let editable = &fieldset.children[0];
+    let ancestors: Vec<&DomNode> = vec![&fieldset];
+    assert!(
+      matches(editable, &ancestors, &PseudoClass::ReadWrite),
+      "contenteditable elements should not be disabled by a disabled fieldset"
+    );
+    assert!(!matches(editable, &ancestors, &PseudoClass::ReadOnly));
   }
 
   #[test]
