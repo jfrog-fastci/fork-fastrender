@@ -62,6 +62,18 @@ fn gc_string_survives_collection_and_relocates() {
   // SAFETY: `root` is a valid `GcPtr` slot and is popped in LIFO order.
   unsafe { rt_root_push(&mut root as *mut *mut u8) };
 
+  let (view_ptr_before_tagged, view_offset) = {
+    let view_before = rt_string_as_utf8(root);
+    // SAFETY: `rt_string_as_utf8` returns a valid byte range until the next GC.
+    let bytes_before = unsafe { core::slice::from_raw_parts(view_before.ptr, view_before.len) };
+    assert_eq!(bytes_before, b"hello");
+
+    // Do not keep the borrowed pointer itself across GC: conservative scanning fallback (when
+    // enabled) can treat stack words as candidate roots. Tag the value so it is not a plausible
+    // aligned pointer.
+    ((view_before.ptr as usize) | 1, (view_before.ptr as usize) - (root as usize))
+  };
+
   // Conservative scanning fallback (when enabled) can treat stack words as candidate pointers.
   // Tag the old value so it is not a plausible aligned pointer.
   let before_tagged = (root as usize) | 1;
@@ -77,6 +89,17 @@ fn gc_string_survives_collection_and_relocates() {
   assert_ne!(after, before, "expected a nursery allocation to relocate during GC");
 
   let view = rt_string_as_utf8(after);
+  let view_ptr_before = (view_ptr_before_tagged & !1) as *const u8;
+  assert_eq!(
+    view.ptr as usize,
+    after as usize + view_offset,
+    "expected UTF-8 view pointer to match the relocated object base + data offset"
+  );
+  assert_ne!(
+    view.ptr, view_ptr_before,
+    "`rt_string_as_utf8` returns a borrowed view into the GC heap; the pointer must not be assumed \
+     stable across GC"
+  );
   // SAFETY: `rt_string_as_utf8` returns a valid byte range until the next GC.
   let bytes = unsafe { core::slice::from_raw_parts(view.ptr, view.len) };
   assert_eq!(bytes, b"hello");

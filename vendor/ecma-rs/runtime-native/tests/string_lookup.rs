@@ -1,5 +1,8 @@
 use runtime_native::abi::InternedId;
 use runtime_native::test_util::TestRuntimeGuard;
+use std::process::Command;
+
+const FREE_CHILD_ENV: &str = "RUNTIME_NATIVE_STRING_LOOKUP_FREE_CHILD";
 
 #[test]
 fn string_lookup_pinned_roundtrips_for_pinned_ids() {
@@ -97,3 +100,40 @@ fn string_lookup_empty_string_is_distinct_from_invalid() {
   });
 }
 
+#[test]
+fn string_lookup_stringref_is_borrowed_and_must_not_be_freed() {
+  if std::env::var(FREE_CHILD_ENV).is_ok() {
+    let _rt = TestRuntimeGuard::new();
+    runtime_native::test_util::with_interner_test_lock(|| {
+      let id = runtime_native::rt_string_intern(b"hello".as_ptr(), b"hello".len());
+      let got = runtime_native::rt_string_lookup(id);
+
+      // `rt_string_lookup` returns a borrowed view (it may point into the GC heap), so freeing it is
+      // a misuse that must abort.
+      runtime_native::rt_string_free(got);
+      unreachable!("rt_string_free should have aborted on borrowed StringRef");
+    });
+  }
+
+  let exe = std::env::current_exe().expect("current_exe");
+  let out = Command::new(exe)
+    .arg("--exact")
+    .arg("string_lookup_stringref_is_borrowed_and_must_not_be_freed")
+    .env(FREE_CHILD_ENV, "1")
+    .output()
+    .expect("spawn child test process");
+
+  assert!(
+    !out.status.success(),
+    "expected subprocess to abort\nstatus: {}\nstdout:\n{}\nstderr:\n{}",
+    out.status,
+    String::from_utf8_lossy(&out.stdout),
+    String::from_utf8_lossy(&out.stderr)
+  );
+
+  #[cfg(unix)]
+  {
+    use std::os::unix::process::ExitStatusExt;
+    assert_eq!(out.status.signal(), Some(libc::SIGABRT));
+  }
+}

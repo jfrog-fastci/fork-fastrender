@@ -257,12 +257,19 @@ pub struct CoroutineId(pub u64);
 /// `runtime-native` crate). A future milestone may instead make strings opaque
 /// GC-managed handles, but that would be a separate ABI decision.
 ///
-/// Note:
-/// - `StringRef` values returned by `rt_string_concat` / `rt_string_to_owned_utf8` are allocated
-///   **outside** the GC heap and must be freed via `rt_string_free` (or the compatibility alias
-///   `rt_stringref_free`).
-/// - `rt_string_as_utf8` returns a borrowed `StringRef` view into the GC heap that is only valid
-///   until the next GC safepoint/collection (the string may be relocated).
+/// Note: `StringRef` values have API-defined ownership/lifetime:
+/// - **Owned** `StringRef` values must be freed exactly once via `rt_string_free` (or the
+///   compatibility alias `rt_stringref_free`):
+///   - `rt_string_concat`
+///   - `rt_string_to_owned_utf8`
+/// - **Borrowed** `StringRef` values must NOT be freed:
+///   - `rt_string_as_utf8`: points into the GC heap and is only valid until the next GC
+///     safepoint/collection (the string may be relocated).
+///   - `rt_string_lookup`: borrowed; may point into movable GC storage for unpinned IDs, so treat it
+///     as valid only until the next GC safepoint/collection. Use `rt_string_lookup_pinned` when a
+///     GC-stable byte pointer is required.
+///   - `rt_string_lookup_pinned`: pinned-only; points to interner-owned non-GC memory and is stable
+///     for the lifetime of the process.
 #[repr(C)]
 pub struct StringRef {
   pub ptr: *const u8,

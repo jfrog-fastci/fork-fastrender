@@ -2699,14 +2699,20 @@ Design:
   - Locked writes (rare after startup)
   
 API:
-  intern(str: &str) -> InternedId
-  lookup(id: InternedId) -> &str
+  intern(bytes: &[u8]) -> InternedId
+  lookup(id: InternedId) -> StringRef
+    - Borrowed; must NOT be freed.
+    - May be backed by movable GC storage (unpinned IDs), so only valid until next GC safepoint/collection.
+    - If a GC-stable byte pointer is required, use `lookup_pinned` instead.
+  pin(id: InternedId) -> void
+  lookup_pinned(id: InternedId, out: *mut StringRef) -> bool
+    - Pinned-only; returns a borrowed pointer into interner-owned non-GC memory, stable for the lifetime of the process.
   eq(a: InternedId, b: InternedId) -> bool  // Just ==
   
 GC Integration:
-  - Weak references in intern table
-  - Unused strings collected
-  - Common strings (keywords, property names) pinned
+  - Unpinned entries stored as weak references to GC-managed string objects (collectible + movable).
+  - Unused strings collected; IDs become permanently invalid (never reused).
+  - Common strings (keywords, property names) pinned; pinned entries use out-of-GC storage for stable pointers.
 
 Usage:
   - All property names interned

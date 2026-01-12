@@ -255,10 +255,19 @@ unsafe fn rt_string_free_impl(s: StringRef) {
   }
 
   let header_size = core::mem::size_of::<StringAllocHeader>();
-  let base = (s.ptr as *mut u8).sub(header_size);
-  let header = &*(base as *const StringAllocHeader);
+  // Use wrapping arithmetic for defensive behavior on bogus `s.ptr` values; this function is
+  // expected to abort on misuse (e.g. freeing borrowed `StringRef`s).
+  let base = (s.ptr as usize).wrapping_sub(header_size) as *mut u8;
+  let expected_align = core::mem::align_of::<StringAllocHeader>();
+  if (base as usize) % expected_align != 0 {
+    trap::rt_trap_invalid_arg("rt_string_free: misaligned `StringRef` pointer");
+  }
+
+  let header = (base as *const StringAllocHeader).read();
   if header.magic != STRING_ALLOC_MAGIC {
-    trap::rt_trap_invalid_arg("rt_string_free: buffer was not allocated by rt_string_concat");
+    trap::rt_trap_invalid_arg(
+      "rt_string_free: buffer was not allocated by rt_string_concat or rt_string_to_owned_utf8",
+    );
   }
   if header.size < header_size {
     trap::rt_trap_invalid_arg("rt_string_free: invalid allocation header");
@@ -267,7 +276,7 @@ unsafe fn rt_string_free_impl(s: StringRef) {
   if payload_len != s.len {
     trap::rt_trap_invalid_arg("rt_string_free: length mismatch");
   }
-  if header.align == 0 || !header.align.is_power_of_two() {
+  if header.align != expected_align {
     trap::rt_trap_invalid_arg("rt_string_free: invalid allocation alignment");
   }
   let layout = std::alloc::Layout::from_size_align(header.size, header.align)

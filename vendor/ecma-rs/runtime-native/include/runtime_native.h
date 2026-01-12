@@ -171,6 +171,12 @@ typedef struct PromiseLayout {
 } PromiseLayout;
 
 // An FFI-friendly UTF-8 byte string reference.
+//
+// IMPORTANT: `StringRef` values may be either:
+// - owned buffers allocated by the runtime (must be freed via `rt_string_free`), or
+// - borrowed views into runtime-managed memory (must NOT be freed).
+//
+// The ownership/lifetime contract is defined by the API that produced the `StringRef` value.
 typedef struct StringRef {
   const uint8_t* ptr;
   size_t len;
@@ -676,6 +682,10 @@ void rt_thread_set_parked(bool parked);
 StringRef rt_string_concat(const uint8_t* a, size_t a_len, const uint8_t* b, size_t b_len);
 // Free an owned `StringRef` allocated by `rt_string_concat` or `rt_string_to_owned_utf8`.
 //
+// IMPORTANT:
+// - Passing a borrowed `StringRef` (e.g. from `rt_string_as_utf8`, `rt_string_lookup`,
+//   `rt_string_lookup_pinned`) is invalid and the runtime will abort.
+//
 // This is a no-op for empty string references (`len == 0`), including `{ptr=NULL, len=0}`.
 void rt_string_free(StringRef s);
 // Free an owned `StringRef` allocated by `rt_string_concat` or `rt_string_to_owned_utf8`.
@@ -692,6 +702,9 @@ GcPtr rt_string_concat_gc(GcPtr a, GcPtr b);
 size_t rt_string_len(GcPtr s);
 // Borrow the UTF-8 bytes of a GC-managed string.
 //
+// Ownership: the returned `StringRef` is borrowed and must NOT be freed (do not call `rt_string_free` /
+// `rt_stringref_free` on it).
+//
 // The returned view points into the GC heap and is only valid until the next GC safepoint/collection
 // (the string may be relocated).
 StringRef rt_string_as_utf8(GcPtr s);
@@ -701,6 +714,16 @@ StringRef rt_string_as_utf8(GcPtr s);
 StringRef rt_string_to_owned_utf8(GcPtr s);
 InternedId rt_string_intern(const uint8_t* s, size_t len);
 // Lookup an interned string by stable ID.
+//
+// Ownership: the returned `StringRef` is borrowed and must NOT be freed (do not call `rt_string_free` /
+// `rt_stringref_free` on it).
+//
+// GC-safety / lifetime contract:
+// - The interner may store unpinned entries as weak references to GC-managed objects.
+// - For unpinned entries, `ptr..ptr+len` may point into movable GC storage and is only valid until the
+//   next GC safepoint/collection.
+// - If the entry is pinned, the returned bytes may be stable for the lifetime of the process, but
+//   callers that require a GC-stable byte pointer should still prefer `rt_string_lookup_pinned`.
 //
 // Return value contract:
 // - On success: returns `{ptr, len}` for the UTF-8 bytes.
