@@ -4084,6 +4084,70 @@ mod tests {
     );
   }
 
+  #[test]
+  fn weibo_fixture_font_face_relative_url_resolves_against_document_base_url() {
+    // The `weibo.cn` page fixture declares a CJK font using `@font-face` inside an inline `<style>`
+    // block. Inline styles do not have a stylesheet URL, so `url(...)` sources must resolve against
+    // the document URL passed as `base_url` to `FontContext::load_web_fonts`.
+    let dir = tempfile::tempdir().expect("tempdir");
+
+    let doc_dir = dir.path().join("pages/fixtures/weibo.cn");
+    fs::create_dir_all(&doc_dir).expect("create doc dir");
+    let doc_path = doc_dir.join("index.html");
+    fs::write(&doc_path, b"<!doctype html>").expect("write doc html");
+
+    let font_dir = dir.path().join("fixtures/fonts");
+    fs::create_dir_all(&font_dir).expect("create font dir");
+    let font_path = font_dir.join("DejaVuSans-subset.ttf");
+    fs::write(
+      &font_path,
+      include_bytes!("../../tests/fixtures/fonts/DejaVuSans-subset.ttf"),
+    )
+    .expect("write font");
+
+    let doc_url = Url::from_file_path(&doc_path).expect("doc file url");
+    let expected_font_url = Url::from_file_path(&font_path).expect("font file url");
+
+    let css = r#"
+      @font-face {
+        font-family: "WeiboCJKTest";
+        src: url("../../../fixtures/fonts/DejaVuSans-subset.ttf") format("truetype");
+        font-weight: 400;
+        font-style: normal;
+        font-display: block;
+      }
+    "#;
+    let sheet = crate::css::parser::parse_stylesheet(css).expect("stylesheet should parse");
+    let media_ctx = MediaContext::screen(800.0, 600.0);
+    let faces = sheet.collect_font_face_rules(&media_ctx);
+    assert_eq!(faces.len(), 1);
+
+    let ctx = FontContext::empty();
+    let report = ctx
+      .load_web_fonts_with_options(
+        &faces,
+        Some(doc_url.as_str()),
+        None,
+        WebFontLoadOptions::default(),
+      )
+      .expect("load web font");
+    assert!(
+      report.events.iter().any(|event| {
+        matches!(event.status, FontLoadStatus::Loaded)
+          && event.source.as_deref() == Some(expected_font_url.as_str())
+      }),
+      "expected relative @font-face src URL to resolve against document base URL (events={:?})",
+      report.events
+    );
+
+    // The loaded face should be resolved by the family name (i.e. active web fonts win).
+    let families = vec!["WeiboCJKTest".to_string()];
+    let font = ctx
+      .get_font_full(&families, 400, FontStyle::Normal, FontStretch::Normal)
+      .expect("web font should be available");
+    assert_eq!(font.family, "WeiboCJKTest");
+  }
+
   fn font_face_style_from_db(style: fontdb::Style) -> FontFaceStyle {
     match style {
       fontdb::Style::Normal => FontFaceStyle::Normal,

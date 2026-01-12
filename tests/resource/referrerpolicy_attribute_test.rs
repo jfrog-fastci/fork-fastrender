@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crate::common::net::try_bind_localhost;
+use crate::common::net::{net_test_lock, try_bind_localhost};
 
 #[derive(Debug, Clone)]
 struct CapturedRequest {
@@ -203,6 +203,7 @@ fn tiny_png() -> Vec<u8> {
 
 #[test]
 fn img_referrerpolicy_no_referrer_omits_referer_header() {
+  let _net_guard = net_test_lock();
   let Some(server) = TestServer::start(
     "img_referrerpolicy_no_referrer_omits_referer_header",
     |path| match path {
@@ -248,6 +249,7 @@ fn img_referrerpolicy_no_referrer_omits_referer_header() {
 
 #[test]
 fn img_referrerpolicy_overrides_document_referrer_policy() {
+  let _net_guard = net_test_lock();
   let Some(server) = TestServer::start(
     "img_referrerpolicy_overrides_document_referrer_policy",
     |path| match path {
@@ -296,6 +298,7 @@ fn img_referrerpolicy_overrides_document_referrer_policy() {
 
 #[test]
 fn iframe_referrerpolicy_overrides_document_referrer_policy() {
+  let _net_guard = net_test_lock();
   let Some(server) = TestServer::start(
     "iframe_referrerpolicy_overrides_document_referrer_policy",
     |path| match path {
@@ -350,6 +353,7 @@ fn iframe_referrerpolicy_overrides_document_referrer_policy() {
 
 #[test]
 fn iframe_src_referrerpolicy_applies_to_iframe_subresource_requests() {
+  let _net_guard = net_test_lock();
   let Some(server) = TestServer::start(
     "iframe_src_referrerpolicy_applies_to_iframe_subresource_requests",
     |path| {
@@ -405,6 +409,7 @@ fn iframe_src_referrerpolicy_applies_to_iframe_subresource_requests() {
 
 #[test]
 fn link_stylesheet_referrerpolicy_overrides_document_policy_and_applies_to_imports() {
+  let _net_guard = net_test_lock();
   let Some(server) = TestServer::start(
     "link_stylesheet_referrerpolicy_overrides_document_policy_and_applies_to_imports",
     |path| match path {
@@ -462,6 +467,7 @@ fn link_stylesheet_referrerpolicy_overrides_document_policy_and_applies_to_impor
 
 #[test]
 fn iframe_srcdoc_referrerpolicy_applies_to_srcdoc_subresource_requests() {
+  let _net_guard = net_test_lock();
   let Some(server) = TestServer::start(
     "iframe_srcdoc_referrerpolicy_applies_to_srcdoc_subresource_requests",
     |path| match path {

@@ -1,6 +1,6 @@
 #![cfg(feature = "disk_cache")]
 
-use crate::common::net::try_bind_localhost;
+use crate::common::net::{net_test_lock, try_bind_localhost};
 use fastrender::pageset::pageset_stem;
 use fastrender::resource::{
   normalize_user_agent_for_log, CachingFetcherConfig, DiskCacheConfig, DiskCachingFetcher,
@@ -131,6 +131,7 @@ impl ResourceFetcher for FailFetcher {
 
 #[test]
 fn prefetch_assets_warms_disk_cache_with_imports_and_fonts() {
+  let _net_guard = net_test_lock();
   let Some(listener) =
     try_bind_localhost("prefetch_assets_warms_disk_cache_with_imports_and_fonts")
   else {
@@ -232,6 +233,7 @@ fn prefetch_assets_warms_disk_cache_with_imports_and_fonts() {
 
 #[test]
 fn prefetch_assets_warms_disk_cache_with_layer_imports_and_fonts() {
+  let _net_guard = net_test_lock();
   let Some(listener) =
     try_bind_localhost("prefetch_assets_warms_disk_cache_with_layer_imports_and_fonts")
   else {
@@ -334,6 +336,7 @@ fn prefetch_assets_warms_disk_cache_with_layer_imports_and_fonts() {
 
 #[test]
 fn prefetch_assets_warms_disk_cache_with_inline_style_import_and_fonts() {
+  let _net_guard = net_test_lock();
   let Some(listener) =
     try_bind_localhost("prefetch_assets_warms_disk_cache_with_inline_style_import_and_fonts")
   else {
@@ -424,6 +427,7 @@ fn prefetch_assets_warms_disk_cache_with_inline_style_import_and_fonts() {
 
 #[test]
 fn prefetch_assets_warms_disk_cache_with_shadow_root_style_import() {
+  let _net_guard = net_test_lock();
   let Some(listener) =
     try_bind_localhost("prefetch_assets_warms_disk_cache_with_shadow_root_style_import")
   else {
@@ -495,6 +499,7 @@ fn prefetch_assets_warms_disk_cache_with_shadow_root_style_import() {
 
 #[test]
 fn prefetch_assets_warms_disk_cache_with_html_images_iframes_and_embeds() {
+  let _net_guard = net_test_lock();
   let Some(listener) =
     try_bind_localhost("prefetch_assets_warms_disk_cache_with_html_images_iframes_and_embeds")
   else {
@@ -653,6 +658,7 @@ fn prefetch_assets_warms_disk_cache_with_html_images_iframes_and_embeds() {
 
 #[test]
 fn prefetch_assets_does_not_fetch_embeds_without_prefetch_embeds() {
+  let _net_guard = net_test_lock();
   let Some(listener) =
     try_bind_localhost("prefetch_assets_does_not_fetch_embeds_without_prefetch_embeds")
   else {
@@ -785,6 +791,7 @@ fn prefetch_assets_does_not_fetch_embeds_without_prefetch_embeds() {
 
 #[test]
 fn prefetch_assets_honors_base_href_for_html_discovery() {
+  let _net_guard = net_test_lock();
   let Some(listener) = try_bind_localhost("prefetch_assets_honors_base_href_for_html_discovery")
   else {
     return;
@@ -899,6 +906,7 @@ fn prefetch_assets_honors_base_href_for_html_discovery() {
 
 #[test]
 fn prefetch_assets_selects_srcset_candidate_and_respects_max_urls_per_element() {
+  let _net_guard = net_test_lock();
   let Some(listener) = try_bind_localhost(
     "prefetch_assets_selects_srcset_candidate_and_respects_max_urls_per_element",
   ) else {
@@ -1024,6 +1032,7 @@ fn prefetch_assets_selects_srcset_candidate_and_respects_max_urls_per_element() 
 
 #[test]
 fn prefetch_assets_selects_preload_imagesrcset_candidate() {
+  let _net_guard = net_test_lock();
   let Some(listener) = try_bind_localhost("prefetch_assets_selects_preload_imagesrcset_candidate")
   else {
     return;
@@ -1136,6 +1145,7 @@ fn prefetch_assets_selects_preload_imagesrcset_candidate() {
 
 #[test]
 fn prefetch_assets_warms_disk_cache_with_iframes_embeds_icons_and_video_posters() {
+  let _net_guard = net_test_lock();
   let Some(listener) = try_bind_localhost(
     "prefetch_assets_warms_disk_cache_with_iframes_embeds_icons_and_video_posters",
   ) else {
@@ -1313,6 +1323,7 @@ fn prefetch_assets_warms_disk_cache_with_iframes_embeds_icons_and_video_posters(
 
 #[test]
 fn prefetch_assets_respects_max_images_per_page() {
+  let _net_guard = net_test_lock();
   let Some(listener) = try_bind_localhost("prefetch_assets_respects_max_images_per_page") else {
     return;
   };
@@ -1417,6 +1428,7 @@ fn prefetch_assets_respects_max_images_per_page() {
 
 #[test]
 fn prefetch_assets_selects_picture_source_by_media_and_dpr() {
+  let _net_guard = net_test_lock();
   let Some(listener) =
     try_bind_localhost("prefetch_assets_selects_picture_source_by_media_and_dpr")
   else {

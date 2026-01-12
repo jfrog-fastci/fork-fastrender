@@ -1,29 +1,14 @@
+use crate::common::net::{net_test_lock, try_bind_localhost};
 use fastrender::api::{FastRender, FastRenderConfig, RenderOptions};
 use fastrender::debug::runtime::RuntimeToggles;
 use fastrender::resource::HttpFetcher;
 use std::collections::HashMap;
 use std::io::{self, Read, Write};
-use std::net::{TcpListener, TcpStream};
+use std::net::TcpStream;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
-
-fn try_bind_localhost(context: &str) -> Option<TcpListener> {
-  match TcpListener::bind("127.0.0.1:0") {
-    Ok(listener) => Some(listener),
-    Err(err)
-      if matches!(
-        err.kind(),
-        io::ErrorKind::PermissionDenied | io::ErrorKind::AddrNotAvailable
-      ) =>
-    {
-      eprintln!("skipping {context}: cannot bind localhost in this environment: {err}");
-      None
-    }
-    Err(err) => panic!("bind {context}: {err}"),
-  }
-}
 
 fn read_http_headers(stream: &mut TcpStream) -> io::Result<String> {
   stream.set_read_timeout(Some(Duration::from_secs(1)))?;
@@ -717,6 +702,7 @@ fn build_renderer() -> FastRender {
 
 #[test]
 fn img_referrerpolicy_no_referrer_suppresses_referer_header() {
+  let _net_guard = net_test_lock();
   let Some(server) =
     HeaderCaptureServer::start("img_referrerpolicy_no_referrer_suppresses_referer_header")
   else {
@@ -755,6 +741,7 @@ fn img_referrerpolicy_no_referrer_suppresses_referer_header() {
 
 #[test]
 fn img_crossorigin_no_referrer_still_sends_origin_header() {
+  let _net_guard = net_test_lock();
   let Some(server) =
     HeaderCaptureServer::start("img_crossorigin_no_referrer_still_sends_origin_header")
   else {
@@ -798,6 +785,7 @@ fn img_crossorigin_no_referrer_still_sends_origin_header() {
 
 #[test]
 fn img_default_referrer_policy_sends_full_url_for_same_origin_requests() {
+  let _net_guard = net_test_lock();
   let Some(server) = HeaderCaptureServer::start(
     "img_default_referrer_policy_sends_full_url_for_same_origin_requests",
   ) else {
@@ -839,6 +827,7 @@ fn img_default_referrer_policy_sends_full_url_for_same_origin_requests() {
 
 #[test]
 fn img_default_referrer_policy_uses_origin_for_cross_origin_requests() {
+  let _net_guard = net_test_lock();
   let Some(server) =
     HeaderCaptureServer::start("img_default_referrer_policy_uses_origin_for_cross_origin_requests")
   else {
@@ -878,6 +867,7 @@ fn img_default_referrer_policy_uses_origin_for_cross_origin_requests() {
 
 #[test]
 fn img_default_referrer_policy_downgrade_suppresses_referer_header() {
+  let _net_guard = net_test_lock();
   let Some(server) =
     HeaderCaptureServer::start("img_default_referrer_policy_downgrade_suppresses_referer_header")
   else {
@@ -916,6 +906,7 @@ fn img_default_referrer_policy_downgrade_suppresses_referer_header() {
 
 #[test]
 fn iframe_referrerpolicy_no_referrer_suppresses_referer_header() {
+  let _net_guard = net_test_lock();
   let Some(server) =
     HeaderCaptureServer::start("iframe_referrerpolicy_no_referrer_suppresses_referer_header")
   else {
@@ -954,6 +945,7 @@ fn iframe_referrerpolicy_no_referrer_suppresses_referer_header() {
 
 #[test]
 fn stylesheet_referrerpolicy_no_referrer_suppresses_referer_header() {
+  let _net_guard = net_test_lock();
   let Some(server) =
     HeaderCaptureServer::start("stylesheet_referrerpolicy_no_referrer_suppresses_referer_header")
   else {
@@ -995,6 +987,7 @@ fn stylesheet_referrerpolicy_no_referrer_suppresses_referer_header() {
 
 #[test]
 fn stylesheet_referrerpolicy_no_referrer_suppresses_referer_for_imports_and_fonts() {
+  let _net_guard = net_test_lock();
   let Some(server) = HeaderCaptureServer::start(
     "stylesheet_referrerpolicy_no_referrer_suppresses_referer_for_imports_and_fonts",
   ) else {
@@ -1041,6 +1034,7 @@ fn stylesheet_referrerpolicy_no_referrer_suppresses_referer_for_imports_and_font
 
 #[test]
 fn stylesheet_referrerpolicy_origin_applies_to_imports_and_fonts() {
+  let _net_guard = net_test_lock();
   let Some(server) =
     HeaderCaptureServer::start("stylesheet_referrerpolicy_origin_applies_to_imports_and_fonts")
   else {
@@ -1091,6 +1085,7 @@ fn stylesheet_referrerpolicy_origin_applies_to_imports_and_fonts() {
 #[test]
 fn stylesheet_referrerpolicy_same_origin_uses_document_referrer_for_sheet_and_stylesheet_referrer_for_nested(
 ) {
+  let _net_guard = net_test_lock();
   let Some(server) = HeaderCaptureServer::start(
     "stylesheet_referrerpolicy_same_origin_uses_document_referrer_for_sheet_and_stylesheet_referrer_for_nested",
   ) else {
@@ -1152,6 +1147,7 @@ fn stylesheet_referrerpolicy_same_origin_uses_document_referrer_for_sheet_and_st
 #[test]
 fn stylesheet_referrerpolicy_same_origin_omits_cross_origin_document_referrer_but_uses_stylesheet_referrer_for_nested(
 ) {
+  let _net_guard = net_test_lock();
   let Some(server) = HeaderCaptureServer::start(
     "stylesheet_referrerpolicy_same_origin_omits_cross_origin_document_referrer_but_uses_stylesheet_referrer_for_nested",
   ) else {
@@ -1212,6 +1208,7 @@ fn stylesheet_referrerpolicy_same_origin_omits_cross_origin_document_referrer_bu
 #[test]
 fn stylesheet_referrerpolicy_strict_origin_when_cross_origin_downgrade_omits_referer_for_sheet_but_not_nested(
 ) {
+  let _net_guard = net_test_lock();
   let Some(server) = HeaderCaptureServer::start(
     "stylesheet_referrerpolicy_strict_origin_when_cross_origin_downgrade_omits_referer_for_sheet_but_not_nested",
   ) else {
@@ -1275,6 +1272,7 @@ fn stylesheet_referrerpolicy_strict_origin_when_cross_origin_downgrade_omits_ref
 
 #[test]
 fn stylesheet_response_referrer_policy_no_referrer_suppresses_referer_for_imports_and_fonts() {
+  let _net_guard = net_test_lock();
   let Some(server) = HeaderCaptureServer::start(
     "stylesheet_response_referrer_policy_no_referrer_suppresses_referer_for_imports_and_fonts",
   ) else {
@@ -1333,6 +1331,7 @@ fn stylesheet_response_referrer_policy_no_referrer_suppresses_referer_for_import
 #[test]
 fn stylesheet_referrerpolicy_origin_when_cross_origin_uses_origin_for_sheet_and_stylesheet_referrer_for_nested(
 ) {
+  let _net_guard = net_test_lock();
   let Some(server) = HeaderCaptureServer::start(
     "stylesheet_referrerpolicy_origin_when_cross_origin_uses_origin_for_sheet_and_stylesheet_referrer_for_nested",
   ) else {
@@ -1392,6 +1391,7 @@ fn stylesheet_referrerpolicy_origin_when_cross_origin_uses_origin_for_sheet_and_
 
 #[test]
 fn imported_stylesheet_response_referrer_policy_no_referrer_suppresses_referer_for_grandchildren() {
+  let _net_guard = net_test_lock();
   let Some(server) = HeaderCaptureServer::start(
     "imported_stylesheet_response_referrer_policy_no_referrer_suppresses_referer_for_grandchildren",
   ) else {
@@ -1455,6 +1455,7 @@ fn imported_stylesheet_response_referrer_policy_no_referrer_suppresses_referer_f
 
 #[test]
 fn stylesheet_redirect_uses_final_url_as_referrer_for_nested_requests() {
+  let _net_guard = net_test_lock();
   let Some(server) = HeaderCaptureServer::start(
     "stylesheet_redirect_uses_final_url_as_referrer_for_nested_requests",
   ) else {
@@ -1509,6 +1510,7 @@ fn stylesheet_redirect_uses_final_url_as_referrer_for_nested_requests() {
 #[test]
 fn stylesheet_redirect_response_referrer_policy_no_referrer_suppresses_referer_for_followup_request(
 ) {
+  let _net_guard = net_test_lock();
   let Some(server) = HeaderCaptureServer::start(
     "stylesheet_redirect_response_referrer_policy_no_referrer_suppresses_referer_for_followup_request",
   ) else {
@@ -1559,6 +1561,7 @@ fn stylesheet_redirect_response_referrer_policy_no_referrer_suppresses_referer_f
 #[test]
 fn stylesheet_redirect_response_referrer_policy_no_referrer_suppresses_referer_for_nested_requests()
 {
+  let _net_guard = net_test_lock();
   let Some(server) = HeaderCaptureServer::start(
     "stylesheet_redirect_response_referrer_policy_no_referrer_suppresses_referer_for_nested_requests",
   ) else {
@@ -1610,6 +1613,7 @@ fn stylesheet_redirect_response_referrer_policy_no_referrer_suppresses_referer_f
 
 #[test]
 fn meta_referrer_policy_no_referrer_suppresses_referer_for_stylesheets_and_nested_requests() {
+  let _net_guard = net_test_lock();
   let Some(server) = HeaderCaptureServer::start(
     "meta_referrer_policy_no_referrer_suppresses_referer_for_stylesheets_and_nested_requests",
   ) else {
@@ -1661,6 +1665,7 @@ fn meta_referrer_policy_no_referrer_suppresses_referer_for_stylesheets_and_neste
 
 #[test]
 fn meta_referrer_policy_no_referrer_suppresses_referer_for_images() {
+  let _net_guard = net_test_lock();
   let Some(server) =
     HeaderCaptureServer::start("meta_referrer_policy_no_referrer_suppresses_referer_for_images")
   else {
@@ -1708,6 +1713,7 @@ fn meta_referrer_policy_no_referrer_suppresses_referer_for_images() {
 
 #[test]
 fn meta_referrer_policy_no_referrer_suppresses_referer_for_iframes() {
+  let _net_guard = net_test_lock();
   let Some(server) =
     HeaderCaptureServer::start("meta_referrer_policy_no_referrer_suppresses_referer_for_iframes")
   else {
@@ -1755,6 +1761,7 @@ fn meta_referrer_policy_no_referrer_suppresses_referer_for_iframes() {
 
 #[test]
 fn meta_referrer_policy_origin_is_overridden_by_img_referrerpolicy_no_referrer() {
+  let _net_guard = net_test_lock();
   let Some(server) = HeaderCaptureServer::start(
     "meta_referrer_policy_origin_is_overridden_by_img_referrerpolicy_no_referrer",
   ) else {
@@ -1801,6 +1808,7 @@ fn meta_referrer_policy_origin_is_overridden_by_img_referrerpolicy_no_referrer()
 #[test]
 fn meta_referrer_policy_origin_is_overridden_by_iframe_referrerpolicy_no_referrer_for_nested_requests(
 ) {
+  let _net_guard = net_test_lock();
   let Some(server) = HeaderCaptureServer::start(
     "meta_referrer_policy_origin_is_overridden_by_iframe_referrerpolicy_no_referrer_for_nested_requests",
   ) else {
@@ -1860,6 +1868,7 @@ fn meta_referrer_policy_origin_is_overridden_by_iframe_referrerpolicy_no_referre
 
 #[test]
 fn img_invalid_referrerpolicy_attribute_uses_document_meta_policy() {
+  let _net_guard = net_test_lock();
   let Some(server) =
     HeaderCaptureServer::start("img_invalid_referrerpolicy_attribute_uses_document_meta_policy")
   else {
@@ -1907,6 +1916,7 @@ fn img_invalid_referrerpolicy_attribute_uses_document_meta_policy() {
 
 #[test]
 fn iframe_invalid_referrerpolicy_attribute_uses_document_meta_policy_for_nested_requests() {
+  let _net_guard = net_test_lock();
   let Some(server) = HeaderCaptureServer::start(
     "iframe_invalid_referrerpolicy_attribute_uses_document_meta_policy_for_nested_requests",
   ) else {
@@ -1968,6 +1978,7 @@ fn iframe_invalid_referrerpolicy_attribute_uses_document_meta_policy_for_nested_
 
 #[test]
 fn stylesheet_invalid_referrerpolicy_attribute_uses_document_meta_policy() {
+  let _net_guard = net_test_lock();
   let Some(server) = HeaderCaptureServer::start(
     "stylesheet_invalid_referrerpolicy_attribute_uses_document_meta_policy",
   ) else {
@@ -2020,6 +2031,7 @@ fn stylesheet_invalid_referrerpolicy_attribute_uses_document_meta_policy() {
 
 #[test]
 fn meta_invalid_referrer_policy_is_ignored_and_default_policy_applies_for_images() {
+  let _net_guard = net_test_lock();
   let Some(server) = HeaderCaptureServer::start(
     "meta_invalid_referrer_policy_is_ignored_and_default_policy_applies_for_images",
   ) else {
@@ -2067,6 +2079,7 @@ fn meta_invalid_referrer_policy_is_ignored_and_default_policy_applies_for_images
 
 #[test]
 fn meta_referrer_policy_inside_template_is_ignored() {
+  let _net_guard = net_test_lock();
   let Some(server) = HeaderCaptureServer::start("meta_referrer_policy_inside_template_is_ignored")
   else {
     return;
@@ -2115,6 +2128,7 @@ fn meta_referrer_policy_inside_template_is_ignored() {
 
 #[test]
 fn meta_referrer_policy_outside_head_is_ignored() {
+  let _net_guard = net_test_lock();
   let Some(server) = HeaderCaptureServer::start("meta_referrer_policy_outside_head_is_ignored")
   else {
     return;
@@ -2160,6 +2174,7 @@ fn meta_referrer_policy_outside_head_is_ignored() {
 
 #[test]
 fn iframe_srcdoc_inherits_parent_meta_referrer_policy_no_referrer() {
+  let _net_guard = net_test_lock();
   let Some(server) =
     HeaderCaptureServer::start("iframe_srcdoc_inherits_parent_meta_referrer_policy_no_referrer")
   else {
@@ -2204,6 +2219,7 @@ fn iframe_srcdoc_inherits_parent_meta_referrer_policy_no_referrer() {
 
 #[test]
 fn iframe_srcdoc_referrerpolicy_no_referrer_overrides_parent_meta_origin() {
+  let _net_guard = net_test_lock();
   let Some(server) = HeaderCaptureServer::start(
     "iframe_srcdoc_referrerpolicy_no_referrer_overrides_parent_meta_origin",
   ) else {
@@ -2249,6 +2265,7 @@ fn iframe_srcdoc_referrerpolicy_no_referrer_overrides_parent_meta_origin() {
 
 #[test]
 fn iframe_srcdoc_meta_referrer_policy_no_referrer_overrides_iframe_referrerpolicy() {
+  let _net_guard = net_test_lock();
   let Some(server) = HeaderCaptureServer::start(
     "iframe_srcdoc_meta_referrer_policy_no_referrer_overrides_iframe_referrerpolicy",
   ) else {
@@ -2294,6 +2311,7 @@ fn iframe_srcdoc_meta_referrer_policy_no_referrer_overrides_iframe_referrerpolic
 
 #[test]
 fn meta_referrer_policy_no_referrer_allows_referrerpolicy_override_for_images() {
+  let _net_guard = net_test_lock();
   let Some(server) = HeaderCaptureServer::start(
     "meta_referrer_policy_no_referrer_allows_referrerpolicy_override_for_images",
   ) else {
@@ -2341,6 +2359,7 @@ fn meta_referrer_policy_no_referrer_allows_referrerpolicy_override_for_images() 
 
 #[test]
 fn meta_referrer_policy_no_referrer_allows_referrerpolicy_override_for_iframes() {
+  let _net_guard = net_test_lock();
   let Some(server) = HeaderCaptureServer::start(
     "meta_referrer_policy_no_referrer_allows_referrerpolicy_override_for_iframes",
   ) else {
@@ -2388,6 +2407,7 @@ fn meta_referrer_policy_no_referrer_allows_referrerpolicy_override_for_iframes()
 
 #[test]
 fn meta_referrer_policy_no_referrer_allows_iframe_referrerpolicy_override_for_nested_requests() {
+  let _net_guard = net_test_lock();
   let Some(server) = HeaderCaptureServer::start(
     "meta_referrer_policy_no_referrer_allows_iframe_referrerpolicy_override_for_nested_requests",
   ) else {
@@ -2449,6 +2469,7 @@ fn meta_referrer_policy_no_referrer_allows_iframe_referrerpolicy_override_for_ne
 
 #[test]
 fn iframe_meta_referrer_policy_no_referrer_overrides_iframe_referrerpolicy_for_nested_requests() {
+  let _net_guard = net_test_lock();
   let Some(server) = HeaderCaptureServer::start(
     "iframe_meta_referrer_policy_no_referrer_overrides_iframe_referrerpolicy_for_nested_requests",
   ) else {
@@ -2516,6 +2537,7 @@ fn iframe_meta_referrer_policy_no_referrer_overrides_iframe_referrerpolicy_for_n
 
 #[test]
 fn meta_referrer_policy_no_referrer_allows_link_referrerpolicy_override_for_nested_requests() {
+  let _net_guard = net_test_lock();
   let Some(server) = HeaderCaptureServer::start(
     "meta_referrer_policy_no_referrer_allows_link_referrerpolicy_override_for_nested_requests",
   ) else {
@@ -2570,6 +2592,7 @@ fn meta_referrer_policy_no_referrer_allows_link_referrerpolicy_override_for_nest
 #[test]
 fn fetched_document_meta_referrer_policy_no_referrer_suppresses_referer_for_stylesheets_and_nested_requests(
 ) {
+  let _net_guard = net_test_lock();
   let Some(server) = HeaderCaptureServer::start(
     "fetched_document_meta_referrer_policy_no_referrer_suppresses_referer_for_stylesheets_and_nested_requests",
   ) else {
@@ -2612,6 +2635,7 @@ fn fetched_document_meta_referrer_policy_no_referrer_suppresses_referer_for_styl
 #[test]
 fn document_response_referrer_policy_no_referrer_suppresses_referer_for_stylesheets_and_nested_requests(
 ) {
+  let _net_guard = net_test_lock();
   let Some(server) = HeaderCaptureServer::start(
     "document_response_referrer_policy_no_referrer_suppresses_referer_for_stylesheets_and_nested_requests",
   ) else {
@@ -2653,6 +2677,7 @@ fn document_response_referrer_policy_no_referrer_suppresses_referer_for_styleshe
 
 #[test]
 fn document_response_referrer_policy_no_referrer_suppresses_referer_for_images() {
+  let _net_guard = net_test_lock();
   let Some(server) = HeaderCaptureServer::start(
     "document_response_referrer_policy_no_referrer_suppresses_referer_for_images",
   ) else {
@@ -2687,6 +2712,7 @@ fn document_response_referrer_policy_no_referrer_suppresses_referer_for_images()
 
 #[test]
 fn document_response_referrer_policy_invalid_token_is_ignored_for_images() {
+  let _net_guard = net_test_lock();
   let Some(server) = HeaderCaptureServer::start(
     "document_response_referrer_policy_invalid_token_is_ignored_for_images",
   ) else {
@@ -2725,6 +2751,7 @@ fn document_response_referrer_policy_invalid_token_is_ignored_for_images() {
 
 #[test]
 fn document_response_referrer_policy_value_list_last_token_wins_for_images() {
+  let _net_guard = net_test_lock();
   let Some(server) = HeaderCaptureServer::start(
     "document_response_referrer_policy_value_list_last_token_wins_for_images",
   ) else {
@@ -2764,6 +2791,7 @@ fn document_response_referrer_policy_value_list_last_token_wins_for_images() {
 
 #[test]
 fn document_response_referrer_policy_no_referrer_suppresses_referer_for_iframes() {
+  let _net_guard = net_test_lock();
   let Some(server) = HeaderCaptureServer::start(
     "document_response_referrer_policy_no_referrer_suppresses_referer_for_iframes",
   ) else {
@@ -2798,6 +2826,7 @@ fn document_response_referrer_policy_no_referrer_suppresses_referer_for_iframes(
 
 #[test]
 fn document_response_referrer_policy_no_referrer_allows_meta_override_for_nested_requests() {
+  let _net_guard = net_test_lock();
   let Some(server) = HeaderCaptureServer::start(
     "document_response_referrer_policy_no_referrer_allows_meta_override_for_nested_requests",
   ) else {
@@ -2841,6 +2870,7 @@ fn document_response_referrer_policy_no_referrer_allows_meta_override_for_nested
 
 #[test]
 fn document_response_referrer_policy_no_referrer_allows_meta_override_for_images() {
+  let _net_guard = net_test_lock();
   let Some(server) = HeaderCaptureServer::start(
     "document_response_referrer_policy_no_referrer_allows_meta_override_for_images",
   ) else {
@@ -2880,6 +2910,7 @@ fn document_response_referrer_policy_no_referrer_allows_meta_override_for_images
 
 #[test]
 fn document_response_referrer_policy_no_referrer_ignores_invalid_meta_for_images() {
+  let _net_guard = net_test_lock();
   let Some(server) = HeaderCaptureServer::start(
     "document_response_referrer_policy_no_referrer_ignores_invalid_meta_for_images",
   ) else {
@@ -2917,6 +2948,7 @@ fn document_response_referrer_policy_no_referrer_ignores_invalid_meta_for_images
 
 #[test]
 fn document_response_referrer_policy_no_referrer_allows_meta_override_for_iframes() {
+  let _net_guard = net_test_lock();
   let Some(server) = HeaderCaptureServer::start(
     "document_response_referrer_policy_no_referrer_allows_meta_override_for_iframes",
   ) else {
@@ -2959,6 +2991,7 @@ fn document_response_referrer_policy_no_referrer_allows_meta_override_for_iframe
 
 #[test]
 fn document_response_referrer_policy_no_referrer_allows_referrerpolicy_override_for_images() {
+  let _net_guard = net_test_lock();
   let Some(server) = HeaderCaptureServer::start(
     "document_response_referrer_policy_no_referrer_allows_referrerpolicy_override_for_images",
   ) else {
@@ -2998,6 +3031,7 @@ fn document_response_referrer_policy_no_referrer_allows_referrerpolicy_override_
 
 #[test]
 fn document_response_referrer_policy_no_referrer_allows_referrerpolicy_override_for_iframes() {
+  let _net_guard = net_test_lock();
   let Some(server) = HeaderCaptureServer::start(
     "document_response_referrer_policy_no_referrer_allows_referrerpolicy_override_for_iframes",
   ) else {
@@ -3041,6 +3075,7 @@ fn document_response_referrer_policy_no_referrer_allows_referrerpolicy_override_
 #[test]
 fn document_response_referrer_policy_no_referrer_allows_link_referrerpolicy_override_for_nested_requests(
 ) {
+  let _net_guard = net_test_lock();
   let Some(server) = HeaderCaptureServer::start(
     "document_response_referrer_policy_no_referrer_allows_link_referrerpolicy_override_for_nested_requests",
   ) else {
@@ -3085,6 +3120,7 @@ fn document_response_referrer_policy_no_referrer_allows_link_referrerpolicy_over
 #[test]
 fn document_redirect_response_referrer_policy_no_referrer_suppresses_referer_for_stylesheets_and_nested_requests(
 ) {
+  let _net_guard = net_test_lock();
   let Some(server) = HeaderCaptureServer::start(
     "document_redirect_response_referrer_policy_no_referrer_suppresses_referer_for_stylesheets_and_nested_requests",
   ) else {
@@ -3127,6 +3163,7 @@ fn document_redirect_response_referrer_policy_no_referrer_suppresses_referer_for
 
 #[test]
 fn document_redirect_response_referrer_policy_no_referrer_suppresses_referer_for_images() {
+  let _net_guard = net_test_lock();
   let Some(server) = HeaderCaptureServer::start(
     "document_redirect_response_referrer_policy_no_referrer_suppresses_referer_for_images",
   ) else {
@@ -3165,6 +3202,7 @@ fn document_redirect_response_referrer_policy_no_referrer_suppresses_referer_for
 
 #[test]
 fn document_redirect_response_referrer_policy_no_referrer_suppresses_referer_for_iframes() {
+  let _net_guard = net_test_lock();
   let Some(server) = HeaderCaptureServer::start(
     "document_redirect_response_referrer_policy_no_referrer_suppresses_referer_for_iframes",
   ) else {
@@ -3204,6 +3242,7 @@ fn document_redirect_response_referrer_policy_no_referrer_suppresses_referer_for
 #[test]
 fn document_redirect_response_referrer_policy_no_referrer_allows_referrerpolicy_override_for_images(
 ) {
+  let _net_guard = net_test_lock();
   let Some(server) = HeaderCaptureServer::start(
     "document_redirect_response_referrer_policy_no_referrer_allows_referrerpolicy_override_for_images",
   ) else {
@@ -3248,6 +3287,7 @@ fn document_redirect_response_referrer_policy_no_referrer_allows_referrerpolicy_
 #[test]
 fn document_redirect_response_referrer_policy_no_referrer_allows_referrerpolicy_override_for_iframes(
 ) {
+  let _net_guard = net_test_lock();
   let Some(server) = HeaderCaptureServer::start(
     "document_redirect_response_referrer_policy_no_referrer_allows_referrerpolicy_override_for_iframes",
   ) else {
@@ -3292,6 +3332,7 @@ fn document_redirect_response_referrer_policy_no_referrer_allows_referrerpolicy_
 #[test]
 fn document_redirect_response_referrer_policy_no_referrer_allows_link_referrerpolicy_override_for_stylesheets_and_nested_requests(
 ) {
+  let _net_guard = net_test_lock();
   let Some(server) = HeaderCaptureServer::start(
     "document_redirect_response_referrer_policy_no_referrer_allows_link_referrerpolicy_override_for_stylesheets_and_nested_requests",
   ) else {
@@ -3337,6 +3378,7 @@ fn document_redirect_response_referrer_policy_no_referrer_allows_link_referrerpo
 #[test]
 fn document_redirect_response_referrer_policy_no_referrer_allows_meta_override_for_stylesheets_and_nested_requests(
 ) {
+  let _net_guard = net_test_lock();
   let Some(server) = HeaderCaptureServer::start(
     "document_redirect_response_referrer_policy_no_referrer_allows_meta_override_for_stylesheets_and_nested_requests",
   ) else {
@@ -3381,6 +3423,7 @@ fn document_redirect_response_referrer_policy_no_referrer_allows_meta_override_f
 
 #[test]
 fn document_redirect_response_referrer_policy_no_referrer_allows_meta_override_for_images() {
+  let _net_guard = net_test_lock();
   let Some(server) = HeaderCaptureServer::start(
     "document_redirect_response_referrer_policy_no_referrer_allows_meta_override_for_images",
   ) else {
@@ -3424,6 +3467,7 @@ fn document_redirect_response_referrer_policy_no_referrer_allows_meta_override_f
 
 #[test]
 fn document_redirect_response_referrer_policy_no_referrer_allows_meta_override_for_iframes() {
+  let _net_guard = net_test_lock();
   let Some(server) = HeaderCaptureServer::start(
     "document_redirect_response_referrer_policy_no_referrer_allows_meta_override_for_iframes",
   ) else {

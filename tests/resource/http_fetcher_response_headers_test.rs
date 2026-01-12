@@ -1,4 +1,4 @@
-use crate::common::net::try_bind_localhost;
+use crate::common::net::{net_test_lock, try_bind_localhost};
 use fastrender::resource::HttpFetcher;
 use fastrender::ResourceFetcher;
 
@@ -67,6 +67,7 @@ fn spawn_server(listener: TcpListener) -> thread::JoinHandle<()> {
 
 #[test]
 fn http_fetcher_captures_full_response_headers() {
+  let _net_guard = net_test_lock();
   if std::env::var("FASTR_HTTP_BACKEND")
     .ok()
     .is_some_and(|backend| backend.eq_ignore_ascii_case("curl"))
