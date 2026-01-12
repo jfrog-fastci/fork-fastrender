@@ -1,9 +1,16 @@
 use vm_js::{
-  BindingName, ModuleGraph, ResolveExportResult, ResolvedBinding, SourceTextModuleRecord,
+  BindingName, ModuleGraph, ResolveExportResult, ResolvedBinding, SourceTextModuleRecord, VmError,
 };
 
 fn parse(src: &str) -> SourceTextModuleRecord {
   SourceTextModuleRecord::parse(src).expect("module should parse")
+}
+
+fn assert_syntax(src: &str) {
+  match SourceTextModuleRecord::parse(src) {
+    Err(VmError::Syntax(_)) => {}
+    other => panic!("expected SyntaxError, got {other:?}"),
+  }
 }
 
 #[test]
@@ -181,70 +188,19 @@ fn ambiguous_star_exports() {
 }
 
 #[test]
-fn exported_names_preserve_local_and_indirect_duplicates() {
-  let mut graph = ModuleGraph::new();
-
-  let a = graph.add_module_with_specifier(
-    "a",
-    parse(
-      r#"
-      const foo = 1;
-      export { foo as dup, foo as dup };
-      export { x as y } from "b";
-      export { x as y } from "b";
-      export * from "c";
-    "#,
-    ),
+fn exported_names_duplicates_are_parse_errors() {
+  assert_syntax(
+    r#"
+    const foo = 1;
+    export { foo as dup, foo as dup };
+  "#,
   );
 
-  let b = graph.add_module_with_specifier(
-    "b",
-    parse(
-      r#"
-      const x = 1;
-      export { x };
-    "#,
-    ),
-  );
-
-  let _c = graph.add_module_with_specifier(
-    "c",
-    parse(
-      r#"
-      const c1 = 1;
-      export { c1 };
-    "#,
-    ),
-  );
-
-  graph.link_all_by_specifier();
-
-  // `GetExportedNames` appends `[[LocalExportEntries]]` + `[[IndirectExportEntries]]` verbatim,
-  // including duplicates, and only de-dupes names that come from `export *`.
-  assert_eq!(
-    graph.module(a).get_exported_names(&graph, a),
-    vec!["dup", "dup", "y", "y", "c1"]
-      .into_iter()
-      .map(String::from)
-      .collect::<Vec<_>>()
-  );
-
-  // Local exports take precedence over indirect exports/star exports.
-  assert_eq!(
-    graph.module(a).resolve_export(&graph, a, "dup"),
-    ResolveExportResult::Resolved(ResolvedBinding {
-      module: a,
-      binding_name: BindingName::Name("foo".to_string()),
-    })
-  );
-
-  // Indirect export duplicates still resolve deterministically.
-  assert_eq!(
-    graph.module(a).resolve_export(&graph, a, "y"),
-    ResolveExportResult::Resolved(ResolvedBinding {
-      module: b,
-      binding_name: BindingName::Name("x".to_string()),
-    })
+  assert_syntax(
+    r#"
+    export { x as y } from "b";
+    export { x as y } from "b";
+  "#,
   );
 }
 
@@ -321,4 +277,3 @@ fn ambiguous_star_exports_when_binding_name_differs() {
     })
   );
 }
-

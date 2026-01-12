@@ -19,6 +19,7 @@ use parse_js::ast::import_export::ImportNames;
 use parse_js::ast::node::Node;
 use parse_js::ast::stmt::Stmt;
 use parse_js::ast::stmt::ForInOfLhs;
+use parse_js::ast::stmt::decl::VarDeclMode;
 use parse_js::ast::stx::TopLevel;
 use parse_js::lex::KEYWORDS_MAPPING;
 use parse_js::operator::OperatorName;
@@ -1139,6 +1140,8 @@ fn module_record_from_top_level(
     }
   }
 
+  module_static_semantics_early_errors(top, &record, &mut ctx)?;
+
   Ok(record)
 }
 
@@ -1187,6 +1190,364 @@ fn push_local_export_entries_from_binding_pat(
       "invalid binding pattern in export declaration",
     )),
   }
+}
+
+/// Minimal module static-semantics early errors needed for test262 `negative.phase: parse`
+/// module-code coverage.
+///
+/// These checks intentionally run during module record extraction so failures are surfaced as
+/// `VmError::Syntax` (parse phase), not as runtime exceptions during evaluation/instantiation.
+fn module_static_semantics_early_errors(
+  top: &Node<TopLevel>,
+  record: &SourceTextModuleRecord,
+  ctx: &mut ModuleRecordParseCtx<'_>,
+) -> Result<(), VmError> {
+  ctx.budget_tick()?;
+
+  let var_declared_names = module_var_declared_names(top, ctx)?;
+  let lex_declared_names = module_lex_declared_names(top, ctx)?;
+
+  // Import-bound names (+ strict-mode restrictions + collisions).
+  let import_bound_names =
+    module_import_bound_names(record, &var_declared_names, &lex_declared_names, top.loc, ctx)?;
+
+  // ExportedNames uniqueness.
+  module_exported_names_unique(record, top.loc, ctx)?;
+
+  // ExportedBindings must be declared.
+  module_exported_bindings_declared(
+    record,
+    &var_declared_names,
+    &lex_declared_names,
+    &import_bound_names,
+    top.loc,
+    ctx,
+  )?;
+
+  Ok(())
+}
+
+fn module_var_declared_names(
+  top: &Node<TopLevel>,
+  ctx: &mut ModuleRecordParseCtx<'_>,
+) -> Result<HashSet<String>, VmError> {
+  ctx.budget_tick()?;
+
+  let mut names = HashSet::<String>::new();
+  // Heuristic reserve: at least one name per top-level statement.
+  names
+    .try_reserve(top.stx.body.len())
+    .map_err(|_| VmError::OutOfMemory)?;
+
+  // `var` is module-scoped even when nested inside blocks/loops/etc.
+  // Top-level `function` declarations are also var-scoped in modules (Annex B does not apply).
+  module_var_declared_names_from_stmt_list(&top.stx.body, true, &mut names, ctx)?;
+  Ok(names)
+}
+
+fn module_var_declared_names_from_stmt_list(
+  stmts: &[Node<Stmt>],
+  is_module_item_list: bool,
+  out: &mut HashSet<String>,
+  ctx: &mut ModuleRecordParseCtx<'_>,
+) -> Result<(), VmError> {
+  for stmt in stmts {
+    ctx.budget_tick()?;
+    module_var_declared_names_from_stmt(stmt, is_module_item_list, out, ctx)?;
+  }
+  Ok(())
+}
+
+fn module_var_declared_names_from_stmt(
+  stmt: &Node<Stmt>,
+  is_module_item_list: bool,
+  out: &mut HashSet<String>,
+  ctx: &mut ModuleRecordParseCtx<'_>,
+) -> Result<(), VmError> {
+  ctx.budget_tick()?;
+
+  match &*stmt.stx {
+    Stmt::VarDecl(decl) if decl.stx.mode == VarDeclMode::Var => {
+      for declarator in &decl.stx.declarators {
+        ctx.budget_tick()?;
+        pat_decl_bound_names(&declarator.pattern.stx, out, ctx)?;
+      }
+    }
+
+    Stmt::FunctionDecl(decl) => {
+      if is_module_item_list {
+        if let Some(name) = decl.stx.name.as_ref() {
+          ctx.budget_tick()?;
+          out.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
+          out.insert(try_string_from_str(&name.stx.name)?);
+        }
+      }
+      // Function bodies are boundaries: do not descend.
+    }
+
+    // Control-flow / statement-list containers.
+    Stmt::Block(block) => {
+      module_var_declared_names_from_stmt_list(&block.stx.body, false, out, ctx)?;
+    }
+    Stmt::DoWhile(stmt) => module_var_declared_names_from_stmt(&stmt.stx.body, false, out, ctx)?,
+    Stmt::If(stmt) => {
+      module_var_declared_names_from_stmt(&stmt.stx.consequent, false, out, ctx)?;
+      if let Some(alt) = stmt.stx.alternate.as_ref() {
+        module_var_declared_names_from_stmt(alt, false, out, ctx)?;
+      }
+    }
+    Stmt::While(stmt) => module_var_declared_names_from_stmt(&stmt.stx.body, false, out, ctx)?,
+    Stmt::ForTriple(stmt) => {
+      match &stmt.stx.init {
+        parse_js::ast::stmt::ForTripleStmtInit::Decl(decl) if decl.stx.mode == VarDeclMode::Var => {
+          for declarator in &decl.stx.declarators {
+            ctx.budget_tick()?;
+            pat_decl_bound_names(&declarator.pattern.stx, out, ctx)?;
+          }
+        }
+        _ => {}
+      }
+      module_var_declared_names_from_stmt_list(&stmt.stx.body.stx.body, false, out, ctx)?;
+    }
+    Stmt::ForIn(stmt) => {
+      if let ForInOfLhs::Decl((mode, pat_decl)) = &stmt.stx.lhs {
+        if *mode == VarDeclMode::Var {
+          pat_decl_bound_names(&pat_decl.stx, out, ctx)?;
+        }
+      }
+      module_var_declared_names_from_stmt_list(&stmt.stx.body.stx.body, false, out, ctx)?;
+    }
+    Stmt::ForOf(stmt) => {
+      if let ForInOfLhs::Decl((mode, pat_decl)) = &stmt.stx.lhs {
+        if *mode == VarDeclMode::Var {
+          pat_decl_bound_names(&pat_decl.stx, out, ctx)?;
+        }
+      }
+      module_var_declared_names_from_stmt_list(&stmt.stx.body.stx.body, false, out, ctx)?;
+    }
+    Stmt::Label(stmt) => {
+      // Labels do not introduce a new scope.
+      module_var_declared_names_from_stmt(&stmt.stx.statement, is_module_item_list, out, ctx)?;
+    }
+    Stmt::Switch(stmt) => {
+      for branch in &stmt.stx.branches {
+        ctx.budget_tick()?;
+        module_var_declared_names_from_stmt_list(&branch.stx.body, false, out, ctx)?;
+      }
+    }
+    Stmt::Try(stmt) => {
+      module_var_declared_names_from_stmt_list(&stmt.stx.wrapped.stx.body, false, out, ctx)?;
+      if let Some(catch) = stmt.stx.catch.as_ref() {
+        module_var_declared_names_from_stmt_list(&catch.stx.body, false, out, ctx)?;
+      }
+      if let Some(finally) = stmt.stx.finally.as_ref() {
+        module_var_declared_names_from_stmt_list(&finally.stx.body, false, out, ctx)?;
+      }
+    }
+    Stmt::With(stmt) => module_var_declared_names_from_stmt(&stmt.stx.body, false, out, ctx)?,
+
+    // Class bodies are boundaries: do not descend.
+    Stmt::ClassDecl(_) => {}
+
+    // Everything else either contains no statements or only expressions.
+    _ => {}
+  }
+
+  Ok(())
+}
+
+fn module_lex_declared_names(
+  top: &Node<TopLevel>,
+  ctx: &mut ModuleRecordParseCtx<'_>,
+) -> Result<HashSet<String>, VmError> {
+  ctx.budget_tick()?;
+
+  let mut names = HashSet::<String>::new();
+  names
+    .try_reserve(top.stx.body.len())
+    .map_err(|_| VmError::OutOfMemory)?;
+
+  for stmt in &top.stx.body {
+    ctx.budget_tick()?;
+
+    match &*stmt.stx {
+      Stmt::VarDecl(decl)
+        if matches!(
+          decl.stx.mode,
+          VarDeclMode::Let | VarDeclMode::Const | VarDeclMode::Using | VarDeclMode::AwaitUsing
+        ) =>
+      {
+        for declarator in &decl.stx.declarators {
+          ctx.budget_tick()?;
+          pat_decl_bound_names(&declarator.pattern.stx, &mut names, ctx)?;
+        }
+      }
+
+      Stmt::ClassDecl(decl) => {
+        let Some(name) = decl.stx.name.as_ref() else {
+          continue;
+        };
+        ctx.budget_tick()?;
+        names.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
+        names.insert(try_string_from_str(&name.stx.name)?);
+      }
+
+      _ => {}
+    }
+  }
+
+  Ok(names)
+}
+
+fn pat_decl_bound_names(
+  pat: &parse_js::ast::stmt::decl::PatDecl,
+  out: &mut HashSet<String>,
+  ctx: &mut ModuleRecordParseCtx<'_>,
+) -> Result<(), VmError> {
+  pat_bound_names(&pat.pat, out, ctx)
+}
+
+fn pat_bound_names(
+  pat: &Node<Pat>,
+  out: &mut HashSet<String>,
+  ctx: &mut ModuleRecordParseCtx<'_>,
+) -> Result<(), VmError> {
+  ctx.budget_tick()?;
+
+  match &*pat.stx {
+    Pat::Id(id) => {
+      out.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
+      out.insert(try_string_from_str(&id.stx.name)?);
+    }
+    Pat::Arr(arr) => {
+      for elem in &arr.stx.elements {
+        let Some(elem) = elem.as_ref() else {
+          // Array patterns can contain arbitrarily many elisions (`[,,,,x]`); ensure the traversal
+          // can't do `O(N)` work without ticking.
+          ctx.budget_tick()?;
+          continue;
+        };
+        pat_bound_names(&elem.target, out, ctx)?;
+      }
+      if let Some(rest) = arr.stx.rest.as_ref() {
+        pat_bound_names(rest, out, ctx)?;
+      }
+    }
+    Pat::Obj(obj) => {
+      for prop in &obj.stx.properties {
+        ctx.budget_tick()?;
+        pat_bound_names(&prop.stx.target, out, ctx)?;
+      }
+      if let Some(rest) = obj.stx.rest.as_ref() {
+        pat_bound_names(rest, out, ctx)?;
+      }
+    }
+    // Assignment targets are not valid binding patterns, but can appear in the AST for recovery.
+    Pat::AssignTarget(_) => {}
+  }
+
+  Ok(())
+}
+
+fn module_import_bound_names<'a>(
+  record: &'a SourceTextModuleRecord,
+  var_declared_names: &HashSet<String>,
+  lex_declared_names: &HashSet<String>,
+  loc: parse_js::loc::Loc,
+  ctx: &mut ModuleRecordParseCtx<'_>,
+) -> Result<HashSet<&'a str>, VmError> {
+  ctx.budget_tick()?;
+
+  let mut names = HashSet::<&'a str>::new();
+  names
+    .try_reserve(record.import_entries.len())
+    .map_err(|_| VmError::OutOfMemory)?;
+
+  for entry in &record.import_entries {
+    ctx.budget_tick()?;
+
+    let local_name = entry.local_name.as_str();
+
+    // Modules are strict: `eval`/`arguments` are RestrictedIdentifiers in binding positions.
+    if local_name == "eval" || local_name == "arguments" {
+      return Err(syntax_error(
+        loc,
+        "imported bindings must not be eval or arguments in modules",
+      ));
+    }
+
+    // `import` introduces module-scope bindings; they must not collide with local declarations.
+    if var_declared_names.contains(local_name) || lex_declared_names.contains(local_name) {
+      return Err(syntax_error(loc, "imported binding collides with local declaration"));
+    }
+
+    // Import-bound names must be unique.
+    if !names.insert(local_name) {
+      return Err(syntax_error(loc, "duplicate import binding name"));
+    }
+  }
+
+  Ok(names)
+}
+
+fn module_exported_names_unique(
+  record: &SourceTextModuleRecord,
+  loc: parse_js::loc::Loc,
+  ctx: &mut ModuleRecordParseCtx<'_>,
+) -> Result<(), VmError> {
+  ctx.budget_tick()?;
+
+  let mut names = HashSet::<&str>::new();
+  names
+    .try_reserve(record.local_export_entries.len() + record.indirect_export_entries.len())
+    .map_err(|_| VmError::OutOfMemory)?;
+
+  for entry in &record.local_export_entries {
+    ctx.budget_tick()?;
+    if !names.insert(entry.export_name.as_str()) {
+      return Err(syntax_error(loc, "duplicate exported name"));
+    }
+  }
+  for entry in &record.indirect_export_entries {
+    ctx.budget_tick()?;
+    if !names.insert(entry.export_name.as_str()) {
+      return Err(syntax_error(loc, "duplicate exported name"));
+    }
+  }
+
+  Ok(())
+}
+
+fn module_exported_bindings_declared(
+  record: &SourceTextModuleRecord,
+  var_declared_names: &HashSet<String>,
+  lex_declared_names: &HashSet<String>,
+  import_bound_names: &HashSet<&str>,
+  loc: parse_js::loc::Loc,
+  ctx: &mut ModuleRecordParseCtx<'_>,
+) -> Result<(), VmError> {
+  ctx.budget_tick()?;
+
+  for entry in &record.local_export_entries {
+    ctx.budget_tick()?;
+
+    // `export default <expr>` and unnamed default export declarations do not create a binding name.
+    if entry.local_name == "*default*" {
+      continue;
+    }
+
+    let local_name = entry.local_name.as_str();
+    if var_declared_names.contains(local_name)
+      || lex_declared_names.contains(local_name)
+      || import_bound_names.contains(local_name)
+    {
+      continue;
+    }
+
+    return Err(syntax_error(loc, "exported binding must refer to a declared name"));
+  }
+
+  Ok(())
 }
 
 fn module_contains_top_level_await(
@@ -1864,6 +2225,13 @@ mod tests {
   use crate::{SourceText, TerminationReason, Vm, VmError, VmOptions};
   use std::sync::Arc;
 
+  fn assert_syntax(result: Result<SourceTextModuleRecord, VmError>) {
+    match result {
+      Err(VmError::Syntax(_)) => {}
+      other => panic!("expected VmError::Syntax, got {other:?}"),
+    }
+  }
+
   #[test]
   fn parse_source_with_vm_respects_fuel_budget() {
     let mut opts = VmOptions::default();
@@ -1961,5 +2329,78 @@ mod tests {
         },
       ]
     );
+  }
+
+  #[test]
+  fn module_early_error_duplicate_exported_name() {
+    assert_syntax(SourceTextModuleRecord::parse(
+      r#"
+      var x;
+      export { x };
+      export { x };
+    "#,
+    ));
+  }
+
+  #[test]
+  fn module_early_error_duplicate_exported_name_default() {
+    assert_syntax(SourceTextModuleRecord::parse(
+      r#"
+      var x;
+      export default 1;
+      export { x as default };
+    "#,
+    ));
+  }
+
+  #[test]
+  fn module_early_error_export_unresolvable() {
+    assert_syntax(SourceTextModuleRecord::parse("export { unresolvable };"));
+  }
+
+  #[test]
+  fn module_early_error_export_global() {
+    assert_syntax(SourceTextModuleRecord::parse("export { Number };"));
+  }
+
+  #[test]
+  fn module_early_error_import_eval() {
+    assert_syntax(SourceTextModuleRecord::parse("import { x as eval } from 'm';"));
+  }
+
+  #[test]
+  fn module_early_error_import_arguments() {
+    assert_syntax(SourceTextModuleRecord::parse("import arguments from 'm';"));
+  }
+
+  #[test]
+  fn module_early_error_import_collides_with_var() {
+    assert_syntax(SourceTextModuleRecord::parse(
+      r#"
+      import { x } from 'm';
+      var x;
+    "#,
+    ));
+  }
+
+  #[test]
+  fn module_early_error_duplicate_import_binding() {
+    assert_syntax(SourceTextModuleRecord::parse(
+      r#"
+      import { x } from 'm';
+      import { x } from 'n';
+    "#,
+    ));
+  }
+
+  #[test]
+  fn module_allows_exporting_imported_binding() {
+    SourceTextModuleRecord::parse(
+      r#"
+      import { x } from 'm';
+      export { x };
+    "#,
+    )
+    .expect("exporting an imported binding should be valid");
   }
 }
