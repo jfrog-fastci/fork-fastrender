@@ -7,9 +7,9 @@ fn pixel_rgba(pixmap: &tiny_skia::Pixmap, x: u32, y: u32) -> (u8, u8, u8, u8) {
 }
 
 fn legacy_paint_backend_toggles() -> RuntimeToggles {
-  let mut raw = std::env::vars()
-    .filter(|(k, _)| k.starts_with("FASTR_"))
-    .collect::<std::collections::HashMap<String, String>>();
+  // Don't inherit host `FASTR_*` env vars; tests should be deterministic under the unified
+  // integration test binary.
+  let mut raw = std::collections::HashMap::<String, String>::new();
   raw.insert("FASTR_PAINT_BACKEND".to_string(), "legacy".to_string());
   RuntimeToggles::from_map(raw)
 }

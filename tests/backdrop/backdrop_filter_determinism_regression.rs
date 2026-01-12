@@ -159,9 +159,9 @@ fn blur_cache_toggles() -> Arc<RuntimeToggles> {
   // over blur tiles when the pool has multiple threads.
   const MAX_BYTES: usize = 30_000;
 
-  let mut raw = std::env::vars()
-    .filter(|(k, _)| k.starts_with("FASTR_"))
-    .collect::<HashMap<String, String>>();
+  // Don't inherit host `FASTR_*` env vars; this test asserts determinism and should only depend on
+  // the toggles it configures explicitly.
+  let mut raw = HashMap::<String, String>::new();
   // Ensure the renderer doesn't hop into a dedicated paint pool that would ignore the varying rayon
   // pools installed by this test.
   raw.insert("FASTR_PAINT_THREADS".to_string(), "1".to_string());
