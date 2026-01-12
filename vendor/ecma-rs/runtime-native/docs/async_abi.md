@@ -933,10 +933,11 @@ Drives the full event loop for one turn:
 - Executes at most one macrotask (timer/I/O/etc), then performs a microtask checkpoint.
 - If there are no macrotasks, it drains microtasks directly.
 - Blocks in the platform reactor wait syscall (`epoll_wait`/`kevent`) when there is no ready work but
-  there are pending I/O watchers or timers.
+  there are pending I/O watchers, timers, or outstanding external work (e.g. a `rt_parallel_spawn_promise`
+  task that has not yet settled its promise).
 
 The return value indicates whether there is still pending work (timers, I/O watchers, microtasks,
-macrotasks) after the turn.
+macrotasks, or outstanding external work) after the turn.
 
 ## Unhandled promise rejections
 
