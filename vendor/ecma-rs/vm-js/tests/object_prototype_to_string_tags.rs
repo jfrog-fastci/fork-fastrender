@@ -106,6 +106,13 @@ fn object_prototype_to_string_tags() -> Result<(), VmError> {
   let out = rt.exec_script("Object.prototype.toString.call([1, 2, 3])")?;
   assert_eq!(expect_string(&rt, out), "[object Array]");
 
+  // ArrayBuffer / Uint8Array.
+  let out = rt.exec_script("Object.prototype.toString.call(new ArrayBuffer(0))")?;
+  assert_eq!(expect_string(&rt, out), "[object ArrayBuffer]");
+
+  let out = rt.exec_script("Object.prototype.toString.call(new Uint8Array(0))")?;
+  assert_eq!(expect_string(&rt, out), "[object Uint8Array]");
+
   // Callable Proxies.
   let out = rt.exec_script("Object.prototype.toString.call(callableProxy)")?;
   assert_eq!(expect_string(&rt, out), "[object Function]");

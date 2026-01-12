@@ -2602,6 +2602,17 @@ impl Intrinsics {
       data_desc(Value::Object(array_buffer), true, false, true),
     )?;
 
+    // ArrayBuffer.prototype[@@toStringTag]
+    {
+      let tag_value = scope.alloc_string("ArrayBuffer")?;
+      scope.push_root(Value::String(tag_value))?;
+      scope.define_property(
+        array_buffer_prototype,
+        PropertyKey::Symbol(well_known_symbols.to_string_tag),
+        data_desc(Value::String(tag_value), false, false, true),
+      )?;
+    }
+
     // ArrayBuffer.isView
     {
       let is_view_call = vm.register_native_call(builtins::array_buffer_is_view)?;
@@ -2702,6 +2713,17 @@ impl Intrinsics {
       common.constructor,
       data_desc(Value::Object(uint8_array), true, false, true),
     )?;
+
+    // Uint8Array.prototype[@@toStringTag]
+    {
+      let tag_value = scope.alloc_string("Uint8Array")?;
+      scope.push_root(Value::String(tag_value))?;
+      scope.define_property(
+        uint8_array_prototype,
+        PropertyKey::Symbol(well_known_symbols.to_string_tag),
+        data_desc(Value::String(tag_value), false, false, true),
+      )?;
+    }
 
     // --- TypedArray constructors ---
     //
@@ -3064,7 +3086,10 @@ impl Intrinsics {
       vm.register_native_call(builtins::typed_array_prototype_subarray)?;
     let typed_array_set_call = vm.register_native_call(builtins::typed_array_prototype_set)?;
 
-    let make_getter = |scope: &mut Scope<'_>, call: NativeFunctionId, name: &str| -> Result<GcObject, VmError> {
+    let make_getter = |scope: &mut Scope<'_>,
+                       call: NativeFunctionId,
+                       name: &str|
+     -> Result<GcObject, VmError> {
       let name_s = scope.alloc_string(name)?;
       scope.push_root(Value::String(name_s))?;
       let get = scope.alloc_native_function(call, None, name_s, 0)?;
