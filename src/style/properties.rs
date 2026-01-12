@@ -22796,8 +22796,6 @@ fn parse_text_decoration_line(value: &PropertyValue) -> Option<TextDecorationLin
 
   let mut lines = TextDecorationLine::NONE;
   let mut saw_blink = false;
-  let mut saw_spelling_error = false;
-  let mut saw_grammar_error = false;
   for token in tokens.drain(..) {
     match token.as_str() {
       "underline" => {
@@ -22818,24 +22816,24 @@ fn parse_text_decoration_line(value: &PropertyValue) -> Option<TextDecorationLin
         }
         lines.insert(TextDecorationLine::LINE_THROUGH);
       }
-      // Accepted-but-ignored keywords (cannot be represented in our bitflags today).
+      "spelling-error" => {
+        if lines.contains(TextDecorationLine::SPELLING_ERROR) {
+          return None;
+        }
+        lines.insert(TextDecorationLine::SPELLING_ERROR);
+      }
+      "grammar-error" => {
+        if lines.contains(TextDecorationLine::GRAMMAR_ERROR) {
+          return None;
+        }
+        lines.insert(TextDecorationLine::GRAMMAR_ERROR);
+      }
+      // Accepted-but-ignored keyword.
       "blink" => {
         if saw_blink {
           return None;
         }
         saw_blink = true;
-      }
-      "spelling-error" => {
-        if saw_spelling_error {
-          return None;
-        }
-        saw_spelling_error = true;
-      }
-      "grammar-error" => {
-        if saw_grammar_error {
-          return None;
-        }
-        saw_grammar_error = true;
       }
       _ => return None,
     }

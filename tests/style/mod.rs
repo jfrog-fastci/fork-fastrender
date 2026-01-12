@@ -151,6 +151,7 @@ mod text_combine_upright_case_insensitive_test;
 mod text_combine_upright_invalid_test;
 mod text_decoration_skip_ink_test;
 mod text_decoration_skip_test;
+mod text_decoration_spelling_grammar_test;
 mod text_orientation_case_insensitive_test;
 mod text_orientation_inheritance_top_test;
 mod text_orientation_properties;

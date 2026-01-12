@@ -10273,10 +10273,43 @@ impl DisplayListBuilder {
     let mut max_block = f32::NEG_INFINITY;
 
     for deco in decorations {
-      let decoration_color = deco.decoration.color.unwrap_or(style.color);
-      if decoration_color.alpha_u8() == 0 {
-        continue;
+      #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+      enum UnderlineDecorationKind {
+        Underline,
+        SpellingError,
+        GrammarError,
       }
+
+      impl UnderlineDecorationKind {
+        fn priority(self) -> u8 {
+          match self {
+            Self::Underline => 0,
+            Self::SpellingError => 1,
+            Self::GrammarError => 2,
+          }
+        }
+      }
+
+      #[derive(Debug, Clone)]
+      struct UnderlineDecoration {
+        kind: UnderlineDecorationKind,
+        style: TextDecorationStyle,
+        color: Rgba,
+        stroke: DecorationStroke,
+      }
+
+      // CSS Text Decoration Level 4: spelling/grammar error decorations are UA-defined, and the UA
+      // must disregard other `text-decoration-*` sub-properties and paint-affecting properties
+      // (text-decoration-color/style/thickness, underline-position/offset, skip-ink, etc).
+      const SPELLING_ERROR_COLOR: Rgba = Rgba::RED;
+      // CSS `green` is #008000; keep the grammar underline closer to typical browser output than
+      // `Rgba::GREEN` (which is #00FF00 / `lime`).
+      const GRAMMAR_ERROR_COLOR: Rgba = Rgba::rgb(0, 128, 0);
+
+      let lines = deco.decoration.lines;
+
+      let decoration_color = deco.decoration.color.unwrap_or(style.color);
+      let standard_visible = decoration_color.alpha_u8() != 0;
 
       let used_thickness =
         self.resolve_text_decoration_thickness_override(deco.decoration.thickness, style);
@@ -10289,11 +10322,9 @@ impl DisplayListBuilder {
         line_through: None,
       };
 
-      if deco
-        .decoration
-        .lines
-        .contains(TextDecorationLine::UNDERLINE)
-      {
+      let mut underline_like: Vec<UnderlineDecoration> = Vec::new();
+
+      if standard_visible && lines.contains(TextDecorationLine::UNDERLINE) {
         let thickness = used_thickness.unwrap_or(metrics.underline_thickness);
         let center = self.underline_center(
           &metrics,
@@ -10322,17 +10353,132 @@ impl DisplayListBuilder {
         } else {
           None
         };
-        let segments = clip_segments(segments);
-        paint.underline = Some(DecorationStroke {
-          center,
-          thickness,
-          segments,
+        underline_like.push(UnderlineDecoration {
+          kind: UnderlineDecorationKind::Underline,
+          style: deco.decoration.style,
+          color: decoration_color,
+          stroke: DecorationStroke {
+            center,
+            thickness,
+            segments: clip_segments(segments),
+          },
         });
-        let half_extent = Self::stroke_half_extent(deco.decoration.style, thickness);
-        min_block = min_block.min(center - half_extent);
-        max_block = max_block.max(center + half_extent);
       }
-      if deco.decoration.lines.contains(TextDecorationLine::OVERLINE) {
+
+      if lines.contains(TextDecorationLine::SPELLING_ERROR) {
+        let thickness = metrics.underline_thickness;
+        let center = self.underline_center(
+          &metrics,
+          TextUnderlinePosition::Auto,
+          TextUnderlineOffset::Auto,
+          thickness,
+          block_baseline,
+          inline_vertical,
+          style,
+        );
+        underline_like.push(UnderlineDecoration {
+          kind: UnderlineDecorationKind::SpellingError,
+          style: TextDecorationStyle::Wavy,
+          color: SPELLING_ERROR_COLOR,
+          stroke: DecorationStroke {
+            center,
+            thickness,
+            segments: clip_segments(None),
+          },
+        });
+      }
+
+      if lines.contains(TextDecorationLine::GRAMMAR_ERROR) {
+        let thickness = metrics.underline_thickness;
+        let center = self.underline_center(
+          &metrics,
+          TextUnderlinePosition::Auto,
+          TextUnderlineOffset::Auto,
+          thickness,
+          block_baseline,
+          inline_vertical,
+          style,
+        );
+        underline_like.push(UnderlineDecoration {
+          kind: UnderlineDecorationKind::GrammarError,
+          style: TextDecorationStyle::Wavy,
+          color: GRAMMAR_ERROR_COLOR,
+          stroke: DecorationStroke {
+            center,
+            thickness,
+            segments: clip_segments(None),
+          },
+        });
+      }
+
+      // If multiple underline-like decorations are present on the same text run (e.g.
+      // `underline spelling-error`), bump the later decorations outwards so all strokes remain
+      // visible.
+      if underline_like.len() > 1 {
+        let baseline = block_baseline;
+        let mut neg: Vec<usize> = Vec::new();
+        let mut pos: Vec<usize> = Vec::new();
+        for idx in 0..underline_like.len() {
+          let delta = underline_like[idx].stroke.center - baseline;
+          let sign = if delta.abs() <= 1e-3 { 1.0 } else { delta.signum() };
+          if sign < 0.0 {
+            neg.push(idx);
+          } else {
+            pos.push(idx);
+          }
+        }
+
+        let mut adjust_group = |indices: &mut Vec<usize>, sign: f32| {
+          if indices.len() <= 1 {
+            return;
+          }
+          indices.sort_by(|&a, &b| {
+            let da = (underline_like[a].stroke.center - baseline).abs();
+            let db = (underline_like[b].stroke.center - baseline).abs();
+            da.partial_cmp(&db)
+              .unwrap_or(std::cmp::Ordering::Equal)
+              .then_with(|| underline_like[a].kind.priority().cmp(&underline_like[b].kind.priority()))
+          });
+
+          let mut prev_pos: Option<f32> = None;
+          let mut prev_half: f32 = 0.0;
+          let mut prev_thickness: f32 = 0.0;
+          for &idx in indices.iter() {
+            let delta = underline_like[idx].stroke.center - baseline;
+            let pos = delta.abs();
+            let thickness = underline_like[idx].stroke.thickness;
+            let half_extent = Self::stroke_half_extent(underline_like[idx].style, thickness);
+            let adjusted = match prev_pos {
+              Some(prev) => {
+                let gap = prev_thickness.max(thickness) * 0.5;
+                let min_pos = prev + prev_half + half_extent + gap;
+                pos.max(min_pos)
+              }
+              None => pos,
+            };
+            underline_like[idx].stroke.center = baseline + sign * adjusted;
+            prev_pos = Some(adjusted);
+            prev_half = half_extent;
+            prev_thickness = thickness;
+          }
+        };
+
+        adjust_group(&mut pos, 1.0);
+        adjust_group(&mut neg, -1.0);
+      }
+
+      // Finish standard underline + bounds updates.
+      for underline in underline_like.iter() {
+        let half_extent = Self::stroke_half_extent(underline.style, underline.stroke.thickness);
+        min_block = min_block.min(underline.stroke.center - half_extent);
+        max_block = max_block.max(underline.stroke.center + half_extent);
+        match underline.kind {
+          UnderlineDecorationKind::Underline => paint.underline = Some(underline.stroke.clone()),
+          UnderlineDecorationKind::SpellingError | UnderlineDecorationKind::GrammarError => {}
+        }
+      }
+
+      if standard_visible && lines.contains(TextDecorationLine::OVERLINE) {
         let thickness = used_thickness.unwrap_or(metrics.underline_thickness);
         let center = block_baseline - metrics.ascent;
         paint.overline = Some(DecorationStroke {
@@ -10344,11 +10490,7 @@ impl DisplayListBuilder {
         min_block = min_block.min(center - half_extent);
         max_block = max_block.max(center + half_extent);
       }
-      if deco
-        .decoration
-        .lines
-        .contains(TextDecorationLine::LINE_THROUGH)
-      {
+      if standard_visible && lines.contains(TextDecorationLine::LINE_THROUGH) {
         let thickness = used_thickness.unwrap_or(metrics.strike_thickness);
         let center = block_baseline - metrics.strike_pos;
         paint.line_through = Some(DecorationStroke {
@@ -10363,6 +10505,21 @@ impl DisplayListBuilder {
 
       if paint.underline.is_some() || paint.overline.is_some() || paint.line_through.is_some() {
         paints.push(paint);
+      }
+
+      for underline in underline_like {
+        match underline.kind {
+          UnderlineDecorationKind::SpellingError | UnderlineDecorationKind::GrammarError => {
+            paints.push(DecorationPaint {
+              style: underline.style,
+              color: underline.color,
+              underline: Some(underline.stroke),
+              overline: None,
+              line_through: None,
+            });
+          }
+          UnderlineDecorationKind::Underline => {}
+        }
       }
     }
 

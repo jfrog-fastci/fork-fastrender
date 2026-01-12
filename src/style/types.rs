@@ -3567,10 +3567,12 @@ impl Default for TextDecoration {
 pub struct TextDecorationLine(pub u8);
 
 impl TextDecorationLine {
-  pub const ALL: Self = Self(0b111);
+  pub const ALL: Self = Self(0b1_1111);
   pub const LINE_THROUGH: Self = Self(1 << 2);
+  pub const GRAMMAR_ERROR: Self = Self(1 << 4);
   pub const NONE: Self = Self(0);
   pub const OVERLINE: Self = Self(1 << 1);
+  pub const SPELLING_ERROR: Self = Self(1 << 3);
   pub const UNDERLINE: Self = Self(1 << 0);
 
   pub const fn contains(self, other: Self) -> bool {
