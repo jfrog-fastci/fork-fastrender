@@ -11,7 +11,6 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-mod common;
 
 const VIEWPORT: u32 = 256;
 const DPR: f32 = 1.0;
