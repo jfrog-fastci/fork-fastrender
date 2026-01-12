@@ -108,8 +108,9 @@ CI note: the main GitHub Actions workflow (`ci.yml`) compiles the `browser` bina
 `--features browser_ui` on Linux/macOS/Windows; Linux additionally runs the headless smoke mode.
 
 Note: when run without a URL, the windowed `browser` app will typically try to restore the previous
-session (tabs + per-tab zoom). If no session file exists yet, it falls back to `about:newtab`.
-Use `--no-restore` to disable session restore.
+session (tabs + per-tab zoom). If no session file exists yet, it falls back to `about:newtab`,
+which acts as a basic start page (showing bookmarks + recently visited pages when available). Use
+`--no-restore` to disable session restore.
 
 ## Appearance
 

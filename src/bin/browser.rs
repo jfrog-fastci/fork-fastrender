@@ -2416,6 +2416,14 @@ error: {err}",
   }
 
   fn handle_worker_message(&mut self, msg: fastrender::ui::WorkerToUi) -> bool {
+    // Keep the `about:newtab` snapshot updated with global history so opening a new tab surfaces
+    // recently visited pages even when the primary UI lives in egui panels.
+    if let fastrender::ui::WorkerToUi::NavigationCommitted { url, title, .. } = &msg {
+      if !fastrender::ui::about_pages::is_about_url(url) {
+        fastrender::ui::about_pages::record_global_history_visit(url, title.as_deref());
+      }
+    }
+
     // Worker-initiated tab creation/navigation.
     if let fastrender::ui::WorkerToUi::RequestOpenInNewTab { tab_id: _, url } = msg {
       use fastrender::ui::cancel::CancelGens;

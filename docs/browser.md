@@ -51,7 +51,8 @@ end-to-end:
   - click to focus and type into basic text inputs / textareas
   - pointer toggles for checkboxes / radios
 
-Note: the window currently starts by navigating to `about:newtab`.
+Note: the window currently starts by navigating to `about:newtab`, which now acts as a basic start
+page (showing bookmarks + recently visited pages when available).
 
 ### DOM interaction (non-JS)
 

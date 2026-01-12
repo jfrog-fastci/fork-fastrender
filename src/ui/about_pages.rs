@@ -8,7 +8,100 @@ pub const ABOUT_TEST_SCROLL: &str = "about:test-scroll";
 pub const ABOUT_TEST_HEAVY: &str = "about:test-heavy";
 pub const ABOUT_TEST_FORM: &str = "about:test-form";
 
-use std::sync::OnceLock;
+use std::sync::{OnceLock, RwLock};
+use std::time::SystemTime;
+
+#[derive(Debug, Clone, Default)]
+pub struct AboutPageSnapshot {
+  pub bookmarks: Vec<BookmarkSnapshot>,
+  /// Global (cross-tab) browsing history.
+  ///
+  /// This is expected to be ordered by recency (newest first), but about pages should remain robust
+  /// even when callers provide unsorted data.
+  pub history: Vec<HistorySnapshot>,
+}
+
+#[derive(Debug, Clone)]
+pub struct BookmarkSnapshot {
+  pub title: Option<String>,
+  pub url: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct HistorySnapshot {
+  pub title: Option<String>,
+  pub url: String,
+  /// When this URL was last visited.
+  pub last_visited: Option<SystemTime>,
+  /// Number of times this URL has been visited.
+  pub visit_count: u64,
+}
+
+static ABOUT_PAGE_SNAPSHOT: OnceLock<RwLock<AboutPageSnapshot>> = OnceLock::new();
+
+fn about_page_snapshot_lock() -> &'static RwLock<AboutPageSnapshot> {
+  ABOUT_PAGE_SNAPSHOT.get_or_init(|| RwLock::new(AboutPageSnapshot::default()))
+}
+
+pub fn about_page_snapshot() -> AboutPageSnapshot {
+  let guard = about_page_snapshot_lock()
+    .read()
+    .unwrap_or_else(|poisoned| poisoned.into_inner());
+  guard.clone()
+}
+
+pub fn set_about_page_snapshot(snapshot: AboutPageSnapshot) {
+  let mut guard = about_page_snapshot_lock()
+    .write()
+    .unwrap_or_else(|poisoned| poisoned.into_inner());
+  *guard = snapshot;
+}
+
+pub fn record_global_history_visit(url: &str, title: Option<&str>) {
+  const MAX_ENTRIES: usize = 500;
+  let url = url.trim();
+  if url.is_empty() {
+    return;
+  }
+  // Avoid recording internal pages in global history.
+  if is_about_url(url) {
+    return;
+  }
+
+  let title = title
+    .map(|t| t.trim())
+    .filter(|t| !t.is_empty())
+    .map(str::to_string);
+  let now = SystemTime::now();
+
+  let mut guard = about_page_snapshot_lock()
+    .write()
+    .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+  if let Some(pos) = guard.history.iter().position(|entry| entry.url == url) {
+    let mut existing = guard.history.remove(pos);
+    existing.visit_count = existing.visit_count.saturating_add(1);
+    existing.last_visited = Some(now);
+    if title.is_some() {
+      existing.title = title;
+    }
+    guard.history.insert(0, existing);
+  } else {
+    guard.history.insert(
+      0,
+      HistorySnapshot {
+        title,
+        url: url.to_string(),
+        last_visited: Some(now),
+        visit_count: 1,
+      },
+    );
+  }
+
+  if guard.history.len() > MAX_ENTRIES {
+    guard.history.truncate(MAX_ENTRIES);
+  }
+}
 
 #[derive(Debug, Clone)]
 struct GpuInfo {
@@ -62,7 +155,7 @@ pub fn html_for_about_url(url: &str) -> Option<String> {
   let lower = normalized.to_ascii_lowercase();
   match lower.as_str() {
     ABOUT_BLANK => Some(blank_html().to_string()),
-    ABOUT_NEWTAB => Some(newtab_html().to_string()),
+    ABOUT_NEWTAB => Some(newtab_html()),
     ABOUT_HELP => Some(help_html().to_string()),
     ABOUT_VERSION => Some(version_html()),
     ABOUT_GPU => Some(gpu_html()),
@@ -82,8 +175,85 @@ fn blank_html() -> &'static str {
   "<!doctype html><html><head><meta charset=\"utf-8\"></head><body></body></html>"
 }
 
-fn newtab_html() -> &'static str {
-  r#"<!doctype html>
+fn newtab_html() -> String {
+  const MAX_BOOKMARKS: usize = 12;
+  const MAX_HISTORY: usize = 12;
+
+  let snapshot = about_page_snapshot();
+
+  let mut bookmark_tiles = String::new();
+  let mut bookmark_count = 0usize;
+  for bookmark in snapshot.bookmarks.iter() {
+    if bookmark_count >= MAX_BOOKMARKS {
+      break;
+    }
+    let url = bookmark.url.trim();
+    if url.is_empty() {
+      continue;
+    }
+    let title = bookmark
+      .title
+      .as_deref()
+      .map(str::trim)
+      .filter(|t| !t.is_empty())
+      .unwrap_or(url);
+    let safe_url = escape_html(url);
+    let safe_title = escape_html(title);
+    let safe_display_url = escape_html(url);
+    use std::fmt::Write;
+    let _ = write!(
+      bookmark_tiles,
+      "<a class=\"btn\" href=\"{safe_url}\"><div class=\"label\">{safe_title}</div><div class=\"url\">{safe_display_url}</div></a>"
+    );
+    bookmark_count += 1;
+  }
+
+  let mut history_tiles = String::new();
+  let mut history_count = 0usize;
+  let mut seen_urls = std::collections::HashSet::<&str>::new();
+  for entry in snapshot.history.iter() {
+    if history_count >= MAX_HISTORY {
+      break;
+    }
+    let url = entry.url.trim();
+    if url.is_empty() {
+      continue;
+    }
+    if !seen_urls.insert(url) {
+      continue;
+    }
+    let title = entry
+      .title
+      .as_deref()
+      .map(str::trim)
+      .filter(|t| !t.is_empty())
+      .unwrap_or(url);
+    let safe_url = escape_html(url);
+    let safe_title = escape_html(title);
+    let safe_display_url = escape_html(url);
+    use std::fmt::Write;
+    let _ = write!(
+      history_tiles,
+      "<a class=\"btn\" href=\"{safe_url}\"><div class=\"label\">{safe_title}</div><div class=\"url\">{safe_display_url}</div></a>"
+    );
+    history_count += 1;
+  }
+
+  let bookmarks_body = if bookmark_count == 0 {
+    "<p class=\"empty\">No bookmarks yet.</p>".to_string()
+  } else {
+    format!("<div class=\"actions\" aria-label=\"Bookmarks\">{bookmark_tiles}</div>")
+  };
+
+  let history_body = if history_count == 0 {
+    "<p class=\"empty\">No history yet.</p>".to_string()
+  } else {
+    format!("<div class=\"actions\" aria-label=\"Recently visited\">{history_tiles}</div>")
+  };
+
+  let mut out = String::new();
+  out.push_str(
+    r#"<!doctype html>
 <html>
   <head>
     <meta charset="utf-8">
@@ -152,6 +322,12 @@ fn newtab_html() -> &'static str {
         letter-spacing: -0.02em;
       }
 
+      h2 {
+        font-size: 16px;
+        margin: 22px 0 10px;
+        letter-spacing: -0.01em;
+      }
+
       p { margin: 0 0 14px; color: var(--muted); }
       code { font-family: var(--mono); }
 
@@ -199,6 +375,8 @@ fn newtab_html() -> &'static str {
       .btn .label { font-weight: 650; margin: 0 0 4px; }
       .btn .url { font-family: var(--mono); font-size: 12px; color: var(--muted); }
 
+      .empty { color: var(--muted); }
+
       .footer {
         margin-top: 18px;
         font-size: 13px;
@@ -211,8 +389,8 @@ fn newtab_html() -> &'static str {
       <section class="card">
         <h1>FastRender</h1>
         <p>
-          A fast, offline-first HTML/CSS renderer. This <code>about:newtab</code> page is built in
-          and deterministic.
+          This is an offline <code>about:newtab</code> page powered by your local bookmarks and
+          browsing history.
         </p>
 
         <div class="hint" role="note">
@@ -221,6 +399,7 @@ fn newtab_html() -> &'static str {
           <span>Type to search or enter a URL</span>
         </div>
 
+        <h2>Shortcuts</h2>
         <div class="actions" aria-label="Shortcuts">
           <a class="btn" href="https://example.com/">
             <div class="label">Example page</div>
@@ -240,6 +419,20 @@ fn newtab_html() -> &'static str {
           </a>
         </div>
 
+        <h2>Bookmarks</h2>
+"#,
+  );
+  out.push_str(&bookmarks_body);
+  out.push_str(
+    r#"
+
+        <h2>Recently visited</h2>
+"#,
+  );
+  out.push_str(&history_body);
+  out.push_str(
+    r#"
+
         <div class="footer">
           Tip: You can also open local files by typing a path like <code>/tmp/a.html</code> or
           <code>C:\path\to\file.html</code>.
@@ -247,7 +440,9 @@ fn newtab_html() -> &'static str {
       </section>
     </main>
   </body>
-</html>"#
+</html>"#,
+  );
+  out
 }
 
 fn help_html() -> &'static str {
@@ -700,6 +895,8 @@ fn escape_html(text: &str) -> String {
 mod tests {
   use super::*;
 
+  static SNAPSHOT_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
   fn extract_title(html: &str) -> Option<&str> {
     let start = html.find("<title>")? + "<title>".len();
     let end = html[start..].find("</title>")? + start;
@@ -753,6 +950,81 @@ mod tests {
         "expected about:newtab HTML to link to {url}"
       );
     }
+  }
+
+  #[test]
+  fn newtab_renders_snapshot_bookmarks_and_history() {
+    let _lock = SNAPSHOT_TEST_LOCK
+      .lock()
+      .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let before = about_page_snapshot();
+
+    set_about_page_snapshot(AboutPageSnapshot {
+      bookmarks: vec![
+        BookmarkSnapshot {
+          title: Some("My <Bookmark>".to_string()),
+          url: "https://example.com/".to_string(),
+        },
+        BookmarkSnapshot {
+          title: None,
+          url: "https://fallback.example/".to_string(),
+        },
+      ],
+      history: vec![
+        // Duplicate URL: only the first (most recent) should render.
+        HistorySnapshot {
+          title: Some("New title".to_string()),
+          url: "https://dup.example/?a=1&b=2".to_string(),
+          last_visited: None,
+          visit_count: 3,
+        },
+        HistorySnapshot {
+          title: Some("Old title".to_string()),
+          url: "https://dup.example/?a=1&b=2".to_string(),
+          last_visited: None,
+          visit_count: 1,
+        },
+        HistorySnapshot {
+          title: Some("Visited & <Site>".to_string()),
+          url: "https://visited.example/".to_string(),
+          last_visited: None,
+          visit_count: 1,
+        },
+      ],
+    });
+
+    let html = html_for_about_url(ABOUT_NEWTAB).unwrap();
+    // Bookmarks
+    assert!(html.contains("https://example.com/"));
+    assert!(html.contains("My &lt;Bookmark&gt;"));
+    assert!(html.contains("https://fallback.example/"));
+
+    // Recently visited
+    assert!(html.contains("https://dup.example/?a=1&amp;b=2"));
+    assert!(html.contains("New title"));
+    assert!(!html.contains("Old title"));
+    assert!(html.contains("Visited &amp; &lt;Site&gt;"));
+
+    set_about_page_snapshot(before);
+  }
+
+  #[test]
+  fn newtab_contains_static_default_links_when_snapshot_empty() {
+    let _lock = SNAPSHOT_TEST_LOCK
+      .lock()
+      .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let before = about_page_snapshot();
+    set_about_page_snapshot(AboutPageSnapshot::default());
+
+    let html = html_for_about_url(ABOUT_NEWTAB).unwrap();
+    for url in [ABOUT_HELP, ABOUT_VERSION, ABOUT_GPU] {
+      assert!(
+        html.contains(url),
+        "expected about:newtab HTML to link to {url}"
+      );
+    }
+
+    set_about_page_snapshot(before);
   }
 
   #[test]
