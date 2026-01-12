@@ -42,6 +42,11 @@ impl EnvVarGuard {
         "integration tests must not mutate FASTR_USE_BUNDLED_FONTS; configure the renderer with FontConfig::bundled_only() instead"
       );
     }
+    if key == OsStr::new("RAYON_NUM_THREADS") {
+      panic!(
+        "integration tests must not mutate RAYON_NUM_THREADS; rely on FastRender's safe global pool initialisation (via common::init_rayon_for_tests) or disable parallelism via RenderOptions/renderer config instead"
+      );
+    }
   }
 
   /// Set `key` to `value` for the lifetime of this guard.
