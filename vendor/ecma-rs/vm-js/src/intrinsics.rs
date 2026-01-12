@@ -2856,6 +2856,16 @@ impl Intrinsics {
       common.constructor,
       data_desc(Value::Object(int8_array), true, false, true),
     )?;
+    // Int8Array.prototype[@@toStringTag]
+    {
+      let tag_value = scope.alloc_string("Int8Array")?;
+      scope.push_root(Value::String(tag_value))?;
+      scope.define_property(
+        int8_array_prototype,
+        PropertyKey::Symbol(well_known_symbols.to_string_tag),
+        data_desc(Value::String(tag_value), false, false, true),
+      )?;
+    }
 
     // `%Uint8ClampedArray%`
     let uint8_clamped_array_call =
@@ -2899,6 +2909,16 @@ impl Intrinsics {
       common.constructor,
       data_desc(Value::Object(uint8_clamped_array), true, false, true),
     )?;
+    // Uint8ClampedArray.prototype[@@toStringTag]
+    {
+      let tag_value = scope.alloc_string("Uint8ClampedArray")?;
+      scope.push_root(Value::String(tag_value))?;
+      scope.define_property(
+        uint8_clamped_array_prototype,
+        PropertyKey::Symbol(well_known_symbols.to_string_tag),
+        data_desc(Value::String(tag_value), false, false, true),
+      )?;
+    }
 
     // `%Int16Array%`
     let int16_array_call = vm.register_native_call(builtins::int16_array_constructor_call)?;
@@ -2936,6 +2956,16 @@ impl Intrinsics {
       common.constructor,
       data_desc(Value::Object(int16_array), true, false, true),
     )?;
+    // Int16Array.prototype[@@toStringTag]
+    {
+      let tag_value = scope.alloc_string("Int16Array")?;
+      scope.push_root(Value::String(tag_value))?;
+      scope.define_property(
+        int16_array_prototype,
+        PropertyKey::Symbol(well_known_symbols.to_string_tag),
+        data_desc(Value::String(tag_value), false, false, true),
+      )?;
+    }
 
     // `%Uint16Array%`
     let uint16_array_call = vm.register_native_call(builtins::uint16_array_constructor_call)?;
@@ -2973,6 +3003,16 @@ impl Intrinsics {
       common.constructor,
       data_desc(Value::Object(uint16_array), true, false, true),
     )?;
+    // Uint16Array.prototype[@@toStringTag]
+    {
+      let tag_value = scope.alloc_string("Uint16Array")?;
+      scope.push_root(Value::String(tag_value))?;
+      scope.define_property(
+        uint16_array_prototype,
+        PropertyKey::Symbol(well_known_symbols.to_string_tag),
+        data_desc(Value::String(tag_value), false, false, true),
+      )?;
+    }
 
     // `%Int32Array%`
     let int32_array_call = vm.register_native_call(builtins::int32_array_constructor_call)?;
@@ -3010,6 +3050,16 @@ impl Intrinsics {
       common.constructor,
       data_desc(Value::Object(int32_array), true, false, true),
     )?;
+    // Int32Array.prototype[@@toStringTag]
+    {
+      let tag_value = scope.alloc_string("Int32Array")?;
+      scope.push_root(Value::String(tag_value))?;
+      scope.define_property(
+        int32_array_prototype,
+        PropertyKey::Symbol(well_known_symbols.to_string_tag),
+        data_desc(Value::String(tag_value), false, false, true),
+      )?;
+    }
 
     // `%Uint32Array%`
     let uint32_array_call = vm.register_native_call(builtins::uint32_array_constructor_call)?;
@@ -3047,6 +3097,16 @@ impl Intrinsics {
       common.constructor,
       data_desc(Value::Object(uint32_array), true, false, true),
     )?;
+    // Uint32Array.prototype[@@toStringTag]
+    {
+      let tag_value = scope.alloc_string("Uint32Array")?;
+      scope.push_root(Value::String(tag_value))?;
+      scope.define_property(
+        uint32_array_prototype,
+        PropertyKey::Symbol(well_known_symbols.to_string_tag),
+        data_desc(Value::String(tag_value), false, false, true),
+      )?;
+    }
 
     // `%Float32Array%`
     let float32_array_call = vm.register_native_call(builtins::float32_array_constructor_call)?;
@@ -3084,6 +3144,16 @@ impl Intrinsics {
       common.constructor,
       data_desc(Value::Object(float32_array), true, false, true),
     )?;
+    // Float32Array.prototype[@@toStringTag]
+    {
+      let tag_value = scope.alloc_string("Float32Array")?;
+      scope.push_root(Value::String(tag_value))?;
+      scope.define_property(
+        float32_array_prototype,
+        PropertyKey::Symbol(well_known_symbols.to_string_tag),
+        data_desc(Value::String(tag_value), false, false, true),
+      )?;
+    }
 
     // `%Float64Array%`
     let float64_array_call = vm.register_native_call(builtins::float64_array_constructor_call)?;
@@ -3121,6 +3191,16 @@ impl Intrinsics {
       common.constructor,
       data_desc(Value::Object(float64_array), true, false, true),
     )?;
+    // Float64Array.prototype[@@toStringTag]
+    {
+      let tag_value = scope.alloc_string("Float64Array")?;
+      scope.push_root(Value::String(tag_value))?;
+      scope.define_property(
+        float64_array_prototype,
+        PropertyKey::Symbol(well_known_symbols.to_string_tag),
+        data_desc(Value::String(tag_value), false, false, true),
+      )?;
+    }
 
     // `%DataView%`
     let data_view_call = vm.register_native_call(builtins::data_view_constructor_call)?;
@@ -3158,6 +3238,16 @@ impl Intrinsics {
       common.constructor,
       data_desc(Value::Object(data_view), true, false, true),
     )?;
+    // DataView.prototype[@@toStringTag]
+    {
+      let tag_value = scope.alloc_string("DataView")?;
+      scope.push_root(Value::String(tag_value))?;
+      scope.define_property(
+        data_view_prototype,
+        PropertyKey::Symbol(well_known_symbols.to_string_tag),
+        data_desc(Value::String(tag_value), false, false, true),
+      )?;
+    }
 
     // --- TypedArray prototype accessors/methods ---
     let typed_array_byte_length_get_call =
