@@ -43,8 +43,8 @@ plumbing), it belongs here.
 
 If the legacy heap-only runtime adapter is still present, it lives here.
 
-- Cargo package name: `webidl-runtime`
-- Rust crate name: `webidl_runtime`
+- Cargo package name: `webidl-js-runtime`
+- Rust crate name: `webidl_js_runtime`
 
 This layer exists for migration/testing where older heap-only bindings/runtime code is still
 referenced. Prefer the realm-based `webidl-vm-js` path for new bindings work.
