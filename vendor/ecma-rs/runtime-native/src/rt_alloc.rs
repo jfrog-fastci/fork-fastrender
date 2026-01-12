@@ -144,14 +144,31 @@ fn ensure_thread_registered_for_alloc() {
   // Most callers will explicitly register threads via `rt_thread_init`, but Rust integration tests
   // (and some embedders) may call `rt_alloc` directly. `threading::register_current_thread` is
   // idempotent, so we can "ensure registered" on the first allocation on each thread.
-  TLS_ALLOC_REGISTERED.with(|flag| {
-    if flag.get() {
-      return;
+  match TLS_ALLOC_REGISTERED.try_with(|flag| flag.get()) {
+    Ok(true) => return,
+    Ok(false) => {
+      // This will call `on_thread_registered` (via the wrapper in `threading/mod.rs`), which sets
+      // `TLS_ALLOC_REGISTERED` to true.
+      crate::threading::register_current_thread(crate::threading::ThreadKind::External);
     }
-    // This will call `on_thread_registered` (via the wrapper in `threading/mod.rs`), which sets
-    // `TLS_ALLOC_REGISTERED` to true.
-    crate::threading::register_current_thread(crate::threading::ThreadKind::External);
-  });
+    Err(_) => {
+      // `rt_alloc` may be called from other thread-local destructors during thread teardown. If the
+      // allocator TLS has already been destroyed, `LocalKey::with` would panic with `AccessError`
+      // and abort the process (`abort_on_dtor_unwind`).
+      //
+      // Avoid calling into the allocator unless the thread is still registered with the runtime,
+      // since allocating GC-managed objects from an unregistered thread would be unsound (GC would
+      // not scan/stop this thread at safepoints).
+      if crate::threading::registry::current_thread_state().is_some() {
+        return;
+      }
+
+      crate::threading::register_current_thread(crate::threading::ThreadKind::External);
+      if crate::threading::registry::current_thread_state().is_none() {
+        crate::trap::rt_trap_invalid_arg("rt_alloc called during thread-local teardown");
+      }
+    }
+  }
 }
 
 struct GlobalHeap {
@@ -355,11 +372,15 @@ pub(crate) fn alloc(size: usize, shape: RtShapeId) -> *mut u8 {
   }
 
   // Fast path: per-thread nursery TLAB.
-  if let Some(obj) = TLS_ALLOC.with(|alloc| unsafe {
-    let alloc = &mut *alloc.get();
-    alloc.refresh_nursery_epoch();
-    alloc.nursery.alloc(size, align, nursery(global))
-  }) {
+  if let Some(obj) = TLS_ALLOC
+    .try_with(|alloc| unsafe {
+      let alloc = &mut *alloc.get();
+      alloc.refresh_nursery_epoch();
+      alloc.nursery.alloc(size, align, nursery(global))
+    })
+    .ok()
+    .flatten()
+  {
     unsafe { init_object(obj, size, type_desc, epoch, false) };
     return obj;
   }
@@ -408,11 +429,15 @@ pub(crate) fn alloc_array(len: usize, elem_size: usize) -> *mut u8 {
     });
   }
 
-  if let Some(obj) = TLS_ALLOC.with(|alloc| unsafe {
-    let alloc = &mut *alloc.get();
-    alloc.refresh_nursery_epoch();
-    alloc.nursery.alloc(size, align, nursery(global))
-  }) {
+  if let Some(obj) = TLS_ALLOC
+    .try_with(|alloc| unsafe {
+      let alloc = &mut *alloc.get();
+      alloc.refresh_nursery_epoch();
+      alloc.nursery.alloc(size, align, nursery(global))
+    })
+    .ok()
+    .flatten()
+  {
     unsafe { init_object(obj, size, &array::RT_ARRAY_TYPE_DESC, epoch, false) };
     unsafe {
       let arr = &mut *(obj as *mut array::RtArrayHeader);
@@ -429,22 +454,26 @@ pub(crate) fn alloc_array(len: usize, elem_size: usize) -> *mut u8 {
     // allocation while holding the heap lock to avoid safepoint polls after the
     // object is allocated but before it is registered.
     return with_heap_lock_mutator(|heap| {
-      // Fast path: bump within the current thread-local Immix hole.
-      let obj = if let Some(obj) = TLS_ALLOC.with(|alloc| unsafe { (*alloc.get()).immix.alloc_fast(size, align) }) {
-        obj
-      } else {
-        // Slow path: reserve a new hole from the global Immix space.
-        let min_lines = size.div_ceil(LINE_SIZE);
-        let (start, limit) = heap
-          .immix
-          .reserve_hole(min_lines)
-          .unwrap_or_else(|| crate::trap::rt_trap_oom(size, "rt_alloc_array: Immix out of space"));
-        let obj = TLS_ALLOC.with(|alloc| unsafe {
-          (*alloc.get()).immix.cursor = start;
-          (*alloc.get()).immix.limit = limit;
-          (*alloc.get()).immix.alloc_fast(size, align)
-        });
-        obj.unwrap_or_else(|| crate::trap::rt_trap_oom(size, "rt_alloc_array: Immix hole too small"))
+      let obj = match TLS_ALLOC.try_with(|alloc| unsafe { (*alloc.get()).immix.alloc_fast(size, align) }) {
+        Ok(Some(obj)) => obj,
+        Ok(None) => {
+          // Slow path: reserve a new hole from the global Immix space.
+          let min_lines = size.div_ceil(LINE_SIZE);
+          let (start, limit) = heap
+            .immix
+            .reserve_hole(min_lines)
+            .unwrap_or_else(|| crate::trap::rt_trap_oom(size, "rt_alloc_array: Immix out of space"));
+          match TLS_ALLOC.try_with(|alloc| unsafe {
+            (*alloc.get()).immix.cursor = start;
+            (*alloc.get()).immix.limit = limit;
+            (*alloc.get()).immix.alloc_fast(size, align)
+          }) {
+            Ok(Some(obj)) => obj,
+            Ok(None) => crate::trap::rt_trap_oom(size, "rt_alloc_array: Immix hole too small"),
+            Err(_) => heap.los.alloc(size, align),
+          }
+        }
+        Err(_) => heap.los.alloc(size, align),
       };
 
       unsafe { init_object(obj, size, &array::RT_ARRAY_TYPE_DESC, epoch, false) };
@@ -510,13 +539,25 @@ pub(crate) fn alloc_pinned(size: usize, shape: RtShapeId) -> *mut u8 {
 
 fn alloc_old(size: usize, align: usize, desc: &'static TypeDescriptor, epoch: u8) -> *mut u8 {
   // Fast path: bump within the current thread-local Immix hole.
-  if let Some(obj) = TLS_ALLOC.with(|alloc| unsafe {
+  match TLS_ALLOC.try_with(|alloc| unsafe {
     let alloc = &mut *alloc.get();
     alloc.refresh_major_epoch();
     alloc.immix.alloc_fast(size, align)
   }) {
-    unsafe { init_object(obj, size, desc, epoch, false) };
-    return obj;
+    Ok(Some(obj)) => {
+      unsafe { init_object(obj, size, desc, epoch, false) };
+      return obj;
+    }
+    Ok(None) => {}
+    Err(_) => {
+      // If allocator TLS is inaccessible during thread teardown, fall back to allocating in the
+      // LOS under the global heap lock instead of aborting with `AccessError`.
+      return with_heap_lock_mutator(|heap| {
+        let obj = heap.los.alloc(size, align);
+        unsafe { init_object(obj, size, desc, epoch, false) };
+        obj
+      });
+    }
   }
 
   // Slow path: reserve a new hole from the global Immix space.
@@ -524,17 +565,23 @@ fn alloc_old(size: usize, align: usize, desc: &'static TypeDescriptor, epoch: u8
   let (start, limit) = with_heap_lock_mutator(|heap| heap.immix.reserve_hole(min_lines))
     .unwrap_or_else(|| crate::trap::rt_trap_oom(size, "rt_alloc: Immix out of space"));
 
-  let obj = TLS_ALLOC.with(|alloc| unsafe {
+  let obj = match TLS_ALLOC.try_with(|alloc| unsafe {
     (*alloc.get()).immix.cursor = start;
     (*alloc.get()).immix.limit = limit;
     (*alloc.get()).immix.alloc_fast(size, align)
-  });
-  if let Some(obj) = obj {
-    unsafe { init_object(obj, size, desc, epoch, false) };
-    return obj;
-  }
-
-  crate::trap::rt_trap_oom(size, "rt_alloc: Immix hole too small");
+  }) {
+    Ok(Some(obj)) => obj,
+    Ok(None) => crate::trap::rt_trap_oom(size, "rt_alloc: Immix hole too small"),
+    Err(_) => {
+      return with_heap_lock_mutator(|heap| {
+        let obj = heap.los.alloc(size, align);
+        unsafe { init_object(obj, size, desc, epoch, false) };
+        obj
+      });
+    }
+  };
+  unsafe { init_object(obj, size, desc, epoch, false) };
+  obj
 }
 
 #[cfg(test)]
