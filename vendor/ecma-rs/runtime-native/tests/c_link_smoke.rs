@@ -267,10 +267,11 @@ static void native_async_heap_destroy(CoroutineRef coro) {
   rt_global_root_register(&global_root);
   rt_global_root_unregister(&global_root);
 
-  // Shape table is 1-indexed. Provide:
-  // - shape 1: small leaf object used by the pinned-allocation smoke,
-  // - shape 2: opaque promise allocation used by the native async smoke.
-  static const RtShapeDescriptor kShapes[2] = {
+  // Shape table is 1-indexed.
+  //
+  // Register a base table (shape 1) via the legacy `rt_register_shape_table`, then
+  // append additional shapes via the dlopen/JIT-friendly extend API.
+  static const RtShapeDescriptor kLeafShape[1] = {
     {
       .size = 16,
       .align = 16,
@@ -279,6 +280,10 @@ static void native_async_heap_destroy(CoroutineRef coro) {
       .ptr_offsets_len = 0,
       .reserved = 0,
     },
+  };
+  rt_register_shape_table(kLeafShape, 1);
+ 
+  static const RtShapeDescriptor kPromiseShape[1] = {
     {
       .size = 64,
       .align = 16,
@@ -288,7 +293,25 @@ static void native_async_heap_destroy(CoroutineRef coro) {
       .reserved = 0,
     },
   };
-  rt_register_shape_table(kShapes, 2);
+  if (rt_register_shape_table_extend(kPromiseShape, 1) != (RtShapeId)2) {
+    rt_thread_deinit();
+    return 4;
+  }
+ 
+  static const RtShapeDescriptor kExtraShape[1] = {
+    {
+      .size = 16,
+      .align = 16,
+      .flags = 0,
+      .ptr_offsets = (const uint32_t*)0,
+      .ptr_offsets_len = 0,
+      .reserved = 0,
+    },
+  };
+  if (rt_register_shape(&kExtraShape[0]) != (RtShapeId)3) {
+    rt_thread_deinit();
+    return 5;
+  }
 
   RtShapeId shape = (RtShapeId)1;
   uint8_t* pinned = rt_alloc_pinned(16, shape);
