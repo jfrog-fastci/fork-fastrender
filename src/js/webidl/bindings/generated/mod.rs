@@ -6,7 +6,8 @@
 pub mod window {
   use vm_js::{GcObject, Heap, Realm, Scope, Value, Vm, VmError, VmHost, VmHostHooks};
   use webidl_vm_js::bindings_runtime::{
-    to_int32_f64, AccessorPropertyAttributes, BindingValue, BindingsRuntime, DataPropertyAttributes,
+    to_int32_f64, to_uint32_f64, AccessorPropertyAttributes, BindingValue, BindingsRuntime,
+    DataPropertyAttributes,
   };
   use webidl_vm_js::conversions;
   use webidl_vm_js::{host_from_hooks, IterableKind};
@@ -18,7 +19,7 @@ pub mod window {
     hooks: &mut dyn VmHostHooks,
     value: Value,
   ) -> Result<Value, VmError> {
-    let _ = (host, hooks);
+    let _ = (&mut *host, &mut *hooks);
     if matches!(value, Value::Undefined | Value::Null) {
       let obj = rt.alloc_object()?;
       return Ok(Value::Object(obj));
@@ -84,13 +85,63 @@ pub mod window {
   }
 
   #[allow(dead_code)]
+  fn js_to_dict_element_creation_options(
+    rt: &mut BindingsRuntime<'_>,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    value: Value,
+  ) -> Result<Value, VmError> {
+    let _ = (&mut *host, &mut *hooks);
+    if matches!(value, Value::Undefined | Value::Null) {
+      let obj = rt.alloc_object()?;
+      return Ok(Value::Object(obj));
+    }
+    let Value::Object(input) = value else {
+      return Err(rt.throw_type_error("expected object for dictionary ElementCreationOptions"));
+    };
+    rt.scope.push_root(Value::Object(input))?;
+    let out_obj = rt.alloc_object()?;
+    {
+      let key = rt.property_key("customElementRegistry")?;
+      let v = rt.vm.get(&mut rt.scope, input, key)?;
+      if !matches!(v, Value::Undefined) {
+        let converted = if matches!(v, Value::Null | Value::Undefined) {
+          Value::Null
+        } else {
+          v
+        };
+        rt.define_data_property_str(
+          out_obj,
+          "customElementRegistry",
+          converted,
+          DataPropertyAttributes::new(true, true, true),
+        )?;
+      }
+    }
+    {
+      let key = rt.property_key("is")?;
+      let v = rt.vm.get(&mut rt.scope, input, key)?;
+      if !matches!(v, Value::Undefined) {
+        let converted = Value::String(rt.scope.to_string(&mut *rt.vm, host, hooks, v)?);
+        rt.define_data_property_str(
+          out_obj,
+          "is",
+          converted,
+          DataPropertyAttributes::new(true, true, true),
+        )?;
+      }
+    }
+    Ok(Value::Object(out_obj))
+  }
+
+  #[allow(dead_code)]
   fn js_to_dict_event_listener_options(
     rt: &mut BindingsRuntime<'_>,
     host: &mut dyn VmHost,
     hooks: &mut dyn VmHostHooks,
     value: Value,
   ) -> Result<Value, VmError> {
-    let _ = (host, hooks);
+    let _ = (&mut *host, &mut *hooks);
     if matches!(value, Value::Undefined | Value::Null) {
       let obj = rt.alloc_object()?;
       return Ok(Value::Object(obj));
@@ -114,6 +165,1605 @@ pub mod window {
       }
     }
     Ok(Value::Object(out_obj))
+  }
+
+  #[allow(dead_code)]
+  fn character_data_call_without_new(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    _hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    _this: Value,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    Err(rt.throw_type_error("Illegal constructor"))
+  }
+
+  #[allow(dead_code)]
+  fn character_data_construct(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    callee: GcObject,
+    args: &[Value],
+    new_target: Value,
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    let _ = (host, hooks, callee, args, new_target);
+    Err(rt.throw_type_error("Illegal constructor"))
+  }
+
+  #[allow(dead_code)]
+  fn d_o_m_token_list_add(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    {
+      let mut converted_args: Vec<Value> = Vec::new();
+      for v in args.iter().copied().skip(0) {
+        let converted = Value::String(rt.scope.to_string(&mut *rt.vm, host, hooks, v)?);
+        let converted = rt.scope.push_root(converted)?;
+        converted_args.push(converted);
+      }
+      let bindings_host = host_from_hooks(hooks)?;
+      bindings_host.call_operation(
+        &mut *rt.vm,
+        &mut rt.scope,
+        receiver,
+        "DOMTokenList",
+        "add",
+        0,
+        &converted_args,
+      )
+    }
+  }
+
+  #[allow(dead_code)]
+  fn d_o_m_token_list_contains(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    {
+      let mut converted_args: Vec<Value> = Vec::new();
+      let v0 = if args.len() > 0 {
+        args[0]
+      } else {
+        Value::Undefined
+      };
+      let converted = Value::String(rt.scope.to_string(&mut *rt.vm, host, hooks, v0)?);
+      let converted = rt.scope.push_root(converted)?;
+      converted_args.push(converted);
+      let bindings_host = host_from_hooks(hooks)?;
+      bindings_host.call_operation(
+        &mut *rt.vm,
+        &mut rt.scope,
+        receiver,
+        "DOMTokenList",
+        "contains",
+        0,
+        &converted_args,
+      )
+    }
+  }
+
+  #[allow(dead_code)]
+  fn d_o_m_token_list_entries(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    let _ = _args;
+    let bindings_host = host_from_hooks(hooks)?;
+    let snapshot = bindings_host.iterable_snapshot(
+      &mut *rt.vm,
+      &mut rt.scope,
+      receiver,
+      "DOMTokenList",
+      IterableKind::Entries,
+    )?;
+    let arr = rt.alloc_array(snapshot.len())?;
+    for (idx, item) in snapshot.into_iter().enumerate() {
+      let value = rt.binding_value_to_js(item)?;
+      let value = rt.scope.push_root(value)?;
+      let key_s = rt.scope.alloc_string(&idx.to_string())?;
+      rt.scope.push_root(Value::String(key_s))?;
+      let key = vm_js::PropertyKey::from_string(key_s);
+      rt.scope.create_data_property_or_throw(arr, key, value)?;
+    }
+    let intr = rt
+      .vm
+      .intrinsics()
+      .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+    let iterator_key = vm_js::PropertyKey::from_symbol(intr.well_known_symbols().iterator);
+    let Some(method) = rt
+      .vm
+      .get_method_from_object(&mut rt.scope, arr, iterator_key)?
+    else {
+      return Err(rt.throw_type_error("iterable snapshot array is not iterable"));
+    };
+    rt.vm
+      .call_with_host_and_hooks(_host, &mut rt.scope, hooks, method, Value::Object(arr), &[])
+  }
+
+  #[allow(dead_code)]
+  fn d_o_m_token_list_for_each(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    let callback = args.get(0).copied().unwrap_or(Value::Undefined);
+    let callback = rt.scope.push_root(callback)?;
+    let this_arg = args.get(1).copied().unwrap_or(Value::Undefined);
+    let this_arg = rt.scope.push_root(this_arg)?;
+    let bindings_host = host_from_hooks(hooks)?;
+    let snapshot = bindings_host.iterable_snapshot(
+      &mut *rt.vm,
+      &mut rt.scope,
+      receiver,
+      "DOMTokenList",
+      IterableKind::Entries,
+    )?;
+    for entry in snapshot {
+      let BindingValue::Sequence(pair) = entry else {
+        return Err(rt.throw_type_error("iterable forEach: expected [key, value] pair"));
+      };
+      if pair.len() != 2 {
+        return Err(rt.throw_type_error("iterable forEach: expected [key, value] pair"));
+      }
+      let mut iter = pair.into_iter();
+      let key = iter
+        .next()
+        .ok_or_else(|| rt.throw_type_error("iterable forEach: expected [key, value] pair"))?;
+      let value = iter
+        .next()
+        .ok_or_else(|| rt.throw_type_error("iterable forEach: expected [key, value] pair"))?;
+      let key_js = rt.binding_value_to_js(key)?;
+      let key_js = rt.scope.push_root(key_js)?;
+      let value_js = rt.binding_value_to_js(value)?;
+      let value_js = rt.scope.push_root(value_js)?;
+      let _ = rt.vm.call_with_host_and_hooks(
+        _host,
+        &mut rt.scope,
+        hooks,
+        callback,
+        this_arg,
+        &[value_js, key_js, this],
+      )?;
+    }
+    Ok(Value::Undefined)
+  }
+
+  #[allow(dead_code)]
+  fn d_o_m_token_list_item(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    {
+      let mut converted_args: Vec<Value> = Vec::new();
+      let v0 = if args.len() > 0 {
+        args[0]
+      } else {
+        Value::Undefined
+      };
+      let converted =
+        Value::Number(to_uint32_f64(rt.scope.to_number(&mut *rt.vm, host, hooks, v0)?) as f64);
+      let converted = rt.scope.push_root(converted)?;
+      converted_args.push(converted);
+      let bindings_host = host_from_hooks(hooks)?;
+      bindings_host.call_operation(
+        &mut *rt.vm,
+        &mut rt.scope,
+        receiver,
+        "DOMTokenList",
+        "item",
+        0,
+        &converted_args,
+      )
+    }
+  }
+
+  #[allow(dead_code)]
+  fn d_o_m_token_list_keys(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    let _ = _args;
+    let bindings_host = host_from_hooks(hooks)?;
+    let snapshot = bindings_host.iterable_snapshot(
+      &mut *rt.vm,
+      &mut rt.scope,
+      receiver,
+      "DOMTokenList",
+      IterableKind::Keys,
+    )?;
+    let arr = rt.alloc_array(snapshot.len())?;
+    for (idx, item) in snapshot.into_iter().enumerate() {
+      let value = rt.binding_value_to_js(item)?;
+      let value = rt.scope.push_root(value)?;
+      let key_s = rt.scope.alloc_string(&idx.to_string())?;
+      rt.scope.push_root(Value::String(key_s))?;
+      let key = vm_js::PropertyKey::from_string(key_s);
+      rt.scope.create_data_property_or_throw(arr, key, value)?;
+    }
+    let intr = rt
+      .vm
+      .intrinsics()
+      .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+    let iterator_key = vm_js::PropertyKey::from_symbol(intr.well_known_symbols().iterator);
+    let Some(method) = rt
+      .vm
+      .get_method_from_object(&mut rt.scope, arr, iterator_key)?
+    else {
+      return Err(rt.throw_type_error("iterable snapshot array is not iterable"));
+    };
+    rt.vm
+      .call_with_host_and_hooks(_host, &mut rt.scope, hooks, method, Value::Object(arr), &[])
+  }
+
+  #[allow(dead_code)]
+  fn d_o_m_token_list_remove(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    {
+      let mut converted_args: Vec<Value> = Vec::new();
+      for v in args.iter().copied().skip(0) {
+        let converted = Value::String(rt.scope.to_string(&mut *rt.vm, host, hooks, v)?);
+        let converted = rt.scope.push_root(converted)?;
+        converted_args.push(converted);
+      }
+      let bindings_host = host_from_hooks(hooks)?;
+      bindings_host.call_operation(
+        &mut *rt.vm,
+        &mut rt.scope,
+        receiver,
+        "DOMTokenList",
+        "remove",
+        0,
+        &converted_args,
+      )
+    }
+  }
+
+  #[allow(dead_code)]
+  fn d_o_m_token_list_replace(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    {
+      let mut converted_args: Vec<Value> = Vec::new();
+      let v0 = if args.len() > 0 {
+        args[0]
+      } else {
+        Value::Undefined
+      };
+      let converted = Value::String(rt.scope.to_string(&mut *rt.vm, host, hooks, v0)?);
+      let converted = rt.scope.push_root(converted)?;
+      converted_args.push(converted);
+      let v1 = if args.len() > 1 {
+        args[1]
+      } else {
+        Value::Undefined
+      };
+      let converted = Value::String(rt.scope.to_string(&mut *rt.vm, host, hooks, v1)?);
+      let converted = rt.scope.push_root(converted)?;
+      converted_args.push(converted);
+      let bindings_host = host_from_hooks(hooks)?;
+      bindings_host.call_operation(
+        &mut *rt.vm,
+        &mut rt.scope,
+        receiver,
+        "DOMTokenList",
+        "replace",
+        0,
+        &converted_args,
+      )
+    }
+  }
+
+  #[allow(dead_code)]
+  fn d_o_m_token_list_toggle(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    {
+      let mut converted_args: Vec<Value> = Vec::new();
+      let v0 = if args.len() > 0 {
+        args[0]
+      } else {
+        Value::Undefined
+      };
+      let converted = Value::String(rt.scope.to_string(&mut *rt.vm, host, hooks, v0)?);
+      let converted = rt.scope.push_root(converted)?;
+      converted_args.push(converted);
+      let v1 = if args.len() > 1 {
+        args[1]
+      } else {
+        Value::Undefined
+      };
+      let converted = if matches!(v1, Value::Undefined) {
+        Value::Undefined
+      } else {
+        Value::Bool(rt.scope.heap().to_boolean(v1)?)
+      };
+      let converted = rt.scope.push_root(converted)?;
+      converted_args.push(converted);
+      let bindings_host = host_from_hooks(hooks)?;
+      bindings_host.call_operation(
+        &mut *rt.vm,
+        &mut rt.scope,
+        receiver,
+        "DOMTokenList",
+        "toggle",
+        0,
+        &converted_args,
+      )
+    }
+  }
+
+  #[allow(dead_code)]
+  fn d_o_m_token_list_values(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    let _ = _args;
+    let bindings_host = host_from_hooks(hooks)?;
+    let snapshot = bindings_host.iterable_snapshot(
+      &mut *rt.vm,
+      &mut rt.scope,
+      receiver,
+      "DOMTokenList",
+      IterableKind::Values,
+    )?;
+    let arr = rt.alloc_array(snapshot.len())?;
+    for (idx, item) in snapshot.into_iter().enumerate() {
+      let value = rt.binding_value_to_js(item)?;
+      let value = rt.scope.push_root(value)?;
+      let key_s = rt.scope.alloc_string(&idx.to_string())?;
+      rt.scope.push_root(Value::String(key_s))?;
+      let key = vm_js::PropertyKey::from_string(key_s);
+      rt.scope.create_data_property_or_throw(arr, key, value)?;
+    }
+    let intr = rt
+      .vm
+      .intrinsics()
+      .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+    let iterator_key = vm_js::PropertyKey::from_symbol(intr.well_known_symbols().iterator);
+    let Some(method) = rt
+      .vm
+      .get_method_from_object(&mut rt.scope, arr, iterator_key)?
+    else {
+      return Err(rt.throw_type_error("iterable snapshot array is not iterable"));
+    };
+    rt.vm
+      .call_with_host_and_hooks(_host, &mut rt.scope, hooks, method, Value::Object(arr), &[])
+  }
+
+  #[allow(dead_code)]
+  fn d_o_m_token_list_get_attribute_length(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    let bindings_host = host_from_hooks(hooks)?;
+    bindings_host.call_operation(
+      &mut *rt.vm,
+      &mut rt.scope,
+      receiver,
+      "DOMTokenList",
+      "length",
+      0,
+      &[],
+    )
+  }
+
+  #[allow(dead_code)]
+  fn d_o_m_token_list_get_attribute_value(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    let bindings_host = host_from_hooks(hooks)?;
+    bindings_host.call_operation(
+      &mut *rt.vm,
+      &mut rt.scope,
+      receiver,
+      "DOMTokenList",
+      "value",
+      0,
+      &[],
+    )
+  }
+
+  #[allow(dead_code)]
+  fn d_o_m_token_list_set_attribute_value(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    {
+      let mut converted_args: Vec<Value> = Vec::new();
+      let v0 = if args.len() > 0 {
+        args[0]
+      } else {
+        Value::Undefined
+      };
+      let converted = Value::String(rt.scope.to_string(&mut *rt.vm, host, hooks, v0)?);
+      let converted = rt.scope.push_root(converted)?;
+      converted_args.push(converted);
+      let bindings_host = host_from_hooks(hooks)?;
+      let _ = bindings_host.call_operation(
+        &mut *rt.vm,
+        &mut rt.scope,
+        receiver,
+        "DOMTokenList",
+        "value",
+        0,
+        &converted_args,
+      )?;
+      Ok(Value::Undefined)
+    }
+  }
+
+  #[allow(dead_code)]
+  fn d_o_m_token_list_call_without_new(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    _hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    _this: Value,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    Err(rt.throw_type_error("Illegal constructor"))
+  }
+
+  #[allow(dead_code)]
+  fn d_o_m_token_list_construct(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    callee: GcObject,
+    args: &[Value],
+    new_target: Value,
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    let _ = (host, hooks, callee, args, new_target);
+    Err(rt.throw_type_error("Illegal constructor"))
+  }
+
+  #[allow(dead_code)]
+  fn document_create_document_fragment(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    {
+      let converted_args: Vec<Value> = Vec::new();
+      let bindings_host = host_from_hooks(hooks)?;
+      bindings_host.call_operation(
+        &mut *rt.vm,
+        &mut rt.scope,
+        receiver,
+        "Document",
+        "createDocumentFragment",
+        0,
+        &converted_args,
+      )
+    }
+  }
+
+  #[allow(dead_code)]
+  fn document_create_element(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    {
+      let mut converted_args: Vec<Value> = Vec::new();
+      let v0 = if args.len() > 0 {
+        args[0]
+      } else {
+        Value::Undefined
+      };
+      let converted = Value::String(rt.scope.to_string(&mut *rt.vm, host, hooks, v0)?);
+      let converted = rt.scope.push_root(converted)?;
+      converted_args.push(converted);
+      let v1 = if args.len() > 1 {
+        args[1]
+      } else {
+        Value::Undefined
+      };
+      let converted = if matches!(v1, Value::Undefined) {
+        {
+          let obj = rt.alloc_object()?;
+          Value::Object(obj)
+        }
+      } else {
+        {
+          let v = v1;
+          if false {
+            Value::Undefined
+          } else if matches!(v, Value::Null | Value::Undefined) {
+            js_to_dict_element_creation_options(rt, host, hooks, v)?
+          } else if let Value::Object(_) = v {
+            js_to_dict_element_creation_options(rt, host, hooks, v)?
+          } else if matches!(v, Value::String(_)) {
+            Value::String(rt.scope.to_string(&mut *rt.vm, host, hooks, v)?)
+          } else {
+            Value::String(rt.scope.to_string(&mut *rt.vm, host, hooks, v)?)
+          }
+        }
+      };
+      let converted = rt.scope.push_root(converted)?;
+      converted_args.push(converted);
+      let bindings_host = host_from_hooks(hooks)?;
+      bindings_host.call_operation(
+        &mut *rt.vm,
+        &mut rt.scope,
+        receiver,
+        "Document",
+        "createElement",
+        0,
+        &converted_args,
+      )
+    }
+  }
+
+  #[allow(dead_code)]
+  fn document_create_text_node(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    {
+      let mut converted_args: Vec<Value> = Vec::new();
+      let v0 = if args.len() > 0 {
+        args[0]
+      } else {
+        Value::Undefined
+      };
+      let converted = Value::String(rt.scope.to_string(&mut *rt.vm, host, hooks, v0)?);
+      let converted = rt.scope.push_root(converted)?;
+      converted_args.push(converted);
+      let bindings_host = host_from_hooks(hooks)?;
+      bindings_host.call_operation(
+        &mut *rt.vm,
+        &mut rt.scope,
+        receiver,
+        "Document",
+        "createTextNode",
+        0,
+        &converted_args,
+      )
+    }
+  }
+
+  #[allow(dead_code)]
+  fn document_get_element_by_id(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    {
+      let mut converted_args: Vec<Value> = Vec::new();
+      let v0 = if args.len() > 0 {
+        args[0]
+      } else {
+        Value::Undefined
+      };
+      let converted = Value::String(rt.scope.to_string(&mut *rt.vm, host, hooks, v0)?);
+      let converted = rt.scope.push_root(converted)?;
+      converted_args.push(converted);
+      let bindings_host = host_from_hooks(hooks)?;
+      bindings_host.call_operation(
+        &mut *rt.vm,
+        &mut rt.scope,
+        receiver,
+        "Document",
+        "getElementById",
+        0,
+        &converted_args,
+      )
+    }
+  }
+
+  #[allow(dead_code)]
+  fn document_get_elements_by_class_name(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    {
+      let mut converted_args: Vec<Value> = Vec::new();
+      let v0 = if args.len() > 0 {
+        args[0]
+      } else {
+        Value::Undefined
+      };
+      let converted = Value::String(rt.scope.to_string(&mut *rt.vm, host, hooks, v0)?);
+      let converted = rt.scope.push_root(converted)?;
+      converted_args.push(converted);
+      let bindings_host = host_from_hooks(hooks)?;
+      bindings_host.call_operation(
+        &mut *rt.vm,
+        &mut rt.scope,
+        receiver,
+        "Document",
+        "getElementsByClassName",
+        0,
+        &converted_args,
+      )
+    }
+  }
+
+  #[allow(dead_code)]
+  fn document_get_elements_by_tag_name(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    {
+      let mut converted_args: Vec<Value> = Vec::new();
+      let v0 = if args.len() > 0 {
+        args[0]
+      } else {
+        Value::Undefined
+      };
+      let converted = Value::String(rt.scope.to_string(&mut *rt.vm, host, hooks, v0)?);
+      let converted = rt.scope.push_root(converted)?;
+      converted_args.push(converted);
+      let bindings_host = host_from_hooks(hooks)?;
+      bindings_host.call_operation(
+        &mut *rt.vm,
+        &mut rt.scope,
+        receiver,
+        "Document",
+        "getElementsByTagName",
+        0,
+        &converted_args,
+      )
+    }
+  }
+
+  #[allow(dead_code)]
+  fn document_query_selector(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    {
+      let mut converted_args: Vec<Value> = Vec::new();
+      let v0 = if args.len() > 0 {
+        args[0]
+      } else {
+        Value::Undefined
+      };
+      let converted = Value::String(rt.scope.to_string(&mut *rt.vm, host, hooks, v0)?);
+      let converted = rt.scope.push_root(converted)?;
+      converted_args.push(converted);
+      let bindings_host = host_from_hooks(hooks)?;
+      bindings_host.call_operation(
+        &mut *rt.vm,
+        &mut rt.scope,
+        receiver,
+        "Document",
+        "querySelector",
+        0,
+        &converted_args,
+      )
+    }
+  }
+
+  #[allow(dead_code)]
+  fn document_query_selector_all(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    {
+      let mut converted_args: Vec<Value> = Vec::new();
+      let v0 = if args.len() > 0 {
+        args[0]
+      } else {
+        Value::Undefined
+      };
+      let converted = Value::String(rt.scope.to_string(&mut *rt.vm, host, hooks, v0)?);
+      let converted = rt.scope.push_root(converted)?;
+      converted_args.push(converted);
+      let bindings_host = host_from_hooks(hooks)?;
+      bindings_host.call_operation(
+        &mut *rt.vm,
+        &mut rt.scope,
+        receiver,
+        "Document",
+        "querySelectorAll",
+        0,
+        &converted_args,
+      )
+    }
+  }
+
+  #[allow(dead_code)]
+  fn document_get_attribute_body(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    let bindings_host = host_from_hooks(hooks)?;
+    bindings_host.call_operation(
+      &mut *rt.vm,
+      &mut rt.scope,
+      receiver,
+      "Document",
+      "body",
+      0,
+      &[],
+    )
+  }
+
+  #[allow(dead_code)]
+  fn document_set_attribute_body(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    {
+      let mut converted_args: Vec<Value> = Vec::new();
+      let v0 = if args.len() > 0 {
+        args[0]
+      } else {
+        Value::Undefined
+      };
+      let converted = if matches!(v0, Value::Null | Value::Undefined) {
+        Value::Null
+      } else {
+        v0
+      };
+      let converted = rt.scope.push_root(converted)?;
+      converted_args.push(converted);
+      let bindings_host = host_from_hooks(hooks)?;
+      let _ = bindings_host.call_operation(
+        &mut *rt.vm,
+        &mut rt.scope,
+        receiver,
+        "Document",
+        "body",
+        0,
+        &converted_args,
+      )?;
+      Ok(Value::Undefined)
+    }
+  }
+
+  #[allow(dead_code)]
+  fn document_get_attribute_document_element(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    let bindings_host = host_from_hooks(hooks)?;
+    bindings_host.call_operation(
+      &mut *rt.vm,
+      &mut rt.scope,
+      receiver,
+      "Document",
+      "documentElement",
+      0,
+      &[],
+    )
+  }
+
+  #[allow(dead_code)]
+  fn document_get_attribute_head(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    let bindings_host = host_from_hooks(hooks)?;
+    bindings_host.call_operation(
+      &mut *rt.vm,
+      &mut rt.scope,
+      receiver,
+      "Document",
+      "head",
+      0,
+      &[],
+    )
+  }
+
+  #[allow(dead_code)]
+  fn document_call_without_new(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    _hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    _this: Value,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    Err(rt.throw_type_error("Illegal constructor"))
+  }
+
+  #[allow(dead_code)]
+  fn document_construct(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    callee: GcObject,
+    args: &[Value],
+    new_target: Value,
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    let _ = (host, hooks, callee, args, new_target);
+    Err(rt.throw_type_error("Illegal constructor"))
+  }
+
+  #[allow(dead_code)]
+  fn document_fragment_call_without_new(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    _hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    _this: Value,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    Err(rt.throw_type_error("Illegal constructor"))
+  }
+
+  #[allow(dead_code)]
+  fn document_fragment_construct(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    callee: GcObject,
+    args: &[Value],
+    new_target: Value,
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    let _ = (host, hooks, callee, args, new_target);
+    Err(rt.throw_type_error("Illegal constructor"))
+  }
+
+  #[allow(dead_code)]
+  fn element_closest(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    {
+      let mut converted_args: Vec<Value> = Vec::new();
+      let v0 = if args.len() > 0 {
+        args[0]
+      } else {
+        Value::Undefined
+      };
+      let converted = Value::String(rt.scope.to_string(&mut *rt.vm, host, hooks, v0)?);
+      let converted = rt.scope.push_root(converted)?;
+      converted_args.push(converted);
+      let bindings_host = host_from_hooks(hooks)?;
+      bindings_host.call_operation(
+        &mut *rt.vm,
+        &mut rt.scope,
+        receiver,
+        "Element",
+        "closest",
+        0,
+        &converted_args,
+      )
+    }
+  }
+
+  #[allow(dead_code)]
+  fn element_get_attribute(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    {
+      let mut converted_args: Vec<Value> = Vec::new();
+      let v0 = if args.len() > 0 {
+        args[0]
+      } else {
+        Value::Undefined
+      };
+      let converted = Value::String(rt.scope.to_string(&mut *rt.vm, host, hooks, v0)?);
+      let converted = rt.scope.push_root(converted)?;
+      converted_args.push(converted);
+      let bindings_host = host_from_hooks(hooks)?;
+      bindings_host.call_operation(
+        &mut *rt.vm,
+        &mut rt.scope,
+        receiver,
+        "Element",
+        "getAttribute",
+        0,
+        &converted_args,
+      )
+    }
+  }
+
+  #[allow(dead_code)]
+  fn element_matches(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    {
+      let mut converted_args: Vec<Value> = Vec::new();
+      let v0 = if args.len() > 0 {
+        args[0]
+      } else {
+        Value::Undefined
+      };
+      let converted = Value::String(rt.scope.to_string(&mut *rt.vm, host, hooks, v0)?);
+      let converted = rt.scope.push_root(converted)?;
+      converted_args.push(converted);
+      let bindings_host = host_from_hooks(hooks)?;
+      bindings_host.call_operation(
+        &mut *rt.vm,
+        &mut rt.scope,
+        receiver,
+        "Element",
+        "matches",
+        0,
+        &converted_args,
+      )
+    }
+  }
+
+  #[allow(dead_code)]
+  fn element_query_selector(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    {
+      let mut converted_args: Vec<Value> = Vec::new();
+      let v0 = if args.len() > 0 {
+        args[0]
+      } else {
+        Value::Undefined
+      };
+      let converted = Value::String(rt.scope.to_string(&mut *rt.vm, host, hooks, v0)?);
+      let converted = rt.scope.push_root(converted)?;
+      converted_args.push(converted);
+      let bindings_host = host_from_hooks(hooks)?;
+      bindings_host.call_operation(
+        &mut *rt.vm,
+        &mut rt.scope,
+        receiver,
+        "Element",
+        "querySelector",
+        0,
+        &converted_args,
+      )
+    }
+  }
+
+  #[allow(dead_code)]
+  fn element_query_selector_all(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    {
+      let mut converted_args: Vec<Value> = Vec::new();
+      let v0 = if args.len() > 0 {
+        args[0]
+      } else {
+        Value::Undefined
+      };
+      let converted = Value::String(rt.scope.to_string(&mut *rt.vm, host, hooks, v0)?);
+      let converted = rt.scope.push_root(converted)?;
+      converted_args.push(converted);
+      let bindings_host = host_from_hooks(hooks)?;
+      bindings_host.call_operation(
+        &mut *rt.vm,
+        &mut rt.scope,
+        receiver,
+        "Element",
+        "querySelectorAll",
+        0,
+        &converted_args,
+      )
+    }
+  }
+
+  #[allow(dead_code)]
+  fn element_remove_attribute(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    {
+      let mut converted_args: Vec<Value> = Vec::new();
+      let v0 = if args.len() > 0 {
+        args[0]
+      } else {
+        Value::Undefined
+      };
+      let converted = Value::String(rt.scope.to_string(&mut *rt.vm, host, hooks, v0)?);
+      let converted = rt.scope.push_root(converted)?;
+      converted_args.push(converted);
+      let bindings_host = host_from_hooks(hooks)?;
+      bindings_host.call_operation(
+        &mut *rt.vm,
+        &mut rt.scope,
+        receiver,
+        "Element",
+        "removeAttribute",
+        0,
+        &converted_args,
+      )
+    }
+  }
+
+  #[allow(dead_code)]
+  fn element_set_attribute(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    {
+      let mut converted_args: Vec<Value> = Vec::new();
+      let v0 = if args.len() > 0 {
+        args[0]
+      } else {
+        Value::Undefined
+      };
+      let converted = Value::String(rt.scope.to_string(&mut *rt.vm, host, hooks, v0)?);
+      let converted = rt.scope.push_root(converted)?;
+      converted_args.push(converted);
+      let v1 = if args.len() > 1 {
+        args[1]
+      } else {
+        Value::Undefined
+      };
+      let converted = {
+        let v = v1;
+        if false {
+          Value::Undefined
+        } else if let Value::Object(_) = v {
+          v
+        } else if matches!(v, Value::String(_)) {
+          Value::String(rt.scope.to_string(&mut *rt.vm, host, hooks, v)?)
+        } else {
+          Value::String(rt.scope.to_string(&mut *rt.vm, host, hooks, v)?)
+        }
+      };
+      let converted = rt.scope.push_root(converted)?;
+      converted_args.push(converted);
+      let bindings_host = host_from_hooks(hooks)?;
+      bindings_host.call_operation(
+        &mut *rt.vm,
+        &mut rt.scope,
+        receiver,
+        "Element",
+        "setAttribute",
+        0,
+        &converted_args,
+      )
+    }
+  }
+
+  #[allow(dead_code)]
+  fn element_get_attribute_children(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    let bindings_host = host_from_hooks(hooks)?;
+    bindings_host.call_operation(
+      &mut *rt.vm,
+      &mut rt.scope,
+      receiver,
+      "Element",
+      "children",
+      0,
+      &[],
+    )
+  }
+
+  #[allow(dead_code)]
+  fn element_get_attribute_class_list(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    let bindings_host = host_from_hooks(hooks)?;
+    bindings_host.call_operation(
+      &mut *rt.vm,
+      &mut rt.scope,
+      receiver,
+      "Element",
+      "classList",
+      0,
+      &[],
+    )
+  }
+
+  #[allow(dead_code)]
+  fn element_get_attribute_class_name(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    let bindings_host = host_from_hooks(hooks)?;
+    bindings_host.call_operation(
+      &mut *rt.vm,
+      &mut rt.scope,
+      receiver,
+      "Element",
+      "className",
+      0,
+      &[],
+    )
+  }
+
+  #[allow(dead_code)]
+  fn element_set_attribute_class_name(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    {
+      let mut converted_args: Vec<Value> = Vec::new();
+      let v0 = if args.len() > 0 {
+        args[0]
+      } else {
+        Value::Undefined
+      };
+      let converted = Value::String(rt.scope.to_string(&mut *rt.vm, host, hooks, v0)?);
+      let converted = rt.scope.push_root(converted)?;
+      converted_args.push(converted);
+      let bindings_host = host_from_hooks(hooks)?;
+      let _ = bindings_host.call_operation(
+        &mut *rt.vm,
+        &mut rt.scope,
+        receiver,
+        "Element",
+        "className",
+        0,
+        &converted_args,
+      )?;
+      Ok(Value::Undefined)
+    }
+  }
+
+  #[allow(dead_code)]
+  fn element_get_attribute_id(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    let bindings_host = host_from_hooks(hooks)?;
+    bindings_host.call_operation(
+      &mut *rt.vm,
+      &mut rt.scope,
+      receiver,
+      "Element",
+      "id",
+      0,
+      &[],
+    )
+  }
+
+  #[allow(dead_code)]
+  fn element_set_attribute_id(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    {
+      let mut converted_args: Vec<Value> = Vec::new();
+      let v0 = if args.len() > 0 {
+        args[0]
+      } else {
+        Value::Undefined
+      };
+      let converted = Value::String(rt.scope.to_string(&mut *rt.vm, host, hooks, v0)?);
+      let converted = rt.scope.push_root(converted)?;
+      converted_args.push(converted);
+      let bindings_host = host_from_hooks(hooks)?;
+      let _ = bindings_host.call_operation(
+        &mut *rt.vm,
+        &mut rt.scope,
+        receiver,
+        "Element",
+        "id",
+        0,
+        &converted_args,
+      )?;
+      Ok(Value::Undefined)
+    }
+  }
+
+  #[allow(dead_code)]
+  fn element_get_attribute_tag_name(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    let bindings_host = host_from_hooks(hooks)?;
+    bindings_host.call_operation(
+      &mut *rt.vm,
+      &mut rt.scope,
+      receiver,
+      "Element",
+      "tagName",
+      0,
+      &[],
+    )
+  }
+
+  #[allow(dead_code)]
+  fn element_call_without_new(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    _hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    _this: Value,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    Err(rt.throw_type_error("Illegal constructor"))
+  }
+
+  #[allow(dead_code)]
+  fn element_construct(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    callee: GcObject,
+    args: &[Value],
+    new_target: Value,
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    let _ = (host, hooks, callee, args, new_target);
+    Err(rt.throw_type_error("Illegal constructor"))
   }
 
   #[allow(dead_code)]
@@ -385,6 +2035,623 @@ pub mod window {
   }
 
   #[allow(dead_code)]
+  fn h_t_m_l_collection_item(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    {
+      let mut converted_args: Vec<Value> = Vec::new();
+      let v0 = if args.len() > 0 {
+        args[0]
+      } else {
+        Value::Undefined
+      };
+      let converted =
+        Value::Number(to_uint32_f64(rt.scope.to_number(&mut *rt.vm, host, hooks, v0)?) as f64);
+      let converted = rt.scope.push_root(converted)?;
+      converted_args.push(converted);
+      let bindings_host = host_from_hooks(hooks)?;
+      bindings_host.call_operation(
+        &mut *rt.vm,
+        &mut rt.scope,
+        receiver,
+        "HTMLCollection",
+        "item",
+        0,
+        &converted_args,
+      )
+    }
+  }
+
+  #[allow(dead_code)]
+  fn h_t_m_l_collection_named_item(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    {
+      let mut converted_args: Vec<Value> = Vec::new();
+      let v0 = if args.len() > 0 {
+        args[0]
+      } else {
+        Value::Undefined
+      };
+      let converted = Value::String(rt.scope.to_string(&mut *rt.vm, host, hooks, v0)?);
+      let converted = rt.scope.push_root(converted)?;
+      converted_args.push(converted);
+      let bindings_host = host_from_hooks(hooks)?;
+      bindings_host.call_operation(
+        &mut *rt.vm,
+        &mut rt.scope,
+        receiver,
+        "HTMLCollection",
+        "namedItem",
+        0,
+        &converted_args,
+      )
+    }
+  }
+
+  #[allow(dead_code)]
+  fn h_t_m_l_collection_get_attribute_length(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    let bindings_host = host_from_hooks(hooks)?;
+    bindings_host.call_operation(
+      &mut *rt.vm,
+      &mut rt.scope,
+      receiver,
+      "HTMLCollection",
+      "length",
+      0,
+      &[],
+    )
+  }
+
+  #[allow(dead_code)]
+  fn h_t_m_l_collection_call_without_new(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    _hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    _this: Value,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    Err(rt.throw_type_error("Illegal constructor"))
+  }
+
+  #[allow(dead_code)]
+  fn h_t_m_l_collection_construct(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    callee: GcObject,
+    args: &[Value],
+    new_target: Value,
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    let _ = (host, hooks, callee, args, new_target);
+    Err(rt.throw_type_error("Illegal constructor"))
+  }
+
+  #[allow(dead_code)]
+  fn node_append_child(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    {
+      let mut converted_args: Vec<Value> = Vec::new();
+      let v0 = if args.len() > 0 {
+        args[0]
+      } else {
+        Value::Undefined
+      };
+      let converted = v0;
+      let converted = rt.scope.push_root(converted)?;
+      converted_args.push(converted);
+      let bindings_host = host_from_hooks(hooks)?;
+      bindings_host.call_operation(
+        &mut *rt.vm,
+        &mut rt.scope,
+        receiver,
+        "Node",
+        "appendChild",
+        0,
+        &converted_args,
+      )
+    }
+  }
+
+  #[allow(dead_code)]
+  fn node_clone_node(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    {
+      let mut converted_args: Vec<Value> = Vec::new();
+      let v0 = if args.len() > 0 {
+        args[0]
+      } else {
+        Value::Undefined
+      };
+      let converted = if matches!(v0, Value::Undefined) {
+        Value::Bool(false)
+      } else {
+        Value::Bool(rt.scope.heap().to_boolean(v0)?)
+      };
+      let converted = rt.scope.push_root(converted)?;
+      converted_args.push(converted);
+      let bindings_host = host_from_hooks(hooks)?;
+      bindings_host.call_operation(
+        &mut *rt.vm,
+        &mut rt.scope,
+        receiver,
+        "Node",
+        "cloneNode",
+        0,
+        &converted_args,
+      )
+    }
+  }
+
+  #[allow(dead_code)]
+  fn node_insert_before(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    {
+      let mut converted_args: Vec<Value> = Vec::new();
+      let v0 = if args.len() > 0 {
+        args[0]
+      } else {
+        Value::Undefined
+      };
+      let converted = v0;
+      let converted = rt.scope.push_root(converted)?;
+      converted_args.push(converted);
+      let v1 = if args.len() > 1 {
+        args[1]
+      } else {
+        Value::Undefined
+      };
+      let converted = if matches!(v1, Value::Null | Value::Undefined) {
+        Value::Null
+      } else {
+        v1
+      };
+      let converted = rt.scope.push_root(converted)?;
+      converted_args.push(converted);
+      let bindings_host = host_from_hooks(hooks)?;
+      bindings_host.call_operation(
+        &mut *rt.vm,
+        &mut rt.scope,
+        receiver,
+        "Node",
+        "insertBefore",
+        0,
+        &converted_args,
+      )
+    }
+  }
+
+  #[allow(dead_code)]
+  fn node_remove_child(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    {
+      let mut converted_args: Vec<Value> = Vec::new();
+      let v0 = if args.len() > 0 {
+        args[0]
+      } else {
+        Value::Undefined
+      };
+      let converted = v0;
+      let converted = rt.scope.push_root(converted)?;
+      converted_args.push(converted);
+      let bindings_host = host_from_hooks(hooks)?;
+      bindings_host.call_operation(
+        &mut *rt.vm,
+        &mut rt.scope,
+        receiver,
+        "Node",
+        "removeChild",
+        0,
+        &converted_args,
+      )
+    }
+  }
+
+  #[allow(dead_code)]
+  fn node_replace_child(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    {
+      let mut converted_args: Vec<Value> = Vec::new();
+      let v0 = if args.len() > 0 {
+        args[0]
+      } else {
+        Value::Undefined
+      };
+      let converted = v0;
+      let converted = rt.scope.push_root(converted)?;
+      converted_args.push(converted);
+      let v1 = if args.len() > 1 {
+        args[1]
+      } else {
+        Value::Undefined
+      };
+      let converted = v1;
+      let converted = rt.scope.push_root(converted)?;
+      converted_args.push(converted);
+      let bindings_host = host_from_hooks(hooks)?;
+      bindings_host.call_operation(
+        &mut *rt.vm,
+        &mut rt.scope,
+        receiver,
+        "Node",
+        "replaceChild",
+        0,
+        &converted_args,
+      )
+    }
+  }
+
+  #[allow(dead_code)]
+  fn node_get_attribute_child_nodes(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    let bindings_host = host_from_hooks(hooks)?;
+    bindings_host.call_operation(
+      &mut *rt.vm,
+      &mut rt.scope,
+      receiver,
+      "Node",
+      "childNodes",
+      0,
+      &[],
+    )
+  }
+
+  #[allow(dead_code)]
+  fn node_get_attribute_first_child(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    let bindings_host = host_from_hooks(hooks)?;
+    bindings_host.call_operation(
+      &mut *rt.vm,
+      &mut rt.scope,
+      receiver,
+      "Node",
+      "firstChild",
+      0,
+      &[],
+    )
+  }
+
+  #[allow(dead_code)]
+  fn node_get_attribute_last_child(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    let bindings_host = host_from_hooks(hooks)?;
+    bindings_host.call_operation(
+      &mut *rt.vm,
+      &mut rt.scope,
+      receiver,
+      "Node",
+      "lastChild",
+      0,
+      &[],
+    )
+  }
+
+  #[allow(dead_code)]
+  fn node_get_attribute_next_sibling(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    let bindings_host = host_from_hooks(hooks)?;
+    bindings_host.call_operation(
+      &mut *rt.vm,
+      &mut rt.scope,
+      receiver,
+      "Node",
+      "nextSibling",
+      0,
+      &[],
+    )
+  }
+
+  #[allow(dead_code)]
+  fn node_get_attribute_node_name(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    let bindings_host = host_from_hooks(hooks)?;
+    bindings_host.call_operation(
+      &mut *rt.vm,
+      &mut rt.scope,
+      receiver,
+      "Node",
+      "nodeName",
+      0,
+      &[],
+    )
+  }
+
+  #[allow(dead_code)]
+  fn node_get_attribute_node_type(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    let bindings_host = host_from_hooks(hooks)?;
+    bindings_host.call_operation(
+      &mut *rt.vm,
+      &mut rt.scope,
+      receiver,
+      "Node",
+      "nodeType",
+      0,
+      &[],
+    )
+  }
+
+  #[allow(dead_code)]
+  fn node_get_attribute_parent_node(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    let bindings_host = host_from_hooks(hooks)?;
+    bindings_host.call_operation(
+      &mut *rt.vm,
+      &mut rt.scope,
+      receiver,
+      "Node",
+      "parentNode",
+      0,
+      &[],
+    )
+  }
+
+  #[allow(dead_code)]
+  fn node_get_attribute_previous_sibling(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    let bindings_host = host_from_hooks(hooks)?;
+    bindings_host.call_operation(
+      &mut *rt.vm,
+      &mut rt.scope,
+      receiver,
+      "Node",
+      "previousSibling",
+      0,
+      &[],
+    )
+  }
+
+  #[allow(dead_code)]
+  fn node_get_attribute_text_content(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    let bindings_host = host_from_hooks(hooks)?;
+    bindings_host.call_operation(
+      &mut *rt.vm,
+      &mut rt.scope,
+      receiver,
+      "Node",
+      "textContent",
+      0,
+      &[],
+    )
+  }
+
+  #[allow(dead_code)]
+  fn node_set_attribute_text_content(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    {
+      let mut converted_args: Vec<Value> = Vec::new();
+      let v0 = if args.len() > 0 {
+        args[0]
+      } else {
+        Value::Undefined
+      };
+      let converted = if matches!(v0, Value::Null | Value::Undefined) {
+        Value::Null
+      } else {
+        Value::String(rt.scope.to_string(&mut *rt.vm, host, hooks, v0)?)
+      };
+      let converted = rt.scope.push_root(converted)?;
+      converted_args.push(converted);
+      let bindings_host = host_from_hooks(hooks)?;
+      let _ = bindings_host.call_operation(
+        &mut *rt.vm,
+        &mut rt.scope,
+        receiver,
+        "Node",
+        "textContent",
+        0,
+        &converted_args,
+      )?;
+      Ok(Value::Undefined)
+    }
+  }
+
+  #[allow(dead_code)]
   fn node_call_without_new(
     vm: &mut Vm,
     scope: &mut Scope<'_>,
@@ -401,6 +2668,329 @@ pub mod window {
 
   #[allow(dead_code)]
   fn node_construct(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    callee: GcObject,
+    args: &[Value],
+    new_target: Value,
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    let _ = (host, hooks, callee, args, new_target);
+    Err(rt.throw_type_error("Illegal constructor"))
+  }
+
+  #[allow(dead_code)]
+  fn node_list_entries(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    let _ = _args;
+    let bindings_host = host_from_hooks(hooks)?;
+    let snapshot = bindings_host.iterable_snapshot(
+      &mut *rt.vm,
+      &mut rt.scope,
+      receiver,
+      "NodeList",
+      IterableKind::Entries,
+    )?;
+    let arr = rt.alloc_array(snapshot.len())?;
+    for (idx, item) in snapshot.into_iter().enumerate() {
+      let value = rt.binding_value_to_js(item)?;
+      let value = rt.scope.push_root(value)?;
+      let key_s = rt.scope.alloc_string(&idx.to_string())?;
+      rt.scope.push_root(Value::String(key_s))?;
+      let key = vm_js::PropertyKey::from_string(key_s);
+      rt.scope.create_data_property_or_throw(arr, key, value)?;
+    }
+    let intr = rt
+      .vm
+      .intrinsics()
+      .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+    let iterator_key = vm_js::PropertyKey::from_symbol(intr.well_known_symbols().iterator);
+    let Some(method) = rt
+      .vm
+      .get_method_from_object(&mut rt.scope, arr, iterator_key)?
+    else {
+      return Err(rt.throw_type_error("iterable snapshot array is not iterable"));
+    };
+    rt.vm
+      .call_with_host_and_hooks(_host, &mut rt.scope, hooks, method, Value::Object(arr), &[])
+  }
+
+  #[allow(dead_code)]
+  fn node_list_for_each(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    let callback = args.get(0).copied().unwrap_or(Value::Undefined);
+    let callback = rt.scope.push_root(callback)?;
+    let this_arg = args.get(1).copied().unwrap_or(Value::Undefined);
+    let this_arg = rt.scope.push_root(this_arg)?;
+    let bindings_host = host_from_hooks(hooks)?;
+    let snapshot = bindings_host.iterable_snapshot(
+      &mut *rt.vm,
+      &mut rt.scope,
+      receiver,
+      "NodeList",
+      IterableKind::Entries,
+    )?;
+    for entry in snapshot {
+      let BindingValue::Sequence(pair) = entry else {
+        return Err(rt.throw_type_error("iterable forEach: expected [key, value] pair"));
+      };
+      if pair.len() != 2 {
+        return Err(rt.throw_type_error("iterable forEach: expected [key, value] pair"));
+      }
+      let mut iter = pair.into_iter();
+      let key = iter
+        .next()
+        .ok_or_else(|| rt.throw_type_error("iterable forEach: expected [key, value] pair"))?;
+      let value = iter
+        .next()
+        .ok_or_else(|| rt.throw_type_error("iterable forEach: expected [key, value] pair"))?;
+      let key_js = rt.binding_value_to_js(key)?;
+      let key_js = rt.scope.push_root(key_js)?;
+      let value_js = rt.binding_value_to_js(value)?;
+      let value_js = rt.scope.push_root(value_js)?;
+      let _ = rt.vm.call_with_host_and_hooks(
+        _host,
+        &mut rt.scope,
+        hooks,
+        callback,
+        this_arg,
+        &[value_js, key_js, this],
+      )?;
+    }
+    Ok(Value::Undefined)
+  }
+
+  #[allow(dead_code)]
+  fn node_list_item(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    {
+      let mut converted_args: Vec<Value> = Vec::new();
+      let v0 = if args.len() > 0 {
+        args[0]
+      } else {
+        Value::Undefined
+      };
+      let converted =
+        Value::Number(to_uint32_f64(rt.scope.to_number(&mut *rt.vm, host, hooks, v0)?) as f64);
+      let converted = rt.scope.push_root(converted)?;
+      converted_args.push(converted);
+      let bindings_host = host_from_hooks(hooks)?;
+      bindings_host.call_operation(
+        &mut *rt.vm,
+        &mut rt.scope,
+        receiver,
+        "NodeList",
+        "item",
+        0,
+        &converted_args,
+      )
+    }
+  }
+
+  #[allow(dead_code)]
+  fn node_list_keys(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    let _ = _args;
+    let bindings_host = host_from_hooks(hooks)?;
+    let snapshot = bindings_host.iterable_snapshot(
+      &mut *rt.vm,
+      &mut rt.scope,
+      receiver,
+      "NodeList",
+      IterableKind::Keys,
+    )?;
+    let arr = rt.alloc_array(snapshot.len())?;
+    for (idx, item) in snapshot.into_iter().enumerate() {
+      let value = rt.binding_value_to_js(item)?;
+      let value = rt.scope.push_root(value)?;
+      let key_s = rt.scope.alloc_string(&idx.to_string())?;
+      rt.scope.push_root(Value::String(key_s))?;
+      let key = vm_js::PropertyKey::from_string(key_s);
+      rt.scope.create_data_property_or_throw(arr, key, value)?;
+    }
+    let intr = rt
+      .vm
+      .intrinsics()
+      .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+    let iterator_key = vm_js::PropertyKey::from_symbol(intr.well_known_symbols().iterator);
+    let Some(method) = rt
+      .vm
+      .get_method_from_object(&mut rt.scope, arr, iterator_key)?
+    else {
+      return Err(rt.throw_type_error("iterable snapshot array is not iterable"));
+    };
+    rt.vm
+      .call_with_host_and_hooks(_host, &mut rt.scope, hooks, method, Value::Object(arr), &[])
+  }
+
+  #[allow(dead_code)]
+  fn node_list_values(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    let _ = _args;
+    let bindings_host = host_from_hooks(hooks)?;
+    let snapshot = bindings_host.iterable_snapshot(
+      &mut *rt.vm,
+      &mut rt.scope,
+      receiver,
+      "NodeList",
+      IterableKind::Values,
+    )?;
+    let arr = rt.alloc_array(snapshot.len())?;
+    for (idx, item) in snapshot.into_iter().enumerate() {
+      let value = rt.binding_value_to_js(item)?;
+      let value = rt.scope.push_root(value)?;
+      let key_s = rt.scope.alloc_string(&idx.to_string())?;
+      rt.scope.push_root(Value::String(key_s))?;
+      let key = vm_js::PropertyKey::from_string(key_s);
+      rt.scope.create_data_property_or_throw(arr, key, value)?;
+    }
+    let intr = rt
+      .vm
+      .intrinsics()
+      .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+    let iterator_key = vm_js::PropertyKey::from_symbol(intr.well_known_symbols().iterator);
+    let Some(method) = rt
+      .vm
+      .get_method_from_object(&mut rt.scope, arr, iterator_key)?
+    else {
+      return Err(rt.throw_type_error("iterable snapshot array is not iterable"));
+    };
+    rt.vm
+      .call_with_host_and_hooks(_host, &mut rt.scope, hooks, method, Value::Object(arr), &[])
+  }
+
+  #[allow(dead_code)]
+  fn node_list_get_attribute_length(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    let bindings_host = host_from_hooks(hooks)?;
+    bindings_host.call_operation(
+      &mut *rt.vm,
+      &mut rt.scope,
+      receiver,
+      "NodeList",
+      "length",
+      0,
+      &[],
+    )
+  }
+
+  #[allow(dead_code)]
+  fn node_list_call_without_new(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    _hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    _this: Value,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    Err(rt.throw_type_error("Illegal constructor"))
+  }
+
+  #[allow(dead_code)]
+  fn node_list_construct(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    callee: GcObject,
+    args: &[Value],
+    new_target: Value,
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    let _ = (host, hooks, callee, args, new_target);
+    Err(rt.throw_type_error("Illegal constructor"))
+  }
+
+  #[allow(dead_code)]
+  fn text_call_without_new(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    _hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    _this: Value,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    Err(rt.throw_type_error("Illegal constructor"))
+  }
+
+  #[allow(dead_code)]
+  fn text_construct(
     vm: &mut Vm,
     scope: &mut Scope<'_>,
     host: &mut dyn VmHost,
@@ -1608,6 +4198,684 @@ pub mod window {
     }
   }
 
+  #[allow(dead_code)]
+  fn window_get_attribute_document(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    let receiver = None;
+    let bindings_host = host_from_hooks(hooks)?;
+    bindings_host.call_operation(
+      &mut *rt.vm,
+      &mut rt.scope,
+      receiver,
+      "Window",
+      "document",
+      0,
+      &[],
+    )
+  }
+
+  pub fn install_character_data_bindings_vm_js(
+    vm: &mut Vm,
+    heap: &mut Heap,
+    realm: &Realm,
+  ) -> Result<(), VmError> {
+    let mut rt = BindingsRuntime::new(vm, heap);
+    let global = realm.global_object();
+    rt.scope.push_root(Value::Object(global))?;
+
+    let key = rt.property_key("CharacterData")?;
+    if rt
+      .scope
+      .heap()
+      .object_get_own_property(global, &key)?
+      .is_some()
+    {
+      return Ok(());
+    }
+
+    let global_var_attrs = DataPropertyAttributes::new(true, false, true);
+    let ctor_link_attrs = DataPropertyAttributes::new(false, false, false);
+
+    let proto_character_data = rt.alloc_object()?;
+    let parent_proto = {
+      let ctor_key = rt.property_key("Node")?;
+      let ctor_value = rt
+        .scope
+        .heap()
+        .object_get_own_data_property_value(global, &ctor_key)?
+        .unwrap_or(Value::Undefined);
+      if let Value::Object(ctor_obj) = ctor_value {
+        let proto_key = rt.property_key("prototype")?;
+        match rt.vm.get(&mut rt.scope, ctor_obj, proto_key)? {
+          Value::Object(obj) => Some(obj),
+          _ => None,
+        }
+      } else {
+        None
+      }
+    };
+    if let Some(parent_proto) = parent_proto {
+      rt.set_prototype(proto_character_data, Some(parent_proto))?;
+    }
+
+    let slots = [Value::Object(proto_character_data)];
+    let ctor_character_data = rt.alloc_native_function_with_slots(
+      character_data_call_without_new,
+      Some(character_data_construct),
+      "CharacterData",
+      0,
+      &slots,
+    )?;
+    rt.define_data_property_str(
+      global,
+      "CharacterData",
+      Value::Object(ctor_character_data),
+      global_var_attrs,
+    )?;
+    rt.define_data_property_str(
+      ctor_character_data,
+      "prototype",
+      Value::Object(proto_character_data),
+      ctor_link_attrs,
+    )?;
+    rt.define_data_property_str(
+      proto_character_data,
+      "constructor",
+      Value::Object(ctor_character_data),
+      ctor_link_attrs,
+    )?;
+    Ok(())
+  }
+
+  pub fn install_dom_token_list_bindings_vm_js(
+    vm: &mut Vm,
+    heap: &mut Heap,
+    realm: &Realm,
+  ) -> Result<(), VmError> {
+    let mut rt = BindingsRuntime::new(vm, heap);
+    let global = realm.global_object();
+    rt.scope.push_root(Value::Object(global))?;
+
+    let key = rt.property_key("DOMTokenList")?;
+    if rt
+      .scope
+      .heap()
+      .object_get_own_property(global, &key)?
+      .is_some()
+    {
+      return Ok(());
+    }
+
+    let global_var_attrs = DataPropertyAttributes::new(true, false, true);
+    let ctor_link_attrs = DataPropertyAttributes::new(false, false, false);
+
+    let proto_d_o_m_token_list = rt.alloc_object()?;
+    let func = rt.alloc_native_function(d_o_m_token_list_add, None, "add", 0)?;
+    rt.define_data_property_str(
+      proto_d_o_m_token_list,
+      "add",
+      Value::Object(func),
+      DataPropertyAttributes::METHOD,
+    )?;
+    let func = rt.alloc_native_function(d_o_m_token_list_contains, None, "contains", 1)?;
+    rt.define_data_property_str(
+      proto_d_o_m_token_list,
+      "contains",
+      Value::Object(func),
+      DataPropertyAttributes::METHOD,
+    )?;
+    let func = rt.alloc_native_function(d_o_m_token_list_entries, None, "entries", 0)?;
+    rt.define_data_property_str(
+      proto_d_o_m_token_list,
+      "entries",
+      Value::Object(func),
+      DataPropertyAttributes::METHOD,
+    )?;
+    let func = rt.alloc_native_function(d_o_m_token_list_for_each, None, "forEach", 1)?;
+    rt.define_data_property_str(
+      proto_d_o_m_token_list,
+      "forEach",
+      Value::Object(func),
+      DataPropertyAttributes::METHOD,
+    )?;
+    let func = rt.alloc_native_function(d_o_m_token_list_item, None, "item", 1)?;
+    rt.define_data_property_str(
+      proto_d_o_m_token_list,
+      "item",
+      Value::Object(func),
+      DataPropertyAttributes::METHOD,
+    )?;
+    let func = rt.alloc_native_function(d_o_m_token_list_keys, None, "keys", 0)?;
+    rt.define_data_property_str(
+      proto_d_o_m_token_list,
+      "keys",
+      Value::Object(func),
+      DataPropertyAttributes::METHOD,
+    )?;
+    let func = rt.alloc_native_function(d_o_m_token_list_remove, None, "remove", 0)?;
+    rt.define_data_property_str(
+      proto_d_o_m_token_list,
+      "remove",
+      Value::Object(func),
+      DataPropertyAttributes::METHOD,
+    )?;
+    let func = rt.alloc_native_function(d_o_m_token_list_replace, None, "replace", 2)?;
+    rt.define_data_property_str(
+      proto_d_o_m_token_list,
+      "replace",
+      Value::Object(func),
+      DataPropertyAttributes::METHOD,
+    )?;
+    let func = rt.alloc_native_function(d_o_m_token_list_toggle, None, "toggle", 1)?;
+    rt.define_data_property_str(
+      proto_d_o_m_token_list,
+      "toggle",
+      Value::Object(func),
+      DataPropertyAttributes::METHOD,
+    )?;
+    let func = rt.alloc_native_function(d_o_m_token_list_values, None, "values", 0)?;
+    rt.define_data_property_str(
+      proto_d_o_m_token_list,
+      "values",
+      Value::Object(func),
+      DataPropertyAttributes::METHOD,
+    )?;
+    let iterator_key = vm_js::PropertyKey::from_symbol(realm.well_known_symbols().iterator);
+    rt.define_data_property(
+      proto_d_o_m_token_list,
+      iterator_key,
+      Value::Object(func),
+      DataPropertyAttributes::METHOD,
+    )?;
+    let get =
+      rt.alloc_native_function(d_o_m_token_list_get_attribute_length, None, "get length", 0)?;
+    let set = Value::Undefined;
+    rt.define_accessor_property_str(
+      proto_d_o_m_token_list,
+      "length",
+      Value::Object(get),
+      set,
+      AccessorPropertyAttributes::ATTRIBUTE,
+    )?;
+    let get =
+      rt.alloc_native_function(d_o_m_token_list_get_attribute_value, None, "get value", 0)?;
+    let set = Value::Object(rt.alloc_native_function(
+      d_o_m_token_list_set_attribute_value,
+      None,
+      "set value",
+      1,
+    )?);
+    rt.define_accessor_property_str(
+      proto_d_o_m_token_list,
+      "value",
+      Value::Object(get),
+      set,
+      AccessorPropertyAttributes::ATTRIBUTE,
+    )?;
+    let slots = [Value::Object(proto_d_o_m_token_list)];
+    let ctor_d_o_m_token_list = rt.alloc_native_function_with_slots(
+      d_o_m_token_list_call_without_new,
+      Some(d_o_m_token_list_construct),
+      "DOMTokenList",
+      0,
+      &slots,
+    )?;
+    rt.define_data_property_str(
+      global,
+      "DOMTokenList",
+      Value::Object(ctor_d_o_m_token_list),
+      global_var_attrs,
+    )?;
+    rt.define_data_property_str(
+      ctor_d_o_m_token_list,
+      "prototype",
+      Value::Object(proto_d_o_m_token_list),
+      ctor_link_attrs,
+    )?;
+    rt.define_data_property_str(
+      proto_d_o_m_token_list,
+      "constructor",
+      Value::Object(ctor_d_o_m_token_list),
+      ctor_link_attrs,
+    )?;
+    Ok(())
+  }
+
+  pub fn install_document_bindings_vm_js(
+    vm: &mut Vm,
+    heap: &mut Heap,
+    realm: &Realm,
+  ) -> Result<(), VmError> {
+    let mut rt = BindingsRuntime::new(vm, heap);
+    let global = realm.global_object();
+    rt.scope.push_root(Value::Object(global))?;
+
+    let key = rt.property_key("Document")?;
+    if rt
+      .scope
+      .heap()
+      .object_get_own_property(global, &key)?
+      .is_some()
+    {
+      return Ok(());
+    }
+
+    let global_var_attrs = DataPropertyAttributes::new(true, false, true);
+    let ctor_link_attrs = DataPropertyAttributes::new(false, false, false);
+
+    let proto_document = rt.alloc_object()?;
+    let parent_proto = {
+      let ctor_key = rt.property_key("Node")?;
+      let ctor_value = rt
+        .scope
+        .heap()
+        .object_get_own_data_property_value(global, &ctor_key)?
+        .unwrap_or(Value::Undefined);
+      if let Value::Object(ctor_obj) = ctor_value {
+        let proto_key = rt.property_key("prototype")?;
+        match rt.vm.get(&mut rt.scope, ctor_obj, proto_key)? {
+          Value::Object(obj) => Some(obj),
+          _ => None,
+        }
+      } else {
+        None
+      }
+    };
+    if let Some(parent_proto) = parent_proto {
+      rt.set_prototype(proto_document, Some(parent_proto))?;
+    }
+
+    let func = rt.alloc_native_function(
+      document_create_document_fragment,
+      None,
+      "createDocumentFragment",
+      0,
+    )?;
+    rt.define_data_property_str(
+      proto_document,
+      "createDocumentFragment",
+      Value::Object(func),
+      DataPropertyAttributes::METHOD,
+    )?;
+    let func = rt.alloc_native_function(document_create_element, None, "createElement", 1)?;
+    rt.define_data_property_str(
+      proto_document,
+      "createElement",
+      Value::Object(func),
+      DataPropertyAttributes::METHOD,
+    )?;
+    let func = rt.alloc_native_function(document_create_text_node, None, "createTextNode", 1)?;
+    rt.define_data_property_str(
+      proto_document,
+      "createTextNode",
+      Value::Object(func),
+      DataPropertyAttributes::METHOD,
+    )?;
+    let func = rt.alloc_native_function(document_get_element_by_id, None, "getElementById", 1)?;
+    rt.define_data_property_str(
+      proto_document,
+      "getElementById",
+      Value::Object(func),
+      DataPropertyAttributes::METHOD,
+    )?;
+    let func = rt.alloc_native_function(
+      document_get_elements_by_class_name,
+      None,
+      "getElementsByClassName",
+      1,
+    )?;
+    rt.define_data_property_str(
+      proto_document,
+      "getElementsByClassName",
+      Value::Object(func),
+      DataPropertyAttributes::METHOD,
+    )?;
+    let func = rt.alloc_native_function(
+      document_get_elements_by_tag_name,
+      None,
+      "getElementsByTagName",
+      1,
+    )?;
+    rt.define_data_property_str(
+      proto_document,
+      "getElementsByTagName",
+      Value::Object(func),
+      DataPropertyAttributes::METHOD,
+    )?;
+    let func = rt.alloc_native_function(document_query_selector, None, "querySelector", 1)?;
+    rt.define_data_property_str(
+      proto_document,
+      "querySelector",
+      Value::Object(func),
+      DataPropertyAttributes::METHOD,
+    )?;
+    let func =
+      rt.alloc_native_function(document_query_selector_all, None, "querySelectorAll", 1)?;
+    rt.define_data_property_str(
+      proto_document,
+      "querySelectorAll",
+      Value::Object(func),
+      DataPropertyAttributes::METHOD,
+    )?;
+    let get = rt.alloc_native_function(document_get_attribute_body, None, "get body", 0)?;
+    let set =
+      Value::Object(rt.alloc_native_function(document_set_attribute_body, None, "set body", 1)?);
+    rt.define_accessor_property_str(
+      proto_document,
+      "body",
+      Value::Object(get),
+      set,
+      AccessorPropertyAttributes::ATTRIBUTE,
+    )?;
+    let get = rt.alloc_native_function(
+      document_get_attribute_document_element,
+      None,
+      "get documentElement",
+      0,
+    )?;
+    let set = Value::Undefined;
+    rt.define_accessor_property_str(
+      proto_document,
+      "documentElement",
+      Value::Object(get),
+      set,
+      AccessorPropertyAttributes::ATTRIBUTE,
+    )?;
+    let get = rt.alloc_native_function(document_get_attribute_head, None, "get head", 0)?;
+    let set = Value::Undefined;
+    rt.define_accessor_property_str(
+      proto_document,
+      "head",
+      Value::Object(get),
+      set,
+      AccessorPropertyAttributes::ATTRIBUTE,
+    )?;
+    let slots = [Value::Object(proto_document)];
+    let ctor_document = rt.alloc_native_function_with_slots(
+      document_call_without_new,
+      Some(document_construct),
+      "Document",
+      0,
+      &slots,
+    )?;
+    rt.define_data_property_str(
+      global,
+      "Document",
+      Value::Object(ctor_document),
+      global_var_attrs,
+    )?;
+    rt.define_data_property_str(
+      ctor_document,
+      "prototype",
+      Value::Object(proto_document),
+      ctor_link_attrs,
+    )?;
+    rt.define_data_property_str(
+      proto_document,
+      "constructor",
+      Value::Object(ctor_document),
+      ctor_link_attrs,
+    )?;
+    Ok(())
+  }
+
+  pub fn install_document_fragment_bindings_vm_js(
+    vm: &mut Vm,
+    heap: &mut Heap,
+    realm: &Realm,
+  ) -> Result<(), VmError> {
+    let mut rt = BindingsRuntime::new(vm, heap);
+    let global = realm.global_object();
+    rt.scope.push_root(Value::Object(global))?;
+
+    let key = rt.property_key("DocumentFragment")?;
+    if rt
+      .scope
+      .heap()
+      .object_get_own_property(global, &key)?
+      .is_some()
+    {
+      return Ok(());
+    }
+
+    let global_var_attrs = DataPropertyAttributes::new(true, false, true);
+    let ctor_link_attrs = DataPropertyAttributes::new(false, false, false);
+
+    let proto_document_fragment = rt.alloc_object()?;
+    let parent_proto = {
+      let ctor_key = rt.property_key("Node")?;
+      let ctor_value = rt
+        .scope
+        .heap()
+        .object_get_own_data_property_value(global, &ctor_key)?
+        .unwrap_or(Value::Undefined);
+      if let Value::Object(ctor_obj) = ctor_value {
+        let proto_key = rt.property_key("prototype")?;
+        match rt.vm.get(&mut rt.scope, ctor_obj, proto_key)? {
+          Value::Object(obj) => Some(obj),
+          _ => None,
+        }
+      } else {
+        None
+      }
+    };
+    if let Some(parent_proto) = parent_proto {
+      rt.set_prototype(proto_document_fragment, Some(parent_proto))?;
+    }
+
+    let slots = [Value::Object(proto_document_fragment)];
+    let ctor_document_fragment = rt.alloc_native_function_with_slots(
+      document_fragment_call_without_new,
+      Some(document_fragment_construct),
+      "DocumentFragment",
+      0,
+      &slots,
+    )?;
+    rt.define_data_property_str(
+      global,
+      "DocumentFragment",
+      Value::Object(ctor_document_fragment),
+      global_var_attrs,
+    )?;
+    rt.define_data_property_str(
+      ctor_document_fragment,
+      "prototype",
+      Value::Object(proto_document_fragment),
+      ctor_link_attrs,
+    )?;
+    rt.define_data_property_str(
+      proto_document_fragment,
+      "constructor",
+      Value::Object(ctor_document_fragment),
+      ctor_link_attrs,
+    )?;
+    Ok(())
+  }
+
+  pub fn install_element_bindings_vm_js(
+    vm: &mut Vm,
+    heap: &mut Heap,
+    realm: &Realm,
+  ) -> Result<(), VmError> {
+    let mut rt = BindingsRuntime::new(vm, heap);
+    let global = realm.global_object();
+    rt.scope.push_root(Value::Object(global))?;
+
+    let key = rt.property_key("Element")?;
+    if rt
+      .scope
+      .heap()
+      .object_get_own_property(global, &key)?
+      .is_some()
+    {
+      return Ok(());
+    }
+
+    let global_var_attrs = DataPropertyAttributes::new(true, false, true);
+    let ctor_link_attrs = DataPropertyAttributes::new(false, false, false);
+
+    let proto_element = rt.alloc_object()?;
+    let parent_proto = {
+      let ctor_key = rt.property_key("Node")?;
+      let ctor_value = rt
+        .scope
+        .heap()
+        .object_get_own_data_property_value(global, &ctor_key)?
+        .unwrap_or(Value::Undefined);
+      if let Value::Object(ctor_obj) = ctor_value {
+        let proto_key = rt.property_key("prototype")?;
+        match rt.vm.get(&mut rt.scope, ctor_obj, proto_key)? {
+          Value::Object(obj) => Some(obj),
+          _ => None,
+        }
+      } else {
+        None
+      }
+    };
+    if let Some(parent_proto) = parent_proto {
+      rt.set_prototype(proto_element, Some(parent_proto))?;
+    }
+
+    let func = rt.alloc_native_function(element_closest, None, "closest", 1)?;
+    rt.define_data_property_str(
+      proto_element,
+      "closest",
+      Value::Object(func),
+      DataPropertyAttributes::METHOD,
+    )?;
+    let func = rt.alloc_native_function(element_get_attribute, None, "getAttribute", 1)?;
+    rt.define_data_property_str(
+      proto_element,
+      "getAttribute",
+      Value::Object(func),
+      DataPropertyAttributes::METHOD,
+    )?;
+    let func = rt.alloc_native_function(element_matches, None, "matches", 1)?;
+    rt.define_data_property_str(
+      proto_element,
+      "matches",
+      Value::Object(func),
+      DataPropertyAttributes::METHOD,
+    )?;
+    let func = rt.alloc_native_function(element_query_selector, None, "querySelector", 1)?;
+    rt.define_data_property_str(
+      proto_element,
+      "querySelector",
+      Value::Object(func),
+      DataPropertyAttributes::METHOD,
+    )?;
+    let func = rt.alloc_native_function(element_query_selector_all, None, "querySelectorAll", 1)?;
+    rt.define_data_property_str(
+      proto_element,
+      "querySelectorAll",
+      Value::Object(func),
+      DataPropertyAttributes::METHOD,
+    )?;
+    let func = rt.alloc_native_function(element_remove_attribute, None, "removeAttribute", 1)?;
+    rt.define_data_property_str(
+      proto_element,
+      "removeAttribute",
+      Value::Object(func),
+      DataPropertyAttributes::METHOD,
+    )?;
+    let func = rt.alloc_native_function(element_set_attribute, None, "setAttribute", 2)?;
+    rt.define_data_property_str(
+      proto_element,
+      "setAttribute",
+      Value::Object(func),
+      DataPropertyAttributes::METHOD,
+    )?;
+    let get = rt.alloc_native_function(element_get_attribute_children, None, "get children", 0)?;
+    let set = Value::Undefined;
+    rt.define_accessor_property_str(
+      proto_element,
+      "children",
+      Value::Object(get),
+      set,
+      AccessorPropertyAttributes::ATTRIBUTE,
+    )?;
+    let get =
+      rt.alloc_native_function(element_get_attribute_class_list, None, "get classList", 0)?;
+    let set = Value::Undefined;
+    rt.define_accessor_property_str(
+      proto_element,
+      "classList",
+      Value::Object(get),
+      set,
+      AccessorPropertyAttributes::ATTRIBUTE,
+    )?;
+    let get =
+      rt.alloc_native_function(element_get_attribute_class_name, None, "get className", 0)?;
+    let set = Value::Object(rt.alloc_native_function(
+      element_set_attribute_class_name,
+      None,
+      "set className",
+      1,
+    )?);
+    rt.define_accessor_property_str(
+      proto_element,
+      "className",
+      Value::Object(get),
+      set,
+      AccessorPropertyAttributes::ATTRIBUTE,
+    )?;
+    let get = rt.alloc_native_function(element_get_attribute_id, None, "get id", 0)?;
+    let set =
+      Value::Object(rt.alloc_native_function(element_set_attribute_id, None, "set id", 1)?);
+    rt.define_accessor_property_str(
+      proto_element,
+      "id",
+      Value::Object(get),
+      set,
+      AccessorPropertyAttributes::ATTRIBUTE,
+    )?;
+    let get = rt.alloc_native_function(element_get_attribute_tag_name, None, "get tagName", 0)?;
+    let set = Value::Undefined;
+    rt.define_accessor_property_str(
+      proto_element,
+      "tagName",
+      Value::Object(get),
+      set,
+      AccessorPropertyAttributes::ATTRIBUTE,
+    )?;
+    let slots = [Value::Object(proto_element)];
+    let ctor_element = rt.alloc_native_function_with_slots(
+      element_call_without_new,
+      Some(element_construct),
+      "Element",
+      0,
+      &slots,
+    )?;
+    rt.define_data_property_str(
+      global,
+      "Element",
+      Value::Object(ctor_element),
+      global_var_attrs,
+    )?;
+    rt.define_data_property_str(
+      ctor_element,
+      "prototype",
+      Value::Object(proto_element),
+      ctor_link_attrs,
+    )?;
+    rt.define_data_property_str(
+      proto_element,
+      "constructor",
+      Value::Object(ctor_element),
+      ctor_link_attrs,
+    )?;
+    Ok(())
+  }
+
   pub fn install_event_target_bindings_vm_js(
     vm: &mut Vm,
     heap: &mut Heap,
@@ -1682,6 +4950,86 @@ pub mod window {
       proto_event_target,
       "constructor",
       Value::Object(ctor_event_target),
+      ctor_link_attrs,
+    )?;
+    Ok(())
+  }
+
+  pub fn install_html_collection_bindings_vm_js(
+    vm: &mut Vm,
+    heap: &mut Heap,
+    realm: &Realm,
+  ) -> Result<(), VmError> {
+    let mut rt = BindingsRuntime::new(vm, heap);
+    let global = realm.global_object();
+    rt.scope.push_root(Value::Object(global))?;
+
+    let key = rt.property_key("HTMLCollection")?;
+    if rt
+      .scope
+      .heap()
+      .object_get_own_property(global, &key)?
+      .is_some()
+    {
+      return Ok(());
+    }
+
+    let global_var_attrs = DataPropertyAttributes::new(true, false, true);
+    let ctor_link_attrs = DataPropertyAttributes::new(false, false, false);
+
+    let proto_h_t_m_l_collection = rt.alloc_object()?;
+    let func = rt.alloc_native_function(h_t_m_l_collection_item, None, "item", 1)?;
+    rt.define_data_property_str(
+      proto_h_t_m_l_collection,
+      "item",
+      Value::Object(func),
+      DataPropertyAttributes::METHOD,
+    )?;
+    let func = rt.alloc_native_function(h_t_m_l_collection_named_item, None, "namedItem", 1)?;
+    rt.define_data_property_str(
+      proto_h_t_m_l_collection,
+      "namedItem",
+      Value::Object(func),
+      DataPropertyAttributes::METHOD,
+    )?;
+    let get = rt.alloc_native_function(
+      h_t_m_l_collection_get_attribute_length,
+      None,
+      "get length",
+      0,
+    )?;
+    let set = Value::Undefined;
+    rt.define_accessor_property_str(
+      proto_h_t_m_l_collection,
+      "length",
+      Value::Object(get),
+      set,
+      AccessorPropertyAttributes::ATTRIBUTE,
+    )?;
+    let slots = [Value::Object(proto_h_t_m_l_collection)];
+    let ctor_h_t_m_l_collection = rt.alloc_native_function_with_slots(
+      h_t_m_l_collection_call_without_new,
+      Some(h_t_m_l_collection_construct),
+      "HTMLCollection",
+      0,
+      &slots,
+    )?;
+    rt.define_data_property_str(
+      global,
+      "HTMLCollection",
+      Value::Object(ctor_h_t_m_l_collection),
+      global_var_attrs,
+    )?;
+    rt.define_data_property_str(
+      ctor_h_t_m_l_collection,
+      "prototype",
+      Value::Object(proto_h_t_m_l_collection),
+      ctor_link_attrs,
+    )?;
+    rt.define_data_property_str(
+      proto_h_t_m_l_collection,
+      "constructor",
+      Value::Object(ctor_h_t_m_l_collection),
       ctor_link_attrs,
     )?;
     Ok(())
@@ -1772,6 +5120,137 @@ pub mod window {
       rt.set_prototype(proto_node, Some(parent_proto))?;
     }
 
+    let func = rt.alloc_native_function(node_append_child, None, "appendChild", 1)?;
+    rt.define_data_property_str(
+      proto_node,
+      "appendChild",
+      Value::Object(func),
+      DataPropertyAttributes::METHOD,
+    )?;
+    let func = rt.alloc_native_function(node_clone_node, None, "cloneNode", 0)?;
+    rt.define_data_property_str(
+      proto_node,
+      "cloneNode",
+      Value::Object(func),
+      DataPropertyAttributes::METHOD,
+    )?;
+    let func = rt.alloc_native_function(node_insert_before, None, "insertBefore", 2)?;
+    rt.define_data_property_str(
+      proto_node,
+      "insertBefore",
+      Value::Object(func),
+      DataPropertyAttributes::METHOD,
+    )?;
+    let func = rt.alloc_native_function(node_remove_child, None, "removeChild", 1)?;
+    rt.define_data_property_str(
+      proto_node,
+      "removeChild",
+      Value::Object(func),
+      DataPropertyAttributes::METHOD,
+    )?;
+    let func = rt.alloc_native_function(node_replace_child, None, "replaceChild", 2)?;
+    rt.define_data_property_str(
+      proto_node,
+      "replaceChild",
+      Value::Object(func),
+      DataPropertyAttributes::METHOD,
+    )?;
+    let get =
+      rt.alloc_native_function(node_get_attribute_child_nodes, None, "get childNodes", 0)?;
+    let set = Value::Undefined;
+    rt.define_accessor_property_str(
+      proto_node,
+      "childNodes",
+      Value::Object(get),
+      set,
+      AccessorPropertyAttributes::ATTRIBUTE,
+    )?;
+    let get =
+      rt.alloc_native_function(node_get_attribute_first_child, None, "get firstChild", 0)?;
+    let set = Value::Undefined;
+    rt.define_accessor_property_str(
+      proto_node,
+      "firstChild",
+      Value::Object(get),
+      set,
+      AccessorPropertyAttributes::ATTRIBUTE,
+    )?;
+    let get = rt.alloc_native_function(node_get_attribute_last_child, None, "get lastChild", 0)?;
+    let set = Value::Undefined;
+    rt.define_accessor_property_str(
+      proto_node,
+      "lastChild",
+      Value::Object(get),
+      set,
+      AccessorPropertyAttributes::ATTRIBUTE,
+    )?;
+    let get =
+      rt.alloc_native_function(node_get_attribute_next_sibling, None, "get nextSibling", 0)?;
+    let set = Value::Undefined;
+    rt.define_accessor_property_str(
+      proto_node,
+      "nextSibling",
+      Value::Object(get),
+      set,
+      AccessorPropertyAttributes::ATTRIBUTE,
+    )?;
+    let get = rt.alloc_native_function(node_get_attribute_node_name, None, "get nodeName", 0)?;
+    let set = Value::Undefined;
+    rt.define_accessor_property_str(
+      proto_node,
+      "nodeName",
+      Value::Object(get),
+      set,
+      AccessorPropertyAttributes::ATTRIBUTE,
+    )?;
+    let get = rt.alloc_native_function(node_get_attribute_node_type, None, "get nodeType", 0)?;
+    let set = Value::Undefined;
+    rt.define_accessor_property_str(
+      proto_node,
+      "nodeType",
+      Value::Object(get),
+      set,
+      AccessorPropertyAttributes::ATTRIBUTE,
+    )?;
+    let get =
+      rt.alloc_native_function(node_get_attribute_parent_node, None, "get parentNode", 0)?;
+    let set = Value::Undefined;
+    rt.define_accessor_property_str(
+      proto_node,
+      "parentNode",
+      Value::Object(get),
+      set,
+      AccessorPropertyAttributes::ATTRIBUTE,
+    )?;
+    let get = rt.alloc_native_function(
+      node_get_attribute_previous_sibling,
+      None,
+      "get previousSibling",
+      0,
+    )?;
+    let set = Value::Undefined;
+    rt.define_accessor_property_str(
+      proto_node,
+      "previousSibling",
+      Value::Object(get),
+      set,
+      AccessorPropertyAttributes::ATTRIBUTE,
+    )?;
+    let get =
+      rt.alloc_native_function(node_get_attribute_text_content, None, "get textContent", 0)?;
+    let set = Value::Object(rt.alloc_native_function(
+      node_set_attribute_text_content,
+      None,
+      "set textContent",
+      1,
+    )?);
+    rt.define_accessor_property_str(
+      proto_node,
+      "textContent",
+      Value::Object(get),
+      set,
+      AccessorPropertyAttributes::ATTRIBUTE,
+    )?;
     let slots = [
       Value::Object(proto_node),
       Value::Number(4200005633u64 as f64),
@@ -2011,6 +5490,177 @@ pub mod window {
       "TEXT_NODE",
       Value::Number(3.0),
       DataPropertyAttributes::CONST,
+    )?;
+    Ok(())
+  }
+
+  pub fn install_node_list_bindings_vm_js(
+    vm: &mut Vm,
+    heap: &mut Heap,
+    realm: &Realm,
+  ) -> Result<(), VmError> {
+    let mut rt = BindingsRuntime::new(vm, heap);
+    let global = realm.global_object();
+    rt.scope.push_root(Value::Object(global))?;
+
+    let key = rt.property_key("NodeList")?;
+    if rt
+      .scope
+      .heap()
+      .object_get_own_property(global, &key)?
+      .is_some()
+    {
+      return Ok(());
+    }
+
+    let global_var_attrs = DataPropertyAttributes::new(true, false, true);
+    let ctor_link_attrs = DataPropertyAttributes::new(false, false, false);
+
+    let proto_node_list = rt.alloc_object()?;
+    let func = rt.alloc_native_function(node_list_entries, None, "entries", 0)?;
+    rt.define_data_property_str(
+      proto_node_list,
+      "entries",
+      Value::Object(func),
+      DataPropertyAttributes::METHOD,
+    )?;
+    let func = rt.alloc_native_function(node_list_for_each, None, "forEach", 1)?;
+    rt.define_data_property_str(
+      proto_node_list,
+      "forEach",
+      Value::Object(func),
+      DataPropertyAttributes::METHOD,
+    )?;
+    let func = rt.alloc_native_function(node_list_item, None, "item", 1)?;
+    rt.define_data_property_str(
+      proto_node_list,
+      "item",
+      Value::Object(func),
+      DataPropertyAttributes::METHOD,
+    )?;
+    let func = rt.alloc_native_function(node_list_keys, None, "keys", 0)?;
+    rt.define_data_property_str(
+      proto_node_list,
+      "keys",
+      Value::Object(func),
+      DataPropertyAttributes::METHOD,
+    )?;
+    let func = rt.alloc_native_function(node_list_values, None, "values", 0)?;
+    rt.define_data_property_str(
+      proto_node_list,
+      "values",
+      Value::Object(func),
+      DataPropertyAttributes::METHOD,
+    )?;
+    let iterator_key = vm_js::PropertyKey::from_symbol(realm.well_known_symbols().iterator);
+    rt.define_data_property(
+      proto_node_list,
+      iterator_key,
+      Value::Object(func),
+      DataPropertyAttributes::METHOD,
+    )?;
+    let get = rt.alloc_native_function(node_list_get_attribute_length, None, "get length", 0)?;
+    let set = Value::Undefined;
+    rt.define_accessor_property_str(
+      proto_node_list,
+      "length",
+      Value::Object(get),
+      set,
+      AccessorPropertyAttributes::ATTRIBUTE,
+    )?;
+    let slots = [Value::Object(proto_node_list)];
+    let ctor_node_list = rt.alloc_native_function_with_slots(
+      node_list_call_without_new,
+      Some(node_list_construct),
+      "NodeList",
+      0,
+      &slots,
+    )?;
+    rt.define_data_property_str(
+      global,
+      "NodeList",
+      Value::Object(ctor_node_list),
+      global_var_attrs,
+    )?;
+    rt.define_data_property_str(
+      ctor_node_list,
+      "prototype",
+      Value::Object(proto_node_list),
+      ctor_link_attrs,
+    )?;
+    rt.define_data_property_str(
+      proto_node_list,
+      "constructor",
+      Value::Object(ctor_node_list),
+      ctor_link_attrs,
+    )?;
+    Ok(())
+  }
+
+  pub fn install_text_bindings_vm_js(
+    vm: &mut Vm,
+    heap: &mut Heap,
+    realm: &Realm,
+  ) -> Result<(), VmError> {
+    let mut rt = BindingsRuntime::new(vm, heap);
+    let global = realm.global_object();
+    rt.scope.push_root(Value::Object(global))?;
+
+    let key = rt.property_key("Text")?;
+    if rt
+      .scope
+      .heap()
+      .object_get_own_property(global, &key)?
+      .is_some()
+    {
+      return Ok(());
+    }
+
+    let global_var_attrs = DataPropertyAttributes::new(true, false, true);
+    let ctor_link_attrs = DataPropertyAttributes::new(false, false, false);
+
+    let proto_text = rt.alloc_object()?;
+    let parent_proto = {
+      let ctor_key = rt.property_key("CharacterData")?;
+      let ctor_value = rt
+        .scope
+        .heap()
+        .object_get_own_data_property_value(global, &ctor_key)?
+        .unwrap_or(Value::Undefined);
+      if let Value::Object(ctor_obj) = ctor_value {
+        let proto_key = rt.property_key("prototype")?;
+        match rt.vm.get(&mut rt.scope, ctor_obj, proto_key)? {
+          Value::Object(obj) => Some(obj),
+          _ => None,
+        }
+      } else {
+        None
+      }
+    };
+    if let Some(parent_proto) = parent_proto {
+      rt.set_prototype(proto_text, Some(parent_proto))?;
+    }
+
+    let slots = [Value::Object(proto_text)];
+    let ctor_text = rt.alloc_native_function_with_slots(
+      text_call_without_new,
+      Some(text_construct),
+      "Text",
+      0,
+      &slots,
+    )?;
+    rt.define_data_property_str(global, "Text", Value::Object(ctor_text), global_var_attrs)?;
+    rt.define_data_property_str(
+      ctor_text,
+      "prototype",
+      Value::Object(proto_text),
+      ctor_link_attrs,
+    )?;
+    rt.define_data_property_str(
+      proto_text,
+      "constructor",
+      Value::Object(ctor_text),
+      ctor_link_attrs,
     )?;
     Ok(())
   }
@@ -2360,8 +6010,16 @@ pub mod window {
     heap: &mut Heap,
     realm: &Realm,
   ) -> Result<(), VmError> {
+    install_character_data_bindings_vm_js(vm, heap, realm)?;
+    install_dom_token_list_bindings_vm_js(vm, heap, realm)?;
+    install_document_bindings_vm_js(vm, heap, realm)?;
+    install_document_fragment_bindings_vm_js(vm, heap, realm)?;
+    install_element_bindings_vm_js(vm, heap, realm)?;
     install_event_target_bindings_vm_js(vm, heap, realm)?;
+    install_html_collection_bindings_vm_js(vm, heap, realm)?;
     install_node_bindings_vm_js(vm, heap, realm)?;
+    install_node_list_bindings_vm_js(vm, heap, realm)?;
+    install_text_bindings_vm_js(vm, heap, realm)?;
     install_url_bindings_vm_js(vm, heap, realm)?;
     install_url_search_params_bindings_vm_js(vm, heap, realm)?;
     install_window_ops_bindings_vm_js(vm, heap, realm)?;
@@ -2384,7 +6042,7 @@ pub mod worker {
     hooks: &mut dyn VmHostHooks,
     value: Value,
   ) -> Result<Value, VmError> {
-    let _ = (host, hooks);
+    let _ = (&mut *host, &mut *hooks);
     if matches!(value, Value::Undefined | Value::Null) {
       let obj = rt.alloc_object()?;
       return Ok(Value::Object(obj));
@@ -2456,7 +6114,7 @@ pub mod worker {
     hooks: &mut dyn VmHostHooks,
     value: Value,
   ) -> Result<Value, VmError> {
-    let _ = (host, hooks);
+    let _ = (&mut *host, &mut *hooks);
     if matches!(value, Value::Undefined | Value::Null) {
       let obj = rt.alloc_object()?;
       return Ok(Value::Object(obj));
@@ -3985,8 +7643,16 @@ pub mod worker {
   }
 }
 
+pub use window::install_character_data_bindings_vm_js;
+pub use window::install_document_bindings_vm_js;
+pub use window::install_document_fragment_bindings_vm_js;
+pub use window::install_dom_token_list_bindings_vm_js;
+pub use window::install_element_bindings_vm_js;
 pub use window::install_event_target_bindings_vm_js;
+pub use window::install_html_collection_bindings_vm_js;
 pub use window::install_node_bindings_vm_js;
+pub use window::install_node_list_bindings_vm_js;
+pub use window::install_text_bindings_vm_js;
 pub use window::install_url_bindings_vm_js;
 pub use window::install_url_search_params_bindings_vm_js;
 pub use window::install_window_bindings_vm_js;

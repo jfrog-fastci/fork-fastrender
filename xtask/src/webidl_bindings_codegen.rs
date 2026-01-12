@@ -721,12 +721,7 @@ fn window_parse_interface_entry(
           iface.name, member.raw
         )
       })?;
-      let InterfaceMember::Operation {
-        name: Some(name),
-        special: None,
-        ..
-      } = &parsed
-      else {
+      let InterfaceMember::Operation { name: Some(name), .. } = &parsed else {
         continue;
       };
       if name == op_name {
@@ -3291,7 +3286,7 @@ fn write_dictionary_converter_vmjs(
   out.push_str(&format!(
     "#[allow(dead_code)]\nfn {fn_name}(\n  rt: &mut BindingsRuntime<'_>,\n  host: &mut dyn VmHost,\n  hooks: &mut dyn VmHostHooks,\n  value: Value,\n) -> Result<Value, VmError>\n{{\n",
   ));
-  out.push_str("  let _ = (host, hooks);\n");
+  out.push_str("  let _ = (&mut *host, &mut *hooks);\n");
   out.push_str("  if matches!(value, Value::Undefined | Value::Null) {\n");
   out.push_str("    let obj = rt.alloc_object()?;\n");
   out.push_str("    return Ok(Value::Object(obj));\n");

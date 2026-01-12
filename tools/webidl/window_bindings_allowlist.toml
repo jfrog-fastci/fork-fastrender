@@ -18,8 +18,83 @@ operations = ["addEventListener", "removeEventListener", "dispatchEvent"]
 [[interface]]
 name = "Node"
 constructors = false
+attributes = [
+  "nodeType",
+  "nodeName",
+  "parentNode",
+  "childNodes",
+  "firstChild",
+  "lastChild",
+  "nextSibling",
+  "previousSibling",
+  "textContent",
+]
+operations = ["appendChild", "insertBefore", "removeChild", "replaceChild", "cloneNode"]
+
+[[interface]]
+name = "CharacterData"
+constructors = false
 attributes = []
 operations = []
+
+[[interface]]
+name = "Document"
+constructors = false
+attributes = ["documentElement", "body", "head"]
+operations = [
+  "getElementById",
+  "getElementsByClassName",
+  "getElementsByTagName",
+  "querySelector",
+  "querySelectorAll",
+  "createElement",
+  "createTextNode",
+  "createDocumentFragment",
+]
+
+[[interface]]
+name = "DocumentFragment"
+constructors = false
+attributes = []
+operations = []
+
+[[interface]]
+name = "Element"
+constructors = false
+attributes = ["id", "className", "classList", "tagName", "children"]
+operations = [
+  "getAttribute",
+  "setAttribute",
+  "removeAttribute",
+  "matches",
+  "closest",
+  "querySelector",
+  "querySelectorAll",
+]
+
+[[interface]]
+name = "Text"
+constructors = false
+attributes = []
+operations = []
+
+[[interface]]
+name = "NodeList"
+constructors = false
+attributes = ["length"]
+operations = ["item"]
+
+[[interface]]
+name = "HTMLCollection"
+constructors = false
+attributes = ["length"]
+operations = ["item", "namedItem"]
+
+[[interface]]
+name = "DOMTokenList"
+constructors = false
+attributes = ["value", "length"]
+operations = ["add", "remove", "toggle", "contains", "replace", "item"]
 
 [[interface]]
 name = "URL"
@@ -37,5 +112,5 @@ operations = ["append", "delete", "get", "getAll", "has", "set"]
 [[interface]]
 name = "Window"
 constructors = false
-attributes = []
+attributes = ["document"]
 operations = ["alert", "setTimeout", "setInterval", "clearTimeout", "clearInterval", "queueMicrotask"]
