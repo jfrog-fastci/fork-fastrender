@@ -261,6 +261,9 @@ pub(crate) struct WindowRealmUserData {
   /// Cached JS `document` object for rooting event listener callbacks and mapping
   /// `EventTargetId::Document` back into JS.
   document_obj: Option<GcObject>,
+  /// Cached JS `location` object so embedders can repair `location.href` when a navigation is
+  /// canceled (for example by a `beforeunload` handler).
+  location_obj: Option<GcObject>,
   console_counts: HashMap<String, u32>,
   console_timers: HashMap<String, Duration>,
 }
@@ -279,6 +282,7 @@ impl std::fmt::Debug for WindowRealmUserData {
       .field("crypto_rng_state", &self.crypto_rng_state)
       .field("has_window_obj", &self.window_obj.is_some())
       .field("has_document_obj", &self.document_obj.is_some())
+      .field("has_location_obj", &self.location_obj.is_some())
       .finish()
   }
 }
@@ -309,6 +313,7 @@ impl WindowRealmUserData {
       events_dom_fallback: dom2::Document::new(QuirksMode::NoQuirks),
       window_obj: None,
       document_obj: None,
+      location_obj: None,
       console_counts: HashMap::new(),
       console_timers: HashMap::new(),
     }
@@ -499,8 +504,8 @@ impl WindowRealm {
     // realm-owned module graph allocation.
     //
     // `vm-js` module graphs store persistent GC roots (module environments/namespaces, cached
-    // `import.meta`, and top-level await evaluation state). Dropping a graph without tearing it
-    // down leaks those roots when the heap is reused.
+    // `import.meta`, async evaluation state, etc). Dropping a graph without tearing it down leaks
+    // those roots when the heap is reused and can trigger `vm-js` debug assertions.
     let module_graph = self
       .runtime
       .vm
@@ -609,6 +614,34 @@ impl WindowRealm {
       .vm
       .user_data_mut::<WindowRealmUserData>()
       .and_then(|data| data.pending_navigation.take())
+  }
+
+  /// Restore `location.href` to the current document URL.
+  ///
+  /// `window.location` APIs update the location object's internal href slot before the embedding
+  /// commits navigation. When a navigation is canceled (for example by a `beforeunload` handler),
+  /// embeddings should call this to keep `location.href` consistent with the still-active document.
+  pub fn restore_location_url_to_document_url(&mut self) -> Result<(), VmError> {
+    let (document_url, location_obj) = {
+      let Some(data) = self.runtime.vm.user_data_mut::<WindowRealmUserData>() else {
+        return Ok(());
+      };
+      (data.document_url.clone(), data.location_obj)
+    };
+    let Some(location_obj) = location_obj else {
+      return Ok(());
+    };
+
+    let (_vm, _realm, heap) = self.runtime.vm_realm_and_heap_mut();
+    let mut scope = heap.scope();
+    scope.push_root(Value::Object(location_obj))?;
+
+    let url_s = scope.alloc_string(&document_url)?;
+    scope.push_root(Value::String(url_s))?;
+
+    let location_url_key = alloc_key(&mut scope, LOCATION_URL_KEY)?;
+    scope.define_property(location_obj, location_url_key, data_desc(Value::String(url_s)))?;
+    Ok(())
   }
 
   /// Execute a classic script in this window realm.
@@ -9966,20 +9999,53 @@ fn event_target_dispatch_event_native(
 
     match call_result {
       Ok(ret) => {
-        // HTML EventHandler semantics:
-        // - returning `false` cancels most events
-        // - `window.onerror` returning `true` cancels the error.
-        let should_cancel = match cancel_on {
-          EventHandlerCancelOnReturn::False => matches!(ret, Value::Bool(false)),
-          EventHandlerCancelOnReturn::True => matches!(ret, Value::Bool(true)),
-        };
-        if should_cancel {
-          rust_event.prevent_default();
+        // `beforeunload`: HTML treats a non-empty string return value as a cancellation signal.
+        //
+        // We support the common cancellation patterns:
+        // - `return "..."` (sets `event.returnValue`)
+        // - `event.returnValue = "..."` (checked after handler runs)
+        // - `event.preventDefault()` (already handled via Event.prototype.preventDefault)
+        if rust_event.type_ == "beforeunload" {
+          if let Value::String(s) = ret {
+            let raw = scope.heap().get_string(s)?.to_utf8_lossy();
+            if !raw.is_empty() {
+              scope.push_root(Value::String(s))?;
+              let return_value_key = alloc_key(scope, "returnValue")?;
+              scope.define_property(event_obj, return_value_key, data_desc(Value::String(s)))?;
+              rust_event.prevent_default();
+            }
+          }
+        } else {
+          // HTML EventHandler semantics:
+          // - returning `false` cancels most events
+          // - `window.onerror` returning `true` cancels the error.
+          let should_cancel = match cancel_on {
+            EventHandlerCancelOnReturn::False => matches!(ret, Value::Bool(false)),
+            EventHandlerCancelOnReturn::True => matches!(ret, Value::Bool(true)),
+          };
+          if should_cancel {
+            rust_event.prevent_default();
+          }
         }
       }
       Err(err) => {
         // Per web platform behavior, exceptions from event handlers should not abort `dispatchEvent`.
         invoker.report_listener_exception(err);
+      }
+    }
+
+    // `beforeunload`: cancellation can also be signaled by assigning to `event.returnValue` even if
+    // the handler returns undefined.
+    if rust_event.type_ == "beforeunload" {
+      let return_value_key = alloc_key(scope, "returnValue")?;
+      if let Some(Value::String(s)) = scope
+        .heap()
+        .object_get_own_data_property_value(event_obj, &return_value_key)?
+      {
+        let rv = scope.heap().get_string(s)?.to_utf8_lossy();
+        if !rv.is_empty() {
+          rust_event.prevent_default();
+        }
       }
     }
 
@@ -19933,6 +19999,7 @@ fn init_window_globals(
   if let Some(user_data) = vm.user_data_mut::<WindowRealmUserData>() {
     user_data.window_obj = Some(global);
     user_data.document_obj = Some(document_obj);
+    user_data.location_obj = Some(location_obj);
   }
 
   // --- Web Storage (localStorage / sessionStorage) ---------------------------

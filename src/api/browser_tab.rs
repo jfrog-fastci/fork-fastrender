@@ -144,6 +144,19 @@ pub trait BrowserTabJsExecutor {
     None
   }
 
+  /// Dispatch a `beforeunload` event on the current document and return whether navigation should
+  /// proceed.
+  ///
+  /// The default implementation always allows navigation. JS-capable executors (e.g. the `vm-js`
+  /// executor) should override this so scripts can cancel navigations via `beforeunload`.
+  fn dispatch_beforeunload_event(
+    &mut self,
+    _document: &mut BrowserDocumentDom2,
+    _event_loop: &mut EventLoop<BrowserTabHost>,
+  ) -> Result<bool> {
+    Ok(true)
+  }
+
   /// Notify the executor that the document base URL (`Document.baseURI`) has changed.
   ///
   /// Hosts call this during streaming HTML parsing when a `<base href>` element is encountered so
@@ -2895,9 +2908,12 @@ impl BrowserTabHost {
             ScriptType::Unknown => Ok(()),
           });
         if let Some(req) = executor.take_navigation_request() {
-          *pending_navigation = Some(req);
-          *pending_navigation_deadline =
-            crate::render_control::root_deadline().filter(|deadline| deadline.is_enabled());
+          let should_navigate = executor.dispatch_beforeunload_event(document.as_mut(), self.event_loop)?;
+          if should_navigate {
+            *pending_navigation = Some(req);
+            *pending_navigation_deadline =
+              crate::render_control::root_deadline().filter(|deadline| deadline.is_enabled());
+          }
         }
         result
       }
@@ -3586,9 +3602,15 @@ impl DocumentLifecycleHost for BrowserTabHost {
       }
     };
     if let Some(req) = self.executor.take_navigation_request() {
-      self.pending_navigation = Some(req);
-      self.pending_navigation_deadline =
-        crate::render_control::root_deadline().filter(|deadline| deadline.is_enabled());
+      let should_navigate = {
+        let (executor, document) = (&mut self.executor, &mut self.document);
+        executor.dispatch_beforeunload_event(document.as_mut(), event_loop)?
+      };
+      if should_navigate {
+        self.pending_navigation = Some(req);
+        self.pending_navigation_deadline =
+          crate::render_control::root_deadline().filter(|deadline| deadline.is_enabled());
+      }
     }
     match result {
       Ok(()) => {
@@ -3807,7 +3829,7 @@ impl BrowserTab {
     let base_url =
       tab.parse_html_streaming_and_schedule_scripts(html, Some(document_url), &options)?;
     if let Some(req) = tab.host.pending_navigation.take() {
-      tab.navigate_to_url_with_replace(&req.url, options.clone(), req.replace)?;
+      tab.navigate_to_url_with_replace_after_beforeunload(&req.url, options.clone(), req.replace)?;
     } else {
       let renderer = tab.host.document.renderer_mut();
       match base_url {
@@ -4051,7 +4073,7 @@ impl BrowserTab {
     }
     let base_url = tab.parse_html_streaming_and_schedule_scripts(html, None, &parse_options)?;
     if let Some(req) = tab.host.pending_navigation.take() {
-      tab.navigate_to_url_with_replace(&req.url, options_for_parse.clone(), req.replace)?;
+      tab.navigate_to_url_with_replace_after_beforeunload(&req.url, options_for_parse.clone(), req.replace)?;
     } else if tab.host.streaming_parse.is_none() {
       let renderer = tab.host.document.renderer_mut();
       match base_url {
@@ -4263,7 +4285,7 @@ impl BrowserTab {
     let base_url =
       tab.parse_html_streaming_and_schedule_scripts(html, Some(document_url), &parse_options)?;
     if let Some(req) = tab.host.pending_navigation.take() {
-      tab.navigate_to_url_with_replace(&req.url, options_for_parse.clone(), req.replace)?;
+      tab.navigate_to_url_with_replace_after_beforeunload(&req.url, options_for_parse.clone(), req.replace)?;
     } else {
       let renderer = tab.host.document.renderer_mut();
       match base_url {
@@ -4363,7 +4385,7 @@ impl BrowserTab {
     }
     let base_url = tab.parse_html_streaming_and_schedule_scripts(html, None, &parse_options)?;
     if let Some(req) = tab.host.pending_navigation.take() {
-      tab.navigate_to_url_with_replace(&req.url, options_for_parse.clone(), req.replace)?;
+      tab.navigate_to_url_with_replace_after_beforeunload(&req.url, options_for_parse.clone(), req.replace)?;
     } else {
       let renderer = tab.host.document.renderer_mut();
       match base_url {
@@ -4470,6 +4492,46 @@ impl BrowserTab {
     let _deadline_guard = deadline
       .as_ref()
       .map(|deadline| DeadlineGuard::install(Some(deadline)));
+
+    // `beforeunload` can cancel navigations; only proceed if not canceled.
+    let should_navigate = {
+      let (executor, document) = (&mut self.host.executor, &mut self.host.document);
+      executor.dispatch_beforeunload_event(document.as_mut(), &mut self.event_loop)?
+    };
+    if !should_navigate {
+      return Ok(());
+    }
+
+    // Navigation proceeds: fire the old document's teardown events before replacing the realm/DOM.
+    {
+      let mut event = Event::new(
+        "pagehide",
+        EventInit {
+          bubbles: false,
+          cancelable: false,
+          composed: false,
+        },
+      );
+      event.is_trusted = true;
+      self
+        .host
+        .dispatch_lifecycle_event(&mut self.event_loop, EventTargetId::Window, event)?;
+    }
+    {
+      let mut event = Event::new(
+        "unload",
+        EventInit {
+          bubbles: false,
+          cancelable: false,
+          composed: false,
+        },
+      );
+      event.is_trusted = true;
+      self
+        .host
+        .dispatch_lifecycle_event(&mut self.event_loop, EventTargetId::Window, event)?;
+    }
+
     self
       .host
       .document
@@ -4496,8 +4558,24 @@ impl BrowserTab {
     parse_options.cancel_callback = None;
     let base_url = self.parse_html_streaming_and_schedule_scripts(html, None, &parse_options)?;
     if let Some(req) = self.host.pending_navigation.take() {
-      self.navigate_to_url_with_replace(&req.url, options_for_parse.clone(), req.replace)?;
+      self.navigate_to_url_with_replace_after_beforeunload(&req.url, options_for_parse.clone(), req.replace)?;
       return Ok(());
+    }
+
+    // Navigation committed: fire `pageshow` before DOMContentLoaded/load tasks run.
+    {
+      let mut event = Event::new(
+        "pageshow",
+        EventInit {
+          bubbles: false,
+          cancelable: false,
+          composed: false,
+        },
+      );
+      event.is_trusted = true;
+      self
+        .host
+        .dispatch_lifecycle_event(&mut self.event_loop, EventTargetId::Window, event)?;
     }
 
     if self.host.streaming_parse.is_none() {
@@ -4521,7 +4599,26 @@ impl BrowserTab {
     &mut self,
     url: &str,
     options: RenderOptions,
+    replace: bool,
+  ) -> Result<()> {
+    self.navigate_to_url_with_replace_internal(url, options, replace, /*run_beforeunload=*/ true)
+  }
+
+  fn navigate_to_url_with_replace_after_beforeunload(
+    &mut self,
+    url: &str,
+    options: RenderOptions,
+    replace: bool,
+  ) -> Result<()> {
+    self.navigate_to_url_with_replace_internal(url, options, replace, /*run_beforeunload=*/ false)
+  }
+
+  fn navigate_to_url_with_replace_internal(
+    &mut self,
+    url: &str,
+    options: RenderOptions,
     mut replace: bool,
+    mut run_beforeunload: bool,
   ) -> Result<()> {
     // Navigations replace the current document; any pending frame is no longer relevant.
     self.pending_frame = None;
@@ -4604,6 +4701,46 @@ impl BrowserTab {
           (final_url, html, header_csp, document_referrer_policy)
         };
 
+      if run_beforeunload {
+        let should_navigate = {
+          let (executor, document) = (&mut self.host.executor, &mut self.host.document);
+          executor.dispatch_beforeunload_event(document.as_mut(), &mut self.event_loop)?
+        };
+        if !should_navigate {
+          return Ok(());
+        }
+      }
+
+      // Navigation proceeds: fire the old document's teardown events before we replace its DOM/realm.
+      {
+        let mut event = Event::new(
+          "pagehide",
+          EventInit {
+            bubbles: false,
+            cancelable: false,
+            composed: false,
+          },
+        );
+        event.is_trusted = true;
+        self
+          .host
+          .dispatch_lifecycle_event(&mut self.event_loop, EventTargetId::Window, event)?;
+      }
+      {
+        let mut event = Event::new(
+          "unload",
+          EventInit {
+            bubbles: false,
+            cancelable: false,
+            composed: false,
+          },
+        );
+        event.is_trusted = true;
+        self
+          .host
+          .dispatch_lifecycle_event(&mut self.event_loop, EventTargetId::Window, event)?;
+      }
+
       if replace {
         self.history.replace_current_url(final_url.clone());
       } else {
@@ -4648,7 +4785,26 @@ impl BrowserTab {
       if let Some(req) = self.host.pending_navigation.take() {
         target_url = req.url;
         replace = req.replace;
+        // `beforeunload` was dispatched when the navigation request was produced; do not re-dispatch
+        // it for the follow-up navigation.
+        run_beforeunload = false;
         continue;
+      }
+
+      // Navigation committed: fire `pageshow` before DOMContentLoaded/load tasks run.
+      {
+        let mut event = Event::new(
+          "pageshow",
+          EventInit {
+            bubbles: false,
+            cancelable: false,
+            composed: false,
+          },
+        );
+        event.is_trusted = true;
+        self
+          .host
+          .dispatch_lifecycle_event(&mut self.event_loop, EventTargetId::Window, event)?;
       }
 
       if self.host.streaming_parse.is_none() {
@@ -4684,7 +4840,7 @@ impl BrowserTab {
         .map(|deadline| DeadlineGuard::install(Some(deadline)))
     };
     let options = self.host.document.options().clone();
-    self.navigate_to_url_with_replace(&req.url, options, req.replace)?;
+    self.navigate_to_url_with_replace_after_beforeunload(&req.url, options, req.replace)?;
     Ok(true)
   }
 
@@ -10187,6 +10343,140 @@ html, body { margin: 0; padding: 0; }
     assert!(
       !tab.history.can_go_back(),
       "expected replace to not push history"
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn beforeunload_can_cancel_location_navigation_without_clearing_event_loop_work() -> Result<()> {
+    let page1_url = "https://example.com/page1.html";
+    let page2_url = "https://example.com/page2.html";
+    let page2_html = "<!doctype html><html><body><div id=page2></div></body></html>";
+    let page1_html = format!(
+      r#"<!doctype html><html><body>
+        <div id=page1></div>
+        <script>
+          window.onbeforeunload = () => "stay";
+          window.onpagehide = () => document.body.setAttribute("data-pagehide", "1");
+          window.onunload = () => document.body.setAttribute("data-unload", "1");
+          // Schedule work before attempting to navigate; this must still run if navigation is canceled.
+          setTimeout(() => {{
+            document.body.setAttribute("data-after", location.href);
+          }}, 0);
+          location.href = {page2_url:?};
+        </script>
+      </body></html>"#
+    );
+
+    let mut tab = BrowserTab::from_html_with_vmjs_executor("", RenderOptions::default())?;
+    tab.register_html_source(page1_url, page1_html);
+    tab.register_html_source(page2_url, page2_html);
+
+    tab.navigate_to_url(page1_url, RenderOptions::default())?;
+    tab.run_event_loop_until_idle(RunLimits::unbounded())?;
+
+    assert!(
+      tab.dom().get_element_by_id("page1").is_some(),
+      "expected navigation to remain on page1 after beforeunload cancellation"
+    );
+    assert!(
+      tab.dom().get_element_by_id("page2").is_none(),
+      "expected canceled navigation not to commit page2"
+    );
+
+    assert_eq!(
+      tab.history.len(),
+      1,
+      "expected canceled navigation not to push a history entry"
+    );
+    assert_eq!(
+      tab.history.current().map(|e| e.url.as_str()),
+      Some(page1_url),
+      "expected canceled navigation to keep the current history URL"
+    );
+
+    let dom = tab.dom();
+    let body = dom.body().expect("body should exist");
+    assert_eq!(
+      dom.get_attribute(body, "data-after").expect("get_attribute should succeed"),
+      Some(page1_url),
+      "expected location.href to be restored after canceling navigation"
+    );
+    assert_eq!(
+      dom.get_attribute(body, "data-pagehide").expect("get_attribute should succeed"),
+      None,
+      "expected pagehide not to fire when navigation is canceled"
+    );
+    assert_eq!(
+      dom.get_attribute(body, "data-unload").expect("get_attribute should succeed"),
+      None,
+      "expected unload not to fire when navigation is canceled"
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn navigation_lifecycle_events_fire_in_order_with_persisted_false() -> Result<()> {
+    let page1_url = "https://example.com/page1.html";
+    let page2_url = "https://example.com/page2.html";
+
+    let page1_html = format!(
+      r#"<!doctype html><html><body>
+        <div id=page1></div>
+        <script>
+          document.cookie = "log=;path=/";
+          function getLog() {{
+            const part = document.cookie.split("; ").find(p => p.startsWith("log="));
+            return part ? part.slice(4) : "";
+          }}
+          function append(s) {{
+            const cur = getLog();
+            document.cookie = "log=" + (cur ? (cur + ",") : "") + s + ";path=/";
+          }}
+          window.addEventListener("beforeunload", () => append("beforeunload"));
+          window.addEventListener("pagehide", (e) => append("pagehide:" + e.persisted));
+          window.addEventListener("unload", () => append("unload"));
+          location.href = {page2_url:?};
+        </script>
+      </body></html>"#
+    );
+
+    let page2_html = r#"<!doctype html><html><body>
+        <div id=page2></div>
+        <script>
+          function getLog() {
+            const part = document.cookie.split("; ").find(p => p.startsWith("log="));
+            return part ? part.slice(4) : "";
+          }
+          function append(s) {
+            const cur = getLog();
+            document.cookie = "log=" + (cur ? (cur + ",") : "") + s + ";path=/";
+          }
+          window.addEventListener("pageshow", (e) => append("pageshow:" + e.persisted));
+          document.addEventListener("DOMContentLoaded", () => append("DOMContentLoaded"));
+          window.addEventListener("load", () => {
+            append("load");
+            document.body.setAttribute("data-log", getLog());
+          });
+        </script>
+      </body></html>"#;
+
+    let mut tab = BrowserTab::from_html_with_vmjs_executor("", RenderOptions::default())?;
+    tab.register_html_source(page1_url, page1_html);
+    tab.register_html_source(page2_url, page2_html.to_string());
+
+    tab.navigate_to_url(page1_url, RenderOptions::default())?;
+    tab.run_event_loop_until_idle(RunLimits::unbounded())?;
+
+    assert!(
+      tab.dom().get_element_by_id("page2").is_some(),
+      "expected navigation to commit page2"
+    );
+    let dom = tab.dom();
+    let body = dom.body().expect("body should exist");
+    assert_eq!(
+      dom.get_attribute(body, "data-log").expect("get_attribute should succeed"),
+      Some("beforeunload,pagehide:false,unload,pageshow:false,DOMContentLoaded,load"),
     );
     Ok(())
   }

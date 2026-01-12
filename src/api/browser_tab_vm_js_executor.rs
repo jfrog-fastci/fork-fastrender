@@ -912,6 +912,81 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
       .and_then(WindowRealm::take_pending_navigation_request)
   }
 
+  fn dispatch_beforeunload_event(
+    &mut self,
+    document: &mut BrowserDocumentDom2,
+    event_loop: &mut crate::js::EventLoop<BrowserTabHost>,
+  ) -> Result<bool> {
+    let Some(realm) = self.realm.as_mut() else {
+      return Ok(true);
+    };
+
+    let diagnostics = self.diagnostics.clone();
+    let webidl_bindings_host = self.webidl_bindings_host;
+    let clock = event_loop.clock();
+
+    // Run `beforeunload` synchronously and return whether navigation should proceed.
+    //
+    // We treat `event.preventDefault()` and non-empty `event.returnValue` as cancellation signals.
+    // Additionally, `window.onbeforeunload = () => "..."` is supported via `EventTarget.dispatchEvent`
+    // EventHandler invocation.
+    let source = r#"(function(){
+      const e = new BeforeUnloadEvent("beforeunload", { cancelable: true });
+      dispatchEvent(e);
+      const rv = e.returnValue;
+      return e.defaultPrevented || (typeof rv === "string" && rv.length > 0);
+    })();"#;
+
+    update_time_bindings_clock(realm.heap(), clock).map_err(|err| Error::Other(err.to_string()))?;
+    realm.reset_interrupt();
+    let webidl_bindings_host = match webidl_bindings_host {
+      Some(mut host_ptr) => Some(unsafe { host_ptr.as_mut() }),
+      None => None,
+    };
+    let mut hooks = VmJsEventLoopHooks::<BrowserTabHost>::new_with_vm_host_and_window_realm(
+      document,
+      realm,
+      webidl_bindings_host,
+    );
+    hooks.set_event_loop(event_loop);
+    let source_text = Arc::new(SourceText::new("<beforeunload>", Arc::from(source)));
+    let result = realm.exec_script_source_with_host_and_hooks(document, &mut hooks, source_text);
+    if let Some(err) = hooks.finish(realm.heap_mut()) {
+      return Err(err);
+    }
+
+    // Discard any nested `window.location` navigation request produced by the handler: we're
+    // already in the middle of deciding whether the current navigation should proceed.
+    if realm.take_pending_navigation_request().is_some() {
+      realm.reset_interrupt();
+    }
+
+    let canceled = match result {
+      Ok(Value::Bool(canceled)) => canceled,
+      Ok(_) => false,
+      Err(err) => {
+        if vm_error_format::vm_error_is_js_exception(&err) {
+          if let Some(diag) = diagnostics.as_ref() {
+            Self::record_js_exception(diag, realm, err);
+          }
+          false
+        } else {
+          return Err(vm_error_format::vm_error_to_error(realm.heap_mut(), err));
+        }
+      }
+    };
+
+    if canceled {
+      // `window.location` updates the internal href slot before the navigation commits. Restore the
+      // current document URL so `location.href` remains consistent when navigation is canceled.
+      realm
+        .restore_location_url_to_document_url()
+        .map_err(|err| Error::Other(err.to_string()))?;
+    }
+
+    Ok(!canceled)
+  }
+
   fn dispatch_lifecycle_event(
     &mut self,
     target: EventTargetId,
@@ -933,14 +1008,42 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
     };
 
     let type_lit = serde_json::to_string(&event.type_).unwrap_or_else(|_| "\"\"".to_string());
-    let init_lit = serde_json::json!({
-      "bubbles": event.bubbles,
-      "cancelable": event.cancelable,
-      "composed": event.composed,
-    })
-    .to_string();
-    let source =
-      format!("(function(){{const e=new Event({type_lit},{init_lit});{dispatch_expr}}})();",);
+    let (ctor_name, init_lit) = match event.type_.as_str() {
+      "pagehide" | "pageshow" => (
+        "PageTransitionEvent",
+        serde_json::json!({
+          "bubbles": event.bubbles,
+          "cancelable": event.cancelable,
+          "composed": event.composed,
+          "persisted": false,
+        })
+        .to_string(),
+      ),
+      // `beforeunload` is primarily dispatched via `dispatch_beforeunload_event` so the host can
+      // observe cancellation. Still construct a `BeforeUnloadEvent` here so JS can inspect
+      // `event.returnValue` when `BrowserTabHost` dispatches it as a generic lifecycle event.
+      "beforeunload" => (
+        "BeforeUnloadEvent",
+        serde_json::json!({
+          "bubbles": event.bubbles,
+          "cancelable": event.cancelable,
+          "composed": event.composed,
+        })
+        .to_string(),
+      ),
+      _ => (
+        "Event",
+        serde_json::json!({
+          "bubbles": event.bubbles,
+          "cancelable": event.cancelable,
+          "composed": event.composed,
+        })
+        .to_string(),
+      ),
+    };
+    let source = format!(
+      "(function(){{const e=new {ctor_name}({type_lit},{init_lit});{dispatch_expr}}})();",
+    );
 
     let clock = event_loop.clock();
 
