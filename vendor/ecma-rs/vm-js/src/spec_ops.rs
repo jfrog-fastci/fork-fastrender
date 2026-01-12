@@ -923,7 +923,10 @@ pub fn this_bigint_value(scope: &mut Scope<'_>, value: Value) -> Result<GcBigInt
         None => scope.heap_mut().ensure_internal_bigint_data_symbol()?,
       };
       let marker_key = PropertyKey::from_symbol(marker_sym);
-      if let Some(Value::BigInt(b)) = scope.heap().object_get_own_data_property_value(obj, &marker_key)? {
+      if let Some(Value::BigInt(b)) = scope
+        .heap()
+        .object_get_own_data_property_value(obj, &marker_key)?
+      {
         scope.heap().get_bigint(b)?;
         return Ok(b);
       }
