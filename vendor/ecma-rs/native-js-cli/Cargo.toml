@@ -24,3 +24,4 @@ wait-timeout = { workspace = true }
 assert_cmd = { workspace = true }
 predicates = { workspace = true }
 tempfile = { workspace = true }
+runtime-native = { workspace = true }

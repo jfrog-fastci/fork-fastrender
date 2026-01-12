@@ -92,9 +92,18 @@ pub struct LinkOpts {
 
 impl Default for LinkOpts {
   fn default() -> Self {
+    // Prefer lld for reproducible linking when available, but fall back to the system linker.
+    //
+    // This keeps `native-js` usable on hosts that have `clang` but don't ship `ld.lld` in PATH
+    // (e.g. minimal CI images or distros that package lld separately).
+    let linker = if lld_fuse_arg().is_some() {
+      LinkerFlavor::Lld
+    } else {
+      LinkerFlavor::System
+    };
     Self {
       gc_sections: true,
-      linker: LinkerFlavor::default(),
+      linker,
       target: None,
       pie: false,
       debug: false,
