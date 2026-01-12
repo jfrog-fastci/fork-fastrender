@@ -2,10 +2,6 @@ use crate::dom::{is_valid_shadow_host_name, ShadowRootMode, HTML_NAMESPACE};
 
 use super::{DomError, Document, NodeId, NodeKind, SlotAssignmentMode};
 
-fn is_html_namespace(namespace: &str) -> bool {
-  namespace.is_empty() || namespace == HTML_NAMESPACE
-}
-
 fn node_is_element_like(kind: &NodeKind) -> bool {
   matches!(kind, NodeKind::Element { .. } | NodeKind::Slot { .. })
 }
