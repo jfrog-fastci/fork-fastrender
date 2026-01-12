@@ -5846,6 +5846,42 @@ fn document_create_document_fragment_native(
   get_or_create_node_wrapper(vm, scope, document_obj, Some(dom), node_id)
 }
 
+fn define_event_default_properties(scope: &mut Scope<'_>, obj: GcObject) -> Result<(), VmError> {
+  // WHATWG DOM: core Event attributes must exist from construction time (or `createEvent`), with
+  // default values until dispatch populates them.
+  let target_key = alloc_key(scope, "target")?;
+  scope.define_property(obj, target_key, data_desc(Value::Null))?;
+  // Legacy alias for `target` (still present on most browsers).
+  let src_element_key = alloc_key(scope, "srcElement")?;
+  scope.define_property(obj, src_element_key, data_desc(Value::Null))?;
+
+  let current_target_key = alloc_key(scope, "currentTarget")?;
+  scope.define_property(obj, current_target_key, data_desc(Value::Null))?;
+
+  let event_phase_key = alloc_key(scope, "eventPhase")?;
+  scope.define_property(obj, event_phase_key, data_desc(Value::Number(0.0)))?;
+
+  // `timeStamp` is defined at construction time. For MVP we use `0`.
+  let time_stamp_key = alloc_key(scope, "timeStamp")?;
+  scope.define_property(obj, time_stamp_key, data_desc(Value::Number(0.0)))?;
+
+  let is_trusted_key = alloc_key(scope, "isTrusted")?;
+  scope.define_property(obj, is_trusted_key, data_desc(Value::Bool(false)))?;
+
+  // Base dispatch-control flags, mutable via `preventDefault()` / propagation control.
+  let default_prevented_key = alloc_key(scope, "defaultPrevented")?;
+  scope.define_property(obj, default_prevented_key, data_desc(Value::Bool(false)))?;
+
+  let cancel_bubble_key = alloc_key(scope, "cancelBubble")?;
+  scope.define_property(obj, cancel_bubble_key, data_desc(Value::Bool(false)))?;
+
+  // Internal flag used by `stopImmediatePropagation()`.
+  let immediate_stop_key = alloc_key(scope, EVENT_IMMEDIATE_STOP_KEY)?;
+  scope.define_property(obj, immediate_stop_key, data_desc(Value::Bool(false)))?;
+
+  Ok(())
+}
+
 fn event_constructor_native(
   _vm: &mut Vm,
   _scope: &mut Scope<'_>,
@@ -5926,11 +5962,7 @@ fn event_constructor_impl(
   let composed_key = alloc_key(scope, "composed")?;
   scope.define_property(obj, composed_key, data_desc(Value::Bool(composed)))?;
 
-  let default_prevented_key = alloc_key(scope, "defaultPrevented")?;
-  scope.define_property(obj, default_prevented_key, data_desc(Value::Bool(false)))?;
-
-  let cancel_bubble_key = alloc_key(scope, "cancelBubble")?;
-  scope.define_property(obj, cancel_bubble_key, data_desc(Value::Bool(false)))?;
+  define_event_default_properties(scope, obj)?;
 
   Ok(Value::Object(obj))
 }
@@ -6026,11 +6058,7 @@ fn custom_event_constructor_impl(
   let composed_key = alloc_key(scope, "composed")?;
   scope.define_property(obj, composed_key, data_desc(Value::Bool(composed)))?;
 
-  let default_prevented_key = alloc_key(scope, "defaultPrevented")?;
-  scope.define_property(obj, default_prevented_key, data_desc(Value::Bool(false)))?;
-
-  let cancel_bubble_key = alloc_key(scope, "cancelBubble")?;
-  scope.define_property(obj, cancel_bubble_key, data_desc(Value::Bool(false)))?;
+  define_event_default_properties(scope, obj)?;
 
   let detail_key = alloc_key(scope, "detail")?;
   scope.define_property(obj, detail_key, data_desc(detail))?;
@@ -6170,11 +6198,7 @@ fn storage_event_constructor_native(
   let composed_key = alloc_key(scope, "composed")?;
   scope.define_property(obj, composed_key, data_desc(Value::Bool(composed)))?;
 
-  let default_prevented_key = alloc_key(scope, "defaultPrevented")?;
-  scope.define_property(obj, default_prevented_key, data_desc(Value::Bool(false)))?;
-
-  let cancel_bubble_key = alloc_key(scope, "cancelBubble")?;
-  scope.define_property(obj, cancel_bubble_key, data_desc(Value::Bool(false)))?;
+  define_event_default_properties(scope, obj)?;
 
   // StorageEvent fields.
   let key_key = alloc_key(scope, "key")?;
@@ -6285,10 +6309,7 @@ fn promise_rejection_event_constructor_impl(
   scope.define_property(obj, cancelable_key, data_desc(Value::Bool(cancelable)))?;
   scope.define_property(obj, composed_key, data_desc(Value::Bool(composed)))?;
 
-  let default_prevented_key = alloc_key(scope, "defaultPrevented")?;
-  scope.define_property(obj, default_prevented_key, data_desc(Value::Bool(false)))?;
-  let cancel_bubble_key = alloc_key(scope, "cancelBubble")?;
-  scope.define_property(obj, cancel_bubble_key, data_desc(Value::Bool(false)))?;
+  define_event_default_properties(scope, obj)?;
 
   scope.define_property(
     obj,
@@ -6426,11 +6447,7 @@ fn error_event_constructor_native(
   let composed_key = alloc_key(scope, "composed")?;
   scope.define_property(obj, composed_key, data_desc(Value::Bool(composed)))?;
 
-  let default_prevented_key = alloc_key(scope, "defaultPrevented")?;
-  scope.define_property(obj, default_prevented_key, data_desc(Value::Bool(false)))?;
-
-  let cancel_bubble_key = alloc_key(scope, "cancelBubble")?;
-  scope.define_property(obj, cancel_bubble_key, data_desc(Value::Bool(false)))?;
+  define_event_default_properties(scope, obj)?;
 
   let message_key = alloc_key(scope, "message")?;
   scope.define_property(obj, message_key, read_only_data_desc(Value::String(message)))?;
@@ -6538,11 +6555,7 @@ fn before_unload_event_constructor_native(
   let composed_key = alloc_key(scope, "composed")?;
   scope.define_property(obj, composed_key, data_desc(Value::Bool(composed)))?;
 
-  let default_prevented_key = alloc_key(scope, "defaultPrevented")?;
-  scope.define_property(obj, default_prevented_key, data_desc(Value::Bool(false)))?;
-
-  let cancel_bubble_key = alloc_key(scope, "cancelBubble")?;
-  scope.define_property(obj, cancel_bubble_key, data_desc(Value::Bool(false)))?;
+  define_event_default_properties(scope, obj)?;
 
   let return_value_key = alloc_key(scope, "returnValue")?;
   scope.define_property(
@@ -6634,11 +6647,7 @@ fn page_transition_event_constructor_native(
   let composed_key = alloc_key(scope, "composed")?;
   scope.define_property(obj, composed_key, data_desc(Value::Bool(composed)))?;
 
-  let default_prevented_key = alloc_key(scope, "defaultPrevented")?;
-  scope.define_property(obj, default_prevented_key, data_desc(Value::Bool(false)))?;
-
-  let cancel_bubble_key = alloc_key(scope, "cancelBubble")?;
-  scope.define_property(obj, cancel_bubble_key, data_desc(Value::Bool(false)))?;
+  define_event_default_properties(scope, obj)?;
 
   let persisted_key = alloc_key(scope, "persisted")?;
   scope.define_property(
@@ -8747,6 +8756,9 @@ impl<Host: WindowRealmHost + 'static> WindowRealmDomEventListenerInvoker<Host> {
       Self::js_value_for_target(vm, scope, window_obj, document_obj, dom, event.target)?;
     scope.define_property(event_obj, target_key, data_desc(target_v))?;
 
+    let src_element_key = alloc_key(scope, "srcElement")?;
+    scope.define_property(event_obj, src_element_key, data_desc(target_v))?;
+
     let current_target_key = alloc_key(scope, "currentTarget")?;
     let current_target_v = Self::js_value_for_target(
       vm,
@@ -9127,6 +9139,9 @@ impl<'a, 'hooks> VmJsDomEventInvoker<'a, 'hooks> {
     let target_key = alloc_key(scope, "target")?;
     let target_v = self.js_value_for_target(event.target)?;
     scope.define_property(self.event_obj, target_key, data_desc(target_v))?;
+
+    let src_element_key = alloc_key(scope, "srcElement")?;
+    scope.define_property(self.event_obj, src_element_key, data_desc(target_v))?;
 
     let current_target_key = alloc_key(scope, "currentTarget")?;
     let current_target_v = self.js_value_for_target(event.current_target)?;
@@ -9869,6 +9884,9 @@ fn event_target_dispatch_event_native(
     };
     scope.define_property(event_obj, target_key, data_desc(target_v))?;
 
+    let src_element_key = alloc_key(scope, "srcElement")?;
+    scope.define_property(event_obj, src_element_key, data_desc(target_v))?;
+
     let current_target_key = alloc_key(scope, "currentTarget")?;
     scope.define_property(event_obj, current_target_key, data_desc(Value::Null))?;
 
@@ -10199,11 +10217,7 @@ fn document_create_event_native(
   let composed_key = alloc_key(scope, "composed")?;
   scope.define_property(obj, composed_key, data_desc(Value::Bool(false)))?;
 
-  let default_prevented_key = alloc_key(scope, "defaultPrevented")?;
-  scope.define_property(obj, default_prevented_key, data_desc(Value::Bool(false)))?;
-
-  let cancel_bubble_key = alloc_key(scope, "cancelBubble")?;
-  scope.define_property(obj, cancel_bubble_key, data_desc(Value::Bool(false)))?;
+  define_event_default_properties(scope, obj)?;
 
   if matches!(kind, Kind::CustomEvent) {
     let detail_key = alloc_key(scope, "detail")?;
