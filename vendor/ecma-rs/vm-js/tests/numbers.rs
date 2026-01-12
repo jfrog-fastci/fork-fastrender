@@ -89,6 +89,14 @@ fn number_prototype_formatting_methods_work() -> Result<(), VmError> {
     Value::Bool(true)
   );
 
+  assert_eq!(rt.exec_script(r#"Number.prototype.valueOf()"#)?, Value::Number(0.0));
+
+  let s = rt.exec_script(r#"Number.prototype.toString()"#)?;
+  assert_eq!(as_utf8_lossy(&rt, s), "0");
+
+  let s = rt.exec_script(r#"Object.prototype.toString.call(Number.prototype)"#)?;
+  assert_eq!(as_utf8_lossy(&rt, s), "[object Number]");
+
   // Range errors / Type errors.
   let s = rt.exec_script(r#"try { (1).toString(1); } catch (e) { e.name }"#)?;
   assert_eq!(as_utf8_lossy(&rt, s), "RangeError");

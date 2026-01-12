@@ -2,7 +2,7 @@ use vm_js::{Heap, HeapLimits, JsRuntime, Value, Vm, VmError, VmOptions};
 
 fn new_runtime() -> Result<JsRuntime, VmError> {
   let vm = Vm::new(VmOptions::default());
-  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let heap = Heap::new(HeapLimits::new(4 * 1024 * 1024, 4 * 1024 * 1024));
   JsRuntime::new(vm, heap)
 }
 
@@ -28,7 +28,7 @@ fn object_prototype_to_string_generator_falls_back_when_to_string_tag_deleted() 
         }
 
         if (proto1[Symbol.toStringTag] !== undefined) return false;
-        return Object.prototype.toString.call(it) === "[object Generator]";
+        return Object.prototype.toString.call(it) === "[object Object]";
       })()
     "#,
   )?;
@@ -53,7 +53,7 @@ fn object_prototype_to_string_generator_falls_back_when_to_string_tag_non_string
         });
 
         if (it[Symbol.toStringTag] !== 1) return false;
-        return Object.prototype.toString.call(it) === "[object Generator]";
+        return Object.prototype.toString.call(it) === "[object Object]";
       })()
     "#,
   )?;

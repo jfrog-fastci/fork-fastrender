@@ -692,15 +692,7 @@ impl Intrinsics {
       "Function",
     )?;
     install_to_string_tag(scope, array_prototype, well_known_symbols.to_string_tag, "Array")?;
-    install_to_string_tag(scope, string_prototype, well_known_symbols.to_string_tag, "String")?;
     install_to_string_tag(scope, regexp_prototype, well_known_symbols.to_string_tag, "RegExp")?;
-    install_to_string_tag(scope, number_prototype, well_known_symbols.to_string_tag, "Number")?;
-    install_to_string_tag(
-      scope,
-      boolean_prototype,
-      well_known_symbols.to_string_tag,
-      "Boolean",
-    )?;
     install_to_string_tag(scope, bigint_prototype, well_known_symbols.to_string_tag, "BigInt")?;
     install_to_string_tag(scope, date_prototype, well_known_symbols.to_string_tag, "Date")?;
     install_to_string_tag(scope, symbol_prototype, well_known_symbols.to_string_tag, "Symbol")?;
@@ -752,6 +744,37 @@ impl Intrinsics {
     install_to_string_tag(scope, data_view_prototype, well_known_symbols.to_string_tag, "DataView")?;
     install_to_string_tag(scope, weak_map_prototype, well_known_symbols.to_string_tag, "WeakMap")?;
     install_to_string_tag(scope, weak_set_prototype, well_known_symbols.to_string_tag, "WeakSet")?;
+
+    {
+      let marker = scope.alloc_string("vm-js.internal.BooleanData")?;
+      scope.push_root(Value::String(marker))?;
+      let marker_sym = scope.heap_mut().symbol_for(marker)?;
+      scope.define_property(
+        boolean_prototype,
+        PropertyKey::from_symbol(marker_sym),
+        data_desc(Value::Bool(false), true, false, false),
+      )?;
+
+      let marker = scope.alloc_string("vm-js.internal.NumberData")?;
+      scope.push_root(Value::String(marker))?;
+      let marker_sym = scope.heap_mut().symbol_for(marker)?;
+      scope.define_property(
+        number_prototype,
+        PropertyKey::from_symbol(marker_sym),
+        data_desc(Value::Number(0.0), true, false, false),
+      )?;
+
+      let marker = scope.alloc_string("vm-js.internal.StringData")?;
+      scope.push_root(Value::String(marker))?;
+      let marker_sym = scope.heap_mut().symbol_for(marker)?;
+      let empty_string = scope.alloc_string("")?;
+      scope.push_root(Value::String(empty_string))?;
+      scope.define_property(
+        string_prototype,
+        PropertyKey::from_symbol(marker_sym),
+        data_desc(Value::String(empty_string), true, false, false),
+      )?;
+    }
 
     // --- Common property keys used throughout the intrinsic graph ---
     //

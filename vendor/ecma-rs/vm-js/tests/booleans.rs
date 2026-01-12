@@ -29,8 +29,16 @@ fn boolean_prototype_to_string_and_value_of_work() -> Result<(), VmError> {
     Value::Bool(false)
   );
 
+  assert_eq!(rt.exec_script(r#"Boolean.prototype.valueOf()"#)?, Value::Bool(false));
+
+  let s = rt.exec_script(r#"Boolean.prototype.toString()"#)?;
+  assert_eq!(as_utf8_lossy(&rt, s), "false");
+
   let s = rt.exec_script(r#"Boolean.prototype.toString.call(new Boolean(false))"#)?;
   assert_eq!(as_utf8_lossy(&rt, s), "false");
+
+  let s = rt.exec_script(r#"Object.prototype.toString.call(Boolean.prototype)"#)?;
+  assert_eq!(as_utf8_lossy(&rt, s), "[object Boolean]");
 
   let s = rt.exec_script(r#"try { Boolean.prototype.toString.call("x"); } catch (e) { e.name }"#)?;
   assert_eq!(as_utf8_lossy(&rt, s), "TypeError");
