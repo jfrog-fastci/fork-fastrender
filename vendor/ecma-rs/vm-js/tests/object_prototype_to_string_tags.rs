@@ -139,6 +139,14 @@ fn object_prototype_to_string_tags() -> Result<(), VmError> {
   let out = rt.exec_script("Object.prototype.toString.call(new Date(0))")?;
   assert_eq!(expect_string(&rt, out), "[object Date]");
 
+  // Promise.
+  let out = rt.exec_script("Object.prototype.toString.call(Promise.resolve(1))")?;
+  assert_eq!(expect_string(&rt, out), "[object Promise]");
+
+  // Proxied Promise should tag as Promise via Promise.prototype[@@toStringTag].
+  let out = rt.exec_script("Object.prototype.toString.call(new Proxy(Promise.resolve(1), {}))")?;
+  assert_eq!(expect_string(&rt, out), "[object Promise]");
+
   // `%Math%` / `%Reflect%`.
   let out = rt.exec_script("Object.prototype.toString.call(Math)")?;
   assert_eq!(expect_string(&rt, out), "[object Math]");
