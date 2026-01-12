@@ -4586,7 +4586,16 @@ impl App {
         ui.horizontal(|ui| {
           ui.heading("Downloads");
           ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if ui.button("✕").on_hover_text("Close (Esc)").clicked() {
+            let close_resp = fastrender::ui::icon_button(
+              ui,
+              fastrender::ui::BrowserIcon::Close,
+              "Close (Esc)",
+              true,
+            );
+            close_resp.widget_info(|| {
+              egui::WidgetInfo::labeled(egui::WidgetType::Button, "Close downloads panel")
+            });
+            if close_resp.clicked() {
               close_panel = true;
             }
           });
