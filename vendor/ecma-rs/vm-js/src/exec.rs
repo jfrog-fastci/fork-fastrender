@@ -1237,6 +1237,20 @@ impl JsRuntime {
     // Make the runtime-owned module graph available to nested ECMAScript function calls (and other
     // VM entry points that do not naturally thread an explicit `&mut ModuleGraph` parameter).
     vm.set_module_graph(modules.as_mut());
+    // Realm initialization uses nested `Scope`s that can temporarily grow the heap's stack root
+    // vectors. Once initialization is complete there should be no active stack roots, so we can
+    // drop any excess capacity to reduce baseline heap footprint under tight `HeapLimits`.
+    //
+    // This is particularly important for tests and embeddings that configure small heaps:
+    // otherwise the runtime can end up with large `root_stack`/`env_root_stack` capacity that counts
+    // against `Heap::estimated_total_bytes` even when the stacks are empty.
+    debug_assert!(
+      heap.root_stack.is_empty() && heap.env_root_stack.is_empty(),
+      "expected runtime initialization to leave no active stack roots"
+    );
+    heap.root_stack = Vec::new();
+    heap.env_root_stack = Vec::new();
+
     Ok(Self {
       vm,
       heap,
