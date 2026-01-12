@@ -35,9 +35,11 @@ fi
 # (they create duplicate binaries / module graphs). Enforce this invariant unconditionally so we
 # don't regress while other migrations are ongoing.
 if [[ "${have_rg}" -eq 1 ]]; then
-  shim_matches="$(rg -n '#\[path\s*=\s*"' tests || true)"
+  # Only Rust sources can contain `#[path = "..."]`; avoid scanning large fixture trees (WPT, HTML
+  # fixtures, etc.) so this check stays fast even as test data grows.
+  shim_matches="$(rg -n --glob '*.rs' '#\[path\s*=\s*"' tests || true)"
 else
-  shim_matches="$(grep -RInE '#\\[[[:space:]]*path[[:space:]]*=[[:space:]]*"' tests || true)"
+  shim_matches="$(grep -RInE --include='*.rs' '#\\[[[:space:]]*path[[:space:]]*=[[:space:]]*"' tests || true)"
 fi
 if [[ -n "${shim_matches}" ]]; then
   echo "error: found #[path = \"...\"] shims under tests/ (these create extra test binaries):" >&2
