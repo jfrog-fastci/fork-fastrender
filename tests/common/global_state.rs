@@ -5,12 +5,17 @@
 //! tests that mutate process-global state (environment variables, stage listeners, etc.) must
 //! coordinate to remain deterministic under parallel execution.
 
+use parking_lot::{ReentrantMutex, ReentrantMutexGuard};
 use std::ffi::{OsStr, OsString};
-pub type GlobalTestLockGuard = parking_lot::ReentrantMutexGuard<'static, ()>;
 
-/// Serialises tests that mutate process-global state (environment variables, stage listeners, etc).
+pub type GlobalTestLockGuard = ReentrantMutexGuard<'static, ()>;
+
+/// Serialises tests that mutate process-global state (environment variables, stage listeners, etc.).
 pub fn global_test_lock() -> GlobalTestLockGuard {
-  static LOCK: parking_lot::ReentrantMutex<()> = parking_lot::ReentrantMutex::new(());
+  // Many integration tests have helper layers that may re-enter the global lock (e.g. a top-level
+  // test takes the lock, then constructs a helper that also takes it). Use a re-entrant mutex so
+  // these call paths do not deadlock.
+  static LOCK: ReentrantMutex<()> = ReentrantMutex::new(());
   LOCK.lock()
 }
 

@@ -384,8 +384,8 @@ fn build_font_definitions_from_dbs(
 }
 
 fn build_font_definitions() -> FontDefinitions {
-  // The browser integration tests set `FASTR_USE_BUNDLED_FONTS=1` to avoid expensive system font
-  // scans; respect that here so `apply_browser_theme` stays cheap/deterministic under tests/CI.
+  // When running in deterministic/bundled mode (CI or `FASTR_USE_BUNDLED_FONTS=1`), avoid scanning
+  // system fonts. System font discovery is expensive and makes UI rendering less predictable.
   let allow_system_fonts =
     !env_flag("FASTR_USE_BUNDLED_FONTS").unwrap_or(false) && !env_flag("CI").unwrap_or(false);
 

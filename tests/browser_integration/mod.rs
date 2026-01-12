@@ -133,6 +133,6 @@ pub(crate) fn stage_listener_test_lock() -> parking_lot::ReentrantMutexGuard<'st
   #[cfg(feature = "browser_ui")]
   support::ensure_bundled_fonts_loaded();
 
-  static LOCK: parking_lot::ReentrantMutex<()> = parking_lot::ReentrantMutex::new(());
-  LOCK.lock()
+  // Keep this suite serialized with other tests that manipulate process-global state.
+  crate::common::global_state::global_test_lock()
 }

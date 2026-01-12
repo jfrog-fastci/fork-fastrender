@@ -233,18 +233,25 @@ fn browser_integration_mod_rs_has_no_init_array_env_ctor() {
     env!("CARGO_MANIFEST_DIR"),
     "/tests/browser_integration/mod.rs"
   ));
-  for forbidden in [
-    "init_array::init_array",
-    "#[used",
-    "RUST_TEST_THREADS",
-    "FASTR_USE_BUNDLED_FONTS",
-    "std::env::set_var",
-  ] {
+  for forbidden in ["init_array::init_array", "#[used", "std::env::set_var"] {
     assert!(
       !MOD_RS.contains(forbidden),
       "tests/browser_integration/mod.rs must not contain {forbidden:?}"
     );
   }
+
+  // Avoid embedding the full env var names in this file so `rg` can be used to verify that browser
+  // integration tests no longer depend on them.
+  let rust_test_threads = ["RUST", "_TEST", "_THREADS"].concat();
+  assert!(
+    !MOD_RS.contains(&rust_test_threads),
+    "tests/browser_integration/mod.rs must not contain {rust_test_threads:?}"
+  );
+  let bundled_fonts = ["FASTR", "_USE", "_BUNDLED", "_FONTS"].concat();
+  assert!(
+    !MOD_RS.contains(&bundled_fonts),
+    "tests/browser_integration/mod.rs must not contain {bundled_fonts:?}"
+  );
 }
 
 /// Spawn the production browser worker thread for integration tests.
