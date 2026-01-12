@@ -11053,7 +11053,7 @@ impl InlineFormattingContext {
     let needs_rebalance = use_first_line_width
       && matches!(
         text_wrap,
-        TextWrap::Balance | TextWrap::Pretty | TextWrap::Stable
+        TextWrap::Balance | TextWrap::Pretty | TextWrap::Stable | TextWrap::AvoidOrphans
       );
 
     if !needs_rebalance {
@@ -11101,7 +11101,7 @@ impl InlineFormattingContext {
       }
     }
 
-    // Balance/pretty/stable may need additional candidate line builds. Preserve an immutable copy
+    // Balance/pretty/stable/avoid-orphans may need additional candidate line builds. Preserve an immutable copy
     // of the original items and build the greedy baseline from a clone.
     let original_items = items;
     let mut build = self.build_lines(
@@ -11128,7 +11128,7 @@ impl InlineFormattingContext {
     }
 
     if matches!(text_wrap, TextWrap::Stable) {
-      let stable_factor = 0.9;
+      let stable_factor = 0.85;
       let candidate_width = (subsequent_line_width * stable_factor).max(1.0);
       let stable_first = candidate_width;
       let mut stable_lines = self.build_lines(
@@ -11443,6 +11443,9 @@ impl InlineFormattingContext {
       match text_wrap {
         // Pretty is tuned for headlines: prefer fewer hyphens and avoid lonely last lines.
         TextWrap::Pretty => (0.85f32, 0.01f32, 3.0f32, 1.5f32),
+        // `avoid-orphans` biases toward reducing excessively short last lines without incurring
+        // as much additional work as full balancing.
+        TextWrap::AvoidOrphans => (0.85f32, 0.01f32, 2.0f32, 2.5f32),
         // Balance is used more broadly; search a bit further to find a good raggedness minimum.
         TextWrap::Balance => (0.65f32, 0.01f32, 1.5f32, 1.0f32),
         _ => return Ok(base),
@@ -11526,7 +11529,10 @@ impl InlineFormattingContext {
         continue;
       }
 
-      let candidate_first = if matches!(text_wrap, TextWrap::Balance | TextWrap::Pretty) {
+      let candidate_first = if matches!(
+        text_wrap,
+        TextWrap::Balance | TextWrap::Pretty | TextWrap::AvoidOrphans
+      ) {
         candidate_width
       } else {
         first_line_width
@@ -25946,6 +25952,34 @@ mod tests {
       .unwrap()
       .lines;
 
+    let mut avoid_style = style.clone();
+    avoid_style.text_wrap = TextWrap::AvoidOrphans;
+    let avoid_node = BoxNode::new_text(Arc::new(avoid_style.clone()), text.clone());
+    let avoid_items = ifc
+      .create_inline_items_for_text(&avoid_node, &text, false)
+      .expect("avoid-orphans items");
+    let avoid = ifc
+      .layout_segment_lines(
+        avoid_items,
+        true,
+        width,
+        width,
+        avoid_style.text_wrap,
+        0.0,
+        false,
+        false,
+        &strut,
+        Some(unicode_bidi::Level::ltr()),
+        avoid_style.direction,
+        avoid_style.unicode_bidi,
+        None,
+        0.0,
+        0.0,
+        None,
+      )
+      .unwrap()
+      .lines;
+
     assert_eq!(
       line_texts(&auto),
       vec![
@@ -25960,6 +25994,7 @@ mod tests {
         format!("behind it\u{00A0}all"),
       ]
     );
+    assert_eq!(line_texts(&avoid), line_texts(&pretty));
   }
 
   #[test]

@@ -13988,16 +13988,32 @@ fn apply_declaration_with_base_internal_with_order(
       };
     }
     "text-wrap" => {
-      if let PropertyValue::Keyword(kw) = resolved_value {
-        let kw = kw.to_ascii_lowercase();
-        styles.text_wrap = match kw.as_str() {
-          "wrap" | "auto" | "normal" => TextWrap::Auto,
-          "nowrap" => TextWrap::NoWrap,
-          "balance" => TextWrap::Balance,
-          "pretty" => TextWrap::Pretty,
-          "stable" => TextWrap::Stable,
-          _ => styles.text_wrap,
-        };
+      match resolved_value {
+        PropertyValue::Keyword(kw) => {
+          if let Some(parsed) = TextWrap::parse(kw) {
+            styles.text_wrap = parsed;
+          }
+        }
+        PropertyValue::Multiple(values) => {
+          let mut raw = String::new();
+          let mut valid = true;
+          for (idx, value) in values.iter().enumerate() {
+            let PropertyValue::Keyword(part) = value else {
+              valid = false;
+              break;
+            };
+            if idx > 0 {
+              raw.push(' ');
+            }
+            raw.push_str(part);
+          }
+          if valid {
+            if let Some(parsed) = TextWrap::parse(&raw) {
+              styles.text_wrap = parsed;
+            }
+          }
+        }
+        _ => {}
       }
     }
     "text-orientation" => {
@@ -26617,6 +26633,36 @@ mod tests {
       &mut style,
       &Declaration {
         property: "text-wrap".into(),
+        value: PropertyValue::Keyword("wrap balance".to_string()),
+        contains_var: false,
+        raw_value: String::new(),
+        important: false,
+      },
+      &ComputedStyle::default(),
+      16.0,
+      16.0,
+    );
+    assert_eq!(style.text_wrap, TextWrap::Balance);
+
+    apply_declaration(
+      &mut style,
+      &Declaration {
+        property: "text-wrap".into(),
+        value: PropertyValue::Keyword("balance wrap".to_string()),
+        contains_var: false,
+        raw_value: String::new(),
+        important: false,
+      },
+      &ComputedStyle::default(),
+      16.0,
+      16.0,
+    );
+    assert_eq!(style.text_wrap, TextWrap::Balance);
+
+    apply_declaration(
+      &mut style,
+      &Declaration {
+        property: "text-wrap".into(),
         value: PropertyValue::Keyword("pretty".to_string()),
         contains_var: false,
         raw_value: String::new(),
@@ -26627,6 +26673,53 @@ mod tests {
       16.0,
     );
     assert_eq!(style.text_wrap, TextWrap::Pretty);
+
+    apply_declaration(
+      &mut style,
+      &Declaration {
+        property: "text-wrap".into(),
+        value: PropertyValue::Keyword("avoid-orphans".to_string()),
+        contains_var: false,
+        raw_value: String::new(),
+        important: false,
+      },
+      &ComputedStyle::default(),
+      16.0,
+      16.0,
+    );
+    assert_eq!(style.text_wrap, TextWrap::AvoidOrphans);
+
+    apply_declaration(
+      &mut style,
+      &Declaration {
+        property: "text-wrap".into(),
+        value: PropertyValue::Keyword("nowrap avoid-orphans".to_string()),
+        contains_var: false,
+        raw_value: String::new(),
+        important: false,
+      },
+      &ComputedStyle::default(),
+      16.0,
+      16.0,
+    );
+    assert_eq!(style.text_wrap, TextWrap::NoWrap);
+
+    // Invalid combinations should be ignored.
+    style.text_wrap = TextWrap::Balance;
+    apply_declaration(
+      &mut style,
+      &Declaration {
+        property: "text-wrap".into(),
+        value: PropertyValue::Keyword("wrap nowrap".to_string()),
+        contains_var: false,
+        raw_value: String::new(),
+        important: false,
+      },
+      &ComputedStyle::default(),
+      16.0,
+      16.0,
+    );
+    assert_eq!(style.text_wrap, TextWrap::Balance);
 
     apply_declaration(
       &mut style,

@@ -277,6 +277,25 @@ mod tests {
   }
 
   #[test]
+  fn supports_text_wrap_keywords_and_shorthand_pairs() {
+    assert!(supports_declaration("text-wrap", "wrap"));
+    assert!(supports_declaration("text-wrap", "nowrap"));
+    assert!(supports_declaration("text-wrap", "auto"));
+    assert!(supports_declaration("text-wrap", "balance"));
+    assert!(supports_declaration("text-wrap", "pretty"));
+    assert!(supports_declaration("text-wrap", "stable"));
+    assert!(supports_declaration("text-wrap", "avoid-orphans"));
+
+    assert!(supports_declaration("text-wrap", "wrap balance"));
+    assert!(supports_declaration("text-wrap", "balance wrap"));
+    assert!(supports_declaration("text-wrap", "nowrap balance"));
+
+    assert!(!supports_declaration("text-wrap", "wrap nowrap"));
+    assert!(!supports_declaration("text-wrap", "balance pretty"));
+    assert!(!supports_declaration("text-wrap", "bogus"));
+  }
+
+  #[test]
   fn supports_opacity_percentage_values() {
     assert!(supports_declaration("opacity", "0%"));
     assert!(supports_declaration("opacity", "50%"));

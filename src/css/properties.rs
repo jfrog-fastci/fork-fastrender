@@ -3152,6 +3152,9 @@ pub(crate) fn supports_parsed_declaration_is_valid(
         _ => false,
       };
     }
+    "text-wrap" => {
+      return crate::style::types::TextWrap::parse(raw_value).is_some();
+    }
     "break-before" | "break-after" => {
       // CSS Fragmentation: supported break values between boxes.
       return keyword_in_list(

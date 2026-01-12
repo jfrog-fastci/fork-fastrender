@@ -4004,11 +4004,120 @@ pub enum TextWrap {
   Balance,
   Pretty,
   Stable,
+  AvoidOrphans,
 }
 
 impl Default for TextWrap {
   fn default() -> Self {
     TextWrap::Auto
+  }
+}
+
+impl TextWrap {
+  /// Parse a `text-wrap` value.
+  ///
+  /// Spec: CSS Text Module Level 4
+  /// Grammar (shorthand): `<<text-wrap-mode>> || <<text-wrap-style>>`
+  /// - `text-wrap-mode`: `wrap | nowrap` (initial: wrap)
+  /// - `text-wrap-style`: `auto | balance | stable | pretty | avoid-orphans` (initial: auto)
+  ///
+  /// FastRender stores `text-wrap` as a single enum rather than exposing the `text-wrap-mode` /
+  /// `text-wrap-style` longhands. When `nowrap` is specified we preserve only the wrapping
+  /// disabling behavior (style keywords become irrelevant).
+  pub fn parse(raw: &str) -> Option<Self> {
+    let mut input = ParserInput::new(raw);
+    let mut parser = Parser::new(&mut input);
+    Self::parse_from_parser(&mut parser)
+  }
+
+  pub(crate) fn parse_from_parser<'i, 't>(parser: &mut Parser<'i, 't>) -> Option<Self> {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum WrapMode {
+      Wrap,
+      NoWrap,
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum WrapStyle {
+      Auto,
+      Balance,
+      Pretty,
+      Stable,
+      AvoidOrphans,
+    }
+
+    let mut mode: Option<WrapMode> = None;
+    let mut style: Option<WrapStyle> = None;
+    let mut saw_any = false;
+
+    while let Ok(token) = parser.next_including_whitespace_and_comments() {
+      match token {
+        Token::WhiteSpace(_) | Token::Comment(_) => continue,
+        Token::Ident(ident) => {
+          saw_any = true;
+          let ident = ident.as_ref();
+
+          if ident.eq_ignore_ascii_case("wrap") {
+            if mode.replace(WrapMode::Wrap).is_some() {
+              return None;
+            }
+            continue;
+          }
+
+          if ident.eq_ignore_ascii_case("nowrap") {
+            if mode.replace(WrapMode::NoWrap).is_some() {
+              return None;
+            }
+            continue;
+          }
+
+          let parsed_style = if ident.eq_ignore_ascii_case("auto")
+            || ident.eq_ignore_ascii_case("normal")
+          {
+            Some(WrapStyle::Auto)
+          } else if ident.eq_ignore_ascii_case("balance") {
+            Some(WrapStyle::Balance)
+          } else if ident.eq_ignore_ascii_case("pretty") {
+            Some(WrapStyle::Pretty)
+          } else if ident.eq_ignore_ascii_case("stable") {
+            Some(WrapStyle::Stable)
+          } else if ident.eq_ignore_ascii_case("avoid-orphans") {
+            Some(WrapStyle::AvoidOrphans)
+          } else {
+            None
+          };
+
+          if let Some(parsed_style) = parsed_style {
+            if style.replace(parsed_style).is_some() {
+              return None;
+            }
+            continue;
+          }
+
+          return None;
+        }
+        _ => return None,
+      }
+    }
+
+    if !saw_any {
+      return None;
+    }
+
+    let mode = mode.unwrap_or(WrapMode::Wrap);
+    let style = style.unwrap_or(WrapStyle::Auto);
+
+    if matches!(mode, WrapMode::NoWrap) {
+      return Some(Self::NoWrap);
+    }
+
+    Some(match style {
+      WrapStyle::Auto => Self::Auto,
+      WrapStyle::Balance => Self::Balance,
+      WrapStyle::Pretty => Self::Pretty,
+      WrapStyle::Stable => Self::Stable,
+      WrapStyle::AvoidOrphans => Self::AvoidOrphans,
+    })
   }
 }
 
