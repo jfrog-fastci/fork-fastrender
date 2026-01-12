@@ -95,3 +95,24 @@ fn string_iterator_prototype_chain_includes_iterator_prototype() -> Result<(), V
   Ok(())
 }
 
+#[test]
+fn string_iterator_next_proxy_receiver_throws_type_error() -> Result<(), VmError> {
+  let mut rt = new_runtime()?;
+  let value = rt.exec_script(
+    r#"
+      try {
+        const it = "ab"[Symbol.iterator]();
+        const p = new Proxy(it, {});
+        p.next();
+        "no";
+      } catch (e) { e.name }
+    "#,
+  )?;
+  let Value::String(s) = value else {
+    return Err(VmError::InvariantViolation(
+      "expected String iterator proxy test to return a string",
+    ));
+  };
+  assert_eq!(rt.heap().get_string(s)?.to_utf8_lossy(), "TypeError");
+  Ok(())
+}

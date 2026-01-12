@@ -97,3 +97,24 @@ fn symbol_to_primitive_is_non_writable() {
     .unwrap();
   assert_eq!(value, Value::Bool(true));
 }
+
+#[test]
+fn symbol_wrapper_proxy_receiver_throws_type_error() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        var ok = false;
+        try {
+          const boxed = Object(Symbol("x"));
+          const p = new Proxy(boxed, {});
+          Symbol.prototype.valueOf.call(p);
+        } catch (e) {
+          ok = e && e.name === "TypeError";
+        }
+        ok
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}

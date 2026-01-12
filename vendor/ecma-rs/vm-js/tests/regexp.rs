@@ -112,6 +112,24 @@ fn match_all_iterator_is_iterable() {
 }
 
 #[test]
+fn regexp_string_iterator_next_proxy_receiver_throws_type_error() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        try {
+          const it = /a/g[Symbol.matchAll]("a");
+          const p = new Proxy(it, {});
+          p.next();
+          "no";
+        } catch (e) { e.name }
+      "#,
+    )
+    .unwrap();
+  assert_eq!(as_utf8_lossy(&rt, value), "TypeError");
+}
+
+#[test]
 fn regexp_engine_catastrophic_backtracking_is_interruptible() {
   let mut vm = Vm::new(VmOptions::default());
   vm.set_budget(Budget {

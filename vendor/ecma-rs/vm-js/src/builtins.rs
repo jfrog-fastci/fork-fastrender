@@ -12870,6 +12870,10 @@ pub fn regexp_string_iterator_next(
   let missing_slots_err =
     || VmError::TypeError("RegExp string iterator next called on an object missing internal slots");
 
+  if scope.heap().is_proxy_object(iter) {
+    return Err(missing_slots_err());
+  }
+
   let done_key = PropertyKey::from_symbol(done_sym);
   let done_val = scope
     .heap()
@@ -15237,6 +15241,12 @@ pub fn string_iterator_next(
     ));
   };
 
+  if scope.heap().is_proxy_object(iter) {
+    return Err(VmError::TypeError(
+      "String iterator next called on an object missing internal slots",
+    ));
+  }
+
   let iterated_key = PropertyKey::from_symbol(iterated_sym);
   let next_index_key = PropertyKey::from_symbol(next_index_sym);
   let iterated_val = scope
@@ -16642,6 +16652,11 @@ pub fn symbol_prototype_value_of(
   match this {
     Value::Symbol(s) => Ok(Value::Symbol(s)),
     Value::Object(obj) => {
+      if scope.heap().is_proxy_object(obj) {
+        return Err(VmError::TypeError(
+          "Symbol.prototype.valueOf called on non-Symbol object",
+        ));
+      }
       let marker_sym = match scope.heap().internal_symbol_data_symbol() {
         Some(sym) => sym,
         None => scope.heap_mut().ensure_internal_symbol_data_symbol()?,
