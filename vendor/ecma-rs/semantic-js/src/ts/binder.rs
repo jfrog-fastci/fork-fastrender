@@ -397,6 +397,16 @@ impl<'a, HP: Fn(FileId) -> Arc<HirFile>> Binder<'a, HP> {
     );
 
     for ambient in &hir.ambient_modules {
+      if ambient.export_modifier || ambient.export_modifier_span.is_some() {
+        self.diagnostics.push(Diagnostic::error(
+          "TS2668",
+          "'export' modifier cannot be applied to ambient modules and module augmentations since they are always visible.",
+          Span::new(
+            hir.file_id,
+            ambient.export_modifier_span.unwrap_or(ambient.name_span),
+          ),
+        ));
+      }
       if is_script {
         deps.extend(self.bind_ambient_module(hir.file_id, hir.file_kind, ambient));
         continue;

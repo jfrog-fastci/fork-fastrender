@@ -1463,6 +1463,27 @@ fn ambient_modules_lower_from_ast() {
 }
 
 #[test]
+fn export_modifier_on_ambient_module_reports_ts2668() {
+  // Matches TypeScript `tests/cases/compiler/ambientExternalModuleInsideNonAmbientExternalModule.ts`.
+  let source = r#"export declare module "M" { }"#;
+  let file = FileId(3200);
+  let ast = parse(source).expect("parse");
+  let lowered = lower_file(file, HirFileKind::Ts, &ast);
+  let hir = lower_to_ts_hir(&ast, &lowered);
+ 
+  let files: HashMap<FileId, Arc<HirFile>> = maplit::hashmap! { file => Arc::new(hir) };
+  let resolver = StaticResolver::new(HashMap::new());
+ 
+  let (_semantics, diags) =
+    bind_ts_program(&[file], &resolver, |f| files.get(&f).unwrap().clone());
+ 
+  assert!(
+    diags.iter().any(|d| d.code == "TS2668"),
+    "expected TS2668, got diagnostics: {diags:?}"
+  );
+}
+
+#[test]
 fn ambient_module_in_dts_script_reports_export_mismatch_for_unexported_namespace_merge() {
   // Mirrors TypeScript's `tests/cases/compiler/namespaceNotMergedWithFunctionDefaultExport.ts`
   // (`replace-in-file/types/index.d.ts`).
