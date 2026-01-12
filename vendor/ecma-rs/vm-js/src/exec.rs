@@ -10504,7 +10504,7 @@ fn async_bind_object_pattern_from(
     excluded.push(rooted_key);
 
     let mut prop_value = match scope
-      .ordinary_get_with_host_and_hooks(
+      .get_with_host_and_hooks(
         evaluator.vm,
         &mut *evaluator.host,
         &mut *evaluator.hooks,
@@ -10639,7 +10639,7 @@ fn async_bind_object_pattern_from(
     }
 
     let v = match rest_scope
-      .ordinary_get_with_host_and_hooks(
+      .get_with_host_and_hooks(
         evaluator.vm,
         &mut *evaluator.host,
         &mut *evaluator.hooks,
@@ -10677,9 +10677,10 @@ fn async_array_like_length(
   obj: GcObject,
 ) -> Result<u32, VmError> {
   let key_s = scope.alloc_string("length")?;
+  scope.push_root(Value::String(key_s))?;
   let key = PropertyKey::from_string(key_s);
   let v = scope
-    .ordinary_get_with_host_and_hooks(
+    .get_with_host_and_hooks(
       evaluator.vm,
       &mut *evaluator.host,
       &mut *evaluator.hooks,
@@ -10703,9 +10704,10 @@ fn async_array_like_get(
 ) -> Result<Value, VmError> {
   let key_str = idx.to_string();
   let key_s = scope.alloc_string(&key_str)?;
+  scope.push_root(Value::String(key_s))?;
   let key = PropertyKey::from_string(key_s);
   scope
-    .ordinary_get_with_host_and_hooks(
+    .get_with_host_and_hooks(
       evaluator.vm,
       &mut *evaluator.host,
       &mut *evaluator.hooks,
@@ -17945,7 +17947,7 @@ fn async_resume_from_frames(
             let prop = &prop.stx;
 
             let mut prop_value = match scope
-              .ordinary_get_with_host_and_hooks(
+              .get_with_host_and_hooks(
                 evaluator.vm,
                 &mut *evaluator.host,
                 &mut *evaluator.hooks,

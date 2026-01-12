@@ -1,4 +1,7 @@
-use vm_js::{Heap, HeapLimits, JsRuntime, Value, Vm, VmError, VmOptions};
+use vm_js::{
+  GcObject, Heap, HeapLimits, JsRuntime, PropertyDescriptor, PropertyKey, PropertyKind, Scope, Value, Vm,
+  VmError, VmOptions,
+};
 
 fn new_runtime() -> JsRuntime {
   let vm = Vm::new(VmOptions::default());
@@ -18,6 +21,31 @@ fn value_to_number(value: Value) -> f64 {
     panic!("expected number, got {value:?}");
   };
   n
+}
+
+fn global_var_desc(value: Value) -> PropertyDescriptor {
+  PropertyDescriptor {
+    enumerable: true,
+    configurable: true,
+    kind: PropertyKind::Data {
+      value,
+      writable: true,
+    },
+  }
+}
+
+fn define_global(
+  scope: &mut Scope<'_>,
+  global: GcObject,
+  name: &str,
+  value: Value,
+) -> Result<(), VmError> {
+  scope.push_root(Value::Object(global))?;
+  scope.push_root(value)?;
+  let key_s = scope.alloc_string(name)?;
+  scope.push_root(Value::String(key_s))?;
+  let key = PropertyKey::from_string(key_s);
+  scope.define_property(global, key, global_var_desc(value))
 }
 
 #[test]
@@ -225,6 +253,67 @@ fn await_in_object_pattern_default() -> Result<(), VmError> {
 }
 
 #[test]
+fn await_in_object_pattern_default_uses_proxy_get_trap() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let global = rt.realm().global_object();
+
+  rt.exec_script(
+    r#"
+      var log = [];
+      var out = "";
+      var target = {};
+      var handler = {
+        get: function (t, k, r) {
+          log.push(String(k));
+          // Force the default value path so we suspend on `await`.
+          return undefined;
+        },
+      };
+    "#,
+  )?;
+
+  let target = match rt.exec_script("target")? {
+    Value::Object(o) => o,
+    other => panic!("expected target object, got {other:?}"),
+  };
+  let handler = match rt.exec_script("handler")? {
+    Value::Object(o) => o,
+    other => panic!("expected handler object, got {other:?}"),
+  };
+
+  {
+    let (_vm, _realm, heap) = rt.vm_realm_and_heap_mut();
+    let mut scope = heap.scope();
+    scope.push_root(Value::Object(target))?;
+    scope.push_root(Value::Object(handler))?;
+    let proxy = scope.alloc_proxy(Some(target), Some(handler))?;
+    define_global(&mut scope, global, "p", Value::Object(proxy))?;
+  }
+
+  let value = rt.exec_script(
+    r#"
+      async function f() {
+        const { x = await Promise.resolve("ok") } = p;
+        return x;
+      }
+      f().then(function (v) { out = v; });
+      out
+    "#,
+  )?;
+  assert_eq!(value_to_string(&rt, value), "");
+
+  // `Get(p, "x")` should run before suspending on `await`.
+  let log_value = rt.exec_script("log.join(',')")?;
+  assert!(value_to_string(&rt, log_value).contains("x"));
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let out_value = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, out_value), "ok");
+  Ok(())
+}
+
+#[test]
 fn await_in_array_pattern_default() -> Result<(), VmError> {
   let mut rt = new_runtime();
 
@@ -245,6 +334,67 @@ fn await_in_array_pattern_default() -> Result<(), VmError> {
 
   let value = rt.exec_script("out")?;
   assert_eq!(value_to_string(&rt, value), "ok");
+  Ok(())
+}
+
+#[test]
+fn await_in_array_pattern_default_uses_proxy_get_trap_for_length_and_index() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let global = rt.realm().global_object();
+
+  rt.exec_script(
+    r#"
+      var log = [];
+      var out = "";
+      var target = [undefined];
+      var handler = {
+        get: function (t, k, r) {
+          log.push(String(k));
+          return t[k];
+        },
+      };
+    "#,
+  )?;
+
+  let target = match rt.exec_script("target")? {
+    Value::Object(o) => o,
+    other => panic!("expected target object, got {other:?}"),
+  };
+  let handler = match rt.exec_script("handler")? {
+    Value::Object(o) => o,
+    other => panic!("expected handler object, got {other:?}"),
+  };
+
+  {
+    let (_vm, _realm, heap) = rt.vm_realm_and_heap_mut();
+    let mut scope = heap.scope();
+    scope.push_root(Value::Object(target))?;
+    scope.push_root(Value::Object(handler))?;
+    let proxy = scope.alloc_proxy(Some(target), Some(handler))?;
+    define_global(&mut scope, global, "p", Value::Object(proxy))?;
+  }
+
+  let value = rt.exec_script(
+    r#"
+      async function f() {
+        const [x = await Promise.resolve("ok")] = p;
+        return x;
+      }
+      f().then(function (v) { out = v; });
+      out
+    "#,
+  )?;
+  assert_eq!(value_to_string(&rt, value), "");
+
+  let log_value = rt.exec_script("log.join(',')")?;
+  let log_str = value_to_string(&rt, log_value);
+  assert!(log_str.contains("length"));
+  assert!(log_str.contains("0"));
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let out_value = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, out_value), "ok");
   Ok(())
 }
 
