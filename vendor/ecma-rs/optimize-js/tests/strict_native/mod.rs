@@ -25,6 +25,52 @@ fn rejects_computed_property_get() {
 }
 
 #[test]
+fn rejects_object_literal_with_dynamic_computed_key() {
+  let src = r#"
+    function make(key: string) {
+      return { [key]: 1 };
+    }
+    make("x");
+  "#;
+
+  let err = optimize_js::compile_source_typed_strict_native(
+    src,
+    TopLevelMode::Module,
+    false,
+    StrictNativeOpts::default(),
+  )
+  .expect_err("dynamic computed object literal keys should be rejected");
+
+  assert!(
+    err.iter().any(|d| d.code == "OPTN0004"),
+    "expected OPTN0004 diagnostic, got {err:?}"
+  );
+}
+
+#[test]
+fn rejects_object_literal_with_proto_key() {
+  let src = r#"
+    const obj = { __proto__: {} };
+    obj;
+  "#;
+
+  let err = optimize_js::compile_source_typed_strict_native(
+    src,
+    TopLevelMode::Module,
+    false,
+    StrictNativeOpts::default(),
+  )
+  .expect_err("__proto__ object literal keys should be rejected");
+
+  assert!(
+    err
+      .iter()
+      .any(|d| d.code == "OPTN0005" && d.message.contains("__proto__")),
+    "expected OPTN0005 diagnostic mentioning __proto__, got {err:?}"
+  );
+}
+
+#[test]
 fn rejects_spread_calls() {
   let src = r#"
     let sink = 0;

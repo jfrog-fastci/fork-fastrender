@@ -1,3 +1,5 @@
+#![cfg(feature = "vm-js-tests")]
+
 #[path = "common/mod.rs"]
 mod common;
 

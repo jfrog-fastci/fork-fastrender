@@ -334,6 +334,63 @@ fn resolves_to_proto_key(arg: &Arg, vars: &HashMap<u32, ValueState>) -> bool {
   )
 }
 
+fn validate_object_literal_call_args(
+  program: &Program,
+  inst: &Inst,
+  vars: &HashMap<u32, ValueState>,
+  diagnostics: &mut Vec<Diagnostic>,
+) {
+  const INTERNAL_OBJECT_PROP_MARKER: &str = "__optimize_js_object_prop";
+  const INTERNAL_OBJECT_COMPUTED_MARKER: &str = "__optimize_js_object_prop_computed";
+  const INTERNAL_OBJECT_SPREAD_MARKER: &str = "__optimize_js_object_spread";
+
+  // Convention: `__optimize_js_object` encodes each property as a triple:
+  // - marker (builtin)
+  // - key/spread expr
+  // - value (or `undefined` for spreads)
+  let Some(args) = inst.args.get(2..) else {
+    return;
+  };
+  if args.len() % 3 != 0 {
+    return;
+  }
+
+  for chunk in args.chunks(3) {
+    let [marker, key, _value] = chunk else {
+      continue;
+    };
+    let Some(marker_path) = resolve_builtin_path(marker, vars) else {
+      continue;
+    };
+
+    if marker_path == INTERNAL_OBJECT_COMPUTED_MARKER {
+      if !is_static_prop_key(key, vars) {
+        diagnostics.push(diag(
+          program,
+          inst,
+          CODE_DYNAMIC_PROP,
+          "strict-native forbids dynamic computed keys in object literals",
+        ));
+      }
+    } else if marker_path == INTERNAL_OBJECT_PROP_MARKER {
+      // Non-computed keys are already forced to constants by lowering, but still forbid
+      // `__proto__` to avoid prototype mutation during object creation.
+      if resolves_to_proto_key(key, vars) {
+        diagnostics.push(diag(
+          program,
+          inst,
+          CODE_BANNED_BUILTIN,
+          "strict-native forbids `__proto__` keys in object literals",
+        ));
+      }
+    } else if marker_path == INTERNAL_OBJECT_SPREAD_MARKER {
+      // Spreads may introduce dynamic keys; strict-native currently allows them and relies on
+      // upstream (typecheck-ts / effect analysis) to make them native-safe.
+      continue;
+    }
+  }
+}
+
 fn is_banned_root_call(path: &str, root: &str) -> bool {
   let Some(rest) = path.strip_prefix(root) else {
     return false;
@@ -730,6 +787,12 @@ fn validate_cfg(program: &Program, cfg: &Cfg, scopes: &SymbolScopes, opts: Stric
                 CODE_BANNED_BUILTIN,
                 format!("strict-native forbids binding `{target}`"),
               )),
+            }
+          }
+
+          if let Some(callee_path) = resolve_builtin_path(&inst.args[0], &vars) {
+            if callee_path == "__optimize_js_object" {
+              validate_object_literal_call_args(program, inst, &vars, &mut diagnostics);
             }
           }
         }

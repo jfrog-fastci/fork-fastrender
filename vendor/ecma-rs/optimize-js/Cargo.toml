@@ -13,6 +13,10 @@ native-fusion = ["semantic-ops"]
 native-array-ops = []
 typed = ["dep:typecheck-ts", "dep:types-ts-interned"]
 parallel-analyses = ["dep:rayon"]
+# Integration tests that execute decompiled JS under the `vm-js` oracle. Keep this behind an
+# explicit feature so scoped unit test runs (`cargo test -p optimize-js --lib`) don't compile the
+# full VM.
+vm-js-tests = ["dep:vm-js"]
 serde = [
   "dep:serde",
   "dep:serde_json",
@@ -49,11 +53,11 @@ emit-js = { workspace = true }
 hir-js = { workspace = true }
 typecheck-ts = { workspace = true, optional = true }
 types-ts-interned = { workspace = true, optional = true }
+vm-js = { workspace = true, optional = true }
 
 [dev-dependencies]
 serde_json = { workspace = true }
 criterion = { workspace = true }
-vm-js = { workspace = true }
 
 [[bench]]
 name = "analysis"
