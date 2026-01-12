@@ -1933,6 +1933,7 @@ pub fn reflect_set_prototype_of(
     Err(e) => Err(e),
   }
 }
+
 fn create_array_object(vm: &mut Vm, scope: &mut Scope<'_>, len: u32) -> Result<GcObject, VmError> {
   let intr = require_intrinsics(vm)?;
 
@@ -7694,20 +7695,40 @@ pub fn function_prototype_apply(
 pub fn function_prototype_bind(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
   let intr = require_intrinsics(vm)?;
 
-  let target = require_callable(this)?;
+  // `bind` needs the target to be an object so it can be stored in `[[BoundTargetFunction]]`.
+  let Value::Object(target) = this else {
+    return Err(VmError::TypeError("Function.prototype.bind called on non-object"));
+  };
+  if !scope.heap().is_callable(Value::Object(target))? {
+    return Err(VmError::TypeError("Function.prototype.bind called on non-callable"));
+  }
+  let is_constructor = scope.heap().is_constructor(Value::Object(target))?;
 
-  // Extract function metadata without holding a heap borrow across allocations.
-  let (target_len, target_name) = {
-    let f = scope.heap().get_function(target)?;
-    (f.length, f.name)
+  // Read metadata via `Get` so Proxy traps / host exotic hooks are respected.
+  let length_key = string_key(scope, "length")?;
+  let target_len_value = vm.get_with_host_and_hooks(host, scope, hooks, target, length_key)?;
+  let target_len = u32::try_from(to_length(target_len_value)).unwrap_or(u32::MAX);
+
+  let name_key = string_key(scope, "name")?;
+  let target_name_value = vm.get_with_host_and_hooks(host, scope, hooks, target, name_key)?;
+  let target_name = match target_name_value {
+    Value::String(s) => {
+      scope.push_root(Value::String(s))?;
+      s
+    }
+    _ => {
+      let s = scope.alloc_string("")?;
+      scope.push_root(Value::String(s))?;
+      s
+    }
   };
 
   let bound_this = args.first().copied().unwrap_or(Value::Undefined);
@@ -7717,7 +7738,30 @@ pub fn function_prototype_bind(
   let bound_len = target_len.saturating_sub(bound_args_len_u32);
 
   let name = scope.alloc_string("bound")?;
-  let func = scope.alloc_bound_function(target, bound_this, bound_args, name, bound_len)?;
+
+  // `Scope::alloc_bound_function` requires the target to be a real `HeapObject::Function` so it can
+  // clone handlers. When binding callable Proxies (or other exotic callables), use placeholder
+  // handlers and rely on the VM's bound-function forwarding logic to delegate via
+  // `[[BoundTargetFunction]]`.
+  let placeholder_call = {
+    let f = scope.heap().get_function(intr.function_prototype())?;
+    f.call.clone()
+  };
+  let placeholder_construct = if is_constructor {
+    let f = scope.heap().get_function(intr.object_constructor())?;
+    f.construct
+  } else {
+    None
+  };
+  let func = scope.alloc_bound_function_with_handlers(
+    placeholder_call,
+    placeholder_construct,
+    target,
+    bound_this,
+    bound_args,
+    name,
+    bound_len,
+  )?;
 
   // Bound functions are ordinary function objects: their `[[Prototype]]` is `%Function.prototype%`.
   scope
@@ -7733,7 +7777,8 @@ pub fn function_prototype_bind(
   )?;
   crate::function_properties::set_function_length(scope, func, bound_len)?;
 
-  if let Some(realm) = scope.heap().get_function_realm(target)? {
+  // Best-effort realm propagation: exotic callables may not have `[[Realm]]`.
+  if let Ok(Some(realm)) = scope.heap().get_function_realm(target) {
     scope.heap_mut().set_function_realm(func, realm)?;
   }
 

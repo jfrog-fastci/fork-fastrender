@@ -6690,6 +6690,41 @@ impl<'a> Scope<'a> {
     Ok(GcObject(scope.heap.alloc_unchecked(obj, new_bytes)?))
   }
 
+  /// Allocates a bound function object using explicitly provided call/construct handlers.
+  ///
+  /// This is used for exotic callable targets (e.g. callable Proxies) where the target is not a
+  /// real `HeapObject::Function` and therefore does not have cloneable handlers.
+  ///
+  /// The handlers are placeholders: the VM's bound-function forwarding logic performs the actual
+  /// call/construct via `[[BoundTargetFunction]]`, but `Vm::call` / `Vm::construct` still require
+  /// the bound function itself to appear callable/constructable during prechecks.
+  pub(crate) fn alloc_bound_function_with_handlers(
+    &mut self,
+    call: CallHandler,
+    construct: Option<ConstructHandler>,
+    target: GcObject,
+    bound_this: Value,
+    bound_args: &[Value],
+    name: GcString,
+    length: u32,
+  ) -> Result<GcObject, VmError> {
+    let bound_args_len = bound_args.len();
+    let bound_args = if bound_args.is_empty() {
+      None
+    } else {
+      // Allocate the bound args buffer fallibly so hostile inputs cannot abort the host process
+      // on allocator OOM.
+      let mut buf: Vec<Value> = Vec::new();
+      buf
+        .try_reserve_exact(bound_args_len)
+        .map_err(|_| VmError::OutOfMemory)?;
+      buf.extend_from_slice(bound_args);
+      Some(buf.into_boxed_slice())
+    };
+
+    self.alloc_bound_function_raw(call, construct, name, length, target, bound_this, bound_args)
+  }
+
   /// Allocates a user-defined JavaScript function object on the heap.
   pub fn alloc_user_function(
     &mut self,
