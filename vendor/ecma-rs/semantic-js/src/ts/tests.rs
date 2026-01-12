@@ -3878,6 +3878,11 @@ fn unresolved_module_augmentation_reports_diagnostic() {
   assert_eq!(bind1005.primary.file, file);
   assert_eq!(bind1005.primary.range, module_name_span);
   assert!(
+    bind1005.message.contains("module augmentation"),
+    "expected diagnostic message to mention module augmentation, got {:?}",
+    bind1005.message
+  );
+  assert!(
     diags.iter().all(|d| d.code != "TS2664"),
     "unexpected TS2664 diagnostics: {diags:?}"
   );

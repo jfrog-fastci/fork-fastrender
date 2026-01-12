@@ -758,7 +758,8 @@ impl<'a, HP: Fn(FileId) -> Arc<HirFile>> Binder<'a, HP> {
     let implicit_export = implicit_export
       && !exports
         .iter()
-        .any(|export| matches!(export, Export::ExportAssignment { .. }));
+        .any(|export| matches!(export, Export::ExportAssignment { .. }))
+      && !decls.iter().any(|decl| matches!(decl.exported, Exported::Default));
     let mut has_exports = false;
     let mut first_export_span: Option<Span> = None;
     let mut has_export_assignment = false;
