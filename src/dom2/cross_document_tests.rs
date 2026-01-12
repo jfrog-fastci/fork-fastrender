@@ -3,6 +3,22 @@ use selectors::context::QuirksMode;
 
 use super::{Document, DomError, NodeId, NodeKind};
 
+fn id_attribute(kind: &NodeKind) -> Option<&str> {
+  match kind {
+    NodeKind::Element { attributes, .. } | NodeKind::Slot { attributes, .. } => attributes
+      .iter()
+      .find(|(k, _)| k.eq_ignore_ascii_case("id"))
+      .map(|(_, v)| v.as_str()),
+    _ => None,
+  }
+}
+
+fn find_in_subtree_by_id(doc: &Document, root: NodeId, id: &str) -> Option<NodeId> {
+  doc
+    .subtree_preorder(root)
+    .find(|&node_id| id_attribute(&doc.node(node_id).kind) == Some(id))
+}
+
 fn find_first_html_script(doc: &Document) -> NodeId {
   doc
     .nodes()
@@ -23,15 +39,34 @@ fn find_first_html_script(doc: &Document) -> NodeId {
     .expect("expected an HTML <script> element")
 }
 
+fn assert_node_kind_equivalent(src: &NodeKind, dst: &NodeKind) {
+  match (src, dst) {
+    (
+      NodeKind::Slot {
+        namespace: src_ns,
+        attributes: src_attrs,
+        ..
+      },
+      NodeKind::Slot {
+        namespace: dst_ns,
+        attributes: dst_attrs,
+        ..
+      },
+    ) => {
+      // `assigned` is derived state; it is not required to be preserved by cloning/importing/adopting.
+      assert_eq!(src_ns, dst_ns, "slot namespace mismatch");
+      assert_eq!(src_attrs, dst_attrs, "slot attributes mismatch");
+    }
+    _ => assert_eq!(src, dst, "node kind mismatch"),
+  }
+}
+
 fn assert_subtree_kinds_match(src: &Document, src_root: NodeId, dst: &Document, dst_root: NodeId) {
   let mut stack: Vec<(NodeId, NodeId)> = vec![(src_root, dst_root)];
   while let Some((src_id, dst_id)) = stack.pop() {
     let src_node = src.node(src_id);
     let dst_node = dst.node(dst_id);
-    assert_eq!(
-      src_node.kind, dst_node.kind,
-      "kind mismatch for src={src_id:?} dst={dst_id:?}"
-    );
+    assert_node_kind_equivalent(&src_node.kind, &dst_node.kind);
     assert_eq!(
       src_node.children.len(),
       dst_node.children.len(),
@@ -67,6 +102,38 @@ fn count_subtree_nodes(doc: &Document, root: NodeId) -> usize {
     stack.extend_from_slice(&doc.node(id).children);
   }
   count
+}
+
+fn build_shadow_host_source_document() -> (Document, NodeId) {
+  let html = concat!(
+    "<!doctype html>",
+    "<html><body>",
+    "<div id=host data-x=y>",
+    "<!--c-->",
+    "<template shadowroot=open shadowrootdelegatesfocus>",
+    "<slot id=slot name=s><span id=fallback>fallback</span></slot>",
+    "<span id=shadow_span>shadow</span>",
+    "</template>",
+    "<p id=light>light</p>",
+    "<script id=s></script>",
+    "</div>",
+    "</body></html>"
+  );
+  let mut doc = crate::dom2::parse_html(html).unwrap();
+  let host = doc.get_element_by_id("host").expect("host element not found");
+
+  // Ensure the subtree contains a ProcessingInstruction node kind (not produced by the HTML parser).
+  let pi = doc.push_node(
+    NodeKind::ProcessingInstruction {
+      target: "xml".to_string(),
+      data: "version=\"1.0\"".to_string(),
+    },
+    None,
+    /* inert_subtree */ false,
+  );
+  doc.append_child(host, pi).unwrap();
+
+  (doc, host)
 }
 
 #[test]
@@ -142,6 +209,297 @@ fn adopt_node_from_returns_mapping_and_detaches_source_subtree() {
   assert_eq!(src.parent(div).unwrap(), None);
   assert_eq!(src.parent(span).unwrap(), None);
   assert_eq!(src.parent(text).unwrap(), None);
+}
+
+#[test]
+fn import_node_from_node_kind_coverage_including_shadow_dom_and_script_flags() {
+  let (mut src, host) = build_shadow_host_source_document();
+
+  // Detach the host so the imported nodes originate from a disconnected subtree.
+  let host_parent = src.parent(host).unwrap().expect("host should be connected");
+  src.remove_child(host_parent, host).unwrap();
+
+  let src_comment = src
+    .subtree_preorder(host)
+    .find(|&id| matches!(src.node(id).kind, NodeKind::Comment { .. }))
+    .expect("comment node not found");
+  let src_pi = src
+    .subtree_preorder(host)
+    .find(|&id| matches!(src.node(id).kind, NodeKind::ProcessingInstruction { .. }))
+    .expect("processing instruction node not found");
+  let src_slot = src
+    .subtree_preorder(host)
+    .find(|&id| matches!(src.node(id).kind, NodeKind::Slot { .. }))
+    .expect("slot node not found");
+  let src_script = find_in_subtree_by_id(&src, host, "s").expect("script node not found");
+  assert!(
+    src.node(src_script).script_parser_document,
+    "expected parser-inserted script in source subtree"
+  );
+
+  let src_text = src.create_text("hello");
+  let src_doctype = src.create_doctype("html", "", "");
+
+  let src_fragment = {
+    let frag = src.create_document_fragment();
+    let div = src.create_element("div", HTML_NAMESPACE);
+    src.set_attribute(div, "id", "frag_div").unwrap();
+    src.append_child(frag, div).unwrap();
+    let t = src.create_text("frag");
+    src.append_child(div, t).unwrap();
+    frag
+  };
+
+  // Element root: deep=false.
+  {
+    let mut dst = Document::new(QuirksMode::NoQuirks);
+    let imported = dst.import_node_from(&src, host, /* deep */ false).unwrap();
+    assert_eq!(dst.parent(imported).unwrap(), None, "imported root must be detached");
+    assert_node_kind_equivalent(&src.node(host).kind, &dst.node(imported).kind);
+    assert!(
+      dst.node(imported).children.is_empty(),
+      "deep=false should not clone children"
+    );
+  }
+
+  // Element root: deep=true (should clone ShadowRoot+Slot descendants and clear script flags).
+  {
+    let mut dst = Document::new(QuirksMode::NoQuirks);
+    let imported = dst.import_node_from(&src, host, /* deep */ true).unwrap();
+    assert_eq!(dst.parent(imported).unwrap(), None, "imported root must be detached");
+    assert_subtree_kinds_match(&src, host, &dst, imported);
+
+    assert!(
+      dst
+        .subtree_preorder(imported)
+        .any(|id| matches!(dst.node(id).kind, NodeKind::ShadowRoot { .. })),
+      "expected ShadowRoot node in imported subtree"
+    );
+    assert!(
+      dst
+        .subtree_preorder(imported)
+        .any(|id| matches!(dst.node(id).kind, NodeKind::Slot { .. })),
+      "expected Slot node in imported subtree"
+    );
+
+    let imported_script =
+      find_in_subtree_by_id(&dst, imported, "s").expect("imported script node not found");
+    assert!(
+      !dst.node(imported_script).script_parser_document,
+      "imported scripts must not be parser-inserted"
+    );
+  }
+
+  // Text.
+  {
+    let mut dst = Document::new(QuirksMode::NoQuirks);
+    let imported = dst.import_node_from(&src, src_text, /* deep */ false).unwrap();
+    assert_eq!(dst.parent(imported).unwrap(), None);
+    assert_node_kind_equivalent(&src.node(src_text).kind, &dst.node(imported).kind);
+  }
+
+  // Comment.
+  {
+    let mut dst = Document::new(QuirksMode::NoQuirks);
+    let imported = dst.import_node_from(&src, src_comment, /* deep */ false).unwrap();
+    assert_eq!(dst.parent(imported).unwrap(), None);
+    assert_node_kind_equivalent(&src.node(src_comment).kind, &dst.node(imported).kind);
+  }
+
+  // ProcessingInstruction.
+  {
+    let mut dst = Document::new(QuirksMode::NoQuirks);
+    let imported = dst.import_node_from(&src, src_pi, /* deep */ false).unwrap();
+    assert_eq!(dst.parent(imported).unwrap(), None);
+    assert_node_kind_equivalent(&src.node(src_pi).kind, &dst.node(imported).kind);
+  }
+
+  // Doctype.
+  {
+    let mut dst = Document::new(QuirksMode::NoQuirks);
+    let imported = dst
+      .import_node_from(&src, src_doctype, /* deep */ false)
+      .unwrap();
+    assert_eq!(dst.parent(imported).unwrap(), None);
+    assert_node_kind_equivalent(&src.node(src_doctype).kind, &dst.node(imported).kind);
+  }
+
+  // DocumentFragment deep=false.
+  {
+    let mut dst = Document::new(QuirksMode::NoQuirks);
+    let imported = dst
+      .import_node_from(&src, src_fragment, /* deep */ false)
+      .unwrap();
+    assert_eq!(dst.parent(imported).unwrap(), None);
+    assert_node_kind_equivalent(&src.node(src_fragment).kind, &dst.node(imported).kind);
+    assert!(
+      dst.node(imported).children.is_empty(),
+      "deep=false should not clone fragment children"
+    );
+  }
+
+  // DocumentFragment deep=true.
+  {
+    let mut dst = Document::new(QuirksMode::NoQuirks);
+    let imported = dst
+      .import_node_from(&src, src_fragment, /* deep */ true)
+      .unwrap();
+    assert_eq!(dst.parent(imported).unwrap(), None);
+    assert_subtree_kinds_match(&src, src_fragment, &dst, imported);
+  }
+
+  // Slot deep=false.
+  {
+    let mut dst = Document::new(QuirksMode::NoQuirks);
+    let imported = dst.import_node_from(&src, src_slot, /* deep */ false).unwrap();
+    assert_eq!(dst.parent(imported).unwrap(), None);
+    assert_node_kind_equivalent(&src.node(src_slot).kind, &dst.node(imported).kind);
+    assert!(
+      dst.node(imported).children.is_empty(),
+      "deep=false should not clone slot fallback children"
+    );
+  }
+
+  // Slot deep=true.
+  {
+    let mut dst = Document::new(QuirksMode::NoQuirks);
+    let imported = dst.import_node_from(&src, src_slot, /* deep */ true).unwrap();
+    assert_eq!(dst.parent(imported).unwrap(), None);
+    assert_subtree_kinds_match(&src, src_slot, &dst, imported);
+    let fallback =
+      find_in_subtree_by_id(&dst, imported, "fallback").expect("slot fallback not found");
+    assert!(
+      matches!(dst.node(fallback).kind, NodeKind::Element { .. }),
+      "expected element fallback content under slot"
+    );
+  }
+}
+
+#[test]
+fn adopt_node_from_mapping_is_complete_and_preserves_node_kinds_for_shadow_dom_subtree() {
+  let (mut src, host) = build_shadow_host_source_document();
+  let old_parent = src.parent(host).unwrap().expect("host should be connected");
+
+  let old_ids: Vec<NodeId> = src.subtree_preorder(host).collect();
+  assert!(
+    !old_ids.is_empty(),
+    "expected at least the root node in the adopted subtree"
+  );
+
+  let src_script = find_in_subtree_by_id(&src, host, "s").expect("source script not found");
+  assert!(
+    src.node(src_script).script_parser_document,
+    "expected parser-inserted script in source document"
+  );
+
+  let mut dst = Document::new(QuirksMode::NoQuirks);
+  let adopted = dst.adopt_node_from(&mut src, host).unwrap();
+
+  assert_eq!(dst.parent(adopted.new_root).unwrap(), None);
+  assert!(
+    !src.children(old_parent).unwrap().contains(&host),
+    "adopted node should be removed from its old parent's child list"
+  );
+  assert_eq!(src.parent(host).unwrap(), None, "adopted source root must be detached");
+
+  // Convert mapping list into an indexable lookup for tests.
+  let mut old_to_new = std::collections::HashMap::<NodeId, NodeId>::new();
+  for (old, new) in &adopted.mapping {
+    old_to_new.insert(*old, *new);
+  }
+
+  assert_eq!(
+    old_to_new.get(&host).copied(),
+    Some(adopted.new_root),
+    "expected mapping to include adopted root"
+  );
+
+  for old_id in &old_ids {
+    let new_id = old_to_new
+      .get(old_id)
+      .copied()
+      .unwrap_or_else(|| panic!("missing mapping for old node id {old_id:?}"));
+    assert_node_kind_equivalent(&src.node(*old_id).kind, &dst.node(new_id).kind);
+  }
+
+  assert_eq!(
+    old_to_new.len(),
+    old_ids.len(),
+    "expected mapping to contain one entry per node in the adopted subtree"
+  );
+
+  assert_subtree_kinds_match(&src, host, &dst, adopted.new_root);
+
+  assert!(
+    dst
+      .subtree_preorder(adopted.new_root)
+      .any(|id| matches!(dst.node(id).kind, NodeKind::ShadowRoot { .. })),
+    "expected ShadowRoot node in adopted subtree"
+  );
+  assert!(
+    dst
+      .subtree_preorder(adopted.new_root)
+      .any(|id| matches!(dst.node(id).kind, NodeKind::Slot { .. })),
+    "expected Slot node in adopted subtree"
+  );
+
+  let adopted_script =
+    find_in_subtree_by_id(&dst, adopted.new_root, "s").expect("adopted script not found");
+  assert!(
+    !dst.node(adopted_script).script_parser_document,
+    "adopted scripts must not be parser-inserted"
+  );
+}
+
+#[test]
+fn adopt_node_from_document_fragment_root_includes_mapping_for_all_descendants() {
+  let mut src = Document::new(QuirksMode::NoQuirks);
+  let frag = src.create_document_fragment();
+  let div = src.create_element("div", HTML_NAMESPACE);
+  src.set_attribute(div, "id", "frag_div").unwrap();
+  src.append_child(frag, div).unwrap();
+  let text = src.create_text("frag");
+  src.append_child(div, text).unwrap();
+
+  let old_ids: Vec<NodeId> = src.subtree_preorder(frag).collect();
+
+  let mut dst = Document::new(QuirksMode::NoQuirks);
+  let adopted = dst.adopt_node_from(&mut src, frag).unwrap();
+  assert_eq!(dst.parent(adopted.new_root).unwrap(), None);
+
+  let mut old_to_new = std::collections::HashMap::<NodeId, NodeId>::new();
+  for (old, new) in &adopted.mapping {
+    old_to_new.insert(*old, *new);
+  }
+
+  for old_id in &old_ids {
+    let new_id = old_to_new
+      .get(old_id)
+      .copied()
+      .unwrap_or_else(|| panic!("missing mapping for old node id {old_id:?}"));
+    assert_node_kind_equivalent(&src.node(*old_id).kind, &dst.node(new_id).kind);
+  }
+
+  assert_subtree_kinds_match(&src, frag, &dst, adopted.new_root);
+}
+
+#[test]
+fn adopt_node_from_doctype_detaches_from_source_document() {
+  let mut src = Document::new(QuirksMode::NoQuirks);
+  let root = src.root();
+  let doctype = src.create_doctype("html", "", "");
+  src.append_child(root, doctype).unwrap();
+  assert_eq!(src.parent(doctype).unwrap(), Some(root));
+
+  let mut dst = Document::new(QuirksMode::NoQuirks);
+  let adopted = dst.adopt_node_from(&mut src, doctype).unwrap();
+  assert_eq!(dst.parent(adopted.new_root).unwrap(), None);
+  assert_eq!(src.parent(doctype).unwrap(), None, "source doctype should be detached");
+  assert_node_kind_equivalent(&src.node(doctype).kind, &dst.node(adopted.new_root).kind);
+  assert!(
+    adopted.mapping.iter().any(|(old, new)| *old == doctype && *new == adopted.new_root),
+    "expected mapping to contain adopted doctype"
+  );
 }
 
 #[test]
