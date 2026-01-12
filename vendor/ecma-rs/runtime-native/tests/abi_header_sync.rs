@@ -71,6 +71,7 @@ fn runtime_native_c_header_contains_expected_abi_symbols() {
     "rt_unregister_current_thread(",
     "rt_register_thread(",
     "rt_unregister_thread(",
+    "rt_thread_current(",
     "rt_thread_attach(",
     "rt_thread_detach(",
     "rt_keep_alive_gc_ref(",
@@ -197,6 +198,7 @@ fn runtime_native_exports_match_expected_abi_signatures() {
   let _unregister_current: extern "C" fn() = runtime_native::rt_unregister_current_thread;
   let _register_thread: extern "C" fn() = runtime_native::rt_register_thread;
   let _unregister_thread: extern "C" fn() = runtime_native::rt_unregister_thread;
+  let _thread_current: extern "C" fn() -> *mut runtime_native::Thread = runtime_native::rt_thread_current;
   let _thread_attach: unsafe extern "C" fn(*mut runtime_native::Runtime) -> *mut runtime_native::Thread =
     runtime_native::rt_thread_attach;
   let _thread_detach: unsafe extern "C" fn(*mut runtime_native::Thread) = runtime_native::rt_thread_detach;
@@ -848,15 +850,19 @@ fn runtime_native_cdylib_exports_rt_symbols() {
   let static_stdout = String::from_utf8_lossy(&static_out.stdout);
   let dylib_stdout = String::from_utf8_lossy(&dylib_out.stdout);
 
+  fn strip_symbol_version(name: &str) -> &str {
+    name.split_once('@').map(|(base, _)| base).unwrap_or(name)
+  }
+
   let static_syms: std::collections::BTreeSet<String> = static_stdout
     .lines()
-    .filter_map(|line| line.split_whitespace().last())
+    .filter_map(|line| line.split_whitespace().last().map(strip_symbol_version))
     .filter(|name| name.starts_with("rt_"))
     .map(|s| s.to_string())
     .collect();
   let dylib_syms: std::collections::BTreeSet<String> = dylib_stdout
     .lines()
-    .filter_map(|line| line.split_whitespace().last())
+    .filter_map(|line| line.split_whitespace().last().map(strip_symbol_version))
     .filter(|name| name.starts_with("rt_"))
     .map(|s| s.to_string())
     .collect();
@@ -886,7 +892,7 @@ fn runtime_native_cdylib_exports_rt_symbols() {
       line
         .split_whitespace()
         .last()
-        .is_some_and(|name| name == "RT_GC_EPOCH")
+        .is_some_and(|name| strip_symbol_version(name) == "RT_GC_EPOCH")
     }),
     "expected RT_GC_EPOCH to be exported from {}",
     cdylib.display()

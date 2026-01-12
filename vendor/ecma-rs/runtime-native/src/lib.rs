@@ -883,6 +883,7 @@ mod tests {
       "void rt_unregister_current_thread(void);",
       "void rt_register_thread(void);",
       "void rt_unregister_thread(void);",
+      "Thread* rt_thread_current(void);",
       "Thread* rt_thread_attach(Runtime* runtime);",
       "void rt_thread_detach(Thread* thread);",
       "GcPtr rt_alloc(size_t size, RtShapeId shape);",

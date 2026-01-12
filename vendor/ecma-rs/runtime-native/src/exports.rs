@@ -3480,6 +3480,11 @@ pub extern "C" fn rt_coro_await_value_legacy(coro: *mut RtCoroutineHeader, await
 // Thread registration (native codegen / embedding)
 // -----------------------------------------------------------------------------
 
+#[no_mangle]
+pub extern "C" fn rt_thread_current() -> *mut Thread {
+  abort_on_panic(|| crate::thread::current_thread_ptr())
+}
+
 /// Attach the calling OS thread to `runtime`.
 ///
 /// Returns a pointer to the per-thread [`Thread`] record, or null on failure.

@@ -203,6 +203,11 @@ typedef struct Thread Thread;
 //
 // Generated code may load this symbol directly to access per-thread state with
 // minimal overhead.
+//
+// Note: when linking against `libruntime_native.so`, some toolchains may not
+// export TLS variables like `RT_THREAD` into the dynamic symbol table. Prefer
+// storing the `Thread*` returned by `rt_thread_attach` in embedder-owned
+// TLS/state, or use `rt_thread_current()` as a dynamic-link-friendly accessor.
 #if defined(__cplusplus)
 extern thread_local Thread* RT_THREAD;
 #elif defined(__STDC_VERSION__) && (__STDC_VERSION__ >= 201112L)
@@ -220,6 +225,7 @@ extern Thread* RT_THREAD;
 // - If the current OS thread is not yet registered (via `rt_thread_register` / `rt_thread_init`),
 //   `rt_thread_attach` will register it as `External`.
 // - `rt_thread_detach` will unregister only if attach performed the registration.
+Thread* rt_thread_current(void);
 Thread* rt_thread_attach(Runtime* runtime);
 void rt_thread_detach(Thread* thread);
 

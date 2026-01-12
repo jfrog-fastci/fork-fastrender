@@ -52,7 +52,8 @@ Note: `RT_THREAD` is primarily intended for **static linking** (e.g. a native ex
 Rust's `cdylib` export filtering may omit TLS variables defined outside Rust, so embedders and
 separately-built DSOs should not assume `RT_THREAD` is available via the dynamic symbol table.
 Instead, call `rt_thread_attach` (or `rt_thread_register`) and store the returned `Thread*` in
-embedder-owned TLS/state.
+embedder-owned TLS/state. The runtime also exports `Thread* rt_thread_current(void)` as a
+dynamic-link-friendly accessor.
 
 **Canonical mutator contract:** stop-the-world safepoints and GC root enumeration use the **global**
 thread registry described above. As a result:

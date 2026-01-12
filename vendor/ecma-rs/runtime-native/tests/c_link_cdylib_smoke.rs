@@ -140,13 +140,17 @@ fn c_can_link_and_run_against_runtime_native_cdylib() {
 // This is not a valid C identifier, so bind it via an asm label.
 extern void gc_safepoint_poll(void) __asm__("gc.safepoint_poll");
 
-int main(void) {
-  // Use External kind; this test only validates dynamic linking works.
-  rt_thread_init(3);
-  rt_gc_safepoint();
-  // The slow-path entrypoint is implemented in platform-specific assembly (and has historically
-  // been easy to accidentally omit from `cdylib` exports). Call it with an even epoch so it returns
-  // immediately, but still exercises the symbol resolution + call path.
+ int main(void) {
+   // Use External kind; this test only validates dynamic linking works.
+   rt_thread_init(3);
+   if (rt_thread_current() != NULL) {
+     // `rt_thread_init` registers the thread for safepoints but does not attach it.
+     return 2;
+   }
+   rt_gc_safepoint();
+   // The slow-path entrypoint is implemented in platform-specific assembly (and has historically
+   // been easy to accidentally omit from `cdylib` exports). Call it with an even epoch so it returns
+   // immediately, but still exercises the symbol resolution + call path.
   rt_gc_safepoint_slow((uint64_t)0);
   // Exercise `gc.safepoint_poll` resolution too. With no active stop-the-world request it should
   // return immediately.
