@@ -100,7 +100,7 @@ fn arrow_captures_super_from_enclosing_method_for_flow_narrowing() {
   let file = FileKey::new("a.ts");
   let src = r#"
 class B {
-  isString(x: string | number): x is string {
+  isString(this: C, x: string | number): x is string {
     return typeof x === "string";
   }
 }
@@ -142,7 +142,7 @@ fn arrow_in_static_field_initializer_captures_super_for_flow_narrowing() {
   let file = FileKey::new("a.ts");
   let src = r#"
 class B {
-  static isString(this: any, x: string | number): x is string {
+  static isString(this: typeof C, x: string | number): x is string {
     return typeof x === "string";
   }
 }
