@@ -101,9 +101,7 @@ impl ProgramState {
       .map(|key| self.intern_file_key(key.clone(), FileOrigin::Source))
       .collect();
 
-    let mut type_packages = self.compiler_options.types.clone();
-    type_packages.sort();
-    type_packages.dedup();
+    let type_packages = self.compiler_options.types.clone();
 
     root_keys.sort_unstable_by(|a, b| a.as_str().cmp(b.as_str()));
     root_keys.dedup_by(|a, b| a.as_str() == b.as_str());

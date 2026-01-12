@@ -421,15 +421,10 @@ fn compiler_options_from_raw(raw: &RawCompilerOptions) -> Result<CompilerOptions
   if let Some(libs) = raw.lib.as_ref() {
     let mut parsed = Vec::new();
     for raw in libs {
-      if let Some(lib) = LibName::parse(raw) {
+      if let Some(lib) = LibName::from_compiler_option_value(raw) {
         parsed.push(lib);
       }
     }
-    if parsed.is_empty() && !libs.is_empty() {
-      return Err("compilerOptions.lib did not include any supported libs".to_string());
-    }
-    parsed.sort();
-    parsed.dedup();
     options.libs = parsed;
   }
 

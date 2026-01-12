@@ -346,18 +346,14 @@ impl HarnessOptions {
 
     let mut libs = Vec::new();
     for lib in &self.lib {
-      if let Some(parsed) = LibName::parse(lib) {
+      if let Some(parsed) = LibName::from_compiler_option_value(lib) {
         libs.push(parsed);
       }
     }
-    if !libs.is_empty() {
-      libs.sort();
-      libs.dedup();
-      opts.libs = libs;
-    }
+    opts.libs = libs;
     opts.no_default_lib = self.no_lib.unwrap_or(false);
 
-    opts
+    opts.normalize()
   }
 
   pub(crate) fn to_tsc_options_map(&self) -> Map<String, Value> {
@@ -422,15 +418,11 @@ impl HarnessOptions {
     }
 
     if !self.lib.is_empty() {
-      let libs: Vec<String> = if compiler.libs.is_empty() {
-        self.lib.clone()
-      } else {
-        compiler
-          .libs
-          .iter()
-          .map(|lib| lib.as_str().to_string())
-          .collect()
-      };
+      let libs: Vec<String> = compiler
+        .libs
+        .iter()
+        .map(|lib| lib.as_str().to_string())
+        .collect();
       map.insert(
         "lib".to_string(),
         Value::Array(libs.into_iter().map(Value::String).collect()),
@@ -448,13 +440,13 @@ impl HarnessOptions {
     if let Some(value) = self.declaration {
       map.insert("declaration".to_string(), Value::Bool(value));
     }
-    if let Some(value) = self.module_resolution.as_ref() {
+    if let Some(value) = compiler.module_resolution.as_ref() {
       map.insert("moduleResolution".to_string(), Value::String(value.clone()));
     }
-    if !self.types.is_empty() {
+    if !compiler.types.is_empty() {
       map.insert(
         "types".to_string(),
-        Value::Array(self.types.iter().cloned().map(Value::String).collect()),
+        Value::Array(compiler.types.iter().cloned().map(Value::String).collect()),
       );
     }
     if !self.type_roots.is_empty() {
@@ -808,7 +800,7 @@ mod tests {
       vec![LibName::parse("es2020").expect("es2020 lib")]
     );
     assert!(compiler.no_default_lib);
-    assert_eq!(compiler.types, vec!["foo".to_string(), "bar".to_string()]);
+    assert_eq!(compiler.types, vec!["bar".to_string(), "foo".to_string()]);
     assert_eq!(
       compiler.module_resolution.as_deref(),
       Some("node16"),
@@ -821,7 +813,7 @@ mod tests {
         .get("types")
         .and_then(|v| v.as_array())
         .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>()),
-      Some(vec!["foo", "bar"])
+      Some(vec!["bar", "foo"])
     );
   }
 

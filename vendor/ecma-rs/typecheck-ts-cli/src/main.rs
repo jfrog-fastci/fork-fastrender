@@ -332,18 +332,20 @@ fn run_typecheck(args: TypecheckArgs) -> ExitCode {
     options.types = effective_type_packages(cfg, &options, &type_roots);
   }
 
-  let module_resolution = options
-    .module_resolution
-    .as_deref()
-    .map(|s| s.trim().to_ascii_lowercase());
+  // Canonicalize casing/ordering so CLI outputs are deterministic regardless of
+  // how options were specified. Note: option diagnostics (TS5053, TS6046, etc)
+  // are emitted by `typecheck-ts` core during `Program::check()`, not here.
+  options = options.normalize();
+
+  let module_resolution = options.module_resolution.as_deref();
   let node_resolve = args.node_resolve
     || matches!(
-      module_resolution.as_deref(),
+      module_resolution,
       Some("node" | "node10" | "node16" | "nodenext" | "bundler")
     )
     || matches!(options.module, Some(ModuleKind::Node16 | ModuleKind::NodeNext))
     || !options.types.is_empty();
-  let module_resolution_mode = match module_resolution.as_deref() {
+  let module_resolution_mode = match module_resolution {
     Some("node16") => ModuleResolutionMode::Node16,
     Some("nodenext") => ModuleResolutionMode::NodeNext,
     Some("bundler") => ModuleResolutionMode::Bundler,
@@ -582,13 +584,10 @@ fn build_compiler_options(
   if !args.lib.is_empty() {
     let mut libs = Vec::new();
     for raw in &args.lib {
-      let Some(lib) = LibName::parse(raw) else {
-        return Err(format!("unknown lib '{}'", raw.trim()));
-      };
-      libs.push(lib);
+      if let Some(lib) = LibName::from_compiler_option_value(raw) {
+        libs.push(lib);
+      }
     }
-    libs.sort();
-    libs.dedup();
     options.libs = libs;
   }
 

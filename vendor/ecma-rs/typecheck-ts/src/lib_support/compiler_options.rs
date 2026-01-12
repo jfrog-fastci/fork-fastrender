@@ -2,6 +2,7 @@
 use serde::{Deserialize, Serialize};
 use std::{fmt, sync::Arc};
 
+use diagnostics::{Diagnostic, FileId, Span, TextRange};
 use types_ts_interned::CacheConfig;
 
 /// Target language level.
@@ -163,6 +164,50 @@ impl Default for CompilerOptions {
   }
 }
 
+impl CompilerOptions {
+  /// Canonicalize option values so that downstream behavior is deterministic
+  /// regardless of how the options were specified (ordering, casing, etc).
+  ///
+  /// This does **not** emit diagnostics. Use [`Self::normalize_and_validate`] to
+  /// apply `tsc`-style option validation that also produces diagnostics.
+  pub fn normalize(mut self) -> Self {
+    self.module_resolution = self
+      .module_resolution
+      .take()
+      .and_then(|raw| normalize_optional_string(raw, |s| s.to_ascii_lowercase()));
+
+    if self.libs.len() > 1 {
+      self.libs.sort();
+      self.libs.dedup();
+    }
+
+    if !self.types.is_empty() {
+      let mut normalized: Vec<String> = self
+        .types
+        .into_iter()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+      normalized.sort();
+      normalized.dedup();
+      self.types = normalized;
+    }
+
+    self
+  }
+
+  /// Normalize and validate compiler options, returning the updated options and
+  /// any diagnostics produced during validation.
+  ///
+  /// Validation may apply `tsc`-compatible fixups (for example, a conflicting
+  /// `noLib` + `lib` combination emits `TS5053` and then ignores the `lib` list).
+  pub fn normalize_and_validate(self) -> (Self, Vec<Diagnostic>) {
+    let mut options = self.normalize();
+    let diagnostics = validate_options(&mut options);
+    (options, diagnostics)
+  }
+}
+
 /// Strategy for sharing caches across bodies/files.
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -254,6 +299,17 @@ impl LibName {
     canonicalize_lib_name(raw).map(|name| LibName(Arc::from(name)))
   }
 
+  /// Parse a lib name from a `--lib` / `compilerOptions.lib` entry, preserving
+  /// values that are invalid so the bundled lib loader can emit `TS6046`.
+  ///
+  /// This is intentionally more permissive than [`Self::parse`]. It performs
+  /// best-effort canonicalization (trim, lower-case, strip `lib.` prefix and
+  /// `.d.ts`/`.ts` suffix) but does not require the resulting string to match
+  /// the set of known TypeScript libs.
+  pub fn from_compiler_option_value(raw: &str) -> Option<Self> {
+    normalize_lib_option_value(raw).map(|name| LibName(Arc::from(name)))
+  }
+
   /// Parse a lib name from TypeScript-style option strings (e.g. `dom`, `es2020`,
   /// `esnext.disposable`). This is a small compatibility shim used by features
   /// like `/// <reference lib="..." />`.
@@ -276,6 +332,36 @@ impl fmt::Display for LibName {
   fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
     f.write_str(self.as_str())
   }
+}
+
+fn normalize_optional_string(
+  raw: String,
+  map: impl FnOnce(&str) -> String,
+) -> Option<String> {
+  let trimmed = raw.trim();
+  if trimmed.is_empty() {
+    return None;
+  }
+  Some(map(trimmed))
+}
+
+fn validate_options(options: &mut CompilerOptions) -> Vec<Diagnostic> {
+  use crate::codes;
+
+  let mut diagnostics = Vec::new();
+
+  // Match tsc's TS5053 behaviour: `--noLib` conflicts with an explicit `--lib`
+  // list. TypeScript emits the diagnostic and then proceeds as `--noLib`
+  // (ignoring the `lib` list entirely).
+  if options.no_default_lib && !options.libs.is_empty() {
+    diagnostics.push(codes::LIB_OPTION_CANNOT_BE_SPECIFIED_WITH_NOLIB.error(
+      "Option 'lib' cannot be specified with option 'noLib'.",
+      Span::new(FileId(u32::MAX), TextRange::new(0, 0)),
+    ));
+    options.libs.clear();
+  }
+
+  diagnostics
 }
 
 fn canonicalize_lib_name(raw: &str) -> Option<String> {
@@ -315,6 +401,41 @@ fn canonicalize_lib_name(raw: &str) -> Option<String> {
     return None;
   }
 
+  Some(normalized)
+}
+
+fn normalize_lib_option_value(raw: &str) -> Option<String> {
+  let trimmed = raw.trim();
+  if trimmed.is_empty() {
+    return None;
+  }
+
+  // TypeScript treats lib names case-insensitively.
+  let mut normalized = trimmed.to_ascii_lowercase();
+
+  // Permit passing file names/paths (`lib.es2020.d.ts` or `.../lib.es2020.d.ts`).
+  if let Some((_, tail)) = normalized.rsplit_once(['/', '\\']) {
+    normalized = tail.to_string();
+  }
+
+  let mut candidate = normalized.trim_start_matches("lib.").to_string();
+  candidate = candidate
+    .trim_end_matches(".d.ts")
+    .trim_end_matches(".ts")
+    .to_string();
+
+  // `--lib es6` is an alias for `es2015`.
+  if candidate == "es6" {
+    candidate = "es2015".to_string();
+  }
+
+  if !candidate.is_empty() {
+    return Some(candidate);
+  }
+
+  // If stripping `lib.` / suffixes produced an empty string, preserve the
+  // original value so downstream validation can produce a deterministic TS6046
+  // diagnostic.
   Some(normalized)
 }
 
@@ -636,6 +757,103 @@ mod tests {
     options.libs = vec![LibName::parse("es2015.promise").unwrap()];
     let libs = LibSet::for_options(&options);
     assert_eq!(libs.libs(), &[LibName::parse("es2015.promise").unwrap()]);
+  }
+
+  #[test]
+  fn compiler_options_normalization_is_idempotent() {
+    let mut options = CompilerOptions::default();
+    options.module_resolution = Some("  Node16 ".to_string());
+    options.types = vec![
+      " react ".to_string(),
+      "".to_string(),
+      "react".to_string(),
+      "jest".to_string(),
+    ];
+    options.libs = vec![
+      LibName::from_compiler_option_value("ES2020").unwrap(),
+      LibName::from_compiler_option_value("dom").unwrap(),
+      LibName::from_compiler_option_value("es2020").unwrap(),
+    ];
+
+    let once = options.clone().normalize();
+    let twice = once.clone().normalize();
+    assert_eq!(once, twice);
+    assert_eq!(once.module_resolution.as_deref(), Some("node16"));
+    assert_eq!(once.types, vec!["jest".to_string(), "react".to_string()]);
+    assert_eq!(
+      once.libs,
+      vec![
+        LibName::from_compiler_option_value("dom").unwrap(),
+        LibName::from_compiler_option_value("es2020").unwrap(),
+      ]
+    );
+  }
+
+  #[test]
+  fn compiler_options_normalization_is_order_insensitive() {
+    let mut a = CompilerOptions::default();
+    a.module_resolution = Some("NODE".to_string());
+    a.types = vec!["b".to_string(), "a".to_string()];
+    a.libs = vec![
+      LibName::from_compiler_option_value("es2020").unwrap(),
+      LibName::from_compiler_option_value("dom").unwrap(),
+    ];
+
+    let mut b = CompilerOptions::default();
+    b.module_resolution = Some(" node ".to_string());
+    b.types = vec!["a".to_string(), "b".to_string(), "b".to_string()];
+    b.libs = vec![
+      LibName::from_compiler_option_value("DOM").unwrap(),
+      LibName::from_compiler_option_value("ES2020").unwrap(),
+      LibName::from_compiler_option_value("es2020").unwrap(),
+    ];
+
+    assert_eq!(a.normalize(), b.normalize());
+  }
+
+  #[test]
+  fn compiler_options_validation_is_deterministic_and_applies_fixups() {
+    let mut options = CompilerOptions::default();
+    options.no_default_lib = true;
+    options.libs = vec![
+      LibName::from_compiler_option_value("dom").unwrap(),
+      LibName::from_compiler_option_value("es2020").unwrap(),
+    ];
+
+    let (normalized, diagnostics) = options.normalize_and_validate();
+    assert!(normalized.libs.is_empty(), "libs should be ignored under noLib");
+    assert_eq!(
+      diagnostics
+        .iter()
+        .map(|d| d.code.as_str())
+        .collect::<Vec<_>>(),
+      vec!["TS5053"]
+    );
+
+    // Re-validating should not emit duplicate diagnostics.
+    let (normalized2, diagnostics2) = normalized.clone().normalize_and_validate();
+    assert_eq!(normalized, normalized2);
+    assert!(diagnostics2.is_empty());
+  }
+
+  #[test]
+  fn invalid_libs_produce_deduped_ts6046_diagnostics() {
+    let mut options = CompilerOptions::default();
+    options.libs = vec![
+      LibName::from_compiler_option_value("definitely-not-a-lib").unwrap(),
+      LibName::from_compiler_option_value("DEFINITELY-NOT-A-LIB").unwrap(),
+      LibName::from_compiler_option_value("es2020").unwrap(),
+    ];
+
+    let options = options.normalize();
+    let manager = crate::lib_support::lib_env::LibManager::new();
+    let loaded = manager.bundled_libs(&options);
+    let invalid: Vec<_> = loaded
+      .diagnostics
+      .iter()
+      .filter(|d| d.code.as_str() == crate::codes::INVALID_LIB_OPTION.as_str())
+      .collect();
+    assert_eq!(invalid.len(), 1, "expected TS6046 to be deduped");
   }
 }
 
