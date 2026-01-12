@@ -113,6 +113,57 @@ fn await_in_assignment_expression() -> Result<(), VmError> {
 }
 
 #[test]
+fn await_in_destructuring_assignment_default() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(
+    r#"
+      var out = "";
+      async function f() {
+        let x;
+        ({ a: x = await Promise.resolve("ok") } = {});
+        return x;
+      }
+      f().then(function (v) { out = v; });
+      out
+    "#,
+  )?;
+  assert_eq!(value_to_string(&rt, value), "");
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let value = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, value), "ok");
+  Ok(())
+}
+
+#[test]
+fn await_in_destructuring_assignment_computed_key_and_result() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(
+    r#"
+      var out = "";
+      async function f() {
+        let x;
+        let obj = { k: "v" };
+        let res = ({ [await Promise.resolve("k")]: x } = obj);
+        return res.k + x;
+      }
+      f().then(function (v) { out = v; });
+      out
+    "#,
+  )?;
+  assert_eq!(value_to_string(&rt, value), "");
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let value = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, value), "vv");
+  Ok(())
+}
+
+#[test]
 fn await_in_comma_expression() -> Result<(), VmError> {
   let mut rt = new_runtime();
 
@@ -257,4 +308,3 @@ fn await_in_import_specifier() -> Result<(), VmError> {
   host.teardown_jobs(&mut rt);
   Ok(())
 }
-

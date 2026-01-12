@@ -8843,6 +8843,12 @@ enum AsyncFrame {
   AssignPatternAfterRhs {
     expr: *const BinaryExpr,
   },
+  /// Finish a destructuring assignment after binding the pattern (used when the pattern evaluation
+  /// itself contains `await` and can suspend). Restores the assignment expression result to the
+  /// original RHS value.
+  AssignPatternAfterBind {
+    result_root: RootId,
+  },
   /// Continue an assignment expression after evaluating a member base expression.
   AssignMemberAfterBase {
     expr: *const BinaryExpr,
@@ -9143,6 +9149,7 @@ fn async_teardown_frame(heap: &mut Heap, frame: &mut AsyncFrame) {
       }
     }
     AsyncFrame::ImportAfterOptions { specifier_root, .. } => heap.remove_root(*specifier_root),
+    AsyncFrame::AssignPatternAfterBind { result_root } => heap.remove_root(*result_root),
     AsyncFrame::AssignComputedMemberAfterMember { base_root, .. } => heap.remove_root(*base_root),
     AsyncFrame::AssignAfterRhs {
       base_root, key_root, ..
@@ -14821,20 +14828,55 @@ fn async_eval_assignment_simple(
   match &*expr.left.stx {
     Expr::ObjPat(_) | Expr::ArrPat(_) => match async_eval_expr(evaluator, scope, &expr.right)? {
       AsyncEval::Complete(value) => {
-        let mut bind_scope = scope.reborrow();
-        bind_scope.push_root(value)?;
-        bind_assignment_target(
-          evaluator.vm,
-          &mut *evaluator.host,
-          &mut *evaluator.hooks,
-          &mut bind_scope,
-          evaluator.env,
-          &expr.left,
-          value,
-          evaluator.strict,
-          evaluator.this,
-        )?;
-        Ok(AsyncEval::Complete(value))
+        if expr_contains_await(&expr.left) {
+          // The RHS has completed, but the pattern may still suspend while evaluating computed keys
+          // or default values. Root the RHS twice: once for the binder to consume, and once so we
+          // can restore the assignment expression result after binding completes.
+          let result_root = async_root_value(scope, value)?;
+          let value_root = async_root_value(scope, value)?;
+          match async_bind_assignment_target(evaluator, scope, &expr.left, value_root) {
+            Ok(AsyncEval::Complete(())) => {
+              let value = scope
+                .heap()
+                .get_root(result_root)
+                .ok_or(VmError::InvariantViolation(
+                  "missing destructuring assignment result root",
+                ))?;
+              scope.heap_mut().remove_root(result_root);
+              Ok(AsyncEval::Complete(value))
+            }
+            Ok(AsyncEval::Suspend(mut suspend)) => {
+              if let Err(_) = suspend.frames.try_reserve(1) {
+                for mut frame in suspend.frames {
+                  async_teardown_frame(scope.heap_mut(), &mut frame);
+                }
+                scope.heap_mut().remove_root(result_root);
+                return Err(VmError::OutOfMemory);
+              }
+              suspend.frames.push_back(AsyncFrame::AssignPatternAfterBind { result_root });
+              Ok(AsyncEval::Suspend(suspend))
+            }
+            Err(err) => {
+              scope.heap_mut().remove_root(result_root);
+              Err(err)
+            }
+          }
+        } else {
+          let mut bind_scope = scope.reborrow();
+          bind_scope.push_root(value)?;
+          bind_assignment_target(
+            evaluator.vm,
+            &mut *evaluator.host,
+            &mut *evaluator.hooks,
+            &mut bind_scope,
+            evaluator.env,
+            &expr.left,
+            value,
+            evaluator.strict,
+            evaluator.this,
+          )?;
+          Ok(AsyncEval::Complete(value))
+        }
       }
       AsyncEval::Suspend(mut suspend) => {
         async_frames_push(
@@ -18214,24 +18256,75 @@ fn async_resume_from_frames(
         AsyncState::Expr(rhs_res) => match rhs_res {
           Ok(value) => {
             let expr = unsafe { &*expr };
-            let mut bind_scope = scope.reborrow();
-            bind_scope.push_root(value)?;
-            match bind_assignment_target(
-              evaluator.vm,
-              &mut *evaluator.host,
-              &mut *evaluator.hooks,
-              &mut bind_scope,
-              evaluator.env,
-              &expr.left,
-              value,
-              evaluator.strict,
-              evaluator.this,
-            ) {
-              Ok(()) => state = AsyncState::Expr(Ok(value)),
-              Err(err @ (VmError::Throw(_) | VmError::ThrowWithStack { .. })) => {
-                state = AsyncState::Expr(Err(err))
+            if expr_contains_await(&expr.left) {
+              // The RHS is now known, but binding the pattern itself may suspend if it evaluates
+              // computed keys/default values containing `await`.
+              let result_root = async_root_value(scope, value)?;
+              let value_root = match async_root_value(scope, value) {
+                Ok(root) => root,
+                Err(err) => {
+                  scope.heap_mut().remove_root(result_root);
+                  return Err(err);
+                }
+              };
+              match async_bind_assignment_target(evaluator, scope, &expr.left, value_root) {
+                Ok(AsyncEval::Complete(())) => {
+                  let value = scope
+                    .heap()
+                    .get_root(result_root)
+                    .ok_or(VmError::InvariantViolation(
+                      "missing destructuring assignment result root",
+                    ))?;
+                  scope.heap_mut().remove_root(result_root);
+                  state = AsyncState::Expr(Ok(value));
+                }
+                Ok(AsyncEval::Suspend(mut suspend)) => {
+                  if let Err(_) = suspend.frames.try_reserve(1) {
+                    for mut frame in suspend.frames {
+                      async_teardown_frame(scope.heap_mut(), &mut frame);
+                    }
+                    scope.heap_mut().remove_root(result_root);
+                    for mut frame in frames {
+                      async_teardown_frame(scope.heap_mut(), &mut frame);
+                    }
+                    return Err(VmError::OutOfMemory);
+                  }
+                  suspend.frames.push_back(AsyncFrame::AssignPatternAfterBind { result_root });
+                  suspend.frames.append(&mut frames);
+                  return Ok(AsyncBodyResult::Await {
+                    await_value: suspend.await_value,
+                    frames: suspend.frames,
+                  });
+                }
+                Err(err @ (VmError::Throw(_) | VmError::ThrowWithStack { .. })) => {
+                  scope.heap_mut().remove_root(result_root);
+                  state = AsyncState::Expr(Err(err));
+                }
+                Err(err) => {
+                  scope.heap_mut().remove_root(result_root);
+                  return Err(err);
+                }
               }
-              Err(err) => return Err(err),
+            } else {
+              let mut bind_scope = scope.reborrow();
+              bind_scope.push_root(value)?;
+              match bind_assignment_target(
+                evaluator.vm,
+                &mut *evaluator.host,
+                &mut *evaluator.hooks,
+                &mut bind_scope,
+                evaluator.env,
+                &expr.left,
+                value,
+                evaluator.strict,
+                evaluator.this,
+              ) {
+                Ok(()) => state = AsyncState::Expr(Ok(value)),
+                Err(err @ (VmError::Throw(_) | VmError::ThrowWithStack { .. })) => {
+                  state = AsyncState::Expr(Err(err))
+                }
+                Err(err) => return Err(err),
+              }
             }
           }
           Err(err) => state = AsyncState::Expr(Err(err)),
@@ -18240,6 +18333,31 @@ fn async_resume_from_frames(
           return Err(VmError::InvariantViolation(
             "assignment pattern frame received completion state",
           ))
+        }
+      },
+
+      AsyncFrame::AssignPatternAfterBind { result_root } => match state {
+        AsyncState::Expr(bind_res) => match bind_res {
+          Ok(_) => {
+            let value = scope
+              .heap()
+              .get_root(result_root)
+              .ok_or(VmError::InvariantViolation(
+                "missing destructuring assignment result root",
+              ))?;
+            scope.heap_mut().remove_root(result_root);
+            state = AsyncState::Expr(Ok(value));
+          }
+          Err(err) => {
+            scope.heap_mut().remove_root(result_root);
+            state = AsyncState::Expr(Err(err));
+          }
+        },
+        AsyncState::Completion(_) => {
+          scope.heap_mut().remove_root(result_root);
+          return Err(VmError::InvariantViolation(
+            "assignment pattern after bind frame received completion state",
+          ));
         }
       },
 
