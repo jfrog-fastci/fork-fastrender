@@ -9,6 +9,12 @@ pub enum BrowserTheme {
   Dark,
 }
 
+impl Default for BrowserTheme {
+  fn default() -> Self {
+    Self::System
+  }
+}
+
 impl BrowserTheme {
   pub fn as_str(self) -> &'static str {
     match self {
@@ -16,6 +22,27 @@ impl BrowserTheme {
       Self::Light => "light",
       Self::Dark => "dark",
     }
+  }
+}
+
+impl serde::Serialize for BrowserTheme {
+  fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+  where
+    S: serde::Serializer,
+  {
+    serializer.serialize_str(self.as_str())
+  }
+}
+
+impl<'de> serde::Deserialize<'de> for BrowserTheme {
+  fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+  where
+    D: serde::Deserializer<'de>,
+  {
+    let raw = <String as serde::Deserialize<'de>>::deserialize(deserializer)?;
+    // Be permissive so hand-edited session files don't hard-fail on unknown values. Unknown/empty
+    // strings fall back to the default `System` theme.
+    Ok(parse_browser_theme(&raw).unwrap_or(BrowserTheme::System))
   }
 }
 

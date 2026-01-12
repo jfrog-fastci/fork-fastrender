@@ -26,6 +26,15 @@ fn parse_env_bool(value: &str) -> bool {
     || v.eq_ignore_ascii_case("off"))
 }
 
+/// Read the reduced-motion override from the environment.
+///
+/// - `None` means the env var is not set (caller should fall back to settings/defaults).
+/// - `Some(false)` means the env var is set but falsey (`0`, `false`, empty, etc).
+/// - `Some(true)` means the env var is set and truthy (`1`, `true`, etc).
+pub fn reduced_motion_override_from_env() -> Option<bool> {
+  runtime_toggles().get(ENV_REDUCED_MOTION).map(parse_env_bool)
+}
+
 fn reduced_motion_from_runtime_toggles() -> bool {
   runtime_toggles()
     .get(ENV_REDUCED_MOTION)
@@ -73,6 +82,13 @@ impl UiMotion {
     Self::new(!reduced_motion)
   }
 
+  /// Construct the motion policy from a runtime setting, while still honoring the env var as the
+  /// highest-precedence override.
+  pub fn from_settings(reduced_motion: bool) -> Self {
+    let reduced_motion = reduced_motion_override_from_env().unwrap_or(reduced_motion);
+    Self::new(!reduced_motion)
+  }
+
   pub fn new(enabled: bool) -> Self {
     Self {
       enabled,
@@ -92,6 +108,17 @@ impl UiMotion {
     const MIN_SCALE: f32 = 0.98;
     let t = t.clamp(0.0, 1.0);
     MIN_SCALE + (1.0 - MIN_SCALE) * t
+  }
+
+  #[cfg(feature = "browser_ui")]
+  pub fn from_ctx(ctx: &egui::Context) -> Self {
+    let reduced_motion = ctx.data(|d| d.get_temp::<bool>(motion_ctx_id()).unwrap_or(false));
+    Self::from_settings(reduced_motion)
+  }
+
+  #[cfg(feature = "browser_ui")]
+  pub fn set_ctx_reduced_motion(ctx: &egui::Context, reduced_motion: bool) {
+    ctx.data_mut(|d| d.insert_temp(motion_ctx_id(), reduced_motion));
   }
 
   #[cfg(feature = "browser_ui")]
@@ -123,10 +150,15 @@ impl UiMotion {
   }
 }
 
+#[cfg(feature = "browser_ui")]
+fn motion_ctx_id() -> egui::Id {
+  egui::Id::new("fastr_browser_reduced_motion_setting")
+}
+
 #[cfg(test)]
 mod tests {
-  use crate::debug::runtime::{with_runtime_toggles, RuntimeToggles};
   use super::{parse_env_bool, UiMotion, ENV_REDUCED_MOTION};
+  use crate::debug::runtime::{with_runtime_toggles, RuntimeToggles};
   use std::collections::HashMap;
   use std::sync::Arc;
 
@@ -206,5 +238,34 @@ mod tests {
     );
     let mid = motion.popup_open_scale(0.5);
     assert!(mid > 0.98 && mid < 1.0, "expected mid scale to be in (0.98, 1.0)");
+  }
+
+  #[test]
+  fn ui_motion_from_settings_env_override_beats_settings() {
+    with_runtime_toggles(
+      Arc::new(RuntimeToggles::from_map(HashMap::from([(
+        ENV_REDUCED_MOTION.to_string(),
+        "1".to_string(),
+      )]))),
+      || {
+        assert!(
+          !UiMotion::from_settings(false).enabled,
+          "expected env=true to force reduced motion, overriding settings"
+        );
+      },
+    );
+
+    with_runtime_toggles(
+      Arc::new(RuntimeToggles::from_map(HashMap::from([(
+        ENV_REDUCED_MOTION.to_string(),
+        "0".to_string(),
+      )]))),
+      || {
+        assert!(
+          UiMotion::from_settings(true).enabled,
+          "expected env=false to force motion enabled, overriding settings"
+        );
+      },
+    );
   }
 }

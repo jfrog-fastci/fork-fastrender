@@ -27,6 +27,7 @@ pub enum BrowserIcon {
   CloseTab,
   NewTab,
   OpenInNewTab,
+  Appearance,
   ZoomIn,
   ZoomOut,
   LockSecure,
@@ -62,6 +63,7 @@ impl BrowserIcon {
       Self::CloseTab => "close_tab",
       Self::NewTab => "new_tab",
       Self::OpenInNewTab => "open_in_new_tab",
+      Self::Appearance => "appearance",
       Self::ZoomIn => "zoom_in",
       Self::ZoomOut => "zoom_out",
       Self::LockSecure => "lock_secure",
@@ -97,6 +99,7 @@ impl BrowserIcon {
       Self::CloseTab => "Close tab",
       Self::NewTab => "New tab",
       Self::OpenInNewTab => "Open in new tab",
+      Self::Appearance => "Appearance",
       Self::ZoomIn => "Zoom in",
       Self::ZoomOut => "Zoom out",
       Self::LockSecure => "Secure connection",
@@ -128,6 +131,7 @@ impl BrowserIcon {
       Self::CloseTab => include_bytes!("../../assets/browser_icons/close_tab.svg"),
       Self::NewTab => include_bytes!("../../assets/browser_icons/new_tab.svg"),
       Self::OpenInNewTab => include_bytes!("../../assets/browser_icons/open_in_new_tab.svg"),
+      Self::Appearance => include_bytes!("../../assets/browser_icons/appearance.svg"),
       Self::ZoomIn => include_bytes!("../../assets/browser_icons/zoom_in.svg"),
       Self::ZoomOut => include_bytes!("../../assets/browser_icons/zoom_out.svg"),
       Self::LockSecure => include_bytes!("../../assets/browser_icons/lock_secure.svg"),
@@ -429,7 +433,7 @@ impl egui::Widget for IconButton {
     //
     // Egui's default widget visuals snap immediately between states. For the browser chrome we use
     // subtle animations so the toolbar feels responsive and premium, with reduced-motion support.
-    let motion = UiMotion::from_env();
+    let motion = UiMotion::from_ctx(ui.ctx());
     let hover_t = motion.animate_bool(
       ui.ctx(),
       response.id.with("hover"),
@@ -478,12 +482,14 @@ impl egui::Widget for IconButton {
       paint_icon(ui, rect, self.icon, icon_side, fg_color);
     }
 
+    // Ensure keyboard focus is visible (important for a11y and non-mouse workflows).
     if response.has_focus() {
       let focus_stroke = ui.visuals().selection.stroke;
       let expand = 1.0 + focus_stroke.width * 0.5;
       let focus_rect = rect.expand(expand);
       let focus_rounding = egui::Rounding::same(rounding.nw + expand);
-      ui.painter()
+      ui
+        .painter()
         .rect_stroke(focus_rect, focus_rounding, focus_stroke);
     }
 
@@ -551,6 +557,7 @@ mod tests {
       BrowserIcon::NewTab,
       BrowserIcon::CloseTab,
       BrowserIcon::OpenInNewTab,
+      BrowserIcon::Appearance,
       BrowserIcon::ZoomOut,
       BrowserIcon::ZoomIn,
       BrowserIcon::LockSecure,
@@ -696,6 +703,7 @@ mod tests {
       BrowserIcon::CloseTab,
       BrowserIcon::NewTab,
       BrowserIcon::OpenInNewTab,
+      BrowserIcon::Appearance,
       BrowserIcon::ZoomIn,
       BrowserIcon::ZoomOut,
       BrowserIcon::LockSecure,

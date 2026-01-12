@@ -1,4 +1,5 @@
 pub mod about_pages;
+pub mod appearance;
 pub mod bookmarks;
 pub mod browser_app;
 pub mod browser_limits;
@@ -72,7 +73,7 @@ pub mod theme;
 pub mod profile_persistence;
 pub mod profile_autosave;
 
-#[cfg(feature = "browser_ui")]
+#[cfg(any(test, feature = "browser_ui"))]
 pub mod session;
 
 #[cfg(feature = "browser_ui")]

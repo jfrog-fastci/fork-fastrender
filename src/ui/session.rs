@@ -3,8 +3,9 @@
 //! Kept behind the `browser_ui` feature gate so core renderer builds remain lean.
 
 use crate::ui::about_pages;
+use crate::ui::appearance;
+use crate::ui::appearance::AppearanceSettings;
 use crate::ui::browser_app::BrowserAppState;
-use crate::ui::theme;
 use crate::ui::validate_user_navigation_url_scheme;
 use crate::ui::zoom;
 use fs2::FileExt;
@@ -146,6 +147,8 @@ pub struct BrowserSession {
   pub windows: Vec<BrowserSessionWindow>,
   #[serde(default)]
   pub active_window_index: usize,
+  #[serde(default, skip_serializing_if = "AppearanceSettings::is_default")]
+  pub appearance: AppearanceSettings,
   /// Whether the previous browser process believes it shut down cleanly.
   ///
   /// This is used as a lightweight crash marker:
@@ -176,6 +179,7 @@ impl BrowserSession {
         window_state: None,
       }],
       active_window_index: 0,
+      appearance: AppearanceSettings::default(),
       did_exit_cleanly: true,
       ui_scale: None,
     }
@@ -185,8 +189,8 @@ impl BrowserSession {
   /// Build a session snapshot from the current windowed UI state model.
   ///
   /// This intentionally stores only lightweight serializable data (URLs, zoom, viewport scroll).
-  pub fn from_app_state(app: &BrowserAppState, ui_scale: f32) -> Self {
-    let ui_scale = theme::clamp_ui_scale(ui_scale);
+  pub fn from_app_state(app: &BrowserAppState) -> Self {
+    let ui_scale = appearance::clamp_ui_scale(app.appearance.ui_scale);
     let mut tabs = Vec::new();
     for tab in &app.tabs {
       let mut url = tab
@@ -230,8 +234,9 @@ impl BrowserSession {
         window_state: None,
       }],
       active_window_index: 0,
+      appearance: app.appearance,
       did_exit_cleanly: true,
-      ui_scale: (ui_scale != theme::DEFAULT_UI_SCALE).then_some(ui_scale),
+      ui_scale: (ui_scale != appearance::DEFAULT_UI_SCALE).then_some(ui_scale),
     }
     .sanitized()
   }
@@ -239,6 +244,7 @@ impl BrowserSession {
   /// Ensure the session is well-formed and contains only supported URLs.
   pub fn sanitized(mut self) -> Self {
     self.version = SESSION_VERSION;
+    self.appearance = self.appearance.sanitized();
 
     let home_trimmed = self.home_url.trim().to_string();
     self.home_url = if home_trimmed.is_empty()
@@ -273,8 +279,24 @@ impl BrowserSession {
 
     self.ui_scale = self
       .ui_scale
-      .map(|raw| theme::clamp_ui_scale(raw))
-      .and_then(|scale| (scale != theme::DEFAULT_UI_SCALE).then_some(scale));
+      .map(|raw| appearance::clamp_ui_scale(raw))
+      .and_then(|scale| (scale != appearance::DEFAULT_UI_SCALE).then_some(scale));
+
+    // Backwards compatibility: older v2 session files stored chrome UI scale in the legacy
+    // top-level `ui_scale` field. The new appearance settings persist UI scale inside
+    // `appearance.ui_scale`. If the appearance value is still default, treat the legacy field as
+    // the persisted value.
+    if (self.appearance.ui_scale - appearance::DEFAULT_UI_SCALE).abs() <= 1e-6 {
+      if let Some(scale) = self.ui_scale {
+        self.appearance.ui_scale = scale;
+      }
+    }
+
+    // Keep the legacy field in sync so older browser builds (that only understand `ui_scale`) can
+    // still restore the user's configured scaling.
+    self.appearance.ui_scale = appearance::clamp_ui_scale(self.appearance.ui_scale);
+    self.ui_scale = (self.appearance.ui_scale != appearance::DEFAULT_UI_SCALE)
+      .then_some(self.appearance.ui_scale);
 
     self
   }
@@ -377,6 +399,7 @@ mod tests {
         window_state: None,
       }],
       active_window_index: 0,
+      appearance: AppearanceSettings::default(),
       did_exit_cleanly: true,
       ui_scale: None,
     }
@@ -448,6 +471,7 @@ mod tests {
         window_state: None,
       }],
       active_window_index: 0,
+      appearance: AppearanceSettings::default(),
       did_exit_cleanly: true,
       ui_scale: None,
     }
@@ -487,7 +511,7 @@ mod tests {
     app.push_tab(a, true);
     app.push_tab(b, false);
 
-    let session = BrowserSession::from_app_state(&app, theme::DEFAULT_UI_SCALE);
+    let session = BrowserSession::from_app_state(&app);
     assert_eq!(session.active_window_index, 0);
     assert_eq!(session.home_url, about_pages::ABOUT_NEWTAB);
     assert_eq!(session.windows[0].active_tab_index, 0);
@@ -531,21 +555,21 @@ mod tests {
     assert_eq!(session.windows.len(), 1);
     assert_eq!(session.active_window_index, 0);
     assert_eq!(session.windows[0].active_tab_index, 1);
-      assert_eq!(
-        session.windows[0].tabs,
-        vec![
-          BrowserSessionTab {
-            url: "about:newtab".to_string(),
-            zoom: None,
-            scroll_css: None,
-          },
-          BrowserSessionTab {
-            url: "about:blank".to_string(),
-            zoom: Some(1.5),
-            scroll_css: None,
-          }
-        ]
-      );
+    assert_eq!(
+      session.windows[0].tabs,
+      vec![
+        BrowserSessionTab {
+          url: "about:newtab".to_string(),
+          zoom: None,
+          scroll_css: None,
+        },
+        BrowserSessionTab {
+          url: "about:blank".to_string(),
+          zoom: Some(1.5),
+          scroll_css: None,
+        }
+      ]
+    );
   }
 
   #[test]
@@ -570,6 +594,7 @@ mod tests {
         },
       ],
       active_window_index: 999,
+      appearance: AppearanceSettings::default(),
       did_exit_cleanly: true,
       ui_scale: None,
     }
@@ -608,6 +633,7 @@ mod tests {
         }),
       }],
       active_window_index: 0,
+      appearance: AppearanceSettings::default(),
       did_exit_cleanly: true,
       ui_scale: None,
     }
@@ -636,6 +662,116 @@ mod tests {
     // Legacy v1 top-level keys should never be written.
     assert!(value.get("tabs").is_none());
     assert!(value.get("active_tab_index").is_none());
+  }
+
+  #[test]
+  fn session_roundtrips_appearance_settings() {
+    use crate::ui::theme_parsing::BrowserTheme;
+
+    let mut session = BrowserSession::single("about:newtab".to_string());
+    session.appearance = AppearanceSettings {
+      theme: BrowserTheme::Dark,
+      ui_scale: 1.25,
+      high_contrast: true,
+      reduced_motion: true,
+    };
+
+    let json = serde_json::to_string(&session).expect("serialize session");
+    let parsed = parse_session_json(&json).expect("parse session JSON");
+    assert_eq!(parsed.appearance, session.appearance.sanitized());
+  }
+
+  #[test]
+  fn session_sanitizes_appearance_ui_scale() {
+    use crate::ui::appearance::{DEFAULT_UI_SCALE, MAX_UI_SCALE, MIN_UI_SCALE};
+    use crate::ui::theme_parsing::BrowserTheme;
+
+    let session = BrowserSession {
+      version: SESSION_VERSION,
+      windows: vec![BrowserSessionWindow {
+        tabs: vec![BrowserSessionTab {
+          url: "about:newtab".to_string(),
+          zoom: None,
+          scroll_css: None,
+        }],
+        active_tab_index: 0,
+        window_state: None,
+      }],
+      active_window_index: 0,
+      appearance: AppearanceSettings {
+        theme: BrowserTheme::System,
+        ui_scale: 999.0,
+        high_contrast: false,
+        reduced_motion: false,
+      },
+      did_exit_cleanly: true,
+      ui_scale: None,
+    }
+    .sanitized();
+    assert_eq!(session.appearance.ui_scale, MAX_UI_SCALE);
+
+    let session = BrowserSession {
+      version: SESSION_VERSION,
+      windows: vec![BrowserSessionWindow {
+        tabs: vec![BrowserSessionTab {
+          url: "about:newtab".to_string(),
+          zoom: None,
+          scroll_css: None,
+        }],
+        active_tab_index: 0,
+        window_state: None,
+      }],
+      active_window_index: 0,
+      appearance: AppearanceSettings {
+        theme: BrowserTheme::System,
+        ui_scale: 0.01,
+        high_contrast: false,
+        reduced_motion: false,
+      },
+      did_exit_cleanly: true,
+      ui_scale: None,
+    }
+    .sanitized();
+    assert_eq!(session.appearance.ui_scale, MIN_UI_SCALE);
+
+    let session = BrowserSession {
+      version: SESSION_VERSION,
+      windows: vec![BrowserSessionWindow {
+        tabs: vec![BrowserSessionTab {
+          url: "about:newtab".to_string(),
+          zoom: None,
+          scroll_css: None,
+        }],
+        active_tab_index: 0,
+        window_state: None,
+      }],
+      active_window_index: 0,
+      appearance: AppearanceSettings {
+        theme: BrowserTheme::System,
+        ui_scale: f32::NAN,
+        high_contrast: false,
+        reduced_motion: false,
+      },
+      did_exit_cleanly: true,
+      ui_scale: None,
+    }
+    .sanitized();
+    assert_eq!(session.appearance.ui_scale, DEFAULT_UI_SCALE);
+  }
+
+  #[test]
+  fn session_parses_unknown_theme_value_as_system() {
+    use crate::ui::theme_parsing::BrowserTheme;
+
+    let raw = r#"{
+      "version": 2,
+      "windows": [{"tabs": [{"url": "about:newtab"}], "active_tab_index": 0}],
+      "active_window_index": 0,
+      "appearance": {"theme": "wat"}
+    }"#;
+
+    let session = parse_session_json(raw).expect("parse session");
+    assert_eq!(session.appearance.theme, BrowserTheme::System);
   }
 
   #[test]
@@ -781,6 +917,7 @@ fn v1_into_v2(v1: BrowserSessionV1) -> BrowserSession {
       window_state: None,
     }],
     active_window_index: 0,
+    appearance: AppearanceSettings::default(),
     did_exit_cleanly: true,
     ui_scale: None,
   }

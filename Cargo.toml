@@ -169,6 +169,8 @@ filetime = "0.2"
 usvg = "0.43"
 proc-macro2 = { version = "1", features = ["span-locations"] }
 syn = { version = "2", features = ["full", "visit"] }
+directories = "5"
+fs2 = "0.4"
 
 [profile.dev]
 # `xtask page-loop --debug` intentionally uses the dev profile to keep iteration quick, but pages

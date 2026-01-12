@@ -3,6 +3,7 @@
 use crate::render_control::StageHeartbeat;
 use crate::ui::a11y;
 use crate::ui::address_bar::{format_address_bar_url, AddressBarSecurityState};
+use crate::ui::appearance::{DEFAULT_UI_SCALE, MAX_UI_SCALE, MIN_UI_SCALE};
 use crate::ui::browser_app::{BrowserAppState, BrowserTabState};
 use crate::ui::bookmarks::{bookmarks_bar_ui, BookmarkId, BookmarkStore};
 use crate::ui::load_progress::{load_progress_indicator, LoadProgressIndicator};
@@ -16,6 +17,7 @@ use crate::ui::icons::paint_icon_in_rect;
 use crate::ui::security_indicator;
 use crate::ui::shortcuts::{map_shortcut, Key, KeyEvent, Modifiers, ShortcutAction};
 use crate::ui::url::{resolve_omnibox_input, search_url_for_query, OmniboxInputResolution, DEFAULT_SEARCH_ENGINE_TEMPLATE};
+use crate::ui::theme_parsing::BrowserTheme as ThemeChoice;
 use crate::ui::url_display;
 use crate::ui::zoom;
 use crate::ui::{icon_button, icon_tinted, spinner, BrowserIcon};
@@ -498,7 +500,8 @@ pub fn chrome_ui_with_bookmarks(
   mut favicon_for_tab: impl FnMut(TabId) -> Option<egui::TextureId>,
 ) -> Vec<ChromeAction> {
   let mut actions = Vec::new();
-  let motion = UiMotion::from_env();
+  UiMotion::set_ctx_reduced_motion(ctx, app.appearance.reduced_motion);
+  let motion = UiMotion::from_ctx(ctx);
   let mut address_bar_rect: Option<egui::Rect> = None;
   let mut address_bar_text_edit_response: Option<egui::Response> = None;
 
@@ -795,7 +798,6 @@ pub fn chrome_ui_with_bookmarks(
   if forward {
     actions.push(ChromeAction::Forward);
   }
-
   // Clear transient tab-drag state on mouse release.
   if app.chrome.dragging_tab_id.is_some()
     && ctx.input(|i| {
@@ -815,6 +817,8 @@ pub fn chrome_ui_with_bookmarks(
   }
 
   tab_search_overlay_ui(ctx, app, &mut actions, &mut favicon_for_tab);
+  let mut appearance_button_rect: Option<egui::Rect> = None;
+  let mut appearance_opened_now = false;
   egui::TopBottomPanel::top("chrome").show(ctx, |ui| {
     actions.extend(tab_strip::tab_strip_ui(ui, app, &mut favicon_for_tab, motion));
 
@@ -1081,8 +1085,10 @@ pub fn chrome_ui_with_bookmarks(
       });
 
       let bar_height = ui.spacing().interact_size.y;
+      let reserved_right =
+        ui.spacing().interact_size.y + ui.spacing().item_spacing.x;
       let (bar_rect, bar_response) = ui.allocate_exact_size(
-        egui::vec2(ui.available_width(), bar_height),
+        egui::vec2((ui.available_width() - reserved_right).max(0.0), bar_height),
         if show_text_edit_initial {
           egui::Sense::hover()
         } else {
@@ -1710,6 +1716,17 @@ pub fn chrome_ui_with_bookmarks(
         address_bar_text_edit_response = Some(response.clone());
       }
       });
+
+      let appearance_response = ui
+        .push_id("appearance_button", |ui| {
+          icon_button(ui, BrowserIcon::Appearance, "Appearance", true)
+        })
+        .inner;
+      appearance_button_rect = Some(appearance_response.rect);
+      if appearance_response.clicked() {
+        app.chrome.appearance_popup_open = !app.chrome.appearance_popup_open;
+        appearance_opened_now = app.chrome.appearance_popup_open;
+      }
     });
 
     // ---------------------------------------------------------------------------
@@ -2041,6 +2058,78 @@ pub fn chrome_ui_with_bookmarks(
           }
         }
       }
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Appearance popup
+  // ---------------------------------------------------------------------------
+  if app.chrome.appearance_popup_open {
+    if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+      app.chrome.appearance_popup_open = false;
+    }
+  }
+
+  if app.chrome.appearance_popup_open {
+    let Some(button_rect) = appearance_button_rect else {
+      app.chrome.appearance_popup_open = false;
+      return actions;
+    };
+
+    let anchor = button_rect.left_bottom() + egui::vec2(0.0, 4.0);
+    let area = egui::Area::new(egui::Id::new("fastr_appearance_popup"))
+      .order(egui::Order::Foreground)
+      .fixed_pos(anchor);
+
+    let mut popup_rect: Option<egui::Rect> = None;
+    let inner = area.show(ctx, |ui| {
+      let frame = egui::Frame::popup(ui.style());
+      frame.show(ui, |ui| {
+        ui.set_min_width(260.0);
+        ui.heading("Appearance");
+        ui.separator();
+
+        ui.label("Theme");
+        let first_radio = ui.radio_value(&mut app.appearance.theme, ThemeChoice::System, "System");
+        ui.radio_value(&mut app.appearance.theme, ThemeChoice::Light, "Light");
+        ui.radio_value(&mut app.appearance.theme, ThemeChoice::Dark, "Dark");
+
+        if appearance_opened_now {
+          first_radio.request_focus();
+        }
+
+        ui.add_space(8.0);
+        ui.label("UI scale");
+        ui.add(
+          egui::Slider::new(&mut app.appearance.ui_scale, MIN_UI_SCALE..=MAX_UI_SCALE)
+            .clamp_to_range(true)
+            .show_value(true),
+        );
+        if ui.button("Reset scale (1.0)").clicked() {
+          app.appearance.ui_scale = DEFAULT_UI_SCALE;
+        }
+
+        ui.add_space(8.0);
+        ui.checkbox(&mut app.appearance.high_contrast, "High contrast");
+        ui.checkbox(&mut app.appearance.reduced_motion, "Reduced motion");
+
+        // Clamp/sanitize any values that could come from hand-edited session state.
+        app.appearance = app.appearance.sanitized();
+      })
+    });
+
+    popup_rect = Some(inner.response.rect);
+
+    let clicked_outside = ctx.input(|i| {
+      i.pointer.any_pressed()
+        && i
+          .pointer
+          .interact_pos()
+          .or_else(|| i.pointer.latest_pos())
+          .is_some_and(|pos| !popup_rect.unwrap().contains(pos))
+    });
+    if clicked_outside {
+      app.chrome.appearance_popup_open = false;
     }
   }
 

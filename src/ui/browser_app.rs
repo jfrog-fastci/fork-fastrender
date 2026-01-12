@@ -5,6 +5,7 @@ use crate::ui::cancel::CancelGens;
 use crate::ui::messages::{
   CursorKind, NavigationReason, RenderedFrame, ScrollMetrics, TabId, UiToWorker, WorkerToUi,
 };
+use crate::ui::appearance::AppearanceSettings;
 use crate::ui::{
   resolve_omnibox_input, validate_user_navigation_url_scheme, GlobalHistoryStore, OmniboxSuggestion,
   VisitedUrlStore,
@@ -440,6 +441,8 @@ pub struct ChromeState {
   /// This is egui-agnostic state: the windowed front-end owns the background fetch worker and
   /// stores the latest results here for consumption by the omnibox suggestion engine.
   pub remote_search_cache: RemoteSearchSuggestCache,
+  /// Whether the chrome "Appearance" popup is currently open.
+  pub appearance_popup_open: bool,
   /// Whether the chrome History side panel is currently visible.
   pub history_panel_open: bool,
   /// Search/filter query for the History panel.
@@ -552,6 +555,7 @@ pub struct BrowserAppState {
   pub history: GlobalHistoryStore,
   pub visited: VisitedUrlStore,
   pub chrome: ChromeState,
+  pub appearance: AppearanceSettings,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -571,6 +575,7 @@ impl BrowserAppState {
       history: GlobalHistoryStore::default(),
       visited: VisitedUrlStore::new(),
       chrome: ChromeState::default(),
+      appearance: AppearanceSettings::default(),
     }
   }
 

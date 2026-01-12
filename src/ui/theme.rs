@@ -408,6 +408,11 @@ pub fn apply_browser_theme_with_ui_scale(ctx: &egui::Context, theme: &BrowserThe
   ctx.set_fonts(build_font_definitions());
 
   let mut style: Style = (*ctx.style()).clone();
+  let stroke_width = if theme.high_contrast {
+    theme.sizing.stroke_width.max(2.0)
+  } else {
+    theme.sizing.stroke_width
+  };
 
   // Typography.
   let base = theme.typography.base_font_size * ui_scale;
@@ -456,7 +461,7 @@ pub fn apply_browser_theme_with_ui_scale(ctx: &egui::Context, theme: &BrowserThe
 
   visuals.panel_fill = theme.colors.bg;
   visuals.window_fill = theme.colors.raised;
-  visuals.window_stroke = Stroke::new(theme.sizing.stroke_width, theme.colors.border);
+  visuals.window_stroke = Stroke::new(stroke_width, theme.colors.border);
 
   visuals.window_rounding = egui::Rounding::same(theme.sizing.corner_radius);
   visuals.menu_rounding = egui::Rounding::same(theme.sizing.corner_radius);

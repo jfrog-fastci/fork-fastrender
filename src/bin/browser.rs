@@ -745,11 +745,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
   use winit::window::Theme;
   use winit::window::WindowBuilder;
 
-  let theme_override = fastrender::ui::theme::theme_mode_override_from_env();
+  let appearance_env = fastrender::ui::appearance::AppearanceEnvOverrides::from_env();
   let theme_accent = fastrender::ui::theme::accent_color_override_from_env();
-  let window_theme_override = match theme_override {
-    Some(fastrender::ui::theme::ThemeMode::Light) => Some(Theme::Light),
-    Some(fastrender::ui::theme::ThemeMode::Dark) => Some(Theme::Dark),
+  let applied_appearance = startup_session.appearance.with_env_overrides(appearance_env);
+  let window_theme_override = match applied_appearance.theme {
+    fastrender::ui::theme_parsing::BrowserTheme::Light => Some(Theme::Light),
+    fastrender::ui::theme_parsing::BrowserTheme::Dark => Some(Theme::Dark),
     _ => None,
   };
   let window_state = startup_session
@@ -815,11 +816,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     window.set_fullsize_content_view(true);
   }
 
-  let ui_scale = fastrender::ui::theme::resolve_ui_scale(
-    fastrender::ui::theme::ui_scale_from_env(),
-    startup_session.ui_scale,
-  );
-
   let (ui_to_worker_tx, worker_to_ui_rx, worker_join) =
     fastrender::ui::spawn_browser_ui_worker("fastr-browser-ui-worker")?;
 
@@ -865,13 +861,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     ui_to_worker_tx,
     worker_join,
     &gpu,
-    theme_override,
+    appearance_env,
+    applied_appearance,
     theme_accent,
     bookmarks_path,
     history_path,
     bookmarks,
     history,
-    ui_scale,
   )?;
   app.startup(startup_session);
   match fastrender::ui::ProfileAutosaveHandle::spawn(
@@ -891,8 +887,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
   //
   // This is the crash marker: if the process is terminated unexpectedly, `did_exit_cleanly`
   // remains false on disk and the next launch can restore + log.
-  let mut session =
-    fastrender::ui::BrowserSession::from_app_state(&app.browser_state, app.ui_scale);
+  let mut session = fastrender::ui::BrowserSession::from_app_state(&app.browser_state);
   session.home_url = app.home_url.clone();
   session.windows[session.active_window_index].window_state = capture_window_state(&app.window);
   session.did_exit_cleanly = false;
@@ -934,10 +929,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     // threads) explicitly when the loop is torn down.
     if matches!(event, Event::LoopDestroyed) {
       if let Some(mut app) = app.take() {
-        let mut session =
-          fastrender::ui::BrowserSession::from_app_state(&app.browser_state, app.ui_scale);
+        let mut session = fastrender::ui::BrowserSession::from_app_state(&app.browser_state);
         session.home_url = app.home_url.clone();
-        session.windows[session.active_window_index].window_state = capture_window_state(&app.window);
+        session.windows[session.active_window_index].window_state =
+          capture_window_state(&app.window);
         session.did_exit_cleanly = true;
         session_autosave.request_save(session.clone());
 
@@ -996,8 +991,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let request_autosave = |app: &App| {
-      let mut session =
-        fastrender::ui::BrowserSession::from_app_state(&app.browser_state, app.ui_scale);
+      let mut session = fastrender::ui::BrowserSession::from_app_state(&app.browser_state);
       session.home_url = app.home_url.clone();
       session.windows[session.active_window_index].window_state = capture_window_state(&app.window);
       session.did_exit_cleanly = false;
@@ -1044,7 +1038,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
           } => {
             session_dirty = true;
             app.window_minimized = new_inner_size.width == 0 || new_inner_size.height == 0;
-            app.set_pixels_per_point(scale_factor as f32);
+            app.set_system_pixels_per_point(scale_factor as f32);
             app.resize(*new_inner_size);
             app.window.request_redraw();
           }
@@ -1851,10 +1845,18 @@ struct App {
   egui_ctx: egui::Context,
   egui_state: egui_winit::State,
   egui_renderer: egui_wgpu::Renderer,
-  pixels_per_point: f32,
+  /// Window/system scale factor (physical pixels per egui point) reported by winit.
+  ///
+  /// This is *not* affected by the user-configurable UI scale multiplier.
+  system_pixels_per_point: f32,
+  /// User-configurable UI scale multiplier (separate from per-tab page zoom).
   ui_scale: f32,
+  /// Effective egui pixels-per-point used for chrome rendering: `system_pixels_per_point * ui_scale`.
+  pixels_per_point: f32,
   browser_limits: fastrender::ui::browser_limits::BrowserLimits,
   page_texture_filter_policy: PageTextureFilterPolicy,
+  appearance_env_overrides: fastrender::ui::appearance::AppearanceEnvOverrides,
+  applied_appearance: fastrender::ui::appearance::AppearanceSettings,
   theme_override: Option<fastrender::ui::theme::ThemeMode>,
   theme_accent: Option<egui::Color32>,
   theme: fastrender::ui::theme::BrowserTheme,
@@ -2014,15 +2016,26 @@ impl App {
       },
     };
 
-    if resolved_mode == self.theme.mode {
+    let high_contrast = self.applied_appearance.high_contrast;
+    if resolved_mode == self.theme.mode && high_contrast == self.theme.high_contrast {
       return false;
     }
 
     self.theme = match resolved_mode {
       fastrender::ui::theme::ThemeMode::Dark => {
-        fastrender::ui::theme::BrowserTheme::dark(self.theme_accent)
+        if high_contrast {
+          fastrender::ui::theme::BrowserTheme::dark_high_contrast(self.theme_accent)
+        } else {
+          fastrender::ui::theme::BrowserTheme::dark(self.theme_accent)
+        }
       }
-      _ => fastrender::ui::theme::BrowserTheme::light(self.theme_accent),
+      _ => {
+        if high_contrast {
+          fastrender::ui::theme::BrowserTheme::light_high_contrast(self.theme_accent)
+        } else {
+          fastrender::ui::theme::BrowserTheme::light(self.theme_accent)
+        }
+      }
     };
     fastrender::ui::theme::apply_browser_theme_with_ui_scale(
       &self.egui_ctx,
@@ -2039,6 +2052,63 @@ impl App {
     };
 
     true
+  }
+
+  fn sync_appearance_settings(&mut self) -> bool {
+    let desired = self
+      .browser_state
+      .appearance
+      .with_env_overrides(self.appearance_env_overrides);
+
+    if desired == self.applied_appearance {
+      return false;
+    }
+
+    let prev = self.applied_appearance;
+    self.applied_appearance = desired;
+
+    let mut needs_redraw = false;
+
+    if (desired.ui_scale - prev.ui_scale).abs() > 1e-6 {
+      self.ui_scale = desired.ui_scale;
+      self.update_effective_pixels_per_point();
+      // Point-space popups/hit boxes become stale when UI scaling changes; close them.
+      self.close_select_dropdown();
+      self.close_context_menu();
+      if self.scrollbar_drag.is_some() {
+        self.cancel_scrollbar_drag();
+      }
+      if self.pointer_captured {
+        self.cancel_pointer_capture();
+      }
+      needs_redraw = true;
+    }
+
+    if desired.theme != prev.theme || desired.high_contrast != prev.high_contrast {
+      self.theme_override = match desired.theme {
+        fastrender::ui::theme_parsing::BrowserTheme::Light => {
+          Some(fastrender::ui::theme::ThemeMode::Light)
+        }
+        fastrender::ui::theme_parsing::BrowserTheme::Dark => {
+          Some(fastrender::ui::theme::ThemeMode::Dark)
+        }
+        fastrender::ui::theme_parsing::BrowserTheme::System => None,
+      };
+
+      let window_theme_override = match desired.theme {
+        fastrender::ui::theme_parsing::BrowserTheme::Light => Some(winit::window::Theme::Light),
+        fastrender::ui::theme_parsing::BrowserTheme::Dark => Some(winit::window::Theme::Dark),
+        fastrender::ui::theme_parsing::BrowserTheme::System => None,
+      };
+      self.window.set_theme(window_theme_override);
+
+      needs_redraw |= self.refresh_theme_from_system_theme(self.window.theme());
+      // Even if the resolved egui theme is unchanged (e.g. switching System→Light while the system
+      // is already light), still treat this as a redraw-worthy UI change.
+      needs_redraw = true;
+    }
+
+    needs_redraw
   }
 
   fn cursor_over_egui_overlay(&self, pos_points: egui::Pos2) -> bool {
@@ -2134,26 +2204,34 @@ impl App {
     ui_to_worker_tx: std::sync::mpsc::Sender<fastrender::ui::UiToWorker>,
     worker_join: std::thread::JoinHandle<()>,
     gpu: &GpuContext,
-    theme_override: Option<fastrender::ui::theme::ThemeMode>,
+    appearance_env_overrides: fastrender::ui::appearance::AppearanceEnvOverrides,
+    applied_appearance: fastrender::ui::appearance::AppearanceSettings,
     theme_accent: Option<egui::Color32>,
     bookmarks_path: std::path::PathBuf,
     history_path: std::path::PathBuf,
     bookmarks: fastrender::ui::BookmarkStore,
     history: fastrender::ui::GlobalHistoryStore,
-    ui_scale: f32,
   ) -> Result<Self, Box<dyn std::error::Error>> {
     // Enable OS IME integration (WindowEvent::Ime) so the page can handle non-Latin input methods.
     // Egui manages IME for chrome text fields; we forward IME events to the page when appropriate.
     window.set_ime_allowed(true);
 
-    let pixels_per_point = window.scale_factor() as f32;
+    let system_pixels_per_point = window.scale_factor() as f32;
+    let ui_scale = applied_appearance.ui_scale;
+    let pixels_per_point = system_pixels_per_point * ui_scale;
 
     let egui_ctx = egui::Context::default();
     egui_ctx.set_pixels_per_point(pixels_per_point);
     let egui_state = egui_winit::State::new(event_loop);
 
+    let theme_override = match applied_appearance.theme {
+      fastrender::ui::theme_parsing::BrowserTheme::Light => Some(fastrender::ui::theme::ThemeMode::Light),
+      fastrender::ui::theme_parsing::BrowserTheme::Dark => Some(fastrender::ui::theme::ThemeMode::Dark),
+      fastrender::ui::theme_parsing::BrowserTheme::System => None,
+    };
+
     let theme_mode = fastrender::ui::theme::resolve_theme_mode(&window, theme_override);
-    let high_contrast = fastrender::ui::high_contrast::high_contrast_enabled_from_env();
+    let high_contrast = applied_appearance.high_contrast;
     let theme = match theme_mode {
       fastrender::ui::theme::ThemeMode::Dark => {
         if high_contrast {
@@ -2237,10 +2315,13 @@ impl App {
       egui_ctx,
       egui_state,
       egui_renderer,
-      pixels_per_point,
+      system_pixels_per_point,
       ui_scale,
+      pixels_per_point,
       browser_limits: fastrender::ui::browser_limits::BrowserLimits::from_env(),
       page_texture_filter_policy: PageTextureFilterPolicy::from_env(),
+      appearance_env_overrides,
+      applied_appearance,
       theme_override,
       theme_accent,
       theme,
@@ -2327,6 +2408,7 @@ impl App {
 
     let session = session.sanitized();
     self.home_url = session.home_url.clone();
+    self.browser_state.appearance = session.appearance;
     let active_window_index = session.active_window_index;
     let fastrender::ui::BrowserSessionWindow {
       tabs,
@@ -2698,12 +2780,29 @@ impl App {
     let _ = self.ui_to_worker_tx.send(msg);
   }
 
-  fn set_pixels_per_point(&mut self, ppp: f32) {
-    self.pixels_per_point = ppp;
-    self.egui_ctx.set_pixels_per_point(ppp);
-    // Invalidate the cached viewport so the worker receives the new DPR: changing the DPI scale
-    // factor affects the effective device pixel ratio used for rendering.
+  fn update_effective_pixels_per_point(&mut self) {
+    let effective = self.system_pixels_per_point * self.ui_scale;
+    // Protect against bogus values so we don't feed NaNs into egui input mapping.
+    let effective = if effective.is_finite() && effective > 0.0 {
+      effective
+    } else {
+      1.0
+    };
+
+    if (effective - self.pixels_per_point).abs() <= 1e-6 {
+      return;
+    }
+
+    self.pixels_per_point = effective;
+    self.egui_ctx.set_pixels_per_point(effective);
+    // Invalidate cached point-space state; next frame will recompute layout/viewport.
+    self.last_cursor_pos_points = None;
     self.viewport_cache_tab = None;
+  }
+
+  fn set_system_pixels_per_point(&mut self, system_ppp: f32) {
+    self.system_pixels_per_point = system_ppp;
+    self.update_effective_pixels_per_point();
   }
 
   fn resize(&mut self, new_size: winit::dpi::PhysicalSize<u32>) {
@@ -7444,8 +7543,14 @@ impl App {
         .map(|t| t.zoom)
         .unwrap_or(fastrender::ui::DEFAULT_ZOOM);
       let (viewport_css, dpr) = fastrender::ui::viewport_css_and_dpr_for_zoom(
-        (logical_viewport_points.x, logical_viewport_points.y),
-        self.pixels_per_point,
+        // UI scale affects egui's points↔pixels mapping (chrome/widget scaling), but should not
+        // change the page zoom level. Feed the render worker the *system* pixels-per-point and
+        // counteract the UI-scale effect by scaling the available points.
+        (
+          logical_viewport_points.x * self.ui_scale,
+          logical_viewport_points.y * self.ui_scale,
+        ),
+        self.system_pixels_per_point,
         zoom,
       );
       self.update_viewport_throttled(viewport_css, dpr);
@@ -8077,6 +8182,13 @@ impl App {
 
     for id in &full_output.textures_delta.free {
       self.egui_renderer.free_texture(id);
+    }
+
+    // Apply any appearance changes (theme/high-contrast/UI scale) for the *next* frame. Doing this
+    // after presenting avoids mutating egui state while we're still rendering the current frame's
+    // output.
+    if self.sync_appearance_settings() {
+      self.window.request_redraw();
     }
 
     if let (Some(hud), Some(frame_start)) = (self.hud.as_mut(), frame_start) {
