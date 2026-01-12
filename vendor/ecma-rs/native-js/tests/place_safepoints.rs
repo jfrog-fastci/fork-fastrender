@@ -228,6 +228,48 @@ fn place_safepoints_inserts_polls_even_if_gc_safepoint_poll_is_defined() {
 }
 
 #[test]
+fn place_safepoints_rejects_multi_block_gc_safepoint_poll_definition() {
+  let context = Context::create();
+  let module = context.create_module("place_safepoints_poll_multiblock");
+  let builder = context.create_builder();
+
+  // A multi-block definition: this should be rejected (we only know how to strip a trivial stub).
+  let void_ty = context.void_type();
+  let poll_ty = void_ty.fn_type(&[], false);
+  let poll = module.add_function("gc.safepoint_poll", poll_ty, None);
+  let entry = context.append_basic_block(poll, "entry");
+  let exit = context.append_basic_block(poll, "exit");
+  builder.position_at_end(entry);
+  builder.build_unconditional_branch(exit).expect("br");
+  builder.position_at_end(exit);
+  builder.build_return(None).expect("ret void");
+
+  let test_ty = void_ty.fn_type(&[], false);
+  let test_fn = module.add_function("test", test_ty, None);
+  gc::set_default_gc_strategy(&test_fn).expect("GC strategy contains NUL byte");
+  let test_entry = context.append_basic_block(test_fn, "entry");
+  builder.position_at_end(test_entry);
+  builder.build_return(None).expect("ret void");
+
+  if let Err(err) = module.verify() {
+    panic!(
+      "input module verification failed: {err}\n\nIR:\n{}",
+      module.print_to_string()
+    );
+  }
+
+  let tm = host_target_machine();
+  module.set_triple(&tm.get_triple());
+  module.set_data_layout(&tm.get_target_data().get_data_layout());
+
+  let err = passes::place_safepoints_and_rewrite_statepoints_for_gc(&module, &tm).unwrap_err();
+  assert!(
+    matches!(err, passes::PassError::SafepointPollHasBody { .. }),
+    "expected SafepointPollHasBody, got: {err}"
+  );
+}
+
+#[test]
 fn place_safepoints_polls_are_rewritten_into_statepoints() {
   let context = Context::create();
   let module = context.create_module("place_safepoints");

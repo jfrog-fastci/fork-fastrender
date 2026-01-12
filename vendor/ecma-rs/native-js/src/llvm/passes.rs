@@ -68,6 +68,10 @@ pub enum PassError {
   UnsupportedMustTailCallInGcFunction { function: String, instruction: String },
   #[error("LLVM module defines `{name}` with incompatible signature (expected `void ()`)")]
   IncompatibleSafepointPollSignature { name: String },
+  #[error(
+    "LLVM module defines `{name}` with a body containing {blocks} basic blocks; it must be an external declaration when running `place-safepoints`"
+  )]
+  SafepointPollHasBody { name: String, blocks: u32 },
   #[error("LLVM module defines `{name}` with incompatible type (expected `i64`)")]
   IncompatibleSafepointEpochType { name: String },
   #[error("LLVM module defines `{name}` with incompatible signature (expected `void (i64)`)")]
@@ -122,6 +126,16 @@ pub fn ensure_gc_safepoint_poll_decl(module: &Module<'_>) -> Result<(), PassErro
       // `place-safepoints` only inserts polls when `gc.safepoint_poll` is a declaration (has no
       // body). In debug builds/tests we may have defined a weak stub body after a previous run, so
       // strip any existing blocks here to ensure poll insertion remains effective.
+      let blocks = LLVMCountBasicBlocks(existing);
+      if blocks > 1 {
+        // We only expect a simple 1-block stub (like `debug_define_weak_safepoint_poll_stub`
+        // produces). Stripping a multi-block body would require safely rewiring CFG edges/PHIs; fail
+        // fast instead of trying to mutate arbitrary IR.
+        return Err(PassError::SafepointPollHasBody {
+          name: "gc.safepoint_poll".to_string(),
+          blocks,
+        });
+      }
       let mut bb = LLVMGetFirstBasicBlock(existing);
       while !bb.is_null() {
         let next = LLVMGetNextBasicBlock(bb);
