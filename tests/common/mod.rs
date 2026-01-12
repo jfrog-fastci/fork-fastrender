@@ -5,8 +5,6 @@ pub(crate) mod env;
 pub(crate) mod global_state;
 pub(crate) mod net;
 pub(crate) mod rayon;
-// Compatibility shim (some older tests still reference `crate::common::rayon_test_util`).
-pub(crate) mod rayon_test_util;
 pub(crate) mod stack;
 
 pub(crate) use global_state::{

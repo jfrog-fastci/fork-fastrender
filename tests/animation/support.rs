@@ -14,7 +14,7 @@ pub fn ensure_test_env() {
     //
     // `init_rayon_for_tests` triggers FastRender's safe global Rayon initialization. The argument is
     // intentionally ignored to avoid order-dependent global pool configuration.
-    crate::common::rayon_test_util::init_rayon_for_tests(1);
+    crate::common::init_rayon_for_tests(1);
   });
 }
 
