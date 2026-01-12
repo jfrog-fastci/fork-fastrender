@@ -1445,8 +1445,34 @@ mod tests {
            return true;\n\
          } catch (e) {\n\
            return e && e.name;\n\
-         }\n\
-       })()",
+          }\n\
+        })()",
+    )?;
+    assert_eq!(out, Value::Bool(true));
+
+    Ok(())
+  }
+
+  #[test]
+  fn window_realm_installs_node_type_constants() -> Result<()> {
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+
+    // Mirror the DOM Parsing WPT checks: comment nodes must survive `innerHTML` parsing and
+    // serialize back out, and `Node.COMMENT_NODE` must be defined.
+    let out = host.exec_script(
+      "(() => {\n\
+        const el = document.createElement('div');\n\
+        el.innerHTML = 'a<!--c-->b';\n\
+        return (\n\
+          Node.COMMENT_NODE === 8 &&\n\
+          el.innerHTML === 'a<!--c-->b' &&\n\
+          el.outerHTML === '<div>a<!--c-->b</div>' &&\n\
+          el.childNodes.length === 3 &&\n\
+          el.childNodes[1].nodeType === Node.COMMENT_NODE &&\n\
+          el.childNodes[1].data === 'c'\n\
+        );\n\
+      })()",
     )?;
     assert_eq!(out, Value::Bool(true));
 

@@ -32812,16 +32812,33 @@ fn init_window_globals(
       let node_key = alloc_key(&mut scope, "Node")?;
       scope.define_property(global, node_key, data_desc(Value::Object(node_ctor)))?;
 
+      // https://dom.spec.whatwg.org/#interface-node
+      //
+      // WebIDL constants should be:
+      // - writable: false
+      // - enumerable: true
+      // - configurable: false
       for (name, value) in [
+        // Node types.
         ("ELEMENT_NODE", 1.0),
         ("ATTRIBUTE_NODE", 2.0),
         ("TEXT_NODE", 3.0),
         ("CDATA_SECTION_NODE", 4.0),
+        ("ENTITY_REFERENCE_NODE", 5.0),
+        ("ENTITY_NODE", 6.0),
         ("PROCESSING_INSTRUCTION_NODE", 7.0),
         ("COMMENT_NODE", 8.0),
         ("DOCUMENT_NODE", 9.0),
         ("DOCUMENT_TYPE_NODE", 10.0),
         ("DOCUMENT_FRAGMENT_NODE", 11.0),
+        ("NOTATION_NODE", 12.0),
+        // NodeDocumentPosition bits.
+        ("DOCUMENT_POSITION_DISCONNECTED", 1.0),
+        ("DOCUMENT_POSITION_PRECEDING", 2.0),
+        ("DOCUMENT_POSITION_FOLLOWING", 4.0),
+        ("DOCUMENT_POSITION_CONTAINS", 8.0),
+        ("DOCUMENT_POSITION_CONTAINED_BY", 16.0),
+        ("DOCUMENT_POSITION_IMPLEMENTATION_SPECIFIC", 32.0),
       ] {
         let key = alloc_key(&mut scope, name)?;
         let desc = const_desc(Value::Number(value));

@@ -182,11 +182,6 @@ status = "xfail"
 reason = "NodeIterator/TreeWalker/NodeFilter not implemented yet"
 
 [[expectations]]
-id = "domparsing/innerhtml-comments.window.js"
-status = "xfail"
-reason = "Comment node parsing/serialization is not implemented until dom2 materializes Comment nodes."
-
-[[expectations]]
 id = "html/htmlelement_reflection.window.js"
 backend = "quickjs"
 status = "skip"

@@ -15,7 +15,8 @@ test(() => {
   assert_equals(typeof Comment, "function", "Comment should be exposed as a constructor");
   assert_equals(typeof CharacterData, "function", "CharacterData should be exposed as a constructor");
 
-  assert_equals(Node.COMMENT_NODE, 8, "Node.COMMENT_NODE should be 8");
+  const comment_node = Node.COMMENT_NODE;
+  assert_equals(comment_node, 8, `Node.COMMENT_NODE should be 8 (got ${comment_node})`);
 
   assert_equals(el.childNodes.length, 3, "expected 3 children: Text, Comment, Text");
   if (el.childNodes.length !== 3) return;

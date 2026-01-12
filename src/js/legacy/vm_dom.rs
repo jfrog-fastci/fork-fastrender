@@ -3082,7 +3082,7 @@ pub fn install_dom_bindings_with_limits(
   let global = realm.global_object();
 
   // Interface constructors (non-constructable; used for prototype access / `instanceof` checks).
-  install_interface_constructor(
+  let ctor_node = install_interface_constructor(
     &mut scope,
     realm,
     global,
@@ -3090,6 +3090,7 @@ pub fn install_dom_bindings_with_limits(
     proto_node,
     call_illegal_constructor,
   )?;
+  install_node_constants(&mut scope, ctor_node, proto_node)?;
   install_interface_constructor(
     &mut scope,
     realm,
@@ -3196,6 +3197,55 @@ fn install_interface_constructor(
   scope.define_property(global, global_key, method_desc(Value::Object(ctor)))?;
 
   Ok(ctor)
+}
+
+fn install_node_constants(scope: &mut Scope<'_>, ctor: GcObject, proto: GcObject) -> Result<(), VmError> {
+  // https://dom.spec.whatwg.org/#interface-node
+  //
+  // WebIDL constants are:
+  // - writable: false
+  // - enumerable: true
+  // - configurable: false
+  fn define(scope: &mut Scope<'_>, obj: GcObject, name: &str, value: f64) -> Result<(), VmError> {
+    let key = PropertyKey::from_string(scope.alloc_string(name)?);
+    scope.define_property(
+      obj,
+      key,
+      data_desc(
+        Value::Number(value),
+        /* writable */ false,
+        /* enumerable */ true,
+        /* configurable */ false,
+      ),
+    )?;
+    Ok(())
+  }
+
+  for obj in [ctor, proto] {
+    // Node types.
+    define(scope, obj, "ELEMENT_NODE", 1.0)?;
+    define(scope, obj, "ATTRIBUTE_NODE", 2.0)?;
+    define(scope, obj, "TEXT_NODE", 3.0)?;
+    define(scope, obj, "CDATA_SECTION_NODE", 4.0)?;
+    define(scope, obj, "ENTITY_REFERENCE_NODE", 5.0)?;
+    define(scope, obj, "ENTITY_NODE", 6.0)?;
+    define(scope, obj, "PROCESSING_INSTRUCTION_NODE", 7.0)?;
+    define(scope, obj, "COMMENT_NODE", 8.0)?;
+    define(scope, obj, "DOCUMENT_NODE", 9.0)?;
+    define(scope, obj, "DOCUMENT_TYPE_NODE", 10.0)?;
+    define(scope, obj, "DOCUMENT_FRAGMENT_NODE", 11.0)?;
+    define(scope, obj, "NOTATION_NODE", 12.0)?;
+
+    // NodeDocumentPosition bits.
+    define(scope, obj, "DOCUMENT_POSITION_DISCONNECTED", 1.0)?;
+    define(scope, obj, "DOCUMENT_POSITION_PRECEDING", 2.0)?;
+    define(scope, obj, "DOCUMENT_POSITION_FOLLOWING", 4.0)?;
+    define(scope, obj, "DOCUMENT_POSITION_CONTAINS", 8.0)?;
+    define(scope, obj, "DOCUMENT_POSITION_CONTAINED_BY", 16.0)?;
+    define(scope, obj, "DOCUMENT_POSITION_IMPLEMENTATION_SPECIFIC", 32.0)?;
+  }
+
+  Ok(())
 }
 
 fn install_method(
