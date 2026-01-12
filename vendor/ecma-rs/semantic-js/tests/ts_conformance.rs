@@ -506,3 +506,42 @@ fn ts_conformance_type_only_namespace_export_namespace2() {
     "c.ts should not export a in the value namespace (type-only import)"
   );
 }
+
+#[test]
+fn ts_conformance_type_only_default_import_is_namespace_qualifier_filter_namespace_import() {
+  let case =
+    TsConformanceCase::load("conformance/externalModules/typeOnly/filterNamespace_import.ts");
+  let (sem, diags) = case.bind_and_assert_deterministic();
+  assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+
+  let a = case.file_id("/a.ts");
+  let ns_file = case.file_id("/ns.ts");
+
+  assert!(
+    sem.resolve_in_module(a, "ns", Namespace::VALUE).is_none(),
+    "ns should not be present in the value namespace for a type-only default import"
+  );
+
+  let ns_type = sem
+    .resolve_in_module(a, "ns", Namespace::TYPE)
+    .expect("a.ts should import ns in the type namespace");
+  let ns_namespace = sem
+    .resolve_in_module(a, "ns", Namespace::NAMESPACE)
+    .expect("a.ts should import ns as a namespace qualifier");
+  assert_eq!(
+    ns_type, ns_namespace,
+    "type-only default import should resolve to the same symbol for type and namespace namespaces"
+  );
+
+  let symbols = sem.symbols();
+  match &symbols.symbol(ns_type).origin {
+    SymbolOrigin::Import {
+      from: ModuleRef::File(from),
+      imported,
+    } => {
+      assert_eq!(*from, ns_file);
+      assert_eq!(imported, "default");
+    }
+    other => panic!("expected imported ns symbol origin, got {other:?}"),
+  }
+}
