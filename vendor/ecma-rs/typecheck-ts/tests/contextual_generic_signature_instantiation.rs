@@ -1,7 +1,7 @@
 mod common;
 
 use typecheck_ts::lib_support::CompilerOptions;
-use typecheck_ts::{FileKey, MemoryHost, Program};
+use typecheck_ts::{codes, FileKey, MemoryHost, Program};
 
 #[test]
 fn contextual_generic_signature_is_instantiated_from_body() {
@@ -47,6 +47,38 @@ export const f: <T>(x: T) => T = (x: string) => x;
 "#;
   host.insert(file.clone(), source);
 
+  let program = Program::new(host, vec![file.clone()]);
+  let diagnostics = program.check();
+  assert!(
+    diagnostics.is_empty(),
+    "unexpected diagnostics: {diagnostics:?}"
+  );
+
+  let file_id = program.file_id(&file).expect("file id");
+  let x_offset = source
+    .rfind("=> x")
+    .map(|idx| idx as u32 + "=> ".len() as u32)
+    .expect("offset for x return");
+  let x_ty = program.type_at(file_id, x_offset).expect("type at x return");
+  assert_eq!(program.display_type(x_ty).to_string(), "string");
+}
+
+#[test]
+fn contextual_generic_signature_instantiation_infers_from_return_only() {
+  let mut host = MemoryHost::with_options(CompilerOptions {
+    no_default_lib: true,
+    ..CompilerOptions::default()
+  });
+  host.add_lib(common::core_globals_lib());
+
+  let file = FileKey::new("main.ts");
+  host.insert(
+    file.clone(),
+    r#"
+export const f: <T>(x: T) => T = x => 1;
+"#,
+  );
+
   let program = Program::new(host, vec![file]);
   let diagnostics = program.check();
   assert!(
@@ -55,3 +87,28 @@ export const f: <T>(x: T) => T = (x: string) => x;
   );
 }
 
+#[test]
+fn contextual_generic_signature_instantiation_checks_body() {
+  let mut host = MemoryHost::with_options(CompilerOptions {
+    no_default_lib: true,
+    ..CompilerOptions::default()
+  });
+  host.add_lib(common::core_globals_lib());
+
+  let file = FileKey::new("main.ts");
+  host.insert(
+    file.clone(),
+    r#"
+export const f: <T>(x: T) => T = x => missing;
+"#,
+  );
+
+  let program = Program::new(host, vec![file]);
+  let diagnostics = program.check();
+  assert!(
+    diagnostics
+      .iter()
+      .any(|diag| diag.code.as_str() == codes::UNKNOWN_IDENTIFIER.as_str()),
+    "expected UNKNOWN_IDENTIFIER diagnostic, got {diagnostics:?}"
+  );
+}

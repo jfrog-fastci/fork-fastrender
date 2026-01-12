@@ -2532,14 +2532,13 @@ impl<'a> Checker<'a> {
         type_param_decls = self.lower_type_params(params);
         self.type_param_scopes.push(type_param_decls.clone());
       }
-
       let (this_ty, super_ty) = self.this_super_for_span(body_range);
       self.current_this_ty = this_ty;
       self.current_super_ty = super_ty;
       self.current_super_ctor_ty = self.super_ctor_for_span(body_range);
       let prim = self.store.primitive_ids();
 
-      let contextual_sig = self.contextual_signature();
+      let mut contextual_sig = self.contextual_signature();
       let explicit_this_ty = func_node
         .stx
         .parameters
@@ -2565,6 +2564,25 @@ impl<'a> Checker<'a> {
       if let Some(this_ty) = explicit_this_ty.or(contextual_this_ty) {
         self.current_this_ty = this_ty;
       }
+
+      if let Some(instantiated) = contextual_sig
+        .as_ref()
+        .and_then(|sig| self.instantiate_generic_contextual_signature_for_function_expr(func_node, sig))
+      {
+        contextual_sig = Some(instantiated);
+        // If a `this` type came from the contextual signature, refresh it after
+        // instantiation so the body check sees the instantiated `this` type.
+        if explicit_this_ty.is_none() {
+          if let Some(this_ty) = contextual_sig
+            .as_ref()
+            .and_then(|sig| sig.this_param)
+            .filter(|ty| *ty != prim.unknown)
+          {
+            self.current_this_ty = this_ty;
+          }
+        }
+      }
+
       let pushed_contextual_type_params = if has_type_params {
         false
       } else if let Some(sig) = contextual_sig.as_ref() {
@@ -3707,7 +3725,10 @@ impl<'a> Checker<'a> {
         self.resolve_type_ref(&["RegExp"]).unwrap_or(prim.unknown)
       }
       AstExpr::This(_) => self.current_this_ty,
-      AstExpr::Super(_) => self.current_super_ty,
+      AstExpr::Super(_) => self
+        .this_super_context
+        .super_instance_ty
+        .unwrap_or(self.current_super_ty),
       AstExpr::ImportMeta(_) => self
         .resolve_type_ref(&["ImportMeta"])
         .unwrap_or(self.store.primitive_ids().unknown),
@@ -9870,6 +9891,129 @@ impl<'a> Checker<'a> {
     }))
   }
 
+  fn instantiate_generic_contextual_signature_for_function_expr(
+    &mut self,
+    func: &Node<Func>,
+    contextual_sig: &Signature,
+  ) -> Option<Signature> {
+    if contextual_sig.type_params.is_empty() {
+      return None;
+    }
+    // Explicitly generic functions are checked against the generic contextual
+    // signature directly; only non-generic expressions participate in
+    // contextual signature instantiation.
+    if func.stx.type_parameters.is_some() {
+      return None;
+    }
+
+    let prim = self.store.primitive_ids();
+
+    // Build an "actual" signature for the function expression. Parameter types
+    // come from annotations (or `unknown`), and the return type is inferred from
+    // a probe body check with no contextual expected return.
+    let mut actual_params = Vec::new();
+    for (idx, param) in func.stx.parameters.iter().enumerate() {
+      if idx == 0
+        && matches!(
+          param.stx.pattern.stx.pat.stx.as_ref(),
+          AstPat::Id(id) if id.stx.name == "this"
+        )
+      {
+        // `this` parameters are modeled on signatures via `this_param`, not as
+        // regular parameters.
+        continue;
+      }
+      let ty = param
+        .stx
+        .type_annotation
+        .as_ref()
+        .map(|ann| self.lowerer.lower_type_expr(ann))
+        .unwrap_or(prim.unknown);
+      actual_params.push(SigParam {
+        name: None,
+        ty,
+        optional: param.stx.optional,
+        rest: param.stx.rest,
+      });
+    }
+
+    let actual_ret = if let Some(ann) = func.stx.return_type.as_ref() {
+      self.lowerer.lower_type_expr(ann)
+    } else if func.stx.body.is_some() {
+      // Probe the body to infer a return type, but discard diagnostics so the
+      // real contextual check is the only source of errors.
+      let saved_diag_len = self.diagnostics.len();
+      let saved_implicit_any = self.implicit_any_reported.clone();
+      let saved_jsx_namespace_missing = self.jsx_namespace_missing_reported;
+      let saved_no_implicit_any = self.no_implicit_any;
+
+      let saved_expected = self.expected_return;
+      let saved_async = self.in_async_function;
+      let saved_returns = std::mem::take(&mut self.return_types);
+
+      self.in_async_function = func.stx.async_;
+      self.expected_return = None;
+      // Always use `unknown` for unannotated parameters during the probe
+      // inference pass (avoid `--noImplicitAny` diagnostics + `any`).
+      self.no_implicit_any = false;
+
+      self.scopes.push(Scope::default());
+      self.var_scopes.push(self.scopes.len().saturating_sub(1));
+      self.bind_params(func, &[], None);
+      self.check_function_body(func);
+      self.var_scopes.pop();
+      self.scopes.pop();
+
+      let inferred_ret = if self.return_types.is_empty() {
+        prim.void
+      } else {
+        self.store.union(self.return_types.clone())
+      };
+      let inferred_ret = if func.stx.async_ {
+        self.async_function_return_type(inferred_ret)
+      } else {
+        inferred_ret
+      };
+
+      self.return_types = saved_returns;
+      self.expected_return = saved_expected;
+      self.in_async_function = saved_async;
+      self.no_implicit_any = saved_no_implicit_any;
+
+      self.diagnostics.truncate(saved_diag_len);
+      self.implicit_any_reported = saved_implicit_any;
+      self.jsx_namespace_missing_reported = saved_jsx_namespace_missing;
+
+      inferred_ret
+    } else {
+      prim.unknown
+    };
+
+    let actual_sig = Signature {
+      params: actual_params,
+      ret: actual_ret,
+      type_params: Vec::new(),
+      this_param: None,
+    };
+
+    let inference = infer_type_arguments_from_contextual_signature(
+      &self.store,
+      &self.relate,
+      &contextual_sig.type_params,
+      contextual_sig,
+      &actual_sig,
+    );
+    if !inference.diagnostics.is_empty() {
+      return None;
+    }
+
+    let mut substituter = Substituter::new(Arc::clone(&self.store), inference.substitutions);
+    let instantiated_id = substituter.substitute_signature(contextual_sig);
+    let mut instantiated_sig = self.store.signature(instantiated_id);
+    instantiated_sig.type_params.clear();
+    Some(instantiated_sig)
+  }
+
   fn contextual_signature_for_function_expr(
     &mut self,
     expected: TypeId,
@@ -9921,9 +10065,12 @@ impl<'a> Checker<'a> {
       return Some(first.clone());
     }
 
+    let first = first.clone();
     matching.retain(|(_, sig)| sig.type_params.is_empty());
     if matching.is_empty() {
-      return None;
+      // If all viable signatures are generic, still pick a contextual signature
+      // so we can perform contextual signature instantiation during refinement.
+      return Some(first);
     }
     if matching.len() == 1 {
       return Some(matching.pop().expect("single signature").1);
