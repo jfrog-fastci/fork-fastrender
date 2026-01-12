@@ -3750,11 +3750,13 @@ mod tests {
 #[cfg(test)]
 mod element_dispatch_tests {
   use super::*;
+  use crate::dom2;
   use crate::js::dom_platform::DomInterface;
   use crate::js::realm_module_loader::{ModuleLoader, ModuleLoaderHandle};
   use crate::js::{WindowHostState, WindowRealm, WindowRealmConfig};
   use selectors::context::QuirksMode;
   use std::any::Any;
+  use webidl_vm_js::host_from_hooks;
 
   #[derive(Default)]
   struct TestHooks {
