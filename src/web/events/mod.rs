@@ -268,6 +268,14 @@ pub struct MouseEvent {
   pub button: i16,
   /// Currently pressed buttons bitfield (`MouseEvent.buttons`).
   pub buttons: u16,
+  /// Click count (`UIEvent.detail`).
+  ///
+  /// For user input this is typically:
+  /// - `1` for the first click in a sequence
+  /// - `2` for double-click
+  ///
+  /// For non-click-related mouse events (move/enter/leave/over/out), this should be `0`.
+  pub detail: i32,
   pub ctrl_key: bool,
   pub shift_key: bool,
   pub alt_key: bool,
@@ -285,6 +293,7 @@ impl Default for MouseEvent {
       client_y: 0.0,
       button: 0,
       buttons: 0,
+      detail: 0,
       ctrl_key: false,
       shift_key: false,
       alt_key: false,

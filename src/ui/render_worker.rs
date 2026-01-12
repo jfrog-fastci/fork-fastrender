@@ -156,6 +156,7 @@ struct TabState {
   last_base_url: Option<String>,
 
   last_pointer_pos_css: Option<(f32, f32)>,
+  last_pointer_click_count: u8,
   pointer_buttons: u16,
   last_hovered_dom_node_id: Option<usize>,
   last_hovered_dom_element_id: Option<String>,
@@ -188,6 +189,7 @@ impl TabState {
       last_committed_url: None,
       last_base_url: None,
       last_pointer_pos_css: None,
+      last_pointer_click_count: 0,
       pointer_buttons: 0,
       last_hovered_dom_node_id: None,
       last_hovered_dom_element_id: None,
@@ -2672,6 +2674,7 @@ impl BrowserRuntime {
       client_y: mouse_client_coord(pos_css.1),
       button: mouse_event_button(button),
       buttons: pointer_buttons,
+      detail: 0,
       ctrl_key: modifiers.ctrl(),
       shift_key: modifiers.shift(),
       alt_key: modifiers.alt(),
@@ -2905,6 +2908,7 @@ impl BrowserRuntime {
     let Some(tab) = self.tabs.get_mut(&tab_id) else {
       return;
     };
+    tab.last_pointer_click_count = click_count;
     tab.pointer_buttons |= mouse_buttons_mask_for_button(button);
     let Some(doc) = tab.document.as_mut() else {
       return;
@@ -2954,17 +2958,18 @@ impl BrowserRuntime {
       if let Some(js_tab) = tab.js_tab.as_mut() {
         let target = js_dom_node_for_preorder_id(js_tab, target_id, target_element_id.as_deref());
         if let Some(node_id) = target {
-          let mouse = web_events::MouseEvent {
-            client_x: mouse_client_coord(pos_css.0),
-            client_y: mouse_client_coord(pos_css.1),
-            button: mouse_event_button(button),
-            buttons: pointer_buttons,
-            ctrl_key: modifiers.ctrl(),
-            shift_key: modifiers.shift(),
-            alt_key: modifiers.alt(),
-            meta_key: modifiers.meta(),
-            related_target: None,
-          };
+           let mouse = web_events::MouseEvent {
+             client_x: mouse_client_coord(pos_css.0),
+             client_y: mouse_client_coord(pos_css.1),
+             button: mouse_event_button(button),
+             buttons: pointer_buttons,
+             detail: click_count as i32,
+             ctrl_key: modifiers.ctrl(),
+             shift_key: modifiers.shift(),
+             alt_key: modifiers.alt(),
+             meta_key: modifiers.meta(),
+             related_target: None,
+           };
           if let Err(err) = js_tab.dispatch_mouse_event(
             node_id,
             "mousedown",
@@ -3001,6 +3006,7 @@ impl BrowserRuntime {
       return;
     };
     tab.pointer_buttons &= !mouse_buttons_mask_for_button(button);
+    let click_count = tab.last_pointer_click_count;
 
     if !matches!(button, PointerButton::Primary | PointerButton::Middle) {
       // Right-click/etc: no default interaction engine actions, but still dispatch a DOM `mouseup`
@@ -3042,6 +3048,7 @@ impl BrowserRuntime {
               client_y: mouse_client_coord(pos_css.1),
               button: mouse_event_button(button),
               buttons: pointer_buttons,
+              detail: click_count as i32,
               ctrl_key: modifiers.ctrl(),
               shift_key: modifiers.shift(),
               alt_key: modifiers.alt(),
@@ -3231,6 +3238,7 @@ impl BrowserRuntime {
             client_y: mouse_client_coord(pos_css.1),
             button: mouse_event_button(button),
             buttons: pointer_buttons,
+            detail: click_count as i32,
             ctrl_key: modifiers.ctrl(),
             shift_key: modifiers.shift(),
             alt_key: modifiers.alt(),
@@ -3268,6 +3276,7 @@ impl BrowserRuntime {
             client_y: mouse_client_coord(pos_css.1),
             button: mouse_event_button(button),
             buttons: pointer_buttons,
+            detail: click_count as i32,
             ctrl_key: modifiers.ctrl(),
             shift_key: modifiers.shift(),
             alt_key: modifiers.alt(),
@@ -3289,6 +3298,47 @@ impl BrowserRuntime {
               let _ = self.ui_tx.send(WorkerToUi::DebugLog {
                 tab_id,
                 line: format!("js click event dispatch failed: {err}"),
+              });
+            }
+          }
+        }
+      }
+    }
+
+    // Double click: after dispatching the second click, dispatch `dblclick` at the same target.
+    //
+    // Note: this is a best-effort approximation driven by the UI-provided click_count.
+    if click_count == 2 && matches!(button, PointerButton::Primary) {
+      if let Some(target_id) = click_target {
+        if let Some(js_tab) = tab.js_tab.as_mut() {
+          let target =
+            js_dom_node_for_preorder_id(js_tab, target_id, click_target_element_id.as_deref());
+          if let Some(node_id) = target {
+            let mouse = web_events::MouseEvent {
+              client_x: mouse_client_coord(pos_css.0),
+              client_y: mouse_client_coord(pos_css.1),
+              button: mouse_event_button(button),
+              buttons: pointer_buttons,
+              detail: 2,
+              ctrl_key: modifiers.ctrl(),
+              shift_key: modifiers.shift(),
+              alt_key: modifiers.alt(),
+              meta_key: modifiers.meta(),
+              related_target: None,
+            };
+            if let Err(err) = js_tab.dispatch_mouse_event(
+              node_id,
+              "dblclick",
+              web_events::EventInit {
+                bubbles: true,
+                cancelable: true,
+                composed: false,
+              },
+              mouse,
+            ) {
+              let _ = self.ui_tx.send(WorkerToUi::DebugLog {
+                tab_id,
+                line: format!("js dblclick event dispatch failed: {err}"),
               });
             }
           }
@@ -3470,6 +3520,7 @@ impl BrowserRuntime {
             client_y: mouse_client_coord(pos_css.1),
             button: mouse_event_button(PointerButton::Secondary),
             buttons: tab.pointer_buttons,
+            detail: 0,
             ctrl_key: false,
             shift_key: false,
             alt_key: false,

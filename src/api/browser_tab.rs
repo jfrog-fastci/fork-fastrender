@@ -5232,7 +5232,9 @@ impl BrowserTab {
     // In browsers, `click` is a `MouseEvent`. We may not always have real pointer coordinates (e.g.
     // programmatic "simulate click" helpers or keyboard activation), but surfacing a MouseEvent
     // shape is important for real-world scripts that check `instanceof MouseEvent`.
-    event.mouse = Some(MouseEvent::default());
+    let mut mouse = MouseEvent::default();
+    mouse.detail = 1;
+    event.mouse = Some(mouse);
     let (host, event_loop) = (&mut self.host, &mut self.event_loop);
     host.dispatch_dom_event_in_event_loop(
       EventTargetId::Node(node_id).normalize(),

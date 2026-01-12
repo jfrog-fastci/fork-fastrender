@@ -10176,6 +10176,7 @@ fn mouse_event_constructor_native(
   let mut client_y = 0.0f64;
   let mut button = 0.0f64;
   let mut buttons = 0.0f64;
+  let mut detail = 0.0f64;
   let mut ctrl_key = false;
   let mut shift_key = false;
   let mut alt_key = false;
@@ -10236,6 +10237,14 @@ fn mouse_event_constructor_native(
         .object_get_own_data_property_value(init_obj, &buttons_key)?
       {
         buttons = scope.heap_mut().to_number(value)?;
+      }
+
+      let detail_key = alloc_key(scope, "detail")?;
+      if let Some(value) = scope
+        .heap()
+        .object_get_own_data_property_value(init_obj, &detail_key)?
+      {
+        detail = scope.heap_mut().to_number(value)?;
       }
 
       let ctrl_key_key = alloc_key(scope, "ctrlKey")?;
@@ -10320,6 +10329,8 @@ fn mouse_event_constructor_native(
   scope.define_property(obj, button_key, data_desc(Value::Number(button)))?;
   let buttons_key = alloc_key(scope, "buttons")?;
   scope.define_property(obj, buttons_key, data_desc(Value::Number(buttons)))?;
+  let detail_key = alloc_key(scope, "detail")?;
+  scope.define_property(obj, detail_key, data_desc(Value::Number(detail)))?;
 
   let ctrl_key_key = alloc_key(scope, "ctrlKey")?;
   scope.define_property(obj, ctrl_key_key, data_desc(Value::Bool(ctrl_key)))?;
@@ -15916,6 +15927,12 @@ impl<Host: WindowRealmHost + 'static> WindowRealmDomEventListenerInvoker<Host> {
         buttons_key,
         data_desc(Value::Number(mouse.buttons as f64)),
       )?;
+      let detail_key = alloc_key(scope, "detail")?;
+      scope.define_property(
+        event_obj,
+        detail_key,
+        data_desc(Value::Number(mouse.detail as f64)),
+      )?;
       let ctrl_key = alloc_key(scope, "ctrlKey")?;
       scope.define_property(event_obj, ctrl_key, data_desc(Value::Bool(mouse.ctrl_key)))?;
       let shift_key = alloc_key(scope, "shiftKey")?;
@@ -18063,6 +18080,8 @@ fn document_create_event_native(
     scope.define_property(obj, button_key, data_desc(Value::Number(0.0)))?;
     let buttons_key = alloc_key(scope, "buttons")?;
     scope.define_property(obj, buttons_key, data_desc(Value::Number(0.0)))?;
+    let detail_key = alloc_key(scope, "detail")?;
+    scope.define_property(obj, detail_key, data_desc(Value::Number(0.0)))?;
     let ctrl_key = alloc_key(scope, "ctrlKey")?;
     scope.define_property(obj, ctrl_key, data_desc(Value::Bool(false)))?;
     let shift_key = alloc_key(scope, "shiftKey")?;
@@ -27088,6 +27107,7 @@ fn init_window_globals(
   for (prop, type_) in [
     // Mouse events.
     ("onclick", "click"),
+    ("ondblclick", "dblclick"),
     ("onmousedown", "mousedown"),
     ("onmouseup", "mouseup"),
     ("onmousemove", "mousemove"),
@@ -33298,9 +33318,10 @@ mod tests {
             e.clientX,\n\
             e.clientY,\n\
             e.button,\n\
-            e.buttons,\n\
-            e.ctrlKey,\n\
-            e.shiftKey,\n\
+             e.buttons,\n\
+             e.detail,\n\
+             e.ctrlKey,\n\
+             e.shiftKey,\n\
              e.altKey,\n\
              e.metaKey,\n\
            ].join('|'));\n\
@@ -33320,6 +33341,7 @@ mod tests {
          target.onmouseenter = capRelated;\n\
          target.onmouseleave = capRelated;\n\
          target.onclick = cap;\n\
+         target.ondblclick = cap;\n\
          target.oncontextmenu = cap;",
     )?;
 
@@ -33361,6 +33383,7 @@ mod tests {
       client_y: 20.0,
       button: 0,
       buttons: 1,
+      detail: 1,
       ctrl_key: true,
       shift_key: false,
       alt_key: true,
@@ -33390,6 +33413,7 @@ mod tests {
       client_y: 22.0,
       button: 0,
       buttons: 1,
+      detail: 0,
       ctrl_key: false,
       shift_key: true,
       alt_key: false,
@@ -33419,6 +33443,7 @@ mod tests {
       client_y: 24.0,
       button: 0,
       buttons: 0,
+      detail: 1,
       ctrl_key: false,
       shift_key: false,
       alt_key: false,
@@ -33448,6 +33473,7 @@ mod tests {
       client_y: 0.0,
       button: 0,
       buttons: 0,
+      detail: 0,
       ctrl_key: false,
       shift_key: false,
       alt_key: false,
@@ -33477,6 +33503,7 @@ mod tests {
       client_y: 0.0,
       button: 0,
       buttons: 0,
+      detail: 0,
       ctrl_key: false,
       shift_key: false,
       alt_key: false,
@@ -33506,6 +33533,7 @@ mod tests {
       client_y: 0.0,
       button: 0,
       buttons: 0,
+      detail: 0,
       ctrl_key: false,
       shift_key: false,
       alt_key: false,
@@ -33535,6 +33563,7 @@ mod tests {
       client_y: 0.0,
       button: 0,
       buttons: 0,
+      detail: 0,
       ctrl_key: false,
       shift_key: false,
       alt_key: false,
@@ -33564,6 +33593,7 @@ mod tests {
       client_y: 26.0,
       button: 0,
       buttons: 0,
+      detail: 1,
       ctrl_key: true,
       shift_key: true,
       alt_key: false,
@@ -33579,6 +33609,36 @@ mod tests {
     )
     .expect("click dispatch should succeed");
 
+    let mut dblclick = web_events::Event::new(
+      "dblclick",
+      web_events::EventInit {
+        bubbles: true,
+        cancelable: true,
+        composed: false,
+      },
+    );
+    dblclick.is_trusted = true;
+    dblclick.mouse = Some(web_events::MouseEvent {
+      client_x: 15.0,
+      client_y: 30.0,
+      button: 0,
+      buttons: 0,
+      detail: 2,
+      ctrl_key: false,
+      shift_key: false,
+      alt_key: false,
+      meta_key: false,
+      related_target: None,
+    });
+    web_events::dispatch_event(
+      web_events::EventTargetId::Node(target).normalize(),
+      &mut dblclick,
+      host.dom(),
+      host.dom().events(),
+      &mut invoker,
+    )
+    .expect("dblclick dispatch should succeed");
+
     let mut contextmenu = web_events::Event::new(
       "contextmenu",
       web_events::EventInit {
@@ -33593,6 +33653,7 @@ mod tests {
       client_y: 28.0,
       button: 2,
       buttons: 0,
+      detail: 0,
       ctrl_key: false,
       shift_key: false,
       alt_key: true,
@@ -33611,16 +33672,17 @@ mod tests {
     let realm = realm_slot.as_mut().expect("expected realm slot");
     let ok = realm.exec_script(
       "(() => {\n\
-         return __log.length === 9 &&\n\
-           __log[0] === 'mousedown|true|10|20|0|1|true|false|true|false' &&\n\
-           __log[1] === 'mousemove|true|11|22|0|1|false|true|false|true' &&\n\
-           __log[2] === 'mouseup|true|12|24|0|0|false|false|false|false' &&\n\
+         return __log.length === 10 &&\n\
+           __log[0] === 'mousedown|true|10|20|0|1|1|true|false|true|false' &&\n\
+           __log[1] === 'mousemove|true|11|22|0|1|0|false|true|false|true' &&\n\
+           __log[2] === 'mouseup|true|12|24|0|0|1|false|false|false|false' &&\n\
            __log[3] === 'mouseover|true|other' &&\n\
            __log[4] === 'mouseout|true|other' &&\n\
            __log[5] === 'mouseenter|true|other' &&\n\
            __log[6] === 'mouseleave|true|other' &&\n\
-           __log[7] === 'click|true|13|26|0|0|true|true|false|false' &&\n\
-           __log[8] === 'contextmenu|true|14|28|2|0|false|false|true|false';\n\
+           __log[7] === 'click|true|13|26|0|0|1|true|true|false|false' &&\n\
+           __log[8] === 'dblclick|true|15|30|0|0|2|false|false|false|false' &&\n\
+           __log[9] === 'contextmenu|true|14|28|2|0|0|false|false|true|false';\n\
         })()",
     )?;
     assert_eq!(ok, Value::Bool(true));
