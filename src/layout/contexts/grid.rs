@@ -10382,9 +10382,15 @@ impl GridFormattingContext {
         true,
         box_node.is_replaced(),
       );
-      taffy
-        .set_style(root_id, override_taffy_style)
-        .map_err(|e| LayoutError::MissingContext(format!("Taffy error: {:?}", e)))?;
+      let needs_override_update = match taffy.style(root_id) {
+        Ok(existing) => existing != &override_taffy_style,
+        Err(_) => true,
+      };
+      if needs_override_update {
+        taffy
+          .set_style(root_id, override_taffy_style)
+          .map_err(|e| LayoutError::MissingContext(format!("Taffy error: {:?}", e)))?;
+      }
     }
 
     self.patch_root_calc_percentage_sizing_and_edges(
@@ -16032,9 +16038,15 @@ impl FormattingContext for GridFormattingContext {
         true,
         box_node.is_replaced(),
       );
-      taffy
-        .set_style(root_id, override_taffy_style)
-        .map_err(|e| LayoutError::MissingContext(format!("Taffy error: {:?}", e)))?;
+      let needs_override_update = match taffy.style(root_id) {
+        Ok(existing) => existing != &override_taffy_style,
+        Err(_) => true,
+      };
+      if needs_override_update {
+        taffy
+          .set_style(root_id, override_taffy_style)
+          .map_err(|e| LayoutError::MissingContext(format!("Taffy error: {:?}", e)))?;
+      }
     }
 
     // Ensure block-level grids with `width:auto` stretch to the definite inline size used for this
