@@ -5,7 +5,7 @@ use crate::LoadedModuleRequest;
 use crate::ModuleRequest;
 use crate::SourceText;
 use crate::{
-  EnvRootId, ExternalMemoryToken, Heap, PromiseCapability, RootId, Scope, Value, Vm, VmError,
+  EnvRootId, ExternalMemoryToken, GcObject, Heap, PromiseCapability, RealmId, RootId, Scope, Value, Vm, VmError,
 };
 use diagnostics::{Diagnostic, FileId};
 use parse_js::ast::class_or_object::{
@@ -277,6 +277,25 @@ pub struct SourceTextModuleRecord {
   pub(crate) pending_async_dependencies: Option<usize>,
   /// `[[EvaluationError]]` – thrown value during evaluation (or empty).
   pub(crate) evaluation_error: Option<ValueRoot>,
+
+  /// Async continuation id produced by top-level await execution, if this module suspended at an
+  /// `await` boundary.
+  ///
+  /// This is used by `ModuleGraph::abort_tla_evaluation` to tear down module-owned async
+  /// continuations so their persistent roots do not leak when an embedder does not drive the event
+  /// loop.
+  #[allow(dead_code)]
+  pub(crate) async_continuation_id: Option<u32>,
+
+  /// Realm/global object used for module execution.
+  ///
+  /// These are recorded when module evaluation begins so async module execution microtasks
+  /// (`AsyncModuleExecutionFulfilled` / `AsyncModuleExecutionRejected`) can execute dependent modules
+  /// later, after `ModuleGraph::evaluate_with_scope` has returned.
+  #[allow(dead_code)]
+  pub(crate) eval_realm_id: Option<RealmId>,
+  #[allow(dead_code)]
+  pub(crate) eval_global_object: Option<GcObject>,
 }
 
 impl SourceTextModuleRecord {

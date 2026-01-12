@@ -119,22 +119,22 @@ impl ForInEnumerator {
           continue;
         };
 
-        // Suppress duplicates across own keys/prototypes, including shadowing by non-enumerable
-        // keys.
-        if self
-          .visited
-          .check_and_mark_visited(vm, scope.heap(), key_s)?
-        {
+        // If a property is deleted before it is processed it is ignored and does *not* count as
+        // visited, so an enumerable prototype property with the same key may still be returned.
+        if self.visited.contains(vm, scope.heap(), key_s)? {
           continue;
         }
 
         // Re-check the property descriptor at yield time so deletions and enumerability changes are
         // observable during iteration.
-        let Some(desc) =
-          scope.get_own_property_with_host_and_hooks(vm, host, hooks, obj, key)?
-        else {
+        let Some(desc) = scope.get_own_property_with_host_and_hooks(vm, host, hooks, obj, key)? else {
           continue;
         };
+
+        // Suppress duplicates across own keys/prototypes, including shadowing by non-enumerable
+        // keys.
+        self.visited.insert(scope.heap(), key_s)?;
+
         if !desc.enumerable {
           continue;
         }
@@ -181,40 +181,43 @@ struct VisitedStringKeys {
 }
 
 impl VisitedStringKeys {
-  fn check_and_mark_visited(
-    &mut self,
-    vm: &mut Vm,
-    heap: &Heap,
-    key: GcString,
-  ) -> Result<bool, VmError> {
+  fn contains(&self, vm: &mut Vm, heap: &Heap, key: GcString) -> Result<bool, VmError> {
     const BUCKET_SCAN_TICK_EVERY: usize = 256;
 
     let hash = heap.get_string(key)?.stable_hash64();
 
-    if let Some(bucket) = self.by_hash.get_mut(&hash) {
-      let needle = heap.get_string(key)?.as_code_units();
-      for (i, existing) in bucket.iter().enumerate() {
-        if i % BUCKET_SCAN_TICK_EVERY == 0 {
-          vm.tick()?;
-        }
-        let existing_units = heap.get_string(*existing)?.as_code_units();
-        if existing_units == needle {
-          return Ok(true);
-        }
-      }
-
-      // New key for this hash bucket.
-      bucket.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
-      bucket.push(key);
+    let Some(bucket) = self.by_hash.get(&hash) else {
       return Ok(false);
+    };
+
+    let needle = heap.get_string(key)?.as_code_units();
+    for (i, existing) in bucket.iter().enumerate() {
+      if i % BUCKET_SCAN_TICK_EVERY == 0 {
+        vm.tick()?;
+      }
+      let existing_units = heap.get_string(*existing)?.as_code_units();
+      if existing_units == needle {
+        return Ok(true);
+      }
     }
 
-    // First key for this hash.
+    Ok(false)
+  }
+
+  fn insert(&mut self, heap: &Heap, key: GcString) -> Result<(), VmError> {
+    let hash = heap.get_string(key)?.stable_hash64();
+
+    if let Some(bucket) = self.by_hash.get_mut(&hash) {
+      bucket.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
+      bucket.push(key);
+      return Ok(());
+    }
+
     self.by_hash.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
     let mut bucket: Vec<GcString> = Vec::new();
     bucket.try_reserve_exact(1).map_err(|_| VmError::OutOfMemory)?;
     bucket.push(key);
     self.by_hash.insert(hash, bucket);
-    Ok(false)
+    Ok(())
   }
 }

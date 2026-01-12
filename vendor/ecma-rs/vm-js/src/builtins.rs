@@ -5200,34 +5200,6 @@ fn resolve_promise(
     return fulfill_promise(vm, hooks, scope, promise, resolution, current_realm);
   }
 
-  // If `resolution` is a Promise and `then` is the intrinsic `%Promise.prototype%.then`, we can
-  // link the two Promises directly via `PerformPromiseThen` without calling `then`.
-  //
-  // This matches the spec's intent for `PromiseResolveThenableJob` and avoids observable side
-  // effects from Promise species construction (e.g. `await` must not invoke a Promise's
-  // `@@species` constructor).
-  if scope.heap().is_promise_object(thenable_obj) {
-    let Value::Object(then_obj) = then else {
-      return Err(VmError::Unimplemented("callable then is not an object"));
-    };
-    if then_obj == intr.promise_prototype_then() {
-      // Root the thenable Promise while allocating fresh resolving functions and scheduling
-      // Promise reaction jobs.
-      scope.push_root(Value::Object(thenable_obj))?;
-      let (resolve, reject) = create_promise_resolving_functions(vm, scope, promise)?;
-      scope.push_roots(&[resolve, reject])?;
-      perform_promise_then_no_capability(
-        vm,
-        scope,
-        hooks,
-        Value::Object(thenable_obj),
-        resolve,
-        reject,
-      )?;
-      return Ok(());
-    }
-  }
-
   let Value::Object(then_obj) = then else {
     return Err(VmError::Unimplemented("callable then is not an object"));
   };

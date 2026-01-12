@@ -9435,6 +9435,12 @@ fn async_teardown_frame(heap: &mut Heap, frame: &mut AsyncFrame) {
 pub(crate) struct AsyncContinuation {
   env: RuntimeEnv,
   strict: bool,
+  /// Optional execution context to install while resuming the async continuation.
+  ///
+  /// This is primarily used for top-level await in modules: module evaluation must provide an
+  /// active `ScriptOrModule::Module` so `import.meta` and dynamic `import()` can observe the active
+  /// module during each resumed execution segment (ECMA-262 `AsyncBlockStart` behaviour).
+  exec_ctx: Option<ExecutionContext>,
   this_root: RootId,
   new_target_root: RootId,
   promise_root: RootId,
@@ -10112,7 +10118,9 @@ pub(crate) fn async_resume_call(
   };
 
   let Some(mut cont) = vm.take_async_continuation(id) else {
-    return Err(VmError::InvariantViolation("async continuation not found"));
+    // Embeddings can abort in-progress top-level await evaluation by tearing down async
+    // continuations. In that case, previously-registered resume callbacks must no-op.
+    return Ok(Value::Undefined);
   };
 
   // The awaited promise has settled; it no longer needs to be rooted by the continuation.
@@ -10148,6 +10156,34 @@ pub(crate) fn async_resume_call(
       .ok_or(VmError::InvariantViolation(
         "async continuation missing new.target root",
       ))?;
+
+  // If this continuation carries an execution context (used by top-level await in modules),
+  // install it for the duration of the resumed evaluation segment so `import.meta` and dynamic
+  // `import()` can observe the active module.
+  if let Some(exec_ctx) = cont.exec_ctx {
+    vm.push_execution_context(exec_ctx);
+    let res = (|| {
+      let mut evaluator = Evaluator {
+        vm,
+        host,
+        hooks,
+        env: &mut cont.env,
+        strict: cont.strict,
+        this,
+        new_target,
+      };
+
+      let frames = mem::take(&mut cont.frames);
+      let resume_value = if is_reject { Err(arg0) } else { Ok(arg0) };
+      let result = async_resume_from_frames(&mut evaluator, scope, frames, resume_value);
+
+      async_handle_body_result(vm, scope, host, hooks, id, cont, resolve, reject, result)
+    })();
+
+    let popped = vm.pop_execution_context();
+    debug_assert_eq!(popped, Some(exec_ctx));
+    return res;
+  }
 
   let mut evaluator = Evaluator {
     vm,
@@ -23231,6 +23267,7 @@ pub(crate) fn run_ecma_function(
         let cont = AsyncContinuation {
           env: evaluator.env.clone(),
           strict,
+          exec_ctx: None,
           this_root,
           new_target_root,
           promise_root,
@@ -23298,11 +23335,16 @@ pub(crate) fn run_ecma_function(
         })();
 
         if let Err(err) = schedule_res {
-          let _ = evaluator.vm.take_async_continuation(id);
-          for id in roots.drain(..) {
-            root_scope.heap_mut().remove_root(id);
+          // Best-effort cleanup: take the continuation back out and tear down its persistent roots
+          // (including any roots held by async frames).
+          if let Some(cont) = evaluator.vm.take_async_continuation(id) {
+            async_teardown_continuation(&mut root_scope, cont);
+          } else {
+            for id in roots.drain(..) {
+              root_scope.heap_mut().remove_root(id);
+            }
+            evaluator.env.teardown(root_scope.heap_mut());
           }
-          evaluator.env.teardown(root_scope.heap_mut());
           return Err(err);
         }
 

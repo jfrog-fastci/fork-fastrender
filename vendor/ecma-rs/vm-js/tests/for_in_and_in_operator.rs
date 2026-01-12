@@ -72,6 +72,29 @@ fn for_in_skips_deleted_keys() {
 }
 
 #[test]
+fn for_in_deleted_key_allows_prototype_key() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      var p = {b:1};
+      var o = Object.create(p);
+      o.a = 1;
+      o.b = 2;
+      o.c = 3;
+      var s = "";
+      for (var k in o) {
+        s += k;
+        if (k === "a") { delete o.b; }
+      }
+      s
+      "#,
+    )
+    .unwrap();
+  assert_value_is_utf8(&rt, value, "acb");
+}
+
+#[test]
 fn for_in_non_enumerable_own_property_shadows_prototype() {
   let mut rt = new_runtime();
   let value = rt

@@ -97,6 +97,18 @@ fn ns_get(
   scope.ordinary_get_with_host_and_hooks(vm, host, hooks, ns, key, Value::Object(ns))
 }
 
+fn call0(
+  vm: &mut Vm,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  scope: &mut Scope<'_>,
+  func: Value,
+) -> Result<Value, VmError> {
+  let mut scope = scope.reborrow();
+  scope.push_root(func)?;
+  vm.call_with_host_and_hooks(host, &mut scope, hooks, func, Value::Undefined, &[])
+}
+
 fn root_value(heap: &mut Heap, value: Value) -> Result<RootId, VmError> {
   let mut scope = heap.scope();
   scope.push_root(value)?;
@@ -295,10 +307,10 @@ fn tla_async_cycle_evaluates_without_deadlock() -> Result<(), VmError> {
       "b.js",
       SourceTextModuleRecord::parse(
         r#"
-          import { a } from "a.js";
-          export function base() { return 41; }
-          export const sum = a + base();
-        "#,
+           import { a } from "a.js";
+           export function base() { return 41; }
+           export function sum() { return a + base(); }
+         "#,
       )?,
     );
     graph.link_all_by_specifier();
@@ -346,8 +358,12 @@ fn tla_async_cycle_evaluates_without_deadlock() -> Result<(), VmError> {
       Value::Number(42.0)
     );
     assert_eq!(
-      ns_get(&mut vm, &mut host, &mut hooks, &mut scope, ns_b, "sum")?,
-      Value::Number(83.0)
+      {
+        let sum = ns_get(&mut vm, &mut host, &mut hooks, &mut scope, ns_b, "sum")?;
+        call0(&mut vm, &mut host, &mut hooks, &mut scope, sum)?
+      },
+      Value::Number(83.0),
+      "calling `sum()` should observe `a` after async cycle evaluation"
     );
 
     drop(scope);
@@ -457,10 +473,10 @@ fn tla_evaluation_promise_is_cached_per_scc() -> Result<(), VmError> {
       "b.js",
       SourceTextModuleRecord::parse(
         r#"
-          import { a } from "a.js";
-          export function base() { return 41; }
-          export const sum = a + base();
-        "#,
+           import { a } from "a.js";
+           export function base() { return 41; }
+           export function sum() { return a + base(); }
+         "#,
       )?,
     );
     graph.link_all_by_specifier();
