@@ -1911,6 +1911,11 @@ pub fn validate_native_strict_body(
       self.resolve_def(def)
     }
 
+    fn resolve_expr(&self, expr: ExprRef) -> Option<DestructuredAliasKind> {
+      let expr = expr_unwrap_comma_and_alias(self.const_aliases, expr);
+      self.resolve_ident(expr.body, expr.expr)
+    }
+
     fn resolve_def(&self, def: hir_js::DefId) -> Option<DestructuredAliasKind> {
       if let Some(hit) = self.cache.borrow().get(&def).copied() {
         return hit;
@@ -2167,7 +2172,12 @@ pub fn validate_native_strict_body(
         let alias_kind = destructured_aliases
           .get(&callee_check_id)
           .copied()
-          .or_else(|| semantic_destructured_aliases.resolve_ident(body_id, callee_check_id));
+          .or_else(|| {
+            semantic_destructured_aliases.resolve_expr(ExprRef {
+              body: body_id,
+              expr: call.callee,
+            })
+          });
         if let Some(alias_kind) = alias_kind {
           match alias_kind {
             DestructuredAliasKind::Eval => {

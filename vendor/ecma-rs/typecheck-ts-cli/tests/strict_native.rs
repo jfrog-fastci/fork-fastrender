@@ -352,6 +352,33 @@ export function main() {
 }
 
 #[test]
+fn strict_native_reports_eval_through_outer_destructuring_alias_then_const_alias() {
+  let tmp = tempdir().expect("temp dir");
+  let entry = tmp.path().join("main.ts");
+  fs::write(
+    &entry,
+    r#"
+declare const globalThis: { eval(code: string): unknown };
+const { eval: e } = globalThis;
+const x = e;
+export function main() {
+  x("1");
+}
+"#,
+  )
+  .expect("write main.ts");
+
+  typecheck_cli()
+    .timeout(CLI_TIMEOUT)
+    .args(["typecheck", "--lib", "es5"])
+    .arg("--strict-native")
+    .arg(entry.as_os_str())
+    .assert()
+    .failure()
+    .stdout(contains(codes::NATIVE_STRICT_EVAL.as_str()));
+}
+
+#[test]
 fn strict_native_reports_eval_through_outer_const_alias() {
   let tmp = tempdir().expect("temp dir");
   let entry = tmp.path().join("main.ts");
@@ -451,6 +478,33 @@ revocable({}, {});
 }
 
 #[test]
+fn strict_native_reports_proxy_revocable_through_outer_destructuring_alias_then_const_alias() {
+  let tmp = tempdir().expect("temp dir");
+  let entry = tmp.path().join("main.ts");
+  fs::write(
+    &entry,
+    r#"
+declare const Proxy: { revocable(target: object, handler: object): object };
+const { revocable } = Proxy;
+const r = revocable;
+export function main() {
+  r({}, {});
+}
+"#,
+  )
+  .expect("write main.ts");
+
+  typecheck_cli()
+    .timeout(CLI_TIMEOUT)
+    .args(["typecheck", "--lib", "es5"])
+    .arg("--strict-native")
+    .arg(entry.as_os_str())
+    .assert()
+    .failure()
+    .stdout(contains(codes::NATIVE_STRICT_PROXY.as_str()));
+}
+
+#[test]
 fn strict_native_reports_prototype_mutation_via_destructuring_define_property() {
   let tmp = tempdir().expect("temp dir");
   let entry = tmp.path().join("main.ts");
@@ -487,6 +541,35 @@ class Foo {}
 const { defineProperty: dp } = Object;
 export function main() {
   dp(Foo, "prototype", {});
+}
+"#,
+  )
+  .expect("write main.ts");
+
+  typecheck_cli()
+    .timeout(CLI_TIMEOUT)
+    .args(["typecheck", "--lib", "es5"])
+    .arg("--strict-native")
+    .arg(entry.as_os_str())
+    .assert()
+    .failure()
+    .stdout(contains(
+      codes::NATIVE_STRICT_PROTOTYPE_MUTATION.as_str(),
+    ));
+}
+
+#[test]
+fn strict_native_reports_prototype_mutation_through_outer_destructuring_define_property_then_const_alias() {
+  let tmp = tempdir().expect("temp dir");
+  let entry = tmp.path().join("main.ts");
+  fs::write(
+    &entry,
+    r#"
+class Foo {}
+const { defineProperty: dp } = Object;
+const f = dp;
+export function main() {
+  f(Foo, "prototype", {});
 }
 "#,
   )
@@ -942,6 +1025,34 @@ export {};
 declare const Object: { constructor: FunctionConstructor };
 const { constructor: F } = Object;
 F("return 1");
+"#,
+  )
+  .expect("write main.ts");
+
+  typecheck_cli()
+    .timeout(CLI_TIMEOUT)
+    .args(["typecheck", "--lib", "es5"])
+    .arg("--strict-native")
+    .arg(entry.as_os_str())
+    .assert()
+    .failure()
+    .stdout(contains(codes::NATIVE_STRICT_NEW_FUNCTION.as_str()));
+}
+
+#[test]
+fn strict_native_reports_function_constructor_through_outer_destructuring_constructor_then_const_alias() {
+  let tmp = tempdir().expect("temp dir");
+  let entry = tmp.path().join("main.ts");
+  fs::write(
+    &entry,
+    r#"
+export {};
+declare const Object: { constructor: FunctionConstructor };
+const { constructor: F } = Object;
+const G = F;
+export function main() {
+  G("return 1");
+}
 "#,
   )
   .expect("write main.ts");
