@@ -10,6 +10,7 @@ mod docs_presence;
 mod ecma_rs_workspace_exclude_guard;
 mod fetch_and_render_exit_presence;
 mod js_runtime_consolidation_guard;
+mod no_deprecated_test_harness_names;
 mod no_merge_markers;
 mod no_production_panics;
 mod style_regressions_presence;
