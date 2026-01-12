@@ -14,7 +14,7 @@
     "layout": 8.769792835868717,
     "paint": 105.5244302602172
   },
-  "notes": "Medium is behind Cloudflare bot protection (\"Just a moment...\" / `__cf_chl_*` challenge). Pageset runs commonly capture the JS+cookie interstitial rather than the real homepage (tiny DOM + display list). Treat this page as \"good\" for now; remaining Chrome diffs are expected from the interstitial + minor paint/text rendering differences.",
+  "notes": "Medium is behind Cloudflare bot protection (\"Just a moment...\" / `__cf_chl_*` challenge). Cached HTML snapshots can end up being the Cloudflare interstitial (tiny DOM + display list) rather than the real homepage, and the content can vary depending on whether the challenge was passed at capture time. That makes the stored Chrome accuracy diff unreliable (baseline/render may correspond to different captured content). Treat this page as \"good\" for now; remaining diffs are expected from the interstitial/baseline mismatch rather than a specific renderer bug.",
   "accuracy": {
     "baseline": "chrome",
     "diff_pixels": 96804,
