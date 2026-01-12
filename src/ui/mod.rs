@@ -156,7 +156,7 @@ pub use session::{BrowserSession, BrowserSessionTab, BrowserSessionWindow, Brows
 #[cfg(feature = "browser_ui")]
 pub use session_autosave::SessionAutosave;
 #[cfg(feature = "browser_ui")]
-pub use icons::{icon, icon_button, icon_tinted, spinner, BrowserIcon};
+pub use icons::{icon, icon_button, icon_tinted, paint_icon_in_rect, spinner, BrowserIcon};
 pub use profile_autosave::{AutosaveMsg, ProfileAutosaveHandle};
 pub use profile_persistence::{
   bookmarks_path, history_path, load_bookmarks, load_history, parse_bookmarks_json,

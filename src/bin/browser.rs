@@ -3430,15 +3430,12 @@ impl App {
             }
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-              if ui
-                .add(
-                  egui::Button::new(
-                    egui::RichText::new("×").color(theme_colors.text_secondary),
-                  )
-                  .frame(false),
-                )
-                .clicked()
-              {
+              let close_resp =
+                fastrender::ui::icon_button(ui, fastrender::ui::BrowserIcon::Close, "Dismiss", true);
+              close_resp.widget_info(|| {
+                egui::WidgetInfo::labeled(egui::WidgetType::Button, "Dismiss")
+              });
+              if close_resp.clicked() {
                 dismiss = true;
               }
             });
@@ -3774,7 +3771,12 @@ impl App {
               .desired_width(160.0),
           );
           if !self.debug_log_filter.is_empty() {
-            let clear_filter = ui.small_button("×").on_hover_text("Clear filter");
+            let clear_filter = fastrender::ui::icon_button(
+              ui,
+              fastrender::ui::BrowserIcon::Close,
+              "Clear filter",
+              true,
+            );
             clear_filter.widget_info(|| {
               egui::WidgetInfo::labeled(egui::WidgetType::Button, "Clear filter")
             });
@@ -3858,6 +3860,7 @@ impl App {
 
   fn render_context_menu(&mut self, ctx: &egui::Context) -> bool {
     use fastrender::ui::ChromeAction;
+    use fastrender::ui::BrowserIcon;
     use fastrender::ui::context_menu::{
       apply_page_context_menu_action, build_page_context_menu_entries, PageContextMenuAction,
       PageContextMenuBuildInput, PageContextMenuEntry,
@@ -3915,7 +3918,7 @@ impl App {
 
     #[derive(Clone)]
     struct MenuItem {
-      icon: &'static str,
+      icon: BrowserIcon,
       label: String,
       action: PageContextMenuAction,
     }
@@ -3941,17 +3944,17 @@ impl App {
         }
         PageContextMenuEntry::Action(item) => {
           let icon = match (&item.action, item.checked) {
-            (PageContextMenuAction::OpenLinkInNewTab(_), _) => "↗",
-            (PageContextMenuAction::CopyLinkAddress(_), _) => "⧉",
+            (PageContextMenuAction::OpenLinkInNewTab(_), _) => BrowserIcon::NewTab,
+            (PageContextMenuAction::CopyLinkAddress(_), _) => BrowserIcon::Copy,
             (PageContextMenuAction::BookmarkLink(_), true)
-            | (PageContextMenuAction::BookmarkPage(_), true) => "★",
+            | (PageContextMenuAction::BookmarkPage(_), true) => BrowserIcon::BookmarkFilled,
             (PageContextMenuAction::BookmarkLink(_), false)
-            | (PageContextMenuAction::BookmarkPage(_), false) => "☆",
-            (PageContextMenuAction::ToggleHistoryPanel, true) => "✓",
-            (PageContextMenuAction::ToggleHistoryPanel, false) => "⌛",
-            (PageContextMenuAction::ToggleBookmarksPanel, true) => "✓",
-            (PageContextMenuAction::ToggleBookmarksPanel, false) => "☆",
-            (PageContextMenuAction::Reload, _) => "⟳",
+            | (PageContextMenuAction::BookmarkPage(_), false) => BrowserIcon::BookmarkOutline,
+            (PageContextMenuAction::ToggleHistoryPanel, true) => BrowserIcon::Check,
+            (PageContextMenuAction::ToggleHistoryPanel, false) => BrowserIcon::History,
+            (PageContextMenuAction::ToggleBookmarksPanel, true) => BrowserIcon::Check,
+            (PageContextMenuAction::ToggleBookmarksPanel, false) => BrowserIcon::BookmarkOutline,
+            (PageContextMenuAction::Reload, _) => BrowserIcon::Reload,
           };
           menu_entries.push(MenuEntry::Item(MenuItem {
             icon,
@@ -4171,9 +4174,16 @@ impl App {
             ui.allocate_ui_at_rect(rect, |ui| {
               ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                 ui.add_space(10.0);
-                ui.add_sized(
+                let (icon_rect, _) = ui.allocate_exact_size(
                   egui::vec2(16.0, MENU_ITEM_HEIGHT),
-                  egui::Label::new(egui::RichText::new(item.icon)),
+                  egui::Sense::hover(),
+                );
+                fastrender::ui::paint_icon_in_rect(
+                  ui,
+                  icon_rect,
+                  item.icon,
+                  16.0,
+                  ui.visuals().text_color(),
                 );
                 ui.add_space(8.0);
                 ui.label(&item.label);
@@ -4589,11 +4599,15 @@ impl App {
 
                   let mut x = rect.min.x + base_padding_x;
                   if selected_t > 0.0 {
-                    painter.text(
-                      egui::pos2(x, rect.center().y),
-                      egui::Align2::LEFT_CENTER,
-                      "✓",
-                      body_font.clone(),
+                    let check_rect = egui::Rect::from_min_max(
+                      egui::pos2(x, rect.top()),
+                      egui::pos2(x + check_col_width, rect.bottom()),
+                    );
+                    fastrender::ui::paint_icon_in_rect(
+                      ui,
+                      check_rect,
+                      fastrender::ui::BrowserIcon::Check,
+                      14.0,
                       Self::with_alpha(selection_base, selected_t * open_opacity),
                     );
                   }
@@ -6843,7 +6857,12 @@ impl App {
           ui.horizontal(|ui| {
             ui.heading("History");
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-              let close_resp = ui.button("✕").on_hover_text("Close");
+              let close_resp = fastrender::ui::icon_button(
+                ui,
+                fastrender::ui::BrowserIcon::Close,
+                "Close",
+                true,
+              );
               close_resp.widget_info(|| {
                 egui::WidgetInfo::labeled(egui::WidgetType::Button, "Close history panel")
               });

@@ -21,6 +21,8 @@ pub enum BrowserIcon {
   Search,
   History,
   Tab,
+  Copy,
+  Check,
   Close,
   CloseTab,
   NewTab,
@@ -49,6 +51,8 @@ impl BrowserIcon {
       Self::Search => "search",
       Self::History => "history",
       Self::Tab => "tab",
+      Self::Copy => "copy",
+      Self::Check => "check",
       Self::Close => "close",
       Self::CloseTab => "close_tab",
       Self::NewTab => "new_tab",
@@ -81,6 +85,8 @@ impl BrowserIcon {
       Self::Search => "Search",
       Self::History => "History",
       Self::Tab => "Tab",
+      Self::Copy => "Copy",
+      Self::Check => "Check",
       Self::Close => "Close",
       Self::CloseTab => "Close tab",
       Self::NewTab => "New tab",
@@ -109,6 +115,8 @@ impl BrowserIcon {
       Self::Search => include_bytes!("../../assets/browser_icons/search.svg"),
       Self::History => include_bytes!("../../assets/browser_icons/history.svg"),
       Self::Tab => include_bytes!("../../assets/browser_icons/tab.svg"),
+      Self::Copy => include_bytes!("../../assets/browser_icons/copy.svg"),
+      Self::Check => include_bytes!("../../assets/browser_icons/check.svg"),
       Self::Close => include_bytes!("../../assets/browser_icons/close_tab.svg"),
       Self::CloseTab => include_bytes!("../../assets/browser_icons/close_tab.svg"),
       Self::NewTab => include_bytes!("../../assets/browser_icons/new_tab.svg"),
@@ -353,7 +361,7 @@ fn paint_icon(
   ui.painter().image(tex_id, icon_rect, uv, tint);
 }
 
-pub(crate) fn paint_icon_in_rect(
+pub fn paint_icon_in_rect(
   ui: &egui::Ui,
   rect: egui::Rect,
   icon: BrowserIcon,
@@ -529,6 +537,8 @@ mod tests {
       BrowserIcon::Search,
       BrowserIcon::History,
       BrowserIcon::Tab,
+      BrowserIcon::Copy,
+      BrowserIcon::Check,
       BrowserIcon::Close,
       BrowserIcon::NewTab,
       BrowserIcon::CloseTab,
