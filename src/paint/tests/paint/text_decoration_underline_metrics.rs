@@ -1,8 +1,9 @@
+use std::sync::Arc;
+
 use crate::paint::display_list::DisplayItem;
 use crate::paint::display_list_builder::DisplayListBuilder;
 use crate::style::types::{TextDecorationLine, TextDecorationThickness};
 use crate::{ComputedStyle, FontConfig, FontContext, FragmentNode, FragmentTree, Rect, Rgba};
-use std::sync::Arc;
 
 #[test]
 fn underline_center_uses_font_metrics_without_double_counting_thickness() {
@@ -41,7 +42,7 @@ fn underline_center_uses_font_metrics_without_double_counting_thickness() {
   let text_rect = Rect::from_xywh(0.0, 0.0, 100.0, 40.0);
   let fragment = FragmentNode::new_text_shaped(
     text_rect,
-    "Hi".to_string(),
+    "Hi",
     baseline_offset,
     Arc::new(runs),
     Arc::clone(&style),
