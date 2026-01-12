@@ -20,10 +20,7 @@ fn object_prototype_to_string_honors_symbol_to_string_tag_for_generators() -> Re
   let value = rt.exec_script("function* g(){ yield 1; }\nObject.prototype.toString.call(g)")?;
   assert_eq!(value_to_utf8(&rt, value), "[object GeneratorFunction]");
 
-  // Calling generator functions is not implemented yet in vm-js, but we can still validate the
-  // @@toStringTag behavior via the generator function's instance prototype chain:
-  // `it.[[Prototype]] === g.prototype` and `g.prototype.[[Prototype]] === %GeneratorPrototype%`.
-  let value = rt.exec_script("const it = Object.create(g.prototype);\nObject.prototype.toString.call(it)")?;
+  let value = rt.exec_script("const it = g();\nObject.prototype.toString.call(it)")?;
   assert_eq!(value_to_utf8(&rt, value), "[object Generator]");
 
   // Non-string @@toStringTag values must be ignored.
