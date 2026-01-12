@@ -397,11 +397,17 @@ pub fn print_manifest_suggestions_toml(
 
   writeln!(
     out,
-    "# Suggested manifest entries from `typecheck-ts-harness triage` (review before committing)."
+    "# Suggested manifest entries from `typecheck-ts-harness triage --emit-manifest`."
+  )?;
+  writeln!(out, "# Review before committing.")?;
+  writeln!(out, "#")?;
+  writeln!(
+    out,
+    "# Matcher rules: ids/globs are relative to the suite root, normalized, and must use forward slashes."
   )?;
   writeln!(
     out,
-    "# Note: ids/globs are relative to the suite root and must use forward slashes."
+    "# Non-pass entries include tracking_issue = \"TODO\" placeholders."
   )?;
 
   let snippet = ManifestSnippet {
