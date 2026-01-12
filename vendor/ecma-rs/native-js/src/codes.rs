@@ -187,6 +187,17 @@ pub const UNSUPPORTED_EXPR: Code = Code::new("NJS0200", "unsupported expression"
 /// NJS0201: Failed to access lowered HIR for the entry file.
 pub const MISSING_ENTRY_HIR: Code = Code::new("NJS0201", "missing lowered HIR for entry file");
 
+/// NJS0202: Statement form not supported by the legacy parse-js-driven emitter yet.
+pub const LEGACY_UNSUPPORTED_STMT: Code =
+  Code::new("NJS0202", "unsupported statement in native-js legacy emitter");
+
+/// NJS0203: Operator not supported by the legacy parse-js-driven emitter yet.
+pub const LEGACY_UNSUPPORTED_OPERATOR: Code =
+  Code::new("NJS0203", "unsupported operator in native-js legacy emitter");
+
+/// NJS0204: Type error produced by the legacy parse-js-driven emitter.
+pub const LEGACY_TYPE_ERROR: Code = Code::new("NJS0204", "type error in native-js legacy emitter");
+
 impl Code {
   pub const fn new(id: &'static str, description: &'static str) -> Self {
     Self { id, description }

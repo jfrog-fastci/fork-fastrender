@@ -56,9 +56,10 @@ fn ty_from_type_expr(expr: &Node<TypeExpr>) -> Result<Ty, NativeJsError> {
     TypeExpr::Void(_) => Ok(Ty::Void),
     TypeExpr::Null(_) => Ok(Ty::Null),
     TypeExpr::Undefined(_) => Ok(Ty::Undefined),
-    other => Err(NativeJsError::Codegen(CodegenError::TypeError(format!(
-      "unsupported type annotation: {other:?}"
-    )))),
+    other => Err(NativeJsError::Codegen(CodegenError::TypeError {
+      message: format!("unsupported type annotation: {other:?}"),
+      loc: expr.loc,
+    })),
   }
 }
 
@@ -567,7 +568,12 @@ pub fn compile_project_to_llvm_ir(
         dialect: dialect_for_kind(kind),
         source_type: SourceType::Module,
       },
-    )?;
+    )
+    .map_err(|error| NativeJsError::ParseFile {
+      file: file_label(program, file),
+      file_id: file,
+      error,
+    })?;
 
     let mut fn_map: BTreeMap<String, (Vec<Ty>, Ty)> = BTreeMap::new();
     for stmt in &parsed.stx.body {
@@ -583,13 +589,35 @@ pub fn compile_project_to_llvm_ir(
         let mut params = Vec::new();
         for param in &func.stx.function.stx.parameters {
           if param.stx.rest || param.stx.optional {
-            return Err(NativeJsError::Codegen(CodegenError::TypeError(format!(
-              "function `{name}` has unsupported parameter syntax"
-            ))));
+            return Err(NativeJsError::CodegenFile {
+              file: file_label(program, file),
+              file_id: file,
+              error: CodegenError::TypeError {
+                message: format!("function `{name}` has unsupported parameter syntax"),
+                loc: param.loc,
+              },
+            });
           }
-          params.push(ty_from_opt_type_expr(param.stx.type_annotation.as_ref())?);
+          params.push(
+            ty_from_opt_type_expr(param.stx.type_annotation.as_ref()).map_err(|err| match err {
+              NativeJsError::Codegen(error) => NativeJsError::CodegenFile {
+                file: file_label(program, file),
+                file_id: file,
+                error,
+              },
+              other => other,
+            })?,
+          );
         }
-        let ret = ty_from_opt_type_expr(func.stx.function.stx.return_type.as_ref())?;
+        let ret =
+          ty_from_opt_type_expr(func.stx.function.stx.return_type.as_ref()).map_err(|err| match err {
+            NativeJsError::Codegen(error) => NativeJsError::CodegenFile {
+              file: file_label(program, file),
+              file_id: file,
+              error,
+            },
+            other => other,
+          })?;
         fn_map.insert(name, (params, ret));
       }
     }
@@ -749,7 +777,11 @@ pub fn compile_project_to_llvm_ir(
 
     builder
       .add_init_function(&llvm_init_symbol(file), &init_stmts, targets)
-      .map_err(NativeJsError::Codegen)?;
+      .map_err(|error| NativeJsError::CodegenFile {
+        file: file_label(program, file),
+        file_id: file,
+        error,
+      })?;
 
     // Compile top-level function declarations.
     for stmt in &ast.stx.body {
@@ -770,7 +802,11 @@ pub fn compile_project_to_llvm_ir(
         })?;
       builder
         .add_ts_function(&sig.llvm_name, func, targets)
-        .map_err(NativeJsError::Codegen)?;
+        .map_err(|error| NativeJsError::CodegenFile {
+          file: file_label(program, file),
+          file_id: file,
+          error,
+        })?;
     }
   }
 
@@ -779,7 +815,11 @@ pub fn compile_project_to_llvm_ir(
   let init_symbols: Vec<String> = init_order.iter().copied().map(llvm_init_symbol).collect();
   builder
     .add_main(&init_symbols, entry_call.as_ref())
-    .map_err(NativeJsError::Codegen)?;
+    .map_err(|error| NativeJsError::CodegenFile {
+      file: file_label(program, entry_file),
+      file_id: entry_file,
+      error,
+    })?;
 
   Ok(builder.finish())
 }

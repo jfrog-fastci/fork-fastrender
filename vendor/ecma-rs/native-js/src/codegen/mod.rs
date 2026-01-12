@@ -3506,23 +3506,24 @@ pub(crate) mod llvm;
 use crate::CompileOptions;
 use parse_js::ast::node::Node;
 use parse_js::ast::stx::TopLevel;
+use parse_js::loc::Loc;
 
 #[derive(thiserror::Error, Debug)]
 pub enum CodegenError {
   #[error("unsupported statement")]
-  UnsupportedStmt,
+  UnsupportedStmt { loc: Loc },
 
   #[error("unsupported expression")]
-  UnsupportedExpr,
+  UnsupportedExpr { loc: Loc },
 
-  #[error("unsupported operator: {0:?}")]
-  UnsupportedOperator(parse_js::operator::OperatorName),
+  #[error("unsupported operator: {op:?}")]
+  UnsupportedOperator { op: parse_js::operator::OperatorName, loc: Loc },
 
   #[error("builtins disabled")]
-  BuiltinsDisabled,
+  BuiltinsDisabled { loc: Loc },
 
-  #[error("type error: {0}")]
-  TypeError(String),
+  #[error("type error: {message}")]
+  TypeError { message: String, loc: Loc },
 }
 
 pub fn emit_llvm_module(ast: &Node<TopLevel>, opts: CompileOptions) -> Result<String, CodegenError> {

@@ -1,4 +1,4 @@
-use diagnostics::Diagnostic;
+use diagnostics::{Diagnostic, FileId};
 use std::path::PathBuf;
 use thiserror::Error;
 
@@ -40,8 +40,24 @@ pub enum NativeJsError {
   #[error(transparent)]
   Parse(#[from] parse_js::error::SyntaxError),
 
+  #[error("syntax error in {file}")]
+  ParseFile {
+    file: String,
+    file_id: FileId,
+    #[source]
+    error: parse_js::error::SyntaxError,
+  },
+
   #[error(transparent)]
   Codegen(#[from] crate::codegen::CodegenError),
+
+  #[error("codegen error in {file}")]
+  CodegenFile {
+    file: String,
+    file_id: FileId,
+    #[source]
+    error: crate::codegen::CodegenError,
+  },
 
   #[error("failed to load source for {file}: {reason}")]
   FileText { file: String, reason: String },

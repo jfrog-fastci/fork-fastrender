@@ -16,6 +16,10 @@ mod host;
 #[path = "../bench.rs"]
 mod bench;
 
+#[path = "../diag.rs"]
+#[allow(dead_code)]
+mod diag;
+
 #[path = "../output.rs"]
 mod output;
 
@@ -302,7 +306,7 @@ fn cmd_check(cli: &Cli, entry: &Path, render: diagnostics::render::RenderOptions
   };
 
   let diagnostics = collect_check_diagnostics(&program, entry_file, cli.extra_strict);
-  let exit_code = exit_code_for_diagnostics(&diagnostics);
+  let exit_code = ExitCode::from(diag::exit_code_for_diagnostics(&diagnostics));
   match output::emit_diagnostics(&program, diagnostics, cli.json, render) {
     Ok(_) => exit_code,
     Err(err) => exit_internal(
@@ -333,7 +337,7 @@ fn cmd_build(
   // We only pre-run the legacy strict validator when explicitly requested.
   if cli.extra_strict {
     let diagnostics = collect_check_diagnostics(&program, entry_file, true);
-    let exit_code = exit_code_for_diagnostics(&diagnostics);
+    let exit_code = ExitCode::from(diag::exit_code_for_diagnostics(&diagnostics));
     if exit_code != ExitCode::SUCCESS {
       let _ = output::emit_diagnostics(&program, diagnostics, cli.json, render);
       return exit_code;
@@ -376,7 +380,7 @@ fn cmd_build(
   if let Err(err) = native_js::compile_program(&program, entry_file, &opts) {
     if let Some(diags) = err.diagnostics() {
       let _ = output::emit_diagnostics(&program, diags.to_vec(), cli.json, render);
-      return exit_code_for_diagnostics(diags);
+      return ExitCode::from(diag::exit_code_for_diagnostics(diags));
     }
     return exit_internal(&program, cli.json, render, err.to_string());
   }
@@ -405,7 +409,7 @@ fn cmd_emit_ir(
 
   if cli.extra_strict {
     let diagnostics = collect_check_diagnostics(&program, entry_file, true);
-    let exit_code = exit_code_for_diagnostics(&diagnostics);
+    let exit_code = ExitCode::from(diag::exit_code_for_diagnostics(&diagnostics));
     if exit_code != ExitCode::SUCCESS {
       let _ = output::emit_diagnostics(&program, diagnostics, cli.json, render);
       return exit_code;
@@ -428,7 +432,7 @@ fn cmd_emit_ir(
   if let Err(err) = native_js::compile_program(&program, entry_file, &opts) {
     if let Some(diags) = err.diagnostics() {
       let _ = output::emit_diagnostics(&program, diags.to_vec(), cli.json, render);
-      return exit_code_for_diagnostics(diags);
+      return ExitCode::from(diag::exit_code_for_diagnostics(diags));
     }
     return exit_internal(&program, cli.json, render, err.to_string());
   }
@@ -571,13 +575,13 @@ fn cmd_bench(
     }
   };
 
-  if cli.extra_strict {
-    let diagnostics = collect_check_diagnostics(&program, entry_file, true);
-    let exit_code = exit_u8_for_diagnostics(&diagnostics);
-    if exit_code != 0 {
-      if cli.json {
-        let payload = bench::BenchJsonOutput {
-          schema_version: bench::JSON_SCHEMA_VERSION,
+    if cli.extra_strict {
+      let diagnostics = collect_check_diagnostics(&program, entry_file, true);
+      let exit_code = diag::exit_code_for_diagnostics(&diagnostics);
+      if exit_code != 0 {
+        if cli.json {
+          let payload = bench::BenchJsonOutput {
+            schema_version: bench::JSON_SCHEMA_VERSION,
           command: "bench",
           diagnostics,
           error: None,
@@ -641,7 +645,7 @@ fn cmd_bench(
   if let Err(err) = native_js::compile_program(&program, entry_file, &opts) {
     let compile_time_ms = bench::duration_ms(compile_start.elapsed());
     if let Some(diags) = err.diagnostics() {
-      let exit_code = exit_u8_for_diagnostics(diags);
+      let exit_code = diag::exit_code_for_diagnostics(diags);
       if cli.json {
         let payload = bench::BenchJsonOutput {
           schema_version: bench::JSON_SCHEMA_VERSION,
@@ -1073,36 +1077,6 @@ fn opt_level(raw: u8) -> Result<native_js::OptLevel, String> {
     3 => Ok(native_js::OptLevel::O3),
     other => Err(format!("invalid --opt={other} (expected 0,1,2,3)")),
   }
-}
-
-fn exit_code_for_diagnostics(diagnostics: &[Diagnostic]) -> ExitCode {
-  let has_errors = diagnostics.iter().any(|d| d.severity == Severity::Error);
-  if !has_errors {
-    return ExitCode::SUCCESS;
-  }
-
-  let has_internal = diagnostics.iter().any(|d| {
-    d.severity == Severity::Error
-      && (d.code.as_str().starts_with("ICE") || d.code.as_str().starts_with("HOST"))
-  });
-  if has_internal {
-    ExitCode::from(2)
-  } else {
-    ExitCode::from(1)
-  }
-}
-
-fn exit_u8_for_diagnostics(diagnostics: &[Diagnostic]) -> u8 {
-  let has_errors = diagnostics.iter().any(|d| d.severity == Severity::Error);
-  if !has_errors {
-    return 0;
-  }
-
-  let has_internal = diagnostics.iter().any(|d| {
-    d.severity == Severity::Error
-      && (d.code.as_str().starts_with("ICE") || d.code.as_str().starts_with("HOST"))
-  });
-  if has_internal { 2 } else { 1 }
 }
 
 fn exit_internal_without_program(json: bool, message: String) -> ExitCode {

@@ -36,8 +36,17 @@ struct JsonDiagnosticsOutput {
   diagnostics: Vec<Diagnostic>,
 }
 
-fn collect_json_files(program: Option<&Program>, diagnostics: &[Diagnostic]) -> Vec<JsonFileEntry> {
-  fn insert_file(map: &mut BTreeMap<FileId, String>, program: Option<&Program>, file: FileId) {
+fn collect_json_files(
+  program: Option<&Program>,
+  source: Option<&dyn SourceProvider>,
+  diagnostics: &[Diagnostic],
+) -> Vec<JsonFileEntry> {
+  fn insert_file(
+    map: &mut BTreeMap<FileId, String>,
+    program: Option<&Program>,
+    source: Option<&dyn SourceProvider>,
+    file: FileId,
+  ) {
     if map.contains_key(&file) {
       return;
     }
@@ -45,6 +54,7 @@ fn collect_json_files(program: Option<&Program>, diagnostics: &[Diagnostic]) -> 
     let path = program
       .and_then(|program| program.file_key(file))
       .map(|key| key.to_string())
+      .or_else(|| source.and_then(|source| source.file_name(file).map(|name| name.to_string())))
       .unwrap_or_else(|| "<unknown file>".to_string());
     map.insert(file, path);
   }
@@ -53,14 +63,14 @@ fn collect_json_files(program: Option<&Program>, diagnostics: &[Diagnostic]) -> 
 
   if let Some(program) = program {
     for file in program.files() {
-      insert_file(&mut map, Some(program), file);
+      insert_file(&mut map, Some(program), source, file);
     }
   }
 
   for diagnostic in diagnostics {
-    insert_file(&mut map, program, diagnostic.primary.file);
+    insert_file(&mut map, program, source, diagnostic.primary.file);
     for label in &diagnostic.labels {
-      insert_file(&mut map, program, label.span.file);
+      insert_file(&mut map, program, source, label.span.file);
     }
   }
 
@@ -70,8 +80,9 @@ fn collect_json_files(program: Option<&Program>, diagnostics: &[Diagnostic]) -> 
     .collect()
 }
 
-pub fn emit_json_diagnostics(
+fn emit_json_diagnostics_inner(
   program: Option<&Program>,
+  source: Option<&dyn SourceProvider>,
   mut diagnostics: Vec<Diagnostic>,
 ) -> std::io::Result<bool> {
   diagnostics::sort_diagnostics(&mut diagnostics);
@@ -81,7 +92,7 @@ pub fn emit_json_diagnostics(
 
   let payload = JsonDiagnosticsOutput {
     schema_version: JSON_SCHEMA_VERSION,
-    files: collect_json_files(program, &diagnostics),
+    files: collect_json_files(program, source, &diagnostics),
     diagnostics,
   };
   let stdout = std::io::stdout();
@@ -92,14 +103,21 @@ pub fn emit_json_diagnostics(
   Ok(has_errors)
 }
 
-pub fn emit_diagnostics(
-  program: &Program,
+pub fn emit_json_diagnostics(
+  program: Option<&Program>,
+  diagnostics: Vec<Diagnostic>,
+) -> std::io::Result<bool> {
+  emit_json_diagnostics_inner(program, None, diagnostics)
+}
+
+pub fn emit_diagnostics_with_source(
+  source: &impl SourceProvider,
   mut diagnostics: Vec<Diagnostic>,
   json: bool,
   render: RenderOptions,
 ) -> std::io::Result<bool> {
   if json {
-    return emit_json_diagnostics(Some(program), diagnostics);
+    return emit_json_diagnostics_inner(None, Some(source as &dyn SourceProvider), diagnostics);
   }
 
   diagnostics::sort_diagnostics(&mut diagnostics);
@@ -107,15 +125,27 @@ pub fn emit_diagnostics(
     .iter()
     .any(|diagnostic| diagnostic.severity == Severity::Error);
 
-  let snapshot = snapshot_from_program(program);
   for diagnostic in diagnostics {
     eprintln!(
       "{}",
-      render_diagnostic_with_options(&snapshot, &diagnostic, render)
+      render_diagnostic_with_options(source, &diagnostic, render)
     );
   }
 
   Ok(has_errors)
+}
+
+pub fn emit_diagnostics(
+  program: &Program,
+  diagnostics: Vec<Diagnostic>,
+  json: bool,
+  render: RenderOptions,
+) -> std::io::Result<bool> {
+  if json {
+    return emit_json_diagnostics(Some(program), diagnostics);
+  }
+  let snapshot = snapshot_from_program(program);
+  emit_diagnostics_with_source(&snapshot, diagnostics, false, render)
 }
 
 struct ProgramSourceSnapshot {

@@ -1438,6 +1438,132 @@ fn checked_pipeline_check_fails_on_type_error() {
 }
 
 #[test]
+fn checked_pipeline_json_check_error_contains_diagnostics_array() {
+  let tmp = TempDir::new().unwrap();
+  let entry = tmp.path().join("entry.ts");
+  fs::write(
+    &entry,
+    "export function main(): number { return \"nope\"; }\n",
+  )
+  .unwrap();
+
+  let assert = native_js_cli()
+    .timeout(CLI_TIMEOUT)
+    .arg("--pipeline")
+    .arg("checked")
+    .arg("--json")
+    .arg("check")
+    .arg(&entry)
+    .assert()
+    .failure()
+    .code(1);
+
+  assert!(
+    assert.get_output().stderr.is_empty(),
+    "expected stderr to be empty, got: {}",
+    String::from_utf8_lossy(&assert.get_output().stderr)
+  );
+
+  let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
+  let value: Value = serde_json::from_str(&stdout).expect("stdout to be valid JSON");
+  assert_eq!(value["schema_version"], 1);
+
+  let diagnostics = value
+    .get("diagnostics")
+    .and_then(|value| value.as_array())
+    .expect("expected diagnostics array");
+  assert!(
+    !diagnostics.is_empty(),
+    "expected diagnostics to be non-empty, got: {diagnostics:?}"
+  );
+}
+
+#[test]
+fn project_pipeline_json_parse_error_contains_diagnostics_array() {
+  let tmp = TempDir::new().unwrap();
+  let entry = tmp.path().join("entry.ts");
+
+  // Syntax error: missing closing braces.
+  fs::write(&entry, "export function main(): number { return 0;\n").unwrap();
+
+  let assert = native_js_cli()
+    .timeout(CLI_TIMEOUT)
+    .arg("--pipeline")
+    .arg("project")
+    .arg("--json")
+    .arg(&entry)
+    .assert()
+    .failure()
+    .code(1);
+
+  assert!(
+    assert.get_output().stderr.is_empty(),
+    "expected stderr to be empty, got: {}",
+    String::from_utf8_lossy(&assert.get_output().stderr)
+  );
+
+  let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
+  let value: Value = serde_json::from_str(&stdout).expect("stdout to be valid JSON");
+  assert_eq!(value["schema_version"], 1);
+
+  let diagnostics = value
+    .get("diagnostics")
+    .and_then(|value| value.as_array())
+    .expect("expected diagnostics array");
+  assert!(
+    !diagnostics.is_empty(),
+    "expected diagnostics to be non-empty, got: {diagnostics:?}"
+  );
+}
+
+#[test]
+fn native_js_cli_color_flag_emits_ansi_escapes() {
+  let tmp = TempDir::new().unwrap();
+  let entry = tmp.path().join("entry.ts");
+  fs::write(
+    &entry,
+    "export function main(): number { return \"nope\"; }\n",
+  )
+  .unwrap();
+
+  native_js_cli()
+    .timeout(CLI_TIMEOUT)
+    .arg("--pipeline")
+    .arg("checked")
+    .arg("--color")
+    .arg("check")
+    .arg(&entry)
+    .assert()
+    .failure()
+    .code(1)
+    .stderr(predicates::str::contains("\u{1b}["));
+}
+
+#[test]
+fn native_js_cli_no_color_flag_disables_ansi_escapes() {
+  let tmp = TempDir::new().unwrap();
+  let entry = tmp.path().join("entry.ts");
+  fs::write(
+    &entry,
+    "export function main(): number { return \"nope\"; }\n",
+  )
+  .unwrap();
+
+  native_js_cli()
+    .timeout(CLI_TIMEOUT)
+    .arg("--pipeline")
+    .arg("checked")
+    .arg("--no-color")
+    .arg("check")
+    .arg(&entry)
+    .assert()
+    .failure()
+    .code(1)
+    .stderr(predicates::str::contains("\u{1b}[").not())
+    .stderr(predicates::str::contains("TS2322"));
+}
+
+#[test]
 fn checked_pipeline_run_exits_with_program_exit_code() {
   let tmp = TempDir::new().unwrap();
   let entry = tmp.path().join("entry.ts");

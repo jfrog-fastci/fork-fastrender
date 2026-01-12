@@ -7,6 +7,7 @@ use parse_js::ast::stmt::decl::FuncDecl;
 use parse_js::ast::stmt::Stmt;
 use parse_js::ast::stx::TopLevel;
 use parse_js::ast::type_expr::TypeExpr;
+use parse_js::loc::Loc;
 use parse_js::operator::OperatorName;
 use std::collections::{BTreeMap, HashMap};
 
@@ -175,11 +176,12 @@ impl Codegen {
     }
   }
 
-  fn emit_alloca(&mut self, ty: Ty) -> Result<String, CodegenError> {
+  fn emit_alloca(&mut self, ty: Ty, loc: Loc) -> Result<String, CodegenError> {
     if ty == Ty::Void {
-      return Err(CodegenError::TypeError(
-        "cannot allocate storage for void".to_string(),
-      ));
+      return Err(CodegenError::TypeError {
+        message: "cannot allocate storage for void".to_string(),
+        loc,
+      });
     }
     let llvm_ty = Self::llvm_type_of(ty);
     let align = Self::llvm_align_of(ty);
@@ -190,9 +192,10 @@ impl Codegen {
 
   fn emit_store(&mut self, ty: Ty, value_ir: &str, ptr_ir: &str) -> Result<(), CodegenError> {
     if ty == Ty::Void {
-      return Err(CodegenError::TypeError(
-        "cannot store a void value".to_string(),
-      ));
+      return Err(CodegenError::TypeError {
+        message: "cannot store a void value".to_string(),
+        loc: Loc(0, 0),
+      });
     }
     let llvm_ty = Self::llvm_type_of(ty);
     let align = Self::llvm_align_of(ty);
@@ -204,9 +207,10 @@ impl Codegen {
 
   fn emit_load(&mut self, ty: Ty, ptr_ir: &str) -> Result<String, CodegenError> {
     if ty == Ty::Void {
-      return Err(CodegenError::TypeError(
-        "cannot load a void value".to_string(),
-      ));
+      return Err(CodegenError::TypeError {
+        message: "cannot load a void value".to_string(),
+        loc: Loc(0, 0),
+      });
     }
     let llvm_ty = Self::llvm_type_of(ty);
     let align = Self::llvm_align_of(ty);
@@ -259,9 +263,10 @@ impl Codegen {
         self.emit(format!("  notail call i32 @puts(ptr {undef_ptr})"));
         Ok(())
       }
-      Ty::Void => Err(CodegenError::TypeError(
-        "cannot print a void expression".to_string(),
-      )),
+      Ty::Void => Err(CodegenError::TypeError {
+        message: "cannot print a void expression".to_string(),
+        loc: Loc(0, 0),
+      }),
     }
   }
 
@@ -306,9 +311,10 @@ impl Codegen {
         ));
         Ok(())
       }
-      Ty::Void => Err(CodegenError::TypeError(
-        "cannot print a void expression".to_string(),
-      )),
+      Ty::Void => Err(CodegenError::TypeError {
+        message: "cannot print a void expression".to_string(),
+        loc: Loc(0, 0),
+      }),
     }
   }
 
@@ -415,7 +421,7 @@ impl Codegen {
 
     for (idx, arg) in args.iter().enumerate() {
       if arg.stx.spread {
-        return Err(CodegenError::UnsupportedExpr);
+        return Err(CodegenError::UnsupportedExpr { loc: arg.loc });
       }
       let v = self.compile_expr(&arg.stx.value)?;
       self.emit_print_value_inline(v)?;
@@ -430,7 +436,7 @@ impl Codegen {
     Ok(())
   }
 
-  fn emit_truthy_to_bool(&mut self, value: Value) -> Result<String, CodegenError> {
+  fn emit_truthy_to_bool(&mut self, value: Value, loc: Loc) -> Result<String, CodegenError> {
     match value.ty {
       Ty::Bool => Ok(value.ir),
       Ty::Number => {
@@ -455,9 +461,10 @@ impl Codegen {
         Ok(out)
       }
       Ty::Null | Ty::Undefined => Ok("0".to_string()),
-      Ty::Void => Err(CodegenError::TypeError(
-        "cannot use a void expression as a condition".to_string(),
-      )),
+      Ty::Void => Err(CodegenError::TypeError {
+        message: "cannot use a void expression as a condition".to_string(),
+        loc,
+      }),
     }
   }
 
@@ -483,7 +490,7 @@ impl Codegen {
       }
       Stmt::If(if_stmt) => {
         let cond = self.compile_expr(&if_stmt.stx.test)?;
-        let cond_bool = self.emit_truthy_to_bool(cond)?;
+        let cond_bool = self.emit_truthy_to_bool(cond, if_stmt.stx.test.loc)?;
 
         let then_label = self.fresh_block("if.then");
         let else_label = self.fresh_block("if.else");
@@ -526,7 +533,7 @@ impl Codegen {
 
         self.emit(format!("{cond_label}:"));
         let cond = self.compile_expr(&while_stmt.stx.condition)?;
-        let cond_bool = self.emit_truthy_to_bool(cond)?;
+        let cond_bool = self.emit_truthy_to_bool(cond, while_stmt.stx.condition.loc)?;
         self.emit(format!(
           "  br i1 {}, label %{body_label}, label %{end_label}",
           cond_bool
@@ -543,9 +550,10 @@ impl Codegen {
       }
       Stmt::Return(ret) => {
         let Some(expected) = self.current_return_ty else {
-          return Err(CodegenError::TypeError(
-            "`return` is not allowed at the top level".to_string(),
-          ));
+          return Err(CodegenError::TypeError {
+            message: "`return` is not allowed at the top level".to_string(),
+            loc: ret.loc,
+          });
         };
 
         match (expected, ret.stx.value.as_ref()) {
@@ -553,21 +561,26 @@ impl Codegen {
             self.emit("  ret void".to_string());
             Ok(())
           }
-          (Ty::Void, Some(_)) => Err(CodegenError::TypeError(
-            "cannot return a value from a `void` function".to_string(),
-          )),
+          (Ty::Void, Some(_)) => Err(CodegenError::TypeError {
+            message: "cannot return a value from a `void` function".to_string(),
+            loc: ret.loc,
+          }),
           (expected, Some(expr)) => {
             let value = self.compile_expr(expr)?;
             if value.ty == Ty::Void {
-              return Err(CodegenError::TypeError(
-                "cannot return a void expression".to_string(),
-              ));
+              return Err(CodegenError::TypeError {
+                message: "cannot return a void expression".to_string(),
+                loc: expr.loc,
+              });
             }
             if value.ty != expected {
-              return Err(CodegenError::TypeError(format!(
-                "return type mismatch: expected {expected:?}, got {got:?}",
-                got = value.ty
-              )));
+              return Err(CodegenError::TypeError {
+                message: format!(
+                  "return type mismatch: expected {expected:?}, got {got:?}",
+                  got = value.ty
+                ),
+                loc: expr.loc,
+              });
             }
 
             let llvm_ty = Self::llvm_type_of(expected);
@@ -578,16 +591,17 @@ impl Codegen {
             self.emit(format!("  ret {llvm_ty} {value_ir}"));
             Ok(())
           }
-          (expected, None) => Err(CodegenError::TypeError(format!(
-            "missing return value for function returning {expected:?}"
-          ))),
+          (expected, None) => Err(CodegenError::TypeError {
+            message: format!("missing return value for function returning {expected:?}"),
+            loc: ret.loc,
+          }),
         }
       }
       // `export { ... }` without a `from` clause is a runtime no-op. Allow it so callers can add
       // `export {};` as a module marker without requiring project compilation.
       Stmt::ExportList(export) => {
         if export.stx.from.is_some() {
-          Err(CodegenError::UnsupportedStmt)
+          Err(CodegenError::UnsupportedStmt { loc: stmt.loc })
         } else {
           Ok(())
         }
@@ -599,7 +613,11 @@ impl Codegen {
         for declarator in &decl.stx.declarators {
           let name = match declarator.pattern.stx.pat.stx.as_ref() {
             Pat::Id(id) => id.stx.name.clone(),
-            _ => return Err(CodegenError::UnsupportedStmt),
+            _ => {
+              return Err(CodegenError::UnsupportedStmt {
+                loc: declarator.pattern.loc,
+              });
+            }
           };
 
           let value = if let Some(init) = declarator.initializer.as_ref() {
@@ -611,7 +629,7 @@ impl Codegen {
             }
           };
 
-          let slot = self.emit_alloca(value.ty)?;
+          let slot = self.emit_alloca(value.ty, declarator.pattern.loc)?;
           let store_val = match value.ty {
             Ty::Null | Ty::Undefined => "0",
             _ => value.ir.as_str(),
@@ -621,7 +639,7 @@ impl Codegen {
         }
         Ok(())
       }
-      _ => Err(CodegenError::UnsupportedStmt),
+      _ => Err(CodegenError::UnsupportedStmt { loc: stmt.loc }),
     }
   }
 
@@ -676,7 +694,7 @@ impl Codegen {
               ty: Ty::Number,
               ir: f64_to_llvm_const(f64::INFINITY),
             }),
-            _ => Err(CodegenError::UnsupportedExpr),
+            _ => Err(CodegenError::UnsupportedExpr { loc: expr.loc }),
           }
         }
       },
@@ -687,17 +705,19 @@ impl Codegen {
             let target = match bin.stx.left.stx.as_ref() {
               Expr::IdPat(id) => id.stx.name.as_str(),
               _ => {
-                return Err(CodegenError::TypeError(
-                  "invalid assignment target".to_string(),
-                ))
+                return Err(CodegenError::TypeError {
+                  message: "invalid assignment target".to_string(),
+                  loc: bin.stx.left.loc,
+                });
               }
             };
 
             let rhs = self.compile_expr(&bin.stx.right)?;
             if rhs.ty == Ty::Void {
-              return Err(CodegenError::TypeError(
-                "cannot assign a void expression".to_string(),
-              ));
+              return Err(CodegenError::TypeError {
+                message: "cannot assign a void expression".to_string(),
+                loc: bin.stx.right.loc,
+              });
             }
 
             if let Some((existing_ty, existing_slot)) = self.vars.get(target).cloned() {
@@ -710,7 +730,7 @@ impl Codegen {
               } else {
                 // The minimal `parse-js`-driven emitter doesn't typecheck; allow the binding's
                 // type to change by allocating a fresh slot and updating the map.
-                let new_slot = self.emit_alloca(rhs.ty)?;
+                let new_slot = self.emit_alloca(rhs.ty, bin.loc)?;
                 let store_val = match rhs.ty {
                   Ty::Null | Ty::Undefined => "0",
                   _ => rhs.ir.as_str(),
@@ -719,9 +739,10 @@ impl Codegen {
                 self.vars.insert(target.to_string(), (rhs.ty, new_slot));
               }
             } else {
-              return Err(CodegenError::TypeError(format!(
-                "assignment to undeclared variable `{target}`"
-              )));
+              return Err(CodegenError::TypeError {
+                message: format!("assignment to undeclared variable `{target}`"),
+                loc: bin.loc,
+              });
             }
 
             Ok(rhs)
@@ -730,27 +751,33 @@ impl Codegen {
             let target = match bin.stx.left.stx.as_ref() {
               Expr::IdPat(id) => id.stx.name.as_str(),
               _ => {
-                return Err(CodegenError::TypeError(
-                  "invalid assignment target".to_string(),
-                ))
+                return Err(CodegenError::TypeError {
+                  message: "invalid assignment target".to_string(),
+                  loc: bin.stx.left.loc,
+                });
               }
             };
 
             let (lhs_ty, lhs_slot) = self.vars.get(target).cloned().ok_or_else(|| {
-              CodegenError::TypeError(format!("assignment to undeclared variable `{target}`"))
+              CodegenError::TypeError {
+                message: format!("assignment to undeclared variable `{target}`"),
+                loc: bin.loc,
+              }
             })?;
 
             if lhs_ty != Ty::Number {
-              return Err(CodegenError::TypeError(
-                "operator `+=` currently only supports number variables".to_string(),
-              ));
+              return Err(CodegenError::TypeError {
+                message: "operator `+=` currently only supports number variables".to_string(),
+                loc: bin.loc,
+              });
             }
 
             let rhs = self.compile_expr(&bin.stx.right)?;
             if rhs.ty != Ty::Number {
-              return Err(CodegenError::TypeError(
-                "operator `+=` currently only supports number RHS".to_string(),
-              ));
+              return Err(CodegenError::TypeError {
+                message: "operator `+=` currently only supports number RHS".to_string(),
+                loc: bin.stx.right.loc,
+              });
             }
 
             let lhs_val = self.emit_load(Ty::Number, &lhs_slot)?;
@@ -767,9 +794,10 @@ impl Codegen {
             let left = self.compile_expr(&bin.stx.left)?;
             let right = self.compile_expr(&bin.stx.right)?;
             if left.ty != Ty::Number || right.ty != Ty::Number {
-              return Err(CodegenError::TypeError(
-                "binary `+` currently only supports numbers".to_string(),
-              ));
+              return Err(CodegenError::TypeError {
+                message: "binary `+` currently only supports numbers".to_string(),
+                loc: bin.loc,
+              });
             }
             let out = self.tmp();
             self.emit(format!("  {out} = fadd double {}, {}", left.ir, right.ir));
@@ -782,9 +810,10 @@ impl Codegen {
             let left = self.compile_expr(&bin.stx.left)?;
             let right = self.compile_expr(&bin.stx.right)?;
             if left.ty != Ty::Number || right.ty != Ty::Number {
-              return Err(CodegenError::TypeError(
-                "binary `-` currently only supports numbers".to_string(),
-              ));
+              return Err(CodegenError::TypeError {
+                message: "binary `-` currently only supports numbers".to_string(),
+                loc: bin.loc,
+              });
             }
             let out = self.tmp();
             self.emit(format!("  {out} = fsub double {}, {}", left.ir, right.ir));
@@ -797,9 +826,10 @@ impl Codegen {
             let left = self.compile_expr(&bin.stx.left)?;
             let right = self.compile_expr(&bin.stx.right)?;
             if left.ty != Ty::Number || right.ty != Ty::Number {
-              return Err(CodegenError::TypeError(
-                "binary `*` currently only supports numbers".to_string(),
-              ));
+              return Err(CodegenError::TypeError {
+                message: "binary `*` currently only supports numbers".to_string(),
+                loc: bin.loc,
+              });
             }
             let out = self.tmp();
             self.emit(format!("  {out} = fmul double {}, {}", left.ir, right.ir));
@@ -812,9 +842,10 @@ impl Codegen {
             let left = self.compile_expr(&bin.stx.left)?;
             let right = self.compile_expr(&bin.stx.right)?;
             if left.ty != Ty::Number || right.ty != Ty::Number {
-              return Err(CodegenError::TypeError(
-                "binary `/` currently only supports numbers".to_string(),
-              ));
+              return Err(CodegenError::TypeError {
+                message: "binary `/` currently only supports numbers".to_string(),
+                loc: bin.loc,
+              });
             }
             let out = self.tmp();
             self.emit(format!("  {out} = fdiv double {}, {}", left.ir, right.ir));
@@ -827,9 +858,10 @@ impl Codegen {
             let left = self.compile_expr(&bin.stx.left)?;
             let right = self.compile_expr(&bin.stx.right)?;
             if left.ty == Ty::Void || right.ty == Ty::Void {
-              return Err(CodegenError::TypeError(
-                "cannot compare a void expression".to_string(),
-              ));
+              return Err(CodegenError::TypeError {
+                message: "cannot compare a void expression".to_string(),
+                loc: bin.loc,
+              });
             }
             if left.ty != right.ty {
               // JS semantics: different types are always strictly not equal.
@@ -864,10 +896,12 @@ impl Codegen {
                 });
               }
               _ => {
-                return Err(CodegenError::TypeError(
-                  "`===` currently only supports numbers, booleans, strings, null, and undefined"
-                    .to_string(),
-                ));
+                return Err(CodegenError::TypeError {
+                  message:
+                    "`===` currently only supports numbers, booleans, strings, null, and undefined"
+                      .to_string(),
+                  loc: bin.loc,
+                });
               }
             }
             Ok(Value {
@@ -879,9 +913,10 @@ impl Codegen {
             let left = self.compile_expr(&bin.stx.left)?;
             let right = self.compile_expr(&bin.stx.right)?;
             if left.ty == Ty::Void || right.ty == Ty::Void {
-              return Err(CodegenError::TypeError(
-                "cannot compare a void expression".to_string(),
-              ));
+              return Err(CodegenError::TypeError {
+                message: "cannot compare a void expression".to_string(),
+                loc: bin.loc,
+              });
             }
             if left.ty != right.ty {
               // JS semantics: different types are always strictly not equal.
@@ -928,10 +963,12 @@ impl Codegen {
                 ty: Ty::Bool,
                 ir: "0".to_string(),
               }),
-              _ => Err(CodegenError::TypeError(
-                "`!==` currently only supports numbers, booleans, strings, null, and undefined"
-                  .to_string(),
-              )),
+              _ => Err(CodegenError::TypeError {
+                message:
+                  "`!==` currently only supports numbers, booleans, strings, null, and undefined"
+                    .to_string(),
+                loc: bin.loc,
+              }),
             }
           }
           OperatorName::LessThan
@@ -941,9 +978,10 @@ impl Codegen {
             let left = self.compile_expr(&bin.stx.left)?;
             let right = self.compile_expr(&bin.stx.right)?;
             if left.ty != Ty::Number || right.ty != Ty::Number {
-              return Err(CodegenError::TypeError(
-                "numeric comparison currently only supports numbers".to_string(),
-              ));
+              return Err(CodegenError::TypeError {
+                message: "numeric comparison currently only supports numbers".to_string(),
+                loc: bin.loc,
+              });
             }
             let out = self.tmp();
             let pred = match bin.stx.operator {
@@ -969,12 +1007,13 @@ impl Codegen {
             // don't need to track the current basic block label name.
             let left = self.compile_expr(&bin.stx.left)?;
             if left.ty != Ty::Bool {
-              return Err(CodegenError::TypeError(
-                "logical operators currently only support booleans".to_string(),
-              ));
+              return Err(CodegenError::TypeError {
+                message: "logical operators currently only support booleans".to_string(),
+                loc: bin.loc,
+              });
             }
 
-            let result_slot = self.emit_alloca(Ty::Bool)?;
+            let result_slot = self.emit_alloca(Ty::Bool, bin.loc)?;
             let rhs = self.fresh_block("logic.rhs");
             let short = self.fresh_block("logic.short");
             let cont = self.fresh_block("logic.cont");
@@ -1006,9 +1045,10 @@ impl Codegen {
             self.emit(format!("{rhs}:"));
             let right = self.compile_expr(&bin.stx.right)?;
             if right.ty != Ty::Bool {
-              return Err(CodegenError::TypeError(
-                "logical operators currently only support booleans".to_string(),
-              ));
+              return Err(CodegenError::TypeError {
+                message: "logical operators currently only support booleans".to_string(),
+                loc: bin.stx.right.loc,
+              });
             }
             self.emit_store(Ty::Bool, right.ir.as_str(), &result_slot)?;
             self.emit(format!("  br label %{cont}"));
@@ -1020,7 +1060,10 @@ impl Codegen {
               ir: loaded,
             })
           }
-          other => Err(CodegenError::UnsupportedOperator(other)),
+          other => Err(CodegenError::UnsupportedOperator {
+            op: other,
+            loc: bin.loc,
+          }),
         }
       }
 
@@ -1029,9 +1072,10 @@ impl Codegen {
         match unary.stx.operator {
           OperatorName::UnaryNegation => {
             if arg.ty != Ty::Number {
-              return Err(CodegenError::TypeError(
-                "unary `-` currently only supports numbers".to_string(),
-              ));
+              return Err(CodegenError::TypeError {
+                message: "unary `-` currently only supports numbers".to_string(),
+                loc: unary.loc,
+              });
             }
             let out = self.tmp();
             self.emit(format!("  {out} = fneg double {}", arg.ir));
@@ -1042,14 +1086,15 @@ impl Codegen {
           }
           OperatorName::UnaryPlus => {
             if arg.ty != Ty::Number {
-              return Err(CodegenError::TypeError(
-                "unary `+` currently only supports numbers".to_string(),
-              ));
+              return Err(CodegenError::TypeError {
+                message: "unary `+` currently only supports numbers".to_string(),
+                loc: unary.loc,
+              });
             }
             Ok(arg)
           }
           OperatorName::LogicalNot => {
-            let arg_bool = self.emit_truthy_to_bool(arg)?;
+            let arg_bool = self.emit_truthy_to_bool(arg, unary.stx.argument.loc)?;
             let out = self.tmp();
             self.emit(format!("  {out} = xor i1 {arg_bool}, true"));
             Ok(Value {
@@ -1057,7 +1102,10 @@ impl Codegen {
               ir: out,
             })
           }
-          other => Err(CodegenError::UnsupportedOperator(other)),
+          other => Err(CodegenError::UnsupportedOperator {
+            op: other,
+            loc: unary.loc,
+          }),
         }
       }
 
@@ -1065,7 +1113,7 @@ impl Codegen {
         let builtin = recognize_builtin(call);
         if let Some(builtin) = builtin {
           if !self.opts.builtins {
-            return Err(CodegenError::BuiltinsDisabled);
+            return Err(CodegenError::BuiltinsDisabled { loc: call.loc });
           }
 
           match builtin {
@@ -1077,7 +1125,7 @@ impl Codegen {
             }
             BuiltinCall::Assert { cond, msg } => {
               let cond_v = self.compile_expr(cond)?;
-              let cond_bool = self.emit_truthy_to_bool(cond_v)?;
+              let cond_bool = self.emit_truthy_to_bool(cond_v, cond.loc)?;
 
               let ok = self.fresh_block("assert.ok");
               let fail = self.fresh_block("assert.fail");
@@ -1128,16 +1176,23 @@ impl Codegen {
         } else {
           // Minimal support for direct calls to user-defined functions.
           if call.stx.optional_chaining {
-            return Err(CodegenError::UnsupportedExpr);
+            return Err(CodegenError::UnsupportedExpr { loc: call.loc });
           }
 
           let callee = match call.stx.callee.stx.as_ref() {
             Expr::Id(id) => id.stx.name.as_str(),
-            _ => return Err(CodegenError::UnsupportedExpr),
+            _ => {
+              return Err(CodegenError::UnsupportedExpr {
+                loc: call.stx.callee.loc,
+              });
+            }
           };
 
           let sig = self.function_sigs.get(callee).cloned().ok_or_else(|| {
-            CodegenError::TypeError(format!("call to unknown function `{callee}`"))
+            CodegenError::TypeError {
+              message: format!("call to unknown function `{callee}`"),
+              loc: call.loc,
+            }
           })?;
           let llvm_name = self
             .function_llvm_names
@@ -1146,25 +1201,31 @@ impl Codegen {
             .expect("collected function LLVM names earlier");
 
           if sig.params.len() != call.stx.arguments.len() {
-            return Err(CodegenError::TypeError(format!(
-              "function `{callee}` expects {} args, got {}",
-              sig.params.len(),
-              call.stx.arguments.len()
-            )));
+            return Err(CodegenError::TypeError {
+              message: format!(
+                "function `{callee}` expects {} args, got {}",
+                sig.params.len(),
+                call.stx.arguments.len()
+              ),
+              loc: call.loc,
+            });
           }
 
           let mut arg_irs = Vec::with_capacity(sig.params.len());
           for (idx, (param_ty, arg)) in sig.params.iter().zip(&call.stx.arguments).enumerate() {
             if arg.stx.spread {
-              return Err(CodegenError::UnsupportedExpr);
+              return Err(CodegenError::UnsupportedExpr { loc: arg.loc });
             }
             let v = self.compile_expr(&arg.stx.value)?;
             if v.ty != *param_ty {
-              return Err(CodegenError::TypeError(format!(
-                "argument {idx} to `{callee}` has type {got:?}, expected {expected:?}",
-                got = v.ty,
-                expected = param_ty
-              )));
+              return Err(CodegenError::TypeError {
+                message: format!(
+                  "argument {idx} to `{callee}` has type {got:?}, expected {expected:?}",
+                  got = v.ty,
+                  expected = param_ty
+                ),
+                loc: arg.loc,
+              });
             }
             let llvm_ty = Self::llvm_type_of(*param_ty);
             let value_ir = match v.ty {
@@ -1196,7 +1257,7 @@ impl Codegen {
         }
       }
 
-      _ => Err(CodegenError::UnsupportedExpr),
+      _ => Err(CodegenError::UnsupportedExpr { loc: expr.loc }),
     }
   }
 }
@@ -1216,20 +1277,22 @@ pub(super) fn emit_llvm_module(
   for stmt in &ast.stx.body {
     match stmt.stx.as_ref() {
       Stmt::Import(_) | Stmt::ImportTypeDecl(_) | Stmt::ImportEqualsDecl(_) => {
-        return Err(CodegenError::UnsupportedStmt);
+        return Err(CodegenError::UnsupportedStmt { loc: stmt.loc });
       }
       // `export { ... }` (no `from`) is a runtime no-op. The minimal single-module emitter can
       // safely ignore it, which also lets callers add `export {};` as a deterministic module
       // marker for otherwise-script sources.
       Stmt::ExportList(export) => {
         if export.stx.from.is_some() {
-          return Err(CodegenError::UnsupportedStmt);
+          return Err(CodegenError::UnsupportedStmt { loc: stmt.loc });
         }
       }
       Stmt::ExportDefaultExpr(_)
       | Stmt::ExportAssignmentDecl(_)
       | Stmt::ExportAsNamespaceDecl(_)
-      | Stmt::ExportTypeDecl(_) => return Err(CodegenError::UnsupportedStmt),
+      | Stmt::ExportTypeDecl(_) => {
+        return Err(CodegenError::UnsupportedStmt { loc: stmt.loc });
+      }
       _ => {}
     }
   }
@@ -1340,9 +1403,10 @@ impl Codegen {
       TypeExpr::Void(_) => Ok(Ty::Void),
       TypeExpr::Null(_) => Ok(Ty::Null),
       TypeExpr::Undefined(_) => Ok(Ty::Undefined),
-      other => Err(CodegenError::TypeError(format!(
-        "unsupported type annotation: {other:?}"
-      ))),
+      other => Err(CodegenError::TypeError {
+        message: format!("unsupported type annotation: {other:?}"),
+        loc: ty.loc,
+      }),
     }
   }
 
@@ -1362,26 +1426,31 @@ impl Codegen {
         continue;
       };
       let Some(name) = decl.stx.name.as_ref().map(|n| n.stx.name.clone()) else {
-        return Err(CodegenError::TypeError(
-          "function declarations must have a name".to_string(),
-        ));
+        return Err(CodegenError::TypeError {
+          message: "function declarations must have a name".to_string(),
+          loc: decl.loc,
+        });
       };
       if name == "main" {
-        return Err(CodegenError::TypeError(
-          "`main` is reserved for the native entrypoint; use a different function name".to_string(),
-        ));
+        return Err(CodegenError::TypeError {
+          message: "`main` is reserved for the native entrypoint; use a different function name"
+            .to_string(),
+          loc: decl.loc,
+        });
       }
       if self.function_sigs.contains_key(&name) {
-        return Err(CodegenError::TypeError(format!(
-          "duplicate function declaration `{name}`"
-        )));
+        return Err(CodegenError::TypeError {
+          message: format!("duplicate function declaration `{name}`"),
+          loc: decl.loc,
+        });
       }
 
       let func = &decl.stx.function;
       if func.stx.async_ || func.stx.generator {
-        return Err(CodegenError::TypeError(format!(
-          "function `{name}` must not be async or a generator"
-        )));
+        return Err(CodegenError::TypeError {
+          message: format!("function `{name}` must not be async or a generator"),
+          loc: func.loc,
+        });
       }
 
       let ret = match func.stx.return_type.as_ref() {
@@ -1392,9 +1461,10 @@ impl Codegen {
       let mut params = Vec::new();
       for param in &func.stx.parameters {
         if param.stx.rest || param.stx.optional {
-          return Err(CodegenError::TypeError(format!(
-            "function `{name}` has unsupported parameter syntax"
-          )));
+          return Err(CodegenError::TypeError {
+            message: format!("function `{name}` has unsupported parameter syntax"),
+            loc: param.loc,
+          });
         }
         let param_ty = match param.stx.type_annotation.as_ref() {
           Some(ann) => Self::type_from_type_expr(ann)?,
@@ -1423,9 +1493,10 @@ impl Codegen {
 
   fn compile_function_decl(&mut self, decl: &Node<FuncDecl>) -> Result<(), CodegenError> {
     let Some(name) = decl.stx.name.as_ref().map(|n| n.stx.name.clone()) else {
-      return Err(CodegenError::TypeError(
-        "function declarations must have a name".to_string(),
-      ));
+      return Err(CodegenError::TypeError {
+        message: "function declarations must have a name".to_string(),
+        loc: decl.loc,
+      });
     };
     let sig = self
       .function_sigs
@@ -1445,9 +1516,10 @@ impl Codegen {
       let param_name = match param.stx.pattern.stx.pat.stx.as_ref() {
         Pat::Id(id) => id.stx.name.clone(),
         _ => {
-          return Err(CodegenError::TypeError(format!(
-            "function `{name}` parameter {idx} must be an identifier"
-          )))
+          return Err(CodegenError::TypeError {
+            message: format!("function `{name}` parameter {idx} must be an identifier"),
+            loc: param.stx.pattern.loc,
+          });
         }
       };
 
@@ -1455,11 +1527,14 @@ impl Codegen {
         .params
         .get(idx)
         .copied()
-        .ok_or_else(|| CodegenError::TypeError("parameter list mismatch".to_string()))?;
+        .ok_or_else(|| CodegenError::TypeError {
+          message: "parameter list mismatch".to_string(),
+          loc: decl.loc,
+        })?;
       let llvm_ty = Self::llvm_type_of(expected_ty);
       param_decls.push(format!("{llvm_ty} %{param_name}"));
 
-      let slot = self.emit_alloca(expected_ty)?;
+      let slot = self.emit_alloca(expected_ty, param.loc)?;
       self.emit_store(expected_ty, &format!("%{param_name}"), &slot)?;
       self.vars.insert(param_name, (expected_ty, slot));
     }
@@ -1473,11 +1548,14 @@ impl Codegen {
       Some(FuncBody::Expression(expr)) => {
         let value = self.compile_expr(expr)?;
         if value.ty != sig.ret {
-          return Err(CodegenError::TypeError(format!(
-            "function `{name}` returns {got:?}, expected {expected:?}",
-            got = value.ty,
-            expected = sig.ret
-          )));
+          return Err(CodegenError::TypeError {
+            message: format!(
+              "function `{name}` returns {got:?}, expected {expected:?}",
+              got = value.ty,
+              expected = sig.ret
+            ),
+            loc: expr.loc,
+          });
         }
         let llvm_ty = Self::llvm_type_of(sig.ret);
         let value_ir = match sig.ret {
