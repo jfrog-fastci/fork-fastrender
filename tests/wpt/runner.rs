@@ -72,7 +72,9 @@ use std::time::Instant;
 use url::Url;
 
 fn build_offline_renderer() -> fastrender::Result<fastrender::FastRender> {
+  super::init_rayon_for_wpt_tests();
   fastrender::FastRender::builder()
+    .font_sources(fastrender::FontConfig::bundled_only())
     .resource_policy(
       ResourcePolicy::default()
         .allow_http(false)
@@ -2172,7 +2174,7 @@ mod tests {
   use tempfile::TempDir;
 
   fn create_test_renderer() -> fastrender::FastRender {
-    crate::create_test_renderer()
+    super::super::create_test_renderer()
   }
 
   #[test]

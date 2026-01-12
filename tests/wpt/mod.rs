@@ -11,6 +11,36 @@ pub mod runner;
 #[cfg(test)]
 mod validate_manifest;
 
+pub(crate) fn init_rayon_for_wpt_tests() {
+  use std::sync::Once;
+
+  static INIT: Once = Once::new();
+  INIT.call_once(|| {
+    if let Err(err) = rayon::ThreadPoolBuilder::new()
+      .num_threads(1)
+      .build_global()
+    {
+      let already_initialized = std::panic::catch_unwind(|| rayon::current_num_threads()).is_ok();
+      if !already_initialized {
+        panic!("failed to initialize Rayon global pool for WPT tests: {err}");
+      }
+    }
+  });
+}
+
+pub(crate) fn create_test_renderer() -> fastrender::FastRender {
+  init_rayon_for_wpt_tests();
+  fastrender::FastRender::builder()
+    .font_sources(fastrender::FontConfig::bundled_only())
+    .resource_policy(
+      fastrender::ResourcePolicy::default()
+        .allow_http(false)
+        .allow_https(false),
+    )
+    .build()
+    .expect("build renderer")
+}
+
 // Re-export main types for convenience
 pub use harness::compare_images;
 pub use harness::generate_diff_image;
@@ -31,6 +61,9 @@ pub use runner::WptRunner;
 pub use runner::WptRunnerBuilder;
 
 #[cfg(test)]
+mod tests;
+
+#[cfg(test)]
 mod integration_tests {
   use super::*;
   use std::path::PathBuf;
@@ -39,12 +72,7 @@ mod integration_tests {
   /// Test that we can create a runner and run tests
   #[test]
   fn test_wpt_runner_integration() {
-    // Ensure our WPT harness tests don't accidentally initialize Rayon with an unbounded global
-    // pool before the main `wpt_local_suite_passes` test runs.
-    //
-    // The main WPT suite pins `RAYON_NUM_THREADS=1` for deterministic pixel output; if another
-    // test initializes Rayon first, setting the env var later has no effect.
-    let renderer = crate::create_test_renderer();
+    let renderer = super::create_test_renderer();
     let runner = WptRunner::new(renderer);
 
     // Runner should start with empty stats
@@ -56,7 +84,7 @@ mod integration_tests {
   /// Test running a suite on an empty directory
   #[test]
   fn test_empty_suite() {
-    let renderer = crate::create_test_renderer();
+    let renderer = super::create_test_renderer();
     let mut runner = WptRunner::new(renderer);
 
     let temp = TempDir::new().unwrap();
@@ -68,7 +96,7 @@ mod integration_tests {
   /// Test suite aggregation
   #[test]
   fn test_suite_aggregation() {
-    let renderer = crate::create_test_renderer();
+    let renderer = super::create_test_renderer();
     let mut runner = WptRunner::new(renderer);
 
     let temp = TempDir::new().unwrap();
@@ -94,7 +122,7 @@ mod integration_tests {
   /// Test filtering by pattern
   #[test]
   fn test_filter_pattern() {
-    let renderer = crate::create_test_renderer();
+    let renderer = super::create_test_renderer();
     let config = HarnessConfig::default().with_filter("box-model");
     let mut runner = WptRunner::with_config(renderer, config);
 
@@ -144,7 +172,7 @@ mod integration_tests {
   /// Test runner builder pattern
   #[test]
   fn test_runner_builder_pattern() {
-    let renderer = crate::create_test_renderer();
+    let renderer = super::create_test_renderer();
     let runner = WptRunnerBuilder::new()
       .renderer(renderer)
       .test_dir("tests/custom")
@@ -173,7 +201,7 @@ mod integration_tests {
   /// Test statistics tracking
   #[test]
   fn test_stats_tracking() {
-    let renderer = crate::create_test_renderer();
+    let renderer = super::create_test_renderer();
     let mut runner = WptRunner::new(renderer);
 
     let temp = TempDir::new().unwrap();

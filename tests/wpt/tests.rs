@@ -1,44 +1,4 @@
-//! WPT Test Runner Integration Tests
-//!
-//! This file integrates the WPT test runner module into the test suite.
-
-// Standalone WPT test harness
-mod wpt;
-
-// Re-export for test discovery
-pub use wpt::*;
-
-#[cfg(test)]
-use std::sync::Once;
-
-#[cfg(test)]
-static SET_BUNDLED_FONTS: Once = Once::new();
-
-#[cfg(test)]
-fn ensure_bundled_fonts() {
-  SET_BUNDLED_FONTS.call_once(|| {
-    std::env::set_var("FASTR_USE_BUNDLED_FONTS", "1");
-    // FastRender uses Rayon for parallel layout/paint. Rayon defaults to the host CPU count,
-    // which can exceed CI sandbox thread budgets and also makes pixel output nondeterministic.
-    // If the caller hasn't pinned the pool size already, clamp it to a deterministic default.
-    if std::env::var("RAYON_NUM_THREADS").is_err() {
-      std::env::set_var("RAYON_NUM_THREADS", "1");
-    }
-  });
-}
-
-#[cfg(test)]
-fn create_test_renderer() -> fastrender::FastRender {
-  ensure_bundled_fonts();
-  fastrender::FastRender::builder()
-    .resource_policy(
-      fastrender::ResourcePolicy::default()
-        .allow_http(false)
-        .allow_https(false),
-    )
-    .build()
-    .unwrap()
-}
+use super::*;
 
 #[test]
 fn wpt_local_suite_passes() {
@@ -49,9 +9,9 @@ fn wpt_local_suite_passes() {
     .spawn(|| {
       let renderer = create_test_renderer();
       let mut config = HarnessConfig::default();
-      // The discovery directory under `tests/wpt/tests/` contains harness-focused metadata
-      // fixtures (expected failures, disables, etc.). Keep the smoke-test suite focused on the
-      // curated manifest entries so UPDATE_WPT_EXPECTED mode doesn't trip over those fixtures.
+      // The discovery directory under `tests/wpt/tests/` contains harness-focused metadata fixtures
+      // (expected failures, disables, etc.). Keep the smoke-test suite focused on the curated
+      // manifest entries so UPDATE_WPT_EXPECTED mode doesn't trip over those fixtures.
       config.discovery_mode = DiscoveryMode::ManifestOnly;
       config.expected_dir = std::env::var_os("WPT_EXPECTED_DIR")
         .map(PathBuf::from)
@@ -92,19 +52,19 @@ fn wpt_local_suite_passes() {
     .unwrap();
 }
 
-#[cfg(test)]
 mod wpt_runner_tests {
-  use super::wpt::DiscoveryMode;
-  use super::wpt::HarnessConfig;
-  use super::wpt::CompareConfig;
-  use super::wpt::RunnerStats;
-  use super::wpt::SuiteResult;
-  use super::wpt::TestMetadata;
-  use super::wpt::TestResult;
-  use super::wpt::TestStatus;
-  use super::wpt::TestType;
-  use super::wpt::WptRunner;
-  use super::wpt::WptRunnerBuilder;
+  use super::AssertionResult;
+  use super::DiscoveryMode;
+  use super::HarnessConfig;
+  use super::CompareConfig;
+  use super::RunnerStats;
+  use super::SuiteResult;
+  use super::TestMetadata;
+  use super::TestResult;
+  use super::TestStatus;
+  use super::TestType;
+  use super::WptRunner;
+  use super::WptRunnerBuilder;
   use image::codecs::png::PngEncoder;
   use image::{ColorType, ImageEncoder, Rgba, RgbaImage};
   use serde_json::Value as JsonValue;
@@ -386,7 +346,6 @@ mod wpt_runner_tests {
 
   #[test]
   fn wpt_relative_stylesheet_loads_with_base_url() {
-    super::ensure_bundled_fonts();
     let temp = TempDir::new().unwrap();
     let support_dir = temp.path().join("support");
     std::fs::create_dir_all(&support_dir).unwrap();
@@ -447,7 +406,6 @@ mod wpt_runner_tests {
 
   #[test]
   fn wpt_reftest_base_url_isolated_per_document() {
-    super::ensure_bundled_fonts();
     let temp = TempDir::new().unwrap();
 
     let test_dir = temp.path().join("test");
@@ -510,7 +468,6 @@ mod wpt_runner_tests {
 
   #[test]
   fn wpt_runner_default_is_offline() {
-    super::ensure_bundled_fonts();
     let temp = TempDir::new().unwrap();
 
     let css = r#"body { margin: 0; }
@@ -714,10 +671,7 @@ mod wpt_runner_tests {
   fn test_type_from_path_manual() {
     use std::path::Path;
 
-    assert_eq!(
-      TestType::from_path(Path::new("manual-test.html")),
-      TestType::Manual
-    );
+    assert_eq!(TestType::from_path(Path::new("manual-test.html")), TestType::Manual);
   }
 
   // =========================================================================
@@ -792,7 +746,7 @@ mod wpt_runner_tests {
 
     let rendered_png = fastrender::image_compare::encode_png(&rendered).unwrap();
     let expected_png = fastrender::image_compare::encode_png(&expected).unwrap();
-    let diff = super::wpt::compare_images(&rendered_png, &expected_png, &CompareConfig::strict()).unwrap();
+    let diff = super::compare_images(&rendered_png, &expected_png, &CompareConfig::strict()).unwrap();
 
     let result = TestResult::pass(metadata, Duration::from_millis(100)).with_diff(&diff);
 
@@ -841,7 +795,7 @@ mod wpt_runner_tests {
   }
 
   fn with_wpt_env<T>(vars: &[(&str, Option<&str>)], f: impl FnOnce() -> T) -> T {
-    let _lock = super::wpt::harness::global_env_lock();
+    let _lock = super::harness::global_env_lock();
     let _env = ScopedEnv::apply(vars);
     f()
   }
@@ -1067,8 +1021,6 @@ mod wpt_runner_tests {
 
   #[test]
   fn test_assertion_result_variants() {
-    use super::wpt::AssertionResult;
-
     let pass = AssertionResult::Pass;
     assert!(pass.is_pass());
     assert!(!pass.is_fail());
@@ -1087,8 +1039,6 @@ mod wpt_runner_tests {
 
   #[test]
   fn test_assertion_result_display() {
-    use super::wpt::AssertionResult;
-
     assert_eq!(format!("{}", AssertionResult::Pass), "PASS");
     assert!(format!("{}", AssertionResult::Fail("msg".to_string())).contains("FAIL"));
     assert!(format!("{}", AssertionResult::Error("msg".to_string())).contains("ERROR"));
@@ -1106,7 +1056,6 @@ mod wpt_runner_tests {
 
   #[test]
   fn wpt_report_writes_without_artifact_pngs_when_disabled() {
-    super::ensure_bundled_fonts();
     let temp = TempDir::new().unwrap();
     let suite_dir = temp.path();
 
@@ -1153,7 +1102,6 @@ mod wpt_runner_tests {
 
   #[test]
   fn wpt_writes_artifacts_for_failures_when_enabled() {
-    super::ensure_bundled_fonts();
     let temp = TempDir::new().unwrap();
     let suite_dir = temp.path();
 
