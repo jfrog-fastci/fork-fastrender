@@ -1216,6 +1216,12 @@ pub fn check_body_with_expander(
     .enumerate()
     .map(|(idx, pat)| (pat.span, PatId(idx as u32)))
     .collect();
+  let mut class_expr_def_by_span: HashMap<TextRange, DefId> = HashMap::new();
+  for expr in body.exprs.iter() {
+    if let ExprKind::ClassExpr { def, .. } = &expr.kind {
+      class_expr_def_by_span.insert(expr.span, *def);
+    }
+  }
   let mut decl_def_by_span: HashMap<TextRange, DefId> = HashMap::new();
   for stmt in body.stmts.iter() {
     if let StmtKind::Decl(def) = &stmt.kind {
@@ -1301,6 +1307,7 @@ pub fn check_body_with_expander(
     pat_spans,
     expr_map,
     pat_map,
+    class_expr_def_by_span,
     decl_def_by_span,
     diagnostics: Vec::new(),
     implicit_any_reported: HashSet::new(),
@@ -1461,6 +1468,7 @@ struct Checker<'a> {
   pat_spans: Vec<TextRange>,
   expr_map: HashMap<TextRange, ExprId>,
   pat_map: HashMap<TextRange, PatId>,
+  class_expr_def_by_span: HashMap<TextRange, DefId>,
   decl_def_by_span: HashMap<TextRange, DefId>,
   diagnostics: Vec<Diagnostic>,
   implicit_any_reported: HashSet<TextRange>,
@@ -3628,10 +3636,26 @@ impl<'a> Checker<'a> {
         .expr_value_overrides
         .and_then(|overrides| overrides.get(&loc_to_range(self.file, expr.loc)).copied())
         .unwrap_or_else(|| self.function_type(&func.stx.func)),
-      AstExpr::Class(_) => self
-        .expr_value_overrides
-        .and_then(|overrides| overrides.get(&loc_to_range(self.file, expr.loc)).copied())
-        .unwrap_or(self.store.primitive_ids().unknown),
+      AstExpr::Class(_class_expr) => {
+        let range = loc_to_range(self.file, expr.loc);
+        if let Some(ty) = self
+          .expr_value_overrides
+          .and_then(|overrides| overrides.get(&range).copied())
+        {
+          ty
+        } else {
+          match self.class_expr_def_by_span.get(&range).copied() {
+            Some(type_def) => {
+              let value_def = self.value_defs.get(&type_def).copied().unwrap_or(type_def);
+              self.store.intern_type(TypeKind::Ref {
+                def: value_def,
+                args: Vec::new(),
+              })
+            }
+            None => self.store.primitive_ids().unknown,
+          }
+        }
+      }
       AstExpr::JsxElem(elem) => self.check_jsx_elem(elem),
       AstExpr::IdPat(_) | AstExpr::ArrPat(_) | AstExpr::ObjPat(_) => {
         self.store.primitive_ids().unknown
