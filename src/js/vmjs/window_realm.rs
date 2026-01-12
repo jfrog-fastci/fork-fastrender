@@ -24645,12 +24645,15 @@ fn dom_implementation_create_html_document_native(
     let data = vm
       .user_data_mut::<WindowRealmUserData>()
       .ok_or(VmError::TypeError("Illegal invocation"))?;
-    if data.owned_dom2_documents.contains_key(&document_id) {
+    if data.owned_dom2_documents.borrow().contains_key(&document_id) {
       return Err(VmError::InvariantViolation(
         "createHTMLDocument generated a duplicate document id",
       ));
     }
-    data.owned_dom2_documents.insert(document_id, Box::new(dom));
+    data
+      .owned_dom2_documents
+      .borrow_mut()
+      .insert(document_id, Box::new(dom));
   }
 
   if let Some(platform) = dom_platform_mut(vm) {
