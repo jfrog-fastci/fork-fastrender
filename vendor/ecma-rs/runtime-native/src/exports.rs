@@ -568,6 +568,9 @@ pub extern "C" fn rt_gc_set_config(cfg: *const crate::abi::RtGcConfig) -> bool {
       major_gc_old_blocks_threshold: core::ptr::addr_of!((*cfg).major_gc_old_blocks_threshold).read(),
       major_gc_external_bytes_threshold: core::ptr::addr_of!((*cfg).major_gc_external_bytes_threshold).read(),
       promote_after_minor_survivals: core::ptr::addr_of!((*cfg).promote_after_minor_survivals).read(),
+      // The public C ABI config does not currently expose mark-thread tuning. Use the runtime
+      // default unless configured programmatically via `HeapConfig`.
+      ..Default::default()
     };
     if let Err(msg) = config.validate() {
       trap::rt_trap_invalid_arg(msg);

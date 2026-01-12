@@ -47,6 +47,19 @@ fn compile_unit_name(
   Some(name.to_string_lossy().to_string())
 }
 
+fn compile_unit_language(unit: &gimli::read::Unit<Reader<'_>, usize>) -> Option<gimli::DwLang> {
+  let mut entries = unit.entries();
+  let (_, entry) = entries.next_dfs().ok()??;
+  let attr = entry.attr(gimli::DW_AT_language).ok()??;
+  match attr.value() {
+    gimli::read::AttributeValue::Language(lang) => Some(lang),
+    other => other
+      .udata_value()
+      .and_then(|v| u16::try_from(v).ok())
+      .map(gimli::DwLang),
+  }
+}
+
 fn row_file_name(
   dwarf: &Dwarf<Reader<'_>>,
   unit: &gimli::read::Unit<Reader<'_>, usize>,
@@ -80,6 +93,40 @@ fn addr2line_location_matches<R: gimli::read::Reader>(
   let Some(loc) = loc else { return false };
   let Some(path) = loc.file else { return false };
   path.ends_with(file_suffix) && loc.line == Some(line)
+}
+
+#[test]
+fn dwarf_compile_unit_language_is_c_plus_plus_fallback() {
+  let mut host = es5_host();
+  let main_key = FileKey::new("main.ts");
+  host.insert(main_key.clone(), "export function main(): number { return 0; }\n");
+
+  let program = Program::new(host, vec![main_key.clone()]);
+  let entry = program.file_id(&main_key).expect("entry file id");
+
+  let obj = compile_to_obj(&program, entry);
+  let dwarf = load_dwarf(&obj);
+
+  let mut units = dwarf.units();
+  let mut seen = Vec::new();
+
+  while let Some(header) = units.next().expect("iterate units") {
+    let unit = dwarf.unit(header).expect("parse unit");
+    let name = compile_unit_name(&dwarf, &unit);
+    let lang = compile_unit_language(&unit);
+    let lang = lang.expect("compile unit should have DW_AT_language");
+    seen.push((name.clone(), Some(lang)));
+    assert_eq!(
+      lang,
+      gimli::DW_LANG_C_plus_plus,
+      "unexpected DW_AT_language for compile unit {name:?}"
+    );
+  }
+
+  assert!(
+    !seen.is_empty(),
+    "expected at least one DWARF compile unit; seen={seen:#?}"
+  );
 }
 
 #[test]

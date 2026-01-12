@@ -107,7 +107,16 @@ impl<'ctx> CodegenDebug<'ctx> {
     module.set_source_file_name(&entry_name);
     let (builder, compile_unit) = module.create_debug_info_builder(
       true,
-      DWARFSourceLanguage::C,
+      // DWARF's `DW_AT_language` is used by some debuggers/IDEs for language-specific presentation
+      // (expression parsing, syntax highlighting heuristics, etc).
+      //
+      // We'd like to use a JavaScript/TypeScript language tag, but LLVM/inkwell's
+      // `DWARFSourceLanguage` (as of inkwell 0.5 / LLVM 18) does not expose those variants. Pick a
+      // broadly-supported fallback that matches TS's C-like syntax reasonably well.
+      //
+      // If/when inkwell adds a `JavaScript`/`TypeScript` variant, switch to it here and update the
+      // corresponding DWARF decode assertion in `tests/debug_line_decode.rs`.
+      DWARFSourceLanguage::CPlusPlus,
       &entry_name,
       ".",
       "native-js",
