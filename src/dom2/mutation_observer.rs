@@ -274,6 +274,30 @@ impl Document {
     std::mem::take(&mut agent.microtask_needs_queueing)
   }
 
+  pub(crate) fn mutation_observer_remap_node_ids(&mut self, mapping: &HashMap<NodeId, NodeId>) {
+    self.mutation_observer_agent.borrow_mut().remap_node_ids(mapping);
+  }
+
+  pub(crate) fn mutation_observer_move_registrations(&mut self, old: NodeId, new: NodeId) {
+    if old == new {
+      return;
+    }
+    if old.index() >= self.nodes.len() || new.index() >= self.nodes.len() {
+      return;
+    }
+
+    let moved = std::mem::take(&mut self.nodes[old.index()].registered_observers);
+    if moved.is_empty() {
+      return;
+    }
+
+    let new_list = &mut self.nodes[new.index()].registered_observers;
+    for reg in moved {
+      new_list.retain(|r| r.observer != reg.observer);
+      new_list.push(reg);
+    }
+  }
+
   pub fn mutation_observer_observe(
     &mut self,
     observer: MutationObserverId,
