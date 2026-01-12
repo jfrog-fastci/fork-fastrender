@@ -525,6 +525,7 @@ fn async_from_sync_iterator_continuation(
   scope: &mut Scope<'_>,
   sync_iterator: Value,
   result: Value,
+  close_on_rejection: bool,
 ) -> Result<Value, VmError> {
   // Root the sync iterator + iterator result across `IteratorComplete`/`IteratorValue`, which can
   // allocate (string keys) and trigger GC.
@@ -544,30 +545,23 @@ fn async_from_sync_iterator_continuation(
   ) {
     Ok(p) => p,
     Err(err) => {
-      if !done {
-        let original_is_throw = err.is_throw_completion();
+      if !done && close_on_rejection {
         // Root the thrown value across `IteratorClose`, which can allocate and trigger GC.
-        if original_is_throw {
-          if let Some(thrown) = err.thrown_value() {
-            scope.push_root(thrown)?;
-          }
+        if let Some(thrown) = err.thrown_value() {
+          scope.push_root(thrown)?;
         }
-
         let record = IteratorRecord {
           iterator: sync_iterator,
           next_method: Value::Undefined,
           done: false,
         };
-
         // `AsyncFromSyncIteratorContinuation` calls `IteratorClose(syncIteratorRecord, valueWrapper)`
         // where `valueWrapper` is a throw completion (`PromiseResolve` failed), so close errors are
         // suppressed unless they represent a fatal VM failure (OOM/termination/etc).
         if let Err(close_err) =
           iterator_close(vm, host, hooks, &mut scope, &record, CloseCompletionKind::Throw)
         {
-          if original_is_throw && !close_err.is_throw_completion() {
-            return Err(close_err);
-          }
+          return Err(close_err);
         }
       }
       return Err(err);
@@ -588,7 +582,7 @@ fn async_from_sync_iterator_continuation(
   // `PerformPromiseThen`), since Rust stack locals are not traced by the GC.
   scope.push_root(Value::Object(unwrap))?;
 
-  let on_rejected = if done {
+  let on_rejected = if done || !close_on_rejection {
     None
   } else {
     let close_call_id = vm.async_from_sync_iterator_close_call_id()?;
@@ -830,7 +824,15 @@ pub(crate) fn async_from_sync_iterator_next_call(
     return promise_reject(vm, host, hooks, &mut scope, reason);
   }
 
-  match async_from_sync_iterator_continuation(vm, host, hooks, &mut scope, sync_iterator, result) {
+  match async_from_sync_iterator_continuation(
+    vm,
+    host,
+    hooks,
+    &mut scope,
+    sync_iterator,
+    result,
+    true,
+  ) {
     Ok(promise) => Ok(promise),
     Err(err) => reject_promise_from_vm_error(vm, host, hooks, &mut scope, err),
   }
@@ -930,7 +932,15 @@ pub(crate) fn async_from_sync_iterator_return_call(
     return promise_reject(vm, host, hooks, &mut scope, reason);
   }
 
-  match async_from_sync_iterator_continuation(vm, host, hooks, &mut scope, sync_iterator, result) {
+  match async_from_sync_iterator_continuation(
+    vm,
+    host,
+    hooks,
+    &mut scope,
+    sync_iterator,
+    result,
+    false,
+  ) {
     Ok(promise) => Ok(promise),
     Err(err) => reject_promise_from_vm_error(vm, host, hooks, &mut scope, err),
   }
@@ -1021,7 +1031,15 @@ pub(crate) fn async_from_sync_iterator_throw_call(
     return promise_reject(vm, host, hooks, &mut scope, reason);
   }
 
-  match async_from_sync_iterator_continuation(vm, host, hooks, &mut scope, sync_iterator, result) {
+  match async_from_sync_iterator_continuation(
+    vm,
+    host,
+    hooks,
+    &mut scope,
+    sync_iterator,
+    result,
+    true,
+  ) {
     Ok(promise) => Ok(promise),
     Err(err) => reject_promise_from_vm_error(vm, host, hooks, &mut scope, err),
   }

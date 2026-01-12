@@ -14361,24 +14361,15 @@ fn async_for_await_of_close(
     Err(err) => {
       scope.heap_mut().remove_root(iterator_root);
       scope.heap_mut().remove_root(next_method_root);
-      // Spec: `AsyncIteratorClose` suppresses `return` lookup/call errors when closing due to a
-      // throw completion.
       if completion_is_throw && err.is_throw_completion() {
         return Ok(AsyncEval::Complete(completion));
       }
       match err {
         VmError::Throw(_) | VmError::ThrowWithStack { .. } => {
-          // AsyncIteratorClose suppression rules (ECMA-262):
-          // - If the original completion is a throw completion, suppress errors from
-          //   `GetMethod("return")` / `Call(return)`.
-          // - Never suppress fatal VM errors (OOM/termination/etc).
-          if completion_is_throw {
-            return Ok(AsyncEval::Complete(completion));
-          }
           return Ok(AsyncEval::Complete(completion_from_expr_result(Err(err))?));
         }
         other => return Err(other),
-      }
+      };
     }
   };
 
@@ -23028,28 +23019,11 @@ fn async_resume_from_frames(
           }
           Err(err @ (VmError::Throw(_) | VmError::ThrowWithStack { .. })) => {
             let completion = completion_from_expr_result(Err(err))?;
-            match async_for_await_of_close(
-              evaluator,
-              scope,
-              v_root,
-              iterator_root,
-              next_method_root,
-              &iterator_record,
-              completion,
-            ) {
-              Ok(AsyncEval::Complete(c)) => state = AsyncState::Completion(c),
-              Ok(AsyncEval::Suspend(mut suspend)) => {
-                suspend.frames.append(&mut frames);
-                return Ok(AsyncBodyResult::Await {
-                  await_value: suspend.await_value,
-                  frames: suspend.frames,
-                });
-              }
-              Err(err @ (VmError::Throw(_) | VmError::ThrowWithStack { .. })) => {
-                state = AsyncState::Completion(completion_from_expr_result(Err(err))?)
-              }
-              Err(err) => return Err(err),
-            }
+            // Spec: ForAwaitOfBodyEvaluation does not perform `AsyncIteratorClose` on errors produced
+            // while awaiting `iterator.next()`. For sync iterables, async-from-sync wrappers close
+            // the underlying iterator when the iterated value promise rejects.
+            async_for_await_of_cleanup(scope, v_root, iterator_root, next_method_root);
+            state = AsyncState::Completion(completion);
           }
           Err(err) => {
             async_for_await_of_cleanup(scope, v_root, iterator_root, next_method_root);
