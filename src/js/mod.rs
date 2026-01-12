@@ -101,6 +101,8 @@ pub mod window_crypto;
 pub mod window_css;
 #[path = "vmjs/window_file.rs"]
 pub mod window_file;
+#[path = "vmjs/window_file_reader.rs"]
+pub mod window_file_reader;
 #[path = "vmjs/window_env.rs"]
 pub mod window_env;
 #[path = "vmjs/window_fetch.rs"]
