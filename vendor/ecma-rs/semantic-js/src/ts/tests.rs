@@ -5484,6 +5484,8 @@ fn export_equals_module_augmentation_with_value_exports_reports_ts2649() {
   let augmentation = AmbientModule {
     name: "lib".to_string(),
     name_span: span(200),
+    export_modifier: false,
+    export_modifier_span: None,
     decls: vec![fn_decl],
     imports: Vec::new(),
     type_imports: Vec::new(),
