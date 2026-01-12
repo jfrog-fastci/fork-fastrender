@@ -14,7 +14,7 @@
     "layout": 19.0790514,
     "paint": 80.33284800000001
   },
-  "notes": "",
+  "notes": "Visually good. This fixture is the logged-out Facebook home/login page (`?_fb_noscript=1`, `UIPage_LoggedOut`). Fixture page-loop (1200x800, JS off) shows remaining ~5-6% pixel diffs vs Chrome are dominated by paint-only raster differences: text rasterization/hinting plus small per-pixel blur/AA deltas around the login card's box-shadows/rounded corners.",
   "accuracy": {
     "baseline": "chrome",
     "diff_pixels": 55554,
