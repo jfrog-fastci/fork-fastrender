@@ -12,7 +12,9 @@ use crate::ast::import_export::ExportNames;
 use crate::ast::import_export::ImportName;
 use crate::ast::import_export::ImportNames;
 use crate::ast::import_export::ModuleExportImportName;
+use crate::ast::node::LiteralStringCodeUnits;
 use crate::ast::node::LegacyOctalEscapeSequence;
+use crate::ast::node::ModuleExportImportNameCodeUnits;
 use crate::ast::node::Node;
 use crate::ast::stmt::decl::PatDecl;
 use crate::ast::stmt::ExportDefaultExprStmt;
@@ -61,6 +63,7 @@ impl<'a> Parser<'a> {
   ) -> SyntaxResult<(ModuleExportImportName, Node<IdPat>)> {
     let t0 = self.peek();
     let mut target_escape = None;
+    let mut target_code_units: Option<Vec<u16>> = None;
     #[rustfmt::skip]
     let (target, alias_is_required) = match t0.typ {
       TT::LiteralString => {
@@ -70,6 +73,7 @@ impl<'a> Parser<'a> {
           return Err(loc.error(SyntaxErrorType::InvalidCharacterEscape, Some(TT::LiteralString)));
         }
         target_escape = escape_loc;
+        target_code_units = Some(code_units);
         // Imports require an explicit local binding name, but exports can re-export string
         // names without an `as` clause (e.g. `export { "☿" } from "./m.js";`).
         (ModuleExportImportName::Str(name), !is_export)
@@ -77,8 +81,9 @@ impl<'a> Parser<'a> {
       t if is_valid_pattern_identifier(t, ctx.rules) => (ModuleExportImportName::Ident(self.consume_as_string()), false),
       // `default` is special: in exports it can be used without alias, but in imports it requires an alias
       TT::KeywordDefault if is_export => (ModuleExportImportName::Ident(self.consume_as_string()), false),
-      // Any other keyword is allowed, but if reserved, an alias must be used.
-      t if KEYWORDS_MAPPING.contains_key(&t) => (ModuleExportImportName::Ident(self.consume_as_string()), true),
+      // Any other keyword is allowed. In imports, local bindings are identifiers so an alias is
+      // required; in exports, names are `IdentifierName`s so a shorthand is allowed.
+      t if KEYWORDS_MAPPING.contains_key(&t) => (ModuleExportImportName::Ident(self.consume_as_string()), !is_export),
       _ => return Err(t0.error(SyntaxErrorType::ExpectedNotFound)),
     };
     let mut alias = if self.consume_if(TT::KeywordAs).is_match() {
@@ -92,6 +97,9 @@ impl<'a> Parser<'a> {
           return Err(loc.error(SyntaxErrorType::InvalidCharacterEscape, Some(TT::LiteralString)));
         }
         let mut alias = Node::new(loc, IdPat { name });
+        alias
+          .assoc
+          .set(LiteralStringCodeUnits(code_units.into_boxed_slice()));
         if let Some(escape_loc) = escape_loc {
           alias.assoc.set(LegacyOctalEscapeSequence(escape_loc));
         }
@@ -134,6 +142,11 @@ impl<'a> Parser<'a> {
       if alias.assoc.get::<LegacyOctalEscapeSequence>().is_none() {
         alias.assoc.set(LegacyOctalEscapeSequence(target_escape));
       }
+    }
+    if let Some(code_units) = target_code_units {
+      alias
+        .assoc
+        .set(ModuleExportImportNameCodeUnits(code_units.into_boxed_slice()));
     }
     Ok((target, alias))
   }
@@ -476,6 +489,9 @@ impl<'a> Parser<'a> {
                 ));
               }
               let mut alias = Node::new(loc, IdPat { name });
+              alias
+                .assoc
+                .set(LiteralStringCodeUnits(code_units.into_boxed_slice()));
               if let Some(escape_loc) = escape_loc {
                 alias.assoc.set(LegacyOctalEscapeSequence(escape_loc));
               }

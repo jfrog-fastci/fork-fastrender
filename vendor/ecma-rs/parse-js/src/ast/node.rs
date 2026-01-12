@@ -104,6 +104,25 @@ pub fn literal_string_code_units(assoc: &NodeAssocData) -> Option<&[u16]> {
     .map(|data| data.0.as_ref())
 }
 
+/// Marker attached to import/export specifier nodes recording the exact UTF-16 code units produced
+/// by decoding a string-literal *module import/export name*.
+///
+/// This is used for `ModuleExportName : StringLiteral` / `ModuleImportName : StringLiteral` early
+/// errors like `IsStringWellFormedUnicode`, which must observe unpaired surrogate code units that
+/// cannot be represented in Rust `String`s.
+///
+/// Note: `parse-js` currently attaches this marker to the specifier's *alias* node because the
+/// target string literal itself is stored as a plain `String` in `ModuleExportImportName::Str`.
+#[derive(Clone, Debug)]
+pub struct ModuleExportImportNameCodeUnits(pub Box<[u16]>);
+
+/// Returns the UTF-16 code units for a string-literal module import/export name, if present.
+pub fn module_export_import_name_code_units(assoc: &NodeAssocData) -> Option<&[u16]> {
+  assoc
+    .get::<ModuleExportImportNameCodeUnits>()
+    .map(|data| data.0.as_ref())
+}
+
 /// Marker attached to template literal expression nodes recording the raw and
 /// cooked UTF-16 code units for each template string segment.
 ///

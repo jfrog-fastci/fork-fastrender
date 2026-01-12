@@ -16,7 +16,7 @@ use parse_js::ast::expr::pat::Pat;
 use parse_js::ast::expr::lit::{LitArrElem, LitTemplatePart};
 use parse_js::ast::import_export::ExportNames;
 use parse_js::ast::import_export::ImportNames;
-use parse_js::ast::node::Node;
+use parse_js::ast::node::{literal_string_code_units, module_export_import_name_code_units, Node};
 use parse_js::ast::stmt::Stmt;
 use parse_js::ast::stmt::ForInOfLhs;
 use parse_js::ast::stmt::decl::VarDeclMode;
@@ -1222,6 +1222,10 @@ fn module_static_semantics_early_errors(
 ) -> Result<(), VmError> {
   ctx.budget_tick()?;
 
+  // `ModuleExportName : StringLiteral` and `ModuleImportName : StringLiteral`
+  // require `IsStringWellFormedUnicode` to be true.
+  module_export_import_name_string_literals_well_formed_unicode(top, ctx)?;
+
   let var_declared_names = module_var_declared_names(top, ctx)?;
   let lex_declared_names = module_lex_declared_names(top, ctx)?;
 
@@ -1751,6 +1755,123 @@ fn module_exported_bindings_declared(
   }
 
   Ok(())
+}
+
+fn module_export_import_name_string_literals_well_formed_unicode(
+  top: &Node<TopLevel>,
+  ctx: &mut ModuleRecordParseCtx<'_>,
+) -> Result<(), VmError> {
+  ctx.budget_tick()?;
+
+  for stmt in &top.stx.body {
+    ctx.budget_tick()?;
+
+    match &*stmt.stx {
+      Stmt::Import(import_stmt) => {
+        if import_stmt.stx.type_only {
+          continue;
+        }
+        let Some(names) = import_stmt.stx.names.as_ref() else {
+          continue;
+        };
+        if let ImportNames::Specific(list) = names {
+          for name in list {
+            ctx.budget_tick()?;
+            if name.stx.type_only {
+              continue;
+            }
+            let parse_js::ast::stmt::decl::PatDecl { pat } = &*name.stx.alias.stx;
+            let Pat::Id(id) = &*pat.stx else {
+              continue;
+            };
+            if let Some(code_units) = module_export_import_name_code_units(&id.assoc) {
+              validate_string_well_formed_unicode(code_units, id.loc, ctx)?;
+            }
+          }
+        }
+      }
+
+      Stmt::ExportList(export_stmt) => {
+        if export_stmt.stx.type_only {
+          continue;
+        }
+
+        match &export_stmt.stx.names {
+          ExportNames::Specific(list) => {
+            for name in list {
+              ctx.budget_tick()?;
+              if name.stx.type_only {
+                continue;
+              }
+
+              // Validate the `ModuleExportName : StringLiteral` target (left-hand side).
+              if let Some(code_units) = module_export_import_name_code_units(&name.stx.alias.assoc) {
+                validate_string_well_formed_unicode(code_units, name.stx.alias.loc, ctx)?;
+              }
+              // Validate the exported alias (`as "name"`).
+              if let Some(code_units) = literal_string_code_units(&name.stx.alias.assoc) {
+                validate_string_well_formed_unicode(code_units, name.stx.alias.loc, ctx)?;
+              }
+            }
+          }
+          ExportNames::All(Some(alias)) => {
+            if let Some(code_units) = literal_string_code_units(&alias.assoc) {
+              validate_string_well_formed_unicode(code_units, alias.loc, ctx)?;
+            }
+          }
+          ExportNames::All(None) => {}
+        }
+      }
+
+      _ => {}
+    }
+  }
+
+  Ok(())
+}
+
+fn validate_string_well_formed_unicode(
+  code_units: &[u16],
+  loc: parse_js::loc::Loc,
+  ctx: &mut ModuleRecordParseCtx<'_>,
+) -> Result<(), VmError> {
+  if !string_is_well_formed_unicode(code_units, ctx)? {
+    return Err(syntax_error(
+      loc,
+      "module import/export string literals must be well-formed unicode",
+    ));
+  }
+  Ok(())
+}
+
+fn string_is_well_formed_unicode(
+  code_units: &[u16],
+  ctx: &mut ModuleRecordParseCtx<'_>,
+) -> Result<bool, VmError> {
+  let mut i: usize = 0;
+  while i < code_units.len() {
+    ctx.budget_tick()?;
+
+    let cu = code_units[i];
+    if (0xD800..=0xDBFF).contains(&cu) {
+      // High surrogate must be followed by a low surrogate.
+      if i + 1 >= code_units.len() {
+        return Ok(false);
+      }
+      let next = code_units[i + 1];
+      if !(0xDC00..=0xDFFF).contains(&next) {
+        return Ok(false);
+      }
+      i = i.saturating_add(2);
+      continue;
+    }
+    if (0xDC00..=0xDFFF).contains(&cu) {
+      // Low surrogate without a preceding high surrogate.
+      return Ok(false);
+    }
+    i = i.saturating_add(1);
+  }
+  Ok(true)
 }
 
 fn module_contains_top_level_await(
@@ -2635,6 +2756,48 @@ mod tests {
       }
     "#,
     ));
+  }
+
+  #[test]
+  fn module_early_error_export_alias_string_literal_invalid_unicode() {
+    assert_syntax(SourceTextModuleRecord::parse(
+      r#"export { Moon as "\uD83C" } from "./m.js";"#,
+    ));
+  }
+
+  #[test]
+  fn module_early_error_export_target_string_literal_invalid_unicode() {
+    assert_syntax(SourceTextModuleRecord::parse(
+      r#"export { "\uD83C" as Moon } from "./m.js";"#,
+    ));
+  }
+
+  #[test]
+  fn module_early_error_import_target_string_literal_invalid_unicode() {
+    assert_syntax(SourceTextModuleRecord::parse(
+      r#"import { "\uD83C" as Moon } from "./m.js";"#,
+    ));
+  }
+
+  #[test]
+  fn module_early_error_export_star_alias_string_literal_invalid_unicode() {
+    assert_syntax(SourceTextModuleRecord::parse(
+      r#"export * as "\uD83C" from "./m.js";"#,
+    ));
+  }
+
+  #[test]
+  fn module_allows_well_formed_unicode_string_literal_export_names() {
+    SourceTextModuleRecord::parse(
+      r#"export { Moon as "\uD83C\uDF19" } from "./m.js";"#,
+    )
+    .expect("well-formed unicode string literals should be valid module export names");
+  }
+
+  #[test]
+  fn module_allows_shorthand_string_literal_export_names() {
+    SourceTextModuleRecord::parse(r#"export { "☿" } from "./m.js";"#)
+      .expect("string-literal module export names should be allowed in re-exports");
   }
 
   #[test]
