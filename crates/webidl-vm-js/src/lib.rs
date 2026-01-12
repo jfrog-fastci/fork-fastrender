@@ -21,10 +21,6 @@ use webidl::{
   InterfaceId, IteratorResult, JsOwnPropertyDescriptor, JsPropertyKind, PropertyKey, WebIdlHooks,
   WebIdlLimits, WellKnownSymbol,
 };
-use webidl_bindings_core::runtime::{
-  IteratorRecord as CoreIteratorRecord, JsOwnPropertyDescriptor as CoreJsOwnPropertyDescriptor,
-  JsPropertyKind as CoreJsPropertyKind,
-};
 
 pub mod bindings_runtime;
 pub mod conversions;
@@ -968,9 +964,23 @@ impl webidl::JsRuntime for VmJsWebIdlCx<'_> {
     matches!(value, Value::Object(_))
   }
 
-  fn is_string_object(&self, _value: Self::Value) -> bool {
-    // `vm-js` does not yet model boxed String objects.
-    false
+  fn is_string_object(&self, value: Self::Value) -> bool {
+    let Value::Object(obj) = value else {
+      return false;
+    };
+ 
+    // When realm intrinsics are available, boxed String objects should inherit from
+    // `%String.prototype%`.
+    let Some(intr) = self.vm.intrinsics() else {
+      return false;
+    };
+    self
+      .scope
+      .heap()
+      .object_prototype(obj)
+      .ok()
+      .flatten()
+      .is_some_and(|proto| proto == intr.string_prototype())
   }
 
   fn as_string(&self, value: Self::Value) -> Option<Self::String> {
@@ -1355,16 +1365,16 @@ impl webidl::WebIdlJsRuntime for VmJsWebIdlCx<'_> {
   }
 
   fn throw_type_error(&mut self, message: &str) -> Self::Error {
-    let Some(intr) = self.vm.intrinsics() else {
-      return VmError::Unimplemented("intrinsics not initialized");
+    let value = match self.vm.intrinsics() {
+      Some(intr) => vm_js::new_error(
+        &mut self.scope,
+        intr.type_error_prototype(),
+        "TypeError",
+        message,
+      ),
+      None => fallback_error_object(&mut self.scope, "TypeError", message),
     };
-
-    match vm_js::new_error(
-      &mut self.scope,
-      intr.type_error_prototype(),
-      "TypeError",
-      message,
-    ) {
+    match value {
       Ok(value) => match self.root(value) {
         Ok(()) => VmError::Throw(value),
         Err(err) => err,
@@ -1374,16 +1384,16 @@ impl webidl::WebIdlJsRuntime for VmJsWebIdlCx<'_> {
   }
 
   fn throw_range_error(&mut self, message: &str) -> Self::Error {
-    let Some(intr) = self.vm.intrinsics() else {
-      return VmError::Unimplemented("intrinsics not initialized");
+    let value = match self.vm.intrinsics() {
+      Some(intr) => vm_js::new_error(
+        &mut self.scope,
+        intr.range_error_prototype(),
+        "RangeError",
+        message,
+      ),
+      None => fallback_error_object(&mut self.scope, "RangeError", message),
     };
-
-    match vm_js::new_error(
-      &mut self.scope,
-      intr.range_error_prototype(),
-      "RangeError",
-      message,
-    ) {
+    match value {
       Ok(value) => match self.root(value) {
         Ok(()) => VmError::Throw(value),
         Err(err) => err,
@@ -1392,8 +1402,8 @@ impl webidl::WebIdlJsRuntime for VmJsWebIdlCx<'_> {
     }
   }
 
-  fn is_array_buffer(&self, _value: Self::Value) -> bool {
-    false
+  fn is_array_buffer(&self, value: Self::Value) -> bool {
+    self.hooks.is_array_buffer(value)
   }
 
   fn is_shared_array_buffer(&self, _value: Self::Value) -> bool {
@@ -1608,547 +1618,6 @@ fn fallback_error_object(
   )?;
 
   Ok(Value::Object(err))
-}
-
-impl webidl_bindings_core::JsRuntime for VmJsWebIdlCx<'_> {
-  type JsValue = Value;
-  type PropertyKey = VmPropertyKey;
-  type Error = VmError;
-
-  fn with_stack_roots<R, F>(&mut self, roots: &[Self::JsValue], f: F) -> Result<R, Self::Error>
-  where
-    F: FnOnce(&mut Self) -> Result<R, Self::Error>,
-  {
-    let base = self.scope.heap().stack_root_len();
-    self.scope.heap_mut().push_stack_roots(roots)?;
-    let out = f(self);
-    self.scope.heap_mut().truncate_stack_roots(base);
-    out
-  }
-
-  fn js_undefined(&self) -> Self::JsValue {
-    Value::Undefined
-  }
-
-  fn js_null(&self) -> Self::JsValue {
-    Value::Null
-  }
-
-  fn js_boolean(&self, value: bool) -> Self::JsValue {
-    Value::Bool(value)
-  }
-
-  fn js_number(&self, value: f64) -> Self::JsValue {
-    Value::Number(value)
-  }
-
-  fn alloc_string(&mut self, value: &str) -> Result<Self::JsValue, Self::Error> {
-    let s = self.scope.alloc_string(value)?;
-    self.scope.push_root(Value::String(s))?;
-    Ok(Value::String(s))
-  }
-
-  fn alloc_string_from_code_units(&mut self, units: &[u16]) -> Result<Self::JsValue, Self::Error> {
-    let s = self.scope.alloc_string_from_code_units(units)?;
-    self.scope.push_root(Value::String(s))?;
-    Ok(Value::String(s))
-  }
-
-  fn is_undefined(&self, value: Self::JsValue) -> bool {
-    matches!(value, Value::Undefined)
-  }
-
-  fn is_null(&self, value: Self::JsValue) -> bool {
-    matches!(value, Value::Null)
-  }
-
-  fn with_string_code_units<R>(
-    &mut self,
-    string: Self::JsValue,
-    f: impl FnOnce(&[u16]) -> R,
-  ) -> Result<R, Self::Error> {
-    let Value::String(s) = string else {
-      return Err(webidl_bindings_core::WebIdlJsRuntime::throw_type_error(
-        self,
-        "expected a string value",
-      ));
-    };
-    Ok(f(self.scope.heap().get_string(s)?.as_code_units()))
-  }
-
-  fn property_key_from_str(&mut self, s: &str) -> Result<Self::PropertyKey, Self::Error> {
-    let handle = self.scope.alloc_string(s)?;
-    self.scope.push_root(Value::String(handle))?;
-    Ok(VmPropertyKey::from_string(handle))
-  }
-
-  fn property_key_from_u32(&mut self, index: u32) -> Result<Self::PropertyKey, Self::Error> {
-    self.property_key_from_str(&index.to_string())
-  }
-
-  fn property_key_is_symbol(&self, key: Self::PropertyKey) -> bool {
-    matches!(key, VmPropertyKey::Symbol(_))
-  }
-
-  fn property_key_is_string(&self, key: Self::PropertyKey) -> bool {
-    matches!(key, VmPropertyKey::String(_))
-  }
-
-  fn property_key_to_js_string(
-    &mut self,
-    key: Self::PropertyKey,
-  ) -> Result<Self::JsValue, Self::Error> {
-    match key {
-      VmPropertyKey::String(s) => {
-        self.scope.push_root(Value::String(s))?;
-        Ok(Value::String(s))
-      }
-      VmPropertyKey::Symbol(sym) => {
-        let s = self.scope.heap_mut().to_string(Value::Symbol(sym))?;
-        self.scope.push_root(Value::String(s))?;
-        Ok(Value::String(s))
-      }
-    }
-  }
-
-  fn alloc_object(&mut self) -> Result<Self::JsValue, Self::Error> {
-    let obj = self.scope.alloc_object()?;
-    self.scope.push_root(Value::Object(obj))?;
-
-    // When a realm is initialized, prefer `%Object.prototype%` so the result behaves like a normal
-    // JavaScript object (e.g. has standard methods).
-    if let Some(intrinsics) = self.vm.intrinsics() {
-      let proto = intrinsics.object_prototype();
-      self.scope.push_root(Value::Object(proto))?;
-      self.scope.object_set_prototype(obj, Some(proto))?;
-    }
-    Ok(Value::Object(obj))
-  }
-
-  fn alloc_array(&mut self) -> Result<Self::JsValue, Self::Error> {
-    let obj = self.scope.alloc_array(0)?;
-    self.scope.push_root(Value::Object(obj))?;
-
-    // When a realm is initialized, prefer `%Array.prototype%` so the result behaves like a normal
-    // JavaScript array (e.g. is iterable, has standard methods).
-    if let Some(intrinsics) = self.vm.intrinsics() {
-      let proto = intrinsics.array_prototype();
-      self.scope.push_root(Value::Object(proto))?;
-      self.scope.object_set_prototype(obj, Some(proto))?;
-    }
-
-    Ok(Value::Object(obj))
-  }
-
-  fn define_data_property(
-    &mut self,
-    obj: Self::JsValue,
-    key: Self::PropertyKey,
-    value: Self::JsValue,
-    enumerable: bool,
-  ) -> Result<(), Self::Error> {
-    let Value::Object(obj) = obj else {
-      return Err(webidl_bindings_core::WebIdlJsRuntime::throw_type_error(
-        self,
-        "define_data_property: receiver is not an object",
-      ));
-    };
-
-    self.scope.define_property(
-      obj,
-      key,
-      vm_js::PropertyDescriptor {
-        enumerable,
-        configurable: true,
-        kind: vm_js::PropertyKind::Data {
-          value,
-          writable: true,
-        },
-      },
-    )
-  }
-
-  fn is_object(&self, value: Self::JsValue) -> bool {
-    matches!(value, Value::Object(_))
-  }
-
-  fn is_callable(&self, value: Self::JsValue) -> bool {
-    self.scope.heap().is_callable(value).unwrap_or(false)
-  }
-
-  fn is_boolean(&self, value: Self::JsValue) -> bool {
-    matches!(value, Value::Bool(_))
-  }
-
-  fn is_number(&self, value: Self::JsValue) -> bool {
-    matches!(value, Value::Number(_))
-  }
-
-  fn is_bigint(&self, value: Self::JsValue) -> bool {
-    matches!(value, Value::BigInt(_))
-  }
-
-  fn is_string(&self, value: Self::JsValue) -> bool {
-    matches!(value, Value::String(_))
-  }
-
-  fn is_symbol(&self, value: Self::JsValue) -> bool {
-    matches!(value, Value::Symbol(_))
-  }
-
-  fn to_object(&mut self, value: Self::JsValue) -> Result<Self::JsValue, Self::Error> {
-    let mut dummy_host = ();
-    struct NoopHooks;
-    impl VmHostHooks for NoopHooks {
-      fn host_enqueue_promise_job(&mut self, _job: vm_js::Job, _realm: Option<vm_js::RealmId>) {}
-    }
-    let mut dummy_hooks = NoopHooks;
-
-    // The conversion context stores raw pointers to the embedder host + hooks so conversions can
-    // call back into JS (ToPrimitive, iterator protocol, etc.) while still routing through the
-    // embedder-provided host context.
-    //
-    // These pointers are created by `from_native_call(_unchecked)` and are only used for the
-    // duration of this call, so it is safe to rehydrate them into `&mut` references here.
-    let host = self.host.map(|mut host| unsafe { host.as_mut() });
-    let hooks = self.host_hooks.map(|mut hooks| unsafe { hooks.as_mut() });
-
-    let obj = match (host, hooks) {
-      (Some(host), Some(hooks)) => self.scope.to_object(self.vm, host, hooks, value)?,
-      (Some(host), None) => self
-        .scope
-        .to_object(self.vm, host, &mut dummy_hooks, value)?,
-      (None, Some(hooks)) => self
-        .scope
-        .to_object(self.vm, &mut dummy_host, hooks, value)?,
-      (None, None) => self
-        .scope
-        .to_object(self.vm, &mut dummy_host, &mut dummy_hooks, value)?,
-    };
-    self.scope.push_root(Value::Object(obj))?;
-    Ok(Value::Object(obj))
-  }
-
-  fn call(
-    &mut self,
-    callee: Self::JsValue,
-    this: Self::JsValue,
-    args: &[Self::JsValue],
-  ) -> Result<Self::JsValue, Self::Error> {
-    self.call_js(callee, this, args)
-  }
-
-  fn to_boolean(&mut self, value: Self::JsValue) -> Result<bool, Self::Error> {
-    self.scope.heap().to_boolean(value)
-  }
-
-  fn to_number(&mut self, value: Self::JsValue) -> Result<f64, Self::Error> {
-    match value {
-      Value::Object(_) => {
-        let prim = self.to_primitive(value, ToPrimitiveHint::Number)?;
-        self.scope.heap_mut().to_number(prim)
-      }
-      other => self.scope.heap_mut().to_number(other),
-    }
-  }
-
-  fn to_string(&mut self, value: Self::JsValue) -> Result<Self::JsValue, Self::Error> {
-    let s = match value {
-      Value::Object(_) => {
-        let prim = self.to_primitive(value, ToPrimitiveHint::String)?;
-        self.scope.heap_mut().to_string(prim)?
-      }
-      other => self.scope.heap_mut().to_string(other)?,
-    };
-    self.scope.push_root(Value::String(s))?;
-    Ok(Value::String(s))
-  }
-
-  fn string_to_utf8_lossy(&mut self, string: Self::JsValue) -> Result<String, Self::Error> {
-    let string = self.to_string(string)?;
-    let Value::String(s) = string else {
-      return Err(VmError::InvariantViolation("ToString returned non-string"));
-    };
-    Ok(self.scope.heap().get_string(s)?.to_utf8_lossy())
-  }
-
-  fn to_bigint(&mut self, value: Self::JsValue) -> Result<Self::JsValue, Self::Error> {
-    webidl::WebIdlJsRuntime::to_bigint(self, value)
-  }
-
-  fn to_numeric(&mut self, value: Self::JsValue) -> Result<Self::JsValue, Self::Error> {
-    webidl::WebIdlJsRuntime::to_numeric(self, value)
-  }
-
-  fn get(
-    &mut self,
-    obj: Self::JsValue,
-    key: Self::PropertyKey,
-  ) -> Result<Self::JsValue, Self::Error> {
-    let Value::Object(object) = obj else {
-      return Err(webidl_bindings_core::WebIdlJsRuntime::throw_type_error(
-        self,
-        "Get: receiver is not an object",
-      ));
-    };
-    self.scope.push_root(Value::Object(object))?;
-    match key {
-      VmPropertyKey::String(s) => self.scope.push_root(Value::String(s))?,
-      VmPropertyKey::Symbol(s) => self.scope.push_root(Value::Symbol(s))?,
-    };
-
-    // Implement ECMAScript `[[Get]]` directly so accessor getters are invoked via `call_js`.
-    let value = match self.scope.heap().get_property(object, &key)? {
-      None => Value::Undefined,
-      Some(desc) => match desc.kind {
-        vm_js::PropertyKind::Data { value, .. } => value,
-        vm_js::PropertyKind::Accessor { get, .. } => {
-          if matches!(get, Value::Undefined) {
-            Value::Undefined
-          } else {
-            if !self.scope.heap().is_callable(get)? {
-              return Err(VmError::TypeError("accessor getter is not callable"));
-            }
-            self.call_js(get, Value::Object(object), &[])?
-          }
-        }
-      },
-    };
-
-    self.scope.push_root(value)?;
-    Ok(value)
-  }
-
-  fn own_property_keys(
-    &mut self,
-    obj: Self::JsValue,
-  ) -> Result<Vec<Self::PropertyKey>, Self::Error> {
-    let Value::Object(obj) = obj else {
-      return Err(webidl_bindings_core::WebIdlJsRuntime::throw_type_error(
-        self,
-        "OwnPropertyKeys: receiver is not an object",
-      ));
-    };
-    self.scope.push_root(Value::Object(obj))?;
-    self.scope.heap().own_property_keys(obj)
-  }
-
-  fn get_own_property(
-    &mut self,
-    obj: Self::JsValue,
-    key: Self::PropertyKey,
-  ) -> Result<Option<CoreJsOwnPropertyDescriptor<Self::JsValue>>, Self::Error> {
-    let Value::Object(obj) = obj else {
-      return Err(webidl_bindings_core::WebIdlJsRuntime::throw_type_error(
-        self,
-        "GetOwnProperty: receiver is not an object",
-      ));
-    };
-    self.scope.push_root(Value::Object(obj))?;
-    match key {
-      VmPropertyKey::String(s) => self.scope.push_root(Value::String(s))?,
-      VmPropertyKey::Symbol(s) => self.scope.push_root(Value::Symbol(s))?,
-    };
-
-    let Some(desc) = self.scope.heap().object_get_own_property(obj, &key)? else {
-      return Ok(None);
-    };
-
-    let kind = match desc.kind {
-      vm_js::PropertyKind::Data { value, .. } => CoreJsPropertyKind::Data { value },
-      vm_js::PropertyKind::Accessor { get, set } => CoreJsPropertyKind::Accessor { get, set },
-    };
-
-    Ok(Some(CoreJsOwnPropertyDescriptor {
-      enumerable: desc.enumerable,
-      kind,
-    }))
-  }
-
-  fn get_method(
-    &mut self,
-    obj: Self::JsValue,
-    key: Self::PropertyKey,
-  ) -> Result<Option<Self::JsValue>, Self::Error> {
-    let value = self.get(obj, key)?;
-    if matches!(value, Value::Undefined | Value::Null) {
-      return Ok(None);
-    }
-    if !self.is_callable(value) {
-      return Err(VmError::TypeError("GetMethod: target is not callable"));
-    }
-    Ok(Some(value))
-  }
-
-  fn get_iterator_from_method(
-    &mut self,
-    iterable: Self::JsValue,
-    method: Self::JsValue,
-  ) -> Result<CoreIteratorRecord<Self::JsValue>, Self::Error> {
-    let iterator = self.call(method, iterable, &[])?;
-    if !self.is_object(iterator) {
-      return Err(webidl_bindings_core::WebIdlJsRuntime::throw_type_error(
-        self,
-        "GetIteratorFromMethod: iterator method did not return an object",
-      ));
-    }
-    // Root the iterator object for the lifetime of this conversion context so it stays alive across
-    // element conversions (which can allocate and trigger GC).
-    self.scope.push_root(iterator)?;
-
-    self.with_stack_roots(&[iterator], |rt| {
-      let next_key = rt.property_key_from_str("next")?;
-      let next = rt.get(iterator, next_key)?;
-      if !rt.is_callable(next) {
-        return Err(webidl_bindings_core::WebIdlJsRuntime::throw_type_error(
-          rt,
-          "GetIteratorFromMethod: iterator.next is not callable",
-        ));
-      }
-      Ok(CoreIteratorRecord {
-        iterator,
-        next_method: next,
-        done: false,
-      })
-    })
-  }
-
-  fn iterator_step_value(
-    &mut self,
-    iterator_record: &mut CoreIteratorRecord<Self::JsValue>,
-  ) -> Result<Option<Self::JsValue>, Self::Error> {
-    if iterator_record.done {
-      return Ok(None);
-    }
-
-    let iterator = iterator_record.iterator;
-    let next_method = iterator_record.next_method;
-    self.with_stack_roots(&[iterator, next_method], |rt| {
-      let result = rt.call(next_method, iterator, &[])?;
-      if !rt.is_object(result) {
-        return Err(webidl_bindings_core::WebIdlJsRuntime::throw_type_error(
-          rt,
-          "Iterator.next() did not return an object",
-        ));
-      }
-
-      rt.with_stack_roots(&[result], |rt| {
-        let done_key = rt.property_key_from_str("done")?;
-        let done = rt.get(result, done_key)?;
-        let done = rt.to_boolean(done)?;
-        if done {
-          iterator_record.done = true;
-          return Ok(None);
-        }
-
-        let value_key = rt.property_key_from_str("value")?;
-        let value = rt.get(result, value_key)?;
-        Ok(Some(value))
-      })
-    })
-  }
-}
-
-impl webidl_bindings_core::WebIdlJsRuntime for VmJsWebIdlCx<'_> {
-  fn limits(&self) -> WebIdlLimits {
-    self.limits
-  }
-
-  fn hooks(&self) -> &dyn WebIdlHooks<Self::JsValue> {
-    self.hooks
-  }
-
-  fn symbol_iterator(&mut self) -> Result<Self::PropertyKey, Self::Error> {
-    let sym = self.get_well_known_symbol_cached(WellKnownSymbol::Iterator)?;
-    Ok(VmPropertyKey::from_symbol(sym))
-  }
-
-  fn symbol_async_iterator(&mut self) -> Result<Self::PropertyKey, Self::Error> {
-    let sym = self.get_well_known_symbol_cached(WellKnownSymbol::AsyncIterator)?;
-    Ok(VmPropertyKey::from_symbol(sym))
-  }
-
-  fn symbol_to_property_key(
-    &mut self,
-    symbol: Self::JsValue,
-  ) -> Result<Self::PropertyKey, Self::Error> {
-    let Value::Symbol(sym) = symbol else {
-      return Err(self.throw_type_error("expected a Symbol value"));
-    };
-    Ok(VmPropertyKey::from_symbol(sym))
-  }
-
-  fn platform_object_opaque(&self, value: Self::JsValue) -> Option<u64> {
-    if !self.is_platform_object(value) {
-      return None;
-    }
-    let Value::Object(obj) = value else {
-      return None;
-    };
-    Some((obj.index() as u64) | ((obj.generation() as u64) << 32))
-  }
-
-  fn is_string_object(&self, value: Self::JsValue) -> bool {
-    let Value::Object(obj) = value else {
-      return false;
-    };
-    let Some(intr) = self.vm.intrinsics() else {
-      return false;
-    };
-    self
-      .scope
-      .heap()
-      .object_prototype(obj)
-      .ok()
-      .flatten()
-      .is_some_and(|proto| proto == intr.string_prototype())
-  }
-
-  fn is_array_buffer(&self, value: Self::JsValue) -> bool {
-    self.hooks.is_array_buffer(value)
-  }
-
-  fn is_shared_array_buffer(&self, _value: Self::JsValue) -> bool {
-    false
-  }
-
-  fn is_data_view(&self, _value: Self::JsValue) -> bool {
-    false
-  }
-
-  fn typed_array_name(&self, _value: Self::JsValue) -> Option<&'static str> {
-    None
-  }
-
-  fn platform_object_to_js_value(
-    &mut self,
-    value: &webidl_ir::PlatformObject,
-  ) -> Option<Self::JsValue> {
-    value.downcast_ref::<Value>().copied()
-  }
-
-  fn throw_type_error(&mut self, message: &str) -> Self::Error {
-    if let Some(intr) = self.vm.intrinsics() {
-      return vm_js::throw_type_error(&mut self.scope, intr, message);
-    }
-    match fallback_error_object(&mut self.scope, "TypeError", message) {
-      Ok(v) => VmError::Throw(v),
-      Err(err) => err,
-    }
-  }
-
-  fn throw_range_error(&mut self, message: &str) -> Self::Error {
-    if let Some(intr) = self.vm.intrinsics() {
-      return match vm_js::new_range_error(&mut self.scope, intr, message) {
-        Ok(v) => VmError::Throw(v),
-        Err(err) => err,
-      };
-    }
-    match fallback_error_object(&mut self.scope, "RangeError", message) {
-      Ok(v) => VmError::Throw(v),
-      Err(err) => err,
-    }
-  }
 }
 
 #[cfg(test)]

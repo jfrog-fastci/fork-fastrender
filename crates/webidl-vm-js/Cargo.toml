@@ -9,5 +9,3 @@ description = "FastRender workspace-local adapter for ecma-rs webidl <-> vm-js"
 [dependencies]
 vm-js = { path = "../../vendor/ecma-rs/vm-js" }
 webidl = { path = "../../vendor/ecma-rs/webidl" }
-webidl-bindings-core = { path = "../webidl-bindings-core" }
-webidl-ir = { path = "../webidl-ir" }
