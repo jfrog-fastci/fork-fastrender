@@ -6,7 +6,7 @@
 
 use crate::geometry::Rect;
 use crate::paint::display_list::ResolvedFilter;
-use crate::paint::svg_filter::{FilterPrimitive, SvgFilterUnits, SvgLength};
+use crate::paint::svg_filter::{EdgeMode, FilterPrimitive, SvgFilterUnits, SvgLength};
 
 /// Outset distances on each side of a rectangle.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -94,7 +94,11 @@ fn svg_filter_kernel_outset_css(
 
   for step in &filter.steps {
     match &step.primitive {
-      FilterPrimitive::GaussianBlur { std_dev, .. } => {
+      FilterPrimitive::GaussianBlur {
+        std_dev,
+        edge_mode,
+        ..
+      } => {
         let (sx, sy) = resolve_pair(*std_dev);
         let sx = if sx.is_finite() { sx.abs() } else { 0.0 };
         let sy = if sy.is_finite() { sy.abs() } else { 0.0 };
@@ -105,6 +109,15 @@ fn svg_filter_kernel_outset_css(
         }
         if dy.is_finite() {
           pad_y += dy;
+        }
+        if matches!(edge_mode, EdgeMode::Wrap) {
+          // `edgeMode="wrap"` can sample from the opposite edge of the filter region (wrapping the
+          // source image). When rendering in tiles, treating the tile boundary as an edge will wrap
+          // within the tile instead of within the filter region, producing seams/serial-vs-parallel
+          // divergence. Conservatively request enough halo to cover the full filter region so each
+          // tile evaluates the blur against a complete wrap source (similar to `feTile`).
+          pad_x = pad_x.max(filter_region_w);
+          pad_y = pad_y.max(filter_region_h);
         }
       }
       FilterPrimitive::DropShadow {
@@ -161,6 +174,7 @@ fn svg_filter_kernel_outset_css(
         order_y,
         target_x,
         target_y,
+        edge_mode,
         ..
       } => {
         let order_x = i64::try_from(*order_x).unwrap_or(i64::MAX);
@@ -178,6 +192,13 @@ fn svg_filter_kernel_outset_css(
         }
         if reach_y.is_finite() {
           pad_y += reach_y;
+        }
+        if matches!(edge_mode, EdgeMode::Wrap) {
+          // Like `edgeMode="wrap"` for `feGaussianBlur`, wrapping kernel samples can depend on the
+          // opposite edge of the filter region. Request a full-region halo to avoid treating tile
+          // boundaries as wrap edges.
+          pad_x = pad_x.max(filter_region_w);
+          pad_y = pad_y.max(filter_region_h);
         }
       }
       FilterPrimitive::DisplacementMap { scale, .. } => {
@@ -622,6 +643,42 @@ mod tests {
         && (t - 9.0).abs() < 0.01
         && (b - 9.0).abs() < 0.01,
       "expected gaussian blur to contribute 9px padding, got {l},{t},{r},{b}"
+    );
+  }
+
+  #[test]
+  fn svg_filter_gaussian_blur_wrap_requests_full_region_halo() {
+    let mut filter = SvgFilter {
+      color_interpolation_filters: ColorInterpolationFilters::LinearRGB,
+      steps: vec![FilterStep {
+        result: None,
+        color_interpolation_filters: None,
+        primitive: FilterPrimitive::GaussianBlur {
+          input: FilterInput::SourceGraphic,
+          std_dev: (3.0, 3.0),
+          edge_mode: EdgeMode::Wrap,
+        },
+        region: None,
+      }],
+      // Filter region = bbox.
+      region: SvgFilterRegion {
+        x: SvgLength::Number(0.0),
+        y: SvgLength::Number(0.0),
+        width: SvgLength::Number(1.0),
+        height: SvgLength::Number(1.0),
+        units: SvgFilterUnits::ObjectBoundingBox,
+      },
+      filter_res: None,
+      primitive_units: SvgFilterUnits::UserSpaceOnUse,
+      fingerprint: 0,
+    };
+    filter.refresh_fingerprint();
+    let filters = vec![ResolvedFilter::SvgFilter(Arc::new(filter))];
+    let bbox = Rect::from_xywh(10.0, 20.0, 100.0, 50.0);
+    let (l, t, r, b) = compute_filter_outset(&filters, bbox, 1.0);
+    assert!(
+      l >= 100.0 - 0.01 && r >= 100.0 - 0.01 && t >= 50.0 - 0.01 && b >= 50.0 - 0.01,
+      "expected edgeMode=wrap to request full-region halo, got {l},{t},{r},{b}"
     );
   }
 
