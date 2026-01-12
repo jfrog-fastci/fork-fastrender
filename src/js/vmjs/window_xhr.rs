@@ -355,7 +355,14 @@ fn xhr_info_from_this(scope: &mut Scope<'_>, this: Value) -> Result<(u64, u64, G
 
 fn current_document_base_url(vm: &mut Vm, env_id: u64) -> Result<Option<String>, VmError> {
   if let Some(data) = vm.user_data_mut::<WindowRealmUserData>() {
-    return Ok(data.base_url.clone());
+    // Match `document.baseURI` semantics: when the base URL is missing/cleared, fall back to the
+    // realm's document URL so relative XHR URLs still resolve deterministically.
+    return Ok(Some(
+      data
+        .base_url
+        .clone()
+        .unwrap_or_else(|| data.document_url().to_string()),
+    ));
   }
   with_env_state(env_id, |state| Ok(state.env.document_url.clone()))
 }

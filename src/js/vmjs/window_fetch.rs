@@ -240,7 +240,15 @@ fn alloc_symbol_key(scope: &mut Scope<'_>, description: &str) -> Result<Property
 
 fn current_document_base_url(vm: &mut Vm, env_id: u64) -> Result<Option<String>, VmError> {
   if let Some(data) = vm.user_data_mut::<WindowRealmUserData>() {
-    return Ok(data.base_url.clone());
+    // `document.baseURI` falls back to the realm document URL when the embedder has not installed a
+    // base URL (or explicitly cleared it). Keep fetch's relative URL resolution consistent with
+    // `document.baseURI` by treating a missing base URL as "use document_url".
+    return Ok(Some(
+      data
+        .base_url
+        .clone()
+        .unwrap_or_else(|| data.document_url().to_string()),
+    ));
   }
   with_env_state(env_id, |state| Ok(state.env.document_url.clone()))
 }

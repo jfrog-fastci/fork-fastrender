@@ -189,3 +189,50 @@ fn window_host_base_url_propagates_to_dynamic_import_resolution() -> Result<()> 
   assert_eq!(fetcher.request_urls(), vec!["https://example.com/a/b/mod.js".to_string()]);
   Ok(())
 }
+
+#[test]
+fn window_host_cleared_base_url_falls_back_to_document_url_for_fetch() -> Result<()> {
+  let dom = Dom2Document::new(QuirksMode::NoQuirks);
+  let fetcher = Arc::new(RecordingFetcher::default());
+  fetcher.insert(
+    "https://example.com/a/b/c",
+    FetchedResource::new(b"ok".to_vec(), Some("text/plain".to_string())),
+  );
+
+  let mut host = WindowHost::new_with_fetcher_and_options(
+    dom,
+    // Use a URL with a filename to ensure path resolution uses the document URL when `base_url` is
+    // cleared.
+    "https://example.com/a/b/page.html",
+    fetcher.clone() as Arc<dyn ResourceFetcher>,
+    js_opts_for_test(),
+  )?;
+
+  // Clear the base URL override: `document.baseURI` should still be the document URL, and relative
+  // fetch() URLs should resolve against it.
+  host.host_mut().set_document_base_url(None);
+
+  host.exec_script(
+    r#"
+    globalThis.__href = new URL('c', document.baseURI).href;
+    globalThis.__err = '';
+    globalThis.__text = '';
+    fetch('c')
+      .then(r => r.text())
+      .then(t => { globalThis.__text = t; })
+      .catch(e => { globalThis.__err = String(e && (e.stack || e.message) || e); });
+    "#,
+  )?;
+
+  host.run_until_idle(RunLimits {
+    max_tasks: 10,
+    max_microtasks: 100,
+    max_wall_time: Some(Duration::from_secs(5)),
+  })?;
+
+  assert_eq!(get_global_string(&mut host, "__err").unwrap_or_default(), "");
+  assert_eq!(get_global_string(&mut host, "__href").as_deref(), Some("https://example.com/a/b/c"));
+  assert_eq!(get_global_string(&mut host, "__text").as_deref(), Some("ok"));
+  assert_eq!(fetcher.request_urls(), vec!["https://example.com/a/b/c".to_string()]);
+  Ok(())
+}

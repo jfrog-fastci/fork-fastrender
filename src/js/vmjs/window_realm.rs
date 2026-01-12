@@ -511,10 +511,24 @@ impl WindowRealm {
   /// Update the document base URL used for resolving relative URLs in JS (e.g. `fetch("rel")` and
   /// `document.baseURI`).
   pub fn set_base_url(&mut self, base_url: Option<String>) {
-    if let Some(data) = self.runtime.vm.user_data_mut::<WindowRealmUserData>() {
-      data.base_url = base_url.clone();
-    }
-    self.module_loader.borrow_mut().set_document_url(base_url);
+    let effective_for_module_loader = if let Some(data) = self.runtime.vm.user_data_mut::<WindowRealmUserData>() {
+      data.base_url = base_url;
+      // When the embedder hasn't installed a base URL (or clears it), browsers still use the
+      // document URL as the base URL. Keep module resolution consistent with `document.baseURI` and
+      // `fetch("rel")` by falling back to `document_url` here as well.
+      Some(
+        data
+          .base_url
+          .clone()
+          .unwrap_or_else(|| data.document_url.clone()),
+      )
+    } else {
+      base_url
+    };
+    self
+      .module_loader
+      .borrow_mut()
+      .set_document_url(effective_for_module_loader);
   }
 
   pub fn module_loader_handle(&self) -> ModuleLoaderHandle {
@@ -2304,7 +2318,11 @@ fn request_location_navigation(
         "window realm missing user data",
       ));
     };
-    data.base_url.clone()
+    // Match `document.baseURI`: fall back to the document URL when no explicit base URL is set.
+    data
+      .base_url
+      .clone()
+      .unwrap_or_else(|| data.document_url.clone())
   };
 
   let url_value = match url_value {
@@ -2314,7 +2332,7 @@ fn request_location_navigation(
   scope.push_root(Value::String(url_value))?;
   let url_input = scope.heap().get_string(url_value)?.to_utf8_lossy();
 
-  let resolved = crate::js::url_resolve::resolve_url(&url_input, base_url.as_deref())
+  let resolved = crate::js::url_resolve::resolve_url(&url_input, Some(base_url.as_str()))
     .map_err(|err| throw_type_error(vm, scope, host, hooks, &err.to_string()))?;
 
   let parsed = Url::parse(&resolved)
@@ -9999,7 +10017,7 @@ fn is_html_script_element(dom: &dom2::Document, node_id: NodeId) -> bool {
 
 fn current_base_url_for_dynamic_scripts(vm: &Vm) -> Option<String> {
   vm.user_data::<WindowRealmUserData>()
-    .and_then(|data| data.base_url.clone())
+    .map(|data| data.base_url.clone().unwrap_or_else(|| data.document_url.clone()))
 }
 
 // --- Dynamic <script> insertion (non-parser-inserted) --------------------------
