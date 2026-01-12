@@ -290,14 +290,24 @@ fn tab_search_overlay_ui(
   actions: &mut Vec<ChromeAction>,
   favicon_for_tab: &mut impl FnMut(TabId) -> Option<egui::TextureId>,
 ) {
+  let overlay_id = egui::Id::new("tab_search_overlay");
+  let was_open_id = overlay_id.with("was_open");
   if !app.chrome.tab_search.open {
+    ctx.data_mut(|d| {
+      d.insert_temp(was_open_id, false);
+    });
     return;
   }
 
   let motion = UiMotion::from_env();
+  let was_open = ctx.data(|d| d.get_temp::<bool>(was_open_id)).unwrap_or(false);
+  ctx.data_mut(|d| {
+    d.insert_temp(was_open_id, true);
+  });
+  let opening = !was_open;
   let open_t = motion.animate_bool(
     ctx,
-    egui::Id::new("tab_search_overlay").with("popup_open"),
+    overlay_id.with("popup_open"),
     true,
     motion.durations.popup_open,
   );
@@ -384,6 +394,15 @@ fn tab_search_overlay_ui(
               egui::Color32::from_rgba_unmultiplied(base.r(), base.g(), base.b(), alpha)
             };
 
+            let scroll_selected_id = overlay_id.with("scroll_selected");
+            let mut scrolled_to_selected = ctx
+              .data(|d| d.get_temp::<Option<usize>>(scroll_selected_id))
+              .unwrap_or(None);
+            let should_scroll_selected = opening || down || up || query_changed;
+            if should_scroll_selected {
+              scrolled_to_selected = None;
+            }
+
             for (idx, m) in matches.iter().enumerate() {
               let tab = &app.tabs[m.tab_index];
               let is_selected = idx == app.chrome.tab_search.selected;
@@ -428,6 +447,15 @@ fn tab_search_overlay_ui(
                 );
               }
 
+              // Keep the selected row visible when navigating via keyboard (or on initial open).
+              //
+              // Avoid continuously forcing the scroll position: only scroll when the selection was
+              // recently updated by keyboard input or when the overlay is first opened.
+              if is_selected && should_scroll_selected && scrolled_to_selected != Some(idx) {
+                response.scroll_to_me(Some(egui::Align::Center));
+                scrolled_to_selected = Some(idx);
+              }
+
               ui.allocate_ui_at_rect(rect.shrink2(inner_margin), |ui| {
                 ui.horizontal(|ui| {
                   let mut drew_favicon = false;
@@ -461,13 +489,17 @@ fn tab_search_overlay_ui(
                 });
               });
 
-              if response.hovered() {
+              if response.hovered() && !(down || up) {
                 app.chrome.tab_search.selected = idx;
               }
               if response.clicked() {
                 clicked = Some(tab.id);
               }
             }
+
+            ctx.data_mut(|d| {
+              d.insert_temp(scroll_selected_id, scrolled_to_selected);
+            });
           });
 
         clicked
@@ -1923,6 +1955,13 @@ pub fn chrome_ui_with_bookmarks(
           let max_height = row_height * (MAX_VISIBLE_ROWS as f32);
 
           egui::ScrollArea::vertical().max_height(max_height).show(ui, |ui| {
+            let scroll_selected_id = id.with("scroll_selected");
+            let mut scrolled_to_selected = ctx
+              .data(|d| d.get_temp::<Option<usize>>(scroll_selected_id))
+              .unwrap_or(None);
+            if app.chrome.omnibox.selected.is_none() {
+              scrolled_to_selected = None;
+            }
             for (idx, suggestion) in app.chrome.omnibox.suggestions.iter().enumerate() {
               let is_selected = app.chrome.omnibox.selected == Some(idx);
               let (rect, response) = ui.allocate_exact_size(
@@ -1956,6 +1995,10 @@ pub fn chrome_ui_with_bookmarks(
                   0.0,
                   with_alpha(ui.visuals().selection.bg_fill, selected_t * open_opacity),
                 );
+              }
+              if is_selected && scrolled_to_selected != Some(idx) {
+                response.scroll_to_me(Some(egui::Align::Center));
+                scrolled_to_selected = Some(idx);
               }
 
               ui.allocate_ui_at_rect(rect, |ui| {
@@ -2018,6 +2061,9 @@ pub fn chrome_ui_with_bookmarks(
                 clicked_suggestion = Some(idx);
               }
             }
+            ctx.data_mut(|d| {
+              d.insert_temp(scroll_selected_id, scrolled_to_selected);
+            });
           });
         });
       });
