@@ -300,7 +300,7 @@ fn join_var_state(
  
 fn collect_alias_facts(
   cfg: &Cfg,
-  live_outs: &HashMap<(u32, usize), HashSet<u32>>,
+  live_outs: &liveness::LiveOutBits,
   call_summaries: Option<&[FnSummary]>,
 ) -> Vec<AliasFact> {
   let mut facts = Vec::new();
@@ -317,9 +317,8 @@ fn collect_alias_facts(
           let Some(Arg::Var(src)) = inst.args.get(0) else {
             continue;
           };
-          let live_out = live_outs.get(&(label, inst_idx));
-          let src_live_out = live_out.is_some_and(|s| s.contains(src));
-          let tgt_live_out = live_out.is_some_and(|s| s.contains(&tgt));
+          let src_live_out = live_outs.contains(label, inst_idx, *src);
+          let tgt_live_out = live_outs.contains(label, inst_idx, tgt);
           facts.push(AliasFact {
             label,
             inst_idx,
@@ -340,9 +339,8 @@ fn collect_alias_facts(
           let Some(Arg::Var(src)) = args.get(i) else {
             continue;
           };
-          let live_out = live_outs.get(&(label, inst_idx));
-          let src_live_out = live_out.is_some_and(|s| s.contains(src));
-          let tgt_live_out = live_out.is_some_and(|s| s.contains(&tgt));
+          let src_live_out = live_outs.contains(label, inst_idx, *src);
+          let tgt_live_out = live_outs.contains(label, inst_idx, tgt);
           facts.push(AliasFact {
             label,
             inst_idx,
@@ -384,7 +382,7 @@ fn infer_ownership_with_params_and_summaries(
   escapes: &EscapeResult,
   call_summaries: Option<&[FnSummary]>,
 ) -> OwnershipResults {
-  let live_outs = liveness::calculate_live_outs(cfg, &HashMap::default(), &HashSet::default());
+  let live_outs = liveness::calculate_live_outs_bits(cfg, &HashMap::default(), &HashSet::default());
   let (all_vars, defs, uses) = collect_vars(cfg);
   let inputs = collect_input_vars(cfg, &defs, &uses, params);
   let alloc_vars = collect_alloc_vars(cfg, call_summaries);
@@ -459,16 +457,14 @@ fn infer_ownership_with_params_and_summaries(
  
   // 2) Per-instruction argument use modes.
   let mut arg_use: HashMap<(u32, usize), Vec<UseMode>> = HashMap::default();
-  let empty_live_out = HashSet::<u32>::default();
- 
+
   for label in cfg_labels_sorted(cfg) {
     let Some(block) = cfg.bblocks.maybe_get(label) else {
       continue;
     };
     for (inst_idx, inst) in block.iter().enumerate() {
-      let live_out = live_outs.get(&(label, inst_idx)).unwrap_or(&empty_live_out);
       let mut modes = vec![UseMode::Borrow; inst.args.len()];
- 
+  
       for (arg_idx, arg) in inst.args.iter().enumerate() {
         let Arg::Var(v) = arg else {
           continue;
@@ -479,7 +475,7 @@ fn infer_ownership_with_params_and_summaries(
         if var_ownership.get(v) != Some(&OwnershipState::Owned) {
           continue;
         }
-        if live_out.contains(v) {
+        if live_outs.contains(label, inst_idx, *v) {
           continue;
         }
         modes[arg_idx] = UseMode::Consume;

@@ -978,3 +978,24 @@ mod tests {
     assert_eq!(json_a, json_b);
   }
 }
+
+/// Per-function metadata derived from lowering/optimization.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[non_exhaustive]
+pub struct FunctionMeta {
+  /// Whether this body originated from an `async` function.
+  #[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "is_false"))]
+  pub is_async: bool,
+  /// Whether this function can be treated as synchronous because there are no
+  /// remaining suspension points (e.g. all `await` operations were proven to be
+  /// non-suspending and elided).
+  #[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "is_false"))]
+  pub async_elidable: bool,
+}
+
+impl FunctionMeta {
+  pub fn is_default(&self) -> bool {
+    !self.is_async && !self.async_elidable
+  }
+}

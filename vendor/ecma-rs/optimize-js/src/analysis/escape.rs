@@ -499,6 +499,12 @@ pub fn analyze_cfg_escapes_with_params_and_summaries(
   call_summaries: Option<&[FnSummary]>,
 ) -> EscapeResult {
   let facts = collect_local_alloc_flow_facts(cfg, call_summaries);
+  // Fast path: if there are no local allocation sites (marker literals / known-fresh calls), the
+  // escape map is empty. Avoid the (potentially expensive) alias/external propagation fixpoint for
+  // large CFGs that only manipulate foreign values.
+  if facts.alloc_vars.is_empty() {
+    return BTreeMap::new();
+  }
   let callee_defs = summaries.map(|summaries| {
     build_callee_var_defs(cfg, summaries.constant_foreign_fns())
   });

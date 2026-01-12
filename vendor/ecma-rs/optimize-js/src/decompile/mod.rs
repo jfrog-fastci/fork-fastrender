@@ -359,7 +359,15 @@ impl<'a> FunctionDecompiler<'a> {
   }
 
   fn prepare_temp_decls(&mut self, temps: &[u32]) -> Option<Node<Stmt>> {
-    if !self.options.declare_registers {
+    // `let` declarations are block-scoped; if we declare SSA registers on first use inside nested
+    // blocks (e.g. inside an `if`/state-machine branch) we can accidentally introduce TDZ / scope
+    // issues when the same register is later referenced from other blocks.
+    //
+    // For top-level global/script output we default to `let ... = void 0` temporaries
+    // (`ResolvedTempDeclStyle::LetWithVoidInit`). In that mode we always predeclare registers at
+    // the top-level so downstream consumers (including `optimize-js` itself in roundtrip tests)
+    // see a stable, well-scoped binding for every register.
+    if !self.options.declare_registers && !matches!(self.resolved_style, ResolvedTempDeclStyle::LetWithVoidInit) {
       return None;
     }
     for temp in temps {
@@ -811,6 +819,7 @@ mod tests {
     bblocks.add(0, Vec::new());
     ProgramFunction {
       debug: None,
+      meta: Default::default(),
       body: Cfg {
         graph,
         bblocks,
@@ -904,6 +913,7 @@ mod tests {
     bblocks.add(0, vec![Inst::ret(Some(Arg::Const(Const::Undefined)))]);
     let func = ProgramFunction {
       debug: None,
+      meta: Default::default(),
       body: Cfg {
         graph,
         bblocks,

@@ -119,6 +119,7 @@ fn analyze_program_function_uses_analyzed_cfg() {
   // we can assert the wrapper uses `ProgramFunction::analyzed_cfg()`.
   let func = ProgramFunction {
     debug: None,
+    meta: Default::default(),
     body: cfg_with_string("hello"),
     params: Vec::new(),
     ssa_body: Some(cfg_with_string("π")),

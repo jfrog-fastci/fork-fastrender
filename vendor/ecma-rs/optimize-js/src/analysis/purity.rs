@@ -333,6 +333,7 @@ mod tests {
     bblocks.add(0, Vec::new());
     ProgramFunction {
       debug: None,
+      meta: Default::default(),
       body: Cfg {
         graph,
         bblocks,
@@ -359,6 +360,7 @@ mod tests {
   fn func(cfg: Cfg) -> ProgramFunction {
     ProgramFunction {
       debug: None,
+      meta: Default::default(),
       body: cfg,
       params: Vec::new(),
       ssa_body: None,

@@ -1046,6 +1046,7 @@ mod tests {
       functions: Vec::new(),
       top_level: ProgramFunction {
         debug: None,
+        meta: Default::default(),
         body: cfg,
         params: Vec::new(),
         ssa_body: None,
@@ -1091,6 +1092,7 @@ mod tests {
       functions: Vec::new(),
       top_level: ProgramFunction {
         debug: None,
+        meta: Default::default(),
         body: cfg,
         params: Vec::new(),
         ssa_body: None,
@@ -1139,6 +1141,7 @@ mod tests {
       functions: Vec::new(),
       top_level: ProgramFunction {
         debug: None,
+        meta: Default::default(),
         body: cfg,
         params: Vec::new(),
         ssa_body: None,
@@ -1184,6 +1187,7 @@ mod tests {
       functions: Vec::new(),
       top_level: ProgramFunction {
         debug: None,
+        meta: Default::default(),
         body: cfg,
         params: Vec::new(),
         ssa_body: None,
@@ -1233,6 +1237,7 @@ mod tests {
       functions: Vec::new(),
       top_level: ProgramFunction {
         debug: None,
+        meta: Default::default(),
         body: cfg,
         params: Vec::new(),
         ssa_body: None,

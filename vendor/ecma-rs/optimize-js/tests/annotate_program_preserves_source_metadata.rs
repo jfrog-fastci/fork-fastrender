@@ -60,6 +60,7 @@ fn annotate_program_preserves_lowering_metadata_fields() {
     functions: Vec::new(),
     top_level: ProgramFunction {
       debug: None,
+      meta: Default::default(),
       body: cfg.clone(),
       params: Vec::new(),
       // `annotate_program` resets metadata on both the SSA and SSA-deconstructed CFGs. Most real

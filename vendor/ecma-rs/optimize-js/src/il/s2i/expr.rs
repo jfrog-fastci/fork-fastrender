@@ -2092,10 +2092,12 @@ impl<'p> HirSourceToInst<'p> {
         known_resolved,
       } => {
         let arg = self.compile_expr(*expr)?;
+        let known_resolved =
+          *known_resolved || (self.in_function && matches!(&arg, Arg::Const(_)));
         #[cfg(feature = "native-async-ops")]
         {
           let tmp = self.c_temp.bump();
-          self.push_value_inst(expr_id, Inst::await_(tmp, arg, *known_resolved));
+          self.push_value_inst(expr_id, Inst::await_(tmp, arg, known_resolved));
           Ok(Arg::Var(tmp))
         }
         #[cfg(not(feature = "native-async-ops"))]

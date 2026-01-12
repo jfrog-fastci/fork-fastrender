@@ -1,4 +1,4 @@
-use crate::analysis::liveness::calculate_live_outs;
+use crate::analysis::liveness::calculate_live_outs_bits;
 use crate::analysis::ownership::OwnershipResult;
 use crate::cfg::cfg::Cfg;
 use crate::il::inst::{Arg, ArgUseMode, InPlaceHint, InstTyp, OwnershipState};
@@ -24,13 +24,12 @@ fn ownership_of_var(ownership: &OwnershipResult, var: u32) -> OwnershipState {
     .unwrap_or(OwnershipState::Unknown)
 }
  
-fn should_consume_var(var: u32, live_out: &HashSet<u32>, ownership: &OwnershipResult) -> bool {
-  ownership_of_var(ownership, var) == OwnershipState::Owned && !live_out.contains(&var)
+fn should_consume_var(var: u32, live_out: bool, ownership: &OwnershipResult) -> bool {
+  ownership_of_var(ownership, var) == OwnershipState::Owned && !live_out
 }
- 
+  
 pub fn annotate_cfg_consumption(cfg: &mut Cfg, ownership: &OwnershipResult) {
-  let live_outs = calculate_live_outs(cfg, &HashMap::default(), &HashSet::default());
-  let empty_live_out: HashSet<u32> = HashSet::default();
+  let live_outs = calculate_live_outs_bits(cfg, &HashMap::default(), &HashSet::default());
 
   let mut labels: Vec<u32> = cfg.bblocks.all().map(|(label, _)| label).collect();
   labels.sort_unstable();
@@ -38,8 +37,6 @@ pub fn annotate_cfg_consumption(cfg: &mut Cfg, ownership: &OwnershipResult) {
   for label in labels {
     let insts_len = cfg.bblocks.get(label).len();
     for inst_idx in 0..insts_len {
-      let live_out = live_outs.get(&(label, inst_idx)).unwrap_or(&empty_live_out);
-  
       let inst = &mut cfg.bblocks.get_mut(label)[inst_idx];
       inst.meta.in_place_hint = None;
 
@@ -57,7 +54,7 @@ pub fn annotate_cfg_consumption(cfg: &mut Cfg, ownership: &OwnershipResult) {
         let Arg::Var(var) = arg else {
           continue;
         };
-        if should_consume_var(*var, &live_out, ownership) {
+        if should_consume_var(*var, live_outs.contains(label, inst_idx, *var), ownership) {
           let modes_vec = modes.get_or_insert_with(|| vec![ArgUseMode::Borrow; inst.args.len()]);
           modes_vec[idx] = ArgUseMode::Consume;
         }

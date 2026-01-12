@@ -58,6 +58,7 @@ fn manual_function_with_unreachable_block(inst: Inst) -> ProgramFunction {
 
   ProgramFunction {
     debug: None,
+    meta: Default::default(),
     body: Cfg {
       graph: CfgGraph::from_graph(graph),
       bblocks,

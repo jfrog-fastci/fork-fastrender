@@ -13,6 +13,7 @@ fn decompile_flat_il_supports_nonzero_entry_label() {
 
   let func = ProgramFunction {
     debug: None,
+    meta: Default::default(),
     body: Cfg {
       graph,
       bblocks,

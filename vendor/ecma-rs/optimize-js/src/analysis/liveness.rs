@@ -15,6 +15,14 @@ impl BitSet {
     }
   }
 
+  fn contains(&self, idx: usize) -> bool {
+    let (word, bit) = Self::word_bit(idx);
+    self
+      .bits
+      .get(word)
+      .is_some_and(|word| (word & (1u64 << bit)) != 0)
+  }
+
   fn insert(&mut self, idx: usize) {
     let (word, bit) = Self::word_bit(idx);
     self.bits[word] |= 1u64 << bit;
@@ -225,6 +233,29 @@ pub struct LiveInOut {
   pub live_outs: HashMap<(u32, usize), HashSet<u32>>,
 }
 
+/// Live-out information indexed by (label, inst_idx), represented as a bitset.
+///
+/// This exists to allow analyses (ownership/consumption) to do fast membership tests
+/// without materializing full `HashSet<u32>` snapshots for every instruction in large
+/// CFGs.
+#[derive(Clone)]
+pub(crate) struct LiveOutBits {
+  var_to_bit: HashMap<u32, usize>,
+  live_outs: HashMap<(u32, usize), BitSet>,
+}
+
+impl LiveOutBits {
+  pub fn contains(&self, label: u32, inst_idx: usize, var: u32) -> bool {
+    let Some(bit) = self.var_to_bit.get(&var) else {
+      return false;
+    };
+    self
+      .live_outs
+      .get(&(label, inst_idx))
+      .is_some_and(|set| set.contains(*bit))
+  }
+}
+
 pub fn calculate_live_in_outs(
   cfg: &Cfg,
   inlines: &HashMap<(u32, usize), (u32, usize)>,
@@ -254,6 +285,34 @@ pub fn calculate_live_in_outs(
   }
 
   LiveInOut { live_ins, live_outs }
+}
+
+pub(crate) fn calculate_live_outs_bits(
+  cfg: &Cfg,
+  inlines: &HashMap<(u32, usize), (u32, usize)>,
+  inlined_vars: &HashSet<u32>,
+) -> LiveOutBits {
+  let mut analysis = LivenessAnalysis::new(cfg, inlines, inlined_vars);
+  let result = analysis.analyze(cfg, AnalysisBoundary::VirtualExit);
+
+  let mut live_outs = HashMap::default();
+  for label in cfg.graph.labels_sorted() {
+    let mut state = result
+      .blocks
+      .get(&label)
+      .map(|b| b.exit.clone())
+      .unwrap_or_else(|| analysis.bottom(cfg));
+    for (inst_idx, inst) in cfg.bblocks.get(label).iter().enumerate().rev() {
+      if analysis.inlined_insts.contains(&(label, inst_idx)) {
+        continue;
+      }
+      live_outs.insert((label, inst_idx), state.clone());
+      analysis.apply_to_instruction(label, inst_idx, inst, &mut state);
+    }
+  }
+
+  let var_to_bit = std::mem::take(&mut analysis.var_to_bit);
+  LiveOutBits { var_to_bit, live_outs }
 }
 
 pub fn calculate_live_outs(

@@ -18,6 +18,7 @@ fn program_throw_one() -> Program {
     functions: Vec::new(),
     top_level: ProgramFunction {
       debug: None,
+      meta: Default::default(),
       body: cfg,
       params: Vec::new(),
       ssa_body: None,

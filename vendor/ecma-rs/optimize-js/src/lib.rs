@@ -76,6 +76,7 @@ use hir_js::LowerResult;
 use hir_js::NameId;
 use hir_js::NameInterner;
 use hir_js::PatId;
+use opt::optpass_async_elide::optpass_async_elide;
 use opt::optpass_cfg_prune::optpass_cfg_prune;
 use opt::optpass_dvn::optpass_dvn;
 use opt::optpass_impossible_branches::optpass_impossible_branches;
@@ -277,6 +278,11 @@ impl OptimizationStats {
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct ProgramFunction {
   pub debug: Option<OptimizerDebug>,
+  #[cfg_attr(
+    feature = "serde",
+    serde(default, skip_serializing_if = "crate::il::meta::FunctionMeta::is_default")
+  )]
+  pub meta: crate::il::meta::FunctionMeta,
   pub body: Cfg,
   #[cfg_attr(
     feature = "serde",
@@ -688,6 +694,8 @@ pub(crate) fn build_program_function_with_options(
       let dom = dom_cache.ensure(&cfg, &mut stats);
       let mut iteration_result = PassResult::default();
 
+      iteration_result.merge(optpass_async_elide(&mut cfg));
+      dbg_checkpoint(&format!("opt{}_async_elide", i), &cfg);
       iteration_result.merge(optpass_dvn(&mut cfg, dom));
       dbg_checkpoint(&format!("opt{}_dvn", i), &cfg);
       if options.enable_licm {
@@ -768,6 +776,20 @@ pub(crate) fn build_program_function_with_options(
   //
   // Escape/ownership/consumption metadata is annotated at the end of compilation using
   // whole-program interprocedural summaries so direct `Arg::Fn` calls can be handled precisely.
+  let async_elidable = {
+    #[cfg(feature = "native-async-ops")]
+    {
+      use crate::il::inst::InstTyp;
+      !cfg
+        .bblocks
+        .all()
+        .any(|(_, block)| block.iter().any(|inst| inst.t == InstTyp::Await))
+    }
+    #[cfg(not(feature = "native-async-ops"))]
+    {
+      false
+    }
+  };
   let ssa_cfg = cfg.clone();
 
   if !options.keep_ssa {
@@ -780,6 +802,10 @@ pub(crate) fn build_program_function_with_options(
 
   ProgramFunction {
     debug: dbg,
+    meta: crate::il::meta::FunctionMeta {
+      async_elidable,
+      ..Default::default()
+    },
     body: cfg,
     params,
     ssa_body: Some(ssa_cfg),
@@ -922,7 +948,6 @@ fn annotate_program_ssa_metadata(program: &mut Program) {
   // Recompute summaries and annotate final metadata after scalar replacement converges.
   let call_summaries = analysis::call_summary::summarize_program(program);
   let summaries = analysis::interproc_escape::compute_program_escape_summaries(program);
-
   if annotate_top_level {
     if let Some(cfg) = program.top_level.ssa_body.as_mut() {
       annotate_ssa_cfg_escape_and_ownership(
@@ -947,12 +972,23 @@ pub(crate) fn compile_hir_body(
   body: BodyId,
 ) -> OptimizeResult<ProgramFunction> {
   let (insts, c_label, c_temp, params) = crate::il::s2i::stmt::translate_body(program, body)?;
+  let is_async = program
+    .body(body)
+    .function
+    .as_ref()
+    .map(|f| f.async_)
+    .unwrap_or(false);
   let options = program.cfg_options;
-  Ok(if options == CompileCfgOptions::default() {
+  let mut func = if options == CompileCfgOptions::default() {
     build_program_function(program, insts, c_label, c_temp, params)
   } else {
     build_program_function_with_options(program, insts, c_label, c_temp, params, options)
-  })
+  };
+  func.meta.is_async = is_async;
+  // Only async functions can be "async-elidable"; keep the flag cleared for all
+  // other bodies (top-level, sync functions, class bodies, etc).
+  func.meta.async_elidable &= is_async;
+  Ok(func)
 }
 
 pub type FnId = usize;

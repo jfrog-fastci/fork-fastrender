@@ -22,6 +22,7 @@ fn cfg_single_block(insts: Vec<Inst>) -> Cfg {
 fn func(cfg: Cfg, params: Vec<u32>) -> ProgramFunction {
   ProgramFunction {
     debug: None,
+    meta: Default::default(),
     body: cfg,
     params,
     ssa_body: None,
