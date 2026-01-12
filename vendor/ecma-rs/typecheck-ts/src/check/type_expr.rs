@@ -202,6 +202,18 @@ impl TypeLowerer {
       .expect("type parameter scope stack underflow");
   }
 
+  pub(crate) fn declare_type_param(&mut self, name: String, id: TypeParamId) {
+    self
+      .type_param_scopes
+      .last_mut()
+      .expect("type parameter scope stack should not be empty")
+      .insert(name, id);
+    let next = id.0.saturating_add(1);
+    if next > self.next_type_param {
+      self.next_type_param = next;
+    }
+  }
+
   fn lookup_type_param(&self, name: &str) -> Option<TypeParamId> {
     for scope in self.type_param_scopes.iter().rev() {
       if let Some(id) = scope.get(name) {

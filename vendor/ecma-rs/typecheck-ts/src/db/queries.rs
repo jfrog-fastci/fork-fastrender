@@ -1942,43 +1942,87 @@ pub mod body_check {
           return ctx_super;
         }
 
-        let Some(class_body_id) = class_def.body else {
-          return ctx_super;
-        };
-        let Some(class_body) = lowered.body(class_body_id) else {
-          return ctx_super;
-        };
-        let Some(extends_expr) = class_body.class.as_ref().and_then(|c| c.extends) else {
-          return ctx_super;
-        };
-        let base_name = match class_body.exprs.get(extends_expr.0 as usize).map(|e| &e.kind) {
-          Some(hir_js::ExprKind::Ident(name_id)) => lowered.names.resolve(*name_id),
-          _ => None,
-        };
-        let Some(base_name) = base_name else {
-          return ctx_super;
-        };
-        let base_name = base_name.to_string();
-
-        let base_binding = ctx
-          .file_bindings
-          .get(&meta.file)
-          .and_then(|bindings| bindings.get(&base_name))
-          .or_else(|| ctx.global_bindings.get(&base_name));
-        let Some(base_binding) = base_binding else {
-          return ctx_super;
-        };
-        let base_value_ty = base_binding
-          .def
-          .map(map_def_ty)
-          .filter(|ty| *ty != prim.unknown)
-          .or(base_binding.type_id)
+        // Prefer deriving the base constructor type from the containing class's
+        // value type: `lower_class_instance_and_value` models `class Derived
+        // extends Base<number> {}` as an intersection where one constituent is
+        // `typeof Base<number>`. This keeps the type arguments from the `extends`
+        // clause (and any class type parameters) intact for `super()` call
+        // checking.
+        let mut base_value_ty: Option<TypeId> = None;
+        let class_value_def = ctx.value_defs.get(&class_def.id).copied().unwrap_or(class_def.id);
+        let raw_class_value_ty = ctx
+          .interned_def_types
+          .get(&class_value_def)
+          .copied()
           .unwrap_or(prim.unknown);
+        let class_value_ty = if ctx.store.contains_type_id(raw_class_value_ty) {
+          ctx.store.canon(raw_class_value_ty)
+        } else {
+          prim.unknown
+        };
+        if class_value_ty != prim.unknown {
+          if let types_ts_interned::TypeKind::Intersection(members) = ctx.store.type_kind(class_value_ty)
+          {
+            base_value_ty = members.iter().copied().find(|member| {
+              matches!(ctx.store.type_kind(*member), types_ts_interned::TypeKind::Ref { .. })
+            });
+          }
+        }
 
-        if base_value_ty != prim.unknown {
+        // Fallback: derive the base constructor type from the syntactic `extends`
+        // expression when we cannot recover it from the declared class value type
+        // (e.g. missing declared types).
+        if base_value_ty.is_none() {
+          let Some(class_body_id) = class_def.body else {
+            return ctx_super;
+          };
+          let Some(class_body) = lowered.body(class_body_id) else {
+            return ctx_super;
+          };
+          let Some(extends_expr) = class_body.class.as_ref().and_then(|c| c.extends) else {
+            return ctx_super;
+          };
+          let base_name = match class_body.exprs.get(extends_expr.0 as usize).map(|e| &e.kind) {
+            Some(hir_js::ExprKind::Ident(name_id)) => lowered.names.resolve(*name_id),
+            Some(hir_js::ExprKind::Instantiation { expr, .. }) => {
+              match class_body.exprs.get(expr.0 as usize).map(|e| &e.kind) {
+                Some(hir_js::ExprKind::Ident(name_id)) => lowered.names.resolve(*name_id),
+                _ => None,
+              }
+            }
+            _ => None,
+          };
+          let Some(base_name) = base_name else {
+            return ctx_super;
+          };
+          let base_name = base_name.to_string();
+
+          let base_binding = ctx
+            .file_bindings
+            .get(&meta.file)
+            .and_then(|bindings| bindings.get(&base_name))
+            .or_else(|| ctx.global_bindings.get(&base_name));
+          let Some(base_binding) = base_binding else {
+            return ctx_super;
+          };
+          let base_ty = base_binding
+            .def
+            .map(map_def_ty)
+            .filter(|ty| *ty != prim.unknown)
+            .or(base_binding.type_id)
+            .unwrap_or(prim.unknown);
+          if base_ty != prim.unknown {
+            base_value_ty = Some(base_ty);
+          }
+        }
+
+        if let Some(base_value_ty) = base_value_ty.filter(|ty| *ty != prim.unknown) {
           ctx_super.super_value_ty = Some(base_value_ty);
-          let ctor_sigs =
-            crate::check::overload::construct_signatures(ctx.store.as_ref(), base_value_ty);
+          let ctor_sigs = crate::check::overload::construct_signatures_with_expander(
+            ctx.store.as_ref(),
+            base_value_ty,
+            Some(&expander),
+          );
           if !ctor_sigs.is_empty() {
             let mut rets: Vec<_> = ctor_sigs
               .iter()

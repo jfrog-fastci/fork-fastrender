@@ -164,6 +164,7 @@ struct VarInfo {
 struct ClassInfo {
   name: Option<String>,
   extends: Option<String>,
+  type_params: Vec<String>,
   instance_fields: Vec<ClassFieldDecl>,
   static_fields: Vec<ClassFieldDecl>,
   instance_param_props: Vec<String>,
@@ -382,6 +383,12 @@ impl AstIndex {
           .name
           .as_ref()
           .map(|name| name.stx.name.clone());
+        let type_params: Vec<String> = class_decl
+          .stx
+          .type_parameters
+          .as_ref()
+          .map(|params| params.iter().map(|param| param.stx.name.clone()).collect())
+          .unwrap_or_default();
         let extends_name =
           class_decl
             .stx
@@ -393,9 +400,9 @@ impl AstIndex {
                 AstExpr::Id(id) => Some(id.stx.name.clone()),
                 _ => None,
               },
-              _ => None,
-            });
-        let class_index = self.register_class(class_name, extends_name);
+               _ => None,
+             });
+        let class_index = self.register_class(class_name, extends_name, type_params);
         for decorator in class_decl.stx.decorators.iter() {
           self.index_expr(&decorator.stx.expression, file, cancelled);
         }
@@ -673,6 +680,12 @@ impl AstIndex {
           .name
           .as_ref()
           .map(|name| name.stx.name.clone());
+        let type_params: Vec<String> = class_expr
+          .stx
+          .type_parameters
+          .as_ref()
+          .map(|params| params.iter().map(|param| param.stx.name.clone()).collect())
+          .unwrap_or_default();
         let extends_name =
           class_expr
             .stx
@@ -684,9 +697,9 @@ impl AstIndex {
                 AstExpr::Id(id) => Some(id.stx.name.clone()),
                 _ => None,
               },
-              _ => None,
-            });
-        let class_index = self.register_class(class_name, extends_name);
+               _ => None,
+             });
+        let class_index = self.register_class(class_name, extends_name, type_params);
         for decorator in class_expr.stx.decorators.iter() {
           self.index_expr(&decorator.stx.expression, file, cancelled);
         }
@@ -731,7 +744,7 @@ impl AstIndex {
     }
   }
 
-  fn register_class(&mut self, name: Option<String>, extends: Option<String>) -> usize {
+  fn register_class(&mut self, name: Option<String>, extends: Option<String>, type_params: Vec<String>) -> usize {
     let index = self.classes.len();
     if let Some(name) = name.as_ref() {
       self.classes_by_name.entry(name.clone()).or_insert(index);
@@ -739,6 +752,7 @@ impl AstIndex {
     self.classes.push(ClassInfo {
       name,
       extends,
+      type_params,
       instance_fields: Vec::new(),
       static_fields: Vec::new(),
       instance_param_props: Vec::new(),
@@ -1460,7 +1474,11 @@ pub fn check_body_with_expander(
       checker.check_stmt_list(&ast.stx.body);
     }
     BodyKind::Function => {
+      let pushed_class_type_params = checker.push_class_type_param_scope(body_range);
       let found = checker.check_enclosing_function(body_range);
+      if pushed_class_type_params {
+        checker.pop_class_type_param_scope();
+      }
       if !found {
         checker.diagnostics.push(codes::MISSING_BODY.error(
           "missing function body for checker",
@@ -1469,7 +1487,11 @@ pub fn check_body_with_expander(
       }
     }
     BodyKind::Initializer => {
+      let pushed_class_type_params = checker.push_class_type_param_scope(body_range);
       let found = checker.check_matching_initializer(body_range);
+      if pushed_class_type_params {
+        checker.pop_class_type_param_scope();
+      }
       if !found {
         checker.diagnostics.push(codes::MISSING_BODY.error(
           "missing initializer body for checker",
@@ -1624,6 +1646,89 @@ impl<'a> Checker<'a> {
     None
   }
 
+  fn enclosing_class_context_for_type_params(&self, span: TextRange) -> Option<(TextRange, usize, bool)> {
+    let mut best: Option<(u32, TextRange, usize, bool)> = None;
+
+    if let Some(block) = self.index.enclosing_class_static_block(span) {
+      let len = block.span.end.saturating_sub(block.span.start);
+      best = Some((len, block.span, block.class_index, true));
+    }
+
+    if let Some((init_span, info)) = self.index.enclosing_class_field_initializer(span) {
+      let len = init_span.end.saturating_sub(init_span.start);
+      let replace = match best {
+        Some((best_len, _, _, _)) => len < best_len,
+        None => true,
+      };
+      if replace {
+        best = Some((len, init_span, info.class_index, info.is_static));
+      }
+    }
+
+    for func in self.index.functions.iter().copied() {
+      let Some(ctx) = func.class_member else {
+        continue;
+      };
+      let contains = contains_range(func.func_span, span) || contains_range(span, func.func_span);
+      if !contains {
+        continue;
+      }
+      let len = func.func_span.end.saturating_sub(func.func_span.start);
+      let replace = match best {
+        Some((best_len, _, _, _)) => len < best_len,
+        None => true,
+      };
+      if replace {
+        best = Some((len, func.func_span, ctx.class_index, ctx.is_static));
+      }
+    }
+
+    best.map(|(_, span, class_index, is_static)| (span, class_index, is_static))
+  }
+
+  fn push_class_type_param_scope(&mut self, span: TextRange) -> bool {
+    let Some((_ctx_span, class_index, is_static)) = self.enclosing_class_context_for_type_params(span)
+    else {
+      return false;
+    };
+    if is_static {
+      return false;
+    }
+    let Some(class_def) = self.current_class_def else {
+      return false;
+    };
+    let Some(type_param_decls) = self
+      .def_type_param_decls
+      .and_then(|decls| decls.get(&class_def))
+      .cloned()
+    else {
+      return false;
+    };
+    if type_param_decls.is_empty() {
+      return false;
+    }
+    let Some(class_info) = self.index.classes.get(class_index) else {
+      return false;
+    };
+    if class_info.type_params.is_empty() {
+      return false;
+    }
+
+    self.lowerer.push_type_param_scope();
+    for (name, decl) in class_info.type_params.iter().zip(type_param_decls.iter()) {
+      self.lowerer.declare_type_param(name.clone(), decl.id);
+    }
+    self
+      .type_param_scopes
+      .push(type_param_decls.iter().cloned().collect());
+    true
+  }
+
+  fn pop_class_type_param_scope(&mut self) {
+    self.type_param_scopes.pop();
+    self.lowerer.pop_type_param_scope();
+  }
+
   fn expand_callable_type(&self, ty: TypeId) -> TypeId {
     let mut current = self.expand_ref(ty);
     let mut seen = HashSet::new();
@@ -1720,6 +1825,78 @@ impl<'a> Checker<'a> {
       reported_arity: &mut bool,
       reported_constraint: &mut bool,
     ) -> TypeId {
+      let ty = checker.store.canon(ty);
+      if let TypeKind::Ref { def, .. } = checker.store.type_kind(ty) {
+        if let Some(decls_map) = checker.def_type_param_decls {
+          let decls = decls_map
+            .get(&def)
+            .cloned()
+            .or_else(|| {
+              checker
+                .value_defs
+                .iter()
+                .find_map(|(type_def, value_def)| {
+                  (*value_def == def).then(|| decls_map.get(type_def).cloned()).flatten()
+                })
+            });
+          if let Some(decls) = decls {
+            let declared = decls.len();
+            if type_args.len() > declared && !*reported_arity {
+              checker
+                .diagnostics
+                .push(codes::WRONG_TYPE_ARGUMENT_COUNT.error(
+                  format!(
+                    "Expected {declared} type arguments, but got {}.",
+                    type_args.len()
+                  ),
+                  span,
+                ));
+              *reported_arity = true;
+            }
+            if declared == 0 {
+              return checker.store.primitive_ids().unknown;
+            }
+
+            let mut prefix_subst: HashMap<TypeParamId, TypeId> = HashMap::new();
+            for (idx, decl) in decls.iter().enumerate() {
+              let Some(arg) = type_args.get(idx).copied() else {
+                break;
+              };
+              if let Some(constraint) = decl.constraint {
+                let instantiated_constraint = if prefix_subst.is_empty() {
+                  constraint
+                } else {
+                  let mut substituter =
+                    Substituter::new(Arc::clone(&checker.store), prefix_subst.clone());
+                  substituter.substitute_type(constraint)
+                };
+                if !checker.relate.is_assignable(arg, instantiated_constraint) && !*reported_constraint
+                {
+                  checker
+                    .diagnostics
+                    .push(codes::TYPE_ARGUMENT_CONSTRAINT_VIOLATION.error(
+                      format!(
+                        "Type '{}' does not satisfy the constraint '{}'.",
+                        TypeDisplay::new(checker.store.as_ref(), arg),
+                        TypeDisplay::new(checker.store.as_ref(), instantiated_constraint)
+                      ),
+                      span,
+                    ));
+                  *reported_constraint = true;
+                }
+              }
+              prefix_subst.insert(decl.id, arg);
+            }
+
+            let stored_args: Vec<_> = type_args.iter().take(declared).copied().collect();
+            return checker.store.intern_type(TypeKind::Ref {
+              def,
+              args: stored_args,
+            });
+          }
+        }
+      }
+
       let ty = checker.expand_callable_type(ty);
       match checker.store.type_kind(ty) {
         TypeKind::Any | TypeKind::Unknown | TypeKind::Never => ty,
@@ -3589,10 +3766,11 @@ impl<'a> Checker<'a> {
                 args: Vec::new(),
               })),
               None => {
-                self.diagnostics.push(codes::UNRESOLVED_MODULE.error(
-                  format!("unresolved module specifier \"{specifier}\""),
-                  Span::new(self.file, loc_to_range(self.file, import.stx.module.loc)),
-                ));
+                let span = Span::new(self.file, loc_to_range(self.file, import.stx.module.loc));
+                let mut diag = codes::UNRESOLVED_MODULE
+                  .error(format!("unresolved module specifier \"{specifier}\""), span);
+                diag.push_note(format!("module specifier: \"{specifier}\""));
+                self.diagnostics.push(diag);
                 prim.unknown
               }
             }
@@ -4550,11 +4728,34 @@ impl<'a> Checker<'a> {
     //
     // Prefer the span-derived constructor type, but fall back to the per-body
     // context when the AST index cannot determine it (e.g. missing enclosing
-    // class/extends info).
-    let super_ctor_ty = if self.store.canon(self.current_super_ctor_ty) != prim.unknown {
-      self.current_super_ctor_ty
+    // class/extends info). When both are available, prefer the per-body context
+    // if it provides a more-specific instantiation of the same base constructor
+    // (e.g. `class C extends Base<number> { constructor() { super(1); } }`).
+    let ctx_super_ctor_ty = self.this_super_context.super_value_ty.unwrap_or(prim.unknown);
+    let ctx_super_ctor_canon = self.store.canon(ctx_super_ctor_ty);
+    let current_super_ctor_canon = self.store.canon(self.current_super_ctor_ty);
+    let prefer_ctx = match (
+      self.store.type_kind(current_super_ctor_canon),
+      self.store.type_kind(ctx_super_ctor_canon),
+    ) {
+      (
+        TypeKind::Ref {
+          def: current_def,
+          args: current_args,
+        },
+        TypeKind::Ref {
+          def: ctx_def,
+          args: ctx_args,
+        },
+      ) => current_def == ctx_def && ctx_args.len() > current_args.len(),
+      _ => false,
+    };
+    let super_ctor_ty = if ctx_super_ctor_canon != prim.unknown
+      && (current_super_ctor_canon == prim.unknown || prefer_ctx)
+    {
+      ctx_super_ctor_ty
     } else {
-      self.this_super_context.super_value_ty.unwrap_or(prim.unknown)
+      self.current_super_ctor_ty
     };
     self.record_expr_type(call.stx.callee.loc, super_ctor_ty);
     let callee_ty = self.expand_callable_type(super_ctor_ty);

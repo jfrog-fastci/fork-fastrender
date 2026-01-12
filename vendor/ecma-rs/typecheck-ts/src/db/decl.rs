@@ -141,7 +141,11 @@ pub fn lower_decl_types(
           })
           .or_insert(instance);
         if !params.is_empty() {
-          decls.type_params.insert(target_def, params);
+          // Record class type parameters for both the type-side and value-side
+          // defs. The value-side table is required to expand `typeof C<T>` refs
+          // (including `extends C<T>`), so `super()` call checking can see the
+          // instantiated constructor signatures.
+          decls.type_params.insert(target_def, params.clone());
         }
         if let Some(value_defs) = value_defs {
           if let Some(value_def) = value_defs
@@ -156,6 +160,9 @@ pub fn lower_decl_types(
                 *existing = merge_interned_decl_types(&store, *existing, value);
               })
               .or_insert(value);
+            if !params.is_empty() {
+              decls.type_params.insert(value_def, params);
+            }
           }
         }
       }
