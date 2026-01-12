@@ -5144,12 +5144,14 @@ impl<'a> Scope<'a> {
 
   /// Allocates a Proxy exotic object on the heap.
   ///
-  /// If either `target` or `handler` is `None`, the Proxy is considered **revoked**.
+  /// If both `target` and `handler` are `None`, the Proxy is considered **revoked**.
   pub fn alloc_proxy(
     &mut self,
-    target: Option<GcObject>,
-    handler: Option<GcObject>,
+    target: impl Into<Option<GcObject>>,
+    handler: impl Into<Option<GcObject>>,
   ) -> Result<GcObject, VmError> {
+    let target = target.into();
+    let handler = handler.into();
     if target.is_some() != handler.is_some() {
       return Err(VmError::InvariantViolation(
         "Proxy allocation requires both target and handler (or neither for a revoked proxy)",

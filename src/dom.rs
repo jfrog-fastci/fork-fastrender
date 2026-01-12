@@ -10997,6 +10997,512 @@ mod tests {
     assert_ne!(assigned.slot_node_id, named_id);
   }
 
+  mod composed_dom_snapshot_tests {
+    use super::*;
+
+    fn find_by_id<'a>(root: &'a DomNode, id: &str) -> Option<&'a DomNode> {
+      let mut stack = vec![root];
+      while let Some(node) = stack.pop() {
+        if node.get_attribute_ref("id") == Some(id) {
+          return Some(node);
+        }
+        for child in node.children.iter().rev() {
+          stack.push(child);
+        }
+      }
+      None
+    }
+
+    fn find_by_tag<'a>(root: &'a DomNode, tag: &str) -> Option<&'a DomNode> {
+      let mut stack = vec![root];
+      while let Some(node) = stack.pop() {
+        if node
+          .tag_name()
+          .is_some_and(|name| name.eq_ignore_ascii_case(tag))
+        {
+          return Some(node);
+        }
+        for child in node.children.iter().rev() {
+          stack.push(child);
+        }
+      }
+      None
+    }
+
+    #[test]
+    fn composed_snapshot_places_slotted_nodes_under_slot() {
+      let html = r#"<div id="host"><template shadowroot="open"><slot></slot></template><span id="light">hi</span></div>"#;
+      let dom = parse_html(html).expect("parse html");
+      let snapshot = composed_dom_snapshot(&dom).expect("compose snapshot");
+
+      let host = find_by_id(&snapshot, "host").expect("host element");
+      assert_eq!(
+        host.children.len(),
+        1,
+        "host should expose shadow root children"
+      );
+      assert!(
+        matches!(host.children[0].node_type, DomNodeType::Slot { .. }),
+        "host child should be the shadow slot"
+      );
+
+      let slot = &host.children[0];
+      assert_eq!(slot.children.len(), 1, "slot should contain the assigned node");
+      assert_eq!(
+        slot.children[0].get_attribute_ref("id"),
+        Some("light"),
+        "assigned node should appear under slot"
+      );
+    }
+
+    #[test]
+    fn composed_snapshot_slot_fallback_is_used_when_unassigned() {
+      let html = r#"<div id="host"><template shadowroot="open"><slot><span id="fallback">fb</span></slot></template></div>"#;
+      let dom = parse_html(html).expect("parse html");
+      let snapshot = composed_dom_snapshot(&dom).expect("compose snapshot");
+
+      let host = find_by_id(&snapshot, "host").expect("host element");
+      let slot = find_by_tag(host, "slot").expect("slot element");
+      assert_eq!(slot.children.len(), 1, "fallback content should be kept");
+      assert_eq!(
+        slot.children[0].get_attribute_ref("id"),
+        Some("fallback"),
+        "fallback node should remain under slot"
+      );
+    }
+
+    #[test]
+    fn composed_snapshot_named_and_default_slots_use_assignment_and_suppress_fallback() {
+      let html = r#"<div id="host"><template shadowroot="open"><slot name="title" id="title-slot"><span id="fallback-title">Fallback title</span></slot><slot id="default-slot"><span id="fallback-default">Fallback default</span></slot></template><span slot="title" id="title">Title</span><span id="body">Body</span></div>"#;
+      let dom = parse_html(html).expect("parse html");
+      let ids = enumerate_dom_ids(&dom);
+      let assignment = compute_slot_assignment_with_ids(&dom, &ids).expect("slot assignment");
+      let snapshot = composed_dom_snapshot_with_ids_and_assignment(&dom, &ids, &assignment)
+        .expect("snapshot");
+
+      let host = find_by_id(&snapshot, "host").expect("host element");
+      assert_eq!(
+        host.children.len(),
+        2,
+        "host should expose its shadow root children"
+      );
+      let title_slot = find_by_id(host, "title-slot").expect("title slot");
+      assert!(
+        matches!(title_slot.node_type, DomNodeType::Slot { assigned: true, .. }),
+        "slot should be marked assigned when it receives nodes"
+      );
+      assert_eq!(title_slot.children.len(), 1);
+      assert_eq!(title_slot.children[0].get_attribute_ref("id"), Some("title"));
+      assert!(
+        find_by_id(title_slot, "fallback-title").is_none(),
+        "fallback subtree should be suppressed when assigned"
+      );
+
+      let default_slot = find_by_id(host, "default-slot").expect("default slot");
+      assert!(
+        matches!(
+          default_slot.node_type,
+          DomNodeType::Slot { assigned: true, .. }
+        ),
+        "default slot should be marked assigned when it receives nodes"
+      );
+      assert_eq!(default_slot.children.len(), 1);
+      assert_eq!(default_slot.children[0].get_attribute_ref("id"), Some("body"));
+      assert!(
+        find_by_id(default_slot, "fallback-default").is_none(),
+        "fallback subtree should be suppressed when assigned"
+      );
+    }
+
+    #[test]
+    fn composed_snapshot_respects_nested_shadow_root_boundaries() {
+      let html = r#"<div id="outer"><template shadowroot="open"><slot></slot><div id="inner-host"><template shadowroot="open"><slot name="inner"><span id="inner-fallback">fallback</span></slot></template></div></template><span id="outer-light" slot="inner">outer</span></div>"#;
+      let dom = parse_html(html).expect("parse html");
+      let snapshot = composed_dom_snapshot(&dom).expect("compose snapshot");
+
+      let outer = find_by_id(&snapshot, "outer").expect("outer host");
+      let outer_slot = outer
+        .children
+        .iter()
+        .find(|child| matches!(child.node_type, DomNodeType::Slot { .. }))
+        .expect("outer default slot");
+      assert_eq!(
+        outer_slot
+          .children
+          .first()
+          .and_then(|node| node.get_attribute_ref("id")),
+        Some("outer-light"),
+        "outer light DOM should be assigned to the outer default slot"
+      );
+
+      let inner_host = find_by_id(&snapshot, "inner-host").expect("inner host");
+      let inner_slot = inner_host
+        .children
+        .iter()
+        .find(|child| matches!(child.node_type, DomNodeType::Slot { .. }))
+        .expect("inner slot");
+      assert_eq!(
+        inner_slot
+          .children
+          .first()
+          .and_then(|node| node.get_attribute_ref("id")),
+        Some("inner-fallback"),
+        "inner slot should use fallback when it has no light DOM assigned"
+      );
+    }
+
+    #[test]
+    fn composed_snapshot_skips_inert_template_contents() {
+      let html = r#"<div id="root"><template id="t"><span id="inert">X</span></template><span id="other">Y</span></div>"#;
+      let dom = parse_html(html).expect("parse html");
+      let snapshot = composed_dom_snapshot(&dom).expect("compose snapshot");
+
+      let template = find_by_id(&snapshot, "t").expect("template element should remain in tree");
+      assert!(
+        find_by_id(&snapshot, "inert").is_none(),
+        "template contents should be skipped in composed snapshots"
+      );
+      assert_eq!(
+        template.children.len(),
+        0,
+        "template element should have no composed children"
+      );
+      assert!(
+        find_by_id(&snapshot, "other").is_some(),
+        "non-template siblings should still be traversed"
+      );
+    }
+  }
+
+  mod part_export_map_tests {
+    use super::*;
+
+    fn find_dom_by_id<'a>(root: &'a DomNode, id: &str) -> Option<&'a DomNode> {
+      // `DomNode::walk_tree` uses a higher-ranked closure bound which makes it awkward to return a
+      // borrowed node from the callback. Use an explicit stack so we can return `&'a DomNode`.
+      let mut stack: Vec<&'a DomNode> = vec![root];
+      while let Some(node) = stack.pop() {
+        if node.get_attribute_ref("id") == Some(id) {
+          return Some(node);
+        }
+        for child in node.children.iter().rev() {
+          stack.push(child);
+        }
+      }
+      None
+    }
+
+    fn node_id_by_html_id(
+      root: &DomNode,
+      ids: &HashMap<*const DomNode, usize>,
+      html_id: &str,
+    ) -> usize {
+      let node = find_dom_by_id(root, html_id).unwrap_or_else(|| panic!("missing #{html_id}"));
+      *ids
+        .get(&(node as *const DomNode))
+        .unwrap_or_else(|| panic!("missing dom id for #{html_id}"))
+    }
+
+    #[test]
+    fn part_export_map_direct_part_on_host_shadow_root() {
+      let html = r#"
+        <div id="outer-host">
+          <template shadowrootmode="open">
+            <div id="outer-part" part="outer"></div>
+          </template>
+        </div>
+      "#;
+
+      let dom = parse_html(html).expect("parsed html");
+      let ids = enumerate_dom_ids(&dom);
+      let map = compute_part_export_map_with_ids(&dom, &ids).expect("part export map");
+
+      let outer_host_id = node_id_by_html_id(&dom, &ids, "outer-host");
+      let outer_part_id = node_id_by_html_id(&dom, &ids, "outer-part");
+
+      let exports = map
+        .exports_for_host(outer_host_id)
+        .expect("outer host exports");
+      let targets = exports.get("outer").expect("outer part exports");
+      assert!(
+        targets.contains(&ExportedPartTarget::Element(outer_part_id)),
+        "outer part exports must contain the part element"
+      );
+    }
+
+    #[test]
+    fn part_export_map_nested_host_reexports_into_ancestor_host() {
+      let html = r#"
+        <div id="outer-host">
+          <template shadowrootmode="open">
+            <div id="inner-host" exportparts="inner:reexported">
+              <template shadowrootmode="open">
+                <span id="inner-part" part="inner"></span>
+              </template>
+            </div>
+          </template>
+        </div>
+      "#;
+
+      let dom = parse_html(html).expect("parsed html");
+      let ids = enumerate_dom_ids(&dom);
+      let map = compute_part_export_map_with_ids(&dom, &ids).expect("part export map");
+
+      let outer_host_id = node_id_by_html_id(&dom, &ids, "outer-host");
+      let inner_part_id = node_id_by_html_id(&dom, &ids, "inner-part");
+
+      let exports = map
+        .exports_for_host(outer_host_id)
+        .expect("outer host exports");
+      let targets = exports.get("reexported").expect("reexported part exports");
+      assert!(
+        targets.contains(&ExportedPartTarget::Element(inner_part_id)),
+        "reexported part exports must contain forwarded element target"
+      );
+    }
+
+    #[test]
+    fn part_export_map_alias_chaining_across_multiple_levels() {
+      let html = r#"
+        <div id="outer-host" exportparts="mid:outer">
+          <template shadowrootmode="open">
+            <div id="inner-host" exportparts="inner:mid">
+              <template shadowrootmode="open">
+                <span id="inner-part" part="inner"></span>
+              </template>
+            </div>
+          </template>
+        </div>
+      "#;
+
+      let dom = parse_html(html).expect("parsed html");
+      let ids = enumerate_dom_ids(&dom);
+      let map = compute_part_export_map_with_ids(&dom, &ids).expect("part export map");
+
+      let outer_host_id = node_id_by_html_id(&dom, &ids, "outer-host");
+      let inner_part_id = node_id_by_html_id(&dom, &ids, "inner-part");
+
+      let exports = map
+        .exports_for_host(outer_host_id)
+        .expect("outer host exports");
+      let targets = exports.get("outer").expect("outer alias exports");
+      assert!(
+        targets.contains(&ExportedPartTarget::Element(inner_part_id)),
+        "chained alias exports must include forwarded element target"
+      );
+      assert!(
+        exports.get("mid").is_none(),
+        "outer host exportparts mapping must not leak intermediate part name"
+      );
+    }
+
+    #[test]
+    fn part_export_map_does_not_leak_nested_shadow_without_exportparts() {
+      let html = r#"
+        <div id="outer-host">
+          <template shadowrootmode="open">
+            <div id="inner-host">
+              <template shadowrootmode="open">
+                <span id="inner-part" part="inner"></span>
+              </template>
+            </div>
+          </template>
+        </div>
+      "#;
+
+      let dom = parse_html(html).expect("parsed html");
+      let ids = enumerate_dom_ids(&dom);
+      let map = compute_part_export_map_with_ids(&dom, &ids).expect("part export map");
+
+      let outer_host_id = node_id_by_html_id(&dom, &ids, "outer-host");
+      let inner_part_id = node_id_by_html_id(&dom, &ids, "inner-part");
+
+      let exports = map
+        .exports_for_host(outer_host_id)
+        .expect("outer host exports");
+      assert!(
+        exports
+          .values()
+          .all(|targets| { !targets.contains(&ExportedPartTarget::Element(inner_part_id)) }),
+        "outer host exports must not include inner shadow part without exportparts"
+      );
+    }
+
+    #[test]
+    fn part_export_map_host_exportparts_hides_unlisted_parts() {
+      let html = r#"
+        <div id="host" exportparts="one">
+          <template shadowrootmode="open">
+            <span id="one-part" part="one"></span>
+            <span id="two-part" part="two"></span>
+          </template>
+        </div>
+      "#;
+
+      let dom = parse_html(html).expect("parsed html");
+      let ids = enumerate_dom_ids(&dom);
+      let map = compute_part_export_map_with_ids(&dom, &ids).expect("part export map");
+
+      let host_id = node_id_by_html_id(&dom, &ids, "host");
+      let one_id = node_id_by_html_id(&dom, &ids, "one-part");
+
+      let exports = map.exports_for_host(host_id).expect("host exports");
+      let one_targets = exports.get("one").expect("one part exports");
+      assert!(
+        one_targets.contains(&ExportedPartTarget::Element(one_id)),
+        "listed part should be exported"
+      );
+      assert!(
+        exports.get("two").is_none(),
+        "unlisted part must not be exported when exportparts is present"
+      );
+    }
+
+    #[test]
+    fn part_export_map_host_exportparts_rename_hides_internal_name() {
+      let html = r#"
+        <div id="host" exportparts="inner:outer">
+          <template shadowrootmode="open">
+            <span id="part" part="inner"></span>
+          </template>
+        </div>
+      "#;
+
+      let dom = parse_html(html).expect("parsed html");
+      let ids = enumerate_dom_ids(&dom);
+      let map = compute_part_export_map_with_ids(&dom, &ids).expect("part export map");
+
+      let host_id = node_id_by_html_id(&dom, &ids, "host");
+      let part_id = node_id_by_html_id(&dom, &ids, "part");
+
+      let exports = map.exports_for_host(host_id).expect("host exports");
+      let targets = exports.get("outer").expect("outer part exports");
+      assert!(
+        targets.contains(&ExportedPartTarget::Element(part_id)),
+        "renamed part must be exported under its alias"
+      );
+      assert!(
+        exports.get("inner").is_none(),
+        "internal part name must not be exported when exportparts renames it"
+      );
+    }
+
+    #[test]
+    fn part_export_map_host_exportparts_does_not_chain_mappings() {
+      let html = r#"
+        <div id="host" exportparts="inner:mid, mid:outer">
+          <template shadowrootmode="open">
+            <span id="part" part="inner"></span>
+          </template>
+        </div>
+      "#;
+
+      let dom = parse_html(html).expect("parsed html");
+      let ids = enumerate_dom_ids(&dom);
+      let map = compute_part_export_map_with_ids(&dom, &ids).expect("part export map");
+
+      let host_id = node_id_by_html_id(&dom, &ids, "host");
+      let part_id = node_id_by_html_id(&dom, &ids, "part");
+
+      let exports = map.exports_for_host(host_id).expect("host exports");
+      let targets = exports.get("mid").expect("mid part exports");
+      assert!(
+        targets.contains(&ExportedPartTarget::Element(part_id)),
+        "first mapping should export the part under its alias"
+      );
+      assert!(
+        exports.get("outer").is_none(),
+        "exportparts mappings must not chain within a single attribute value"
+      );
+    }
+
+    #[test]
+    fn part_export_map_includes_exportparts_pseudo_elements() {
+      let html = r#"
+        <div id="host">
+          <template shadowrootmode="open">
+            <p id="p" exportparts="::before: preceding-text">Main</p>
+          </template>
+        </div>
+      "#;
+
+      let dom = parse_html(html).expect("parsed html");
+      let ids = enumerate_dom_ids(&dom);
+      let map = compute_part_export_map_with_ids(&dom, &ids).expect("part export map");
+
+      let host_id = node_id_by_html_id(&dom, &ids, "host");
+      let p_id = node_id_by_html_id(&dom, &ids, "p");
+
+      let exports = map.exports_for_host(host_id).expect("host exports");
+      let targets = exports.get("preceding-text").expect("pseudo part exports");
+      assert!(
+        targets.contains(&ExportedPartTarget::Pseudo {
+          node_id: p_id,
+          pseudo: PseudoElement::Before,
+        }),
+        "exportparts must expose the element's ::before pseudo-element as a part target"
+      );
+    }
+
+    #[test]
+    fn part_export_map_includes_exportparts_file_selector_button_pseudo_element() {
+      let html = r#"
+        <div id="host">
+          <template shadowrootmode="open">
+            <input id="file" type="file" exportparts="::file-selector-button: upload-button">
+          </template>
+        </div>
+      "#;
+
+      let dom = parse_html(html).expect("parsed html");
+      let ids = enumerate_dom_ids(&dom);
+      let map = compute_part_export_map_with_ids(&dom, &ids).expect("part export map");
+
+      let host_id = node_id_by_html_id(&dom, &ids, "host");
+      let file_id = node_id_by_html_id(&dom, &ids, "file");
+
+      let exports = map.exports_for_host(host_id).expect("host exports");
+      let targets = exports
+        .get("upload-button")
+        .expect("file-selector-button exports");
+      assert!(
+        targets.contains(&ExportedPartTarget::Pseudo {
+          node_id: file_id,
+          pseudo: PseudoElement::FileSelectorButton,
+        }),
+        "exportparts must expose the element's ::file-selector-button pseudo-element as a part target"
+      );
+    }
+
+    #[test]
+    fn part_export_map_includes_exportparts_slider_thumb_pseudo_element() {
+      let html = r#"
+        <div id="host">
+          <template shadowrootmode="open">
+            <input id="range" type="range" exportparts="::slider-thumb: thumb">
+          </template>
+        </div>
+      "#;
+
+      let dom = parse_html(html).expect("parsed html");
+      let ids = enumerate_dom_ids(&dom);
+      let map = compute_part_export_map_with_ids(&dom, &ids).expect("part export map");
+
+      let host_id = node_id_by_html_id(&dom, &ids, "host");
+      let range_id = node_id_by_html_id(&dom, &ids, "range");
+
+      let exports = map.exports_for_host(host_id).expect("host exports");
+      let targets = exports.get("thumb").expect("slider thumb exports");
+      assert!(
+        targets.contains(&ExportedPartTarget::Pseudo {
+          node_id: range_id,
+          pseudo: PseudoElement::SliderThumb,
+        }),
+        "exportparts must expose the element's ::slider-thumb pseudo-element as a part target"
+      );
+    }
+  }
+
   #[test]
   fn part_export_map_ignores_template_contents() {
     let html = "<div id='host'><template shadowroot='open'><template><div id='tmpl' part='x'></div></template><div id='real' part='x'></div></template></div>";
