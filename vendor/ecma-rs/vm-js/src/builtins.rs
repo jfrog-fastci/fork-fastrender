@@ -5400,7 +5400,15 @@ fn perform_promise_all(
   let mut index: u32 = 0;
 
   loop {
-    let next_value = crate::iterator::iterator_step_value(vm, host, hooks, scope, iterator_record)?;
+    let next_value = match crate::iterator::iterator_step_value(vm, host, hooks, scope, iterator_record) {
+      Ok(v) => v,
+      Err(err) => {
+        // Per spec, iterator-protocol errors during IteratorStep/IteratorValue set
+        // `iteratorRecord.[[Done]] = true` so the outer wrapper does not attempt `IteratorClose`.
+        iterator_record.done = true;
+        return Err(err);
+      }
+    };
     let Some(next_value) = next_value else {
       // Done: decrement initial 1.
       let remaining_value = read_internal_record_value(scope, remaining)?;
@@ -5580,7 +5588,15 @@ fn perform_promise_race(
 ) -> Result<Value, VmError> {
   // `PerformPromiseRace` (ECMA-262).
   loop {
-    let next_value = crate::iterator::iterator_step_value(vm, host, hooks, scope, iterator_record)?;
+    let next_value = match crate::iterator::iterator_step_value(vm, host, hooks, scope, iterator_record) {
+      Ok(v) => v,
+      Err(err) => {
+        // Per spec, iterator-protocol errors during IteratorStep/IteratorValue set
+        // `iteratorRecord.[[Done]] = true` so the outer wrapper does not attempt `IteratorClose`.
+        iterator_record.done = true;
+        return Err(err);
+      }
+    };
     let Some(next_value) = next_value else {
       return Ok(capability.promise);
     };
@@ -5696,7 +5712,15 @@ fn perform_promise_all_settled(
   let mut index: u32 = 0;
 
   loop {
-    let next_value = crate::iterator::iterator_step_value(vm, host, hooks, scope, iterator_record)?;
+    let next_value = match crate::iterator::iterator_step_value(vm, host, hooks, scope, iterator_record) {
+      Ok(v) => v,
+      Err(err) => {
+        // Per spec, iterator-protocol errors during IteratorStep/IteratorValue set
+        // `iteratorRecord.[[Done]] = true` so the outer wrapper does not attempt `IteratorClose`.
+        iterator_record.done = true;
+        return Err(err);
+      }
+    };
     let Some(next_value) = next_value else {
       let remaining_value = read_internal_record_value(scope, remaining)?;
       let Value::Number(n) = remaining_value else {
@@ -5908,7 +5932,15 @@ fn perform_promise_any(
   let mut index: u32 = 0;
 
   loop {
-    let next_value = crate::iterator::iterator_step_value(vm, host, hooks, scope, iterator_record)?;
+    let next_value = match crate::iterator::iterator_step_value(vm, host, hooks, scope, iterator_record) {
+      Ok(v) => v,
+      Err(err) => {
+        // Per spec, iterator-protocol errors during IteratorStep/IteratorValue set
+        // `iteratorRecord.[[Done]] = true` so the outer wrapper does not attempt `IteratorClose`.
+        iterator_record.done = true;
+        return Err(err);
+      }
+    };
     let Some(next_value) = next_value else {
       let remaining_value = read_internal_record_value(scope, remaining)?;
       let Value::Number(n) = remaining_value else {
