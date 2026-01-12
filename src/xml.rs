@@ -1,6 +1,133 @@
 use std::borrow::Cow;
 use std::ops::Range;
 
+/// Extracted `<!DOCTYPE ...>` information from markup that is being sanitized for `roxmltree`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ExtractedDoctype {
+  /// Byte offset of the `<!DOCTYPE` start in the original markup.
+  pub start: usize,
+  pub name: String,
+  pub public_id: String,
+  pub system_id: String,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ParsedDoctype<'a> {
+  name: &'a str,
+  public_id: Option<&'a str>,
+  system_id: Option<&'a str>,
+}
+
+fn is_xml_whitespace(b: u8) -> bool {
+  // XML "S" production: https://www.w3.org/TR/xml/#NT-S
+  matches!(b, b' ' | b'\t' | b'\r' | b'\n')
+}
+
+fn skip_ws(bytes: &[u8], i: &mut usize) {
+  while bytes.get(*i).is_some_and(|b| is_xml_whitespace(*b)) {
+    *i += 1;
+  }
+}
+
+fn scan_name_token<'a>(bytes: &'a [u8], i: &mut usize) -> &'a str {
+  let start = *i;
+  while let Some(&b) = bytes.get(*i) {
+    if is_xml_whitespace(b) || matches!(b, b'>' | b'[') {
+      break;
+    }
+    *i += 1;
+  }
+  // Safety: `input` is valid UTF-8, and we only slice within it.
+  unsafe { std::str::from_utf8_unchecked(&bytes[start..*i]) }
+}
+
+fn scan_word_token<'a>(bytes: &'a [u8], i: &mut usize) -> &'a [u8] {
+  let start = *i;
+  while let Some(&b) = bytes.get(*i) {
+    if is_xml_whitespace(b) || matches!(b, b'>' | b'[') {
+      break;
+    }
+    *i += 1;
+  }
+  &bytes[start..*i]
+}
+
+fn scan_quoted<'a>(bytes: &'a [u8], i: &mut usize) -> Option<&'a str> {
+  let quote = *bytes.get(*i)?;
+  if quote != b'\'' && quote != b'"' {
+    return None;
+  }
+  *i += 1;
+  let start = *i;
+  while let Some(&b) = bytes.get(*i) {
+    if b == quote {
+      let out = &bytes[start..*i];
+      *i += 1;
+      // Safety: `input` is valid UTF-8 and quoted literals are subsets of it.
+      return Some(unsafe { std::str::from_utf8_unchecked(out) });
+    }
+    *i += 1;
+  }
+  None
+}
+
+fn parse_doctype_decl(decl: &[u8]) -> ParsedDoctype<'_> {
+  // `decl` is the byte slice of the entire doctype declaration, including `<!DOCTYPE` and the
+  // closing `>`. The caller ensures it starts at `<!DOCTYPE` (case-insensitive).
+  let mut i = 0usize;
+  i = i.saturating_add(2);
+  i = i.saturating_add("DOCTYPE".len());
+  skip_ws(decl, &mut i);
+
+  let name = scan_name_token(decl, &mut i);
+  skip_ws(decl, &mut i);
+
+  // Stop if internal subset starts immediately.
+  if decl.get(i).is_some_and(|b| *b == b'[') {
+    return ParsedDoctype {
+      name,
+      public_id: None,
+      system_id: None,
+    };
+  }
+
+  let keyword = scan_word_token(decl, &mut i);
+  skip_ws(decl, &mut i);
+
+  if keyword.eq_ignore_ascii_case(b"SYSTEM") {
+    let system_id = scan_quoted(decl, &mut i);
+    return ParsedDoctype {
+      name,
+      public_id: None,
+      system_id,
+    };
+  }
+  if keyword.eq_ignore_ascii_case(b"PUBLIC") {
+    let public_id = scan_quoted(decl, &mut i);
+    skip_ws(decl, &mut i);
+    let system_id = scan_quoted(decl, &mut i);
+    // Ignore malformed external IDs (must be both strings).
+    if public_id.is_some() && system_id.is_some() {
+      return ParsedDoctype {
+        name,
+        public_id,
+        system_id,
+      };
+    }
+    return ParsedDoctype {
+      name,
+      public_id: None,
+      system_id: None,
+    };
+  }
+
+  ParsedDoctype {
+    name,
+    public_id: None,
+    system_id: None,
+  }
+}
+
 /// Returns markup suitable for parsing with [`roxmltree`].
 ///
 /// `roxmltree` deliberately rejects `<!DOCTYPE ...>` declarations, which are common in real-world
@@ -13,11 +140,25 @@ use std::ops::Range;
 /// - `>` characters inside quoted strings.
 /// - `>` characters within the `[...]` internal subset.
 pub fn markup_for_roxmltree(input: &str) -> Cow<'_, str> {
+  let (markup, _doctypes) = markup_for_roxmltree_with_doctypes(input);
+  markup
+}
+
+/// Like [`markup_for_roxmltree`], but also extracts doctype metadata.
+///
+/// Parsing rules are pragmatic (not a full DTD parser):
+/// - After `<!DOCTYPE` (case-insensitive), parse the name token.
+/// - If `SYSTEM` then parse 1 quoted string → `system_id`.
+/// - If `PUBLIC` then parse 2 quoted strings → `public_id`, `system_id`.
+/// - Ignore internal subset; ignore malformed external ids (leave ids empty).
+pub(crate) fn markup_for_roxmltree_with_doctypes(
+  input: &str,
+) -> (Cow<'_, str>, Vec<ExtractedDoctype>) {
   const DOCTYPE_LEN: usize = "<!DOCTYPE".len();
 
   let bytes = input.as_bytes();
   if bytes.len() < DOCTYPE_LEN {
-    return Cow::Borrowed(input);
+    return (Cow::Borrowed(input), Vec::new());
   }
 
   let mut ranges: Vec<Range<usize>> = Vec::new();
@@ -79,7 +220,19 @@ pub fn markup_for_roxmltree(input: &str) -> Cow<'_, str> {
   }
 
   if ranges.is_empty() {
-    return Cow::Borrowed(input);
+    return (Cow::Borrowed(input), Vec::new());
+  }
+
+  let mut doctypes: Vec<ExtractedDoctype> = Vec::with_capacity(ranges.len());
+  for range in &ranges {
+    let decl = &bytes[range.start..range.end];
+    let parsed = parse_doctype_decl(decl);
+    doctypes.push(ExtractedDoctype {
+      start: range.start,
+      name: parsed.name.to_string(),
+      public_id: parsed.public_id.unwrap_or("").to_string(),
+      system_id: parsed.system_id.unwrap_or("").to_string(),
+    });
   }
 
   let mut out_bytes = bytes.to_vec();
@@ -91,9 +244,9 @@ pub fn markup_for_roxmltree(input: &str) -> Cow<'_, str> {
 
   // `input` is UTF-8. Replacing bytes with ASCII spaces preserves UTF-8 validity.
   match String::from_utf8(out_bytes) {
-    Ok(s) => Cow::Owned(s),
+    Ok(s) => (Cow::Owned(s), doctypes),
     // Should be impossible, but fall back defensively.
-    Err(_) => Cow::Borrowed(input),
+    Err(_) => (Cow::Borrowed(input), doctypes),
   }
 }
 
@@ -172,4 +325,3 @@ mod tests {
     assert_blanks_doctype(input, "<root>π</root>");
   }
 }
-
