@@ -186,6 +186,10 @@ jobs:
       - name: Init ecma-rs checkout (vendored/submodule compatibility)
         run: bash scripts/ci_init_ecma_rs_submodule.sh
 
+      - name: TypeScript version sync (vendor/ecma-rs)
+        working-directory: vendor/ecma-rs
+        run: bash scripts/check_typescript_version_sync.sh
+
       - name: Install typecheck-ts-harness Node deps (npm ci)
         run: |
           set -euo pipefail
