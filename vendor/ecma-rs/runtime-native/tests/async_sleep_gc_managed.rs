@@ -1,5 +1,6 @@
 use runtime_native::abi::PromiseRef;
 use runtime_native::async_abi::PromiseHeader;
+use runtime_native::roots::Root;
 use runtime_native::test_util::TestRuntimeGuard;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
@@ -46,8 +47,9 @@ fn async_sleep_returns_gc_managed_collectible_promise() {
   //
   // Use the `*_h` variant so the weak-handle table lock can be acquired safely even under a moving
   // GC (it reloads the pointer from an addressable slot after lock acquisition).
-  let mut promise_ptr = p.0.cast::<u8>();
-  let weak = unsafe { runtime_native::rt_weak_add_h(&mut promise_ptr as *mut *mut u8) };
+  let root = Root::<u8>::new(p.0.cast::<u8>());
+  let weak = unsafe { runtime_native::rt_weak_add_h(root.handle()) };
+  drop(root);
   let _weak_guard = WeakHandleGuard(weak);
 
   // Drop the last strong reference and force a GC while the timer is still pending.
