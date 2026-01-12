@@ -167,10 +167,12 @@ fn push_imported_dom2_node(dst_doc: &mut Document, parent: NodeId, src_doc: &Doc
     NodeKind::Element {
       tag_name,
       namespace,
+      prefix,
       attributes,
     } => NodeKind::Element {
       tag_name: tag_name.clone(),
       namespace: namespace.clone(),
+      prefix: prefix.clone(),
       attributes: attributes.clone(),
     },
     NodeKind::Text { content } => NodeKind::Text {
