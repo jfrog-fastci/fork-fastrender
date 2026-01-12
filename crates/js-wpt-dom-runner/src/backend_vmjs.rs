@@ -129,6 +129,13 @@ impl Backend for VmJsBackend {
     self.deadline = Some(init.timeout);
     self.timed_out = false;
 
+    // Tear down any previous realm so we don't keep global state (e.g. session storage namespace
+    // registrations) alive while resetting thread-local subsystems for the next test.
+    self.host = None;
+    self.event_loop = None;
+    self.virtual_clock = None;
+    self.run_state = None;
+
     // Each curated WPT test expects a fresh browsing context. FastRender's Web Storage hub is
     // thread-local, so it must be reset between tests executed on the same worker thread.
     fastrender::js::web_storage::clear_default_web_storage_hub();
@@ -729,7 +736,10 @@ mod tests {
   use super::VmJsBackend;
   use crate::engine::{Backend, BackendInit};
   use crate::wpt_fs::WptFs;
-  use fastrender::js::web_storage::{get_local_area, get_session_area, origin_key_from_document_url, SessionNamespaceId};
+  use fastrender::js::web_storage::{
+    get_local_area, get_session_area, origin_key_from_document_url, with_default_hub_mut,
+    SessionNamespaceId,
+  };
   use std::path::PathBuf;
   use std::time::Duration;
 
@@ -756,7 +766,13 @@ mod tests {
       .set_item("leak", "1")
       .expect("failed to set local area item");
 
-    let session_area = get_session_area(SessionNamespaceId(1), Some(origin.as_str()));
+    // Session storage areas are only persisted by the hub when the namespace is registered as
+    // "active" (i.e. when a window/browsing context is alive). Simulate an active namespace without
+    // relying on `WindowHostState` internals.
+    let session_ns = SessionNamespaceId(1);
+    with_default_hub_mut(|hub| hub.register_window(session_ns).disarm());
+
+    let session_area = get_session_area(session_ns, Some(origin.as_str()));
     session_area
       .lock()
       .set_item("leak", "1")

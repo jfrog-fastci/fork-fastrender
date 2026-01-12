@@ -2903,6 +2903,16 @@ fn request_clone_native(
     ));
   }
 
+  if request_body_stream_locked(env_id, request_id, scope.heap())? {
+    return Err(throw_type_error(
+      vm,
+      scope,
+      &mut *host,
+      host_hooks,
+      "Request body is locked",
+    ));
+  }
+
   let cloned: Option<CoreRequest> = with_env_state(env_id, scope.heap(), |state| {
     let req = state
       .requests
