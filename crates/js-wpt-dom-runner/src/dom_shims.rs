@@ -3748,4 +3748,66 @@ mod tests {
       assert_eq!(v["resetOk"], true);
     });
   }
+
+  #[test]
+  fn form_elements_skips_template_contents_and_includes_nested_controls() {
+    let rt = Runtime::new().unwrap();
+    let context = Context::full(&rt).unwrap();
+    context.with(|ctx| {
+      install_dom_shims(ctx.clone(), &ctx.globals()).unwrap();
+
+      let v = eval_json(
+        ctx.clone(),
+        r#"
+        (function () {
+          var form = document.createElement("form");
+          var elements = form.elements;
+
+          var outer = document.createElement("input");
+          form.appendChild(outer);
+          var len1 = elements.length;
+
+          var container = document.createElement("div");
+          form.appendChild(container);
+          var nested = document.createElement("input");
+          container.appendChild(nested);
+          var len2 = elements.length;
+
+          var tmpl = document.createElement("template");
+          form.appendChild(tmpl);
+          var insideTemplate = document.createElement("input");
+          tmpl.appendChild(insideTemplate);
+          // Template contents should be inert for form.elements.
+          var len2Still = elements.length;
+
+          // Moving the control out of the template should make it appear.
+          tmpl.removeChild(insideTemplate);
+          form.appendChild(insideTemplate);
+          var len3 = elements.length;
+          var orderAfterLen3 = Array.from(elements).map(function (n) { return n === outer ? "outer" : (n === insideTemplate ? "inside" : "other"); }).join(",");
+
+          // Removing a nested control should remove it from the collection.
+          container.removeChild(nested);
+          var len2Again = elements.length;
+
+          return JSON.stringify({
+            len1: len1,
+            len2: len2,
+            len2Still: len2Still,
+            len3: len3,
+            len2Again: len2Again,
+            orderAfterLen3: orderAfterLen3,
+          });
+        })()
+        "#,
+      );
+
+      assert_eq!(v["len1"], 1);
+      assert_eq!(v["len2"], 2);
+      assert_eq!(v["len2Still"], 2);
+      assert_eq!(v["len3"], 3);
+      assert_eq!(v["orderAfterLen3"], "outer,other,inside");
+      assert_eq!(v["len2Again"], 2);
+    });
+  }
 }
