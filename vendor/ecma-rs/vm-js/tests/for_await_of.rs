@@ -44,6 +44,47 @@ fn for_await_over_array_awaits_values() -> Result<(), VmError> {
 }
 
 #[test]
+fn for_await_of_array_destructuring_closes_inner_iterator() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  // This exercises `BindingInitialization` for an ArrayBindingPattern inside `for await...of`.
+  // The loop yields a *custom iterable object* and the LHS destructuring pattern `[x]` must use
+  // `@@iterator` + `IteratorClose` (not array-like indexing) to bind `x`.
+  //
+  // In particular, the iterator returned by `iter[Symbol.iterator]()` is not exhausted after
+  // binding `x`, so `IteratorClose` must be performed and call `return()`.
+  let value = rt.exec_script(
+    r#"
+      var out = "";
+      async function f() {
+        var returnCalls = 0;
+        var iter = {};
+        iter[Symbol.iterator] = function () {
+          return {
+            next() { return { value: 1, done: false }; },
+            return() { returnCalls++; return {}; },
+          };
+        };
+
+        for await (const [x] of [iter]) {
+          return returnCalls + ":" + x;
+        }
+        return "bad";
+      }
+      f().then(function (v) { out = v; });
+      out
+    "#,
+  )?;
+  assert_eq!(value_to_string(&rt, value), "");
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let value = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, value), "1:1");
+  Ok(())
+}
+
+#[test]
 fn await_in_for_await_of_lhs_destructuring_default_value() -> Result<(), VmError> {
   let mut rt = new_runtime();
 
