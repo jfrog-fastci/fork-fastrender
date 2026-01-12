@@ -768,7 +768,7 @@ pub fn chrome_ui_with_bookmarks(
     // Navigation + address bar row.
     ui.horizontal(|ui| {
       let is_compact = ui.available_width() < COMPACT_MODE_THRESHOLD_PX;
-      let (can_back, can_forward, loading, stage, load_progress, zoom_factor) = app
+      let (can_back, can_forward, loading, stage, load_progress, zoom_factor, error, warning) = app
         .active_tab()
         .map(|t| {
           (
@@ -778,9 +778,11 @@ pub fn chrome_ui_with_bookmarks(
             t.load_stage,
             t.load_progress,
             t.zoom,
+            t.error.clone(),
+            t.warning.clone(),
           )
         })
-        .unwrap_or((false, false, false, None, None, zoom::DEFAULT_ZOOM));
+        .unwrap_or((false, false, false, None, None, zoom::DEFAULT_ZOOM, None, None));
 
       let back_tooltip = if cfg!(target_os = "macos") {
         "Back (Cmd+[)"
@@ -1029,6 +1031,48 @@ pub fn chrome_ui_with_bookmarks(
             if response.clicked() {
               actions.push(ChromeAction::ToggleBookmarkForActiveTab);
             }
+          }
+
+          let badge_rounding =
+            egui::Rounding::same((ui.visuals().widgets.inactive.rounding.nw * 0.4).clamp(2.0, 4.0));
+          let badge_margin = {
+            let pad = ui.spacing().button_padding;
+            egui::Margin::same((pad.y * 0.35).clamp(1.0, 3.0))
+          };
+
+          if let Some(err) = error.as_deref().filter(|s| !s.trim().is_empty()) {
+            let err_fg = ui.visuals().error_fg_color;
+            let err_bg =
+              egui::Color32::from_rgba_unmultiplied(err_fg.r(), err_fg.g(), err_fg.b(), 40);
+            let resp = egui::Frame::none()
+              .fill(err_bg)
+              .rounding(badge_rounding)
+              .inner_margin(badge_margin)
+              .show(ui, |ui| {
+                let _ = icon_tinted(ui, BrowserIcon::Error, ui.spacing().icon_width, err_fg);
+              })
+              .response;
+            let _ = resp.on_hover_text(err);
+          }
+
+          if let Some(warn) = warning.as_deref().filter(|s| !s.trim().is_empty()) {
+            let warn_fg = ui.visuals().warn_fg_color;
+            let warn_bg =
+              egui::Color32::from_rgba_unmultiplied(warn_fg.r(), warn_fg.g(), warn_fg.b(), 40);
+            let resp = egui::Frame::none()
+              .fill(warn_bg)
+              .rounding(badge_rounding)
+              .inner_margin(badge_margin)
+              .show(ui, |ui| {
+                let _ = icon_tinted(
+                  ui,
+                  BrowserIcon::WarningInsecure,
+                  ui.spacing().icon_width,
+                  warn_fg,
+                );
+              })
+              .response;
+            let _ = resp.on_hover_text(warn);
           }
 
           if loading {

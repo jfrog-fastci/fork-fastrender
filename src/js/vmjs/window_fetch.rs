@@ -13963,11 +13963,10 @@ mod tests {
       let mut hooks = VmJsEventLoopHooks::<EventLoopHost>::new_with_host(&mut host)?;
       hooks.set_event_loop(&mut event_loop);
       let EventLoopHost { host_ctx, window } = &mut host;
-      window
-        .exec_script_with_host_and_hooks(
-          host_ctx,
-          &mut hooks,
-          r#"
+      let result = window.exec_script_with_host_and_hooks(
+        host_ctx,
+        &mut hooks,
+        r#"
             globalThis.__u1 = URL.createObjectURL(new Blob(['hi'], { type: 'text/plain' }));
             globalThis.__u2 = URL.createObjectURL(new Blob(['bye']));
             globalThis.__p1 = fetch(globalThis.__u1).then((r) => {
@@ -13975,11 +13974,11 @@ mod tests {
               return r.text();
             });
           "#,
-        )
-        .unwrap();
+      );
       if let Some(err) = hooks.finish(window.heap_mut()) {
         return Err(err);
       }
+      result.map_err(|e| crate::error::Error::Other(e.to_string()))?;
     }
 
     assert_eq!(
@@ -14018,21 +14017,20 @@ mod tests {
       let mut hooks = VmJsEventLoopHooks::<EventLoopHost>::new_with_host(&mut host)?;
       hooks.set_event_loop(&mut event_loop);
       let EventLoopHost { host_ctx, window } = &mut host;
-      window
-        .exec_script_with_host_and_hooks(
-          host_ctx,
-          &mut hooks,
-          r#"
+      let result = window.exec_script_with_host_and_hooks(
+        host_ctx,
+        &mut hooks,
+        r#"
             URL.revokeObjectURL(globalThis.__u1);
             globalThis.__p2 = fetch(globalThis.__u1);
             // Avoid leaking the second URL in the process-global registry.
             URL.revokeObjectURL(globalThis.__u2);
           "#,
-        )
-        .unwrap();
+      );
       if let Some(err) = hooks.finish(window.heap_mut()) {
         return Err(err);
       }
+      result.map_err(|e| crate::error::Error::Other(e.to_string()))?;
     }
 
     assert_eq!(

@@ -4584,9 +4584,8 @@ fn dispatch_hashchange_event<Host: WindowRealmHost + 'static>(
   new_url: &str,
 ) -> crate::error::Result<()> {
   let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host)?;
-  let (vm_host, window_realm) = host.vm_host_and_window_realm()?;
   hooks.set_event_loop(event_loop);
-
+  let (vm_host, window_realm) = host.vm_host_and_window_realm()?;
   window_realm.reset_interrupt();
 
   let global_obj = window_realm.global_object();
@@ -14028,6 +14027,7 @@ fn mutation_observer_notify_native(
       };
       dom_host.mutation_observer_take_deliveries()
     };
+    (deliveries, dom_ptr_for_event_registry(host))
     (deliveries, dom_ptr_for_event_registry(host))
   } else {
     let Some(mut dom_ptr) = (|| {

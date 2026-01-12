@@ -43,7 +43,8 @@ pub fn ui_scale_from_str(raw: &str) -> Option<f32> {
 
 /// Returns `Some(scale)` when the env var is set to a valid float, otherwise `None`.
 pub fn ui_scale_from_env() -> Option<f32> {
-  let raw = runtime_toggles().get(ENV_UI_SCALE)?;
+  let toggles = runtime_toggles();
+  let raw = toggles.get(ENV_UI_SCALE)?;
   ui_scale_from_str(raw)
 }
 
