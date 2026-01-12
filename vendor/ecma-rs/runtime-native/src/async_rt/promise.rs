@@ -280,28 +280,24 @@ pub(crate) fn untrack_pending_reactions(promise: *mut PromiseHeader) {
     map.remove(&PendingPromiseKey::Raw(promise as usize));
     return;
   }
-
-  let root = threading::registry::current_thread_state()
-    .is_some()
-    .then(|| crate::roots::Root::new(promise));
   let table = crate::roots::global_persistent_handle_table();
 
-  let ids_to_free: Vec<HandleId> = {
-    let mut map = PROMISES_WITH_PENDING_REACTIONS.lock();
+  // See `track_pending_reactions_keepalive` for the reasoning behind this structure:
+  // avoid blocking on a GC-aware mutex while holding handle-stack roots.
+  let mut promise_ptr: *mut u8 = promise.cast::<u8>();
+  let mut scope = crate::roots::RootScope::new();
+  scope.push(&mut promise_ptr as *mut *mut u8);
+
+  // Fast path: avoid blocking if the lock is uncontended.
+  if let Some(mut map) = PROMISES_WITH_PENDING_REACTIONS.try_lock() {
     let mut to_remove = Vec::new();
-    let current_ptr = || {
-      root
-        .as_ref()
-        .map(|r| r.get().cast::<u8>())
-        .unwrap_or(promise.cast::<u8>())
-    };
 
     for key in map.keys().copied() {
       let PendingPromiseKey::Rooted(id) = key else {
         continue;
       };
       match table.get(id) {
-        Some(p) if p == current_ptr() => {
+        Some(p) if p == promise_ptr => {
           // Defensive: remove all matches to avoid leaking duplicate roots if tracking was raced.
           to_remove.push(id);
         }
@@ -317,6 +313,51 @@ pub(crate) fn untrack_pending_reactions(promise: *mut PromiseHeader) {
       map.remove(&PendingPromiseKey::Rooted(*id));
     }
 
+    drop(map);
+    drop(scope);
+
+    for id in to_remove {
+      let _ = table.free(id);
+    }
+    return;
+  }
+
+  // Contended slow path: create a stable handle ID for `promise` before blocking on the map lock,
+  // then drop the handle-stack root so the thread can enter a GC-safe region while blocked.
+  //
+  // Safety: `promise_ptr` is an addressable slot rooted via `RootScope`.
+  let target_id = unsafe { table.alloc_from_slot(&mut promise_ptr as *mut *mut u8) };
+  drop(scope);
+
+  let ids_to_free: Vec<HandleId> = {
+    let mut map = PROMISES_WITH_PENDING_REACTIONS.lock();
+
+    let mut want_ptr = table.get(target_id).unwrap_or(null_mut());
+    let mut scope = crate::roots::RootScope::new();
+    scope.push(&mut want_ptr as *mut *mut u8);
+
+    let mut to_remove = Vec::new();
+    for key in map.keys().copied() {
+      let PendingPromiseKey::Rooted(id) = key else {
+        continue;
+      };
+      match table.get(id) {
+        Some(p) if p == want_ptr => {
+          to_remove.push(id);
+        }
+        None => {
+          to_remove.push(id);
+        }
+        _ => {}
+      }
+    }
+
+    for id in &to_remove {
+      map.remove(&PendingPromiseKey::Rooted(*id));
+    }
+
+    // Free the temporary handle we created for stable lookup.
+    to_remove.push(target_id);
     to_remove
   };
 
