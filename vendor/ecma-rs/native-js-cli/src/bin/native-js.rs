@@ -6,8 +6,6 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
 use std::time::{Duration, Instant};
 use tempfile::tempdir;
-use typecheck_ts::lib_support::{LibName, ScriptTarget};
-use typecheck_ts::resolve::{canonicalize_path, NodeResolver, ResolveOptions};
 use typecheck_ts::Program;
 use wait_timeout::ChildExt;
 
@@ -25,6 +23,9 @@ mod tsconfig;
 
 #[path = "../type_libs.rs"]
 mod type_libs;
+
+#[path = "../project_load.rs"]
+mod project_load;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about = "Compile TypeScript to native executables via native-js (LLVM)")]
@@ -181,7 +182,9 @@ fn main() -> ExitCode {
 }
 
 fn cmd_check(cli: &Cli, entry: &Path, render: diagnostics::render::RenderOptions) -> ExitCode {
-  let (program, entry_file) = match load_program(cli, entry) {
+  let (program, entry_file) =
+    match project_load::load_program(cli.project.as_deref(), entry, project_load::LoadMode::Checked)
+    {
     Ok(res) => res,
     Err(err) => return exit_internal_without_program(cli.json, err),
   };
@@ -206,7 +209,9 @@ fn cmd_build(
   emit_ir: Option<&Path>,
   render: diagnostics::render::RenderOptions,
 ) -> ExitCode {
-  let (program, entry_file) = match load_program(cli, entry) {
+  let (program, entry_file) =
+    match project_load::load_program(cli.project.as_deref(), entry, project_load::LoadMode::Checked)
+    {
     Ok(res) => res,
     Err(err) => return exit_internal_without_program(cli.json, err),
   };
@@ -255,7 +260,9 @@ fn cmd_emit_ir(
   output_ll: &Path,
   render: diagnostics::render::RenderOptions,
 ) -> ExitCode {
-  let (program, entry_file) = match load_program(cli, entry) {
+  let (program, entry_file) =
+    match project_load::load_program(cli.project.as_deref(), entry, project_load::LoadMode::Checked)
+    {
     Ok(res) => res,
     Err(err) => return exit_internal_without_program(cli.json, err),
   };
@@ -731,95 +738,6 @@ fn collect_check_diagnostics(program: &Program, entry_file: FileId, extra_strict
 
   diagnostics::sort_diagnostics(&mut diagnostics);
   diagnostics
-}
-
-fn load_program(cli: &Cli, entry: &Path) -> Result<(Program, FileId), String> {
-  let project = match cli.project.as_deref() {
-    Some(path) => Some(tsconfig::load_project_config(path)?),
-    None => None,
-  };
-  let mut compiler_options = project
-    .as_ref()
-    .map(|cfg| cfg.compiler_options.clone())
-    .unwrap_or_default();
-
-  // TypeScript defaults to loading `dom` + an ES lib when `compilerOptions.lib` is not provided.
-  // For native-js, the DOM lib is unnecessary (we're targeting native executables / Node-like
-  // environments) and adds significant startup cost during typechecking.
-  //
-  // When the user did not specify `lib` and did not opt out via `no_default_lib`, default to the
-  // target ES lib only.
-  if compiler_options.libs.is_empty() && !compiler_options.no_default_lib {
-    let es_lib = match compiler_options.target {
-      ScriptTarget::Es3 | ScriptTarget::Es5 => "es5",
-      ScriptTarget::Es2015 => "es2015",
-      ScriptTarget::Es2016 => "es2016",
-      ScriptTarget::Es2017 => "es2017",
-      ScriptTarget::Es2018 => "es2018",
-      ScriptTarget::Es2019 => "es2019",
-      ScriptTarget::Es2020 => "es2020",
-      ScriptTarget::Es2021 => "es2021",
-      ScriptTarget::Es2022 => "es2022",
-      ScriptTarget::EsNext => "esnext",
-    };
-    compiler_options.libs.push(
-      LibName::parse(es_lib).expect("built-in ES lib name should parse as a LibName"),
-    );
-    if matches!(compiler_options.target, ScriptTarget::EsNext) {
-      compiler_options.libs.push(
-        LibName::parse("esnext.disposable")
-          .expect("built-in ES lib name should parse as a LibName"),
-      );
-    }
-  }
-  let (type_roots, extra_libs) = match project.as_ref() {
-    Some(cfg) => {
-      let type_roots = cfg
-        .type_roots
-        .clone()
-        .unwrap_or_else(|| type_libs::default_type_roots(&cfg.root_dir));
-      let libs = type_libs::load_type_libs(cfg, &compiler_options, &type_roots)?;
-      // The CLI loads `typeRoots`/`types` packages as host-provided libs (ambient `.d.ts` inputs),
-      // matching `tsc` more closely. Clear the compiler option so `typecheck-ts` doesn't also try
-      // to resolve them via module resolution.
-      compiler_options.types.clear();
-      (type_roots, libs)
-    }
-    None => (Vec::new(), Vec::new()),
-  };
-  let mut extra_libs = extra_libs;
-  extra_libs.push(native_js::builtins::checked_builtins_lib());
-  let resolve_options = ResolveOptions {
-    node_modules: true,
-    package_imports: true,
-  };
-
-  let entry_canonical =
-    canonicalize_path(entry).map_err(|err| format!("failed to read entry {}: {err}", entry.display()))?;
-
-  let mut root_paths = Vec::new();
-  if let Some(cfg) = project.as_ref() {
-    root_paths.extend(cfg.root_files.iter().cloned());
-  }
-  root_paths.push(entry_canonical.clone());
-  root_paths.sort_by(|a, b| a.display().to_string().cmp(&b.display().to_string()));
-  root_paths.dedup();
-
-  let resolver = host::ModuleResolver {
-    resolver: NodeResolver::new(resolve_options),
-    tsconfig: project.as_ref().and_then(host::TsconfigResolver::from_project),
-  };
-
-  let (host, roots) = host::DiskHost::new(&root_paths, resolver, compiler_options, extra_libs, type_roots)?;
-  let entry_key = host
-    .key_for_path(&entry_canonical)
-    .ok_or_else(|| format!("entry file not loaded: {}", entry.display()))?;
-  let program = Program::new(host, roots);
-  let entry_file = program
-    .file_id(&entry_key)
-    .ok_or_else(|| format!("entry file not loaded: {}", entry.display()))?;
-
-  Ok((program, entry_file))
 }
 
 fn opt_level(raw: u8) -> Result<native_js::OptLevel, String> {

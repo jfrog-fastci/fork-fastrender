@@ -256,6 +256,28 @@ impl Program {
   }
 }
 
+impl Host for Program {
+  fn file_text(&self, file: &FileKey) -> Result<Arc<str>, HostError> {
+    self.host.file_text(file)
+  }
+
+  fn resolve(&self, from: &FileKey, specifier: &str) -> Option<FileKey> {
+    self.host.resolve(from, specifier)
+  }
+
+  fn compiler_options(&self) -> CompilerOptions {
+    self.host.compiler_options()
+  }
+
+  fn lib_files(&self) -> Vec<LibFile> {
+    self.host.lib_files()
+  }
+
+  fn file_kind(&self, file: &FileKey) -> FileKind {
+    self.host.file_kind(file)
+  }
+}
+
 #[cfg(test)]
 mod tests {
   use crate::{FileKey, MemoryHost, Program};

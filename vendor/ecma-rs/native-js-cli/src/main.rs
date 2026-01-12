@@ -1,20 +1,19 @@
+mod host;
 mod output;
+mod project_load;
+mod tsconfig;
+mod type_libs;
 
 use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
-use diagnostics::paths::normalize_fs_path;
 use native_js::compiler::compile_llvm_ir_to_artifact;
 use native_js::{
   compile_program, compile_project_to_llvm_ir, compile_typescript_to_llvm_ir, CompileOptions,
   EmitKind, NativeJsError, OptLevel,
 };
-use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{exit, Command, Stdio};
-use std::sync::{Arc, Mutex};
-use typecheck_ts::lib_support::{CompilerOptions, FileKind, LibFile, LibName, ScriptTarget};
-use typecheck_ts::resolve::{canonicalize_path, NodeResolver, ResolveOptions};
-use typecheck_ts::{FileId, FileKey, Host, HostError, Program};
+use typecheck_ts::Program;
 
 #[derive(Parser, Debug)]
 #[command(author, version)]
@@ -25,6 +24,16 @@ struct Cli {
   /// TypeScript input file to compile and run (default command).
   #[arg(value_name = "PATH")]
   input: Option<PathBuf>,
+
+  /// TypeScript project file (`tsconfig.json`) to load.
+  ///
+  /// When set, module resolution honors `compilerOptions.baseUrl` / `paths`, and `typeRoots` /
+  /// `types` packages are loaded (matching `native-js` behavior).
+  ///
+  /// The path can be either a directory (meaning `<dir>/tsconfig.json`) or an explicit
+  /// `tsconfig.json` path.
+  #[arg(long, short = 'p', value_name = "PATH|DIR", global = true)]
+  project: Option<PathBuf>,
 
   /// Exported function in the entry module to call after module initialization.
   ///
@@ -292,136 +301,6 @@ fn main() {
   }
 }
 
-#[derive(Clone)]
-struct DiskHost {
-  state: Arc<Mutex<DiskState>>,
-  resolver: NodeResolver,
-  compiler_options: CompilerOptions,
-  libs: Vec<LibFile>,
-}
-
-#[derive(Default)]
-struct DiskState {
-  path_to_key: BTreeMap<PathBuf, FileKey>,
-  key_to_path: HashMap<FileKey, PathBuf>,
-  key_to_kind: HashMap<FileKey, FileKind>,
-  texts: HashMap<FileKey, Arc<str>>,
-}
-
-impl DiskHost {
-  fn new(
-    entry: &Path,
-    compiler_options: CompilerOptions,
-    libs: Vec<LibFile>,
-  ) -> Result<(Self, FileKey), String> {
-    let canonical = canonicalize_path(entry)
-      .map_err(|err| format!("failed to read {}: {err}", entry.display()))?;
-
-    let resolver = NodeResolver::new(ResolveOptions {
-      node_modules: true,
-      package_imports: true,
-    });
-
-    let state = Arc::new(Mutex::new(DiskState::default()));
-    let host = DiskHost {
-      state,
-      resolver,
-      compiler_options,
-      libs,
-    };
-
-    let entry_key = {
-      let mut guard = host.state.lock().unwrap();
-      guard.intern_path(canonical)
-    };
-
-    Ok((host, entry_key))
-  }
-
-  fn path_for_key(&self, key: &FileKey) -> Option<PathBuf> {
-    let state = self.state.lock().unwrap();
-    state.key_to_path.get(key).cloned()
-  }
-}
-
-impl DiskState {
-  fn intern_path(&mut self, path: PathBuf) -> FileKey {
-    if let Some(existing) = self.path_to_key.get(&path) {
-      return existing.clone();
-    }
-    let key = FileKey::new(normalize_fs_path(&path));
-    let kind = file_kind_for(&path);
-    self.path_to_key.insert(path.clone(), key.clone());
-    self.key_to_path.insert(key.clone(), path);
-    self.key_to_kind.insert(key.clone(), kind);
-    key
-  }
-}
-
-impl Host for DiskHost {
-  fn file_text(&self, file: &FileKey) -> Result<Arc<str>, HostError> {
-    let mut state = self.state.lock().unwrap();
-    if let Some(text) = state.texts.get(file) {
-      return Ok(text.clone());
-    }
-    let path = state
-      .key_to_path
-      .get(file)
-      .cloned()
-      .ok_or_else(|| HostError::new(format!("unknown file {file}")))?;
-    let text = fs::read_to_string(&path)
-      .map_err(|err| HostError::new(format!("failed to read {}: {err}", path.display())))?;
-    let arc: Arc<str> = Arc::from(text);
-    state.texts.insert(file.clone(), arc.clone());
-    Ok(arc)
-  }
-
-  fn resolve(&self, from: &FileKey, specifier: &str) -> Option<FileKey> {
-    let base = self.path_for_key(from).or_else(|| {
-      let candidate = PathBuf::from(from.as_str());
-      candidate.is_file().then_some(candidate)
-    })?;
-    let resolved = self.resolver.resolve(&base, specifier)?;
-    let resolved = canonicalize_path(&resolved).unwrap_or(resolved);
-    let mut state = self.state.lock().unwrap();
-    Some(state.intern_path(resolved))
-  }
-
-  fn compiler_options(&self) -> CompilerOptions {
-    self.compiler_options.clone()
-  }
-
-  fn lib_files(&self) -> Vec<LibFile> {
-    self.libs.clone()
-  }
-
-  fn file_kind(&self, file: &FileKey) -> FileKind {
-    let state = self.state.lock().unwrap();
-    state.key_to_kind.get(file).copied().unwrap_or(FileKind::Ts)
-  }
-}
-
-fn file_kind_for(path: &Path) -> FileKind {
-  let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
-  let name = name.to_ascii_lowercase();
-  if name.ends_with(".d.ts") || name.ends_with(".d.mts") || name.ends_with(".d.cts") {
-    return FileKind::Dts;
-  }
-  if name.ends_with(".tsx") {
-    return FileKind::Tsx;
-  }
-  if name.ends_with(".ts") || name.ends_with(".mts") || name.ends_with(".cts") {
-    return FileKind::Ts;
-  }
-  if name.ends_with(".jsx") {
-    return FileKind::Jsx;
-  }
-  if name.ends_with(".js") || name.ends_with(".mjs") || name.ends_with(".cjs") {
-    return FileKind::Js;
-  }
-  FileKind::Ts
-}
-
 fn ensure_checked_pipeline_supported(cli: &Cli) {
   if cli.entry_fn.is_some() {
     eprintln!(
@@ -429,65 +308,6 @@ fn ensure_checked_pipeline_supported(cli: &Cli) {
     );
     exit(2);
   }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum LoadMode {
-  Project,
-  Checked,
-}
-
-fn load_program(input: &Path, mode: LoadMode) -> Result<(DiskHost, Program, FileId), String> {
-  let mut compiler_options = match mode {
-    // For the legacy `project` pipeline, `typecheck-ts` is only used for module graph discovery and
-    // export maps. Avoid loading TypeScript's bundled standard library (`lib.dom.d.ts`, etc), which
-    // is large and makes the CLI (and its integration tests) extremely slow.
-    LoadMode::Project => CompilerOptions {
-      no_default_lib: true,
-      ..Default::default()
-    },
-    // The checked pipeline runs real typechecking and strict-subset validation. The native-js
-    // backend targets Node-like native executables, so the DOM lib is unnecessary and slow to load.
-    // Match the `native-js` binary defaults: load only the target ES lib unless the user explicitly
-    // configured libs.
-    LoadMode::Checked => CompilerOptions::default(),
-  };
-
-  if compiler_options.libs.is_empty() && !compiler_options.no_default_lib {
-    let es_lib = match compiler_options.target {
-      ScriptTarget::Es3 | ScriptTarget::Es5 => "es5",
-      ScriptTarget::Es2015 => "es2015",
-      ScriptTarget::Es2016 => "es2016",
-      ScriptTarget::Es2017 => "es2017",
-      ScriptTarget::Es2018 => "es2018",
-      ScriptTarget::Es2019 => "es2019",
-      ScriptTarget::Es2020 => "es2020",
-      ScriptTarget::Es2021 => "es2021",
-      ScriptTarget::Es2022 => "es2022",
-      ScriptTarget::EsNext => "esnext",
-    };
-    compiler_options.libs.push(
-      LibName::parse(es_lib).expect("built-in ES lib name should parse as a LibName"),
-    );
-    if matches!(compiler_options.target, ScriptTarget::EsNext) {
-      compiler_options.libs.push(
-        LibName::parse("esnext.disposable")
-          .expect("built-in ES lib name should parse as a LibName"),
-      );
-    }
-  }
-
-  let libs = match mode {
-    LoadMode::Project => vec![native_js::builtins::project_builtins_lib()],
-    LoadMode::Checked => vec![native_js::builtins::checked_builtins_lib()],
-  };
-
-  let (host, entry_key) = DiskHost::new(input, compiler_options, libs)?;
-  let program = Program::new(host.clone(), vec![entry_key.clone()]);
-  let entry_id: FileId = program
-    .file_id(&entry_key)
-    .expect("entry file should be loaded");
-  Ok((host, program, entry_id))
 }
 
 fn compile_file_to_ir(cli: &Cli, input: &Path) -> String {
@@ -516,7 +336,7 @@ fn compile_file_to_ir(cli: &Cli, input: &Path) -> String {
   // `typecheck-ts` program graph and instead use the pure `parse-js` emitter directly. This keeps
   // the CLI responsive and prevents the builtins integration tests from timing out when run under
   // heavy parallelism.
-  if cli.entry_fn.is_none() {
+  if cli.entry_fn.is_none() && cli.project.is_none() {
     let source = match fs::read_to_string(input) {
       Ok(s) => s,
       Err(err) => {
@@ -553,10 +373,12 @@ fn compile_file_to_ir(cli: &Cli, input: &Path) -> String {
     }
   }
 
-  let (host, program, entry_id) = load_program(input, LoadMode::Project).unwrap_or_else(|err| {
-    eprintln!("{err}");
-    exit(1);
-  });
+  let (program, entry_id) =
+    project_load::load_program(cli.project.as_deref(), input, project_load::LoadMode::Project)
+      .unwrap_or_else(|err| {
+        eprintln!("{err}");
+        exit(1);
+      });
 
   // `Program::check()` is required to populate HIR lowerings, module resolution snapshots, and
   // export maps. The legacy `project` pipeline still tries to compile even when `typecheck-ts`
@@ -567,7 +389,7 @@ fn compile_file_to_ir(cli: &Cli, input: &Path) -> String {
   // errors and enforces the strict subset validator.
   let _diagnostics = program.check();
 
-  match compile_project_to_llvm_ir(&program, &host, entry_id, opts, cli.entry_fn.as_deref()) {
+  match compile_project_to_llvm_ir(&program, &program, entry_id, opts, cli.entry_fn.as_deref()) {
     Ok(ir) => ir,
     Err(err) => {
       eprintln!("{err}");
@@ -582,9 +404,11 @@ fn compile_file_checked(
   emit: EmitKind,
   output: Option<PathBuf>,
 ) -> Result<native_js::Artifact, ()> {
-  let (_host, program, entry_id) = load_program(input, LoadMode::Checked).map_err(|err| {
-    eprintln!("{err}");
-  })?;
+  let (program, entry_id) =
+    project_load::load_program(cli.project.as_deref(), input, project_load::LoadMode::Checked)
+      .map_err(|err| {
+        eprintln!("{err}");
+      })?;
 
   let mut opts = CompileOptions::default();
   opts.builtins = !cli.no_builtins;

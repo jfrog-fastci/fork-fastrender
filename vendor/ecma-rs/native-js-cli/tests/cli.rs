@@ -823,6 +823,150 @@ fn checked_pipeline_supports_import_and_call_across_modules() {
 }
 
 #[test]
+fn checked_pipeline_resolves_tsconfig_paths_with_project_flag() {
+  let tmp = TempDir::new().unwrap();
+
+  let lib_dir = tmp.path().join("src").join("lib");
+  fs::create_dir_all(&lib_dir).unwrap();
+  let dep = lib_dir.join("math.ts");
+  fs::write(
+    &dep,
+    "export function add(a:number,b:number): number { return a+b; }\n",
+  )
+  .unwrap();
+
+  let entry = tmp.path().join("entry.ts");
+  fs::write(
+    &entry,
+    "import {add} from \"@lib/math\";\nexport function main(): number { print(add(20, 22)); return 0; }\n",
+  )
+  .unwrap();
+
+  let tsconfig = tmp.path().join("tsconfig.json");
+  fs::write(
+    &tsconfig,
+    r#"{
+  "compilerOptions": {
+    "baseUrl": ".",
+    "paths": {
+      "@lib/*": ["src/lib/*"]
+    }
+  },
+  "files": ["entry.ts"]
+}
+"#,
+  )
+  .unwrap();
+
+  native_js_cli()
+    .timeout(CLI_TIMEOUT)
+    .arg("--pipeline")
+    .arg("checked")
+    .arg("--project")
+    .arg(&tsconfig)
+    .arg("run")
+    .arg(&entry)
+    .assert()
+    .success()
+    .stdout(predicate::eq("42\n"));
+}
+
+#[test]
+fn checked_pipeline_loads_type_roots_and_types_with_project_flag() {
+  let tmp = TempDir::new().unwrap();
+
+  let types_dir = tmp.path().join("types").join("mypkg");
+  fs::create_dir_all(&types_dir).unwrap();
+  fs::write(
+    types_dir.join("index.d.ts"),
+    "declare interface FromTypes { x: number }\n",
+  )
+  .unwrap();
+
+  let entry = tmp.path().join("entry.ts");
+  fs::write(
+    &entry,
+    "type T = FromTypes;\nexport function main(): number { return 0; }\n",
+  )
+  .unwrap();
+
+  let tsconfig = tmp.path().join("tsconfig.json");
+  fs::write(
+    &tsconfig,
+    r#"{
+  "compilerOptions": {
+    "typeRoots": ["./types"],
+    "types": ["mypkg"]
+  },
+  "files": ["entry.ts"]
+}
+"#,
+  )
+  .unwrap();
+
+  native_js_cli()
+    .timeout(CLI_TIMEOUT)
+    .arg("--pipeline")
+    .arg("checked")
+    .arg("--project")
+    .arg(&tsconfig)
+    .arg("run")
+    .arg(&entry)
+    .assert()
+    .success()
+    .stdout(predicate::eq(""));
+}
+
+#[test]
+fn project_pipeline_resolves_tsconfig_paths_with_project_flag() {
+  let tmp = TempDir::new().unwrap();
+
+  let lib_dir = tmp.path().join("src").join("lib");
+  fs::create_dir_all(&lib_dir).unwrap();
+  let dep = lib_dir.join("math.ts");
+  fs::write(
+    &dep,
+    "export function add(a:number,b:number): number { return a+b; }\n",
+  )
+  .unwrap();
+
+  let entry = tmp.path().join("entry.ts");
+  fs::write(
+    &entry,
+    "import {add} from \"@lib/math\";\nprint(add(20, 22));\n",
+  )
+  .unwrap();
+
+  let tsconfig = tmp.path().join("tsconfig.json");
+  fs::write(
+    &tsconfig,
+    r#"{
+  "compilerOptions": {
+    "baseUrl": ".",
+    "paths": {
+      "@lib/*": ["src/lib/*"]
+    }
+  },
+  "files": ["entry.ts"]
+}
+"#,
+  )
+  .unwrap();
+
+  native_js_cli()
+    .timeout(CLI_TIMEOUT)
+    .arg("--pipeline")
+    .arg("project")
+    .arg("--project")
+    .arg(&tsconfig)
+    .arg("run")
+    .arg(&entry)
+    .assert()
+    .success()
+    .stdout(predicate::eq("42\n"));
+}
+
+#[test]
 fn checked_pipeline_runs_module_initializers_in_import_order_with_transitive_deps() {
   let tmp = TempDir::new().unwrap();
   let a = tmp.path().join("a.ts");
