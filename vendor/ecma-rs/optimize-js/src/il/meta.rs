@@ -459,6 +459,7 @@ pub enum ParallelReason {
   PromiseWritesHeap,
   PromiseConflictingAccess,
   PromiseDependsOnOther,
+  ArrayChainUnsupportedOp,
   ReduceNotAssociative,
   Await,
 }

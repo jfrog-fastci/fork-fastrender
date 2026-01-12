@@ -7,6 +7,9 @@ use crate::{FnId, Program};
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 
+#[cfg(feature = "native-fusion")]
+use crate::il::inst::ArrayChainOp;
+
 #[derive(Clone, Copy, Debug, Default)]
 pub struct CallbackInfo {
   /// Whether the callback uses its second declared parameter.
@@ -230,6 +233,50 @@ fn promise_components_plan(
   }
 
   Ok(())
+}
+
+#[cfg(feature = "native-fusion")]
+fn array_chain_plan(
+  args: &[Arg],
+  ops: &[ArrayChainOp],
+  fn_effects: &FnEffectMap,
+  fn_purities: &FnPurityMap,
+  callback_infos: &[CallbackInfo],
+  defs: &BTreeMap<u32, CalleeVarDef>,
+) -> ParallelPlan {
+  for op in ops {
+    match *op {
+      ArrayChainOp::Map { callback } | ArrayChainOp::Filter { callback } => {
+        let Some(callback_arg) = args.get(callback) else {
+          return ParallelPlan::NotParallelizable(ParallelReason::UnknownCallback);
+        };
+        let Some(id) = resolve_fn_id(callback_arg, defs, &mut Vec::new()) else {
+          return ParallelPlan::NotParallelizable(ParallelReason::UnknownCallback);
+        };
+        let plan = map_filter_plan(id, fn_effects, fn_purities, callback_infos);
+        if !matches!(plan, ParallelPlan::Parallelizable) {
+          return plan;
+        }
+      }
+      ArrayChainOp::Reduce { callback, .. } => {
+        let Some(callback_arg) = args.get(callback) else {
+          return ParallelPlan::NotParallelizable(ParallelReason::UnknownCallback);
+        };
+        let Some(id) = resolve_fn_id(callback_arg, defs, &mut Vec::new()) else {
+          return ParallelPlan::NotParallelizable(ParallelReason::UnknownCallback);
+        };
+        let plan = reduce_plan(id, fn_effects, fn_purities, callback_infos);
+        if !matches!(plan, ParallelPlan::Parallelizable) {
+          return plan;
+        }
+      }
+      // Short-circuiting ops are not modeled yet.
+      ArrayChainOp::Find { .. } | ArrayChainOp::Every { .. } | ArrayChainOp::Some { .. } => {
+        return ParallelPlan::NotParallelizable(ParallelReason::ArrayChainUnsupportedOp);
+      }
+    }
+  }
+  ParallelPlan::Parallelizable
 }
 
 fn detect_associative_reduce_callback(cfg: &Cfg, params: &[u32]) -> bool {
@@ -515,6 +562,23 @@ pub fn annotate_cfg_parallelize(
 
   for label in cfg.graph.labels_sorted() {
     for inst in cfg.bblocks.get_mut(label).iter_mut() {
+      #[cfg(feature = "native-fusion")]
+      if inst.t == InstTyp::ArrayChain {
+        let plan = {
+          let (_tgt, _base, ops) = inst.as_array_chain();
+          array_chain_plan(
+            &inst.args,
+            ops,
+            fn_effects,
+            fn_purities,
+            callback_infos,
+            &defs,
+          )
+        };
+        inst.meta.parallel = Some(plan);
+        continue;
+      }
+
       #[cfg(feature = "native-async-ops")]
       match inst.t {
         InstTyp::Await => {

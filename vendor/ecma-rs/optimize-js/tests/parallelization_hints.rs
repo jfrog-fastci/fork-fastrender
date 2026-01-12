@@ -122,3 +122,25 @@ fn array_map_with_impure_callback_is_not_parallelizable() {
     inst.meta.parallel
   );
 }
+
+#[cfg(feature = "native-fusion")]
+#[test]
+fn array_chain_map_filter_pure_is_parallelizable() {
+  let source = r#"
+    function run(arr) {
+      return arr.map(x => x + 1).filter(x => x > 0);
+    }
+    void run([1, 2, 3]);
+  "#;
+
+  let mut program = compile_source(source, TopLevelMode::Module, false);
+  let _analyses = annotate_program(&mut program);
+
+  let inst = find_inst(&program, |inst| inst.t == InstTyp::ArrayChain)
+    .expect("expected ArrayChain instruction");
+  assert!(
+    matches!(inst.meta.parallel, Some(ParallelPlan::Parallelizable)),
+    "expected ArrayChain to be parallelizable but got {:?}",
+    inst.meta.parallel
+  );
+}

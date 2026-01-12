@@ -738,7 +738,6 @@ pub(crate) fn build_program_function_with_options(
       dom_cache.maybe_invalidate(&cfg_prune_result);
       iteration_result.merge(cfg_prune_result);
       dbg_checkpoint(&format!("opt{}_cfg_prune", i), &cfg);
-
       if options.enable_loop_opts {
         let loop_opts_result = optpass_loop_opts(&mut cfg);
         dom_cache.maybe_invalidate(&loop_opts_result);
