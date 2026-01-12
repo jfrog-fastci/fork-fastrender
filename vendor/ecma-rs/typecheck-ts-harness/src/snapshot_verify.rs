@@ -2,6 +2,7 @@ use crate::directives::{DirectiveParseOptions, HarnessOptions, IgnoredDirectiveS
 use crate::discover::{
   discover_conformance_test_paths, Filter, Shard, TestCasePath, DEFAULT_EXTENSIONS,
 };
+use crate::resolution_trace::ResolutionTraceEntry;
 use crate::runner::{HarnessFileSet, SnapshotStore, TscPoolError, TscRunnerPool};
 use crate::tsc::{node_available, typescript_available};
 use crate::{HarnessError, Result};
@@ -22,6 +23,7 @@ pub struct VerifySnapshotsOptions {
   pub timeout: Duration,
   pub jobs: usize,
   pub trace: bool,
+  pub trace_resolution: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -57,6 +59,8 @@ pub struct VerifySnapshotsCase {
   pub status: VerifySnapshotsStatus,
   #[serde(skip_serializing_if = "Option::is_none")]
   pub detail: Option<String>,
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  pub tsc_resolution_trace: Option<Vec<ResolutionTraceEntry>>,
   #[serde(default, skip_serializing_if = "Vec::is_empty")]
   pub notes: Vec<String>,
 }
@@ -130,10 +134,11 @@ pub fn verify_snapshots(opts: VerifySnapshotsOptions) -> Result<VerifySnapshotsR
   let timeout = opts.timeout;
   let snapshot_store_ref = &snapshot_store;
   let tsc_pool_ref = &tsc_pool;
+  let trace_resolution = opts.trace_resolution;
   let mut results: Vec<VerifySnapshotsCaseResult> = pool.install(|| {
     cases
       .into_par_iter()
-      .map(|case| verify_case(case, snapshot_store_ref, tsc_pool_ref, timeout))
+      .map(|case| verify_case(case, snapshot_store_ref, tsc_pool_ref, timeout, trace_resolution))
       .collect()
   });
   results.sort_by(|a, b| a.case.id.cmp(&b.case.id));
@@ -186,6 +191,7 @@ fn verify_case(
   snapshot_store: &SnapshotStore,
   tsc_pool: &TscRunnerPool,
   timeout: Duration,
+  trace_resolution: bool,
 ) -> VerifySnapshotsCaseResult {
   let TestCasePath { id, path } = case;
   let path_display = path.display().to_string();
@@ -209,11 +215,14 @@ fn verify_case(
     }
   };
 
-  let make_case = |status: VerifySnapshotsStatus, detail: Option<String>| VerifySnapshotsCase {
+  let make_case = |status: VerifySnapshotsStatus,
+                   detail: Option<String>,
+                   tsc_resolution_trace: Option<Vec<ResolutionTraceEntry>>| VerifySnapshotsCase {
     id: id.clone(),
     path: path_display.clone(),
     status,
     detail,
+    tsc_resolution_trace,
     notes: notes.clone(),
   };
 
@@ -221,7 +230,11 @@ fn verify_case(
     Ok(snapshot) => snapshot,
     Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
       return VerifySnapshotsCaseResult {
-        case: make_case(VerifySnapshotsStatus::MissingSnapshot, Some(err.to_string())),
+        case: make_case(
+          VerifySnapshotsStatus::MissingSnapshot,
+          Some(err.to_string()),
+          None,
+        ),
         harness_options,
       };
     }
@@ -230,6 +243,7 @@ fn verify_case(
         case: make_case(
           VerifySnapshotsStatus::Drift,
           Some(format!("failed to load snapshot: {err}")),
+          None,
         ),
         harness_options,
       };
@@ -240,31 +254,34 @@ fn verify_case(
     (Some(file_set), Some(options)) => (file_set, options),
     _ => {
       return VerifySnapshotsCaseResult {
-        case: make_case(VerifySnapshotsStatus::Drift, input_error),
+        case: make_case(VerifySnapshotsStatus::Drift, input_error, None),
         harness_options,
       };
     }
   };
 
   let deadline = Instant::now() + timeout;
-  let live = match tsc_pool.run(&file_set, &options, deadline, false) {
+  let live = match tsc_pool.run(&file_set, &options, deadline, trace_resolution) {
     Ok(diags) => diags,
     Err(TscPoolError::Timeout) => {
       return VerifySnapshotsCaseResult {
         case: make_case(
           VerifySnapshotsStatus::Timeout,
           Some(format!("timed out after {}s", timeout.as_secs())),
+          None,
         ),
         harness_options,
       };
     }
     Err(TscPoolError::Crashed(err)) => {
       return VerifySnapshotsCaseResult {
-        case: make_case(VerifySnapshotsStatus::TscCrashed, Some(err)),
+        case: make_case(VerifySnapshotsStatus::TscCrashed, Some(err), None),
         harness_options,
       };
     }
   };
+  let live_resolution_trace =
+    trace_resolution.then(|| live.resolution_trace.clone().unwrap_or_default());
 
   let mut expected = snapshot;
   expected.canonicalize_for_baseline();
@@ -278,6 +295,7 @@ fn verify_case(
         case: make_case(
           VerifySnapshotsStatus::Drift,
           Some(format!("failed to serialize snapshot payload: {err}")),
+          None,
         ),
         harness_options,
       };
@@ -290,6 +308,7 @@ fn verify_case(
         case: make_case(
           VerifySnapshotsStatus::TscCrashed,
           Some(format!("failed to serialize live tsc payload: {err}")),
+          None,
         ),
         harness_options,
       };
@@ -298,14 +317,14 @@ fn verify_case(
 
   if expected_value == actual_value {
     return VerifySnapshotsCaseResult {
-      case: make_case(VerifySnapshotsStatus::Ok, None),
+      case: make_case(VerifySnapshotsStatus::Ok, None, None),
       harness_options,
     };
   }
 
   let detail = diff_payloads(&expected_value, &actual_value);
   VerifySnapshotsCaseResult {
-    case: make_case(VerifySnapshotsStatus::Drift, Some(detail)),
+    case: make_case(VerifySnapshotsStatus::Drift, Some(detail), live_resolution_trace),
     harness_options,
   }
 }

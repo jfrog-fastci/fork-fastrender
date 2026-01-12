@@ -204,6 +204,10 @@ enum Commands {
     #[arg(long)]
     trace: bool,
 
+    /// Record module resolution traces for the live `tsc` run.
+    #[arg(long)]
+    trace_resolution: bool,
+
     /// Override the conformance root directory
     #[arg(long)]
     root: Option<std::path::PathBuf>,
@@ -452,6 +456,7 @@ fn main() -> ExitCode {
       node,
       timeout_secs,
       trace,
+      trace_resolution,
       root,
       jobs,
     } => {
@@ -486,6 +491,7 @@ fn main() -> ExitCode {
         timeout: Duration::from_secs(timeout_secs),
         jobs,
         trace,
+        trace_resolution,
       };
 
       match verify_snapshots(opts) {

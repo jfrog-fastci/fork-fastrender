@@ -305,6 +305,9 @@ bash ../scripts/cargo_agent.sh run -p typecheck-ts-harness --release -- \
   live `tsc`, `tsc` crashes, or times out.
 - `--json` emits a deterministic report on stdout; pass `--trace` to enable
   structured tracing logs on stderr (keeping stdout parseable for CI redirects).
+- Pass `--trace-resolution` to capture `tsc_resolution_trace` entries for drifted
+  cases (useful for diagnosing snapshot mismatches caused by module resolution
+  changes).
 
 **GitHub Actions suggestion (`ubuntu-latest`, 2-core):**
 
