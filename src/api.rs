@@ -2920,6 +2920,15 @@ pub struct LayoutDiagnostics {
   /// Number of measure callback invocations performed by Taffy during grid layout.
   #[serde(default, skip_serializing_if = "Option::is_none")]
   pub taffy_grid_measure_calls: Option<u64>,
+  /// Grid item measurement cache hits served from the thread-local cache.
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  pub grid_measure_cache_tls_hits: Option<u64>,
+  /// Grid item measurement cache hits served from the shared cross-thread cache.
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  pub grid_measure_cache_shared_hits: Option<u64>,
+  /// Grid item measurement cache misses (requiring nested formatting-context layout).
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  pub grid_measure_cache_misses: Option<u64>,
   pub fragment_deep_clones: Option<usize>,
   pub fragment_traversed: Option<usize>,
   #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -7017,6 +7026,14 @@ impl FastRender {
           rec.stats.layout.taffy_grid_compute_cpu_ms =
             Some(taffy_perf.grid_compute_ns as f64 / 1_000_000.0);
           rec.stats.layout.taffy_grid_measure_calls = Some(taffy_perf.grid_measure_calls);
+        }
+        if toggles.truthy("FASTR_GRID_MEASURE_CACHE_PROFILE") || toggles.truthy("FASTR_LAYOUT_PROFILE")
+        {
+          let (tls_hits, shared_hits, misses) =
+            crate::layout::contexts::grid::grid_measure_cache_counters();
+          rec.stats.layout.grid_measure_cache_tls_hits = Some(tls_hits);
+          rec.stats.layout.grid_measure_cache_shared_hits = Some(shared_hits);
+          rec.stats.layout.grid_measure_cache_misses = Some(misses);
         }
         let fragment_metrics = crate::tree::fragment_tree::fragment_instrumentation_counters();
         rec.stats.layout.fragment_deep_clones = Some(fragment_metrics.deep_clones);
@@ -12514,6 +12531,11 @@ impl FastRender {
     let mut layout_profile_totals = LayoutProfileSnapshot::default();
     if diagnostics_enabled || layout_profile {
       reset_layout_profile();
+    }
+    let grid_measure_cache_profile =
+      toggles.truthy("FASTR_GRID_MEASURE_CACHE_PROFILE") || layout_profile;
+    if grid_measure_cache_profile {
+      crate::layout::contexts::grid::reset_grid_measure_cache_counters();
     }
     let flex_profile = flex_profile_enabled();
     if flex_profile {

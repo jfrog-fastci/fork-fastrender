@@ -45,8 +45,6 @@ use crate::layout::formatting_context::fragmentainer_block_offset_hint;
 use crate::layout::formatting_context::fragmentainer_block_size_hint;
 use crate::layout::formatting_context::intrinsic_block_cache_lookup;
 use crate::layout::formatting_context::intrinsic_block_cache_store;
-#[cfg(not(test))]
-use crate::layout::formatting_context::intrinsic_cache_epoch;
 use crate::layout::formatting_context::intrinsic_cache_lookup;
 use crate::layout::formatting_context::intrinsic_cache_store;
 use crate::layout::formatting_context::layout_cache_lookup;
@@ -101,10 +99,12 @@ use crate::tree::box_tree::BoxNode;
 use crate::tree::fragment_tree::{
   FragmentContent, FragmentNode, GridFragmentationInfo, GridItemFragmentationData, GridTrackRanges,
 };
+use parking_lot::RwLock;
 use rayon::prelude::*;
 use rustc_hash::{FxHashMap, FxHashSet, FxHasher};
 use std::cell::{Cell, RefCell};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, LazyLock};
 use taffy::geometry::Line;
 use taffy::prelude::TaffyFitContent;
 use taffy::prelude::TaffyMaxContent;
@@ -276,11 +276,159 @@ struct MeasureKey {
 
 const EPHEMERAL_BOX_ID_BASE: usize = 1usize << (usize::BITS - 1);
 
-#[cfg(not(test))]
 const GRID_MEASURE_SIZE_CACHE_MAX_ENTRIES: usize = 262_144;
-
-#[cfg(not(test))]
 const GRID_MEASURE_SIZE_CACHE_EVICTION_BATCH: usize = 16_384;
+
+/// Number of shards used for the shared (cross-thread) grid measurement cache.
+///
+/// Grid layout can fan out across rayon workers, and a purely thread-local measure cache would
+/// fragment reuse across those workers (amplifying expensive nested layout). A shared cache avoids
+/// this duplication while keeping lock contention low via sharding.
+const GRID_MEASURE_SHARED_CACHE_SHARDS: usize = 64;
+const GRID_MEASURE_SHARED_CACHE_MAX_ENTRIES_PER_SHARD: usize =
+  GRID_MEASURE_SIZE_CACHE_MAX_ENTRIES / GRID_MEASURE_SHARED_CACHE_SHARDS;
+const GRID_MEASURE_SHARED_CACHE_EVICTION_BATCH_PER_SHARD: usize =
+  GRID_MEASURE_SIZE_CACHE_EVICTION_BATCH / GRID_MEASURE_SHARED_CACHE_SHARDS;
+
+#[derive(Clone, Copy)]
+struct GridMeasureCacheEntry {
+  epoch: usize,
+  output: taffy::tree::MeasureOutput,
+}
+
+struct ShardedGridMeasureCache {
+  shards:
+    [RwLock<FxHashMap<MeasureKey, GridMeasureCacheEntry>>; GRID_MEASURE_SHARED_CACHE_SHARDS],
+}
+
+impl ShardedGridMeasureCache {
+  fn new() -> Self {
+    Self {
+      shards: std::array::from_fn(|_| RwLock::new(FxHashMap::default())),
+    }
+  }
+
+  #[inline]
+  fn shard_index_for_box_id(box_id: usize) -> usize {
+    box_id % GRID_MEASURE_SHARED_CACHE_SHARDS
+  }
+
+  #[inline]
+  fn get(&self, key: &MeasureKey, epoch: usize) -> Option<taffy::tree::MeasureOutput> {
+    let shard = &self.shards[Self::shard_index_for_box_id(key.box_id)];
+    {
+      let map = shard.read();
+      if let Some(entry) = map.get(key) {
+        if entry.epoch == epoch {
+          return Some(entry.output);
+        }
+      } else {
+        return None;
+      }
+    }
+
+    // Slow path: if the entry is stale, remove it lazily under a write lock.
+    let mut map = shard.write();
+    if let Some(entry) = map.get(key) {
+      if entry.epoch == epoch {
+        return Some(entry.output);
+      }
+      if entry.epoch != epoch {
+        map.remove(key);
+      }
+    }
+    None
+  }
+
+  #[inline]
+  fn insert(&self, key: MeasureKey, epoch: usize, output: taffy::tree::MeasureOutput) {
+    let shard = &self.shards[Self::shard_index_for_box_id(key.box_id)];
+    let mut map = shard.write();
+
+    let max_entries = GRID_MEASURE_SHARED_CACHE_MAX_ENTRIES_PER_SHARD;
+    if max_entries == 0 {
+      map.clear();
+      return;
+    }
+    if map.len() >= max_entries && !map.contains_key(&key) {
+      let eviction_batch = GRID_MEASURE_SHARED_CACHE_EVICTION_BATCH_PER_SHARD
+        .max(1)
+        .min(max_entries)
+        .min(map.len());
+      if eviction_batch > 0 {
+        let keys: Vec<_> = map.keys().take(eviction_batch).cloned().collect();
+        for key in keys {
+          map.remove(&key);
+        }
+      }
+    }
+    map.insert(
+      key,
+      GridMeasureCacheEntry {
+        epoch,
+        output,
+      },
+    );
+  }
+
+  fn clear(&self) {
+    for shard in &self.shards {
+      shard.write().clear();
+    }
+  }
+}
+
+static GLOBAL_GRID_MEASURE_SIZE_CACHE: LazyLock<ShardedGridMeasureCache> =
+  LazyLock::new(ShardedGridMeasureCache::new);
+static GLOBAL_GRID_MEASURE_SIZE_CACHE_EPOCH: AtomicUsize = AtomicUsize::new(0);
+
+static GRID_MEASURE_CACHE_TLS_HITS: AtomicU64 = AtomicU64::new(0);
+static GRID_MEASURE_CACHE_SHARED_HITS: AtomicU64 = AtomicU64::new(0);
+static GRID_MEASURE_CACHE_MISSES: AtomicU64 = AtomicU64::new(0);
+
+#[inline]
+fn grid_measure_cache_profile_enabled() -> bool {
+  crate::debug::runtime::runtime_toggles().truthy("FASTR_GRID_MEASURE_CACHE_PROFILE")
+    || crate::debug::runtime::runtime_toggles().truthy("FASTR_LAYOUT_PROFILE")
+}
+
+#[inline]
+fn record_grid_measure_cache_tls_hit() {
+  if !grid_measure_cache_profile_enabled() {
+    return;
+  }
+  GRID_MEASURE_CACHE_TLS_HITS.fetch_add(1, Ordering::Relaxed);
+}
+
+#[inline]
+fn record_grid_measure_cache_shared_hit() {
+  if !grid_measure_cache_profile_enabled() {
+    return;
+  }
+  GRID_MEASURE_CACHE_SHARED_HITS.fetch_add(1, Ordering::Relaxed);
+}
+
+#[inline]
+fn record_grid_measure_cache_miss() {
+  if !grid_measure_cache_profile_enabled() {
+    return;
+  }
+  GRID_MEASURE_CACHE_MISSES.fetch_add(1, Ordering::Relaxed);
+}
+
+pub(crate) fn grid_measure_cache_counters() -> (u64, u64, u64) {
+  (
+    GRID_MEASURE_CACHE_TLS_HITS.load(Ordering::Relaxed),
+    GRID_MEASURE_CACHE_SHARED_HITS.load(Ordering::Relaxed),
+    GRID_MEASURE_CACHE_MISSES.load(Ordering::Relaxed),
+  )
+}
+
+pub(crate) fn reset_grid_measure_cache_counters() {
+  GRID_MEASURE_CACHE_TLS_HITS.store(0, Ordering::Relaxed);
+  GRID_MEASURE_CACHE_SHARED_HITS.store(0, Ordering::Relaxed);
+  GRID_MEASURE_CACHE_MISSES.store(0, Ordering::Relaxed);
+}
 
 fn grid_measure_size_cache_store_with_policy(
   cache: &mut FxHashMap<MeasureKey, taffy::tree::MeasureOutput>,
@@ -308,7 +456,6 @@ fn grid_measure_size_cache_store_with_policy(
   cache.insert(key, output);
 }
 
-#[cfg(not(test))]
 thread_local! {
   /// Cross-invocation cache for grid item measurements keyed by quantized constraints.
   ///
@@ -321,37 +468,125 @@ thread_local! {
   static GRID_MEASURE_SIZE_CACHE_EPOCH: Cell<usize> = const { Cell::new(0) };
 }
 
-#[cfg(not(test))]
-fn grid_measure_size_cache_use_epoch() {
-  let epoch = intrinsic_cache_epoch().max(1);
+#[cfg(test)]
+thread_local! {
+  static GRID_MEASURE_SIZE_CACHE_ENABLED: Cell<bool> = const { Cell::new(false) };
+}
+
+#[cfg(test)]
+static GRID_MEASURE_SIZE_CACHE_TEST_LOCK: LazyLock<parking_lot::ReentrantMutex<()>> =
+  LazyLock::new(|| parking_lot::ReentrantMutex::new(()));
+
+#[cfg(test)]
+fn grid_measure_size_cache_test_lock() -> parking_lot::ReentrantMutexGuard<'static, ()> {
+  GRID_MEASURE_SIZE_CACHE_TEST_LOCK.lock()
+}
+
+#[inline]
+fn grid_measure_size_cache_enabled() -> bool {
+  #[cfg(test)]
+  {
+    GRID_MEASURE_SIZE_CACHE_ENABLED.with(|cell| cell.get())
+  }
+  #[cfg(not(test))]
+  {
+    true
+  }
+}
+
+#[cfg(test)]
+struct GridMeasureSizeCacheThreadGuard {
+  prev: bool,
+}
+
+#[cfg(test)]
+impl Drop for GridMeasureSizeCacheThreadGuard {
+  fn drop(&mut self) {
+    GRID_MEASURE_SIZE_CACHE_ENABLED.with(|cell| cell.set(self.prev));
+    GRID_MEASURE_SIZE_CACHE_EPOCH.with(|cell| cell.set(0));
+    GRID_MEASURE_SIZE_CACHE.with(|cache| cache.borrow_mut().clear());
+  }
+}
+
+#[cfg(test)]
+fn reset_grid_measure_size_cache_for_test() {
+  GRID_MEASURE_SIZE_CACHE_EPOCH.with(|cell| cell.set(0));
+  GRID_MEASURE_SIZE_CACHE.with(|cache| cache.borrow_mut().clear());
+  GLOBAL_GRID_MEASURE_SIZE_CACHE_EPOCH.store(0, Ordering::Relaxed);
+  GLOBAL_GRID_MEASURE_SIZE_CACHE.clear();
+}
+
+#[cfg(test)]
+fn enable_grid_measure_size_cache_for_test_thread() -> GridMeasureSizeCacheThreadGuard {
+  let prev = GRID_MEASURE_SIZE_CACHE_ENABLED.with(|cell| {
+    let prev = cell.get();
+    cell.set(true);
+    prev
+  });
+  GRID_MEASURE_SIZE_CACHE_EPOCH.with(|cell| cell.set(0));
+  GRID_MEASURE_SIZE_CACHE.with(|cache| cache.borrow_mut().clear());
+  GridMeasureSizeCacheThreadGuard { prev }
+}
+
+fn grid_measure_size_cache_use_epoch() -> usize {
+  let epoch = crate::layout::formatting_context::intrinsic_cache_epoch().max(1);
   GRID_MEASURE_SIZE_CACHE_EPOCH.with(|cell| {
     if cell.get() != epoch {
       cell.set(epoch);
       GRID_MEASURE_SIZE_CACHE.with(|cache| cache.borrow_mut().clear());
+      let previous_global = GLOBAL_GRID_MEASURE_SIZE_CACHE_EPOCH.swap(epoch, Ordering::Relaxed);
+      if previous_global != epoch {
+        GLOBAL_GRID_MEASURE_SIZE_CACHE.clear();
+      }
     }
   });
+  epoch
 }
 
-#[cfg(not(test))]
 fn grid_measure_size_cache_lookup(key: &MeasureKey) -> Option<taffy::tree::MeasureOutput> {
-  if (key.box_id & EPHEMERAL_BOX_ID_BASE) != 0 {
+  if !grid_measure_size_cache_enabled() || (key.box_id & EPHEMERAL_BOX_ID_BASE) != 0 {
     return None;
   }
-  grid_measure_size_cache_use_epoch();
-  GRID_MEASURE_SIZE_CACHE.with(|cache| cache.borrow().get(key).copied())
+
+  let epoch = grid_measure_size_cache_use_epoch();
+  if let Some(hit) = GRID_MEASURE_SIZE_CACHE.with(|cache| cache.borrow().get(key).copied()) {
+    record_grid_measure_cache_tls_hit();
+    return Some(hit);
+  }
+
+  // Avoid polluting the shared cache with style-override probes; they are typically short-lived and
+  // local to a single measurement pass.
+  if key.override_fingerprint.is_some() {
+    record_grid_measure_cache_miss();
+    return None;
+  }
+
+  let Some(hit) = GLOBAL_GRID_MEASURE_SIZE_CACHE.get(key, epoch) else {
+    record_grid_measure_cache_miss();
+    return None;
+  };
+  record_grid_measure_cache_shared_hit();
+
+  GRID_MEASURE_SIZE_CACHE.with(|cache| {
+    let mut cache = cache.borrow_mut();
+    grid_measure_size_cache_store_with_policy(
+      &mut cache,
+      *key,
+      hit,
+      GRID_MEASURE_SIZE_CACHE_MAX_ENTRIES,
+      GRID_MEASURE_SIZE_CACHE_EVICTION_BATCH,
+    );
+  });
+  Some(hit)
 }
 
-#[cfg(test)]
-fn grid_measure_size_cache_lookup(_key: &MeasureKey) -> Option<taffy::tree::MeasureOutput> {
-  None
-}
-
-#[cfg(not(test))]
 fn grid_measure_size_cache_store(key: MeasureKey, output: taffy::tree::MeasureOutput) {
-  if (key.box_id & EPHEMERAL_BOX_ID_BASE) != 0 {
+  if !grid_measure_size_cache_enabled() || (key.box_id & EPHEMERAL_BOX_ID_BASE) != 0 {
     return;
   }
-  grid_measure_size_cache_use_epoch();
+
+  let key_copy = key;
+  let epoch = grid_measure_size_cache_use_epoch();
   GRID_MEASURE_SIZE_CACHE.with(|cache| {
     let mut cache = cache.borrow_mut();
     grid_measure_size_cache_store_with_policy(
@@ -362,10 +597,11 @@ fn grid_measure_size_cache_store(key: MeasureKey, output: taffy::tree::MeasureOu
       GRID_MEASURE_SIZE_CACHE_EVICTION_BATCH,
     );
   });
-}
 
-#[cfg(test)]
-fn grid_measure_size_cache_store(_key: MeasureKey, _output: taffy::tree::MeasureOutput) {}
+  if key_copy.override_fingerprint.is_none() {
+    GLOBAL_GRID_MEASURE_SIZE_CACHE.insert(key_copy, epoch, output);
+  }
+}
 
 impl MeasureKey {
   fn quantize(val: f32) -> f32 {
@@ -408,7 +644,7 @@ impl MeasureKey {
 
   fn new(
     node: &BoxNode,
-    known_dimensions: taffy::geometry::Size<Option<f32>>,
+    mut known_dimensions: taffy::geometry::Size<Option<f32>>,
     available_space: taffy::geometry::Size<taffy::style::AvailableSpace>,
     _viewport: Size,
     drop_available_height: bool,
@@ -425,6 +661,30 @@ impl MeasureKey {
         }
         taffy::style::AvailableSpace::MinContent => MeasureAvailKey::MinContent,
         taffy::style::AvailableSpace::MaxContent => MeasureAvailKey::MaxContent,
+      }
+    }
+
+    // `constraints_from_taffy` treats tiny definite sizes (`<= 1px`) as effectively indefinite.
+    // Mirror that normalization in the cache key so "probe" sizes coalesce and we don't end up
+    // caching (or returning) a 0px forced layout.
+    if let Some(w) = known_dimensions.width {
+      if w <= 1.0
+        && matches!(
+          available_space.width,
+          taffy::style::AvailableSpace::Definite(v) if v <= 1.0
+        )
+      {
+        known_dimensions.width = None;
+      }
+    }
+    if let Some(h) = known_dimensions.height {
+      if h <= 1.0
+        && matches!(
+          available_space.height,
+          taffy::style::AvailableSpace::Definite(v) if v <= 1.0
+        )
+      {
+        known_dimensions.height = None;
       }
     }
 
@@ -10189,10 +10449,6 @@ impl GridFormattingContext {
     // §6.5). Taffy still probes leaf nodes with the current track size estimate, which can be much
     // smaller than the item's max-content size.
     //
-    // Keep the definite height in the cache key (for conservatism) but treat it as effectively
-    // indefinite for nested layout so intrinsic sizing keywords like `height:fit-content` don't
-    // clamp to a transient track size and incorrectly prevent the item from contributing to track
-    // sizing.
     let treat_definite_height_probe_as_indefinite_for_layout = !allow_stretch_block_size_override
       && known_dimensions.height.is_none()
       && matches!(
@@ -10207,6 +10463,13 @@ impl GridFormattingContext {
           | FormattingContextType::Flex
       )
       && node_or_in_flow_children_depend_on_available_height(box_node);
+    if treat_definite_height_probe_as_indefinite_for_layout {
+      // When we intentionally treat a definite probe height as effectively indefinite for nested
+      // layout, reflect that in the cache key by dropping the available height entirely. This keeps
+      // key cardinality bounded on pages where Taffy iterates through many intermediate track-size
+      // guesses.
+      drop_available_height = true;
+    }
     // Taffy expresses intrinsic height probes (min-/max-content contributions) by setting
     // `available_space.height` to `MinContent`/`MaxContent`.
     //
@@ -10297,24 +10560,13 @@ impl GridFormattingContext {
       self.viewport_size,
       drop_available_height,
     );
-    let mut layout_available_space = available_space;
-    if treat_definite_height_probe_as_indefinite_for_layout
-      && matches!(
-        layout_available_space.height,
-        taffy::style::AvailableSpace::Definite(_)
-      )
-    {
-      // Use a tiny definite so `constraints_from_taffy` normalizes it to an indefinite height.
-      layout_available_space.height = taffy::style::AvailableSpace::Definite(0.0);
-    }
     if trace_measure_id.is_some_and(|id| id == box_node.id) {
       eprintln!(
-        "[grid-measure-item] box_id={} node_id={:?} known={:?} avail={:?} layout_avail={:?} fc={:?} height={:?} height_kw={:?} allow_stretch={} treat_height_probe_indef={} drop_avail_height={}",
+        "[grid-measure-item] box_id={} node_id={:?} known={:?} avail={:?} fc={:?} height={:?} height_kw={:?} allow_stretch={} treat_height_probe_indef={} drop_avail_height={}",
         box_node.id,
         node_id,
         known_dimensions,
         available_space,
-        layout_available_space,
         fc_type,
         style.height,
         style.height_keyword,
@@ -10341,7 +10593,7 @@ impl GridFormattingContext {
       let constraints = constraints_from_taffy(
         self.viewport_size,
         known_dimensions,
-        layout_available_space,
+        available_space,
         style.writing_mode,
         parent_inline_base,
       );
@@ -10366,7 +10618,7 @@ impl GridFormattingContext {
     let mut constraints = constraints_from_taffy(
       self.viewport_size,
       known_dimensions,
-      layout_available_space,
+      available_space,
       style.writing_mode,
       parent_inline_base,
     );
@@ -10959,7 +11211,7 @@ impl GridFormattingContext {
 
       if let Some(limit) = fit_height_limit {
         let can_use_available_height = matches!(
-          layout_available_space.height,
+          available_space.height,
           taffy::style::AvailableSpace::Definite(h) if h.is_finite() && h > 1.0
         );
         if limit.is_none() && !can_use_available_height {
@@ -10969,7 +11221,7 @@ impl GridFormattingContext {
           // precomputed border-box size based on intrinsic probes (which can ignore the actual
           // column width and collapse content).
         } else {
-          match compute_fit_border_box(Axis::Vertical, limit, layout_available_space.height) {
+          match compute_fit_border_box(Axis::Vertical, limit, available_space.height) {
             Ok(border_box) if border_box.is_finite() => {
               let border_box = border_box.max(0.0);
               fit_border_box_height = Some(border_box);
@@ -11044,7 +11296,7 @@ impl GridFormattingContext {
 
       if resolve_fit_max_height {
         if let Some(limit) = fit_max_height_limit {
-          match compute_fit_border_box(Axis::Vertical, limit, layout_available_space.height) {
+          match compute_fit_border_box(Axis::Vertical, limit, available_space.height) {
             Ok(max_border_box) if max_border_box.is_finite() => {
               let max_border_box = max_border_box.max(0.0);
               if let Some(existing) = constraints.used_border_box_height {
@@ -19014,6 +19266,314 @@ mod tests {
   }
 
   #[test]
+  fn grid_measure_cross_invocation_cache_reuses_layout_results_within_epoch() {
+    use taffy::style::AvailableSpace;
+
+    let _lock = grid_measure_size_cache_test_lock();
+    reset_grid_measure_size_cache_for_test();
+    let _cache_guard = enable_grid_measure_size_cache_for_test_thread();
+
+    let gc = GridFormattingContext::new();
+    let factory = gc.factory.clone();
+    let container_style = make_grid_style();
+    let container_constraints = LayoutConstraints::indefinite();
+    let taffy_style: taffy::style::Style = taffy::style::Style::default();
+
+    let mut node = BoxNode::new_block(make_item_style(), FormattingContextType::Block, vec![]);
+    node.id = 4242;
+    let node_ptr = &node as *const _;
+
+    let node_id = TaffyNodeId::from(1u64);
+    let known = taffy::geometry::Size {
+      width: None,
+      height: None,
+    };
+    let avail = taffy::geometry::Size {
+      width: AvailableSpace::Definite(200.0),
+      height: AvailableSpace::Definite(100.0),
+    };
+
+    reset_grid_measure_layout_calls();
+
+    let mut measure_cache: FxHashMap<MeasureKey, taffy::tree::MeasureOutput> = FxHashMap::default();
+    let mut measured_fragments: FxHashMap<MeasureKey, FragmentNode> = FxHashMap::default();
+    let mut measured_node_keys: FxHashMap<TaffyNodeId, Vec<MeasureKey>> = FxHashMap::default();
+
+    let first = gc.measure_grid_item(
+      node_ptr,
+      node_id,
+      known,
+      avail,
+      None,
+      container_style.as_ref(),
+      &container_constraints,
+      &taffy_style,
+      &FxHashSet::default(),
+      &factory,
+      &mut measure_cache,
+      &mut measured_fragments,
+      &mut measured_node_keys,
+    );
+
+    assert_eq!(grid_measure_layout_calls(), 1);
+
+    // Simulate a fresh Taffy invocation: new per-invocation caches should still reuse the
+    // cross-invocation measure cache.
+    let mut measure_cache: FxHashMap<MeasureKey, taffy::tree::MeasureOutput> = FxHashMap::default();
+    let mut measured_fragments: FxHashMap<MeasureKey, FragmentNode> = FxHashMap::default();
+    let mut measured_node_keys: FxHashMap<TaffyNodeId, Vec<MeasureKey>> = FxHashMap::default();
+
+    let second = gc.measure_grid_item(
+      node_ptr,
+      node_id,
+      known,
+      avail,
+      None,
+      container_style.as_ref(),
+      &container_constraints,
+      &taffy_style,
+      &FxHashSet::default(),
+      &factory,
+      &mut measure_cache,
+      &mut measured_fragments,
+      &mut measured_node_keys,
+    );
+
+    assert_eq!(
+      grid_measure_layout_calls(),
+      1,
+      "repeated measurements in the same epoch should hit the cross-invocation cache"
+    );
+    assert_eq!(second.size, first.size);
+  }
+
+  #[test]
+  fn grid_measure_key_coalesces_tiny_known_probes() {
+    use taffy::style::AvailableSpace;
+
+    let _lock = grid_measure_size_cache_test_lock();
+    reset_grid_measure_size_cache_for_test();
+    let _cache_guard = enable_grid_measure_size_cache_for_test_thread();
+
+    let gc = GridFormattingContext::new();
+    let factory = gc.factory.clone();
+    let container_style = make_grid_style();
+    let container_constraints = LayoutConstraints::indefinite();
+    let taffy_style: taffy::style::Style = taffy::style::Style::default();
+
+    let mut node = BoxNode::new_block(make_item_style(), FormattingContextType::Block, vec![]);
+    node.id = 4243;
+    let node_ptr = &node as *const _;
+
+    let node_id = TaffyNodeId::from(1u64);
+    let avail = taffy::geometry::Size {
+      width: AvailableSpace::Definite(0.0),
+      height: AvailableSpace::Definite(100.0),
+    };
+
+    reset_grid_measure_layout_calls();
+
+    let mut measure_cache: FxHashMap<MeasureKey, taffy::tree::MeasureOutput> = FxHashMap::default();
+    let mut measured_fragments: FxHashMap<MeasureKey, FragmentNode> = FxHashMap::default();
+    let mut measured_node_keys: FxHashMap<TaffyNodeId, Vec<MeasureKey>> = FxHashMap::default();
+
+    let first = gc.measure_grid_item(
+      node_ptr,
+      node_id,
+      taffy::geometry::Size {
+        width: Some(0.0),
+        height: None,
+      },
+      avail,
+      None,
+      container_style.as_ref(),
+      &container_constraints,
+      &taffy_style,
+      &FxHashSet::default(),
+      &factory,
+      &mut measure_cache,
+      &mut measured_fragments,
+      &mut measured_node_keys,
+    );
+
+    assert_eq!(grid_measure_layout_calls(), 1);
+
+    let mut measure_cache: FxHashMap<MeasureKey, taffy::tree::MeasureOutput> = FxHashMap::default();
+    let mut measured_fragments: FxHashMap<MeasureKey, FragmentNode> = FxHashMap::default();
+    let mut measured_node_keys: FxHashMap<TaffyNodeId, Vec<MeasureKey>> = FxHashMap::default();
+
+    let second = gc.measure_grid_item(
+      node_ptr,
+      node_id,
+      taffy::geometry::Size {
+        width: None,
+        height: None,
+      },
+      avail,
+      None,
+      container_style.as_ref(),
+      &container_constraints,
+      &taffy_style,
+      &FxHashSet::default(),
+      &factory,
+      &mut measure_cache,
+      &mut measured_fragments,
+      &mut measured_node_keys,
+    );
+
+    assert_eq!(
+      grid_measure_layout_calls(),
+      1,
+      "tiny definite probes should normalize so cache keys coalesce (<=1px)"
+    );
+    assert_eq!(second.size, first.size);
+  }
+
+  #[test]
+  fn grid_measure_shared_cache_reuses_across_threads() {
+    use taffy::style::AvailableSpace;
+
+    let _lock = grid_measure_size_cache_test_lock();
+    reset_grid_measure_size_cache_for_test();
+    reset_grid_measure_cache_counters();
+
+    let item_style = make_item_style();
+    let box_id = 4244usize;
+
+    let toggles = Arc::new(runtime::RuntimeToggles::from_map(HashMap::from([(
+      "FASTR_GRID_MEASURE_CACHE_PROFILE".to_string(),
+      "1".to_string(),
+    )])));
+
+    let thread_1 = {
+      let toggles = toggles.clone();
+      let item_style = item_style.clone();
+      std::thread::spawn(move || {
+        runtime::with_thread_runtime_toggles(toggles, || {
+          let _cache_guard = enable_grid_measure_size_cache_for_test_thread();
+          let mut node = BoxNode::new_block(item_style, FormattingContextType::Block, vec![]);
+          node.id = box_id;
+          let node_ptr = &node as *const _;
+          let gc = GridFormattingContext::new();
+          let factory = gc.factory.clone();
+          let container_style = make_grid_style();
+          let container_constraints = LayoutConstraints::indefinite();
+          let taffy_style: taffy::style::Style = taffy::style::Style::default();
+
+          let avail = taffy::geometry::Size {
+            width: AvailableSpace::Definite(200.0),
+            height: AvailableSpace::Definite(100.0),
+          };
+          let known = taffy::geometry::Size {
+            width: None,
+            height: None,
+          };
+
+          reset_grid_measure_layout_calls();
+          let mut measure_cache: FxHashMap<MeasureKey, taffy::tree::MeasureOutput> =
+            FxHashMap::default();
+          let mut measured_fragments: FxHashMap<MeasureKey, FragmentNode> = FxHashMap::default();
+          let mut measured_node_keys: FxHashMap<TaffyNodeId, Vec<MeasureKey>> = FxHashMap::default();
+
+          let output = gc.measure_grid_item(
+            node_ptr,
+            TaffyNodeId::from(1u64),
+            known,
+            avail,
+            None,
+            container_style.as_ref(),
+            &container_constraints,
+            &taffy_style,
+            &FxHashSet::default(),
+            &factory,
+            &mut measure_cache,
+            &mut measured_fragments,
+            &mut measured_node_keys,
+          );
+
+          assert_eq!(
+            grid_measure_layout_calls(),
+            1,
+            "first thread should miss and perform nested layout"
+          );
+          output.size
+        })
+      })
+    };
+
+    let size_1 = thread_1.join().expect("thread 1 join");
+
+    let thread_2 = {
+      let toggles = toggles.clone();
+      let item_style = item_style.clone();
+      std::thread::spawn(move || {
+        runtime::with_thread_runtime_toggles(toggles, || {
+          let _cache_guard = enable_grid_measure_size_cache_for_test_thread();
+          let mut node = BoxNode::new_block(item_style, FormattingContextType::Block, vec![]);
+          node.id = box_id;
+          let node_ptr = &node as *const _;
+          let gc = GridFormattingContext::new();
+          let factory = gc.factory.clone();
+          let container_style = make_grid_style();
+          let container_constraints = LayoutConstraints::indefinite();
+          let taffy_style: taffy::style::Style = taffy::style::Style::default();
+
+          let avail = taffy::geometry::Size {
+            width: AvailableSpace::Definite(200.0),
+            height: AvailableSpace::Definite(100.0),
+          };
+          let known = taffy::geometry::Size {
+            width: None,
+            height: None,
+          };
+
+          reset_grid_measure_layout_calls();
+          let mut measure_cache: FxHashMap<MeasureKey, taffy::tree::MeasureOutput> =
+            FxHashMap::default();
+          let mut measured_fragments: FxHashMap<MeasureKey, FragmentNode> = FxHashMap::default();
+          let mut measured_node_keys: FxHashMap<TaffyNodeId, Vec<MeasureKey>> = FxHashMap::default();
+
+          let output = gc.measure_grid_item(
+            node_ptr,
+            TaffyNodeId::from(1u64),
+            known,
+            avail,
+            None,
+            container_style.as_ref(),
+            &container_constraints,
+            &taffy_style,
+            &FxHashSet::default(),
+            &factory,
+            &mut measure_cache,
+            &mut measured_fragments,
+            &mut measured_node_keys,
+          );
+
+          assert_eq!(
+            grid_measure_layout_calls(),
+            0,
+            "second thread should hit the shared cache and skip nested layout"
+          );
+          output.size
+        })
+      })
+    };
+
+    let size_2 = thread_2.join().expect("thread 2 join");
+    assert_eq!(size_2, size_1);
+
+    let (_tls_hits, shared_hits, misses) = grid_measure_cache_counters();
+    assert!(
+      shared_hits >= 1,
+      "expected at least one shared cache hit, got shared_hits={shared_hits}"
+    );
+    assert!(
+      misses >= 1,
+      "expected at least one miss for the first fill, got misses={misses}"
+    );
+  }
+
+  #[test]
   fn grid_measure_quantization_limits_layout_calls() {
     use taffy::style::AvailableSpace;
 
@@ -19199,7 +19759,7 @@ mod tests {
   }
 
   #[test]
-  fn grid_measure_respects_definite_available_height_when_percentage_children_present() {
+  fn grid_measure_ignores_definite_available_height_when_percentage_children_present_in_auto_tracks() {
     use taffy::style::AvailableSpace;
 
     let gc = GridFormattingContext::new();
@@ -19264,13 +19824,14 @@ mod tests {
     let calls = grid_measure_layout_calls();
     assert_eq!(
       calls,
-      nodes.len() * heights.len(),
-      "percentage-height children should force distinct cache keys per definite height probe (calls={calls})"
+      nodes.len(),
+      "percentage-height children should not force distinct cache keys for content-sized tracks (calls={calls})"
     );
   }
 
   #[test]
-  fn grid_measure_respects_definite_available_height_when_fit_content_children_present() {
+  fn grid_measure_ignores_definite_available_height_when_fit_content_children_present_in_auto_tracks()
+  {
     use taffy::style::AvailableSpace;
 
     let gc = GridFormattingContext::new();
@@ -19335,8 +19896,8 @@ mod tests {
     let calls = grid_measure_layout_calls();
     assert_eq!(
       calls,
-      nodes.len() * heights.len(),
-      "fit-content children should force distinct cache keys per definite height probe (calls={calls})"
+      nodes.len(),
+      "fit-content children should not force distinct cache keys for content-sized tracks (calls={calls})"
     );
   }
 
@@ -20259,6 +20820,75 @@ mod tests {
       "expected first (order 1) item at y=10, got {:?}",
       first_fragment.bounds
     );
+  }
+
+  #[test]
+  fn grid_layout_is_deterministic_across_rayon_threads() {
+    // This test intentionally compares the *full fragment positions* produced by grid layout under
+    // different rayon pool sizes. The grid code paths use rayon for child layout and fragment
+    // conversion; the output must remain deterministic regardless of how work is partitioned.
+
+    let mut grid_style = ComputedStyle::default();
+    grid_style.display = CssDisplay::Grid;
+    grid_style.grid_template_columns = vec![
+      GridTrack::Length(Length::px(100.0)),
+      GridTrack::Length(Length::px(100.0)),
+      GridTrack::Length(Length::px(100.0)),
+      GridTrack::Length(Length::px(100.0)),
+    ];
+    let grid_style = Arc::new(grid_style);
+
+    let mut children = Vec::new();
+    let mut ids = Vec::new();
+    for i in 0..32usize {
+      let mut style = ComputedStyle::default();
+      style.height = Some(Length::px(10.0 + (i % 3) as f32));
+      let style = Arc::new(style);
+      let id = 1000 + i;
+      let mut child = BoxNode::new_block(style, FormattingContextType::Block, vec![]);
+      child.id = id;
+      children.push(child);
+      ids.push(id);
+    }
+
+    let mut grid = BoxNode::new_block(grid_style, FormattingContextType::Grid, children);
+    grid.id = 999;
+    let constraints = LayoutConstraints::definite(400.0, 400.0);
+
+    let run = |threads| -> Vec<(usize, Rect)> {
+      let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(threads)
+        .build()
+        .expect("build rayon pool");
+      pool.install(|| {
+        let fc = GridFormattingContext::with_viewport(Size::new(400.0, 400.0)).with_parallelism(
+          LayoutParallelism::enabled(1).with_max_threads(Some(threads)),
+        );
+        let fragment = fc.layout(&grid, &constraints).expect("layout should succeed");
+        let mut result: Vec<(usize, Rect)> = ids
+          .iter()
+          .map(|id| (*id, find_block_fragment(&fragment, *id).bounds))
+          .collect();
+        result.sort_by_key(|(id, _)| *id);
+        result
+      })
+    };
+
+    let layout_2 = run(2);
+    let layout_4 = run(4);
+
+    assert_eq!(layout_2.len(), layout_4.len());
+    let eps = 0.01;
+    for ((id_2, rect_2), (id_4, rect_4)) in layout_2.iter().zip(layout_4.iter()) {
+      assert_eq!(id_2, id_4);
+      assert!(
+        (rect_2.x() - rect_4.x()).abs() < eps
+          && (rect_2.y() - rect_4.y()).abs() < eps
+          && (rect_2.width() - rect_4.width()).abs() < eps
+          && (rect_2.height() - rect_4.height()).abs() < eps,
+        "grid layout mismatch for id={id_2}: rect_2={rect_2:?} rect_4={rect_4:?}"
+      );
+    }
   }
 
   #[test]
