@@ -84,7 +84,7 @@ When `appearance:none` is computed, the control stops using the native form-cont
   - `src/tree/box_generation.rs::file_input_appearance_none_generates_file_selector_button_box`
 - Paint integration tests:
   - `tests/paint/form_control_appearance_none_affordances.rs` asserts `appearance:none` suppresses number/date affordance glyphs.
-  - `tests/form_control_placeholder_opacity.rs` asserts `::placeholder` opacity is applied (both paint backends).
+  - `tests/misc/form_control_placeholder_opacity.rs` asserts `::placeholder` opacity is applied (both paint backends).
   - `tests/paint/range_track_pseudo_element.rs` asserts the range track pseudo-element paints under `appearance:none` (both paint backends).
   - `tests/paint/range_pseudo_opacity.rs` asserts range track/thumb pseudo-element `opacity` is applied (both paint backends).
   - `tests/paint/file_selector_button_pseudo_element.rs` asserts `::file-selector-button` paints under `appearance:none` (both paint backends).
