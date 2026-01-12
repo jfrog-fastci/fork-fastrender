@@ -462,7 +462,6 @@ impl WindowRealmUserData {
   pub(crate) fn document_obj(&self) -> Option<GcObject> {
     self.document_obj
   }
-
   pub(crate) fn dom_platform_mut(&mut self) -> Option<&mut DomPlatform> {
     self.dom_platform.as_mut()
   }

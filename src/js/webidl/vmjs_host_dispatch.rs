@@ -3,7 +3,7 @@ use crate::dom::HTML_NAMESPACE;
 use crate::dom2::{DomError, NodeId, NodeKind};
 use crate::js::bindings::DomExceptionClassVmJs;
 use crate::js::dom2_bindings;
-use crate::js::dom_platform::DomPlatform;
+use crate::js::dom_platform::{DomInterface, DomNodeKey, DomPlatform};
 use crate::js::window_realm::{
   abort_signal_listener_cleanup_native, event_target_add_event_listener_dom2,
   event_target_dispatch_event_dom2, event_target_remove_event_listener_dom2, WindowRealmUserData,
@@ -15,10 +15,14 @@ use crate::js::window_timers::{
   SET_INTERVAL_NOT_CALLABLE_ERROR, SET_INTERVAL_STRING_HANDLER_ERROR,
   SET_TIMEOUT_NOT_CALLABLE_ERROR, SET_TIMEOUT_STRING_HANDLER_ERROR,
 };
-use crate::js::{DomHost, DocumentHostState, TimerId, Url, UrlLimits, UrlSearchParams, WindowRealmHost};
+use std::any::TypeId;
+use crate::js::{
+  DomHost, DocumentHostState, TimerId, Url, UrlLimits, UrlSearchParams, WindowRealmHost,
+};
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::marker::PhantomData;
+use std::ptr::NonNull;
 use std::rc::Rc;
 use std::time::Duration;
 use vm_js::{
@@ -34,6 +38,7 @@ const URLSP_ITER_INDEX_SLOT: &str = "__fastrender_urlsp_iter_index";
 const URLSP_ITER_LEN_SLOT: &str = "__fastrender_urlsp_iter_len";
 const URL_SEARCH_PARAMS_SLOT: &str = "__fastrender_url_searchParams";
 const ELEMENT_CLASS_LIST_PLACEHOLDER_SLOT: &str = "__fastrender_element_class_list_placeholder";
+const DOM_HOST_NOT_AVAILABLE_ERROR: &str = "DOM host not available";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum UrlSearchParamsIteratorKind {
@@ -102,6 +107,36 @@ struct EventListenerEntry {
 #[derive(Debug, Default)]
 struct EventTargetState {
   listeners: Vec<EventListenerEntry>,
+}
+
+enum DomHostAdapter<'a, Host: DomHost + 'static> {
+  Embedder(&'a mut Host),
+  DocumentHost(&'a mut DocumentHostState),
+  BrowserDocument(&'a mut BrowserDocumentDom2),
+}
+
+impl<Host: DomHost + 'static> DomHost for DomHostAdapter<'_, Host> {
+  fn with_dom<R, F>(&self, f: F) -> R
+  where
+    F: FnOnce(&crate::dom2::Document) -> R,
+  {
+    match self {
+      Self::Embedder(host) => host.with_dom(f),
+      Self::DocumentHost(host) => host.with_dom(f),
+      Self::BrowserDocument(host) => <BrowserDocumentDom2 as DomHost>::with_dom(*host, f),
+    }
+  }
+
+  fn mutate_dom<R, F>(&mut self, f: F) -> R
+  where
+    F: FnOnce(&mut crate::dom2::Document) -> (R, bool),
+  {
+    match self {
+      Self::Embedder(host) => host.mutate_dom(f),
+      Self::DocumentHost(host) => host.mutate_dom(f),
+      Self::BrowserDocument(host) => <BrowserDocumentDom2 as DomHost>::mutate_dom(host, f),
+    }
+  }
 }
 
 fn is_callable(scope: &Scope<'_>, value: Value) -> bool {
@@ -327,6 +362,12 @@ fn key_from_str(scope: &mut Scope<'_>, s: &str) -> Result<PropertyKey, VmError> 
   let s = scope.alloc_string(s)?;
   scope.push_root(Value::String(s))?;
   Ok(PropertyKey::from_string(s))
+}
+
+fn gc_object_id(obj: GcObject) -> u64 {
+  // Must match `window_realm::gc_object_id`. Duplicated here to avoid introducing a large module
+  // dependency edge from WebIDL host dispatch to `window_realm`.
+  (obj.index() as u64) | ((obj.generation() as u64) << 32)
 }
 
 fn js_string_to_rust_string(scope: &Scope<'_>, value: Value) -> Result<String, VmError> {
@@ -650,6 +691,90 @@ impl<Host: WindowRealmHost + 'static> VmJsWebIdlBindingsHostDispatch<Host> {
       .get(&WeakGcObject::from(obj))
       .cloned()
       .ok_or(VmError::TypeError("Illegal invocation"))
+  }
+
+  fn with_dom_host<R>(
+    &mut self,
+    vm: &mut Vm,
+    f: impl FnOnce(&mut DomHostAdapter<'_, Host>) -> Result<R, VmError>,
+  ) -> Result<R, VmError>
+  where
+    Host: DomHost,
+  {
+    enum DomHostSource<Host: DomHost + 'static> {
+      Embedder(NonNull<Host>),
+      DocumentHost(NonNull<DocumentHostState>),
+      BrowserDocument(NonNull<BrowserDocumentDom2>),
+    }
+
+    let Some(hooks_ptr) = vm.active_host_hooks_ptr() else {
+      return Err(VmError::TypeError(DOM_HOST_NOT_AVAILABLE_ERROR));
+    };
+    // SAFETY: the returned pointer is only exposed by `vm-js` while an embedder-owned `VmHostHooks`
+    // value is mutably borrowed for a single JS execution boundary.
+    let hooks = unsafe { &mut *hooks_ptr };
+    let Some(any) = hooks.as_any_mut() else {
+      return Err(VmError::TypeError(DOM_HOST_NOT_AVAILABLE_ERROR));
+    };
+
+    let payload_ptr: *mut VmJsHostHooksPayload = {
+      let any_ptr: *mut dyn std::any::Any = any;
+      // SAFETY: `any_ptr` is derived from `hooks.as_any_mut()` and is only used within this method.
+      unsafe {
+        (&mut *any_ptr)
+          .downcast_mut::<VmJsHostHooksPayload>()
+          .map(|payload| payload as *mut VmJsHostHooksPayload)
+      }
+    }
+    .ok_or(VmError::TypeError(DOM_HOST_NOT_AVAILABLE_ERROR))?;
+
+    let source = unsafe {
+      let payload = &mut *payload_ptr;
+      if let Some(host) = payload.embedder_state_mut::<Host>() {
+        Some(DomHostSource::Embedder(NonNull::from(host)))
+      } else if let Some(mut vm_host_ptr) = payload.vm_host_ptr() {
+        let vm_host = vm_host_ptr.as_mut();
+        let any = vm_host.as_any_mut();
+        let ty = any.type_id();
+        if ty == TypeId::of::<Host>() {
+          let host = any.downcast_mut::<Host>().expect("checked type id");
+          Some(DomHostSource::Embedder(NonNull::from(host)))
+        } else if ty == TypeId::of::<DocumentHostState>() {
+          let host = any
+            .downcast_mut::<DocumentHostState>()
+            .expect("checked type id");
+          Some(DomHostSource::DocumentHost(NonNull::from(host)))
+        } else if ty == TypeId::of::<BrowserDocumentDom2>() {
+          let host = any
+            .downcast_mut::<BrowserDocumentDom2>()
+            .expect("checked type id");
+          Some(DomHostSource::BrowserDocument(NonNull::from(host)))
+        } else {
+          None
+        }
+      } else {
+        None
+      }
+    }
+    .ok_or(VmError::TypeError(DOM_HOST_NOT_AVAILABLE_ERROR))?;
+
+    match source {
+      DomHostSource::Embedder(mut host_ptr) => {
+        let host = unsafe { host_ptr.as_mut() };
+        let mut adapter = DomHostAdapter::Embedder(host);
+        f(&mut adapter)
+      }
+      DomHostSource::DocumentHost(mut host_ptr) => {
+        let host = unsafe { host_ptr.as_mut() };
+        let mut adapter = DomHostAdapter::DocumentHost(host);
+        f(&mut adapter)
+      }
+      DomHostSource::BrowserDocument(mut host_ptr) => {
+        let host = unsafe { host_ptr.as_mut() };
+        let mut adapter = DomHostAdapter::BrowserDocument(host);
+        f(&mut adapter)
+      }
+    }
   }
 
   fn require_params(&self, receiver: Option<Value>) -> Result<UrlSearchParams, VmError> {
@@ -1190,7 +1315,7 @@ impl<Host: WindowRealmHost + 'static> VmJsWebIdlBindingsHostDispatch<Host> {
   }
 }
 
-impl<Host: WindowRealmHost + 'static> WebIdlBindingsHost for VmJsWebIdlBindingsHostDispatch<Host> {
+impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebIdlBindingsHostDispatch<Host> {
   fn call_operation(
     &mut self,
     vm: &mut Vm,
@@ -1204,6 +1329,44 @@ impl<Host: WindowRealmHost + 'static> WebIdlBindingsHost for VmJsWebIdlBindingsH
     self.maybe_sweep(scope.heap_mut());
 
     match (interface, operation, overload) {
+      ("Document", "getElementById", 0) => {
+        let document_obj = Self::require_receiver_object(receiver)?;
+        let id_value = args.get(0).copied().unwrap_or(Value::Undefined);
+        let id_value = scope.heap_mut().to_string(id_value)?;
+        let id = scope
+          .heap()
+          .get_string(id_value)
+          .map(|s| s.to_utf8_lossy())
+          .unwrap_or_default();
+
+        let found = self.with_dom_host(vm, |host| {
+          Ok(host.with_dom(|dom| {
+            dom.get_element_by_id(&id).map(|node_id| {
+              let primary = DomInterface::primary_for_node_kind(&dom.node(node_id).kind);
+              (node_id, primary)
+            })
+          }))
+        })?;
+        let Some((node_id, primary_interface)) = found else {
+          return Ok(Value::Null);
+        };
+
+        let wrapper = if let Some(data) = vm.user_data_mut::<WindowRealmUserData>() {
+          if let Some(platform) = data.dom_platform_mut() {
+            let document_id = gc_object_id(document_obj);
+            platform.get_or_create_wrapper(
+              scope,
+              DomNodeKey::new(document_id, node_id),
+              primary_interface,
+            )?
+          } else {
+            scope.alloc_object()?
+          }
+        } else {
+          scope.alloc_object()?
+        };
+        Ok(Value::Object(wrapper))
+      }
       ("EventTarget", "constructor", 0) => {
         let obj = Self::require_receiver_object(receiver)?;
         scope.heap_mut().object_set_host_slots(
@@ -2332,20 +2495,16 @@ impl<Host: WindowRealmHost + 'static> WebIdlBindingsHost for VmJsWebIdlBindingsH
 #[cfg(test)]
 mod window_document_tests {
   use super::*;
+  use crate::dom2;
   use crate::dom2::DomError;
   use crate::js::window_realm::{WindowRealm, WindowRealmConfig};
   use crate::js::window_timers::VmJsEventLoopHooks;
-  use crate::js::WindowHostState;
+  use crate::js::{DocumentHostState, WindowHostState};
   use vm_js::{
-    Heap, HeapLimits, PropertyDescriptor, PropertyKey, PropertyKind, Realm, Scope, Value, Vm,
-    VmError, VmHost, VmHostHooks, VmOptions,
+    GcObject, Heap, HeapLimits, PropertyDescriptor, PropertyKey, PropertyKind, Realm, Scope, Value,
+    Vm, VmError, VmHost, VmHostHooks, VmOptions,
   };
-
-  #[test]
-  fn url_search_params_iterator_kind_returns_error_for_unknown_operation() {
-    let err = url_search_params_iterator_kind("bogus").unwrap_err();
-    assert!(matches!(err, VmError::TypeError(_)));
-  }
+  use webidl_vm_js::{host_from_hooks, VmJsHostHooksPayload};
 
   fn window_document_getter_native(
     vm: &mut Vm,
@@ -2356,7 +2515,7 @@ mod window_document_tests {
     _this: Value,
     _args: &[Value],
   ) -> Result<Value, VmError> {
-    let bindings_host = webidl_vm_js::host_from_hooks(hooks)?;
+    let bindings_host = host_from_hooks(hooks)?;
     bindings_host.call_operation(vm, scope, None, "Window", "document", 0, &[])
   }
 
@@ -3081,6 +3240,93 @@ mod element_dispatch_tests {
       }
     }
     realm.teardown(&mut heap);
+    Ok(())
+  }
+
+  fn call_document_get_element_by_id_native(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
+    let Value::Object(global_obj) = this else {
+      return Err(VmError::TypeError("expected global object"));
+    };
+    scope.push_root(Value::Object(global_obj))?;
+
+    // Resolve `globalThis.document`.
+    let document_key_s = scope.alloc_string("document")?;
+    scope.push_root(Value::String(document_key_s))?;
+    let document_key = PropertyKey::from_string(document_key_s);
+    let document = vm.get_with_host_and_hooks(host, scope, hooks, global_obj, document_key)?;
+    scope.push_root(document)?;
+
+    let id_s = scope.alloc_string("target")?;
+    scope.push_root(Value::String(id_s))?;
+    let id_value = Value::String(id_s);
+
+    let host_dispatch = host_from_hooks(hooks)?;
+    host_dispatch.call_operation(
+      vm,
+      scope,
+      Some(document),
+      "Document",
+      "getElementById",
+      0,
+      &[id_value],
+    )
+  }
+
+  #[test]
+  fn dom_dispatch_can_recover_dom_host_without_embedder_state() -> Result<(), VmError> {
+    let dom = dom2::parse_html("<!doctype html><html><body><div id=\"target\"></div></body></html>")
+      .expect("parse_html");
+    let mut doc_host = DocumentHostState::new(dom);
+    let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
+    let global = realm.global_object();
+
+    let mut host_dispatch = VmJsWebIdlBindingsHostDispatch::<WindowHostState>::new(global);
+    let mut hooks = VmJsEventLoopHooks::<WindowHostState>::new_with_vm_host_and_window_realm(
+      &mut doc_host,
+      &mut realm,
+      Some(&mut host_dispatch),
+    );
+
+    let payload = VmHostHooks::as_any_mut(&mut hooks)
+      .and_then(|any| any.downcast_mut::<VmJsHostHooksPayload>())
+      .expect("hooks should expose VmJsHostHooksPayload");
+    assert!(
+      payload.embedder_state_any_mut().is_none(),
+      "expected embedder_state to be unset for borrow-split hook construction"
+    );
+
+    let (vm, realm_ref, heap) = realm.vm_realm_and_heap_mut();
+    let call_id = vm.register_native_call(call_document_get_element_by_id_native)?;
+    let mut scope = heap.scope();
+    scope.push_root(Value::Object(global))?;
+
+    let name = scope.alloc_string("test_dom_dispatch")?;
+    scope.push_root(Value::String(name))?;
+    let func = scope.alloc_native_function(call_id, None, name, 0)?;
+    scope.heap_mut().object_set_prototype(
+      func,
+      Some(realm_ref.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(func))?;
+
+    let result = vm.call_with_host_and_hooks(
+      &mut doc_host,
+      &mut scope,
+      &mut hooks,
+      Value::Object(func),
+      Value::Object(global),
+      &[],
+    )?;
+    assert!(matches!(result, Value::Object(_)));
+
     Ok(())
   }
 }

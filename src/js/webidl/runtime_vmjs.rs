@@ -17,7 +17,6 @@ struct NoopVmHostHooks;
 impl VmHostHooks for NoopVmHostHooks {
   fn host_enqueue_promise_job(&mut self, _job: vm_js::Job, _realm: Option<vm_js::RealmId>) {}
 }
-
 #[derive(Debug, Clone, Copy)]
 pub struct JsOwnPropertyDescriptor {
   pub enumerable: bool,
