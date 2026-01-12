@@ -173,6 +173,8 @@ impl OmniboxProvider for AboutPagesProvider {
 
     const PAGES: &[(&str, &str)] = &[
       (about_pages::ABOUT_NEWTAB, "New Tab"),
+      (about_pages::ABOUT_HISTORY, "History"),
+      (about_pages::ABOUT_BOOKMARKS, "Bookmarks"),
       (about_pages::ABOUT_HELP, "Help"),
       (about_pages::ABOUT_VERSION, "Version"),
       (about_pages::ABOUT_GPU, "GPU"),
@@ -760,6 +762,8 @@ mod tests {
     let suggestions = build_omnibox_suggestions(&ctx, "about", 10);
     for url in [
       about_pages::ABOUT_NEWTAB,
+      about_pages::ABOUT_HISTORY,
+      about_pages::ABOUT_BOOKMARKS,
       about_pages::ABOUT_HELP,
       about_pages::ABOUT_VERSION,
       about_pages::ABOUT_GPU,
