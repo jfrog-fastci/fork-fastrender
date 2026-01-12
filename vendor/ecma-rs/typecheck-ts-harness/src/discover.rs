@@ -194,6 +194,9 @@ fn load_conformance_test_from_path(case: TestCasePath) -> Result<TestCase> {
   );
   let mut notes = split.notes;
   notes.extend(parsed.notes);
+  if let Some(note) = parsed.options.directives.ignored_directives_note() {
+    notes.push(note);
+  }
 
   Ok(TestCase {
     id: case.id,
@@ -310,6 +313,9 @@ pub fn load_conformance_test(root: &Path, id: &str) -> Result<TestCase> {
   );
   let mut notes = split.notes;
   notes.extend(parsed.notes);
+  if let Some(note) = parsed.options.directives.ignored_directives_note() {
+    notes.push(note);
+  }
 
   Ok(TestCase {
     id: normalized_id,
@@ -417,6 +423,26 @@ mod tests {
     assert_eq!(case.options.strict, Some(true));
     assert_eq!(case.files.len(), 1);
     assert_eq!(case.files[0].name, "subdir/foo.ts");
+  }
+
+  #[test]
+  fn discover_notes_ignored_directives() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("case.ts");
+    fs::write(&path, "// @unknownOption: true\nconst value = 1;\n").unwrap();
+
+    let cases =
+      discover_conformance_tests(dir.path(), &Filter::All, &default_extensions()).unwrap();
+    assert_eq!(cases.len(), 1);
+    let case = &cases[0];
+    assert!(
+      case
+        .notes
+        .iter()
+        .any(|note| note.contains("ignored directives: @unknownoption")),
+      "expected ignored directive note; notes={:?}",
+      case.notes
+    );
   }
 
   #[test]
