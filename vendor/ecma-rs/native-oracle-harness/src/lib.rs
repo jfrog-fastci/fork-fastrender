@@ -198,6 +198,53 @@ pub fn erase_typescript_to_js(source: &str) -> Result<String, TsToJsError> {
   erase_typescript_to_js_with_source_type(source, SourceType::Script)
 }
 
+/// Typecheck TypeScript source in strict-native mode.
+///
+/// This is a compile-time acceptance gate: if any [`diagnostics::Severity::Error`] diagnostics are
+/// emitted, the check fails and the full diagnostic list is returned.
+///
+/// This API is feature-gated because the `typecheck-ts` crate is intentionally not pulled into the
+/// default `native-oracle-harness` build.
+#[cfg(feature = "typecheck-strict-native")]
+pub fn typecheck_strict_native(name: &str, source: &str) -> Result<(), Vec<Diagnostic>> {
+  use typecheck_ts::lib_support::{CompilerOptions, ScriptTarget};
+  use typecheck_ts::{FileKey, MemoryHost, Program};
+
+  let mut options = CompilerOptions::default();
+  // Prefer the new option name, but keep the legacy alias set for compatibility.
+  options.native_strict = true;
+  options.strict_native = true;
+  options.target = ScriptTarget::Es2020;
+
+  let mut host = MemoryHost::with_options(options);
+  let file = FileKey::new(name);
+  host.insert(file.clone(), source);
+
+  let program = Program::new(host, vec![file]);
+  let diagnostics = program.check();
+  if diagnostics
+    .iter()
+    .any(|diag| diag.severity == diagnostics::Severity::Error)
+  {
+    Err(diagnostics)
+  } else {
+    Ok(())
+  }
+}
+
+/// Like [`erase_typescript_to_js`], but only after the input passes strict-native typechecking.
+///
+/// This is intended for future `native-vs-oracle` suites that want to ensure the oracle is only
+/// run on programs accepted by the strict-native dialect.
+#[cfg(feature = "typecheck-strict-native")]
+pub fn erase_typescript_to_js_checked_strict_native(
+  name: &str,
+  source: &str,
+) -> Result<String, Diagnostic> {
+  typecheck_strict_native(name, source).map_err(diagnostics_to_one)?;
+  ts_to_js(source)
+}
+
 #[cfg(feature = "optimize-js-fallback")]
 fn erase_with_optimize_js_fallback(
   source: &str,
