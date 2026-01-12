@@ -8638,6 +8638,12 @@ mod tests {
       "expected fetch to not override global ReadableStream, got {stream_ctor_is_unchanged:?}"
     );
 
+    let stream_env_id = window.exec_script("new ReadableStream().__fastrender_fetch_env_id")?;
+    assert!(
+      matches!(stream_env_id, Value::Undefined),
+      "expected global ReadableStream to come from window_streams, got {stream_env_id:?}"
+    );
+
     let response_body_is_global_readable_stream =
       window.exec_script("new Response('x').body instanceof ReadableStream")?;
     assert!(
