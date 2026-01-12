@@ -219,6 +219,16 @@ The browser also requests `Theme::Dark` on Linux:
 - **X11:** winit uses the `_GTK_THEME_VARIANT=dark` hint (best-effort; depends on the window manager).
 - **Wayland:** applies to client-side decorations (CSD) where supported by the compositor.
 
+## Usage
+
+- The address bar is an “omnibox”: type either a URL **or** a search query and press Enter.
+  - URL inputs are normalized:
+    - `example.com` → `https://example.com/`
+    - filesystem paths like `/tmp/a.html` → `file://...`
+  - Non-URL queries (e.g. `cats`) are treated as searches using the default search engine.
+- While typing, the omnibox shows a suggestions dropdown (from history and open tabs).
+  - Use ArrowUp/ArrowDown to select a suggestion, Enter to accept, Escape to close the dropdown.
+
 ## Keyboard / mouse shortcuts
 
 | Shortcut | Action |

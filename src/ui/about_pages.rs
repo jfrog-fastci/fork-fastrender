@@ -470,9 +470,12 @@ fn help_html() -> &'static str {
 
       <h2>Usage</h2>
       <ul>
-        <li>Type a URL into the address bar (http/https/file/about).</li>
+        <li>Type a URL (http/https/file/about) or a search query into the address bar.</li>
         <li>Typing <code>example.com</code> defaults to <code>https://example.com/</code>.</li>
         <li>Typing a filesystem path like <code>/tmp/a.html</code> navigates to a <code>file://</code> URL.</li>
+        <li>Non-URL queries (e.g. <code>cats</code>) are treated as searches using the default search engine.</li>
+        <li>The address bar (omnibox) shows suggestions from history and open tabs while typing.
+          Use <kbd>ArrowUp</kbd>/<kbd>ArrowDown</kbd> to select, <kbd>Enter</kbd> to accept, <kbd>Escape</kbd> to close.</li>
       </ul>
 
       <h2>Bookmarks and history</h2>
@@ -1087,5 +1090,18 @@ mod tests {
         "expected about:help HTML to contain {needle:?}"
       );
     }
+  }
+
+  #[test]
+  fn about_help_mentions_search_and_omnibox_suggestions() {
+    let html = html_for_about_url(ABOUT_HELP).unwrap();
+    assert!(
+      html.contains("default search engine"),
+      "expected about:help HTML to mention search fallback, got: {html}"
+    );
+    assert!(
+      html.contains("omnibox") && html.contains("ArrowDown"),
+      "expected about:help HTML to mention omnibox suggestions, got: {html}"
+    );
   }
 }
