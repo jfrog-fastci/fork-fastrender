@@ -16,6 +16,8 @@ If you have the `native-js` binary installed on your `PATH`, common commands are
 native-js check input.ts
 native-js run input.ts
 native-js bench input.ts --warmup 1 --iters 10
+# Symbolize instruction addresses back to TypeScript source:
+native-js addr2line /tmp/out 0x401234 0x4012ab
 # Machine-readable timing output:
 native-js --json bench input.ts --warmup 1 --iters 10
 ```
@@ -455,6 +457,26 @@ lldb /tmp/out
 
 If the breakpoint does not resolve, try using the absolute path (matching the path embedded in the
 DWARF debug info).
+
+### Symbolizing crash addresses (`addr2line`)
+
+When you have a raw instruction address (e.g. from a crash report or debugger backtrace), you can
+resolve it back to the TypeScript source location using the DWARF line tables emitted by
+`native-js --debug`:
+
+```bash
+native-js --debug build path/to/entry.ts -o /tmp/out
+
+# Use runtime instruction addresses (RIP/PC values) from the debugger/crash report:
+native-js addr2line /tmp/out 0x401234
+```
+
+If the executable was built as PIE and the address comes from a running process, you may need to
+subtract the load base:
+
+```bash
+native-js addr2line /tmp/out --base 0x555555554000 0x555555556234
+```
 
 ### Diagnostics
 
