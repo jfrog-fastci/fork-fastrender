@@ -35,8 +35,10 @@ struct RenderedHost {
 }
 
 impl WindowRealmHost for RenderedHost {
-  fn vm_host_and_window_realm(&mut self) -> (&mut dyn VmHost, &mut WindowRealm) {
-    (&mut self.document, &mut self.realm)
+  fn vm_host_and_window_realm(
+    &mut self,
+  ) -> fastrender::error::Result<(&mut dyn VmHost, &mut WindowRealm)> {
+    Ok((&mut self.document, &mut self.realm))
   }
 
   fn webidl_bindings_host(&mut self) -> Option<&mut dyn webidl_vm_js::WebIdlBindingsHost> {
@@ -470,7 +472,9 @@ impl Backend for VmJsRenderedBackend {
       let mut hooks = VmJsEventLoopHooks::<RenderedHost>::new_with_host(host);
       hooks.set_event_loop(event_loop);
 
-      let (vm_host, window_realm) = host.vm_host_and_window_realm();
+      let (vm_host, window_realm) = host
+        .vm_host_and_window_realm()
+        .map_err(|err| RunError::Js(err.to_string()))?;
       let exec_result =
         window_realm.exec_script_with_name_and_host_and_hooks(vm_host, &mut hooks, name, source);
 
