@@ -384,7 +384,11 @@ impl Program {
       self.ensure_not_cancelled()?;
       {
         let state = self.read_state();
-        if state.analyzed {
+        // Incremental edits can invalidate cached interned tables without
+        // changing the declaration fingerprint (e.g. when body-based inference
+        // updates exported types). `interned_dirty` tracks this state; when set
+        // we must rebuild interned tables before answering queries from caches.
+        if state.analyzed && !state.interned_dirty {
           let db = state.typecheck_db.lock().clone();
           let fingerprint = db::decl_types_fingerprint(&db);
           if state.decl_types_fingerprint == Some(fingerprint) {

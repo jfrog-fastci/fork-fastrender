@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use typecheck_ts::lib_support::CompilerOptions;
-use typecheck_ts::{FileKey, MemoryHost, Program};
+use typecheck_ts::{DefKind, FileKey, MemoryHost, Program, PropertyKey};
 
 #[test]
 fn inferred_function_return_updates_after_set_file_text() {
@@ -197,6 +197,115 @@ fn inferred_types_update_in_dependents_after_dependency_body_edit() {
     .and_then(|entry| entry.type_id)
     .expect("x export type after dep edit");
   assert_eq!(program.display_type(x_ty).to_string(), "string");
+}
+
+#[test]
+fn namespace_object_type_updates_after_dependency_body_edit() {
+  let mut options = CompilerOptions::default();
+  options.no_default_lib = true;
+
+  let mut host = MemoryHost::with_options(options);
+  let entry = FileKey::new("main.ts");
+  let dep = FileKey::new("dep.ts");
+  host.insert(
+    entry.clone(),
+    Arc::from(
+      "import { foo } from \"./dep\";\nexport namespace N { export const x = foo(); }\n",
+    ),
+  );
+  host.insert(dep.clone(), Arc::from("export function foo() { return 1; }\n"));
+  host.link(entry.clone(), "./dep", dep.clone());
+
+  let mut program = Program::new(host, vec![entry.clone()]);
+  let entry_id = program.file_id(&entry).expect("entry file id");
+  let dep_id = program.file_id(&dep).expect("dep file id");
+
+  let n_def = program
+    .definitions_in_file(entry_id)
+    .into_iter()
+    .find(|def| {
+      program.def_name(*def).as_deref() == Some("N")
+        && matches!(program.def_kind(*def), Some(DefKind::Namespace(_)))
+    })
+    .expect("namespace N def");
+
+  let before = program.display_type(program.type_of_def(n_def)).to_string();
+  assert_eq!(before, "{ readonly x: number }");
+
+  program.set_file_text(dep_id, Arc::from("export function foo() { return \"a\"; }\n"));
+
+  // Force analysis to rerun while leaving interned tables cached so this test
+  // exercises `Program::with_interned_state`'s incremental invalidation logic.
+  let n_def_after = program
+    .definitions_in_file(entry_id)
+    .into_iter()
+    .find(|def| {
+      program.def_name(*def).as_deref() == Some("N")
+        && matches!(program.def_kind(*def), Some(DefKind::Namespace(_)))
+    })
+    .expect("namespace N def after edit");
+  assert_eq!(n_def_after, n_def, "namespace DefId should be stable");
+
+  let after = program.display_type(program.type_of_def(n_def)).to_string();
+  assert_eq!(after, "{ readonly x: string }");
+}
+
+#[test]
+fn typeof_import_module_namespace_updates_after_dependency_body_edit() {
+  let mut options = CompilerOptions::default();
+  options.no_default_lib = true;
+
+  let mut host = MemoryHost::with_options(options);
+  let entry = FileKey::new("entry.ts");
+  let dep = FileKey::new("dep.ts");
+  host.insert(
+    entry.clone(),
+    Arc::from("type M = typeof import(\"./dep\");\n"),
+  );
+  host.insert(dep.clone(), Arc::from("export function foo() { return 1; }\n"));
+  host.link(entry.clone(), "./dep", dep.clone());
+
+  let mut program = Program::new(host, vec![entry.clone()]);
+  let entry_id = program.file_id(&entry).expect("entry file id");
+  let dep_id = program.file_id(&dep).expect("dep file id");
+
+  let m_def = program
+    .definitions_in_file(entry_id)
+    .into_iter()
+    .find(|def| {
+      program.def_name(*def).as_deref() == Some("M")
+        && matches!(program.def_kind(*def), Some(DefKind::TypeAlias(_)))
+    })
+    .expect("type alias M");
+
+  let m_ty = program.type_of_def(m_def);
+  let foo_ty = program
+    .property_type(m_ty, PropertyKey::String("foo".into()))
+    .expect("foo property on module namespace");
+  let sigs = program.call_signatures(foo_ty);
+  assert_eq!(sigs.len(), 1, "expected single call signature for foo");
+  assert_eq!(program.display_type(sigs[0].signature.ret).to_string(), "number");
+
+  program.set_file_text(dep_id, Arc::from("export function foo() { return \"a\"; }\n"));
+
+  // Force analysis to rerun without eagerly rebuilding interned tables.
+  let m_def_after = program
+    .definitions_in_file(entry_id)
+    .into_iter()
+    .find(|def| {
+      program.def_name(*def).as_deref() == Some("M")
+        && matches!(program.def_kind(*def), Some(DefKind::TypeAlias(_)))
+    })
+    .expect("type alias M after edit");
+  assert_eq!(m_def_after, m_def, "type alias DefId should be stable");
+
+  let m_ty = program.type_of_def(m_def);
+  let foo_ty = program
+    .property_type(m_ty, PropertyKey::String("foo".into()))
+    .expect("foo property on module namespace after edit");
+  let sigs = program.call_signatures(foo_ty);
+  assert_eq!(sigs.len(), 1, "expected single call signature for foo after edit");
+  assert_eq!(program.display_type(sigs[0].signature.ret).to_string(), "string");
 }
 
 #[test]

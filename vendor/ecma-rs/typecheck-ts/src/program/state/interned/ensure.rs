@@ -88,6 +88,14 @@ impl ProgramState {
     self.interned_def_types = def_types.clone();
     self.interned_type_params = type_params.clone();
     self.interned_type_param_decls = type_param_decls.clone();
+
+    // Namespace/module bodies can reference import bindings declared in the
+    // surrounding module scope. When we infer types from those bodies (e.g.
+    // namespace members initialized with imported functions), the body checker
+    // seeds identifier bindings from `interned_def_types`. Ensure import binding
+    // types are available before we start running body-based inference as part
+    // of interned table construction.
+    self.refresh_import_def_types()?;
     let mut namespace_types: HashMap<(FileId, String), TypeId> = HashMap::new();
     let mut declared_type_cache: HashMap<(FileId, TextRange), Option<TypeId>> = HashMap::new();
     let def_by_name = self.canonical_defs()?;
@@ -688,7 +696,9 @@ impl ProgramState {
           let ty = if let Some(def) = member.best_def {
             let mut ty = def_types.get(&def).copied().unwrap_or(unknown);
             ty = store.canon(ty);
-            if matches!(store.type_kind(ty), tti::TypeKind::Unknown) {
+            if matches!(store.type_kind(ty), tti::TypeKind::Unknown)
+              || callable_return_is_unknown(&store, ty)
+            {
               ty = store.canon(self.type_of_def(def)?);
               def_types.insert(def, ty);
             }
@@ -725,12 +735,17 @@ impl ProgramState {
           });
         }
       } else if let Some(file_state) = self.files.get(&file) {
-        for (name, entry) in file_state.exports.iter() {
+        let exports: Vec<(String, ExportEntry)> = file_state
+          .exports
+          .iter()
+          .map(|(name, entry)| (name.clone(), entry.clone()))
+          .collect();
+        for (name, entry) in exports {
           let is_value_export = self
             .semantics
             .as_ref()
             .and_then(|semantics| {
-              semantics.resolve_export(sem_ts::FileId(file.0), name, sem_ts::Namespace::VALUE)
+              semantics.resolve_export(sem_ts::FileId(file.0), &name, sem_ts::Namespace::VALUE)
             })
             .is_some()
             || entry
@@ -741,13 +756,23 @@ impl ProgramState {
           if !is_value_export {
             continue;
           }
-          let ty = entry
-            .def
-            .and_then(|def| def_types.get(&def).copied())
-            .or_else(|| entry.type_id.map(|ty| store.canon(ty)))
-            .unwrap_or(unknown);
+          let ty = if let Some(def) = entry.def {
+            let mut ty = def_types.get(&def).copied().unwrap_or(unknown);
+            ty = store.canon(ty);
+            if matches!(store.type_kind(ty), tti::TypeKind::Unknown)
+              || callable_return_is_unknown(&store, ty)
+            {
+              ty = store.canon(self.type_of_def(def)?);
+              def_types.insert(def, ty);
+            }
+            ty
+          } else if let Some(ty) = entry.type_id {
+            store.canon(ty)
+          } else {
+            unknown
+          };
           let ty = crate::check::widen::widen_literal(store.as_ref(), ty);
-          let key = PropKey::String(store.intern_name_ref(name));
+          let key = PropKey::String(store.intern_name_ref(name.as_str()));
           shape.properties.push(Property {
             key,
             data: PropData {
