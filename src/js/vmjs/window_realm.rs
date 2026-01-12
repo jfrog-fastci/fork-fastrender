@@ -27459,55 +27459,6 @@ fn init_window_globals(
     match_media_guard.id(),
   )?;
 
-  // window.scrollX / window.scrollY (+ aliases pageXOffset/pageYOffset).
-  let scroll_x_key = alloc_key(&mut scope, "scrollX")?;
-  let scroll_y_key = alloc_key(&mut scope, "scrollY")?;
-  let page_x_offset_key = alloc_key(&mut scope, "pageXOffset")?;
-  let page_y_offset_key = alloc_key(&mut scope, "pageYOffset")?;
-
-  let scroll_x_get_call_id = vm.register_native_call(window_scroll_x_get_native)?;
-  let scroll_x_get_name = scope.alloc_string("get scrollX")?;
-  scope.push_root(Value::String(scroll_x_get_name))?;
-  let scroll_x_get_func =
-    scope.alloc_native_function(scroll_x_get_call_id, None, scroll_x_get_name, 0)?;
-  scope.heap_mut().object_set_prototype(
-    scroll_x_get_func,
-    Some(realm.intrinsics().function_prototype()),
-  )?;
-  scope.push_root(Value::Object(scroll_x_get_func))?;
-
-  let scroll_y_get_call_id = vm.register_native_call(window_scroll_y_get_native)?;
-  let scroll_y_get_name = scope.alloc_string("get scrollY")?;
-  scope.push_root(Value::String(scroll_y_get_name))?;
-  let scroll_y_get_func =
-    scope.alloc_native_function(scroll_y_get_call_id, None, scroll_y_get_name, 0)?;
-  scope.heap_mut().object_set_prototype(
-    scroll_y_get_func,
-    Some(realm.intrinsics().function_prototype()),
-  )?;
-  scope.push_root(Value::Object(scroll_y_get_func))?;
-
-  let scroll_x_desc = PropertyDescriptor {
-    enumerable: false,
-    configurable: true,
-    kind: PropertyKind::Accessor {
-      get: Value::Object(scroll_x_get_func),
-      set: Value::Undefined,
-    },
-  };
-  let scroll_y_desc = PropertyDescriptor {
-    enumerable: false,
-    configurable: true,
-    kind: PropertyKind::Accessor {
-      get: Value::Object(scroll_y_get_func),
-      set: Value::Undefined,
-    },
-  };
-  scope.define_property(global, scroll_x_key, scroll_x_desc)?;
-  scope.define_property(global, page_x_offset_key, scroll_x_desc)?;
-  scope.define_property(global, scroll_y_key, scroll_y_desc)?;
-  scope.define_property(global, page_y_offset_key, scroll_y_desc)?;
-
   if let Some(data) = vm.user_data_mut::<WindowRealmUserData>() {
     // `window.document` is writable/configurable, so store canonical handles in host-owned state for
     // receiver branding and event dispatch.
