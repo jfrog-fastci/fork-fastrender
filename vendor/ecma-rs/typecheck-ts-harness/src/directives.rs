@@ -1012,6 +1012,31 @@ mod tests {
   }
 
   #[test]
+  fn supports_skip_lib_check_false_directive() {
+    let directive =
+      parse_directive("// @skipLibCheck: false", 1).expect("skipLibCheck directive should parse");
+    let parsed = HarnessOptions::from_directives_with_options(
+      &[directive],
+      DirectiveParseOptions::default(),
+    );
+    assert_eq!(
+      parsed.options.skip_lib_check,
+      Some(false),
+      "expected skip_lib_check to be parsed as false; notes={:?}",
+      parsed.notes
+    );
+
+    let compiler = parsed.options.to_compiler_options();
+    assert!(
+      !compiler.skip_lib_check,
+      "expected compiler options to preserve skip_lib_check=false"
+    );
+
+    let tsc = parsed.options.to_tsc_options_map();
+    assert_eq!(tsc.get("skipLibCheck"), Some(&Value::Bool(false)));
+  }
+
+  #[test]
   fn duplicate_directives_last_one_wins() {
     let directives = vec![dir("module", Some("commonjs")), dir("module", Some("amd"))];
     let parsed =
