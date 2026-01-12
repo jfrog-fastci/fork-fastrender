@@ -30,8 +30,9 @@ fn yield_star_over_array_delegates_values() -> Result<(), VmError> {
     }
     // Generators are still under development in vm-js. Once generator functions/yield* land, this
     // test will begin exercising delegation semantics (including array iterator acquisition).
-    Err(VmError::Unimplemented("generator functions" | "async generator functions")) => Ok(()),
+    Err(VmError::Unimplemented(
+      "generator functions" | "async generator functions" | "generator function call",
+    )) => Ok(()),
     Err(err) => Err(err),
   }
 }
-

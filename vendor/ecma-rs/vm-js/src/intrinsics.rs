@@ -61,6 +61,7 @@ pub struct Intrinsics {
   object_constructor: GcObject,
   function_constructor: GcObject,
   array_constructor: GcObject,
+  proxy_constructor: GcObject,
   string_constructor: GcObject,
   number_constructor: GcObject,
   boolean_constructor: GcObject,
@@ -119,6 +120,8 @@ pub struct Intrinsics {
   promise_all_resolve_element_call: NativeFunctionId,
   promise_all_settled_element_call: NativeFunctionId,
   promise_any_reject_element_call: NativeFunctionId,
+
+  proxy_revoker_call: NativeFunctionId,
 
   class_constructor_call: NativeFunctionId,
   class_constructor_construct: NativeConstructId,
@@ -613,6 +616,8 @@ impl Intrinsics {
     let array_is_array = vm.register_native_call(builtins::array_is_array)?;
     let array_prototype_keys = vm.register_native_call(builtins::array_prototype_keys)?;
     let array_prototype_entries = vm.register_native_call(builtins::array_prototype_entries)?;
+    let proxy_revocable = vm.register_native_call(builtins::proxy_revocable)?;
+    let proxy_revoker_call = vm.register_native_call(builtins::proxy_revoker)?;
     let array_prototype_values = vm.register_native_call(builtins::array_prototype_values)?;
     let array_iterator_next_call = vm.register_native_call(builtins::array_iterator_next)?;
     let iterator_prototype_iterator = vm.register_native_call(builtins::iterator_prototype_iterator)?;
@@ -1166,6 +1171,52 @@ impl Intrinsics {
         .object_set_prototype(func, Some(function_prototype))?;
       scope.define_property(
         array_constructor,
+        key,
+        data_desc(Value::Object(func), true, false, true),
+      )?;
+    }
+
+    // `%Proxy%`
+    //
+    // This is currently minimal: it supports creation/revocation and the spec `IsArray`
+    // interaction, but does not implement Proxy trap semantics.
+    let proxy_call = vm.register_native_call(builtins::proxy_constructor_call)?;
+    let proxy_construct = vm.register_native_construct(builtins::proxy_constructor_construct)?;
+    let proxy_name = scope.alloc_string("Proxy")?;
+    let proxy_constructor = alloc_rooted_native_function(
+      scope,
+      roots,
+      proxy_call,
+      Some(proxy_construct),
+      proxy_name,
+      2,
+    )?;
+    scope
+      .heap_mut()
+      .object_set_prototype(proxy_constructor, Some(function_prototype))?;
+    scope.define_property(
+      proxy_constructor,
+      common.name,
+      data_desc(Value::String(proxy_name), false, false, true),
+    )?;
+    scope.define_property(
+      proxy_constructor,
+      common.length,
+      data_desc(Value::Number(2.0), false, false, true),
+    )?;
+
+    // `Proxy.revocable`
+    {
+      let revocable_s = scope.alloc_string("revocable")?;
+      scope.push_root(Value::String(revocable_s))?;
+      let key = PropertyKey::from_string(revocable_s);
+      let func = scope.alloc_native_function(proxy_revocable, None, revocable_s, 2)?;
+      scope.push_root(Value::Object(func))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(func, Some(function_prototype))?;
+      scope.define_property(
+        proxy_constructor,
         key,
         data_desc(Value::Object(func), true, false, true),
       )?;
@@ -4049,6 +4100,7 @@ impl Intrinsics {
       object_constructor,
       function_constructor,
       array_constructor,
+      proxy_constructor,
       string_constructor,
       number_constructor,
       boolean_constructor,
@@ -4106,6 +4158,8 @@ impl Intrinsics {
       promise_all_resolve_element_call,
       promise_all_settled_element_call,
       promise_any_reject_element_call,
+
+      proxy_revoker_call,
 
       class_constructor_call,
       class_constructor_construct,
@@ -4237,6 +4291,10 @@ impl Intrinsics {
 
   pub fn array_constructor(&self) -> GcObject {
     self.array_constructor
+  }
+
+  pub fn proxy_constructor(&self) -> GcObject {
+    self.proxy_constructor
   }
 
   pub fn string_constructor(&self) -> GcObject {
@@ -4461,6 +4519,10 @@ impl Intrinsics {
 
   pub(crate) fn promise_any_reject_element_call(&self) -> NativeFunctionId {
     self.promise_any_reject_element_call
+  }
+
+  pub(crate) fn proxy_revoker_call(&self) -> NativeFunctionId {
+    self.proxy_revoker_call
   }
 
   pub(crate) fn class_constructor_call(&self) -> NativeFunctionId {
