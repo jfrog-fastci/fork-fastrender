@@ -5411,6 +5411,36 @@ impl Heap {
     }
   }
 
+  /// Sets the value of a captured native slot on a function object.
+  ///
+  /// This is used to implement spec "abstract closure" semantics for built-ins such as
+  /// `Proxy.revocable` where the associated revoker must clear its `[[RevocableProxy]]` slot after
+  /// the first call so it does not keep the proxy alive.
+  pub(crate) fn set_function_native_slot(
+    &mut self,
+    func: GcObject,
+    slot_idx: usize,
+    value: Value,
+  ) -> Result<(), VmError> {
+    debug_assert!(self.debug_value_is_valid_or_primitive(value));
+
+    let HeapObject::Function(f) = self.get_heap_object_mut(func.0)? else {
+      return Err(VmError::NotCallable);
+    };
+    let Some(slots) = f.native_slots.as_deref_mut() else {
+      return Err(VmError::InvariantViolation(
+        "attempted to set native slot on a function without native slots",
+      ));
+    };
+    let Some(slot) = slots.get_mut(slot_idx) else {
+      return Err(VmError::InvariantViolation(
+        "native slot index out of bounds",
+      ));
+    };
+    *slot = value;
+    Ok(())
+  }
+
   pub(crate) fn get_function_construct_handler(
     &self,
     func: GcObject,

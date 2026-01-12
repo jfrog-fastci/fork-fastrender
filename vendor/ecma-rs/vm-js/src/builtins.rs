@@ -2551,13 +2551,33 @@ pub fn proxy_revoker(
   _this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
-  let slots = scope.heap().get_function_native_slots(callee)?;
-  let Some(Value::Object(proxy)) = slots.first().copied() else {
-    return Err(VmError::InvariantViolation(
-      "Proxy.revocable revoke function missing proxy slot",
-    ));
+  // Spec: https://tc39.es/ecma262/#sec-proxy-revocation-functions
+  //
+  // The revoke function captures the proxy in an internal slot `[[RevocableProxy]]`. After the
+  // first call, the slot is set to `null` so:
+  // - subsequent calls are no-ops, and
+  // - the revoke function does not keep the proxy alive for GC.
+  let slot0 = scope
+    .heap()
+    .get_function_native_slots(callee)?
+    .first()
+    .copied()
+    .unwrap_or(Value::Undefined);
+
+  let proxy = match slot0 {
+    Value::Object(proxy) => proxy,
+    Value::Null | Value::Undefined => return Ok(Value::Undefined),
+    _ => {
+      return Err(VmError::InvariantViolation(
+        "Proxy.revocable revoke function missing proxy slot",
+      ))
+    }
   };
 
+  // Clear the captured slot before revoking to match spec ordering.
+  scope
+    .heap_mut()
+    .set_function_native_slot(callee, 0, Value::Null)?;
   scope.revoke_proxy(proxy)?;
   Ok(Value::Undefined)
 }
