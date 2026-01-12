@@ -602,7 +602,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         continue;
       }
       let agg = by_url.entry(url.to_string()).or_default();
-      agg.visit_count = agg.visit_count.saturating_add(1);
+      agg.visit_count = agg
+        .visit_count
+        .saturating_add(entry.visit_count.max(1));
 
       let title = entry
         .title
@@ -2804,14 +2806,6 @@ impl App {
   }
 
   fn handle_worker_message(&mut self, msg: fastrender::ui::WorkerToUi) -> bool {
-    // Keep the `about:newtab` snapshot updated with global history so opening a new tab surfaces
-    // recently visited pages even when the primary UI lives in egui panels.
-    if let fastrender::ui::WorkerToUi::NavigationCommitted { url, title, .. } = &msg {
-      if !fastrender::ui::about_pages::is_about_url(url) {
-        fastrender::ui::about_pages::record_global_history_visit(url, title.as_deref());
-      }
-    }
-
     // Worker-initiated tab creation/navigation.
     if let fastrender::ui::WorkerToUi::RequestOpenInNewTab { tab_id: _, url } = msg {
       use fastrender::ui::cancel::CancelGens;
@@ -2954,6 +2948,12 @@ impl App {
     let update = self.browser_state.apply_worker_msg(msg);
 
     if update.history_changed {
+      // Keep the process-global about-page snapshot in sync with the canonical `BrowserAppState`
+      // history store so `about:newtab` can render "recently visited" without needing to read the
+      // on-disk history file mid-session.
+      if let Some(entry) = self.browser_state.history.entries.last() {
+        fastrender::ui::about_pages::record_global_history_visit(&entry.url, entry.title.as_deref());
+      }
       if let Some(autosave) = self.profile_autosave.as_ref() {
         let _ = autosave.send(fastrender::ui::AutosaveMsg::UpdateHistory(
           self.browser_state.history.clone(),
@@ -4543,12 +4543,10 @@ impl App {
 
   fn clear_history(&mut self) {
     self.browser_state.clear_history();
-
     // Mirror the clear into the `about:newtab` snapshot so "Recently visited" reflects the
     // user-visible history store.
-    let mut snapshot = fastrender::ui::about_pages::about_page_snapshot();
-    snapshot.history.clear();
-    fastrender::ui::about_pages::set_about_page_snapshot(snapshot);
+    fastrender::ui::about_pages::clear_global_history_snapshot();
+    self.window.request_redraw();
 
     let Some(autosave) = self.profile_autosave.as_ref() else {
       return;

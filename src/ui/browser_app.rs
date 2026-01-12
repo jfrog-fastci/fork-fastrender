@@ -876,11 +876,22 @@ impl BrowserAppState {
         can_go_back,
         can_go_forward,
       } => {
-        // Ignore `about:` navigations so global history + omnibox suggestions don't get polluted by
-        // internal pages like `about:newtab`.
-        if !about_pages::is_about_url(&url) {
-          self.visited.record_visit(url.clone(), title.clone());
-          update.history_changed = self.history.record(url.clone(), title.clone());
+        // Record global history. This is the single canonical source of truth for what counts as a
+        // "visit" (scheme allowlist, fragment stripping, `about:` filtering, etc).
+        update.history_changed = self.history.record(url.clone(), title.clone());
+
+        // Keep the omnibox visited store consistent with the global history store by recording the
+        // normalized URL (e.g. fragment stripped). Only record when the global store accepted the
+        // navigation.
+        if update.history_changed {
+          let normalized_url = self
+            .history
+            .get(&url)
+            .map(|entry| entry.url.clone())
+            // `record` returned true, so this should be unreachable, but keep a safe fallback to
+            // avoid losing visited entries in release builds if invariants change.
+            .unwrap_or_else(|| url.clone());
+          self.visited.record_visit(normalized_url, title.clone());
         }
         if let Some(tab) = self.tab_mut(tab_id) {
           tab.current_url = Some(url.clone());
@@ -1270,6 +1281,11 @@ mod browser_app_tests {
     let entry = app.history.entries.last().expect("expected history entry");
     assert_eq!(entry.url, "https://example.com/final");
     assert_eq!(entry.visit_count, 1);
+    assert_eq!(app.visited.len(), 1);
+    assert_eq!(
+      app.visited.iter_recent().next().unwrap().url,
+      "https://example.com/final"
+    );
 
     // `about:` pages are ignored by global history.
     let update = app.apply_worker_msg(WorkerToUi::NavigationCommitted {

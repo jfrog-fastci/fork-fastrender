@@ -105,6 +105,13 @@ pub fn record_global_history_visit(url: &str, title: Option<&str>) {
   }
 }
 
+pub fn clear_global_history_snapshot() {
+  let mut guard = about_page_snapshot_lock()
+    .write()
+    .unwrap_or_else(|poisoned| poisoned.into_inner());
+  guard.history.clear();
+}
+
 #[derive(Debug, Clone)]
 struct GpuInfo {
   adapter_name: String,
