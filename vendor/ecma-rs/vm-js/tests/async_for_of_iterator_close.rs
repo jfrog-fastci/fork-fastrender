@@ -79,3 +79,49 @@ fn iterator_close_get_method_throw_suppressed_on_throw_completion_in_async_for_o
   Ok(())
 }
 
+#[test]
+fn iterator_close_get_method_throw_suppressed_on_throw_completion_in_async_for_of_binding_error(
+) -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  // Ensure the `for..of` statement goes through the async AST evaluator by including `await` in the
+  // loop body. The binding error (unresolvable reference in strict mode) happens before the body
+  // executes, so the iterator must be closed using the error-based IteratorClose path.
+  let value = rt.exec_script(
+    r#"
+      "use strict";
+
+      var out = "";
+      var closed = false;
+
+      var iterable = {};
+      iterable[Symbol.iterator] = function () {
+        return {
+          next: function () { return { value: 1, done: false }; },
+          get "return"() { closed = true; throw "close"; }
+        };
+      };
+
+      async function f() {
+        for (x of iterable) {
+          await 0;
+        }
+      }
+
+      f().catch(e => { out = (e && e.name) || e; });
+
+      out
+    "#,
+  )?;
+  assert_eq!(value_to_string(&rt, value), "");
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let out = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, out), "ReferenceError");
+
+  let closed = rt.exec_script("closed")?;
+  assert_eq!(closed, Value::Bool(true));
+
+  Ok(())
+}

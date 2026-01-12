@@ -16542,9 +16542,13 @@ fn async_iterator_close_on_error(
     return err;
   }
 
-  // Only replace the original error with a closing error when the original is a JS throw. For
-  // fatal/non-catchable errors (OOM, termination, etc), attempt to close best-effort but preserve
-  // the original error.
+  // `IteratorClose` suppression rules:
+  // - If the original error is a JS throw completion, iterator closing is best-effort and any
+  //   *catchable* closing error is suppressed (the original throw must be preserved).
+  // - Never suppress fatal VM errors (OOM/termination/etc): if iterator close fails with a fatal
+  //   error, it overrides the original throw.
+  // - For non-throw (fatal) original errors, iterator closing is best-effort and the original error
+  //   is always preserved.
   let original_is_throw = err.is_throw_completion();
 
   // Root the thrown value across `IteratorClose`, which can allocate and trigger GC.
@@ -16567,8 +16571,13 @@ fn async_iterator_close_on_error(
   match close_res {
     Ok(()) => err,
     Err(close_err) => {
-      let close_err = coerce_error_to_throw_for_async(evaluator.vm, scope, close_err);
-      if original_is_throw { close_err } else { err }
+      if original_is_throw && close_err.is_throw_completion() {
+        err
+      } else if original_is_throw {
+        close_err
+      } else {
+        err
+      }
     }
   }
 }
