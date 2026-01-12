@@ -1,5 +1,5 @@
-use runtime_native::test_util::TestRuntimeGuard;
 use runtime_native::abi::PromiseRef;
+use runtime_native::test_util::TestRuntimeGuard;
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Barrier;

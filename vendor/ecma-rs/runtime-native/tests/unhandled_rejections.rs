@@ -112,6 +112,7 @@ fn awaiting_after_unhandled_rejection_reports_rejectionhandled() {
   let _rt = TestRuntimeGuard::new();
 
   let p = runtime_native::rt_promise_new_legacy();
+  let p_ref = PromiseRef(p.0.cast());
   let err = 0xBAD0_C0DEu64 as usize as ValueRef;
   runtime_native::rt_promise_reject_legacy(p, err);
 
@@ -119,9 +120,7 @@ fn awaiting_after_unhandled_rejection_reports_rejectionhandled() {
   while runtime_native::rt_async_poll_legacy() {}
   assert_eq!(
     runtime_native::test_util::drain_promise_rejection_events(),
-    vec![PromiseRejectionEvent::UnhandledRejection {
-      promise: PromiseRef(p.0.cast())
-    }]
+    vec![PromiseRejectionEvent::UnhandledRejection { promise: p_ref }]
   );
 
   let coro_obj = unsafe { alloc_pinned::<PropagatingAwaitCoroutine>(RtShapeId(1)) };
@@ -143,9 +142,7 @@ fn awaiting_after_unhandled_rejection_reports_rejectionhandled() {
   while runtime_native::rt_async_poll_legacy() {}
   assert_eq!(
     runtime_native::test_util::drain_promise_rejection_events(),
-    vec![PromiseRejectionEvent::RejectionHandled {
-      promise: PromiseRef(p.0.cast())
-    }]
+    vec![PromiseRejectionEvent::RejectionHandled { promise: p_ref }]
   );
 }
 

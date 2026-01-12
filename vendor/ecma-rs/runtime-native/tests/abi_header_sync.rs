@@ -299,6 +299,24 @@ fn runtime_native_exports_match_expected_abi_signatures() {
     *mut u8,
   ) -> runtime_native::abi::LegacyPromiseRef = runtime_native::rt_parallel_spawn_promise_legacy;
 
+  let _spawn_blocking: extern "C" fn(
+    extern "C" fn(*mut u8, runtime_native::abi::LegacyPromiseRef),
+    *mut u8,
+  ) -> runtime_native::abi::LegacyPromiseRef = runtime_native::rt_spawn_blocking;
+
+  // Legacy promise/coroutine ABI shims (still used by some tests + embeddings).
+  let _legacy_promise_new: extern "C" fn() -> runtime_native::abi::LegacyPromiseRef = runtime_native::rt_promise_new;
+  let _legacy_promise_new_legacy: extern "C" fn() -> runtime_native::abi::LegacyPromiseRef =
+    runtime_native::rt_promise_new_legacy;
+  let _legacy_async_spawn: extern "C" fn(*mut runtime_native::abi::RtCoroutineHeader) -> runtime_native::abi::LegacyPromiseRef =
+    runtime_native::rt_async_spawn_legacy;
+  let _legacy_async_sleep: extern "C" fn(u64) -> runtime_native::abi::LegacyPromiseRef = runtime_native::rt_async_sleep_legacy;
+  let _legacy_coro_await: extern "C" fn(
+    *mut runtime_native::abi::RtCoroutineHeader,
+    runtime_native::abi::LegacyPromiseRef,
+    u32,
+  ) = runtime_native::rt_coro_await;
+
   // Stable native promise + coroutine ABI.
   let _promise_init: unsafe extern "C" fn(runtime_native::PromiseRef) = runtime_native::rt_promise_init;
   let _promise_fulfill: unsafe extern "C" fn(runtime_native::PromiseRef) = runtime_native::rt_promise_fulfill;

@@ -240,7 +240,12 @@ impl BlockingPool {
     promise
   }
 
-  fn spawn_promise_impl(&self, task: extern "C" fn(*mut u8, *mut u8) -> u8, data: WorkData, layout: PromiseLayout) -> PromiseRef {
+  fn spawn_promise_impl(
+    &self,
+    task: extern "C" fn(*mut u8, *mut u8) -> u8,
+    data: WorkData,
+    layout: PromiseLayout,
+  ) -> PromiseRef {
     // Ensure the async runtime is initialized so microtask settlement can wake a blocked
     // `epoll_wait`.
     let _ = async_rt::global();
