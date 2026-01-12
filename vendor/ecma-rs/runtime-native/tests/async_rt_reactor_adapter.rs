@@ -144,6 +144,35 @@ fn async_rt_register_fd_rejects_empty_interest() {
 }
 
 #[test]
+fn async_rt_register_fd_rejects_duplicate_fd() {
+  let _rt = TestRuntimeGuard::new();
+
+  let (read, _write) = make_pipe();
+
+  let id1 = runtime_native::async_rt::register_fd(
+    read.as_raw_fd(),
+    Interest::READABLE,
+    noop_task,
+    std::ptr::null_mut(),
+  )
+  .expect("expected initial register_fd to succeed");
+
+  let err = runtime_native::async_rt::register_fd(
+    read.as_raw_fd(),
+    Interest::READABLE,
+    noop_task,
+    std::ptr::null_mut(),
+  )
+  .expect_err("expected duplicate register_fd to fail");
+  assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists, "got {err:?}");
+
+  assert!(
+    runtime_native::async_rt::global().deregister_fd(id1),
+    "deregister_fd must still succeed for the original watcher id"
+  );
+}
+
+#[test]
 fn readiness_and_wake_coalescing_via_async_rt_adapter() {
   let _rt = TestRuntimeGuard::new();
 
