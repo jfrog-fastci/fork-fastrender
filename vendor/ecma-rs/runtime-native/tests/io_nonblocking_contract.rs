@@ -1682,6 +1682,126 @@ fn rt_io_register_rooted_h_callback_receives_relocated_ptr_after_gc() {
 }
 
 #[test]
+fn rt_io_register_rooted_h_rejects_empty_interests_and_does_not_leak_root() {
+  let _rt = TestRuntimeGuard::new();
+  let (rfd, _wfd) = pipe_nonblocking().unwrap();
+
+  let mut heap = GcHeap::new();
+  let obj = heap.alloc_young(&ROOTED_OBJ_DESC);
+  let weak = runtime_native::rt_weak_add(obj);
+  let _weak_guard = WeakHandleGuard(weak);
+
+  let mut slot = obj;
+  let id = unsafe { rt_io_register_rooted_h(rfd.as_raw_fd(), 0, noop_cb, &mut slot) };
+  assert_eq!(id, 0, "expected rooted_h registration to fail for empty interests");
+  assert_eq!(
+    rt_io_debug_take_last_error(),
+    rt_io_debug::ERR_INVALID_INTERESTS,
+    "expected invalid-interest registration to be diagnosable"
+  );
+
+  // Since the rooted wrapper is only constructed after interest validation, this should not leak
+  // any GC root. The object must be collectable immediately.
+  let deadline = Instant::now() + Duration::from_secs(2);
+  loop {
+    collect_major(&mut heap);
+    if runtime_native::rt_weak_get(weak).is_null() {
+      break;
+    }
+    assert!(
+      Instant::now() < deadline,
+      "GC object stayed alive after rooted_h I/O watcher registration failed (root leak?)"
+    );
+    std::thread::yield_now();
+  }
+
+  let pending = poll_once_with_immediate_timer();
+  assert!(!pending, "runtime should be idle if no watcher leaked");
+}
+
+#[test]
+fn rt_io_register_rooted_h_duplicate_fd_does_not_leak_gc_root() {
+  let _rt = TestRuntimeGuard::new();
+  let (rfd, _wfd) = pipe_nonblocking().unwrap();
+
+  let id1 = rt_io_register(rfd.as_raw_fd(), RT_IO_READABLE, noop_cb, std::ptr::null_mut());
+  assert_ne!(id1, 0, "expected initial registration to succeed");
+  assert_eq!(rt_io_debug_take_last_error(), rt_io_debug::OK);
+
+  let mut heap = GcHeap::new();
+  let obj = heap.alloc_young(&ROOTED_OBJ_DESC);
+  let weak = runtime_native::rt_weak_add(obj);
+  let _weak_guard = WeakHandleGuard(weak);
+
+  let mut slot = obj;
+  let id2 = unsafe { rt_io_register_rooted_h(rfd.as_raw_fd(), RT_IO_READABLE, noop_cb, &mut slot) };
+  assert_eq!(id2, 0, "expected rooted_h registration to fail for duplicate fd");
+  assert_eq!(
+    rt_io_debug_take_last_error(),
+    rt_io_debug::ERR_ALREADY_REGISTERED,
+    "expected duplicate registration to be diagnosable"
+  );
+
+  rt_io_unregister(id1);
+  assert_eq!(
+    rt_io_debug_take_last_error(),
+    rt_io_debug::OK,
+    "rt_io_unregister should succeed for the original watcher id"
+  );
+
+  let deadline = Instant::now() + Duration::from_secs(2);
+  loop {
+    collect_major(&mut heap);
+    if runtime_native::rt_weak_get(weak).is_null() {
+      break;
+    }
+    assert!(
+      Instant::now() < deadline,
+      "GC object stayed alive after rooted_h I/O watcher registration failed (root leak?)"
+    );
+    std::thread::yield_now();
+  }
+
+  let pending = poll_once_with_immediate_timer();
+  assert!(!pending, "runtime should be idle if no watcher leaked");
+}
+
+#[test]
+fn rt_io_register_rooted_h_invalid_fd_does_not_leak_gc_root() {
+  let _rt = TestRuntimeGuard::new();
+
+  let mut heap = GcHeap::new();
+  let obj = heap.alloc_young(&ROOTED_OBJ_DESC);
+  let weak = runtime_native::rt_weak_add(obj);
+  let _weak_guard = WeakHandleGuard(weak);
+
+  let mut slot = obj;
+  let id = unsafe { rt_io_register_rooted_h(-1, RT_IO_READABLE, noop_cb, &mut slot) };
+  assert_eq!(id, 0, "expected rt_io_register_rooted_h to fail for invalid fd");
+  assert_eq!(
+    rt_io_debug_take_last_error(),
+    rt_io_debug::ERR_OTHER,
+    "invalid fd should not be misclassified as a nonblocking contract violation"
+  );
+
+  let deadline = Instant::now() + Duration::from_secs(2);
+  loop {
+    collect_major(&mut heap);
+    if runtime_native::rt_weak_get(weak).is_null() {
+      break;
+    }
+    assert!(
+      Instant::now() < deadline,
+      "GC object stayed alive after rooted_h I/O watcher registration failed (root leak?)"
+    );
+    std::thread::yield_now();
+  }
+
+  let pending = poll_once_with_immediate_timer();
+  assert!(!pending, "runtime should be idle if no watcher leaked");
+}
+
+#[test]
 fn rt_io_register_rooted_rejects_empty_interests_and_does_not_leak_root() {
   let _rt = TestRuntimeGuard::new();
   let (rfd, _wfd) = pipe_nonblocking().unwrap();
