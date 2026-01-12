@@ -67,6 +67,107 @@ fn for_await_of_next_throw_does_not_close_iterator() -> Result<(), VmError> {
 }
 
 #[test]
+fn for_await_of_await_next_reject_does_not_close_iterator() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(
+    r#"
+       var out = "";
+       var returnCalls = 0;
+
+       const iterable = {};
+       iterable[Symbol.asyncIterator] = function () {
+         return {
+           next() {
+             return Promise.reject("boom");
+           },
+           return() {
+             returnCalls++;
+             return { done: true };
+           },
+         };
+       };
+
+       async function f() {
+         for await (const x of iterable) {
+           // Never reached.
+           out = "bad";
+         }
+       }
+
+       f().then(function () { out = "bad"; }, function (e) { out = e; });
+       out
+    "#,
+  )?;
+  assert_eq!(value_to_string(&rt, value), "");
+  assert_eq!(rt.exec_script("returnCalls")?, Value::Number(0.0));
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let out = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, out), "boom");
+
+  let return_calls = rt.exec_script("returnCalls")?;
+  assert_eq!(return_calls, Value::Number(0.0));
+  assert!(
+    rt.vm.microtask_queue().is_empty(),
+    "expected microtask queue to be empty after checkpoint"
+  );
+  Ok(())
+}
+
+#[test]
+fn for_await_of_next_result_non_object_does_not_close_iterator() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(
+    r#"
+       var out = "";
+       var returnCalls = 0;
+
+       const iterable = {};
+       iterable[Symbol.asyncIterator] = function () {
+         return {
+           next() {
+             // Iterator result must be an object; this should throw a TypeError during stepping.
+             return 1;
+           },
+           return() {
+             returnCalls++;
+             return { done: true };
+           },
+         };
+       };
+
+       async function f() {
+         for await (const x of iterable) {
+           // Never reached.
+           out = "bad";
+         }
+       }
+
+       f().then(function () { out = "bad"; }, function (e) { out = e.name; });
+       out
+    "#,
+  )?;
+  assert_eq!(value_to_string(&rt, value), "");
+  assert_eq!(rt.exec_script("returnCalls")?, Value::Number(0.0));
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let out = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, out), "TypeError");
+
+  let return_calls = rt.exec_script("returnCalls")?;
+  assert_eq!(return_calls, Value::Number(0.0));
+  assert!(
+    rt.vm.microtask_queue().is_empty(),
+    "expected microtask queue to be empty after checkpoint"
+  );
+  Ok(())
+}
+
+#[test]
 fn for_await_of_done_getter_throw_does_not_close_iterator() -> Result<(), VmError> {
   let mut rt = new_runtime();
 
