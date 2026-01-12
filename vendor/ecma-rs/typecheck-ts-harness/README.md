@@ -491,6 +491,11 @@ bash ../scripts/cargo_agent.sh run -p typecheck-ts-harness --release -- conforma
 Both `conformance` and `difftsc` accept `--manifest <path>` describing expected
 skips or failures.
 
+`difftsc` convenience: when `--manifest` is not provided and the suite directory
+contains a `manifest.toml` file, `difftsc` will load it automatically. This is
+used by the bundled `fixtures/difftsc` suite so the common baseline-only command
+does not need an extra flag.
+
 Each `[[expectations]]` entry matches test ids by `id`, `glob`, or `regex` and
 assigns a `status`:
 
