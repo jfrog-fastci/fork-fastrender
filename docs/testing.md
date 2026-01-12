@@ -50,6 +50,10 @@ Rules (post-cleanup):
 - **Do not use `#[path = ...]` shims.** Use normal Rust modules (`mod ...;`) and run subsets via test name filters (see below).
 - If a test needs access to internal/private implementation details, it is a **unit test** and belongs in `src/`, not `tests/`.
 
+CI guardrail:
+
+- Run `bash scripts/ci_check_test_architecture.sh` before pushing changes that touch `tests/`. It enforces the “2 (max 3)” integration-test-binary architecture and bans `#[path = "..."]` shims. See `instructions/test_cleanup.md`.
+
 ## Core tests
 
 - Unit only (fast): `bash scripts/cargo_agent.sh test --quiet -p fastrender --lib`
