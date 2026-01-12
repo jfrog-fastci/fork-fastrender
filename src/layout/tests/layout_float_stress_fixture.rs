@@ -1,9 +1,26 @@
 use crate::geometry::Rect;
+use crate::render_control::{with_deadline, RenderDeadline};
 use crate::tree::fragment_tree::{FragmentContent, FragmentNode};
 use crate::{FastRender, FontConfig, ResourcePolicy};
 use std::fs;
 use std::path::PathBuf;
+use std::time::Duration;
 use url::Url;
+
+struct TestRenderDelayGuard;
+
+impl TestRenderDelayGuard {
+  fn set(ms: Option<u64>) -> Self {
+    crate::render_control::set_test_render_delay_ms(ms);
+    Self
+  }
+}
+
+impl Drop for TestRenderDelayGuard {
+  fn drop(&mut self) {
+    crate::render_control::set_test_render_delay_ms(None);
+  }
+}
 
 fn fixture_path(name: &str) -> PathBuf {
   PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -62,6 +79,7 @@ fn line_bounds_for_probe(root: &FragmentNode) -> Vec<Rect> {
 
 #[test]
 fn layout_float_stress_fixture_has_expected_probe_line_geometry() {
+  let _delay_guard = TestRenderDelayGuard::set(Some(0));
   let html_path = fixture_path("layout_float_stress");
   let html =
     fs::read_to_string(&html_path).unwrap_or_else(|e| panic!("read {}: {e}", html_path.display()));
@@ -80,8 +98,11 @@ fn layout_float_stress_fixture_has_expected_probe_line_geometry() {
     .expect("build renderer");
 
   let dom = renderer.parse_html(&html).expect("parse HTML");
-  let fragments = renderer
-    .layout_document(&dom, 1040, 1240)
+
+  // Keep a budgeted end-to-end stress check to guard against regressions where float placement
+  // degenerates into quadratic scans.
+  let deadline = RenderDeadline::new(Some(Duration::from_millis(4000)), None);
+  let fragments = with_deadline(Some(&deadline), || renderer.layout_document(&dom, 1040, 1240))
     .expect("layout fixture");
 
   let lines = line_bounds_for_probe(&fragments.root);
