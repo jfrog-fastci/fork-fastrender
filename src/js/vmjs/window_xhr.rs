@@ -520,14 +520,15 @@ fn xhr_status_get(
   _args: &[Value],
 ) -> Result<Value, VmError> {
   let (env_id, xhr_id, _) = xhr_info_from_this(scope, this)?;
-  let status = with_env_state(env_id, |state| {
+  let (ready_state, status) = with_env_state(env_id, |state| {
     let xhr = state
       .xhrs
       .get(&xhr_id)
       .ok_or(VmError::TypeError("XMLHttpRequest: invalid backing state"))?;
-    Ok(xhr.status)
+    Ok((xhr.ready_state, xhr.status))
   })?;
-  Ok(Value::Number(status as f64))
+  let visible = if ready_state < XHR_HEADERS_RECEIVED { 0 } else { status };
+  Ok(Value::Number(visible as f64))
 }
 
 fn xhr_status_text_get(
@@ -540,13 +541,18 @@ fn xhr_status_text_get(
   _args: &[Value],
 ) -> Result<Value, VmError> {
   let (env_id, xhr_id, _) = xhr_info_from_this(scope, this)?;
-  let text = with_env_state(env_id, |state| {
+  let (ready_state, text) = with_env_state(env_id, |state| {
     let xhr = state
       .xhrs
       .get(&xhr_id)
       .ok_or(VmError::TypeError("XMLHttpRequest: invalid backing state"))?;
-    Ok(xhr.status_text.clone())
+    Ok((xhr.ready_state, xhr.status_text.clone()))
   })?;
+  let text = if ready_state < XHR_HEADERS_RECEIVED {
+    String::new()
+  } else {
+    text
+  };
   let s = scope.alloc_string(&text)?;
   Ok(Value::String(s))
 }
@@ -1523,12 +1529,15 @@ fn xhr_send_native<Host: WindowRealmHost + 'static>(
         return Ok(false);
       }
       if is_timeout || is_error {
+        xhr.ready_state = XHR_DONE;
         xhr.status = 0;
         xhr.status_text.clear();
         xhr.response_bytes.clear();
         xhr.response_text.clear();
         xhr.response_headers.clear();
       } else {
+        // Ensure `status` isn't observable while `readyState` is still OPENED.
+        xhr.ready_state = XHR_HEADERS_RECEIVED;
         xhr.status = status;
         xhr.status_text = status_text;
         xhr.response_text = String::from_utf8_lossy(&bytes).to_string();
