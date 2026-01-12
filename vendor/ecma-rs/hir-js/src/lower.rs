@@ -5316,7 +5316,22 @@ fn collect_expr<'a>(
                   );
                 });
               }
-              _ => {}
+              ClassOrObjVal::Prop(None) | ClassOrObjVal::IndexSignature(_) => {}
+              ClassOrObjVal::StaticBlock(block) => {
+                for stmt in block.stx.body.iter() {
+                  collect_stmt(
+                    stmt,
+                    descriptors,
+                    module_items,
+                    names,
+                    false,
+                    false,
+                    ambient,
+                    in_global,
+                    ctx,
+                  );
+                }
+              }
             }
           }
           ObjMemberType::Rest { val } => collect_expr(
