@@ -30,6 +30,7 @@ use crate::{
 use std::any::Any;
 use std::cell::RefCell;
 use std::fmt;
+use std::mem;
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -1438,106 +1439,20 @@ pub fn import_attributes_from_options(
   options: Value,
   supported_keys: &[&str],
 ) -> Result<Vec<ImportAttribute>, ImportCallError> {
-  vm.tick().map_err(ImportCallError::Vm)?;
-  if matches!(options, Value::Undefined) {
-    return Ok(Vec::new());
-  }
-
-  let Value::Object(options_obj) = options else {
-    return Err(ImportCallError::TypeError(ImportCallTypeError::OptionsNotObject));
-  };
-
-  // Root the options object across allocations/GC while inspecting it.
-  let mut scope = scope.reborrow();
-  scope
-    .push_root(Value::Object(options_obj))
-    .map_err(ImportCallError::Vm)?;
-
-  let with_key =
-    PropertyKey::from_string(make_key_string(&mut scope, "with").map_err(ImportCallError::Vm)?);
-  let attributes_obj = scope
-    .ordinary_get(vm, options_obj, with_key, Value::Object(options_obj))
-    .map_err(ImportCallError::Vm)?;
-
-  if matches!(attributes_obj, Value::Undefined) {
-    return Ok(Vec::new());
-  }
-
-  let Value::Object(attributes_obj) = attributes_obj else {
-    return Err(ImportCallError::TypeError(
-      ImportCallTypeError::AttributesNotObject,
-    ));
-  };
-
-  // Root the attributes object so property enumeration/getters cannot collect it.
-  scope
-    .push_root(Value::Object(attributes_obj))
-    .map_err(ImportCallError::Vm)?;
-
-  let own_keys = scope
-    .ordinary_own_property_keys_with_tick(attributes_obj, || vm.tick())
-    .map_err(ImportCallError::Vm)?;
-
-  let mut attributes = Vec::<ImportAttribute>::new();
-  attributes
-    .try_reserve_exact(own_keys.len())
-    .map_err(|_| ImportCallError::Vm(VmError::OutOfMemory))?;
-
-  for key in own_keys {
-    vm.tick().map_err(ImportCallError::Vm)?;
-    let PropertyKey::String(key_string) = key else {
-      continue;
-    };
-
-    let Some(desc) = scope
-      .ordinary_get_own_property(attributes_obj, key)
-      .map_err(ImportCallError::Vm)?
-    else {
-      continue;
-    };
-
-    if !desc.enumerable {
-      continue;
-    }
-
-    let value = scope
-      .ordinary_get(vm, attributes_obj, key, Value::Object(attributes_obj))
-      .map_err(ImportCallError::Vm)?;
-
-    let Value::String(value_string) = value else {
-      return Err(ImportCallError::TypeError(
-        ImportCallTypeError::AttributeValueNotString,
-      ));
-    };
-
-    let key = clone_heap_string_to_string(scope.heap(), key_string).map_err(ImportCallError::Vm)?;
-    let value =
-      clone_heap_string_to_string(scope.heap(), value_string).map_err(ImportCallError::Vm)?;
-
-    attributes.push(ImportAttribute { key, value });
-  }
-
-  // `AllImportAttributesSupported`.
-  for attribute in &attributes {
-    vm.tick().map_err(ImportCallError::Vm)?;
-    if !supported_keys
-      .iter()
-      .any(|supported| *supported == attribute.key.as_str())
-    {
-      return Err(ImportCallError::TypeError(
-        ImportCallTypeError::UnsupportedImportAttribute {
-          key: attribute.key.clone(),
-        },
-      ));
-    }
-  }
-
-  // Sort by key (and value for determinism) by UTF-16 code unit order.
-  attributes.sort_by(|a, b| match cmp_utf16_code_units(&a.key, &b.key) {
-    std::cmp::Ordering::Equal => cmp_utf16_code_units(&a.value, &b.value),
-    non_eq => non_eq,
-  });
-  Ok(attributes)
+  // Backwards-compatible wrapper that uses a dummy host context and the VM-owned microtask queue
+  // as hooks.
+  let mut dummy_host = ();
+  let mut hooks = mem::take(vm.microtask_queue_mut());
+  let result = import_attributes_from_options_with_host_and_hooks(
+    vm,
+    scope,
+    &mut dummy_host,
+    &mut hooks,
+    options,
+    supported_keys,
+  );
+  *vm.microtask_queue_mut() = hooks;
+  result
 }
 
 /// Host-context aware variant of [`import_attributes_from_options`].
@@ -1567,7 +1482,7 @@ pub fn import_attributes_from_options_with_host_and_hooks(
   let with_key =
     PropertyKey::from_string(make_key_string(&mut scope, "with").map_err(ImportCallError::Vm)?);
   let attributes_obj = scope
-    .ordinary_get_with_host_and_hooks(vm, host_ctx, hooks, options_obj, with_key, Value::Object(options_obj))
+    .object_get_with_host_and_hooks(vm, host_ctx, hooks, options_obj, with_key, Value::Object(options_obj))
     .map_err(ImportCallError::Vm)?;
 
   if matches!(attributes_obj, Value::Undefined) {
@@ -1586,7 +1501,7 @@ pub fn import_attributes_from_options_with_host_and_hooks(
     .map_err(ImportCallError::Vm)?;
 
   let own_keys = scope
-    .ordinary_own_property_keys_with_tick(attributes_obj, || vm.tick())
+    .object_own_property_keys_with_host_and_hooks(vm, host_ctx, hooks, attributes_obj)
     .map_err(ImportCallError::Vm)?;
 
   let mut attributes = Vec::<ImportAttribute>::new();
@@ -1601,7 +1516,7 @@ pub fn import_attributes_from_options_with_host_and_hooks(
     };
 
     let Some(desc) = scope
-      .ordinary_get_own_property(attributes_obj, key)
+      .object_get_own_property_with_host_and_hooks(vm, host_ctx, hooks, attributes_obj, key)
       .map_err(ImportCallError::Vm)?
     else {
       continue;
@@ -1612,7 +1527,7 @@ pub fn import_attributes_from_options_with_host_and_hooks(
     }
 
     let value = scope
-      .ordinary_get_with_host_and_hooks(vm, host_ctx, hooks, attributes_obj, key, Value::Object(attributes_obj))
+      .object_get_with_host_and_hooks(vm, host_ctx, hooks, attributes_obj, key, Value::Object(attributes_obj))
       .map_err(ImportCallError::Vm)?;
 
     let Value::String(value_string) = value else {
@@ -1838,8 +1753,28 @@ pub fn start_dynamic_import_with_host_and_hooks(
         state.reject(vm, &mut import_scope, host_ctx, host, reason)?;
         return Ok(promise);
       }
-      state.teardown_roots(import_scope.heap_mut());
-      return Err(err);
+      match err {
+        VmError::TypeError(message) => {
+          let Some(intr) = vm.intrinsics() else {
+            state.teardown_roots(import_scope.heap_mut());
+            return Err(VmError::Unimplemented(
+              "dynamic import requires intrinsics (create a Realm first)",
+            ));
+          };
+          let err_value = crate::new_error(
+            &mut import_scope,
+            intr.type_error_prototype(),
+            "TypeError",
+            message,
+          )?;
+          state.reject(vm, &mut import_scope, host_ctx, host, err_value)?;
+          return Ok(promise);
+        }
+        other => {
+          state.teardown_roots(import_scope.heap_mut());
+          return Err(other);
+        }
+      }
     }
   };
 

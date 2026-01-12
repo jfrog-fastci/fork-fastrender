@@ -1,9 +1,9 @@
 use std::collections::HashMap;
 
 use vm_js::{
-  HeapLimits, HostDefined, JsRuntime, MicrotaskQueue, ModuleId, ModuleLoadPayload, ModuleReferrer,
-  ModuleRequest, PromiseState, PropertyKey, PropertyKind, SourceTextModuleRecord, Value, Vm, VmError,
-  VmHostHooks, VmOptions,
+  GcObject, HeapLimits, HostDefined, JsRuntime, MicrotaskQueue, ModuleId, ModuleLoadPayload,
+  ModuleReferrer, ModuleRequest, PromiseState, PropertyKey, PropertyKind, Scope, SourceTextModuleRecord,
+  Value, Vm, VmError, VmHostHooks, VmOptions,
 };
 
 #[derive(Debug)]
@@ -191,6 +191,25 @@ fn new_runtime() -> Result<JsRuntime, VmError> {
   let vm = Vm::new(VmOptions::default());
   let heap = vm_js::Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
   JsRuntime::new(vm, heap)
+}
+
+fn define_global(scope: &mut Scope<'_>, global: GcObject, name: &str, value: Value) -> Result<(), VmError> {
+  scope.push_root(Value::Object(global))?;
+  scope.push_root(value)?;
+  let key_s = scope.alloc_string(name)?;
+  scope.push_root(Value::String(key_s))?;
+  let key = PropertyKey::from_string(key_s);
+  scope.create_data_property_or_throw(global, key, value)
+}
+
+fn expect_string(rt: &JsRuntime, value: Value) -> String {
+  let Value::String(s) = value else {
+    panic!("expected string value, got {value:?}");
+  };
+  rt.heap()
+    .get_string(s)
+    .expect("string handle should be valid")
+    .to_utf8_lossy()
 }
 
 #[test]
@@ -658,6 +677,151 @@ fn dynamic_import_rejects_unsupported_import_attributes() -> Result<(), VmError>
   assert_eq!(scope.heap().get_string(name)?.to_utf8_lossy(), "TypeError");
 
   drop(scope);
+  rt.heap.remove_root(promise_root);
+  host.teardown_jobs(&mut rt);
+  Ok(())
+}
+
+#[test]
+fn dynamic_import_options_proxy_get_trap_is_observed() -> Result<(), VmError> {
+  let mut rt = new_runtime()?;
+  let mut host = TestHostHooks::new();
+
+  let global = rt.realm().global_object();
+
+  // Create a Proxy target + handler in JS so the traps can mutate JS-visible state (`log`).
+  rt.exec_script_with_hooks(
+    &mut host,
+    r#"
+      var log = "";
+      var __opts_target = { with: { type: "json" } };
+      var __opts_handler = {
+        get: function (t, k, r) {
+          log += "get:" + String(k) + ",";
+          return Reflect.get(t, k, r);
+        }
+      };
+    "#,
+  )?;
+
+  let Value::Object(target) = rt.exec_script_with_hooks(&mut host, "__opts_target")? else {
+    return Err(VmError::InvariantViolation("__opts_target should be an object"));
+  };
+  let Value::Object(handler) = rt.exec_script_with_hooks(&mut host, "__opts_handler")? else {
+    return Err(VmError::InvariantViolation("__opts_handler should be an object"));
+  };
+
+  // Install `opts` as a host-created Proxy object.
+  {
+    let (_vm, _realm, heap) = rt.vm_realm_and_heap_mut();
+    let mut scope = heap.scope();
+    let proxy = scope.alloc_proxy(Some(target), Some(handler))?;
+    define_global(&mut scope, global, "opts", Value::Object(proxy))?;
+  }
+
+  // Host supports no import attributes, so this should reject before invoking `HostLoadImportedModule`.
+  let promise_value = rt.exec_script_with_hooks(&mut host, "import('./m.js', opts)")?;
+  let promise_root = rt.heap.add_root(promise_value)?;
+
+  let Value::Object(promise_obj) = promise_value else {
+    panic!("import() should evaluate to a Promise object");
+  };
+  assert_eq!(rt.heap.promise_state(promise_obj)?, PromiseState::Rejected);
+  assert_eq!(host.pending_count(), 0, "host loader should not be invoked");
+
+  let log_value = rt.exec_script_with_hooks(&mut host, "log")?;
+  let log = expect_string(&rt, log_value);
+  assert!(
+    log.contains("get:with"),
+    "expected options Proxy get trap to be invoked for 'with', got {log:?}"
+  );
+
+  rt.heap.remove_root(promise_root);
+  host.teardown_jobs(&mut rt);
+  Ok(())
+}
+
+#[test]
+fn dynamic_import_attributes_proxy_traps_are_observed() -> Result<(), VmError> {
+  let mut rt = new_runtime()?;
+  let mut host = TestHostHooks::new();
+
+  // Create a Proxy target + handler in JS so the traps can mutate JS-visible state (`log`).
+  rt.exec_script_with_hooks(
+    &mut host,
+    r#"
+      var log = "";
+      var __attrs_target = { type: "json" };
+      var __attrs_handler = {
+        ownKeys: function (t) {
+          log += "ownKeys,";
+          return ["type"];
+        },
+         getOwnPropertyDescriptor: function (t, k) {
+           log += "gopd:" + String(k) + ",";
+           // vm-js currently exposes `Reflect.getOwnPropertyDescriptor` but may not implement
+           // `Object.getOwnPropertyDescriptor` yet. Use Reflect so the trap can return a complete
+           // descriptor object and attribute processing can continue to the `Get` path.
+           return Reflect.getOwnPropertyDescriptor(t, k);
+         },
+         get: function (t, k, r) {
+           log += "get:" + String(k) + ",";
+           return Reflect.get(t, k, r);
+        },
+      };
+      var __opts = {};
+    "#,
+  )?;
+
+  let Value::Object(target) = rt.exec_script_with_hooks(&mut host, "__attrs_target")? else {
+    return Err(VmError::InvariantViolation("__attrs_target should be an object"));
+  };
+  let Value::Object(handler) = rt.exec_script_with_hooks(&mut host, "__attrs_handler")? else {
+    return Err(VmError::InvariantViolation("__attrs_handler should be an object"));
+  };
+  let Value::Object(opts) = rt.exec_script_with_hooks(&mut host, "__opts")? else {
+    return Err(VmError::InvariantViolation("__opts should be an object"));
+  };
+
+  // Install `opts.with` as a host-created Proxy object.
+  {
+    let (_vm, _realm, heap) = rt.vm_realm_and_heap_mut();
+    let mut scope = heap.scope();
+    scope.push_root(Value::Object(opts))?;
+    let proxy = scope.alloc_proxy(Some(target), Some(handler))?;
+    scope.push_root(Value::Object(proxy))?;
+
+    let with_key_s = scope.alloc_string("with")?;
+    scope.push_root(Value::String(with_key_s))?;
+    let with_key = PropertyKey::from_string(with_key_s);
+    scope.create_data_property_or_throw(opts, with_key, Value::Object(proxy))?;
+  }
+
+  // Host supports no import attributes, so this should reject before invoking `HostLoadImportedModule`.
+  let promise_value = rt.exec_script_with_hooks(&mut host, "import('./m.js', __opts)")?;
+  let promise_root = rt.heap.add_root(promise_value)?;
+
+  let Value::Object(promise_obj) = promise_value else {
+    panic!("import() should evaluate to a Promise object");
+  };
+  assert_eq!(rt.heap.promise_state(promise_obj)?, PromiseState::Rejected);
+  assert_eq!(host.pending_count(), 0, "host loader should not be invoked");
+
+  let log_value = rt.exec_script_with_hooks(&mut host, "log")?;
+  let log = expect_string(&rt, log_value);
+  assert!(
+    log.contains("ownKeys"),
+    "expected attributes Proxy ownKeys trap to be invoked, got {log:?}"
+  );
+  assert!(
+    log.contains("gopd:type"),
+    "expected attributes Proxy getOwnPropertyDescriptor trap to be invoked, got {log:?}"
+  );
+  assert!(
+    log.contains("get:type"),
+    "expected attributes Proxy get trap to be invoked for 'type', got {log:?}"
+  );
+
   rt.heap.remove_root(promise_root);
   host.teardown_jobs(&mut rt);
   Ok(())

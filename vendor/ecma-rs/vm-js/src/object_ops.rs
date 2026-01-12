@@ -144,6 +144,82 @@ impl<'a> Scope<'a> {
     scope.ordinary_get_own_property_with_tick(obj, key, || vm.tick())
   }
 
+  /// ECMAScript `[[Get]]` internal method dispatch.
+  ///
+  /// This is a spec-shaped wrapper around `OrdinaryGet` that routes Proxy objects through the
+  /// `get` trap (when present).
+  pub fn object_get_with_host_and_hooks(
+    &mut self,
+    vm: &mut Vm,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    obj: GcObject,
+    key: PropertyKey,
+    receiver: Value,
+  ) -> Result<Value, VmError> {
+    // Root inputs so a Proxy trap can allocate freely.
+    let mut scope = self.reborrow();
+    let key_root = match key {
+      PropertyKey::String(s) => Value::String(s),
+      PropertyKey::Symbol(s) => Value::Symbol(s),
+    };
+    scope.push_roots(&[Value::Object(obj), key_root, receiver])?;
+ 
+    // Allocate the trap key once (rather than once per proxy hop).
+    let trap_key_s = scope.alloc_string("get")?;
+    scope.push_root(Value::String(trap_key_s))?;
+    let trap_key = PropertyKey::from_string(trap_key_s);
+ 
+    // Follow Proxy chains iteratively to avoid recursion.
+    let mut current = obj;
+    let mut steps = 0usize;
+    loop {
+      if steps != 0 && steps % 1024 == 0 {
+        vm.tick()?;
+      }
+      steps = steps.saturating_add(1);
+ 
+      let Some(proxy) = scope.heap().get_proxy_data(current)? else {
+        return scope.ordinary_get_with_host_and_hooks(vm, host, hooks, current, key, receiver);
+      };
+ 
+      vm.tick()?;
+ 
+      let (Some(target), Some(handler)) = (proxy.target, proxy.handler) else {
+        return Err(VmError::TypeError("Cannot perform 'get' on a proxy that has been revoked"));
+      };
+ 
+      // Root target/handler for the duration of trap lookup + invocation.
+      let mut trap_scope = scope.reborrow();
+      trap_scope.push_roots(&[Value::Object(target), Value::Object(handler)])?;
+ 
+      let trap = vm.get_method_with_host_and_hooks(
+        host,
+        &mut trap_scope,
+        hooks,
+        Value::Object(handler),
+        trap_key,
+      )?;
+ 
+      // If the trap is undefined, forward to the target's `[[Get]]`.
+      let Some(trap) = trap else {
+        current = target;
+        continue;
+      };
+ 
+      // Call the trap with `(target, key, receiver)`.
+      let trap_args = [Value::Object(target), key_root, receiver];
+      return vm.call_with_host_and_hooks(
+        host,
+        &mut trap_scope,
+        hooks,
+        trap,
+        Value::Object(handler),
+        &trap_args,
+      );
+    }
+  }
+
   /// ECMAScript `[[DefineOwnProperty]]` for ordinary objects.
   pub fn ordinary_define_own_property(
     &mut self,
@@ -873,6 +949,116 @@ impl<'a> Scope<'a> {
     }
 
     self.heap_mut().ordinary_delete(obj, key)
+  }
+
+  /// ECMAScript `[[OwnPropertyKeys]]` internal method dispatch.
+  ///
+  /// This is a spec-shaped wrapper around `OrdinaryOwnPropertyKeys` that routes Proxy objects
+  /// through the `ownKeys` trap (when present).
+  pub fn object_own_property_keys_with_host_and_hooks(
+    &mut self,
+    vm: &mut Vm,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    obj: GcObject,
+  ) -> Result<Vec<PropertyKey>, VmError> {
+    // Root the input so a Proxy trap can allocate freely.
+    let mut scope = self.reborrow();
+    scope.push_root(Value::Object(obj))?;
+ 
+    // Allocate the trap key once (rather than once per proxy hop).
+    let trap_key_s = scope.alloc_string("ownKeys")?;
+    scope.push_root(Value::String(trap_key_s))?;
+    let trap_key = PropertyKey::from_string(trap_key_s);
+ 
+    // Follow Proxy chains iteratively to avoid recursion.
+    let mut current = obj;
+    let mut steps = 0usize;
+    loop {
+      if steps != 0 && steps % 1024 == 0 {
+        vm.tick()?;
+      }
+      steps = steps.saturating_add(1);
+ 
+      let Some(proxy) = scope.heap().get_proxy_data(current)? else {
+        return scope.ordinary_own_property_keys_with_tick(current, || vm.tick());
+      };
+ 
+      vm.tick()?;
+ 
+      let (Some(target), Some(handler)) = (proxy.target, proxy.handler) else {
+        return Err(VmError::TypeError(
+          "Cannot perform 'ownKeys' on a proxy that has been revoked",
+        ));
+      };
+ 
+      // Root target/handler for the duration of trap lookup + invocation.
+      let mut trap_scope = scope.reborrow();
+      trap_scope.push_roots(&[Value::Object(target), Value::Object(handler)])?;
+ 
+      let trap = vm.get_method_with_host_and_hooks(
+        host,
+        &mut trap_scope,
+        hooks,
+        Value::Object(handler),
+        trap_key,
+      )?;
+ 
+      // If the trap is undefined, forward to the target's `[[OwnPropertyKeys]]`.
+      let Some(trap) = trap else {
+        current = target;
+        continue;
+      };
+ 
+      // Call the trap with `(target)`.
+      let trap_args = [Value::Object(target)];
+      let trap_result = vm.call_with_host_and_hooks(
+        host,
+        &mut trap_scope,
+        hooks,
+        trap,
+        Value::Object(handler),
+        &trap_args,
+      )?;
+ 
+      let Value::Object(trap_result_obj) = trap_result else {
+        return Err(VmError::TypeError("Proxy ownKeys trap returned non-object"));
+      };
+ 
+      trap_scope.push_root(Value::Object(trap_result_obj))?;
+ 
+      // Convert the trap result into a list of keys.
+      //
+      // Spec: `CreateListFromArrayLike(trapResult, « String, Symbol »)`.
+      let values = crate::spec_ops::create_list_from_array_like_with_host_and_hooks(
+        vm,
+        &mut trap_scope,
+        host,
+        hooks,
+        trap_result_obj,
+      )?;
+ 
+      let mut out: Vec<PropertyKey> = Vec::new();
+      out
+        .try_reserve_exact(values.len())
+        .map_err(|_| VmError::OutOfMemory)?;
+      for (i, v) in values.into_iter().enumerate() {
+        if i != 0 && i % 1024 == 0 {
+          vm.tick()?;
+        }
+        match v {
+          Value::String(s) => out.push(PropertyKey::from_string(s)),
+          Value::Symbol(s) => out.push(PropertyKey::from_symbol(s)),
+          _ => {
+            return Err(VmError::TypeError(
+              "Proxy ownKeys trap returned non-string/non-symbol",
+            ))
+          }
+        }
+      }
+ 
+      return Ok(out);
+    }
   }
 
   /// ECMAScript `[[OwnPropertyKeys]]` for ordinary objects.
