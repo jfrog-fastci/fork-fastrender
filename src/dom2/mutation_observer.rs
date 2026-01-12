@@ -345,6 +345,18 @@ impl Document {
         let Some(node) = self.nodes.get_mut(node_id.index()) else {
           continue;
         };
+        // `MutationObserverAgent` can be shared across multiple `dom2::Document` instances.
+        //
+        // `NodeId` is document-local, so a `node_list` entry may refer to a node that lives in a
+        // different document. Avoid mutating unrelated nodes by only touching nodes that actually
+        // have registrations for this observer.
+        let has_registration = node
+          .registered_observers
+          .iter()
+          .any(|reg| reg.observer == observer);
+        if !has_registration {
+          continue;
+        }
         node
           .registered_observers
           .retain(|reg| !(reg.observer == observer && reg.transient_source == Some(target)));
@@ -533,8 +545,26 @@ impl Document {
 
     for &node_id in node_list {
       let Some(node) = nodes.get_mut(node_id.index()) else {
+        // `node_list` entries can refer to nodes in other documents that share the same mutation
+        // observer agent. We can't clean those up from this document, but we must keep them so we
+        // don't corrupt the observer's node list.
+        keep_nodes.push(node_id);
         continue;
       };
+
+      // If this `NodeId` doesn't have any registrations for `observer` in this document, it may be
+      // referring to a node from another document. Leave it alone and keep it in the node list.
+      //
+      // Note: this means stale entries can persist in `node_list`, but that is preferable to
+      // incorrectly removing the node list for observers owned by other documents.
+      let has_registration = node
+        .registered_observers
+        .iter()
+        .any(|reg| reg.observer == observer);
+      if !has_registration {
+        keep_nodes.push(node_id);
+        continue;
+      }
 
       node.registered_observers.retain(|reg| {
         !(reg.observer == observer && reg.transient_source.is_some())
