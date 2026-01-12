@@ -292,6 +292,15 @@ fn tab_search_overlay_ui(
     return;
   }
 
+  let motion = UiMotion::from_env();
+  let open_t = motion.animate_bool(
+    ctx,
+    egui::Id::new("tab_search_overlay").with("popup_open"),
+    true,
+    motion.durations.popup_open,
+  );
+  let open_opacity = open_t.clamp(0.0, 1.0);
+
   if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
     app.chrome.tab_search.open = false;
     actions.push(ChromeAction::CloseTabSearch);
@@ -304,7 +313,13 @@ fn tab_search_overlay_ui(
 
   let action = area
     .show(ctx, |ui| {
-      let frame = egui::Frame::popup(ui.style()).show(ui, |ui| {
+      ui.visuals_mut().override_text_color =
+        Some(with_alpha(ui.visuals().text_color(), open_opacity));
+      let mut frame = egui::Frame::popup(ui.style());
+      frame.fill = with_alpha(frame.fill, open_opacity);
+      frame.stroke.color = with_alpha(frame.stroke.color, open_opacity);
+      frame.shadow.color = with_alpha(frame.shadow.color, open_opacity);
+      let frame = frame.show(ui, |ui| {
         ui.set_min_width(520.0);
 
         let input = ui.add(
@@ -363,7 +378,7 @@ fn tab_search_overlay_ui(
               let secondary = tab_search_secondary_text(tab);
 
               let fill = if is_selected {
-                ui.visuals().selection.bg_fill
+                with_alpha(ui.visuals().selection.bg_fill, open_opacity)
               } else {
                 egui::Color32::TRANSPARENT
               };
@@ -1818,6 +1833,13 @@ pub fn chrome_ui_with_bookmarks(
     if let Some(anchor) = address_bar_rect {
       let pos = egui::pos2(anchor.min.x, anchor.max.y);
       let id = egui::Id::new("omnibox_dropdown");
+      let open_t = motion.animate_bool(
+        ctx,
+        id.with("popup_open"),
+        true,
+        motion.durations.popup_open,
+      );
+      let open_opacity = open_t.clamp(0.0, 1.0);
       let area = egui::Area::new(id)
         .order(egui::Order::Foreground)
         .fixed_pos(pos)
@@ -1825,7 +1847,13 @@ pub fn chrome_ui_with_bookmarks(
 
       let mut clicked_suggestion: Option<usize> = None;
       let inner = area.show(ctx, |ui| {
-        egui::Frame::popup(ui.style()).show(ui, |ui| {
+        ui.visuals_mut().override_text_color =
+          Some(with_alpha(ui.visuals().text_color(), open_opacity));
+        let mut frame = egui::Frame::popup(ui.style());
+        frame.fill = with_alpha(frame.fill, open_opacity);
+        frame.stroke.color = with_alpha(frame.stroke.color, open_opacity);
+        frame.shadow.color = with_alpha(frame.shadow.color, open_opacity);
+        frame.show(ui, |ui| {
           let width = anchor.width();
           if width.is_finite() && width > 0.0 {
             ui.set_min_width(width);
@@ -1845,33 +1873,33 @@ pub fn chrome_ui_with_bookmarks(
               );
 
               let hovered = response.hovered();
-              if is_selected || hovered {
-                let visuals = ui.visuals();
-                let bg = if is_selected {
-                  visuals.selection.bg_fill
-                } else {
-                  visuals.widgets.hovered.bg_fill
-                };
-                ui.painter().rect_filled(rect, 0.0, bg);
-              }
+                if is_selected || hovered {
+                  let visuals = ui.visuals();
+                  let bg = if is_selected {
+                    with_alpha(visuals.selection.bg_fill, open_opacity)
+                  } else {
+                    with_alpha(visuals.widgets.hovered.bg_fill, open_opacity)
+                  };
+                  ui.painter().rect_filled(rect, 0.0, bg);
+                }
 
               ui.allocate_ui_at_rect(rect, |ui| {
                 ui.spacing_mut().item_spacing.x = 8.0;
                 ui.horizontal(|ui| {
                   ui.add_space(6.0);
-                  match omnibox_suggestion_icon(suggestion) {
-                    OmniboxSuggestionIcon::Icon(icon) => {
-                      let _ = icon_tinted(
-                        ui,
-                        icon,
-                        ui.spacing().icon_width,
-                        ui.visuals().text_color(),
-                      );
+                    match omnibox_suggestion_icon(suggestion) {
+                      OmniboxSuggestionIcon::Icon(icon) => {
+                        let _ = icon_tinted(
+                          ui,
+                          icon,
+                          ui.spacing().icon_width,
+                          with_alpha(ui.visuals().text_color(), open_opacity),
+                        );
+                      }
+                      OmniboxSuggestionIcon::Text(text) => {
+                        ui.label(egui::RichText::new(text).strong());
+                      }
                     }
-                    OmniboxSuggestionIcon::Text(text) => {
-                      ui.label(egui::RichText::new(text).strong());
-                    }
-                  }
 
                   let title = suggestion
                     .title
@@ -1901,7 +1929,7 @@ pub fn chrome_ui_with_bookmarks(
                         egui::Label::new(
                           egui::RichText::new(secondary)
                             .small()
-                            .color(ui.visuals().weak_text_color()),
+                            .color(with_alpha(ui.visuals().weak_text_color(), open_opacity)),
                         )
                         .wrap(false)
                         .truncate(true),
