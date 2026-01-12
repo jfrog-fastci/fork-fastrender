@@ -87,6 +87,7 @@ These are consumed by the experimental desktop browser UI (`browser` binary; see
 - `FASTR_TEST_BROWSER_HEADLESS_SMOKE=1` – **test-only** hook: run a minimal end-to-end headless smoke test of the real `browser` entrypoint and UI↔worker messaging (for CI environments without a display/GPU). On success it prints `HEADLESS_SMOKE_OK` to stdout and exits without opening a window or initialising winit/wgpu.
 - `FASTR_TEST_BROWSER_HEADLESS_SMOKE_SESSION_JSON=<json>` – **test-only** hook: override the restored session used by headless smoke mode with an explicit `BrowserSession` JSON value.
 - `FASTR_TEST_BROWSER_HEADLESS_SMOKE_BOOKMARKS_JSON=<json>` – **test-only** hook: override the bookmarks snapshot used by headless smoke mode with an explicit JSON value.
+  - This is expected to be a `BookmarkStore` JSON object, but legacy bookmark list schemas are still accepted and migrated.
 - `FASTR_TEST_BROWSER_HEADLESS_SMOKE_HISTORY_JSON=<json>` – **test-only** hook: override the global history snapshot used by headless smoke mode with an explicit JSON value.
 
 ### Appearance / accessibility / debugging (browser UX)

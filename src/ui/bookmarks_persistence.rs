@@ -1,16 +1,16 @@
 //! Browser UI bookmarks persistence.
 //!
-//! This module is intentionally lightweight: it stores an opaque JSON snapshot so the UI can
-//! iterate on bookmark schema without rewriting migration logic up-front. The headless smoke mode
-//! uses this to exercise persistence in CI.
+//! The browser persists bookmarks as a [`crate::ui::bookmarks::BookmarkStore`] JSON snapshot.
+//! `load_bookmarks` supports migration from older on-disk schemas:
+//! - `{ "urls": [...] }` (legacy `BTreeSet<String>` bookmark store)
+//! - `[{ "title": "...", "url": "..." }, ...]` (legacy headless-smoke schema)
 
 use std::path::{Path, PathBuf};
 
+use super::bookmarks::BookmarkStore;
+
 const BOOKMARKS_ENV_PATH: &str = "FASTR_BROWSER_BOOKMARKS_PATH";
 const BOOKMARKS_FILE_NAME: &str = "fastrender_bookmarks.json";
-
-/// Opaque bookmarks snapshot persisted to disk.
-pub type BookmarksSnapshot = serde_json::Value;
 
 /// Determine the on-disk bookmarks file location.
 ///
@@ -36,20 +36,20 @@ pub fn bookmarks_path() -> PathBuf {
 }
 
 /// Attempt to read + parse a bookmarks file. Missing file is not an error.
-pub fn load_bookmarks(path: &Path) -> Result<Option<BookmarksSnapshot>, String> {
+pub fn load_bookmarks(path: &Path) -> Result<Option<BookmarkStore>, String> {
   let data = match std::fs::read_to_string(path) {
     Ok(data) => data,
     Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
     Err(err) => return Err(format!("failed to read {}: {err}", path.display())),
   };
 
-  let bookmarks: BookmarksSnapshot = serde_json::from_str(&data)
-    .map_err(|err| format!("failed to parse {}: {err}", path.display()))?;
-  Ok(Some(bookmarks))
+  let (store, _migration) = BookmarkStore::from_json_str_migrating(&data)
+    .map_err(|err| format!("failed to parse {}: {err:?}", path.display()))?;
+  Ok(Some(store))
 }
 
 /// Write the bookmarks file atomically (write temp file + rename).
-pub fn save_bookmarks_atomic(path: &Path, bookmarks: &BookmarksSnapshot) -> Result<(), String> {
+pub fn save_bookmarks_atomic(path: &Path, bookmarks: &BookmarkStore) -> Result<(), String> {
   let parent_dir = path
     .parent()
     .filter(|p| !p.as_os_str().is_empty())
@@ -103,4 +103,3 @@ pub fn save_bookmarks_atomic(path: &Path, bookmarks: &BookmarksSnapshot) -> Resu
     }
   }
 }
-

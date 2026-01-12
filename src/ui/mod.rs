@@ -1,4 +1,5 @@
 pub mod about_pages;
+pub mod bookmarks;
 pub mod browser_app;
 pub mod browser_limits;
 pub mod browser_tab_controller;
@@ -128,6 +129,10 @@ pub use zoom::{
   DEFAULT_ZOOM, MAX_ZOOM, MIN_ZOOM, ZOOM_STEP,
 };
 
+pub use bookmarks::{
+  BookmarkError, BookmarkFolder, BookmarkId, BookmarkNode, BookmarkStore, BookmarkStoreMigration,
+  BOOKMARK_STORE_VERSION,
+};
 pub use notifications::{WarningToast, WarningToastState, WARNING_TOAST_DEFAULT_TTL};
 
 pub use frame_upload::FrameUploadCoalescer;
@@ -145,5 +150,5 @@ pub use session_autosave::SessionAutosave;
 pub use icons::{icon, icon_button, icon_tinted, spinner, BrowserIcon};
 pub use profile_autosave::{
   bookmarks_path, history_path, load_bookmarks, load_history, save_bookmarks_atomic,
-  save_history_atomic, AutosaveMsg, BookmarkStore, ProfileAutosaveHandle,
+  save_history_atomic, AutosaveMsg, ProfileAutosaveHandle,
 };

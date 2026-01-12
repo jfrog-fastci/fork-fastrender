@@ -1,11 +1,12 @@
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use serde::{de::DeserializeOwned, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-use crate::ui::GlobalHistoryStore;
+use super::bookmarks::BookmarkStore;
+use super::global_history::GlobalHistoryStore;
 #[cfg(test)]
-use crate::ui::GlobalHistoryEntry;
+use super::global_history::GlobalHistoryEntry;
 
 const BOOKMARKS_ENV_PATH: &str = "FASTR_BROWSER_BOOKMARKS_PATH";
 const HISTORY_ENV_PATH: &str = "FASTR_BROWSER_HISTORY_PATH";
@@ -14,27 +15,6 @@ const HISTORY_FILE_NAME: &str = "fastrender_history.json";
 
 const DEFAULT_BOOKMARKS_DEBOUNCE: Duration = Duration::from_secs(1);
 const DEFAULT_HISTORY_DEBOUNCE: Duration = Duration::from_secs(8);
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
-pub struct BookmarkStore {
-  #[serde(default)]
-  pub urls: std::collections::BTreeSet<String>,
-}
-
-impl BookmarkStore {
-  pub fn toggle_url(&mut self, url: &str) -> bool {
-    if self.urls.remove(url) {
-      false
-    } else {
-      self.urls.insert(url.to_string());
-      true
-    }
-  }
-
-  pub fn contains(&self, url: &str) -> bool {
-    self.urls.contains(url)
-  }
-}
 
 /// Determine the on-disk bookmarks file location.
 ///
@@ -90,7 +70,15 @@ pub fn history_path() -> PathBuf {
 
 /// Attempt to read + parse a bookmarks file. Missing file is not an error.
 pub fn load_bookmarks(path: &Path) -> Result<Option<BookmarkStore>, String> {
-  load_json(path)
+  let data = match std::fs::read_to_string(path) {
+    Ok(data) => data,
+    Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+    Err(err) => return Err(format!("failed to read {}: {err}", path.display())),
+  };
+
+  let (store, _migration) = BookmarkStore::from_json_str_migrating(&data)
+    .map_err(|err| format!("failed to parse {}: {err:?}", path.display()))?;
+  Ok(Some(store))
 }
 
 /// Attempt to read + parse a history file. Missing file is not an error.
@@ -404,15 +392,16 @@ mod tests {
     )
     .unwrap();
 
+    let mut bookmarks_a = BookmarkStore::default();
+    bookmarks_a.toggle("https://a.example/", Some("a"));
+    let mut bookmarks_b = BookmarkStore::default();
+    bookmarks_b.toggle("https://b.example/", Some("b"));
+
     autosave
-      .send(AutosaveMsg::UpdateBookmarks(BookmarkStore {
-        urls: ["https://a.example/".to_string()].into_iter().collect(),
-      }))
+      .send(AutosaveMsg::UpdateBookmarks(bookmarks_a))
       .unwrap();
     autosave
-      .send(AutosaveMsg::UpdateBookmarks(BookmarkStore {
-        urls: ["https://b.example/".to_string()].into_iter().collect(),
-      }))
+      .send(AutosaveMsg::UpdateBookmarks(bookmarks_b.clone()))
       .unwrap();
 
     autosave
@@ -440,12 +429,7 @@ mod tests {
 
     let saved_bookmarks: BookmarkStore =
       serde_json::from_str(&std::fs::read_to_string(&bookmarks_path).unwrap()).unwrap();
-    assert_eq!(
-      saved_bookmarks,
-      BookmarkStore {
-        urls: ["https://b.example/".to_string()].into_iter().collect(),
-      }
-    );
+    assert_eq!(saved_bookmarks, bookmarks_b);
 
     let saved_history: GlobalHistoryStore =
       serde_json::from_str(&std::fs::read_to_string(&history_path).unwrap()).unwrap();
@@ -478,26 +462,18 @@ mod tests {
     )
     .unwrap();
 
+    let mut bookmarks = BookmarkStore::default();
+    bookmarks.toggle("https://final.example/", Some("final"));
+
     autosave
-      .send(AutosaveMsg::UpdateBookmarks(BookmarkStore {
-        urls: ["https://final.example/".to_string()]
-          .into_iter()
-          .collect(),
-      }))
+      .send(AutosaveMsg::UpdateBookmarks(bookmarks.clone()))
       .unwrap();
 
     autosave.shutdown_with_timeout(Duration::from_millis(500));
 
     let saved_bookmarks: BookmarkStore =
       serde_json::from_str(&std::fs::read_to_string(&bookmarks_path).unwrap()).unwrap();
-    assert_eq!(
-      saved_bookmarks,
-      BookmarkStore {
-        urls: ["https://final.example/".to_string()]
-          .into_iter()
-          .collect(),
-      }
-    );
+    assert_eq!(saved_bookmarks, bookmarks);
 
     // History file should not exist (no history updates were sent).
     assert!(!history_path.exists());

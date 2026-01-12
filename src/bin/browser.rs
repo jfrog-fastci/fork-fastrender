@@ -578,13 +578,26 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     const MAX_HISTORY: usize = 500;
 
     let bookmarks_snapshot: Vec<BookmarkSnapshot> = bookmarks
-      .urls
+      .roots
       .iter()
-      .map(|raw| raw.trim())
-      .filter(|url| !url.is_empty())
-      .map(|url| BookmarkSnapshot {
-        title: None,
-        url: url.to_string(),
+      .filter_map(|id| match bookmarks.nodes.get(id) {
+        Some(fastrender::ui::BookmarkNode::Bookmark(entry)) => {
+          let url = entry.url.trim();
+          if url.is_empty() {
+            return None;
+          }
+          let title = entry
+            .title
+            .as_deref()
+            .map(str::trim)
+            .filter(|t| !t.is_empty())
+            .map(str::to_string);
+          Some(BookmarkSnapshot {
+            title,
+            url: url.to_string(),
+          })
+        }
+        _ => None,
       })
       .collect();
 
@@ -1130,26 +1143,26 @@ fn run_headless_smoke_mode(
   let history_path = fastrender::ui::history_persistence::history_path();
 
   const BOOKMARKS_OVERRIDE_ENV: &str = "FASTR_TEST_BROWSER_HEADLESS_SMOKE_BOOKMARKS_JSON";
-  let (bookmarks_source, bookmarks_snapshot) = match std::env::var(BOOKMARKS_OVERRIDE_ENV) {
+  let (bookmarks_source, bookmarks_store) = match std::env::var(BOOKMARKS_OVERRIDE_ENV) {
     Ok(raw) if !raw.trim().is_empty() => {
-      let snapshot: serde_json::Value = serde_json::from_str(&raw)
-        .map_err(|err| format!("{BOOKMARKS_OVERRIDE_ENV}: invalid JSON: {err}"))?;
-      ("override", snapshot)
+      let (store, _migration) = fastrender::ui::BookmarkStore::from_json_str_migrating(&raw)
+        .map_err(|err| format!("{BOOKMARKS_OVERRIDE_ENV}: invalid JSON: {err:?}"))?;
+      ("override", store)
     }
     _ => match fastrender::ui::bookmarks_persistence::load_bookmarks(&bookmarks_path) {
-      Ok(Some(snapshot)) => ("disk", snapshot),
-      Ok(None) => ("empty", serde_json::Value::Array(Vec::new())),
+      Ok(Some(store)) => ("disk", store),
+      Ok(None) => ("empty", fastrender::ui::BookmarkStore::default()),
       Err(err) => {
         eprintln!(
           "failed to load bookmarks from {}: {err}",
           bookmarks_path.display()
         );
-        ("empty", serde_json::Value::Array(Vec::new()))
+        ("empty", fastrender::ui::BookmarkStore::default())
       }
     },
   };
   let bookmarks_json =
-    serde_json::to_string(&bookmarks_snapshot).unwrap_or_else(|_| "<invalid>".to_string());
+    serde_json::to_string(&bookmarks_store).unwrap_or_else(|_| "<invalid>".to_string());
   println!("HEADLESS_BOOKMARKS source={bookmarks_source} {bookmarks_json}");
 
   const HISTORY_OVERRIDE_ENV: &str = "FASTR_TEST_BROWSER_HEADLESS_SMOKE_HISTORY_JSON";
@@ -1312,7 +1325,7 @@ fn run_headless_smoke_mode(
 
   if let Err(err) = fastrender::ui::bookmarks_persistence::save_bookmarks_atomic(
     &bookmarks_path,
-    &bookmarks_snapshot,
+    &bookmarks_store,
   ) {
     eprintln!(
       "failed to save bookmarks to {}: {err}",
@@ -4505,29 +4518,50 @@ impl App {
     let mut snapshot = fastrender::ui::about_pages::about_page_snapshot();
     snapshot.bookmarks = self
       .bookmarks
-      .urls
+      .roots
       .iter()
-      .map(|raw| raw.trim())
-      .filter(|url| !url.is_empty())
-      .map(|url| fastrender::ui::about_pages::BookmarkSnapshot {
-        title: None,
-        url: url.to_string(),
+      .filter_map(|id| match self.bookmarks.nodes.get(id) {
+        Some(fastrender::ui::BookmarkNode::Bookmark(entry)) => {
+          let url = entry.url.trim();
+          if url.is_empty() {
+            return None;
+          }
+          let title = entry
+            .title
+            .as_deref()
+            .map(str::trim)
+            .filter(|t| !t.is_empty())
+            .map(str::to_string);
+          Some(fastrender::ui::about_pages::BookmarkSnapshot {
+            title,
+            url: url.to_string(),
+          })
+        }
+        _ => None,
       })
       .collect();
     fastrender::ui::about_pages::set_about_page_snapshot(snapshot);
   }
 
   fn toggle_bookmark_for_active_tab(&mut self) {
-    let Some(url) = self
+    let Some((url, title)) = self
       .browser_state
       .active_tab()
-      .and_then(|tab| tab.committed_url.as_deref().or(tab.current_url.as_deref()))
-      .map(str::to_string)
+      .and_then(|tab| {
+        let url = tab.committed_url.as_deref().or(tab.current_url.as_deref())?;
+        let title = tab
+          .committed_title
+          .as_deref()
+          .or(tab.title.as_deref())
+          .filter(|t| !t.trim().is_empty())
+          .map(str::to_string);
+        Some((url.to_string(), title))
+      })
     else {
       return;
     };
 
-    self.bookmarks.toggle_url(&url);
+    self.bookmarks.toggle(&url, title.as_deref());
     self.autosave_bookmarks();
     self.sync_about_newtab_bookmarks_snapshot();
   }
@@ -6041,7 +6075,7 @@ impl App {
           });
           ui.separator();
 
-          if self.bookmarks.urls.is_empty() {
+          if self.bookmarks.roots.is_empty() {
             ui.label("No bookmarks.");
             return;
           }
@@ -6049,11 +6083,48 @@ impl App {
           egui::ScrollArea::vertical()
             .auto_shrink([false, false])
             .show(ui, |ui| {
-              for url in &self.bookmarks.urls {
-                if ui.button(url).clicked() {
-                  panel_actions.push(fastrender::ui::ChromeAction::NavigateTo(url.clone()));
+              fn render_nodes(
+                ui: &mut egui::Ui,
+                store: &fastrender::ui::BookmarkStore,
+                ids: &[fastrender::ui::BookmarkId],
+                panel_actions: &mut Vec<fastrender::ui::ChromeAction>,
+              ) {
+                for id in ids {
+                  let Some(node) = store.nodes.get(id) else {
+                    continue;
+                  };
+                  match node {
+                    fastrender::ui::BookmarkNode::Bookmark(entry) => {
+                      let label = entry
+                        .title
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|t| !t.is_empty())
+                        .unwrap_or(entry.url.as_str());
+                      if ui.button(label).clicked() {
+                        panel_actions.push(fastrender::ui::ChromeAction::NavigateTo(
+                          entry.url.clone(),
+                        ));
+                      }
+                    }
+                    fastrender::ui::BookmarkNode::Folder(folder) => {
+                      egui::CollapsingHeader::new(folder.title.as_str())
+                        .id_source(folder.id.0)
+                        .default_open(true)
+                        .show(ui, |ui| {
+                          render_nodes(ui, store, &folder.children, panel_actions);
+                        });
+                    }
+                  }
                 }
               }
+
+              render_nodes(
+                ui,
+                &self.bookmarks,
+                &self.bookmarks.roots,
+                &mut panel_actions,
+              );
             });
         });
     } else if self.history_panel_open {
