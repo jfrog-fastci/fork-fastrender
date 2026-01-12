@@ -41,6 +41,19 @@ extern "C" fn write_u32_and_reject(data: *mut u8, out_payload: *mut u8) -> u8 {
   1 // reject
 }
 
+static ROOTED_DATA_STARTED: AtomicBool = AtomicBool::new(false);
+static ROOTED_DATA_RELEASE: AtomicBool = AtomicBool::new(false);
+static ROOTED_DATA_FINISHED: AtomicBool = AtomicBool::new(false);
+
+extern "C" fn rooted_data_task_block(_data: *mut u8, _out_payload: *mut u8) -> u8 {
+  ROOTED_DATA_STARTED.store(true, Ordering::Release);
+  while !ROOTED_DATA_RELEASE.load(Ordering::Acquire) {
+    std::thread::sleep(Duration::from_millis(1));
+  }
+  ROOTED_DATA_FINISHED.store(true, Ordering::Release);
+  0 // fulfill
+}
+
 #[test]
 fn spawn_blocking_promise_is_gc_managed_and_gc_safe() {
   let _rt = TestRuntimeGuard::new();
@@ -204,5 +217,82 @@ fn spawn_blocking_promise_rejects_when_tag_is_nonzero() {
   unsafe {
     drop(Box::from_raw(ctx_ptr));
   }
+  threading::unregister_current_thread();
+}
+
+#[test]
+fn spawn_blocking_promise_rooted_keeps_data_alive_until_task_finishes() {
+  let _rt = TestRuntimeGuard::new();
+  threading::register_current_thread(ThreadKind::Main);
+
+  const TIMEOUT: Duration = if cfg!(debug_assertions) {
+    Duration::from_secs(30)
+  } else {
+    Duration::from_secs(2)
+  };
+
+  ROOTED_DATA_STARTED.store(false, Ordering::Release);
+  ROOTED_DATA_RELEASE.store(false, Ordering::Release);
+  ROOTED_DATA_FINISHED.store(false, Ordering::Release);
+
+  // Use a GC-managed allocation that does not depend on registering a shape table.
+  let mut data_obj = runtime_native::rt_alloc_array(16, 1);
+  assert!(!data_obj.is_null());
+
+  let weak = runtime_native::rt_weak_add(data_obj);
+
+  let _promise = runtime_native::rt_spawn_blocking_promise_rooted(
+    rooted_data_task_block,
+    data_obj,
+    PromiseLayout::of::<()>(),
+  );
+
+  // Wait until the blocking task has started (meaning it's running under `enter_gc_safe_region`).
+  let deadline = Instant::now() + TIMEOUT;
+  while !ROOTED_DATA_STARTED.load(Ordering::Acquire) {
+    assert!(Instant::now() < deadline, "timeout waiting for rooted blocking task to start");
+    std::thread::yield_now();
+  }
+
+  // Ensure the stack doesn't accidentally keep a strong reference to `data_obj`.
+  unsafe {
+    ptr::write_volatile(&mut data_obj, ptr::null_mut());
+  }
+
+  // While the blocking task is still running, the rooted variant must keep the GC object alive.
+  runtime_native::rt_gc_collect();
+  assert_ne!(
+    runtime_native::rt_weak_get(weak),
+    ptr::null_mut(),
+    "rooted spawn_blocking_promise must keep data alive across GC while the task is pending"
+  );
+
+  // Allow the task to complete, then ensure the object becomes collectible again.
+  ROOTED_DATA_RELEASE.store(true, Ordering::Release);
+  let deadline = Instant::now() + TIMEOUT;
+  while !ROOTED_DATA_FINISHED.load(Ordering::Acquire) {
+    assert!(Instant::now() < deadline, "timeout waiting for rooted blocking task to finish");
+    std::thread::yield_now();
+  }
+
+  // Drain the settle microtask so the runtime can release its internal promise handle.
+  let deadline = Instant::now() + TIMEOUT;
+  while runtime_native::roots::global_persistent_handle_table().live_count() != 0 {
+    let _ = runtime_native::rt_drain_microtasks();
+    assert!(
+      Instant::now() < deadline,
+      "timeout waiting for spawn_blocking_promise_rooted to release persistent handles"
+    );
+    std::thread::yield_now();
+  }
+
+  runtime_native::rt_gc_collect();
+  assert_eq!(
+    runtime_native::rt_weak_get(weak),
+    ptr::null_mut(),
+    "data should be collectible after the rooted blocking task finishes"
+  );
+  runtime_native::rt_weak_remove(weak);
+
   threading::unregister_current_thread();
 }
