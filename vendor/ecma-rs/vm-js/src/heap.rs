@@ -1418,7 +1418,7 @@ impl Heap {
     index: usize,
   ) -> Result<Option<Value>, VmError> {
     let view = self.get_typed_array(obj)?;
-    if self.get_array_buffer(view.viewed_array_buffer)?.data.is_none() {
+    if self.typed_array_view_is_out_of_bounds(view)? {
       return Ok(None);
     }
     if index >= view.length {

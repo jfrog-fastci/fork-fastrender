@@ -10008,6 +10008,119 @@ pub(crate) fn generator_prototype_next(
   }
 }
 
+/// `%GeneratorPrototype%.return` (minimal).
+///
+/// This is primarily needed so iterator-closing operations (array/call spread, `for...of`, etc)
+/// can call `IteratorClose`, which invokes `iterator.return()` on abrupt completion.
+///
+/// Full `GeneratorResumeAbrupt` semantics (running `finally` blocks, yielding again, etc) are not
+/// implemented yet; we conservatively mark the generator as completed and return `{ value, done:
+/// true }`.
+pub(crate) fn generator_prototype_return(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let intr = vm
+    .intrinsics()
+    .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+
+  let this_obj = match this {
+    Value::Object(o) => o,
+    _ => {
+      return Err(throw_type_error(
+        vm,
+        scope,
+        "Generator.prototype.return called on non-object",
+      )?)
+    }
+  };
+
+  let return_value = args.get(0).copied().unwrap_or(Value::Undefined);
+
+  let mut gen_scope = scope.reborrow();
+  gen_scope.push_root(Value::Object(this_obj))?;
+  gen_scope.push_root(return_value)?;
+
+  let id_key = internal_symbol_key(&mut gen_scope, GENERATOR_CONTINUATION_ID_MARKER)?;
+  let id_desc = gen_scope
+    .heap()
+    .object_get_own_property_with_tick(this_obj, &id_key, || vm.tick())?;
+  let id_value = match id_desc {
+    Some(PropertyDescriptor {
+      kind: PropertyKind::Data { value, .. },
+      ..
+    }) => value,
+    Some(PropertyDescriptor {
+      kind: PropertyKind::Accessor { .. },
+      ..
+    }) => return Err(VmError::PropertyNotData),
+    None => {
+      return Err(throw_type_error(
+        vm,
+        &mut gen_scope,
+        "Generator.prototype.return called on incompatible receiver",
+      )?)
+    }
+  };
+
+  // Completed generator.
+  if matches!(id_value, Value::Undefined) {
+    let result = create_iterator_result_object(
+      &mut gen_scope,
+      intr.object_prototype(),
+      return_value,
+      true,
+    )?;
+    return Ok(Value::Object(result));
+  }
+
+  let id = match id_value {
+    Value::Number(n) => n as u32,
+    _ => {
+      return Err(throw_type_error(
+        vm,
+        &mut gen_scope,
+        "Generator.prototype.return missing continuation id",
+      )?)
+    }
+  };
+
+  let Some(cont) = vm.take_generator_continuation(id) else {
+    return Err(VmError::InvariantViolation(
+      "generator continuation missing for id",
+    ));
+  };
+
+  generator_teardown_continuation(&mut gen_scope, cont);
+  // Mark as completed by setting the continuation id to `undefined` (keeping the property so
+  // subsequent `.next()` calls return `{ value: undefined, done: true }` instead of throwing).
+  gen_scope.define_property(
+    this_obj,
+    id_key,
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: true,
+      kind: PropertyKind::Data {
+        value: Value::Undefined,
+        writable: true,
+      },
+    },
+  )?;
+
+  let result = create_iterator_result_object(
+    &mut gen_scope,
+    intr.object_prototype(),
+    return_value,
+    true,
+  )?;
+  Ok(Value::Object(result))
+}
+
 fn async_handle_body_result(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -23546,14 +23659,10 @@ pub(crate) fn run_ecma_function(
   args: &[Value],
 ) -> Result<Value, VmError> {
   if func.stx.generator {
-    // Generator functions are still under development in vm-js. Use a consistent "feature gate"
-    // error message so tests can treat generator-related coverage as a soft-fail until the
-    // implementation lands.
-    return Err(VmError::Unimplemented(if func.stx.async_ {
-      "async generator functions"
-    } else {
-      "generator functions"
-    }));
+    if func.stx.async_ {
+      return Err(VmError::Unimplemented("async generator functions"));
+    }
+    return Err(VmError::Unimplemented("generator functions"));
   }
   env.set_source_info(source, base_offset, prefix_len);
 

@@ -2255,8 +2255,8 @@ impl<'a> Scope<'a> {
           if numeric_index >= len as f64 {
             return Ok(true);
           }
-          // Valid integer index: continue with ordinary `[[Set]]` semantics below.
-        }
+           // Valid integer index: continue with ordinary `[[Set]]` semantics below.
+         }
       }
     }
 
@@ -2418,8 +2418,8 @@ impl<'a> Scope<'a> {
           if numeric_index >= len as f64 {
             return Ok(true);
           }
-          // Valid integer index: continue with ordinary `[[Set]]` semantics below.
-        }
+           // Valid integer index: continue with ordinary `[[Set]]` semantics below.
+         }
       }
     }
 

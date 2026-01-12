@@ -58,7 +58,9 @@ fn assert_function_name_and_length(
 
 #[test]
 fn generator_prototype_methods_validate_this_and_are_stubbed() -> Result<(), VmError> {
-  let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  // This test deliberately allocates many TypeError instances (receiver validation), so give it a
+  // little more headroom than the minimum 1MiB heap used by most tests.
+  let mut heap = Heap::new(HeapLimits::new(2 * 1024 * 1024, 2 * 1024 * 1024));
   let mut vm = Vm::new(VmOptions::default());
   let mut realm = Realm::new(&mut vm, &mut heap)?;
   let intr = *realm.intrinsics();
@@ -149,8 +151,8 @@ fn generator_prototype_methods_validate_this_and_are_stubbed() -> Result<(), VmE
     // Fake "generator object": has the internal [[GeneratorState]] marker and inherits from
     // `%GeneratorPrototype%` so builtin receiver validation passes.
     //
-    // Since it has no continuation id, `%GeneratorPrototype%.next` should still treat it as an
-    // incompatible receiver (TypeError). `%GeneratorPrototype%.return` / `.throw` remain stubbed.
+    // Since it has no continuation id, `%GeneratorPrototype%.next` / `.return` should still treat
+    // it as an incompatible receiver (TypeError). `%GeneratorPrototype%.throw` remains stubbed.
     let gen = scope.alloc_object()?;
     scope.push_root(Value::Object(gen))?;
     scope
@@ -193,7 +195,7 @@ fn generator_prototype_methods_validate_this_and_are_stubbed() -> Result<(), VmE
         &[Value::Undefined],
       )
       .unwrap_err();
-    assert!(matches!(err, VmError::Unimplemented("GeneratorResumeAbrupt")));
+    assert_is_type_error(&mut scope, &intr, err)?;
 
     let err = vm
       .call_without_host(

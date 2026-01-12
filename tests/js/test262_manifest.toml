@@ -723,6 +723,22 @@ reason = "vm-js: staging tests depend on more complete Function.prototype.apply 
 
 # --- Known-passing tests (keep regressions unexpected) ---
 [[expectations]]
+id = "language/expressions/array/spread-err-mult-err-expr-throws.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/array/spread-err-sngl-err-expr-throws.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/new/spread-err-mult-err-expr-throws.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/new/spread-err-sngl-err-expr-throws.js"
+status = "pass"
+
+[[expectations]]
 id = "language/expressions/addition/S11.6.1_A1.js"
 status = "pass"
 

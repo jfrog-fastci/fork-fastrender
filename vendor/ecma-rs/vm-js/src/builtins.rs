@@ -11369,13 +11369,13 @@ pub fn generator_prototype_next(
 
 /// `%GeneratorPrototype%.return` (validation + stub).
 pub fn generator_prototype_return(
-  _vm: &mut Vm,
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
-  _callee: GcObject,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
   this: Value,
-  _args: &[Value],
+  args: &[Value],
 ) -> Result<Value, VmError> {
   let _ = require_generator_object(
     scope,
@@ -11383,7 +11383,7 @@ pub fn generator_prototype_return(
     "Generator.prototype.return called on non-object",
     "Generator.prototype.return called on incompatible receiver",
   )?;
-  Err(VmError::Unimplemented("GeneratorResumeAbrupt"))
+  crate::exec::generator_prototype_return(vm, scope, host, hooks, callee, this, args)
 }
 
 /// `%GeneratorPrototype%.throw` (validation + stub).

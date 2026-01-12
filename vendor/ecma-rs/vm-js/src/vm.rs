@@ -1397,7 +1397,7 @@ impl Vm {
     Some((code.source.clone(), code.span_start, code.span_end, code.kind))
   }
 
-  fn ecma_function_ast(
+  pub(crate) fn ecma_function_ast(
     &mut self,
     heap: &mut Heap,
     id: EcmaFunctionId,

@@ -738,7 +738,18 @@ impl SourceTextModuleRecord {
     }
 
     // 2. Append the Record { [[Module]]: module, [[ExportName]]: exportName } to resolveSet.
-    resolve_set.push((module, export_name.to_string()));
+    //
+    // `export_name` can be attacker-controlled (e.g. extremely long export names), so perform host
+    // allocations fallibly to avoid aborting on allocator OOM.
+    resolve_set
+      .try_reserve_exact(1)
+      .map_err(|_| VmError::OutOfMemory)?;
+    let mut name = String::new();
+    name
+      .try_reserve_exact(export_name.len())
+      .map_err(|_| VmError::OutOfMemory)?;
+    name.push_str(export_name);
+    resolve_set.push((module, name));
 
     // 3. For each ExportEntry Record e of module.[[LocalExportEntries]], do
     for entry in &self.local_export_entries {
