@@ -6233,6 +6233,52 @@ impl<'a> Scope<'a> {
     slots: &[Value],
     closure_env: Option<GcEnv>,
   ) -> Result<GcObject, VmError> {
+    self.alloc_native_function_with_slots_and_env_impl(
+      call,
+      construct,
+      name,
+      length,
+      slots,
+      closure_env,
+      true,
+    )
+  }
+
+  /// Like [`Scope::alloc_native_function_with_slots_and_env`], but does **not** create a
+  /// constructor `.prototype` property.
+  ///
+  /// This exists for spec-accurate intrinsics like `%Proxy%`, which is constructible but does not
+  /// have an own `"prototype"` property (test262: `built-ins/Proxy/proxy-no-prototype.js`).
+  pub(crate) fn alloc_native_function_with_slots_and_env_no_constructor_prototype(
+    &mut self,
+    call: NativeFunctionId,
+    construct: Option<NativeConstructId>,
+    name: GcString,
+    length: u32,
+    slots: &[Value],
+    closure_env: Option<GcEnv>,
+  ) -> Result<GcObject, VmError> {
+    self.alloc_native_function_with_slots_and_env_impl(
+      call,
+      construct,
+      name,
+      length,
+      slots,
+      closure_env,
+      false,
+    )
+  }
+
+  fn alloc_native_function_with_slots_and_env_impl(
+    &mut self,
+    call: NativeFunctionId,
+    construct: Option<NativeConstructId>,
+    name: GcString,
+    length: u32,
+    slots: &[Value],
+    closure_env: Option<GcEnv>,
+    make_constructor_prototype: bool,
+  ) -> Result<GcObject, VmError> {
     // Root inputs during allocation in case `ensure_can_allocate` triggers a GC.
     let mut scope = self.reborrow();
     // Root `name` and `slots` in a way that's robust against GC triggering while we grow the root
@@ -6287,7 +6333,7 @@ impl<'a> Scope<'a> {
     crate::function_properties::set_function_length(&mut scope, func, length)?;
 
     // Constructors get a `.prototype` object.
-    if construct.is_some() {
+    if make_constructor_prototype && construct.is_some() {
       crate::function_properties::make_constructor(&mut scope, func)?;
     }
 

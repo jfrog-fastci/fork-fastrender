@@ -1548,14 +1548,17 @@ impl Intrinsics {
     let proxy_revocable = vm.register_native_call(builtins::proxy_revocable)?;
     let proxy_revoker_call = vm.register_native_call(builtins::proxy_revoker)?;
     let proxy_name = scope.alloc_string("Proxy")?;
-    let proxy_constructor = alloc_rooted_native_function(
-      scope,
-      roots,
+    // `%Proxy%` is constructible, but does not have an own `"prototype"` property (ECMA-262,
+    // test262 `built-ins/Proxy/proxy-no-prototype.js`).
+    let proxy_constructor = scope.alloc_native_function_with_slots_and_env_no_constructor_prototype(
       proxy_call,
       Some(proxy_construct),
       proxy_name,
       2,
+      &[],
+      None,
     )?;
+    roots.push(scope.heap_mut().add_root(Value::Object(proxy_constructor))?);
     scope
       .heap_mut()
       .object_set_prototype(proxy_constructor, Some(function_prototype))?;
