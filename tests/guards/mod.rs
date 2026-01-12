@@ -21,6 +21,7 @@ mod no_deprecated_test_harness_names;
 mod no_extra_test_binaries;
 mod no_path_env_mutation;
 mod no_fastr_use_bundled_fonts_env_mutation;
+mod no_rayon_num_threads_env_mutation;
 mod no_process_global_env_mutation;
 mod no_process_global_stage_listener_mutation;
 mod no_process_global_runtime_toggles_override;
