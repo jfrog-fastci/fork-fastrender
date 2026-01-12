@@ -195,11 +195,11 @@ The runtime reads stackmaps at runtime. Therefore:
   **allocated** section (ELF `SHF_ALLOC`) and ends up in a loadable segment.
 - Build tooling must not strip it (explicit `strip`, `objcopy`, or post-link
   tooling must preserve it).
-- When linking with `-Wl,--gc-sections`, the final link step must also apply a linker script fragment
+  - When linking with `-Wl,--gc-sections`, the final link step must also apply a linker script fragment
   that `KEEP`s stackmaps. In this repo:
-  - non-PIE: `runtime-native/link/stackmaps_nopie.ld`
+  - non-PIE (lld): `runtime-native/link/stackmaps_nopie.ld`
   - PIE + lld: `runtime-native/link/stackmaps.ld` (expects `.data.rel.ro.llvm_*` inputs)
-  - PIE + GNU ld: `runtime-native/link/stackmaps_gnuld.ld`
+  - GNU ld (PIE or non-PIE): `runtime-native/link/stackmaps_gnuld.ld`
   - `runtime-native/stackmaps.ld` is kept as a compatibility alias for older scripts.
 
 Verification:

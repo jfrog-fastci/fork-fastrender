@@ -55,9 +55,9 @@ Both fragments work with **GNU ld** and **lld**, but they target different layou
   `.bss`** (an always-present anchor, even for minimal PIE links; outside the RELRO range) to avoid
   lld's RELRO contiguity checks.
 
-For GNU ld **PIE** builds where stackmaps must be writable for relocations,
-`scripts/native_link.sh` selects `runtime-native/link/stackmaps_gnuld.ld` automatically to keep
-stackmaps/faultmaps in dedicated `.data.rel.ro.llvm_*` output sections.
+For GNU ld links, `scripts/native_link.sh` selects `runtime-native/link/stackmaps_gnuld.ld`
+automatically (PIE or non-PIE) to avoid RWX PT_LOAD segments when stackmaps/faultmaps are
+writable.
 
 It also defines stable boundary symbols for runtime discovery (see below).
 
@@ -104,7 +104,7 @@ For linking arbitrary programs against `runtime-native` (e.g. from C), see:
 
 - `runtime-native/link/stackmaps_nopie.ld` (non-PIE)
 - `runtime-native/link/stackmaps.ld` (PIE, lld-friendly)
-- `runtime-native/link/stackmaps_gnuld.ld` (GNU ld PIE)
+- `runtime-native/link/stackmaps_gnuld.ld` (GNU ld; avoids RWX when stackmaps are writable)
 - `runtime-native/stackmaps.ld` (compat), and
 - `runtime-native/README.md`
 
@@ -150,9 +150,9 @@ The more general `scripts/native_link.sh` rewrites `.llvm_stackmaps` / `.llvm_fa
 `.data.rel.ro.llvm_*` in the input objects (via `objcopy`/`llvm-objcopy --rename-section`) when
 needed and injects the appropriate linker fragment:
 
-- non-PIE: `runtime-native/link/stackmaps_nopie.ld`
+- non-PIE (lld): `runtime-native/link/stackmaps_nopie.ld`
 - PIE (lld): `runtime-native/link/stackmaps.ld`
-- PIE (GNU ld): `runtime-native/link/stackmaps_gnuld.ld`
+- GNU ld (PIE or non-PIE): `runtime-native/link/stackmaps_gnuld.ld`
 
 Current default policy in `native-js` and `native_link.sh`: **non-PIE** (`-no-pie`) unless the
 caller opts into PIE explicitly (note: non-PIE disables main-executable ASLR on Linux).
