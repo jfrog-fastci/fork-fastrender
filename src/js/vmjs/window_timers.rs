@@ -1108,17 +1108,17 @@ fn queue_promise_rejection_event_task<Host: WindowRealmHost + 'static>(
 
         let (event_value, needs_payload_define) = if scope
           .heap()
-          .is_callable(promise_rejection_ctor)
+          .is_constructor(promise_rejection_ctor)
           .unwrap_or(false)
         {
           (
-            vm.call_with_host_and_hooks(
+            vm.construct_with_host_and_hooks(
               vm_host,
               &mut scope,
               &mut hooks,
               promise_rejection_ctor,
-              Value::Undefined,
               &[Value::String(type_s), Value::Object(init_obj)],
+              promise_rejection_ctor,
             )?,
             false,
           )
@@ -1133,13 +1133,13 @@ fn queue_promise_rejection_event_task<Host: WindowRealmHost + 'static>(
           )?;
           scope.push_root(event_ctor)?;
           (
-            vm.call_with_host_and_hooks(
+            vm.construct_with_host_and_hooks(
               vm_host,
               &mut scope,
               &mut hooks,
               event_ctor,
-              Value::Undefined,
               &[Value::String(type_s), Value::Object(init_obj)],
+              event_ctor,
             )?,
             true,
           )
