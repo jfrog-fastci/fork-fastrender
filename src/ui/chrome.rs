@@ -1222,6 +1222,7 @@ pub fn chrome_ui_with_bookmarks(
       let mut menu_open = ctx
         .data(|d| d.get_temp::<bool>(menu_open_id))
         .unwrap_or(false);
+      let menu_open_prev = menu_open;
 
       let menu_button = icon_button(ui, BrowserIcon::Menu, "Menu", true);
       show_tooltip_on_focus(ui, &menu_button, "Menu");
@@ -1356,6 +1357,10 @@ pub fn chrome_ui_with_bookmarks(
         if clicked_outside {
           menu_open = false;
         }
+      }
+      if menu_open_prev && !menu_open {
+        // Ensure we paint at least one follow-up frame so the menu can fade out smoothly.
+        ctx.request_repaint();
       }
 
       ctx.data_mut(|d| {
@@ -2484,6 +2489,7 @@ pub fn chrome_ui_with_bookmarks(
   // ---------------------------------------------------------------------------
   // Appearance popup
   // ---------------------------------------------------------------------------
+  let appearance_open_prev = app.chrome.appearance_popup_open;
   if app.chrome.appearance_popup_open {
     if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
       app.chrome.appearance_popup_open = false;
@@ -2569,6 +2575,11 @@ pub fn chrome_ui_with_bookmarks(
         app.chrome.appearance_popup_open = false;
       }
     }
+  }
+  if appearance_open_prev && !app.chrome.appearance_popup_open {
+    // The appearance popup lives outside the winit redraw loop; request a follow-up frame so the
+    // fade-out animation is visible even when closing via click-away/Escape.
+    ctx.request_repaint();
   }
 
   // ---------------------------------------------------------------------------
