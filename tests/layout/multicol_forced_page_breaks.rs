@@ -1482,3 +1482,64 @@ fn multicol_break_after_right_on_last_child_inserts_blank_page_before_following_
     page_content_start_y(page3)
   );
 }
+
+#[test]
+fn multicol_break_after_left_on_last_child_forces_next_page_without_blank_page() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          html { direction: ltr; }
+          @page { size: 200px 200px; margin: 20px; }
+          @page :left { @top-center { content: "LEFT"; } }
+          @page :right { @top-center { content: "RIGHT"; } }
+          body { margin: 0; }
+          .multi { column-count: 2; column-gap: 0; }
+          .blk { height: 80px; margin: 0; }
+          #b { break-after: left; }
+        </style>
+      </head>
+      <body>
+        <div class="multi">
+          <div class="blk" id="a">A</div>
+          <div class="blk" id="b">B</div>
+        </div>
+        <div id="after">AFTER</div>
+      </body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(html).unwrap();
+  let options = LayoutDocumentOptions::new().with_page_stacking(PageStacking::Untranslated);
+  let tree = renderer
+    .layout_document_for_media_with_options(&dom, 200, 200, MediaType::Print, options, None)
+    .unwrap();
+  let page_roots = pages(&tree);
+
+  assert_eq!(
+    page_roots.len(),
+    2,
+    "break-after: left at the end of a paged multicol flow should advance to the next page without inserting blank pages"
+  );
+
+  let page1 = page_roots[0];
+  let page2 = page_roots[1];
+
+  let page1_content = page_content(page1);
+  assert!(find_text_eq(page1_content, "A").is_some());
+  assert!(find_text_eq(page1_content, "B").is_some());
+  assert!(find_text_eq(page1_content, "AFTER").is_none());
+
+  assert!(margin_boxes_contain_text(page2, "LEFT"));
+  assert!(!margin_boxes_contain_text(page2, "RIGHT"));
+
+  let page2_content = page_content(page2);
+  assert!(find_text_eq(page2_content, "AFTER").is_some());
+  let pos_after = find_text_position(page2, "AFTER", (0.0, 0.0)).expect("AFTER on page 2");
+  assert!(
+    pos_after.1 <= page_content_start_y(page2) + 1.0,
+    "expected AFTER to start at the top of the second page; pos={pos_after:?} content_start_y={}",
+    page_content_start_y(page2)
+  );
+}
