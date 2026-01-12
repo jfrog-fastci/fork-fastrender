@@ -100,22 +100,27 @@ impl ProgramState {
       return;
     }
 
+    fn keep_skip_lib_check_diagnostic_from_dts(code: &str) -> bool {
+      // `skipLibCheck` in `tsc` skips semantic/type-checking diagnostics for
+      // `.d.ts` files. However, it still surfaces triple-slash reference errors
+      // that affect which files participate in the program.
+      matches!(code, "TS6053" | "TS2688" | "TS2726")
+    }
+
     diagnostics.retain(|diag| {
       if self.file_kinds.get(&diag.primary.file) != Some(&FileKind::Dts) {
         return true;
       }
       let code = diag.code.as_str();
-      if code.starts_with("TC") || code.starts_with("BIND") {
-        return false;
+
+      if keep_skip_lib_check_diagnostic_from_dts(code) {
+        return true;
       }
 
       // `skipLibCheck` should suppress type/binder errors originating from
-      // declaration files, but still surface diagnostics that affect module/lib
-      // resolution. Keep a small allow-list of non-type-checking TS codes for
-      // `.d.ts` files so failures like missing `/// <reference lib="..." />`
-      // targets are still visible.
-      if code.starts_with("TS") {
-        return matches!(code, "TS6053" | "TS2688" | "TS2726");
+      // declaration files.
+      if code.starts_with("TC") || code.starts_with("BIND") || code.starts_with("TS") {
+        return false;
       }
 
       true
