@@ -2925,7 +2925,8 @@ mod element_dispatch_tests {
     let wrapper = {
       let data = vm.user_data_mut::<WindowRealmUserData>().expect("user data");
       let platform = data.dom_platform_mut().expect("platform");
-      platform.get_or_create_wrapper(&mut scope, div, DomInterface::Element)?
+      let document_key = WeakGcObject::from(realm.global_object());
+      platform.get_or_create_wrapper(&mut scope, document_key, div, DomInterface::Element)?
     };
     scope.push_root(Value::Object(wrapper))?;
 

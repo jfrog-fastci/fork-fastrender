@@ -39884,7 +39884,7 @@ mod tests {
     let captured_for_sink = Arc::clone(&captured);
 
     let sink: ConsoleSink = Arc::new(move |level, heap, args| {
-      let message = vm_error_format::format_console_arguments_limited(heap, args);
+      let message = crate::js::vm_error_format::format_console_arguments_limited(heap, args);
       captured_for_sink.lock().push((level, message));
     });
 
