@@ -87,6 +87,7 @@ There is a golden-image test: `svg_filter_filterres_offset_clip_matches_golden`.
   `UPDATE_SVG_FILTER_FILTERRES_OFFSET_CLIP_GOLDEN=1 bash scripts/cargo_agent.sh test -p fastrender -q svg_filter_filterres_offset_clip_matches_golden`
   - If the test has been migrated into `src/` as a unit test, you can also use: `... --lib svg_filter_filterres_offset_clip_matches_golden`
   - If the test lives in the unified integration harness, you can also use: `... --test integration svg_filter_filterres_offset_clip_matches_golden`
+  - If the test lives in the paint integration harness, you can also use: `... --test paint_tests svg_filter_filterres_offset_clip_matches_golden`
 
 ## Chromium note (baseline)
 
