@@ -2208,9 +2208,9 @@ fn proxy_constructor_impl(
   Ok(Value::Object(proxy))
 }
 
-/// `Proxy(..)` call behavior (ECMA-262).
+/// `Proxy` constructor (ECMA-262).
 ///
-/// The `Proxy` constructor is not callable without `new`.
+/// Proxy must be called with `new`; calling it as a normal function throws a TypeError.
 pub fn proxy_constructor_call(
   _vm: &mut Vm,
   _scope: &mut Scope<'_>,
@@ -2289,9 +2289,7 @@ pub fn proxy_revocable(
     .heap_mut()
     .object_set_prototype(result, Some(intr.object_prototype()))?;
 
-  let proxy_str = scope.alloc_string("proxy")?;
-  scope.push_root(Value::String(proxy_str))?;
-  let proxy_key = PropertyKey::from_string(proxy_str);
+  let proxy_key = string_key(&mut scope, "proxy")?;
   let revoke_key = PropertyKey::from_string(revoke_name);
   scope.define_property(
     result,
@@ -2330,6 +2328,7 @@ pub fn proxy_revoker(
 
 // Alias kept for compatibility with older intrinsic initialization code that refers to
 // `builtins::proxy_revoke`.
+#[allow(dead_code)]
 pub fn proxy_revoke(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
