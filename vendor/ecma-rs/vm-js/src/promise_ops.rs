@@ -151,6 +151,25 @@ pub fn perform_promise_then_with_host_and_hooks(
   )
 }
 
+/// `PerformPromiseThen(promise, onFulfilled, onRejected, resultCapability = undefined)`.
+///
+/// This is used by async/await and module top-level await: it attaches Promise reactions without
+/// creating a derived promise (and therefore must not trigger Promise species side effects).
+pub fn perform_promise_then_no_capability_with_host_and_hooks(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host_ctx: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  promise: Value,
+  on_fulfilled: Value,
+  on_rejected: Value,
+) -> Result<(), VmError> {
+  // `PerformPromiseThen` does not currently need the host context, but accept it so embeddings can
+  // thread it through spec-shaped helper APIs consistently.
+  let _ = host_ctx;
+  crate::builtins::perform_promise_then_no_capability(vm, scope, hooks, promise, on_fulfilled, on_rejected)
+}
+
 /// Convenience wrapper around [`perform_promise_then_with_host_and_hooks`] that passes a dummy host
 /// context (`()`).
 ///

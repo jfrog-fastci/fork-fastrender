@@ -8050,14 +8050,14 @@ fn async_handle_body_result(
           }
         }
 
-        let _ = crate::promise_ops::perform_promise_then_with_host_and_hooks(
+        crate::promise_ops::perform_promise_then_no_capability_with_host_and_hooks(
           vm,
           &mut await_scope,
           host,
           hooks,
           awaited_promise,
-          Some(Value::Object(on_fulfilled)),
-          Some(Value::Object(on_rejected)),
+          Value::Object(on_fulfilled),
+          Value::Object(on_rejected),
         )?;
         Ok(())
       })();
@@ -13075,14 +13075,14 @@ pub(crate) fn run_ecma_function(
             }
           }
 
-          let _ = crate::promise_ops::perform_promise_then_with_host_and_hooks(
+          crate::promise_ops::perform_promise_then_no_capability_with_host_and_hooks(
             evaluator.vm,
             &mut root_scope,
             &mut *evaluator.host,
             &mut *evaluator.hooks,
             awaited_promise,
-            Some(Value::Object(on_fulfilled)),
-            Some(Value::Object(on_rejected)),
+            Value::Object(on_fulfilled),
+            Value::Object(on_rejected),
           )?;
 
           Ok(())

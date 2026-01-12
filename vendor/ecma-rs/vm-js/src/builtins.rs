@@ -2592,8 +2592,29 @@ fn enqueue_promise_reaction_job(
   let capability = reaction.capability;
 
   let job = Job::new(JobKind::Promise, move |ctx, host| {
-    let Some(cap) = reaction.capability else {
-      return Ok(());
+    let Some(cap) = capability else {
+      // Spec invariant: `NewPromiseReactionJob` is only constructed with an undefined capability for
+      // `Await`, where the handlers are always callable. A missing reject handler would imply a
+      // `ThrowCompletion` handler result, which the spec rules out via an assertion.
+      //
+      // Mirror the invariant checks in `promise_jobs::new_promise_reaction_job` so await resumption
+      // uses the spec's `resultCapability = undefined` behavior.
+      let Some(handler) = &reaction.handler else {
+        if matches!(reaction.type_, PromiseReactionType::Reject) {
+          return Err(VmError::InvariantViolation(
+            "PromiseReactionJob reject handler is missing while capability is undefined",
+          ));
+        }
+        return Ok(());
+      };
+
+      return match host.host_call_job_callback(ctx, handler, Value::Undefined, &[argument]) {
+        Ok(_) => Ok(()),
+        Err(VmError::Throw(_) | VmError::ThrowWithStack { .. }) => Err(VmError::InvariantViolation(
+          "PromiseReactionJob handler threw while capability is undefined",
+        )),
+        Err(e) => Err(e),
+      };
     };
 
     match reaction.type_ {
@@ -3224,6 +3245,98 @@ pub(crate) fn perform_promise_then(
   };
 
   perform_promise_then_with_capability(vm, scope, host, promise, on_fulfilled, on_rejected, capability)
+}
+
+/// `PerformPromiseThen(promise, onFulfilled, onRejected, resultCapability = undefined)`.
+///
+/// This is used by the spec's `Await` abstract operation (and therefore by async/await and module
+/// top-level await) to attach Promise reactions **without** creating a derived promise.
+pub(crate) fn perform_promise_then_no_capability(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHostHooks,
+  promise: Value,
+  on_fulfilled: Value,
+  on_rejected: Value,
+) -> Result<(), VmError> {
+  let Value::Object(promise_obj) = promise else {
+    return Err(VmError::TypeError("expected Promise object"));
+  };
+  if !scope.heap().is_promise_object(promise_obj) {
+    return Err(VmError::TypeError("expected Promise object"));
+  }
+
+  // `PerformPromiseThen`: unhandled rejection tracking.
+  let was_handled = scope.heap().promise_is_handled(promise_obj)?;
+  if scope.heap().promise_state(promise_obj)? == PromiseState::Rejected && !was_handled {
+    host.host_promise_rejection_tracker(
+      PromiseHandle(promise_obj),
+      PromiseRejectionOperation::Handle,
+    );
+  }
+
+  // `PerformPromiseThen` sets `[[PromiseIsHandled]] = true`.
+  scope.heap_mut().promise_set_is_handled(promise_obj, true)?;
+
+  // `Await` always provides callable handlers; treat non-callable values as an engine invariant
+  // violation so we don't accidentally model the `Identity`/`Thrower` substitution from
+  // `Promise.prototype.then`.
+  let Value::Object(on_fulfilled_obj) = on_fulfilled else {
+    return Err(VmError::InvariantViolation(
+      "PerformPromiseThen(no capability) onFulfilled is not an object",
+    ));
+  };
+  if !scope.heap().is_callable(Value::Object(on_fulfilled_obj))? {
+    return Err(VmError::InvariantViolation(
+      "PerformPromiseThen(no capability) onFulfilled is not callable",
+    ));
+  }
+  let Value::Object(on_rejected_obj) = on_rejected else {
+    return Err(VmError::InvariantViolation(
+      "PerformPromiseThen(no capability) onRejected is not an object",
+    ));
+  };
+  if !scope.heap().is_callable(Value::Object(on_rejected_obj))? {
+    return Err(VmError::InvariantViolation(
+      "PerformPromiseThen(no capability) onRejected is not callable",
+    ));
+  }
+
+  let fulfill_reaction = PromiseReaction {
+    capability: None,
+    type_: PromiseReactionType::Fulfill,
+    handler: Some(host.host_make_job_callback(on_fulfilled_obj)),
+  };
+  let reject_reaction = PromiseReaction {
+    capability: None,
+    type_: PromiseReactionType::Reject,
+    handler: Some(host.host_make_job_callback(on_rejected_obj)),
+  };
+
+  let current_realm = vm.current_realm();
+
+  match scope.heap().promise_state(promise_obj)? {
+    PromiseState::Pending => {
+      scope.promise_append_fulfill_reaction(promise_obj, fulfill_reaction)?;
+      scope.promise_append_reject_reaction(promise_obj, reject_reaction)?;
+    }
+    PromiseState::Fulfilled => {
+      let arg = scope
+        .heap()
+        .promise_result(promise_obj)?
+        .unwrap_or(Value::Undefined);
+      enqueue_promise_reaction_job(host, scope, fulfill_reaction, arg, current_realm)?;
+    }
+    PromiseState::Rejected => {
+      let arg = scope
+        .heap()
+        .promise_result(promise_obj)?
+        .unwrap_or(Value::Undefined);
+      enqueue_promise_reaction_job(host, scope, reject_reaction, arg, current_realm)?;
+    }
+  }
+
+  Ok(())
 }
 
 fn invoke_then(

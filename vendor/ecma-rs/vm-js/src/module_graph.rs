@@ -1070,14 +1070,14 @@ impl ModuleGraph {
     scope.push_root(Value::Object(on_rejected))?;
 
     scope.push_root(awaited_promise)?;
-    let _derived = crate::promise_ops::perform_promise_then_with_host_and_hooks(
+    crate::promise_ops::perform_promise_then_no_capability_with_host_and_hooks(
       vm,
       scope,
       host,
       hooks,
       awaited_promise,
-      Some(Value::Object(on_fulfilled)),
-      Some(Value::Object(on_rejected)),
+      Value::Object(on_fulfilled),
+      Value::Object(on_rejected),
     )?;
     Ok(())
   }
