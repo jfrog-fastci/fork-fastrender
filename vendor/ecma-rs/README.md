@@ -28,14 +28,15 @@ Today the repo contains:
 
 The workspace dependency graph in [`docs/deps.md`](./docs/deps.md) is generated; run `just docs` to refresh it.
 
-## Native compiler (EXEC.plan)
+## Native compiler plan (strict-native)
 
 This repository also includes a detailed execution plan for a future **TypeScript → native** compiler (and a strict TS dialect intended to make AOT compilation feasible).
 
 - [`docs/native_compiler_quickstart.md`](./docs/native_compiler_quickstart.md) — strict-native rules, system checks, strict-native typecheck CLI usage, and the `vm-js` oracle harness flow.
 
-The source of truth for requirements and scope is [`EXEC.plan.md`](./EXEC.plan.md) (a stable entry
-point that links to the current workstream plans under [`instructions/`](./instructions/)).
+The source of truth for requirements and scope is [`instructions/native_aot.md`](./instructions/native_aot.md)
+(reachable via the stable entry point [`EXEC.plan.md`](./EXEC.plan.md), which links to the current
+workstream plans under [`instructions/`](./instructions/)).
 
 ## Quick start
 
@@ -127,7 +128,7 @@ Type-check a file:
 ```bash
 bash scripts/cargo_agent.sh run -p typecheck-ts-cli --locked -- typecheck fixtures/basic.ts
 
-# Enforce additional strict-native checks (repo-specific; see EXEC.plan):
+# Enforce additional strict-native checks (repo-specific; see instructions/native_aot.md):
 bash scripts/cargo_agent.sh run -p typecheck-ts-cli --locked -- typecheck --native-strict fixtures/basic.ts
 ```
 

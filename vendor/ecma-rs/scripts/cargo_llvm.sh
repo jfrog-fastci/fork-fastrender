@@ -51,7 +51,7 @@ cd "${REPO_ROOT}"
 
 # Higher RAM limit for LLVM operations.
 #
-# Default to 96GB (matches `vendor/ecma-rs/EXEC.plan.md`). Override via the same
+# Default to 96GB (matches `vendor/ecma-rs/instructions/native_aot.md`). Override via the same
 # knob as `scripts/cargo_agent.sh` (preferred):
 #   FASTR_CARGO_LIMIT_AS=128G bash scripts/cargo_llvm.sh build --release -p native-js
 #
@@ -107,7 +107,7 @@ fi
 # Fail fast with a clearer message than llvm-sys/inkwell when LLVM is missing.
 if [[ -n "${LLVM_SYS_180_PREFIX:-}" && ! -d "${LLVM_SYS_180_PREFIX}" ]]; then
   echo "error: LLVM_SYS_180_PREFIX is set but does not exist: ${LLVM_SYS_180_PREFIX}" >&2
-  echo "hint: install LLVM 18 and set LLVM_SYS_180_PREFIX=/usr/lib/llvm-18 (see vendor/ecma-rs/EXEC.plan.md)" >&2
+  echo "hint: install LLVM 18 and set LLVM_SYS_180_PREFIX=/usr/lib/llvm-18 (see vendor/ecma-rs/instructions/native_aot.md)" >&2
   exit 1
 fi
 

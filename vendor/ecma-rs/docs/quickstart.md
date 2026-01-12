@@ -4,8 +4,8 @@ This repo is a Rust workspace (toolchain pinned via [`rust-toolchain.toml`](../r
 
 If you only want to build and run the core crates/CLIs, you **do not** need Node or submodules.
 
-If you're working on the **native compiler** track described in [`EXEC.plan.md`](../EXEC.plan.md) (shim),
-see
+If you're working on the **native compiler** track described in
+[`instructions/native_aot.md`](../instructions/native_aot.md) (reachable via the `EXEC.plan.md` shim), see
 [`docs/native_compiler_quickstart.md`](./native_compiler_quickstart.md) for strict-native + VM-oracle guidance.
 
 ## Workspace defaults (baseline vs full workspace)

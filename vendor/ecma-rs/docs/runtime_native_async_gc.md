@@ -2,7 +2,7 @@
 
 This document describes the minimum GC-facing invariants required for the **runtime-native async
 runtime** (event loop + suspended coroutines + Promise jobs) described in
-[`instructions/native_aot.md`](../instructions/native_aot.md) (§5.5 “Async Runtime”; reachable via the
+[`instructions/native_aot.md`](../instructions/native_aot.md#55-async-runtime) (§5.5 “Async Runtime”; reachable via the
 stable permalink `EXEC.plan.md`).
 
 The target is a **moving, precise GC** (compacting / generational) where compiled JS/TS uses LLVM

@@ -138,7 +138,7 @@ pub trait ForwardEdgeDataFlowAnalysis {
   }
 }
 
-// Back-compat / naming alignment with `EXEC.plan.md` tasks.
+// Back-compat / naming alignment with `instructions/native_aot.md` tasks (historically `EXEC.plan.md`).
 pub use ForwardEdgeDataFlowAnalysis as EdgeDataFlowAnalysis;
 
 fn cfg_labels(cfg: &Cfg, entry_label: u32) -> Vec<u32> {

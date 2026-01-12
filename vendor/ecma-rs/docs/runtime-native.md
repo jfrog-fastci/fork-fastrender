@@ -2,7 +2,7 @@
 This document describes how `native-js` output links to and interacts with
 `runtime-native` (GC + statepoints + scheduler + async).
 
-For the **Milestone 1 (POC) ABI**, `vendor/ecma-rs/instructions/native_aot.md` is the
+For the **Milestone 1 (POC) ABI**, [`instructions/native_aot.md`](../instructions/native_aot.md) is the
 authoritative source of truth (reachable via the stable permalink `vendor/ecma-rs/EXEC.plan.md`).
 The “Milestone 1 (POC) ABI — CURRENT” section in this document is intended to mirror the plan
 exactly; update the plan first if they ever diverge.
@@ -174,7 +174,7 @@ cross-language unwinding hazards.
 
 This section documents the **current** ABI surface expected by `native-js`
 Milestone 1, and must match the runtime-native API sketch in
-`vendor/ecma-rs/instructions/native_aot.md`.
+[`instructions/native_aot.md`](../instructions/native_aot.md).
 
 #### 3.1.1 Types (FFI-safe)
 

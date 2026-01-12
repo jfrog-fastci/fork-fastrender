@@ -1,15 +1,15 @@
 # Native compiler quickstart (strict-native + VM oracle)
 
-This is a practical guide for the **native compiler** track described in [`EXEC.plan.md`](../EXEC.plan.md)
-(note: `EXEC.plan.md` is a compatibility shim; the canonical native-AOT plan lives in
-[`instructions/native_aot.md`](../instructions/native_aot.md)).
+This is a practical guide for the **native compiler** track described in
+[`instructions/native_aot.md`](../instructions/native_aot.md) (formerly `EXEC.plan.md`, which is now a
+compatibility shim).
 It’s aimed at developers/agents working on:
 
 - the **strict-native** TypeScript dialect (a strict subset we can compile/optimize reliably), and
 - the **TS → JS → `vm-js`** oracle harness used to validate native output.
 
-For the full rationale and long-form plan, start at [`EXEC.plan.md`](../EXEC.plan.md) and follow its
-workstream links (especially [`instructions/native_aot.md`](../instructions/native_aot.md)).
+For the full rationale and long-form plan, read [`instructions/native_aot.md`](../instructions/native_aot.md)
+(source of truth).
 
 ---
 
@@ -52,7 +52,7 @@ This is **stricter than** `tsc --strict`: code that TypeScript accepts can still
 
 Strict-native rejects (hard error, not warning):
 
-**Strict-native design** (see [`EXEC.plan.md`](../EXEC.plan.md) for rationale):
+**Strict-native design** (see [`instructions/native_aot.md`](../instructions/native_aot.md) for rationale):
 
 - `any` (explicit or inferred)
 - Unsafe type assertions that bypass checking (`x as T`, `<T>x`)
@@ -100,7 +100,8 @@ See [`native-js/README.md`](../native-js/README.md) for the canonical `native_js
 - `unknown`: allowed, but must be narrowed before use.
 - Dynamic property access: may be routed to a slow path (and can be diagnosed). Prefer known shapes and direct property access.
 
-See [`EXEC.plan.md`](../EXEC.plan.md) → “Our TypeScript Dialect” for the canonical list and rationale.
+See [`instructions/native_aot.md`](../instructions/native_aot.md#our-typescript-dialect-strict-mode) →
+“Our TypeScript Dialect (“Strict Mode”)” for the canonical list and rationale.
 
 ---
 
@@ -268,7 +269,7 @@ See [`native-js-cli/README.md`](../native-js-cli/README.md) for details and flag
 
 ## 4) TS → JS → `vm-js` oracle flow (what’s happening)
 
-### Target flow (from `EXEC.plan.md`)
+### Target flow (from `instructions/native_aot.md`)
 
 At a high level, each oracle test case should:
 
