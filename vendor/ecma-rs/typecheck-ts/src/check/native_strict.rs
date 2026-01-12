@@ -1997,13 +1997,15 @@ pub fn validate_native_strict_body(
         self.reflect_name,
         "Reflect",
       );
-      let init_is_function = expr_is_ident_or_global_this_member(
+      let init_is_function_like = expr_is_function_like_value(
         self.resolver,
         self.const_aliases,
         init_ref,
         self.global_this_name,
+        self.object_name,
         self.function_name,
-        "Function",
+        self.proxy_name,
+        self.constructor_name,
       );
       let init_is_function_prototype = expr_is_builtin_member(
         self.resolver,
@@ -2060,7 +2062,7 @@ pub fn validate_native_strict_body(
         }
       }
 
-      if kind.is_none() && (init_is_function || init_is_function_prototype) {
+      if kind.is_none() && (init_is_function_like || init_is_function_prototype) {
         if self.object_key_matches(body, &prop_key, self.call_name, "call") {
           kind = Some(DestructuredAliasKind::FunctionPrototypeCall);
         } else if self.object_key_matches(body, &prop_key, self.apply_name, "apply") {
