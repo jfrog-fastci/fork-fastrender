@@ -3570,6 +3570,7 @@ mod tests {
           var options = select.options;
           var optionsSame = options === select.options;
           var optionsIsHTMLOptionsCollection = options instanceof HTMLOptionsCollection;
+          var optionsIsHTMLCollection = options instanceof HTMLCollection;
           var optionsLen0 = options.length;
           var optA = document.createElement("option");
           optA.value = "a";
@@ -3613,6 +3614,7 @@ mod tests {
           var elements = form.elements;
           var elementsSame = elements === form.elements;
           var elementsIsHTMLFormControlsCollection = elements instanceof HTMLFormControlsCollection;
+          var elementsIsHTMLCollection = elements instanceof HTMLCollection;
           var formLen0 = elements.length;
           form.appendChild(input);
           var formLen1 = elements.length;
@@ -3662,6 +3664,7 @@ mod tests {
 
             optionsSame: optionsSame,
             optionsIsHTMLOptionsCollection: optionsIsHTMLOptionsCollection,
+            optionsIsHTMLCollection: optionsIsHTMLCollection,
             optionsLen0: optionsLen0,
             optionsLen1: optionsLen1,
             optionsLen2: optionsLen2,
@@ -3689,6 +3692,7 @@ mod tests {
 
             elementsSame: elementsSame,
             elementsIsHTMLFormControlsCollection: elementsIsHTMLFormControlsCollection,
+            elementsIsHTMLCollection: elementsIsHTMLCollection,
             formLen0: formLen0,
             formLen1: formLen1,
             formLen3: formLen3,
@@ -3724,6 +3728,7 @@ mod tests {
 
       assert_eq!(v["optionsSame"], true);
       assert_eq!(v["optionsIsHTMLOptionsCollection"], true);
+      assert_eq!(v["optionsIsHTMLCollection"], true);
       assert_eq!(v["optionsLen0"], 0);
       assert_eq!(v["optionsLen1"], 1);
       assert_eq!(v["optionsLen2"], 2);
@@ -3751,6 +3756,7 @@ mod tests {
 
       assert_eq!(v["elementsSame"], true);
       assert_eq!(v["elementsIsHTMLFormControlsCollection"], true);
+      assert_eq!(v["elementsIsHTMLCollection"], true);
       assert_eq!(v["formLen0"], 0);
       assert_eq!(v["formLen1"], 1);
       assert_eq!(v["formLen3"], 3);
