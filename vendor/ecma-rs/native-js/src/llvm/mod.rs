@@ -34,11 +34,6 @@ use target_lexicon::Triple;
 
 #[cfg(feature = "legacy-expr-backend")]
 pub mod legacy_expr;
-#[cfg(feature = "legacy-expr-backend")]
-#[deprecated(note = "legacy expression-only backend; prefer the checked `native_js::codegen` backend")]
-pub mod expr {
-  pub use super::legacy_expr::*;
-}
 pub mod gc;
 pub mod gc_lint;
 pub mod passes;
