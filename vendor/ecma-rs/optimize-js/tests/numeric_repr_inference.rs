@@ -14,6 +14,7 @@ fn compile_typed_no_opt(source: &str) -> optimize_js::Program {
       keep_ssa: true,
       run_opt_passes: false,
       inline: InlineOptions::default(),
+      ..CompileCfgOptions::default()
     },
   )
   .expect("compile typed source")

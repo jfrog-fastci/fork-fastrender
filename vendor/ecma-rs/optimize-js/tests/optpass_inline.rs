@@ -41,9 +41,8 @@ fn inlines_simple_arithmetic_iife() {
     TopLevelMode::Module,
     false,
     CompileCfgOptions {
-      keep_ssa: false,
       run_opt_passes: false,
-      inline: InlineOptions::default(),
+      ..CompileCfgOptions::default()
     },
   )
   .expect("compile");
@@ -98,9 +97,8 @@ fn inlines_branching_function_and_inserts_phi() {
     TopLevelMode::Module,
     false,
     CompileCfgOptions {
-      keep_ssa: false,
       run_opt_passes: false,
-      inline: InlineOptions::default(),
+      ..CompileCfgOptions::default()
     },
   )
   .expect("compile");
@@ -334,9 +332,8 @@ fn preserves_native_layout_on_inlined_call_result() {
     TopLevelMode::Module,
     false,
     CompileCfgOptions {
-      keep_ssa: false,
       run_opt_passes: false,
-      inline: InlineOptions::default(),
+      ..CompileCfgOptions::default()
     },
   )
   .expect("compile typed");
