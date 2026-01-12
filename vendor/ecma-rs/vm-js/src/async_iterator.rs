@@ -125,7 +125,7 @@ pub fn get_async_iterator(
   }
 
   // Fall back to sync iterator protocol and wrap.
-  let sync = iterator::get_iterator(vm, host, hooks, scope, iterable)?;
+  let sync = iterator::get_iterator_protocol(vm, host, hooks, scope, iterable)?;
   Ok(create_async_from_sync_iterator(sync))
 }
 
