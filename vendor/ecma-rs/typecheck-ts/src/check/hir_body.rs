@@ -6007,6 +6007,12 @@ impl<'a> Checker<'a> {
     ) {
       return;
     }
+    // In `tsc`, spreading an `any` value into the JSX attributes object makes the entire props
+    // type `any`, which bypasses both excess-property and assignability checks. Mirror that by
+    // skipping all JSX props diagnostics when the computed props type is `any`.
+    if matches!(self.store.type_kind(actual.ty), TypeKind::Any) {
+      return;
+    }
     if !matches!(
       self.store.type_kind(actual.ty),
       TypeKind::Any | TypeKind::Unknown
