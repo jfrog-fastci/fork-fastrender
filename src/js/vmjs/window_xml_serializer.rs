@@ -1,5 +1,14 @@
 //! DOM `XMLSerializer` bindings for the `vm-js` Window realm.
+//!
+//! ## DOMException semantics
+//!
+//! Per DOM Parsing and Serialization, `XMLSerializer.serializeToString` must throw an
+//! **InvalidStateError DOMException** when a node cannot be serialized. Some older Window shims
+//! throw plain `{ name, message }` objects; for `XMLSerializer` we ensure the thrown value inherits
+//! from `DOMException.prototype` so callers (and future WPT coverage) can assert
+//! `e instanceof DOMException`.
 
+use crate::js::bindings::DomExceptionClassVmJs;
 use vm_js::{
   GcObject, Heap, NativeConstructId, NativeFunctionId, PropertyDescriptor, PropertyKey, PropertyKind,
   Realm, Scope, Value, Vm, VmError, VmHost, VmHostHooks,
@@ -8,6 +17,9 @@ use vm_js::{
 const XML_SERIALIZER_BRAND_KEY: &str = "__fastrender_xml_serializer";
 const NODE_ID_KEY: &str = "__fastrender_node_id";
 const WRAPPER_DOCUMENT_KEY: &str = "__fastrender_wrapper_document";
+
+// Native slot indices for `XMLSerializer.prototype.serializeToString`.
+const SERIALIZE_SLOT_DOM_EXCEPTION_PROTO: usize = 0;
 
 fn gc_object_id(obj: GcObject) -> u64 {
   (obj.index() as u64) | ((obj.generation() as u64) << 32)
@@ -45,6 +57,43 @@ fn alloc_key(scope: &mut Scope<'_>, name: &str) -> Result<PropertyKey, VmError> 
   let s = scope.alloc_string(name)?;
   scope.push_root(Value::String(s))?;
   Ok(PropertyKey::from_string(s))
+}
+
+fn dom_exception_proto_from_callee(scope: &Scope<'_>, callee: GcObject) -> Result<GcObject, VmError> {
+  let slots = scope.heap().get_function_native_slots(callee)?;
+  match slots.get(SERIALIZE_SLOT_DOM_EXCEPTION_PROTO).copied() {
+    Some(Value::Object(obj)) => Ok(obj),
+    _ => Err(VmError::InvariantViolation(
+      "XMLSerializer.serializeToString missing DOMException prototype slot",
+    )),
+  }
+}
+
+fn make_dom_exception_instance(
+  scope: &mut Scope<'_>,
+  prototype: GcObject,
+  name: &str,
+  message: &str,
+) -> Result<Value, VmError> {
+  let mut scope = scope.reborrow();
+  scope.push_root(Value::Object(prototype))?;
+
+  let name_s = scope.alloc_string(name)?;
+  scope.push_root(Value::String(name_s))?;
+  let message_s = scope.alloc_string(message)?;
+  scope.push_root(Value::String(message_s))?;
+
+  let obj = scope.alloc_object()?;
+  scope.push_root(Value::Object(obj))?;
+  scope.heap_mut().object_set_prototype(obj, Some(prototype))?;
+
+  let name_key = alloc_key(&mut scope, "name")?;
+  let message_key = alloc_key(&mut scope, "message")?;
+
+  scope.define_property(obj, name_key, data_desc(Value::String(name_s)))?;
+  scope.define_property(obj, message_key, data_desc(Value::String(message_s)))?;
+
+  Ok(Value::Object(obj))
 }
 
 fn xml_serializer_ctor_call(
@@ -131,7 +180,7 @@ fn xml_serializer_serialize_to_string_native(
   scope: &mut Scope<'_>,
   host: &mut dyn VmHost,
   _hooks: &mut dyn VmHostHooks,
-  _callee: GcObject,
+  callee: GcObject,
   this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
@@ -195,11 +244,10 @@ fn xml_serializer_serialize_to_string_native(
         crate::web::dom::DomException::NotSupportedError { message } => ("NotSupportedError", message),
         crate::web::dom::DomException::InvalidStateError { message } => ("InvalidStateError", message),
       };
-      return Err(VmError::Throw(crate::js::window_realm::make_dom_exception(
-        scope,
-        name,
-        &message,
-      )?));
+
+      let proto = dom_exception_proto_from_callee(scope, callee)?;
+      let ex = make_dom_exception_instance(scope, proto, name, &message)?;
+      return Err(VmError::Throw(ex));
     }
   };
 
@@ -217,6 +265,10 @@ pub fn install_window_xml_serializer_bindings(
   let global = realm.global_object();
   scope.push_root(Value::Object(global))?;
 
+  // Ensure `DOMException` exists and capture its prototype for throws.
+  let dom_exception = DomExceptionClassVmJs::install(vm, &mut scope, realm)?;
+  scope.push_root(Value::Object(dom_exception.prototype))?;
+
   let func_proto = realm.intrinsics().function_prototype();
 
   // --- Prototype -------------------------------------------------------------------------------
@@ -227,10 +279,18 @@ pub fn install_window_xml_serializer_bindings(
     .object_set_prototype(proto, Some(realm.intrinsics().object_prototype()))?;
 
   // Prototype method: serializeToString(root)
-  let serialize_call_id: NativeFunctionId = vm.register_native_call(xml_serializer_serialize_to_string_native)?;
+  let serialize_call_id: NativeFunctionId =
+    vm.register_native_call(xml_serializer_serialize_to_string_native)?;
   let serialize_name = scope.alloc_string("serializeToString")?;
   scope.push_root(Value::String(serialize_name))?;
-  let serialize_func = scope.alloc_native_function(serialize_call_id, None, serialize_name, 1)?;
+  let serialize_slots = [Value::Object(dom_exception.prototype)];
+  let serialize_func = scope.alloc_native_function_with_slots(
+    serialize_call_id,
+    None,
+    serialize_name,
+    1,
+    &serialize_slots,
+  )?;
   scope
     .heap_mut()
     .object_set_prototype(serialize_func, Some(func_proto))?;
@@ -259,3 +319,36 @@ pub fn install_window_xml_serializer_bindings(
 
   Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+  use crate::dom2;
+  use crate::error::Result;
+  use crate::js::WindowHost;
+  use selectors::context::QuirksMode;
+  use vm_js::Value;
+
+  #[test]
+  fn serialize_to_string_throws_dom_exception_instance_for_invalid_comment() -> Result<()> {
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut host = WindowHost::new(dom, "https://example.com/")?;
+
+    let value = host.exec_script(
+      r#"
+      (() => {
+        const bad = document.createComment('--');
+        try {
+          new XMLSerializer().serializeToString(bad);
+          return false;
+        } catch (e) {
+          return e instanceof DOMException && e.name === 'InvalidStateError';
+        }
+      })()
+      "#,
+    )?;
+
+    assert_eq!(value, Value::Bool(true));
+    Ok(())
+  }
+}
+
