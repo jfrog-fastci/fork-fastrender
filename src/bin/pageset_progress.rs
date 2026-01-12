@@ -103,6 +103,9 @@ const MAX_CACHED_HTML_META_BYTES: u64 = 256 * 1024;
 // Stage heartbeat + timeline files should be tiny; cap reads to avoid pathological allocations.
 const MAX_STAGE_FILE_BYTES: u64 = 4096;
 const MAX_STAGE_TIMELINE_BYTES: u64 = 64 * 1024;
+// Match the library's pixmap allocation guard (`paint::pixmap::MAX_PIXMAP_BYTES`) so dimension
+// mismatch diffs can't try to allocate an absurd union-sized diff image.
+const MAX_ACCURACY_DIFF_IMAGE_BYTES: u64 = 512 * 1024 * 1024;
 
 fn read_to_string_capped(path: &Path, max_bytes: u64) -> io::Result<String> {
   let len = fs::metadata(path)?.len();
@@ -1710,6 +1713,14 @@ fn compute_accuracy_for_pixmap(
     return Some(accuracy);
   }
 
+  log.push_str(&format!(
+    "Accuracy: dimension mismatch rendered {}x{}, baseline {}x{}\n",
+    rendered_img.width(),
+    rendered_img.height(),
+    baseline_img.width(),
+    baseline_img.height()
+  ));
+
   // Dimensions mismatch: treat missing pixels as differences and compute perceptual distance over
   // the overlapping region so the metric remains informative.
   let overlap_width = rendered_img.width().min(baseline_img.width());
@@ -1729,7 +1740,29 @@ fn compute_accuracy_for_pixmap(
   let mut different_pixels = 0u64;
   let mut first_mismatch: Option<(u32, u32)> = None;
   let mut first_mismatch_rgba: Option<([u8; 4], [u8; 4])> = None;
-  let mut diff_image = diff_dir.map(|_| RgbaImage::new(max_width, max_height));
+  let mut diff_image = diff_dir.and_then(|_| {
+    let bytes = u64::from(max_width)
+      .checked_mul(u64::from(max_height))
+      .and_then(|px| px.checked_mul(4))?;
+    if bytes > MAX_ACCURACY_DIFF_IMAGE_BYTES {
+      log.push_str(&format!(
+        "Accuracy: diff image too large to allocate ({}x{} => {} bytes, limit {})\n",
+        max_width, max_height, bytes, MAX_ACCURACY_DIFF_IMAGE_BYTES
+      ));
+      return None;
+    }
+    let len = usize::try_from(bytes).ok()?;
+    let mut buf = Vec::new();
+    if buf.try_reserve_exact(len).is_err() {
+      log.push_str(&format!(
+        "Accuracy: diff image allocation failed ({}x{} => {} bytes)\n",
+        max_width, max_height, bytes
+      ));
+      return None;
+    }
+    buf.resize(len, 0);
+    RgbaImage::from_raw(max_width, max_height, buf)
+  });
 
   for y in 0..max_height {
     for x in 0..max_width {
@@ -11536,14 +11569,26 @@ mod tests {
 
   #[test]
   fn current_git_sha_uses_env_fallback() {
-    let _guard = ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
     let expected = "env-fallback-sha";
-    let _fastr_sha = EnvVarGuard::set("FASTR_GIT_SHA", expected);
-    let _github_sha = EnvVarGuard::set("GITHUB_SHA", "wrong-sha");
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
+    let prev_fastr = std::env::var_os("FASTR_GIT_SHA");
+    let prev_github = std::env::var_os("GITHUB_SHA");
+    std::env::set_var("FASTR_GIT_SHA", expected);
+    std::env::set_var("GITHUB_SHA", "wrong-sha");
 
     // `current_git_sha()` should prefer env vars over spawning `git`, so this remains stable even
     // when `git` is available on PATH.
     let detected = current_git_sha();
+
+    match prev_fastr {
+      Some(value) => std::env::set_var("FASTR_GIT_SHA", value),
+      None => std::env::remove_var("FASTR_GIT_SHA"),
+    }
+    match prev_github {
+      Some(value) => std::env::set_var("GITHUB_SHA", value),
+      None => std::env::remove_var("GITHUB_SHA"),
+    }
+    drop(_guard);
 
     assert_eq!(detected.as_deref(), Some(expected));
   }
