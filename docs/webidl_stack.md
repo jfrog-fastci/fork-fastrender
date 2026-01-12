@@ -12,8 +12,7 @@ stack (and the boundary between `vendor/ecma-rs/` vs `src/`; see also:
 Note: WebIDL *consolidation* is complete: generic JS/WebIDL infrastructure lives in the vendored
 `vendor/ecma-rs/` workspace. FastRender may still carry compatibility shims (e.g.
 `vendor/ecma-rs/webidl-runtime` / crate `webidl-js-runtime`) while migration off legacy backends is
-in progress, but **new**
-infrastructure should follow the rules below.
+in progress, but **new** infrastructure should follow the rules below.
 
 ## Crate / code layout
 

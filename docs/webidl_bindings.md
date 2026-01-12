@@ -36,7 +36,7 @@ For an overview of the consolidated WebIDL crate layout (and where new code belo
     code. It cannot execute author scripts and should not be used for new bindings work.
   - Cargo package name: `webidl-js-runtime` (Rust crate name: `webidl_js_runtime`).
   - It remains available under `fastrender::js::webidl::legacy` while migration is in progress.
-  - Note: run it via the vendored ecma-rs workspace wrapper:
+  - Run it via the vendored ecma-rs workspace wrapper:
 
     ```bash
     bash vendor/ecma-rs/scripts/cargo_agent.sh test -p webidl-js-runtime
@@ -196,7 +196,8 @@ world:
     against the committed snapshot world).
 - **Legacy `webidl-js-runtime` (heap-only) bindings** (`--backend legacy --out src/js/webidl/bindings/generated_legacy.rs`):
   `src/js/webidl/bindings/generated_legacy.rs`
-  - Backed by `fastrender::js::webidl::legacy` (vendored as `vendor/ecma-rs/webidl-runtime`).
+  - Backed by `fastrender::js::webidl::legacy` (vendored at `vendor/ecma-rs/webidl-runtime`, Cargo
+    package `webidl-js-runtime`).
   - Kept temporarily for migration and for unit tests that still exercise the older bindings/runtime
     surface.
   - Regenerate with:

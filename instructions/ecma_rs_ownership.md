@@ -33,6 +33,9 @@ repo) when the canonical implementation lives in:
 This creates maintenance burden, sync overhead, and divergence. Every line in a parallel crate is
 technical debt.
 
+Note: a transitional workspace-local copy of the legacy heap-only runtime previously existed at
+`crates/webidl-js-runtime/`, but it has been removed. Do not re-introduce it; modify
+`vendor/ecma-rs/webidl-runtime/` directly.
 ### ❌ "Workspace isolation" as justification
 
 **Wrong reasoning:**
@@ -109,6 +112,7 @@ This is a one-time fix. Don't create parallel crates to avoid it.
 ## Repository shape (post-consolidation)
 
 `crates/` should be reserved for FastRender-specific tooling (currently `crates/js-wpt-dom-runner/`).
+No JS/WebIDL infrastructure crates should exist there.
 
 All generic JS/WebIDL infrastructure lives in `vendor/ecma-rs/`. If you find yourself reaching for
 `crates/` to add WebIDL parsing/conversions/VM integration, that is almost certainly a design
