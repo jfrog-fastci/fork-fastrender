@@ -3675,6 +3675,10 @@ pub extern "C" fn rt_promise_resolve_promise_legacy(p: PromiseRef, other: Promis
   })
 }
 
+/// Drop a legacy `async_rt::promise::RtPromise` allocated by `rt_promise_new_legacy`.
+///
+/// If `p` refers to a non-legacy promise allocation (e.g. a native async-ABI promise or a GC-managed
+/// payload promise), this is a no-op.
 #[no_mangle]
 pub extern "C" fn rt_promise_drop_legacy(p: PromiseRef) {
   abort_on_panic(|| {

@@ -3,19 +3,33 @@ use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, AtomicU8, AtomicUsize
 
 use crate::abi::{PromiseRef, PromiseResolveInput, PromiseResolveKind, ThenableRef, ValueRef};
 use crate::async_abi::{PromiseHeader, PROMISE_FLAG_EXTERNAL_PENDING, PROMISE_FLAG_HAS_PAYLOAD};
+use crate::async_runtime::PromiseLayout;
+use crate::gc::HandleId;
+use crate::promise_reactions::{
+  decode_waiters_ptr, enqueue_reaction_jobs, reverse_list, PromiseReactionNode,
+  PromiseReactionVTable,
+};
 use crate::sync::GcAwareMutex;
+use crate::threading;
 use once_cell::sync::Lazy;
 use std::any::Any;
 use std::collections::HashMap;
 use std::sync::Weak;
-use crate::async_runtime::PromiseLayout;
-use crate::gc::HandleId;
-use crate::promise_reactions::{
-  decode_waiters_ptr, enqueue_reaction_jobs, reverse_list, PromiseReactionNode, PromiseReactionVTable,
-};
-use crate::threading;
 
 use super::{gc as async_gc, global as async_global, Task};
+
+/// Internal flag bit in [`PromiseHeader::flags`] indicating this promise handle refers to a legacy
+/// [`RtPromise`] allocation owned by this module.
+///
+/// This is required because `PromiseRef` is an ABI-level opaque handle that may refer to:
+/// - legacy boxed `RtPromise` values, or
+/// - native async-ABI promises (arbitrary `PromiseHeader`-prefixed objects), including payload
+///   promises returned by `rt_parallel_spawn_promise`.
+///
+/// The runtime must never cast a `PromiseRef` to `RtPromise` unless it can prove the underlying
+/// allocation is actually an `RtPromise`; otherwise dereferencing would be UB for smaller promise
+/// layouts.
+const PROMISE_FLAG_LEGACY_RT_PROMISE: u8 = 1 << 3;
 
 #[derive(Clone)]
 enum PendingPromiseKeepAlive {
@@ -38,8 +52,9 @@ enum PendingPromiseKeepAlive {
 /// This enables `rt_async_cancel_all` to abandon pending async work safely by dropping reaction
 /// nodes that would otherwise never be enqueued (because the promise never settles after the host
 /// shuts down timers/I/O).
-static PROMISES_WITH_PENDING_REACTIONS: Lazy<GcAwareMutex<HashMap<HandleId, PendingPromiseKeepAlive>>> =
-  Lazy::new(|| GcAwareMutex::new(HashMap::new()));
+static PROMISES_WITH_PENDING_REACTIONS: Lazy<
+  GcAwareMutex<HashMap<HandleId, PendingPromiseKeepAlive>>,
+> = Lazy::new(|| GcAwareMutex::new(HashMap::new()));
 
 pub(crate) fn track_pending_reactions(promise: *mut PromiseHeader) {
   track_pending_reactions_keepalive(promise, PendingPromiseKeepAlive::None);
@@ -52,7 +67,10 @@ pub(crate) fn track_pending_reactions_weak(
   track_pending_reactions_keepalive(promise, PendingPromiseKeepAlive::Weak(keepalive));
 }
 
-fn track_pending_reactions_keepalive(promise: *mut PromiseHeader, keepalive: PendingPromiseKeepAlive) {
+fn track_pending_reactions_keepalive(
+  promise: *mut PromiseHeader,
+  keepalive: PendingPromiseKeepAlive,
+) {
   if promise.is_null() {
     return;
   }
@@ -74,6 +92,9 @@ fn track_pending_reactions_keepalive(promise: *mut PromiseHeader, keepalive: Pen
   // - Slow path (contended): first materialize a stable persistent handle ID, then drop any
   //   temporary handle-stack roots and only then block on the mutex so the thread can transition
   //   into a GC-safe region while waiting.
+  //
+  // The optional `keepalive` policy determines whether it is safe to dereference this pointer
+  // during teardown if cancellation races with the promise being dropped on another thread.
   let table = crate::roots::global_persistent_handle_table();
 
   // Addressable slot holding the promise pointer. Root it via the per-thread handle stack while we
@@ -113,7 +134,8 @@ fn track_pending_reactions_keepalive(promise: *mut PromiseHeader, keepalive: Pen
       Some(id) => {
         // Preserve any existing keepalive (it may have been upgraded to `Weak` by another caller).
         if let Some(existing) = map.get_mut(&id) {
-          if matches!(existing, PendingPromiseKeepAlive::None) && matches!(keepalive, PendingPromiseKeepAlive::Weak(_))
+          if matches!(existing, PendingPromiseKeepAlive::None)
+            && matches!(keepalive, PendingPromiseKeepAlive::Weak(_))
           {
             *existing = keepalive;
           }
@@ -206,7 +228,9 @@ pub(crate) fn untrack_pending_reactions(promise: *mut PromiseHeader) {
     std::process::abort();
   }
 
-  let root = threading::registry::current_thread_state().is_some().then(|| crate::roots::Root::new(promise));
+  let root = threading::registry::current_thread_state()
+    .is_some()
+    .then(|| crate::roots::Root::new(promise));
   let table = crate::roots::global_persistent_handle_table();
 
   let ids_to_free: Vec<HandleId> = {
@@ -304,7 +328,7 @@ impl RtPromise {
         },
         state: core::sync::atomic::AtomicU8::new(PromiseHeader::PENDING),
         waiters: core::sync::atomic::AtomicUsize::new(0),
-        flags: core::sync::atomic::AtomicU8::new(0),
+        flags: core::sync::atomic::AtomicU8::new(PROMISE_FLAG_LEGACY_RT_PROMISE),
       },
       value: AtomicUsize::new(0),
       error: AtomicUsize::new(0),
@@ -328,24 +352,9 @@ impl Drop for RtPromise {
 }
 
 #[inline]
-fn promise_ptr(p: PromiseRef) -> *mut RtPromise {
-  if p.is_null() {
-    return null_mut();
-  }
-
-  // PromiseRef is an opaque pointer handle over the ABI, but all of our promise
-  // operations dereference it. Abort on misalignment to avoid UB if the ABI is
-  // misused.
-  let ptr = p.0 as *mut RtPromise;
-  if (ptr as usize) % core::mem::align_of::<RtPromise>() != 0 {
-    std::process::abort();
-  }
-  ptr
-}
-
-#[inline]
 fn promise_header_ref(p: PromiseRef) -> crate::async_abi::PromiseRef {
-  // `RtPromise` embeds `PromiseHeader` at offset 0.
+  // `PromiseRef` is an opaque handle over the ABI. Every runtime-native promise allocation begins
+  // with a `PromiseHeader` prefix at offset 0.
   p.0.cast::<PromiseHeader>()
 }
 
@@ -355,43 +364,149 @@ pub(crate) enum PromiseOutcome {
   Rejected(ValueRef),
 }
 
-pub(crate) fn promise_outcome(p: PromiseRef) -> PromiseOutcome {
-  let ptr = promise_ptr(p);
-  if ptr.is_null() {
-    return PromiseOutcome::Pending;
+/// Layout for "payload promises" created by `rt_parallel_spawn_promise`.
+///
+/// The only stable contract is:
+/// - `PromiseHeader` is at offset 0, and
+/// - the payload pointer is stored immediately after the header.
+///
+/// The promise's actual payload buffer is allocated out-of-line and is accessible via
+/// `rt_promise_payload_ptr`.
+#[repr(C)]
+struct PayloadPromise {
+  header: PromiseHeader,
+  payload_ptr: AtomicUsize,
+}
+
+enum PromiseClass {
+  /// Null promises are treated as a "never settles" sentinel.
+  Null,
+  /// Payload promise (identified via `PROMISE_FLAG_HAS_PAYLOAD`).
+  Payload(*mut PayloadPromise),
+  /// Legacy value promise owned by this module (identified via `PROMISE_FLAG_LEGACY_RT_PROMISE`).
+  LegacyValue(*mut RtPromise),
+  /// Some other `PromiseHeader`-prefixed promise layout (native async ABI, etc).
+  Unknown(*mut PromiseHeader),
+}
+
+#[inline]
+fn promise_header_ptr(p: PromiseRef) -> *mut PromiseHeader {
+  if p.is_null() {
+    return null_mut();
+  }
+  let header = p.0.cast::<PromiseHeader>();
+  if (header as usize) % core::mem::align_of::<PromiseHeader>() != 0 {
+    std::process::abort();
+  }
+  header
+}
+
+#[inline]
+fn classify_promise(p: PromiseRef) -> PromiseClass {
+  let header = promise_header_ptr(p);
+  if header.is_null() {
+    return PromiseClass::Null;
   }
 
-  let state = unsafe { &*ptr }.header.state.load(Ordering::Acquire);
-  match state {
-    PromiseHeader::FULFILLED => {
-      let h = unsafe { &*ptr }.value_root.load(Ordering::Acquire);
-      if let Some(h) = decode_root_handle(h) {
-        let value = crate::roots::global_persistent_handle_table()
-          .get(h)
-          .unwrap_or_else(|| std::process::abort());
-        PromiseOutcome::Fulfilled(value.cast())
-      } else {
-        PromiseOutcome::Fulfilled(unsafe { &*ptr }.value.load(Ordering::Acquire) as ValueRef)
+  // Safety: `header` is non-null and properly aligned.
+  let flags = unsafe { &(*header).flags }.load(Ordering::Acquire);
+
+  if (flags & PROMISE_FLAG_HAS_PAYLOAD) != 0 {
+    let payload = header.cast::<PayloadPromise>();
+    if (payload as usize) % core::mem::align_of::<PayloadPromise>() != 0 {
+      std::process::abort();
+    }
+    return PromiseClass::Payload(payload);
+  }
+
+  if (flags & PROMISE_FLAG_LEGACY_RT_PROMISE) != 0 {
+    let legacy = header.cast::<RtPromise>();
+    if (legacy as usize) % core::mem::align_of::<RtPromise>() != 0 {
+      std::process::abort();
+    }
+    return PromiseClass::LegacyValue(legacy);
+  }
+
+  PromiseClass::Unknown(header)
+}
+
+#[inline]
+fn rt_promise_ptr(p: PromiseRef) -> *mut RtPromise {
+  let header = promise_header_ptr(p);
+  if header.is_null() {
+    return null_mut();
+  }
+  let flags = unsafe { &(*header).flags }.load(Ordering::Acquire);
+  if (flags & PROMISE_FLAG_LEGACY_RT_PROMISE) == 0 {
+    return null_mut();
+  }
+  let ptr = header.cast::<RtPromise>();
+  if (ptr as usize) % core::mem::align_of::<RtPromise>() != 0 {
+    std::process::abort();
+  }
+  ptr
+}
+
+pub(crate) fn promise_outcome(p: PromiseRef) -> PromiseOutcome {
+  match classify_promise(p) {
+    PromiseClass::Null => PromiseOutcome::Pending,
+    PromiseClass::Payload(payload) => {
+      let state = unsafe { &(*payload).header.state }.load(Ordering::Acquire);
+      match state {
+        PromiseHeader::FULFILLED => {
+          let payload = unsafe { &(*payload).payload_ptr }.load(Ordering::Acquire) as ValueRef;
+          PromiseOutcome::Fulfilled(payload)
+        }
+        PromiseHeader::REJECTED => {
+          let payload = unsafe { &(*payload).payload_ptr }.load(Ordering::Acquire) as ValueRef;
+          PromiseOutcome::Rejected(payload)
+        }
+        _ => PromiseOutcome::Pending,
       }
     }
-    PromiseHeader::REJECTED => {
-      let h = unsafe { &*ptr }.error_root.load(Ordering::Acquire);
-      if let Some(h) = decode_root_handle(h) {
-        let err = crate::roots::global_persistent_handle_table()
-          .get(h)
-          .unwrap_or_else(|| std::process::abort());
-        PromiseOutcome::Rejected(err.cast())
-      } else {
-        PromiseOutcome::Rejected(unsafe { &*ptr }.error.load(Ordering::Acquire) as ValueRef)
+    PromiseClass::LegacyValue(ptr) => {
+      let state = unsafe { &(*ptr).header.state }.load(Ordering::Acquire);
+      match state {
+        PromiseHeader::FULFILLED => {
+          let h = unsafe { &(*ptr).value_root }.load(Ordering::Acquire);
+          if let Some(h) = decode_root_handle(h) {
+            let value = crate::roots::global_persistent_handle_table()
+              .get(h)
+              .unwrap_or_else(|| std::process::abort());
+            PromiseOutcome::Fulfilled(value.cast())
+          } else {
+            PromiseOutcome::Fulfilled(unsafe { &(*ptr).value }.load(Ordering::Acquire) as ValueRef)
+          }
+        }
+        PromiseHeader::REJECTED => {
+          let h = unsafe { &(*ptr).error_root }.load(Ordering::Acquire);
+          if let Some(h) = decode_root_handle(h) {
+            let err = crate::roots::global_persistent_handle_table()
+              .get(h)
+              .unwrap_or_else(|| std::process::abort());
+            PromiseOutcome::Rejected(err.cast())
+          } else {
+            PromiseOutcome::Rejected(unsafe { &(*ptr).error }.load(Ordering::Acquire) as ValueRef)
+          }
+        }
+        _ => PromiseOutcome::Pending,
       }
     }
-    // Includes `PENDING` + internal settling states.
-    _ => PromiseOutcome::Pending,
+    PromiseClass::Unknown(header) => {
+      let state = unsafe { &(*header).state }.load(Ordering::Acquire);
+      match state {
+        PromiseHeader::FULFILLED => PromiseOutcome::Fulfilled(core::ptr::null_mut()),
+        PromiseHeader::REJECTED => PromiseOutcome::Rejected(core::ptr::null_mut()),
+        _ => PromiseOutcome::Pending,
+      }
+    }
   }
 }
 
 pub(crate) fn promise_new() -> PromiseRef {
-  PromiseRef(Box::into_raw(Box::new(RtPromise::new_pending())) as *mut runtime_native_abi::PromiseHeader)
+  PromiseRef(
+    Box::into_raw(Box::new(RtPromise::new_pending())) as *mut runtime_native_abi::PromiseHeader
+  )
 }
 
 pub(crate) fn promise_new_with_payload(layout: PromiseLayout) -> PromiseRef {
@@ -416,31 +531,20 @@ pub(crate) fn promise_new_with_payload(layout: PromiseLayout) -> PromiseRef {
     .flags
     // Publish the payload pointer before setting the "has payload" flag so that a thread reading
     // `flags` with `Acquire` will also observe the `value` store.
-    .store(PROMISE_FLAG_HAS_PAYLOAD, Ordering::Release);
+    .store(
+      PROMISE_FLAG_HAS_PAYLOAD | PROMISE_FLAG_LEGACY_RT_PROMISE,
+      Ordering::Release,
+    );
   PromiseRef(Box::into_raw(promise) as *mut runtime_native_abi::PromiseHeader)
 }
 
 pub(crate) fn promise_payload_ptr(p: PromiseRef) -> *mut u8 {
-  if p.is_null() {
-    return core::ptr::null_mut();
+  match classify_promise(p) {
+    PromiseClass::Payload(payload) => {
+      unsafe { &(*payload).payload_ptr }.load(Ordering::Acquire) as *mut u8
+    }
+    _ => core::ptr::null_mut(),
   }
-
-  // `rt_promise_payload_ptr` is part of the stable C ABI and accepts a generic `PromiseRef` (which
-  // may refer to a native async-ABI promise that is only a `PromiseHeader` prefix). Avoid casting to
-  // `RtPromise` unless we know this handle refers to one of our payload promises.
-  let header = promise_header_ref(p);
-  if (header as usize) % core::mem::align_of::<PromiseHeader>() != 0 {
-    std::process::abort();
-  }
-
-  let flags = unsafe { &(*header).flags }.load(Ordering::Acquire);
-  if flags & PROMISE_FLAG_HAS_PAYLOAD == 0 {
-    return core::ptr::null_mut();
-  }
-  // Safety: `PROMISE_FLAG_HAS_PAYLOAD` is only set by `promise_new_with_payload`, which allocates
-  // an `RtPromise` (header prefix + out-of-line payload pointer stored in `value`).
-  let ptr = promise_ptr(p);
-  unsafe { &(*ptr).value }.load(Ordering::Acquire) as *mut u8
 }
 
 /// Attempt to fulfill a payload promise created by `rt_parallel_spawn_promise`.
@@ -448,12 +552,12 @@ pub(crate) fn promise_payload_ptr(p: PromiseRef) -> *mut u8 {
 /// Unlike [`promise_resolve`], this does **not** overwrite the promise's `value` field: for payload
 /// promises `value` stores the out-of-line payload pointer returned by `rt_promise_payload_ptr`.
 pub(crate) fn promise_try_fulfill_payload(p: PromiseRef) -> bool {
-  let ptr = promise_ptr(p);
-  if ptr.is_null() {
+  let PromiseClass::Payload(payload) = classify_promise(p) else {
     return false;
-  }
+  };
 
-  let state = unsafe { &(*ptr).header.state };
+  let header = payload.cast::<PromiseHeader>();
+  let state = unsafe { &(*header).state };
   if state
     .compare_exchange(
       PromiseHeader::PENDING,
@@ -465,16 +569,14 @@ pub(crate) fn promise_try_fulfill_payload(p: PromiseRef) -> bool {
   {
     // Best-effort: if this was an external-pending payload promise, ensure the count is not left
     // stuck in the presence of duplicate settles.
-    maybe_clear_external_pending(ptr.cast::<PromiseHeader>());
+    maybe_clear_external_pending(header);
     return false;
   }
 
-  // Preserve `value` (payload pointer). Clear any stale rejection reason.
-  unsafe { &(*ptr).error }.store(0, Ordering::Relaxed);
   state.store(PromiseHeader::FULFILLED, Ordering::Release);
 
-  drain_reactions(ptr);
-  maybe_clear_external_pending(ptr.cast::<PromiseHeader>());
+  drain_reactions_generic(header);
+  maybe_clear_external_pending(header);
   true
 }
 
@@ -487,12 +589,12 @@ pub(crate) fn promise_fulfill_payload(p: PromiseRef) {
 /// The promise's payload buffer is still accessible via `rt_promise_payload_ptr`. For legacy
 /// awaiters, we report the payload pointer as the rejection reason (`await_error`).
 pub(crate) fn promise_try_reject_payload(p: PromiseRef) -> bool {
-  let ptr = promise_ptr(p);
-  if ptr.is_null() {
+  let PromiseClass::Payload(payload) = classify_promise(p) else {
     return false;
-  }
+  };
 
-  let state = unsafe { &(*ptr).header.state };
+  let header = payload.cast::<PromiseHeader>();
+  let state = unsafe { &(*header).state };
   if state
     .compare_exchange(
       PromiseHeader::PENDING,
@@ -502,12 +604,10 @@ pub(crate) fn promise_try_reject_payload(p: PromiseRef) -> bool {
     )
     .is_err()
   {
-    maybe_clear_external_pending(ptr.cast::<PromiseHeader>());
+    maybe_clear_external_pending(header);
     return false;
   }
 
-  let payload = unsafe { &(*ptr).value }.load(Ordering::Acquire);
-  unsafe { &(*ptr).error }.store(payload, Ordering::Relaxed);
   state.store(PromiseHeader::REJECTED, Ordering::Release);
 
   // If no one attached a handler yet, schedule unhandled-rejection tracking.
@@ -515,8 +615,8 @@ pub(crate) fn promise_try_reject_payload(p: PromiseRef) -> bool {
     crate::unhandled_rejection::on_reject(p);
   }
 
-  drain_reactions(ptr);
-  maybe_clear_external_pending(ptr.cast::<PromiseHeader>());
+  drain_reactions_generic(header);
+  maybe_clear_external_pending(header);
   true
 }
 
@@ -534,7 +634,10 @@ struct CallbackReaction {
   gc_root: Option<async_gc::Root>,
 }
 
-extern "C" fn callback_reaction_run(node: *mut PromiseReactionNode, _promise: crate::async_abi::PromiseRef) {
+extern "C" fn callback_reaction_run(
+  node: *mut PromiseReactionNode,
+  _promise: crate::async_abi::PromiseRef,
+) {
   // Safety: allocated by `alloc_callback_reaction`.
   let node = unsafe { &*(node as *mut CallbackReaction) };
   let data = node.gc_root.as_ref().map(|r| r.ptr()).unwrap_or(node.data);
@@ -575,8 +678,8 @@ fn alloc_callback_reaction(
   Box::into_raw(node) as *mut PromiseReactionNode
 }
 
-fn push_reaction(ptr: *mut RtPromise, node: *mut PromiseReactionNode) {
-  let reactions = unsafe { &(*ptr).header.waiters };
+fn push_reaction(promise: *mut PromiseHeader, node: *mut PromiseReactionNode) {
+  let reactions = unsafe { &(*promise).waiters };
   loop {
     let head_val = reactions.load(Ordering::Acquire);
     let head = decode_waiters_ptr(head_val);
@@ -594,7 +697,11 @@ fn push_reaction(ptr: *mut RtPromise, node: *mut PromiseReactionNode) {
 
 fn drain_reactions(ptr: *mut RtPromise) {
   let promise = ptr.cast::<PromiseHeader>();
-  let reactions = unsafe { &(*ptr).header.waiters };
+  drain_reactions_generic(promise);
+}
+
+fn drain_reactions_generic(promise: *mut PromiseHeader) {
+  let reactions = unsafe { &(*promise).waiters };
   let head_val = reactions.swap(0, Ordering::AcqRel);
   let mut head = decode_waiters_ptr(head_val);
   if head.is_null() {
@@ -620,7 +727,8 @@ fn maybe_clear_external_pending(promise: *mut PromiseHeader) {
   if (promise as usize) % core::mem::align_of::<PromiseHeader>() != 0 {
     std::process::abort();
   }
-  let prev = unsafe { &(*promise).flags }.fetch_and(!PROMISE_FLAG_EXTERNAL_PENDING, Ordering::AcqRel);
+  let prev =
+    unsafe { &(*promise).flags }.fetch_and(!PROMISE_FLAG_EXTERNAL_PENDING, Ordering::AcqRel);
   if (prev & PROMISE_FLAG_EXTERNAL_PENDING) != 0 {
     crate::async_rt::external_pending_dec();
   }
@@ -656,8 +764,8 @@ pub(crate) fn promise_mark_handled(p: PromiseRef) {
 ///
 /// This is the unified internal mechanism used by both `await` and `then`-style APIs.
 pub(crate) fn promise_register_reaction(p: PromiseRef, node: *mut PromiseReactionNode) {
-  let ptr = promise_ptr(p);
-  if ptr.is_null() {
+  let header = promise_header_ptr(p);
+  if header.is_null() {
     // Treat null as "never settles": discard the node so it doesn't leak.
     if !node.is_null() {
       let vtable = unsafe { (*node).vtable };
@@ -665,7 +773,8 @@ pub(crate) fn promise_register_reaction(p: PromiseRef, node: *mut PromiseReactio
         std::process::abort();
       }
       crate::ffi::abort_on_callback_panic(|| unsafe {
-        let drop_fn: extern "C-unwind" fn(*mut PromiseReactionNode) = std::mem::transmute((&*vtable).drop);
+        let drop_fn: extern "C-unwind" fn(*mut PromiseReactionNode) =
+          std::mem::transmute((&*vtable).drop);
         drop_fn(node);
       });
     }
@@ -675,23 +784,30 @@ pub(crate) fn promise_register_reaction(p: PromiseRef, node: *mut PromiseReactio
   // Test-only deterministic race hook: allow a resolver thread to settle/drain while this
   // registration is paused before linking into `reactions`.
   if let Some(hook) = debug_waiter_race_hook() {
-    let state = unsafe { &(*ptr).header.state }.load(Ordering::Acquire);
-    if state == PromiseHeader::PENDING {
-      hook.notify_waiter_checked_pending();
-      hook.wait_for_resolved();
+    // The legacy race hook is only wired into the legacy value-promise settle path
+    // (`promise_resolve`/`promise_reject`). Avoid waiting on promises that won't ever notify it.
+    let flags = unsafe { &(*header).flags }.load(Ordering::Acquire);
+    let is_legacy_value =
+      (flags & PROMISE_FLAG_LEGACY_RT_PROMISE) != 0 && (flags & PROMISE_FLAG_HAS_PAYLOAD) == 0;
+    if is_legacy_value {
+      let state = unsafe { &(*header).state }.load(Ordering::Acquire);
+      if state == PromiseHeader::PENDING {
+        hook.notify_waiter_checked_pending();
+        hook.wait_for_resolved();
+      }
     }
   }
 
   // Mark "handled" as soon as someone attaches a reaction (await/then).
   promise_mark_handled(p);
 
-  push_reaction(ptr, node);
-  track_pending_reactions(ptr.cast::<PromiseHeader>());
+  push_reaction(header, node);
+  track_pending_reactions(header);
 
   // If the promise is already settled, drain and schedule immediately.
-  let state = unsafe { &(*ptr).header.state }.load(Ordering::Acquire);
+  let state = unsafe { &(*header).state }.load(Ordering::Acquire);
   if state == PromiseHeader::FULFILLED || state == PromiseHeader::REJECTED {
-    drain_reactions(ptr);
+    drain_reactions_generic(header);
   }
 }
 
@@ -766,10 +882,9 @@ pub(crate) fn promise_then_with_drop(
 }
 
 pub(crate) fn promise_resolve(p: PromiseRef, value: ValueRef) {
-  let ptr = promise_ptr(p);
-  if ptr.is_null() {
+  let PromiseClass::LegacyValue(ptr) = classify_promise(p) else {
     return;
-  }
+  };
 
   let hook = debug_waiter_race_hook();
   if let Some(hook) = hook {
@@ -803,7 +918,8 @@ pub(crate) fn promise_resolve(p: PromiseRef, value: ValueRef) {
     let _ = crate::roots::global_persistent_handle_table().free(h);
   }
 
-  let root = (!value.is_null()).then(|| crate::roots::global_persistent_handle_table().alloc(value.cast()));
+  let root =
+    (!value.is_null()).then(|| crate::roots::global_persistent_handle_table().alloc(value.cast()));
 
   // Publish the result before flipping to the externally-visible fulfilled state.
   unsafe { &(*ptr).value }.store(value as usize, Ordering::Relaxed);
@@ -821,10 +937,9 @@ pub(crate) fn promise_resolve(p: PromiseRef, value: ValueRef) {
 }
 
 pub(crate) fn promise_reject(p: PromiseRef, err: ValueRef) {
-  let ptr = promise_ptr(p);
-  if ptr.is_null() {
+  let PromiseClass::LegacyValue(ptr) = classify_promise(p) else {
     return;
-  }
+  };
 
   let hook = debug_waiter_race_hook();
   if let Some(hook) = hook {
@@ -858,7 +973,8 @@ pub(crate) fn promise_reject(p: PromiseRef, err: ValueRef) {
     let _ = crate::roots::global_persistent_handle_table().free(h);
   }
 
-  let root = (!err.is_null()).then(|| crate::roots::global_persistent_handle_table().alloc(err.cast()));
+  let root =
+    (!err.is_null()).then(|| crate::roots::global_persistent_handle_table().alloc(err.cast()));
 
   unsafe { &(*ptr).error }.store(err as usize, Ordering::Relaxed);
   unsafe { &(*ptr).value }.store(0, Ordering::Relaxed);
@@ -903,7 +1019,10 @@ pub(crate) fn cancel_all_pending_reactions() {
       continue;
     }
 
-    let promise = table.get(id).unwrap_or(core::ptr::null_mut()).cast::<PromiseHeader>();
+    let promise = table
+      .get(id)
+      .unwrap_or(core::ptr::null_mut())
+      .cast::<PromiseHeader>();
     if !promise.is_null() {
       if (promise as usize) % core::mem::align_of::<PromiseHeader>() != 0 {
         std::process::abort();
@@ -930,7 +1049,8 @@ pub(crate) fn cancel_all_pending_reactions() {
           std::process::abort();
         }
         crate::ffi::abort_on_callback_panic(|| unsafe {
-          let drop_fn: extern "C-unwind" fn(*mut PromiseReactionNode) = std::mem::transmute((&*vtable).drop);
+          let drop_fn: extern "C-unwind" fn(*mut PromiseReactionNode) =
+            std::mem::transmute((&*vtable).drop);
           drop_fn(head);
         });
 
@@ -1021,7 +1141,8 @@ impl PromiseWaiterRaceHook {
   }
 }
 
-static DEBUG_WAITER_RACE_HOOK: AtomicPtr<PromiseWaiterRaceHook> = AtomicPtr::new(core::ptr::null_mut());
+static DEBUG_WAITER_RACE_HOOK: AtomicPtr<PromiseWaiterRaceHook> =
+  AtomicPtr::new(core::ptr::null_mut());
 
 pub(crate) fn debug_set_waiter_race_hook(hook: Option<&'static PromiseWaiterRaceHook>) {
   let ptr = hook
@@ -1041,11 +1162,11 @@ fn debug_waiter_race_hook() -> Option<&'static PromiseWaiterRaceHook> {
 }
 
 pub(crate) fn debug_waiters_is_empty(p: PromiseRef) -> bool {
-  let ptr = promise_ptr(p);
-  if ptr.is_null() {
+  let header = promise_header_ptr(p);
+  if header.is_null() {
     return true;
   }
-  unsafe { &(*ptr).header.waiters }.load(Ordering::Acquire) == 0
+  unsafe { &(*header).waiters }.load(Ordering::Acquire) == 0
 }
 
 // -----------------------------------------------------------------------------
@@ -1121,7 +1242,12 @@ pub(crate) fn promise_resolve_promise(dst: PromiseRef, src: PromiseRef) {
           dst_root: cont.dst_root.clone(),
           src_root: cont.src_root.clone(),
         });
-        promise_then_with_drop(src, adopt_on_settle, Box::into_raw(cont) as *mut u8, drop_adopt_continuation);
+        promise_then_with_drop(
+          src,
+          adopt_on_settle,
+          Box::into_raw(cont) as *mut u8,
+          drop_adopt_continuation,
+        );
       }
     }
   }
@@ -1137,7 +1263,12 @@ pub(crate) fn promise_resolve_promise(dst: PromiseRef, src: PromiseRef) {
     dst_root: unsafe { async_gc::Root::new_unchecked(dst.0.cast::<u8>()) },
     src_root: unsafe { async_gc::Root::new_unchecked(src.0.cast::<u8>()) },
   });
-  promise_then_with_drop(src, adopt_on_settle, Box::into_raw(cont) as *mut u8, drop_adopt_continuation);
+  promise_then_with_drop(
+    src,
+    adopt_on_settle,
+    Box::into_raw(cont) as *mut u8,
+    drop_adopt_continuation,
+  );
 }
 
 pub(crate) fn promise_resolve_thenable(dst: PromiseRef, thenable: ThenableRef) {
@@ -1250,7 +1381,13 @@ pub(crate) fn promise_resolve_thenable(dst: PromiseRef, thenable: ThenableRef) {
       .unwrap_or(job.thenable.ptr);
 
     let thrown = unsafe {
-      crate::ffi::invoke_thenable_call(call_then, thenable_ptr, thenable_resolve, thenable_reject, resolver_ptr)
+      crate::ffi::invoke_thenable_call(
+        call_then,
+        thenable_ptr,
+        thenable_resolve,
+        thenable_reject,
+        resolver_ptr,
+      )
     };
 
     if !thrown.is_null() {
@@ -1263,7 +1400,11 @@ pub(crate) fn promise_resolve_thenable(dst: PromiseRef, thenable: ThenableRef) {
     // intended to be relocatable.
     .then(|| unsafe { async_gc::Root::new_unchecked(thenable.ptr) });
   let dst_root = unsafe { async_gc::Root::new_unchecked(dst.0.cast::<u8>()) };
-  let job = Box::new(ThenableJob { dst_root, thenable, thenable_root });
+  let job = Box::new(ThenableJob {
+    dst_root,
+    thenable,
+    thenable_root,
+  });
 
   extern "C" fn drop_thenable_job(data: *mut u8) {
     // Safety: allocated by `Box::into_raw` above.
@@ -1279,13 +1420,16 @@ pub(crate) fn promise_resolve_thenable(dst: PromiseRef, thenable: ThenableRef) {
   ));
 }
 
-/// Drop a legacy runtime-native promise.
+/// Drop a legacy runtime-native promise (`RtPromise`).
 ///
 /// Promises are currently leaked in production builds; this exists so tests and
 /// embedders can deterministically release promises and any persistent GC roots
 /// they keep alive.
+///
+/// If `p` does not refer to a legacy `RtPromise` allocation (e.g. it is a native async-ABI promise
+/// or a non-legacy payload promise), this is a no-op.
 pub(crate) fn promise_drop(p: PromiseRef) {
-  let ptr = promise_ptr(p);
+  let ptr = rt_promise_ptr(p);
   if ptr.is_null() {
     return;
   }
@@ -1297,13 +1441,14 @@ pub(crate) fn promise_drop(p: PromiseRef) {
   // Still, make the drop path robust so that:
   // - pending reactions are destroyed without running, and
   // - future cancellation/teardown does not observe a freed promise pointer.
-  untrack_pending_reactions(ptr.cast::<PromiseHeader>());
+  let header = ptr.cast::<PromiseHeader>();
+  untrack_pending_reactions(header);
 
   // Drop any pending reaction nodes stored on the promise header.
   //
   // These would otherwise be leaked if the promise never settles (or if the embedding drops the
   // promise early). We treat promise drop as a teardown operation, so callbacks are *not* executed.
-  let reactions = unsafe { &(*ptr).header.waiters };
+  let reactions = unsafe { &(*header).waiters };
   let head_val = reactions.swap(0, Ordering::AcqRel);
   let mut head = decode_waiters_ptr(head_val);
   while !head.is_null() {
@@ -1316,7 +1461,8 @@ pub(crate) fn promise_drop(p: PromiseRef) {
       std::process::abort();
     }
     crate::ffi::abort_on_callback_panic(|| unsafe {
-      let drop_fn: extern "C-unwind" fn(*mut PromiseReactionNode) = std::mem::transmute((&*vtable).drop);
+      let drop_fn: extern "C-unwind" fn(*mut PromiseReactionNode) =
+        std::mem::transmute((&*vtable).drop);
       drop_fn(head);
     });
     head = next;
@@ -1324,7 +1470,7 @@ pub(crate) fn promise_drop(p: PromiseRef) {
 
   // If this promise was keeping the event loop non-idle via an external pending count (e.g. a
   // parallel task), clear the flag and decrement that count.
-  maybe_clear_external_pending(ptr.cast::<PromiseHeader>());
+  maybe_clear_external_pending(header);
 
   // Also ensure the unhandled-rejection tracker doesn't retain a freed promise pointer.
   crate::unhandled_rejection::forget_promise(p);
