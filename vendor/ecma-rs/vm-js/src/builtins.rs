@@ -455,48 +455,10 @@ pub fn object_get_own_property_descriptor(
   };
 
   // `FromPropertyDescriptor` (ECMA-262).
-  let out = scope.alloc_object()?;
-  scope.push_root(Value::Object(out))?;
-
-  let enumerable_key = PropertyKey::from_string(scope.alloc_string("enumerable")?);
-  scope.define_property(
-    out,
-    enumerable_key,
-    data_desc(Value::Bool(desc.enumerable), true, true, true),
-  )?;
-
-  let configurable_key = PropertyKey::from_string(scope.alloc_string("configurable")?);
-  scope.define_property(
-    out,
-    configurable_key,
-    data_desc(Value::Bool(desc.configurable), true, true, true),
-  )?;
-
-  match desc.kind {
-    PropertyKind::Data { value, writable } => {
-      scope.push_root(value)?;
-
-      let value_key = PropertyKey::from_string(scope.alloc_string("value")?);
-      scope.define_property(out, value_key, data_desc(value, true, true, true))?;
-
-      let writable_key = PropertyKey::from_string(scope.alloc_string("writable")?);
-      scope.define_property(
-        out,
-        writable_key,
-        data_desc(Value::Bool(writable), true, true, true),
-      )?;
-    }
-    PropertyKind::Accessor { get, set } => {
-      scope.push_roots(&[get, set])?;
-
-      let get_key = PropertyKey::from_string(scope.alloc_string("get")?);
-      scope.define_property(out, get_key, data_desc(get, true, true, true))?;
-
-      let set_key = PropertyKey::from_string(scope.alloc_string("set")?);
-      scope.define_property(out, set_key, data_desc(set, true, true, true))?;
-    }
-  }
-
+  //
+  // This must create an ordinary object inheriting from `%Object.prototype%` when a realm is
+  // initialized so callers can use methods like `hasOwnProperty` on the descriptor.
+  let out = crate::property_descriptor_ops::from_property_descriptor(&mut scope, desc)?;
   Ok(Value::Object(out))
 }
 

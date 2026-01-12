@@ -18,6 +18,8 @@ fn function_prototype_has_restricted_caller_and_arguments_accessors() -> Result<
       const descArgs = Object.getOwnPropertyDescriptor(Function.prototype, 'arguments');
 
       const okDesc =
+        Object.getPrototypeOf(descCaller) === Object.prototype &&
+        Object.getPrototypeOf(descArgs) === Object.prototype &&
         typeof descCaller.get === 'function' &&
         descCaller.get === descCaller.set &&
         descCaller.get === descArgs.get &&
@@ -85,4 +87,3 @@ fn generator_functions_inherit_function_prototype_restricted_properties() -> Res
     Err(err) => Err(err),
   }
 }
-
