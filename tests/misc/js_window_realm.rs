@@ -4789,3 +4789,168 @@ fn window_xhr_open_undefined_async_defaults_to_true() -> Result<()> {
   assert_eq!(log, "after_sendloadend");
   Ok(())
 }
+
+#[test]
+fn readable_stream_pipe_to_writable_stream_fulfills() -> Result<()> {
+  let renderer_dom =
+    fastrender::dom::parse_html("<!doctype html><html><head></head><body></body></html>")?;
+  let mut host = host_state_from_renderer_dom(&renderer_dom, "https://example.com/")?;
+  let mut event_loop = EventLoop::<WindowHostState>::new();
+  install_vm_js_microtask_checkpoint_hook(&mut event_loop);
+
+  host.exec_script_in_event_loop(
+    &mut event_loop,
+    r#"
+globalThis.__chunks = [];
+globalThis.__closed = false;
+globalThis.__done = false;
+globalThis.__err = "";
+
+const rs = new ReadableStream({
+  start(controller) {
+    controller.enqueue("a");
+    controller.enqueue("b");
+    controller.close();
+  }
+});
+
+const ws = new WritableStream({
+  write(chunk) { globalThis.__chunks.push(chunk); },
+  close() { globalThis.__closed = true; },
+});
+
+rs.pipeTo(ws)
+  .then(() => { globalThis.__done = true; })
+  .catch((e) => { globalThis.__err = String(e && e.message || e); });
+"#,
+  )?;
+
+  assert_eq!(
+    event_loop.run_until_idle(
+      &mut host,
+      RunLimits {
+        max_tasks: 10,
+        max_microtasks: 100,
+        max_wall_time: None,
+      },
+    )?,
+    RunUntilIdleOutcome::Idle
+  );
+
+  let ok = host.exec_script_in_event_loop(
+    &mut event_loop,
+    "globalThis.__done === true && globalThis.__err === '' && globalThis.__closed === true && globalThis.__chunks.join(',') === 'a,b'",
+  )?;
+  assert_eq!(ok, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn readable_stream_pipe_to_prevent_close_does_not_close_writer() -> Result<()> {
+  let renderer_dom =
+    fastrender::dom::parse_html("<!doctype html><html><head></head><body></body></html>")?;
+  let mut host = host_state_from_renderer_dom(&renderer_dom, "https://example.com/")?;
+  let mut event_loop = EventLoop::<WindowHostState>::new();
+  install_vm_js_microtask_checkpoint_hook(&mut event_loop);
+
+  host.exec_script_in_event_loop(
+    &mut event_loop,
+    r#"
+globalThis.__chunks = [];
+globalThis.__closed = false;
+globalThis.__done = false;
+globalThis.__err = "";
+
+const rs = new ReadableStream({
+  start(controller) {
+    controller.enqueue("x");
+    controller.close();
+  }
+});
+
+const ws = new WritableStream({
+  write(chunk) { globalThis.__chunks.push(chunk); },
+  close() { globalThis.__closed = true; },
+});
+
+rs.pipeTo(ws, { preventClose: true })
+  .then(() => { globalThis.__done = true; })
+  .catch((e) => { globalThis.__err = String(e && e.message || e); });
+"#,
+  )?;
+
+  assert_eq!(
+    event_loop.run_until_idle(
+      &mut host,
+      RunLimits {
+        max_tasks: 10,
+        max_microtasks: 100,
+        max_wall_time: None,
+      },
+    )?,
+    RunUntilIdleOutcome::Idle
+  );
+
+  let ok = host.exec_script_in_event_loop(
+    &mut event_loop,
+    "globalThis.__done === true && globalThis.__err === '' && globalThis.__closed === false && globalThis.__chunks.join(',') === 'x'",
+  )?;
+  assert_eq!(ok, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn readable_stream_pipe_to_rejects_when_writer_write_throws() -> Result<()> {
+  let renderer_dom =
+    fastrender::dom::parse_html("<!doctype html><html><head></head><body></body></html>")?;
+  let mut host = host_state_from_renderer_dom(&renderer_dom, "https://example.com/")?;
+  let mut event_loop = EventLoop::<WindowHostState>::new();
+  install_vm_js_microtask_checkpoint_hook(&mut event_loop);
+
+  host.exec_script_in_event_loop(
+    &mut event_loop,
+    r#"
+globalThis.__unhandled = false;
+globalThis.__caught = false;
+globalThis.__err = "";
+
+window.addEventListener("unhandledrejection", () => { globalThis.__unhandled = true; });
+
+const rs = new ReadableStream({
+  start(controller) {
+    controller.enqueue("x");
+    controller.close();
+  }
+});
+
+const ws = new WritableStream({
+  write() { throw new Error("boom"); },
+});
+
+rs.pipeTo(ws)
+  .catch((e) => {
+    globalThis.__caught = true;
+    globalThis.__err = String(e && e.message || e);
+  });
+"#,
+  )?;
+
+  assert_eq!(
+    event_loop.run_until_idle(
+      &mut host,
+      RunLimits {
+        max_tasks: 25,
+        max_microtasks: 100,
+        max_wall_time: None,
+      },
+    )?,
+    RunUntilIdleOutcome::Idle
+  );
+
+  let ok = host.exec_script_in_event_loop(
+    &mut event_loop,
+    "globalThis.__caught === true && globalThis.__err === 'boom' && globalThis.__unhandled === false",
+  )?;
+  assert_eq!(ok, Value::Bool(true));
+  Ok(())
+}

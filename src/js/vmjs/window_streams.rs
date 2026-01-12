@@ -15,7 +15,7 @@
 //! - `ReadableStream` underlying source/controller APIs beyond `start` + `enqueue/close/error`
 //!   (no `pull`, backpressure, etc.)
 //! - BYOB readers
-//! - `pipeTo`/teeing/backpressure
+//! - teeing/backpressure
 //!
 //! The goal is to provide just enough surface area for real-world code that expects streams
 //! constructors to exist and for host-owned byte sources to be consumed via
@@ -100,6 +100,12 @@ const TRANSFORM_STREAM_CTOR_SLOT_CONTROLLER_PROTO: usize = 4;
 
 const READABLE_STREAM_PIPE_THROUGH_SLOT_READER: usize = 1;
 const READABLE_STREAM_PIPE_THROUGH_SLOT_WRITER: usize = 2;
+
+const READABLE_STREAM_PIPE_TO_SLOT_READER: usize = 1;
+const READABLE_STREAM_PIPE_TO_SLOT_WRITER: usize = 2;
+const READABLE_STREAM_PIPE_TO_SLOT_RESOLVE: usize = 3;
+const READABLE_STREAM_PIPE_TO_SLOT_REJECT: usize = 4;
+const READABLE_STREAM_PIPE_TO_SLOT_PREVENT_CLOSE: usize = 5;
 
 fn chunk_sizes_for_len(mut len: usize) -> VecDeque<usize> {
   let mut queue = VecDeque::new();
@@ -292,6 +298,12 @@ struct StreamRealmState {
   readable_stream_pipe_through_read_rejected_call_id: NativeFunctionId,
   readable_stream_pipe_through_write_fulfilled_call_id: NativeFunctionId,
   readable_stream_pipe_through_write_rejected_call_id: NativeFunctionId,
+  readable_stream_pipe_to_read_fulfilled_call_id: NativeFunctionId,
+  readable_stream_pipe_to_read_rejected_call_id: NativeFunctionId,
+  readable_stream_pipe_to_write_fulfilled_call_id: NativeFunctionId,
+  readable_stream_pipe_to_write_rejected_call_id: NativeFunctionId,
+  readable_stream_pipe_to_close_fulfilled_call_id: NativeFunctionId,
+  readable_stream_pipe_to_close_rejected_call_id: NativeFunctionId,
   streams: HashMap<WeakGcObject, StreamState>,
   readers: HashMap<WeakGcObject, ReaderState>,
   last_gc_runs: u64,
@@ -847,7 +859,7 @@ fn readable_stream_pipe_through_read_fulfilled_native(
   )?;
   scope.push_root(Value::Object(on_rejected))?;
 
-  let _ = perform_promise_then_with_host_and_hooks(
+  let derived = perform_promise_then_with_host_and_hooks(
     vm,
     &mut scope,
     host,
@@ -856,6 +868,7 @@ fn readable_stream_pipe_through_read_fulfilled_native(
     Some(Value::Object(on_fulfilled)),
     Some(Value::Object(on_rejected)),
   )?;
+  mark_promise_handled(&mut scope, derived)?;
 
   Ok(Value::Undefined)
 }
@@ -1003,7 +1016,7 @@ fn readable_stream_pipe_through_write_fulfilled_native(
   )?;
   scope.push_root(Value::Object(on_rejected))?;
 
-  let _ = perform_promise_then_with_host_and_hooks(
+  let derived = perform_promise_then_with_host_and_hooks(
     vm,
     &mut scope,
     host,
@@ -1012,6 +1025,7 @@ fn readable_stream_pipe_through_write_fulfilled_native(
     Some(Value::Object(on_fulfilled)),
     Some(Value::Object(on_rejected)),
   )?;
+  mark_promise_handled(&mut scope, derived)?;
 
   Ok(Value::Undefined)
 }
@@ -1221,7 +1235,7 @@ fn readable_stream_pipe_through_native(
   )?;
   scope.push_root(Value::Object(on_rejected))?;
 
-  let _ = perform_promise_then_with_host_and_hooks(
+  let derived = perform_promise_then_with_host_and_hooks(
     vm,
     &mut scope,
     host,
@@ -1230,8 +1244,823 @@ fn readable_stream_pipe_through_native(
     Some(Value::Object(on_fulfilled)),
     Some(Value::Object(on_rejected)),
   )?;
+  mark_promise_handled(&mut scope, derived)?;
 
   Ok(Value::Object(readable_obj))
+}
+
+fn readable_stream_pipe_to_close_fulfilled_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let slots = scope.heap().get_function_native_slots(callee)?;
+  let resolve = slots
+    .get(READABLE_STREAM_PIPE_TO_SLOT_RESOLVE)
+    .copied()
+    .unwrap_or(Value::Undefined);
+  vm.call_with_host_and_hooks(host, scope, hooks, resolve, Value::Undefined, &[])?;
+  Ok(Value::Undefined)
+}
+
+fn readable_stream_pipe_to_close_rejected_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let slots = scope.heap().get_function_native_slots(callee)?;
+  let reject = slots
+    .get(READABLE_STREAM_PIPE_TO_SLOT_REJECT)
+    .copied()
+    .unwrap_or(Value::Undefined);
+  let reason = args.get(0).copied().unwrap_or(Value::Undefined);
+  scope.push_root(reason)?;
+  vm.call_with_host_and_hooks(host, scope, hooks, reject, Value::Undefined, &[reason])?;
+  Ok(Value::Undefined)
+}
+
+fn readable_stream_pipe_to_read_fulfilled_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let slots = scope.heap().get_function_native_slots(callee)?;
+  let reader_obj = match slots
+    .get(READABLE_STREAM_PIPE_TO_SLOT_READER)
+    .copied()
+    .unwrap_or(Value::Undefined)
+  {
+    Value::Object(obj) => obj,
+    _ => {
+      return Err(VmError::InvariantViolation(
+        "ReadableStream pipeTo read callback missing reader slot",
+      ))
+    }
+  };
+  let writer_obj = match slots
+    .get(READABLE_STREAM_PIPE_TO_SLOT_WRITER)
+    .copied()
+    .unwrap_or(Value::Undefined)
+  {
+    Value::Object(obj) => obj,
+    _ => {
+      return Err(VmError::InvariantViolation(
+        "ReadableStream pipeTo read callback missing writer slot",
+      ))
+    }
+  };
+  let resolve = slots
+    .get(READABLE_STREAM_PIPE_TO_SLOT_RESOLVE)
+    .copied()
+    .unwrap_or(Value::Undefined);
+  let reject = slots
+    .get(READABLE_STREAM_PIPE_TO_SLOT_REJECT)
+    .copied()
+    .unwrap_or(Value::Undefined);
+  let prevent_close = matches!(
+    slots
+      .get(READABLE_STREAM_PIPE_TO_SLOT_PREVENT_CLOSE)
+      .copied()
+      .unwrap_or(Value::Bool(false)),
+    Value::Bool(true)
+  );
+  let realm_slot = slots
+    .get(STREAM_REALM_ID_SLOT)
+    .copied()
+    .unwrap_or(Value::Undefined);
+
+  let result = args.get(0).copied().unwrap_or(Value::Undefined);
+  let Value::Object(result_obj) = result else {
+    let reason = vm_error_to_rejection_value(
+      vm,
+      scope,
+      VmError::TypeError("ReadableStream.pipeTo: read() did not return an object"),
+    )?;
+    // Best-effort `writer.abort(reason)`.
+    let _ = readable_stream_pipe_to_read_rejected_native(
+      vm,
+      scope,
+      host,
+      hooks,
+      callee,
+      Value::Undefined,
+      &[reason],
+    );
+    // `readable_stream_pipe_to_read_rejected_native` already rejected the pipeTo promise.
+    return Ok(Value::Undefined);
+  };
+
+  // Root result object while allocating keys / accessing properties.
+  scope.push_root(Value::Object(result_obj))?;
+  let done_key = alloc_key(scope, "done")?;
+  let done_val = vm.get_with_host_and_hooks(host, scope, hooks, result_obj, done_key)?;
+  let done = scope.heap().to_boolean(done_val)?;
+
+  if done {
+    if prevent_close {
+      vm.call_with_host_and_hooks(host, scope, hooks, resolve, Value::Undefined, &[])?;
+      return Ok(Value::Undefined);
+    }
+
+    // writer.close()
+    let close_promise = (|| {
+      let mut scope = scope.reborrow();
+      scope.push_root(Value::Object(writer_obj))?;
+      let close_key = alloc_key(&mut scope, "close")?;
+      let close_fn = vm.get_with_host_and_hooks(host, &mut scope, hooks, writer_obj, close_key)?;
+      let close_val = vm.call_with_host_and_hooks(
+        host,
+        &mut scope,
+        hooks,
+        close_fn,
+        Value::Object(writer_obj),
+        &[],
+      )?;
+      promise_resolve_with_host_and_hooks(vm, &mut scope, host, hooks, close_val)
+    })();
+
+    let close_promise = match close_promise {
+      Ok(p) => p,
+      Err(err) => {
+        let reason = vm_error_to_rejection_value(vm, scope, err)?;
+        scope.push_root(reason)?;
+        vm.call_with_host_and_hooks(host, scope, hooks, reject, Value::Undefined, &[reason])?;
+        return Ok(Value::Undefined);
+      }
+    };
+
+    let Value::Object(close_promise_obj) = close_promise else {
+      return Err(VmError::InvariantViolation(
+        "ReadableStream.pipeTo: close() did not return a Promise",
+      ));
+    };
+
+    let (fulfilled_call_id, rejected_call_id) =
+      with_realm_state_mut(vm, scope, callee, |state, _heap| {
+        Ok((
+          state.readable_stream_pipe_to_close_fulfilled_call_id,
+          state.readable_stream_pipe_to_close_rejected_call_id,
+        ))
+      })?;
+
+    // Root captured values + promise across callback allocation.
+    let mut scope = scope.reborrow();
+    scope.push_root(Value::Object(reader_obj))?;
+    scope.push_root(Value::Object(writer_obj))?;
+    scope.push_root(resolve)?;
+    scope.push_root(reject)?;
+    scope.push_root(Value::Bool(prevent_close))?;
+    scope.push_root(close_promise)?;
+
+    let on_fulfilled_name = scope.alloc_string("ReadableStream pipeTo close fulfilled")?;
+    scope.push_root(Value::String(on_fulfilled_name))?;
+    let on_fulfilled = scope.alloc_native_function_with_slots(
+      fulfilled_call_id,
+      None,
+      on_fulfilled_name,
+      1,
+      &[
+        realm_slot,
+        Value::Object(reader_obj),
+        Value::Object(writer_obj),
+        resolve,
+        reject,
+        Value::Bool(prevent_close),
+      ],
+    )?;
+    scope.push_root(Value::Object(on_fulfilled))?;
+
+    let on_rejected_name = scope.alloc_string("ReadableStream pipeTo close rejected")?;
+    scope.push_root(Value::String(on_rejected_name))?;
+    let on_rejected = scope.alloc_native_function_with_slots(
+      rejected_call_id,
+      None,
+      on_rejected_name,
+      1,
+      &[
+        realm_slot,
+        Value::Object(reader_obj),
+        Value::Object(writer_obj),
+        resolve,
+        reject,
+        Value::Bool(prevent_close),
+      ],
+    )?;
+    scope.push_root(Value::Object(on_rejected))?;
+
+    let derived = perform_promise_then_with_host_and_hooks(
+      vm,
+      &mut scope,
+      host,
+      hooks,
+      Value::Object(close_promise_obj),
+      Some(Value::Object(on_fulfilled)),
+      Some(Value::Object(on_rejected)),
+    )?;
+    mark_promise_handled(&mut scope, derived)?;
+
+    return Ok(Value::Undefined);
+  }
+
+  let value_key = alloc_key(scope, "value")?;
+  let chunk = vm.get_with_host_and_hooks(host, scope, hooks, result_obj, value_key)?;
+
+  // writer.write(chunk)
+  let write_promise = (|| {
+    let mut scope = scope.reborrow();
+    scope.push_root(Value::Object(writer_obj))?;
+    scope.push_root(chunk)?;
+    let write_key = alloc_key(&mut scope, "write")?;
+    let write_fn = vm.get_with_host_and_hooks(host, &mut scope, hooks, writer_obj, write_key)?;
+    let write_val = vm.call_with_host_and_hooks(
+      host,
+      &mut scope,
+      hooks,
+      write_fn,
+      Value::Object(writer_obj),
+      &[chunk],
+    )?;
+    promise_resolve_with_host_and_hooks(vm, &mut scope, host, hooks, write_val)
+  })();
+
+  let write_promise = match write_promise {
+    Ok(p) => p,
+    Err(err) => {
+      let reason = vm_error_to_rejection_value(vm, scope, err)?;
+      // Best-effort cancellation of the source stream.
+      if let Ok(cancel_promise) = reader_cancel_native(
+        vm,
+        scope,
+        host,
+        hooks,
+        callee,
+        Value::Object(reader_obj),
+        &[],
+      ) {
+        let _ = mark_promise_handled(scope, cancel_promise);
+      }
+      scope.push_root(reason)?;
+      vm.call_with_host_and_hooks(host, scope, hooks, reject, Value::Undefined, &[reason])?;
+      return Ok(Value::Undefined);
+    }
+  };
+
+  let Value::Object(write_promise_obj) = write_promise else {
+    return Err(VmError::InvariantViolation(
+      "ReadableStream.pipeTo: write() did not return a Promise",
+    ));
+  };
+
+  let (fulfilled_call_id, rejected_call_id) =
+    with_realm_state_mut(vm, scope, callee, |state, _heap| {
+      Ok((
+        state.readable_stream_pipe_to_write_fulfilled_call_id,
+        state.readable_stream_pipe_to_write_rejected_call_id,
+      ))
+    })?;
+
+  // Root captured values + promise across callback allocation.
+  let mut scope = scope.reborrow();
+  scope.push_root(Value::Object(reader_obj))?;
+  scope.push_root(Value::Object(writer_obj))?;
+  scope.push_root(resolve)?;
+  scope.push_root(reject)?;
+  scope.push_root(Value::Bool(prevent_close))?;
+  scope.push_root(write_promise)?;
+
+  let on_fulfilled_name = scope.alloc_string("ReadableStream pipeTo write fulfilled")?;
+  scope.push_root(Value::String(on_fulfilled_name))?;
+  let on_fulfilled = scope.alloc_native_function_with_slots(
+    fulfilled_call_id,
+    None,
+    on_fulfilled_name,
+    1,
+    &[
+      realm_slot,
+      Value::Object(reader_obj),
+      Value::Object(writer_obj),
+      resolve,
+      reject,
+      Value::Bool(prevent_close),
+    ],
+  )?;
+  scope.push_root(Value::Object(on_fulfilled))?;
+
+  let on_rejected_name = scope.alloc_string("ReadableStream pipeTo write rejected")?;
+  scope.push_root(Value::String(on_rejected_name))?;
+  let on_rejected = scope.alloc_native_function_with_slots(
+    rejected_call_id,
+    None,
+    on_rejected_name,
+    1,
+    &[
+      realm_slot,
+      Value::Object(reader_obj),
+      Value::Object(writer_obj),
+      resolve,
+      reject,
+      Value::Bool(prevent_close),
+    ],
+  )?;
+  scope.push_root(Value::Object(on_rejected))?;
+
+  let derived = perform_promise_then_with_host_and_hooks(
+    vm,
+    &mut scope,
+    host,
+    hooks,
+    Value::Object(write_promise_obj),
+    Some(Value::Object(on_fulfilled)),
+    Some(Value::Object(on_rejected)),
+  )?;
+  mark_promise_handled(&mut scope, derived)?;
+
+  Ok(Value::Undefined)
+}
+
+fn readable_stream_pipe_to_read_rejected_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let slots = scope.heap().get_function_native_slots(callee)?;
+  let writer_obj = match slots
+    .get(READABLE_STREAM_PIPE_TO_SLOT_WRITER)
+    .copied()
+    .unwrap_or(Value::Undefined)
+  {
+    Value::Object(obj) => obj,
+    _ => {
+      return Err(VmError::InvariantViolation(
+        "ReadableStream pipeTo read rejection callback missing writer slot",
+      ))
+    }
+  };
+  let reject = slots
+    .get(READABLE_STREAM_PIPE_TO_SLOT_REJECT)
+    .copied()
+    .unwrap_or(Value::Undefined);
+
+  let reason = args.get(0).copied().unwrap_or(Value::Undefined);
+
+  // Best-effort `writer.abort(reason)`; ignore failures.
+  let abort_promise = (|| {
+    let mut scope = scope.reborrow();
+    scope.push_root(Value::Object(writer_obj))?;
+    scope.push_root(reason)?;
+    let abort_key = alloc_key(&mut scope, "abort")?;
+    let abort_fn = vm.get_with_host_and_hooks(host, &mut scope, hooks, writer_obj, abort_key)?;
+    if !scope.heap().is_callable(abort_fn)? {
+      return Ok(Value::Undefined);
+    }
+    vm.call_with_host_and_hooks(
+      host,
+      &mut scope,
+      hooks,
+      abort_fn,
+      Value::Object(writer_obj),
+      &[reason],
+    )
+  })();
+  if let Ok(abort_val) = abort_promise {
+    scope.push_root(abort_val)?;
+    if let Ok(p) = promise_resolve_with_host_and_hooks(vm, scope, host, hooks, abort_val) {
+      let _ = mark_promise_handled(scope, p);
+    }
+  }
+
+  scope.push_root(reason)?;
+  vm.call_with_host_and_hooks(host, scope, hooks, reject, Value::Undefined, &[reason])?;
+
+  Ok(Value::Undefined)
+}
+
+fn readable_stream_pipe_to_write_fulfilled_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let slots = scope.heap().get_function_native_slots(callee)?;
+  let reader_obj = match slots
+    .get(READABLE_STREAM_PIPE_TO_SLOT_READER)
+    .copied()
+    .unwrap_or(Value::Undefined)
+  {
+    Value::Object(obj) => obj,
+    _ => {
+      return Err(VmError::InvariantViolation(
+        "ReadableStream pipeTo write callback missing reader slot",
+      ))
+    }
+  };
+  let writer_obj = match slots
+    .get(READABLE_STREAM_PIPE_TO_SLOT_WRITER)
+    .copied()
+    .unwrap_or(Value::Undefined)
+  {
+    Value::Object(obj) => obj,
+    _ => {
+      return Err(VmError::InvariantViolation(
+        "ReadableStream pipeTo write callback missing writer slot",
+      ))
+    }
+  };
+  let resolve = slots
+    .get(READABLE_STREAM_PIPE_TO_SLOT_RESOLVE)
+    .copied()
+    .unwrap_or(Value::Undefined);
+  let reject = slots
+    .get(READABLE_STREAM_PIPE_TO_SLOT_REJECT)
+    .copied()
+    .unwrap_or(Value::Undefined);
+  let prevent_close = matches!(
+    slots
+      .get(READABLE_STREAM_PIPE_TO_SLOT_PREVENT_CLOSE)
+      .copied()
+      .unwrap_or(Value::Bool(false)),
+    Value::Bool(true)
+  );
+  let realm_slot = slots
+    .get(STREAM_REALM_ID_SLOT)
+    .copied()
+    .unwrap_or(Value::Undefined);
+
+  // Start the next `reader.read()`.
+  let read_promise = reader_read_native(
+    vm,
+    scope,
+    host,
+    hooks,
+    callee,
+    Value::Object(reader_obj),
+    &[],
+  );
+  let read_promise = match read_promise {
+    Ok(p) => p,
+    Err(err) => {
+      let reason = vm_error_to_rejection_value(vm, scope, err)?;
+      // Best-effort `writer.abort(reason)`.
+      let _ = readable_stream_pipe_to_read_rejected_native(
+        vm,
+        scope,
+        host,
+        hooks,
+        callee,
+        Value::Undefined,
+        &[reason],
+      );
+      // `readable_stream_pipe_to_read_rejected_native` already rejected the pipeTo promise.
+      return Ok(Value::Undefined);
+    }
+  };
+  let Value::Object(read_promise_obj) = read_promise else {
+    return Err(VmError::InvariantViolation(
+      "ReadableStreamDefaultReader.read must return an object",
+    ));
+  };
+
+  let (fulfilled_call_id, rejected_call_id) =
+    with_realm_state_mut(vm, scope, callee, |state, _heap| {
+      Ok((
+        state.readable_stream_pipe_to_read_fulfilled_call_id,
+        state.readable_stream_pipe_to_read_rejected_call_id,
+      ))
+    })?;
+
+  // Root captured values + promise across callback allocation.
+  let mut scope = scope.reborrow();
+  scope.push_root(Value::Object(reader_obj))?;
+  scope.push_root(Value::Object(writer_obj))?;
+  scope.push_root(resolve)?;
+  scope.push_root(reject)?;
+  scope.push_root(Value::Bool(prevent_close))?;
+  scope.push_root(read_promise)?;
+
+  let on_fulfilled_name = scope.alloc_string("ReadableStream pipeTo read fulfilled")?;
+  scope.push_root(Value::String(on_fulfilled_name))?;
+  let on_fulfilled = scope.alloc_native_function_with_slots(
+    fulfilled_call_id,
+    None,
+    on_fulfilled_name,
+    1,
+    &[
+      realm_slot,
+      Value::Object(reader_obj),
+      Value::Object(writer_obj),
+      resolve,
+      reject,
+      Value::Bool(prevent_close),
+    ],
+  )?;
+  scope.push_root(Value::Object(on_fulfilled))?;
+
+  let on_rejected_name = scope.alloc_string("ReadableStream pipeTo read rejected")?;
+  scope.push_root(Value::String(on_rejected_name))?;
+  let on_rejected = scope.alloc_native_function_with_slots(
+    rejected_call_id,
+    None,
+    on_rejected_name,
+    1,
+    &[
+      realm_slot,
+      Value::Object(reader_obj),
+      Value::Object(writer_obj),
+      resolve,
+      reject,
+      Value::Bool(prevent_close),
+    ],
+  )?;
+  scope.push_root(Value::Object(on_rejected))?;
+
+  let derived = perform_promise_then_with_host_and_hooks(
+    vm,
+    &mut scope,
+    host,
+    hooks,
+    Value::Object(read_promise_obj),
+    Some(Value::Object(on_fulfilled)),
+    Some(Value::Object(on_rejected)),
+  )?;
+  mark_promise_handled(&mut scope, derived)?;
+
+  Ok(Value::Undefined)
+}
+
+fn readable_stream_pipe_to_write_rejected_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let slots = scope.heap().get_function_native_slots(callee)?;
+  let reader_obj = match slots
+    .get(READABLE_STREAM_PIPE_TO_SLOT_READER)
+    .copied()
+    .unwrap_or(Value::Undefined)
+  {
+    Value::Object(obj) => obj,
+    _ => {
+      return Err(VmError::InvariantViolation(
+        "ReadableStream pipeTo write rejection callback missing reader slot",
+      ))
+    }
+  };
+  let reject = slots
+    .get(READABLE_STREAM_PIPE_TO_SLOT_REJECT)
+    .copied()
+    .unwrap_or(Value::Undefined);
+
+  // Best-effort cancellation of the source stream.
+  if let Ok(cancel_promise) = reader_cancel_native(vm, scope, host, hooks, callee, Value::Object(reader_obj), &[])
+  {
+    let _ = mark_promise_handled(scope, cancel_promise);
+  }
+
+  let reason = args.get(0).copied().unwrap_or(Value::Undefined);
+  scope.push_root(reason)?;
+  vm.call_with_host_and_hooks(host, scope, hooks, reject, Value::Undefined, &[reason])?;
+  Ok(Value::Undefined)
+}
+
+fn readable_stream_pipe_to_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(stream_obj) = this else {
+    return Err(VmError::TypeError("ReadableStream.pipeTo: illegal invocation"));
+  };
+  // Root the source stream across allocations in this helper. The VM call frame roots `this`, but we
+  // also invoke other native helpers directly from Rust, which can allocate/GC before they root
+  // their receivers.
+  scope.push_root(Value::Object(stream_obj))?;
+
+  // Ensure this is one of our streams (and not e.g. an arbitrary object inheriting the prototype).
+  with_realm_state_mut(vm, scope, callee, |state, _heap| {
+    state
+      .streams
+      .contains_key(&WeakGcObject::from(stream_obj))
+      .then_some(())
+      .ok_or(VmError::TypeError("ReadableStream.pipeTo: illegal invocation"))
+  })?;
+
+  let destination = args.get(0).copied().unwrap_or(Value::Undefined);
+  let Value::Object(destination_obj) = destination else {
+    return Err(VmError::TypeError(
+      "ReadableStream.pipeTo expects a destination object",
+    ));
+  };
+
+  // Acquire a writer from `destination`.
+  scope.push_root(Value::Object(destination_obj))?;
+  let get_writer_key = alloc_key(scope, "getWriter")?;
+  let get_writer_fn =
+    vm.get_with_host_and_hooks(host, scope, hooks, destination_obj, get_writer_key)?;
+  if !scope.heap().is_callable(get_writer_fn)? {
+    return Err(VmError::TypeError(
+      "ReadableStream.pipeTo: destination.getWriter is not callable",
+    ));
+  }
+  let writer_val = vm.call_with_host_and_hooks(
+    host,
+    scope,
+    hooks,
+    get_writer_fn,
+    Value::Object(destination_obj),
+    &[],
+  )?;
+  let Value::Object(writer_obj) = writer_val else {
+    return Err(VmError::TypeError(
+      "ReadableStream.pipeTo: getWriter did not return an object",
+    ));
+  };
+  // Root writer across subsequent allocations (not otherwise reachable until we capture it in the
+  // Promise reaction callbacks).
+  scope.push_root(Value::Object(writer_obj))?;
+
+  let mut prevent_close = false;
+  let options = args.get(1).copied().unwrap_or(Value::Undefined);
+  if let Value::Object(options_obj) = options {
+    scope.push_root(Value::Object(options_obj))?;
+    let prevent_close_key = alloc_key(scope, "preventClose")?;
+    let prevent_close_val =
+      vm.get_with_host_and_hooks(host, scope, hooks, options_obj, prevent_close_key)?;
+    prevent_close = matches!(prevent_close_val, Value::Bool(true));
+  }
+
+  // Lock the source stream and start an asynchronous pump:
+  //
+  // - `source.getReader().read().then(write-to-writable, abort-on-error)`
+  // - Each successful `write()` schedules the next `read()`.
+  // - When `read()` completes, optionally `writer.close()` then resolve.
+  let reader_val = readable_stream_get_reader_native(
+    vm,
+    scope,
+    host,
+    hooks,
+    callee,
+    Value::Object(stream_obj),
+    &[],
+  )?;
+  let Value::Object(reader_obj) = reader_val else {
+    return Err(VmError::InvariantViolation(
+      "ReadableStream.getReader must return an object",
+    ));
+  };
+  // Root reader across subsequent allocations (not otherwise reachable until we capture it in the
+  // Promise reaction callbacks).
+  scope.push_root(Value::Object(reader_obj))?;
+
+  let cap: PromiseCapability = new_promise_capability_with_host_and_hooks(vm, scope, host, hooks)?;
+  let promise = scope.push_root(cap.promise)?;
+  let resolve = scope.push_root(cap.resolve)?;
+  let reject = scope.push_root(cap.reject)?;
+
+  let read_promise = match reader_read_native(
+    vm,
+    scope,
+    host,
+    hooks,
+    callee,
+    Value::Object(reader_obj),
+    &[],
+  ) {
+    Ok(p) => p,
+    Err(err) => {
+      let reason = vm_error_to_rejection_value(vm, scope, err)?;
+
+      // Best-effort `writer.abort(reason)`; ignore failures.
+      let abort_val = (|| {
+        let mut scope = scope.reborrow();
+        scope.push_root(Value::Object(writer_obj))?;
+        scope.push_root(reason)?;
+        let abort_key = alloc_key(&mut scope, "abort")?;
+        let abort_fn = vm.get_with_host_and_hooks(host, &mut scope, hooks, writer_obj, abort_key)?;
+        if !scope.heap().is_callable(abort_fn)? {
+          return Ok(Value::Undefined);
+        }
+        vm.call_with_host_and_hooks(
+          host,
+          &mut scope,
+          hooks,
+          abort_fn,
+          Value::Object(writer_obj),
+          &[reason],
+        )
+      })();
+      if let Ok(abort_val) = abort_val {
+        scope.push_root(abort_val)?;
+        if let Ok(p) = promise_resolve_with_host_and_hooks(vm, scope, host, hooks, abort_val) {
+          let _ = mark_promise_handled(scope, p);
+        }
+      }
+
+      scope.push_root(reason)?;
+      vm.call_with_host_and_hooks(host, scope, hooks, reject, Value::Undefined, &[reason])?;
+      return Ok(promise);
+    }
+  };
+  let Value::Object(read_promise_obj) = read_promise else {
+    return Err(VmError::InvariantViolation(
+      "ReadableStreamDefaultReader.read must return an object",
+    ));
+  };
+
+  let (fulfilled_call_id, rejected_call_id) =
+    with_realm_state_mut(vm, scope, callee, |state, _heap| {
+      Ok((
+        state.readable_stream_pipe_to_read_fulfilled_call_id,
+        state.readable_stream_pipe_to_read_rejected_call_id,
+      ))
+    })?;
+
+  let realm_id = realm_id_for_binding_call(vm, scope.heap(), callee)?;
+  let realm_slot = Value::Number(realm_id.to_raw() as f64);
+
+  // Root captured values + promise across callback allocation.
+  let mut scope = scope.reborrow();
+  scope.push_root(Value::Object(reader_obj))?;
+  scope.push_root(Value::Object(writer_obj))?;
+  scope.push_root(resolve)?;
+  scope.push_root(reject)?;
+  scope.push_root(Value::Bool(prevent_close))?;
+  scope.push_root(read_promise)?;
+
+  let on_fulfilled_name = scope.alloc_string("ReadableStream pipeTo read fulfilled")?;
+  scope.push_root(Value::String(on_fulfilled_name))?;
+  let on_fulfilled = scope.alloc_native_function_with_slots(
+    fulfilled_call_id,
+    None,
+    on_fulfilled_name,
+    1,
+    &[
+      realm_slot,
+      Value::Object(reader_obj),
+      Value::Object(writer_obj),
+      resolve,
+      reject,
+      Value::Bool(prevent_close),
+    ],
+  )?;
+  scope.push_root(Value::Object(on_fulfilled))?;
+
+  let on_rejected_name = scope.alloc_string("ReadableStream pipeTo read rejected")?;
+  scope.push_root(Value::String(on_rejected_name))?;
+  let on_rejected = scope.alloc_native_function_with_slots(
+    rejected_call_id,
+    None,
+    on_rejected_name,
+    1,
+    &[
+      realm_slot,
+      Value::Object(reader_obj),
+      Value::Object(writer_obj),
+      resolve,
+      reject,
+      Value::Bool(prevent_close),
+    ],
+  )?;
+  scope.push_root(Value::Object(on_rejected))?;
+
+  let derived = perform_promise_then_with_host_and_hooks(
+    vm,
+    &mut scope,
+    host,
+    hooks,
+    Value::Object(read_promise_obj),
+    Some(Value::Object(on_fulfilled)),
+    Some(Value::Object(on_rejected)),
+  )?;
+  mark_promise_handled(&mut scope, derived)?;
+
+  Ok(promise)
 }
 
 fn readable_stream_controller_stream(
@@ -2355,6 +3184,17 @@ fn promise_reject_with_reason(
   scope.push_root(reason)?;
   vm.call_with_host_and_hooks(host, scope, hooks, reject, Value::Undefined, &[reason])?;
   Ok(promise)
+}
+
+fn mark_promise_handled(scope: &mut Scope<'_>, value: Value) -> Result<(), VmError> {
+  let Value::Object(obj) = value else {
+    return Ok(());
+  };
+  if !scope.heap().is_promise_object(obj) {
+    return Ok(());
+  }
+  scope.heap_mut().promise_set_is_handled(obj, true)?;
+  Ok(())
 }
 
 fn create_writable_stream_from_sink(
@@ -3554,6 +4394,27 @@ pub fn install_window_streams_bindings(
     data_desc(Value::Object(pipe_through_fn), true),
   )?;
 
+  let pipe_to_call_id: NativeFunctionId = vm.register_native_call(readable_stream_pipe_to_native)?;
+  let pipe_to_name = scope.alloc_string("pipeTo")?;
+  scope.push_root(Value::String(pipe_to_name))?;
+  let pipe_to_fn = scope.alloc_native_function_with_slots(
+    pipe_to_call_id,
+    None,
+    pipe_to_name,
+    1,
+    &[Value::Number(realm_id.to_raw() as f64)],
+  )?;
+  scope.push_root(Value::Object(pipe_to_fn))?;
+  scope
+    .heap_mut()
+    .object_set_prototype(pipe_to_fn, Some(intr.function_prototype()))?;
+  let pipe_to_key = alloc_key(&mut scope, "pipeTo")?;
+  scope.define_property(
+    stream_proto,
+    pipe_to_key,
+    data_desc(Value::Object(pipe_to_fn), true),
+  )?;
+
   let locked_get_call_id: NativeFunctionId =
     vm.register_native_call(readable_stream_locked_get_native)?;
   let locked_get_name = scope.alloc_string("get locked")?;
@@ -3609,6 +4470,20 @@ pub fn install_window_streams_bindings(
     vm.register_native_call(readable_stream_pipe_through_write_fulfilled_native)?;
   let readable_stream_pipe_through_write_rejected_call_id: NativeFunctionId =
     vm.register_native_call(readable_stream_pipe_through_write_rejected_native)?;
+
+  // pipeTo pump callbacks.
+  let readable_stream_pipe_to_read_fulfilled_call_id: NativeFunctionId =
+    vm.register_native_call(readable_stream_pipe_to_read_fulfilled_native)?;
+  let readable_stream_pipe_to_read_rejected_call_id: NativeFunctionId =
+    vm.register_native_call(readable_stream_pipe_to_read_rejected_native)?;
+  let readable_stream_pipe_to_write_fulfilled_call_id: NativeFunctionId =
+    vm.register_native_call(readable_stream_pipe_to_write_fulfilled_native)?;
+  let readable_stream_pipe_to_write_rejected_call_id: NativeFunctionId =
+    vm.register_native_call(readable_stream_pipe_to_write_rejected_native)?;
+  let readable_stream_pipe_to_close_fulfilled_call_id: NativeFunctionId =
+    vm.register_native_call(readable_stream_pipe_to_close_fulfilled_native)?;
+  let readable_stream_pipe_to_close_rejected_call_id: NativeFunctionId =
+    vm.register_native_call(readable_stream_pipe_to_close_rejected_native)?;
 
   // --- ReadableStreamDefaultController (prototype only; no global constructor) ------------------
   let readable_controller_proto = scope.alloc_object()?;
@@ -4147,6 +5022,12 @@ pub fn install_window_streams_bindings(
       readable_stream_pipe_through_read_rejected_call_id,
       readable_stream_pipe_through_write_fulfilled_call_id,
       readable_stream_pipe_through_write_rejected_call_id,
+      readable_stream_pipe_to_read_fulfilled_call_id,
+      readable_stream_pipe_to_read_rejected_call_id,
+      readable_stream_pipe_to_write_fulfilled_call_id,
+      readable_stream_pipe_to_write_rejected_call_id,
+      readable_stream_pipe_to_close_fulfilled_call_id,
+      readable_stream_pipe_to_close_rejected_call_id,
       streams: HashMap::new(),
       readers: HashMap::new(),
       last_gc_runs: scope.heap().gc_runs(),
