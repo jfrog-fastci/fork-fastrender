@@ -158,8 +158,12 @@ pub struct VariantLayout {
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Layout {
-  Scalar { abi: AbiScalar },
-  Ptr { to: PtrKind },
+  Scalar {
+    abi: AbiScalar,
+  },
+  Ptr {
+    to: PtrKind,
+  },
   Struct {
     fields: Vec<FieldLayout>,
     size: u32,
@@ -188,7 +192,10 @@ pub enum GcTraceStep {
   Ptr { offset: u32 },
   /// A tagged union that requires inspecting its tag before tracing the active
   /// payload variant.
-  TaggedUnion { tag: TagLayout, variants: Vec<GcTraceVariant> },
+  TaggedUnion {
+    tag: TagLayout,
+    variants: Vec<GcTraceVariant>,
+  },
 }
 
 impl Layout {
@@ -282,7 +289,9 @@ impl LayoutStore {
             return id;
           }
           let next_id = LayoutId(fingerprint(&layout, LAYOUT_DOMAIN, salt.wrapping_add(1)));
-          panic!("strict-determinism: layout ID collision for {id:?} (next candidate: {next_id:?})");
+          panic!(
+            "strict-determinism: layout ID collision for {id:?} (next candidate: {next_id:?})"
+          );
         }
         Entry::Vacant(entry) => {
           entry.insert(layout);
@@ -318,12 +327,18 @@ impl LayoutStore {
     }
 
     let layout = match store.type_kind(ty) {
-      TypeKind::Boolean | TypeKind::BooleanLiteral(_) => Layout::Scalar { abi: AbiScalar::Bool },
-      TypeKind::Number | TypeKind::NumberLiteral(_) => Layout::Scalar { abi: AbiScalar::F64 },
-      TypeKind::String | TypeKind::StringLiteral(_) | TypeKind::TemplateLiteral(_) => {
-        Layout::Ptr { to: PtrKind::GcString }
+      TypeKind::Boolean | TypeKind::BooleanLiteral(_) => Layout::Scalar {
+        abi: AbiScalar::Bool,
+      },
+      TypeKind::Number | TypeKind::NumberLiteral(_) => Layout::Scalar {
+        abi: AbiScalar::F64,
+      },
+      TypeKind::String | TypeKind::StringLiteral(_) | TypeKind::TemplateLiteral(_) => Layout::Ptr {
+        to: PtrKind::GcString,
+      },
+      TypeKind::Null | TypeKind::Undefined | TypeKind::Void => {
+        Layout::Scalar { abi: AbiScalar::U8 }
       }
-      TypeKind::Null | TypeKind::Undefined | TypeKind::Void => Layout::Scalar { abi: AbiScalar::U8 },
       TypeKind::Tuple(elems) => self.layout_tuple(store, &elems),
       TypeKind::Array { ty, .. } => {
         let elem = self.layout_of_type(store, ty);
@@ -346,7 +361,9 @@ impl LayoutStore {
         }
       }
       // Placeholder until native backend decides on a canonical JSValue ABI.
-      _ => Layout::Ptr { to: PtrKind::Opaque },
+      _ => Layout::Ptr {
+        to: PtrKind::Opaque,
+      },
     };
 
     let id = self.intern_layout(layout);
@@ -415,7 +432,10 @@ impl LayoutStore {
             .into_iter()
             .map(|variant| GcTraceVariant {
               discriminant: variant.discriminant,
-              trace: shift(&trace_layout(store, variant.layout), payload_offset),
+              trace: shift(
+                &trace_layout(store, variant.layout),
+                payload_offset.saturating_add(variant.payload_offset),
+              ),
             })
             .collect();
           vec![GcTraceStep::TaggedUnion { tag, variants }]
@@ -434,14 +454,20 @@ impl LayoutStore {
       )
     }
 
-    fn shift(offsets: &std::collections::BTreeSet<u32>, delta: u32) -> std::collections::BTreeSet<u32> {
+    fn shift(
+      offsets: &std::collections::BTreeSet<u32>,
+      delta: u32,
+    ) -> std::collections::BTreeSet<u32> {
       offsets
         .iter()
         .map(|offset| offset.saturating_add(delta))
         .collect()
     }
 
-    fn collect_unconditional(store: &LayoutStore, layout: LayoutId) -> std::collections::BTreeSet<u32> {
+    fn collect_unconditional(
+      store: &LayoutStore,
+      layout: LayoutId,
+    ) -> std::collections::BTreeSet<u32> {
       match store.layout(layout) {
         Layout::Scalar { .. } => Default::default(),
         Layout::Ptr { to } => {
@@ -472,9 +498,15 @@ impl LayoutStore {
             return Default::default();
           };
 
-          let mut common = shift(&collect_unconditional(store, first.layout), payload_offset);
+          let mut common = shift(
+            &collect_unconditional(store, first.layout),
+            payload_offset.saturating_add(first.payload_offset),
+          );
           for variant in it {
-            let offsets = shift(&collect_unconditional(store, variant.layout), payload_offset);
+            let offsets = shift(
+              &collect_unconditional(store, variant.layout),
+              payload_offset.saturating_add(variant.payload_offset),
+            );
             common = common.intersection(&offsets).copied().collect();
             if common.is_empty() {
               break;
@@ -489,7 +521,9 @@ impl LayoutStore {
   }
 
   fn canonical_closure_payload_layout(&self) -> LayoutId {
-    let fn_ptr = self.intern_layout(Layout::Ptr { to: PtrKind::Opaque });
+    let fn_ptr = self.intern_layout(Layout::Ptr {
+      to: PtrKind::Opaque,
+    });
     let env = self.intern_layout(Layout::Ptr { to: PtrKind::GcAny });
 
     let fields = vec![
@@ -510,7 +544,11 @@ impl LayoutStore {
     ];
     let size = PTR_SIZE * 2;
     let align = PTR_ALIGN;
-    self.intern_layout(Layout::Struct { fields, size, align })
+    self.intern_layout(Layout::Struct {
+      fields,
+      size,
+      align,
+    })
   }
 
   fn layout_tuple(&self, store: &TypeStore, elems: &[TupleElem]) -> Layout {
@@ -534,7 +572,11 @@ impl LayoutStore {
       align = align.max(field_align);
     }
     let size = align_up(offset, align);
-    Layout::Struct { fields, size, align }
+    Layout::Struct {
+      fields,
+      size,
+      align,
+    }
   }
 
   fn tag_abi(variant_count: usize) -> AbiScalar {
@@ -579,7 +621,7 @@ impl LayoutStore {
         ty,
         layout,
         discriminant: idx as u32,
-        payload_offset,
+        payload_offset: 0,
       })
       .collect();
 
@@ -652,7 +694,11 @@ impl LayoutStore {
     }
 
     let size = align_up(offset, align);
-    let layout = Layout::Struct { fields, size, align };
+    let layout = Layout::Struct {
+      fields,
+      size,
+      align,
+    };
     let id = self.intern_layout(layout);
     self.by_shape.insert(shape_id, id);
     id

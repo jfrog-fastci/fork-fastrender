@@ -44,6 +44,7 @@ mod eval;
 mod infer;
 #[cfg(all(feature = "fuzzing", feature = "serde-json"))]
 mod fuzz;
+mod gc_trace;
 mod ids;
 mod kind;
 mod layout;
@@ -63,6 +64,9 @@ pub use eval::TypeEvaluator;
 pub use eval::TypeExpander;
 #[cfg(all(feature = "fuzzing", feature = "serde-json"))]
 pub use fuzz::fuzz_type_graph;
+pub use gc_trace::FieldTrace;
+pub use gc_trace::GcTraceLayout;
+pub use gc_trace::VariantTrace;
 pub use ids::DefId;
 pub use ids::NameId;
 pub use ids::ObjectId;

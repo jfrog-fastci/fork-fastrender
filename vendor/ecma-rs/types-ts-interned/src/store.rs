@@ -1,4 +1,5 @@
 use crate::display::TypeDisplay;
+use crate::gc_trace::GcTraceLayout;
 use crate::ids::{NameId, ObjectId, ShapeId, SignatureId, TypeId};
 use crate::kind::{CompositeKind, TypeKind};
 use crate::layout::{ArrayElemRepr, GcTraceKind, GcTraceStep, Layout, LayoutId, LayoutStore, PtrKind};
@@ -619,6 +620,17 @@ impl TypeStore {
     self.layouts.gc_trace(layout)
   }
 
+  /// Compute a structured GC tracing layout for values of the given native
+  /// layout.
+  ///
+  /// This produces a deterministic, codegen-friendly representation that can
+  /// distinguish fully-flat layouts (traceable as an unconditional pointer list)
+  /// from layouts that require tag dispatch (e.g. tagged unions where only some
+  /// variants contain GC pointers).
+  pub fn gc_trace_layout(&self, layout: LayoutId) -> GcTraceLayout {
+    crate::gc_trace::gc_trace(self, layout)
+  }
+
   /// Extract unconditional GC pointer byte offsets for a layout.
   ///
   /// This is a convenience wrapper around [`TypeStore::gc_trace`] that returns
@@ -652,13 +664,18 @@ impl TypeStore {
         offsets.dedup();
         Some(offsets)
       }
-      Layout::TaggedUnion { variants, .. } => {
+      Layout::TaggedUnion {
+        payload_offset,
+        variants,
+        ..
+      } => {
         let mut reference: Option<Vec<u32>> = None;
         for variant in variants {
           let child_offsets = self.layout_flat_gc_ptr_offsets(variant.layout)?;
+          let base = payload_offset.saturating_add(variant.payload_offset);
           let mut offsets: Vec<u32> = child_offsets
             .into_iter()
-            .map(|offset| variant.payload_offset.saturating_add(offset))
+            .map(|offset| base.saturating_add(offset))
             .collect();
           offsets.sort_unstable();
           offsets.dedup();
@@ -672,6 +689,11 @@ impl TypeStore {
         Some(reference.unwrap_or_default())
       }
     }
+  }
+
+  /// Whether the given [`LayoutId`] contains any GC-managed pointer slots.
+  pub fn layout_contains_gc_ptrs(&self, layout: LayoutId) -> bool {
+    crate::gc_trace::contains_gc_ptrs(self, layout)
   }
 
   /// Returns `true` if the layout contains **no GC pointers** and therefore does
