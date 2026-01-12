@@ -389,12 +389,18 @@ impl VmJsBrowserTabExecutor {
     event_loop: &mut crate::js::EventLoop<BrowserTabHost>,
   ) -> bool {
     // Treat the loop as "idle" only when:
-    // - we are not currently inside a task/microtask turn,
+    // - we are not currently inside a *task* turn,
     // - no tasks or microtasks are queued,
     // - no timers remain scheduled (even if due in the future),
     // - and no requestAnimationFrame callbacks remain queued.
-    if event_loop.currently_running_task().is_some() {
-      return false;
+    //
+    // NOTE: `EventLoop` runs microtask checkpoint hooks while `currently_running_task` may still be
+    // set to the last drained microtask (implementation detail). Treat that as "between turns" so
+    // we can detect quiescence and abort never-settling module top-level await deterministically.
+    if let Some(task) = event_loop.currently_running_task() {
+      if !task.is_microtask {
+        return false;
+      }
     }
     if !event_loop.is_idle() {
       return false;

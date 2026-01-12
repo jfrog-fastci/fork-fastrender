@@ -13353,6 +13353,54 @@ html, body { margin: 0; padding: 0; }
   }
 
   #[test]
+  fn module_top_level_await_that_never_settles_after_draining_microtasks_aborts_on_idle() -> Result<()> {
+    let mut js_options = JsExecutionOptions::default();
+    js_options.supports_module_scripts = true;
+
+    let mut options = RenderOptions::default();
+    options.diagnostics_level = crate::api::DiagnosticsLevel::Basic;
+
+    let mut tab = BrowserTab::from_html_with_js_execution_options(
+      r#"<!doctype html><body>
+        <script type="module">
+          // Ensure the microtask checkpoint runs at least one microtask before the module is left
+          // pending. The executor should still treat the loop as quiescent once all work is drained.
+          queueMicrotask(() => {});
+          await new Promise(() => {});
+          document.body.setAttribute("data-never", "1");
+        </script>
+      </body>"#,
+      options,
+      crate::api::VmJsBrowserTabExecutor::default(),
+      js_options,
+    )?;
+    tab.run_event_loop_until_idle(RunLimits::unbounded())?;
+
+    assert!(
+      tab.host.pending_module_executions.is_empty(),
+      "expected pending module executions to be finalized even when top-level await never settles"
+    );
+
+    let diagnostics = tab
+      .diagnostics
+      .as_ref()
+      .expect("diagnostics should be enabled")
+      .clone()
+      .into_inner();
+    assert!(
+      diagnostics
+        .js_exceptions
+        .iter()
+        .any(|exc| exc
+          .message
+          .contains("module top-level await did not settle before the event loop became idle")),
+      "expected async module evaluation failure to be reported, got js_exceptions={:?}",
+      diagnostics.js_exceptions
+    );
+    Ok(())
+  }
+
+  #[test]
   fn module_top_level_await_that_never_settles_aborts_after_turn_budget_even_if_tasks_keep_running()
   -> Result<()> {
     let mut js_options = JsExecutionOptions::default();
