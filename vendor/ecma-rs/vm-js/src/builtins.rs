@@ -19369,8 +19369,9 @@ pub fn weak_map_constructor_construct(
     Ok(()) => Ok(Value::Object(map)),
     Err(err) => {
       if !iterator_record.done {
-        // If iterator close throws, it overrides the original error (ECMA-262 `IteratorClose`),
-        // but it must not replace VM-internal fatal errors (termination, OOM, etc).
+        // Per ECMA-262 `IteratorClose`, if the original completion is a *throw completion*, errors
+        // produced while getting/calling `iterator.return` are suppressed. However, vm-js also has
+        // non-catchable VM failures (termination, OOM, etc) which must never be suppressed.
         let original_is_throw = err.is_throw_completion();
         let pending_root = err
           .thrown_value()
@@ -19388,7 +19389,9 @@ pub fn weak_map_constructor_construct(
           scope.heap_mut().remove_root(root);
         }
         if let Err(close_err) = close_res {
-          if original_is_throw {
+          // Only propagate close errors for non-catchable failures; otherwise preserve the original
+          // throw completion.
+          if original_is_throw && !close_err.is_throw_completion() {
             return Err(close_err);
           }
         }
@@ -19472,8 +19475,9 @@ pub fn weak_set_constructor_construct(
     Ok(()) => Ok(Value::Object(set)),
     Err(err) => {
       if !iterator_record.done {
-        // If iterator close throws, it overrides the original error (ECMA-262 `IteratorClose`),
-        // but it must not replace VM-internal fatal errors (termination, OOM, etc).
+        // Per ECMA-262 `IteratorClose`, if the original completion is a *throw completion*, errors
+        // produced while getting/calling `iterator.return` are suppressed. However, vm-js also has
+        // non-catchable VM failures (termination, OOM, etc) which must never be suppressed.
         let original_is_throw = err.is_throw_completion();
         let pending_root = err
           .thrown_value()
@@ -19491,7 +19495,9 @@ pub fn weak_set_constructor_construct(
           scope.heap_mut().remove_root(root);
         }
         if let Err(close_err) = close_res {
-          if original_is_throw {
+          // Only propagate close errors for non-catchable failures; otherwise preserve the original
+          // throw completion.
+          if original_is_throw && !close_err.is_throw_completion() {
             return Err(close_err);
           }
         }

@@ -6102,9 +6102,9 @@ impl<'a> Evaluator<'a> {
               &mut iter,
             ) {
               Ok(v) => v,
-              Err(err) => {
-                return Err(self.iterator_close_on_error(&mut spread_scope, &iter, err))
-              }
+              // Spec: array spread does not perform `IteratorClose` on errors produced while
+              // stepping the iterator (`next`/`done`/`value`).
+              Err(err) => return Err(err),
             };
 
             let Some(value) = next_value else {
@@ -6942,9 +6942,9 @@ impl<'a> Evaluator<'a> {
                   &mut iter,
                 ) {
                   Ok(v) => v,
-                  Err(err) => {
-                    return Err(self.iterator_close_on_error(&mut new_scope, &iter, err));
-                  }
+                  // Spec: spread argument evaluation does not perform `IteratorClose` on errors
+                  // produced while stepping the iterator (`next`/`done`/`value`).
+                  Err(err) => return Err(err),
                 };
 
                 let Some(value) = next_value else {
@@ -7175,9 +7175,9 @@ impl<'a> Evaluator<'a> {
             &mut iter,
           ) {
             Ok(v) => v,
-            Err(err) => {
-              return Err(self.iterator_close_on_error(&mut call_scope, &iter, err));
-            }
+            // Spec: spread argument evaluation does not perform `IteratorClose` on errors produced
+            // while stepping the iterator (`next`/`done`/`value`).
+            Err(err) => return Err(err),
           };
 
           let Some(value) = next_value else {
@@ -14122,7 +14122,6 @@ fn async_for_await_of_close(
 ) -> Result<AsyncEval<Completion>, VmError> {
   // We're exiting the loop, so `V` is no longer needed.
   scope.heap_mut().remove_root(v_root);
-
   let completion_is_throw = matches!(&completion, Completion::Throw(_));
 
   let close_value: Result<Option<Value>, VmError> = (|| {
@@ -14155,6 +14154,13 @@ fn async_for_await_of_close(
       }
       match err {
         VmError::Throw(_) | VmError::ThrowWithStack { .. } => {
+          // AsyncIteratorClose suppression rules (ECMA-262):
+          // - If the original completion is a throw completion, suppress errors from
+          //   `GetMethod("return")` / `Call(return)`.
+          // - Never suppress fatal VM errors (OOM/termination/etc).
+          if completion_is_throw {
+            return Ok(AsyncEval::Complete(completion));
+          }
           return Ok(AsyncEval::Complete(completion_from_expr_result(Err(err))?));
         }
         other => return Err(other),
@@ -22723,9 +22729,10 @@ fn async_resume_from_frames(
               }
             }
             Err(err) => {
-              // Spec: `AsyncIteratorClose` suppression rules:
+              // `AsyncIteratorClose` suppression rules (ECMA-262):
               // - If the pending completion is a throw completion, suppress throw-completion errors
-              //   produced by awaiting `return`.
+              //   from `GetMethod("return")` / `Call(return)` / awaiting/validating the return
+              //   value.
               // - Never suppress fatal VM errors (OOM/termination/etc).
               if pending_is_throw && err.is_throw_completion() {
                 state = AsyncState::Completion(pending_completion);

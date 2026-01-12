@@ -305,6 +305,36 @@ fn iterator_close_get_method_non_callable_suppressed_on_throw_completion() {
 }
 
 #[test]
+fn iterator_close_get_method_throw_suppressed_on_throw_completion_in_array_destructuring_assignment() {
+  let mut rt = new_runtime();
+  let err = rt
+    .exec_script(
+      r#"
+      var iterable = {};
+      iterable[Symbol.iterator] = function () {
+        return {
+          next: function () { return { value: 1, done: false }; },
+          get "return"() { throw "close"; }
+        };
+      };
+
+      var target = {};
+      Object.defineProperty(target, "x", {
+        set: function (v) { throw "assign"; },
+      });
+
+      [target.x] = iterable;
+    "#,
+    )
+    .unwrap_err();
+
+  let thrown = err
+    .thrown_value()
+    .unwrap_or_else(|| panic!("expected thrown exception, got {err:?}"));
+  assert_value_is_utf8(&rt, thrown, "assign");
+}
+
+#[test]
 fn iterator_step_error_does_not_invoke_iterator_close() {
   let mut rt = new_runtime();
   let value = rt

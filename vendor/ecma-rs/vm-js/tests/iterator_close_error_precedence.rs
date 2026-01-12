@@ -2,12 +2,15 @@ use vm_js::{Heap, HeapLimits, JsRuntime, PromiseState, Value, Vm, VmError, VmOpt
 
 fn new_runtime() -> JsRuntime {
   let vm = Vm::new(VmOptions::default());
-  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  // These tests intentionally use iterables with accessors that throw; this can allocate enough
+  // bytecode / objects that 1MiB heaps become flaky as the engine evolves.
+  let heap = Heap::new(HeapLimits::new(4 * 1024 * 1024, 4 * 1024 * 1024));
   JsRuntime::new(vm, heap).unwrap()
 }
 
 #[test]
-fn object_from_entries_suppresses_iterator_close_errors_on_throw_completion() -> Result<(), VmError> {
+fn object_from_entries_suppresses_iterator_close_errors_on_throw_completion_return_getter_throws(
+) -> Result<(), VmError> {
   let mut rt = new_runtime();
 
   // When the iterator value access throws, `Object.fromEntries` performs `IteratorClose`. Per
@@ -16,45 +19,57 @@ fn object_from_entries_suppresses_iterator_close_errors_on_throw_completion() ->
   let value = rt.exec_script(
     r#"
       (function () {
-        // Case 1: `iterator.return` getter throws.
-        var original1 = "original1";
-        var close1 = "close1";
+        var original = "original";
+        var close = "close";
 
-        var iter1 = {};
-        iter1[Symbol.iterator] = function () {
+        var iter = {};
+        iter[Symbol.iterator] = function () {
           return {
             next: function () {
               return {
                 done: false,
                 value: {
-                  get 0() { throw original1; },
-                  get 1() { return 1; },
+                  get 0() { throw original; },
+                  1: 1,
                 },
               };
             },
-            get return() { throw close1; },
+            get return() { throw close; },
           };
         };
 
-        var r1 = null;
         try {
-          Object.fromEntries(iter1);
+          Object.fromEntries(iter);
         } catch (e) {
-          r1 = e;
+          return e === original;
         }
+        return false;
+      })()
+    "#,
+  )?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
 
-        // Case 2: `iterator.return` is non-callable.
-        var original2 = "original2";
+#[test]
+fn object_from_entries_suppresses_iterator_close_errors_on_throw_completion_return_not_callable(
+) -> Result<(), VmError> {
+  let mut rt = new_runtime();
 
-        var iter2 = {};
-        iter2[Symbol.iterator] = function () {
+  let value = rt.exec_script(
+    r#"
+      (function () {
+        var original = "original";
+
+        var iter = {};
+        iter[Symbol.iterator] = function () {
           return {
             next: function () {
               return {
                 done: false,
                 value: {
-                  get 0() { throw original2; },
-                  get 1() { return 1; },
+                  get 0() { throw original; },
+                  1: 1,
                 },
               };
             },
@@ -62,14 +77,12 @@ fn object_from_entries_suppresses_iterator_close_errors_on_throw_completion() ->
           };
         };
 
-        var r2 = null;
         try {
-          Object.fromEntries(iter2);
+          Object.fromEntries(iter);
         } catch (e) {
-          r2 = e;
+          return e === original;
         }
-
-        return r1 === original1 && r2 === original2;
+        return false;
       })()
     "#,
   )?;
@@ -151,3 +164,75 @@ fn promise_race_suppresses_iterator_close_errors_on_throw_completion() -> Result
   Ok(())
 }
 
+#[test]
+fn weak_map_constructor_suppresses_iterator_close_errors_on_throw_completion() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(
+    r#"
+      (function () {
+        var original = "original";
+        var close = "close";
+
+        var iter = {};
+        iter[Symbol.iterator] = function () {
+          return {
+            next: function () {
+              return {
+                done: false,
+                value: {
+                  get 0() { throw original; },
+                  get 1() { return {}; },
+                },
+              };
+            },
+            get return() { throw close; },
+          };
+        };
+
+        try {
+          new WeakMap(iter);
+        } catch (e) {
+          return e === original;
+        }
+        return false;
+      })()
+    "#,
+  )?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn weak_set_constructor_suppresses_iterator_close_errors_on_throw_completion() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(
+    r#"
+      (function () {
+        var original = "original";
+        var close = "close";
+
+        // Force the per-element `adder` call to throw a predictable value.
+        WeakSet.prototype.add = function () { throw original; };
+
+        var iter = {};
+        iter[Symbol.iterator] = function () {
+          return {
+            next: function () { return { done: false, value: {} }; },
+            get return() { throw close; },
+          };
+        };
+
+        try {
+          new WeakSet(iter);
+        } catch (e) {
+          return e === original;
+        }
+        return false;
+      })()
+    "#,
+  )?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}

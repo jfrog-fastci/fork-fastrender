@@ -461,6 +461,8 @@ pub(crate) fn async_from_sync_iterator_close_call(
   };
 
   // `closeIterator` implements `IteratorClose(syncIteratorRecord, ThrowCompletion(reason))`.
+  // Closing errors are suppressed for throw completions, but fatal VM errors (OOM/termination) must
+  // still propagate.
   iterator_close(vm, host, hooks, &mut scope, &record, CloseCompletionKind::Throw)?;
   Err(VmError::Throw(reason))
 }
@@ -563,14 +565,13 @@ fn async_from_sync_iterator_continuation(
           done: false,
         };
 
-        // `AsyncFromSyncIteratorContinuation` calls
-        // `IteratorClose(syncIteratorRecord, valueWrapper)` where `valueWrapper` is a throw
-        // completion (`PromiseResolve` failed), so close errors must be suppressed.
+        // `AsyncFromSyncIteratorContinuation` calls `IteratorClose(syncIteratorRecord, valueWrapper)`
+        // where `valueWrapper` is a throw completion (`PromiseResolve` failed), so close errors are
+        // suppressed unless they represent a fatal VM failure (OOM/termination/etc).
         if let Err(close_err) =
           iterator_close(vm, host, hooks, &mut scope, &record, CloseCompletionKind::Throw)
         {
-          // Never allow iterator-close errors (including fatal ones) to override fatal VM errors.
-          if original_is_throw {
+          if original_is_throw && !close_err.is_throw_completion() {
             return Err(close_err);
           }
         }
