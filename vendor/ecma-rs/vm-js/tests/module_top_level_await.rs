@@ -1087,3 +1087,116 @@ fn await_promise_resolve_constructor_getter_throw_is_catchable_in_modules() -> R
   realm.teardown(&mut heap);
   Ok(())
 }
+
+#[test]
+fn multiple_top_level_awaits_reuse_continuation_without_leaking() -> Result<(), VmError> {
+  let (mut vm, mut heap, mut realm) = new_vm_heap_realm()?;
+  let mut hooks = TestHostHooks::new("https://example.invalid/m.js");
+  let mut host = ();
+
+  let mut graph = ModuleGraph::new();
+  let m = graph.add_module_with_specifier(
+    "m.js",
+    SourceTextModuleRecord::parse(
+      r#"
+        export let resolve1;
+        export let resolve2;
+        export const p1 = new Promise(r => resolve1 = r);
+        export const p2 = new Promise(r => resolve2 = r);
+        export let out = 0;
+        await p1;
+        out = 1;
+        await p2;
+        out = 2;
+      "#,
+    )?,
+  );
+  graph.link_all_by_specifier();
+
+  let eval_promise = graph.evaluate(
+    &mut vm,
+    &mut heap,
+    realm.global_object(),
+    realm.id(),
+    m,
+    &mut host,
+    &mut hooks,
+  )?;
+  let eval_promise_root = heap.add_root(eval_promise)?;
+
+  let eval_promise_obj = match eval_promise {
+    Value::Object(obj) => obj,
+    _ => return Err(VmError::InvariantViolation("module evaluation must return a promise object")),
+  };
+  assert_eq!(heap.promise_state(eval_promise_obj)?, PromiseState::Pending);
+
+  // Should have stored one async continuation for the first suspension.
+  assert_eq!(vm.async_continuation_count(), 1);
+
+  // Resolve the first awaited promise (p1).
+  {
+    let mut scope = heap.scope();
+    let ns = graph.get_module_namespace(m, &mut vm, &mut scope)?;
+    let resolve1 = ns_get(&mut vm, &mut host, &mut hooks, &mut scope, ns, "resolve1")?;
+    scope.push_root(resolve1)?;
+    let _ = vm.call_with_host_and_hooks(
+      &mut host,
+      &mut scope,
+      &mut hooks,
+      resolve1,
+      Value::Undefined,
+      &[Value::Undefined],
+    )?;
+  }
+
+  hooks.perform_microtask_checkpoint(&mut vm, &mut heap)?;
+
+  // Module should have suspended again at the second `await`, still using a single continuation id.
+  assert_eq!(heap.promise_state(eval_promise_obj)?, PromiseState::Pending);
+  assert_eq!(vm.async_continuation_count(), 1);
+
+  // Resolve the second awaited promise (p2).
+  {
+    let mut scope = heap.scope();
+    let ns = graph.get_module_namespace(m, &mut vm, &mut scope)?;
+    let resolve2 = ns_get(&mut vm, &mut host, &mut hooks, &mut scope, ns, "resolve2")?;
+    scope.push_root(resolve2)?;
+    let _ = vm.call_with_host_and_hooks(
+      &mut host,
+      &mut scope,
+      &mut hooks,
+      resolve2,
+      Value::Undefined,
+      &[Value::Undefined],
+    )?;
+  }
+
+  hooks.perform_microtask_checkpoint(&mut vm, &mut heap)?;
+
+  assert_eq!(vm.async_continuation_count(), 0);
+
+  {
+    let mut scope = heap.scope();
+    let eval_promise_value = scope
+      .heap()
+      .get_root(eval_promise_root)
+      .ok_or_else(|| VmError::invalid_handle())?;
+    let Value::Object(eval_promise_obj) = eval_promise_value else {
+      return Err(VmError::InvariantViolation("evaluation promise root must reference an object"));
+    };
+    assert_eq!(scope.heap().promise_state(eval_promise_obj)?, PromiseState::Fulfilled);
+
+    let ns = graph.get_module_namespace(m, &mut vm, &mut scope)?;
+    assert_eq!(
+      ns_get(&mut vm, &mut host, &mut hooks, &mut scope, ns, "out")?,
+      Value::Number(2.0)
+    );
+  }
+
+  heap.remove_root(eval_promise_root);
+  graph.abort_tla_evaluation(&mut vm, &mut heap, m);
+  hooks.teardown_jobs(&mut vm, &mut heap);
+  graph.teardown(&mut vm, &mut heap);
+  realm.teardown(&mut heap);
+  Ok(())
+}
