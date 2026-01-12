@@ -905,6 +905,14 @@ impl Heap {
     matches!(self.get_heap_object(obj.0), Ok(HeapObject::ArrayBuffer(_)))
   }
 
+  /// Returns `true` if `obj` is a detached `ArrayBuffer`.
+  ///
+  /// `vm-js` represents detachment by clearing the backing store (`data: None`), which also makes
+  /// `ArrayBufferByteLength` report `0`.
+  pub fn is_detached_array_buffer(&self, obj: GcObject) -> Result<bool, VmError> {
+    Ok(self.get_array_buffer(obj)?.data.is_none())
+  }
+
   /// Returns `true` if `obj` currently points to a live Uint8Array object allocation.
   pub fn is_uint8_array_object(&self, obj: GcObject) -> bool {
     matches!(

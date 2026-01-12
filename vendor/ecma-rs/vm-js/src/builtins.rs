@@ -1835,6 +1835,20 @@ pub fn uint8_array_constructor_construct(
   let Value::Object(buffer) = arg0 else {
     return Err(VmError::TypeError("Uint8Array constructor expects an ArrayBuffer"));
   };
+  // Brand check first (buffer must be an ArrayBuffer), then reject detached buffers per
+  // ECMA-262 `InitializeTypedArrayFromArrayBuffer`.
+  if !scope.heap().is_array_buffer_object(buffer) {
+    return Err(VmError::TypeError("Uint8Array constructor expects an ArrayBuffer"));
+  }
+  if scope
+    .heap()
+    .is_detached_array_buffer(buffer)
+    .map_err(|_| VmError::TypeError("Uint8Array constructor expects an ArrayBuffer"))?
+  {
+    return Err(VmError::TypeError(
+      "Uint8Array constructor cannot use a detached ArrayBuffer",
+    ));
+  }
   let buf_len = scope
     .heap()
     .array_buffer_byte_length(buffer)
