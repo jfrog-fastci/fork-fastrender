@@ -245,6 +245,31 @@ fn runs_reexports_and_imports_in_declaration_order() {
 }
 
 #[test]
+fn runs_named_reexports_and_imports_in_declaration_order() {
+  let dir = tempdir().unwrap();
+  let b = dir.path().join("b.ts");
+  let c = dir.path().join("c.ts");
+  let main = dir.path().join("main.ts");
+
+  fs::write(&b, "console.log(\"b\");\nexport function value(){return 0}\n").unwrap();
+  fs::write(&c, "console.log(\"c\");\n").unwrap();
+  fs::write(
+    &main,
+    "export { value } from './b';\nimport './c';\nexport function main(){console.log(\"main\");}\n",
+  )
+  .unwrap();
+
+  native_js_cli()
+    .timeout(CLI_TIMEOUT)
+    .arg("--entry-fn")
+    .arg("main")
+    .arg(main)
+    .assert()
+    .success()
+    .stdout(predicate::eq("b\nc\nmain\n"));
+}
+
+#[test]
 fn runs_export_all_reexports_and_imports_in_declaration_order() {
   let dir = tempdir().unwrap();
   let b = dir.path().join("b.ts");

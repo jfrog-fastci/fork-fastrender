@@ -1624,6 +1624,36 @@ export function main(): number { print(4); return 0; }
 }
 
 #[test]
+fn named_reexports_and_imports_run_in_declaration_order() {
+  let tmp = TempDir::new().unwrap();
+
+  let b = tmp.path().join("b.ts");
+  fs::write(&b, "print(1);\nexport let x: number = 0;\n").unwrap();
+
+  let c = tmp.path().join("c.ts");
+  fs::write(&c, "print(2);\n").unwrap();
+
+  let entry = tmp.path().join("entry.ts");
+  fs::write(
+    &entry,
+    r#"export { x } from "./b";
+import "./c";
+print(99);
+export function main(): number { print(4); return 0; }
+"#,
+  )
+  .unwrap();
+
+  native_js()
+    .timeout(CLI_TIMEOUT)
+    .arg("run")
+    .arg(&entry)
+    .assert()
+    .success()
+    .stdout(predicate::eq("1\n2\n99\n4\n"));
+}
+
+#[test]
 fn export_all_reexports_and_imports_run_in_declaration_order() {
   let tmp = TempDir::new().unwrap();
 
