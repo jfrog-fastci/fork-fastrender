@@ -3088,8 +3088,9 @@ impl App {
     let update = self.browser_state.apply_worker_msg(msg);
 
     if update.history_changed {
-      fastrender::ui::about_pages::set_about_snapshot_from_stores(
-        &self.bookmarks,
+      // Avoid rebuilding bookmark snapshots on every navigation commit: bookmarks are relatively
+      // static compared to history updates.
+      fastrender::ui::about_pages::sync_about_page_snapshot_history_from_global_history_store(
         &self.browser_state.history,
       );
       if let Some(autosave) = self.profile_autosave.as_ref() {
