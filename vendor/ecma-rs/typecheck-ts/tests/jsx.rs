@@ -165,6 +165,61 @@ fn jsx_namespace_missing_emits_diagnostic() {
 }
 
 #[test]
+fn react_jsx_runtime_module_missing_emits_ts2875() {
+  let mut options = CompilerOptions::default();
+  options.no_default_lib = true;
+  options.jsx = Some(JsxMode::ReactJsx);
+  options.jsx_import_source = Some("preact".to_string());
+
+  let entry = FileKey::new("entry.tsx");
+  let host = TestHost::new(options)
+    .with_lib(jsx_lib_file())
+    .with_file(entry.clone(), "const el = <div />;");
+  let program = Program::new(host, vec![entry]);
+  let diagnostics = program.check();
+
+  assert_eq!(
+    diagnostics.len(),
+    1,
+    "expected one diagnostic, got {diagnostics:?}"
+  );
+  assert_eq!(
+    diagnostics[0].code.as_str(),
+    codes::JSX_RUNTIME_MODULE_MISSING.as_str(),
+    "expected JSX_RUNTIME_MODULE_MISSING, got {diagnostics:?}"
+  );
+  assert!(
+    diagnostics[0].message.contains("preact/jsx-runtime"),
+    "expected TS2875 message to mention preact/jsx-runtime, got {diagnostics:?}"
+  );
+}
+
+#[test]
+fn react_jsx_does_not_report_ts2875_when_runtime_module_exists() {
+  let mut options = CompilerOptions::default();
+  options.no_default_lib = true;
+  options.jsx = Some(JsxMode::ReactJsx);
+  options.jsx_import_source = Some("preact".to_string());
+
+  let entry = FileKey::new("entry.tsx");
+  let runtime = FileKey::new("preact_jsx_runtime.ts");
+  let host = TestHost::new(options)
+    .with_lib(jsx_lib_file())
+    .with_file(runtime.clone(), "export {};")
+    .with_file(entry.clone(), "const el = <div />;")
+    .link(entry.clone(), "preact/jsx-runtime", runtime);
+  let program = Program::new(host, vec![entry]);
+  let diagnostics = program.check();
+
+  assert!(
+    diagnostics
+      .iter()
+      .all(|diag| diag.code.as_str() != codes::JSX_RUNTIME_MODULE_MISSING.as_str()),
+    "did not expect TS2875 when runtime module is available, got {diagnostics:?}"
+  );
+}
+
+#[test]
 fn intrinsic_props_checked() {
   let mut options = CompilerOptions::default();
   options.no_default_lib = true;
@@ -1866,14 +1921,17 @@ declare namespace JSX {
 
   let entry = FileKey::new("entry.tsx");
   let source = r#"
-declare function Title(props: { children: string }): JSX.Element;
-declare function Wrong(props: { offspring: string }): JSX.Element;
-const ok = <Title>Hello</Title>;
-const bad = <Wrong>Byebye</Wrong>;
-"#;
+ declare function Title(props: { children: string }): JSX.Element;
+ declare function Wrong(props: { offspring: string }): JSX.Element;
+ const ok = <Title>Hello</Title>;
+ const bad = <Wrong>Byebye</Wrong>;
+ "#;
+  let runtime = FileKey::new("react_jsx_runtime.ts");
   let host = TestHost::new(options)
     .with_lib(jsx)
-    .with_file(entry.clone(), source);
+    .with_file(runtime.clone(), "export {};")
+    .with_file(entry.clone(), source)
+    .link(entry.clone(), "react/jsx-runtime", runtime);
   let program = Program::new(host, vec![entry]);
   let diagnostics = program.check();
 

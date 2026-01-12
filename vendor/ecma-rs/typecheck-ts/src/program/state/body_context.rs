@@ -181,6 +181,7 @@ impl ProgramState {
       cache_mode: self.compiler_options.cache.mode,
       cache_options: self.compiler_options.cache.clone(),
       jsx_mode: self.compiler_options.jsx,
+      jsx_import_source: self.compiler_options.jsx_import_source.clone(),
       query_stats: self.query_stats.clone(),
       cancelled: Arc::clone(&self.cancelled),
     }

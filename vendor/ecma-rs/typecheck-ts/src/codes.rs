@@ -921,6 +921,23 @@ pub const JSX_SPREAD_ATTR_MUST_BE_OBJECT: Code = Code::new(
   &[],
 );
 
+/// TS2875: Automatic JSX runtime import module could not be resolved.
+///
+/// TypeScript emits this diagnostic for `jsx=react-jsx` / `jsx=react-jsxdev` when
+/// the implicit runtime module (`react/jsx-runtime`, `react/jsx-dev-runtime`, or
+/// `{jsxImportSource}/...`) cannot be found.
+///
+/// - Primary span: the JSX element span that required the runtime module.
+/// - Labels: primary only.
+/// - Notes: none.
+pub const JSX_RUNTIME_MODULE_MISSING: Code = Code::new(
+  "TS2875",
+  "jsx runtime module missing",
+  "JSX element span that required the implicit JSX runtime import",
+  &["primary: JSX element span"],
+  &[],
+);
+
 /// TS2879: JSX fragments require a fragment factory to be in scope.
 ///
 /// TypeScript emits this diagnostic when using `<>...</>` in classic React or

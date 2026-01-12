@@ -611,12 +611,15 @@ impl HarnessOptions {
     if let Some(value) = self.module_detection.as_ref() {
       opts.module_detection = Some(value.clone());
     }
-    if let Some(value) = self.jsx_import_source.as_ref() {
-      opts.jsx_import_source = Some(value.clone());
-    }
 
     if let Some(mode) = self.jsx.as_deref().and_then(parse_jsx_mode) {
       opts.jsx = Some(mode);
+    }
+    if let Some(raw) = self.jsx_import_source.as_deref() {
+      let trimmed = raw.trim();
+      if !trimmed.is_empty() {
+        opts.jsx_import_source = Some(trimmed.to_string());
+      }
     }
 
     let mut libs = Vec::new();
@@ -698,8 +701,8 @@ impl HarnessOptions {
     } else if let Some(raw) = &self.jsx {
       map.insert("jsx".to_string(), Value::String(raw.clone()));
     }
-    if let Some(source) = self.jsx_import_source.as_ref() {
-      map.insert("jsxImportSource".to_string(), Value::String(source.clone()));
+    if let Some(value) = self.jsx_import_source.as_ref() {
+      map.insert("jsxImportSource".to_string(), Value::String(value.clone()));
     }
 
     if !self.lib.is_empty() {
@@ -921,12 +924,6 @@ fn tsc_only_option_notes(options: &HarnessOptions) -> Vec<String> {
   if options.paths.is_some() {
     notes.push(
       "tsc option paths is set via directives but is ignored by the Rust checker".to_string(),
-    );
-  }
-  if options.jsx_import_source.is_some() {
-    notes.push(
-      "tsc option jsxImportSource is set via directives but is ignored by the Rust checker"
-        .to_string(),
     );
   }
   if options.es_module_interop.is_some() {

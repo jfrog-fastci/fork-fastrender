@@ -1157,6 +1157,7 @@ pub fn check_body(
     false,
     None,
     None,
+    None,
   )
 }
 
@@ -1184,6 +1185,7 @@ pub fn check_body_with_expander(
   strict_native: bool,
   no_implicit_any: bool,
   jsx_mode: Option<JsxMode>,
+  jsx_import_source: Option<String>,
   cancelled: Option<&Arc<AtomicBool>>,
 ) -> BodyCheckResult {
   if let Some(flag) = cancelled {
@@ -1250,6 +1252,23 @@ pub fn check_body_with_expander(
     && body.pats.is_empty();
   let native_define_class_fields =
     use_define_for_class_fields && matches!(target, ScriptTarget::Es2022 | ScriptTarget::EsNext);
+  let jsx_runtime_module = match jsx_mode {
+    Some(JsxMode::ReactJsx) => {
+      let base = jsx_import_source
+        .as_deref()
+        .filter(|value| !value.is_empty())
+        .unwrap_or("react");
+      Some(Arc::<str>::from(format!("{base}/jsx-runtime")))
+    }
+    Some(JsxMode::ReactJsxdev) => {
+      let base = jsx_import_source
+        .as_deref()
+        .filter(|value| !value.is_empty())
+        .unwrap_or("react");
+      Some(Arc::<str>::from(format!("{base}/jsx-dev-runtime")))
+    }
+    _ => None,
+  };
   let prim = store.primitive_ids();
   let mut checker = Checker {
     store,
@@ -1259,6 +1278,9 @@ pub fn check_body_with_expander(
     lowerer,
     type_resolver,
     jsx_mode,
+    jsx_runtime_module,
+    jsx_runtime_module_exists: None,
+    jsx_runtime_module_missing_reported: false,
     jsx_element_ty: None,
     jsx_element_type_constraint_ty: None,
     jsx_element_class_ty: None,
@@ -1415,6 +1437,9 @@ struct Checker<'a> {
   lowerer: TypeLowerer,
   type_resolver: Option<Arc<dyn TypeResolver>>,
   jsx_mode: Option<JsxMode>,
+  jsx_runtime_module: Option<Arc<str>>,
+  jsx_runtime_module_exists: Option<bool>,
+  jsx_runtime_module_missing_reported: bool,
   jsx_element_ty: Option<TypeId>,
   jsx_element_type_constraint_ty: Option<Option<TypeId>>,
   jsx_element_class_ty: Option<TypeId>,
@@ -4701,6 +4726,8 @@ impl<'a> Checker<'a> {
       return prim.unknown;
     }
 
+    self.check_jsx_runtime_module(elem.loc);
+
     let element_ty = self.jsx_element_type(elem.loc);
     let element_type_constraint = self.jsx_element_type_constraint_type();
 
@@ -6326,6 +6353,48 @@ impl<'a> Checker<'a> {
     })))
   }
 
+  fn resolve_jsx_type_ref(&mut self, path: &[&str]) -> Option<TypeId> {
+    let resolver = self.type_resolver.as_ref()?;
+    let segments: Vec<String> = path.iter().map(|s| s.to_string()).collect();
+
+    if let Some(module) = self.jsx_runtime_module.as_deref() {
+      if let Some(def) = resolver.resolve_import_type(module, Some(&segments)) {
+        return Some(self.store.canon(self.store.intern_type(TypeKind::Ref {
+          def,
+          args: Vec::new(),
+        })));
+      }
+    }
+
+    self.resolve_type_ref(path)
+  }
+
+  fn check_jsx_runtime_module(&mut self, loc: Loc) {
+    let Some(module) = self.jsx_runtime_module.as_deref() else {
+      return;
+    };
+    if self.jsx_runtime_module_exists == Some(true) {
+      return;
+    }
+
+    if self.jsx_runtime_module_exists.is_none() {
+      let Some(resolver) = self.type_resolver.as_ref() else {
+        return;
+      };
+      self.jsx_runtime_module_exists = Some(resolver.resolve_import_typeof(module, None).is_some());
+    }
+
+    if self.jsx_runtime_module_exists == Some(false) && !self.jsx_runtime_module_missing_reported {
+      self.jsx_runtime_module_missing_reported = true;
+      self.diagnostics.push(codes::JSX_RUNTIME_MODULE_MISSING.error(
+        format!(
+          "This JSX tag requires the module path '{module}' to exist, but none could be found. Make sure you have types for the appropriate package installed."
+        ),
+        Span::new(self.file, loc_to_range(self.file, loc)),
+      ));
+    }
+  }
+
   fn report_jsx_namespace_missing(&mut self, loc: Loc) {
     if self.jsx_namespace_missing_reported {
       return;
@@ -6341,7 +6410,7 @@ impl<'a> Checker<'a> {
     if let Some(cached) = self.jsx_element_type_constraint_ty {
       return cached;
     }
-    let resolved = self.resolve_type_ref(&["JSX", "ElementType"]);
+    let resolved = self.resolve_jsx_type_ref(&["JSX", "ElementType"]);
     let ty = resolved
       .map(|ty| self.expand_ref(ty))
       .and_then(|ty| match self.store.type_kind(ty) {
@@ -6357,7 +6426,7 @@ impl<'a> Checker<'a> {
       return ty;
     }
     let prim = self.store.primitive_ids();
-    let resolved = self.resolve_type_ref(&["JSX", "Element"]);
+    let resolved = self.resolve_jsx_type_ref(&["JSX", "Element"]);
     if resolved.is_none() {
       self.report_jsx_namespace_missing(loc);
     }
@@ -6372,7 +6441,7 @@ impl<'a> Checker<'a> {
     }
     let prim = self.store.primitive_ids();
     let ty = self
-      .resolve_type_ref(&["JSX", "ElementClass"])
+      .resolve_jsx_type_ref(&["JSX", "ElementClass"])
       .unwrap_or(prim.unknown);
     self.jsx_element_class_ty = Some(ty);
     ty
@@ -6383,7 +6452,7 @@ impl<'a> Checker<'a> {
       return ty;
     }
     let prim = self.store.primitive_ids();
-    let resolved = self.resolve_type_ref(&["JSX", "IntrinsicElements"]);
+    let resolved = self.resolve_jsx_type_ref(&["JSX", "IntrinsicElements"]);
     if resolved.is_none() {
       self.report_jsx_namespace_missing(loc);
     }
@@ -6399,7 +6468,7 @@ impl<'a> Checker<'a> {
     // `JSX.IntrinsicAttributes` is optional; when absent treat it as `{}` so it
     // neither contributes additional props nor disables checks.
     let ty = self
-      .resolve_type_ref(&["JSX", "IntrinsicAttributes"])
+      .resolve_jsx_type_ref(&["JSX", "IntrinsicAttributes"])
       .unwrap_or_else(|| self.store.intern_type(TypeKind::EmptyObject));
     self.jsx_intrinsic_attributes_ty = Some(ty);
     ty
@@ -6410,7 +6479,7 @@ impl<'a> Checker<'a> {
       return *cached;
     }
     let def = self
-      .resolve_type_ref(&["JSX", "LibraryManagedAttributes"])
+      .resolve_jsx_type_ref(&["JSX", "LibraryManagedAttributes"])
       .and_then(|ty| match self.store.type_kind(ty) {
         TypeKind::Ref { def, args } if args.is_empty() => Some(def),
         _ => None,
@@ -6440,7 +6509,7 @@ impl<'a> Checker<'a> {
       return *cached;
     }
     let def = self
-      .resolve_type_ref(&["JSX", "IntrinsicClassAttributes"])
+      .resolve_jsx_type_ref(&["JSX", "IntrinsicClassAttributes"])
       .and_then(|ty| match self.store.type_kind(ty) {
         TypeKind::Ref { def, args } if args.is_empty() => Some(def),
         _ => None,
@@ -6463,7 +6532,7 @@ impl<'a> Checker<'a> {
     if let Some(cached) = self.jsx_element_attributes_prop_name {
       return cached;
     }
-    let Some(attrs_ty) = self.resolve_type_ref(&["JSX", "ElementAttributesProperty"]) else {
+    let Some(attrs_ty) = self.resolve_jsx_type_ref(&["JSX", "ElementAttributesProperty"]) else {
       let name = JsxAttributesPropertyName::Missing;
       self.jsx_element_attributes_prop_name = Some(name);
       return name;
@@ -6504,7 +6573,6 @@ impl<'a> Checker<'a> {
     if let Some(cached) = self.jsx_children_prop_name {
       return cached;
     }
-
     if matches!(self.jsx_mode, Some(JsxMode::ReactJsx | JsxMode::ReactJsxdev)) {
       let children = self.store.intern_name_ref("children");
       let selected = Some(children);
@@ -6512,7 +6580,8 @@ impl<'a> Checker<'a> {
       return selected;
     }
 
-    let Some(children_attr_ty) = self.resolve_type_ref(&["JSX", "ElementChildrenAttribute"]) else {
+    let Some(children_attr_ty) = self.resolve_jsx_type_ref(&["JSX", "ElementChildrenAttribute"])
+    else {
       let children = self.store.intern_name_ref("children");
       let selected = Some(children);
       self.jsx_children_prop_name = Some(selected);

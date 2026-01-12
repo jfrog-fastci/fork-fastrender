@@ -127,6 +127,12 @@ pub struct CompilerOptions {
     feature = "serde",
     serde(default, skip_serializing_if = "Option::is_none")
   )]
+  /// Base module used for automatic JSX runtime imports.
+  ///
+  /// When `jsx` is set to `react-jsx`/`react-jsxdev`, TypeScript implicitly
+  /// imports either `{jsxImportSource}/jsx-runtime` or
+  /// `{jsxImportSource}/jsx-dev-runtime` for JSX helper functions and associated
+  /// `JSX.*` namespace typings.
   pub jsx_import_source: Option<String>,
   pub strict_null_checks: bool,
   pub no_implicit_any: bool,

@@ -489,6 +489,13 @@ fn compiler_options_from_raw(raw: &RawCompilerOptions) -> Result<CompilerOptions
     options.jsx = Some(parse_jsx_mode(raw)?);
   }
 
+  if let Some(raw) = raw.jsx_import_source.as_deref() {
+    let trimmed = raw.trim();
+    if !trimmed.is_empty() {
+      options.jsx_import_source = Some(trimmed.to_string());
+    }
+  }
+
   Ok(options)
 }
 

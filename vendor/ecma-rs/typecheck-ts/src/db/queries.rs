@@ -30,7 +30,7 @@ use crate::db::types::{DeclTypes, SharedDeclTypes};
 use crate::db::{symbols, Db};
 use crate::files::FileOrigin;
 use crate::lib_support::lib_env::prepared as prepared_libs;
-use crate::lib_support::{CacheOptions, CompilerOptions, FileKind};
+use crate::lib_support::{CacheOptions, CompilerOptions, FileKind, JsxMode};
 use crate::lower_metrics;
 use crate::parse_metrics;
 use crate::profile::{CacheKind, QueryKind, QueryStatsCollector};
@@ -170,6 +170,28 @@ fn module_specifiers_for(db: &dyn Db, file: FileInput) -> Arc<[Arc<str>]> {
       }
       TripleSlashReferenceKind::Types => specs.push(Arc::<str>::from(value)),
       TripleSlashReferenceKind::Lib => {}
+    }
+  }
+  let options = compiler_options_for(db, db.compiler_options_input());
+  if matches!(file_kind_for(db, file), FileKind::Tsx | FileKind::Jsx) {
+    match options.jsx {
+      Some(JsxMode::ReactJsx) => {
+        let base = options
+          .jsx_import_source
+          .as_deref()
+          .filter(|value| !value.is_empty())
+          .unwrap_or("react");
+        specs.push(Arc::<str>::from(format!("{base}/jsx-runtime")));
+      }
+      Some(JsxMode::ReactJsxdev) => {
+        let base = options
+          .jsx_import_source
+          .as_deref()
+          .filter(|value| !value.is_empty())
+          .unwrap_or("react");
+        specs.push(Arc::<str>::from(format!("{base}/jsx-dev-runtime")));
+      }
+      _ => {}
     }
   }
   specs.sort_unstable_by(|a, b| a.as_ref().cmp(b.as_ref()));
@@ -1317,6 +1339,7 @@ pub mod body_check {
     pub cache_mode: CacheMode,
     pub cache_options: CacheOptions,
     pub jsx_mode: Option<JsxMode>,
+    pub jsx_import_source: Option<String>,
     pub query_stats: QueryStatsCollector,
     pub cancelled: Arc<AtomicBool>,
   }
@@ -1837,6 +1860,7 @@ pub mod body_check {
         strict_native,
         no_implicit_any,
         ctx.jsx_mode,
+        ctx.jsx_import_source.clone(),
         Some(&ctx.cancelled),
       );
 
