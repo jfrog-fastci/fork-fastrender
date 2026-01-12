@@ -103,7 +103,8 @@ fn integration_statepoint_stackmap_lookup() {
     let pairs: Vec<_> = sp.gc_root_pairs().collect();
     assert_eq!(pairs.len(), 1);
 
-    // Both base and derived should be indirect stack slots, typically SP-relative.
+    // Both base and derived should be indirect stack slots (typically SP-relative, but LLVM may
+    // also choose FP-relative spill slots depending on code shape/opts).
     match (pairs[0].base, pairs[0].derived) {
         (
             Location::Indirect {
@@ -122,15 +123,18 @@ fn integration_statepoint_stackmap_lookup() {
             assert_eq!(*base_reg, *derived_reg);
             assert_eq!(*base_off, *derived_off);
 
-            // SP-relative slots (Agent 113 verified this is the stable ABI for statepoints).
-            let expected_sp_reg: u16 = if cfg!(target_arch = "x86_64") {
-                7 // DWARF RSP
+            // Stack slots may be SP- or FP-relative.
+            let (expected_sp_reg, expected_fp_reg): (u16, u16) = if cfg!(target_arch = "x86_64") {
+                (7, 6) // DWARF RSP, RBP
             } else if cfg!(target_arch = "aarch64") {
-                31 // DWARF SP
+                (31, 29) // DWARF SP, X29
             } else {
                 return;
             };
-            assert_eq!(*base_reg, expected_sp_reg);
+            assert!(
+                *base_reg == expected_sp_reg || *base_reg == expected_fp_reg,
+                "expected SP/FP-relative root slot (dwarf_reg in [{expected_sp_reg}, {expected_fp_reg}]), got dwarf_reg={base_reg}"
+            );
         }
         other => panic!("unexpected root pair: {other:?}"),
     }
