@@ -1022,6 +1022,7 @@ pub fn validate_native_strict_body(
     Eval,
     Function,
     Proxy,
+    ProxyRevocable,
     ReflectApply,
     ReflectConstruct,
     ObjectSetPrototypeOf,
@@ -1044,6 +1045,13 @@ pub fn validate_native_strict_body(
     body_id: hir_js::BodyId,
     resolver: &'a dyn NativeStrictResolver,
     semantic_aliases: &'a ConstAliasResolver<'a>,
+    result: &'a BodyCheckResult,
+    store: &'a TypeStore,
+    type_expander: Option<&'a dyn RelateTypeExpander>,
+    type_call_name: types_ts_interned::NameId,
+    type_apply_name: types_ts_interned::NameId,
+    type_bind_name: types_ts_interned::NameId,
+    function_like_cache: HashMap<TypeId, bool>,
     scopes: Vec<HashMap<hir_js::NameId, BindingKind>>,
     const_aliases: HashMap<hir_js::ExprId, hir_js::ExprId>,
     destructured_aliases: HashMap<hir_js::ExprId, DestructuredAliasKind>,
@@ -1054,12 +1062,14 @@ pub fn validate_native_strict_body(
     reflect_name: hir_js::NameId,
     function_name: hir_js::NameId,
     proxy_name: hir_js::NameId,
+    revocable_name: hir_js::NameId,
     apply_name: hir_js::NameId,
     construct_name: hir_js::NameId,
     set_prototype_of_name: hir_js::NameId,
     define_property_name: hir_js::NameId,
     define_properties_name: hir_js::NameId,
     assign_name: hir_js::NameId,
+    constructor_name: hir_js::NameId,
   }
 
   impl<'a> AliasBuilder<'a> {
@@ -1068,24 +1078,39 @@ pub fn validate_native_strict_body(
       body_id: hir_js::BodyId,
       resolver: &'a dyn NativeStrictResolver,
       semantic_aliases: &'a ConstAliasResolver<'a>,
+      result: &'a BodyCheckResult,
+      store: &'a TypeStore,
+      type_expander: Option<&'a dyn RelateTypeExpander>,
+      type_call_name: types_ts_interned::NameId,
+      type_apply_name: types_ts_interned::NameId,
+      type_bind_name: types_ts_interned::NameId,
       eval_name: hir_js::NameId,
       global_this_name: hir_js::NameId,
       object_name: hir_js::NameId,
       reflect_name: hir_js::NameId,
       function_name: hir_js::NameId,
       proxy_name: hir_js::NameId,
+      revocable_name: hir_js::NameId,
       apply_name: hir_js::NameId,
       construct_name: hir_js::NameId,
       set_prototype_of_name: hir_js::NameId,
       define_property_name: hir_js::NameId,
       define_properties_name: hir_js::NameId,
       assign_name: hir_js::NameId,
+      constructor_name: hir_js::NameId,
     ) -> Self {
       Self {
         body,
         body_id,
         resolver,
         semantic_aliases,
+        result,
+        store,
+        type_expander,
+        type_call_name,
+        type_apply_name,
+        type_bind_name,
+        function_like_cache: HashMap::new(),
         scopes: vec![HashMap::new()],
         const_aliases: HashMap::new(),
         destructured_aliases: HashMap::new(),
@@ -1095,12 +1120,14 @@ pub fn validate_native_strict_body(
         reflect_name,
         function_name,
         proxy_name,
+        revocable_name,
         apply_name,
         construct_name,
         set_prototype_of_name,
         define_property_name,
         define_properties_name,
         assign_name,
+        constructor_name,
       }
     }
 
@@ -1201,6 +1228,26 @@ pub fn validate_native_strict_body(
         || object_key_is_literal_string(self.body, key, value)
     }
 
+    fn expr_is_function_like(&mut self, expr_id: hir_js::ExprId) -> bool {
+      let expr_ty = self
+        .result
+        .expr_types
+        .get(expr_id.0 as usize)
+        .copied()
+        .unwrap_or(self.store.primitive_ids().unknown);
+      let mut visiting = HashSet::new();
+      type_is_function_like(
+        self.store,
+        expr_ty,
+        self.type_expander,
+        self.type_call_name,
+        self.type_apply_name,
+        self.type_bind_name,
+        &mut self.function_like_cache,
+        &mut visiting,
+      )
+    }
+
     fn bind_const_object_pat(&mut self, obj: &hir_js::ObjectPat, init: hir_js::ExprId) {
       let init_ref = ExprRef {
         body: self.body_id,
@@ -1228,6 +1275,15 @@ pub fn validate_native_strict_body(
         self.reflect_name,
         "Reflect",
       );
+      let init_is_proxy = expr_is_ident_or_global_this_member(
+        self.resolver,
+        self.semantic_aliases,
+        init_ref,
+        self.global_this_name,
+        self.proxy_name,
+        "Proxy",
+      );
+      let mut init_is_function_like: Option<bool> = None;
 
       for prop in &obj.props {
         let mut kind = None;
@@ -1260,6 +1316,18 @@ pub fn validate_native_strict_body(
             kind = Some(DestructuredAliasKind::ReflectSetPrototypeOf);
           } else if self.object_key_matches(&prop.key, self.define_property_name, "defineProperty") {
             kind = Some(DestructuredAliasKind::ReflectDefineProperty);
+          }
+        }
+        if init_is_proxy {
+          if self.object_key_matches(&prop.key, self.revocable_name, "revocable") {
+            kind = Some(DestructuredAliasKind::ProxyRevocable);
+          }
+        }
+        if kind.is_none() && self.object_key_matches(&prop.key, self.constructor_name, "constructor") {
+          let init_is_function_like =
+            *init_is_function_like.get_or_insert_with(|| self.expr_is_function_like(init));
+          if init_is_function_like {
+            kind = Some(DestructuredAliasKind::Function);
           }
         }
 
@@ -1681,18 +1749,26 @@ pub fn validate_native_strict_body(
       body_id,
       resolver,
       &const_aliases,
+      result,
+      store,
+      type_expander,
+      type_call_name,
+      type_apply_name,
+      type_bind_name,
       eval_name,
       global_this_name,
       object_name,
       reflect_name,
       function_name,
       proxy_name,
+      revocable_name,
       apply_name,
       construct_name,
       set_prototype_of_name,
       define_property_name,
       define_properties_name,
       assign_name,
+      constructor_name,
     );
     for stmt in &body.root_stmts {
       builder.visit_stmt(*stmt);
@@ -1740,6 +1816,12 @@ pub fn validate_native_strict_body(
                   Span::new(file, callee_span),
                 ));
               }
+            }
+            DestructuredAliasKind::ProxyRevocable => {
+              diagnostics.push(codes::NATIVE_STRICT_PROXY.error(
+                "`Proxy` is forbidden when `native_strict` is enabled",
+                Span::new(file, callee_span),
+              ));
             }
             DestructuredAliasKind::ReflectApply => {
               // Minimal direct `Reflect.apply(target, thisArg, argsList)` handling.

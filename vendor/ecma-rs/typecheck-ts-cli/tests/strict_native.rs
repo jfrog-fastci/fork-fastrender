@@ -855,3 +855,82 @@ fn strict_native_allows_non_function_constructor_call_sanity() {
     codes::NATIVE_STRICT_NEW_FUNCTION.as_str()
   );
 }
+
+#[test]
+fn strict_native_reports_forbidden_proxy_revocable_via_destructuring_alias() {
+  let tmp = tempdir().expect("temp dir");
+  let entry = tmp.path().join("main.ts");
+  fs::write(
+    &entry,
+    r#"
+declare const Proxy: { revocable(target: {}, handler: {}): unknown };
+const { revocable } = Proxy;
+revocable({}, {});
+"#,
+  )
+  .expect("write main.ts");
+
+  typecheck_cli()
+    .timeout(CLI_TIMEOUT)
+    .args(["typecheck", "--lib", "es5"])
+    .arg("--strict-native")
+    .arg(entry.as_os_str())
+    .assert()
+    .failure()
+    .stdout(contains(codes::NATIVE_STRICT_PROXY.as_str()));
+}
+
+#[test]
+fn strict_native_reports_function_constructor_via_destructured_constructor_from_function_like() {
+  let tmp = tempdir().expect("temp dir");
+  let entry = tmp.path().join("main.ts");
+  fs::write(
+    &entry,
+    r#"
+const { constructor: F } = Object;
+F("return 1")();
+"#,
+  )
+  .expect("write main.ts");
+
+  typecheck_cli()
+    .timeout(CLI_TIMEOUT)
+    .args(["typecheck", "--lib", "es5"])
+    .arg("--strict-native")
+    .arg(entry.as_os_str())
+    .assert()
+    .failure()
+    .stdout(contains(codes::NATIVE_STRICT_NEW_FUNCTION.as_str()));
+}
+
+#[test]
+fn strict_native_allows_destructured_constructor_from_non_function_like_sanity() {
+  let tmp = tempdir().expect("temp dir");
+  let entry = tmp.path().join("main.ts");
+  fs::write(
+    &entry,
+    r#"
+const { constructor: C } = {};
+C({});
+"#,
+  )
+  .expect("write main.ts");
+
+  let output = typecheck_cli()
+    .timeout(CLI_TIMEOUT)
+    .args(["typecheck", "--lib", "es5"])
+    .arg("--strict-native")
+    .arg(entry.as_os_str())
+    .assert()
+    .success()
+    .get_output()
+    .stdout
+    .clone();
+
+  let stdout = String::from_utf8_lossy(&output);
+  assert!(
+    !stdout.contains(codes::NATIVE_STRICT_NEW_FUNCTION.as_str()),
+    "did not expect {}, got {stdout}",
+    codes::NATIVE_STRICT_NEW_FUNCTION.as_str()
+  );
+}
