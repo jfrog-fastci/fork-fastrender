@@ -1090,9 +1090,55 @@ impl Heap {
   }
 
   pub(crate) fn array_buffer_is_detached(&self, obj: GcObject) -> Result<bool, VmError> {
-    Ok(self.get_array_buffer(obj)?.data.is_none())
+    self.is_detached_array_buffer(obj)
   }
 
+  /// Transfers the backing store of `src` into a new `ArrayBuffer` object without copying bytes.
+  ///
+  /// On success:
+  /// - `src` becomes detached (`src.byteLength === 0`),
+  /// - the returned `ArrayBuffer` owns the original backing store,
+  /// - and the heap's `external_bytes` accounting is unchanged (bytes remain tracked exactly once).
+  ///
+  /// This is intended for host implementations of HTML structured clone transfer semantics.
+  pub fn transfer_array_buffer(&mut self, src: GcObject) -> Result<GcObject, VmError> {
+    // Validate up-front so we don't allocate a destination buffer if `src` is not transferable.
+    {
+      let buf = self.get_array_buffer(src)?;
+      if buf.data.is_none() {
+        return Err(VmError::TypeError("Cannot transfer detached ArrayBuffer"));
+      }
+    }
+
+    // Root `src` across any allocation/GC triggered by `ensure_can_allocate`.
+    let mut scope = self.scope();
+    scope.push_root(Value::Object(src))?;
+
+    // Only require room for the new heap allocation (object metadata); the external backing store
+    // bytes are already tracked and are moved without allocation.
+    let new_bytes = JsArrayBuffer::heap_size_bytes_for_property_count(0);
+    scope
+      .heap
+      .ensure_can_allocate_with(|heap| heap.additional_bytes_for_heap_alloc(new_bytes))?;
+
+    // Allocate the destination buffer in a detached state, then attach the transferred data. This
+    // avoids any need to "undo" a detachment if the allocation fails.
+    let obj = HeapObject::ArrayBuffer(JsArrayBuffer::new_detached(None));
+    let dst = GcObject(scope.heap.alloc_unchecked_after_ensure(obj, new_bytes)?);
+
+    let data = {
+      let src_buf = scope.heap.get_array_buffer_mut(src)?;
+      src_buf
+        .data
+        .take()
+        .ok_or(VmError::TypeError("Cannot transfer detached ArrayBuffer"))?
+    };
+    let dst_buf = scope.heap.get_array_buffer_mut(dst)?;
+    debug_assert!(dst_buf.data.is_none());
+    dst_buf.data = Some(data);
+
+    Ok(dst)
+  }
   /// Returns a borrowed view of the bytes backing an `ArrayBuffer` object.
   ///
   /// This is intended for host bindings that need to read `ArrayBuffer` contents (e.g. `TextDecoder`).
@@ -1266,21 +1312,23 @@ impl Heap {
   ///
   /// # Errors
   ///
-  /// Returns a `TypeError` if the backing `ArrayBuffer` is detached or if the view is out of bounds.
+  /// If the backing `ArrayBuffer` is detached, this returns an empty slice.
+  ///
+  /// Returns a `TypeError` if the view is out of bounds.
   pub fn uint8_array_data(&self, obj: GcObject) -> Result<&[u8], VmError> {
     let view = self.get_typed_array(obj)?;
     if view.kind != TypedArrayKind::Uint8 {
       return Err(VmError::invalid_handle());
     }
+    let buf = self.get_array_buffer(view.viewed_array_buffer)?;
+    let Some(data) = buf.data.as_deref() else {
+      // Detached buffers behave like out-of-bounds views.
+      return Ok(&[]);
+    };
     let start = view.byte_offset;
     let end = start
       .checked_add(view.byte_length()?)
       .ok_or(VmError::InvariantViolation("Uint8Array byte offset overflow"))?;
-    let buf = self.get_array_buffer(view.viewed_array_buffer)?;
-    let data = buf
-      .data
-      .as_deref()
-      .ok_or(VmError::TypeError("ArrayBuffer is detached"))?;
     data
       .get(start..end)
       .ok_or(VmError::TypeError("Uint8Array view out of bounds"))
@@ -1295,15 +1343,12 @@ impl Heap {
   /// `index` is out of bounds or `bytes` is empty, this returns `Ok(0)` (mirroring typed array
   /// out-of-bounds write semantics).
   ///
-  /// If the backing `ArrayBuffer` is detached, this returns a `TypeError`.
-  ///
-  /// If the view is out of bounds, this returns `Ok(0)` (defensive no-op), matching typed array
-  /// out-of-bounds element write behaviour.
+  /// Writes are ignored (returns `Ok(0)`) if the backing `ArrayBuffer` is detached or the view is
+  /// out of bounds.
   ///
   /// # Errors
   ///
-  /// Returns an error if `obj` is not a live `Uint8Array` object or if its backing `ArrayBuffer` is
-  /// detached.
+  /// Returns an error if `obj` is not a live `Uint8Array` object.
   pub fn uint8_array_write(&mut self, obj: GcObject, index: usize, bytes: &[u8]) -> Result<usize, VmError> {
     // Extract view fields without holding a mutable borrow across ArrayBuffer access.
     let (buffer, byte_offset, length) = {
@@ -1330,23 +1375,23 @@ impl Heap {
       .checked_add(max_write)
       .ok_or(VmError::InvariantViolation("Uint8Array byte offset overflow"))?;
 
+    // Detached buffers behave like out-of-bounds views; writes are ignored.
     let buf_len = {
       let buf = self.get_array_buffer(buffer)?;
-      let data = buf
-        .data
-        .as_deref()
-        .ok_or(VmError::TypeError("ArrayBuffer is detached"))?;
+      let Some(data) = buf.data.as_deref() else {
+        return Ok(0);
+      };
       data.len()
     };
     if view_end > buf_len {
+      // Out-of-bounds views behave like out-of-bounds indices: writes are ignored.
       return Ok(0);
     }
 
     let buf = self.get_array_buffer_mut(buffer)?;
-    let data = buf
-      .data
-      .as_deref_mut()
-      .ok_or(VmError::TypeError("ArrayBuffer is detached"))?;
+    let Some(data) = buf.data.as_deref_mut() else {
+      return Ok(0);
+    };
     data[abs_start..abs_end].copy_from_slice(&bytes[..max_write]);
     Ok(max_write)
   }
@@ -6958,8 +7003,15 @@ impl JsArrayBuffer {
     }
   }
 
+  fn new_detached(prototype: Option<GcObject>) -> Self {
+    Self {
+      base: ObjectBase::new(prototype),
+      data: None,
+    }
+  }
+
   fn byte_length(&self) -> usize {
-    // If `data` is missing, the buffer has been detached (transfer-list semantics).
+    // Detached ArrayBuffers have a `byteLength` of 0.
     self.data.as_deref().map(|data| data.len()).unwrap_or(0)
   }
 
@@ -7571,9 +7623,8 @@ mod detached_array_buffer_tests {
     }
 
     match scope.heap().uint8_array_data(view) {
-      Err(VmError::TypeError(_)) => {}
-      Err(other) => panic!("expected TypeError, got {other:?}"),
-      Ok(_) => panic!("expected error for Uint8Array backed by a detached ArrayBuffer"),
+      Ok(data) => assert!(data.is_empty(), "detached Uint8Array should read as empty"),
+      Err(other) => panic!("expected Ok(empty), got {other:?}"),
     }
 
     match scope.heap_mut().uint8_array_write(view, 0, &[1, 2, 3]) {
