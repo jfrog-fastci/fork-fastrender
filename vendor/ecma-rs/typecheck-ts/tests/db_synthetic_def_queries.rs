@@ -190,3 +190,88 @@ fn synthetic_def_maps_are_deterministic_across_root_order() {
     "module namespace def mapping should not depend on root order"
   );
 }
+
+fn seed_db() -> TypecheckDb {
+  let mut db = TypecheckDb::default();
+  let entry_file = FileId(0);
+  let entry_key = FileKey::new("entry.ts");
+  let dep_file = FileId(1);
+  let dep_key = FileKey::new("dep.ts");
+
+  db.set_file(
+    entry_file,
+    entry_key.clone(),
+    FileKind::Ts,
+    Arc::from("type M = typeof import(\"./dep\");\nclass C {}\n"),
+    FileOrigin::Source,
+  );
+  db.set_file(
+    dep_file,
+    dep_key.clone(),
+    FileKind::Ts,
+    Arc::from("export const value: number = 1;\nenum E { A = 1 }\n"),
+    FileOrigin::Source,
+  );
+  db.set_roots(Arc::from([entry_key]));
+  db.set_module_resolution_ref(entry_file, "./dep", Some(dep_file));
+  db
+}
+
+#[test]
+fn synthetic_def_queries_are_deterministic_across_runs() {
+  let db_a = seed_db();
+  let db_b = seed_db();
+
+  assert_eq!(
+    queries::value_defs(&db_a).as_ref(),
+    queries::value_defs(&db_b).as_ref()
+  );
+  assert_eq!(
+    queries::module_namespace_defs(&db_a).as_ref(),
+    queries::module_namespace_defs(&db_b).as_ref()
+  );
+}
+
+#[test]
+fn value_defs_update_when_class_or_enum_added_or_removed() {
+  let mut db = TypecheckDb::default();
+  let file = FileId(0);
+  let key = FileKey::new("main.ts");
+  db.set_file(
+    file,
+    key.clone(),
+    FileKind::Ts,
+    Arc::from("export const value = 1;"),
+    FileOrigin::Source,
+  );
+  db.set_roots(Arc::from([key]));
+
+  assert!(
+    queries::value_defs(&db).is_empty(),
+    "expected no class/enum value defs in initial program"
+  );
+
+  db.set_file_text(
+    file,
+    Arc::from("export const value = 1;\nclass C {}\nenum E { A = 1 }\n"),
+  );
+
+  let class_def = def_in_file(&db, file, "C", HirDefKind::Class);
+  let enum_def = def_in_file(&db, file, "E", HirDefKind::Enum);
+  let defs = queries::value_defs(&db);
+  assert!(
+    defs.contains_key(&class_def),
+    "expected value def mapping for class C"
+  );
+  assert!(
+    defs.contains_key(&enum_def),
+    "expected value def mapping for enum E"
+  );
+
+  db.set_file_text(file, Arc::from("export const value = 1;"));
+  let defs = queries::value_defs(&db);
+  assert!(
+    !defs.contains_key(&class_def) && !defs.contains_key(&enum_def),
+    "expected class/enum value defs to be removed after deleting declarations"
+  );
+}

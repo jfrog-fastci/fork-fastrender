@@ -36,12 +36,12 @@ pub use queries::{
   decl_types, decl_types_fingerprint, def_file, def_to_file, expr_at, file_kind, file_span_index,
   file_text, global_augmentation_diagnostics, global_bindings, local_symbol_info, lower_hir,
   module_dep_diagnostics, module_deps, module_namespace_defs, module_resolve, module_reverse_deps,
-  module_specifiers, module_reverse_deps_transitive, module_transitive_reverse_deps, parse,
+  module_reverse_deps_transitive, module_specifiers, module_transitive_reverse_deps, parse,
   parse_query_count, program_diagnostics, reachable_files, reset_parse_query_count, roots, sem_hir,
   span_of_def, span_of_expr, symbol_occurrences, ts_semantics, type_at,
   unresolved_module_diagnostics, value_defs, var_initializer, DeclInfo, DeclKind, GlobalBindingsDb,
-  Initializer, LowerResultWithDiagnostics, SharedTypeStore, TsSemantics, TypeDatabase, TypeSemantics,
-  TypesDatabase, VarInit,
+  Initializer, LowerResultWithDiagnostics, SharedTypeStore, TsSemantics, TypeDatabase,
+  TypeSemantics, TypesDatabase, VarInit,
 };
 pub use spans::FileSpanIndex;
 

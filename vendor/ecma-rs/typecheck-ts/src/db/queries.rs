@@ -29,8 +29,8 @@ use crate::db::symbols::{LocalSymbolInfo, SymbolIndex};
 use crate::db::types::{DeclTypes, SharedDeclTypes};
 use crate::db::{symbols, Db};
 use crate::files::FileOrigin;
-use crate::lib_support::{CacheOptions, CompilerOptions, FileKind};
 use crate::lib_support::lib_env::prepared as prepared_libs;
+use crate::lib_support::{CacheOptions, CompilerOptions, FileKind};
 use crate::lower_metrics;
 use crate::parse_metrics;
 use crate::profile::{CacheKind, QueryKind, QueryStatsCollector};
@@ -880,6 +880,7 @@ fn deterministic_symbol_id(name: &str) -> SymbolId {
 }
 
 fn stable_hash_u32<T: Hash>(value: &T) -> u32 {
+  #[derive(Clone)]
   struct StableHasher(u64);
 
   impl StableHasher {
@@ -2084,10 +2085,7 @@ pub mod body_check {
         let hir_js::StmtKind::Decl(type_def) = &stmt.kind else {
           continue;
         };
-        if !matches!(
-          ctx.def_kinds.get(type_def),
-          Some(crate::DefKind::Class(_))
-        ) {
+        if !matches!(ctx.def_kinds.get(type_def), Some(crate::DefKind::Class(_))) {
           continue;
         }
         let Some(def_data) = lowered.def(*type_def) else {
