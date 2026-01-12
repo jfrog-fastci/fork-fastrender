@@ -5,7 +5,7 @@ use crate::ui::cancel::CancelGens;
 use crate::ui::messages::{
   CursorKind, NavigationReason, RenderedFrame, ScrollMetrics, TabId, UiToWorker, WorkerToUi,
 };
-use crate::ui::{normalize_user_url, validate_user_navigation_url_scheme};
+use crate::ui::{normalize_user_url, validate_user_navigation_url_scheme, VisitedUrlStore};
 use std::collections::VecDeque;
 use url::Url;
 
@@ -399,6 +399,7 @@ pub struct BrowserAppState {
   pub tabs: Vec<BrowserTabState>,
   pub active_tab: Option<TabId>,
   pub closed_tabs: Vec<ClosedTabState>,
+  pub visited: VisitedUrlStore,
   pub chrome: ChromeState,
 }
 
@@ -416,6 +417,7 @@ impl BrowserAppState {
       tabs: Vec::new(),
       active_tab: None,
       closed_tabs: Vec::new(),
+      visited: VisitedUrlStore::new(),
       chrome: ChromeState::default(),
     }
   }
@@ -720,6 +722,12 @@ impl BrowserAppState {
         can_go_back,
         can_go_forward,
       } => {
+        // We intentionally ignore `about:` navigations so omnibox history doesn't get polluted by
+        // internal pages like `about:newtab`.
+        if !about_pages::is_about_url(&url) {
+          self.visited.record_visit(url.clone(), title.clone());
+        }
+
         if let Some(tab) = self.tab_mut(tab_id) {
           tab.current_url = Some(url.clone());
           tab.committed_url = Some(url.clone());
@@ -747,6 +755,7 @@ impl BrowserAppState {
         can_go_back,
         can_go_forward,
       } => {
+        // Do not record failed navigations in global omnibox history.
         if let Some(tab) = self.tab_mut(tab_id) {
           tab.current_url = Some(url.clone());
           tab.loading = false;
@@ -1011,6 +1020,25 @@ mod browser_app_tests {
     assert!(tab.can_go_back);
     assert!(!tab.can_go_forward);
     assert_eq!(app.chrome.address_bar_text, "https://example.com/");
+  }
+
+  #[test]
+  fn navigation_committed_is_recorded_in_visited_store() {
+    let mut app = BrowserAppState::new_with_initial_tab("about:newtab".to_string());
+    let tab_id = app.active_tab_id().unwrap();
+
+    app.apply_worker_msg(WorkerToUi::NavigationCommitted {
+      tab_id,
+      url: "https://example.com/".to_string(),
+      title: Some("Example Domain".to_string()),
+      can_go_back: false,
+      can_go_forward: false,
+    });
+
+    assert_eq!(app.visited.len(), 1);
+    let record = app.visited.iter_recent().next().expect("expected visit");
+    assert_eq!(record.url, "https://example.com/");
+    assert_eq!(record.title.as_deref(), Some("Example Domain"));
   }
 
   #[test]

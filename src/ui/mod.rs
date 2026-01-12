@@ -20,6 +20,7 @@ pub mod cancel;
 pub mod context_menu;
 pub mod frame_upload;
 pub mod history;
+pub mod visited;
 pub mod messages;
 pub mod render_worker;
 pub mod scrollbars;
@@ -99,6 +100,7 @@ pub use browser_app::{
   FindInPageState, LatestFrameMeta, OpenSelectDropdownUpdate,
 };
 pub use history::{HistoryEntry, TabHistory};
+pub use visited::{VisitedUrlRecord, VisitedUrlStore};
 pub use zoom::{
   clamp_zoom, viewport_css_and_dpr_for_zoom, zoom_in, zoom_out, zoom_percent, zoom_reset,
   DEFAULT_ZOOM, MAX_ZOOM, MIN_ZOOM, ZOOM_STEP,
