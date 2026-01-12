@@ -371,7 +371,7 @@ bash scripts/cargo_agent.sh test --lib
 
 ```bash
 # Any `#[path = "..."]` attribute under tests/ is a shim.
-rg -n '#\[path\s*=\s*"' tests/
+rg -n '^\s*#\[\s*path\s*=\s*"' tests/
 ```
 
 ### 5.2 Delete them

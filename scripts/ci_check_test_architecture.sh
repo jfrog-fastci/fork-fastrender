@@ -40,7 +40,7 @@ if [[ "${have_rg}" -eq 1 ]]; then
   #
   # Anchor to the start of the line (with optional whitespace) so docs/doc-comments that mention the
   # pattern don't trigger false positives.
-  shim_matches="$(rg -n --glob '*.rs' '^[[:space:]]*#\[path\s*=\s*"' tests || true)"
+  shim_matches="$(rg -n --glob '*.rs' '^\s*#\[\s*path\s*=\s*"' tests || true)"
 else
   shim_matches="$(grep -RInE --include='*.rs' '^[[:space:]]*#\\[[[:space:]]*path[[:space:]]*=[[:space:]]*"' tests || true)"
 fi
