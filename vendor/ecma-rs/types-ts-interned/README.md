@@ -47,6 +47,11 @@ Function/closure representation:
 - Object shapes with `call_signatures` / `construct_signatures` use the same
   `fn_ptr` + `env` header as a prefix before regular object properties, making
   callables-with-properties representable.
+- Callable-like intersections (e.g. `((x: T) => U) & { foo: string }`) are also
+  representable: when an intersection contains a callable (or callable object)
+  member and all members are object-like, it lowers to a `GcObject` payload that
+  starts with the canonical `fn_ptr` + `env` header followed by deterministically
+  merged properties.
 
 GC tracing helpers:
 
