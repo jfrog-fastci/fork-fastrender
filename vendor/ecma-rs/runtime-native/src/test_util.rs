@@ -302,6 +302,14 @@ pub fn legacy_promise_outcome(p: PromiseRef) -> LegacyPromiseOutcome {
   }
 }
 
+/// Debug/test helper: snapshot payload-promise out-of-line buffer byte counters.
+///
+/// Returns `(allocated_bytes, freed_bytes)`.
+#[doc(hidden)]
+pub fn debug_payload_promise_payload_bytes() -> (usize, usize) {
+  async_rt::promise::debug_payload_promise_payload_bytes()
+}
+
 /// Debug/test helper: drop a legacy `async_rt::promise::RtPromise` allocated by the runtime.
 ///
 /// # Safety

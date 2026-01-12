@@ -348,6 +348,14 @@ pub(crate) fn with_heap_lock_mutator<R>(f: impl FnOnce(&mut crate::gc::GcHeap) -
   f(heap)
 }
 
+/// Run `f` with exclusive access to the process-global GC heap.
+///
+/// This is intended for runtime-owned subsystems that need to mutate heap state that is not
+/// thread-safe (e.g. registering GC finalizers for runtime-allocated objects).
+pub(crate) fn with_global_heap_lock_mutator<R>(f: impl FnOnce(&mut crate::gc::GcHeap) -> R) -> R {
+  with_heap_lock_mutator(f)
+}
+
 /// Run `f` with exclusive access to the global heap while the world is stopped.
 ///
 /// # Safety contract

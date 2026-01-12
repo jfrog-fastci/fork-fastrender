@@ -234,36 +234,45 @@ pub(crate) fn alloc_payload_promise(layout: PromiseLayout, external_pending: boo
     }
   };
 
-  let promise = crate::rt_alloc::with_heap_lock_mutator(|heap| {
-    // Allocate the promise object in the process-global heap.
-    let obj = heap.alloc_old(&PAYLOAD_PROMISE_TYPE_DESC);
-    let p = PromiseRef(obj.cast());
+  // Allocate the promise object in the GC heap as a normal movable object (nursery preferred).
+  //
+  // Payload promises must be movable under minor GC evacuation and (optional future) major
+  // compaction; callers root them via the persistent handle table while tasks are pending.
+  let mut obj = crate::rt_alloc::alloc_typed(&PAYLOAD_PROMISE_TYPE_DESC);
+  let promise = PromiseRef(obj.cast());
 
-    unsafe {
-      crate::native_async::promise_init(p);
+  unsafe {
+    crate::native_async::promise_init(promise);
 
-      let pp = &mut *(obj as *mut PayloadPromise);
-      pp.payload_ptr.store(payload_ptr as usize, Ordering::Relaxed);
-      pp.payload_base_ptr = payload_base_ptr as usize;
-      pp.payload_size = payload_alloc_len;
-      pp.payload_align = align;
+    let pp = &mut *(obj as *mut PayloadPromise);
+    pp.payload_ptr.store(payload_ptr as usize, Ordering::Relaxed);
+    pp.payload_base_ptr = payload_base_ptr as usize;
+    pp.payload_size = payload_alloc_len;
+    pp.payload_align = align;
 
-      // Publish payload fields before setting the `HAS_PAYLOAD` flag so an Acquire load of `flags`
-      // also observes the payload pointer.
-      let mut flags = PROMISE_FLAG_HAS_PAYLOAD;
-      if external_pending {
-        flags |= PROMISE_FLAG_EXTERNAL_PENDING;
-      }
-      pp.header.flags.store(flags, Ordering::Release);
+    // Publish payload fields before setting the `HAS_PAYLOAD` flag so an Acquire load of `flags`
+    // also observes the payload pointer.
+    let mut flags = PROMISE_FLAG_HAS_PAYLOAD;
+    if external_pending {
+      flags |= PROMISE_FLAG_EXTERNAL_PENDING;
     }
+    pp.header.flags.store(flags, Ordering::Release);
+  }
 
+  // Register a finalizer and account for the external payload buffer. Acquiring the heap lock is
+  // GC-aware; if contended it may temporarily enter a GC-safe region while waiting. Root `obj` in an
+  // addressable slot so a moving GC can update it before we register the finalizer.
+  let slot = &mut obj as *mut *mut u8;
+  let mut scope = crate::roots::RootScope::new();
+  scope.push(slot);
+  crate::rt_alloc::with_global_heap_lock_mutator(|heap| unsafe {
+    let obj = slot.read();
     heap.register_finalizer(obj, payload_promise_finalizer);
     if payload_alloc_len != 0 {
       heap.add_external_bytes(payload_alloc_len);
     }
-
-    p
   });
+  drop(scope);
 
   if external_pending && !promise.is_null() {
     crate::async_rt::external_pending_inc();

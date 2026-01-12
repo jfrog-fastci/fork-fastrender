@@ -55,7 +55,7 @@ impl ShadowStack {
       // shadow-stack invariant with the stop-the-world epoch: mutation is only forbidden while a
       // stop-the-world GC is actively running.
       !super::gc_in_progress() || crate::threading::safepoint::current_epoch() & 1 == 0,
-      "cannot mutate shadow stack while GC is in progress"
+      "cannot mutate shadow stack while stop-the-world GC is in progress"
     );
     let slots = self.slots_mut();
 
@@ -70,7 +70,7 @@ impl ShadowStack {
   pub(crate) fn truncate(&self, len: usize) {
     debug_assert!(
       !super::gc_in_progress() || crate::threading::safepoint::current_epoch() & 1 == 0,
-      "cannot mutate shadow stack while GC is in progress"
+      "cannot mutate shadow stack while stop-the-world GC is in progress"
     );
     self.slots_mut().truncate(len);
   }
@@ -82,7 +82,7 @@ impl ShadowStack {
   pub(crate) fn set(&self, idx: usize, ptr: *mut u8) {
     debug_assert!(
       !super::gc_in_progress() || crate::threading::safepoint::current_epoch() & 1 == 0,
-      "cannot mutate shadow stack while GC is in progress"
+      "cannot mutate shadow stack while stop-the-world GC is in progress"
     );
     self.slots_mut()[idx] = ptr;
   }

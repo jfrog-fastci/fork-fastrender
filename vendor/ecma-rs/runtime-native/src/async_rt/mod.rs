@@ -720,6 +720,12 @@ pub(crate) fn cancel_all_pending_work_under_driver_guard() {
   let _guard = POLL_LOCK.lock();
   let _had_work = global().loop_.cancel_all();
 
+  // Detached parallel promise tasks (`rt_parallel_spawn_promise*`) store GC roots in the persistent
+  // handle table while queued. Tear down those tasks too so:
+  // - callbacks do not run after teardown, and
+  // - handle-table roots do not outlive the async runtime's cancelled state.
+  crate::parallel_integration::cancel_all_promise_tasks();
+
   // Cancellation abandons any in-flight "external pending" work (e.g. parallel tasks). Clear the
   // counter so the runtime can report idle after teardown.
   EXTERNAL_PENDING.store(0, Ordering::Release);
@@ -747,6 +753,7 @@ pub(crate) fn clear_state_for_tests() {
   // Treat resets as "driving" operations: they mutate the process-global async runtime state.
   let _ = with_driver_guard("clear_state_for_tests", || {
     let _guard = POLL_LOCK.lock();
+    crate::parallel_integration::cancel_all_promise_tasks();
     global().loop_.reset_for_tests();
     promise::cancel_all_pending_reactions();
     crate::unhandled_rejection::clear_state_for_tests();

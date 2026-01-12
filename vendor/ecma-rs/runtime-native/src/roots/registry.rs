@@ -327,9 +327,20 @@ impl RootRegistry {
     // - mutator threads cannot observe a stop-the-world (odd) epoch and still proceed holding this
     //   lock (they will safepoint instead).
     //
-    // The GC coordinator can still acquire the lock during stop-the-world: `GcAwareMutex::lock()`
-    // treats the coordinator thread as special and returns a guard even while the epoch is odd.
-    let mut inner = self.inner.lock();
+    // During stop-the-world GC, root enumeration may run on the coordinator thread even if it is
+    // not registered as a mutator (e.g. some tests call low-level STW helpers directly). In that
+    // case, `GcAwareMutex::lock()` may intentionally wait for the world to resume before returning
+    // if the mutex is contended. Use the coordinator-only `lock_for_gc()` path while STW is active
+    // to ensure enumeration can always make progress.
+    let epoch = crate::threading::safepoint::current_epoch();
+    let mut inner = if epoch & 1 == 1
+      && (crate::threading::safepoint::in_stop_the_world()
+        || crate::threading::safepoint::is_stop_the_world_coordinator(epoch))
+    {
+      self.inner.lock_for_gc()
+    } else {
+      self.inner.lock()
+    };
     for slot in &mut inner.slots {
       let Some(entry) = slot.entry.as_mut() else {
         continue;
@@ -527,6 +538,7 @@ impl Drop for RootScope {
 #[cfg(test)]
 mod tests {
   use super::*;
+  use std::process::Command;
   use std::sync::atomic::{AtomicBool, Ordering};
   use std::sync::{Arc, Barrier};
   use crate::threading;
@@ -581,22 +593,23 @@ mod tests {
   }
 
   #[test]
-  fn handle_api_multithreaded_stw_stress_no_deadlock() {
+  fn handle_api_multithreaded_stw_stress_no_deadlock_child() {
     let _rt = crate::test_util::TestRuntimeGuard::new();
+    if std::env::var_os("RT_HANDLE_STW_STRESS_CHILD").is_none() {
+      return;
+    }
 
     // Use multiple registered mutator threads so stop-the-world coordination is exercised.
-    //
-    // Keep debug/test builds modest: Rust unit tests run in parallel by default, and multi-agent CI
-    // hosts can be heavily oversubscribed. In that environment, a stress test that spawns many hot
-    // worker threads can starve a thread holding a contended lock long enough to trip stop-the-world
-    // watchdog timeouts, causing flaky failures.
-    const N_THREADS: usize = if cfg!(debug_assertions) { 2 } else { 4 };
-    const N_STW_CYCLES: usize = if cfg!(debug_assertions) { 10 } else { 25 };
+    // Keep debug builds conservative: unit tests run in parallel by default and this stress test
+    // spawns additional worker threads. On heavily contended CI hosts, using too many threads/stop
+    // cycles can lead to flaky stop-the-world watchdog timeouts even when the protocol is correct.
+    let n_threads: usize = if cfg!(debug_assertions) { 2 } else { 4 };
+    let stw_iters: usize = if cfg!(debug_assertions) { 10 } else { 25 };
     let stop = Arc::new(AtomicBool::new(false));
-    let start = Arc::new(Barrier::new(N_THREADS + 1));
+    let start = Arc::new(Barrier::new(n_threads + 1));
 
     let mut workers = Vec::new();
-    for t in 0..N_THREADS {
+    for t in 0..n_threads {
       let stop = stop.clone();
       let start = start.clone();
       workers.push(std::thread::spawn(move || {
@@ -637,7 +650,7 @@ mod tests {
 
     // Stop-the-world while worker threads are actively contending on the handle table lock.
     let stw_res = std::panic::catch_unwind(|| {
-      for _ in 0..N_STW_CYCLES {
+      for _ in 0..stw_iters {
         crate::safepoint::with_world_stopped(|| {});
         // Yield between stop-the-world cycles so mutator threads reliably get CPU time to make
         // forward progress on heavily contended test runners.
@@ -653,6 +666,23 @@ mod tests {
     if let Err(panic) = stw_res {
       std::panic::resume_unwind(panic);
     }
+  }
+
+  #[test]
+  fn handle_api_multithreaded_stw_stress_no_deadlock() {
+    // Stop-the-world stress tests are inherently sensitive to other tests running in parallel:
+    // other threads in the same process can delay safepoint handshakes or contend on global locks.
+    //
+    // Run the stress loop in an isolated child process to keep the result deterministic without
+    // requiring `--test-threads=1` globally.
+    let exe = std::env::current_exe().expect("current_exe");
+    let status = Command::new(exe)
+      .env("RT_HANDLE_STW_STRESS_CHILD", "1")
+      .arg("--exact")
+      .arg("roots::registry::tests::handle_api_multithreaded_stw_stress_no_deadlock_child")
+      .status()
+      .expect("spawn child");
+    assert!(status.success(), "expected child to exit successfully");
   }
 
   #[test]

@@ -6,7 +6,9 @@ use crate::abi::{
   RT_PROMISE_RESOLVE_THENABLE, RT_PROMISE_RESOLVE_VALUE,
 };
 use crate::async_abi::{PromiseHeader, PROMISE_FLAG_EXTERNAL_PENDING, PROMISE_FLAG_HAS_PAYLOAD};
+use crate::async_runtime::PromiseLayout;
 use crate::gc::HandleId;
+use crate::gc::TypeDescriptor;
 use crate::promise_reactions::{
   decode_waiters_ptr, enqueue_reaction_jobs, reverse_list, PromiseReactionNode, PromiseReactionVTable,
 };
@@ -467,6 +469,44 @@ pub(crate) enum PromiseOutcome {
 struct PayloadPromise {
   header: PromiseHeader,
   payload_ptr: AtomicUsize,
+  payload_size: usize,
+  payload_align: usize,
+}
+
+// IMPORTANT: `payload_ptr` points to non-GC memory (malloc) and must never be treated as a GC
+// reference. That means this descriptor must contain **no** pointer offsets.
+#[allow(dead_code)]
+static PAYLOAD_PROMISE_DESC: TypeDescriptor =
+  TypeDescriptor::new(core::mem::size_of::<PayloadPromise>(), &[]);
+
+static PAYLOAD_PROMISE_PAYLOAD_BYTES_ALLOCATED: AtomicUsize = AtomicUsize::new(0);
+static PAYLOAD_PROMISE_PAYLOAD_BYTES_FREED: AtomicUsize = AtomicUsize::new(0);
+
+#[doc(hidden)]
+pub(crate) fn debug_payload_promise_payload_bytes() -> (usize, usize) {
+  (
+    PAYLOAD_PROMISE_PAYLOAD_BYTES_ALLOCATED.load(Ordering::Relaxed),
+    PAYLOAD_PROMISE_PAYLOAD_BYTES_FREED.load(Ordering::Relaxed),
+  )
+}
+
+#[allow(dead_code)]
+unsafe fn finalize_payload_promise(_heap: &mut crate::gc::GcHeap, obj: *mut u8) {
+  // Safety: `obj` points at a `PayloadPromise` allocation.
+  let promise = &*(obj as *const PayloadPromise);
+  let payload_ptr = promise.payload_ptr.load(Ordering::Relaxed) as *mut u8;
+  let size = promise.payload_size;
+  let align = promise.payload_align;
+
+  if payload_ptr.is_null() || size == 0 {
+    return;
+  }
+
+  let layout = std::alloc::Layout::from_size_align(size, align).unwrap_or_else(|_| std::process::abort());
+  unsafe {
+    std::alloc::dealloc(payload_ptr, layout);
+  }
+  PAYLOAD_PROMISE_PAYLOAD_BYTES_FREED.fetch_add(size, Ordering::Relaxed);
 }
 
 enum PromiseClass {
@@ -598,6 +638,76 @@ pub(crate) fn promise_new() -> LegacyPromiseRef {
   LegacyPromiseRef(Box::into_raw(Box::new(RtPromise::new_pending())).cast())
 }
 
+#[allow(dead_code)]
+pub(crate) fn promise_new_with_payload(layout: PromiseLayout) -> PromiseRef {
+  let size = layout.size;
+  let align = layout.align.max(1);
+  if !align.is_power_of_two() {
+    crate::trap::rt_trap_invalid_arg("promise payload align must be a power of two");
+  }
+
+  // Allocate the out-of-line payload buffer outside the GC heap, but free it when the promise
+  // becomes unreachable (via a GC finalizer registered on the promise object).
+  //
+  // Zero the payload buffer for determinism and to avoid exposing uninitialized bytes if the
+  // producer doesn't fully write the output struct.
+  let payload = if size == 0 {
+    core::ptr::null_mut()
+  } else {
+    let layout = std::alloc::Layout::from_size_align(size, align)
+      .unwrap_or_else(|_| crate::trap::rt_trap_invalid_arg("invalid promise payload layout"));
+    let ptr = unsafe { std::alloc::alloc_zeroed(layout) };
+    if ptr.is_null() {
+      crate::trap::rt_trap_oom(size, "promise payload");
+    }
+    PAYLOAD_PROMISE_PAYLOAD_BYTES_ALLOCATED.fetch_add(size, Ordering::Relaxed);
+    ptr
+  };
+
+  // Allocate a GC-managed promise header so it can relocate under minor/major GC.
+  let mut promise_obj: *mut u8 = crate::rt_alloc::alloc_typed(&PAYLOAD_PROMISE_DESC);
+  if promise_obj.is_null() {
+    std::process::abort();
+  }
+
+  // Initialize the promise object body. `rt_alloc` has already initialized the `ObjHeader` prefix
+  // (type descriptor + metadata bits) and zeroed the allocation; only initialize the promise
+  // protocol fields and payload metadata here.
+  let promise = promise_obj.cast::<PayloadPromise>();
+  unsafe {
+    (*promise).header.state.store(PromiseHeader::PENDING, Ordering::Relaxed);
+    (*promise).header.waiters.store(0, Ordering::Relaxed);
+    (*promise).payload_ptr.store(payload as usize, Ordering::Relaxed);
+    (*promise).payload_size = size;
+    (*promise).payload_align = align;
+    // Publish the payload pointer before setting the "has payload" flag so that a thread reading
+    // `flags` with `Acquire` will also observe the `payload_ptr` store.
+    (*promise)
+      .header
+      .flags
+      .store(PROMISE_FLAG_HAS_PAYLOAD, Ordering::Release);
+  }
+
+  // Register a finalizer so the out-of-line payload buffer is reclaimed when the promise becomes
+  // unreachable.
+  if size != 0 {
+    // Root the promise pointer across potential lock contention while registering the finalizer: if
+    // we block while holding only an unrooted raw pointer, a moving GC could relocate the promise
+    // and leave us registering the finalizer on a stale address.
+    let slot = &mut promise_obj as *mut *mut u8;
+    let mut scope = crate::roots::RootScope::new();
+    scope.push(slot);
+    crate::rt_alloc::with_global_heap_lock_mutator(|heap| unsafe {
+      // Safety: `slot` points at a rooted GC pointer and is updated if the object moves while we
+      // contend on internal locks.
+      let obj = slot.read();
+      heap.register_finalizer(obj, finalize_payload_promise);
+    });
+    drop(scope);
+  }
+
+  PromiseRef(promise_obj.cast::<runtime_native_abi::PromiseHeader>())
+}
 pub(crate) fn promise_payload_ptr(p: PromiseRef) -> *mut u8 {
   match classify_promise(p) {
     PromiseClass::Payload(payload) => {
