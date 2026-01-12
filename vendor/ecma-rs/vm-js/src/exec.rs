@@ -13911,6 +13911,11 @@ fn async_eval_expr(
     Expr::LitObj(obj) => async_eval_lit_obj(evaluator, scope, &obj.stx),
     Expr::LitTemplate(tpl) => async_eval_lit_template(evaluator, scope, &tpl.stx),
     Expr::TaggedTemplate(tag) => async_eval_tagged_template(evaluator, scope, tag),
+    // TypeScript-only nodes: only the wrapped expression is evaluated.
+    Expr::Instantiation(inst) => async_eval_expr(evaluator, scope, &inst.stx.expression),
+    Expr::TypeAssertion(expr) => async_eval_expr(evaluator, scope, &expr.stx.expression),
+    Expr::NonNullAssertion(expr) => async_eval_expr(evaluator, scope, &expr.stx.expression),
+    Expr::SatisfiesExpr(expr) => async_eval_expr(evaluator, scope, &expr.stx.expression),
     _ => Err(VmError::Unimplemented("await in expression type")),
   }
 }
@@ -15945,10 +15950,22 @@ fn async_binary_after_left(
       async_eval_expr(evaluator, scope, &expr.right)
     }
     OperatorName::Addition
+    | OperatorName::Multiplication
+    | OperatorName::BitwiseAnd
+    | OperatorName::BitwiseOr
+    | OperatorName::BitwiseXor
+    | OperatorName::BitwiseLeftShift
+    | OperatorName::BitwiseRightShift
+    | OperatorName::BitwiseUnsignedRightShift
+    | OperatorName::Subtraction
+    | OperatorName::Division
+    | OperatorName::Remainder
     | OperatorName::StrictEquality
     | OperatorName::StrictInequality
     | OperatorName::Equality
     | OperatorName::Inequality
+    | OperatorName::In
+    | OperatorName::Instanceof
     | OperatorName::LessThan
     | OperatorName::LessThanOrEqual
     | OperatorName::GreaterThan
@@ -15990,18 +16007,205 @@ fn async_apply_binary_operator(
   left: Value,
   right: Value,
 ) -> Result<Value, VmError> {
+  // Root both operands for the duration of operator application: conversions like
+  // `ToPrimitive`/`ToNumeric`/`ToPropertyKey` can allocate and trigger GC.
+  let mut op_scope = scope.reborrow();
+  op_scope.push_roots(&[left, right])?;
+
   match operator {
-    OperatorName::Addition => {
-      let mut op_scope = scope.reborrow();
-      op_scope.push_roots(&[left, right])?;
-      evaluator
-        .addition_operator(&mut op_scope, left, right)
-        .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut op_scope, err))
+    OperatorName::Addition => evaluator
+      .addition_operator(&mut op_scope, left, right)
+      .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut op_scope, err)),
+    OperatorName::Multiplication => {
+      let left_num = evaluator
+        .to_numeric(&mut op_scope, left)
+        .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut op_scope, err))?;
+      let right_num = evaluator
+        .to_numeric(&mut op_scope, right)
+        .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut op_scope, err))?;
+      match (left_num, right_num) {
+        (NumericValue::Number(a), NumericValue::Number(b)) => Ok(Value::Number(a * b)),
+        (NumericValue::BigInt(a), NumericValue::BigInt(b)) => {
+          let Some(out) = a.checked_mul(b) else {
+            return Err(VmError::Unimplemented("BigInt multiplication overflow"));
+          };
+          Ok(Value::BigInt(out))
+        }
+        _ => Err(throw_type_error(
+          evaluator.vm,
+          &mut op_scope,
+          "Cannot mix BigInt and other types",
+        )?),
+      }
+    }
+    OperatorName::BitwiseAnd | OperatorName::BitwiseOr | OperatorName::BitwiseXor => {
+      let left_num = evaluator
+        .to_numeric(&mut op_scope, left)
+        .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut op_scope, err))?;
+      let right_num = evaluator
+        .to_numeric(&mut op_scope, right)
+        .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut op_scope, err))?;
+      match (left_num, right_num) {
+        (NumericValue::Number(a), NumericValue::Number(b)) => {
+          let a = to_int32(a);
+          let b = to_int32(b);
+          let out = match operator {
+            OperatorName::BitwiseAnd => a & b,
+            OperatorName::BitwiseOr => a | b,
+            OperatorName::BitwiseXor => a ^ b,
+            _ => unreachable!(),
+          };
+          Ok(Value::Number(out as f64))
+        }
+        (NumericValue::BigInt(a), NumericValue::BigInt(b)) => {
+          let out = match operator {
+            OperatorName::BitwiseAnd => a.checked_bitwise_and(b),
+            OperatorName::BitwiseOr => a.checked_bitwise_or(b),
+            OperatorName::BitwiseXor => a.checked_bitwise_xor(b),
+            _ => unreachable!(),
+          };
+          let Some(out) = out else {
+            return Err(VmError::Unimplemented("BigInt bitwise out of range"));
+          };
+          Ok(Value::BigInt(out))
+        }
+        _ => Err(throw_type_error(
+          evaluator.vm,
+          &mut op_scope,
+          "Cannot mix BigInt and other types",
+        )?),
+      }
+    }
+    OperatorName::BitwiseLeftShift
+    | OperatorName::BitwiseRightShift
+    | OperatorName::BitwiseUnsignedRightShift => {
+      let left_num = evaluator
+        .to_numeric(&mut op_scope, left)
+        .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut op_scope, err))?;
+      let right_num = evaluator
+        .to_numeric(&mut op_scope, right)
+        .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut op_scope, err))?;
+
+      match (left_num, right_num) {
+        (NumericValue::Number(a), NumericValue::Number(b)) => {
+          let shift = (to_uint32(b) & 0x1f) as u32;
+          match operator {
+            OperatorName::BitwiseLeftShift => {
+              let a = to_int32(a);
+              Ok(Value::Number(a.wrapping_shl(shift) as f64))
+            }
+            OperatorName::BitwiseRightShift => {
+              let a = to_int32(a);
+              Ok(Value::Number(a.wrapping_shr(shift) as f64))
+            }
+            OperatorName::BitwiseUnsignedRightShift => {
+              let a = to_uint32(a);
+              Ok(Value::Number((a >> shift) as f64))
+            }
+            _ => unreachable!(),
+          }
+        }
+        (NumericValue::BigInt(a), NumericValue::BigInt(b)) => {
+          if matches!(operator, OperatorName::BitwiseUnsignedRightShift) {
+            return Err(throw_type_error(
+              evaluator.vm,
+              &mut op_scope,
+              "BigInt does not support unsigned right shift",
+            )?);
+          }
+
+          let (shift_negative, shift) = match b.try_to_i128() {
+            Some(shift_i) => {
+              let shift_mag: u128 = if shift_i == i128::MIN {
+                1u128 << 127
+              } else if shift_i < 0 {
+                (-shift_i) as u128
+              } else {
+                shift_i as u128
+              };
+              let shift = u32::try_from(shift_mag).unwrap_or(u32::MAX).min(256);
+              (shift_i < 0, shift)
+            }
+            None => (b.is_negative(), 256),
+          };
+
+          match operator {
+            OperatorName::BitwiseLeftShift => {
+              if shift_negative {
+                Ok(Value::BigInt(a.shr(shift)))
+              } else {
+                let Some(out) = a.checked_shl(shift) else {
+                  return Err(VmError::Unimplemented("BigInt left shift overflow"));
+                };
+                Ok(Value::BigInt(out))
+              }
+            }
+            OperatorName::BitwiseRightShift => {
+              if shift_negative {
+                let Some(out) = a.checked_shl(shift) else {
+                  return Err(VmError::Unimplemented("BigInt left shift overflow"));
+                };
+                Ok(Value::BigInt(out))
+              } else {
+                Ok(Value::BigInt(a.shr(shift)))
+              }
+            }
+            OperatorName::BitwiseUnsignedRightShift => unreachable!(),
+            _ => unreachable!(),
+          }
+        }
+        _ => Err(throw_type_error(
+          evaluator.vm,
+          &mut op_scope,
+          "Cannot mix BigInt and other types",
+        )?),
+      }
+    }
+    OperatorName::Subtraction | OperatorName::Division | OperatorName::Remainder => {
+      let left_num = evaluator
+        .to_numeric(&mut op_scope, left)
+        .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut op_scope, err))?;
+      let right_num = evaluator
+        .to_numeric(&mut op_scope, right)
+        .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut op_scope, err))?;
+
+      match (left_num, right_num) {
+        (NumericValue::Number(a), NumericValue::Number(b)) => Ok(match operator {
+          OperatorName::Subtraction => Value::Number(a - b),
+          OperatorName::Division => Value::Number(a / b),
+          OperatorName::Remainder => Value::Number(a % b),
+          _ => unreachable!(),
+        }),
+        (NumericValue::BigInt(a), NumericValue::BigInt(b)) => {
+          if b.is_zero() && matches!(operator, OperatorName::Division | OperatorName::Remainder) {
+            return Err(throw_range_error(evaluator.vm, &mut op_scope, "Division by zero")?);
+          }
+
+          let out = match operator {
+            OperatorName::Subtraction => a
+              .checked_sub(b)
+              .ok_or(VmError::Unimplemented("BigInt subtraction overflow"))?,
+            OperatorName::Division => a
+              .checked_div(b)
+              .ok_or(VmError::InvariantViolation("BigInt division returned None"))?,
+            OperatorName::Remainder => a.checked_rem(b).ok_or(VmError::InvariantViolation(
+              "BigInt remainder returned None",
+            ))?,
+            _ => unreachable!(),
+          };
+          Ok(Value::BigInt(out))
+        }
+        _ => Err(throw_type_error(
+          evaluator.vm,
+          &mut op_scope,
+          "Cannot mix BigInt and other types",
+        )?),
+      }
     }
     OperatorName::StrictEquality => {
       let mut tick = || evaluator.tick();
       Ok(Value::Bool(strict_equal_with_tick(
-        scope.heap(),
+        op_scope.heap(),
         left,
         right,
         &mut tick,
@@ -16010,39 +16214,67 @@ fn async_apply_binary_operator(
     OperatorName::StrictInequality => {
       let mut tick = || evaluator.tick();
       Ok(Value::Bool(!strict_equal_with_tick(
-        scope.heap(),
+        op_scope.heap(),
         left,
         right,
         &mut tick,
       )?))
     }
     OperatorName::Equality => {
-      let mut op_scope = scope.reborrow();
-      op_scope.push_roots(&[left, right])?;
       let ok = evaluator
         .abstract_equality_comparison(&mut op_scope, left, right)
         .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut op_scope, err))?;
       Ok(Value::Bool(ok))
     }
     OperatorName::Inequality => {
-      let mut op_scope = scope.reborrow();
-      op_scope.push_roots(&[left, right])?;
       let ok = evaluator
         .abstract_equality_comparison(&mut op_scope, left, right)
         .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut op_scope, err))?;
       Ok(Value::Bool(!ok))
     }
+    OperatorName::In => {
+      let Value::Object(obj) = right else {
+        return Err(throw_type_error(
+          evaluator.vm,
+          &mut op_scope,
+          "Right-hand side of 'in' should be an object",
+        )?);
+      };
+
+      let key = evaluator
+        .to_property_key_operator(&mut op_scope, left)
+        .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut op_scope, err))?;
+
+      Ok(Value::Bool(
+        crate::spec_ops::internal_has_property_with_host_and_hooks(
+          evaluator.vm,
+          &mut op_scope,
+          &mut *evaluator.host,
+          &mut *evaluator.hooks,
+          obj,
+          key,
+        )
+        .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut op_scope, err))?,
+      ))
+    }
+    OperatorName::Instanceof => Ok(Value::Bool(
+      evaluator
+        .instanceof_operator(&mut op_scope, left, right)
+        .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut op_scope, err))?,
+    )),
     OperatorName::LessThan
     | OperatorName::LessThanOrEqual
     | OperatorName::GreaterThan
     | OperatorName::GreaterThanOrEqual => {
-      let mut op_scope = scope.reborrow();
-      op_scope.push_roots(&[left, right])?;
       let ok = evaluator
         .relational_comparison_operator(&mut op_scope, operator, left, right)
         .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut op_scope, err))?;
       Ok(Value::Bool(ok))
     }
+    // Assignment operators are handled separately (they require reference semantics).
+    OperatorName::Assignment | OperatorName::AssignmentAddition => Err(VmError::InvariantViolation(
+      "internal error: assignment operator in async_apply_binary_operator",
+    )),
     _ => Err(VmError::Unimplemented("binary operator")),
   }
 }

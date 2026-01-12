@@ -1248,3 +1248,159 @@ fn await_in_with_object_expression() -> Result<(), VmError> {
   assert_eq!(value_to_string(&rt, value), "ok");
   Ok(())
 }
+
+#[test]
+fn await_in_object_literal_value_expression() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(
+    r#"
+      var out = "";
+      async function f() { return ({ x: await Promise.resolve("ok") }).x; }
+      f().then(function (v) { out = v; });
+      out
+    "#,
+  )?;
+  assert_eq!(value_to_string(&rt, value), "");
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let value = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, value), "ok");
+  Ok(())
+}
+
+#[test]
+fn await_in_array_literal_element_expression() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(
+    r#"
+      var out = "";
+      async function f() { return [await Promise.resolve("ok")][0]; }
+      f().then(function (v) { out = v; });
+      out
+    "#,
+  )?;
+  assert_eq!(value_to_string(&rt, value), "");
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let value = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, value), "ok");
+  Ok(())
+}
+
+#[test]
+fn await_in_template_literal_substitution() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(
+    r#"
+      var out = "";
+      async function f() { return `a${await Promise.resolve("b")}c`; }
+      f().then(function (v) { out = v; });
+      out
+    "#,
+  )?;
+  assert_eq!(value_to_string(&rt, value), "");
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let value = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, value), "abc");
+  Ok(())
+}
+
+#[test]
+fn await_in_tagged_template_substitution() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(
+    r#"
+      var out = "";
+      function tag(s, v) { return s[0] + v + s[1]; }
+      async function f() { return tag`a${await Promise.resolve("b")}c`; }
+      f().then(function (v) { out = v; });
+      out
+    "#,
+  )?;
+  assert_eq!(value_to_string(&rt, value), "");
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let value = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, value), "abc");
+  Ok(())
+}
+
+#[test]
+fn await_in_multiplication_binary_operator() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(
+    r#"
+      var out = 0;
+      async function f() { return (await Promise.resolve(3)) * 2; }
+      f().then(function (v) { out = v; });
+      out
+    "#,
+  )?;
+  assert!(matches!(value, Value::Number(n) if n == 0.0));
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let value = rt.exec_script("out")?;
+  assert!(matches!(value, Value::Number(n) if n == 6.0));
+  Ok(())
+}
+
+#[test]
+fn await_in_assignment_expression() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(
+    r#"
+      var out = "";
+      async function f() {
+        let x;
+        x = await Promise.resolve("ok");
+        return x;
+      }
+      f().then(function (v) { out = v; });
+      out
+    "#,
+  )?;
+  assert_eq!(value_to_string(&rt, value), "");
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let value = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, value), "ok");
+  Ok(())
+}
+
+#[test]
+fn await_in_compound_assignment_expression() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(
+    r#"
+      var out = 0;
+      async function f() {
+        let x = 1;
+        x += await Promise.resolve(2);
+        return x;
+      }
+      f().then(function (v) { out = v; });
+      out
+    "#,
+  )?;
+  assert!(matches!(value, Value::Number(n) if n == 0.0));
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let value = rt.exec_script("out")?;
+  assert!(matches!(value, Value::Number(n) if n == 3.0));
+  Ok(())
+}

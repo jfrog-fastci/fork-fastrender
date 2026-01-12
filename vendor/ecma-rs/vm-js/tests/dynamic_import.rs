@@ -625,6 +625,70 @@ fn dynamic_import_from_function_body_works() -> Result<(), VmError> {
 }
 
 #[test]
+fn dynamic_import_with_awaited_specifier_works() -> Result<(), VmError> {
+  let mut rt = new_runtime()?;
+
+  let dep = rt
+    .modules_mut()
+    .add_module(SourceTextModuleRecord::parse("export const y = 1;")?);
+  let m = rt.modules_mut().add_module(SourceTextModuleRecord::parse(
+    "export { y } from './dep.js'; export const x = 1;",
+  )?);
+
+  let mut host = TestHostHooks::new();
+  host.register_module("./m.js", m);
+  host.register_module("./dep.js", dep);
+
+  // Exercise `import()` where the specifier expression itself contains an `await`.
+  rt.exec_script_with_hooks(
+    &mut host,
+    r#"
+      var result;
+      async function f() {
+        return import(await Promise.resolve("./m.js"));
+      }
+      f().then(function (ns) { result = ns; });
+    "#,
+  )?;
+
+  // `f` should suspend on the awaited specifier before reaching the dynamic import.
+  assert_eq!(host.pending_count(), 0);
+
+  host.perform_microtask_checkpoint(&mut rt)?;
+
+  // Resumption should trigger the dynamic import and enqueue a host module load.
+  assert_eq!(host.pending_count(), 1);
+  host.complete_load_for(&mut rt, "./m.js");
+  assert_eq!(host.pending_count(), 1);
+  host.complete_load_for(&mut rt, "./dep.js");
+
+  // Run the `.then(ns => result = ns)` callback.
+  host.perform_microtask_checkpoint(&mut rt)?;
+
+  let result_value = rt.exec_script_with_hooks(&mut host, "result")?;
+  let Value::Object(ns_obj) = result_value else {
+    return Err(VmError::InvariantViolation(
+      "result should be set to a namespace object",
+    ));
+  };
+
+  let mut scope = rt.heap.scope();
+  let x_key = PropertyKey::from_string(scope.alloc_string("x")?);
+  let y_key = PropertyKey::from_string(scope.alloc_string("y")?);
+
+  let x_value =
+    scope.ordinary_get_with_host(&mut rt.vm, &mut host, ns_obj, x_key, Value::Object(ns_obj))?;
+  let y_value =
+    scope.ordinary_get_with_host(&mut rt.vm, &mut host, ns_obj, y_key, Value::Object(ns_obj))?;
+  assert!(matches!(x_value, Value::Number(n) if n == 1.0));
+  assert!(matches!(y_value, Value::Number(n) if n == 1.0));
+
+  drop(scope);
+  host.teardown_jobs(&mut rt);
+  Ok(())
+}
+
+#[test]
 fn dynamic_import_from_promise_callback_works() -> Result<(), VmError> {
   let mut rt = new_runtime()?;
 
