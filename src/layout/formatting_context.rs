@@ -519,6 +519,24 @@ fn ensure_intrinsic_thread_epoch(epoch: usize) {
 }
 
 pub(crate) fn intrinsic_cache_lookup(node: &BoxNode, mode: IntrinsicSizingMode) -> Option<f32> {
+  #[cfg(test)]
+  let _test_lock_guard = {
+    // When cache behavior is being asserted in a unit test, other concurrently-running tests can
+    // pollute the global cache/counters and make stats-based assertions flaky.
+    //
+    // `intrinsic_cache_test_lock()` is a re-entrant mutex so the test thread can safely call into
+    // layout/intrinsic code while holding the lock. Non-owning threads fail fast here and bypass
+    // caching, avoiding cross-test interference without risking deadlocks.
+    if INTRINSIC_CACHE_TEST_LOCK_DEPTH.load(Ordering::Relaxed) > 0 {
+      match INTRINSIC_CACHE_TEST_LOCK.try_lock() {
+        Some(guard) => Some(guard),
+        None => return None,
+      }
+    } else {
+      None
+    }
+  };
+
   CACHE_LOOKUPS.inc();
   let epoch = CACHE_EPOCH.load(Ordering::Relaxed);
   ensure_intrinsic_thread_epoch(epoch);
@@ -553,6 +571,18 @@ pub(crate) fn intrinsic_cache_lookup(node: &BoxNode, mode: IntrinsicSizingMode) 
 }
 
 pub(crate) fn intrinsic_cache_store(node: &BoxNode, mode: IntrinsicSizingMode, value: f32) {
+  #[cfg(test)]
+  let _test_lock_guard = {
+    if INTRINSIC_CACHE_TEST_LOCK_DEPTH.load(Ordering::Relaxed) > 0 {
+      match INTRINSIC_CACHE_TEST_LOCK.try_lock() {
+        Some(guard) => Some(guard),
+        None => return,
+      }
+    } else {
+      None
+    }
+  };
+
   let epoch = CACHE_EPOCH.load(Ordering::Relaxed);
   ensure_intrinsic_thread_epoch(epoch);
 
@@ -2052,10 +2082,16 @@ impl std::error::Error for LayoutError {}
 mod tests {
   use super::*;
   use crate::geometry::{Rect, Size};
+  use crate::layout::contexts::block::BlockFormattingContext;
+  use crate::layout::contexts::factory::FormattingContextFactory;
+  use crate::layout::engine::LayoutParallelism;
   use crate::style::display::{Display, FormattingContextType};
+  use crate::style::float::Float;
   use crate::style::types::IntrinsicSizeKeyword;
   use crate::style::values::Length;
   use crate::style::ComputedStyle;
+  use crate::text::font_loader::FontContext;
+  use crate::tree::fragment_tree::FragmentContent;
   use rayon::ThreadPoolBuilder;
   use std::sync::atomic::Ordering;
   use std::sync::Arc;
@@ -2317,6 +2353,109 @@ mod tests {
         None
       );
     });
+
+    intrinsic_cache_use_epoch(1, true);
+  }
+
+  fn find_fragment_by_box_id<'a>(fragment: &'a FragmentNode, box_id: usize) -> Option<&'a FragmentNode> {
+    let mut stack = vec![fragment];
+    while let Some(node) = stack.pop() {
+      let matches_id = match &node.content {
+        FragmentContent::Block { box_id: Some(id) }
+        | FragmentContent::Inline { box_id: Some(id), .. }
+        | FragmentContent::Text { box_id: Some(id), .. }
+        | FragmentContent::Replaced { box_id: Some(id), .. } => *id == box_id,
+        _ => false,
+      };
+      if matches_id {
+        return Some(node);
+      }
+      for child in node.children.iter() {
+        stack.push(child);
+      }
+    }
+    None
+  }
+
+  #[test]
+  fn float_shrink_to_fit_reuses_intrinsic_cache() {
+    let _guard = intrinsic_cache_test_lock();
+    intrinsic_cache_use_epoch(1, true);
+
+    let viewport = crate::geometry::Size::new(800.0, 600.0);
+    let factory = FormattingContextFactory::with_font_context_and_viewport(FontContext::new(), viewport)
+      .with_parallelism(LayoutParallelism::disabled());
+    let fc = BlockFormattingContext::with_factory(factory);
+
+    let mut root_style = ComputedStyle::default();
+    root_style.display = Display::Block;
+    root_style.width = Some(Length::px(300.0));
+
+    let mut float_style = ComputedStyle::default();
+    float_style.display = Display::Block;
+    float_style.float = Float::Left;
+
+    let mut text_style = ComputedStyle::default();
+    text_style.display = Display::Inline;
+
+    let text = BoxNode::new_text(
+      Arc::new(text_style),
+      "supercalifragilisticexpialidocious".to_string(),
+    );
+
+    let mut float_node = BoxNode::new_block(
+      Arc::new(float_style),
+      FormattingContextType::Block,
+      vec![text],
+    );
+    float_node.id = 2;
+
+    let mut root = BoxNode::new_block(
+      Arc::new(root_style),
+      FormattingContextType::Block,
+      vec![float_node],
+    );
+    root.id = 1;
+
+    let constraints = LayoutConstraints::definite(300.0, 600.0);
+
+    let fragment1 = fc.layout(&root, &constraints).expect("first layout should succeed");
+    let float_fragment1 = find_fragment_by_box_id(&fragment1, 2).expect("float fragment should exist");
+    let width1 = float_fragment1.bounds.width();
+
+    let (lookups1, hits1, stores1, ..) = intrinsic_cache_stats();
+
+    let fragment2 = fc.layout(&root, &constraints).expect("second layout should succeed");
+    let float_fragment2 = find_fragment_by_box_id(&fragment2, 2).expect("float fragment should exist");
+    let width2 = float_fragment2.bounds.width();
+
+    assert!(
+      (width1 - width2).abs() < 0.01,
+      "expected shrink-to-fit float width to be stable across cached layout passes ({} vs {})",
+      width1,
+      width2
+    );
+
+    let (lookups2, hits2, stores2, ..) = intrinsic_cache_stats();
+
+    assert!(
+      stores1 > 0,
+      "expected first layout to populate intrinsic cache (stores={stores1})"
+    );
+    assert_eq!(
+      stores2, stores1,
+      "expected second layout to reuse intrinsic cache (stores increased: {stores1} -> {stores2})"
+    );
+    assert_eq!(
+      lookups2.saturating_sub(lookups1),
+      2,
+      "expected second layout to perform exactly two intrinsic cache lookups for shrink-to-fit sizing"
+    );
+    assert_eq!(
+      hits2.saturating_sub(hits1),
+      2,
+      "expected second layout to hit the intrinsic cache for both min/max-content measurements"
+    );
 
     intrinsic_cache_use_epoch(1, true);
   }

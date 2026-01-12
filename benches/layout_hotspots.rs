@@ -13,6 +13,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use fastrender::layout::constraints::LayoutConstraints;
 use fastrender::layout::contexts::block::BlockFormattingContext;
 use fastrender::layout::engine::LayoutParallelism;
 use fastrender::layout::table::{TableFormattingContext, TableStructure};
@@ -21,6 +22,7 @@ use fastrender::layout::taffy_integration::{
   TaffyPerfCountersGuard,
 };
 use fastrender::style::display::Display;
+use fastrender::style::float::Float;
 use fastrender::style::types::{BorderCollapse, BorderStyle, FlexWrap, TableLayout};
 use fastrender::style::values::Length;
 use fastrender::{
@@ -193,6 +195,42 @@ fn assign_box_ids(node: &mut BoxNode, next: &mut usize) {
   for child in &mut node.children {
     assign_box_ids(child, next);
   }
+}
+
+fn build_float_shrink_to_fit_tree(float_count: usize) -> BoxTree {
+  // Regression protected:
+  // - Float shrink-to-fit sizing performs intrinsic measurement on the float subtree.
+  //   Reusing the intrinsic cache avoids repeated measurement when the same float-heavy subtree is
+  //   laid out repeatedly (e.g. incremental layout / container query second pass).
+
+  const TEXT: &str = "supercalifragilisticexpialidocious";
+
+  let mut root_style = ComputedStyle::default();
+  root_style.display = Display::Block;
+  root_style.width = Some(Length::px(800.0));
+  let root_style = Arc::new(root_style);
+
+  let mut float_style = ComputedStyle::default();
+  float_style.display = Display::Block;
+  float_style.float = Float::Left;
+  let float_style = Arc::new(float_style);
+
+  let mut text_style = ComputedStyle::default();
+  text_style.display = Display::Inline;
+  let text_style = Arc::new(text_style);
+
+  let mut children = Vec::with_capacity(float_count);
+  for idx in 0..float_count {
+    let text = BoxNode::new_text(text_style.clone(), format!("float-{idx} {TEXT} {TEXT} {TEXT}"));
+    children.push(BoxNode::new_block(
+      float_style.clone(),
+      FormattingContextType::Block,
+      vec![text],
+    ));
+  }
+
+  let root = BoxNode::new_block(root_style, FormattingContextType::Block, children);
+  BoxTree::new(root)
 }
 
 fn build_table_tree(rows: usize, cols: usize) -> BoxNode {
@@ -411,6 +449,27 @@ fn bench_block_intrinsic_many_inline_runs(c: &mut Criterion) {
   group.finish();
 }
 
+fn bench_float_shrink_to_fit_sizing(c: &mut Criterion) {
+  common::bench_print_config_once("layout_hotspots", &[]);
+  let viewport = Size::new(800.0, 600.0);
+  let font_ctx = common::fixed_font_context();
+  let bfc = BlockFormattingContext::with_font_context_and_viewport(font_ctx, viewport);
+  let box_tree = build_float_shrink_to_fit_tree(128);
+  let constraints = LayoutConstraints::definite(800.0, 600.0);
+
+  // Warm intrinsic caches for a steady-state benchmark.
+  let _ = bfc.layout(&box_tree.root, &constraints);
+
+  c.bench_function("layout_hotspots_float_shrink_to_fit_cached", |b| {
+    b.iter(|| {
+      let fragment = bfc
+        .layout(black_box(&box_tree.root), black_box(&constraints))
+        .expect("layout should succeed");
+      black_box(fragment);
+    })
+  });
+}
+
 fn bench_table_cell_intrinsic_and_distribution(c: &mut Criterion) {
   common::bench_print_config_once("layout_hotspots", &[]);
   let viewport = Size::new(960.0, 720.0);
@@ -496,6 +555,7 @@ criterion_group!(
     bench_flex_measure_hot_path,
     bench_block_intrinsic_sizing,
     bench_block_intrinsic_many_inline_runs,
+    bench_float_shrink_to_fit_sizing,
     bench_table_cell_intrinsic_and_distribution,
     bench_inline_layout_cache
 );
