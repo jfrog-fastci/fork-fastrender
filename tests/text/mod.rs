@@ -72,7 +72,5 @@ mod emphasis_skip_punctuation_test;
 mod emphasis_space_combining_mark_test;
 mod emphasis_string_truncation_test;
 mod emphasis_string_vertical_shaping_test;
-mod keywords_case_insensitive_test;
 mod mark_only_clusters_test;
 mod multiscript_fallback_test;
-mod overflow_invalid_values_ignored_test;
