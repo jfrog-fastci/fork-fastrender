@@ -1,6 +1,6 @@
 use crate::dom::{is_valid_shadow_host_name, ShadowRootMode};
 
-use super::{Document, NodeId, NodeKind};
+use super::{DomError, Document, NodeId, NodeKind, SlotAssignmentMode};
 
 fn node_is_element_like(kind: &NodeKind) -> bool {
   matches!(kind, NodeKind::Element { .. } | NodeKind::Slot { .. })
@@ -101,6 +101,7 @@ fn promote_template_to_shadow_root(
     NodeKind::ShadowRoot {
       mode,
       delegates_focus,
+      slot_assignment: SlotAssignmentMode::Named,
     },
     None,
     /* inert_subtree */ false,
@@ -134,6 +135,57 @@ fn promote_template_to_shadow_root(
 }
 
 impl Document {
+  /// Imperative Shadow DOM: `Element.attachShadow(init)`.
+  ///
+  /// Creates and attaches a new `ShadowRoot` node as the first child of `host`.
+  pub fn attach_shadow_root(
+    &mut self,
+    host: NodeId,
+    mode: ShadowRootMode,
+    delegates_focus: bool,
+    slot_assignment: SlotAssignmentMode,
+  ) -> Result<NodeId, DomError> {
+    self.node_checked(host)?;
+
+    let (tag_name, namespace) = match &self.node(host).kind {
+      NodeKind::Element {
+        tag_name,
+        namespace,
+        ..
+      } => (tag_name.as_str(), namespace.as_str()),
+      // `attachShadow()` is not permitted on `<slot>` elements.
+      NodeKind::Slot { .. } => return Err(DomError::NotSupportedError),
+      _ => return Err(DomError::InvalidNodeType),
+    };
+
+    if !is_html_namespace(namespace) || !is_valid_shadow_host_name(tag_name) {
+      return Err(DomError::NotSupportedError);
+    }
+
+    if self
+      .node(host)
+      .children
+      .iter()
+      .any(|&child| self.node(child).parent == Some(host) && matches!(self.node(child).kind, NodeKind::ShadowRoot { .. }))
+    {
+      return Err(DomError::NotSupportedError);
+    }
+
+    let shadow_root = self.push_node(
+      NodeKind::ShadowRoot {
+        mode,
+        delegates_focus,
+        slot_assignment,
+      },
+      None,
+      /* inert_subtree */ false,
+    );
+
+    let reference = self.node(host).children.first().copied();
+    let _ = self.insert_before(host, shadow_root, reference)?;
+    Ok(shadow_root)
+  }
+
   /// Attach declarative shadow roots represented by `<template shadowroot=...>` elements.
   ///
   /// This mirrors `crate::dom::attach_shadow_roots` and must run as a post-processing step once
@@ -281,7 +333,8 @@ mod tests {
         doc.node(host_children[0]).kind,
         NodeKind::ShadowRoot {
           mode: ShadowRootMode::Open,
-          delegates_focus: false
+          delegates_focus: false,
+          slot_assignment: SlotAssignmentMode::Named
         }
       ),
       "host should have an attached open shadow root at index 0"
@@ -312,7 +365,8 @@ mod tests {
         doc.node(inner_children[0]).kind,
         NodeKind::ShadowRoot {
           mode: ShadowRootMode::Closed,
-          delegates_focus: false
+          delegates_focus: false,
+          slot_assignment: SlotAssignmentMode::Named
         }
       ),
       "nested shadow root should be promoted within the first template contents"

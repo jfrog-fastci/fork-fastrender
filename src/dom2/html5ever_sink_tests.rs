@@ -2,7 +2,7 @@
 
 use super::Dom2TreeSink;
 use super::live_mutation::{LiveMutationEvent, LiveMutationTestRecorder};
-use super::{Document, NodeId, NodeKind};
+use super::{Document, NodeId, NodeKind, SlotAssignmentMode};
 use crate::debug::snapshot::snapshot_dom;
 use crate::dom::{parse_html_with_options, DomParseOptions, MATHML_NAMESPACE};
 use crate::html::pausable_html5ever::{Html5everPump, PausableHtml5everParser};
@@ -428,11 +428,17 @@ fn declarative_shadow_rootmode_attaches_and_routes_template_contents() {
     NodeKind::ShadowRoot {
       mode,
       delegates_focus,
+      slot_assignment,
     } => {
       assert_eq!(*mode, ShadowRootMode::Open);
       assert!(
         *delegates_focus,
         "shadowrootdelegatesfocus should set delegates_focus"
+      );
+      assert_eq!(
+        *slot_assignment,
+        SlotAssignmentMode::Named,
+        "declarative shadow roots should default to named slot assignment mode"
       );
     }
     other => panic!("expected ShadowRoot kind, got {other:?}"),

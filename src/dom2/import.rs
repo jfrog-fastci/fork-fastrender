@@ -1,7 +1,7 @@
 use crate::dom::{DomNode, DomNodeType};
 use selectors::context::QuirksMode;
 
-use super::{Document, NodeId, NodeKind};
+use super::{Document, NodeId, NodeKind, SlotAssignmentMode};
 
 struct Frame {
   src: *const DomNode,
@@ -23,6 +23,7 @@ fn push_imported_node(doc: &mut Document, parent: NodeId, src: &DomNode) -> Node
     } => NodeKind::ShadowRoot {
       mode: *mode,
       delegates_focus: *delegates_focus,
+      slot_assignment: SlotAssignmentMode::Named,
     },
     DomNodeType::Slot {
       namespace,
@@ -164,9 +165,11 @@ fn push_imported_dom2_node(dst_doc: &mut Document, parent: NodeId, src_doc: &Doc
     NodeKind::ShadowRoot {
       mode,
       delegates_focus,
+      slot_assignment,
     } => NodeKind::ShadowRoot {
       mode: *mode,
       delegates_focus: *delegates_focus,
+      slot_assignment: *slot_assignment,
     },
     NodeKind::Slot {
       namespace,

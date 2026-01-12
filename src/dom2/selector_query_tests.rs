@@ -5,7 +5,7 @@ use crate::dom::{DomNode, DomNodeType, ShadowRootMode};
 use crate::web::dom::DomException;
 use selectors::context::QuirksMode;
 
-use super::{Document, NodeId, NodeKind};
+use super::{Document, NodeId, NodeKind, SlotAssignmentMode};
 
 fn attr_value<'a>(doc: &'a Document, node: NodeId, name: &str) -> Option<&'a str> {
   let node = doc.node(node);
@@ -269,6 +269,7 @@ fn query_selector_supports_virtual_scoping_roots_for_shadow_roots() {
     NodeKind::ShadowRoot {
       mode: ShadowRootMode::Open,
       delegates_focus: false,
+      slot_assignment: SlotAssignmentMode::Named,
     },
     Some(host),
     /* inert_subtree */ false,

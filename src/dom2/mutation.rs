@@ -60,9 +60,11 @@ fn clone_node_data(doc: &Document, src: &Node, parent: Option<NodeId>) -> CloneN
     NodeKind::ShadowRoot {
       mode,
       delegates_focus,
+      slot_assignment,
     } => NodeKind::ShadowRoot {
       mode: *mode,
       delegates_focus: *delegates_focus,
+      slot_assignment: *slot_assignment,
     },
     NodeKind::Slot {
       namespace,

@@ -2450,6 +2450,9 @@ const ELEMENT_QUERY_SELECTOR_KEY: &str = "__fastrender_element_query_selector";
 const ELEMENT_QUERY_SELECTOR_ALL_KEY: &str = "__fastrender_element_query_selector_all";
 const ELEMENT_MATCHES_KEY: &str = "__fastrender_element_matches";
 const ELEMENT_CLOSEST_KEY: &str = "__fastrender_element_closest";
+const SLOT_ASSIGNED_NODES_KEY: &str = "__fastrender_slot_assigned_nodes";
+const SLOT_ASSIGNED_ELEMENTS_KEY: &str = "__fastrender_slot_assigned_elements";
+const SLOT_ASSIGN_KEY: &str = "__fastrender_slot_assign";
 const ELEMENT_GET_BOUNDING_CLIENT_RECT_KEY: &str = "__fastrender_element_get_bounding_client_rect";
 const INPUT_VALUE_GET_KEY: &str = "__fastrender_input_value_get";
 const INPUT_VALUE_SET_KEY: &str = "__fastrender_input_value_set";
@@ -6585,6 +6588,25 @@ fn get_or_create_node_wrapper(
       .object_get_own_data_property_value(document_obj, &key)?
   };
 
+  let slot_assigned_nodes = {
+    let key = alloc_key(scope, SLOT_ASSIGNED_NODES_KEY)?;
+    scope
+      .heap()
+      .object_get_own_data_property_value(document_obj, &key)?
+  };
+  let slot_assigned_elements = {
+    let key = alloc_key(scope, SLOT_ASSIGNED_ELEMENTS_KEY)?;
+    scope
+      .heap()
+      .object_get_own_data_property_value(document_obj, &key)?
+  };
+  let slot_assign = {
+    let key = alloc_key(scope, SLOT_ASSIGN_KEY)?;
+    scope
+      .heap()
+      .object_get_own_data_property_value(document_obj, &key)?
+  };
+
   let element_get_bounding_client_rect = {
     let key = alloc_key(scope, ELEMENT_GET_BOUNDING_CLIENT_RECT_KEY)?;
     scope
@@ -8205,6 +8227,57 @@ fn get_or_create_node_wrapper(
     let key = alloc_key(scope, "insertAdjacentText")?;
     if !proto_chain_has_own_property(scope.heap(), wrapper, &key)? {
       scope.define_property(wrapper, key, data_desc(Value::Object(func)))?;
+    }
+  }
+
+  // Shadow DOM / slotting APIs.
+  if let Some(dom) = dom {
+    match &dom.node(node_id).kind {
+      NodeKind::Slot { .. } => {
+        if let Some(Value::Object(func)) = slot_assigned_nodes {
+          let key = alloc_key(scope, "assignedNodes")?;
+          scope.define_property(wrapper, key, data_desc(Value::Object(func)))?;
+        }
+        if let Some(Value::Object(func)) = slot_assigned_elements {
+          let key = alloc_key(scope, "assignedElements")?;
+          scope.define_property(wrapper, key, data_desc(Value::Object(func)))?;
+        }
+        if let Some(Value::Object(func)) = slot_assign {
+          let key = alloc_key(scope, "assign")?;
+          scope.define_property(wrapper, key, data_desc(Value::Object(func)))?;
+        }
+      }
+      NodeKind::ShadowRoot {
+        mode,
+        delegates_focus,
+        slot_assignment,
+      } => {
+        let mode_str = match mode {
+          crate::dom::ShadowRootMode::Open => "open",
+          crate::dom::ShadowRootMode::Closed => "closed",
+        };
+        let mode_s = scope.alloc_string(mode_str)?;
+        scope.push_root(Value::String(mode_s))?;
+        let mode_key = alloc_key(scope, "mode")?;
+        scope.define_property(wrapper, mode_key, read_only_data_desc(Value::String(mode_s)))?;
+
+        let delegates_focus_key = alloc_key(scope, "delegatesFocus")?;
+        scope.define_property(
+          wrapper,
+          delegates_focus_key,
+          read_only_data_desc(Value::Bool(*delegates_focus)),
+        )?;
+
+        let slot_assignment_s = scope.alloc_string(slot_assignment.as_str())?;
+        scope.push_root(Value::String(slot_assignment_s))?;
+        let slot_assignment_key = alloc_key(scope, "slotAssignment")?;
+        scope.define_property(
+          wrapper,
+          slot_assignment_key,
+          read_only_data_desc(Value::String(slot_assignment_s)),
+        )?;
+      }
+      _ => {}
     }
   }
 
@@ -22472,6 +22545,413 @@ fn element_client_left_get_native(
   Ok(Value::Number(value as f64))
 }
 
+fn element_attach_shadow_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(wrapper_obj) = this else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+
+  let node_id = dom_platform_mut(vm)
+    .ok_or(VmError::TypeError("Illegal invocation"))?
+    .require_element_id(scope.heap(), Value::Object(wrapper_obj))?;
+
+  let dom = dom_from_vm_host_mut(host).ok_or(VmError::TypeError(
+    "Element.attachShadow requires a DOM-backed document",
+  ))?;
+
+  let init_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let Value::Object(init_obj) = init_value else {
+    return Err(VmError::TypeError(
+      "Element.attachShadow requires a ShadowRootInit object",
+    ));
+  };
+
+  let mode = {
+    let key = alloc_key(scope, "mode")?;
+    let value = scope
+      .heap()
+      .object_get_own_data_property_value(init_obj, &key)?
+      .unwrap_or(Value::Undefined);
+    if matches!(value, Value::Undefined) {
+      return Err(VmError::TypeError("ShadowRootInit.mode is required"));
+    }
+    let value = scope.heap_mut().to_string(value)?;
+    let value = scope
+      .heap()
+      .get_string(value)
+      .map(|s| s.to_utf8_lossy())
+      .unwrap_or_default();
+    if value == "open" {
+      crate::dom::ShadowRootMode::Open
+    } else if value == "closed" {
+      crate::dom::ShadowRootMode::Closed
+    } else {
+      return Err(VmError::TypeError(
+        "ShadowRootInit.mode must be \"open\" or \"closed\"",
+      ));
+    }
+  };
+
+  let delegates_focus = {
+    let key = alloc_key(scope, "delegatesFocus")?;
+    scope
+      .heap()
+      .object_get_own_data_property_value(init_obj, &key)?
+      .map(|v| scope.heap().to_boolean(v))
+      .transpose()?
+      .unwrap_or(false)
+  };
+
+  let slot_assignment = {
+    let key = alloc_key(scope, "slotAssignment")?;
+    let value = scope
+      .heap()
+      .object_get_own_data_property_value(init_obj, &key)?
+      .unwrap_or(Value::Undefined);
+    if matches!(value, Value::Undefined) {
+      dom2::SlotAssignmentMode::Named
+    } else {
+      let value = scope.heap_mut().to_string(value)?;
+      let value = scope
+        .heap()
+        .get_string(value)
+        .map(|s| s.to_utf8_lossy())
+        .unwrap_or_default();
+      if value == "named" {
+        dom2::SlotAssignmentMode::Named
+      } else if value == "manual" {
+        dom2::SlotAssignmentMode::Manual
+      } else {
+        return Err(VmError::TypeError(
+          "ShadowRootInit.slotAssignment must be \"named\" or \"manual\"",
+        ));
+      }
+    }
+  };
+
+  let shadow_root = match dom.attach_shadow_root(node_id, mode, delegates_focus, slot_assignment) {
+    Ok(id) => id,
+    Err(err) => return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?)),
+  };
+
+  let document_obj = node_wrapper_document_obj(scope, wrapper_obj, node_id)?;
+  get_or_create_node_wrapper(vm, scope, document_obj, Some(dom), shadow_root)
+}
+
+fn element_shadow_root_get_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(wrapper_obj) = this else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+
+  let node_id = dom_platform_mut(vm)
+    .ok_or(VmError::TypeError("Illegal invocation"))?
+    .require_element_id(scope.heap(), Value::Object(wrapper_obj))?;
+
+  let dom = dom_from_vm_host(host).ok_or(VmError::TypeError(
+    "Element.shadowRoot requires a DOM-backed document",
+  ))?;
+
+  let Some(shadow_root) = dom.shadow_root_for_host(node_id) else {
+    return Ok(Value::Null);
+  };
+
+  let NodeKind::ShadowRoot { mode, .. } = &dom.node(shadow_root).kind else {
+    return Ok(Value::Null);
+  };
+  if *mode != crate::dom::ShadowRootMode::Open {
+    return Ok(Value::Null);
+  }
+
+  let document_obj = node_wrapper_document_obj(scope, wrapper_obj, node_id)?;
+  get_or_create_node_wrapper(vm, scope, document_obj, Some(dom), shadow_root)
+}
+
+fn slottable_assigned_slot_get_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(wrapper_obj) = this else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+
+  let node_id = dom_platform_mut(vm)
+    .ok_or(VmError::TypeError("Illegal invocation"))?
+    .require_node_id(scope.heap(), Value::Object(wrapper_obj))?;
+
+  let dom = dom_from_vm_host(host).ok_or(VmError::TypeError(
+    "Slottable.assignedSlot requires a DOM-backed document",
+  ))?;
+
+  if !matches!(
+    dom.node(node_id).kind,
+    NodeKind::Element { .. } | NodeKind::Slot { .. } | NodeKind::Text { .. }
+  ) {
+    return Err(VmError::TypeError("Illegal invocation"));
+  }
+
+  let Some(slot_id) = dom.find_slot_for_slottable(node_id) else {
+    return Ok(Value::Null);
+  };
+
+  let document_obj = node_wrapper_document_obj(scope, wrapper_obj, node_id)?;
+  get_or_create_node_wrapper(vm, scope, document_obj, Some(dom), slot_id)
+}
+
+fn html_slot_element_assigned_nodes_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(wrapper_obj) = this else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+
+  let node_id = dom_platform_mut(vm)
+    .ok_or(VmError::TypeError("Illegal invocation"))?
+    .require_node_id(scope.heap(), Value::Object(wrapper_obj))?;
+
+  let dom = dom_from_vm_host(host).ok_or(VmError::TypeError(
+    "HTMLSlotElement.assignedNodes requires a DOM-backed document",
+  ))?;
+  if !matches!(dom.node(node_id).kind, NodeKind::Slot { .. }) {
+    return Err(VmError::TypeError("Illegal invocation"));
+  }
+
+  let flatten = match args.get(0).copied().unwrap_or(Value::Undefined) {
+    Value::Undefined => false,
+    Value::Object(options_obj) => {
+      let flatten_key = alloc_key(scope, "flatten")?;
+      match scope
+        .heap()
+        .object_get_own_data_property_value(options_obj, &flatten_key)?
+      {
+        Some(v) => scope.heap().to_boolean(v)?,
+        None => false,
+      }
+    }
+    other => scope.heap().to_boolean(other)?,
+  };
+
+  let assigned = if flatten {
+    dom.find_flattened_slottables_for_slot(node_id)
+  } else {
+    dom.find_slottables_for_slot(node_id)
+  };
+
+  let array = scope.alloc_array(0)?;
+  scope.push_root(Value::Object(array))?;
+  if let Some(intrinsics) = vm.intrinsics() {
+    scope
+      .heap_mut()
+      .object_set_prototype(array, Some(intrinsics.array_prototype()))?;
+  }
+
+  let document_obj = node_wrapper_document_obj(scope, wrapper_obj, node_id)?;
+  for (idx, node_id) in assigned.iter().copied().enumerate() {
+    let key = alloc_key(scope, &idx.to_string())?;
+    let wrapper = get_or_create_node_wrapper(vm, scope, document_obj, Some(dom), node_id)?;
+    scope.define_property(array, key, data_desc(wrapper))?;
+  }
+  let length_key = alloc_key(scope, "length")?;
+  scope.define_property(
+    array,
+    length_key,
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: false,
+      kind: PropertyKind::Data {
+        value: Value::Number(assigned.len() as f64),
+        writable: true,
+      },
+    },
+  )?;
+  Ok(Value::Object(array))
+}
+
+fn html_slot_element_assigned_elements_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(wrapper_obj) = this else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+
+  let node_id = dom_platform_mut(vm)
+    .ok_or(VmError::TypeError("Illegal invocation"))?
+    .require_node_id(scope.heap(), Value::Object(wrapper_obj))?;
+
+  let dom = dom_from_vm_host(host).ok_or(VmError::TypeError(
+    "HTMLSlotElement.assignedElements requires a DOM-backed document",
+  ))?;
+  if !matches!(dom.node(node_id).kind, NodeKind::Slot { .. }) {
+    return Err(VmError::TypeError("Illegal invocation"));
+  }
+
+  let flatten = match args.get(0).copied().unwrap_or(Value::Undefined) {
+    Value::Undefined => false,
+    Value::Object(options_obj) => {
+      let flatten_key = alloc_key(scope, "flatten")?;
+      match scope
+        .heap()
+        .object_get_own_data_property_value(options_obj, &flatten_key)?
+      {
+        Some(v) => scope.heap().to_boolean(v)?,
+        None => false,
+      }
+    }
+    other => scope.heap().to_boolean(other)?,
+  };
+
+  let assigned = if flatten {
+    dom.find_flattened_slottables_for_slot(node_id)
+  } else {
+    dom.find_slottables_for_slot(node_id)
+  };
+  let assigned: Vec<NodeId> = assigned
+    .into_iter()
+    .filter(|&id| matches!(dom.node(id).kind, NodeKind::Element { .. } | NodeKind::Slot { .. }))
+    .collect();
+
+  let array = scope.alloc_array(0)?;
+  scope.push_root(Value::Object(array))?;
+  if let Some(intrinsics) = vm.intrinsics() {
+    scope
+      .heap_mut()
+      .object_set_prototype(array, Some(intrinsics.array_prototype()))?;
+  }
+
+  let document_obj = node_wrapper_document_obj(scope, wrapper_obj, node_id)?;
+  for (idx, node_id) in assigned.iter().copied().enumerate() {
+    let key = alloc_key(scope, &idx.to_string())?;
+    let wrapper = get_or_create_node_wrapper(vm, scope, document_obj, Some(dom), node_id)?;
+    scope.define_property(array, key, data_desc(wrapper))?;
+  }
+  let length_key = alloc_key(scope, "length")?;
+  scope.define_property(
+    array,
+    length_key,
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: false,
+      kind: PropertyKind::Data {
+        value: Value::Number(assigned.len() as f64),
+        writable: true,
+      },
+    },
+  )?;
+  Ok(Value::Object(array))
+}
+
+fn html_slot_element_assign_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(wrapper_obj) = this else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+
+  let node_id = dom_platform_mut(vm)
+    .ok_or(VmError::TypeError("Illegal invocation"))?
+    .require_node_id(scope.heap(), Value::Object(wrapper_obj))?;
+
+  let dom = dom_from_vm_host_mut(host).ok_or(VmError::TypeError(
+    "HTMLSlotElement.assign requires a DOM-backed document",
+  ))?;
+  if !matches!(dom.node(node_id).kind, NodeKind::Slot { .. }) {
+    return Err(VmError::TypeError("Illegal invocation"));
+  }
+
+  let document_obj = node_wrapper_document_obj(scope, wrapper_obj, node_id)?;
+
+  let node_id_key = alloc_key(scope, NODE_ID_KEY)?;
+  let mut node_ids: Vec<NodeId> = Vec::new();
+  node_ids
+    .try_reserve(args.len())
+    .map_err(|_| VmError::OutOfMemory)?;
+
+  for &arg in args {
+    let Value::Object(arg_obj) = arg else {
+      return Err(VmError::TypeError(
+        "HTMLSlotElement.assign requires (Element or Text) arguments",
+      ));
+    };
+    let node_index = match scope
+      .heap()
+      .object_get_own_data_property_value(arg_obj, &node_id_key)?
+    {
+      Some(Value::Number(n)) if n.is_finite() && n >= 0.0 => n as usize,
+      _ => {
+        return Err(VmError::TypeError(
+          "HTMLSlotElement.assign requires (Element or Text) arguments",
+        ));
+      }
+    };
+    let arg_node_id = dom
+      .node_id_from_index(node_index)
+      .map_err(|_| VmError::TypeError("HTMLSlotElement.assign received an unknown node"))?;
+
+    // Prevent assigning nodes across documents (matches other DOM mutation checks).
+    let arg_document_obj = node_wrapper_document_obj(scope, arg_obj, arg_node_id)
+      .map_err(|_| VmError::TypeError("HTMLSlotElement.assign received an unknown node"))?;
+    if arg_document_obj != document_obj {
+      return Err(VmError::TypeError(
+        "HTMLSlotElement.assign cannot assign nodes from a different document",
+      ));
+    }
+
+    if !matches!(
+      dom.node(arg_node_id).kind,
+      NodeKind::Element { .. } | NodeKind::Slot { .. } | NodeKind::Text { .. }
+    ) {
+      return Err(VmError::TypeError(
+        "HTMLSlotElement.assign requires (Element or Text) arguments",
+      ));
+    }
+
+    node_ids.push(arg_node_id);
+  }
+
+  dom
+    .slot_assign(node_id, &node_ids)
+    .map_err(|_| VmError::TypeError("HTMLSlotElement.assign failed"))?;
+
+  Ok(Value::Undefined)
+}
+
 fn element_class_name_get_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -30991,6 +31471,76 @@ fn init_window_globals(
       },
     )?;
 
+    // Element.attachShadow
+    let attach_shadow_call_id = vm.register_native_call(element_attach_shadow_native)?;
+    let attach_shadow_name = scope.alloc_string("attachShadow")?;
+    scope.push_root(Value::String(attach_shadow_name))?;
+    let attach_shadow_func =
+      scope.alloc_native_function(attach_shadow_call_id, None, attach_shadow_name, 1)?;
+    scope.heap_mut().object_set_prototype(
+      attach_shadow_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(attach_shadow_func))?;
+    let attach_shadow_key = alloc_key(&mut scope, "attachShadow")?;
+    scope.define_property(
+      element_proto,
+      attach_shadow_key,
+      data_desc(Value::Object(attach_shadow_func)),
+    )?;
+
+    // Element.shadowRoot
+    let shadow_root_get_call_id = vm.register_native_call(element_shadow_root_get_native)?;
+    let shadow_root_get_name = scope.alloc_string("get shadowRoot")?;
+    scope.push_root(Value::String(shadow_root_get_name))?;
+    let shadow_root_get_func =
+      scope.alloc_native_function(shadow_root_get_call_id, None, shadow_root_get_name, 0)?;
+    scope.heap_mut().object_set_prototype(
+      shadow_root_get_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(shadow_root_get_func))?;
+    let shadow_root_key = alloc_key(&mut scope, "shadowRoot")?;
+    scope.define_property(
+      element_proto,
+      shadow_root_key,
+      PropertyDescriptor {
+        enumerable: false,
+        configurable: true,
+        kind: PropertyKind::Accessor {
+          get: Value::Object(shadow_root_get_func),
+          set: Value::Undefined,
+        },
+      },
+    )?;
+
+    // Slottable.assignedSlot (Element + Text).
+    let assigned_slot_get_call_id = vm.register_native_call(slottable_assigned_slot_get_native)?;
+    let assigned_slot_get_name = scope.alloc_string("get assignedSlot")?;
+    scope.push_root(Value::String(assigned_slot_get_name))?;
+    let assigned_slot_get_func =
+      scope.alloc_native_function(assigned_slot_get_call_id, None, assigned_slot_get_name, 0)?;
+    scope.heap_mut().object_set_prototype(
+      assigned_slot_get_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(assigned_slot_get_func))?;
+    let assigned_slot_key = alloc_key(&mut scope, "assignedSlot")?;
+    for proto in [element_proto, text_proto] {
+      scope.define_property(
+        proto,
+        assigned_slot_key,
+        PropertyDescriptor {
+          enumerable: false,
+          configurable: true,
+          kind: PropertyKind::Accessor {
+            get: Value::Object(assigned_slot_get_func),
+            set: Value::Undefined,
+          },
+        },
+      )?;
+    }
+
     // DocumentFragment.getElementById
     let frag_get_element_by_id_call_id =
       vm.register_native_call(document_fragment_get_element_by_id_native)?;
@@ -32002,6 +32552,66 @@ fn init_window_globals(
     document_obj,
     element_get_bounding_client_rect_key,
     data_desc(Value::Object(element_get_bounding_client_rect_func)),
+  )?;
+
+  // HTMLSlotElement APIs (stored on `document` so wrappers can reuse them).
+  let slot_assigned_nodes_call_id = vm.register_native_call(html_slot_element_assigned_nodes_native)?;
+  let slot_assigned_nodes_name = scope.alloc_string("assignedNodes")?;
+  scope.push_root(Value::String(slot_assigned_nodes_name))?;
+  let slot_assigned_nodes_func = scope.alloc_native_function(
+    slot_assigned_nodes_call_id,
+    None,
+    slot_assigned_nodes_name,
+    0,
+  )?;
+  scope.heap_mut().object_set_prototype(
+    slot_assigned_nodes_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(slot_assigned_nodes_func))?;
+  let slot_assigned_nodes_key = alloc_key(&mut scope, SLOT_ASSIGNED_NODES_KEY)?;
+  scope.define_property(
+    document_obj,
+    slot_assigned_nodes_key,
+    data_desc(Value::Object(slot_assigned_nodes_func)),
+  )?;
+
+  let slot_assigned_elements_call_id =
+    vm.register_native_call(html_slot_element_assigned_elements_native)?;
+  let slot_assigned_elements_name = scope.alloc_string("assignedElements")?;
+  scope.push_root(Value::String(slot_assigned_elements_name))?;
+  let slot_assigned_elements_func = scope.alloc_native_function(
+    slot_assigned_elements_call_id,
+    None,
+    slot_assigned_elements_name,
+    0,
+  )?;
+  scope.heap_mut().object_set_prototype(
+    slot_assigned_elements_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(slot_assigned_elements_func))?;
+  let slot_assigned_elements_key = alloc_key(&mut scope, SLOT_ASSIGNED_ELEMENTS_KEY)?;
+  scope.define_property(
+    document_obj,
+    slot_assigned_elements_key,
+    data_desc(Value::Object(slot_assigned_elements_func)),
+  )?;
+
+  let slot_assign_call_id = vm.register_native_call(html_slot_element_assign_native)?;
+  let slot_assign_name = scope.alloc_string("assign")?;
+  scope.push_root(Value::String(slot_assign_name))?;
+  let slot_assign_func = scope.alloc_native_function(slot_assign_call_id, None, slot_assign_name, 0)?;
+  scope.heap_mut().object_set_prototype(
+    slot_assign_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(slot_assign_func))?;
+  let slot_assign_key = alloc_key(&mut scope, SLOT_ASSIGN_KEY)?;
+  scope.define_property(
+    document_obj,
+    slot_assign_key,
+    data_desc(Value::Object(slot_assign_func)),
   )?;
 
   // Store shared Element.getAttribute/setAttribute functions on `document` so wrappers can reuse them.

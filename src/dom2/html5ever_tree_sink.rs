@@ -14,7 +14,7 @@ use std::cell::{Ref, RefCell, RefMut};
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use super::{live_mutation::utf16_len, Document, NodeId, NodeKind};
+use super::{live_mutation::utf16_len, Document, NodeId, NodeKind, SlotAssignmentMode};
 
 /// Sentinel handle returned by TreeSink hooks for node types that are intentionally ignored during
 /// parsing (comments, doctypes, processing instructions).
@@ -684,6 +684,7 @@ impl TreeSink for Dom2TreeSink {
       NodeKind::ShadowRoot {
         mode,
         delegates_focus,
+        slot_assignment: SlotAssignmentMode::Named,
       },
       None,
       /* inert_subtree */ false,

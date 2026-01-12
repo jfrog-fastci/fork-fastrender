@@ -46,6 +46,7 @@ mod xml_parse;
 mod serialization;
 mod xml_serialization;
 mod shadow_dom;
+mod slotting;
 mod style_attr;
 mod traversal;
 pub use html5ever_tree_sink::Dom2TreeSink;
@@ -69,6 +70,7 @@ pub use live_mutation::NodeIteratorId;
 pub(crate) use live_mutation::LiveRangeId;
 #[cfg(test)]
 pub(crate) use live_mutation::{LiveMutationEvent, LiveMutationTestRecorder};
+pub use slotting::SlotAssignmentMode;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct NodeId(usize);
@@ -137,6 +139,7 @@ pub enum NodeKind {
   ShadowRoot {
     mode: ShadowRootMode,
     delegates_focus: bool,
+    slot_assignment: SlotAssignmentMode,
   },
   Slot {
     namespace: String,
@@ -248,6 +251,7 @@ pub struct Document {
   mutations: MutationLog,
   mutation_generation: u64,
   selector_snapshot_cache: Option<SelectorSnapshotCache>,
+  slotting: slotting::SlottingState,
   mutation_observer_agent: Rc<RefCell<mutation_observer::MutationObserverAgent>>,
   live_mutation: live_mutation::LiveMutation,
   intersection_observers: intersection_observer::IntersectionObserverRegistry,
@@ -276,6 +280,7 @@ impl Clone for Document {
       mutations: MutationLog::default(),
       mutation_generation: self.mutation_generation,
       selector_snapshot_cache: None,
+      slotting: self.slotting.clone(),
       mutation_observer_agent: Rc::new(RefCell::new(mutation_observer::MutationObserverAgent::new())),
       live_mutation: live_mutation::LiveMutation::default(),
       intersection_observers: intersection_observer::IntersectionObserverRegistry::new(self.nodes.len()),
@@ -428,6 +433,7 @@ impl Document {
       mutations: MutationLog::default(),
       mutation_generation: self.mutation_generation,
       selector_snapshot_cache: None,
+      slotting: self.slotting.clone(),
       mutation_observer_agent: Rc::new(RefCell::new(mutation_observer::MutationObserverAgent::new())),
       live_mutation: live_mutation::LiveMutation::default(),
       intersection_observers: intersection_observer::IntersectionObserverRegistry::new(self.nodes.len()),
@@ -520,6 +526,7 @@ impl Document {
       mutations: MutationLog::default(),
       mutation_generation: 0,
       selector_snapshot_cache: None,
+      slotting: slotting::SlottingState::default(),
       mutation_observer_agent,
       live_mutation: live_mutation::LiveMutation::default(),
       intersection_observers: intersection_observer::IntersectionObserverRegistry::new(0),
@@ -560,6 +567,7 @@ impl Document {
       mutations: MutationLog::default(),
       mutation_generation: 0,
       selector_snapshot_cache: None,
+      slotting: slotting::SlottingState::default(),
       mutation_observer_agent: Rc::new(RefCell::new(mutation_observer::MutationObserverAgent::new())),
       live_mutation: live_mutation::LiveMutation::default(),
       intersection_observers: intersection_observer::IntersectionObserverRegistry::new(0),
@@ -1122,6 +1130,7 @@ impl Document {
         NodeKind::ShadowRoot {
           mode,
           delegates_focus,
+          ..
         } => DomNodeType::ShadowRoot {
           mode: *mode,
           delegates_focus: *delegates_focus,
@@ -1259,6 +1268,7 @@ impl Document {
         NodeKind::ShadowRoot {
           mode,
           delegates_focus,
+          ..
         } => DomNodeType::ShadowRoot {
           mode: *mode,
           delegates_focus: *delegates_focus,

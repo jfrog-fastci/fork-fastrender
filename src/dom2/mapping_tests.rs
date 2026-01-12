@@ -3,7 +3,7 @@
 use crate::dom::{DomNode, DomNodeType};
 use selectors::context::QuirksMode;
 
-use super::{Document, NodeKind};
+use super::{Document, NodeKind, SlotAssignmentMode};
 
 fn node_kind_from_dom_node_type(node_type: &DomNodeType) -> NodeKind {
   match node_type {
@@ -16,6 +16,7 @@ fn node_kind_from_dom_node_type(node_type: &DomNodeType) -> NodeKind {
     } => NodeKind::ShadowRoot {
       mode: *mode,
       delegates_focus: *delegates_focus,
+      slot_assignment: SlotAssignmentMode::Named,
     },
     DomNodeType::Slot {
       namespace,

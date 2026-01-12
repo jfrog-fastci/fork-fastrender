@@ -514,6 +514,7 @@ fn snapshot_dom2_kind(kind: &crate::dom2::NodeKind) -> Dom2NodeKindSnapshot {
     crate::dom2::NodeKind::ShadowRoot {
       mode,
       delegates_focus,
+      ..
     } => Dom2NodeKindSnapshot::ShadowRoot {
       mode: format!("{mode:?}"),
       delegates_focus: *delegates_focus,
