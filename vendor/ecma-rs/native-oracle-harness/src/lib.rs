@@ -1405,7 +1405,7 @@ fn vm_error_to_outcome(rt: &mut JsRuntime, err: VmError) -> RunOutcome {
 /// Future boundary for a TS→native backend.
 ///
 /// This trait is intentionally lightweight: it takes a TypeScript snippet and returns the
-/// **captured stdout output** (as a single string with trailing whitespace trimmed).
+/// **captured stdout output** (with at most one trailing newline removed).
 ///
 /// In practice this is the output produced via the harness' minimal "native builtins" prelude:
 /// `print(...)` / `console.log(...)`.
@@ -1681,6 +1681,21 @@ impl NativeJsRunner {
     }
     out
   }
+
+  fn strip_one_trailing_newline(s: &mut String) {
+    if s.ends_with('\n') {
+      s.pop();
+      if s.ends_with('\r') {
+        s.pop();
+      }
+    }
+  }
+
+  fn bytes_to_captured_string(bytes: &[u8]) -> String {
+    let mut s = String::from_utf8_lossy(bytes).into_owned();
+    Self::strip_one_trailing_newline(&mut s);
+    s
+  }
 }
 
 #[cfg(feature = "native-js-runner")]
@@ -1803,9 +1818,10 @@ impl NativeRunner for NativeJsRunner {
       return Err(harness_error(msg));
     }
 
-    let stdout = String::from_utf8(stdout)
+    let mut stdout = String::from_utf8(stdout)
       .map_err(|err| harness_error(format!("native stdout was not valid UTF-8: {err}")))?;
-    Ok(stdout.trim_end().to_string())
+    Self::strip_one_trailing_newline(&mut stdout);
+    Ok(stdout)
   }
 }
 
@@ -1878,8 +1894,8 @@ impl NativeRunner2 for NativeJsRunner {
         return RunOutcome::Terminated {
           // Avoid including the temporary executable path so the message is stable for comparisons.
           message: format!("native executable timed out after {:?}", self.timeout),
-          stdout: String::from_utf8_lossy(&stdout).trim_end().to_string(),
-          stderr: String::from_utf8_lossy(&stderr).trim_end().to_string(),
+          stdout: Self::bytes_to_captured_string(&stdout),
+          stderr: Self::bytes_to_captured_string(&stderr),
         };
       }
       Err(err) => {
@@ -1900,8 +1916,8 @@ impl NativeRunner2 for NativeJsRunner {
         }
         return RunOutcome::Terminated {
           message: "failed to read native stdout".to_string(),
-          stdout: String::from_utf8_lossy(&stdout).trim_end().to_string(),
-          stderr: String::from_utf8_lossy(&stderr).trim_end().to_string(),
+          stdout: Self::bytes_to_captured_string(&stdout),
+          stderr: Self::bytes_to_captured_string(&stderr),
         };
       }
     }
@@ -1909,14 +1925,14 @@ impl NativeRunner2 for NativeJsRunner {
       if err.read_to_end(&mut stderr).is_err() {
         return RunOutcome::Terminated {
           message: "failed to read native stderr".to_string(),
-          stdout: String::from_utf8_lossy(&stdout).trim_end().to_string(),
-          stderr: String::from_utf8_lossy(&stderr).trim_end().to_string(),
+          stdout: Self::bytes_to_captured_string(&stdout),
+          stderr: Self::bytes_to_captured_string(&stderr),
         };
       }
     }
 
-    let stdout = String::from_utf8_lossy(&stdout).trim_end().to_string();
-    let stderr = String::from_utf8_lossy(&stderr).trim_end().to_string();
+    let stdout = Self::bytes_to_captured_string(&stdout);
+    let stderr = Self::bytes_to_captured_string(&stderr);
 
     if !status.success() {
       return RunOutcome::Terminated {
