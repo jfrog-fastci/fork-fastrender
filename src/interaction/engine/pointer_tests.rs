@@ -8,7 +8,7 @@ use crate::style::ComputedStyle;
 use crate::tree::box_tree::{
   BoxNode, BoxTree, FormControl, FormControlKind, ReplacedType, SelectControl, SelectItem,
 };
-use crate::tree::fragment_tree::{FragmentNode, FragmentTree};
+use crate::tree::fragment_tree::{FragmentNode, FragmentTree, TextSourceRange};
 use crate::ui::messages::{PointerButton, PointerModifiers};
 use crate::Length;
 use selectors::context::QuirksMode;
@@ -39,10 +39,32 @@ fn el(tag: &str, attrs: Vec<(&str, &str)>, children: Vec<DomNode>) -> DomNode {
   }
 }
 
+fn text(content: &str) -> DomNode {
+  DomNode {
+    node_type: DomNodeType::Text {
+      content: content.to_string(),
+    },
+    children: vec![],
+  }
+}
+
 fn find_by_id<'a>(root: &'a DomNode, html_id: &str) -> Option<&'a DomNode> {
   let mut stack = vec![root];
   while let Some(node) = stack.pop() {
     if node.get_attribute_ref("id") == Some(html_id) {
+      return Some(node);
+    }
+    for child in node.children.iter().rev() {
+      stack.push(child);
+    }
+  }
+  None
+}
+
+fn find_text_by_content<'a>(root: &'a DomNode, content: &str) -> Option<&'a DomNode> {
+  let mut stack = vec![root];
+  while let Some(node) = stack.pop() {
+    if matches!(&node.node_type, DomNodeType::Text { content: c } if c == content) {
       return Some(node);
     }
     for child in node.children.iter().rev() {
@@ -79,6 +101,15 @@ fn has_attr(root: &DomNode, html_id: &str, attr: &str) -> bool {
 fn node_id(root: &DomNode, html_id: &str) -> usize {
   let ids = enumerate_dom_ids(root);
   let node = find_by_id(root, html_id).expect("node");
+  ids
+    .get(&(node as *const DomNode))
+    .copied()
+    .expect("id present")
+}
+
+fn text_node_id(root: &DomNode, content: &str) -> usize {
+  let ids = enumerate_dom_ids(root);
+  let node = find_text_by_content(root, content).expect("text node");
   ids
     .get(&(node as *const DomNode))
     .copied()
@@ -6691,4 +6722,110 @@ fn tab_focuses_area_href_elements() {
 
   assert!(engine.key_action(&mut dom, KeyAction::Tab));
   assert_eq!(engine.interaction_state().focused, Some(input_dom_id));
+}
+
+#[test]
+fn document_selection_drag_creates_range_and_suppresses_click() {
+  let full_text = "héllo world";
+  let fragment_text = "world";
+
+  let mut dom = doc(vec![el(
+    "html",
+    vec![("id", "html")],
+    vec![el(
+      "body",
+      vec![("id", "body")],
+      vec![el(
+        "a",
+        vec![("id", "link"), ("href", "foo")],
+        vec![text(full_text)],
+      )],
+    )],
+  )]);
+
+  let text_dom_id = text_node_id(&dom, full_text);
+  let mut text_box = BoxNode::new_text(default_style(), full_text.to_string());
+  text_box.styled_node_id = Some(text_dom_id);
+  let box_tree = BoxTree::new(BoxNode::new_block(
+    default_style(),
+    FormattingContextType::Block,
+    vec![text_box],
+  ));
+  let text_box_id = find_box_id_for_styled_node(&box_tree, text_dom_id);
+
+  let start_byte = full_text
+    .find(fragment_text)
+    .expect("expected substring in test text");
+  let end_byte = start_byte + fragment_text.len();
+  let source_range =
+    TextSourceRange::new(start_byte..end_byte).expect("expected valid packed source range");
+
+  let mut text_fragment =
+    FragmentNode::new_text(Rect::from_xywh(0.0, 0.0, 200.0, 20.0), fragment_text, 16.0);
+  if let crate::tree::fragment_tree::FragmentContent::Text {
+    box_id,
+    source_range: fragment_range,
+    ..
+  } = &mut text_fragment.content
+  {
+    *box_id = Some(text_box_id);
+    *fragment_range = Some(source_range);
+  } else {
+    panic!("expected FragmentContent::Text");
+  }
+
+  let fragment_tree = FragmentTree::new(FragmentNode::new_block(
+    Rect::from_xywh(0.0, 0.0, 200.0, 200.0),
+    vec![text_fragment],
+  ));
+
+  let mut engine = InteractionEngine::new();
+  engine.pointer_down(
+    &mut dom,
+    &box_tree,
+    &fragment_tree,
+    &ScrollState::default(),
+    Point::new(1.0, 10.0),
+  );
+  engine.pointer_move(
+    &mut dom,
+    &box_tree,
+    &fragment_tree,
+    &ScrollState::default(),
+    Point::new(199.0, 10.0),
+  );
+  assert!(
+    engine.interaction_state().document_has_selection,
+    "dragging over text should create a document selection"
+  );
+
+  let (_changed, action) = engine.pointer_up_with_scroll(
+    &mut dom,
+    &box_tree,
+    &fragment_tree,
+    &ScrollState::default(),
+    Point::new(199.0, 10.0),
+    PointerButton::Primary,
+    PointerModifiers::default(),
+    "https://example.com/base/",
+    "https://example.com/base/",
+  );
+  assert!(
+    !matches!(
+      action,
+      InteractionAction::Navigate { .. } | InteractionAction::OpenInNewTab { .. }
+    ),
+    "selection drags should not activate links"
+  );
+  assert_eq!(
+    engine.take_last_click_target(),
+    None,
+    "selection drags should not populate last_click_target"
+  );
+
+  assert_eq!(
+    engine.clipboard_copy_with_layout(&mut dom, &box_tree, &fragment_tree),
+    Some(fragment_text.to_string()),
+    "clipboard copy should serialize the document selection range"
+  );
 }

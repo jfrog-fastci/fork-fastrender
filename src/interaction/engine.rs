@@ -17,7 +17,9 @@ use crate::tree::box_tree::SelectControl;
 use crate::tree::box_tree::SelectItem;
 use crate::tree::fragment_tree::FragmentTree;
 use crate::ui::messages::{PointerButton, PointerModifiers};
-use crate::interaction::selection_serialize::{serialize_document_selection, DocumentSelection};
+use crate::interaction::selection_serialize::{
+  serialize_document_selection, DocumentSelection, DocumentSelectionPoint, DocumentSelectionRange,
+};
 use std::collections::HashMap;
 use std::sync::Arc;
 use unicode_segmentation::UnicodeSegmentation;
@@ -27,7 +29,7 @@ use super::form_submit::{
   form_submission, form_submission_without_submitter, FormSubmission, FormSubmissionMethod,
 };
 use super::fragment_geometry::content_rect_for_border_rect;
-use super::hit_test::hit_test_dom;
+use super::hit_test::{hit_test_dom, HitTestKind};
 use super::image_maps;
 use super::resolve_url;
 use super::state::{ImePreeditState, InteractionState, TextEditPaintState};
@@ -103,6 +105,7 @@ pub struct InteractionEngine {
   range_drag: Option<RangeDragState>,
   number_spin: Option<NumberSpinState>,
   text_drag: Option<TextDragState>,
+  document_drag: Option<DocumentDragState>,
   text_edit: Option<TextEditState>,
   text_undo: HashMap<usize, TextUndoHistory>,
   document_selection: Option<DocumentSelection>,
@@ -115,6 +118,11 @@ pub struct InteractionEngine {
 struct RangeDragState {
   node_id: usize,
   box_id: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct DocumentDragState {
+  anchor: DocumentSelectionPoint,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2655,6 +2663,164 @@ fn fragment_rect_for_box_id_at_point(
   None
 }
 
+fn hit_test_fragments_with_abs_rect<'a>(
+  fragment_tree: &'a FragmentTree,
+  page_point: Point,
+) -> Vec<(&'a crate::tree::fragment_tree::FragmentNode, Rect)> {
+  fn within_root<'a>(
+    root: &'a crate::tree::fragment_tree::FragmentNode,
+    page_point: Point,
+  ) -> Vec<(&'a crate::tree::fragment_tree::FragmentNode, Rect)> {
+    #[derive(Clone, Copy)]
+    enum VisitState {
+      Enter,
+      Exit,
+    }
+
+    struct Frame<'a> {
+      node: &'a crate::tree::fragment_tree::FragmentNode,
+      abs_origin: Point,
+      state: VisitState,
+    }
+
+    let mut hits: Vec<(&'a crate::tree::fragment_tree::FragmentNode, Rect)> = Vec::new();
+
+    if !page_point.x.is_finite() || !page_point.y.is_finite() {
+      return hits;
+    }
+
+    let mut stack: Vec<Frame<'a>> = Vec::new();
+    stack.push(Frame {
+      node: root,
+      abs_origin: root.bounds.origin,
+      state: VisitState::Enter,
+    });
+
+    while let Some(frame) = stack.pop() {
+      let rect = Rect::from_xywh(
+        frame.abs_origin.x,
+        frame.abs_origin.y,
+        frame.node.bounds.width(),
+        frame.node.bounds.height(),
+      );
+
+      match frame.state {
+        VisitState::Enter => {
+          stack.push(Frame {
+            node: frame.node,
+            abs_origin: frame.abs_origin,
+            state: VisitState::Exit,
+          });
+
+          let (clip_x, clip_y) = frame
+            .node
+            .style
+            .as_ref()
+            .map(|style| {
+              (
+                style.overflow_x != crate::style::types::Overflow::Visible,
+                style.overflow_y != crate::style::types::Overflow::Visible,
+              )
+            })
+            .unwrap_or((false, false));
+
+          let within_x = page_point.x >= rect.min_x() && page_point.x <= rect.max_x();
+          let within_y = page_point.y >= rect.min_y() && page_point.y <= rect.max_y();
+
+          if (!clip_x || within_x) && (!clip_y || within_y) {
+            for child in frame.node.children.iter() {
+              stack.push(Frame {
+                node: child,
+                abs_origin: frame.abs_origin.translate(child.bounds.origin),
+                state: VisitState::Enter,
+              });
+            }
+          }
+        }
+        VisitState::Exit => {
+          if rect.contains_point(page_point) {
+            hits.push((frame.node, rect));
+          }
+        }
+      }
+    }
+
+    hits
+  }
+
+  let mut hits = within_root(&fragment_tree.root, page_point);
+  for root in &fragment_tree.additional_fragments {
+    hits.extend(within_root(root, page_point));
+  }
+  hits
+}
+
+fn document_selection_point_at_page_point(
+  box_tree: &BoxTree,
+  fragment_tree: &FragmentTree,
+  page_point: Point,
+) -> Option<DocumentSelectionPoint> {
+  for (fragment, abs_rect) in hit_test_fragments_with_abs_rect(fragment_tree, page_point) {
+    let crate::tree::fragment_tree::FragmentContent::Text {
+      text: fragment_text,
+      box_id,
+      source_range,
+      is_marker,
+      ..
+    } = &fragment.content
+    else {
+      continue;
+    };
+    if *is_marker {
+      continue;
+    }
+    let box_id = (*box_id)?;
+    let box_node = box_node_by_id(box_tree, box_id)?;
+    let BoxType::Text(text_box) = &box_node.box_type else {
+      continue;
+    };
+
+    // Mirror `selection_serialize::box_is_selectable` so hit-tested selections don't begin in
+    // `user-select: none` / hidden / inert content.
+    if box_node.style.display.is_none() {
+      continue;
+    }
+    if box_node.style.visibility != crate::style::computed::Visibility::Visible {
+      continue;
+    }
+    if box_node.style.user_select == crate::style::types::UserSelect::None {
+      continue;
+    }
+    if box_node.style.inert {
+      continue;
+    }
+
+    let node_id = box_node.styled_node_id?;
+
+    let full_text = &text_box.text;
+    let boundary_bytes = char_boundary_bytes(full_text);
+    let total_chars = boundary_bytes.len().saturating_sub(1);
+
+    let start_byte = source_range.map(|range| range.start()).unwrap_or(0);
+    let start_char = char_idx_at_byte(&boundary_bytes, start_byte).min(total_chars);
+
+    let (caret_in_fragment, _affinity) = caret_position_for_x_in_text(
+      fragment_text.as_ref(),
+      box_node.style.as_ref(),
+      abs_rect,
+      page_point.x,
+    );
+
+    let char_offset = start_char
+      .saturating_add(caret_in_fragment)
+      .min(total_chars);
+
+    return Some(DocumentSelectionPoint { node_id, char_offset });
+  }
+
+  None
+}
+
 fn fragment_rect_for_box_id(fragment_tree: &FragmentTree, target_box_id: usize) -> Option<Rect> {
   struct Frame<'a> {
     node: &'a crate::tree::fragment_tree::FragmentNode,
@@ -3213,6 +3379,7 @@ impl InteractionEngine {
       range_drag: None,
       number_spin: None,
       text_drag: None,
+      document_drag: None,
       text_edit: None,
       text_undo: HashMap::new(),
       document_selection: None,
@@ -3521,6 +3688,7 @@ impl InteractionEngine {
       self.state.ime_preedit = None;
       self.text_edit = None;
       self.text_drag = None;
+      self.document_drag = None;
       // Focus changes collapse any existing document selection (e.g. a prior Ctrl+A selection).
       let _ = self.set_document_selection(None);
     }
@@ -3673,6 +3841,7 @@ impl InteractionEngine {
     self.range_drag = None;
     self.number_spin = None;
     self.text_drag = None;
+    self.document_drag = None;
     hover_changed | active_changed
   }
 
@@ -3683,6 +3852,7 @@ impl InteractionEngine {
     self.range_drag = None;
     self.number_spin = None;
     self.text_drag = None;
+    self.document_drag = None;
   }
 
   /// Update hover state (element under pointer + ancestors).
@@ -3769,6 +3939,31 @@ impl InteractionEngine {
             {
               dom_changed = true;
             }
+          }
+        }
+      }
+    }
+
+    if let Some(state) = self.document_drag {
+      // Mirror the sentinel handling in other drags: when the pointer leaves the page image the UI
+      // sends a negative page-point. Do not treat that as selecting the start of the document; keep
+      // the last selection endpoint instead.
+      if page_point.x.is_finite()
+        && page_point.y.is_finite()
+        && page_point.x >= 0.0
+        && page_point.y >= 0.0
+      {
+        if let Some(point) = document_selection_point_at_page_point(box_tree, fragment_tree, page_point)
+        {
+          if point == state.anchor {
+            dom_changed |= self.set_document_selection(None);
+          } else {
+            dom_changed |= self.set_document_selection(Some(DocumentSelection::Range(
+              DocumentSelectionRange {
+                start: state.anchor,
+                end: point,
+              },
+            )));
           }
         }
       }
@@ -3879,6 +4074,7 @@ impl InteractionEngine {
     self.range_drag = None;
     self.number_spin = None;
     self.text_drag = None;
+    self.document_drag = None;
     // Pointer interaction collapses any active document selection.
     let selection_changed = self.set_document_selection(None);
 
@@ -4104,6 +4300,32 @@ impl InteractionEngine {
       }
     }
 
+    if matches!(button, PointerButton::Primary)
+      && self.range_drag.is_none()
+      && self.number_spin.is_none()
+      && self.text_drag.is_none()
+      && !down_hit
+        .as_ref()
+        .is_some_and(|hit| matches!(hit.kind, HitTestKind::FormControl))
+    {
+      if let Some(anchor) =
+        document_selection_point_at_page_point(box_tree, fragment_tree, page_point)
+      {
+        // Starting a document selection drag should blur the currently-focused control when the
+        // gesture begins outside that focused subtree (so subsequent keyboard input does not keep
+        // editing the previous control).
+        if let Some(focused) = self.state.focused {
+          let click_within_focused = down_target
+            .is_some_and(|target| is_ancestor_or_self(&index, focused, target));
+          if !click_within_focused {
+            dom_changed |= self.set_focus(&mut index, None, false);
+          }
+        }
+
+        self.document_drag = Some(DocumentDragState { anchor });
+      }
+    }
+
     dom_changed
   }
 
@@ -4227,6 +4449,21 @@ impl InteractionEngine {
       }
     }
 
+    if let Some(state) = &mut self.document_drag {
+      let ptr = old_index
+        .id_to_node
+        .get(state.anchor.node_id)
+        .copied()
+        .unwrap_or(std::ptr::null_mut());
+      if ptr.is_null() {
+        self.document_drag = None;
+      } else if let Some(&new_id) = new_ids.get(&(ptr as *const DomNode)) {
+        state.anchor.node_id = new_id;
+      } else {
+        self.document_drag = None;
+      }
+    }
+
     // Remap document selection endpoints (used for clipboard copy of document text).
     let mut clear_doc_selection = false;
     if let Some(selection) = &mut self.document_selection {
@@ -4289,6 +4526,8 @@ impl InteractionEngine {
     let range_drag = self.range_drag.take();
     let number_spin = self.number_spin.take();
     let text_drag = self.text_drag.take();
+    let document_drag = self.document_drag.take();
+    let suppress_click = document_drag.is_some() && self.document_selection.is_some();
     let prev_focus = text_drag
       .as_ref()
       .map(|state| state.focus_before)
@@ -4331,11 +4570,14 @@ impl InteractionEngine {
     self.pointer_down_target = None;
     dom_changed |= active_changed;
 
-    let click_qualifies = match (down_semantic, up_semantic) {
+    let mut click_qualifies = match (down_semantic, up_semantic) {
       (Some(down), Some(up)) => down == up || is_ancestor_or_self(&index, down, up),
       (None, None) => true,
       _ => false,
     };
+    if suppress_click {
+      click_qualifies = false;
+    }
 
     let mut action = InteractionAction::None;
     let is_primary_button = matches!(button, PointerButton::Primary);
