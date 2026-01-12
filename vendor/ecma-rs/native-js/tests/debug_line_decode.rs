@@ -1,5 +1,6 @@
 #![cfg(target_os = "linux")]
 
+use addr2line::Context;
 use gimli::read::{Dwarf, EndianSlice};
 use gimli::{RunTimeEndian, SectionId};
 use native_js::{compile_program, CompilerOptions, EmitKind, OptLevel};
@@ -69,6 +70,18 @@ fn compile_to_obj(program: &Program, entry: typecheck_ts::FileId) -> Vec<u8> {
   bytes
 }
 
+fn addr2line_location_matches<R: gimli::read::Reader>(
+  ctx: &Context<R>,
+  addr: u64,
+  file_suffix: &str,
+  line: u32,
+) -> bool {
+  let loc = ctx.find_location(addr).expect("addr2line find_location");
+  let Some(loc) = loc else { return false };
+  let Some(path) = loc.file else { return false };
+  path.ends_with(file_suffix) && loc.line == Some(line)
+}
+
 #[test]
 fn dwarf_line_program_has_main_ts_rows_for_real_code() {
   let mut host = es5_host();
@@ -83,14 +96,18 @@ fn dwarf_line_program_has_main_ts_rows_for_real_code() {
   host.insert(main_key.clone(), main_src);
 
   let program = Program::new(host, vec![main_key.clone()]);
+  let diags = program.check();
+  assert!(diags.is_empty(), "{diags:#?}");
   let entry = program.file_id(&main_key).expect("entry file id");
 
   let obj = compile_to_obj(&program, entry);
   let dwarf = load_dwarf(&obj);
+  let addr_ctx = Context::from_dwarf(load_dwarf(&obj)).expect("addr2line context");
 
   let mut units = dwarf.units();
   let mut cu_names = Vec::new();
   let mut found_return_line_row = false;
+  let mut return_addr = None;
 
   while let Some(header) = units.next().expect("iterate units") {
     let unit = dwarf.unit(header).expect("parse unit");
@@ -116,6 +133,7 @@ fn dwarf_line_program_has_main_ts_rows_for_real_code() {
       // `return x + y;`
       if line.get() == 4 {
         found_return_line_row = true;
+        return_addr = Some(row.address());
         break;
       }
     }
@@ -125,6 +143,12 @@ fn dwarf_line_program_has_main_ts_rows_for_real_code() {
     found_return_line_row,
     "did not find any decoded DWARF line-table row mapping a machine address back to main.ts:4 (`return x + y;`). \
 compile_units={cu_names:#?}"
+  );
+
+  let return_addr = return_addr.expect("missing address for main.ts:4 row");
+  assert!(
+    addr2line_location_matches(&addr_ctx, return_addr, "main.ts", 4),
+    "addr2line could not map the decoded line-row address {return_addr:#x} back to main.ts:4 (`return x + y;`)"
   );
 }
 
@@ -149,14 +173,19 @@ export function main(): number {
   host.link(main_key.clone(), "./math.ts", math_key.clone());
 
   let program = Program::new(host, vec![main_key.clone()]);
+  let diags = program.check();
+  assert!(diags.is_empty(), "{diags:#?}");
   let entry = program.file_id(&main_key).expect("entry file id");
 
   let obj = compile_to_obj(&program, entry);
   let dwarf = load_dwarf(&obj);
+  let addr_ctx = Context::from_dwarf(load_dwarf(&obj)).expect("addr2line context");
 
   let mut units = dwarf.units();
   let mut found_main = false;
   let mut found_math = false;
+  let mut main_return_addr = None;
+  let mut math_return_addr = None;
 
   while let Some(header) = units.next().expect("iterate units") {
     let unit = dwarf.unit(header).expect("parse unit");
@@ -170,11 +199,25 @@ export function main(): number {
       };
       if file_name.ends_with("main.ts") {
         found_main = true;
+        if main_return_addr.is_none() {
+          if let Some(line) = row.line() {
+            if line.get() == 4 {
+              main_return_addr = Some(row.address());
+            }
+          }
+        }
       }
       if file_name.ends_with("math.ts") {
         found_math = true;
+        if math_return_addr.is_none() {
+          if let Some(line) = row.line() {
+            if line.get() == 2 {
+              math_return_addr = Some(row.address());
+            }
+          }
+        }
       }
-      if found_main && found_math {
+      if found_main && found_math && main_return_addr.is_some() && math_return_addr.is_some() {
         break;
       }
     }
@@ -183,5 +226,16 @@ export function main(): number {
   assert!(
     found_main && found_math,
     "expected decoded DWARF line-table rows to reference both `main.ts` and `math.ts`; found_main={found_main} found_math={found_math}"
+  );
+
+  let main_return_addr = main_return_addr.expect("missing address for main.ts:4 row");
+  let math_return_addr = math_return_addr.expect("missing address for math.ts:2 row");
+  assert!(
+    addr2line_location_matches(&addr_ctx, main_return_addr, "main.ts", 4),
+    "addr2line could not map the decoded line-row address {main_return_addr:#x} back to main.ts:4"
+  );
+  assert!(
+    addr2line_location_matches(&addr_ctx, math_return_addr, "math.ts", 2),
+    "addr2line could not map the decoded line-row address {math_return_addr:#x} back to math.ts:2"
   );
 }

@@ -607,13 +607,12 @@ unsafe fn scan_forbidden_constexprs(
   }
   visited.insert(value);
 
-  // Debug intrinsics (`llvm.dbg.*`) carry `MetadataAsValue` operands such as `metadata !DI*`.
+  // DWARF debug intrinsics (e.g. `llvm.dbg.declare`) use `metadata` arguments, which surface in the
+  // C API as `MetadataAsValue`. These are not normal SSA values and do not support operand
+  // traversal via `LLVMGetNumOperands`/`LLVMGetOperand` (and can segfault if treated as such).
   //
-  // LLVM's C API does not treat metadata values as normal SSA operands; querying operands on them
-  // (e.g. via `LLVMGetNumOperands`) is not supported and can segfault.
-  //
-  // Since these operands cannot contain GC pointers or constant-expression address space casts
-  // relevant to the GC lint, skip them entirely.
+  // The GC pointer discipline lint is only concerned with actual pointer/integer SSA values, so
+  // skip metadata operands entirely.
   if LLVMGetValueKind(value) == LLVMValueKind::LLVMMetadataAsValueValueKind {
     return;
   }
