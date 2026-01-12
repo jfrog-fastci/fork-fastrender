@@ -25,6 +25,7 @@ fn basic_report(entries: Vec<Value>) -> Value {
     "after_dir": "fastrender",
     "tolerance": 0,
     "max_diff_percent": 0.0,
+    "perceptual_metric": fastrender::image_compare::PERCEPTUAL_METRIC_ID,
     "ignore_alpha": false,
     "results": entries,
     "totals": {
@@ -681,6 +682,77 @@ fn compare_diff_reports_requires_matching_config_by_default() {
   let report: Value = serde_json::from_str(&fs::read_to_string(&out_json_ok).unwrap()).unwrap();
   assert_eq!(report["config_mismatches"].as_array().unwrap().len(), 1);
   assert_eq!(report["config_mismatches"][0]["field"], "tolerance");
+}
+
+#[test]
+fn compare_diff_reports_requires_matching_perceptual_metric_by_default() {
+  let tmp = tempfile::TempDir::new().expect("tempdir");
+  let baseline_path = tmp.path().join("baseline.json");
+  let new_path = tmp.path().join("new.json");
+  let out_json_fail = tmp.path().join("delta_fail.json");
+  let out_html_fail = tmp.path().join("delta_fail.html");
+  let out_json_ok = tmp.path().join("delta_ok.json");
+  let out_html_ok = tmp.path().join("delta_ok.html");
+
+  let mut baseline = basic_report(vec![]);
+  baseline["perceptual_metric"] = json!("ssim_luma_v0");
+  let mut new_report = basic_report(vec![]);
+  new_report["perceptual_metric"] = json!("ssim_luma_v1");
+
+  write_json(&baseline_path, &baseline);
+  write_json(&new_path, &new_report);
+
+  let output = compare_cmd(tmp.path())
+    .args([
+      "--baseline",
+      baseline_path.to_str().unwrap(),
+      "--new",
+      new_path.to_str().unwrap(),
+      "--json",
+      out_json_fail.to_str().unwrap(),
+      "--html",
+      out_html_fail.to_str().unwrap(),
+    ])
+    .output()
+    .expect("run compare_diff_reports");
+
+  assert!(
+    !output.status.success(),
+    "expected non-zero exit for config mismatch\nstdout:\n{}\nstderr:\n{}",
+    output_text(&output.stdout),
+    output_text(&output.stderr),
+  );
+
+  let report: Value =
+    serde_json::from_str(&fs::read_to_string(&out_json_fail).expect("read delta json")).unwrap();
+  assert_eq!(report["config_mismatches"].as_array().unwrap().len(), 1);
+  assert_eq!(report["config_mismatches"][0]["field"], "perceptual_metric");
+
+  let output = compare_cmd(tmp.path())
+    .args([
+      "--baseline",
+      baseline_path.to_str().unwrap(),
+      "--new",
+      new_path.to_str().unwrap(),
+      "--json",
+      out_json_ok.to_str().unwrap(),
+      "--html",
+      out_html_ok.to_str().unwrap(),
+      "--allow-config-mismatch",
+    ])
+    .output()
+    .expect("run compare_diff_reports");
+
+  assert!(
+    output.status.success(),
+    "expected success when mismatch allowed\nstdout:\n{}\nstderr:\n{}",
+    output_text(&output.stdout),
+    output_text(&output.stderr)
+  );
+
+  let report: Value = serde_json::from_str(&fs::read_to_string(&out_json_ok).unwrap()).unwrap();
+  assert_eq!(report["config_mismatches"].as_array().unwrap().len(), 1);
+  assert_eq!(report["config_mismatches"][0]["field"], "perceptual_metric");
 }
 
 #[test]

@@ -89,6 +89,8 @@ struct DiffReport {
   after_dir: String,
   tolerance: u8,
   max_diff_percent: f64,
+  #[serde(default)]
+  perceptual_metric: Option<String>,
   max_perceptual_distance: Option<f64>,
   #[serde(default)]
   ignore_alpha: bool,
@@ -201,6 +203,8 @@ struct ReportMeta {
   max_diff_percent: f64,
   max_perceptual_distance: Option<f64>,
   ignore_alpha: bool,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  perceptual_metric: Option<String>,
   #[serde(skip_serializing_if = "Option::is_none")]
   shard: Option<ReportShard>,
 }
@@ -1069,6 +1073,7 @@ impl ReportMeta {
       max_diff_percent: report.max_diff_percent,
       max_perceptual_distance: report.max_perceptual_distance,
       ignore_alpha: report.ignore_alpha,
+      perceptual_metric: report.perceptual_metric.clone(),
       shard: report.shard.as_ref().map(|s| ReportShard {
         index: s.index,
         total: s.total,
@@ -1099,6 +1104,18 @@ fn diff_config(baseline: &DiffReport, new_report: &DiffReport) -> Vec<ConfigMism
       baseline: baseline.ignore_alpha.to_string(),
       new: new_report.ignore_alpha.to_string(),
     });
+  }
+  match (
+    baseline.perceptual_metric.as_deref(),
+    new_report.perceptual_metric.as_deref(),
+  ) {
+    (None, None) => {}
+    (Some(a), Some(b)) if a == b => {}
+    (a, b) => mismatches.push(ConfigMismatch {
+      field: "perceptual_metric",
+      baseline: a.unwrap_or("-").to_string(),
+      new: b.unwrap_or("-").to_string(),
+    }),
   }
   match (
     baseline.max_perceptual_distance,
@@ -1645,7 +1662,7 @@ fn write_html_report(
     <p><strong>New:</strong> {new_before} → {new_after}</p>
     <p><strong>New report:</strong> {new_report_link}</p>
     <p><strong>New report JSON:</strong> {new_report_json_link}</p>
-    <p><strong>Config:</strong> tolerance={tolerance}, max_diff_percent={max_diff_percent:.4}, max_perceptual_distance={max_perceptual}, ignore_alpha={ignore_alpha}, shard={shard}</p>
+    <p><strong>Config:</strong> tolerance={tolerance}, max_diff_percent={max_diff_percent:.4}, max_perceptual_distance={max_perceptual}, perceptual_metric={perceptual_metric}, ignore_alpha={ignore_alpha}, shard={shard}</p>
     <p><strong>Filters:</strong> {filters}</p>
     <p><strong>Gating:</strong> {gating}</p>
     <p><strong>Summary:</strong> {summary}</p>
@@ -1707,20 +1724,25 @@ fn write_html_report(
     new_after = escape_html(&report.new.after_dir),
     baseline_report_link = format_report_link(&baseline_html_link),
     new_report_link = format_report_link(&new_html_link),
-    baseline_report_json_link = format_report_link(&baseline_json_link),
-    new_report_json_link = format_report_link(&new_json_link),
-    tolerance = report.new.tolerance,
-    max_diff_percent = report.new.max_diff_percent,
-    max_perceptual = report
+      baseline_report_json_link = format_report_link(&baseline_json_link),
+      new_report_json_link = format_report_link(&new_json_link),
+      tolerance = report.new.tolerance,
+      max_diff_percent = report.new.max_diff_percent,
+      max_perceptual = report
       .new
       .max_perceptual_distance
-      .map(|d| format!("{d:.4}"))
-      .unwrap_or_else(|| "-".to_string()),
-    ignore_alpha = if report.new.ignore_alpha { "yes" } else { "no" },
-    shard = shard_label(&report.new.shard),
-    filters = filters,
-    gating = gating,
-    summary = escape_html(&summary),
+        .map(|d| format!("{d:.4}"))
+        .unwrap_or_else(|| "-".to_string()),
+      perceptual_metric = report
+        .new
+        .perceptual_metric
+        .as_deref()
+        .unwrap_or("-"),
+      ignore_alpha = if report.new.ignore_alpha { "yes" } else { "no" },
+      shard = shard_label(&report.new.shard),
+      filters = filters,
+      gating = gating,
+      summary = escape_html(&summary),
     aggregate_block = aggregate_block,
     mismatch_block = mismatch_block,
     failing_regressions = failing_regressions,
