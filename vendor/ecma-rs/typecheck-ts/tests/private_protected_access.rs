@@ -226,3 +226,53 @@ const v = u.x;
   let offset = source.find(".x").expect("property access") as u32 + 1;
   assert_eq!(diag.primary.range, TextRange::new(offset, offset + 1));
 }
+
+#[test]
+fn destructuring_private_access_errors_outside_class() {
+  let mut host = MemoryHost::with_options(CompilerOptions {
+    no_default_lib: true,
+    ..CompilerOptions::default()
+  });
+  host.add_lib(common::core_globals_lib());
+
+  let source = r#"class C { private x: number = 1; }
+const { x } = new C();
+"#;
+  let file = FileKey::new("entry.ts");
+  host.insert(file.clone(), Arc::from(source.to_string()));
+
+  let program = Program::new(host, vec![file]);
+  let diagnostics = program.check();
+  let diag = diagnostics
+    .iter()
+    .find(|d| d.severity == Severity::Error && d.code.as_str() == codes::PRIVATE_MEMBER_ACCESS.as_str())
+    .expect("TS2341 diagnostic");
+  let offset = source.find("{ x }").expect("pattern property") as u32 + 2;
+  assert_eq!(diag.primary.range, TextRange::new(offset, offset + 1));
+}
+
+#[test]
+fn destructuring_protected_access_errors_outside_class() {
+  let mut host = MemoryHost::with_options(CompilerOptions {
+    no_default_lib: true,
+    ..CompilerOptions::default()
+  });
+  host.add_lib(common::core_globals_lib());
+
+  let source = r#"class Base { protected x: number = 1; }
+const { x } = new Base();
+"#;
+  let file = FileKey::new("entry.ts");
+  host.insert(file.clone(), Arc::from(source.to_string()));
+
+  let program = Program::new(host, vec![file]);
+  let diagnostics = program.check();
+  let diag = diagnostics
+    .iter()
+    .find(|d| {
+      d.severity == Severity::Error && d.code.as_str() == codes::PROTECTED_MEMBER_ACCESS.as_str()
+    })
+    .expect("TS2445 diagnostic");
+  let offset = source.find("{ x }").expect("pattern property") as u32 + 2;
+  assert_eq!(diag.primary.range, TextRange::new(offset, offset + 1));
+}

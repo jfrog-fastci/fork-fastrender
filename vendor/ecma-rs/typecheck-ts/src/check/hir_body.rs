@@ -9704,7 +9704,11 @@ impl<'a> Checker<'a> {
       match &prop.stx.key {
         ClassOrObjKey::Direct(direct) => {
           if !value_is_any {
-            prop_ty = self.member_type(value, &direct.stx.key);
+            if let Some(ty) = self.member_type_opt(value, &direct.stx.key) {
+              let key_range = loc_to_range(self.file, direct.loc);
+              self.check_member_access_for_type(value, &direct.stx.key, key_range);
+              prop_ty = ty;
+            }
           }
         }
         ClassOrObjKey::Computed(expr) => {
@@ -9733,7 +9737,11 @@ impl<'a> Checker<'a> {
               _ => None,
             };
             if let Some(key) = literal_key {
-              prop_ty = self.member_type(value, &key);
+              if let Some(ty) = self.member_type_opt(value, &key) {
+                let key_range = loc_to_range(self.file, expr.loc);
+                self.check_member_access_for_type(value, &key, key_range);
+                prop_ty = ty;
+              }
             }
           }
         }
@@ -9760,9 +9768,49 @@ impl<'a> Checker<'a> {
     let value_is_any = matches!(self.store.type_kind(value), TypeKind::Any);
     for prop in obj.stx.properties.iter() {
       let mut prop_ty = if value_is_any { prim.any } else { prim.unknown };
-      if !value_is_any {
-        if let ClassOrObjKey::Direct(direct) = &prop.stx.key {
-          prop_ty = self.member_type(value, &direct.stx.key);
+      match &prop.stx.key {
+        ClassOrObjKey::Direct(direct) => {
+          if !value_is_any {
+            if let Some(ty) = self.member_type_opt(value, &direct.stx.key) {
+              let key_range = loc_to_range(self.file, direct.loc);
+              self.check_member_access_for_type(value, &direct.stx.key, key_range);
+              prop_ty = ty;
+            }
+          }
+        }
+        ClassOrObjKey::Computed(expr) => {
+          // Always type-check the key expression so identifier resolution and
+          // other nested diagnostics are produced.
+          let _ = self.check_expr(expr);
+
+          if !value_is_any {
+            let literal_key = match expr.stx.as_ref() {
+              AstExpr::LitStr(str_lit) => Some(str_lit.stx.value.clone()),
+              AstExpr::LitNum(num_lit) => Some(num_lit.stx.value.0.to_string()),
+              AstExpr::LitTemplate(tpl) => {
+                let mut out = String::new();
+                let mut has_substitution = false;
+                for part in tpl.stx.parts.iter() {
+                  match part {
+                    parse_js::ast::expr::lit::LitTemplatePart::String(s) => out.push_str(s),
+                    parse_js::ast::expr::lit::LitTemplatePart::Substitution(_) => {
+                      has_substitution = true;
+                      break;
+                    }
+                  }
+                }
+                if has_substitution { None } else { Some(out) }
+              }
+              _ => None,
+            };
+            if let Some(key) = literal_key {
+              if let Some(ty) = self.member_type_opt(value, &key) {
+                let key_range = loc_to_range(self.file, expr.loc);
+                self.check_member_access_for_type(value, &key, key_range);
+                prop_ty = ty;
+              }
+            }
+          }
         }
       }
       if let Some(default) = &prop.stx.default_value {
