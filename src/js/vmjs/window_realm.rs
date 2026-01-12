@@ -4148,9 +4148,10 @@ fn history_state_change_native(
     data.session_history.entries.len()
   };
 
-  // Update `history.state` after URL/session history updates so failures do not partially apply.
+  // Update `history.state`/`history.length` after URL/session history updates so failures do not
+  // partially apply.
   {
-    // Root the receiver while allocating the property key: `alloc_key` can trigger GC.
+    // Root the receiver while allocating property keys: `alloc_key` can trigger GC.
     let mut scope = scope.reborrow();
     scope.push_root(Value::Object(history_obj))?;
     scope.push_root(cloned_state_value)?;
@@ -4160,7 +4161,6 @@ fn history_state_change_native(
       state_key,
       read_only_data_desc(cloned_state_value),
     )?;
-  }
 
     let length_key = alloc_key(&mut scope, "length")?;
     scope.define_property(
