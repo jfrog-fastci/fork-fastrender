@@ -2,7 +2,6 @@
 //!
 //! These tests exercise `fastrender` as an external consumer would (via `FastRender`), without
 //! reaching into internal modules.
-mod cascade_diagnostics_env;
 mod clip_mask_diagnostics;
 mod csp_img_data_url;
 mod css_double_fetch;
