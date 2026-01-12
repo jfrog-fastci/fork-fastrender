@@ -192,6 +192,7 @@ pub use crate::error_object::new_type_error_object;
 pub use crate::error_object::throw_range_error;
 pub use crate::error_object::throw_type_error;
 pub use crate::exec::Completion;
+pub use crate::exec::eval_script_with_host_and_hooks;
 pub use crate::exec::JsRuntime;
 pub use crate::exec::Thrown;
 pub use crate::execution_context::ExecutionContext;

@@ -342,6 +342,159 @@ pub(crate) fn perform_indirect_eval(
   }
 }
 
+/// Execute a *script* provided as a JavaScript String value in the current realm's global
+/// environment.
+///
+/// This is host-facing glue for test harnesses (notably test262's `$262.evalScript`) that need to
+/// run additional global scripts at runtime.
+///
+/// Unlike indirect `eval`, this uses classic Script semantics (GlobalDeclarationInstantiation):
+/// top-level lexical declarations (`let`/`const`/`class`) create bindings in the realm's global
+/// lexical environment and persist after this call returns.
+///
+/// Parse/early errors are surfaced as a thrown `SyntaxError` value so they are catchable in user
+/// code.
+pub fn eval_script_with_host_and_hooks(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  source_string: GcString,
+) -> Result<Value, VmError> {
+  let intr = vm
+    .intrinsics()
+    .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+
+  // Derive the realm's global object + global lexical environment from the intrinsic `eval`
+  // function's metadata (populated by `Realm::new`).
+  let (global_object, global_lexical_env) = {
+    let f = scope.heap().get_function(intr.eval())?;
+    let global_object = f
+      .realm
+      .ok_or(VmError::Unimplemented("eval missing [[Realm]]"))?;
+    let global_lexical_env = f
+      .closure_env
+      .ok_or(VmError::Unimplemented("eval missing [[Environment]]"))?;
+    (global_object, global_lexical_env)
+  };
+
+  // Root the global object, global lexical environment, and the input string across allocations.
+  let mut scope = scope.reborrow();
+  scope.push_roots(&[Value::Object(global_object), Value::String(source_string)])?;
+  scope.push_env_root(global_lexical_env)?;
+
+  let source_text = eval_string_to_utf8_lossy_with_tick(vm, scope.heap(), source_string)?;
+  let source = Arc::new(SourceText::new_charged(
+    scope.heap_mut(),
+    "<evalScript>",
+    source_text,
+  )?);
+
+  let (line, col) = source.line_col(0);
+  let frame = StackFrame {
+    function: None,
+    source: source.name.clone(),
+    line,
+    col,
+  };
+  let mut vm_frame = vm.enter_frame(frame)?;
+
+  // Charge at least one tick at entry so even an empty script respects fuel/deadline/interrupt
+  // budgets.
+  vm_frame.tick()?;
+
+  // Parse as a script and convert syntax errors into a thrown `SyntaxError`.
+  let opts = ParseOptions {
+    dialect: Dialect::Ecma,
+    source_type: SourceType::Script,
+  };
+  let top = match vm_frame.parse_top_level_with_budget(&source.text, opts) {
+    Ok(top) => top,
+    Err(VmError::Syntax(diags)) => {
+      let message = diags
+        .first()
+        .map(|d| d.message.as_str())
+        .unwrap_or("Invalid or unexpected token");
+      let err_obj = crate::error_object::new_syntax_error_object(&mut scope, &intr, message)?;
+      return Err(VmError::Throw(err_obj));
+    }
+    Err(err) => return Err(err),
+  };
+
+  let strict = detect_use_strict_directive(&top.stx.body, || vm_frame.tick())?;
+  {
+    let mut tick = || vm_frame.tick();
+    match crate::early_errors::validate_top_level(
+      &top.stx.body,
+      crate::early_errors::EarlyErrorOptions::script(strict),
+      &mut tick,
+    ) {
+      Ok(()) => {}
+      Err(VmError::Syntax(diags)) => {
+        let message = diags
+          .first()
+          .map(|d| d.message.as_str())
+          .unwrap_or("Invalid or unexpected token");
+        let err_obj = crate::error_object::new_syntax_error_object(&mut scope, &intr, message)?;
+        return Err(VmError::Throw(err_obj));
+      }
+      Err(err) => return Err(err),
+    }
+  }
+
+  let mut env = RuntimeEnv::new(scope.heap_mut(), global_object, global_lexical_env)?;
+  env.set_source_info(source.clone(), 0, 0);
+
+  let result = (|| {
+    // In classic scripts, top-level `this` is the global object (even in strict mode).
+    let global_this = Value::Object(global_object);
+    let mut evaluator = Evaluator {
+      vm: &mut *vm_frame,
+      host,
+      hooks,
+      env: &mut env,
+      strict,
+      this: global_this,
+      new_target: Value::Undefined,
+    };
+
+    evaluator.instantiate_script(&mut scope, &top.stx.body)?;
+
+    let completion = evaluator.eval_stmt_list(&mut scope, &top.stx.body)?;
+    match completion {
+      Completion::Normal(v) => Ok(v.unwrap_or(Value::Undefined)),
+      Completion::Throw(thrown) => Err(VmError::ThrowWithStack {
+        value: thrown.value,
+        stack: thrown.stack,
+      }),
+      Completion::Return(_) => Err(VmError::InvariantViolation(
+        "script evaluation produced Return completion (early errors should prevent this)",
+      )),
+      Completion::Break(..) => Err(VmError::InvariantViolation(
+        "script evaluation produced Break completion (early errors should prevent this)",
+      )),
+      Completion::Continue(..) => Err(VmError::InvariantViolation(
+        "script evaluation produced Continue completion (early errors should prevent this)",
+      )),
+    }
+  })();
+
+  env.teardown(scope.heap_mut());
+
+  // Syntax errors from instantiation/evaluation should also be catchable.
+  match result {
+    Err(VmError::Syntax(diags)) => {
+      let message = diags
+        .first()
+        .map(|d| d.message.as_str())
+        .unwrap_or("Invalid or unexpected token");
+      let err_obj = crate::error_object::new_syntax_error_object(&mut scope, &intr, message)?;
+      Err(VmError::Throw(err_obj))
+    }
+    other => other,
+  }
+}
+
 fn throw_type_error(vm: &Vm, scope: &mut Scope<'_>, message: &str) -> Result<VmError, VmError> {
   let intr = vm
     .intrinsics()

@@ -1002,22 +1002,9 @@ fn test262_eval_script(
   _this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
-  // Implement as an indirect-eval in the current realm.
   let source_val = args.get(0).copied().unwrap_or(Value::Undefined);
   let source = scope.to_string(vm, host, hooks, source_val)?;
-  scope.push_root(Value::String(source))?;
-
-  let intr = vm
-    .intrinsics()
-    .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
-  vm.call_with_host_and_hooks(
-    host,
-    scope,
-    hooks,
-    Value::Object(intr.eval()),
-    Value::Undefined,
-    &[Value::String(source)],
-  )
+  vm_js::eval_script_with_host_and_hooks(vm, scope, host, hooks, source)
 }
 
 fn execute_module(
@@ -1797,6 +1784,34 @@ mod tests {
     assert_eq!(js.phase, ExecPhase::Runtime);
     assert!(js.typ.is_none());
     assert_eq!(js.message, "1");
+  }
+
+  #[test]
+  fn eval_script_creates_global_lexical_bindings() {
+    let exec = VmJsExecutor::default();
+    let cancel = Arc::new(AtomicBool::new(false));
+    exec
+      .execute(
+        &test_case("eval_script_lexical.js"),
+        r#"
+var assert = {};
+assert.sameValue = function (actual, expected, message) {
+  if (actual !== expected) {
+    throw new Error(message || ('assert.sameValue failed: expected ' + expected + ', got ' + actual));
+  }
+};
+
+// Global lexical declarations must be created even if the global object is non-extensible.
+Object.preventExtensions(this);
+
+$262.evalScript('let test262let = 1;');
+test262let = 2;
+assert.sameValue(test262let, 2, '`let` binding is mutable');
+assert.sameValue(this.hasOwnProperty('test262let'), false, 'let does not create a global property');
+"#,
+        &cancel,
+      )
+      .expect("expected $262.evalScript to execute as global script");
   }
 
   #[test]
