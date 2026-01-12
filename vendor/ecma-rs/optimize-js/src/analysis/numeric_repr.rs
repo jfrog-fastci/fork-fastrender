@@ -71,12 +71,6 @@ pub fn analyze_cfg_numeric_repr(cfg: &Cfg, ranges: &range::RangeResult) -> Numer
         continue;
       };
 
-      // Representation inference is intended for typed pipelines; skip values
-      // that do not carry a `type_id` from lowering/typechecking.
-      if inst.meta.type_id.is_none() {
-        continue;
-      }
-
       // Only attempt to classify values that are statically known to be numbers.
       let is_number = types
         .var(tgt)
