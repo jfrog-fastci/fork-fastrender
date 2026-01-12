@@ -18,9 +18,6 @@ mod bench;
 #[path = "../output.rs"]
 mod output;
 
-#[path = "../tsconfig.rs"]
-mod tsconfig;
-
 #[path = "../type_libs.rs"]
 mod type_libs;
 

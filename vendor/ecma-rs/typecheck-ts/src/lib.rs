@@ -385,6 +385,10 @@ pub mod queries;
 /// Utilities for selecting bundled `.d.ts` libraries and compiler options.
 pub mod lib_support;
 
+/// TypeScript `tsconfig.json` loading helpers (JSON5 + `extends` + root discovery).
+#[cfg(feature = "tsconfig")]
+pub mod tsconfig;
+
 /// Node/TypeScript-style module resolution helpers.
 #[cfg(feature = "resolve")]
 pub mod resolve;

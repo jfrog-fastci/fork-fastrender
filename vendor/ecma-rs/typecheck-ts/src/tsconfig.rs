@@ -3,8 +3,9 @@ use serde::Deserialize;
 use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
-use typecheck_ts::lib_support::{CompilerOptions, JsxMode, LibName, ModuleKind, ScriptTarget};
-use walkdir::WalkDir;
+use walkdir::{DirEntry, WalkDir};
+
+use crate::lib_support::{CompilerOptions, JsxMode, LibName, ModuleKind, ScriptTarget};
 
 #[derive(Debug, Clone)]
 pub struct ProjectConfig {
@@ -100,15 +101,13 @@ pub fn load_project_config(project: &Path) -> Result<ProjectConfig, String> {
   let raw = load_raw_config(&tsconfig_path, &root_dir, &mut visited)?;
 
   let compiler_options = compiler_options_from_raw(&raw.compiler_options)?;
-  let mut base_url = raw
+
+  let base_url = raw
     .compiler_options
     .base_url
     .as_deref()
     .map(|raw| resolve_path_relative_to(&root_dir, Path::new(raw)));
   let paths = raw.compiler_options.paths.clone().unwrap_or_default();
-  if base_url.is_none() && !paths.is_empty() {
-    base_url = Some(root_dir.clone());
-  }
 
   let root_files = discover_root_files(&root_dir, &raw)?;
 
@@ -177,8 +176,8 @@ fn load_raw_config(
 
   let text = fs::read_to_string(&canonical)
     .map_err(|err| format!("failed to read {}: {err}", canonical.display()))?;
-  let mut current: RawTsConfig = json5::from_str(&text)
-    .map_err(|err| format!("failed to parse {}: {err}", canonical.display()))?;
+  let mut current: RawTsConfig =
+    json5::from_str(&text).map_err(|err| format!("failed to parse {}: {err}", canonical.display()))?;
   let config_dir = canonical
     .parent()
     .ok_or_else(|| format!("invalid tsconfig path {}", canonical.display()))?;
@@ -214,6 +213,9 @@ fn resolve_raw_config_paths(config: &mut RawTsConfig, config_dir: &Path, root_di
   if let Some(base_url) = opts.base_url.as_mut() {
     *base_url = resolve_path_string_relative_to(config_dir, base_url);
   } else if opts.paths.as_ref().is_some_and(|paths| !paths.is_empty()) {
+    // TypeScript's `paths` are resolved relative to `baseUrl`. When `paths` is
+    // set but `baseUrl` is not, the compiler uses the directory of the config
+    // file that provided the `paths` mapping (important for `extends`).
     opts.base_url = Some(config_dir.to_string_lossy().to_string());
   }
 
@@ -295,6 +297,11 @@ fn normalize_path(path: &Path) -> PathBuf {
 }
 
 fn resolve_extends_path(config_dir: &Path, extends: &str) -> Result<PathBuf, String> {
+  let extends = extends.trim();
+  if extends.is_empty() {
+    return Err("tsconfig `extends` value is empty".to_string());
+  }
+
   if extends.starts_with('.') || Path::new(extends).is_absolute() {
     return resolve_extends_file(&resolve_path_relative_to(config_dir, Path::new(extends)));
   }
@@ -343,16 +350,14 @@ fn merge_raw_configs(base: RawTsConfig, overlay: RawTsConfig) -> RawTsConfig {
   RawTsConfig {
     extends: None,
     compiler_options: merge_raw_compiler_options(base.compiler_options, overlay.compiler_options),
+    // `files`/`include`/`exclude` override, they do not merge (tsc semantics).
     files: overlay.files.or(base.files),
     include: overlay.include.or(base.include),
     exclude: overlay.exclude.or(base.exclude),
   }
 }
 
-fn merge_raw_compiler_options(
-  base: RawCompilerOptions,
-  overlay: RawCompilerOptions,
-) -> RawCompilerOptions {
+fn merge_raw_compiler_options(base: RawCompilerOptions, overlay: RawCompilerOptions) -> RawCompilerOptions {
   let merged_native_strict = overlay
     .native_strict
     .or(overlay.strict_native)
@@ -552,8 +557,9 @@ fn parse_jsx_mode(raw: &str) -> Result<JsxMode, String> {
 }
 
 fn discover_root_files(root_dir: &Path, raw: &RawTsConfig) -> Result<Vec<PathBuf>, String> {
-  let mut files = Vec::new();
+  // `files` overrides and disables glob-based discovery.
   if let Some(explicit) = raw.files.as_ref() {
+    let mut files = Vec::new();
     for file in explicit {
       let path = resolve_path_relative_to(root_dir, Path::new(file));
       files.push(
@@ -562,17 +568,18 @@ fn discover_root_files(root_dir: &Path, raw: &RawTsConfig) -> Result<Vec<PathBuf
           .map_err(|err| format!("failed to read project file {}: {err}", path.display()))?,
       );
     }
+
+    files.sort_by(|a, b| a.display().to_string().cmp(&b.display().to_string()));
+    files.dedup();
+    return Ok(files);
   }
 
   let include = match raw.include.clone() {
     Some(patterns) => patterns,
-    None if raw.files.is_some() => Vec::new(),
     None => vec!["**/*".to_string()],
   };
   if include.is_empty() {
-    files.sort_by(|a, b| a.display().to_string().cmp(&b.display().to_string()));
-    files.dedup();
-    return Ok(files);
+    return Ok(Vec::new());
   }
 
   let exclude = match raw.exclude.clone() {
@@ -586,10 +593,16 @@ fn discover_root_files(root_dir: &Path, raw: &RawTsConfig) -> Result<Vec<PathBuf
 
   let include_set = build_globset(&include)?;
   let exclude_set = build_globset(&exclude)?;
+  let excluded_dir_prefixes = exclude
+    .iter()
+    .filter_map(|pat| exclude_dir_prefix(pat))
+    .collect::<Vec<_>>();
 
+  let mut files = Vec::new();
   for entry in WalkDir::new(root_dir)
     .follow_links(false)
     .into_iter()
+    .filter_entry(|entry| !should_skip_entry(entry, root_dir, &excluded_dir_prefixes))
     .filter_map(|entry| entry.ok())
   {
     if !entry.file_type().is_file() {
@@ -619,6 +632,63 @@ fn discover_root_files(root_dir: &Path, raw: &RawTsConfig) -> Result<Vec<PathBuf
   files.sort_by(|a, b| a.display().to_string().cmp(&b.display().to_string()));
   files.dedup();
   Ok(files)
+}
+
+fn should_skip_entry(entry: &DirEntry, root_dir: &Path, excluded: &[PathBuf]) -> bool {
+  if !entry.file_type().is_dir() {
+    return false;
+  }
+  let rel = match entry.path().strip_prefix(root_dir) {
+    Ok(rel) => rel,
+    Err(_) => return false,
+  };
+  excluded.iter().any(|prefix| rel == prefix || rel.starts_with(prefix))
+}
+
+fn exclude_dir_prefix(pattern: &str) -> Option<PathBuf> {
+  let trimmed = pattern.trim();
+  if trimmed.is_empty() {
+    return None;
+  }
+
+  // Only treat simple directory excludes as traversal filters. Excludes with
+  // glob magic (e.g. `foo/*`) intentionally do not prune entire directories
+  // because TypeScript still considers deeper matches.
+  //
+  // Note that we *don't* apply `expand_directory_pattern` here. For patterns like
+  // `node_modules`, glob expansion yields `node_modules/**/*`, but for traversal
+  // we want to skip the `node_modules` directory itself.
+  let mut normalized = trimmed.replace('\\', "/");
+  while let Some(rest) = normalized.strip_prefix("./") {
+    normalized = rest.to_string();
+  }
+  if normalized.starts_with('/') {
+    normalized = normalized.trim_start_matches('/').to_string();
+  }
+  if contains_glob_magic(&normalized) {
+    return None;
+  }
+
+  let trimmed = normalized.trim_end_matches('/');
+  if trimmed.is_empty() {
+    return None;
+  }
+
+  // Mirror `expand_directory_pattern` heuristics: only patterns that look like
+  // directories (no extension) are used to skip directory traversal.
+  let file_name = Path::new(trimmed)
+    .file_name()
+    .and_then(|s| s.to_str())
+    .unwrap_or("");
+  if file_name.ends_with(".d.ts") || file_name.ends_with(".d.mts") || file_name.ends_with(".d.cts")
+  {
+    return None;
+  }
+  match Path::new(trimmed).extension().and_then(|e| e.to_str()) {
+    Some("ts" | "tsx" | "mts" | "cts" | "js" | "jsx" | "mjs" | "cjs" | "json") => None,
+    Some(_) => None,
+    None => Some(PathBuf::from(trimmed)),
+  }
 }
 
 fn build_globset(patterns: &[String]) -> Result<GlobSet, String> {
@@ -690,10 +760,7 @@ fn is_supported_source_file(path: &Path) -> bool {
   if name.ends_with(".d.ts") || name.ends_with(".d.mts") || name.ends_with(".d.cts") {
     return true;
   }
-  name.ends_with(".ts")
-    || name.ends_with(".tsx")
-    || name.ends_with(".mts")
-    || name.ends_with(".cts")
+  name.ends_with(".ts") || name.ends_with(".tsx") || name.ends_with(".mts") || name.ends_with(".cts")
 }
 
 fn resolve_path_relative_to(base: &Path, path: &Path) -> PathBuf {

@@ -1,9 +1,9 @@
-use crate::tsconfig;
 use diagnostics::paths::normalize_fs_path;
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use typecheck_ts::tsconfig;
 use typecheck_ts::lib_support::{CompilerOptions, FileKind, JsxMode, LibFile};
 use typecheck_ts::FileKey;
 

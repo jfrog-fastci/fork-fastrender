@@ -1,9 +1,9 @@
 use crate::host;
-use crate::tsconfig;
 use crate::type_libs;
 use std::path::{Path, PathBuf};
 use typecheck_ts::lib_support::{CompilerOptions, LibName, ScriptTarget};
 use typecheck_ts::resolve::{canonicalize_path, NodeResolver, ResolveOptions};
+use typecheck_ts::tsconfig;
 use typecheck_ts::{FileId, Program};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -127,4 +127,3 @@ fn ensure_default_es_lib(options: &mut CompilerOptions) {
     }
   }
 }
-

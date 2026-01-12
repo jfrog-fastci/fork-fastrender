@@ -17,9 +17,8 @@ use typecheck_ts::lib_support::{
   CompilerOptions, FileKind, JsxMode, LibFile, LibName, ScriptTarget,
 };
 use typecheck_ts::resolve::{canonicalize_path, NodeResolver, ResolveOptions};
+use typecheck_ts::tsconfig;
 use typecheck_ts::{FileKey, Host, HostError, Program};
-
-mod tsconfig;
 
 #[derive(Parser)]
 #[command(author, version, about = "TypeScript type checking CLI")]
@@ -1377,7 +1376,10 @@ fn sort_diagnostics(diagnostics: &mut [Diagnostic]) {
 
 #[cfg(test)]
 mod tests {
-  use super::normalize_json_path;
+  use super::{normalize_json_path, TsconfigResolver};
+  use std::fs;
+  use tempfile::tempdir;
+  use typecheck_ts::resolve::{NodeResolver, ResolveOptions};
 
   #[test]
   fn json_path_normalization_is_stable() {
@@ -1386,5 +1388,104 @@ mod tests {
       "c:/Users/Project/file.ts"
     );
     assert_eq!(normalize_json_path("src/./lib/../main.ts"), "/src/main.ts");
+  }
+
+  #[test]
+  fn tsconfig_default_excludes_do_not_include_node_modules() {
+    let dir = tempdir().expect("tempdir");
+    let root = dir.path();
+
+    fs::write(root.join("tsconfig.json"), "{}").expect("write tsconfig.json");
+
+    fs::create_dir_all(root.join("src")).expect("create src/");
+    fs::write(root.join("src/main.ts"), "export const x = 1;\n").expect("write src/main.ts");
+
+    fs::create_dir_all(root.join("node_modules/pkg")).expect("create node_modules/pkg");
+    fs::write(
+      root.join("node_modules/pkg/index.ts"),
+      "export const nm = 1;\n",
+    )
+    .expect("write node_modules/pkg/index.ts");
+
+    fs::create_dir_all(root.join("bower_components/pkg")).expect("create bower_components/pkg");
+    fs::write(
+      root.join("bower_components/pkg/index.ts"),
+      "export const bower = 1;\n",
+    )
+    .expect("write bower_components/pkg/index.ts");
+
+    fs::create_dir_all(root.join("jspm_packages/pkg")).expect("create jspm_packages/pkg");
+    fs::write(
+      root.join("jspm_packages/pkg/index.ts"),
+      "export const jspm = 1;\n",
+    )
+    .expect("write jspm_packages/pkg/index.ts");
+
+    let cfg =
+      typecheck_ts::tsconfig::load_project_config(root).expect("load_project_config");
+    let expected = root
+      .join("src/main.ts")
+      .canonicalize()
+      .expect("canonicalize src/main.ts");
+    assert_eq!(cfg.root_files, vec![expected]);
+  }
+
+  #[test]
+  fn tsconfig_extends_paths_infers_base_url_from_extended_config_dir() {
+    let dir = tempdir().expect("tempdir");
+    let root = dir.path();
+
+    fs::create_dir_all(root.join("configs/base/src")).expect("create configs/base/src");
+    fs::write(
+      root.join("configs/base/tsconfig.json"),
+      r#"{
+        "compilerOptions": {
+          "paths": {
+            "@lib/*": ["src/*"]
+          }
+        }
+      }"#,
+    )
+    .expect("write base tsconfig.json");
+    fs::write(
+      root.join("tsconfig.json"),
+      r#"{
+        "extends": "./configs/base/tsconfig.json",
+        "include": []
+      }"#,
+    )
+    .expect("write root tsconfig.json");
+
+    let entry = root.join("entry.ts");
+    fs::write(&entry, "import { foo } from \"@lib/foo\";\nexport {};\n")
+      .expect("write entry.ts");
+
+    let foo = root.join("configs/base/src/foo.ts");
+    fs::write(&foo, "export const foo = 1;\n").expect("write foo.ts");
+
+    let cfg =
+      typecheck_ts::tsconfig::load_project_config(root).expect("load_project_config");
+    let base_url = cfg.base_url.clone().expect("base_url should be inferred");
+    assert_eq!(
+      base_url,
+      root
+        .join("configs/base")
+        .canonicalize()
+        .expect("canonicalize configs/base")
+    );
+
+    let resolver = TsconfigResolver::from_project(&cfg).expect("tsconfig resolver should exist");
+    let node = NodeResolver::new(ResolveOptions {
+      node_modules: false,
+      package_imports: false,
+    });
+
+    let resolved = resolver
+      .resolve(&entry, "@lib/foo", &node)
+      .expect("paths mapping should resolve");
+    assert_eq!(
+      resolved.canonicalize().expect("canonicalize resolved"),
+      foo.canonicalize().expect("canonicalize foo.ts")
+    );
   }
 }

@@ -11,16 +11,13 @@ default-run = "native-js-cli"
 [dependencies]
 clap = { workspace = true, features = ["derive"] }
 diagnostics = { workspace = true, features = ["serde"] }
-globset = { workspace = true }
 inkwell = { workspace = true }
-json5 = { workspace = true }
 native-js = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 target-lexicon = { workspace = true }
 tempfile = { workspace = true }
-typecheck-ts = { workspace = true, features = ["resolve"] }
-walkdir = { workspace = true }
+typecheck-ts = { workspace = true, features = ["resolve", "tsconfig"] }
 wait-timeout = { workspace = true }
 
 [dev-dependencies]

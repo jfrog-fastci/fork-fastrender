@@ -1,4 +1,3 @@
-use crate::tsconfig;
 use crate::type_libs;
 use diagnostics::paths::normalize_fs_path;
 use std::collections::{BTreeMap, HashMap};
@@ -7,6 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use typecheck_ts::lib_support::{CompilerOptions, FileKind, LibFile};
 use typecheck_ts::resolve::{canonicalize_path, NodeResolver};
+use typecheck_ts::tsconfig;
 use typecheck_ts::{FileKey, Host, HostError};
 
 #[derive(Clone)]

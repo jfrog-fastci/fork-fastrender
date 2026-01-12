@@ -9,14 +9,11 @@ description = "Standalone CLI for the typecheck-ts checker"
 [dependencies]
 clap = { workspace = true, features = ["derive"] }
 diagnostics = { workspace = true, features = ["serde"] }
-globset = { workspace = true }
-json5 = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["fmt", "json"] }
-typecheck-ts = { workspace = true, features = ["resolve", "serde"] }
-walkdir = { workspace = true }
+typecheck-ts = { workspace = true, features = ["resolve", "serde", "tsconfig"] }
 
 [dev-dependencies]
 assert_cmd = { workspace = true }
