@@ -16,9 +16,11 @@ required:
 
 - `tests/integration.rs` — one integration test binary (`mod common; mod api; mod fixtures; mod wpt;`)
 - `tests/allocation_failure.rs` — special: `#[global_allocator]` (must be its own binary)
+- `tests/browser_integration_tests.rs` — temporary shim: kept for `cargo test --features browser_ui --test browser_integration_tests`
 
-**Goal: keep total `tests/*.rs` at 2.** Any additional test binaries must be justified and treated
-as temporary exceptions.
+**Goal: keep total `tests/*.rs` at ≤3** (and eventually get back to 2 once the temporary
+`browser_integration_tests` shim can be removed). Any additional test binaries must be justified
+and treated as temporary exceptions.
 
 ## Top-level `tests/*.rs` inventory
 
@@ -110,7 +112,7 @@ migrations.
 | `tests/api/` | public API integration tests | `tests/integration.rs::api` | Must only use public API. |
 | `tests/accessibility/` | accessibility/accname fixtures + assertions | `tests/integration.rs::accessibility` | Public API + fixture-driven; stays in integration. |
 | `tests/allocation_failure/` | OOM + custom allocator harness | `tests/allocation_failure.rs` | Must stay separate due to `#[global_allocator]`. |
-| `tests/animation/` | animation engine tests | `src/animation/` | Currently not wired into `tests/integration.rs`; ensure these tests are either migrated into `src/animation/**` unit tests or included from the integration harness. |
+| `tests/animation/` | animation engine tests | `src/animation/` | Runs in the shared integration binary via `tests/integration.rs` today; long-term goal is to migrate unit-level animation tests into `src/animation/**`. |
 | `tests/bin/` | CLI/binary tests | `tests/integration.rs::bin` | Keep as integration tests; share net/fs helpers via `tests/common/`. |
 | `tests/browser_integration/` | browser/UI worker integration suite | `tests/integration.rs::browser_integration` | Runs in the shared integration binary; avoid process-init env mutation. Tests that touch global state should serialize via `stage_listener_test_lock()` / `common::global_test_lock()`. |
 | `tests/bundled/` | bundled font fixture tests | `tests/integration.rs::bundled` | Integration-style fixture assertions. |
@@ -139,6 +141,6 @@ migrations.
 
 ## End-state invariants to verify
 
-- `ls tests/*.rs | wc -l` is **2**
+- `ls tests/*.rs | wc -l` is **≤3** (and **2** once the temporary `browser_integration_tests` shim can be removed)
 - No `#[path = "..."]` in `tests/` (shims removed): `rg '#\\[path\\s*=' tests/` returns nothing
 - No internal-module imports in `tests/` (integration tests use public API only)
