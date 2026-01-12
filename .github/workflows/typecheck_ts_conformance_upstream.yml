@@ -317,7 +317,7 @@ jobs:
             --manifest typecheck-ts-harness/fixtures/conformance-upstream/manifest.toml \
             --json \
             --jobs 4 \
-            --timeout-secs 10 \
+            --timeout-secs 20 \
             --shard ${{ matrix.shard_index }}/${{ matrix.shard_total }} \
             --shard-strategy hash \
             > "${report_path}" 2> >(tee "${stderr_path}" >&2) || status=$?

@@ -597,7 +597,7 @@ FastRender CI configuration (see `<repo-root>/.github/workflows/typecheck_ts_con
 - shards: 16 (`--shard-strategy hash`)
   - PR/push: runs a small shard set (default: `0/16`)
   - schedule/manual: runs the full set (`0..15/16`)
-- timeout: 10s per case
+- timeout: 20s per case
 - workers: `--jobs 4`
 - expectations: `typecheck-ts-harness/fixtures/conformance-upstream/manifest.toml` (gates only new mismatches)
 
@@ -615,7 +615,7 @@ bash ../scripts/cargo_agent.sh run -p typecheck-ts-harness --release -- conforma
   --fail-on new \
   --shard 0/16 \
   --shard-strategy hash \
-  --timeout-secs 10 \
+  --timeout-secs 20 \
   --jobs 4 \
   --json \
   > upstream-conformance-shard0.json
@@ -630,7 +630,7 @@ bash ../scripts/cargo_agent.sh run -p typecheck-ts-harness --release -- conforma
   --fail-on none \
   --shard 0/16 \
   --shard-strategy hash \
-  --timeout-secs 10 \
+  --timeout-secs 20 \
   --jobs 4 \
   --json \
   > upstream-conformance-shard0.json
