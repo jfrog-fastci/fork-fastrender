@@ -223,6 +223,40 @@ pub struct RtGcStatsSnapshot {
   pub cards_kept_after_rebuild: u64,
 }
 
+/// GC heap configuration for the process-global heap used by `rt_alloc*` and `rt_gc_collect`.
+///
+/// Must match `RtGcConfig` in `runtime-native/include/runtime_native.h`.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RtGcConfig {
+  /// Size of the nursery (young generation), in bytes.
+  pub nursery_size_bytes: usize,
+  /// Allocation size threshold above which objects go to the large object space (LOS), in bytes.
+  pub los_threshold_bytes: usize,
+  /// Trigger a minor collection when nursery usage exceeds this percentage (`0..=100`).
+  pub minor_gc_nursery_used_percent: u8,
+  /// Trigger a major collection when old-generation live bytes exceed this threshold, in bytes.
+  pub major_gc_old_bytes_threshold: usize,
+  /// Trigger a major collection when the old generation owns more than this number of Immix blocks.
+  pub major_gc_old_blocks_threshold: usize,
+  /// Trigger a major collection when external (non-GC) bytes exceed this threshold, in bytes.
+  pub major_gc_external_bytes_threshold: usize,
+  /// Promotion policy: promote an object after it has survived this many minor collections (>= 1).
+  pub promote_after_minor_survivals: u8,
+}
+
+/// Hard heap limits for the process-global heap used by `rt_alloc*` and `rt_gc_collect`.
+///
+/// Must match `RtGcLimits` in `runtime-native/include/runtime_native.h`.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RtGcLimits {
+  /// Hard cap on GC heap usage, in bytes.
+  pub max_heap_bytes: usize,
+  /// Hard cap on total usage including external allocations, in bytes.
+  pub max_total_bytes: usize,
+}
+
 /// A stable identifier for an interned UTF-8 string.
 #[repr(transparent)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -571,6 +605,10 @@ extern "C" {
   pub fn rt_write_barrier_range(obj: GcPtr, start_slot: *mut u8, len: usize);
   pub fn rt_gc_collect();
   pub fn rt_backing_store_external_bytes() -> usize;
+  pub fn rt_gc_set_config(cfg: *const RtGcConfig) -> bool;
+  pub fn rt_gc_set_limits(limits: *const RtGcLimits) -> bool;
+  pub fn rt_gc_get_config(out_cfg: *mut RtGcConfig) -> bool;
+  pub fn rt_gc_get_limits(out_limits: *mut RtGcLimits) -> bool;
   pub fn rt_stackmaps_register(start: *const u8, end: *const u8) -> bool;
   pub fn rt_stackmaps_unregister(start: *const u8) -> bool;
 
@@ -966,6 +1004,21 @@ mod tests {
     assert!(size_of::<RtGcStatsSnapshot>() == 136);
     assert!(align_of::<RtGcStatsSnapshot>() == 8);
 
+    assert!(size_of::<RtGcConfig>() == 56);
+    assert!(align_of::<RtGcConfig>() == 8);
+    assert!(core::mem::offset_of!(RtGcConfig, nursery_size_bytes) == 0);
+    assert!(core::mem::offset_of!(RtGcConfig, los_threshold_bytes) == 8);
+    assert!(core::mem::offset_of!(RtGcConfig, minor_gc_nursery_used_percent) == 16);
+    assert!(core::mem::offset_of!(RtGcConfig, major_gc_old_bytes_threshold) == 24);
+    assert!(core::mem::offset_of!(RtGcConfig, major_gc_old_blocks_threshold) == 32);
+    assert!(core::mem::offset_of!(RtGcConfig, major_gc_external_bytes_threshold) == 40);
+    assert!(core::mem::offset_of!(RtGcConfig, promote_after_minor_survivals) == 48);
+
+    assert!(size_of::<RtGcLimits>() == 16);
+    assert!(align_of::<RtGcLimits>() == 8);
+    assert!(core::mem::offset_of!(RtGcLimits, max_heap_bytes) == 0);
+    assert!(core::mem::offset_of!(RtGcLimits, max_total_bytes) == 8);
+
     assert!(size_of::<AtomicU64>() == 8);
     assert!(align_of::<AtomicU64>() == 8);
 
@@ -1038,6 +1091,8 @@ mod tests {
       "RtCoroStatus",
       "RtCoroutineHeader",
       "RtGcStatsSnapshot",
+      "RtGcConfig",
+      "RtGcLimits",
       "CoroutineRef",
       "CoroutineStepTag",
       "CoroutineStep",
@@ -1140,6 +1195,10 @@ mod tests {
       "rt_write_barrier_range(",
       "rt_gc_collect(",
       "rt_backing_store_external_bytes(",
+      "rt_gc_set_config(",
+      "rt_gc_set_limits(",
+      "rt_gc_get_config(",
+      "rt_gc_get_limits(",
       "rt_stackmaps_register(",
       "rt_stackmaps_unregister(",
       "rt_root_push(",

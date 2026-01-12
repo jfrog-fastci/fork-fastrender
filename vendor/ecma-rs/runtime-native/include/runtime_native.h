@@ -347,6 +347,49 @@ uint8_t* rt_array_data(uint8_t* obj);
 void rt_register_shape_table(const RtShapeDescriptor* table, size_t len);
 
 // -----------------------------------------------------------------------------
+// GC heap configuration (process-global heap)
+// -----------------------------------------------------------------------------
+// These APIs allow embedders to tune GC sizing/policy for the process-global heap
+// used by `rt_alloc*` and `rt_gc_collect`.
+//
+// Configuration must be applied before the process-global heap is initialized
+// (i.e. before the first `rt_thread_init`, `rt_alloc`, `rt_gc_collect`, etc).
+// If the heap has already been initialized, setters return false.
+//
+// Optional environment-variable overrides (read once at heap initialization):
+// - ECMA_RS_GC_NURSERY_MB
+// - ECMA_RS_GC_MAX_HEAP_MB
+// - ECMA_RS_GC_MAX_TOTAL_MB
+typedef struct RtGcConfig {
+  // Size of the nursery (young generation), in bytes.
+  size_t nursery_size_bytes;
+  // Allocation size threshold above which objects go to the large object space (LOS), in bytes.
+  size_t los_threshold_bytes;
+  // Trigger a minor collection when nursery usage exceeds this percentage (0..=100).
+  uint8_t minor_gc_nursery_used_percent;
+  // Trigger a major collection when old-generation live bytes exceed this threshold, in bytes.
+  size_t major_gc_old_bytes_threshold;
+  // Trigger a major collection when the old generation owns more than this number of Immix blocks.
+  size_t major_gc_old_blocks_threshold;
+  // Trigger a major collection when external (non-GC) bytes exceed this threshold, in bytes.
+  size_t major_gc_external_bytes_threshold;
+  // Promotion policy: promote an object after it has survived this many minor collections (>= 1).
+  uint8_t promote_after_minor_survivals;
+} RtGcConfig;
+
+typedef struct RtGcLimits {
+  // Hard cap on GC heap usage, in bytes.
+  size_t max_heap_bytes;
+  // Hard cap on total memory usage including external (non-GC) allocations, in bytes.
+  size_t max_total_bytes;
+} RtGcLimits;
+
+bool rt_gc_set_config(const RtGcConfig* cfg);
+bool rt_gc_set_limits(const RtGcLimits* limits);
+bool rt_gc_get_config(RtGcConfig* out_cfg);
+bool rt_gc_get_limits(RtGcLimits* out_limits);
+
+// -----------------------------------------------------------------------------
 // GC entrypoints (stop-the-world)
 // -----------------------------------------------------------------------------
 

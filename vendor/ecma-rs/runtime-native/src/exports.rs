@@ -541,6 +541,65 @@ pub unsafe extern "C" fn rt_gc_get_young_range(
     }
   })
 }
+
+/// Set GC heap configuration for the process-global heap.
+///
+/// This must be called before the process-global heap is initialized (e.g. before the first
+/// `rt_alloc` / `rt_gc_collect`). Returns false if the heap was already initialized.
+#[no_mangle]
+pub extern "C" fn rt_gc_set_config(cfg: *const crate::abi::RtGcConfig) -> bool {
+  abort_on_panic(|| unsafe {
+    if cfg.is_null() {
+      trap::rt_trap_invalid_arg("rt_gc_set_config: cfg was null");
+    }
+    let config = crate::gc::config::HeapConfig::try_from(*cfg)
+      .unwrap_or_else(|msg| trap::rt_trap_invalid_arg(msg));
+    crate::rt_alloc::try_set_global_heap_config(config)
+  })
+}
+
+/// Set GC heap hard limits for the process-global heap.
+///
+/// This must be called before the process-global heap is initialized (e.g. before the first
+/// `rt_alloc` / `rt_gc_collect`). Returns false if the heap was already initialized.
+#[no_mangle]
+pub extern "C" fn rt_gc_set_limits(limits: *const crate::abi::RtGcLimits) -> bool {
+  abort_on_panic(|| unsafe {
+    if limits.is_null() {
+      trap::rt_trap_invalid_arg("rt_gc_set_limits: limits was null");
+    }
+    let limits = crate::gc::config::HeapLimits::try_from(*limits)
+      .unwrap_or_else(|msg| trap::rt_trap_invalid_arg(msg));
+    crate::rt_alloc::try_set_global_heap_limits(limits)
+  })
+}
+
+/// Debugging helper: snapshot the current GC heap configuration (or the pending config before
+/// initialization).
+#[no_mangle]
+pub unsafe extern "C" fn rt_gc_get_config(out_cfg: *mut crate::abi::RtGcConfig) -> bool {
+  abort_on_panic(|| unsafe {
+    if out_cfg.is_null() {
+      return false;
+    }
+    *out_cfg = crate::rt_alloc::global_heap_config_snapshot().to_rt();
+    true
+  })
+}
+
+/// Debugging helper: snapshot the current GC heap limits (or the pending limits before
+/// initialization).
+#[no_mangle]
+pub unsafe extern "C" fn rt_gc_get_limits(out_limits: *mut crate::abi::RtGcLimits) -> bool {
+  abort_on_panic(|| unsafe {
+    if out_limits.is_null() {
+      return false;
+    }
+    *out_limits = crate::rt_alloc::global_heap_limits_snapshot().to_rt();
+    true
+  })
+}
+
 /// Reset write barrier state for tests.
 ///
 /// This clears only process-global state used by the exported barrier:

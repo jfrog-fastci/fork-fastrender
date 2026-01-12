@@ -17,9 +17,11 @@ use crate::nursery::{NurserySpace, ThreadNursery};
 use crate::sync::GcAwareMutex;
 use crate::threading::ThreadId;
 use crate::shape_table;
+use once_cell::sync::Lazy;
+use parking_lot::Mutex;
 use std::cell::{Cell, UnsafeCell};
 use std::ptr;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 use std::sync::OnceLock;
 
 #[inline(always)]
@@ -30,6 +32,67 @@ fn align_up(addr: usize, align: usize) -> usize {
 
 pub(crate) static NURSERY_EPOCH: AtomicU64 = AtomicU64::new(0);
 pub(crate) static MAJOR_EPOCH: AtomicU64 = AtomicU64::new(0);
+
+// Process-global heap config/limits.
+//
+// These can be configured via the exported C ABI (`rt_gc_set_config` /
+// `rt_gc_set_limits`) but must be set before the global heap is initialized.
+static GLOBAL_HEAP_CONFIG: Lazy<Mutex<crate::gc::config::HeapConfig>> =
+  Lazy::new(|| Mutex::new(crate::gc::config::HeapConfig::default()));
+static GLOBAL_HEAP_LIMITS: Lazy<Mutex<crate::gc::config::HeapLimits>> =
+  Lazy::new(|| Mutex::new(crate::gc::config::HeapLimits::default()));
+static GLOBAL_HEAP_CONFIG_SET: AtomicBool = AtomicBool::new(false);
+static GLOBAL_HEAP_LIMITS_SET: AtomicBool = AtomicBool::new(false);
+
+/// Global heap initialization state:
+/// - 0: not started
+/// - 1: initialization in progress
+/// - 2: initialized
+static GLOBAL_HEAP_INIT_STATE: AtomicU8 = AtomicU8::new(0);
+
+pub(crate) fn try_set_global_heap_config(config: crate::gc::config::HeapConfig) -> bool {
+  if GLOBAL_HEAP_INIT_STATE.load(Ordering::Acquire) != 0 {
+    return false;
+  }
+  {
+    let mut guard = GLOBAL_HEAP_CONFIG.lock();
+    *guard = config;
+    GLOBAL_HEAP_CONFIG_SET.store(true, Ordering::Release);
+  }
+  true
+}
+
+pub(crate) fn try_set_global_heap_limits(limits: crate::gc::config::HeapLimits) -> bool {
+  if GLOBAL_HEAP_INIT_STATE.load(Ordering::Acquire) != 0 {
+    return false;
+  }
+  {
+    let mut guard = GLOBAL_HEAP_LIMITS.lock();
+    *guard = limits;
+    GLOBAL_HEAP_LIMITS_SET.store(true, Ordering::Release);
+  }
+  true
+}
+
+pub(crate) fn global_heap_config_snapshot() -> crate::gc::config::HeapConfig {
+  if GLOBAL_HEAP_INIT_STATE.load(Ordering::Acquire) == 2 {
+    let global = global_heap();
+    // SAFETY: `global.heap` points to a leaked `GcHeap` that outlives the process.
+    let heap = unsafe { &*(global.heap as *const crate::gc::GcHeap) };
+    return *heap.config();
+  }
+  *GLOBAL_HEAP_CONFIG.lock()
+}
+
+pub(crate) fn global_heap_limits_snapshot() -> crate::gc::config::HeapLimits {
+  if GLOBAL_HEAP_INIT_STATE.load(Ordering::Acquire) == 2 {
+    let global = global_heap();
+    // SAFETY: `global.heap` points to a leaked `GcHeap` that outlives the process.
+    let heap = unsafe { &*(global.heap as *const crate::gc::GcHeap) };
+    return *heap.limits();
+  }
+  *GLOBAL_HEAP_LIMITS.lock()
+}
 
 #[inline]
 pub(crate) fn bump_nursery_epoch() {
@@ -179,7 +242,24 @@ struct GlobalHeap {
 fn global_heap() -> &'static GlobalHeap {
   static GLOBAL: OnceLock<GlobalHeap> = OnceLock::new();
   GLOBAL.get_or_init(|| {
-    let mut heap = Box::new(crate::gc::GcHeap::new());
+    GLOBAL_HEAP_INIT_STATE.store(1, Ordering::Release);
+
+    let mut config = *GLOBAL_HEAP_CONFIG.lock();
+    let mut limits = *GLOBAL_HEAP_LIMITS.lock();
+    let apply_config = !GLOBAL_HEAP_CONFIG_SET.load(Ordering::Acquire);
+    let apply_limits = !GLOBAL_HEAP_LIMITS_SET.load(Ordering::Acquire);
+    crate::gc::config::apply_env_overrides(&mut config, &mut limits, apply_config, apply_limits);
+    if let Err(msg) = config.validate() {
+      crate::trap::rt_trap_invalid_arg(msg);
+    }
+    if let Err(msg) = limits.validate() {
+      crate::trap::rt_trap_invalid_arg(msg);
+    }
+    if let Err(msg) = crate::gc::config::validate_config_and_limits(&config, &limits) {
+      crate::trap::rt_trap_invalid_arg(msg);
+    }
+
+    let mut heap = Box::new(crate::gc::GcHeap::with_config(config, limits));
     heap.reserve_card_table_objects_for_minor_gc();
     let heap_ptr = Box::into_raw(heap) as usize;
 
@@ -198,10 +278,13 @@ fn global_heap() -> &'static GlobalHeap {
       }
     }
 
-    GlobalHeap {
+    let global = GlobalHeap {
       heap: heap_ptr,
       heap_lock: GcAwareMutex::new(()),
-    }
+    };
+
+    GLOBAL_HEAP_INIT_STATE.store(2, Ordering::Release);
+    global
   })
 }
 

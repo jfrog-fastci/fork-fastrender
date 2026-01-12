@@ -1,0 +1,171 @@
+use std::process::Command;
+use std::sync::Once;
+use runtime_native::abi::RtGcConfig;
+use runtime_native::abi::RtGcLimits;
+use runtime_native::abi::RtShapeDescriptor;
+use runtime_native::abi::RtShapeId;
+use runtime_native::rt_alloc;
+use runtime_native::rt_gc_collect;
+use runtime_native::rt_gc_get_config;
+use runtime_native::rt_gc_get_limits;
+use runtime_native::rt_gc_get_young_range;
+use runtime_native::rt_gc_set_config;
+use runtime_native::rt_gc_set_limits;
+use runtime_native::shape_table;
+use runtime_native::test_util::TestRuntimeGuard;
+
+static SHAPE_TABLE_ONCE: Once = Once::new();
+static EMPTY_PTR_OFFSETS: [u32; 0] = [];
+static SHAPES: [RtShapeDescriptor; 1] = [RtShapeDescriptor {
+  size: 256,
+  align: 16,
+  flags: 0,
+  ptr_offsets: EMPTY_PTR_OFFSETS.as_ptr(),
+  ptr_offsets_len: 0,
+  reserved: 0,
+}];
+
+fn ensure_shape_table() {
+  SHAPE_TABLE_ONCE.call_once(|| unsafe {
+    shape_table::rt_register_shape_table(SHAPES.as_ptr(), SHAPES.len());
+  });
+}
+
+fn read_config() -> RtGcConfig {
+  let mut out = core::mem::MaybeUninit::<RtGcConfig>::uninit();
+  let ok = unsafe { rt_gc_get_config(out.as_mut_ptr()) };
+  assert!(ok);
+  unsafe { out.assume_init() }
+}
+
+fn read_limits() -> RtGcLimits {
+  let mut out = core::mem::MaybeUninit::<RtGcLimits>::uninit();
+  let ok = unsafe { rt_gc_get_limits(out.as_mut_ptr()) };
+  assert!(ok);
+  unsafe { out.assume_init() }
+}
+
+#[test]
+fn gc_config_api_child() {
+  let _rt = TestRuntimeGuard::new();
+  if std::env::var_os("RT_GC_CONFIG_API_CHILD").is_none() {
+    return;
+  }
+
+  let cfg = RtGcConfig {
+    nursery_size_bytes: 256 * 1024,
+    los_threshold_bytes: 8 * 1024,
+    minor_gc_nursery_used_percent: 50,
+    major_gc_old_bytes_threshold: usize::MAX,
+    major_gc_old_blocks_threshold: usize::MAX,
+    major_gc_external_bytes_threshold: usize::MAX,
+    promote_after_minor_survivals: 1,
+  };
+  let limits = RtGcLimits {
+    max_heap_bytes: 8 * 1024 * 1024,
+    max_total_bytes: 16 * 1024 * 1024,
+  };
+
+  assert!(rt_gc_set_config(&cfg));
+  assert!(rt_gc_set_limits(&limits));
+
+  // Before heap initialization, getters should reflect the configured values.
+  assert_eq!(read_config(), cfg);
+  assert_eq!(read_limits(), limits);
+
+  ensure_shape_table();
+
+  // First allocation initializes the process-global heap.
+  let _ = rt_alloc(256, RtShapeId(1));
+
+  let mut young_start: *mut u8 = core::ptr::null_mut();
+  let mut young_end: *mut u8 = core::ptr::null_mut();
+  unsafe {
+    rt_gc_get_young_range(&mut young_start, &mut young_end);
+  }
+  assert!(!young_start.is_null());
+  assert!(!young_end.is_null());
+  assert_eq!(young_end as usize - young_start as usize, cfg.nursery_size_bytes);
+
+  // With a small nursery, we should fall back to old-gen allocation after a small number of
+  // allocations.
+  let mut saw_old = false;
+  for _ in 0..4096 {
+    let obj = rt_alloc(256, RtShapeId(1)) as usize;
+    if !(young_start as usize..young_end as usize).contains(&obj) {
+      saw_old = true;
+      break;
+    }
+  }
+  assert!(saw_old);
+
+  // GC should reset the nursery, making subsequent allocations young again.
+  rt_gc_collect();
+  unsafe {
+    rt_gc_get_young_range(&mut young_start, &mut young_end);
+  }
+  let after = rt_alloc(256, RtShapeId(1)) as usize;
+  assert!((young_start as usize..young_end as usize).contains(&after));
+
+  // After heap initialization, configuration must be immutable.
+  assert!(!rt_gc_set_config(&cfg));
+  assert!(!rt_gc_set_limits(&limits));
+  assert_eq!(read_config(), cfg);
+  assert_eq!(read_limits(), limits);
+}
+
+#[test]
+fn gc_config_api() {
+  let exe = std::env::current_exe().expect("current_exe");
+
+  let status = Command::new(exe)
+    .env("RT_GC_CONFIG_API_CHILD", "1")
+    .arg("--exact")
+    .arg("gc_config_api_child")
+    .status()
+    .expect("spawn child");
+
+  assert!(status.success(), "expected child to exit successfully");
+}
+
+#[test]
+fn gc_config_env_overrides_child() {
+  let _rt = TestRuntimeGuard::new();
+  if std::env::var_os("RT_GC_CONFIG_ENV_CHILD").is_none() {
+    return;
+  }
+
+  // Env overrides must not be read until heap initialization.
+  let before = read_config();
+  assert_eq!(before.nursery_size_bytes, runtime_native::gc::HeapConfig::default().nursery_size_bytes);
+  let before_limits = read_limits();
+  assert_eq!(before_limits.max_heap_bytes, runtime_native::gc::HeapLimits::default().max_heap_bytes);
+
+  ensure_shape_table();
+  let _ = rt_alloc(256, RtShapeId(1));
+
+  let after = read_config();
+  assert_eq!(after.nursery_size_bytes, 1 * 1024 * 1024);
+
+  let after_limits = read_limits();
+  assert_eq!(after_limits.max_heap_bytes, 8 * 1024 * 1024);
+  assert_eq!(after_limits.max_total_bytes, 16 * 1024 * 1024);
+}
+
+#[test]
+fn gc_config_env_overrides() {
+  let exe = std::env::current_exe().expect("current_exe");
+
+  let status = Command::new(exe)
+    .env("RT_GC_CONFIG_ENV_CHILD", "1")
+    .env("ECMA_RS_GC_NURSERY_MB", "1")
+    .env("ECMA_RS_GC_MAX_HEAP_MB", "8")
+    .env("ECMA_RS_GC_MAX_TOTAL_MB", "16")
+    .arg("--exact")
+    .arg("gc_config_env_overrides_child")
+    .status()
+    .expect("spawn child");
+
+  assert!(status.success(), "expected child to exit successfully");
+}
+

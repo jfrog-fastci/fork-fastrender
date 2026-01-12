@@ -62,6 +62,10 @@ fn runtime_native_c_header_contains_expected_abi_symbols() {
     "rt_async_set_strict_await_yields(",
     "rt_async_run_until_idle(",
     "rt_async_block_on(",
+    "rt_gc_set_config(",
+    "rt_gc_set_limits(",
+    "rt_gc_get_config(",
+    "rt_gc_get_limits(",
     "rt_gc_set_young_range(",
     "rt_gc_get_young_range(",
     "rt_gc_poll(",
@@ -126,6 +130,12 @@ fn runtime_native_c_header_contains_expected_abi_symbols() {
     assert!(
       HEADER.contains(sym),
       "`runtime_native.h` is missing expected array ABI declaration: {sym}"
+    );
+  }
+  for sym in ["typedef struct RtGcConfig", "typedef struct RtGcLimits"] {
+    assert!(
+      HEADER.contains(sym),
+      "`runtime_native.h` is missing expected GC config ABI declaration: {sym}"
     );
   }
   for field in [
