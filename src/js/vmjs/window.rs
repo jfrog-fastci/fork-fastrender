@@ -3885,6 +3885,116 @@ mod tests {
   }
 
   #[test]
+  fn intersection_observer_exists_and_supports_basic_methods() -> Result<()> {
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+
+    host.exec_script(
+      r#"
+      var g = this;
+      g.__io_is_fn = (typeof IntersectionObserver === 'function');
+      g.__io_call_throws = false;
+      try { IntersectionObserver(function () {}); } catch (e) { g.__io_call_throws = true; }
+
+      const obs = new IntersectionObserver(function () {});
+      g.__io_root_is_null = (obs.root === null);
+      g.__io_root_margin = obs.rootMargin;
+      g.__io_thresholds_is_array = Array.isArray(obs.thresholds);
+      g.__io_thresholds_len = obs.thresholds.length;
+      g.__io_threshold0 = obs.thresholds[0];
+
+      const el = document.createElement('div');
+      g.__io_observe_ok = true;
+      try { obs.observe(el); } catch (e) { g.__io_observe_ok = false; }
+
+      g.__io_observe_text_throws = false;
+      try { obs.observe(document.createTextNode('x')); } catch (e) { g.__io_observe_text_throws = true; }
+
+      g.__io_take_records_is_array = Array.isArray(obs.takeRecords());
+      "#,
+    )?;
+
+    assert_eq!(get_global_prop(&mut host, "__io_is_fn"), Value::Bool(true));
+    assert_eq!(get_global_prop(&mut host, "__io_call_throws"), Value::Bool(true));
+    assert_eq!(get_global_prop(&mut host, "__io_root_is_null"), Value::Bool(true));
+    assert_eq!(
+      get_global_prop_utf8(&mut host, "__io_root_margin").as_deref(),
+      Some("0px")
+    );
+    assert_eq!(
+      get_global_prop(&mut host, "__io_thresholds_is_array"),
+      Value::Bool(true)
+    );
+    assert!(matches!(
+      get_global_prop(&mut host, "__io_thresholds_len"),
+      Value::Number(n) if n == 1.0
+    ));
+    assert!(matches!(
+      get_global_prop(&mut host, "__io_threshold0"),
+      Value::Number(n) if n == 0.0
+    ));
+    assert_eq!(get_global_prop(&mut host, "__io_observe_ok"), Value::Bool(true));
+    assert_eq!(
+      get_global_prop(&mut host, "__io_observe_text_throws"),
+      Value::Bool(true)
+    );
+    assert_eq!(
+      get_global_prop(&mut host, "__io_take_records_is_array"),
+      Value::Bool(true)
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn resize_observer_exists_and_parses_box_option() -> Result<()> {
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+
+    host.exec_script(
+      r#"
+      var g = this;
+      g.__ro_is_fn = (typeof ResizeObserver === 'function');
+      g.__ro_call_throws = false;
+      try { ResizeObserver(function () {}); } catch (e) { g.__ro_call_throws = true; }
+
+      const ro = new ResizeObserver(function () {});
+      const el = document.createElement('div');
+
+      g.__ro_observe_ok = true;
+      try { ro.observe(el); } catch (e) { g.__ro_observe_ok = false; }
+
+      g.__ro_observe_text_throws = false;
+      try { ro.observe(document.createTextNode('x')); } catch (e) { g.__ro_observe_text_throws = true; }
+
+      g.__ro_invalid_box_throws = false;
+      try { ro.observe(el, { box: 'invalid' }); } catch (e) { g.__ro_invalid_box_throws = true; }
+
+      g.__ro_border_box_ok = true;
+      try { ro.observe(el, { box: 'border-box' }); } catch (e) { g.__ro_border_box_ok = false; }
+
+      g.__ro_take_records_is_array = Array.isArray(ro.takeRecords());
+      "#,
+    )?;
+
+    assert_eq!(get_global_prop(&mut host, "__ro_is_fn"), Value::Bool(true));
+    assert_eq!(get_global_prop(&mut host, "__ro_call_throws"), Value::Bool(true));
+    assert_eq!(get_global_prop(&mut host, "__ro_observe_ok"), Value::Bool(true));
+    assert_eq!(
+      get_global_prop(&mut host, "__ro_observe_text_throws"),
+      Value::Bool(true)
+    );
+    assert_eq!(
+      get_global_prop(&mut host, "__ro_invalid_box_throws"),
+      Value::Bool(true)
+    );
+    assert_eq!(get_global_prop(&mut host, "__ro_border_box_ok"), Value::Bool(true));
+    assert_eq!(
+      get_global_prop(&mut host, "__ro_take_records_is_array"),
+      Value::Bool(true)
+    );
+    Ok(())
+  }
+  #[test]
   fn document_cookie_round_trip_is_deterministic() -> Result<()> {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
     let mut host = WindowHost::new(dom, "https://example.invalid/")?;

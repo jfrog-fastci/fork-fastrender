@@ -2091,12 +2091,31 @@ const MUTATION_RECORD_PROTOTYPE_KEY: &str = "__fastrender_mutation_record_protot
 const NODE_LIST_ITERATOR_LIST_KEY: &str = "__fastrender_node_list_iterator_list";
 const NODE_LIST_ITERATOR_INDEX_KEY: &str = "__fastrender_node_list_iterator_index";
 
+const INTERSECTION_OBSERVER_ID_KEY: &str = "__fastrender_intersection_observer_id";
+const INTERSECTION_OBSERVER_CALLBACK_KEY: &str = "__fastrender_intersection_observer_callback";
+const INTERSECTION_OBSERVER_DOCUMENT_KEY: &str = "__fastrender_intersection_observer_document";
+const INTERSECTION_OBSERVER_REGISTRY_KEY: &str = "__fastrender_intersection_observer_registry";
+const INTERSECTION_OBSERVER_NOTIFY_KEY: &str = "__fastrender_intersection_observer_notify";
+const INTERSECTION_OBSERVER_ROOT_KEY: &str = "__fastrender_intersection_observer_root";
+const INTERSECTION_OBSERVER_ROOT_MARGIN_KEY: &str = "__fastrender_intersection_observer_root_margin";
+const INTERSECTION_OBSERVER_THRESHOLDS_KEY: &str = "__fastrender_intersection_observer_thresholds";
+
+const RESIZE_OBSERVER_ID_KEY: &str = "__fastrender_resize_observer_id";
+const RESIZE_OBSERVER_CALLBACK_KEY: &str = "__fastrender_resize_observer_callback";
+const RESIZE_OBSERVER_DOCUMENT_KEY: &str = "__fastrender_resize_observer_document";
+const RESIZE_OBSERVER_REGISTRY_KEY: &str = "__fastrender_resize_observer_registry";
+const RESIZE_OBSERVER_NOTIFY_KEY: &str = "__fastrender_resize_observer_notify";
+
 const MUTATION_OBSERVER_NOTIFY_DOCUMENT_SLOT: usize = 0;
+const INTERSECTION_OBSERVER_NOTIFY_DOCUMENT_SLOT: usize = 0;
+const RESIZE_OBSERVER_NOTIFY_DOCUMENT_SLOT: usize = 0;
 
 static NEXT_CURRENT_SCRIPT_SOURCE_ID: AtomicU64 = AtomicU64::new(1);
 static NEXT_ACTIVE_EVENT_ID: AtomicU64 = AtomicU64::new(1);
 
 static NEXT_MUTATION_OBSERVER_ID: AtomicU64 = AtomicU64::new(1);
+static NEXT_INTERSECTION_OBSERVER_ID: AtomicU64 = AtomicU64::new(1);
+static NEXT_RESIZE_OBSERVER_ID: AtomicU64 = AtomicU64::new(1);
 
 thread_local! {
   static CURRENT_SCRIPT_SOURCES: RefCell<HashMap<u64, CurrentScriptStateHandle>> =
@@ -12207,6 +12226,1367 @@ fn mutation_observer_notify_native(
       Value::Object(observer_obj),
       &args,
     );
+  }
+
+  Ok(Value::Undefined)
+}
+
+fn intersection_observer_constructor_native(
+  _vm: &mut Vm,
+  _scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  Err(VmError::TypeError(
+    "IntersectionObserver constructor cannot be invoked without 'new'",
+  ))
+}
+
+fn intersection_observer_constructor_construct_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  args: &[Value],
+  new_target: Value,
+) -> Result<Value, VmError> {
+  let callback = args.get(0).copied().unwrap_or(Value::Undefined);
+  if !matches!(callback, Value::Object(_)) || !scope.heap().is_callable(callback)? {
+    return Err(VmError::TypeError(
+      "IntersectionObserver constructor requires a callable callback",
+    ));
+  }
+
+  let mut root_value = Value::Null;
+  let mut root_margin: vm_js::GcString = scope.alloc_string("0px")?;
+  scope.push_root(Value::String(root_margin))?;
+  let mut thresholds: Vec<f64> = vec![0.0];
+
+  let options_value = args.get(1).copied().unwrap_or(Value::Undefined);
+  if !matches!(options_value, Value::Undefined) {
+    let Value::Object(options_obj) = options_value else {
+      return Err(VmError::TypeError(
+        "IntersectionObserver constructor: options must be an object",
+      ));
+    };
+    scope.push_root(Value::Object(options_obj))?;
+
+    let root_key = alloc_key(scope, "root")?;
+    let root_opt = vm.get_with_host_and_hooks(host, scope, hooks, options_obj, root_key)?;
+    if !matches!(root_opt, Value::Undefined) {
+      match root_opt {
+        Value::Null => root_value = Value::Null,
+        Value::Object(_) => root_value = root_opt,
+        _ => {
+          return Err(VmError::TypeError(
+            "IntersectionObserver constructor: root must be an Element, Document, or null",
+          ));
+        }
+      }
+    }
+
+    let root_margin_key = alloc_key(scope, "rootMargin")?;
+    let root_margin_value = vm.get_with_host_and_hooks(host, scope, hooks, options_obj, root_margin_key)?;
+    if !matches!(root_margin_value, Value::Undefined) {
+      root_margin = scope.heap_mut().to_string(root_margin_value)?;
+      scope.push_root(Value::String(root_margin))?;
+    }
+
+    let threshold_key = alloc_key(scope, "threshold")?;
+    let threshold_value = vm.get_with_host_and_hooks(host, scope, hooks, options_obj, threshold_key)?;
+    if !matches!(threshold_value, Value::Undefined) {
+      let mut parsed: Vec<f64> = Vec::new();
+      match threshold_value {
+        Value::Object(obj) => {
+          scope.push_root(Value::Object(obj))?;
+          let length_key = alloc_key(scope, "length")?;
+          let length_value = vm.get_with_host_and_hooks(host, scope, hooks, obj, length_key)?;
+          let len = match length_value {
+            Value::Number(n) if n.is_finite() && n >= 0.0 => (n.trunc() as usize).min(1024),
+            _ => 0,
+          };
+          for idx in 0..len {
+            let idx_key = alloc_key(scope, &idx.to_string())?;
+            let v = vm.get_with_host_and_hooks(host, scope, hooks, obj, idx_key)?;
+            let n = scope.heap_mut().to_number(v)?;
+            if !n.is_finite() {
+              return Err(VmError::TypeError(
+                "IntersectionObserver constructor: threshold must be a finite number",
+              ));
+            }
+            if !(0.0..=1.0).contains(&n) {
+              return Err(VmError::TypeError(
+                "IntersectionObserver constructor: threshold must be between 0 and 1 inclusive",
+              ));
+            }
+            parsed.push(n);
+          }
+        }
+        other => {
+          let n = scope.heap_mut().to_number(other)?;
+          if !n.is_finite() {
+            return Err(VmError::TypeError(
+              "IntersectionObserver constructor: threshold must be a finite number",
+            ));
+          }
+          if !(0.0..=1.0).contains(&n) {
+            return Err(VmError::TypeError(
+              "IntersectionObserver constructor: threshold must be between 0 and 1 inclusive",
+            ));
+          }
+          parsed.push(n);
+        }
+      }
+
+      if parsed.is_empty() {
+        parsed.push(0.0);
+      }
+      parsed.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+      parsed.dedup_by(|a, b| *a == *b);
+      thresholds = parsed;
+    }
+  }
+
+  let ctor = match new_target {
+    Value::Object(obj) => obj,
+    _ => callee,
+  };
+
+  let prototype_key = alloc_key(scope, "prototype")?;
+  let proto = scope
+    .heap()
+    .object_get_own_data_property_value(ctor, &prototype_key)?
+    .and_then(|v| match v {
+      Value::Object(obj) => Some(obj),
+      _ => None,
+    });
+
+  let obj = scope.alloc_object()?;
+  scope.push_root(Value::Object(obj))?;
+  if let Some(proto) = proto {
+    scope.heap_mut().object_set_prototype(obj, Some(proto))?;
+  }
+
+  let id = NEXT_INTERSECTION_OBSERVER_ID.fetch_add(1, Ordering::Relaxed);
+
+  let id_key = alloc_key(scope, INTERSECTION_OBSERVER_ID_KEY)?;
+  scope.define_property(
+    obj,
+    id_key,
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: false,
+      kind: PropertyKind::Data {
+        value: Value::Number(id as f64),
+        writable: false,
+      },
+    },
+  )?;
+
+  let callback_key = alloc_key(scope, INTERSECTION_OBSERVER_CALLBACK_KEY)?;
+  scope.define_property(
+    obj,
+    callback_key,
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: false,
+      kind: PropertyKind::Data {
+        value: callback,
+        writable: false,
+      },
+    },
+  )?;
+
+  let thresholds_array = {
+    let array = scope.alloc_array(0)?;
+    scope.push_root(Value::Object(array))?;
+    if let Some(intrinsics) = vm.intrinsics() {
+      scope
+        .heap_mut()
+        .object_set_prototype(array, Some(intrinsics.array_prototype()))?;
+    }
+    for (idx, t) in thresholds.iter().copied().enumerate() {
+      let key = alloc_key(scope, &idx.to_string())?;
+      scope.define_property(array, key, data_desc(Value::Number(t)))?;
+    }
+    let length_key = alloc_key(scope, "length")?;
+    scope.define_property(
+      array,
+      length_key,
+      PropertyDescriptor {
+        enumerable: false,
+        configurable: false,
+        kind: PropertyKind::Data {
+          value: Value::Number(thresholds.len() as f64),
+          writable: true,
+        },
+      },
+    )?;
+    array
+  };
+
+  let root_internal_key = alloc_key(scope, INTERSECTION_OBSERVER_ROOT_KEY)?;
+  scope.define_property(
+    obj,
+    root_internal_key,
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: false,
+      kind: PropertyKind::Data {
+        value: root_value,
+        writable: false,
+      },
+    },
+  )?;
+
+  let root_margin_internal_key = alloc_key(scope, INTERSECTION_OBSERVER_ROOT_MARGIN_KEY)?;
+  scope.define_property(
+    obj,
+    root_margin_internal_key,
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: false,
+      kind: PropertyKind::Data {
+        value: Value::String(root_margin),
+        writable: false,
+      },
+    },
+  )?;
+
+  let thresholds_internal_key = alloc_key(scope, INTERSECTION_OBSERVER_THRESHOLDS_KEY)?;
+  scope.define_property(
+    obj,
+    thresholds_internal_key,
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: false,
+      kind: PropertyKind::Data {
+        value: Value::Object(thresholds_array),
+        writable: false,
+      },
+    },
+  )?;
+
+  let root_public_key = alloc_key(scope, "root")?;
+  scope.define_property(
+    obj,
+    root_public_key,
+    PropertyDescriptor {
+      enumerable: true,
+      configurable: true,
+      kind: PropertyKind::Data {
+        value: root_value,
+        writable: false,
+      },
+    },
+  )?;
+
+  let root_margin_public_key = alloc_key(scope, "rootMargin")?;
+  scope.define_property(
+    obj,
+    root_margin_public_key,
+    PropertyDescriptor {
+      enumerable: true,
+      configurable: true,
+      kind: PropertyKind::Data {
+        value: Value::String(root_margin),
+        writable: false,
+      },
+    },
+  )?;
+
+  let thresholds_public_key = alloc_key(scope, "thresholds")?;
+  scope.define_property(
+    obj,
+    thresholds_public_key,
+    PropertyDescriptor {
+      enumerable: true,
+      configurable: true,
+      kind: PropertyKind::Data {
+        value: Value::Object(thresholds_array),
+        writable: false,
+      },
+    },
+  )?;
+
+  Ok(Value::Object(obj))
+}
+
+fn intersection_observer_id_from_obj(scope: &mut Scope<'_>, obj: GcObject) -> Result<u64, VmError> {
+  scope.push_root(Value::Object(obj))?;
+  let id_key = alloc_key(scope, INTERSECTION_OBSERVER_ID_KEY)?;
+  match scope.heap().object_get_own_data_property_value(obj, &id_key)? {
+    Some(Value::Number(n)) if n.is_finite() && n >= 0.0 && n <= u64::MAX as f64 => Ok(n as u64),
+    _ => Err(VmError::TypeError("Illegal invocation")),
+  }
+}
+
+fn intersection_observer_document_from_obj(
+  scope: &mut Scope<'_>,
+  obj: GcObject,
+) -> Result<Option<GcObject>, VmError> {
+  scope.push_root(Value::Object(obj))?;
+  let key = alloc_key(scope, INTERSECTION_OBSERVER_DOCUMENT_KEY)?;
+  Ok(match scope.heap().object_get_own_data_property_value(obj, &key)? {
+    Some(Value::Object(doc)) => Some(doc),
+    _ => None,
+  })
+}
+
+fn intersection_observer_registry_from_document(
+  scope: &mut Scope<'_>,
+  document_obj: GcObject,
+) -> Result<GcObject, VmError> {
+  scope.push_root(Value::Object(document_obj))?;
+  let key = alloc_key(scope, INTERSECTION_OBSERVER_REGISTRY_KEY)?;
+  match scope
+    .heap()
+    .object_get_own_data_property_value(document_obj, &key)?
+  {
+    Some(Value::Object(obj)) => Ok(obj),
+    _ => {
+      let registry = scope.alloc_object()?;
+      scope.push_root(Value::Object(registry))?;
+      scope.define_property(
+        document_obj,
+        key,
+        PropertyDescriptor {
+          enumerable: false,
+          configurable: false,
+          kind: PropertyKind::Data {
+            value: Value::Object(registry),
+            writable: false,
+          },
+        },
+      )?;
+      Ok(registry)
+    }
+  }
+}
+
+fn intersection_observer_init_from_obj(
+  scope: &mut Scope<'_>,
+  dom: &dom2::Document,
+  observer_obj: GcObject,
+) -> Result<dom2::IntersectionObserverInit, VmError> {
+  scope.push_root(Value::Object(observer_obj))?;
+
+  let root_key = alloc_key(scope, INTERSECTION_OBSERVER_ROOT_KEY)?;
+  let root_value = scope
+    .heap()
+    .object_get_own_data_property_value(observer_obj, &root_key)?
+    .unwrap_or(Value::Null);
+  let root = match root_value {
+    Value::Null | Value::Undefined => None,
+    Value::Object(obj) => {
+      let Some(node_id) = dom_node_id_from_obj(scope, dom, obj)? else {
+        return Err(VmError::TypeError(
+          "IntersectionObserver.observe: root must be a Document or Element",
+        ));
+      };
+      match dom.node(node_id).kind {
+        NodeKind::Document { .. } | NodeKind::Element { .. } | NodeKind::Slot { .. } => {}
+        _ => {
+          return Err(VmError::TypeError(
+            "IntersectionObserver.observe: root must be a Document or Element",
+          ));
+        }
+      }
+      Some(node_id)
+    }
+    _ => None,
+  };
+
+  let root_margin_key = alloc_key(scope, INTERSECTION_OBSERVER_ROOT_MARGIN_KEY)?;
+  let root_margin = match scope
+    .heap()
+    .object_get_own_data_property_value(observer_obj, &root_margin_key)?
+  {
+    Some(Value::String(s)) => scope.heap().get_string(s)?.to_utf8_lossy(),
+    _ => "0px".to_string(),
+  };
+
+  let thresholds_key = alloc_key(scope, INTERSECTION_OBSERVER_THRESHOLDS_KEY)?;
+  let thresholds_obj = match scope
+    .heap()
+    .object_get_own_data_property_value(observer_obj, &thresholds_key)?
+  {
+    Some(Value::Object(obj)) => obj,
+    _ => {
+      return Ok(dom2::IntersectionObserverInit {
+        root,
+        root_margin,
+        thresholds: vec![0.0],
+      })
+    }
+  };
+  scope.push_root(Value::Object(thresholds_obj))?;
+  let length_key = alloc_key(scope, "length")?;
+  let len = match scope
+    .heap()
+    .object_get_own_data_property_value(thresholds_obj, &length_key)?
+  {
+    Some(Value::Number(n)) if n.is_finite() && n >= 0.0 => (n.trunc() as usize).min(1024),
+    _ => 0,
+  };
+  let mut thresholds: Vec<f64> = Vec::with_capacity(len.min(32));
+  for idx in 0..len {
+    let idx_key = alloc_key(scope, &idx.to_string())?;
+    let v = scope
+      .heap()
+      .object_get_own_data_property_value(thresholds_obj, &idx_key)?
+      .unwrap_or(Value::Undefined);
+    let Value::Number(n) = v else {
+      continue;
+    };
+    if n.is_finite() && (0.0..=1.0).contains(&n) {
+      thresholds.push(n);
+    } else {
+      return Err(VmError::TypeError(
+        "IntersectionObserver.observe: threshold must be between 0 and 1 inclusive",
+      ));
+    }
+  }
+  if thresholds.is_empty() {
+    thresholds.push(0.0);
+  }
+
+  Ok(dom2::IntersectionObserverInit {
+    root,
+    root_margin,
+    thresholds,
+  })
+}
+
+fn intersection_observer_observe_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(observer_obj) = this else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+  let observer_id = intersection_observer_id_from_obj(scope, observer_obj)?;
+
+  let target_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let Value::Object(target_obj) = target_value else {
+    return Err(VmError::TypeError(
+      "IntersectionObserver.observe: target must be an Element",
+    ));
+  };
+
+  let wrapper_document_key = alloc_key(scope, WRAPPER_DOCUMENT_KEY)?;
+  let document_obj = match scope
+    .heap()
+    .object_get_own_data_property_value(target_obj, &wrapper_document_key)?
+  {
+    Some(Value::Object(obj)) => obj,
+    _ => {
+      return Err(VmError::TypeError(
+        "IntersectionObserver.observe: target must be an Element",
+      ));
+    }
+  };
+
+  let dom = dom_from_vm_host_mut(host).ok_or(VmError::TypeError(
+    "IntersectionObserver.observe requires a DOM-backed element",
+  ))?;
+  let Some(target_id) = dom_node_id_from_obj(scope, dom, target_obj)? else {
+    return Err(VmError::TypeError(
+      "IntersectionObserver.observe requires a DOM-backed element",
+    ));
+  };
+  match dom.node(target_id).kind {
+    NodeKind::Element { .. } | NodeKind::Slot { .. } => {}
+    _ => {
+      return Err(VmError::TypeError(
+        "IntersectionObserver.observe: target must be an Element",
+      ));
+    }
+  }
+
+  let init = intersection_observer_init_from_obj(scope, dom, observer_obj)?;
+
+  if let Err(err) = dom.intersection_observer_observe(observer_id, target_id, init) {
+    return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
+  }
+
+  // Ensure the observer stays alive while it is observing.
+  let registry = intersection_observer_registry_from_document(scope, document_obj)?;
+  scope.push_root(Value::Object(registry))?;
+  scope.push_root(Value::Object(observer_obj))?;
+  let key = alloc_key(scope, &observer_id.to_string())?;
+  scope.define_property(registry, key, data_desc(Value::Object(observer_obj)))?;
+
+  // Remember which document this observer is associated with so `disconnect()`/`takeRecords()` can
+  // find the right `dom2::Document`.
+  let doc_key = alloc_key(scope, INTERSECTION_OBSERVER_DOCUMENT_KEY)?;
+  scope.define_property(observer_obj, doc_key, data_desc(Value::Object(document_obj)))?;
+
+  Ok(Value::Undefined)
+}
+
+fn intersection_observer_unobserve_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(observer_obj) = this else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+  let observer_id = intersection_observer_id_from_obj(scope, observer_obj)?;
+
+  let Some(_document_obj) = intersection_observer_document_from_obj(scope, observer_obj)? else {
+    return Ok(Value::Undefined);
+  };
+
+  let target_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let Value::Object(target_obj) = target_value else {
+    return Err(VmError::TypeError(
+      "IntersectionObserver.unobserve: target must be an Element",
+    ));
+  };
+
+  let dom = dom_from_vm_host_mut(host).ok_or(VmError::TypeError(
+    "IntersectionObserver.unobserve requires a DOM-backed element",
+  ))?;
+  let Some(target_id) = dom_node_id_from_obj(scope, dom, target_obj)? else {
+    return Err(VmError::TypeError(
+      "IntersectionObserver.unobserve requires a DOM-backed element",
+    ));
+  };
+  match dom.node(target_id).kind {
+    NodeKind::Element { .. } | NodeKind::Slot { .. } => {}
+    _ => {
+      return Err(VmError::TypeError(
+        "IntersectionObserver.unobserve: target must be an Element",
+      ));
+    }
+  }
+
+  dom.intersection_observer_unobserve(observer_id, target_id);
+  Ok(Value::Undefined)
+}
+
+fn intersection_observer_disconnect_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(observer_obj) = this else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+  let observer_id = intersection_observer_id_from_obj(scope, observer_obj)?;
+
+  let Some(document_obj) = intersection_observer_document_from_obj(scope, observer_obj)? else {
+    return Ok(Value::Undefined);
+  };
+
+  if let Some(dom) = dom_from_vm_host_mut(host) {
+    dom.intersection_observer_disconnect(observer_id);
+  }
+
+  if let Ok(registry) = intersection_observer_registry_from_document(scope, document_obj) {
+    scope.push_root(Value::Object(registry))?;
+    let key = alloc_key(scope, &observer_id.to_string())?;
+    scope.define_property(registry, key, data_desc(Value::Undefined))?;
+  }
+
+  Ok(Value::Undefined)
+}
+
+fn alloc_dom_rect_like_object(
+  scope: &mut Scope<'_>,
+  rect: crate::geometry::Rect,
+) -> Result<GcObject, VmError> {
+  let obj = scope.alloc_object()?;
+  scope.push_root(Value::Object(obj))?;
+
+  let x = rect.origin.x as f64;
+  let y = rect.origin.y as f64;
+  let width = rect.size.width as f64;
+  let height = rect.size.height as f64;
+  let right = x + width;
+  let bottom = y + height;
+
+  for (name, value) in [
+    ("x", x),
+    ("y", y),
+    ("width", width),
+    ("height", height),
+    ("top", y),
+    ("left", x),
+    ("right", right),
+    ("bottom", bottom),
+  ] {
+    let key = alloc_key(scope, name)?;
+    scope.define_property(obj, key, data_desc(Value::Number(value)))?;
+  }
+
+  Ok(obj)
+}
+
+fn alloc_intersection_observer_entry_object(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  document_obj: GcObject,
+  dom: Option<&dom2::Document>,
+  entry: &dom2::IntersectionObserverEntry,
+) -> Result<GcObject, VmError> {
+  let obj = scope.alloc_object()?;
+  scope.push_root(Value::Object(obj))?;
+
+  let time_key = alloc_key(scope, "time")?;
+  scope.define_property(obj, time_key, data_desc(Value::Number(entry.time)))?;
+
+  let target_key = alloc_key(scope, "target")?;
+  let target_wrapper = get_or_create_node_wrapper(vm, scope, document_obj, dom, entry.target)?;
+  scope.define_property(obj, target_key, data_desc(target_wrapper))?;
+
+  let root_bounds_key = alloc_key(scope, "rootBounds")?;
+  let root_bounds_value = match entry.root_bounds {
+    Some(r) => Value::Object(alloc_dom_rect_like_object(scope, r)?),
+    None => Value::Null,
+  };
+  scope.define_property(obj, root_bounds_key, data_desc(root_bounds_value))?;
+
+  let bounding_key = alloc_key(scope, "boundingClientRect")?;
+  let bounding_rect = alloc_dom_rect_like_object(scope, entry.bounding_client_rect)?;
+  scope.define_property(obj, bounding_key, data_desc(Value::Object(bounding_rect)))?;
+
+  let intersection_rect_key = alloc_key(scope, "intersectionRect")?;
+  let intersection_rect = alloc_dom_rect_like_object(scope, entry.intersection_rect)?;
+  scope.define_property(
+    obj,
+    intersection_rect_key,
+    data_desc(Value::Object(intersection_rect)),
+  )?;
+
+  let is_intersecting_key = alloc_key(scope, "isIntersecting")?;
+  scope.define_property(
+    obj,
+    is_intersecting_key,
+    data_desc(Value::Bool(entry.is_intersecting)),
+  )?;
+
+  let ratio_key = alloc_key(scope, "intersectionRatio")?;
+  scope.define_property(
+    obj,
+    ratio_key,
+    data_desc(Value::Number(entry.intersection_ratio)),
+  )?;
+
+  Ok(obj)
+}
+
+fn alloc_intersection_observer_entries_array(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  document_obj: GcObject,
+  dom: Option<&dom2::Document>,
+  entries: &[dom2::IntersectionObserverEntry],
+) -> Result<GcObject, VmError> {
+  let array = scope.alloc_array(0)?;
+  scope.push_root(Value::Object(array))?;
+  if let Some(intrinsics) = vm.intrinsics() {
+    scope
+      .heap_mut()
+      .object_set_prototype(array, Some(intrinsics.array_prototype()))?;
+  }
+  for (idx, entry) in entries.iter().enumerate() {
+    let key = alloc_key(scope, &idx.to_string())?;
+    let obj = alloc_intersection_observer_entry_object(vm, scope, document_obj, dom, entry)?;
+    scope.define_property(array, key, data_desc(Value::Object(obj)))?;
+  }
+  let length_key = alloc_key(scope, "length")?;
+  scope.define_property(
+    array,
+    length_key,
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: false,
+      kind: PropertyKind::Data {
+        value: Value::Number(entries.len() as f64),
+        writable: true,
+      },
+    },
+  )?;
+  Ok(array)
+}
+
+fn intersection_observer_take_records_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(observer_obj) = this else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+  let observer_id = intersection_observer_id_from_obj(scope, observer_obj)?;
+
+  let alloc_empty_array = |vm: &mut Vm, scope: &mut Scope<'_>| -> Result<GcObject, VmError> {
+    let array = scope.alloc_array(0)?;
+    scope.push_root(Value::Object(array))?;
+    if let Some(intrinsics) = vm.intrinsics() {
+      scope
+        .heap_mut()
+        .object_set_prototype(array, Some(intrinsics.array_prototype()))?;
+    }
+    let length_key = alloc_key(scope, "length")?;
+    scope.define_property(
+      array,
+      length_key,
+      PropertyDescriptor {
+        enumerable: false,
+        configurable: false,
+        kind: PropertyKind::Data {
+          value: Value::Number(0.0),
+          writable: true,
+        },
+      },
+    )?;
+    Ok(array)
+  };
+
+  let Some(document_obj) = intersection_observer_document_from_obj(scope, observer_obj)? else {
+    let empty = alloc_empty_array(vm, scope)?;
+    return Ok(Value::Object(empty));
+  };
+
+  let Some(dom) = dom_from_vm_host_mut(host) else {
+    let empty = alloc_empty_array(vm, scope)?;
+    return Ok(Value::Object(empty));
+  };
+  let records = dom.intersection_observer_take_records(observer_id);
+  let array = alloc_intersection_observer_entries_array(vm, scope, document_obj, Some(dom), &records)?;
+  Ok(Value::Object(array))
+}
+
+fn intersection_observer_notify_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let slots = scope.heap().get_function_native_slots(callee)?;
+  let document_obj = match slots
+    .get(INTERSECTION_OBSERVER_NOTIFY_DOCUMENT_SLOT)
+    .copied()
+    .unwrap_or(Value::Undefined)
+  {
+    Value::Object(obj) => obj,
+    _ => return Ok(Value::Undefined),
+  };
+
+  let deliveries = {
+    let Some(dom) = dom_from_vm_host_mut(host) else {
+      return Ok(Value::Undefined);
+    };
+    dom.intersection_observer_take_deliveries()
+  };
+  if deliveries.is_empty() {
+    return Ok(Value::Undefined);
+  }
+
+  let registry = intersection_observer_registry_from_document(scope, document_obj)?;
+  scope.push_root(Value::Object(registry))?;
+
+  for (observer_id, entries) in deliveries {
+    if entries.is_empty() {
+      continue;
+    }
+
+    let key = alloc_key(scope, &observer_id.to_string())?;
+    let observer_value = scope
+      .heap()
+      .object_get_own_data_property_value(registry, &key)?
+      .unwrap_or(Value::Undefined);
+    let Value::Object(observer_obj) = observer_value else {
+      continue;
+    };
+
+    let callback_key = alloc_key(scope, INTERSECTION_OBSERVER_CALLBACK_KEY)?;
+    let callback = scope
+      .heap()
+      .object_get_own_data_property_value(observer_obj, &callback_key)?
+      .unwrap_or(Value::Undefined);
+    if !matches!(callback, Value::Object(_)) || !scope.heap().is_callable(callback)? {
+      continue;
+    }
+
+    let entries_array = {
+      let dom_for_wrappers = dom_from_vm_host(host);
+      alloc_intersection_observer_entries_array(vm, scope, document_obj, dom_for_wrappers, &entries)?
+    };
+    let args = [Value::Object(entries_array), Value::Object(observer_obj)];
+    let _ =
+      vm.call_with_host_and_hooks(host, scope, hooks, callback, Value::Object(observer_obj), &args);
+  }
+
+  Ok(Value::Undefined)
+}
+
+fn resize_observer_constructor_native(
+  _vm: &mut Vm,
+  _scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  Err(VmError::TypeError(
+    "ResizeObserver constructor cannot be invoked without 'new'",
+  ))
+}
+
+fn resize_observer_constructor_construct_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  args: &[Value],
+  new_target: Value,
+) -> Result<Value, VmError> {
+  let callback = args.get(0).copied().unwrap_or(Value::Undefined);
+  if !matches!(callback, Value::Object(_)) || !scope.heap().is_callable(callback)? {
+    return Err(VmError::TypeError(
+      "ResizeObserver constructor requires a callable callback",
+    ));
+  }
+
+  let ctor = match new_target {
+    Value::Object(obj) => obj,
+    _ => callee,
+  };
+
+  let prototype_key = alloc_key(scope, "prototype")?;
+  let proto = scope
+    .heap()
+    .object_get_own_data_property_value(ctor, &prototype_key)?
+    .and_then(|v| match v {
+      Value::Object(obj) => Some(obj),
+      _ => None,
+    });
+
+  let obj = scope.alloc_object()?;
+  scope.push_root(Value::Object(obj))?;
+  if let Some(proto) = proto {
+    scope.heap_mut().object_set_prototype(obj, Some(proto))?;
+  }
+
+  let id = NEXT_RESIZE_OBSERVER_ID.fetch_add(1, Ordering::Relaxed);
+
+  let id_key = alloc_key(scope, RESIZE_OBSERVER_ID_KEY)?;
+  scope.define_property(
+    obj,
+    id_key,
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: false,
+      kind: PropertyKind::Data {
+        value: Value::Number(id as f64),
+        writable: false,
+      },
+    },
+  )?;
+
+  let callback_key = alloc_key(scope, RESIZE_OBSERVER_CALLBACK_KEY)?;
+  scope.define_property(
+    obj,
+    callback_key,
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: false,
+      kind: PropertyKind::Data {
+        value: callback,
+        writable: false,
+      },
+    },
+  )?;
+
+  Ok(Value::Object(obj))
+}
+
+fn resize_observer_id_from_obj(scope: &mut Scope<'_>, obj: GcObject) -> Result<u64, VmError> {
+  scope.push_root(Value::Object(obj))?;
+  let id_key = alloc_key(scope, RESIZE_OBSERVER_ID_KEY)?;
+  match scope.heap().object_get_own_data_property_value(obj, &id_key)? {
+    Some(Value::Number(n)) if n.is_finite() && n >= 0.0 && n <= u64::MAX as f64 => Ok(n as u64),
+    _ => Err(VmError::TypeError("Illegal invocation")),
+  }
+}
+
+fn resize_observer_document_from_obj(scope: &mut Scope<'_>, obj: GcObject) -> Result<Option<GcObject>, VmError> {
+  scope.push_root(Value::Object(obj))?;
+  let key = alloc_key(scope, RESIZE_OBSERVER_DOCUMENT_KEY)?;
+  Ok(match scope.heap().object_get_own_data_property_value(obj, &key)? {
+    Some(Value::Object(doc)) => Some(doc),
+    _ => None,
+  })
+}
+
+fn resize_observer_registry_from_document(
+  scope: &mut Scope<'_>,
+  document_obj: GcObject,
+) -> Result<GcObject, VmError> {
+  scope.push_root(Value::Object(document_obj))?;
+  let key = alloc_key(scope, RESIZE_OBSERVER_REGISTRY_KEY)?;
+  match scope
+    .heap()
+    .object_get_own_data_property_value(document_obj, &key)?
+  {
+    Some(Value::Object(obj)) => Ok(obj),
+    _ => {
+      let registry = scope.alloc_object()?;
+      scope.push_root(Value::Object(registry))?;
+      scope.define_property(
+        document_obj,
+        key,
+        PropertyDescriptor {
+          enumerable: false,
+          configurable: false,
+          kind: PropertyKind::Data {
+            value: Value::Object(registry),
+            writable: false,
+          },
+        },
+      )?;
+      Ok(registry)
+    }
+  }
+}
+
+fn parse_resize_observer_box_option(
+  scope: &mut Scope<'_>,
+  s: &str,
+) -> Result<dom2::ResizeObserverBoxOptions, VmError> {
+  match s {
+    "content-box" => Ok(dom2::ResizeObserverBoxOptions::ContentBox),
+    "border-box" => Ok(dom2::ResizeObserverBoxOptions::BorderBox),
+    "device-pixel-content-box" => Ok(dom2::ResizeObserverBoxOptions::DevicePixelContentBox),
+    _ => Err(VmError::TypeError(
+      "ResizeObserver.observe: options.box must be 'content-box', 'border-box', or 'device-pixel-content-box'",
+    )),
+  }
+}
+
+fn resize_observer_observe_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(observer_obj) = this else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+  let observer_id = resize_observer_id_from_obj(scope, observer_obj)?;
+
+  let target_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let Value::Object(target_obj) = target_value else {
+    return Err(VmError::TypeError(
+      "ResizeObserver.observe: target must be an Element",
+    ));
+  };
+
+  let wrapper_document_key = alloc_key(scope, WRAPPER_DOCUMENT_KEY)?;
+  let document_obj = match scope
+    .heap()
+    .object_get_own_data_property_value(target_obj, &wrapper_document_key)?
+  {
+    Some(Value::Object(obj)) => obj,
+    _ => {
+      return Err(VmError::TypeError(
+        "ResizeObserver.observe: target must be an Element",
+      ));
+    }
+  };
+
+  let mut box_opt = dom2::ResizeObserverBoxOptions::ContentBox;
+  let options_value = args.get(1).copied().unwrap_or(Value::Undefined);
+  if !matches!(options_value, Value::Undefined) {
+    let Value::Object(options_obj) = options_value else {
+      return Err(VmError::TypeError(
+        "ResizeObserver.observe: options must be an object",
+      ));
+    };
+    scope.push_root(Value::Object(options_obj))?;
+    let box_key = alloc_key(scope, "box")?;
+    let box_value = vm.get_with_host_and_hooks(host, scope, hooks, options_obj, box_key)?;
+    if !matches!(box_value, Value::Undefined) {
+      let box_s = scope.heap_mut().to_string(box_value)?;
+      let box_text = scope.heap().get_string(box_s)?.to_utf8_lossy();
+      box_opt = parse_resize_observer_box_option(scope, &box_text)?;
+    }
+  }
+
+  let dom = dom_from_vm_host_mut(host).ok_or(VmError::TypeError(
+    "ResizeObserver.observe requires a DOM-backed element",
+  ))?;
+  let Some(target_id) = dom_node_id_from_obj(scope, dom, target_obj)? else {
+    return Err(VmError::TypeError(
+      "ResizeObserver.observe requires a DOM-backed element",
+    ));
+  };
+  match dom.node(target_id).kind {
+    NodeKind::Element { .. } | NodeKind::Slot { .. } => {}
+    _ => {
+      return Err(VmError::TypeError(
+        "ResizeObserver.observe: target must be an Element",
+      ));
+    }
+  }
+
+  if let Err(err) = dom.resize_observer_observe(observer_id, target_id, box_opt) {
+    return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
+  }
+
+  let registry = resize_observer_registry_from_document(scope, document_obj)?;
+  scope.push_root(Value::Object(registry))?;
+  scope.push_root(Value::Object(observer_obj))?;
+  let key = alloc_key(scope, &observer_id.to_string())?;
+  scope.define_property(registry, key, data_desc(Value::Object(observer_obj)))?;
+
+  let doc_key = alloc_key(scope, RESIZE_OBSERVER_DOCUMENT_KEY)?;
+  scope.define_property(observer_obj, doc_key, data_desc(Value::Object(document_obj)))?;
+
+  Ok(Value::Undefined)
+}
+
+fn resize_observer_unobserve_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(observer_obj) = this else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+  let observer_id = resize_observer_id_from_obj(scope, observer_obj)?;
+
+  let Some(_document_obj) = resize_observer_document_from_obj(scope, observer_obj)? else {
+    return Ok(Value::Undefined);
+  };
+
+  let target_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let Value::Object(target_obj) = target_value else {
+    return Err(VmError::TypeError(
+      "ResizeObserver.unobserve: target must be an Element",
+    ));
+  };
+
+  let dom = dom_from_vm_host_mut(host).ok_or(VmError::TypeError(
+    "ResizeObserver.unobserve requires a DOM-backed element",
+  ))?;
+  let Some(target_id) = dom_node_id_from_obj(scope, dom, target_obj)? else {
+    return Err(VmError::TypeError(
+      "ResizeObserver.unobserve requires a DOM-backed element",
+    ));
+  };
+  match dom.node(target_id).kind {
+    NodeKind::Element { .. } | NodeKind::Slot { .. } => {}
+    _ => {
+      return Err(VmError::TypeError(
+        "ResizeObserver.unobserve: target must be an Element",
+      ));
+    }
+  }
+
+  dom.resize_observer_unobserve(observer_id, target_id);
+  Ok(Value::Undefined)
+}
+
+fn resize_observer_disconnect_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(observer_obj) = this else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+  let observer_id = resize_observer_id_from_obj(scope, observer_obj)?;
+
+  let Some(document_obj) = resize_observer_document_from_obj(scope, observer_obj)? else {
+    return Ok(Value::Undefined);
+  };
+
+  if let Some(dom) = dom_from_vm_host_mut(host) {
+    dom.resize_observer_disconnect(observer_id);
+  }
+
+  if let Ok(registry) = resize_observer_registry_from_document(scope, document_obj) {
+    scope.push_root(Value::Object(registry))?;
+    let key = alloc_key(scope, &observer_id.to_string())?;
+    scope.define_property(registry, key, data_desc(Value::Undefined))?;
+  }
+
+  Ok(Value::Undefined)
+}
+
+fn alloc_resize_observer_size_object(
+  scope: &mut Scope<'_>,
+  size: &dom2::ResizeObserverSize,
+) -> Result<GcObject, VmError> {
+  let obj = scope.alloc_object()?;
+  scope.push_root(Value::Object(obj))?;
+
+  let inline_key = alloc_key(scope, "inlineSize")?;
+  scope.define_property(obj, inline_key, data_desc(Value::Number(size.inline_size)))?;
+
+  let block_key = alloc_key(scope, "blockSize")?;
+  scope.define_property(obj, block_key, data_desc(Value::Number(size.block_size)))?;
+
+  Ok(obj)
+}
+
+fn alloc_resize_observer_size_array(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  size: &dom2::ResizeObserverSize,
+) -> Result<GcObject, VmError> {
+  let array = scope.alloc_array(0)?;
+  scope.push_root(Value::Object(array))?;
+  if let Some(intrinsics) = vm.intrinsics() {
+    scope
+      .heap_mut()
+      .object_set_prototype(array, Some(intrinsics.array_prototype()))?;
+  }
+  let idx0_key = alloc_key(scope, "0")?;
+  let size_obj = alloc_resize_observer_size_object(scope, size)?;
+  scope.define_property(array, idx0_key, data_desc(Value::Object(size_obj)))?;
+
+  let length_key = alloc_key(scope, "length")?;
+  scope.define_property(
+    array,
+    length_key,
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: false,
+      kind: PropertyKind::Data {
+        value: Value::Number(1.0),
+        writable: true,
+      },
+    },
+  )?;
+  Ok(array)
+}
+
+fn alloc_resize_observer_entry_object(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  document_obj: GcObject,
+  dom: Option<&dom2::Document>,
+  entry: &dom2::ResizeObserverEntry,
+) -> Result<GcObject, VmError> {
+  let obj = scope.alloc_object()?;
+  scope.push_root(Value::Object(obj))?;
+
+  let target_key = alloc_key(scope, "target")?;
+  let target_wrapper = get_or_create_node_wrapper(vm, scope, document_obj, dom, entry.target)?;
+  scope.define_property(obj, target_key, data_desc(target_wrapper))?;
+
+  let content_rect_key = alloc_key(scope, "contentRect")?;
+  let content_rect = alloc_dom_rect_like_object(scope, entry.content_rect)?;
+  scope.define_property(obj, content_rect_key, data_desc(Value::Object(content_rect)))?;
+
+  let border_box_key = alloc_key(scope, "borderBoxSize")?;
+  let border_box = alloc_resize_observer_size_array(vm, scope, &entry.border_box_size)?;
+  scope.define_property(obj, border_box_key, data_desc(Value::Object(border_box)))?;
+
+  let content_box_key = alloc_key(scope, "contentBoxSize")?;
+  let content_box = alloc_resize_observer_size_array(vm, scope, &entry.content_box_size)?;
+  scope.define_property(obj, content_box_key, data_desc(Value::Object(content_box)))?;
+
+  let device_box_key = alloc_key(scope, "devicePixelContentBoxSize")?;
+  let device_box = alloc_resize_observer_size_array(vm, scope, &entry.device_pixel_content_box_size)?;
+  scope.define_property(obj, device_box_key, data_desc(Value::Object(device_box)))?;
+
+  Ok(obj)
+}
+
+fn alloc_resize_observer_entries_array(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  document_obj: GcObject,
+  dom: Option<&dom2::Document>,
+  entries: &[dom2::ResizeObserverEntry],
+) -> Result<GcObject, VmError> {
+  let array = scope.alloc_array(0)?;
+  scope.push_root(Value::Object(array))?;
+  if let Some(intrinsics) = vm.intrinsics() {
+    scope
+      .heap_mut()
+      .object_set_prototype(array, Some(intrinsics.array_prototype()))?;
+  }
+  for (idx, entry) in entries.iter().enumerate() {
+    let key = alloc_key(scope, &idx.to_string())?;
+    let obj = alloc_resize_observer_entry_object(vm, scope, document_obj, dom, entry)?;
+    scope.define_property(array, key, data_desc(Value::Object(obj)))?;
+  }
+  let length_key = alloc_key(scope, "length")?;
+  scope.define_property(
+    array,
+    length_key,
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: false,
+      kind: PropertyKind::Data {
+        value: Value::Number(entries.len() as f64),
+        writable: true,
+      },
+    },
+  )?;
+  Ok(array)
+}
+
+fn resize_observer_take_records_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(observer_obj) = this else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+  let observer_id = resize_observer_id_from_obj(scope, observer_obj)?;
+
+  let alloc_empty_array = |vm: &mut Vm, scope: &mut Scope<'_>| -> Result<GcObject, VmError> {
+    let array = scope.alloc_array(0)?;
+    scope.push_root(Value::Object(array))?;
+    if let Some(intrinsics) = vm.intrinsics() {
+      scope
+        .heap_mut()
+        .object_set_prototype(array, Some(intrinsics.array_prototype()))?;
+    }
+    let length_key = alloc_key(scope, "length")?;
+    scope.define_property(
+      array,
+      length_key,
+      PropertyDescriptor {
+        enumerable: false,
+        configurable: false,
+        kind: PropertyKind::Data {
+          value: Value::Number(0.0),
+          writable: true,
+        },
+      },
+    )?;
+    Ok(array)
+  };
+
+  let Some(document_obj) = resize_observer_document_from_obj(scope, observer_obj)? else {
+    let empty = alloc_empty_array(vm, scope)?;
+    return Ok(Value::Object(empty));
+  };
+
+  let Some(dom) = dom_from_vm_host_mut(host) else {
+    let empty = alloc_empty_array(vm, scope)?;
+    return Ok(Value::Object(empty));
+  };
+  let records = dom.resize_observer_take_records(observer_id);
+  let array = alloc_resize_observer_entries_array(vm, scope, document_obj, Some(dom), &records)?;
+  Ok(Value::Object(array))
+}
+
+fn resize_observer_notify_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let slots = scope.heap().get_function_native_slots(callee)?;
+  let document_obj = match slots
+    .get(RESIZE_OBSERVER_NOTIFY_DOCUMENT_SLOT)
+    .copied()
+    .unwrap_or(Value::Undefined)
+  {
+    Value::Object(obj) => obj,
+    _ => return Ok(Value::Undefined),
+  };
+
+  let deliveries = {
+    let Some(dom) = dom_from_vm_host_mut(host) else {
+      return Ok(Value::Undefined);
+    };
+    dom.resize_observer_take_deliveries()
+  };
+  if deliveries.is_empty() {
+    return Ok(Value::Undefined);
+  }
+
+  let registry = resize_observer_registry_from_document(scope, document_obj)?;
+  scope.push_root(Value::Object(registry))?;
+
+  for (observer_id, entries) in deliveries {
+    if entries.is_empty() {
+      continue;
+    }
+
+    let key = alloc_key(scope, &observer_id.to_string())?;
+    let observer_value = scope
+      .heap()
+      .object_get_own_data_property_value(registry, &key)?
+      .unwrap_or(Value::Undefined);
+    let Value::Object(observer_obj) = observer_value else {
+      continue;
+    };
+
+    let callback_key = alloc_key(scope, RESIZE_OBSERVER_CALLBACK_KEY)?;
+    let callback = scope
+      .heap()
+      .object_get_own_data_property_value(observer_obj, &callback_key)?
+      .unwrap_or(Value::Undefined);
+    if !matches!(callback, Value::Object(_)) || !scope.heap().is_callable(callback)? {
+      continue;
+    }
+
+    let entries_array = {
+      let dom_for_wrappers = dom_from_vm_host(host);
+      alloc_resize_observer_entries_array(vm, scope, document_obj, dom_for_wrappers, &entries)?
+    };
+    let args = [Value::Object(entries_array), Value::Object(observer_obj)];
+    let _ =
+      vm.call_with_host_and_hooks(host, scope, hooks, callback, Value::Object(observer_obj), &args);
   }
 
   Ok(Value::Undefined)
@@ -23459,6 +24839,97 @@ fn init_window_globals(
       },
     },
   )?;
+
+  let intersection_observer_registry = scope.alloc_object()?;
+  scope.push_root(Value::Object(intersection_observer_registry))?;
+  let intersection_observer_registry_key = alloc_key(&mut scope, INTERSECTION_OBSERVER_REGISTRY_KEY)?;
+  scope.define_property(
+    document_obj,
+    intersection_observer_registry_key,
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: false,
+      kind: PropertyKind::Data {
+        value: Value::Object(intersection_observer_registry),
+        writable: false,
+      },
+    },
+  )?;
+
+  let intersection_observer_notify_call_id =
+    vm.register_native_call(intersection_observer_notify_native)?;
+  let intersection_observer_notify_name = scope.alloc_string("notify intersection observers")?;
+  scope.push_root(Value::String(intersection_observer_notify_name))?;
+  let intersection_observer_notify_func = scope.alloc_native_function_with_slots(
+    intersection_observer_notify_call_id,
+    None,
+    intersection_observer_notify_name,
+    0,
+    &[Value::Object(document_obj)],
+  )?;
+  scope.heap_mut().object_set_prototype(
+    intersection_observer_notify_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(intersection_observer_notify_func))?;
+  let intersection_observer_notify_key = alloc_key(&mut scope, INTERSECTION_OBSERVER_NOTIFY_KEY)?;
+  scope.define_property(
+    document_obj,
+    intersection_observer_notify_key,
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: false,
+      kind: PropertyKind::Data {
+        value: Value::Object(intersection_observer_notify_func),
+        writable: false,
+      },
+    },
+  )?;
+
+  let resize_observer_registry = scope.alloc_object()?;
+  scope.push_root(Value::Object(resize_observer_registry))?;
+  let resize_observer_registry_key = alloc_key(&mut scope, RESIZE_OBSERVER_REGISTRY_KEY)?;
+  scope.define_property(
+    document_obj,
+    resize_observer_registry_key,
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: false,
+      kind: PropertyKind::Data {
+        value: Value::Object(resize_observer_registry),
+        writable: false,
+      },
+    },
+  )?;
+
+  let resize_observer_notify_call_id = vm.register_native_call(resize_observer_notify_native)?;
+  let resize_observer_notify_name = scope.alloc_string("notify resize observers")?;
+  scope.push_root(Value::String(resize_observer_notify_name))?;
+  let resize_observer_notify_func = scope.alloc_native_function_with_slots(
+    resize_observer_notify_call_id,
+    None,
+    resize_observer_notify_name,
+    0,
+    &[Value::Object(document_obj)],
+  )?;
+  scope.heap_mut().object_set_prototype(
+    resize_observer_notify_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(resize_observer_notify_func))?;
+  let resize_observer_notify_key = alloc_key(&mut scope, RESIZE_OBSERVER_NOTIFY_KEY)?;
+  scope.define_property(
+    document_obj,
+    resize_observer_notify_key,
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: false,
+      kind: PropertyKind::Data {
+        value: Value::Object(resize_observer_notify_func),
+        writable: false,
+      },
+    },
+  )?;
   // `Document.referrer`.
   //
   // Many real-world scripts assume this is a string (even if empty) and call string methods on it.
@@ -26496,6 +27967,254 @@ fn init_window_globals(
     let key = alloc_key(&mut scope, "fromRect")?;
     scope.define_property(ctor, key, data_desc(Value::Object(func)))?;
   }
+  // IntersectionObserver constructor + prototype.
+  let intersection_observer_proto = scope.alloc_object()?;
+  scope.push_root(Value::Object(intersection_observer_proto))?;
+
+  let intersection_observer_observe_call_id =
+    vm.register_native_call(intersection_observer_observe_native)?;
+  let intersection_observer_observe_name = scope.alloc_string("observe")?;
+  scope.push_root(Value::String(intersection_observer_observe_name))?;
+  let intersection_observer_observe_func = scope.alloc_native_function(
+    intersection_observer_observe_call_id,
+    None,
+    intersection_observer_observe_name,
+    1,
+  )?;
+  scope.heap_mut().object_set_prototype(
+    intersection_observer_observe_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(intersection_observer_observe_func))?;
+  let intersection_observer_observe_key = alloc_key(&mut scope, "observe")?;
+  scope.define_property(
+    intersection_observer_proto,
+    intersection_observer_observe_key,
+    data_desc(Value::Object(intersection_observer_observe_func)),
+  )?;
+
+  let intersection_observer_unobserve_call_id =
+    vm.register_native_call(intersection_observer_unobserve_native)?;
+  let intersection_observer_unobserve_name = scope.alloc_string("unobserve")?;
+  scope.push_root(Value::String(intersection_observer_unobserve_name))?;
+  let intersection_observer_unobserve_func = scope.alloc_native_function(
+    intersection_observer_unobserve_call_id,
+    None,
+    intersection_observer_unobserve_name,
+    1,
+  )?;
+  scope.heap_mut().object_set_prototype(
+    intersection_observer_unobserve_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(intersection_observer_unobserve_func))?;
+  let intersection_observer_unobserve_key = alloc_key(&mut scope, "unobserve")?;
+  scope.define_property(
+    intersection_observer_proto,
+    intersection_observer_unobserve_key,
+    data_desc(Value::Object(intersection_observer_unobserve_func)),
+  )?;
+
+  let intersection_observer_disconnect_call_id =
+    vm.register_native_call(intersection_observer_disconnect_native)?;
+  let intersection_observer_disconnect_name = scope.alloc_string("disconnect")?;
+  scope.push_root(Value::String(intersection_observer_disconnect_name))?;
+  let intersection_observer_disconnect_func = scope.alloc_native_function(
+    intersection_observer_disconnect_call_id,
+    None,
+    intersection_observer_disconnect_name,
+    0,
+  )?;
+  scope.heap_mut().object_set_prototype(
+    intersection_observer_disconnect_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(intersection_observer_disconnect_func))?;
+  let intersection_observer_disconnect_key = alloc_key(&mut scope, "disconnect")?;
+  scope.define_property(
+    intersection_observer_proto,
+    intersection_observer_disconnect_key,
+    data_desc(Value::Object(intersection_observer_disconnect_func)),
+  )?;
+
+  let intersection_observer_take_records_call_id =
+    vm.register_native_call(intersection_observer_take_records_native)?;
+  let intersection_observer_take_records_name = scope.alloc_string("takeRecords")?;
+  scope.push_root(Value::String(intersection_observer_take_records_name))?;
+  let intersection_observer_take_records_func = scope.alloc_native_function(
+    intersection_observer_take_records_call_id,
+    None,
+    intersection_observer_take_records_name,
+    0,
+  )?;
+  scope.heap_mut().object_set_prototype(
+    intersection_observer_take_records_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(intersection_observer_take_records_func))?;
+  let intersection_observer_take_records_key = alloc_key(&mut scope, "takeRecords")?;
+  scope.define_property(
+    intersection_observer_proto,
+    intersection_observer_take_records_key,
+    data_desc(Value::Object(intersection_observer_take_records_func)),
+  )?;
+
+  let intersection_observer_ctor_call_id =
+    vm.register_native_call(intersection_observer_constructor_native)?;
+  let intersection_observer_ctor_construct_id =
+    vm.register_native_construct(intersection_observer_constructor_construct_native)?;
+  let intersection_observer_ctor_name = scope.alloc_string("IntersectionObserver")?;
+  scope.push_root(Value::String(intersection_observer_ctor_name))?;
+  let intersection_observer_ctor_func = scope.alloc_native_function(
+    intersection_observer_ctor_call_id,
+    Some(intersection_observer_ctor_construct_id),
+    intersection_observer_ctor_name,
+    2,
+  )?;
+  scope.heap_mut().object_set_prototype(
+    intersection_observer_ctor_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(intersection_observer_ctor_func))?;
+  scope.define_property(
+    intersection_observer_ctor_func,
+    prototype_key,
+    data_desc(Value::Object(intersection_observer_proto)),
+  )?;
+  scope.define_property(
+    intersection_observer_proto,
+    constructor_key,
+    data_desc(Value::Object(intersection_observer_ctor_func)),
+  )?;
+  let intersection_observer_key = alloc_key(&mut scope, "IntersectionObserver")?;
+  scope.define_property(
+    global,
+    intersection_observer_key,
+    data_desc(Value::Object(intersection_observer_ctor_func)),
+  )?;
+
+  // ResizeObserver constructor + prototype.
+  let resize_observer_proto = scope.alloc_object()?;
+  scope.push_root(Value::Object(resize_observer_proto))?;
+
+  let resize_observer_observe_call_id = vm.register_native_call(resize_observer_observe_native)?;
+  let resize_observer_observe_name = scope.alloc_string("observe")?;
+  scope.push_root(Value::String(resize_observer_observe_name))?;
+  let resize_observer_observe_func = scope.alloc_native_function(
+    resize_observer_observe_call_id,
+    None,
+    resize_observer_observe_name,
+    2,
+  )?;
+  scope.heap_mut().object_set_prototype(
+    resize_observer_observe_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(resize_observer_observe_func))?;
+  let resize_observer_observe_key = alloc_key(&mut scope, "observe")?;
+  scope.define_property(
+    resize_observer_proto,
+    resize_observer_observe_key,
+    data_desc(Value::Object(resize_observer_observe_func)),
+  )?;
+
+  let resize_observer_unobserve_call_id = vm.register_native_call(resize_observer_unobserve_native)?;
+  let resize_observer_unobserve_name = scope.alloc_string("unobserve")?;
+  scope.push_root(Value::String(resize_observer_unobserve_name))?;
+  let resize_observer_unobserve_func = scope.alloc_native_function(
+    resize_observer_unobserve_call_id,
+    None,
+    resize_observer_unobserve_name,
+    1,
+  )?;
+  scope.heap_mut().object_set_prototype(
+    resize_observer_unobserve_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(resize_observer_unobserve_func))?;
+  let resize_observer_unobserve_key = alloc_key(&mut scope, "unobserve")?;
+  scope.define_property(
+    resize_observer_proto,
+    resize_observer_unobserve_key,
+    data_desc(Value::Object(resize_observer_unobserve_func)),
+  )?;
+
+  let resize_observer_disconnect_call_id =
+    vm.register_native_call(resize_observer_disconnect_native)?;
+  let resize_observer_disconnect_name = scope.alloc_string("disconnect")?;
+  scope.push_root(Value::String(resize_observer_disconnect_name))?;
+  let resize_observer_disconnect_func = scope.alloc_native_function(
+    resize_observer_disconnect_call_id,
+    None,
+    resize_observer_disconnect_name,
+    0,
+  )?;
+  scope.heap_mut().object_set_prototype(
+    resize_observer_disconnect_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(resize_observer_disconnect_func))?;
+  let resize_observer_disconnect_key = alloc_key(&mut scope, "disconnect")?;
+  scope.define_property(
+    resize_observer_proto,
+    resize_observer_disconnect_key,
+    data_desc(Value::Object(resize_observer_disconnect_func)),
+  )?;
+
+  let resize_observer_take_records_call_id =
+    vm.register_native_call(resize_observer_take_records_native)?;
+  let resize_observer_take_records_name = scope.alloc_string("takeRecords")?;
+  scope.push_root(Value::String(resize_observer_take_records_name))?;
+  let resize_observer_take_records_func = scope.alloc_native_function(
+    resize_observer_take_records_call_id,
+    None,
+    resize_observer_take_records_name,
+    0,
+  )?;
+  scope.heap_mut().object_set_prototype(
+    resize_observer_take_records_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(resize_observer_take_records_func))?;
+  let resize_observer_take_records_key = alloc_key(&mut scope, "takeRecords")?;
+  scope.define_property(
+    resize_observer_proto,
+    resize_observer_take_records_key,
+    data_desc(Value::Object(resize_observer_take_records_func)),
+  )?;
+
+  let resize_observer_ctor_call_id = vm.register_native_call(resize_observer_constructor_native)?;
+  let resize_observer_ctor_construct_id =
+    vm.register_native_construct(resize_observer_constructor_construct_native)?;
+  let resize_observer_ctor_name = scope.alloc_string("ResizeObserver")?;
+  scope.push_root(Value::String(resize_observer_ctor_name))?;
+  let resize_observer_ctor_func = scope.alloc_native_function(
+    resize_observer_ctor_call_id,
+    Some(resize_observer_ctor_construct_id),
+    resize_observer_ctor_name,
+    1,
+  )?;
+  scope.heap_mut().object_set_prototype(
+    resize_observer_ctor_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(resize_observer_ctor_func))?;
+  scope.define_property(
+    resize_observer_ctor_func,
+    prototype_key,
+    data_desc(Value::Object(resize_observer_proto)),
+  )?;
+  scope.define_property(
+    resize_observer_proto,
+    constructor_key,
+    data_desc(Value::Object(resize_observer_ctor_func)),
+  )?;
+  let resize_observer_key = alloc_key(&mut scope, "ResizeObserver")?;
+  scope.define_property(
+    global,
+    resize_observer_key,
+    data_desc(Value::Object(resize_observer_ctor_func)),
+  )?;
 
   // Store shared function objects on document so wrappers can reuse them.
   let add_event_listener_internal_key = alloc_key(&mut scope, EVENT_TARGET_ADD_EVENT_LISTENER_KEY)?;

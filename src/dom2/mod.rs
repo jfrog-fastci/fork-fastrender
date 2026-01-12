@@ -53,6 +53,12 @@ pub use mutation_observer::{
   MutationObserverAgent, MutationObserverId, MutationObserverInit, MutationObserverLimits, MutationRecord,
   MutationRecordType,
 };
+pub use intersection_observer::{
+  IntersectionObserverEntry, IntersectionObserverId, IntersectionObserverInit, IntersectionObserverLimits,
+};
+pub use resize_observer::{
+  ResizeObserverBoxOptions, ResizeObserverEntry, ResizeObserverId, ResizeObserverLimits, ResizeObserverSize,
+};
 pub use scripting_parser::parse_html_with_scripting_dom2;
 pub(crate) use live_mutation::{LiveRangeId, NodeIteratorId};
 
