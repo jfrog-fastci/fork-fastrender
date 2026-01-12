@@ -243,6 +243,35 @@ pub fn iterator_close(
   Ok(())
 }
 
+/// `IteratorClose` (ECMA-262) with completion-sensitive error precedence.
+///
+/// This is a convenience wrapper for callers that need the *full* `IteratorClose` semantics from
+/// ECMA-262 (which takes an input completion):
+/// - Always attempts `GetMethod(iterator, "return")` and calls it when present.
+/// - If `completion_is_throw` is `true`, any *throw completion* produced by `GetMethod`/`Call` (or
+///   by the "return result is not object" check) is suppressed.
+/// - If `completion_is_throw` is `false`, closing errors are propagated (and thus override
+///   non-throw completions like `break`/`return`).
+pub fn iterator_close_strict(
+  vm: &mut Vm,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  scope: &mut Scope<'_>,
+  record: &IteratorRecord,
+  completion_is_throw: bool,
+) -> Result<(), VmError> {
+  match iterator_close(vm, host, hooks, scope, record) {
+    Ok(()) => Ok(()),
+    Err(err) => {
+      if completion_is_throw && err.is_throw_completion() {
+        Ok(())
+      } else {
+        Err(err)
+      }
+    }
+  }
+}
+
 /// Native call handler for the `unwrap` closure in `AsyncFromSyncIteratorContinuation`.
 ///
 /// This is used as the `onFulfilled` Promise reaction handler when awaiting an iterator result's

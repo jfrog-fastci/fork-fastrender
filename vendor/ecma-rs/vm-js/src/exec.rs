@@ -1688,22 +1688,16 @@ impl<'a> Evaluator<'a> {
       scope.push_root(v)?;
     }
 
-    match iterator::iterator_close(
+    iterator::iterator_close_strict(
       self.vm,
       &mut *self.host,
       &mut *self.hooks,
       scope,
       record,
-    ) {
-      Ok(()) => Ok(completion),
-      Err(close_err) => {
-        if completion_is_throw && close_err.is_throw_completion() {
-          Ok(completion)
-        } else {
-          Err(close_err)
-        }
-      }
-    }
+      /* completion_is_throw */ completion_is_throw,
+    )?;
+
+    Ok(completion)
   }
 
   fn function_length(&mut self, func: &parse_js::ast::func::Func) -> Result<u32, VmError> {
