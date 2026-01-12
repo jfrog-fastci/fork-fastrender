@@ -2,6 +2,9 @@ use vm_js::{Heap, HeapLimits, JsRuntime, Value, Vm, VmError, VmOptions};
 
 fn new_runtime() -> JsRuntime {
   let vm = Vm::new(VmOptions::default());
+  // `for await...of` iterator close tests exercise Promise jobs and async iterator operations.
+  // Use a slightly larger heap than the default 1MiB used by many unit tests to avoid spurious OOM
+  // failures when implementation details change.
   let heap = Heap::new(HeapLimits::new(2 * 1024 * 1024, 2 * 1024 * 1024));
   JsRuntime::new(vm, heap).unwrap()
 }
@@ -271,6 +274,203 @@ fn for_await_of_throw_suppresses_get_method_non_callable() -> Result<(), VmError
 
   let closed = rt.exec_script("closed")?;
   assert_eq!(closed, Value::Bool(true));
+
+  Ok(())
+}
+
+#[test]
+fn iterator_step_rejected_next_does_not_invoke_async_iterator_close_in_for_await_of(
+) -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(
+    r#"
+      var out = "";
+      var returnCalls = 0;
+
+      const iterable = {};
+      iterable[Symbol.asyncIterator] = function () {
+        return {
+          next() {
+            return Promise.reject("next");
+          },
+          return() {
+            returnCalls++;
+            return Promise.resolve({ done: true });
+          },
+        };
+      };
+
+      async function f() {
+        for await (const _ of iterable) {}
+      }
+
+      f().then(
+        () => { out = "resolved"; },
+        e => { out = e; }
+      );
+
+      out
+    "#,
+  )?;
+  assert_eq!(value_to_string(&rt, value), "");
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let out = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, out), "next");
+
+  let return_calls = rt.exec_script("returnCalls")?;
+  assert_eq!(return_calls, Value::Number(0.0));
+
+  Ok(())
+}
+
+#[test]
+fn iterator_step_next_throw_does_not_invoke_async_iterator_close_in_for_await_of() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(
+    r#"
+      var out = "";
+      var returnCalls = 0;
+
+      const iterable = {};
+      iterable[Symbol.asyncIterator] = function () {
+        return {
+          next() {
+            throw "next";
+          },
+          return() {
+            returnCalls++;
+            return Promise.resolve({ done: true });
+          },
+        };
+      };
+
+      async function f() {
+        for await (const _ of iterable) {}
+      }
+
+      f().then(
+        () => { out = "resolved"; },
+        e => { out = e; }
+      );
+
+      out
+    "#,
+  )?;
+  assert_eq!(value_to_string(&rt, value), "");
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let out = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, out), "next");
+
+  let return_calls = rt.exec_script("returnCalls")?;
+  assert_eq!(return_calls, Value::Number(0.0));
+
+  Ok(())
+}
+
+#[test]
+fn iterator_step_done_getter_throw_does_not_invoke_async_iterator_close_in_for_await_of(
+) -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(
+    r#"
+      var out = "";
+      var returnCalls = 0;
+
+      const iterable = {};
+      iterable[Symbol.asyncIterator] = function () {
+        return {
+          next() {
+            return Promise.resolve({
+              get done() { throw "done"; },
+              value: 1,
+            });
+          },
+          return() {
+            returnCalls++;
+            return Promise.resolve({ done: true });
+          },
+        };
+      };
+
+      async function f() {
+        for await (const _ of iterable) {}
+      }
+
+      f().then(
+        () => { out = "resolved"; },
+        e => { out = e; }
+      );
+
+      out
+    "#,
+  )?;
+  assert_eq!(value_to_string(&rt, value), "");
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let out = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, out), "done");
+
+  let return_calls = rt.exec_script("returnCalls")?;
+  assert_eq!(return_calls, Value::Number(0.0));
+
+  Ok(())
+}
+
+#[test]
+fn iterator_step_value_getter_throw_does_not_invoke_async_iterator_close_in_for_await_of(
+) -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(
+    r#"
+      var out = "";
+      var returnCalls = 0;
+
+      const iterable = {};
+      iterable[Symbol.asyncIterator] = function () {
+        return {
+          next() {
+            return Promise.resolve({
+              done: false,
+              get value() { throw "value"; },
+            });
+          },
+          return() {
+            returnCalls++;
+            return Promise.resolve({ done: true });
+          },
+        };
+      };
+
+      async function f() {
+        for await (const _ of iterable) {}
+      }
+
+      f().then(
+        () => { out = "resolved"; },
+        e => { out = e; }
+      );
+
+      out
+    "#,
+  )?;
+  assert_eq!(value_to_string(&rt, value), "");
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let out = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, out), "value");
+
+  let return_calls = rt.exec_script("returnCalls")?;
+  assert_eq!(return_calls, Value::Number(0.0));
 
   Ok(())
 }

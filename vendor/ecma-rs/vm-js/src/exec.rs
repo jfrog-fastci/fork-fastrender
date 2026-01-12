@@ -13940,6 +13940,8 @@ fn async_for_await_of_await_next(
   ) {
     Ok(v) => v,
     Err(err) => {
+      // Spec: `ForIn/OfBodyEvaluation` does not perform `AsyncIteratorClose` on errors produced
+      // while stepping the iterator (`next`/awaiting the result/`done`/`value`).
       let err = coerce_error_to_throw_for_async(evaluator.vm, scope, err);
       match err {
         VmError::Throw(_) | VmError::ThrowWithStack { .. } => {
@@ -14014,6 +14016,8 @@ fn async_for_await_of_after_next(
   ) {
     Ok(done) => done,
     Err(err) => {
+      // Spec: `ForIn/OfBodyEvaluation` does not perform `AsyncIteratorClose` on errors produced
+      // while stepping the iterator (`next`/awaiting the result/`done`/`value`).
       let err = coerce_error_to_throw_for_async(evaluator.vm, &mut step_scope, err);
       match err {
         VmError::Throw(_) | VmError::ThrowWithStack { .. } => {
@@ -14043,6 +14047,8 @@ fn async_for_await_of_after_next(
   ) {
     Ok(value) => value,
     Err(err) => {
+      // Spec: `ForIn/OfBodyEvaluation` does not perform `AsyncIteratorClose` on errors produced
+      // while stepping the iterator (`next`/awaiting the result/`done`/`value`).
       let err = coerce_error_to_throw_for_async(evaluator.vm, &mut step_scope, err);
       match err {
         VmError::Throw(_) | VmError::ThrowWithStack { .. } => {
@@ -23005,9 +23011,11 @@ fn async_resume_from_frames(
           }
           Err(err @ (VmError::Throw(_) | VmError::ThrowWithStack { .. })) => {
             let completion = completion_from_expr_result(Err(err))?;
-            // Spec: ForAwaitOfBodyEvaluation does not perform `AsyncIteratorClose` on errors produced
-            // while awaiting `iterator.next()`. For sync iterables, async-from-sync wrappers close
-            // the underlying iterator when the iterated value promise rejects.
+            // Spec: `ForIn/OfBodyEvaluation(..., iteratorKind: ~async~)` does not perform
+            // `AsyncIteratorClose` on errors produced while awaiting `iterator.next()`.
+            //
+            // For sync iterables, async-from-sync wrappers close the underlying iterator when the
+            // iterated value promise rejects.
             async_for_await_of_cleanup(scope, v_root, iterator_root, next_method_root);
             state = AsyncState::Completion(completion);
           }
