@@ -8525,6 +8525,8 @@ enum AsyncFrame {
   RootBlockBody,
   /// Root frame for expression-bodied async arrow functions (`async () => expr`).
   RootExprBody,
+  /// Root frame for async module evaluation (`run_module_async` / top-level await).
+  RootModuleBody,
 
   /// Resume statement-list evaluation after a suspended statement completes.
   StmtList {
@@ -17434,6 +17436,32 @@ fn async_resume_from_frames(
     Err(reason) => Err(VmError::Throw(reason)),
   });
 
+  // If resumption hits a fatal error (termination/OOM/etc), the caller has already moved the async
+  // frame stack out of its persistent continuation. Ensure we tear down any remaining frames so we
+  // don't leak their GC roots.
+  struct AsyncFramesDropGuard {
+    heap: *mut Heap,
+    frames: *mut VecDeque<AsyncFrame>,
+  }
+  impl Drop for AsyncFramesDropGuard {
+    fn drop(&mut self) {
+      // Safety: both pointers remain valid for the duration of `async_resume_from_frames`.
+      unsafe {
+        let heap = &mut *self.heap;
+        let frames = &mut *self.frames;
+        for mut frame in frames.drain(..) {
+          async_teardown_frame(heap, &mut frame);
+        }
+      }
+    }
+  }
+  let heap_ptr = scope.heap_mut() as *mut Heap;
+  let frames_ptr = &mut frames as *mut VecDeque<AsyncFrame>;
+  let _frames_guard = AsyncFramesDropGuard {
+    heap: heap_ptr,
+    frames: frames_ptr,
+  };
+
   loop {
     evaluator.tick()?;
     let Some(frame) = frames.pop_front() else {
@@ -17481,8 +17509,41 @@ fn async_resume_from_frames(
         }
       },
 
+      AsyncFrame::RootModuleBody => match state {
+        AsyncState::Completion(completion) => match completion {
+          Completion::Normal(_) => return Ok(AsyncBodyResult::CompleteOk(Value::Undefined)),
+          Completion::Throw(thrown) => {
+            return Err(VmError::ThrowWithStack {
+              value: thrown.value,
+              stack: thrown.stack,
+            })
+          }
+          Completion::Return(_) => {
+            return Err(VmError::InvariantViolation(
+              "module evaluation produced Return completion (early errors should prevent this)",
+            ))
+          }
+          Completion::Break(..) => {
+            return Err(VmError::InvariantViolation(
+              "module evaluation produced Break completion (early errors should prevent this)",
+            ))
+          }
+          Completion::Continue(..) => {
+            return Err(VmError::InvariantViolation(
+              "module evaluation produced Continue completion (early errors should prevent this)",
+            ))
+          }
+        },
+        AsyncState::Expr(_) => {
+          return Err(VmError::InvariantViolation(
+            "module body resumed with expression state",
+          ))
+        }
+      },
+
       AsyncFrame::AwaitAfterOperand => match state {
         AsyncState::Expr(Ok(v)) => {
+          let frames = mem::take(&mut frames);
           return Ok(AsyncBodyResult::Await {
             await_value: v,
             frames,
@@ -22865,6 +22926,201 @@ pub(crate) fn run_module_until_await(
   let popped = vm.pop_execution_context();
   debug_assert_eq!(popped, Some(exec_ctx));
   debug_assert!(popped.is_some(), "module execution popped no execution context");
+  result
+}
+
+/// Persistent continuation state for async module (top-level await) evaluation.
+#[derive(Debug)]
+pub(crate) struct ModuleAsyncContinuation {
+  env: RuntimeEnv,
+  frames: VecDeque<AsyncFrame>,
+}
+
+impl ModuleAsyncContinuation {
+  pub(crate) fn teardown(self, heap: &mut Heap) {
+    let mut this = self;
+    this.env.teardown(heap);
+    for mut frame in this.frames {
+      async_teardown_frame(heap, &mut frame);
+    }
+  }
+}
+
+#[derive(Debug)]
+pub(crate) enum ModuleAsyncEvalResult {
+  Completed,
+  Await {
+    await_value: Value,
+    continuation: ModuleAsyncContinuation,
+  },
+}
+
+#[derive(Debug)]
+pub(crate) enum ModuleAsyncResumeResult {
+  Completed,
+  Await { await_value: Value },
+}
+
+/// Starts evaluating a module as an async statement list, returning a continuation on suspension.
+pub(crate) fn run_module_async(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  global_object: GcObject,
+  realm_id: RealmId,
+  module_id: ModuleId,
+  module_env: GcEnv,
+  source: Arc<SourceText>,
+  stmts: &Vec<Node<Stmt>>,
+) -> Result<ModuleAsyncEvalResult, VmError> {
+  // Ensure module execution reports an active ScriptOrModule so `import.meta` can consult it.
+  let exec_ctx = ExecutionContext {
+    realm: realm_id,
+    script_or_module: Some(ScriptOrModule::Module(module_id)),
+  };
+  vm.push_execution_context(exec_ctx);
+
+  let result = (|| -> Result<ModuleAsyncEvalResult, VmError> {
+    let mut env =
+      RuntimeEnv::new_with_var_env(scope.heap_mut(), global_object, module_env, module_env)?;
+    env.set_source_info(source.clone(), 0, 0);
+
+    let (line, col) = source.line_col(0);
+    let frame = StackFrame {
+      function: None,
+      source: source.name.clone(),
+      line,
+      col,
+    };
+    let mut vm_frame = vm.enter_frame(frame)?;
+
+    let mut evaluator = Evaluator {
+      vm: &mut *vm_frame,
+      host,
+      hooks,
+      env: &mut env,
+      strict: true,
+      // Per ECMA-262, module top-level `this` is `undefined`.
+      this: Value::Undefined,
+      new_target: Value::Undefined,
+    };
+
+    match async_eval_stmt_list(&mut evaluator, scope, stmts) {
+      Ok(AsyncEval::Complete(completion)) => {
+        let result = match completion {
+          Completion::Normal(_) => Ok(ModuleAsyncEvalResult::Completed),
+          Completion::Throw(thrown) => Err(VmError::ThrowWithStack {
+            value: thrown.value,
+            stack: thrown.stack,
+          }),
+          Completion::Return(_) => Err(VmError::InvariantViolation(
+            "module evaluation produced Return completion (early errors should prevent this)",
+          )),
+          Completion::Break(..) => Err(VmError::InvariantViolation(
+            "module evaluation produced Break completion (early errors should prevent this)",
+          )),
+          Completion::Continue(..) => Err(VmError::InvariantViolation(
+            "module evaluation produced Continue completion (early errors should prevent this)",
+          )),
+        };
+
+        env.teardown(scope.heap_mut());
+        result
+      }
+      Ok(AsyncEval::Suspend(mut suspend)) => {
+        if let Err(err) = async_frames_push(&mut suspend.frames, AsyncFrame::RootModuleBody) {
+          let cont = ModuleAsyncContinuation {
+            env,
+            frames: suspend.frames,
+          };
+          cont.teardown(scope.heap_mut());
+          return Err(err);
+        }
+
+        Ok(ModuleAsyncEvalResult::Await {
+          await_value: suspend.await_value,
+          continuation: ModuleAsyncContinuation {
+            env,
+            frames: suspend.frames,
+          },
+        })
+      }
+      Err(err) => {
+        env.teardown(scope.heap_mut());
+        Err(err)
+      }
+    }
+  })();
+
+  let popped = vm.pop_execution_context();
+  debug_assert_eq!(popped, Some(exec_ctx));
+  debug_assert!(
+    popped.is_some(),
+    "module execution popped no execution context"
+  );
+  result
+}
+
+/// Resumes an async module evaluation from a stored continuation.
+pub(crate) fn resume_module_async(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  realm_id: RealmId,
+  module_id: ModuleId,
+  continuation: &mut ModuleAsyncContinuation,
+  resume_value: Result<Value, Value>,
+) -> Result<ModuleAsyncResumeResult, VmError> {
+  let source = continuation.env.source();
+
+  // Ensure module execution reports an active ScriptOrModule so `import.meta` can consult it.
+  let exec_ctx = ExecutionContext {
+    realm: realm_id,
+    script_or_module: Some(ScriptOrModule::Module(module_id)),
+  };
+  vm.push_execution_context(exec_ctx);
+
+  let result = (|| -> Result<ModuleAsyncResumeResult, VmError> {
+    let (line, col) = source.line_col(0);
+    let frame = StackFrame {
+      function: None,
+      source: source.name.clone(),
+      line,
+      col,
+    };
+    let mut vm_frame = vm.enter_frame(frame)?;
+
+    let mut evaluator = Evaluator {
+      vm: &mut *vm_frame,
+      host,
+      hooks,
+      env: &mut continuation.env,
+      strict: true,
+      // Per ECMA-262, module top-level `this` is `undefined`.
+      this: Value::Undefined,
+      new_target: Value::Undefined,
+    };
+
+    let frames = mem::take(&mut continuation.frames);
+    match async_resume_from_frames(&mut evaluator, scope, frames, resume_value) {
+      Ok(AsyncBodyResult::CompleteOk(_)) => Ok(ModuleAsyncResumeResult::Completed),
+      Ok(AsyncBodyResult::CompleteThrow(reason)) => Err(VmError::Throw(reason)),
+      Ok(AsyncBodyResult::Await { await_value, frames }) => {
+        continuation.frames = frames;
+        Ok(ModuleAsyncResumeResult::Await { await_value })
+      }
+      Err(err) => Err(err),
+    }
+  })();
+
+  let popped = vm.pop_execution_context();
+  debug_assert_eq!(popped, Some(exec_ctx));
+  debug_assert!(
+    popped.is_some(),
+    "module execution popped no execution context"
+  );
   result
 }
 
