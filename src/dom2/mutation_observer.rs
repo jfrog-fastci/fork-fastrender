@@ -615,7 +615,6 @@ impl Document {
       })
       .unwrap_or(0)
   }
-
   pub(crate) fn queue_mutation_record_attributes(
     &mut self,
     target: NodeId,
