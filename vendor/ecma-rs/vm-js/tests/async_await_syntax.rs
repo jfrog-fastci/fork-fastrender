@@ -5,7 +5,7 @@ use vm_js::{
 
 fn new_runtime() -> JsRuntime {
   let vm = Vm::new(VmOptions::default());
-  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let heap = Heap::new(HeapLimits::new(4 * 1024 * 1024, 4 * 1024 * 1024));
   JsRuntime::new(vm, heap).unwrap()
 }
 
@@ -1430,6 +1430,32 @@ fn await_in_new_constructor_expr() -> Result<(), VmError> {
 }
 
 #[test]
+fn await_in_computed_method_name_in_class_decl() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(
+    r#"
+      var out = "";
+      async function f() {
+        class C {
+          [await Promise.resolve("m")]() { return "ok"; }
+        }
+        return new C().m();
+      }
+      f().then(function (v) { out = v; });
+      out
+    "#,
+  )?;
+  assert_eq!(value_to_string(&rt, value), "");
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let value = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, value), "ok");
+  Ok(())
+}
+
+#[test]
 fn await_in_delete_operand_member_base() -> Result<(), VmError> {
   let mut rt = new_runtime();
 
@@ -1476,5 +1502,57 @@ fn await_in_prefix_increment_member_base() -> Result<(), VmError> {
 
   let value = rt.exec_script("out")?;
   assert_eq!(value_to_number(value), 4.0);
+  Ok(())
+}
+
+#[test]
+fn await_in_computed_static_method_name() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(
+    r#"
+      var out = "";
+      async function f() {
+        class C {
+          static [await Promise.resolve("s")]() { return "ok"; }
+        }
+        return C.s();
+      }
+      f().then(function (v) { out = v; });
+      out
+    "#,
+  )?;
+  assert_eq!(value_to_string(&rt, value), "");
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let value = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, value), "ok");
+  Ok(())
+}
+
+#[test]
+fn await_in_computed_method_name_in_anonymous_class_expr() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(
+    r#"
+      var out = "";
+      async function f() {
+        const C = class {
+          [await Promise.resolve("m")]() { return "ok"; }
+        };
+        return new C().m();
+      }
+      f().then(function (v) { out = v; });
+      out
+    "#,
+  )?;
+  assert_eq!(value_to_string(&rt, value), "");
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let value = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, value), "ok");
   Ok(())
 }

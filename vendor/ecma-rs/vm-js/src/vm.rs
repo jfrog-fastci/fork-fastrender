@@ -123,6 +123,11 @@ pub(crate) enum EcmaFunctionKind {
   ///
   /// These are parsed by wrapping the snippet in an object literal expression: `({ <snippet> })`.
   ObjectMember,
+  /// A class method/getter/setter/constructor definition (e.g. `m() {}` / `static m() {}` /
+  /// `[expr]() {}`).
+  ///
+  /// These are parsed by wrapping the snippet in a class expression: `(class { <snippet> })`.
+  ClassMember,
 }
 
 #[derive(Debug)]
@@ -1365,6 +1370,7 @@ impl Vm {
       EcmaFunctionKind::Decl => 0,
       EcmaFunctionKind::Expr => 1,
       EcmaFunctionKind::ObjectMember => 2,
+      EcmaFunctionKind::ClassMember => 8, // "(class {".
     };
 
     self.ecma_functions.push(EcmaFunctionCode {
@@ -1482,6 +1488,16 @@ impl Vm {
           .try_reserve(capacity)
           .map_err(|_| VmError::OutOfMemory)?;
         wrapped.push_str("({");
+        wrapped.push_str(snippet);
+        wrapped.push_str("})");
+        parse_top(self, &wrapped, script_opts, module_opts, false)?
+      }
+      EcmaFunctionKind::ClassMember => {
+        let capacity = snippet.len().checked_add(10).ok_or(VmError::OutOfMemory)?;
+        wrapped
+          .try_reserve(capacity)
+          .map_err(|_| VmError::OutOfMemory)?;
+        wrapped.push_str("(class {");
         wrapped.push_str(snippet);
         wrapped.push_str("})");
         parse_top(self, &wrapped, script_opts, module_opts, false)?
@@ -1608,6 +1624,47 @@ impl Vm {
         _ => {
           return Err(VmError::Unimplemented(
             "ECMAScript object member snippet did not parse as an expression statement",
+          ));
+        }
+      },
+      EcmaFunctionKind::ClassMember => match *stmt.stx {
+        Stmt::Expr(expr_stmt) => {
+          let expr = expr_stmt.stx.expr;
+          match *expr.stx {
+            AstExpr::Class(class_expr) => {
+              let member = class_expr.stx.members.into_iter().next().ok_or(VmError::Unimplemented(
+                "ECMAScript class member snippet did not contain any members",
+              ))?;
+              match member.stx.val {
+                ClassOrObjVal::Method(method) => {
+                  let ClassOrObjMethod { func } = *method.stx;
+                  func
+                }
+                ClassOrObjVal::Getter(getter) => {
+                  let ClassOrObjGetter { func } = *getter.stx;
+                  func
+                }
+                ClassOrObjVal::Setter(setter) => {
+                  let ClassOrObjSetter { func } = *setter.stx;
+                  func
+                }
+                _ => {
+                  return Err(VmError::Unimplemented(
+                    "ECMAScript class member snippet did not parse as a method/getter/setter",
+                  ));
+                }
+              }
+            }
+            _ => {
+              return Err(VmError::Unimplemented(
+                "ECMAScript class member snippet did not parse as a class expression",
+              ));
+            }
+          }
+        }
+        _ => {
+          return Err(VmError::Unimplemented(
+            "ECMAScript class member snippet did not parse as an expression statement",
           ));
         }
       },

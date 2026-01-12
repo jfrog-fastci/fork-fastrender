@@ -3821,18 +3821,18 @@ impl<'a> Evaluator<'a> {
       if ctor_method.is_some() {
         return Err(syntax_error(member.loc, "A class may only have one constructor"));
       }
-      ctor_method = Some((&method.stx.func, direct.loc.start_u32(), member.loc));
+      ctor_method = Some((&method.stx.func, member.loc.start_u32(), member.loc));
     }
 
     let mut ctor_length: u32 = 0;
-    let ctor_body_func = if let Some((func_node, key_loc_start, loc)) = ctor_method {
+    let ctor_body_func = if let Some((func_node, member_loc_start, loc)) = ctor_method {
       if func_node.stx.generator {
         return Err(syntax_error(loc, "Class constructor may not be a generator"));
       }
 
       ctor_length = self.function_length(&func_node.stx)?;
 
-      let rel_start = key_loc_start.saturating_sub(self.env.prefix_len());
+      let rel_start = member_loc_start.saturating_sub(self.env.prefix_len());
       let rel_end = func_node
         .loc
         .end_u32()
@@ -3844,7 +3844,7 @@ impl<'a> Evaluator<'a> {
         self.env.source(),
         span_start,
         span_end,
-        EcmaFunctionKind::ObjectMember,
+        EcmaFunctionKind::ClassMember,
       )?;
 
       // Class constructor bodies are always strict mode.
@@ -3973,11 +3973,7 @@ impl<'a> Evaluator<'a> {
         prototype_obj
       };
 
-      // Compute property key.
-      let key_loc_start = match &member.stx.key {
-        ClassOrObjKey::Direct(direct) => direct.loc.start_u32(),
-        ClassOrObjKey::Computed(expr) => expr.loc.start_u32(),
-      };
+      let member_loc_start = member.loc.start_u32();
 
       let mut member_scope = class_scope.reborrow();
       member_scope.push_root(Value::Object(target_obj))?;
@@ -4016,19 +4012,19 @@ impl<'a> Evaluator<'a> {
           }
           let length = self.function_length(&func_node.stx)?;
 
-          let span_start =
-            self.object_member_span_start(member.loc.start_u32(), key_loc_start, &func_node.stx);
+          let rel_start = member_loc_start.saturating_sub(self.env.prefix_len());
           let rel_end = func_node
             .loc
             .end_u32()
             .saturating_sub(self.env.prefix_len());
+          let span_start = self.env.base_offset().saturating_add(rel_start);
           let span_end = self.env.base_offset().saturating_add(rel_end);
 
           let code = self.vm.register_ecma_function(
             self.env.source(),
             span_start,
             span_end,
-            EcmaFunctionKind::ObjectMember,
+            EcmaFunctionKind::ClassMember,
           )?;
 
           // Class methods are always strict mode.
@@ -4107,7 +4103,7 @@ impl<'a> Evaluator<'a> {
           let func_node = &getter.stx.func;
           let length = self.function_length(&func_node.stx)?;
 
-          let rel_start = key_loc_start.saturating_sub(self.env.prefix_len());
+          let rel_start = member_loc_start.saturating_sub(self.env.prefix_len());
           let rel_end = func_node
             .loc
             .end_u32()
@@ -4119,7 +4115,7 @@ impl<'a> Evaluator<'a> {
             self.env.source(),
             span_start,
             span_end,
-            EcmaFunctionKind::ObjectMember,
+            EcmaFunctionKind::ClassMember,
           )?;
 
           // Class accessors are always strict mode.
@@ -4181,7 +4177,7 @@ impl<'a> Evaluator<'a> {
           let func_node = &setter.stx.func;
           let length = self.function_length(&func_node.stx)?;
 
-          let rel_start = key_loc_start.saturating_sub(self.env.prefix_len());
+          let rel_start = member_loc_start.saturating_sub(self.env.prefix_len());
           let rel_end = func_node
             .loc
             .end_u32()
@@ -4193,7 +4189,7 @@ impl<'a> Evaluator<'a> {
             self.env.source(),
             span_start,
             span_end,
-            EcmaFunctionKind::ObjectMember,
+            EcmaFunctionKind::ClassMember,
           )?;
 
           // Class accessors are always strict mode.
@@ -6179,21 +6175,21 @@ impl<'a> Evaluator<'a> {
       .heap_mut()
       .object_set_prototype(obj, Some(intr.object_prototype()))?;
 
-    for member in &expr.members {
+    for member_node in &expr.members {
       // Per-member tick: object literals can do significant work per member even when no nested
       // expressions are evaluated (e.g. shorthand props and methods/getters/setters with direct
       // keys).
       self.tick()?;
 
       let mut member_scope = obj_scope.reborrow();
-      let member_loc_start = member.loc.start_u32();
-      let member = &member.stx.typ;
+      let member_loc_start = member_node.loc.start_u32();
+      let member = &member_node.stx.typ;
 
       match member {
         ObjMemberType::Valued { key, val } => {
           let key_loc_start = match key {
             ClassOrObjKey::Direct(direct) => direct.loc.start_u32(),
-            ClassOrObjKey::Computed(expr) => expr.loc.start_u32(),
+            ClassOrObjKey::Computed(_) => member_loc_start,
           };
           let key = match key {
             ClassOrObjKey::Direct(direct) => {
@@ -6239,8 +6235,7 @@ impl<'a> Evaluator<'a> {
               }
               let length = self.function_length(&func_node.stx)?;
 
-              let span_start =
-                self.object_member_span_start(member_loc_start, key_loc_start, &func_node.stx);
+              let span_start = self.object_member_span_start(member_loc_start, key_loc_start, &func_node.stx);
               let rel_end = func_node
                 .loc
                 .end_u32()
@@ -6341,7 +6336,7 @@ impl<'a> Evaluator<'a> {
               let func_node = &getter.stx.func;
               let length = self.function_length(&func_node.stx)?;
 
-              let rel_start = key_loc_start.saturating_sub(self.env.prefix_len());
+              let rel_start = member_loc_start.saturating_sub(self.env.prefix_len());
               let rel_end = func_node
                 .loc
                 .end_u32()
@@ -6433,7 +6428,7 @@ impl<'a> Evaluator<'a> {
               let func_node = &setter.stx.func;
               let length = self.function_length(&func_node.stx)?;
 
-              let rel_start = key_loc_start.saturating_sub(self.env.prefix_len());
+              let rel_start = member_loc_start.saturating_sub(self.env.prefix_len());
               let rel_end = func_node
                 .loc
                 .end_u32()
@@ -8577,6 +8572,11 @@ enum AsyncFrame {
   Throw {
     stmt: *const Node<ThrowStmt>,
   },
+  /// Finish a class declaration after evaluating the class definition.
+  ClassDecl {
+    decl: *const Node<ClassDecl>,
+    outer: GcEnv,
+  },
 
   /// Continue a `var`/`let`/`const` declaration after a declarator initializer completes.
   VarDecl {
@@ -8893,6 +8893,13 @@ enum AsyncFrame {
   ComputedMemberAfterMember {
     expr: *const ComputedMemberExpr,
     base_root: RootId,
+  },
+
+  /// Continue class evaluation after evaluating a computed member key.
+  ClassAfterComputedKey {
+    members: *const Vec<Node<ClassMember>>,
+    member_index: usize,
+    func_root: RootId,
   },
 
   /// Continue a conditional expression after evaluating the test.
@@ -9276,6 +9283,7 @@ fn async_teardown_frame(heap: &mut Heap, frame: &mut AsyncFrame) {
     }
     AsyncFrame::TryAfterFinally { pending } => pending.teardown(heap),
     AsyncFrame::ComputedMemberAfterMember { base_root, .. } => heap.remove_root(*base_root),
+    AsyncFrame::ClassAfterComputedKey { func_root, .. } => heap.remove_root(*func_root),
     AsyncFrame::CallComputedMemberAfterMember { base_root, .. } => heap.remove_root(*base_root),
     AsyncFrame::BinaryAfterRight { left_root, .. } => heap.remove_root(*left_root),
     AsyncFrame::AssignAfterRhsProperty { base_root, key_root } => {
@@ -10234,6 +10242,14 @@ fn expr_contains_await(expr: &Node<Expr>) -> bool {
     // Nested functions are not evaluated when the function value is created.
     Expr::Func(_) | Expr::ArrowFunc(_) => false,
 
+    Expr::Class(class) => {
+      class.stx.extends.as_ref().is_some_and(expr_contains_await)
+        || class.stx.members.iter().any(|member| match &member.stx.key {
+          ClassOrObjKey::Direct(_) => false,
+          ClassOrObjKey::Computed(expr) => expr_contains_await(expr),
+        })
+    }
+
     // TypeScript-only nodes: only the wrapped expression is evaluated.
     Expr::Instantiation(inst) => expr_contains_await(&inst.stx.expression),
     Expr::TypeAssertion(expr) => expr_contains_await(&expr.stx.expression),
@@ -10292,10 +10308,16 @@ fn stmt_contains_await(stmt: &Node<Stmt>) -> bool {
     | Stmt::Import(_)
     | Stmt::ExportList(_)
     | Stmt::FunctionDecl(_)
-    | Stmt::ClassDecl(_)
     | Stmt::Break(_)
     | Stmt::Continue(_) => false,
     Stmt::ExportDefaultExpr(stmt) => expr_contains_await(&stmt.stx.expression),
+    Stmt::ClassDecl(class) => {
+      class.stx.extends.as_ref().is_some_and(expr_contains_await)
+        || class.stx.members.iter().any(|member| match &member.stx.key {
+          ClassOrObjKey::Direct(_) => false,
+          ClassOrObjKey::Computed(expr) => expr_contains_await(expr),
+        })
+    }
     Stmt::Expr(expr_stmt) => expr_contains_await(&expr_stmt.stx.expr),
     Stmt::Return(ret) => ret.stx.value.as_ref().is_some_and(expr_contains_await),
     Stmt::Throw(throw_stmt) => expr_contains_await(&throw_stmt.stx.value),
@@ -10833,6 +10855,7 @@ fn async_eval_stmt_labelled(
     Stmt::Throw(stmt) => async_eval_throw_stmt(evaluator, scope, stmt),
     Stmt::VarDecl(decl) => async_eval_var_decl(evaluator, scope, &decl.stx, 0),
     Stmt::Debugger(_) => Ok(AsyncEval::Complete(Completion::empty())),
+    Stmt::ClassDecl(class_decl) => async_eval_class_decl(evaluator, scope, class_decl),
     Stmt::Block(block) => async_eval_block_stmt(evaluator, scope, &block.stx),
     Stmt::If(if_stmt) => {
       match async_eval_expr(evaluator, scope, &if_stmt.stx.test) {
@@ -11842,6 +11865,863 @@ fn async_bind_array_pattern_from(
   rest_scope.heap_mut().remove_root(value_root);
 
   async_bind_pattern(evaluator, &mut rest_scope, &rest_pat.stx, Value::Object(rest_arr), kind)
+}
+
+fn async_eval_class_decl(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  decl: &Node<ClassDecl>,
+) -> Result<AsyncEval<Completion>, VmError> {
+  if decl.stx.extends.is_some() {
+    return Err(VmError::Unimplemented("class inheritance"));
+  }
+  if !decl.stx.decorators.is_empty() {
+    return Err(VmError::Unimplemented("class decorators"));
+  }
+  if decl.stx.type_parameters.is_some() {
+    return Err(VmError::Unimplemented("class type parameters"));
+  }
+  if !decl.stx.implements.is_empty() {
+    return Err(VmError::Unimplemented("class implements"));
+  }
+  if decl.stx.declare || decl.stx.abstract_ {
+    return Err(VmError::Unimplemented("class modifiers"));
+  }
+
+  let binding_name = match decl.stx.name.as_ref() {
+    Some(name) => name.stx.name.as_str(),
+    None => "*default*",
+  };
+  let func_name = match decl.stx.name.as_ref() {
+    Some(name) => name.stx.name.as_str(),
+    None => "default",
+  };
+
+  // Per ECMAScript, class declarations are evaluated within a fresh lexical environment whose
+  // outer is the surrounding lexical environment. When the class has a name, that environment
+  // contains an immutable binding for the class name so class element functions can reference the
+  // class even if the outer binding is later reassigned.
+  let outer = evaluator.env.lexical_env;
+  let class_env = scope.env_create(Some(outer))?;
+  evaluator.env.set_lexical_env(scope.heap_mut(), class_env);
+
+  let inner_binding = match decl.stx.name.as_ref() {
+    Some(name) => ClassBinding::Immutable(name.stx.name.as_str()),
+    None => ClassBinding::None,
+  };
+
+  let result = async_eval_class(evaluator, scope, inner_binding, func_name, &decl.stx.members);
+
+  match result {
+    Ok(AsyncEval::Complete(func_value)) => {
+      // Restore outer environment regardless of how binding initialization completes.
+      evaluator.env.set_lexical_env(scope.heap_mut(), outer);
+
+      // Initialize the outer (mutable) class binding in the surrounding environment.
+      //
+      // Root the class constructor object first: creating the binding may allocate and trigger GC.
+      let mut init_scope = scope.reborrow();
+      init_scope.push_root(func_value)?;
+
+      if !init_scope.heap().env_has_binding(outer, binding_name)? {
+        // Non-block statement contexts may not have performed lexical hoisting yet.
+        init_scope.env_create_mutable_binding(outer, binding_name)?;
+      }
+      init_scope
+        .heap_mut()
+        .env_initialize_binding(outer, binding_name, func_value)?;
+      Ok(AsyncEval::Complete(Completion::empty()))
+    }
+    Ok(AsyncEval::Suspend(mut suspend)) => {
+      // Preserve the class environment across suspension; restore the outer env and initialize the
+      // surrounding binding on completion.
+      if let Err(err) = async_frames_push(
+        &mut suspend.frames,
+        AsyncFrame::ClassDecl {
+          decl: decl as *const Node<ClassDecl>,
+          outer,
+        },
+      ) {
+        evaluator.env.set_lexical_env(scope.heap_mut(), outer);
+        return Err(err);
+      }
+      Ok(AsyncEval::Suspend(suspend))
+    }
+    Err(err) => {
+      // Restore outer environment regardless of how class evaluation completes.
+      evaluator.env.set_lexical_env(scope.heap_mut(), outer);
+      Err(err)
+    }
+  }
+}
+
+fn async_eval_class_expr(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  expr: &Node<ClassExpr>,
+) -> Result<AsyncEval<Value>, VmError> {
+  if expr.stx.extends.is_some() {
+    return Err(VmError::Unimplemented("class inheritance"));
+  }
+  if !expr.stx.decorators.is_empty() {
+    return Err(VmError::Unimplemented("class decorators"));
+  }
+  if expr.stx.type_parameters.is_some() {
+    return Err(VmError::Unimplemented("class type parameters"));
+  }
+  if !expr.stx.implements.is_empty() {
+    return Err(VmError::Unimplemented("class implements"));
+  }
+
+  // Named class expressions introduce an inner immutable binding for the class name.
+  let outer = evaluator.env.lexical_env;
+  let result = (|| {
+    let Some(name) = expr.stx.name.as_ref() else {
+      return async_eval_class(evaluator, scope, ClassBinding::None, "", &expr.stx.members);
+    };
+
+    let class_env = scope.env_create(Some(outer))?;
+    evaluator.env.set_lexical_env(scope.heap_mut(), class_env);
+    async_eval_class(
+      evaluator,
+      scope,
+      ClassBinding::Immutable(name.stx.name.as_str()),
+      name.stx.name.as_str(),
+      &expr.stx.members,
+    )
+  })();
+
+  match result {
+    Ok(AsyncEval::Complete(v)) => {
+      if expr.stx.name.is_some() {
+        evaluator.env.set_lexical_env(scope.heap_mut(), outer);
+      }
+      Ok(AsyncEval::Complete(v))
+    }
+    Ok(AsyncEval::Suspend(mut suspend)) => {
+      // Preserve the class environment across suspension; restore the outer env on completion.
+      if expr.stx.name.is_some() {
+        async_frames_push(&mut suspend.frames, AsyncFrame::RestoreLexEnv { outer })?;
+      }
+      Ok(AsyncEval::Suspend(suspend))
+    }
+    Err(err) => {
+      if expr.stx.name.is_some() {
+        evaluator.env.set_lexical_env(scope.heap_mut(), outer);
+      }
+      Err(err)
+    }
+  }
+}
+
+fn async_eval_class(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  binding: ClassBinding<'_>,
+  func_name: &str,
+  members: &Vec<Node<ClassMember>>,
+) -> Result<AsyncEval<Value>, VmError> {
+  let class_env = evaluator.env.lexical_env;
+
+  // Ensure the requested class binding exists before creating any class element closures that may
+  // reference it.
+  match binding {
+    ClassBinding::None => {}
+    ClassBinding::Immutable(name) => {
+      if scope.heap().env_has_binding(class_env, name)? {
+        return Err(VmError::InvariantViolation(
+          "class binding already exists in class environment",
+        ));
+      }
+      scope.env_create_immutable_binding(class_env, name)?;
+    }
+  }
+
+  // Find an explicit `constructor(...) { ... }` method, if present.
+  let mut ctor_method: Option<(&Node<Func>, u32, parse_js::loc::Loc)> = None;
+  for member in members {
+    evaluator.tick()?;
+    if !member.stx.decorators.is_empty() {
+      return Err(VmError::Unimplemented("class member decorators"));
+    }
+    if member.stx.declare || member.stx.abstract_ {
+      return Err(VmError::Unimplemented("class member modifiers"));
+    }
+    if member.stx.readonly
+      || member.stx.accessor
+      || member.stx.optional
+      || member.stx.override_
+      || member.stx.definite_assignment
+    {
+      return Err(VmError::Unimplemented("class member modifiers"));
+    }
+    if member.stx.accessibility.is_some() || member.stx.type_annotation.is_some() {
+      return Err(VmError::Unimplemented("class member type annotations"));
+    }
+
+    if member.stx.static_ {
+      continue;
+    }
+    let ClassOrObjKey::Direct(direct) = &member.stx.key else {
+      continue;
+    };
+    if direct.stx.key != "constructor" {
+      continue;
+    }
+
+    let ClassOrObjVal::Method(method) = &member.stx.val else {
+      continue;
+    };
+
+    if ctor_method.is_some() {
+      return Err(syntax_error(member.loc, "A class may only have one constructor"));
+    }
+    ctor_method = Some((&method.stx.func, member.loc.start_u32(), member.loc));
+  }
+
+  let mut ctor_length: u32 = 0;
+  let ctor_body_func = if let Some((func_node, member_loc_start, loc)) = ctor_method {
+    if func_node.stx.generator {
+      return Err(syntax_error(loc, "Class constructor may not be a generator"));
+    }
+
+    ctor_length = evaluator.function_length(&func_node.stx)?;
+
+    let rel_start = member_loc_start.saturating_sub(evaluator.env.prefix_len());
+    let rel_end = func_node
+      .loc
+      .end_u32()
+      .saturating_sub(evaluator.env.prefix_len());
+    let span_start = evaluator.env.base_offset().saturating_add(rel_start);
+    let span_end = evaluator.env.base_offset().saturating_add(rel_end);
+
+    let code = evaluator.vm.register_ecma_function(
+      evaluator.env.source(),
+      span_start,
+      span_end,
+      EcmaFunctionKind::ClassMember,
+    )?;
+
+    // Class constructor bodies are always strict mode.
+    let is_strict = true;
+    let this_mode = if func_node.stx.arrow {
+      ThisMode::Lexical
+    } else {
+      ThisMode::Strict
+    };
+    let closure_env = Some(evaluator.env.lexical_env);
+
+    let mut ctor_scope = scope.reborrow();
+    let name_string = ctor_scope.alloc_string("constructor")?;
+    let func_obj = ctor_scope.alloc_ecma_function(
+      code,
+      /* is_constructable */ true,
+      name_string,
+      ctor_length,
+      this_mode,
+      is_strict,
+      closure_env,
+    )?;
+
+    let intr = evaluator
+      .vm
+      .intrinsics()
+      .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+    ctor_scope
+      .heap_mut()
+      .object_set_prototype(func_obj, Some(intr.function_prototype()))?;
+    ctor_scope
+      .heap_mut()
+      .set_function_realm(func_obj, evaluator.env.global_object())?;
+    if let Some(realm) = evaluator.vm.current_realm() {
+      ctor_scope.heap_mut().set_function_job_realm(func_obj, realm)?;
+    }
+    Some(func_obj)
+  } else {
+    None
+  };
+
+  let func_obj =
+    evaluator.create_class_constructor_object(scope, func_name, ctor_length, ctor_body_func)?;
+
+  // Create a persistent root for the class constructor object so it remains GC-safe across `await`
+  // suspensions during computed member key evaluation.
+  let func_root = {
+    let mut root_scope = scope.reborrow();
+    root_scope.push_root(Value::Object(func_obj))?;
+    root_scope.heap_mut().add_root(Value::Object(func_obj))?
+  };
+
+  // Initialize the requested binding now that the class constructor object exists.
+  if let Some(binding_name) = match binding {
+    ClassBinding::None => None,
+    ClassBinding::Immutable(name) => Some(name),
+  } {
+    let init_res = (|| -> Result<(), VmError> {
+      // Root the class constructor object during initialization so if the operation grows the root
+      // stack (and triggers GC) we don't collect the class constructor before it becomes reachable
+      // from its binding.
+      let mut init_scope = scope.reborrow();
+      init_scope.push_root(Value::Object(func_obj))?;
+      init_scope
+        .heap_mut()
+        .env_initialize_binding(class_env, binding_name, Value::Object(func_obj))?;
+      Ok(())
+    })();
+    if let Err(err) = init_res {
+      scope.heap_mut().remove_root(func_root);
+      return Err(err);
+    }
+  }
+
+  // Extract the prototype object created by `make_constructor`.
+  let (prototype_key, prototype_obj) =
+    match (|| -> Result<(PropertyKey, GcObject), VmError> {
+      let mut class_scope = scope.reborrow();
+      class_scope.push_root(Value::Object(func_obj))?;
+      let prototype_key_s = class_scope.alloc_string("prototype")?;
+      class_scope.push_root(Value::String(prototype_key_s))?;
+      let prototype_key = PropertyKey::from_string(prototype_key_s);
+      let Some(prototype_desc) = class_scope.heap().get_own_property(func_obj, prototype_key)?
+      else {
+        return Err(VmError::InvariantViolation(
+          "class constructor missing prototype property",
+        ));
+      };
+      let PropertyKind::Data { value, .. } = prototype_desc.kind else {
+        return Err(VmError::InvariantViolation(
+          "class constructor prototype property is not a data property",
+        ));
+      };
+      let Value::Object(prototype_obj) = value else {
+        return Err(VmError::InvariantViolation(
+          "class constructor prototype property is not an object",
+        ));
+      };
+      Ok((prototype_key, prototype_obj))
+    })() {
+      Ok(v) => v,
+      Err(e) => {
+        scope.heap_mut().remove_root(func_root);
+        return Err(e);
+      }
+    };
+
+  // Per ECMAScript, class constructors have a non-writable `prototype` property.
+  let patch_res = (|| -> Result<(), VmError> {
+    let mut class_scope = scope.reborrow();
+    class_scope.push_root(Value::Object(func_obj))?;
+    class_scope.push_root(Value::Object(prototype_obj))?;
+    match prototype_key {
+      PropertyKey::String(s) => class_scope.push_root(Value::String(s))?,
+      PropertyKey::Symbol(s) => class_scope.push_root(Value::Symbol(s))?,
+    };
+    class_scope
+      .define_property_or_throw(
+        func_obj,
+        prototype_key,
+        PropertyDescriptorPatch {
+          writable: Some(false),
+          ..Default::default()
+        },
+      )
+      .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut class_scope, err))?;
+    Ok(())
+  })();
+  if let Err(err) = patch_res {
+    scope.heap_mut().remove_root(func_root);
+    return Err(err);
+  }
+
+  // Define prototype and static methods.
+  match async_eval_class_members_from(evaluator, scope, members, 0, func_root)? {
+    AsyncEval::Complete(v) => Ok(AsyncEval::Complete(v)),
+    AsyncEval::Suspend(suspend) => Ok(AsyncEval::Suspend(suspend)),
+  }
+}
+
+fn async_eval_class_members_from(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  members: &Vec<Node<ClassMember>>,
+  start_index: usize,
+  func_root: RootId,
+) -> Result<AsyncEval<Value>, VmError> {
+  let res: Result<AsyncEval<Value>, VmError> = (|| {
+    let func_value = scope
+      .heap()
+      .get_root(func_root)
+      .ok_or(VmError::InvariantViolation("missing class constructor root"))?;
+    let Value::Object(func_obj) = func_value else {
+      return Err(VmError::InvariantViolation(
+        "class constructor root is not an object",
+      ));
+    };
+
+    let prototype_obj = {
+      let mut class_scope = scope.reborrow();
+      class_scope.push_root(Value::Object(func_obj))?;
+      let prototype_key_s = class_scope.alloc_string("prototype")?;
+      class_scope.push_root(Value::String(prototype_key_s))?;
+      let prototype_key = PropertyKey::from_string(prototype_key_s);
+      let Some(prototype_desc) = class_scope.heap().get_own_property(func_obj, prototype_key)? else {
+        return Err(VmError::InvariantViolation(
+          "class constructor missing prototype property",
+        ));
+      };
+      let PropertyKind::Data { value, .. } = prototype_desc.kind else {
+        return Err(VmError::InvariantViolation(
+          "class constructor prototype property is not a data property",
+        ));
+      };
+      let Value::Object(prototype_obj) = value else {
+        return Err(VmError::InvariantViolation(
+          "class constructor prototype property is not an object",
+        ));
+      };
+      prototype_obj
+    };
+
+    for (idx, member) in members.iter().enumerate().skip(start_index) {
+      evaluator.tick()?;
+
+      if !member.stx.decorators.is_empty() {
+        return Err(VmError::Unimplemented("class member decorators"));
+      }
+      if member.stx.declare || member.stx.abstract_ {
+        return Err(VmError::Unimplemented("class member modifiers"));
+      }
+      if member.stx.readonly
+        || member.stx.accessor
+        || member.stx.optional
+        || member.stx.override_
+        || member.stx.definite_assignment
+      {
+        return Err(VmError::Unimplemented("class member modifiers"));
+      }
+      if member.stx.accessibility.is_some() || member.stx.type_annotation.is_some() {
+        return Err(VmError::Unimplemented("class member type annotations"));
+      }
+
+      // Skip the actual `constructor(...) { ... }` method: it's represented by the class
+      // constructor object itself (and its hidden body function).
+      let is_constructor_method = !member.stx.static_
+        && matches!(&member.stx.key, ClassOrObjKey::Direct(direct) if direct.stx.key == "constructor")
+        && matches!(&member.stx.val, ClassOrObjVal::Method(_));
+      if is_constructor_method {
+        continue;
+      }
+
+      let target_obj = if member.stx.static_ { func_obj } else { prototype_obj };
+
+      let key = match &member.stx.key {
+        ClassOrObjKey::Direct(direct) => {
+          let mut key_scope = scope.reborrow();
+          key_scope.push_root(Value::Object(target_obj))?;
+          let key_s = if let Some(units) = literal_string_code_units(&direct.assoc) {
+            key_scope.alloc_string_from_code_units(units)?
+          } else if direct.stx.tt == TT::LiteralNumber {
+            let n = direct
+              .stx
+              .key
+              .parse::<f64>()
+              .map_err(|_| VmError::Unimplemented("numeric literal property name parse"))?;
+            key_scope.heap_mut().to_string(Value::Number(n))?
+          } else {
+            key_scope.alloc_string(&direct.stx.key)?
+          };
+          PropertyKey::from_string(key_s)
+        }
+        ClassOrObjKey::Computed(expr) => match async_eval_expr(evaluator, scope, expr)? {
+          AsyncEval::Complete(value) => {
+            let mut key_scope = scope.reborrow();
+            key_scope.push_root(Value::Object(target_obj))?;
+            key_scope.push_root(value)?;
+            evaluator
+              .to_property_key_operator(&mut key_scope, value)
+              .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err))?
+          }
+          AsyncEval::Suspend(mut suspend) => {
+            async_frames_push(
+              &mut suspend.frames,
+              AsyncFrame::ClassAfterComputedKey {
+                members: members as *const Vec<Node<ClassMember>>,
+                member_index: idx,
+                func_root,
+              },
+            )?;
+            return Ok(AsyncEval::Suspend(suspend));
+          }
+        },
+      };
+
+      async_define_class_member(
+        evaluator,
+        scope,
+        member,
+        func_obj,
+        prototype_obj,
+        target_obj,
+        key,
+      )?;
+    }
+
+    Ok(AsyncEval::Complete(Value::Object(func_obj)))
+  })();
+
+  match res {
+    Ok(AsyncEval::Suspend(suspend)) => Ok(AsyncEval::Suspend(suspend)),
+    Ok(AsyncEval::Complete(v)) => {
+      scope.heap_mut().remove_root(func_root);
+      Ok(AsyncEval::Complete(v))
+    }
+    Err(err) => {
+      scope.heap_mut().remove_root(func_root);
+      Err(err)
+    }
+  }
+}
+
+fn async_define_class_member(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  member: &Node<ClassMember>,
+  _func_obj: GcObject,
+  _prototype_obj: GcObject,
+  target_obj: GcObject,
+  key: PropertyKey,
+) -> Result<(), VmError> {
+  let mut member_scope = scope.reborrow();
+  member_scope.push_root(Value::Object(target_obj))?;
+  match key {
+    PropertyKey::String(s) => member_scope.push_root(Value::String(s))?,
+    PropertyKey::Symbol(s) => member_scope.push_root(Value::Symbol(s))?,
+  };
+
+  let member_loc_start = member.loc.start_u32();
+
+  match &member.stx.val {
+    ClassOrObjVal::Method(method) => {
+      let func_node = &method.stx.func;
+      let length = evaluator.function_length(&func_node.stx)?;
+
+      let rel_start = member_loc_start.saturating_sub(evaluator.env.prefix_len());
+      let rel_end = func_node
+        .loc
+        .end_u32()
+        .saturating_sub(evaluator.env.prefix_len());
+      let span_start = evaluator.env.base_offset().saturating_add(rel_start);
+      let span_end = evaluator.env.base_offset().saturating_add(rel_end);
+
+      let code = evaluator.vm.register_ecma_function(
+        evaluator.env.source(),
+        span_start,
+        span_end,
+        EcmaFunctionKind::ClassMember,
+      )?;
+
+      // Class methods are always strict mode.
+      let is_strict = true;
+      let this_mode = if func_node.stx.arrow {
+        ThisMode::Lexical
+      } else {
+        ThisMode::Strict
+      };
+      let closure_env = Some(evaluator.env.lexical_env);
+
+      let name_string = match key {
+        PropertyKey::String(s) => s,
+        PropertyKey::Symbol(_) => member_scope.alloc_string("")?,
+      };
+
+      let func_obj = member_scope.alloc_ecma_function(
+        code,
+        /* is_constructable */ false,
+        name_string,
+        length,
+        this_mode,
+        is_strict,
+        closure_env,
+      )?;
+
+      let intr = evaluator
+        .vm
+        .intrinsics()
+        .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+      member_scope
+        .heap_mut()
+        .object_set_prototype(func_obj, Some(intr.function_prototype()))?;
+      member_scope
+        .heap_mut()
+        .set_function_realm(func_obj, evaluator.env.global_object())?;
+      if let Some(realm) = evaluator.vm.current_realm() {
+        member_scope.heap_mut().set_function_job_realm(func_obj, realm)?;
+      }
+      member_scope.push_root(Value::Object(func_obj))?;
+
+      // Methods use the property key as the function `name` if possible.
+      if !matches!(key, PropertyKey::String(_)) {
+        crate::function_properties::set_function_name(&mut member_scope, func_obj, key, None)
+          .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut member_scope, err))?;
+      }
+
+      member_scope
+        .define_property_or_throw(
+          target_obj,
+          key,
+          PropertyDescriptorPatch {
+            value: Some(Value::Object(func_obj)),
+            writable: Some(true),
+            enumerable: Some(false),
+            configurable: Some(true),
+            ..Default::default()
+          },
+        )
+        .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut member_scope, err))?;
+    }
+    ClassOrObjVal::Getter(getter) => {
+      let func_node = &getter.stx.func;
+      let length = evaluator.function_length(&func_node.stx)?;
+
+      let rel_start = member_loc_start.saturating_sub(evaluator.env.prefix_len());
+      let rel_end = func_node
+        .loc
+        .end_u32()
+        .saturating_sub(evaluator.env.prefix_len());
+      let span_start = evaluator.env.base_offset().saturating_add(rel_start);
+      let span_end = evaluator.env.base_offset().saturating_add(rel_end);
+
+      let code = evaluator.vm.register_ecma_function(
+        evaluator.env.source(),
+        span_start,
+        span_end,
+        EcmaFunctionKind::ClassMember,
+      )?;
+
+      // Class accessors are always strict mode.
+      let is_strict = true;
+      let this_mode = if func_node.stx.arrow {
+        ThisMode::Lexical
+      } else {
+        ThisMode::Strict
+      };
+      let closure_env = Some(evaluator.env.lexical_env);
+
+      let name_string = member_scope.alloc_string("")?;
+      let func_obj = member_scope.alloc_ecma_function(
+        code,
+        /* is_constructable */ false,
+        name_string,
+        length,
+        this_mode,
+        is_strict,
+        closure_env,
+      )?;
+
+      let intr = evaluator
+        .vm
+        .intrinsics()
+        .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+      member_scope
+        .heap_mut()
+        .object_set_prototype(func_obj, Some(intr.function_prototype()))?;
+      member_scope
+        .heap_mut()
+        .set_function_realm(func_obj, evaluator.env.global_object())?;
+      if let Some(realm) = evaluator.vm.current_realm() {
+        member_scope.heap_mut().set_function_job_realm(func_obj, realm)?;
+      }
+      member_scope.push_root(Value::Object(func_obj))?;
+
+      crate::function_properties::set_function_name(&mut member_scope, func_obj, key, Some("get"))
+        .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut member_scope, err))?;
+
+      member_scope
+        .define_property_or_throw(
+          target_obj,
+          key,
+          PropertyDescriptorPatch {
+            get: Some(Value::Object(func_obj)),
+            enumerable: Some(false),
+            configurable: Some(true),
+            ..Default::default()
+          },
+        )
+        .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut member_scope, err))?;
+    }
+    ClassOrObjVal::Setter(setter) => {
+      let func_node = &setter.stx.func;
+      let length = evaluator.function_length(&func_node.stx)?;
+
+      let rel_start = member_loc_start.saturating_sub(evaluator.env.prefix_len());
+      let rel_end = func_node
+        .loc
+        .end_u32()
+        .saturating_sub(evaluator.env.prefix_len());
+      let span_start = evaluator.env.base_offset().saturating_add(rel_start);
+      let span_end = evaluator.env.base_offset().saturating_add(rel_end);
+
+      let code = evaluator.vm.register_ecma_function(
+        evaluator.env.source(),
+        span_start,
+        span_end,
+        EcmaFunctionKind::ClassMember,
+      )?;
+
+      // Class accessors are always strict mode.
+      let is_strict = true;
+      let this_mode = if func_node.stx.arrow {
+        ThisMode::Lexical
+      } else {
+        ThisMode::Strict
+      };
+      let closure_env = Some(evaluator.env.lexical_env);
+
+      let name_string = member_scope.alloc_string("")?;
+      let func_obj = member_scope.alloc_ecma_function(
+        code,
+        /* is_constructable */ false,
+        name_string,
+        length,
+        this_mode,
+        is_strict,
+        closure_env,
+      )?;
+
+      let intr = evaluator
+        .vm
+        .intrinsics()
+        .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+      member_scope
+        .heap_mut()
+        .object_set_prototype(func_obj, Some(intr.function_prototype()))?;
+      member_scope
+        .heap_mut()
+        .set_function_realm(func_obj, evaluator.env.global_object())?;
+      if let Some(realm) = evaluator.vm.current_realm() {
+        member_scope.heap_mut().set_function_job_realm(func_obj, realm)?;
+      }
+      member_scope.push_root(Value::Object(func_obj))?;
+
+      crate::function_properties::set_function_name(&mut member_scope, func_obj, key, Some("set"))
+        .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut member_scope, err))?;
+
+      member_scope
+        .define_property_or_throw(
+          target_obj,
+          key,
+          PropertyDescriptorPatch {
+            set: Some(Value::Object(func_obj)),
+            enumerable: Some(false),
+            configurable: Some(true),
+            ..Default::default()
+          },
+        )
+        .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut member_scope, err))?;
+    }
+    ClassOrObjVal::Prop(_) => {
+      return Err(VmError::Unimplemented("class fields"));
+    }
+    ClassOrObjVal::IndexSignature(_) => {
+      return Err(VmError::Unimplemented("class index signature"));
+    }
+    ClassOrObjVal::StaticBlock(_) => {
+      return Err(VmError::Unimplemented("class static block"));
+    }
+  }
+
+  Ok(())
+}
+
+fn async_class_after_computed_key(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  members: &Vec<Node<ClassMember>>,
+  member_index: usize,
+  func_root: RootId,
+  key_value: Value,
+) -> Result<AsyncEval<Value>, VmError> {
+  let prep_res: Result<(), VmError> = (|| {
+    let func_value = scope
+      .heap()
+      .get_root(func_root)
+      .ok_or(VmError::InvariantViolation("missing class constructor root"))?;
+    let Value::Object(func_obj) = func_value else {
+      return Err(VmError::InvariantViolation(
+        "class constructor root is not an object",
+      ));
+    };
+
+    let prototype_obj = {
+      let mut class_scope = scope.reborrow();
+      class_scope.push_root(Value::Object(func_obj))?;
+      let prototype_key_s = class_scope.alloc_string("prototype")?;
+      class_scope.push_root(Value::String(prototype_key_s))?;
+      let prototype_key = PropertyKey::from_string(prototype_key_s);
+      let Some(prototype_desc) = class_scope.heap().get_own_property(func_obj, prototype_key)? else {
+        return Err(VmError::InvariantViolation(
+          "class constructor missing prototype property",
+        ));
+      };
+      let PropertyKind::Data { value, .. } = prototype_desc.kind else {
+        return Err(VmError::InvariantViolation(
+          "class constructor prototype property is not a data property",
+        ));
+      };
+      let Value::Object(prototype_obj) = value else {
+        return Err(VmError::InvariantViolation(
+          "class constructor prototype property is not an object",
+        ));
+      };
+      prototype_obj
+    };
+
+    let member = members
+      .get(member_index)
+      .ok_or(VmError::InvariantViolation("async class continuation out of bounds"))?;
+
+    let target_obj = if member.stx.static_ { func_obj } else { prototype_obj };
+
+    if !matches!(&member.stx.key, ClassOrObjKey::Computed(_)) {
+      return Err(VmError::InvariantViolation(
+        "class computed key frame resumed for non-computed key",
+      ));
+    }
+
+    let key = {
+      let mut key_scope = scope.reborrow();
+      key_scope.push_root(Value::Object(target_obj))?;
+      key_scope.push_root(key_value)?;
+      evaluator
+        .to_property_key_operator(&mut key_scope, key_value)
+        .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err))?
+    };
+
+    async_define_class_member(
+      evaluator,
+      scope,
+      member,
+      func_obj,
+      prototype_obj,
+      target_obj,
+      key,
+    )?;
+
+    Ok(())
+  })();
+
+  if let Err(err) = prep_res {
+    scope.heap_mut().remove_root(func_root);
+    return Err(err);
+  }
+
+  async_eval_class_members_from(
+    evaluator,
+    scope,
+    members,
+    member_index.saturating_add(1),
+    func_root,
+  )
 }
 
 fn async_eval_while(
@@ -14151,6 +15031,7 @@ fn async_eval_expr(
     Expr::LitObj(obj) => async_eval_lit_obj(evaluator, scope, &obj.stx),
     Expr::LitTemplate(tpl) => async_eval_lit_template(evaluator, scope, &tpl.stx),
     Expr::TaggedTemplate(tag) => async_eval_tagged_template(evaluator, scope, tag),
+    Expr::Class(class_expr) => async_eval_class_expr(evaluator, scope, class_expr),
     // TypeScript-only nodes: only the wrapped expression is evaluated.
     Expr::Instantiation(inst) => async_eval_expr(evaluator, scope, &inst.stx.expression),
     Expr::TypeAssertion(expr) => async_eval_expr(evaluator, scope, &expr.stx.expression),
@@ -14368,20 +15249,16 @@ fn async_eval_lit_obj_from(
     let mut obj_scope = scope.reborrow();
     obj_scope.push_root(Value::Object(obj))?;
 
-    for (member_index, member) in expr.members.iter().enumerate().skip(start_member_index) {
+    for (member_index, member_node) in expr.members.iter().enumerate().skip(start_member_index) {
       evaluator.tick()?;
 
       let mut member_scope = obj_scope.reborrow();
       member_scope.push_root(Value::Object(obj))?;
-      let member = &member.stx.typ;
+      let member_loc_start = member_node.loc.start_u32();
+      let member = &member_node.stx.typ;
 
       match member {
         ObjMemberType::Valued { key, val } => {
-          let key_loc_start = match key {
-            ClassOrObjKey::Direct(direct) => direct.loc.start_u32(),
-            ClassOrObjKey::Computed(expr) => expr.loc.start_u32(),
-          };
-
           let key = match key {
             ClassOrObjKey::Direct(direct) => {
               let key_s = if let Some(units) = literal_string_code_units(&direct.assoc) {
@@ -14440,7 +15317,7 @@ fn async_eval_lit_obj_from(
             member_index,
             key,
             key_root_value,
-            key_loc_start,
+            member_loc_start,
             val,
           )? {
             AsyncEval::Complete(()) => {}
@@ -14567,7 +15444,7 @@ fn async_eval_lit_obj_apply_valued_member(
   member_index: usize,
   key: PropertyKey,
   key_root_value: Value,
-  key_loc_start: u32,
+  member_loc_start: u32,
   val: &ClassOrObjVal,
 ) -> Result<AsyncEval<()>, VmError> {
   let mut member_scope = scope.reborrow();
@@ -14617,7 +15494,7 @@ fn async_eval_lit_obj_apply_valued_member(
       let func_node = &method.stx.func;
       let length = evaluator.function_length(&func_node.stx)?;
 
-      let rel_start = key_loc_start.saturating_sub(evaluator.env.prefix_len());
+      let rel_start = member_loc_start.saturating_sub(evaluator.env.prefix_len());
       let rel_end = func_node
         .loc
         .end_u32()
@@ -14703,7 +15580,7 @@ fn async_eval_lit_obj_apply_valued_member(
       let func_node = &getter.stx.func;
       let length = evaluator.function_length(&func_node.stx)?;
 
-      let rel_start = key_loc_start.saturating_sub(evaluator.env.prefix_len());
+      let rel_start = member_loc_start.saturating_sub(evaluator.env.prefix_len());
       let rel_end = func_node
         .loc
         .end_u32()
@@ -14801,7 +15678,7 @@ fn async_eval_lit_obj_apply_valued_member(
       let func_node = &setter.stx.func;
       let length = evaluator.function_length(&func_node.stx)?;
 
-      let rel_start = key_loc_start.saturating_sub(evaluator.env.prefix_len());
+      let rel_start = member_loc_start.saturating_sub(evaluator.env.prefix_len());
       let rel_end = func_node
         .loc
         .end_u32()
@@ -17879,6 +18756,48 @@ fn async_resume_from_frames(
         }
       },
 
+      AsyncFrame::ClassAfterComputedKey {
+        members,
+        member_index,
+        func_root,
+      } => match state {
+        AsyncState::Expr(key_res) => {
+          let members = unsafe { &*members };
+          match key_res {
+            Ok(key_value) => match async_class_after_computed_key(
+              evaluator,
+              scope,
+              members,
+              member_index,
+              func_root,
+              key_value,
+            ) {
+              Ok(AsyncEval::Complete(v)) => state = AsyncState::Expr(Ok(v)),
+              Ok(AsyncEval::Suspend(mut suspend)) => {
+                suspend.frames.append(&mut frames);
+                return Ok(AsyncBodyResult::Await {
+                  await_value: suspend.await_value,
+                  frames: suspend.frames,
+                });
+              }
+              Err(err @ (VmError::Throw(_) | VmError::ThrowWithStack { .. })) => {
+                state = AsyncState::Expr(Err(err))
+              }
+              Err(err) => return Err(err),
+            },
+            Err(err) => {
+              scope.heap_mut().remove_root(func_root);
+              state = AsyncState::Expr(Err(err));
+            }
+          }
+        }
+        AsyncState::Completion(_) => {
+          return Err(VmError::InvariantViolation(
+            "class computed key frame received completion state",
+          ))
+        }
+      },
+
       AsyncFrame::CondAfterTest { expr } => match state {
         AsyncState::Expr(Ok(test)) => {
           let expr = unsafe { &*expr };
@@ -18473,13 +19392,13 @@ fn async_resume_from_frames(
               "LitObjAfterComputedKey used for non-valued member",
             ));
           };
-          let ClassOrObjKey::Computed(key_expr) = key else {
+          let ClassOrObjKey::Computed(_key_expr) = key else {
             scope.heap_mut().remove_root(obj_root);
             return Err(VmError::InvariantViolation(
               "LitObjAfterComputedKey used for direct key",
             ));
           };
-          let key_loc_start = key_expr.loc.start_u32();
+          let member_loc_start = member_node.loc.start_u32();
 
           match key_res {
             Ok(key_value) => {
@@ -18517,7 +19436,7 @@ fn async_resume_from_frames(
                 member_index,
                 key,
                 key_root_value,
-                key_loc_start,
+                member_loc_start,
                 val,
               ) {
                 Ok(AsyncEval::Complete(())) => {}
@@ -19737,6 +20656,43 @@ fn async_resume_from_frames(
         }
       },
 
+      AsyncFrame::ClassDecl { decl, outer } => match state {
+        AsyncState::Expr(expr_res) => {
+          evaluator.env.set_lexical_env(scope.heap_mut(), outer);
+
+          match expr_res {
+            Ok(v) => {
+              let decl = unsafe { &*decl };
+              let binding_name = match decl.stx.name.as_ref() {
+                Some(name) => name.stx.name.as_str(),
+                None => "*default*",
+              };
+
+              // Root the class constructor object first: creating the binding may allocate and
+              // trigger GC.
+              let mut init_scope = scope.reborrow();
+              init_scope.push_root(v)?;
+
+              if !init_scope.heap().env_has_binding(outer, binding_name)? {
+                // Non-block statement contexts may not have performed lexical hoisting yet.
+                init_scope.env_create_mutable_binding(outer, binding_name)?;
+              }
+              init_scope
+                .heap_mut()
+                .env_initialize_binding(outer, binding_name, v)?;
+
+              state = AsyncState::Completion(Completion::empty());
+            }
+            Err(err) => state = AsyncState::Completion(completion_from_expr_result(Err(err))?),
+          }
+        }
+        AsyncState::Completion(_) => {
+          return Err(VmError::InvariantViolation(
+            "class decl frame received completion state",
+          ))
+        }
+      },
+
       AsyncFrame::Throw { stmt } => match state {
         AsyncState::Expr(expr_res) => match expr_res {
           Ok(v) => {
@@ -20429,10 +21385,9 @@ fn async_resume_from_frames(
           evaluator.env.set_lexical_env(scope.heap_mut(), outer);
           state = AsyncState::Completion(c);
         }
-        AsyncState::Expr(_) => {
-          return Err(VmError::InvariantViolation(
-            "restore lexical env frame received expression state",
-          ))
+        AsyncState::Expr(expr_res) => {
+          evaluator.env.set_lexical_env(scope.heap_mut(), outer);
+          state = AsyncState::Expr(expr_res);
         }
       },
 
