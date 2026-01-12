@@ -381,6 +381,31 @@ fn json_bench_invalid_target_still_uses_bench_schema() {
 }
 
 #[test]
+fn bench_text_output_contains_summary_lines() {
+  let tmp = TempDir::new().unwrap();
+  let entry = tmp.path().join("entry.ts");
+  fs::write(&entry, "export function main(): number { return 0; }\n").unwrap();
+
+  native_js()
+    .timeout(CLI_TIMEOUT)
+    .arg("bench")
+    .arg(&entry)
+    .arg("--warmup")
+    .arg("0")
+    .arg("--iters")
+    .arg("2")
+    .assert()
+    .success()
+    .code(0)
+    .stdout(predicates::str::contains("compile_time_ms:"))
+    .stdout(predicates::str::contains("run_times_ms:"))
+    .stdout(predicates::str::contains("mean_ms:"))
+    .stdout(predicates::str::contains("median_ms:"))
+    .stdout(predicates::str::contains("min_ms:"))
+    .stdout(predicates::str::contains("max_ms:"));
+}
+
+#[test]
 fn build_and_run_returns_exit_code() {
   let tmp = TempDir::new().unwrap();
   let entry = tmp.path().join("entry.ts");
