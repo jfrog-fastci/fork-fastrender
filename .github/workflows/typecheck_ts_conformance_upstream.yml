@@ -325,7 +325,7 @@ jobs:
           # The harness is expected to emit JSON even on failure (e.g. uncovered regressions).
           if [[ ! -s "${report_path}" ]]; then
             echo "::error::typecheck-ts-harness did not emit a JSON report (stdout was empty). See ${stderr_path}." >&2
-            echo "{\"error\":\"no_json_report\"}" > "${report_path}"
+            echo '{"compare_mode":"tsc","results":[],"error":"no_json_report"}' > "${report_path}"
             # Preserve the original exit status (e.g. timeout) if one was produced.
             if [[ "${status}" -eq 0 ]]; then
               status=1
@@ -344,6 +344,7 @@ jobs:
           PY
             then
               echo "::error::typecheck-ts-harness emitted an invalid JSON report. See ${report_path} and ${stderr_path}." >&2
+              echo '{"compare_mode":"tsc","results":[],"error":"invalid_json_report"}' > "${report_path}"
               if [[ "${status}" -eq 0 ]]; then
                 status=1
               fi
