@@ -1793,6 +1793,7 @@ impl BrowserTabHost {
     Ok(())
   }
 
+
   fn discover_and_start_image_loads(&mut self, event_loop: &mut EventLoop<Self>) -> Result<()> {
     // The `load` event waits for images, but `DOMContentLoaded` must not. To avoid making
     // DOMContentLoaded observers wait on synchronous fetch work (since `ResourceFetcher` is
@@ -1835,31 +1836,64 @@ impl BrowserTabHost {
         if !is_html_namespace(namespace) {
           continue;
         }
-        let is_img = tag_name.eq_ignore_ascii_case("img");
-        let is_input_image = tag_name.eq_ignore_ascii_case("input")
-          && dom
+
+        // Determine which element attribute represents the URL of an image-like subresource.
+        //
+        // Note: we always consider these element types so we can clear any existing per-node state
+        // when attributes change (e.g. `type` mutation on `<input>` or `rel` mutation on `<link>`).
+        let maybe_src: Option<&str> = if tag_name.eq_ignore_ascii_case("img") {
+          dom.get_attribute(node_id, "src").ok().flatten()
+        } else if tag_name.eq_ignore_ascii_case("input") {
+          // `<input type=image src=...>` loads an image resource (used for form submission
+          // buttons).
+          let is_input_image = dom
             .get_attribute(node_id, "type")
             .ok()
             .flatten()
             .map(super::trim_ascii_whitespace)
             .is_some_and(|t| t.eq_ignore_ascii_case("image"));
-        if !(is_img || is_input_image) {
+          if !is_input_image {
+            None
+          } else {
+            dom.get_attribute(node_id, "src").ok().flatten()
+          }
+        } else if tag_name.eq_ignore_ascii_case("link") {
+          // `<link rel=icon href=...>` loads an image-like subresource.
+          let is_icon = dom
+            .get_attribute(node_id, "rel")
+            .ok()
+            .flatten()
+            .map(super::trim_ascii_whitespace)
+            .is_some_and(|rel| {
+              rel
+                .split_ascii_whitespace()
+                .any(|t| t.eq_ignore_ascii_case("icon"))
+            });
+          if !is_icon {
+            None
+          } else {
+            dom.get_attribute(node_id, "href").ok().flatten()
+          }
+        } else if tag_name.eq_ignore_ascii_case("video") {
+          // `<video poster=...>` loads an image resource for the poster frame.
+          dom.get_attribute(node_id, "poster").ok().flatten()
+        } else {
           continue;
-        }
-        let maybe_url = dom
-          .get_attribute(node_id, "src")
-          .ok()
-          .flatten()
+        };
+
+        let maybe_url = maybe_src
           .map(super::trim_ascii_whitespace)
           .filter(|src| !src.is_empty())
           .and_then(|src| resolve_href_with_base(base_url.as_deref(), src))
           .filter(|url| !crate::resource::is_data_url(url));
+
         let Some(url) = maybe_url else {
           if self.image_load_state.contains_key(&node_id) {
             clear_state.push(node_id);
           }
           continue;
         };
+
         if self
           .image_load_state
           .get(&node_id)
@@ -1895,45 +1929,66 @@ impl BrowserTabHost {
     //
     // `dom2` node ids are stable indices, so pages that create/remove many images could otherwise
     // accumulate unbounded bookkeeping. Removing state also ensures queued loads for disconnected
-      // images become deterministic no-ops (they will still clear their registered load blocker).
-      {
-        let dom = self.document.dom();
-        fn is_html_namespace(namespace: &str) -> bool {
-          namespace.is_empty() || namespace == HTML_NAMESPACE
+    // images become deterministic no-ops (they will still clear their registered load blocker).
+    {
+      let dom = self.document.dom();
+      fn is_html_namespace(namespace: &str) -> bool {
+        namespace.is_empty() || namespace == HTML_NAMESPACE
+      }
+      let mut to_remove = Vec::new();
+      for (&node_id, _state) in &self.image_load_state {
+        if !dom.is_connected_for_scripting(node_id) {
+          to_remove.push(node_id);
+          continue;
         }
-        let mut to_remove = Vec::new();
-        for (&node_id, _state) in &self.image_load_state {
-          if !dom.is_connected_for_scripting(node_id) {
-            to_remove.push(node_id);
-            continue;
-          }
-          match &dom.node(node_id).kind {
-            NodeKind::Element { tag_name, namespace, .. } if is_html_namespace(namespace) => {
-              if tag_name.eq_ignore_ascii_case("img") {
-                // keep
-              } else if tag_name.eq_ignore_ascii_case("input") {
-                let is_input_image = dom
-                  .get_attribute(node_id, "type")
-                  .ok()
-                  .flatten()
-                  .map(super::trim_ascii_whitespace)
-                  .is_some_and(|t| t.eq_ignore_ascii_case("image"));
-                if !is_input_image {
-                  to_remove.push(node_id);
-                }
-              } else {
+        match &dom.node(node_id).kind {
+          NodeKind::Element {
+            tag_name,
+            namespace,
+            ..
+          } if is_html_namespace(namespace) => {
+            if tag_name.eq_ignore_ascii_case("img") {
+              // keep
+            } else if tag_name.eq_ignore_ascii_case("input") {
+              let is_input_image = dom
+                .get_attribute(node_id, "type")
+                .ok()
+                .flatten()
+                .map(super::trim_ascii_whitespace)
+                .is_some_and(|t| t.eq_ignore_ascii_case("image"));
+              if !is_input_image {
                 to_remove.push(node_id);
               }
-            }
-            _ => {
+            } else if tag_name.eq_ignore_ascii_case("link") {
+              let is_icon = dom
+                .get_attribute(node_id, "rel")
+                .ok()
+                .flatten()
+                .map(super::trim_ascii_whitespace)
+                .is_some_and(|rel| {
+                  rel
+                    .split_ascii_whitespace()
+                    .any(|t| t.eq_ignore_ascii_case("icon"))
+                });
+              if !is_icon {
+                to_remove.push(node_id);
+              }
+            } else if tag_name.eq_ignore_ascii_case("video") {
+              // keep
+            } else {
               to_remove.push(node_id);
             }
           }
-        }
-        for node_id in to_remove {
-          self.image_load_state.remove(&node_id);
+          _ => {
+            to_remove.push(node_id);
+          }
         }
       }
+      for node_id in to_remove {
+        self.image_load_state.remove(&node_id);
+      }
+    }
+
     for (node_id, url, cors_mode) in discovered {
       self.start_image_load(node_id, url, cors_mode, event_loop)?;
     }
@@ -10837,6 +10892,205 @@ html, body { margin: 0; padding: 0; }
       assert!(event_loop.run_next_task(host)?); // load
     }
 
+    assert_eq!(
+      tab.dom()
+        .get_attribute(body, "data-load")
+        .expect("get_attribute"),
+      Some("1")
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn window_load_waits_for_link_icon_href() -> Result<()> {
+    #[derive(Debug, Default, Clone)]
+    struct IconFetcher {
+      image_fetches: Arc<AtomicUsize>,
+    }
+
+    impl IconFetcher {
+      fn image_fetch_count(&self) -> usize {
+        self.image_fetches.load(Ordering::SeqCst)
+      }
+    }
+
+    impl ResourceFetcher for IconFetcher {
+      fn fetch(&self, _url: &str) -> Result<FetchedResource> {
+        Err(Error::Other("IconFetcher::fetch should not be used".to_string()))
+      }
+
+      fn fetch_with_request(&self, req: FetchRequest<'_>) -> Result<FetchedResource> {
+        if matches!(req.destination, FetchDestination::Image | FetchDestination::ImageCors) {
+          self.image_fetches.fetch_add(1, Ordering::SeqCst);
+          Ok(FetchedResource::new(
+            b"fake-png-bytes".to_vec(),
+            Some("image/png".to_string()),
+          ))
+        } else {
+          Err(Error::Other(format!(
+            "unexpected fetch destination {:?} for url={}",
+            req.destination, req.url
+          )))
+        }
+      }
+    }
+
+    let fetcher = Arc::new(IconFetcher::default());
+    let html = r#"<!doctype html>
+      <head>
+        <link rel="icon" href="https://example.com/favicon.ico">
+      </head>
+      <body>
+        <script>
+          document.addEventListener('DOMContentLoaded', function () {
+            document.body.setAttribute('data-dom', '1');
+          });
+          window.addEventListener('load', function () {
+            document.body.setAttribute('data-load', '1');
+          });
+        </script>
+      </body>"#;
+
+    let mut tab = BrowserTab::from_html_with_vmjs_and_document_url_and_fetcher(
+      html,
+      "https://example.com/",
+      RenderOptions::default(),
+      Arc::clone(&fetcher) as Arc<dyn ResourceFetcher>,
+    )?;
+
+    let body = tab.dom().body().expect("body should exist");
+
+    // DOMContentLoaded barrier + DOMContentLoaded.
+    {
+      let BrowserTab { host, event_loop, .. } = &mut tab;
+      assert!(event_loop.run_next_task(host)?); // barrier
+      assert!(event_loop.run_next_task(host)?); // DOMContentLoaded
+    }
+
+    assert_eq!(
+      tab.dom()
+        .get_attribute(body, "data-dom")
+        .expect("get_attribute"),
+      Some("1")
+    );
+    assert_eq!(fetcher.image_fetch_count(), 0);
+    assert_eq!(
+      tab.dom()
+        .get_attribute(body, "data-load")
+        .expect("get_attribute"),
+      None
+    );
+
+    // Icon fetch task turn.
+    {
+      let BrowserTab { host, event_loop, .. } = &mut tab;
+      assert!(event_loop.run_next_task(host)?);
+    }
+    assert_eq!(fetcher.image_fetch_count(), 1);
+
+    // `load` event dispatch.
+    {
+      let BrowserTab { host, event_loop, .. } = &mut tab;
+      assert!(event_loop.run_next_task(host)?);
+    }
+    assert_eq!(
+      tab.dom()
+        .get_attribute(body, "data-load")
+        .expect("get_attribute"),
+      Some("1")
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn window_load_waits_for_video_poster() -> Result<()> {
+    #[derive(Debug, Default, Clone)]
+    struct PosterFetcher {
+      image_fetches: Arc<AtomicUsize>,
+    }
+
+    impl PosterFetcher {
+      fn image_fetch_count(&self) -> usize {
+        self.image_fetches.load(Ordering::SeqCst)
+      }
+    }
+
+    impl ResourceFetcher for PosterFetcher {
+      fn fetch(&self, _url: &str) -> Result<FetchedResource> {
+        Err(Error::Other("PosterFetcher::fetch should not be used".to_string()))
+      }
+
+      fn fetch_with_request(&self, req: FetchRequest<'_>) -> Result<FetchedResource> {
+        if matches!(req.destination, FetchDestination::Image | FetchDestination::ImageCors) {
+          self.image_fetches.fetch_add(1, Ordering::SeqCst);
+          Ok(FetchedResource::new(
+            b"fake-png-bytes".to_vec(),
+            Some("image/png".to_string()),
+          ))
+        } else {
+          Err(Error::Other(format!(
+            "unexpected fetch destination {:?} for url={}",
+            req.destination, req.url
+          )))
+        }
+      }
+    }
+
+    let fetcher = Arc::new(PosterFetcher::default());
+    let html = r#"<!doctype html><body>
+      <video poster="https://example.com/poster.png"></video>
+      <script>
+        document.addEventListener('DOMContentLoaded', function () {
+          document.body.setAttribute('data-dom', '1');
+        });
+        window.addEventListener('load', function () {
+          document.body.setAttribute('data-load', '1');
+        });
+      </script>
+    </body>"#;
+
+    let mut tab = BrowserTab::from_html_with_vmjs_and_document_url_and_fetcher(
+      html,
+      "https://example.com/",
+      RenderOptions::default(),
+      Arc::clone(&fetcher) as Arc<dyn ResourceFetcher>,
+    )?;
+
+    let body = tab.dom().body().expect("body should exist");
+
+    // DOMContentLoaded barrier + DOMContentLoaded.
+    {
+      let BrowserTab { host, event_loop, .. } = &mut tab;
+      assert!(event_loop.run_next_task(host)?); // barrier
+      assert!(event_loop.run_next_task(host)?); // DOMContentLoaded
+    }
+
+    assert_eq!(
+      tab.dom()
+        .get_attribute(body, "data-dom")
+        .expect("get_attribute"),
+      Some("1")
+    );
+    assert_eq!(fetcher.image_fetch_count(), 0);
+    assert_eq!(
+      tab.dom()
+        .get_attribute(body, "data-load")
+        .expect("get_attribute"),
+      None
+    );
+
+    // Poster fetch task turn.
+    {
+      let BrowserTab { host, event_loop, .. } = &mut tab;
+      assert!(event_loop.run_next_task(host)?);
+    }
+    assert_eq!(fetcher.image_fetch_count(), 1);
+
+    // `load` event dispatch.
+    {
+      let BrowserTab { host, event_loop, .. } = &mut tab;
+      assert!(event_loop.run_next_task(host)?);
+    }
     assert_eq!(
       tab.dom()
         .get_attribute(body, "data-load")
