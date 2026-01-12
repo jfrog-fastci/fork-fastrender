@@ -8,6 +8,8 @@
 
 pub mod harness;
 pub mod runner;
+#[cfg(test)]
+mod validate_manifest;
 
 // Re-export main types for convenience
 pub use harness::compare_images;
