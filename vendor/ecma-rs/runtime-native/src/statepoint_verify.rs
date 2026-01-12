@@ -1,7 +1,7 @@
 //! Verifier for LLVM `gc.statepoint` stackmap conventions.
 //!
 //! Our GC design currently assumes that all GC roots at statepoints are spilled
-//! into addressable stack slots (SP-relative `Indirect` locations). LLVM *can*
+//! into addressable stack slots (`Indirect` spill slots relative to SP/FP). LLVM *can*
 //! legally encode roots in registers, so we keep a runtime verifier to fail fast
 //! if codegen or LLVM changes break that assumption.
 //!
