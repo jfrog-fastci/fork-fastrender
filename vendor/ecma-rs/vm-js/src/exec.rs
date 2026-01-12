@@ -6785,19 +6785,17 @@ impl<'a> Evaluator<'a> {
     scope.push_root(object)?;
     scope.push_root(constructor)?;
 
-    // 1. `C` must be callable.
-    if !scope.heap().is_callable(constructor)? {
+    // InstanceofOperator(O, C) (ECMA-262).
+    //
+    // Spec: https://tc39.es/ecma262/#sec-instanceofoperator
+    //
+    // 1. If Type(C) is not Object, throw a TypeError exception.
+    let Value::Object(constructor_obj) = constructor else {
       return Err(throw_type_error(
         self.vm,
         &mut scope,
-        "Right-hand side of 'instanceof' is not callable",
+        "Right-hand side of 'instanceof' is not an object",
       )?);
-    }
-    let Value::Object(constructor_obj) = constructor else {
-      // `Heap::is_callable` returning true for a non-object would be an internal bug.
-      return Err(VmError::InvariantViolation(
-        "instanceof: is_callable returned true for non-object",
-      ));
     };
 
     // 2. GetMethod(C, @@hasInstance).
@@ -6840,19 +6838,23 @@ impl<'a> Evaluator<'a> {
       return Ok(to_boolean(scope.heap(), result)?);
     }
 
-    // 3. If `C` is not constructable, `instanceof` is `false`.
-    if !scope.heap().is_constructor(constructor)? {
-      return Ok(false);
+    // 3. If IsCallable(C) is false, throw a TypeError exception.
+    if !scope.heap().is_callable(constructor)? {
+      return Err(throw_type_error(
+        self.vm,
+        &mut scope,
+        "Right-hand side of 'instanceof' is not callable",
+      )?);
     }
 
-    self.ordinary_has_instance(&mut scope, object, constructor_obj)
+    self.ordinary_has_instance(&mut scope, constructor_obj, object)
   }
 
   fn ordinary_has_instance(
     &mut self,
     scope: &mut Scope<'_>,
-    object: Value,
     constructor: GcObject,
+    object: Value,
   ) -> Result<bool, VmError> {
     // Bound functions delegate `instanceof` checks to their target.
     if let Ok(func) = scope.heap().get_function(constructor) {
@@ -6891,11 +6893,25 @@ impl<'a> Evaluator<'a> {
     let mut steps = 0usize;
     let mut visited: HashSet<GcObject> = HashSet::new();
     while let Some(obj) = current {
+      // Budget the prototype traversal: hostile inputs can synthesize extremely deep chains (up to
+      // the engine hard limit) inside a single `instanceof` expression. Observe fuel/deadline /
+      // interrupt budgets periodically while walking.
+      //
+      // Note: avoid ticking on the first iteration so shallow `instanceof` checks don't
+      // effectively double-charge fuel (the surrounding expression evaluation already ticks).
+      const TICK_EVERY: usize = 32;
+      if steps != 0 && steps % TICK_EVERY == 0 {
+        self.tick()?;
+      }
+
       if steps >= crate::MAX_PROTOTYPE_CHAIN {
         return Err(VmError::PrototypeChainTooDeep);
       }
       steps += 1;
 
+      if visited.try_reserve(1).is_err() {
+        return Err(VmError::OutOfMemory);
+      }
       if !visited.insert(obj) {
         return Err(VmError::PrototypeCycle);
       }

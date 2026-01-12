@@ -53,6 +53,10 @@ glob = "language/expressions/comma/**"
 status = "pass"
 
 [[expectations]]
+glob = "language/expressions/instanceof/**"
+status = "pass"
+
+[[expectations]]
 id = "language/expressions/comma/tco-final.js"
 status = "xfail"
 reason = "vm-js does not yet implement named function expression binding / proper tail calls."

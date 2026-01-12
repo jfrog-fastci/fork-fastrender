@@ -6,28 +6,8 @@ fn new_runtime() -> JsRuntime {
   JsRuntime::new(vm, heap).unwrap()
 }
 
-#[test]
-fn ordinary_instanceof_true_for_constructed_object() {
-  let mut rt = new_runtime();
-  let value = rt
-    .exec_script(r#"function C(){}; var o=new C(); o instanceof C === true"#)
-    .unwrap();
-  assert_eq!(value, Value::Bool(true));
-}
-
-#[test]
-fn ordinary_instanceof_false_for_other_object() {
-  let mut rt = new_runtime();
-  let value = rt.exec_script(r#"function C(){}; ({} instanceof C) === false"#).unwrap();
-  assert_eq!(value, Value::Bool(true));
-}
-
-#[test]
-fn instanceof_throws_type_error_when_prototype_is_not_object() {
-  let mut rt = new_runtime();
-  let err = rt
-    .exec_script(r#"function C(){}; C.prototype = 1; ({} instanceof C)"#)
-    .unwrap_err();
+fn assert_throws_type_error(rt: &mut JsRuntime, script: &str) {
+  let err = rt.exec_script(script).unwrap_err();
 
   let thrown = err
     .thrown_value()
@@ -57,11 +37,82 @@ fn instanceof_throws_type_error_when_prototype_is_not_object() {
 }
 
 #[test]
+fn ordinary_instanceof_true_for_constructed_object() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(r#"function C(){}; var o=new C(); o instanceof C === true"#)
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn ordinary_instanceof_false_for_other_object() {
+  let mut rt = new_runtime();
+  let value = rt.exec_script(r#"function C(){}; ({} instanceof C) === false"#).unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn instanceof_throws_type_error_when_prototype_is_not_object() {
+  let mut rt = new_runtime();
+  assert_throws_type_error(&mut rt, r#"function C(){}; C.prototype = 1; ({} instanceof C)"#);
+}
+
+#[test]
 fn has_instance_override_is_called() {
   let mut rt = new_runtime();
   let value = rt
     .exec_script(
       r#"function C(){}; C[Symbol.hasInstance] = function(){ return true; }; ({} instanceof C) === true"#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn has_instance_override_is_called_for_non_callable_rhs_object() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"var C = {}; C[Symbol.hasInstance] = function(){ return true; }; ({} instanceof C) === true"#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn instanceof_throws_type_error_when_rhs_is_not_object() {
+  let mut rt = new_runtime();
+  assert_throws_type_error(&mut rt, r#"({} instanceof 1)"#);
+}
+
+#[test]
+fn instanceof_throws_type_error_when_rhs_is_not_callable_and_has_no_hasinstance() {
+  let mut rt = new_runtime();
+  assert_throws_type_error(&mut rt, r#"({} instanceof ({}))"#);
+}
+
+#[test]
+fn instanceof_throws_type_error_when_has_instance_is_not_callable() {
+  let mut rt = new_runtime();
+  assert_throws_type_error(
+    &mut rt,
+    r#"function C(){}; C[Symbol.hasInstance] = 1; ({} instanceof C)"#,
+  );
+}
+
+#[test]
+fn instanceof_throws_type_error_for_arrow_function_without_prototype() {
+  let mut rt = new_runtime();
+  assert_throws_type_error(&mut rt, r#"var f = () => {}; ({} instanceof f)"#);
+}
+
+#[test]
+fn bound_function_instanceof_delegates_to_bound_target() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"function C(){}; var B = C.bind(null); var o = new C(); (o instanceof B) === true"#,
     )
     .unwrap();
   assert_eq!(value, Value::Bool(true));
