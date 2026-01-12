@@ -39,7 +39,7 @@ mod tests {
 
   #[test]
   fn maps_font_palette_variants_to_base_selection() {
-    let data = fs::read("tests/fixtures/fonts/PaletteTestCOLRv1.ttf")
+    let data = fs::read(crate::testing::fixtures_dir().join("fonts/PaletteTestCOLRv1.ttf"))
       .expect("test font with palette types should load");
     let face = ttf_parser::Face::parse(&data, 0).expect("test font should parse");
 
@@ -54,7 +54,7 @@ mod tests {
 
   #[test]
   fn parses_palette_via_color_font_module() {
-    let data = fs::read("tests/fixtures/fonts/PaletteTestCOLRv1.ttf")
+    let data = fs::read(crate::testing::fixtures_dir().join("fonts/PaletteTestCOLRv1.ttf"))
       .expect("test font with palette types should load");
     let face = ttf_parser::Face::parse(&data, 0).expect("test font should parse");
 

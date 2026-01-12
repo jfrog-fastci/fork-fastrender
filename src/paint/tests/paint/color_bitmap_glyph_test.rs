@@ -13,7 +13,8 @@ fn renders_sbix_jpeg_bitmap_glyph() {
   let font = LoadedFont {
     id: None,
     data: Arc::new(
-      std::fs::read("tests/fixtures/fonts/TestSbixJPEG.ttf").expect("fixture font should exist"),
+      std::fs::read(crate::testing::fixtures_dir().join("fonts/TestSbixJPEG.ttf"))
+        .expect("fixture font should exist"),
     ),
     index: 0,
     family: "Test Sbix JPEG".to_string(),

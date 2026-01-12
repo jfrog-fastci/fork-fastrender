@@ -5000,8 +5000,8 @@ mod tests {
   fn web_font_blocking_wait_respects_render_deadline() {
     use std::sync::mpsc;
 
-    let font_data =
-      fs::read("tests/fixtures/fonts/NotoSans-subset.ttf").expect("read font fixture");
+    let font_data = fs::read(crate::testing::fixtures_dir().join("fonts/NotoSans-subset.ttf"))
+      .expect("read font fixture");
     let url = "https://example.com/font.ttf".to_string();
     let (started_tx, started_rx) = mpsc::channel::<()>();
     let release = Arc::new(std::sync::Barrier::new(2));
@@ -5109,8 +5109,8 @@ mod tests {
     use std::sync::atomic::AtomicBool;
     use std::sync::mpsc;
 
-    let font_data =
-      fs::read("tests/fixtures/fonts/NotoSans-subset.ttf").expect("read font fixture");
+    let font_data = fs::read(crate::testing::fixtures_dir().join("fonts/NotoSans-subset.ttf"))
+      .expect("read font fixture");
     let url = "https://example.com/font.ttf".to_string();
     let (started_tx, started_rx) = mpsc::channel::<()>();
     let release = Arc::new(std::sync::Barrier::new(2));

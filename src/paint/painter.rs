@@ -25190,7 +25190,7 @@ mod tests {
 
   #[test]
   fn painter_applies_variable_font_variations() {
-    let font_bytes = match fs::read("tests/fixtures/fonts/TestVar.ttf") {
+    let font_bytes = match fs::read(crate::testing::fixtures_dir().join("fonts/TestVar.ttf")) {
       Ok(bytes) => bytes,
       Err(_) => return,
     };
@@ -25244,7 +25244,7 @@ mod tests {
 
   #[test]
   fn underline_skip_ink_uses_variable_font_bounds() {
-    let font_bytes = match fs::read("tests/fixtures/fonts/TestVar.ttf") {
+    let font_bytes = match fs::read(crate::testing::fixtures_dir().join("fonts/TestVar.ttf")) {
       Ok(bytes) => bytes,
       Err(_) => return,
     };
@@ -25294,7 +25294,7 @@ mod tests {
 
   #[test]
   fn painter_applies_variable_font_variations_vertical_runs() {
-    let font_bytes = match fs::read("tests/fixtures/fonts/TestVar.ttf") {
+    let font_bytes = match fs::read(crate::testing::fixtures_dir().join("fonts/TestVar.ttf")) {
       Ok(bytes) => bytes,
       Err(_) => return,
     };
@@ -25350,7 +25350,7 @@ mod tests {
 
   #[test]
   fn emphasis_string_applies_variable_font_variations() {
-    let font_bytes = match fs::read("tests/fixtures/fonts/TestVar.ttf") {
+    let font_bytes = match fs::read(crate::testing::fixtures_dir().join("fonts/TestVar.ttf")) {
       Ok(bytes) => bytes,
       Err(_) => return,
     };

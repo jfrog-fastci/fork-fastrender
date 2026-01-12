@@ -688,7 +688,9 @@ fn math_layout_falls_back_without_fonts() {
 
 fn math_font_context() -> FontContext {
   let mut cfg = FontConfig::default();
-  cfg.font_dirs.push(PathBuf::from("tests/fixtures/fonts"));
+  cfg
+    .font_dirs
+    .push(crate::testing::fixtures_dir().join("fonts"));
   FontContext::with_config(cfg)
 }
 

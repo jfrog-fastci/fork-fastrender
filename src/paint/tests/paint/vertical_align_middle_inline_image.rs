@@ -17,9 +17,10 @@ fn vertical_align_middle_inline_images_cover_the_top_device_row() {
   // 13.5 boundary; using the glyph-derived x-height shifts it upward so the top row is painted.
 
   // Nunito Regular webfont from the CDC offline fixture.
-  let nunito =
-    std::fs::read("tests/pages/fixtures/cdc.gov/assets/eecd9875ba1c2555504cf3404f1fd8f1.woff2")
-      .expect("read nunito woff2");
+  let nunito = std::fs::read(crate::testing::tests_dir().join(
+    "pages/fixtures/cdc.gov/assets/eecd9875ba1c2555504cf3404f1fd8f1.woff2",
+  ))
+  .expect("read nunito woff2");
   let nunito_b64 = BASE64.encode(&nunito);
 
   // 64x44 solid blue PNG (matches the CDC header flag image intrinsic size).

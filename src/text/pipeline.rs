@@ -7838,7 +7838,8 @@ mod tests {
 
   #[test]
   fn missing_base_glyph_clusters_fall_back_to_notdef() {
-    let data = fs::read("tests/fixtures/fonts/NotoSans-subset.ttf").expect("read Noto Sans subset");
+    let data = fs::read(crate::testing::fixtures_dir().join("fonts/NotoSans-subset.ttf"))
+      .expect("read Noto Sans subset");
     let ctx = load_font_context_with_data(data).expect("load font context");
     let font = ctx
       .database()
@@ -7913,8 +7914,8 @@ mod tests {
     // fallback resolver sees an emoji font early that can't render the cluster, and would otherwise
     // short-circuit before considering the bundled emoji font when tag characters are treated as
     // required for coverage.
-    let web_data =
-      fs::read("tests/fixtures/fonts/NotoSans-subset.ttf").expect("read web font data");
+    let web_data = fs::read(crate::testing::fixtures_dir().join("fonts/NotoSans-subset.ttf"))
+      .expect("read web font data");
     let Some((_dir, web_url)) = temp_font_url(&web_data) else {
       return;
     };
@@ -9334,8 +9335,8 @@ mod tests {
 
   #[test]
   fn web_font_only_context_shapes_missing_glyphs_with_notdef() {
-    let font_data =
-      fs::read("tests/fixtures/fonts/NotoSans-subset.ttf").expect("read NotoSans subset fixture");
+    let font_data = fs::read(crate::testing::fixtures_dir().join("fonts/NotoSans-subset.ttf"))
+      .expect("read NotoSans subset fixture");
     let parsed = ttf_parser::Face::parse(&font_data, 0).expect("parse NotoSans subset fixture");
     assert!(parsed.glyph_index('A').is_some());
     assert!(parsed.glyph_index('a').is_some());
@@ -9843,7 +9844,7 @@ mod tests {
   #[cfg(debug_assertions)]
   #[test]
   fn rustybuzz_faces_are_cached_across_runs() {
-    let font_data = match fs::read("tests/fonts/ColorTestCOLR.ttf") {
+    let font_data = match fs::read(crate::testing::tests_dir().join("fonts/ColorTestCOLR.ttf")) {
       Ok(data) => data,
       Err(_) => return,
     };
