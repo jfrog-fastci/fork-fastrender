@@ -1,4 +1,5 @@
 use vm_js::{Heap, HeapLimits, PropertyDescriptor, PropertyKey, PropertyKind, Value, VmError};
+use std::mem;
 
 #[test]
 fn generator_objects_are_ordinary_objects_and_gc_traces_internal_slots() -> Result<(), VmError> {
@@ -66,6 +67,51 @@ fn generator_objects_are_ordinary_objects_and_gc_traces_internal_slots() -> Resu
     assert!(scope.heap().is_valid_object(arg_obj));
     assert!(scope.heap().is_valid_env(env));
     assert!(!scope.heap().is_valid_object(prop_obj));
+
+    // Exercise generator internal slot mutation APIs that must keep heap byte accounting in sync.
+    // `cont_obj` is only kept alive via `gen.[[Continuation]]` once set (it's not a stack root).
+    let cont_obj = scope.alloc_object()?;
+    let used_before_cont_set = scope.heap().used_bytes();
+    scope.heap_mut().generator_set_continuation(
+      gen,
+      Some(vec![Value::Object(cont_obj)].into_boxed_slice()),
+    )?;
+    let used_after_cont_set = scope.heap().used_bytes();
+    assert_eq!(
+      used_after_cont_set - used_before_cont_set,
+      mem::size_of::<Value>()
+    );
+
+    scope.heap_mut().collect_garbage();
+    assert!(scope.heap().is_valid_object(cont_obj));
+
+    let used_before_cont_unset = scope.heap().used_bytes();
+    scope.heap_mut().generator_set_continuation(gen, None)?;
+    let used_after_cont_unset = scope.heap().used_bytes();
+    assert_eq!(
+      used_before_cont_unset - used_after_cont_unset,
+      mem::size_of::<Value>()
+    );
+    assert_eq!(used_after_cont_unset, used_before_cont_set);
+
+    // `cont_obj` is now unreachable (continuation cleared), so it should be collected.
+    scope.heap_mut().collect_garbage();
+    assert!(!scope.heap().is_valid_object(cont_obj));
+
+    // `arg_obj` is only kept alive by `gen.[[Args]]`. Clear it and ensure the arg object can be
+    // collected, and heap byte accounting shrinks accordingly.
+    let used_before_args_clear = scope.heap().used_bytes();
+    scope.heap_mut().generator_set_args(gen, None)?;
+    let used_after_args_clear = scope.heap().used_bytes();
+    assert_eq!(
+      used_before_args_clear - used_after_args_clear,
+      mem::size_of::<Value>()
+    );
+
+    scope.heap_mut().collect_garbage();
+    assert!(!scope.heap().is_valid_object(arg_obj));
+    assert!(scope.heap().is_valid_object(this_obj));
+    assert!(scope.heap().is_valid_env(env));
   }
 
   // Stack roots were removed when the scope was dropped.
@@ -78,4 +124,3 @@ fn generator_objects_are_ordinary_objects_and_gc_traces_internal_slots() -> Resu
   assert!(matches!(heap.get(gen, &PropertyKey::from_string(key)), Err(VmError::InvalidHandle { .. })));
   Ok(())
 }
-

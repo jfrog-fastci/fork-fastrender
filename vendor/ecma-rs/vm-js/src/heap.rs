@@ -3205,11 +3205,262 @@ impl Heap {
   }
 
   #[allow(dead_code)]
-  pub(crate) fn get_generator_mut(&mut self, obj: GcObject) -> Result<&mut JsGenerator, VmError> {
+  fn get_generator_mut(&mut self, obj: GcObject) -> Result<&mut JsGenerator, VmError> {
     match self.get_heap_object_mut(obj.0)? {
       HeapObject::Generator(g) => Ok(g),
       _ => Err(VmError::invalid_handle()),
     }
+  }
+
+  pub(crate) fn generator_set_state(
+    &mut self,
+    obj: GcObject,
+    state: GeneratorState,
+  ) -> Result<(), VmError> {
+    let idx = self
+      .validate(obj.0)
+      .ok_or_else(|| VmError::invalid_handle())?;
+
+    let (property_count, args_len, continuation_len, old_bytes) = {
+      let slot = &self.slots[idx];
+      let Some(HeapObject::Generator(gen)) = slot.value.as_ref() else {
+        return Err(VmError::invalid_handle());
+      };
+      (
+        gen.object.base.properties.len(),
+        gen.args.as_deref().map(|args| args.len()).unwrap_or(0),
+        gen.continuation.as_deref().map(|c| c.len()).unwrap_or(0),
+        slot.bytes,
+      )
+    };
+
+    let new_bytes = JsGenerator::heap_size_bytes_for_counts(property_count, args_len, continuation_len);
+    let grow_by = new_bytes.saturating_sub(old_bytes);
+    if grow_by != 0 {
+      // Treat `obj` as a root in case this triggers a GC.
+      let roots = [Value::Object(obj)];
+      self.ensure_can_allocate_with_extra_roots(|_| grow_by, &roots, &[], &[], &[])?;
+    }
+
+    let Some(HeapObject::Generator(gen)) = self.slots[idx].value.as_mut() else {
+      return Err(VmError::invalid_handle());
+    };
+    gen.state = state;
+
+    self.update_slot_bytes(idx, new_bytes);
+    #[cfg(debug_assertions)]
+    self.debug_assert_used_bytes_is_correct();
+    Ok(())
+  }
+
+  pub(crate) fn generator_set_this_value(
+    &mut self,
+    obj: GcObject,
+    this_value: Value,
+  ) -> Result<(), VmError> {
+    if !self.debug_value_is_valid_or_primitive(this_value) {
+      return Err(VmError::invalid_handle());
+    }
+
+    let idx = self
+      .validate(obj.0)
+      .ok_or_else(|| VmError::invalid_handle())?;
+
+    let (property_count, args_len, continuation_len, old_bytes) = {
+      let slot = &self.slots[idx];
+      let Some(HeapObject::Generator(gen)) = slot.value.as_ref() else {
+        return Err(VmError::invalid_handle());
+      };
+      (
+        gen.object.base.properties.len(),
+        gen.args.as_deref().map(|args| args.len()).unwrap_or(0),
+        gen.continuation.as_deref().map(|c| c.len()).unwrap_or(0),
+        slot.bytes,
+      )
+    };
+
+    let new_bytes = JsGenerator::heap_size_bytes_for_counts(property_count, args_len, continuation_len);
+    let grow_by = new_bytes.saturating_sub(old_bytes);
+    if grow_by != 0 {
+      // Treat `obj`/`this_value` as roots in case this triggers a GC.
+      let obj_root = [Value::Object(obj)];
+      let value_root = [this_value];
+      self.ensure_can_allocate_with_extra_roots(|_| grow_by, &obj_root, &value_root, &[], &[])?;
+    }
+
+    let Some(HeapObject::Generator(gen)) = self.slots[idx].value.as_mut() else {
+      return Err(VmError::invalid_handle());
+    };
+    gen.this_value = this_value;
+
+    self.update_slot_bytes(idx, new_bytes);
+    #[cfg(debug_assertions)]
+    self.debug_assert_used_bytes_is_correct();
+    Ok(())
+  }
+
+  pub(crate) fn generator_set_env(
+    &mut self,
+    obj: GcObject,
+    env: Option<GcEnv>,
+  ) -> Result<(), VmError> {
+    if let Some(env) = env {
+      if !self.is_valid_env(env) {
+        return Err(VmError::invalid_handle());
+      }
+    }
+
+    let idx = self
+      .validate(obj.0)
+      .ok_or_else(|| VmError::invalid_handle())?;
+
+    let (property_count, args_len, continuation_len, old_bytes) = {
+      let slot = &self.slots[idx];
+      let Some(HeapObject::Generator(gen)) = slot.value.as_ref() else {
+        return Err(VmError::invalid_handle());
+      };
+      (
+        gen.object.base.properties.len(),
+        gen.args.as_deref().map(|args| args.len()).unwrap_or(0),
+        gen.continuation.as_deref().map(|c| c.len()).unwrap_or(0),
+        slot.bytes,
+      )
+    };
+
+    let new_bytes = JsGenerator::heap_size_bytes_for_counts(property_count, args_len, continuation_len);
+    let grow_by = new_bytes.saturating_sub(old_bytes);
+    if grow_by != 0 {
+      // Treat `obj` and `env` as roots in case this triggers a GC.
+      let obj_root = [Value::Object(obj)];
+      let env_root;
+      let env_roots: &[GcEnv] = if let Some(e) = env {
+        env_root = [e];
+        &env_root
+      } else {
+        &[]
+      };
+      self.ensure_can_allocate_with_extra_roots(|_| grow_by, &obj_root, &[], env_roots, &[])?;
+    }
+
+    let Some(HeapObject::Generator(gen)) = self.slots[idx].value.as_mut() else {
+      return Err(VmError::invalid_handle());
+    };
+    gen.env = env;
+
+    self.update_slot_bytes(idx, new_bytes);
+    #[cfg(debug_assertions)]
+    self.debug_assert_used_bytes_is_correct();
+    Ok(())
+  }
+
+  pub fn generator_set_args(
+    &mut self,
+    obj: GcObject,
+    args: Option<Box<[Value]>>,
+  ) -> Result<(), VmError> {
+    if let Some(args) = args.as_deref() {
+      for &value in args {
+        if !self.debug_value_is_valid_or_primitive(value) {
+          return Err(VmError::invalid_handle());
+        }
+      }
+    }
+
+    let idx = self
+      .validate(obj.0)
+      .ok_or_else(|| VmError::invalid_handle())?;
+
+    let (property_count, continuation_len, old_bytes) = {
+      let slot = &self.slots[idx];
+      let Some(HeapObject::Generator(gen)) = slot.value.as_ref() else {
+        return Err(VmError::invalid_handle());
+      };
+      (
+        gen.object.base.properties.len(),
+        gen.continuation.as_deref().map(|c| c.len()).unwrap_or(0),
+        slot.bytes,
+      )
+    };
+
+    let args_len = args.as_deref().map(|args| args.len()).unwrap_or(0);
+    let new_bytes = JsGenerator::heap_size_bytes_for_counts(property_count, args_len, continuation_len);
+    let grow_by = new_bytes.saturating_sub(old_bytes);
+    if grow_by != 0 {
+      // Treat `obj` and the new args buffer as roots in case this triggers a GC.
+      let obj_root = [Value::Object(obj)];
+      self.ensure_can_allocate_with_extra_roots(
+        |_| grow_by,
+        &obj_root,
+        args.as_deref().unwrap_or(&[]),
+        &[],
+        &[],
+      )?;
+    }
+
+    let Some(HeapObject::Generator(gen)) = self.slots[idx].value.as_mut() else {
+      return Err(VmError::invalid_handle());
+    };
+    gen.args = args;
+
+    self.update_slot_bytes(idx, new_bytes);
+    #[cfg(debug_assertions)]
+    self.debug_assert_used_bytes_is_correct();
+    Ok(())
+  }
+
+  pub fn generator_set_continuation(
+    &mut self,
+    obj: GcObject,
+    continuation: Option<Box<[Value]>>,
+  ) -> Result<(), VmError> {
+    if let Some(continuation) = continuation.as_deref() {
+      for &value in continuation {
+        if !self.debug_value_is_valid_or_primitive(value) {
+          return Err(VmError::invalid_handle());
+        }
+      }
+    }
+
+    let idx = self
+      .validate(obj.0)
+      .ok_or_else(|| VmError::invalid_handle())?;
+
+    let (property_count, args_len, old_bytes) = {
+      let slot = &self.slots[idx];
+      let Some(HeapObject::Generator(gen)) = slot.value.as_ref() else {
+        return Err(VmError::invalid_handle());
+      };
+      (
+        gen.object.base.properties.len(),
+        gen.args.as_deref().map(|args| args.len()).unwrap_or(0),
+        slot.bytes,
+      )
+    };
+
+    let continuation_len = continuation.as_deref().map(|c| c.len()).unwrap_or(0);
+    let new_bytes = JsGenerator::heap_size_bytes_for_counts(property_count, args_len, continuation_len);
+    let grow_by = new_bytes.saturating_sub(old_bytes);
+    if grow_by != 0 {
+      // Treat `obj` and the new continuation buffer as roots in case this triggers a GC.
+      let obj_root = [Value::Object(obj)];
+      self.ensure_can_allocate_with_extra_roots(
+        |_| grow_by,
+        &obj_root,
+        continuation.as_deref().unwrap_or(&[]),
+        &[],
+        &[],
+      )?;
+    }
+
+    let Some(HeapObject::Generator(gen)) = self.slots[idx].value.as_mut() else {
+      return Err(VmError::invalid_handle());
+    };
+    gen.continuation = continuation;
+
+    self.update_slot_bytes(idx, new_bytes);
+    #[cfg(debug_assertions)]
+    self.debug_assert_used_bytes_is_correct();
+    Ok(())
   }
 
   /// Returns `promise.[[PromiseState]]`.
