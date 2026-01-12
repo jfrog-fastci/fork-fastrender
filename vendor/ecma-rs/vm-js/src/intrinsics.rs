@@ -929,6 +929,7 @@ impl Intrinsics {
       vm.register_native_call(builtins::function_prototype_symbol_has_instance)?;
     let throw_type_error_intrinsic_call =
       vm.register_native_call(builtins::throw_type_error_intrinsic)?;
+    let array_prototype_at = vm.register_native_call(builtins::array_prototype_at)?;
     let array_prototype_map = vm.register_native_call(builtins::array_prototype_map)?;
     let array_prototype_for_each = vm.register_native_call(builtins::array_prototype_for_each)?;
     let array_prototype_index_of = vm.register_native_call(builtins::array_prototype_index_of)?;
@@ -1859,9 +1860,24 @@ impl Intrinsics {
       "Array Iterator",
     )?;
 
-    // Array.prototype.map / forEach / indexOf / includes / filter / reduce / some / every / find /
-    // findIndex / concat / reverse / sort / join / slice / push / pop / shift / unshift / splice
+    // Array.prototype.at / map / forEach / indexOf / includes / filter / reduce / some / every /
+    // find / findIndex / concat / reverse / sort / join / slice / push / pop / shift / unshift /
+    // splice
       {
+        let at_s = scope.alloc_string("at")?;
+        scope.push_root(Value::String(at_s))?;
+        let at_key = PropertyKey::from_string(at_s);
+        let at_fn = scope.alloc_native_function(array_prototype_at, None, at_s, 1)?;
+        scope.push_root(Value::Object(at_fn))?;
+        scope
+          .heap_mut()
+          .object_set_prototype(at_fn, Some(function_prototype))?;
+        scope.define_property(
+          array_prototype,
+          at_key,
+          data_desc(Value::Object(at_fn), true, false, true),
+        )?;
+
         let map_s = scope.alloc_string("map")?;
         scope.push_root(Value::String(map_s))?;
         let map_key = PropertyKey::from_string(map_s);

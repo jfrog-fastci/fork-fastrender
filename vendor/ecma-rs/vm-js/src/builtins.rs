@@ -9303,6 +9303,46 @@ const SET_ITERATOR_SET_MARKER: &str = "vm-js.internal.SetIteratorSet";
 const SET_ITERATOR_INDEX_MARKER: &str = "vm-js.internal.SetIteratorIndex";
 const SET_ITERATOR_KIND_MARKER: &str = "vm-js.internal.SetIteratorKind";
 const GENERATOR_STATE_MARKER: &str = "vm-js.internal.GeneratorState";
+/// `Array.prototype.at(index)` (ECMA-262).
+pub fn array_prototype_at(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  // Spec: https://tc39.es/ecma262/#sec-array.prototype.at
+  let mut scope = scope.reborrow();
+  let obj = scope.to_object(vm, host, hooks, this)?;
+  scope.push_root(Value::Object(obj))?;
+
+  let index_val = args.get(0).copied().unwrap_or(Value::Undefined);
+  let relative = scope.to_integer_or_infinity(vm, host, hooks, index_val)?;
+  if !relative.is_finite() {
+    return Ok(Value::Undefined);
+  }
+
+  let len = length_of_array_like_usize(vm, &mut scope, host, hooks, obj)?;
+  let k = if relative >= 0.0 {
+    relative
+  } else {
+    (len as f64) + relative
+  };
+  if k < 0.0 || k >= (len as f64) || k > (usize::MAX as f64) {
+    return Ok(Value::Undefined);
+  }
+  let idx = k as usize;
+
+  let mut key_scope = scope.reborrow();
+  key_scope.push_root(Value::Object(obj))?;
+  let key_s = key_scope.alloc_string(&idx.to_string())?;
+  key_scope.push_root(Value::String(key_s))?;
+  let key = PropertyKey::from_string(key_s);
+  key_scope.get_with_host_and_hooks(vm, host, hooks, obj, key, Value::Object(obj))
+}
+
 /// `Array.prototype.map` (minimal).
 pub fn array_prototype_map(
   vm: &mut Vm,
@@ -21983,6 +22023,65 @@ mod date_tests {
   fn date_unary_plus_matches_get_time() -> Result<(), VmError> {
     let mut rt = new_runtime();
     let v = rt.exec_script("const d = new Date(1234); +d === d.getTime()")?;
+    assert_eq!(v, Value::Bool(true));
+    Ok(())
+  }
+}
+
+#[cfg(test)]
+mod array_at_tests {
+  use crate::{Heap, HeapLimits, JsRuntime, Value, Vm, VmError, VmOptions};
+
+  fn new_runtime() -> JsRuntime {
+    let vm = Vm::new(VmOptions::default());
+    let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    JsRuntime::new(vm, heap).unwrap()
+  }
+
+  #[test]
+  fn array_prototype_at_basic_indices() -> Result<(), VmError> {
+    let mut rt = new_runtime();
+    let v = rt.exec_script(
+      r#"
+        const a = [1, 2, 3];
+        a.at(0) === 1 &&
+        a.at(2) === 3 &&
+        a.at(-1) === 3 &&
+        a.at(-2) === 2 &&
+        a.at(3) === undefined &&
+        a.at(-4) === undefined
+      "#,
+    )?;
+    assert_eq!(v, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn array_prototype_at_is_generic() -> Result<(), VmError> {
+    let mut rt = new_runtime();
+    let v = rt.exec_script(
+      r#"
+        Array.prototype.at.call({ 0: "a", length: 1 }, 0) === "a" &&
+        Array.prototype.at.call("abc", 1) === "b"
+      "#,
+    )?;
+    assert_eq!(v, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn array_prototype_at_truncates_fractional_and_handles_infinity() -> Result<(), VmError> {
+    let mut rt = new_runtime();
+    let v = rt.exec_script(
+      r#"
+        const a = [10, 20, 30];
+        a.at(NaN) === 10 &&
+        a.at(1.9) === 20 &&
+        a.at(-1.1) === 30 &&
+        a.at(Infinity) === undefined &&
+        a.at(-Infinity) === undefined
+      "#,
+    )?;
     assert_eq!(v, Value::Bool(true));
     Ok(())
   }
