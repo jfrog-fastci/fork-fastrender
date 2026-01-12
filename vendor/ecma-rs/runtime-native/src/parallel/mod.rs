@@ -54,15 +54,16 @@ thread_local! {
 }
 
 fn local_worker_ptr() -> Option<(*const Worker<Arc<TaskState>>, usize)> {
-  LOCAL_WORKER.with(|worker| {
-    let ptr = worker.get();
-    if ptr.is_null() {
-      None
-    } else {
-      let idx = WORKER_INDEX.with(|idx| idx.get());
-      Some((ptr, idx))
-    }
-  })
+  // `rt_parallel_*` entrypoints can be invoked from other thread-local destructors during TLS
+  // teardown. If this TLS key has already been destroyed, `LocalKey::with` would panic with
+  // `AccessError` and abort the process (`abort_on_dtor_unwind`). Treat an inaccessible TLS key as
+  // "not a worker thread" and fall back to the global injector queue.
+  let ptr = LOCAL_WORKER.try_with(|worker| worker.get()).ok()?;
+  if ptr.is_null() {
+    return None;
+  }
+  let idx = WORKER_INDEX.try_with(|idx| idx.get()).ok()?;
+  Some((ptr, idx))
 }
 
 /// Internal parallel scheduler state.
