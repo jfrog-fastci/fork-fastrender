@@ -348,6 +348,59 @@ fn ensure_no_duplicate_rust_fns_in_single_module(module_name: &str, src: &str) -
   );
 }
 
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn duplicate_fn_names_in_window_module_are_rejected() {
+    let src = r#"
+pub mod window {
+  pub fn a() {}
+  pub fn a() {}
+}
+"#;
+
+    let err = ensure_no_duplicate_rust_fns_in_bindings_modules(src).unwrap_err();
+    let msg = err.to_string();
+    assert!(
+      msg.contains("module `window`"),
+      "expected module name in error message, got: {msg}"
+    );
+    assert!(
+      msg.contains("a (2x)"),
+      "expected duplicate fn name/count in error message, got: {msg}"
+    );
+  }
+
+  #[test]
+  fn same_fn_name_in_window_and_worker_is_allowed() {
+    let src = r#"
+pub mod window {
+  pub fn a() {}
+}
+
+pub mod worker {
+  pub fn a() {}
+}
+"#;
+
+    ensure_no_duplicate_rust_fns_in_bindings_modules(src)
+      .expect("expected no duplicates per module");
+  }
+
+  #[test]
+  fn missing_bindings_modules_are_ignored() {
+    let src = r#"
+pub fn a() {}
+pub fn a() {}
+"#;
+
+    ensure_no_duplicate_rust_fns_in_bindings_modules(src)
+      .expect("expected duplicate checks to be skipped without window/worker modules");
+  }
+}
+
 fn absolutize(repo_root: PathBuf, path: PathBuf) -> PathBuf {
   if path.is_absolute() {
     path
