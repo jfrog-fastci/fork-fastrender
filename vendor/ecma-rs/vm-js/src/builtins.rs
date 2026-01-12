@@ -1053,10 +1053,10 @@ fn test_integrity_level(
 }
 
 pub fn object_prevent_extensions(
-  _vm: &mut Vm,
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   _this: Value,
   args: &[Value],
@@ -1066,7 +1066,13 @@ pub fn object_prevent_extensions(
   let Value::Object(obj) = obj_val else {
     return Ok(obj_val);
   };
-  scope.object_prevent_extensions(obj)?;
+  let mut scope = scope.reborrow();
+  scope.push_root(Value::Object(obj))?;
+
+  let ok = scope.prevent_extensions_with_host_and_hooks(vm, host, hooks, obj)?;
+  if !ok {
+    return Err(VmError::TypeError("Object.preventExtensions failed"));
+  }
   Ok(Value::Object(obj))
 }
 
@@ -1671,10 +1677,10 @@ pub fn object_set_prototype_of(
 }
 
 pub fn object_is_extensible(
-  _vm: &mut Vm,
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   _this: Value,
   args: &[Value],
@@ -1686,7 +1692,11 @@ pub fn object_is_extensible(
   let Value::Object(obj) = arg0 else {
     return Ok(Value::Bool(false));
   };
-  Ok(Value::Bool(scope.object_is_extensible(obj)?))
+  let mut scope = scope.reborrow();
+  scope.push_root(Value::Object(obj))?;
+  Ok(Value::Bool(
+    scope.is_extensible_with_host_and_hooks(vm, host, hooks, obj)?,
+  ))
 }
 
 pub fn reflect_apply(

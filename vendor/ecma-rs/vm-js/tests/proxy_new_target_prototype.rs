@@ -418,6 +418,175 @@ fn proxy_own_keys_trap_observed_for_reflect_own_keys() -> Result<(), VmError> {
 }
 
 #[test]
+fn proxy_is_extensible_trap_observed_for_reflect_and_object_is_extensible() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let global = rt.realm().global_object();
+
+  rt.exec_script(
+    r#"
+      var count = 0;
+      var target = {};
+      function isExtensibleTrap(t) { count++; return true; }
+      var handler = { isExtensible: isExtensibleTrap };
+    "#,
+  )?;
+
+  let target = rt.exec_script("target")?;
+  let handler = rt.exec_script("handler")?;
+  let Value::Object(target_obj) = target else {
+    panic!("expected target to be an object, got {target:?}");
+  };
+  let Value::Object(handler_obj) = handler else {
+    panic!("expected handler to be an object, got {handler:?}");
+  };
+
+  // Install proxy as global `P`.
+  {
+    let (_vm, _realm, heap) = rt.vm_realm_and_heap_mut();
+    let mut scope = heap.scope();
+    let proxy = scope.alloc_proxy(Some(target_obj), Some(handler_obj))?;
+    define_global(&mut scope, global, "P", Value::Object(proxy))?;
+  }
+
+  let value = rt.exec_script(
+    r#"
+      Reflect.isExtensible(P) === true &&
+      Object.isExtensible(P) === true &&
+      count === 2
+    "#,
+  )?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn proxy_is_extensible_invariant_throws_on_inconsistent_trap_result() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let global = rt.realm().global_object();
+
+  rt.exec_script(
+    r#"
+      var count = 0;
+      var target = {};
+      function isExtensibleTrap(t) { count++; return false; }
+      var handler = { isExtensible: isExtensibleTrap };
+    "#,
+  )?;
+
+  let target = rt.exec_script("target")?;
+  let handler = rt.exec_script("handler")?;
+  let Value::Object(target_obj) = target else {
+    panic!("expected target to be an object, got {target:?}");
+  };
+  let Value::Object(handler_obj) = handler else {
+    panic!("expected handler to be an object, got {handler:?}");
+  };
+
+  // Install proxy as global `P`.
+  {
+    let (_vm, _realm, heap) = rt.vm_realm_and_heap_mut();
+    let mut scope = heap.scope();
+    let proxy = scope.alloc_proxy(Some(target_obj), Some(handler_obj))?;
+    define_global(&mut scope, global, "P", Value::Object(proxy))?;
+  }
+
+  let value = rt.exec_script(
+    r#"
+      var ok = false;
+      try { Reflect.isExtensible(P); } catch(e) { ok = e.name === "TypeError"; }
+      ok && count === 1
+    "#,
+  )?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn proxy_prevent_extensions_trap_observed_for_reflect_and_object_prevent_extensions() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let global = rt.realm().global_object();
+
+  rt.exec_script(
+    r#"
+      var count = 0;
+      var target = {};
+      function preventExtensionsTrap(t) { count++; Object.preventExtensions(t); return true; }
+      var handler = { preventExtensions: preventExtensionsTrap };
+    "#,
+  )?;
+
+  let target = rt.exec_script("target")?;
+  let handler = rt.exec_script("handler")?;
+  let Value::Object(target_obj) = target else {
+    panic!("expected target to be an object, got {target:?}");
+  };
+  let Value::Object(handler_obj) = handler else {
+    panic!("expected handler to be an object, got {handler:?}");
+  };
+
+  // Install proxy as global `P`.
+  {
+    let (_vm, _realm, heap) = rt.vm_realm_and_heap_mut();
+    let mut scope = heap.scope();
+    let proxy = scope.alloc_proxy(Some(target_obj), Some(handler_obj))?;
+    define_global(&mut scope, global, "P", Value::Object(proxy))?;
+  }
+
+  let value = rt.exec_script(
+    r#"
+      Reflect.preventExtensions(P) === true &&
+      Object.isExtensible(target) === false &&
+      Object.preventExtensions(P) === P &&
+      count === 2
+    "#,
+  )?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn proxy_prevent_extensions_invariant_throws_if_target_stays_extensible() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let global = rt.realm().global_object();
+
+  rt.exec_script(
+    r#"
+      var count = 0;
+      var target = {};
+      function preventExtensionsTrap(t) { count++; return true; }
+      var handler = { preventExtensions: preventExtensionsTrap };
+    "#,
+  )?;
+
+  let target = rt.exec_script("target")?;
+  let handler = rt.exec_script("handler")?;
+  let Value::Object(target_obj) = target else {
+    panic!("expected target to be an object, got {target:?}");
+  };
+  let Value::Object(handler_obj) = handler else {
+    panic!("expected handler to be an object, got {handler:?}");
+  };
+
+  // Install proxy as global `P`.
+  {
+    let (_vm, _realm, heap) = rt.vm_realm_and_heap_mut();
+    let mut scope = heap.scope();
+    let proxy = scope.alloc_proxy(Some(target_obj), Some(handler_obj))?;
+    define_global(&mut scope, global, "P", Value::Object(proxy))?;
+  }
+
+  let value = rt.exec_script(
+    r#"
+      var ok = false;
+      try { Reflect.preventExtensions(P); } catch(e) { ok = e.name === "TypeError"; }
+      ok && count === 1 && Object.isExtensible(target) === true
+    "#,
+  )?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
 fn proxy_get_prototype_of_trap_observed_for_reflect_get_prototype_of() -> Result<(), VmError> {
   let mut rt = new_runtime();
   let global = rt.realm().global_object();
