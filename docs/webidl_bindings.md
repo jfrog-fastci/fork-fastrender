@@ -34,7 +34,8 @@ For an overview of the consolidated WebIDL crate layout (and where new code belo
 - **Binding installation / host scaffolding (legacy heap-only runtime)**: `vendor/ecma-rs/webidl-runtime`
   - This provides a heap-only `vm-js` value/object model (`VmJsRuntime`) used by early scaffolding
     code. It cannot execute author scripts and should not be used for new bindings work.
-  - Cargo package name: `webidl-js-runtime` (Rust crate name: `webidl_js_runtime`).
+  - Cargo package name: `webidl-js-runtime` (library crate name: `webidl_runtime`, imported as
+    `webidl_js_runtime` in FastRender).
   - It remains available under `fastrender::js::webidl::legacy` while migration is in progress.
   - Run it via the vendored ecma-rs workspace wrapper:
 

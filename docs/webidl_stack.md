@@ -50,13 +50,14 @@ belongs here.
 If you need a new feature in the `webidl` ↔ `vm-js` adapter (rooting, iterator helpers, host dispatch
 plumbing), it belongs here.
 
-### Legacy heap-only runtime (compat): `vendor/ecma-rs/webidl-runtime` (crate: `webidl-js-runtime`)
+### Legacy heap-only runtime (compat): `vendor/ecma-rs/webidl-runtime` (package: `webidl-js-runtime`)
 
 The legacy heap-only runtime adapter is used by early scaffolding and some unit tests. It cannot
 execute author scripts and should not be used for new bindings work.
 
 - Cargo package name: `webidl-js-runtime`
-- Rust crate name: `webidl_js_runtime`
+- Library crate name: `webidl_runtime` (see `vendor/ecma-rs/webidl-runtime/Cargo.toml`)
+- FastRender renames this dependency to `webidl_js_runtime` in the root `Cargo.toml` for compatibility
 
 This layer exists for migration/testing where older heap-only bindings/runtime code is still
 referenced. Prefer the realm-based `webidl-vm-js` path for new bindings work.
