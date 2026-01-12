@@ -18,7 +18,7 @@ If workspace configuration makes this awkward, **fix the workspace configuration
 
 ## Anti-patterns (FORBIDDEN)
 
-### ❌ Creating parallel JS/WebIDL crates outside `vendor/ecma-rs/`
+### ❌ Creating parallel JS/WebIDL infrastructure crates outside `vendor/ecma-rs/`
 
 **Wrong:** putting a second copy of WebIDL infrastructure under `crates/` (or anywhere else in this
 repo) when the canonical implementation lives in:
@@ -105,11 +105,29 @@ This is a one-time fix. Don't create parallel crates to avoid it.
 
 ## Repository shape (post-migration)
 
-`crates/` exists only for FastRender-specific tooling (currently `crates/js-wpt-dom-runner`).
+`crates/` exists only for FastRender-specific tooling (currently `crates/js-wpt-dom-runner/`).
 
 All generic JS/WebIDL infrastructure lives in `vendor/ecma-rs/`. If you find yourself reaching for
 `crates/` to add WebIDL parsing/conversions/VM integration, that is almost certainly a design
 mistake: put it in ecma-rs instead.
+
+### Migration table (legacy `crates/` → target)
+
+The `crates/` directory previously contained parallel JS/WebIDL infrastructure that should be
+merged into ecma-rs (or deleted if legacy):
+
+| Current location | Target location |
+|-----------------|-----------------|
+| `crates/webidl-ir/` | `vendor/ecma-rs/webidl/` (merge) |
+| `crates/webidl-bindings-core/` | `vendor/ecma-rs/webidl/` (merge) |
+| `crates/webidl-vm-js/` | `vendor/ecma-rs/webidl-vm-js/` (merge) |
+| `crates/webidl-js-runtime/` | `vendor/ecma-rs/webidl-runtime/` (new crate) |
+| `crates/js-dom-bindings/` | Delete (legacy QuickJS-era bindings; verify unused) |
+| `crates/js-dom-bindings-quickjs/` | Delete (legacy QuickJS-era bindings; verify unused) |
+| `crates/js-wpt-dom-runner/` | Keep as FastRender-specific tool crate (NOT JS/WebIDL infra) |
+
+After migration, `crates/` must not contain any JS/WebIDL infrastructure crates.  
+`crates/js-wpt-dom-runner/` may remain as the only FastRender-specific tool crate (unless it is explicitly moved elsewhere).
 
 ---
 
@@ -120,14 +138,14 @@ Before creating any new code:
 1. **Is this JavaScript language infrastructure?** → Put it in `vendor/ecma-rs/`
 2. **Is this WebIDL spec implementation?** → Put it in `vendor/ecma-rs/webidl*/`
 3. **Is this specific to FastRender's DOM?** → Put it in `src/js/`
-4. **Am I about to create a new crate in `crates/`?** → **STOP.** This is almost certainly wrong.
+4. **Am I about to create a new JS/WebIDL infrastructure crate in `crates/`?** → **STOP.** This is almost certainly wrong.
 
 ---
 
 ## No exceptions
 
 There are no valid reasons to:
-- Create parallel crates in `crates/`
+- Create parallel JS/WebIDL infrastructure crates in `crates/`
 - Maintain "workspace-local copies" of ecma-rs crates
 - Avoid modifying ecma-rs "because it's separate"
 
