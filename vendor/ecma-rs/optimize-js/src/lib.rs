@@ -786,6 +786,15 @@ pub(crate) fn build_program_function_with_options(
     }
   }
 
+  // In typed builds, SSA/optimization passes can introduce new SSA vars (e.g.
+  // Phi nodes, preheader copies) that need native layout metadata. Propagate
+  // layouts across SSA so downstream native backends can treat
+  // `InstMeta::native_layout` as a stable invariant.
+  #[cfg(feature = "typed")]
+  {
+    analysis::layout::propagate_cfg_native_layouts(&mut cfg, program.types.as_ref());
+  }
+
   // Preserve an SSA-form CFG for downstream consumers (e.g. native codegen backends). We
   // intentionally do not propagate escape/ownership/consumption metadata onto the deconstructed
   // CFG; consumers should use `ProgramFunction::analyzed_cfg()` when they need those results.

@@ -50,7 +50,7 @@ pub struct NativeReadyProgram {
 ///
 /// This is only available when `optimize-js` is built with `feature = "typed"`.
 pub fn compile_file_native_ready(
-  program: Arc<typecheck_ts::Program>,
+  type_program: Arc<typecheck_ts::Program>,
   file: typecheck_ts::FileId,
   mode: TopLevelMode,
   debug: bool,
@@ -62,7 +62,7 @@ pub fn compile_file_native_ready(
     ..Default::default()
   };
 
-  let source = program.file_text(file).ok_or_else(|| {
+  let source = type_program.file_text(file).ok_or_else(|| {
     vec![Diagnostic::error(
       "OPT0003",
       format!("missing source text for {file:?}"),
@@ -72,9 +72,9 @@ pub fn compile_file_native_ready(
 
   let top_level_node = crate::parse_source(&source, file, mode)?;
 
-  let (mut program, types) = if let Some(lowered) = program.hir_lowered(file) {
+  let (mut program, types) = if let Some(lowered) = type_program.hir_lowered(file) {
     let types = Arc::new(types::TypeContext::from_typecheck_program_aligned(
-      Arc::clone(&program),
+      Arc::clone(&type_program),
       file,
       lowered.as_ref(),
     ));
@@ -91,7 +91,7 @@ pub fn compile_file_native_ready(
   } else {
     let lower = hir_js::lower_file(file, HirFileKind::Ts, &top_level_node);
     let types = Arc::new(types::TypeContext::from_typecheck_program(
-      Arc::clone(&program),
+      Arc::clone(&type_program),
       file,
       &lower,
     ));

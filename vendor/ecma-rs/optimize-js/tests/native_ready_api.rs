@@ -5,11 +5,11 @@ use optimize_js::{compile_file_native_ready, NativeReadyOptions, TopLevelMode};
 use std::sync::Arc;
 use typecheck_ts::lib_support::{CompilerOptions as TsCompilerOptions, LibName};
 
-fn build_type_program(source: &str) -> (Arc<typecheck_ts::Program>, typecheck_ts::FileId) {
-  let mut host = typecheck_ts::MemoryHost::with_options(TsCompilerOptions {
-    libs: vec![LibName::parse("es2015").expect("LibName::parse(es2015)")],
-    ..Default::default()
-  });
+fn build_type_program_with_options(
+  source: &str,
+  options: TsCompilerOptions,
+) -> (Arc<typecheck_ts::Program>, typecheck_ts::FileId) {
+  let mut host = typecheck_ts::MemoryHost::with_options(options);
   let file = typecheck_ts::FileKey::new("input.ts");
   host.insert(file.clone(), source);
   let program = Arc::new(typecheck_ts::Program::new(host, vec![file.clone()]));
@@ -20,6 +20,16 @@ fn build_type_program(source: &str) -> (Arc<typecheck_ts::Program>, typecheck_ts
   );
   let file_id = program.file_id(&file).expect("typecheck file id");
   (program, file_id)
+}
+
+fn build_type_program(source: &str) -> (Arc<typecheck_ts::Program>, typecheck_ts::FileId) {
+  build_type_program_with_options(
+    source,
+    TsCompilerOptions {
+      libs: vec![LibName::parse("es2015").expect("LibName::parse(es2015)")],
+      ..Default::default()
+    },
+  )
 }
 
 fn any_inst(program: &optimize_js::Program, pred: impl Fn(&Inst) -> bool) -> bool {

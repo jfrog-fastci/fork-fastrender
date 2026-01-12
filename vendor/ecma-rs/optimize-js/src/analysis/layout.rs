@@ -1,23 +1,34 @@
-//! SSA layout propagation and verification.
+//! SSA native layout propagation and validation.
 //!
-//! Native (LLVM) lowering requires that each SSA variable has a single,
-//! unambiguous `LayoutId`. This module builds a `Var(u32) -> LayoutId` map for a
-//! [`Cfg`] and rejects IR that would require implicit layout conversions (e.g.
-//! a `Phi` that merges values with incompatible layouts).
+//! Typed native backends treat `InstMeta::native_layout` as the ABI/layout for an SSA value.
+//! SSA construction and optimisation passes can introduce new SSA defs (notably `Phi` nodes and
+//! preheader temps) which must also carry layout metadata.
+//!
+//! This module provides two related utilities:
+//! - [`propagate_cfg_native_layouts`]: best-effort propagation of layouts through SSA, writing the
+//!   result back into `InstMeta::native_layout` for every value-defining instruction.
+//! - [`validate_layouts`]/[`validate_layouts_with_file`]: strict verification that the CFG has
+//!   consistent layouts (e.g. no `Phi` node merges incompatible layouts, no `VarAssign` lies about
+//!   copy layouts), producing deterministic diagnostics.
+//!
+//! These are complementary: propagation keeps metadata stable across passes, while validation is
+//! used by strict-native verifiers to reject IR that would require implicit layout conversions.
 
 use crate::cfg::cfg::Cfg;
 use crate::il::inst::{Arg, Const, Inst, InstTyp};
-use crate::types::LayoutId;
+use crate::types::{LayoutId, TypeContext, TypeId};
 use ahash::HashMap;
+use ahash::HashMapExt;
 use diagnostics::{Diagnostic, FileId, Span, TextRange};
 use once_cell::sync::Lazy;
+use std::collections::BTreeSet;
 use std::ops::Deref;
 use std::sync::Arc;
 
 /// Per-function mapping from SSA variables to their native runtime layout.
 ///
-/// In [`LayoutValidationMode::BestEffort`] mode this may also contain warning
-/// diagnostics describing values that were forced to `unknown_layout`.
+/// In [`LayoutValidationMode::BestEffort`] mode this may also contain warning diagnostics describing
+/// values that were forced to an "unknown" layout.
 #[derive(Clone, Debug, Default)]
 pub struct LayoutMap {
   layouts: HashMap<u32, LayoutId>,
@@ -54,8 +65,8 @@ pub enum LayoutValidationMode {
 static FALLBACK_STORE: Lazy<Arc<types_ts_interned::TypeStore>> = Lazy::new(types_ts_interned::TypeStore::new);
 static FALLBACK_FN_LAYOUT: Lazy<LayoutId> = Lazy::new(|| {
   // Model `Arg::Fn` constants as the layout of a representative callable type.
-  // `types-ts-interned` uses a canonical closure payload layout, so the
-  // particular signature/return type chosen here does not matter for the ABI.
+  // `types-ts-interned` uses a canonical closure payload layout, so the particular
+  // signature/return type chosen here does not matter for the ABI.
   let store = &*FALLBACK_STORE;
   let prim = store.primitive_ids();
   let sig = types_ts_interned::Signature {
@@ -97,10 +108,9 @@ fn diagnostic_for_inst(
   message: String,
   inst: &Inst,
 ) -> Diagnostic {
-  // `validate_layouts*` typically only sees a `Cfg`, not the full `Program`, so
-  // the caller may need to supply the file id. `validate_layouts` defaults to
-  // `FileId(0)` (matching `compile_source`); `validate_layouts_with_file` is
-  // available for typed pipelines that keep the original file id.
+  // `validate_layouts*` typically only sees a `Cfg`, not the full `Program`, so the caller may need
+  // to supply the file id. `validate_layouts` defaults to `FileId(0)` (matching `compile_source`);
+  // `validate_layouts_with_file` is available for typed pipelines that keep the original file id.
   let span = Span::new(file, inst.meta.span.unwrap_or_else(|| TextRange::new(0, 0)));
   let mut diag = match mode {
     LayoutValidationMode::Strict => Diagnostic::error(code, message, span),
@@ -113,16 +123,14 @@ fn diagnostic_for_inst(
 }
 
 fn layout_of_builtin(value: &str) -> Option<LayoutId> {
-  // Only handle builtins that are commonly treated as constants by the IL.
-  // Everything else is left as unknown (and should typically flow through a
-  // variable with `InstMeta.native_layout`).
+  // Only handle builtins that are commonly treated as constants by the IL. Everything else is left
+  // as unknown (and should typically flow through a variable with `InstMeta.native_layout`).
   let store = &*FALLBACK_STORE;
   let prim = store.primitive_ids();
   match value {
     "undefined" => Some(store.layout_of(prim.undefined)),
     "NaN" | "Infinity" => Some(store.layout_of(prim.number)),
-    // `Symbol.iterator`, etc. Symbols currently lower to opaque pointers in the
-    // layout model.
+    // `Symbol.iterator`, etc. Symbols currently lower to opaque pointers in the layout model.
     v if v.starts_with("Symbol.") => Some(store.layout_of(prim.symbol)),
     _ => None,
   }
@@ -164,11 +172,38 @@ fn set_layout(
   }
 }
 
+fn phi_incoming_layouts(
+  inst: &Inst,
+  map: &LayoutMap,
+  unknown_layout: LayoutId,
+) -> Vec<(u32, Option<LayoutId>)> {
+  let mut incoming: Vec<(u32, Option<LayoutId>)> = inst
+    .labels
+    .iter()
+    .copied()
+    .zip(inst.args.iter())
+    .map(|(pred, arg)| (pred, arg_layout(arg, map, unknown_layout)))
+    .collect();
+  incoming.sort_by_key(|(pred, _)| *pred);
+  incoming
+}
+
+fn fmt_incoming(incoming: &[(u32, Option<LayoutId>)]) -> String {
+  incoming
+    .iter()
+    .map(|(pred, layout)| match layout {
+      Some(layout) => format!("{pred}=>{layout:?}"),
+      None => format!("{pred}=><unresolved>"),
+    })
+    .collect::<Vec<_>>()
+    .join(", ")
+}
+
 /// Validate layout consistency for an SSA-form CFG and return a `Var -> LayoutId` map.
 ///
-/// The validator consumes `InstMeta::native_layout` as the authoritative layout for
+/// The validator treats `InstMeta::native_layout` as the authoritative layout for
 /// value-defining instructions. `Phi` layouts are computed as the join of their
-/// incoming values.
+/// incoming values, and `VarAssign` layouts can be inferred from their RHS for common cases.
 pub fn validate_layouts(cfg: &Cfg, mode: LayoutValidationMode) -> Result<LayoutMap, Vec<Diagnostic>> {
   validate_layouts_with_file(cfg, FileId(0), mode)
 }
@@ -182,9 +217,8 @@ pub fn validate_layouts_with_file(
   let unknown_layout = fallback_unknown_layout();
   let mut map = LayoutMap::default();
 
-  // Deterministic outer iteration: we only ever assign layouts (monotone) so a
-  // bounded fixpoint converges quickly even in the presence of cycles (loop
-  // phis, etc).
+  // Deterministic outer iteration: we only ever assign layouts (monotone) so a bounded fixpoint
+  // converges quickly even in the presence of cycles (loop phis, etc).
   let mut changed = true;
   let mut iterations = 0usize;
   let max_iterations = 64usize;
@@ -204,28 +238,20 @@ pub fn validate_layouts_with_file(
 
         match inst.t {
           InstTyp::Phi => {
-            let mut joined: Option<LayoutId> = None;
-            let mut mismatch: Option<(LayoutId, LayoutId)> = None;
-            for arg in inst.args.iter() {
-              let Some(layout) = arg_layout(arg, &map, unknown_layout) else {
-                continue;
-              };
-              match joined {
-                None => joined = Some(layout),
-                Some(existing) if existing == layout => {}
-                Some(existing) => {
-                  mismatch = Some((existing, layout));
-                  break;
-                }
+            let incoming = phi_incoming_layouts(inst, &map, unknown_layout);
+            let mut distinct = BTreeSet::new();
+            for (_, layout) in &incoming {
+              if let Some(layout) = *layout {
+                distinct.insert(layout);
               }
             }
 
-            if let Some((a, b)) = mismatch {
+            if distinct.len() > 1 {
               map.diagnostics.push(diagnostic_for_inst(
                 file,
                 mode,
                 "OPT0101",
-                format!("phi merges incompatible layouts: {a:?} vs {b:?}"),
+                format!("phi merges incompatible layouts: [{}]", fmt_incoming(&incoming)),
                 inst,
               ));
               if mode == LayoutValidationMode::BestEffort {
@@ -234,7 +260,8 @@ pub fn validate_layouts_with_file(
               continue;
             }
 
-            let Some(layout) = joined else {
+            let layout = distinct.into_iter().next();
+            let Some(layout) = layout else {
               if mode == LayoutValidationMode::BestEffort {
                 changed |= set_layout(&mut map, file, mode, tgt, unknown_layout, inst);
               }
@@ -244,8 +271,8 @@ pub fn validate_layouts_with_file(
             // The phi result must match the joined layout.
             changed |= set_layout(&mut map, file, mode, tgt, layout, inst);
 
-            // Propagate the phi layout back into any incoming vars that haven't
-            // been assigned yet (e.g. function parameters).
+            // Propagate the phi layout back into any incoming vars that haven't been assigned yet
+            // (e.g. function parameters).
             for arg in inst.args.iter() {
               let Arg::Var(v) = arg else {
                 continue;
@@ -261,10 +288,9 @@ pub fn validate_layouts_with_file(
             if let Some(layout) = declared {
               changed |= set_layout(&mut map, file, mode, tgt, layout, inst);
             } else if let Some(rhs) = inst.args.get(0) {
-              // VarAssign can be both a copy (`%t = %x`) and an actual definition
-              // (`%t = 123`, `%t = Fn0`, `%t = undefined`). When lowering did not
-              // attach `InstMeta.native_layout`, we can still infer the layout
-              // from the RHS for most cases.
+              // VarAssign can be both a copy (`%t = %x`) and an actual definition (`%t = 123`,
+              // `%t = Fn0`, `%t = undefined`). When lowering did not attach `InstMeta.native_layout`,
+              // we can still infer the layout from the RHS for most cases.
               if let Some(rhs_layout) = arg_layout(rhs, &map, unknown_layout) {
                 changed |= set_layout(&mut map, file, mode, tgt, rhs_layout, inst);
               } else if mode == LayoutValidationMode::BestEffort {
@@ -274,10 +300,9 @@ pub fn validate_layouts_with_file(
               changed |= set_layout(&mut map, file, mode, tgt, unknown_layout, inst);
             }
 
-            // Validate copy assignments (`%tgt = %src`) preserve layouts. We only
-            // check `Arg::Var` sources: other RHS kinds (Const/Builtin/Fn) are
-            // not "copies" and their ABI/layout is defined by the target
-            // instruction metadata.
+            // Validate copy assignments (`%tgt = %src`) preserve layouts. We only check `Arg::Var`
+            // sources: other RHS kinds (Const/Builtin/Fn) are not "copies" and their ABI/layout is
+            // defined by the target instruction metadata.
             if let Some(Arg::Var(src_var)) = inst.args.get(0) {
               let tgt_layout = map.get(tgt);
               let src_layout = map.get(*src_var);
@@ -301,8 +326,8 @@ pub fn validate_layouts_with_file(
                   changed |= set_layout(&mut map, file, mode, *src_var, tgt_layout, inst);
                 }
                 (None, Some(src_layout)) => {
-                  // Infer the target layout from the source when the VarAssign
-                  // lacks metadata in best-effort mode.
+                  // Infer the target layout from the source when the VarAssign lacks metadata in
+                  // best-effort mode.
                   if mode == LayoutValidationMode::BestEffort {
                     changed |= set_layout(&mut map, file, mode, tgt, src_layout, inst);
                   }
@@ -315,15 +340,6 @@ pub fn validate_layouts_with_file(
           _ => {
             if let Some(layout) = inst.meta.native_layout {
               changed |= set_layout(&mut map, file, mode, tgt, layout, inst);
-            } else if mode == LayoutValidationMode::BestEffort {
-              changed |= set_layout(&mut map, file, mode, tgt, unknown_layout, inst);
-              map.diagnostics.push(diagnostic_for_inst(
-                file,
-                mode,
-                "OPT0100",
-                format!("missing InstMeta.native_layout for instruction result %{tgt}"),
-                inst,
-              ));
             } else {
               map.diagnostics.push(diagnostic_for_inst(
                 file,
@@ -332,6 +348,9 @@ pub fn validate_layouts_with_file(
                 format!("missing InstMeta.native_layout for instruction result %{tgt}"),
                 inst,
               ));
+              if mode == LayoutValidationMode::BestEffort {
+                changed |= set_layout(&mut map, file, mode, tgt, unknown_layout, inst);
+              }
             }
           }
         }
@@ -367,4 +386,153 @@ pub fn validate_layouts_with_file(
   }
 
   Ok(map)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LayoutState {
+  /// No constraints known (any layout is possible).
+  Any,
+  /// Exactly one layout is possible.
+  Exact(LayoutId),
+  /// Conflicting constraints (no single layout satisfies all requirements).
+  Conflict,
+}
+
+impl LayoutState {
+  fn meet(self, other: Self) -> Self {
+    use LayoutState::*;
+    match (self, other) {
+      (Conflict, _) | (_, Conflict) => Conflict,
+      (Any, x) | (x, Any) => x,
+      (Exact(a), Exact(b)) => {
+        if a == b {
+          Exact(a)
+        } else {
+          Conflict
+        }
+      }
+    }
+  }
+
+  fn as_layout(self) -> Option<LayoutId> {
+    match self {
+      LayoutState::Exact(id) => Some(id),
+      LayoutState::Any | LayoutState::Conflict => None,
+    }
+  }
+}
+
+fn type_store(types: &TypeContext) -> Option<Arc<types_ts_interned::TypeStore>> {
+  Some(types.program.as_ref()?.interned_type_store())
+}
+
+fn layout_of_type(store: Option<&types_ts_interned::TypeStore>, ty: TypeId) -> Option<LayoutId> {
+  let store = store?;
+  if !store.contains_type_id(ty) {
+    return None;
+  }
+  Some(store.layout_of(store.canon(ty)))
+}
+
+fn state_of_arg(
+  arg: &Arg,
+  vars: &HashMap<u32, LayoutState>,
+  _store: Option<&types_ts_interned::TypeStore>,
+) -> LayoutState {
+  match arg {
+    Arg::Var(v) => vars.get(v).copied().unwrap_or(LayoutState::Any),
+    Arg::Const(c) => LayoutState::Exact(layout_of_const(c)),
+    Arg::Fn(_) => LayoutState::Exact(*FALLBACK_FN_LAYOUT),
+    Arg::Builtin(name) => LayoutState::Exact(layout_of_builtin(name).unwrap_or_else(fallback_unknown_layout)),
+  }
+}
+
+fn def_constraint(
+  inst: &Inst,
+  vars: &HashMap<u32, LayoutState>,
+  store: Option<&types_ts_interned::TypeStore>,
+) -> LayoutState {
+  match inst.t {
+    InstTyp::Phi => inst
+      .args
+      .iter()
+      .fold(LayoutState::Any, |acc, arg| acc.meet(state_of_arg(arg, vars, store))),
+    InstTyp::VarAssign => {
+      if let Some(layout) = inst.meta.native_layout {
+        return LayoutState::Exact(layout);
+      }
+      if let Some(type_id) = inst.meta.type_id {
+        if let Some(layout) = layout_of_type(store, type_id) {
+          return LayoutState::Exact(layout);
+        }
+      }
+      inst
+        .args
+        .get(0)
+        .map(|arg| state_of_arg(arg, vars, store))
+        .unwrap_or(LayoutState::Any)
+    }
+    _ => {
+      if let Some(layout) = inst.meta.native_layout {
+        return LayoutState::Exact(layout);
+      }
+      if let Some(type_id) = inst.meta.type_id {
+        return layout_of_type(store, type_id)
+          .map(LayoutState::Exact)
+          .unwrap_or(LayoutState::Any);
+      }
+      LayoutState::Any
+    }
+  }
+}
+
+/// Compute and write back `InstMeta::native_layout` for all value defs in `cfg`.
+pub fn propagate_cfg_native_layouts(cfg: &mut Cfg, types: &TypeContext) -> HashMap<u32, Option<LayoutId>> {
+  let store_arc = type_store(types);
+  let store = store_arc.as_deref();
+
+  // Deterministic list of SSA defs (label, inst index, tgt).
+  let mut defs: Vec<(u32, usize, u32)> = Vec::new();
+  let mut labels: Vec<u32> = cfg.bblocks.all().map(|(label, _)| label).collect();
+  labels.sort_unstable();
+  for label in labels {
+    let block = cfg.bblocks.get(label);
+    for (idx, inst) in block.iter().enumerate() {
+      if let Some(&tgt) = inst.tgts.get(0) {
+        defs.push((label, idx, tgt));
+      }
+    }
+  }
+
+  let mut var_states: HashMap<u32, LayoutState> = HashMap::new();
+  for &(_, _, tgt) in &defs {
+    var_states.entry(tgt).or_insert(LayoutState::Any);
+  }
+
+  // Iterate to a fixpoint. `LayoutState` only refines (`Any` -> `Exact` -> `Conflict`), so this
+  // converges quickly even with loops.
+  loop {
+    let mut changed = false;
+    for &(label, idx, tgt) in &defs {
+      let inst = &cfg.bblocks.get(label)[idx];
+      let new_state = def_constraint(inst, &var_states, store);
+      let entry = var_states.entry(tgt).or_insert(LayoutState::Any);
+      if *entry != new_state {
+        *entry = new_state;
+        changed = true;
+      }
+    }
+    if !changed {
+      break;
+    }
+  }
+
+  let mut out: HashMap<u32, Option<LayoutId>> = HashMap::new();
+  for &(label, idx, tgt) in &defs {
+    let state = var_states.get(&tgt).copied().unwrap_or(LayoutState::Any);
+    let layout = state.as_layout();
+    out.insert(tgt, layout);
+    cfg.bblocks.get_mut(label)[idx].meta.native_layout = layout;
+  }
+  out
 }

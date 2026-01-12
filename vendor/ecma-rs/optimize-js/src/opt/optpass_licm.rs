@@ -162,6 +162,12 @@ fn ensure_loop_preheader(
       // Otherwise, create a new Phi in the preheader and feed that to the header Phi.
       let new_tgt = alloc_var(next_var);
       let mut phi = Inst::phi_empty(new_tgt);
+      // Preserve any result metadata inferred for the loop header phi (type/layout/etc). This
+      // matters in typed builds where downstream backends rely on `InstMeta` attached to SSA defs.
+      phi.meta.copy_result_var_metadata_from(&inst.meta);
+      if !inst.value_type.is_unknown() {
+        phi.value_type = inst.value_type;
+      }
       for (pred, arg) in incoming {
         phi.insert_phi(pred, arg);
       }
