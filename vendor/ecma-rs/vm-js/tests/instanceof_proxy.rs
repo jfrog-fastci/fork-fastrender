@@ -331,6 +331,49 @@ fn instanceof_bound_function_with_undefined_has_instance_delegates_to_bound_targ
 }
 
 #[test]
+fn instanceof_throws_type_error_when_proxy_has_instance_is_not_callable() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  assert_throws_type_error(
+    &mut rt,
+    r#"
+      function f() {}
+      var p = new Proxy(f, {
+        get(target, prop, receiver) {
+          if (prop === Symbol.hasInstance) return 1;
+          return target[prop];
+        }
+      });
+      ({} instanceof p);
+    "#,
+  );
+
+  Ok(())
+}
+
+#[test]
+fn instanceof_throws_type_error_when_proxy_prototype_is_not_object() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  assert_throws_type_error(
+    &mut rt,
+    r#"
+      function f() {}
+      var p = new Proxy(f, {
+        get(target, prop, receiver) {
+          if (prop === Symbol.hasInstance) return undefined;
+          if (prop === "prototype") return 1;
+          return target[prop];
+        }
+      });
+      ({} instanceof p);
+    "#,
+  );
+
+  Ok(())
+}
+
+#[test]
 fn instanceof_throws_type_error_on_revoked_proxy_lhs_or_rhs() -> Result<(), VmError> {
   let mut rt = new_runtime();
   let global = rt.realm().global_object();
