@@ -16,6 +16,9 @@ fn runtime_call_registry_has_gc_safety_metadata() {
     RuntimeFn::GcSafepoint,
     RuntimeFn::GcSafepointSlow,
     RuntimeFn::GcCollect,
+    RuntimeFn::ParallelSpawn,
+    RuntimeFn::ParallelJoin,
+    RuntimeFn::ParallelFor,
   ] {
     let spec = f.spec();
     assert!(spec.may_gc, "expected {f:?} to be may_gc=true, got {spec:?}");

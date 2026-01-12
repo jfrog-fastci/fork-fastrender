@@ -69,6 +69,25 @@ pub enum RuntimeFn {
   ///
   /// Contract: must not allocate or trigger GC.
   KeepAliveGcRef,
+
+  // -----------------------------------------------------------------------------
+  // Parallel scheduler (worker pool)
+  // -----------------------------------------------------------------------------
+  //
+  // These entrypoints do not take GC pointers by default, but they are still treated as **MayGC**
+  // because:
+  // - they may allocate scheduler state, and/or
+  // - they may block, during which a stop-the-world GC can occur.
+  //
+  // Therefore, calls from GC-managed code must be eligible for statepoint rewriting (i.e. these
+  // symbols must not be marked `"gc-leaf-function"`).
+
+  /// `rt_parallel_spawn(task: extern "C" fn(*mut u8), data: *mut u8) -> TaskId`
+  ParallelSpawn,
+  /// `rt_parallel_join(tasks: *const TaskId, count: usize)`
+  ParallelJoin,
+  /// `rt_parallel_for(start: usize, end: usize, body: extern "C" fn(usize, *mut u8), data: *mut u8)`
+  ParallelFor,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -341,6 +360,51 @@ impl RuntimeFn {
           runtime_params: &[AbiTy::RawPtr],
           codegen_ret: AbiTy::Void,
           codegen_params: &[AbiTy::GcPtr],
+        },
+      },
+      RuntimeFn::ParallelSpawn => RuntimeFnDecl {
+        spec: RuntimeFnSpec {
+          name: "rt_parallel_spawn",
+          may_gc: true,
+          gc_ptr_args: 0,
+          gc_handle_args: 0,
+          arg_rooting: ArgRootingPolicy::NoGcPointersAllowedIfMayGc,
+        },
+        abi: RuntimeFnAbi {
+          runtime_ret: AbiTy::I64,
+          runtime_params: &[AbiTy::RawPtr, AbiTy::RawPtr],
+          codegen_ret: AbiTy::I64,
+          codegen_params: &[AbiTy::RawPtr, AbiTy::RawPtr],
+        },
+      },
+      RuntimeFn::ParallelJoin => RuntimeFnDecl {
+        spec: RuntimeFnSpec {
+          name: "rt_parallel_join",
+          may_gc: true,
+          gc_ptr_args: 0,
+          gc_handle_args: 0,
+          arg_rooting: ArgRootingPolicy::NoGcPointersAllowedIfMayGc,
+        },
+        abi: RuntimeFnAbi {
+          runtime_ret: AbiTy::Void,
+          runtime_params: &[AbiTy::RawPtr, AbiTy::I64],
+          codegen_ret: AbiTy::Void,
+          codegen_params: &[AbiTy::RawPtr, AbiTy::I64],
+        },
+      },
+      RuntimeFn::ParallelFor => RuntimeFnDecl {
+        spec: RuntimeFnSpec {
+          name: "rt_parallel_for",
+          may_gc: true,
+          gc_ptr_args: 0,
+          gc_handle_args: 0,
+          arg_rooting: ArgRootingPolicy::NoGcPointersAllowedIfMayGc,
+        },
+        abi: RuntimeFnAbi {
+          runtime_ret: AbiTy::Void,
+          runtime_params: &[AbiTy::I64, AbiTy::I64, AbiTy::RawPtr, AbiTy::RawPtr],
+          codegen_ret: AbiTy::Void,
+          codegen_params: &[AbiTy::I64, AbiTy::I64, AbiTy::RawPtr, AbiTy::RawPtr],
         },
       },
     }

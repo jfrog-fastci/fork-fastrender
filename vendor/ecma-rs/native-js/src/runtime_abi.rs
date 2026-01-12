@@ -120,9 +120,9 @@ impl<'ctx, 'm> RuntimeAbi<'ctx, 'm> {
       rt_write_barrier_gc,
       rt_write_barrier_range_gc,
       rt_keep_alive_gc_ref_gc,
-      rt_parallel_spawn: self.rt_parallel_spawn_raw(),
-      rt_parallel_join: self.rt_parallel_join_raw(),
-      rt_parallel_for: self.rt_parallel_for_raw(),
+      rt_parallel_spawn: self.get_or_declare_raw(RuntimeFn::ParallelSpawn),
+      rt_parallel_join: self.get_or_declare_raw(RuntimeFn::ParallelJoin),
+      rt_parallel_for: self.get_or_declare_raw(RuntimeFn::ParallelFor),
     }
   }
 
@@ -397,60 +397,8 @@ impl<'ctx, 'm> RuntimeAbi<'ctx, 'm> {
     Ok(call)
   }
 
-  // -----------------------------------------------------------------------------
-  // Parallel scheduler raw runtime extern declarations (addrspace(0))
-  // -----------------------------------------------------------------------------
-  // NOTE: `rt_parallel_spawn`/`rt_parallel_join`/`rt_parallel_for` are classified as **MayGC** in
-  // `docs/runtime-native.md` even though they do not take GC pointers. They may allocate scheduler
-  // metadata and/or block while waiting, during which a stop-the-world GC can occur. Therefore,
-  // calls from GC-managed code must be eligible for statepoint rewriting (i.e. these declarations
-  // must *not* be marked `"gc-leaf-function"`).
-
-  fn rt_parallel_spawn_raw(&self) -> FunctionValue<'ctx> {
-    if let Some(existing) = self.module.get_function("rt_parallel_spawn") {
-      return existing;
-    }
-    // `runtime-native` exports:
-    //   `rt_parallel_spawn(task: extern "C" fn(*mut u8), data: *mut u8) -> TaskId`
-    let i64_ty = self.context.i64_type();
-    // In LLVM's opaque-pointer mode, function pointers are simply `ptr`.
-    let fn_ty = i64_ty.fn_type(&[self.ptr_raw().into(), self.ptr_raw().into()], false);
-    self.module.add_function("rt_parallel_spawn", fn_ty, None)
-  }
-
-  fn rt_parallel_join_raw(&self) -> FunctionValue<'ctx> {
-    if let Some(existing) = self.module.get_function("rt_parallel_join") {
-      return existing;
-    }
-    // `runtime-native` exports:
-    //   `rt_parallel_join(tasks: *const TaskId, count: usize)`
-    let i64_ty = self.context.i64_type();
-    let fn_ty = self
-      .context
-      .void_type()
-      .fn_type(&[self.ptr_raw().into(), i64_ty.into()], false);
-    self.module.add_function("rt_parallel_join", fn_ty, None)
-  }
-
-  fn rt_parallel_for_raw(&self) -> FunctionValue<'ctx> {
-    if let Some(existing) = self.module.get_function("rt_parallel_for") {
-      return existing;
-    }
-    // `runtime-native` exports:
-    //   `rt_parallel_for(start: usize, end: usize, body: extern "C" fn(usize, *mut u8), data: *mut u8)`
-    let i64_ty = self.context.i64_type();
-    let fn_ty = self.context.void_type().fn_type(
-      &[
-        i64_ty.into(),
-        i64_ty.into(),
-        // In LLVM's opaque-pointer mode, function pointers are simply `ptr`.
-        self.ptr_raw().into(),
-        self.ptr_raw().into(),
-      ],
-      false,
-    );
-    self.module.add_function("rt_parallel_for", fn_ty, None)
-  }
+  // Parallel scheduler entrypoints are now described in `RuntimeFn` so they share the same
+  // GC-safety metadata validation as other runtime entrypoints.
 }
 
 // -----------------------------------------------------------------------------
