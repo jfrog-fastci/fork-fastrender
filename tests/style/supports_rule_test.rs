@@ -72,6 +72,24 @@ fn supports_container_type_inline_size_scroll_state_matches() {
 }
 
 #[test]
+fn supports_container_type_scroll_state_size_matches() {
+  let css = r"@supports (container-type: scroll-state size) { div { display: inline; } }";
+  assert_eq!(render_div_display(css), "inline");
+}
+
+#[test]
+fn supports_container_type_scroll_state_inline_size_matches() {
+  let css = r"@supports (container-type: scroll-state inline-size) { div { display: inline; } }";
+  assert_eq!(render_div_display(css), "inline");
+}
+
+#[test]
+fn supports_container_shorthand_scroll_state_matches() {
+  let css = r"@supports (container: demo / scroll-state) { div { display: inline; } }";
+  assert_eq!(render_div_display(css), "inline");
+}
+
+#[test]
 fn supports_container_type_invalid_combo_is_unsupported() {
   let css = r"@supports (container-type: normal scroll-state) { div { display: inline; } }";
   assert_eq!(render_div_display(css), "block");
