@@ -2812,16 +2812,33 @@ fn resolve_promise(
     return fulfill_promise(vm, hooks, scope, promise, resolution, current_realm);
   };
 
-  // Promise resolutions are common and can be handled without invoking the user-observable `then`
-  // method (which would in turn consult `constructor[Symbol.species]`). Attach reactions directly
-  // to avoid species side effects and match `PerformPromiseThen(..., resultCapability = undefined)`
-  // behaviour.
+  // If the resolution is already a Promise object, adopt it directly by attaching reactions to its
+  // internal slots.
+  //
+  // Critically, this must **not** call `thenable.then(...)` for Promise objects:
+  // - Calling `%Promise.prototype.then%` would invoke `SpeciesConstructor`, which is observable via
+  //   `thenable.constructor[Symbol.species]` (and should not happen for async/await or top-level
+  //   await).
+  // - More generally, resolving a Promise with another Promise should not be affected by tampering
+  //   with the Promise's `.then` method.
+  //
+  // This corresponds to `PerformPromiseThen(thenable, resolve, reject, resultCapability = undefined)`.
   if scope.heap().is_promise_object(thenable_obj) {
-    // Root the thenable promise while creating fresh resolving functions (which can allocate/GC).
+    // Root `thenable_obj` while allocating the resolving functions + appending/enqueueing
+    // reactions: these operations can allocate/GC.
     scope.push_root(Value::Object(thenable_obj))?;
     let (resolve, reject) = create_promise_resolving_functions(vm, scope, promise)?;
-    scope.push_roots(&[resolve, reject])?;
-    perform_promise_then_no_capability(vm, scope, hooks, Value::Object(thenable_obj), resolve, reject)?;
+
+    let mut then_scope = scope.reborrow();
+    then_scope.push_roots(&[Value::Object(thenable_obj), resolve, reject])?;
+    perform_promise_then_no_capability(
+      vm,
+      &mut then_scope,
+      hooks,
+      Value::Object(thenable_obj),
+      resolve,
+      reject,
+    )?;
     return Ok(());
   }
 
@@ -7243,7 +7260,11 @@ pub fn array_iterator_next(
           scope.create_data_property_or_throw(entry, key1, value)?;
           Value::Object(entry)
         }
-        ArrayIteratorKind::Keys => unreachable!(),
+        ArrayIteratorKind::Keys => {
+          return Err(VmError::InvariantViolation(
+            "ArrayIteratorKind::Keys reached in Values/Entries branch",
+          ));
+        }
       }
     }
   };
@@ -9340,7 +9361,16 @@ pub fn global_parse_int(
     if i % 1024 == 0 {
       vm.tick()?;
     }
-    let digit = radix_digit_value(unit).unwrap() as f64;
+    // `units[s_start..end]` was validated above to contain only radix digits, but keep this
+    // fallible so malformed inputs can never trigger a panic.
+    let digit = match radix_digit_value(unit) {
+      Some(d) => d as f64,
+      None => {
+        return Err(VmError::InvariantViolation(
+          "ParseInt digit slice contained non-radix digit",
+        ));
+      }
+    };
     math_int = math_int * radix_f64 + digit;
   }
 
@@ -9907,7 +9937,7 @@ fn decode_uri_string(
           | (((b2 & 0x3F) as u32) << 6)
           | ((b3 & 0x3F) as u32)
       }
-      _ => unreachable!(),
+      _ => return throw_uri_error(vm, scope, hooks, "URI malformed"),
     };
 
     // Reject surrogate code points and out-of-range values.

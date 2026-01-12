@@ -1750,7 +1750,9 @@ impl Vm {
           n /= 10;
         }
       }
-      let s = std::str::from_utf8(&buf[pos..]).expect("u32 decimal digits are valid UTF-8");
+      let s = std::str::from_utf8(&buf[pos..]).map_err(|_| {
+        VmError::InvariantViolation("invalid UTF-8 in array index formatting buffer")
+      })?;
       let key_s = scope.alloc_string_from_utf8(s)?;
       Ok(PropertyKey::from_string(key_s))
     }
