@@ -2502,6 +2502,11 @@ impl<'a, E: TypeExpander> TypeEvaluator<'a, E> {
     hits: &mut Vec<TypeId>,
     options: crate::TypeOptions,
   ) {
+    let dummy_name = self.store.intern_name_ref("");
+    let dummy_string_key = PropKey::String(dummy_name);
+    let dummy_symbol_key = PropKey::Symbol(dummy_name);
+    let zero_key = PropKey::Number(0);
+
     for prop in shape.properties.iter() {
       if match (key, &prop.key) {
         (Key::Literal(a), b) => prop_keys_equal_for_lookup(self.store.as_ref(), a, b),
@@ -2523,16 +2528,11 @@ impl<'a, E: TypeExpander> TypeEvaluator<'a, E> {
       let matches = match key {
         Key::Literal(prop_key) => self.indexer_accepts_key(prop_key, idxer.key_type),
         Key::String => {
-          self.indexer_accepts_key(
-            &PropKey::String(self.store.intern_name(String::new())),
-            idxer.key_type,
-          ) || self.indexer_accepts_key(&PropKey::Number(0), idxer.key_type)
+          self.indexer_accepts_key(&dummy_string_key, idxer.key_type)
+            || self.indexer_accepts_key(&zero_key, idxer.key_type)
         }
-        Key::Number => self.indexer_accepts_key(&PropKey::Number(0), idxer.key_type),
-        Key::Symbol => self.indexer_accepts_key(
-          &PropKey::Symbol(self.store.intern_name(String::new())),
-          idxer.key_type,
-        ),
+        Key::Number => self.indexer_accepts_key(&zero_key, idxer.key_type),
+        Key::Symbol => self.indexer_accepts_key(&dummy_symbol_key, idxer.key_type),
       };
       if matches {
         hits.push(idxer.value_type);

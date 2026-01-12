@@ -2109,7 +2109,7 @@ fn template_literal_number_atom_respects_match_state_limit() {
 
   // This cannot match because the final `x` is not number-like, but a naive
   // matcher would still have to explore many splits between the numeric spans.
-  let src = store.intern_type(TypeKind::StringLiteral(store.intern_name(
+  let src = store.intern_type(TypeKind::StringLiteral(store.intern_name_ref(
     "111111111111111111111111111111111111111111111111111111111111x",
   )));
   let template = store.intern_type(TypeKind::TemplateLiteral(TemplateLiteralType {
