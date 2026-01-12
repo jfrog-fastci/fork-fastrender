@@ -20827,6 +20827,206 @@ mod tests {
   }
 
   #[test]
+  fn text_combine_spec_text_run_rules_do_not_partially_combine_across_inline_boundaries() {
+    // CSS Writing Modes 4 § “Text Run Rules”:
+    // <https://www.w3.org/TR/css-writing-modes-4/#text-combine-runs>
+    //
+    // Given:
+    //   tcy { text-combine-upright: digits 4; }
+    //
+    // The markup:
+    //   <tcy>12<span>34</span></tcy>
+    // must not combine either "12" or "34" because together they form a four-digit run that is
+    // interrupted only by an inline box boundary.
+    let ifc = InlineFormattingContext::new();
+
+    let mut tcy_style = ComputedStyle::default();
+    tcy_style.writing_mode = WritingMode::VerticalRl;
+    tcy_style.text_combine_upright = TextCombineUpright::Digits(4);
+    tcy_style.font_size = 16.0;
+    let tcy_style = Arc::new(tcy_style);
+
+    let span = BoxNode::new_inline(
+      tcy_style.clone(),
+      vec![BoxNode::new_text(tcy_style.clone(), "34".into())],
+    );
+    let tcy = BoxNode::new_inline(
+      tcy_style.clone(),
+      vec![BoxNode::new_text(tcy_style.clone(), "12".into()), span],
+    );
+    let root = make_inline_container(vec![tcy]);
+
+    #[derive(Debug)]
+    struct TextInfo {
+      text: String,
+      advance_for_layout: f32,
+      metrics: BaselineMetrics,
+      run_advance_sum: f32,
+    }
+
+    fn collect_text_infos(items: &[InlineItem], out: &mut Vec<TextInfo>) {
+      for item in items {
+        match item {
+          InlineItem::Text(t) => out.push(TextInfo {
+            text: t.text.clone(),
+            advance_for_layout: t.advance_for_layout,
+            metrics: t.metrics,
+            run_advance_sum: t.runs.iter().map(|r| r.advance).sum(),
+          }),
+          InlineItem::InlineBox(b) => collect_text_infos(&b.children, out),
+          InlineItem::Ruby(r) => {
+            for seg in &r.segments {
+              collect_text_infos(&seg.base_items, out);
+            }
+          }
+          _ => {}
+        }
+      }
+    }
+
+    fn is_text_combine_composition(info: &TextInfo, em: f32) -> bool {
+      // `compress_text_combine` forces:
+      //   - advance_for_layout = 1em
+      //   - a 1em square baseline box (baseline at 0.5em)
+      //   - per-run advances to 0 so the vertical emitter doesn't stack them.
+      (info.advance_for_layout - em).abs() < 0.01
+        && (info.metrics.height - em).abs() < 0.01
+        && (info.metrics.baseline_offset - em * 0.5).abs() < 0.01
+        && info.run_advance_sum.abs() < 0.01
+    }
+
+    let mut positioned = Vec::new();
+    let items = ifc
+      .collect_inline_items_with_base(&root, 200.0, None, Direction::Ltr, &mut positioned)
+      .expect("collect inline items");
+
+    let mut infos = Vec::new();
+    collect_text_infos(&items, &mut infos);
+    let em = tcy_style.font_size;
+    let twelve = infos.iter().find(|i| i.text == "12").expect("text 12");
+    let thirty_four = infos.iter().find(|i| i.text == "34").expect("text 34");
+
+    assert!(
+      !is_text_combine_composition(twelve, em),
+      "spec example A: expected '12' to remain uncombined (got advance_for_layout={} metrics={:?} run_advance_sum={})",
+      twelve.advance_for_layout,
+      twelve.metrics,
+      twelve.run_advance_sum
+    );
+    assert!(
+      !is_text_combine_composition(thirty_four, em),
+      "spec example A: expected '34' to remain uncombined (got advance_for_layout={} metrics={:?} run_advance_sum={})",
+      thirty_four.advance_for_layout,
+      thirty_four.metrics,
+      thirty_four.run_advance_sum
+    );
+  }
+
+  #[test]
+  fn text_combine_spec_text_run_rules_allow_combination_when_not_sharing_common_tcy_ancestor() {
+    // CSS Writing Modes 4 § “Text Run Rules”:
+    //   - "34" can still combine when preceded by "12" outside the box establishing
+    //     `text-combine-upright` (and across empty inline wrappers).
+    let ifc = InlineFormattingContext::new();
+
+    let mut tcy_style = ComputedStyle::default();
+    tcy_style.writing_mode = WritingMode::VerticalRl;
+    tcy_style.text_combine_upright = TextCombineUpright::Digits(4);
+    tcy_style.font_size = 16.0;
+    let tcy_style = Arc::new(tcy_style);
+
+    let mut before_style = ComputedStyle::default();
+    before_style.writing_mode = WritingMode::VerticalRl;
+    before_style.font_size = 16.0;
+    let before_style = Arc::new(before_style);
+
+    #[derive(Debug)]
+    struct TextInfo {
+      text: String,
+      advance_for_layout: f32,
+      metrics: BaselineMetrics,
+      run_advance_sum: f32,
+    }
+
+    fn collect_text_infos(items: &[InlineItem], out: &mut Vec<TextInfo>) {
+      for item in items {
+        match item {
+          InlineItem::Text(t) => out.push(TextInfo {
+            text: t.text.clone(),
+            advance_for_layout: t.advance_for_layout,
+            metrics: t.metrics,
+            run_advance_sum: t.runs.iter().map(|r| r.advance).sum(),
+          }),
+          InlineItem::InlineBox(b) => collect_text_infos(&b.children, out),
+          InlineItem::Ruby(r) => {
+            for seg in &r.segments {
+              collect_text_infos(&seg.base_items, out);
+            }
+          }
+          _ => {}
+        }
+      }
+    }
+
+    fn is_text_combine_composition(info: &TextInfo, em: f32) -> bool {
+      (info.advance_for_layout - em).abs() < 0.01
+        && (info.metrics.height - em).abs() < 0.01
+        && (info.metrics.baseline_offset - em * 0.5).abs() < 0.01
+        && info.run_advance_sum.abs() < 0.01
+    }
+
+    let em = tcy_style.font_size;
+    let cases = [
+      "12<tcy><span>34</span></tcy>",
+      "12<tcy><span></span>34</tcy>",
+      "12<tcy>34<span></span></tcy>",
+    ];
+
+    for label in cases {
+      let tcy_children = match label {
+        "12<tcy><span>34</span></tcy>" => {
+          let span = BoxNode::new_inline(
+            tcy_style.clone(),
+            vec![BoxNode::new_text(tcy_style.clone(), "34".into())],
+          );
+          vec![span]
+        }
+        "12<tcy><span></span>34</tcy>" => {
+          let empty_span = BoxNode::new_inline(tcy_style.clone(), Vec::new());
+          vec![empty_span, BoxNode::new_text(tcy_style.clone(), "34".into())]
+        }
+        "12<tcy>34<span></span></tcy>" => {
+          let empty_span = BoxNode::new_inline(tcy_style.clone(), Vec::new());
+          vec![BoxNode::new_text(tcy_style.clone(), "34".into()), empty_span]
+        }
+        _ => unreachable!("case label must be one of the spec examples"),
+      };
+
+      let tcy = BoxNode::new_inline(tcy_style.clone(), tcy_children);
+      let root = make_inline_container(vec![
+        BoxNode::new_text(before_style.clone(), "12".into()),
+        tcy,
+      ]);
+
+      let mut positioned = Vec::new();
+      let items = ifc
+        .collect_inline_items_with_base(&root, 200.0, None, Direction::Ltr, &mut positioned)
+        .expect("collect inline items");
+
+      let mut infos = Vec::new();
+      collect_text_infos(&items, &mut infos);
+      let thirty_four = infos.iter().find(|i| i.text == "34").expect("text 34");
+      assert!(
+        is_text_combine_composition(thirty_four, em),
+        "spec example B ({label}): expected '34' to combine into a 1em composition (got advance_for_layout={} metrics={:?} run_advance_sum={})",
+        thirty_four.advance_for_layout,
+        thirty_four.metrics,
+        thirty_four.run_advance_sum
+      );
+    }
+  }
+
+  #[test]
   fn bidi_wrappers_are_stripped_from_shaped_runs() {
     let ifc = InlineFormattingContext::new();
     let mut style = ComputedStyle::default();
