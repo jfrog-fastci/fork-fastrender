@@ -3,9 +3,10 @@
 use super::support::{create_tab_msg, navigate_msg, DEFAULT_TIMEOUT};
 use fastrender::api::{FastRenderFactory, FastRenderPoolConfig};
 use fastrender::resource::{FetchDestination, FetchRequest, FetchedResource, ResourceFetcher};
+use fastrender::text::font_db::FontConfig;
 use fastrender::ui::messages::{NavigationReason, TabId, UiToWorker, WorkerToUi};
 use fastrender::ui::spawn_browser_worker_with_factory;
-use fastrender::{Error, Result};
+use fastrender::{Error, FastRenderConfig, Result};
 use std::collections::HashMap;
 use std::io;
 use std::sync::Arc;
@@ -111,8 +112,12 @@ fn per_tab_back_forward_state_machine() -> Result<()> {
         "<!doctype html><title>B</title><body>B</body>",
       ),
   );
-  let factory =
-    FastRenderFactory::with_config(FastRenderPoolConfig::default().with_fetcher(fetcher))?;
+  let renderer_config = FastRenderConfig::default().with_font_sources(FontConfig::bundled_only());
+  let factory = FastRenderFactory::with_config(
+    FastRenderPoolConfig::default()
+      .with_renderer_config(renderer_config)
+      .with_fetcher(fetcher),
+  )?;
   let worker = spawn_browser_worker_with_factory(factory)?;
   let (worker_tx, worker_rx, join) = (worker.tx, worker.rx, worker.join);
 
@@ -209,8 +214,12 @@ fn redirects_commit_final_url_into_history_entry() -> Result<()> {
         "<!doctype html><title>Final</title><body>final</body>",
       ),
   );
-  let factory =
-    FastRenderFactory::with_config(FastRenderPoolConfig::default().with_fetcher(fetcher))?;
+  let renderer_config = FastRenderConfig::default().with_font_sources(FontConfig::bundled_only());
+  let factory = FastRenderFactory::with_config(
+    FastRenderPoolConfig::default()
+      .with_renderer_config(renderer_config)
+      .with_fetcher(fetcher),
+  )?;
   let worker = spawn_browser_worker_with_factory(factory)?;
   let (worker_tx, worker_rx, join) = (worker.tx, worker.rx, worker.join);
 

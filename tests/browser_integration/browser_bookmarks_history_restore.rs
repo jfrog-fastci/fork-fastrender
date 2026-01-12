@@ -16,7 +16,6 @@ fn run_browser_headless_smoke(
     .arg(env!("CARGO_BIN_EXE_browser"))
     .args(args)
     .env("RAYON_NUM_THREADS", "1")
-    .env("FASTR_USE_BUNDLED_FONTS", "1")
     .env("FASTR_TEST_BROWSER_HEADLESS_SMOKE", "1")
     .env("FASTR_BROWSER_SESSION_PATH", session_path);
   for (k, v) in extra_env {
