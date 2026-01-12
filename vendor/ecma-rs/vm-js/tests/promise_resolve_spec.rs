@@ -73,3 +73,38 @@ fn promise_resolve_observes_constructor_get() -> Result<(), VmError> {
   rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
   Ok(())
 }
+
+#[test]
+fn promise_resolve_observes_constructor_get_via_proxy_trap() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  // `PromiseResolve(%Promise%, x)` must use the internal-method dispatch `Get`, so a Proxy in the
+  // prototype chain can observe the lookup via its `get` trap.
+  let value = rt.exec_script(
+    r#"
+      var log = [];
+
+      var p = Promise.resolve(1);
+
+      // Force the constructor lookup to hit the prototype chain.
+      delete Promise.prototype.constructor;
+      Object.setPrototypeOf(Promise.prototype, new Proxy({ constructor: Promise }, {
+        get(target, key, receiver) {
+          log.push(String(key));
+          return Reflect.get(target, key, receiver);
+        }
+      }));
+
+      async function f() { await p; }
+      f();
+
+      log.join(",")
+    "#,
+  )?;
+  assert_eq!(value_to_string(&rt, value), "constructor");
+
+  // Drain any Promise jobs enqueued by the async function so the queued `Job`s are not dropped with
+  // live persistent roots.
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+  Ok(())
+}
