@@ -882,4 +882,64 @@ mod tests {
       .expect("script should catch and return");
     assert_eq!(js_value_to_utf8(realm.heap(), v), "QuotaExceededError");
   }
+
+  #[test]
+  fn crypto_get_random_values_respects_view_byte_offset_and_length() {
+    let mut realm = WindowRealm::new(
+      WindowRealmConfig::new("https://example.invalid/").with_crypto_rng_seed(1),
+    )
+    .expect("create realm");
+
+    assert_eq!(
+      realm
+        .exec_script(
+          r#"
+          (() => {
+            const buf = new ArrayBuffer(16);
+            const u8 = new Uint8Array(buf);
+            for (let i = 0; i < u8.length; i++) u8[i] = 0;
+
+            // View covers bytes [4, 12).
+            const view = new Uint32Array(buf, 4, 2);
+            crypto.getRandomValues(view);
+
+            // Bytes outside the view must remain unchanged (zero).
+            for (let i = 0; i < 4; i++) { if (u8[i] !== 0) return false; }
+            for (let i = 12; i < 16; i++) { if (u8[i] !== 0) return false; }
+
+            // And at least one byte inside the view should change.
+            let anyNonZero = false;
+            for (let i = 4; i < 12; i++) { if (u8[i] !== 0) { anyNonZero = true; break; } }
+            return anyNonZero;
+          })()
+          "#,
+        )
+        .expect("script should run"),
+      Value::Bool(true)
+    );
+  }
+
+  #[test]
+  fn crypto_get_random_values_ignores_spoofed_byte_length_property() {
+    let mut realm = WindowRealm::new(
+      WindowRealmConfig::new("https://example.invalid/").with_crypto_rng_seed(1),
+    )
+    .expect("create realm");
+
+    // `crypto.getRandomValues` must use the TypedArray's internal slots, not a user-defined
+    // `byteLength` data property shadowing the prototype getter.
+    let v = realm
+      .exec_script(
+        r#"
+        (() => {
+          const a = new Uint8Array(4);
+          Object.defineProperty(a, "byteLength", { value: 65537 });
+          try { crypto.getRandomValues(a); return "ok"; }
+          catch (e) { return e && e.name || String(e); }
+        })()
+        "#,
+      )
+      .expect("script should catch and return");
+    assert_eq!(js_value_to_utf8(realm.heap(), v), "ok");
+  }
 }
