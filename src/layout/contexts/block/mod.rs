@@ -10394,7 +10394,7 @@ impl FormattingContext for BlockFormattingContext {
       Ok((child_fragments, content_height, positioned_children, column_info))
     };
 
-    let (mut child_fragments, mut content_height, mut positioned_children, mut column_info) =
+    let (mut child_fragments, content_height, mut positioned_children, mut column_info) =
       layout_contents(&child_ctx, &nearest_cb, &nearest_fixed_cb)?;
 
     let min_height = if let Some(keyword) = style.min_height_keyword {

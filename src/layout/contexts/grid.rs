@@ -707,7 +707,7 @@ fn grid_item_allows_stretch_block_size_override(
   // (e.g. placement via named lines or auto-placement).
   let fallback = grid_container_allows_stretch_block_size_override(container_style, container_constraints);
 
-  let mut row_start = item_style.grid_row_start;
+  let row_start = item_style.grid_row_start;
   let mut row_end = item_style.grid_row_end;
   if row_start > 0 && row_end == 0 {
     // An explicit start with an auto end implies a 1-track span.
@@ -15034,7 +15034,7 @@ impl FormattingContext for GridFormattingContext {
       Err(_) => 0.0,
     };
 
-    let mut intrinsic_constraints = if inline_is_horizontal {
+    let intrinsic_constraints = if inline_is_horizontal {
       LayoutConstraints::new(
         CrateAvailableSpace::Definite(inline_border_box),
         CrateAvailableSpace::Indefinite,

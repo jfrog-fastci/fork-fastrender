@@ -4528,9 +4528,7 @@ impl<'a> LineBuilder<'a> {
                   return Ok(SplitInlineBoxForLineResult::BreakBefore { inline_box });
                 }
 
-                fragment_has_in_flow_children = true;
                 fragment_children.push(InlineItem::InlineBox(child_box));
-                used_width += next_width;
                 break;
               }
 
@@ -4593,7 +4591,6 @@ impl<'a> LineBuilder<'a> {
                   ends_with_hard_break: child_hard_break,
                   force_break: child_force_break,
                 } => {
-                  fragment_has_in_flow_children = true;
                   fragment_children.push(InlineItem::InlineBox(fragment));
                   if let Some(remainder) = remainder {
                     remaining.push_front(InlineItem::InlineBox(remainder));
