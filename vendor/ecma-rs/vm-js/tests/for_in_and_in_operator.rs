@@ -125,3 +125,37 @@ fn for_in_restores_lexical_env_on_uncatchable_error() {
     .unwrap();
   assert_value_is_utf8(&rt, value, "ok");
 }
+
+#[test]
+fn for_in_over_typed_array_skips_prototype_numeric_keys() {
+  let mut rt = new_runtime();
+
+  // Prototype numeric index keys should be ignored when the typed array does not have a valid
+  // integer index (consistent with the `in` operator and TypedArray `[[HasProperty]]` semantics).
+  let value = rt
+    .exec_script(
+      r#"
+      Uint8Array.prototype['0']=7;
+      var s='';
+      for (var k in new Uint8Array(0)) { s+=k; }
+      delete Uint8Array.prototype['0'];
+      s
+      "#,
+    )
+    .unwrap();
+  assert_value_is_utf8(&rt, value, "");
+
+  // Non-numeric prototype keys are still enumerable.
+  let value = rt
+    .exec_script(
+      r#"
+      Uint8Array.prototype.foo=1;
+      var s='';
+      for (var k in new Uint8Array(0)) { s+=k; }
+      delete Uint8Array.prototype.foo;
+      s
+      "#,
+    )
+    .unwrap();
+  assert_value_is_utf8(&rt, value, "foo");
+}

@@ -11,6 +11,7 @@ use std::collections::HashMap;
 /// - Re-checks `[[GetOwnProperty]]` at yield time so deleted/reconfigured properties are observed.
 #[derive(Debug)]
 pub(crate) struct ForInEnumerator {
+  original_object: GcObject,
   current_obj: Option<GcObject>,
   current_keys: Vec<PropertyKey>,
   next_key_index: usize,
@@ -21,6 +22,7 @@ pub(crate) struct ForInEnumerator {
 impl ForInEnumerator {
   pub(crate) fn new(object: GcObject) -> Self {
     Self {
+      original_object: object,
       current_obj: Some(object),
       current_keys: Vec::new(),
       next_key_index: 0,
@@ -134,6 +136,14 @@ impl ForInEnumerator {
           continue;
         };
         if !desc.enumerable {
+          continue;
+        }
+
+        // For-in enumeration yields only keys that satisfy `HasProperty` for the original RHS
+        // object. This matters for typed arrays: `[[HasProperty]]` for canonical numeric index
+        // strings does not consult prototypes, so prototype numeric keys must be skipped when they
+        // are not valid integer indices for the typed array.
+        if !scope.ordinary_has_property_with_tick(self.original_object, key, || vm.tick())? {
           continue;
         }
 
