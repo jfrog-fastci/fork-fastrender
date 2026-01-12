@@ -6,6 +6,10 @@ use crate::ui::browser_app::BrowserAppState;
 use crate::ui::load_progress::{load_progress_indicator, LoadProgressIndicator};
 use crate::ui::messages::TabId;
 use crate::ui::motion::UiMotion;
+use crate::ui::omnibox::{
+  build_omnibox_suggestions, OmniboxAction, OmniboxContext, OmniboxSearchSource, OmniboxSuggestion,
+  OmniboxSuggestionSource, OmniboxUrlSource,
+};
 use crate::ui::security_indicator;
 use crate::ui::shortcuts::{map_shortcut, Key, KeyEvent, Modifiers, ShortcutAction};
 use crate::ui::url_display;
@@ -106,6 +110,32 @@ fn with_alpha(color: egui::Color32, alpha: f32) -> egui::Color32 {
   egui::Color32::from_rgba_unmultiplied(r, g, b, a)
 }
 
+fn omnibox_suggestion_icon(suggestion: &OmniboxSuggestion) -> &'static str {
+  match suggestion.source {
+    OmniboxSuggestionSource::Url(OmniboxUrlSource::OpenTab) => "T",
+    OmniboxSuggestionSource::Url(OmniboxUrlSource::Bookmark) => "★",
+    OmniboxSuggestionSource::Url(OmniboxUrlSource::ClosedTab) => "↩",
+    OmniboxSuggestionSource::Url(OmniboxUrlSource::Visited) => "H",
+    OmniboxSuggestionSource::Search(OmniboxSearchSource::RemoteSuggest) => "S",
+  }
+}
+
+fn omnibox_suggestion_fill_text(suggestion: &OmniboxSuggestion) -> Option<&str> {
+  match &suggestion.action {
+    OmniboxAction::NavigateToUrl(url) => Some(url),
+    OmniboxAction::ActivateTab(_) => suggestion.url.as_deref(),
+    OmniboxAction::Search(query) => Some(query),
+  }
+}
+
+fn omnibox_suggestion_accept_action(suggestion: &OmniboxSuggestion) -> ChromeAction {
+  match &suggestion.action {
+    OmniboxAction::NavigateToUrl(url) => ChromeAction::NavigateTo(url.clone()),
+    OmniboxAction::ActivateTab(tab_id) => ChromeAction::ActivateTab(*tab_id),
+    OmniboxAction::Search(query) => ChromeAction::NavigateTo(query.clone()),
+  }
+}
+
 pub fn chrome_ui(
   ctx: &egui::Context,
   app: &mut BrowserAppState,
@@ -113,6 +143,8 @@ pub fn chrome_ui(
 ) -> Vec<ChromeAction> {
   let mut actions = Vec::new();
   let motion = UiMotion::from_env();
+  let mut address_bar_rect: Option<egui::Rect> = None;
+  let mut address_bar_text_edit_response: Option<egui::Response> = None;
 
   // -----------------------------------------------------------------------------
   // Chrome-level keyboard shortcuts
@@ -399,6 +431,21 @@ pub fn chrome_ui(
       let show_text_edit =
         egui_focus || app.chrome.address_bar_has_focus || app.chrome.request_focus_address_bar;
 
+      // Capture + consume navigation keys before building the text edit so they don't reach the
+      // `TextEdit` (cursor movement) or bubble up to the page.
+      let mut key_arrow_down = false;
+      let mut key_arrow_up = false;
+      let mut key_enter = false;
+      let mut key_escape = false;
+      if egui_focus || app.chrome.address_bar_has_focus {
+        ui.input_mut(|i| {
+          key_arrow_down = i.consume_key(Default::default(), egui::Key::ArrowDown);
+          key_arrow_up = i.consume_key(Default::default(), egui::Key::ArrowUp);
+          key_enter = i.consume_key(Default::default(), egui::Key::Enter);
+          key_escape = i.consume_key(Default::default(), egui::Key::Escape);
+        });
+      }
+
       // Derive the URL for display/indicator from the active tab (not from in-progress address bar
       // edits).
       let active_url = app
@@ -423,6 +470,7 @@ pub fn chrome_ui(
           egui::Sense::click()
         },
       );
+      address_bar_rect = Some(bar_rect);
       if !show_text_edit {
         // When the address bar is in display mode (non-editing), still expose a focusable element
         // for assistive tech to activate.
@@ -644,6 +692,18 @@ pub fn chrome_ui(
       }
 
       if let Some(response) = text_edit_response {
+        // When the omnibox dropdown is open, keep keyboard focus in the address bar so keyboard
+        // navigation remains stable across frames (and popups don't accidentally steal focus).
+        //
+        // Avoid doing this while the user is interacting with the pointer: clicks should be able to
+        // change focus naturally (e.g. clicking the page to dismiss the dropdown).
+        if app.chrome.omnibox.open
+          && app.chrome.address_bar_has_focus
+          && !ui.input(|i| i.pointer.any_pressed())
+        {
+          response.request_focus();
+        }
+
         if app.chrome.request_focus_address_bar {
           response.request_focus();
           app.chrome.request_focus_address_bar = false;
@@ -675,22 +735,269 @@ pub fn chrome_ui(
         // typing, so worker navigation updates don't clobber in-progress input.
         if has_focus && response.changed() {
           app.chrome.address_bar_editing = true;
+
+          // User input while the omnibox is open should rebuild suggestions and reset selection.
+          app.chrome.omnibox.open = true;
+          app.chrome.omnibox.selected = None;
+          app.chrome.omnibox.original_input = None;
+
+          let input = app.chrome.address_bar_text.clone();
+          let suggestions = {
+            let ctx = OmniboxContext {
+              open_tabs: &app.tabs,
+              closed_tabs: &app.closed_tabs,
+              visited: &app.visited,
+              active_tab_id: app.active_tab_id(),
+              bookmarks: None,
+              remote_search_suggest: None,
+            };
+            build_omnibox_suggestions(&ctx, &input)
+          };
+          app.chrome.omnibox.suggestions = suggestions;
+          app.chrome.omnibox.last_built_for_input = input;
+          if app.chrome.omnibox.suggestions.is_empty() {
+            app.chrome.omnibox.open = false;
+          }
         }
 
-        if has_focus && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+        if has_focus && (key_arrow_down || key_arrow_up) {
+          if !app.chrome.omnibox.open {
+            app.chrome.omnibox.open = true;
+
+            // Avoid rebuilding suggestions if we already have suggestions for the current input (for
+            // example, after pressing Escape to close the dropdown while keeping focus).
+            if app.chrome.omnibox.last_built_for_input != app.chrome.address_bar_text
+              || app.chrome.omnibox.suggestions.is_empty()
+            {
+              let input = app.chrome.address_bar_text.clone();
+              let suggestions = {
+                let ctx = OmniboxContext {
+                  open_tabs: &app.tabs,
+                  closed_tabs: &app.closed_tabs,
+                  visited: &app.visited,
+                  active_tab_id: app.active_tab_id(),
+                  bookmarks: None,
+                  remote_search_suggest: None,
+                };
+                build_omnibox_suggestions(&ctx, &input)
+              };
+              app.chrome.omnibox.suggestions = suggestions;
+              app.chrome.omnibox.last_built_for_input = input;
+            }
+
+            if app.chrome.omnibox.suggestions.is_empty() {
+              app.chrome.omnibox.open = false;
+            }
+          }
+
+          if app.chrome.omnibox.open && !app.chrome.omnibox.suggestions.is_empty() {
+            let len = app.chrome.omnibox.suggestions.len();
+            let next = if key_arrow_down {
+              match app.chrome.omnibox.selected {
+                None => 0,
+                Some(i) => (i + 1) % len,
+              }
+            } else {
+              // ArrowUp
+              match app.chrome.omnibox.selected {
+                None => len - 1,
+                Some(i) => (i + len - 1) % len,
+              }
+            };
+
+            if app.chrome.omnibox.selected.is_none() && app.chrome.omnibox.original_input.is_none() {
+              app.chrome.omnibox.original_input = Some(app.chrome.address_bar_text.clone());
+            }
+            app.chrome.omnibox.selected = Some(next);
+
+            if let Some(suggestion) = app.chrome.omnibox.suggestions.get(next) {
+              if let Some(fill) = omnibox_suggestion_fill_text(suggestion) {
+                app.chrome.address_bar_text = fill.to_string();
+              }
+            }
+          }
+        }
+
+        if has_focus && key_escape {
+          if app.chrome.omnibox.open || app.chrome.omnibox.selected.is_some() {
+            app.chrome.omnibox.open = false;
+            app.chrome.omnibox.selected = None;
+            if let Some(original) = app.chrome.omnibox.original_input.take() {
+              app.chrome.address_bar_text = original;
+            }
+          } else {
+            app.set_address_bar_editing(false);
+            response.surrender_focus();
+            actions.push(ChromeAction::AddressBarFocusChanged(false));
+          }
+        }
+
+        if has_focus && key_enter {
+          let accept_action = (app.chrome.omnibox.open)
+            .then_some(())
+            .and_then(|_| app.chrome.omnibox.selected)
+            .and_then(|i| app.chrome.omnibox.suggestions.get(i))
+            .map(omnibox_suggestion_accept_action);
+
+          let action = accept_action.unwrap_or_else(|| {
+            ChromeAction::NavigateTo(app.chrome.address_bar_text.clone())
+          });
+
+          if let ChromeAction::NavigateTo(url) = &action {
+            app.chrome.address_bar_text = url.clone();
+          }
+
           app.chrome.address_bar_editing = false;
-          app.sync_address_bar_to_active();
+          app.chrome.address_bar_has_focus = false;
+          app.chrome.omnibox.reset();
+
+          actions.push(action);
+          actions.push(ChromeAction::AddressBarFocusChanged(false));
           response.surrender_focus();
         }
 
-        if has_focus && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-          app.chrome.address_bar_editing = false;
-          actions.push(ChromeAction::NavigateTo(app.chrome.address_bar_text.clone()));
-          response.surrender_focus();
-        }
+        address_bar_text_edit_response = Some(response.clone());
       }
     });
   });
+
+  // -----------------------------------------------------------------------------
+  // Omnibox dropdown overlay
+  // -----------------------------------------------------------------------------
+  if app.chrome.address_bar_has_focus
+    && app.chrome.omnibox.open
+    && !app.chrome.omnibox.suggestions.is_empty()
+  {
+    if let Some(anchor) = address_bar_rect {
+      let pos = egui::pos2(anchor.min.x, anchor.max.y);
+      let id = egui::Id::new("omnibox_dropdown");
+      let area = egui::Area::new(id)
+        .order(egui::Order::Foreground)
+        .fixed_pos(pos)
+        .constrain_to(ctx.screen_rect());
+
+      let mut clicked_suggestion: Option<usize> = None;
+      let inner = area.show(ctx, |ui| {
+        egui::Frame::popup(ui.style()).show(ui, |ui| {
+          let width = anchor.width();
+          if width.is_finite() && width > 0.0 {
+            ui.set_min_width(width);
+            ui.set_max_width(width);
+          }
+
+          const MAX_VISIBLE_ROWS: usize = 8;
+          let row_height = ui.spacing().interact_size.y.max(24.0);
+          let max_height = row_height * (MAX_VISIBLE_ROWS as f32);
+
+          egui::ScrollArea::vertical().max_height(max_height).show(ui, |ui| {
+            for (idx, suggestion) in app.chrome.omnibox.suggestions.iter().enumerate() {
+              let is_selected = app.chrome.omnibox.selected == Some(idx);
+              let (rect, response) = ui.allocate_exact_size(
+                egui::vec2(ui.available_width(), row_height),
+                egui::Sense::click(),
+              );
+
+              let hovered = response.hovered();
+              if is_selected || hovered {
+                let visuals = ui.visuals();
+                let bg = if is_selected {
+                  visuals.selection.bg_fill
+                } else {
+                  visuals.widgets.hovered.bg_fill
+                };
+                ui.painter().rect_filled(rect, 0.0, bg);
+              }
+
+              ui.allocate_ui_at_rect(rect, |ui| {
+                ui.spacing_mut().item_spacing.x = 8.0;
+                ui.horizontal(|ui| {
+                  ui.add_space(6.0);
+                  ui.label(egui::RichText::new(omnibox_suggestion_icon(suggestion)).strong());
+
+                  let title = suggestion
+                    .title
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty());
+                  let url = suggestion
+                    .url
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty());
+
+                  let (primary, secondary) = if let Some(title) = title {
+                    (title, url)
+                  } else if let Some(url) = url {
+                    (url, None)
+                  } else if let OmniboxAction::Search(query) = &suggestion.action {
+                    (query.as_str(), None)
+                  } else {
+                    ("", None)
+                  };
+
+                  ui.vertical(|ui| {
+                    ui.add(egui::Label::new(primary).wrap(false).truncate(true));
+                    if let Some(secondary) = secondary {
+                      ui.add(
+                        egui::Label::new(
+                          egui::RichText::new(secondary)
+                            .small()
+                            .color(ui.visuals().weak_text_color()),
+                        )
+                        .wrap(false)
+                        .truncate(true),
+                      );
+                    }
+                  });
+                });
+              });
+
+              if response.clicked() {
+                clicked_suggestion = Some(idx);
+              }
+            }
+          });
+        });
+      });
+
+      if let Some(idx) = clicked_suggestion {
+        if let Some(suggestion) = app.chrome.omnibox.suggestions.get(idx) {
+          let action = omnibox_suggestion_accept_action(suggestion);
+          if let ChromeAction::NavigateTo(url) = &action {
+            app.chrome.address_bar_text = url.clone();
+          }
+          app.chrome.address_bar_editing = false;
+          app.chrome.address_bar_has_focus = false;
+          app.chrome.omnibox.reset();
+          actions.push(action);
+          actions.push(ChromeAction::AddressBarFocusChanged(false));
+          if let Some(response) = address_bar_text_edit_response.as_ref() {
+            response.surrender_focus();
+          }
+        }
+      } else {
+        // Best-effort dismissal when clicking outside both the dropdown and the address bar.
+        let clicked_outside = ctx.input(|i| {
+          i.pointer.any_pressed()
+            && i
+              .pointer
+              .interact_pos()
+              .or_else(|| i.pointer.latest_pos())
+              .is_some_and(|pos| !inner.response.rect.contains(pos) && !anchor.contains(pos))
+        });
+        if clicked_outside {
+          app.chrome.omnibox.open = false;
+          app.chrome.omnibox.selected = None;
+          app.chrome.omnibox.original_input = None;
+        } else if !ctx.input(|i| i.pointer.any_pressed()) {
+          // Keep keyboard focus in the address bar while the dropdown is open.
+          if let Some(response) = address_bar_text_edit_response.as_ref() {
+            response.request_focus();
+          }
+        }
+      }
+    }
+  }
 
   // ---------------------------------------------------------------------------
   // Hovered-link status
@@ -871,6 +1178,15 @@ mod tests {
     raw.time = Some(0.0);
     raw.events = events;
     ctx.begin_frame(raw);
+  }
+
+  fn key_press(key: egui::Key) -> egui::Event {
+    egui::Event::Key {
+      key,
+      pressed: true,
+      repeat: false,
+      modifiers: egui::Modifiers::default(),
+    }
   }
 
   fn middle_click_at(pos: egui::Pos2) -> Vec<egui::Event> {
@@ -1937,5 +2253,169 @@ mod tests {
 
     let zoom_after_out = app.active_tab().unwrap().zoom;
     assert!(zoom_after_out < zoom_after_in, "expected zoom to decrease");
+  }
+
+  #[test]
+  fn omnibox_typing_opens_and_arrow_down_previews_first_suggestion() {
+    let mut app = BrowserAppState::new();
+    let tab_id = TabId(1);
+    app.push_tab(
+      BrowserTabState::new(tab_id, "about:newtab".to_string()),
+      true,
+    );
+    app
+      .visited
+      .record_visit("https://example.com/".to_string(), Some("Example".to_string()));
+
+    // Ensure typed input doesn't append to the active tab URL.
+    app.chrome.address_bar_text.clear();
+
+    let ctx = egui::Context::default();
+
+    // Focus address bar.
+    app.chrome.request_focus_address_bar = true;
+    begin_frame(&ctx, Vec::new());
+    let _ = chrome_ui(&ctx, &mut app, |_| None);
+    let _ = ctx.end_frame();
+
+    assert!(app.chrome.address_bar_has_focus);
+
+    // Type input.
+    begin_frame(&ctx, vec![egui::Event::Text("exam".into())]);
+    let _ = chrome_ui(&ctx, &mut app, |_| None);
+    let _ = ctx.end_frame();
+
+    assert!(app.chrome.omnibox.open);
+    assert!(!app.chrome.omnibox.suggestions.is_empty());
+
+    // ArrowDown previews first suggestion.
+    begin_frame(&ctx, vec![key_press(egui::Key::ArrowDown)]);
+    let _ = chrome_ui(&ctx, &mut app, |_| None);
+    let _ = ctx.end_frame();
+
+    assert_eq!(app.chrome.address_bar_text, "https://example.com/");
+  }
+
+  #[test]
+  fn omnibox_escape_restores_original_input_and_keeps_focus() {
+    let mut app = BrowserAppState::new();
+    let tab_id = TabId(1);
+    app.push_tab(
+      BrowserTabState::new(tab_id, "about:newtab".to_string()),
+      true,
+    );
+    app
+      .visited
+      .record_visit("https://example.com/".to_string(), Some("Example".to_string()));
+    app.chrome.address_bar_text.clear();
+
+    let ctx = egui::Context::default();
+
+    app.chrome.request_focus_address_bar = true;
+    begin_frame(&ctx, Vec::new());
+    let _ = chrome_ui(&ctx, &mut app, |_| None);
+    let _ = ctx.end_frame();
+
+    begin_frame(&ctx, vec![egui::Event::Text("exam".into())]);
+    let _ = chrome_ui(&ctx, &mut app, |_| None);
+    let _ = ctx.end_frame();
+
+    begin_frame(&ctx, vec![key_press(egui::Key::ArrowDown)]);
+    let _ = chrome_ui(&ctx, &mut app, |_| None);
+    let _ = ctx.end_frame();
+
+    assert_eq!(app.chrome.address_bar_text, "https://example.com/");
+
+    // Escape should close dropdown and restore original typed input without blurring.
+    begin_frame(&ctx, vec![key_press(egui::Key::Escape)]);
+    let _ = chrome_ui(&ctx, &mut app, |_| None);
+    let _ = ctx.end_frame();
+
+    assert!(!app.chrome.omnibox.open);
+    assert_eq!(app.chrome.address_bar_text, "exam");
+    assert!(app.chrome.address_bar_has_focus);
+  }
+
+  #[test]
+  fn omnibox_second_escape_blurs_and_reverts_to_active_url() {
+    let mut app = BrowserAppState::new();
+    let tab_id = TabId(1);
+    app.push_tab(
+      BrowserTabState::new(tab_id, "about:newtab".to_string()),
+      true,
+    );
+    app
+      .visited
+      .record_visit("https://example.com/".to_string(), Some("Example".to_string()));
+    app.chrome.address_bar_text.clear();
+
+    let ctx = egui::Context::default();
+
+    app.chrome.request_focus_address_bar = true;
+    begin_frame(&ctx, Vec::new());
+    let _ = chrome_ui(&ctx, &mut app, |_| None);
+    let _ = ctx.end_frame();
+
+    begin_frame(&ctx, vec![egui::Event::Text("exam".into())]);
+    let _ = chrome_ui(&ctx, &mut app, |_| None);
+    let _ = ctx.end_frame();
+
+    begin_frame(&ctx, vec![key_press(egui::Key::ArrowDown)]);
+    let _ = chrome_ui(&ctx, &mut app, |_| None);
+    let _ = ctx.end_frame();
+
+    // First Escape closes dropdown and keeps focus.
+    begin_frame(&ctx, vec![key_press(egui::Key::Escape)]);
+    let _ = chrome_ui(&ctx, &mut app, |_| None);
+    let _ = ctx.end_frame();
+    assert!(app.chrome.address_bar_has_focus);
+
+    // Second Escape should blur and revert to active tab URL.
+    begin_frame(&ctx, vec![key_press(egui::Key::Escape)]);
+    let _ = chrome_ui(&ctx, &mut app, |_| None);
+    let _ = ctx.end_frame();
+
+    assert!(!app.chrome.address_bar_has_focus);
+    assert_eq!(app.chrome.address_bar_text, "about:newtab");
+  }
+
+  #[test]
+  fn omnibox_enter_with_selection_emits_navigate_action() {
+    let mut app = BrowserAppState::new();
+    let tab_id = TabId(1);
+    app.push_tab(
+      BrowserTabState::new(tab_id, "about:newtab".to_string()),
+      true,
+    );
+    app
+      .visited
+      .record_visit("https://example.com/".to_string(), Some("Example".to_string()));
+    app.chrome.address_bar_text.clear();
+
+    let ctx = egui::Context::default();
+
+    app.chrome.request_focus_address_bar = true;
+    begin_frame(&ctx, Vec::new());
+    let _ = chrome_ui(&ctx, &mut app, |_| None);
+    let _ = ctx.end_frame();
+
+    begin_frame(&ctx, vec![egui::Event::Text("exam".into())]);
+    let _ = chrome_ui(&ctx, &mut app, |_| None);
+    let _ = ctx.end_frame();
+
+    begin_frame(&ctx, vec![key_press(egui::Key::ArrowDown)]);
+    let _ = chrome_ui(&ctx, &mut app, |_| None);
+    let _ = ctx.end_frame();
+
+    begin_frame(&ctx, vec![key_press(egui::Key::Enter)]);
+    let actions = chrome_ui(&ctx, &mut app, |_| None);
+    let _ = ctx.end_frame();
+
+    assert!(
+      actions
+        .iter()
+        .any(|action| matches!(action, ChromeAction::NavigateTo(url) if url == "https://example.com/")),
+      "expected ChromeAction::NavigateTo(\"https://example.com/\"), got {actions:?}"
+    );
   }
 }

@@ -6,7 +6,8 @@ use crate::ui::messages::{
   CursorKind, NavigationReason, RenderedFrame, ScrollMetrics, TabId, UiToWorker, WorkerToUi,
 };
 use crate::ui::{
-  resolve_omnibox_input, validate_user_navigation_url_scheme, GlobalHistoryStore, VisitedUrlStore,
+  resolve_omnibox_input, validate_user_navigation_url_scheme, GlobalHistoryStore, OmniboxSuggestion,
+  VisitedUrlStore,
 };
 use std::collections::VecDeque;
 use url::Url;
@@ -421,10 +422,44 @@ pub struct ChromeState {
   /// in-progress input is not clobbered.
   pub address_bar_editing: bool,
   pub address_bar_has_focus: bool,
+  pub omnibox: OmniboxUiState,
   /// One-frame request flag consumed by `chrome_ui` to focus the address bar.
   pub request_focus_address_bar: bool,
   /// One-frame request flag consumed by `chrome_ui` to select all text in the address bar.
   pub request_select_all_address_bar: bool,
+}
+
+/// Egui-agnostic UI state for the address bar omnibox dropdown.
+#[derive(Debug, Clone)]
+pub struct OmniboxUiState {
+  pub open: bool,
+  pub selected: Option<usize>,
+  /// The address bar contents before the user started navigating suggestions.
+  ///
+  /// This is captured when the selection first moves away from "no selection", so Escape can
+  /// restore the original typed input after previewing a suggestion.
+  pub original_input: Option<String>,
+  /// The raw address bar input that `suggestions` were last built for.
+  pub last_built_for_input: String,
+  pub suggestions: Vec<OmniboxSuggestion>,
+}
+
+impl Default for OmniboxUiState {
+  fn default() -> Self {
+    Self {
+      open: false,
+      selected: None,
+      original_input: None,
+      last_built_for_input: String::new(),
+      suggestions: Vec::new(),
+    }
+  }
+}
+
+impl OmniboxUiState {
+  pub fn reset(&mut self) {
+    *self = Self::default();
+  }
 }
 
 #[derive(Debug)]
@@ -501,6 +536,7 @@ impl BrowserAppState {
     // Switching tabs should always reflect the newly active tab URL in the address bar. If the
     // user was typing, cancel that edit rather than carrying the partially typed URL across tabs.
     self.chrome.address_bar_editing = false;
+    self.chrome.omnibox.reset();
     self.sync_address_bar_to_active();
     if let Some(tab) = self.tab_mut(tab_id) {
       tab.hovered_url = None;
@@ -519,6 +555,7 @@ impl BrowserAppState {
     if make_active || self.active_tab.is_none() {
       self.active_tab = Some(tab_id);
       self.chrome.address_bar_editing = false;
+      self.chrome.omnibox.reset();
       self.sync_address_bar_to_active();
     }
   }
@@ -599,6 +636,7 @@ impl BrowserAppState {
     };
     self.active_tab = Some(new_active);
     self.chrome.address_bar_editing = false;
+    self.chrome.omnibox.reset();
     self.sync_address_bar_to_active();
     RemoveTabResult {
       new_active: Some(new_active),
@@ -638,6 +676,7 @@ impl BrowserAppState {
     self.chrome.address_bar_editing = editing;
     self.chrome.address_bar_has_focus = editing;
     if !editing {
+      self.chrome.omnibox.reset();
       self.sync_address_bar_to_active();
     }
   }
@@ -671,6 +710,7 @@ impl BrowserAppState {
 
     self.chrome.address_bar_editing = false;
     self.chrome.address_bar_has_focus = false;
+    self.chrome.omnibox.reset();
     self.chrome.address_bar_text = normalized.clone();
 
     if let Some(tab) = self.tab_mut(tab_id) {
