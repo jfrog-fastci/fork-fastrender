@@ -1933,10 +1933,10 @@ impl<'a> Evaluator<'a> {
 
   /// Implements `IteratorClose` error precedence for operations that return `Result<_, VmError>`.
   ///
-  /// - If the original error is a JS-throw completion, iterator closing is best-effort and any
-  ///   *catchable* closing error is suppressed (ECMA-262 `IteratorClose`).
-  /// - For fatal/non-catchable errors (termination, OOM, etc), iterator closing is best-effort and
-  ///   the original error is preserved.
+  /// Per ECMA-262 `IteratorClose(iteratorRecord, completion)`, errors thrown while getting/calling
+  /// `iterator.return` override the incoming completion (even when the incoming completion is a
+  /// throw completion). `vm-js` also has non-catchable VM failures (termination, OOM, etc) which
+  /// must never be replaced by a catchable close-time throw.
   fn iterator_close_on_error(
     &mut self,
     scope: &mut Scope<'_>,
@@ -1946,26 +1946,22 @@ impl<'a> Evaluator<'a> {
     if record.done {
       return err;
     }
- 
-    let original_is_throw = err.is_throw_completion();
-    // Root the thrown value across `IteratorClose`, which can allocate and trigger GC.
-    if original_is_throw {
-      if let Some(thrown) = err.thrown_value() {
-        if let Err(root_err) = scope.push_root(thrown) {
-          return root_err;
-        }
-      }
-    }
 
-    match iterator::iterator_close(
+    let original_is_throw = err.is_throw_completion();
+    let completion = Completion::Throw(Thrown {
+      value: err.thrown_value().unwrap_or(Value::Undefined),
+      stack: Vec::new(),
+    });
+
+    match iterator::iterator_close_with_completion(
       self.vm,
       &mut *self.host,
       &mut *self.hooks,
       scope,
       record,
-      iterator::CloseCompletionKind::Throw,
+      completion,
     ) {
-      Ok(()) => err,
+      Ok(_) => err,
       Err(close_err) => {
         if original_is_throw {
           close_err
@@ -1977,36 +1973,20 @@ impl<'a> Evaluator<'a> {
   }
 
   /// Implements `IteratorClose` for operations that return a `Completion` record.
-  ///
-  /// Iterator closing errors override non-throw completions, but are suppressed for throw
-  /// completions (ECMA-262 `IteratorClose`).
   fn iterator_close_on_completion(
     &mut self,
     scope: &mut Scope<'_>,
     record: &iterator::IteratorRecord,
     completion: Completion,
   ) -> Result<Completion, VmError> {
-    if record.done {
-      return Ok(completion);
-    }
-
-    let completion_is_throw = matches!(&completion, Completion::Throw(_));
-
-    // Root the completion value across `IteratorClose`, which can allocate and trigger GC.
-    if let Some(v) = completion.value() {
-      scope.push_root(v)?;
-    }
-
-    iterator::iterator_close_strict(
+    iterator::iterator_close_with_completion(
       self.vm,
       &mut *self.host,
       &mut *self.hooks,
       scope,
       record,
-      /* completion_is_throw */ completion_is_throw,
-    )?;
-
-    Ok(completion)
+      completion,
+    )
   }
 
   fn function_length(&mut self, func: &parse_js::ast::func::Func) -> Result<u32, VmError> {
@@ -14467,49 +14447,22 @@ fn async_iterator_close_on_completion(
   iterator_record: &iterator::IteratorRecord,
   completion: Completion,
 ) -> Result<Completion, VmError> {
-  if iterator_record.done {
+  // `IteratorClose` is only observable for iterator-protocol iterators. Our `IteratorRecord`
+  // fast-path for Array iteration uses `next_method = undefined` and has no concept of `return()`.
+  if iterator_record.done || matches!(iterator_record.next_method, Value::Undefined) {
     return Ok(completion);
   }
-  let completion_is_throw = matches!(&completion, Completion::Throw(_));
-  let completion_kind = if completion_is_throw {
-    iterator::CloseCompletionKind::Throw
-  } else {
-    iterator::CloseCompletionKind::NonThrow
-  };
 
-  // Root the completion value across `IteratorClose`, which can allocate and trigger GC.
-  let close_res: Result<(), VmError> = (|| {
-    let mut close_scope = scope.reborrow();
-    if let Some(v) = completion.value() {
-      close_scope.push_root(v)?;
-    }
-    iterator::iterator_close(
-      evaluator.vm,
-      &mut *evaluator.host,
-      &mut *evaluator.hooks,
-      &mut close_scope,
-      iterator_record,
-      completion_kind,
-    )
-  })();
-
-  match close_res {
-    Ok(()) => Ok(completion),
-    Err(close_err) => {
-      // `IteratorClose` suppression rules:
-      // - If the original completion is a throw completion, suppress errors from
-      //   `GetMethod("return")` / `Call(return)` / non-object `return` values.
-      // - Never suppress fatal VM errors (OOM/termination/etc).
-      if completion_is_throw && close_err.is_throw_completion() {
-        Ok(completion)
-      } else {
-        Err(coerce_error_to_throw_for_async(
-          evaluator.vm,
-          scope,
-          close_err,
-        ))
-      }
-    }
+  match iterator::iterator_close_with_completion(
+    evaluator.vm,
+    &mut *evaluator.host,
+    &mut *evaluator.hooks,
+    scope,
+    iterator_record,
+    completion,
+  ) {
+    Ok(completion) => Ok(completion),
+    Err(err) => Err(coerce_error_to_throw_for_async(evaluator.vm, scope, err)),
   }
 }
 
@@ -18311,11 +18264,12 @@ fn async_iterator_close_on_error(
     return err;
   }
 
-  // `IteratorClose` suppression rules:
-  // - If the original completion is a throw completion, iterator closing is best-effort and any
-  //   *throw completion* closing error is suppressed (the original throw must be preserved).
-  // - Never suppress fatal VM errors (OOM/termination/etc): a fatal close error overrides a throw
-  //   completion, but iterator closing must not replace a fatal original error.
+  // `IteratorClose` precedence rules:
+  // - Per ECMA-262 `IteratorClose`, errors from getting/calling `iterator.return` override the
+  //   incoming completion (even when the incoming completion is itself a throw).
+  // - vm-js also has non-catchable VM failures (OOM/termination/etc). Those must never be replaced
+  //   by a catchable close-time throw, so for non-throw original errors iterator closing is
+  //   best-effort and the original error is preserved.
   let original_is_throw = err.is_throw_completion();
 
   // Root the thrown value across `IteratorClose`, which can allocate and trigger GC.
@@ -18339,17 +18293,8 @@ fn async_iterator_close_on_error(
   match close_res {
     Ok(()) => err,
     Err(close_err) => {
-      // `IteratorClose` suppression rules:
-      // - If the original completion is a throw completion, suppress errors from
-      //   `GetMethod("return")` / `Call(return)`.
-      // - Never suppress fatal VM errors (OOM/termination/etc).
-      if original_is_throw && close_err.is_throw_completion() {
-        err
-      } else if original_is_throw {
-        close_err
-      } else {
-        err
-      }
+      let close_err = coerce_error_to_throw_for_async(evaluator.vm, scope, close_err);
+      if original_is_throw { close_err } else { err }
     }
   }
 }
@@ -18360,43 +18305,7 @@ fn async_iterator_close_on_error_force_close(
   iter: &iterator::IteratorRecord,
   err: VmError,
 ) -> VmError {
-  // Do not close iterators that do not implement the iterator protocol (e.g. internal fast-paths).
-  if matches!(iter.next_method, Value::Undefined) {
-    return err;
-  }
-
-  let original_is_throw = err.is_throw_completion();
-
-  // Root the thrown value across `IteratorClose`, which can allocate and trigger GC.
-  if original_is_throw {
-    if let Some(thrown) = err.thrown_value() {
-      if let Err(root_err) = scope.push_root(thrown) {
-        return root_err;
-      }
-    }
-  }
-
-  let close_res = iterator::iterator_close(
-    evaluator.vm,
-    &mut *evaluator.host,
-    &mut *evaluator.hooks,
-    scope,
-    iter,
-    iterator::CloseCompletionKind::Throw,
-  );
-
-  match close_res {
-    Ok(()) => err,
-    Err(close_err) => {
-      if original_is_throw && close_err.is_throw_completion() {
-        err
-      } else if original_is_throw {
-        close_err
-      } else {
-        err
-      }
-    }
-  }
+  async_iterator_close_on_error(evaluator, scope, iter, err)
 }
 
 fn async_call_store_arg_value(

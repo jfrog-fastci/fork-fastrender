@@ -1,5 +1,5 @@
 use crate::property::PropertyKey;
-use crate::{GcObject, PromiseCapability, Scope, Value, Vm, VmError, VmHost, VmHostHooks};
+use crate::{Completion, GcObject, PromiseCapability, Scope, Value, Vm, VmError, VmHost, VmHostHooks};
 
 /// ECMAScript "IteratorRecord" (ECMA-262).
 #[derive(Debug, Clone, Copy)]
@@ -15,9 +15,13 @@ pub struct IteratorRecord {
 /// coupling the iterator layer to `exec.rs::Completion`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CloseCompletionKind {
-  /// Closing on a *throw* completion (errors from `return` are suppressed).
+  /// Closing on a *throw* completion.
+  ///
+  /// Per ECMA-262 `IteratorClose`, errors from `GetMethod("return")` / `Call(return)` are still
+  /// propagated and override the incoming completion. The only special-case for throw completions
+  /// is that the non-object return-result TypeError check is skipped.
   Throw,
-  /// Closing on a *non-throw* completion (errors from `return` are propagated).
+  /// Closing on a *non-throw* completion.
   NonThrow,
 }
 
@@ -295,6 +299,10 @@ pub fn iterator_close(
   record: &IteratorRecord,
   completion_kind: CloseCompletionKind,
 ) -> Result<(), VmError> {
+  if record.done {
+    return Ok(());
+  }
+
   // Root the iterator across property-key allocation and the `GetMethod`/`Call` sequence. Without
   // this, the iterator object could be collected while closing (since values on the Rust stack are
   // not traced by the GC).
@@ -302,44 +310,27 @@ pub fn iterator_close(
   close_scope.push_root(record.iterator)?;
 
   let return_key = string_key(&mut close_scope, "return")?;
-  let return_method = match crate::spec_ops::get_method_with_host_and_hooks(
+  let Some(return_method) = crate::spec_ops::get_method_with_host_and_hooks(
     vm,
     &mut close_scope,
     host,
     hooks,
     record.iterator,
     return_key,
-  ) {
-    Ok(m) => m,
-    Err(err) => {
-      if completion_kind == CloseCompletionKind::Throw && err.is_throw_completion() {
-        return Ok(());
-      }
-      return Err(err);
-    }
-  };
-
-  let Some(return_method) = return_method else {
+  )?
+  else {
     return Ok(());
   };
 
   close_scope.push_root(return_method)?;
-  let result = match vm.call_with_host_and_hooks(
+  let result = vm.call_with_host_and_hooks(
     host,
     &mut close_scope,
     hooks,
     return_method,
     record.iterator,
     &[],
-  ) {
-    Ok(v) => v,
-    Err(err) => {
-      if completion_kind == CloseCompletionKind::Throw && err.is_throw_completion() {
-        return Ok(());
-      }
-      return Err(err);
-    }
-  };
+  )?;
 
   if completion_kind == CloseCompletionKind::Throw {
     // Spec: for throw completions, ignore non-object `return` results.
@@ -364,10 +355,9 @@ pub fn iterator_close(
 /// This is a convenience wrapper for callers that need the *full* `IteratorClose` semantics from
 /// ECMA-262 (which takes an input completion):
 /// - Always attempts `GetMethod(iterator, "return")` and calls it when present.
-/// - If `completion_is_throw` is `true`, any *throw completion* produced by `GetMethod`/`Call` (or
-///   by the "return result is not object" check) is suppressed.
-/// - If `completion_is_throw` is `false`, closing errors are propagated (and thus override
-///   non-throw completions like `break`/`return`).
+/// - If `completion_is_throw` is `true`, the "return result is not object" TypeError check is
+///   suppressed.
+/// - Closing errors are always propagated, overriding the incoming completion.
 pub fn iterator_close_strict(
   vm: &mut Vm,
   host: &mut dyn VmHost,
@@ -382,6 +372,48 @@ pub fn iterator_close_strict(
     CloseCompletionKind::NonThrow
   };
   iterator_close(vm, host, hooks, scope, record, completion_kind)
+}
+
+/// `IteratorClose(iteratorRecord, completion)` (ECMA-262).
+///
+/// This is the spec-shaped form of iterator closing used by `for..of` and iterator-consuming
+/// algorithms: closing errors override the incoming completion, except that the non-object return
+/// result TypeError check is skipped when closing due to a throw completion.
+pub fn iterator_close_with_completion(
+  vm: &mut Vm,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  scope: &mut Scope<'_>,
+  record: &IteratorRecord,
+  completion: Completion,
+) -> Result<Completion, VmError> {
+  if record.done {
+    return Ok(completion);
+  }
+
+  let completion_is_throw = matches!(&completion, Completion::Throw(_));
+
+  // Root the completion value (if any) across IteratorClose, since it can allocate and run user
+  // code.
+  let mut close_scope = scope.reborrow();
+  if let Some(v) = completion.value() {
+    close_scope.push_root(v)?;
+  }
+
+  iterator_close(
+    vm,
+    host,
+    hooks,
+    &mut close_scope,
+    record,
+    if completion_is_throw {
+      CloseCompletionKind::Throw
+    } else {
+      CloseCompletionKind::NonThrow
+    },
+  )?;
+
+  Ok(completion)
 }
 
 /// Native call handler for the `unwrap` closure in `AsyncFromSyncIteratorContinuation`.

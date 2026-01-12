@@ -8,9 +8,9 @@ use crate::regexp::{
 use crate::string::{utf16_to_utf8_lossy_with_tick, JsString};
 use crate::{
   heap::TypedArrayKind,
-  ExternalMemoryToken, GcObject, GcString, Job, JobKind, PromiseCapability, PromiseHandle, PromiseReaction,
-  PromiseReactionType, PromiseRejectionOperation, PromiseState, RealmId, RootId, Scope, SourceText, Value,
-  Vm, VmError, VmHost, VmHostHooks,
+  Completion, ExternalMemoryToken, GcObject, GcString, Job, JobKind, PromiseCapability, PromiseHandle,
+  PromiseReaction, PromiseReactionType, PromiseRejectionOperation, PromiseState, RealmId, RootId, Scope,
+  SourceText, Thrown, Value, Vm, VmError, VmHost, VmHostHooks,
 };
 use parse_js::ast::expr::Expr;
 use parse_js::ast::func::FuncBody;
@@ -127,6 +127,43 @@ fn require_callable(this: Value) -> Result<GcObject, VmError> {
   match this {
     Value::Object(obj) => Ok(obj),
     _ => Err(VmError::NotCallable),
+  }
+}
+
+fn iterator_close_on_error(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  iterator_record: &crate::iterator::IteratorRecord,
+  err: VmError,
+) -> VmError {
+  if iterator_record.done {
+    return err;
+  }
+
+  let original_is_throw = err.is_throw_completion();
+  let completion = Completion::Throw(Thrown {
+    value: err.thrown_value().unwrap_or(Value::Undefined),
+    stack: Vec::new(),
+  });
+
+  match crate::iterator::iterator_close_with_completion(
+    vm,
+    host,
+    hooks,
+    scope,
+    iterator_record,
+    completion,
+  ) {
+    Ok(_) => err,
+    Err(close_err) => {
+      if original_is_throw {
+        close_err
+      } else {
+        err
+      }
+    }
   }
 }
 
@@ -1530,32 +1567,14 @@ pub fn object_from_entries(
 
     if let Err(entry_err) = entry_result {
       if !iterator_record.done {
-        // Per ECMA-262 `IteratorClose`, if the original completion is a *throw completion*, errors
-        // produced while getting/calling `iterator.return` are suppressed. However, vm-js also has
-        // non-catchable VM failures (termination, OOM, etc) which must never be suppressed.
-        let original_is_throw = entry_err.is_throw_completion();
-        let pending_root = entry_err
-          .thrown_value()
-          .map(|v| scope.heap_mut().add_root(v))
-          .transpose()?;
-        let close_res = crate::iterator::iterator_close(
+        return Err(iterator_close_on_error(
           vm,
+          &mut scope,
           host,
           hooks,
-          &mut scope,
           &iterator_record,
-          crate::iterator::CloseCompletionKind::Throw,
-        );
-        if let Some(root) = pending_root {
-          scope.heap_mut().remove_root(root);
-        }
-        if let Err(close_err) = close_res {
-          // Only propagate close errors for non-catchable failures; otherwise preserve the original
-          // throw completion.
-          if original_is_throw && !close_err.is_throw_completion() {
-            return Err(close_err);
-          }
-        }
+          entry_err,
+        ));
       }
       return Err(entry_err);
     }
@@ -4863,32 +4882,14 @@ fn aggregate_error_iterable_to_list_array(
     Ok(()) => Ok(array),
     Err(err) => {
       if !iterator_record.done {
-        // Per ECMA-262 `IteratorClose`, if the original completion is a *throw completion*, errors
-        // produced while getting/calling `iterator.return` are suppressed. However, vm-js also has
-        // non-catchable VM failures (termination, OOM, etc) which must never be suppressed.
-        let original_is_throw = err.is_throw_completion();
-        let pending_root = err
-          .thrown_value()
-          .map(|v| scope.heap_mut().add_root(v))
-          .transpose()?;
-        let close_res = crate::iterator::iterator_close(
+        return Err(iterator_close_on_error(
           vm,
+          scope,
           host,
           hooks,
-          scope,
           &iterator_record,
-          crate::iterator::CloseCompletionKind::Throw,
-        );
-        if let Some(root) = pending_root {
-          scope.heap_mut().remove_root(root);
-        }
-        if let Err(close_err) = close_res {
-          // Only propagate close errors for non-catchable failures; otherwise preserve the original
-          // throw completion.
-          if original_is_throw && !close_err.is_throw_completion() {
-            return Err(close_err);
-          }
-        }
+          err,
+        ));
       }
       Err(err)
     }
@@ -6873,35 +6874,7 @@ pub fn promise_all(
   match result {
     Ok(v) => Ok(v),
     Err(err) => {
-      let mut completion = err;
-      if !iterator_record.done {
-        // Per ECMA-262 `IteratorClose`, if the original completion is a *throw completion*, errors
-        // produced while getting/calling `iterator.return` are suppressed. However, vm-js also has
-        // non-catchable VM failures (termination, OOM, etc) which must never be suppressed.
-        let original_is_throw = completion.is_throw_completion();
-        let pending_root =
-          completion.thrown_value().map(|v| scope.heap_mut().add_root(v)).transpose()?;
-        match crate::iterator::iterator_close(
-          vm,
-          host,
-          hooks,
-          scope,
-          &iterator_record,
-          crate::iterator::CloseCompletionKind::Throw,
-        ) {
-          Ok(()) => {}
-          Err(close_err) => {
-            // Only propagate close errors for non-catchable failures; otherwise preserve the
-            // original throw completion.
-            if original_is_throw && !close_err.is_throw_completion() {
-              completion = close_err;
-            }
-          }
-        }
-        if let Some(root) = pending_root {
-          scope.heap_mut().remove_root(root);
-        }
-      }
+      let completion = iterator_close_on_error(vm, scope, host, hooks, &iterator_record, err);
       if_abrupt_reject_promise(vm, scope, host, hooks, capability, completion)
     }
   }
@@ -6992,35 +6965,7 @@ pub fn promise_race(
   match result {
     Ok(v) => Ok(v),
     Err(err) => {
-      let mut completion = err;
-      if !iterator_record.done {
-        // Per ECMA-262 `IteratorClose`, if the original completion is a *throw completion*, errors
-        // produced while getting/calling `iterator.return` are suppressed. However, vm-js also has
-        // non-catchable VM failures (termination, OOM, etc) which must never be suppressed.
-        let original_is_throw = completion.is_throw_completion();
-        let pending_root =
-          completion.thrown_value().map(|v| scope.heap_mut().add_root(v)).transpose()?;
-        match crate::iterator::iterator_close(
-          vm,
-          host,
-          hooks,
-          scope,
-          &iterator_record,
-          crate::iterator::CloseCompletionKind::Throw,
-        ) {
-          Ok(()) => {}
-          Err(close_err) => {
-            // Only propagate close errors for non-catchable failures; otherwise preserve the
-            // original throw completion.
-            if original_is_throw && !close_err.is_throw_completion() {
-              completion = close_err;
-            }
-          }
-        }
-        if let Some(root) = pending_root {
-          scope.heap_mut().remove_root(root);
-        }
-      }
+      let completion = iterator_close_on_error(vm, scope, host, hooks, &iterator_record, err);
       if_abrupt_reject_promise(vm, scope, host, hooks, capability, completion)
     }
   }
@@ -7221,35 +7166,7 @@ pub fn promise_all_settled(
   match result {
     Ok(v) => Ok(v),
     Err(err) => {
-      let mut completion = err;
-      if !iterator_record.done {
-        // Per ECMA-262 `IteratorClose`, if the original completion is a *throw completion*, errors
-        // produced while getting/calling `iterator.return` are suppressed. However, vm-js also has
-        // non-catchable VM failures (termination, OOM, etc) which must never be suppressed.
-        let original_is_throw = completion.is_throw_completion();
-        let pending_root =
-          completion.thrown_value().map(|v| scope.heap_mut().add_root(v)).transpose()?;
-        match crate::iterator::iterator_close(
-          vm,
-          host,
-          hooks,
-          scope,
-          &iterator_record,
-          crate::iterator::CloseCompletionKind::Throw,
-        ) {
-          Ok(()) => {}
-          Err(close_err) => {
-            // Only propagate close errors for non-catchable failures; otherwise preserve the
-            // original throw completion.
-            if original_is_throw && !close_err.is_throw_completion() {
-              completion = close_err;
-            }
-          }
-        }
-        if let Some(root) = pending_root {
-          scope.heap_mut().remove_root(root);
-        }
-      }
+      let completion = iterator_close_on_error(vm, scope, host, hooks, &iterator_record, err);
       if_abrupt_reject_promise(vm, scope, host, hooks, capability, completion)
     }
   }
@@ -7434,35 +7351,7 @@ pub fn promise_any(
   match result {
     Ok(v) => Ok(v),
     Err(err) => {
-      let mut completion = err;
-      if !iterator_record.done {
-        // Per ECMA-262 `IteratorClose`, if the original completion is a *throw completion*, errors
-        // produced while getting/calling `iterator.return` are suppressed. However, vm-js also has
-        // non-catchable VM failures (termination, OOM, etc) which must never be suppressed.
-        let original_is_throw = completion.is_throw_completion();
-        let pending_root =
-          completion.thrown_value().map(|v| scope.heap_mut().add_root(v)).transpose()?;
-        match crate::iterator::iterator_close(
-          vm,
-          host,
-          hooks,
-          scope,
-          &iterator_record,
-          crate::iterator::CloseCompletionKind::Throw,
-        ) {
-          Ok(()) => {}
-          Err(close_err) => {
-            // Only propagate close errors for non-catchable failures; otherwise preserve the
-            // original throw completion.
-            if original_is_throw && !close_err.is_throw_completion() {
-              completion = close_err;
-            }
-          }
-        }
-        if let Some(root) = pending_root {
-          scope.heap_mut().remove_root(root);
-        }
-      }
+      let completion = iterator_close_on_error(vm, scope, host, hooks, &iterator_record, err);
       if_abrupt_reject_promise(vm, scope, host, hooks, capability, completion)
     }
   }
