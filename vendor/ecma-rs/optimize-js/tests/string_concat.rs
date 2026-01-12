@@ -1,7 +1,10 @@
 use optimize_js::analysis::encoding::analyze_cfg_encoding;
 use optimize_js::cfg::cfg::{Cfg, CfgBBlocks, CfgGraph};
-use optimize_js::il::inst::{Arg, BinOp, Const, Inst, InstTyp, StringEncoding};
+use optimize_js::il::inst::{Arg, Const, Inst, InstTyp, StringEncoding};
 use optimize_js::{CompileCfgOptions, TopLevelMode};
+
+#[cfg(feature = "typed")]
+use optimize_js::il::inst::BinOp;
 
 fn cfg_labels_sorted(cfg: &Cfg) -> Vec<u32> {
   let mut labels: Vec<u32> = cfg.bblocks.all().map(|(label, _)| label).collect();
@@ -50,6 +53,10 @@ fn template_literals_lower_to_string_concat_when_enabled() {
   }
   #[cfg(not(feature = "typed"))]
   {
+    assert!(
+      !has_string_concat,
+      "expected template literal to lower via __optimize_js_template marker call"
+    );
     assert!(
       has_template_call,
       "expected template literal to lower via __optimize_js_template marker call"
@@ -125,4 +132,3 @@ fn encoding_propagates_through_string_concat() {
   let result = analyze_cfg_encoding(&cfg);
   assert_eq!(result.encoding_at_entry(1, 2), StringEncoding::Ascii);
 }
-

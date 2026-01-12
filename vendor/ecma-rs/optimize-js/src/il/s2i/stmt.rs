@@ -267,7 +267,10 @@ impl<'p> HirSourceToInst<'p> {
         let inst = match var_type {
           VarType::Local(local) => {
             let tgt = self.symbol_to_temp(local);
+            #[cfg(feature = "typed")]
             let mut inst = Inst::var_assign(tgt, rval.clone());
+            #[cfg(not(feature = "typed"))]
+            let inst = Inst::var_assign(tgt, rval.clone());
             #[cfg(feature = "typed")]
             {
               let layout_for_const = |program: &typecheck_ts::Program, c: &Const| {
