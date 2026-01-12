@@ -378,12 +378,6 @@ jobs:
       - name: Generate lockfile
         run: cargo generate-lockfile
 
-      - name: Determine bundled TypeScript version
-        run: |
-          set -euo pipefail
-          VERSION=$(cargo run -p typecheck-ts-cli --quiet --locked -- print-typescript-version)
-          echo "TYPESCRIPT_VERSION=$VERSION" >> "$GITHUB_ENV"
-
       - name: Install TypeScript (npm)
         working-directory: ./typecheck-ts-harness
         run: npm ci --ignore-scripts
