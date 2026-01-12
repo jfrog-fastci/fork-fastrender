@@ -169,6 +169,7 @@ mod user_agent_test;
 mod user_validity_pseudo_test;
 mod var_dependent_recompute_test;
 mod var_resolution_test;
+mod var_resolution_no_panic_token_splice_test;
 mod vendor_font_smoothing_test;
 mod vendor_prefixed_properties_test;
 mod visual_keywords_case_insensitive_test;

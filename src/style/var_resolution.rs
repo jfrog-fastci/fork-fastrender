@@ -388,10 +388,10 @@ fn push_css_with_token_splice_boundary(out: &mut String, chunk: &str) {
     return;
   }
 
-  let prev = *out
-    .as_bytes()
-    .last()
-    .expect("non-empty string must have last byte");
+  let Some(prev) = out.as_bytes().last().copied() else {
+    out.push_str(chunk);
+    return;
+  };
   let next_bytes = chunk.as_bytes();
   let next = next_bytes[0];
   let next_next = next_bytes.get(1).copied();
@@ -2092,55 +2092,52 @@ fn push_token_to_css(out: &mut String, token: &Token) {
     _ => true,
   };
 
-  if needs_boundary && !out.is_empty() {
-    // Compute the first byte of the serialized token so we can decide whether a token-splice
-    // boundary separator is required.
-    let (first, second) = match token {
-      Token::Ident(ident) => (ident.as_bytes()[0], ident.as_bytes().get(1).copied()),
-      Token::AtKeyword(_) => (b'@', None),
-      Token::Hash(_) | Token::IDHash(_) => (b'#', None),
-      Token::QuotedString(_) => (b'"', None),
-      Token::UnquotedUrl(_) | Token::BadUrl(_) => (b'u', Some(b'r')),
-      Token::Number {
-        has_sign, value, ..
-      }
-      | Token::Percentage {
-        has_sign,
-        unit_value: value,
-        ..
-      }
-      | Token::Dimension {
-        has_sign, value, ..
-      } => {
-        if value.is_sign_negative() {
-          (b'-', None)
-        } else if *has_sign {
-          (b'+', None)
-        } else {
-          (b'0', None)
+  if needs_boundary {
+    if let Some(prev) = out.as_bytes().last().copied() {
+      // Compute the first byte of the serialized token so we can decide whether a token-splice
+      // boundary separator is required.
+      let (first, second) = match token {
+        Token::Ident(ident) => (ident.as_bytes()[0], ident.as_bytes().get(1).copied()),
+        Token::AtKeyword(_) => (b'@', None),
+        Token::Hash(_) | Token::IDHash(_) => (b'#', None),
+        Token::QuotedString(_) => (b'"', None),
+        Token::UnquotedUrl(_) | Token::BadUrl(_) => (b'u', Some(b'r')),
+        Token::Number {
+          has_sign, value, ..
         }
+        | Token::Percentage {
+          has_sign,
+          unit_value: value,
+          ..
+        }
+        | Token::Dimension {
+          has_sign, value, ..
+        } => {
+          if value.is_sign_negative() {
+            (b'-', None)
+          } else if *has_sign {
+            (b'+', None)
+          } else {
+            (b'0', None)
+          }
+        }
+        Token::Delim(ch) => (*ch as u8, None),
+        Token::Colon => (b':', None),
+        Token::Semicolon => (b';', None),
+        Token::Comma => (b',', None),
+        Token::IncludeMatch => (b'~', Some(b'=')),
+        Token::DashMatch => (b'|', Some(b'=')),
+        Token::PrefixMatch => (b'^', Some(b'=')),
+        Token::SuffixMatch => (b'$', Some(b'=')),
+        Token::SubstringMatch => (b'*', Some(b'=')),
+        Token::CDO => (b'<', Some(b'!')),
+        Token::CDC => (b'-', Some(b'-')),
+        // Fallback: this token kind isn't important for our splice-boundary heuristic.
+        _ => (b'?', None),
+      };
+      if needs_token_splice_separator(prev, first, second) {
+        out.push_str(TOKEN_SPLICE_SEPARATOR);
       }
-      Token::Delim(ch) => (*ch as u8, None),
-      Token::Colon => (b':', None),
-      Token::Semicolon => (b';', None),
-      Token::Comma => (b',', None),
-      Token::IncludeMatch => (b'~', Some(b'=')),
-      Token::DashMatch => (b'|', Some(b'=')),
-      Token::PrefixMatch => (b'^', Some(b'=')),
-      Token::SuffixMatch => (b'$', Some(b'=')),
-      Token::SubstringMatch => (b'*', Some(b'=')),
-      Token::CDO => (b'<', Some(b'!')),
-      Token::CDC => (b'-', Some(b'-')),
-      // Fallback: this token kind isn't important for our splice-boundary heuristic.
-      _ => (b'?', None),
-    };
-
-    let prev = *out
-      .as_bytes()
-      .last()
-      .expect("non-empty string must have last byte");
-    if needs_token_splice_separator(prev, first, second) {
-      out.push_str(TOKEN_SPLICE_SEPARATOR);
     }
   }
 
@@ -2169,14 +2166,12 @@ fn push_token_to_css(out: &mut String, token: &Token) {
         out.push_str(raw);
         out.push('"');
       } else {
-        token
-          .to_css(out)
-          .expect("writing to String should be infallible");
+        let _ = token.to_css(out);
       }
     }
-    other => other
-      .to_css(out)
-      .expect("writing to String should be infallible"),
+    other => {
+      let _ = other.to_css(out);
+    }
   }
 }
 
@@ -2191,10 +2186,16 @@ fn token_to_css_string(token: &Token) -> String {
       } else if !raw.contains('"') {
         format!("\"{raw}\"")
       } else {
-        token.to_css_string()
+        let mut out = String::new();
+        let _ = token.to_css(&mut out);
+        out
       }
     }
-    _ => token.to_css_string(),
+    _ => {
+      let mut out = String::new();
+      let _ = token.to_css(&mut out);
+      out
+    }
   }
 }
 
