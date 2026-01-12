@@ -26,15 +26,6 @@ pub fn is_line_marked(map: &LineMap, line: usize) -> bool {
   (map[word].load(Ordering::Relaxed) & mask) != 0
 }
 
-#[inline]
-pub fn set_line(map: &LineMap, line: usize) {
-  debug_assert!(line < LINES_PER_BLOCK);
-  let word = line / 64;
-  let bit = line % 64;
-  let mask = 1u64 << bit;
-  map[word].fetch_or(mask, Ordering::Relaxed);
-}
-
 pub fn set_range(map: &LineMap, start_line: usize, end_line: usize) {
   debug_assert!(start_line <= end_line);
   debug_assert!(end_line <= LINES_PER_BLOCK);

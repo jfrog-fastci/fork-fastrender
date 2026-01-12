@@ -19,14 +19,27 @@ use runtime_native::gc::{HeapConfig, HeapLimits, ObjHeader, RootStack, SimpleRem
 use runtime_native::GcHeap;
 
 #[cfg(target_os = "linux")]
+const EXTRA_PTRS: usize = 4;
+#[cfg(target_os = "linux")]
 #[repr(C)]
 struct Node {
   header: ObjHeader,
   next: *mut u8,
+  extra: [*mut u8; EXTRA_PTRS],
 }
 
 #[cfg(target_os = "linux")]
-static NODE_PTR_OFFSETS: [u32; 1] = [mem::offset_of!(Node, next) as u32];
+static NODE_PTR_OFFSETS: [u32; 1 + EXTRA_PTRS] = {
+  const PTR_SIZE: usize = mem::size_of::<*mut u8>();
+  let base = mem::offset_of!(Node, extra) as u32;
+  [
+    mem::offset_of!(Node, next) as u32,
+    base + (0 * PTR_SIZE) as u32,
+    base + (1 * PTR_SIZE) as u32,
+    base + (2 * PTR_SIZE) as u32,
+    base + (3 * PTR_SIZE) as u32,
+  ]
+};
 #[cfg(target_os = "linux")]
 static NODE_DESC: TypeDescriptor = TypeDescriptor::new(mem::size_of::<Node>(), &NODE_PTR_OFFSETS);
 
@@ -70,12 +83,20 @@ fn build_heap(mark_threads: usize, nodes: usize, chains: usize) -> BenchHeap {
     *slot = heap.alloc_old(&NODE_DESC);
     roots.push(&mut *slot as *mut *mut u8);
 
+    unsafe {
+      let n = &mut *(*slot as *mut Node);
+      n.next = ptr::null_mut();
+      // Keep some extra pointer slots non-null to increase per-object scan work.
+      n.extra = [*slot; EXTRA_PTRS];
+    }
+
     let mut prev = *slot;
     for _ in 1..chain_len {
       let obj = heap.alloc_old(&NODE_DESC);
       unsafe {
         (*(prev as *mut Node)).next = obj;
         (*(obj as *mut Node)).next = ptr::null_mut();
+        (*(obj as *mut Node)).extra = [*slot; EXTRA_PTRS];
       }
       prev = obj;
     }
@@ -132,7 +153,7 @@ criterion_group! {
   config = Criterion::default()
     .sample_size(10)
     .warm_up_time(Duration::from_millis(100))
-    .measurement_time(Duration::from_millis(300));
+    .measurement_time(Duration::from_secs(3));
   targets = bench_major_gc_mark
 }
 

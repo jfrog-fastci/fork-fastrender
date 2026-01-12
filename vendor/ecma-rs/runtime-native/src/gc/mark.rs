@@ -85,7 +85,12 @@ impl GcHeap {
       let cfg = self.config().major_gc_mark_threads;
       if cfg == 0 { parallel_marker_pool().max_workers } else { cfg }
     });
-    parallel_mark_major(self, epoch, roots, mark_workers);
+    let mark_workers = mark_workers.max(1);
+    if mark_workers == 1 {
+      mark_major_single_thread(self, epoch, roots);
+    } else {
+      parallel_mark_major(self, epoch, roots, mark_workers);
+    }
 
     let cfg = self.major_compaction;
     if cfg.enabled && cfg.max_live_ratio_percent <= 100 {
@@ -208,6 +213,99 @@ impl GcHeap {
     self.stats.last_major_pause = pause;
     self.stats.total_major_pause += pause;
     Ok(())
+  }
+}
+
+fn mark_major_single_thread(heap: &mut GcHeap, epoch: u8, roots: &mut dyn RootSet) {
+  let mut marker = SingleThreadMarker { heap, epoch };
+  marker.heap.work_stack.clear();
+
+  roots.for_each_root_slot(&mut |slot| marker.visit_slot(slot));
+  crate::roots::global_root_registry().for_each_root_slot(|slot| marker.visit_slot(slot));
+  crate::roots::global_persistent_handle_table().for_each_root_slot(|slot| marker.visit_slot(slot));
+
+  let mut root_handles = mem::take(&mut marker.heap.root_handles);
+  root_handles.for_each_root_slot(&mut |slot| marker.visit_slot(slot));
+  marker.heap.root_handles = root_handles;
+
+  while let Some(obj) = marker.heap.work_stack.pop() {
+    marker.visit_obj(obj);
+  }
+}
+
+struct SingleThreadMarker<'a> {
+  heap: &'a mut GcHeap,
+  epoch: u8,
+}
+
+impl SingleThreadMarker<'_> {
+  fn mark_obj(&mut self, mut obj: *mut u8) {
+    if obj.is_null() {
+      return;
+    }
+
+    // `collect_major` runs `collect_minor` first, so in the common case there should be no nursery
+    // pointers left. Handle them (and any stale/foreign pointers) defensively anyway.
+    loop {
+      if !self.heap.is_valid_obj_ptr_for_tracing(obj, true) {
+        return;
+      }
+
+      if self.heap.is_in_nursery(obj) {
+        // SAFETY: `obj` is a valid pointer into this heap's nursery.
+        unsafe {
+          let header = &*super::header_from_obj(obj);
+          if header.is_forwarded() {
+            obj = header.forwarding_ptr();
+            continue;
+          }
+        }
+        return;
+      }
+
+      // Follow forwarding pointers (used by nursery evacuation today, and by potential future major
+      // GC compaction).
+      // SAFETY: `obj` is in this heap (Immix or LOS), so it points at an `ObjHeader`.
+      unsafe {
+        let header = &*super::header_from_obj(obj);
+        if header.is_forwarded() {
+          obj = header.forwarding_ptr();
+          continue;
+        }
+      }
+
+      break;
+    }
+
+    // SAFETY: `obj` points to an `ObjHeader`.
+    let already_marked = unsafe { (&*super::header_from_obj(obj)).is_marked(self.epoch) };
+    if already_marked {
+      return;
+    }
+
+    // SAFETY: `obj` points to an `ObjHeader`.
+    unsafe {
+      let header = &*super::header_from_obj(obj);
+      header.set_mark_epoch(self.epoch);
+
+      let size = super::obj_size(obj);
+      if self.heap.is_in_immix(obj) {
+        self.heap.immix.set_lines_for_live_object(obj, size);
+      } else {
+        debug_assert!(self.heap.is_in_los(obj), "unknown heap object location");
+      }
+    }
+
+    self.heap.work_stack.push(obj);
+  }
+}
+
+impl Tracer for SingleThreadMarker<'_> {
+  fn visit_slot(&mut self, slot: *mut *mut u8) {
+    // SAFETY: `slot` originates from root enumeration or from a valid object
+    // descriptor, so it is a valid pointer to a GC reference.
+    let obj = unsafe { *slot };
+    self.mark_obj(obj);
   }
 }
 

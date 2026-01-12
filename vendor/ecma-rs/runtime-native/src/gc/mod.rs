@@ -544,22 +544,21 @@ impl ObjHeader {
   #[inline]
   pub(crate) fn set_mark_epoch_idempotent(&self, epoch: u8) -> bool {
     debug_assert!(epoch <= 1);
-    let desired = (epoch as usize) << META_MARK_SHIFT;
-    loop {
-      let meta = self.meta.load(Ordering::Relaxed);
+    if self.is_forwarded() {
       // Forwarded objects store relocation pointers in `meta`; never mutate the
       // tagged pointer state during marking.
-      if (meta & META_FORWARDED) != 0 {
-        return false;
-      }
-      if (meta & META_MARK_MASK) == desired {
-        return false;
-      }
-      let new_meta = (meta & !META_MARK_MASK) | desired;
-      match self.meta.compare_exchange_weak(meta, new_meta, Ordering::AcqRel, Ordering::Relaxed) {
-        Ok(_) => return true,
-        Err(_) => continue,
-      }
+      return false;
+    }
+
+    // Fast path: marking flips a single bit (epoch 0/1). Use a single atomic RMW instead of a CAS
+    // loop; the only expected contention is concurrent attempts to mark the same object, and RMW
+    // preserves all other metadata bits (pinned/remembered/card-table ptr).
+    if epoch == 1 {
+      let prev = self.meta.fetch_or(META_MARK_MASK, Ordering::AcqRel);
+      (prev & META_MARK_MASK) == 0
+    } else {
+      let prev = self.meta.fetch_and(!META_MARK_MASK, Ordering::AcqRel);
+      (prev & META_MARK_MASK) != 0
     }
   }
 
