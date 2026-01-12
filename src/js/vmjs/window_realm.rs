@@ -3302,36 +3302,6 @@ fn window_scroll_by_native(
   Ok(Value::Undefined)
 }
 
-fn window_scroll_x_get_native(
-  _vm: &mut Vm,
-  _scope: &mut Scope<'_>,
-  host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
-  _callee: GcObject,
-  _this: Value,
-  _args: &[Value],
-) -> Result<Value, VmError> {
-  if let Some(document) = host.as_any_mut().downcast_mut::<BrowserDocumentDom2>() {
-    return Ok(Value::Number(document.viewport_scroll_offset().x as f64));
-  }
-  Ok(Value::Number(0.0))
-}
-
-fn window_scroll_y_get_native(
-  _vm: &mut Vm,
-  _scope: &mut Scope<'_>,
-  host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
-  _callee: GcObject,
-  _this: Value,
-  _args: &[Value],
-) -> Result<Value, VmError> {
-  if let Some(document) = host.as_any_mut().downcast_mut::<BrowserDocumentDom2>() {
-    return Ok(Value::Number(document.viewport_scroll_offset().y as f64));
-  }
-  Ok(Value::Number(0.0))
-}
-
 fn serialized_origin_for_document_url(url: &str) -> String {
   let Ok(url) = Url::parse(url) else {
     return "null".to_string();
@@ -26886,83 +26856,6 @@ fn init_window_globals(
   scope.push_root(Value::Object(scroll_by_func))?;
   let scroll_by_key = alloc_key(&mut scope, "scrollBy")?;
   scope.define_property(global, scroll_by_key, data_desc(Value::Object(scroll_by_func)))?;
-
-  // scrollX / scrollY
-  let scroll_x_get_call_id = vm.register_native_call(window_scroll_x_get_native)?;
-  let scroll_x_get_name = scope.alloc_string("get scrollX")?;
-  scope.push_root(Value::String(scroll_x_get_name))?;
-  let scroll_x_get_func =
-    scope.alloc_native_function(scroll_x_get_call_id, None, scroll_x_get_name, 0)?;
-  scope.heap_mut().object_set_prototype(
-    scroll_x_get_func,
-    Some(realm.intrinsics().function_prototype()),
-  )?;
-  scope.push_root(Value::Object(scroll_x_get_func))?;
-  let scroll_x_key = alloc_key(&mut scope, "scrollX")?;
-  scope.define_property(
-    global,
-    scroll_x_key,
-    PropertyDescriptor {
-      enumerable: false,
-      configurable: true,
-      kind: PropertyKind::Accessor {
-        get: Value::Object(scroll_x_get_func),
-        set: Value::Undefined,
-      },
-    },
-  )?;
-  // pageXOffset is an alias of scrollX.
-  let page_x_offset_key = alloc_key(&mut scope, "pageXOffset")?;
-  scope.define_property(
-    global,
-    page_x_offset_key,
-    PropertyDescriptor {
-      enumerable: false,
-      configurable: true,
-      kind: PropertyKind::Accessor {
-        get: Value::Object(scroll_x_get_func),
-        set: Value::Undefined,
-      },
-    },
-  )?;
-
-  let scroll_y_get_call_id = vm.register_native_call(window_scroll_y_get_native)?;
-  let scroll_y_get_name = scope.alloc_string("get scrollY")?;
-  scope.push_root(Value::String(scroll_y_get_name))?;
-  let scroll_y_get_func =
-    scope.alloc_native_function(scroll_y_get_call_id, None, scroll_y_get_name, 0)?;
-  scope.heap_mut().object_set_prototype(
-    scroll_y_get_func,
-    Some(realm.intrinsics().function_prototype()),
-  )?;
-  scope.push_root(Value::Object(scroll_y_get_func))?;
-  let scroll_y_key = alloc_key(&mut scope, "scrollY")?;
-  scope.define_property(
-    global,
-    scroll_y_key,
-    PropertyDescriptor {
-      enumerable: false,
-      configurable: true,
-      kind: PropertyKind::Accessor {
-        get: Value::Object(scroll_y_get_func),
-        set: Value::Undefined,
-      },
-    },
-  )?;
-  // pageYOffset is an alias of scrollY.
-  let page_y_offset_key = alloc_key(&mut scope, "pageYOffset")?;
-  scope.define_property(
-    global,
-    page_y_offset_key,
-    PropertyDescriptor {
-      enumerable: false,
-      configurable: true,
-      kind: PropertyKind::Accessor {
-        get: Value::Object(scroll_y_get_func),
-        set: Value::Undefined,
-      },
-    },
-  )?;
 
   // getComputedStyle(element[, pseudoElt])
   let computed_style_get_property_value_call_id =
