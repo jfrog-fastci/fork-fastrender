@@ -50,6 +50,7 @@
 extern crate runtime_native as _;
 
 pub mod builtins;
+pub mod backend_ssa;
 pub mod codegen;
 pub mod codes;
 pub mod compiler;
@@ -115,6 +116,16 @@ pub enum EmitKind {
   Executable,
 }
 
+/// Which internal code generation backend to use for the typechecked pipeline.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum BackendKind {
+  /// Existing HIR-driven backend (`native-js/src/codegen`).
+  Hir,
+  /// New SSA/analysis-driven backend built on `optimize-js` CFG/IL.
+  Ssa,
+}
+
 /// Options controlling native compilation.
 #[derive(Debug, Clone)]
 #[non_exhaustive]
@@ -146,6 +157,8 @@ pub struct CompilerOptions {
   pub pie: bool,
   /// If true, recognize and lower small builtin APIs such as `console.log` and `assert`.
   pub builtins: bool,
+  /// Which code generation backend to use for the typechecked pipeline.
+  pub backend: BackendKind,
   /// Explicit output path. When `None`, a temp file is created for the chosen [`EmitKind`].
   pub output: Option<PathBuf>,
   /// If set, also write the generated textual LLVM IR (`.ll`) to this path in addition to the
@@ -168,6 +181,7 @@ impl Default for CompilerOptions {
       keep_temp: false,
       pie: false,
       builtins: true,
+      backend: BackendKind::Hir,
       output: None,
       emit_ir: None,
     }

@@ -543,18 +543,31 @@ impl<'a> Compiler<'a> {
     context: &'ctx Context,
     loaded: &LoadedProgram,
   ) -> Result<Module<'ctx>, NativeJsError> {
-    crate::codegen::codegen(
-      context,
-      self.program,
-      self.entry,
-      loaded.entrypoint,
-      crate::codegen::CodegenOptions {
-        module_name: "native-js".to_string(),
-        debug: self.opts.debug,
-        opt_level: effective_opt_level(self.opts),
-      },
-    )
-    .map_err(|diagnostics| NativeJsError::Rejected { diagnostics })
+    match self.opts.backend {
+      crate::BackendKind::Hir => crate::codegen::codegen(
+        context,
+        self.program,
+        self.entry,
+        loaded.entrypoint,
+        crate::codegen::CodegenOptions {
+          module_name: "native-js".to_string(),
+          debug: self.opts.debug,
+          opt_level: effective_opt_level(self.opts),
+        },
+      )
+      .map_err(|diagnostics| NativeJsError::Rejected { diagnostics }),
+      crate::BackendKind::Ssa => crate::backend_ssa::codegen(
+        context,
+        self.program,
+        self.entry,
+        loaded.entrypoint,
+        crate::backend_ssa::CodegenOptions {
+          module_name: "native-js".to_string(),
+        },
+        self.opts.debug,
+      )
+      .map_err(|diagnostics| NativeJsError::Rejected { diagnostics }),
+    }
   }
 
   fn emit_artifact<'ctx>(&self, module: &Module<'ctx>) -> Result<Artifact, NativeJsError> {
