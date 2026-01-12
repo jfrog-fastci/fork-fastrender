@@ -410,7 +410,8 @@ pub fn create_list_from_array_like_with_host_and_hooks(
   // Budget the per-element work (string allocation + `Get`) more aggressively than the default
   // 1024-iteration cadence used in many native loops. `CreateListFromArrayLike` is often invoked by
   // `Function.prototype.apply` on attacker-controlled "array-like" objects and can otherwise
-  // allocate large numbers of temporary property keys before fuel is observed.
+  // allocate large numbers of temporary property keys before fuel is observed (see
+  // `budget_integration::builtins_function_apply_consumes_fuel_in_native_loop`).
   const TICK_EVERY: usize = 64;
   for idx in 0..len {
     if idx % TICK_EVERY == 0 {

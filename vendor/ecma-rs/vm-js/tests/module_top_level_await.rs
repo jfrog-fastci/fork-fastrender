@@ -435,6 +435,105 @@ fn export_default_await_initializes_default_binding() -> Result<(), VmError> {
   Ok(())
 }
 
+// Exercises `IncrementModuleAsyncEvaluationCount` + `[[AsyncEvaluationOrder]]` assignment using the
+// spec's "asynchronous cyclic module graph" example.
+//
+// See: ECMA-262 Figure "An asynchronous cyclic module graph" + Table "Module fields after the
+// initial Evaluate() call".
+#[test]
+fn module_async_evaluation_order_is_deterministic() -> Result<(), VmError> {
+  let mut vm = Vm::new(VmOptions::default());
+
+  let mut graph = ModuleGraph::new();
+  let a = graph.add_module_with_specifier(
+    "a.js",
+    SourceTextModuleRecord::parse(
+      r#"
+        import "b.js";
+        import "c.js";
+        export {};
+      "#,
+    )?,
+  );
+  let b = graph.add_module_with_specifier(
+    "b.js",
+    SourceTextModuleRecord::parse(
+      r#"
+        import "d.js";
+        await 0;
+        export {};
+      "#,
+    )?,
+  );
+  let c = graph.add_module_with_specifier(
+    "c.js",
+    SourceTextModuleRecord::parse(
+      r#"
+        import "d.js";
+        import "e.js";
+        export {};
+      "#,
+    )?,
+  );
+  let d = graph.add_module_with_specifier(
+    "d.js",
+    SourceTextModuleRecord::parse(
+      r#"
+        import "a.js";
+        await 0;
+        export {};
+      "#,
+    )?,
+  );
+  let e = graph.add_module_with_specifier(
+    "e.js",
+    SourceTextModuleRecord::parse(
+      r#"
+        await 0;
+        export {};
+      "#,
+    )?,
+  );
+  graph.link_all_by_specifier();
+
+  graph.inner_module_evaluation(&mut vm, a)?;
+
+  let order_a = graph
+    .module_async_evaluation_order(a)
+    .expect("a should have an async evaluation order");
+  let order_b = graph
+    .module_async_evaluation_order(b)
+    .expect("b should have an async evaluation order");
+  let order_c = graph
+    .module_async_evaluation_order(c)
+    .expect("c should have an async evaluation order");
+  let order_d = graph
+    .module_async_evaluation_order(d)
+    .expect("d should have an async evaluation order");
+  let order_e = graph
+    .module_async_evaluation_order(e)
+    .expect("e should have an async evaluation order");
+
+  // The spec example assigns the following relative order:
+  // D < B < E < C < A.
+  assert!(order_d < order_b);
+  assert!(order_b < order_e);
+  assert!(order_e < order_c);
+  assert!(order_c < order_a);
+
+  // Ensure `AsyncModuleExecutionFulfilled` produces a deterministically sorted execList when
+  // multiple ancestors become available at once:
+  // - E fulfilling first decrements C to 1 pending dependency (no execList yet),
+  // - D fulfilling next makes both B and C available, and sorting must execute B before C.
+  let exec_after_e = graph.async_module_execution_fulfilled(e)?;
+  assert!(exec_after_e.is_empty());
+
+  let exec_after_d = graph.async_module_execution_fulfilled(d)?;
+  assert_eq!(exec_after_d, vec![b, c]);
+
+  Ok(())
+}
+
 #[test]
 fn throw_await_rejects_module_evaluation_promise() -> Result<(), VmError> {
   let (mut vm, mut heap, mut realm) = new_vm_heap_realm()?;

@@ -263,6 +263,12 @@ pub struct Vm {
   interrupt_handle: InterruptHandle,
   budget: BudgetState,
   math_random_state: u64,
+  /// Counter used to assign deterministic `[[AsyncEvaluationOrder]]` values during async module
+  /// evaluation (top-level await).
+  ///
+  /// This is the engine's equivalent of ECMA-262's Agent Record `[[ModuleAsyncEvaluationCount]]`
+  /// and is incremented by `IncrementModuleAsyncEvaluationCount`.
+  module_async_evaluation_count: u64,
   stack: Vec<StackFrame>,
   execution_context_stack: Vec<ExecutionContext>,
   native_calls: Vec<NativeCall>,
@@ -531,6 +537,7 @@ impl Vm {
       // Placeholder; immediately overwritten by `reset_budget_to_default`.
       budget: BudgetState::new(Budget::unlimited(check_time_every)),
       math_random_state,
+      module_async_evaluation_count: 0,
       stack: Vec::new(),
       execution_context_stack: Vec::new(),
       native_calls: Vec::new(),
@@ -593,6 +600,25 @@ impl Vm {
     x ^= x >> 27;
     self.math_random_state = x;
     x.wrapping_mul(0x2545_F491_4F6C_DD1D)
+  }
+
+  /// Implements ECMA-262 `IncrementModuleAsyncEvaluationCount`.
+  ///
+  /// Returns the old counter value and increments it.
+  pub(crate) fn increment_module_async_evaluation_count(&mut self) -> u64 {
+    let old = self.module_async_evaluation_count;
+    // Prevent debug-overflow panics; wrap is fine (overflow would be unobservable in practice).
+    self.module_async_evaluation_count = self.module_async_evaluation_count.wrapping_add(1);
+    old
+  }
+
+  /// Resets the async module evaluation counter.
+  ///
+  /// Spec note: `[[ModuleAsyncEvaluationCount]]` may be unobservably reset to 0 whenever there are
+  /// no pending async modules.
+  #[allow(dead_code)]
+  pub(crate) fn reset_module_async_evaluation_count(&mut self) {
+    self.module_async_evaluation_count = 0;
   }
 
   /// Returns the VM-owned microtask queue.

@@ -13,6 +13,7 @@ use crate::{
 };
 use crate::{Heap, VmHost, VmHostHooks};
 use core::mem;
+use std::cmp::Ordering;
 use std::sync::Arc;
 use std::collections::HashMap;
 
@@ -45,6 +46,43 @@ fn non_throw_vm_error_message(err: &VmError) -> &'static str {
     },
     VmError::Syntax(_) => "syntax error",
   }
+}
+
+/// Value of a module's `[[AsyncEvaluationOrder]]` internal slot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AsyncEvaluationOrder {
+  /// The module is not (currently) part of async module evaluation.
+  Unset,
+  /// The module's async execution completed (fulfilled or rejected).
+  Done,
+  /// The module has been assigned an evaluation order index.
+  Order(u64),
+}
+
+impl Default for AsyncEvaluationOrder {
+  fn default() -> Self {
+    Self::Unset
+  }
+}
+
+impl AsyncEvaluationOrder {
+  #[inline]
+  fn as_integer(self) -> Option<u64> {
+    match self {
+      Self::Order(n) => Some(n),
+      _ => None,
+    }
+  }
+}
+
+#[derive(Debug, Default)]
+struct AsyncModuleEvalState {
+  async_evaluation_order: AsyncEvaluationOrder,
+  /// Mirrors the spec's `[[PendingAsyncDependencies]]` slot:
+  /// - `None` means `~empty~`,
+  /// - `Some(n)` means an integer counter.
+  pending_async_dependencies: Option<usize>,
+  async_parent_modules: Vec<ModuleId>,
 }
 
 fn format_rejection_stack_trace_limited(frames: &[StackFrame]) -> String {
@@ -194,6 +232,7 @@ pub struct ModuleGraph {
   pending_dynamic_import_prev_graph: Option<*mut ModuleGraph>,
   next_pending_dynamic_import_evaluation_id: u32,
   torn_down: bool,
+  async_eval_states: Vec<AsyncModuleEvalState>,
 }
 
 impl Default for ModuleGraph {
@@ -208,6 +247,7 @@ impl Default for ModuleGraph {
       next_pending_dynamic_import_evaluation_id: 0,
       // A freshly-created graph does not own any persistent roots yet, and can be dropped safely.
       torn_down: true,
+      async_eval_states: Vec::new(),
     }
   }
 }
@@ -292,6 +332,7 @@ impl ModuleGraph {
     let id = ModuleId::from_raw(self.modules.len() as u64);
     self.modules.push(record);
     self.tla_states.push(None);
+    self.async_eval_states.push(AsyncModuleEvalState::default());
     id
   }
 
@@ -416,6 +457,193 @@ impl ModuleGraph {
   /// Alias for [`ModuleGraph::teardown`].
   pub fn remove_roots(&mut self, vm: &mut Vm, heap: &mut Heap) {
     self.teardown(vm, heap);
+  }
+
+  /// Returns the module's `[[AsyncEvaluationOrder]]` value if it has been assigned an integer.
+  ///
+  /// This is a minimal testing/introspection hook used to validate deterministic async module
+  /// evaluation ordering.
+  pub fn module_async_evaluation_order(&self, module: ModuleId) -> Option<u64> {
+    self
+      .async_eval_states
+      .get(module_index(module))
+      .and_then(|s| s.async_evaluation_order.as_integer())
+  }
+
+  /// Implements the `InnerModuleEvaluation` bookkeeping needed to assign deterministic
+  /// `[[AsyncEvaluationOrder]]` values for top-level await graphs.
+  ///
+  /// This currently models only the state transitions needed for `AsyncModuleExecutionFulfilled`'s
+  /// `execList` sorting (evaluation order + pending dependency counts + async-parent links). It
+  /// intentionally does **not** execute module code.
+  pub fn inner_module_evaluation(&mut self, vm: &mut Vm, module: ModuleId) -> Result<(), VmError> {
+    // Reset per-module async evaluation state so callers can invoke this deterministically on a
+    // fresh graph (e.g. unit tests).
+    for state in &mut self.async_eval_states {
+      state.async_evaluation_order = AsyncEvaluationOrder::Unset;
+      state.pending_async_dependencies = None;
+      state.async_parent_modules.clear();
+    }
+
+    let mut visited = vec![false; self.modules.len()];
+    self.inner_module_evaluation_dfs(vm, module, &mut visited)
+  }
+
+  fn inner_module_evaluation_dfs(
+    &mut self,
+    vm: &mut Vm,
+    module: ModuleId,
+    visited: &mut [bool],
+  ) -> Result<(), VmError> {
+    let idx = module_index(module);
+    if idx >= self.modules.len() {
+      return Err(VmError::invalid_handle());
+    }
+    if visited[idx] {
+      return Ok(());
+    }
+    visited[idx] = true;
+
+    // Recurse into requested modules first (left-to-right).
+    let requests = self.modules[idx].requested_modules.clone();
+    let mut deps: Vec<ModuleId> = Vec::new();
+    deps
+      .try_reserve_exact(requests.len())
+      .map_err(|_| VmError::OutOfMemory)?;
+    for request in &requests {
+      if let Some(dep) = self.get_imported_module(module, request) {
+        deps.push(dep);
+      }
+    }
+    for &dep in &deps {
+      self.inner_module_evaluation_dfs(vm, dep, visited)?;
+    }
+
+    // Compute PendingAsyncDependencies and build AsyncParentModules edges.
+    let mut pending: usize = 0;
+    for &dep in &deps {
+      let dep_idx = module_index(dep);
+      if self.async_eval_states[dep_idx]
+        .async_evaluation_order
+        .as_integer()
+        .is_some()
+      {
+        pending = pending.saturating_add(1);
+        self.async_eval_states[dep_idx]
+          .async_parent_modules
+          .push(module);
+      }
+    }
+
+    if pending > 0 || self.modules[idx].has_tla {
+      // `IncrementModuleAsyncEvaluationCount` assigns unique monotonic integers in discovery order.
+      let order = vm.increment_module_async_evaluation_count();
+      self.async_eval_states[idx].async_evaluation_order = AsyncEvaluationOrder::Order(order);
+      self.async_eval_states[idx].pending_async_dependencies = Some(pending);
+    } else {
+      // Leave the module as `~unset~` / `~empty~` for purely-synchronous modules.
+      self.async_eval_states[idx].async_evaluation_order = AsyncEvaluationOrder::Unset;
+      self.async_eval_states[idx].pending_async_dependencies = None;
+    }
+
+    Ok(())
+  }
+
+  fn gather_available_ancestors(
+    &mut self,
+    module: ModuleId,
+    exec_list: &mut Vec<ModuleId>,
+  ) -> Result<(), VmError> {
+    let idx = module_index(module);
+    if idx >= self.modules.len() {
+      return Err(VmError::invalid_handle());
+    }
+
+    // Clone the parent list so we can mutably borrow `self` while iterating.
+    let parents = self.async_eval_states[idx].async_parent_modules.clone();
+    for parent in parents {
+      if exec_list.contains(&parent) {
+        continue;
+      }
+
+      let parent_idx = module_index(parent);
+      if parent_idx >= self.modules.len() {
+        return Err(VmError::invalid_handle());
+      }
+
+      let pending = self.async_eval_states[parent_idx]
+        .pending_async_dependencies
+        .ok_or(VmError::InvariantViolation(
+          "GatherAvailableAncestors: async parent missing pending dependency count",
+        ))?;
+      debug_assert!(pending > 0, "pendingAsyncDependencies underflow");
+      let new_pending = pending.saturating_sub(1);
+      self.async_eval_states[parent_idx].pending_async_dependencies = Some(new_pending);
+
+      if new_pending == 0 {
+        exec_list.push(parent);
+        if !self.modules[parent_idx].has_tla {
+          self.gather_available_ancestors(parent, exec_list)?;
+        }
+      }
+    }
+
+    Ok(())
+  }
+
+  /// Implements `AsyncModuleExecutionFulfilled`'s `execList` computation and sorting.
+  ///
+  /// This updates `[[PendingAsyncDependencies]]` for async parents and returns the `sortedExecList`
+  /// (ordered by `[[AsyncEvaluationOrder]]` ascending).
+  ///
+  /// Note: this is currently a *state-machine helper* for top-level await tests and does not yet
+  /// execute module code.
+  pub fn async_module_execution_fulfilled(
+    &mut self,
+    module: ModuleId,
+  ) -> Result<Vec<ModuleId>, VmError> {
+    let idx = module_index(module);
+    if idx >= self.modules.len() {
+      return Err(VmError::invalid_handle());
+    }
+
+    // Mirror the spec's `~done~` transition.
+    debug_assert!(
+      matches!(
+        self.async_eval_states[idx].async_evaluation_order,
+        AsyncEvaluationOrder::Order(_)
+      ),
+      "AsyncModuleExecutionFulfilled called on a module without an integer AsyncEvaluationOrder"
+    );
+    self.async_eval_states[idx].async_evaluation_order = AsyncEvaluationOrder::Done;
+
+    let mut exec_list: Vec<ModuleId> = Vec::new();
+    self.gather_available_ancestors(module, &mut exec_list)?;
+
+    exec_list.sort_by(|a, b| {
+      let a_order = self
+        .async_eval_states
+        .get(module_index(*a))
+        .and_then(|s| s.async_evaluation_order.as_integer())
+        .unwrap_or(u64::MAX);
+      let b_order = self
+        .async_eval_states
+        .get(module_index(*b))
+        .and_then(|s| s.async_evaluation_order.as_integer())
+        .unwrap_or(u64::MAX);
+      a_order.cmp(&b_order)
+    });
+
+    // Spec invariant: all elements are sorted by their integer order.
+    debug_assert!(exec_list
+      .windows(2)
+      .all(|w| match w {
+        [a, b] => self.module_async_evaluation_order(*a).cmp(&self.module_async_evaluation_order(*b))
+          != Ordering::Greater,
+        _ => true,
+      }));
+
+    Ok(exec_list)
   }
 
   /// Abort an in-progress async module evaluation created via top-level `await`.
