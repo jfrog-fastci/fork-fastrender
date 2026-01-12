@@ -3353,6 +3353,27 @@ fn default_export_function_interface_namespace_merge_reports_ts2652_on_function_
 }
 
 #[test]
+fn default_export_function_overloads_do_not_report_ts2652() {
+  let file = FileId(5095);
+  let source = include_str!(
+    "../../../parse-js/tests/TypeScript/tests/cases/conformance/es6/modules/defaultExportWithOverloads01.ts"
+  );
+
+  let ast = parse(source).expect("parse defaultExportWithOverloads01.ts");
+  let lowered = lower_file(file, HirFileKind::Ts, &ast);
+  let hir = lower_to_ts_hir(&ast, &lowered, source);
+
+  let files: HashMap<FileId, Arc<HirFile>> = maplit::hashmap! { file => Arc::new(hir) };
+  let resolver = StaticResolver::new(HashMap::new());
+  let (_semantics, diags) = bind_ts_program(&[file], &resolver, |f| files.get(&f).unwrap().clone());
+
+  assert!(
+    diags.iter().all(|d| d.code != "TS2652"),
+    "expected no TS2652 diagnostics, got {diags:?}"
+  );
+}
+
+#[test]
 fn binder_diagnostics_are_deterministic_across_orders_and_threads() {
   let file_a = FileId(6000);
   let file_b = FileId(6001);

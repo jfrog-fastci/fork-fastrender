@@ -3515,15 +3515,34 @@ fn emit_default_export_merge_diagnostics(
 
     decls.sort_by(|a, b| decl_sort_key(symbols, *a).cmp(&decl_sort_key(symbols, *b)));
 
-    let Some(default_export_decl) = decls.iter().copied().find(|decl| {
+    let is_default_export_decl = |decl: &DeclId| {
       let data = symbols.decl(*decl);
       matches!(data.exported, Exported::Default)
         && matches!(data.kind, DeclKind::Function | DeclKind::Class)
-    }) else {
+    };
+
+    let Some(default_export_decl) = decls.iter().copied().find(|decl| is_default_export_decl(decl))
+    else {
       continue;
     };
 
-    let Some(other_decl) = decls.iter().copied().find(|decl| *decl != default_export_decl) else {
+    // `tsc` does not report TS2652 for pure default-export overload sets like:
+    //
+    // ```ts
+    // export default function f();
+    // export default function f(x: string);
+    // export default function f(...args: any[]) {}
+    // ```
+    //
+    // In that case, the merged symbol contains multiple declarations, but they
+    // are all default exports. Only report TS2652 once the merged symbol
+    // contains at least one *non-default-export* declaration (namespace, type,
+    // or non-default overload) that truly merges with the default export.
+    let Some(other_decl) = decls
+      .iter()
+      .copied()
+      .find(|decl| !is_default_export_decl(decl))
+    else {
       continue;
     };
 
