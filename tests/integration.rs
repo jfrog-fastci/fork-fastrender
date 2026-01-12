@@ -32,7 +32,6 @@ mod ui;
 mod var;
 mod guards;
 mod js;
-mod interaction;
 mod resource;
 mod wpt;
 
@@ -45,5 +44,3 @@ mod tooling;
 mod regression;
 mod bin;
 mod bundled;
-
-mod wpt;
