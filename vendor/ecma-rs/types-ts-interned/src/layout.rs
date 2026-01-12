@@ -152,6 +152,8 @@ pub struct VariantLayout {
   pub ty: TypeId,
   pub layout: LayoutId,
   pub discriminant: u32,
+  /// Variant payload offset relative to the union's [`Layout::TaggedUnion`]
+  /// `payload_offset`.
   pub payload_offset: u32,
 }
 
