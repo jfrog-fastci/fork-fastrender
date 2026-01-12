@@ -2845,12 +2845,20 @@ impl<'a> Checker<'a> {
           self.check_unary(un.stx.operator, &un.stx.argument)
         }
       }
-      AstExpr::UnaryPostfix(post) => match post.stx.operator {
-        OperatorName::PostfixIncrement | OperatorName::PostfixDecrement => {
-          self.store.primitive_ids().number
+      AstExpr::UnaryPostfix(post) => {
+        let operand_ty = self.check_expr(&post.stx.argument);
+        match post.stx.operator {
+          OperatorName::PostfixIncrement | OperatorName::PostfixDecrement => {
+            let prim = self.store.primitive_ids();
+            if self.is_bigint_like(self.base_type(operand_ty)) {
+              prim.bigint
+            } else {
+              prim.number
+            }
+          }
+          _ => self.store.primitive_ids().unknown,
         }
-        _ => self.store.primitive_ids().unknown,
-      },
+      }
       AstExpr::Binary(bin) => self.check_binary(bin.stx.operator, &bin.stx.left, &bin.stx.right),
       AstExpr::Cond(cond) => {
         let cons = self.check_expr(&cond.stx.consequent);
@@ -7053,6 +7061,15 @@ impl<'a> Checker<'a> {
         let _ = self.check_expr(arg);
         self.store.primitive_ids().number
       }
+      OperatorName::PrefixIncrement | OperatorName::PrefixDecrement => {
+        let prim = self.store.primitive_ids();
+        let operand_ty = self.check_expr(arg);
+        if self.is_bigint_like(self.base_type(operand_ty)) {
+          prim.bigint
+        } else {
+          prim.number
+        }
+      }
       OperatorName::Await => {
         let inner = self.check_expr(arg);
         awaited_type(self.store.as_ref(), inner, self.ref_expander)
@@ -7789,6 +7806,15 @@ impl<'a> Checker<'a> {
         self.store.intersection(mapped)
       }
       _ => ty,
+    }
+  }
+
+  fn is_bigint_like(&self, ty: TypeId) -> bool {
+    match self.store.type_kind(ty) {
+      TypeKind::BigInt | TypeKind::BigIntLiteral(_) => true,
+      TypeKind::Union(members) => members.iter().all(|m| self.is_bigint_like(*m)),
+      TypeKind::Intersection(members) => members.iter().all(|m| self.is_bigint_like(*m)),
+      _ => false,
     }
   }
 
