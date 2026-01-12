@@ -6,8 +6,9 @@ use std::fmt::Formatter;
 use std::fmt::{self};
 
 pub use crate::il::meta::{
-  ArgUseMode, EffectLocation, EffectSet, InPlaceHint, InstMeta, Nullability, NullabilityNarrowing,
-  OwnershipState, ParallelPlan, ParallelReason, Purity, StringEncoding, TypeInfo,
+  ArgUseMode, AwaitBehavior, EffectLocation, EffectSet, InPlaceHint, InstMeta, Nullability,
+  NullabilityNarrowing, OwnershipState, ParallelPlan, ParallelReason, Purity, StringEncoding,
+  TypeInfo,
 };
 pub use crate::types::ValueTypeSummary;
 

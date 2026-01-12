@@ -377,6 +377,27 @@ impl Default for ArgUseMode {
   }
 }
 
+/// Whether an `await` is required to yield to the microtask queue.
+///
+/// In ECMAScript, `await` always yields (even when awaiting a non-promise value).
+/// Native AOT backends may opt into a relaxed semantics where `await` on a value
+/// proven to be non-promise and non-thenable is allowed to not yield.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
+pub enum AwaitBehavior {
+  /// Strict ECMAScript semantics: always yield.
+  MustYield,
+  /// Relaxed semantics: may not yield when the awaited value is already "ready".
+  MayNotYield,
+}
+
+impl Default for AwaitBehavior {
+  fn default() -> Self {
+    Self::MustYield
+  }
+}
+
 fn is_default_arg_use_modes(modes: &[ArgUseMode]) -> bool {
   modes.is_empty() || modes.iter().all(|m| matches!(m, ArgUseMode::Borrow))
 }
@@ -584,6 +605,15 @@ pub struct InstMeta {
     serde(default, skip_serializing_if = "Option::is_none")
   )]
   pub nullability_narrowing: Option<NullabilityNarrowing>,
+  /// Opt-in `await` semantics relaxation for internal await ops.
+  ///
+  /// This field is currently consumed by native backends that choose to elide
+  /// yielding for "ready" values (see [`AwaitBehavior`]).
+  #[cfg_attr(
+    feature = "serde",
+    serde(default, skip_serializing_if = "Option::is_none")
+  )]
+  pub await_behavior: Option<AwaitBehavior>,
   #[cfg_attr(
     feature = "serde",
     serde(default, skip_serializing_if = "Option::is_none")
@@ -678,6 +708,7 @@ impl InstMeta {
       && self.result_escape.is_none()
       && self.callee_purity.is_default()
       && self.nullability_narrowing.is_none()
+      && self.await_behavior.is_none()
       && self.value.is_none()
       && self.parallel.is_none()
       && self.parallel.is_none();
