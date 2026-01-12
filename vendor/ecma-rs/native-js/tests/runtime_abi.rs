@@ -124,6 +124,65 @@ fn runtime_abi_declares_raw_symbols_and_no_may_gc_wrappers() {
 
   // Raw runtime ABI symbols must be declared with addrspace(0) pointer types to match
   // `runtime-native`'s exported C ABI (important for LTO).
+  assert!(
+    ir.contains("declare void @rt_thread_init(i32)"),
+    "missing rt_thread_init:\n{ir}"
+  );
+  assert!(
+    ir.contains("declare void @rt_thread_deinit()"),
+    "missing rt_thread_deinit:\n{ir}"
+  );
+  assert!(
+    ir.contains("declare i64 @rt_thread_register(i32)"),
+    "missing rt_thread_register:\n{ir}"
+  );
+  assert!(
+    ir.contains("declare void @rt_thread_unregister()"),
+    "missing rt_thread_unregister:\n{ir}"
+  );
+  assert!(
+    ir.contains("declare void @rt_thread_set_parked(i1)"),
+    "missing rt_thread_set_parked:\n{ir}"
+  );
+  assert!(
+    ir.contains("declare void @rt_register_shape_table(ptr, i64)"),
+    "missing rt_register_shape_table:\n{ir}"
+  );
+
+  // ABI regression guards for thread entrypoints.
+  let thread_init_params = fns.rt_thread_init.get_type().get_param_types();
+  assert_eq!(thread_init_params.len(), 1);
+  assert_eq!(thread_init_params[0].into_int_type().get_bit_width(), 32);
+
+  let thread_register_params = fns.rt_thread_register.get_type().get_param_types();
+  assert_eq!(thread_register_params.len(), 1);
+  assert_eq!(thread_register_params[0].into_int_type().get_bit_width(), 32);
+  let thread_register_ret = fns
+    .rt_thread_register
+    .get_type()
+    .get_return_type()
+    .expect("rt_thread_register returns i64");
+  assert_eq!(thread_register_ret.into_int_type().get_bit_width(), 64);
+
+  let thread_set_parked_params = fns.rt_thread_set_parked.get_type().get_param_types();
+  assert_eq!(thread_set_parked_params.len(), 1);
+  assert_eq!(thread_set_parked_params[0].into_int_type().get_bit_width(), 1);
+
+  let register_shape_table_params = fns.rt_register_shape_table.get_type().get_param_types();
+  assert_eq!(register_shape_table_params.len(), 2);
+  assert!(register_shape_table_params[0].is_pointer_type());
+  assert_eq!(
+    register_shape_table_params[0]
+      .into_pointer_type()
+      .get_address_space(),
+    AddressSpace::default(),
+    "rt_register_shape_table table param must be addrspace(0) in the stable ABI"
+  );
+  assert_eq!(
+    register_shape_table_params[1].into_int_type().get_bit_width(),
+    64
+  );
+
   assert!(ir.contains("declare ptr @rt_alloc"), "missing rt_alloc:\n{ir}");
   assert!(
     ir.contains("declare ptr @rt_alloc_pinned"),
@@ -304,6 +363,30 @@ fn runtime_abi_declares_raw_symbols_and_no_may_gc_wrappers() {
 
   // MayGC runtime entrypoints must remain eligible for statepoint rewriting, so they must not be
   // marked as GC leaf functions.
+  assert!(
+    !has_gc_leaf_attr(fns.rt_thread_init),
+    "rt_thread_init must not be marked gc-leaf-function"
+  );
+  assert!(
+    !has_gc_leaf_attr(fns.rt_thread_deinit),
+    "rt_thread_deinit must not be marked gc-leaf-function"
+  );
+  assert!(
+    !has_gc_leaf_attr(fns.rt_thread_register),
+    "rt_thread_register must not be marked gc-leaf-function"
+  );
+  assert!(
+    !has_gc_leaf_attr(fns.rt_thread_unregister),
+    "rt_thread_unregister must not be marked gc-leaf-function"
+  );
+  assert!(
+    !has_gc_leaf_attr(fns.rt_thread_set_parked),
+    "rt_thread_set_parked must not be marked gc-leaf-function"
+  );
+  assert!(
+    !has_gc_leaf_attr(fns.rt_register_shape_table),
+    "rt_register_shape_table must not be marked gc-leaf-function"
+  );
   assert!(
     !has_gc_leaf_attr(fns.rt_alloc),
     "rt_alloc must not be marked gc-leaf-function"

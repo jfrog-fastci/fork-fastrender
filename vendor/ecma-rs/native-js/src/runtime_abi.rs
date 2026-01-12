@@ -56,6 +56,12 @@ const _: [(); 4] = [(); core::mem::size_of::<RtShapeId>()];
 #[derive(Clone, Copy)]
 pub struct RuntimeFns<'ctx> {
   // Raw runtime ABI symbols (addrspace(0)).
+  pub rt_thread_init: FunctionValue<'ctx>,
+  pub rt_thread_deinit: FunctionValue<'ctx>,
+  pub rt_thread_register: FunctionValue<'ctx>,
+  pub rt_thread_unregister: FunctionValue<'ctx>,
+  pub rt_thread_set_parked: FunctionValue<'ctx>,
+  pub rt_register_shape_table: FunctionValue<'ctx>,
   pub rt_alloc: FunctionValue<'ctx>,
   pub rt_alloc_pinned: FunctionValue<'ctx>,
   pub rt_alloc_array: FunctionValue<'ctx>,
@@ -106,6 +112,12 @@ impl<'ctx, 'm> RuntimeAbi<'ctx, 'm> {
     let rt_keep_alive_gc_ref_gc = self.get_or_define_leaf_wrapper(RuntimeFn::KeepAliveGcRef);
 
     RuntimeFns {
+      rt_thread_init: self.get_or_declare_raw(RuntimeFn::ThreadInit),
+      rt_thread_deinit: self.get_or_declare_raw(RuntimeFn::ThreadDeinit),
+      rt_thread_register: self.get_or_declare_raw(RuntimeFn::ThreadRegister),
+      rt_thread_unregister: self.get_or_declare_raw(RuntimeFn::ThreadUnregister),
+      rt_thread_set_parked: self.get_or_declare_raw(RuntimeFn::ThreadSetParked),
+      rt_register_shape_table: self.get_or_declare_raw(RuntimeFn::RegisterShapeTable),
       rt_alloc: self.get_or_declare_raw(RuntimeFn::Alloc),
       rt_alloc_pinned: self.get_or_declare_raw(RuntimeFn::AllocPinned),
       rt_alloc_array: self.get_or_declare_raw(RuntimeFn::AllocArray),

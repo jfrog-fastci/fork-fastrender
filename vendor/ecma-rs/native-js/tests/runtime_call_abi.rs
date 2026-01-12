@@ -8,6 +8,12 @@ use native_js::runtime_abi::{
 fn runtime_call_registry_has_gc_safety_metadata() {
   // MayGC functions with no raw GC pointer args.
   for f in [
+    RuntimeFn::ThreadInit,
+    RuntimeFn::ThreadDeinit,
+    RuntimeFn::ThreadRegister,
+    RuntimeFn::ThreadUnregister,
+    RuntimeFn::ThreadSetParked,
+    RuntimeFn::RegisterShapeTable,
     RuntimeFn::Alloc,
     RuntimeFn::AllocPinned,
     RuntimeFn::AllocArray,

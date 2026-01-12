@@ -13,6 +13,30 @@
 /// See `native-js/docs/llvm_gc_strategy.md` for the full rationale.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum RuntimeFn {
+  // -----------------------------------------------------------------------------
+  // Thread lifecycle / mutator registration
+  // -----------------------------------------------------------------------------
+  //
+  // These entrypoints may allocate thread-local runtime state and/or block on GC-aware locks.
+  // Calls from compiled code must therefore be eligible for statepoint rewriting.
+
+  /// Register the current OS thread with the runtime (`rt_thread_init`).
+  ThreadInit,
+  /// Unregister the current OS thread from the runtime (`rt_thread_deinit`).
+  ThreadDeinit,
+  /// Register the current OS thread and return a runtime-assigned thread id (`rt_thread_register`).
+  ThreadRegister,
+  /// Unregister the current OS thread previously registered via [`RuntimeFn::ThreadRegister`].
+  ThreadUnregister,
+  /// Mark/unmark the current thread as "parked" (`rt_thread_set_parked`).
+  ThreadSetParked,
+
+  // -----------------------------------------------------------------------------
+  // Memory / shape tables
+  // -----------------------------------------------------------------------------
+
+  /// Register the global shape table used by `RtShapeId` (`rt_register_shape_table`).
+  RegisterShapeTable,
   /// Allocation entrypoint: always may trigger GC.
   Alloc,
   /// Pinned allocation entrypoint: always may trigger GC.
@@ -177,6 +201,96 @@ pub(crate) struct RuntimeFnDecl {
 impl RuntimeFn {
   pub(crate) const fn decl(self) -> RuntimeFnDecl {
     match self {
+      RuntimeFn::ThreadInit => RuntimeFnDecl {
+        spec: RuntimeFnSpec {
+          name: "rt_thread_init",
+          may_gc: true,
+          gc_ptr_args: 0,
+          gc_handle_args: 0,
+          arg_rooting: ArgRootingPolicy::NoGcPointersAllowedIfMayGc,
+        },
+        abi: RuntimeFnAbi {
+          runtime_ret: AbiTy::Void,
+          runtime_params: &[AbiTy::I32],
+          codegen_ret: AbiTy::Void,
+          codegen_params: &[AbiTy::I32],
+        },
+      },
+      RuntimeFn::ThreadDeinit => RuntimeFnDecl {
+        spec: RuntimeFnSpec {
+          name: "rt_thread_deinit",
+          may_gc: true,
+          gc_ptr_args: 0,
+          gc_handle_args: 0,
+          arg_rooting: ArgRootingPolicy::NoGcPointersAllowedIfMayGc,
+        },
+        abi: RuntimeFnAbi {
+          runtime_ret: AbiTy::Void,
+          runtime_params: &[],
+          codegen_ret: AbiTy::Void,
+          codegen_params: &[],
+        },
+      },
+      RuntimeFn::ThreadRegister => RuntimeFnDecl {
+        spec: RuntimeFnSpec {
+          name: "rt_thread_register",
+          may_gc: true,
+          gc_ptr_args: 0,
+          gc_handle_args: 0,
+          arg_rooting: ArgRootingPolicy::NoGcPointersAllowedIfMayGc,
+        },
+        abi: RuntimeFnAbi {
+          runtime_ret: AbiTy::I64,
+          runtime_params: &[AbiTy::I32],
+          codegen_ret: AbiTy::I64,
+          codegen_params: &[AbiTy::I32],
+        },
+      },
+      RuntimeFn::ThreadUnregister => RuntimeFnDecl {
+        spec: RuntimeFnSpec {
+          name: "rt_thread_unregister",
+          may_gc: true,
+          gc_ptr_args: 0,
+          gc_handle_args: 0,
+          arg_rooting: ArgRootingPolicy::NoGcPointersAllowedIfMayGc,
+        },
+        abi: RuntimeFnAbi {
+          runtime_ret: AbiTy::Void,
+          runtime_params: &[],
+          codegen_ret: AbiTy::Void,
+          codegen_params: &[],
+        },
+      },
+      RuntimeFn::ThreadSetParked => RuntimeFnDecl {
+        spec: RuntimeFnSpec {
+          name: "rt_thread_set_parked",
+          may_gc: true,
+          gc_ptr_args: 0,
+          gc_handle_args: 0,
+          arg_rooting: ArgRootingPolicy::NoGcPointersAllowedIfMayGc,
+        },
+        abi: RuntimeFnAbi {
+          runtime_ret: AbiTy::Void,
+          runtime_params: &[AbiTy::I1],
+          codegen_ret: AbiTy::Void,
+          codegen_params: &[AbiTy::I1],
+        },
+      },
+      RuntimeFn::RegisterShapeTable => RuntimeFnDecl {
+        spec: RuntimeFnSpec {
+          name: "rt_register_shape_table",
+          may_gc: true,
+          gc_ptr_args: 0,
+          gc_handle_args: 0,
+          arg_rooting: ArgRootingPolicy::NoGcPointersAllowedIfMayGc,
+        },
+        abi: RuntimeFnAbi {
+          runtime_ret: AbiTy::Void,
+          runtime_params: &[AbiTy::RawPtr, AbiTy::I64],
+          codegen_ret: AbiTy::Void,
+          codegen_params: &[AbiTy::RawPtr, AbiTy::I64],
+        },
+      },
       RuntimeFn::Alloc => RuntimeFnDecl {
         spec: RuntimeFnSpec {
           name: "rt_alloc",
@@ -454,6 +568,12 @@ mod tests {
     // When adding a runtime entrypoint, keep the GC-safety metadata and ABI signature metadata in
     // sync. This test is intentionally internal (unit test) so it can see the `AbiTy` variants.
     for f in [
+      RuntimeFn::ThreadInit,
+      RuntimeFn::ThreadDeinit,
+      RuntimeFn::ThreadRegister,
+      RuntimeFn::ThreadUnregister,
+      RuntimeFn::ThreadSetParked,
+      RuntimeFn::RegisterShapeTable,
       RuntimeFn::Alloc,
       RuntimeFn::AllocPinned,
       RuntimeFn::AllocArray,
