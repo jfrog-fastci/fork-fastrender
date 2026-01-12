@@ -95,6 +95,7 @@ pub struct AstIndex {
   params: HashMap<TextRange, *const Node<ParamDecl>>,
   vars: HashMap<TextRange, VarInfo>,
   class_field_initializers: HashMap<TextRange, ClassFieldInitializerInfo>,
+  class_member_functions: HashMap<TextRange, ClassMemberFunctionInfo>,
   classes: Vec<ClassInfo>,
   classes_by_name: HashMap<String, usize>,
   functions: Vec<FunctionInfo>,
@@ -142,6 +143,12 @@ struct ClassFieldInitializerInfo {
 }
 
 #[derive(Clone, Copy)]
+struct ClassMemberFunctionInfo {
+  class_index: usize,
+  is_static: bool,
+}
+
+#[derive(Clone, Copy)]
 struct FunctionInfo {
   func_span: TextRange,
   func: *const Node<Func>,
@@ -169,6 +176,7 @@ impl AstIndex {
       params: HashMap::new(),
       vars: HashMap::new(),
       class_field_initializers: HashMap::new(),
+      class_member_functions: HashMap::new(),
       classes: Vec::new(),
       classes_by_name: HashMap::new(),
       functions: Vec::new(),
@@ -781,9 +789,36 @@ impl AstIndex {
       }
     }
     match &member.stx.val {
-      ClassOrObjVal::Getter(getter) => self.index_function(&getter.stx.func, file, cancelled),
-      ClassOrObjVal::Setter(setter) => self.index_function(&setter.stx.func, file, cancelled),
-      ClassOrObjVal::Method(method) => self.index_function(&method.stx.func, file, cancelled),
+      ClassOrObjVal::Getter(getter) => {
+        self.class_member_functions.insert(
+          loc_to_range(file, getter.stx.func.loc),
+          ClassMemberFunctionInfo {
+            class_index,
+            is_static: member.stx.static_,
+          },
+        );
+        self.index_function(&getter.stx.func, file, cancelled);
+      }
+      ClassOrObjVal::Setter(setter) => {
+        self.class_member_functions.insert(
+          loc_to_range(file, setter.stx.func.loc),
+          ClassMemberFunctionInfo {
+            class_index,
+            is_static: member.stx.static_,
+          },
+        );
+        self.index_function(&setter.stx.func, file, cancelled);
+      }
+      ClassOrObjVal::Method(method) => {
+        self.class_member_functions.insert(
+          loc_to_range(file, method.stx.func.loc),
+          ClassMemberFunctionInfo {
+            class_index,
+            is_static: member.stx.static_,
+          },
+        );
+        self.index_function(&method.stx.func, file, cancelled);
+      }
       ClassOrObjVal::Prop(Some(expr)) => {
         let init_range = loc_to_range(file, expr.loc);
         self.class_field_initializers.insert(
@@ -819,6 +854,66 @@ impl AstIndex {
 
   fn class_field_initializer(&self, span: TextRange) -> Option<ClassFieldInitializerInfo> {
     self.class_field_initializers.get(&span).copied()
+  }
+
+  fn enclosing_class_field_initializer(&self, span: TextRange) -> Option<ClassFieldInitializerInfo> {
+    let mut best: Option<(u32, ClassFieldInitializerInfo)> = None;
+    for (init_span, info) in self.class_field_initializers.iter() {
+      let init_span = *init_span;
+      if !contains_range(init_span, span) && !contains_range(span, init_span) {
+        continue;
+      }
+      let len = init_span.end.saturating_sub(init_span.start);
+      let replace = match best {
+        Some((best_len, _)) => len < best_len,
+        None => true,
+      };
+      if replace {
+        best = Some((len, *info));
+      }
+    }
+    best.map(|(_, info)| info)
+  }
+
+  fn class_member_function(&self, span: TextRange) -> Option<ClassMemberFunctionInfo> {
+    self.class_member_functions.get(&span).copied()
+  }
+
+  fn enclosing_class_field_param_props(&self, span: TextRange) -> Option<&[String]> {
+    let mut best: Option<(u32, &Vec<String>)> = None;
+    for (init_span, props) in self.class_field_param_props.iter() {
+      let init_span = *init_span;
+      if !contains_range(init_span, span) && !contains_range(span, init_span) {
+        continue;
+      }
+      let len = init_span.end.saturating_sub(init_span.start);
+      let replace = match best {
+        Some((best_len, _)) => len < best_len,
+        None => true,
+      };
+      if replace {
+        best = Some((len, props));
+      }
+    }
+    best.map(|(_, props)| props.as_slice())
+  }
+
+  fn enclosing_class_static_block(&self, span: TextRange) -> Option<ClassStaticBlockInfo> {
+    let mut best: Option<(u32, ClassStaticBlockInfo)> = None;
+    for block in self.class_static_blocks.iter().copied() {
+      if !contains_range(block.span, span) && !contains_range(span, block.span) {
+        continue;
+      }
+      let len = block.span.end.saturating_sub(block.span.start);
+      let replace = match best {
+        Some((best_len, _)) => len < best_len,
+        None => true,
+      };
+      if replace {
+        best = Some((len, block));
+      }
+    }
+    best.map(|(_, block)| block)
   }
 
   fn field_declared_not_before(
@@ -1048,6 +1143,7 @@ pub fn check_body_with_expander(
     && body.pats.is_empty();
   let native_define_class_fields =
     use_define_for_class_fields && matches!(target, ScriptTarget::Es2022 | ScriptTarget::EsNext);
+  let prim = store.primitive_ids();
   let mut checker = Checker {
     store,
     relate,
@@ -1093,6 +1189,8 @@ pub fn check_body_with_expander(
     native_define_class_fields,
     current_class_field_param_props: None,
     class_field_initializer: None,
+    current_this_ty: prim.unknown,
+    current_super_ty: prim.unknown,
     file,
     ref_expander: relate_expander,
     def_type_param_decls: type_param_decls,
@@ -1241,6 +1339,8 @@ struct Checker<'a> {
   native_define_class_fields: bool,
   current_class_field_param_props: Option<&'a [String]>,
   class_field_initializer: Option<ClassFieldInitializerContext>,
+  current_this_ty: TypeId,
+  current_super_ty: TypeId,
   file: FileId,
   ref_expander: Option<&'a dyn types_ts_interned::RelateTypeExpander>,
   def_type_param_decls: Option<&'a HashMap<DefId, Arc<[TypeParamDecl]>>>,
@@ -1721,6 +1821,99 @@ impl<'a> Checker<'a> {
     None
   }
 
+  fn resolve_single_segment_ref(&self, name: &str, typeof_query: bool) -> Option<TypeId> {
+    let resolver = self.type_resolver.as_ref()?;
+    let path = [name.to_string()];
+    let def = if typeof_query {
+      resolver.resolve_typeof(&path)?
+    } else {
+      resolver.resolve_type_name(&path)?
+    };
+    Some(self.store.canon(self.store.intern_type(TypeKind::Ref {
+      def,
+      args: Vec::new(),
+    })))
+  }
+
+  fn this_super_for_class(&self, class_index: usize, is_static: bool) -> (TypeId, TypeId) {
+    let prim = self.store.primitive_ids();
+    let Some(info) = self.index.classes.get(class_index) else {
+      return (prim.unknown, prim.unknown);
+    };
+    let Some(name) = info.name.as_deref() else {
+      return (prim.unknown, prim.unknown);
+    };
+    let this_ty = self
+      .resolve_single_segment_ref(name, is_static)
+      .unwrap_or(prim.unknown);
+    let super_ty = info
+      .extends
+      .as_deref()
+      .and_then(|base| self.resolve_single_segment_ref(base, is_static))
+      .unwrap_or(prim.unknown);
+    (this_ty, super_ty)
+  }
+
+  fn enclosing_function(&self, span: TextRange, strict: bool) -> Option<FunctionInfo> {
+    let mut best: Option<FunctionInfo> = None;
+    for (idx, func) in self.index.functions.iter().copied().enumerate() {
+      if idx % 2048 == 0 {
+        self.check_cancelled();
+      }
+      let contains = if strict {
+        func.func_span.start < span.start && func.func_span.end > span.end
+      } else {
+        func.func_span.start <= span.start && func.func_span.end >= span.end
+      };
+      if !contains {
+        continue;
+      }
+      let len = func.func_span.end.saturating_sub(func.func_span.start);
+      let replace = match best {
+        Some(existing) => {
+          let existing_len = existing
+            .func_span
+            .end
+            .saturating_sub(existing.func_span.start);
+          len < existing_len
+        }
+        None => true,
+      };
+      if replace {
+        best = Some(func);
+      }
+    }
+    best
+  }
+
+  fn this_super_for_span(&self, span: TextRange) -> (TypeId, TypeId) {
+    if let Some(info) = self.index.enclosing_class_field_initializer(span) {
+      return self.this_super_for_class(info.class_index, info.is_static);
+    }
+
+    let prim = self.store.primitive_ids();
+    let mut current = span;
+    let mut strict = false;
+    while let Some(func) = self.enclosing_function(current, strict) {
+      let func_node = unsafe { &*func.func };
+      if func_node.stx.arrow {
+        current = func.func_span;
+        strict = true;
+        continue;
+      }
+      if let Some(ctx) = self.index.class_member_function(func.func_span) {
+        return self.this_super_for_class(ctx.class_index, ctx.is_static);
+      }
+      return (prim.unknown, prim.unknown);
+    }
+
+    if let Some(block) = self.index.enclosing_class_static_block(span) {
+      return self.this_super_for_class(block.class_index, true);
+    }
+
+    (prim.unknown, prim.unknown)
+  }
+
   fn check_enclosing_function(&mut self, body_range: TextRange) -> bool {
     let mut best: Option<FunctionInfo> = None;
     for (idx, func) in self.index.functions.iter().copied().enumerate() {
@@ -1750,6 +1943,10 @@ impl<'a> Checker<'a> {
     if let Some(func) = best {
       self.check_cancelled();
       let func_node = unsafe { &*func.func };
+      let (prev_this, prev_super) = (self.current_this_ty, self.current_super_ty);
+      let (this_ty, super_ty) = self.this_super_for_span(body_range);
+      self.current_this_ty = this_ty;
+      self.current_super_ty = super_ty;
       let prev_return = self.expected_return;
       let prev_async = self.in_async_function;
       let mut type_param_decls = Vec::new();
@@ -1780,6 +1977,8 @@ impl<'a> Checker<'a> {
       }
       self.expected_return = prev_return;
       self.in_async_function = prev_async;
+      self.current_this_ty = prev_this;
+      self.current_super_ty = prev_super;
       return true;
     }
     false
@@ -1813,7 +2012,13 @@ impl<'a> Checker<'a> {
         member_index: block.member_index,
         is_static: true,
       });
+      let (prev_this, prev_super) = (self.current_this_ty, self.current_super_ty);
+      let (this_ty, super_ty) = self.this_super_for_class(block.class_index, true);
+      self.current_this_ty = this_ty;
+      self.current_super_ty = super_ty;
       self.check_block_body(&block_node.stx.body);
+      self.current_this_ty = prev_this;
+      self.current_super_ty = prev_super;
       self.class_field_initializer = prev_ctx;
     }
 
@@ -1852,7 +2057,15 @@ impl<'a> Checker<'a> {
             member_index: info.member_index,
             is_static: info.is_static,
           });
+      let (prev_this, prev_super) = (self.current_this_ty, self.current_super_ty);
+      if let Some(ctx) = self.class_field_initializer {
+        let (this_ty, super_ty) = self.this_super_for_class(ctx.class_index, ctx.is_static);
+        self.current_this_ty = this_ty;
+        self.current_super_ty = super_ty;
+      }
       let _ = self.check_expr(expr);
+      self.current_this_ty = prev_this;
+      self.current_super_ty = prev_super;
       self.class_field_initializer = prev_field_init;
       self.current_class_field_param_props = prev_props;
       checked_any = true;
@@ -1887,19 +2100,26 @@ impl<'a> Checker<'a> {
       let mut has_type_params = false;
       if let Some(init) = info.initializer {
         let init = unsafe { &*init };
+        let init_range = loc_to_range(self.file, init.loc);
         // Initializer bodies can be nested inside functions. Bind any enclosing
         // function parameters so references like `const x = param;` do not emit
         // spurious `unknown identifier` diagnostics when the initializer is
         // type-checked in isolation.
-        has_type_params = self.bind_enclosing_params(loc_to_range(self.file, init.loc));
+        has_type_params = self.bind_enclosing_params(init_range);
         let annotation = info
           .type_annotation
           .map(|ann| unsafe { &*ann })
           .map(|ann| self.lowerer.lower_type_expr(ann));
+        let (prev_this, prev_super) = (self.current_this_ty, self.current_super_ty);
+        let (this_ty, super_ty) = self.this_super_for_span(init_range);
+        self.current_this_ty = this_ty;
+        self.current_super_ty = super_ty;
         let init_ty = match annotation {
           Some(expected) => self.check_expr_with_expected(init, expected),
           None => self.check_expr(init),
         };
+        self.current_this_ty = prev_this;
+        self.current_super_ty = prev_super;
         if let Some(annotation) = annotation {
           // Mirror `check_var_decl`: anchor assignment diagnostics on the binding
           // name/pattern to match tsc and dedupe with the top-level var check.
@@ -1963,22 +2183,23 @@ impl<'a> Checker<'a> {
       self.check_cancelled();
       let expr = unsafe { &*expr };
       let prev_props = self.current_class_field_param_props;
-      self.current_class_field_param_props = self
-        .index
-        .class_field_param_props
-        .get(&body_range)
-        .map(|props| props.as_slice());
+      self.current_class_field_param_props = self.index.enclosing_class_field_param_props(body_range);
       let prev_field_init = self.class_field_initializer;
-      self.class_field_initializer =
-        self
-          .index
-          .class_field_initializer(body_range)
-          .map(|info| ClassFieldInitializerContext {
-            class_index: info.class_index,
-            member_index: info.member_index,
-            is_static: info.is_static,
-          });
+      self.class_field_initializer = self
+        .index
+        .enclosing_class_field_initializer(body_range)
+        .map(|info| ClassFieldInitializerContext {
+          class_index: info.class_index,
+          member_index: info.member_index,
+          is_static: info.is_static,
+        });
+      let (prev_this, prev_super) = (self.current_this_ty, self.current_super_ty);
+      let (this_ty, super_ty) = self.this_super_for_span(body_range);
+      self.current_this_ty = this_ty;
+      self.current_super_ty = super_ty;
       let _ = self.check_expr(expr);
+      self.current_this_ty = prev_this;
+      self.current_super_ty = prev_super;
       self.class_field_initializer = prev_field_init;
       self.current_class_field_param_props = prev_props;
       return true;
@@ -2615,8 +2836,8 @@ impl<'a> Checker<'a> {
         let prim = self.store.primitive_ids();
         self.resolve_type_ref(&["RegExp"]).unwrap_or(prim.unknown)
       }
-      AstExpr::This(_) => self.store.primitive_ids().unknown,
-      AstExpr::Super(_) => self.store.primitive_ids().unknown,
+      AstExpr::This(_) => self.current_this_ty,
+      AstExpr::Super(_) => self.current_super_ty,
       AstExpr::Unary(un) => {
         if matches!(un.stx.operator, OperatorName::New) {
           self.check_new_expr(un, expr.loc, None)
@@ -7633,11 +7854,25 @@ impl<'a> Checker<'a> {
       let saved_expected = self.expected_return;
       let saved_async = self.in_async_function;
       let saved_returns = std::mem::take(&mut self.return_types);
+      let (saved_this, saved_super) = (self.current_this_ty, self.current_super_ty);
 
       let pushed_scope = Scope::default();
       let pushed_type_param_scope = !type_params.is_empty();
       if pushed_type_param_scope {
         self.type_param_scopes.push(type_params.clone());
+      }
+
+      if !func.stx.arrow {
+        let prim = self.store.primitive_ids();
+        let func_span = loc_to_range(self.file, func.loc);
+        if let Some(ctx) = self.index.class_member_function(func_span) {
+          let (this_ty, super_ty) = self.this_super_for_class(ctx.class_index, ctx.is_static);
+          self.current_this_ty = this_ty;
+          self.current_super_ty = super_ty;
+        } else {
+          self.current_this_ty = prim.unknown;
+          self.current_super_ty = prim.unknown;
+        }
       }
 
       self.in_async_function = func.stx.async_;
@@ -7657,6 +7892,8 @@ impl<'a> Checker<'a> {
       self.return_types = saved_returns;
       self.expected_return = saved_expected;
       self.in_async_function = saved_async;
+      self.current_this_ty = saved_this;
+      self.current_super_ty = saved_super;
       if pushed_type_param_scope {
         self.type_param_scopes.pop();
       }
