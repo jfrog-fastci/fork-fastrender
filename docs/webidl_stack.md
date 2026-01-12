@@ -11,7 +11,8 @@ stack (and the boundary between `vendor/ecma-rs/` vs `src/`; see also:
 
 Note: WebIDL *consolidation* is complete: generic JS/WebIDL infrastructure lives in the vendored
 `vendor/ecma-rs/` workspace. FastRender may still carry compatibility shims (e.g.
-`crates/webidl-js-runtime`) while migration off legacy backends is in progress, but **new**
+`vendor/ecma-rs/webidl-runtime` / crate `webidl-js-runtime`) while migration off legacy backends is
+in progress, but **new**
 infrastructure should follow the rules below.
 
 ## Crate / code layout
@@ -50,13 +51,13 @@ belongs here.
 If you need a new feature in the `webidl` ↔ `vm-js` adapter (rooting, iterator helpers, host dispatch
 plumbing), it belongs here.
 
-### Legacy heap-only runtime (compat): `vendor/ecma-rs/webidl-runtime` (crate: `webidl-runtime`)
+### Legacy heap-only runtime (compat): `vendor/ecma-rs/webidl-runtime` (crate: `webidl-js-runtime`)
 
 The legacy heap-only runtime adapter is used by early scaffolding and some unit tests. It cannot
 execute author scripts and should not be used for new bindings work.
 
-- Cargo package name: `webidl-runtime`
-- Rust crate name: `webidl_runtime`
+- Cargo package name: `webidl-js-runtime`
+- Rust crate name: `webidl_js_runtime`
 
 This layer exists for migration/testing where older heap-only bindings/runtime code is still
 referenced. Prefer the realm-based `webidl-vm-js` path for new bindings work.
