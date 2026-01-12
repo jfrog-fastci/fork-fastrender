@@ -19,8 +19,14 @@ fn generic_callable_assigns_to_non_generic_function_type() {
     Arc::from(
       r#"
 export const id = <T>(x: T) => x;
+export type NumFn = (x: number) => number;
 export const f: (x: number) => number = id;
+export const f_alias: NumFn = id;
 export const g: (x: string) => string = id;
+export let h: (x: number) => number;
+h = id;
+export const obj: { f: (x: number) => number } = { f: (x: number) => x };
+obj.f = id;
 "#,
     ),
   );
@@ -65,4 +71,3 @@ export const bad: (x: number) => string = id;
     "expected TS2322 diagnostic, got {diagnostics:?}"
   );
 }
-

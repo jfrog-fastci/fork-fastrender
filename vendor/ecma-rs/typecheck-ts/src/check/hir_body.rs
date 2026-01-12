@@ -6722,7 +6722,7 @@ impl<'a> Checker<'a> {
     match left.stx.as_ref() {
       AstExpr::Id(id) => {
         if let Some(binding) = self.lookup(&id.stx.name) {
-          let value_ty = if matches!(op, OperatorName::Assignment) {
+          let mut value_ty = if matches!(op, OperatorName::Assignment) {
             self.check_expr_with_expected(right, binding.ty)
           } else {
             self.check_expr(right)
@@ -6738,6 +6738,14 @@ impl<'a> Checker<'a> {
                   },
                 ));
               }
+            }
+          }
+          if matches!(op, OperatorName::Assignment) && !self.relate.is_assignable(value_ty, binding.ty)
+          {
+            if let Some(instantiated) =
+              self.contextually_instantiate_generic_callable(value_ty, binding.ty)
+            {
+              value_ty = instantiated;
             }
           }
           if !self.relate.is_assignable(value_ty, binding.ty) {
@@ -6759,7 +6767,7 @@ impl<'a> Checker<'a> {
       }
       AstExpr::IdPat(id) => {
         if let Some(binding) = self.lookup(&id.stx.name) {
-          let value_ty = if matches!(op, OperatorName::Assignment) {
+          let mut value_ty = if matches!(op, OperatorName::Assignment) {
             self.check_expr_with_expected(right, binding.ty)
           } else {
             self.check_expr(right)
@@ -6775,6 +6783,14 @@ impl<'a> Checker<'a> {
                   },
                 ));
               }
+            }
+          }
+          if matches!(op, OperatorName::Assignment) && !self.relate.is_assignable(value_ty, binding.ty)
+          {
+            if let Some(instantiated) =
+              self.contextually_instantiate_generic_callable(value_ty, binding.ty)
+            {
+              value_ty = instantiated;
             }
           }
           if !self.relate.is_assignable(value_ty, binding.ty) {
@@ -6797,7 +6813,7 @@ impl<'a> Checker<'a> {
       AstExpr::Member(mem) => {
         let obj_ty = self.check_expr(&mem.stx.left);
         let target_ty = self.member_type(obj_ty, &mem.stx.right);
-        let value_ty = if matches!(op, OperatorName::Assignment) && target_ty != prim.unknown {
+        let mut value_ty = if matches!(op, OperatorName::Assignment) && target_ty != prim.unknown {
           self.check_expr_with_expected(right, target_ty)
         } else {
           self.check_expr(right)
@@ -6814,6 +6830,14 @@ impl<'a> Checker<'a> {
                   },
                 ));
               }
+            }
+          }
+          if matches!(op, OperatorName::Assignment) && !self.relate.is_assignable(value_ty, target_ty)
+          {
+            if let Some(instantiated) =
+              self.contextually_instantiate_generic_callable(value_ty, target_ty)
+            {
+              value_ty = instantiated;
             }
           }
           if !self.relate.is_assignable(value_ty, target_ty) {
@@ -6840,7 +6864,7 @@ impl<'a> Checker<'a> {
           .as_deref()
           .map(|key| self.member_type(obj_ty, key))
           .unwrap_or(prim.unknown);
-        let value_ty = if matches!(op, OperatorName::Assignment) && target_ty != prim.unknown {
+        let mut value_ty = if matches!(op, OperatorName::Assignment) && target_ty != prim.unknown {
           self.check_expr_with_expected(right, target_ty)
         } else {
           self.check_expr(right)
@@ -6857,6 +6881,14 @@ impl<'a> Checker<'a> {
                   },
                 ));
               }
+            }
+          }
+          if matches!(op, OperatorName::Assignment) && !self.relate.is_assignable(value_ty, target_ty)
+          {
+            if let Some(instantiated) =
+              self.contextually_instantiate_generic_callable(value_ty, target_ty)
+            {
+              value_ty = instantiated;
             }
           }
           if !self.relate.is_assignable(value_ty, target_ty) {
@@ -7852,6 +7884,65 @@ impl<'a> Checker<'a> {
     self.check_assignable_with_code(expr, src, dst, range_override, &codes::TYPE_MISMATCH);
   }
 
+  fn contextually_instantiate_generic_callable(&mut self, src: TypeId, dst: TypeId) -> Option<TypeId> {
+    // `tsc` permits assigning a generic function value to a non-generic function
+    // type by contextually instantiating the generic signature from the
+    // destination signature:
+    //
+    //   const id = <T>(x: T) => x;
+    //   const f: (x: number) => number = id;
+    //
+    // The low-level relation engine rejects signatures with differing type
+    // parameter counts, so we opportunistically perform contextual
+    // instantiation and retry the assignability check.
+    let contextual_sig = self.first_callable_signature(dst)?;
+    if !contextual_sig.type_params.is_empty() {
+      return None;
+    }
+
+    let src = self.expand_callable_type(src);
+    let candidate_sigs =
+      callable_signatures_with_expander(self.store.as_ref(), src, self.ref_expander);
+    for sig_id in candidate_sigs {
+      let actual_sig = self.store.signature(sig_id);
+      if actual_sig.type_params.is_empty() {
+        continue;
+      }
+
+      let inference = infer_type_arguments_from_contextual_signature(
+        &self.store,
+        &self.relate,
+        &actual_sig.type_params,
+        &contextual_sig,
+        &actual_sig,
+      );
+      if !inference.diagnostics.is_empty() {
+        continue;
+      }
+
+      let instantiated_sig_id = self.instantiation_cache.instantiate_signature(
+        &self.store,
+        sig_id,
+        &actual_sig,
+        &inference.substitutions,
+      );
+      let mut instantiated_sig = self.store.signature(instantiated_sig_id);
+      instantiated_sig.type_params.clear();
+      let instantiated_sig_id = self.store.intern_signature(instantiated_sig);
+      let instantiated_callable = self.store.intern_type(TypeKind::Callable {
+        overloads: vec![instantiated_sig_id],
+      });
+
+      if self.relate.is_assignable(instantiated_callable, dst)
+        && self.variance_allows_assignability(instantiated_callable, dst)
+      {
+        return Some(instantiated_callable);
+      }
+    }
+
+    None
+  }
+
   fn check_assignable_with_code(
     &mut self,
     expr: &Node<AstExpr>,
@@ -7894,59 +7985,8 @@ impl<'a> Checker<'a> {
     if self.relate.is_assignable(src, dst) && self.variance_allows_assignability(src, dst) {
       return;
     }
-
-    // `tsc` permits assigning a generic function value to a non-generic function
-    // type by contextually instantiating the generic signature from the
-    // destination signature:
-    //
-    //   const id = <T>(x: T) => x;
-    //   const f: (x: number) => number = id;
-    //
-    // The low-level relation engine rejects signatures with differing type
-    // parameter counts, so we opportunistically perform contextual
-    // instantiation here and retry the assignability check.
-    if let Some(contextual_sig) = self.first_callable_signature(dst) {
-      if contextual_sig.type_params.is_empty() {
-        let src = self.expand_callable_type(src);
-        let candidate_sigs =
-          callable_signatures_with_expander(self.store.as_ref(), src, self.ref_expander);
-        for sig_id in candidate_sigs {
-          let actual_sig = self.store.signature(sig_id);
-          if actual_sig.type_params.is_empty() {
-            continue;
-          }
-
-          let inference = infer_type_arguments_from_contextual_signature(
-            &self.store,
-            &self.relate,
-            &actual_sig.type_params,
-            &contextual_sig,
-            &actual_sig,
-          );
-          if !inference.diagnostics.is_empty() {
-            continue;
-          }
-
-          let instantiated_sig_id = self.instantiation_cache.instantiate_signature(
-            &self.store,
-            sig_id,
-            &actual_sig,
-            &inference.substitutions,
-          );
-          let mut instantiated_sig = self.store.signature(instantiated_sig_id);
-          instantiated_sig.type_params.clear();
-          let instantiated_sig_id = self.store.intern_signature(instantiated_sig);
-          let instantiated_callable = self.store.intern_type(TypeKind::Callable {
-            overloads: vec![instantiated_sig_id],
-          });
-
-          if self.relate.is_assignable(instantiated_callable, dst)
-            && self.variance_allows_assignability(instantiated_callable, dst)
-          {
-            return;
-          }
-        }
-      }
+    if self.contextually_instantiate_generic_callable(src, dst).is_some() {
+      return;
     }
 
     if std::env::var("DEBUG_TYPE_MISMATCH").is_ok() {
