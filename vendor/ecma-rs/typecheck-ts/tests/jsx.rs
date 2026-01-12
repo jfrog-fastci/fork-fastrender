@@ -1958,6 +1958,43 @@ const el = <Foo x={1} />;
 }
 
 #[test]
+fn missing_required_props_member_allows_children_without_error() {
+  let mut options = CompilerOptions::default();
+  options.no_default_lib = true;
+  options.jsx = Some(JsxMode::React);
+
+  let jsx = LibFile {
+    key: FileKey::new("jsx.d.ts"),
+    name: Arc::from("jsx.d.ts"),
+    kind: FileKind::Dts,
+    text: Arc::from(
+      r#"
+declare namespace JSX {
+  interface Element {}
+  interface ElementAttributesProperty { props: {} }
+}
+"#,
+    ),
+  };
+
+  let entry = FileKey::new("entry.tsx");
+  let source = r#"
+declare const Foo: { new(): {} };
+const el = <Foo>hi</Foo>;
+"#;
+  let host = TestHost::new(options)
+    .with_lib(jsx)
+    .with_file(entry.clone(), source);
+  let program = Program::new(host, vec![entry]);
+  let diagnostics = program.check();
+
+  assert!(
+    diagnostics.is_empty(),
+    "expected no diagnostics when props member is missing but JSX uses only children (no explicit attrs), got {diagnostics:?}"
+  );
+}
+
+#[test]
 fn library_managed_attributes_are_applied_to_component_props() {
   let mut options = CompilerOptions::default();
   options.no_default_lib = true;

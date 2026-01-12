@@ -3998,7 +3998,7 @@ impl<'a> Checker<'a> {
             }
           }
           let expected_props_ty = self
-            .jsx_expected_props_for_value_tag(component_ty, elem.loc, !elem.stx.attributes.is_empty())
+            .jsx_expected_props_for_value_tag(component_ty, elem.loc)
             .map(|expected| self.jsx_apply_intrinsic_attributes(expected));
           let actual_props = self.jsx_actual_props(
             elem.loc,
@@ -4085,7 +4085,7 @@ impl<'a> Checker<'a> {
             }
           }
           let expected_props_ty = self
-            .jsx_expected_props_for_value_tag(current, elem.loc, !elem.stx.attributes.is_empty())
+            .jsx_expected_props_for_value_tag(current, elem.loc)
             .map(|expected| self.jsx_apply_intrinsic_attributes(expected));
           let actual_props = self.jsx_actual_props(
             elem.loc,
@@ -4161,12 +4161,7 @@ impl<'a> Checker<'a> {
     }
   }
 
-  fn jsx_expected_props_for_value_tag(
-    &mut self,
-    tag_ty: TypeId,
-    elem_loc: Loc,
-    has_explicit_attrs: bool,
-  ) -> Option<TypeId> {
+  fn jsx_expected_props_for_value_tag(&mut self, tag_ty: TypeId, elem_loc: Loc) -> Option<TypeId> {
     let prim = self.store.primitive_ids();
     if matches!(
       self.store.type_kind(tag_ty),
@@ -4177,14 +4172,14 @@ impl<'a> Checker<'a> {
 
     let expanded = self.expand_for_props(tag_ty);
     if expanded != tag_ty {
-      return self.jsx_expected_props_for_value_tag(expanded, elem_loc, has_explicit_attrs);
+      return self.jsx_expected_props_for_value_tag(expanded, elem_loc);
     }
 
     match self.store.type_kind(tag_ty) {
       TypeKind::Union(members) => {
         let mut collected = Vec::new();
         for member in members {
-          let props_ty = self.jsx_expected_props_for_value_tag(member, elem_loc, has_explicit_attrs)?;
+          let props_ty = self.jsx_expected_props_for_value_tag(member, elem_loc)?;
           collected.push(props_ty);
         }
         if collected.is_empty() {
@@ -4242,7 +4237,10 @@ impl<'a> Checker<'a> {
                 let prop_name = self.store.name(attrs_prop);
                 if self.type_has_prop(ret_ty, &prop_name) {
                   props_ty = self.member_type(ret_ty, &prop_name);
-                } else if has_explicit_attrs {
+                } else {
+                  // The instance type does not have the required member, so we can't determine a
+                  // props type. TypeScript treats this as `unknown` (and may later emit TS2607 if
+                  // explicit attributes are present).
                   return None;
                 }
               }
@@ -4985,14 +4983,21 @@ impl<'a> Checker<'a> {
             let prop_name = self.store.name(attrs_prop);
             if self.type_has_prop(ret_ty, &prop_name) {
               props_ty = self.member_type(ret_ty, &prop_name);
-            } else if actual_props.explicit_attr_count > 0 {
-              self.diagnostics.push(codes::JSX_ELEMENT_CLASS_DOES_NOT_SUPPORT_ATTRIBUTES.error(
-                format!(
-                  "JSX element class does not support attributes because it does not have a '{prop_name}' property.",
-                ),
-                span,
-              ));
-              return;
+            } else {
+              if actual_props.explicit_attr_count > 0 {
+                self.diagnostics.push(codes::JSX_ELEMENT_CLASS_DOES_NOT_SUPPORT_ATTRIBUTES.error(
+                  format!(
+                    "JSX element class does not support attributes because it does not have a '{prop_name}' property.",
+                  ),
+                  span,
+                ));
+                return;
+              }
+              // We can't determine a props type when the required instance member is missing.
+              // TypeScript treats the expected props as `unknown` (and only emits TS2607 when
+              // explicit attributes are present).
+              all_props.push(prim.unknown);
+              continue;
             }
           }
         };
