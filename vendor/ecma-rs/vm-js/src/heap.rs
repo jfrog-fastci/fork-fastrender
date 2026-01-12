@@ -4489,7 +4489,6 @@ impl<'a> Scope<'a> {
     let obj = HeapObject::Object(JsObject::new(None));
     Ok(GcObject(self.heap.alloc_unchecked(obj, new_bytes)?))
   }
-
   /// Allocates an empty `WeakSet` object on the heap.
   pub fn alloc_weak_set(&mut self) -> Result<GcObject, VmError> {
     let new_bytes = JsWeakSet::heap_size_bytes_for_counts(0, 0);
@@ -4609,6 +4608,12 @@ impl<'a> Scope<'a> {
     target: Option<GcObject>,
     handler: Option<GcObject>,
   ) -> Result<GcObject, VmError> {
+    if target.is_some() != handler.is_some() {
+      return Err(VmError::InvariantViolation(
+        "Proxy allocation requires both target and handler (or neither for a revoked proxy)",
+      ));
+    }
+
     // Validate handles up-front.
     if let Some(target) = target {
       if !self.heap.is_valid_object(target) {

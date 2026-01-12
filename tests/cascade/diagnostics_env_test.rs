@@ -1,31 +1,17 @@
 use fastrender::api::{DiagnosticsLevel, FastRender, RenderOptions};
-
-struct EnvVarGuard {
-  key: &'static str,
-  previous: Option<String>,
-}
-
-impl EnvVarGuard {
-  fn set(key: &'static str, value: &str) -> Self {
-    let previous = std::env::var(key).ok();
-    std::env::set_var(key, value);
-    Self { key, previous }
-  }
-}
-
-impl Drop for EnvVarGuard {
-  fn drop(&mut self) {
-    match self.previous.take() {
-      Some(val) => std::env::set_var(self.key, val),
-      None => std::env::remove_var(self.key),
-    }
-  }
-}
+use fastrender::debug::runtime::RuntimeToggles;
+use std::collections::HashMap;
 
 #[test]
 fn cascade_profile_env_populates_cascade_diagnostics() {
-  let _guard = EnvVarGuard::set("FASTR_CASCADE_PROFILE", "1");
-  let mut renderer = FastRender::new().expect("renderer");
+  let toggles = RuntimeToggles::from_map(HashMap::from([(
+    "FASTR_CASCADE_PROFILE".to_string(),
+    "1".to_string(),
+  )]));
+  let mut renderer = FastRender::builder()
+    .runtime_toggles(toggles)
+    .build()
+    .expect("renderer");
   let html = r#"
     <style>
       div.foo { color: red; }

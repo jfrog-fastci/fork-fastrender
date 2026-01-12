@@ -7,30 +7,8 @@ use fastrender::style::color::Rgba;
 use fastrender::style::types::{BackfaceVisibility, TransformStyle};
 use fastrender::text::font_loader::FontContext;
 use fastrender::Rect;
-use std::ffi::{OsStr, OsString};
+use std::collections::HashMap;
 use std::sync::Arc;
-
-struct EnvVarGuard {
-  key: &'static str,
-  previous: Option<OsString>,
-}
-
-impl EnvVarGuard {
-  fn set(key: &'static str, value: impl AsRef<OsStr>) -> Self {
-    let previous = std::env::var_os(key);
-    std::env::set_var(key, value);
-    Self { key, previous }
-  }
-}
-
-impl Drop for EnvVarGuard {
-  fn drop(&mut self) {
-    match self.previous.take() {
-      Some(value) => std::env::set_var(self.key, value),
-      None => std::env::remove_var(self.key),
-    }
-  }
-}
 
 fn bounding_box_for_color<F>(
   pixmap: &tiny_skia::Pixmap,
@@ -105,9 +83,13 @@ fn preserve3d_disable_warp_env_forces_affine_approximation() {
   let _lock = super::global_test_lock();
   // Force the warp path to be "available", then ensure the disable flag still wins. This matches
   // how the CLI/libraries consume FASTR_PRESERVE3D_* via RuntimeToggles sourced from env.
-  let _warp_guard = EnvVarGuard::set("FASTR_PRESERVE3D_WARP", "1");
-  let _disable_guard = EnvVarGuard::set("FASTR_PRESERVE3D_DISABLE_WARP", "1");
-  let toggles = Arc::new(RuntimeToggles::from_env());
+  let toggles = Arc::new(RuntimeToggles::from_map(HashMap::from([
+    ("FASTR_PRESERVE3D_WARP".to_string(), "1".to_string()),
+    (
+      "FASTR_PRESERVE3D_DISABLE_WARP".to_string(),
+      "1".to_string(),
+    ),
+  ])));
 
   let plane = Rect::from_xywh(10.0, 10.0, 40.0, 40.0);
   let perspective = Transform3D::perspective(50.0);

@@ -1,32 +1,12 @@
+use fastrender::debug::runtime::RuntimeToggles;
 use fastrender::render_control::{set_stage_listener, StageHeartbeat};
 use fastrender::{
   DiagnosticsLevel, FastRender, FastRenderConfig, FontConfig, FragmentContent, FragmentNode, Point,
   Rect, RenderArtifactRequest, RenderOptions,
 };
+use std::collections::HashMap;
 use std::sync::{mpsc, Arc, Condvar, Mutex};
 use std::time::Duration;
-
-struct EnvVarGuard {
-  key: &'static str,
-  previous: Option<String>,
-}
-
-impl EnvVarGuard {
-  fn set(key: &'static str, value: &str) -> Self {
-    let previous = std::env::var(key).ok();
-    std::env::set_var(key, value);
-    Self { key, previous }
-  }
-}
-
-impl Drop for EnvVarGuard {
-  fn drop(&mut self) {
-    match self.previous.take() {
-      Some(value) => std::env::set_var(self.key, value),
-      None => std::env::remove_var(self.key),
-    }
-  }
-}
 
 struct StageListenerGuard;
 
@@ -70,8 +50,9 @@ fn find_text_fragment_bounds(fragment: &FragmentNode, offset: Point, needle: &st
 #[test]
 fn taffy_perf_counters_reset_between_diagnostics_renders() {
   let _lock = super::global_test_lock();
-  let _diag_env = EnvVarGuard::set("FASTR_DIAGNOSTICS_LEVEL", "none");
-  let config = FastRenderConfig::default().with_font_sources(FontConfig::bundled_only());
+  let config = FastRenderConfig::default()
+    .with_font_sources(FontConfig::bundled_only())
+    .with_runtime_toggles(RuntimeToggles::from_map(HashMap::new()));
   let mut renderer = FastRender::with_config(config).expect("renderer");
 
   let options = RenderOptions::default()
@@ -158,8 +139,9 @@ fn taffy_perf_counters_reset_between_diagnostics_renders() {
 #[test]
 fn taffy_perf_counters_do_not_reset_between_layout_passes_in_one_render() {
   let _lock = super::global_test_lock();
-  let _diag_env = EnvVarGuard::set("FASTR_DIAGNOSTICS_LEVEL", "none");
-  let config = FastRenderConfig::default().with_font_sources(FontConfig::bundled_only());
+  let config = FastRenderConfig::default()
+    .with_font_sources(FontConfig::bundled_only())
+    .with_runtime_toggles(RuntimeToggles::from_map(HashMap::new()));
   let mut renderer = FastRender::with_config(config).expect("renderer");
 
   let options = RenderOptions::default()
@@ -240,7 +222,6 @@ fn taffy_perf_counters_do_not_reset_between_layout_passes_in_one_render() {
 #[test]
 fn taffy_perf_counters_do_not_leak_between_overlapping_diagnostics_renders() {
   let _lock = super::global_test_lock();
-  let _diag_env = EnvVarGuard::set("FASTR_DIAGNOSTICS_LEVEL", "none");
   // Block one diagnostics render mid-pipeline to ensure another thread can attempt to start while
   // the global diagnostics session lock is held. This used to expose a bug where Taffy perf
   // counters could be enabled before acquiring the diagnostics session lock, leaking counters
@@ -297,7 +278,9 @@ fn taffy_perf_counters_do_not_leak_between_overlapping_diagnostics_renders() {
   let handle_a = std::thread::spawn({
     let options = options.clone();
     move || {
-      let config = FastRenderConfig::default().with_font_sources(FontConfig::bundled_only());
+      let config = FastRenderConfig::default()
+        .with_font_sources(FontConfig::bundled_only())
+        .with_runtime_toggles(RuntimeToggles::from_map(HashMap::new()));
       let mut renderer = FastRender::with_config(config).expect("renderer");
       renderer
         .render_html_with_diagnostics(flex_html, options)
@@ -328,7 +311,9 @@ fn taffy_perf_counters_do_not_leak_between_overlapping_diagnostics_renders() {
     let options = options.clone();
     move || {
       b_started_tx.send(()).ok();
-      let config = FastRenderConfig::default().with_font_sources(FontConfig::bundled_only());
+      let config = FastRenderConfig::default()
+        .with_font_sources(FontConfig::bundled_only())
+        .with_runtime_toggles(RuntimeToggles::from_map(HashMap::new()));
       let mut renderer = FastRender::with_config(config).expect("renderer");
       renderer
         .render_html_with_diagnostics(plain_html, options)
