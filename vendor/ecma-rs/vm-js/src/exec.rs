@@ -17957,10 +17957,13 @@ pub(crate) fn run_ecma_function(
   args: &[Value],
 ) -> Result<Value, VmError> {
   if func.stx.generator {
+    // Generator functions are still under development in vm-js. Use a consistent "feature gate"
+    // error message so tests can treat generator-related coverage as a soft-fail until the
+    // implementation lands.
     return Err(VmError::Unimplemented(if func.stx.async_ {
-      "async generator function call"
+      "async generator functions"
     } else {
-      "generator function call"
+      "generator functions"
     }));
   }
   env.set_source_info(source, base_offset, prefix_len);

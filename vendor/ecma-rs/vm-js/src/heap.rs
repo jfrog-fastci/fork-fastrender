@@ -1022,11 +1022,19 @@ impl Heap {
   }
 
   pub(crate) fn typed_array_byte_length(&self, obj: GcObject) -> Result<usize, VmError> {
-    self.get_typed_array(obj)?.byte_length()
+    let view = self.get_typed_array(obj)?;
+    if self.get_array_buffer(view.viewed_array_buffer)?.data.is_none() {
+      return Ok(0);
+    }
+    view.byte_length()
   }
 
   pub(crate) fn typed_array_byte_offset(&self, obj: GcObject) -> Result<usize, VmError> {
-    Ok(self.get_typed_array(obj)?.byte_offset)
+    let view = self.get_typed_array(obj)?;
+    if self.get_array_buffer(view.viewed_array_buffer)?.data.is_none() {
+      return Ok(0);
+    }
+    Ok(view.byte_offset)
   }
 
   pub(crate) fn typed_array_buffer(&self, obj: GcObject) -> Result<GcObject, VmError> {
@@ -1039,6 +1047,9 @@ impl Heap {
     index: usize,
   ) -> Result<Option<Value>, VmError> {
     let view = self.get_typed_array(obj)?;
+    if self.get_array_buffer(view.viewed_array_buffer)?.data.is_none() {
+      return Ok(None);
+    }
     if index >= view.length {
       return Ok(None);
     }

@@ -711,6 +711,18 @@ impl<'a> Scope<'a> {
     ];
     self.push_roots(&roots)?;
 
+    // Integer-indexed exotic objects (typed arrays): numeric index keys never consult the prototype
+    // chain, and out-of-bounds / detached writes are silently ignored (but still considered
+    // successful so strict-mode assignments do not throw).
+    if self.heap().is_typed_array_object(obj) {
+      if let Some(index) = self.heap().array_index(&key) {
+        let _ = self
+          .heap_mut()
+          .typed_array_set_element_value(obj, index as usize, value)?;
+        return Ok(true);
+      }
+    }
+
     let mut desc = self
       .heap()
       .get_property_with_tick(obj, &key, || vm.tick())?;
@@ -805,6 +817,16 @@ impl<'a> Scope<'a> {
       receiver,
     ];
     self.push_roots(&roots)?;
+
+    // Integer-indexed exotic objects (typed arrays): see `ordinary_set`.
+    if self.heap().is_typed_array_object(obj) {
+      if let Some(index) = self.heap().array_index(&key) {
+        let _ = self
+          .heap_mut()
+          .typed_array_set_element_value(obj, index as usize, value)?;
+        return Ok(true);
+      }
+    }
 
     // Host hook for "exotic" property setters (e.g. DOM named properties) runs before ordinary
     // `[[Set]]` processing so it can override prototype-chain properties like `constructor`.
