@@ -558,9 +558,13 @@ impl VmHostHooks for Test262ModuleHooks {
       }
     };
 
-    let source_name = canonical.to_string_lossy().into_owned();
+    let source_name: Arc<str> = Arc::from(canonical.to_string_lossy().into_owned());
     let source_text = match kind {
-      RequestedModuleKind::JavaScript => Arc::new(SourceText::new(source_name, source)),
+      RequestedModuleKind::JavaScript => Arc::new(SourceText::new_charged(
+        scope.heap_mut(),
+        source_name.clone(),
+        source,
+      )?),
       RequestedModuleKind::Json => {
         let json: JsonValue = match serde_json::from_str(&source) {
           Ok(v) => v,
@@ -606,7 +610,11 @@ impl VmHostHooks for Test262ModuleHooks {
           }
         };
         let synthesized = format!("export default {json_expr};\n");
-        Arc::new(SourceText::new(source_name, synthesized))
+        Arc::new(SourceText::new_charged(
+          scope.heap_mut(),
+          source_name.clone(),
+          synthesized,
+        )?)
       }
     };
 
@@ -768,7 +776,10 @@ impl Executor for VmJsExecutor {
       }
 
       let mut hooks = Test262ModuleHooks::new(&case.path);
-      let source_text = Arc::new(SourceText::new(file_name, source));
+      let source_text = match SourceText::new_charged(&mut runtime.heap, file_name, source) {
+        Ok(source_text) => Arc::new(source_text),
+        Err(err) => return Err(map_vm_error(case, source, cancel, &mut runtime, err)),
+      };
       let result = runtime.exec_script_source_with_hooks(&mut hooks, source_text);
 
       // Cancellation should win over any other outcome (including parse/runtime errors).
@@ -1023,7 +1034,10 @@ fn execute_module(
   // 1) Run the harness prelude as a classic script to populate the global object.
   if !harness_src.trim().is_empty() {
     let harness_name = format!("{file_name}#harness");
-    let harness_source = Arc::new(SourceText::new(harness_name, harness_src));
+    let harness_source = match SourceText::new_charged(&mut runtime.heap, harness_name, harness_src) {
+      Ok(source) => Arc::new(source),
+      Err(err) => return Err(map_vm_error(case, harness_src, cancel, runtime, err)),
+    };
     let result = runtime.exec_script_source_with_hooks(&mut hooks, harness_source);
 
     if cancel.load(Ordering::Relaxed) {
@@ -1041,7 +1055,10 @@ fn execute_module(
   }
 
   // 2) Parse the module source text.
-  let module_source = Arc::new(SourceText::new(file_name.to_string(), module_src));
+  let module_source = match SourceText::new_charged(&mut runtime.heap, file_name.to_string(), module_src) {
+    Ok(source) => Arc::new(source),
+    Err(err) => return Err(map_vm_error(case, module_src, cancel, runtime, err)),
+  };
   let record = match SourceTextModuleRecord::parse_source_with_vm(&mut runtime.vm, module_source) {
     Ok(record) => record,
     Err(err) => return Err(map_vm_error(case, module_src, cancel, runtime, err)),
@@ -2036,11 +2053,11 @@ var assert = {
         );
     "#;
 
+    let source_text = Arc::new(
+      SourceText::new_charged(&mut runtime.heap, "case.js", source).unwrap(),
+    );
     runtime
-      .exec_script_source_with_hooks(
-        &mut hooks,
-        Arc::new(SourceText::new("case.js", source)),
-      )
+      .exec_script_source_with_hooks(&mut hooks, source_text)
       .unwrap();
 
     // Drain the host-owned queue and ensure the Promise job runs with `Test262ModuleHooks` as the

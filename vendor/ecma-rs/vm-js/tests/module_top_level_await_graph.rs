@@ -129,7 +129,7 @@ fn tla_basic_module_evaluation_promise_is_pending_until_microtasks_run() -> Resu
   let result = (|| -> Result<(), VmError> {
     let m = graph.add_module_with_specifier(
       "m.js",
-      SourceTextModuleRecord::parse("export const value = await Promise.resolve(42);")?,
+      SourceTextModuleRecord::parse(&mut heap, "export const value = await Promise.resolve(42);")?,
     );
     graph.link_all_by_specifier();
 
@@ -187,11 +187,14 @@ fn tla_in_dependency_makes_importer_evaluation_async() -> Result<(), VmError> {
   let result = (|| -> Result<(), VmError> {
     graph.add_module_with_specifier(
       "dep.js",
-      SourceTextModuleRecord::parse("export const v = await Promise.resolve(1);")?,
+      SourceTextModuleRecord::parse(&mut heap, "export const v = await Promise.resolve(1);")?,
     );
     let main = graph.add_module_with_specifier(
       "main.js",
-      SourceTextModuleRecord::parse("import { v } from 'dep.js'; export const out = v + 1;")?,
+      SourceTextModuleRecord::parse(
+        &mut heap,
+        "import { v } from 'dep.js'; export const out = v + 1;",
+      )?,
     );
     graph.link_all_by_specifier();
 
@@ -250,6 +253,7 @@ fn tla_async_cycle_evaluates_without_deadlock() -> Result<(), VmError> {
     let a = graph.add_module_with_specifier(
       "a.js",
       SourceTextModuleRecord::parse(
+        &mut heap,
         r#"
           import { base } from "b.js";
           export const a = (await Promise.resolve(1)) + base();
@@ -259,6 +263,7 @@ fn tla_async_cycle_evaluates_without_deadlock() -> Result<(), VmError> {
     let b = graph.add_module_with_specifier(
       "b.js",
       SourceTextModuleRecord::parse(
+        &mut heap,
         r#"
            import { a } from "a.js";
            export function base() { return 41; }
@@ -335,7 +340,7 @@ fn tla_evaluation_promise_is_cached_for_single_module() -> Result<(), VmError> {
   let result = (|| -> Result<(), VmError> {
     let m = graph.add_module_with_specifier(
       "m.js",
-      SourceTextModuleRecord::parse("export const value = await Promise.resolve(42);")?,
+      SourceTextModuleRecord::parse(&mut heap, "export const value = await Promise.resolve(42);")?,
     );
     graph.link_all_by_specifier();
 
@@ -400,6 +405,7 @@ fn tla_evaluation_promise_is_cached_per_scc() -> Result<(), VmError> {
     let a = graph.add_module_with_specifier(
       "a.js",
       SourceTextModuleRecord::parse(
+        &mut heap,
         r#"
           import { base } from "b.js";
           export const a = (await Promise.resolve(1)) + base();
@@ -409,6 +415,7 @@ fn tla_evaluation_promise_is_cached_per_scc() -> Result<(), VmError> {
     let b = graph.add_module_with_specifier(
       "b.js",
       SourceTextModuleRecord::parse(
+        &mut heap,
         r#"
            import { a } from "a.js";
            export function base() { return 41; }
@@ -478,11 +485,14 @@ fn tla_error_propagates_through_async_parents() -> Result<(), VmError> {
   let result = (|| -> Result<(), VmError> {
     graph.add_module_with_specifier(
       "bad.js",
-      SourceTextModuleRecord::parse("await Promise.resolve(); throw 'boom'; export const x = 1;")?,
+      SourceTextModuleRecord::parse(
+        &mut heap,
+        "await Promise.resolve(); throw 'boom'; export const x = 1;",
+      )?,
     );
     let main = graph.add_module_with_specifier(
       "main.js",
-      SourceTextModuleRecord::parse("import { x } from 'bad.js'; export const ok = 1;")?,
+      SourceTextModuleRecord::parse(&mut heap, "import { x } from 'bad.js'; export const ok = 1;")?,
     );
     graph.link_all_by_specifier();
 

@@ -12,6 +12,7 @@ fn module_link_throws_syntax_error_for_unresolvable_indirect_exports() -> Result
   graph.add_module_with_specifier(
     "m",
     SourceTextModuleRecord::parse(
+      &mut heap,
       r#"
       export const y = 1;
     "#,
@@ -21,6 +22,7 @@ fn module_link_throws_syntax_error_for_unresolvable_indirect_exports() -> Result
   let reexport = graph.add_module_with_specifier(
     "reexport",
     SourceTextModuleRecord::parse(
+      &mut heap,
       r#"
       export { x } from "m";
     "#,

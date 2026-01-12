@@ -612,7 +612,6 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
     } else {
       Arc::from("<inline>")
     };
-    let source = Arc::new(SourceText::new(name, Arc::from(script_text)));
     let js_execution_options = self.js_execution_options;
     let module_loader = realm.module_loader_handle();
     let effective_referrer_policy = spec.referrer_policy.unwrap_or(self.document_referrer_policy);
@@ -621,6 +620,16 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
       .map_err(|err| Error::Other(err.to_string()))?;
     realm.set_base_url(spec.base_url.clone());
     realm.reset_interrupt();
+
+    let source = match SourceText::new_charged(realm.heap_mut(), name, Arc::from(script_text)) {
+      Ok(source) => Arc::new(source),
+      Err(err) => {
+        if let Some(diag) = diagnostics.as_ref() {
+          diag.record_js_vm_error(&err);
+        }
+        return Err(vm_error_format::vm_error_to_error(realm.heap_mut(), err));
+      }
+    };
 
     // Classic scripts can evaluate dynamic `import()` expressions. If module loading is enabled for
     // this realm, ensure the per-realm loader uses classic-script defaults.
@@ -812,21 +821,22 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
         }
       };
 
-      let entry_module: std::result::Result<ModuleId, VmError> = {
-        let mut loader = module_loader.borrow_mut();
-        if spec.src_attr_present {
-          loader.set_entry_module_integrity_override(entry_integrity_override.clone());
-          let result = loader.get_or_fetch_module(module_graph, entry_key.clone());
-          loader.set_entry_module_integrity_override(None);
-          result
-        } else {
-          loader.set_entry_module_integrity_override(None);
-          loader.get_or_parse_inline_module(
-            module_graph,
-            entry_key.clone(),
-            spec.inline_text.as_str(),
-          )
-        }
+        let entry_module: std::result::Result<ModuleId, VmError> = {
+          let mut loader = module_loader.borrow_mut();
+          if spec.src_attr_present {
+            loader.set_entry_module_integrity_override(entry_integrity_override.clone());
+            let result = loader.get_or_fetch_module(scope.heap_mut(), module_graph, entry_key.clone());
+            loader.set_entry_module_integrity_override(None);
+            result
+          } else {
+            loader.set_entry_module_integrity_override(None);
+            loader.get_or_parse_inline_module(
+              scope.heap_mut(),
+              module_graph,
+              entry_key.clone(),
+              spec.inline_text.as_str(),
+            )
+          }
       };
 
       let entry_module = match entry_module {
@@ -973,7 +983,7 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
 
       let entry_module = {
         let mut loader = module_loader.borrow_mut();
-        loader.get_or_parse_inline_module(module_graph, entry_key.clone(), script_text)
+        loader.get_or_parse_inline_module(heap, module_graph, entry_key.clone(), script_text)
       };
       let entry_module = match entry_module {
         Ok(id) => id,
@@ -1198,18 +1208,30 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
             Some(mut host_ptr) => Some(unsafe { host_ptr.as_mut() }),
             None => None,
           };
-          let mut hooks = VmJsEventLoopHooks::<BrowserTabHost>::new_with_vm_host_and_window_realm(
-            document,
-            realm,
-            webidl_bindings_host,
-          );
-          hooks.set_event_loop(event_loop);
-          let source_text = Arc::new(SourceText::new("<importmap error>", Arc::from(source)));
-          let result = realm.exec_script_source_with_host_and_hooks(document, &mut hooks, source_text);
-          if let Some(err) = hooks.finish(realm.heap_mut()) {
-            if let Some(diag) = self.diagnostics.as_ref() {
-              diag.record_console_message(ConsoleMessageLevel::Error, format!("importmap: error event dispatch failed: {err}"));
-            }
+           let mut hooks = VmJsEventLoopHooks::<BrowserTabHost>::new_with_vm_host_and_window_realm(
+             document,
+             realm,
+             webidl_bindings_host,
+           );
+           hooks.set_event_loop(event_loop);
+           let source_text = match SourceText::new_charged(
+             realm.heap_mut(),
+             "<importmap error>",
+             Arc::from(source),
+           ) {
+             Ok(source_text) => Arc::new(source_text),
+             Err(err) => {
+               if let Some(diag) = self.diagnostics.as_ref() {
+                 diag.record_js_vm_error(&err);
+               }
+               return Ok(());
+             }
+           };
+           let result = realm.exec_script_source_with_host_and_hooks(document, &mut hooks, source_text);
+           if let Some(err) = hooks.finish(realm.heap_mut()) {
+             if let Some(diag) = self.diagnostics.as_ref() {
+               diag.record_console_message(ConsoleMessageLevel::Error, format!("importmap: error event dispatch failed: {err}"));
+             }
           } else if let Err(vm_err) = result {
             if vm_error_format::vm_error_is_js_exception(&vm_err) {
               if let Some(diag) = self.diagnostics.as_ref() {
@@ -1352,7 +1374,11 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
       webidl_bindings_host,
     );
     hooks.set_event_loop(event_loop);
-    let source_text = Arc::new(SourceText::new("<beforeunload>", Arc::from(source)));
+    let source_text = match SourceText::new_charged(realm.heap_mut(), "<beforeunload>", Arc::from(source))
+    {
+      Ok(source_text) => Arc::new(source_text),
+      Err(err) => return Err(vm_error_format::vm_error_to_error(realm.heap_mut(), err)),
+    };
     let result = realm.exec_script_source_with_host_and_hooks(document, &mut hooks, source_text);
     if let Some(err) = hooks.finish(realm.heap_mut()) {
       return Err(err);
@@ -1470,7 +1496,11 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
       webidl_bindings_host,
     );
     hooks.set_event_loop(event_loop);
-    let source_text = Arc::new(SourceText::new("<lifecycle>", Arc::from(source)));
+    let source_text = match SourceText::new_charged(realm.heap_mut(), "<lifecycle>", Arc::from(source))
+    {
+      Ok(source_text) => Arc::new(source_text),
+      Err(err) => return Err(vm_error_format::vm_error_to_error(realm.heap_mut(), err)),
+    };
     let result = realm.exec_script_source_with_host_and_hooks(document, &mut hooks, source_text);
     if let Some(err) = hooks.finish(realm.heap_mut()) {
       return Err(err);

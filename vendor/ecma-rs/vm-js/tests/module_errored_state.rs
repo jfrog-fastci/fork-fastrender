@@ -62,8 +62,8 @@ fn discard_jobs(vm: &mut Vm, heap: &mut Heap, hooks: &mut Hooks) {
   }
 }
 
-fn boom_module() -> SourceTextModuleRecord {
-  SourceTextModuleRecord::parse("throw new Error('boom');").expect("module should parse")
+fn boom_module(heap: &mut Heap) -> SourceTextModuleRecord {
+  SourceTextModuleRecord::parse(heap, "throw new Error('boom');").expect("module should parse")
 }
 
 #[test]
@@ -76,7 +76,7 @@ fn sync_evaluation_rethrows_cached_error_object() -> Result<(), VmError> {
   let realm_id = realm.id();
 
   let mut modules = ModuleGraph::new();
-  let module = modules.add_module(boom_module());
+  let module = modules.add_module(boom_module(&mut heap));
 
   let mut host = ();
   let mut hooks = Hooks::default();
@@ -147,7 +147,7 @@ fn evaluation_promise_rejects_with_cached_error_object() -> Result<(), VmError> 
   let realm_id = realm.id();
 
   let mut modules = ModuleGraph::new();
-  let module = modules.add_module(boom_module());
+  let module = modules.add_module(boom_module(&mut heap));
 
   let mut host = ();
   let mut hooks = Hooks::default();

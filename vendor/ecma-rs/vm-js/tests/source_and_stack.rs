@@ -1,4 +1,6 @@
 use std::sync::Arc;
+use vm_js::Heap;
+use vm_js::HeapLimits;
 use vm_js::format_stack_trace;
 use vm_js::SourceText;
 use vm_js::StackFrame;
@@ -6,7 +8,8 @@ use vm_js::StackFrame;
 #[test]
 fn source_text_line_col_handles_newlines_tabs_and_utf8() {
   let text = "a\té\nb🙂c\n";
-  let source = SourceText::new("<inline>", text);
+  let mut heap = Heap::new(HeapLimits::new(16 * 1024 * 1024, 16 * 1024 * 1024));
+  let source = SourceText::new_charged(&mut heap, "<inline>", text).unwrap();
 
   // Byte offsets are used as the input; reported columns are 1-based UTF-8
   // byte offsets from the start of the line (exact for ASCII).
@@ -28,7 +31,8 @@ fn source_text_line_col_handles_newlines_tabs_and_utf8() {
 fn source_text_line_col_is_dos_safe_on_huge_single_line_sources() {
   const SIZE: usize = 5 * 1024 * 1024;
   let text = String::from_utf8(vec![b'a'; SIZE]).unwrap();
-  let source = SourceText::new("<inline>", text);
+  let mut heap = Heap::new(HeapLimits::new(16 * 1024 * 1024, 16 * 1024 * 1024));
+  let source = SourceText::new_charged(&mut heap, "<inline>", text).unwrap();
 
   let end_offset = SIZE as u32;
 

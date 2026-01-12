@@ -70,6 +70,7 @@ fn module_tla_does_not_invoke_species_constructor() -> Result<(), VmError> {
   let module = graph.add_module_with_specifier(
     "tla.js",
     SourceTextModuleRecord::parse(
+      &mut heap,
       r#"
         export let called = 0;
         export let out = "";

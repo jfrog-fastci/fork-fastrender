@@ -725,12 +725,12 @@ impl<Host: WindowRealmHost + 'static> VmHostHooks for VmJsEventLoopHooks<Host> {
                                                 modules: &mut ModuleGraph,
                                                 key: crate::js::realm_module_loader::ModuleKey|
          -> Result<(), VmError> {
-          let (waiters, result) = module_loader
-            .borrow_mut()
-            .fetch_and_register(modules, key)
-            .ok_or(VmError::InvariantViolation(
-              "module loader missing inflight continuation",
-            ))?;
+           let (waiters, result) = module_loader
+             .borrow_mut()
+             .fetch_and_register(scope.heap_mut(), modules, key)
+             .ok_or(VmError::InvariantViolation(
+               "module loader missing inflight continuation",
+             ))?;
 
           let completion = match result {
             Ok(id) => Ok(id),
@@ -816,12 +816,12 @@ impl<Host: WindowRealmHost + 'static> VmHostHooks for VmJsEventLoopHooks<Host> {
               // realm-owned boxed `ModuleGraph`, cleared during teardown.
               let modules = unsafe { &mut *(modules_ptr as *mut ModuleGraph) };
 
-              let (waiters, result) = module_loader_for_task
-                .borrow_mut()
-                .fetch_and_register(modules, key_for_task)
-                .ok_or(VmError::InvariantViolation(
-                  "module loader missing inflight continuation",
-                ))?;
+               let (waiters, result) = module_loader_for_task
+                 .borrow_mut()
+                 .fetch_and_register(heap, modules, key_for_task)
+                 .ok_or(VmError::InvariantViolation(
+                   "module loader missing inflight continuation",
+                 ))?;
 
               let mut scope = heap.scope();
 

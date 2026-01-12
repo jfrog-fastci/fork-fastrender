@@ -18,12 +18,17 @@ pub struct SourceText {
 impl SourceText {
   /// Store at most this many line-start checkpoints.
   ///
-  /// `SourceText::new` is infallible, so it must avoid unbounded allocations. We cap the number of
-  /// stored entries to ensure hostile input (e.g. `eval` with millions of newlines) cannot force
-  /// the host to abort due to allocator OOM.
+  /// `SourceText::new` is infallible and uncharged, so it must avoid unbounded allocations. We cap
+  /// the number of stored entries to ensure hostile input (e.g. `eval` with millions of newlines)
+  /// cannot force the host to abort due to allocator OOM.
   const MAX_LINE_STARTS: usize = 4096;
 
-  pub fn new(name: impl Into<Arc<str>>, text: impl Into<Arc<str>>) -> Self {
+  /// Construct a `SourceText` without charging it against [`crate::HeapLimits`].
+  ///
+  /// This constructor is restricted to `pub(crate)` so that embeddings cannot accidentally bypass
+  /// heap limits by storing attacker-controlled scripts/modules without charging their backing
+  /// text.
+  pub(crate) fn new(name: impl Into<Arc<str>>, text: impl Into<Arc<str>>) -> Self {
     let name = name.into();
     let text = text.into();
     let bytes = text.as_bytes();
@@ -121,41 +126,19 @@ impl SourceText {
     name: impl Into<Arc<str>>,
     text: impl Into<Arc<str>>,
   ) -> Result<Self, VmError> {
-    let name = name.into();
-    let text = text.into();
-
-    // Pre-allocate `line_starts` using a cheap newline count over bytes (since `\n` is ASCII).
-    let newline_count = text.as_bytes().iter().filter(|&&b| b == b'\n').count();
-    let line_starts_capacity = newline_count.saturating_add(1);
-
-    let bytes = name
+    let mut source = Self::new(name, text);
+    let line_starts_bytes = source
+      .line_starts
+      .capacity()
+      .saturating_mul(mem::size_of::<u32>());
+    let bytes = source
+      .name
       .len()
-      .saturating_add(text.len())
-      .saturating_add(line_starts_capacity.saturating_mul(mem::size_of::<u32>()));
+      .saturating_add(source.text.len())
+      .saturating_add(line_starts_bytes);
     let token = heap.charge_external(bytes)?;
-
-    let mut line_starts: Vec<u32> = Vec::new();
-    line_starts
-      .try_reserve_exact(line_starts_capacity)
-      .map_err(|_| VmError::OutOfMemory)?;
-    line_starts.push(0u32);
-
-    for (idx, ch) in text.char_indices() {
-      if ch == '\n' {
-        let next = (idx + 1).min(text.len());
-        if let Ok(next) = u32::try_from(next) {
-          line_starts.push(next);
-        }
-      }
-    }
-
-    Ok(Self {
-      name,
-      text,
-      line_starts,
-      line_start_stride: 1,
-      external_memory: Some(Arc::new(token)),
-    })
+    source.external_memory = Some(Arc::new(token));
+    Ok(source)
   }
 
   /// Convert a UTF-8 byte offset into 1-based `(line, col)` numbers.

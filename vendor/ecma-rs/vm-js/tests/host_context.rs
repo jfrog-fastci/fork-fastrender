@@ -143,10 +143,11 @@ fn exec_script_source_with_host_and_hooks_threads_host_context_into_native_calls
   let mut host = Host::default();
   let mut hooks = MicrotaskQueue::new();
 
+  let source = Arc::new(SourceText::new_charged(&mut rt.heap, "<inline>", "inc();")?);
   rt.exec_script_source_with_host_and_hooks(
     &mut host,
     &mut hooks,
-    Arc::new(SourceText::new("<inline>", "inc();")),
+    source,
   )?;
 
   assert_eq!(host.counter, 1);
@@ -205,11 +206,9 @@ fn exec_script_with_hooks_passes_dummy_vmhost_context_for_native_calls() -> Resu
     .expect_err("expected dummy host context to fail Host downcast");
   assert!(matches!(err, VmError::Unimplemented(_)));
 
+  let source = Arc::new(SourceText::new_charged(&mut rt.heap, "<inline>", "inc();")?);
   let err = rt
-    .exec_script_source_with_hooks(
-      &mut hooks,
-      Arc::new(SourceText::new("<inline>", "inc();")),
-    )
+    .exec_script_source_with_hooks(&mut hooks, source)
     .expect_err("expected dummy host context to fail Host downcast");
   assert!(matches!(err, VmError::Unimplemented(_)));
   Ok(())
@@ -233,10 +232,11 @@ fn exec_script_source_with_host_and_hooks_drains_vm_microtask_queue_into_host_ho
   let mut host = ();
   let mut hooks = RecordingHooks::default();
 
+  let source = Arc::new(SourceText::new_charged(&mut rt.heap, "<inline>", "enqueue();")?);
   rt.exec_script_source_with_host_and_hooks(
     &mut host,
     &mut hooks,
-    Arc::new(SourceText::new("<inline>", "enqueue();")),
+    source,
   )?;
 
   assert_eq!(hooks.jobs.len(), 1, "expected VM microtask to be forwarded to hooks");
@@ -262,11 +262,16 @@ fn exec_script_source_with_host_and_hooks_drains_vm_microtask_queue_even_on_erro
   let mut host = ();
   let mut hooks = RecordingHooks::default();
 
+  let source = Arc::new(SourceText::new_charged(
+    &mut rt.heap,
+    "<inline>",
+    "enqueue(); throw 1;",
+  )?);
   let err = rt
     .exec_script_source_with_host_and_hooks(
       &mut host,
       &mut hooks,
-      Arc::new(SourceText::new("<inline>", "enqueue(); throw 1;")),
+      source,
     )
     .expect_err("script should throw");
   assert!(matches!(err, VmError::ThrowWithStack { .. }));
@@ -471,10 +476,15 @@ fn promise_jobs_can_access_host_context_when_job_context_calls_with_host_and_hoo
   let mut host = Host::default();
   let mut hooks = MicrotaskQueue::new();
 
+  let source = Arc::new(SourceText::new_charged(
+    &mut rt.heap,
+    "<inline>",
+    "Promise.resolve().then(inc);",
+  )?);
   rt.exec_script_source_with_host_and_hooks(
     &mut host,
     &mut hooks,
-    Arc::new(SourceText::new("<inline>", "Promise.resolve().then(inc);")),
+    source,
   )?;
   assert_eq!(host.counter, 0);
 

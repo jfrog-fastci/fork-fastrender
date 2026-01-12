@@ -427,10 +427,12 @@ fn take_captured_console(vm: &mut Vm) -> (String, String) {
 fn install_native_builtins(rt: &mut JsRuntime) -> Result<(), VmError> {
   rt.register_global_native_function(NATIVE_PRINT_NAME, native_print, 0)?;
   rt.register_global_native_function(NATIVE_EPRINT_NAME, native_eprint, 0)?;
-  rt.exec_script_source(Arc::new(SourceText::new(
+  let source = Arc::new(SourceText::new_charged(
+    &mut rt.heap,
     NATIVE_BUILTINS_PRELUDE_SOURCE_NAME,
     NATIVE_BUILTINS_PRELUDE_SCRIPT,
-  )))?;
+  )?);
+  rt.exec_script_source(source)?;
   Ok(())
 }
 
@@ -736,7 +738,10 @@ pub fn run_js_source_outcome_with_options(
       return vm_error_to_outcome(&mut rt, err);
     }
 
-    let source = Arc::new(SourceText::new(source_name, source_text));
+    let source = match SourceText::new_charged(&mut rt.heap, source_name, source_text) {
+      Ok(source) => Arc::new(source),
+      Err(err) => return vm_error_to_outcome(&mut rt, err),
+    };
     let value = match rt.exec_script_source(source) {
       Ok(v) => v,
       Err(err) => return vm_error_to_outcome(&mut rt, err),
@@ -776,7 +781,13 @@ pub fn run_js_source_with_options(
   let mut rt = new_runtime_with_options(options).map_err(|e| OracleHarnessError::Vm {
     message: e.to_string(),
   })?;
-  let source = Arc::new(SourceText::new(source_name, source_text));
+  let source = Arc::new(
+    SourceText::new_charged(&mut rt.heap, source_name, source_text).map_err(|err| {
+      OracleHarnessError::Vm {
+        message: err.to_string(),
+      }
+    })?,
+  );
 
   let result = rt.exec_script_source(source);
   let out = match result {
@@ -821,7 +832,11 @@ pub fn run_js_source_capture_stdout_with_options(
   let out = (|| {
     install_native_builtins(&mut rt).map_err(|err| map_vm_error(&mut rt, err))?;
 
-    rt.exec_script_source(Arc::new(SourceText::new(source_name, source_text)))
+    let source = Arc::new(
+      SourceText::new_charged(&mut rt.heap, source_name, source_text)
+        .map_err(|err| map_vm_error(&mut rt, err))?,
+    );
+    rt.exec_script_source(source)
       .map_err(|err| map_vm_error(&mut rt, err))?;
 
     rt.vm
@@ -917,13 +932,22 @@ pub fn run_js_source_with_native_builtins_capture_stdout_with_options(
     rt.register_global_native_function(NATIVE_EPRINT_NAME, native_eprint, 0)
       .map_err(|err| map_vm_error(&mut rt, err))?;
 
-    rt.exec_script_source(Arc::new(SourceText::new(
-      NATIVE_BUILTINS_PRELUDE_SOURCE_NAME,
-      NATIVE_BUILTINS_PRELUDE_SCRIPT,
-    )))
-    .map_err(|err| map_vm_error(&mut rt, err))?;
+    let prelude = Arc::new(
+      SourceText::new_charged(
+        &mut rt.heap,
+        NATIVE_BUILTINS_PRELUDE_SOURCE_NAME,
+        NATIVE_BUILTINS_PRELUDE_SCRIPT,
+      )
+      .map_err(|err| map_vm_error(&mut rt, err))?,
+    );
+    rt.exec_script_source(prelude)
+      .map_err(|err| map_vm_error(&mut rt, err))?;
 
-    rt.exec_script_source(Arc::new(SourceText::new(source_name, source_text)))
+    let source = Arc::new(
+      SourceText::new_charged(&mut rt.heap, source_name, source_text)
+        .map_err(|err| map_vm_error(&mut rt, err))?,
+    );
+    rt.exec_script_source(source)
       .map_err(|err| map_vm_error(&mut rt, err))?;
 
     rt.vm
@@ -1465,7 +1489,14 @@ impl NativeRunner for VmJsOracleRunner {
       return Err(finish_err(&mut rt, diag));
     }
 
-    if let Err(err) = rt.exec_script_source(Arc::new(SourceText::new("<fixture>", js))) {
+    let fixture_source = match SourceText::new_charged(&mut rt.heap, "<fixture>", js) {
+      Ok(source) => Arc::new(source),
+      Err(err) => {
+        let diag = vm_error_to_diagnostic(&rt, err);
+        return Err(finish_err(&mut rt, diag));
+      }
+    };
+    if let Err(err) = rt.exec_script_source(fixture_source) {
       let diag = vm_error_to_diagnostic(&rt, err);
       return Err(finish_err(&mut rt, diag));
     }
@@ -1531,7 +1562,10 @@ pub fn run_fixture_ts_outcome_with_name_and_options(
       return vm_error_to_outcome(&mut rt, err);
     }
 
-    let fixture_source = Arc::new(SourceText::new(name, js));
+    let fixture_source = match SourceText::new_charged(&mut rt.heap, name, js) {
+      Ok(source) => Arc::new(source),
+      Err(err) => return vm_error_to_outcome(&mut rt, err),
+    };
     if let Err(err) = rt.exec_script_source(fixture_source) {
       return vm_error_to_outcome(&mut rt, err);
     }
@@ -1540,10 +1574,12 @@ pub fn run_fixture_ts_outcome_with_name_and_options(
       return vm_error_to_outcome(&mut rt, err);
     }
 
-    let value = match rt.exec_script_source(Arc::new(SourceText::new(
-      OBSERVE_SOURCE_NAME,
-      OBSERVE_SCRIPT,
-    ))) {
+    let observe_source = match SourceText::new_charged(&mut rt.heap, OBSERVE_SOURCE_NAME, OBSERVE_SCRIPT)
+    {
+      Ok(source) => Arc::new(source),
+      Err(err) => return vm_error_to_outcome(&mut rt, err),
+    };
+    let value = match rt.exec_script_source(observe_source) {
       Ok(v) => v,
       Err(err) => return vm_error_to_outcome(&mut rt, err),
     };
@@ -1980,7 +2016,10 @@ pub fn run_fixture_ts_with_name_and_options(
   let mut rt = new_runtime_with_options(options)
     .map_err(|err| harness_error(format!("failed to init vm-js: {err}")))?;
 
-  let fixture_source = Arc::new(SourceText::new(name, js));
+  let fixture_source = Arc::new(
+    SourceText::new_charged(&mut rt.heap, name, js)
+      .map_err(|err| harness_error(format!("{err}")))?,
+  );
   if let Err(err) = rt.exec_script_source(fixture_source) {
     let diag = vm_error_to_diagnostic(&rt, err);
     teardown_microtasks(&mut rt);
@@ -1993,10 +2032,14 @@ pub fn run_fixture_ts_with_name_and_options(
     return Err(diag);
   }
 
-  let value = match rt.exec_script_source(Arc::new(SourceText::new(
-    OBSERVE_SOURCE_NAME,
-    OBSERVE_SCRIPT,
-  ))) {
+  let observe_source = match SourceText::new_charged(&mut rt.heap, OBSERVE_SOURCE_NAME, OBSERVE_SCRIPT) {
+    Ok(source) => Arc::new(source),
+    Err(err) => {
+      teardown_microtasks(&mut rt);
+      return Err(harness_error(format!("{err}")));
+    }
+  };
+  let value = match rt.exec_script_source(observe_source) {
     Ok(v) => v,
     Err(err) => {
       let diag = vm_error_to_diagnostic(&rt, err);
@@ -2336,7 +2379,7 @@ impl VmHostHooks for FixtureModuleLoader {
     };
 
     let name = self.stable_source_name(&canonical)?;
-    let source_text = Arc::new(SourceText::new(name, js));
+    let source_text = Arc::new(SourceText::new_charged(scope.heap_mut(), name, js)?);
 
     let record = match SourceTextModuleRecord::parse_source_with_vm(vm, source_text) {
       Ok(record) => record,
@@ -2437,7 +2480,10 @@ pub fn run_fixture_ts_module_dir(dir: impl AsRef<Path>) -> Result<String, Diagno
     } else {
       entry_src
     };
-    let entry_source_text = Arc::new(SourceText::new(entry_name, entry_js));
+    let entry_source_text = Arc::new(
+      SourceText::new_charged(heap, entry_name, entry_js)
+        .map_err(|err| vm_error_to_diagnostic_with_heap(&*heap, err))?,
+    );
     let entry_record = SourceTextModuleRecord::parse_source_with_vm(vm, entry_source_text)
       .map_err(|err| vm_error_to_diagnostic_with_heap(&*heap, err))?;
     let entry_id = modules.add_module(entry_record);
@@ -2588,10 +2634,15 @@ pub fn run_fixture_ts_module_dir(dir: impl AsRef<Path>) -> Result<String, Diagno
     return Err(diag);
   }
 
-  let value = match rt.exec_script_source(Arc::new(SourceText::new(
-    OBSERVE_SOURCE_NAME,
-    OBSERVE_SCRIPT,
-  ))) {
+  let observe_source = match SourceText::new_charged(&mut rt.heap, OBSERVE_SOURCE_NAME, OBSERVE_SCRIPT) {
+    Ok(source) => Arc::new(source),
+    Err(err) => {
+      let diag = vm_error_to_diagnostic(&rt, err);
+      teardown_microtasks(&mut rt);
+      return Err(diag);
+    }
+  };
+  let value = match rt.exec_script_source(observe_source) {
     Ok(v) => v,
     Err(err) => {
       let diag = vm_error_to_diagnostic(&rt, err);

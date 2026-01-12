@@ -1,13 +1,14 @@
 use vm_js::{
-  BindingName, ModuleGraph, ResolveExportResult, ResolvedBinding, SourceTextModuleRecord, VmError,
+  BindingName, Heap, HeapLimits, ModuleGraph, ResolveExportResult, ResolvedBinding, SourceTextModuleRecord,
+  VmError,
 };
 
-fn parse(src: &str) -> SourceTextModuleRecord {
-  SourceTextModuleRecord::parse(src).expect("module should parse")
+fn parse(heap: &mut Heap, src: &str) -> SourceTextModuleRecord {
+  SourceTextModuleRecord::parse(heap, src).expect("module should parse")
 }
 
-fn assert_syntax(src: &str) {
-  match SourceTextModuleRecord::parse(src) {
+fn assert_syntax(heap: &mut Heap, src: &str) {
+  match SourceTextModuleRecord::parse(heap, src) {
     Err(VmError::Syntax(_)) => {}
     other => panic!("expected SyntaxError, got {other:?}"),
   }
@@ -15,11 +16,13 @@ fn assert_syntax(src: &str) {
 
 #[test]
 fn exported_names_and_resolve_export() {
+  let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
   let mut graph = ModuleGraph::new();
 
   let a = graph.add_module_with_specifier(
     "a",
     parse(
+      &mut heap,
       r#"
       const foo = 1;
       export { foo as bar };
@@ -33,6 +36,7 @@ fn exported_names_and_resolve_export() {
   let b = graph.add_module_with_specifier(
     "b",
     parse(
+      &mut heap,
       r#"
       const x = 1;
       export { x };
@@ -43,6 +47,7 @@ fn exported_names_and_resolve_export() {
   let c = graph.add_module_with_specifier(
     "c",
     parse(
+      &mut heap,
       r#"
       const c1 = 1;
       const c2 = 2;
@@ -97,11 +102,13 @@ fn exported_names_and_resolve_export() {
 
 #[test]
 fn circular_export_star_does_not_infinite_loop() {
+  let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
   let mut graph = ModuleGraph::new();
 
   let d = graph.add_module_with_specifier(
     "d",
     parse(
+      &mut heap,
       r#"
       export * from "e";
     "#,
@@ -111,6 +118,7 @@ fn circular_export_star_does_not_infinite_loop() {
   let e = graph.add_module_with_specifier(
     "e",
     parse(
+      &mut heap,
       r#"
       export * from "d";
       const z = 1;
@@ -137,11 +145,13 @@ fn circular_export_star_does_not_infinite_loop() {
 
 #[test]
 fn ambiguous_star_exports() {
+  let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
   let mut graph = ModuleGraph::new();
 
   let m1 = graph.add_module_with_specifier(
     "m1",
     parse(
+      &mut heap,
       r#"
       const x = 1;
       export { x };
@@ -152,6 +162,7 @@ fn ambiguous_star_exports() {
   let m2 = graph.add_module_with_specifier(
     "m2",
     parse(
+      &mut heap,
       r#"
       const x = 2;
       export { x };
@@ -162,6 +173,7 @@ fn ambiguous_star_exports() {
   let star = graph.add_module_with_specifier(
     "star",
     parse(
+      &mut heap,
       r#"
       export * from "m1";
       export * from "m2";
@@ -189,7 +201,9 @@ fn ambiguous_star_exports() {
 
 #[test]
 fn exported_names_duplicates_are_parse_errors() {
+  let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
   assert_syntax(
+    &mut heap,
     r#"
     const foo = 1;
     export { foo as dup, foo as dup };
@@ -197,6 +211,7 @@ fn exported_names_duplicates_are_parse_errors() {
   );
 
   assert_syntax(
+    &mut heap,
     r#"
     export { x as y } from "b";
     export { x as y } from "b";
@@ -206,11 +221,13 @@ fn exported_names_duplicates_are_parse_errors() {
 
 #[test]
 fn ambiguous_star_exports_when_binding_name_differs() {
+  let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
   let mut graph = ModuleGraph::new();
 
   let base = graph.add_module_with_specifier(
     "base",
     parse(
+      &mut heap,
       r#"
       const a = 1;
       const b = 2;
@@ -222,6 +239,7 @@ fn ambiguous_star_exports_when_binding_name_differs() {
   let m1 = graph.add_module_with_specifier(
     "m1",
     parse(
+      &mut heap,
       r#"
       export { a as x } from "base";
     "#,
@@ -231,6 +249,7 @@ fn ambiguous_star_exports_when_binding_name_differs() {
   let m2 = graph.add_module_with_specifier(
     "m2",
     parse(
+      &mut heap,
       r#"
       export { b as x } from "base";
     "#,
@@ -240,6 +259,7 @@ fn ambiguous_star_exports_when_binding_name_differs() {
   let star = graph.add_module_with_specifier(
     "star",
     parse(
+      &mut heap,
       r#"
       export * from "m1";
       export * from "m2";

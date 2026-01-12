@@ -291,6 +291,7 @@ fn import_meta_works_after_top_level_await() -> Result<(), VmError> {
   let m = graph.add_module_with_specifier(
     "m.js",
     SourceTextModuleRecord::parse(
+      &mut heap,
       r#"
         export const before = import.meta.url;
         await Promise.resolve();
@@ -374,6 +375,7 @@ fn export_default_await_initializes_default_binding() -> Result<(), VmError> {
   let m = graph.add_module_with_specifier(
     "m.js",
     SourceTextModuleRecord::parse(
+      &mut heap,
       r#"
         export default await Promise.resolve(1);
         export const ok = 2;
@@ -443,11 +445,13 @@ fn export_default_await_initializes_default_binding() -> Result<(), VmError> {
 #[test]
 fn module_async_evaluation_order_is_deterministic() -> Result<(), VmError> {
   let mut vm = Vm::new(VmOptions::default());
+  let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
 
   let mut graph = ModuleGraph::new();
   let a = graph.add_module_with_specifier(
     "a.js",
     SourceTextModuleRecord::parse(
+      &mut heap,
       r#"
         import "b.js";
         import "c.js";
@@ -458,6 +462,7 @@ fn module_async_evaluation_order_is_deterministic() -> Result<(), VmError> {
   let b = graph.add_module_with_specifier(
     "b.js",
     SourceTextModuleRecord::parse(
+      &mut heap,
       r#"
         import "d.js";
         await 0;
@@ -468,6 +473,7 @@ fn module_async_evaluation_order_is_deterministic() -> Result<(), VmError> {
   let c = graph.add_module_with_specifier(
     "c.js",
     SourceTextModuleRecord::parse(
+      &mut heap,
       r#"
         import "d.js";
         import "e.js";
@@ -478,6 +484,7 @@ fn module_async_evaluation_order_is_deterministic() -> Result<(), VmError> {
   let d = graph.add_module_with_specifier(
     "d.js",
     SourceTextModuleRecord::parse(
+      &mut heap,
       r#"
         import "a.js";
         await 0;
@@ -488,6 +495,7 @@ fn module_async_evaluation_order_is_deterministic() -> Result<(), VmError> {
   let e = graph.add_module_with_specifier(
     "e.js",
     SourceTextModuleRecord::parse(
+      &mut heap,
       r#"
         await 0;
         export {};
@@ -544,6 +552,7 @@ fn throw_await_rejects_module_evaluation_promise() -> Result<(), VmError> {
   let m = graph.add_module_with_specifier(
     "m.js",
     SourceTextModuleRecord::parse(
+      &mut heap,
       r#"
         await Promise.resolve();
         throw await Promise.resolve('boom');
@@ -616,6 +625,7 @@ fn throw_await_error_object_attaches_throw_site_stack() -> Result<(), VmError> {
   let m = graph.add_module_with_specifier(
     "m.js",
     SourceTextModuleRecord::parse(
+      &mut heap,
       "const err = new Error('boom');\nawait Promise.resolve();\nthrow await Promise.resolve(err);\nexport const unreachable = 1;",
     )?,
   );
@@ -699,11 +709,12 @@ fn dynamic_import_after_top_level_await_starts_and_resolves() -> Result<(), VmEr
   let mut graph = ModuleGraph::new();
   let dep = graph.add_module_with_specifier(
     "./dep.js",
-    SourceTextModuleRecord::parse("export const x = 1;")?,
+    SourceTextModuleRecord::parse(&mut heap, "export const x = 1;")?,
   );
   let m = graph.add_module_with_specifier(
     "m.js",
     SourceTextModuleRecord::parse(
+      &mut heap,
       r#"
         await Promise.resolve();
         export const p = import('./dep.js');

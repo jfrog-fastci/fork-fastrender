@@ -73,6 +73,7 @@ fn abort_tla_evaluation_rejects_pending_module_evaluation_promise() -> Result<()
 
   let mut graph = ModuleGraph::new();
   let entry = graph.add_module(SourceTextModuleRecord::parse(
+    &mut heap,
     "await new Promise(() => {}); export {};",
   )?);
 

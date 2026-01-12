@@ -904,11 +904,11 @@ impl WindowRealm {
     hooks: &mut dyn VmHostHooks,
     source: &str,
   ) -> Result<Value, VmError> {
-    self.exec_script_source_with_host_and_hooks(
-      host,
-      hooks,
-      Arc::new(SourceText::new("<inline>", source)),
-    )
+    let source = {
+      let (_vm, _realm, heap) = self.runtime.vm_realm_and_heap_mut();
+      Arc::new(SourceText::new_charged(heap, "<inline>", source)?)
+    };
+    self.exec_script_source_with_host_and_hooks(host, hooks, source)
   }
 
   /// Execute a classic script in this window realm with an explicit source name, embedder host
@@ -924,11 +924,11 @@ impl WindowRealm {
     source_name: impl Into<Arc<str>>,
     source_text: impl Into<Arc<str>>,
   ) -> Result<Value, VmError> {
-    self.exec_script_source_with_host_and_hooks(
-      host,
-      hooks,
-      Arc::new(SourceText::new(source_name, source_text)),
-    )
+    let source = {
+      let (_vm, _realm, heap) = self.runtime.vm_realm_and_heap_mut();
+      Arc::new(SourceText::new_charged(heap, source_name, source_text)?)
+    };
+    self.exec_script_source_with_host_and_hooks(host, hooks, source)
   }
 
   /// Execute a classic script in this window realm using a custom host hook implementation.
@@ -941,7 +941,11 @@ impl WindowRealm {
     hooks: &mut dyn VmHostHooks,
     source: &str,
   ) -> Result<Value, VmError> {
-    self.exec_script_source_with_hooks(hooks, Arc::new(SourceText::new("<inline>", source)))
+    let source = {
+      let (_vm, _realm, heap) = self.runtime.vm_realm_and_heap_mut();
+      Arc::new(SourceText::new_charged(heap, "<inline>", source)?)
+    };
+    self.exec_script_source_with_hooks(hooks, source)
   }
 
   /// Ensure the `window` global object participates in the DOM `EventTarget` prototype chain.
@@ -1223,9 +1227,13 @@ impl WindowRealm {
       }
     }
 
-    let source = Arc::new(SourceText::new(source_name, source_text));
-
     self.with_vm_budget(move |rt| {
+      let source = Arc::new(SourceText::new_charged(
+        &mut rt.heap,
+        source_name,
+        source_text,
+      )?);
+
       // Temporarily move the VM-owned microtask queue out so we can both:
       // - expose DOM shim exotic hooks to the evaluator, and
       // - keep Promise jobs enqueued onto the VM-owned queue (restored on drop).

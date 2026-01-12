@@ -40,6 +40,7 @@ fn module_evaluate_supports_named_default_imports_and_live_bindings() -> Result<
   let a = graph.add_module_with_specifier(
     "a.js",
     SourceTextModuleRecord::parse(
+      &mut heap,
       r#"
         export let x = 1;
         export default 2;
@@ -50,6 +51,7 @@ fn module_evaluate_supports_named_default_imports_and_live_bindings() -> Result<
   let b = graph.add_module_with_specifier(
     "b.js",
     SourceTextModuleRecord::parse(
+      &mut heap,
       r#"
         import y, { x, inc } from "a.js";
         export const before = x;
@@ -116,6 +118,7 @@ fn module_evaluate_supports_anonymous_default_export_function_decls() -> Result<
   graph.add_module_with_specifier(
     "a",
     SourceTextModuleRecord::parse(
+      &mut heap,
       r#"
         export default function() { return 1; }
       "#,
@@ -124,6 +127,7 @@ fn module_evaluate_supports_anonymous_default_export_function_decls() -> Result<
   let b = graph.add_module_with_specifier(
     "b",
     SourceTextModuleRecord::parse(
+      &mut heap,
       r#"
         import f from "a";
         export const r = f();
@@ -176,6 +180,7 @@ fn module_evaluate_supports_reexports_and_export_star_as_namespace() -> Result<(
   graph.add_module_with_specifier(
     "base.js",
     SourceTextModuleRecord::parse(
+      &mut heap,
       r#"
         export const foo = 10;
         export const bar = 5;
@@ -186,6 +191,7 @@ fn module_evaluate_supports_reexports_and_export_star_as_namespace() -> Result<(
   let reexport = graph.add_module_with_specifier(
     "reexport.js",
     SourceTextModuleRecord::parse(
+      &mut heap,
       r#"
         export { foo as f } from "base.js";
         export * from "base.js";
@@ -196,6 +202,7 @@ fn module_evaluate_supports_reexports_and_export_star_as_namespace() -> Result<(
   let consumer = graph.add_module_with_specifier(
     "consumer.js",
     SourceTextModuleRecord::parse(
+      &mut heap,
       r#"
         import { foo, bar, f, ns } from "reexport.js";
         export const sum = foo + bar + f + ns.foo;
@@ -255,6 +262,7 @@ fn module_evaluate_handles_cycles_with_function_decls() -> Result<(), VmError> {
   let a = graph.add_module_with_specifier(
     "a.js",
     SourceTextModuleRecord::parse(
+      &mut heap,
       r#"
         import { getB, fromA } from "b.js";
         export function getA() { return "A"; }
@@ -266,6 +274,7 @@ fn module_evaluate_handles_cycles_with_function_decls() -> Result<(), VmError> {
   let b = graph.add_module_with_specifier(
     "b.js",
     SourceTextModuleRecord::parse(
+      &mut heap,
       r#"
         import { getA } from "a.js";
         export function getB() { return "B" + getA(); }
@@ -421,6 +430,7 @@ fn module_evaluate_supports_import_meta_and_caches_it_per_module() -> Result<(),
   let module = graph.add_module_with_specifier(
     "m.js",
     SourceTextModuleRecord::parse(
+      &mut heap,
       r#"
         export const meta1 = import.meta;
         export const meta2 = import.meta;

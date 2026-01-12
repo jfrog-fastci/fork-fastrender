@@ -109,6 +109,7 @@ fn import_meta_cache_is_scoped_to_module_graph() -> Result<(), VmError> {
   };
   let mut graph1 = ModuleGraph::new();
   let module1 = graph1.add_module(SourceTextModuleRecord::parse(
+    &mut heap,
     r#"
       export const m = import.meta;
       export const url = import.meta.url ?? 1;
@@ -150,6 +151,7 @@ fn import_meta_cache_is_scoped_to_module_graph() -> Result<(), VmError> {
   };
   let mut graph2 = ModuleGraph::new();
   let module2 = graph2.add_module(SourceTextModuleRecord::parse(
+    &mut heap,
     r#"
       export const m = import.meta;
       export const url = import.meta.url ?? 1;

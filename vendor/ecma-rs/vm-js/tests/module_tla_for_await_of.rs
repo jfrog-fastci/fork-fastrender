@@ -81,6 +81,7 @@ fn module_top_level_for_await_of_suspends_and_resumes() -> Result<(), VmError> {
 
   let mut graph = ModuleGraph::new();
   let module = graph.add_module(SourceTextModuleRecord::parse(
+    &mut heap,
     r#"
       export let sum = 0;
       for await (const x of [Promise.resolve(1), Promise.resolve(2)]) { sum = sum + x; }

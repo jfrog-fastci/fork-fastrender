@@ -48,6 +48,7 @@ fn module_graph_teardown_unregisters_persistent_roots() -> Result<(), VmError> {
 
   let mut graph = ModuleGraph::new();
   let module = graph.add_module(SourceTextModuleRecord::parse(
+    &mut heap,
     r#"
       export const meta = import.meta;
       export const x = 1;

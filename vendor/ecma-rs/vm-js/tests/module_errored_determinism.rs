@@ -33,7 +33,7 @@ fn evaluate_rejects_with_cached_error_for_errored_modules() -> Result<(), VmErro
   let mut graph = ModuleGraph::new();
   let m = graph.add_module_with_specifier(
     "m.js",
-    SourceTextModuleRecord::parse("export const x = 1; throw 7;")?,
+    SourceTextModuleRecord::parse(&mut heap, "export const x = 1; throw 7;")?,
   );
   graph.link_all_by_specifier();
   graph.link(&mut vm, &mut heap, realm.global_object(), m)?;
@@ -91,10 +91,13 @@ fn link_rethrows_cached_error_for_errored_modules() -> Result<(), VmError> {
   let mut realm = Realm::new(&mut vm, &mut heap)?;
 
   let mut graph = ModuleGraph::new();
-  graph.add_module_with_specifier("a.js", SourceTextModuleRecord::parse("export const x = 1;")?);
+  graph.add_module_with_specifier(
+    "a.js",
+    SourceTextModuleRecord::parse(&mut heap, "export const x = 1;")?,
+  );
   let b = graph.add_module_with_specifier(
     "b.js",
-    SourceTextModuleRecord::parse("import { y } from \"a.js\";")?,
+    SourceTextModuleRecord::parse(&mut heap, "import { y } from \"a.js\";")?,
   );
   graph.link_all_by_specifier();
 
@@ -121,4 +124,3 @@ fn link_rethrows_cached_error_for_errored_modules() -> Result<(), VmError> {
   realm.teardown(&mut heap);
   Ok(())
 }
-

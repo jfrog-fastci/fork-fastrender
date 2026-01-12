@@ -356,7 +356,8 @@ impl ScriptRealm for VmJsScriptRealm {
       }
     };
 
-    let source_text = SourceText::new(source_name, source);
+    let source_text =
+      SourceText::new_charged(&mut self.heap, source_name, source).map_err(vm_error_to_runtime)?;
 
     // Push a frame so errors/terminations surface at least one stack frame.
     let (line, col) = source_text.line_col(0);
@@ -1176,7 +1177,8 @@ mod tests {
       }
     };
 
-    let source_text = SourceText::new(source_name, source);
+    let source_text =
+      SourceText::new_charged(&mut realm.heap, source_name, source).map_err(vm_error_to_runtime)?;
 
     // Push a frame so errors/terminations surface at least one stack frame.
     let (line, col) = source_text.line_col(0);

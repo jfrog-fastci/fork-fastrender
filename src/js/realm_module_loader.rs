@@ -14,7 +14,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 use url::Url;
 use vm_js::{
-  ImportAttribute, ModuleGraph, ModuleId, ModuleLoadPayload, ModuleReferrer, ModuleRequest,
+  Heap, ImportAttribute, ModuleGraph, ModuleId, ModuleLoadPayload, ModuleReferrer, ModuleRequest,
   ScriptId, SourceText, SourceTextModuleRecord, VmError,
 };
 
@@ -274,6 +274,7 @@ impl ModuleLoader {
   /// the dependency graph.
   pub fn get_or_fetch_module(
     &mut self,
+    heap: &mut Heap,
     modules: &mut ModuleGraph,
     key: ModuleKey,
   ) -> Result<ModuleId, VmError> {
@@ -397,7 +398,7 @@ impl ModuleLoader {
     let source_text = String::from_utf8(fetched.bytes)
       .map_err(|_| VmError::TypeError(MODULE_FETCH_INVALID_UTF8_TYPE_ERROR))?;
 
-    let source = Arc::new(SourceText::new(key.url.clone(), source_text));
+    let source = Arc::new(SourceText::new_charged(heap, key.url.clone(), source_text)?);
     let record = SourceTextModuleRecord::parse_source(source)?;
     let module_id = modules.add_module(record);
     self.register_module(key, module_id, 0, next_total)
@@ -409,6 +410,7 @@ impl ModuleLoader {
   /// fetched the module source text and wants to reuse it without performing another fetch.
   pub fn get_or_parse_inline_module(
     &mut self,
+    heap: &mut Heap,
     modules: &mut ModuleGraph,
     key: ModuleKey,
     source_text: &str,
@@ -459,10 +461,11 @@ impl ModuleLoader {
       ));
     }
 
-    let source = Arc::new(SourceText::new(
+    let source = Arc::new(SourceText::new_charged(
+      heap,
       key.url.clone(),
       Arc::<str>::from(source_text),
-    ));
+    )?);
     let record = SourceTextModuleRecord::parse_source(source)?;
     let module_id = modules.add_module(record);
     self.register_module(key, module_id, 0, next_total)
@@ -616,6 +619,7 @@ impl ModuleLoader {
   /// Intended to run in a `TaskSource::Networking` task.
   pub fn fetch_and_register(
     &mut self,
+    heap: &mut Heap,
     modules: &mut ModuleGraph,
     key: ModuleKey,
   ) -> Option<(Vec<PendingContinuation>, Result<ModuleId, VmError>)> {
@@ -754,7 +758,7 @@ impl ModuleLoader {
       let source = String::from_utf8(fetched.bytes)
         .map_err(|_| VmError::TypeError(MODULE_FETCH_INVALID_UTF8_TYPE_ERROR))?;
 
-      let source = Arc::new(SourceText::new(key.url.clone(), source));
+      let source = Arc::new(SourceText::new_charged(heap, key.url.clone(), source)?);
       let record = SourceTextModuleRecord::parse_source(source)?;
 
       // `ModuleGraph` currently uses `Vec` push for storage; allocation failure aborts. This loader
@@ -857,8 +861,8 @@ mod tests {
     let payload_clone = {
       let mut scope = heap.scope();
 
-      let root_record =
-        vm_js::SourceTextModuleRecord::parse("import './dep.js';").expect("parse root module");
+      let root_record = vm_js::SourceTextModuleRecord::parse(scope.heap_mut(), "import './dep.js';")
+        .expect("parse root module");
       let mut modules = vm_js::ModuleGraph::new();
       let root_id = modules.add_module(root_record);
 
@@ -980,9 +984,10 @@ mod tests {
       "fetcher should not be called until the host starts fetching"
     );
 
+    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
     let mut modules = vm_js::ModuleGraph::new();
     let (waiters, result) = loader
-      .fetch_and_register(&mut modules, key.clone())
+      .fetch_and_register(&mut heap, &mut modules, key.clone())
       .expect("expected inflight entry");
     assert_eq!(waiters.len(), 1);
     let module_id = result.expect("expected module load to succeed");
@@ -1046,9 +1051,10 @@ mod tests {
       "expected inflight request to be deduped, got {outcome2:?}"
     );
 
+    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
     let mut modules = vm_js::ModuleGraph::new();
     let (waiters, result) = loader
-      .fetch_and_register(&mut modules, key1)
+      .fetch_and_register(&mut heap, &mut modules, key1)
       .expect("expected inflight entry");
     assert_eq!(
       fetcher

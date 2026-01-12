@@ -352,8 +352,9 @@ impl SourceTextModuleRecord {
   ///
   /// This corresponds to the spec's `ParseModule` abstract operation, but only models the export
   /// entry lists and `[[RequestedModules]]`.
-  pub fn parse(source: &str) -> Result<Self, VmError> {
-    Self::parse_source(Arc::new(SourceText::new("<inline>", source)))
+  pub fn parse(heap: &mut Heap, source: &str) -> Result<Self, VmError> {
+    let source = Arc::new(SourceText::new_charged(heap, "<inline>", source)?);
+    Self::parse_source(source)
   }
 
   /// Parse a module and capture its [`SourceText`] + parsed AST for later evaluation.
@@ -380,8 +381,8 @@ impl SourceTextModuleRecord {
   }
 
   /// Parses a source text module using VM budget/interrupt state.
-  pub fn parse_with_vm(vm: &mut Vm, source: &str) -> Result<Self, VmError> {
-    let source = Arc::new(SourceText::new("<inline>", source));
+  pub fn parse_with_vm(heap: &mut Heap, vm: &mut Vm, source: &str) -> Result<Self, VmError> {
+    let source = Arc::new(SourceText::new_charged(heap, "<inline>", source)?);
     let opts = ParseOptions {
       dialect: Dialect::Ecma,
       source_type: SourceType::Module,
@@ -2663,7 +2664,7 @@ fn syntax_error(loc: parse_js::loc::Loc, message: &str) -> VmError {
 #[cfg(test)]
 mod tests {
   use super::{LocalExportEntry, SourceTextModuleRecord};
-  use crate::{SourceText, TerminationReason, Vm, VmError, VmOptions};
+  use crate::{Heap, HeapLimits, SourceText, TerminationReason, Vm, VmError, VmOptions};
   use std::sync::Arc;
 
   fn assert_syntax(result: Result<SourceTextModuleRecord, VmError>) {
@@ -2673,15 +2674,21 @@ mod tests {
     }
   }
 
+  fn parse(src: &str) -> Result<SourceTextModuleRecord, VmError> {
+    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    SourceTextModuleRecord::parse(&mut heap, src)
+  }
+
   #[test]
   fn parse_source_with_vm_respects_fuel_budget() {
     let mut opts = VmOptions::default();
     opts.default_fuel = Some(0);
     let mut vm = Vm::new(opts);
-    let source = Arc::new(SourceText::new(
-      "https://example.invalid/module.js",
-      "export const x = 1;",
-    ));
+    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let source = Arc::new(
+      SourceText::new_charged(&mut heap, "https://example.invalid/module.js", "export const x = 1;")
+        .expect("SourceText::new_charged"),
+    );
 
     let err = SourceTextModuleRecord::parse_source_with_vm(&mut vm, source)
       .expect_err("expected fuel budget to terminate parsing");
@@ -2693,8 +2700,7 @@ mod tests {
 
   #[test]
   fn export_object_destructuring_exports_bound_names() {
-    let record =
-      SourceTextModuleRecord::parse("export const { a, b: c, ...d } = obj;").unwrap();
+    let record = parse("export const { a, b: c, ...d } = obj;").unwrap();
     assert_eq!(
       record.local_export_entries,
       vec![
@@ -2716,8 +2722,7 @@ mod tests {
 
   #[test]
   fn export_array_destructuring_exports_bound_names() {
-    let record =
-      SourceTextModuleRecord::parse("export let [a, , b, ...rest] = arr;").unwrap();
+    let record = parse("export let [a, , b, ...rest] = arr;").unwrap();
     assert_eq!(
       record.local_export_entries,
       vec![
@@ -2739,7 +2744,7 @@ mod tests {
 
   #[test]
   fn export_nested_destructuring_exports_bound_names() {
-    let record = SourceTextModuleRecord::parse("export const { a: { b } } = obj;").unwrap();
+    let record = parse("export const { a: { b } } = obj;").unwrap();
     assert_eq!(
       record.local_export_entries,
       vec![LocalExportEntry {
@@ -2751,8 +2756,7 @@ mod tests {
 
   #[test]
   fn export_multiple_declarators_exports_all_bound_names() {
-    let record =
-      SourceTextModuleRecord::parse("export const { a } = obj, [b] = arr, c = 1;").unwrap();
+    let record = parse("export const { a } = obj, [b] = arr, c = 1;").unwrap();
     assert_eq!(
       record.local_export_entries,
       vec![
@@ -2774,7 +2778,7 @@ mod tests {
 
   #[test]
   fn module_early_error_duplicate_exported_name() {
-    assert_syntax(SourceTextModuleRecord::parse(
+    assert_syntax(parse(
       r#"
       var x;
       export { x };
@@ -2785,7 +2789,7 @@ mod tests {
 
   #[test]
   fn module_early_error_duplicate_exported_name_default() {
-    assert_syntax(SourceTextModuleRecord::parse(
+    assert_syntax(parse(
       r#"
       var x;
       export default 1;
@@ -2796,27 +2800,27 @@ mod tests {
 
   #[test]
   fn module_early_error_export_unresolvable() {
-    assert_syntax(SourceTextModuleRecord::parse("export { unresolvable };"));
+    assert_syntax(parse("export { unresolvable };"));
   }
 
   #[test]
   fn module_early_error_export_global() {
-    assert_syntax(SourceTextModuleRecord::parse("export { Number };"));
+    assert_syntax(parse("export { Number };"));
   }
 
   #[test]
   fn module_early_error_import_eval() {
-    assert_syntax(SourceTextModuleRecord::parse("import { x as eval } from 'm';"));
+    assert_syntax(parse("import { x as eval } from 'm';"));
   }
 
   #[test]
   fn module_early_error_import_arguments() {
-    assert_syntax(SourceTextModuleRecord::parse("import arguments from 'm';"));
+    assert_syntax(parse("import arguments from 'm';"));
   }
 
   #[test]
   fn module_early_error_import_collides_with_var() {
-    assert_syntax(SourceTextModuleRecord::parse(
+    assert_syntax(parse(
       r#"
       import { x } from 'm';
       var x;
@@ -2826,7 +2830,7 @@ mod tests {
 
   #[test]
   fn module_early_error_duplicate_import_binding() {
-    assert_syntax(SourceTextModuleRecord::parse(
+    assert_syntax(parse(
       r#"
       import { x } from 'm';
       import { x } from 'n';
@@ -2836,7 +2840,7 @@ mod tests {
 
   #[test]
   fn module_early_error_duplicate_lex_declared_name() {
-    assert_syntax(SourceTextModuleRecord::parse(
+    assert_syntax(parse(
       r#"
       let x;
       const x = 0;
@@ -2846,7 +2850,7 @@ mod tests {
 
   #[test]
   fn module_early_error_lex_and_var_collision() {
-    assert_syntax(SourceTextModuleRecord::parse(
+    assert_syntax(parse(
       r#"
       let x;
       var x;
@@ -2856,7 +2860,7 @@ mod tests {
 
   #[test]
   fn module_early_error_duplicate_top_level_function_decl() {
-    assert_syntax(SourceTextModuleRecord::parse(
+    assert_syntax(parse(
       r#"
       function x() {}
       function x() {}
@@ -2866,7 +2870,7 @@ mod tests {
 
   #[test]
   fn module_early_error_duplicate_labels() {
-    assert_syntax(SourceTextModuleRecord::parse(
+    assert_syntax(parse(
       r#"
       label: {
         label: 0;
@@ -2877,7 +2881,7 @@ mod tests {
 
   #[test]
   fn module_early_error_undefined_break_label() {
-    assert_syntax(SourceTextModuleRecord::parse(
+    assert_syntax(parse(
       r#"
       while (false) {
         break undef;
@@ -2888,7 +2892,7 @@ mod tests {
 
   #[test]
   fn module_early_error_undefined_continue_label() {
-    assert_syntax(SourceTextModuleRecord::parse(
+    assert_syntax(parse(
       r#"
       while (false) {
         continue undef;
@@ -2899,49 +2903,47 @@ mod tests {
 
   #[test]
   fn module_early_error_export_alias_string_literal_invalid_unicode() {
-    assert_syntax(SourceTextModuleRecord::parse(
+    assert_syntax(parse(
       r#"export { Moon as "\uD83C" } from "./m.js";"#,
     ));
   }
 
   #[test]
   fn module_early_error_export_target_string_literal_invalid_unicode() {
-    assert_syntax(SourceTextModuleRecord::parse(
+    assert_syntax(parse(
       r#"export { "\uD83C" as Moon } from "./m.js";"#,
     ));
   }
 
   #[test]
   fn module_early_error_import_target_string_literal_invalid_unicode() {
-    assert_syntax(SourceTextModuleRecord::parse(
+    assert_syntax(parse(
       r#"import { "\uD83C" as Moon } from "./m.js";"#,
     ));
   }
 
   #[test]
   fn module_early_error_export_star_alias_string_literal_invalid_unicode() {
-    assert_syntax(SourceTextModuleRecord::parse(
+    assert_syntax(parse(
       r#"export * as "\uD83C" from "./m.js";"#,
     ));
   }
 
   #[test]
   fn module_allows_well_formed_unicode_string_literal_export_names() {
-    SourceTextModuleRecord::parse(
-      r#"export { Moon as "\uD83C\uDF19" } from "./m.js";"#,
-    )
-    .expect("well-formed unicode string literals should be valid module export names");
+    parse(r#"export { Moon as "\uD83C\uDF19" } from "./m.js";"#)
+      .expect("well-formed unicode string literals should be valid module export names");
   }
 
   #[test]
   fn module_allows_shorthand_string_literal_export_names() {
-    SourceTextModuleRecord::parse(r#"export { "☿" } from "./m.js";"#)
+    parse(r#"export { "☿" } from "./m.js";"#)
       .expect("string-literal module export names should be allowed in re-exports");
   }
 
   #[test]
   fn module_allows_exporting_imported_binding() {
-    SourceTextModuleRecord::parse(
+    parse(
       r#"
       import { x } from 'm';
       export { x };

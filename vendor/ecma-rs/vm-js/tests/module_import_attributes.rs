@@ -1,7 +1,8 @@
-use vm_js::{ImportAttribute, ModuleRequest, SourceTextModuleRecord, VmError};
+use vm_js::{Heap, HeapLimits, ImportAttribute, ModuleRequest, SourceTextModuleRecord, VmError};
 
 fn assert_syntax_error(source: &str) {
-  match SourceTextModuleRecord::parse(source) {
+  let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  match SourceTextModuleRecord::parse(&mut heap, source) {
     Err(VmError::Syntax(_)) => {}
     other => panic!("expected VmError::Syntax, got {other:?}"),
   }
@@ -9,7 +10,9 @@ fn assert_syntax_error(source: &str) {
 
 #[test]
 fn parses_import_with_attributes() {
-  let module = SourceTextModuleRecord::parse(r#"import x from "m" with { type: "json" };"#).unwrap();
+  let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let module =
+    SourceTextModuleRecord::parse(&mut heap, r#"import x from "m" with { type: "json" };"#).unwrap();
   assert_eq!(
     module.requested_modules,
     vec![ModuleRequest::new(
@@ -21,8 +24,9 @@ fn parses_import_with_attributes() {
 
 #[test]
 fn parses_export_with_attributes() {
+  let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
   let module =
-    SourceTextModuleRecord::parse(r#"export * from "m" with { type: "json" };"#).unwrap();
+    SourceTextModuleRecord::parse(&mut heap, r#"export * from "m" with { type: "json" };"#).unwrap();
   assert_eq!(
     module.requested_modules,
     vec![ModuleRequest::new(
@@ -34,7 +38,9 @@ fn parses_export_with_attributes() {
 
 #[test]
 fn sorts_attributes_and_dedupes_requested_modules() {
+  let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
   let module = SourceTextModuleRecord::parse(
+    &mut heap,
     r#"
       import x from "m" with { b: "2", a: "1" };
       import y from "m" with { a: "1", b: "2" };
@@ -54,7 +60,9 @@ fn sorts_attributes_and_dedupes_requested_modules() {
 
 #[test]
 fn requested_modules_distinguish_different_attributes() {
+  let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
   let module = SourceTextModuleRecord::parse(
+    &mut heap,
     r#"
       import x from "m" with { type: "json" };
       import y from "m" with { type: "css" };

@@ -1,7 +1,8 @@
-use vm_js::{SourceTextModuleRecord, VmError};
+use vm_js::{Heap, HeapLimits, SourceTextModuleRecord, VmError};
 
 fn assert_module_syntax_error(source: &str) {
-  match SourceTextModuleRecord::parse(source) {
+  let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  match SourceTextModuleRecord::parse(&mut heap, source) {
     Err(VmError::Syntax(_)) => {}
     other => panic!("expected VmError::Syntax, got {other:?}"),
   }

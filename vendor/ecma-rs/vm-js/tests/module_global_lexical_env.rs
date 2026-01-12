@@ -30,9 +30,8 @@ fn module_env_outer_links_to_global_lexical_env() -> Result<(), VmError> {
   let mut rt = new_runtime();
   assert_eq!(rt.exec_script("let foo = 123; foo")?, Value::Number(123.0));
 
-  let module = rt
-    .modules_mut()
-    .add_module(SourceTextModuleRecord::parse("export const bar = foo;")?);
+  let record = SourceTextModuleRecord::parse(&mut rt.heap, "export const bar = foo;")?;
+  let module = rt.modules_mut().add_module(record);
 
   let global_object = rt.realm().global_object();
   let realm_id = rt.realm().id();

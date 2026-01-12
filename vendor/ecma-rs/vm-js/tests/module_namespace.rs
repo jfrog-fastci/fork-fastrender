@@ -27,6 +27,7 @@ fn module_namespace_is_cached_and_spec_shaped() -> Result<(), VmError> {
 
   let mut graph = ModuleGraph::new();
   let record = SourceTextModuleRecord::parse(
+    &mut heap,
     r#"
       export const b = 1;
       export const a = 2;
@@ -83,10 +84,14 @@ fn module_namespace_import_star_is_non_extensible() -> Result<(), VmError> {
   let mut realm = Realm::new(&mut vm, &mut heap)?;
 
   let mut graph = ModuleGraph::new();
-  graph.add_module_with_specifier("a.js", SourceTextModuleRecord::parse("export const x = 1;")?);
+  graph.add_module_with_specifier(
+    "a.js",
+    SourceTextModuleRecord::parse(&mut heap, "export const x = 1;")?,
+  );
   let consumer = graph.add_module_with_specifier(
     "consumer.js",
     SourceTextModuleRecord::parse(
+      &mut heap,
       r#"
         import * as ns from "a.js";
         export const isExtensible = Object.isExtensible(ns);
@@ -147,10 +152,14 @@ fn module_namespace_rejects_adding_new_properties_in_strict_mode() -> Result<(),
   let mut realm = Realm::new(&mut vm, &mut heap)?;
 
   let mut graph = ModuleGraph::new();
-  graph.add_module_with_specifier("a.js", SourceTextModuleRecord::parse("export const x = 1;")?);
+  graph.add_module_with_specifier(
+    "a.js",
+    SourceTextModuleRecord::parse(&mut heap, "export const x = 1;")?,
+  );
   let consumer = graph.add_module_with_specifier(
     "consumer.js",
     SourceTextModuleRecord::parse(
+      &mut heap,
       r#"
         import * as ns from "a.js";
         ns.newProp = 1;

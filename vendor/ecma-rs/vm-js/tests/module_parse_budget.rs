@@ -1,4 +1,4 @@
-use vm_js::{Budget, SourceTextModuleRecord, TerminationReason, Vm, VmError, VmOptions};
+use vm_js::{Budget, Heap, HeapLimits, SourceTextModuleRecord, TerminationReason, Vm, VmError, VmOptions};
 
 fn assert_termination_reason(err: VmError, expected: TerminationReason) {
   match err {
@@ -9,6 +9,7 @@ fn assert_termination_reason(err: VmError, expected: TerminationReason) {
 
 #[test]
 fn module_record_parse_respects_vm_fuel_budget() {
+  let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
   let mut vm = Vm::new(VmOptions::default());
   vm.set_budget(Budget {
     fuel: Some(0),
@@ -16,7 +17,8 @@ fn module_record_parse_respects_vm_fuel_budget() {
     check_time_every: 1,
   });
 
-  let err = SourceTextModuleRecord::parse_with_vm(&mut vm, "export const x = 1;").unwrap_err();
+  let err =
+    SourceTextModuleRecord::parse_with_vm(&mut heap, &mut vm, "export const x = 1;").unwrap_err();
   assert_termination_reason(err, TerminationReason::OutOfFuel);
 }
 
@@ -24,6 +26,7 @@ fn module_record_parse_respects_vm_fuel_budget() {
 fn module_record_parse_is_interruptible_during_record_extraction() {
   // Parsing itself should succeed (only charges one tick for small inputs), but the post-parse
   // record extraction passes (`has_tla` scan + import/export extraction) should also respect fuel.
+  let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
   let mut vm = Vm::new(VmOptions::default());
   vm.set_budget(Budget {
     fuel: Some(2),
@@ -33,7 +36,7 @@ fn module_record_parse_is_interruptible_during_record_extraction() {
 
   // Large enough to trigger at least one periodic extraction tick (MODULE_RECORD_TICK_EVERY=256).
   let src = ";".repeat(300);
-  let err = SourceTextModuleRecord::parse_with_vm(&mut vm, &src).unwrap_err();
+  let err = SourceTextModuleRecord::parse_with_vm(&mut heap, &mut vm, &src).unwrap_err();
   assert_termination_reason(err, TerminationReason::OutOfFuel);
 }
 
@@ -42,6 +45,7 @@ fn module_record_parse_is_interruptible_during_parsing() {
   // `Vm::parse_top_level_with_budget` charges one tick at parse entry and then periodically during
   // parsing itself. Ensure an out-of-fuel condition observed during parsing is surfaced as VM
   // termination (not as a parser `Cancelled` syntax error).
+  let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
   let mut vm = Vm::new(VmOptions::default());
   vm.set_budget(Budget {
     fuel: Some(1),
@@ -51,12 +55,13 @@ fn module_record_parse_is_interruptible_during_parsing() {
 
   // Large enough to trigger at least one parse tick (PARSE_TICK_EVERY=1024).
   let src = ";".repeat(5000);
-  let err = SourceTextModuleRecord::parse_with_vm(&mut vm, &src).unwrap_err();
+  let err = SourceTextModuleRecord::parse_with_vm(&mut heap, &mut vm, &src).unwrap_err();
   assert_termination_reason(err, TerminationReason::OutOfFuel);
 }
 
 #[test]
 fn module_record_top_level_await_scan_budgets_holey_array_literals() {
+  let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
   let mut vm = Vm::new(VmOptions::default());
   vm.set_budget(Budget {
     // Budget small enough that parsing succeeds but module record extraction (top-level await scan)
@@ -75,12 +80,13 @@ fn module_record_top_level_await_scan_budgets_holey_array_literals() {
   }
   src.push_str("];");
 
-  let err = SourceTextModuleRecord::parse_with_vm(&mut vm, &src).unwrap_err();
+  let err = SourceTextModuleRecord::parse_with_vm(&mut heap, &mut vm, &src).unwrap_err();
   assert_termination_reason(err, TerminationReason::OutOfFuel);
 }
 
 #[test]
 fn module_record_top_level_await_scan_budgets_holey_array_patterns() {
+  let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
   let mut vm = Vm::new(VmOptions::default());
   vm.set_budget(Budget {
     fuel: Some(50),
@@ -95,6 +101,6 @@ fn module_record_top_level_await_scan_budgets_holey_array_patterns() {
     src.push(',');
   }
   src.push_str("x] = a;");
-  let err = SourceTextModuleRecord::parse_with_vm(&mut vm, &src).unwrap_err();
+  let err = SourceTextModuleRecord::parse_with_vm(&mut heap, &mut vm, &src).unwrap_err();
   assert_termination_reason(err, TerminationReason::OutOfFuel);
 }
