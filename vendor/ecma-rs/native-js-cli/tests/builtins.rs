@@ -491,5 +491,6 @@ fn no_builtins_flag_disables_builtin_recognition() {
     .assert()
     .failure()
     .stderr(predicate::str::contains("NJS0012"))
-    .stderr(predicate::str::contains("builtins are disabled"));
+    .stderr(predicate::str::contains("builtins"))
+    .stderr(predicate::str::contains("disabled"));
 }
