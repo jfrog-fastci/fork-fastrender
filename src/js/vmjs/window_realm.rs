@@ -8957,17 +8957,28 @@ fn maybe_adopt_node_into_document(
   )?;
 
   // Update wrapper `ownerDocument` for any existing wrappers in the adopted subtree.
+  //
+  // When a node has already been wrapped (and its wrapper has created per-node shim subobjects like
+  // `dataset` / `classList` / `style`), those subobjects must also be updated to point at the new
+  // `(document, node id)` after adoption.
   let dest_document_key = vm_js::WeakGcObject::from(dest_document_obj);
   scope.push_root(Value::Object(dest_document_obj))?;
   let wrapper_document_key = alloc_key(scope, WRAPPER_DOCUMENT_KEY)?;
-  let desc = PropertyDescriptor {
+  let node_id_key = alloc_key(scope, NODE_ID_KEY)?;
+  let dataset_key = alloc_key(scope, "dataset")?;
+  let class_list_key = alloc_key(scope, "classList")?;
+  let style_key = alloc_key(scope, "style")?;
+  let owner_document_value = Value::Object(dest_document_obj);
+
+  let owner_document_desc = PropertyDescriptor {
     enumerable: false,
     configurable: false,
     kind: PropertyKind::Data {
-      value: Value::Object(dest_document_obj),
+      value: owner_document_value,
       writable: true,
     },
   };
+
   for &new_id in mapping.values() {
     if new_id.index() == 0 {
       continue;
@@ -8975,7 +8986,105 @@ fn maybe_adopt_node_into_document(
     let Some(wrapper_obj) = platform.get_existing_wrapper(scope.heap(), dest_document_key, new_id) else {
       continue;
     };
-    scope.define_property(wrapper_obj, wrapper_document_key, desc)?;
+
+    // Keep wrapper `ownerDocument` in sync.
+    match scope.heap_mut().object_set_existing_data_property_value(
+      wrapper_obj,
+      &wrapper_document_key,
+      owner_document_value,
+    ) {
+      Ok(()) => {}
+      Err(VmError::PropertyNotFound | VmError::PropertyNotData) => {
+        // Some wrappers created outside of the normal platform wrapper path may not have the
+        // internal slot; define it so future native calls can rely on it.
+        scope.define_property(wrapper_obj, wrapper_document_key, owner_document_desc)?;
+      }
+      Err(err) => return Err(err),
+    };
+
+    // `Element.dataset` (DOMStringMap-like) shim.
+    if let Some(Value::Object(dataset_obj)) = scope
+      .heap()
+      .object_get_own_data_property_value(wrapper_obj, &dataset_key)?
+    {
+      if let Ok(Some(slots)) = scope.heap().object_host_slots(dataset_obj) {
+        if slots.b == HOST_EXOTIC_DOM_STRING_MAP {
+          let _ = scope.heap_mut().object_set_host_slots(
+            dataset_obj,
+            HostSlots {
+              a: new_id.index() as u64,
+              b: HOST_EXOTIC_DOM_STRING_MAP,
+            },
+          );
+        }
+      }
+      let _ = scope.heap_mut().object_set_existing_data_property_value(
+        dataset_obj,
+        &wrapper_document_key,
+        owner_document_value,
+      );
+      let _ = scope.heap_mut().object_set_existing_data_property_value(
+        dataset_obj,
+        &node_id_key,
+        Value::Number(new_id.index() as f64),
+      );
+    }
+
+    // `Element.classList` (DOMTokenList-like) shim.
+    if let Some(Value::Object(class_list_obj)) = scope
+      .heap()
+      .object_get_own_data_property_value(wrapper_obj, &class_list_key)?
+    {
+      if let Ok(Some(slots)) = scope.heap().object_host_slots(class_list_obj) {
+        if slots.b == HOST_EXOTIC_DOM_TOKEN_LIST {
+          let _ = scope.heap_mut().object_set_host_slots(
+            class_list_obj,
+            HostSlots {
+              a: new_id.index() as u64,
+              b: HOST_EXOTIC_DOM_TOKEN_LIST,
+            },
+          );
+        }
+      }
+      let _ = scope.heap_mut().object_set_existing_data_property_value(
+        class_list_obj,
+        &wrapper_document_key,
+        owner_document_value,
+      );
+      let _ = scope.heap_mut().object_set_existing_data_property_value(
+        class_list_obj,
+        &node_id_key,
+        Value::Number(new_id.index() as f64),
+      );
+    }
+
+    // `Element.style` (CSSStyleDeclaration-like) shim.
+    if let Some(Value::Object(style_obj)) = scope
+      .heap()
+      .object_get_own_data_property_value(wrapper_obj, &style_key)?
+    {
+      if let Ok(Some(slots)) = scope.heap().object_host_slots(style_obj) {
+        if slots.b == CSS_STYLE_DECL_HOST_TAG {
+          let _ = scope.heap_mut().object_set_host_slots(
+            style_obj,
+            HostSlots {
+              a: new_id.index() as u64,
+              b: CSS_STYLE_DECL_HOST_TAG,
+            },
+          );
+        }
+      }
+      let _ = scope.heap_mut().object_set_existing_data_property_value(
+        style_obj,
+        &wrapper_document_key,
+        owner_document_value,
+      );
+      let _ = scope.heap_mut().object_set_existing_data_property_value(
+        style_obj,
+        &node_id_key,
+        Value::Number(new_id.index() as f64),
+      );
+    }
   }
 
   Ok(DomNodeKey::new(dest_document_id, new_root))
@@ -45635,6 +45744,162 @@ mod tests {
       })()",
     )?;
     assert_eq!(ok, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn cross_document_append_child_adopts_subtree_and_preserves_wrapper_identity() -> Result<(), VmError> {
+    let renderer_dom = crate::dom::parse_html("<!doctype html><html><body></body></html>").unwrap();
+    let mut host = crate::js::HostDocumentState::from_renderer_dom(&renderer_dom);
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+
+    let result = exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      "(() => {\n\
+        const doc2 = document.implementation.createHTMLDocument('');\n\
+        const parent = doc2.createElement('div');\n\
+        parent.id = 'p';\n\
+        const child = doc2.createElement('span');\n\
+        child.id = 'c';\n\
+        parent.appendChild(child);\n\
+\n\
+        // Cache wrapper identity + per-node shims before adoption.\n\
+        const p = parent;\n\
+        const c = child;\n\
+        const cachedChildNodes = parent.childNodes;\n\
+        const pDataset = parent.dataset;\n\
+        const cDataset = child.dataset;\n\
+        const pClassList = parent.classList;\n\
+        const cClassList = child.classList;\n\
+        const pStyle = parent.style;\n\
+        const cStyle = child.style;\n\
+\n\
+        // Mutate the pre-adoption document to ensure state is copied.\n\
+        pDataset.foo = 'bar';\n\
+        cDataset.bar = 'baz';\n\
+\n\
+        // Cross-document insertion should auto-adopt the subtree and preserve wrapper identity.\n\
+        document.body.appendChild(parent);\n\
+        if (parent !== p) return 'parent_identity';\n\
+        if (child !== c) return 'child_identity';\n\
+        if (parent.ownerDocument !== document) return 'parent_owner_document';\n\
+        if (child.ownerDocument !== document) return 'child_owner_document';\n\
+        if (child.parentNode !== parent) return 'child_parent';\n\
+\n\
+        // Cached node lists should stay stable.\n\
+        if (parent.childNodes !== cachedChildNodes) return 'child_nodes_identity';\n\
+        if (cachedChildNodes[0] !== child) return 'child_nodes_contents';\n\
+\n\
+        // Cached per-node shim subobjects must keep identity and be rebound to the adopted node.\n\
+        if (parent.dataset !== pDataset) return 'dataset_identity';\n\
+        if (child.dataset !== cDataset) return 'dataset_child_identity';\n\
+        if (parent.classList !== pClassList) return 'class_list_identity';\n\
+        if (child.classList !== cClassList) return 'class_list_child_identity';\n\
+        if (parent.style !== pStyle) return 'style_identity';\n\
+        if (child.style !== cStyle) return 'style_child_identity';\n\
+\n\
+        pDataset.foo = 'x';\n\
+        if (parent.getAttribute('data-foo') !== 'x') return 'dataset_parent_rebind';\n\
+        cDataset.bar = 'y';\n\
+        if (child.getAttribute('data-bar') !== 'y') return 'dataset_child_rebind';\n\
+\n\
+        try { pClassList.add('a'); } catch (e) { return 'class_list_parent_throw'; }\n\
+        if (parent.getAttribute('class') !== 'a') return 'class_list_parent_rebind';\n\
+        if (pClassList[0] !== 'a') return 'class_list_parent_exotic_rebind';\n\
+\n\
+        try { cClassList.add('b'); } catch (e) { return 'class_list_child_throw'; }\n\
+        if (child.getAttribute('class') !== 'b') return 'class_list_child_rebind';\n\
+        if (cClassList[0] !== 'b') return 'class_list_child_exotic_rebind';\n\
+\n\
+        try { pStyle.display = 'block'; } catch (e) { return 'style_parent_throw'; }\n\
+        if (pStyle.display !== 'block') return 'style_parent_rebind';\n\
+        try { cStyle.display = 'none'; } catch (e) { return 'style_child_throw'; }\n\
+        if (cStyle.display !== 'none') return 'style_child_rebind';\n\
+\n\
+        if (parent.querySelector('#c') !== child) return 'query_selector';\n\
+\n\
+        return 'ok';\n\
+      })()",
+    )?;
+
+    assert_eq!(get_string(realm.heap(), result), "ok");
+    Ok(())
+  }
+
+  #[test]
+  fn document_adopt_node_across_documents_preserves_subtree_wrapper_identity() -> Result<(), VmError> {
+    let renderer_dom = crate::dom::parse_html("<!doctype html><html><body></body></html>").unwrap();
+    let mut host = crate::js::HostDocumentState::from_renderer_dom(&renderer_dom);
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+
+    let result = exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      "(() => {\n\
+        const doc2 = document.implementation.createHTMLDocument('');\n\
+        const parent = doc2.createElement('div');\n\
+        parent.id = 'p';\n\
+        const child = doc2.createElement('span');\n\
+        child.id = 'c';\n\
+        parent.appendChild(child);\n\
+\n\
+        const p = parent;\n\
+        const c = child;\n\
+        const cachedChildNodes = parent.childNodes;\n\
+        const pDataset = parent.dataset;\n\
+        const cDataset = child.dataset;\n\
+        const pClassList = parent.classList;\n\
+        const cClassList = child.classList;\n\
+        const pStyle = parent.style;\n\
+        const cStyle = child.style;\n\
+\n\
+        pDataset.foo = 'bar';\n\
+        cDataset.bar = 'baz';\n\
+\n\
+        const adopted = document.adoptNode(parent);\n\
+        if (adopted !== parent) return 'adopted_identity';\n\
+        if (parent !== p) return 'parent_identity';\n\
+        if (child !== c) return 'child_identity';\n\
+        if (parent.ownerDocument !== document) return 'parent_owner_document';\n\
+        if (child.ownerDocument !== document) return 'child_owner_document';\n\
+        if (parent.parentNode !== null) return 'parent_parent_should_be_null';\n\
+        if (child.parentNode !== parent) return 'child_parent';\n\
+\n\
+        if (parent.childNodes !== cachedChildNodes) return 'child_nodes_identity';\n\
+        if (cachedChildNodes[0] !== child) return 'child_nodes_contents';\n\
+\n\
+        if (parent.dataset !== pDataset) return 'dataset_identity';\n\
+        if (child.dataset !== cDataset) return 'dataset_child_identity';\n\
+        if (parent.classList !== pClassList) return 'class_list_identity';\n\
+        if (child.classList !== cClassList) return 'class_list_child_identity';\n\
+        if (parent.style !== pStyle) return 'style_identity';\n\
+        if (child.style !== cStyle) return 'style_child_identity';\n\
+\n\
+        pDataset.foo = 'x';\n\
+        if (parent.getAttribute('data-foo') !== 'x') return 'dataset_parent_rebind';\n\
+        cDataset.bar = 'y';\n\
+        if (child.getAttribute('data-bar') !== 'y') return 'dataset_child_rebind';\n\
+\n\
+        try { pClassList.add('a'); } catch (e) { return 'class_list_parent_throw'; }\n\
+        if (parent.getAttribute('class') !== 'a') return 'class_list_parent_rebind';\n\
+        if (pClassList[0] !== 'a') return 'class_list_parent_exotic_rebind';\n\
+\n\
+        try { cClassList.add('b'); } catch (e) { return 'class_list_child_throw'; }\n\
+        if (child.getAttribute('class') !== 'b') return 'class_list_child_rebind';\n\
+        if (cClassList[0] !== 'b') return 'class_list_child_exotic_rebind';\n\
+\n\
+        try { pStyle.display = 'block'; } catch (e) { return 'style_parent_throw'; }\n\
+        if (pStyle.display !== 'block') return 'style_parent_rebind';\n\
+        try { cStyle.display = 'none'; } catch (e) { return 'style_child_throw'; }\n\
+        if (cStyle.display !== 'none') return 'style_child_rebind';\n\
+\n\
+        if (parent.querySelector('#c') !== child) return 'query_selector';\n\
+        return 'ok';\n\
+      })()",
+    )?;
+
+    assert_eq!(get_string(realm.heap(), result), "ok");
     Ok(())
   }
 
