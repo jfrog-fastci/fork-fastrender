@@ -2824,6 +2824,84 @@ mod tests {
   }
 
   #[test]
+  fn webidl_event_target_dispatch_integrates_with_dom_event_system() -> Result<()> {
+    let renderer_dom = crate::dom::parse_html("<!doctype html><html><body></body></html>").unwrap();
+    let dom = dom2::Document::from_renderer_dom(&renderer_dom);
+    // This test runs a capture/bubble dispatch through the DOM event system while using
+    // WebIDL-installed `EventTarget.prototype` methods. It can be a bit slow in debug builds.
+    let mut opts = JsExecutionOptions::default();
+    opts.event_loop_run_limits.max_wall_time = Some(Duration::from_secs(2));
+    let mut host = WindowHost::new_with_options(dom, "https://example.invalid/", opts)?;
+
+    // Force the generated WebIDL EventTarget bindings to install (WindowRealm ships with a
+    // handcrafted EventTarget implementation by default).
+    {
+      let window = host.host_mut().window_mut();
+      let (_vm, realm, heap) = window.vm_realm_and_heap_mut();
+      let mut scope = heap.scope();
+      let global = realm.global_object();
+      scope
+        .push_root(Value::Object(global))
+        .map_err(|err| Error::Other(err.to_string()))?;
+      let key_s = scope
+        .alloc_string("EventTarget")
+        .map_err(|err| Error::Other(err.to_string()))?;
+      scope
+        .push_root(Value::String(key_s))
+        .map_err(|err| Error::Other(err.to_string()))?;
+      let key = PropertyKey::from_string(key_s);
+      scope
+        .delete_property_or_throw(global, key)
+        .map_err(|err| Error::Other(err.to_string()))?;
+    }
+    {
+      let window = host.host_mut().window_mut();
+      let (vm, realm, heap) = window.vm_realm_and_heap_mut();
+      crate::js::bindings::install_event_target_bindings_vm_js(vm, heap, realm)
+        .map_err(|err| Error::Other(err.to_string()))?;
+    }
+
+    let got = host.exec_script(
+      r#"
+      (() => {
+        let calls = 0;
+        function inc() { calls++; }
+
+        const el = document.createElement('div');
+        document.body.appendChild(el);
+
+        // Ensure we're exercising WebIDL-installed `EventTarget.prototype` methods rather than
+        // WindowRealm's handcrafted `addEventListener`/`dispatchEvent` instance properties.
+        for (const t of [window, document, el]) {
+          delete t.addEventListener;
+          delete t.removeEventListener;
+          delete t.dispatchEvent;
+        }
+
+        // Patch DOM wrapper prototype chain so DOM nodes inherit WebIDL `EventTarget.prototype`.
+        Object.setPrototypeOf(Node.prototype, EventTarget.prototype);
+        // The global object (window) is not a DOM wrapper, so patch its prototype directly.
+        Object.setPrototypeOf(window, EventTarget.prototype);
+
+        if (el.addEventListener !== EventTarget.prototype.addEventListener) throw new Error("el not using WebIDL EventTarget");
+        if (document.addEventListener !== EventTarget.prototype.addEventListener) throw new Error("document not using WebIDL EventTarget");
+        if (window.addEventListener !== EventTarget.prototype.addEventListener) throw new Error("window not using WebIDL EventTarget");
+
+        el.addEventListener('x', inc);
+        document.addEventListener('x', inc);
+        window.addEventListener('x', inc);
+
+        // Bubble to document/window to ensure we exercise DOM-backed propagation.
+        el.dispatchEvent(new Event('x', { bubbles: true }));
+        return calls;
+      })()
+      "#,
+    )?;
+    assert!(matches!(got, Value::Number(n) if n == 3.0));
+    Ok(())
+  }
+
+  #[test]
   fn dispatch_event_listener_runs_with_real_vm_host() -> Result<()> {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
     let mut host = WindowHost::new(dom, "https://example.invalid/")?;

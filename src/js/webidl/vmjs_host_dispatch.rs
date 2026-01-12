@@ -6,7 +6,10 @@ use crate::js::window_timers::{
 };
 use crate::js::bindings::DomExceptionClassVmJs;
 use crate::js::{TimerId, Url, UrlLimits, UrlSearchParams, WindowRealmHost};
-use crate::js::window_realm::WindowRealmUserData;
+use crate::js::window_realm::{
+  abort_signal_listener_cleanup_native, event_target_add_event_listener_dom2,
+  event_target_dispatch_event_dom2, event_target_remove_event_listener_dom2, WindowRealmUserData,
+};
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::marker::PhantomData;
@@ -411,6 +414,7 @@ pub struct VmJsWebIdlBindingsHostDispatch<Host: WindowRealmHost + 'static> {
   urls: HashMap<WeakGcObject, Url>,
   params: HashMap<WeakGcObject, UrlSearchParams>,
   event_targets: HashMap<WeakGcObject, EventTargetState>,
+  abort_signal_listener_cleanup_call: Option<NativeFunctionId>,
   timer_registry: Rc<RefCell<HashMap<TimerId, TimerEntry>>>,
   urlsp_iterator_next_call: Option<NativeFunctionId>,
   urlsp_iterator_iterator_call: Option<NativeFunctionId>,
@@ -426,6 +430,7 @@ impl<Host: WindowRealmHost + 'static> VmJsWebIdlBindingsHostDispatch<Host> {
       urls: HashMap::new(),
       params: HashMap::new(),
       event_targets: HashMap::new(),
+      abort_signal_listener_cleanup_call: None,
       timer_registry: Rc::new(RefCell::new(HashMap::new())),
       urlsp_iterator_next_call: None,
       urlsp_iterator_iterator_call: None,
@@ -441,6 +446,7 @@ impl<Host: WindowRealmHost + 'static> VmJsWebIdlBindingsHostDispatch<Host> {
       urls: HashMap::new(),
       params: HashMap::new(),
       event_targets: HashMap::new(),
+      abort_signal_listener_cleanup_call: None,
       timer_registry: Rc::new(RefCell::new(HashMap::new())),
       urlsp_iterator_next_call: None,
       urlsp_iterator_iterator_call: None,
@@ -458,7 +464,44 @@ impl<Host: WindowRealmHost + 'static> VmJsWebIdlBindingsHostDispatch<Host> {
     self.timer_registry.borrow_mut().clear();
     self.urlsp_iterator_next_call = None;
     self.urlsp_iterator_iterator_call = None;
+    self.abort_signal_listener_cleanup_call = None;
     self.last_gc_runs = 0;
+  }
+
+  fn abort_signal_listener_cleanup_call_id(&mut self, vm: &mut Vm) -> Result<NativeFunctionId, VmError> {
+    if let Some(id) = self.abort_signal_listener_cleanup_call {
+      return Ok(id);
+    }
+    let id = vm.register_native_call(abort_signal_listener_cleanup_native)?;
+    self.abort_signal_listener_cleanup_call = Some(id);
+    Ok(id)
+  }
+
+  fn is_dom_backed_event_target(
+    vm: &mut Vm,
+    heap: &vm_js::Heap,
+    receiver_obj: GcObject,
+  ) -> Result<bool, VmError> {
+    let Some(data) = vm.user_data_mut::<WindowRealmUserData>() else {
+      return Ok(false);
+    };
+
+    let window_obj = data.window_obj();
+    let document_obj = data.document_obj();
+
+    if window_obj == Some(receiver_obj) || document_obj == Some(receiver_obj) {
+      return Ok(true);
+    }
+
+    let Some(platform) = data.dom_platform_mut() else {
+      return Ok(false);
+    };
+
+    match platform.event_target_id_for_value(heap, Value::Object(receiver_obj)) {
+      Ok(_) => Ok(true),
+      Err(VmError::OutOfMemory) => Err(VmError::OutOfMemory),
+      Err(_) => Ok(false),
+    }
   }
 
   fn maybe_sweep(&mut self, heap: &mut vm_js::Heap) {
@@ -1055,6 +1098,26 @@ impl<Host: WindowRealmHost + 'static> WebIdlBindingsHost for VmJsWebIdlBindingsH
       }
       ("EventTarget", "addEventListener", 0) => {
         let obj = self.require_event_target_receiver(vm, scope, receiver)?;
+
+        // Route DOM-backed targets (`window`/`document`/node wrappers) through the DOM event system
+        // so capture/bubble semantics match `WindowRealm`'s native `dispatchEvent`.
+        if Self::is_dom_backed_event_target(vm, scope.heap(), obj)? {
+          let abort_cleanup_call_id = self.abort_signal_listener_cleanup_call_id(vm)?;
+          if let Some(result) = with_active_vm_host_and_hooks(vm, |vm, host, hooks| {
+            event_target_add_event_listener_dom2(
+              vm,
+              scope,
+              host,
+              hooks,
+              abort_cleanup_call_id,
+              obj,
+              args,
+            )
+          })? {
+            return Ok(result);
+          }
+        }
+
         let Some(Value::String(_)) = args.get(0).copied() else {
           return Err(VmError::TypeError(
             "EventTarget.addEventListener: missing type",
@@ -1100,6 +1163,15 @@ impl<Host: WindowRealmHost + 'static> WebIdlBindingsHost for VmJsWebIdlBindingsH
       }
       ("EventTarget", "removeEventListener", 0) => {
         let obj = self.require_event_target_receiver(vm, scope, receiver)?;
+
+        if Self::is_dom_backed_event_target(vm, scope.heap(), obj)? {
+          if let Some(result) = with_active_vm_host_and_hooks(vm, |vm, host, hooks| {
+            event_target_remove_event_listener_dom2(vm, scope, host, hooks, obj, args)
+          })? {
+            return Ok(result);
+          }
+        }
+
         let Some(Value::String(_)) = args.get(0).copied() else {
           return Ok(Value::Undefined);
         };
@@ -1135,6 +1207,15 @@ impl<Host: WindowRealmHost + 'static> WebIdlBindingsHost for VmJsWebIdlBindingsH
       }
       ("EventTarget", "dispatchEvent", 0) => {
         let obj = self.require_event_target_receiver(vm, scope, receiver)?;
+
+        if Self::is_dom_backed_event_target(vm, scope.heap(), obj)? {
+          if let Some(result) = with_active_vm_host_and_hooks(vm, |vm, host, hooks| {
+            event_target_dispatch_event_dom2(vm, scope, host, hooks, obj, args)
+          })? {
+            return Ok(result);
+          }
+        }
+
         let event_val = args.get(0).copied().unwrap_or(Value::Undefined);
 
         // Snapshot listeners before touching JS to avoid re-entrancy hazards.

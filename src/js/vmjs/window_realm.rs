@@ -1843,6 +1843,7 @@ const STORAGE_ILLEGAL_INVOCATION_ERROR: &str = "Illegal invocation";
 const STORAGE_BRAND_KEY: &str = "__fastrender_storage_brand";
 const STORAGE_KIND_KEY: &str = "__fastrender_storage_kind";
 const EVENT_TARGET_DEFAULT_THIS_SLOT: usize = 0;
+#[allow(dead_code)]
 const EVENT_TARGET_CONTEXT_GLOBAL_SLOT: usize = 1;
 const EVENT_TARGET_CONTEXT_ABORT_CLEANUP_CALL_ID_SLOT: usize = 2;
 const EVENT_HANDLER_WRAPPER_CALL_ID_SLOT: usize = 2;
@@ -11776,23 +11777,6 @@ fn event_target_default_this_from_callee(
   )
 }
 
-fn event_target_context_global_from_callee(
-  scope: &Scope<'_>,
-  callee: GcObject,
-) -> Result<GcObject, VmError> {
-  let slots = scope.heap().get_function_native_slots(callee)?;
-  match slots
-    .get(EVENT_TARGET_CONTEXT_GLOBAL_SLOT)
-    .copied()
-    .unwrap_or(Value::Undefined)
-  {
-    Value::Object(obj) => Ok(obj),
-    _ => Err(VmError::InvariantViolation(
-      "EventTarget method missing required global slot",
-    )),
-  }
-}
-
 fn event_target_abort_cleanup_call_id_from_callee(
   scope: &Scope<'_>,
   callee: GcObject,
@@ -12044,7 +12028,6 @@ fn resolve_event_target(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
   host: &mut dyn VmHost,
-  callee: GcObject,
   target_obj: GcObject,
 ) -> Result<ResolvedEventTarget, VmError> {
   let (resolved_dom, dom_ptr) = match resolve_dom_event_target(vm, scope, host, target_obj) {
@@ -12055,18 +12038,17 @@ fn resolve_event_target(
         return Err(err);
       }
 
-      let window_obj = event_target_context_global_from_callee(scope, callee)?;
-      let (document_obj, dom_ptr) = {
+      let (window_obj, document_obj, dom_ptr) = {
         let Some(data) = vm.user_data_mut::<WindowRealmUserData>() else {
           return Err(VmError::InvariantViolation(
             "missing WindowRealmUserData for event target resolution",
           ));
         };
-        if data.window_obj != Some(window_obj) {
+        let Some(window_obj) = data.window_obj else {
           return Err(VmError::InvariantViolation(
-            "EventTarget global mismatch for WindowRealm user data",
+            "window object missing from WindowRealmUserData",
           ));
-        }
+        };
         let Some(document_obj) = data.document_obj else {
           return Err(VmError::InvariantViolation(
             "document object missing from WindowRealmUserData",
@@ -12074,7 +12056,7 @@ fn resolve_event_target(
         };
         let dom_ptr = dom_ptr_for_event_registry(host)
           .unwrap_or_else(|| NonNull::from(&mut data.events_dom_fallback));
-        (document_obj, dom_ptr)
+        (window_obj, document_obj, dom_ptr)
       };
 
       return Ok(ResolvedEventTarget {
@@ -14355,7 +14337,7 @@ const ABORT_SIGNAL_CLEANUP_TYPE_SLOT: usize = 2;
 const ABORT_SIGNAL_CLEANUP_LISTENER_ID_SLOT: usize = 3;
 const ABORT_SIGNAL_CLEANUP_CAPTURE_SLOT: usize = 4;
 
-fn abort_signal_listener_cleanup_native(
+pub(crate) fn abort_signal_listener_cleanup_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
   host: &mut dyn VmHost,
@@ -14508,7 +14490,7 @@ fn event_handler_get_native(
   let type_s = event_handler_type_from_callee(scope, callee)?;
   let type_name = scope.heap().get_string(type_s)?.to_utf8_lossy();
 
-  let resolved = resolve_event_target(vm, scope, host, callee, target_obj)?;
+  let resolved = resolve_event_target(vm, scope, host, target_obj)?;
   let ResolvedEventTarget {
     resolved,
     listener_roots_owner,
@@ -14557,7 +14539,7 @@ fn event_handler_set_native(
   let type_s = event_handler_type_from_callee(scope, callee)?;
   let type_name = scope.heap().get_string(type_s)?.to_utf8_lossy();
 
-  let resolved = resolve_event_target(vm, scope, host, callee, target_obj)?;
+  let resolved = resolve_event_target(vm, scope, host, target_obj)?;
   let ResolvedEventTarget {
     resolved,
     mut dom_ptr,
@@ -14727,17 +14709,16 @@ fn event_handler_wrapper_native(
   Ok(Value::Undefined)
 }
 
-fn event_target_add_event_listener_native(
+pub(crate) fn event_target_add_event_listener_dom2(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
   host: &mut dyn VmHost,
   hooks: &mut dyn VmHostHooks,
-  callee: GcObject,
-  this: Value,
+  abort_cleanup_call_id: vm_js::NativeFunctionId,
+  target_obj: GcObject,
   args: &[Value],
 ) -> Result<Value, VmError> {
-  let target_obj = event_target_resolve_this(scope, callee, this)?;
-  let resolved = resolve_event_target(vm, scope, host, callee, target_obj)?;
+  let resolved = resolve_event_target(vm, scope, host, target_obj)?;
   let ResolvedEventTarget {
     resolved,
     mut dom_ptr,
@@ -14773,8 +14754,7 @@ fn event_target_add_event_listener_native(
     scope.push_root(Value::Object(options_obj))?;
 
     let signal_key = alloc_key(&mut scope, "signal")?;
-    let signal_value =
-      vm.get_with_host_and_hooks(host, &mut scope, hooks, options_obj, signal_key)?;
+    let signal_value = vm.get_with_host_and_hooks(host, &mut scope, hooks, options_obj, signal_key)?;
     match signal_value {
       Value::Undefined | Value::Null => {}
       Value::Object(obj) => {
@@ -14820,11 +14800,10 @@ fn event_target_add_event_listener_native(
       // We approximate the DOM abort-algorithm list by registering an internal `{ once: true }`
       // capture listener on the signal's `abort` event. Capture ensures the cleanup runs before
       // bubble listeners, closer to the spec's "run abort algorithms, then dispatch" ordering.
-      let abort_cleanup_call_id = event_target_abort_cleanup_call_id_from_callee(scope, callee)?;
 
       // Resolve the AbortSignal as an EventTarget so we register in the correct listener registry.
       scope.push_root(Value::Object(signal_obj))?;
-      let signal_target = resolve_event_target(vm, scope, host, callee, signal_obj)?;
+      let signal_target = resolve_event_target(vm, scope, host, signal_obj)?;
       let ResolvedEventTarget {
         resolved: signal_resolved,
         dom_ptr: mut signal_dom_ptr,
@@ -14893,17 +14872,15 @@ fn event_target_add_event_listener_native(
   Ok(Value::Undefined)
 }
 
-fn event_target_remove_event_listener_native(
+pub(crate) fn event_target_remove_event_listener_dom2(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
   host: &mut dyn VmHost,
   hooks: &mut dyn VmHostHooks,
-  callee: GcObject,
-  this: Value,
+  target_obj: GcObject,
   args: &[Value],
 ) -> Result<Value, VmError> {
-  let target_obj = event_target_resolve_this(scope, callee, this)?;
-  let resolved = resolve_event_target(vm, scope, host, callee, target_obj)?;
+  let resolved = resolve_event_target(vm, scope, host, target_obj)?;
   let ResolvedEventTarget {
     resolved,
     mut dom_ptr,
@@ -14947,17 +14924,15 @@ fn event_target_remove_event_listener_native(
   Ok(Value::Undefined)
 }
 
-fn event_target_dispatch_event_native(
+pub(crate) fn event_target_dispatch_event_dom2(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
   vm_host: &mut dyn VmHost,
   hooks: &mut dyn VmHostHooks,
-  callee: GcObject,
-  this: Value,
+  target_obj: GcObject,
   args: &[Value],
 ) -> Result<Value, VmError> {
-  let target_obj = event_target_resolve_this(scope, callee, this)?;
-  let resolved = resolve_event_target(vm, scope, vm_host, callee, target_obj)?;
+  let resolved = resolve_event_target(vm, scope, vm_host, target_obj)?;
   let ResolvedEventTarget {
     resolved,
     dom_ptr,
@@ -15350,6 +15325,54 @@ fn event_target_dispatch_event_native(
   }
 
   Ok(Value::Bool(result))
+}
+
+fn event_target_add_event_listener_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let target_obj = event_target_resolve_this(scope, callee, this)?;
+  let abort_cleanup_call_id = event_target_abort_cleanup_call_id_from_callee(scope, callee)?;
+  event_target_add_event_listener_dom2(
+    vm,
+    scope,
+    host,
+    hooks,
+    abort_cleanup_call_id,
+    target_obj,
+    args,
+  )
+}
+
+fn event_target_remove_event_listener_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let target_obj = event_target_resolve_this(scope, callee, this)?;
+  event_target_remove_event_listener_dom2(vm, scope, host, hooks, target_obj, args)
+}
+
+fn event_target_dispatch_event_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  vm_host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let target_obj = event_target_resolve_this(scope, callee, this)?;
+  event_target_dispatch_event_dom2(vm, scope, vm_host, hooks, target_obj, args)
 }
 
 fn document_create_event_native(
