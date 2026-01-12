@@ -143,6 +143,7 @@ mod shadow_slot_focus_within_test;
 mod shadow_slotted_pseudo_element_test;
 mod shadow_slotted_specificity_test;
 mod shadow_slotted_test;
+mod shorthand_reset_tests;
 mod simple_keyword_comments_ignored_test;
 mod sizing_invalid_values_ignored_test;
 mod sizing_keywords_test;
