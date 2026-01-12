@@ -2657,6 +2657,33 @@ properties:
       Some("node/web_fetch.yaml")
     );
 
+    let headers = kb
+      .api_for_target("Headers", &node_20)
+      .expect("Headers should resolve for Node targets >= 18");
+    assert_eq!(headers.name, "Headers");
+    assert_eq!(
+      kb.source_for_target("Headers", &node_20),
+      Some("node/web_fetch.yaml")
+    );
+
+    let request = kb
+      .api_for_target("Request", &node_20)
+      .expect("Request should resolve for Node targets >= 18");
+    assert_eq!(request.name, "Request");
+    assert_eq!(
+      kb.source_for_target("Request", &node_20),
+      Some("node/web_fetch.yaml")
+    );
+
+    let response = kb
+      .api_for_target("Response", &node_20)
+      .expect("Response should resolve for Node targets >= 18");
+    assert_eq!(response.name, "Response");
+    assert_eq!(
+      kb.source_for_target("Response", &node_20),
+      Some("node/web_fetch.yaml")
+    );
+
     let readable = kb
       .api_for_target("ReadableStream", &node_20)
       .expect("ReadableStream should resolve for Node targets >= 18");
@@ -2681,6 +2708,18 @@ properties:
     assert!(
       kb.api_for_target("fetch", &node_16).is_none(),
       "fetch should not resolve for Node < 18"
+    );
+    assert!(
+      kb.api_for_target("Headers", &node_16).is_none(),
+      "Headers should not resolve for Node < 18"
+    );
+    assert!(
+      kb.api_for_target("Request", &node_16).is_none(),
+      "Request should not resolve for Node < 18"
+    );
+    assert!(
+      kb.api_for_target("Response", &node_16).is_none(),
+      "Response should not resolve for Node < 18"
     );
     assert!(
       kb.api_for_target("ReadableStream", &node_16).is_none(),
