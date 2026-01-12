@@ -316,6 +316,7 @@ impl Document {
       }
       return;
     };
+    // Merge registrations so an observer+transient_source pair appears only once per node.
     for reg in moved {
       if let Some(existing) = new_node
         .registered_observers

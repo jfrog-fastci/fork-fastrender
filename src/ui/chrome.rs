@@ -780,6 +780,7 @@ pub fn chrome_ui_with_bookmarks(
     // modifiers via events, and using the event snapshot keeps this robust in unit tests as well.
     let mut focus_address_bar = false;
     let mut open_find_in_page = false;
+    let mut toggle_bookmarks_manager = false;
     let mut new_tab = false;
     let mut close_tab = false;
     let mut reopen_closed_tab = false;
@@ -864,7 +865,7 @@ pub fn chrome_ui_with_bookmarks(
       forward,
       zoom_action,
     )
-  });
+    });
 
   // -----------------------------------------------------------------------------
   // Ctrl/Cmd+mouse wheel zoom
