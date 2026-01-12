@@ -93,6 +93,7 @@ mod wpt_runner_tests {
   use super::wpt::TestType;
   use super::wpt::WptRunner;
   use super::wpt::WptRunnerBuilder;
+  use serde_json::Value as JsonValue;
   use std::collections::HashMap;
   use std::path::Path;
   use std::path::PathBuf;
@@ -242,6 +243,66 @@ mod wpt_runner_tests {
     let results = runner.run_suite(temp.path());
 
     assert_eq!(results.len(), 2);
+  }
+
+  #[test]
+  fn wpt_writes_json_report() {
+    let renderer = super::create_test_renderer();
+    let temp = TempDir::new().unwrap();
+    let suite_dir = temp.path().join("suite");
+    std::fs::create_dir_all(&suite_dir).unwrap();
+
+    std::fs::write(
+      suite_dir.join("sample.html"),
+      "<!doctype html><html><body>ok</body></html>",
+    )
+    .unwrap();
+    std::fs::write(
+      suite_dir.join("sample-ref.html"),
+      "<!doctype html><html><body>ok</body></html>",
+    )
+    .unwrap();
+
+    let out_dir = temp.path().join("out");
+    let mut config = HarnessConfig::with_test_dir(&suite_dir);
+    config.output_dir = out_dir.clone();
+
+    let mut runner = WptRunner::with_config(renderer, config);
+    let results = runner.run_suite(&suite_dir);
+    assert_eq!(results.len(), 1);
+
+    let report_json_path = out_dir.join("report.json");
+    assert!(report_json_path.exists());
+
+    let data = std::fs::read(&report_json_path).unwrap();
+    let report: JsonValue = serde_json::from_slice(&data).unwrap();
+
+    assert_eq!(report["schema_version"].as_u64(), Some(1));
+    assert!(report["suite"]["timestamp"].as_str().is_some());
+    assert!(report["suite"]["duration_ms"].as_u64().is_some());
+
+    assert_eq!(report["summary"]["total"].as_u64(), Some(1));
+    assert_eq!(report["summary"]["pass"].as_u64(), Some(1));
+
+    let tests = report["tests"].as_array().unwrap();
+    assert_eq!(tests.len(), 1);
+    let test = &tests[0];
+
+    assert_eq!(test["id"].as_str(), Some("sample"));
+    assert_eq!(test["path"].as_str(), Some("sample.html"));
+    assert_eq!(test["test_type"].as_str(), Some("reftest"));
+    assert_eq!(test["reference"].as_str(), Some("sample-ref.html"));
+    assert_eq!(test["status"].as_str(), Some("PASS"));
+
+    assert_eq!(
+      test["artifacts"]["expected"].as_str(),
+      Some("sample/expected.png")
+    );
+    assert_eq!(
+      test["artifacts"]["actual"].as_str(),
+      Some("sample/actual.png")
+    );
+    assert_eq!(test["artifacts"]["diff"].as_str(), Some("sample/diff.png"));
   }
 
   #[test]

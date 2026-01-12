@@ -63,7 +63,8 @@ use image::codecs::png::PngEncoder;
 use image::{ColorType, ImageEncoder, Rgba, RgbaImage};
 use markup5ever_rcdom::{Handle, NodeData, RcDom};
 use rayon::prelude::*;
-use serde::Deserialize;
+use chrono::{DateTime, SecondsFormat, Utc};
+use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::fmt::Write;
 use std::fs;
@@ -201,6 +202,60 @@ struct ArtifactPaths {
   actual: PathBuf,
   diff: PathBuf,
   expected: PathBuf,
+}
+
+const WPT_REPORT_JSON_SCHEMA_VERSION: u32 = 1;
+
+#[derive(Debug, Serialize)]
+struct WptJsonReport {
+  schema_version: u32,
+  suite: WptJsonReportSuite,
+  summary: WptJsonReportSummary,
+  tests: Vec<WptJsonReportTest>,
+}
+
+#[derive(Debug, Serialize)]
+struct WptJsonReportSuite {
+  timestamp: String,
+  duration_ms: u64,
+  name: String,
+}
+
+#[derive(Debug, Serialize)]
+struct WptJsonReportSummary {
+  total: usize,
+  pass: usize,
+  fail: usize,
+  error: usize,
+  skip: usize,
+  timeout: usize,
+}
+
+#[derive(Debug, Serialize)]
+struct WptJsonReportTest {
+  id: String,
+  path: String,
+  test_type: String,
+  reference: Option<String>,
+  status: String,
+  expected_status: Option<String>,
+  diff: WptJsonReportDiff,
+  artifacts: WptJsonReportArtifacts,
+  message: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct WptJsonReportDiff {
+  different_percent: Option<f64>,
+  max_channel_diff: Option<u8>,
+  perceptual_distance: Option<f64>,
+}
+
+#[derive(Debug, Serialize)]
+struct WptJsonReportArtifacts {
+  expected: Option<String>,
+  actual: Option<String>,
+  diff: Option<String>,
 }
 
 impl RunnerStats {
@@ -348,6 +403,8 @@ impl WptRunner {
   /// );
   /// ```
   pub fn run_suite(&mut self, suite_dir: &Path) -> Vec<TestResult> {
+    let started_at = Utc::now();
+    let suite_start = Instant::now();
     self.apply_font_overrides();
     let test_cases = self.discover_tests(suite_dir);
     let mut results = if self.config.parallel && !self.config.fail_fast {
@@ -360,7 +417,8 @@ impl WptRunner {
       self.record_result(result);
     }
 
-    self.write_report(&results);
+    let duration = suite_start.elapsed();
+    self.write_report(&results, started_at, duration);
     results
   }
 
@@ -1507,7 +1565,25 @@ impl WptRunner {
     }
   }
 
-  fn write_report(&self, results: &[TestResult]) -> Option<PathBuf> {
+  fn test_type_json_value(test_type: TestType) -> &'static str {
+    match test_type {
+      TestType::Reftest => "reftest",
+      TestType::Visual => "visual",
+      TestType::Testharness => "testharness",
+      TestType::Manual => "manual",
+      TestType::Crashtest => "crashtest",
+    }
+  }
+
+  fn link_from_test_root(&self, path: &Path) -> String {
+    if let Ok(relative) = path.strip_prefix(&self.config.test_dir) {
+      relative.to_string_lossy().replace('\\', "/")
+    } else {
+      path.to_string_lossy().replace('\\', "/")
+    }
+  }
+
+  fn write_report(&self, results: &[TestResult], started_at: DateTime<Utc>, duration: Duration) -> Option<PathBuf> {
     if !self.config.write_report {
       return None;
     }
@@ -1614,7 +1690,7 @@ impl WptRunner {
 </body>
 </html>
 "#
-    );
+      );
 
     let report_path = self.config.output_dir.join("report.html");
     if let Some(parent) = report_path.parent() {
@@ -1623,10 +1699,64 @@ impl WptRunner {
       }
     }
 
-    match fs::write(&report_path, report) {
-      Ok(_) => Some(report_path),
-      Err(_) => None,
+    let html_result = fs::write(&report_path, report).ok().map(|_| report_path);
+
+    let json_report_path = self.config.output_dir.join("report.json");
+    let summary = WptJsonReportSummary {
+      total,
+      pass: counts(TestStatus::Pass),
+      fail: counts(TestStatus::Fail),
+      error: counts(TestStatus::Error),
+      skip: counts(TestStatus::Skip),
+      timeout: counts(TestStatus::Timeout),
+    };
+
+    let tests = results
+      .iter()
+      .map(|result| {
+        let paths = Self::artifact_paths(&self.config, &result.metadata);
+        WptJsonReportTest {
+          id: result.metadata.id.clone(),
+          path: self.link_from_test_root(&result.metadata.path),
+          test_type: Self::test_type_json_value(result.metadata.test_type).to_string(),
+          reference: result
+            .metadata
+            .reference_path
+            .as_ref()
+            .map(|path| self.link_from_test_root(path)),
+          status: result.status.to_string(),
+          expected_status: result.metadata.expected_status.map(|status| status.to_string()),
+          diff: WptJsonReportDiff {
+            different_percent: result.diff_percentage,
+            max_channel_diff: result.max_channel_diff,
+            perceptual_distance: None,
+          },
+          artifacts: WptJsonReportArtifacts {
+            expected: Some(self.link_from_output(&paths.expected)),
+            actual: Some(self.link_from_output(&paths.actual)),
+            diff: Some(self.link_from_output(&paths.diff)),
+          },
+          message: result.message.clone(),
+        }
+      })
+      .collect();
+
+    let report = WptJsonReport {
+      schema_version: WPT_REPORT_JSON_SCHEMA_VERSION,
+      suite: WptJsonReportSuite {
+        timestamp: started_at.to_rfc3339_opts(SecondsFormat::Millis, true),
+        duration_ms: duration.as_millis().min(u128::from(u64::MAX)) as u64,
+        name: suite_name.to_string(),
+      },
+      summary,
+      tests,
+    };
+
+    if let Ok(json) = serde_json::to_vec_pretty(&report) {
+      let _ = fs::write(&json_report_path, json);
     }
+
+    html_result
   }
 
   fn test_id_for_path(path: &Path, test_root: &Path) -> String {
