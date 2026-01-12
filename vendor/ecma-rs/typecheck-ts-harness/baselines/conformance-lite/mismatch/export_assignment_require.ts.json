@@ -1,0 +1,40 @@
+{
+  "schema_version": 2,
+  "metadata": {
+    "typescript_version": "5.9.3",
+    "options": {
+      "exactOptionalPropertyTypes": false,
+      "lib": [
+        "lib.es5.d.ts"
+      ],
+      "moduleResolution": 2,
+      "noEmit": true,
+      "noImplicitAny": false,
+      "noUncheckedIndexedAccess": false,
+      "pretty": false,
+      "skipLibCheck": true,
+      "strictFunctionTypes": true,
+      "strictNullChecks": true,
+      "target": 2,
+      "useDefineForClassFields": true
+    }
+  },
+  "diagnostics": [
+    {
+      "code": 1203,
+      "file": "dep.ts",
+      "start": 18,
+      "end": 31,
+      "category": "error",
+      "message": "Export assignment cannot be used when targeting ECMAScript modules. Consider using 'export default' or another module format instead."
+    },
+    {
+      "code": 1202,
+      "file": "main.ts",
+      "start": 0,
+      "end": 30,
+      "category": "error",
+      "message": "Import assignment cannot be used when targeting ECMAScript modules. Consider using 'import * as ns from \"mod\"', 'import {a} from \"mod\"', 'import d from \"mod\"', or another module format instead."
+    }
+  ]
+}

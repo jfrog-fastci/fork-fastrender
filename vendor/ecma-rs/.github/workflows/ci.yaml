@@ -227,22 +227,24 @@ jobs:
       - name: Generate lockfile
         run: cargo generate-lockfile
 
-      - name: Run conformance mini suite (snapshots)
+      - name: Run conformance lite suite (snapshots)
         run: >
           cargo run -p typecheck-ts-harness --release --locked --
           conformance
-          --root typecheck-ts-harness/fixtures/conformance-mini
+          --root typecheck-ts-harness/fixtures/conformance-lite
           --compare snapshot
-          --manifest typecheck-ts-harness/fixtures/conformance-mini/manifest.toml
+          --manifest typecheck-ts-harness/fixtures/conformance-lite/manifest.toml
+          --fail-on new
+          --jobs 2
           --json
-          > typecheck-conformance-mini.json
+          > typecheck-conformance-lite.json
 
       - name: Upload conformance report
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: typecheck-conformance-mini
-          path: typecheck-conformance-mini.json
+          name: typecheck-conformance-lite
+          path: typecheck-conformance-lite.json
 
   typecheck-ts-bench-smoke:
     runs-on: ubuntu-24.04
@@ -404,12 +406,12 @@ jobs:
         run: >
           cargo run -p typecheck-ts-harness --release --locked --
           verify-snapshots
-          --root typecheck-ts-harness/fixtures/conformance-mini
+          --root typecheck-ts-harness/fixtures/conformance-lite
           --node node
           --jobs 2
           --timeout-secs 20
           --json
-          > conformance-mini-snapshot-verify.json
+          > conformance-lite-snapshot-verify.json
 
       - name: Upload live difftsc report
         if: always()
@@ -422,8 +424,8 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: conformance-mini-snapshot-verify
-          path: conformance-mini-snapshot-verify.json
+          name: conformance-lite-snapshot-verify
+          path: conformance-lite-snapshot-verify.json
 
   typecheck-ts-upstream-conformance:
     name: typecheck-ts upstream conformance (${{ matrix.shard }}/8)

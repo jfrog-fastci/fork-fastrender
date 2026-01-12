@@ -1,0 +1,32 @@
+{
+  "schema_version": 2,
+  "metadata": {
+    "typescript_version": "5.9.3",
+    "options": {
+      "exactOptionalPropertyTypes": false,
+      "lib": [
+        "lib.es5.d.ts"
+      ],
+      "moduleResolution": 2,
+      "noEmit": true,
+      "noImplicitAny": false,
+      "noUncheckedIndexedAccess": false,
+      "pretty": false,
+      "skipLibCheck": true,
+      "strictFunctionTypes": true,
+      "strictNullChecks": true,
+      "target": 2,
+      "useDefineForClassFields": true
+    }
+  },
+  "diagnostics": [
+    {
+      "code": 2345,
+      "file": "generic_constraint_error.ts",
+      "start": 81,
+      "end": 84,
+      "category": "error",
+      "message": "Argument of type '{ y: number; }' is not assignable to parameter of type '{ x: number; }'.\n  Property 'x' is missing in type '{ y: number; }' but required in type '{ x: number; }'."
+    }
+  ]
+}

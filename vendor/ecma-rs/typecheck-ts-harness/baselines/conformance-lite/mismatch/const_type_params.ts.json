@@ -1,0 +1,40 @@
+{
+  "schema_version": 2,
+  "metadata": {
+    "typescript_version": "5.9.3",
+    "options": {
+      "exactOptionalPropertyTypes": false,
+      "lib": [
+        "lib.es5.d.ts"
+      ],
+      "moduleResolution": 2,
+      "noEmit": true,
+      "noImplicitAny": false,
+      "noUncheckedIndexedAccess": false,
+      "pretty": false,
+      "skipLibCheck": true,
+      "strictFunctionTypes": true,
+      "strictNullChecks": true,
+      "target": 2,
+      "useDefineForClassFields": true
+    }
+  },
+  "diagnostics": [
+    {
+      "code": 2322,
+      "file": "const_type_params.ts",
+      "start": 468,
+      "end": 469,
+      "category": "error",
+      "message": "Type '2' is not assignable to type '1'."
+    },
+    {
+      "code": 2322,
+      "file": "const_type_params.ts",
+      "start": 474,
+      "end": 475,
+      "category": "error",
+      "message": "Type '\"no\"' is not assignable to type '\"x\"'."
+    }
+  ]
+}

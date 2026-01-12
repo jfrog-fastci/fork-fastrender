@@ -1,0 +1,32 @@
+{
+  "schema_version": 2,
+  "metadata": {
+    "typescript_version": "5.9.3",
+    "options": {
+      "exactOptionalPropertyTypes": false,
+      "lib": [
+        "lib.es5.d.ts"
+      ],
+      "moduleResolution": 2,
+      "noEmit": true,
+      "noImplicitAny": false,
+      "noUncheckedIndexedAccess": false,
+      "pretty": false,
+      "skipLibCheck": true,
+      "strictFunctionTypes": true,
+      "strictNullChecks": true,
+      "target": 2,
+      "useDefineForClassFields": true
+    }
+  },
+  "diagnostics": [
+    {
+      "code": 2353,
+      "file": "excess_property_error.ts",
+      "start": 57,
+      "end": 58,
+      "category": "error",
+      "message": "Object literal may only specify known properties, and 'y' does not exist in type 'Point'."
+    }
+  ]
+}

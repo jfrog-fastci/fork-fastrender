@@ -1,0 +1,37 @@
+# Conformance expectations for the curated `conformance-lite` snapshot suite.
+#
+# Keep this file minimal and up to date:
+# - Add `xfail` entries for known mismatches between the Rust checker and `tsc`.
+# - Remove entries when they start passing (CI treats XPASS as a failure under
+#   `--fail-on new`).
+#
+# Format:
+# [[expectations]]
+# id = "match/example.ts"
+# status = "xfail"
+# reason = "explain the missing feature / known bug"
+
+[[expectations]]
+id = "match/generic_defaults.ts"
+status = "xfail"
+reason = "Default type arguments for type aliases are not implemented yet"
+
+[[expectations]]
+id = "match/narrowing_typeof.ts"
+status = "xfail"
+reason = "`typeof`-based control-flow narrowing not implemented yet"
+
+[[expectations]]
+id = "match/narrowing_truthiness.ts"
+status = "xfail"
+reason = "Truthiness-based narrowing (`if (x)`) not implemented yet"
+
+[[expectations]]
+id = "mismatch/excess_property_error.ts"
+status = "xfail"
+reason = "Excess property check diagnostic span differs from tsc (tsc highlights the property name)"
+
+[[expectations]]
+id = "mismatch/overload_no_match.ts"
+status = "xfail"
+reason = "Overload mismatch diagnostic span differs from tsc"

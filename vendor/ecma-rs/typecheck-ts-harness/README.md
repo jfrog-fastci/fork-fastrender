@@ -209,11 +209,52 @@ bash ../scripts/cargo_agent.sh run -p typecheck-ts-harness --release -- conforma
 - `--trace` enables structured tracing logs on stderr (JSONL), keeping stdout
   parseable when `--json` is enabled. Redirect with `2> trace.jsonl`.
 - `--profile` is forwarded to the checker.
-- A tiny demo corpus lives at `typecheck-ts-harness/fixtures/conformance-mini`.
+- Curated snapshot suites:
+  - `typecheck-ts-harness/fixtures/conformance-mini`: tiny demo corpus
+  - `typecheck-ts-harness/fixtures/conformance-lite`: CI-fast semantic regression suite
 - Stored conformance snapshots (for `--compare snapshot`) live under
   `typecheck-ts-harness/baselines/<suite>/<id>.json`, where the filename is the
   test id with `.json` appended (so single-file tests preserve their original
   extension, e.g. `match/basic.ts` → `baselines/conformance-mini/match/basic.ts.json`).
+
+### Updating `conformance-lite` snapshots
+
+`conformance-lite` is a curated “semantic litmus test” suite intended to run
+quickly in PR CI using stored `tsc` snapshots (so CI does not need Node.js).
+
+- Fixtures: `typecheck-ts-harness/fixtures/conformance-lite/{match,mismatch}/`
+  - Keep each test small.
+  - Prefer an explicit `// @lib: ...` directive to avoid the default `dom` lib,
+    which can dominate runtime.
+  - Multi-file cases should use TypeScript harness directives (`// @filename: ...`)
+    instead of directories (matching the upstream conformance suite style).
+- Snapshots: `typecheck-ts-harness/baselines/conformance-lite/**.json`
+
+To regenerate snapshots (requires Node + `typescript`):
+
+```bash
+cd typecheck-ts-harness && npm ci
+
+bash ../scripts/cargo_agent.sh run -p typecheck-ts-harness --release -- \
+  conformance \
+  --root typecheck-ts-harness/fixtures/conformance-lite \
+  --update-snapshots \
+  --jobs 2 \
+  --manifest typecheck-ts-harness/fixtures/conformance-lite/manifest.toml \
+  --allow-mismatches
+```
+
+Then verify the suite is clean under snapshot compare mode:
+
+```bash
+bash ../scripts/cargo_agent.sh run -p typecheck-ts-harness --release -- \
+  conformance \
+  --root typecheck-ts-harness/fixtures/conformance-lite \
+  --compare snapshot \
+  --jobs 2 \
+  --manifest typecheck-ts-harness/fixtures/conformance-lite/manifest.toml \
+  --fail-on new
+```
 
 ## Snapshot integrity (`verify-snapshots`)
 
@@ -227,10 +268,10 @@ integrity).
 ```
 bash ../scripts/cargo_agent.sh run -p typecheck-ts-harness --release -- \
   verify-snapshots \
-  --root typecheck-ts-harness/fixtures/conformance-mini \
+  --root typecheck-ts-harness/fixtures/conformance-lite \
   --jobs 2 \
   --timeout-secs 20 \
-  --json > conformance-mini-snapshot-verify.json
+  --json > conformance-lite-snapshot-verify.json
 ```
 
 - The suite name is derived from `--root`'s final path component, matching
