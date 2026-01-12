@@ -58,7 +58,7 @@ fn import_expr_returns_promise_unknown_when_promise_exists() {
   host.add_lib(lib_file(
     "promise.d.ts",
     r#"
-interface Promise<out T> {}
+interface Promise<T> {}
 declare var Promise: any;
 "#,
   ));
