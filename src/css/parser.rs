@@ -3331,7 +3331,9 @@ fn parse_page_block<'i, 't>(
       Ok(Token::AtKeyword(kw)) => {
         if let Some(area) = parse_margin_area(kw.as_ref()) {
           parser.expect_curly_bracket_block().map_err(|_| {
-            parser.new_custom_error(SelectorParseErrorKind::UnexpectedIdent("expected {".into()))
+            parser.new_custom_error::<_, SelectorParseErrorKind<'_>>(
+              SelectorParseErrorKind::UnexpectedIdent("expected {".into()),
+            )
           })?;
           let nested = parser.parse_nested_block(|nested| {
             parse_declaration_list(nested, DeclarationContext::Style).map_err(|_| {

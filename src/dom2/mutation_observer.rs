@@ -826,6 +826,7 @@ impl Document {
 #[cfg(test)]
 mod tests {
   use super::*;
+  use selectors::context::QuirksMode;
 
   fn record(target: NodeId) -> MutationRecord {
     MutationRecord {
@@ -888,5 +889,65 @@ mod tests {
     assert!(agent.observers.contains_key(&1));
     assert!(!agent.observers.contains_key(&2));
     assert_eq!(agent.pending, vec![1]);
+  }
+
+  #[test]
+  fn observe_update_removes_transient_registrations_from_node_list() {
+    let mut doc = Document::new(QuirksMode::NoQuirks);
+
+    let parent = doc.create_element("div", "");
+    let child = doc.create_element("div", "");
+    let grandchild = doc.create_element("div", "");
+    doc.append_child(child, grandchild).unwrap();
+    doc.append_child(parent, child).unwrap();
+
+    let observer = 1;
+    let initial_options = MutationObserverInit {
+      attributes: true,
+      subtree: true,
+      ..MutationObserverInit::default()
+    };
+    doc
+      .mutation_observer_observe(observer, parent, initial_options)
+      .unwrap();
+
+    let parent_registration_id = doc.nodes[parent.index()]
+      .registered_observers
+      .iter()
+      .find(|reg| reg.observer == observer && reg.transient_source.is_none())
+      .expect("parent should have non-transient registration after observe()")
+      .id;
+
+    // Detach the subtree; removal should install a transient registered observer on the detached
+    // root (`child`).
+    doc.remove_child(parent, child).unwrap();
+    assert_eq!(doc.mutation_observer_transient_registration_count(child), 1);
+    assert!(doc.nodes[child.index()].registered_observers.iter().any(|reg| {
+      reg.observer == observer && reg.transient_source == Some(parent_registration_id)
+    }));
+
+    // Mutations inside the detached subtree should still be observed via the transient registration.
+    doc.set_attribute(grandchild, "id", "before").unwrap();
+    let records = doc.mutation_observer_take_records(observer);
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].type_, MutationRecordType::Attributes);
+    assert_eq!(records[0].target, grandchild);
+
+    // Updating the observer's registration on `parent` must remove transient registrations sourced
+    // from the old registration so detached subtrees stop being observed.
+    let updated_options = MutationObserverInit {
+      attributes: true,
+      subtree: false,
+      ..MutationObserverInit::default()
+    };
+    doc
+      .mutation_observer_observe(observer, parent, updated_options)
+      .unwrap();
+
+    assert_eq!(doc.mutation_observer_transient_registration_count(child), 0);
+
+    doc.set_attribute(grandchild, "id", "after").unwrap();
+    let records = doc.mutation_observer_take_records(observer);
+    assert!(records.is_empty());
   }
 }
