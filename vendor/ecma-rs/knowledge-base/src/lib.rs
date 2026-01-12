@@ -2717,6 +2717,33 @@ properties:
       Some("node/web_events.yaml")
     );
 
+    let channel = kb
+      .api_for_target("MessageChannel", &node_20)
+      .expect("MessageChannel should resolve for modern Node targets");
+    assert_eq!(channel.name, "MessageChannel");
+    assert_eq!(
+      kb.source_for_target("MessageChannel", &node_20),
+      Some("node/web_messaging.yaml")
+    );
+
+    let post_message = kb
+      .api_for_target("MessagePort.prototype.postMessage", &node_20)
+      .expect("MessagePort.prototype.postMessage should resolve for modern Node targets");
+    assert_eq!(post_message.name, "MessagePort.prototype.postMessage");
+    assert_eq!(
+      kb.source_for_target("MessagePort.prototype.postMessage", &node_20),
+      Some("node/web_messaging.yaml")
+    );
+
+    let bc = kb
+      .api_for_target("BroadcastChannel", &node_20)
+      .expect("BroadcastChannel should resolve for modern Node targets");
+    assert_eq!(bc.name, "BroadcastChannel");
+    assert_eq!(
+      kb.source_for_target("BroadcastChannel", &node_20),
+      Some("node/web_messaging.yaml")
+    );
+
     let blob = kb
       .api_for_target("Blob", &node_20)
       .expect("Blob should resolve for Node targets with fetch globals");

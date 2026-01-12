@@ -1,0 +1,50 @@
+# Web messaging / channels APIs that are available as Node.js globals.
+#
+# These entries are duplicated from `web/messaging.yaml` so that `TargetEnv::Node` lookups can
+# resolve them without matching browser-only APIs.
+#
+# Node notes:
+# - Modern Node versions expose `MessageChannel`/`BroadcastChannel` as globals. We conservatively
+#   gate these to Node 15+.
+
+- name: MessageChannel
+  kind: constructor
+  since: "v15.0.0"
+  effects:
+    allocates: true
+    may_throw: false
+  purity: Allocating
+
+- name: MessagePort.prototype.postMessage
+  kind: function
+  since: "v15.0.0"
+  effects: Unknown
+  purity: Impure
+  async: true
+  parallelizable: false
+  idempotent: false
+  deterministic: false
+
+- name: MessagePort.prototype.close
+  kind: function
+  since: "v15.0.0"
+  effects: Unknown
+  purity: Impure
+
+- name: BroadcastChannel
+  kind: constructor
+  since: "v15.0.0"
+  effects: Unknown
+  purity: Impure
+
+- name: BroadcastChannel.prototype.postMessage
+  kind: function
+  since: "v15.0.0"
+  effects: Unknown
+  purity: Impure
+
+- name: BroadcastChannel.prototype.close
+  kind: function
+  since: "v15.0.0"
+  effects: Unknown
+  purity: Impure
