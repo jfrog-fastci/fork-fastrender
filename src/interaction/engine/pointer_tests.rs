@@ -474,6 +474,193 @@ fn link_click_emits_navigation_with_resolved_url() {
 }
 
 #[test]
+fn link_middle_click_opens_in_new_tab() {
+  let mut dom = doc(vec![el(
+    "html",
+    vec![("id", "html")],
+    vec![el(
+      "body",
+      vec![("id", "body")],
+      vec![el("a", vec![("id", "link"), ("href", "foo")], vec![])],
+    )],
+  )]);
+
+  let link_dom_id = node_id(&dom, "link");
+  let mut link_box = BoxNode::new_block(default_style(), FormattingContextType::Block, vec![]);
+  link_box.styled_node_id = Some(link_dom_id);
+  let box_tree = BoxTree::new(BoxNode::new_block(
+    default_style(),
+    FormattingContextType::Block,
+    vec![link_box],
+  ));
+
+  let link_box_id = find_box_id_for_styled_node(&box_tree, link_dom_id);
+  let fragment_tree = FragmentTree::new(FragmentNode::new_block(
+    Rect::from_xywh(0.0, 0.0, 200.0, 200.0),
+    vec![FragmentNode::new_block_with_id(
+      Rect::from_xywh(0.0, 0.0, 50.0, 50.0),
+      link_box_id,
+      vec![],
+    )],
+  ));
+
+  let mut engine = InteractionEngine::new();
+  engine.pointer_down(
+    &mut dom,
+    &box_tree,
+    &fragment_tree,
+    &ScrollState::default(),
+    Point::new(10.0, 10.0),
+  );
+  let (_, action) = engine.pointer_up_with_scroll(
+    &mut dom,
+    &box_tree,
+    &fragment_tree,
+    &ScrollState::default(),
+    Point::new(10.0, 10.0),
+    PointerButton::Middle,
+    PointerModifiers::default(),
+    "https://example.com/base/",
+    "https://example.com/base/",
+  );
+  assert_eq!(
+    action,
+    InteractionAction::OpenInNewTab {
+      href: "https://example.com/base/foo".to_string()
+    }
+  );
+  assert!(engine.interaction_state().is_visited_link(link_dom_id));
+}
+
+#[test]
+fn link_command_click_opens_in_new_tab() {
+  let mut dom = doc(vec![el(
+    "html",
+    vec![("id", "html")],
+    vec![el(
+      "body",
+      vec![("id", "body")],
+      vec![el("a", vec![("id", "link"), ("href", "foo")], vec![])],
+    )],
+  )]);
+
+  let link_dom_id = node_id(&dom, "link");
+  let mut link_box = BoxNode::new_block(default_style(), FormattingContextType::Block, vec![]);
+  link_box.styled_node_id = Some(link_dom_id);
+  let box_tree = BoxTree::new(BoxNode::new_block(
+    default_style(),
+    FormattingContextType::Block,
+    vec![link_box],
+  ));
+
+  let link_box_id = find_box_id_for_styled_node(&box_tree, link_dom_id);
+  let fragment_tree = FragmentTree::new(FragmentNode::new_block(
+    Rect::from_xywh(0.0, 0.0, 200.0, 200.0),
+    vec![FragmentNode::new_block_with_id(
+      Rect::from_xywh(0.0, 0.0, 50.0, 50.0),
+      link_box_id,
+      vec![],
+    )],
+  ));
+
+  let modifiers = if cfg!(target_os = "macos") {
+    PointerModifiers::META
+  } else {
+    PointerModifiers::CTRL
+  };
+
+  let mut engine = InteractionEngine::new();
+  engine.pointer_down(
+    &mut dom,
+    &box_tree,
+    &fragment_tree,
+    &ScrollState::default(),
+    Point::new(10.0, 10.0),
+  );
+  let (_, action) = engine.pointer_up_with_scroll(
+    &mut dom,
+    &box_tree,
+    &fragment_tree,
+    &ScrollState::default(),
+    Point::new(10.0, 10.0),
+    PointerButton::Primary,
+    modifiers,
+    "https://example.com/base/",
+    "https://example.com/base/",
+  );
+  assert_eq!(
+    action,
+    InteractionAction::OpenInNewTab {
+      href: "https://example.com/base/foo".to_string()
+    }
+  );
+  assert!(engine.interaction_state().is_visited_link(link_dom_id));
+}
+
+#[test]
+fn link_target_blank_opens_in_new_tab() {
+  let mut dom = doc(vec![el(
+    "html",
+    vec![("id", "html")],
+    vec![el(
+      "body",
+      vec![("id", "body")],
+      vec![el(
+        "a",
+        vec![("id", "link"), ("href", "foo"), ("target", "  _BLANK  ")],
+        vec![],
+      )],
+    )],
+  )]);
+
+  let link_dom_id = node_id(&dom, "link");
+  let mut link_box = BoxNode::new_block(default_style(), FormattingContextType::Block, vec![]);
+  link_box.styled_node_id = Some(link_dom_id);
+  let box_tree = BoxTree::new(BoxNode::new_block(
+    default_style(),
+    FormattingContextType::Block,
+    vec![link_box],
+  ));
+
+  let link_box_id = find_box_id_for_styled_node(&box_tree, link_dom_id);
+  let fragment_tree = FragmentTree::new(FragmentNode::new_block(
+    Rect::from_xywh(0.0, 0.0, 200.0, 200.0),
+    vec![FragmentNode::new_block_with_id(
+      Rect::from_xywh(0.0, 0.0, 50.0, 50.0),
+      link_box_id,
+      vec![],
+    )],
+  ));
+
+  let mut engine = InteractionEngine::new();
+  engine.pointer_down(
+    &mut dom,
+    &box_tree,
+    &fragment_tree,
+    &ScrollState::default(),
+    Point::new(10.0, 10.0),
+  );
+  let (_, action) = engine.pointer_up_with_scroll(
+    &mut dom,
+    &box_tree,
+    &fragment_tree,
+    &ScrollState::default(),
+    Point::new(10.0, 10.0),
+    PointerButton::Primary,
+    PointerModifiers::default(),
+    "https://example.com/base/",
+    "https://example.com/base/",
+  );
+  assert_eq!(
+    action,
+    InteractionAction::OpenInNewTab {
+      href: "https://example.com/base/foo".to_string()
+    }
+  );
+  assert!(engine.interaction_state().is_visited_link(link_dom_id));
+}
+
+#[test]
 fn img_usemap_area_click_emits_navigation_and_sets_area_visited() {
   let mut dom = doc(vec![el(
     "html",
