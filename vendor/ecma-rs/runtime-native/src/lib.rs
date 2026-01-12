@@ -1543,7 +1543,14 @@ mod tests {
       .or_else(|| std::env::var("RT_NUM_THREADS").ok())
       .and_then(|v| v.parse::<usize>().ok())
       .filter(|&n| n > 0)
-      .unwrap_or_else(|| std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1))
+      .unwrap_or_else(|| {
+        let default = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
+        if cfg!(debug_assertions) {
+          default.min(32)
+        } else {
+          default
+        }
+      })
   }
 
   #[repr(C)]
@@ -1561,6 +1568,7 @@ mod tests {
 
     // Keep the task alive until the test releases it so other workers have a chance to overlap.
     while !data.release.load(Ordering::SeqCst) {
+      crate::threading::safepoint_poll();
       std::thread::yield_now();
     }
 
@@ -1593,6 +1601,7 @@ mod tests {
     // the worker pool time to start both tasks so we can observe overlap reliably.
     let start = Instant::now();
     while data.max_active.load(Ordering::SeqCst) < 2 && start.elapsed() < Duration::from_secs(2) {
+      crate::threading::safepoint_poll();
       std::thread::yield_now();
     }
     data.release.store(true, Ordering::SeqCst);

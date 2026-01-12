@@ -119,7 +119,14 @@ fn parallel_spawn_promise_rooted_roots_and_relocates_task_context() {
     .or_else(|| std::env::var("RT_NUM_THREADS").ok())
     .and_then(|v| v.parse::<usize>().ok())
     .filter(|&n| n > 0)
-    .unwrap_or_else(|| std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1));
+    .unwrap_or_else(|| {
+      let default = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
+      if cfg!(debug_assertions) {
+        default.min(32)
+      } else {
+        default
+      }
+    });
 
   // Ensure worker threads are registered before we try to saturate them with blocking tasks.
   let deadline = Instant::now() + Duration::from_secs(2);

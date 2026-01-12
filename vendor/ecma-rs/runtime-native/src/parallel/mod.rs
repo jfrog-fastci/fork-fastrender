@@ -382,7 +382,14 @@ impl Scheduler {
       .or_else(|| std::env::var("RT_NUM_THREADS").ok())
       .and_then(|v| v.parse::<usize>().ok())
       .filter(|&n| n > 0)
-      .unwrap_or_else(|| thread::available_parallelism().map(|n| n.get()).unwrap_or(1));
+      .unwrap_or_else(|| {
+        let default = thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
+        if cfg!(debug_assertions) {
+          default.min(32)
+        } else {
+          default
+        }
+      });
 
     let mut workers: Vec<Worker<Arc<TaskState>>> = Vec::with_capacity(worker_count);
     let mut stealers: Vec<Stealer<Arc<TaskState>>> = Vec::with_capacity(worker_count);
