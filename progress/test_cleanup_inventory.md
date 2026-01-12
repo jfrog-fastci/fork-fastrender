@@ -31,37 +31,13 @@ section in sync with `ls tests/*.rs`.
 |---|---|---|---|---|
 | `tests/allocation_failure_tests.rs` | special | `tests/allocation_failure.rs` | Contains `#[global_allocator]` (via `tests/allocation_failure/mod.rs`); must remain separate. Rename from `*_tests.rs`. | TODO |
 | `tests/animation_tests.rs` | unit | `src/animation/mod.rs` | Not just a harness (large file). Also uses `#[path]` to include `tests/animation/mod.rs`; migrate all to `src/animation/**`. | TODO |
-| `tests/border_tests.rs` | unit | `src/style/` | Border parsing + cascade expectations (e.g. `src/style/types.rs`, `src/style/cascade.rs`). | TODO |
-| `tests/cascade_tests.rs` | unit | `src/style/cascade.rs` | Harness for `tests/cascade/**`. | TODO |
 | `tests/css_font_feature_values_test.rs` | unit | `src/style/font_feature_values.rs` | Parser-level tests for `@font-feature-values`. | TODO |
-| `tests/css_integration_tests.rs` | unit | `src/css/loader.rs` | “Integration” in name only; tests internal CSS loading/URL rewrite/import logic. | TODO |
-| `tests/determinism_tests.rs` | integration | `tests/integration.rs::fixtures::determinism` | Renders fixtures repeatedly + compares PNG output. Uses env vars (`FASTR_IN_PROCESS_DETERMINISM_*`) and Rayon scheduling. | TODO |
-| `tests/dom_integration_tests.rs` | unit | `src/dom/` | DOM parsing/query/range tests under `tests/dom_integration/**` (split across `src/dom/**` + `src/dom2/**`). | TODO |
 | `tests/fixtures_test.rs` | integration | `tests/integration.rs::fixtures::runner` | Reads `tests/fixtures/html/**` and compares against `tests/fixtures/golden/**`; mutates env (`FASTR_USE_BUNDLED_FONTS`, `UPDATE_GOLDEN`). | TODO |
-| `tests/font_tests.rs` | unit | `src/text/` | Font loader/resolver/shaping + font-related style parsing (`src/text/**`, some `src/style/**`). | TODO |
 | `tests/fuzz_corpus_smoke_test.rs` | integration | `tests/integration.rs::tooling::fuzz_corpus_smoke` | Drives the renderer against checked-in `tests/fuzz_corpus/**` inputs with tight timeouts. | TODO |
-| `tests/iframe_tests.rs` | integration | `tests/integration.rs::fixtures::iframe` | Golden-image comparisons; sets `FASTR_USE_BUNDLED_FONTS`; uses file URLs/tempdirs. | TODO |
-| `tests/image_integration_tests.rs` | integration | `tests/integration.rs::api::image_integration` | Image loading/output/CORS integration tests under `tests/image_integration/**`. | TODO |
 | `tests/integration.rs` | integration | keep | Unified integration test binary. Should become the default home for remaining integration suites. | DONE |
-| `tests/js_harness_tests.rs` | unit | `src/js/` | Large internal JS harness (event loop, timers, DOM integration). Likely lands as `#[cfg(test)]` submodules under `src/js/**`. | TODO |
 | `tests/js_html_integration.rs` | integration | `tests/integration.rs::api::js_html_integration` | End-to-end HTML+JS execution behavior via `BrowserTab` and `EventLoop`. Fold into `tests/api/`. | TODO |
-| `tests/layout_tests.rs` | unit | `src/layout/` | Harness for `tests/layout/**` (very large). | TODO |
-| `tests/legacy_tests.rs` | unit | `src/paint/` | Legacy rendering regressions; many tests call paint internals (`paint_tree_with_resources_*`, `ImageCache`, etc.). | TODO |
-| `tests/misc_tests.rs` | unit | `src/**` (split) | Mixed grab-bag; many tests mutate env/process-wide knobs. Repo-only guardrails may stay under `tests/integration.rs`. | TODO |
 | `tests/paged_media.rs` | unit | `src/layout/pagination.rs` | Dedicated paged-media regression target; remove standalone binary after moving into `src/layout/**`. | TODO |
-| `tests/paint_tests.rs` | unit | `src/paint/` | Paint/backdrop/ref-image tests under `tests/paint/**`, `tests/backdrop/**`. | TODO |
-| `tests/progress_tests.rs` | integration | `tests/integration.rs::fixtures::progress` | Repo artifact guardrail tests for `progress/pages/*.json` (no library code). | TODO |
-| `tests/ref_tests.rs` | integration | `tests/integration.rs::common::ref` | Reference image diff/test harness tests; serializes env var changes via mutex. | TODO |
-| `tests/render_tests.rs` | integration | `tests/integration.rs::api::render` | End-to-end rendering APIs (`render_url`, diagnostics, timeouts, etc.). | TODO |
-| `tests/scroll_tests.rs` | unit | `src/scroll.rs` | Scroll state/behavior tests under `tests/scroll/**`. | TODO |
-| `tests/style_tests.rs` | unit | `src/style/` | Large style regression suite under `tests/style/**` (some use ref-image utilities). | TODO |
-| `tests/text_tests.rs` | unit | `src/text/` | Text/shaping regressions under `tests/text/**`. | TODO |
-| `tests/tree_tests.rs` | unit | `src/tree/` | Box/tree generation tests under `tests/tree/**`. | TODO |
-| `tests/ui_tests.rs` | integration | `tests/integration.rs::api::ui` | Browser UI protocol tests under `tests/ui/**` (feature-gated in places). | TODO |
 | `tests/user_agent_placeholder_pseudo_test.rs` | unit | `src/style/color.rs` | Placeholder pseudo default color (`GrayText`) regression; uses cascade helpers. | TODO |
-| `tests/var_tests.rs` | unit | `src/style/var_resolution.rs` | CSS custom property (`var()`) resolution tests. | TODO |
-| `tests/weibo_web_font_relative_url_test.rs` | unit | `src/text/font_loader.rs` | Uses fixtures; ensures `@font-face url(...)` in inline styles resolves against document base URL. | TODO |
-
 ### Completed (top-level crate removed)
 
 | File | Type | Destination (new architecture) | Notes | Status |
@@ -80,6 +56,27 @@ section in sync with `ls tests/*.rs`.
 | `tests/csp_img_data_url.rs` | integration | `tests/api/csp_img_data_url.rs` | Top-level crate removed; tests now run via `tests/integration.rs::api`. | DONE |
 | `tests/clip_tests.rs` | unit | `src/paint/display_list_builder.rs` | Migrated clip-rect regression coverage into `src/paint/display_list_builder.rs` unit tests and removed `tests/clip_tests.rs`/`tests/clip/**`. | DONE |
 | `tests/display_list_tests.rs` | unit | `src/paint/display_list_renderer/tests/display_list/mod.rs` | Migrated the display-list backend regression suite into unit tests under `src/paint/display_list_renderer/tests/display_list/**` and removed the standalone test binary. | DONE |
+| `tests/border_tests.rs` | delete | delete | Top-level harness removed; suite now lives under `tests/border/**` and is pulled into `tests/integration.rs`. | DONE |
+| `tests/cascade_tests.rs` | delete | delete | Top-level harness removed; suite now lives under `tests/cascade/**` and is pulled into `tests/integration.rs`. | DONE |
+| `tests/css_integration_tests.rs` | delete | delete | Top-level harness removed; suite now lives under `tests/css_integration/**` and is pulled into `tests/integration.rs`. | DONE |
+| `tests/determinism_tests.rs` | delete | delete | Top-level harness removed; suite now lives under `tests/determinism/**` and is pulled into `tests/integration.rs`. | DONE |
+| `tests/dom_integration_tests.rs` | delete | delete | Top-level harness removed; suite now lives under `tests/dom_integration/**` and is pulled into `tests/integration.rs`. | DONE |
+| `tests/font_tests.rs` | delete | delete | Top-level harness removed; suite now lives under `tests/font/**` and is pulled into `tests/integration.rs`. | DONE |
+| `tests/js_harness_tests.rs` | delete | delete | Top-level harness removed; suite now lives under `tests/js_harness/**` and is pulled into `tests/integration.rs`. | DONE |
+| `tests/layout_tests.rs` | delete | delete | Top-level harness removed; suite now lives under `tests/layout/**` and is pulled into `tests/integration.rs`. | DONE |
+| `tests/legacy_tests.rs` | delete | delete | Top-level harness removed; suite now lives under `tests/legacy/**` and is pulled into `tests/integration.rs`. | DONE |
+| `tests/misc_tests.rs` | delete | delete | Top-level harness removed; suite now lives under `tests/misc/**` and is pulled into `tests/integration.rs`. | DONE |
+| `tests/paint_tests.rs` | delete | delete | Top-level harness removed; suite now lives under `tests/paint/**` (and friends) and is pulled into `tests/integration.rs`. | DONE |
+| `tests/progress_tests.rs` | delete | delete | Top-level harness removed; suite now lives under `tests/progress/**` and is pulled into `tests/integration.rs`. | DONE |
+| `tests/ref_tests.rs` | delete | delete | Top-level harness removed; suite now lives under `tests/ref/**` and is pulled into `tests/integration.rs`. | DONE |
+| `tests/render_tests.rs` | delete | delete | Top-level harness removed; suite now lives under `tests/render/**` and is pulled into `tests/integration.rs`. | DONE |
+| `tests/scroll_tests.rs` | delete | delete | Top-level harness removed; suite now lives under `tests/scroll/**` and is pulled into `tests/integration.rs`. | DONE |
+| `tests/style_tests.rs` | delete | delete | Pure `#[path]` shim removed; style suite runs via `tests/style/**` (included from `tests/integration.rs`). | DONE |
+| `tests/text_tests.rs` | delete | delete | Top-level harness removed; suite now lives under `tests/text/**` and is pulled into `tests/integration.rs`. | DONE |
+| `tests/tree_tests.rs` | delete | delete | Top-level harness removed; suite now lives under `tests/tree/**` and is pulled into `tests/integration.rs`. | DONE |
+| `tests/ui_tests.rs` | delete | delete | Top-level harness removed; suite now lives under `tests/ui/**` and is pulled into `tests/integration.rs`. | DONE |
+| `tests/var_tests.rs` | delete | delete | Top-level harness removed; suite now lives under `tests/var/**` and is pulled into `tests/integration.rs`. | DONE |
+| `tests/weibo_web_font_relative_url_test.rs` | delete | delete | Migrated to unit tests (`src/text/font_loader.rs`) as `weibo_fixture_font_face_relative_url_resolves_against_document_base_url`. | DONE |
 | `tests/flex_nowrap_negative_margins_do_not_trigger_monotonic_fallback.rs` | delete | delete | Pure `#[path]` shim removed; test remains under `tests/layout/**`. | DONE |
 | `tests/flex_wrap_order_does_not_trigger_manual_placement.rs` | delete | delete | Pure `#[path]` shim removed; test remains under `tests/layout/**`. | DONE |
 | `tests/grid_tests.rs` | unit | `src/layout/contexts/grid.rs` | Migrated to grid context unit tests (and `tests/grid/**` directory removed). | DONE |
