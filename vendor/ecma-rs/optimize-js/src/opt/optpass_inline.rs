@@ -10,6 +10,7 @@ use std::collections::{BTreeMap, BTreeSet};
 #[derive(Clone, Debug)]
 struct FnSummary {
   inst_count: usize,
+  is_recursive: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -194,20 +195,34 @@ fn compute_callsite_counts(program: &Program, foreign_fns: &BTreeMap<SymbolId, F
   counts
 }
 
-fn compute_fn_summaries(program: &Program) -> Vec<FnSummary> {
+fn compute_fn_summaries(program: &Program, foreign_fns: &BTreeMap<SymbolId, FnId>) -> Vec<FnSummary> {
   program
     .functions
     .iter()
-    .map(|func| {
+    .enumerate()
+    .map(|(fn_id, func)| {
       let cfg = cfg_for_inlining(func);
+      let defs = build_callee_var_defs(cfg, foreign_fns);
       let mut inst_count = 0usize;
+      let mut is_recursive = false;
       for inst in collect_reachable_insts(cfg) {
         if inst.t == InstTyp::Phi {
           continue;
         }
         inst_count += 1;
+        if inst.t == InstTyp::Call {
+          let mut visiting = Vec::new();
+          if let Some(callee_id) = resolve_fn_id(&inst.args[0], &defs, &mut visiting) {
+            if callee_id == fn_id {
+              is_recursive = true;
+            }
+          }
+        }
       }
-      FnSummary { inst_count }
+      FnSummary {
+        inst_count,
+        is_recursive,
+      }
     })
     .collect()
 }
@@ -603,14 +618,25 @@ fn should_inline(
   fn_summaries: &[FnSummary],
   options: InlineOptions,
 ) -> bool {
-  let called_once = call_counts.get(callee).copied().unwrap_or(0) == 1;
-  if called_once {
-    return true;
-  }
   let Some(summary) = fn_summaries.get(callee) else {
     return false;
   };
-  summary.inst_count <= options.threshold
+
+  if summary.is_recursive {
+    return false;
+  }
+
+  let called_once = call_counts.get(callee).copied().unwrap_or(0) == 1;
+  // Called-once functions are good inlining candidates because removing the call can unlock further
+  // optimisations (escape analysis, scalar replacement, etc.). Still, we need a deterministic size
+  // limit to avoid pathological code growth (e.g. large IIFEs).
+  let max_insts = if called_once {
+    options.threshold.saturating_mul(4)
+  } else {
+    options.threshold
+  };
+
+  summary.inst_count <= max_insts
 }
 
 fn inline_cfg(
@@ -707,7 +733,7 @@ pub fn optpass_inline(program: &mut Program, options: InlineOptions, keep_ssa: b
   // Global, deterministic helpers.
   let foreign_fns = collect_constant_foreign_fns(program);
   let call_counts = compute_callsite_counts(program, &foreign_fns);
-  let fn_summaries = compute_fn_summaries(program);
+  let fn_summaries = compute_fn_summaries(program, &foreign_fns);
 
   let callees: Vec<CalleeSnapshot> = program
     .functions

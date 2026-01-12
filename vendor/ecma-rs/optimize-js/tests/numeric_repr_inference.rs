@@ -2,7 +2,7 @@
 
 use optimize_js::analysis::annotate_program;
 use optimize_js::il::inst::{Arg, BinOp, Const, InstTyp, NumericRepr};
-use optimize_js::{compile_source_typed_cfg_options, CompileCfgOptions, TopLevelMode};
+use optimize_js::{compile_source_typed_cfg_options, CompileCfgOptions, InlineOptions, TopLevelMode};
 use parse_js::num::JsNumber;
 
 fn compile_typed_no_opt(source: &str) -> optimize_js::Program {
@@ -13,6 +13,7 @@ fn compile_typed_no_opt(source: &str) -> optimize_js::Program {
     CompileCfgOptions {
       keep_ssa: true,
       run_opt_passes: false,
+      inline: InlineOptions::default(),
     },
   )
   .expect("compile typed source")
@@ -137,4 +138,3 @@ fn numeric_repr_is_unknown_for_non_number_values() {
 
   assert_eq!(assign.meta.numeric_repr, NumericRepr::Unknown);
 }
-
