@@ -375,6 +375,65 @@ fn callable_object_shapes_include_closure_header_fields() {
 }
 
 #[test]
+fn callable_object_layout_is_deterministic_across_stores() {
+  use types_ts_interned::Signature;
+
+  fn build() -> (std::sync::Arc<TypeStore>, types_ts_interned::TypeId) {
+    let store = TypeStore::new();
+    let primitives = store.primitive_ids();
+
+    let sig = store.intern_signature(Signature::new(Vec::new(), primitives.number));
+
+    let name_a = store.intern_name("a");
+    let name_b = store.intern_name("b");
+    let mut shape = Shape::new();
+    shape.call_signatures.push(sig);
+    // Intentionally unsorted insertion order.
+    shape.properties.push(Property {
+      key: PropKey::String(name_b),
+      data: PropData {
+        ty: primitives.string,
+        optional: false,
+        readonly: false,
+        accessibility: None,
+        is_method: false,
+        origin: None,
+        declared_on: None,
+      },
+    });
+    shape.properties.push(Property {
+      key: PropKey::String(name_a),
+      data: PropData {
+        ty: primitives.boolean,
+        optional: false,
+        readonly: false,
+        accessibility: None,
+        is_method: false,
+        origin: None,
+        declared_on: None,
+      },
+    });
+
+    let shape = store.intern_shape(shape);
+    let obj = store.intern_object(ObjectType { shape });
+    let ty = store.intern_type(TypeKind::Object(obj));
+    (store, ty)
+  }
+
+  let (store_a, ty_a) = build();
+  let (store_b, ty_b) = build();
+  assert_eq!(ty_a, ty_b);
+
+  let root_a = store_a.layout_of(ty_a);
+  let root_b = store_b.layout_of(ty_b);
+  assert_eq!(root_a, root_b);
+
+  let graph_a = collect_layout_graph(store_a.as_ref(), root_a);
+  let graph_b = collect_layout_graph(store_b.as_ref(), root_b);
+  assert_eq!(graph_a, graph_b);
+}
+
+#[test]
 fn closure_layout_ids_are_deterministic_across_stores() {
   use types_ts_interned::Signature;
 
