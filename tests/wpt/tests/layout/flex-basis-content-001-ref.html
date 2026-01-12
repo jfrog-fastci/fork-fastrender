@@ -1,0 +1,40 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>flex-basis: content overrides width for flex base sizing reference</title>
+<style>
+  body {
+    margin: 0;
+    background: #fff;
+  }
+  .frame {
+    position: absolute;
+    left: 10px;
+    top: 10px;
+    width: 200px;
+    height: 20px;
+    box-shadow: 0 0 0 2px #000;
+  }
+  .auto {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 50px;
+    height: 20px;
+    background: #ef4444;
+    overflow: hidden;
+  }
+  .content {
+    position: absolute;
+    left: 50px;
+    top: 0;
+    width: 80px;
+    height: 20px;
+    background: #22c55e;
+    overflow: hidden;
+  }
+  .intrinsic {
+    width: 80px;
+    height: 20px;
+  }
+</style>
+<div class="frame"><div class="auto"><div class="intrinsic"></div></div><div class="content"><div class="intrinsic"></div></div></div>

@@ -1,0 +1,37 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Grid baseline alignment with mixed font sizes</title>
+<style>
+  body {
+    margin: 0;
+    background: #fff;
+    font-family: "Noto Sans", sans-serif;
+  }
+  .grid {
+    position: absolute;
+    left: 10px;
+    top: 10px;
+    display: grid;
+    grid-template-columns: auto auto auto;
+    align-items: baseline;
+  }
+  .box {
+    line-height: 1;
+    padding: 0 4px;
+    color: #fff;
+    font-weight: 700;
+  }
+  .a {
+    font-size: 40px;
+    background: #ef4444;
+  }
+  .b {
+    font-size: 20px;
+    background: #22c55e;
+  }
+  .c {
+    font-size: 30px;
+    background: #3b82f6;
+  }
+</style>
+<div class="grid"><div class="box a">A</div><div class="box b">A</div><div class="box c">A</div></div>

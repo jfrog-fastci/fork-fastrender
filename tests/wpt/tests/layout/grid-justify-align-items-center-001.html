@@ -1,0 +1,41 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Grid justify-items/align-items center with self overrides</title>
+<style>
+  body {
+    margin: 0;
+    background: #fff;
+  }
+  .grid {
+    position: absolute;
+    left: 10px;
+    top: 10px;
+    width: 100px;
+    height: 100px;
+    display: grid;
+    grid-template-columns: 50px 50px;
+    grid-template-rows: 50px 50px;
+    justify-items: center;
+    align-items: center;
+    box-shadow: 0 0 0 2px #000;
+  }
+  .cell {
+    width: 20px;
+    height: 20px;
+  }
+  .a {
+    background: #ef4444;
+  }
+  .b {
+    background: #22c55e;
+  }
+  .c {
+    background: #3b82f6;
+  }
+  .d {
+    background: #111827;
+    justify-self: stretch;
+    align-self: stretch;
+  }
+</style>
+<div class="grid"><div class="cell a"></div><div class="cell b"></div><div class="cell c"></div><div class="d"></div></div>

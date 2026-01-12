@@ -1,0 +1,28 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Flex stretch cross size provides aspect-ratio main size</title>
+<style>
+  body {
+    margin: 0;
+    background: #fff;
+  }
+  .flex {
+    position: absolute;
+    left: 10px;
+    top: 10px;
+    width: 50px;
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    box-shadow: 0 0 0 2px #000;
+  }
+  .ar {
+    aspect-ratio: 1 / 2;
+    background: #22c55e;
+  }
+  .after {
+    height: 20px;
+    background: #ef4444;
+  }
+</style>
+<div class="flex"><div class="ar"></div><div class="after"></div></div>

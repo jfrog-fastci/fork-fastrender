@@ -1,0 +1,37 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Flex align-content: space-between with wrapping</title>
+<style>
+  body {
+    margin: 0;
+    background: #fff;
+  }
+  .flex {
+    position: absolute;
+    left: 10px;
+    top: 10px;
+    width: 100px;
+    height: 100px;
+    display: flex;
+    flex-wrap: wrap;
+    align-content: space-between;
+    box-shadow: 0 0 0 2px #000;
+  }
+  .item {
+    width: 50px;
+    height: 20px;
+  }
+  .a {
+    background: #ef4444;
+  }
+  .b {
+    background: #22c55e;
+  }
+  .c {
+    background: #3b82f6;
+  }
+  .d {
+    background: #111827;
+  }
+</style>
+<div class="flex"><div class="item a"></div><div class="item b"></div><div class="item c"></div><div class="item d"></div></div>

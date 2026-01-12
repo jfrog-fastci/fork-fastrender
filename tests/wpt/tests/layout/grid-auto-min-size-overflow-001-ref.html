@@ -1,0 +1,61 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Grid auto-min-size with minmax(auto, 1fr) and overflow reference</title>
+<style>
+  body {
+    margin: 0;
+    background: #fff;
+  }
+  .frame {
+    position: absolute;
+    left: 10px;
+    width: 90px;
+    height: 20px;
+    box-shadow: 0 0 0 2px #000;
+  }
+  .row1 {
+    top: 10px;
+  }
+  .row2 {
+    top: 40px;
+  }
+  .a1 {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 80px;
+    height: 20px;
+    background: #ef4444;
+  }
+  .b1 {
+    position: absolute;
+    left: 80px;
+    top: 0;
+    width: 20px;
+    height: 20px;
+    background: #22c55e;
+  }
+  .a2 {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 70px;
+    height: 20px;
+    background: #ef4444;
+    overflow: hidden;
+  }
+  .b2 {
+    position: absolute;
+    left: 70px;
+    top: 0;
+    width: 20px;
+    height: 20px;
+    background: #22c55e;
+  }
+  .intrinsic {
+    width: 80px;
+    height: 20px;
+  }
+</style>
+<div class="frame row1"><div class="a1"><div class="intrinsic"></div></div><div class="b1"></div></div>
+<div class="frame row2"><div class="a2"><div class="intrinsic"></div></div><div class="b2"></div></div>

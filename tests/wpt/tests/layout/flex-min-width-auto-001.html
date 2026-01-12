@@ -1,0 +1,41 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Flex auto minimum size vs min-width: 0</title>
+<style>
+  body {
+    margin: 0;
+    background: #fff;
+  }
+  .frame {
+    position: absolute;
+    left: 10px;
+    width: 100px;
+    height: 20px;
+    display: flex;
+    box-shadow: 0 0 0 2px #000;
+  }
+  .row1 {
+    top: 10px;
+  }
+  .row2 {
+    top: 40px;
+  }
+  .fixed {
+    flex: 0 0 20px;
+    background: #ef4444;
+  }
+  .item {
+    flex: 1 1 0px;
+    background: #22c55e;
+  }
+  .intrinsic {
+    width: 150px;
+    height: 20px;
+  }
+  .min0 {
+    min-width: 0;
+    overflow: hidden;
+  }
+</style>
+<div class="frame row1"><div class="fixed"></div><div class="item"><div class="intrinsic"></div></div></div>
+<div class="frame row2"><div class="fixed"></div><div class="item min0"><div class="intrinsic"></div></div></div>

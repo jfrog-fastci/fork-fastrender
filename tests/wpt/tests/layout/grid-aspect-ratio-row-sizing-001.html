@@ -1,0 +1,26 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Grid row sizing with aspect-ratio item</title>
+<style>
+  body {
+    margin: 0;
+    background: #fff;
+  }
+  .grid {
+    position: absolute;
+    left: 10px;
+    top: 10px;
+    display: grid;
+    grid-template-columns: 50px 10px;
+    width: 60px;
+    box-shadow: 0 0 0 2px #000;
+  }
+  .ar {
+    aspect-ratio: 1 / 2;
+    background: #22c55e;
+  }
+  .side {
+    background: #ef4444;
+  }
+</style>
+<div class="grid"><div class="ar"></div><div class="side"></div></div>

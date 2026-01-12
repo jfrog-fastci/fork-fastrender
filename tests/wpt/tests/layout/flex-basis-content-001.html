@@ -1,0 +1,42 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>flex-basis: content overrides width for flex base sizing</title>
+<style>
+  body {
+    margin: 0;
+    background: #fff;
+  }
+  .flex {
+    position: absolute;
+    left: 10px;
+    top: 10px;
+    width: 200px;
+    height: 20px;
+    display: flex;
+    box-shadow: 0 0 0 2px #000;
+  }
+  .item {
+    height: 20px;
+    min-width: 0;
+    overflow: hidden;
+  }
+  .auto {
+    flex-grow: 0;
+    flex-shrink: 0;
+    flex-basis: auto;
+    width: 50px;
+    background: #ef4444;
+  }
+  .content {
+    flex-grow: 0;
+    flex-shrink: 0;
+    flex-basis: content;
+    width: 50px;
+    background: #22c55e;
+  }
+  .intrinsic {
+    width: 80px;
+    height: 20px;
+  }
+</style>
+<div class="flex"><div class="item auto"><div class="intrinsic"></div></div><div class="item content"><div class="intrinsic"></div></div></div>

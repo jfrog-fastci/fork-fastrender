@@ -73,6 +73,32 @@ width = 120
 height = 120
 
 [[tests]]
+id = "css/subgrid/subgrid-intrinsic-contribution-001"
+path = "css/subgrid/subgrid-intrinsic-contribution-001.html"
+reference = "css/subgrid/subgrid-intrinsic-contribution-001-ref.html"
+test_type = "reftest"
+expected = "pass"
+timeout_ms = 12000
+dpr = 1.0
+
+[tests.viewport]
+width = 160
+height = 60
+
+[[tests]]
+id = "css/subgrid/subgrid-align-items-center-001"
+path = "css/subgrid/subgrid-align-items-center-001.html"
+reference = "css/subgrid/subgrid-align-items-center-001-ref.html"
+test_type = "reftest"
+expected = "pass"
+timeout_ms = 12000
+dpr = 1.0
+
+[tests.viewport]
+width = 120
+height = 80
+
+[[tests]]
 id = "media/print-media-001"
 path = "media/print-media-001.html"
 reference = "media/print-media-001-ref.html"
@@ -460,6 +486,84 @@ width = 500
 height = 260
 
 [[tests]]
+id = "layout/flex-min-width-auto-001"
+path = "layout/flex-min-width-auto-001.html"
+reference = "layout/flex-min-width-auto-001-ref.html"
+test_type = "reftest"
+expected = "pass"
+timeout_ms = 12000
+dpr = 1.0
+
+[tests.viewport]
+width = 220
+height = 80
+
+[[tests]]
+id = "layout/flex-percent-height-indefinite-001"
+path = "layout/flex-percent-height-indefinite-001.html"
+reference = "layout/flex-percent-height-indefinite-001-ref.html"
+test_type = "reftest"
+expected = "pass"
+timeout_ms = 12000
+dpr = 1.0
+
+[tests.viewport]
+width = 120
+height = 80
+
+[[tests]]
+id = "layout/flex-basis-content-001"
+path = "layout/flex-basis-content-001.html"
+reference = "layout/flex-basis-content-001-ref.html"
+test_type = "reftest"
+expected = "pass"
+timeout_ms = 12000
+dpr = 1.0
+
+[tests.viewport]
+width = 240
+height = 60
+
+[[tests]]
+id = "layout/flex-baseline-alignment-001"
+path = "layout/flex-baseline-alignment-001.html"
+reference = "layout/flex-baseline-alignment-001-ref.html"
+test_type = "reftest"
+expected = "pass"
+timeout_ms = 12000
+dpr = 1.0
+
+[tests.viewport]
+width = 220
+height = 80
+
+[[tests]]
+id = "layout/flex-align-content-space-between-001"
+path = "layout/flex-align-content-space-between-001.html"
+reference = "layout/flex-align-content-space-between-001-ref.html"
+test_type = "reftest"
+expected = "pass"
+timeout_ms = 12000
+dpr = 1.0
+
+[tests.viewport]
+width = 140
+height = 140
+
+[[tests]]
+id = "layout/flex-aspect-ratio-stretch-001"
+path = "layout/flex-aspect-ratio-stretch-001.html"
+reference = "layout/flex-aspect-ratio-stretch-001-ref.html"
+test_type = "reftest"
+expected = "pass"
+timeout_ms = 12000
+dpr = 1.0
+
+[tests.viewport]
+width = 120
+height = 160
+
+[[tests]]
 id = "layout/grid-basic-001"
 path = "layout/grid-basic-001.html"
 test_type = "visual"
@@ -603,6 +707,84 @@ dpr = 1.0
 [tests.viewport]
 width = 240
 height = 120
+
+[[tests]]
+id = "layout/grid-auto-min-size-overflow-001"
+path = "layout/grid-auto-min-size-overflow-001.html"
+reference = "layout/grid-auto-min-size-overflow-001-ref.html"
+test_type = "reftest"
+expected = "pass"
+timeout_ms = 12000
+dpr = 1.0
+
+[tests.viewport]
+width = 160
+height = 80
+
+[[tests]]
+id = "layout/grid-justify-align-items-center-001"
+path = "layout/grid-justify-align-items-center-001.html"
+reference = "layout/grid-justify-align-items-center-001-ref.html"
+test_type = "reftest"
+expected = "pass"
+timeout_ms = 12000
+dpr = 1.0
+
+[tests.viewport]
+width = 140
+height = 140
+
+[[tests]]
+id = "layout/grid-align-content-space-between-001"
+path = "layout/grid-align-content-space-between-001.html"
+reference = "layout/grid-align-content-space-between-001-ref.html"
+test_type = "reftest"
+expected = "pass"
+timeout_ms = 12000
+dpr = 1.0
+
+[tests.viewport]
+width = 160
+height = 160
+
+[[tests]]
+id = "layout/grid-percent-height-indefinite-001"
+path = "layout/grid-percent-height-indefinite-001.html"
+reference = "layout/grid-percent-height-indefinite-001-ref.html"
+test_type = "reftest"
+expected = "pass"
+timeout_ms = 12000
+dpr = 1.0
+
+[tests.viewport]
+width = 120
+height = 80
+
+[[tests]]
+id = "layout/grid-aspect-ratio-row-sizing-001"
+path = "layout/grid-aspect-ratio-row-sizing-001.html"
+reference = "layout/grid-aspect-ratio-row-sizing-001-ref.html"
+test_type = "reftest"
+expected = "pass"
+timeout_ms = 12000
+dpr = 1.0
+
+[tests.viewport]
+width = 120
+height = 140
+
+[[tests]]
+id = "layout/grid-baseline-alignment-002"
+path = "layout/grid-baseline-alignment-002.html"
+reference = "layout/grid-baseline-alignment-002-ref.html"
+test_type = "reftest"
+expected = "pass"
+timeout_ms = 12000
+dpr = 1.0
+
+[tests.viewport]
+width = 220
+height = 80
 
 [[tests]]
 id = "layout/abs-inset-bottom-right-001"

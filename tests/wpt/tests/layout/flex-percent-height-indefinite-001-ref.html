@@ -1,0 +1,27 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Flex item percentage height with indefinite container height reference</title>
+<style>
+  body {
+    margin: 0;
+    background: #fff;
+  }
+  .block {
+    position: absolute;
+    left: 10px;
+    top: 10px;
+    width: 80px;
+    box-shadow: 0 0 0 2px #000;
+  }
+  .pct {
+    background: #ef4444;
+  }
+  .inner {
+    height: 30px;
+  }
+  .after {
+    height: 10px;
+    background: #22c55e;
+  }
+</style>
+<div class="block"><div class="pct"><div class="inner"></div></div><div class="after"></div></div>

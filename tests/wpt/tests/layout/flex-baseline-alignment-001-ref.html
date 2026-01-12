@@ -1,0 +1,37 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Flex baseline alignment with mixed font sizes reference</title>
+<style>
+  body {
+    margin: 0;
+    background: #fff;
+  }
+  .row {
+    position: absolute;
+    left: 10px;
+    top: 10px;
+    font-size: 0;
+  }
+  .box {
+    display: inline-block;
+    vertical-align: baseline;
+    line-height: 1;
+    padding: 0 4px;
+    color: #fff;
+    font-weight: 700;
+    font-family: "Noto Sans", sans-serif;
+  }
+  .a {
+    font-size: 40px;
+    background: #ef4444;
+  }
+  .b {
+    font-size: 20px;
+    background: #22c55e;
+  }
+  .c {
+    font-size: 30px;
+    background: #3b82f6;
+  }
+</style>
+<div class="row"><div class="box a">A</div><div class="box b">A</div><div class="box c">A</div></div>

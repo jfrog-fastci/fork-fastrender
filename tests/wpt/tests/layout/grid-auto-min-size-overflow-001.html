@@ -1,0 +1,40 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Grid auto-min-size with minmax(auto, 1fr) and overflow</title>
+<style>
+  body {
+    margin: 0;
+    background: #fff;
+  }
+  .grid {
+    position: absolute;
+    left: 10px;
+    width: 90px;
+    height: 20px;
+    display: grid;
+    grid-template-columns: minmax(auto, 1fr) 20px;
+    grid-template-rows: 20px;
+    box-shadow: 0 0 0 2px #000;
+  }
+  .row1 {
+    top: 10px;
+  }
+  .row2 {
+    top: 40px;
+  }
+  .a {
+    background: #ef4444;
+  }
+  .b {
+    background: #22c55e;
+  }
+  .intrinsic {
+    width: 80px;
+    height: 20px;
+  }
+  .hidden {
+    overflow: hidden;
+  }
+</style>
+<div class="grid row1"><div class="a"><div class="intrinsic"></div></div><div class="b"></div></div>
+<div class="grid row2"><div class="a hidden"><div class="intrinsic"></div></div><div class="b"></div></div>

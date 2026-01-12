@@ -1,0 +1,34 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Grid row sizing with aspect-ratio item reference</title>
+<style>
+  body {
+    margin: 0;
+    background: #fff;
+  }
+  .frame {
+    position: absolute;
+    left: 10px;
+    top: 10px;
+    width: 60px;
+    height: 100px;
+    box-shadow: 0 0 0 2px #000;
+  }
+  .ar {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 50px;
+    height: 100px;
+    background: #22c55e;
+  }
+  .side {
+    position: absolute;
+    left: 50px;
+    top: 0;
+    width: 10px;
+    height: 100px;
+    background: #ef4444;
+  }
+</style>
+<div class="frame"><div class="ar"></div><div class="side"></div></div>
