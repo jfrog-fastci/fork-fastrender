@@ -3300,89 +3300,126 @@ pub fn typed_array_prototype_set(
     return Err(VmError::TypeError("TypedArray.prototype.set called on non-object"));
   };
 
-  // Brand-check the receiver, but *do not* rely on `typed_array_length()` for detached/out-of-bounds
-  // semantics. Per ECMA-262 `SetTypedArrayFromTypedArray`, `%TypedArray%.prototype.set` must throw
-  // a TypeError when either the target or source typed array is out-of-bounds (including detached).
-  let target_len = scope
+  // RequireInternalSlot(target, [[TypedArrayName]]).
+  let _ = scope
     .heap()
-    .typed_array_length(target)
+    .typed_array_kind(target)
     .map_err(|_| VmError::TypeError("TypedArray.prototype.set called on incompatible receiver"))?;
 
   let source_val = args.get(0).copied().unwrap_or(Value::Undefined);
-  let Value::Object(source) = source_val else {
-    return Err(VmError::TypeError("TypedArray.prototype.set expects a typed array source"));
-  };
-  let source_len = scope
-    .heap()
-    .typed_array_length(source)
-    .map_err(|_| VmError::TypeError("TypedArray.prototype.set expects a typed array source"))?;
 
+  // Per ECMA-262, the `offset` argument is coerced via `ToIntegerOrInfinity` *before* detached/
+  // out-of-bounds typed array checks are performed.
   let offset_val = args.get(1).copied().unwrap_or(Value::Undefined);
-  let offset = if matches!(offset_val, Value::Undefined) {
-    0usize
-  } else {
-    // Spec: `offset` is converted using `ToIndex`/`ToInteger`, which can invoke user code via
-    // `ToNumber(ToPrimitive(...))`. Use the spec-shaped `Scope::to_number` rather than the heap's
-    // minimal `ToNumber` so objects (including those with side-effectful `valueOf`/`toString`) are
-    // handled correctly.
-    let n = scope.to_number(vm, host, hooks, offset_val)?;
-    if !n.is_finite() || n < 0.0 || n.fract() != 0.0 {
-      return Err(VmError::TypeError(
-        "TypedArray.prototype.set offset must be a non-negative integer",
-      ));
-    }
-    n as usize
-  };
+  let offset = scope.to_integer_or_infinity(vm, host, hooks, offset_val)?;
+  if offset < 0.0 {
+    return Err(VmError::RangeError(
+      "TypedArray.prototype.set offset must be a non-negative integer",
+    ));
+  }
 
-  // Spec: detached buffer checks happen after coercing `offset` (ToInteger/ToIndex), since that
-  // coercion can run user code via `valueOf`/`toString`.
-  //
-  // Per ECMA-262 `SetTypedArrayFromTypedArray`, `%TypedArray%.prototype.set` must throw a TypeError
-  // when either the target or source typed array is out-of-bounds (including detached).
-  //
-  // This also prevents detached buffers (introduced via transfer/structured clone) from tripping
-  // non-catchable VM invariant violations during the copy loop.
+  // After offset coercion, `%TypedArray%.prototype.set` must throw a TypeError if the target typed
+  // array is out-of-bounds (including when its backing ArrayBuffer is detached).
   if scope.heap().typed_array_is_out_of_bounds(target)? {
-    return Err(VmError::TypeError(
-      "TypedArray.prototype.set target is detached or out of bounds",
-    ));
-  }
-  if scope.heap().typed_array_is_out_of_bounds(source)? {
-    return Err(VmError::TypeError(
-      "TypedArray.prototype.set source is detached or out of bounds",
-    ));
+    return Err(VmError::TypeError("ArrayBuffer is detached"));
   }
 
-  if offset > target_len || source_len > target_len - offset {
-    return Err(VmError::TypeError("TypedArray.prototype.set out of bounds"));
+  // TypedArray source fast path.
+  if let Value::Object(source) = source_val {
+    if scope.heap().is_typed_array_object(source) {
+      // After offset coercion, typed array sources must also throw when detached/out-of-bounds.
+      if scope.heap().typed_array_is_out_of_bounds(source)? {
+        return Err(VmError::TypeError("ArrayBuffer is detached"));
+      }
+
+      // Bounds checks happen after the detached/out-of-bounds checks (spec ordering).
+      let target_len = scope.heap().typed_array_length(target)?;
+      let source_len = scope.heap().typed_array_length(source)?;
+      if offset.is_infinite() || offset > target_len as f64 {
+        return Err(VmError::RangeError("TypedArray.prototype.set out of bounds"));
+      }
+      let offset = offset as usize;
+      if source_len > target_len - offset {
+        return Err(VmError::RangeError("TypedArray.prototype.set out of bounds"));
+      }
+
+      // Root source/target while copying.
+      scope.push_roots(&[Value::Object(target), Value::Object(source)])?;
+
+      // Copy values into a temporary Vec so overlapping ranges behave correctly.
+      let mut tmp: Vec<Value> = Vec::new();
+      tmp
+        .try_reserve_exact(source_len)
+        .map_err(|_| VmError::OutOfMemory)?;
+      const TICK_EVERY: usize = 1024;
+      for i in 0..source_len {
+        if i % TICK_EVERY == 0 {
+          vm.tick()?;
+        }
+        let v = scope
+          .heap()
+          .typed_array_get_element_value(source, i)?
+          .ok_or(VmError::TypeError("ArrayBuffer is detached"))?;
+        tmp.push(v);
+      }
+      for (i, v) in tmp.into_iter().enumerate() {
+        if i % TICK_EVERY == 0 {
+          vm.tick()?;
+        }
+        let ok = scope
+          .heap_mut()
+          .typed_array_set_element_value(target, offset + i, v)?;
+        if !ok {
+          return Err(VmError::TypeError("ArrayBuffer is detached"));
+        }
+      }
+
+      return Ok(Value::Undefined);
+    }
   }
 
-  // Root source/target while copying.
-  scope.push_roots(&[Value::Object(target), Value::Object(source)])?;
+  // Array-like source path (spec `SetTypedArrayFromArrayLike`).
+  //
+  // Note: we do the target out-of-bounds check above (after offset coercion) before touching the
+  // source to ensure detached typed arrays always throw TypeError rather than other errors.
+  let source_obj = scope.to_object(vm, host, hooks, source_val)?;
+  scope.push_root(Value::Object(source_obj))?;
 
-  // Copy values into a temporary Vec so overlapping ranges behave correctly.
-  let mut tmp: Vec<Value> = Vec::new();
-  tmp
-    .try_reserve_exact(source_len)
-    .map_err(|_| VmError::OutOfMemory)?;
+  let source_len = length_of_array_like_usize(vm, scope, host, hooks, source_obj)?;
+
+  // Bounds checks happen after the detached/out-of-bounds check (spec ordering).
+  let target_len = scope.heap().typed_array_length(target)?;
+  if offset.is_infinite() || offset > target_len as f64 {
+    return Err(VmError::RangeError("TypedArray.prototype.set out of bounds"));
+  }
+  let offset = offset as usize;
+  if source_len > target_len - offset {
+    return Err(VmError::RangeError("TypedArray.prototype.set out of bounds"));
+  }
+
+  // Copy values from the array-like source. This follows the spec shape:
+  // `Get` each index and perform numeric conversion before storing into the target typed array.
   const TICK_EVERY: usize = 1024;
   for i in 0..source_len {
     if i % TICK_EVERY == 0 {
       vm.tick()?;
     }
-    let v = scope
-      .heap()
-      .typed_array_get_element_value(source, i)?
-      .unwrap_or(Value::Undefined);
-    tmp.push(v);
-  }
-  for (i, v) in tmp.into_iter().enumerate() {
-    if i % TICK_EVERY == 0 {
-      vm.tick()?;
-    }
-    let _ = scope
+    // Root `source_obj`/`target` across key allocation and `Get`/`ToNumber` calls (which may
+    // allocate and can invoke user JS).
+    let mut idx_scope = scope.reborrow();
+    idx_scope.push_roots(&[Value::Object(source_obj), Value::Object(target)])?;
+
+    let key_s = idx_scope.alloc_string(&i.to_string())?;
+    let key = PropertyKey::from_string(key_s);
+    let value = vm.get_with_host_and_hooks(host, &mut idx_scope, hooks, source_obj, key)?;
+
+    let n = idx_scope.to_number(vm, host, hooks, value)?;
+    let ok = idx_scope
       .heap_mut()
-      .typed_array_set_element_value(target, offset + i, v)?;
+      .typed_array_set_element_value(target, offset + i, Value::Number(n))?;
+    if !ok {
+      return Err(VmError::TypeError("ArrayBuffer is detached"));
+    }
   }
 
   Ok(Value::Undefined)
