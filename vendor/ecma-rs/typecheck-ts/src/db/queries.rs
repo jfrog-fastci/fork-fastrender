@@ -1047,6 +1047,7 @@ pub mod body_check {
   use crate::check::caches::{CheckerCacheStats, CheckerCaches};
   use crate::check::hir_body::{
     check_body_with_env_tables_with_bindings, check_body_with_expander, BindingTypeResolver,
+    BodyThisSuperContext,
   };
   use crate::codes;
   use crate::db::expander::{DbTypeExpander, TypeExpanderDb};
@@ -1515,6 +1516,77 @@ pub mod body_check {
         && ctx.file_registry.lookup_origin(meta.file) != Some(crate::FileOrigin::Lib)
         && !is_dts;
       let no_implicit_any = ctx.no_implicit_any || strict_native;
+      let this_super_context = (|| {
+        let mut ctx_super = BodyThisSuperContext::default();
+
+        let Some(owner_def) = lowered.def(body.owner) else {
+          return ctx_super;
+        };
+        let Some(class_def) = owner_def.parent else {
+          return ctx_super;
+        };
+        let Some(class_def) = lowered.def(class_def) else {
+          return ctx_super;
+        };
+        if class_def.path.kind != hir_js::DefKind::Class {
+          return ctx_super;
+        }
+
+        let Some(class_body_id) = class_def.body else {
+          return ctx_super;
+        };
+        let Some(class_body) = lowered.body(class_body_id) else {
+          return ctx_super;
+        };
+        let Some(extends_expr) = class_body.class.as_ref().and_then(|c| c.extends) else {
+          return ctx_super;
+        };
+        let base_name = match class_body.exprs.get(extends_expr.0 as usize).map(|e| &e.kind) {
+          Some(hir_js::ExprKind::Ident(name_id)) => lowered.names.resolve(*name_id),
+          _ => None,
+        };
+        let Some(base_name) = base_name else {
+          return ctx_super;
+        };
+        let base_name = base_name.to_string();
+
+        let base_binding = ctx
+          .file_bindings
+          .get(&meta.file)
+          .and_then(|bindings| bindings.get(&base_name))
+          .or_else(|| ctx.global_bindings.get(&base_name));
+        let Some(base_binding) = base_binding else {
+          return ctx_super;
+        };
+        let base_value_ty = if let Some(def) = base_binding.def {
+          map_def_ty(def)
+        } else if let Some(ty) = base_binding.type_id {
+          ty
+        } else {
+          prim.unknown
+        };
+
+        if base_value_ty != prim.unknown {
+          ctx_super.super_value_ty = Some(base_value_ty);
+          let ctor_sigs =
+            crate::check::overload::construct_signatures(ctx.store.as_ref(), base_value_ty);
+          if !ctor_sigs.is_empty() {
+            let mut rets: Vec<_> = ctor_sigs
+              .iter()
+              .map(|sig_id| ctx.store.signature(*sig_id).ret)
+              .collect();
+            rets.sort_by(|a, b| ctx.store.type_cmp(*a, *b));
+            rets.dedup();
+            ctx_super.super_instance_ty = Some(if rets.len() == 1 {
+              rets[0]
+            } else {
+              ctx.store.union(rets)
+            });
+          }
+        }
+
+        ctx_super
+      })();
       let mut result = check_body_with_expander(
         body_id,
         body,
@@ -1531,6 +1603,7 @@ pub mod body_check {
         Some(&expander),
         Some(&ctx.interned_type_param_decls),
         contextual_fn_ty,
+        this_super_context,
         strict_native,
         no_implicit_any,
         ctx.jsx_mode,
@@ -1680,6 +1753,7 @@ pub mod body_check {
           None,
           flow_relate,
           Some(&expander),
+          this_super_context,
           strict_native,
         );
         let mut relate_hooks = relate_hooks();

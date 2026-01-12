@@ -1037,6 +1037,18 @@ impl AstIndex {
   }
 }
 
+/// Per-body context needed for correctly typing `this`/`super` expressions.
+///
+/// This is computed by `ProgramState`/DB callers and threaded into the base and
+/// flow body checkers so syntax like `super()` can resolve against the base
+/// class constructor signatures even when the `super` keyword itself is typed
+/// as the base instance type for `super.prop`.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct BodyThisSuperContext {
+  pub super_instance_ty: Option<TypeId>,
+  pub super_value_ty: Option<TypeId>,
+}
+
 /// Type-check a lowered HIR body, producing per-expression and per-pattern type tables.
 pub fn check_body(
   body_id: BodyId,
@@ -1068,6 +1080,7 @@ pub fn check_body(
     None,
     None,
     None,
+    BodyThisSuperContext::default(),
     false,
     false,
     None,
@@ -1094,6 +1107,7 @@ pub fn check_body_with_expander(
   relate_expander: Option<&dyn types_ts_interned::RelateTypeExpander>,
   type_param_decls: Option<&HashMap<DefId, Arc<[TypeParamDecl]>>>,
   contextual_fn_ty: Option<TypeId>,
+  this_super_context: BodyThisSuperContext,
   strict_native: bool,
   no_implicit_any: bool,
   jsx_mode: Option<JsxMode>,
@@ -1217,6 +1231,7 @@ pub fn check_body_with_expander(
     ref_expander: relate_expander,
     def_type_param_decls: type_param_decls,
     contextual_fn_ty,
+    this_super_context,
     cancelled,
     _names: names,
     _bump: Bump::new(),
@@ -1376,6 +1391,7 @@ struct Checker<'a> {
   ref_expander: Option<&'a dyn types_ts_interned::RelateTypeExpander>,
   def_type_param_decls: Option<&'a HashMap<DefId, Arc<[TypeParamDecl]>>>,
   contextual_fn_ty: Option<TypeId>,
+  this_super_context: BodyThisSuperContext,
   cancelled: Option<&'a Arc<AtomicBool>>,
   _names: &'a NameInterner,
   _bump: Bump,
@@ -3550,12 +3566,98 @@ impl<'a> Checker<'a> {
     }
   }
 
+  fn check_super_call_expr(
+    &mut self,
+    call: &Node<parse_js::ast::expr::CallExpr>,
+    contextual_return: Option<TypeId>,
+  ) -> TypeId {
+    let prim = self.store.primitive_ids();
+    let callee_ty = self.this_super_context.super_value_ty.unwrap_or(prim.unknown);
+    self.record_expr_type(call.stx.callee.loc, callee_ty);
+    let callee_ty = self.expand_callable_type(callee_ty);
+
+    let candidate_sigs =
+      construct_signatures_with_expander(self.store.as_ref(), callee_ty, self.ref_expander);
+
+    let mut arg_types = Vec::with_capacity(call.stx.arguments.len());
+    let mut const_arg_types = Vec::with_capacity(call.stx.arguments.len());
+    for arg in call.stx.arguments.iter() {
+      let ty = self.check_expr(&arg.stx.value);
+      if arg.stx.spread {
+        arg_types.push(CallArgType::spread(ty));
+      } else {
+        arg_types.push(CallArgType::new(ty));
+      }
+      const_arg_types.push(self.const_inference_type(&arg.stx.value));
+    }
+
+    let span = Span {
+      file: self.file,
+      range: loc_to_range(self.file, call.loc),
+    };
+
+    let resolution = resolve_construct(
+      &self.store,
+      &self.relate,
+      &self.instantiation_cache,
+      callee_ty,
+      &arg_types,
+      Some(&const_arg_types),
+      None,
+      contextual_return,
+      span,
+      self.ref_expander,
+    );
+
+    let allow_assignable_fallback = resolution.diagnostics.len() == 1
+      && resolution.diagnostics[0].code.as_str() == codes::NO_OVERLOAD.as_str()
+      && candidate_sigs.len() == 1;
+    let mut reported_assignability = false;
+    if allow_assignable_fallback {
+      if let Some(sig_id) = resolution
+        .contextual_signature
+        .or_else(|| candidate_sigs.first().copied())
+      {
+        let sig = self.store.signature(sig_id);
+        let before = self.diagnostics.len();
+        for (idx, arg) in call.stx.arguments.iter().enumerate() {
+          if arg.stx.spread {
+            continue;
+          }
+          let Some(param_ty) = expected_arg_type_at(self.store.as_ref(), &sig, idx) else {
+            continue;
+          };
+          let arg_ty = arg_types.get(idx).map(|arg| arg.ty).unwrap_or(prim.unknown);
+          self.check_assignable_with_code(
+            &arg.stx.value,
+            arg_ty,
+            param_ty,
+            None,
+            &codes::ARGUMENT_TYPE_MISMATCH,
+          );
+        }
+        reported_assignability = self.diagnostics.len() > before;
+      }
+    }
+
+    if !reported_assignability {
+      for diag in &resolution.diagnostics {
+        self.diagnostics.push(diag.clone());
+      }
+    }
+    self.record_call_signature(call.loc, resolution.signature.or(resolution.contextual_signature));
+    resolution.return_type
+  }
+
   fn check_call_expr(
     &mut self,
     call: &Node<parse_js::ast::expr::CallExpr>,
     contextual_return: Option<TypeId>,
   ) -> TypeId {
     let prim = self.store.primitive_ids();
+    if matches!(call.stx.callee.stx.as_ref(), AstExpr::Super(_)) {
+      return self.check_super_call_expr(call, contextual_return);
+    }
     let callee_ty = self.check_expr(&call.stx.callee);
 
     if matches!(call.stx.callee.stx.as_ref(), AstExpr::Super(_)) {
@@ -9877,6 +9979,7 @@ pub fn check_body_with_env_with_bindings_strict_native(
     names,
     Arc::clone(&store),
     file,
+    BodyThisSuperContext::default(),
     initial,
     &expr_def_types,
     flow_bindings,
@@ -9914,6 +10017,7 @@ pub(crate) fn check_body_with_env_tables_with_bindings(
   flow_bindings: Option<&FlowBindings>,
   relate: RelateCtx,
   ref_expander: Option<&dyn types_ts_interned::RelateTypeExpander>,
+  this_super_context: BodyThisSuperContext,
   strict_native: bool,
 ) -> FlowBodyCheckTables {
   let mut checker = FlowBodyChecker::new(
@@ -9922,6 +10026,7 @@ pub(crate) fn check_body_with_env_tables_with_bindings(
     names,
     Arc::clone(&store),
     file,
+    this_super_context,
     initial,
     expr_def_types,
     flow_bindings,
@@ -9976,6 +10081,7 @@ struct FlowBodyChecker<'a> {
   names: &'a NameInterner,
   store: Arc<TypeStore>,
   file: FileId,
+  this_super_context: BodyThisSuperContext,
   relate: RelateCtx<'a>,
   instantiation_cache: InstantiationCache,
   expr_types: Vec<TypeId>,
@@ -10696,6 +10802,7 @@ impl<'a> FlowBodyChecker<'a> {
     names: &'a NameInterner,
     store: Arc<TypeStore>,
     file: FileId,
+    this_super_context: BodyThisSuperContext,
     initial: &HashMap<NameId, TypeId>,
     expr_def_types: &'a HashMap<DefId, TypeId>,
     flow_bindings: Option<&'a FlowBindings>,
@@ -10758,6 +10865,7 @@ impl<'a> FlowBodyChecker<'a> {
       names,
       store,
       file,
+      this_super_context,
       relate,
       instantiation_cache: InstantiationCache::default(),
       expr_types,
@@ -12374,12 +12482,21 @@ impl<'a> FlowBodyChecker<'a> {
         .get(expr_id.0 as usize)
         .unwrap_or(&TextRange::new(0, 0)),
     );
-    let resolution = if call.is_new {
+    let is_super_call = matches!(
+      self.body.exprs[call.callee.0 as usize].kind,
+      ExprKind::Super
+    );
+    let resolution = if call.is_new || is_super_call {
+      let construct_target = if is_super_call {
+        self.this_super_context.super_value_ty.unwrap_or(prim.unknown)
+      } else {
+        callee_non_nullish
+      };
       resolve_construct(
         &self.store,
         &self.relate,
         &self.instantiation_cache,
-        callee_non_nullish,
+        construct_target,
         &arg_bases,
         None,
         None,
@@ -12433,7 +12550,7 @@ impl<'a> FlowBodyChecker<'a> {
     }
 
     let mut ret_ty = resolution.return_type;
-    if !call.is_new {
+    if !call.is_new && !is_super_call {
       if let Some(sig_id) = resolution.signature {
         let sig = self.store.signature(sig_id);
         if let TypeKind::Predicate {
