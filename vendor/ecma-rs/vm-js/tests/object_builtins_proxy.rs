@@ -2,7 +2,10 @@ use vm_js::{Heap, HeapLimits, JsRuntime, Value, Vm, VmError, VmOptions};
 
 fn new_runtime() -> JsRuntime {
   let vm = Vm::new(VmOptions::default());
-  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  // These tests exercise Proxy routing in `Object.*` builtins, which can allocate a fair number of
+  // temporary strings/descriptor objects (trap names, descriptor conversions, etc). Use a slightly
+  // larger heap to avoid making these semantic tests depend on micro-allocation behaviour.
+  let heap = Heap::new(HeapLimits::new(2 * 1024 * 1024, 2 * 1024 * 1024));
   JsRuntime::new(vm, heap).unwrap()
 }
 
@@ -197,6 +200,121 @@ fn object_prototype_proto_set_invokes_set_prototype_of_trap() -> Result<(), VmEr
       });
       p.__proto__ = null;
       called && Object.getPrototypeOf(target) === null
+    "#,
+  )?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn object_is_extensible_invokes_proxy_trap() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = rt.exec_script(
+    r#"
+      var called = false;
+      var target = {};
+      var p = new Proxy(target, {
+        isExtensible: function (t) {
+          called = true;
+          return true;
+        }
+      });
+      Object.isExtensible(p) === true && called
+    "#,
+  )?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn object_prevent_extensions_invokes_proxy_trap() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = rt.exec_script(
+    r#"
+      var called = false;
+      var target = {};
+      var p = new Proxy(target, {
+        preventExtensions: function (t) {
+          called = true;
+          Reflect.preventExtensions(t);
+          return true;
+        }
+      });
+      var out = Object.preventExtensions(p);
+      out === p && called && Object.isExtensible(target) === false
+    "#,
+  )?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn object_seal_is_proxy_aware() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = rt.exec_script(
+    r#"
+      var calledPrevent = false;
+      var calledOwnKeys = false;
+      var calledDefine = false;
+
+      var target = { a: 1 };
+      var p = new Proxy(target, {
+        preventExtensions: function (t) {
+          calledPrevent = true;
+          return Reflect.preventExtensions(t);
+        },
+        ownKeys: function (t) {
+          calledOwnKeys = true;
+          return ["a"];
+        },
+        defineProperty: function (t, k, desc) {
+          calledDefine = true;
+          return Reflect.defineProperty(t, k, desc);
+        }
+      });
+
+      Object.seal(p);
+      calledPrevent && calledOwnKeys && calledDefine && Object.isExtensible(target) === false
+    "#,
+  )?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn object_freeze_is_proxy_aware() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = rt.exec_script(
+    r#"
+      var calledPrevent = false;
+      var calledOwnKeys = false;
+      var calledGOPD = false;
+      var calledDefine = false;
+
+      var target = { a: 1 };
+      var p = new Proxy(target, {
+        preventExtensions: function (t) {
+          calledPrevent = true;
+          return Reflect.preventExtensions(t);
+        },
+        ownKeys: function (t) {
+          calledOwnKeys = true;
+          return ["a"];
+        },
+        getOwnPropertyDescriptor: function (t, k) {
+          calledGOPD = true;
+          // Keep the trap lightweight: constructing the descriptor object via Reflect can allocate
+          // more than our small test heap budget.
+          return { value: 1, writable: true, enumerable: true, configurable: true };
+        },
+        defineProperty: function (t, k, desc) {
+          calledDefine = true;
+          return Reflect.defineProperty(t, k, desc);
+        }
+      });
+
+      Object.freeze(p);
+      calledPrevent && calledOwnKeys && calledGOPD && calledDefine && Object.isExtensible(target) === false
     "#,
   )?;
   assert_eq!(value, Value::Bool(true));

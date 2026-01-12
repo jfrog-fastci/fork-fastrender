@@ -1008,7 +1008,6 @@ fn set_integrity_level(
   // https://tc39.es/ecma262/#sec-setintegritylevel
   let mut scope = scope.reborrow();
   scope.push_root(Value::Object(obj))?;
-
   let ok = scope.prevent_extensions_with_host_and_hooks(vm, host, hooks, obj)?;
   if !ok {
     return Ok(false);
@@ -1035,23 +1034,34 @@ fn set_integrity_level(
       vm.tick()?;
     }
 
-    let Some(desc) =
-      scope.get_own_property_with_host_and_hooks_with_tick(vm, host, hooks, obj, key, &mut tick)?
-    else {
-      continue;
-    };
-
-    let mut patch = PropertyDescriptorPatch {
-      configurable: Some(false),
-      ..Default::default()
-    };
-    if matches!(level, IntegrityLevel::Frozen) && desc.is_data_descriptor() {
-      patch.writable = Some(false);
-    }
-
-    let ok = scope.define_own_property_with_host_and_hooks(vm, host, hooks, obj, key, patch)?;
-    if !ok {
-      return Ok(false);
+    if matches!(level, IntegrityLevel::Frozen) {
+      let Some(desc) =
+        scope.get_own_property_with_host_and_hooks_with_tick(vm, host, hooks, obj, key, &mut tick)?
+      else {
+        continue;
+      };
+      let mut patch = PropertyDescriptorPatch {
+        configurable: Some(false),
+        ..Default::default()
+      };
+      if desc.is_data_descriptor() {
+        patch.writable = Some(false);
+      }
+      let mut define_scope = scope.reborrow();
+      define_scope.define_property_or_throw_with_host_and_hooks(vm, host, hooks, obj, key, patch)?;
+    } else {
+      let mut define_scope = scope.reborrow();
+      define_scope.define_property_or_throw_with_host_and_hooks(
+        vm,
+        host,
+        hooks,
+        obj,
+        key,
+        PropertyDescriptorPatch {
+          configurable: Some(false),
+          ..Default::default()
+        },
+      )?;
     }
   }
 
@@ -1069,7 +1079,6 @@ fn test_integrity_level(
   // https://tc39.es/ecma262/#sec-testintegritylevel
   let mut scope = scope.reborrow();
   scope.push_root(Value::Object(obj))?;
-
   if scope.is_extensible_with_host_and_hooks(vm, host, hooks, obj)? {
     return Ok(false);
   }
@@ -1094,8 +1103,14 @@ fn test_integrity_level(
     if i % 1024 == 0 {
       vm.tick()?;
     }
-    let Some(desc) =
-      scope.get_own_property_with_host_and_hooks_with_tick(vm, host, hooks, obj, key, &mut tick)?
+    let Some(desc) = scope.get_own_property_with_host_and_hooks_with_tick(
+      vm,
+      host,
+      hooks,
+      obj,
+      key,
+      &mut tick,
+    )?
     else {
       continue;
     };
