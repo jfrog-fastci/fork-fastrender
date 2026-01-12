@@ -46,6 +46,8 @@ browser_ui = [
   "dep:egui-wgpu",
   "dep:pollster",
   "dep:arboard",
+  "dep:accesskit",
+  "dep:accesskit_winit",
   "dep:directories",
   "fs2",
 ]
@@ -66,6 +68,10 @@ base64 = "0.22"
 avif-decode = { version = "1.0", default-features = false, optional = true }
 avif-parse = { version = "1.4", optional = true }
 arboard = { version = "3.6", optional = true }
+# Keep AccessKit versions aligned with egui/egui-winit 0.23 so we don't pull in a second
+# (newer) winit via accesskit_winit.
+accesskit = { version = "0.11", optional = true }
+accesskit_winit = { version = "0.14", optional = true }
 brotli = "6"
 clap = { version = "4", features = ["derive", "env"] }
 chrono = "0.4.42"
@@ -157,11 +163,11 @@ directories = { version = "5", optional = true }
 # for Wayland. See the `browser_ui_wayland` feature for optional Wayland support.
 [target.'cfg(target_os = "linux")'.dependencies]
 winit = { version = "0.28", default-features = false, features = ["x11"], optional = true }
-egui-winit = { version = "0.23", default-features = false, features = ["x11", "clipboard"], optional = true }
+egui-winit = { version = "0.23", default-features = false, features = ["x11", "clipboard", "accesskit"], optional = true }
 
 [target.'cfg(not(target_os = "linux"))'.dependencies]
 winit = { version = "0.28", default-features = false, optional = true }
-egui-winit = { version = "0.23", default-features = false, features = ["clipboard"], optional = true }
+egui-winit = { version = "0.23", default-features = false, features = ["clipboard", "accesskit"], optional = true }
 
 [dev-dependencies]
 criterion = "0.5"

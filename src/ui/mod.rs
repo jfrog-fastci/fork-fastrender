@@ -39,6 +39,10 @@ pub mod loading_overlay;
 // Viewport-change throttling is used only by the windowed browser UI.
 pub mod viewport_throttle;
 
+// egui widget accessibility helpers (AccessKit).
+#[cfg(feature = "browser_ui")]
+pub mod a11y;
+
 // `chrome` depends on egui, so keep it behind the `browser_ui` feature gate.
 #[cfg(feature = "browser_ui")]
 pub mod chrome;

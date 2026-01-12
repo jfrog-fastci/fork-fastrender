@@ -40,6 +40,26 @@ impl BrowserIcon {
     }
   }
 
+  /// Accessible name for icon-only controls.
+  ///
+  /// This is used for egui/AccessKit `WidgetInfo` so screen readers announce a semantic label
+  /// ("Back") instead of a generic "button" or raw icon description.
+  pub const fn a11y_label(self) -> &'static str {
+    match self {
+      Self::Back => "Back",
+      Self::Forward => "Forward",
+      Self::Reload => "Reload",
+      Self::CloseTab => "Close tab",
+      Self::NewTab => "New tab",
+      Self::ZoomIn => "Zoom in",
+      Self::ZoomOut => "Zoom out",
+      Self::LockSecure => "Secure connection",
+      Self::WarningInsecure => "Not secure",
+      Self::Error => "Error",
+      Self::Spinner => "Loading",
+    }
+  }
+
   fn svg_bytes(self) -> &'static [u8] {
     match self {
       Self::Back => include_bytes!("../../assets/browser_icons/back.svg"),
@@ -319,6 +339,7 @@ impl IconButton {
 
 impl egui::Widget for IconButton {
   fn ui(self, ui: &mut egui::Ui) -> egui::Response {
+    let icon = self.icon;
     let side_points = ui.spacing().interact_size.y;
     let (rect, mut response) = ui.allocate_exact_size(
       egui::vec2(side_points, side_points),
@@ -379,6 +400,8 @@ impl egui::Widget for IconButton {
     }
 
     response = response.on_hover_text(self.tooltip);
+    let label = icon.a11y_label();
+    response.widget_info(move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label));
     response
   }
 }
@@ -407,6 +430,26 @@ pub fn spinner(ui: &mut egui::Ui, side_points: f32) -> egui::Response {
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  #[test]
+  fn icon_buttons_have_accessible_labels() {
+    for icon in [
+      BrowserIcon::Back,
+      BrowserIcon::Forward,
+      BrowserIcon::Reload,
+      BrowserIcon::NewTab,
+      BrowserIcon::CloseTab,
+      BrowserIcon::ZoomOut,
+      BrowserIcon::ZoomIn,
+    ] {
+      let label = icon.a11y_label();
+      assert!(
+        !label.trim().is_empty(),
+        "expected {:?} to have a non-empty a11y label",
+        icon
+      );
+    }
+  }
 
   #[test]
   fn rasterize_produces_expected_dimensions() {

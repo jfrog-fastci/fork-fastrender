@@ -1,6 +1,7 @@
 #![cfg(feature = "browser_ui")]
 
 use crate::render_control::StageHeartbeat;
+use crate::ui::a11y;
 use crate::ui::browser_app::BrowserAppState;
 use crate::ui::load_progress::{load_progress_indicator, LoadProgressIndicator};
 use crate::ui::messages::TabId;
@@ -361,11 +362,15 @@ pub fn chrome_ui(
           }
         }
         let percent = zoom::zoom_percent(zoom_factor);
-        if ui
+        let reset_zoom_label = format!("Zoom: {percent}% (reset)");
+        let reset_zoom_response = ui
           .button(format!("{percent}%"))
-          .on_hover_text("Reset zoom (Ctrl/Cmd+0)")
-          .clicked()
-        {
+          .on_hover_text("Reset zoom (Ctrl/Cmd+0)");
+        reset_zoom_response.widget_info({
+          let reset_zoom_label = reset_zoom_label.clone();
+          move || egui::WidgetInfo::labeled(egui::WidgetType::Button, reset_zoom_label.clone())
+        });
+        if reset_zoom_response.clicked() {
           if let Some(tab) = app.active_tab_mut() {
             tab.zoom = zoom::zoom_reset();
           }
@@ -409,6 +414,13 @@ pub fn chrome_ui(
           egui::Sense::click()
         },
       );
+      if !show_text_edit {
+        // When the address bar is in display mode (non-editing), still expose a focusable element
+        // for assistive tech to activate.
+        bar_response.widget_info(|| {
+          egui::WidgetInfo::labeled(egui::WidgetType::Button, a11y::ADDRESS_BAR_LABEL)
+        });
+      }
 
       let bar_rounding = egui::Rounding::same(bar_rect.height() / 2.0);
       ui.painter().rect_filled(bar_rect, bar_rounding, ui.visuals().widgets.inactive.bg_fill);
@@ -479,6 +491,9 @@ pub fn chrome_ui(
                 .hint_text("Enter URL…")
                 .frame(false),
             );
+            response.widget_info(|| {
+              egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, a11y::ADDRESS_BAR_LABEL)
+            });
             text_edit_response = Some(response);
           } else {
             let display = if active_url.trim().is_empty() {

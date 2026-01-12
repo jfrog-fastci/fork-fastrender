@@ -4086,7 +4086,6 @@ impl App {
         };
 
         if let Some((tab_id, axis, scrollbar, axis_delta_points)) = drag_update {
-
           let axis_delta_css = scrollbar.scroll_delta_css_for_thumb_drag_points(axis_delta_points);
           if axis_delta_css != 0.0 {
             let delta_css = match axis {
@@ -5502,6 +5501,14 @@ impl App {
         tex.set_filter_mode(&self.device, &mut self.egui_renderer, desired_filter);
         let response =
           ui.add(egui::Image::new((tex.id(), size_points)).sense(egui::Sense::click()));
+        // The page is currently presented as a rendered image (no document accessibility yet). Give
+        // it a stable label so screen readers can identify what this focusable region represents.
+        response.widget_info(|| {
+          egui::WidgetInfo::labeled(
+            egui::WidgetType::Label,
+            "Web page content (rendered image)",
+          )
+        });
         self.page_rect_points = Some(response.rect);
         self.page_viewport_css = Some(viewport_css_for_mapping);
         let mapping = fastrender::ui::InputMapping::new(response.rect, viewport_css_for_mapping);

@@ -292,6 +292,24 @@ FastRender’s experimental desktop browser UI supports **bookmarks** and a basi
     - `FASTR_BROWSER_BOOKMARKS_PATH`
     - `FASTR_BROWSER_HISTORY_PATH`
 
+## Accessibility / screen readers (chrome)
+
+The browser chrome UI is built with **egui** and, when compiled with `--features browser_ui`, enables
+egui’s **AccessKit** integration so screen readers can traverse the chrome widget tree.
+
+Scope note: the rendered page is currently an image; full document accessibility is a separate
+future project. Today, screen reader support is intended for chrome-only UI: tabs, toolbar buttons,
+address bar, and popups/menus.
+
+Manual verification checklist:
+
+- macOS: VoiceOver can traverse toolbar controls (Back/Forward/Reload/Zoom, tab close, new tab) and
+  announces their labels.
+- macOS: focusing the address bar (e.g. Cmd+L) is announced as “Address bar” and selection changes
+  (select-all) are announced.
+- Windows: Narrator can traverse toolbar controls and announces their labels.
+- Linux: Orca can traverse toolbar controls (when using X11/Wayland backend supported by your build).
+
 ## Code layout
 
 - Entry point + winit/egui/wgpu integration: [`src/bin/browser.rs`](../src/bin/browser.rs)
