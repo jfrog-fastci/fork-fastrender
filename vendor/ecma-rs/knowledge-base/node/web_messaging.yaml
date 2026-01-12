@@ -15,6 +15,18 @@
     may_throw: false
   purity: Allocating
 
+- name: MessageChannel.prototype.port1
+  kind: getter
+  since: "v15.0.0"
+  effects: Pure
+  purity: ReadOnly
+
+- name: MessageChannel.prototype.port2
+  kind: getter
+  since: "v15.0.0"
+  effects: Pure
+  purity: ReadOnly
+
 - name: MessagePort.prototype.postMessage
   kind: function
   since: "v15.0.0"
@@ -24,6 +36,12 @@
   parallelizable: false
   idempotent: false
   deterministic: false
+
+- name: MessagePort.prototype.start
+  kind: function
+  since: "v15.0.0"
+  effects: Unknown
+  purity: Impure
 
 - name: MessagePort.prototype.close
   kind: function

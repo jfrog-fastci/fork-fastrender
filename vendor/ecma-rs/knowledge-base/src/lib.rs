@@ -2788,12 +2788,30 @@ properties:
       Some("node/web_messaging.yaml")
     );
 
+    let port1 = kb
+      .api_for_target("MessageChannel.prototype.port1", &node_20)
+      .expect("MessageChannel.prototype.port1 should resolve for modern Node targets");
+    assert_eq!(port1.name, "MessageChannel.prototype.port1");
+    assert_eq!(
+      kb.source_for_target("MessageChannel.prototype.port1", &node_20),
+      Some("node/web_messaging.yaml")
+    );
+
     let post_message = kb
       .api_for_target("MessagePort.prototype.postMessage", &node_20)
       .expect("MessagePort.prototype.postMessage should resolve for modern Node targets");
     assert_eq!(post_message.name, "MessagePort.prototype.postMessage");
     assert_eq!(
       kb.source_for_target("MessagePort.prototype.postMessage", &node_20),
+      Some("node/web_messaging.yaml")
+    );
+
+    let start = kb
+      .api_for_target("MessagePort.prototype.start", &node_20)
+      .expect("MessagePort.prototype.start should resolve for modern Node targets");
+    assert_eq!(start.name, "MessagePort.prototype.start");
+    assert_eq!(
+      kb.source_for_target("MessagePort.prototype.start", &node_20),
       Some("node/web_messaging.yaml")
     );
 
