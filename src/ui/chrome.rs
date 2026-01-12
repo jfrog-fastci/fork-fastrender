@@ -1434,13 +1434,14 @@ pub fn chrome_ui_with_bookmarks(
             } else {
               BrowserIcon::BookmarkOutline
             };
-            let color = if is_bookmarked {
-              ui.visuals().selection.stroke.color
-            } else {
-              ui.visuals().weak_text_color()
-            };
-            let (rect, mut response) = ui.allocate_exact_size(
-              egui::vec2(ui.spacing().interact_size.y, ui.spacing().interact_size.y),
+            let (_id, rect) = ui.allocate_space(egui::vec2(
+              ui.spacing().interact_size.y,
+              ui.spacing().interact_size.y,
+            ));
+            let icon_id = address_bar_id.with("bookmark");
+            let mut response = ui.interact(
+              rect,
+              icon_id,
               if can_toggle {
                 egui::Sense::click()
               } else {
@@ -1452,8 +1453,35 @@ pub fn chrome_ui_with_bookmarks(
               egui::WidgetInfo::labeled(egui::WidgetType::Button, action_label)
             });
             show_tooltip_on_focus(ui, &response, tooltip.as_str());
-            paint_focus_ring(ui, &response, focus_ring);
+
+            // Micro-interaction: fade a subtle hover fill in/out.
+            let highlight = can_toggle && (response.hovered() || response.has_focus());
+            let hover_t = motion.animate_bool(
+              ui.ctx(),
+              icon_id.with("hover"),
+              highlight,
+              motion.durations.hover_fade,
+            );
+            if hover_t > 0.0 {
+              let rounding = egui::Rounding::same(
+                (ui.visuals().widgets.inactive.rounding.nw * 0.8).clamp(4.0, 6.0),
+              );
+              ui.painter().rect_filled(
+                rect,
+                rounding,
+                with_alpha(ui.visuals().widgets.hovered.bg_fill.gamma_multiply(0.85), hover_t),
+              );
+            }
+
+            let color = if is_bookmarked {
+              ui.visuals().selection.stroke.color
+            } else if highlight {
+              ui.visuals().text_color()
+            } else {
+              ui.visuals().weak_text_color()
+            };
             paint_icon_in_rect(ui, rect, icon, ui.spacing().icon_width, color);
+            paint_focus_ring(ui, &response, focus_ring);
             if response.clicked() {
               actions.push(ChromeAction::ToggleBookmarkForActiveTab);
             }
@@ -1586,19 +1614,40 @@ pub fn chrome_ui_with_bookmarks(
           }
 
           // Downloads button + progress indicator.
-          let (downloads_rect, downloads_resp) = ui.allocate_exact_size(
-            egui::vec2(ui.spacing().interact_size.y, ui.spacing().interact_size.y),
-            egui::Sense::click(),
-          );
-          let downloads_resp = downloads_resp.on_hover_text(downloads_hover.clone());
+          let (_id, downloads_rect) = ui.allocate_space(egui::vec2(
+            ui.spacing().interact_size.y,
+            ui.spacing().interact_size.y,
+          ));
+          let downloads_id = address_bar_id.with("downloads");
+          let downloads_resp = ui
+            .interact(downloads_rect, downloads_id, egui::Sense::click())
+            .on_hover_text(downloads_hover.clone());
           downloads_resp.widget_info({
             let label = downloads_hover.clone();
             move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label)
           });
           show_tooltip_on_focus(ui, &downloads_resp, &downloads_hover);
-          paint_focus_ring(ui, &downloads_resp, focus_ring);
 
-          let downloads_icon_color = if downloads.active_count > 0 {
+          // Micro-interaction: fade a subtle hover fill in/out.
+          let highlight = downloads_resp.hovered() || downloads_resp.has_focus();
+          let hover_t = motion.animate_bool(
+            ui.ctx(),
+            downloads_id.with("hover"),
+            highlight,
+            motion.durations.hover_fade,
+          );
+          if hover_t > 0.0 {
+            let rounding = egui::Rounding::same(
+              (ui.visuals().widgets.inactive.rounding.nw * 0.8).clamp(4.0, 6.0),
+            );
+            ui.painter().rect_filled(
+              downloads_rect,
+              rounding,
+              with_alpha(ui.visuals().widgets.hovered.bg_fill.gamma_multiply(0.85), hover_t),
+            );
+          }
+
+          let downloads_icon_color = if downloads.active_count > 0 || highlight {
             ui.visuals().text_color()
           } else {
             ui.visuals().weak_text_color()
@@ -1639,6 +1688,8 @@ pub fn chrome_ui_with_bookmarks(
               badge_text_color,
             );
           }
+
+          paint_focus_ring(ui, &downloads_resp, focus_ring);
 
           if downloads_resp.clicked() {
             actions.push(ChromeAction::ToggleDownloadsPanel);
