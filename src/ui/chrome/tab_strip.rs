@@ -23,6 +23,47 @@ const ICON_GAP: f32 = 8.0;
 const CLOSE_BUTTON_SIZE: f32 = 28.0;
 const ACTIVE_UNDERLINE_HEIGHT: f32 = 2.0;
 
+fn tab_status_messages(tab: &BrowserTabState) -> (Option<&str>, Option<&str>) {
+  let err = tab.error.as_deref().filter(|s| !s.trim().is_empty());
+  let warn = tab.warning.as_deref().filter(|s| !s.trim().is_empty());
+  (err, warn)
+}
+
+fn paint_tab_status_badges(
+  painter: &egui::Painter,
+  icon_rect: Rect,
+  visuals: &egui::Visuals,
+  has_error: bool,
+  has_warning: bool,
+) {
+  if !has_error && !has_warning {
+    return;
+  }
+
+  // Overlay small status dots on the favicon rect so error/warning states are discoverable even for
+  // background tabs (without stealing horizontal space from titles).
+  let mut colors = Vec::new();
+  if has_error {
+    colors.push(visuals.error_fg_color);
+  }
+  if has_warning {
+    colors.push(visuals.warn_fg_color);
+  }
+
+  let radius = 3.0;
+  let gap = 1.0;
+  let inset = 1.0;
+  let mut x = icon_rect.right() - radius - inset;
+  let y = icon_rect.bottom() - radius - inset;
+  let stroke = Stroke::new(1.0, visuals.widgets.inactive.bg_stroke.color);
+  for color in colors {
+    let center = Pos2::new(x, y);
+    painter.circle_filled(center, radius, color);
+    painter.circle_stroke(center, radius, stroke);
+    x -= radius * 2.0 + gap;
+  }
+}
+
 fn lerp(a: f32, b: f32, t: f32) -> f32 {
   a + (b - a) * t
 }
@@ -135,9 +176,22 @@ fn tab_ui(
   let (_, tab_rect) = ui.allocate_space(Vec2::new(tab_width, TAB_HEIGHT));
   let tab_id = ui.make_persistent_id(("tab_strip_tab", tab.id));
   let title = tab.display_title();
+  let (err, warn) = tab_status_messages(tab);
+  let tooltip = if err.is_none() && warn.is_none() {
+    title.clone()
+  } else {
+    let mut lines = vec![title.clone()];
+    if let Some(err) = err {
+      lines.push(format!("Error: {err}"));
+    }
+    if let Some(warn) = warn {
+      lines.push(format!("Warning: {warn}"));
+    }
+    lines.join("\n")
+  };
   let response = ui
     .interact(tab_rect, tab_id, Sense::click_and_drag())
-    .on_hover_text(title.as_str());
+    .on_hover_text(tooltip);
   response.widget_info({
     let title = title.clone();
     move || egui::WidgetInfo::labeled(egui::WidgetType::Button, title.clone())
@@ -200,6 +254,8 @@ fn tab_ui(
     };
     paint_spinner(ui.painter(), icon_rect.expand(2.0), time, visuals.text_color());
   }
+
+  paint_tab_status_badges(ui.painter(), icon_rect, &visuals, err.is_some(), warn.is_some());
 
   // Close button (only when more than one tab exists).
   let mut close_clicked = false;
@@ -330,9 +386,22 @@ fn pinned_tab_ui(
   let (_, tab_rect) = ui.allocate_space(Vec2::new(PINNED_TAB_WIDTH, TAB_HEIGHT));
   let tab_id = ui.make_persistent_id(("tab_strip_tab", tab.id));
   let title = tab.display_title();
+  let (err, warn) = tab_status_messages(tab);
+  let tooltip = if err.is_none() && warn.is_none() {
+    title.clone()
+  } else {
+    let mut lines = vec![title.clone()];
+    if let Some(err) = err {
+      lines.push(format!("Error: {err}"));
+    }
+    if let Some(warn) = warn {
+      lines.push(format!("Warning: {warn}"));
+    }
+    lines.join("\n")
+  };
   let response = ui
     .interact(tab_rect, tab_id, Sense::click_and_drag())
-    .on_hover_text(title.as_str());
+    .on_hover_text(tooltip);
   response.widget_info({
     let title = title.clone();
     move || egui::WidgetInfo::labeled(egui::WidgetType::Button, title.clone())
@@ -394,6 +463,8 @@ fn pinned_tab_ui(
     let time = ui.input(|i| i.time);
     paint_spinner(ui.painter(), icon_rect.expand(2.0), time, visuals.text_color());
   }
+
+  paint_tab_status_badges(ui.painter(), icon_rect, &visuals, err.is_some(), warn.is_some());
 
   // Input semantics.
   if response.clicked_by(egui::PointerButton::Secondary) {
