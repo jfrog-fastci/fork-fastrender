@@ -1767,6 +1767,8 @@ impl<'a> RelateCtx<'a> {
         (len <= max_len && len <= max_total).then_some(vec![s])
       }
       TypeKind::Boolean => Some(vec!["false".into(), "true".into()]),
+      TypeKind::Null => Some(vec!["null".into()]),
+      TypeKind::Undefined => Some(vec!["undefined".into()]),
       TypeKind::TemplateLiteral(tpl) => self.template_strings(&tpl, depth + 1, visited),
       TypeKind::Union(members) => {
         let mut out = Vec::new();

@@ -2077,6 +2077,73 @@ fn template_literal_boolean_atom_matches_true_or_false() {
 }
 
 #[test]
+fn template_literal_null_atom_matches_only_null() {
+  let store = TypeStore::new();
+  let primitives = store.primitive_ids();
+  let ctx = RelateCtx::new(store.clone(), default_options());
+
+  let null = store.intern_type(TypeKind::StringLiteral(store.intern_name_ref("null")));
+  let undefined = store.intern_type(TypeKind::StringLiteral(store.intern_name_ref("undefined")));
+  let nope = store.intern_type(TypeKind::StringLiteral(store.intern_name_ref("nope")));
+
+  let template = store.intern_type(TypeKind::TemplateLiteral(TemplateLiteralType {
+    head: "".into(),
+    spans: vec![TemplateChunk {
+      ty: primitives.null,
+      literal: "".into(),
+    }],
+  }));
+
+  assert!(ctx.is_assignable(null, template));
+  assert!(!ctx.is_assignable(undefined, template));
+  assert!(!ctx.is_assignable(nope, template));
+}
+
+#[test]
+fn template_literal_undefined_atom_matches_only_undefined() {
+  let store = TypeStore::new();
+  let primitives = store.primitive_ids();
+  let ctx = RelateCtx::new(store.clone(), default_options());
+
+  let null = store.intern_type(TypeKind::StringLiteral(store.intern_name_ref("null")));
+  let undefined = store.intern_type(TypeKind::StringLiteral(store.intern_name_ref("undefined")));
+  let nope = store.intern_type(TypeKind::StringLiteral(store.intern_name_ref("nope")));
+
+  let template = store.intern_type(TypeKind::TemplateLiteral(TemplateLiteralType {
+    head: "".into(),
+    spans: vec![TemplateChunk {
+      ty: primitives.undefined,
+      literal: "".into(),
+    }],
+  }));
+
+  assert!(ctx.is_assignable(undefined, template));
+  assert!(!ctx.is_assignable(null, template));
+  assert!(!ctx.is_assignable(nope, template));
+}
+
+#[test]
+fn template_literal_prefix_null_atom_is_constrained() {
+  let store = TypeStore::new();
+  let primitives = store.primitive_ids();
+  let ctx = RelateCtx::new(store.clone(), default_options());
+
+  let ok = store.intern_type(TypeKind::StringLiteral(store.intern_name_ref("x_null")));
+  let bad = store.intern_type(TypeKind::StringLiteral(store.intern_name_ref("x_undefined")));
+
+  let template = store.intern_type(TypeKind::TemplateLiteral(TemplateLiteralType {
+    head: "x_".into(),
+    spans: vec![TemplateChunk {
+      ty: primitives.null,
+      literal: "".into(),
+    }],
+  }));
+
+  assert!(ctx.is_assignable(ok, template));
+  assert!(!ctx.is_assignable(bad, template));
+}
+
+#[test]
 fn template_literal_bigint_atom_is_constrained() {
   let store = TypeStore::new();
   let primitives = store.primitive_ids();
