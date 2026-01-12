@@ -66,6 +66,11 @@ A change counts if it lands at least one of:
 - `console.dir()`, `.table()`
 - `console.time()`, `.timeEnd()`
 - `console.assert()`, `.count()`
+- Format string substitutions (`%s`, `%d`/`%i`/`%f`, `%o`/`%O`, `%%`, `%c`)
+  - In FastRender, `console.*` calls are routed to a host-provided `ConsoleSink` which receives raw
+    JS arguments.
+  - Default sinks must format using `vm_error_format::format_console_arguments_limited` (bounded,
+    deterministic, avoids invoking user-defined `toString` hooks).
 
 **Crypto API (Web Cryptography API):**
 - `crypto.getRandomValues()`

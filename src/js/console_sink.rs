@@ -1,3 +1,4 @@
+use crate::api::ConsoleMessageLevel;
 use crate::js::vm_error_format;
 use crate::js::ConsoleSink;
 use std::sync::Arc;
@@ -11,6 +12,23 @@ pub fn stderr_console_sink() -> ConsoleSink {
   // Delegate to the internal helper used by other embeddings so stderr formatting stays
   // consistent across the codebase.
   vm_error_format::stderr_console_sink()
+}
+
+/// Create a [`ConsoleSink`] that formats raw console arguments and forwards the resulting message
+/// to a callback.
+///
+/// The formatting behavior matches the default diagnostics/stderr sinks:
+/// - `%` substitution support (`%s`, `%d`, `%o`, etc.)
+/// - bounded output via [`vm_error_format::format_console_arguments_limited`]
+/// - avoids invoking user-defined `toString` hooks
+pub fn formatting_console_sink<F>(f: F) -> ConsoleSink
+where
+  F: Fn(ConsoleMessageLevel, String) + Send + Sync + 'static,
+{
+  Arc::new(move |level, heap, args| {
+    let message = vm_error_format::format_console_arguments_limited(heap, args);
+    f(level, message);
+  })
 }
 
 /// Combine two [`ConsoleSink`]s into one by invoking both in order.

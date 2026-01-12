@@ -1,6 +1,6 @@
 use crate::debug::runtime::runtime_toggles;
 use crate::error::{Error, Result};
-use crate::js::console_sink::{fanout_console_sink, stderr_console_sink};
+use crate::js::console_sink::{fanout_console_sink, formatting_console_sink, stderr_console_sink};
 use crate::js::time::update_time_bindings_clock;
 use crate::js::vm_error_format;
 use crate::js::window_file_reader::install_window_file_reader_bindings;
@@ -266,11 +266,9 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
 
     let stderr_console = console_stderr_enabled();
     let mut console_sink: Option<crate::js::ConsoleSink> = self.diagnostics.clone().map(|diag| {
-      let sink: crate::js::ConsoleSink = Arc::new(move |level, heap, args| {
-        let message = vm_error_format::format_console_arguments_limited(heap, args);
+      formatting_console_sink(move |level, message| {
         diag.record_console_message(level, message);
-      });
-      sink
+      })
     });
 
     if stderr_console {

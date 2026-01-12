@@ -52,6 +52,16 @@ use vm_js::{
 use webidl_vm_js::VmJsHostHooksPayload;
 use webidl_vm_js::WebIdlBindingsHost;
 
+/// Host callback invoked by `console.*` methods.
+///
+/// The sink receives the raw JS argument list. Embeddings that want browser-like formatting
+/// (including `%` substitutions) should format via
+/// [`crate::js::vm_error_format::format_console_arguments_limited`], which is:
+/// - bounded (safe to enable for untrusted pages)
+/// - deterministic (avoids invoking user-defined `toString` hooks)
+///
+/// Note: Some console methods (e.g. `console.trace`, `console.assert`, `console.timeLog`) pass a
+/// preformatted string as the first argument.
 pub type ConsoleSink =
   Arc<dyn Fn(ConsoleMessageLevel, &mut vm_js::Heap, &[vm_js::Value]) + Send + Sync + 'static>;
 
@@ -2851,26 +2861,24 @@ fn console_time_log_native(
   let delta = end.checked_sub(start).unwrap_or(Duration::from_secs(0));
   let ms = crate::js::time::duration_to_ms_f64(delta);
   if let Some(sink) = sink {
-    let msg = format!("{label}: {:.3}ms", ms);
-    let msg_s = scope.alloc_string(&msg)?;
-    scope.push_root(Value::String(msg_s))?;
-
     let extra = args.get(1..).unwrap_or(&[]);
-    if extra.is_empty() {
-      let msg_v = [Value::String(msg_s)];
-      sink(ConsoleMessageLevel::Log, scope.heap_mut(), &msg_v);
+    let formatted_extra = if extra.is_empty() {
+      String::new()
     } else {
       let max_extra = MAX_CONSOLE_TIME_LOG_ARGS.saturating_sub(1);
       let extra = &extra[..extra.len().min(max_extra)];
+      crate::js::vm_error_format::format_console_arguments_limited(scope.heap_mut(), extra)
+    };
 
-      let mut out: Vec<Value> = Vec::new();
-      out
-        .try_reserve_exact(1 + extra.len())
-        .map_err(|_| VmError::OutOfMemory)?;
-      out.push(Value::String(msg_s));
-      out.extend_from_slice(extra);
-      sink(ConsoleMessageLevel::Log, scope.heap_mut(), &out);
-    }
+    let message = if formatted_extra.is_empty() {
+      format!("{label}: {:.3}ms", ms)
+    } else {
+      format!("{label}: {:.3}ms {formatted_extra}", ms)
+    };
+    let msg_s = scope.alloc_string(&message)?;
+    scope.push_root(Value::String(msg_s))?;
+    let msg_v = [Value::String(msg_s)];
+    sink(ConsoleMessageLevel::Log, scope.heap_mut(), &msg_v);
   }
 
   Ok(Value::Undefined)
@@ -32020,6 +32028,44 @@ mod tests {
   }
 
   #[test]
+  fn console_log_percent_substitutions_are_applied_end_to_end() -> Result<(), VmError> {
+    let _lock = console_sink_test_lock()
+      .lock()
+      .expect("console sink test mutex should not be poisoned");
+    let url = "https://example.com/path";
+    let captured: Arc<Mutex<Vec<(ConsoleMessageLevel, String)>>> = Arc::new(Mutex::new(Vec::new()));
+    let captured_for_sink = Arc::clone(&captured);
+
+    let sink: ConsoleSink = Arc::new(move |level, heap, args| {
+      let message = vm_error_format::format_console_arguments_limited(heap, args);
+      captured_for_sink.lock().push((level, message));
+    });
+
+    let mut config = WindowRealmConfig::new(url);
+    config.console_sink = Some(sink);
+    let mut realm = new_realm(config)?;
+
+    captured.lock().clear();
+    assert_eq!(realm.exec_script("console.log('x=%d', 1)")?, Value::Undefined);
+    assert_eq!(
+      &*captured.lock(),
+      &[(ConsoleMessageLevel::Log, "x=1".to_string())]
+    );
+
+    captured.lock().clear();
+    assert_eq!(
+      realm.exec_script("console.log('hello %s', 'world', 42)")?,
+      Value::Undefined
+    );
+    assert_eq!(
+      &*captured.lock(),
+      &[(ConsoleMessageLevel::Log, "hello world 42".to_string())]
+    );
+
+    Ok(())
+  }
+
+  #[test]
   fn console_trace_includes_stack_trace() -> Result<(), VmError> {
     let _lock = console_sink_test_lock()
       .lock()
@@ -32083,10 +32129,7 @@ mod tests {
       &[
         CapturedConsoleCall {
           level: ConsoleMessageLevel::Log,
-          args: vec![
-            CapturedConsoleArg::String("a: 5.000ms".to_string()),
-            CapturedConsoleArg::String("x".to_string()),
-          ],
+          args: vec![CapturedConsoleArg::String("a: 5.000ms x".to_string())],
         },
         CapturedConsoleCall {
           level: ConsoleMessageLevel::Log,
