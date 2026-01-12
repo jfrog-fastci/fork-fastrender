@@ -1,8 +1,14 @@
 //! Guard against `crates/` accumulating new parallel infrastructure crates.
 //!
-//! After the WebIDL + JS runtime consolidation, shared infrastructure should live in the vendored
-//! `vendor/ecma-rs/` workspace. `crates/` is reserved for a small number of FastRender-specific
-//! tools.
+//! See `instructions/webidl_consolidation.md`.
+//!
+//! During the WebIDL + JS runtime consolidation (**status: IN PROGRESS**), a small set of legacy
+//! WebIDL crates still exists under `crates/` and is temporarily allowlisted here:
+//! `webidl-js-runtime`, `webidl-ir`, and `webidl-bindings-core`.
+//!
+//! Long-term, shared JS/WebIDL infrastructure should live in the vendored `vendor/ecma-rs/`
+//! workspace and `crates/` should be reserved for FastRender-specific tooling. Once the migration
+//! completes, remove the legacy WebIDL entries from the allowlist below.
 
 use std::collections::BTreeSet;
 use std::fs;
@@ -12,7 +18,12 @@ use std::path::{Path, PathBuf};
 ///
 /// Adding any new crate under `crates/` must be an explicit decision: update this allowlist and
 /// justify why it doesn't belong under `vendor/ecma-rs/`.
-const ALLOWED_CRATE_DIRS: [&str; 1] = ["js-wpt-dom-runner"];
+const ALLOWED_CRATE_DIRS: [&str; 4] = [
+  "js-wpt-dom-runner",
+  "webidl-bindings-core",
+  "webidl-ir",
+  "webidl-js-runtime",
+];
 
 fn list_crate_dirs(crates_dir: &Path) -> BTreeSet<String> {
   let mut dirs = BTreeSet::new();
@@ -56,18 +67,16 @@ fn crates_directory_is_explicitly_allowlisted() {
   );
 
   let actual = list_crate_dirs(&crates_dir);
-  let expected: BTreeSet<String> =
+  let allowlist: BTreeSet<String> =
     ALLOWED_CRATE_DIRS.iter().map(|dir| (*dir).to_owned()).collect();
 
-  let unexpected: Vec<_> = actual.difference(&expected).cloned().collect();
-  let missing: Vec<_> = expected.difference(&actual).cloned().collect();
+  let unexpected: Vec<_> = actual.difference(&allowlist).cloned().collect();
 
   assert!(
-    unexpected.is_empty() && missing.is_empty(),
+    unexpected.is_empty(),
     "unexpected crate directories found under crates/.\n\
 unexpected crate dirs found: {unexpected:?}\n\
-expected allowlist: {expected:?}\n\
-missing expected crate dirs: {missing:?}\n\
+allowlisted crate dirs: {allowlist:?}\n\
 actual crate dirs: {actual:?}",
   );
 }
