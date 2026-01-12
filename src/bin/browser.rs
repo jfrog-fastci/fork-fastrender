@@ -1956,19 +1956,17 @@ error: {err}",
           .as_ref()
           .is_some_and(|pending| pending.tab_id == *tab_id && pending.pos_css == *pos_css)
         {
-          let pending = self
-            .pending_context_menu_request
-            .take()
-            .expect("checked is_some above");
-          self.open_context_menu = Some(OpenContextMenu {
-            tab_id: *tab_id,
-            pos_css: *pos_css,
-            anchor_points: pending.anchor_points,
-            link_url: link_url.clone(),
-            selected_idx: 0,
-          });
-          self.open_context_menu_rect = None;
-          request_redraw = true;
+          if let Some(pending) = self.pending_context_menu_request.take() {
+            self.open_context_menu = Some(OpenContextMenu {
+              tab_id: *tab_id,
+              pos_css: *pos_css,
+              anchor_points: pending.anchor_points,
+              link_url: link_url.clone(),
+              selected_idx: 0,
+            });
+            self.open_context_menu_rect = None;
+            request_redraw = true;
+          }
         }
       }
     }
@@ -2941,17 +2939,20 @@ error: {err}",
           self.window.request_redraw();
         }
 
-        if self.scrollbar_drag.is_some() {
-          let (tab_id, axis, scrollbar, axis_delta_points) = {
-            let drag = self.scrollbar_drag.as_mut().unwrap();
-            let delta_points = pos_points - drag.last_cursor_points;
-            drag.last_cursor_points = pos_points;
-            let axis_delta_points = match drag.axis {
-              fastrender::ui::scrollbars::ScrollbarAxis::Vertical => delta_points.y,
-              fastrender::ui::scrollbars::ScrollbarAxis::Horizontal => delta_points.x,
-            };
-            (drag.tab_id, drag.axis, drag.scrollbar, axis_delta_points)
+        let drag_update = {
+          let Some(drag) = self.scrollbar_drag.as_mut() else {
+            None
           };
+          let delta_points = pos_points - drag.last_cursor_points;
+          drag.last_cursor_points = pos_points;
+          let axis_delta_points = match drag.axis {
+            fastrender::ui::scrollbars::ScrollbarAxis::Vertical => delta_points.y,
+            fastrender::ui::scrollbars::ScrollbarAxis::Horizontal => delta_points.x,
+          };
+          Some((drag.tab_id, drag.axis, drag.scrollbar, axis_delta_points))
+        };
+
+        if let Some((tab_id, axis, scrollbar, axis_delta_points)) = drag_update {
 
           let axis_delta_css = scrollbar.scroll_delta_css_for_thumb_drag_points(axis_delta_points);
           if axis_delta_css != 0.0 {

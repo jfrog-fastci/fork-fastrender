@@ -284,29 +284,6 @@ fn html_meta_path(html_path: &Path) -> PathBuf {
   meta_path
 }
 
-fn file_url_for_path(path: &Path) -> String {
-  let abs = fs::canonicalize(path).unwrap_or_else(|_| {
-    if path.is_absolute() {
-      path.to_path_buf()
-    } else {
-      std::env::current_dir()
-        .unwrap_or_else(|_| PathBuf::from("."))
-        .join(path)
-    }
-  });
-  Url::from_file_path(&abs)
-    .map(|u| u.to_string())
-    .unwrap_or_else(|()| {
-      let mut url = Url::parse("file:///").expect("file base url");
-      let mut path_str = abs.to_string_lossy().replace('\\', "/");
-      if !path_str.starts_with('/') {
-        path_str.insert(0, '/');
-      }
-      url.set_path(&path_str);
-      url.to_string()
-    })
-}
-
 fn parse_collision_suffix(raw: &str) -> Option<(&str, &str)> {
   raw
     .rsplit_once("--")
@@ -445,7 +422,7 @@ fn load_input_document(args: &Args) -> io::Result<InputDocument> {
     // If there is no `.meta` URL hint, ensure we use a valid absolute file:// base hint (the shared
     // cached doc helper uses `file://{path.display()}`, which may be relative).
     if !meta_exists || doc.base_hint.starts_with("file://") {
-      let file_url = file_url_for_path(&path);
+      let file_url = common::file_url::file_url_for_path(&path);
       doc = doc.with_base_override(Some(&file_url));
     }
   }
