@@ -29167,7 +29167,13 @@ mod tests {
       )
       .unwrap_err();
     match err {
-      VmError::Syntax(_) => Ok(()),
+      VmError::Syntax(diags) => {
+        assert!(
+          diags.iter().any(|d| d.code.as_str() == "VMJS0004"),
+          "expected early error VMJS0004, got {diags:?}"
+        );
+        Ok(())
+      }
       other => panic!("expected VmError::Syntax, got {other:?}"),
     }
   }
@@ -29191,7 +29197,13 @@ mod tests {
       )
       .unwrap_err();
     match err {
-      VmError::Syntax(_) => Ok(()),
+      VmError::Syntax(diags) => {
+        assert!(
+          diags.iter().any(|d| d.code.as_str() == "VMJS0004"),
+          "expected early error VMJS0004, got {diags:?}"
+        );
+        Ok(())
+      }
       other => panic!("expected VmError::Syntax, got {other:?}"),
     }
   }
@@ -29214,6 +29226,8 @@ mod tests {
       )
       .unwrap_err();
     match err {
+      // Depending on parser/early-error split, this can surface either as a parser diagnostic (PS*)
+      // or an engine early error (VMJS0004).
       VmError::Syntax(_) => Ok(()),
       other => panic!("expected VmError::Syntax, got {other:?}"),
     }
@@ -29236,7 +29250,71 @@ mod tests {
       )
       .unwrap_err();
     match err {
-      VmError::Syntax(_) => Ok(()),
+      VmError::Syntax(diags) => {
+        assert!(
+          diags.iter().any(|d| d.code.as_str() == "VMJS0004"),
+          "expected early error VMJS0004, got {diags:?}"
+        );
+        Ok(())
+      }
+      other => panic!("expected VmError::Syntax, got {other:?}"),
+    }
+  }
+
+  #[test]
+  fn class_static_block_duplicate_lexical_decl_is_syntax_error() -> Result<(), VmError> {
+    let vm = Vm::new(VmOptions::default());
+    let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut rt = JsRuntime::new(vm, heap)?;
+    let err = rt
+      .exec_script(
+        r#"
+        class C {
+          static {
+            let x;
+            let x;
+          }
+        }
+      "#,
+      )
+      .unwrap_err();
+    match err {
+      VmError::Syntax(diags) => {
+        assert!(
+          diags.iter().any(|d| d.code.as_str() == "VMJS0004"),
+          "expected early error VMJS0004, got {diags:?}"
+        );
+        Ok(())
+      }
+      other => panic!("expected VmError::Syntax, got {other:?}"),
+    }
+  }
+
+  #[test]
+  fn class_static_block_lexical_var_collision_is_syntax_error() -> Result<(), VmError> {
+    let vm = Vm::new(VmOptions::default());
+    let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut rt = JsRuntime::new(vm, heap)?;
+    let err = rt
+      .exec_script(
+        r#"
+        class C {
+          static {
+            let x;
+            var x;
+          }
+        }
+      "#,
+      )
+      .unwrap_err();
+    match err {
+      VmError::Syntax(diags) => {
+        assert!(
+          diags.iter().any(|d| d.code.as_str() == "VMJS0004"),
+          "expected early error VMJS0004, got {diags:?}"
+        );
+        Ok(())
+      }
       other => panic!("expected VmError::Syntax, got {other:?}"),
     }
   }

@@ -1083,6 +1083,7 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
       /* arguments_allowed */ false,
     );
     ctx.return_allowed = false;
+    self.static_block_declared_name_early_errors(stmts)?;
     let res = self.visit_stmt_list(ctx, stmts);
     self.restore_function(ctx, saved);
     res
@@ -1171,6 +1172,178 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
         // Assignment targets are not binding patterns; ignore.
       }
     }
+  }
+
+  fn collect_var_declared_names_in_stmt(
+    &mut self,
+    stmt: &Node<Stmt>,
+    out: &mut HashSet<String>,
+  ) -> Result<(), VmError> {
+    self.step()?;
+
+    match &*stmt.stx {
+      Stmt::VarDecl(decl) => {
+        if decl.stx.mode != VarDeclMode::Var {
+          return Ok(());
+        }
+        for declarator in &decl.stx.declarators {
+          self.step()?;
+          let mut names: Vec<(String, Loc)> = Vec::new();
+          Self::collect_bound_names_from_pat(&declarator.pattern.stx.pat, &mut names);
+          for (name, _) in names {
+            out.insert(name);
+          }
+        }
+        Ok(())
+      }
+      Stmt::Block(block) => {
+        for s in &block.stx.body {
+          self.collect_var_declared_names_in_stmt(s, out)?;
+        }
+        Ok(())
+      }
+      Stmt::If(stmt) => {
+        self.collect_var_declared_names_in_stmt(&stmt.stx.consequent, out)?;
+        if let Some(alt) = &stmt.stx.alternate {
+          self.collect_var_declared_names_in_stmt(alt, out)?;
+        }
+        Ok(())
+      }
+      Stmt::While(stmt) => self.collect_var_declared_names_in_stmt(&stmt.stx.body, out),
+      Stmt::DoWhile(stmt) => self.collect_var_declared_names_in_stmt(&stmt.stx.body, out),
+      Stmt::ForTriple(stmt) => {
+        if let ForTripleStmtInit::Decl(decl) = &stmt.stx.init {
+          if decl.stx.mode == VarDeclMode::Var {
+            for declarator in &decl.stx.declarators {
+              self.step()?;
+              let mut names: Vec<(String, Loc)> = Vec::new();
+              Self::collect_bound_names_from_pat(&declarator.pattern.stx.pat, &mut names);
+              for (name, _) in names {
+                out.insert(name);
+              }
+            }
+          }
+        }
+        for s in &stmt.stx.body.stx.body {
+          self.collect_var_declared_names_in_stmt(s, out)?;
+        }
+        Ok(())
+      }
+      Stmt::ForIn(stmt) => {
+        if let ForInOfLhs::Decl((mode, pat)) = &stmt.stx.lhs {
+          if *mode == VarDeclMode::Var {
+            let mut names: Vec<(String, Loc)> = Vec::new();
+            Self::collect_bound_names_from_pat(&pat.stx.pat, &mut names);
+            for (name, _) in names {
+              out.insert(name);
+            }
+          }
+        }
+        for s in &stmt.stx.body.stx.body {
+          self.collect_var_declared_names_in_stmt(s, out)?;
+        }
+        Ok(())
+      }
+      Stmt::ForOf(stmt) => {
+        if let ForInOfLhs::Decl((mode, pat)) = &stmt.stx.lhs {
+          if *mode == VarDeclMode::Var {
+            let mut names: Vec<(String, Loc)> = Vec::new();
+            Self::collect_bound_names_from_pat(&pat.stx.pat, &mut names);
+            for (name, _) in names {
+              out.insert(name);
+            }
+          }
+        }
+        for s in &stmt.stx.body.stx.body {
+          self.collect_var_declared_names_in_stmt(s, out)?;
+        }
+        Ok(())
+      }
+      Stmt::Try(stmt) => {
+        for s in &stmt.stx.wrapped.stx.body {
+          self.collect_var_declared_names_in_stmt(s, out)?;
+        }
+        if let Some(catch) = &stmt.stx.catch {
+          for s in &catch.stx.body {
+            self.collect_var_declared_names_in_stmt(s, out)?;
+          }
+        }
+        if let Some(finally) = &stmt.stx.finally {
+          for s in &finally.stx.body {
+            self.collect_var_declared_names_in_stmt(s, out)?;
+          }
+        }
+        Ok(())
+      }
+      Stmt::Switch(stmt) => {
+        for branch in &stmt.stx.branches {
+          for s in &branch.stx.body {
+            self.collect_var_declared_names_in_stmt(s, out)?;
+          }
+        }
+        Ok(())
+      }
+      Stmt::Label(stmt) => self.collect_var_declared_names_in_stmt(&stmt.stx.statement, out),
+      Stmt::With(stmt) => self.collect_var_declared_names_in_stmt(&stmt.stx.body, out),
+
+      // Do not descend into nested functions/classes: var declarations inside them are scoped to
+      // that nested code.
+      Stmt::ClassDecl(_) | Stmt::FunctionDecl(_) => Ok(()),
+
+      _ => Ok(()),
+    }
+  }
+
+  fn static_block_declared_name_early_errors(&mut self, stmts: &[Node<Stmt>]) -> Result<(), VmError> {
+    // `VarDeclaredNames` can traverse large statement trees. Budget the traversal.
+    let mut var_names: HashSet<String> = HashSet::new();
+    for stmt in stmts {
+      self.collect_var_declared_names_in_stmt(stmt, &mut var_names)?;
+    }
+
+    // `LexicallyDeclaredNames` of a statement list includes only declarations that are direct
+    // children of that statement list (it does not include lexical declarations nested inside other
+    // statements like inner `{ ... }` blocks).
+    let mut lexical_names: HashSet<String> = HashSet::new();
+    for stmt in stmts {
+      self.step()?;
+      match &*stmt.stx {
+        Stmt::VarDecl(decl)
+          if matches!(
+            decl.stx.mode,
+            VarDeclMode::Let | VarDeclMode::Const | VarDeclMode::Using | VarDeclMode::AwaitUsing
+          ) =>
+        {
+          for declarator in &decl.stx.declarators {
+            self.step()?;
+            let mut names: Vec<(String, Loc)> = Vec::new();
+            Self::collect_bound_names_from_pat(&declarator.pattern.stx.pat, &mut names);
+            for (name, loc) in names {
+              if !lexical_names.insert(name.clone()) || var_names.contains(&name) {
+                self.push_error(loc, "Identifier has already been declared")?;
+              }
+            }
+          }
+        }
+        Stmt::ClassDecl(decl) => {
+          if let Some(name) = &decl.stx.name {
+            if !lexical_names.insert(name.stx.name.clone()) || var_names.contains(&name.stx.name) {
+              self.push_error(name.loc, "Identifier has already been declared")?;
+            }
+          }
+        }
+        Stmt::FunctionDecl(decl) => {
+          if let Some(name) = &decl.stx.name {
+            if !lexical_names.insert(name.stx.name.clone()) || var_names.contains(&name.stx.name) {
+              self.push_error(name.loc, "Identifier has already been declared")?;
+            }
+          }
+        }
+        _ => {}
+      }
+    }
+
+    Ok(())
   }
 
   fn visit_func(
