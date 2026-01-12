@@ -9991,9 +9991,9 @@ fn dom_rect_from_rect_native(
 }
 
 fn element_get_bounding_client_rect_native(
-  _vm: &mut Vm,
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
+  host: &mut dyn VmHost,
   _hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   this: Value,
@@ -10005,18 +10005,13 @@ fn element_get_bounding_client_rect_native(
     ));
   };
 
-  let wrapper_document_key = alloc_key(scope, WRAPPER_DOCUMENT_KEY)?;
-  let document_obj = match scope
-    .heap()
-    .object_get_own_data_property_value(wrapper_obj, &wrapper_document_key)?
-  {
-    Some(Value::Object(obj)) => obj,
-    _ => {
-      return Err(VmError::TypeError(
-        "Element.getBoundingClientRect must be called on an element object",
-      ))
-    }
-  };
+  let handle = element_handle_from_wrapper_obj(
+    vm,
+    scope,
+    wrapper_obj,
+    "Element.getBoundingClientRect must be called on an element object",
+  )?;
+  let document_obj = handle.document_obj;
 
   let document_window_key = alloc_key(scope, DOCUMENT_WINDOW_KEY)?;
   let window_obj = match scope
@@ -10029,6 +10024,34 @@ fn element_get_bounding_client_rect_native(
         "Element.getBoundingClientRect requires a DOM-backed document",
       ))
     }
+  };
+
+  // Only renderer-backed documents can currently compute layout geometry.
+  let (x, y, width, height) = if is_host_document_id(vm, handle.document_id) {
+    if let Some(document) = host.as_any_mut().downcast_mut::<BrowserDocumentDom2>() {
+      if document.ensure_layout_for_dom_queries().is_ok() {
+        if let Ok(geometry) = document.geometry_context() {
+          if let Some(rect) = geometry.border_box_in_viewport(handle.node_id) {
+            (
+              rect.x() as f64,
+              rect.y() as f64,
+              rect.width() as f64,
+              rect.height() as f64,
+            )
+          } else {
+            (0.0, 0.0, 0.0, 0.0)
+          }
+        } else {
+          (0.0, 0.0, 0.0, 0.0)
+        }
+      } else {
+        (0.0, 0.0, 0.0, 0.0)
+      }
+    } else {
+      (0.0, 0.0, 0.0, 0.0)
+    }
+  } else {
+    (0.0, 0.0, 0.0, 0.0)
   };
 
   // Read the constructor off the global object so the returned instance has the right prototype.
@@ -10045,7 +10068,7 @@ fn element_get_bounding_client_rect_native(
     ));
   };
 
-  dom_rect_create_instance(&mut scope, dom_rect_ctor, true, 0.0, 0.0, 0.0, 0.0)
+  dom_rect_create_instance(&mut scope, dom_rect_ctor, true, x, y, width, height)
 }
 
 fn document_create_element_native(
@@ -38030,6 +38053,55 @@ mod tests {
       &mut realm,
       &mut host,
       "document.getElementById('x').getBoundingClientRect() instanceof DOMRectReadOnly",
+    )?;
+    assert_eq!(ok, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn element_get_bounding_client_rect_returns_layout_geometry_for_browser_document_dom2(
+  ) -> Result<(), VmError> {
+    use crate::api::RenderOptions;
+
+    let html = r#"<!doctype html>
+      <html>
+        <head>
+          <style>
+            html, body { margin: 0; padding: 0; }
+            #x {
+              position: absolute;
+              left: 10px;
+              top: 20px;
+              width: 30px;
+              height: 40px;
+            }
+          </style>
+        </head>
+        <body>
+          <div id="x"></div>
+        </body>
+      </html>"#;
+
+    let mut document = BrowserDocumentDom2::from_html(
+      html,
+      RenderOptions::new().with_viewport(200, 200),
+    )
+    .expect("BrowserDocumentDom2::from_html should succeed");
+
+    // Ensure layout exists without forcing a paint.
+    document
+      .ensure_layout_for_dom_queries()
+      .expect("layout preparation should succeed");
+
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+    let ok = exec_script_with_dom_host(
+      &mut realm,
+      &mut document,
+      "(() => {\n\
+         const r = document.getElementById('x').getBoundingClientRect();\n\
+         const close = (a, b) => Math.abs(a - b) < 0.01;\n\
+         return close(r.x, 10) && close(r.y, 20) && close(r.width, 30) && close(r.height, 40);\n\
+       })()",
     )?;
     assert_eq!(ok, Value::Bool(true));
     Ok(())
