@@ -9319,68 +9319,44 @@ impl<'a> Checker<'a> {
       return self.check_expr(expr);
     }
 
-    match expr.stx.as_ref() {
-      AstExpr::LitObj(obj) => {
-        let ty = self.object_literal_type_with_expected(obj, expected);
-        self.record_expr_type(expr.loc, ty);
-        ty
-      }
-      AstExpr::LitArr(arr) => {
-        let ty = self.array_literal_type_with_expected(arr, expected);
-        self.record_expr_type(expr.loc, ty);
-        ty
-      }
-      AstExpr::ArrowFunc(arrow) => {
-        if let Some(refined) = self.refine_function_expr_with_expected(&arrow.stx.func, expected) {
-          self.record_expr_type(expr.loc, refined);
-          refined
-        } else if let Some(callable) = self.contextual_callable_type(expected) {
-          self.record_expr_type(expr.loc, callable);
-          callable
-        } else {
-          self.check_expr(expr)
-        }
-      }
-      AstExpr::Func(func) => {
-        if let Some(refined) = self.refine_function_expr_with_expected(&func.stx.func, expected) {
-          self.record_expr_type(expr.loc, refined);
-          refined
-        } else if let Some(callable) = self.contextual_callable_type(expected) {
-          self.record_expr_type(expr.loc, callable);
-          callable
-        } else {
-          self.check_expr(expr)
-        }
-      }
+    let ty = match expr.stx.as_ref() {
+      AstExpr::LitObj(obj) => self.object_literal_type_with_expected(obj, expected),
+      AstExpr::LitArr(arr) => self.array_literal_type_with_expected(arr, expected),
+      AstExpr::ArrowFunc(arrow) => self
+        .refine_function_expr_with_expected(&arrow.stx.func, expected)
+        .or_else(|| self.contextual_callable_type(expected))
+        .unwrap_or_else(|| self.check_expr(expr)),
+      AstExpr::Func(func) => self
+        .refine_function_expr_with_expected(&func.stx.func, expected)
+        .or_else(|| self.contextual_callable_type(expected))
+        .unwrap_or_else(|| self.check_expr(expr)),
       AstExpr::Call(call) => {
         let contextual_return = match self.store.type_kind(expected) {
           TypeKind::Any | TypeKind::Unknown => None,
           _ => Some(expected),
         };
-        let ty = self.check_call_expr(call, contextual_return);
-        self.record_expr_type(expr.loc, ty);
-        ty
+        self.check_call_expr(call, contextual_return)
       }
       AstExpr::TaggedTemplate(tagged) => {
         let contextual_return = match self.store.type_kind(expected) {
           TypeKind::Any | TypeKind::Unknown => None,
           _ => Some(expected),
         };
-        let ty = self.check_tagged_template_expr(tagged, expr.loc, contextual_return);
-        self.record_expr_type(expr.loc, ty);
-        ty
+        self.check_tagged_template_expr(tagged, expr.loc, contextual_return)
       }
       AstExpr::Unary(un) if matches!(un.stx.operator, OperatorName::New) => {
         let contextual_return = match self.store.type_kind(expected) {
           TypeKind::Any | TypeKind::Unknown => None,
           _ => Some(expected),
         };
-        let ty = self.check_new_expr(un, expr.loc, contextual_return);
-        self.record_expr_type(expr.loc, ty);
-        ty
+        self.check_new_expr(un, expr.loc, contextual_return)
       }
       _ => self.check_expr(expr),
-    }
+    };
+
+    let contextual = self.contextual_arg_type(ty, expected);
+    self.record_expr_type(expr.loc, contextual);
+    contextual
   }
 
   fn refine_function_expr_with_expected(
