@@ -8,7 +8,6 @@ mod api;
 mod accessibility;
 mod animation;
 mod interaction;
-mod animation;
 mod fixtures;
 mod browser_integration;
 mod layout;
