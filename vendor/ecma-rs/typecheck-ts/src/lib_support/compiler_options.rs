@@ -219,6 +219,16 @@ impl CompilerOptions {
       .take()
       .and_then(|raw| normalize_optional_string(raw, |s| s.to_ascii_lowercase()));
 
+    self.module_detection = self
+      .module_detection
+      .take()
+      .and_then(|raw| normalize_optional_string(raw, |s| s.to_ascii_lowercase()));
+
+    self.jsx_import_source = self
+      .jsx_import_source
+      .take()
+      .and_then(|raw| normalize_optional_string(raw, |s| s.to_string()));
+
     if self.libs.len() > 1 {
       self.libs.sort();
       self.libs.dedup();
@@ -807,6 +817,8 @@ mod tests {
   fn compiler_options_normalization_is_idempotent() {
     let mut options = CompilerOptions::default();
     options.module_resolution = Some("  Node16 ".to_string());
+    options.module_detection = Some("  Force ".to_string());
+    options.jsx_import_source = Some("  react ".to_string());
     // `strict_native` is a legacy alias for `native_strict`; normalization should
     // make them consistent.
     options.native_strict = true;
@@ -827,6 +839,8 @@ mod tests {
     let twice = once.clone().normalize();
     assert_eq!(once, twice);
     assert_eq!(once.module_resolution.as_deref(), Some("node16"));
+    assert_eq!(once.module_detection.as_deref(), Some("force"));
+    assert_eq!(once.jsx_import_source.as_deref(), Some("react"));
     assert!(once.native_strict);
     assert!(once.strict_native);
     assert_eq!(once.types, vec!["jest".to_string(), "react".to_string()]);
@@ -843,6 +857,8 @@ mod tests {
   fn compiler_options_normalization_is_order_insensitive() {
     let mut a = CompilerOptions::default();
     a.module_resolution = Some("NODE".to_string());
+    a.module_detection = Some(" AUTO ".to_string());
+    a.jsx_import_source = Some(" react ".to_string());
     a.types = vec!["b".to_string(), "a".to_string()];
     a.libs = vec![
       LibName::from_compiler_option_value("es2020").unwrap(),
@@ -851,6 +867,8 @@ mod tests {
 
     let mut b = CompilerOptions::default();
     b.module_resolution = Some(" node ".to_string());
+    b.module_detection = Some("auto".to_string());
+    b.jsx_import_source = Some("react".to_string());
     b.types = vec!["a".to_string(), "b".to_string(), "b".to_string()];
     b.libs = vec![
       LibName::from_compiler_option_value("DOM").unwrap(),
