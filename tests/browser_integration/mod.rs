@@ -30,6 +30,7 @@ mod click_events;
 mod document;
 mod document2;
 mod console_formatting;
+mod element_from_point;
 mod dynamic_script_insertion;
 mod csp_script_enforcement;
 mod script_crossorigin_cors;

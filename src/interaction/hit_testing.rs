@@ -4,7 +4,7 @@ use crate::scroll::ScrollState;
 use crate::tree::fragment_tree::FragmentNode;
 use crate::tree::fragment_tree::FragmentTree;
 
-use super::hit_test::{hit_test_dom, HitTestResult};
+use super::hit_test::{hit_test_dom, hit_test_dom_all, HitTestResult};
 
 /// Clone a fragment tree and apply element scroll offsets from `scroll`.
 ///
@@ -41,6 +41,15 @@ pub fn hit_test_dom_with_scroll(
   hit_test_dom(prepared.dom(), prepared.box_tree(), &tree, page_point_css)
 }
 
+pub fn hit_test_dom_with_scroll_all(
+  prepared: &PreparedDocument,
+  scroll: &ScrollState,
+  page_point_css: Point,
+) -> Vec<HitTestResult> {
+  let tree = fragment_tree_with_scroll(prepared.fragment_tree(), scroll);
+  hit_test_dom_all(prepared.dom(), prepared.box_tree(), &tree, page_point_css)
+}
+
 pub fn hit_test_dom_viewport_point(
   prepared: &PreparedDocument,
   scroll: &ScrollState,
@@ -51,4 +60,12 @@ pub fn hit_test_dom_viewport_point(
     scroll,
     viewport_point_css.translate(scroll.viewport),
   )
+}
+
+pub fn hit_test_dom_viewport_point_all(
+  prepared: &PreparedDocument,
+  scroll: &ScrollState,
+  viewport_point_css: Point,
+) -> Vec<HitTestResult> {
+  hit_test_dom_with_scroll_all(prepared, scroll, viewport_point_css.translate(scroll.viewport))
 }

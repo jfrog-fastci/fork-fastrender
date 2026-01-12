@@ -836,6 +836,128 @@ impl BrowserDocumentDom2 {
     self.dom2_node_for_renderer_preorder(hit.dom_node_id)
   }
 
+  /// Perform a viewport-coordinate hit test and return the hit element's stable `dom2::NodeId`.
+  ///
+  /// This mirrors `Document.elementFromPoint()` semantics at the host layer:
+  /// - `x`/`y` are viewport-relative CSS px coordinates (before applying scroll offsets).
+  /// - The returned id is stable across renderer snapshots (unlike renderer preorder ids).
+  /// - The returned node is guaranteed to be an element (walking up the ancestor chain if needed).
+  ///
+  /// This ensures style/layout are up to date but does **not** require a paint.
+  pub fn element_from_point(
+    &mut self,
+    x: f32,
+    y: f32,
+  ) -> Result<Option<crate::dom2::NodeId>> {
+    if !x.is_finite() || !y.is_finite() {
+      return Ok(None);
+    }
+
+    self.ensure_layout_for_hit_testing()?;
+    let Some(prepared) = self.prepared.as_ref() else {
+      return Ok(None);
+    };
+
+    let viewport = prepared.fragment_tree().viewport_size();
+    if x < 0.0 || y < 0.0 || x >= viewport.width || y >= viewport.height {
+      return Ok(None);
+    }
+
+    let scroll_state = ScrollState::from_parts_with_deltas(
+      Point::new(self.options.scroll_x, self.options.scroll_y),
+      self.options.element_scroll_offsets.clone(),
+      self.options.scroll_delta,
+      self.options.element_scroll_deltas.clone(),
+    );
+
+    let Some(hit) = crate::interaction::hit_testing::hit_test_dom_viewport_point(
+      prepared,
+      &scroll_state,
+      Point::new(x, y),
+    ) else {
+      return Ok(None);
+    };
+
+    let Some(mut node_id) = self.dom2_node_for_hit_test(&hit) else {
+      return Ok(None);
+    };
+
+    // The hit-test layer should already resolve semantic targets to elements, but keep this
+    // defensive so callers (JS) never accidentally receive Text/comment nodes.
+    loop {
+      match &self.dom().node(node_id).kind {
+        crate::dom2::NodeKind::Element { .. } => return Ok(Some(node_id)),
+        _ => match self.dom().parent_node(node_id) {
+          Some(parent) => node_id = parent,
+          None => return Ok(None),
+        },
+      }
+    }
+  }
+
+  /// Like [`BrowserDocumentDom2::element_from_point`], but returns all hit elements (topmost first).
+  ///
+  /// This backs `Document.elementsFromPoint()` when needed.
+  pub fn elements_from_point(
+    &mut self,
+    x: f32,
+    y: f32,
+  ) -> Result<Vec<crate::dom2::NodeId>> {
+    if !x.is_finite() || !y.is_finite() {
+      return Ok(Vec::new());
+    }
+
+    self.ensure_layout_for_hit_testing()?;
+    let Some(prepared) = self.prepared.as_ref() else {
+      return Ok(Vec::new());
+    };
+
+    let viewport = prepared.fragment_tree().viewport_size();
+    if x < 0.0 || y < 0.0 || x >= viewport.width || y >= viewport.height {
+      return Ok(Vec::new());
+    }
+
+    let scroll_state = ScrollState::from_parts_with_deltas(
+      Point::new(self.options.scroll_x, self.options.scroll_y),
+      self.options.element_scroll_offsets.clone(),
+      self.options.scroll_delta,
+      self.options.element_scroll_deltas.clone(),
+    );
+
+    let hits = crate::interaction::hit_testing::hit_test_dom_viewport_point_all(
+      prepared,
+      &scroll_state,
+      Point::new(x, y),
+    );
+
+    let mut out: Vec<crate::dom2::NodeId> = Vec::new();
+    for hit in hits {
+      let Some(mut node_id) = self.dom2_node_for_hit_test(&hit) else {
+        continue;
+      };
+
+      loop {
+        match &self.dom().node(node_id).kind {
+          crate::dom2::NodeKind::Element { .. } => break,
+          _ => match self.dom().parent_node(node_id) {
+            Some(parent) => node_id = parent,
+            None => break,
+          },
+        }
+      }
+
+      if matches!(&self.dom().node(node_id).kind, crate::dom2::NodeKind::Element { .. }) {
+        // `hit_test_dom_*` already de-dupes within the renderer preorder space, but ensure we don't
+        // return duplicates after walking to element ancestors.
+        if !out.contains(&node_id) {
+          out.push(node_id);
+        }
+      }
+    }
+
+    Ok(out)
+  }
+
   /// Renders a new frame if anything has been invalidated since the last successful frame.
   ///
   /// Returns `Ok(None)` when no dirty flags are set.
@@ -1144,6 +1266,113 @@ impl BrowserDocumentDom2 {
     // outstanding.
     self.last_seen_dom_mutation_generation = dom_generation;
     Ok(prepared)
+  }
+
+  /// Ensure `self.prepared` + `self.last_dom_mapping` reflect the current live DOM.
+  ///
+  /// This is a "layout flush" that runs at most cascade+layout. It intentionally does **not** paint.
+  fn ensure_layout_for_hit_testing(&mut self) -> Result<()> {
+    // If we haven't rendered before, force a full pipeline run even if the flags were cleared.
+    if self.prepared.is_none() {
+      self.invalidate_all();
+    }
+
+    // Missing mapping implies we can't translate renderer preorder IDs back to dom2 node IDs.
+    let needs_layout = self.style_dirty
+      || self.layout_dirty
+      || self.prepared.is_none()
+      || self.last_dom_mapping.is_none()
+      || self.dom.mutation_generation() != self.last_seen_dom_mutation_generation;
+
+    if !needs_layout {
+      return Ok(());
+    }
+
+    // Layout without style changes can often avoid a full cascade by patching the existing box tree
+    // and rerunning only layout (e.g. text content changes).
+    let can_incremental_relayout = !self.style_dirty
+      && self.layout_dirty
+      && !self.dirty_text_nodes.is_empty()
+      && self.dirty_style_nodes.is_empty()
+      && self.dirty_structure_nodes.is_empty()
+      && self.prepared.is_some()
+      && self.last_dom_mapping.is_some();
+
+    let mut did_incremental_layout = false;
+    if can_incremental_relayout {
+      let mut prepared = self
+        .prepared
+        .take()
+        .expect("prepared exists when can_incremental_relayout=true");
+      match self.incremental_relayout_for_text_changes(&mut prepared) {
+        Ok(true) => {
+          self.invalidation_counters.incremental_relayouts =
+            self.invalidation_counters.incremental_relayouts.saturating_add(1);
+          self.last_seen_dom_mutation_generation = self.dom.mutation_generation();
+          self.prepared = Some(prepared);
+          did_incremental_layout = true;
+        }
+        Ok(false) => {
+          // Could not safely apply incremental relayout; fall back to a full pipeline run.
+          self.prepared = Some(prepared);
+        }
+        Err(err) => {
+          // Preserve the (possibly partially updated) prepared artifacts so callers can retry.
+          self.prepared = Some(prepared);
+          return Err(err);
+        }
+      }
+    }
+
+    if !did_incremental_layout {
+      let prev_prepared = self.prepared.take();
+      let mut prepared = match self.prepare_dom_with_options() {
+        Ok(prepared) => prepared,
+        Err(err) => {
+          self.prepared = prev_prepared;
+          return Err(err);
+        }
+      };
+
+      self.invalidation_counters.full_restyles =
+        self.invalidation_counters.full_restyles.saturating_add(1);
+      self.invalidation_counters.full_relayouts =
+        self.invalidation_counters.full_relayouts.saturating_add(1);
+
+      let now_ms = super::sanitize_animation_time_ms(self.animation_time_for_paint());
+      match now_ms {
+        None => {
+          prepared.fragment_tree.transition_state = None;
+        }
+        Some(now_ms) => {
+          let prev_state = prev_prepared
+            .as_ref()
+            .and_then(|prepared| prepared.fragment_tree.transition_state.as_deref());
+          let prev_box_tree = prev_prepared.as_ref().map(|prepared| prepared.box_tree());
+          let mut transition_state = TransitionState::update_for_style_change(
+            prev_state,
+            prev_box_tree,
+            prepared.box_tree(),
+            now_ms,
+          );
+          transition_state.capture_layout_from_fragment_tree(&prepared.fragment_tree);
+          prepared.fragment_tree.transition_state = Some(Arc::new(transition_state));
+        }
+      }
+
+      self.prepared = Some(prepared);
+    }
+
+    // We now have fresh style/layout artifacts stored in `self.prepared`. Clear the layout
+    // dirtiness so callers can rely on the cached layout, while leaving paint marked dirty.
+    self.style_dirty = false;
+    self.layout_dirty = false;
+    self.dirty_style_nodes.clear();
+    self.dirty_text_nodes.clear();
+    self.dirty_structure_nodes.clear();
+    self.paint_dirty = true;
+
+    Ok(())
   }
 
   #[inline]

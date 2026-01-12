@@ -460,6 +460,97 @@ pub fn hit_test_dom(
   None
 }
 
+/// Like [`hit_test_dom`], but returns *all* hit targets (topmost first).
+///
+/// This is a convenience for APIs like `Document.elementsFromPoint()` that need to enumerate the
+/// stacking order at a viewport coordinate.
+pub fn hit_test_dom_all(
+  dom: &DomNode,
+  box_tree: &BoxTree,
+  fragment_tree: &FragmentTree,
+  point: Point,
+) -> Vec<HitTestResult> {
+  let box_index = BoxIndex::new(box_tree);
+  let dom_index = DomIndex::new(dom);
+  let mut results: Vec<HitTestResult> = Vec::new();
+  let mut seen: std::collections::HashSet<usize> = std::collections::HashSet::new();
+
+  for fragment in fragment_tree.hit_test(point) {
+    let Some(box_id) = fragment.box_id() else {
+      continue;
+    };
+    let Some(box_node) = box_index.node(box_id) else {
+      continue;
+    };
+    if !box_is_interactive(box_node) {
+      continue;
+    }
+
+    let Some(styled_node_id) = resolve_styled_node_id_from_box_ancestors(&box_index, box_id) else {
+      continue;
+    };
+
+    // MVP: styled node ids are the cascade DOM pre-order ids.
+    let dom_node_id = styled_node_id;
+
+    let (semantic_dom_node_id, mut kind, mut href) = match resolve_semantic_target(&dom_index, dom_node_id) {
+      SemanticResolveResult::Hit {
+        node_id,
+        kind,
+        href,
+      } => (node_id, kind, href),
+      SemanticResolveResult::InertSubtree => {
+        // Inert subtrees block interaction target resolution entirely.
+        return Vec::new();
+      }
+      SemanticResolveResult::Invalid => continue,
+    };
+
+    let mut resolved_dom_node_id = semantic_dom_node_id;
+
+    // Client-side image maps: `<img usemap>` hit-testing resolves to the associated `<area>`.
+    if dom_index
+      .node(dom_node_id)
+      .and_then(|node| node.tag_name())
+      .is_some_and(|tag| tag.eq_ignore_ascii_case("img"))
+    {
+      if let Some(usemap) = dom_index
+        .node(dom_node_id)
+        .and_then(|node| node.get_attribute_ref("usemap"))
+      {
+        if let Some(image_point) = image_maps::local_point_in_fragment(fragment_tree, fragment, point) {
+          if let Some(area) = image_maps::hit_test_image_map(dom, usemap, image_point) {
+            if let Some(area_id) = dom_index.id_for_ptr(area as *const DomNode) {
+              resolved_dom_node_id = area_id;
+              if let Some(area_href) = area.get_attribute_ref("href") {
+                kind = HitTestKind::Link;
+                href = Some(area_href.to_string());
+              } else {
+                kind = HitTestKind::Other;
+                href = None;
+              }
+            }
+          }
+        }
+      }
+    }
+
+    if !seen.insert(resolved_dom_node_id) {
+      continue;
+    }
+
+    results.push(HitTestResult {
+      box_id,
+      styled_node_id,
+      dom_node_id: resolved_dom_node_id,
+      kind,
+      href,
+    });
+  }
+
+  results
+}
+
 pub fn resolve_label_associated_control(dom: &DomNode, label_node_id: usize) -> Option<usize> {
   let dom_index = DomIndex::new(dom);
   let label = dom_index.node(label_node_id)?;

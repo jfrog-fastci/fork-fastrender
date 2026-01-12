@@ -5913,6 +5913,159 @@ fn document_query_selector_all_native(
   Ok(Value::Object(array))
 }
 
+fn document_element_from_point_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(document_obj) = this else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+
+  {
+    let platform = dom_platform_mut(vm).ok_or(VmError::TypeError("Illegal invocation"))?;
+    let _ = platform.require_document_id(scope.heap(), Value::Object(document_obj))?;
+  };
+
+  let x = scope
+    .heap_mut()
+    .to_number(args.get(0).copied().unwrap_or(Value::Undefined))?;
+  let y = scope
+    .heap_mut()
+    .to_number(args.get(1).copied().unwrap_or(Value::Undefined))?;
+  if !x.is_finite() || !y.is_finite() {
+    return Ok(Value::Null);
+  }
+
+  let Some(document) = host.as_any_mut().downcast_mut::<BrowserDocumentDom2>() else {
+    // Safe no-op fallback for non-renderer-backed hosts.
+    return Ok(Value::Null);
+  };
+
+  let hit = match document.element_from_point(x as f32, y as f32) {
+    Ok(hit) => hit,
+    Err(_) => return Ok(Value::Null),
+  };
+  let Some(mut node_id) = hit else {
+    return Ok(Value::Null);
+  };
+
+  // Ensure we return an element wrapper. If hit testing returns a non-element (unexpected), walk up
+  // to the first element ancestor.
+  loop {
+    match &document.dom().node(node_id).kind {
+      NodeKind::Element { .. } => break,
+      _ => match document.dom().parent_node(node_id) {
+        Some(parent) => node_id = parent,
+        None => return Ok(Value::Null),
+      },
+    }
+  }
+
+  get_or_create_node_wrapper(vm, scope, document_obj, Some(document.dom()), node_id)
+}
+
+fn document_elements_from_point_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(document_obj) = this else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+
+  {
+    let platform = dom_platform_mut(vm).ok_or(VmError::TypeError("Illegal invocation"))?;
+    let _ = platform.require_document_id(scope.heap(), Value::Object(document_obj))?;
+  };
+
+  let x = scope
+    .heap_mut()
+    .to_number(args.get(0).copied().unwrap_or(Value::Undefined))?;
+  let y = scope
+    .heap_mut()
+    .to_number(args.get(1).copied().unwrap_or(Value::Undefined))?;
+
+  let mut ids: Vec<NodeId> = Vec::new();
+  let dom: Option<&dom2::Document>;
+  if x.is_finite() && y.is_finite() {
+    if let Some(document) = host.as_any_mut().downcast_mut::<BrowserDocumentDom2>() {
+      match document.elements_from_point(x as f32, y as f32) {
+        Ok(found) => {
+          ids = found;
+          dom = Some(document.dom());
+        }
+        Err(_) => {
+          dom = Some(document.dom());
+        }
+      }
+    } else {
+      dom = dom_from_vm_host(host);
+    }
+  } else {
+    dom = dom_from_vm_host(host);
+  }
+
+  let array = scope.alloc_array(0)?;
+  scope.push_root(Value::Object(array))?;
+  if let Some(intrinsics) = vm.intrinsics() {
+    scope
+      .heap_mut()
+      .object_set_prototype(array, Some(intrinsics.array_prototype()))?;
+  }
+
+  // Only BrowserDocumentDom2 can currently produce hit-tested results. For other hosts, return an
+  // empty array.
+  let Some(dom) = dom else {
+    let length_key = alloc_key(scope, "length")?;
+    scope.define_property(
+      array,
+      length_key,
+      PropertyDescriptor {
+        enumerable: false,
+        configurable: false,
+        kind: PropertyKind::Data {
+          value: Value::Number(0.0),
+          writable: true,
+        },
+      },
+    )?;
+    return Ok(Value::Object(array));
+  };
+
+  let mut written: usize = 0;
+  for node_id in ids.into_iter() {
+    let key = alloc_key(scope, &written.to_string())?;
+    let wrapper = get_or_create_node_wrapper(vm, scope, document_obj, Some(dom), node_id)?;
+    scope.define_property(array, key, data_desc(wrapper))?;
+    written = written.saturating_add(1);
+  }
+
+  let length_key = alloc_key(scope, "length")?;
+  scope.define_property(
+    array,
+    length_key,
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: false,
+      kind: PropertyKind::Data {
+        value: Value::Number(written as f64),
+        writable: true,
+      },
+    },
+  )?;
+
+  Ok(Value::Object(array))
+}
+
 fn element_query_selector_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -18848,6 +19001,42 @@ fn init_window_globals(
     document_obj,
     query_selector_all_key,
     data_desc(Value::Object(query_selector_all_func)),
+  )?;
+
+  // document.elementFromPoint
+  let element_from_point_key = alloc_key(&mut scope, "elementFromPoint")?;
+  let element_from_point_call_id = vm.register_native_call(document_element_from_point_native)?;
+  let element_from_point_name = scope.alloc_string("elementFromPoint")?;
+  scope.push_root(Value::String(element_from_point_name))?;
+  let element_from_point_func =
+    scope.alloc_native_function(element_from_point_call_id, None, element_from_point_name, 2)?;
+  scope.heap_mut().object_set_prototype(
+    element_from_point_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(element_from_point_func))?;
+  scope.define_property(
+    document_obj,
+    element_from_point_key,
+    data_desc(Value::Object(element_from_point_func)),
+  )?;
+
+  // document.elementsFromPoint
+  let elements_from_point_key = alloc_key(&mut scope, "elementsFromPoint")?;
+  let elements_from_point_call_id = vm.register_native_call(document_elements_from_point_native)?;
+  let elements_from_point_name = scope.alloc_string("elementsFromPoint")?;
+  scope.push_root(Value::String(elements_from_point_name))?;
+  let elements_from_point_func =
+    scope.alloc_native_function(elements_from_point_call_id, None, elements_from_point_name, 2)?;
+  scope.heap_mut().object_set_prototype(
+    elements_from_point_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(elements_from_point_func))?;
+  scope.define_property(
+    document_obj,
+    elements_from_point_key,
+    data_desc(Value::Object(elements_from_point_func)),
   )?;
 
   // document.createElement
