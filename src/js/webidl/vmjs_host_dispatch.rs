@@ -15,10 +15,8 @@ use crate::js::window_timers::{
   SET_INTERVAL_NOT_CALLABLE_ERROR, SET_INTERVAL_STRING_HANDLER_ERROR,
   SET_TIMEOUT_NOT_CALLABLE_ERROR, SET_TIMEOUT_STRING_HANDLER_ERROR,
 };
+use crate::js::{DomHost, DocumentHostState, TimerId, Url, UrlLimits, UrlSearchParams, WindowRealmHost};
 use std::any::TypeId;
-use crate::js::{
-  DomHost, DocumentHostState, TimerId, Url, UrlLimits, UrlSearchParams, WindowRealmHost,
-};
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::marker::PhantomData;
@@ -368,6 +366,43 @@ fn gc_object_id(obj: GcObject) -> u64 {
   // Must match `window_realm::gc_object_id`. Duplicated here to avoid introducing a large module
   // dependency edge from WebIDL host dispatch to `window_realm`.
   (obj.index() as u64) | ((obj.generation() as u64) << 32)
+}
+
+fn require_dom_platform_mut(vm: &mut Vm) -> Result<&mut DomPlatform, VmError> {
+  dom_platform_mut(vm).ok_or(VmError::TypeError("Illegal invocation"))
+}
+
+fn with_embedder_state_from_hooks<Host: 'static, R>(
+  vm: &mut Vm,
+  f: impl FnOnce(&mut Host) -> Result<R, VmError>,
+) -> Result<R, VmError> {
+  let Some(hooks_ptr) = vm.active_host_hooks_ptr() else {
+    return Err(VmError::TypeError(
+      "WebIDL DOM operation called without an active VmHostHooks payload",
+    ));
+  };
+  // SAFETY: the returned pointer is only exposed by `vm-js` while an embedder-owned `VmHostHooks`
+  // value is mutably borrowed for a single JS execution boundary.
+  let hooks = unsafe { &mut *hooks_ptr };
+
+  let Some(any) = hooks.as_any_mut() else {
+    return Err(VmError::TypeError(
+      "WebIDL DOM operation called without an Any-backed VmHostHooks payload",
+    ));
+  };
+
+  // SAFETY: `any_ptr` is derived from `hooks.as_any_mut()` and is only used within this block.
+  let any_ptr: *mut dyn std::any::Any = any;
+  let host = unsafe {
+    (&mut *any_ptr)
+      .downcast_mut::<VmJsHostHooksPayload>()
+      .and_then(|payload| payload.embedder_state_mut::<Host>())
+  }
+  .ok_or(VmError::TypeError(
+    "WebIDL DOM operation called without an embedder host state",
+  ))?;
+
+  f(host)
 }
 
 fn js_string_to_rust_string(scope: &Scope<'_>, value: Value) -> Result<String, VmError> {
@@ -800,6 +835,31 @@ impl<Host: WindowRealmHost + 'static> VmJsWebIdlBindingsHostDispatch<Host> {
       .get(&WeakGcObject::from(obj))
       .cloned()
       .ok_or(VmError::TypeError("Illegal invocation"))
+  }
+
+  fn dom_error_to_vm_error(
+    &self,
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    err: DomError,
+  ) -> VmError {
+    let name = err.code();
+    let message = "";
+
+    if let Some(intr) = vm.intrinsics() {
+      if let Some(global) = self.global {
+        if let Ok(dom_exception) = DomExceptionClassVmJs::install_for_global(vm, scope, global, intr) {
+          return crate::js::bindings::throw_dom_exception(scope, dom_exception, name, message);
+        }
+      }
+      // Fall back to a plain `Error` object if DOMException isn't available.
+      return crate::js::bindings::dom_exception_vmjs::throw_dom_exception_like_error(
+        scope, intr, name, message,
+      );
+    }
+
+    // No realm intrinsics; best-effort throw.
+    VmError::Throw(Value::Undefined)
   }
 
   fn url_proto_from_global(&self, vm: &mut Vm, scope: &mut Scope<'_>) -> Result<GcObject, VmError> {
@@ -1675,6 +1735,517 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         }
 
         Ok(Value::Bool(true))
+      }
+
+      ("Node", "nodeType", 0) => {
+        let receiver = receiver.unwrap_or(Value::Undefined);
+        let node_id = require_dom_platform_mut(vm)?.require_node_id(scope.heap(), receiver)?;
+        let node_type = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+          Ok(host.with_dom(|dom| {
+            if node_id.index() >= dom.nodes_len() {
+              return Err(DomError::NotFoundError);
+            }
+            Ok(match &dom.node(node_id).kind {
+              NodeKind::Document { .. } => 9,
+              NodeKind::DocumentFragment | NodeKind::ShadowRoot { .. } => 11,
+              NodeKind::Text { .. } => 3,
+              NodeKind::Comment { .. } => 8,
+              NodeKind::ProcessingInstruction { .. } => 7,
+              NodeKind::Doctype { .. } => 10,
+              NodeKind::Element { .. } | NodeKind::Slot { .. } => 1,
+            })
+          }))
+        })?;
+        match node_type {
+          Ok(code) => Ok(Value::Number(code as f64)),
+          Err(err) => Err(self.dom_error_to_vm_error(vm, scope, err)),
+        }
+      }
+      ("Node", "nodeName", 0) => {
+        let receiver = receiver.unwrap_or(Value::Undefined);
+        let node_id = require_dom_platform_mut(vm)?.require_node_id(scope.heap(), receiver)?;
+        let name = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+          Ok(host.with_dom(|dom| {
+            if node_id.index() >= dom.nodes_len() {
+              return Err(DomError::NotFoundError);
+            }
+            Ok(match &dom.node(node_id).kind {
+              NodeKind::Document { .. } => "#document".to_string(),
+              NodeKind::DocumentFragment | NodeKind::ShadowRoot { .. } => "#document-fragment".to_string(),
+              NodeKind::Text { .. } => "#text".to_string(),
+              NodeKind::Comment { .. } => "#comment".to_string(),
+              NodeKind::ProcessingInstruction { target, .. } => target.clone(),
+              NodeKind::Doctype { name, .. } => name.clone(),
+              NodeKind::Element { tag_name, .. } => tag_name.to_ascii_uppercase(),
+              NodeKind::Slot { .. } => "SLOT".to_string(),
+            })
+          }))
+        })?;
+        match name {
+          Ok(name) => {
+            let s = scope.alloc_string(&name)?;
+            scope.push_root(Value::String(s))?;
+            Ok(Value::String(s))
+          }
+          Err(err) => Err(self.dom_error_to_vm_error(vm, scope, err)),
+        }
+      }
+      ("Node", "parentNode", 0) => {
+        let receiver = receiver.unwrap_or(Value::Undefined);
+        let node_id = require_dom_platform_mut(vm)?.require_node_id(scope.heap(), receiver)?;
+        let parent = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+          Ok(host.with_dom(|dom| dom.parent(node_id)))
+        })?;
+        let parent = match parent {
+          Ok(v) => v,
+          Err(err) => return Err(self.dom_error_to_vm_error(vm, scope, err)),
+        };
+        let Some(parent_id) = parent else {
+          return Ok(Value::Null);
+        };
+        let primary = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+          Ok(host.with_dom(|dom| {
+            if parent_id.index() >= dom.nodes_len() {
+              DomInterface::Node
+            } else {
+              DomInterface::primary_for_node_kind(&dom.node(parent_id).kind)
+            }
+          }))
+        })?;
+        let wrapper = require_dom_platform_mut(vm)?.get_or_create_wrapper(scope, parent_id, primary)?;
+        scope.push_root(Value::Object(wrapper))?;
+        Ok(Value::Object(wrapper))
+      }
+      ("Node", "childNodes", 0) => {
+        // Transitional: return a JS Array of node wrappers in tree order.
+        //
+        // Follow-up task: replace with a real `NodeList` platform object wrapper.
+        let receiver = receiver.unwrap_or(Value::Undefined);
+        let node_id = require_dom_platform_mut(vm)?.require_node_id(scope.heap(), receiver)?;
+        let children = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+          Ok(host.with_dom(|dom| dom.children(node_id).map(|children| children.to_vec())))
+        })?;
+        let children = match children {
+          Ok(v) => v,
+          Err(err) => return Err(self.dom_error_to_vm_error(vm, scope, err)),
+        };
+
+        let intr = vm
+          .intrinsics()
+          .ok_or(VmError::InvariantViolation("missing intrinsics"))?;
+
+        let arr = scope.alloc_array(children.len())?;
+        scope.push_root(Value::Object(arr))?;
+        scope
+          .heap_mut()
+          .object_set_prototype(arr, Some(intr.array_prototype()))?;
+
+        for (idx, child_id) in children.into_iter().enumerate() {
+          let primary = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+            Ok(host.with_dom(|dom| {
+              if child_id.index() >= dom.nodes_len() {
+                DomInterface::Node
+              } else {
+                DomInterface::primary_for_node_kind(&dom.node(child_id).kind)
+              }
+            }))
+          })?;
+          let child_wrapper = require_dom_platform_mut(vm)?.get_or_create_wrapper(scope, child_id, primary)?;
+          scope.push_root(Value::Object(child_wrapper))?;
+
+          let idx_key = key_from_str(scope, &idx.to_string())?;
+          scope.define_property(
+            arr,
+            idx_key,
+            data_property(Value::Object(child_wrapper), true, true, true),
+          )?;
+        }
+
+        Ok(Value::Object(arr))
+      }
+      ("Node", "firstChild", 0) => {
+        let receiver = receiver.unwrap_or(Value::Undefined);
+        let node_id = require_dom_platform_mut(vm)?.require_node_id(scope.heap(), receiver)?;
+        let first = with_embedder_state_from_hooks::<Host, _>(vm, |host| Ok(host.with_dom(|dom| dom.first_child(node_id))))?;
+        let Some(first_id) = first else {
+          return Ok(Value::Null);
+        };
+        let primary = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+          Ok(host.with_dom(|dom| {
+            if first_id.index() >= dom.nodes_len() {
+              DomInterface::Node
+            } else {
+              DomInterface::primary_for_node_kind(&dom.node(first_id).kind)
+            }
+          }))
+        })?;
+        let wrapper = require_dom_platform_mut(vm)?.get_or_create_wrapper(scope, first_id, primary)?;
+        scope.push_root(Value::Object(wrapper))?;
+        Ok(Value::Object(wrapper))
+      }
+      ("Node", "lastChild", 0) => {
+        let receiver = receiver.unwrap_or(Value::Undefined);
+        let node_id = require_dom_platform_mut(vm)?.require_node_id(scope.heap(), receiver)?;
+        let last =
+          with_embedder_state_from_hooks::<Host, _>(vm, |host| Ok(host.with_dom(|dom| dom.last_child(node_id))))?;
+        let Some(last_id) = last else {
+          return Ok(Value::Null);
+        };
+        let primary = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+          Ok(host.with_dom(|dom| {
+            if last_id.index() >= dom.nodes_len() {
+              DomInterface::Node
+            } else {
+              DomInterface::primary_for_node_kind(&dom.node(last_id).kind)
+            }
+          }))
+        })?;
+        let wrapper = require_dom_platform_mut(vm)?.get_or_create_wrapper(scope, last_id, primary)?;
+        scope.push_root(Value::Object(wrapper))?;
+        Ok(Value::Object(wrapper))
+      }
+      ("Node", "nextSibling", 0) => {
+        let receiver = receiver.unwrap_or(Value::Undefined);
+        let node_id = require_dom_platform_mut(vm)?.require_node_id(scope.heap(), receiver)?;
+        let sib =
+          with_embedder_state_from_hooks::<Host, _>(vm, |host| Ok(host.with_dom(|dom| dom.next_sibling(node_id))))?;
+        let Some(sib_id) = sib else {
+          return Ok(Value::Null);
+        };
+        let primary = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+          Ok(host.with_dom(|dom| {
+            if sib_id.index() >= dom.nodes_len() {
+              DomInterface::Node
+            } else {
+              DomInterface::primary_for_node_kind(&dom.node(sib_id).kind)
+            }
+          }))
+        })?;
+        let wrapper = require_dom_platform_mut(vm)?.get_or_create_wrapper(scope, sib_id, primary)?;
+        scope.push_root(Value::Object(wrapper))?;
+        Ok(Value::Object(wrapper))
+      }
+      ("Node", "previousSibling", 0) => {
+        let receiver = receiver.unwrap_or(Value::Undefined);
+        let node_id = require_dom_platform_mut(vm)?.require_node_id(scope.heap(), receiver)?;
+        let sib = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+          Ok(host.with_dom(|dom| dom.previous_sibling(node_id)))
+        })?;
+        let Some(sib_id) = sib else {
+          return Ok(Value::Null);
+        };
+        let primary = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+          Ok(host.with_dom(|dom| {
+            if sib_id.index() >= dom.nodes_len() {
+              DomInterface::Node
+            } else {
+              DomInterface::primary_for_node_kind(&dom.node(sib_id).kind)
+            }
+          }))
+        })?;
+        let wrapper = require_dom_platform_mut(vm)?.get_or_create_wrapper(scope, sib_id, primary)?;
+        scope.push_root(Value::Object(wrapper))?;
+        Ok(Value::Object(wrapper))
+      }
+      ("Node", "textContent", 0) => {
+        let receiver = receiver.unwrap_or(Value::Undefined);
+        let node_id = require_dom_platform_mut(vm)?.require_node_id(scope.heap(), receiver)?;
+        if args.is_empty() {
+          let text = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+            Ok(host.with_dom(|dom| {
+              if node_id.index() >= dom.nodes_len() {
+                return Err(DomError::NotFoundError);
+              }
+              match &dom.node(node_id).kind {
+                NodeKind::Text { content } => Ok(Some(content.clone())),
+                NodeKind::Comment { content } => Ok(Some(content.clone())),
+                NodeKind::ProcessingInstruction { data, .. } => Ok(Some(data.clone())),
+                NodeKind::Doctype { .. } => Ok(None),
+                _ => {
+                  let mut out = String::new();
+                  for id in dom.subtree_preorder(node_id) {
+                    if let NodeKind::Text { content } = &dom.node(id).kind {
+                      out.push_str(content);
+                    }
+                  }
+                  Ok(Some(out))
+                }
+              }
+            }))
+          })?;
+          match text {
+            Ok(Some(text)) => {
+              let s = scope.alloc_string(&text)?;
+              scope.push_root(Value::String(s))?;
+              Ok(Value::String(s))
+            }
+            Ok(None) => Ok(Value::Null),
+            Err(err) => Err(self.dom_error_to_vm_error(vm, scope, err)),
+          }
+        } else {
+          let value = args.get(0).copied().unwrap_or(Value::Undefined);
+          let value = match value {
+            Value::Undefined | Value::Null => String::new(),
+            Value::String(_) => js_string_to_rust_string(scope, value)?,
+            other => {
+              let s = scope.heap_mut().to_string(other)?;
+              scope.heap().get_string(s)?.to_utf8_lossy()
+            }
+          };
+
+          let result = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+            Ok(host.mutate_dom(|dom| {
+              if node_id.index() >= dom.nodes_len() {
+                return (Err(DomError::NotFoundError), false);
+              }
+
+              // Fast-path: character-data nodes.
+              match &dom.node(node_id).kind {
+                NodeKind::Text { .. } => match dom.set_text_data(node_id, &value) {
+                  Ok(changed) => return (Ok(()), changed),
+                  Err(err) => return (Err(err), false),
+                },
+                NodeKind::Comment { .. } => {
+                  let old = match &dom.node(node_id).kind {
+                    NodeKind::Comment { content } => content.as_str(),
+                    _ => "",
+                  };
+                  if old == value.as_str() {
+                    return (Ok(()), false);
+                  }
+                  if let NodeKind::Comment { content } = &mut dom.node_mut(node_id).kind {
+                    content.clear();
+                    content.push_str(&value);
+                  }
+                  return (Ok(()), true);
+                }
+                NodeKind::ProcessingInstruction { .. } => {
+                  let old = match &dom.node(node_id).kind {
+                    NodeKind::ProcessingInstruction { data, .. } => data.as_str(),
+                    _ => "",
+                  };
+                  if old == value.as_str() {
+                    return (Ok(()), false);
+                  }
+                  if let NodeKind::ProcessingInstruction { data, .. } = &mut dom.node_mut(node_id).kind {
+                    data.clear();
+                    data.push_str(&value);
+                  }
+                  return (Ok(()), true);
+                }
+                NodeKind::Doctype { .. } => return (Ok(()), false),
+                _ => {}
+              }
+
+              // Replace children.
+              let children = match dom.children(node_id) {
+                Ok(children) => children.to_vec(),
+                Err(err) => return (Err(err), false),
+              };
+              let mut changed = false;
+              for child in children {
+                match dom.remove_child(node_id, child) {
+                  Ok(child_changed) => changed |= child_changed,
+                  Err(err) => return (Err(err), false),
+                }
+              }
+              if !value.is_empty() {
+                let text = dom.create_text(&value);
+                match dom.append_child(node_id, text) {
+                  Ok(child_changed) => changed |= child_changed,
+                  Err(err) => return (Err(err), false),
+                }
+              }
+              (Ok(()), changed)
+            }))
+          })?;
+          match result {
+            Ok(()) => Ok(Value::Undefined),
+            Err(err) => Err(self.dom_error_to_vm_error(vm, scope, err)),
+          }
+        }
+      }
+
+      ("Node", "appendChild", 0) => {
+        let receiver = receiver.unwrap_or(Value::Undefined);
+        let platform = require_dom_platform_mut(vm)?;
+        let parent_id = platform.require_node_id(scope.heap(), receiver)?;
+        let child_value = args.get(0).copied().unwrap_or(Value::Undefined);
+        let child_id = platform.require_node_id(scope.heap(), child_value)?;
+
+        let result = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+          Ok(host.mutate_dom(|dom| match dom.append_child(parent_id, child_id) {
+            Ok(changed) => (Ok(()), changed),
+            Err(err) => (Err(err), false),
+          }))
+        })?;
+        match result {
+          Ok(()) => {
+            let primary = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+              Ok(host.with_dom(|dom| {
+                if child_id.index() >= dom.nodes_len() {
+                  DomInterface::Node
+                } else {
+                  DomInterface::primary_for_node_kind(&dom.node(child_id).kind)
+                }
+              }))
+            })?;
+            let wrapper = require_dom_platform_mut(vm)?.get_or_create_wrapper(scope, child_id, primary)?;
+            scope.push_root(Value::Object(wrapper))?;
+            Ok(Value::Object(wrapper))
+          }
+          Err(err) => Err(self.dom_error_to_vm_error(vm, scope, err)),
+        }
+      }
+      ("Node", "insertBefore", 0) => {
+        let receiver = receiver.unwrap_or(Value::Undefined);
+        let platform = require_dom_platform_mut(vm)?;
+        let parent_id = platform.require_node_id(scope.heap(), receiver)?;
+        let child_value = args.get(0).copied().unwrap_or(Value::Undefined);
+        let child_id = platform.require_node_id(scope.heap(), child_value)?;
+        let reference = match args.get(1).copied() {
+          None | Some(Value::Undefined) | Some(Value::Null) => None,
+          Some(v) => Some(platform.require_node_id(scope.heap(), v)?),
+        };
+
+        let result = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+          Ok(host.mutate_dom(|dom| match dom.insert_before(parent_id, child_id, reference) {
+            Ok(changed) => (Ok(()), changed),
+            Err(err) => (Err(err), false),
+          }))
+        })?;
+        match result {
+          Ok(()) => {
+            let primary = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+              Ok(host.with_dom(|dom| {
+                if child_id.index() >= dom.nodes_len() {
+                  DomInterface::Node
+                } else {
+                  DomInterface::primary_for_node_kind(&dom.node(child_id).kind)
+                }
+              }))
+            })?;
+            let wrapper = require_dom_platform_mut(vm)?.get_or_create_wrapper(scope, child_id, primary)?;
+            scope.push_root(Value::Object(wrapper))?;
+            Ok(Value::Object(wrapper))
+          }
+          Err(err) => Err(self.dom_error_to_vm_error(vm, scope, err)),
+        }
+      }
+      ("Node", "removeChild", 0) => {
+        let receiver = receiver.unwrap_or(Value::Undefined);
+        let platform = require_dom_platform_mut(vm)?;
+        let parent_id = platform.require_node_id(scope.heap(), receiver)?;
+        let child_value = args.get(0).copied().unwrap_or(Value::Undefined);
+        let child_id = platform.require_node_id(scope.heap(), child_value)?;
+
+        let result = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+          Ok(host.mutate_dom(|dom| match dom.remove_child(parent_id, child_id) {
+            Ok(changed) => (Ok(()), changed),
+            Err(err) => (Err(err), false),
+          }))
+        })?;
+        match result {
+          Ok(()) => {
+            let primary = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+              Ok(host.with_dom(|dom| {
+                if child_id.index() >= dom.nodes_len() {
+                  DomInterface::Node
+                } else {
+                  DomInterface::primary_for_node_kind(&dom.node(child_id).kind)
+                }
+              }))
+            })?;
+            let wrapper = require_dom_platform_mut(vm)?.get_or_create_wrapper(scope, child_id, primary)?;
+            scope.push_root(Value::Object(wrapper))?;
+            Ok(Value::Object(wrapper))
+          }
+          Err(err) => Err(self.dom_error_to_vm_error(vm, scope, err)),
+        }
+      }
+      ("Node", "replaceChild", 0) => {
+        let receiver = receiver.unwrap_or(Value::Undefined);
+        let platform = require_dom_platform_mut(vm)?;
+        let parent_id = platform.require_node_id(scope.heap(), receiver)?;
+        let new_child_value = args.get(0).copied().unwrap_or(Value::Undefined);
+        let new_child_id = platform.require_node_id(scope.heap(), new_child_value)?;
+        let old_child_value = args.get(1).copied().unwrap_or(Value::Undefined);
+        let old_child_id = platform.require_node_id(scope.heap(), old_child_value)?;
+
+        let result = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+          Ok(host.mutate_dom(|dom| match dom.replace_child(parent_id, new_child_id, old_child_id) {
+            Ok(changed) => (Ok(()), changed),
+            Err(err) => (Err(err), false),
+          }))
+        })?;
+        match result {
+          Ok(()) => {
+            let primary = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+              Ok(host.with_dom(|dom| {
+                if old_child_id.index() >= dom.nodes_len() {
+                  DomInterface::Node
+                } else {
+                  DomInterface::primary_for_node_kind(&dom.node(old_child_id).kind)
+                }
+              }))
+            })?;
+            let wrapper = require_dom_platform_mut(vm)?.get_or_create_wrapper(scope, old_child_id, primary)?;
+            scope.push_root(Value::Object(wrapper))?;
+            Ok(Value::Object(wrapper))
+          }
+          Err(err) => Err(self.dom_error_to_vm_error(vm, scope, err)),
+        }
+      }
+      ("Node", "cloneNode", 0) => {
+        let receiver = receiver.unwrap_or(Value::Undefined);
+        let node_id = require_dom_platform_mut(vm)?.require_node_id(scope.heap(), receiver)?;
+        let deep = args.get(0).copied().unwrap_or(Value::Bool(false));
+        let deep = scope.heap().to_boolean(deep)?;
+
+        let result = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+          Ok(host.mutate_dom(|dom| match dom.clone_node(node_id, deep) {
+            Ok(cloned) => (Ok(cloned), false),
+            Err(err) => (Err(err), false),
+          }))
+        })?;
+        match result {
+          Ok(cloned_id) => {
+            let primary = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+              Ok(host.with_dom(|dom| {
+                if cloned_id.index() >= dom.nodes_len() {
+                  DomInterface::Node
+                } else {
+                  DomInterface::primary_for_node_kind(&dom.node(cloned_id).kind)
+                }
+              }))
+            })?;
+            let wrapper = require_dom_platform_mut(vm)?.get_or_create_wrapper(scope, cloned_id, primary)?;
+            scope.push_root(Value::Object(wrapper))?;
+            Ok(Value::Object(wrapper))
+          }
+          Err(err) => Err(self.dom_error_to_vm_error(vm, scope, err)),
+        }
+      }
+      ("Node", "remove", 0) => {
+        let receiver = receiver.unwrap_or(Value::Undefined);
+        let node_id = require_dom_platform_mut(vm)?.require_node_id(scope.heap(), receiver)?;
+        let result = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+          Ok(host.mutate_dom(|dom| {
+            let parent = match dom.parent(node_id) {
+              Ok(Some(p)) => p,
+              Ok(None) => return (Ok(()), false),
+              Err(err) => return (Err(err), false),
+            };
+            match dom.remove_child(parent, node_id) {
+              Ok(changed) => (Ok(()), changed),
+              Err(err) => (Err(err), false),
+            }
+          }))
+        })?;
+        match result {
+          Ok(()) => Ok(Value::Undefined),
+          Err(err) => Err(self.dom_error_to_vm_error(vm, scope, err)),
+        }
       }
 
       ("URL", "constructor", 0) => {
@@ -3337,6 +3908,248 @@ mod element_dispatch_tests {
     )?;
     assert!(matches!(result, Value::Object(_)));
 
+    Ok(())
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  use crate::js::window::WindowHostState;
+  use std::any::Any;
+  use vm_js::{Job, RealmId, VmHostHooks};
+
+  struct TestHooks {
+    payload: VmJsHostHooksPayload,
+  }
+
+  impl TestHooks {
+    fn new(host: &mut WindowHostState) -> Self {
+      let mut payload = VmJsHostHooksPayload::default();
+      payload.set_embedder_state(host);
+      Self { payload }
+    }
+  }
+
+  impl VmHostHooks for TestHooks {
+    fn host_enqueue_promise_job(&mut self, _job: Job, _realm: Option<RealmId>) {}
+
+    fn as_any_mut(&mut self) -> Option<&mut dyn Any> {
+      Some(&mut self.payload)
+    }
+  }
+
+  fn child_list_len(scope: &mut Scope<'_>, array: GcObject) -> Result<usize, VmError> {
+    scope.push_root(Value::Object(array))?;
+    let length_key = key_from_str(scope, "length")?;
+    match scope
+      .heap()
+      .object_get_own_data_property_value(array, &length_key)?
+      .unwrap_or(Value::Undefined)
+    {
+      Value::Number(n) if n.is_finite() && n >= 0.0 => Ok(n as usize),
+      _ => Err(VmError::TypeError("expected array.length to be a number")),
+    }
+  }
+
+  fn child_at(scope: &mut Scope<'_>, array: GcObject, idx: usize) -> Result<Value, VmError> {
+    scope.push_root(Value::Object(array))?;
+    let key = key_from_str(scope, &idx.to_string())?;
+    Ok(
+      scope
+        .heap()
+        .object_get_own_data_property_value(array, &key)?
+        .unwrap_or(Value::Undefined),
+    )
+  }
+
+  #[test]
+  fn node_append_child_attaches_and_traversal_reflects_it() -> Result<(), VmError> {
+    let dom = crate::dom2::parse_html("<div id=a></div>").unwrap();
+    let mut host = WindowHostState::new(dom, "https://example.invalid/").unwrap();
+
+    let parent_id = host
+      .with_dom(|dom| dom.get_element_by_id("a"))
+      .ok_or(VmError::TypeError("missing #a"))?;
+    let child_id = host.mutate_dom(|dom| (dom.create_element("span", ""), false));
+    let parent_primary =
+      host.with_dom(|dom| DomInterface::primary_for_node_kind(&dom.node(parent_id).kind));
+    let child_primary =
+      host.with_dom(|dom| DomInterface::primary_for_node_kind(&dom.node(child_id).kind));
+
+    // `VmJsHostHooksPayload::set_embedder_state` stores a raw pointer; create hooks before borrowing
+    // the window realm to avoid aliasing `&mut host`.
+    let mut hooks = TestHooks::new(&mut host);
+
+    let window = host.window_mut();
+    let (vm, realm, heap) = window.vm_realm_and_heap_mut();
+    let mut scope = heap.scope();
+
+    let mut dispatch = VmJsWebIdlBindingsHostDispatch::<WindowHostState>::new(realm.global_object());
+
+    let parent_wrapper = {
+      let wrapper =
+        require_dom_platform_mut(vm)?.get_or_create_wrapper(&mut scope, parent_id, parent_primary)?;
+      scope.push_root(Value::Object(wrapper))?;
+      wrapper
+    };
+    let child_wrapper = {
+      let wrapper = require_dom_platform_mut(vm)?.get_or_create_wrapper(&mut scope, child_id, child_primary)?;
+      scope.push_root(Value::Object(wrapper))?;
+      wrapper
+    };
+
+    let appended = vm.with_host_hooks_override(&mut hooks, |vm| {
+      dispatch.call_operation(
+        vm,
+        &mut scope,
+        Some(Value::Object(parent_wrapper)),
+        "Node",
+        "appendChild",
+        0,
+        &[Value::Object(child_wrapper)],
+      )
+    })?;
+    assert_eq!(appended, Value::Object(child_wrapper));
+
+    let parent_node = vm.with_host_hooks_override(&mut hooks, |vm| {
+      dispatch.call_operation(
+        vm,
+        &mut scope,
+        Some(Value::Object(child_wrapper)),
+        "Node",
+        "parentNode",
+        0,
+        &[],
+      )
+    })?;
+    assert_eq!(parent_node, Value::Object(parent_wrapper));
+
+    let first_child = vm.with_host_hooks_override(&mut hooks, |vm| {
+      dispatch.call_operation(
+        vm,
+        &mut scope,
+        Some(Value::Object(parent_wrapper)),
+        "Node",
+        "firstChild",
+        0,
+        &[],
+      )
+    })?;
+    assert_eq!(first_child, Value::Object(child_wrapper));
+
+    let child_nodes = vm.with_host_hooks_override(&mut hooks, |vm| {
+      dispatch.call_operation(
+        vm,
+        &mut scope,
+        Some(Value::Object(parent_wrapper)),
+        "Node",
+        "childNodes",
+        0,
+        &[],
+      )
+    })?;
+    let Value::Object(child_nodes_arr) = child_nodes else {
+      return Err(VmError::TypeError("expected childNodes to return an array object"));
+    };
+    assert_eq!(child_list_len(&mut scope, child_nodes_arr)?, 1);
+    assert_eq!(child_at(&mut scope, child_nodes_arr, 0)?, Value::Object(child_wrapper));
+
+    Ok(())
+  }
+
+  #[test]
+  fn node_append_child_brand_check_rejects_plain_object() -> Result<(), VmError> {
+    let dom = crate::dom2::parse_html("<div id=a></div>").unwrap();
+    let mut host = WindowHostState::new(dom, "https://example.invalid/").unwrap();
+
+    let parent_id = host
+      .with_dom(|dom| dom.get_element_by_id("a"))
+      .ok_or(VmError::TypeError("missing #a"))?;
+    let parent_primary =
+      host.with_dom(|dom| DomInterface::primary_for_node_kind(&dom.node(parent_id).kind));
+
+    let mut hooks = TestHooks::new(&mut host);
+
+    let window = host.window_mut();
+    let (vm, realm, heap) = window.vm_realm_and_heap_mut();
+    let mut scope = heap.scope();
+
+    let mut dispatch = VmJsWebIdlBindingsHostDispatch::<WindowHostState>::new(realm.global_object());
+    let parent_wrapper = {
+      let wrapper =
+        require_dom_platform_mut(vm)?.get_or_create_wrapper(&mut scope, parent_id, parent_primary)?;
+      scope.push_root(Value::Object(wrapper))?;
+      wrapper
+    };
+
+    let plain_obj = scope.alloc_object()?;
+    scope.push_root(Value::Object(plain_obj))?;
+    let err = vm
+      .with_host_hooks_override(&mut hooks, |vm| {
+        dispatch.call_operation(
+          vm,
+          &mut scope,
+          Some(Value::Object(parent_wrapper)),
+          "Node",
+          "appendChild",
+          0,
+          &[Value::Object(plain_obj)],
+        )
+      })
+      .expect_err("expected brand check to throw");
+    assert!(matches!(err, VmError::TypeError("Illegal invocation")));
+    Ok(())
+  }
+
+  #[test]
+  fn node_mutation_errors_throw_dom_exception_like() -> Result<(), VmError> {
+    let dom = crate::dom2::parse_html("<div id=a></div>").unwrap();
+    let mut host = WindowHostState::new(dom, "https://example.invalid/").unwrap();
+
+    let parent_text_id = host.mutate_dom(|dom| (dom.create_text("hi"), false));
+    let child_id = host.mutate_dom(|dom| (dom.create_element("span", ""), false));
+    let parent_primary =
+      host.with_dom(|dom| DomInterface::primary_for_node_kind(&dom.node(parent_text_id).kind));
+    let child_primary =
+      host.with_dom(|dom| DomInterface::primary_for_node_kind(&dom.node(child_id).kind));
+
+    let mut hooks = TestHooks::new(&mut host);
+
+    let window = host.window_mut();
+    let (vm, realm, heap) = window.vm_realm_and_heap_mut();
+    let mut scope = heap.scope();
+
+    let mut dispatch = VmJsWebIdlBindingsHostDispatch::<WindowHostState>::new(realm.global_object());
+
+    let text_wrapper = {
+      let wrapper =
+        require_dom_platform_mut(vm)?.get_or_create_wrapper(&mut scope, parent_text_id, parent_primary)?;
+      scope.push_root(Value::Object(wrapper))?;
+      wrapper
+    };
+    let child_wrapper = {
+      let wrapper =
+        require_dom_platform_mut(vm)?.get_or_create_wrapper(&mut scope, child_id, child_primary)?;
+      scope.push_root(Value::Object(wrapper))?;
+      wrapper
+    };
+
+    let err = vm
+      .with_host_hooks_override(&mut hooks, |vm| {
+        dispatch.call_operation(
+          vm,
+          &mut scope,
+          Some(Value::Object(text_wrapper)),
+          "Node",
+          "appendChild",
+          0,
+          &[Value::Object(child_wrapper)],
+        )
+      })
+      .expect_err("expected appendChild on Text to throw");
+    assert!(matches!(err, VmError::Throw(_) | VmError::ThrowWithStack { .. }));
     Ok(())
   }
 }
