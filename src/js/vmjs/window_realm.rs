@@ -7191,6 +7191,201 @@ impl<Host: WindowRealmHost + 'static> WindowRealmDomEventListenerInvoker<Host> {
     Some(unsafe { ptr.as_mut() })
   }
 
+  pub(crate) fn invoke_event_handler_property(
+    &mut self,
+    target: web_events::EventTargetId,
+    event: &mut web_events::Event,
+  ) -> std::result::Result<(), web_events::DomError> {
+    let target = target.normalize();
+
+    // SAFETY: `BrowserTabHost` stores the returned invoker alongside the owning executor, so the
+    // pointer remains valid for the lifetime of the host. Dispatch is single-threaded and
+    // non-reentrant with respect to other `WindowRealm` borrows.
+    let Some(realm) = unsafe { &mut *self.realm }.as_mut() else {
+      return Ok(());
+    };
+
+    let Some(mut host_ptr) = (unsafe { *self.vm_host }) else {
+      return Ok(());
+    };
+    // SAFETY: The embedding stores a stable heap-allocated host context (e.g. `BrowserDocumentDom2`)
+    // for the lifetime of the `WindowRealm` and updates the pointer on navigations.
+    let host_ctx: &mut dyn VmHost = unsafe { host_ptr.as_mut() };
+
+    let webidl_bindings_host: Option<&mut dyn WebIdlBindingsHost> =
+      unsafe { *self.webidl_bindings_host }.map(|mut host| unsafe { host.as_mut() });
+    let mut host_hooks = VmJsEventLoopHooks::<Host>::new_with_vm_host_and_window_realm(
+      host_ctx,
+      realm,
+      webidl_bindings_host,
+    );
+    if let Some(event_loop) = self.current_event_loop_mut() {
+      host_hooks.set_event_loop(event_loop);
+    }
+
+    // Host-driven dispatch is a "new turn" of JS execution: clear any prior termination state and
+    // install the latest per-run budgets from `JsExecutionOptions` so hostile handlers cannot hang
+    // the host.
+    realm.reset_interrupt();
+    let budget = realm.vm_budget_now();
+
+    let realm_id = realm.realm_id;
+    let (vm, realm_ref, heap) = realm.vm_realm_and_heap_mut();
+    let mut vm = vm.push_budget(budget);
+    vm.tick()
+      .map_err(|e| web_events::DomError::new(e.to_string()))?;
+    let mut scope = heap.scope();
+    let mut vm = vm.execution_context_guard(vm_js::ExecutionContext {
+      realm: realm_id,
+      script_or_module: None,
+    });
+
+    let window_obj = realm_ref.global_object();
+    let document_obj = {
+      scope
+        .push_root(Value::Object(window_obj))
+        .map_err(|e| web_events::DomError::new(e.to_string()))?;
+      let document_key =
+        alloc_key(&mut scope, "document").map_err(|e| web_events::DomError::new(e.to_string()))?;
+      match vm
+        .get(&mut scope, window_obj, document_key)
+        .map_err(|e| web_events::DomError::new(e.to_string()))?
+      {
+        Value::Object(obj) => obj,
+        _ => return Ok(()),
+      }
+    };
+
+    let dom_for_wrappers = dom_ptr_for_event_registry(host_ctx).map(|ptr| unsafe { ptr.as_ref() });
+    let target_value = Self::js_value_for_target(
+      &mut vm,
+      &mut scope,
+      window_obj,
+      document_obj,
+      dom_for_wrappers,
+      Some(target),
+    )
+    .map_err(|e| web_events::DomError::new(e.to_string()))?;
+    let Value::Object(target_obj) = target_value else {
+      return Ok(());
+    };
+
+    // Look up `on{type}` on the target object. This intentionally only checks own data properties:
+    // we do not yet have IDL EventHandler attribute plumbing (which would involve prototype
+    // accessors + stable callback storage on the underlying DOM node).
+    let handler_name = format!("on{}", event.type_);
+    scope
+      .push_root(Value::Object(target_obj))
+      .map_err(|e| web_events::DomError::new(e.to_string()))?;
+    let handler_key =
+      alloc_key(&mut scope, &handler_name).map_err(|e| web_events::DomError::new(e.to_string()))?;
+    let Some(handler) = scope
+      .heap()
+      .object_get_own_data_property_value(target_obj, &handler_key)
+      .map_err(|e| web_events::DomError::new(e.to_string()))?
+    else {
+      return Ok(());
+    };
+    if !scope
+      .heap()
+      .is_callable(handler)
+      .map_err(|e| web_events::DomError::new(e.to_string()))?
+    {
+      return Ok(());
+    }
+
+    // Expose `currentTarget`/`eventPhase` while the handler runs.
+    struct EventStateGuard<'a> {
+      event: &'a mut web_events::Event,
+      prev_target: Option<web_events::EventTargetId>,
+      prev_current_target: Option<web_events::EventTargetId>,
+      prev_phase: web_events::EventPhase,
+    }
+
+    impl Drop for EventStateGuard<'_> {
+      fn drop(&mut self) {
+        self.event.target = self.prev_target;
+        self.event.current_target = self.prev_current_target;
+        self.event.event_phase = self.prev_phase;
+      }
+    }
+
+    let mut state_guard = EventStateGuard {
+      prev_target: event.target,
+      prev_current_target: event.current_target,
+      prev_phase: event.event_phase,
+      event,
+    };
+    state_guard.event.target = Some(target);
+    state_guard.event.current_target = Some(target);
+    state_guard.event.event_phase = web_events::EventPhase::AtTarget;
+
+    let event_obj = Self::alloc_js_event_object(&mut scope, document_obj, state_guard.event)
+      .map_err(|e| web_events::DomError::new(e.to_string()))?;
+    scope
+      .push_root(Value::Object(event_obj))
+      .map_err(|e| web_events::DomError::new(e.to_string()))?;
+    Self::sync_event_object(
+      &mut vm,
+      &mut scope,
+      window_obj,
+      document_obj,
+      dom_for_wrappers,
+      event_obj,
+      state_guard.event,
+    )
+    .map_err(|e| web_events::DomError::new(e.to_string()))?;
+
+    let event_id = NEXT_ACTIVE_EVENT_ID.fetch_add(1, Ordering::Relaxed);
+    let _active_guard = push_active_event_for_host(host_ctx, event_id, state_guard.event);
+    let event_id_key =
+      alloc_key(&mut scope, EVENT_ID_KEY).map_err(|e| web_events::DomError::new(e.to_string()))?;
+    scope
+      .define_property(
+        event_obj,
+        event_id_key,
+        PropertyDescriptor {
+          enumerable: false,
+          configurable: true,
+          kind: PropertyKind::Data {
+            value: Value::Number(event_id as f64),
+            writable: true,
+          },
+        },
+      )
+      .map_err(|e| web_events::DomError::new(e.to_string()))?;
+
+    // Invoke callback, swallowing exceptions to match web platform behavior.
+    let call_result =
+      vm.call_with_host_and_hooks(host_ctx, &mut scope, &mut host_hooks, handler, target_value, &[Value::Object(event_obj)]);
+    match call_result {
+      Ok(ret) => {
+        // HTML EventHandler semantics: returning `false` cancels the event.
+        if matches!(ret, Value::Bool(false)) {
+          state_guard.event.prevent_default();
+        }
+      }
+      Err(err) => {
+        // Termination (out of fuel, interrupted, deadline exceeded) is not a "normal" exception: it
+        // is a safety mechanism enforced by the host, so it must propagate to the embedding.
+        if matches!(err, VmError::Termination(_)) {
+          return Err(web_events::DomError::new(err.to_string()));
+        }
+      }
+    }
+
+    // Mirror JS-visible flags back onto the Rust event in case Event.prototype methods were invoked
+    // with a host that does not support `ActiveEventStack`.
+    sync_rust_event_from_js_event_object(&mut scope, event_obj, state_guard.event)
+      .map_err(|e| web_events::DomError::new(e.to_string()))?;
+
+    if let Some(err) = host_hooks.finish(scope.heap_mut()) {
+      return Err(web_events::DomError::new(err.to_string()));
+    }
+
+    Ok(())
+  }
+
   fn js_value_for_target(
     vm: &mut Vm,
     scope: &mut Scope<'_>,

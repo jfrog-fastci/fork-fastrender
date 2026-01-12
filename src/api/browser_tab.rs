@@ -571,6 +571,7 @@ impl BrowserTabHost {
     mut event: Event,
     event_loop: &mut EventLoop<Self>,
   ) -> Result<bool> {
+    let target = target.normalize();
     let dom: &crate::dom2::Document = self.document.dom();
     let event_invoker = &mut self.event_invoker;
     if let Some(invoker) = event_invoker.as_any_mut().and_then(|any| {
@@ -578,7 +579,13 @@ impl BrowserTabHost {
     }) {
       return invoker.with_event_loop(event_loop, |invoker| {
         crate::web::events::dispatch_event(target, &mut event, dom, dom.events(), invoker)
-          .map_err(|err| Error::Other(err.to_string()))
+          .map_err(|err| Error::Other(err.to_string()))?;
+        if matches!(target, EventTargetId::Node(_)) {
+          invoker
+            .invoke_event_handler_property(target, &mut event)
+            .map_err(|err| Error::Other(err.to_string()))?;
+        }
+        Ok(!event.default_prevented)
       });
     }
 
@@ -6694,6 +6701,194 @@ mod tests {
     event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;
 
     assert_eq!(&*event_log.borrow(), &["error".to_string()]);
+    Ok(())
+  }
+
+  #[test]
+  fn script_onload_property_fires_for_external_script_success() -> Result<()> {
+    #[derive(Clone)]
+    struct MapFetcher {
+      entries: Arc<HashMap<String, FetchedResource>>,
+    }
+
+    impl ResourceFetcher for MapFetcher {
+      fn fetch(&self, url: &str) -> Result<FetchedResource> {
+        self
+          .entries
+          .get(url)
+          .cloned()
+          .ok_or_else(|| Error::Other(format!("missing fetcher entry for {url}")))
+      }
+    }
+
+    let script_url = "https://example.invalid/external.js";
+    let mut entries: HashMap<String, FetchedResource> = HashMap::new();
+    entries.insert(
+      script_url.to_string(),
+      FetchedResource::new(
+        br#"Promise.resolve().then(() => { push('s'); });"#.to_vec(),
+        Some("text/javascript".to_string()),
+      ),
+    );
+
+    let fetcher: Arc<dyn ResourceFetcher> = Arc::new(MapFetcher {
+      entries: Arc::new(entries),
+    });
+
+    let html = format!(
+      r#"<!doctype html><html><head><script>
+        window.__log = "";
+        window.push = (c) => {{ window.__log += c; }};
+
+        const s = document.createElement('script');
+        window.__script = s;
+        s.src = {script_url:?};
+        s.addEventListener('load', () => {{ push('l'); }});
+        s.onload = function (e) {{
+          window.__thisOk = (this === window.__script) ? '1' : '0';
+          window.__typeOk = (e && e.type === 'load') ? '1' : '0';
+          push('h');
+          Promise.resolve().then(() => {{
+            push('m');
+            document.documentElement.setAttribute('data-log', window.__log);
+            document.documentElement.setAttribute('data-this-ok', window.__thisOk);
+            document.documentElement.setAttribute('data-type-ok', window.__typeOk);
+          }});
+        }};
+        document.head.appendChild(s);
+      </script></head><body></body></html>"#
+    );
+
+    let mut tab = BrowserTab::from_html_with_vmjs_and_document_url_and_fetcher(
+      &html,
+      "https://example.invalid/index.html",
+      RenderOptions::default(),
+      fetcher,
+    )?;
+    tab.run_event_loop_until_idle(RunLimits::unbounded())?;
+
+    let dom = tab.dom();
+    let document_element = dom.document_element().expect("documentElement should exist");
+    let log = dom
+      .get_attribute(document_element, "data-log")
+      .expect("get_attribute should succeed")
+      .expect("expected onload microtask to write data-log");
+    assert!(
+      log.contains('s'),
+      "expected external script microtask to run before load event; got log={log:?}"
+    );
+    assert!(
+      log.contains('l'),
+      "expected addEventListener('load') listener to run; got log={log:?}"
+    );
+    assert!(
+      log.contains('h'),
+      "expected script.onload handler property to run; got log={log:?}"
+    );
+    assert!(
+      log.contains('m'),
+      "expected microtask queued by onload to run; got log={log:?}"
+    );
+    let m_idx = log.find('m').expect("expected microtask marker");
+    assert!(
+      m_idx > log.find('l').unwrap_or(usize::MAX) && m_idx > log.find('h').unwrap_or(usize::MAX),
+      "expected microtask to run after load listeners; got log={log:?}"
+    );
+    assert_eq!(
+      dom.get_attribute(document_element, "data-this-ok")
+        .expect("get_attribute should succeed"),
+      Some("1"),
+      "expected script.onload to receive this=script element",
+    );
+    assert_eq!(
+      dom.get_attribute(document_element, "data-type-ok")
+        .expect("get_attribute should succeed"),
+      Some("1"),
+      "expected script.onload to receive event argument with correct type",
+    );
+
+    Ok(())
+  }
+
+  #[test]
+  fn script_onerror_property_fires_for_missing_src_attribute() -> Result<()> {
+    #[derive(Clone)]
+    struct NoFetchExpected;
+
+    impl ResourceFetcher for NoFetchExpected {
+      fn fetch(&self, url: &str) -> Result<FetchedResource> {
+        Err(Error::Other(format!(
+          "unexpected fetch for missing-src onerror test: {url}"
+        )))
+      }
+    }
+
+    let html = r#"<!doctype html><html><head><script>
+      window.__log = "";
+      window.push = (c) => { window.__log += c; };
+
+      const s = document.createElement('script');
+      window.__script = s;
+      s.setAttribute('src', '');
+      s.addEventListener('error', () => { push('l'); });
+      s.onerror = function (e) {
+        window.__thisOk = (this === window.__script) ? '1' : '0';
+        window.__typeOk = (e && e.type === 'error') ? '1' : '0';
+        push('h');
+        Promise.resolve().then(() => {
+          push('m');
+          document.documentElement.setAttribute('data-log', window.__log);
+          document.documentElement.setAttribute('data-this-ok', window.__thisOk);
+          document.documentElement.setAttribute('data-type-ok', window.__typeOk);
+        });
+      };
+      document.head.appendChild(s);
+    </script></head><body></body></html>"#;
+
+    let fetcher: Arc<dyn ResourceFetcher> = Arc::new(NoFetchExpected);
+    let mut tab = BrowserTab::from_html_with_vmjs_and_document_url_and_fetcher(
+      html,
+      "https://example.invalid/index.html",
+      RenderOptions::default(),
+      fetcher,
+    )?;
+    tab.run_event_loop_until_idle(RunLimits::unbounded())?;
+
+    let dom = tab.dom();
+    let document_element = dom.document_element().expect("documentElement should exist");
+    let log = dom
+      .get_attribute(document_element, "data-log")
+      .expect("get_attribute should succeed")
+      .expect("expected onerror microtask to write data-log");
+    assert!(
+      log.contains('l'),
+      "expected addEventListener('error') listener to run; got log={log:?}"
+    );
+    assert!(
+      log.contains('h'),
+      "expected script.onerror handler property to run; got log={log:?}"
+    );
+    assert!(
+      log.contains('m'),
+      "expected microtask queued by onerror to run; got log={log:?}"
+    );
+    let m_idx = log.find('m').expect("expected microtask marker");
+    assert!(
+      m_idx > log.find('l').unwrap_or(usize::MAX) && m_idx > log.find('h').unwrap_or(usize::MAX),
+      "expected microtask to run after error listeners; got log={log:?}"
+    );
+    assert_eq!(
+      dom.get_attribute(document_element, "data-this-ok")
+        .expect("get_attribute should succeed"),
+      Some("1"),
+      "expected script.onerror to receive this=script element",
+    );
+    assert_eq!(
+      dom.get_attribute(document_element, "data-type-ok")
+        .expect("get_attribute should succeed"),
+      Some("1"),
+      "expected script.onerror to receive event argument with correct type",
+    );
     Ok(())
   }
 
