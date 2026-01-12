@@ -549,6 +549,27 @@ Non-fatal examples (see `ImportMapWarningKind`):
 Many warnings result in a `null` mapping entry in the normalized map (which module specifier
 resolution must treat as “blocked”).
 
+### BrowserTab: surfacing import map failures
+
+FastRender follows the HTML Standard’s split between **warnings** (“report a warning to the console”)
+and **errors** (exceptions reported to the global object):
+
+* Warnings are recorded as console warnings (`console.warn`-level diagnostics) with an `importmap:`
+  prefix.
+* Errors are recorded as:
+  * a console error (`console.error`-level diagnostics) with an `importmap:` prefix, and
+  * an uncaught JS exception diagnostic (for parity with other runtime errors), and
+  * a `window` `"error"` event (so `window.addEventListener('error', ...)` and `window.onerror` can
+    observe import map failures).
+
+Import maps are not JavaScript, so **inline** `<script type="importmap">` parse/registration
+failures **do not** fire `<script>` element `"error"` events in FastRender. This matches the HTML
+Standard’s `register an import map` algorithm, which reports the exception to the global object
+instead of the script element.
+
+Note: `<script type="importmap" src="...">` is not supported by the HTML Standard today; browsers
+fire a `<script>` element `"error"` event for this case, and FastRender matches that behavior.
+
 ---
 
 ## URL handling notes (important for callers)

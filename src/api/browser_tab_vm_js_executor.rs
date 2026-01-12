@@ -690,8 +690,8 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
     script_text: &str,
     spec: &ScriptElementSpec,
     _current_script: Option<crate::dom2::NodeId>,
-    _document: &mut BrowserDocumentDom2,
-    _event_loop: &mut crate::js::EventLoop<BrowserTabHost>,
+    document: &mut BrowserDocumentDom2,
+    event_loop: &mut crate::js::EventLoop<BrowserTabHost>,
   ) -> Result<()> {
     let base_url = spec.base_url.as_deref().unwrap_or("about:blank");
     let base_url = url::Url::parse(base_url)
@@ -718,15 +718,95 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
       return Ok(());
     }
 
-    let module_loader = realm.module_loader_handle();
-    let mut module_loader = module_loader.borrow_mut();
-    let import_map_state = module_loader.import_map_state_mut();
+    // Scope the module loader borrow so we can run JS (to dispatch a window `error` event) in the
+    // failure path. `WindowRealm::exec_script_source_with_host_and_hooks` registers per-script URL
+    // metadata with the module loader and will fail if the loader is still borrowed.
+    let registration_result = {
+      let module_loader = realm.module_loader_handle();
+      let mut module_loader = module_loader.borrow_mut();
+      let import_map_state = module_loader.import_map_state_mut();
+      register_import_map_with_limits(import_map_state, result, limits)
+    };
 
-    match register_import_map_with_limits(import_map_state, result, limits) {
+    match registration_result {
       Ok(()) => Ok(()),
       Err(err) => {
+        let formatted = format_import_map_error(&err);
         if let Some(diag) = self.diagnostics.as_ref() {
-          diag.record_js_exception(format_import_map_error(&err), None);
+          // Keep existing behavior: import map failures show up as "uncaught JS exceptions" in the
+          // diagnostics snapshot.
+          diag.record_js_exception(formatted.clone(), None);
+          // Additionally surface failures as console errors so tooling that only inspects console
+          // output (e.g. Playwright/Puppeteer console listeners) can observe import map failures.
+          diag.record_console_message(ConsoleMessageLevel::Error, format!("importmap: {formatted}"));
+        }
+
+        // WHATWG HTML: "register an import map" reports the error as an exception for the global
+        // object. This manifests as a window `error` event (observable via
+        // `window.addEventListener('error', ...)` and `window.onerror`).
+        //
+        // Note: browsers do not fire a `<script>` element "error" event for import map parse
+        // failures; see docs/import_maps.md.
+        let dispatch_message = formatted.clone();
+        let filename = self.document_url.clone();
+        // Best-effort: dispatching the error event must not crash parsing.
+        if let (Ok(message_lit), Ok(filename_lit)) = (
+          serde_json::to_string(&dispatch_message),
+          serde_json::to_string(&filename),
+        ) {
+          let (error_expr, error_message_lit) = match &err {
+            ImportMapError::Json(e) => (
+              "SyntaxError",
+              serde_json::to_string(&e.to_string()).unwrap_or_else(|_| "\"\"".to_string()),
+            ),
+            ImportMapError::TypeError(message) => (
+              "TypeError",
+              serde_json::to_string(message).unwrap_or_else(|_| "\"\"".to_string()),
+            ),
+            ImportMapError::LimitExceeded(message) => (
+              "TypeError",
+              serde_json::to_string(&format!("import map limit exceeded: {message}"))
+                .unwrap_or_else(|_| "\"\"".to_string()),
+            ),
+          };
+          let source = format!(
+             "(function(){{\
+               const ev = new Event('error', {{ cancelable: true }});\
+               try {{ ev.message = {message_lit}; }} catch (_) {{}}\
+               try {{ ev.filename = {filename_lit}; }} catch (_) {{}}\
+               try {{ ev.lineno = 0; }} catch (_) {{}}\
+               try {{ ev.colno = 0; }} catch (_) {{}}\
+               try {{ ev.error = new {error_expr}({error_message_lit}); }} catch (_) {{}}\
+               try {{ window.dispatchEvent(ev); }} catch (_) {{}}\
+             }})();"
+          );
+
+          let clock = event_loop.clock();
+          let _ = update_time_bindings_clock(realm.heap(), clock);
+          realm.reset_interrupt();
+          let webidl_bindings_host = match self.webidl_bindings_host {
+            Some(mut host_ptr) => Some(unsafe { host_ptr.as_mut() }),
+            None => None,
+          };
+          let mut hooks = VmJsEventLoopHooks::<BrowserTabHost>::new_with_vm_host_and_window_realm(
+            document,
+            realm,
+            webidl_bindings_host,
+          );
+          hooks.set_event_loop(event_loop);
+          let source_text = Arc::new(SourceText::new("<importmap error>", Arc::from(source)));
+          let result = realm.exec_script_source_with_host_and_hooks(document, &mut hooks, source_text);
+          if let Some(err) = hooks.finish(realm.heap_mut()) {
+            if let Some(diag) = self.diagnostics.as_ref() {
+              diag.record_console_message(ConsoleMessageLevel::Error, format!("importmap: error event dispatch failed: {err}"));
+            }
+          } else if let Err(vm_err) = result {
+            if vm_error_format::vm_error_is_js_exception(&vm_err) {
+              if let Some(diag) = self.diagnostics.as_ref() {
+                Self::record_js_exception(diag, realm, vm_err);
+              }
+            }
+          }
         }
         Ok(())
       }

@@ -11264,6 +11264,137 @@ html, body { margin: 0; padding: 0; }
   }
 
   #[test]
+  fn importmap_parse_failure_emits_console_error_diagnostic() -> Result<()> {
+    let mut js_options = JsExecutionOptions::default();
+    js_options.supports_module_scripts = true;
+
+    let html = r#"<!doctype html><body>
+      <script type="importmap">{"imports":{"react":}}</script>
+      <script type="module">
+        import x from "react";
+        document.body.setAttribute("data-importmap", String(x));
+      </script>
+    </body>"#;
+
+    let mut tab = BrowserTab::from_html_with_js_execution_options(
+      html,
+      RenderOptions::new().with_diagnostics_level(crate::api::DiagnosticsLevel::Basic),
+      crate::api::VmJsBrowserTabExecutor::default(),
+      js_options,
+    )?;
+    tab.run_event_loop_until_idle(RunLimits::unbounded())?;
+
+    let diagnostics = tab
+      .diagnostics_snapshot()
+      .expect("expected diagnostics to be enabled");
+    assert!(
+      diagnostics.console_messages.iter().any(|m| {
+        m.level == crate::api::ConsoleMessageLevel::Error
+          && m.message.contains("importmap:")
+          && m.message.contains("SyntaxError")
+      }),
+      "expected an import map parse error to surface as a console error; got: {diagnostics:?}"
+    );
+
+    Ok(())
+  }
+
+  #[test]
+  fn importmap_parse_failure_dispatches_window_error_event_but_not_script_error_event() -> Result<()> {
+    let mut js_options = JsExecutionOptions::default();
+    js_options.supports_module_scripts = true;
+
+    let html = r#"<!doctype html><body>
+      <script>
+        window.onerror = function (msg) {
+          document.body.setAttribute("data-window-onerror", String(msg));
+        };
+        window.addEventListener("error", function (e) {
+          document.body.setAttribute("data-window-error", String(e.message || ""));
+        });
+        const im = document.createElement("script");
+        im.type = "importmap";
+        im.addEventListener("error", function () {
+          document.body.setAttribute("data-importmap-script-error", "1");
+        });
+        im.textContent = "{\"imports\":{\"react\":}}";
+        document.body.appendChild(im);
+      </script>
+    </body>"#;
+
+    let mut tab = BrowserTab::from_html_with_js_execution_options(
+      html,
+      RenderOptions::default(),
+      crate::api::VmJsBrowserTabExecutor::default(),
+      js_options,
+    )?;
+    tab.run_event_loop_until_idle(RunLimits::unbounded())?;
+
+    let dom = tab.dom();
+    let body = dom.body().expect("body should exist");
+    assert_eq!(
+      dom.get_attribute(body, "data-importmap-script-error")
+        .expect("get_attribute should succeed"),
+      None,
+      "expected import map parse failures to not fire `<script>` element error events"
+    );
+    assert!(
+      dom.get_attribute(body, "data-window-error")
+        .expect("get_attribute should succeed")
+        .is_some(),
+      "expected import map parse failures to dispatch a window error event"
+    );
+    assert!(
+      dom.get_attribute(body, "data-window-onerror")
+        .expect("get_attribute should succeed")
+        .is_some(),
+      "expected import map parse failures to invoke window.onerror"
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn invalid_importmap_does_not_abort_later_module_scripts_and_is_not_applied() -> Result<()> {
+    let mut js_options = JsExecutionOptions::default();
+    js_options.supports_module_scripts = true;
+
+    let html = r#"<!doctype html><body>
+      <script type="importmap">{"imports":{"react":}}</script>
+      <script type="module">
+        document.body.setAttribute("data-module-ok", "1");
+      </script>
+      <script type="module">
+        import x from "react";
+        document.body.setAttribute("data-module-bare", String(x));
+      </script>
+    </body>"#;
+
+    let mut tab = BrowserTab::from_html_with_js_execution_options(
+      html,
+      RenderOptions::default(),
+      crate::api::VmJsBrowserTabExecutor::default(),
+      js_options,
+    )?;
+    tab.run_event_loop_until_idle(RunLimits::unbounded())?;
+
+    let dom = tab.dom();
+    let body = dom.body().expect("body should exist");
+    assert_eq!(
+      dom.get_attribute(body, "data-module-ok")
+        .expect("get_attribute should succeed"),
+      Some("1"),
+      "expected later module scripts to continue running after an import map parse failure"
+    );
+    assert_eq!(
+      dom.get_attribute(body, "data-module-bare")
+        .expect("get_attribute should succeed"),
+      None,
+      "expected invalid import maps to not be registered/applied to later module scripts"
+    );
+    Ok(())
+  }
+
+  #[test]
   fn import_maps_do_not_override_already_resolved_url_like_specifiers() -> Result<()> {
     let mut js_options = JsExecutionOptions::default();
     js_options.supports_module_scripts = true;
