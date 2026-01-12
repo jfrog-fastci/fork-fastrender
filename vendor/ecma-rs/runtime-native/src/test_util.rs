@@ -109,6 +109,22 @@ pub fn with_test_runtime<T>(f: impl FnOnce() -> T) -> T {
   f()
 }
 
+/// Test-only helper: run `f` while holding the global string-interner test lock.
+///
+/// This is used by integration tests that need deterministic behavior for interner GC/pruning.
+#[doc(hidden)]
+pub fn with_interner_test_lock<T>(f: impl FnOnce() -> T) -> T {
+  crate::interner::with_test_lock(f)
+}
+
+/// Test-only helper: force a GC/prune cycle for the global string interner.
+///
+/// Unpinned interned strings are weakly held and may be reclaimed after this call.
+#[doc(hidden)]
+pub fn interner_collect_garbage_for_tests() {
+  crate::interner::collect_garbage_for_tests();
+}
+
 /// Debug/test helper: hold the spawn_blocking queue lock.
 ///
 /// This exists to deterministically reproduce contention on the blocking pool's

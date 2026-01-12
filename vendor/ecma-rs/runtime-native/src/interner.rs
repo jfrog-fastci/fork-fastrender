@@ -351,6 +351,11 @@ pub(crate) fn pin_interned(id: InternedId) {
 /// Resolve an interned ID back to a [`StringRef`].
 ///
 /// Returns `None` if the ID is invalid or if the interned entry was reclaimed.
+///
+/// IMPORTANT: For non-pinned entries this returns a `StringRef` into a GC-managed allocation. The
+/// returned `ptr` must not be kept across any operation that may GC/safepoint. Use
+/// [`lookup_pinned`] (or the stable `rt_string_lookup` ABI) when a GC-stable byte pointer is
+/// required.
 #[allow(dead_code)] // Planned runtime API; currently used by tests and future debug tooling.
 pub(crate) fn lookup(id: InternedId) -> Option<StringRef> {
   ensure_thread_registered();
@@ -372,9 +377,35 @@ pub(crate) fn lookup(id: InternedId) -> Option<StringRef> {
   }
 }
 
-#[cfg(test)]
+/// Test-only helper: run `f` while holding a global interner lock.
+///
+/// This keeps interner tests deterministic under parallel execution.
 pub(crate) fn with_test_lock<T>(f: impl FnOnce() -> T) -> T {
   static TEST_LOCK: Lazy<parking_lot::Mutex<()>> = Lazy::new(|| parking_lot::Mutex::new(()));
   let _g = TEST_LOCK.lock();
   f()
+}
+
+/// Resolve an interned ID back to a [`StringRef`], but only for pinned entries.
+///
+/// This is the GC-safe lookup used by the stable `rt_string_lookup` ABI: pinned entries are stored
+/// as owned `Arc<[u8]>` outside the GC heap, so the returned `ptr` is stable across moving GC
+/// cycles.
+pub(crate) fn lookup_pinned(id: InternedId) -> Option<StringRef> {
+  ensure_thread_registered();
+  let tables = INTERNER.tables.load_full();
+  let idx = usize::try_from(id.0).ok()?;
+  match tables.entries.get(idx)? {
+    Entry::Pinned { bytes } => Some(StringRef {
+      ptr: bytes.as_ptr(),
+      len: bytes.len(),
+    }),
+    Entry::Weak { .. } | Entry::Dead => None,
+  }
+}
+
+/// Force a GC cycle for the interner's internal heap (test-only).
+pub(crate) fn collect_garbage_for_tests() {
+  ensure_thread_registered();
+  crate::rt_gc_collect();
 }

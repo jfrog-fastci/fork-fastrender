@@ -471,3 +471,26 @@ pub extern "C" fn rt_string_pin_interned(id: InternedId) {
     interner::pin_interned(id);
   })
 }
+
+/// Look up the bytes for a pinned interned string ID.
+///
+/// Returns false if `id` is invalid, was reclaimed, or is not pinned.
+///
+/// # Safety
+/// `out` must be a valid, aligned pointer to a writable [`StringRef`].
+#[no_mangle]
+pub unsafe extern "C" fn rt_string_lookup(id: InternedId, out: *mut StringRef) -> bool {
+  abort_on_panic(|| unsafe {
+    if out.is_null() {
+      trap::rt_trap_invalid_arg("rt_string_lookup: `out` was null");
+    }
+
+    if let Some(s) = interner::lookup_pinned(id) {
+      *out = s;
+      true
+    } else {
+      *out = StringRef::empty();
+      false
+    }
+  })
+}

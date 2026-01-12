@@ -107,12 +107,16 @@ fn runtime_native_c_header_contains_expected_abi_symbols() {
     "rt_io_register_rooted_h(",
     "rt_io_register_with_drop(",
     "rt_io_update(",
-    "rt_io_unregister(",
-    // Legacy promise resolution ABI.
-    "rt_promise_resolve_into_legacy(",
-    "rt_promise_resolve_promise_legacy(",
-    "rt_promise_resolve_thenable_legacy(",
-    "rt_coro_await_value_legacy(",
+     "rt_io_unregister(",
+     // Interned strings.
+     "rt_string_intern(",
+     "rt_string_pin_interned(",
+     "rt_string_lookup(",
+     // Legacy promise resolution ABI.
+     "rt_promise_resolve_into_legacy(",
+     "rt_promise_resolve_promise_legacy(",
+     "rt_promise_resolve_thenable_legacy(",
+     "rt_coro_await_value_legacy(",
   ] {
     assert!(
       HEADER.contains(sym),
@@ -261,6 +265,16 @@ fn runtime_native_exports_match_expected_abi_signatures() {
   let _backing_store_external_bytes: extern "C" fn() -> usize =
     runtime_native::rt_backing_store_external_bytes;
   let _keep_alive: unsafe extern "C" fn(*mut u8) = rt_keep_alive_gc_ref;
+
+  // Strings.
+  let _string_concat: extern "C" fn(*const u8, usize, *const u8, usize) -> runtime_native::abi::StringRef =
+    runtime_native::rt_string_concat;
+  let _string_intern: extern "C" fn(*const u8, usize) -> runtime_native::abi::InternedId =
+    runtime_native::rt_string_intern;
+  let _string_pin_interned: extern "C" fn(runtime_native::abi::InternedId) =
+    runtime_native::rt_string_pin_interned;
+  let _string_lookup: unsafe extern "C" fn(runtime_native::abi::InternedId, *mut runtime_native::abi::StringRef) -> bool =
+    runtime_native::rt_string_lookup;
 
   // Parallel → Promise bridge.
   let _parallel_spawn_promise: extern "C" fn(
@@ -483,6 +497,10 @@ fn runtime_native_exports_match_expected_abi_signatures() {
     _write_barrier_range,
     _backing_store_external_bytes,
     _keep_alive,
+    _string_concat,
+    _string_intern,
+    _string_pin_interned,
+    _string_lookup,
     _parallel_spawn_promise,
     _promise_init,
     _promise_fulfill,
