@@ -5,7 +5,7 @@ use typecheck_ts::{FileKey, MemoryHost, Program};
 
 #[test]
 fn reports_implicit_any_for_params_and_destructuring() {
-  let source = "function f(x) { return x; }\nconst {a} = something;";
+  let source = "function f(x) { return x; }\nconst something: unknown = null as unknown;\nconst {a} = something;";
   let key = FileKey::new("main.ts");
   let mut host = MemoryHost::with_options(CompilerOptions {
     no_implicit_any: true,

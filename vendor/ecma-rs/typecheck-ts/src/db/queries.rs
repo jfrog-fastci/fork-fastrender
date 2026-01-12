@@ -2747,16 +2747,58 @@ pub mod body_check {
         if *span != func_span {
           continue;
         }
-        if let Some(ty) = parent_result.expr_types.get(idx).copied() {
-          if store.contains_type_id(ty)
-            && matches!(
-              store.type_kind(ty),
-              types_ts_interned::TypeKind::Callable { .. }
-            )
-          {
-            return Some(ty);
-          }
+        let Some(ty) = parent_result.expr_types.get(idx).copied() else {
+          continue;
+        };
+        if !store.contains_type_id(ty)
+          || !matches!(
+            store.type_kind(ty),
+            types_ts_interned::TypeKind::Callable { .. }
+          )
+        {
+          continue;
         }
+
+        // Avoid using the function expression's own inferred signature as its
+        // "contextual type". Without this guard, uncontextualized arrow/function
+        // expressions can appear contextually typed by a callable type that was
+        // derived from the expression itself, which suppresses `--noImplicitAny`
+        // diagnostics for parameters.
+        let should_skip_self_context = (|| {
+          let Some(meta) = db.bc_body_info(parent) else {
+            return false;
+          };
+          let Some(hir_body_id) = meta.hir else {
+            return false;
+          };
+          let Some(lowered) = db.bc_lower_hir(meta.file) else {
+            return false;
+          };
+          let Some(parent_body) = lowered.body(hir_body_id) else {
+            return false;
+          };
+          let Some(expr) = parent_body.exprs.get(idx) else {
+            return false;
+          };
+          let hir_js::ExprKind::FunctionExpr { def, body, .. } = &expr.kind else {
+            return false;
+          };
+          if *body != body_id {
+            return false;
+          }
+          let Some(def_ty) = db.context.interned_def_types.get(def).copied() else {
+            return false;
+          };
+          if !store.contains_type_id(def_ty) {
+            return false;
+          }
+          store.canon(def_ty) == store.canon(ty)
+        })();
+        if should_skip_self_context {
+          continue;
+        }
+
+        return Some(ty);
       }
       current = db.context.body_parents.get(&parent).copied();
     }
