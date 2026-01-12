@@ -336,6 +336,33 @@ fn opaque_axis_aligned_rect_fills_snap_half_pixel_edges_like_chrome() {
 }
 
 #[test]
+fn semi_transparent_axis_aligned_rect_fills_snap_half_pixel_edges_like_chrome() {
+  // Chrome/Skia rasterize axis-aligned rect fills without anti-aliasing and decide coverage based
+  // on pixel centers ("open min / closed max"), even when the fill is semi-transparent.
+  //
+  // This matters for hairlines like `height: 0.5px`, which should cover a full device pixel row
+  // (not a half-coverage blended row).
+  let bg = Rgba::WHITE;
+  let src = Rgba::BLACK.with_alpha(0.4);
+  let mut canvas = Canvas::new(10, 2, bg).unwrap();
+  canvas.draw_rect(Rect::from_xywh(0.0, 0.0, 10.0, 0.5), src);
+
+  let p0 = canvas.pixmap().pixel(0, 0).unwrap();
+  assert_eq!(
+    (p0.red(), p0.green(), p0.blue(), p0.alpha()),
+    (153, 153, 153, 255),
+    "expected 0.5px-high rect to cover the first scanline at full alpha (0.4 over white)"
+  );
+
+  let p1 = canvas.pixmap().pixel(0, 1).unwrap();
+  assert_eq!(
+    (p1.red(), p1.green(), p1.blue(), p1.alpha()),
+    (255, 255, 255, 255),
+    "expected rect not to bleed into the next scanline"
+  );
+}
+
+#[test]
 fn near_opaque_axis_aligned_rect_fills_are_pixel_snapped() {
   let mut canvas = Canvas::new(10, 60, Rgba::WHITE).unwrap();
 

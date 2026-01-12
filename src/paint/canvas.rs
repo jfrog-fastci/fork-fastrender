@@ -2067,7 +2067,7 @@ impl Canvas {
     self.mirror_to_source_alpha(|canvas| canvas.draw_rect_impl(rect, color));
   }
 
-  fn snapped_device_rect_for_opaque_axis_aligned_fill(
+  fn snapped_device_rect_for_axis_aligned_fill(
     &self,
     rect: Rect,
     transform: Transform,
@@ -2077,9 +2077,13 @@ impl Canvas {
     if transform.kx.abs() > 1e-6 || transform.ky.abs() > 1e-6 {
       return None;
     }
-    // This snapping path exists to avoid seams between adjacent opaque backgrounds whose edges
-    // land on fractional device pixels. It must not quantize animated CSS transforms (e.g.
-    // `transform: translateX(0.5px)`), otherwise transitions appear to "stick" to integer pixels.
+    // This snapping path exists to:
+    // - avoid seams between adjacent backgrounds whose edges land on fractional device pixels
+    // - match Chrome/Skia's non-AA axis-aligned rect fill coverage for both opaque fills and
+    //   semi-transparent hairlines (e.g. 0.5px dividers).
+    //
+    // It must not quantize animated CSS transforms (e.g. `transform: translateX(0.5px)`), otherwise
+    // transitions appear to "stick" to integer pixels.
     //
     // Restrict snapping to translation-only transforms whose translation is already near an
     // integer device pixel.
@@ -2104,11 +2108,11 @@ impl Canvas {
     // Snap in *device* space so the resulting fill is stable under translated canvases
     // (e.g. tile-based rendering).
     //
-    // We intentionally do *not* require that the rect edges are already near integer pixels. Chrome
-    // / Skia fill axis-aligned opaque rectangles without anti-aliasing, so pixels are covered
-    // based on their centers using an "open min / closed max" rule. Using the same pixel-center
-    // rule avoids blended seams/border "bleed" when layout produces fractional edges like
-    // `left: 2.8px` or `height: 51.6px`.
+    // We intentionally do *not* require that the rect edges are already near integer pixels.
+    // Chrome/Skia fill axis-aligned rectangles without anti-aliasing, so pixels are covered based
+    // on their centers using an "open min / closed max" rule. Using the same pixel-center rule
+    // avoids blended seams/border "bleed" when layout produces fractional edges like `left: 2.8px`
+    // or `height: 51.6px`.
     let x0 = rect.min_x();
     let x1 = rect.max_x();
     let y0 = rect.min_y();
@@ -2213,7 +2217,12 @@ impl Canvas {
       return false;
     }
 
-    let mut dev_rect = Rect::from_xywh(rect.x() + tx, rect.y() + ty, rect.width(), rect.height());
+    // Chrome/Skia treat axis-aligned rect fills as non-AA and determine covered pixels based on
+    // pixel centers ("open min / closed max"), even for semi-transparent fills. This matters for
+    // hairlines like `height: 0.5px` which should cover a full 1px scanline in Chrome.
+    let Some(mut dev_rect) = self.snapped_device_rect_for_axis_aligned_fill(rect, transform) else {
+      return false;
+    };
 
     if let Some(clip) = self.current_state.clip_rect {
       dev_rect = match dev_rect.intersection(clip) {
@@ -2608,8 +2617,7 @@ impl Canvas {
         let ty_round = transform.ty.round();
         if (transform.tx - tx_round).abs() <= 1e-3 && (transform.ty - ty_round).abs() <= 1e-3 {
           // First try the seam-avoidance snap that rounds near-integer rect edges in device space.
-          if let Some(snapped) =
-            self.snapped_device_rect_for_opaque_axis_aligned_fill(rect, transform)
+          if let Some(snapped) = self.snapped_device_rect_for_axis_aligned_fill(rect, transform)
           {
             if let Some(skia_rect) = self.to_skia_rect(snapped) {
               let path = PathBuilder::from_rect(skia_rect);
@@ -3051,7 +3059,7 @@ impl Canvas {
       && (transform.sx - 1.0).abs() <= 1e-6
       && (transform.sy - 1.0).abs() <= 1e-6
     {
-      if let Some(snapped) = self.snapped_device_rect_for_opaque_axis_aligned_fill(rect, transform)
+      if let Some(snapped) = self.snapped_device_rect_for_axis_aligned_fill(rect, transform)
       {
         (snapped, Transform::identity())
       } else {

@@ -14,7 +14,7 @@
     "layout": 82.94517296666666,
     "paint": 73.95111806666667
   },
-  "notes": "",
+  "notes": "Homepage content (not a paywall/interstitial). Remaining diffs vs Chrome are dominated by typography: the fixture references many proprietary webfonts (AGaramondPro, Atlantic Serif, Logic Monospace, etc) via 0-byte `assets/missing_*.bin` placeholders, so font fallback/text metrics + rasterization differ.",
   "accuracy": {
     "baseline": "chrome",
     "diff_pixels": 104879,
