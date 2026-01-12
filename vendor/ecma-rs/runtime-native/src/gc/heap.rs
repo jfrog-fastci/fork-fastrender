@@ -503,7 +503,7 @@ impl GcHeap {
       .saturating_add(self.external_bytes())
   }
 
-  fn projected_total_bytes_with(
+  pub(crate) fn projected_total_bytes_with(
     &self,
     additional_immix_blocks: usize,
     additional_los_objects: usize,
@@ -517,7 +517,7 @@ impl GcHeap {
   }
 
   #[inline]
-  fn projected_total_bytes_including_external_with(
+  pub(crate) fn projected_total_bytes_including_external_with(
     &self,
     additional_immix_blocks: usize,
     additional_los_objects: usize,

@@ -79,7 +79,7 @@ fn gc_config_api_child() {
   ensure_shape_table();
 
   // First allocation initializes the process-global heap.
-  let first_obj = rt_alloc(256, RtShapeId(1)) as usize;
+  let mut first_obj = rt_alloc(256, RtShapeId(1)) as usize;
 
   let mut young_start: *mut u8 = core::ptr::null_mut();
   let mut young_end: *mut u8 = core::ptr::null_mut();
@@ -88,17 +88,33 @@ fn gc_config_api_child() {
   }
   assert!(!young_start.is_null());
   assert!(!young_end.is_null());
-  assert_eq!(young_end as usize - young_start as usize, cfg.nursery_size_bytes);
-  assert!((young_start as usize..young_end as usize).contains(&first_obj));
+  let mut young_start_addr = young_start as usize;
+  let mut young_end_addr = young_end as usize;
+  assert_eq!(young_end_addr - young_start_addr, cfg.nursery_size_bytes);
+  assert!((young_start_addr..young_end_addr).contains(&first_obj));
 
   // With a small nursery and a low minor-GC trigger threshold, the allocator should trigger a minor
   // collection quickly. A rooted young object should then be evacuated/promoted out of the nursery.
+  //
+  // Tag the start/end and root pointers so conservative stack scanning (used when stackmaps are
+  // unavailable) does not treat these raw heap addresses as GC roots.
+  let young_start_tagged = young_start_addr | 1;
+  let young_end_tagged = young_end_addr | 1;
+  // Avoid leaving raw heap addresses on the stack: conservative scanning may treat them as roots.
+  unsafe {
+    core::ptr::write_volatile(&mut first_obj, 0);
+    core::ptr::write_volatile(&mut young_start_addr, 0);
+    core::ptr::write_volatile(&mut young_end_addr, 0);
+    core::ptr::write_volatile(&mut young_start, core::ptr::null_mut());
+    core::ptr::write_volatile(&mut young_end, core::ptr::null_mut());
+  }
+
   let rooted = Root::<u8>::new(rt_alloc(256, RtShapeId(1)));
   let mut promoted = false;
   for _ in 0..4096 {
     let _ = rt_alloc(256, RtShapeId(1));
-    let obj = rooted.get() as usize;
-    if !(young_start as usize..young_end as usize).contains(&obj) {
+    let obj = (rooted.get() as usize) | 1;
+    if obj < young_start_tagged || obj >= young_end_tagged {
       promoted = true;
       break;
     }

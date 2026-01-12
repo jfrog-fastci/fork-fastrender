@@ -531,9 +531,13 @@ fn validate_descriptor(index: usize, desc: &RtShapeDescriptor) {
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::roots::Root;
+  use crate::test_util::TestRuntimeGuard;
 
   #[test]
   fn register_table_and_trace_uses_offsets() {
+    let _rt = TestRuntimeGuard::new();
+
     // Invalid registration is rejected (offset inside ObjHeader).
     static HEADER_PTR_OFFSETS: [u32; 1] = [0];
     static HEADER_TABLE: [RtShapeDescriptor; 1] = [RtShapeDescriptor {
@@ -575,31 +579,39 @@ mod tests {
         crate::rt_thread_init(0);
       }
 
-      // Allocate objects via the runtime ABI (`rt_alloc`) so we exercise the shape table wiring.
-      let wrapper = crate::rt_alloc(weird_desc.size, weird);
-      let should_live = crate::rt_alloc(mem::size_of::<ObjHeader>(), leaf);
-      let should_die = crate::rt_alloc(mem::size_of::<ObjHeader>(), leaf);
-      assert!(!wrapper.is_null());
-      assert!(!should_live.is_null());
-      assert!(!should_die.is_null());
+      {
+        // Allocate objects via the runtime ABI (`rt_alloc`) so we exercise the shape table wiring.
+        //
+        // Use a `Root` so this test is safe under parallel execution: other tests may trigger
+        // stop-the-world GC during these allocations, and GC-managed pointers stored in plain Rust
+        // locals are not scanned unless rooted.
+        let wrapper = Root::<u8>::new(crate::rt_alloc(weird_desc.size, weird));
 
-      // Wrapper has two pointer-sized slots at offsets header+0 and header+ptr_size, but the
-      // descriptor only lists the second one (WEIRD_PTR_OFFSETS).
-      let base = wrapper as *mut u8;
-      *base.add(mem::size_of::<ObjHeader>()).cast::<*mut u8>() = should_die;
-      *base
-        .add(mem::size_of::<ObjHeader>() + mem::size_of::<*mut u8>())
-        .cast::<*mut u8>() = should_live;
+        // Wrapper has two pointer-sized slots at offsets header+0 and header+ptr_size, but the
+        // descriptor only lists the second one (WEIRD_PTR_OFFSETS). Store the live value in the
+        // traced slot before the next allocation (which may trigger GC).
+        let should_live = crate::rt_alloc(mem::size_of::<ObjHeader>(), leaf);
+        assert!(!should_live.is_null());
+        let base = wrapper.get() as *mut u8;
+        *base
+          .add(mem::size_of::<ObjHeader>() + mem::size_of::<*mut u8>())
+          .cast::<*mut u8>() = should_live;
 
-      let mut seen = Vec::<usize>::new();
-      crate::gc::for_each_ptr_slot(base, |slot| {
-        seen.push(slot as usize);
-      });
+        let should_die = crate::rt_alloc(mem::size_of::<ObjHeader>(), leaf);
+        assert!(!should_die.is_null());
+        let base = wrapper.get() as *mut u8;
+        *base.add(mem::size_of::<ObjHeader>()).cast::<*mut u8>() = should_die;
 
-      let expected_slot = base
-        .add(mem::size_of::<ObjHeader>() + mem::size_of::<*mut u8>())
-        .cast::<*mut u8>() as usize;
-      assert_eq!(seen, vec![expected_slot]);
+        let mut seen = Vec::<usize>::new();
+        crate::gc::for_each_ptr_slot(base, |slot| {
+          seen.push(slot as usize);
+        });
+
+        let expected_slot = base
+          .add(mem::size_of::<ObjHeader>() + mem::size_of::<*mut u8>())
+          .cast::<*mut u8>() as usize;
+        assert_eq!(seen, vec![expected_slot]);
+      }
 
       if !was_registered {
         crate::rt_thread_deinit();

@@ -24,6 +24,13 @@ use std::ptr;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 use std::sync::OnceLock;
 
+/// Per-thread sampling period for checking nursery usage against
+/// `HeapConfig::minor_gc_nursery_used_percent`.
+///
+/// The check itself reads a global atomic bump pointer and compares against a
+/// static nursery size; keep it off the hot path by only checking occasionally.
+const MINOR_GC_CHECK_PERIOD_BYTES: usize = 256 * 1024;
+
 #[inline(always)]
 fn align_up(addr: usize, align: usize) -> usize {
   debug_assert!(align.is_power_of_two());
@@ -150,6 +157,7 @@ struct ThreadAlloc {
   immix: ImmixCursor,
   nursery_epoch: u64,
   major_epoch: u64,
+  minor_gc_check_debt: usize,
 }
 
 impl ThreadAlloc {
@@ -159,6 +167,7 @@ impl ThreadAlloc {
       immix: ImmixCursor::new(),
       nursery_epoch: 0,
       major_epoch: 0,
+      minor_gc_check_debt: MINOR_GC_CHECK_PERIOD_BYTES,
     }
   }
 
@@ -331,30 +340,6 @@ fn current_mark_epoch(global: &GlobalHeap) -> u8 {
   unsafe { (*(global.heap as *mut crate::gc::GcHeap)).mark_epoch }
 }
 
-#[inline]
-fn should_trigger_minor(global: &GlobalHeap) -> bool {
-  // SAFETY: `global.heap` points to a leaked `GcHeap` that outlives the process.
-  let heap = unsafe { &*(global.heap as *const crate::gc::GcHeap) };
-  let percent = heap.config().minor_gc_nursery_used_percent as usize;
-  if percent >= 100 {
-    return false;
-  }
-  let used = nursery(global).allocated_bytes();
-  let cap = nursery(global).size_bytes();
-  used * 100 > cap * percent
-}
-
-#[inline]
-fn should_trigger_major() -> bool {
-  with_heap_lock_mutator(|heap| {
-    let config = heap.config();
-    let old_bytes = (heap.immix.block_count() * IMMIX_BLOCK_SIZE).saturating_add(heap.los.committed_bytes());
-    old_bytes > config.major_gc_old_bytes_threshold
-      || heap.immix.block_count() > config.major_gc_old_blocks_threshold
-      || heap.external_bytes() > config.major_gc_external_bytes_threshold
-  })
-}
-
 pub(crate) fn with_heap_lock_mutator<R>(f: impl FnOnce(&mut crate::gc::GcHeap) -> R) -> R {
   let global = global_heap();
   let _guard = global.heap_lock.lock();
@@ -430,10 +415,6 @@ pub(crate) fn on_thread_registered(_id: ThreadId) {
     return;
   }
 
-  // Eagerly initialize the process-global GC heap when a thread registers so `rt_gc_collect` never
-  // needs to allocate while the world is stopped.
-  let _ = global_heap();
-
   let _ = TLS_ALLOC.try_with(|alloc| unsafe {
     let alloc = &mut *alloc.get();
     alloc.nursery_epoch = NURSERY_EPOCH.load(Ordering::Relaxed);
@@ -442,9 +423,11 @@ pub(crate) fn on_thread_registered(_id: ThreadId) {
 
   // Keep write-barrier behavior deterministic for tests that intentionally set a synthetic
   // young-generation range (see `tests/write_barrier_integration.rs`). Only restore the global heap
-  // nursery range if the range is currently unset.
+  // nursery range if the range is currently unset *and* the global heap is already initialized.
   if YOUNG_SPACE.start.load(Ordering::Acquire) == 0 && YOUNG_SPACE.end.load(Ordering::Acquire) == 0 {
-    ensure_global_heap_init();
+    if GLOBAL_HEAP_INIT_STATE.load(Ordering::Acquire) == 2 {
+      ensure_global_heap_init();
+    }
   }
 }
 
@@ -457,9 +440,65 @@ pub(crate) fn on_thread_unregistered(_id: ThreadId) {
   });
 }
 
+#[inline(always)]
+fn safepoint_poll_with_entry_fp(entry_fp: u64) {
+  let epoch = crate::threading::safepoint::RT_GC_EPOCH.load(Ordering::Acquire);
+  if epoch & 1 == 0 {
+    return;
+  }
+  crate::threading::safepoint::with_safepoint_fixup_start_fp(entry_fp, || {
+    crate::threading::safepoint_poll();
+  });
+}
+
+#[inline]
+fn should_trigger_minor_gc_sampled(global: &GlobalHeap, size: usize) -> bool {
+  // Sampling: decrement a per-thread "debt" counter so we only check nursery usage occasionally.
+  let should_check = TLS_ALLOC
+    .try_with(|alloc| unsafe {
+      let alloc = &mut *alloc.get();
+      if alloc.minor_gc_check_debt <= size {
+        alloc.minor_gc_check_debt = MINOR_GC_CHECK_PERIOD_BYTES;
+        true
+      } else {
+        alloc.minor_gc_check_debt -= size;
+        false
+      }
+    })
+    .unwrap_or(false);
+  if !should_check {
+    return false;
+  }
+
+  // SAFETY: Heap config is immutable after heap initialization.
+  let percent = unsafe { (&*(global.heap as *const crate::gc::GcHeap)).config().minor_gc_nursery_used_percent };
+  if percent >= 100 {
+    return false;
+  }
+
+  let used = nursery(global).allocated_bytes() as u128;
+  let cap = nursery(global).size_bytes() as u128;
+  used.saturating_mul(100) > cap.saturating_mul(percent as u128)
+}
+
+#[inline]
+fn should_trigger_major_gc_locked(heap: &crate::gc::GcHeap) -> bool {
+  let cfg = heap.config();
+  let old_bytes = (heap.immix.block_count() * IMMIX_BLOCK_SIZE).saturating_add(heap.los.committed_bytes());
+  old_bytes > cfg.major_gc_old_bytes_threshold
+    || heap.immix.block_count() > cfg.major_gc_old_blocks_threshold
+    || heap.external_bytes() > cfg.major_gc_external_bytes_threshold
+}
+
+#[inline]
+fn is_above_hard_limits_locked(heap: &crate::gc::GcHeap) -> bool {
+  let limits = heap.limits();
+  heap.estimated_total_bytes() > limits.max_heap_bytes || heap.estimated_total_bytes_including_external() > limits.max_total_bytes
+}
+
 pub(crate) fn alloc(size: usize, shape: RtShapeId, entry_fp: u64) -> *mut u8 {
   ensure_thread_registered_for_alloc();
-  crate::threading::safepoint_poll();
+  safepoint_poll_with_entry_fp(entry_fp);
   ensure_global_heap_init();
 
   let (shape_desc, type_desc) = shape_table::validate_alloc_request(size, shape);
@@ -482,60 +521,108 @@ pub(crate) fn alloc(size: usize, shape: RtShapeId, entry_fp: u64) -> *mut u8 {
   );
 
   let global = global_heap();
+  let mut epoch = current_mark_epoch(global);
 
   if size > IMMIX_MAX_OBJECT_SIZE || align > IMMIX_BLOCK_SIZE {
-    if should_trigger_major() {
-      crate::exports::gc_collect_major_for_alloc("rt_alloc", entry_fp);
-    }
-    return with_heap_lock_mutator(|heap| {
-      let epoch = current_mark_epoch(global);
-      let obj = heap.los.alloc(size, align);
-      unsafe { init_object(obj, size, type_desc, epoch, false) };
-      obj
-    });
-  }
+    // Large object space (LOS) allocation path.
+    //
+    // LOS allocations mutate global heap state and can exceed heap limits; check triggers and
+    // retry after a major GC when needed.
+    let mut did_major = false;
+    loop {
+      // Fast path: do not take the heap lock unless we are actually allocating.
+      let action = crate::threading::safepoint::with_safepoint_fixup_start_fp(entry_fp, || {
+        with_heap_lock_mutator(|heap| {
+          if !did_major && (should_trigger_major_gc_locked(heap) || is_above_hard_limits_locked(heap)) {
+            return Err(());
+          }
 
-  if should_trigger_minor(global) {
-    crate::exports::gc_collect_minor_for_alloc("rt_alloc", entry_fp);
+          // Enforce hard limits deterministically *before* calling into `mmap`.
+          //
+          // Mirror `GcHeap::try_alloc_old_raw` LOS accounting: round up to 4k pages.
+          let committed_bytes = size.saturating_add(align.saturating_sub(1));
+          let committed = (committed_bytes + 4095) & !4095;
+          let projected_heap = heap.projected_total_bytes_with(0, 1, committed);
+          let projected_total = heap.projected_total_bytes_including_external_with(0, 1, committed);
+          if projected_heap > heap.limits().max_heap_bytes || projected_total > heap.limits().max_total_bytes {
+            return Err(());
+          }
+
+          let obj = heap.los.alloc(size, align);
+          let epoch = heap.mark_epoch;
+          unsafe { init_object(obj, size, type_desc, epoch, false) };
+          Ok(obj)
+        })
+      });
+
+      match action {
+        Ok(obj) => return obj,
+        Err(()) => {
+          if did_major {
+            crate::trap::rt_trap_oom(size, "rt_alloc: LOS allocation exceeded heap limits");
+          }
+          did_major = true;
+          crate::exports::gc_collect_major_for_alloc("rt_alloc", entry_fp);
+        }
+      }
+    }
   }
 
   // Fast path: per-thread nursery TLAB.
-  match TLS_ALLOC.try_with(|alloc| unsafe {
-    let alloc = &mut *alloc.get();
-    alloc.refresh_nursery_epoch();
-    alloc.nursery.alloc(size, align, nursery(global))
-  }) {
-    Ok(Some(obj)) => {
-      let epoch = current_mark_epoch(global);
-      unsafe { init_object(obj, size, type_desc, epoch, false) };
-      return obj;
-    }
-    Ok(None) => {
-      // Nursery exhausted: trigger a stop-the-world minor GC and retry nursery allocation.
-      crate::exports::gc_collect_minor_for_alloc("rt_alloc", entry_fp);
-      if let Ok(Some(obj)) = TLS_ALLOC.try_with(|alloc| unsafe {
-        let alloc = &mut *alloc.get();
-        alloc.refresh_nursery_epoch();
-        alloc.nursery.alloc(size, align, nursery(global))
-      }) {
-        let epoch = current_mark_epoch(global);
-        unsafe { init_object(obj, size, type_desc, epoch, false) };
-        return obj;
-      }
-    }
-    Err(_) => {
-      // If allocator TLS is inaccessible during thread teardown, fall back to allocating in the old
-      // generation without attempting to trigger GC.
-    }
+  if should_trigger_minor_gc_sampled(global, size) {
+    crate::exports::gc_collect_minor_for_alloc("rt_alloc", entry_fp);
+  }
+  if let Some(obj) = TLS_ALLOC
+    .try_with(|alloc| unsafe {
+      let alloc = &mut *alloc.get();
+      alloc.refresh_nursery_epoch();
+      alloc.nursery.alloc(size, align, nursery(global))
+    })
+    .ok()
+    .flatten()
+  {
+    unsafe { init_object(obj, size, type_desc, epoch, false) };
+    return obj;
   }
 
-  // Fall back to old-gen allocation (may trigger major GC on failure/pressure).
+  // Nursery exhausted: trigger a minor collection and retry once before falling back to old-gen.
+  crate::exports::gc_collect_minor_for_alloc("rt_alloc", entry_fp);
+  if let Some(obj) = TLS_ALLOC
+    .try_with(|alloc| unsafe {
+      let alloc = &mut *alloc.get();
+      alloc.refresh_nursery_epoch();
+      alloc.nursery.alloc(size, align, nursery(global))
+    })
+    .ok()
+    .flatten()
+  {
+    unsafe { init_object(obj, size, type_desc, epoch, false) };
+    return obj;
+  }
+
+  // Still cannot allocate in the nursery: run a major collection (also resets the nursery) and retry.
+  crate::exports::gc_collect_major_for_alloc("rt_alloc", entry_fp);
+  epoch = current_mark_epoch(global);
+  if let Some(obj) = TLS_ALLOC
+    .try_with(|alloc| unsafe {
+      let alloc = &mut *alloc.get();
+      alloc.refresh_nursery_epoch();
+      alloc.nursery.alloc(size, align, nursery(global))
+    })
+    .ok()
+    .flatten()
+  {
+    unsafe { init_object(obj, size, type_desc, epoch, false) };
+    return obj;
+  }
+
+  // Fall back to old-gen allocation.
   alloc_old_may_gc(size, align, type_desc, entry_fp, "rt_alloc")
 }
 
 pub(crate) fn alloc_array(len: usize, elem_size: usize, entry_fp: u64) -> *mut u8 {
   ensure_thread_registered_for_alloc();
-  crate::threading::safepoint_poll();
+  safepoint_poll_with_entry_fp(entry_fp);
   ensure_global_heap_init();
 
   let Some(spec) = array::decode_rt_array_elem_size(elem_size) else {
@@ -551,150 +638,215 @@ pub(crate) fn alloc_array(len: usize, elem_size: usize, entry_fp: u64) -> *mut u
 
   let align = array::RT_ARRAY_TYPE_DESC.align.max(OBJ_ALIGN);
   let global = global_heap();
+  let mut epoch = current_mark_epoch(global);
 
   if size > IMMIX_MAX_OBJECT_SIZE || align > IMMIX_BLOCK_SIZE {
-    if should_trigger_major() {
-      crate::exports::gc_collect_major_for_alloc("rt_alloc_array", entry_fp);
-    }
-    return with_heap_lock_mutator(|heap| {
-      let epoch = current_mark_epoch(global);
-      let obj = heap.los.alloc(size, align);
-      unsafe { init_object(obj, size, &array::RT_ARRAY_TYPE_DESC, epoch, false) };
-      unsafe {
-        let arr = &mut *(obj as *mut array::RtArrayHeader);
-        arr.len = len;
-        arr.elem_size = spec.elem_size as u32;
-        arr.elem_flags = spec.elem_flags;
-      }
-      if should_install_card_table {
-        // SAFETY: `obj` points at a heap allocation initialized by `init_object`.
-        unsafe {
-          heap.install_card_table_for_obj(&mut *(obj as *mut ObjHeader), size);
+    // Large object space (LOS) array allocation path.
+    let mut did_major = false;
+    loop {
+      let res = crate::threading::safepoint::with_safepoint_fixup_start_fp(entry_fp, || {
+        with_heap_lock_mutator(|heap| {
+          if !did_major && (should_trigger_major_gc_locked(heap) || is_above_hard_limits_locked(heap)) {
+            return Err(());
+          }
+
+          let committed_bytes = size.saturating_add(align.saturating_sub(1));
+          let committed = (committed_bytes + 4095) & !4095;
+          let projected_heap = heap.projected_total_bytes_with(0, 1, committed);
+          let projected_total = heap.projected_total_bytes_including_external_with(0, 1, committed);
+          if projected_heap > heap.limits().max_heap_bytes || projected_total > heap.limits().max_total_bytes {
+            return Err(());
+          }
+
+          let obj = heap.los.alloc(size, align);
+          let epoch = heap.mark_epoch;
+          unsafe { init_object(obj, size, &array::RT_ARRAY_TYPE_DESC, epoch, false) };
+          unsafe {
+            let arr = &mut *(obj as *mut array::RtArrayHeader);
+            arr.len = len;
+            arr.elem_size = spec.elem_size as u32;
+            arr.elem_flags = spec.elem_flags;
+          }
+          if should_install_card_table {
+            unsafe {
+              heap.install_card_table_for_obj(&mut *(obj as *mut ObjHeader), size);
+            }
+          }
+          Ok(obj)
+        })
+      });
+
+      match res {
+        Ok(obj) => return obj,
+        Err(()) => {
+          if did_major {
+            crate::trap::rt_trap_oom(size, "rt_alloc_array: LOS allocation exceeded heap limits");
+          }
+          did_major = true;
+          crate::exports::gc_collect_major_for_alloc("rt_alloc_array", entry_fp);
         }
       }
-      obj
-    });
+    }
   }
 
-  if should_trigger_minor(global) {
+  if should_trigger_minor_gc_sampled(global, size) {
     crate::exports::gc_collect_minor_for_alloc("rt_alloc_array", entry_fp);
   }
+  if let Some(obj) = TLS_ALLOC
+    .try_with(|alloc| unsafe {
+      let alloc = &mut *alloc.get();
+      alloc.refresh_nursery_epoch();
+      alloc.nursery.alloc(size, align, nursery(global))
+    })
+    .ok()
+    .flatten()
+  {
+    unsafe { init_object(obj, size, &array::RT_ARRAY_TYPE_DESC, epoch, false) };
+    unsafe {
+      let arr = &mut *(obj as *mut array::RtArrayHeader);
+      arr.len = len;
+      arr.elem_size = spec.elem_size as u32;
+      arr.elem_flags = spec.elem_flags;
+    }
+    return obj;
+  }
 
-  match TLS_ALLOC.try_with(|alloc| unsafe {
-    let alloc = &mut *alloc.get();
-    alloc.refresh_nursery_epoch();
-    alloc.nursery.alloc(size, align, nursery(global))
-  }) {
-    Ok(Some(obj)) => {
-      let epoch = current_mark_epoch(global);
-      unsafe { init_object(obj, size, &array::RT_ARRAY_TYPE_DESC, epoch, false) };
-      unsafe {
-        let arr = &mut *(obj as *mut array::RtArrayHeader);
-        arr.len = len;
-        arr.elem_size = spec.elem_size as u32;
-        arr.elem_flags = spec.elem_flags;
-      }
-      return obj;
+  // Nursery exhausted for this array: trigger a minor collection and retry once before falling back.
+  crate::exports::gc_collect_minor_for_alloc("rt_alloc_array", entry_fp);
+  if let Some(obj) = TLS_ALLOC
+    .try_with(|alloc| unsafe {
+      let alloc = &mut *alloc.get();
+      alloc.refresh_nursery_epoch();
+      alloc.nursery.alloc(size, align, nursery(global))
+    })
+    .ok()
+    .flatten()
+  {
+    unsafe { init_object(obj, size, &array::RT_ARRAY_TYPE_DESC, epoch, false) };
+    unsafe {
+      let arr = &mut *(obj as *mut array::RtArrayHeader);
+      arr.len = len;
+      arr.elem_size = spec.elem_size as u32;
+      arr.elem_flags = spec.elem_flags;
     }
-    Ok(None) => {
-      // Nursery exhausted: trigger a stop-the-world minor GC and retry nursery allocation.
-      crate::exports::gc_collect_minor_for_alloc("rt_alloc_array", entry_fp);
-      if let Ok(Some(obj)) = TLS_ALLOC.try_with(|alloc| unsafe {
-        let alloc = &mut *alloc.get();
-        alloc.refresh_nursery_epoch();
-        alloc.nursery.alloc(size, align, nursery(global))
-      }) {
-        let epoch = current_mark_epoch(global);
-        unsafe { init_object(obj, size, &array::RT_ARRAY_TYPE_DESC, epoch, false) };
-        unsafe {
-          let arr = &mut *(obj as *mut array::RtArrayHeader);
-          arr.len = len;
-          arr.elem_size = spec.elem_size as u32;
-          arr.elem_flags = spec.elem_flags;
-        }
-        return obj;
-      }
+    return obj;
+  }
+
+  // Still cannot allocate in the nursery: run a major collection (also resets the nursery) and retry.
+  crate::exports::gc_collect_major_for_alloc("rt_alloc_array", entry_fp);
+  epoch = current_mark_epoch(global);
+  if let Some(obj) = TLS_ALLOC
+    .try_with(|alloc| unsafe {
+      let alloc = &mut *alloc.get();
+      alloc.refresh_nursery_epoch();
+      alloc.nursery.alloc(size, align, nursery(global))
+    })
+    .ok()
+    .flatten()
+  {
+    unsafe { init_object(obj, size, &array::RT_ARRAY_TYPE_DESC, epoch, false) };
+    unsafe {
+      let arr = &mut *(obj as *mut array::RtArrayHeader);
+      arr.len = len;
+      arr.elem_size = spec.elem_size as u32;
+      arr.elem_flags = spec.elem_flags;
     }
-    Err(_) => {}
+    return obj;
   }
 
   if should_install_card_table {
-    // Installing a card table requires registering the owning object with the heap so it can be
-    // reclaimed during major GC. Do the entire old-gen allocation while holding the heap lock to
-    // avoid blocking (and entering a GC-safe region) between allocating the object and registering
-    // it in heap metadata.
-    let mut did_collect_major = false;
+    // Card-table installation requires registering the owning object with the heap; keep the
+    // allocation + installation atomic w.r.t. GC by doing the full operation under the heap lock.
+    let mut did_major_for_pressure = false;
+    let mut did_major_for_failure = false;
     loop {
-      // Honor major-GC policy triggers before allocating into old-gen. This check acquires the heap
-      // lock internally; do it outside the allocation critical section so we never try to initiate
-      // stop-the-world while holding `heap_lock`.
-      if !did_collect_major && should_trigger_major() {
-        crate::exports::gc_collect_major_for_alloc("rt_alloc_array", entry_fp);
-        did_collect_major = true;
-        continue;
-      }
-
-      enum Outcome {
-        Ok(*mut u8),
-        NeedMajorGc,
-      }
-
-      let outcome = with_heap_lock_mutator(|heap| {
-        let obj = match TLS_ALLOC.try_with(|alloc| unsafe {
-          let alloc = &mut *alloc.get();
-          alloc.refresh_major_epoch();
-          alloc.immix.alloc_fast(size, align)
-        }) {
-          Ok(Some(obj)) => obj,
-          Ok(None) => {
-            // Slow path: reserve a new hole from the global Immix space.
-            let min_lines = size.div_ceil(LINE_SIZE);
-            let Some((start, limit)) = heap.immix.reserve_hole(min_lines) else {
-              return Outcome::NeedMajorGc;
-            };
-            match TLS_ALLOC.try_with(|alloc| unsafe {
-              let alloc = &mut *alloc.get();
-              alloc.refresh_major_epoch();
-              alloc.immix.cursor = start;
-              alloc.immix.limit = limit;
-              alloc.immix.alloc_fast(size, align)
-            }) {
-              Ok(Some(obj)) => obj,
-              Ok(None) => crate::trap::rt_trap_oom(size, "rt_alloc_array: Immix hole too small"),
-              Err(_) => heap.los.alloc(size, align),
-            }
+      let attempt = crate::threading::safepoint::with_safepoint_fixup_start_fp(entry_fp, || {
+        with_heap_lock_mutator(|heap| {
+          if !did_major_for_pressure && (should_trigger_major_gc_locked(heap) || is_above_hard_limits_locked(heap)) {
+            return Err(());
           }
-          Err(_) => heap.los.alloc(size, align),
-        };
 
-        let epoch = current_mark_epoch(global);
-        unsafe { init_object(obj, size, &array::RT_ARRAY_TYPE_DESC, epoch, false) };
-        unsafe {
-          let arr = &mut *(obj as *mut array::RtArrayHeader);
-          arr.len = len;
-          arr.elem_size = spec.elem_size as u32;
-          arr.elem_flags = spec.elem_flags;
-        }
+          let obj = match TLS_ALLOC.try_with(|alloc| unsafe {
+            let alloc = &mut *alloc.get();
+            alloc.refresh_major_epoch();
+            alloc.immix.alloc_fast(size, align)
+          }) {
+            Ok(Some(obj)) => obj,
+            Ok(None) => {
+              let min_lines = size.div_ceil(LINE_SIZE);
+              // Prefer reusing an existing hole; only grow the Immix space if needed and within hard limits.
+              if let Some((start, limit)) = heap.immix.reserve_hole(min_lines, false) {
+                let _ = TLS_ALLOC.try_with(|alloc| unsafe {
+                  let alloc = &mut *alloc.get();
+                  alloc.refresh_major_epoch();
+                  alloc.immix.cursor = start;
+                  alloc.immix.limit = limit;
+                });
+              } else {
+                let projected_heap = heap.projected_total_bytes_with(1, 0, 0);
+                let projected_total = heap.projected_total_bytes_including_external_with(1, 0, 0);
+                if projected_heap > heap.limits().max_heap_bytes || projected_total > heap.limits().max_total_bytes {
+                  return Err(());
+                }
+                let Some((start, limit)) = heap.immix.reserve_hole(min_lines, true) else {
+                  return Err(());
+                };
+                let _ = TLS_ALLOC.try_with(|alloc| unsafe {
+                  let alloc = &mut *alloc.get();
+                  alloc.refresh_major_epoch();
+                  alloc.immix.cursor = start;
+                  alloc.immix.limit = limit;
+                });
+              }
 
-        unsafe {
-          heap.install_card_table_for_obj(&mut *(obj as *mut ObjHeader), size);
-        }
-        Outcome::Ok(obj)
+              match TLS_ALLOC.try_with(|alloc| unsafe {
+                let alloc = &mut *alloc.get();
+                alloc.refresh_major_epoch();
+                alloc.immix.alloc_fast(size, align)
+              }) {
+                Ok(Some(obj)) => obj,
+                Ok(None) => return Err(()),
+                Err(_) => heap.los.alloc(size, align),
+              }
+            }
+            Err(_) => heap.los.alloc(size, align),
+          };
+
+          let epoch = heap.mark_epoch;
+          unsafe { init_object(obj, size, &array::RT_ARRAY_TYPE_DESC, epoch, false) };
+          unsafe {
+            let arr = &mut *(obj as *mut array::RtArrayHeader);
+            arr.len = len;
+            arr.elem_size = spec.elem_size as u32;
+            arr.elem_flags = spec.elem_flags;
+          }
+
+          unsafe {
+            heap.install_card_table_for_obj(&mut *(obj as *mut ObjHeader), size);
+          }
+          Ok(obj)
+        })
       });
 
-      match outcome {
-        Outcome::Ok(obj) => return obj,
-        Outcome::NeedMajorGc => {
-          if did_collect_major {
+      match attempt {
+        Ok(obj) => return obj,
+        Err(()) => {
+          if !did_major_for_pressure {
+            did_major_for_pressure = true;
+            crate::exports::gc_collect_major_for_alloc("rt_alloc_array", entry_fp);
+            continue;
+          }
+          if did_major_for_failure {
             crate::trap::rt_trap_oom(size, "rt_alloc_array: Immix out of space");
           }
+          did_major_for_failure = true;
           crate::exports::gc_collect_major_for_alloc("rt_alloc_array", entry_fp);
-          did_collect_major = true;
         }
       }
     }
   }
 
+  // Fall back to old-gen allocation.
   let obj = alloc_old_may_gc(size, align, &array::RT_ARRAY_TYPE_DESC, entry_fp, "rt_alloc_array");
   unsafe {
     let arr = &mut *(obj as *mut array::RtArrayHeader);
@@ -707,7 +859,7 @@ pub(crate) fn alloc_array(len: usize, elem_size: usize, entry_fp: u64) -> *mut u
 
 pub(crate) fn alloc_pinned(size: usize, shape: RtShapeId, entry_fp: u64) -> *mut u8 {
   ensure_thread_registered_for_alloc();
-  crate::threading::safepoint_poll();
+  safepoint_poll_with_entry_fp(entry_fp);
   ensure_global_heap_init();
 
   let (shape_desc, type_desc) = shape_table::validate_alloc_request(size, shape);
@@ -731,18 +883,41 @@ pub(crate) fn alloc_pinned(size: usize, shape: RtShapeId, entry_fp: u64) -> *mut
     "shape table TypeDescriptor::align must match max(OBJ_ALIGN, RtShapeDescriptor.align)"
   );
 
-  let global = global_heap();
+  let mut did_major = false;
+  loop {
+    let res = crate::threading::safepoint::with_safepoint_fixup_start_fp(entry_fp, || {
+      with_heap_lock_mutator(|heap| {
+        if !did_major && (should_trigger_major_gc_locked(heap) || is_above_hard_limits_locked(heap)) {
+          return Err(());
+        }
 
-  if should_trigger_major() {
-    crate::exports::gc_collect_major_for_alloc("rt_alloc_pinned", entry_fp);
+        // Mirror `GcHeap::try_alloc_pinned` LOS accounting (round to 4k).
+        let committed_bytes = size.saturating_add(align.saturating_sub(1));
+        let committed = (committed_bytes + 4095) & !4095;
+        let projected_heap = heap.projected_total_bytes_with(0, 1, committed);
+        let projected_total = heap.projected_total_bytes_including_external_with(0, 1, committed);
+        if projected_heap > heap.limits().max_heap_bytes || projected_total > heap.limits().max_total_bytes {
+          return Err(());
+        }
+
+        let obj = heap.los.alloc(size, align);
+        let epoch = heap.mark_epoch;
+        unsafe { init_object(obj, size, type_desc, epoch, true) };
+        Ok(obj)
+      })
+    });
+
+    match res {
+      Ok(obj) => return obj,
+      Err(()) => {
+        if did_major {
+          crate::trap::rt_trap_oom(size, "rt_alloc_pinned: exceeded heap limits");
+        }
+        did_major = true;
+        crate::exports::gc_collect_major_for_alloc("rt_alloc_pinned", entry_fp);
+      }
+    }
   }
-
-  with_heap_lock_mutator(|heap| {
-    let epoch = current_mark_epoch(global);
-    let obj = heap.los.alloc(size, align);
-    unsafe { init_object(obj, size, type_desc, epoch, true) };
-    obj
-  })
 }
 
 /// Allocate a GC object in the process-global heap using a custom [`TypeDescriptor`].
@@ -786,7 +961,7 @@ pub(crate) fn alloc_typed_with_entry(
   entry_name: &'static str,
 ) -> *mut u8 {
   ensure_thread_registered_for_alloc();
-  crate::threading::safepoint_poll();
+  safepoint_poll_with_entry_fp(entry_fp);
   ensure_global_heap_init();
 
   let size = desc.size;
@@ -799,55 +974,94 @@ pub(crate) fn alloc_typed_with_entry(
 
   let align = desc.align.max(OBJ_ALIGN);
   let global = global_heap();
+  let mut epoch = current_mark_epoch(global);
 
   if size > IMMIX_MAX_OBJECT_SIZE || align > IMMIX_BLOCK_SIZE {
-    if should_trigger_major() {
-      crate::exports::gc_collect_major_for_alloc(entry_name, entry_fp);
-    }
-    return with_heap_lock_mutator(|heap| {
-      let epoch = current_mark_epoch(global);
-      let obj = heap.los.alloc(size, align);
-      unsafe { init_object(obj, size, desc, epoch, false) };
-      obj
-    });
-  }
+    // Large object space (LOS) allocation path.
+    let mut did_major = false;
+    loop {
+      let action = crate::threading::safepoint::with_safepoint_fixup_start_fp(entry_fp, || {
+        with_heap_lock_mutator(|heap| {
+          if !did_major && (should_trigger_major_gc_locked(heap) || is_above_hard_limits_locked(heap)) {
+            return Err(());
+          }
 
-  if should_trigger_minor(global) {
-    crate::exports::gc_collect_minor_for_alloc(entry_name, entry_fp);
-  }
+          let committed_bytes = size.saturating_add(align.saturating_sub(1));
+          let committed = (committed_bytes + 4095) & !4095;
+          let projected_heap = heap.projected_total_bytes_with(0, 1, committed);
+          let projected_total = heap.projected_total_bytes_including_external_with(0, 1, committed);
+          if projected_heap > heap.limits().max_heap_bytes || projected_total > heap.limits().max_total_bytes {
+            return Err(());
+          }
 
-  // Fast path: per-thread nursery TLAB.
-  match TLS_ALLOC.try_with(|alloc| unsafe {
-    let alloc = &mut *alloc.get();
-    alloc.refresh_nursery_epoch();
-    alloc.nursery.alloc(size, align, nursery(global))
-  }) {
-    Ok(Some(obj)) => {
-      let epoch = current_mark_epoch(global);
-      unsafe { init_object(obj, size, desc, epoch, false) };
-      return obj;
-    }
-    Ok(None) => {
-      // Nursery exhausted: trigger a stop-the-world minor GC and retry nursery allocation.
-      crate::exports::gc_collect_minor_for_alloc(entry_name, entry_fp);
-      if let Ok(Some(obj)) = TLS_ALLOC.try_with(|alloc| unsafe {
-        let alloc = &mut *alloc.get();
-        alloc.refresh_nursery_epoch();
-        alloc.nursery.alloc(size, align, nursery(global))
-      }) {
-        let epoch = current_mark_epoch(global);
-        unsafe { init_object(obj, size, desc, epoch, false) };
-        return obj;
+          let obj = heap.los.alloc(size, align);
+          let epoch = heap.mark_epoch;
+          unsafe { init_object(obj, size, desc, epoch, false) };
+          Ok(obj)
+        })
+      });
+
+      match action {
+        Ok(obj) => return obj,
+        Err(()) => {
+          if did_major {
+            crate::trap::rt_trap_oom(size, "alloc_typed: LOS allocation exceeded heap limits");
+          }
+          did_major = true;
+          crate::exports::gc_collect_major_for_alloc(entry_name, entry_fp);
+        }
       }
     }
-    Err(_) => {
-      // If allocator TLS is inaccessible during thread teardown, fall back to allocating in the old
-      // generation without attempting to trigger GC.
-      return alloc_old_no_gc(size, align, desc);
-    }
   }
 
-  // Fall back to old-gen allocation (may trigger major GC on failure/pressure).
+  if should_trigger_minor_gc_sampled(global, size) {
+    crate::exports::gc_collect_minor_for_alloc(entry_name, entry_fp);
+  }
+  if let Some(obj) = TLS_ALLOC
+    .try_with(|alloc| unsafe {
+      let alloc = &mut *alloc.get();
+      alloc.refresh_nursery_epoch();
+      alloc.nursery.alloc(size, align, nursery(global))
+    })
+    .ok()
+    .flatten()
+  {
+    unsafe { init_object(obj, size, desc, epoch, false) };
+    return obj;
+  }
+
+  // Nursery exhausted: trigger a minor collection and retry once.
+  crate::exports::gc_collect_minor_for_alloc(entry_name, entry_fp);
+  if let Some(obj) = TLS_ALLOC
+    .try_with(|alloc| unsafe {
+      let alloc = &mut *alloc.get();
+      alloc.refresh_nursery_epoch();
+      alloc.nursery.alloc(size, align, nursery(global))
+    })
+    .ok()
+    .flatten()
+  {
+    unsafe { init_object(obj, size, desc, epoch, false) };
+    return obj;
+  }
+
+  // Still cannot allocate in the nursery: run a major collection (also resets the nursery) and retry.
+  crate::exports::gc_collect_major_for_alloc(entry_name, entry_fp);
+  epoch = current_mark_epoch(global);
+  if let Some(obj) = TLS_ALLOC
+    .try_with(|alloc| unsafe {
+      let alloc = &mut *alloc.get();
+      alloc.refresh_nursery_epoch();
+      alloc.nursery.alloc(size, align, nursery(global))
+    })
+    .ok()
+    .flatten()
+  {
+    unsafe { init_object(obj, size, desc, epoch, false) };
+    return obj;
+  }
+
+  // Fall back to old-gen allocation.
   alloc_old_may_gc(size, align, desc, entry_fp, entry_name)
 }
 
@@ -868,7 +1082,7 @@ pub(crate) fn alloc_typed_old_with_entry(
   entry_name: &'static str,
 ) -> *mut u8 {
   ensure_thread_registered_for_alloc();
-  crate::threading::safepoint_poll();
+  safepoint_poll_with_entry_fp(entry_fp);
   ensure_global_heap_init();
 
   let size = desc.size;
@@ -880,73 +1094,45 @@ pub(crate) fn alloc_typed_old_with_entry(
   crate::gc_stats::record_alloc(size);
 
   let align = desc.align.max(OBJ_ALIGN);
-  let global = global_heap();
-
   if size > IMMIX_MAX_OBJECT_SIZE || align > IMMIX_BLOCK_SIZE {
-    if should_trigger_major() {
-      crate::exports::gc_collect_major_for_alloc(entry_name, entry_fp);
+    // Large object space (LOS) allocation path.
+    let mut did_major = false;
+    loop {
+      let action = crate::threading::safepoint::with_safepoint_fixup_start_fp(entry_fp, || {
+        with_heap_lock_mutator(|heap| {
+          if !did_major && (should_trigger_major_gc_locked(heap) || is_above_hard_limits_locked(heap)) {
+            return Err(());
+          }
+
+          let committed_bytes = size.saturating_add(align.saturating_sub(1));
+          let committed = (committed_bytes + 4095) & !4095;
+          let projected_heap = heap.projected_total_bytes_with(0, 1, committed);
+          let projected_total = heap.projected_total_bytes_including_external_with(0, 1, committed);
+          if projected_heap > heap.limits().max_heap_bytes || projected_total > heap.limits().max_total_bytes {
+            return Err(());
+          }
+
+          let obj = heap.los.alloc(size, align);
+          let epoch = heap.mark_epoch;
+          unsafe { init_object(obj, size, desc, epoch, false) };
+          Ok(obj)
+        })
+      });
+
+      match action {
+        Ok(obj) => return obj,
+        Err(()) => {
+          if did_major {
+            crate::trap::rt_trap_oom(size, "alloc_typed_old: LOS allocation exceeded heap limits");
+          }
+          did_major = true;
+          crate::exports::gc_collect_major_for_alloc(entry_name, entry_fp);
+        }
+      }
     }
-    return with_heap_lock_mutator(|heap| {
-      let epoch = current_mark_epoch(global);
-      let obj = heap.los.alloc(size, align);
-      unsafe { init_object(obj, size, desc, epoch, false) };
-      obj
-    });
   }
 
   alloc_old_may_gc(size, align, desc, entry_fp, entry_name)
-}
-
-fn alloc_old_no_gc(size: usize, align: usize, desc: &'static TypeDescriptor) -> *mut u8 {
-  let global = global_heap();
-  // Fast path: bump within the current thread-local Immix hole.
-  match TLS_ALLOC.try_with(|alloc| unsafe {
-    let alloc = &mut *alloc.get();
-    alloc.refresh_major_epoch();
-    alloc.immix.alloc_fast(size, align)
-  }) {
-    Ok(Some(obj)) => {
-      let epoch = current_mark_epoch(global);
-      unsafe { init_object(obj, size, desc, epoch, false) };
-      return obj;
-    }
-    Ok(None) => {}
-    Err(_) => {
-      // If allocator TLS is inaccessible during thread teardown, fall back to allocating in the
-      // LOS under the global heap lock instead of aborting with `AccessError`.
-      return with_heap_lock_mutator(|heap| {
-        let epoch = current_mark_epoch(global);
-        let obj = heap.los.alloc(size, align);
-        unsafe { init_object(obj, size, desc, epoch, false) };
-        obj
-      });
-    }
-  }
-
-  // Slow path: reserve a new hole from the global Immix space.
-  let min_lines = size.div_ceil(LINE_SIZE);
-  let (start, limit) = with_heap_lock_mutator(|heap| heap.immix.reserve_hole(min_lines))
-    .unwrap_or_else(|| crate::trap::rt_trap_oom(size, "rt_alloc: Immix out of space"));
-
-  let obj = match TLS_ALLOC.try_with(|alloc| unsafe {
-    (*alloc.get()).immix.cursor = start;
-    (*alloc.get()).immix.limit = limit;
-    (*alloc.get()).immix.alloc_fast(size, align)
-  }) {
-    Ok(Some(obj)) => obj,
-    Ok(None) => crate::trap::rt_trap_oom(size, "rt_alloc: Immix hole too small"),
-    Err(_) => {
-      return with_heap_lock_mutator(|heap| {
-        let epoch = current_mark_epoch(global);
-        let obj = heap.los.alloc(size, align);
-        unsafe { init_object(obj, size, desc, epoch, false) };
-        obj
-      });
-    }
-  };
-  let epoch = current_mark_epoch(global);
-  unsafe { init_object(obj, size, desc, epoch, false) };
-  obj
 }
 
 fn alloc_old_may_gc(
@@ -961,22 +1147,30 @@ fn alloc_old_may_gc(
   // If allocator TLS is inaccessible during thread teardown, fall back to allocating in the LOS
   // without attempting to trigger GC (we may not have a stable managed callsite to publish).
   if TLS_ALLOC.try_with(|_| ()).is_err() {
-    return with_heap_lock_mutator(|heap| {
-      let epoch = current_mark_epoch(global);
-      let obj = heap.los.alloc(size, align);
-      unsafe { init_object(obj, size, desc, epoch, false) };
-      obj
+    return crate::threading::safepoint::with_safepoint_fixup_start_fp(entry_fp, || {
+      with_heap_lock_mutator(|heap| {
+        let epoch = current_mark_epoch(global);
+        let obj = heap.los.alloc(size, align);
+        unsafe { init_object(obj, size, desc, epoch, false) };
+        obj
+      })
     });
   }
 
+  #[derive(Clone, Copy)]
+  enum RefillResult {
+    Hole(*mut u8, *mut u8),
+    NeedMajor,
+    Oom,
+  }
+
+  // Conservative estimate for how many Immix lines we need to reserve to satisfy
+  // `alloc_fast` under arbitrary alignment padding.
+  let committed_bytes = size.saturating_add(align.saturating_sub(1));
+  let min_lines = committed_bytes.div_ceil(LINE_SIZE);
+
   let mut did_collect_major = false;
   loop {
-    if !did_collect_major && should_trigger_major() {
-      crate::exports::gc_collect_major_for_alloc(entry_name, entry_fp);
-      did_collect_major = true;
-      continue;
-    }
-
     // Fast path: bump within the current thread-local Immix hole.
     match TLS_ALLOC.try_with(|alloc| unsafe {
       let alloc = &mut *alloc.get();
@@ -996,14 +1190,50 @@ fn alloc_old_may_gc(
     }
 
     // Slow path: reserve a new hole from the global Immix space.
-    let min_lines = size.div_ceil(LINE_SIZE);
-    let Some((start, limit)) = with_heap_lock_mutator(|heap| heap.immix.reserve_hole(min_lines)) else {
-      if did_collect_major {
+    let refill = crate::threading::safepoint::with_safepoint_fixup_start_fp(entry_fp, || {
+      with_heap_lock_mutator(|heap| {
+        if !did_collect_major && (should_trigger_major_gc_locked(heap) || is_above_hard_limits_locked(heap)) {
+          return RefillResult::NeedMajor;
+        }
+
+        // First, try to reuse an existing hole without growing the Immix space.
+        if let Some((start, limit)) = heap.immix.reserve_hole(min_lines, false) {
+          return RefillResult::Hole(start, limit);
+        }
+
+        // No holes available. Run a major GC before committing more memory.
+        if !did_collect_major {
+          return RefillResult::NeedMajor;
+        }
+
+        // Already did a major GC and still can't find space: attempt to grow by allocating a new
+        // Immix block, but only if this stays within hard limits.
+        let projected_heap = heap.projected_total_bytes_with(1, 0, 0);
+        let projected_total = heap.projected_total_bytes_including_external_with(1, 0, 0);
+        if projected_heap > heap.limits().max_heap_bytes || projected_total > heap.limits().max_total_bytes {
+          return RefillResult::Oom;
+        }
+
+        let Some((start, limit)) = heap.immix.reserve_hole(min_lines, true) else {
+          return RefillResult::Oom;
+        };
+        RefillResult::Hole(start, limit)
+      })
+    });
+
+    let (start, limit) = match refill {
+      RefillResult::Hole(start, limit) => (start, limit),
+      RefillResult::NeedMajor => {
+        if did_collect_major {
+          crate::trap::rt_trap_oom(size, "rt_alloc: exceeded heap limits");
+        }
+        crate::exports::gc_collect_major_for_alloc(entry_name, entry_fp);
+        did_collect_major = true;
+        continue;
+      }
+      RefillResult::Oom => {
         crate::trap::rt_trap_oom(size, "rt_alloc: Immix out of space");
       }
-      crate::exports::gc_collect_major_for_alloc(entry_name, entry_fp);
-      did_collect_major = true;
-      continue;
     };
 
     let obj = match TLS_ALLOC.try_with(|alloc| unsafe {
@@ -1074,10 +1304,10 @@ mod tests {
         .recv_timeout(TIMEOUT)
         .expect("thread A should acquire the heap lock");
 
-      scope.spawn(move || {
-        let id = threading::register_current_thread(ThreadKind::Worker);
-        c_registered_tx.send(id).unwrap();
-        c_start_rx.recv().unwrap();
+       scope.spawn(move || {
+         let id = threading::register_current_thread(ThreadKind::Worker);
+         c_registered_tx.send(id).unwrap();
+         c_start_rx.recv().unwrap();
 
         // Force a LOS allocation by exceeding `IMMIX_MAX_OBJECT_SIZE`.
         let entry_fp = crate::stackwalk::current_frame_pointer();

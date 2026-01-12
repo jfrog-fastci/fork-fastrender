@@ -294,8 +294,13 @@ fn ensure_current_thread_registered() {
 #[no_mangle]
 #[inline(never)]
 pub extern "C" fn rt_alloc(size: usize, shape: RtShapeId) -> crate::roots::GcPtr {
-  // Capture the frame pointer of this runtime entrypoint before entering `abort_on_panic`, which
-  // uses `catch_unwind` in `panic=unwind` builds and may not preserve a reliable frame-pointer chain.
+  // Capture the frame pointer of this runtime entrypoint *before* entering
+  // `abort_on_panic` (which uses `catch_unwind` in `panic=unwind` builds).
+  //
+  // The sysroot's `catch_unwind` implementation is not guaranteed to maintain a
+  // valid frame-pointer chain, so allocator slow paths that need to publish a
+  // managed safepoint context (for stackmap-based scanning) must be able to
+  // start from a stable FP outside the `catch_unwind` frames.
   let entry_fp = crate::stackwalk::current_frame_pointer();
   abort_on_panic(|| {
     #[cfg(feature = "gc_stats")]
@@ -978,8 +983,10 @@ pub extern "C" fn rt_gc_collect() {
   // later, we avoid depending on the sysroot's FP behavior while still keeping the
   // extern "C" boundary abort-on-panic.
   let entry_fp = crate::stackwalk::current_frame_pointer();
-  let fallback_ctx = crate::arch::capture_safepoint_context();
 
+  // Capture a fallback safepoint context outside `abort_on_panic` so conservative scanning remains
+  // robust even if `catch_unwind` repurposes the frame-pointer register.
+  let fallback_ctx = crate::arch::capture_safepoint_context();
   abort_on_panic(|| rt_gc_collect_impl(GcCollectKind::Major, "rt_gc_collect", entry_fp, fallback_ctx))
 }
 
@@ -1118,124 +1125,131 @@ fn rt_gc_collect_impl(
     }
   }
 
-  #[cfg(feature = "gc_stats")]
-  crate::gc_stats::record_gc_collect();
+  // When called from inside a `catch_unwind` runtime entrypoint, GC-aware locks may temporarily
+  // enter GC-safe regions to avoid deadlocking stop-the-world coordination. Those GC-safe transitions
+  // publish a `SafepointContext` that may need FP-chain fixup. Provide `entry_fp` as a stable
+  // override start point so fixup can recover the nearest managed callsite even if `catch_unwind`
+  // repurposes the frame-pointer register.
+  crate::threading::safepoint::with_safepoint_fixup_start_fp(entry_fp, || {
+    #[cfg(feature = "gc_stats")]
+    crate::gc_stats::record_gc_collect();
 
-  // Tests (and some embedders) may reset the exported young range between runs.
-  // Ensure it always reflects the nursery backing the process-global heap before
-  // starting a collection.
-  //
-  // This must remain allocation-free after `rt_thread_init` (see `tests/no_alloc_rt_gc_collect.rs`).
-  crate::rt_alloc::ensure_global_heap_init();
+    // Tests (and some embedders) may reset the exported young range between runs.
+    // Ensure it always reflects the nursery backing the process-global heap before
+    // starting a collection.
+    //
+    // This must remain allocation-free after `rt_thread_init` (see `tests/no_alloc_rt_gc_collect.rs`).
+    crate::rt_alloc::ensure_global_heap_init();
 
-  // Any minor GC increments the nursery epoch, and any major GC increments the
-  // major epoch. Use these as the "satisfaction" counters so:
-  // - concurrent `rt_gc_collect_minor` calls coalesce with each other or with a
-  //   major collection, and
-  // - `rt_gc_collect` / `rt_gc_collect_major` are not incorrectly satisfied by a
-  //   concurrent minor collection or unrelated stop-the-world phase.
-  let satisfied_epoch_before = kind.satisfied_epoch();
+    // Any minor GC increments the nursery epoch, and any major GC increments the
+    // major epoch. Use these as the "satisfaction" counters so:
+    // - concurrent `rt_gc_collect_minor` calls coalesce with each other or with a
+    //   major collection, and
+    // - `rt_gc_collect` / `rt_gc_collect_major` are not incorrectly satisfied by a
+    //   concurrent minor collection or unrelated stop-the-world phase.
+    let satisfied_epoch_before = kind.satisfied_epoch();
 
-  loop {
-    // If a stop-the-world is already active, join it at this callsite (so we still
-    // publish a safepoint context for stack walking). Then check whether it
-    // satisfied the requested kind; if not, loop and attempt to initiate the
-    // requested collection after the world resumes.
-    let epoch_before = crate::threading::safepoint::current_epoch();
-    if epoch_before & 1 == 1 {
-      join_stop_the_world(entry_fp, fallback_ctx, epoch_before);
+    loop {
+      // If a stop-the-world is already active, join it at this callsite (so we still
+      // publish a safepoint context for stack walking). Then check whether it
+      // satisfied the requested kind; if not, loop and attempt to initiate the
+      // requested collection after the world resumes.
+      let epoch_before = crate::threading::safepoint::current_epoch();
+      if epoch_before & 1 == 1 {
+        join_stop_the_world(entry_fp, fallback_ctx, epoch_before);
+        if kind.satisfied_epoch() != satisfied_epoch_before {
+          return;
+        }
+        continue;
+      }
+
+      let _gc_collect_guard = GC_COLLECT_MUTEX.lock();
+
+      // If a satisfying collection completed while we were waiting on the collector lock,
+      // do not start a second stop-the-world cycle. Instead, publish that we've observed
+      // the current (even) safepoint epoch and return.
       if kind.satisfied_epoch() != satisfied_epoch_before {
+        let epoch = crate::threading::safepoint::current_epoch();
+        if epoch & 1 == 1 {
+          // Stop-the-world is currently active (e.g. initiated via another API);
+          // release the lock and join it.
+          drop(_gc_collect_guard);
+          join_stop_the_world(entry_fp, fallback_ctx, epoch);
+        } else if registry::current_thread_id().is_some() {
+          registry::set_current_thread_safepoint_epoch_observed(epoch);
+          crate::threading::safepoint::notify_state_change();
+        }
         return;
       }
-      continue;
-    }
 
-    let _gc_collect_guard = GC_COLLECT_MUTEX.lock();
-
-    // If a satisfying collection completed while we were waiting on the collector lock,
-    // do not start a second stop-the-world cycle. Instead, publish that we've observed
-    // the current (even) safepoint epoch and return.
-    if kind.satisfied_epoch() != satisfied_epoch_before {
-      let epoch = crate::threading::safepoint::current_epoch();
-      if epoch & 1 == 1 {
-        // Stop-the-world is currently active (e.g. initiated via another API);
-        // release the lock and join it.
+      // A stop-the-world request may have started while we were waiting on the collector lock.
+      // Join it, then re-check satisfaction.
+      let epoch_after_lock = crate::threading::safepoint::current_epoch();
+      if epoch_after_lock & 1 == 1 {
         drop(_gc_collect_guard);
-        join_stop_the_world(entry_fp, fallback_ctx, epoch);
-      } else if registry::current_thread_id().is_some() {
-        registry::set_current_thread_safepoint_epoch_observed(epoch);
-        crate::threading::safepoint::notify_state_change();
+        join_stop_the_world(entry_fp, fallback_ctx, epoch_after_lock);
+        if kind.satisfied_epoch() != satisfied_epoch_before {
+          return;
+        }
+        continue;
       }
+
+      // Attempt to become the stop-the-world coordinator.
+      let Some(stop_epoch) = crate::threading::safepoint::rt_gc_try_request_stop_the_world() else {
+        // Another stop-the-world request beat us (could be GC or another STW
+        // protocol). Join it if active; otherwise, loop and re-check whether the
+        // requested kind was satisfied.
+        let epoch = crate::threading::safepoint::current_epoch();
+        drop(_gc_collect_guard);
+        if epoch & 1 == 1 {
+          join_stop_the_world(entry_fp, fallback_ctx, epoch);
+        }
+        if kind.satisfied_epoch() != satisfied_epoch_before {
+          return;
+        }
+        continue;
+      };
+
+      // If this entrypoint is called from an attached mutator thread, publish the
+      // initiator's safepoint context before waiting for other threads. This keeps
+      // the initiator's stack eligible for stackmap-based root enumeration while
+      // the world is stopped.
+      publish_current_thread_safepoint_context(entry_fp, fallback_ctx, stop_epoch);
+
+      crate::safepoint::with_world_stopped_requested(stop_epoch, move || {
+        struct AbiRootSet {
+          stop_epoch: u64,
+          entry_name: &'static str,
+        }
+
+        impl crate::gc::RootSet for AbiRootSet {
+          fn for_each_root_slot(&mut self, f: &mut dyn FnMut(*mut *mut u8)) {
+            // Roots for stopped mutator threads + global roots/handles.
+            crate::threading::safepoint::for_each_root_slot_world_stopped(self.stop_epoch, |slot| {
+              f(slot);
+            })
+            .unwrap_or_else(|err| {
+              eprintln!("{}: failed to enumerate roots: {err:?}", self.entry_name);
+              std::process::abort();
+            });
+          }
+        }
+
+        let mut remembered = global_remset::WorldStoppedRememberedSet::new();
+        let mut roots = AbiRootSet { stop_epoch, entry_name };
+
+        let res = crate::rt_alloc::with_heap_lock_world_stopped(|heap| match kind {
+          GcCollectKind::Minor => heap.collect_minor(&mut roots, &mut remembered),
+          GcCollectKind::Major => heap.collect_major(&mut roots, &mut remembered),
+        });
+        if res.is_err() {
+          crate::trap::rt_trap_oom(0, kind.oom_trap_msg(entry_name));
+        }
+      });
+
       return;
     }
-
-    // A stop-the-world request may have started while we were waiting on the collector lock.
-    // Join it, then re-check satisfaction.
-    let epoch_after_lock = crate::threading::safepoint::current_epoch();
-    if epoch_after_lock & 1 == 1 {
-      drop(_gc_collect_guard);
-      join_stop_the_world(entry_fp, fallback_ctx, epoch_after_lock);
-      if kind.satisfied_epoch() != satisfied_epoch_before {
-        return;
-      }
-      continue;
-    }
-
-    // Attempt to become the stop-the-world coordinator.
-    let Some(stop_epoch) = crate::threading::safepoint::rt_gc_try_request_stop_the_world() else {
-      // Another stop-the-world request beat us (could be GC or another STW
-      // protocol). Join it if active; otherwise, loop and re-check whether the
-      // requested kind was satisfied.
-      let epoch = crate::threading::safepoint::current_epoch();
-      drop(_gc_collect_guard);
-      if epoch & 1 == 1 {
-        join_stop_the_world(entry_fp, fallback_ctx, epoch);
-      }
-      if kind.satisfied_epoch() != satisfied_epoch_before {
-        return;
-      }
-      continue;
-    };
-
-    // If this entrypoint is called from an attached mutator thread, publish the
-    // initiator's safepoint context before waiting for other threads. This keeps
-    // the initiator's stack eligible for stackmap-based root enumeration while
-    // the world is stopped.
-    publish_current_thread_safepoint_context(entry_fp, fallback_ctx, stop_epoch);
-
-    crate::safepoint::with_world_stopped_requested(stop_epoch, move || {
-      struct AbiRootSet {
-        stop_epoch: u64,
-        entry_name: &'static str,
-      }
-
-      impl crate::gc::RootSet for AbiRootSet {
-        fn for_each_root_slot(&mut self, f: &mut dyn FnMut(*mut *mut u8)) {
-          // Roots for stopped mutator threads + global roots/handles.
-          crate::threading::safepoint::for_each_root_slot_world_stopped(self.stop_epoch, |slot| {
-            f(slot);
-          })
-          .unwrap_or_else(|err| {
-            eprintln!("{}: failed to enumerate roots: {err:?}", self.entry_name);
-            std::process::abort();
-          });
-        }
-      }
-
-      let mut remembered = global_remset::WorldStoppedRememberedSet::new();
-      let mut roots = AbiRootSet { stop_epoch, entry_name };
-
-      let res = crate::rt_alloc::with_heap_lock_world_stopped(|heap| match kind {
-        GcCollectKind::Minor => heap.collect_minor(&mut roots, &mut remembered),
-        GcCollectKind::Major => heap.collect_major(&mut roots, &mut remembered),
-      });
-      if res.is_err() {
-        crate::trap::rt_trap_oom(0, kind.oom_trap_msg(entry_name));
-      }
-    });
-
-    return;
-  }
+  });
 }
 
 /// Returns the total number of bytes currently held in non-moving backing stores (e.g. `ArrayBuffer`

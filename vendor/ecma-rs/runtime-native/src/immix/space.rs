@@ -172,7 +172,7 @@ impl ImmixSpace {
   ///   range **without** mutating Immix metadata on the hot path.
   ///
   /// The reserved range is line-aligned and may be larger than `min_lines`.
-  pub fn reserve_hole(&mut self, min_lines: usize) -> Option<(*mut u8, *mut u8)> {
+  pub fn reserve_hole(&mut self, min_lines: usize, grow: bool) -> Option<(*mut u8, *mut u8)> {
     if min_lines == 0 || min_lines > super::LINES_PER_BLOCK {
       return None;
     }
@@ -204,6 +204,10 @@ impl ImmixSpace {
           self.available_by_hole[largest].push(block_id);
         }
       }
+    }
+
+    if !grow {
+      return None;
     }
 
     // No holes: allocate a new block.

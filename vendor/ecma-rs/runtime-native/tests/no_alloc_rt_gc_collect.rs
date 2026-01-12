@@ -109,12 +109,7 @@ fn trigger_gc_via_stackmap_test() {
   assert_eq!(ret, ptr);
 }
 
-#[test]
-fn rt_gc_collect_does_not_allocate_after_thread_init() {
-  // This test overrides the process-global allocator to count `alloc`/`realloc` calls. The test
-  // harness runs tests in parallel by default, so ensure this binary's tests do not race on the
-  // shared allocator counters (and on the runtime-global thread registration state).
-  let _lock = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+fn assert_rt_gc_collect_does_not_allocate_after_thread_init(with_card_tables: bool) {
   let _rt = TestRuntimeGuard::new();
 
   // Registering a thread should eagerly parse and index stackmaps so stop-the-world GC doesn't do
@@ -125,6 +120,22 @@ fn rt_gc_collect_does_not_allocate_after_thread_init() {
   // gc-pair count. This is required for this test to catch any accidental Vec allocations in
   // per-frame root enumeration.
   assert_stackmap_test_has_gc_pairs();
+
+  if with_card_tables {
+    // Install a couple of per-object card tables in the old generation before the measured
+    // section.
+    //
+    // Without care, `rt_gc_collect` will try to `reserve` additional capacity for the card-table
+    // registry *during* GC, which would call the Rust global allocator while the world is stopped.
+    let ptr_size = core::mem::size_of::<*mut u8>();
+    let ptr_elem_size = runtime_native::array::RT_ARRAY_ELEM_PTR_FLAG | ptr_size;
+    let len = (runtime_native::gc::heap::IMMIX_MAX_OBJECT_SIZE / ptr_size) + 1;
+
+    let a = runtime_native::rt_alloc_array(len, ptr_elem_size);
+    let b = runtime_native::rt_alloc_array(len, ptr_elem_size);
+    assert!(!a.is_null());
+    assert!(!b.is_null());
+  }
 
   // Ensure the safepoint coordinator singleton is initialized outside the measured section.
   let _ = runtime_native::threading::safepoint::threads_waiting_at_safepoint();
@@ -146,58 +157,22 @@ fn rt_gc_collect_does_not_allocate_after_thread_init() {
   }
   assert_eq!(
     allocs, 0,
-    "rt_gc_collect performed unexpected allocations after thread init (alloc calls={allocs})"
+    "rt_gc_collect performed unexpected allocations after thread init (with_card_tables={with_card_tables}, alloc calls={allocs})"
   );
 
   rt_thread_deinit();
 }
 
 #[test]
-fn rt_gc_collect_does_not_allocate_after_thread_init_with_card_tables() {
-  // See comment in `rt_gc_collect_does_not_allocate_after_thread_init`.
-  let _lock = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-  let _rt = TestRuntimeGuard::new();
-  rt_thread_init(3);
-
-  // Ensure stackmaps are available and contain roots so stop-the-world enumeration exercises the
-  // non-trivial statepoint path.
-  assert_stackmap_test_has_gc_pairs();
-
-  // Install a couple of per-object card tables in the old generation before the measured section.
+fn rt_gc_collect_does_not_allocate_after_thread_init() {
+  // This test installs a global allocator that counts allocations. The libtest harness itself
+  // performs allocations when reporting per-test results (e.g. pretty formatting test names), and
+  // the harness runs tests in parallel by default.
   //
-  // Without care, `rt_gc_collect` will try to `reserve` additional capacity for the card-table
-  // registry *during* GC, which would call the Rust global allocator while the world is stopped.
-  let ptr_size = core::mem::size_of::<*mut u8>();
-  let ptr_elem_size = runtime_native::array::RT_ARRAY_ELEM_PTR_FLAG | ptr_size;
-  let len = (runtime_native::gc::heap::IMMIX_MAX_OBJECT_SIZE / ptr_size) + 1;
+  // Keep a single `#[test]` in this binary and run both scenarios sequentially under a lock so we
+  // do not race with harness bookkeeping allocations.
+  let _lock = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
 
-  let a = runtime_native::rt_alloc_array(len, ptr_elem_size);
-  let b = runtime_native::rt_alloc_array(len, ptr_elem_size);
-  assert!(!a.is_null());
-  assert!(!b.is_null());
-
-  // Ensure the safepoint coordinator singleton is initialized outside the measured section.
-  let _ = runtime_native::threading::safepoint::threads_waiting_at_safepoint();
-
-  ALLOC_CALLS.store(0, Ordering::SeqCst);
-  ALLOC_RECORD_LEN.store(0, Ordering::SeqCst);
-
-  trigger_gc_via_stackmap_test();
-
-  let allocs = ALLOC_CALLS.load(Ordering::SeqCst);
-  if allocs != 0 {
-    let n = ALLOC_RECORD_LEN.load(Ordering::SeqCst).min(ALLOC_SIZES.len());
-    eprintln!("no_alloc_rt_gc_collect(card tables): saw {allocs} allocations; first {n} layouts:");
-    for i in 0..n {
-      let size = ALLOC_SIZES[i].load(Ordering::SeqCst);
-      let align = ALLOC_ALIGNS[i].load(Ordering::SeqCst);
-      eprintln!("  #{i}: size={size} align={align}");
-    }
-  }
-  assert_eq!(
-    allocs, 0,
-    "rt_gc_collect performed unexpected allocations after installing card tables (alloc calls={allocs})"
-  );
-
-  rt_thread_deinit();
+  assert_rt_gc_collect_does_not_allocate_after_thread_init(false);
+  assert_rt_gc_collect_does_not_allocate_after_thread_init(true);
 }
