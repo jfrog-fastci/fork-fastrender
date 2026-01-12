@@ -41,6 +41,7 @@ fn assert_roundtrip(src: &str, mode: TopLevelMode) {
     let options = CompileCfgOptions {
       run_opt_passes: false,
       keep_ssa: true,
+      annotate_ssa_metadata: false,
       ..CompileCfgOptions::default()
     };
     if let Err(errs) = optimize_js::compile_source_with_cfg_options(&out_str, mode, false, options) {

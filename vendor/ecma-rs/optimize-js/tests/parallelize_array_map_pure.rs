@@ -33,7 +33,13 @@ fn parallelize_array_map_pure() {
   annotate_program(&mut program);
 
   let insts = collect_insts(program.top_level.analyzed_cfg());
-  let map = insts
+  #[cfg(any(feature = "native-fusion", feature = "native-array-ops"))]
+  if let Some(chain) = insts.iter().find(|inst| inst.t == InstTyp::ArrayChain) {
+    assert_eq!(chain.meta.parallel, Some(ParallelPlan::Parallelizable));
+    return;
+  }
+
+  let map_call = insts
     .iter()
     .find(|inst| {
       inst.t == InstTyp::Call
@@ -41,6 +47,5 @@ fn parallelize_array_map_pure() {
     })
     .expect("expected Array.prototype.map call");
 
-  assert_eq!(map.meta.parallel, Some(ParallelPlan::Parallelizable));
+  assert_eq!(map_call.meta.parallel, Some(ParallelPlan::Parallelizable));
 }
-

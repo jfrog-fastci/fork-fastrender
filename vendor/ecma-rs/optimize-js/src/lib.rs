@@ -182,6 +182,18 @@ pub struct CompileCfgOptions {
   ///
   /// Default off.
   pub enable_bce: bool,
+  /// Populate escape/ownership/consumption metadata on the preserved SSA CFGs.
+  ///
+  /// When enabled (default), the compilation pipeline computes whole-program
+  /// interprocedural summaries and annotates each function's [`ProgramFunction::ssa_body`]
+  /// with:
+  /// - `InstMeta::result_escape` for allocation results
+  /// - `InstMeta::ownership` for value ownership
+  /// - `InstMeta::arg_use_modes` + `InstMeta::in_place_hint` for consumption/move hints
+  ///
+  /// Disabling this can significantly speed up compilation for large programs when
+  /// this metadata is not needed (e.g. decompiler roundtrip tests).
+  pub annotate_ssa_metadata: bool,
 }
 
 /// Options controlling the SSA inliner (`optpass_inline`).
@@ -219,6 +231,7 @@ impl Default for CompileCfgOptions {
       enable_devirtualize: false,
       enable_loop_opts: false,
       enable_bce: false,
+      annotate_ssa_metadata: true,
     }
   }
 }
@@ -327,7 +340,7 @@ pub struct ProgramFunction {
     serde(default, skip_serializing_if = "Vec::is_empty")
   )]
   pub params: Vec<u32>,
-  /// SSA-form CFG annotated with escape/ownership/consumption metadata.
+  /// SSA-form CFG (may be annotated with escape/ownership/consumption metadata).
   ///
   /// This is produced after SSA construction and optimization passes converge, and
   /// before SSA deconstruction. Native backends should prefer this over
@@ -1623,7 +1636,9 @@ impl Program {
     // Annotate `ssa_body` CFGs with interprocedural escape/ownership metadata. This lets downstream
     // consumers (e.g. native backends) rely on `ProgramFunction::analyzed_cfg()` without separately
     // running the program-wide analysis driver.
-    annotate_program_ssa_metadata(&mut program, cfg_options);
+    if cfg_options.annotate_ssa_metadata {
+      annotate_program_ssa_metadata(&mut program, cfg_options);
+    }
 
     Ok(program)
   }

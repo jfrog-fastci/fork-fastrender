@@ -6,7 +6,7 @@ mod common;
 use common::compile_source_typed;
 use optimize_js::analysis::annotate_program;
 use optimize_js::cfg::cfg::Cfg;
-use optimize_js::il::inst::{Arg, Inst, InstTyp, ParallelPlan, ParallelReason};
+use optimize_js::il::inst::{Arg, Inst, InstTyp, ParallelPlan};
 use optimize_js::TopLevelMode;
 
 fn collect_insts(cfg: &Cfg) -> Vec<Inst> {
@@ -19,15 +19,12 @@ fn collect_insts(cfg: &Cfg) -> Vec<Inst> {
 }
 
 #[test]
-fn parallelize_array_map_impure() {
+fn parallelize_array_reduce_associative_add() {
   let mut program = compile_source_typed(
     r#"
-      let total = 0;
-      const out = [1, 2, 3].map((x) => {
-        total = total + x;
-        return x + 1;
-      });
-      console.log(out, total);
+      const arr: number[] = [1, 2, 3];
+      const sum: number = arr.reduce((a: number, b: number) => a + b, 0);
+      console.log(sum);
     "#,
     TopLevelMode::Module,
     false,
@@ -38,23 +35,17 @@ fn parallelize_array_map_impure() {
   let insts = collect_insts(program.top_level.analyzed_cfg());
   #[cfg(any(feature = "native-fusion", feature = "native-array-ops"))]
   if let Some(chain) = insts.iter().find(|inst| inst.t == InstTyp::ArrayChain) {
-    assert_eq!(
-      chain.meta.parallel,
-      Some(ParallelPlan::NotParallelizable(ParallelReason::ImpureCallback))
-    );
+    assert_eq!(chain.meta.parallel, Some(ParallelPlan::Parallelizable));
     return;
   }
 
-  let map_call = insts
+  let reduce_call = insts
     .iter()
     .find(|inst| {
       inst.t == InstTyp::Call
-        && matches!(inst.args.get(0), Some(Arg::Builtin(path)) if path == "Array.prototype.map")
+        && matches!(inst.args.get(0), Some(Arg::Builtin(path)) if path == "Array.prototype.reduce")
     })
-    .expect("expected Array.prototype.map call");
+    .expect("expected Array.prototype.reduce call");
 
-  assert_eq!(
-    map_call.meta.parallel,
-    Some(ParallelPlan::NotParallelizable(ParallelReason::ImpureCallback))
-  );
+  assert_eq!(reduce_call.meta.parallel, Some(ParallelPlan::Parallelizable));
 }
