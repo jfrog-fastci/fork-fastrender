@@ -47,8 +47,10 @@ fn relation_cache_eviction_does_not_change_results() {
   let pairs: Vec<_> = (0..12)
     .flat_map(|i| {
       let lit = store.intern_type(TypeKind::NumberLiteral(OrderedFloat(i as f64)));
-      let string_target =
-        store.intern_type(TypeKind::StringLiteral(store.intern_name(i.to_string())));
+      let mut buf = itoa::Buffer::new();
+      let string_target = store.intern_type(TypeKind::StringLiteral(
+        store.intern_name_ref(buf.format(i)),
+      ));
       [
         (lit, primitives.number),
         (lit, string_target),
