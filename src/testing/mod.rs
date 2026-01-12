@@ -11,12 +11,14 @@
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
 mod golden;
+mod net;
 mod paths;
 mod pixmap;
 mod rayon;
 mod stack;
 
 pub(crate) use golden::{compare_config_from_env, compare_pngs, ArtifactPaths, CompareEnvVars};
+pub(crate) use net::{net_test_lock, try_bind_localhost};
 pub(crate) use paths::{
   fixture_path, fixtures_dir, manifest_dir, ref_fixtures_dir, repo_root, tests_dir,
 };

@@ -273,17 +273,13 @@ fn parse_duckduckgo_ac_json(bytes: &[u8]) -> Vec<String> {
 }
 
 #[cfg(test)]
-#[path = "../../tests/common/net.rs"]
-mod net_test_support;
-
-#[cfg(test)]
 mod tests {
   use super::*;
   use std::io::{Read, Write};
   use std::net::TcpListener;
   use std::time::Duration;
 
-  use super::net_test_support as net;
+  use crate::testing as net;
 
   fn http_response(body: &str) -> Vec<u8> {
     let mut out = Vec::new();
