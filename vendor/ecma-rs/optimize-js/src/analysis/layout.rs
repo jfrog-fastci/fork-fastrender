@@ -91,16 +91,17 @@ fn layout_of_const(value: &Const) -> LayoutId {
 }
 
 fn diagnostic_for_inst(
+  file: FileId,
   mode: LayoutValidationMode,
   code: &'static str,
   message: String,
   inst: &Inst,
 ) -> Diagnostic {
-  // `validate_layouts` currently only sees a `Cfg`, not the full `Program`, so it
-  // cannot reliably recover the original file id. Most `optimize-js` entry
-  // points use `FileId(0)`; we still use the best-effort `InstMeta.span` to
-  // point at the right source range when available.
-  let span = Span::new(FileId(0), inst.meta.span.unwrap_or_else(|| TextRange::new(0, 0)));
+  // `validate_layouts*` typically only sees a `Cfg`, not the full `Program`, so
+  // the caller may need to supply the file id. `validate_layouts` defaults to
+  // `FileId(0)` (matching `compile_source`); `validate_layouts_with_file` is
+  // available for typed pipelines that keep the original file id.
+  let span = Span::new(file, inst.meta.span.unwrap_or_else(|| TextRange::new(0, 0)));
   let mut diag = match mode {
     LayoutValidationMode::Strict => Diagnostic::error(code, message, span),
     LayoutValidationMode::BestEffort => Diagnostic::warning(code, message, span),
@@ -136,7 +137,14 @@ fn arg_layout(arg: &Arg, map: &LayoutMap, unknown_layout: LayoutId) -> Option<La
   }
 }
 
-fn set_layout(map: &mut LayoutMap, mode: LayoutValidationMode, var: u32, layout: LayoutId, inst: &Inst) -> bool {
+fn set_layout(
+  map: &mut LayoutMap,
+  file: FileId,
+  mode: LayoutValidationMode,
+  var: u32,
+  layout: LayoutId,
+  inst: &Inst,
+) -> bool {
   match map.layouts.get(&var).copied() {
     None => {
       map.layouts.insert(var, layout);
@@ -145,6 +153,7 @@ fn set_layout(map: &mut LayoutMap, mode: LayoutValidationMode, var: u32, layout:
     Some(existing) if existing == layout => false,
     Some(existing) => {
       map.diagnostics.push(diagnostic_for_inst(
+        file,
         mode,
         "OPT0103",
         format!("conflicting layouts for %{var}: {existing:?} vs {layout:?}"),
@@ -161,6 +170,15 @@ fn set_layout(map: &mut LayoutMap, mode: LayoutValidationMode, var: u32, layout:
 /// value-defining instructions. `Phi` layouts are computed as the join of their
 /// incoming values.
 pub fn validate_layouts(cfg: &Cfg, mode: LayoutValidationMode) -> Result<LayoutMap, Vec<Diagnostic>> {
+  validate_layouts_with_file(cfg, FileId(0), mode)
+}
+
+/// Like [`validate_layouts`] but uses the provided `file` id for diagnostics.
+pub fn validate_layouts_with_file(
+  cfg: &Cfg,
+  file: FileId,
+  mode: LayoutValidationMode,
+) -> Result<LayoutMap, Vec<Diagnostic>> {
   let unknown_layout = fallback_unknown_layout();
   let mut map = LayoutMap::default();
 
@@ -204,26 +222,27 @@ pub fn validate_layouts(cfg: &Cfg, mode: LayoutValidationMode) -> Result<LayoutM
 
             if let Some((a, b)) = mismatch {
               map.diagnostics.push(diagnostic_for_inst(
+                file,
                 mode,
                 "OPT0101",
                 format!("phi merges incompatible layouts: {a:?} vs {b:?}"),
                 inst,
               ));
               if mode == LayoutValidationMode::BestEffort {
-                changed |= set_layout(&mut map, mode, tgt, unknown_layout, inst);
+                changed |= set_layout(&mut map, file, mode, tgt, unknown_layout, inst);
               }
               continue;
             }
 
             let Some(layout) = joined else {
               if mode == LayoutValidationMode::BestEffort {
-                changed |= set_layout(&mut map, mode, tgt, unknown_layout, inst);
+                changed |= set_layout(&mut map, file, mode, tgt, unknown_layout, inst);
               }
               continue;
             };
 
             // The phi result must match the joined layout.
-            changed |= set_layout(&mut map, mode, tgt, layout, inst);
+            changed |= set_layout(&mut map, file, mode, tgt, layout, inst);
 
             // Propagate the phi layout back into any incoming vars that haven't
             // been assigned yet (e.g. function parameters).
@@ -232,7 +251,7 @@ pub fn validate_layouts(cfg: &Cfg, mode: LayoutValidationMode) -> Result<LayoutM
                 continue;
               };
               if map.get(*v).is_none() {
-                changed |= set_layout(&mut map, mode, *v, layout, inst);
+                changed |= set_layout(&mut map, file, mode, *v, layout, inst);
               }
             }
           }
@@ -240,11 +259,12 @@ pub fn validate_layouts(cfg: &Cfg, mode: LayoutValidationMode) -> Result<LayoutM
           InstTyp::VarAssign => {
             let declared = inst.meta.native_layout;
             if let Some(layout) = declared {
-              changed |= set_layout(&mut map, mode, tgt, layout, inst);
+              changed |= set_layout(&mut map, file, mode, tgt, layout, inst);
             } else if mode == LayoutValidationMode::BestEffort {
-              changed |= set_layout(&mut map, mode, tgt, unknown_layout, inst);
+              changed |= set_layout(&mut map, file, mode, tgt, unknown_layout, inst);
             } else {
               map.diagnostics.push(diagnostic_for_inst(
+                file,
                 mode,
                 "OPT0100",
                 format!("missing InstMeta.native_layout for VarAssign result %{tgt}"),
@@ -264,6 +284,7 @@ pub fn validate_layouts(cfg: &Cfg, mode: LayoutValidationMode) -> Result<LayoutM
                 (Some(tgt_layout), Some(src_layout)) => {
                   if tgt_layout != src_layout {
                     map.diagnostics.push(diagnostic_for_inst(
+                      file,
                       mode,
                       "OPT0102",
                       format!(
@@ -275,13 +296,13 @@ pub fn validate_layouts(cfg: &Cfg, mode: LayoutValidationMode) -> Result<LayoutM
                 }
                 (Some(tgt_layout), None) => {
                   // Infer the source layout from the target (common for params).
-                  changed |= set_layout(&mut map, mode, *src_var, tgt_layout, inst);
+                  changed |= set_layout(&mut map, file, mode, *src_var, tgt_layout, inst);
                 }
                 (None, Some(src_layout)) => {
                   // Infer the target layout from the source when the VarAssign
                   // lacks metadata in best-effort mode.
                   if mode == LayoutValidationMode::BestEffort {
-                    changed |= set_layout(&mut map, mode, tgt, src_layout, inst);
+                    changed |= set_layout(&mut map, file, mode, tgt, src_layout, inst);
                   }
                 }
                 _ => {}
@@ -291,10 +312,11 @@ pub fn validate_layouts(cfg: &Cfg, mode: LayoutValidationMode) -> Result<LayoutM
 
           _ => {
             if let Some(layout) = inst.meta.native_layout {
-              changed |= set_layout(&mut map, mode, tgt, layout, inst);
+              changed |= set_layout(&mut map, file, mode, tgt, layout, inst);
             } else if mode == LayoutValidationMode::BestEffort {
-              changed |= set_layout(&mut map, mode, tgt, unknown_layout, inst);
+              changed |= set_layout(&mut map, file, mode, tgt, unknown_layout, inst);
               map.diagnostics.push(diagnostic_for_inst(
+                file,
                 mode,
                 "OPT0100",
                 format!("missing InstMeta.native_layout for instruction result %{tgt}"),
@@ -302,6 +324,7 @@ pub fn validate_layouts(cfg: &Cfg, mode: LayoutValidationMode) -> Result<LayoutM
               ));
             } else {
               map.diagnostics.push(diagnostic_for_inst(
+                file,
                 mode,
                 "OPT0100",
                 format!("missing InstMeta.native_layout for instruction result %{tgt}"),
@@ -326,6 +349,7 @@ pub fn validate_layouts(cfg: &Cfg, mode: LayoutValidationMode) -> Result<LayoutM
         };
         if map.get(tgt).is_none() {
           map.diagnostics.push(diagnostic_for_inst(
+            file,
             mode,
             "OPT0100",
             format!("missing layout for SSA value %{tgt}"),

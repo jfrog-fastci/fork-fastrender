@@ -46,7 +46,7 @@ pub use driver::{
 };
 
 #[cfg(feature = "typed")]
-pub use layout::{validate_layouts, LayoutMap, LayoutValidationMode};
+pub use layout::{validate_layouts, validate_layouts_with_file, LayoutMap, LayoutValidationMode};
 
 #[cfg(test)]
 mod tests;
