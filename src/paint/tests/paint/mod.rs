@@ -89,6 +89,7 @@ mod iframe_background_compositing;
 mod image_downscale_sampling;
 mod image_fractional_src_rect_baking_downscale;
 mod image_set_intrinsic_background_size;
+mod image_set_intrinsic_sizing;
 mod image_set_type_and_dpr_selection;
 mod image_src_rect_clipping;
 mod image_src_rect_clips_to_dest_rect;

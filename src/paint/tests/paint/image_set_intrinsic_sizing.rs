@@ -1,16 +1,15 @@
-use base64::engine::general_purpose;
+use base64::prelude::BASE64_STANDARD;
 use base64::Engine as _;
-use fastrender::css::types::Declaration;
-use fastrender::css::types::PropertyValue;
-use fastrender::geometry::Rect;
-use fastrender::paint::display_list_builder::DisplayListBuilder;
-use fastrender::style::properties::apply_declaration;
-use fastrender::style::properties::with_image_set_dpr;
-use fastrender::tree::fragment_tree::FragmentNode;
-use fastrender::{ComputedStyle, DisplayItem};
 use image::codecs::png::PngEncoder;
-use image::{ColorType, ImageEncoder};
+use image::{ExtendedColorType, ImageEncoder};
 use std::sync::Arc;
+
+use crate::css::types::{Declaration, PropertyValue};
+use crate::geometry::Rect;
+use crate::paint::display_list_builder::DisplayListBuilder;
+use crate::style::properties::{apply_declaration, with_image_set_dpr};
+use crate::tree::fragment_tree::FragmentNode;
+use crate::{ComputedStyle, DisplayItem};
 
 fn solid_png_data_url(width: u32, height: u32, rgba: [u8; 4]) -> String {
   let pixels: Vec<u8> = std::iter::repeat(rgba)
@@ -19,9 +18,9 @@ fn solid_png_data_url(width: u32, height: u32, rgba: [u8; 4]) -> String {
     .collect();
   let mut buf = Vec::new();
   PngEncoder::new(&mut buf)
-    .write_image(&pixels, width, height, ColorType::Rgba8.into())
+    .write_image(&pixels, width, height, ExtendedColorType::Rgba8)
     .expect("encode png");
-  format!("data:image/png;base64,{}", general_purpose::STANDARD.encode(buf))
+  format!("data:image/png;base64,{}", BASE64_STANDARD.encode(buf))
 }
 
 fn assert_background_image_set_tile_size(css_function: &str) {
