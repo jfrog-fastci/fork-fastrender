@@ -56,6 +56,7 @@ mod headless_chrome_media_features;
 mod browser_mem_limit_env;
 mod browser_bookmarks_history_restore;
 mod browser_session_restore;
+mod browser_session_scroll_restore;
 mod browser_tab_vmjs_smoke;
 mod browser_thread_base_url_across_navigations;
 mod browser_thread_cancellation;

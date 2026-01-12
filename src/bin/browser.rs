@@ -1485,6 +1485,11 @@ struct App {
   tab_textures: std::collections::HashMap<fastrender::ui::TabId, fastrender::ui::WgpuPixmapTexture>,
   tab_favicons: std::collections::HashMap<fastrender::ui::TabId, fastrender::ui::WgpuPixmapTexture>,
   tab_cancel: std::collections::HashMap<fastrender::ui::TabId, fastrender::ui::cancel::CancelGens>,
+  /// Pending session scroll restores keyed by tab id.
+  ///
+  /// When restoring a session we only know the persisted scroll offset; applying it must wait until
+  /// the tab has a known viewport (after the first `ViewportChanged` for this window/tab).
+  pending_scroll_restores: std::collections::HashMap<fastrender::ui::TabId, (f32, f32)>,
   /// Pending `FrameReady` pixmaps coalesced until the next window redraw.
   ///
   /// Uploading a pixmap into a wgpu texture is expensive; the UI worker can produce multiple frames
@@ -1774,6 +1779,7 @@ impl App {
       tab_textures: std::collections::HashMap::new(),
       tab_favicons: std::collections::HashMap::new(),
       tab_cancel: std::collections::HashMap::new(),
+      pending_scroll_restores: std::collections::HashMap::new(),
       pending_frame_uploads: fastrender::ui::FrameUploadCoalescer::new(),
       page_rect_points: None,
       page_viewport_css: None,
@@ -1835,6 +1841,7 @@ impl App {
         tabs: vec![fastrender::ui::BrowserSessionTab {
           url: fastrender::ui::about_pages::ABOUT_NEWTAB.to_string(),
           zoom: None,
+          scroll_css: None,
         }],
         active_tab_index: 0,
         window_state: None,
@@ -1844,6 +1851,10 @@ impl App {
     for tab in window.tabs {
       let tab_id = fastrender::ui::TabId::new();
       tab_ids.push(tab_id);
+
+      if let Some(scroll_css) = tab.scroll_css {
+        self.pending_scroll_restores.insert(tab_id, scroll_css);
+      }
 
       let mut tab_state = fastrender::ui::BrowserTabState::new(tab_id, tab.url.clone());
       if let Some(zoom) = tab.zoom {
@@ -2730,6 +2741,9 @@ impl App {
       && self.viewport_cache_css == viewport_css
       && (self.viewport_cache_dpr - dpr).abs() < f32::EPSILON
     {
+      // Even when the viewport is unchanged, session restore may still have a pending scroll
+      // offset to apply once the tab's viewport has been established.
+      self.maybe_restore_session_scroll(tab_id);
       return;
     }
 
@@ -2741,6 +2755,23 @@ impl App {
       tab_id,
       viewport_css,
       dpr,
+    });
+
+    self.maybe_restore_session_scroll(tab_id);
+  }
+
+  fn maybe_restore_session_scroll(&mut self, tab_id: fastrender::ui::TabId) {
+    use fastrender::ui::{RepaintReason, UiToWorker};
+
+    let Some(pos_css) = self.pending_scroll_restores.remove(&tab_id) else {
+      return;
+    };
+
+    self.send_worker_msg(UiToWorker::ScrollTo { tab_id, pos_css });
+    // Ensure the restored scroll becomes visible even if it lands after the initial paint.
+    self.send_worker_msg(UiToWorker::RequestRepaint {
+      tab_id,
+      reason: RepaintReason::Scroll,
     });
   }
 

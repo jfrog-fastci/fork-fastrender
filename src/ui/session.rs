@@ -20,6 +20,7 @@ const MAX_WINDOW_DIM_PX: i64 = 16_384;
 const MAX_WINDOW_POS_ABS_PX: i64 = 1_000_000;
 const FALLBACK_WINDOW_WIDTH_PX: i64 = 1_024;
 const FALLBACK_WINDOW_HEIGHT_PX: i64 = 768;
+const MAX_SCROLL_CSS: f32 = 1e9;
 
 fn default_did_exit_cleanly() -> bool {
   true
@@ -38,6 +39,12 @@ pub struct BrowserSessionTab {
   pub url: String,
   #[serde(default, skip_serializing_if = "Option::is_none")]
   pub zoom: Option<f32>,
+  /// Viewport/document scroll offset in CSS pixels.
+  ///
+  /// `None` means "unknown / top" and is omitted from the serialized JSON for backwards
+  /// compatibility and cleanliness.
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  pub scroll_css: Option<(f32, f32)>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -95,6 +102,7 @@ impl BrowserSessionWindow {
       self.tabs.push(BrowserSessionTab {
         url: about_pages::ABOUT_NEWTAB.to_string(),
         zoom: None,
+        scroll_css: None,
       });
       self.active_tab_index = 0;
     }
@@ -137,7 +145,11 @@ impl BrowserSession {
     Self {
       version: SESSION_VERSION,
       windows: vec![BrowserSessionWindow {
-        tabs: vec![BrowserSessionTab { url, zoom: None }],
+        tabs: vec![BrowserSessionTab {
+          url,
+          zoom: None,
+          scroll_css: None,
+        }],
         active_tab_index: 0,
         window_state: None,
       }],
@@ -149,7 +161,7 @@ impl BrowserSession {
 
   /// Build a session snapshot from the current windowed UI state model.
   ///
-  /// This intentionally stores only lightweight serializable data (URLs, zoom).
+  /// This intentionally stores only lightweight serializable data (URLs, zoom, viewport scroll).
   pub fn from_app_state(app: &BrowserAppState) -> Self {
     let mut tabs = Vec::new();
     for tab in &app.tabs {
@@ -160,9 +172,23 @@ impl BrowserSession {
       if validate_user_navigation_url_scheme(&url).is_err() {
         url = about_pages::ABOUT_NEWTAB.to_string();
       }
+
+      let scroll_css = {
+        let viewport = tab.scroll_state.viewport;
+        let x = viewport.x;
+        let y = viewport.y;
+        if !x.is_finite() || !y.is_finite() {
+          None
+        } else {
+          let x = x.max(0.0);
+          let y = y.max(0.0);
+          ((x, y) != (0.0, 0.0)).then_some((x, y))
+        }
+      };
       tabs.push(BrowserSessionTab {
         url,
         zoom: Some(tab.zoom),
+        scroll_css,
       });
     }
 
@@ -193,6 +219,7 @@ impl BrowserSession {
         tabs: vec![BrowserSessionTab {
           url: about_pages::ABOUT_NEWTAB.to_string(),
           zoom: None,
+          scroll_css: None,
         }],
         active_tab_index: 0,
         window_state: None,
@@ -228,6 +255,15 @@ fn sanitize_tab(tab: &mut BrowserSessionTab) {
       }
     })
     .and_then(|zoom| (zoom != zoom::DEFAULT_ZOOM).then_some(zoom));
+
+  tab.scroll_css = tab.scroll_css.and_then(|(x, y)| {
+    if !x.is_finite() || !y.is_finite() {
+      return None;
+    }
+    let x = x.max(0.0).min(MAX_SCROLL_CSS);
+    let y = y.max(0.0).min(MAX_SCROLL_CSS);
+    ((x, y) != (0.0, 0.0)).then_some((x, y))
+  });
 }
 
 fn sanitize_window_dim(value: Option<i64>) -> Option<i64> {
@@ -257,35 +293,43 @@ mod tests {
           BrowserSessionTab {
             url: "about:newtab".to_string(),
             zoom: Some(f32::NAN),
+            scroll_css: None,
           },
           BrowserSessionTab {
             url: "about:newtab".to_string(),
             zoom: Some(f32::INFINITY),
+            scroll_css: None,
           },
           BrowserSessionTab {
             url: "about:newtab".to_string(),
             zoom: Some(0.0),
+            scroll_css: None,
           },
           BrowserSessionTab {
             url: "about:newtab".to_string(),
             zoom: Some(-1.0),
+            scroll_css: None,
           },
           // Finite but outside the supported UI range should clamp.
           BrowserSessionTab {
             url: "about:newtab".to_string(),
             zoom: Some(0.1),
+            scroll_css: None,
           },
           BrowserSessionTab {
             url: "about:newtab".to_string(),
             zoom: Some(999.0),
+            scroll_css: None,
           },
           BrowserSessionTab {
             url: "about:newtab".to_string(),
             zoom: Some(2.0),
+            scroll_css: None,
           },
           BrowserSessionTab {
             url: "about:newtab".to_string(),
             zoom: Some(zoom::DEFAULT_ZOOM),
+            scroll_css: None,
           },
         ],
         active_tab_index: 0,
@@ -311,8 +355,81 @@ mod tests {
   }
 
   #[test]
+  fn session_omits_default_scroll_from_json() {
+    let session = BrowserSession::single("about:newtab".to_string());
+    let json = serde_json::to_string(&session).expect("serialize session");
+    assert!(
+      !json.contains("scroll_css"),
+      "expected default scroll to be omitted from JSON, got: {json}"
+    );
+  }
+
+  #[test]
+  fn session_sanitizes_invalid_scroll_values() {
+    let session = BrowserSession {
+      version: 123,
+      windows: vec![BrowserSessionWindow {
+        tabs: vec![
+          BrowserSessionTab {
+            url: "about:newtab".to_string(),
+            zoom: None,
+            scroll_css: Some((f32::NAN, 1.0)),
+          },
+          BrowserSessionTab {
+            url: "about:newtab".to_string(),
+            zoom: None,
+            scroll_css: Some((1.0, f32::INFINITY)),
+          },
+          BrowserSessionTab {
+            url: "about:newtab".to_string(),
+            zoom: None,
+            scroll_css: Some((-5.0, -3.0)),
+          },
+          BrowserSessionTab {
+            url: "about:newtab".to_string(),
+            zoom: None,
+            scroll_css: Some((-5.0, 25.0)),
+          },
+          BrowserSessionTab {
+            url: "about:newtab".to_string(),
+            zoom: None,
+            scroll_css: Some((1e12, 5.0)),
+          },
+          BrowserSessionTab {
+            url: "about:newtab".to_string(),
+            zoom: None,
+            scroll_css: Some((0.0, 0.0)),
+          },
+        ],
+        active_tab_index: 0,
+        window_state: None,
+      }],
+      active_window_index: 0,
+      did_exit_cleanly: true,
+    }
+    .sanitized();
+
+    let tabs = &session.windows[0].tabs;
+
+    // Non-finite scrolls are dropped.
+    assert_eq!(tabs[0].scroll_css, None);
+    assert_eq!(tabs[1].scroll_css, None);
+
+    // Negatives clamp to 0; (0,0) normalizes to None.
+    assert_eq!(tabs[2].scroll_css, None);
+    assert_eq!(tabs[3].scroll_css, Some((0.0, 25.0)));
+
+    // Absurdly large scrolls are clamped.
+    assert_eq!(tabs[4].scroll_css, Some((MAX_SCROLL_CSS, 5.0)));
+
+    // (0,0) normalizes to None.
+    assert_eq!(tabs[5].scroll_css, None);
+  }
+
+  #[test]
   fn from_app_state_includes_non_default_zoom() {
     use crate::ui::{BrowserAppState, BrowserTabState, TabId};
+    use crate::Point;
 
     let mut app = BrowserAppState::new();
     let tab_a = TabId(1);
@@ -320,6 +437,7 @@ mod tests {
 
     let mut a = BrowserTabState::new(tab_a, "about:newtab".to_string());
     a.zoom = 1.5;
+    a.scroll_state = crate::scroll::ScrollState::with_viewport(Point::new(12.0, 34.0));
     let b = BrowserTabState::new(tab_b, "about:blank".to_string());
 
     app.push_tab(a, true);
@@ -334,10 +452,12 @@ mod tests {
         BrowserSessionTab {
           url: "about:newtab".to_string(),
           zoom: Some(1.5),
+          scroll_css: Some((12.0, 34.0)),
         },
         BrowserSessionTab {
           url: "about:blank".to_string(),
           zoom: None,
+          scroll_css: None,
         },
       ]
     );
@@ -364,19 +484,21 @@ mod tests {
     assert_eq!(session.windows.len(), 1);
     assert_eq!(session.active_window_index, 0);
     assert_eq!(session.windows[0].active_tab_index, 1);
-    assert_eq!(
-      session.windows[0].tabs,
-      vec![
-        BrowserSessionTab {
-          url: "about:newtab".to_string(),
-          zoom: None,
-        },
-        BrowserSessionTab {
-          url: "about:blank".to_string(),
-          zoom: Some(1.5),
-        }
-      ]
-    );
+      assert_eq!(
+        session.windows[0].tabs,
+        vec![
+          BrowserSessionTab {
+            url: "about:newtab".to_string(),
+            zoom: None,
+            scroll_css: None,
+          },
+          BrowserSessionTab {
+            url: "about:blank".to_string(),
+            zoom: Some(1.5),
+            scroll_css: None,
+          }
+        ]
+      );
   }
 
   #[test]
@@ -393,6 +515,7 @@ mod tests {
           tabs: vec![BrowserSessionTab {
             url: "about:blank".to_string(),
             zoom: None,
+            scroll_css: None,
           }],
           active_tab_index: 999,
           window_state: None,
@@ -423,6 +546,7 @@ mod tests {
         tabs: vec![BrowserSessionTab {
           url: "about:newtab".to_string(),
           zoom: None,
+          scroll_css: None,
         }],
         active_tab_index: 0,
         window_state: Some(BrowserWindowState {
