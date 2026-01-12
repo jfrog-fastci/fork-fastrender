@@ -543,7 +543,7 @@ int main(void) {
   if (check(ab.len == 2)) { rc = 2; goto done; }
   if (check(ab.ptr != NULL)) { rc = 3; goto done; }
   if (check(memcmp(ab.ptr, "ab", 2) == 0)) { rc = 4; goto done; }
-  rt_stringref_free(ab);
+  rt_string_free(ab);
 
   // Microtask API: microtasks should not run synchronously when queued, and should run once drained.
   int microtask_ran = 0;
