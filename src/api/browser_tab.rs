@@ -466,7 +466,7 @@ pub struct BrowserTabHost {
 
 impl BrowserTabHost {
   fn new(
-    document: BrowserDocumentDom2,
+    mut document: BrowserDocumentDom2,
     mut executor: Box<dyn BrowserTabJsExecutor>,
     trace: TraceHandle,
     js_execution_options: JsExecutionOptions,
@@ -474,6 +474,7 @@ impl BrowserTabHost {
     let mut webidl_bindings_host =
       Box::new(VmJsWebIdlBindingsHostDispatch::<BrowserTabHost>::new_without_global());
     executor.set_webidl_bindings_host(webidl_bindings_host.as_mut());
+    document.set_webidl_bindings_host(webidl_bindings_host.as_mut());
     let event_invoker = executor
       .event_listener_invoker()
       .unwrap_or_else(|| Box::new(NoopEventInvoker));

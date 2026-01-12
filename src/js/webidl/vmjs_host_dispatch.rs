@@ -21,6 +21,7 @@ const URL_INVALID_ERROR: &str = "Invalid URL";
 const URLSP_ITER_VALUES_SLOT: &str = "__fastrender_urlsp_iter_values";
 const URLSP_ITER_INDEX_SLOT: &str = "__fastrender_urlsp_iter_index";
 const URLSP_ITER_LEN_SLOT: &str = "__fastrender_urlsp_iter_len";
+const URL_SEARCH_PARAMS_SLOT: &str = "__fastrender_url_searchParams";
 
 #[derive(Debug, Clone, Copy)]
 struct RootedCallback {
@@ -466,6 +467,33 @@ impl<Host: WindowRealmHost + 'static> VmJsWebIdlBindingsHostDispatch<Host> {
     scope.push_root(proto)?;
     let Value::Object(proto_obj) = proto else {
       return Err(VmError::TypeError("URL.prototype is not an object"));
+    };
+    Ok(proto_obj)
+  }
+
+  fn url_search_params_proto_from_global(
+    &self,
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+  ) -> Result<GcObject, VmError> {
+    let global = self
+      .global
+      .ok_or(VmError::Unimplemented("WebIDL host missing global object"))?;
+
+    let ctor_key = key_from_str(scope, "URLSearchParams")?;
+    let ctor = get_with_active_vm_host_and_hooks(vm, scope, global, ctor_key)?;
+    scope.push_root(ctor)?;
+    let Value::Object(ctor_obj) = ctor else {
+      return Err(VmError::TypeError("globalThis.URLSearchParams is not an object"));
+    };
+
+    let proto_key = key_from_str(scope, "prototype")?;
+    let proto = get_with_active_vm_host_and_hooks(vm, scope, ctor_obj, proto_key)?;
+    scope.push_root(proto)?;
+    let Value::Object(proto_obj) = proto else {
+      return Err(VmError::TypeError(
+        "URLSearchParams.prototype is not an object",
+      ));
     };
     Ok(proto_obj)
   }
@@ -1149,6 +1177,61 @@ impl<Host: WindowRealmHost + 'static> WebIdlBindingsHost for VmJsWebIdlBindingsH
         let s = scope.alloc_string(&origin)?;
         scope.push_root(Value::String(s))?;
         Ok(Value::String(s))
+      }
+      ("URL", "searchParams", 0) => {
+        let url_obj = Self::require_receiver_object(receiver)?;
+
+        // Internal cache slot used to preserve `[SameObject]` semantics for `URL.searchParams`:
+        // repeated reads should return the same wrapper object for as long as the URL object is
+        // alive.
+        //
+        // We store the wrapper as a non-enumerable, non-writable, non-configurable own data
+        // property so the vm-js GC traces it naturally.
+        let slot_key = key_from_str(scope, URL_SEARCH_PARAMS_SLOT)?;
+        if let Some(cached) = scope
+          .heap()
+          .object_get_own_data_property_value(url_obj, &slot_key)?
+        {
+          if cached != Value::Undefined {
+            let Value::Object(_) = cached else {
+              return Err(VmError::TypeError(
+                "URL.searchParams cache slot value is not an object",
+              ));
+            };
+            return Ok(cached);
+          }
+        }
+
+        let url = self
+          .urls
+          .get(&WeakGcObject::from(url_obj))
+          .cloned()
+          .ok_or(VmError::TypeError("Illegal invocation"))?;
+        let params = url.search_params();
+
+        let proto = self.url_search_params_proto_from_global(vm, scope)?;
+        scope.push_root(Value::Object(proto))?;
+        let params_obj = scope.alloc_object_with_prototype(Some(proto))?;
+        scope.push_root(Value::Object(params_obj))?;
+        self.params.insert(WeakGcObject::from(params_obj), params);
+
+        // Note: allocate a fresh key for the define_property call (instead of reusing `slot_key`)
+        // so we never hold a non-rooted string handle across operations that may allocate/GC.
+        let slot_key = key_from_str(scope, URL_SEARCH_PARAMS_SLOT)?;
+        scope.define_property(
+          url_obj,
+          slot_key,
+          PropertyDescriptor {
+            enumerable: false,
+            configurable: false,
+            kind: PropertyKind::Data {
+              value: Value::Object(params_obj),
+              writable: false,
+            },
+          },
+        )?;
+
+        Ok(Value::Object(params_obj))
       }
       ("URL", "toJSON", 0) => {
         let url = self.require_url(receiver)?;

@@ -595,6 +595,32 @@ pub mod window {
   }
 
   #[allow(dead_code)]
+  fn u_r_l_get_attribute_search_params(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    let bindings_host = host_from_hooks(hooks)?;
+    bindings_host.call_operation(
+      &mut *rt.vm,
+      &mut rt.scope,
+      receiver,
+      "URL",
+      "searchParams",
+      0,
+      &[],
+    )
+  }
+
+  #[allow(dead_code)]
   fn u_r_l_call_without_new(
     vm: &mut Vm,
     scope: &mut Scope<'_>,
@@ -2010,6 +2036,20 @@ pub mod window {
       set,
       AccessorPropertyAttributes::ATTRIBUTE,
     )?;
+    let get = rt.alloc_native_function(
+      u_r_l_get_attribute_search_params,
+      None,
+      "get searchParams",
+      0,
+    )?;
+    let set = Value::Undefined;
+    rt.define_accessor_property_str(
+      proto_u_r_l,
+      "searchParams",
+      Value::Object(get),
+      set,
+      AccessorPropertyAttributes::ATTRIBUTE,
+    )?;
     let slots = [Value::Object(proto_u_r_l)];
     let ctor_u_r_l = rt.alloc_native_function_with_slots(
       u_r_l_call_without_new,
@@ -2862,6 +2902,32 @@ pub mod worker {
   }
 
   #[allow(dead_code)]
+  fn u_r_l_get_attribute_search_params(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    let bindings_host = host_from_hooks(hooks)?;
+    bindings_host.call_operation(
+      &mut *rt.vm,
+      &mut rt.scope,
+      receiver,
+      "URL",
+      "searchParams",
+      0,
+      &[],
+    )
+  }
+
+  #[allow(dead_code)]
   fn u_r_l_call_without_new(
     vm: &mut Vm,
     scope: &mut Scope<'_>,
@@ -3656,6 +3722,20 @@ pub mod worker {
     rt.define_accessor_property_str(
       proto_u_r_l,
       "origin",
+      Value::Object(get),
+      set,
+      AccessorPropertyAttributes::ATTRIBUTE,
+    )?;
+    let get = rt.alloc_native_function(
+      u_r_l_get_attribute_search_params,
+      None,
+      "get searchParams",
+      0,
+    )?;
+    let set = Value::Undefined;
+    rt.define_accessor_property_str(
+      proto_u_r_l,
+      "searchParams",
       Value::Object(get),
       set,
       AccessorPropertyAttributes::ATTRIBUTE,

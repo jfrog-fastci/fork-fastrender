@@ -51,6 +51,14 @@ pub struct BrowserDocumentDom2 {
   /// `document.currentScript` to be resolved via downcast on the real `VmHost` without relying on
   /// any per-call host shim.
   current_script: CurrentScriptStateHandle,
+  /// Optional WebIDL binding dispatch host used when the document itself is installed as the
+  /// `webidl_vm_js::WebIdlBindingsHost` (for example via `WebIdlBindingsHostSlot`).
+  ///
+  /// In FastRender's primary execution pipelines, generated vm-js WebIDL bindings dispatch through
+  /// a `VmJsWebIdlBindingsHostDispatch<Host>` owned by the surrounding window/tab host.
+  /// `BrowserDocumentDom2` stores a non-owning pointer to that dispatcher so that if the document is
+  /// used as the WebIDL host, it can still forward to the real dispatcher.
+  webidl_bindings_host: Option<NonNull<dyn webidl_vm_js::WebIdlBindingsHost>>,
   options: RenderOptions,
   prepared: Option<PreparedDocument>,
   last_dom_mapping: Option<crate::dom2::RendererDomMapping>,
@@ -98,6 +106,7 @@ impl BrowserDocumentDom2 {
       active_events: ActiveEventStack::default(),
       visibility_state: DocumentVisibilityState::Visible,
       current_script: CurrentScriptStateHandle::default(),
+      webidl_bindings_host: None,
       options,
       prepared: None,
       last_dom_mapping: None,
@@ -139,6 +148,13 @@ impl BrowserDocumentDom2 {
 
   pub(crate) fn set_current_script_handle(&mut self, handle: CurrentScriptStateHandle) {
     self.current_script = handle;
+  }
+
+  pub(crate) fn set_webidl_bindings_host(
+    &mut self,
+    host: &mut dyn webidl_vm_js::WebIdlBindingsHost,
+  ) {
+    self.webidl_bindings_host = Some(NonNull::from(host));
   }
 
   pub(crate) fn visibility_state(&self) -> DocumentVisibilityState {
@@ -1004,31 +1020,63 @@ impl crate::js::DomHost for BrowserDocumentDom2 {
 impl webidl_vm_js::WebIdlBindingsHost for BrowserDocumentDom2 {
   fn call_operation(
     &mut self,
-    _vm: &mut vm_js::Vm,
-    _scope: &mut vm_js::Scope<'_>,
-    _receiver: Option<vm_js::Value>,
-    _interface: &'static str,
-    _operation: &'static str,
-    _overload: usize,
-    _args: &[vm_js::Value],
+    vm: &mut vm_js::Vm,
+    scope: &mut vm_js::Scope<'_>,
+    receiver: Option<vm_js::Value>,
+    interface: &'static str,
+    operation: &'static str,
+    overload: usize,
+    args: &[vm_js::Value],
   ) -> std::result::Result<vm_js::Value, vm_js::VmError> {
-    Err(vm_js::VmError::Unimplemented(
-      "BrowserDocumentDom2 does not implement WebIDL binding dispatch",
-    ))
+    let Some(mut host_ptr) = self.webidl_bindings_host else {
+      return Err(vm_js::VmError::Unimplemented(
+        "BrowserDocumentDom2 is missing a WebIDL bindings host",
+      ));
+    };
+
+    // SAFETY: `webidl_bindings_host` is a non-owning pointer set by the surrounding tab/window
+    // host. The embedder must guarantee it is valid for the lifetime of this document.
+    let host = unsafe { host_ptr.as_mut() };
+    host.call_operation(vm, scope, receiver, interface, operation, overload, args)
   }
 
   fn call_constructor(
     &mut self,
-    _vm: &mut vm_js::Vm,
-    _scope: &mut vm_js::Scope<'_>,
-    _interface: &'static str,
-    _overload: usize,
-    _args: &[vm_js::Value],
-    _new_target: vm_js::Value,
+    vm: &mut vm_js::Vm,
+    scope: &mut vm_js::Scope<'_>,
+    interface: &'static str,
+    overload: usize,
+    args: &[vm_js::Value],
+    new_target: vm_js::Value,
   ) -> std::result::Result<vm_js::Value, vm_js::VmError> {
-    Err(vm_js::VmError::Unimplemented(
-      "BrowserDocumentDom2 does not implement WebIDL binding dispatch",
-    ))
+    let Some(mut host_ptr) = self.webidl_bindings_host else {
+      return Err(vm_js::VmError::Unimplemented(
+        "BrowserDocumentDom2 is missing a WebIDL bindings host",
+      ));
+    };
+
+    // SAFETY: see `call_operation`.
+    let host = unsafe { host_ptr.as_mut() };
+    host.call_constructor(vm, scope, interface, overload, args, new_target)
+  }
+
+  fn iterable_snapshot(
+    &mut self,
+    vm: &mut vm_js::Vm,
+    scope: &mut vm_js::Scope<'_>,
+    receiver: Option<vm_js::Value>,
+    interface: &'static str,
+    kind: webidl_vm_js::IterableKind,
+  ) -> std::result::Result<Vec<webidl_vm_js::bindings_runtime::BindingValue>, vm_js::VmError> {
+    let Some(mut host_ptr) = self.webidl_bindings_host else {
+      return Err(vm_js::VmError::Unimplemented(
+        "BrowserDocumentDom2 is missing a WebIDL bindings host",
+      ));
+    };
+
+    // SAFETY: see `call_operation`.
+    let host = unsafe { host_ptr.as_mut() };
+    host.iterable_snapshot(vm, scope, receiver, interface, kind)
   }
 }
 
