@@ -877,7 +877,7 @@ fn parse_image_set_type_descriptor(token: &str) -> Option<String> {
   }
 }
 
-fn split_image_set_candidates(inner: &str) -> Vec<String> {
+fn split_image_set_candidates(inner: &str) -> Option<Vec<String>> {
   let mut paren = 0usize;
   let mut bracket = 0usize;
   let mut brace = 0usize;
@@ -954,20 +954,28 @@ fn split_image_set_candidates(inner: &str) -> Vec<String> {
         current.push(ch);
       }
       ',' if paren == 0 && bracket == 0 && brace == 0 => {
-        if !trim_ascii_whitespace(&current).is_empty() {
-          parts.push(trim_ascii_whitespace(&current).to_string());
+        let trimmed = trim_ascii_whitespace(&current);
+        if trimmed.is_empty() {
+          return None;
         }
+        parts.push(trimmed.to_string());
         current.clear();
       }
       _ => current.push(ch),
     }
   }
 
-  if !trim_ascii_whitespace(&current).is_empty() {
-    parts.push(trim_ascii_whitespace(&current).to_string());
+  let trimmed = trim_ascii_whitespace(&current);
+  if trimmed.is_empty() {
+    return None;
   }
+  parts.push(trimmed.to_string());
 
-  parts
+  if parts.is_empty() {
+    None
+  } else {
+    Some(parts)
+  }
 }
 
 pub(crate) fn parse_image_set(text: &str) -> Option<BackgroundImage> {
@@ -1061,7 +1069,8 @@ pub(crate) fn parse_image_set(text: &str) -> Option<BackgroundImage> {
   let inner = trim_ascii_whitespace(trimmed.get(start + 1..end_idx)?);
   let mut candidates = Vec::new();
 
-  for candidate in split_image_set_candidates(inner) {
+  let candidates_raw = split_image_set_candidates(inner)?;
+  for candidate in candidates_raw {
     let tokens = tokenize_image_set_candidate(&candidate);
     if tokens.is_empty() {
       continue;
@@ -34001,6 +34010,11 @@ mod tests {
     let parsed =
       parse_image_set("image-set(url(\"a.png\")/*comment*/1x, url(\"b.png\")2x)").expect("image-set");
     assert_eq!(parsed, BackgroundImage::Url("a.png".to_string()));
+  }
+
+  #[test]
+  fn image_set_rejects_trailing_comma() {
+    assert!(parse_image_set("image-set(url(\"a.png\") 1x,)").is_none());
   }
 
   #[test]
