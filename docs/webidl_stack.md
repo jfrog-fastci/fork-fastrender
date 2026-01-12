@@ -122,7 +122,7 @@ bash scripts/cargo_agent.sh test --manifest-path vendor/ecma-rs/Cargo.toml -p we
 bash scripts/cargo_agent.sh test -p xtask --test webidl_bindings_snapshots_up_to_date
 
 # FastRender integration tests that exercise WebIDL-driven bindings.
-bash scripts/cargo_agent.sh test -p fastrender --test misc_tests -- js_webidl_
+bash scripts/cargo_agent.sh test -p fastrender --test integration -- js_webidl_
 ```
 
 ## Related docs
