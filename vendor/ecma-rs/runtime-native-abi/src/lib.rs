@@ -382,6 +382,10 @@ unsafe impl Sync for PromiseRef {}
 /// The runtime allocates a payload buffer described by this struct. The worker task can write its
 /// result into `rt_promise_payload_ptr(promise)` and then call `rt_promise_fulfill` (or
 /// `rt_promise_reject`).
+///
+/// Note: this payload buffer is treated as raw bytes and is **not traced by the GC**. If the payload
+/// contains GC pointers, use `rt_parallel_spawn_promise_with_shape` instead (promise is GC-managed
+/// and traced via a provided `RtShapeId`).
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct PromiseLayout {
@@ -695,6 +699,27 @@ extern "C" {
     task: RtParallelPromiseTaskFn,
     data: GcHandle,
     layout: PromiseLayout,
+  ) -> PromiseRef;
+  pub fn rt_parallel_spawn_promise_with_shape(
+    task: RtParallelPromiseTaskFn,
+    data: *mut u8,
+    promise_size: usize,
+    promise_align: usize,
+    promise_shape: RtShapeId,
+  ) -> PromiseRef;
+  pub fn rt_parallel_spawn_promise_with_shape_rooted(
+    task: RtParallelPromiseTaskFn,
+    data: GcPtr,
+    promise_size: usize,
+    promise_align: usize,
+    promise_shape: RtShapeId,
+  ) -> PromiseRef;
+  pub fn rt_parallel_spawn_promise_with_shape_rooted_h(
+    task: RtParallelPromiseTaskFn,
+    data: GcHandle,
+    promise_size: usize,
+    promise_align: usize,
+    promise_shape: RtShapeId,
   ) -> PromiseRef;
   pub fn rt_spawn_blocking(
     task: extern "C" fn(*mut u8, LegacyPromiseRef),
@@ -1249,6 +1274,9 @@ mod tests {
       "rt_parallel_spawn_promise(",
       "rt_parallel_spawn_promise_rooted(",
       "rt_parallel_spawn_promise_rooted_h(",
+      "rt_parallel_spawn_promise_with_shape(",
+      "rt_parallel_spawn_promise_with_shape_rooted(",
+      "rt_parallel_spawn_promise_with_shape_rooted_h(",
       "rt_spawn_blocking(",
       "rt_promise_init(",
       "rt_promise_fulfill(",

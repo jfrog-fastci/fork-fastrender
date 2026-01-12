@@ -932,6 +932,9 @@ mod tests {
       "PromiseRef rt_parallel_spawn_promise(void (*task)(uint8_t*, PromiseRef), uint8_t* data, PromiseLayout layout);",
       "PromiseRef rt_parallel_spawn_promise_rooted(void (*task)(uint8_t*, PromiseRef), uint8_t* data, PromiseLayout layout);",
       "PromiseRef rt_parallel_spawn_promise_rooted_h(void (*task)(uint8_t*, PromiseRef), GcHandle data, PromiseLayout layout);",
+      "PromiseRef rt_parallel_spawn_promise_with_shape(void (*task)(uint8_t*, PromiseRef), uint8_t* data, size_t promise_size, size_t promise_align, RtShapeId promise_shape);",
+      "PromiseRef rt_parallel_spawn_promise_with_shape_rooted(void (*task)(uint8_t*, PromiseRef), uint8_t* data, size_t promise_size, size_t promise_align, RtShapeId promise_shape);",
+      "PromiseRef rt_parallel_spawn_promise_with_shape_rooted_h(void (*task)(uint8_t*, PromiseRef), GcHandle data, size_t promise_size, size_t promise_align, RtShapeId promise_shape);",
       "LegacyPromiseRef rt_spawn_blocking(void (*task)(uint8_t*, LegacyPromiseRef), uint8_t* data);",
       "void rt_promise_init(PromiseRef p);",
       "void rt_promise_fulfill(PromiseRef p);",
@@ -1110,6 +1113,27 @@ mod tests {
       crate::roots::GcHandle,
       PromiseLayout,
     ) -> abi::PromiseRef = rt_parallel_spawn_promise_rooted_h;
+    let _spawn_promise_with_shape: extern "C" fn(
+      extern "C" fn(*mut u8, abi::PromiseRef),
+      *mut u8,
+      usize,
+      usize,
+      abi::RtShapeId,
+    ) -> abi::PromiseRef = rt_parallel_spawn_promise_with_shape;
+    let _spawn_promise_with_shape_rooted: extern "C" fn(
+      extern "C" fn(*mut u8, abi::PromiseRef),
+      *mut u8,
+      usize,
+      usize,
+      abi::RtShapeId,
+    ) -> abi::PromiseRef = rt_parallel_spawn_promise_with_shape_rooted;
+    let _spawn_promise_with_shape_rooted_h: unsafe extern "C" fn(
+      extern "C" fn(*mut u8, abi::PromiseRef),
+      crate::roots::GcHandle,
+      usize,
+      usize,
+      abi::RtShapeId,
+    ) -> abi::PromiseRef = rt_parallel_spawn_promise_with_shape_rooted_h;
     let _spawn_blocking: extern "C" fn(extern "C" fn(*mut u8, abi::PromiseRef), *mut u8) -> abi::PromiseRef =
       rt_spawn_blocking;
     let _promise_init: unsafe extern "C" fn(PromiseRef) = rt_promise_init;

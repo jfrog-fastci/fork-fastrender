@@ -489,6 +489,7 @@ Parallel scheduling APIs take an opaque `data` pointer that is passed through to
   - `rt_parallel_spawn_rooted` / `rt_parallel_spawn_rooted_h`
   - `rt_parallel_for_rooted` / `rt_parallel_for_rooted_h`
   - `rt_parallel_spawn_promise_rooted` / `rt_parallel_spawn_promise_rooted_h`
+  - `rt_parallel_spawn_promise_with_shape_rooted` / `rt_parallel_spawn_promise_with_shape_rooted_h`
 
 Rooted contract:
 
@@ -526,6 +527,11 @@ PromiseRef schedule(GcPtr obj_base) {
   return rt_parallel_spawn_promise_rooted_h(worker_task, &slot, layout);
 }
 ```
+
+Note: `rt_parallel_spawn_promise` uses an **out-of-line** payload buffer that is treated as raw
+bytes (not traced by the GC). If the payload contains GC pointers, use
+`rt_parallel_spawn_promise_with_shape{,_rooted,_rooted_h}` so the promise itself is GC-managed and
+the payload is traced via the provided `RtShapeId`.
 
 ### Scheduler design
 

@@ -162,6 +162,9 @@ struct PromiseResolveInput {
 // The runtime allocates a payload buffer described by this struct. The worker
 // task writes the result into `rt_promise_payload_ptr(promise)` and then calls
 // `rt_promise_fulfill` (or `rt_promise_reject`).
+//
+// Note: this payload buffer is treated as raw bytes and is **not traced by the GC**. If the payload
+// contains GC pointers, use `rt_parallel_spawn_promise_with_shape` instead.
 typedef struct PromiseLayout {
   size_t size;
   size_t align;
@@ -772,6 +775,45 @@ PromiseRef rt_parallel_spawn_promise_rooted(void (*task)(uint8_t*, PromiseRef), 
 // Like `rt_parallel_spawn_promise_rooted`, but takes the GC pointer as a `GcHandle` (pointer-to-slot).
 PromiseRef rt_parallel_spawn_promise_rooted_h(void (*task)(uint8_t*, PromiseRef), GcHandle data, PromiseLayout layout);
 
+// Like `rt_parallel_spawn_promise`, but allocates the promise as a **GC-managed object** with the
+// provided `promise_shape`.
+//
+// This is required when the promise payload contains GC pointers: the runtime uses `promise_shape`
+// to precisely trace and update those pointers during moving GC.
+//
+// The promise payload begins immediately after the `PromiseHeader` prefix (same as the native async
+// ABI). Use `rt_promise_payload_ptr` to obtain the payload pointer.
+PromiseRef rt_parallel_spawn_promise_with_shape(
+  void (*task)(uint8_t*, PromiseRef),
+  uint8_t* data,
+  size_t promise_size,
+  size_t promise_align,
+  RtShapeId promise_shape
+);
+// Like `rt_parallel_spawn_promise_with_shape`, but `data` is a GC-managed object that the runtime
+// will keep alive until the worker task finishes executing.
+//
+// Contract:
+// - `data` must be a pointer to the base of a GC-managed object (start of ObjHeader).
+// - The runtime registers a strong GC root for `data` until the task completes.
+// - The worker callback receives the (possibly relocated) pointer after any GC relocation.
+PromiseRef rt_parallel_spawn_promise_with_shape_rooted(
+  void (*task)(uint8_t*, PromiseRef),
+  uint8_t* data,
+  size_t promise_size,
+  size_t promise_align,
+  RtShapeId promise_shape
+);
+// Like `rt_parallel_spawn_promise_with_shape_rooted`, but takes the GC pointer as a `GcHandle`
+// (pointer-to-slot).
+PromiseRef rt_parallel_spawn_promise_with_shape_rooted_h(
+  void (*task)(uint8_t*, PromiseRef),
+  GcHandle data,
+  size_t promise_size,
+  size_t promise_align,
+  RtShapeId promise_shape
+);
+
 // -----------------------------------------------------------------------------
 // Blocking thread pool
 // -----------------------------------------------------------------------------
@@ -802,8 +844,15 @@ void rt_promise_reject(PromiseRef p);
 bool rt_promise_try_reject(PromiseRef p);
 // Mark a promise as handled for unhandled-rejection tracking.
 void rt_promise_mark_handled(PromiseRef p);
-// Returns the payload pointer for promises created by `rt_parallel_spawn_promise` or
-// `rt_parallel_spawn_promise_rooted`.
+// Returns the promise payload pointer.
+//
+// - For promises created by `rt_parallel_spawn_promise` / `rt_parallel_spawn_promise_rooted`, this
+//   returns the runtime-allocated **out-of-line** payload buffer.
+// - For GC-managed native async ABI promises (`rt_alloc` + `rt_promise_init`), this returns the
+//   **inline** payload pointer immediately after the `PromiseHeader` prefix. This includes promises
+//   created by `rt_parallel_spawn_promise_with_shape`.
+//
+// For non-payload promises, this may return NULL.
 uint8_t* rt_promise_payload_ptr(PromiseRef p);
 
 // -----------------------------------------------------------------------------

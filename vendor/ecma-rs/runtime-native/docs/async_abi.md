@@ -489,6 +489,9 @@ Ownership contract:
 - `rt_parallel_spawn_promise(task: extern "C" fn(*mut u8, PromiseRef), data: *mut u8, layout: PromiseLayout) -> PromiseRef`
 - `rt_parallel_spawn_promise_rooted(task: extern "C" fn(*mut u8, PromiseRef), data: *mut u8, layout: PromiseLayout) -> PromiseRef`
 - `rt_parallel_spawn_promise_rooted_h(task: extern "C" fn(*mut u8, PromiseRef), data: GcHandle, layout: PromiseLayout) -> PromiseRef`
+- `rt_parallel_spawn_promise_with_shape(task: extern "C" fn(*mut u8, PromiseRef), data: *mut u8, promise_size: usize, promise_align: usize, promise_shape: RtShapeId) -> PromiseRef`
+- `rt_parallel_spawn_promise_with_shape_rooted(task: extern "C" fn(*mut u8, PromiseRef), data: *mut u8, promise_size: usize, promise_align: usize, promise_shape: RtShapeId) -> PromiseRef`
+- `rt_parallel_spawn_promise_with_shape_rooted_h(task: extern "C" fn(*mut u8, PromiseRef), data: GcHandle, promise_size: usize, promise_align: usize, promise_shape: RtShapeId) -> PromiseRef`
 - `rt_promise_payload_ptr(p: PromiseRef) -> *mut u8`
 
 #### Rooted vs unrooted task userdata
@@ -623,7 +626,39 @@ PromiseRef rt_parallel_spawn_promise_rooted_h(
   PromiseLayout layout
 );
 
+// Allocate a GC-managed promise (payload is inline after PromiseHeader) and execute
+// `task(data, promise)` on the work-stealing pool.
+//
+// The promise allocation is `rt_alloc(promise_size, promise_shape)`, which means the promise
+// payload may contain GC pointers that are traced/updated according to the registered shape
+// descriptor.
+PromiseRef rt_parallel_spawn_promise_with_shape(
+  void (*task)(uint8_t* data, PromiseRef promise),
+  uint8_t* data,
+  size_t promise_size,
+  size_t promise_align,
+  RtShapeId promise_shape
+);
+PromiseRef rt_parallel_spawn_promise_with_shape_rooted(
+  void (*task)(uint8_t* data, PromiseRef promise),
+  uint8_t* data,
+  size_t promise_size,
+  size_t promise_align,
+  RtShapeId promise_shape
+);
+PromiseRef rt_parallel_spawn_promise_with_shape_rooted_h(
+  void (*task)(uint8_t* data, PromiseRef promise),
+  GcHandle data,
+  size_t promise_size,
+  size_t promise_align,
+  RtShapeId promise_shape
+);
+
 // Get a writable pointer to the promise payload storage.
+//
+// For `rt_parallel_spawn_promise` promises, this returns the out-of-line payload buffer.
+// For GC-managed promises (native async ABI, including `rt_parallel_spawn_promise_with_shape`), this
+// returns the inline payload pointer immediately after `PromiseHeader`.
 uint8_t* rt_promise_payload_ptr(PromiseRef promise);
 
 // Settle the promise (exactly once).
@@ -641,6 +676,11 @@ typedef struct PromiseLayout {
   size_t align;
 } PromiseLayout;
 ```
+
+Note: `PromiseLayout` is only used by `rt_parallel_spawn_promise{,_rooted,_rooted_h}` and describes an
+**out-of-line** payload buffer treated as raw bytes (not GC-traced). For GC-traceable payloads, use
+`rt_parallel_spawn_promise_with_shape{,_rooted,_rooted_h}` instead: the payload is inline in the
+promise allocation and traced according to the `RtShapeId`.
 
 ### Result retrieval
 

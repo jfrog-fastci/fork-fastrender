@@ -1779,6 +1779,93 @@ pub unsafe extern "C" fn rt_parallel_spawn_promise_rooted_h(
   })
 }
 
+/// Like [`rt_parallel_spawn_promise`], but allocates the promise as a **GC-managed object** with the
+/// provided `promise_shape`.
+///
+/// This is required when the promise payload contains GC pointers: the runtime uses `promise_shape`
+/// to precisely trace and update those pointers during moving GC.
+///
+/// The promise payload begins immediately after the [`PromiseHeader`] prefix (same as the native
+/// async ABI). Use [`rt_promise_payload_ptr`] to obtain the payload pointer.
+#[no_mangle]
+pub extern "C" fn rt_parallel_spawn_promise_with_shape(
+  task: extern "C" fn(*mut u8, PromiseRef),
+  data: *mut u8,
+  promise_size: usize,
+  promise_align: usize,
+  promise_shape: RtShapeId,
+) -> PromiseRef {
+  abort_on_panic(|| {
+    let _ = crate::rt_ensure_init();
+    ensure_event_loop_thread_registered();
+    crate::parallel_integration::spawn_promise_with_shape(
+      task,
+      data,
+      promise_size,
+      promise_align,
+      promise_shape,
+    )
+  })
+}
+
+/// Like [`rt_parallel_spawn_promise_with_shape`], but `data` is a GC-managed object that the runtime
+/// will keep alive until the worker task finishes executing.
+///
+/// Contract:
+/// - `data` must be a pointer to the base of a GC-managed object (start of `ObjHeader`).
+/// - The runtime registers a strong GC root for `data` until the task completes.
+/// - The worker callback receives the (possibly relocated) pointer after any GC relocation.
+#[no_mangle]
+pub extern "C" fn rt_parallel_spawn_promise_with_shape_rooted(
+  task: extern "C" fn(*mut u8, PromiseRef),
+  data: *mut u8,
+  promise_size: usize,
+  promise_align: usize,
+  promise_shape: RtShapeId,
+) -> PromiseRef {
+  abort_on_panic(|| {
+    let _ = crate::rt_ensure_init();
+    ensure_event_loop_thread_registered();
+    crate::parallel_integration::spawn_promise_with_shape_rooted(
+      task,
+      data,
+      promise_size,
+      promise_align,
+      promise_shape,
+    )
+  })
+}
+
+/// Like [`rt_parallel_spawn_promise_with_shape_rooted`], but takes the GC-managed `data` pointer as a
+/// `GcHandle` (pointer-to-slot).
+///
+/// # Safety
+/// `data` must be a valid, aligned pointer to a writable `*mut u8` slot containing a GC-managed
+/// object base pointer.
+#[no_mangle]
+pub unsafe extern "C" fn rt_parallel_spawn_promise_with_shape_rooted_h(
+  task: extern "C" fn(*mut u8, PromiseRef),
+  data: crate::roots::GcHandle,
+  promise_size: usize,
+  promise_align: usize,
+  promise_shape: RtShapeId,
+) -> PromiseRef {
+  abort_on_panic(|| {
+    let _ = crate::rt_ensure_init();
+    ensure_event_loop_thread_registered();
+    // Safety: caller contract.
+    unsafe {
+      crate::parallel_integration::spawn_promise_with_shape_rooted_h(
+        task,
+        data,
+        promise_size,
+        promise_align,
+        promise_shape,
+      )
+    }
+  })
+}
+
 #[no_mangle]
 pub extern "C" fn rt_spawn_blocking(
   task: extern "C" fn(*mut u8, PromiseRef),
@@ -3710,14 +3797,45 @@ pub extern "C" fn rt_promise_new_legacy() -> PromiseRef {
 }
 
 /// Return the payload buffer associated with a promise created by `rt_parallel_spawn_promise` (or
-/// `rt_parallel_spawn_promise_rooted`).
+/// `rt_parallel_spawn_promise_rooted`), or the inline payload for a GC-managed promise created by
+/// `rt_parallel_spawn_promise_with_shape`.
 ///
 /// For non-payload promises, this may return null.
 #[no_mangle]
 pub extern "C" fn rt_promise_payload_ptr(p: PromiseRef) -> *mut u8 {
   abort_on_panic(|| {
     ensure_current_thread_registered();
-    async_rt::promise::promise_payload_ptr(p)
+    if p.is_null() {
+      return core::ptr::null_mut();
+    }
+
+    // `PromiseRef` is an opaque pointer in the stable ABI, but by contract it must point to a
+    // `PromiseHeader` at offset 0 of the allocation.
+    let header = p.0.cast::<PromiseHeader>();
+    if (header as usize) % core::mem::align_of::<PromiseHeader>() != 0 {
+      std::process::abort();
+    }
+
+    // Payload promises created by `rt_parallel_spawn_promise` are implemented by the legacy promise
+    // runtime (`async_rt::promise`) and carry an out-of-line payload buffer.
+    let flags = unsafe { &(*header).flags }.load(Ordering::Acquire);
+    if (flags & crate::async_abi::PROMISE_FLAG_HAS_PAYLOAD) != 0 {
+      return async_rt::promise::promise_payload_ptr(p);
+    }
+
+    // GC-managed native async ABI promises (`rt_alloc` + `rt_promise_init`) store their payload
+    // inline immediately after the `PromiseHeader` prefix. We can detect them by the presence of a
+    // non-null type descriptor in the GC header.
+    //
+    // Promises with an inert GC header (`type_desc == null`) include:
+    // - legacy `async_rt::promise::RtPromise` promises (including old payload promises), and
+    // - Rust `promise_api::Promise<T>` values allocated via `Arc`.
+    let type_desc = unsafe { (*header).obj.type_desc };
+    if type_desc.is_null() {
+      return core::ptr::null_mut();
+    }
+
+    unsafe { (header as *mut u8).add(core::mem::size_of::<PromiseHeader>()) }
   })
 }
 

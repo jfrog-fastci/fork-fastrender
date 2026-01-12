@@ -144,6 +144,10 @@ pub(crate) fn rt_async_run_until_idle_under_driver_guard() -> bool {
 /// The runtime uses this to allocate a payload buffer; the parallel task writes
 /// its result into the buffer (via `rt_promise_payload_ptr`) and then settles the
 /// promise (via `rt_promise_fulfill` / `rt_promise_reject`).
+///
+/// Note: the payload buffer is treated as raw bytes and is **not traced by the GC**. If the payload
+/// contains GC pointers, use `rt_parallel_spawn_promise_with_shape` instead, which allocates the
+/// promise itself as a GC-managed object with a provided `RtShapeId`.
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct PromiseLayout {

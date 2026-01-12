@@ -1486,8 +1486,6 @@ mod tests {
           unsafe {
             assert_eq!((*(root as *mut Obj)).value, idx);
           }
- 
-          drop(scope);
         }
         completed.fetch_add(1, Ordering::Release);
         // Unregistering the thread may contend on GC-aware locks, which can temporarily enter a
