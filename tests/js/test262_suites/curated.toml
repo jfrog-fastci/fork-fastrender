@@ -206,6 +206,11 @@ include = [
   "built-ins/WeakMap/iterator-close-after-set-failure.js",
   "built-ins/WeakMap/iterator-items-are-not-object-close-iterator.js",
   "built-ins/WeakSet/iterator-close-after-add-failure.js",
+  # WeakMap/WeakSet iterator protocol error propagation
+  "built-ins/WeakMap/iterator-next-failure.js",
+  "built-ins/WeakMap/iterator-value-failure.js",
+  "built-ins/WeakSet/iterator-next-failure.js",
+  "built-ins/WeakSet/iterator-value-failure.js",
 ]
 
 exclude = [
