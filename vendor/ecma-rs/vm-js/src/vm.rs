@@ -1116,6 +1116,37 @@ impl Vm {
       source_type: SourceType::Module,
     };
 
+    fn parse_top(
+      vm: &mut Vm,
+      src: &str,
+      script: ParseOptions,
+      module: ParseOptions,
+      allow_enclosing_meta_properties: bool,
+    ) -> Result<Node<parse_js::ast::stx::TopLevel>, VmError> {
+      let parse = |vm: &mut Vm, src: &str, opts: ParseOptions| {
+        if allow_enclosing_meta_properties {
+          vm.parse_top_level_with_budget_allowing_enclosing_meta_properties(src, opts)
+        } else {
+          vm.parse_top_level_with_budget(src, opts)
+        }
+      };
+
+      match parse(vm, src, script) {
+        Ok(top) => Ok(top),
+        Err(err @ VmError::Syntax(_)) => match parse(vm, src, module) {
+          Ok(top) => Ok(top),
+          Err(module_err) => {
+            if matches!(module_err, VmError::Syntax(_)) {
+              Err(err)
+            } else {
+              Err(module_err)
+            }
+          }
+        },
+        Err(err) => Err(err),
+      }
+    }
+
     let mut wrapped: String = String::new();
     let top = match kind {
       // Most function snippets originate from classic scripts, which must be parsed in
@@ -1126,16 +1157,7 @@ impl Vm {
       // - `import.meta` inside function bodies
       //
       // In that case, parsing as a script will fail with a SyntaxError; retry parsing as a module.
-      EcmaFunctionKind::Decl => match self.parse_top_level_with_budget(snippet, script_opts) {
-        Ok(top) => top,
-        Err(err @ VmError::Syntax(_)) => {
-          match self.parse_top_level_with_budget(snippet, module_opts) {
-            Ok(top) => top,
-            Err(_) => return Err(err),
-          }
-        }
-        Err(err) => return Err(err),
-      },
+      EcmaFunctionKind::Decl => parse_top(self, snippet, script_opts, module_opts, false)?,
       EcmaFunctionKind::ObjectMember => {
         let capacity = snippet.len().checked_add(4).ok_or(VmError::OutOfMemory)?;
         wrapped
@@ -1144,16 +1166,7 @@ impl Vm {
         wrapped.push_str("({");
         wrapped.push_str(snippet);
         wrapped.push_str("})");
-        match self.parse_top_level_with_budget(&wrapped, script_opts) {
-          Ok(top) => top,
-          Err(err @ VmError::Syntax(_)) => {
-            match self.parse_top_level_with_budget(&wrapped, module_opts) {
-              Ok(top) => top,
-              Err(_) => return Err(err),
-            }
-          }
-          Err(err) => return Err(err),
-        }
+        parse_top(self, &wrapped, script_opts, module_opts, false)?
       }
       EcmaFunctionKind::Expr => {
         let mut attempt: usize = 0;
@@ -1178,33 +1191,14 @@ impl Vm {
           //
           // We conservatively allow these meta-properties here since the enclosing context was
           // already validated by the original parse of the full source.
-          let parsed = match self
-            .parse_top_level_with_budget_allowing_enclosing_meta_properties(&wrapped, script_opts)
-          {
-            Ok(top) => Ok(top),
-            Err(script_err) => {
-              // Propagate non-syntax errors (VM termination, OOM, etc).
-              if !matches!(script_err, VmError::Syntax(_)) {
-                return Err(script_err);
-              }
-
-              match self
-                .parse_top_level_with_budget_allowing_enclosing_meta_properties(&wrapped, module_opts)
-              {
-                Ok(top) => Ok(top),
-                Err(module_err) => {
-                  if !matches!(module_err, VmError::Syntax(_)) {
-                    return Err(module_err);
-                  }
-                  Err(script_err)
-                }
-              }
-            }
-          };
-
-          match parsed {
+          match parse_top(self, &wrapped, script_opts, module_opts, true) {
             Ok(top) => break top,
             Err(err) => {
+              // Propagate non-syntax errors (VM termination, OOM, etc).
+              if !matches!(err, VmError::Syntax(_)) {
+                return Err(err);
+              }
+
               // Retry by stripping a likely delimiter suffix if present.
               //
               // This should be rare: it indicates our saved snippet span included a trailing token
@@ -1278,15 +1272,9 @@ impl Vm {
           let expr = expr_stmt.stx.expr;
           match *expr.stx {
             AstExpr::LitObj(obj_expr) => {
-              let member =
-                obj_expr
-                  .stx
-                  .members
-                  .into_iter()
-                  .next()
-                  .ok_or(VmError::Unimplemented(
-                    "ECMAScript object member snippet did not contain any members",
-                  ))?;
+              let member = obj_expr.stx.members.into_iter().next().ok_or(
+                VmError::Unimplemented("ECMAScript object member snippet did not contain any members"),
+              )?;
               let ObjMember { typ } = *member.stx;
               match typ {
                 ObjMemberType::Valued { val, .. } => match val {
