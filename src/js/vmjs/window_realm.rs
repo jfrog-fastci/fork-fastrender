@@ -5,7 +5,7 @@ use crate::js::bindings::DomExceptionClassVmJs;
 use crate::js::clock::{Clock, RealClock};
 use crate::js::cookie_jar::{CookieJar, MAX_COOKIE_STRING_BYTES};
 use crate::js::document_write::{current_document_write_state_mut, DocumentWriteLimitError};
-use crate::js::dom_platform::{DomInterface, DomNodeKey, DomPlatform};
+use crate::js::dom_platform::{DocumentId, DomInterface, DomNodeKey, DomPlatform};
 use crate::js::host_document::ActiveEventGuard;
 use crate::js::realm_module_loader::{ModuleLoader, ModuleLoaderHandle};
 use crate::js::time::{TimeBindings, WebTime};
@@ -272,7 +272,7 @@ pub(crate) struct WindowRealmUserData {
   ///
   /// This is used for DOMs created from JS (e.g. `document.implementation.createHTMLDocument()`)
   /// which are not backed by the embedder/renderer.
-  owned_dom2_documents: HashMap<NodeId, Box<dom2::Document>>,
+  owned_dom2_documents: HashMap<DocumentId, Box<dom2::Document>>,
   /// Deterministic per-realm PRNG state used by `window.crypto` RNG APIs.
   pub(crate) crypto_rng_state: u64,
   /// Fallback `dom2::Document` used for events when the realm is not backed by a host DOM.
@@ -16367,14 +16367,19 @@ fn element_prefix_get_native(
 
 #[derive(Clone, Copy)]
 struct ElementHandle {
-  document_id: NodeId,
+  document_id: DocumentId,
   node_id: NodeId,
   document_obj: GcObject,
 }
 
-fn is_host_document_id(document_id: NodeId) -> bool {
-  // `dom2` always stores the host document node at index 0.
-  document_id.index() == 0
+fn is_host_document_id(vm: &mut Vm, document_id: DocumentId) -> bool {
+  let Some(data) = vm.user_data::<WindowRealmUserData>() else {
+    return false;
+  };
+  let Some(document_obj) = data.document_obj() else {
+    return false;
+  };
+  gc_object_id(document_obj) == document_id
 }
 
 fn element_handle_from_wrapper_obj(
@@ -16384,17 +16389,14 @@ fn element_handle_from_wrapper_obj(
   error_message: &'static str,
 ) -> Result<ElementHandle, VmError> {
   let platform = dom_platform_mut(vm).ok_or(VmError::TypeError(error_message))?;
-  let node_id = platform
-    .require_element_id(scope.heap(), Value::Object(wrapper_obj))
+  let node_key = platform
+    .require_element_handle(scope.heap(), Value::Object(wrapper_obj))
     .map_err(|_| VmError::TypeError(error_message))?;
   let document_obj =
-    node_wrapper_document_obj(scope, wrapper_obj, node_id).map_err(|_| VmError::TypeError(error_message))?;
-  let document_id = platform
-    .require_document_id(scope.heap(), Value::Object(document_obj))
-    .map_err(|_| VmError::TypeError(error_message))?;
+    node_wrapper_document_obj(scope, wrapper_obj, node_key.node_id).map_err(|_| VmError::TypeError(error_message))?;
   Ok(ElementHandle {
-    document_id,
-    node_id,
+    document_id: node_key.document_id,
+    node_id: node_key.node_id,
     document_obj,
   })
 }
@@ -16405,64 +16407,44 @@ fn element_handle_from_wrapper_obj_opt(
   wrapper_obj: GcObject,
 ) -> Option<ElementHandle> {
   let platform = dom_platform_mut(vm)?;
-  let node_id = platform
-    .require_element_id(scope.heap(), Value::Object(wrapper_obj))
+  let node_key = platform
+    .require_element_handle(scope.heap(), Value::Object(wrapper_obj))
     .ok()?;
-  let document_obj = node_wrapper_document_obj(scope, wrapper_obj, node_id).ok()?;
-  let document_id = platform
-    .require_document_id(scope.heap(), Value::Object(document_obj))
-    .ok()?;
+  let document_obj = node_wrapper_document_obj(scope, wrapper_obj, node_key.node_id).ok()?;
   Some(ElementHandle {
-    document_id,
-    node_id,
+    document_id: node_key.document_id,
+    node_id: node_key.node_id,
     document_obj,
   })
 }
 
-fn owned_dom_ptr_for_document_id_read(
+fn dom_ptr_for_document_id_read(
   vm: &mut Vm,
-  document_id: NodeId,
+  host: &mut dyn VmHost,
+  document_id: DocumentId,
 ) -> Option<NonNull<dom2::Document>> {
+  if is_host_document_id(vm, document_id) {
+    return dom_from_vm_host(host).map(NonNull::from);
+  }
   let data = vm.user_data::<WindowRealmUserData>()?;
   let dom = data.owned_dom2_documents.get(&document_id)?;
   Some(NonNull::from(dom.as_ref()))
 }
 
-fn owned_dom_ptr_for_document_id_mut(
+fn dom_ptr_for_document_id_mut(
   vm: &mut Vm,
-  document_id: NodeId,
+  host: &mut dyn VmHost,
+  document_id: DocumentId,
 ) -> Option<NonNull<dom2::Document>> {
+  if is_host_document_id(vm, document_id) {
+    return dom_from_vm_host_mut(host).map(NonNull::from);
+  }
   let dom_ptr = {
     let data = vm.user_data_mut::<WindowRealmUserData>()?;
     let dom = data.owned_dom2_documents.get_mut(&document_id)?;
     NonNull::from(dom.as_mut())
   };
   Some(dom_ptr)
-}
-
-fn dom_for_document_id_read<'a>(
-  vm: &mut Vm,
-  host: &'a mut dyn VmHost,
-  document_id: NodeId,
-) -> Option<&'a dom2::Document> {
-  if is_host_document_id(document_id) {
-    return dom_from_vm_host(host);
-  }
-  let dom_ptr = owned_dom_ptr_for_document_id_read(vm, document_id)?;
-  // SAFETY: owned documents are stored in `WindowRealmUserData` for the lifetime of the realm, so
-  // the pointer remains valid for the duration of this native call.
-  Some(unsafe { dom_ptr.as_ref() })
-}
-
-fn dom_ptr_for_document_id_mut(
-  vm: &mut Vm,
-  host: &mut dyn VmHost,
-  document_id: NodeId,
-) -> Option<NonNull<dom2::Document>> {
-  if is_host_document_id(document_id) {
-    return dom_from_vm_host_mut(host).map(NonNull::from);
-  }
-  owned_dom_ptr_for_document_id_mut(vm, document_id)
 }
 
 fn element_class_name_get_native(
@@ -16481,9 +16463,11 @@ fn element_class_name_get_native(
   let Some(handle) = element_handle_from_wrapper_obj_opt(vm, scope, wrapper_obj) else {
     return Ok(Value::Undefined);
   };
-  let Some(dom) = dom_for_document_id_read(vm, host, handle.document_id) else {
+  let Some(dom_ptr) = dom_ptr_for_document_id_read(vm, host, handle.document_id) else {
     return Ok(Value::Undefined);
   };
+  // SAFETY: `dom_ptr` is valid for the duration of this native call.
+  let dom = unsafe { dom_ptr.as_ref() };
 
   let class_name = dom.element_class_name(handle.node_id);
   let s = scope.alloc_string(class_name)?;
@@ -16515,7 +16499,7 @@ fn element_class_name_set_native(
     .map(|s| s.to_utf8_lossy())
     .unwrap_or_default();
 
-  if !is_host_document_id(handle.document_id) {
+  if !is_host_document_id(vm, handle.document_id) {
     let Some(mut dom_ptr) = dom_ptr_for_document_id_mut(vm, host, handle.document_id) else {
       return Ok(Value::Undefined);
     };
@@ -16591,9 +16575,11 @@ fn element_id_get_native(
   let Some(handle) = element_handle_from_wrapper_obj_opt(vm, scope, wrapper_obj) else {
     return Ok(Value::Undefined);
   };
-  let Some(dom) = dom_for_document_id_read(vm, host, handle.document_id) else {
+  let Some(dom_ptr) = dom_ptr_for_document_id_read(vm, host, handle.document_id) else {
     return Ok(Value::Undefined);
   };
+  // SAFETY: `dom_ptr` is valid for the duration of this native call.
+  let dom = unsafe { dom_ptr.as_ref() };
 
   let id = dom.element_id(handle.node_id);
   let s = scope.alloc_string(id)?;
@@ -16625,7 +16611,7 @@ fn element_id_set_native(
     .map(|s| s.to_utf8_lossy())
     .unwrap_or_default();
 
-  if !is_host_document_id(handle.document_id) {
+  if !is_host_document_id(vm, handle.document_id) {
     let Some(mut dom_ptr) = dom_ptr_for_document_id_mut(vm, host, handle.document_id) else {
       return Ok(Value::Undefined);
     };
@@ -16707,9 +16693,11 @@ fn element_reflected_string_get_native(
   let Some(handle) = element_handle_from_wrapper_obj_opt(vm, scope, obj) else {
     return Ok(Value::Undefined);
   };
-  let Some(dom) = dom_for_document_id_read(vm, host, handle.document_id) else {
+  let Some(dom_ptr) = dom_ptr_for_document_id_read(vm, host, handle.document_id) else {
     return Ok(Value::Undefined);
   };
+  // SAFETY: `dom_ptr` is valid for the duration of this native call.
+  let dom = unsafe { dom_ptr.as_ref() };
   let value = dom
     .get_attribute(handle.node_id, &attr)
     .ok()
@@ -16736,7 +16724,7 @@ fn element_reflected_string_set_native(
   };
 
   let attr = native_slot_string(scope, callee)?;
-  if !is_host_document_id(handle.document_id) {
+  if !is_host_document_id(vm, handle.document_id) {
     let Some(mut dom_ptr) = dom_ptr_for_document_id_mut(vm, host, handle.document_id) else {
       return Ok(Value::Undefined);
     };
@@ -16818,9 +16806,11 @@ fn element_reflected_bool_get_native(
   let Some(handle) = element_handle_from_wrapper_obj_opt(vm, scope, obj) else {
     return Ok(Value::Undefined);
   };
-  let Some(dom) = dom_for_document_id_read(vm, host, handle.document_id) else {
+  let Some(dom_ptr) = dom_ptr_for_document_id_read(vm, host, handle.document_id) else {
     return Ok(Value::Undefined);
   };
+  // SAFETY: `dom_ptr` is valid for the duration of this native call.
+  let dom = unsafe { dom_ptr.as_ref() };
   if attr == "async" && is_html_script_element(dom, handle.node_id) {
     let force_async = dom.node(handle.node_id).script_force_async;
     let async_attr = dom.has_attribute(handle.node_id, "async").unwrap_or(false);
@@ -16881,7 +16871,7 @@ fn element_reflected_bool_set_native(
     return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
   }
 
-  if !is_host_document_id(handle.document_id) {
+  if !is_host_document_id(vm, handle.document_id) {
     // Owned documents: skip MutationObserver microtask scheduling.
     let _ = dom.take_mutation_observer_microtask_needed();
     return Ok(Value::Undefined);
@@ -18923,9 +18913,11 @@ fn element_get_attribute_native(
     .map(|s| s.to_utf8_lossy())
     .unwrap_or_default();
 
-  let dom = dom_for_document_id_read(vm, host, handle.document_id).ok_or(VmError::TypeError(
+  let dom_ptr = dom_ptr_for_document_id_read(vm, host, handle.document_id).ok_or(VmError::TypeError(
     "Element.getAttribute requires a DOM-backed document",
   ))?;
+  // SAFETY: `dom_ptr` is valid for the duration of this native call.
+  let dom = unsafe { dom_ptr.as_ref() };
 
   match dom.get_attribute(handle.node_id, &name) {
     Ok(Some(value)) => Ok(Value::String(scope.alloc_string(value)?)),
@@ -19538,7 +19530,7 @@ fn element_set_attribute_native(
     .map(|s| s.to_utf8_lossy())
     .unwrap_or_default();
 
-  if is_host_document_id(handle.document_id) {
+  if is_host_document_id(vm, handle.document_id) {
     if let Some(document) = host.as_any_mut().downcast_mut::<BrowserDocumentDom2>() {
       let node_id = handle.node_id;
       let dom_ptr = document.dom_non_null();
@@ -19589,7 +19581,7 @@ fn element_set_attribute_native(
     Ok(v) => v,
     Err(err) => return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?)),
   };
-  if !is_host_document_id(handle.document_id) {
+  if !is_host_document_id(vm, handle.document_id) {
     // Owned documents: skip dynamic script steps + MutationObserver microtask scheduling.
     let _ = unsafe { dom_ptr.as_mut() }.take_mutation_observer_microtask_needed();
     return Ok(Value::Undefined);
@@ -19652,7 +19644,7 @@ fn element_remove_attribute_native(
     .map(|s| s.to_utf8_lossy())
     .unwrap_or_default();
 
-  if is_host_document_id(handle.document_id) {
+  if is_host_document_id(vm, handle.document_id) {
     if let Some(document) = host.as_any_mut().downcast_mut::<BrowserDocumentDom2>() {
       let node_id = handle.node_id;
       let dom_ptr = document.dom_non_null();
@@ -19703,7 +19695,7 @@ fn element_remove_attribute_native(
     Ok(v) => v,
     Err(err) => return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?)),
   };
-  if !is_host_document_id(handle.document_id) {
+  if !is_host_document_id(vm, handle.document_id) {
     // Owned documents: skip dynamic script steps + MutationObserver microtask scheduling.
     let _ = unsafe { dom_ptr.as_mut() }.take_mutation_observer_microtask_needed();
     return Ok(Value::Undefined);
