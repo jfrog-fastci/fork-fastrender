@@ -257,3 +257,56 @@ fn phi_labels_must_match_cfg_predecessors() {
     "expected OPTN0007 phi-label mismatch diagnostic, got {err:?}"
   );
 }
+
+#[test]
+fn use_before_def_in_block_triggers_diagnostic() {
+  let mut graph = CfgGraph::default();
+  graph.ensure_label(0);
+  let mut bblocks = CfgBBlocks::default();
+  bblocks.add(
+    0,
+    vec![
+      // %0 is used before it is defined later in the same block.
+      Inst::var_assign(1, Arg::Var(0)),
+      Inst::var_assign(0, Arg::Const(Const::Undefined)),
+      Inst::ret(None),
+    ],
+  );
+  let cfg = Cfg {
+    graph,
+    bblocks,
+    entry: 0,
+  };
+
+  let top_level = ProgramFunction {
+    debug: None,
+    meta: Default::default(),
+    body: cfg.clone(),
+    params: Vec::new(),
+    ssa_body: Some(cfg),
+    stats: OptimizationStats::default(),
+  };
+  let program = Program {
+    source_file: FileId(0),
+    source_len: 0,
+    functions: Vec::new(),
+    top_level,
+    top_level_mode: TopLevelMode::Module,
+    symbols: None,
+  };
+
+  let err = verify_program_strict_native(
+    &program,
+    &VerifyOptions {
+      file: FileId(0),
+      require_type_metadata: false,
+      ..Default::default()
+    },
+  )
+  .expect_err("expected verifier to reject use-before-def within a block");
+
+  assert!(
+    err.iter().any(|diag| diag.code == "OPTN0007" && diag.message.contains("used before its definition")),
+    "expected OPTN0007 use-before-def diagnostic, got {err:?}"
+  );
+}
