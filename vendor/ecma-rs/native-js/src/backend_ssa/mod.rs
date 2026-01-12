@@ -241,12 +241,46 @@ struct SsaDebug<'ctx> {
   line_index: LineIndex,
 }
 
+fn split_file_key(file_key: &str) -> (String, Option<String>) {
+  // `Program::file_key` is usually a filesystem path (often a canonical absolute path) but it may
+  // also be a bare filename ("main.ts") in tests or synthetic hosts.
+  //
+  // LLVM DIFile expects filename and directory as separate strings. Passing full paths in the
+  // filename field (while leaving directory as ".") produces odd DWARF that debuggers often render
+  // poorly. Split on common path separators when present.
+  let last_sep = file_key.rfind(|c| c == '/' || c == '\\');
+  let Some(last_sep) = last_sep else {
+    return (file_key.to_string(), None);
+  };
+
+  // If the string ends with a separator, treat it as not path-like.
+  if last_sep + 1 >= file_key.len() {
+    return (file_key.to_string(), None);
+  }
+
+  let filename = file_key[(last_sep + 1)..].to_string();
+  let mut directory = file_key[..last_sep].to_string();
+  if directory.is_empty() {
+    // Root path like `/main.ts`.
+    directory = file_key[..=last_sep].to_string();
+  }
+
+  (filename, Some(directory))
+}
+
 impl<'ctx> SsaDebug<'ctx> {
   fn new(module: &Module<'ctx>, program: &Program, entry_file: FileId, source: Arc<str>) -> Self {
     let entry_name = program
       .file_key(entry_file)
       .map(|k| k.to_string())
       .unwrap_or_else(|| "entry.ts".to_string());
+    let (entry_filename, entry_parent) = split_file_key(&entry_name);
+    let compile_dir = entry_parent.clone().unwrap_or_else(|| {
+      std::env::current_dir()
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| ".".to_string())
+    });
+    let file_dir = entry_parent.unwrap_or_else(|| ".".to_string());
 
     // Keep the module-level `source_filename` in sync with the DWARF compile-unit file so tools
     // that inspect LLVM IR (or fall back to the module header) see a meaningful entry filename.
@@ -256,8 +290,8 @@ impl<'ctx> SsaDebug<'ctx> {
     let (builder, compile_unit) = module.create_debug_info_builder(
       true,
       DWARFSourceLanguage::CPlusPlus,
-      &entry_name,
-      ".",
+      &entry_filename,
+      &compile_dir,
       "native-js",
       false,
       "",
@@ -271,7 +305,7 @@ impl<'ctx> SsaDebug<'ctx> {
       "",
     );
 
-    let file = builder.create_file(&entry_name, ".");
+    let file = builder.create_file(&entry_filename, &file_dir);
     let i32_ty = builder
       .create_basic_type("i32", 32, 0x05, 0)
       .expect("failed to create `i32` debug type")
