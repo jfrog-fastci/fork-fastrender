@@ -228,12 +228,17 @@ fn for_await_rejected_next_rejects_async_function_promise() -> Result<(), VmErro
   let value = rt.exec_script(
     r#"
       var out = "";
+      var returnCalls = 0;
       async function f() {
         const iterable = {};
         iterable[Symbol.asyncIterator] = function () {
           return {
             next() {
               return Promise.reject("boom");
+            },
+            return() {
+              returnCalls++;
+              return {};
             },
           };
         };
@@ -253,6 +258,209 @@ fn for_await_rejected_next_rejects_async_function_promise() -> Result<(), VmErro
 
   let value = rt.exec_script("out")?;
   assert_eq!(value_to_string(&rt, value), "boom");
+
+  let return_calls = rt.exec_script("returnCalls")?;
+  assert_eq!(return_calls, Value::Number(0.0));
+  Ok(())
+}
+
+#[test]
+fn for_await_of_next_throw_does_not_close_iterator() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(
+    r#"
+      var out = "";
+      var returnCalls = 0;
+
+      const iterable = {};
+      iterable[Symbol.asyncIterator] = function () {
+        return {
+          next() {
+            throw "boom";
+          },
+          return() {
+            returnCalls++;
+            return {};
+          },
+        };
+      };
+
+      async function f() {
+        for await (const x of iterable) {
+          out = "bad";
+        }
+        out = "bad";
+      }
+
+      f().then(
+        function () { out = "resolved"; },
+        function (e) { out = e; }
+      );
+      out
+    "#,
+  )?;
+  assert_eq!(value_to_string(&rt, value), "");
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let value = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, value), "boom");
+
+  let return_calls = rt.exec_script("returnCalls")?;
+  assert_eq!(return_calls, Value::Number(0.0));
+  Ok(())
+}
+
+#[test]
+fn for_await_of_done_getter_throw_does_not_close_iterator() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(
+    r#"
+      var out = "";
+      var returnCalls = 0;
+
+      const iterable = {};
+      iterable[Symbol.asyncIterator] = function () {
+        const resultObj = {
+          get done() { throw "boom"; },
+          value: 1,
+        };
+        return {
+          next() {
+            return Promise.resolve(resultObj);
+          },
+          return() {
+            returnCalls++;
+            return {};
+          },
+        };
+      };
+
+      async function f() {
+        for await (const x of iterable) {
+          out = "bad";
+        }
+        out = "bad";
+      }
+
+      f().then(
+        function () { out = "resolved"; },
+        function (e) { out = e; }
+      );
+      out
+    "#,
+  )?;
+  assert_eq!(value_to_string(&rt, value), "");
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let value = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, value), "boom");
+
+  let return_calls = rt.exec_script("returnCalls")?;
+  assert_eq!(return_calls, Value::Number(0.0));
+  Ok(())
+}
+
+#[test]
+fn for_await_of_value_getter_throw_does_not_close_iterator() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(
+    r#"
+      var out = "";
+      var returnCalls = 0;
+
+      const iterable = {};
+      iterable[Symbol.asyncIterator] = function () {
+        const resultObj = {
+          get done() { return false; },
+          get value() { throw "boom"; },
+        };
+        return {
+          next() {
+            return Promise.resolve(resultObj);
+          },
+          return() {
+            returnCalls++;
+            return {};
+          },
+        };
+      };
+
+      async function f() {
+        for await (const x of iterable) {
+          out = "bad";
+        }
+        out = "bad";
+      }
+
+      f().then(
+        function () { out = "resolved"; },
+        function (e) { out = e; }
+      );
+      out
+    "#,
+  )?;
+  assert_eq!(value_to_string(&rt, value), "");
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let value = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, value), "boom");
+
+  let return_calls = rt.exec_script("returnCalls")?;
+  assert_eq!(return_calls, Value::Number(0.0));
+  Ok(())
+}
+
+#[test]
+fn for_await_of_next_result_non_object_does_not_close_iterator() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(
+    r#"
+      var out = "";
+      var returnCalls = 0;
+
+      const iterable = {};
+      iterable[Symbol.asyncIterator] = function () {
+        return {
+          next() {
+            return Promise.resolve(1);
+          },
+          return() {
+            returnCalls++;
+            return {};
+          },
+        };
+      };
+
+      async function f() {
+        for await (const x of iterable) {
+          out = "bad";
+        }
+        out = "bad";
+      }
+
+      f().then(
+        function () { out = "resolved"; },
+        function (e) { out = e.constructor.name; }
+      );
+      out
+    "#,
+  )?;
+  assert_eq!(value_to_string(&rt, value), "");
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let value = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, value), "TypeError");
+
+  let return_calls = rt.exec_script("returnCalls")?;
+  assert_eq!(return_calls, Value::Number(0.0));
   Ok(())
 }
 
