@@ -32,6 +32,7 @@ members = [
   "runtime-native-abi",
   "webidl",
   "webidl-vm-js",
+  "webidl-runtime",
   "types-ts-interned",
   "hir-js",
   "typecheck-ts",
@@ -57,6 +58,7 @@ default-members = [
   "vm-js",
   "webidl",
   "webidl-vm-js",
+  "webidl-runtime",
 ]
 exclude = ["fuzz"]
 
@@ -92,6 +94,7 @@ runtime-native-abi = { path = "runtime-native-abi", version = "0.1.0" }
 runtime-native = { path = "runtime-native", version = "0.1.0" }
 webidl = { path = "webidl", version = "0.1.0" }
 webidl-vm-js = { path = "webidl-vm-js", version = "0.1.0" }
+webidl-runtime = { path = "webidl-runtime", version = "0.1.0" }
 stackmap = { path = "stackmap", version = "0.1.0" }
 stackmap-context = { path = "stackmap-context", version = "0.1.0" }
 

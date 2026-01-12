@@ -8,6 +8,9 @@ mod idl;
 mod numeric;
 mod to_js;
 pub mod ir;
+pub mod runtime;
+mod bindings_conversions;
+pub mod overload_resolution;
 
 pub use error::{WebIdlError, WebIdlLimit};
 pub use idl::{ByteString, DomString, FrozenArray, IdlRecord, IdlString, IdlUndefined, UsvString};
@@ -289,6 +292,7 @@ pub mod conversions {
   //! Only a tiny subset is implemented today; the rest will be added as bindings are generated.
 
   use super::JsRuntime;
+  pub use super::bindings_conversions::*;
 
   /// Convert ECMAScript `value` to a WebIDL `DOMString`.
   ///
