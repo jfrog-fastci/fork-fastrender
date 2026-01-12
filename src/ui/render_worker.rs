@@ -16,15 +16,18 @@ use crate::interaction::{
   fragment_tree_with_scroll, hit_test_dom, FormSubmission, FormSubmissionMethod, HitTestKind,
   InteractionAction, InteractionEngine,
 };
+use crate::paint::rasterize::fill_rect;
 use crate::render_control::{
   push_stage_listener, DeadlineGuard, StageHeartbeat, StageListenerGuard,
 };
 use crate::scroll::ScrollState;
+use crate::style::color::Rgba;
 use crate::style::types::OrientationTransform;
 use crate::text::font_db::FontConfig;
 use crate::ui::about_pages;
 use crate::ui::browser_limits::BrowserLimits;
 use crate::ui::cancel::{deadline_for, CancelGens, CancelSnapshot};
+use crate::ui::find_in_page::{FindIndex, FindMatch, FindOptions};
 use crate::ui::history::TabHistory;
 use crate::ui::messages::{
   CursorKind, NavigationReason, PointerButton, RenderedFrame, ScrollMetrics, TabId, UiToWorker,
@@ -125,6 +128,14 @@ const FAVICON_MAX_EDGE_PX: u32 = 32;
 const MAX_FAVICON_BYTES: usize =
   (FAVICON_MAX_EDGE_PX as usize) * (FAVICON_MAX_EDGE_PX as usize) * 4;
 
+#[derive(Debug, Clone, Default)]
+struct FindInPageWorkerState {
+  query: String,
+  case_sensitive: bool,
+  matches: Vec<FindMatch>,
+  active_match_index: Option<usize>,
+}
+
 struct TabState {
   history: TabHistory,
   loading: bool,
@@ -151,6 +162,8 @@ struct TabState {
   force_repaint: bool,
 
   tick_animation_time_ms: f32,
+
+  find: FindInPageWorkerState,
 }
 
 impl TabState {
@@ -176,6 +189,7 @@ impl TabState {
       needs_repaint: false,
       force_repaint: false,
       tick_animation_time_ms: 0.0,
+      find: FindInPageWorkerState::default(),
     }
   }
 }
@@ -1464,8 +1478,17 @@ impl BrowserRuntime {
       | UiToWorker::FindNext { .. }
       | UiToWorker::FindPrev { .. }
       | UiToWorker::FindStop { .. } => {
-        // Find-in-page is wired through the protocol + shared UI state model, but worker-side find
-        // implementation/highlighting lives in a separate task. Ignore these messages for now.
+        match msg {
+          UiToWorker::FindQuery {
+            tab_id,
+            query,
+            case_sensitive,
+          } => self.handle_find_query(tab_id, &query, case_sensitive),
+          UiToWorker::FindNext { tab_id } => self.handle_find_next(tab_id),
+          UiToWorker::FindPrev { tab_id } => self.handle_find_prev(tab_id),
+          UiToWorker::FindStop { tab_id } => self.handle_find_stop(tab_id),
+          _ => {}
+        }
       }
       UiToWorker::RequestRepaint { tab_id, reason: _ } => {
         let Some(tab) = self.tabs.get_mut(&tab_id) else {
@@ -1722,6 +1745,23 @@ impl BrowserRuntime {
       }
     }
 
+    // Full navigations replace the document; clear any active find-in-page results so the UI does
+    // not continue displaying stale match counts for the previous page.
+    if !tab.find.query.is_empty()
+      || tab.find.case_sensitive
+      || tab.find.active_match_index.is_some()
+      || !tab.find.matches.is_empty()
+    {
+      tab.find = FindInPageWorkerState::default();
+      let _ = self.ui_tx.send(WorkerToUi::FindResult {
+        tab_id,
+        query: String::new(),
+        case_sensitive: false,
+        match_count: 0,
+        active_match_index: None,
+      });
+    }
+
     tab.cancel.bump_nav();
     tab.loading = true;
     tab.needs_repaint = false;
@@ -1797,6 +1837,380 @@ impl BrowserRuntime {
     };
     doc.set_animation_time_ms(tab.tick_animation_time_ms);
     tab.needs_repaint = true;
+  }
+
+  fn handle_find_query(&mut self, tab_id: TabId, query: &str, case_sensitive: bool) {
+    let Some(tab) = self.tabs.get_mut(&tab_id) else {
+      return;
+    };
+
+    let query_changed = tab.find.query != query || tab.find.case_sensitive != case_sensitive;
+    tab.find.query = query.to_string();
+    tab.find.case_sensitive = case_sensitive;
+    if query_changed {
+      tab.find.active_match_index = None;
+    }
+
+    if tab.find.query.is_empty() {
+      tab.find.matches.clear();
+      tab.find.active_match_index = None;
+      let _ = self.ui_tx.send(WorkerToUi::FindResult {
+        tab_id,
+        query: String::new(),
+        case_sensitive,
+        match_count: 0,
+        active_match_index: None,
+      });
+
+      // Force a repaint so any highlight overlays are cleared.
+      if tab.document.is_some() {
+        tab.cancel.bump_paint();
+        tab.needs_repaint = true;
+        tab.force_repaint = true;
+      }
+      return;
+    }
+
+    if let Some(doc) = tab.document.as_ref() {
+      if doc.prepared().is_some() {
+        Self::rebuild_find_matches(&mut tab.find, &tab.scroll_state, doc);
+      } else {
+        tab.find.matches.clear();
+        tab.find.active_match_index = None;
+      }
+    }
+
+    if tab.find.active_match_index.is_none() && !tab.find.matches.is_empty() {
+      tab.find.active_match_index = Some(0);
+    }
+
+    let _ = self.ui_tx.send(WorkerToUi::FindResult {
+      tab_id,
+      query: tab.find.query.clone(),
+      case_sensitive: tab.find.case_sensitive,
+      match_count: tab.find.matches.len(),
+      active_match_index: tab.find.active_match_index,
+    });
+
+    Self::scroll_to_active_find_match(&self.ui_tx, tab_id, tab);
+
+    if tab.document.is_some() {
+      tab.cancel.bump_paint();
+      tab.needs_repaint = true;
+      tab.force_repaint = true;
+    }
+  }
+
+  fn handle_find_next(&mut self, tab_id: TabId) {
+    let Some(tab) = self.tabs.get_mut(&tab_id) else {
+      return;
+    };
+
+    if tab.find.query.is_empty() {
+      return;
+    }
+
+    if tab.find.matches.is_empty() {
+      if let Some(doc) = tab.document.as_ref() {
+        if doc.prepared().is_some() {
+          Self::rebuild_find_matches(&mut tab.find, &tab.scroll_state, doc);
+        }
+      }
+    }
+
+    if tab.find.matches.is_empty() {
+      let _ = self.ui_tx.send(WorkerToUi::FindResult {
+        tab_id,
+        query: tab.find.query.clone(),
+        case_sensitive: tab.find.case_sensitive,
+        match_count: 0,
+        active_match_index: None,
+      });
+      if tab.document.is_some() {
+        tab.cancel.bump_paint();
+        tab.needs_repaint = true;
+        tab.force_repaint = true;
+      }
+      return;
+    }
+
+    let count = tab.find.matches.len();
+    let next = tab.find.active_match_index.unwrap_or(0).saturating_add(1) % count;
+    tab.find.active_match_index = Some(next);
+
+    let _ = self.ui_tx.send(WorkerToUi::FindResult {
+      tab_id,
+      query: tab.find.query.clone(),
+      case_sensitive: tab.find.case_sensitive,
+      match_count: count,
+      active_match_index: tab.find.active_match_index,
+    });
+
+    Self::scroll_to_active_find_match(&self.ui_tx, tab_id, tab);
+
+    if tab.document.is_some() {
+      tab.cancel.bump_paint();
+      tab.needs_repaint = true;
+      tab.force_repaint = true;
+    }
+  }
+
+  fn handle_find_prev(&mut self, tab_id: TabId) {
+    let Some(tab) = self.tabs.get_mut(&tab_id) else {
+      return;
+    };
+
+    if tab.find.query.is_empty() {
+      return;
+    }
+
+    if tab.find.matches.is_empty() {
+      if let Some(doc) = tab.document.as_ref() {
+        if doc.prepared().is_some() {
+          Self::rebuild_find_matches(&mut tab.find, &tab.scroll_state, doc);
+        }
+      }
+    }
+
+    if tab.find.matches.is_empty() {
+      let _ = self.ui_tx.send(WorkerToUi::FindResult {
+        tab_id,
+        query: tab.find.query.clone(),
+        case_sensitive: tab.find.case_sensitive,
+        match_count: 0,
+        active_match_index: None,
+      });
+      if tab.document.is_some() {
+        tab.cancel.bump_paint();
+        tab.needs_repaint = true;
+        tab.force_repaint = true;
+      }
+      return;
+    }
+
+    let count = tab.find.matches.len();
+    let current = tab.find.active_match_index.unwrap_or(0) % count;
+    let prev = if current == 0 { count - 1 } else { current - 1 };
+    tab.find.active_match_index = Some(prev);
+
+    let _ = self.ui_tx.send(WorkerToUi::FindResult {
+      tab_id,
+      query: tab.find.query.clone(),
+      case_sensitive: tab.find.case_sensitive,
+      match_count: count,
+      active_match_index: tab.find.active_match_index,
+    });
+
+    Self::scroll_to_active_find_match(&self.ui_tx, tab_id, tab);
+
+    if tab.document.is_some() {
+      tab.cancel.bump_paint();
+      tab.needs_repaint = true;
+      tab.force_repaint = true;
+    }
+  }
+
+  fn handle_find_stop(&mut self, tab_id: TabId) {
+    let Some(tab) = self.tabs.get_mut(&tab_id) else {
+      return;
+    };
+
+    tab.find = FindInPageWorkerState::default();
+
+    let _ = self.ui_tx.send(WorkerToUi::FindResult {
+      tab_id,
+      query: String::new(),
+      case_sensitive: false,
+      match_count: 0,
+      active_match_index: None,
+    });
+
+    if tab.document.is_some() {
+      tab.cancel.bump_paint();
+      tab.needs_repaint = true;
+      tab.force_repaint = true;
+    }
+  }
+
+  fn rebuild_find_matches(
+    find: &mut FindInPageWorkerState,
+    scroll: &ScrollState,
+    doc: &BrowserDocument,
+  ) {
+    let Some(prepared) = doc.prepared() else {
+      find.matches.clear();
+      find.active_match_index = None;
+      return;
+    };
+
+    let tree = fragment_tree_with_scroll(prepared.fragment_tree(), scroll);
+    let index = FindIndex::build(&tree);
+    find.matches = index.find(
+      &find.query,
+      FindOptions {
+        case_sensitive: find.case_sensitive,
+      },
+    );
+
+    if find.matches.is_empty() {
+      find.active_match_index = None;
+    } else {
+      let max = find.matches.len() - 1;
+      let current = find.active_match_index.unwrap_or(0).min(max);
+      find.active_match_index = Some(current);
+    }
+  }
+
+  fn scroll_to_active_find_match(ui_tx: &Sender<WorkerToUi>, tab_id: TabId, tab: &mut TabState) {
+    let Some(doc) = tab.document.as_mut() else {
+      return;
+    };
+
+    let Some(active) = tab.find.active_match_index else {
+      return;
+    };
+    let Some(m) = tab.find.matches.get(active) else {
+      return;
+    };
+    let bounds = m.bounds;
+    if bounds == Rect::ZERO {
+      return;
+    }
+
+    let viewport_w = tab.viewport_css.0 as f32;
+    let viewport_h = tab.viewport_css.1 as f32;
+
+    let mut target = tab.scroll_state.viewport;
+
+    if bounds.min_y() < target.y {
+      target.y = bounds.min_y();
+    } else if bounds.max_y() > target.y + viewport_h {
+      target.y = bounds.max_y() - viewport_h;
+    }
+
+    if bounds.min_x() < target.x {
+      target.x = bounds.min_x();
+    } else if bounds.max_x() > target.x + viewport_w {
+      target.x = bounds.max_x() - viewport_w;
+    }
+
+    if !target.x.is_finite() {
+      target.x = 0.0;
+    }
+    if !target.y.is_finite() {
+      target.y = 0.0;
+    }
+    target.x = target.x.max(0.0);
+    target.y = target.y.max(0.0);
+
+    if let Some(prepared) = doc.prepared() {
+      let viewport = Size::new(viewport_w, viewport_h);
+      if let Some(root) =
+        crate::scroll::build_scroll_chain(&prepared.fragment_tree().root, viewport, &[]).last()
+      {
+        target = root.bounds.clamp(target);
+      }
+    }
+
+    if target != tab.scroll_state.viewport {
+      let mut next = tab.scroll_state.clone();
+      next.viewport = target;
+      doc.set_scroll_state(next.clone());
+      tab.scroll_state = next;
+      tab
+        .history
+        .update_scroll(tab.scroll_state.viewport.x, tab.scroll_state.viewport.y);
+      let _ = ui_tx.send(WorkerToUi::ScrollStateUpdated {
+        tab_id,
+        scroll: tab.scroll_state.clone(),
+      });
+    }
+  }
+
+  fn apply_find_highlight(tab: &TabState, dpr: f32, pixmap: &mut tiny_skia::Pixmap) {
+    if tab.find.matches.is_empty() {
+      return;
+    }
+
+    let viewport_w = tab.viewport_css.0 as f32;
+    let viewport_h = tab.viewport_css.1 as f32;
+    let viewport_css = Rect::from_xywh(0.0, 0.0, viewport_w, viewport_h);
+    let viewport_page = Rect::from_xywh(
+      tab.scroll_state.viewport.x,
+      tab.scroll_state.viewport.y,
+      viewport_w,
+      viewport_h,
+    );
+
+    let highlight = Rgba::new(255, 235, 59, 0.25);
+    let highlight_active = Rgba::new(255, 193, 7, 0.35);
+
+    let active = tab.find.active_match_index;
+
+    for (idx, m) in tab.find.matches.iter().enumerate() {
+      if Some(idx) == active {
+        continue;
+      }
+      if m.rects.is_empty() || m.bounds == Rect::ZERO {
+        continue;
+      }
+      if m.bounds.intersection(viewport_page).is_none() {
+        continue;
+      }
+
+      for rect in &m.rects {
+        let local = Rect::from_xywh(
+          rect.x() - tab.scroll_state.viewport.x,
+          rect.y() - tab.scroll_state.viewport.y,
+          rect.width(),
+          rect.height(),
+        );
+        let Some(visible) = local.intersection(viewport_css) else {
+          continue;
+        };
+        fill_rect(
+          pixmap,
+          visible.x() * dpr,
+          visible.y() * dpr,
+          visible.width() * dpr,
+          visible.height() * dpr,
+          highlight,
+        );
+      }
+    }
+
+    let Some(active) = active else {
+      return;
+    };
+    let Some(m) = tab.find.matches.get(active) else {
+      return;
+    };
+    if m.rects.is_empty() || m.bounds == Rect::ZERO {
+      return;
+    }
+    if m.bounds.intersection(viewport_page).is_none() {
+      return;
+    }
+
+    for rect in &m.rects {
+      let local = Rect::from_xywh(
+        rect.x() - tab.scroll_state.viewport.x,
+        rect.y() - tab.scroll_state.viewport.y,
+        rect.width(),
+        rect.height(),
+      );
+      let Some(visible) = local.intersection(viewport_css) else {
+        continue;
+      };
+      fill_rect(
+        pixmap,
+        visible.x() * dpr,
+        visible.y() * dpr,
+        visible.width() * dpr,
+        visible.height() * dpr,
+        highlight_active,
+      );
+    }
   }
 
   fn maybe_emit_hover_changed(
@@ -3438,17 +3852,42 @@ impl BrowserRuntime {
     // we were rendering, skip this frame and let the subsequent repaint win.
     if let Some(frame) = painted {
       if paint_snapshot.is_still_current_for_paint(&cancel) {
+        let actual_dpr = tab
+          .document
+          .as_ref()
+          .and_then(|d| d.prepared())
+          .map(|p| p.device_pixel_ratio())
+          .unwrap_or(dpr);
+
+        let mut pixmap = frame.pixmap;
+
+        if !tab.find.query.is_empty() {
+          let prev_count = tab.find.matches.len();
+          let prev_active = tab.find.active_match_index;
+          if let Some(doc) = tab.document.as_ref() {
+            Self::rebuild_find_matches(&mut tab.find, &tab.scroll_state, doc);
+          } else {
+            tab.find.matches.clear();
+            tab.find.active_match_index = None;
+          }
+          if tab.find.matches.len() != prev_count || tab.find.active_match_index != prev_active {
+            msgs.push(WorkerToUi::FindResult {
+              tab_id,
+              query: tab.find.query.clone(),
+              case_sensitive: tab.find.case_sensitive,
+              match_count: tab.find.matches.len(),
+              active_match_index: tab.find.active_match_index,
+            });
+          }
+          Self::apply_find_highlight(tab, actual_dpr, &mut pixmap);
+        }
+
         msgs.push(WorkerToUi::FrameReady {
           tab_id,
           frame: RenderedFrame {
-            pixmap: frame.pixmap,
+            pixmap,
             viewport_css,
-            dpr: tab
-              .document
-              .as_ref()
-              .and_then(|d| d.prepared())
-              .map(|p| p.device_pixel_ratio())
-              .unwrap_or(dpr),
+            dpr: actual_dpr,
             scroll_state: tab.scroll_state.clone(),
             scroll_metrics: compute_scroll_metrics(
               tab.document.as_ref(),
@@ -3790,17 +4229,35 @@ impl BrowserRuntime {
         .history
         .update_scroll(tab.scroll_state.viewport.x, tab.scroll_state.viewport.y);
 
+      let actual_dpr = doc
+        .prepared()
+        .map(|p| p.device_pixel_ratio())
+        .unwrap_or(tab.dpr);
+
+      let mut pixmap = frame.pixmap;
+
+      if !tab.find.query.is_empty() {
+        let prev_count = tab.find.matches.len();
+        let prev_active = tab.find.active_match_index;
+        Self::rebuild_find_matches(&mut tab.find, &tab.scroll_state, &*doc);
+        if tab.find.matches.len() != prev_count || tab.find.active_match_index != prev_active {
+          msgs.push(WorkerToUi::FindResult {
+            tab_id,
+            query: tab.find.query.clone(),
+            case_sensitive: tab.find.case_sensitive,
+            match_count: tab.find.matches.len(),
+            active_match_index: tab.find.active_match_index,
+          });
+        }
+        Self::apply_find_highlight(tab, actual_dpr, &mut pixmap);
+      }
+
       msgs.push(WorkerToUi::FrameReady {
         tab_id,
         frame: RenderedFrame {
-          pixmap: frame.pixmap,
+          pixmap,
           viewport_css: tab.viewport_css,
-          dpr: tab
-            .document
-            .as_ref()
-            .and_then(|d| d.prepared())
-            .map(|p| p.device_pixel_ratio())
-            .unwrap_or(tab.dpr),
+          dpr: actual_dpr,
           scroll_state: tab.scroll_state.clone(),
           scroll_metrics: compute_scroll_metrics(
             tab.document.as_ref(),

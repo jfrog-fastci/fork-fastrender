@@ -5,8 +5,11 @@ use crate::interaction::{
   fragment_tree_with_scroll, FormSubmission, FormSubmissionMethod, InteractionAction,
   InteractionEngine, InteractionState,
 };
+use crate::paint::rasterize::fill_rect;
 use crate::scroll::ScrollState;
+use crate::style::color::Rgba;
 use crate::ui::about_pages;
+use crate::ui::find_in_page::{FindIndex, FindOptions, FindMatch};
 use crate::ui::messages::{
   NavigationReason, PointerButton, RenderedFrame, ScrollMetrics, TabId, UiToWorker, WorkerToUi,
 };
@@ -28,6 +31,10 @@ pub struct BrowserTabController {
   last_reported_scroll_state: ScrollState,
   viewport_css: (u32, u32),
   dpr: f32,
+  find_query: String,
+  find_case_sensitive: bool,
+  find_matches: Vec<FindMatch>,
+  find_active_match_index: Option<usize>,
 }
 
 impl BrowserTabController {
@@ -77,6 +84,10 @@ impl BrowserTabController {
       last_reported_scroll_state: ScrollState::default(),
       viewport_css,
       dpr,
+      find_query: String::new(),
+      find_case_sensitive: false,
+      find_matches: Vec::new(),
+      find_active_match_index: None,
     })
   }
 
@@ -151,6 +162,14 @@ impl BrowserTabController {
       UiToWorker::Paste { tab_id, text } if tab_id == self.tab_id => self.handle_paste(&text),
       UiToWorker::SelectAll { tab_id } if tab_id == self.tab_id => self.handle_select_all(),
       UiToWorker::KeyAction { tab_id, key } if tab_id == self.tab_id => self.handle_key_action(key),
+      UiToWorker::FindQuery {
+        tab_id,
+        query,
+        case_sensitive,
+      } if tab_id == self.tab_id => self.handle_find_query(&query, case_sensitive),
+      UiToWorker::FindNext { tab_id } if tab_id == self.tab_id => self.handle_find_next(),
+      UiToWorker::FindPrev { tab_id } if tab_id == self.tab_id => self.handle_find_prev(),
+      UiToWorker::FindStop { tab_id } if tab_id == self.tab_id => self.handle_find_stop(),
       UiToWorker::Navigate {
         tab_id,
         url,
@@ -158,6 +177,211 @@ impl BrowserTabController {
       } if tab_id == self.tab_id => self.navigate(&url, reason),
       UiToWorker::RequestRepaint { tab_id, .. } if tab_id == self.tab_id => self.force_repaint(),
       _ => Ok(Vec::new()),
+    }
+  }
+
+  fn handle_find_query(&mut self, query: &str, case_sensitive: bool) -> Result<Vec<WorkerToUi>> {
+    let query = query.to_string();
+    let query_changed = self.find_query != query || self.find_case_sensitive != case_sensitive;
+    self.find_query = query.clone();
+    self.find_case_sensitive = case_sensitive;
+    if query_changed {
+      self.find_active_match_index = None;
+    }
+
+    if query.is_empty() {
+      self.find_matches.clear();
+      self.find_active_match_index = None;
+
+      let mut out = vec![WorkerToUi::FindResult {
+        tab_id: self.tab_id,
+        query,
+        case_sensitive,
+        match_count: 0,
+        active_match_index: None,
+      }];
+
+      // Force a repaint so any existing highlight overlays are cleared.
+      out.extend(self.force_repaint()?);
+      return Ok(out);
+    }
+
+    self.rebuild_find_matches();
+    if self.find_active_match_index.is_none() && !self.find_matches.is_empty() {
+      self.find_active_match_index = Some(0);
+    }
+
+    self.scroll_to_active_find_match();
+
+    let mut out = vec![self.find_result_msg()];
+    out.extend(self.force_repaint()?);
+    Ok(out)
+  }
+
+  fn handle_find_next(&mut self) -> Result<Vec<WorkerToUi>> {
+    if self.find_query.is_empty() {
+      return Ok(Vec::new());
+    }
+
+    if self.find_matches.is_empty() {
+      self.rebuild_find_matches();
+    }
+
+    if self.find_matches.is_empty() {
+      let mut out = vec![self.find_result_msg()];
+      out.extend(self.force_repaint()?);
+      return Ok(out);
+    }
+
+    let count = self.find_matches.len();
+    let next = self
+      .find_active_match_index
+      .unwrap_or(0)
+      .saturating_add(1)
+      % count;
+    self.find_active_match_index = Some(next);
+    self.scroll_to_active_find_match();
+
+    let mut out = vec![self.find_result_msg()];
+    out.extend(self.force_repaint()?);
+    Ok(out)
+  }
+
+  fn handle_find_prev(&mut self) -> Result<Vec<WorkerToUi>> {
+    if self.find_query.is_empty() {
+      return Ok(Vec::new());
+    }
+
+    if self.find_matches.is_empty() {
+      self.rebuild_find_matches();
+    }
+
+    if self.find_matches.is_empty() {
+      let mut out = vec![self.find_result_msg()];
+      out.extend(self.force_repaint()?);
+      return Ok(out);
+    }
+
+    let count = self.find_matches.len();
+    let current = self.find_active_match_index.unwrap_or(0) % count;
+    let prev = if current == 0 { count - 1 } else { current - 1 };
+    self.find_active_match_index = Some(prev);
+    self.scroll_to_active_find_match();
+
+    let mut out = vec![self.find_result_msg()];
+    out.extend(self.force_repaint()?);
+    Ok(out)
+  }
+
+  fn handle_find_stop(&mut self) -> Result<Vec<WorkerToUi>> {
+    self.find_query.clear();
+    self.find_case_sensitive = false;
+    self.find_matches.clear();
+    self.find_active_match_index = None;
+
+    let mut out = vec![WorkerToUi::FindResult {
+      tab_id: self.tab_id,
+      query: String::new(),
+      case_sensitive: false,
+      match_count: 0,
+      active_match_index: None,
+    }];
+    out.extend(self.force_repaint()?);
+    Ok(out)
+  }
+
+  fn find_result_msg(&self) -> WorkerToUi {
+    WorkerToUi::FindResult {
+      tab_id: self.tab_id,
+      query: self.find_query.clone(),
+      case_sensitive: self.find_case_sensitive,
+      match_count: self.find_matches.len(),
+      active_match_index: self.find_active_match_index,
+    }
+  }
+
+  fn rebuild_find_matches(&mut self) {
+    let Some(prepared) = self.document.prepared() else {
+      // Layout not ready yet; keep matches empty until after the first paint.
+      self.find_matches.clear();
+      self.find_active_match_index = None;
+      return;
+    };
+
+    // Apply element scroll offsets so matches inside scroll containers highlight in the same
+    // coordinate space used for hit testing and painting.
+    let tree = fragment_tree_with_scroll(prepared.fragment_tree(), &self.scroll_state);
+    let index = FindIndex::build(&tree);
+    self.find_matches = index.find(
+      &self.find_query,
+      FindOptions {
+        case_sensitive: self.find_case_sensitive,
+      },
+    );
+
+    if self.find_matches.is_empty() {
+      self.find_active_match_index = None;
+    } else {
+      let max = self.find_matches.len() - 1;
+      let current = self.find_active_match_index.unwrap_or(0).min(max);
+      self.find_active_match_index = Some(current);
+    }
+  }
+
+  fn scroll_to_active_find_match(&mut self) {
+    let Some(active) = self.find_active_match_index else {
+      return;
+    };
+    let Some(m) = self.find_matches.get(active) else {
+      return;
+    };
+    let bounds = m.bounds;
+    if bounds == Rect::ZERO {
+      return;
+    }
+
+    let viewport_w = self.viewport_css.0 as f32;
+    let viewport_h = self.viewport_css.1 as f32;
+
+    let mut target = self.scroll_state.viewport;
+
+    // Try to keep the full match bounds visible, clamping later.
+    if bounds.min_y() < target.y {
+      target.y = bounds.min_y();
+    } else if bounds.max_y() > target.y + viewport_h {
+      target.y = bounds.max_y() - viewport_h;
+    }
+
+    if bounds.min_x() < target.x {
+      target.x = bounds.min_x();
+    } else if bounds.max_x() > target.x + viewport_w {
+      target.x = bounds.max_x() - viewport_w;
+    }
+
+    if !target.x.is_finite() {
+      target.x = 0.0;
+    }
+    if !target.y.is_finite() {
+      target.y = 0.0;
+    }
+    target.x = target.x.max(0.0);
+    target.y = target.y.max(0.0);
+
+    // Clamp to root scroll bounds when possible.
+    if let Some(prepared) = self.document.prepared() {
+      let viewport_size = Size::new(viewport_w, viewport_h);
+      if let Some(root) =
+        crate::scroll::build_scroll_chain(&prepared.fragment_tree().root, viewport_size, &[]).last()
+      {
+        target = root.bounds.clamp(target);
+      }
+    }
+
+    if target != self.scroll_state.viewport {
+      let mut next = self.scroll_state.clone();
+      next.viewport = target;
+      self.scroll_state = next;
+      self.document.set_scroll_state(self.scroll_state.clone());
     }
   }
 
@@ -745,10 +969,24 @@ impl BrowserTabController {
 
   fn navigate(&mut self, url: &str, _reason: NavigationReason) -> Result<Vec<WorkerToUi>> {
     let url = url.trim();
-    let mut out = vec![WorkerToUi::NavigationStarted {
-      tab_id: self.tab_id,
-      url: url.to_string(),
-    }];
+    self.find_query.clear();
+    self.find_case_sensitive = false;
+    self.find_matches.clear();
+    self.find_active_match_index = None;
+
+    let mut out = vec![
+      WorkerToUi::FindResult {
+        tab_id: self.tab_id,
+        query: String::new(),
+        case_sensitive: false,
+        match_count: 0,
+        active_match_index: None,
+      },
+      WorkerToUi::NavigationStarted {
+        tab_id: self.tab_id,
+        url: url.to_string(),
+      },
+    ];
 
     let options = RenderOptions::new()
       .with_viewport(self.viewport_css.0, self.viewport_css.1)
@@ -815,10 +1053,24 @@ impl BrowserTabController {
     _reason: NavigationReason,
   ) -> Result<Vec<WorkerToUi>> {
     let url = submission.url.trim();
-    let mut out = vec![WorkerToUi::NavigationStarted {
-      tab_id: self.tab_id,
-      url: url.to_string(),
-    }];
+    self.find_query.clear();
+    self.find_case_sensitive = false;
+    self.find_matches.clear();
+    self.find_active_match_index = None;
+
+    let mut out = vec![
+      WorkerToUi::FindResult {
+        tab_id: self.tab_id,
+        query: String::new(),
+        case_sensitive: false,
+        match_count: 0,
+        active_match_index: None,
+      },
+      WorkerToUi::NavigationStarted {
+        tab_id: self.tab_id,
+        url: url.to_string(),
+      },
+    ];
 
     let options = RenderOptions::new()
       .with_viewport(self.viewport_css.0, self.viewport_css.1)
@@ -904,7 +1156,7 @@ impl BrowserTabController {
     Ok(self.emit_frame(frame))
   }
 
-  fn emit_frame(&mut self, frame: crate::PaintedFrame) -> Vec<WorkerToUi> {
+  fn emit_frame(&mut self, mut frame: crate::PaintedFrame) -> Vec<WorkerToUi> {
     let mut out = Vec::new();
 
     self.scroll_state = frame.scroll_state.clone();
@@ -920,6 +1172,18 @@ impl BrowserTabController {
     if let Some(prepared) = self.document.prepared() {
       self.dpr = prepared.device_pixel_ratio();
     }
+
+    // Recompute matches after layout updates so highlight rects remain accurate across relayout.
+    if !self.find_query.is_empty() {
+      let prev_count = self.find_matches.len();
+      let prev_active = self.find_active_match_index;
+      self.rebuild_find_matches();
+      if prev_count != self.find_matches.len() || prev_active != self.find_active_match_index {
+        out.push(self.find_result_msg());
+      }
+    }
+
+    self.apply_find_highlight(&mut frame.pixmap);
 
     out.push(WorkerToUi::FrameReady {
       tab_id: self.tab_id,
@@ -979,6 +1243,88 @@ impl BrowserTabController {
 
     out
   }
+
+  fn apply_find_highlight(&self, pixmap: &mut tiny_skia::Pixmap) {
+    if self.find_matches.is_empty() {
+      return;
+    }
+
+    let viewport_w = self.viewport_css.0 as f32;
+    let viewport_h = self.viewport_css.1 as f32;
+    let viewport_css = Rect::from_xywh(0.0, 0.0, viewport_w, viewport_h);
+    let viewport_page = Rect::from_xywh(
+      self.scroll_state.viewport.x,
+      self.scroll_state.viewport.y,
+      viewport_w,
+      viewport_h,
+    );
+
+    let highlight = Rgba::new(255, 235, 59, 0.25);
+    let highlight_active = Rgba::new(255, 193, 7, 0.35);
+
+    let active = self.find_active_match_index;
+
+    for (idx, m) in self.find_matches.iter().enumerate() {
+      if Some(idx) == active {
+        continue;
+      }
+      if m.rects.is_empty() || m.bounds == Rect::ZERO {
+        continue;
+      }
+      if m.bounds.intersection(viewport_page).is_none() {
+        continue;
+      }
+
+      for rect in &m.rects {
+        let local = Rect::from_xywh(
+          rect.x() - self.scroll_state.viewport.x,
+          rect.y() - self.scroll_state.viewport.y,
+          rect.width(),
+          rect.height(),
+        );
+        let Some(visible) = local.intersection(viewport_css) else {
+          continue;
+        };
+
+        let x = visible.x() * self.dpr;
+        let y = visible.y() * self.dpr;
+        let w = visible.width() * self.dpr;
+        let h = visible.height() * self.dpr;
+        fill_rect(pixmap, x, y, w, h, highlight);
+      }
+    }
+
+    let Some(active) = active else {
+      return;
+    };
+    let Some(m) = self.find_matches.get(active) else {
+      return;
+    };
+    if m.rects.is_empty() || m.bounds == Rect::ZERO {
+      return;
+    }
+    if m.bounds.intersection(viewport_page).is_none() {
+      return;
+    }
+
+    for rect in &m.rects {
+      let local = Rect::from_xywh(
+        rect.x() - self.scroll_state.viewport.x,
+        rect.y() - self.scroll_state.viewport.y,
+        rect.width(),
+        rect.height(),
+      );
+      let Some(visible) = local.intersection(viewport_css) else {
+        continue;
+      };
+
+      let x = visible.x() * self.dpr;
+      let y = visible.y() * self.dpr;
+      let w = visible.width() * self.dpr;
+      let h = visible.height() * self.dpr;
+      fill_rect(pixmap, x, y, w, h, highlight_active);
+    }
+  }
 }
 
 fn same_document_fragment(current_url: &str, href: &str) -> Option<String> {
@@ -999,4 +1345,130 @@ fn strip_fragment(url: &str) -> String {
   };
   parsed.set_fragment(None);
   parsed.to_string()
+}
+
+#[cfg(test)]
+mod find_in_page_tests {
+  use super::*;
+  use crate::text::font_db::FontConfig;
+  use crate::ui::messages::RepaintReason;
+
+  #[test]
+  fn find_query_and_navigation_produce_results_scroll_and_highlight() {
+    let renderer = FastRender::builder()
+      .font_sources(FontConfig::bundled_only())
+      .build()
+      .expect("build deterministic renderer");
+
+    let tab_id = TabId(1);
+    let viewport_css = (240, 120);
+    let dpr = 1.0;
+    let html = r#"<!doctype html>
+      <html>
+        <head>
+          <meta charset="utf-8">
+          <style>
+            html, body { margin: 0; padding: 0; }
+            body { font: 16px sans-serif; }
+          </style>
+        </head>
+        <body>
+          <div>hello</div>
+          <div style="height: 2000px"></div>
+          <div>hello</div>
+        </body>
+      </html>"#;
+
+    let mut controller = BrowserTabController::from_html_with_renderer(
+      renderer,
+      tab_id,
+      html,
+      "https://example.com/",
+      viewport_css,
+      dpr,
+    )
+    .expect("controller from_html_with_renderer");
+
+    let initial = controller
+      .handle_message(UiToWorker::RequestRepaint {
+        tab_id,
+        reason: RepaintReason::Explicit,
+      })
+      .expect("initial repaint");
+    let before = initial
+      .into_iter()
+      .rev()
+      .find_map(|msg| match msg {
+        WorkerToUi::FrameReady { frame, .. } => Some(frame.pixmap.data().to_vec()),
+        _ => None,
+      })
+      .expect("expected an initial FrameReady");
+
+    let out = controller
+      .handle_message(UiToWorker::FindQuery {
+        tab_id,
+        query: "HELLO".to_string(),
+        case_sensitive: false,
+      })
+      .expect("find query");
+
+    let mut match_count = None;
+    let mut active = None;
+    let mut after = None;
+    for msg in out {
+      match msg {
+        WorkerToUi::FindResult {
+          match_count: got_count,
+          active_match_index,
+          ..
+        } => {
+          match_count = Some(got_count);
+          active = active_match_index;
+        }
+        WorkerToUi::FrameReady { frame, .. } => {
+          after = Some(frame.pixmap.data().to_vec());
+        }
+        _ => {}
+      }
+    }
+
+    assert_eq!(match_count, Some(2));
+    assert_eq!(active, Some(0));
+    assert_ne!(
+      before,
+      after.expect("expected a FrameReady after FindQuery"),
+      "expected find highlight overlay to affect rendered pixels"
+    );
+
+    let out = controller
+      .handle_message(UiToWorker::FindNext { tab_id })
+      .expect("find next");
+
+    let mut match_count = None;
+    let mut active = None;
+    let mut scrolled_y = None;
+    for msg in out {
+      match msg {
+        WorkerToUi::FindResult {
+          match_count: got_count,
+          active_match_index,
+          ..
+        } => {
+          match_count = Some(got_count);
+          active = active_match_index;
+        }
+        WorkerToUi::ScrollStateUpdated { scroll, .. } => {
+          scrolled_y = Some(scroll.viewport.y);
+        }
+        _ => {}
+      }
+    }
+
+    assert_eq!(match_count, Some(2));
+    assert_eq!(active, Some(1));
+    assert!(
+      scrolled_y.is_some_and(|y| y > 0.0),
+      "expected FindNext to scroll down to the next match (got scroll_y={scrolled_y:?})"
+    );
+  }
 }
