@@ -276,12 +276,16 @@ const BBlockElement = ({
   data: { label, insts },
   symbolNames,
   changed,
+  selectedInst,
   onHoverInst,
+  onSelectInst,
 }: {
   data: BBlockNode["data"];
   symbolNames?: Map<string, string>;
   changed?: boolean;
+  selectedInst?: GraphInst;
   onHoverInst?: (inst: GraphInst | undefined) => void;
+  onSelectInst?: (inst: GraphInst | undefined) => void;
 }) => {
   return (
     <>
@@ -292,10 +296,11 @@ const BBlockElement = ({
           {insts.map((s, i) => (
             <li
               key={i}
-              className="inst"
+              className={`inst ${s === selectedInst ? "selected" : ""}`}
               title={(s as any).meta ? JSON.stringify((s as any).meta, null, 2) : undefined}
               onMouseEnter={() => onHoverInst?.(s)}
               onMouseLeave={() => onHoverInst?.(undefined)}
+              onClick={() => onSelectInst?.(s)}
             >
               <InstElement inst={s} symbolNames={symbolNames} />
             </li>
@@ -410,7 +415,9 @@ export const Graph = ({
   filter,
   onlyUnknownEffects,
   onlyEscapingAllocs,
+  selectedInst,
   onHoverInst,
+  onSelectInst,
 }: {
   stepNames: Array<string>;
   step: NormalizedStep;
@@ -419,7 +426,9 @@ export const Graph = ({
   filter: string;
   onlyUnknownEffects?: boolean;
   onlyEscapingAllocs?: boolean;
+  selectedInst?: GraphInst;
   onHoverInst?: (inst: GraphInst | undefined) => void;
+  onSelectInst?: (inst: GraphInst | undefined) => void;
 }) => {
   const query = filter.trim().toLowerCase();
 
@@ -464,6 +473,7 @@ export const Graph = ({
 
   useEffect(() => {
     onHoverInst?.(undefined);
+    onSelectInst?.(undefined);
   }, [step, query, onlyUnknownEffects, onlyEscapingAllocs]);
 
   const visible = useMemo(() => new Set(filteredBlocks.map((b) => b.label)), [filteredBlocks]);
@@ -505,11 +515,13 @@ export const Graph = ({
           {...props}
           symbolNames={symbolNames}
           changed={changed?.has(props.data.label)}
+          selectedInst={selectedInst}
           onHoverInst={onHoverInst}
+          onSelectInst={onSelectInst}
         />
       ),
     }),
-    [symbolNames, changed, onHoverInst],
+    [symbolNames, changed, selectedInst, onHoverInst, onSelectInst],
   );
 
   return (

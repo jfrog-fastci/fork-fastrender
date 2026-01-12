@@ -339,6 +339,117 @@
             "cfgChildren": {}
           },
           {
+            "name": "opt1_async_elide",
+            "bblockOrder": [
+              0
+            ],
+            "bblocks": {
+              "0": [
+                {
+                  "t": "VarAssign",
+                  "tgts": [
+                    6
+                  ],
+                  "args": [
+                    {
+                      "kind": "const",
+                      "value": {
+                        "kind": "num",
+                        "value": 1.0
+                      }
+                    }
+                  ],
+                  "spreads": [],
+                  "labels": []
+                },
+                {
+                  "t": "VarAssign",
+                  "tgts": [
+                    7
+                  ],
+                  "args": [
+                    {
+                      "kind": "var",
+                      "value": 6
+                    }
+                  ],
+                  "spreads": [],
+                  "labels": []
+                },
+                {
+                  "t": "Bin",
+                  "tgts": [
+                    8
+                  ],
+                  "args": [
+                    {
+                      "kind": "var",
+                      "value": 7
+                    },
+                    {
+                      "kind": "const",
+                      "value": {
+                        "kind": "num",
+                        "value": 2.0
+                      }
+                    }
+                  ],
+                  "spreads": [],
+                  "labels": [],
+                  "binOp": "+"
+                },
+                {
+                  "t": "VarAssign",
+                  "tgts": [
+                    9
+                  ],
+                  "args": [
+                    {
+                      "kind": "var",
+                      "value": 8
+                    }
+                  ],
+                  "spreads": [],
+                  "labels": []
+                },
+                {
+                  "t": "VarAssign",
+                  "tgts": [
+                    10
+                  ],
+                  "args": [
+                    {
+                      "kind": "var",
+                      "value": 9
+                    }
+                  ],
+                  "spreads": [],
+                  "labels": []
+                },
+                {
+                  "t": "Bin",
+                  "tgts": [
+                    11
+                  ],
+                  "args": [
+                    {
+                      "kind": "var",
+                      "value": 10
+                    },
+                    {
+                      "kind": "var",
+                      "value": 7
+                    }
+                  ],
+                  "spreads": [],
+                  "labels": [],
+                  "binOp": "+"
+                }
+              ]
+            },
+            "cfgChildren": {}
+          },
+          {
             "name": "opt1_dvn",
             "bblockOrder": [
               0
@@ -483,6 +594,16 @@
           },
           {
             "name": "opt1_cfg_prune",
+            "bblockOrder": [
+              0
+            ],
+            "bblocks": {
+              "0": []
+            },
+            "cfgChildren": {}
+          },
+          {
+            "name": "opt2_async_elide",
             "bblockOrder": [
               0
             ],

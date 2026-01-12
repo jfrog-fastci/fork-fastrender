@@ -34,6 +34,14 @@
   color: #333;
 }
 
+.BBlocksExplorer .insts .inst.selected > div {
+  background: rgba(25, 118, 210, 0.08);
+}
+
+.BBlocksExplorer .insts .inst.selected > div:first-child {
+  border-left: 2px solid rgba(25, 118, 210, 0.9);
+}
+
 .BBlocksExplorer .insts .inst > div {
   display: table-cell;
   vertical-align: top;

@@ -63,13 +63,14 @@ export const App = () => {
   const [onlyEscapingAllocs, setOnlyEscapingAllocs] = useState(false);
   const [analysisCfg, setAnalysisCfg] = useState<"ssa" | "deconstructed">("ssa");
   const [hoveredInst, setHoveredInst] = useState<GraphInst>();
+  const [selectedInst, setSelectedInst] = useState<GraphInst>();
 
   const editorRef = useRef<any>();
   const monacoRef = useRef<any>();
   const spanDecorationsRef = useRef<string[]>([]);
 
   const hoveredSpan = useMemo(() => {
-    const span = (hoveredInst as any)?.meta?.span;
+    const span = (selectedInst as any)?.meta?.span ?? (hoveredInst as any)?.meta?.span;
     if (
       span &&
       typeof span === "object" &&
@@ -189,6 +190,8 @@ export const App = () => {
           errors.push(String(compileResult.reason));
         }
 
+        setHoveredInst(undefined);
+        setSelectedInst(undefined);
         setError(errors.length > 0 ? errors.join("\n") : undefined);
         setStepIdx(0);
       } catch (err) {
@@ -200,6 +203,8 @@ export const App = () => {
         setDump(undefined);
         setCompileProgram(undefined);
         setCurFnId(undefined);
+        setHoveredInst(undefined);
+        setSelectedInst(undefined);
       }
     })();
 
@@ -251,6 +256,8 @@ export const App = () => {
   const fnCount = Math.max(dump?.functions.length ?? 0, compileProgram?.functions.length ?? 0);
   const fnIds = [undefined, ...Array.from({ length: fnCount }, (_, i) => i)];
 
+  const activeInst = selectedInst ?? hoveredInst;
+
   return (
     <div className="App">
       <main>
@@ -264,6 +271,8 @@ export const App = () => {
                   onClick={() => {
                     setCurFnId(fnId);
                     setStepIdx(0);
+                    setHoveredInst(undefined);
+                    setSelectedInst(undefined);
                   }}
                 >
                   {fnId == undefined ? "Top level" : `Fn${fnId}`}
@@ -276,7 +285,11 @@ export const App = () => {
                   type="radio"
                   name="view"
                   checked={view === "analysis"}
-                  onChange={() => setView("analysis")}
+                  onChange={() => {
+                    setView("analysis");
+                    setHoveredInst(undefined);
+                    setSelectedInst(undefined);
+                  }}
                 />
                 Analyzed CFG
               </label>
@@ -285,7 +298,11 @@ export const App = () => {
                   type="radio"
                   name="view"
                   checked={view === "steps"}
-                  onChange={() => setView("steps")}
+                  onChange={() => {
+                    setView("steps");
+                    setHoveredInst(undefined);
+                    setSelectedInst(undefined);
+                  }}
                 />
                 Optimizer steps
               </label>
@@ -294,14 +311,25 @@ export const App = () => {
                   type="radio"
                   name="view"
                   checked={view === "symbols"}
-                  onChange={() => setView("symbols")}
+                  onChange={() => {
+                    setView("symbols");
+                    setHoveredInst(undefined);
+                    setSelectedInst(undefined);
+                  }}
                 />
                 Symbols
               </label>
               {view === "analysis" && (
                 <label>
                   CFG:
-                  <select value={analysisCfg} onChange={(e) => setAnalysisCfg(e.target.value as any)}>
+                  <select
+                    value={analysisCfg}
+                    onChange={(e) => {
+                      setAnalysisCfg(e.target.value as any);
+                      setHoveredInst(undefined);
+                      setSelectedInst(undefined);
+                    }}
+                  >
                     <option value="ssa">ssa (analyzed)</option>
                     <option value="deconstructed">deconstructed</option>
                   </select>
@@ -374,6 +402,10 @@ export const App = () => {
               onlyUnknownEffects={onlyUnknownEffects}
               onlyEscapingAllocs={onlyEscapingAllocs}
               onHoverInst={setHoveredInst}
+              selectedInst={selectedInst}
+              onSelectInst={(inst) =>
+                setSelectedInst((cur) => (cur === inst ? undefined : inst))
+              }
             />
           )}
           {view === "steps" && currentDebugStep && (
@@ -384,6 +416,10 @@ export const App = () => {
               changed={showDiff ? diffs[safeStepIdx] : undefined}
               filter={filter}
               onHoverInst={setHoveredInst}
+              selectedInst={selectedInst}
+              onSelectInst={(inst) =>
+                setSelectedInst((cur) => (cur === inst ? undefined : inst))
+              }
             />
           )}
           {view === "symbols" && <SymbolsPanel symbols={compileProgram?.symbols} filter={filter} />}
@@ -397,7 +433,7 @@ export const App = () => {
               </p>
             )}
           </div>
-          <InstMetaPanel inst={hoveredInst} source={source} />
+          <InstMetaPanel inst={activeInst} source={source} />
           <div className="editor">
             <div className="controls">
               <label>
