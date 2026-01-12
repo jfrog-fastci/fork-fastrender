@@ -2,13 +2,12 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use fastrender::api::{
-  BrowserDocumentDom2, BrowserTab, BrowserTabHost, BrowserTabJsExecutor, RenderOptions,
+  BrowserDocumentDom2, BrowserTab, BrowserTabHost, BrowserTabJsExecutor, ModuleScriptExecutionStatus, RenderOptions,
 };
 use fastrender::dom2::{NodeId, NodeKind};
 use fastrender::error::Result;
 use fastrender::js::{
-  EventLoop, RunLimits, ScriptElementSpec, TaskSource, WindowRealm, WindowRealmConfig,
-  WindowRealmHost,
+  EventLoop, HtmlScriptId, RunLimits, ScriptElementSpec, TaskSource, WindowRealm, WindowRealmConfig, WindowRealmHost,
 };
 
 struct ExecutorWithWindow<E> {
@@ -104,13 +103,15 @@ impl BrowserTabJsExecutor for InterleavingExecutor {
 
   fn execute_module_script(
     &mut self,
+    _script_id: HtmlScriptId,
     script_text: &str,
     spec: &ScriptElementSpec,
     current_script: Option<NodeId>,
     document: &mut BrowserDocumentDom2,
     event_loop: &mut EventLoop<BrowserTabHost>,
-  ) -> Result<()> {
-    self.execute_classic_script(script_text, spec, current_script, document, event_loop)
+  ) -> Result<ModuleScriptExecutionStatus> {
+    self.execute_classic_script(script_text, spec, current_script, document, event_loop)?;
+    Ok(ModuleScriptExecutionStatus::Completed)
   }
 }
 

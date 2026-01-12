@@ -1,11 +1,12 @@
 use fastrender::api::VmJsBrowserTabExecutor;
 use fastrender::dom2::{Document, NodeId};
 use fastrender::js::{
-  Clock, EventLoop, JsExecutionOptions, RunLimits, RunUntilIdleOutcome, TaskSource, VirtualClock,
+  Clock, EventLoop, HtmlScriptId, JsExecutionOptions, RunLimits, RunUntilIdleOutcome, TaskSource, VirtualClock,
   WindowRealm, WindowRealmConfig, WindowRealmHost,
 };
 use fastrender::{
-  BrowserTab, BrowserTabHost, BrowserTabJsExecutor, DiagnosticsLevel, Error, RenderOptions, Result,
+  BrowserTab, BrowserTabHost, BrowserTabJsExecutor, DiagnosticsLevel, Error, ModuleScriptExecutionStatus,
+  RenderOptions, Result,
 };
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -61,15 +62,16 @@ impl<E: BrowserTabJsExecutor> BrowserTabJsExecutor for ExecutorWithWindow<E> {
 
   fn execute_module_script(
     &mut self,
+    script_id: HtmlScriptId,
     script_text: &str,
     spec: &fastrender::js::ScriptElementSpec,
     current_script: Option<NodeId>,
     document: &mut fastrender::BrowserDocumentDom2,
     event_loop: &mut EventLoop<BrowserTabHost>,
-  ) -> Result<()> {
+  ) -> Result<ModuleScriptExecutionStatus> {
     self
       .inner
-      .execute_module_script(script_text, spec, current_script, document, event_loop)
+      .execute_module_script(script_id, script_text, spec, current_script, document, event_loop)
   }
 
   fn execute_import_map_script(
@@ -162,13 +164,15 @@ impl BrowserTabJsExecutor for QueuedMutationExecutor {
 
   fn execute_module_script(
     &mut self,
+    _script_id: HtmlScriptId,
     script_text: &str,
     spec: &fastrender::js::ScriptElementSpec,
     current_script: Option<NodeId>,
     document: &mut fastrender::BrowserDocumentDom2,
     event_loop: &mut EventLoop<BrowserTabHost>,
-  ) -> Result<()> {
-    self.execute_classic_script(script_text, spec, current_script, document, event_loop)
+  ) -> Result<ModuleScriptExecutionStatus> {
+    self.execute_classic_script(script_text, spec, current_script, document, event_loop)?;
+    Ok(ModuleScriptExecutionStatus::Completed)
   }
 }
 
@@ -189,13 +193,15 @@ impl BrowserTabJsExecutor for NoopExecutor {
 
   fn execute_module_script(
     &mut self,
+    _script_id: HtmlScriptId,
     script_text: &str,
     spec: &fastrender::js::ScriptElementSpec,
     current_script: Option<NodeId>,
     document: &mut fastrender::BrowserDocumentDom2,
     event_loop: &mut EventLoop<BrowserTabHost>,
-  ) -> Result<()> {
-    self.execute_classic_script(script_text, spec, current_script, document, event_loop)
+  ) -> Result<ModuleScriptExecutionStatus> {
+    self.execute_classic_script(script_text, spec, current_script, document, event_loop)?;
+    Ok(ModuleScriptExecutionStatus::Completed)
   }
 }
 
@@ -226,13 +232,15 @@ fn browser_tab_script_src_uses_base_url_at_discovery() -> Result<()> {
 
     fn execute_module_script(
       &mut self,
+      _script_id: HtmlScriptId,
       script_text: &str,
       spec: &fastrender::js::ScriptElementSpec,
       current_script: Option<NodeId>,
       document: &mut fastrender::BrowserDocumentDom2,
       event_loop: &mut EventLoop<BrowserTabHost>,
-    ) -> Result<()> {
-      self.execute_classic_script(script_text, spec, current_script, document, event_loop)
+    ) -> Result<ModuleScriptExecutionStatus> {
+      self.execute_classic_script(script_text, spec, current_script, document, event_loop)?;
+      Ok(ModuleScriptExecutionStatus::Completed)
     }
   }
 
@@ -397,13 +405,15 @@ impl BrowserTabJsExecutor for ErrorThenMutationExecutor {
 
   fn execute_module_script(
     &mut self,
+    _script_id: HtmlScriptId,
     script_text: &str,
     spec: &fastrender::js::ScriptElementSpec,
     current_script: Option<NodeId>,
     document: &mut fastrender::BrowserDocumentDom2,
     event_loop: &mut EventLoop<BrowserTabHost>,
-  ) -> Result<()> {
-    self.execute_classic_script(script_text, spec, current_script, document, event_loop)
+  ) -> Result<ModuleScriptExecutionStatus> {
+    self.execute_classic_script(script_text, spec, current_script, document, event_loop)?;
+    Ok(ModuleScriptExecutionStatus::Completed)
   }
 }
 
@@ -511,13 +521,15 @@ impl BrowserTabJsExecutor for TimerMutationExecutor {
 
   fn execute_module_script(
     &mut self,
+    _script_id: HtmlScriptId,
     script_text: &str,
     spec: &fastrender::js::ScriptElementSpec,
     current_script: Option<NodeId>,
     document: &mut fastrender::BrowserDocumentDom2,
     event_loop: &mut EventLoop<BrowserTabHost>,
-  ) -> Result<()> {
-    self.execute_classic_script(script_text, spec, current_script, document, event_loop)
+  ) -> Result<ModuleScriptExecutionStatus> {
+    self.execute_classic_script(script_text, spec, current_script, document, event_loop)?;
+    Ok(ModuleScriptExecutionStatus::Completed)
   }
 }
 
@@ -625,13 +637,15 @@ impl BrowserTabJsExecutor for ParseTimeDomAssertionExecutor {
 
   fn execute_module_script(
     &mut self,
+    _script_id: HtmlScriptId,
     script_text: &str,
     spec: &fastrender::js::ScriptElementSpec,
     current_script: Option<NodeId>,
     document: &mut fastrender::BrowserDocumentDom2,
     event_loop: &mut EventLoop<BrowserTabHost>,
-  ) -> Result<()> {
-    self.execute_classic_script(script_text, spec, current_script, document, event_loop)
+  ) -> Result<ModuleScriptExecutionStatus> {
+    self.execute_classic_script(script_text, spec, current_script, document, event_loop)?;
+    Ok(ModuleScriptExecutionStatus::Completed)
   }
 }
 
@@ -893,13 +907,15 @@ impl BrowserTabJsExecutor for NavigateUrlParseTimeExecutor {
 
   fn execute_module_script(
     &mut self,
+    _script_id: HtmlScriptId,
     script_text: &str,
     spec: &fastrender::js::ScriptElementSpec,
     current_script: Option<NodeId>,
     document: &mut fastrender::BrowserDocumentDom2,
     event_loop: &mut EventLoop<BrowserTabHost>,
-  ) -> Result<()> {
-    self.execute_classic_script(script_text, spec, current_script, document, event_loop)
+  ) -> Result<ModuleScriptExecutionStatus> {
+    self.execute_classic_script(script_text, spec, current_script, document, event_loop)?;
+    Ok(ModuleScriptExecutionStatus::Completed)
   }
 }
 

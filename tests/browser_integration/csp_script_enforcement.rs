@@ -1,8 +1,9 @@
 use fastrender::{
-  BrowserDocumentDom2, BrowserTab, BrowserTabHost, BrowserTabJsExecutor, RenderOptions, Result,
+  BrowserDocumentDom2, BrowserTab, BrowserTabHost, BrowserTabJsExecutor, ModuleScriptExecutionStatus, RenderOptions,
+  Result,
 };
 use fastrender::dom2::NodeId;
-use fastrender::js::{EventLoop, RunLimits, ScriptElementSpec};
+use fastrender::js::{EventLoop, HtmlScriptId, RunLimits, ScriptElementSpec};
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -27,14 +28,15 @@ impl BrowserTabJsExecutor for LogExecutor {
 
   fn execute_module_script(
     &mut self,
+    _script_id: HtmlScriptId,
     script_text: &str,
     _spec: &ScriptElementSpec,
     _current_script: Option<NodeId>,
     _document: &mut BrowserDocumentDom2,
     _event_loop: &mut EventLoop<BrowserTabHost>,
-  ) -> Result<()> {
+  ) -> Result<ModuleScriptExecutionStatus> {
     self.log.borrow_mut().push(script_text.to_string());
-    Ok(())
+    Ok(ModuleScriptExecutionStatus::Completed)
   }
 }
 

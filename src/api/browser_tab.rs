@@ -33,7 +33,7 @@ use crate::web::events::{Event, EventInit, EventTargetId};
 use encoding_rs::{Encoding, UTF_8};
 
 use std::cell::Cell;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
@@ -47,6 +47,21 @@ use super::{
 
 const MODULE_GRAPH_FETCH_UNSUPPORTED_MESSAGE: &str =
   "module graph fetching is not supported by this BrowserTabJsExecutor";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModuleScriptExecutionStatus {
+  /// The module completed evaluation within the current call.
+  ///
+  /// This includes both:
+  /// - modules without top-level await, and
+  /// - top-level await that resolves synchronously via microtasks before returning control.
+  Completed,
+  /// The module has started evaluation but has not completed yet (e.g. top-level await).
+  ///
+  /// The executor must later notify the host (via the event loop) when the evaluation promise
+  /// settles so the host can finalize script execution and unblock ordered module queues.
+  Pending,
+}
 
 pub trait BrowserTabJsExecutor {
   /// Notify the executor that the document referrer policy has been set/updated for the current
@@ -68,12 +83,13 @@ pub trait BrowserTabJsExecutor {
 
   fn execute_module_script(
     &mut self,
+    _script_id: HtmlScriptId,
     _script_text: &str,
     _spec: &ScriptElementSpec,
     _current_script: Option<NodeId>,
     _document: &mut BrowserDocumentDom2,
     _event_loop: &mut EventLoop<BrowserTabHost>,
-  ) -> Result<()> {
+  ) -> Result<ModuleScriptExecutionStatus> {
     Err(Error::Other(
       "module script execution is not supported by this BrowserTabJsExecutor".to_string(),
     ))
@@ -402,6 +418,18 @@ impl ParseUntilBlockedResult {
   }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ScriptExecutionCompletion {
+  Completed,
+  PendingModuleEvaluation,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OrderedModuleQueueKind {
+  OrderedAsap,
+  PostParse,
+}
+
 pub struct BrowserTabHost {
   trace: TraceHandle,
   document: Box<BrowserDocumentDom2>,
@@ -422,11 +450,24 @@ pub struct BrowserTabHost {
   scheduled_script_nodes: HashSet<NodeId>,
   deferred_scripts: HashSet<HtmlScriptId>,
   executed: HashSet<HtmlScriptId>,
+  /// Module scripts whose evaluation has started but not yet completed (e.g. due to top-level
+  /// await).
+  pending_module_executions: HashSet<HtmlScriptId>,
   pending_script_load_blockers: HashSet<HtmlScriptId>,
   pending_asap_script_executions: HashSet<HtmlScriptId>,
   pending_image_load_blockers: HashSet<(NodeId, u64)>,
   image_load_state: HashMap<NodeId, ImageLoadState>,
   next_image_load_request_id: u64,
+  /// The currently in-flight ordered-asap module script (dynamic `type=module` with
+  /// `async=false`/`force_async=false`).
+  ///
+  /// Ordered module scripts must not start until the prior one finishes evaluation (including
+  /// top-level await).
+  in_flight_ordered_asap_module: Option<HtmlScriptId>,
+  queued_ordered_asap_modules: VecDeque<HtmlScriptSchedulerAction<NodeId>>,
+  /// The currently in-flight post-parse module script (parser-inserted, non-async `type=module`).
+  in_flight_post_parse_module: Option<HtmlScriptId>,
+  queued_post_parse_modules: VecDeque<HtmlScriptSchedulerAction<NodeId>>,
   parser_blocked_on: Option<HtmlScriptId>,
   document_url: Option<String>,
   /// Current document base URL used for resolving *JS-visible* relative URLs.
@@ -511,11 +552,16 @@ impl BrowserTabHost {
       scheduled_script_nodes: HashSet::new(),
       deferred_scripts: HashSet::new(),
       executed: HashSet::new(),
+      pending_module_executions: HashSet::new(),
       pending_script_load_blockers: HashSet::new(),
       pending_asap_script_executions: HashSet::new(),
       pending_image_load_blockers: HashSet::new(),
       image_load_state: HashMap::new(),
       next_image_load_request_id: 1,
+      in_flight_ordered_asap_module: None,
+      queued_ordered_asap_modules: VecDeque::new(),
+      in_flight_post_parse_module: None,
+      queued_post_parse_modules: VecDeque::new(),
       parser_blocked_on: None,
       document_url: None,
       base_url: None,
@@ -753,11 +799,16 @@ impl BrowserTabHost {
     self.scheduled_script_nodes.clear();
     self.deferred_scripts.clear();
     self.executed.clear();
+    self.pending_module_executions.clear();
     self.pending_script_load_blockers.clear();
     self.pending_asap_script_executions.clear();
     self.pending_image_load_blockers.clear();
     self.image_load_state.clear();
     self.next_image_load_request_id = 1;
+    self.in_flight_ordered_asap_module = None;
+    self.queued_ordered_asap_modules.clear();
+    self.in_flight_post_parse_module = None;
+    self.queued_post_parse_modules.clear();
     self.parser_blocked_on = None;
     self.document_url = document_url.clone();
     self.base_url = document_url;
@@ -1323,7 +1374,9 @@ impl BrowserTabHost {
 
             let exec_result = {
               let _guard = JsExecutionGuard::enter(&self.js_execution_depth);
-              self.execute_script(script_id, &source_text, event_loop)
+              self
+                .execute_script(script_id, &source_text, event_loop)
+                .map(|_| ())
             };
             // Ensure parser blocking is cleared even if script execution fails.
             self.finish_script_execution(script_id, event_loop)?;
@@ -2600,7 +2653,18 @@ impl BrowserTabHost {
             self.execute_script(script_id, &source_text, event_loop)
           };
           // Ensure a script failure doesn't leave parsing blocked forever.
-          self.finish_script_execution(script_id, event_loop)?;
+          //
+          // For module scripts with top-level await, execution may still be pending after the call
+          // returns. In that case we defer `finish_script_execution` until the executor notifies us
+          // that evaluation has settled.
+          if matches!(
+            exec_result,
+            Ok(ScriptExecutionCompletion::PendingModuleEvaluation)
+          ) {
+            self.pending_module_executions.insert(script_id);
+          } else {
+            self.finish_script_execution(script_id, event_loop)?;
+          }
 
           // HTML: "clean up after running script" performs a microtask checkpoint only when the JS
           // execution context stack is empty. Nested (re-entrant) script execution must not drain
@@ -2614,7 +2678,7 @@ impl BrowserTabHost {
             if let Some(entry) = entry {
               self.dispatch_script_event_in_event_loop(entry.node_id, "error", event_loop)?;
             }
-            return exec_result;
+            return exec_result.map(|_| ());
           }
 
           let microtask_err = if should_checkpoint && self.js_execution_depth.get() == 0 {
@@ -2626,7 +2690,7 @@ impl BrowserTabHost {
           };
 
           match exec_result {
-            Ok(()) => {
+            Ok(ScriptExecutionCompletion::Completed) => {
               if let Some(entry) = entry {
                 if entry.spec.src_attr_present
                   && entry.spec.src.as_deref().is_some_and(|s| !s.is_empty())
@@ -2634,6 +2698,10 @@ impl BrowserTabHost {
                   self.dispatch_script_event_in_event_loop(entry.node_id, "load", event_loop)?;
                 }
               }
+            }
+            Ok(ScriptExecutionCompletion::PendingModuleEvaluation) => {
+              // Module script evaluation is still pending (top-level await). Dispatch `load` once it
+              // completes.
             }
             Err(err) => {
               let Some(entry) = entry else {
@@ -2736,13 +2804,41 @@ impl BrowserTabHost {
             })
             .unwrap_or(TaskSource::Script);
 
+          // Ordered module scripts must not start until the prior ordered module has fully completed
+          // evaluation (including top-level await). When the scheduler queues multiple module
+          // scripts at once, delay queuing subsequent ones until the in-flight module completes.
+          if let Some(kind) = self.ordered_module_queue_kind(script_id) {
+            if self.ordered_module_queue_is_blocked(kind) {
+              self.enqueue_ordered_module_action(
+                kind,
+                HtmlScriptSchedulerAction::QueueTask {
+                  script_id,
+                  node_id,
+                  work: HtmlScriptWork::Module {
+                    source_text: Some(source_text),
+                  },
+                },
+              );
+              continue;
+            }
+            self.mark_ordered_module_in_flight(kind, script_id);
+          }
+
           event_loop.queue_task(task_source, move |host, event_loop| {
             let entry = host.scripts.get(&script_id).cloned();
             let result = {
               let _guard = JsExecutionGuard::enter(&host.js_execution_depth);
               host.execute_script(script_id, &source_text, event_loop)
             };
-            host.finish_script_execution(script_id, event_loop)?;
+            let is_pending_module_eval = matches!(
+              result,
+              Ok(ScriptExecutionCompletion::PendingModuleEvaluation)
+            );
+            if is_pending_module_eval {
+              host.pending_module_executions.insert(script_id);
+            } else {
+              host.finish_script_execution(script_id, event_loop)?;
+            }
 
             if matches!(&result, Err(Error::Render(_))) {
               // Preserve existing behavior: dispatch the script element error event, then abort
@@ -2750,7 +2846,7 @@ impl BrowserTabHost {
               if let Some(entry) = entry {
                 host.dispatch_script_event_in_event_loop(entry.node_id, "error", event_loop)?;
               }
-              return result;
+              return result.map(|_| ());
             }
 
             let microtask_err = if host.js_execution_depth.get() == 0 {
@@ -2762,7 +2858,7 @@ impl BrowserTabHost {
             };
 
             match result {
-              Ok(()) => {
+              Ok(ScriptExecutionCompletion::Completed) => {
                 if let Some(entry) = entry {
                   if entry.spec.src_attr_present
                     && entry.spec.src.as_deref().is_some_and(|s| !s.is_empty())
@@ -2770,6 +2866,10 @@ impl BrowserTabHost {
                     host.dispatch_script_event_in_event_loop(entry.node_id, "load", event_loop)?;
                   }
                 }
+              }
+              Ok(ScriptExecutionCompletion::PendingModuleEvaluation) => {
+                // Module script evaluation is still pending (top-level await). Dispatch `load` once
+                // the evaluation promise settles.
               }
               Err(err) => {
                 let Some(entry) = entry else {
@@ -2784,6 +2884,10 @@ impl BrowserTabHost {
 
             if let Some(err) = microtask_err {
               return Err(err);
+            }
+
+            if !is_pending_module_eval {
+              host.finish_ordered_module_and_maybe_start_next(script_id, event_loop)?;
             }
 
             Ok(())
@@ -2807,6 +2911,108 @@ impl BrowserTabHost {
         }
       }
     }
+    Ok(())
+  }
+
+  fn ordered_module_queue_kind(&self, script_id: HtmlScriptId) -> Option<OrderedModuleQueueKind> {
+    let entry = self.scripts.get(&script_id)?;
+    if entry.spec.script_type != ScriptType::Module {
+      return None;
+    }
+    if entry.spec.async_attr || entry.spec.force_async {
+      // Async module scripts execute as soon as possible once ready; they are not part of the
+      // ordered module queues.
+      return None;
+    }
+    if entry.spec.parser_inserted {
+      Some(OrderedModuleQueueKind::PostParse)
+    } else {
+      Some(OrderedModuleQueueKind::OrderedAsap)
+    }
+  }
+
+  fn ordered_module_queue_is_blocked(&self, kind: OrderedModuleQueueKind) -> bool {
+    match kind {
+      OrderedModuleQueueKind::OrderedAsap => self.in_flight_ordered_asap_module.is_some(),
+      OrderedModuleQueueKind::PostParse => self.in_flight_post_parse_module.is_some(),
+    }
+  }
+
+  fn enqueue_ordered_module_action(
+    &mut self,
+    kind: OrderedModuleQueueKind,
+    action: HtmlScriptSchedulerAction<NodeId>,
+  ) {
+    match kind {
+      OrderedModuleQueueKind::OrderedAsap => self.queued_ordered_asap_modules.push_back(action),
+      OrderedModuleQueueKind::PostParse => self.queued_post_parse_modules.push_back(action),
+    }
+  }
+
+  fn mark_ordered_module_in_flight(&mut self, kind: OrderedModuleQueueKind, script_id: HtmlScriptId) {
+    match kind {
+      OrderedModuleQueueKind::OrderedAsap => self.in_flight_ordered_asap_module = Some(script_id),
+      OrderedModuleQueueKind::PostParse => self.in_flight_post_parse_module = Some(script_id),
+    }
+  }
+
+  fn finish_ordered_module_and_maybe_start_next(
+    &mut self,
+    script_id: HtmlScriptId,
+    event_loop: &mut EventLoop<Self>,
+  ) -> Result<()> {
+    let Some(kind) = self.ordered_module_queue_kind(script_id) else {
+      return Ok(());
+    };
+
+    let in_flight_matches = match kind {
+      OrderedModuleQueueKind::OrderedAsap => self.in_flight_ordered_asap_module == Some(script_id),
+      OrderedModuleQueueKind::PostParse => self.in_flight_post_parse_module == Some(script_id),
+    };
+    if !in_flight_matches {
+      return Ok(());
+    }
+
+    match kind {
+      OrderedModuleQueueKind::OrderedAsap => self.in_flight_ordered_asap_module = None,
+      OrderedModuleQueueKind::PostParse => self.in_flight_post_parse_module = None,
+    }
+
+    let next = match kind {
+      OrderedModuleQueueKind::OrderedAsap => self.queued_ordered_asap_modules.pop_front(),
+      OrderedModuleQueueKind::PostParse => self.queued_post_parse_modules.pop_front(),
+    };
+    if let Some(action) = next {
+      self.apply_scheduler_actions(vec![action], event_loop)?;
+    }
+    Ok(())
+  }
+
+  pub(crate) fn on_module_script_evaluation_complete(
+    &mut self,
+    script_id: HtmlScriptId,
+    event_loop: &mut EventLoop<Self>,
+  ) -> Result<()> {
+    if !self.pending_module_executions.remove(&script_id) {
+      // Either:
+      // - the script was already finalized, or
+      // - it was never marked pending (e.g. completed synchronously).
+      //
+      // In either case, be idempotent.
+    }
+    if self.executed.contains(&script_id) {
+      return Ok(());
+    }
+
+    self.finish_script_execution(script_id, event_loop)?;
+
+    if let Some(entry) = self.scripts.get(&script_id) {
+      if entry.spec.src_attr_present && entry.spec.src.as_deref().is_some_and(|s| !s.is_empty()) {
+        self.dispatch_script_event_in_event_loop(entry.node_id, "load", event_loop)?;
+      }
+    }
+
+    self.finish_ordered_module_and_maybe_start_next(script_id, event_loop)?;
     Ok(())
   }
 
@@ -2836,9 +3042,9 @@ impl BrowserTabHost {
     script_id: HtmlScriptId,
     source_text: &str,
     event_loop: &mut EventLoop<Self>,
-  ) -> Result<()> {
+  ) -> Result<ScriptExecutionCompletion> {
     if self.executed.contains(&script_id) {
-      return Ok(());
+      return Ok(ScriptExecutionCompletion::Completed);
     }
 
     let Some(entry) = self.scripts.get(&script_id).cloned() else {
@@ -2856,6 +3062,7 @@ impl BrowserTabHost {
       source_text: &'a str,
       spec: &'a ScriptElementSpec,
       event_loop: &'a mut EventLoop<BrowserTabHost>,
+      completion: ScriptExecutionCompletion,
     }
 
     impl ScriptBlockExecutor<BrowserTabHost> for Adapter<'_> {
@@ -2895,31 +3102,40 @@ impl BrowserTabHost {
           document_write_state,
           ..
         } = host;
-        let result =
-          crate::js::with_document_write_state(document_write_state, || match script_type {
-            ScriptType::Classic => executor.execute_classic_script(
+        let result = crate::js::with_document_write_state(document_write_state, || match script_type {
+          ScriptType::Classic => executor.execute_classic_script(
+            self.source_text,
+            self.spec,
+            current_script,
+            document.as_mut(),
+            self.event_loop,
+          ),
+          ScriptType::Module => {
+            let status = executor.execute_module_script(
+              self.script_id,
               self.source_text,
               self.spec,
               current_script,
               document.as_mut(),
               self.event_loop,
-            ),
-            ScriptType::Module => executor.execute_module_script(
-              self.source_text,
-              self.spec,
-              current_script,
-              document.as_mut(),
-              self.event_loop,
-            ),
-            ScriptType::ImportMap => executor.execute_import_map_script(
-              self.source_text,
-              self.spec,
-              current_script,
-              document.as_mut(),
-              self.event_loop,
-            ),
-            ScriptType::Unknown => Ok(()),
-          });
+            )?;
+            self.completion = match status {
+              ModuleScriptExecutionStatus::Completed => ScriptExecutionCompletion::Completed,
+              ModuleScriptExecutionStatus::Pending => {
+                ScriptExecutionCompletion::PendingModuleEvaluation
+              }
+            };
+            Ok(())
+          }
+          ScriptType::ImportMap => executor.execute_import_map_script(
+            self.source_text,
+            self.spec,
+            current_script,
+            document.as_mut(),
+            self.event_loop,
+          ),
+          ScriptType::Unknown => Ok(()),
+        });
         if let Some(req) = executor.take_navigation_request() {
           let should_navigate = executor.dispatch_beforeunload_event(document.as_mut(), self.event_loop)?;
           if should_navigate {
@@ -2937,6 +3153,7 @@ impl BrowserTabHost {
       source_text,
       spec: &entry.spec,
       event_loop,
+      completion: ScriptExecutionCompletion::Completed,
     };
 
     // Avoid double-borrowing `self` by temporarily moving the orchestrator out.
@@ -2947,7 +3164,7 @@ impl BrowserTabHost {
     let result =
       orchestrator.execute_prepared_script_element(self, node_id, script_type, &mut adapter);
     self.orchestrator = orchestrator;
-    result
+    result.map(|_| adapter.completion)
   }
 
   fn start_module_graph_fetch(
@@ -3520,6 +3737,14 @@ fn reset_event_loop_for_navigation(
   event_loop.reset_for_navigation(trace, queue_limits);
 }
 
+fn browser_tab_microtask_checkpoint_hook(
+  host: &mut BrowserTabHost,
+  event_loop: &mut EventLoop<BrowserTabHost>,
+) -> Result<()> {
+  let (executor, document) = (&mut host.executor, &mut host.document);
+  executor.after_microtask_checkpoint(document.as_mut(), event_loop)
+}
+
 impl CurrentScriptHost for BrowserTabHost {
   fn current_script_state(&self) -> &CurrentScriptStateHandle {
     &self.current_script
@@ -3812,6 +4037,7 @@ impl BrowserTab {
     let mut event_loop = EventLoop::new();
     event_loop.set_trace_handle(trace_handle.clone());
     event_loop.set_queue_limits(js_execution_options.event_loop_queue_limits);
+    event_loop.set_microtask_checkpoint_hook(Some(browser_tab_microtask_checkpoint_hook));
 
     let mut tab = Self {
       trace: trace_handle,
@@ -4042,6 +4268,7 @@ impl BrowserTab {
     let mut event_loop = EventLoop::new();
     event_loop.set_trace_handle(trace_handle.clone());
     event_loop.set_queue_limits(js_execution_options.event_loop_queue_limits);
+    event_loop.set_microtask_checkpoint_hook(Some(browser_tab_microtask_checkpoint_hook));
 
     let mut tab = Self {
       trace: trace_handle,
@@ -4162,6 +4389,7 @@ impl BrowserTab {
     let mut event_loop = EventLoop::new();
     event_loop.set_trace_handle(trace_handle.clone());
     event_loop.set_queue_limits(js_execution_options.event_loop_queue_limits);
+    event_loop.set_microtask_checkpoint_hook(Some(browser_tab_microtask_checkpoint_hook));
 
     let mut tab = Self {
       trace: trace_handle,
@@ -4243,6 +4471,7 @@ impl BrowserTab {
     let mut event_loop = EventLoop::new();
     event_loop.set_trace_handle(trace_handle.clone());
     event_loop.set_queue_limits(js_execution_options.event_loop_queue_limits);
+    event_loop.set_microtask_checkpoint_hook(Some(browser_tab_microtask_checkpoint_hook));
 
     let mut tab = Self {
       trace: trace_handle,
@@ -4354,6 +4583,7 @@ impl BrowserTab {
     host.external_script_sources = Arc::clone(&external_script_sources);
     event_loop.set_trace_handle(trace_handle.clone());
     event_loop.set_queue_limits(js_execution_options.event_loop_queue_limits);
+    event_loop.set_microtask_checkpoint_hook(Some(browser_tab_microtask_checkpoint_hook));
 
     let mut tab = Self {
       trace: trace_handle,
@@ -5547,20 +5777,24 @@ mod tests {
 
     fn execute_module_script(
       &mut self,
+      _script_id: HtmlScriptId,
       script_text: &str,
       _spec: &ScriptElementSpec,
       _current_script: Option<NodeId>,
       _document: &mut BrowserDocumentDom2,
       event_loop: &mut EventLoop<BrowserTabHost>,
-    ) -> Result<()> {
-      self.log.borrow_mut().push(format!("module:{script_text}"));
+    ) -> Result<ModuleScriptExecutionStatus> {
+      self
+        .log
+        .borrow_mut()
+        .push(format!("module:{script_text}"));
       let log = Rc::clone(&self.log);
       let name = script_text.to_string();
       event_loop.queue_microtask(move |_host, _event_loop| {
         log.borrow_mut().push(format!("microtask:{name}"));
         Ok(())
       })?;
-      Ok(())
+      Ok(ModuleScriptExecutionStatus::Completed)
     }
   }
 
@@ -5577,7 +5811,9 @@ mod tests {
       js_execution_options,
     )?;
     host.reset_scripting_state(None, ReferrerPolicy::default())?;
-    Ok((host, EventLoop::new()))
+    let mut event_loop = EventLoop::new();
+    event_loop.set_microtask_checkpoint_hook(Some(browser_tab_microtask_checkpoint_hook));
+    Ok((host, event_loop))
   }
 
   fn sri_sha256_token(bytes: &[u8]) -> String {
@@ -5900,6 +6136,97 @@ mod tests {
   }
 
   #[test]
+  fn deferred_module_scripts_with_top_level_await_execute_in_order_and_block_lifecycle_events(
+  ) -> Result<()> {
+    use crate::js::clock::VirtualClock;
+    use std::time::Duration;
+
+    let html = r#"<!doctype html>
+      <div id="marker"></div>
+      <script>
+        const marker = document.getElementById('marker');
+        marker.setAttribute('data-log', '');
+        document.addEventListener('DOMContentLoaded', () => {
+          marker.setAttribute('data-log', marker.getAttribute('data-log') + 'dcl,');
+        });
+        window.addEventListener('load', () => {
+          marker.setAttribute('data-log', marker.getAttribute('data-log') + 'load,');
+        });
+      </script>
+      <script type="module">
+        const marker = document.getElementById('marker');
+        marker.setAttribute('data-log', marker.getAttribute('data-log') + 'm1-start,');
+        await new Promise(r => setTimeout(r, 10));
+        marker.setAttribute('data-log', marker.getAttribute('data-log') + 'm1-end,');
+      </script>
+      <script type="module">
+        const marker = document.getElementById('marker');
+        marker.setAttribute('data-log', marker.getAttribute('data-log') + 'm2,');
+      </script>"#;
+
+    let mut js_options = JsExecutionOptions::default();
+    js_options.supports_module_scripts = true;
+
+    let clock = Arc::new(VirtualClock::new());
+    let event_loop = EventLoop::with_clock(clock.clone());
+
+    let mut tab = BrowserTab::from_html_with_event_loop_and_js_execution_options(
+      html,
+      RenderOptions::default(),
+      crate::api::VmJsBrowserTabExecutor::default(),
+      event_loop,
+      js_options,
+    )?;
+
+    tab.run_event_loop_until_idle(RunLimits::unbounded())?;
+
+    let marker = tab
+      .host
+      .dom()
+      .get_element_by_id("marker")
+      .expect("expected #marker element to exist");
+    let log = tab
+      .host
+      .dom()
+      .get_attribute(marker, "data-log")
+      .expect("get data-log")
+      .unwrap_or("")
+      .to_string();
+
+    assert_eq!(
+      log,
+      "m1-start,",
+      "expected module 1 to start and then block on top-level await"
+    );
+    assert!(
+      !log.contains("m2,"),
+      "expected module 2 to remain blocked on module 1 evaluation"
+    );
+    assert!(
+      !log.contains("dcl,"),
+      "expected DOMContentLoaded to wait for deferred module scripts"
+    );
+    assert!(
+      !log.contains("load,"),
+      "expected load to wait for module evaluation to complete"
+    );
+
+    clock.advance(Duration::from_millis(20));
+    tab.run_event_loop_until_idle(RunLimits::unbounded())?;
+
+    let log = tab
+      .host
+      .dom()
+      .get_attribute(marker, "data-log")
+      .expect("get data-log")
+      .unwrap_or("")
+      .to_string();
+
+    assert_eq!(log, "m1-start,m1-end,m2,dcl,load,");
+    Ok(())
+  }
+
+  #[test]
   fn dynamic_script_discovery_respects_force_async_internal_slot() -> Result<()> {
     struct LoggingExecutor {
       log: Rc<RefCell<Vec<String>>>,
@@ -5920,13 +6247,15 @@ mod tests {
 
       fn execute_module_script(
         &mut self,
+        _script_id: HtmlScriptId,
         script_text: &str,
         spec: &ScriptElementSpec,
         current_script: Option<NodeId>,
         document: &mut BrowserDocumentDom2,
         event_loop: &mut EventLoop<BrowserTabHost>,
-      ) -> Result<()> {
-        self.execute_classic_script(script_text, spec, current_script, document, event_loop)
+      ) -> Result<ModuleScriptExecutionStatus> {
+        self.execute_classic_script(script_text, spec, current_script, document, event_loop)?;
+        Ok(ModuleScriptExecutionStatus::Completed)
       }
     }
 
@@ -6080,7 +6409,9 @@ mod tests {
       JsExecutionOptions::default(),
     )?;
     host.reset_scripting_state(None, ReferrerPolicy::default())?;
-    Ok((host, EventLoop::new()))
+    let mut event_loop = EventLoop::new();
+    event_loop.set_microtask_checkpoint_hook(Some(browser_tab_microtask_checkpoint_hook));
+    Ok((host, event_loop))
   }
 
   fn build_host(
@@ -6107,13 +6438,14 @@ mod tests {
 
     fn execute_module_script(
       &mut self,
+      _script_id: HtmlScriptId,
       _script_text: &str,
       _spec: &ScriptElementSpec,
       _current_script: Option<NodeId>,
       _document: &mut BrowserDocumentDom2,
       _event_loop: &mut EventLoop<BrowserTabHost>,
-    ) -> Result<()> {
-      Ok(())
+    ) -> Result<ModuleScriptExecutionStatus> {
+      Ok(ModuleScriptExecutionStatus::Completed)
     }
 
     fn fetch_module_graph(
@@ -6183,13 +6515,15 @@ mod tests {
 
     fn execute_module_script(
       &mut self,
+      _script_id: HtmlScriptId,
       script_text: &str,
       spec: &ScriptElementSpec,
       current_script: Option<NodeId>,
       document: &mut BrowserDocumentDom2,
       event_loop: &mut EventLoop<BrowserTabHost>,
-    ) -> Result<()> {
-      self.execute_classic_script(script_text, spec, current_script, document, event_loop)
+    ) -> Result<ModuleScriptExecutionStatus> {
+      self.execute_classic_script(script_text, spec, current_script, document, event_loop)?;
+      Ok(ModuleScriptExecutionStatus::Completed)
     }
 
     fn window_realm_mut(&mut self) -> Option<&mut crate::js::WindowRealm> {
@@ -6358,16 +6692,17 @@ mod tests {
 
       fn execute_module_script(
         &mut self,
+        _script_id: HtmlScriptId,
         script_text: &str,
         _spec: &ScriptElementSpec,
         _current_script: Option<NodeId>,
         _document: &mut BrowserDocumentDom2,
         _event_loop: &mut EventLoop<BrowserTabHost>,
-      ) -> Result<()> {
+      ) -> Result<ModuleScriptExecutionStatus> {
         // Tests in this module primarily cover classic script execution; implement module execution
         // by reusing the same "log the script text" behavior.
         self.log.borrow_mut().push(script_text.to_string());
-        Ok(())
+        Ok(ModuleScriptExecutionStatus::Completed)
       }
     }
 
@@ -6806,17 +7141,18 @@ mod tests {
 
       fn execute_module_script(
         &mut self,
+        _script_id: HtmlScriptId,
         script_text: &str,
         _spec: &ScriptElementSpec,
         _current_script: Option<NodeId>,
         _document: &mut BrowserDocumentDom2,
         _event_loop: &mut EventLoop<BrowserTabHost>,
-      ) -> Result<()> {
+      ) -> Result<ModuleScriptExecutionStatus> {
         self.log.borrow_mut().push(script_text.to_string());
         if script_text == "bad" {
           return Err(Error::Other("boom".to_string()));
         }
-        Ok(())
+        Ok(ModuleScriptExecutionStatus::Completed)
       }
     }
 
@@ -7529,13 +7865,15 @@ mod tests {
 
       fn execute_module_script(
         &mut self,
+        _script_id: HtmlScriptId,
         script_text: &str,
         spec: &ScriptElementSpec,
         current_script: Option<NodeId>,
         document: &mut BrowserDocumentDom2,
         event_loop: &mut EventLoop<BrowserTabHost>,
-      ) -> Result<()> {
-        self.execute_classic_script(script_text, spec, current_script, document, event_loop)
+      ) -> Result<ModuleScriptExecutionStatus> {
+        self.execute_classic_script(script_text, spec, current_script, document, event_loop)?;
+        Ok(ModuleScriptExecutionStatus::Completed)
       }
     }
 
@@ -7653,13 +7991,15 @@ mod tests {
 
       fn execute_module_script(
         &mut self,
+        _script_id: HtmlScriptId,
         script_text: &str,
         spec: &ScriptElementSpec,
         current_script: Option<NodeId>,
         document: &mut BrowserDocumentDom2,
         event_loop: &mut EventLoop<BrowserTabHost>,
-      ) -> Result<()> {
-        self.execute_classic_script(script_text, spec, current_script, document, event_loop)
+      ) -> Result<ModuleScriptExecutionStatus> {
+        self.execute_classic_script(script_text, spec, current_script, document, event_loop)?;
+        Ok(ModuleScriptExecutionStatus::Completed)
       }
     }
 
@@ -7935,13 +8275,15 @@ mod tests {
 
       fn execute_module_script(
         &mut self,
+        _script_id: HtmlScriptId,
         script_text: &str,
         spec: &ScriptElementSpec,
         current_script: Option<NodeId>,
         document: &mut BrowserDocumentDom2,
         event_loop: &mut EventLoop<BrowserTabHost>,
-      ) -> Result<()> {
-        self.execute_classic_script(script_text, spec, current_script, document, event_loop)
+      ) -> Result<ModuleScriptExecutionStatus> {
+        self.execute_classic_script(script_text, spec, current_script, document, event_loop)?;
+        Ok(ModuleScriptExecutionStatus::Completed)
       }
     }
 
@@ -8242,15 +8584,17 @@ mod tests {
   }
 
   fn microtask_checkpoint_counting_hook(
-    _host: &mut BrowserTabHost,
-    _event_loop: &mut EventLoop<BrowserTabHost>,
+    host: &mut BrowserTabHost,
+    event_loop: &mut EventLoop<BrowserTabHost>,
   ) -> Result<()> {
     MICROTASK_CHECKPOINT_TEST_COUNTER.with(|slot| {
       if let Some(counter) = slot.borrow().as_ref() {
         counter.fetch_add(1, Ordering::SeqCst);
       }
     });
-    Ok(())
+    // Preserve the BrowserTab default hook behavior so JS executors are still notified after each
+    // checkpoint while tests collect metrics.
+    browser_tab_microtask_checkpoint_hook(host, event_loop)
   }
 
   struct MicrotaskCheckpointTestCounterGuard {
@@ -8960,16 +9304,18 @@ mod tests {
 
     fn execute_module_script(
       &mut self,
+      _script_id: HtmlScriptId,
       script_text: &str,
       spec: &ScriptElementSpec,
       current_script: Option<NodeId>,
       document: &mut BrowserDocumentDom2,
       event_loop: &mut EventLoop<BrowserTabHost>,
-    ) -> Result<()> {
+    ) -> Result<ModuleScriptExecutionStatus> {
       // These lifecycle tests exercise event dispatch and microtask checkpoints; module-specific
       // semantics are validated by dedicated tests elsewhere. Treat module scripts like classic
       // scripts here so the executor satisfies the `BrowserTabJsExecutor` contract.
-      self.execute_classic_script(script_text, spec, current_script, document, event_loop)
+      self.execute_classic_script(script_text, spec, current_script, document, event_loop)?;
+      Ok(ModuleScriptExecutionStatus::Completed)
     }
 
     fn dispatch_lifecycle_event(
@@ -9692,13 +10038,15 @@ html, body { margin: 0; padding: 0; }
 
     fn execute_module_script(
       &mut self,
+      _script_id: HtmlScriptId,
       script_text: &str,
       spec: &ScriptElementSpec,
       current_script: Option<NodeId>,
       document: &mut BrowserDocumentDom2,
       event_loop: &mut EventLoop<BrowserTabHost>,
-    ) -> Result<()> {
-      self.execute_classic_script(script_text, spec, current_script, document, event_loop)
+    ) -> Result<ModuleScriptExecutionStatus> {
+      self.execute_classic_script(script_text, spec, current_script, document, event_loop)?;
+      Ok(ModuleScriptExecutionStatus::Completed)
     }
   }
 
@@ -9995,13 +10343,15 @@ html, body { margin: 0; padding: 0; }
 
       fn execute_module_script(
         &mut self,
+        _script_id: HtmlScriptId,
         script_text: &str,
         spec: &ScriptElementSpec,
         current_script: Option<NodeId>,
         document: &mut BrowserDocumentDom2,
         event_loop: &mut EventLoop<BrowserTabHost>,
-      ) -> Result<()> {
-        self.execute_classic_script(script_text, spec, current_script, document, event_loop)
+      ) -> Result<ModuleScriptExecutionStatus> {
+        self.execute_classic_script(script_text, spec, current_script, document, event_loop)?;
+        Ok(ModuleScriptExecutionStatus::Completed)
       }
     }
 
@@ -10067,13 +10417,15 @@ html, body { margin: 0; padding: 0; }
 
       fn execute_module_script(
         &mut self,
+        _script_id: HtmlScriptId,
         script_text: &str,
         spec: &ScriptElementSpec,
         current_script: Option<NodeId>,
         document: &mut BrowserDocumentDom2,
         event_loop: &mut EventLoop<BrowserTabHost>,
-      ) -> Result<()> {
-        self.execute_classic_script(script_text, spec, current_script, document, event_loop)
+      ) -> Result<ModuleScriptExecutionStatus> {
+        self.execute_classic_script(script_text, spec, current_script, document, event_loop)?;
+        Ok(ModuleScriptExecutionStatus::Completed)
       }
     }
 
@@ -10262,19 +10614,15 @@ html, body { margin: 0; padding: 0; }
 
       fn execute_module_script(
         &mut self,
+        _script_id: HtmlScriptId,
         script_text: &str,
-        _spec: &ScriptElementSpec,
-        _current_script: Option<NodeId>,
-        _document: &mut BrowserDocumentDom2,
-        _event_loop: &mut EventLoop<BrowserTabHost>,
-      ) -> Result<()> {
-        if script_text == "NAVIGATE" && self.pending.is_none() {
-          self.pending = Some(LocationNavigationRequest {
-            url: self.target_url.clone(),
-            replace: false,
-          });
-        }
-        Ok(())
+        spec: &ScriptElementSpec,
+        current_script: Option<NodeId>,
+        document: &mut BrowserDocumentDom2,
+        event_loop: &mut EventLoop<BrowserTabHost>,
+      ) -> Result<ModuleScriptExecutionStatus> {
+        self.execute_classic_script(script_text, spec, current_script, document, event_loop)?;
+        Ok(ModuleScriptExecutionStatus::Completed)
       }
 
       fn take_navigation_request(&mut self) -> Option<LocationNavigationRequest> {
@@ -10349,15 +10697,17 @@ html, body { margin: 0; padding: 0; }
 
       fn execute_module_script(
         &mut self,
+        _script_id: HtmlScriptId,
         script_text: &str,
         spec: &ScriptElementSpec,
         current_script: Option<NodeId>,
         document: &mut BrowserDocumentDom2,
         event_loop: &mut EventLoop<BrowserTabHost>,
-      ) -> Result<()> {
+      ) -> Result<ModuleScriptExecutionStatus> {
         // Tests only exercise classic scripts today; treat module scripts the same way so the
         // executor remains usable as module support is incrementally added.
-        self.execute_classic_script(script_text, spec, current_script, document, event_loop)
+        self.execute_classic_script(script_text, spec, current_script, document, event_loop)?;
+        Ok(ModuleScriptExecutionStatus::Completed)
       }
 
       fn take_navigation_request(&mut self) -> Option<LocationNavigationRequest> {
@@ -10423,14 +10773,16 @@ html, body { margin: 0; padding: 0; }
 
       fn execute_module_script(
         &mut self,
+        _script_id: HtmlScriptId,
         script_text: &str,
         spec: &ScriptElementSpec,
         current_script: Option<NodeId>,
         document: &mut BrowserDocumentDom2,
         event_loop: &mut EventLoop<BrowserTabHost>,
-      ) -> Result<()> {
+      ) -> Result<ModuleScriptExecutionStatus> {
         // Navigation tests don't distinguish script types; treat module scripts as classic.
-        self.execute_classic_script(script_text, spec, current_script, document, event_loop)
+        self.execute_classic_script(script_text, spec, current_script, document, event_loop)?;
+        Ok(ModuleScriptExecutionStatus::Completed)
       }
 
       fn take_navigation_request(&mut self) -> Option<LocationNavigationRequest> {
@@ -10692,13 +11044,15 @@ html, body { margin: 0; padding: 0; }
 
       fn execute_module_script(
         &mut self,
+        _script_id: HtmlScriptId,
         script_text: &str,
         spec: &ScriptElementSpec,
         current_script: Option<NodeId>,
         document: &mut BrowserDocumentDom2,
         event_loop: &mut EventLoop<BrowserTabHost>,
-      ) -> Result<()> {
-        self.execute_classic_script(script_text, spec, current_script, document, event_loop)
+      ) -> Result<ModuleScriptExecutionStatus> {
+        self.execute_classic_script(script_text, spec, current_script, document, event_loop)?;
+        Ok(ModuleScriptExecutionStatus::Completed)
       }
 
       fn take_navigation_request(&mut self) -> Option<LocationNavigationRequest> {
@@ -10835,13 +11189,15 @@ html, body { margin: 0; padding: 0; }
 
       fn execute_module_script(
         &mut self,
+        _script_id: HtmlScriptId,
         script_text: &str,
         spec: &ScriptElementSpec,
         current_script: Option<NodeId>,
         document: &mut BrowserDocumentDom2,
         event_loop: &mut EventLoop<BrowserTabHost>,
-      ) -> Result<()> {
-        self.execute_classic_script(script_text, spec, current_script, document, event_loop)
+      ) -> Result<ModuleScriptExecutionStatus> {
+        self.execute_classic_script(script_text, spec, current_script, document, event_loop)?;
+        Ok(ModuleScriptExecutionStatus::Completed)
       }
 
       fn take_navigation_request(&mut self) -> Option<LocationNavigationRequest> {
@@ -10935,13 +11291,15 @@ html, body { margin: 0; padding: 0; }
 
       fn execute_module_script(
         &mut self,
+        _script_id: HtmlScriptId,
         script_text: &str,
         spec: &ScriptElementSpec,
         current_script: Option<NodeId>,
         document: &mut BrowserDocumentDom2,
         event_loop: &mut EventLoop<BrowserTabHost>,
-      ) -> Result<()> {
-        self.execute_classic_script(script_text, spec, current_script, document, event_loop)
+      ) -> Result<ModuleScriptExecutionStatus> {
+        self.execute_classic_script(script_text, spec, current_script, document, event_loop)?;
+        Ok(ModuleScriptExecutionStatus::Completed)
       }
 
       fn take_navigation_request(&mut self) -> Option<LocationNavigationRequest> {
@@ -11016,13 +11374,15 @@ html, body { margin: 0; padding: 0; }
 
       fn execute_module_script(
         &mut self,
+        _script_id: HtmlScriptId,
         script_text: &str,
         spec: &ScriptElementSpec,
         current_script: Option<NodeId>,
         document: &mut BrowserDocumentDom2,
         event_loop: &mut EventLoop<BrowserTabHost>,
-      ) -> Result<()> {
-        self.execute_classic_script(script_text, spec, current_script, document, event_loop)
+      ) -> Result<ModuleScriptExecutionStatus> {
+        self.execute_classic_script(script_text, spec, current_script, document, event_loop)?;
+        Ok(ModuleScriptExecutionStatus::Completed)
       }
 
       fn take_navigation_request(&mut self) -> Option<LocationNavigationRequest> {
@@ -11131,13 +11491,15 @@ html, body { margin: 0; padding: 0; }
 
       fn execute_module_script(
         &mut self,
+        _script_id: HtmlScriptId,
         script_text: &str,
         spec: &ScriptElementSpec,
         current_script: Option<NodeId>,
         document: &mut BrowserDocumentDom2,
         event_loop: &mut EventLoop<BrowserTabHost>,
-      ) -> Result<()> {
-        self.execute_classic_script(script_text, spec, current_script, document, event_loop)
+      ) -> Result<ModuleScriptExecutionStatus> {
+        self.execute_classic_script(script_text, spec, current_script, document, event_loop)?;
+        Ok(ModuleScriptExecutionStatus::Completed)
       }
 
       fn take_navigation_request(&mut self) -> Option<LocationNavigationRequest> {

@@ -14,10 +14,12 @@ use std::time::{Duration, Instant};
 
 use fastrender::dom2::NodeId;
 use fastrender::js::{
-  CurrentScriptStateHandle, EventLoop, JsExecutionOptions, ScriptElementSpec, WindowRealm,
+  CurrentScriptStateHandle, EventLoop, HtmlScriptId, JsExecutionOptions, ScriptElementSpec, WindowRealm,
   WindowRealmConfig, WindowRealmHost,
 };
-use fastrender::{BrowserDocumentDom2, BrowserTabHost, BrowserTabJsExecutor, Result};
+use fastrender::{
+  BrowserDocumentDom2, BrowserTabHost, BrowserTabJsExecutor, ModuleScriptExecutionStatus, Result,
+};
 
 /// Default per-wait timeout used by integration-test helpers/tests that don't define their own.
 ///
@@ -77,15 +79,16 @@ impl<E: BrowserTabJsExecutor> BrowserTabJsExecutor for ExecutorWithWindow<E> {
 
   fn execute_module_script(
     &mut self,
+    script_id: HtmlScriptId,
     script_text: &str,
     spec: &ScriptElementSpec,
     current_script: Option<NodeId>,
     document: &mut BrowserDocumentDom2,
     event_loop: &mut EventLoop<BrowserTabHost>,
-  ) -> Result<()> {
+  ) -> Result<ModuleScriptExecutionStatus> {
     self
       .inner
-      .execute_module_script(script_text, spec, current_script, document, event_loop)
+      .execute_module_script(script_id, script_text, spec, current_script, document, event_loop)
   }
 
   fn execute_import_map_script(

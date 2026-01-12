@@ -1,8 +1,9 @@
 use base64::Engine as _;
 use fastrender::dom2::{Document, NodeId};
-use fastrender::js::{EventLoop, RunLimits, RunUntilIdleOutcome, ScriptElementSpec};
+use fastrender::js::{EventLoop, HtmlScriptId, RunLimits, RunUntilIdleOutcome, ScriptElementSpec};
 use fastrender::{
-  BrowserDocumentDom2, BrowserTab, BrowserTabHost, BrowserTabJsExecutor, RenderOptions, Result,
+  BrowserDocumentDom2, BrowserTab, BrowserTabHost, BrowserTabJsExecutor, ModuleScriptExecutionStatus, RenderOptions,
+  Result,
 };
 use std::sync::{Arc, Mutex};
 
@@ -100,13 +101,15 @@ impl BrowserTabJsExecutor for LoggingExecutor {
 
   fn execute_module_script(
     &mut self,
+    _script_id: HtmlScriptId,
     script_text: &str,
     spec: &ScriptElementSpec,
     current_script: Option<NodeId>,
     document: &mut BrowserDocumentDom2,
     event_loop: &mut EventLoop<BrowserTabHost>,
-  ) -> Result<()> {
-    self.execute_classic_script(script_text, spec, current_script, document, event_loop)
+  ) -> Result<ModuleScriptExecutionStatus> {
+    self.execute_classic_script(script_text, spec, current_script, document, event_loop)?;
+    Ok(ModuleScriptExecutionStatus::Completed)
   }
 }
 

@@ -1,13 +1,13 @@
 use crate::common::net::{net_test_lock, try_bind_localhost};
 
 use fastrender::api::{
-  BrowserDocumentDom2, BrowserTab, BrowserTabHost, BrowserTabJsExecutor, RenderOptions,
+  BrowserDocumentDom2, BrowserTab, BrowserTabHost, BrowserTabJsExecutor, ModuleScriptExecutionStatus, RenderOptions,
 };
 use fastrender::debug::runtime::{with_thread_runtime_toggles, RuntimeToggles};
 use fastrender::dom2::NodeId;
 use fastrender::error::Result;
 use fastrender::js::{
-  EventLoop, RunLimits, ScriptElementSpec, WindowRealm, WindowRealmConfig, WindowRealmHost,
+  EventLoop, HtmlScriptId, RunLimits, ScriptElementSpec, WindowRealm, WindowRealmConfig, WindowRealmHost,
 };
 
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
@@ -54,13 +54,15 @@ impl BrowserTabJsExecutor for LogExecutor {
 
   fn execute_module_script(
     &mut self,
+    _script_id: HtmlScriptId,
     script_text: &str,
     spec: &ScriptElementSpec,
     current_script: Option<NodeId>,
     document: &mut BrowserDocumentDom2,
     event_loop: &mut EventLoop<BrowserTabHost>,
-  ) -> Result<()> {
-    self.execute_classic_script(script_text, spec, current_script, document, event_loop)
+  ) -> Result<ModuleScriptExecutionStatus> {
+    self.execute_classic_script(script_text, spec, current_script, document, event_loop)?;
+    Ok(ModuleScriptExecutionStatus::Completed)
   }
 }
 

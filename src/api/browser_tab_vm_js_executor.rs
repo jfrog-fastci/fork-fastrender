@@ -13,12 +13,14 @@ use crate::js::{
     create_import_map_parse_result_with_limits, register_import_map_with_limits, ImportMapError,
     ImportMapWarningKind,
   },
-  CurrentScriptStateHandle, JsExecutionOptions, LocationNavigationRequest, ModuleKey, ScriptElementSpec,
-  WindowFetchBindings, WindowFetchEnv, WindowWebSocketBindings, WindowWebSocketEnv, WindowXhrBindings, WindowXhrEnv,
+  CurrentScriptStateHandle, HtmlScriptId, JsExecutionOptions, LocationNavigationRequest, ModuleKey,
+  ScriptElementSpec, TaskSource, WindowFetchBindings, WindowFetchEnv, WindowWebSocketBindings,
+  WindowWebSocketEnv, WindowXhrBindings, WindowXhrEnv,
 };
 use crate::resource::{origin_from_url, CorsMode, ReferrerPolicy, ResourceFetcher};
 use crate::style::media::{MediaContext, MediaType};
 use crate::web::events::{Event, EventTargetId};
+use std::collections::HashMap;
 use std::ptr::NonNull;
 use std::sync::Arc;
 use vm_js::{
@@ -28,7 +30,10 @@ use vm_js::{
 use webidl_vm_js::WebIdlBindingsHost;
 
 use super::BrowserDocumentDom2;
-use super::{BrowserTabHost, BrowserTabJsExecutor, ConsoleMessageLevel, SharedRenderDiagnostics};
+use super::{
+  BrowserTabHost, BrowserTabJsExecutor, ConsoleMessageLevel, ModuleScriptExecutionStatus,
+  SharedRenderDiagnostics,
+};
 
 #[derive(Debug, Clone, Copy)]
 struct PendingModuleEvaluation {
@@ -70,7 +75,7 @@ pub struct VmJsBrowserTabExecutor {
   document_referrer_policy: ReferrerPolicy,
   session_storage_namespace: u64,
   session_storage_guard: Option<StorageListenerGuard>,
-  pending_module_evaluation: Option<PendingModuleEvaluation>,
+  pending_module_evaluations: HashMap<HtmlScriptId, PendingModuleEvaluation>,
   pending_navigation: Option<LocationNavigationRequest>,
   diagnostics: Option<SharedRenderDiagnostics>,
   /// Cached `vm-js` host context for Rust-driven event dispatch.
@@ -95,7 +100,7 @@ impl VmJsBrowserTabExecutor {
       document_referrer_policy: ReferrerPolicy::default(),
       session_storage_namespace: WindowRealmConfig::new("about:blank").session_storage_namespace,
       session_storage_guard: None,
-      pending_module_evaluation: None,
+      pending_module_evaluations: HashMap::new(),
       pending_navigation: None,
       diagnostics: None,
       vm_host: None,
@@ -113,20 +118,28 @@ impl VmJsBrowserTabExecutor {
   }
 
   fn abort_pending_module_evaluation(&mut self) {
-    let Some(pending) = self.pending_module_evaluation.take() else {
+    if self.pending_module_evaluations.is_empty() {
       return;
-    };
+    }
     let Some(realm) = self.realm.as_mut() else {
+      self.pending_module_evaluations.clear();
       return;
     };
     let (vm, _realm_ref, heap) = realm.vm_realm_and_heap_mut();
+    let pending = std::mem::take(&mut self.pending_module_evaluations);
     if let Some(modules_ptr) = vm.module_graph_ptr() {
       // SAFETY: `module_graph_ptr` points at the boxed module graph stored in realm user data when
       // module loading is enabled.
       let module_graph = unsafe { &mut *(modules_ptr as *mut ModuleGraph) };
-      module_graph.abort_tla_evaluation(vm, heap, pending.module);
+      for (_, pending) in pending {
+        module_graph.abort_tla_evaluation(vm, heap, pending.module);
+        heap.remove_root(pending.promise_root);
+      }
+      return;
     }
-    heap.remove_root(pending.promise_root);
+    for (_, pending) in pending {
+      heap.remove_root(pending.promise_root);
+    }
   }
 
   fn next_inline_module_id(&mut self, spec: &ScriptElementSpec) -> String {
@@ -585,12 +598,13 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
 
   fn execute_module_script(
     &mut self,
+    script_id: HtmlScriptId,
     script_text: &str,
     spec: &ScriptElementSpec,
     _current_script: Option<crate::dom2::NodeId>,
     document: &mut BrowserDocumentDom2,
     event_loop: &mut crate::js::EventLoop<BrowserTabHost>,
-  ) -> Result<()> {
+  ) -> Result<ModuleScriptExecutionStatus> {
     // HTML: module scripts are fetched in CORS mode by default. When the `crossorigin` attribute is
     // missing, the default state is "anonymous" (same-origin credentials for same-origin requests).
     let cors_mode = spec.crossorigin.unwrap_or(CorsMode::Anonymous);
@@ -599,7 +613,7 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
       // External module script: use the resolved `src` URL as the module's specifier.
       let Some(entry_url) = spec.src.as_deref().filter(|s| !s.is_empty()) else {
         // HTML: modules with `src` present but empty/invalid do not execute.
-        return Ok(());
+        return Ok(ModuleScriptExecutionStatus::Completed);
       };
       entry_url.to_string()
     } else {
@@ -787,14 +801,19 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
       if let Some(req) = realm.take_pending_navigation_request() {
         realm.reset_interrupt();
         self.pending_navigation = Some(req);
-        return Ok(());
+        return Ok(ModuleScriptExecutionStatus::Completed);
       }
     }
 
     match exec_result {
       Ok(pending) => {
-        self.pending_module_evaluation = pending;
-        Ok(())
+        match pending {
+          Some(pending) => {
+            self.pending_module_evaluations.insert(script_id, pending);
+            Ok(ModuleScriptExecutionStatus::Pending)
+          }
+          None => Ok(ModuleScriptExecutionStatus::Completed),
+        }
       }
       Err(err) => Err(err),
     }
@@ -931,61 +950,63 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
   fn after_microtask_checkpoint(
     &mut self,
     _document: &mut BrowserDocumentDom2,
-    _event_loop: &mut crate::js::EventLoop<BrowserTabHost>,
+    event_loop: &mut crate::js::EventLoop<BrowserTabHost>,
   ) -> Result<()> {
-    let Some(pending) = self.pending_module_evaluation.take() else {
+    if self.pending_module_evaluations.is_empty() {
       return Ok(());
-    };
+    }
     let Some(realm) = self.realm.as_mut() else {
       return Ok(());
     };
 
     let diagnostics = self.diagnostics.clone();
     let (_vm, _realm_ref, heap) = realm.vm_realm_and_heap_mut();
-
-    let state = match heap.promise_state(pending.promise) {
-      Ok(state) => state,
-      Err(err) => {
-        // Preserve state so teardown can still abort/remove roots.
-        self.pending_module_evaluation = Some(pending);
-        if let Some(diag) = diagnostics.as_ref() {
-          diag.record_js_vm_error(&err);
-        }
-        return Err(vm_error_format::vm_error_to_error(heap, err));
-      }
-    };
-
-    match state {
-      PromiseState::Fulfilled => {
-        heap.remove_root(pending.promise_root);
-        Ok(())
-      }
-      PromiseState::Rejected => {
-        let reason = match heap.promise_result(pending.promise) {
-          Ok(reason) => reason.unwrap_or(Value::Undefined),
-          Err(err) => {
-            self.pending_module_evaluation = Some(pending);
-            if let Some(diag) = diagnostics.as_ref() {
-              diag.record_js_vm_error(&err);
-            }
-            return Err(vm_error_format::vm_error_to_error(heap, err));
+    let mut completed: Vec<(HtmlScriptId, RootId)> = Vec::new();
+    for (script_id, pending) in &self.pending_module_evaluations {
+      let state = match heap.promise_state(pending.promise) {
+        Ok(state) => state,
+        Err(err) => {
+          if let Some(diag) = diagnostics.as_ref() {
+            diag.record_js_vm_error(&err);
           }
-        };
-        if let Some(diag) = diagnostics.as_ref() {
-          let (message, stack) =
-            vm_error_format::vm_error_to_message_and_stack(heap, VmError::Throw(reason));
-          diag.record_js_exception(message, stack);
+          return Err(vm_error_format::vm_error_to_error(heap, err));
         }
-        heap.remove_root(pending.promise_root);
-        Ok(())
-      }
-      PromiseState::Pending => {
-        // Top-level await is allowed to remain pending across event loop turns (e.g. timers/network).
-        // Keep the evaluation alive and observe it on a future microtask checkpoint.
-        self.pending_module_evaluation = Some(pending);
-        Ok(())
+      };
+
+      match state {
+        PromiseState::Fulfilled => {
+          completed.push((*script_id, pending.promise_root));
+        }
+        PromiseState::Rejected => {
+          let reason = match heap.promise_result(pending.promise) {
+            Ok(reason) => reason.unwrap_or(Value::Undefined),
+            Err(err) => {
+              if let Some(diag) = diagnostics.as_ref() {
+                diag.record_js_vm_error(&err);
+              }
+              return Err(vm_error_format::vm_error_to_error(heap, err));
+            }
+          };
+          if let Some(diag) = diagnostics.as_ref() {
+            let (message, stack) =
+              vm_error_format::vm_error_to_message_and_stack(heap, VmError::Throw(reason));
+            diag.record_js_exception(message, stack);
+          }
+          completed.push((*script_id, pending.promise_root));
+        }
+        PromiseState::Pending => {}
       }
     }
+
+    for (script_id, root_id) in completed {
+      event_loop.queue_task(TaskSource::Script, move |host, event_loop| {
+        host.on_module_script_evaluation_complete(script_id, event_loop)
+      })?;
+      heap.remove_root(root_id);
+      self.pending_module_evaluations.remove(&script_id);
+    }
+
+    Ok(())
   }
 
   fn take_navigation_request(&mut self) -> Option<LocationNavigationRequest> {
@@ -1526,7 +1547,15 @@ mod tests {
       node_id: None,
       script_type: crate::js::ScriptType::Module,
     };
-    executor.execute_module_script(script_text, &spec, None, &mut document, &mut event_loop)?;
+    let status = executor.execute_module_script(
+      HtmlScriptId::from_u64(1),
+      script_text,
+      &spec,
+      None,
+      &mut document,
+      &mut event_loop,
+    )?;
+    assert_eq!(status, ModuleScriptExecutionStatus::Completed);
 
     let realm = executor.realm.as_mut().expect("realm initialized");
     assert_eq!(
@@ -1620,13 +1649,15 @@ mod tests {
       node_id: None,
       script_type: crate::js::ScriptType::Module,
     };
-    executor.execute_module_script(
+    let status = executor.execute_module_script(
+      HtmlScriptId::from_u64(2),
       module_text,
       &module_spec,
       None,
       &mut document,
       &mut event_loop,
     )?;
+    assert_eq!(status, ModuleScriptExecutionStatus::Completed);
 
     let realm = executor.realm.as_mut().expect("realm initialized");
     assert_eq!(get_global_prop(realm, "result"), Value::Number(7.0));

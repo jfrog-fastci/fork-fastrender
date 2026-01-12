@@ -238,6 +238,7 @@ pub use api::BrowserDocumentJs;
 pub use api::BrowserTab;
 pub use api::BrowserTabHost;
 pub use api::BrowserTabJsExecutor;
+pub use api::ModuleScriptExecutionStatus;
 pub use api::CascadeDiagnostics;
 pub use api::ConsoleMessage;
 pub use api::ConsoleMessageLevel;

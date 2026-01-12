@@ -259,7 +259,7 @@ mod browser_document2;
 pub use browser_document2::BrowserDocument2;
 
 mod browser_tab;
-pub use browser_tab::{BrowserTab, BrowserTabHost, BrowserTabJsExecutor};
+pub use browser_tab::{BrowserTab, BrowserTabHost, BrowserTabJsExecutor, ModuleScriptExecutionStatus};
 
 mod browser_tab_vm_js_executor;
 pub use browser_tab_vm_js_executor::VmJsBrowserTabExecutor;

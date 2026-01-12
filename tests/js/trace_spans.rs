@@ -1,10 +1,11 @@
 use fastrender::api::{
-  BrowserDocumentDom2, BrowserTab, BrowserTabHost, BrowserTabJsExecutor, RenderOptions,
+  BrowserDocumentDom2, BrowserTab, BrowserTabHost, BrowserTabJsExecutor, ModuleScriptExecutionStatus,
+  RenderOptions,
 };
 use fastrender::dom2::NodeId;
 use fastrender::error::Result;
 use fastrender::js::{
-  CurrentScriptStateHandle, EventLoop, JsExecutionOptions, RunLimits, ScriptElementSpec,
+  CurrentScriptStateHandle, EventLoop, HtmlScriptId, JsExecutionOptions, RunLimits, ScriptElementSpec,
   TaskSource, WindowRealm, WindowRealmConfig, WindowRealmHost,
 };
 use std::collections::HashSet;
@@ -43,15 +44,16 @@ impl<E: BrowserTabJsExecutor> BrowserTabJsExecutor for ExecutorWithWindow<E> {
 
   fn execute_module_script(
     &mut self,
+    script_id: HtmlScriptId,
     script_text: &str,
     spec: &ScriptElementSpec,
     current_script: Option<NodeId>,
     document: &mut BrowserDocumentDom2,
     event_loop: &mut EventLoop<BrowserTabHost>,
-  ) -> Result<()> {
+  ) -> Result<ModuleScriptExecutionStatus> {
     self
       .inner
-      .execute_module_script(script_text, spec, current_script, document, event_loop)
+      .execute_module_script(script_id, script_text, spec, current_script, document, event_loop)
   }
 
   fn execute_import_map_script(
@@ -141,13 +143,15 @@ fn js_tracing_emits_basic_spans_for_scripts_and_tasks() {
 
     fn execute_module_script(
       &mut self,
+      _script_id: HtmlScriptId,
       script_text: &str,
       spec: &ScriptElementSpec,
       current_script: Option<NodeId>,
       document: &mut BrowserDocumentDom2,
       event_loop: &mut EventLoop<BrowserTabHost>,
-    ) -> Result<()> {
-      self.execute_classic_script(script_text, spec, current_script, document, event_loop)
+    ) -> Result<ModuleScriptExecutionStatus> {
+      self.execute_classic_script(script_text, spec, current_script, document, event_loop)?;
+      Ok(ModuleScriptExecutionStatus::Completed)
     }
   }
 

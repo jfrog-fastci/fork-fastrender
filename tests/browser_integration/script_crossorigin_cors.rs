@@ -1,6 +1,6 @@
 use fastrender::debug::runtime::{with_thread_runtime_toggles, RuntimeToggles};
 use fastrender::dom2::{Document, NodeId};
-use fastrender::js::{EventLoop, RunLimits, RunUntilIdleOutcome};
+use fastrender::js::{EventLoop, HtmlScriptId, RunLimits, RunUntilIdleOutcome};
 use fastrender::resource::{
   origin_from_url, FetchCredentialsMode, FetchDestination, FetchRequest, FetchedResource,
   ResourceFetcher,
@@ -9,8 +9,8 @@ use fastrender::web::events::{
   AddEventListenerOptions, DomError, Event, EventListenerInvoker, EventTargetId, ListenerId,
 };
 use fastrender::{
-  BrowserDocumentDom2, BrowserTab, BrowserTabHost, BrowserTabJsExecutor, Error, RenderOptions,
-  Result,
+  BrowserDocumentDom2, BrowserTab, BrowserTabHost, BrowserTabJsExecutor, Error, ModuleScriptExecutionStatus,
+  RenderOptions, Result,
 };
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -71,18 +71,19 @@ impl BrowserTabJsExecutor for RecordingExecutor {
 
   fn execute_module_script(
     &mut self,
+    _script_id: HtmlScriptId,
     script_text: &str,
     _spec: &fastrender::js::ScriptElementSpec,
     _current_script: Option<NodeId>,
     _document: &mut BrowserDocumentDom2,
     _event_loop: &mut EventLoop<BrowserTabHost>,
-  ) -> Result<()> {
+  ) -> Result<ModuleScriptExecutionStatus> {
     self
       .executed
       .lock()
       .expect("executor log lock")
       .push(script_text.to_string());
-    Ok(())
+    Ok(ModuleScriptExecutionStatus::Completed)
   }
 }
 
