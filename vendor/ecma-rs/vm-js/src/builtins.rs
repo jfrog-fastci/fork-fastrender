@@ -2175,8 +2175,21 @@ pub fn reflect_set_prototype_of(
       ))
     }
   };
-  let ok = scope.set_prototype_of_with_host_and_hooks(vm, host, hooks, target, proto)?;
-  Ok(Value::Bool(ok))
+  let current_proto = scope.object_get_prototype(target)?;
+  if current_proto == proto {
+    return Ok(Value::Bool(true));
+  }
+
+  if !scope.object_is_extensible(target)? {
+    return Ok(Value::Bool(false));
+  }
+
+  match scope.object_set_prototype(target, proto) {
+    Ok(()) => Ok(Value::Bool(true)),
+    // A cycle (or hostile prototype chain) rejects the mutation.
+    Err(VmError::PrototypeCycle | VmError::PrototypeChainTooDeep) => Ok(Value::Bool(false)),
+    Err(e) => Err(e),
+  }
 }
 fn create_array_object(vm: &mut Vm, scope: &mut Scope<'_>, len: u32) -> Result<GcObject, VmError> {
   let intr = require_intrinsics(vm)?;

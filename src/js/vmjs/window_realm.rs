@@ -15882,7 +15882,6 @@ fn mutation_observer_notify_native(
     Value::Object(obj) => obj,
     _ => return Ok(Value::Undefined),
   };
-
   let document_id = gc_object_id(document_obj);
   let (deliveries, dom_ptr_for_wrappers) = if is_host_document_id(vm, document_id) {
     // Borrow the DOM host only long enough to drain deliveries. We must not hold a borrowed

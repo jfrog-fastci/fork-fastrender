@@ -28,6 +28,10 @@ pub enum ShortcutAction {
   ShowHistory,
   /// Show the bookmarks manager UI surface (Ctrl/Cmd+Shift+O).
   ShowBookmarksManager,
+  /// Toggle visibility of the bookmarks bar (Ctrl/Cmd+Shift+B).
+  ToggleBookmarksBar,
+  /// Open the "Clear browsing data" dialog (Ctrl/Cmd+Shift+Delete).
+  OpenClearBrowsingDataDialog,
   /// Activate a tab by its 1-based index (9 = last tab), matching typical browser shortcuts.
   ActivateTabNumber(u8),
   ZoomIn,
@@ -67,6 +71,7 @@ impl Modifiers {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Key {
   A,
+  B,
   C,
   D,
   F,
@@ -291,7 +296,17 @@ pub fn map_shortcut_with_platform(event: KeyEvent, platform: Platform) -> Option
     (Key::H, Modifiers { shift: true, .. }) if primary_cmd && matches!(platform, Platform::Mac) => {
       Some(ShortcutAction::ShowHistory)
     }
-    (Key::O, Modifiers { shift: true, .. }) if primary_cmd => Some(ShortcutAction::ShowBookmarksManager),
+    (Key::O, Modifiers { shift: true, .. }) if primary_cmd => {
+      Some(ShortcutAction::ShowBookmarksManager)
+    }
+
+    // UI.
+    (Key::B, Modifiers { shift: true, .. }) if cmd => Some(ShortcutAction::ToggleBookmarksBar),
+
+    // History / data.
+    (Key::Delete, Modifiers { shift: true, .. }) if cmd => {
+      Some(ShortcutAction::OpenClearBrowsingDataDialog)
+    }
 
     // Ctrl/Cmd+1..9 switches tabs (9 = last tab).
     (Key::Num1, _) if cmd => Some(ShortcutAction::ActivateTabNumber(1)),
@@ -792,7 +807,18 @@ mod tests {
       None
     );
     // Ensure we don't treat AltGr as chrome-level Ctrl shortcuts.
-    for key in [Key::L, Key::N, Key::Tab, Key::Num1, Key::Equals, Key::Minus, Key::R] {
+    for key in [
+      Key::B,
+      Key::F,
+      Key::L,
+      Key::N,
+      Key::Tab,
+      Key::Num1,
+      Key::Equals,
+      Key::Minus,
+      Key::R,
+      Key::Delete,
+    ] {
       assert_eq!(
         map_shortcut_with_platform(
           KeyEvent::new(key, Modifiers::new(true, false, true, false)),
@@ -1032,6 +1058,17 @@ mod tests {
   }
 
   #[test]
+  fn ctrl_shift_b_toggles_bookmarks_bar() {
+    assert_eq!(
+      map_shortcut_with_platform(
+        KeyEvent::new(Key::B, Modifiers::new(true, true, false, false)),
+        Platform::Other
+      ),
+      Some(ShortcutAction::ToggleBookmarksBar)
+    );
+  }
+
+  #[test]
   fn ctrl_h_shows_history_on_other_platforms() {
     assert_eq!(
       map_shortcut_with_platform(
@@ -1050,6 +1087,44 @@ mod tests {
         Platform::Other
       ),
       Some(ShortcutAction::ShowBookmarksManager)
+    );
+  }
+
+  #[test]
+  fn mac_cmd_or_ctrl_shift_b_toggles_bookmarks_bar() {
+    assert_eq!(
+      map_shortcut_with_platform(
+        KeyEvent::new(Key::B, Modifiers::new(false, true, false, true)),
+        Platform::Mac
+      ),
+      Some(ShortcutAction::ToggleBookmarksBar)
+    );
+    // Allow Ctrl as a secondary shortcut modifier on macOS.
+    assert_eq!(
+      map_shortcut_with_platform(
+        KeyEvent::new(Key::B, Modifiers::new(true, true, false, false)),
+        Platform::Mac
+      ),
+      Some(ShortcutAction::ToggleBookmarksBar)
+    );
+  }
+
+  #[test]
+  fn ctrl_shift_delete_opens_clear_browsing_data_dialog() {
+    assert_eq!(
+      map_shortcut_with_platform(
+        KeyEvent::new(Key::Delete, Modifiers::new(true, true, false, false)),
+        Platform::Other
+      ),
+      Some(ShortcutAction::OpenClearBrowsingDataDialog)
+    );
+    // Ensure we still treat Shift+Delete without Ctrl/Cmd as Cut (IBM CUA shortcut).
+    assert_eq!(
+      map_shortcut_with_platform(
+        KeyEvent::new(Key::Delete, Modifiers::new(false, true, false, false)),
+        Platform::Other
+      ),
+      Some(ShortcutAction::Cut)
     );
   }
 
@@ -1095,6 +1170,25 @@ mod tests {
         Platform::Mac
       ),
       None
+    );
+  }
+
+  #[test]
+  fn mac_cmd_or_ctrl_shift_delete_opens_clear_browsing_data_dialog() {
+    assert_eq!(
+      map_shortcut_with_platform(
+        KeyEvent::new(Key::Delete, Modifiers::new(false, true, false, true)),
+        Platform::Mac
+      ),
+      Some(ShortcutAction::OpenClearBrowsingDataDialog)
+    );
+    // Allow Ctrl as a secondary shortcut modifier on macOS.
+    assert_eq!(
+      map_shortcut_with_platform(
+        KeyEvent::new(Key::Delete, Modifiers::new(true, true, false, false)),
+        Platform::Mac
+      ),
+      Some(ShortcutAction::OpenClearBrowsingDataDialog)
     );
   }
 }

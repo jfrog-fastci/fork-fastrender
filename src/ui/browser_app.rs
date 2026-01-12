@@ -451,6 +451,8 @@ pub struct ChromeState {
   pub bookmarks_manager_open: bool,
   /// Search/filter query for the Bookmarks Manager panel.
   pub bookmarks_manager_search_text: String,
+  /// Whether the bookmarks bar is visible.
+  pub bookmarks_bar_visible: bool,
   pub tab_search: TabSearchState,
   /// The currently open tab-strip context menu (right-click on a tab label/icon), if any.
   ///

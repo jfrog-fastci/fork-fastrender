@@ -70,6 +70,8 @@ pub enum ChromeAction {
   OpenTabSearch,
   /// Close the tab search / quick switcher overlay (Escape, selection, click-away).
   CloseTabSearch,
+  /// Toggle visibility of the bookmarks bar.
+  ToggleBookmarksBar,
   AddressBarFocusChanged(bool),
   /// Toggle a bookmark for the currently active tab.
   ToggleBookmarkForActiveTab,
@@ -107,6 +109,7 @@ fn egui_modifiers_to_shortcuts_modifiers(modifiers: egui::Modifiers) -> Modifier
 fn egui_key_to_shortcuts_key(key: egui::Key) -> Option<Key> {
   Some(match key {
     egui::Key::A => Key::A,
+    egui::Key::B => Key::B,
     egui::Key::C => Key::C,
     egui::Key::D => Key::D,
     egui::Key::F => Key::F,
@@ -124,6 +127,10 @@ fn egui_key_to_shortcuts_key(key: egui::Key) -> Option<Key> {
     egui::Key::Tab => Key::Tab,
     egui::Key::ArrowLeft => Key::Left,
     egui::Key::ArrowRight => Key::Right,
+    egui::Key::Delete => Key::Delete,
+    // On macOS the physical key labelled "delete" typically maps to Backspace.
+    #[cfg(target_os = "macos")]
+    egui::Key::Backspace => Key::Delete,
     egui::Key::Num0 => Key::Num0,
     egui::Key::Num1 => Key::Num1,
     egui::Key::Num2 => Key::Num2,
@@ -656,6 +663,8 @@ pub fn chrome_ui_with_bookmarks(
     home,
     toggle_bookmark,
     toggle_history_panel,
+    toggle_bookmarks_bar,
+    open_clear_browsing_data_dialog,
     tab_delta,
     tab_number,
     back,
@@ -674,7 +683,8 @@ pub fn chrome_ui_with_bookmarks(
     let mut home = false;
     let mut toggle_bookmark = false;
     let mut toggle_history_panel = false;
-    let mut toggle_bookmarks_manager = false;
+    let mut toggle_bookmarks_bar = false;
+    let mut open_clear_browsing_data_dialog = false;
     let mut tab_delta: Option<isize> = None;
     let mut tab_number: Option<u8> = None;
     let mut back = false;
@@ -715,6 +725,8 @@ pub fn chrome_ui_with_bookmarks(
         ShortcutAction::ToggleBookmark => toggle_bookmark = true,
         ShortcutAction::ShowHistory => toggle_history_panel = true,
         ShortcutAction::ShowBookmarksManager => toggle_bookmarks_manager = true,
+        ShortcutAction::ToggleBookmarksBar => toggle_bookmarks_bar = true,
+        ShortcutAction::OpenClearBrowsingDataDialog => open_clear_browsing_data_dialog = true,
         ShortcutAction::NextTab => tab_delta = Some(1),
         ShortcutAction::PrevTab => tab_delta = Some(-1),
         ShortcutAction::ActivateTabNumber(n) => tab_number = Some(n),
@@ -739,6 +751,8 @@ pub fn chrome_ui_with_bookmarks(
       home,
       toggle_bookmark,
       toggle_history_panel,
+      toggle_bookmarks_bar,
+      open_clear_browsing_data_dialog,
       tab_delta,
       tab_number,
       back,
@@ -836,6 +850,12 @@ pub fn chrome_ui_with_bookmarks(
   }
   if toggle_history_panel {
     actions.push(ChromeAction::ToggleHistoryPanel);
+  }
+  if toggle_bookmarks_bar {
+    actions.push(ChromeAction::ToggleBookmarksBar);
+  }
+  if open_clear_browsing_data_dialog {
+    actions.push(ChromeAction::OpenClearBrowsingDataDialog);
   }
   if let Some(zoom_action) = zoom_action {
     if let Some(tab) = app.active_tab_mut() {
@@ -1939,28 +1959,30 @@ pub fn chrome_ui_with_bookmarks(
       }
     }
 
-    if let Some(bookmarks) = omnibox_bookmarks {
-      let mut has_any = false;
-      for id in &bookmarks.roots {
-        if matches!(
-          bookmarks.nodes.get(id),
-          Some(crate::ui::BookmarkNode::Bookmark(_))
-        ) {
-          has_any = true;
-          break;
-        }
-      }
-      if has_any {
-        ui.separator();
-        let bar = bookmarks_bar_ui(ui, bookmarks, BOOKMARKS_BAR_MAX_ITEMS);
-        if let Some(url) = bar.navigate_to {
-          if bar.navigate_new_tab {
-            actions.push(ChromeAction::NewTab);
+    if app.chrome.bookmarks_bar_visible {
+      if let Some(bookmarks) = omnibox_bookmarks {
+        let mut has_any = false;
+        for id in &bookmarks.roots {
+          if matches!(
+            bookmarks.nodes.get(id),
+            Some(crate::ui::BookmarkNode::Bookmark(_))
+          ) {
+            has_any = true;
+            break;
           }
-          actions.push(ChromeAction::NavigateTo(url));
         }
-        if let Some(order) = bar.reorder_roots {
-          actions.push(ChromeAction::ReorderBookmarksBar(order));
+        if has_any {
+          ui.separator();
+          let bar = bookmarks_bar_ui(ui, bookmarks, BOOKMARKS_BAR_MAX_ITEMS);
+          if let Some(url) = bar.navigate_to {
+            if bar.navigate_new_tab {
+              actions.push(ChromeAction::NewTab);
+            }
+            actions.push(ChromeAction::NavigateTo(url));
+          }
+          if let Some(order) = bar.reorder_roots {
+            actions.push(ChromeAction::ReorderBookmarksBar(order));
+          }
         }
       }
     }
@@ -3393,6 +3415,56 @@ mod tests {
         .iter()
         .any(|action| matches!(action, ChromeAction::NewTab)),
       "expected Ctrl/Cmd+Shift+T not to emit NewTab, got {actions:?}"
+    );
+  }
+
+  #[test]
+  fn ctrl_shift_b_emits_toggle_bookmarks_bar_even_when_address_bar_focused() {
+    let mut app = BrowserAppState::new();
+    app.chrome.address_bar_has_focus = true;
+    app.chrome.address_bar_editing = true;
+
+    let ctx = new_context_with_key(
+      egui::Key::B,
+      egui::Modifiers {
+        command: true,
+        shift: true,
+        ..Default::default()
+      },
+    );
+    let actions = chrome_ui(&ctx, &mut app, |_| None);
+    let _ = ctx.end_frame();
+
+    assert!(
+      actions
+        .iter()
+        .any(|action| matches!(action, ChromeAction::ToggleBookmarksBar)),
+      "expected ChromeAction::ToggleBookmarksBar, got {actions:?}"
+    );
+  }
+
+  #[test]
+  fn ctrl_shift_delete_emits_open_clear_browsing_data_dialog_even_when_address_bar_focused() {
+    let mut app = BrowserAppState::new();
+    app.chrome.address_bar_has_focus = true;
+    app.chrome.address_bar_editing = true;
+
+    let ctx = new_context_with_key(
+      egui::Key::Delete,
+      egui::Modifiers {
+        command: true,
+        shift: true,
+        ..Default::default()
+      },
+    );
+    let actions = chrome_ui(&ctx, &mut app, |_| None);
+    let _ = ctx.end_frame();
+
+    assert!(
+      actions
+        .iter()
+        .any(|action| matches!(action, ChromeAction::OpenClearBrowsingDataDialog)),
+      "expected ChromeAction::OpenClearBrowsingDataDialog, got {actions:?}"
     );
   }
 

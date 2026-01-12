@@ -5547,6 +5547,10 @@ impl App {
           return;
         }
 
+        if self.clear_browsing_data_dialog_open {
+          return;
+        }
+
         if !self.pointer_captured && self.cursor_over_egui_overlay(pos_points) {
           return;
         }
@@ -5623,6 +5627,9 @@ impl App {
         }
 
         let mapped_button = map_mouse_button(*button);
+        if self.clear_browsing_data_dialog_open {
+          return;
+        }
         if matches!(
           mapped_button,
           fastrender::ui::PointerButton::Back | fastrender::ui::PointerButton::Forward
@@ -6167,6 +6174,8 @@ impl App {
               | ShortcutAction::ToggleBookmark
               | ShortcutAction::ShowHistory
               | ShortcutAction::ShowBookmarksManager
+              | ShortcutAction::ToggleBookmarksBar
+              | ShortcutAction::OpenClearBrowsingDataDialog
               | ShortcutAction::ActivateTabNumber(_)
               | ShortcutAction::ZoomIn
               | ShortcutAction::ZoomOut
@@ -7018,6 +7027,11 @@ impl App {
             self.browser_state.chrome.address_bar_text = url.clone();
           }
           self.send_worker_msg(msg);
+        }
+        ChromeAction::ToggleBookmarksBar => {
+          self.browser_state.chrome.bookmarks_bar_visible =
+            !self.browser_state.chrome.bookmarks_bar_visible;
+          self.window.request_redraw();
         }
         ChromeAction::Back => {
           self.force_send_viewport_now();
@@ -8225,6 +8239,7 @@ fn map_winit_key_to_shortcuts_key(
 
   Some(match key {
     VirtualKeyCode::A => ShortcutKey::A,
+    VirtualKeyCode::B => ShortcutKey::B,
     VirtualKeyCode::C => ShortcutKey::C,
     VirtualKeyCode::D => ShortcutKey::D,
     VirtualKeyCode::F => ShortcutKey::F,

@@ -1,4 +1,4 @@
-use super::{Document, DomError, NodeId, NodeKind};
+use super::{Document, DomError, Node, NodeId, NodeKind};
 use std::collections::{HashMap, HashSet};
 
 pub type MutationObserverId = u64;
@@ -573,7 +573,7 @@ impl Document {
   }
 
   fn mutation_observer_cleanup_transient_registrations(
-    nodes: &mut [super::Node],
+    nodes: &mut [Node],
     agent: &mut MutationObserverAgent,
     observer: MutationObserverId,
     node_list: &[NodeId],
@@ -617,7 +617,6 @@ impl Document {
         keep_nodes.push(node_id);
       }
     }
-
     if let Some(state) = agent.observers.get_mut(&observer) {
       state.node_list = keep_nodes;
     }
