@@ -10,6 +10,35 @@ fn new_runtime() -> JsRuntime {
 fn object_define_property_on_uint8_array_numeric_indices() -> Result<(), VmError> {
   let mut rt = new_runtime();
 
+  // `Object.getOwnPropertyDescriptor` reports typed array element properties as configurable.
+  let value = rt.exec_script(
+    r#"
+      {
+        let u = new Uint8Array(2);
+        let d = Object.getOwnPropertyDescriptor(u, "0");
+        d.configurable === true && d.enumerable === true && d.writable === true
+      }
+    "#,
+  )?;
+  assert_eq!(value, Value::Bool(true));
+
+  // Round-tripping a descriptor through `Object.defineProperty` should succeed.
+  let value = rt.exec_script(
+    r#"
+      {
+        let u = new Uint8Array(2);
+        let d = Object.getOwnPropertyDescriptor(u, "0");
+        try {
+          Object.defineProperty(u, "0", d);
+          true
+        } catch (e) {
+          false
+        }
+      }
+    "#,
+  )?;
+  assert_eq!(value, Value::Bool(true));
+
   // Writes go through `[[DefineOwnProperty]]` and update the backing buffer.
   let value = rt.exec_script(
     r#"

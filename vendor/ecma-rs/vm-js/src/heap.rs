@@ -2108,7 +2108,12 @@ impl Heap {
           if idx < view.length {
             return Ok(Some(PropertyDescriptor {
               enumerable: true,
-              configurable: false,
+              // TypedArray integer-indexed properties are reported as configurable per ECMA-262
+              // `TypedArray.[[GetOwnProperty]]`.
+              //
+              // Note: deletion is still rejected by TypedArray `[[Delete]]`, so these properties are
+              // "non-deletable" even though they are reported as configurable.
+              configurable: true,
               kind: PropertyKind::Data {
                 value: self.typed_array_get_value(view, idx)?,
                 writable: true,
