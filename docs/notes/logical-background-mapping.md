@@ -9,7 +9,7 @@ Logical `background-position-*` and `background-size-*` longhands map to physica
 
 ## Regression coverage
 
-- Unit tests in `src/style/` (migrated from `tests/style/background_position_logical_test.rs`)
+- Unit tests live under `src/style/` (search for `background_position_logical_`)
   - Covers inline/block position/size for `horizontal-tb`, `vertical-rl`, `sideways-lr`, `sideways-rl`
   - Also covers `background-position-x/y` longhands
   - `background-size-y` is deprecated in specs, but is still parsed/mapped and tested here
