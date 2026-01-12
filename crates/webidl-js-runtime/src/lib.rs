@@ -12,7 +12,7 @@ pub mod conversions;
 pub mod ecma_runtime;
 pub mod overload_resolution;
 pub mod runtime;
-pub mod to_js;
+pub mod vmjs;
 
 pub use conversions::{convert_arguments, convert_to_idl, ArgumentSchema, ConvertedValue};
 pub use ecma_runtime::VmJsRuntime;
@@ -24,7 +24,6 @@ pub use runtime::{
   interface_id_from_name, InterfaceId, IteratorRecord, JsOwnPropertyDescriptor, JsPropertyKind,
   JsRuntime, NativeHostFunction, WebIdlBindingsRuntime, WebIdlHooks, WebIdlJsRuntime, WebIdlLimits,
 };
-pub use to_js::{to_js, to_js_with_limits, ToJsLimits};
 
 // Re-export the canonical runtime trait from `vendor/ecma-rs/webidl` under an explicit name so
 // callers can migrate without conflicting with this crate's legacy runtime traits.
