@@ -30,6 +30,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tempfile::TempDir;
+use target_lexicon::Triple;
 use typecheck_ts::{BodyCheckResult, FileId, FileKey, Host, Program};
 /// Parse + typecheck a TypeScript program and then validate that it fits the
 /// strict native-js subset.
@@ -72,6 +73,9 @@ pub fn compile_llvm_ir_to_artifact(
     return Err(NativeJsError::UnsupportedPlatform {
       target_os: std::env::consts::OS.to_string(),
     });
+  }
+  if matches!(opts.emit, EmitKind::Executable) {
+    ensure_executable_target_supported(opts.target.as_ref())?;
   }
 
   let (out_path, out_tempdir) = resolve_output_path(opts.emit, opts.debug, output_path)?;
@@ -143,6 +147,7 @@ pub fn compile_llvm_ir_to_artifact(
             link::LinkOpts {
               pie: opts.pie,
               debug: opts.debug,
+              target: opts.target.clone(),
               ..Default::default()
             },
             std::slice::from_ref(&runtime_native_a),
@@ -549,6 +554,7 @@ impl<'a> Compiler<'a> {
             target_os: std::env::consts::OS.to_string(),
           });
         }
+        ensure_executable_target_supported(self.opts.target.as_ref())?;
 
         let runtime_native_a = require_runtime_native_staticlib()?;
 
@@ -584,6 +590,7 @@ impl<'a> Compiler<'a> {
           link::LinkOpts {
             pie: self.opts.pie,
             debug: self.opts.debug,
+            target: self.opts.target.clone(),
             ..Default::default()
           },
           std::slice::from_ref(&runtime_native_a),
@@ -672,6 +679,28 @@ struct LoadedProgram {
   checked_bodies: BTreeMap<BodyId, Arc<BodyCheckResult>>,
   #[allow(dead_code)]
   entrypoint: crate::strict::Entrypoint,
+}
+
+fn ensure_executable_target_supported(target: Option<&Triple>) -> Result<(), NativeJsError> {
+  let Some(target) = target else {
+    return Ok(());
+  };
+
+  // `clang -target <triple>` needs an appropriate sysroot/C runtime for the requested target. For
+  // now, we only support linking "host-like" executables (same arch/os/env as the compiler).
+  let host = Triple::host();
+  if target.architecture != host.architecture
+    || target.operating_system != host.operating_system
+    || target.environment != host.environment
+    || target.binary_format != host.binary_format
+  {
+    return Err(NativeJsError::UnsupportedFeature(format!(
+      "native-js does not yet support cross-compiling executables (requested target `{target}`, host target `{host}`). \
+Cross-linking requires a target sysroot and C runtime for clang."
+    )));
+  }
+
+  Ok(())
 }
 
 impl LoadedProgram {

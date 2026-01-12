@@ -366,6 +366,51 @@ fn build_and_run_returns_exit_code() {
 }
 
 #[test]
+fn build_with_target_triple_succeeds() {
+  let tmp = TempDir::new().unwrap();
+  let entry = tmp.path().join("entry.ts");
+  fs::write(&entry, "export function main(): number { return 0; }\n").unwrap();
+
+  let out = tmp.path().join("out-bin");
+  native_js()
+    .timeout(CLI_TIMEOUT)
+    .arg("--target")
+    .arg("x86_64-unknown-linux-gnu")
+    .arg("build")
+    .arg(&entry)
+    .arg("-o")
+    .arg(&out)
+    .assert()
+    .success();
+
+  let output = StdCommand::new(&out).output().unwrap();
+  assert_eq!(output.status.code(), Some(0), "unexpected status {:?}", output.status);
+  assert!(
+    output.stdout.is_empty(),
+    "expected stdout to be empty, got: {}",
+    String::from_utf8_lossy(&output.stdout)
+  );
+}
+
+#[test]
+fn invalid_target_triple_is_rejected_by_cli() {
+  let tmp = TempDir::new().unwrap();
+  let entry = tmp.path().join("entry.ts");
+  fs::write(&entry, "export function main(): number { return 0; }\n").unwrap();
+
+  native_js()
+    .timeout(CLI_TIMEOUT)
+    .arg("--target")
+    .arg("definitely-not-a-triple")
+    .arg("check")
+    .arg(&entry)
+    .assert()
+    .failure()
+    .code(2)
+    .stderr(predicate::str::contains("invalid --target"));
+}
+
+#[test]
 fn build_and_run_returns_boolean_exit_code() {
   let tmp = TempDir::new().unwrap();
   let entry = tmp.path().join("entry.ts");

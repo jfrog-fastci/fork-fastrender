@@ -37,6 +37,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::process::Stdio;
+use target_lexicon::Triple;
 
 const RUNTIME_NATIVE_STATICLIB_FILENAME: &str = "libruntime_native.a";
 
@@ -55,13 +56,18 @@ pub enum LinkerFlavor {
 }
 
 /// Options controlling how we link generated artifacts into an executable.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct LinkOpts {
   /// If true, pass `-Wl,--gc-sections` to the linker.
   ///
   /// Note: stackmaps are still retained via our linker script fragment (`KEEP(*(...))`).
   pub gc_sections: bool,
   pub linker: LinkerFlavor,
+  /// Target triple to link for.
+  ///
+  /// When set, this is passed through to `clang -target <triple>` so linking does not depend on the
+  /// toolchain default.
+  pub target: Option<Triple>,
   /// Whether to produce a PIE executable.
   ///
   /// Ubuntu toolchains default to PIE, but LLVM stackmaps contain absolute relocations against
@@ -89,6 +95,7 @@ impl Default for LinkOpts {
     Self {
       gc_sections: true,
       linker: LinkerFlavor::default(),
+      target: None,
       pie: false,
       debug: false,
     }
@@ -117,7 +124,7 @@ const LLVM_STACKMAPS_LD_NOPIE_FRAGMENT: &str =
 const LLVM_STACKMAPS_LD_GNULD_FRAGMENT: &str =
   include_str!("../../runtime-native/link/stackmaps_gnuld.ld");
 
-fn stackmaps_linker_script_fragment(opts: LinkOpts) -> &'static str {
+fn stackmaps_linker_script_fragment(opts: &LinkOpts) -> &'static str {
   if cfg!(target_os = "linux") && !opts.pie {
     // GNU ld can merge a writable stackmaps section into the text PT_LOAD when a script fragment
     // inserts it immediately after `.text` (RWX). Prefer the GNU ld fragment in System mode so
@@ -139,7 +146,7 @@ fn stackmaps_linker_script_fragment(opts: LinkOpts) -> &'static str {
   }
 }
 
-fn write_stackmaps_linker_script(path: &Path, opts: LinkOpts) -> anyhow::Result<()> {
+fn write_stackmaps_linker_script(path: &Path, opts: &LinkOpts) -> anyhow::Result<()> {
   fs::write(path, stackmaps_linker_script_fragment(opts)).with_context(|| {
     format!(
       "failed to write linker script fragment to {}",
@@ -257,10 +264,22 @@ pub fn link_elf_executable(output_path: &Path, object_files: &[PathBuf]) -> anyh
 pub fn link_elf_executable_with_options_and_static_libs(
   output_path: &Path,
   object_files: &[PathBuf],
-  opts: LinkOpts,
+  mut opts: LinkOpts,
   extra_static_libs: &[PathBuf],
 ) -> anyhow::Result<()> {
   let clang = find_clang().context("unable to locate clang (expected `clang-18` or `clang`)")?;
+
+  // Prefer lld for deterministic links, but allow falling back to the system linker when `ld.lld`
+  // isn't available in PATH (common on developer machines that only have `clang` installed).
+  let lld = if matches!(opts.linker, LinkerFlavor::Lld) {
+    lld_fuse_arg()
+  } else {
+    None
+  };
+  if matches!(opts.linker, LinkerFlavor::Lld) && lld.is_none() {
+    opts.linker = LinkerFlavor::System;
+  }
+
   let out_dir = output_path
     .parent()
     .context("output_path must have a parent directory")?;
@@ -282,7 +301,7 @@ pub fn link_elf_executable_with_options_and_static_libs(
   let script_dir =
     tempfile::tempdir().context("failed to create tempdir for stackmaps linker script")?;
   let script_path = script_dir.path().join("llvm_stackmaps.ld");
-  write_stackmaps_linker_script(&script_path, opts)?;
+  write_stackmaps_linker_script(&script_path, &opts)?;
 
   // Relocate `.llvm_stackmaps` / `.llvm_faultmaps` into
   // `.data.rel.ro.llvm_stackmaps` / `.data.rel.ro.llvm_faultmaps` in the input objects so lld can
@@ -332,6 +351,9 @@ pub fn link_elf_executable_with_options_and_static_libs(
 
   let mut cmd = Command::new(clang);
   cmd.arg("-o").arg(output_path);
+  if let Some(target) = opts.target.as_ref() {
+    cmd.arg("-target").arg(target.to_string());
+  }
 
   if opts.debug {
     cmd.arg("-g");
@@ -340,8 +362,9 @@ pub fn link_elf_executable_with_options_and_static_libs(
   match opts.linker {
     LinkerFlavor::System => {}
     LinkerFlavor::Lld => {
-      let lld =
-        lld_fuse_arg().context("unable to locate lld (expected `ld.lld-18` or `ld.lld` in PATH)")?;
+      // `lld` is computed above when `opts.linker == LinkerFlavor::Lld`. If it is missing we
+      // downgrade to `LinkerFlavor::System` so this branch is only entered when lld is available.
+      let lld = lld.expect("lld should be Some when LinkerFlavor::Lld is active");
       cmd.arg(format!("-fuse-ld={lld}"));
     }
   }
@@ -446,7 +469,7 @@ pub fn link_bitcode_to_exe(bitcode: &[u8], opts: LinkOpts) -> anyhow::Result<Vec
 
   fs::write(&bc_path, bitcode)
     .with_context(|| format!("failed to write bitcode to {}", bc_path.display()))?;
-  write_stackmaps_linker_script(&script_path, opts)?;
+  write_stackmaps_linker_script(&script_path, &opts)?;
 
   let mut cmd = Command::new(clang);
   cmd.arg("-flto");
@@ -551,7 +574,7 @@ pub fn link_elf_executable_lto(
     .with_context(|| format!("failed to create output directory {}", out_dir.display()))?;
 
   let script_path = out_dir.join("llvm_stackmaps.ld");
-  write_stackmaps_linker_script(&script_path, opts)?;
+  write_stackmaps_linker_script(&script_path, &opts)?;
 
   let mut cmd = Command::new(clang);
   cmd.arg("-flto=full");
@@ -638,9 +661,10 @@ pub fn link_object_to_executable(
   // - `KEEP`s `.llvm_stackmaps` so `--gc-sections` can't discard it.
   let td = tempfile::tempdir().map_err(crate::NativeJsError::TempDirCreateFailed)?;
   let script_path = td.path().join("fastr_stackmaps.ld");
+  let default_opts = LinkOpts::default();
   fs::write(
     &script_path,
-    stackmaps_linker_script_fragment(LinkOpts::default()),
+    stackmaps_linker_script_fragment(&default_opts),
   )
   .map_err(|source| {
     crate::NativeJsError::Io {

@@ -17,6 +17,7 @@ json5 = { workspace = true }
 native-js = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+target-lexicon = { workspace = true }
 tempfile = { workspace = true }
 typecheck-ts = { workspace = true, features = ["resolve"] }
 walkdir = { workspace = true }

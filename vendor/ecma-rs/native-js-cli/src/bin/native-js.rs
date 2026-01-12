@@ -58,6 +58,13 @@ struct Cli {
   #[arg(long, global = true)]
   opt: Option<u8>,
 
+  /// Target triple to compile and link for (e.g. `x86_64-unknown-linux-gnu`).
+  ///
+  /// When provided, this is passed through to both LLVM codegen and the system linker driver
+  /// (`clang -target <triple>`). Cross-compiling executables is not supported yet.
+  #[arg(long, value_name = "TRIPLE", global = true)]
+  target: Option<String>,
+
   /// Best-effort debug build (passes `-g` to the system linker).
   #[arg(long, global = true)]
   debug: bool,
@@ -165,6 +172,19 @@ fn main() -> ExitCode {
     return ExitCode::from(2);
   }
 
+  let target = match cli.target.as_deref() {
+    Some(raw) => match raw.parse::<target_lexicon::Triple>() {
+      Ok(triple) => Some(triple),
+      Err(err) => {
+        return exit_internal_without_program(
+          cli.json,
+          format!("invalid --target={raw} (expected a target triple like `x86_64-unknown-linux-gnu`): {err}"),
+        );
+      }
+    },
+    None => None,
+  };
+
   let render = output::render_options(cli.color, cli.no_color);
   match &cli.command {
     Commands::Check(args) => cmd_check(&cli, &args.entry, render),
@@ -173,11 +193,12 @@ fn main() -> ExitCode {
       &args.entry,
       &args.output,
       args.emit_ir.as_deref(),
+      &target,
       render,
     ),
-    Commands::Run(args) => cmd_run(&cli, &args.entry, &args.args, render),
-    Commands::Bench(args) => cmd_bench(&cli, args, render),
-    Commands::EmitIr(args) => cmd_emit_ir(&cli, &args.entry, &args.output, render),
+    Commands::Run(args) => cmd_run(&cli, &args.entry, &args.args, &target, render),
+    Commands::Bench(args) => cmd_bench(&cli, args, &target, render),
+    Commands::EmitIr(args) => cmd_emit_ir(&cli, &args.entry, &args.output, &target, render),
   }
 }
 
@@ -207,6 +228,7 @@ fn cmd_build(
   entry: &Path,
   output_exe: &Path,
   emit_ir: Option<&Path>,
+  target: &Option<target_lexicon::Triple>,
   render: diagnostics::render::RenderOptions,
 ) -> ExitCode {
   let (program, entry_file) =
@@ -233,6 +255,7 @@ fn cmd_build(
   opts.emit_ir = emit_ir.map(|p| p.to_path_buf());
   opts.debug = cli.debug;
   opts.pie = cli.pie;
+  opts.target = target.clone();
   opts.opt_level = match opt_level(cli.opt.unwrap_or(2)) {
     Ok(level) => level,
     Err(err) => return exit_internal(&program, cli.json, render, err),
@@ -258,6 +281,7 @@ fn cmd_emit_ir(
   cli: &Cli,
   entry: &Path,
   output_ll: &Path,
+  target: &Option<target_lexicon::Triple>,
   render: diagnostics::render::RenderOptions,
 ) -> ExitCode {
   let (program, entry_file) =
@@ -280,6 +304,7 @@ fn cmd_emit_ir(
   opts.emit = native_js::EmitKind::LlvmIr;
   opts.output = Some(output_ll.to_path_buf());
   opts.debug = cli.debug;
+  opts.target = target.clone();
   opts.opt_level = match opt_level(cli.opt.unwrap_or(2)) {
     Ok(level) => level,
     Err(err) => return exit_internal(&program, cli.json, render, err),
@@ -304,6 +329,7 @@ fn cmd_run(
   cli: &Cli,
   entry: &Path,
   args: &[OsString],
+  target: &Option<target_lexicon::Triple>,
   render: diagnostics::render::RenderOptions,
 ) -> ExitCode {
   let dir = match tempdir() {
@@ -314,7 +340,7 @@ fn cmd_run(
   };
   let exe = dir.path().join("out");
 
-  let build_exit = cmd_build(cli, entry, &exe, None, render);
+  let build_exit = cmd_build(cli, entry, &exe, None, target, render);
   if build_exit != ExitCode::SUCCESS {
     return build_exit;
   }
@@ -344,7 +370,12 @@ fn cmd_run(
   }
 }
 
-fn cmd_bench(cli: &Cli, args: &BenchArgs, render: diagnostics::render::RenderOptions) -> ExitCode {
+fn cmd_bench(
+  cli: &Cli,
+  args: &BenchArgs,
+  target: &Option<target_lexicon::Triple>,
+  render: diagnostics::render::RenderOptions,
+) -> ExitCode {
   fn emit_json(payload: &bench::BenchJsonOutput) {
     let stdout = std::io::stdout();
     let mut handle = stdout.lock();
@@ -391,7 +422,11 @@ fn cmd_bench(cli: &Cli, args: &BenchArgs, render: diagnostics::render::RenderOpt
   let exe = dir.path().join("out");
 
   let compile_start = Instant::now();
-  let (program, entry_file) = match load_program(cli, &args.entry) {
+  let (program, entry_file) = match project_load::load_program(
+    cli.project.as_deref(),
+    &args.entry,
+    project_load::LoadMode::Checked,
+  ) {
     Ok(res) => res,
     Err(err) => {
       let compile_time_ms = bench::duration_ms(compile_start.elapsed());
@@ -484,6 +519,7 @@ fn cmd_bench(cli: &Cli, args: &BenchArgs, render: diagnostics::render::RenderOpt
   // Bench builds should be representative "release" builds.
   opts.debug = false;
   opts.pie = cli.pie;
+  opts.target = target.clone();
   opts.opt_level = opt;
 
   if let Err(err) = native_js::compile_program(&program, entry_file, &opts) {
