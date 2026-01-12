@@ -9,6 +9,10 @@ use std::path::Path;
 ///
 /// Module tests need the harness prelude to run as a classic script to populate the global object
 /// before the test body is evaluated as an ECMAScript module.
+///
+/// The marker is intentionally **optional**:
+/// - When the effective harness mode is `none`, there is no harness prelude to separate.
+/// - `flags: [raw]` tests must not have their source modified.
 pub(crate) const MODULE_SEPARATOR_MARKER: &str = "\n/* test262-semantic:module */\n";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -30,19 +34,28 @@ pub fn assemble_source(
   body: &str,
   harness_mode: HarnessMode,
 ) -> Result<String> {
+  let is_raw = frontmatter.flags.iter().any(|f| f == "raw");
+  // `flags: [raw]` requires the test source to be executed verbatim (no harness injection, no
+  // module-separator marker, etc).
+  let harness_mode = if is_raw {
+    HarnessMode::None
+  } else {
+    harness_mode
+  };
+
   let mut out = String::new();
   // Ensure strict-mode variants actually run in strict mode: the directive must appear before any
   // other statements (including harness includes), otherwise the directive prologue is already
   // terminated.
-  if variant == Variant::Strict {
+  //
+  // Do not inject `'use strict'` for `flags: [raw]` tests: those tests must be executed exactly as
+  // authored.
+  if variant == Variant::Strict && !is_raw {
     out.push_str("'use strict';\n\n");
   }
 
   // In `none` mode, do not touch the filesystem at all.
   if harness_mode == HarnessMode::None {
-    if variant == Variant::Module {
-      out.push_str(MODULE_SEPARATOR_MARKER);
-    }
     out.push_str(body);
     return Ok(out);
   }
@@ -308,7 +321,7 @@ mod tests {
   }
 
   #[test]
-  fn module_variant_in_none_mode_still_inserts_separator_marker_without_fs_access() {
+  fn module_variant_in_none_mode_omits_separator_marker_without_fs_access() {
     let dir = tempdir().unwrap();
     let src = assemble_source(
       dir.path(),
@@ -318,6 +331,28 @@ mod tests {
       HarnessMode::None,
     )
     .unwrap();
-    assert_eq!(src, format!("{MODULE_SEPARATOR_MARKER}body();"));
+    assert_eq!(src, "body();");
+  }
+
+  #[test]
+  fn raw_flag_forces_harness_none_and_omits_module_separator() {
+    let dir = tempdir().unwrap();
+    let frontmatter = Frontmatter {
+      flags: vec!["raw".to_string(), "module".to_string()],
+      // If raw incorrectly attempted to load harness includes, this would error because the harness
+      // directory does not exist.
+      includes: vec!["assert.js".to_string(), "missing.js".to_string()],
+      ..Frontmatter::default()
+    };
+    let body = "/*body*/\n";
+    let source = assemble_source(
+      dir.path(),
+      &frontmatter,
+      Variant::Module,
+      body,
+      HarnessMode::Test262,
+    )
+    .unwrap();
+    assert_eq!(source, body);
   }
 }

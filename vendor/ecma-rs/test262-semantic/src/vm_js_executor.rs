@@ -929,6 +929,17 @@ mod tests {
     assert_eq!(js.message, "1");
   }
 
+  #[test]
+  fn module_without_separator_executes_entire_source_as_module() {
+    let exec = VmJsExecutor::default();
+    let cancel = Arc::new(AtomicBool::new(false));
+    let mut case = test_case("module_no_sep.js");
+    case.variant = Variant::Module;
+    exec
+      .execute(&case, "export const x = 1;\n", &cancel)
+      .expect("module should execute");
+  }
+
   fn setup_test262_with_assert() -> tempfile::TempDir {
     let temp = tempdir().unwrap();
     fs::create_dir_all(temp.path().join("harness")).unwrap();
