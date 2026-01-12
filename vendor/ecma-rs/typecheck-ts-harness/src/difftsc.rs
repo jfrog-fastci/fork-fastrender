@@ -705,7 +705,24 @@ fn run_rust_check(
       error: Some(fatal.to_string()),
     },
     Ok(Ok(diags)) => {
-      let mut normalized = crate::diagnostic_norm::normalize_rust_diagnostics(&diags, |id| {
+      // Difftsc fixtures focus on parity for the virtual filesystem under test.
+      // The Rust checker also loads bundled libs; when `skipLibCheck` is disabled
+      // those libs can surface diagnostics that are unrelated to the fixture
+      // itself and would swamp the comparison.
+      //
+      // Filter out diagnostics that originate from files outside the fixture's
+      // `HarnessFileSet` (typically bundled lib files). Keep file-less
+      // diagnostics (e.g. compiler option errors using a placeholder span)
+      // because they can legitimately appear in baselines.
+      let filtered: Vec<_> = diags
+        .into_iter()
+        .filter(|diag| match program.file_key(diag.primary.file) {
+          Some(key) => file_set.name_for_key(&key).is_some(),
+          None => true,
+        })
+        .collect();
+
+      let mut normalized = crate::diagnostic_norm::normalize_rust_diagnostics(&filtered, |id| {
         program
           .file_key(id)
           .and_then(|key| file_set.name_for_key(&key).map(|name| name.to_string()))
@@ -1051,14 +1068,13 @@ fn run_single_test(
   let mut compiler_options = harness_options.to_compiler_options();
   let type_roots = harness_options.type_roots.clone();
   // `typecheck-ts` still ships with an intentionally minimal lib surface (enough for
-  // difftsc progress tracking, not a full TypeScript standard library). Running
-  // difftsc with `skip_lib_check=false` would therefore flood the comparison with
-  // lib-only errors that are not representative of user code or parity with `tsc`.
-  //
-  // Keep the Rust checker in skip-lib-check mode for difftsc runs regardless of
-  // fixture directives; fixtures may still toggle `skipLibCheck` for the `tsc`
-  // side when they need to assert specific diagnostics.
-  compiler_options.skip_lib_check = true;
+  // difftsc progress tracking, not a full TypeScript standard library). Default to
+  // skip-lib-check mode for difftsc runs so we don't flood comparisons with
+  // lib-only errors, but still respect explicit fixture directives (some cases
+  // intentionally set `@skipLibCheck: false` to validate `.d.ts` diagnostics).
+  if harness_options.skip_lib_check.is_none() {
+    compiler_options.skip_lib_check = true;
+  }
   let base_url = harness_options.base_url.clone();
   let paths = harness_options.paths.clone();
   let (host, rust_trace) = if args.trace_resolution {
@@ -2665,6 +2681,53 @@ mod tests {
         .contains("123"),
       "expected timeout error to mention duration; got {:?}",
       diagnostics.error
+    );
+  }
+
+  #[test]
+  fn rust_checker_emits_unresolved_module_for_export_all_in_dts_when_skip_lib_check_disabled() {
+    // Regression test: difftsc includes a fixture that disables skipLibCheck to
+    // assert that unresolved re-exports in `.d.ts` files surface `TS2307`
+    // (mapped from `typecheck-ts`'s `TC1001`).
+    //
+    // Keep this unit test small by disabling the default lib set; we only care
+    // about `.d.ts` module resolution diagnostics.
+    let file_set = HarnessFileSet::new(&[
+      VirtualFile {
+        name: "main.ts".to_string(),
+        content: "import \"./dep\";\nexport {};\n".into(),
+      },
+      VirtualFile {
+        name: "dep.d.ts".to_string(),
+        content: "export * from \"missing\";\nexport {};\n".into(),
+      },
+    ]);
+    let mut compiler_options = CompilerOptions::default();
+    compiler_options.no_default_lib = true;
+    compiler_options.skip_lib_check = false;
+    compiler_options.module_resolution = Some("node".to_string());
+    let host = HarnessHost::new(file_set.clone(), compiler_options, Vec::new());
+    let program = Program::new(host, file_set.root_keys());
+
+    assert!(
+      !program.compiler_options().skip_lib_check,
+      "expected skip_lib_check=false to round-trip through Host::compiler_options"
+    );
+
+    let dep_key = file_set
+      .resolve_ref("/dep.d.ts")
+      .expect("dep.d.ts should be in the harness file set");
+    let dep_id = program.file_id(dep_key).expect("dep.d.ts should be loaded");
+
+    let diagnostics = program.check();
+    assert!(
+      diagnostics.iter().any(|diag| {
+        diag.code.as_str() == typecheck_ts::codes::UNRESOLVED_MODULE.as_str()
+          && diag.primary.file == dep_id
+          && diag.primary.range.start == 14
+          && diag.primary.range.end == 23
+      }),
+      "expected unresolved-module diagnostic for `export * from \"missing\"` in dep.d.ts; got {diagnostics:?}"
     );
   }
 
