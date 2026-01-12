@@ -3071,15 +3071,12 @@ impl Heap {
       110, 103, 68, 97, 116, 97,
     ];
 
-    for entry in &self.symbol_registry {
-      let Ok(js) = self.get_string(entry.key) else {
-        continue;
-      };
-      if js.as_code_units() == STRING_DATA_KEY {
-        return Some(entry.sym);
-      }
+    // The registry is kept sorted by key contents, so this can use binary search instead of an
+    // O(n) scan (important: scripts can grow the global symbol registry arbitrarily).
+    match self.symbol_registry_binary_search_code_units(&STRING_DATA_KEY) {
+      Ok(Ok(idx)) => Some(self.symbol_registry[idx].sym),
+      _ => None,
     }
-    None
   }
 
   pub(crate) fn internal_boolean_data_symbol(&self) -> Option<GcSymbol> {
@@ -4046,6 +4043,30 @@ impl Heap {
       let mid = low + (high - low) / 2;
       let mid_key = self.get_string(self.symbol_registry[mid].key)?;
       match mid_key.cmp(key) {
+        std::cmp::Ordering::Less => {
+          low = mid + 1;
+        }
+        std::cmp::Ordering::Greater => {
+          high = mid;
+        }
+        std::cmp::Ordering::Equal => return Ok(Ok(mid)),
+      }
+    }
+    Ok(Err(low))
+  }
+
+  fn symbol_registry_binary_search_code_units(
+    &self,
+    key: &[u16],
+  ) -> Result<Result<usize, usize>, VmError> {
+    // Manual binary search so we can compare by string contents (not by handle identity), without
+    // constructing a temporary `JsString`.
+    let mut low = 0usize;
+    let mut high = self.symbol_registry.len();
+    while low < high {
+      let mid = low + (high - low) / 2;
+      let mid_key = self.get_string(self.symbol_registry[mid].key)?;
+      match mid_key.as_code_units().cmp(key) {
         std::cmp::Ordering::Less => {
           low = mid + 1;
         }
