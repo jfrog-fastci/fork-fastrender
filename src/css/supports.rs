@@ -77,9 +77,10 @@ fn strip_trailing_important(value: &str) -> &str {
   if matches!(last, Some((SignificantToken::ImportantIdent, _)))
     && matches!(second_last, Some((SignificantToken::Bang, _)))
   {
-    let bang_state = second_last.expect("matched Some above").1;
-    parser.reset(&bang_state);
-    return trim_ascii_whitespace(parser.slice_from(start));
+    if let Some((SignificantToken::Bang, bang_state)) = second_last {
+      parser.reset(&bang_state);
+      return trim_ascii_whitespace(parser.slice_from(start));
+    }
   }
 
   trimmed

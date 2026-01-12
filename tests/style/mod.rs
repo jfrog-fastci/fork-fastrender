@@ -134,6 +134,7 @@ mod style_containment_quotes_test;
 mod style_properties_no_panic_regression_test;
 mod styled_node_shallow_dom_clone;
 mod supports_rule_test;
+mod supports_important_stripping_test;
 mod supports_selector_forgiving_list_test;
 mod supports_selector_namespace_test;
 mod supports_selector_test;
