@@ -621,21 +621,65 @@ pub fn chrome_ui(
     });
   });
 
+  // ---------------------------------------------------------------------------
+  // Hovered-link status
+  // ---------------------------------------------------------------------------
+  //
+  // Canonical UX: show hovered URLs in a dedicated bottom status bar (browser-like).
+  //
+  // We intentionally avoid also rendering an in-page hover overlay: it duplicates the URL and can
+  // look messy on top of page content.
+  //
   // Always reserve space for the status bar so showing/hiding the hovered URL doesn't change the
   // page viewport size (which would trigger needless repaints and can cause hover flicker).
-  let status_text = app
+  const STATUS_BAR_HEIGHT: f32 = 24.0;
+  let hovered_url = app
     .active_tab()
     .and_then(|t| t.hovered_url.as_deref())
-    .map(|s| s.trim())
-    .filter(|s| !s.is_empty())
-    .unwrap_or(" ");
+    .map(str::trim)
+    .filter(|s| !s.is_empty());
 
   egui::TopBottomPanel::bottom("status_bar")
     .resizable(false)
-    .default_height(18.0)
+    .default_height(STATUS_BAR_HEIGHT)
+    .min_height(STATUS_BAR_HEIGHT)
+    .max_height(STATUS_BAR_HEIGHT)
     .show(ctx, |ui| {
       ui.horizontal(|ui| {
-        ui.add(egui::Label::new(egui::RichText::new(status_text).small()).wrap(false));
+        ui.add_space(4.0);
+
+        if let Some(url) = hovered_url {
+          let visuals = ui.visuals();
+          let frame = egui::Frame::none()
+            .fill(visuals.widgets.inactive.bg_fill)
+            .stroke(visuals.widgets.inactive.bg_stroke)
+            .rounding(egui::Rounding::same(4.0))
+            .inner_margin(egui::Margin::symmetric(8.0, 2.0));
+          frame.show(ui, |ui| {
+            // Use a read-only `TextEdit` so the hovered URL is selectable/copyable.
+            let mut url_owned = url.to_string();
+            let max_width = ui.available_width().min(600.0);
+            let desired_width = ui
+              .fonts(|f| {
+                let font_id = egui::TextStyle::Small.resolve(ui.style());
+                f.layout_no_wrap(url_owned.clone(), font_id, ui.visuals().text_color())
+              })
+              .size()
+              .x
+              .min(max_width);
+            ui.add(
+              egui::TextEdit::singleline(&mut url_owned)
+                .id(ui.make_persistent_id("hovered_url_status_text"))
+                .font(egui::TextStyle::Small)
+                .desired_width(desired_width)
+                .interactive(false)
+                .frame(false),
+            );
+          });
+        } else {
+          // Preserve the bar height even when no URL is displayed.
+          ui.add(egui::Label::new(egui::RichText::new(" ").small()));
+        }
       });
     });
 
