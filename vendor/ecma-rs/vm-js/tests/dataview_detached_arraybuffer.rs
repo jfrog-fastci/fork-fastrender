@@ -84,6 +84,29 @@ fn dataview_getters_throw_on_detached_arraybuffer() -> Result<(), VmError> {
 }
 
 #[test]
+fn dataview_buffer_getter_returns_detached_buffer() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let ab = rt.exec_script("var ab = new ArrayBuffer(8); var dv = new DataView(ab, 1, 2); ab")?;
+  let Value::Object(ab) = ab else {
+    panic!("expected ArrayBuffer object");
+  };
+
+  rt.heap_mut().detach_array_buffer(ab)?;
+
+  let value = rt.exec_script(
+    r#"
+    // `DataView.prototype.buffer` should still return the backing ArrayBuffer even when detached.
+    var ok = dv.buffer === ab;
+    ok = ok && dv.buffer.byteLength === 0 && ab.byteLength === 0;
+    ok
+  "#,
+  )?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
 fn dataview_methods_throw_on_detached_arraybuffer() -> Result<(), VmError> {
   let mut rt = new_runtime();
 
