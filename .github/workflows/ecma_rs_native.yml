@@ -105,12 +105,6 @@ jobs:
       - name: TypeScript version sync (ecma-rs)
         run: bash vendor/ecma-rs/scripts/check_typescript_version_sync.sh
 
-      - name: Lint committed TypeScript baselines (ecma-rs)
-        working-directory: vendor/ecma-rs
-        env:
-          FASTR_CARGO_LOCK_DIR: target/.cargo_agent_locks
-        run: bash scripts/cargo_agent.sh run -p typecheck-ts-harness -- lint-baselines
-
       - name: Cache cargo registry (ecma-rs native)
         uses: actions/cache@v4
         with:
@@ -137,6 +131,12 @@ jobs:
 
       - name: Diagnostic code policy
         run: bash vendor/ecma-rs/scripts/check_diagnostic_codes.sh
+
+      - name: Lint committed TypeScript baselines (ecma-rs)
+        working-directory: vendor/ecma-rs
+        env:
+          FASTR_CARGO_LOCK_DIR: target/.cargo_agent_locks
+        run: bash scripts/cargo_agent.sh run -p typecheck-ts-harness -- lint-baselines
 
       - name: LLVM statepoint stackmap ABI (scripts)
         run: |
