@@ -14,7 +14,8 @@ fn optimized_debuginfo_emits_dbg_value_intrinsics() {
     r#"
 export function main(): number {
   let x = 1;
-  x = x + 2;
+  let y = 2;
+  x = x && y;
   return x;
 }
 "#,
@@ -38,4 +39,3 @@ export function main(): number {
 
   let _ = std::fs::remove_file(&artifact.path);
 }
-

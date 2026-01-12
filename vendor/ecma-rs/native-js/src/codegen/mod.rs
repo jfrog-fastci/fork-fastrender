@@ -1984,8 +1984,7 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
       .expect("failed to build logical-and rhs branch");
 
     self.builder.position_at_end(end_bb);
-    self.dbg_value_locals_from_slots(span.range);
-    match expected {
+    let out = match expected {
       TsAbiKind::Void => {
         if lhs.kind() != TsAbiKind::Void || rhs.kind() != TsAbiKind::Void {
           return Err(vec![codes::UNSUPPORTED_NATIVE_TYPE.error(
@@ -1993,7 +1992,7 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
             span,
           )]);
         }
-        Ok(NativeValue::Void)
+        NativeValue::Void
       }
       TsAbiKind::Number => {
         let (NativeValue::Number(lhs), NativeValue::Number(rhs)) = (lhs, rhs) else {
@@ -2007,7 +2006,7 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
           .build_phi(self.cg.f64_ty, "land")
           .expect("failed to build phi");
         phi.add_incoming(&[(&lhs, lhs_bb), (&rhs, rhs_end_bb)]);
-        Ok(NativeValue::Number(phi.as_basic_value().into_float_value()))
+        NativeValue::Number(phi.as_basic_value().into_float_value())
       }
       TsAbiKind::Boolean => {
         let (NativeValue::Boolean(lhs), NativeValue::Boolean(rhs)) = (lhs, rhs) else {
@@ -2021,9 +2020,14 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
           .build_phi(self.cg.i1_ty, "land")
           .expect("failed to build phi");
         phi.add_incoming(&[(&lhs, lhs_bb), (&rhs, rhs_end_bb)]);
-        Ok(NativeValue::Boolean(phi.as_basic_value().into_int_value()))
+        NativeValue::Boolean(phi.as_basic_value().into_int_value())
       }
-    }
+    };
+    // Note: `dbg_value_locals_from_slots` emits loads (non-PHI instructions). Ensure it runs *after*
+    // any PHI construction in this merge block so we don't violate LLVM's "PHIs must come first"
+    // verifier rule.
+    self.dbg_value_locals_from_slots(span.range);
+    Ok(out)
   }
 
   fn codegen_logical_or(
@@ -2060,8 +2064,7 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
       .expect("failed to build logical-or rhs branch");
 
     self.builder.position_at_end(end_bb);
-    self.dbg_value_locals_from_slots(span.range);
-    match expected {
+    let out = match expected {
       TsAbiKind::Void => {
         if lhs.kind() != TsAbiKind::Void || rhs.kind() != TsAbiKind::Void {
           return Err(vec![codes::UNSUPPORTED_NATIVE_TYPE.error(
@@ -2069,7 +2072,7 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
             span,
           )]);
         }
-        Ok(NativeValue::Void)
+        NativeValue::Void
       }
       TsAbiKind::Number => {
         let (NativeValue::Number(lhs), NativeValue::Number(rhs)) = (lhs, rhs) else {
@@ -2083,7 +2086,7 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
           .build_phi(self.cg.f64_ty, "lor")
           .expect("failed to build phi");
         phi.add_incoming(&[(&lhs, lhs_bb), (&rhs, rhs_end_bb)]);
-        Ok(NativeValue::Number(phi.as_basic_value().into_float_value()))
+        NativeValue::Number(phi.as_basic_value().into_float_value())
       }
       TsAbiKind::Boolean => {
         let (NativeValue::Boolean(lhs), NativeValue::Boolean(rhs)) = (lhs, rhs) else {
@@ -2097,9 +2100,14 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
           .build_phi(self.cg.i1_ty, "lor")
           .expect("failed to build phi");
         phi.add_incoming(&[(&lhs, lhs_bb), (&rhs, rhs_end_bb)]);
-        Ok(NativeValue::Boolean(phi.as_basic_value().into_int_value()))
+        NativeValue::Boolean(phi.as_basic_value().into_int_value())
       }
-    }
+    };
+    // Note: `dbg_value_locals_from_slots` emits loads (non-PHI instructions). Ensure it runs *after*
+    // any PHI construction in this merge block so we don't violate LLVM's "PHIs must come first"
+    // verifier rule.
+    self.dbg_value_locals_from_slots(span.range);
+    Ok(out)
   }
 
   fn codegen_comma(&mut self, left: ExprId, right: ExprId) -> Result<NativeValue<'ctx>, Vec<Diagnostic>> {
