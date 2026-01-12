@@ -1,8 +1,8 @@
-use knowledge_base::ApiDatabase;
 use hir_js::{
   Body, BodyId, ExprId, ExprKind, ImportKind, Literal, LowerResult, NameId, ObjectKey, PatId,
   PatKind, StmtKind,
 };
+use knowledge_base::ApiDatabase;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 
@@ -17,10 +17,11 @@ impl LexicalDecls {
   }
 
   fn shadows_at(&self, name: NameId, offset: u32) -> bool {
-    self
-      .ranges
-      .get(&name)
-      .is_some_and(|ranges| ranges.iter().any(|(start, end)| *start <= offset && offset < *end))
+    self.ranges.get(&name).is_some_and(|ranges| {
+      ranges
+        .iter()
+        .any(|(start, end)| *start <= offset && offset < *end)
+    })
   }
 }
 
@@ -31,8 +32,8 @@ fn strip_transparent_wrappers(body: &Body, mut expr: ExprId) -> ExprId {
     };
     match &node.kind {
       ExprKind::TypeAssertion { expr: inner, .. }
-      | ExprKind::NonNull { expr: inner }
       | ExprKind::Instantiation { expr: inner, .. }
+      | ExprKind::NonNull { expr: inner }
       | ExprKind::Satisfies { expr: inner, .. } => expr = *inner,
       _ => return expr,
     }
@@ -146,7 +147,9 @@ fn collect_lexical_decls(lower: &LowerResult, body: &Body) -> LexicalDecls {
       | StmtKind::With { body: inner, .. } => {
         collect_in_stmt(lower, body, *inner, scope_span, body_span, out);
       }
-      StmtKind::For { init, body: inner, .. } => {
+      StmtKind::For {
+        init, body: inner, ..
+      } => {
         if let Some(init) = init {
           if let hir_js::ForInit::Var(var_decl) = init {
             let mut names = BTreeSet::new();
@@ -170,7 +173,9 @@ fn collect_lexical_decls(lower: &LowerResult, body: &Body) -> LexicalDecls {
 
         collect_in_stmt(lower, body, *inner, scope_span, body_span, out);
       }
-      StmtKind::ForIn { left, body: inner, .. } => {
+      StmtKind::ForIn {
+        left, body: inner, ..
+      } => {
         if let hir_js::ForHead::Var(var_decl) = left {
           let mut names = BTreeSet::new();
           for decl in var_decl.declarators.iter() {
@@ -242,7 +247,14 @@ fn collect_lexical_decls(lower: &LowerResult, body: &Body) -> LexicalDecls {
     }
   }
 
-  collect_in_scope(lower, body, &body.root_stmts, body_span, body_span, &mut decls);
+  collect_in_scope(
+    lower,
+    body,
+    &body.root_stmts,
+    body_span,
+    body_span,
+    &mut decls,
+  );
 
   decls
 }
@@ -355,7 +367,10 @@ fn collect_import_bindings(lower: &LowerResult) -> RequireBindings {
 }
 
 #[cfg(feature = "typed")]
-fn import_specifier_for_def(program: &typecheck_ts::Program, def: typecheck_ts::DefId) -> Option<String> {
+fn import_specifier_for_def(
+  program: &typecheck_ts::Program,
+  def: typecheck_ts::DefId,
+) -> Option<String> {
   // Task 234: prefer the original import specifier captured on the import def.
   // This remains stable even when the resolved file's FileKey is a path or other
   // host-specific identifier (e.g. "node_fs.ts").
@@ -368,7 +383,9 @@ fn import_specifier_for_def(program: &typecheck_ts::Program, def: typecheck_ts::
   // target's specifier when available.
   match program.def_kind(def) {
     Some(typecheck_ts::DefKind::Import(import)) => match import.target {
-      typecheck_ts::ImportTarget::Unresolved { specifier } if !specifier.is_empty() => Some(specifier),
+      typecheck_ts::ImportTarget::Unresolved { specifier } if !specifier.is_empty() => {
+        Some(specifier)
+      }
       typecheck_ts::ImportTarget::File(file) => {
         // Last-resort: avoid leaking filesystem paths into KB keys.
         //
@@ -385,7 +402,10 @@ fn import_specifier_for_def(program: &typecheck_ts::Program, def: typecheck_ts::
 }
 
 #[cfg(feature = "typed")]
-fn collect_import_bindings_typed(program: &typecheck_ts::Program, lower: &LowerResult) -> RequireBindings {
+fn collect_import_bindings_typed(
+  program: &typecheck_ts::Program,
+  lower: &LowerResult,
+) -> RequireBindings {
   let mut bindings = RequireBindings::default();
 
   for import in lower.hir.imports.iter() {
@@ -398,7 +418,8 @@ fn collect_import_bindings_typed(program: &typecheck_ts::Program, lower: &LowerR
             .local_def
             .and_then(|def| match program.def_kind(def) {
               Some(typecheck_ts::DefKind::Import(import)) => {
-                let module = import_specifier_for_def(program, def).unwrap_or_else(|| fallback_module.to_string());
+                let module = import_specifier_for_def(program, def)
+                  .unwrap_or_else(|| fallback_module.to_string());
                 let path = if import.original == "*" {
                   Vec::new()
                 } else {
@@ -418,7 +439,8 @@ fn collect_import_bindings_typed(program: &typecheck_ts::Program, lower: &LowerR
             .local_def
             .and_then(|def| match program.def_kind(def) {
               Some(typecheck_ts::DefKind::Import(import)) => {
-                let module = import_specifier_for_def(program, def).unwrap_or_else(|| fallback_module.to_string());
+                let module = import_specifier_for_def(program, def)
+                  .unwrap_or_else(|| fallback_module.to_string());
                 let path = if import.original == "*" {
                   Vec::new()
                 } else {
@@ -438,7 +460,8 @@ fn collect_import_bindings_typed(program: &typecheck_ts::Program, lower: &LowerR
             .local_def
             .and_then(|def| match program.def_kind(def) {
               Some(typecheck_ts::DefKind::Import(import)) => {
-                let module = import_specifier_for_def(program, def).unwrap_or_else(|| fallback_module.to_string());
+                let module = import_specifier_for_def(program, def)
+                  .unwrap_or_else(|| fallback_module.to_string());
                 let path = if import.original == "*" {
                   Vec::new()
                 } else {
@@ -470,7 +493,8 @@ fn collect_import_bindings_typed(program: &typecheck_ts::Program, lower: &LowerR
           .local_def
           .and_then(|def| match program.def_kind(def) {
             Some(typecheck_ts::DefKind::Import(import)) => {
-              let module = import_specifier_for_def(program, def).unwrap_or_else(|| fallback_module.to_string());
+              let module = import_specifier_for_def(program, def)
+                .unwrap_or_else(|| fallback_module.to_string());
               let path = if import.original == "*" {
                 Vec::new()
               } else {
@@ -553,8 +577,14 @@ fn collect_require_bindings_seeded(
           }
           let resolved = extract_require_member_path(lower, body, init)
             .map(|(module, path)| BindingTarget { module, path })
-            .or_else(|| extract_alias_target(lower, body, init, &available, &out, &local_decls, start));
-          let Some(BindingTarget { module, path: prefix_path }) = resolved else {
+            .or_else(|| {
+              extract_alias_target(lower, body, init, &available, &out, &local_decls, start)
+            });
+          let Some(BindingTarget {
+            module,
+            path: prefix_path,
+          }) = resolved
+          else {
             continue;
           };
           let mut collected = Vec::new();
@@ -640,7 +670,11 @@ fn extract_require_module(lower: &LowerResult, body: &Body, expr: ExprId) -> Opt
   Some(lit.lossy.clone())
 }
 
-fn object_key_to_static_string(lower: &LowerResult, body: &Body, key: &ObjectKey) -> Option<String> {
+fn object_key_to_static_string(
+  lower: &LowerResult,
+  body: &Body,
+  key: &ObjectKey,
+) -> Option<String> {
   match key {
     ObjectKey::Ident(id) => lower.names.resolve(*id).map(|s| s.to_string()),
     ObjectKey::String(s) => Some(s.clone()),
@@ -650,7 +684,9 @@ fn object_key_to_static_string(lower: &LowerResult, body: &Body, key: &ObjectKey
       let expr = body.exprs.get(expr.0 as usize)?;
       match &expr.kind {
         ExprKind::Literal(Literal::String(lit)) => Some(lit.lossy.clone()),
-        ExprKind::Literal(Literal::Number(n)) => Some(crate::js_string::number_literal_to_js_string(n)),
+        ExprKind::Literal(Literal::Number(n)) => {
+          Some(crate::js_string::number_literal_to_js_string(n))
+        }
         ExprKind::Literal(Literal::BigInt(n)) => Some(n.clone()),
         ExprKind::Template(tmpl) if tmpl.spans.is_empty() => Some(tmpl.head.clone()),
         _ => None,
@@ -815,7 +851,7 @@ pub fn resolve_api_call_typed<'a>(
   if call.optional || call.is_new {
     return None;
   }
- 
+
   let use_start = body.exprs[call.callee.0 as usize].span.start;
   let local_decls = collect_lexical_decls(lower, body);
   let mut seed = RequireBindings::default();
@@ -1124,7 +1160,10 @@ mod tests {
         wf('y', 'z');
       "#,
     );
-    assert_eq!(calls, vec!["node:fs.promises.readFile", "node:fs.promises.writeFile"]);
+    assert_eq!(
+      calls,
+      vec!["node:fs.promises.readFile", "node:fs.promises.writeFile"]
+    );
   }
 
   #[test]

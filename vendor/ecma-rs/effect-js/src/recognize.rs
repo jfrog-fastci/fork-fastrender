@@ -30,8 +30,8 @@ fn expr_fingerprint(lowered: &LowerResult, body: BodyId, expr: ExprId) -> Option
   let expr = body_ref.exprs.get(expr.0 as usize)?;
   match &expr.kind {
     ExprKind::TypeAssertion { expr, .. }
-    | ExprKind::NonNull { expr }
     | ExprKind::Instantiation { expr, .. }
+    | ExprKind::NonNull { expr }
     | ExprKind::Satisfies { expr, .. } => expr_fingerprint(lowered, body, *expr),
     ExprKind::Ident(name) => Some(ExprFingerprint::Ident(*name)),
     ExprKind::This => Some(ExprFingerprint::This),
@@ -424,8 +424,8 @@ fn strip_transparent_wrappers(body: &hir_js::Body, mut expr: ExprId) -> ExprId {
     };
     match &node.kind {
       ExprKind::TypeAssertion { expr: inner, .. }
-      | ExprKind::NonNull { expr: inner }
       | ExprKind::Instantiation { expr: inner, .. }
+      | ExprKind::NonNull { expr: inner }
       | ExprKind::Satisfies { expr: inner, .. } => expr = *inner,
       _ => return expr,
     }
@@ -809,7 +809,10 @@ fn collect_reachable_exprs(body: &hir_js::Body) -> std::collections::HashSet<Exp
       ExprKind::Instantiation { expr, .. }
       | ExprKind::TypeAssertion { expr, .. }
       | ExprKind::Satisfies { expr, .. } => visit_expr(body, *expr, reachable),
-      ExprKind::ImportCall { argument, attributes } => {
+      ExprKind::ImportCall {
+        argument,
+        attributes,
+      } => {
         visit_expr(body, *argument, reachable);
         if let Some(attributes) = attributes {
           visit_expr(body, *attributes, reachable);

@@ -1,8 +1,8 @@
 #![cfg(feature = "typed")]
 
 use diagnostics::TextRange;
-use effect_js::{load_default_api_database, resolve_call, resolve_member, ApiId};
 use effect_js::typed::TypedProgram;
+use effect_js::{load_default_api_database, resolve_call, resolve_member, ApiId};
 use hir_js::{BodyId, ExprId, ExprKind};
 use std::sync::Arc;
 use typecheck_ts::lib_support::{CompilerOptions as TsCompilerOptions, LibName};
@@ -63,6 +63,7 @@ export {};
 
 interface URL {
   readonly pathname: string;
+  readonly searchParams: URLSearchParams;
   toString(): string;
 }
 
@@ -80,16 +81,25 @@ declare const URLSearchParams: {
   new (init: string): URLSearchParams;
 };
 
-interface Response {
+declare class Response {
+  readonly ok: boolean;
+  readonly status: number;
   json(): Promise<any>;
 }
 
 declare function fetch(url: string): Promise<Response>;
 
+interface Promise<T> {
+  then<U>(onfulfilled: (value: T) => U): Promise<U>;
+}
+
 new URL("https://x").pathname;
+new URL("https://x").searchParams;
 new URL("https://x").toString();
 new URLSearchParams("a=1").get("a");
-fetch("x").then((r: Response) => r.json());
+fetch("x").then(r => r.status);
+fetch("x").then(r => r.ok);
+fetch("x").then(r => r.json());
 "#;
 
   let file = FileKey::new("index.ts");
@@ -114,7 +124,21 @@ fetch("x").then((r: Response) => r.json());
   let resolved_pathname =
     resolve_member(&kb, lower, pathname_body, pathname_expr, &types).expect("resolve URL.pathname");
   assert_eq!(resolved_pathname.api, "URL.prototype.pathname");
-  assert_eq!(resolved_pathname.api_id, ApiId::from_name("URL.prototype.pathname"));
+  assert_eq!(
+    resolved_pathname.api_id,
+    ApiId::from_name("URL.prototype.pathname")
+  );
+
+  let search_params_span = range_of(source, r#"new URL("https://x").searchParams"#);
+  let (search_params_body, search_params_expr) = find_member_expr(lower, search_params_span);
+  let resolved_search_params =
+    resolve_member(&kb, lower, search_params_body, search_params_expr, &types)
+      .expect("resolve URL.searchParams");
+  assert_eq!(resolved_search_params.api, "URL.prototype.searchParams");
+  assert_eq!(
+    resolved_search_params.api_id,
+    ApiId::from_name("URL.prototype.searchParams")
+  );
 
   let url_to_string_span = range_of(source, r#"new URL("https://x").toString()"#);
   let (to_string_body, to_string_expr) = find_call_expr(lower, url_to_string_span);
@@ -129,7 +153,10 @@ fetch("x").then((r: Response) => r.json());
   )
   .expect("resolve URL.toString()");
   assert_eq!(resolved_to_string.api, "URL.prototype.toString");
-  assert_eq!(resolved_to_string.api_id, ApiId::from_name("URL.prototype.toString"));
+  assert_eq!(
+    resolved_to_string.api_id,
+    ApiId::from_name("URL.prototype.toString")
+  );
 
   let params_get_span = range_of(source, r#"new URLSearchParams("a=1").get("a")"#);
   let (params_body, params_expr) = find_call_expr(lower, params_get_span);
@@ -149,6 +176,26 @@ fetch("x").then((r: Response) => r.json());
     ApiId::from_name("URLSearchParams.prototype.get")
   );
 
+  let status_span = range_of(source, "r.status");
+  let (status_body, status_expr) = find_member_expr(lower, status_span);
+  let resolved_status =
+    resolve_member(&kb, lower, status_body, status_expr, &types).expect("resolve Response.status");
+  assert_eq!(resolved_status.api, "Response.prototype.status");
+  assert_eq!(
+    resolved_status.api_id,
+    ApiId::from_name("Response.prototype.status")
+  );
+
+  let ok_span = range_of(source, "r.ok");
+  let (ok_body, ok_expr) = find_member_expr(lower, ok_span);
+  let resolved_ok =
+    resolve_member(&kb, lower, ok_body, ok_expr, &types).expect("resolve Response.ok");
+  assert_eq!(resolved_ok.api, "Response.prototype.ok");
+  assert_eq!(
+    resolved_ok.api_id,
+    ApiId::from_name("Response.prototype.ok")
+  );
+
   let json_span = range_of(source, "r.json()");
   let (json_body, json_expr) = find_call_expr(lower, json_span);
   let json_body_ref = lower.body(json_body).expect("body");
@@ -162,5 +209,8 @@ fetch("x").then((r: Response) => r.json());
   )
   .expect("resolve Response.json()");
   assert_eq!(resolved_json.api, "Response.prototype.json");
-  assert_eq!(resolved_json.api_id, ApiId::from_name("Response.prototype.json"));
+  assert_eq!(
+    resolved_json.api_id,
+    ApiId::from_name("Response.prototype.json")
+  );
 }

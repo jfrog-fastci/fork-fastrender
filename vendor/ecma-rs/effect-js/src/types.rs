@@ -76,7 +76,10 @@ pub trait TypeProvider {
       match self.type_kind(ty) {
         Some(TypeKindSummary::Array { .. } | TypeKindSummary::Tuple { .. }) => return true,
         Some(TypeKindSummary::Ref { def, .. }) => {
-          if matches!(self.def_name(def).as_deref(), Some("Array" | "ReadonlyArray")) {
+          if matches!(
+            self.def_name(def).as_deref(),
+            Some("Array" | "ReadonlyArray")
+          ) {
             return true;
           }
 
@@ -105,7 +108,9 @@ pub trait TypeProvider {
     for _ in 0..MAX_ALIAS_DEPTH {
       match self.type_kind(ty) {
         Some(
-          TypeKindSummary::String | TypeKindSummary::StringLiteral(_) | TypeKindSummary::TemplateLiteral,
+          TypeKindSummary::String
+          | TypeKindSummary::StringLiteral(_)
+          | TypeKindSummary::TemplateLiteral,
         ) => return true,
         Some(TypeKindSummary::Ref { def, .. }) => {
           let Some(typed) = self.as_typed_program() else {
@@ -133,7 +138,17 @@ pub trait TypeProvider {
     const MAX_ALIAS_DEPTH: usize = 8;
     for _ in 0..MAX_ALIAS_DEPTH {
       let Some(TypeKindSummary::Ref { def, .. }) = self.type_kind(ty) else {
-        return false;
+        // Some concrete nominal types (notably many DOM classes/interfaces) can be
+        // represented as `Object` types by the checker while still having a stable
+        // display name. Fall back to the type display string before giving up.
+        //
+        // This remains conservative in the sense that we still require explicit
+        // typechecker evidence of the nominal name; it just isn't always encoded
+        // as a `Ref` node.
+        return self
+          .display_type(ty)
+          .map(|display| display.trim() == expected)
+          .unwrap_or(false);
       };
 
       if self.def_name(def).as_deref() == Some(expected) {

@@ -257,7 +257,8 @@ impl<'a, 'db, O: TypeOracle> BodyAnalyzer<'a, 'db, O> {
       return self.encoding_of_kb_free_call(call);
     };
 
-    let Some(prop_name) = object_key_to_str(self.body, &self.lowered.names, &member.property) else {
+    let Some(prop_name) = object_key_to_str(self.body, &self.lowered.names, &member.property)
+    else {
       return StringEncoding::Unknown;
     };
 
@@ -393,8 +394,8 @@ fn strip_transparent_wrappers(body: &hir_js::Body, mut expr: ExprId) -> ExprId {
     };
     match &node.kind {
       ExprKind::TypeAssertion { expr: inner, .. }
-      | ExprKind::NonNull { expr: inner }
       | ExprKind::Instantiation { expr: inner, .. }
+      | ExprKind::NonNull { expr: inner }
       | ExprKind::Satisfies { expr: inner, .. } => expr = *inner,
       _ => return expr,
     }
@@ -551,7 +552,9 @@ mod tests {
     let root_body_id = lower.hir.root_body;
     let root_body = &lower.bodies[*lower.body_index.get(&root_body_id).unwrap()];
 
-    let expr_id = find_first_expr(root_body, |kind| matches!(kind, hir_js::ExprKind::Template(_)));
+    let expr_id = find_first_expr(root_body, |kind| {
+      matches!(kind, hir_js::ExprKind::Template(_))
+    });
 
     let kb = KnowledgeBase::default();
     let results = analyze_string_encodings(&lower, &kb);
@@ -566,9 +569,10 @@ mod tests {
     let root_body_id = lower.hir.root_body;
     let root_body = &lower.bodies[*lower.body_index.get(&root_body_id).unwrap()];
 
-    let expr_id = find_first_expr(root_body, |kind| {
-      matches!(kind, hir_js::ExprKind::Call(call) if !call.is_new)
-    });
+    let expr_id = find_first_expr(
+      root_body,
+      |kind| matches!(kind, hir_js::ExprKind::Call(call) if !call.is_new),
+    );
 
     let entries = parse_api_semantics_yaml_str(
       r#"
@@ -591,7 +595,9 @@ mod tests {
     let root_body_id = lower.hir.root_body;
     let root_body = &lower.bodies[*lower.body_index.get(&root_body_id).unwrap()];
 
-    let expr_id = find_first_expr(root_body, |kind| matches!(kind, hir_js::ExprKind::Member(_)));
+    let expr_id = find_first_expr(root_body, |kind| {
+      matches!(kind, hir_js::ExprKind::Member(_))
+    });
 
     let entries = parse_api_semantics_yaml_str(
       r#"
@@ -613,9 +619,9 @@ mod tests {
   #[test]
   fn to_lowercase_preserves_ascii() {
     use crate::typed::TypedProgram;
+    use std::sync::Arc;
     use typecheck_ts::lib_support::{CompilerOptions as TsCompilerOptions, LibName};
     use typecheck_ts::{FileKey, MemoryHost, Program};
-    use std::sync::Arc;
 
     let key = FileKey::new("index.ts");
     let mut host = MemoryHost::with_options(TsCompilerOptions {
@@ -650,9 +656,9 @@ mod tests {
   #[test]
   fn to_lowercase_on_any_is_unknown() {
     use crate::typed::TypedProgram;
+    use std::sync::Arc;
     use typecheck_ts::lib_support::{CompilerOptions as TsCompilerOptions, LibName};
     use typecheck_ts::{FileKey, MemoryHost, Program};
-    use std::sync::Arc;
 
     let key = FileKey::new("index.ts");
     let mut host = MemoryHost::with_options(TsCompilerOptions {
@@ -688,8 +694,8 @@ mod tests {
   fn trim_preserves_ascii_via_kb() {
     use crate::typed::TypedProgram;
     use knowledge_base::{parse_api_semantics_yaml_str, ApiDatabase};
-    use typecheck_ts::lib_support::{CompilerOptions as TsCompilerOptions, LibName};
     use std::sync::Arc;
+    use typecheck_ts::lib_support::{CompilerOptions as TsCompilerOptions, LibName};
     use typecheck_ts::{FileKey, MemoryHost, Program};
 
     let key = FileKey::new("index.ts");

@@ -1,6 +1,6 @@
-use hir_js::{Body, BodyId, ExprId, ExprKind, LowerResult, ObjectKey};
 #[cfg(feature = "hir-semantic-ops")]
 use hir_js::{ArrayChainOp, ArrayElement};
+use hir_js::{Body, BodyId, ExprId, ExprKind, LowerResult, ObjectKey};
 use knowledge_base::{ApiDatabase, ApiId, KnowledgeBase, TargetEnv};
 
 use crate::target::TargetedKb;
@@ -28,7 +28,9 @@ fn static_object_key_name<'a>(
       let expr = body.exprs.get(expr.0 as usize)?;
       match &expr.kind {
         ExprKind::Literal(hir_js::Literal::String(s)) => Some(s.lossy.clone()),
-        ExprKind::Literal(hir_js::Literal::Number(n)) => Some(crate::js_string::number_literal_to_js_string(n)),
+        ExprKind::Literal(hir_js::Literal::Number(n)) => {
+          Some(crate::js_string::number_literal_to_js_string(n))
+        }
         ExprKind::Literal(hir_js::Literal::BigInt(n)) => Some(n.clone()),
         ExprKind::Template(tmpl) if tmpl.spans.is_empty() => Some(tmpl.head.clone()),
         _ => None,
@@ -62,6 +64,7 @@ impl<'a> ApiCallResolver<'a> {
   fn callee_segments(&self, body: BodyId, id: ExprId) -> Option<Vec<String>> {
     let expr = expr(self.lowered, body, id)?;
     match &expr.kind {
+      ExprKind::Instantiation { expr, .. } => self.callee_segments(body, *expr),
       ExprKind::Ident(name) => Some(vec![ident_name(self.lowered, *name)?.to_string()]),
       ExprKind::Member(member) => {
         if member.optional {
@@ -121,7 +124,9 @@ impl<'a> ApiCallResolver<'a> {
       _ => {}
     }
 
-    let ExprKind::Call(call) = &call.kind else { return None };
+    let ExprKind::Call(call) = &call.kind else {
+      return None;
+    };
     // Be conservative around optional chaining and `new` calls.
     if call.optional || call.is_new {
       return None;
@@ -156,7 +161,11 @@ impl<'a> ApiCallResolver<'a> {
   /// This is intentionally more permissive than [`Self::resolve_call_untyped`]:
   /// it may return prototype method identifiers without proving the receiver
   /// type (e.g. treating `x.map(...)` as `Array.prototype.map`).
-  pub(crate) fn resolve_call_best_effort_untyped(&self, body: BodyId, call_expr: ExprId) -> Option<ApiId> {
+  pub(crate) fn resolve_call_best_effort_untyped(
+    &self,
+    body: BodyId,
+    call_expr: ExprId,
+  ) -> Option<ApiId> {
     if let Some(api) = self.resolve_call_untyped(body, call_expr) {
       return Some(api);
     }
@@ -173,12 +182,15 @@ impl<'a> ApiCallResolver<'a> {
       _ => {}
     }
 
-    let ExprKind::Call(call) = &call.kind else { return None };
+    let ExprKind::Call(call) = &call.kind else {
+      return None;
+    };
     if call.optional || call.is_new {
       return None;
     }
 
-    let callee = expr(self.lowered, body, call.callee)?;
+    let callee_id = strip_transparent_wrappers(body_ref, call.callee);
+    let callee = expr(self.lowered, body, callee_id)?;
     let ExprKind::Member(member) = &callee.kind else {
       return None;
     };
@@ -210,9 +222,13 @@ impl<'a> ApiCallResolver<'a> {
     // file keys are host-specific (paths/synthetic IDs), which makes the API key
     // mapping into the knowledge base more reliable.
     if let Some(typed) = types.as_typed_program() {
-      if let Some(api) =
-        crate::resolver::resolve_api_call_typed(self.kb, typed.program(), self.lowered, body, call_expr)
-      {
+      if let Some(api) = crate::resolver::resolve_api_call_typed(
+        self.kb,
+        typed.program(),
+        self.lowered,
+        body,
+        call_expr,
+      ) {
         // Typed resolution here is only for module bindings; avoid resolving
         // prototype methods without explicit receiver gating below.
         if !api.contains(".prototype.") {
@@ -252,7 +268,8 @@ impl<'a> ApiCallResolver<'a> {
       return None;
     }
 
-    let callee = expr(self.lowered, body, call.callee)?;
+    let callee_id = strip_transparent_wrappers(body_ref, call.callee);
+    let callee = expr(self.lowered, body, callee_id)?;
     let ExprKind::Member(member) = &callee.kind else {
       return None;
     };
@@ -406,7 +423,8 @@ fn receiver_is_array_method_receiver(
     return false;
   }
 
-  let Some(callee) = expr(lowered, body, call.callee) else {
+  let callee_id = strip_transparent_wrappers(body_ref, call.callee);
+  let Some(callee) = expr(lowered, body, callee_id) else {
     return false;
   };
   let ExprKind::Member(member) = &callee.kind else {
@@ -420,7 +438,9 @@ fn receiver_is_array_method_receiver(
   };
 
   match prop.as_str() {
-    "map" | "filter" | "flatMap" => receiver_is_array_method_receiver(lowered, body, member.object, types),
+    "map" | "filter" | "flatMap" => {
+      receiver_is_array_method_receiver(lowered, body, member.object, types)
+    }
     _ => false,
   }
 }
@@ -431,9 +451,9 @@ fn strip_transparent_wrappers(body: &Body, mut expr: ExprId) -> ExprId {
       return expr;
     };
     match &node.kind {
-      ExprKind::TypeAssertion { expr: inner, .. }
+      ExprKind::Instantiation { expr: inner, .. }
+      | ExprKind::TypeAssertion { expr: inner, .. }
       | ExprKind::NonNull { expr: inner }
-      | ExprKind::Instantiation { expr: inner, .. }
       | ExprKind::Satisfies { expr: inner, .. } => expr = *inner,
       _ => return expr,
     }
@@ -474,26 +494,22 @@ pub fn resolve_call_for_target(
       // original array argument so `ResolvedCall.args` remains consistent with
       // the `CallExpr` representation (i.e. `Promise.all(<arg0>)`).
       let span = (expr.span.start, expr.span.end);
-      let arg0 = body
-        .exprs
-        .iter()
-        .enumerate()
-        .find_map(|(idx, candidate)| {
-          if candidate.span.start < span.0 || candidate.span.end > span.1 {
-            return None;
+      let arg0 = body.exprs.iter().enumerate().find_map(|(idx, candidate)| {
+        if candidate.span.start < span.0 || candidate.span.end > span.1 {
+          return None;
+        }
+        let ExprKind::Array(arr) = &candidate.kind else {
+          return None;
+        };
+        let mut elements = Vec::with_capacity(arr.elements.len());
+        for element in arr.elements.iter() {
+          match element {
+            ArrayElement::Expr(expr) => elements.push(*expr),
+            ArrayElement::Empty | ArrayElement::Spread(_) => return None,
           }
-          let ExprKind::Array(arr) = &candidate.kind else {
-            return None;
-          };
-          let mut elements = Vec::with_capacity(arr.elements.len());
-          for element in arr.elements.iter() {
-            match element {
-              ArrayElement::Expr(expr) => elements.push(*expr),
-              ArrayElement::Empty | ArrayElement::Spread(_) => return None,
-            }
-          }
-          (elements == promises.as_slice()).then_some(ExprId(idx as u32))
-        });
+        }
+        (elements == promises.as_slice()).then_some(ExprId(idx as u32))
+      });
 
       return Some(ResolvedCall {
         call: call_expr,
@@ -512,26 +528,22 @@ pub fn resolve_call_for_target(
       // original array argument so `ResolvedCall.args` remains consistent with
       // the `CallExpr` representation (i.e. `Promise.race(<arg0>)`).
       let span = (expr.span.start, expr.span.end);
-      let arg0 = body
-        .exprs
-        .iter()
-        .enumerate()
-        .find_map(|(idx, candidate)| {
-          if candidate.span.start < span.0 || candidate.span.end > span.1 {
-            return None;
+      let arg0 = body.exprs.iter().enumerate().find_map(|(idx, candidate)| {
+        if candidate.span.start < span.0 || candidate.span.end > span.1 {
+          return None;
+        }
+        let ExprKind::Array(arr) = &candidate.kind else {
+          return None;
+        };
+        let mut elements = Vec::with_capacity(arr.elements.len());
+        for element in arr.elements.iter() {
+          match element {
+            ArrayElement::Expr(expr) => elements.push(*expr),
+            ArrayElement::Empty | ArrayElement::Spread(_) => return None,
           }
-          let ExprKind::Array(arr) = &candidate.kind else {
-            return None;
-          };
-          let mut elements = Vec::with_capacity(arr.elements.len());
-          for element in arr.elements.iter() {
-            match element {
-              ArrayElement::Expr(expr) => elements.push(*expr),
-              ArrayElement::Empty | ArrayElement::Spread(_) => return None,
-            }
-          }
-          (elements == promises.as_slice()).then_some(ExprId(idx as u32))
-        });
+        }
+        (elements == promises.as_slice()).then_some(ExprId(idx as u32))
+      });
 
       return Some(ResolvedCall {
         call: call_expr,

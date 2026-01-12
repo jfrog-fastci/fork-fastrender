@@ -194,8 +194,8 @@ fn strip_transparent_wrappers(body: &Body, mut expr: ExprId) -> ExprId {
     };
     match &node.kind {
       ExprKind::TypeAssertion { expr: inner, .. }
-      | ExprKind::NonNull { expr: inner }
       | ExprKind::Instantiation { expr: inner, .. }
+      | ExprKind::NonNull { expr: inner }
       | ExprKind::Satisfies { expr: inner, .. } => expr = *inner,
       _ => return expr,
     }
@@ -215,8 +215,8 @@ fn callee_root_ident(body: &Body, mut expr: ExprId) -> Option<NameId> {
         expr = mem.object;
       }
       ExprKind::TypeAssertion { expr: inner, .. }
-      | ExprKind::NonNull { expr: inner }
       | ExprKind::Instantiation { expr: inner, .. }
+      | ExprKind::NonNull { expr: inner }
       | ExprKind::Satisfies { expr: inner, .. } => expr = *inner,
       _ => return None,
     }
@@ -303,14 +303,18 @@ fn stmt_declares_name_anywhere(
     StmtKind::While { body: inner, .. } | StmtKind::DoWhile { body: inner, .. } => {
       stmt_declares_name_anywhere(lowered, body, *inner, name)
     }
-    StmtKind::For { init, body: inner, .. } => {
+    StmtKind::For {
+      init, body: inner, ..
+    } => {
       let init_declares = matches!(init, Some(ForInit::Var(var)) if var
         .declarators
         .iter()
         .any(|decl| pat_binds_name(body, decl.pat, name)));
       init_declares || stmt_declares_name_anywhere(lowered, body, *inner, name)
     }
-    StmtKind::ForIn { left, body: inner, .. } => {
+    StmtKind::ForIn {
+      left, body: inner, ..
+    } => {
       let head_declares = match left {
         ForHead::Pat(pat) => pat_binds_name(body, *pat, name),
         ForHead::Var(var) => var
@@ -342,7 +346,9 @@ fn stmt_declares_name_anywhere(
           .as_ref()
           .is_some_and(|id| stmt_declares_name_anywhere(lowered, body, *id, name))
     }
-    StmtKind::Labeled { body: inner, .. } => stmt_declares_name_anywhere(lowered, body, *inner, name),
+    StmtKind::Labeled { body: inner, .. } => {
+      stmt_declares_name_anywhere(lowered, body, *inner, name)
+    }
     // `with (obj) { ... }` makes identifier resolution dynamic. Be conservative
     // and treat it as shadowing all names.
     StmtKind::With { .. } => true,
@@ -400,7 +406,9 @@ fn static_callee_path(lowered: &LowerResult, body: &Body, expr_id: ExprId) -> Op
           let expr = body.exprs.get(expr.0 as usize)?;
           match &expr.kind {
             ExprKind::Literal(hir_js::Literal::String(lit)) => lit.lossy.clone(),
-            ExprKind::Literal(hir_js::Literal::Number(n)) => crate::js_string::number_literal_to_js_string(n),
+            ExprKind::Literal(hir_js::Literal::Number(n)) => {
+              crate::js_string::number_literal_to_js_string(n)
+            }
             ExprKind::Literal(hir_js::Literal::BigInt(n)) => n.clone(),
             ExprKind::Template(tmpl) if tmpl.spans.is_empty() => tmpl.head.clone(),
             _ => return None,
@@ -410,8 +418,8 @@ fn static_callee_path(lowered: &LowerResult, body: &Body, expr_id: ExprId) -> Op
       Some(format!("{base}.{prop}"))
     }
     ExprKind::TypeAssertion { expr: inner, .. }
-    | ExprKind::NonNull { expr: inner }
     | ExprKind::Instantiation { expr: inner, .. }
+    | ExprKind::NonNull { expr: inner }
     | ExprKind::Satisfies { expr: inner, .. } => static_callee_path(lowered, body, *inner),
     _ => None,
   }

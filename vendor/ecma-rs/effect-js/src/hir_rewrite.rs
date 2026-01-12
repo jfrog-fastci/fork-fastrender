@@ -95,6 +95,10 @@ fn callee_is_supported(body: &Body, expr_id: ExprId) -> bool {
       // `strip_transparent_wrappers` should have removed these.
       false
     }
+    ExprKind::Instantiation { .. } => {
+      // `strip_transparent_wrappers` should have removed these.
+      false
+    }
     // Any other callee shape may have side effects (e.g. `require("x")`, `foo()`, `(cond ? a : b)`)
     // and/or may depend on dynamic `this` binding. Since `KnownApiCall` cannot encode the callee
     // expression, we only rewrite identifier/member-path calls.
@@ -112,9 +116,9 @@ fn static_object_key_is_supported(body: &Body, key: &ObjectKey) -> bool {
       };
       matches!(
         expr.kind,
-        ExprKind::Literal(hir_js::Literal::String(_)
-          | hir_js::Literal::Number(_)
-          | hir_js::Literal::BigInt(_))
+        ExprKind::Literal(
+          hir_js::Literal::String(_) | hir_js::Literal::Number(_) | hir_js::Literal::BigInt(_)
+        )
       )
     }
   }
@@ -127,6 +131,7 @@ fn strip_transparent_wrappers(body: &Body, mut expr: ExprId) -> ExprId {
     };
     match &node.kind {
       ExprKind::TypeAssertion { expr: inner, .. }
+      | ExprKind::Instantiation { expr: inner, .. }
       | ExprKind::NonNull { expr: inner }
       | ExprKind::Instantiation { expr: inner, .. }
       | ExprKind::Satisfies { expr: inner, .. } => expr = *inner,
@@ -212,7 +217,9 @@ fn static_callee_path(lower: &hir_js::LowerResult, body: &Body, expr_id: ExprId)
           let expr = body.exprs.get(expr.0 as usize)?;
           match &expr.kind {
             ExprKind::Literal(hir_js::Literal::String(lit)) => lit.lossy.clone(),
-            ExprKind::Literal(hir_js::Literal::Number(n)) => crate::js_string::number_literal_to_js_string(n),
+            ExprKind::Literal(hir_js::Literal::Number(n)) => {
+              crate::js_string::number_literal_to_js_string(n)
+            }
             ExprKind::Literal(hir_js::Literal::BigInt(n)) => n.clone(),
             _ => return None,
           }
@@ -221,6 +228,7 @@ fn static_callee_path(lower: &hir_js::LowerResult, body: &Body, expr_id: ExprId)
       Some(format!("{base}.{prop}"))
     }
     ExprKind::TypeAssertion { expr: inner, .. }
+    | ExprKind::Instantiation { expr: inner, .. }
     | ExprKind::NonNull { expr: inner }
     | ExprKind::Satisfies { expr: inner, .. } => static_callee_path(lower, body, *inner),
     _ => None,

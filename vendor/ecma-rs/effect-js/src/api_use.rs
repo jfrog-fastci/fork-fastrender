@@ -31,7 +31,9 @@ pub fn resolve_api_use(
     ExprKind::Call(call) => resolve_call_api_use(file, body, call, names, kb),
     ExprKind::Member(member) => resolve_member_api_use(file, body, expr, member, names, kb),
     ExprKind::Ident(_) => resolve_ident_api_use(file, body, expr, names, kb),
-    ExprKind::Assignment { target, .. } => resolve_assignment_api_use(file, body, *target, names, kb),
+    ExprKind::Assignment { target, .. } => {
+      resolve_assignment_api_use(file, body, *target, names, kb)
+    }
     _ => None,
   }
 }
@@ -124,7 +126,10 @@ fn resolve_assignment_api_use(
   }
 }
 
-fn lookup_kb_entry<'a>(kb: &'a KnowledgeBase, path: &str) -> Option<&'a knowledge_base::ApiSemantics> {
+fn lookup_kb_entry<'a>(
+  kb: &'a KnowledgeBase,
+  path: &str,
+) -> Option<&'a knowledge_base::ApiSemantics> {
   kb.get(path).or_else(|| {
     let canonical = strip_global_prefixes(path)?;
     kb.get(canonical)
@@ -172,8 +177,8 @@ fn resolve_expr_path_segments(
   let expr = body.exprs.get(expr.0 as usize)?;
   match &expr.kind {
     ExprKind::TypeAssertion { expr, .. }
-    | ExprKind::NonNull { expr }
     | ExprKind::Instantiation { expr, .. }
+    | ExprKind::NonNull { expr }
     | ExprKind::Satisfies { expr, .. } => {
       resolve_expr_path_segments(file, body, *expr, allow_instance, in_member, names)
     }
@@ -415,7 +420,9 @@ fn object_key_to_string(body: &Body, key: &ObjectKey, names: &NameInterner) -> O
       let expr = body.exprs.get(expr.0 as usize)?;
       match &expr.kind {
         ExprKind::Literal(Literal::String(lit)) => Some(lit.lossy.clone()),
-        ExprKind::Literal(Literal::Number(n)) => Some(crate::js_string::number_literal_to_js_string(n)),
+        ExprKind::Literal(Literal::Number(n)) => {
+          Some(crate::js_string::number_literal_to_js_string(n))
+        }
         ExprKind::Literal(Literal::BigInt(n)) => Some(n.clone()),
         ExprKind::Template(tmpl) if tmpl.spans.is_empty() => Some(tmpl.head.clone()),
         _ => None,
@@ -451,8 +458,8 @@ fn strip_transparent_wrappers(body: &Body, mut expr: ExprId) -> ExprId {
     };
     match &node.kind {
       ExprKind::TypeAssertion { expr: inner, .. }
-      | ExprKind::NonNull { expr: inner }
       | ExprKind::Instantiation { expr: inner, .. }
+      | ExprKind::NonNull { expr: inner }
       | ExprKind::Satisfies { expr: inner, .. } => expr = *inner,
       _ => return expr,
     }
@@ -984,10 +991,7 @@ mod tests {
     ])
   }
 
-  fn find_expr(
-    body: &hir_js::Body,
-    mut predicate: impl FnMut(&ExprKind) -> bool,
-  ) -> ExprId {
+  fn find_expr(body: &hir_js::Body, mut predicate: impl FnMut(&ExprKind) -> bool) -> ExprId {
     for (idx, expr) in body.exprs.iter().enumerate() {
       if predicate(&expr.kind) {
         return ExprId(idx as u32);
@@ -1570,10 +1574,13 @@ mod tests {
     let body = lowered.body(file.root_body).expect("root body");
 
     let call_expr = find_expr(body, |kind| match kind {
-      ExprKind::Call(call) => call.is_new && matches!(
-        body.exprs.get(call.callee.0 as usize).map(|e| &e.kind),
-        Some(ExprKind::Ident(id)) if names.resolve(*id) == Some("Map")
-      ),
+      ExprKind::Call(call) => {
+        call.is_new
+          && matches!(
+            body.exprs.get(call.callee.0 as usize).map(|e| &e.kind),
+            Some(ExprKind::Ident(id)) if names.resolve(*id) == Some("Map")
+          )
+      }
       _ => false,
     });
 
