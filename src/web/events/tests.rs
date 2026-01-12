@@ -1773,101 +1773,81 @@ fn shadow_root_event_path_respects_composed_flag() {
     AddEventListenerOptions::default()
   ));
 
-  let behaviors = [
-    (
-      id_window_capture,
-      Behavior {
-        label: "window_capture",
-        expected_phase: EventPhase::Capturing,
-        expected_current_target: EventTargetId::Window,
-        action: Action::None,
-      },
-    ),
-    (
-      id_document_capture,
-      Behavior {
-        label: "document_capture",
-        expected_phase: EventPhase::Capturing,
-        expected_current_target: EventTargetId::Document,
-        action: Action::None,
-      },
-    ),
-    (
-      id_host_capture,
-      Behavior {
-        label: "host_capture",
-        expected_phase: EventPhase::Capturing,
-        expected_current_target: EventTargetId::Node(host),
-        action: Action::None,
-      },
-    ),
+  #[derive(Debug, Clone, Copy)]
+  struct Expectation {
+    label: &'static str,
+    expected_phase: EventPhase,
+    expected_current_target: EventTargetId,
+    expected_target: EventTargetId,
+  }
+
+  struct ExpectingInvoker {
+    calls: Vec<&'static str>,
+    expectations: HashMap<ListenerId, Expectation>,
+  }
+
+  impl ExpectingInvoker {
+    fn new(expectations: impl IntoIterator<Item = (ListenerId, Expectation)>) -> Self {
+      Self {
+        calls: Vec::new(),
+        expectations: expectations.into_iter().collect(),
+      }
+    }
+  }
+
+  impl EventListenerInvoker for ExpectingInvoker {
+    fn invoke(&mut self, listener_id: ListenerId, event: &mut Event) -> Result<(), DomError> {
+      let expect = *self.expectations.get(&listener_id).unwrap_or_else(|| {
+        panic!("unexpected listener_id during dispatch: {listener_id:?}");
+      });
+      assert_eq!(event.target, Some(expect.expected_target));
+      assert_eq!(event.current_target, Some(expect.expected_current_target));
+      assert_eq!(event.event_phase, expect.expected_phase);
+      self.calls.push(expect.label);
+      Ok(())
+    }
+  }
+
+  // Non-composed events must not escape from the shadow root to the host/document/window. Since the
+  // event never leaves the shadow tree, no retargeting occurs.
+  let mut invoker = ExpectingInvoker::new([
     (
       id_shadow_root_capture,
-      Behavior {
+      Expectation {
         label: "shadow_root_capture",
         expected_phase: EventPhase::Capturing,
         expected_current_target: EventTargetId::Node(shadow_root),
-        action: Action::None,
+        expected_target: EventTargetId::Node(inner),
       },
     ),
     (
       id_inner_capture,
-      Behavior {
+      Expectation {
         label: "inner_capture",
         expected_phase: EventPhase::AtTarget,
         expected_current_target: EventTargetId::Node(inner),
-        action: Action::None,
+        expected_target: EventTargetId::Node(inner),
       },
     ),
     (
       id_inner_bubble,
-      Behavior {
+      Expectation {
         label: "inner_bubble",
         expected_phase: EventPhase::AtTarget,
         expected_current_target: EventTargetId::Node(inner),
-        action: Action::None,
+        expected_target: EventTargetId::Node(inner),
       },
     ),
     (
       id_shadow_root_bubble,
-      Behavior {
+      Expectation {
         label: "shadow_root_bubble",
         expected_phase: EventPhase::Bubbling,
         expected_current_target: EventTargetId::Node(shadow_root),
-        action: Action::None,
+        expected_target: EventTargetId::Node(inner),
       },
     ),
-    (
-      id_host_bubble,
-      Behavior {
-        label: "host_bubble",
-        expected_phase: EventPhase::Bubbling,
-        expected_current_target: EventTargetId::Node(host),
-        action: Action::None,
-      },
-    ),
-    (
-      id_document_bubble,
-      Behavior {
-        label: "document_bubble",
-        expected_phase: EventPhase::Bubbling,
-        expected_current_target: EventTargetId::Document,
-        action: Action::None,
-      },
-    ),
-    (
-      id_window_bubble,
-      Behavior {
-        label: "window_bubble",
-        expected_phase: EventPhase::Bubbling,
-        expected_current_target: EventTargetId::Window,
-        action: Action::None,
-      },
-    ),
-  ];
-
-  // Non-composed events must not escape from the shadow root to the host/document/window.
-  let mut invoker = RecordingInvoker::new(&registry, EventTargetId::Node(inner), behaviors);
+  ]);
   let mut event = Event::new(
     type_,
     EventInit {
@@ -1894,8 +1874,103 @@ fn shadow_root_event_path_respects_composed_flag() {
     ]
   );
 
-  // Composed events do escape the shadow root.
-  let mut invoker = RecordingInvoker::new(&registry, EventTargetId::Node(inner), behaviors);
+  // Composed events do escape the shadow root. Targets outside the shadow tree observe the host as
+  // `event.target` (retargeting).
+  //
+  // Additionally, the shadow-adjusted target causes the host to observe `AT_TARGET` in both capture
+  // and bubble passes (this is different from the normal capturing/bubbling phases).
+  let mut invoker = ExpectingInvoker::new([
+    (
+      id_window_capture,
+      Expectation {
+        label: "window_capture",
+        expected_phase: EventPhase::Capturing,
+        expected_current_target: EventTargetId::Window,
+        expected_target: EventTargetId::Node(host),
+      },
+    ),
+    (
+      id_document_capture,
+      Expectation {
+        label: "document_capture",
+        expected_phase: EventPhase::Capturing,
+        expected_current_target: EventTargetId::Document,
+        expected_target: EventTargetId::Node(host),
+      },
+    ),
+    (
+      id_host_capture,
+      Expectation {
+        label: "host_capture",
+        expected_phase: EventPhase::AtTarget,
+        expected_current_target: EventTargetId::Node(host),
+        expected_target: EventTargetId::Node(host),
+      },
+    ),
+    (
+      id_shadow_root_capture,
+      Expectation {
+        label: "shadow_root_capture",
+        expected_phase: EventPhase::Capturing,
+        expected_current_target: EventTargetId::Node(shadow_root),
+        expected_target: EventTargetId::Node(inner),
+      },
+    ),
+    (
+      id_inner_capture,
+      Expectation {
+        label: "inner_capture",
+        expected_phase: EventPhase::AtTarget,
+        expected_current_target: EventTargetId::Node(inner),
+        expected_target: EventTargetId::Node(inner),
+      },
+    ),
+    (
+      id_inner_bubble,
+      Expectation {
+        label: "inner_bubble",
+        expected_phase: EventPhase::AtTarget,
+        expected_current_target: EventTargetId::Node(inner),
+        expected_target: EventTargetId::Node(inner),
+      },
+    ),
+    (
+      id_shadow_root_bubble,
+      Expectation {
+        label: "shadow_root_bubble",
+        expected_phase: EventPhase::Bubbling,
+        expected_current_target: EventTargetId::Node(shadow_root),
+        expected_target: EventTargetId::Node(inner),
+      },
+    ),
+    (
+      id_host_bubble,
+      Expectation {
+        label: "host_bubble",
+        expected_phase: EventPhase::AtTarget,
+        expected_current_target: EventTargetId::Node(host),
+        expected_target: EventTargetId::Node(host),
+      },
+    ),
+    (
+      id_document_bubble,
+      Expectation {
+        label: "document_bubble",
+        expected_phase: EventPhase::Bubbling,
+        expected_current_target: EventTargetId::Document,
+        expected_target: EventTargetId::Node(host),
+      },
+    ),
+    (
+      id_window_bubble,
+      Expectation {
+        label: "window_bubble",
+        expected_phase: EventPhase::Bubbling,
+        expected_current_target: EventTargetId::Window,
+        expected_target: EventTargetId::Node(host),
+      },
+    ),
+  ]);
   let mut event = Event::new(
     type_,
     EventInit {
@@ -1927,6 +2002,152 @@ fn shadow_root_event_path_respects_composed_flag() {
       "window_bubble"
     ]
   );
+}
+
+#[test]
+fn closed_shadow_root_composed_path_hides_internal_nodes_from_outside() {
+  let html =
+    "<!doctype html><div id=host><template shadowroot=closed><span id=inner></span></template></div>";
+  let doc = crate::dom2::parse_html(html).unwrap();
+  let host = doc.get_element_by_id("host").expect("host element not found");
+  let shadow_root = doc
+    .node(host)
+    .children
+    .iter()
+    .copied()
+    .find(|&child| {
+      matches!(
+        doc.node(child).kind,
+        NodeKind::ShadowRoot {
+          mode: crate::dom::ShadowRootMode::Closed,
+          ..
+        }
+      )
+    })
+    .expect("expected host to have an attached closed shadow root");
+  let inner = find_node_id_anywhere(&doc, "inner").expect("shadow node not found");
+  assert_eq!(doc.containing_shadow_root(inner), Some(shadow_root));
+
+  let registry = EventListenerRegistry::new();
+  let type_ = "x";
+
+  let id_document_capture = ListenerId::new(1);
+  let id_inner = ListenerId::new(2);
+
+  assert!(registry.add_event_listener(
+    EventTargetId::Document,
+    type_,
+    id_document_capture,
+    AddEventListenerOptions {
+      capture: true,
+      ..Default::default()
+    }
+  ));
+  assert!(registry.add_event_listener(
+    EventTargetId::Node(inner),
+    type_,
+    id_inner,
+    AddEventListenerOptions::default()
+  ));
+
+  struct ComposedPathInvoker {
+    calls: Vec<&'static str>,
+    paths: HashMap<&'static str, Vec<EventTargetId>>,
+    host: NodeId,
+    shadow_root: NodeId,
+    inner: NodeId,
+    id_document_capture: ListenerId,
+    id_inner: ListenerId,
+  }
+
+  impl EventListenerInvoker for ComposedPathInvoker {
+    fn invoke(&mut self, listener_id: ListenerId, event: &mut Event) -> Result<(), DomError> {
+      if listener_id == self.id_document_capture {
+        assert_eq!(event.current_target, Some(EventTargetId::Document));
+        assert_eq!(event.event_phase, EventPhase::Capturing);
+        assert_eq!(event.target, Some(EventTargetId::Node(self.host)));
+        self.calls.push("document_capture");
+        self.paths.insert("document_capture", event.composed_path());
+        return Ok(());
+      }
+      if listener_id == self.id_inner {
+        assert_eq!(event.current_target, Some(EventTargetId::Node(self.inner)));
+        assert_eq!(event.event_phase, EventPhase::AtTarget);
+        assert_eq!(event.target, Some(EventTargetId::Node(self.inner)));
+        self.calls.push("inner");
+        self.paths.insert("inner", event.composed_path());
+        return Ok(());
+      }
+
+      panic!("unexpected listener_id during dispatch: {listener_id:?}");
+    }
+  }
+
+  let mut invoker = ComposedPathInvoker {
+    calls: Vec::new(),
+    paths: HashMap::new(),
+    host,
+    shadow_root,
+    inner,
+    id_document_capture,
+    id_inner,
+  };
+
+  let mut event = Event::new(
+    type_,
+    EventInit {
+      bubbles: true,
+      composed: true,
+      ..Default::default()
+    },
+  );
+  dispatch_event(
+    EventTargetId::Node(inner),
+    &mut event,
+    &doc,
+    &registry,
+    &mut invoker,
+  )
+  .unwrap();
+  assert_eq!(invoker.calls.as_slice(), &["document_capture", "inner"]);
+
+  let outside = invoker
+    .paths
+    .get("document_capture")
+    .expect("document_capture should record composed path");
+  assert_eq!(
+    outside.first().copied(),
+    Some(EventTargetId::Node(host)),
+    "outside listeners should observe the host as the first entry"
+  );
+  assert!(
+    !outside.contains(&EventTargetId::Node(inner)),
+    "outside listeners must not observe nodes inside a closed shadow root"
+  );
+  assert!(
+    !outside.contains(&EventTargetId::Node(shadow_root)),
+    "outside listeners must not observe a closed shadow root node in composed_path()"
+  );
+  assert!(outside.contains(&EventTargetId::Document));
+  assert!(outside.contains(&EventTargetId::Window));
+
+  let inside = invoker
+    .paths
+    .get("inner")
+    .expect("inner should record composed path");
+  assert_eq!(
+    inside.get(0).copied(),
+    Some(EventTargetId::Node(inner)),
+    "inside listeners should observe the original target first"
+  );
+  assert_eq!(
+    inside.get(1).copied(),
+    Some(EventTargetId::Node(shadow_root)),
+    "inside listeners should observe the closed shadow root in composed_path()"
+  );
+  assert!(inside.contains(&EventTargetId::Node(host)));
+  assert!(inside.contains(&EventTargetId::Document));
+  assert!(inside.contains(&EventTargetId::Window));
 }
 
 #[test]

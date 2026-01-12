@@ -11017,12 +11017,7 @@ fn event_prototype_composed_path_native(
     let mut path_targets: Vec<web_events::EventTargetId> = Vec::new();
     if let Some(event_id) = event_active_event_id(scope, event_obj)? {
       if let Some(targets) = with_active_event_for_host(host, event_id, |event| {
-        event
-          .path
-          .iter()
-          .rev()
-          .map(|entry| entry.target)
-          .collect::<Vec<_>>()
+        event.composed_path()
       }) {
         path_targets = targets;
       }

@@ -6,10 +6,15 @@
 //! - a listener registry decoupled from `dom2::Node`
 //! - a deterministic, spec-shaped `dispatch_event` algorithm
 //!
-//! Shadow DOM retargeting and full composed-path semantics are intentionally ignored for now, but we
-//! do respect the `Event.composed` boundary for propagation out of a shadow tree.
+//! Shadow DOM retargeting and composed-path semantics are implemented at a minimal spec-shaped
+//! level:
+//! - `Event.target` is retargeted while dispatch is in progress.
+//! - `Event.eventPhase` reports `AT_TARGET` for "shadow-adjusted targets" (e.g. the shadow host)
+//!   even when invoked from the capture/bubble loops.
+//! - `Event::composed_path()` implements closed-shadow-root filtering based on `currentTarget`.
 
 use crate::dom2;
+use crate::dom::ShadowRootMode;
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::any::Any;
 use std::cell::{Cell, RefCell};
@@ -388,11 +393,64 @@ impl Event {
     }
     self.default_prevented = true;
   }
+
+  /// Spec-shaped `Event.composedPath()` helper.
+  ///
+  /// Returns the current dispatch path in target → root order.
+  ///
+  /// Notes:
+  /// - This is only meaningful while dispatch is in progress (i.e. while `event.path` is
+  ///   populated). The dispatch algorithm clears `event.path` before returning.
+  /// - Closed shadow roots are filtered based on `event.currentTarget` (callers outside a closed
+  ///   shadow tree must not observe its internal nodes).
+  pub fn composed_path(&self) -> Vec<EventTargetId> {
+    if self.path.is_empty() {
+      return Vec::new();
+    }
+
+    let Some(current_target) = self.current_target else {
+      // If no currentTarget is set (e.g. not dispatching), return the raw path.
+      return self.path.iter().rev().map(|entry| entry.target).collect();
+    };
+
+    // Find the current target within the dispatch path.
+    //
+    // During dispatch, `currentTarget` must always be an entry in `path`, but keep the algorithm
+    // defensive for host callers that may query `composed_path()` on partially-initialized events.
+    let Some(current_idx) = self
+      .path
+      .iter()
+      .position(|entry| entry.target == current_target)
+    else {
+      return self.path.iter().rev().map(|entry| entry.target).collect();
+    };
+
+    // Closed shadow roots hide everything "below" them (toward the original target) from
+    // `currentTarget` when `currentTarget` is outside that closed tree. This minimal algorithm is:
+    // - Find the first closed shadow root entry after `currentTarget` (toward the original target).
+    // - Drop that closed shadow root and everything deeper.
+    let cutoff = self
+      .path
+      .iter()
+      .enumerate()
+      .skip(current_idx + 1)
+      .find_map(|(idx, entry)| entry.is_closed_shadow_root.then_some(idx))
+      .unwrap_or(self.path.len());
+
+    self
+      .path
+      .iter()
+      .take(cutoff)
+      .rev()
+      .map(|entry| entry.target)
+      .collect()
+  }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EventPathEntry {
   pub target: EventTargetId,
+  pub is_closed_shadow_root: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -834,8 +892,57 @@ fn build_event_path(
   rev.reverse();
   rev
     .into_iter()
-    .map(|target| EventPathEntry { target })
+    .map(|target| {
+      let is_closed_shadow_root = match target {
+        EventTargetId::Node(node_id) => matches!(
+          dom.node(node_id).kind,
+          dom2::NodeKind::ShadowRoot {
+            mode: ShadowRootMode::Closed,
+            ..
+          }
+        ),
+        _ => false,
+      };
+      EventPathEntry {
+        target,
+        is_closed_shadow_root,
+      }
+    })
     .collect()
+}
+
+fn retarget_shadow_dom(
+  dom: &dom2::Document,
+  original_target: EventTargetId,
+  current_target: EventTargetId,
+) -> EventTargetId {
+  let mut candidate = original_target.normalize();
+  let current_target = current_target.normalize();
+
+  loop {
+    let EventTargetId::Node(candidate_node) = candidate else {
+      return candidate;
+    };
+
+    let Some(shadow_root) = dom.containing_shadow_root(candidate_node) else {
+      return candidate;
+    };
+
+    // If the current target is inside the same shadow root, do not retarget.
+    let current_inside_same_root = match current_target {
+      EventTargetId::Node(current_node) => dom.containing_shadow_root(current_node) == Some(shadow_root),
+      _ => false,
+    };
+    if current_inside_same_root {
+      return candidate;
+    }
+
+    // Otherwise, retarget to the shadow root's host.
+    let Some(host) = dom.node(shadow_root).parent else {
+      return candidate;
+    };
+    candidate = EventTargetId::Node(host);
+  }
 }
 
 fn invoke_listeners(
@@ -885,6 +992,7 @@ pub fn dispatch_event(
   invoker: &mut dyn EventListenerInvoker,
 ) -> std::result::Result<bool, DomError> {
   let target = target.normalize();
+  let original_target = target;
   // Reset per-dispatch state. DOM permits re-dispatching the same Event instance; state from prior
   // dispatches must not leak.
   event.target = Some(target);
@@ -918,22 +1026,30 @@ pub fn dispatch_event(
       if event.propagation_stopped {
         break;
       }
-      let target = event.path[idx].target;
-      event.event_phase = EventPhase::Capturing;
-      event.current_target = Some(target);
-      invoke_listeners(target, event, registry, invoker, /* capture */ true)?;
+      let current_target = event.path[idx].target;
+      let retargeted = retarget_shadow_dom(dom, original_target, current_target);
+      event.target = Some(retargeted);
+      event.current_target = Some(current_target);
+      event.event_phase = if retargeted == current_target {
+        EventPhase::AtTarget
+      } else {
+        EventPhase::Capturing
+      };
+      invoke_listeners(current_target, event, registry, invoker, /* capture */ true)?;
     }
 
     // At-target phase: capture listeners then bubble listeners.
     if !event.propagation_stopped {
-      let target = event.path[target_index].target;
+      let current_target = event.path[target_index].target;
+      let retargeted = retarget_shadow_dom(dom, original_target, current_target);
+      event.target = Some(retargeted);
       event.event_phase = EventPhase::AtTarget;
-      event.current_target = Some(target);
+      event.current_target = Some(current_target);
 
-      invoke_listeners(target, event, registry, invoker, /* capture */ true)?;
+      invoke_listeners(current_target, event, registry, invoker, /* capture */ true)?;
 
       if !event.propagation_stopped && !event.immediate_propagation_stopped {
-        invoke_listeners(target, event, registry, invoker, /* capture */ false)?;
+        invoke_listeners(current_target, event, registry, invoker, /* capture */ false)?;
 
         // EventHandler IDL attribute / handler property (e.g. `node.onclick = fn`).
         //
@@ -941,7 +1057,7 @@ pub fn dispatch_event(
         // - it participates in propagation control (`stopPropagation` / `stopImmediatePropagation`), and
         // - it can observe state changes made by `addEventListener` callbacks.
         if !event.immediate_propagation_stopped {
-          invoker.invoke_event_handler_property(target, event)?;
+          invoker.invoke_event_handler_property(current_target, event)?;
         }
       }
     }
@@ -952,16 +1068,24 @@ pub fn dispatch_event(
         if event.propagation_stopped {
           break;
         }
-        let target = event.path[idx].target;
-        event.event_phase = EventPhase::Bubbling;
-        event.current_target = Some(target);
-        invoke_listeners(target, event, registry, invoker, /* capture */ false)?;
+        let current_target = event.path[idx].target;
+        let retargeted = retarget_shadow_dom(dom, original_target, current_target);
+        event.target = Some(retargeted);
+        event.current_target = Some(current_target);
+        event.event_phase = if retargeted == current_target {
+          EventPhase::AtTarget
+        } else {
+          EventPhase::Bubbling
+        };
+        invoke_listeners(current_target, event, registry, invoker, /* capture */ false)?;
       }
     }
 
     Ok(())
   })();
 
+  // Restore `target` to the original dispatch target for post-dispatch observers.
+  event.target = Some(original_target);
   event.event_phase = EventPhase::None;
   event.current_target = None;
   // The DOM dispatch algorithm clears the computed path at the end of dispatch.

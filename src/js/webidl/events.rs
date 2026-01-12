@@ -233,9 +233,10 @@ impl EventWrapper {
           let arr = rt.alloc_array()?;
           let arr_root = rt.heap_mut().add_root(arr)?;
           let res = (|| {
-            for (idx, entry) in event.path.iter().rev().enumerate() {
+            let path = event.composed_path();
+            for (idx, target) in path.iter().copied().enumerate() {
               let key = rt.property_key_from_u32(idx as u32)?;
-              let value = match entry.target {
+              let value = match target {
                 EventTargetId::Window => window_target,
                 EventTargetId::Document => document_target,
                 EventTargetId::Node(node_id) => Value::Number(node_id.index() as f64),
