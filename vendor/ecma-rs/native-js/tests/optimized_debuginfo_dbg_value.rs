@@ -27,7 +27,10 @@ export function main(): number {
   let mut opts = CompilerOptions::default();
   opts.emit = EmitKind::LlvmIr;
   opts.debug = true;
-  opts.opt_level = OptLevel::O2;
+  // `native-js` treats `debug=true` + `opt_level=default()` as an implied debug build and forces
+  // `O0` (see `compiler::effective_opt_level`). Use a non-default opt level so we actually exercise
+  // the optimized-debug-info path (`llvm.dbg.value`).
+  opts.opt_level = OptLevel::O1;
 
   let artifact = compile_program(&program, entry, &opts).expect("compile_program");
   let ir = std::fs::read_to_string(&artifact.path).expect("read IR");
