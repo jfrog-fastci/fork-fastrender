@@ -126,6 +126,7 @@ migrations.
 | `tests/interaction/` | interaction engine tests | `src/interaction/**` | Harness removed; suite is pulled into `tests/integration.rs::interaction` for now, but should eventually migrate to unit tests in `src/interaction/**`. |
 | `tests/js/` | JS subsystem integration tests | `tests/integration.rs::js` | Consolidated into the shared integration binary. |
 | `tests/layout/` | layout regressions, paging, flex/grid/table, etc | `src/layout/**` | Unit tests (bulk of migration). |
+| `tests/misc/` | grab-bag integration tests (legacy bucket) | `tests/integration.rs::misc` + migrate unit tests into `src/**` | Some internal/unit tests have been migrated out already (e.g. composed DOM snapshotting + exportparts algorithm tests are now unit tests in `src/dom.rs`; old files are stubs). |
 | `tests/paint/` + `tests/backdrop/` | paint/backdrop filter/render pipeline tests | `src/paint/**` | Unit tests; move shared Rayon init helper to `src/test_utils` or `tests/common`. |
 | `tests/progress/` | guardrails for committed `progress/` artifacts | `tests/integration.rs::fixtures::progress` | Not library tests; keep in integration. |
 | `tests/ref/` | image diff + ref-test harness utilities | `tests/common/` | Not a binary; used by fixtures/determinism/etc. (may be renamed/moved). |
