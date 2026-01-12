@@ -4,6 +4,8 @@ pub const ABOUT_HELP: &str = "about:help";
 pub const ABOUT_VERSION: &str = "about:version";
 pub const ABOUT_GPU: &str = "about:gpu";
 pub const ABOUT_ERROR: &str = "about:error";
+pub const ABOUT_HISTORY: &str = "about:history";
+pub const ABOUT_BOOKMARKS: &str = "about:bookmarks";
 pub const ABOUT_TEST_SCROLL: &str = "about:test-scroll";
 pub const ABOUT_TEST_HEAVY: &str = "about:test-heavy";
 pub const ABOUT_TEST_FORM: &str = "about:test-form";
@@ -160,6 +162,8 @@ pub fn html_for_about_url(url: &str) -> Option<String> {
     ABOUT_VERSION => Some(version_html()),
     ABOUT_GPU => Some(gpu_html()),
     ABOUT_ERROR => Some(error_html("Navigation error", None, None)),
+    ABOUT_HISTORY => Some(history_html(url)),
+    ABOUT_BOOKMARKS => Some(bookmarks_html(url)),
     ABOUT_TEST_SCROLL => Some(test_scroll_html()),
     ABOUT_TEST_HEAVY => Some(test_heavy_html()),
     ABOUT_TEST_FORM => Some(test_form_html()),
@@ -405,6 +409,14 @@ fn newtab_html() -> String {
             <div class="label">Example page</div>
             <div class="url">https://example.com/</div>
           </a>
+          <a class="btn" href="about:history">
+            <div class="label">History</div>
+            <div class="url">about:history</div>
+          </a>
+          <a class="btn" href="about:bookmarks">
+            <div class="label">Bookmarks</div>
+            <div class="url">about:bookmarks</div>
+          </a>
           <a class="btn" href="about:help">
             <div class="label">Help</div>
             <div class="url">about:help</div>
@@ -504,6 +516,8 @@ fn help_html() -> &'static str {
       <h2>Built-in pages</h2>
       <ul>
         <li><a href=\"about:newtab\">about:newtab</a></li>
+        <li><a href=\"about:history\">about:history</a></li>
+        <li><a href=\"about:bookmarks\">about:bookmarks</a></li>
         <li><a href=\"about:version\">about:version</a></li>
         <li><a href=\"about:gpu\">about:gpu</a></li>
       </ul>
@@ -608,6 +622,272 @@ fn gpu_html() -> String {
     <div class=\"nav\">
       <a href=\"about:newtab\">Back to new tab</a>
     </div>
+  </body>
+</html>"
+  )
+}
+
+fn about_query_param(url: &str, key: &str) -> Option<String> {
+  let (_, query) = url.split_once('?')?;
+  let query = query.split('#').next().unwrap_or(query);
+  let mut out = None;
+  for (k, v) in url::form_urlencoded::parse(query.as_bytes()) {
+    if k == key {
+      out = Some(v.into_owned());
+    }
+  }
+  out
+}
+
+fn contains_case_insensitive(haystack: &str, needle: &str) -> bool {
+  // Lightweight ASCII-only case-insensitive matching (non-ASCII bytes are compared exactly).
+  if needle.is_empty() {
+    return true;
+  }
+
+  let hay = haystack.as_bytes();
+  let needle = needle.as_bytes();
+  if needle.len() > hay.len() {
+    return false;
+  }
+
+  for i in 0..=(hay.len() - needle.len()) {
+    let mut ok = true;
+    for j in 0..needle.len() {
+      if hay[i + j].to_ascii_lowercase() != needle[j].to_ascii_lowercase() {
+        ok = false;
+        break;
+      }
+    }
+    if ok {
+      return true;
+    }
+  }
+
+  false
+}
+
+fn matches_search_tokens(url: &str, title: Option<&str>, tokens: &[&str]) -> bool {
+  if tokens.is_empty() {
+    return true;
+  }
+
+  for token in tokens {
+    let in_url = contains_case_insensitive(url, token);
+    let in_title = title.is_some_and(|t| contains_case_insensitive(t, token));
+    if !in_url && !in_title {
+      return false;
+    }
+  }
+
+  true
+}
+
+fn history_html(full_url: &str) -> String {
+  let query = about_query_param(full_url, "q")
+    .unwrap_or_default()
+    .trim()
+    .to_string();
+  let tokens: Vec<&str> = query.split_whitespace().filter(|t| !t.is_empty()).collect();
+  let safe_query = escape_html(&query);
+
+  let snapshot = about_page_snapshot();
+
+  let mut results_html = String::new();
+  let mut match_count = 0usize;
+  let mut total_count = 0usize;
+  let mut seen_urls = std::collections::HashSet::<&str>::new();
+
+  for entry in snapshot.history.iter() {
+    let url = entry.url.trim();
+    if url.is_empty() {
+      continue;
+    }
+    if !seen_urls.insert(url) {
+      continue;
+    }
+    total_count += 1;
+
+    let title = entry
+      .title
+      .as_deref()
+      .map(str::trim)
+      .filter(|t| !t.is_empty());
+    if !matches_search_tokens(url, title, &tokens) {
+      continue;
+    }
+
+    match_count += 1;
+    let display_title = title.unwrap_or(url);
+    let safe_title = escape_html(display_title);
+    let safe_url = escape_html(url);
+    use std::fmt::Write;
+    let _ = write!(
+      results_html,
+      "<li class=\"item\">\
+         <div class=\"title\"><a href=\"{safe_url}\">{safe_title}</a></div>\
+         <div class=\"url\"><code>{safe_url}</code></div>\
+       </li>"
+    );
+  }
+
+  let body = if match_count == 0 {
+    if tokens.is_empty() {
+      "<p class=\"empty\">No history entries yet.</p>".to_string()
+    } else {
+      format!("<p class=\"empty\">No history results for <code>{safe_query}</code>.</p>")
+    }
+  } else {
+    format!("<ul class=\"list\">{results_html}</ul>")
+  };
+
+  format!(
+    "<!doctype html>
+<html>
+  <head>
+    <meta charset=\"utf-8\">
+    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">
+    <title>History</title>
+    <style>
+      :root {{ color-scheme: light dark; }}
+      body {{ font: 14px/1.45 system-ui, -apple-system, Segoe UI, sans-serif; margin: 24px; }}
+      a {{ color: inherit; }}
+      h1 {{ margin: 0 0 10px; font-size: 20px; }}
+      code {{ padding: 0.1em 0.35em; border-radius: 6px; background: rgba(127,127,127,0.22); word-break: break-all; }}
+
+      .wrap {{ max-width: 900px; }}
+      .sub {{ margin: 0 0 14px; color: rgba(127,127,127,0.95); }}
+      .search {{ display: flex; gap: 8px; margin: 0 0 18px; }}
+      .search input {{ flex: 1; min-width: 0; padding: 8px 10px; border-radius: 10px; border: 1px solid rgba(127,127,127,0.35); background: rgba(127,127,127,0.06); color: inherit; }}
+      .search button {{ padding: 8px 12px; border-radius: 10px; border: 1px solid rgba(127,127,127,0.35); background: rgba(127,127,127,0.10); color: inherit; font-weight: 600; }}
+
+      .list {{ list-style: none; padding: 0; margin: 0; border-radius: 14px; border: 1px solid rgba(127,127,127,0.28); overflow: hidden; }}
+      .item {{ padding: 10px 12px; border-bottom: 1px solid rgba(127,127,127,0.22); }}
+      .item:last-child {{ border-bottom: none; }}
+      .title {{ font-weight: 650; }}
+      .url {{ margin-top: 4px; font-size: 12px; color: rgba(127,127,127,0.95); }}
+      .empty {{ color: rgba(127,127,127,0.95); }}
+      .nav {{ margin-top: 16px; }}
+    </style>
+  </head>
+  <body>
+    <main class=\"wrap\">
+      <h1>History</h1>
+      <p class=\"sub\">Showing {match_count} of {total_count} entries.</p>
+      <form class=\"search\" method=\"get\" action=\"{ABOUT_HISTORY}\">
+        <input type=\"search\" name=\"q\" value=\"{safe_query}\" placeholder=\"Search history\">
+        <button type=\"submit\">Search</button>
+      </form>
+      {body}
+      <div class=\"nav\">
+        <a href=\"about:newtab\">Back to new tab</a>
+      </div>
+    </main>
+  </body>
+</html>"
+  )
+}
+
+fn bookmarks_html(full_url: &str) -> String {
+  let query = about_query_param(full_url, "q")
+    .unwrap_or_default()
+    .trim()
+    .to_string();
+  let tokens: Vec<&str> = query.split_whitespace().filter(|t| !t.is_empty()).collect();
+  let safe_query = escape_html(&query);
+
+  let snapshot = about_page_snapshot();
+
+  let mut results_html = String::new();
+  let mut match_count = 0usize;
+  let mut total_count = 0usize;
+  let mut seen_urls = std::collections::HashSet::<&str>::new();
+
+  for bookmark in snapshot.bookmarks.iter() {
+    let url = bookmark.url.trim();
+    if url.is_empty() {
+      continue;
+    }
+    if !seen_urls.insert(url) {
+      continue;
+    }
+    total_count += 1;
+
+    let title = bookmark
+      .title
+      .as_deref()
+      .map(str::trim)
+      .filter(|t| !t.is_empty());
+    if !matches_search_tokens(url, title, &tokens) {
+      continue;
+    }
+
+    match_count += 1;
+    let display_title = title.unwrap_or(url);
+    let safe_title = escape_html(display_title);
+    let safe_url = escape_html(url);
+    use std::fmt::Write;
+    let _ = write!(
+      results_html,
+      "<li class=\"item\">\
+         <div class=\"title\"><a href=\"{safe_url}\">{safe_title}</a></div>\
+         <div class=\"url\"><code>{safe_url}</code></div>\
+       </li>"
+    );
+  }
+
+  let body = if match_count == 0 {
+    if tokens.is_empty() {
+      "<p class=\"empty\">No bookmarks yet.</p>".to_string()
+    } else {
+      format!("<p class=\"empty\">No bookmarks match <code>{safe_query}</code>.</p>")
+    }
+  } else {
+    format!("<ul class=\"list\">{results_html}</ul>")
+  };
+
+  format!(
+    "<!doctype html>
+<html>
+  <head>
+    <meta charset=\"utf-8\">
+    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">
+    <title>Bookmarks</title>
+    <style>
+      :root {{ color-scheme: light dark; }}
+      body {{ font: 14px/1.45 system-ui, -apple-system, Segoe UI, sans-serif; margin: 24px; }}
+      a {{ color: inherit; }}
+      h1 {{ margin: 0 0 10px; font-size: 20px; }}
+      code {{ padding: 0.1em 0.35em; border-radius: 6px; background: rgba(127,127,127,0.22); word-break: break-all; }}
+
+      .wrap {{ max-width: 900px; }}
+      .sub {{ margin: 0 0 14px; color: rgba(127,127,127,0.95); }}
+      .search {{ display: flex; gap: 8px; margin: 0 0 18px; }}
+      .search input {{ flex: 1; min-width: 0; padding: 8px 10px; border-radius: 10px; border: 1px solid rgba(127,127,127,0.35); background: rgba(127,127,127,0.06); color: inherit; }}
+      .search button {{ padding: 8px 12px; border-radius: 10px; border: 1px solid rgba(127,127,127,0.35); background: rgba(127,127,127,0.10); color: inherit; font-weight: 600; }}
+
+      .list {{ list-style: none; padding: 0; margin: 0; border-radius: 14px; border: 1px solid rgba(127,127,127,0.28); overflow: hidden; }}
+      .item {{ padding: 10px 12px; border-bottom: 1px solid rgba(127,127,127,0.22); }}
+      .item:last-child {{ border-bottom: none; }}
+      .title {{ font-weight: 650; }}
+      .url {{ margin-top: 4px; font-size: 12px; color: rgba(127,127,127,0.95); }}
+      .empty {{ color: rgba(127,127,127,0.95); }}
+      .nav {{ margin-top: 16px; }}
+    </style>
+  </head>
+  <body>
+    <main class=\"wrap\">
+      <h1>Bookmarks</h1>
+      <p class=\"sub\">Showing {match_count} of {total_count} entries.</p>
+      <form class=\"search\" method=\"get\" action=\"{ABOUT_BOOKMARKS}\">
+        <input type=\"search\" name=\"q\" value=\"{safe_query}\" placeholder=\"Search bookmarks\">
+        <button type=\"submit\">Search</button>
+      </form>
+      {body}
+      <div class=\"nav\">
+        <a href=\"about:newtab\">Back to new tab</a>
+      </div>
+    </main>
   </body>
 </html>"
   )
@@ -915,6 +1195,8 @@ mod tests {
       (ABOUT_VERSION, Some("Version")),
       (ABOUT_GPU, Some("GPU")),
       (ABOUT_ERROR, Some("Navigation error")),
+      (ABOUT_HISTORY, Some("History")),
+      (ABOUT_BOOKMARKS, Some("Bookmarks")),
       (ABOUT_TEST_SCROLL, Some("Scroll Test")),
       (ABOUT_TEST_HEAVY, Some("Heavy Test")),
       (ABOUT_TEST_FORM, Some("Form Test")),
@@ -947,7 +1229,14 @@ mod tests {
       "expected about:newtab to set `color-scheme: light dark`"
     );
 
-    for url in ["https://example.com/", ABOUT_HELP, ABOUT_VERSION, ABOUT_GPU] {
+    for url in [
+      "https://example.com/",
+      ABOUT_HISTORY,
+      ABOUT_BOOKMARKS,
+      ABOUT_HELP,
+      ABOUT_VERSION,
+      ABOUT_GPU,
+    ] {
       assert!(
         html.contains(url),
         "expected about:newtab HTML to link to {url}"
@@ -1103,5 +1392,111 @@ mod tests {
       html.contains("omnibox") && html.contains("ArrowDown"),
       "expected about:help HTML to mention omnibox suggestions, got: {html}"
     );
+  }
+
+  #[test]
+  fn escape_html_escapes_html_special_chars() {
+    assert_eq!(
+      escape_html("&<>\"'"),
+      "&amp;&lt;&gt;&quot;&#39;".to_string()
+    );
+  }
+
+  #[test]
+  fn about_history_html_escapes_urls_and_titles() {
+    let _lock = SNAPSHOT_TEST_LOCK
+      .lock()
+      .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let before = about_page_snapshot();
+
+    set_about_page_snapshot(AboutPageSnapshot {
+      bookmarks: Vec::new(),
+      history: vec![HistorySnapshot {
+        title: Some("<script>alert(1)</script>".to_string()),
+        url: "https://example.com/?a=1&b=<x>\"'".to_string(),
+        last_visited: None,
+        visit_count: 1,
+      }],
+    });
+
+    let html = html_for_about_url(ABOUT_HISTORY).unwrap();
+    assert!(
+      html.contains("https://example.com/?a=1&amp;b=&lt;x&gt;&quot;&#39;"),
+      "expected URL to be HTML escaped"
+    );
+    assert!(
+      html.contains("&lt;script&gt;alert(1)&lt;/script&gt;"),
+      "expected title to be HTML escaped"
+    );
+    assert!(
+      !html.contains("<script>alert(1)</script>"),
+      "raw title should not appear unescaped"
+    );
+
+    set_about_page_snapshot(before);
+  }
+
+  #[test]
+  fn about_history_filters_by_query_param() {
+    let _lock = SNAPSHOT_TEST_LOCK
+      .lock()
+      .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let before = about_page_snapshot();
+
+    set_about_page_snapshot(AboutPageSnapshot {
+      bookmarks: Vec::new(),
+      history: vec![
+        HistorySnapshot {
+          title: Some("Rust".to_string()),
+          url: "https://www.rust-lang.org/".to_string(),
+          last_visited: None,
+          visit_count: 1,
+        },
+        HistorySnapshot {
+          title: Some("Example Domain".to_string()),
+          url: "https://example.com/".to_string(),
+          last_visited: None,
+          visit_count: 1,
+        },
+      ],
+    });
+
+    let html = html_for_about_url("about:history?q=rust").unwrap();
+    assert!(html.contains("https://www.rust-lang.org/"));
+    assert!(!html.contains("https://example.com/"));
+
+    set_about_page_snapshot(before);
+  }
+
+  #[test]
+  fn about_bookmarks_filters_and_includes_entries() {
+    let _lock = SNAPSHOT_TEST_LOCK
+      .lock()
+      .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let before = about_page_snapshot();
+
+    set_about_page_snapshot(AboutPageSnapshot {
+      bookmarks: vec![
+        BookmarkSnapshot {
+          title: None,
+          url: "https://example.com/".to_string(),
+        },
+        BookmarkSnapshot {
+          title: None,
+          url: "https://www.rust-lang.org/".to_string(),
+        },
+      ],
+      history: Vec::new(),
+    });
+
+    let html_all = html_for_about_url(ABOUT_BOOKMARKS).unwrap();
+    assert!(html_all.contains("https://example.com/"));
+    assert!(html_all.contains("https://www.rust-lang.org/"));
+
+    let html_filtered = html_for_about_url("about:bookmarks?q=rust").unwrap();
+    assert!(!html_filtered.contains("https://example.com/"));
+    assert!(html_filtered.contains("https://www.rust-lang.org/"));
+
+    set_about_page_snapshot(before);
   }
 }
