@@ -54,7 +54,9 @@ use super::harness::TestType;
 use fastrender::style::media::MediaType;
 use fastrender::text::font_db::FontDatabase;
 use fastrender::text::font_loader::FontContext;
-use fastrender::ResourcePolicy;
+use fastrender::{
+  FastRenderConfig, FontConfig, LayoutParallelism, PaintParallelism, ResourcePolicy,
+};
 use html5ever::parse_document;
 use html5ever::tendril::TendrilSink;
 use markup5ever_rcdom::{Handle, NodeData, RcDom};
@@ -72,16 +74,11 @@ use std::time::Instant;
 use url::Url;
 
 fn build_offline_renderer() -> fastrender::Result<fastrender::FastRender> {
-  crate::common::init_rayon_for_tests(1);
-  let config = fastrender::FastRenderConfig::default()
-    .with_font_sources(fastrender::FontConfig::bundled_only())
-    .with_resource_policy(
-      ResourcePolicy::default()
-        .allow_http(false)
-        .allow_https(false),
-    )
-    .with_paint_parallelism(fastrender::PaintParallelism::disabled())
-    .with_layout_parallelism(fastrender::LayoutParallelism::disabled());
+  let config = FastRenderConfig::new()
+    .with_font_sources(FontConfig::bundled_only())
+    .with_resource_policy(ResourcePolicy::default().allow_http(false).allow_https(false))
+    .with_layout_parallelism(LayoutParallelism::disabled())
+    .with_paint_parallelism(PaintParallelism::disabled());
   fastrender::FastRender::with_config(config)
 }
 

@@ -13,21 +13,16 @@ mod validate_manifest;
 #[cfg(test)]
 mod offline_invariants;
 
-pub(crate) fn init_rayon_for_wpt_tests() {
-  crate::common::init_rayon_for_tests(1);
-}
-
 pub(crate) fn create_test_renderer() -> fastrender::FastRender {
-  init_rayon_for_wpt_tests();
-  let config = fastrender::FastRenderConfig::default()
+  let config = fastrender::FastRenderConfig::new()
     .with_font_sources(fastrender::FontConfig::bundled_only())
     .with_resource_policy(
       fastrender::ResourcePolicy::default()
         .allow_http(false)
         .allow_https(false),
     )
-    .with_paint_parallelism(fastrender::PaintParallelism::disabled())
-    .with_layout_parallelism(fastrender::LayoutParallelism::disabled());
+    .with_layout_parallelism(fastrender::LayoutParallelism::disabled())
+    .with_paint_parallelism(fastrender::PaintParallelism::disabled());
   fastrender::FastRender::with_config(config).expect("build renderer")
 }
 

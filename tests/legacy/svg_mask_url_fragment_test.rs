@@ -14,8 +14,6 @@ fn pixel(pixmap: &tiny_skia::Pixmap, x: u32, y: u32) -> (u8, u8, u8, u8) {
 }
 
 fn render(html: &str, backend: PaintBackend) -> tiny_skia::Pixmap {
-  crate::common::rayon::init_rayon_for_tests(1);
-
   let viewport_w = 20;
   let viewport_h = 20;
 

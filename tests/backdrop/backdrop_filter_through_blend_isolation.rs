@@ -5,8 +5,6 @@ use fastrender::scroll::ScrollState;
 use fastrender::{FastRender, Point, Rgba};
 
 fn render(html: &str, width: u32, height: u32) -> tiny_skia::Pixmap {
-  crate::common::rayon::init_rayon_for_tests(1);
-
   let mut renderer = FastRender::new().expect("renderer");
   let dom = renderer.parse_html(html).expect("parsed");
   let fragment_tree = renderer

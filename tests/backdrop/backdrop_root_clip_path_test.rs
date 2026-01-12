@@ -13,8 +13,6 @@ fn pixel(pixmap: &tiny_skia::Pixmap, x: u32, y: u32) -> (u8, u8, u8, u8) {
 }
 
 fn render(has_clip_path: bool, width: u32, height: u32) -> tiny_skia::Pixmap {
-  crate::common::rayon::init_rayon_for_tests(2);
-
   let mut list = DisplayList::new();
   list.push(DisplayItem::FillRect(FillRectItem {
     rect: Rect::from_xywh(0.0, 0.0, width as f32, height as f32),

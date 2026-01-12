@@ -6,8 +6,6 @@ fn headless_chrome_media_features_default_to_no_input_devices() {
   // FastRender's pageset harness compares against headless Chrome. Chrome headless reports
   // `hover: none` and `pointer: none`, so ensure the renderer's default media context matches.
   let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
-  crate::common::init_rayon_for_tests(2);
-
   let config = FastRenderConfig::new()
     .with_font_sources(FontConfig::bundled_only())
     .with_layout_parallelism(LayoutParallelism::disabled())

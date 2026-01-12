@@ -4,17 +4,7 @@ use fastrender::paint::painter::paint_tree_with_resources_scaled_offset;
 use fastrender::scroll::ScrollState;
 use fastrender::{FastRender, Point, Rgba};
 
-fn ensure_small_rayon_thread_pool() {
-  let threads = std::env::var("RAYON_NUM_THREADS")
-    .ok()
-    .and_then(|v| v.parse::<usize>().ok())
-    .unwrap_or(4)
-    .max(1);
-  crate::common::rayon::init_rayon_for_tests(threads);
-}
-
 fn render(html: &str, width: u32, height: u32) -> tiny_skia::Pixmap {
-  ensure_small_rayon_thread_pool();
   let mut renderer = FastRender::new().expect("renderer");
   let dom = renderer.parse_html(html).expect("parsed");
   let fragment_tree = renderer

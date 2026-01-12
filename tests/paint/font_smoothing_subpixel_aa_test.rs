@@ -19,7 +19,6 @@ fn count_colored_pixels(pixmap: &Pixmap) -> usize {
 }
 
 fn renderer_with_subpixel_aa() -> FastRender {
-  crate::common::rayon::init_rayon_for_tests(2);
   let toggles = RuntimeToggles::from_map(HashMap::from([
     (
       "FASTR_PAINT_BACKEND".to_string(),

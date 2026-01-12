@@ -28,7 +28,6 @@ fn count_colored_pixels_in_rows(pixmap: &Pixmap, start_y: u32, end_y: u32) -> us
 }
 
 fn renderer_with_subpixel_aa() -> FastRender {
-  crate::common::init_rayon_for_tests(2);
   let toggles = RuntimeToggles::from_map(HashMap::from([
     ("FASTR_PAINT_BACKEND".to_string(), "display_list".to_string()),
     ("FASTR_TEXT_SUBPIXEL_AA".to_string(), "1".to_string()),

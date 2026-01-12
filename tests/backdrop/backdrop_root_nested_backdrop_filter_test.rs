@@ -13,8 +13,6 @@ fn pixel(pixmap: &tiny_skia::Pixmap, x: u32, y: u32) -> (u8, u8, u8, u8) {
 }
 
 fn build_display_list(html: &str, width: u32, height: u32) -> (DisplayList, FontContext) {
-  crate::common::rayon::init_rayon_for_tests(1);
-
   let mut config = FastRenderConfig::new();
   config.font_config = FontConfig::bundled_only();
   // This regression targets backdrop-filter semantics rather than layout fan-out. Disable layout
