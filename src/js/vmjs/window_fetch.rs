@@ -50,6 +50,11 @@ const HEADERS_OWNER_KEY: &str = "__fastrender_headers_owner";
 const REQUEST_ID_KEY: &str = "__fastrender_request_id";
 const RESPONSE_ID_KEY: &str = "__fastrender_response_id";
 
+// Hidden per-instance properties for stream wrappers.
+const RESPONSE_BODY_STREAM_KEY: &str = "__fastrender_response_body_stream";
+const READABLE_STREAM_ID_KEY: &str = "__fastrender_readable_stream_id";
+const READABLE_STREAM_READER_ID_KEY: &str = "__fastrender_readable_stream_reader_id";
+
 // Internal helper keys for Promise capability construction via `new Promise(executor)`.
 const PROMISE_CAP_RESOLVE_KEY: &str = "__fastrender_promise_cap_resolve";
 const PROMISE_CAP_REJECT_KEY: &str = "__fastrender_promise_cap_reject";
@@ -104,11 +109,27 @@ struct EnvState {
   requests: HashMap<u64, CoreRequest>,
   responses: HashMap<u64, CoreResponse>,
   headers_iterators: HashMap<u64, HeadersIteratorState>,
+  response_body_streams: HashMap<u64, u64>,
+  readable_streams: HashMap<u64, ReadableStreamState>,
+  readable_stream_readers: HashMap<u64, ReadableStreamReaderState>,
 }
 
 struct HeadersIteratorState {
   pairs: Vec<(String, String)>,
   index: usize,
+}
+
+struct ReadableStreamState {
+  response_id: Option<u64>,
+  locked: bool,
+  closed: bool,
+  cursor: usize,
+  bytes: Option<Vec<u8>>,
+  current_reader_id: Option<u64>,
+}
+
+struct ReadableStreamReaderState {
+  stream_id: u64,
 }
 
 impl EnvState {
@@ -122,6 +143,9 @@ impl EnvState {
       requests: HashMap::new(),
       responses: HashMap::new(),
       headers_iterators: HashMap::new(),
+      response_body_streams: HashMap::new(),
+      readable_streams: HashMap::new(),
+      readable_stream_readers: HashMap::new(),
     }
   }
 
@@ -768,6 +792,76 @@ fn response_info_from_this(scope: &mut Scope<'_>, this: Value) -> Result<(u64, u
   let response_id =
     number_to_u64(response_val).map_err(|_| VmError::TypeError("Response: illegal invocation"))?;
   Ok((env_id, response_id))
+}
+
+fn readable_stream_proto_from_callee(scope: &Scope<'_>, callee: GcObject) -> Result<GcObject, VmError> {
+  let slots = scope.heap().get_function_native_slots(callee)?;
+  match slots.get(0).copied().unwrap_or(Value::Undefined) {
+    Value::Object(obj) => Ok(obj),
+    _ => Err(VmError::InvariantViolation(
+      "fetch binding missing ReadableStream.prototype native slot",
+    )),
+  }
+}
+
+fn readable_stream_reader_proto_from_callee(scope: &Scope<'_>, callee: GcObject) -> Result<GcObject, VmError> {
+  let slots = scope.heap().get_function_native_slots(callee)?;
+  match slots.get(0).copied().unwrap_or(Value::Undefined) {
+    Value::Object(obj) => Ok(obj),
+    _ => Err(VmError::InvariantViolation(
+      "fetch binding missing ReadableStreamDefaultReader.prototype native slot",
+    )),
+  }
+}
+
+fn readable_stream_info_from_this(scope: &mut Scope<'_>, this: Value) -> Result<(u64, u64), VmError> {
+  let Value::Object(obj) = this else {
+    return Err(VmError::TypeError("ReadableStream: illegal invocation"));
+  };
+
+  let env_val = get_data_prop(scope, obj, ENV_ID_KEY)?;
+  let stream_val = get_data_prop(scope, obj, READABLE_STREAM_ID_KEY)?;
+  if !matches!(env_val, Value::Number(_)) || !matches!(stream_val, Value::Number(_)) {
+    return Err(VmError::TypeError("ReadableStream: illegal invocation"));
+  }
+
+  let env_id =
+    number_to_u64(env_val).map_err(|_| VmError::TypeError("ReadableStream: illegal invocation"))?;
+  let stream_id = number_to_u64(stream_val)
+    .map_err(|_| VmError::TypeError("ReadableStream: illegal invocation"))?;
+  Ok((env_id, stream_id))
+}
+
+fn readable_stream_reader_info_from_this(scope: &mut Scope<'_>, this: Value) -> Result<(u64, u64), VmError> {
+  let Value::Object(obj) = this else {
+    return Err(VmError::TypeError("ReadableStreamDefaultReader: illegal invocation"));
+  };
+
+  let env_val = get_data_prop(scope, obj, ENV_ID_KEY)?;
+  let reader_val = get_data_prop(scope, obj, READABLE_STREAM_READER_ID_KEY)?;
+  if !matches!(env_val, Value::Number(_)) || !matches!(reader_val, Value::Number(_)) {
+    return Err(VmError::TypeError(
+      "ReadableStreamDefaultReader: illegal invocation",
+    ));
+  }
+
+  let env_id = number_to_u64(env_val)
+    .map_err(|_| VmError::TypeError("ReadableStreamDefaultReader: illegal invocation"))?;
+  let reader_id = number_to_u64(reader_val)
+    .map_err(|_| VmError::TypeError("ReadableStreamDefaultReader: illegal invocation"))?;
+  Ok((env_id, reader_id))
+}
+
+fn response_body_stream_locked(env_id: u64, response_id: u64) -> Result<bool, VmError> {
+  with_env_state(env_id, |state| {
+    let Some(stream_id) = state.response_body_streams.get(&response_id) else {
+      return Ok(false);
+    };
+    Ok(state
+      .readable_streams
+      .get(stream_id)
+      .map_or(false, |s| s.locked))
+  })
 }
 
 fn get_headers_mut<'a>(
@@ -3149,6 +3243,19 @@ fn response_text_native(
 
   let cap = new_promise_capability_for_env(vm, scope, &mut *host, host_hooks, env_id)?;
 
+  if response_body_stream_locked(env_id, response_id)? {
+    let err_value = create_type_error(vm, scope, &mut *host, host_hooks, "Response body is locked")?;
+    vm.call_with_host_and_hooks(
+      &mut *host,
+      scope,
+      host_hooks,
+      cap.reject,
+      Value::Undefined,
+      &[err_value],
+    )?;
+    return Ok(cap.promise);
+  }
+
   let result: std::result::Result<String, WebFetchError> = with_env_state_mut(env_id, |state| {
     let res = state
       .responses
@@ -3201,6 +3308,19 @@ fn response_array_buffer_native(
   let (env_id, response_id) = response_info_from_this(scope, this)?;
 
   let cap = new_promise_capability_for_env(vm, scope, &mut *host, host_hooks, env_id)?;
+
+  if response_body_stream_locked(env_id, response_id)? {
+    let err_value = create_type_error(vm, scope, &mut *host, host_hooks, "Response body is locked")?;
+    vm.call_with_host_and_hooks(
+      &mut *host,
+      scope,
+      host_hooks,
+      cap.reject,
+      Value::Undefined,
+      &[err_value],
+    )?;
+    return Ok(cap.promise);
+  }
 
   let result: std::result::Result<Vec<u8>, WebFetchError> = with_env_state_mut(env_id, |state| {
     let res = state
@@ -3260,6 +3380,19 @@ fn response_blob_native(
   let (env_id, response_id) = response_info_from_this(scope, this)?;
 
   let cap = new_promise_capability_for_env(vm, scope, &mut *host, host_hooks, env_id)?;
+
+  if response_body_stream_locked(env_id, response_id)? {
+    let err_value = create_type_error(vm, scope, &mut *host, host_hooks, "Response body is locked")?;
+    vm.call_with_host_and_hooks(
+      &mut *host,
+      scope,
+      host_hooks,
+      cap.reject,
+      Value::Undefined,
+      &[err_value],
+    )?;
+    return Ok(cap.promise);
+  }
 
   let (bytes_result, content_type_result): (
     std::result::Result<Vec<u8>, WebFetchError>,
@@ -3355,6 +3488,19 @@ fn response_form_data_native(
   let (env_id, response_id) = response_info_from_this(scope, this)?;
 
   let cap = new_promise_capability_for_env(vm, scope, &mut *host, host_hooks, env_id)?;
+
+  if response_body_stream_locked(env_id, response_id)? {
+    let err_value = create_type_error(vm, scope, &mut *host, host_hooks, "Response body is locked")?;
+    vm.call_with_host_and_hooks(
+      &mut *host,
+      scope,
+      host_hooks,
+      cap.reject,
+      Value::Undefined,
+      &[err_value],
+    )?;
+    return Ok(cap.promise);
+  }
 
   let (bytes_result, content_type_result): (
     std::result::Result<Vec<u8>, WebFetchError>,
@@ -3495,6 +3641,19 @@ fn response_json_native(
 
   let cap = new_promise_capability_for_env(vm, scope, &mut *host, host_hooks, env_id)?;
 
+  if response_body_stream_locked(env_id, response_id)? {
+    let err_value = create_type_error(vm, scope, &mut *host, host_hooks, "Response body is locked")?;
+    vm.call_with_host_and_hooks(
+      &mut *host,
+      scope,
+      host_hooks,
+      cap.reject,
+      Value::Undefined,
+      &[err_value],
+    )?;
+    return Ok(cap.promise);
+  }
+
   let parsed: Option<std::result::Result<serde_json::Value, WebFetchError>> =
     with_env_state_mut(env_id, |state| {
       let res = state
@@ -3578,6 +3737,20 @@ fn response_clone_native(
       .responses
       .get(&response_id)
       .ok_or(VmError::TypeError("Response: invalid backing response"))?;
+    if state
+      .response_body_streams
+      .get(&response_id)
+      .and_then(|id| state.readable_streams.get(id))
+      .is_some_and(|s| s.locked)
+    {
+      return Err(throw_type_error(
+        vm,
+        scope,
+        &mut *host,
+        host_hooks,
+        "Response body is locked",
+      ));
+    }
     if res.body.as_ref().map_or(false, |b| b.body_used()) {
       return Err(throw_type_error(
         vm,
@@ -3606,6 +3779,83 @@ fn response_clone_native(
   Ok(Value::Object(resp_obj))
 }
 
+fn response_body_get_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(resp_obj) = this else {
+    return Err(VmError::TypeError("Response: illegal invocation"));
+  };
+  let (env_id, response_id) = response_info_from_this(scope, Value::Object(resp_obj))?;
+
+  // Cache per Response instance.
+  let cached = get_data_prop(scope, resp_obj, RESPONSE_BODY_STREAM_KEY)?;
+  if let Value::Object(stream_obj) = cached {
+    return Ok(Value::Object(stream_obj));
+  }
+
+  let readable_stream_proto = readable_stream_proto_from_callee(scope, callee)?;
+
+  let Some(stream_id) = with_env_state_mut(env_id, |state| {
+    let res = state
+      .responses
+      .get(&response_id)
+      .ok_or(VmError::TypeError("Response: invalid backing response"))?;
+    if res.body.is_none() {
+      return Ok(None);
+    }
+
+    if let Some(stream_id) = state.response_body_streams.get(&response_id).copied() {
+      return Ok(Some(stream_id));
+    }
+
+    let body_used = res.body.as_ref().map_or(false, |b| b.body_used());
+    let stream_id = state.alloc_id();
+    state.readable_streams.insert(
+      stream_id,
+      ReadableStreamState {
+        response_id: Some(response_id),
+        locked: false,
+        closed: body_used,
+        cursor: 0,
+        bytes: body_used.then_some(Vec::new()),
+        current_reader_id: None,
+      },
+    );
+    state.response_body_streams.insert(response_id, stream_id);
+    Ok(Some(stream_id))
+  })?
+  else {
+    return Ok(Value::Null);
+  };
+
+  let stream_obj = scope.alloc_object_with_prototype(Some(readable_stream_proto))?;
+  scope.push_root(Value::Object(stream_obj))?;
+  set_data_prop(scope, stream_obj, ENV_ID_KEY, Value::Number(env_id as f64), false)?;
+  set_data_prop(
+    scope,
+    stream_obj,
+    READABLE_STREAM_ID_KEY,
+    Value::Number(stream_id as f64),
+    false,
+  )?;
+
+  set_data_prop(
+    scope,
+    resp_obj,
+    RESPONSE_BODY_STREAM_KEY,
+    Value::Object(stream_obj),
+    false,
+  )?;
+
+  Ok(Value::Object(stream_obj))
+}
+
 fn response_body_used_get_native(
   _vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -3624,6 +3874,444 @@ fn response_body_used_get_native(
     Ok(res.body.as_ref().map_or(false, |b| b.body_used()))
   })?;
   Ok(Value::Bool(used))
+}
+
+fn readable_stream_ctor_call(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  Err(throw_type_error(vm, scope, host, hooks, "Illegal constructor"))
+}
+
+fn readable_stream_ctor_construct(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  _args: &[Value],
+  _new_target: Value,
+) -> Result<Value, VmError> {
+  let env_id = env_id_from_callee(scope, callee)?;
+
+  let stream_id = with_env_state_mut(env_id, |state| {
+    let stream_id = state.alloc_id();
+    state.readable_streams.insert(
+      stream_id,
+      ReadableStreamState {
+        response_id: None,
+        locked: false,
+        closed: true,
+        cursor: 0,
+        bytes: Some(Vec::new()),
+        current_reader_id: None,
+      },
+    );
+    Ok(stream_id)
+  })?;
+
+  let proto = {
+    let key = alloc_key(scope, "prototype")?;
+    match scope
+      .heap()
+      .object_get_own_data_property_value(callee, &key)?
+      .unwrap_or(Value::Undefined)
+    {
+      Value::Object(obj) => obj,
+      _ => return Err(VmError::InvariantViolation("ReadableStream.prototype missing")),
+    }
+  };
+
+  let stream_obj = scope.alloc_object_with_prototype(Some(proto))?;
+  scope.push_root(Value::Object(stream_obj))?;
+  set_data_prop(scope, stream_obj, ENV_ID_KEY, Value::Number(env_id as f64), false)?;
+  set_data_prop(
+    scope,
+    stream_obj,
+    READABLE_STREAM_ID_KEY,
+    Value::Number(stream_id as f64),
+    false,
+  )?;
+  Ok(Value::Object(stream_obj))
+}
+
+fn readable_stream_default_reader_ctor_illegal(
+  _vm: &mut Vm,
+  _scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  Err(VmError::TypeError("Illegal constructor"))
+}
+
+fn readable_stream_default_reader_ctor_construct_illegal(
+  _vm: &mut Vm,
+  _scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _args: &[Value],
+  _new_target: Value,
+) -> Result<Value, VmError> {
+  Err(VmError::TypeError("Illegal constructor"))
+}
+
+fn readable_stream_locked_get_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let (env_id, stream_id) = readable_stream_info_from_this(scope, this)?;
+  let locked = with_env_state(env_id, |state| {
+    let stream = state
+      .readable_streams
+      .get(&stream_id)
+      .ok_or(VmError::TypeError("ReadableStream: invalid backing stream"))?;
+    Ok(stream.locked)
+  })?;
+  Ok(Value::Bool(locked))
+}
+
+fn readable_stream_get_reader_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let (env_id, stream_id) = readable_stream_info_from_this(scope, this)?;
+
+  // No BYOB support; reject non-empty options objects.
+  let options = args.get(0).copied().unwrap_or(Value::Undefined);
+  if !matches!(options, Value::Undefined | Value::Null) {
+    let Value::Object(options_obj) = options else {
+      return Err(throw_type_error(
+        vm,
+        scope,
+        host,
+        hooks,
+        "ReadableStream.getReader options must be an object",
+      ));
+    };
+    let keys = scope
+      .heap()
+      .ordinary_own_property_keys_with_tick(options_obj, || vm.tick())?;
+    if !keys.is_empty() {
+      return Err(throw_type_error(
+        vm,
+        scope,
+        host,
+        hooks,
+        "ReadableStream.getReader options are not supported",
+      ));
+    }
+  }
+
+  let reader_proto = readable_stream_reader_proto_from_callee(scope, callee)?;
+
+  let reader_id = with_env_state_mut(env_id, |state| {
+    let reader_id = state.alloc_id();
+
+    {
+      let stream = state
+        .readable_streams
+        .get_mut(&stream_id)
+        .ok_or(VmError::TypeError("ReadableStream: invalid backing stream"))?;
+      if stream.locked {
+        return Err(throw_type_error(vm, scope, host, hooks, "ReadableStream is locked"));
+      }
+      stream.locked = true;
+      stream.current_reader_id = Some(reader_id);
+    }
+
+    state
+      .readable_stream_readers
+      .insert(reader_id, ReadableStreamReaderState { stream_id });
+    Ok(reader_id)
+  })?;
+
+  let reader_obj = scope.alloc_object_with_prototype(Some(reader_proto))?;
+  scope.push_root(Value::Object(reader_obj))?;
+  set_data_prop(scope, reader_obj, ENV_ID_KEY, Value::Number(env_id as f64), false)?;
+  set_data_prop(
+    scope,
+    reader_obj,
+    READABLE_STREAM_READER_ID_KEY,
+    Value::Number(reader_id as f64),
+    false,
+  )?;
+  Ok(Value::Object(reader_obj))
+}
+
+fn readable_stream_cancel_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let (env_id, stream_id) = readable_stream_info_from_this(scope, this)?;
+
+  let cap = new_promise_capability_for_env(vm, scope, host, hooks, env_id)?;
+
+  let locked = with_env_state_mut(env_id, |state| {
+    let stream = state
+      .readable_streams
+      .get_mut(&stream_id)
+      .ok_or(VmError::TypeError("ReadableStream: invalid backing stream"))?;
+
+    if stream.locked {
+      return Ok(true);
+    }
+
+    stream.closed = true;
+    stream.cursor = 0;
+    stream.bytes = Some(Vec::new());
+
+    if let Some(response_id) = stream.response_id {
+      if let Some(res) = state.responses.get_mut(&response_id) {
+        if let Some(body) = res.body.as_mut() {
+          let _ = body.consume_bytes();
+        }
+      }
+    }
+
+    Ok(false)
+  })?;
+
+  if locked {
+    let err_value = create_type_error(vm, scope, host, hooks, "ReadableStream is locked")?;
+    vm.call_with_host_and_hooks(host, scope, hooks, cap.reject, Value::Undefined, &[err_value])?;
+  } else {
+    vm.call_with_host_and_hooks(host, scope, hooks, cap.resolve, Value::Undefined, &[Value::Undefined])?;
+  }
+
+  Ok(cap.promise)
+}
+
+const READABLE_STREAM_CHUNK_BYTES: usize = 64 * 1024;
+
+struct ReadableStreamReadResult {
+  done: bool,
+  chunk: Option<Vec<u8>>,
+}
+
+fn readable_stream_default_reader_read_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let (env_id, reader_id) = readable_stream_reader_info_from_this(scope, this)?;
+
+  let has_reader = with_env_state(env_id, |state| Ok(state.readable_stream_readers.contains_key(&reader_id)))?;
+  if !has_reader {
+    return Err(VmError::TypeError("ReadableStreamDefaultReader has no stream"));
+  }
+
+  let cap = new_promise_capability_for_env(vm, scope, host, hooks, env_id)?;
+
+  let result = with_env_state_mut(env_id, |state| {
+    let reader = state
+      .readable_stream_readers
+      .get(&reader_id)
+      .ok_or(VmError::TypeError("ReadableStreamDefaultReader has no stream"))?;
+    let stream_id = reader.stream_id;
+    let stream = state
+      .readable_streams
+      .get_mut(&stream_id)
+      .ok_or(VmError::TypeError("ReadableStream: invalid backing stream"))?;
+
+    if stream.current_reader_id != Some(reader_id) || !stream.locked {
+      return Err(VmError::TypeError("ReadableStream reader does not own the lock"));
+    }
+
+    if stream.bytes.is_none() {
+      let bytes = if let Some(response_id) = stream.response_id {
+        let res = state
+          .responses
+          .get_mut(&response_id)
+          .ok_or(VmError::TypeError("Response: invalid backing response"))?;
+        match res.body.as_mut() {
+          None => Vec::new(),
+          Some(body) => {
+            if body.body_used() {
+              Vec::new()
+            } else {
+              body
+                .consume_bytes()
+                .map_err(|_err| VmError::TypeError("Response body is already used"))?
+            }
+          }
+        }
+      } else {
+        Vec::new()
+      };
+
+      if bytes.is_empty() {
+        stream.closed = true;
+      }
+      stream.bytes = Some(bytes);
+    }
+
+    if stream.closed {
+      return Ok(ReadableStreamReadResult { done: true, chunk: None });
+    }
+
+    let bytes = stream.bytes.as_ref().unwrap();
+    if stream.cursor >= bytes.len() {
+      stream.closed = true;
+      return Ok(ReadableStreamReadResult { done: true, chunk: None });
+    }
+
+    let end = stream
+      .cursor
+      .saturating_add(READABLE_STREAM_CHUNK_BYTES)
+      .min(bytes.len());
+    let chunk = bytes[stream.cursor..end].to_vec();
+    stream.cursor = end;
+    if stream.cursor >= bytes.len() {
+      stream.closed = true;
+    }
+
+    Ok(ReadableStreamReadResult {
+      done: false,
+      chunk: Some(chunk),
+    })
+  })?;
+
+  let intr = vm
+    .intrinsics()
+    .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+  let obj = scope.alloc_object_with_prototype(Some(intr.object_prototype()))?;
+  scope.push_root(Value::Object(obj))?;
+
+  let value_val = if result.done {
+    Value::Undefined
+  } else {
+    let chunk = result.chunk.unwrap_or_default();
+    let len = chunk.len();
+    let ab = scope.alloc_array_buffer_from_u8_vec(chunk)?;
+    scope.push_root(Value::Object(ab))?;
+    scope
+      .heap_mut()
+      .object_set_prototype(ab, Some(intr.array_buffer_prototype()))?;
+    let view = scope.alloc_uint8_array(ab, 0, len)?;
+    scope
+      .heap_mut()
+      .object_set_prototype(view, Some(intr.uint8_array_prototype()))?;
+    let value = Value::Object(view);
+    scope.push_root(value)?;
+    value
+  };
+
+  let done_val = Value::Bool(result.done);
+
+  let value_key = alloc_key(scope, "value")?;
+  let done_key = alloc_key(scope, "done")?;
+  scope.define_property(obj, value_key, data_desc(value_val, true))?;
+  scope.define_property(obj, done_key, data_desc(done_val, true))?;
+
+  vm.call_with_host_and_hooks(host, scope, hooks, cap.resolve, Value::Undefined, &[Value::Object(obj)])?;
+
+  Ok(cap.promise)
+}
+
+fn readable_stream_default_reader_release_lock_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let (env_id, reader_id) = readable_stream_reader_info_from_this(scope, this)?;
+
+  with_env_state_mut(env_id, |state| {
+    let Some(reader) = state.readable_stream_readers.remove(&reader_id) else {
+      return Ok(());
+    };
+    if let Some(stream) = state.readable_streams.get_mut(&reader.stream_id) {
+      if stream.current_reader_id == Some(reader_id) {
+        stream.locked = false;
+        stream.current_reader_id = None;
+      }
+    }
+    Ok(())
+  })?;
+
+  Ok(Value::Undefined)
+}
+
+fn readable_stream_default_reader_cancel_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let (env_id, reader_id) = readable_stream_reader_info_from_this(scope, this)?;
+
+  // `cancel()` after `releaseLock()` should throw.
+  let reader_stream_id = with_env_state(env_id, |state| {
+    state
+      .readable_stream_readers
+      .get(&reader_id)
+      .map(|r| r.stream_id)
+      .ok_or(VmError::TypeError("ReadableStreamDefaultReader has no stream"))
+  })?;
+
+  let cap = new_promise_capability_for_env(vm, scope, host, hooks, env_id)?;
+
+  with_env_state_mut(env_id, |state| {
+    let stream = state
+      .readable_streams
+      .get_mut(&reader_stream_id)
+      .ok_or(VmError::TypeError("ReadableStream: invalid backing stream"))?;
+
+    if stream.current_reader_id != Some(reader_id) || !stream.locked {
+      return Err(VmError::TypeError("ReadableStream reader does not own the lock"));
+    }
+
+    stream.closed = true;
+    stream.cursor = 0;
+    stream.bytes = Some(Vec::new());
+
+    if let Some(response_id) = stream.response_id {
+      if let Some(res) = state.responses.get_mut(&response_id) {
+        if let Some(body) = res.body.as_mut() {
+          let _ = body.consume_bytes();
+        }
+      }
+    }
+
+    Ok(())
+  })?;
+
+  vm.call_with_host_and_hooks(host, scope, hooks, cap.resolve, Value::Undefined, &[Value::Undefined])?;
+  Ok(cap.promise)
 }
 
 fn make_headers_wrapper(
@@ -5062,6 +5750,123 @@ pub fn install_window_fetch_bindings_with_guard<Host: WindowRealmHost + 'static>
     scope.define_property(global, key, data_desc(Value::Object(ctor), true))?;
   }
 
+  // --- ReadableStreamDefaultReader ---
+  let readable_stream_default_reader_proto = {
+    let call_id = vm.register_native_call(readable_stream_default_reader_ctor_illegal)?;
+    let construct_id = vm.register_native_construct(readable_stream_default_reader_ctor_construct_illegal)?;
+    let name_s = scope.alloc_string("ReadableStreamDefaultReader")?;
+    scope.push_root(Value::String(name_s))?;
+    let ctor = scope.alloc_native_function(call_id, Some(construct_id), name_s, 1)?;
+    scope.heap_mut().object_set_prototype(ctor, Some(func_proto))?;
+    scope.push_root(Value::Object(ctor))?;
+
+    let Value::Object(proto) = get_data_prop(&mut scope, ctor, "prototype")? else {
+      return Err(VmError::InvariantViolation(
+        "ReadableStreamDefaultReader.prototype missing",
+      ));
+    };
+    scope.push_root(Value::Object(proto))?;
+
+    let read_id = vm.register_native_call(readable_stream_default_reader_read_native)?;
+    let read_name = scope.alloc_string("read")?;
+    scope.push_root(Value::String(read_name))?;
+    let read_fn = scope.alloc_native_function(read_id, None, read_name, 0)?;
+    scope.heap_mut().object_set_prototype(read_fn, Some(func_proto))?;
+    set_data_prop(&mut scope, proto, "read", Value::Object(read_fn), true)?;
+
+    let release_id = vm.register_native_call(readable_stream_default_reader_release_lock_native)?;
+    let release_name = scope.alloc_string("releaseLock")?;
+    scope.push_root(Value::String(release_name))?;
+    let release_fn = scope.alloc_native_function(release_id, None, release_name, 0)?;
+    scope
+      .heap_mut()
+      .object_set_prototype(release_fn, Some(func_proto))?;
+    set_data_prop(&mut scope, proto, "releaseLock", Value::Object(release_fn), true)?;
+
+    let cancel_id = vm.register_native_call(readable_stream_default_reader_cancel_native)?;
+    let cancel_name = scope.alloc_string("cancel")?;
+    scope.push_root(Value::String(cancel_name))?;
+    let cancel_fn = scope.alloc_native_function(cancel_id, None, cancel_name, 1)?;
+    scope.heap_mut().object_set_prototype(cancel_fn, Some(func_proto))?;
+    set_data_prop(&mut scope, proto, "cancel", Value::Object(cancel_fn), true)?;
+
+    let key = alloc_key(&mut scope, "ReadableStreamDefaultReader")?;
+    scope.define_property(global, key, data_desc(Value::Object(ctor), true))?;
+    proto
+  };
+
+  // --- ReadableStream ---
+  let readable_stream_proto = {
+    let call_id = vm.register_native_call(readable_stream_ctor_call)?;
+    let construct_id = vm.register_native_construct(readable_stream_ctor_construct)?;
+    let name_s = scope.alloc_string("ReadableStream")?;
+    scope.push_root(Value::String(name_s))?;
+    let ctor = scope.alloc_native_function_with_slots(
+      call_id,
+      Some(construct_id),
+      name_s,
+      1,
+      &[Value::Number(env_id as f64)],
+    )?;
+    scope.heap_mut().object_set_prototype(ctor, Some(func_proto))?;
+    scope.push_root(Value::Object(ctor))?;
+
+    let Value::Object(proto) = get_data_prop(&mut scope, ctor, "prototype")? else {
+      return Err(VmError::InvariantViolation("ReadableStream.prototype missing"));
+    };
+    scope.push_root(Value::Object(proto))?;
+
+    let get_reader_id = vm.register_native_call(readable_stream_get_reader_native)?;
+    let get_reader_name = scope.alloc_string("getReader")?;
+    scope.push_root(Value::String(get_reader_name))?;
+    let get_reader_fn = scope.alloc_native_function_with_slots(
+      get_reader_id,
+      None,
+      get_reader_name,
+      1,
+      &[Value::Object(readable_stream_default_reader_proto)],
+    )?;
+    scope
+      .heap_mut()
+      .object_set_prototype(get_reader_fn, Some(func_proto))?;
+    set_data_prop(&mut scope, proto, "getReader", Value::Object(get_reader_fn), true)?;
+
+    let cancel_id = vm.register_native_call(readable_stream_cancel_native)?;
+    let cancel_name = scope.alloc_string("cancel")?;
+    scope.push_root(Value::String(cancel_name))?;
+    let cancel_fn = scope.alloc_native_function(cancel_id, None, cancel_name, 1)?;
+    scope.heap_mut().object_set_prototype(cancel_fn, Some(func_proto))?;
+    set_data_prop(&mut scope, proto, "cancel", Value::Object(cancel_fn), true)?;
+
+    // locked accessor (getter only).
+    let locked_get_id = vm.register_native_call(readable_stream_locked_get_native)?;
+    let locked_get_name = scope.alloc_string("get locked")?;
+    scope.push_root(Value::String(locked_get_name))?;
+    let locked_get = scope.alloc_native_function(locked_get_id, None, locked_get_name, 0)?;
+    scope
+      .heap_mut()
+      .object_set_prototype(locked_get, Some(func_proto))?;
+    // Root before allocating the property key: `alloc_key` can trigger GC.
+    scope.push_root(Value::Object(locked_get))?;
+    let locked_key = alloc_key(&mut scope, "locked")?;
+    scope.define_property(
+      proto,
+      locked_key,
+      PropertyDescriptor {
+        enumerable: false,
+        configurable: true,
+        kind: PropertyKind::Accessor {
+          get: Value::Object(locked_get),
+          set: Value::Undefined,
+        },
+      },
+    )?;
+
+    let key = alloc_key(&mut scope, "ReadableStream")?;
+    scope.define_property(global, key, data_desc(Value::Object(ctor), true))?;
+    proto
+  };
+
   // --- Response ---
   let response_proto = {
     let call_id = vm.register_native_call(response_ctor_call)?;
@@ -5179,6 +5984,34 @@ pub fn install_window_fetch_bindings_with_guard<Host: WindowRealmHost + 'static>
         configurable: true,
         kind: PropertyKind::Accessor {
           get: Value::Object(body_used_get),
+          set: Value::Undefined,
+        },
+      },
+    )?;
+
+    // body accessor (getter only).
+    let body_get_id = vm.register_native_call(response_body_get_native)?;
+    let body_get_name = scope.alloc_string("get body")?;
+    scope.push_root(Value::String(body_get_name))?;
+    let body_get = scope.alloc_native_function_with_slots(
+      body_get_id,
+      None,
+      body_get_name,
+      0,
+      &[Value::Object(readable_stream_proto)],
+    )?;
+    scope.heap_mut().object_set_prototype(body_get, Some(func_proto))?;
+    // Root before allocating the property key: `alloc_key` can trigger GC.
+    scope.push_root(Value::Object(body_get))?;
+    let body_key = alloc_key(&mut scope, "body")?;
+    scope.define_property(
+      proto,
+      body_key,
+      PropertyDescriptor {
+        enumerable: false,
+        configurable: true,
+        kind: PropertyKind::Accessor {
+          get: Value::Object(body_get),
           set: Value::Undefined,
         },
       },
@@ -5623,6 +6456,522 @@ mod tests {
     );
 
     drop(scope);
+    realm.teardown(&mut heap);
+    Ok(())
+  }
+
+  #[test]
+  fn response_body_getter_returns_stream_or_null() -> Result<(), VmError> {
+    struct NoopHooks;
+
+    impl VmHostHooks for NoopHooks {
+      fn host_enqueue_promise_job(&mut self, _job: Job, _realm: Option<RealmId>) {}
+    }
+
+    let mut vm = Vm::new(VmOptions::default());
+    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut realm = Realm::new(&mut vm, &mut heap)?;
+    let _realm_guard = RealmTeardownGuard::new(&mut realm, &mut heap);
+
+    let _bindings = install_window_fetch_bindings_with_guard::<DummyHost>(
+      &mut vm,
+      &realm,
+      &mut heap,
+      WindowFetchEnv::for_document(Arc::new(crate::resource::HttpFetcher::new()), None),
+    )?;
+
+    let mut scope = heap.scope();
+    let global = realm.global_object();
+    let Value::Object(response_ctor) = get_data_prop(&mut scope, global, "Response")? else {
+      return Err(VmError::InvariantViolation("Response constructor missing"));
+    };
+
+    let mut host_state = ();
+    let mut hooks = NoopHooks;
+
+    // new Response('hi').body is a ReadableStream object.
+    let hi_s = scope.alloc_string("hi")?;
+    scope.push_root(Value::String(hi_s))?;
+    let Value::Object(resp_obj) = response_ctor_construct(
+      &mut vm,
+      &mut scope,
+      &mut host_state,
+      &mut hooks,
+      response_ctor,
+      &[Value::String(hi_s)],
+      Value::Object(response_ctor),
+    )?
+    else {
+      return Err(VmError::InvariantViolation("Response constructor must return an object"));
+    };
+
+    let body_key = alloc_key(&mut scope, "body")?;
+    let body1 = vm.get(&mut scope, resp_obj, body_key)?;
+    assert!(matches!(body1, Value::Object(_)));
+    // Cached per Response instance.
+    let body2 = vm.get(&mut scope, resp_obj, body_key)?;
+    assert_eq!(body1, body2);
+
+    // new Response().body === null.
+    let Value::Object(resp_null_obj) = response_ctor_construct(
+      &mut vm,
+      &mut scope,
+      &mut host_state,
+      &mut hooks,
+      response_ctor,
+      &[],
+      Value::Object(response_ctor),
+    )?
+    else {
+      return Err(VmError::InvariantViolation("Response constructor must return an object"));
+    };
+    let body_null = vm.get(&mut scope, resp_null_obj, body_key)?;
+    assert!(matches!(body_null, Value::Null));
+
+    drop(scope);
+    realm.teardown(&mut heap);
+    Ok(())
+  }
+
+  #[test]
+  fn readable_stream_read_consumes_response_body_and_unlocks() -> Result<(), VmError> {
+    #[derive(Default)]
+    struct HostState {
+      reads: Vec<(bool, Option<Vec<u8>>)>,
+    }
+
+    fn capture_read_result_native(
+      vm: &mut Vm,
+      scope: &mut Scope<'_>,
+      host: &mut dyn vm_js::VmHost,
+      _hooks: &mut dyn VmHostHooks,
+      _callee: GcObject,
+      _this: Value,
+      args: &[Value],
+    ) -> Result<Value, VmError> {
+      let Value::Object(result_obj) = args.get(0).copied().unwrap_or(Value::Undefined) else {
+        return Err(VmError::TypeError("expected { value, done } object"));
+      };
+      scope.push_root(Value::Object(result_obj))?;
+      let done_key = alloc_key(scope, "done")?;
+      let value_key = alloc_key(scope, "value")?;
+
+      let done_val = vm.get(scope, result_obj, done_key)?;
+      let done = matches!(done_val, Value::Bool(true));
+
+      let value_val = vm.get(scope, result_obj, value_key)?;
+      let bytes = match value_val {
+        Value::Undefined => None,
+        Value::Object(obj) => {
+          if !scope.heap().is_uint8_array_object(obj) {
+            return Err(VmError::TypeError("expected Uint8Array value"));
+          }
+          Some(scope.heap().uint8_array_data(obj)?.to_vec())
+        }
+        _ => return Err(VmError::TypeError("expected Uint8Array value")),
+      };
+
+      let state = host
+        .as_any_mut()
+        .downcast_mut::<HostState>()
+        .ok_or(VmError::InvariantViolation("unexpected host state type"))?;
+      state.reads.push((done, bytes));
+      Ok(Value::Undefined)
+    }
+
+    let mut vm = Vm::new(VmOptions::default());
+    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut realm = Realm::new(&mut vm, &mut heap)?;
+    let _realm_guard = RealmTeardownGuard::new(&mut realm, &mut heap);
+
+    let _bindings = install_window_fetch_bindings_with_guard::<DummyHost>(
+      &mut vm,
+      &realm,
+      &mut heap,
+      WindowFetchEnv::for_document(Arc::new(crate::resource::HttpFetcher::new()), None),
+    )?;
+
+    let mut host_state = HostState::default();
+    let mut hooks = JobQueueHooks::default();
+
+    let (resp_obj, body_obj, reader_obj) = {
+      let mut scope = heap.scope();
+      let global = realm.global_object();
+      let Value::Object(response_ctor) = get_data_prop(&mut scope, global, "Response")? else {
+        return Err(VmError::InvariantViolation("Response constructor missing"));
+      };
+
+      let hi_s = scope.alloc_string("hi")?;
+      scope.push_root(Value::String(hi_s))?;
+      let Value::Object(resp_obj) = response_ctor_construct(
+        &mut vm,
+        &mut scope,
+        &mut host_state,
+        &mut hooks,
+        response_ctor,
+        &[Value::String(hi_s)],
+        Value::Object(response_ctor),
+      )?
+      else {
+        return Err(VmError::InvariantViolation("Response constructor must return an object"));
+      };
+
+      let body_used_key = alloc_key(&mut scope, "bodyUsed")?;
+      let used_before = vm.get(&mut scope, resp_obj, body_used_key)?;
+      assert!(matches!(used_before, Value::Bool(false)));
+
+      let body_key = alloc_key(&mut scope, "body")?;
+      let Value::Object(body_obj) = vm.get(&mut scope, resp_obj, body_key)? else {
+        return Err(VmError::InvariantViolation("Response.body must return an object"));
+      };
+
+      let locked_key = alloc_key(&mut scope, "locked")?;
+      let locked_before = vm.get(&mut scope, body_obj, locked_key)?;
+      assert!(matches!(locked_before, Value::Bool(false)));
+
+      let get_reader_key = alloc_key(&mut scope, "getReader")?;
+      let get_reader_fn = vm.get(&mut scope, body_obj, get_reader_key)?;
+      let Value::Object(reader_obj) = vm.call_with_host_and_hooks(
+        &mut host_state,
+        &mut scope,
+        &mut hooks,
+        get_reader_fn,
+        Value::Object(body_obj),
+        &[],
+      )?
+      else {
+        return Err(VmError::InvariantViolation("ReadableStream.getReader must return an object"));
+      };
+
+      let locked_after = vm.get(&mut scope, body_obj, locked_key)?;
+      assert!(matches!(locked_after, Value::Bool(true)));
+
+      (resp_obj, body_obj, reader_obj)
+    };
+
+    let resp_root = heap.add_root(Value::Object(resp_obj))?;
+    let body_root = heap.add_root(Value::Object(body_obj))?;
+    let reader_root = heap.add_root(Value::Object(reader_obj))?;
+
+    let capture_id = vm.register_native_call(capture_read_result_native)?;
+    let func_proto = realm.intrinsics().function_prototype();
+
+    // reader.read() -> { done:false, value: Uint8Array([104, 105]) }
+    {
+      let mut scope = heap.scope();
+      let read_key = alloc_key(&mut scope, "read")?;
+      let read_fn = vm.get(&mut scope, reader_obj, read_key)?;
+      let promise = vm.call_with_host_and_hooks(
+        &mut host_state,
+        &mut scope,
+        &mut hooks,
+        read_fn,
+        Value::Object(reader_obj),
+        &[],
+      )?;
+      let Value::Object(promise_obj) = promise else {
+        return Err(VmError::InvariantViolation("read() must return a Promise object"));
+      };
+
+      let on_fulfilled = {
+        let name = scope.alloc_string("onFulfilled")?;
+        scope.push_root(Value::String(name))?;
+        let f = scope.alloc_native_function(capture_id, None, name, 1)?;
+        scope.heap_mut().object_set_prototype(f, Some(func_proto))?;
+        f
+      };
+
+      let then_key = alloc_key(&mut scope, "then")?;
+      let then_fn = vm.get(&mut scope, promise_obj, then_key)?;
+      vm.call_with_host_and_hooks(
+        &mut host_state,
+        &mut scope,
+        &mut hooks,
+        then_fn,
+        Value::Object(promise_obj),
+        &[Value::Object(on_fulfilled), Value::Undefined],
+      )?;
+
+      let promise_root = scope.heap_mut().add_root(Value::Object(promise_obj))?;
+      let on_fulfilled_root = scope.heap_mut().add_root(Value::Object(on_fulfilled))?;
+      drop(scope);
+      drain_jobs(&mut vm, &mut heap, &mut host_state, &mut hooks)?;
+      heap.remove_root(promise_root);
+      heap.remove_root(on_fulfilled_root);
+    }
+
+    assert_eq!(host_state.reads.len(), 1);
+    assert_eq!(host_state.reads[0].0, false);
+    assert_eq!(
+      host_state.reads[0].1.as_deref(),
+      Some(&[104u8, 105u8][..])
+    );
+
+    // Response.bodyUsed flips to true after the first read.
+    {
+      let mut scope = heap.scope();
+      let body_used_key = alloc_key(&mut scope, "bodyUsed")?;
+      let used_after = vm.get(&mut scope, resp_obj, body_used_key)?;
+      assert!(matches!(used_after, Value::Bool(true)));
+    }
+
+    // Second read: done:true, value: undefined.
+    {
+      let mut scope = heap.scope();
+      let read_key = alloc_key(&mut scope, "read")?;
+      let read_fn = vm.get(&mut scope, reader_obj, read_key)?;
+      let promise = vm.call_with_host_and_hooks(
+        &mut host_state,
+        &mut scope,
+        &mut hooks,
+        read_fn,
+        Value::Object(reader_obj),
+        &[],
+      )?;
+      let Value::Object(promise_obj) = promise else {
+        return Err(VmError::InvariantViolation("read() must return a Promise object"));
+      };
+
+      let on_fulfilled = {
+        let name = scope.alloc_string("onFulfilled2")?;
+        scope.push_root(Value::String(name))?;
+        let f = scope.alloc_native_function(capture_id, None, name, 1)?;
+        scope.heap_mut().object_set_prototype(f, Some(func_proto))?;
+        f
+      };
+
+      let then_key = alloc_key(&mut scope, "then")?;
+      let then_fn = vm.get(&mut scope, promise_obj, then_key)?;
+      vm.call_with_host_and_hooks(
+        &mut host_state,
+        &mut scope,
+        &mut hooks,
+        then_fn,
+        Value::Object(promise_obj),
+        &[Value::Object(on_fulfilled), Value::Undefined],
+      )?;
+
+      let promise_root = scope.heap_mut().add_root(Value::Object(promise_obj))?;
+      let on_fulfilled_root = scope.heap_mut().add_root(Value::Object(on_fulfilled))?;
+      drop(scope);
+      drain_jobs(&mut vm, &mut heap, &mut host_state, &mut hooks)?;
+      heap.remove_root(promise_root);
+      heap.remove_root(on_fulfilled_root);
+    }
+
+    assert_eq!(host_state.reads.len(), 2);
+    assert_eq!(host_state.reads[1].0, true);
+    assert!(host_state.reads[1].1.is_none());
+
+    // releaseLock() unlocks the stream.
+    {
+      let mut scope = heap.scope();
+      let release_key = alloc_key(&mut scope, "releaseLock")?;
+      let release_fn = vm.get(&mut scope, reader_obj, release_key)?;
+      vm.call_with_host_and_hooks(
+        &mut host_state,
+        &mut scope,
+        &mut hooks,
+        release_fn,
+        Value::Object(reader_obj),
+        &[],
+      )?;
+
+      let locked_key = alloc_key(&mut scope, "locked")?;
+      let locked_after = vm.get(&mut scope, body_obj, locked_key)?;
+      assert!(matches!(locked_after, Value::Bool(false)));
+
+      // Further reads throw TypeError.
+      let read_key = alloc_key(&mut scope, "read")?;
+      let read_fn = vm.get(&mut scope, reader_obj, read_key)?;
+      let err = vm
+        .call_with_host_and_hooks(&mut host_state, &mut scope, &mut hooks, read_fn, Value::Object(reader_obj), &[])
+        .expect_err("expected read() to throw after releaseLock()");
+      assert!(matches!(err, VmError::TypeError(_)), "err={err}");
+    }
+
+    heap.remove_root(resp_root);
+    heap.remove_root(body_root);
+    heap.remove_root(reader_root);
+
+    drop(hooks);
+    drop(host_state);
+    realm.teardown(&mut heap);
+    Ok(())
+  }
+
+  #[test]
+  fn response_consumers_reject_when_body_stream_locked() -> Result<(), VmError> {
+    let mut vm = Vm::new(VmOptions::default());
+    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut realm = Realm::new(&mut vm, &mut heap)?;
+    let _realm_guard = RealmTeardownGuard::new(&mut realm, &mut heap);
+
+    let _bindings = install_window_fetch_bindings_with_guard::<DummyHost>(
+      &mut vm,
+      &realm,
+      &mut heap,
+      WindowFetchEnv::for_document(Arc::new(crate::resource::HttpFetcher::new()), None),
+    )?;
+
+    let mut host_state = CaptureHostState::default();
+    let mut hooks = JobQueueHooks::default();
+
+    let (resp_obj, body_obj, reader_obj) = {
+      let mut scope = heap.scope();
+      let global = realm.global_object();
+      let Value::Object(response_ctor) = get_data_prop(&mut scope, global, "Response")? else {
+        return Err(VmError::InvariantViolation("Response constructor missing"));
+      };
+
+      let hi_s = scope.alloc_string("hi")?;
+      scope.push_root(Value::String(hi_s))?;
+      let Value::Object(resp_obj) = response_ctor_construct(
+        &mut vm,
+        &mut scope,
+        &mut host_state,
+        &mut hooks,
+        response_ctor,
+        &[Value::String(hi_s)],
+        Value::Object(response_ctor),
+      )?
+      else {
+        return Err(VmError::InvariantViolation("Response constructor must return an object"));
+      };
+
+      let body_key = alloc_key(&mut scope, "body")?;
+      let Value::Object(body_obj) = vm.get(&mut scope, resp_obj, body_key)? else {
+        return Err(VmError::InvariantViolation("Response.body must return an object"));
+      };
+
+      let get_reader_key = alloc_key(&mut scope, "getReader")?;
+      let get_reader_fn = vm.get(&mut scope, body_obj, get_reader_key)?;
+      let Value::Object(reader_obj) = vm.call_with_host_and_hooks(
+        &mut host_state,
+        &mut scope,
+        &mut hooks,
+        get_reader_fn,
+        Value::Object(body_obj),
+        &[],
+      )?
+      else {
+        return Err(VmError::InvariantViolation("ReadableStream.getReader must return an object"));
+      };
+
+      (resp_obj, body_obj, reader_obj)
+    };
+
+    let resp_root = heap.add_root(Value::Object(resp_obj))?;
+    let body_root = heap.add_root(Value::Object(body_obj))?;
+    let reader_root = heap.add_root(Value::Object(reader_obj))?;
+
+    // resp.text() rejects with TypeError when locked.
+    {
+      let mut scope = heap.scope();
+      let text_key = alloc_key(&mut scope, "text")?;
+      let text_fn = vm.get(&mut scope, resp_obj, text_key)?;
+      let promise = vm.call_with_host_and_hooks(
+        &mut host_state,
+        &mut scope,
+        &mut hooks,
+        text_fn,
+        Value::Object(resp_obj),
+        &[],
+      )?;
+      let Value::Object(promise_obj) = promise else {
+        return Err(VmError::InvariantViolation("Response.text must return a Promise object"));
+      };
+
+      let capture_id = vm.register_native_call(capture_promise_string_native)?;
+      let func_proto = realm.intrinsics().function_prototype();
+      let on_fulfilled = {
+        let name = scope.alloc_string("onFulfilled")?;
+        scope.push_root(Value::String(name))?;
+        let f = scope.alloc_native_function_with_slots(
+          capture_id,
+          None,
+          name,
+          1,
+          &[Value::Number(0.0)],
+        )?;
+        scope.heap_mut().object_set_prototype(f, Some(func_proto))?;
+        f
+      };
+      let on_rejected = {
+        let name = scope.alloc_string("onRejected")?;
+        scope.push_root(Value::String(name))?;
+        let f = scope.alloc_native_function_with_slots(
+          capture_id,
+          None,
+          name,
+          1,
+          &[Value::Number(1.0)],
+        )?;
+        scope.heap_mut().object_set_prototype(f, Some(func_proto))?;
+        f
+      };
+
+      let then_key = alloc_key(&mut scope, "then")?;
+      let then_fn = vm.get(&mut scope, promise_obj, then_key)?;
+      vm.call_with_host_and_hooks(
+        &mut host_state,
+        &mut scope,
+        &mut hooks,
+        then_fn,
+        Value::Object(promise_obj),
+        &[Value::Object(on_fulfilled), Value::Object(on_rejected)],
+      )?;
+
+      let promise_root = scope.heap_mut().add_root(Value::Object(promise_obj))?;
+      let on_fulfilled_root = scope.heap_mut().add_root(Value::Object(on_fulfilled))?;
+      let on_rejected_root = scope.heap_mut().add_root(Value::Object(on_rejected))?;
+      drop(scope);
+      drain_jobs(&mut vm, &mut heap, &mut host_state, &mut hooks)?;
+      heap.remove_root(promise_root);
+      heap.remove_root(on_fulfilled_root);
+      heap.remove_root(on_rejected_root);
+    }
+
+    assert_eq!(host_state.fulfilled, None);
+    assert_eq!(host_state.rejected.as_deref(), Some("Response body is locked"));
+
+    // resp.clone() throws TypeError when locked.
+    {
+      let mut scope = heap.scope();
+      let clone_key = alloc_key(&mut scope, "clone")?;
+      let clone_fn = vm.get(&mut scope, resp_obj, clone_key)?;
+      let err = vm
+        .call_with_host_and_hooks(
+          &mut host_state,
+          &mut scope,
+          &mut hooks,
+          clone_fn,
+          Value::Object(resp_obj),
+          &[],
+        )
+        .expect_err("expected Response.clone to throw while locked");
+
+      let VmError::Throw(thrown) = err else {
+        return Err(VmError::InvariantViolation("expected thrown TypeError"));
+      };
+      let Value::Object(err_obj) = thrown else {
+        return Err(VmError::InvariantViolation("expected thrown TypeError object"));
+      };
+      scope.push_root(Value::Object(err_obj))?;
+      let message_key = alloc_key(&mut scope, "message")?;
+      let message_val = vm.get(&mut scope, err_obj, message_key)?;
+      let Value::String(message_str) = message_val else {
+        return Err(VmError::InvariantViolation("expected TypeError.message string"));
+      };
+      let msg = scope.heap().get_string(message_str)?.to_utf8_lossy().to_string();
+      assert_eq!(msg, "Response body is locked");
+    }
+
+    heap.remove_root(resp_root);
+    heap.remove_root(body_root);
+    heap.remove_root(reader_root);
+    drop(hooks);
+    drop(host_state);
     realm.teardown(&mut heap);
     Ok(())
   }
