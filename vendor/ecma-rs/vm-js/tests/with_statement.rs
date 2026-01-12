@@ -189,3 +189,77 @@ fn with_statement_proxy_unscopables_get_is_observable() -> Result<(), VmError> {
   );
   Ok(())
 }
+
+#[test]
+fn with_statement_proxy_forwarded_accessor_uses_proxy_receiver() -> Result<(), VmError> {
+  let mut agent = new_agent();
+  let value = agent.run_script(
+    "with_proxy_forwarded_accessor_receiver.js",
+    r#"
+      var log = [];
+      var target = {
+        get x() { log.push("getthis:" + (this === p)); return 1; },
+        set x(v) { log.push("setthis:" + (this === p)); },
+      };
+      var p = new Proxy(target, {
+        has(t, k) { log.push("has:" + String(k)); return (k in t); },
+        // No `get`/`set` trap: engine must forward to target with receiver = proxy.
+      });
+      with (p) { x; x = 2; }
+      log.join(",")
+    "#,
+    Budget::unlimited(1),
+    None,
+  )?;
+  let log = agent.value_to_error_string(value);
+  assert!(log.contains("has:x"), "expected Proxy has trap to be observed, got {log}");
+  assert!(
+    log.contains("getthis:true"),
+    "expected forwarded getter to see receiver === proxy, got {log}"
+  );
+  assert!(
+    log.contains("setthis:true"),
+    "expected forwarded setter to see receiver === proxy, got {log}"
+  );
+  Ok(())
+}
+
+#[test]
+fn with_statement_proxy_forwarded_unscopables_accessor_uses_proxy_receiver() -> Result<(), VmError> {
+  let mut agent = new_gc_stress_agent();
+  let value = agent.run_script(
+    "with_proxy_forwarded_unscopables_receiver.js",
+    r#"
+      var log = [];
+      var target = { x: 1 };
+      Object.defineProperty(target, Symbol.unscopables, {
+        get() { log.push("unscopablesThis:" + (this === p)); return { x: true }; },
+        configurable: true,
+      });
+      var p = new Proxy(target, {
+        has(t, k) { log.push("has:" + String(k)); return (k in t); },
+        // No `get` trap: @@unscopables must still be read with receiver = proxy.
+      });
+      let x = 2;
+      var t;
+      with (p) { t = typeof x; }
+      t + "|" + log.join(",")
+    "#,
+    Budget::unlimited(1),
+    None,
+  )?;
+  let out = agent.value_to_error_string(value);
+  assert!(
+    out.starts_with("number|"),
+    "expected unscopables to force identifier resolution to outer binding, got {out}"
+  );
+  assert!(
+    out.contains("has:x"),
+    "expected Proxy has trap to be observed, got {out}"
+  );
+  assert!(
+    out.contains("unscopablesThis:true"),
+    "expected @@unscopables getter to see receiver === proxy, got {out}"
+  );
+  Ok(())
+}
