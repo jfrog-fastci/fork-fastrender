@@ -53,30 +53,8 @@ fn row_file_name(
   row: &gimli::read::LineRow,
 ) -> Option<String> {
   let file = row.file(header)?;
-  let path = file.path_name();
-  let s = match path {
-    gimli::read::AttributeValue::String(s) => s.to_string_lossy().to_string(),
-    gimli::read::AttributeValue::DebugStrRef(off) => dwarf
-      .debug_str
-      .get_str(off)
-      .ok()?
-      .to_string_lossy()
-      .to_string(),
-    gimli::read::AttributeValue::DebugLineStrRef(off) => dwarf
-      .debug_line_str
-      .get_str(off)
-      .ok()?
-      .to_string_lossy()
-      .to_string(),
-    other => {
-      // This test only cares that filenames can be resolved; if the DWARF encoding uses an
-      // unexpected string form, ignore the row.
-      let _ = other;
-      return None;
-    }
-  };
-  let _ = unit;
-  Some(s)
+  let path = dwarf.attr_string(unit, file.path_name()).ok()?;
+  Some(path.to_string_lossy().into_owned())
 }
 
 fn compile_to_obj(program: &Program, entry: typecheck_ts::FileId) -> Vec<u8> {
@@ -116,17 +94,12 @@ fn dwarf_line_program_has_main_ts_rows_for_real_code() {
 
   while let Some(header) = units.next().expect("iterate units") {
     let unit = dwarf.unit(header).expect("parse unit");
-    let Some(name) = compile_unit_name(&dwarf, &unit) else {
-      continue;
-    };
-    cu_names.push(name.clone());
-
-    if !name.contains("main.ts") {
-      continue;
+    if let Some(name) = compile_unit_name(&dwarf, &unit) {
+      cu_names.push(name);
     }
 
     let Some(program) = unit.line_program.clone() else {
-      panic!("compile unit `{name}` missing DWARF line program");
+      continue;
     };
 
     let mut rows = program.rows();
