@@ -31,6 +31,9 @@ struct Cli {
 enum Commands {
   /// Type-check one or more entry files.
   Typecheck(TypecheckArgs),
+
+  /// Print the TypeScript version whose standard library declarations are bundled with `typecheck-ts`.
+  PrintTypescriptVersion,
 }
 
 #[derive(Args)]
@@ -277,6 +280,20 @@ fn main() -> ExitCode {
   let cli = Cli::parse();
   match cli.command {
     Commands::Typecheck(args) => run_typecheck(args),
+    Commands::PrintTypescriptVersion => print_typescript_version(),
+  }
+}
+
+fn print_typescript_version() -> ExitCode {
+  match typecheck_ts::lib_support::bundled_typescript_version() {
+    Some(version) => {
+      println!("{version}");
+      ExitCode::SUCCESS
+    }
+    None => {
+      eprintln!("no bundled TypeScript version available (build without default-features?)");
+      ExitCode::FAILURE
+    }
   }
 }
 

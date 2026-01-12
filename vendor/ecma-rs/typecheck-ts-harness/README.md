@@ -401,7 +401,9 @@ the suite name (e.g. `difftsc/assignability`).
  baselines.
 
  The workflow installs dependencies from `typecheck-ts-harness/package-lock.json`
- (via `npm ci --ignore-scripts`) and executes:
+ (via `npm ci --ignore-scripts`) and executes. The pinned TypeScript version
+ should match the `typecheck-ts` bundled lib version (see
+ `cargo run -p typecheck-ts-cli --quiet -- print-typescript-version`).
 
 ```bash
 # From `vendor/ecma-rs/`:

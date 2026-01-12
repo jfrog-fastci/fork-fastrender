@@ -110,6 +110,22 @@ pub fn bundled_lib_file(name: super::LibName) -> Option<LibFile> {
   }
 }
 
+/// The TypeScript version that the bundled `lib.*.d.ts` files were sourced from.
+///
+/// When the `bundled-libs` feature is disabled, no `.d.ts` libs are embedded
+/// and this returns `None`.
+pub fn bundled_typescript_version() -> Option<&'static str> {
+  #[cfg(feature = "bundled-libs")]
+  {
+    Some(bundled::typescript_version())
+  }
+
+  #[cfg(not(feature = "bundled-libs"))]
+  {
+    None
+  }
+}
+
 #[cfg(not(feature = "bundled-libs"))]
 const FALLBACK_CORE_GLOBAL_TYPES: &str = r#"
 interface Array<T> {}
@@ -282,6 +298,10 @@ mod bundled {
 
   mod generated {
     include!(concat!(env!("OUT_DIR"), "/typescript_libs_generated.rs"));
+  }
+
+  pub(super) fn typescript_version() -> &'static str {
+    generated::TYPESCRIPT_VERSION
   }
 
   // Ensure the build-script generated `TYPESCRIPT_VERSION` constant is treated as used

@@ -54,6 +54,22 @@ fn typecheck_succeeds_on_basic_fixture() {
 }
 
 #[test]
+fn print_typescript_version_matches_bundled_libs() {
+  let expected = typecheck_ts::lib_support::bundled_typescript_version()
+    .expect("typecheck-ts should be built with bundled-libs by default");
+  let output = typecheck_cli()
+    .timeout(CLI_TIMEOUT)
+    .arg("print-typescript-version")
+    .assert()
+    .success()
+    .get_output()
+    .stdout
+    .clone();
+  let stdout = String::from_utf8(output).expect("utf-8 stdout");
+  assert_eq!(stdout.trim(), expected);
+}
+
+#[test]
 fn type_at_reports_number() {
   let path = fixture("basic.ts");
   let normalized_path = display_path(&path);

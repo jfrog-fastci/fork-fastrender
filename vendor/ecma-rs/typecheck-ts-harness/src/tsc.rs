@@ -86,6 +86,11 @@ pub struct TscDiagnostics {
 impl TscDiagnostics {
   pub(crate) fn canonicalize_for_baseline(&mut self) {
     self.schema_version = Some(TSC_BASELINE_SCHEMA_VERSION);
+    if self.metadata.bundled_typescript_version.is_none() {
+      if let Some(version) = typecheck_ts::lib_support::bundled_typescript_version() {
+        self.metadata.bundled_typescript_version = Some(version.to_string());
+      }
+    }
     self.diagnostics.sort_by(|a, b| {
       (a.file.as_deref().unwrap_or(""), a.start, a.end, a.code).cmp(&(
         b.file.as_deref().unwrap_or(""),
@@ -116,6 +121,8 @@ impl TscDiagnostics {
 pub struct TscMetadata {
   #[serde(default, alias = "typescriptVersion")]
   pub typescript_version: Option<String>,
+  #[serde(default, alias = "bundledTypescriptVersion")]
+  pub bundled_typescript_version: Option<String>,
   #[serde(default)]
   pub options: Map<String, Value>,
 }
@@ -466,6 +473,19 @@ impl TscRunner {
     let mut parsed = parsed;
     if parsed.schema_version.is_none() {
       parsed.schema_version = Some(TSC_BASELINE_SCHEMA_VERSION);
+    }
+
+    if let Some(bundled) = typecheck_ts::lib_support::bundled_typescript_version() {
+      parsed.metadata.bundled_typescript_version = Some(bundled.to_string());
+      if let Some(ref oracle) = parsed.metadata.typescript_version {
+        if oracle.trim() != bundled {
+          bail!(
+            "typescript version mismatch: harness is running npm typescript@{}, but typecheck-ts bundled libs are pinned to {}",
+            oracle.trim(),
+            bundled
+          );
+        }
+      }
     }
     if let Some(crash) = parsed.crash.clone() {
       let mut message = crash.message;
