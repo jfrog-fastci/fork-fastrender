@@ -225,6 +225,12 @@ fn proxy_typeof_call_and_construct() -> Result<(), VmError> {
   assert_eq!(expect_string(&rt, v), "function");
   let v = rt.exec_script("typeof nonCallableProxy")?;
   assert_eq!(expect_string(&rt, v), "object");
+  // Callable/constructable proxies remain callable even after revocation; `typeof` must still
+  // report `"function"` (spec: `IsCallable` checks `[[Call]]` internal method presence).
+  let v = rt.exec_script("typeof revokedCallableProxy")?;
+  assert_eq!(expect_string(&rt, v), "function");
+  let v = rt.exec_script("typeof revokedConstructableProxy")?;
+  assert_eq!(expect_string(&rt, v), "function");
 
   assert_eq!(rt.exec_script("callableProxy(1, 2, 3)")?, Value::Number(3.0));
   assert_eq!(

@@ -1710,54 +1710,27 @@ impl Heap {
 
   /// Returns `true` if `value` is callable (i.e. has an ECMAScript `[[Call]]` internal method).
   pub fn is_callable(&self, value: Value) -> Result<bool, VmError> {
-    let Value::Object(mut obj) = value else {
+    let Value::Object(obj) = value else {
       return Ok(false);
     };
-
-    // Follow Proxy chains iteratively to avoid recursion.
-    for _ in 0..MAX_PROTOTYPE_CHAIN {
-      match self.get_heap_object(obj.0)? {
-        HeapObject::Function(_) => return Ok(true),
-        HeapObject::Proxy(p) => {
-          let (Some(target), Some(_handler)) = (p.target, p.handler) else {
-            // Revoked proxy.
-            return Ok(false);
-          };
-          obj = target;
-        }
-        _ => return Ok(false),
-      }
+    match self.get_heap_object(obj.0)? {
+      HeapObject::Function(_) => Ok(true),
+      HeapObject::Proxy(p) => Ok(p.callable),
+      _ => Ok(false),
     }
-
-    // If we hit the hard traversal limit, treat it as non-callable rather than surfacing an
-    // internal error. (In particular, `typeof` must not throw.)
-    Ok(false)
   }
 
   /// Returns `true` if `value` is a constructor (i.e. has an ECMAScript `[[Construct]]` internal
   /// method).
   pub fn is_constructor(&self, value: Value) -> Result<bool, VmError> {
-    let Value::Object(mut obj) = value else {
+    let Value::Object(obj) = value else {
       return Ok(false);
     };
-
-    // Follow Proxy chains iteratively to avoid recursion.
-    for _ in 0..MAX_PROTOTYPE_CHAIN {
-      match self.get_heap_object(obj.0)? {
-        HeapObject::Function(f) => return Ok(f.construct.is_some()),
-        HeapObject::Proxy(p) => {
-          let (Some(target), Some(_handler)) = (p.target, p.handler) else {
-            // Revoked proxy.
-            return Ok(false);
-          };
-          obj = target;
-        }
-        _ => return Ok(false),
-      }
+    match self.get_heap_object(obj.0)? {
+      HeapObject::Function(f) => Ok(f.construct.is_some()),
+      HeapObject::Proxy(p) => Ok(p.constructable),
+      _ => Ok(false),
     }
-
-    // Avoid surfacing internal errors to user code; see `Heap::is_callable`.
-    Ok(false)
   }
 
   /// Calls `callee` with the provided `this` value and arguments.
@@ -6033,6 +6006,16 @@ impl<'a> Scope<'a> {
       }
     }
 
+    // Proxy callability/constructability is fixed at creation time and must be preserved even after
+    // the Proxy is revoked.
+    let (callable, constructable) = match target {
+      Some(target) => (
+        self.heap().is_callable(Value::Object(target))?,
+        self.heap().is_constructor(Value::Object(target))?,
+      ),
+      None => (false, false),
+    };
+
     // Root inputs during allocation in case root-stack growth, `ensure_can_allocate`, or slot-table
     // growth triggers GC.
     //
@@ -6055,7 +6038,12 @@ impl<'a> Scope<'a> {
     // Proxies have no heap-owned payload allocations today; they store only GC handles inline.
     let new_bytes = 0usize;
     scope.heap.ensure_can_allocate(new_bytes)?;
-    let obj = HeapObject::Proxy(JsProxy { target, handler });
+    let obj = HeapObject::Proxy(JsProxy {
+      target,
+      handler,
+      callable,
+      constructable,
+    });
     Ok(GcObject(scope.heap.alloc_unchecked(obj, new_bytes)?))
   }
   /// Revokes a Proxy exotic object by clearing its target and handler.
@@ -7199,6 +7187,15 @@ impl Trace for JsSymbol {
 struct JsProxy {
   target: Option<GcObject>,
   handler: Option<GcObject>,
+  /// Whether this Proxy has an ECMAScript `[[Call]]` internal method.
+  ///
+  /// Per spec, callability is determined when the Proxy is created and is preserved even if the
+  /// Proxy is later revoked (`[[ProxyTarget]]`/`[[ProxyHandler]]` set to `null`).
+  callable: bool,
+  /// Whether this Proxy has an ECMAScript `[[Construct]]` internal method.
+  ///
+  /// Like `callable`, this is fixed at creation time and preserved across revocation.
+  constructable: bool,
 }
 
 impl Trace for JsProxy {

@@ -8060,18 +8060,41 @@ pub fn function_prototype_to_string(
     return Err(VmError::NotCallable);
   };
 
-  // Extract metadata without holding a heap borrow across allocations.
-  let (call_handler, name, is_bound) = {
-    let func = scope.heap().get_function(func_obj)?;
-    (func.call.clone(), func.name, func.bound_target.is_some())
+  // Callable Proxy objects (and other exotic callables) do not have `HeapObject::Function` payload,
+  // but `Function.prototype.toString` must still succeed for them.
+  //
+  // Spec: https://tc39.es/ecma262/#sec-function.prototype.tostring
+  let (call_handler, name, is_bound) = match scope.heap().get_function(func_obj) {
+    Ok(func) => (Some(func.call.clone()), Some(func.name), func.bound_target.is_some()),
+    Err(VmError::NotCallable) => (None, None, false),
+    Err(other) => return Err(other),
   };
 
   // Bound functions never expose their target source text via `toString`; per spec (and JS engine
   // behaviour), they stringify as `[native code]`.
   if is_bound {
+    let Some(name) = name else {
+      return Err(VmError::InvariantViolation(
+        "bound function missing internal name string",
+      ));
+    };
     let s = canonical_native_function_string(scope, name)?;
     return Ok(Value::String(s));
   }
+
+  // Non-function callables have no internal name slot; stringify as an anonymous native function.
+  let name = if let Some(name) = name {
+    name
+  } else {
+    let empty = scope.alloc_string("")?;
+    scope.push_root(Value::String(empty))?;
+    empty
+  };
+
+  let Some(call_handler) = call_handler else {
+    let s = canonical_native_function_string(scope, name)?;
+    return Ok(Value::String(s));
+  };
 
   match call_handler {
     CallHandler::Native(_) | CallHandler::User(_) => {

@@ -32,6 +32,26 @@ fn function_prototype_to_string_native_contains_native_code() -> Result<(), VmEr
 }
 
 #[test]
+fn function_prototype_to_string_callable_proxy_contains_native_code() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = rt.exec_script("Function.prototype.toString.call(new Proxy(function(){}, {}))")?;
+  let s = value_to_utf8(&rt, value);
+  assert!(s.contains("[native code]"));
+  Ok(())
+}
+
+#[test]
+fn function_prototype_to_string_revoked_callable_proxy_contains_native_code() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = rt.exec_script(
+    r#"let r = Proxy.revocable(function(){}, {}); r.revoke(); Function.prototype.toString.call(r.proxy)"#,
+  )?;
+  let s = value_to_utf8(&rt, value);
+  assert!(s.contains("[native code]"));
+  Ok(())
+}
+
+#[test]
 fn function_prototype_to_string_throws_on_non_callable_receiver() -> Result<(), VmError> {
   let mut rt = new_runtime();
   let value =
@@ -40,4 +60,3 @@ fn function_prototype_to_string_throws_on_non_callable_receiver() -> Result<(), 
   assert_eq!(s, "TypeError");
   Ok(())
 }
-
