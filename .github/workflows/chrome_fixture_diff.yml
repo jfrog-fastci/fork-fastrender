@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       fixtures:
-        description: "Comma-separated fixture stems (default: fixtures referenced by tests/pages_regression_test.rs)"
+        description: "Comma-separated fixture stems (default: xtask fixture-chrome-diff default selection from pages_regression manifest)"
         required: false
         type: string
       shard:
@@ -111,7 +111,7 @@ jobs:
             fonts-noto-core \
             fonts-noto-color-emoji
 
-      - name: Resolve fixture list
+      - name: Normalize fixtures input
         id: fixtures
         shell: bash
         run: |
@@ -119,37 +119,11 @@ jobs:
 
           raw_fixtures="${{ github.event.inputs.fixtures }}"
           raw_fixtures="${raw_fixtures// /}"
-
           if [[ -n "${raw_fixtures}" ]]; then
-            fixtures_csv="${raw_fixtures}"
+            echo "fixtures=${raw_fixtures}" >> "$GITHUB_OUTPUT"
           else
-            mapfile -t fixtures < <(
-              (
-                grep -Eo 'html:[[:space:]]*"[^"]+"' tests/pages_regression_test.rs 2>/dev/null || true
-              ) | sed -E 's/.*"([^"]+)".*/\1/' \
-                | awk -F/ '{print $1}' \
-                | awk '!seen[$0]++'
-            )
-
-            if [[ "${#fixtures[@]}" -eq 0 ]]; then
-              mapfile -t fixtures < <(
-                find tests/pages/fixtures -mindepth 2 -maxdepth 2 -type f -name index.html -print \
-                  | sed -E 's#/index\\.html$##' \
-                  | xargs -n1 basename \
-                  | sort -u
-              )
-            fi
-
-            fixtures_csv="$(IFS=,; echo "${fixtures[*]}")"
+            echo "fixtures=<default (xtask)>" >> "$GITHUB_OUTPUT"
           fi
-
-          if [[ -z "${fixtures_csv}" ]]; then
-            echo "no fixtures selected" >&2
-            exit 1
-          fi
-
-          echo "FIXTURES=${fixtures_csv}" >> "$GITHUB_ENV"
-          echo "fixtures=${fixtures_csv}" >> "$GITHUB_OUTPUT"
 
       - name: Generate report (fixture vs Chrome)
         shell: bash
@@ -160,9 +134,14 @@ jobs:
 
           args=(
             --out-dir "${OUT_DIR}"
-            --fixtures "${FIXTURES}"
             --timeout 30
           )
+
+          fixtures="${{ github.event.inputs.fixtures }}"
+          fixtures="${fixtures// /}"
+          if [[ -n "${fixtures}" ]]; then
+            args+=(--fixtures "${fixtures}")
+          fi
 
           shard="${{ github.event.inputs.shard }}"
           shard="${shard// /}"
