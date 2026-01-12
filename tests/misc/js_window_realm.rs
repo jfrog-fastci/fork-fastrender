@@ -834,6 +834,46 @@ fn history_go_zero_requests_reload_and_interrupts() -> Result<()> {
 }
 
 #[test]
+fn history_push_and_replace_state_update_length_and_state() -> Result<()> {
+  let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))
+    .map_err(|e| Error::Other(e.to_string()))?;
+
+  let value = realm
+    .exec_script(
+      r#"
+      const out = [];
+      out.push(history.length);
+      history.pushState(1, '', null);
+      out.push(history.length, history.state);
+      history.pushState(2, '');
+      out.push(history.length, history.state);
+      history.replaceState(3, '', null);
+      out.push(history.length, history.state);
+      out.join('|')
+      "#,
+    )
+    .map_err(|e| Error::Other(e.to_string()))?;
+
+  assert_eq!(get_string(realm.heap(), value), "1|2|1|3|2|3|3");
+  Ok(())
+}
+
+#[test]
+fn history_push_state_null_url_is_ignored() -> Result<()> {
+  let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/start"))
+    .map_err(|e| Error::Other(e.to_string()))?;
+
+  let value = realm
+    .exec_script("history.pushState(1, '', null); location.href + '|' + document.URL + '|' + document.baseURI")
+    .map_err(|e| Error::Other(e.to_string()))?;
+  assert_eq!(
+    get_string(realm.heap(), value),
+    "https://example.com/start|https://example.com/start|https://example.com/start"
+  );
+  Ok(())
+}
+
+#[test]
 fn js_execution_can_observe_window_globals() -> Result<()> {
   let url = "https://example.com/path";
   let mut realm =

@@ -44,8 +44,8 @@ use std::time::Duration;
 use url::Url;
 use vm_js::{
   GcObject, GcString, Heap, HeapLimits, HostSlots, JsRuntime as VmJsRuntime, ModuleGraph,
-  PropertyDescriptor, PropertyKey, PropertyKind, Realm, RealmId, Scope, SourceText, Value, Vm,
-  VmError, VmHost, VmHostHooks, VmOptions,
+  PropertyDescriptor, PropertyKey, PropertyKind, Realm, RealmId, RootId, Scope, SourceText, Value,
+  Vm, VmError, VmHost, VmHostHooks, VmOptions,
 };
 use webidl_vm_js::VmJsHostHooksPayload;
 use webidl_vm_js::WebIdlBindingsHost;
@@ -234,11 +234,24 @@ pub struct WindowRealm {
   next_script_id_raw: u64,
 }
 
+#[derive(Debug)]
+struct SessionHistoryEntry {
+  url: String,
+  state_root: RootId,
+}
+
+#[derive(Debug, Default)]
+struct SessionHistory {
+  entries: Vec<SessionHistoryEntry>,
+  index: usize,
+}
+
 pub(crate) struct WindowRealmUserData {
   pub(crate) window_id: u64,
   pub(crate) session_storage_namespace: u64,
   document_url: String,
   pub(crate) base_url: Option<String>,
+  session_history: SessionHistory,
   pending_navigation: Option<LocationNavigationRequest>,
   cookie_fetcher: Option<Arc<dyn ResourceFetcher>>,
   cookie_jar: CookieJar,
@@ -275,6 +288,8 @@ impl std::fmt::Debug for WindowRealmUserData {
       .field("session_storage_namespace", &self.session_storage_namespace)
       .field("document_url", &self.document_url)
       .field("base_url", &self.base_url)
+      .field("session_history_len", &self.session_history.entries.len())
+      .field("session_history_index", &self.session_history.index)
       .field("has_cookie_fetcher", &self.cookie_fetcher.is_some())
       .field("cookie_jar", &self.cookie_jar)
       .field("has_module_graph", &self.module_graph.is_some())
@@ -302,6 +317,7 @@ impl WindowRealmUserData {
       window_id,
       session_storage_namespace,
       base_url: Some(document_url.clone()),
+      session_history: SessionHistory::default(),
       pending_navigation: None,
       document_url,
       cookie_fetcher: None,
@@ -523,6 +539,10 @@ impl WindowRealm {
       unregister_match_media_env(id);
     }
     if let Some(data) = self.runtime.vm.user_data_mut::<WindowRealmUserData>() {
+      for entry in data.session_history.entries.drain(..) {
+        self.runtime.heap.remove_root(entry.state_root);
+      }
+      data.session_history.index = 0;
       if let Some(platform) = data.dom_platform.as_mut() {
         platform.teardown(&mut self.runtime.heap);
       }
@@ -2994,7 +3014,7 @@ fn history_state_change_native(
     Value::Object(obj) => obj,
     _ => return Ok(Value::Undefined),
   };
-  let _replace = matches!(
+  let replace = matches!(
     slots
       .get(HISTORY_REPLACE_SLOT)
       .copied()
@@ -3010,7 +3030,8 @@ fn history_state_change_native(
 
   // The optional URL argument is resolved against the document URL (not `document.baseURI`).
   let url_value = args.get(2).copied().unwrap_or(Value::Undefined);
-  if !matches!(url_value, Value::Undefined) {
+  let url_provided = !matches!(url_value, Value::Undefined | Value::Null);
+  if url_provided {
     let current_document_url = {
       let Some(data) = vm.user_data_mut::<WindowRealmUserData>() else {
         return Err(VmError::InvariantViolation(
@@ -3108,11 +3129,61 @@ fn history_state_change_native(
         data.base_url.is_none() || data.base_url.as_deref() == Some(old_doc_url.as_str());
       if update_base {
         data.base_url = Some(resolved);
+        data
+          .module_loader
+          .borrow_mut()
+          .set_document_url(data.base_url.clone());
       }
     }
   }
 
-  // Update `history.state` after URL validation so failures do not partially apply.
+  let session_history_len = {
+    let Some(data) = vm.user_data_mut::<WindowRealmUserData>() else {
+      return Err(VmError::InvariantViolation("window realm missing user data"));
+    };
+    if data.session_history.entries.is_empty() {
+      return Err(VmError::InvariantViolation(
+        "window realm missing session history state",
+      ));
+    }
+    if data.session_history.index >= data.session_history.entries.len() {
+      return Err(VmError::InvariantViolation(
+        "window realm session history index out of bounds",
+      ));
+    }
+
+    let state_root = scope.heap_mut().add_root(state_value)?;
+    if replace {
+      let entry = &mut data.session_history.entries[data.session_history.index];
+      if url_provided {
+        entry.url = data.document_url.clone();
+      }
+      let old_root = std::mem::replace(&mut entry.state_root, state_root);
+      scope.heap_mut().remove_root(old_root);
+    } else {
+      let forward_start = data.session_history.index + 1;
+      if forward_start < data.session_history.entries.len() {
+        for entry in data.session_history.entries.drain(forward_start..) {
+          scope.heap_mut().remove_root(entry.state_root);
+        }
+      }
+      data
+        .session_history
+        .entries
+        .try_reserve(1)
+        .map_err(|_| VmError::OutOfMemory)?;
+      data.session_history.entries.push(SessionHistoryEntry {
+        url: data.document_url.clone(),
+        state_root,
+      });
+      data.session_history.index = data.session_history.entries.len() - 1;
+    }
+
+    data.session_history.entries.len()
+  };
+
+  // Update `history.state` after URL validation/session history changes so failures do not partially
+  // apply.
   {
     // Root the receiver while allocating the property key: `alloc_key` can trigger GC.
     let mut scope = scope.reborrow();
@@ -3120,6 +3191,18 @@ fn history_state_change_native(
     scope.push_root(state_value)?;
     let state_key = alloc_key(&mut scope, "state")?;
     scope.define_property(history_obj, state_key, read_only_data_desc(state_value))?;
+  }
+
+  if !replace {
+    // Keep `history.length` in sync with the host-side session history stack.
+    let mut scope = scope.reborrow();
+    scope.push_root(Value::Object(history_obj))?;
+    let length_key = alloc_key(&mut scope, "length")?;
+    scope.define_property(
+      history_obj,
+      length_key,
+      read_only_data_desc(Value::Number(session_history_len as f64)),
+    )?;
   }
 
   Ok(Value::Undefined)
@@ -19895,6 +19978,31 @@ fn init_window_globals(
     history_length_key,
     read_only_data_desc(Value::Number(1.0)),
   )?;
+
+  // Seed the realm's host-side session history stack with the initial document URL + a `null`
+  // state value.
+  //
+  // The JS `history.state` property is a facade; the actual per-entry state values are stored as
+  // persistent roots so they remain GC-safe across turns.
+  {
+    let Some(data) = vm.user_data_mut::<WindowRealmUserData>() else {
+      return Err(VmError::InvariantViolation("window realm missing user data"));
+    };
+    for entry in data.session_history.entries.drain(..) {
+      scope.heap_mut().remove_root(entry.state_root);
+    }
+    data
+      .session_history
+      .entries
+      .try_reserve(1)
+      .map_err(|_| VmError::OutOfMemory)?;
+    let state_root = scope.heap_mut().add_root(Value::Null)?;
+    data.session_history.entries.push(SessionHistoryEntry {
+      url: config.document_url.clone(),
+      state_root,
+    });
+    data.session_history.index = 0;
+  }
 
   // --- History + Location interface objects ---------------------------------
   //
