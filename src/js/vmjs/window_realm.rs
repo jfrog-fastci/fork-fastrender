@@ -29752,14 +29752,48 @@ fn document_document_uri_get_native(
   _host: &mut dyn VmHost,
   _hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
-  _this: Value,
+  this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
-  // `document.documentURI` is a legacy alias for the document URL.
+  let Value::Object(document_obj) = this else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+
+  // Brand check: `Document.documentURI` must only be callable on real Document wrappers.
+  {
+    let platform = dom_platform_mut(vm).ok_or(VmError::TypeError("Illegal invocation"))?;
+    let _ = platform.require_document_handle(scope.heap(), Value::Object(document_obj))?;
+  }
+
+  let is_host_document = match vm.user_data::<WindowRealmUserData>() {
+    Some(data) => data.document_obj == Some(document_obj),
+    None => false,
+  };
+
+  // `document.documentURI` is a legacy alias for `document.URL`. Return the receiver's own `URL`
+  // data property so detached documents inheriting from the host document do not leak its URL.
+  {
+    // Root while allocating property keys: `alloc_key` can trigger GC.
+    let mut scope = scope.reborrow();
+    scope.push_root(Value::Object(document_obj))?;
+    let url_key = alloc_key(&mut scope, "URL")?;
+    if let Some(Value::String(url_s)) =
+      scope.heap().object_get_own_data_property_value(document_obj, &url_key)?
+    {
+      return Ok(Value::String(url_s));
+    }
+  }
+
+  if !is_host_document {
+    return Ok(Value::String(scope.alloc_string(ABOUT_BLANK_URL)?));
+  }
+
+  // Host document: consult the embedder-tracked URL, falling back to `about:blank` for realms that
+  // do not provide a host document URL.
   let document_url = vm
-    .user_data_mut::<WindowRealmUserData>()
+    .user_data::<WindowRealmUserData>()
     .map(|data| data.document_url.clone())
-    .unwrap_or_default();
+    .unwrap_or_else(|| ABOUT_BLANK_URL.to_string());
   Ok(Value::String(scope.alloc_string(&document_url)?))
 }
 
@@ -29769,19 +29803,36 @@ fn document_compat_mode_get_native(
   host: &mut dyn VmHost,
   _hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
-  _this: Value,
+  this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
-  let dom = dom_from_vm_host(host).or_else(|| {
-    vm.user_data_mut::<WindowRealmUserData>()
-      .map(|data| &data.events_dom_fallback)
-  });
-  let quirks_mode = dom
-    .and_then(|dom| match &dom.node(NodeId::from_index(0)).kind {
-      NodeKind::Document { quirks_mode, .. } => Some(*quirks_mode),
-      _ => None,
-    })
-    .unwrap_or(QuirksMode::NoQuirks);
+  let Value::Object(document_obj) = this else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+
+  let document_key = {
+    let platform = dom_platform_mut(vm).ok_or(VmError::TypeError("Illegal invocation"))?;
+    platform.require_document_handle(scope.heap(), Value::Object(document_obj))?
+  };
+
+  let dom_ptr = match dom_ptr_for_document_id_read(vm, host, document_key.document_id) {
+    Some(dom_ptr) => dom_ptr,
+    None => {
+      if !is_host_document_id(vm, document_key.document_id) {
+        return Err(VmError::TypeError("Illegal invocation"));
+      }
+      let Some(data) = vm.user_data_mut::<WindowRealmUserData>() else {
+        return Err(VmError::TypeError("Illegal invocation"));
+      };
+      NonNull::from(&mut data.events_dom_fallback)
+    }
+  };
+  // SAFETY: `dom_ptr` is valid for the duration of this native call.
+  let dom = unsafe { dom_ptr.as_ref() };
+  let quirks_mode = match &dom.node(document_key.node_id).kind {
+    NodeKind::Document { quirks_mode } => *quirks_mode,
+    _ => return Err(VmError::TypeError("Illegal invocation")),
+  };
   let mode = if quirks_mode == QuirksMode::Quirks {
     "BackCompat"
   } else {
