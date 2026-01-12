@@ -9,6 +9,8 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
+parse-js = { path = "../parse-js" }
+vm-js = { path = "../vm-js" }
 
 [dependencies.types-ts-interned]
 path = "../types-ts-interned"
@@ -17,5 +19,17 @@ features = ["fuzzing", "serde-json"]
 [[bin]]
 name = "type_graph"
 path = "fuzz_targets/type_graph.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "parse_js"
+path = "fuzz_targets/parse_js.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "vm_js_exec"
+path = "fuzz_targets/vm_js_exec.rs"
 test = false
 doc = false
