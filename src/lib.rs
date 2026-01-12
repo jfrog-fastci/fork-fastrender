@@ -196,6 +196,7 @@ pub mod tree;
 // Supporting Modules
 // ============================================================================
 
+pub mod bench;
 pub mod cli_utils;
 #[doc(hidden)]
 pub mod bench_utils;

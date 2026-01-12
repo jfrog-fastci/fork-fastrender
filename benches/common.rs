@@ -2,6 +2,10 @@ use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use criterion::Criterion;
+pub use fastrender::bench::{
+  bench_limits, bench_print_config_once, bench_verbose, bench_verbose_from_lookup, env_byte_limit,
+  env_flag, env_usize, read_fixture_bytes_skip, read_fixture_bytes_truncate, BenchLimits,
+};
 use fastrender::{
   css::parser::{
     extract_css_sources, parse_stylesheet, rel_list_contains_stylesheet, StylesheetSource,
