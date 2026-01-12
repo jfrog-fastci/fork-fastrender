@@ -468,19 +468,20 @@ fn distribute_rowspan_targets_range(
   percent_base: Option<f32>,
   row_floor: &dyn Fn(usize, f32) -> f32,
   combine: &dyn Fn(f32, f32) -> f32,
-) {
+  deadline_counter: &mut usize,
+) -> Result<(), LayoutError> {
   if remaining <= 0.0 {
-    return;
+    return Ok(());
   }
 
   let span_end = end.min(row_heights.len()).min(rows.len());
   let span_start = start.min(span_end);
   if span_start >= span_end {
-    return;
+    return Ok(());
   }
   let span_len = span_end - span_start;
 
-  ROWSPAN_SCRATCH.with(|scratch_cell| {
+  ROWSPAN_SCRATCH.with(|scratch_cell| -> Result<(), LayoutError> {
     let mut scratch = scratch_cell.borrow_mut();
     let RowSpanScratch {
       weights,
@@ -496,6 +497,7 @@ fn distribute_rowspan_targets_range(
 
     let mut total_weight = 0.0;
     for (offset, idx) in (span_start..span_end).enumerate() {
+      check_layout_deadline(deadline_counter)?;
       let current = *row_heights.get(idx).unwrap_or(&0.0);
       let base = row_floor(idx, current);
       let (_, max_opt) = resolve_row_min_max(&rows[idx], percent_base);
@@ -517,6 +519,7 @@ fn distribute_rowspan_targets_range(
 
     let mut allocated = 0.0;
     for ((share, weight), cap) in shares.iter_mut().zip(weights.iter()).zip(caps.iter()) {
+      check_layout_deadline(deadline_counter)?;
       let mut portion = if total_weight > 0.0 {
         remaining * (*weight / total_weight)
       } else {
@@ -534,6 +537,7 @@ fn distribute_rowspan_targets_range(
       let mut finite_sum = 0.0;
       let mut unbounded = 0usize;
       for (cap, share) in caps.iter().zip(shares.iter()) {
+        check_layout_deadline(deadline_counter)?;
         let cap_left = cap.map(|c| (c - *share).max(0.0)).unwrap_or(f32::INFINITY);
         if cap_left <= 0.0 {
           continue;
@@ -547,6 +551,7 @@ fn distribute_rowspan_targets_range(
 
       if finite_sum > 0.0 {
         for (cap, share) in caps.iter().zip(shares.iter_mut()) {
+          check_layout_deadline(deadline_counter)?;
           let cap_left = cap.map(|c| (c - *share).max(0.0)).unwrap_or(f32::INFINITY);
           if cap_left <= 0.0 || !cap_left.is_finite() {
             continue;
@@ -557,6 +562,7 @@ fn distribute_rowspan_targets_range(
       } else if unbounded > 0 {
         let per = leftover / unbounded as f32;
         for (cap, share) in caps.iter().zip(shares.iter_mut()) {
+          check_layout_deadline(deadline_counter)?;
           let cap_left = cap.map(|c| (c - *share).max(0.0)).unwrap_or(f32::INFINITY);
           if cap_left.is_infinite() && cap_left > 0.0 {
             *share += per;
@@ -566,12 +572,15 @@ fn distribute_rowspan_targets_range(
     }
 
     for (offset, share) in shares.iter().enumerate() {
+      check_layout_deadline(deadline_counter)?;
       let target_idx = span_start + offset;
       if let Some(slot) = row_heights.get_mut(target_idx) {
         *slot = combine(*slot, *share);
       }
     }
-  });
+    Ok(())
+  })?;
+  Ok(())
 }
 
 fn distribute_remaining_height_with_caps(
@@ -579,16 +588,21 @@ fn distribute_remaining_height_with_caps(
   rows: &[RowInfo],
   remaining: f32,
   percent_base: Option<f32>,
-) {
+  deadline_counter: &mut usize,
+) -> Result<(), LayoutError> {
   if remaining <= 0.0 || computed.is_empty() {
-    return;
+    return Ok(());
   }
 
   let mut rem = remaining;
   let mut iterations = 0;
+  let mut eligible: Vec<(usize, f32, f32)> = Vec::with_capacity(computed.len());
   while rem > 0.01 && iterations < computed.len().saturating_mul(2).max(1) {
-    let mut eligible = Vec::new();
+    check_layout_deadline(deadline_counter)?;
+    let mut total_weight = 0.0;
+    eligible.clear();
     for (idx, row) in rows.iter().enumerate() {
+      check_layout_deadline(deadline_counter)?;
       let (_, max_cap) = resolve_row_min_max(row, percent_base);
       let headroom = max_cap
         .map(|m| (m - computed[idx]).max(0.0))
@@ -602,19 +616,19 @@ fn distribute_remaining_height_with_caps(
         computed[idx].max(1.0)
       };
       eligible.push((idx, headroom, weight));
+      total_weight += weight;
     }
 
     if eligible.is_empty() {
       break;
     }
-
-    let total_weight: f32 = eligible.iter().map(|(_, _, w)| *w).sum();
     if total_weight <= 0.0 {
       break;
     }
 
     let mut consumed = 0.0;
     for (idx, headroom, weight) in &eligible {
+      check_layout_deadline(deadline_counter)?;
       let mut delta = rem * (*weight / total_weight);
       if headroom.is_finite() {
         delta = delta.min(*headroom);
@@ -628,9 +642,14 @@ fn distribute_remaining_height_with_caps(
     if consumed <= 0.001 {
       break;
     }
-    rem = (rem - consumed).max(0.0);
+    let next_rem = (rem - consumed).max(0.0);
+    if next_rem == rem || (rem - next_rem).abs() <= f32::EPSILON {
+      break;
+    }
+    rem = next_rem;
     iterations += 1;
   }
+  Ok(())
 }
 
 fn distribute_extra_row_height_with_groups(
@@ -642,34 +661,43 @@ fn distribute_extra_row_height_with_groups(
   row_to_group: &[Option<usize>],
   groups: &[RowGroupConstraints],
   v_spacing: f32,
-) {
+  deadline_counter: &mut usize,
+) -> Result<(), LayoutError> {
   if flex_indices.is_empty() || extra <= 0.0 {
-    return;
+    return Ok(());
   }
 
   let mut remaining = extra;
-  let mut iterations = 0;
-  while remaining > 0.01 && iterations < flex_indices.len().saturating_mul(2).max(1) {
-    let mut group_remaining: Vec<Option<f32>> = groups
-      .iter()
-      .map(|g| {
-        let count = (g.start..g.end).count();
-        let spacing = if count > 0 {
-          v_spacing * count.saturating_sub(1) as f32
-        } else {
-          0.0
-        };
-        let current: f32 = (g.start..g.end)
-          .filter_map(|i| row_metrics.get(i))
-          .map(|r| r.height)
-          .sum();
-        let (_, max_cap) = resolve_row_group_min_max(g, percent_base);
-        max_cap.map(|cap| (cap - current - spacing).max(0.0))
-      })
-      .collect();
+  let mut group_remaining: Vec<Option<f32>> = Vec::new();
+  group_remaining.reserve(groups.len());
+  for group in groups {
+    check_layout_deadline(deadline_counter)?;
+    let count = group.end.saturating_sub(group.start);
+    let spacing = if count > 0 {
+      v_spacing * count.saturating_sub(1) as f32
+    } else {
+      0.0
+    };
+    let mut current = 0.0;
+    for idx in group.start..group.end {
+      check_layout_deadline(deadline_counter)?;
+      if let Some(row) = row_metrics.get(idx) {
+        current += row.height;
+      }
+    }
+    let (_, max_cap) = resolve_row_group_min_max(group, percent_base);
+    group_remaining.push(max_cap.map(|cap| (cap - current - spacing).max(0.0)));
+  }
 
-    let mut eligible = Vec::new();
+  let mut iterations = 0;
+  let mut eligible: Vec<(usize, f32, f32)> = Vec::with_capacity(flex_indices.len());
+  let mut group_consumed: Vec<f32> = vec![0.0; groups.len()];
+  while remaining > 0.01 && iterations < flex_indices.len().saturating_mul(2).max(1) {
+    check_layout_deadline(deadline_counter)?;
+    let mut total_weight = 0.0;
+    eligible.clear();
     for &idx in flex_indices {
+      check_layout_deadline(deadline_counter)?;
       if let Some(row) = row_metrics.get(idx) {
         let (_, max_opt) = resolve_row_min_max(&rows[idx], percent_base);
         let row_headroom = max_opt
@@ -692,21 +720,21 @@ fn distribute_extra_row_height_with_groups(
           row.height.max(1.0)
         };
         eligible.push((idx, effective_headroom, weight));
+        total_weight += weight;
       }
     }
 
     if eligible.is_empty() {
       break;
     }
-
-    let total_weight: f32 = eligible.iter().map(|(_, _, w)| *w).sum();
     if total_weight <= 0.0 {
       break;
     }
 
     let mut consumed = 0.0;
-    let mut group_consumed: Vec<f32> = vec![0.0; groups.len()];
+    group_consumed.fill(0.0);
     for (idx, headroom, weight) in &eligible {
+      check_layout_deadline(deadline_counter)?;
       if let Some(row) = row_metrics.get_mut(*idx) {
         let mut delta = remaining * (*weight / total_weight);
         if headroom.is_finite() {
@@ -724,6 +752,7 @@ fn distribute_extra_row_height_with_groups(
     }
 
     for (g_idx, used) in group_consumed.iter().enumerate() {
+      check_layout_deadline(deadline_counter)?;
       if let Some(Some(val)) = group_remaining.get_mut(g_idx) {
         *val = (*val - *used).max(0.0);
       }
@@ -732,9 +761,14 @@ fn distribute_extra_row_height_with_groups(
     if consumed <= 0.001 {
       break;
     }
-    remaining = (remaining - consumed).max(0.0);
+    let next_remaining = (remaining - consumed).max(0.0);
+    if next_remaining == remaining || (remaining - next_remaining).abs() <= f32::EPSILON {
+      break;
+    }
+    remaining = next_remaining;
     iterations += 1;
   }
+  Ok(())
 }
 
 fn reduce_rows_with_headroom(
@@ -743,27 +777,38 @@ fn reduce_rows_with_headroom(
   target_total: f32,
   indices: &[usize],
   percent_base: Option<f32>,
-) {
+  deadline_counter: &mut usize,
+) -> Result<(), LayoutError> {
   if indices.is_empty() {
-    return;
+    return Ok(());
   }
 
-  let mut overflow = computed.iter().sum::<f32>() - target_total;
+  let mut current_total = 0.0;
+  for value in computed.iter() {
+    check_layout_deadline(deadline_counter)?;
+    current_total += *value;
+  }
+  let mut overflow = current_total - target_total;
   if overflow <= 0.0 {
-    return;
+    return Ok(());
   }
 
   // Iteratively shave overflow proportionally to available headroom.
   let mut iterations = 0;
+  let mut headrooms: Vec<(usize, f32)> = Vec::with_capacity(indices.len());
   while overflow > 0.01 && iterations < indices.len().saturating_mul(2).max(1) {
-    let mut headrooms = Vec::new();
+    check_layout_deadline(deadline_counter)?;
+    let mut total_headroom = 0.0;
+    headrooms.clear();
     for &idx in indices {
+      check_layout_deadline(deadline_counter)?;
       if let Some(cur) = computed.get(idx).copied() {
         let (min_cap, _) = resolve_row_min_max(&rows[idx], percent_base);
         let min_floor = min_cap.unwrap_or(rows[idx].min_height);
         let room = (cur - min_floor).max(0.0);
         if room > 0.0 {
           headrooms.push((idx, room));
+          total_headroom += room;
         }
       }
     }
@@ -772,13 +817,13 @@ fn reduce_rows_with_headroom(
       break;
     }
 
-    let total_headroom: f32 = headrooms.iter().map(|(_, room)| *room).sum();
     if total_headroom <= 0.0 {
       break;
     }
 
     let mut shaved = 0.0;
-    for (idx, room) in headrooms {
+    for (idx, room) in headrooms.iter().copied() {
+      check_layout_deadline(deadline_counter)?;
       if let Some(slot) = computed.get_mut(idx) {
         let mut delta = overflow * (room / total_headroom);
         delta = delta.min(*slot); // avoid negative heights
@@ -790,9 +835,16 @@ fn reduce_rows_with_headroom(
     if shaved <= 0.001 {
       break;
     }
-    overflow = (computed.iter().sum::<f32>() - target_total).max(0.0);
+    let next_total = (current_total - shaved).max(0.0);
+    let next_overflow = (next_total - target_total).max(0.0);
+    if next_overflow == overflow || (overflow - next_overflow).abs() <= f32::EPSILON {
+      break;
+    }
+    current_total = next_total;
+    overflow = next_overflow;
     iterations += 1;
   }
+  Ok(())
 }
 
 fn resolve_row_min_max(row: &RowInfo, percent_base: Option<f32>) -> (Option<f32>, Option<f32>) {
@@ -834,16 +886,21 @@ fn distribute_row_group_extra_with_caps(
   indices: &[usize],
   extra: f32,
   percent_base: Option<f32>,
-) {
+  deadline_counter: &mut usize,
+) -> Result<(), LayoutError> {
   if indices.is_empty() || extra <= 0.0 {
-    return;
+    return Ok(());
   }
 
   let mut remaining = extra;
   let mut iterations = 0;
+  let mut eligible: Vec<(usize, f32, f32)> = Vec::with_capacity(indices.len());
   while remaining > 0.01 && iterations < indices.len().saturating_mul(2).max(1) {
-    let mut eligible = Vec::new();
+    check_layout_deadline(deadline_counter)?;
+    let mut total_weight = 0.0;
+    eligible.clear();
     for &idx in indices {
+      check_layout_deadline(deadline_counter)?;
       if let Some(&current) = row_heights.get(idx) {
         let (_, max_cap) = resolve_row_min_max(&rows[idx], percent_base);
         let headroom = max_cap
@@ -858,6 +915,7 @@ fn distribute_row_group_extra_with_caps(
           current.max(1.0)
         };
         eligible.push((idx, headroom, weight));
+        total_weight += weight;
       }
     }
 
@@ -865,13 +923,13 @@ fn distribute_row_group_extra_with_caps(
       break;
     }
 
-    let total_weight: f32 = eligible.iter().map(|(_, _, w)| *w).sum();
     if total_weight <= 0.0 {
       break;
     }
 
     let mut consumed = 0.0;
     for (idx, headroom, weight) in &eligible {
+      check_layout_deadline(deadline_counter)?;
       if let Some(slot) = row_heights.get_mut(*idx) {
         let mut delta = remaining * (*weight / total_weight);
         if headroom.is_finite() {
@@ -885,9 +943,14 @@ fn distribute_row_group_extra_with_caps(
     if consumed <= 0.001 {
       break;
     }
-    remaining = (remaining - consumed).max(0.0);
+    let next_remaining = (remaining - consumed).max(0.0);
+    if next_remaining == remaining || (remaining - next_remaining).abs() <= f32::EPSILON {
+      break;
+    }
+    remaining = next_remaining;
     iterations += 1;
   }
+  Ok(())
 }
 
 fn shrink_row_group_to_target(
@@ -897,21 +960,32 @@ fn shrink_row_group_to_target(
   target_total: f32,
   percent_base: Option<f32>,
   content_floors: &[f32],
-) {
+  deadline_counter: &mut usize,
+) -> Result<(), LayoutError> {
   if indices.is_empty() {
-    return;
+    return Ok(());
   }
 
-  let mut current_total: f32 = indices.iter().filter_map(|i| row_heights.get(*i)).sum();
+  let mut current_total = 0.0;
+  for idx in indices {
+    check_layout_deadline(deadline_counter)?;
+    if let Some(val) = row_heights.get(*idx) {
+      current_total += *val;
+    }
+  }
   let mut overflow = current_total - target_total;
   if overflow <= 0.0 {
-    return;
+    return Ok(());
   }
 
   let mut iterations = 0;
+  let mut headrooms: Vec<(usize, f32)> = Vec::with_capacity(indices.len());
   while overflow > 0.01 && iterations < indices.len().saturating_mul(2).max(1) {
-    let mut headrooms = Vec::new();
+    check_layout_deadline(deadline_counter)?;
+    let mut total_headroom = 0.0;
+    headrooms.clear();
     for &idx in indices {
+      check_layout_deadline(deadline_counter)?;
       let floor_from_content = content_floors.get(idx).copied().unwrap_or(0.0);
       let (min_cap, _) = resolve_row_min_max(&rows[idx], percent_base);
       let mut floor = floor_from_content;
@@ -933,6 +1007,7 @@ fn shrink_row_group_to_target(
         let room = (current - floor).max(0.0);
         if room > 0.0 {
           headrooms.push((idx, room));
+          total_headroom += room;
         }
       }
     }
@@ -941,13 +1016,13 @@ fn shrink_row_group_to_target(
       break;
     }
 
-    let total_headroom: f32 = headrooms.iter().map(|(_, r)| *r).sum();
     if total_headroom <= 0.0 {
       break;
     }
 
     let mut shaved = 0.0;
-    for (idx, room) in headrooms {
+    for (idx, room) in headrooms.iter().copied() {
+      check_layout_deadline(deadline_counter)?;
       if let Some(slot) = row_heights.get_mut(idx) {
         let mut delta = overflow * (room / total_headroom);
         delta = delta.min(*slot);
@@ -960,10 +1035,15 @@ fn shrink_row_group_to_target(
     if shaved <= 0.001 {
       break;
     }
-    current_total = (current_total - shaved).max(0.0);
+    let next_total = (current_total - shaved).max(0.0);
+    if next_total == current_total || (current_total - next_total).abs() <= f32::EPSILON {
+      break;
+    }
+    current_total = next_total;
     overflow = (current_total - target_total).max(0.0);
     iterations += 1;
   }
+  Ok(())
 }
 
 fn apply_row_group_constraints(
@@ -973,32 +1053,57 @@ fn apply_row_group_constraints(
   percent_base: Option<f32>,
   v_spacing: f32,
   content_min: &[f32],
-) {
+  deadline_counter: &mut usize,
+) -> Result<(), LayoutError> {
+  let mut indices: Vec<usize> = Vec::new();
   for group in groups {
+    check_layout_deadline(deadline_counter)?;
     let start = group.start.min(row_heights.len());
     let end = group.end.min(row_heights.len());
     if start >= end {
       continue;
     }
-    let indices: Vec<usize> = (start..end).collect();
+    let (min_target, max_target) = resolve_row_group_min_max(group, percent_base);
+    if min_target.is_none() && max_target.is_none() {
+      continue;
+    }
+
+    indices.clear();
+    let mut rows_sum = 0.0;
+    for idx in start..end {
+      check_layout_deadline(deadline_counter)?;
+      indices.push(idx);
+      rows_sum += row_heights[idx];
+    }
     let spacing_total = if v_spacing > 0.0 {
       v_spacing * indices.len().saturating_sub(1) as f32
     } else {
       0.0
     };
-    let rows_sum: f32 = indices.iter().filter_map(|i| row_heights.get(*i)).sum();
-    let (min_target, max_target) = resolve_row_group_min_max(group, percent_base);
 
     if let Some(min_h) = min_target {
       let needed = (min_h - (rows_sum + spacing_total)).max(0.0);
       if needed > 0.0 {
-        distribute_row_group_extra_with_caps(row_heights, rows, &indices, needed, percent_base);
+        distribute_row_group_extra_with_caps(
+          row_heights,
+          rows,
+          &indices,
+          needed,
+          percent_base,
+          deadline_counter,
+        )?;
       }
     }
 
     if let Some(max_h) = max_target {
       let target_rows_total = (max_h - spacing_total).max(0.0);
-      let current_rows_total: f32 = indices.iter().filter_map(|i| row_heights.get(*i)).sum();
+      let mut current_rows_total = 0.0;
+      for idx in indices.iter().copied() {
+        check_layout_deadline(deadline_counter)?;
+        if let Some(val) = row_heights.get(idx) {
+          current_rows_total += *val;
+        }
+      }
       if current_rows_total > target_rows_total + 0.01 {
         shrink_row_group_to_target(
           row_heights,
@@ -1007,10 +1112,12 @@ fn apply_row_group_constraints(
           target_rows_total,
           percent_base,
           content_min,
-        );
+          deadline_counter,
+        )?;
       }
     }
   }
+  Ok(())
 }
 
 /// Information about a table cell
@@ -4787,6 +4894,7 @@ pub fn calculate_row_heights(structure: &mut TableStructure, available_height: O
     return;
   }
 
+  let mut deadline_counter = 0usize;
   let row_spacing = if structure.border_collapse == BorderCollapse::Collapse {
     0.0
   } else {
@@ -5050,12 +5158,13 @@ pub fn calculate_row_heights(structure: &mut TableStructure, available_height: O
     } else if remaining < 0.0 && !percent_rows.is_empty() {
       // Percent rows over-commit the available space; reduce them using headroom-aware weights.
       let percent_indices: Vec<usize> = percent_rows.iter().map(|(i, _)| *i).collect();
-      reduce_rows_with_headroom(
+      let _ = reduce_rows_with_headroom(
         &mut computed,
         &structure.rows,
         base,
         &percent_indices,
         content_available,
+        &mut deadline_counter,
       );
     }
   }
@@ -5077,11 +5186,12 @@ pub fn calculate_row_heights(structure: &mut TableStructure, available_height: O
   if let Some(base) = content_available {
     let total: f32 = computed.iter().sum();
     if total < base {
-      distribute_remaining_height_with_caps(
+      let _ = distribute_remaining_height_with_caps(
         &mut computed,
         &structure.rows,
         base - total,
         content_available,
+        &mut deadline_counter,
       );
     }
   }
@@ -8060,7 +8170,8 @@ impl FormattingContext for TableFormattingContext {
               percent_base,
               &row_floor_fn,
               &|current, share| current + share,
-            );
+              &mut deadline_counter,
+            )?;
           }
         }
       }
@@ -8097,7 +8208,8 @@ impl FormattingContext for TableFormattingContext {
         percent_height_base,
         v_spacing,
         &content_min_heights,
-      );
+        &mut deadline_counter,
+      )?;
 
       // If the table has a definite height, adjust rows so percent rows meet their targets and remaining space is distributed.
       if let Some(percent_base) = percent_height_base {
@@ -8155,7 +8267,8 @@ impl FormattingContext for TableFormattingContext {
         percent_height_base,
         v_spacing,
         &content_min_heights,
-      );
+        &mut deadline_counter,
+      )?;
 
       if dump {
         let min_col = col_widths.iter().copied().fold(f32::INFINITY, f32::min);
@@ -8296,7 +8409,8 @@ impl FormattingContext for TableFormattingContext {
             &row_to_group,
             &row_group_constraints,
             v_spacing,
-          );
+            &mut deadline_counter,
+          )?;
         }
       }
 
@@ -17569,6 +17683,80 @@ mod tests {
   }
 
   #[test]
+  fn row_height_distribution_times_out_under_deadline() {
+    let rows = 5_000usize;
+
+    let mut table_style = ComputedStyle::default();
+    table_style.display = Display::Table;
+    table_style.border_spacing_horizontal = Length::px(0.0);
+    table_style.border_spacing_vertical = Length::px(0.0);
+    table_style.height = Some(Length::px(20_000.0));
+    table_style.height_keyword = None;
+
+    let mut group_style = ComputedStyle::default();
+    group_style.display = Display::TableRowGroup;
+    // Add a max-height constraint so the row-group sizing pass has to iterate over all rows
+    // and the shrink-to-fit logic is exercised.
+    group_style.min_height = Some(Length::px(6_000.0));
+    group_style.min_height_keyword = None;
+    group_style.max_height = Some(Length::px(10_000.0));
+    group_style.max_height_keyword = None;
+
+    let row_style = Arc::new({
+      let mut style = ComputedStyle::default();
+      style.display = Display::TableRow;
+      style
+    });
+
+    let mut cell_style = ComputedStyle::default();
+    cell_style.display = Display::TableCell;
+    cell_style.width = Some(Length::px(10.0));
+    cell_style.width_keyword = None;
+    cell_style.vertical_align = VerticalAlign::Top;
+    cell_style.vertical_align_specified = true;
+    // Give the single spanning cell a non-zero minimum height so the row-span distributor runs.
+    cell_style.height = Some(Length::px(5_000.0));
+    cell_style.height_keyword = None;
+    let cell = BoxNode::new_block(Arc::new(cell_style), FormattingContextType::Block, vec![])
+      .with_table_cell_spans(1, rows);
+
+    let mut row_nodes = Vec::with_capacity(rows);
+    for idx in 0..rows {
+      let cells = if idx == 0 { vec![cell.clone()] } else { vec![] };
+      row_nodes.push(BoxNode::new_block(
+        Arc::clone(&row_style),
+        FormattingContextType::Block,
+        cells,
+      ));
+    }
+
+    let tbody = BoxNode::new_block(Arc::new(group_style), FormattingContextType::Block, row_nodes);
+    let table = BoxNode::new_block(
+      Arc::new(table_style),
+      FormattingContextType::Table,
+      vec![tbody],
+    );
+
+    // Use a cooperative cancellation callback that triggers after enough periodic deadline checks
+    // to ensure we reach the row-height distribution phase (rowspan + rowgroup constraints +
+    // extra-height distribution).
+    // The check count is deterministic because `check_layout_deadline` uses a fixed stride.
+    let cancel_calls = Arc::new(AtomicUsize::new(0));
+    let cancel_calls_for_cb = Arc::clone(&cancel_calls);
+    let deadline = RenderDeadline::new(
+      None,
+      Some(Arc::new(move || cancel_calls_for_cb.fetch_add(1, Ordering::Relaxed) >= 600)),
+    );
+
+    let tfc = TableFormattingContext::new();
+    let result = with_deadline(Some(&deadline), || {
+      tfc.layout(&table, &LayoutConstraints::definite_width(100.0))
+    });
+
+    assert!(matches!(result, Err(LayoutError::Timeout { .. })));
+  }
+
+  #[test]
   fn caption_does_not_expand_table_width() {
     let mut caption_style = ComputedStyle::default();
     caption_style.display = Display::TableCaption;
@@ -18218,6 +18406,7 @@ mod tests {
 
     let mut range_heights: Vec<f32> = rows.iter().map(|r| r.min_height).collect();
     let mut vec_heights = range_heights.clone();
+    let mut deadline_counter = 0usize;
 
     for (start, span_len, cell_height) in spans {
       let end = (start + span_len).min(rows.len());
@@ -18237,7 +18426,9 @@ mod tests {
         percent_base,
         &row_floor_fn,
         &combine,
-      );
+        &mut deadline_counter,
+      )
+      .expect("rowspan range distribution");
 
       let current_total_vec: f32 = vec_heights[start..end].iter().sum();
       let remaining_vec = (span_height - current_total_vec).max(0.0);
