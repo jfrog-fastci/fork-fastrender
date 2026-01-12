@@ -1630,7 +1630,7 @@ pub fn chrome_ui_with_bookmarks(
             .on_hover_text(downloads_hover.clone());
           downloads_resp.widget_info({
             let label = downloads_hover.clone();
-            move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label)
+            move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label.clone())
           });
           show_tooltip_on_focus(ui, &downloads_resp, &downloads_hover);
 

@@ -5363,7 +5363,7 @@ impl App {
               } else {
                 format!("Value ({hint})")
               };
-              move || egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, label)
+              move || egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, label.clone())
             });
 
             let trimmed = draft.trim();
