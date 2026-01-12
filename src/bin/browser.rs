@@ -477,6 +477,30 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
   }
 
   let (startup_session, _source) = determine_startup_session(cli_url, restore, &session_path);
+  let bookmarks_path = fastrender::ui::bookmarks_path();
+  let history_path = fastrender::ui::history_path();
+  let bookmarks = match fastrender::ui::load_bookmarks(&bookmarks_path) {
+    Ok(Some(store)) => store,
+    Ok(None) => fastrender::ui::BookmarkStore::default(),
+    Err(err) => {
+      eprintln!(
+        "failed to load bookmarks from {}: {err}",
+        bookmarks_path.display()
+      );
+      fastrender::ui::BookmarkStore::default()
+    }
+  };
+  let history = match fastrender::ui::load_history(&history_path) {
+    Ok(Some(store)) => store,
+    Ok(None) => fastrender::ui::GlobalHistoryStore::default(),
+    Err(err) => {
+      eprintln!(
+        "failed to load history from {}: {err}",
+        history_path.display()
+      );
+      fastrender::ui::GlobalHistoryStore::default()
+    }
+  };
 
   use winit::dpi::LogicalSize;
   use winit::event::Event;
@@ -572,8 +596,16 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     worker_join,
     wgpu_init,
     theme_override,
+    bookmarks_path,
+    history_path,
+    bookmarks,
+    history,
   ))?;
   app.startup(startup_session);
+  app.profile_autosave = Some(fastrender::ui::ProfileAutosaveHandle::spawn(
+    app.bookmarks_path.clone(),
+    app.history_path.clone(),
+  ));
 
   let (ui_tx, ui_rx) = std::sync::mpsc::channel::<fastrender::ui::WorkerToUi>();
 
@@ -605,19 +637,36 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     // Keep the event loop idle when there is no work to do.
     *control_flow = ControlFlow::Wait;
 
-    // `EventLoop::run` never returns, so do shutdown hygiene (dropping channels and joining
-    // threads) explicitly when the loop is torn down.
-    if matches!(event, Event::LoopDestroyed) {
-      if let Some(mut app) = app.take() {
-        let session = fastrender::ui::BrowserSession::from_app_state(&app.browser_state);
-        if let Err(err) = fastrender::ui::session::save_session_atomic(&session_path, &session) {
-          eprintln!(
-            "failed to save session to {}: {err}",
-            session_path.display()
-          );
+      // `EventLoop::run` never returns, so do shutdown hygiene (dropping channels and joining
+      // threads) explicitly when the loop is torn down.
+      if matches!(event, Event::LoopDestroyed) {
+        if let Some(mut app) = app.take() {
+          let session = fastrender::ui::BrowserSession::from_app_state(&app.browser_state);
+          if let Err(err) = fastrender::ui::session::save_session_atomic(&session_path, &session) {
+            eprintln!(
+              "failed to save session to {}: {err}",
+              session_path.display()
+            );
+          }
+          if let Err(err) = fastrender::ui::save_bookmarks_atomic(&app.bookmarks_path, &app.bookmarks)
+          {
+            eprintln!(
+              "failed to save bookmarks to {}: {err}",
+              app.bookmarks_path.display()
+            );
+          }
+          if let Err(err) = fastrender::ui::save_history_atomic(&app.history_path, &app.history) {
+            eprintln!(
+              "failed to save history to {}: {err}",
+              app.history_path.display()
+            );
+          }
+
+          if let Some(autosave) = app.profile_autosave.take() {
+            autosave.shutdown_with_timeout(std::time::Duration::from_millis(500));
+          }
+          app.shutdown();
         }
-        app.shutdown();
-      }
 
       if let Some(join) = bridge_join.take() {
         let (done_tx, done_rx) = std::sync::mpsc::channel::<std::thread::Result<()>>();
@@ -1133,6 +1182,12 @@ struct App {
   worker_join: Option<std::thread::JoinHandle<()>>,
   browser_state: fastrender::ui::BrowserAppState,
 
+  bookmarks_path: std::path::PathBuf,
+  history_path: std::path::PathBuf,
+  bookmarks: fastrender::ui::BookmarkStore,
+  history: fastrender::ui::GlobalHistoryStore,
+  profile_autosave: Option<fastrender::ui::ProfileAutosaveHandle>,
+
   tab_textures: std::collections::HashMap<fastrender::ui::TabId, fastrender::ui::WgpuPixmapTexture>,
   tab_favicons: std::collections::HashMap<fastrender::ui::TabId, fastrender::ui::WgpuPixmapTexture>,
   tab_cancel: std::collections::HashMap<fastrender::ui::TabId, fastrender::ui::cancel::CancelGens>,
@@ -1300,6 +1355,10 @@ impl App {
     worker_join: std::thread::JoinHandle<()>,
     wgpu_init: WgpuInitOptions,
     theme_override: Option<fastrender::ui::theme::ThemeMode>,
+    bookmarks_path: std::path::PathBuf,
+    history_path: std::path::PathBuf,
+    bookmarks: fastrender::ui::BookmarkStore,
+    history: fastrender::ui::GlobalHistoryStore,
   ) -> Result<Self, Box<dyn std::error::Error>> {
     // Enable OS IME integration (WindowEvent::Ime) so the page can handle non-Latin input methods.
     // Egui manages IME for chrome text fields; we forward IME events to the page when appropriate.
@@ -1477,6 +1536,11 @@ error: {err}",
       ui_to_worker_tx,
       worker_join: Some(worker_join),
       browser_state: fastrender::ui::BrowserAppState::new(),
+      bookmarks_path,
+      history_path,
+      bookmarks,
+      history,
+      profile_autosave: None,
       tab_textures: std::collections::HashMap::new(),
       tab_favicons: std::collections::HashMap::new(),
       tab_cancel: std::collections::HashMap::new(),
@@ -2079,6 +2143,13 @@ error: {err}",
         }
       }
       _ => {}
+    }
+
+    if let fastrender::ui::WorkerToUi::NavigationCommitted { url, title, .. } = &msg {
+      self.history.record(url.clone(), title.clone());
+      if let Some(autosave) = self.profile_autosave.as_ref() {
+        let _ = autosave.send(fastrender::ui::AutosaveMsg::UpdateHistory(self.history.clone()));
+      }
     }
 
     let mut request_redraw = false;
@@ -3138,6 +3209,68 @@ error: {err}",
     self.browser_state.chrome.request_select_all_address_bar = true;
   }
 
+  fn handle_profile_shortcuts(&mut self, key: winit::event::VirtualKeyCode) -> bool {
+    // On macOS, prefer Cmd as the "command" modifier. Elsewhere, prefer Ctrl.
+    let cmd = if cfg!(target_os = "macos") {
+      (self.modifiers.logo() || self.modifiers.ctrl()) && !self.modifiers.alt()
+    } else {
+      self.modifiers.ctrl() && !self.modifiers.alt()
+    };
+
+    if cmd && !self.modifiers.shift() && matches!(key, winit::event::VirtualKeyCode::D) {
+      self.toggle_bookmark_for_active_tab();
+      return true;
+    }
+
+    if cmd
+      && self.modifiers.shift()
+      && matches!(
+        key,
+        winit::event::VirtualKeyCode::Delete | winit::event::VirtualKeyCode::Back
+      )
+    {
+      self.clear_history();
+      return true;
+    }
+
+    false
+  }
+
+  fn toggle_bookmark_for_active_tab(&mut self) {
+    let Some(url) = self
+      .browser_state
+      .active_tab()
+      .and_then(|tab| tab.committed_url.as_deref().or(tab.current_url.as_deref()))
+      .map(str::to_string)
+    else {
+      return;
+    };
+
+    self.bookmarks.toggle_url(&url);
+
+    if let Some(autosave) = self.profile_autosave.as_ref() {
+      let _ = autosave.send(fastrender::ui::AutosaveMsg::UpdateBookmarks(
+        self.bookmarks.clone(),
+      ));
+    }
+  }
+
+  fn clear_history(&mut self) {
+    self.history.clear();
+
+    let Some(autosave) = self.profile_autosave.as_ref() else {
+      return;
+    };
+
+    let _ = autosave.send(fastrender::ui::AutosaveMsg::UpdateHistory(self.history.clone()));
+
+    // Force an immediate write of the cleared state, but don't block the UI thread waiting for the
+    // ack.
+    let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
+    drop(done_rx);
+    let _ = autosave.send(fastrender::ui::AutosaveMsg::Flush(done_tx));
+  }
+
   fn cancel_pointer_capture(&mut self) {
     if !self.pointer_captured {
       return;
@@ -3672,6 +3805,12 @@ error: {err}",
         let Some(key) = input.virtual_keycode else {
           return;
         };
+
+        // Profile-level shortcuts (bookmarks/history) should never reach page input.
+        if self.handle_profile_shortcuts(key) {
+          self.window.request_redraw();
+          return;
+        }
 
         if self.open_select_dropdown.is_some() {
           if matches!(key, VirtualKeyCode::Escape) {
