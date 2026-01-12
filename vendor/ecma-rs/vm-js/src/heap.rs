@@ -3555,20 +3555,29 @@ impl Heap {
     }
   }
 
+  pub(crate) fn internal_symbol_data_symbol(&self) -> Option<GcSymbol> {
+    const SYMBOL_DATA_KEY: [u16; 25] = [
+      118, 109, 45, 106, 115, 46, 105, 110, 116, 101, 114, 110, 97, 108, 46, 83, 121, 109, 98,
+      111, 108, 68, 97, 116, 97,
+    ];
+
+    // The registry is kept sorted by key contents, so this can use binary search instead of an
+    // O(n) scan (important: scripts can grow the global symbol registry arbitrarily).
+    match self.symbol_registry_binary_search_code_units(&SYMBOL_DATA_KEY) {
+      Ok(Ok(idx)) => Some(self.symbol_registry[idx].sym),
+      _ => None,
+    }
+  }
+
   pub(crate) fn internal_boolean_data_symbol(&self) -> Option<GcSymbol> {
     const BOOLEAN_DATA_KEY: [u16; 26] = [
       118, 109, 45, 106, 115, 46, 105, 110, 116, 101, 114, 110, 97, 108, 46, 66, 111, 111, 108,
       101, 97, 110, 68, 97, 116, 97,
     ];
-    for entry in &self.symbol_registry {
-      let Ok(js) = self.get_string(entry.key) else {
-        continue;
-      };
-      if js.as_code_units() == BOOLEAN_DATA_KEY {
-        return Some(entry.sym);
-      }
+    match self.symbol_registry_binary_search_code_units(&BOOLEAN_DATA_KEY) {
+      Ok(Ok(idx)) => Some(self.symbol_registry[idx].sym),
+      _ => None,
     }
-    None
   }
 
   pub(crate) fn internal_number_data_symbol(&self) -> Option<GcSymbol> {
@@ -3576,31 +3585,10 @@ impl Heap {
       118, 109, 45, 106, 115, 46, 105, 110, 116, 101, 114, 110, 97, 108, 46, 78, 117, 109, 98,
       101, 114, 68, 97, 116, 97,
     ];
-    for entry in &self.symbol_registry {
-      let Ok(js) = self.get_string(entry.key) else {
-        continue;
-      };
-      if js.as_code_units() == NUMBER_DATA_KEY {
-        return Some(entry.sym);
-      }
+    match self.symbol_registry_binary_search_code_units(&NUMBER_DATA_KEY) {
+      Ok(Ok(idx)) => Some(self.symbol_registry[idx].sym),
+      _ => None,
     }
-    None
-  }
-
-  pub(crate) fn internal_symbol_data_symbol(&self) -> Option<GcSymbol> {
-    const SYMBOL_DATA_KEY: [u16; 25] = [
-      118, 109, 45, 106, 115, 46, 105, 110, 116, 101, 114, 110, 97, 108, 46, 83, 121, 109, 98,
-      111, 108, 68, 97, 116, 97,
-    ];
-    for entry in &self.symbol_registry {
-      let Ok(js) = self.get_string(entry.key) else {
-        continue;
-      };
-      if js.as_code_units() == SYMBOL_DATA_KEY {
-        return Some(entry.sym);
-      }
-    }
-    None
   }
 
   pub(crate) fn internal_bigint_data_symbol(&self) -> Option<GcSymbol> {
@@ -3608,15 +3596,10 @@ impl Heap {
       118, 109, 45, 106, 115, 46, 105, 110, 116, 101, 114, 110, 97, 108, 46, 66, 105, 103, 73,
       110, 116, 68, 97, 116, 97,
     ];
-    for entry in &self.symbol_registry {
-      let Ok(js) = self.get_string(entry.key) else {
-        continue;
-      };
-      if js.as_code_units() == BIGINT_DATA_KEY {
-        return Some(entry.sym);
-      }
+    match self.symbol_registry_binary_search_code_units(&BIGINT_DATA_KEY) {
+      Ok(Ok(idx)) => Some(self.symbol_registry[idx].sym),
+      _ => None,
     }
-    None
   }
 
   /// Gets an object's own property descriptor.

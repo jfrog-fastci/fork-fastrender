@@ -420,8 +420,16 @@ fn object_constructor_impl(
         .heap_mut()
         .object_set_prototype(obj, Some(intr.symbol_prototype()))?;
 
-      let marker = scope.alloc_string("vm-js.internal.SymbolData")?;
-      let marker_sym = scope.heap_mut().symbol_for(marker)?;
+      let marker_sym = match scope.heap().internal_symbol_data_symbol() {
+        Some(sym) => sym,
+        None => {
+          // If this is the first time we've created a boxed Symbol object, the internal marker
+          // symbol may not yet exist in the global registry. Create it with budget ticks while
+          // inserting into the sorted registry.
+          let marker = scope.alloc_string("vm-js.internal.SymbolData")?;
+          scope.heap_mut().symbol_for_with_tick(marker, || vm.tick())?
+        }
+      };
       let marker_key = PropertyKey::from_symbol(marker_sym);
       scope.define_property(
         obj,
@@ -11641,7 +11649,7 @@ pub fn bigint_prototype_value_of(
 
 /// `Symbol.prototype.valueOf` (minimal).
 pub fn symbol_prototype_value_of(
-  _vm: &mut Vm,
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
   _hooks: &mut dyn VmHostHooks,
@@ -11652,8 +11660,16 @@ pub fn symbol_prototype_value_of(
   match this {
     Value::Symbol(s) => Ok(Value::Symbol(s)),
     Value::Object(obj) => {
-      let marker = scope.alloc_string("vm-js.internal.SymbolData")?;
-      let marker_sym = scope.heap_mut().symbol_for(marker)?;
+      let marker_sym = match scope.heap().internal_symbol_data_symbol() {
+        Some(sym) => sym,
+        None => {
+          // Fall back to creating the marker symbol if it hasn't been interned yet (should be
+          // rare; primarily reachable if a host created a Symbol wrapper without going through
+          // `Object(Symbol(...))`).
+          let marker = scope.alloc_string("vm-js.internal.SymbolData")?;
+          scope.heap_mut().symbol_for_with_tick(marker, || vm.tick())?
+        }
+      };
       let marker_key = PropertyKey::from_symbol(marker_sym);
       match scope
         .heap()
