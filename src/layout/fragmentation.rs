@@ -4555,6 +4555,17 @@ fn collect_atomic_candidate_for_node(
     });
   }
 
+  if !style.float.is_floating()
+    && matches!(node.content, FragmentContent::Replaced { .. })
+    && style.display.is_block_level()
+  {
+    let required = (end - start).max(0.0);
+    candidates.push(AtomicCandidate {
+      range: AtomicRange { start, end },
+      required_fragmentainer_size: required,
+    });
+  }
+
   let table_row_like = is_table_row_like(style.display);
   let avoid_inside = avoids_break_inside(style.break_inside, context) || table_row_like;
   if avoid_inside {
@@ -5121,6 +5132,7 @@ mod tests {
   use super::*;
   use crate::layout::axis::FragmentAxes;
   use crate::style::float::Float;
+  use crate::tree::box_tree::ReplacedType;
   use crate::tree::fragment_tree::{BlockFragmentMetadata, GridFragmentationInfo, GridTrackRanges};
   use std::sync::Arc;
   use std::time::{Duration, Instant};
@@ -5207,6 +5219,89 @@ mod tests {
         .iter()
         .all(|b| *b <= 0.0 + BREAK_EPSILON || *b >= 30.0 - BREAK_EPSILON),
       "no boundary should fall inside the atomic range: {boundaries:?}"
+    );
+  }
+
+  #[test]
+  fn block_level_replaced_is_pushed_to_next_fragmentainer() {
+    // Regression: block-level replaced content must not be sliced by a fragmentainer limit when it
+    // can fit on the next fragmentainer.
+    //
+    // Layout:
+    // - block A: 0..80
+    // - replaced: 80..110 (height 30)
+    // Fragmentainer size: 100
+    //
+    // Without treating the replaced fragment as atomic, the pagination boundary selection prefers
+    // the fragmentainer limit (100) over the early between-sibling break at 80, slicing the
+    // replaced box.
+    let leading = FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, 100.0, 80.0), vec![]);
+
+    let mut replaced =
+      FragmentNode::new_replaced(Rect::from_xywh(0.0, 80.0, 100.0, 30.0), ReplacedType::Canvas);
+    let mut replaced_style = ComputedStyle::default();
+    replaced_style.display = Display::Block;
+    replaced.style = Some(Arc::new(replaced_style));
+
+    let root = FragmentNode::new_block(
+      Rect::from_xywh(0.0, 0.0, 100.0, 110.0),
+      vec![leading, replaced],
+    );
+    let mut analyzer = FragmentationAnalyzer::new(
+      &root,
+      FragmentationContext::Page,
+      default_axes(),
+      true,
+      Some(100.0),
+    );
+    let total_extent = analyzer.content_extent().max(100.0);
+    let boundaries = analyzer.boundaries(100.0, total_extent).unwrap();
+    let first_boundary = boundaries
+      .iter()
+      .copied()
+      .find(|b| *b > BREAK_EPSILON)
+      .unwrap_or(total_extent);
+    assert!(
+      (first_boundary - 80.0).abs() < BREAK_EPSILON,
+      "expected break before block-level replaced fragment, got {first_boundary} (boundaries={boundaries:?})"
+    );
+  }
+
+  #[test]
+  fn inline_replaced_inside_line_is_not_treated_as_atomic() {
+    // Regression guard: inline replaced fragments inside a line box must not be modeled as atomic
+    // ranges in the pagination flow. Line boxes are already indivisible; introducing atomic ranges
+    // inside them could clamp boundaries to mid-line child starts (illegal breakpoints).
+    let mut replaced =
+      FragmentNode::new_replaced(Rect::from_xywh(0.0, 5.0, 100.0, 20.0), ReplacedType::Canvas);
+    let mut replaced_style = ComputedStyle::default();
+    replaced_style.display = Display::Inline;
+    replaced.style = Some(Arc::new(replaced_style));
+
+    let line = FragmentNode::new_line(
+      Rect::from_xywh(0.0, 80.0, 100.0, 30.0),
+      24.0,
+      vec![replaced],
+    );
+    let root = FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, 100.0, 110.0), vec![line]);
+
+    let mut analyzer = FragmentationAnalyzer::new(
+      &root,
+      FragmentationContext::Page,
+      default_axes(),
+      true,
+      Some(100.0),
+    );
+    let total_extent = analyzer.content_extent().max(100.0);
+    let boundaries = analyzer.boundaries(100.0, total_extent).unwrap();
+    let first_boundary = boundaries
+      .iter()
+      .copied()
+      .find(|b| *b > BREAK_EPSILON)
+      .unwrap_or(total_extent);
+    assert!(
+      (first_boundary - 100.0).abs() < BREAK_EPSILON,
+      "expected boundary to remain at the fragmentainer limit (not clamped to inline replaced child start), got {first_boundary} (boundaries={boundaries:?})"
     );
   }
 
