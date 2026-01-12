@@ -1528,7 +1528,7 @@ pub fn array_buffer_prototype_slice(
     let data = scope
       .heap()
       .array_buffer_data(obj)
-      .map_err(|_| VmError::invalid_handle())?;
+      ?;
     let slice = &data[start..end];
     let mut out: Vec<u8> = Vec::new();
     out

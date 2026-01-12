@@ -944,7 +944,27 @@ impl Heap {
     buf
       .data
       .as_deref()
-      .ok_or(VmError::InvariantViolation("ArrayBuffer backing store missing"))
+      // Detachment is user-observable (e.g. ArrayBuffer transfer / structured clone), so accessing
+      // the backing store must fail as a JS-catchable TypeError rather than an engine-bug error.
+      .ok_or(VmError::TypeError("ArrayBuffer is detached"))
+  }
+
+  /// Detaches an `ArrayBuffer` by dropping its backing store.
+  ///
+  /// A detached `ArrayBuffer` has `byteLength === 0` and attempts to access its underlying bytes
+  /// should throw (see [`Heap::array_buffer_data`]).
+  ///
+  /// This is intended for host embeddings implementing "transfer"/structured clone semantics.
+  pub fn detach_array_buffer(&mut self, obj: GcObject) -> Result<(), VmError> {
+    let buf = self.get_array_buffer_mut(obj)?;
+    let Some(data) = buf.data.take() else {
+      // Already detached.
+      return Ok(());
+    };
+    let len = data.len();
+    drop(data);
+    self.sub_external_bytes(len);
+    Ok(())
   }
 
   /// Detaches an `ArrayBuffer` and returns its backing store.
@@ -1050,9 +1070,10 @@ impl Heap {
       .checked_add(view.byte_length()?)
       .ok_or(VmError::InvariantViolation("Uint8Array byte offset overflow"))?;
     let buf = self.get_array_buffer(view.viewed_array_buffer)?;
-    let data = buf.data.as_deref().ok_or(VmError::InvariantViolation(
-      "Uint8Array view references missing ArrayBuffer backing store",
-    ))?;
+    let data = buf
+      .data
+      .as_deref()
+      .ok_or(VmError::TypeError("ArrayBuffer is detached"))?;
     data.get(start..end).ok_or(VmError::InvariantViolation(
       "Uint8Array view references out-of-bounds ArrayBuffer data",
     ))
@@ -1097,9 +1118,7 @@ impl Heap {
       .get_array_buffer(buffer)?
       .data
       .as_deref()
-      .ok_or(VmError::InvariantViolation(
-        "Uint8Array view references missing ArrayBuffer backing store",
-      ))?
+      .ok_or(VmError::TypeError("ArrayBuffer is detached"))?
       .len();
     if abs_end > buf_len {
       return Err(VmError::InvariantViolation(
@@ -1108,9 +1127,10 @@ impl Heap {
     }
 
     let buf = self.get_array_buffer_mut(buffer)?;
-    let data = buf.data.as_deref_mut().ok_or(VmError::InvariantViolation(
-      "Uint8Array view references missing ArrayBuffer backing store",
-    ))?;
+    let data = buf
+      .data
+      .as_deref_mut()
+      .ok_or(VmError::TypeError("ArrayBuffer is detached"))?;
     data[abs_start..abs_end].copy_from_slice(&bytes[..max_write]);
     Ok(max_write)
   }
@@ -5821,7 +5841,7 @@ impl JsArrayBuffer {
   }
 
   fn finalize(&mut self) -> usize {
-    // If the buffer has already been detached, it has no backing store to free.
+    // Detached buffers have no backing store to free.
     let Some(data) = self.data.take() else {
       return 0;
     };
