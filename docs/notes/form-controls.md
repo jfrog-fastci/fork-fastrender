@@ -56,7 +56,7 @@ Note: FastRender does not delegate to platform-native widgets; “native paintin
     - `src/css/parser.rs::lookup_known_property`
     - `src/css/properties.rs::vendor_prefixed_property_alias`
   - `@supports` handling for vendor properties (intentionally conservative to avoid inverting feature queries):
-    - `src/css/supports.rs::supports_declaration` (tests: `tests/css_supports_vendor_properties.rs`)
+    - `src/css/supports.rs::supports_declaration` (tests: `tests/css_integration/supports_vendor_properties.rs`)
 - Painting:
   - Display list: `src/paint/display_list_builder.rs::emit_form_control`
   - Immediate painter: `src/paint/painter.rs::paint_form_control`
@@ -111,5 +111,5 @@ variants, and focus-visible highlights). Regenerate the reference golden with:
 
 ```
 UPDATE_GOLDEN=1 \
-  bash scripts/cargo_agent.sh test -p fastrender --test ref_tests form_controls_reference_image_matches_golden -- --exact
+  bash scripts/cargo_agent.sh test -p fastrender --test ref_tests form_controls_reference_image_matches_golden
 ```
