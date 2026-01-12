@@ -12467,6 +12467,52 @@ fn async_for_of_cleanup(
   }
 }
 
+fn async_iterator_close_on_completion(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  iterator_record: &iterator::IteratorRecord,
+  completion: Completion,
+) -> Result<Completion, VmError> {
+  if iterator_record.done {
+    return Ok(completion);
+  }
+  let completion_is_throw = matches!(&completion, Completion::Throw(_));
+
+  // Root the completion value across `IteratorClose`, which can allocate and trigger GC.
+  let close_res: Result<(), VmError> = (|| {
+    let mut close_scope = scope.reborrow();
+    if let Some(v) = completion.value() {
+      close_scope.push_root(v)?;
+    }
+    iterator::iterator_close(
+      evaluator.vm,
+      &mut *evaluator.host,
+      &mut *evaluator.hooks,
+      &mut close_scope,
+      iterator_record,
+    )
+  })();
+
+  match close_res {
+    Ok(()) => Ok(completion),
+    Err(close_err) => {
+      // `IteratorClose` suppression rules:
+      // - If the original completion is a throw completion, suppress errors from
+      //   `GetMethod("return")` / `Call(return)` / non-object `return` values.
+      // - Never suppress fatal VM errors (OOM/termination/etc).
+      if completion_is_throw && close_err.is_throw_completion() {
+        Ok(completion)
+      } else {
+        Err(coerce_error_to_throw_for_async(
+          evaluator.vm,
+          scope,
+          close_err,
+        ))
+      }
+    }
+  }
+}
+
 fn async_for_of_after_rhs(
   evaluator: &mut Evaluator<'_>,
   scope: &mut Scope<'_>,
@@ -12677,27 +12723,21 @@ fn async_for_of_loop(
 
         if !Evaluator::loop_continues(&body_completion, &label_set) {
           let completion = body_completion.update_empty(Some(v));
-          let close_res: Result<(), VmError> = (|| {
-            let mut close_scope = scope.reborrow();
-            if let Some(v) = completion.value() {
-              close_scope.push_root(v)?;
-            }
-            iterator::iterator_close(
-              evaluator.vm,
-              &mut *evaluator.host,
-              &mut *evaluator.hooks,
-              &mut close_scope,
-              &iterator_record,
-            )
-          })();
+          let close_res = async_iterator_close_on_completion(
+            evaluator,
+            scope,
+            &iterator_record,
+            completion,
+          );
 
           async_for_of_cleanup(scope, iterator_root, next_method_root, v_root);
-          if let Err(close_err) = close_res {
-            return Err(coerce_error_to_throw_for_async(evaluator.vm, scope, close_err));
+          match close_res {
+            Ok(completion) => {
+              let result = Evaluator::normalise_iteration_break(completion);
+              return Ok(AsyncEval::Complete(result));
+            }
+            Err(close_err) => return Err(close_err),
           }
-
-          let result = Evaluator::normalise_iteration_break(completion);
-          return Ok(AsyncEval::Complete(result));
         }
 
         if let Some(value) = body_completion.value() {
@@ -19038,30 +19078,18 @@ fn async_resume_from_frames(
 
           if !Evaluator::loop_continues(&body_completion, &label_set) {
             let completion = body_completion.update_empty(Some(v));
-            let close_res: Result<(), VmError> = (|| {
-              let mut close_scope = scope.reborrow();
-              if let Some(v) = completion.value() {
-                close_scope.push_root(v)?;
-              }
-              iterator::iterator_close(
-                evaluator.vm,
-                &mut *evaluator.host,
-                &mut *evaluator.hooks,
-                &mut close_scope,
-                &iterator_record,
-              )
-            })();
+            let close_res =
+              async_iterator_close_on_completion(evaluator, scope, &iterator_record, completion);
 
             async_for_of_cleanup(scope, iterator_root, next_method_root, v_root);
 
             match close_res {
-              Ok(()) => {
+              Ok(completion) => {
                 let result = Evaluator::normalise_iteration_break(completion);
                 state = AsyncState::Completion(result);
                 continue;
               }
               Err(close_err) => {
-                let close_err = coerce_error_to_throw_for_async(evaluator.vm, scope, close_err);
                 match close_err {
                   VmError::Throw(_) | VmError::ThrowWithStack { .. } => {
                     state = AsyncState::Completion(completion_from_expr_result(Err(close_err))?);
