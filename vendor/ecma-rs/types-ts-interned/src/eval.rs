@@ -6,10 +6,11 @@ use crate::kind::{
 use crate::relate::RelateCtx;
 use crate::shape::{PropData, PropKey, Property, Shape};
 use crate::store::TypeStore;
-use ahash::{AHashMap, AHashSet};
+use ahash::{AHashMap, AHashSet, RandomState};
 use ordered_float::OrderedFloat;
 use smallvec::SmallVec;
 use std::cmp::Ordering;
+use std::hash::{BuildHasher, Hash, Hasher};
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use std::sync::Arc;
 
@@ -221,13 +222,24 @@ pub struct EvaluatorCacheStats {
 }
 
 #[derive(Clone, Debug)]
+/// Shared caches for [`TypeEvaluator`].
+///
+/// Cached evaluation results are context-sensitive: they depend on
+/// [`TypeOptions`](crate::TypeOptions), evaluator limits, and hook/expander
+/// behavior. The first evaluation performed with a cache "locks" it to a
+/// context fingerprint; subsequent reuse in a different context will panic to
+/// avoid silent miscompilation/nondeterminism.
+///
+/// Use [`EvaluatorCaches::clear`] or [`EvaluatorCaches::invalidate`] to reuse a
+/// cache for a new context.
 pub struct EvaluatorCaches {
   generation: Arc<AtomicU64>,
+  context_hash: Arc<AtomicU64>,
   eval: Arc<ShardedCache<EvalKey, TypeId>>,
   refs: Arc<ShardedCache<RefKey, TypeId>>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct EvaluatorLimits {
   pub depth_limit: usize,
   pub step_limit: usize,
@@ -251,16 +263,28 @@ impl Default for EvaluatorLimits {
 }
 
 impl EvaluatorCaches {
+  pub fn new_with_context(config: CacheConfig, context_hash: u64) -> Self {
+    let caches = Self::new(config);
+    caches.set_context_hash(context_hash);
+    caches
+  }
+
   pub fn new(config: CacheConfig) -> Self {
     Self {
       generation: Arc::new(AtomicU64::new(0)),
+      context_hash: Arc::new(AtomicU64::new(0)),
       eval: Arc::new(ShardedCache::new(config)),
       refs: Arc::new(ShardedCache::new(config)),
     }
   }
 
+  pub fn set_context_hash(&self, context_hash: u64) {
+    self.ensure_context_hash(context_hash);
+  }
+
   pub fn invalidate(&self) {
     self.generation.fetch_add(1, AtomicOrdering::Relaxed);
+    self.context_hash.store(0, AtomicOrdering::Relaxed);
   }
 
   pub fn stats(&self) -> EvaluatorCacheStats {
@@ -291,6 +315,35 @@ impl EvaluatorCaches {
   pub fn clear(&self) {
     self.eval.clear();
     self.refs.clear();
+    self.context_hash.store(0, AtomicOrdering::Relaxed);
+  }
+
+  fn ensure_context_hash(&self, context_hash: u64) {
+    // Reserve `0` for the "unset" sentinel.
+    let actual = if context_hash == 0 { 1 } else { context_hash };
+    let mut expected = self.context_hash.load(AtomicOrdering::Acquire);
+    if expected == 0 {
+      match self.context_hash.compare_exchange(
+        0,
+        actual,
+        AtomicOrdering::AcqRel,
+        AtomicOrdering::Acquire,
+      ) {
+        Ok(_) => return,
+        Err(existing) => expected = existing,
+      }
+    }
+
+    if expected != actual {
+      panic!(
+        concat!(
+          "EvaluatorCaches context hash mismatch (expected {expected:#x}, got {actual:#x}).\n",
+          "Hint: create a new cache or call invalidate/clear; do not share caches across different TypeOptions/Limits/Hooks."
+        ),
+        expected = expected,
+        actual = actual,
+      );
+    }
   }
 }
 
@@ -299,6 +352,7 @@ impl EvaluatorCaches {
 pub struct TypeEvaluator<'a, E: TypeExpander> {
   store: Arc<TypeStore>,
   expander: &'a E,
+  hook_id: u64,
   conditional_assignability: Option<&'a dyn ConditionalAssignability>,
   default_conditional_assignability: Option<RelateCtx<'static>>,
   caches: EvaluatorCaches,
@@ -481,6 +535,7 @@ impl<'a, E: TypeExpander> TypeEvaluator<'a, E> {
     Self {
       store,
       expander,
+      hook_id: 0,
       conditional_assignability: None,
       default_conditional_assignability: None,
       caches,
@@ -496,6 +551,16 @@ impl<'a, E: TypeExpander> TypeEvaluator<'a, E> {
     provider: &'a dyn ConditionalAssignability,
   ) -> Self {
     self.conditional_assignability = Some(provider);
+    self
+  }
+
+  /// Set an opaque identifier for the evaluator's hooks/expanders.
+  ///
+  /// This is used to detect accidental reuse of [`EvaluatorCaches`] across
+  /// semantically different contexts (e.g. different ref expanders or conditional
+  /// assignability providers). The value is not interpreted beyond equality.
+  pub fn with_hook_id(mut self, hook_id: u64) -> Self {
+    self.hook_id = hook_id;
     self
   }
 
@@ -537,6 +602,7 @@ impl<'a, E: TypeExpander> TypeEvaluator<'a, E> {
 
   pub fn evaluate(&mut self, ty: TypeId) -> TypeId {
     self.steps = 0;
+    self.ensure_cache_context();
     #[cfg(feature = "tracing")]
     {
       let before_stats = self.caches.stats();
@@ -578,7 +644,34 @@ impl<'a, E: TypeExpander> TypeEvaluator<'a, E> {
     pairs.dedup_by_key(|(param, _)| param.0);
     let subst = Substitution { bindings: pairs };
     self.steps = 0;
+    self.ensure_cache_context();
     self.evaluate_with_subst(ty, &subst, 0)
+  }
+
+  fn ensure_cache_context(&self) {
+    #[derive(Hash)]
+    struct EvaluatorCacheContext {
+      options: crate::TypeOptions,
+      limits: EvaluatorLimits,
+      hook_id: u64,
+      conditional_assignability: bool,
+    }
+
+    fn stable_hash64<T: Hash>(value: &T) -> u64 {
+      let state = RandomState::with_seeds(0, 0, 0, 0);
+      let mut hasher = state.build_hasher();
+      value.hash(&mut hasher);
+      let out = hasher.finish();
+      if out == 0 { 1 } else { out }
+    }
+
+    let ctx = EvaluatorCacheContext {
+      options: self.store.options(),
+      limits: self.limits,
+      hook_id: self.hook_id,
+      conditional_assignability: self.conditional_assignability.is_some(),
+    };
+    self.caches.ensure_context_hash(stable_hash64(&ctx));
   }
 
   fn evaluate_with_subst(&mut self, ty: TypeId, subst: &Substitution, depth: usize) -> TypeId {

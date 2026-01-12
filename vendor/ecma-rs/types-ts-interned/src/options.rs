@@ -3,7 +3,7 @@
 /// This is intentionally a minimal subset of a full `CompilerOptions` to avoid
 /// additional dependencies while still allowing callers to control core
 /// behaviors such as null/undefined handling or function parameter variance.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct TypeOptions {
   /// Whether `null`/`undefined` are distinct from other types.

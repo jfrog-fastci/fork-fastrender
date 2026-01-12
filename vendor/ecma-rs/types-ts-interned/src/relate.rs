@@ -24,6 +24,7 @@ use bitflags::bitflags;
 use std::cell::{Cell, RefCell};
 use std::collections::{HashSet, VecDeque};
 use std::fmt;
+use std::hash::{BuildHasher, Hash, Hasher};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
@@ -84,7 +85,7 @@ pub struct ReasonNode {
 const MAX_REASON_DEPTH: usize = 12;
 const MAX_REASON_NODES: usize = 256;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct RelationLimits {
   /// Maximum number of relation steps before conservatively assuming success.
   ///
@@ -192,8 +193,19 @@ struct GenRelationKey {
 }
 
 #[derive(Clone, Debug)]
+/// Shared cache for [`RelateCtx`] relation queries.
+///
+/// Cached relation results are context-sensitive: they depend on
+/// [`TypeOptions`], [`RelationLimits`], and hook behavior (ref expansion and
+/// private-member-origin rules). The first relate operation performed with a
+/// cache "locks" it to a context fingerprint; subsequent reuse in a different
+/// context will panic to avoid silent miscompilation/nondeterminism.
+///
+/// Use [`RelationCache::clear`] or [`RelationCache::invalidate`] to reuse a
+/// cache for a new context.
 pub struct RelationCache {
   generation: Arc<AtomicU64>,
+  context_hash: Arc<AtomicU64>,
   inner: Arc<ShardedCache<GenRelationKey, bool>>,
 }
 
@@ -204,15 +216,27 @@ impl Default for RelationCache {
 }
 
 impl RelationCache {
+  pub fn new_with_context(config: CacheConfig, context_hash: u64) -> Self {
+    let cache = Self::new(config);
+    cache.set_context_hash(context_hash);
+    cache
+  }
+
   pub fn new(config: CacheConfig) -> Self {
     Self {
       generation: Arc::new(AtomicU64::new(0)),
+      context_hash: Arc::new(AtomicU64::new(0)),
       inner: Arc::new(ShardedCache::new(config)),
     }
   }
 
+  pub fn set_context_hash(&self, context_hash: u64) {
+    self.ensure_context_hash(context_hash);
+  }
+
   pub fn invalidate(&self) {
     self.generation.fetch_add(1, Ordering::Relaxed);
+    self.context_hash.store(0, Ordering::Relaxed);
   }
 
   pub fn stats(&self) -> CacheStats {
@@ -236,6 +260,29 @@ impl RelationCache {
 
   pub fn clear(&self) {
     self.inner.clear();
+    self.context_hash.store(0, Ordering::Relaxed);
+  }
+
+  fn ensure_context_hash(&self, context_hash: u64) {
+    let actual = if context_hash == 0 { 1 } else { context_hash };
+    let mut expected = self.context_hash.load(Ordering::Acquire);
+    if expected == 0 {
+      match self.context_hash.compare_exchange(0, actual, Ordering::AcqRel, Ordering::Acquire) {
+        Ok(_) => return,
+        Err(existing) => expected = existing,
+      }
+    }
+
+    if expected != actual {
+      panic!(
+        concat!(
+          "RelationCache context hash mismatch (expected {expected:#x}, got {actual:#x}).\n",
+          "Hint: create a new cache or call invalidate/clear; do not share caches across different TypeOptions/Limits/Hooks."
+        ),
+        expected = expected,
+        actual = actual,
+      );
+    }
   }
 }
 
@@ -267,6 +314,7 @@ pub struct RelateCtx<'a> {
   store: Arc<TypeStore>,
   pub options: TypeOptions,
   hooks: RelateHooks<'a>,
+  hook_id: u64,
   cache: RelationCache,
   normalizer_caches: EvaluatorCaches,
   in_progress: RefCell<HashSet<RelationKey>>,
@@ -355,6 +403,12 @@ impl<'a> RelateCtx<'a> {
   ///   referenced types), and
   /// - use semantically equivalent `options` and `hooks` (notably the reference
   ///   expander and conditional-type assignability rules).
+  ///
+  /// [`RelationCache`] and [`EvaluatorCaches`] both enforce this at runtime: the
+  /// first relate/evaluate call "locks" the cache to a context fingerprint
+  /// derived from options/limits and an optional user-provided hook id (see
+  /// [`RelateCtx::with_hook_id`]). Reusing the same cache across a different
+  /// context will panic to prevent silent miscompilation/nondeterminism.
   pub fn with_hooks_cache_and_normalizer_caches(
     store: Arc<TypeStore>,
     options: TypeOptions,
@@ -384,6 +438,7 @@ impl<'a> RelateCtx<'a> {
       store,
       options,
       hooks,
+      hook_id: 0,
       cache,
       normalizer_caches,
       in_progress: RefCell::new(HashSet::new()),
@@ -391,6 +446,17 @@ impl<'a> RelateCtx<'a> {
       limits: RelationLimits::default(),
       steps: Cell::new(0),
     }
+  }
+
+  /// Set an opaque identifier for the relate hooks/expanders.
+  ///
+  /// This is used to detect accidental reuse of [`RelationCache`] /
+  /// [`EvaluatorCaches`] across semantically different contexts (e.g. different
+  /// ref expanders or private-member-origin rules). The value is not interpreted
+  /// beyond equality.
+  pub fn with_hook_id(mut self, hook_id: u64) -> Self {
+    self.hook_id = hook_id;
+    self
   }
 
   pub fn with_limits(mut self, limits: RelationLimits) -> Self {
@@ -607,6 +673,10 @@ impl<'a> RelateCtx<'a> {
     record: bool,
     depth: usize,
   ) -> RelationResult {
+    if depth == 0 {
+      self.ensure_cache_context();
+    }
+
     if depth == 0 && self.limits.step_limit != RelationLimits::DEFAULT_STEP_LIMIT {
       self.steps.set(0);
     }
@@ -3213,6 +3283,7 @@ impl<'a> RelateCtx<'a> {
     let mut evaluator =
       TypeEvaluator::with_caches(self.store.clone(), &adapter, self.normalizer_caches.clone())
         .with_step_limit(self.limits.step_limit)
+        .with_hook_id(self.normalizer_hook_id())
         .with_conditional_assignability(self);
     let result = evaluator.evaluate(ty);
 
@@ -3229,6 +3300,50 @@ impl<'a> RelateCtx<'a> {
     }
 
     result
+  }
+
+  fn ensure_cache_context(&self) {
+    #[derive(Hash)]
+    struct RelationCacheContext {
+      options: TypeOptions,
+      limits: RelationLimits,
+      hook_id: u64,
+    }
+
+    fn stable_hash64<T: Hash>(value: &T) -> u64 {
+      let state = ahash::RandomState::with_seeds(0, 0, 0, 0);
+      let mut hasher = state.build_hasher();
+      value.hash(&mut hasher);
+      let out = hasher.finish();
+      if out == 0 { 1 } else { out }
+    }
+
+    let ctx = RelationCacheContext {
+      options: self.options,
+      limits: self.limits,
+      hook_id: self.hook_id,
+    };
+    self.cache.ensure_context_hash(stable_hash64(&ctx));
+  }
+
+  fn normalizer_hook_id(&self) -> u64 {
+    #[derive(Hash)]
+    struct NormalizerHookContext {
+      options: TypeOptions,
+      limits: RelationLimits,
+      hook_id: u64,
+    }
+
+    let state = ahash::RandomState::with_seeds(0, 0, 0, 0);
+    let mut hasher = state.build_hasher();
+    NormalizerHookContext {
+      options: self.options,
+      limits: self.limits,
+      hook_id: self.hook_id,
+    }
+    .hash(&mut hasher);
+    let out = hasher.finish();
+    if out == 0 { 1 } else { out }
   }
 
   fn is_method_like(&self, data: &PropData) -> bool {
