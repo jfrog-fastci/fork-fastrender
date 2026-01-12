@@ -414,4 +414,32 @@ mod tests {
       "expected dark-mode request to trigger one additional rasterization"
     );
   }
+
+  #[test]
+  fn all_icons_rasterize_to_non_empty_alpha_mask() {
+    // Guard against accidentally shipping empty/malformed SVG assets.
+    let icons = [
+      BrowserIcon::Back,
+      BrowserIcon::Forward,
+      BrowserIcon::Reload,
+      BrowserIcon::CloseTab,
+      BrowserIcon::NewTab,
+      BrowserIcon::LockSecure,
+      BrowserIcon::WarningInsecure,
+      BrowserIcon::Error,
+      BrowserIcon::Spinner,
+    ];
+
+    for icon in icons {
+      let pixmap = rasterize_svg_icon(icon, 32, false).expect("rasterize should succeed");
+      let mut any_alpha = false;
+      for a in pixmap.data().iter().skip(3).step_by(4) {
+        if *a != 0 {
+          any_alpha = true;
+          break;
+        }
+      }
+      assert!(any_alpha, "icon {icon:?} rendered fully transparent");
+    }
+  }
 }
