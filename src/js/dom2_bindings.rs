@@ -59,9 +59,19 @@ pub fn first_child<Host: DomHost + ?Sized>(host: &Host, node: NodeId) -> Option<
   host.with_dom(|dom| dom.first_child(node))
 }
 
+/// `Node.firstElementChild` / `ParentNode.firstElementChild`.
+pub fn first_element_child<Host: DomHost + ?Sized>(host: &Host, node: NodeId) -> Option<NodeId> {
+  host.with_dom(|dom| dom.first_element_child(node))
+}
+
 /// `Node.lastChild`.
 pub fn last_child<Host: DomHost + ?Sized>(host: &Host, node: NodeId) -> Option<NodeId> {
   host.with_dom(|dom| dom.last_child(node))
+}
+
+/// `Node.lastElementChild` / `ParentNode.lastElementChild`.
+pub fn last_element_child<Host: DomHost + ?Sized>(host: &Host, node: NodeId) -> Option<NodeId> {
+  host.with_dom(|dom| dom.last_element_child(node))
 }
 
 /// `Node.previousSibling`.
@@ -69,9 +79,29 @@ pub fn previous_sibling<Host: DomHost + ?Sized>(host: &Host, node: NodeId) -> Op
   host.with_dom(|dom| dom.previous_sibling(node))
 }
 
+/// `NonDocumentTypeChildNode.previousElementSibling` / `Element.previousElementSibling`.
+pub fn previous_element_sibling<Host: DomHost + ?Sized>(host: &Host, node: NodeId) -> Option<NodeId> {
+  host.with_dom(|dom| dom.previous_element_sibling(node))
+}
+
 /// `Node.nextSibling`.
 pub fn next_sibling<Host: DomHost + ?Sized>(host: &Host, node: NodeId) -> Option<NodeId> {
   host.with_dom(|dom| dom.next_sibling(node))
+}
+
+/// `NonDocumentTypeChildNode.nextElementSibling` / `Element.nextElementSibling`.
+pub fn next_element_sibling<Host: DomHost + ?Sized>(host: &Host, node: NodeId) -> Option<NodeId> {
+  host.with_dom(|dom| dom.next_element_sibling(node))
+}
+
+/// `ParentNode.childElementCount`.
+pub fn child_element_count<Host: DomHost + ?Sized>(host: &Host, node: NodeId) -> usize {
+  host.with_dom(|dom| dom.child_element_count(node))
+}
+
+/// Snapshot `ParentNode.children` list as a `Vec<NodeId>`.
+pub fn children_elements<Host: DomHost + ?Sized>(host: &Host, node: NodeId) -> Vec<NodeId> {
+  host.with_dom(|dom| dom.children_elements(node))
 }
 
 /// `Node.isConnected`.
@@ -720,5 +750,25 @@ mod tests {
     let doc = host.dom().root();
     assert!(!text_content_set(&mut host, doc, "new").unwrap());
     assert_eq!(text_content_get(&host, host_el), Some("hello".to_string()));
+  }
+
+  #[test]
+  fn element_traversal_skips_text_nodes() {
+    let root = crate::dom::parse_html(
+      "<!doctype html><div id=host><span id=a></span>text<p id=b></p></div>",
+    )
+    .unwrap();
+    let host = HostDocumentState::from_renderer_dom(&root);
+
+    let host_el = host.dom().get_element_by_id("host").expect("host element");
+    let a = host.dom().get_element_by_id("a").expect("a element");
+    let b = host.dom().get_element_by_id("b").expect("b element");
+
+    assert_eq!(first_element_child(&host, host_el), Some(a));
+    assert_eq!(last_element_child(&host, host_el), Some(b));
+    assert_eq!(next_element_sibling(&host, a), Some(b));
+    assert_eq!(previous_element_sibling(&host, b), Some(a));
+    assert_eq!(child_element_count(&host, host_el), 2);
+    assert_eq!(children_elements(&host, host_el), vec![a, b]);
   }
 }
