@@ -773,8 +773,8 @@ impl CachedLayout {
     let mut string_set_events = string_set_collector.collect(&root, axes);
     string_set_events.sort_by(|a, b| {
       a.abs_block
-        .partial_cmp(&b.abs_block)
-        .unwrap_or(Ordering::Equal)
+        .total_cmp(&b.abs_block)
+        .then_with(|| a.sequence.cmp(&b.sequence))
     });
 
     Self {

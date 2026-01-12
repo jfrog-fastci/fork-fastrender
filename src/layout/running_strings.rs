@@ -30,6 +30,11 @@ fn box_is_in_style_containment(
 pub struct StringSetEvent {
   /// Absolute block-axis position of the assigning fragment.
   pub abs_block: f32,
+  /// Stable monotonic sequence number for deterministic ordering.
+  ///
+  /// Pagination sorts string-set events by `(abs_block, sequence)` so that multiple assignments at
+  /// the same block position (or within the same fragment slice) are applied in collection order.
+  pub sequence: usize,
   /// Originating box id for the assignment, when known.
   ///
   /// This is used by pagination to avoid applying duplicate assignments when a box is fragmented
@@ -84,6 +89,7 @@ impl StringSetEventCollector {
   ) -> Vec<StringSetEvent> {
     let mut events = Vec::new();
     let mut seen_boxes = HashSet::new();
+    let mut sequence = 0usize;
     collect_string_set_events_inner(
       root,
       abs_start,
@@ -94,6 +100,7 @@ impl StringSetEventCollector {
       &self.parent_by_id,
       &self.box_text,
       &mut seen_boxes,
+      &mut sequence,
     );
     events
   }
@@ -160,12 +167,14 @@ fn collect_string_set_events_inner(
   parent_by_id: &HashMap<usize, usize>,
   box_text: &HashMap<usize, String>,
   seen_boxes: &mut HashSet<usize>,
+  sequence: &mut usize,
 ) {
   let logical_bounds = node.logical_bounds();
   let start = axes.abs_block_start(&logical_bounds, abs_start, parent_block_size);
   let node_block_size = axes.block_size(&logical_bounds);
 
   let mut assignments: Option<&[StringSetAssignment]> = None;
+  let mut assignments_in_flow = true;
   let fragment_box_id: Option<usize> = fragment_box_id(node);
   let mut assignments_box_id: Option<usize> = None;
   if let Some(mut probe) = fragment_box_id {
@@ -173,6 +182,7 @@ fn collect_string_set_events_inner(
       if let Some(style) = styles_by_id.get(&probe) {
         if !style.string_set.is_empty() {
           assignments = Some(style.string_set.as_slice());
+          assignments_in_flow = style.position.is_in_flow();
           assignments_box_id = Some(probe);
           break;
         }
@@ -188,6 +198,7 @@ fn collect_string_set_events_inner(
     if let Some(style) = node.style.as_deref() {
       if !style.string_set.is_empty() {
         assignments = Some(style.string_set.as_slice());
+        assignments_in_flow = style.position.is_in_flow();
         assignments_box_id = fragment_box_id;
       }
     }
@@ -207,15 +218,17 @@ fn collect_string_set_events_inner(
       .map(|box_id| seen_boxes.insert(box_id))
       .unwrap_or(true);
 
-    if should_emit && !in_style_containment {
+    if should_emit && !in_style_containment && assignments_in_flow {
       for StringSetAssignment { name, value } in assignments {
         let resolved = resolve_string_set_value(node, value, assignments_box_id, box_text);
         out.push(StringSetEvent {
           abs_block: start,
+          sequence: *sequence,
           box_id: assignments_box_id,
           name: name.clone(),
           value: resolved,
         });
+        *sequence += 1;
       }
     }
   }
@@ -231,6 +244,7 @@ fn collect_string_set_events_inner(
       parent_by_id,
       box_text,
       seen_boxes,
+      sequence,
     );
   }
 }
@@ -282,6 +296,7 @@ mod tests {
   use crate::layout::axis::FragmentAxes;
   use crate::style::content::{StringSetAssignment, StringSetValue};
   use crate::style::display::FormattingContextType;
+  use crate::style::position::Position;
   use crate::style::ComputedStyle;
   use crate::tree::box_tree::{BoxNode, BoxTree};
   use crate::tree::fragment_tree::{FragmentContent, FragmentNode};
@@ -357,10 +372,124 @@ mod tests {
     assert_eq!(events[0].value, "Box Value");
     assert_eq!(events[0].box_id, Some(string_set_box.id));
     assert!((events[0].abs_block - 5.0).abs() < 0.001);
+    assert_eq!(events[0].sequence, 0);
 
     assert_eq!(events[1].name, "note");
     assert_eq!(events[1].value, "Inline fallback");
     assert_eq!(events[1].box_id, None);
     assert!((events[1].abs_block - 20.0).abs() < 0.001);
+    assert_eq!(events[1].sequence, 1);
+  }
+
+  #[test]
+  fn collect_string_set_events_skips_fixed_position_sources() {
+    let mut fixed_style = ComputedStyle::default();
+    fixed_style.position = Position::Fixed;
+    fixed_style.string_set = vec![StringSetAssignment {
+      name: "chapter".into(),
+      value: StringSetValue::Literal("Fixed".into()),
+    }];
+
+    let fixed_text_box =
+      BoxNode::new_text(Arc::new(ComputedStyle::default()), "Ignored".into());
+    let fixed_box = BoxNode::new_block(
+      Arc::new(fixed_style),
+      FormattingContextType::Block,
+      vec![fixed_text_box],
+    );
+    let root_box = BoxNode::new_block(
+      Arc::new(ComputedStyle::default()),
+      FormattingContextType::Block,
+      vec![fixed_box],
+    );
+    let box_tree = BoxTree::new(root_box);
+
+    let fixed_box = &box_tree.root.children[0];
+    let fixed_text_box = &fixed_box.children[0];
+
+    let text_fragment = FragmentNode::new(
+      Rect::from_xywh(0.0, 0.0, 10.0, 5.0),
+      FragmentContent::Text {
+        text: "Ignored".into(),
+        box_id: Some(fixed_text_box.id),
+        source_range: None,
+        baseline_offset: 0.0,
+        shaped: None,
+        is_marker: false,
+        emphasis_offset: Default::default(),
+      },
+      vec![],
+    );
+    let fixed_fragment = FragmentNode::new_block_with_id(
+      Rect::from_xywh(0.0, 5.0, 10.0, 10.0),
+      fixed_box.id,
+      vec![],
+    );
+    let root_fragment = FragmentNode::new_block_with_id(
+      Rect::from_xywh(0.0, 0.0, 10.0, 20.0),
+      box_tree.root.id,
+      vec![text_fragment, fixed_fragment],
+    );
+
+    let collector = StringSetEventCollector::new(&box_tree);
+    let events = collector.collect(&root_fragment, FragmentAxes::default());
+    assert!(events.is_empty());
+  }
+
+  #[test]
+  fn string_set_events_have_stable_sequence_ordering() {
+    let mut style = ComputedStyle::default();
+    style.string_set = vec![
+      StringSetAssignment {
+        name: "a".into(),
+        value: StringSetValue::Literal("1".into()),
+      },
+      StringSetAssignment {
+        name: "b".into(),
+        value: StringSetValue::Literal("2".into()),
+      },
+    ];
+
+    let box_with_string_set = BoxNode::new_block(
+      Arc::new(style),
+      FormattingContextType::Block,
+      vec![],
+    );
+    let root_box = BoxNode::new_block(
+      Arc::new(ComputedStyle::default()),
+      FormattingContextType::Block,
+      vec![box_with_string_set],
+    );
+    let box_tree = BoxTree::new(root_box);
+
+    let string_set_box = &box_tree.root.children[0];
+    let root_fragment = FragmentNode::new_block_with_id(
+      Rect::from_xywh(0.0, 0.0, 10.0, 20.0),
+      box_tree.root.id,
+      vec![FragmentNode::new_block_with_id(
+        Rect::from_xywh(0.0, 0.0, 10.0, 10.0),
+        string_set_box.id,
+        vec![],
+      )],
+    );
+
+    let collector = StringSetEventCollector::new(&box_tree);
+    let events = collector.collect(&root_fragment, FragmentAxes::default());
+    assert_eq!(events.len(), 2);
+    assert_eq!(events[0].name, "a");
+    assert_eq!(events[0].sequence, 0);
+    assert_eq!(events[1].name, "b");
+    assert_eq!(events[1].sequence, 1);
+
+    // When multiple events share the same block position, ordering must be derived from the
+    // monotonic sequence number so pagination can deterministically apply them.
+    let mut reversed = vec![events[1].clone(), events[0].clone()];
+    reversed.sort_by(|a, b| {
+      a.abs_block
+        .total_cmp(&b.abs_block)
+        .then_with(|| a.sequence.cmp(&b.sequence))
+    });
+    assert_eq!(reversed[0].name, "a");
+    assert_eq!(reversed[1].name, "b");
   }
 }
