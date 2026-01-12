@@ -914,6 +914,14 @@ pub fn chrome_ui_with_bookmarks(
 
       let mut menu_rect: Option<egui::Rect> = None;
       if menu_open {
+        let open_t = motion.animate_bool(
+          ctx,
+          menu_id.with("popup_open"),
+          true,
+          motion.durations.popup_open,
+        );
+        let open_opacity = open_t.clamp(0.0, 1.0);
+
         let mut close_menu = false;
         // Anchor the popup menu below the menu button.
         let pos = egui::pos2(menu_button.rect.left(), menu_button.rect.bottom());
@@ -922,7 +930,13 @@ pub fn chrome_ui_with_bookmarks(
           .fixed_pos(pos)
           .constrain_to(ctx.screen_rect());
         let inner = area.show(ctx, |ui| {
-          egui::Frame::popup(ui.style()).show(ui, |ui| {
+          ui.visuals_mut().override_text_color =
+            Some(with_alpha(ui.visuals().text_color(), open_opacity));
+          let mut frame = egui::Frame::popup(ui.style());
+          frame.fill = with_alpha(frame.fill, open_opacity);
+          frame.stroke.color = with_alpha(frame.stroke.color, open_opacity);
+          frame.shadow.color = with_alpha(frame.shadow.color, open_opacity);
+          frame.show(ui, |ui| {
             ui.set_min_width(220.0);
 
             if ui.input_mut(|i| i.consume_key(Default::default(), egui::Key::Escape)) {
@@ -2079,11 +2093,24 @@ pub fn chrome_ui_with_bookmarks(
       let menu_pos = egui::pos2(open_menu.anchor_points.0, open_menu.anchor_points.1);
 
       let menu_id = egui::Id::new(("tab_context_menu", tab_id));
+      let open_t = motion.animate_bool(
+        ctx,
+        menu_id.with("popup_open"),
+        true,
+        motion.durations.popup_open,
+      );
+      let open_opacity = open_t.clamp(0.0, 1.0);
       let menu_response = egui::Area::new(menu_id)
         .order(egui::Order::Foreground)
         .fixed_pos(menu_pos)
         .show(ctx, |ui| {
-          egui::Frame::popup(ui.style()).show(ui, |ui| {
+          ui.visuals_mut().override_text_color =
+            Some(with_alpha(ui.visuals().text_color(), open_opacity));
+          let mut frame = egui::Frame::popup(ui.style());
+          frame.fill = with_alpha(frame.fill, open_opacity);
+          frame.stroke.color = with_alpha(frame.stroke.color, open_opacity);
+          frame.shadow.color = with_alpha(frame.shadow.color, open_opacity);
+          frame.show(ui, |ui| {
             // Provide a consistent target size for hit-testing and a more browser-like look.
             ui.set_min_width(180.0);
 
