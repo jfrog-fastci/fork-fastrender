@@ -275,7 +275,9 @@ fn bind_object_pattern(
 ) -> Result<(), VmError> {
   // Object destructuring follows `GetV` semantics: property lookup uses `ToObject(value)`, but
   // accessors must observe `this = value` (the original RHS value), not the boxed object.
-  let src_value = value;
+  //
+  // Root the original RHS value across boxing: `ToObject` can allocate and therefore trigger GC.
+  let src_value = scope.push_root(value)?;
   let obj = match scope.to_object(vm, host, hooks, src_value) {
     Ok(obj) => obj,
     Err(VmError::TypeError(msg)) => return Err(throw_type_error(vm, scope, msg)?),
@@ -331,14 +333,12 @@ fn bind_object_pattern(
     return Ok(());
   };
 
-  let rest_obj = scope.alloc_object()?;
-  scope.push_root(Value::Object(rest_obj))?;
   let intr = vm
     .intrinsics()
     .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
-  scope
-    .heap_mut()
-    .object_set_prototype(rest_obj, Some(intr.object_prototype()))?;
+  // `...rest` uses `ObjectCreate(%Object.prototype%)` / `CopyDataProperties`.
+  let rest_obj = scope.alloc_object_with_prototype(Some(intr.object_prototype()))?;
+  scope.push_root(Value::Object(rest_obj))?;
 
   let keys = scope.ordinary_own_property_keys_with_tick(obj, || vm.tick())?;
   for key in keys {

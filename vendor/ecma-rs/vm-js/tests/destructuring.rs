@@ -165,6 +165,31 @@ fn object_destructuring_string_key_preserves_unpaired_surrogate() {
 }
 
 #[test]
+fn object_destructuring_accepts_number_primitives() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(r#"var {toString:f} = 1; typeof f === "function""#)
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn object_destructuring_accepts_string_primitives() {
+  let mut rt = new_runtime();
+  let value = rt.exec_script(r#"var {length:l} = "ab"; l === 2"#).unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn object_destructuring_throws_for_null() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(r#"try { var {x} = null; false } catch(e) { e instanceof TypeError }"#)
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn object_destructuring_uses_getv_receiver_for_accessors_on_primitives() {
   let mut rt = new_runtime();
   let value = rt
