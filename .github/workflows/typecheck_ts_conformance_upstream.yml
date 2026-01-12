@@ -161,6 +161,8 @@ jobs:
           PY
           )"
 
+          echo "shard_total=${shard_total}" >> "${GITHUB_OUTPUT}"
+          echo "shard_indices=${shard_indices}" >> "${GITHUB_OUTPUT}"
           echo "matrix=${matrix}" >> "${GITHUB_OUTPUT}"
 
       - name: Matrix summary (step summary)
@@ -171,8 +173,10 @@ jobs:
             echo
             echo "- Event: ${GITHUB_EVENT_NAME}"
             echo "- Enabled: ${{ steps.manifest.outputs.run_enabled }}"
-            echo "- Shards (full run): ${UPSTREAM_CONFORMANCE_SHARD_TOTAL}"
-            echo "- Shards (PR/push): ${UPSTREAM_CONFORMANCE_PR_SHARDS}"
+            echo "- Shard total (effective): ${{ steps.compute.outputs.shard_total }}"
+            echo "- Shards (effective): ${{ steps.compute.outputs.shard_indices }}"
+            echo "- Shards (default full run): ${UPSTREAM_CONFORMANCE_SHARD_TOTAL}"
+            echo "- Shards (default PR/push): ${UPSTREAM_CONFORMANCE_PR_SHARDS}"
             echo
             echo '```json'
             echo '${{ steps.compute.outputs.matrix }}'
