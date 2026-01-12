@@ -50,14 +50,14 @@ section in sync with `ls tests/*.rs`.
 | `tests/bundled_tests.rs` | integration | `tests/integration.rs::bundled` | Top-level harness removed; suite now lives under `tests/bundled/**`. | DONE |
 | `tests/calc_percent_height_is_not_collapsible_through.rs` | delete | delete | Pure `#[path]` shim removed; test remains under `tests/layout/**`. | DONE |
 | `tests/colr_tests.rs` | unit | `src/text/color_fonts/golden_tests.rs` | Migrated to unit tests to directly exercise COLR rasterization. | DONE |
-| `tests/container_scroll_state_queries_test.rs` | delete | delete | Pure `#[path]` shim removed; test remains under `tests/style/**`. | DONE |
-| `tests/container_style_queries.rs` | delete | delete | Pure `#[path]` shim removed; test remains under `tests/style/**`. | DONE |
+| `tests/container_scroll_state_queries_test.rs` | delete | delete | Pure `#[path]` shim removed; corresponding tests now live under `src/style/tests/style/**`. | DONE |
+| `tests/container_style_queries.rs` | delete | delete | Pure `#[path]` shim removed; corresponding tests now live under `src/style/tests/style/**`. | DONE |
 | `tests/content_visibility_tests.rs` | unit | `src/layout/contexts/*` | Migrated into layout context unit tests (block/flex/grid). | DONE |
 | `tests/csp_img_data_url.rs` | integration | `tests/api/csp_img_data_url.rs` | Top-level crate removed; tests now run via `tests/integration.rs::api`. | DONE |
 | `tests/clip_tests.rs` | unit | `src/paint/display_list_builder.rs` | Migrated clip-rect regression coverage into `src/paint/display_list_builder.rs` unit tests and removed `tests/clip_tests.rs`/`tests/clip/**`. | DONE |
 | `tests/display_list_tests.rs` | unit | `src/paint/display_list_renderer/tests/display_list/mod.rs` | Migrated the display-list backend regression suite into unit tests under `src/paint/display_list_renderer/tests/display_list/**` and removed the standalone test binary. | DONE |
-| `tests/border_tests.rs` | delete | delete | Top-level harness removed; suite now lives under `tests/border/**` and is pulled into `tests/integration.rs`. | DONE |
-| `tests/cascade_tests.rs` | delete | delete | Top-level harness removed; suite now lives under `tests/cascade/**` and is pulled into `tests/integration.rs`. | DONE |
+| `tests/border_tests.rs` | delete | `src/style/tests/border/` | Top-level harness removed; suite moved out of `tests/` into lib unit tests. | DONE |
+| `tests/cascade_tests.rs` | delete | `src/style/tests/cascade/` | Top-level harness removed; suite moved out of `tests/` into lib unit tests. | DONE |
 | `tests/css_integration_tests.rs` | delete | delete | Top-level harness removed; suite now lives under `tests/css_integration/**` and is pulled into `tests/integration.rs`. | DONE |
 | `tests/determinism_tests.rs` | delete | delete | Top-level harness removed; suite now lives under `tests/determinism/**` and is pulled into `tests/integration.rs`. | DONE |
 | `tests/dom_integration_tests.rs` | delete | delete | Top-level harness removed; suite now lives under `tests/dom_integration/**` and is pulled into `tests/integration.rs`. | DONE |
@@ -71,11 +71,11 @@ section in sync with `ls tests/*.rs`.
 | `tests/ref_tests.rs` | delete | delete | Top-level harness removed; suite now lives under `tests/ref/**` and is pulled into `tests/integration.rs`. | DONE |
 | `tests/render_tests.rs` | delete | delete | Top-level harness removed; suite now lives under `tests/render/**` and is pulled into `tests/integration.rs`. | DONE |
 | `tests/scroll_tests.rs` | delete | delete | Top-level harness removed; suite now lives under `tests/scroll/**` and is pulled into `tests/integration.rs`. | DONE |
-| `tests/style_tests.rs` | delete | delete | Pure `#[path]` shim removed; style suite runs via `tests/style/**` (included from `tests/integration.rs`). | DONE |
+| `tests/style_tests.rs` | delete | `src/style/tests/style/` | Top-level harness removed; suite moved out of `tests/` into lib unit tests. | DONE |
 | `tests/text_tests.rs` | delete | delete | Top-level harness removed; suite now lives under `tests/text/**` and is pulled into `tests/integration.rs`. | DONE |
 | `tests/tree_tests.rs` | delete | delete | Top-level harness removed; suite now lives under `tests/tree/**` and is pulled into `tests/integration.rs`. | DONE |
 | `tests/ui_tests.rs` | delete | delete | Top-level harness removed; suite now lives under `tests/ui/**` and is pulled into `tests/integration.rs`. | DONE |
-| `tests/var_tests.rs` | delete | delete | Top-level harness removed; suite now lives under `tests/var/**` and is pulled into `tests/integration.rs`. | DONE |
+| `tests/var_tests.rs` | delete | `src/style/tests/var/` | Top-level harness removed; suite moved out of `tests/` into lib unit tests. | DONE |
 | `tests/weibo_web_font_relative_url_test.rs` | delete | delete | Migrated to unit tests (`src/text/font_loader.rs`) as `weibo_fixture_font_face_relative_url_resolves_against_document_base_url`. | DONE |
 | `tests/flex_nowrap_negative_margins_do_not_trigger_monotonic_fallback.rs` | delete | delete | Pure `#[path]` shim removed; test remains under `tests/layout/**`. | DONE |
 | `tests/flex_wrap_order_does_not_trigger_manual_placement.rs` | delete | delete | Pure `#[path]` shim removed; test remains under `tests/layout/**`. | DONE |
@@ -127,7 +127,7 @@ migrations.
 | `tests/ref/` | image diff + ref-test harness utilities | `tests/common/` | Not a binary; used by fixtures/determinism/etc. (may be renamed/moved). |
 | `tests/regression/` | cross-cutting regressions | `src/**` (split) | Many unit tests; some may remain fixture-driven integration tests. |
 | `tests/resource/` | resource fetching/cache/CORS tests | `tests/integration.rs::resource` | Uses net harness; stays integration for now. |
-| `tests/style/` | cascade/values/layout-affecting style regressions | `src/style/**` | Unit tests. |
+| `tests/style/` | migrated (directory removed) | `src/style/**` | Suite moved into `src/style/tests/**` (unit tests). |
 | `tests/text/` | shaping/text regressions | `src/text/**` | Unit tests. |
 | `tests/tooling/` | external tool integration (e.g. LLVM stackmaps) | `tests/integration.rs::tooling` | Tests that shell out to toolchains; should skip when tools absent. |
 | `tests/tree/` | box/tree generation regressions | `src/tree/**` | Unit tests. |

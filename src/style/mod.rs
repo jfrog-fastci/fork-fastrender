@@ -32,6 +32,9 @@ pub mod var_resolution;
 
 pub use root_font_metrics::RootFontMetrics;
 
+#[cfg(test)]
+mod tests;
+
 // Internal imports used by ComputedStyle
 use crate::css::types::BoxShadow;
 use crate::css::types::PropertyValue;

@@ -2531,6 +2531,7 @@ pub fn proxy_revocable(
 
   Ok(Value::Object(result))
 }
+
 /// Revocation function created by `Proxy.revocable`.
 pub fn proxy_revoker(
   _vm: &mut Vm,

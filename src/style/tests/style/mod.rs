@@ -1,4 +1,4 @@
-//! Style integration tests.
+//! Style tests.
 
 mod all_unset_test;
 mod anchor_positioning_values_test;
@@ -78,9 +78,14 @@ mod grid_shorthand_auto_flow_detection_test;
 mod grid_shorthand_case_insensitive_test;
 mod grid_template_areas_single_row_test;
 mod grid_track_list_single_token_test;
+mod grid_auto_flow_tokenization_test;
+mod grid_line_case_insensitive_test;
+mod grid_shorthand_auto_flow_detection_test;
+mod grid_shorthand_case_insensitive_test;
 mod has_selector_quirks_bloom_test;
 mod has_selector_test;
 mod hostile_css_no_panic_smoke_test;
+mod hyphenate_character_test;
 mod import_layer_supports_test;
 mod isolation_case_insensitive_test;
 mod justify_content_normal_test;
@@ -127,7 +132,9 @@ mod shadow_closed_root_style_test;
 mod shadow_document_rule_leak_test;
 mod shadow_dom_container_query_part_test;
 mod shadow_dom_container_query_slotted_test;
+mod shadow_dom_part_selectors;
 mod shadow_dom_scoping_test;
+mod shadow_dom_slotted_selectors;
 mod shadow_dom_slot_inheritance_test;
 mod shadow_exportparts_pseudo_test;
 mod shadow_host_cascade_order_test;
@@ -136,6 +143,7 @@ mod shadow_host_selector_test;
 mod shadow_host_selectors_test;
 mod shadow_host_specificity_test;
 mod shadow_part_fully_styleable_test;
+mod shadow_part_performance_test;
 mod shadow_part_shadow_scope_test;
 mod shadow_part_test;
 mod shadow_slot_focus_within_test;
@@ -152,6 +160,7 @@ mod style_containment_quotes_test;
 mod style_properties_no_panic_regression_test;
 mod property_parser_no_panic_regression_test;
 mod styled_node_shallow_dom_clone;
+mod supports_declaration_css_wide_and_var_test;
 mod supports_rule_test;
 mod supports_important_stripping_test;
 mod supports_selector_forgiving_list_test;
