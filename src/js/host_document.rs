@@ -191,7 +191,15 @@ impl DomHost for HostDocumentState {
   where
     F: FnOnce(&mut dom2::Document) -> (R, bool),
   {
-    let (result, _changed) = f(&mut self.dom);
+    let (result, changed) = f(&mut self.dom);
+    // `dom2::Document` records mutation metadata for incremental invalidation. `HostDocumentState`
+    // has no renderer, but callers (tests / tooling / future invalidation) still expect mutation
+    // logs to be scoped to each `mutate_dom` turn rather than accumulating indefinitely.
+    if changed {
+      let _ = self.dom.take_mutations();
+    } else {
+      self.dom.clear_mutations();
+    }
     result
   }
 }
@@ -327,6 +335,64 @@ mod tests {
         .events_ref()
         .remove_event_listener(target, "click", listener_id, options.capture),
       "listener should be removable through the host-owned registry"
+    );
+  }
+
+  #[test]
+  fn mutate_dom_no_change_clears_dom2_mutation_log() {
+    let renderer_dom = crate::dom::parse_html("<!doctype html><div id=a></div>").unwrap();
+    let mut host = HostDocumentState::from_renderer_dom(&renderer_dom);
+
+    let div = host
+      .dom()
+      .get_element_by_id("a")
+      .expect("expected element with id=a");
+
+    // Seed the mutation log.
+    assert!(host
+      .dom_mut()
+      .set_attribute(div, "data-test", "1")
+      .expect("set_attribute should succeed"));
+    let seeded = host.dom_mut().take_mutations();
+    assert!(
+      !seeded.is_empty(),
+      "expected mutation log to contain the seeded mutation"
+    );
+
+    // Seed it again, then ensure `mutate_dom` clears the pending log even when the closure reports
+    // `changed == false`.
+    assert!(host
+      .dom_mut()
+      .set_attribute(div, "data-test", "2")
+      .expect("set_attribute should succeed"));
+    host.mutate_dom(|_| ((), false));
+
+    let after = host.dom_mut().take_mutations();
+    assert!(
+      after.is_empty(),
+      "expected HostDocumentState::mutate_dom to clear dom2 mutation logs"
+    );
+  }
+
+  #[test]
+  fn mutate_dom_change_clears_dom2_mutation_log() {
+    let renderer_dom = crate::dom::parse_html("<!doctype html><div id=a></div>").unwrap();
+    let mut host = HostDocumentState::from_renderer_dom(&renderer_dom);
+
+    host.mutate_dom(|dom| {
+      let div = dom
+        .get_element_by_id("a")
+        .expect("expected element with id=a");
+      let changed = dom
+        .set_attribute(div, "data-test", "1")
+        .expect("set_attribute should succeed");
+      ((), changed)
+    });
+
+    let after = host.dom_mut().take_mutations();
+    assert!(
+      after.is_empty(),
+      "expected HostDocumentState::mutate_dom to clear dom2 mutation logs"
     );
   }
 }
