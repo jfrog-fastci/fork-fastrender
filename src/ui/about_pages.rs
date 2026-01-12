@@ -83,41 +83,171 @@ fn blank_html() -> &'static str {
 }
 
 fn newtab_html() -> &'static str {
-  "<!doctype html>
+  r#"<!doctype html>
 <html>
   <head>
-    <meta charset=\"utf-8\">
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>New Tab</title>
     <style>
-      :root { color-scheme: light dark; }
-      body { font: 14px/1.45 system-ui, -apple-system, Segoe UI, sans-serif; margin: 24px; }
-      h1 { font-size: 20px; margin: 0 0 12px; }
-      code { padding: 0.1em 0.3em; border-radius: 4px; background: rgba(127,127,127,0.2); }
-      .box { max-width: 720px; }
-      ul { padding-left: 18px; }
+      :root {
+        color-scheme: light dark;
+        --bg: #f7f8fb;
+        --fg: #111827;
+        --muted: #4b5563;
+        --card-bg: rgba(255, 255, 255, 0.75);
+        --card-border: rgba(17, 24, 39, 0.10);
+        --shadow: 0 18px 60px rgba(17, 24, 39, 0.12);
+        --btn-bg: rgba(17, 24, 39, 0.04);
+        --btn-border: rgba(17, 24, 39, 0.12);
+        --btn-hover: rgba(17, 24, 39, 0.07);
+        --focus: #2563eb;
+        --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono",
+          "Courier New", monospace;
+      }
+
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #0b1020;
+          --fg: #e5e7eb;
+          --muted: #9ca3af;
+          --card-bg: rgba(255, 255, 255, 0.04);
+          --card-border: rgba(255, 255, 255, 0.10);
+          --shadow: 0 18px 60px rgba(0, 0, 0, 0.45);
+          --btn-bg: rgba(255, 255, 255, 0.06);
+          --btn-border: rgba(255, 255, 255, 0.12);
+          --btn-hover: rgba(255, 255, 255, 0.10);
+          --focus: #60a5fa;
+        }
+      }
+
+      html, body { height: 100%; }
+      body {
+        margin: 0;
+        font: 16px/1.5 system-ui, -apple-system, Segoe UI, sans-serif;
+        color: var(--fg);
+        background:
+          radial-gradient(900px circle at 20% 0%, rgba(37, 99, 235, 0.13), transparent 45%),
+          radial-gradient(900px circle at 80% 20%, rgba(16, 185, 129, 0.10), transparent 45%),
+          var(--bg);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 48px 18px;
+      }
+
+      .wrap { width: 100%; max-width: 920px; }
+      .card {
+        background: var(--card-bg);
+        border: 1px solid var(--card-border);
+        border-radius: 18px;
+        box-shadow: var(--shadow);
+        padding: 28px;
+      }
+
+      h1 {
+        font-size: 40px;
+        line-height: 1.05;
+        margin: 0 0 10px;
+        letter-spacing: -0.02em;
+      }
+
+      p { margin: 0 0 14px; color: var(--muted); }
+      code { font-family: var(--mono); }
+
+      .hint {
+        margin-top: 16px;
+        padding: 12px 14px;
+        border-radius: 12px;
+        border: 1px solid var(--btn-border);
+        background: rgba(127, 127, 127, 0.10);
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+
+      .kbd {
+        font-family: var(--mono);
+        font-size: 12px;
+        padding: 2px 7px;
+        border-radius: 8px;
+        border: 1px solid var(--btn-border);
+        background: var(--btn-bg);
+        color: var(--fg);
+      }
+
+      .actions {
+        margin-top: 18px;
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+        gap: 12px;
+      }
+
+      a.btn {
+        display: block;
+        text-decoration: none;
+        color: inherit;
+        border: 1px solid var(--btn-border);
+        background: var(--btn-bg);
+        border-radius: 12px;
+        padding: 12px 14px;
+      }
+
+      a.btn:hover { background: var(--btn-hover); }
+      a.btn:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
+
+      .btn .label { font-weight: 650; margin: 0 0 4px; }
+      .btn .url { font-family: var(--mono); font-size: 12px; color: var(--muted); }
+
+      .footer {
+        margin-top: 18px;
+        font-size: 13px;
+        color: var(--muted);
+      }
     </style>
   </head>
   <body>
-    <div class=\"box\">
-      <h1>FastRender</h1>
-      <p>This is an offline <code>about:newtab</code> page.</p>
-      <p>Try navigating to:</p>
-      <ul>
-        <li><a href=\"https://example.com/\">https://example.com/</a></li>
-        <li><a href=\"about:blank\">about:blank</a></li>
-        <li><a href=\"about:help\">about:help</a></li>
-        <li><a href=\"about:version\">about:version</a></li>
-        <li><a href=\"about:gpu\">about:gpu</a></li>
-        <li><a href=\"about:error\">about:error</a> (template)</li>
-      </ul>
-      <p>You can also type filesystem paths into the address bar:</p>
-      <ul>
-        <li><code>/tmp/a.html</code> (POSIX)</li>
-        <li><code>C:\\\\path\\\\to\\\\file.html</code> (Windows)</li>
-      </ul>
-    </div>
+    <main class="wrap">
+      <section class="card">
+        <h1>FastRender</h1>
+        <p>
+          A fast, offline-first HTML/CSS renderer. This <code>about:newtab</code> page is built in
+          and deterministic.
+        </p>
+
+        <div class="hint" role="note">
+          <span class="kbd">Ctrl</span>
+          <span class="kbd">L</span>
+          <span>Type to search or enter a URL</span>
+        </div>
+
+        <div class="actions" aria-label="Shortcuts">
+          <a class="btn" href="https://example.com/">
+            <div class="label">Example page</div>
+            <div class="url">https://example.com/</div>
+          </a>
+          <a class="btn" href="about:help">
+            <div class="label">Help</div>
+            <div class="url">about:help</div>
+          </a>
+          <a class="btn" href="about:version">
+            <div class="label">Version</div>
+            <div class="url">about:version</div>
+          </a>
+          <a class="btn" href="about:gpu">
+            <div class="label">GPU</div>
+            <div class="url">about:gpu</div>
+          </a>
+        </div>
+
+        <div class="footer">
+          Tip: You can also open local files by typing a path like <code>/tmp/a.html</code> or
+          <code>C:\path\to\file.html</code>.
+        </div>
+      </section>
+    </main>
   </body>
-</html>"
+</html>"#
 }
 
 fn help_html() -> &'static str {
@@ -429,9 +559,14 @@ mod tests {
   }
 
   #[test]
-  fn newtab_links_to_new_about_pages() {
-    let html = html_for_about_url(ABOUT_NEWTAB).unwrap();
-    for url in [ABOUT_HELP, ABOUT_VERSION, ABOUT_GPU] {
+  fn newtab_html_includes_color_scheme_and_primary_links() {
+    let html = newtab_html();
+    assert!(
+      html.contains("color-scheme: light dark"),
+      "expected about:newtab to set `color-scheme: light dark`"
+    );
+
+    for url in ["https://example.com/", ABOUT_HELP, ABOUT_VERSION, ABOUT_GPU] {
       assert!(
         html.contains(url),
         "expected about:newtab HTML to link to {url}"

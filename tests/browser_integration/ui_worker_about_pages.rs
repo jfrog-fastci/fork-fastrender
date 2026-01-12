@@ -1,6 +1,7 @@
 #![cfg(feature = "browser_ui")]
 
 use super::support::{create_tab_msg, navigate_msg, DEFAULT_TIMEOUT};
+use fastrender::ui::about_pages;
 use fastrender::ui::messages::{NavigationReason, TabId, WorkerToUi};
 use fastrender::ui::spawn_ui_worker;
 use std::sync::mpsc::Receiver;
@@ -67,6 +68,22 @@ fn about_pages_render_and_have_titles() {
   let _lock = super::stage_listener_test_lock();
   let handle = spawn_ui_worker("ui_worker_about_pages").expect("spawn ui worker");
   let (ui_tx, ui_rx, join) = handle.split();
+
+  // Basic HTML smoke test for the new tab page. (The full rendering validation happens below via
+  // UI worker navigation.)
+  let newtab_html = about_pages::html_for_about_url(about_pages::ABOUT_NEWTAB)
+    .expect("about:newtab HTML");
+  for url in [
+    "https://example.com/",
+    about_pages::ABOUT_HELP,
+    about_pages::ABOUT_VERSION,
+    about_pages::ABOUT_GPU,
+  ] {
+    assert!(
+      newtab_html.contains(url),
+      "expected about:newtab HTML to contain a link to {url}"
+    );
+  }
 
   let tab = TabId::new();
   ui_tx.send(create_tab_msg(tab, None)).expect("create tab");
