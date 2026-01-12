@@ -1404,6 +1404,13 @@ struct SvgPixmapKey {
   device_pixel_ratio_bits: u32,
 }
 
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+struct SvgPreprocessKey {
+  hash: u64,
+  url_hash: u64,
+  len: usize,
+}
+
 #[inline]
 fn f32_to_canonical_bits(value: f32) -> u32 {
   if value == 0.0 {
@@ -1422,6 +1429,18 @@ struct RasterPixmapKey {
   target_width: u32,
   target_height: u32,
   quality_bits: u8,
+}
+
+fn svg_preprocess_key(svg_content: &str, url: &str) -> SvgPreprocessKey {
+  let mut content_hasher = DefaultHasher::new();
+  svg_content.hash(&mut content_hasher);
+  let mut url_hasher = DefaultHasher::new();
+  url.hash(&mut url_hasher);
+  SvgPreprocessKey {
+    hash: content_hasher.finish(),
+    url_hash: url_hasher.finish(),
+    len: svg_content.len(),
+  }
 }
 
 fn raster_pixmap_key(
@@ -1561,6 +1580,81 @@ struct SvgUseInlineSprite {
   defs_injection_cache: HashMap<String, Option<String>>,
 }
 
+#[derive(Clone)]
+struct SvgCachedDataUrl {
+  data_url: Arc<str>,
+  bytes_len: usize,
+  final_url: Option<String>,
+}
+
+#[derive(Clone)]
+struct SvgCachedSprite {
+  sprite: Arc<SvgUseInlineSprite>,
+  final_url: Option<String>,
+}
+
+#[derive(Clone)]
+enum SvgSubresourceCacheValue {
+  ImageDataUrl(SvgCachedDataUrl),
+  Sprite(SvgCachedSprite),
+}
+
+type SvgSubresourceCache = Arc<Mutex<SizedLruCache<String, SvgSubresourceCacheValue>>>;
+
+fn estimate_svg_subresource_cache_entry_bytes(key: &str, value: &SvgSubresourceCacheValue) -> usize {
+  let mut bytes = key
+    .len()
+    .saturating_add(std::mem::size_of::<SvgSubresourceCacheValue>());
+  match value {
+    SvgSubresourceCacheValue::ImageDataUrl(entry) => {
+      bytes = bytes.saturating_add(std::mem::size_of::<SvgCachedDataUrl>());
+      bytes = bytes.saturating_add(entry.data_url.len());
+      bytes = bytes.saturating_add(entry.final_url.as_ref().map(|s| s.len()).unwrap_or(0));
+      bytes = bytes.saturating_add(std::mem::size_of::<Arc<str>>());
+    }
+    SvgSubresourceCacheValue::Sprite(entry) => {
+      bytes = bytes.saturating_add(std::mem::size_of::<SvgCachedSprite>());
+      bytes = bytes.saturating_add(entry.final_url.as_ref().map(|s| s.len()).unwrap_or(0));
+      bytes = bytes.saturating_add(std::mem::size_of::<Arc<SvgUseInlineSprite>>());
+
+      let sprite = entry.sprite.as_ref();
+      bytes = bytes.saturating_add(std::mem::size_of::<SvgUseInlineSprite>());
+      bytes = bytes.saturating_add(sprite.content.len());
+      bytes = bytes.saturating_add(sprite.xmlns_attrs.len());
+      bytes = bytes.saturating_add(std::mem::size_of::<HashMap<String, SvgUseInlineElement>>());
+      bytes = sprite.by_id.iter().fold(bytes, |acc, (id, el)| {
+        let mut acc = acc;
+        acc = acc.saturating_add(id.len());
+        acc = acc.saturating_add(el.tag_name.len());
+        acc = acc.saturating_add(el.view_box.as_ref().map(|s| s.len()).unwrap_or(0));
+        acc = acc.saturating_add(el.preserve_aspect_ratio.as_ref().map(|s| s.len()).unwrap_or(0));
+        acc = acc.saturating_add(std::mem::size_of::<SvgUseInlineElement>());
+        acc
+      });
+      if let Some(root) = sprite.root.as_ref() {
+        bytes = bytes.saturating_add(root.tag_name.len());
+        bytes = bytes.saturating_add(root.view_box.as_ref().map(|s| s.len()).unwrap_or(0));
+        bytes = bytes.saturating_add(root.preserve_aspect_ratio.as_ref().map(|s| s.len()).unwrap_or(0));
+        bytes = bytes.saturating_add(std::mem::size_of::<SvgUseInlineElement>());
+      }
+      bytes = bytes.saturating_add(std::mem::size_of::<HashMap<String, String>>());
+      bytes = sprite.id_defs.iter().fold(bytes, |acc, (id, frag)| {
+        acc.saturating_add(id.len()).saturating_add(frag.len())
+      });
+      bytes = bytes.saturating_add(std::mem::size_of::<HashMap<String, Option<String>>>());
+      bytes = sprite
+        .defs_injection_cache
+        .iter()
+        .fold(bytes, |acc, (id, injection)| {
+          acc
+            .saturating_add(id.len())
+            .saturating_add(injection.as_ref().map(|s| s.len()).unwrap_or(0))
+        });
+    }
+  }
+  bytes
+}
+
 /// Best-effort preprocessor that expands external SVG `<use>` references by fetching the
 /// referenced SVG and inlining the referenced element.
 ///
@@ -1575,6 +1669,7 @@ fn inline_svg_use_references<'a>(
   svg_url: &str,
   fetcher: &dyn ResourceFetcher,
   ctx: Option<&ResourceContext>,
+  subresource_cache: Option<&SvgSubresourceCache>,
 ) -> Result<Cow<'a, str>> {
   // Avoid parsing unless it looks like we might have `<use>` references.
   // Note: inline SVG content in HTML is sometimes namespaced (e.g. `<svg:use>`). The cheap string
@@ -1698,6 +1793,29 @@ fn inline_svg_use_references<'a>(
     }
 
     if !sprite_cache.contains_key(&resolved_url) {
+      if let Some(shared) = subresource_cache {
+        let cache_key = format!("svg-sprite:{resolved_url}");
+        if let Ok(mut cache) = shared.lock() {
+          if let Some(SvgSubresourceCacheValue::Sprite(entry)) = cache.get_cloned(&cache_key) {
+            if let Some(ctx) = ctx {
+              if let Err(err) = ctx.check_allowed_with_final(
+                ResourceKind::Image,
+                &resolved_url,
+                entry.final_url.as_deref(),
+              ) {
+                return Err(Error::Image(ImageError::LoadFailed {
+                  url: resolved_url.clone(),
+                  reason: err.reason,
+                }));
+              }
+            }
+            sprite_cache.insert(resolved_url.clone(), (*entry.sprite).clone());
+          }
+        }
+      }
+    }
+
+    if !sprite_cache.contains_key(&resolved_url) {
       check_root(RenderStage::Paint).map_err(Error::Render)?;
 
       let mut req = FetchRequest::new(&resolved_url, FetchDestination::Image);
@@ -1740,10 +1858,8 @@ fn inline_svg_use_references<'a>(
         continue;
       }
 
-      let sprite_base_url = res
-        .final_url
-        .clone()
-        .unwrap_or_else(|| resolved_url.clone());
+      let sprite_final_url = res.final_url.clone();
+      let sprite_base_url = sprite_final_url.clone().unwrap_or_else(|| resolved_url.clone());
 
       let mut sprite_text = {
         let bytes = res.bytes;
@@ -1792,8 +1908,14 @@ fn inline_svg_use_references<'a>(
       // Inline any external raster images referenced by the sprite itself so that when we later
       // embed a single `<symbol>`/`<g>` fragment into the parent document, nested `<image>`
       // references continue to resolve relative to the sprite URL (not the parent document URL).
-      sprite_text =
-        inline_svg_image_references(&sprite_text, &sprite_base_url, fetcher, ctx)?.into_owned();
+      sprite_text = inline_svg_image_references(
+        &sprite_text,
+        &sprite_base_url,
+        fetcher,
+        ctx,
+        subresource_cache,
+      )?
+      .into_owned();
 
       let sprite_for_parse = svg_markup_for_roxmltree(&sprite_text);
       let sprite_doc = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -2048,6 +2170,18 @@ fn inline_svg_use_references<'a>(
         xmlns_attrs,
         defs_injection_cache: HashMap::new(),
       };
+      if let Some(shared) = subresource_cache {
+        let cache_key = format!("svg-sprite:{resolved_url}");
+        let entry = SvgCachedSprite {
+          sprite: Arc::new(sprite.clone()),
+          final_url: sprite_final_url.clone(),
+        };
+        let value = SvgSubresourceCacheValue::Sprite(entry);
+        let bytes = estimate_svg_subresource_cache_entry_bytes(&cache_key, &value);
+        if let Ok(mut cache) = shared.lock() {
+          cache.insert(cache_key, value, bytes);
+        }
+      }
       sprite_cache.insert(resolved_url.clone(), sprite);
     }
 
@@ -2395,6 +2529,7 @@ fn inline_svg_image_references<'a>(
   svg_url: &str,
   fetcher: &dyn ResourceFetcher,
   ctx: Option<&ResourceContext>,
+  subresource_cache: Option<&SvgSubresourceCache>,
 ) -> Result<Cow<'a, str>> {
   use base64::Engine;
 
@@ -2461,7 +2596,7 @@ fn inline_svg_image_references<'a>(
   let mut embedded_bytes_total = 0usize;
   let mut injected_bytes = 0usize;
   let mut inlines = 0usize;
-  let mut data_url_cache: HashMap<String, String> = HashMap::new();
+  let mut data_url_cache: HashMap<String, SvgCachedDataUrl> = HashMap::new();
 
   'node_loop: for node in doc.descendants().filter(|n| n.is_element()) {
     check_root_periodic(
@@ -2658,13 +2793,295 @@ fn inline_svg_image_references<'a>(
 
         let original_value_len = value_range.end.saturating_sub(value_range.start);
 
-        let data_url = if let Some(cached) = data_url_cache.get(&resolved_url) {
+        let cached = if let Some(cached) = data_url_cache.get(&resolved_url) {
           cached.clone()
         } else {
           if inlines >= MAX_IMAGE_INLINES {
             break 'node_loop;
           }
 
+          let mut cached: Option<SvgCachedDataUrl> = None;
+          if let Some(shared) = subresource_cache {
+            let cache_key = format!("svg-img:{resolved_url}");
+            if let Ok(mut cache) = shared.lock() {
+              if let Some(SvgSubresourceCacheValue::ImageDataUrl(entry)) = cache.get_cloned(&cache_key)
+              {
+                if let Some(ctx) = ctx {
+                  if let Err(err) = ctx.check_allowed_with_final(
+                    ResourceKind::Image,
+                    &resolved_url,
+                    entry.final_url.as_deref(),
+                  ) {
+                    return Err(Error::Image(ImageError::LoadFailed {
+                      url: resolved_url.clone(),
+                      reason: err.reason,
+                    }));
+                  }
+                }
+                cached = Some(entry);
+              }
+            }
+          }
+
+          let mut fetched_entry: Option<(SvgCachedDataUrl, String)> = None;
+          let entry = if let Some(hit) = cached {
+            hit
+          } else {
+            check_root(RenderStage::Paint).map_err(Error::Render)?;
+
+            let mut req = FetchRequest::new(&resolved_url, FetchDestination::Image);
+            if let Some(ctx) = ctx {
+              if let Some(origin) = ctx.policy.document_origin.as_ref() {
+                req = req.with_client_origin(origin);
+              }
+              if let Some(referrer_url) = ctx.document_url.as_deref() {
+                req = req.with_referrer_url(referrer_url);
+              }
+              req = req.with_referrer_policy(ctx.referrer_policy);
+            }
+
+            let res = match fetcher.fetch_with_request(req) {
+              Ok(res) => res,
+              Err(err) => {
+                if matches!(&err, Error::Render(_)) {
+                  return Err(err);
+                }
+                continue;
+              }
+            };
+
+            if let Some(ctx) = ctx {
+              if let Err(err) = ctx.check_allowed_with_final(
+                ResourceKind::Image,
+                &resolved_url,
+                res.final_url.as_deref(),
+              ) {
+                return Err(Error::Image(ImageError::LoadFailed {
+                  url: resolved_url.clone(),
+                  reason: err.reason,
+                }));
+              }
+            }
+
+            if let Err(_) = ensure_http_success(&res, &resolved_url)
+              .and_then(|()| ensure_image_mime_sane(&res, &resolved_url))
+            {
+              continue;
+            }
+            if scheme == "file"
+              && crate::resource::strict_mime_checks_enabled()
+              && payload_looks_like_markup_but_not_svg(&res.bytes)
+            {
+              continue;
+            }
+
+            let bytes_are_gzipped =
+              res.bytes.len() >= 2 && res.bytes[0] == 0x1F && res.bytes[1] == 0x8B;
+            let url_is_svgz = url_ends_with_svgz(&resolved_url)
+              || res.final_url.as_deref().is_some_and(url_ends_with_svgz);
+            let mime_is_svg = res
+              .content_type
+              .as_deref()
+              .map(|m| m.contains("image/svg"))
+              .unwrap_or(false);
+
+            let mut bytes_for_data_url: Cow<'_, [u8]> = Cow::Borrowed(&res.bytes);
+            let mut mime = svg_data_url_mime_for_response(res.content_type.as_deref(), &res.bytes);
+
+            if bytes_are_gzipped && (url_is_svgz || mime_is_svg) {
+              if let Some(decompressed) = maybe_decompress_svgz_for_image_inline(&res.bytes)? {
+                if let Ok(text) = std::str::from_utf8(&decompressed) {
+                  if svg_text_looks_like_markup(text) {
+                    bytes_for_data_url = Cow::Owned(decompressed);
+                    mime = "image/svg+xml".to_string();
+                  }
+                }
+              }
+            }
+
+            let bytes_len = bytes_for_data_url.len();
+            if embedded_bytes_total.saturating_add(bytes_len) > MAX_EMBEDDED_BYTES_TOTAL {
+              break 'node_loop;
+            }
+
+            let base64_len = u64::try_from(bytes_len)
+              .ok()
+              .and_then(|n| n.checked_add(2))
+              .and_then(|n| n.checked_div(3))
+              .and_then(|n| n.checked_mul(4))
+              .and_then(|n| usize::try_from(n).ok());
+            let Some(base64_len) = base64_len else {
+              break 'node_loop;
+            };
+
+            let prefix_len = "data:".len() + mime.len() + ";base64,".len();
+            let total_len = prefix_len.saturating_add(base64_len);
+            let growth = total_len
+              .saturating_sub(original_value_len)
+              .saturating_add(name_growth);
+            if injected_bytes.saturating_add(growth) > MAX_INJECTED_BYTES {
+              break 'node_loop;
+            }
+
+            let encoded =
+              base64::engine::general_purpose::STANDARD.encode(bytes_for_data_url.as_ref());
+            let data_url = format!("data:{mime};base64,{encoded}");
+            let entry = SvgCachedDataUrl {
+              data_url: Arc::from(data_url),
+              bytes_len,
+              final_url: res.final_url.clone(),
+            };
+            fetched_entry = Some((entry.clone(), format!("svg-img:{resolved_url}")));
+            entry
+          };
+
+          if embedded_bytes_total.saturating_add(entry.bytes_len) > MAX_EMBEDDED_BYTES_TOTAL {
+            break 'node_loop;
+          }
+          let total_len = entry.data_url.len();
+          let growth = total_len
+            .saturating_sub(original_value_len)
+            .saturating_add(name_growth);
+          if injected_bytes.saturating_add(growth) > MAX_INJECTED_BYTES {
+            break 'node_loop;
+          }
+
+          if let Some((entry, cache_key)) = fetched_entry {
+            if let Some(shared) = subresource_cache {
+              let value = SvgSubresourceCacheValue::ImageDataUrl(entry.clone());
+              let bytes = estimate_svg_subresource_cache_entry_bytes(&cache_key, &value);
+              if let Ok(mut cache) = shared.lock() {
+                cache.insert(cache_key, value, bytes);
+              }
+            }
+          }
+
+          embedded_bytes_total = embedded_bytes_total.saturating_add(entry.bytes_len);
+          inlines += 1;
+          data_url_cache.insert(resolved_url.clone(), entry.clone());
+          entry
+        };
+
+        let mut replacement = cached.data_url.to_string();
+        if let Some(fragment) = href_fragment {
+          replacement.push('#');
+          replacement.push_str(fragment);
+        }
+        let replacement = match escape_xml_attr_value(&replacement) {
+          Cow::Borrowed(_) => replacement,
+          Cow::Owned(escaped) => escaped,
+        };
+
+        let growth = replacement
+          .len()
+          .saturating_sub(original_value_len)
+          .saturating_add(name_growth);
+        if injected_bytes.saturating_add(growth) > MAX_INJECTED_BYTES {
+          break 'node_loop;
+        }
+        injected_bytes = injected_bytes.saturating_add(growth);
+        if is_src_attr {
+          replacements.push((name_range, "href".to_string()));
+        }
+        replacements.push((value_range, replacement));
+        continue;
+      }
+
+      let start = value_start;
+      while i < bytes.len()
+        && !bytes[i].is_ascii_whitespace()
+        && bytes[i] != b'>'
+        && bytes[i] != b'/'
+      {
+        i += 1;
+      }
+      let value_end = i;
+
+      let value_range = (node_range.start + start)..(node_range.start + value_end);
+      if !is_candidate {
+        continue;
+      }
+      let raw_value = tag.get(start..value_end).unwrap_or_default();
+      let decoded = unescape_xml_attr_value(raw_value);
+      let trimmed = trim_ascii_whitespace(decoded.as_ref());
+      if trimmed.is_empty()
+        || trimmed.starts_with('#')
+        || crate::resource::is_data_url(trimmed)
+        || is_about_url(trimmed)
+      {
+        continue;
+      }
+
+      let (href_no_fragment, href_fragment) = trimmed
+        .split_once('#')
+        .map(|(before, frag)| (before, Some(frag)))
+        .unwrap_or((trimmed, None));
+      let href_no_fragment = trim_ascii_whitespace(href_no_fragment);
+      let href_fragment = href_fragment.filter(|frag| !frag.is_empty());
+      if href_no_fragment.is_empty() {
+        continue;
+      }
+
+      let Some(resolved_base) = effective_base_url
+        .as_deref()
+        .and_then(|base| resolve_against_base(base, href_no_fragment))
+        .or_else(|| Url::parse(href_no_fragment).ok().map(|u| u.to_string()))
+      else {
+        continue;
+      };
+      let Ok(mut resolved_url) = Url::parse(&resolved_base) else {
+        continue;
+      };
+      resolved_url.set_fragment(None);
+      let scheme = resolved_url.scheme();
+      if scheme != "http" && scheme != "https" && scheme != "file" {
+        continue;
+      }
+      let resolved_url = resolved_url.to_string();
+
+      if let Some(ctx) = ctx {
+        if let Err(err) = ctx.check_allowed(ResourceKind::Image, &resolved_url) {
+          return Err(Error::Image(ImageError::LoadFailed {
+            url: resolved_url.clone(),
+            reason: err.reason,
+          }));
+        }
+      }
+
+      let original_value_len = value_range.end.saturating_sub(value_range.start);
+      let cached = if let Some(cached) = data_url_cache.get(&resolved_url) {
+        cached.clone()
+      } else {
+        if inlines >= MAX_IMAGE_INLINES {
+          break 'node_loop;
+        }
+
+        let mut cached: Option<SvgCachedDataUrl> = None;
+        if let Some(shared) = subresource_cache {
+          let cache_key = format!("svg-img:{resolved_url}");
+          if let Ok(mut cache) = shared.lock() {
+            if let Some(SvgSubresourceCacheValue::ImageDataUrl(entry)) = cache.get_cloned(&cache_key) {
+              if let Some(ctx) = ctx {
+                if let Err(err) = ctx.check_allowed_with_final(
+                  ResourceKind::Image,
+                  &resolved_url,
+                  entry.final_url.as_deref(),
+                ) {
+                  return Err(Error::Image(ImageError::LoadFailed {
+                    url: resolved_url.clone(),
+                    reason: err.reason,
+                  }));
+                }
+              }
+              cached = Some(entry);
+            }
+          }
+        }
+
+        let mut fetched_entry: Option<(SvgCachedDataUrl, String)> = None;
+        let entry = if let Some(hit) = cached {
+          hit
+        } else {
           check_root(RenderStage::Paint).map_err(Error::Render)?;
 
           let mut req = FetchRequest::new(&resolved_url, FetchDestination::Image);
@@ -2764,196 +3181,19 @@ fn inline_svg_image_references<'a>(
           let encoded =
             base64::engine::general_purpose::STANDARD.encode(bytes_for_data_url.as_ref());
           let data_url = format!("data:{mime};base64,{encoded}");
-
-          embedded_bytes_total = embedded_bytes_total.saturating_add(bytes_len);
-          inlines += 1;
-          data_url_cache.insert(resolved_url.clone(), data_url.clone());
-          data_url
+          let entry = SvgCachedDataUrl {
+            data_url: Arc::from(data_url),
+            bytes_len,
+            final_url: res.final_url.clone(),
+          };
+          fetched_entry = Some((entry.clone(), format!("svg-img:{resolved_url}")));
+          entry
         };
 
-        let mut replacement = data_url;
-        if let Some(fragment) = href_fragment {
-          replacement.push('#');
-          replacement.push_str(fragment);
-        }
-        let replacement = match escape_xml_attr_value(&replacement) {
-          Cow::Borrowed(_) => replacement,
-          Cow::Owned(escaped) => escaped,
-        };
-
-        let growth = replacement
-          .len()
-          .saturating_sub(original_value_len)
-          .saturating_add(name_growth);
-        if injected_bytes.saturating_add(growth) > MAX_INJECTED_BYTES {
+        if embedded_bytes_total.saturating_add(entry.bytes_len) > MAX_EMBEDDED_BYTES_TOTAL {
           break 'node_loop;
         }
-        injected_bytes = injected_bytes.saturating_add(growth);
-        if is_src_attr {
-          replacements.push((name_range, "href".to_string()));
-        }
-        replacements.push((value_range, replacement));
-        continue;
-      }
-
-      let start = value_start;
-      while i < bytes.len()
-        && !bytes[i].is_ascii_whitespace()
-        && bytes[i] != b'>'
-        && bytes[i] != b'/'
-      {
-        i += 1;
-      }
-      let value_end = i;
-
-      let value_range = (node_range.start + start)..(node_range.start + value_end);
-      if !is_candidate {
-        continue;
-      }
-      let raw_value = tag.get(start..value_end).unwrap_or_default();
-      let decoded = unescape_xml_attr_value(raw_value);
-      let trimmed = trim_ascii_whitespace(decoded.as_ref());
-      if trimmed.is_empty()
-        || trimmed.starts_with('#')
-        || crate::resource::is_data_url(trimmed)
-        || is_about_url(trimmed)
-      {
-        continue;
-      }
-
-      let (href_no_fragment, href_fragment) = trimmed
-        .split_once('#')
-        .map(|(before, frag)| (before, Some(frag)))
-        .unwrap_or((trimmed, None));
-      let href_no_fragment = trim_ascii_whitespace(href_no_fragment);
-      let href_fragment = href_fragment.filter(|frag| !frag.is_empty());
-      if href_no_fragment.is_empty() {
-        continue;
-      }
-
-      let Some(resolved_base) = effective_base_url
-        .as_deref()
-        .and_then(|base| resolve_against_base(base, href_no_fragment))
-        .or_else(|| Url::parse(href_no_fragment).ok().map(|u| u.to_string()))
-      else {
-        continue;
-      };
-      let Ok(mut resolved_url) = Url::parse(&resolved_base) else {
-        continue;
-      };
-      resolved_url.set_fragment(None);
-      let scheme = resolved_url.scheme();
-      if scheme != "http" && scheme != "https" && scheme != "file" {
-        continue;
-      }
-      let resolved_url = resolved_url.to_string();
-
-      if let Some(ctx) = ctx {
-        if let Err(err) = ctx.check_allowed(ResourceKind::Image, &resolved_url) {
-          return Err(Error::Image(ImageError::LoadFailed {
-            url: resolved_url.clone(),
-            reason: err.reason,
-          }));
-        }
-      }
-
-      let original_value_len = value_range.end.saturating_sub(value_range.start);
-      let data_url = if let Some(cached) = data_url_cache.get(&resolved_url) {
-        cached.clone()
-      } else {
-        if inlines >= MAX_IMAGE_INLINES {
-          break 'node_loop;
-        }
-
-        check_root(RenderStage::Paint).map_err(Error::Render)?;
-
-        let mut req = FetchRequest::new(&resolved_url, FetchDestination::Image);
-        if let Some(ctx) = ctx {
-          if let Some(origin) = ctx.policy.document_origin.as_ref() {
-            req = req.with_client_origin(origin);
-          }
-          if let Some(referrer_url) = ctx.document_url.as_deref() {
-            req = req.with_referrer_url(referrer_url);
-          }
-          req = req.with_referrer_policy(ctx.referrer_policy);
-        }
-
-        let res = match fetcher.fetch_with_request(req) {
-          Ok(res) => res,
-          Err(err) => {
-            if matches!(&err, Error::Render(_)) {
-              return Err(err);
-            }
-            continue;
-          }
-        };
-
-        if let Some(ctx) = ctx {
-          if let Err(err) = ctx.check_allowed_with_final(
-            ResourceKind::Image,
-            &resolved_url,
-            res.final_url.as_deref(),
-          ) {
-            return Err(Error::Image(ImageError::LoadFailed {
-              url: resolved_url.clone(),
-              reason: err.reason,
-            }));
-          }
-        }
-
-        if let Err(_) = ensure_http_success(&res, &resolved_url)
-          .and_then(|()| ensure_image_mime_sane(&res, &resolved_url))
-        {
-          continue;
-        }
-        if scheme == "file"
-          && crate::resource::strict_mime_checks_enabled()
-          && payload_looks_like_markup_but_not_svg(&res.bytes)
-        {
-          continue;
-        }
-
-        let bytes_are_gzipped =
-          res.bytes.len() >= 2 && res.bytes[0] == 0x1F && res.bytes[1] == 0x8B;
-        let url_is_svgz = url_ends_with_svgz(&resolved_url)
-          || res.final_url.as_deref().is_some_and(url_ends_with_svgz);
-        let mime_is_svg = res
-          .content_type
-          .as_deref()
-          .map(|m| m.contains("image/svg"))
-          .unwrap_or(false);
-
-        let mut bytes_for_data_url: Cow<'_, [u8]> = Cow::Borrowed(&res.bytes);
-        let mut mime = svg_data_url_mime_for_response(res.content_type.as_deref(), &res.bytes);
-
-        if bytes_are_gzipped && (url_is_svgz || mime_is_svg) {
-          if let Some(decompressed) = maybe_decompress_svgz_for_image_inline(&res.bytes)? {
-            if let Ok(text) = std::str::from_utf8(&decompressed) {
-              if svg_text_looks_like_markup(text) {
-                bytes_for_data_url = Cow::Owned(decompressed);
-                mime = "image/svg+xml".to_string();
-              }
-            }
-          }
-        }
-
-        let bytes_len = bytes_for_data_url.len();
-        if embedded_bytes_total.saturating_add(bytes_len) > MAX_EMBEDDED_BYTES_TOTAL {
-          break 'node_loop;
-        }
-
-        let base64_len = u64::try_from(bytes_len)
-          .ok()
-          .and_then(|n| n.checked_add(2))
-          .and_then(|n| n.checked_div(3))
-          .and_then(|n| n.checked_mul(4))
-          .and_then(|n| usize::try_from(n).ok());
-        let Some(base64_len) = base64_len else {
-          break 'node_loop;
-        };
-
-        let prefix_len = "data:".len() + mime.len() + ";base64,".len();
-        let total_len = prefix_len.saturating_add(base64_len);
+        let total_len = entry.data_url.len();
         let growth = total_len
           .saturating_sub(original_value_len)
           .saturating_add(name_growth);
@@ -2961,17 +3201,23 @@ fn inline_svg_image_references<'a>(
           break 'node_loop;
         }
 
-        let encoded =
-          base64::engine::general_purpose::STANDARD.encode(bytes_for_data_url.as_ref());
-        let data_url = format!("data:{mime};base64,{encoded}");
+        if let Some((entry, cache_key)) = fetched_entry {
+          if let Some(shared) = subresource_cache {
+            let value = SvgSubresourceCacheValue::ImageDataUrl(entry.clone());
+            let bytes = estimate_svg_subresource_cache_entry_bytes(&cache_key, &value);
+            if let Ok(mut cache) = shared.lock() {
+              cache.insert(cache_key, value, bytes);
+            }
+          }
+        }
 
-        embedded_bytes_total = embedded_bytes_total.saturating_add(bytes_len);
+        embedded_bytes_total = embedded_bytes_total.saturating_add(entry.bytes_len);
         inlines += 1;
-        data_url_cache.insert(resolved_url.clone(), data_url.clone());
-        data_url
+        data_url_cache.insert(resolved_url.clone(), entry.clone());
+        entry
       };
 
-      let mut replacement = data_url;
+      let mut replacement = cached.data_url.to_string();
       if let Some(fragment) = href_fragment {
         replacement.push('#');
         replacement.push_str(fragment);
@@ -4811,6 +5057,15 @@ pub struct ImageCacheConfig {
   pub max_cached_svg_pixmaps: usize,
   /// Maximum estimated bytes of cached SVG pixmaps (`0` disables eviction by size).
   pub max_cached_svg_bytes: usize,
+  /// Maximum number of cached SVG preprocessing results (`0` disables eviction by count).
+  pub max_cached_svg_preprocess_items: usize,
+  /// Maximum estimated bytes of cached SVG preprocessing results (`0` disables eviction by size).
+  pub max_cached_svg_preprocess_bytes: usize,
+  /// Maximum number of cached SVG subresources (inlined data URLs, external sprites, ...) (`0`
+  /// disables eviction by count).
+  pub max_cached_svg_subresource_items: usize,
+  /// Maximum estimated bytes of cached SVG subresources (`0` disables eviction by size).
+  pub max_cached_svg_subresource_bytes: usize,
   /// Maximum number of cached premultiplied raster pixmaps (`0` disables eviction by count).
   pub max_cached_raster_pixmaps: usize,
   /// Maximum estimated bytes of cached raster pixmaps (`0` disables eviction by size).
@@ -4835,6 +5090,10 @@ impl Default for ImageCacheConfig {
     const DEFAULT_MAX_RAW_CACHE_BYTES: usize = 64 * 1024 * 1024;
     const DEFAULT_MAX_RASTER_PIXMAP_CACHE_ITEMS: usize = 256;
     const DEFAULT_MAX_RASTER_PIXMAP_CACHE_BYTES: usize = 128 * 1024 * 1024;
+    const DEFAULT_MAX_SVG_PREPROCESS_CACHE_ITEMS: usize = 64;
+    const DEFAULT_MAX_SVG_PREPROCESS_CACHE_BYTES: usize = 32 * 1024 * 1024;
+    const DEFAULT_MAX_SVG_SUBRESOURCE_CACHE_ITEMS: usize = 64;
+    const DEFAULT_MAX_SVG_SUBRESOURCE_CACHE_BYTES: usize = 64 * 1024 * 1024;
 
     let toggles = runtime::runtime_toggles();
     let max_cached_metadata_items = toggles
@@ -4857,6 +5116,19 @@ impl Default for ImageCacheConfig {
       .usize("FASTR_IMAGE_RASTER_PIXMAP_CACHE_BYTES")
       .unwrap_or(DEFAULT_MAX_RASTER_PIXMAP_CACHE_BYTES);
 
+    let max_cached_svg_preprocess_items = toggles
+      .usize("FASTR_IMAGE_SVG_PREPROCESS_CACHE_ITEMS")
+      .unwrap_or(DEFAULT_MAX_SVG_PREPROCESS_CACHE_ITEMS);
+    let max_cached_svg_preprocess_bytes = toggles
+      .usize("FASTR_IMAGE_SVG_PREPROCESS_CACHE_BYTES")
+      .unwrap_or(DEFAULT_MAX_SVG_PREPROCESS_CACHE_BYTES);
+    let max_cached_svg_subresource_items = toggles
+      .usize("FASTR_IMAGE_SVG_SUBRESOURCE_CACHE_ITEMS")
+      .unwrap_or(DEFAULT_MAX_SVG_SUBRESOURCE_CACHE_ITEMS);
+    let max_cached_svg_subresource_bytes = toggles
+      .usize("FASTR_IMAGE_SVG_SUBRESOURCE_CACHE_BYTES")
+      .unwrap_or(DEFAULT_MAX_SVG_SUBRESOURCE_CACHE_BYTES);
+
     Self {
       max_decoded_pixels: 100_000_000,
       max_decoded_dimension: 32768,
@@ -4864,6 +5136,10 @@ impl Default for ImageCacheConfig {
       max_cached_image_bytes: 256 * 1024 * 1024,
       max_cached_svg_pixmaps: 128,
       max_cached_svg_bytes: 128 * 1024 * 1024,
+      max_cached_svg_preprocess_items,
+      max_cached_svg_preprocess_bytes,
+      max_cached_svg_subresource_items,
+      max_cached_svg_subresource_bytes,
       max_cached_raster_pixmaps,
       max_cached_raster_bytes,
       max_cached_metadata_items,
@@ -4906,6 +5182,26 @@ impl ImageCacheConfig {
 
   pub fn with_max_cached_svg_bytes(mut self, max: usize) -> Self {
     self.max_cached_svg_bytes = max;
+    self
+  }
+
+  pub fn with_max_cached_svg_preprocess_items(mut self, max: usize) -> Self {
+    self.max_cached_svg_preprocess_items = max;
+    self
+  }
+
+  pub fn with_max_cached_svg_preprocess_bytes(mut self, max: usize) -> Self {
+    self.max_cached_svg_preprocess_bytes = max;
+    self
+  }
+
+  pub fn with_max_cached_svg_subresource_items(mut self, max: usize) -> Self {
+    self.max_cached_svg_subresource_items = max;
+    self
+  }
+
+  pub fn with_max_cached_svg_subresource_bytes(mut self, max: usize) -> Self {
+    self.max_cached_svg_subresource_bytes = max;
     self
   }
 
@@ -5123,6 +5419,10 @@ pub struct ImageCache {
   raw_cache: Arc<Mutex<SizedLruCache<String, Arc<FetchedResource>>>>,
   /// In-flight probes keyed by resolved URL to de-duplicate concurrent metadata loads.
   meta_in_flight: Arc<Mutex<HashMap<String, Arc<ProbeInFlight>>>>,
+  /// In-memory cache of preprocessed SVG markup (external `<use>`, `<image>`, ...).
+  svg_preprocess_cache: Arc<Mutex<SizedLruCache<SvgPreprocessKey, Arc<str>>>>,
+  /// In-memory cache of SVG subresources (external sprites and resolved `data:` URLs).
+  svg_subresource_cache: SvgSubresourceCache,
   /// In-memory cache of rendered inline SVG pixmaps keyed by (hash, size).
   svg_pixmap_cache: Arc<Mutex<SizedLruCache<SvgPixmapKey, Arc<tiny_skia::Pixmap>>>>,
   /// In-memory cache of premultiplied raster pixmaps keyed by URL + orientation.
@@ -5230,6 +5530,20 @@ impl Drop for ProbeInFlightOwnerGuard<'_> {
     self
       .cache
       .finish_meta_inflight(self.url, &self.flight, SharedMetaResult::Error(err));
+  }
+}
+
+enum SvgPreprocessedMarkup<'a> {
+  Borrowed(&'a str),
+  Shared(Arc<str>),
+}
+
+impl AsRef<str> for SvgPreprocessedMarkup<'_> {
+  fn as_ref(&self) -> &str {
+    match self {
+      Self::Borrowed(s) => s,
+      Self::Shared(s) => s.as_ref(),
+    }
   }
 }
 
@@ -5367,6 +5681,14 @@ impl ImageCache {
         config.max_raw_cached_bytes,
       ))),
       meta_in_flight: Arc::new(Mutex::new(HashMap::new())),
+      svg_preprocess_cache: Arc::new(Mutex::new(SizedLruCache::new(
+        config.max_cached_svg_preprocess_items,
+        config.max_cached_svg_preprocess_bytes,
+      ))),
+      svg_subresource_cache: Arc::new(Mutex::new(SizedLruCache::new(
+        config.max_cached_svg_subresource_items,
+        config.max_cached_svg_subresource_bytes,
+      ))),
       svg_pixmap_cache: Arc::new(Mutex::new(SizedLruCache::new(
         config.max_cached_svg_pixmaps,
         config.max_cached_svg_bytes,
@@ -5402,6 +5724,14 @@ impl ImageCache {
   /// Set the active resource context for policy and diagnostics.
   pub fn set_resource_context(&mut self, context: Option<ResourceContext>) {
     self.resource_context = context;
+    // SVG preprocessing can fetch and inline subresources, so avoid reusing entries across context
+    // changes (origin/referrer/policy).
+    if let Ok(mut cache) = self.svg_preprocess_cache.lock() {
+      cache.clear();
+    }
+    if let Ok(mut cache) = self.svg_subresource_cache.lock() {
+      cache.clear();
+    }
   }
 
   /// Retrieve the current resource context.
@@ -7856,6 +8186,76 @@ impl ImageCache {
     map.remove(resolved_url);
   }
 
+  fn preprocess_svg_markup<'a>(
+    &self,
+    svg_content: &'a str,
+    svg_url: &str,
+  ) -> Result<SvgPreprocessedMarkup<'a>> {
+    let key = svg_preprocess_key(svg_content, svg_url);
+    if let Ok(mut cache) = self.svg_preprocess_cache.lock() {
+      if let Some(cached) = cache.get_cloned(&key) {
+        return Ok(SvgPreprocessedMarkup::Shared(cached));
+      }
+    }
+
+    let svg_url_no_fragment = strip_url_fragment(svg_url);
+
+    let svg_use_inlined = inline_svg_use_references(
+      svg_content,
+      svg_url_no_fragment.as_ref(),
+      self.fetcher.as_ref(),
+      self.resource_context.as_ref(),
+      Some(&self.svg_subresource_cache),
+    )?;
+    let svg_images_inlined = inline_svg_image_references(
+      svg_use_inlined.as_ref(),
+      svg_url_no_fragment.as_ref(),
+      self.fetcher.as_ref(),
+      self.resource_context.as_ref(),
+      Some(&self.svg_subresource_cache),
+    )?;
+    let svg_fragment_applied = apply_svg_url_fragment(svg_images_inlined.as_ref(), svg_url);
+    let svg_imports_inlined = inline_svg_style_imports(
+      svg_fragment_applied.as_ref(),
+      svg_url_no_fragment.as_ref(),
+      self.fetcher.as_ref(),
+      self.resource_context.as_ref(),
+    )?;
+
+    let modified = matches!(svg_use_inlined, Cow::Owned(_))
+      || matches!(svg_images_inlined, Cow::Owned(_))
+      || matches!(svg_fragment_applied, Cow::Owned(_))
+      || matches!(svg_imports_inlined, Cow::Owned(_));
+    if !modified {
+      return Ok(SvgPreprocessedMarkup::Borrowed(svg_content));
+    }
+
+    let preprocessed = match svg_imports_inlined {
+      Cow::Owned(s) => s,
+      Cow::Borrowed(_) => match svg_fragment_applied {
+        Cow::Owned(s) => s,
+        Cow::Borrowed(_) => match svg_images_inlined {
+          Cow::Owned(s) => s,
+          Cow::Borrowed(_) => match svg_use_inlined {
+            Cow::Owned(s) => s,
+            Cow::Borrowed(_) => {
+              return Ok(SvgPreprocessedMarkup::Borrowed(svg_content));
+            }
+          },
+        },
+      },
+    };
+
+    let preprocessed = Arc::<str>::from(preprocessed);
+    let bytes = std::mem::size_of::<SvgPreprocessKey>()
+      .saturating_add(std::mem::size_of::<Arc<str>>())
+      .saturating_add(preprocessed.len());
+    if let Ok(mut cache) = self.svg_preprocess_cache.lock() {
+      cache.insert(key, Arc::clone(&preprocessed), bytes);
+    }
+    Ok(SvgPreprocessedMarkup::Shared(preprocessed))
+  }
+
   /// Render raw SVG content to an image, caching by content hash.
   pub fn render_svg(&self, svg_content: &str) -> Result<Arc<CachedImage>> {
     record_image_cache_request();
@@ -8004,33 +8404,13 @@ impl ImageCache {
 
     let render_timer = Instant::now();
 
-    let url_no_fragment = strip_url_fragment(url);
-
-    let svg_use_inlined = inline_svg_use_references(
-      svg_content,
-      url_no_fragment.as_ref(),
-      self.fetcher.as_ref(),
-      self.resource_context.as_ref(),
-    )?;
-    let svg_images_inlined = inline_svg_image_references(
-      svg_use_inlined.as_ref(),
-      url_no_fragment.as_ref(),
-      self.fetcher.as_ref(),
-      self.resource_context.as_ref(),
-    )?;
-    let svg_fragment_applied = apply_svg_url_fragment(svg_images_inlined.as_ref(), url);
+    let svg_preprocessed = self.preprocess_svg_markup(svg_content, url)?;
     let svg_viewport_resolved = svg_with_resolved_root_viewport_size(
-      svg_fragment_applied.as_ref(),
+      svg_preprocessed.as_ref(),
       render_width,
       render_height,
     );
-    let svg_imports_inlined = inline_svg_style_imports(
-      svg_viewport_resolved.as_ref(),
-      url_no_fragment.as_ref(),
-      self.fetcher.as_ref(),
-      self.resource_context.as_ref(),
-    )?;
-    let svg_content = svg_imports_inlined.as_ref();
+    let svg_content = svg_viewport_resolved.as_ref();
     if let Some(pixmap) = try_render_simple_svg_pixmap(svg_content, render_width, render_height)? {
       let pixmap = Arc::new(pixmap);
       record_image_decode_ms(render_timer.elapsed().as_secs_f64() * 1000.0);
@@ -10468,31 +10848,12 @@ impl ImageCache {
     // Parse SVG
     let options = usvg_options_for_url(url_no_fragment.as_ref());
     self.enforce_svg_resource_policy(svg_content, url_no_fragment.as_ref())?;
-    let svg_use_inlined = inline_svg_use_references(
-      svg_content,
-      url_no_fragment.as_ref(),
-      self.fetcher.as_ref(),
-      self.resource_context.as_ref(),
-    )?;
-    let svg_images_inlined = inline_svg_image_references(
-      svg_use_inlined.as_ref(),
-      url_no_fragment.as_ref(),
-      self.fetcher.as_ref(),
-      self.resource_context.as_ref(),
-    )?;
-    let svg_fragment_applied = apply_svg_url_fragment(svg_images_inlined.as_ref(), url);
-    let svg_content = svg_fragment_applied.as_ref();
+    let svg_preprocessed = self.preprocess_svg_markup(svg_content, url)?;
+    let svg_content = svg_preprocessed.as_ref();
     let (meta_width, meta_height, meta_ratio, aspect_ratio_none) =
       svg_intrinsic_metadata(svg_content, 16.0, 16.0).unwrap_or((None, None, None, false));
     let svg_has_intrinsic_size = meta_width.filter(|w| *w > 0.0).is_some()
       || meta_height.filter(|h| *h > 0.0).is_some();
-    let svg_imports_inlined = inline_svg_style_imports(
-      svg_content,
-      url_no_fragment.as_ref(),
-      self.fetcher.as_ref(),
-      self.resource_context.as_ref(),
-    )?;
-    let svg_content = svg_imports_inlined.as_ref();
     let svg_for_parse = svg_markup_for_roxmltree(svg_content);
     let tree = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
       usvg::Tree::from_str(svg_for_parse.as_ref(), &options)
@@ -10930,6 +11291,8 @@ impl Clone for ImageCache {
       meta_cache: Arc::clone(&self.meta_cache),
       raw_cache: Arc::clone(&self.raw_cache),
       meta_in_flight: Arc::clone(&self.meta_in_flight),
+      svg_preprocess_cache: Arc::clone(&self.svg_preprocess_cache),
+      svg_subresource_cache: Arc::clone(&self.svg_subresource_cache),
       svg_pixmap_cache: Arc::clone(&self.svg_pixmap_cache),
       raster_pixmap_cache: Arc::clone(&self.raster_pixmap_cache),
       base_url: self.base_url.clone(),
@@ -15575,7 +15938,8 @@ mod tests_inline {
     let fetcher = MapFetcher::with_entries([(sprite_url.to_string(), sprite_res)]);
 
     let main_svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"><use href="/sprite.svg#icon" width="1" height="1"/></svg>"#;
-    let expanded = inline_svg_use_references(main_svg, main_url, &fetcher, None).expect("expand");
+    let expanded =
+      inline_svg_use_references(main_svg, main_url, &fetcher, None, None).expect("expand");
     assert!(
       expanded.contains("linearGradient") && expanded.contains("id=\"g\""),
       "expected sprite <defs> dependency to be injected, got: {expanded}"
@@ -15607,7 +15971,8 @@ mod tests_inline {
     let fetcher = MapFetcher::with_entries([(sprite_url.to_string(), sprite_res)]);
 
     let main_svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"><use href="https://example.test/sprite.svg#icon" style="display:none" /></svg>"#;
-    let expanded = inline_svg_use_references(main_svg, main_url, &fetcher, None).expect("expand");
+    let expanded =
+      inline_svg_use_references(main_svg, main_url, &fetcher, None, None).expect("expand");
     assert_eq!(expanded.as_ref(), main_svg);
     assert!(fetcher.requests().is_empty(), "expected no fetches for display:none <use>");
   }
@@ -15631,7 +15996,8 @@ mod tests_inline {
     let fetcher = MapFetcher::with_entries([(sprite_url.to_string(), sprite_res)]);
 
     let main_svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"><use href="/sprite.svg#icon"/></svg>"#;
-    let expanded = inline_svg_use_references(main_svg, main_url, &fetcher, None).expect("expand");
+    let expanded =
+      inline_svg_use_references(main_svg, main_url, &fetcher, None, None).expect("expand");
     assert_eq!(
       expanded.as_ref(),
       main_svg,
@@ -15657,6 +16023,7 @@ mod tests_inline {
       svg,
       "https://example.test/main.svg",
       &RenderErrorFetcher,
+      None,
       None,
     )
     .expect_err("expected render error to propagate");
@@ -16008,7 +16375,7 @@ mod tests_inline {
     ]);
 
     let inlined =
-      inline_svg_use_references(&main_svg, &main_url, &fetcher, None).expect("inlined svg");
+      inline_svg_use_references(&main_svg, &main_url, &fetcher, None, None).expect("inlined svg");
     assert!(
       inlined.as_ref().contains("data:image/png;base64,"),
       "expected sprite-nested <image> to be inlined for file:// sprites, got: {}",
@@ -16054,6 +16421,136 @@ mod tests_inline {
         .iter()
         .any(|(url, dest, _)| url == img_url && *dest == FetchDestination::Image),
       "expected fetch for image href {img_url}, got: {requests:?}"
+    );
+  }
+
+  #[test]
+  fn svg_image_inliner_caches_data_urls_across_sizes() {
+    let main_url = "https://example.test/main.svg";
+    let img_url = "https://example.test/img.png";
+
+    let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="2" height="2"><image href="https://example.test/img.png" width="2" height="2"/></svg>"#;
+
+    let mut img_res = FetchedResource::new(
+      encode_single_pixel_png([255, 0, 0, 255]),
+      Some("image/png".to_string()),
+    );
+    img_res.status = Some(200);
+    img_res.final_url = Some(img_url.to_string());
+
+    let fetcher = MapFetcher::with_entries([(img_url.to_string(), img_res)]);
+    let cache = ImageCache::with_fetcher(Arc::new(fetcher.clone()));
+
+    cache
+      .render_svg_pixmap_at_size(svg, 1, 1, main_url, 1.0)
+      .expect("render at 1x1");
+    cache
+      .render_svg_pixmap_at_size(svg, 2, 2, main_url, 1.0)
+      .expect("render at 2x2");
+
+    let requests = fetcher.requests();
+    let fetches = requests
+      .iter()
+      .filter(|(url, dest, _)| url == img_url && *dest == FetchDestination::Image)
+      .count();
+    assert_eq!(
+      fetches, 1,
+      "expected a single FetchDestination::Image request for {img_url}, got: {requests:?}"
+    );
+  }
+
+  #[test]
+  fn svg_use_inliner_caches_external_sprite_across_sizes() {
+    let main_url = "https://example.test/main.svg";
+    let sprite_url = "https://example.test/sprite.svg";
+
+    let main_svg = format!(
+      r#"<svg xmlns="http://www.w3.org/2000/svg" width="2" height="2"><use href="{sprite_url}#icon" width="2" height="2"/></svg>"#
+    );
+    let sprite_svg = r#"<svg xmlns="http://www.w3.org/2000/svg"><symbol id="icon" viewBox="0 0 1 1"><rect width="1" height="1" fill="red"/></symbol></svg>"#;
+
+    let mut sprite_res = FetchedResource::new(
+      sprite_svg.as_bytes().to_vec(),
+      Some("image/svg+xml".to_string()),
+    );
+    sprite_res.status = Some(200);
+    sprite_res.final_url = Some(sprite_url.to_string());
+
+    let fetcher = MapFetcher::with_entries([(sprite_url.to_string(), sprite_res)]);
+    let cache = ImageCache::with_fetcher(Arc::new(fetcher.clone()));
+
+    cache
+      .render_svg_pixmap_at_size(&main_svg, 1, 1, main_url, 1.0)
+      .expect("render at 1x1");
+    cache
+      .render_svg_pixmap_at_size(&main_svg, 2, 2, main_url, 1.0)
+      .expect("render at 2x2");
+
+    let requests = fetcher.requests();
+    let fetches = requests
+      .iter()
+      .filter(|(url, dest, _)| url == sprite_url && *dest == FetchDestination::Image)
+      .count();
+    assert_eq!(
+      fetches, 1,
+      "expected a single FetchDestination::Image request for {sprite_url}, got: {requests:?}"
+    );
+  }
+
+  #[test]
+  fn svg_preprocess_cache_reuse_survives_multiple_calls() {
+    let main_url = "https://example.test/main.svg";
+    let sprite_url = "https://example.test/sprite.svg";
+    let img_url = "https://example.test/img.png";
+
+    let main_svg = format!(
+      r#"<svg xmlns="http://www.w3.org/2000/svg" width="2" height="2"><use href="{sprite_url}#icon" width="2" height="2"/><image href="{img_url}" width="2" height="2"/></svg>"#
+    );
+    let sprite_svg = r#"<svg xmlns="http://www.w3.org/2000/svg"><symbol id="icon" viewBox="0 0 1 1"><rect width="1" height="1" fill="red"/></symbol></svg>"#;
+
+    let mut sprite_res = FetchedResource::new(
+      sprite_svg.as_bytes().to_vec(),
+      Some("image/svg+xml".to_string()),
+    );
+    sprite_res.status = Some(200);
+    sprite_res.final_url = Some(sprite_url.to_string());
+
+    let mut img_res = FetchedResource::new(
+      encode_single_pixel_png([255, 0, 0, 255]),
+      Some("image/png".to_string()),
+    );
+    img_res.status = Some(200);
+    img_res.final_url = Some(img_url.to_string());
+
+    let fetcher = MapFetcher::with_entries([
+      (sprite_url.to_string(), sprite_res),
+      (img_url.to_string(), img_res),
+    ]);
+    let cache = ImageCache::with_fetcher(Arc::new(fetcher.clone()));
+
+    cache
+      .render_svg_pixmap_at_size(&main_svg, 1, 1, main_url, 1.0)
+      .expect("render at 1x1");
+    cache
+      .render_svg_pixmap_at_size(&main_svg, 2, 2, main_url, 1.0)
+      .expect("render at 2x2");
+
+    let requests = fetcher.requests();
+    let sprite_fetches = requests
+      .iter()
+      .filter(|(url, dest, _)| url == sprite_url && *dest == FetchDestination::Image)
+      .count();
+    let img_fetches = requests
+      .iter()
+      .filter(|(url, dest, _)| url == img_url && *dest == FetchDestination::Image)
+      .count();
+    assert_eq!(
+      sprite_fetches, 1,
+      "expected sprite to be fetched once, got: {requests:?}"
+    );
+    assert_eq!(
+      img_fetches, 1,
+      "expected image to be fetched once, got: {requests:?}"
     );
   }
 
@@ -16436,7 +16933,8 @@ mod tests_inline {
     img_res.final_url = Some(img_url.to_string());
 
     let fetcher = MapFetcher::with_entries([(img_url.to_string(), img_res)]);
-    let inlined = inline_svg_image_references(svg, main_url, &fetcher, None).expect("inlined svg");
+    let inlined =
+      inline_svg_image_references(svg, main_url, &fetcher, None, None).expect("inlined svg");
     assert!(
       inlined.as_ref().contains("href=\"data:image/png;base64,"),
       "expected href data URL rewrite, got: {}",
@@ -16477,7 +16975,8 @@ mod tests_inline {
 
     let fetcher = MapFetcher::with_entries([(img_url.to_string(), img_res)]);
 
-    let inlined = inline_svg_image_references(svg, main_url, &fetcher, None).expect("inlined svg");
+    let inlined =
+      inline_svg_image_references(svg, main_url, &fetcher, None, None).expect("inlined svg");
     assert_eq!(inlined.as_ref(), svg);
     assert!(
       !inlined.as_ref().contains("data:image/"),
@@ -16505,7 +17004,8 @@ mod tests_inline {
     img_res.final_url = Some(img_url.to_string());
 
     let fetcher = MapFetcher::with_entries([(img_url.to_string(), img_res)]);
-    let inlined = inline_svg_image_references(svg, main_url, &fetcher, None).expect("inlined svg");
+    let inlined =
+      inline_svg_image_references(svg, main_url, &fetcher, None, None).expect("inlined svg");
     assert!(
       inlined.as_ref().contains("data:image/png;base64,"),
       "expected data URL rewrite, got: {}",
@@ -16540,7 +17040,7 @@ mod tests_inline {
     let fetcher = MapFetcher::with_entries([(nested_url.to_string(), nested_res)]);
 
     let inlined =
-      inline_svg_image_references(main_svg, main_url, &fetcher, None).expect("inlined svg");
+      inline_svg_image_references(main_svg, main_url, &fetcher, None, None).expect("inlined svg");
     let output = inlined.as_ref();
     let prefix = "data:image/svg+xml;base64,";
     let start = output
@@ -16587,6 +17087,7 @@ mod tests_inline {
       svg,
       "https://example.test/main.svg",
       &RenderErrorFetcher,
+      None,
       None,
     )
     .expect_err("expected render error to propagate");
