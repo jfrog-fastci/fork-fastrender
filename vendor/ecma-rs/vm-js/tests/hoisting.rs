@@ -69,3 +69,46 @@ fn const_without_initializer_is_syntax_error_and_does_not_pollute_global_env() {
   let value = rt.exec_script(r#"typeof x === "undefined""#).unwrap();
   assert_eq!(value, Value::Bool(true));
 }
+
+#[test]
+fn destructuring_var_without_initializer_is_syntax_error_and_does_not_pollute_global_env() {
+  let mut rt = new_runtime();
+  let err = rt.exec_script("var { x };").unwrap_err();
+  match err {
+    VmError::Syntax(_) => {}
+    other => panic!("expected syntax error, got {other:?}"),
+  }
+
+  // If hoisting ran before the early error, we would have created a global `var` binding for `x`,
+  // and evaluating `x` would return `undefined` instead of throwing as an unbound identifier.
+  let err = rt.exec_script("x").unwrap_err();
+  match err {
+    VmError::Throw(_) | VmError::ThrowWithStack { .. } => {}
+    other => panic!("expected ReferenceError throw, got {other:?}"),
+  }
+}
+
+#[test]
+fn destructuring_let_without_initializer_is_syntax_error_and_does_not_create_tdz_binding() {
+  let mut rt = new_runtime();
+  let err = rt.exec_script("let { x };").unwrap_err();
+  match err {
+    VmError::Syntax(_) => {}
+    other => panic!("expected syntax error, got {other:?}"),
+  }
+
+  // If hoisting ran before the early error, we would have left behind an uninitialised lexical
+  // binding, and `typeof x` would throw instead of returning `"undefined"`.
+  let value = rt.exec_script(r#"typeof x === "undefined""#).unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn destructuring_var_in_for_triple_without_initializer_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt.exec_script("for (var { x };;) {}").unwrap_err();
+  match err {
+    VmError::Syntax(_) => {}
+    other => panic!("expected syntax error, got {other:?}"),
+  }
+}

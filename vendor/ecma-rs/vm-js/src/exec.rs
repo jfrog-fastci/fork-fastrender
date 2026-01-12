@@ -1652,6 +1652,14 @@ impl<'a> Evaluator<'a> {
     scope: &mut Scope<'_>,
     stmts: &[Node<Stmt>],
   ) -> Result<(), VmError> {
+    // Destructuring `var`/`let` declarations always require an initializer (ECMA-262 early error).
+    //
+    // This must run before any hoisting so invalid declarations do not partially pollute the
+    // function/global environment.
+    for stmt in stmts {
+      self.destructuring_decl_without_initializer_early_error(stmt)?;
+    }
+
     if self.strict {
       for stmt in stmts {
         self.strict_mode_with_early_error(stmt)?;
@@ -1748,6 +1756,109 @@ impl<'a> Evaluator<'a> {
     self.instantiate_lexical_decls_in_stmt_list(scope, lex, stmts)?;
     self.instantiate_var_scoped_function_decls_in_stmt_list(scope, stmts)?;
     Ok(())
+  }
+
+  fn destructuring_decl_without_initializer_early_error(
+    &mut self,
+    stmt: &Node<Stmt>,
+  ) -> Result<(), VmError> {
+    // This mirrors the recursive structure of `VarDeclaredNames`/`strict_mode_with_early_error`
+    // traversals so we reject invalid declarations even when they appear in syntactically nested
+    // statement lists (e.g. a dead `if (false) { ... }` branch).
+    self.tick()?;
+
+    let check_decl = |this: &mut Self, decl: &VarDecl| -> Result<(), VmError> {
+      if decl.mode != VarDeclMode::Var && decl.mode != VarDeclMode::Let {
+        return Ok(());
+      }
+      for declarator in &decl.declarators {
+        this.tick()?;
+        if declarator.initializer.is_none()
+          && !matches!(&*declarator.pattern.stx.pat.stx, Pat::Id(_))
+        {
+          return Err(syntax_error(
+            declarator.pattern.loc,
+            "Missing initializer in destructuring declaration",
+          ));
+        }
+      }
+      Ok(())
+    };
+
+    match &*stmt.stx {
+      Stmt::VarDecl(var) => check_decl(self, &var.stx),
+      Stmt::Block(block) => {
+        for s in &block.stx.body {
+          self.destructuring_decl_without_initializer_early_error(s)?;
+        }
+        Ok(())
+      }
+      Stmt::If(stmt) => {
+        self.destructuring_decl_without_initializer_early_error(&stmt.stx.consequent)?;
+        if let Some(alt) = &stmt.stx.alternate {
+          self.destructuring_decl_without_initializer_early_error(alt)?;
+        }
+        Ok(())
+      }
+      Stmt::Try(stmt) => {
+        for s in &stmt.stx.wrapped.stx.body {
+          self.destructuring_decl_without_initializer_early_error(s)?;
+        }
+        if let Some(catch) = &stmt.stx.catch {
+          for s in &catch.stx.body {
+            self.destructuring_decl_without_initializer_early_error(s)?;
+          }
+        }
+        if let Some(finally) = &stmt.stx.finally {
+          for s in &finally.stx.body {
+            self.destructuring_decl_without_initializer_early_error(s)?;
+          }
+        }
+        Ok(())
+      }
+      Stmt::With(stmt) => self.destructuring_decl_without_initializer_early_error(&stmt.stx.body),
+      Stmt::While(stmt) => self.destructuring_decl_without_initializer_early_error(&stmt.stx.body),
+      Stmt::DoWhile(stmt) => self.destructuring_decl_without_initializer_early_error(&stmt.stx.body),
+      Stmt::ForTriple(stmt) => {
+        if let parse_js::ast::stmt::ForTripleStmtInit::Decl(decl) = &stmt.stx.init {
+          check_decl(self, &decl.stx)?;
+        }
+        for s in &stmt.stx.body.stx.body {
+          self.destructuring_decl_without_initializer_early_error(s)?;
+        }
+        Ok(())
+      }
+      Stmt::ForIn(stmt) => {
+        // `for (var {x} in obj)` / `for (let {x} in obj)` are valid: bindings are per-iteration.
+        for s in &stmt.stx.body.stx.body {
+          self.destructuring_decl_without_initializer_early_error(s)?;
+        }
+        Ok(())
+      }
+      Stmt::ForOf(stmt) => {
+        // `for (var {x} of iter)` / `for (let {x} of iter)` are valid: bindings are per-iteration.
+        for s in &stmt.stx.body.stx.body {
+          self.destructuring_decl_without_initializer_early_error(s)?;
+        }
+        Ok(())
+      }
+      Stmt::Label(stmt) => {
+        self.destructuring_decl_without_initializer_early_error(&stmt.stx.statement)
+      }
+      Stmt::Switch(stmt) => {
+        const BRANCH_TICK_EVERY: usize = 32;
+        for (i, branch) in stmt.stx.branches.iter().enumerate() {
+          if i % BRANCH_TICK_EVERY == 0 {
+            self.tick()?;
+          }
+          for s in &branch.stx.body {
+            self.destructuring_decl_without_initializer_early_error(s)?;
+          }
+        }
+        Ok(())
+      }
+      _ => Ok(()),
+    }
   }
 
   fn strict_mode_with_early_error(&mut self, stmt: &Node<Stmt>) -> Result<(), VmError> {
