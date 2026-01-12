@@ -1,27 +1,27 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use fastrender::animation::{
+use crate::animation::{
   apply_animations, axis_scroll_state, sample_keyframes, scroll_timeline_progress,
   view_timeline_progress, AnimatedValue,
 };
-use fastrender::api::FastRender;
-use fastrender::css::parser::parse_stylesheet;
-use fastrender::css::types::{Transform as CssTransform, TranslateValue};
-use fastrender::dom;
-use fastrender::scroll::ScrollState;
-use fastrender::style::cascade::apply_styles_with_media;
-use fastrender::style::cascade::StyledNode;
-use fastrender::style::media::MediaContext;
-use fastrender::style::types::{
+use crate::api::FastRender;
+use crate::css::parser::parse_stylesheet;
+use crate::css::types::{Transform as CssTransform, TranslateValue};
+use crate::dom;
+use crate::scroll::ScrollState;
+use crate::style::cascade::apply_styles_with_media;
+use crate::style::cascade::StyledNode;
+use crate::style::media::MediaContext;
+use crate::style::types::{
   AnimationFillMode, AnimationRange, AnimationTimeline, BackgroundPosition, BackgroundSize,
   BackgroundSizeComponent, BasicShape, BorderStyle, ClipComponent, Direction, FilterFunction,
   OutlineColor, OutlineStyle, Overflow, RangeOffset, ScrollFunctionTimeline, ScrollTimeline,
   ScrollTimelineScroller, TimelineAxis, TimelineOffset, TransformOrigin, TransitionTimingFunction,
   ViewTimeline, ViewTimelinePhase, WritingMode,
 };
-use fastrender::Rgba;
-use fastrender::{
+use crate::Rgba;
+use crate::{
   BoxNode, ComputedStyle, FragmentNode, FragmentTree, Length, Point, PreparedPaintOptions, Rect,
   RenderOptions, Size,
 };
@@ -133,7 +133,7 @@ fn view_timeline_longhands_combine() {
   assert_eq!(div.styles.view_timelines[0].axis, TimelineAxis::Inline);
   assert_eq!(
     div.styles.view_timelines[0].inset,
-    Some(fastrender::style::types::ViewTimelineInset {
+    Some(crate::style::types::ViewTimelineInset {
       start: Some(Length::px(10.0)),
       end: Some(Length::px(20.0)),
     })
@@ -538,7 +538,7 @@ fn view_timeline_progress_allows_negative_inset() {
   let timeline_outset_end = ViewTimeline {
     name: None,
     axis: TimelineAxis::Block,
-    inset: Some(fastrender::style::types::ViewTimelineInset {
+    inset: Some(crate::style::types::ViewTimelineInset {
       start: Some(Length::px(0.0)),
       end: Some(Length::px(-50.0)),
     }),
@@ -741,13 +741,13 @@ fn keyframes_sample_preserves_scale_none_at_keyframe_boundary() {
 
   let start = sample_keyframes(rule, 0.0, &base, viewport, element_size);
   match start.get("scale") {
-    Some(AnimatedValue::Scale(fastrender::css::types::ScaleValue::None)) => {}
+    Some(AnimatedValue::Scale(crate::css::types::ScaleValue::None)) => {}
     other => panic!("unexpected scale value {other:?}"),
   }
 
   let end = sample_keyframes(rule, 1.0, &base, viewport, element_size);
   match end.get("scale") {
-    Some(AnimatedValue::Scale(fastrender::css::types::ScaleValue::Values { x, y, z })) => {
+    Some(AnimatedValue::Scale(crate::css::types::ScaleValue::Values { x, y, z })) => {
       assert!((*x - 2.0).abs() < 1e-6);
       assert!((*y - 2.0).abs() < 1e-6);
       assert!((*z - 1.0).abs() < 1e-6);
@@ -1404,7 +1404,7 @@ fn clip_path_mismatches_fall_back_to_discrete() {
     );
     match sampled.get("clip-path") {
       Some(AnimatedValue::ClipPath(path)) => match path {
-        fastrender::style::types::ClipPath::BasicShape(shape, _) => shape.as_ref().clone(),
+        crate::style::types::ClipPath::BasicShape(shape, _) => shape.as_ref().clone(),
         other => panic!("unexpected clip-path {other:?}"),
       },
       other => panic!("unexpected clip-path value {other:?}"),
@@ -1454,11 +1454,11 @@ fn clip_path_polygons_interpolate_when_compatible() {
   );
   match sampled.get("clip-path") {
     Some(AnimatedValue::ClipPath(path)) => match path {
-      fastrender::style::types::ClipPath::BasicShape(shape, reference) => {
+      crate::style::types::ClipPath::BasicShape(shape, reference) => {
         assert_eq!(*reference, None);
         match shape.as_ref() {
           BasicShape::Polygon { fill, points } => {
-            assert_eq!(*fill, fastrender::style::types::FillRule::NonZero);
+            assert_eq!(*fill, crate::style::types::FillRule::NonZero);
             assert_eq!(points.len(), 4);
             let eps = 1e-3;
             assert!((points[0].0.to_px() - 0.0).abs() < eps);
@@ -2371,8 +2371,8 @@ fn scroll_timeline_drives_animation_during_render() {
 }
 
 fn find_scroll_container<'a>(
-  node: &'a fastrender::FragmentNode,
-) -> Option<&'a fastrender::FragmentNode> {
+  node: &'a crate::FragmentNode,
+) -> Option<&'a crate::FragmentNode> {
   let is_scroll_container = node
     .style
     .as_ref()

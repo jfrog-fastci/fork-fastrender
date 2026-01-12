@@ -9004,6 +9004,9 @@ impl AnimationRangeExt for AnimationRange {
 }
 
 #[cfg(test)]
+mod animation_tests;
+
+#[cfg(test)]
 mod tests {
   use super::*;
   use crate::css::parser::parse_stylesheet;
