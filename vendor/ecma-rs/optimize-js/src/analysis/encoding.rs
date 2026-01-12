@@ -116,6 +116,35 @@ impl EncodingResult {
     };
     analysis.encoding_of_arg(state, arg)
   }
+
+  /// Replay the encoding analysis transfer function inside a single basic block,
+  /// invoking `visit` after each instruction with the updated state.
+  ///
+  /// This is significantly more efficient than repeatedly calling
+  /// [`EncodingResult::state_after_inst`] for each instruction.
+  pub fn visit_states_after_each_inst_in_block<F>(&self, cfg: &Cfg, label: u32, mut visit: F)
+  where
+    F: FnMut(usize, &Inst, &EncodingState),
+  {
+    let entry = self
+      .block_entry(label)
+      .cloned()
+      .unwrap_or_else(|| vec![StringEncoding::Unknown; self.temp_count]);
+    let mut analysis = EncodingAnalysis {
+      temp_count: self.temp_count,
+      types: ValueTypeSummaries::new(cfg),
+    };
+    let mut state = entry;
+    let block: &[Inst] = cfg
+      .bblocks
+      .maybe_get(label)
+      .map(|bb| bb.as_slice())
+      .unwrap_or(&[]);
+    for (inst_idx, inst) in block.iter().enumerate() {
+      analysis.apply_to_instruction(label, inst_idx, inst, &mut state);
+      visit(inst_idx, inst, &state);
+    }
+  }
 }
 
 struct EncodingAnalysis {

@@ -12,6 +12,8 @@ native-async-ops = []
 typed = ["dep:typecheck-ts", "dep:types-ts-interned"]
 serde = [
   "dep:serde",
+  "dep:serde_json",
+  "dep:rmp-serde",
   "ahash/serde",
   "dashmap/serde",
   "effect-model/serde",
@@ -35,6 +37,8 @@ diagnostics = { workspace = true }
 parse-js = { workspace = true, features = ["diagnostics"] }
 semantic-js = { workspace = true }
 serde = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
+rmp-serde = { workspace = true, optional = true }
 emit-js = { workspace = true }
 hir-js = { workspace = true }
 typecheck-ts = { workspace = true, optional = true }

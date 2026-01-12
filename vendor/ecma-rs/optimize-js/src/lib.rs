@@ -40,6 +40,8 @@ pub mod dom;
 pub mod eval;
 pub mod graph;
 pub mod il;
+#[cfg(feature = "serde")]
+pub mod dump;
 pub mod opt;
 pub mod ssa;
 pub mod symbol;
@@ -53,6 +55,8 @@ pub use crate::decompile::ProgramToJsError;
 pub use crate::decompile::{program_to_ast, DecompileOptions};
 #[cfg(feature = "typed")]
 pub use crate::native::{compile_file_native_ready, NativeReadyOptions, NativeReadyProgram};
+#[cfg(feature = "serde")]
+pub use crate::dump::{dump_program, DumpOptions, ProgramDump, DUMP_VERSION};
 use crate::il::inst::Inst;
 use crate::util::counter::Counter;
 use ahash::HashMap;

@@ -318,6 +318,35 @@ impl NullabilityResult {
       Arg::Builtin(_) => NullishFlags::UNKNOWN,
     }
   }
+
+  /// Replay the analysis transfer function inside a single basic block, invoking
+  /// `visit` after each instruction with the updated state.
+  ///
+  /// This is significantly more efficient than repeatedly calling
+  /// [`NullabilityResult::state_after_inst`] for each instruction.
+  pub fn visit_states_after_each_inst_in_block<F>(&self, cfg: &Cfg, label: u32, mut visit: F)
+  where
+    F: FnMut(usize, &Inst, &State),
+  {
+    let entry = self
+      .state_at_block_entry(label)
+      .cloned()
+      .unwrap_or_else(|| State::bottom(cfg_var_count(cfg)));
+    let mut analysis = NullabilityAnalysis {
+      var_count: entry.masks.len(),
+      types: ValueTypeSummaries::new(cfg),
+    };
+    let mut state = entry;
+    let block: &[Inst] = cfg
+      .bblocks
+      .maybe_get(label)
+      .map(|bb| bb.as_slice())
+      .unwrap_or(&[]);
+    for (inst_idx, inst) in block.iter().enumerate() {
+      analysis.apply_to_instruction(label, inst_idx, inst, &mut state);
+      visit(inst_idx, inst, &state);
+    }
+  }
 }
 
 pub fn calculate_nullability(cfg: &Cfg) -> NullabilityResult {

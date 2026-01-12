@@ -348,6 +348,33 @@ impl RangeResult {
   pub fn result(&self) -> &ForwardEdgeDataFlowResult<State> {
     &self.result
   }
+
+  /// Replay the analysis transfer function inside a single basic block, invoking
+  /// `visit` after each instruction with the updated state.
+  ///
+  /// This is significantly more efficient than repeatedly calling
+  /// [`RangeResult::state_after_inst`] for each instruction (which would replay
+  /// from the block entry every time).
+  pub fn visit_states_after_each_inst_in_block<F>(&self, cfg: &Cfg, label: u32, mut visit: F)
+  where
+    F: FnMut(usize, &Inst, &State),
+  {
+    let entry = self
+      .entry(label)
+      .cloned()
+      .unwrap_or_else(|| State::bottom(cfg_var_count(cfg)));
+    let mut analysis = RangeAnalysis::new_for_replay(entry.ranges.len());
+    let mut state = entry;
+    let block: &[Inst] = cfg
+      .bblocks
+      .maybe_get(label)
+      .map(|bb| bb.as_slice())
+      .unwrap_or(&[]);
+    for (inst_idx, inst) in block.iter().enumerate() {
+      analysis.apply_to_instruction(label, inst_idx, inst, &mut state);
+      visit(inst_idx, inst, &state);
+    }
+  }
 }
 
 #[derive(Clone, Debug)]
