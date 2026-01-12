@@ -232,6 +232,23 @@ fn require_element_receiver(
   Ok((node_id, obj))
 }
 
+fn mutate_dom_detached<R>(
+  host: &mut dyn VmHost,
+  f: impl FnOnce(&mut crate::dom2::Document) -> R,
+) -> Result<R, VmError> {
+  // `Document.createElement` / `createTextNode` / `createDocumentFragment` allocate detached nodes.
+  // They grow the `dom2` node arena but do not change the live document tree until insertion, so we
+  // report `changed=false` to avoid triggering renderer invalidation.
+  let any = host.as_any_mut();
+  if let Some(host) = any.downcast_mut::<DocumentHostState>() {
+    return Ok(DomHost::mutate_dom(host, |dom| (f(dom), false)));
+  }
+  if let Some(host) = any.downcast_mut::<BrowserDocumentDom2>() {
+    return Ok(DomHost::mutate_dom(host, |dom| (f(dom), false)));
+  }
+  Err(VmError::TypeError("DOM host not available"))
+}
+
 fn urlsp_iterator_next_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -402,6 +419,32 @@ fn js_string_to_rust_string(scope: &Scope<'_>, value: Value) -> Result<String, V
     return Err(VmError::TypeError("expected string"));
   };
   Ok(scope.heap().get_string(s)?.to_utf8_lossy())
+}
+
+fn is_valid_create_element_local_name(name: &str) -> bool {
+  let mut chars = name.chars();
+  let Some(first) = chars.next() else {
+    return false;
+  };
+
+  // Fast path: ASCII-alpha first char uses the DOM "valid element local name" byte blacklist.
+  if first.is_ascii_alphabetic() {
+    return !name.bytes().any(|b| {
+      matches!(b, b'\t' | b'\n' | 0x0C | b'\r' | b' ' | b'\0' | b'/' | b'>')
+    });
+  }
+
+  // Full path: match `dom2`'s `is_valid_element_local_name` rules (non-ASCII and certain punct).
+  if !(first == ':' || first == '_' || (first as u32) >= 0x80) {
+    return false;
+  }
+  for ch in chars {
+    if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '.' | ':' | '_') || (ch as u32) >= 0x80 {
+      continue;
+    }
+    return false;
+  }
+  true
 }
 
 fn array_length(vm: &mut Vm, scope: &mut Scope<'_>, array: GcObject) -> Result<usize, VmError> {
@@ -2774,6 +2817,88 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         Ok(Value::Object(document_obj))
       }
 
+      ("Document", "createElement", 0) => {
+        let document_obj = Self::require_receiver_object(receiver)?;
+        let document_key = WeakGcObject::from(document_obj);
+
+        {
+          let platform = dom_platform_mut(vm).ok_or(VmError::TypeError("Illegal invocation"))?;
+          let _ = platform.require_document_id(scope.heap(), Value::Object(document_obj))?;
+        }
+
+        let local_name =
+          js_string_to_rust_string(scope, args.get(0).copied().unwrap_or(Value::Undefined))?;
+        if !is_valid_create_element_local_name(&local_name) {
+          let global = self
+            .global
+            .ok_or(VmError::InvariantViolation("DOMException requires a global object"))?;
+          let class = dom_exception_class(vm, scope, global)?;
+          return Err(throw_dom_exception(
+            scope,
+            class,
+            "InvalidCharacterError",
+            "The tag name provided is not a valid name.",
+          ));
+        }
+
+        let node_id = with_active_vm_host(vm, |host| {
+          mutate_dom_detached(host, |dom| dom.create_element(&local_name, HTML_NAMESPACE))
+        })?;
+
+        let wrapper = {
+          let platform = dom_platform_mut(vm).ok_or(VmError::TypeError("Illegal invocation"))?;
+          platform.get_or_create_wrapper(scope, document_key, node_id, DomInterface::Element)?
+        };
+        Ok(Value::Object(wrapper))
+      }
+
+      ("Document", "createTextNode", 0) => {
+        let document_obj = Self::require_receiver_object(receiver)?;
+        let document_key = WeakGcObject::from(document_obj);
+
+        {
+          let platform = dom_platform_mut(vm).ok_or(VmError::TypeError("Illegal invocation"))?;
+          let _ = platform.require_document_id(scope.heap(), Value::Object(document_obj))?;
+        }
+
+        let data =
+          js_string_to_rust_string(scope, args.get(0).copied().unwrap_or(Value::Undefined))?;
+
+        let node_id =
+          with_active_vm_host(vm, |host| mutate_dom_detached(host, |dom| dom.create_text(&data)))?;
+
+        let wrapper = {
+          let platform = dom_platform_mut(vm).ok_or(VmError::TypeError("Illegal invocation"))?;
+          platform.get_or_create_wrapper(scope, document_key, node_id, DomInterface::Text)?
+        };
+        Ok(Value::Object(wrapper))
+      }
+
+      ("Document", "createDocumentFragment", 0) => {
+        let document_obj = Self::require_receiver_object(receiver)?;
+        let document_key = WeakGcObject::from(document_obj);
+
+        {
+          let platform = dom_platform_mut(vm).ok_or(VmError::TypeError("Illegal invocation"))?;
+          let _ = platform.require_document_id(scope.heap(), Value::Object(document_obj))?;
+        }
+
+        let node_id = with_active_vm_host(vm, |host| {
+          mutate_dom_detached(host, |dom| dom.create_document_fragment())
+        })?;
+
+        let wrapper = {
+          let platform = dom_platform_mut(vm).ok_or(VmError::TypeError("Illegal invocation"))?;
+          platform.get_or_create_wrapper(
+            scope,
+            document_key,
+            node_id,
+            DomInterface::DocumentFragment,
+          )?
+        };
+        Ok(Value::Object(wrapper))
+      }
+
       ("Element", "id", 0) => {
         let (element_id, _obj) = require_element_receiver(vm, scope, receiver)?;
         if args.is_empty() {
@@ -3306,6 +3431,208 @@ mod window_document_tests {
 }
 
 #[cfg(test)]
+mod document_node_creation_tests {
+  use super::*;
+  use crate::dom2::NodeKind;
+  use crate::js::window_realm::{WindowRealm, WindowRealmConfig};
+  use selectors::context::QuirksMode;
+  use std::any::Any;
+  use vm_js::{Job, Scope, Value, VmError, VmHostHooks};
+
+  #[derive(Default)]
+  struct TestHooks {
+    payload: VmJsHostHooksPayload,
+  }
+
+  impl VmHostHooks for TestHooks {
+    fn host_enqueue_promise_job(&mut self, _job: Job, _realm: Option<vm_js::RealmId>) {}
+
+    fn as_any_mut(&mut self) -> Option<&mut dyn Any> {
+      Some(&mut self.payload)
+    }
+  }
+
+  fn get_own_string_property(
+    scope: &mut Scope<'_>,
+    obj: GcObject,
+    name: &str,
+  ) -> Result<String, VmError> {
+    scope.push_root(Value::Object(obj))?;
+    let key_s = scope.alloc_string(name)?;
+    scope.push_root(Value::String(key_s))?;
+    let key = PropertyKey::from_string(key_s);
+    let value = scope
+      .heap()
+      .object_get_own_data_property_value(obj, &key)?
+      .unwrap_or(Value::Undefined);
+    let Value::String(s) = value else {
+      return Err(VmError::TypeError("expected DOMException property to be a string"));
+    };
+    Ok(scope.heap().get_string(s)?.to_utf8_lossy())
+  }
+
+  #[test]
+  fn document_create_node_allocators_return_detached_wrappers() -> Result<(), VmError> {
+    let mut window = WindowRealm::new(WindowRealmConfig::new("https://example.invalid/"))?;
+    let mut dom_host = DocumentHostState::new(crate::dom2::Document::new(QuirksMode::NoQuirks));
+    let mut dispatch =
+      VmJsWebIdlBindingsHostDispatch::<crate::js::WindowHostState>::new(window.global_object());
+
+    let (vm, _realm, heap) = window.vm_realm_and_heap_mut();
+    let mut scope = heap.scope();
+
+    let mut hooks = TestHooks::default();
+    hooks.payload.set_vm_host(&mut dom_host);
+
+    let (element_id, text_id, fragment_id) = vm.with_host_hooks_override(
+      &mut hooks,
+      |vm| -> Result<(NodeId, NodeId, NodeId), VmError> {
+        let document = dispatch.call_operation(vm, &mut scope, None, "Window", "document", 0, &[])?;
+        let Value::Object(document_obj) = document else {
+          return Err(VmError::TypeError("expected Window.document to return an object"));
+        };
+        scope.push_root(document)?;
+
+        let div_s = scope.alloc_string("div")?;
+        scope.push_root(Value::String(div_s))?;
+        let element = dispatch.call_operation(
+          vm,
+          &mut scope,
+          Some(Value::Object(document_obj)),
+          "Document",
+          "createElement",
+          0,
+          &[Value::String(div_s)],
+        )?;
+        scope.push_root(element)?;
+        let element_id = {
+          let data = vm
+            .user_data_mut::<WindowRealmUserData>()
+            .ok_or(VmError::TypeError("expected WindowRealmUserData"))?;
+          let platform = data
+            .dom_platform_mut()
+            .ok_or(VmError::TypeError("expected DomPlatform"))?;
+          platform.require_element_id(scope.heap(), element)?
+        };
+
+        let hi_s = scope.alloc_string("hi")?;
+        scope.push_root(Value::String(hi_s))?;
+        let text = dispatch.call_operation(
+          vm,
+          &mut scope,
+          Some(Value::Object(document_obj)),
+          "Document",
+          "createTextNode",
+          0,
+          &[Value::String(hi_s)],
+        )?;
+        scope.push_root(text)?;
+        let text_id = {
+          let data = vm
+            .user_data_mut::<WindowRealmUserData>()
+            .ok_or(VmError::TypeError("expected WindowRealmUserData"))?;
+          let platform = data
+            .dom_platform_mut()
+            .ok_or(VmError::TypeError("expected DomPlatform"))?;
+          platform.require_text_id(scope.heap(), text)?
+        };
+
+        let fragment = dispatch.call_operation(
+          vm,
+          &mut scope,
+          Some(Value::Object(document_obj)),
+          "Document",
+          "createDocumentFragment",
+          0,
+          &[],
+        )?;
+        scope.push_root(fragment)?;
+        let fragment_id = {
+          let data = vm
+            .user_data_mut::<WindowRealmUserData>()
+            .ok_or(VmError::TypeError("expected WindowRealmUserData"))?;
+          let platform = data
+            .dom_platform_mut()
+            .ok_or(VmError::TypeError("expected DomPlatform"))?;
+          platform.require_document_fragment_id(scope.heap(), fragment)?
+        };
+
+        Ok((element_id, text_id, fragment_id))
+      },
+    )?;
+
+    dom_host.with_dom(|dom| {
+      assert!(dom.node(element_id).parent.is_none());
+      match &dom.node(element_id).kind {
+        NodeKind::Element { tag_name, .. } => assert_eq!(tag_name, "div"),
+        other => panic!("expected Element node kind, got {other:?}"),
+      }
+
+      assert!(dom.node(text_id).parent.is_none());
+      match &dom.node(text_id).kind {
+        NodeKind::Text { content } => assert_eq!(content, "hi"),
+        other => panic!("expected Text node kind, got {other:?}"),
+      }
+
+      assert!(dom.node(fragment_id).parent.is_none());
+      assert!(matches!(dom.node(fragment_id).kind, NodeKind::DocumentFragment));
+    });
+
+    Ok(())
+  }
+
+  #[test]
+  fn document_create_element_throws_invalid_character_error() -> Result<(), VmError> {
+    let mut window = WindowRealm::new(WindowRealmConfig::new("https://example.invalid/"))?;
+    let mut dom_host = DocumentHostState::new(crate::dom2::Document::new(QuirksMode::NoQuirks));
+    let mut dispatch =
+      VmJsWebIdlBindingsHostDispatch::<crate::js::WindowHostState>::new(window.global_object());
+
+    let (vm, _realm, heap) = window.vm_realm_and_heap_mut();
+    let mut scope = heap.scope();
+
+    let mut hooks = TestHooks::default();
+    hooks.payload.set_vm_host(&mut dom_host);
+
+    let err = vm
+      .with_host_hooks_override(&mut hooks, |vm| {
+        let document = dispatch.call_operation(vm, &mut scope, None, "Window", "document", 0, &[])?;
+        let Value::Object(document_obj) = document else {
+          return Err(VmError::TypeError("expected Window.document to return an object"));
+        };
+        scope.push_root(document)?;
+
+        let invalid_s = scope.alloc_string("")?;
+        scope.push_root(Value::String(invalid_s))?;
+        dispatch.call_operation(
+          vm,
+          &mut scope,
+          Some(Value::Object(document_obj)),
+          "Document",
+          "createElement",
+          0,
+          &[Value::String(invalid_s)],
+        )
+      })
+      .unwrap_err();
+
+    let VmError::Throw(thrown) = err else {
+      return Err(VmError::TypeError("expected InvalidCharacterError to throw"));
+    };
+    scope.push_root(thrown)?;
+    let Value::Object(obj) = thrown else {
+      return Err(VmError::TypeError("expected thrown DOMException to be an object"));
+    };
+    assert_eq!(
+      get_own_string_property(&mut scope, obj, "name")?,
+      "InvalidCharacterError"
+    );
+
+    Ok(())
+  }
+}
+
+#[cfg(test)]
 mod tests {
   use super::*;
   use crate::api::RenderOptions;
@@ -3728,6 +4055,9 @@ mod element_dispatch_tests {
     let document_key = WeakGcObject::from(document_obj);
 
     let wrapper = {
+      let document_obj = scope.alloc_object()?;
+      scope.push_root(Value::Object(document_obj))?;
+      let document_key = WeakGcObject::from(document_obj);
       let data = vm.user_data_mut::<WindowRealmUserData>().expect("user data");
       let platform = data.dom_platform_mut().expect("platform");
       platform.get_or_create_wrapper(&mut scope, document_key, div, DomInterface::Element)?
