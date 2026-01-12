@@ -7467,6 +7467,115 @@ fn event_prototype_stop_immediate_propagation_native(
   Ok(Value::Undefined)
 }
 
+fn event_prototype_composed_path_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(event_obj) = this else {
+    return Err(VmError::TypeError(
+      "Event.composedPath must be called on an Event object",
+    ));
+  };
+
+  // Per WHATWG DOM, `Event.composedPath()` returns the event's dispatch path in target → window
+  // order. FastRender stores the computed dispatch path on the Rust `Event` during dispatch as
+  // window → ... → target, so we reverse.
+  //
+  // In the minimal `WindowRealm` harness (or after dispatch completes), there may be no active Rust
+  // `Event` pointer available. In that case we return an empty array (best-effort compatibility).
+  let mut path_targets: Vec<web_events::EventTargetId> = Vec::new();
+  if let Some(event_id) = event_active_event_id(scope, event_obj)? {
+    if let Some(targets) = with_active_event_for_host(host, event_id, |event| {
+      event
+        .path
+        .iter()
+        .rev()
+        .map(|entry| entry.target)
+        .collect::<Vec<_>>()
+    }) {
+      path_targets = targets;
+    }
+  }
+
+  let array = scope.alloc_array(0)?;
+  scope.push_root(Value::Object(array))?;
+  if let Some(intrinsics) = vm.intrinsics() {
+    scope
+      .heap_mut()
+      .object_set_prototype(array, Some(intrinsics.array_prototype()))?;
+  }
+
+  if !path_targets.is_empty() {
+    let (window_obj, document_obj, fallback_dom_ptr) = {
+      let Some(data) = vm.user_data_mut::<WindowRealmUserData>() else {
+        return Err(VmError::InvariantViolation(
+          "WindowRealm is missing required VM user data",
+        ));
+      };
+      let Some(window_obj) = data.window_obj else {
+        return Err(VmError::InvariantViolation(
+          "window object missing from WindowRealmUserData",
+        ));
+      };
+      let Some(document_obj) = data.document_obj else {
+        return Err(VmError::InvariantViolation(
+          "document object missing from WindowRealmUserData",
+        ));
+      };
+      (window_obj, document_obj, NonNull::from(&mut data.events_dom_fallback))
+    };
+
+    // Prefer the embedder DOM (if present) so node wrappers and opaque EventTargets resolve
+    // consistently with `dispatchEvent`.
+    let dom_ptr = dom_ptr_for_event_registry(host).unwrap_or(fallback_dom_ptr);
+    // SAFETY: `dom_ptr` is either the embedder-provided active DOM for this call turn, or the
+    // realm-owned fallback DOM stored in `WindowRealmUserData`.
+    let dom = unsafe { dom_ptr.as_ref() };
+    let registry = dom.events();
+
+    for (idx, target_id) in path_targets.iter().copied().enumerate() {
+      let value = match target_id {
+        web_events::EventTargetId::Window => Value::Object(window_obj),
+        web_events::EventTargetId::Document => Value::Object(document_obj),
+        web_events::EventTargetId::Node(node_id) => {
+          get_or_create_node_wrapper(vm, scope, document_obj, Some(dom), node_id)?
+        }
+        web_events::EventTargetId::Opaque(id) => match registry.opaque_target_object(scope.heap(), id) {
+          Some(obj) => Value::Object(obj),
+          // Opaque EventTargets are stored as weak handles in the event registry. If the object is no
+          // longer alive (or the embedding cannot resolve it), return `null` for that composedPath
+          // entry per the "best effort" mapping strategy used across WindowRealm shims.
+          None => Value::Null,
+        },
+      };
+
+      let key = alloc_key(scope, &idx.to_string())?;
+      scope.define_property(array, key, data_desc(value))?;
+    }
+  }
+
+  let length_key = alloc_key(scope, "length")?;
+  scope.define_property(
+    array,
+    length_key,
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: false,
+      kind: PropertyKind::Data {
+        value: Value::Number(path_targets.len() as f64),
+        writable: true,
+      },
+    },
+  )?;
+
+  Ok(Value::Object(array))
+}
+
 fn event_target_constructor_native(
   _vm: &mut Vm,
   _scope: &mut Scope<'_>,
@@ -17718,6 +17827,23 @@ fn init_window_globals(
     event_proto,
     stop_immediate_key,
     data_desc(Value::Object(stop_immediate_func)),
+  )?;
+
+  let composed_path_call_id = vm.register_native_call(event_prototype_composed_path_native)?;
+  let composed_path_name = scope.alloc_string("composedPath")?;
+  scope.push_root(Value::String(composed_path_name))?;
+  let composed_path_func =
+    scope.alloc_native_function(composed_path_call_id, None, composed_path_name, 0)?;
+  scope.heap_mut().object_set_prototype(
+    composed_path_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(composed_path_func))?;
+  let composed_path_key = alloc_key(&mut scope, "composedPath")?;
+  scope.define_property(
+    event_proto,
+    composed_path_key,
+    data_desc(Value::Object(composed_path_func)),
   )?;
 
   let custom_event_proto = scope.alloc_object()?;

@@ -1396,6 +1396,155 @@ document.body.dispatchEvent(new Event('x'));
 }
 
 #[test]
+fn event_composed_path_includes_dom_ancestors() -> Result<()> {
+  let renderer_dom =
+    fastrender::dom::parse_html("<!doctype html><html><head></head><body></body></html>")?;
+  let mut host = host_state_from_renderer_dom(&renderer_dom, "https://example.com/")?;
+  let mut event_loop = EventLoop::<WindowHostState>::new();
+
+  host.exec_script_in_event_loop(
+    &mut event_loop,
+    r#"
+globalThis.__empty_len = new Event('z').composedPath().length;
+
+globalThis.__cp_len = 0;
+globalThis.__cp_first_is_target = false;
+globalThis.__cp_last_is_window = false;
+globalThis.__cp_contains_document = false;
+globalThis.__cp_ids = "";
+globalThis.__target_id = 0;
+
+const target = document.createElement('div');
+document.body.appendChild(target);
+globalThis.__target_id = target.__fastrender_node_id;
+
+target.addEventListener('x', (e) => {
+  const path = e.composedPath();
+  globalThis.__cp_len = path.length;
+  globalThis.__cp_first_is_target = (path[0] === e.target);
+  globalThis.__cp_last_is_window = (path[path.length - 1] === window);
+  globalThis.__cp_contains_document = false;
+  for (const item of path) {
+    if (item === document) globalThis.__cp_contains_document = true;
+  }
+  globalThis.__cp_ids = path.map((item) => {
+    if (item === window) return "window";
+    if (item === document) return "document";
+    if (item && typeof item === "object" && "__fastrender_node_id" in item) return String(item.__fastrender_node_id);
+    return "null";
+  }).join(",");
+});
+
+target.dispatchEvent(new Event('x', { bubbles: true }));
+"#,
+  )?;
+
+  // `dispatchEvent` is synchronous, but run a checkpoint anyway to ensure any nested microtasks
+  // don't affect assertions.
+  event_loop.perform_microtask_checkpoint(&mut host)?;
+
+  let (empty_len, target_id, cp_len, first_is_target, last_is_window, contains_document, cp_ids) = {
+    let window = host.window_mut();
+    let global = window.global_object();
+    let (_vm, heap) = window.vm_and_heap_mut();
+    let mut scope = heap.scope();
+    (
+      get_data_prop(&mut scope, global, "__empty_len"),
+      get_data_prop(&mut scope, global, "__target_id"),
+      get_data_prop(&mut scope, global, "__cp_len"),
+      get_data_prop(&mut scope, global, "__cp_first_is_target"),
+      get_data_prop(&mut scope, global, "__cp_last_is_window"),
+      get_data_prop(&mut scope, global, "__cp_contains_document"),
+      get_data_prop(&mut scope, global, "__cp_ids"),
+    )
+  };
+
+  assert_eq!(empty_len, Value::Number(0.0));
+  assert_eq!(first_is_target, Value::Bool(true));
+  assert_eq!(last_is_window, Value::Bool(true));
+  assert_eq!(contains_document, Value::Bool(true));
+
+  let target_id = match target_id {
+    Value::Number(n) => n as usize,
+    other => {
+      return Err(Error::Other(format!(
+        "expected __target_id to be a number, got {other:?}"
+      )))
+    }
+  };
+  let cp_len = match cp_len {
+    Value::Number(n) => n as usize,
+    other => {
+      return Err(Error::Other(format!(
+        "expected __cp_len to be a number, got {other:?}"
+      )))
+    }
+  };
+  assert!(
+    cp_len >= 4,
+    "expected composedPath length >= 4, got {cp_len}"
+  );
+
+  let ids = {
+    let window = host.window_mut();
+    let (_vm, heap) = window.vm_and_heap_mut();
+    get_string(heap, cp_ids)
+  };
+  assert!(
+    ids.starts_with(&format!("{target_id},")),
+    "expected __cp_ids to start with the target node id ({target_id}), got {ids:?}"
+  );
+  assert!(
+    ids.ends_with("document,window"),
+    "expected __cp_ids to end with document,window, got {ids:?}"
+  );
+  Ok(())
+}
+
+#[test]
+fn event_composed_path_supports_opaque_event_targets() -> Result<()> {
+  let renderer_dom =
+    fastrender::dom::parse_html("<!doctype html><html><head></head><body></body></html>")?;
+  let mut host = host_state_from_renderer_dom(&renderer_dom, "https://example.com/")?;
+  let mut event_loop = EventLoop::<WindowHostState>::new();
+
+  host.exec_script_in_event_loop(
+    &mut event_loop,
+    r#"
+globalThis.__ok = false;
+
+const parent = new EventTarget();
+const child = new EventTarget(parent);
+
+child.addEventListener('x', (e) => {
+  const path = e.composedPath();
+  globalThis.__ok = (
+    path.length === 2 &&
+    path[0] === child &&
+    path[1] === parent &&
+    !path.includes(window) &&
+    !path.includes(document)
+  );
+});
+
+child.dispatchEvent(new Event('x', { bubbles: true }));
+"#,
+  )?;
+
+  event_loop.perform_microtask_checkpoint(&mut host)?;
+
+  let ok = {
+    let window = host.window_mut();
+    let global = window.global_object();
+    let (_vm, heap) = window.vm_and_heap_mut();
+    let mut scope = heap.scope();
+    get_data_prop(&mut scope, global, "__ok")
+  };
+  assert_eq!(ok, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
 fn promise_rejection_event_tasks_can_mutate_dom() -> Result<()> {
   let renderer_dom =
     fastrender::dom::parse_html("<!doctype html><html><head></head><body></body></html>")?;
