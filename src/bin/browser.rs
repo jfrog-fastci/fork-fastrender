@@ -4761,9 +4761,8 @@ impl App {
   }
 
   fn sync_about_newtab_bookmarks_snapshot(&self) {
-    fastrender::ui::about_pages::set_about_snapshot_from_stores(
+    fastrender::ui::about_pages::sync_about_page_snapshot_bookmarks_from_bookmark_store(
       &self.bookmarks,
-      &self.browser_state.history,
     );
   }
 

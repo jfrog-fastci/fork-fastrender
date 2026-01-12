@@ -76,6 +76,14 @@ pub fn sync_about_page_snapshot_history_from_global_history_store(store: &Global
   guard.history = history;
 }
 
+pub fn sync_about_page_snapshot_bookmarks_from_bookmark_store(store: &BookmarkStore) {
+  let bookmarks = bookmark_snapshots_from_store(store);
+  let mut guard = about_page_snapshot_lock()
+    .write()
+    .unwrap_or_else(|poisoned| poisoned.into_inner());
+  guard.bookmarks = bookmarks;
+}
+
 fn bookmark_snapshots_from_store(bookmarks: &BookmarkStore) -> Vec<BookmarkSnapshot> {
   let mut out = Vec::new();
   let mut seen = std::collections::HashSet::<BookmarkId>::new();
