@@ -29,6 +29,7 @@ fn module_namespace_is_exotic_and_spec_shaped() -> Result<(), VmError> {
   graph.add_module_with_specifier(
     "a.js",
     SourceTextModuleRecord::parse(
+      &mut heap,
       r#"
         export const a = 2;
         export let x = 1;
@@ -38,6 +39,7 @@ fn module_namespace_is_exotic_and_spec_shaped() -> Result<(), VmError> {
   let consumer = graph.add_module_with_specifier(
     "consumer.js",
     SourceTextModuleRecord::parse(
+      &mut heap,
       r#"
         import * as ns from "a.js";
 

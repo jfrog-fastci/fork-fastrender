@@ -550,11 +550,11 @@ fn tla_reexport_from_dependency_is_awaited() -> Result<(), VmError> {
     let mut graph = ModuleGraph::new();
     graph.add_module_with_specifier(
       "dep.js",
-      SourceTextModuleRecord::parse("export const v = await Promise.resolve(7);")?,
+      SourceTextModuleRecord::parse(&mut heap, "export const v = await Promise.resolve(7);")?,
     );
     let reexport = graph.add_module_with_specifier(
       "reexport.js",
-      SourceTextModuleRecord::parse("export { v } from 'dep.js';")?,
+      SourceTextModuleRecord::parse(&mut heap, "export { v } from 'dep.js';")?,
     );
     graph.link_all_by_specifier();
 

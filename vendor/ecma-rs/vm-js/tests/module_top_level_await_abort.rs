@@ -161,6 +161,7 @@ fn evaluate_returns_same_promise_while_tla_pending() -> Result<(), VmError> {
 
   let mut graph = ModuleGraph::new();
   let entry = graph.add_module(SourceTextModuleRecord::parse(
+    &mut heap,
     "await new Promise(() => {}); export const x = 1;",
   )?);
 

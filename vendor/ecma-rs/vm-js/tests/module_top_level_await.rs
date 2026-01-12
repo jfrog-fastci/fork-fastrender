@@ -814,6 +814,7 @@ fn for_await_of_and_await_in_initializer_work_in_modules() -> Result<(), VmError
   let m = graph.add_module_with_specifier(
     "m.js",
     SourceTextModuleRecord::parse(
+      &mut heap,
       r#"
         export const init = await Promise.resolve(2);
         export let out = 0;
@@ -898,6 +899,7 @@ fn top_level_await_in_for_of_lhs_destructuring_default_value_executes() -> Resul
   let m = graph.add_module_with_specifier(
     "m.js",
     SourceTextModuleRecord::parse(
+      &mut heap,
       r#"
         export let out = "bad";
         for (const { x = await Promise.resolve("ok") } of [ {} ]) { out = x; }
@@ -965,6 +967,7 @@ fn await_rejection_is_catchable_in_modules() -> Result<(), VmError> {
   let m = graph.add_module_with_specifier(
     "m.js",
     SourceTextModuleRecord::parse(
+      &mut heap,
       r#"
         export let out = "unset";
         try {
@@ -1037,6 +1040,7 @@ fn await_promise_resolve_constructor_getter_throw_is_catchable_in_modules() -> R
   let m = graph.add_module_with_specifier(
     "m.js",
     SourceTextModuleRecord::parse(
+      &mut heap,
       r#"
         export let out = "unset";
         const p = Promise.resolve(1);
@@ -1109,6 +1113,7 @@ fn multiple_top_level_awaits_reuse_continuation_without_leaking() -> Result<(), 
   let m = graph.add_module_with_specifier(
     "m.js",
     SourceTextModuleRecord::parse(
+      &mut heap,
       r#"
         export let resolve1;
         export let resolve2;

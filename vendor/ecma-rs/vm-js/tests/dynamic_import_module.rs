@@ -621,8 +621,9 @@ fn dynamic_import_uses_callback_module_as_referrer_in_promise_job() -> Result<()
   let mut realm = Realm::new(&mut vm, &mut heap)?;
 
   let mut modules = ModuleGraph::new();
-  let dep = modules.add_module(SourceTextModuleRecord::parse("export const x = 1;")?);
+  let dep = modules.add_module(SourceTextModuleRecord::parse(&mut heap, "export const x = 1;")?);
   let m = modules.add_module(SourceTextModuleRecord::parse(
+    &mut heap,
     "export const p = Promise.resolve().then(() => import('./dep.js'));",
   )?);
 
