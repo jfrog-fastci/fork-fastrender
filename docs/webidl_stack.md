@@ -14,7 +14,7 @@ stack (see also: [`instructions/ecma_rs_ownership.md`](../instructions/ecma_rs_o
 
 Runtime-independent WebIDL implementation:
 
-- WebIDL IR / IDL model and parsing utilities
+- WebIDL IR / IDL model and parsing utilities (`webidl::ir`)
 - WebIDL conversions (JS ↔ IDL) and helpers (`DOMString`/`USVString`, numeric conversions,
   sequences/records/unions, etc.)
 - Overload resolution (the WebIDL overload selection algorithm)
@@ -48,6 +48,9 @@ If the legacy heap-only runtime adapter is still present, it lives here.
 
 This layer exists for migration/testing where older heap-only bindings/runtime code is still
 referenced. Prefer the realm-based `webidl-vm-js` path for new bindings work.
+
+FastRender continues to expose this layer under `fastrender::js::webidl::legacy` while migration is
+in progress.
 
 ### `src/js/webidl/*` (FastRender-specific)
 
@@ -113,10 +116,10 @@ Run the tests that correspond to what you changed:
 bash scripts/cargo_agent.sh check -p fastrender --quiet
 
 # webidl crate tests (vendored ecma-rs workspace).
-bash scripts/cargo_agent.sh test --manifest-path vendor/ecma-rs/Cargo.toml -p webidl
+bash vendor/ecma-rs/scripts/cargo_agent.sh test -p webidl
 
 # webidl-vm-js adapter tests.
-bash scripts/cargo_agent.sh test --manifest-path vendor/ecma-rs/Cargo.toml -p webidl-vm-js
+bash vendor/ecma-rs/scripts/cargo_agent.sh test -p webidl-vm-js
 
 # Binding generator goldens / snapshot checks.
 bash scripts/cargo_agent.sh test -p xtask --test webidl_bindings_snapshots_up_to_date
