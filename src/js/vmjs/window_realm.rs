@@ -41744,6 +41744,7 @@ mod tests {
       client_y: 34.0,
       button: 0,
       buttons: 1,
+      detail: 1,
       ctrl_key: true,
       shift_key: false,
       alt_key: true,
