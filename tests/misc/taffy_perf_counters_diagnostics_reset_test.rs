@@ -50,14 +50,17 @@ fn find_text_fragment_bounds(fragment: &FragmentNode, offset: Point, needle: &st
 #[test]
 fn taffy_perf_counters_reset_between_diagnostics_renders() {
   let _lock = super::global_test_lock();
-  let config = FastRenderConfig::default()
-    .with_font_sources(FontConfig::bundled_only())
-    .with_runtime_toggles(RuntimeToggles::from_map(HashMap::new()));
+  let toggles = RuntimeToggles::from_map(HashMap::from([(
+    "FASTR_DIAGNOSTICS_LEVEL".to_string(),
+    "none".to_string(),
+  )]));
+  let config = FastRenderConfig::default().with_font_sources(FontConfig::bundled_only());
   let mut renderer = FastRender::with_config(config).expect("renderer");
 
   let options = RenderOptions::default()
     .with_viewport(200, 200)
-    .with_diagnostics_level(DiagnosticsLevel::Basic);
+    .with_diagnostics_level(DiagnosticsLevel::Basic)
+    .with_runtime_toggles(toggles.clone());
 
   let html_with_taffy = r#"<!doctype html>
     <html>
@@ -126,7 +129,8 @@ fn taffy_perf_counters_reset_between_diagnostics_renders() {
   // When diagnostics are disabled, stats (including taffy counters) must not be captured.
   let disabled_options = RenderOptions::default()
     .with_viewport(200, 200)
-    .with_diagnostics_level(DiagnosticsLevel::None);
+    .with_diagnostics_level(DiagnosticsLevel::None)
+    .with_runtime_toggles(toggles);
   let result = renderer
     .render_html_with_diagnostics(html_with_taffy, disabled_options)
     .expect("render with diagnostics disabled");
@@ -139,14 +143,17 @@ fn taffy_perf_counters_reset_between_diagnostics_renders() {
 #[test]
 fn taffy_perf_counters_do_not_reset_between_layout_passes_in_one_render() {
   let _lock = super::global_test_lock();
-  let config = FastRenderConfig::default()
-    .with_font_sources(FontConfig::bundled_only())
-    .with_runtime_toggles(RuntimeToggles::from_map(HashMap::new()));
+  let toggles = RuntimeToggles::from_map(HashMap::from([(
+    "FASTR_DIAGNOSTICS_LEVEL".to_string(),
+    "none".to_string(),
+  )]));
+  let config = FastRenderConfig::default().with_font_sources(FontConfig::bundled_only());
   let mut renderer = FastRender::with_config(config).expect("renderer");
 
   let options = RenderOptions::default()
     .with_viewport(300, 200)
-    .with_diagnostics_level(DiagnosticsLevel::Basic);
+    .with_diagnostics_level(DiagnosticsLevel::Basic)
+    .with_runtime_toggles(toggles);
 
   // This document triggers two layout passes via container queries:
   // 1) First layout runs without container query context, so `.target` uses `display:flex` and
@@ -227,9 +234,15 @@ fn taffy_perf_counters_do_not_leak_between_overlapping_diagnostics_renders() {
   // counters could be enabled before acquiring the diagnostics session lock, leaking counters
   // across renders.
 
+  let toggles = RuntimeToggles::from_map(HashMap::from([(
+    "FASTR_DIAGNOSTICS_LEVEL".to_string(),
+    "none".to_string(),
+  )]));
+
   let options = RenderOptions::default()
     .with_viewport(200, 200)
-    .with_diagnostics_level(DiagnosticsLevel::Basic);
+    .with_diagnostics_level(DiagnosticsLevel::Basic)
+    .with_runtime_toggles(toggles);
 
   let flex_html = r#"<!doctype html>
     <html>
@@ -278,9 +291,7 @@ fn taffy_perf_counters_do_not_leak_between_overlapping_diagnostics_renders() {
   let handle_a = std::thread::spawn({
     let options = options.clone();
     move || {
-      let config = FastRenderConfig::default()
-        .with_font_sources(FontConfig::bundled_only())
-        .with_runtime_toggles(RuntimeToggles::from_map(HashMap::new()));
+      let config = FastRenderConfig::default().with_font_sources(FontConfig::bundled_only());
       let mut renderer = FastRender::with_config(config).expect("renderer");
       renderer
         .render_html_with_diagnostics(flex_html, options)
@@ -311,9 +322,7 @@ fn taffy_perf_counters_do_not_leak_between_overlapping_diagnostics_renders() {
     let options = options.clone();
     move || {
       b_started_tx.send(()).ok();
-      let config = FastRenderConfig::default()
-        .with_font_sources(FontConfig::bundled_only())
-        .with_runtime_toggles(RuntimeToggles::from_map(HashMap::new()));
+      let config = FastRenderConfig::default().with_font_sources(FontConfig::bundled_only());
       let mut renderer = FastRender::with_config(config).expect("renderer");
       renderer
         .render_html_with_diagnostics(plain_html, options)
