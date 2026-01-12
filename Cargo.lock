@@ -5646,6 +5646,9 @@ dependencies = [
 [[package]]
 name = "webidl-ir"
 version = "0.1.0"
+dependencies = [
+ "webidl",
+]
 
 [[package]]
 name = "webidl-js-runtime"

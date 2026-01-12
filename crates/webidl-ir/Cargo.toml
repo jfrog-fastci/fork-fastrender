@@ -6,4 +6,4 @@ rust-version = "1.70"
 publish = false
 
 [dependencies]
-
+webidl = { path = "../../vendor/ecma-rs/webidl" }
