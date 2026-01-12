@@ -190,8 +190,8 @@ fn crypto_ctor_illegal_construct(
 fn crypto_get_random_values_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  host: &mut dyn VmHost,
-  hooks: &mut dyn VmHostHooks,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   _this: Value,
   args: &[Value],
@@ -219,98 +219,30 @@ fn crypto_get_random_values_native(
   //
   // We implement this by writing through a `Uint8Array` view:
   // - If the input is a native `Uint8Array`, write directly to it.
-  // - Otherwise, read `buffer`/`byteOffset`/`byteLength` and create a temporary `Uint8Array` view
-  //   over those bytes for efficient filling.
-  let (write_view_obj, byte_len) = if scope.heap().is_uint8_array_object(array_obj) {
-    let len = {
-      // Avoid holding the heap borrow across the subsequent write loop.
-      scope.heap().uint8_array_data(array_obj)?.len()
-    };
-    if len > MAX_GET_RANDOM_VALUES_BYTES {
-      // WebCrypto quota: 65536 bytes (measured on byteLength).
-      return Err(VmError::Throw(create_dom_exception_like(
-        &mut scope,
-        "QuotaExceededError",
-        "",
-      )?));
-    }
-    (array_obj, len)
+  // - Otherwise, create a temporary `Uint8Array` view over the same bytes for efficient filling.
+
+  // Spec: only integer typed arrays are accepted.
+  if !scope.heap().typed_array_is_integer_kind(array_obj)? {
+    return Err(VmError::TypeError(TYPE_ERROR_MSG));
+  }
+
+  let (buffer_obj, byte_offset, byte_len) = scope.heap().typed_array_view_bytes(array_obj)?;
+
+  // WebCrypto quota: 65536 bytes per call (measured on the view's byte length).
+  if byte_len > MAX_GET_RANDOM_VALUES_BYTES {
+    return Err(VmError::Throw(create_dom_exception_like(
+      &mut scope,
+      "QuotaExceededError",
+      "",
+    )?));
+  }
+
+  let write_view_obj = if scope.heap().is_uint8_array_object(array_obj) {
+    array_obj
   } else {
-    // --- Type check (spec: only integer TypedArray variants are accepted) ----------------------
-    let ctor_key = alloc_key(&mut scope, "constructor")?;
-    let ctor = vm.get_with_host_and_hooks(host, &mut scope, hooks, array_obj, ctor_key)?;
-    let Value::Object(ctor_obj) = ctor else {
-      return Err(VmError::TypeError(TYPE_ERROR_MSG));
-    };
-    scope.push_root(Value::Object(ctor_obj))?;
-
-    let name_key = alloc_key(&mut scope, "name")?;
-    let name_val = vm.get_with_host_and_hooks(host, &mut scope, hooks, ctor_obj, name_key)?;
-    let Value::String(name_s) = name_val else {
-      return Err(VmError::TypeError(TYPE_ERROR_MSG));
-    };
-    let name = scope.heap().get_string(name_s)?.to_utf8_lossy();
-    let is_integer_typed_array = matches!(
-      name.as_str(),
-      "Int8Array"
-        | "Uint8Array"
-        | "Uint8ClampedArray"
-        | "Int16Array"
-        | "Uint16Array"
-        | "Int32Array"
-        | "Uint32Array"
-    );
-    if !is_integer_typed_array {
-      return Err(VmError::TypeError(TYPE_ERROR_MSG));
-    }
-
-    // --- Extract view fields ------------------------------------------------------------------
-    let buffer_key = alloc_key(&mut scope, "buffer")?;
-    let byte_offset_key = alloc_key(&mut scope, "byteOffset")?;
-    let byte_length_key = alloc_key(&mut scope, "byteLength")?;
-
-    let buffer_val = vm.get_with_host_and_hooks(host, &mut scope, hooks, array_obj, buffer_key)?;
-    let Value::Object(buffer_obj) = buffer_val else {
-      return Err(VmError::TypeError(TYPE_ERROR_MSG));
-    };
-    if !scope.heap().is_array_buffer_object(buffer_obj) {
-      return Err(VmError::TypeError(TYPE_ERROR_MSG));
-    }
-
-    fn to_nonneg_usize(value: Value) -> Option<usize> {
-      match value {
-        Value::Number(n) if n.is_finite() && n >= 0.0 && n.fract() == 0.0 => {
-          if n > (usize::MAX as f64) {
-            None
-          } else {
-            Some(n as usize)
-          }
-        }
-        _ => None,
-      }
-    }
-
-    let byte_offset_val =
-      vm.get_with_host_and_hooks(host, &mut scope, hooks, array_obj, byte_offset_key)?;
-    let byte_offset = to_nonneg_usize(byte_offset_val).ok_or(VmError::TypeError(TYPE_ERROR_MSG))?;
-
-    let byte_length_val =
-      vm.get_with_host_and_hooks(host, &mut scope, hooks, array_obj, byte_length_key)?;
-    let byte_len = to_nonneg_usize(byte_length_val).ok_or(VmError::TypeError(TYPE_ERROR_MSG))?;
-
-    // WebCrypto quota: 65536 bytes per call (measured on the view's byte length).
-    if byte_len > MAX_GET_RANDOM_VALUES_BYTES {
-      return Err(VmError::Throw(create_dom_exception_like(
-        &mut scope,
-        "QuotaExceededError",
-        "",
-      )?));
-    }
-
     // Allocate a temporary Uint8Array view over the same bytes so we can populate it efficiently
     // via `Heap::uint8_array_write`.
-    let view = scope.alloc_uint8_array(buffer_obj, byte_offset, byte_len)?;
-    (view, byte_len)
+    scope.alloc_uint8_array(buffer_obj, byte_offset, byte_len)?
   };
 
   let mut offset = 0usize;
@@ -887,11 +819,28 @@ mod tests {
     .expect("create realm");
     install_typed_array_polyfills(&mut realm);
 
+    // Plain Float32Array must be rejected.
     let v = realm
       .exec_script(
         r#"
         (() => {
           try { crypto.getRandomValues(new Float32Array(4)); return "no-error"; }
+          catch (e) { return e && e.name || String(e); }
+        })()
+        "#,
+      )
+      .expect("script should catch and return");
+    assert_eq!(js_value_to_utf8(realm.heap(), v), "TypeError");
+
+    // Spoofing constructor/name should not bypass the integer TypedArray restriction.
+    let v = realm
+      .exec_script(
+        r#"
+        (() => {
+          const a = new Float32Array(4);
+          // `constructor` is inherited and writable on TypedArray prototypes; shadow it.
+          a.constructor = { name: "Int32Array" };
+          try { crypto.getRandomValues(a); return "no-error"; }
           catch (e) { return e && e.name || String(e); }
         })()
         "#,

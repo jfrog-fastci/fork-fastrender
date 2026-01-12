@@ -1233,6 +1233,61 @@ impl Heap {
     Ok(self.get_typed_array(obj)?.kind)
   }
 
+  /// Returns `true` if `obj` is an **integer** typed array (Int8/Uint8/Uint8Clamped/Int16/Uint16/Int32/Uint32).
+  ///
+  /// This is intended for host bindings like WebCrypto `crypto.getRandomValues`, which must reject
+  /// float typed arrays.
+  ///
+  /// # Errors
+  ///
+  /// Returns an error if `obj` is not a live typed array object.
+  pub fn typed_array_is_integer_kind(&self, obj: GcObject) -> Result<bool, VmError> {
+    let view = self.get_typed_array(obj)?;
+    Ok(matches!(
+      view.kind,
+      TypedArrayKind::Int8
+        | TypedArrayKind::Uint8
+        | TypedArrayKind::Uint8Clamped
+        | TypedArrayKind::Int16
+        | TypedArrayKind::Uint16
+        | TypedArrayKind::Int32
+        | TypedArrayKind::Uint32
+    ))
+  }
+
+  /// Returns `(buffer, byte_offset, byte_length)` for a typed array view.
+  ///
+  /// This is intended for host bindings that need to operate on the raw bytes covered by a typed
+  /// array (e.g. WebCrypto `crypto.getRandomValues`), while:
+  /// - respecting the view's `byteOffset`/`byteLength` internal slots
+  /// - rejecting detached or out-of-bounds views
+  ///
+  /// # Errors
+  ///
+  /// Returns:
+  /// - `InvalidHandle` if `obj` is not a live typed array object.
+  /// - `TypeError` if the backing ArrayBuffer is detached or the view is out of bounds.
+  pub fn typed_array_view_bytes(&self, obj: GcObject) -> Result<(GcObject, usize, usize), VmError> {
+    let view = self.get_typed_array(obj)?;
+    let buffer = view.viewed_array_buffer;
+    let byte_offset = view.byte_offset;
+    let byte_length = view.byte_length()?;
+
+    let buf = self.get_array_buffer(buffer)?;
+    let data = buf
+      .data
+      .as_deref()
+      .ok_or(VmError::TypeError("ArrayBuffer is detached"))?;
+    let end = byte_offset
+      .checked_add(byte_length)
+      .ok_or(VmError::InvariantViolation("TypedArray byte offset overflow"))?;
+    if end > data.len() {
+      return Err(VmError::TypeError("TypedArray view out of bounds"));
+    }
+
+    Ok((buffer, byte_offset, byte_length))
+  }
+
   fn typed_array_view_is_out_of_bounds(&self, view: &JsTypedArray) -> Result<bool, VmError> {
     // Detached buffers count as out-of-bounds.
     let buf = self.get_array_buffer(view.viewed_array_buffer)?;
