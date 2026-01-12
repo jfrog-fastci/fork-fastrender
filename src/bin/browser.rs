@@ -849,6 +849,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     window.set_fullsize_content_view(true);
   }
 
+  let ui_scale = fastrender::ui::theme::resolve_ui_scale(
+    fastrender::ui::theme::ui_scale_from_env(),
+    startup_session.ui_scale,
+  );
+
   let (ui_to_worker_tx, worker_to_ui_rx, worker_join) =
     fastrender::ui::spawn_browser_ui_worker("fastr-browser-ui-worker")?;
 
@@ -900,6 +905,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     history_path,
     bookmarks,
     history,
+    ui_scale,
   )?;
   app.startup(startup_session);
   match fastrender::ui::ProfileAutosaveHandle::spawn(
@@ -920,7 +926,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     //
     // This is the crash marker: if the process is terminated unexpectedly, `did_exit_cleanly`
     // remains false on disk and the next launch can restore + log.
-    let mut session = fastrender::ui::BrowserSession::from_app_state(&app.browser_state);
+    let mut session =
+      fastrender::ui::BrowserSession::from_app_state(&app.browser_state, app.ui_scale);
     session.windows[session.active_window_index].window_state = capture_window_state(&app.window);
     session.did_exit_cleanly = false;
     autosave.request_save_immediate(session);
@@ -962,7 +969,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     // threads) explicitly when the loop is torn down.
     if matches!(event, Event::LoopDestroyed) {
       if let Some(mut app) = app.take() {
-        let mut session = fastrender::ui::BrowserSession::from_app_state(&app.browser_state);
+        let mut session =
+          fastrender::ui::BrowserSession::from_app_state(&app.browser_state, app.ui_scale);
         session.windows[session.active_window_index].window_state = capture_window_state(&app.window);
         session.did_exit_cleanly = true;
 
@@ -1027,7 +1035,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
       let Some(autosave) = session_autosave.as_ref() else {
         return;
       };
-      let mut session = fastrender::ui::BrowserSession::from_app_state(&app.browser_state);
+      let mut session =
+        fastrender::ui::BrowserSession::from_app_state(&app.browser_state, app.ui_scale);
       session.windows[session.active_window_index].window_state = capture_window_state(&app.window);
       session.did_exit_cleanly = false;
       autosave.request_save(session);
@@ -1834,6 +1843,7 @@ struct App {
   egui_state: egui_winit::State,
   egui_renderer: egui_wgpu::Renderer,
   pixels_per_point: f32,
+  ui_scale: f32,
   browser_limits: fastrender::ui::browser_limits::BrowserLimits,
   page_texture_filter_policy: PageTextureFilterPolicy,
   theme_override: Option<fastrender::ui::theme::ThemeMode>,
@@ -1997,7 +2007,11 @@ impl App {
       }
       _ => fastrender::ui::theme::BrowserTheme::light(self.theme_accent),
     };
-    fastrender::ui::theme::apply_browser_theme(&self.egui_ctx, &self.theme);
+    fastrender::ui::theme::apply_browser_theme_with_ui_scale(
+      &self.egui_ctx,
+      &self.theme,
+      self.ui_scale,
+    );
 
     let bg = self.theme.colors.bg;
     self.clear_color = wgpu::Color {
@@ -2106,6 +2120,7 @@ impl App {
     history_path: std::path::PathBuf,
     bookmarks: fastrender::ui::BookmarkStore,
     history: fastrender::ui::GlobalHistoryStore,
+    ui_scale: f32,
   ) -> Result<Self, Box<dyn std::error::Error>> {
     // Enable OS IME integration (WindowEvent::Ime) so the page can handle non-Latin input methods.
     // Egui manages IME for chrome text fields; we forward IME events to the page when appropriate.
@@ -2124,7 +2139,7 @@ impl App {
       }
       _ => fastrender::ui::theme::BrowserTheme::light(theme_accent),
     };
-    fastrender::ui::theme::apply_browser_theme(&egui_ctx, &theme);
+    fastrender::ui::theme::apply_browser_theme_with_ui_scale(&egui_ctx, &theme, ui_scale);
     let clear_color = {
       let bg = theme.colors.bg;
       wgpu::Color {
@@ -2192,6 +2207,7 @@ impl App {
       egui_state,
       egui_renderer,
       pixels_per_point,
+      ui_scale,
       browser_limits: fastrender::ui::browser_limits::BrowserLimits::from_env(),
       page_texture_filter_policy: PageTextureFilterPolicy::from_env(),
       theme_override,

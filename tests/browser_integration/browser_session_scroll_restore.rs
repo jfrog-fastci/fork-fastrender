@@ -109,6 +109,7 @@ fn browser_session_restores_scroll_position_via_scroll_to() {
     }],
     active_window_index: 0,
     did_exit_cleanly: true,
+    ui_scale: None,
   }
   .sanitized();
 

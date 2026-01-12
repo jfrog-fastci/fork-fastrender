@@ -4,6 +4,7 @@
 
 use crate::ui::about_pages;
 use crate::ui::browser_app::BrowserAppState;
+use crate::ui::theme;
 use crate::ui::validate_user_navigation_url_scheme;
 use crate::ui::zoom;
 use fs2::FileExt;
@@ -145,6 +146,8 @@ pub struct BrowserSession {
   /// preserve the old semantics (sessions were only written on clean shutdown).
   #[serde(default = "default_did_exit_cleanly", skip_serializing_if = "is_true")]
   pub did_exit_cleanly: bool,
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  pub ui_scale: Option<f32>,
 }
 
 impl BrowserSession {
@@ -162,6 +165,7 @@ impl BrowserSession {
       }],
       active_window_index: 0,
       did_exit_cleanly: true,
+      ui_scale: None,
     }
     .sanitized()
   }
@@ -169,7 +173,8 @@ impl BrowserSession {
   /// Build a session snapshot from the current windowed UI state model.
   ///
   /// This intentionally stores only lightweight serializable data (URLs, zoom, viewport scroll).
-  pub fn from_app_state(app: &BrowserAppState) -> Self {
+  pub fn from_app_state(app: &BrowserAppState, ui_scale: f32) -> Self {
+    let ui_scale = theme::clamp_ui_scale(ui_scale);
     let mut tabs = Vec::new();
     for tab in &app.tabs {
       let mut url = tab
@@ -213,6 +218,7 @@ impl BrowserSession {
       }],
       active_window_index: 0,
       did_exit_cleanly: true,
+      ui_scale: (ui_scale != theme::DEFAULT_UI_SCALE).then_some(ui_scale),
     }
     .sanitized()
   }
@@ -242,6 +248,11 @@ impl BrowserSession {
     self.active_window_index = self
       .active_window_index
       .min(self.windows.len().saturating_sub(1));
+
+    self.ui_scale = self
+      .ui_scale
+      .map(|raw| theme::clamp_ui_scale(raw))
+      .and_then(|scale| (scale != theme::DEFAULT_UI_SCALE).then_some(scale));
 
     self
   }
@@ -344,6 +355,7 @@ mod tests {
       }],
       active_window_index: 0,
       did_exit_cleanly: true,
+      ui_scale: None,
     }
     .sanitized();
 
@@ -413,6 +425,7 @@ mod tests {
       }],
       active_window_index: 0,
       did_exit_cleanly: true,
+      ui_scale: None,
     }
     .sanitized();
 
@@ -450,7 +463,7 @@ mod tests {
     app.push_tab(a, true);
     app.push_tab(b, false);
 
-    let session = BrowserSession::from_app_state(&app);
+    let session = BrowserSession::from_app_state(&app, theme::DEFAULT_UI_SCALE);
     assert_eq!(session.active_window_index, 0);
     assert_eq!(session.windows[0].active_tab_index, 0);
     assert_eq!(
@@ -468,6 +481,7 @@ mod tests {
         },
       ]
     );
+    assert_eq!(session.ui_scale, None);
   }
 
   #[test]
@@ -530,6 +544,7 @@ mod tests {
       ],
       active_window_index: 999,
       did_exit_cleanly: true,
+      ui_scale: None,
     }
     .sanitized();
 
@@ -566,6 +581,7 @@ mod tests {
       }],
       active_window_index: 0,
       did_exit_cleanly: true,
+      ui_scale: None,
     }
     .sanitized();
 
@@ -737,6 +753,7 @@ fn v1_into_v2(v1: BrowserSessionV1) -> BrowserSession {
     }],
     active_window_index: 0,
     did_exit_cleanly: true,
+    ui_scale: None,
   }
 }
 

@@ -126,7 +126,6 @@ pub struct Intrinsics {
 
   // Revocation function created by `Proxy.revocable`.
   proxy_revoker_call: NativeFunctionId,
-
   class_constructor_call: NativeFunctionId,
   class_constructor_construct: NativeConstructId,
 }
@@ -5400,7 +5399,6 @@ impl Intrinsics {
       promise_all_resolve_element_call,
       promise_all_settled_element_call,
       promise_any_reject_element_call,
-
       proxy_revoker_call,
 
       class_constructor_call,

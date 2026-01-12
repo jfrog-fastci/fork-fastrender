@@ -7,6 +7,48 @@ use egui::epaint::Shadow;
 pub const ENV_BROWSER_THEME: &str = "FASTR_BROWSER_THEME";
 pub const ENV_BROWSER_ACCENT: &str = "FASTR_BROWSER_ACCENT";
 
+/// Environment variable for overriding the browser chrome UI scale.
+///
+/// This affects only the egui-based chrome (font sizes / widget sizing) and intentionally does
+/// **not** affect per-tab page zoom.
+pub const ENV_UI_SCALE: &str = "FASTR_BROWSER_UI_SCALE";
+
+/// Default UI scale factor when unset.
+pub const DEFAULT_UI_SCALE: f32 = 1.0;
+
+/// Minimum allowed UI scale factor.
+pub const MIN_UI_SCALE: f32 = 0.75;
+
+/// Maximum allowed UI scale factor.
+pub const MAX_UI_SCALE: f32 = 2.0;
+
+pub fn clamp_ui_scale(ui_scale: f32) -> f32 {
+  if !ui_scale.is_finite() {
+    return DEFAULT_UI_SCALE;
+  }
+  ui_scale.clamp(MIN_UI_SCALE, MAX_UI_SCALE)
+}
+
+pub fn ui_scale_from_str(raw: &str) -> Option<f32> {
+  let raw = raw.trim();
+  if raw.is_empty() {
+    return None;
+  }
+  let raw = raw.replace('_', "");
+  let value = raw.parse::<f32>().ok()?;
+  (value.is_finite()).then_some(clamp_ui_scale(value))
+}
+
+/// Returns `Some(scale)` when the env var is set to a valid float, otherwise `None`.
+pub fn ui_scale_from_env() -> Option<f32> {
+  let raw = std::env::var(ENV_UI_SCALE).ok()?;
+  ui_scale_from_str(&raw)
+}
+
+pub fn resolve_ui_scale(env_override: Option<f32>, session: Option<f32>) -> f32 {
+  clamp_ui_scale(env_override.or(session).unwrap_or(DEFAULT_UI_SCALE))
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ThemeMode {
   System,
@@ -325,30 +367,38 @@ fn build_font_definitions() -> FontDefinitions {
 }
 
 pub fn apply_browser_theme(ctx: &egui::Context, theme: &BrowserTheme) {
+  let ui_scale = DEFAULT_UI_SCALE;
+  apply_browser_theme_with_ui_scale(ctx, theme, ui_scale);
+}
+
+pub fn apply_browser_theme_with_ui_scale(ctx: &egui::Context, theme: &BrowserTheme, ui_scale: f32) {
+  let ui_scale = clamp_ui_scale(ui_scale);
   ctx.set_fonts(build_font_definitions());
 
   let mut style: Style = (*ctx.style()).clone();
 
   // Typography.
+  let base = theme.typography.base_font_size * ui_scale;
+  let mono = theme.typography.monospace_font_size * ui_scale;
   style.text_styles.insert(
     egui::TextStyle::Body,
-    FontId::new(theme.typography.base_font_size, FontFamily::Proportional),
+    FontId::new(base, FontFamily::Proportional),
   );
   style.text_styles.insert(
     egui::TextStyle::Button,
-    FontId::new(theme.typography.base_font_size, FontFamily::Proportional),
+    FontId::new(base, FontFamily::Proportional),
   );
   style.text_styles.insert(
     egui::TextStyle::Monospace,
-    FontId::new(theme.typography.monospace_font_size, FontFamily::Monospace),
+    FontId::new(mono, FontFamily::Monospace),
   );
   style.text_styles.insert(
     egui::TextStyle::Small,
-    FontId::new(theme.typography.base_font_size * 0.9, FontFamily::Proportional),
+    FontId::new(base * 0.9, FontFamily::Proportional),
   );
   style.text_styles.insert(
     egui::TextStyle::Heading,
-    FontId::new(theme.typography.base_font_size * 1.25, FontFamily::Proportional),
+    FontId::new(base * 1.25, FontFamily::Proportional),
   );
 
   // Spacing / sizing.
@@ -428,6 +478,9 @@ pub fn apply_browser_theme(ctx: &egui::Context, theme: &BrowserTheme) {
 #[cfg(test)]
 mod tests {
   use super::*;
+  use std::sync::Mutex;
+
+  static ENV_LOCK: Mutex<()> = Mutex::new(());
 
   #[test]
   fn parse_browser_theme_env() {
@@ -502,5 +555,53 @@ mod tests {
     );
     assert_eq!(parse_hex_color("not-a-color"), None);
     assert_eq!(parse_hex_color("#12"), None);
+  }
+
+  #[test]
+  fn clamp_ui_scale_defaults_and_clamps() {
+    assert_eq!(clamp_ui_scale(f32::NAN), DEFAULT_UI_SCALE);
+    assert_eq!(clamp_ui_scale(f32::INFINITY), DEFAULT_UI_SCALE);
+    assert_eq!(clamp_ui_scale(f32::NEG_INFINITY), DEFAULT_UI_SCALE);
+
+    assert_eq!(clamp_ui_scale(0.1), MIN_UI_SCALE);
+    assert_eq!(clamp_ui_scale(10.0), MAX_UI_SCALE);
+    assert_eq!(clamp_ui_scale(1.25), 1.25);
+  }
+
+  #[test]
+  fn ui_scale_from_str_parses_and_clamps() {
+    assert_eq!(ui_scale_from_str(""), None);
+    assert_eq!(ui_scale_from_str("   "), None);
+    assert_eq!(ui_scale_from_str("nope"), None);
+    assert_eq!(ui_scale_from_str("NaN"), None);
+
+    assert_eq!(ui_scale_from_str("1.0"), Some(1.0));
+    assert_eq!(ui_scale_from_str(" 1.25 "), Some(1.25));
+    assert_eq!(ui_scale_from_str("0.5"), Some(MIN_UI_SCALE));
+    assert_eq!(ui_scale_from_str("2.5"), Some(MAX_UI_SCALE));
+  }
+
+  #[test]
+  fn ui_scale_from_env_parses_and_clamps() {
+    let _lock = ENV_LOCK.lock().unwrap();
+
+    let original = std::env::var_os(ENV_UI_SCALE);
+
+    std::env::remove_var(ENV_UI_SCALE);
+    assert_eq!(ui_scale_from_env(), None);
+
+    std::env::set_var(ENV_UI_SCALE, "1.5");
+    assert_eq!(ui_scale_from_env(), Some(1.5));
+
+    std::env::set_var(ENV_UI_SCALE, "1000");
+    assert_eq!(ui_scale_from_env(), Some(MAX_UI_SCALE));
+
+    std::env::set_var(ENV_UI_SCALE, "nope");
+    assert_eq!(ui_scale_from_env(), None);
+
+    match original {
+      Some(v) => std::env::set_var(ENV_UI_SCALE, v),
+      None => std::env::remove_var(ENV_UI_SCALE),
+    }
   }
 }
