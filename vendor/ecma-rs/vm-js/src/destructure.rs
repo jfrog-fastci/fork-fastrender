@@ -527,6 +527,67 @@ fn bind_object_pattern(
   let intr = vm
     .intrinsics()
     .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+
+  // Rest property assignment (e.g. `{...obj[prop]} = source`) must evaluate the LHS reference
+  // before copying properties from the source object. Otherwise, getters (or a large source object)
+  // could run before an abrupt LHS evaluation.
+  enum RestAssignmentTarget<'a> {
+    Binding(ResolvedBinding<'a>),
+    Member { base: Value, key: &'a str },
+    ComputedMember { base: Value, key_value: Value },
+  }
+
+  let mut rest_assignment_target: Option<RestAssignmentTarget<'_>> = None;
+  if matches!(kind, BindingKind::Assignment) {
+    match &*rest_pat.stx {
+      Pat::Id(id) => {
+        let binding = env.resolve_binding_reference(vm, host, hooks, scope, &id.stx.name)?;
+        rest_assignment_target = Some(RestAssignmentTarget::Binding(binding));
+      }
+      Pat::AssignTarget(target) => {
+        let target_ref = (|| -> Result<Option<RestAssignmentTarget<'_>>, VmError> {
+          match &*target.stx {
+            Expr::Id(id) => Ok(Some(RestAssignmentTarget::Binding(
+              env.resolve_binding_reference(vm, host, hooks, scope, &id.stx.name)?,
+            ))),
+            Expr::IdPat(id) => Ok(Some(RestAssignmentTarget::Binding(
+              env.resolve_binding_reference(vm, host, hooks, scope, &id.stx.name)?,
+            ))),
+            Expr::Member(member) => {
+              if member.stx.optional_chaining {
+                return Err(VmError::Unimplemented("optional chaining assignment target"));
+              }
+
+              let base = eval_expr(vm, host, hooks, env, strict, this, scope, &member.stx.left)?;
+              let base = scope.push_root(base)?;
+              Ok(Some(RestAssignmentTarget::Member {
+                base,
+                key: &member.stx.right,
+              }))
+            }
+            Expr::ComputedMember(member) => {
+              if member.stx.optional_chaining {
+                return Err(VmError::Unimplemented("optional chaining assignment target"));
+              }
+
+              let base = eval_expr(vm, host, hooks, env, strict, this, scope, &member.stx.object)?;
+              let base = scope.push_root(base)?;
+              let key_value =
+                eval_expr(vm, host, hooks, env, strict, this, scope, &member.stx.member)?;
+              let key_value = scope.push_root(key_value)?;
+              Ok(Some(RestAssignmentTarget::ComputedMember { base, key_value }))
+            }
+            _ => Ok(None),
+          }
+        })();
+        match target_ref {
+          Ok(v) => rest_assignment_target = v,
+          Err(err) => return Err(err),
+        }
+      }
+      _ => {}
+    }
+  }
   // `...rest` uses `ObjectCreate(%Object.prototype%)` / `CopyDataProperties`.
   let rest_obj = scope.alloc_object_with_prototype(Some(intr.object_prototype()))?;
   scope.push_root(Value::Object(rest_obj))?;
@@ -541,18 +602,47 @@ fn bind_object_pattern(
     &excluded,
   )?;
 
-  bind_pattern(
-    vm,
-    host,
-    hooks,
-    scope,
-    env,
-    &rest_pat.stx,
-    Value::Object(rest_obj),
-    kind,
-    strict,
-    this,
-  )
+  if let Some(target) = rest_assignment_target {
+    match target {
+      RestAssignmentTarget::Binding(binding) => {
+        env.set_resolved_binding(vm, host, hooks, scope, binding, Value::Object(rest_obj), strict)
+      }
+      RestAssignmentTarget::Member { base, key } => {
+        let key_s = scope.alloc_string(key)?;
+        scope.push_root(Value::String(key_s))?;
+        let key = PropertyKey::from_string(key_s);
+        assign_to_property_key(vm, host, hooks, scope, base, key, Value::Object(rest_obj), strict)
+      }
+      RestAssignmentTarget::ComputedMember { base, key_value } => {
+        let key = match scope.to_property_key(vm, host, hooks, key_value) {
+          Ok(key) => key,
+          Err(VmError::TypeError(msg)) => {
+            let err = match throw_type_error(vm, scope, msg) {
+              Ok(e) => e,
+              Err(e) => e,
+            };
+            return Err(err);
+          }
+          Err(err) => return Err(err),
+        };
+        root_property_key(scope, key)?;
+        assign_to_property_key(vm, host, hooks, scope, base, key, Value::Object(rest_obj), strict)
+      }
+    }
+  } else {
+    bind_pattern(
+      vm,
+      host,
+      hooks,
+      scope,
+      env,
+      &rest_pat.stx,
+      Value::Object(rest_obj),
+      kind,
+      strict,
+      this,
+    )
+  }
 }
 
 fn bind_array_pattern(
@@ -853,7 +943,8 @@ fn bind_array_pattern(
   // This ordering is observable in test262 `staging/sm/destructuring/array-iterator-close.js`.
   enum RestAssignmentTarget<'a> {
     Binding(ResolvedBinding<'a>),
-    Property { base: Value, key: PropertyKey },
+    Member { base: Value, key: &'a str },
+    ComputedMember { base: Value, key_value: Value },
   }
 
   let mut rest_assignment_target: Option<RestAssignmentTarget<'_>> = None;
@@ -881,11 +972,10 @@ fn bind_array_pattern(
   
               let base = eval_expr(vm, host, hooks, env, strict, this, scope, &member.stx.left)?;
               let base = scope.push_root(base)?;
-  
-              let key_s = scope.alloc_string(&member.stx.right)?;
-              scope.push_root(Value::String(key_s))?;
-              let key = PropertyKey::from_string(key_s);
-              Ok(Some(RestAssignmentTarget::Property { base, key }))
+              Ok(Some(RestAssignmentTarget::Member {
+                base,
+                key: &member.stx.right,
+              }))
             }
             Expr::ComputedMember(member) => {
               if member.stx.optional_chaining {
@@ -898,13 +988,7 @@ fn bind_array_pattern(
               let key_value =
                 eval_expr(vm, host, hooks, env, strict, this, scope, &member.stx.member)?;
               let key_value = scope.push_root(key_value)?;
-              let key = match scope.to_property_key(vm, host, hooks, key_value) {
-                Ok(key) => key,
-                Err(VmError::TypeError(msg)) => return Err(throw_type_error(vm, scope, msg)?),
-                Err(err) => return Err(err),
-              };
-              root_property_key(scope, key)?;
-              Ok(Some(RestAssignmentTarget::Property { base, key }))
+              Ok(Some(RestAssignmentTarget::ComputedMember { base, key_value }))
             }
             _ => Ok(None),
           }
@@ -976,7 +1060,32 @@ fn bind_array_pattern(
       RestAssignmentTarget::Binding(binding) => {
         env.set_resolved_binding(vm, host, hooks, scope, binding, Value::Object(rest_arr), strict)
       }
-      RestAssignmentTarget::Property { base, key } => {
+      RestAssignmentTarget::Member { base, key } => {
+        let key_s = match scope.alloc_string(key) {
+          Ok(s) => s,
+          Err(err) => return iterator_close_on_err(vm, host, hooks, scope, &iterator_record, err),
+        };
+        if let Err(err) = scope.push_root(Value::String(key_s)) {
+          return iterator_close_on_err(vm, host, hooks, scope, &iterator_record, err);
+        }
+        let key = PropertyKey::from_string(key_s);
+        assign_to_property_key(vm, host, hooks, scope, base, key, Value::Object(rest_arr), strict)
+      }
+      RestAssignmentTarget::ComputedMember { base, key_value } => {
+        let key = match scope.to_property_key(vm, host, hooks, key_value) {
+          Ok(key) => key,
+          Err(VmError::TypeError(msg)) => {
+            let err = match throw_type_error(vm, scope, msg) {
+              Ok(e) => e,
+              Err(e) => e,
+            };
+            return iterator_close_on_err(vm, host, hooks, scope, &iterator_record, err);
+          }
+          Err(err) => return iterator_close_on_err(vm, host, hooks, scope, &iterator_record, err),
+        };
+        if let Err(err) = root_property_key(scope, key) {
+          return iterator_close_on_err(vm, host, hooks, scope, &iterator_record, err);
+        }
         assign_to_property_key(vm, host, hooks, scope, base, key, Value::Object(rest_arr), strict)
       }
     };

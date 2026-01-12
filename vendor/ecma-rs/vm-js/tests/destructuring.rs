@@ -363,6 +363,93 @@ fn object_destructuring_assignment_identifier_target_evaluation_order() {
 }
 
 #[test]
+fn object_destructuring_assignment_rest_identifier_target_evaluation_order() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      var log = [];
+      var vals = {
+        get a() {
+          log.push("get");
+          return 1;
+        },
+      };
+
+      var env = new Proxy({}, {
+        has(_t, pk) {
+          // Avoid `"" + Symbol()` which throws.
+          log.push("binding::" + String(pk));
+        },
+      });
+
+      var rest;
+      with (env) {
+        ({...rest} = vals);
+      }
+
+      log.join(",")
+      "#,
+    )
+    .unwrap();
+  let Value::String(s) = value else {
+    panic!("expected string, got {value:?}");
+  };
+  let log = rt.heap().get_string(s).unwrap().to_utf8_lossy();
+  assert_eq!(log, "binding::vals,binding::rest,get");
+}
+
+#[test]
+fn object_destructuring_assignment_rest_property_reference_evaluation_order() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      var log = [];
+
+      function source() {
+        log.push("source");
+        return {
+          get a() {
+            log.push("get");
+            return 1;
+          },
+        };
+      }
+
+      function target() {
+        log.push("target");
+        return {
+          set q(v) {
+            log.push("set");
+          },
+        };
+      }
+
+      function targetKey() {
+        log.push("target-key");
+        return {
+          toString: function() {
+            log.push("target-key-tostring");
+            return "q";
+          },
+        };
+      }
+
+      ({...target()[targetKey()]} = source());
+
+      log.join(",")
+      "#,
+    )
+    .unwrap();
+  let Value::String(s) = value else {
+    panic!("expected string, got {value:?}");
+  };
+  let log = rt.heap().get_string(s).unwrap().to_utf8_lossy();
+  assert_eq!(log, "source,target,target-key,get,target-key-tostring,set");
+}
+
+#[test]
 fn object_destructuring_assignment_property_reference_evaluation_order() {
   let mut rt = new_runtime();
   let value = rt
@@ -838,6 +925,77 @@ fn array_destructuring_assignment_property_reference_evaluation_order() {
     )
     .unwrap();
   assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn array_destructuring_assignment_rest_property_reference_evaluation_order() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      var log = [];
+
+      function source() {
+        log.push("source");
+        var iterator = {
+          next: function() {
+            log.push("iterator-step");
+            return {
+              get done() {
+                log.push("iterator-done");
+                return true;
+              },
+              get value() {
+                // This getter should not be called when `done` is true.
+                log.push("iterator-value");
+                return 0;
+              },
+            };
+          },
+        };
+        var src = {};
+        src[Symbol.iterator] = function() {
+          log.push("iterator");
+          return iterator;
+        };
+        return src;
+      }
+
+      function target() {
+        log.push("target");
+        return {
+          set q(v) {
+            log.push("set");
+          },
+        };
+      }
+
+      function targetKey() {
+        log.push("target-key");
+        return {
+          toString: function() {
+            log.push("target-key-tostring");
+            return "q";
+          },
+        };
+      }
+
+      // Like normal element targets, the computed key's `ToPropertyKey` conversion is delayed
+      // until the final `PutValue` after the rest array is built.
+      ([...target()[targetKey()]] = source());
+
+      log.join(",")
+      "#,
+    )
+    .unwrap();
+  let Value::String(s) = value else {
+    panic!("expected string, got {value:?}");
+  };
+  let log = rt.heap().get_string(s).unwrap().to_utf8_lossy();
+  assert_eq!(
+    log,
+    "source,iterator,target,target-key,iterator-step,iterator-done,target-key-tostring,set"
+  );
 }
 
 #[test]
