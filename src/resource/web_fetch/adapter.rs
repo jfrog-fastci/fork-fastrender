@@ -578,7 +578,11 @@ pub fn execute_web_fetch<'a>(
     }
   }
 
-  let body = if method.eq_ignore_ascii_case("HEAD") {
+  // Fetch: "null body status" responses must have a `null` body, regardless of any bytes returned
+  // by the underlying fetcher.
+  // https://fetch.spec.whatwg.org/#null-body-status
+  let null_body_status = matches!(status, 101 | 103 | 204 | 205 | 304);
+  let body = if method.eq_ignore_ascii_case("HEAD") || null_body_status {
     None
   } else {
     Some(
@@ -2160,6 +2164,30 @@ mod tests {
     let response = execute_web_fetch(&fetcher, &request, WebFetchExecutionContext::default())
       .expect("expected response");
 
+    assert!(response.body.is_none());
+  }
+
+  #[test]
+  fn null_body_status_204_has_no_body() {
+    let mut resource = FetchedResource::new(b"should-be-ignored".to_vec(), None);
+    resource.status = Some(204);
+    let fetcher = StaticFetcher { resource };
+    let request = Request::new("GET", "https://example.com/a");
+    let response = execute_web_fetch(&fetcher, &request, WebFetchExecutionContext::default())
+      .expect("expected response");
+    assert_eq!(response.status, 204);
+    assert!(response.body.is_none());
+  }
+
+  #[test]
+  fn null_body_status_304_has_no_body() {
+    let mut resource = FetchedResource::new(b"should-be-ignored".to_vec(), None);
+    resource.status = Some(304);
+    let fetcher = StaticFetcher { resource };
+    let request = Request::new("GET", "https://example.com/a");
+    let response = execute_web_fetch(&fetcher, &request, WebFetchExecutionContext::default())
+      .expect("expected response");
+    assert_eq!(response.status, 304);
     assert!(response.body.is_none());
   }
 
