@@ -106,6 +106,20 @@ fn object_prototype_to_string_tags() -> Result<(), VmError> {
   let out = rt.exec_script("Object.prototype.toString.call([1, 2, 3])")?;
   assert_eq!(expect_string(&rt, out), "[object Array]");
 
+  // Iterators.
+  let out = rt.exec_script("Object.prototype.toString.call([1, 2].values())")?;
+  assert_eq!(expect_string(&rt, out), "[object Array Iterator]");
+
+  let out = rt.exec_script(r#"Object.prototype.toString.call("x"[Symbol.iterator]())"#)?;
+  assert_eq!(expect_string(&rt, out), "[object String Iterator]");
+
+  // Generators.
+  let out = rt.exec_script("Object.prototype.toString.call(function*(){})")?;
+  assert_eq!(expect_string(&rt, out), "[object GeneratorFunction]");
+
+  let out = rt.exec_script("Object.prototype.toString.call((function*(){yield 1;})())")?;
+  assert_eq!(expect_string(&rt, out), "[object Generator]");
+
   // ArrayBuffer / Uint8Array.
   let out = rt.exec_script("Object.prototype.toString.call(new ArrayBuffer(0))")?;
   assert_eq!(expect_string(&rt, out), "[object ArrayBuffer]");
@@ -156,6 +170,12 @@ fn object_prototype_to_string_tags() -> Result<(), VmError> {
 
   // Errors.
   let out = rt.exec_script("Object.prototype.toString.call(new Error(\"x\"))")?;
+  assert_eq!(expect_string(&rt, out), "[object Error]");
+
+  let out = rt.exec_script("Object.prototype.toString.call(new TypeError(\"x\"))")?;
+  assert_eq!(expect_string(&rt, out), "[object Error]");
+
+  let out = rt.exec_script("Object.prototype.toString.call(new Proxy(new TypeError(\"x\"), {}))")?;
   assert_eq!(expect_string(&rt, out), "[object Error]");
 
   // Callable Proxies.
