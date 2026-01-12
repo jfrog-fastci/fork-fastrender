@@ -9,13 +9,8 @@ pub fn ensure_test_env() {
   INIT.call_once(|| {
     // FastRender uses Rayon for parallel layout/paint. Rayon defaults to the host CPU count, which
     // can exceed sandbox thread budgets and cause the global pool init to fail.
-    let threads = std::env::var("RAYON_NUM_THREADS")
-      .ok()
-      .and_then(|value| value.parse::<usize>().ok())
-      .unwrap_or(1)
-      .max(1);
     // Do not mutate process environment variables here; integration tests run in a shared process.
-    crate::common::rayon_test_util::init_rayon_for_tests(threads);
+    crate::common::rayon_test_util::init_rayon_for_tests(1);
   });
 }
 
