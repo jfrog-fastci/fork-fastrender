@@ -141,6 +141,7 @@ impl<'a> EffectsAnalyzer<'a> {
       ExprKind::TypeAssertion { expr, .. }
       | ExprKind::Instantiation { expr, .. }
       | ExprKind::NonNull { expr }
+      | ExprKind::Instantiation { expr, .. }
       | ExprKind::Satisfies { expr, .. } => self.analyze_expr(*expr),
 
       ExprKind::Unary { op, expr } => {
