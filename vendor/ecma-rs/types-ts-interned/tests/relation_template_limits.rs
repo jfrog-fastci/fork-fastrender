@@ -41,7 +41,7 @@ fn template_to_template_assignability_bails_on_long_head() {
 fn template_enumeration_with_large_limits_preserves_assignability() {
   let store = TypeStore::new();
 
-  let x = store.intern_type(TypeKind::StringLiteral(store.intern_name("X")));
+  let x = store.intern_type(TypeKind::StringLiteral(store.intern_name_ref("X")));
 
   let src = store.intern_type(TypeKind::TemplateLiteral(TemplateLiteralType {
     head: "X".into(),
