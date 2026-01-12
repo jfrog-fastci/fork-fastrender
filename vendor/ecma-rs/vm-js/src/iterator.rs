@@ -105,19 +105,30 @@ pub fn iterator_complete(
   scope: &mut Scope<'_>,
   iter_result: Value,
 ) -> Result<bool, VmError> {
+  // Root the iterator result object across key allocation and `Get`, which can allocate/GC.
+  let mut complete_scope = scope.reborrow();
+  complete_scope.push_root(iter_result)?;
+
   let Value::Object(obj) = iter_result else {
     let intr = vm
       .intrinsics()
       .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
     return Err(crate::throw_type_error(
-      scope,
+      &mut complete_scope,
       intr,
       "IteratorComplete: iterator result is not an object",
     ));
   };
-  let done_key = string_key(scope, "done")?;
-  let done = scope.ordinary_get_with_host_and_hooks(vm, host, hooks, obj, done_key, iter_result)?;
-  scope.heap().to_boolean(done)
+  let done_key = string_key(&mut complete_scope, "done")?;
+  let done = complete_scope.ordinary_get_with_host_and_hooks(
+    vm,
+    host,
+    hooks,
+    obj,
+    done_key,
+    iter_result,
+  )?;
+  complete_scope.heap().to_boolean(done)
 }
 
 /// `IteratorValue` (ECMA-262).
@@ -128,18 +139,22 @@ pub fn iterator_value(
   scope: &mut Scope<'_>,
   iter_result: Value,
 ) -> Result<Value, VmError> {
+  // Root the iterator result object across key allocation and `Get`, which can allocate/GC.
+  let mut value_scope = scope.reborrow();
+  value_scope.push_root(iter_result)?;
+
   let Value::Object(obj) = iter_result else {
     let intr = vm
       .intrinsics()
       .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
     return Err(crate::throw_type_error(
-      scope,
+      &mut value_scope,
       intr,
       "IteratorValue: iterator result is not an object",
     ));
   };
-  let value_key = string_key(scope, "value")?;
-  scope.ordinary_get_with_host_and_hooks(vm, host, hooks, obj, value_key, iter_result)
+  let value_key = string_key(&mut value_scope, "value")?;
+  value_scope.ordinary_get_with_host_and_hooks(vm, host, hooks, obj, value_key, iter_result)
 }
 
 /// `IteratorStepValue` (ECMA-262).
