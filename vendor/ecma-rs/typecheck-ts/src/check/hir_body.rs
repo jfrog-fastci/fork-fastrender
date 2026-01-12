@@ -8351,80 +8351,104 @@ impl<'a> Checker<'a> {
   }
 
   fn type_has_prop(&self, ty: TypeId, prop: &str) -> bool {
-    fn inner(checker: &Checker<'_>, ty: TypeId, prop: &str, seen: &mut HashSet<TypeId>) -> bool {
+    fn inner(
+      checker: &Checker<'_>,
+      ty: TypeId,
+      prop: &str,
+      cache: &mut HashMap<TypeId, bool>,
+      stack: &mut HashSet<TypeId>,
+    ) -> bool {
       let ty = checker.store.canon(ty);
-      if !seen.insert(ty) {
+      if let Some(cached) = cache.get(&ty) {
+        return *cached;
+      }
+      if !stack.insert(ty) {
+        // Cycle guard.
         return false;
       }
+
       let expanded = checker.expand_for_props(ty);
-      if expanded != ty {
-        return inner(checker, expanded, prop, seen);
-      }
-      let ty = checker.expand_ref(ty);
-      if ty != expanded {
-        return inner(checker, ty, prop, seen);
-      }
-      match checker.store.type_kind(ty) {
-        TypeKind::OmitConstructSignatures(inner_ty) => inner(checker, inner_ty, prop, seen),
-        TypeKind::InheritConstructSignatures { .. } => false,
-        TypeKind::TypeParam(param) => checker
-          .type_param_constraint(param)
-          .is_some_and(|constraint| inner(checker, constraint, prop, seen)),
-        TypeKind::Object(obj_id) => {
-          let shape = checker.store.shape(checker.store.object(obj_id).shape);
-          if matches!(prop, "call" | "apply" | "bind") && !shape.call_signatures.is_empty() {
-            return true;
-          }
-          for candidate in shape.properties.iter() {
-            match candidate.key {
-              PropKey::String(name_id) => {
-                if checker.store.name(name_id) == prop {
-                  return true;
+      let result = if expanded != ty {
+        inner(checker, expanded, prop, cache, stack)
+      } else {
+        let expanded_ref = checker.expand_ref(ty);
+        if expanded_ref != expanded {
+          inner(checker, expanded_ref, prop, cache, stack)
+        } else {
+          match checker.store.type_kind(expanded_ref) {
+            TypeKind::OmitConstructSignatures(inner_ty) => inner(checker, inner_ty, prop, cache, stack),
+            TypeKind::InheritConstructSignatures { .. } => false,
+            TypeKind::TypeParam(param) => checker
+              .type_param_constraint(param)
+              .is_some_and(|constraint| inner(checker, constraint, prop, cache, stack)),
+            TypeKind::Object(obj_id) => {
+              let shape = checker.store.shape(checker.store.object(obj_id).shape);
+              if matches!(prop, "call" | "apply" | "bind") && !shape.call_signatures.is_empty() {
+                true
+              } else {
+                for candidate in shape.properties.iter() {
+                  match candidate.key {
+                    PropKey::String(name_id) => {
+                      if checker.store.name(name_id) == prop {
+                        stack.remove(&ty);
+                        cache.insert(ty, true);
+                        return true;
+                      }
+                    }
+                    PropKey::Number(num) => {
+                      if prop.parse::<i64>().ok() == Some(num) {
+                        stack.remove(&ty);
+                        cache.insert(ty, true);
+                        return true;
+                      }
+                    }
+                    _ => {}
+                  }
+                }
+                if shape.indexers.is_empty() {
+                  false
+                } else {
+                  let key = if let Some(idx) = parse_canonical_index_str(prop) {
+                    PropKey::Number(idx)
+                  } else {
+                    PropKey::String(checker.store.intern_name_ref(prop))
+                  };
+                  shape.indexers.iter().any(|idxer| {
+                    crate::type_queries::indexer_accepts_key(
+                      &key,
+                      idxer.key_type,
+                      checker.store.as_ref(),
+                    )
+                  })
                 }
               }
-              PropKey::Number(num) => {
-                if prop.parse::<i64>().ok() == Some(num) {
-                  return true;
-                }
-              }
-              _ => {}
             }
-          }
-          if !shape.indexers.is_empty() {
-            let key = if let Some(idx) = parse_canonical_index_str(prop) {
-              PropKey::Number(idx)
-            } else {
-              PropKey::String(checker.store.intern_name_ref(prop))
-            };
-            return shape
-              .indexers
+            // For union types, a property is only considered present if it exists on
+            // all constituents (mirrors TS property-access rules).
+            TypeKind::Union(members) => members
               .iter()
-              .any(|idxer| {
-                crate::type_queries::indexer_accepts_key(&key, idxer.key_type, checker.store.as_ref())
-              });
+              .copied()
+              .all(|member| inner(checker, member, prop, cache, stack)),
+            // Intersection types accumulate properties from all members, so a
+            // property exists if any member provides it.
+            TypeKind::Intersection(members) => members
+              .iter()
+              .copied()
+              .any(|member| inner(checker, member, prop, cache, stack)),
+            TypeKind::Callable { .. } => matches!(prop, "call" | "apply" | "bind"),
+            TypeKind::Ref { .. } => false,
+            TypeKind::Mapped(_) => true,
+            _ => false,
           }
-          false
         }
-        // For union types, a property is only considered present if it exists on
-        // all constituents (mirrors TS property-access rules).
-        TypeKind::Union(members) => members
-          .iter()
-          .copied()
-          .all(|member| inner(checker, member, prop, seen)),
-        // Intersection types accumulate properties from all members, so a
-        // property exists if any member provides it.
-        TypeKind::Intersection(members) => members
-          .iter()
-          .copied()
-          .any(|member| inner(checker, member, prop, seen)),
-        TypeKind::Callable { .. } => matches!(prop, "call" | "apply" | "bind"),
-        TypeKind::Ref { .. } => false,
-        TypeKind::Mapped(_) => true,
-        _ => false,
-      }
+      };
+
+      stack.remove(&ty);
+      cache.insert(ty, result);
+      result
     }
 
-    inner(self, ty, prop, &mut HashSet::new())
+    inner(self, ty, prop, &mut HashMap::new(), &mut HashSet::new())
   }
 
   fn receiver_is_derived_from_current_class(&self, receiver_ty: TypeId, current: DefId) -> bool {
