@@ -1975,18 +1975,25 @@ impl DisplayListBuilder {
   }
 
   fn collect_stacking_fragments<'a>(context: &'a StackingContext, out: &mut Vec<&'a FragmentNode>) {
-    out.extend(context.fragments.iter());
-    out.extend(context.layer3_blocks.iter());
-    out.extend(context.layer4_floats.iter());
-    out.extend(context.layer5_inlines.iter());
-    out.extend(
-      context
-        .layer6_positioned
-        .iter()
-        .map(|ordered| &ordered.fragment),
-    );
-    for child in &context.children {
-      Self::collect_stacking_fragments(child, out);
+    // Stacking contexts can nest as deeply as fragments (e.g. opacity chains). Avoid recursion so
+    // hostile depth cannot overflow the call stack.
+    let mut stack: Vec<&'a StackingContext> = vec![context];
+    while let Some(context) = stack.pop() {
+      out.extend(context.fragments.iter());
+      out.extend(context.layer3_blocks.iter());
+      out.extend(context.layer4_floats.iter());
+      out.extend(context.layer5_inlines.iter());
+      out.extend(
+        context
+          .layer6_positioned
+          .iter()
+          .map(|ordered| &ordered.fragment),
+      );
+
+      // Preserve the original recursive traversal order (preorder, children in source order).
+      for child in context.children.iter().rev() {
+        stack.push(child);
+      }
     }
   }
 
