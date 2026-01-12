@@ -857,6 +857,15 @@ fn split_image_set_candidates(inner: &str) -> Vec<String> {
     }
 
     match ch {
+      '\\' => {
+        // Backslash escapes apply outside strings too (e.g. to escape `)` or `,` inside unquoted
+        // `url(...)` candidates). Treat the escaped character as data and do not let it affect
+        // delimiter nesting.
+        current.push(ch);
+        if let Some(next) = chars.next() {
+          current.push(next);
+        }
+      }
       '"' | '\'' => {
         in_string = Some(ch);
         current.push(ch);
@@ -1113,6 +1122,14 @@ fn tokenize_image_set_candidate(value_str: &str) -> Vec<String> {
     }
 
     match ch {
+      '\\' => {
+        // Backslash escapes apply outside strings too (e.g. in unquoted `url(...)` arguments).
+        // Keep the escape sequence intact but ensure it doesn't affect delimiter nesting.
+        current.push(ch);
+        if let Some(next) = chars.next() {
+          current.push(next);
+        }
+      }
       '"' | '\'' => {
         in_string = Some(ch);
         current.push(ch);
@@ -33829,6 +33846,12 @@ mod tests {
   fn image_set_unescapes_string_url_literals() {
     let parsed = parse_image_set("image-set(\"foo\\20 bar.png\" 1x)").expect("image-set");
     assert_eq!(parsed, BackgroundImage::Url("foo bar.png".to_string()));
+  }
+
+  #[test]
+  fn image_set_parses_unquoted_url_with_escaped_paren() {
+    let parsed = parse_image_set("image-set(url(foo\\(bar.png) 1x)").expect("image-set");
+    assert_eq!(parsed, BackgroundImage::Url("foo(bar.png".to_string()));
   }
 
   #[test]
