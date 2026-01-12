@@ -259,6 +259,8 @@ future typechecked/HIR-based backend yet). Supported today:
 
 - ES module subset (multi-file projects):
   - `export function foo(...) { ... }`
+  - `export default function foo(...) { ... }` (named function declarations only)
+  - `import foo from "./mod"`
   - `import { foo } from "./mod"` and `import { foo as bar } from "./mod"`
   - side-effect imports (`import "./mod"`) for module initialization ordering
   - module initializers run in dependency order (matching source import/re-export order for siblings)
@@ -267,7 +269,7 @@ future typechecked/HIR-based backend yet). Supported today:
 
 Limitations:
 
-- Default exports and namespace imports are not supported.
+- Namespace imports (`import * as ns from "./mod"`) are not supported.
 - `tsconfig.json` is not loaded (so `baseUrl`/`paths` are ignored); module resolution
   uses a Node-style resolver for the supported import forms.
 

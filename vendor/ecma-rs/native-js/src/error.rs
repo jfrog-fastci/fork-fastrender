@@ -53,16 +53,14 @@ pub enum NativeJsError {
   UnresolvedImport { from: String, specifier: String },
 
   #[error(
-    "unsupported import syntax: {from} -> {specifier} (only `import {{ ... }} from` is supported)"
+    "unsupported import syntax: {from} -> {specifier} (namespace imports are not supported by native-js right now)"
   )]
   UnsupportedImportSyntax { from: String, specifier: String },
 
   #[error("missing export `{export}` in {file}")]
   MissingExport { file: String, export: String },
 
-  #[error(
-    "export `{export}` in {file} is not supported by native-js right now"
-  )]
+  #[error("export `{export}` in {file} is not supported by native-js right now")]
   UnsupportedExport { file: String, export: String },
 
   #[error("cyclic module dependency detected: {cycle}")]

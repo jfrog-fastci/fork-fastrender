@@ -118,6 +118,31 @@ fn supports_import_aliases() {
 }
 
 #[test]
+fn supports_default_imports() {
+  let dir = tempdir().unwrap();
+  let math = dir.path().join("math.ts");
+  let main = dir.path().join("main.ts");
+
+  fs::write(
+    &math,
+    "export default function add(a:number,b:number){return a+b}\n",
+  )
+  .unwrap();
+  fs::write(
+    &main,
+    "import add from './math';\nexport function main(){console.log(add(1,2));}\n",
+  )
+  .unwrap();
+
+  native_js_cli()
+    .timeout(CLI_TIMEOUT)
+    .arg(main)
+    .assert()
+    .success()
+    .stdout(predicate::eq("3\n"));
+}
+
+#[test]
 fn runs_module_initializers_in_dependency_order() {
   let dir = tempdir().unwrap();
   let dep = dir.path().join("dep.ts");
@@ -247,7 +272,7 @@ fn supports_non_number_function_signatures_across_modules() {
 }
 
 #[test]
-fn errors_on_unsupported_import_syntax() {
+fn errors_on_unsupported_namespace_import_syntax() {
   let dir = tempdir().unwrap();
   let math = dir.path().join("math.ts");
   let main = dir.path().join("main.ts");
@@ -257,10 +282,10 @@ fn errors_on_unsupported_import_syntax() {
     "export function add(a:number,b:number){return a+b}\n",
   )
   .unwrap();
-  // Default imports are out of scope for the minimal module subset.
+  // Namespace imports are out of scope for the minimal module subset.
   fs::write(
     &main,
-    "import add from './math';\nexport function main(){console.log(add(1,2));}\n",
+    "import * as math from './math';\nexport function main(){console.log(1);}\n",
   )
   .unwrap();
 
@@ -314,8 +339,16 @@ fn errors_on_cycles_deterministically() {
   let a = dir.path().join("a.ts");
   let b = dir.path().join("b.ts");
 
-  fs::write(&a, "import {b} from './b';\nexport function a(){return b()}\n").unwrap();
-  fs::write(&b, "import {a} from './a';\nexport function b(){return a()}\n").unwrap();
+  fs::write(
+    &a,
+    "import {b} from './b';\nexport function a(){return b()}\n",
+  )
+  .unwrap();
+  fs::write(
+    &b,
+    "import {a} from './a';\nexport function b(){return a()}\n",
+  )
+  .unwrap();
 
   native_js_cli()
     .timeout(CLI_TIMEOUT)
@@ -614,7 +647,11 @@ fn auto_calls_reexported_main_through_reexport_chain() {
     "console.log(\"dep\");\nexport function main(){console.log(\"main\");}\n",
   )
   .unwrap();
-  fs::write(&mid, "console.log(\"mid\");\nexport { main } from './impl';\n").unwrap();
+  fs::write(
+    &mid,
+    "console.log(\"mid\");\nexport { main } from './impl';\n",
+  )
+  .unwrap();
   fs::write(&entry, "console.log(\"entry\");\nexport * from './mid';\n").unwrap();
 
   native_js_cli()

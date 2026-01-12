@@ -126,12 +126,16 @@ fn resolve_export_def(program: &Program, file: FileId, export_name: &str) -> Opt
 }
 
 fn collect_module_info(program: &Program, file: FileId) -> Result<ModuleInfo, NativeJsError> {
-  let lowered = program.hir_lowered(file).ok_or_else(|| NativeJsError::MissingHirLowering {
-    file: file_label(program, file),
-  })?;
-  let from_key = program.file_key(file).ok_or_else(|| NativeJsError::MissingHirLowering {
-    file: file_label(program, file),
-  })?;
+  let lowered = program
+    .hir_lowered(file)
+    .ok_or_else(|| NativeJsError::MissingHirLowering {
+      file: file_label(program, file),
+    })?;
+  let from_key = program
+    .file_key(file)
+    .ok_or_else(|| NativeJsError::MissingHirLowering {
+      file: file_label(program, file),
+    })?;
 
   let mut info = ModuleInfo::default();
   let mut module_requests: Vec<(u32, FileId)> = Vec::new();
@@ -154,11 +158,104 @@ fn collect_module_info(program: &Program, file: FileId) -> Result<ModuleInfo, Na
       })?;
     module_requests.push((import.span.start, resolved_id));
 
-    // Only `import { foo } from "..."` is supported for now.
-    if es.default.is_some() || es.namespace.is_some() {
+    // Namespace imports (`import * as ns from "./mod"`) require property access and object
+    // materialization, neither of which are implemented by the minimal parse-js-driven backend.
+    //
+    // Default imports (`import foo from "./mod"`) are supported and are treated as importing the
+    // `default` export from the target module.
+    if es.namespace.is_some() {
       return Err(NativeJsError::UnsupportedImportSyntax {
         from: from_key.to_string(),
         specifier: es.specifier.value.clone(),
+      });
+    }
+
+    if let Some(default) = es.default.as_ref() {
+      let import_def = default
+        .local_def
+        .or_else(|| resolve_import_def(program, file, default.span));
+
+      let (dep, export_name, local_name) = match import_def.and_then(|def| program.def_kind(def)) {
+        Some(DefKind::Import(data)) => {
+          let ImportTarget::File(mut dep) = data.target else {
+            // Unresolved import; keep compiling in `project` mode.
+            continue;
+          };
+          let mut export_name = data.original.clone();
+          let local_name = program
+            .def_name(import_def.expect("import def exists"))
+            .unwrap_or_else(|| {
+              lowered
+                .names
+                .resolve(default.local)
+                .unwrap_or("_")
+                .to_string()
+            });
+
+          // If this import points at a module that only re-exports a symbol,
+          // `typecheck-ts` leaves `ExportEntry::def` empty. Follow the symbol to
+          // its original defining file so we can reference the correct LLVM
+          // function symbol.
+          if let Some(entry) = program.exports_of(dep).get(&export_name) {
+            let resolved_file = entry
+              .def
+              .map(|def| def.file())
+              .or_else(|| program.symbol_info(entry.symbol).and_then(|i| i.file));
+            if let Some(file) = resolved_file {
+              if file != dep {
+                if let Some((name, _)) = program
+                  .exports_of(file)
+                  .iter()
+                  .find(|(_, candidate)| candidate.symbol == entry.symbol)
+                {
+                  export_name = name.clone();
+                }
+              }
+              dep = file;
+            }
+          }
+
+          (dep, export_name, local_name)
+        }
+        _ => {
+          // Conservative fallback: rely on the HIR names, but try to resolve
+          // through the target module's export map (covers re-exports where
+          // `ExportEntry::def` is `None`).
+          let local_name = lowered
+            .names
+            .resolve(default.local)
+            .unwrap_or("_")
+            .to_string();
+          let mut export_name = "default".to_string();
+
+          let mut dep = resolved_id;
+          if let Some(entry) = program.exports_of(resolved_id).get(&export_name) {
+            let resolved_file = entry
+              .def
+              .map(|def| def.file())
+              .or_else(|| program.symbol_info(entry.symbol).and_then(|i| i.file));
+            if let Some(file) = resolved_file {
+              if file != dep {
+                if let Some((name, _)) = program
+                  .exports_of(file)
+                  .iter()
+                  .find(|(_, candidate)| candidate.symbol == entry.symbol)
+                {
+                  export_name.clone_from(name);
+                }
+              }
+              dep = file;
+            }
+          }
+
+          (dep, export_name, local_name)
+        }
+      };
+
+      info.import_bindings.push(ImportBinding {
+        dep,
+        export_name,
+        local_name,
       });
     }
 
@@ -276,12 +373,12 @@ fn collect_module_info(program: &Program, file: FileId) -> Result<ModuleInfo, Na
           continue;
         }
 
-        let resolved_id = program
-          .resolve_module(file, &source.value)
-          .ok_or_else(|| NativeJsError::UnresolvedImport {
+        let resolved_id = program.resolve_module(file, &source.value).ok_or_else(|| {
+          NativeJsError::UnresolvedImport {
             from: from_key.to_string(),
             specifier: source.value.clone(),
-          })?;
+          }
+        })?;
         module_requests.push((export.span.start, resolved_id));
       }
       hir_js::ExportKind::ExportAll(all) => {
@@ -455,10 +552,12 @@ pub fn compile_project_to_llvm_ir(
   let mut asts: BTreeMap<FileId, Node<parse_js::ast::stx::TopLevel>> = BTreeMap::new();
   let mut local_fn_sigs: BTreeMap<FileId, BTreeMap<String, (Vec<Ty>, Ty)>> = BTreeMap::new();
   for file in all_files.iter().copied() {
-    let source = program.file_text(file).ok_or_else(|| NativeJsError::FileText {
-      file: file_label(program, file),
-      reason: "Program::file_text returned None".into(),
-    })?;
+    let source = program
+      .file_text(file)
+      .ok_or_else(|| NativeJsError::FileText {
+        file: file_label(program, file),
+        reason: "Program::file_text returned None".into(),
+      })?;
 
     let key = file_key_or_fallback(program, file);
     let kind = host.file_kind(&key);
@@ -529,10 +628,12 @@ pub fn compile_project_to_llvm_ir(
   for (file, exports) in &used_exports {
     let export_map = program.exports_of(*file);
     for export_name in exports {
-      let entry = export_map.get(export_name).ok_or_else(|| NativeJsError::MissingExport {
-        file: file_label(program, *file),
-        export: export_name.clone(),
-      })?;
+      let entry = export_map
+        .get(export_name)
+        .ok_or_else(|| NativeJsError::MissingExport {
+          file: file_label(program, *file),
+          export: export_name.clone(),
+        })?;
       let def = entry.def.ok_or_else(|| NativeJsError::UnsupportedExport {
         file: file_label(program, *file),
         export: export_name.clone(),
@@ -614,10 +715,12 @@ pub fn compile_project_to_llvm_ir(
         export: entry_export.to_string(),
       }
     })?;
-    let local = program.def_name(def).ok_or_else(|| NativeJsError::UnsupportedExport {
-      file: file_label(program, def.file()),
-      export: entry_export.to_string(),
-    })?;
+    let local = program
+      .def_name(def)
+      .ok_or_else(|| NativeJsError::UnsupportedExport {
+        file: file_label(program, def.file()),
+        export: entry_export.to_string(),
+      })?;
     let (params, ret) = local_fn_sigs
       .get(&def.file())
       .and_then(|m| m.get(&local))
@@ -689,10 +792,12 @@ pub fn compile_project_to_llvm_ir(
       if func.stx.function.stx.body.is_none() {
         continue;
       }
-      let sig = targets.get(name).ok_or_else(|| NativeJsError::UnsupportedExport {
-        file: file_label(program, file),
-        export: name.to_string(),
-      })?;
+      let sig = targets
+        .get(name)
+        .ok_or_else(|| NativeJsError::UnsupportedExport {
+          file: file_label(program, file),
+          export: name.to_string(),
+        })?;
       builder
         .add_ts_function(&sig.llvm_name, func, targets)
         .map_err(NativeJsError::Codegen)?;
