@@ -10250,7 +10250,12 @@ impl<'a> FlowBodyChecker<'a> {
       ExprKind::Object(obj) => self.object_type(obj, env),
       ExprKind::FunctionExpr { .. } => prim.unknown,
       ExprKind::ClassExpr { .. } => prim.unknown,
-      ExprKind::Template(_) => prim.string,
+      ExprKind::Template(template) => {
+        for span in template.spans.iter() {
+          let _ = self.eval_expr(span.expr, env);
+        }
+        prim.string
+      }
       ExprKind::TaggedTemplate { tag, template } => {
         let _ = self.eval_expr(*tag, env);
         for span in template.spans.iter() {
