@@ -3259,7 +3259,27 @@ impl BrowserRuntime {
           js_dom_node_for_preorder_id(js_tab, target_id, click_target_element_id.as_deref());
 
         if let Some(node_id) = target {
-          match js_tab.dispatch_click_event(node_id) {
+          let mouse = web_events::MouseEvent {
+            client_x: mouse_client_coord(pos_css.0),
+            client_y: mouse_client_coord(pos_css.1),
+            button: mouse_event_button(button),
+            buttons: pointer_buttons,
+            ctrl_key: modifiers.ctrl(),
+            shift_key: modifiers.shift(),
+            alt_key: modifiers.alt(),
+            meta_key: modifiers.meta(),
+            related_target: None,
+          };
+          match js_tab.dispatch_mouse_event(
+            node_id,
+            "click",
+            web_events::EventInit {
+              bubbles: true,
+              cancelable: true,
+              composed: false,
+            },
+            mouse,
+          ) {
             Ok(allowed) => default_allowed = allowed,
             Err(err) => {
               let _ = self.ui_tx.send(WorkerToUi::DebugLog {
