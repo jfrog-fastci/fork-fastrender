@@ -436,6 +436,7 @@ mod word_break_auto_phrase;
 mod test_locks;
 
 // Consolidated from tests/layout_*.rs
+mod layout_parallel_determinism;
 mod parallel_api;
 mod parallel_stats;
 mod profile_diagnostics;
