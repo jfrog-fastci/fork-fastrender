@@ -1635,7 +1635,6 @@ pub fn proxy_constructor_construct(
   let handler_val = args.get(1).copied().unwrap_or(Value::Undefined);
   let target = require_object(target_val)?;
   let handler = require_object(handler_val)?;
-
   let proxy = scope.alloc_proxy(Some(target), Some(handler))?;
   Ok(Value::Object(proxy))
 }
