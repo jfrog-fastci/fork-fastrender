@@ -45918,17 +45918,21 @@ mod tests {
     // could collide with unrelated shims that also store small state values in `HostSlots.b` (for
     // example, TextDecoder flags/encoding ids).
     //
-    // Construct a forged host-slots object with `b == 4` (a previous DOMStringMap/dataset tag) and
-    // ensure the dataset shim does **not** claim it; instead, dispatch should fall through to the
-    // WebIDL exotic hooks.
+    // Construct forged host-slots objects with small `b` values that used to be used as DOM shim
+    // tags:
+    // - `b == 4`: previous DOMStringMap/dataset tag.
+    // - `b == 3`: previous DOMTokenList/classList tag.
+    //
+    // Ensure the DOM shim exotic hooks do **not** claim these objects; instead, dispatch should fall
+    // through to the WebIDL exotic hooks.
     let dom = crate::dom2::parse_html(
-      "<!doctype html><html><body><div id=target data-foo=\"bar\"></div></body></html>",
+      "<!doctype html><html><body><div id=target class=\"a b\" data-foo=\"bar\"></div></body></html>",
     )?;
     let target = dom.get_element_by_id("target").expect("missing #target");
     let mut host = crate::js::HostDocumentState::new(dom);
     let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
 
-    let forged_obj = {
+    let (forged_dataset_obj, forged_token_list_obj) = {
       let (vm, realm_ref, heap) = realm.vm_realm_and_heap_mut();
       let mut scope = heap.scope();
       let global = realm_ref.global_object();
@@ -45947,31 +45951,54 @@ mod tests {
         document_obj
       };
 
-      let obj = scope.alloc_object()?;
-      scope.push_root(Value::Object(obj))?;
+      let wrapper_document_key = alloc_key(&mut scope, WRAPPER_DOCUMENT_KEY)?;
+
+      let dataset_obj = scope.alloc_object()?;
+      scope.push_root(Value::Object(dataset_obj))?;
       scope.heap_mut().object_set_host_slots(
-        obj,
+        dataset_obj,
         HostSlots {
           a: target.index() as u64,
           b: 4,
         },
       )?;
 
-      let wrapper_document_key = alloc_key(&mut scope, WRAPPER_DOCUMENT_KEY)?;
       scope.define_property(
-        obj,
+        dataset_obj,
         wrapper_document_key,
         data_desc(Value::Object(document_obj)),
       )?;
 
-      let key = alloc_key(&mut scope, "forged")?;
-      scope.define_property(global, key, data_desc(Value::Object(obj)))?;
-      obj
+      let dataset_key = alloc_key(&mut scope, "forgedDataset")?;
+      scope.define_property(global, dataset_key, data_desc(Value::Object(dataset_obj)))?;
+
+      let token_list_obj = scope.alloc_object()?;
+      scope.push_root(Value::Object(token_list_obj))?;
+      scope.heap_mut().object_set_host_slots(
+        token_list_obj,
+        HostSlots {
+          a: target.index() as u64,
+          b: 3,
+        },
+      )?;
+
+      scope.define_property(
+        token_list_obj,
+        wrapper_document_key,
+        data_desc(Value::Object(document_obj)),
+      )?;
+
+      let token_list_key = alloc_key(&mut scope, "forgedTokenList")?;
+      scope.define_property(global, token_list_key, data_desc(Value::Object(token_list_obj)))?;
+
+      (dataset_obj, token_list_obj)
     };
 
     struct ExoticHost {
-      target: GcObject,
-      foo_gets: usize,
+      forged_dataset_obj: GcObject,
+      forged_token_list_obj: GcObject,
+      dataset_gets: usize,
+      token_list_gets: usize,
     }
 
     impl WebIdlBindingsHost for ExoticHost {
@@ -46007,31 +46034,54 @@ mod tests {
         key: PropertyKey,
         _receiver: Value,
       ) -> Result<Option<Value>, VmError> {
-        if obj != self.target {
-          return Ok(None);
-        }
         let PropertyKey::String(s) = key else {
           return Ok(None);
         };
-        if scope.heap().get_string(s)?.to_utf8_lossy() != "foo" {
-          return Ok(None);
+        let key = scope.heap().get_string(s)?.to_utf8_lossy();
+
+        if obj == self.forged_dataset_obj {
+          if key != "foo" {
+            return Ok(None);
+          }
+          self.dataset_gets += 1;
+          return Ok(Some(Value::String(scope.alloc_string("webidl_dataset")?)));
         }
-        self.foo_gets += 1;
-        Ok(Some(Value::String(scope.alloc_string("webidl")?)))
+
+        if obj == self.forged_token_list_obj {
+          if key != "0" {
+            return Ok(None);
+          }
+          self.token_list_gets += 1;
+          return Ok(Some(Value::String(
+            scope.alloc_string("webidl_token_list")?,
+          )));
+        }
+
+        Ok(None)
       }
     }
 
     let mut webidl_host = ExoticHost {
-      target: forged_obj,
-      foo_gets: 0,
+      forged_dataset_obj,
+      forged_token_list_obj,
+      dataset_gets: 0,
+      token_list_gets: 0,
     };
 
     let dataset_ctx = realm.dataset_exotic_context();
     let mut hooks = DomShimHostHooks::new(&mut host, dataset_ctx);
     hooks.set_webidl_bindings_host(&mut webidl_host);
-    let value = realm.exec_script_with_host_and_hooks(&mut host, &mut hooks, "forged.foo")?;
-    assert_eq!(get_string(realm.heap(), value), "webidl");
-    assert_eq!(webidl_host.foo_gets, 1);
+
+    let dataset_value =
+      realm.exec_script_with_host_and_hooks(&mut host, &mut hooks, "forgedDataset.foo")?;
+    assert_eq!(get_string(realm.heap(), dataset_value), "webidl_dataset");
+    assert_eq!(webidl_host.dataset_gets, 1);
+
+    let token_list_value =
+      realm.exec_script_with_host_and_hooks(&mut host, &mut hooks, "forgedTokenList[0]")?;
+    assert_eq!(get_string(realm.heap(), token_list_value), "webidl_token_list");
+    assert_eq!(webidl_host.token_list_gets, 1);
+
     Ok(())
   }
 
