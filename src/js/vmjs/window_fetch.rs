@@ -6291,8 +6291,15 @@ mod tests {
   fn make_user_data(document_url: &str) -> WindowRealmUserData {
     let url = document_url.to_string();
     let module_loader = Rc::new(RefCell::new(ModuleLoader::new(Some(url.clone()))));
-    let session_storage_namespace = WindowRealmConfig::new(url.clone()).session_storage_namespace;
-    WindowRealmUserData::new(url, module_loader, session_storage_namespace, None)
+    let config = WindowRealmConfig::new(url.clone());
+    let session_storage_namespace = config.session_storage_namespace;
+    WindowRealmUserData::new(
+      url,
+      module_loader,
+      session_storage_namespace,
+      None,
+      config.web_storage_quota_utf16_bytes,
+    )
   }
 
   struct DummyHost;

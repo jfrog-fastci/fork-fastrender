@@ -9,6 +9,7 @@ use crate::js::dom_platform::{DomInterface, DomPlatform};
 use crate::js::host_document::ActiveEventGuard;
 use crate::js::realm_module_loader::{ModuleLoader, ModuleLoaderHandle};
 use crate::js::time::{TimeBindings, WebTime};
+use crate::js::web_storage;
 use crate::js::window_env::{
   install_window_shims_vm_js, unregister_match_media_env, MatchMediaEnvGuard, WindowEnv,
 };
@@ -251,6 +252,8 @@ struct SessionHistory {
 pub(crate) struct WindowRealmUserData {
   pub(crate) window_id: u64,
   pub(crate) session_storage_namespace: u64,
+  pub(crate) local_storage_area: Arc<Mutex<web_storage::StorageArea>>,
+  pub(crate) session_storage_area: Arc<Mutex<web_storage::StorageArea>>,
   document_url: String,
   pub(crate) base_url: Option<String>,
   session_history: SessionHistory,
@@ -312,14 +315,29 @@ impl WindowRealmUserData {
     module_loader: ModuleLoaderHandle,
     session_storage_namespace: u64,
     crypto_rng_seed: Option<u64>,
+    web_storage_quota_utf16_bytes: usize,
   ) -> Self {
     let crypto_rng_state = crypto_rng_seed
       .map(crate::js::window_crypto::crypto_rng_seed_from_u64)
       .unwrap_or_else(|| crate::js::window_crypto::crypto_rng_seed_from_document_url(&document_url));
     let window_id = alloc_window_id();
+    let storage_origin_key = web_storage::origin_key_from_document_url(&document_url);
+    let local_storage_area = web_storage::get_local_area(storage_origin_key.as_deref());
+    let session_storage_area = web_storage::get_session_area(
+      web_storage::SessionNamespaceId(session_storage_namespace),
+      storage_origin_key.as_deref(),
+    );
+    local_storage_area
+      .lock()
+      .set_quota_bytes(web_storage_quota_utf16_bytes);
+    session_storage_area
+      .lock()
+      .set_quota_bytes(web_storage_quota_utf16_bytes);
     Self {
       window_id,
       session_storage_namespace,
+      local_storage_area,
+      session_storage_area,
       base_url: Some(document_url.clone()),
       session_history: SessionHistory::default(),
       pending_navigation: None,
@@ -382,6 +400,7 @@ impl WindowRealm {
       Rc::clone(&module_loader),
       config.session_storage_namespace,
       config.crypto_rng_seed,
+      config.web_storage_quota_utf16_bytes,
     ));
     let realm_id = runtime.realm().id();
 
@@ -1448,18 +1467,14 @@ fn illegal_dom_constructor_construct_native(
 fn storage_slots_from_callee(
   scope: &Scope<'_>,
   callee: GcObject,
-) -> Result<(GcObject, GcObject, usize), VmError> {
+) -> Result<(GcObject, web_storage::StorageKind), VmError> {
   let slots = scope.heap().get_function_native_slots(callee)?;
   let this_slot = slots
     .get(STORAGE_METHOD_THIS_SLOT)
     .copied()
     .unwrap_or(Value::Undefined);
-  let data_slot = slots
-    .get(STORAGE_METHOD_DATA_SLOT)
-    .copied()
-    .unwrap_or(Value::Undefined);
-  let quota_slot = slots
-    .get(STORAGE_METHOD_QUOTA_UTF16_BYTES_SLOT)
+  let kind_slot = slots
+    .get(STORAGE_METHOD_KIND_SLOT)
     .copied()
     .unwrap_or(Value::Undefined);
   let Value::Object(expected_this) = this_slot else {
@@ -1467,32 +1482,36 @@ fn storage_slots_from_callee(
       "Storage native missing expected this slot",
     ));
   };
-  let Value::Object(data_obj) = data_slot else {
+  let Value::Number(kind_n) = kind_slot else {
     return Err(VmError::InvariantViolation(
-      "Storage native missing data object slot",
+      "Storage native missing kind slot",
     ));
   };
-  let Value::Number(quota_n) = quota_slot else {
+  if !kind_n.is_finite() || kind_n.is_nan() {
     return Err(VmError::InvariantViolation(
-      "Storage native missing quota slot",
-    ));
-  };
-  if !quota_n.is_finite() || quota_n < 0.0 {
-    return Err(VmError::InvariantViolation(
-      "Storage native had invalid quota slot value",
+      "Storage native kind slot must be a finite number",
     ));
   }
-  Ok((expected_this, data_obj, quota_n as usize))
+  let kind = match kind_n as i32 {
+    0 => web_storage::StorageKind::Local,
+    1 => web_storage::StorageKind::Session,
+    _ => {
+      return Err(VmError::InvariantViolation(
+        "Storage native kind slot must be 0 or 1",
+      ))
+    }
+  };
+  Ok((expected_this, kind))
 }
 
 fn storage_require_this(
   scope: &Scope<'_>,
   callee: GcObject,
   this: Value,
-) -> Result<(GcObject, usize), VmError> {
-  let (expected_this, data_obj, quota_utf16_bytes) = storage_slots_from_callee(scope, callee)?;
+) -> Result<web_storage::StorageKind, VmError> {
+  let (expected_this, kind) = storage_slots_from_callee(scope, callee)?;
   match this {
-    Value::Object(obj) if obj == expected_this => Ok((data_obj, quota_utf16_bytes)),
+    Value::Object(obj) if obj == expected_this => Ok(kind),
     _ => Err(VmError::TypeError(STORAGE_ILLEGAL_INVOCATION_ERROR)),
   }
 }
@@ -1521,42 +1540,19 @@ fn storage_to_index(scope: &mut Scope<'_>, value: Value) -> Result<Option<usize>
   Ok(Some(n as usize))
 }
 
-fn storage_string_utf16_bytes(scope: &Scope<'_>, s: GcString) -> Result<usize, VmError> {
-  Ok(
-    scope
-      .heap()
-      .get_string(s)?
-      .as_code_units()
-      .len()
-      .saturating_mul(2),
-  )
-}
-
-fn storage_total_utf16_bytes(
-  vm: &mut Vm,
-  scope: &mut Scope<'_>,
-  data_obj: GcObject,
-) -> Result<usize, VmError> {
-  let keys = scope.ordinary_own_property_keys_with_tick(data_obj, || vm.tick())?;
-
-  let mut total: usize = 0;
-  for (i, key) in keys.iter().enumerate() {
-    if i % 1024 == 0 {
-      vm.tick()?;
-    }
-    let PropertyKey::String(key_s) = key else {
-      continue;
-    };
-    total = total.saturating_add(storage_string_utf16_bytes(scope, *key_s)?);
-    match scope.heap().object_get_own_data_property_value(data_obj, key)? {
-      Some(Value::String(value_s)) => {
-        total = total.saturating_add(storage_string_utf16_bytes(scope, value_s)?)
-      }
-      _ => {}
-    }
-  }
-
-  Ok(total)
+fn storage_area_from_kind(
+  vm: &Vm,
+  kind: web_storage::StorageKind,
+) -> Result<Arc<Mutex<web_storage::StorageArea>>, VmError> {
+  let Some(user_data) = vm.user_data::<WindowRealmUserData>() else {
+    return Err(VmError::InvariantViolation(
+      "window realm missing user data",
+    ));
+  };
+  Ok(match kind {
+    web_storage::StorageKind::Local => Arc::clone(&user_data.local_storage_area),
+    web_storage::StorageKind::Session => Arc::clone(&user_data.session_storage_area),
+  })
 }
 
 fn storage_length_get_native(
@@ -1568,24 +1564,14 @@ fn storage_length_get_native(
   this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
-  let (data_obj, _) = storage_require_this(scope, callee, this)?;
-  let keys = scope.ordinary_own_property_keys_with_tick(data_obj, || vm.tick())?;
-
-  let mut count: usize = 0;
-  for (i, key) in keys.iter().enumerate() {
-    if i % 1024 == 0 {
-      vm.tick()?;
-    }
-    if matches!(key, PropertyKey::String(_)) {
-      count = count.saturating_add(1);
-    }
-  }
-
-  Ok(Value::Number(count as f64))
+  let kind = storage_require_this(scope, callee, this)?;
+  let area = storage_area_from_kind(vm, kind)?;
+  let len = area.lock().len();
+  Ok(Value::Number(len as f64))
 }
 
 fn storage_get_item_native(
-  _vm: &mut Vm,
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
   _hooks: &mut dyn VmHostHooks,
@@ -1593,17 +1579,17 @@ fn storage_get_item_native(
   this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
-  let (data_obj, _) = storage_require_this(scope, callee, this)?;
+  let kind = storage_require_this(scope, callee, this)?;
+  let area = storage_area_from_kind(vm, kind)?;
   let key_v = args.get(0).copied().unwrap_or(Value::Undefined);
   let key_s = storage_to_string(scope, key_v)?;
-  let key = PropertyKey::from_string(key_s);
-  match scope
-    .heap()
-    .object_get_own_data_property_value(data_obj, &key)?
-  {
-    Some(v) => Ok(v),
-    None => Ok(Value::Null),
-  }
+  let key = scope.heap().get_string(key_s)?.to_utf8_lossy();
+  let Some(value) = area.lock().get_item(&key) else {
+    return Ok(Value::Null);
+  };
+  let value_s = scope.alloc_string(&value)?;
+  scope.push_root(Value::String(value_s))?;
+  Ok(Value::String(value_s))
 }
 
 fn storage_set_item_native(
@@ -1615,56 +1601,27 @@ fn storage_set_item_native(
   this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
-  let (data_obj, quota_utf16_bytes) = storage_require_this(scope, callee, this)?;
+  let kind = storage_require_this(scope, callee, this)?;
+  let area = storage_area_from_kind(vm, kind)?;
   let key_v = args.get(0).copied().unwrap_or(Value::Undefined);
   let value_v = args.get(1).copied().unwrap_or(Value::Undefined);
   let key_s = storage_to_string(scope, key_v)?;
   let value_s = storage_to_string(scope, value_v)?;
-  let key = PropertyKey::from_string(key_s);
-  let value = Value::String(value_s);
+  let key = scope.heap().get_string(key_s)?.to_utf8_lossy();
+  let value = scope.heap().get_string(value_s)?.to_utf8_lossy();
 
-  let current_size = storage_total_utf16_bytes(vm, scope, data_obj)?;
-  let key_size = storage_string_utf16_bytes(scope, key_s)?;
-  let value_size = storage_string_utf16_bytes(scope, value_s)?;
-  let old_value = scope.heap().object_get_own_data_property_value(data_obj, &key)?;
-  let old_value_size = match old_value {
-    Some(Value::String(old_value_s)) => storage_string_utf16_bytes(scope, old_value_s)?,
-    _ => 0,
-  };
-  let old_entry_size = if old_value.is_some() {
-    key_size.saturating_add(old_value_size)
-  } else {
-    0
-  };
-  let new_entry_size = key_size.saturating_add(value_size);
-  let new_size = current_size
-    .saturating_add(new_entry_size)
-    .saturating_sub(old_entry_size);
-  if new_size > quota_utf16_bytes {
+  if let Err(web_storage::StorageError::QuotaExceeded) = area.lock().set_item(&key, &value) {
     return Err(VmError::Throw(make_dom_exception(
       scope,
       "QuotaExceededError",
       "The quota has been exceeded.",
     )?));
   }
-
-  scope.define_property(
-    data_obj,
-    key,
-    PropertyDescriptor {
-      enumerable: true,
-      configurable: true,
-      kind: PropertyKind::Data {
-        value,
-        writable: true,
-      },
-    },
-  )?;
   Ok(Value::Undefined)
 }
 
 fn storage_remove_item_native(
-  _vm: &mut Vm,
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
   _hooks: &mut dyn VmHostHooks,
@@ -1672,11 +1629,12 @@ fn storage_remove_item_native(
   this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
-  let (data_obj, _) = storage_require_this(scope, callee, this)?;
+  let kind = storage_require_this(scope, callee, this)?;
+  let area = storage_area_from_kind(vm, kind)?;
   let key_v = args.get(0).copied().unwrap_or(Value::Undefined);
   let key_s = storage_to_string(scope, key_v)?;
-  let key = PropertyKey::from_string(key_s);
-  let _ = scope.ordinary_delete(data_obj, key)?;
+  let key = scope.heap().get_string(key_s)?.to_utf8_lossy();
+  area.lock().remove_item(&key);
   Ok(Value::Undefined)
 }
 
@@ -1689,14 +1647,9 @@ fn storage_clear_native(
   this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
-  let (data_obj, _) = storage_require_this(scope, callee, this)?;
-  let keys = scope.ordinary_own_property_keys_with_tick(data_obj, || vm.tick())?;
-  for (i, key) in keys.into_iter().enumerate() {
-    if i % 1024 == 0 {
-      vm.tick()?;
-    }
-    let _ = scope.ordinary_delete(data_obj, key)?;
-  }
+  let kind = storage_require_this(scope, callee, this)?;
+  let area = storage_area_from_kind(vm, kind)?;
+  area.lock().clear();
   Ok(Value::Undefined)
 }
 
@@ -1709,28 +1662,18 @@ fn storage_key_native(
   this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
-  let (data_obj, _) = storage_require_this(scope, callee, this)?;
+  let kind = storage_require_this(scope, callee, this)?;
+  let area = storage_area_from_kind(vm, kind)?;
   let idx_v = args.get(0).copied().unwrap_or(Value::Undefined);
   let Some(idx) = storage_to_index(scope, idx_v)? else {
     return Ok(Value::Null);
   };
-  let keys = scope.ordinary_own_property_keys_with_tick(data_obj, || vm.tick())?;
-
-  let mut string_idx: usize = 0;
-  for (i, key) in keys.into_iter().enumerate() {
-    if i % 1024 == 0 {
-      vm.tick()?;
-    }
-    let PropertyKey::String(s) = key else {
-      continue;
-    };
-    if string_idx == idx {
-      return Ok(Value::String(s));
-    }
-    string_idx = string_idx.saturating_add(1);
-  }
-
-  Ok(Value::Null)
+  let Some(key) = area.lock().key(idx) else {
+    return Ok(Value::Null);
+  };
+  let key_s = scope.alloc_string(&key)?;
+  scope.push_root(Value::String(key_s))?;
+  Ok(Value::String(key_s))
 }
 
 fn install_storage_object(
@@ -1740,7 +1683,7 @@ fn install_storage_object(
   global: GcObject,
   global_key: PropertyKey,
   label: &str,
-  quota_utf16_bytes: usize,
+  kind: web_storage::StorageKind,
   length_get_call_id: vm_js::NativeFunctionId,
   get_item_call_id: vm_js::NativeFunctionId,
   set_item_call_id: vm_js::NativeFunctionId,
@@ -1756,14 +1699,12 @@ fn install_storage_object(
 ) -> Result<(), VmError> {
   let storage_obj = scope.alloc_object()?;
   scope.push_root(Value::Object(storage_obj))?;
-  let data_obj = scope.alloc_object()?;
-  scope.push_root(Value::Object(data_obj))?;
 
-  let slots = [
-    Value::Object(storage_obj),
-    Value::Object(data_obj),
-    Value::Number(quota_utf16_bytes as f64),
-  ];
+  let kind_slot = match kind {
+    web_storage::StorageKind::Local => 0.0,
+    web_storage::StorageKind::Session => 1.0,
+  };
+  let slots = [Value::Object(storage_obj), Value::Number(kind_slot)];
 
   let make_method = |scope: &mut Scope<'_>,
                      call_id: vm_js::NativeFunctionId,
@@ -1908,8 +1849,7 @@ const HISTORY_LOCATION_OBJ_SLOT: usize = 1;
 const HISTORY_DOCUMENT_OBJ_SLOT: usize = 2;
 const HISTORY_REPLACE_SLOT: usize = 3;
 const STORAGE_METHOD_THIS_SLOT: usize = 0;
-const STORAGE_METHOD_DATA_SLOT: usize = 1;
-const STORAGE_METHOD_QUOTA_UTF16_BYTES_SLOT: usize = 2;
+const STORAGE_METHOD_KIND_SLOT: usize = 1;
 const STORAGE_ILLEGAL_INVOCATION_ERROR: &str = "Illegal invocation";
 const EVENT_TARGET_DEFAULT_THIS_SLOT: usize = 0;
 const EVENT_TARGET_CONTEXT_GLOBAL_SLOT: usize = 1;
@@ -21787,7 +21727,8 @@ fn init_window_globals(
   // --- Web Storage (localStorage / sessionStorage) ---------------------------
   //
   // Many real-world pages (including MDN + news sites) read from `localStorage` early to decide
-  // theme/layout. Provide a minimal, deterministic `Storage` facade backed by a plain object map.
+  // theme/layout. Provide a minimal, deterministic `Storage` facade backed by the thread-local
+  // storage hub (`crate::js::web_storage`).
   let storage_length_get_call_id = vm.register_native_call(storage_length_get_native)?;
   let storage_get_item_call_id = vm.register_native_call(storage_get_item_native)?;
   let storage_set_item_call_id = vm.register_native_call(storage_set_item_native)?;
@@ -21809,7 +21750,7 @@ fn init_window_globals(
     global,
     local_storage_key,
     "localStorage",
-    config.web_storage_quota_utf16_bytes,
+    web_storage::StorageKind::Local,
     storage_length_get_call_id,
     storage_get_item_call_id,
     storage_set_item_call_id,
@@ -21830,7 +21771,7 @@ fn init_window_globals(
     global,
     session_storage_key,
     "sessionStorage",
-    config.web_storage_quota_utf16_bytes,
+    web_storage::StorageKind::Session,
     storage_length_get_call_id,
     storage_get_item_call_id,
     storage_set_item_call_id,
@@ -22518,6 +22459,38 @@ mod tests {
     let l = realm.exec_script("localStorage.getItem('x')")?;
     assert_eq!(get_string(realm.heap(), l), "l");
 
+    crate::js::web_storage::reset_default_web_storage_hub_for_tests();
+    Ok(())
+  }
+
+  #[test]
+  fn window_local_storage_persists_across_realms_for_http_s() -> Result<(), VmError> {
+    crate::js::web_storage::reset_default_web_storage_hub_for_tests();
+
+    let mut realm_a = new_realm(WindowRealmConfig::new("https://storage-persist.test/a"))?;
+    realm_a.exec_script("localStorage.setItem('k', 'v')")?;
+
+    let mut realm_b = new_realm(WindowRealmConfig::new("https://storage-persist.test/b"))?;
+    let v = realm_b.exec_script("localStorage.getItem('k')")?;
+    assert_eq!(get_string(realm_b.heap(), v), "v");
+
+    crate::js::web_storage::reset_default_web_storage_hub_for_tests();
+    Ok(())
+  }
+
+  #[test]
+  fn window_local_storage_is_ephemeral_for_file_urls() -> Result<(), VmError> {
+    crate::js::web_storage::reset_default_web_storage_hub_for_tests();
+
+    let mut realm_a = new_realm(WindowRealmConfig::new("file:///tmp/a.html"))?;
+    let origin = realm_a.exec_script("window.origin")?;
+    assert_eq!(get_string(realm_a.heap(), origin), "null");
+    realm_a.exec_script("localStorage.setItem('k', 'v')")?;
+
+    let mut realm_b = new_realm(WindowRealmConfig::new("file:///tmp/a.html"))?;
+    assert_eq!(realm_b.exec_script("localStorage.getItem('k')")?, Value::Null);
+
+    crate::js::web_storage::reset_default_web_storage_hub_for_tests();
     Ok(())
   }
 
@@ -22544,6 +22517,7 @@ mod tests {
       realm.exec_script("localStorage.length")?,
       Value::Number(n) if n == 0.0
     ));
+    crate::js::web_storage::reset_default_web_storage_hub_for_tests();
     Ok(())
   }
 

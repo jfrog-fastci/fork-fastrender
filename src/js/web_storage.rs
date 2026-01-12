@@ -78,7 +78,8 @@ pub enum StorageError {
 ///
 /// This is not a general-purpose map:
 /// - Key iteration order is insertion order (updates do not re-order existing keys).
-/// - Quota accounting is based on UTF-8 byte length of key + value strings.
+/// - Quota accounting is based on UTF-16 byte length of key + value strings (matching the units
+///   used by `WindowRealmConfig::web_storage_quota_utf16_bytes`).
 #[derive(Debug)]
 pub struct StorageArea {
   values: HashMap<String, String>,
@@ -94,6 +95,11 @@ impl Default for StorageArea {
 }
 
 impl StorageArea {
+  fn utf16_bytes(s: &str) -> usize {
+    // `encode_utf16` yields code units; quota is specified in UTF-16 bytes.
+    s.encode_utf16().count().saturating_mul(2)
+  }
+
   pub fn new() -> Self {
     Self::new_with_quota(DEFAULT_STORAGE_QUOTA_BYTES)
   }
@@ -107,7 +113,7 @@ impl StorageArea {
     }
   }
 
-  fn set_quota_bytes(&mut self, quota_bytes: usize) {
+  pub(crate) fn set_quota_bytes(&mut self, quota_bytes: usize) {
     self.quota_bytes = quota_bytes;
   }
 
@@ -128,22 +134,24 @@ impl StorageArea {
       });
     }
 
+    let key_bytes = Self::utf16_bytes(key);
+    let value_bytes = Self::utf16_bytes(value);
     let bytes_used_next = match &old_value {
       Some(old_value) => {
         // Updating an existing key does not change insertion order and does not re-count the key
         // bytes (only the value bytes change).
         let without_old_value = self
           .bytes_used
-          .checked_sub(old_value.len())
+          .checked_sub(Self::utf16_bytes(old_value))
           .ok_or(StorageError::QuotaExceeded)?;
         without_old_value
-          .checked_add(value.len())
+          .checked_add(value_bytes)
           .ok_or(StorageError::QuotaExceeded)?
       }
       None => self
         .bytes_used
-        .checked_add(key.len())
-        .and_then(|v| v.checked_add(value.len()))
+        .checked_add(key_bytes)
+        .and_then(|v| v.checked_add(value_bytes))
         .ok_or(StorageError::QuotaExceeded)?,
     };
 
@@ -171,7 +179,7 @@ impl StorageArea {
       return StorageChange::no_op(Some(key.to_string()));
     };
 
-    let delta = key.len().saturating_add(old_value.len());
+    let delta = Self::utf16_bytes(key).saturating_add(Self::utf16_bytes(&old_value));
     self.bytes_used = self.bytes_used.saturating_sub(delta);
     if let Some(pos) = self.key_order.iter().position(|k| k == key) {
       self.key_order.remove(pos);
@@ -305,13 +313,20 @@ pub fn clear_default_web_storage_hub() {
 
 /// Derive a storage origin key from a document URL.
 ///
-/// Supports `http:` / `https:` / `file:`. Other schemes are treated as opaque and return `None`.
+/// Only `http:` / `https:` documents get a persistent storage origin key. Everything else is
+/// treated as an **opaque origin** and returns `None` (including `file:`), matching
+/// `window.origin === "null"` semantics.
 pub fn origin_key_from_document_url(url: &str) -> StorageOriginKey {
   let origin = crate::resource::origin_from_url(url)?;
-  match origin.scheme() {
-    "http" | "https" | "file" => Some(origin.to_string()),
-    _ => None,
+  if !matches!(origin.scheme(), "http" | "https") {
+    return None;
   }
+  // `DocumentOrigin::to_string` uses a sentinel host string for missing hosts. Treat these as
+  // opaque instead of producing an unstable origin key.
+  if origin.host().is_none() {
+    return None;
+  }
+  Some(origin.to_string())
 }
 
 pub fn get_local_area(origin: Option<&str>) -> Arc<Mutex<StorageArea>> {
@@ -408,22 +423,22 @@ mod tests {
   #[test]
   fn quota_failure_does_not_mutate() {
     let mut area = StorageArea::new_with_quota(6);
-    area.set_item("a", "12").unwrap(); // 1 + 2 = 3 bytes
-    assert_eq!(area.bytes_used, 3);
+    area.set_item("a", "12").unwrap(); // 2 + 4 = 6 bytes (UTF-16)
+    assert_eq!(area.bytes_used, 6);
 
-    // Would exceed: existing bytes 3, add new key "b"(1) + value "1234"(4) => 8.
+    // Would exceed: existing bytes 6, add new key "b"(2) + value "1234"(8) => 16.
     let err = area.set_item("b", "1234").unwrap_err();
     assert_eq!(err, StorageError::QuotaExceeded);
     assert_eq!(area.len(), 1);
     assert_eq!(area.key(0).as_deref(), Some("a"));
     assert_eq!(area.get_item("b"), None);
-    assert_eq!(area.bytes_used, 3);
+    assert_eq!(area.bytes_used, 6);
 
     // Updating an existing key should also fail without mutating.
     let err = area.set_item("a", "123456").unwrap_err();
     assert_eq!(err, StorageError::QuotaExceeded);
     assert_eq!(area.get_item("a").as_deref(), Some("12"));
-    assert_eq!(area.bytes_used, 3);
+    assert_eq!(area.bytes_used, 6);
   }
 
   #[test]
