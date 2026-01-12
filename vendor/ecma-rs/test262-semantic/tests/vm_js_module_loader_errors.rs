@@ -86,6 +86,43 @@ fn module_non_utf8_file_rejects_with_typeerror_reason() {
 }
 
 #[test]
+fn module_json_parse_failure_rejects_with_syntaxerror_reason() {
+  let temp = tempdir().unwrap();
+  let test_dir = temp.path().join("test");
+  fs::create_dir_all(&test_dir).unwrap();
+  fs::write(test_dir.join("bad.json"), "{").unwrap();
+
+  let case = module_case(&temp, "entry.js");
+  let executor = default_executor();
+  let cancel = Arc::new(AtomicBool::new(false));
+
+  let err = executor
+    .execute(
+      &case,
+      r#"import value from "./bad.json" with { type: "json" };"#,
+      &cancel,
+    )
+    .unwrap_err();
+
+  let ExecError::Js(js) = err else {
+    panic!("expected JS error, got {err:?}");
+  };
+
+  assert_eq!(js.phase, ExecPhase::Resolution);
+  assert_eq!(js.typ.as_deref(), Some("SyntaxError"));
+  assert!(
+    !js.message.trim().is_empty() && js.message != "undefined",
+    "expected non-empty rejection message, got: {:?}",
+    js.message
+  );
+  assert!(
+    js.message.contains("bad.json"),
+    "expected message to mention bad.json, got: {:?}",
+    js.message
+  );
+}
+
+#[test]
 fn module_unsupported_import_attribute_rejects_with_syntaxerror_reason() {
   let temp = tempdir().unwrap();
   let test_dir = temp.path().join("test");
@@ -146,6 +183,46 @@ fn module_unsupported_module_type_rejects_with_syntaxerror_reason() {
   );
   assert!(
     js.message.contains("Unsupported module type"),
+    "expected helpful message, got: {:?}",
+    js.message
+  );
+}
+
+#[test]
+fn dynamic_import_missing_file_rejects_with_typeerror_reason() {
+  let temp = tempdir().unwrap();
+  let test_dir = temp.path().join("test");
+  fs::create_dir_all(&test_dir).unwrap();
+
+  let case = module_case(&temp, "entry.js");
+  let executor = default_executor();
+  let cancel = Arc::new(AtomicBool::new(false));
+
+  // Use top-level await so the module evaluation promise rejects with the import() rejection
+  // reason.
+  let err = executor
+    .execute(
+      &case,
+      r#"
+        await import("./missing.js");
+      "#,
+      &cancel,
+    )
+    .unwrap_err();
+
+  let ExecError::Js(js) = err else {
+    panic!("expected JS error, got {err:?}");
+  };
+
+  assert_eq!(js.phase, ExecPhase::Runtime);
+  assert_eq!(js.typ.as_deref(), Some("TypeError"));
+  assert!(
+    !js.message.trim().is_empty() && js.message != "undefined",
+    "expected non-empty rejection message, got: {:?}",
+    js.message
+  );
+  assert!(
+    js.message.contains("missing.js"),
     "expected helpful message, got: {:?}",
     js.message
   );
