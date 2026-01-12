@@ -142,6 +142,10 @@ harness = false
 name = "microtasks"
 harness = false
 
+[[bench]]
+name = "gc_major_pause"
+harness = false
+
 [[test]]
 name = "stackmaps_symbols_runtime"
 path = "tests/bin/stackmaps_symbols_runtime.rs"

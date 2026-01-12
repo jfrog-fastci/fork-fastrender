@@ -1,35 +1,41 @@
-use super::LINE_MAP_BYTES;
 use super::LINES_PER_BLOCK;
+use super::LINE_MAP_WORDS;
 
-pub type LineMap = [u8; LINE_MAP_BYTES];
+use core::sync::atomic::{AtomicU64, Ordering};
+
+pub type LineMap = [AtomicU64; LINE_MAP_WORDS];
 
 #[inline]
-pub fn clear(map: &mut LineMap) {
-  map.fill(0);
+pub fn clear(map: &LineMap) {
+  for w in map {
+    w.store(0, Ordering::Relaxed);
+  }
 }
 
 #[inline]
 pub fn is_empty(map: &LineMap) -> bool {
-  map.iter().all(|&b| b == 0)
+  map.iter().all(|w| w.load(Ordering::Relaxed) == 0)
 }
 
 #[inline]
 pub fn is_line_marked(map: &LineMap, line: usize) -> bool {
   debug_assert!(line < LINES_PER_BLOCK);
-  let byte = line / 8;
-  let bit = line % 8;
-  (map[byte] & (1 << bit)) != 0
+  let word = line / 64;
+  let bit = line % 64;
+  let mask = 1u64 << bit;
+  (map[word].load(Ordering::Relaxed) & mask) != 0
 }
 
 #[inline]
-pub fn set_line(map: &mut LineMap, line: usize) {
+pub fn set_line(map: &LineMap, line: usize) {
   debug_assert!(line < LINES_PER_BLOCK);
-  let byte = line / 8;
-  let bit = line % 8;
-  map[byte] |= 1 << bit;
+  let word = line / 64;
+  let bit = line % 64;
+  let mask = 1u64 << bit;
+  map[word].fetch_or(mask, Ordering::Relaxed);
 }
 
-pub fn set_range(map: &mut LineMap, start_line: usize, end_line: usize) {
+pub fn set_range(map: &LineMap, start_line: usize, end_line: usize) {
   debug_assert!(start_line <= end_line);
   debug_assert!(end_line <= LINES_PER_BLOCK);
   for line in start_line..end_line {
@@ -38,7 +44,10 @@ pub fn set_range(map: &mut LineMap, start_line: usize, end_line: usize) {
 }
 
 pub fn used_lines(map: &LineMap) -> usize {
-  map.iter().map(|b| b.count_ones() as usize).sum()
+  map
+    .iter()
+    .map(|w| w.load(Ordering::Relaxed).count_ones() as usize)
+    .sum()
 }
 
 pub fn free_lines(map: &LineMap) -> usize {
@@ -85,4 +94,3 @@ pub fn find_hole(map: &LineMap, start_line: usize, min_lines: usize) -> Option<(
 
   None
 }
-

@@ -537,6 +537,32 @@ impl ObjHeader {
     self.meta.store(meta, Ordering::Release);
   }
 
+  /// Atomically set the mark epoch if it is not already `epoch`.
+  ///
+  /// Returns `true` if this call transitioned the mark bit to `epoch` (i.e. the
+  /// object was not marked for the current major GC epoch yet).
+  #[inline]
+  pub(crate) fn set_mark_epoch_idempotent(&self, epoch: u8) -> bool {
+    debug_assert!(epoch <= 1);
+    let desired = (epoch as usize) << META_MARK_SHIFT;
+    loop {
+      let meta = self.meta.load(Ordering::Relaxed);
+      // Forwarded objects store relocation pointers in `meta`; never mutate the
+      // tagged pointer state during marking.
+      if (meta & META_FORWARDED) != 0 {
+        return false;
+      }
+      if (meta & META_MARK_MASK) == desired {
+        return false;
+      }
+      let new_meta = (meta & !META_MARK_MASK) | desired;
+      match self.meta.compare_exchange_weak(meta, new_meta, Ordering::AcqRel, Ordering::Relaxed) {
+        Ok(_) => return true,
+        Err(_) => continue,
+      }
+    }
+  }
+
   /// Returns a pointer to the per-object card table bitset, or null if the
   /// object has no card table.
   ///

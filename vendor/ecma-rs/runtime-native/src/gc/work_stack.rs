@@ -16,6 +16,10 @@ pub(crate) struct WorkStack {
   layout: Layout,
 }
 
+// SAFETY: `WorkStack` owns an mmap-backed (or single-shot heap-backed) buffer and is safe to move
+// between threads. It is *not* safe for concurrent access without external synchronization.
+unsafe impl Send for WorkStack {}
+
 impl WorkStack {
   const ENV_MB: &'static str = "ECMA_RS_RUNTIME_NATIVE_GC_WORK_STACK_MB";
   #[cfg(unix)]
@@ -25,6 +29,10 @@ impl WorkStack {
   pub(crate) fn new() -> Self {
     let bytes = work_stack_bytes_from_env().unwrap_or(Self::DEFAULT_MB * 1024 * 1024);
 
+    Self::with_capacity_bytes(bytes)
+  }
+
+  pub(crate) fn with_capacity_bytes(bytes: usize) -> Self {
     // Round up to pointer alignment and compute element capacity.
     let elem_size = mem::size_of::<*mut u8>();
     let cap = bytes / elem_size;
@@ -36,7 +44,7 @@ impl WorkStack {
     Self::with_capacity_elems(cap)
   }
 
-  fn with_capacity_elems(cap: usize) -> Self {
+  pub(crate) fn with_capacity_elems(cap: usize) -> Self {
     let elem_size = mem::size_of::<*mut u8>();
     let bytes = cap
       .checked_mul(elem_size)
@@ -114,6 +122,12 @@ impl WorkStack {
   #[allow(dead_code)]
   pub(crate) fn len(&self) -> usize {
     self.len
+  }
+
+  #[inline]
+  #[allow(dead_code)]
+  pub(crate) fn capacity(&self) -> usize {
+    self.cap
   }
 
   #[inline]

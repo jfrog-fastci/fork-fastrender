@@ -3,9 +3,10 @@ use std::ptr::NonNull;
 
 use super::bitmap;
 use super::BLOCK_SIZE;
-use super::LINE_MAP_BYTES;
 use super::LINE_SIZE;
 use super::LINES_PER_BLOCK;
+
+use core::sync::atomic::AtomicU64;
 
 #[derive(Clone, Copy, Debug)]
 enum BlockAllocKind {
@@ -17,7 +18,7 @@ enum BlockAllocKind {
 #[derive(Debug)]
 pub struct Block {
   pub start: NonNull<u8>,
-  pub line_map: [u8; LINE_MAP_BYTES],
+  pub line_map: bitmap::LineMap,
   pub id: usize,
   alloc_kind: BlockAllocKind,
 }
@@ -27,7 +28,7 @@ impl Block {
     let (start, alloc_kind) = alloc_block_aligned()?;
     Some(Self {
       start,
-      line_map: [0; LINE_MAP_BYTES],
+      line_map: core::array::from_fn(|_| AtomicU64::new(0)),
       id,
       alloc_kind,
     })
@@ -45,7 +46,7 @@ impl Block {
 
   #[inline]
   pub fn clear_line_map(&mut self) {
-    bitmap::clear(&mut self.line_map);
+    bitmap::clear(&self.line_map);
   }
 
   #[inline]
@@ -58,7 +59,7 @@ impl Block {
     addr >= self.start_addr() && addr < self.end_addr()
   }
 
-  pub fn mark_addr_range(&mut self, addr_start: usize, addr_end: usize) {
+  pub fn mark_addr_range(&self, addr_start: usize, addr_end: usize) {
     debug_assert!(addr_start <= addr_end);
     debug_assert!(self.contains_addr(addr_start));
     debug_assert!(addr_end <= self.end_addr());
@@ -69,7 +70,7 @@ impl Block {
     let end_line = end_off.div_ceil(LINE_SIZE);
     debug_assert!(start_line < LINES_PER_BLOCK);
     debug_assert!(end_line <= LINES_PER_BLOCK);
-    bitmap::set_range(&mut self.line_map, start_line, end_line);
+    bitmap::set_range(&self.line_map, start_line, end_line);
   }
 
   pub fn metrics(&self) -> BlockMetrics {

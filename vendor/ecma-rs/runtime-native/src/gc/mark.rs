@@ -3,12 +3,16 @@ use std::alloc::Layout;
 use std::collections::VecDeque;
 use std::mem;
 use std::ptr;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
+use std::thread;
 use std::time::Instant;
 
 use ahash::AHashSet;
 
 use super::roots::RememberedSet;
 use super::roots::RootSet;
+use super::work_stack::WorkStack;
 use super::weak::process_global_weak_handles_major;
 use super::weak::run_weak_cleanups;
 use super::Tracer;
@@ -35,6 +39,29 @@ impl GcHeap {
     roots: &mut dyn RootSet,
     remembered: &mut dyn RememberedSet,
   ) -> Result<(), AllocError> {
+    self.collect_major_with_mark_workers_opt(roots, remembered, None)
+  }
+
+  /// Like [`GcHeap::collect_major`], but allows explicitly controlling the
+  /// number of threads used for the stop-the-world marking phase.
+  ///
+  /// This is a test/debug hook; most callers should prefer [`GcHeap::collect_major`].
+  #[doc(hidden)]
+  pub fn collect_major_with_mark_workers(
+    &mut self,
+    roots: &mut dyn RootSet,
+    remembered: &mut dyn RememberedSet,
+    mark_workers: usize,
+  ) -> Result<(), AllocError> {
+    self.collect_major_with_mark_workers_opt(roots, remembered, Some(mark_workers))
+  }
+
+  fn collect_major_with_mark_workers_opt(
+    &mut self,
+    roots: &mut dyn RootSet,
+    remembered: &mut dyn RememberedSet,
+    mark_workers: Option<usize>,
+  ) -> Result<(), AllocError> {
     if !super::gc_in_progress() {
       // Major GC begins with a minor GC which may install per-object card tables
       // for promoted large pointer arrays. Ensure the registry has enough spare
@@ -54,32 +81,8 @@ impl GcHeap {
     // Reset all Immix liveness maps.
     self.immix.clear_line_marks();
 
-    {
-      let mut marker = Marker {
-        heap: self,
-        epoch,
-      };
-      marker.heap.work_stack.clear();
-
-      roots.for_each_root_slot(&mut |slot| {
-        marker.visit_slot(slot);
-      });
-
-      // Process-global roots/handles registered outside of stackmaps (intern tables, runtime-owned
-      // queues, host handles, ...).
-      crate::roots::global_root_registry().for_each_root_slot(|slot| marker.visit_slot(slot));
-      crate::roots::global_persistent_handle_table().for_each_root_slot(|slot| marker.visit_slot(slot));
-
-      let mut root_handles = mem::take(&mut marker.heap.root_handles);
-      root_handles.for_each_root_slot(&mut |slot| {
-        marker.visit_slot(slot);
-      });
-      marker.heap.root_handles = root_handles;
-
-      while let Some(obj) = marker.heap.work_stack.pop() {
-        marker.visit_obj(obj);
-      }
-    }
+    let mark_workers = mark_workers.unwrap_or_else(|| parallel_marker_pool().max_workers);
+    parallel_mark_major(self, epoch, roots, mark_workers);
 
     let cfg = self.major_compaction;
     if cfg.enabled && cfg.max_live_ratio_percent <= 100 {
@@ -198,39 +201,331 @@ impl GcHeap {
   }
 }
 
-struct Marker<'a> {
-  heap: &'a mut GcHeap,
-  epoch: u8,
+// -------------------------------------------------------------------------------------------------
+// Parallel major-GC marking (stop-the-world)
+// -------------------------------------------------------------------------------------------------
+
+static PARALLEL_MARK_POOL: OnceLock<Arc<ParallelMarkPool>> = OnceLock::new();
+
+pub(super) fn ensure_parallel_marker_pool_init() {
+  let _ = parallel_marker_pool();
 }
 
-impl Marker<'_> {
-  fn mark_obj(&mut self, mut obj: *mut u8) {
-    if obj.is_null() {
+fn parallel_marker_pool() -> &'static ParallelMarkPool {
+  PARALLEL_MARK_POOL
+    .get_or_init(|| ParallelMarkPool::new())
+    .as_ref()
+}
+
+struct ParallelMarkPool {
+  /// Max workers for marking, including the GC coordinator thread.
+  max_workers: usize,
+  /// Serialize marking jobs: a single pool is shared across all heaps in the process.
+  job_lock: Mutex<()>,
+  state: Mutex<PoolState>,
+  start_cv: Condvar,
+  done_cv: Condvar,
+
+  pending: AtomicUsize,
+  global: Mutex<WorkStack>,
+  worker0: Mutex<WorkStack>,
+}
+
+struct PoolState {
+  gen: u64,
+  active_workers: usize,
+  heap: usize,
+  epoch: u8,
+  done: usize,
+}
+
+impl ParallelMarkPool {
+  fn new() -> Arc<Self> {
+    let max_workers = parallel_mark_worker_count();
+
+    // Use the same sizing heuristic as the single-threaded work stack (env var + 64MB default) for
+    // the shared/global queue. Per-worker local stacks are sized relative to that.
+    let global = WorkStack::new();
+    let global_bytes = global.capacity().saturating_mul(mem::size_of::<*mut u8>());
+    // Keep per-worker stacks reasonably small so enabling parallel marking doesn't multiply the
+    // reserved address space by `workers`.
+    let local_bytes = (global_bytes / max_workers.saturating_mul(2).max(1)).clamp(256 * 1024, 8 * 1024 * 1024);
+
+    let pool = Arc::new(Self {
+      max_workers,
+      job_lock: Mutex::new(()),
+      state: Mutex::new(PoolState {
+        gen: 0,
+        active_workers: 0,
+        heap: 0,
+        epoch: 0,
+        done: 0,
+      }),
+      start_cv: Condvar::new(),
+      done_cv: Condvar::new(),
+      pending: AtomicUsize::new(0),
+      global: Mutex::new(global),
+      worker0: Mutex::new(WorkStack::with_capacity_bytes(local_bytes)),
+    });
+
+    for worker_id in 1..max_workers {
+      let pool = Arc::clone(&pool);
+      let local = WorkStack::with_capacity_bytes(local_bytes);
+      let name = format!("rt-gc-mark-{worker_id}");
+      let _ = thread::Builder::new()
+        .name(name)
+        .spawn(move || mark_worker_loop(worker_id, pool, local))
+        .unwrap_or_else(|_| std::process::abort());
+    }
+
+    pool
+  }
+}
+
+fn parallel_mark_worker_count() -> usize {
+  // Allow configuring GC marking threads separately, but fall back to the runtime's
+  // general worker-pool thread count env var for convenience.
+  //
+  // Keep debug builds conservative to avoid over-subscribing test hosts.
+  let from_env = std::env::var("ECMA_RS_RUNTIME_NATIVE_GC_THREADS")
+    .ok()
+    .or_else(|| std::env::var("ECMA_RS_RUNTIME_NATIVE_THREADS").ok())
+    .or_else(|| std::env::var("RT_NUM_THREADS").ok())
+    .and_then(|v| v.parse::<usize>().ok())
+    .filter(|&n| n > 0);
+
+  let default = thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
+  let n = from_env.unwrap_or(default);
+  let n = if cfg!(debug_assertions) { n.min(32) } else { n };
+  n.max(1)
+}
+
+fn parallel_mark_major(heap: &mut GcHeap, epoch: u8, roots: &mut dyn RootSet, mark_workers: usize) {
+  let pool = parallel_marker_pool();
+  let workers = mark_workers.clamp(1, pool.max_workers);
+
+  // Only one heap may use the mark pool at a time; collect_major is stop-the-world, but tests may
+  // run multiple independent heaps/collections concurrently.
+  let _job_guard = pool
+    .job_lock
+    .lock()
+    .unwrap_or_else(|_| std::process::abort());
+
+  // Reset shared state for this cycle.
+  pool.pending.store(0, Ordering::Release);
+  {
+    let mut global = pool.global.lock().unwrap_or_else(|_| std::process::abort());
+    global.clear();
+
+    // Seed the global queue from roots. Root enumeration happens on the coordinator thread before
+    // any worker threads start, so we can hold the global queue lock for the duration.
+    roots.for_each_root_slot(&mut |slot| unsafe {
+      let obj = *slot;
+      mark_obj_enqueue_global(&*heap, epoch, obj, &pool.pending, &mut global);
+    });
+
+    // Process-global roots/handles registered outside of stackmaps (intern tables, runtime-owned
+    // queues, host handles, ...).
+    crate::roots::global_root_registry().for_each_root_slot(|slot| unsafe {
+      mark_obj_enqueue_global(&*heap, epoch, *slot, &pool.pending, &mut global);
+    });
+    crate::roots::global_persistent_handle_table().for_each_root_slot(|slot| unsafe {
+      mark_obj_enqueue_global(&*heap, epoch, *slot, &pool.pending, &mut global);
+    });
+
+    let mut root_handles = mem::take(&mut heap.root_handles);
+    root_handles.for_each_root_slot(&mut |slot| unsafe {
+      mark_obj_enqueue_global(&*heap, epoch, *slot, &pool.pending, &mut global);
+    });
+    heap.root_handles = root_handles;
+  }
+
+  // Publish the job and wake workers.
+  {
+    let mut state = pool.state.lock().unwrap_or_else(|_| std::process::abort());
+    state.gen = state.gen.wrapping_add(1);
+    state.active_workers = workers;
+    state.heap = heap as *const GcHeap as usize;
+    state.epoch = epoch;
+    state.done = 0;
+    pool.start_cv.notify_all();
+  }
+
+  // Coordinator participates as worker 0.
+  {
+    let heap_ptr: *const GcHeap = heap as *const GcHeap;
+    let heap_ref = unsafe { &*heap_ptr };
+    let mut local = pool.worker0.lock().unwrap_or_else(|_| std::process::abort());
+    local.clear();
+    run_mark_worker(heap_ref, epoch, &pool.pending, &pool.global, &mut local);
+  }
+
+  // Wait for all participating background workers to finish.
+  if workers > 1 {
+    let mut state = pool.state.lock().unwrap_or_else(|_| std::process::abort());
+    while state.done < workers - 1 {
+      state = pool.done_cv.wait(state).unwrap_or_else(|_| std::process::abort());
+    }
+  }
+
+  debug_assert_eq!(
+    pool.pending.load(Ordering::Acquire),
+    0,
+    "parallel major GC marking ended with pending work"
+  );
+}
+
+fn mark_worker_loop(worker_id: usize, pool: Arc<ParallelMarkPool>, mut local: WorkStack) -> ! {
+  let mut last_gen: u64 = 0;
+  loop {
+    // Wait for a new marking job.
+    let (gen, active_workers, heap, epoch) = {
+      let mut state = pool.state.lock().unwrap_or_else(|_| std::process::abort());
+      while state.gen == last_gen {
+        state = pool.start_cv.wait(state).unwrap_or_else(|_| std::process::abort());
+      }
+      last_gen = state.gen;
+      (state.gen, state.active_workers, state.heap, state.epoch)
+    };
+
+    // Worker threads are created up-front, but each GC cycle may use fewer workers than the pool.
+    if worker_id >= active_workers {
+      continue;
+    }
+
+    // Safety: the coordinator keeps the heap pointer valid for the duration of the job and
+    // serializes jobs via `job_lock`.
+    let heap = unsafe { &*(heap as *const GcHeap) };
+    local.clear();
+    run_mark_worker(heap, epoch, &pool.pending, &pool.global, &mut local);
+
+    // Report completion.
+    let mut state = pool.state.lock().unwrap_or_else(|_| std::process::abort());
+    if state.gen != gen {
+      // A new GC cycle started unexpectedly while we were marking. This should be impossible due to
+      // `job_lock`, but fail fast rather than corrupting GC state.
+      std::process::abort();
+    }
+    state.done += 1;
+    pool.done_cv.notify_all();
+  }
+}
+
+const STEAL_BATCH: usize = 256;
+const SHARE_THRESHOLD: usize = 1024;
+
+fn run_mark_worker(
+  heap: &GcHeap,
+  epoch: u8,
+  pending: &AtomicUsize,
+  global: &Mutex<WorkStack>,
+  local: &mut WorkStack,
+) {
+  let mut worker = MarkWorker {
+    heap,
+    epoch,
+    pending,
+    global,
+    local,
+  };
+  worker.run();
+}
+
+struct MarkWorker<'a> {
+  heap: &'a GcHeap,
+  epoch: u8,
+  pending: &'a AtomicUsize,
+  global: &'a Mutex<WorkStack>,
+  local: &'a mut WorkStack,
+}
+
+impl MarkWorker<'_> {
+  fn run(&mut self) {
+    loop {
+      if let Some(obj) = self.local.pop() {
+        self.visit_obj(obj);
+        self.pending.fetch_sub(1, Ordering::AcqRel);
+        self.maybe_share();
+        continue;
+      }
+
+      if self.steal_from_global() {
+        continue;
+      }
+
+      if self.pending.load(Ordering::Acquire) == 0 {
+        return;
+      }
+
+      std::hint::spin_loop();
+      std::thread::yield_now();
+    }
+  }
+
+  fn steal_from_global(&mut self) -> bool {
+    let mut global = self.global.lock().unwrap_or_else(|_| std::process::abort());
+    let mut n = 0usize;
+    while n < STEAL_BATCH {
+      let Some(obj) = global.pop() else { break };
+      self.local.push(obj);
+      n += 1;
+    }
+    n != 0
+  }
+
+  fn maybe_share(&mut self) {
+    let len = self.local.len();
+    if len < SHARE_THRESHOLD {
       return;
     }
 
-    // `collect_major` runs `collect_minor` first, so in the common case there should be no nursery
-    // pointers left. Handle them (and any stale/foreign pointers) defensively anyway.
-    loop {
-      if !self.heap.is_valid_obj_ptr_for_tracing(obj, true) {
-        return;
-      }
+    let share = len / 2;
+    if share == 0 {
+      return;
+    }
 
-      if self.heap.is_in_nursery(obj) {
-        // SAFETY: `obj` is a valid pointer into this heap's nursery.
-        unsafe {
-          let header = &*super::header_from_obj(obj);
-          if header.is_forwarded() {
-            obj = header.forwarding_ptr();
-            continue;
-          }
-        }
-        return;
-      }
+    let mut global = self.global.lock().unwrap_or_else(|_| std::process::abort());
+    for _ in 0..share {
+      let Some(obj) = self.local.pop() else { break };
+      global.push(obj);
+    }
+  }
 
-      // Follow forwarding pointers (used by nursery evacuation today, and by potential future major
-      // GC compaction).
-      // SAFETY: `obj` is in this heap (Immix or LOS), so it points at an `ObjHeader`.
+  fn mark_obj(&mut self, obj: *mut u8) {
+    mark_obj_enqueue_local(self.heap, self.epoch, obj, self.pending, self.local);
+    self.maybe_share();
+  }
+}
+
+impl Tracer for MarkWorker<'_> {
+  fn visit_slot(&mut self, slot: *mut *mut u8) {
+    // SAFETY: `slot` originates from root enumeration or from a valid object
+    // descriptor, so it is a valid pointer to a GC reference.
+    let obj = unsafe { *slot };
+    self.mark_obj(obj);
+  }
+}
+
+fn mark_obj_enqueue_global(
+  heap: &GcHeap,
+  epoch: u8,
+  mut obj: *mut u8,
+  pending: &AtomicUsize,
+  global: &mut WorkStack,
+) {
+  if obj.is_null() {
+    return;
+  }
+
+  // `collect_major` runs `collect_minor` first, so in the common case there should be no nursery
+  // pointers left. Handle them (and any stale/foreign pointers) defensively anyway.
+  loop {
+    if !heap.is_valid_obj_ptr_for_tracing(obj, true) {
+      return;
+    }
+
+    if heap.is_in_nursery(obj) {
+      // SAFETY: `obj` is a valid pointer into this heap's nursery.
       unsafe {
         let header = &*super::header_from_obj(obj);
         if header.is_forwarded() {
@@ -238,39 +533,101 @@ impl Marker<'_> {
           continue;
         }
       }
-
-      break;
-    }
-
-    // SAFETY: `obj` points to an `ObjHeader`.
-    let already_marked = unsafe { (&*super::header_from_obj(obj)).is_marked(self.epoch) };
-    if already_marked {
       return;
     }
 
-    // SAFETY: `obj` points to an `ObjHeader`.
+    // Follow forwarding pointers (used by nursery evacuation today, and by potential future major
+    // GC compaction).
+    // SAFETY: `obj` is in this heap (Immix or LOS), so it points at an `ObjHeader`.
     unsafe {
       let header = &*super::header_from_obj(obj);
-      header.set_mark_epoch(self.epoch);
-
-      let size = super::obj_size(obj);
-      if self.heap.is_in_immix(obj) {
-        self.heap.immix.set_lines_for_live_object(obj, size);
-      } else {
-        debug_assert!(self.heap.is_in_los(obj), "unknown heap object location");
+      if header.is_forwarded() {
+        obj = header.forwarding_ptr();
+        continue;
       }
     }
-    self.heap.work_stack.push(obj);
+
+    break;
   }
+
+  // SAFETY: `obj` points to an `ObjHeader`.
+  let first_mark = unsafe { (&*super::header_from_obj(obj)).set_mark_epoch_idempotent(epoch) };
+  if !first_mark {
+    return;
+  }
+
+  // SAFETY: `obj` points to a valid object header.
+  let size = unsafe { super::obj_size(obj) };
+  if heap.is_in_immix(obj) {
+    heap.immix.set_lines_for_live_object(obj, size);
+  } else {
+    debug_assert!(heap.is_in_los(obj), "unknown heap object location");
+  }
+
+  pending.fetch_add(1, Ordering::Relaxed);
+  global.push(obj);
 }
 
-impl Tracer for Marker<'_> {
-  fn visit_slot(&mut self, slot: *mut *mut u8) {
-    // SAFETY: `slot` originates from root enumeration or from a valid object
-    // descriptor, so it is a valid pointer to a GC reference.
-    let obj = unsafe { *slot };
-    self.mark_obj(obj);
+fn mark_obj_enqueue_local(
+  heap: &GcHeap,
+  epoch: u8,
+  mut obj: *mut u8,
+  pending: &AtomicUsize,
+  local: &mut WorkStack,
+) {
+  if obj.is_null() {
+    return;
   }
+
+  // `collect_major` runs `collect_minor` first, so in the common case there should be no nursery
+  // pointers left. Handle them (and any stale/foreign pointers) defensively anyway.
+  loop {
+    if !heap.is_valid_obj_ptr_for_tracing(obj, true) {
+      return;
+    }
+
+    if heap.is_in_nursery(obj) {
+      // SAFETY: `obj` is a valid pointer into this heap's nursery.
+      unsafe {
+        let header = &*super::header_from_obj(obj);
+        if header.is_forwarded() {
+          obj = header.forwarding_ptr();
+          continue;
+        }
+      }
+      return;
+    }
+
+    // Follow forwarding pointers (used by nursery evacuation today, and by potential future major
+    // GC compaction).
+    // SAFETY: `obj` is in this heap (Immix or LOS), so it points at an `ObjHeader`.
+    unsafe {
+      let header = &*super::header_from_obj(obj);
+      if header.is_forwarded() {
+        obj = header.forwarding_ptr();
+        continue;
+      }
+    }
+
+    break;
+  }
+
+  // SAFETY: `obj` points to an `ObjHeader`.
+  let first_mark = unsafe { (&*super::header_from_obj(obj)).set_mark_epoch_idempotent(epoch) };
+  if !first_mark {
+    return;
+  }
+
+  // SAFETY: `obj` points to a valid object header.
+  let size = unsafe { super::obj_size(obj) };
+  if heap.is_in_immix(obj) {
+    heap.immix.set_lines_for_live_object(obj, size);
+  } else {
+    debug_assert!(heap.is_in_los(obj), "unknown heap object location");
+  }
+
+  pending.fetch_add(1, Ordering::Relaxed);
+  local.push(obj);
 }
 
 struct Compactor<'a> {

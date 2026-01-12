@@ -208,7 +208,7 @@ impl ImmixSpace {
 
     // No holes: allocate a new block.
     let block_id = self.blocks.len();
-    let mut block = Block::new(block_id)?;
+    let block = Block::new(block_id)?;
     let start = block.start_addr();
     debug_assert_eq!(start % BLOCK_SIZE, 0);
     let limit = start + BLOCK_SIZE;
@@ -230,7 +230,7 @@ impl ImmixSpace {
   }
 
   /// Mark the lines spanned by a live object.
-  pub fn set_lines_for_live_object(&mut self, obj_start: *mut u8, obj_size: usize) {
+  pub fn set_lines_for_live_object(&self, obj_start: *mut u8, obj_size: usize) {
     if obj_size == 0 {
       return;
     }
@@ -246,7 +246,7 @@ impl ImmixSpace {
       .checked_add(obj_size)
       .expect("object size overflow while marking");
 
-    let block = &mut self.blocks[block_id];
+    let block = &self.blocks[block_id];
     debug_assert!(block.contains_addr(obj_addr));
     debug_assert!(obj_end <= block.end_addr(), "object crosses block boundary");
     block.mark_addr_range(obj_addr, obj_end);

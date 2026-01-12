@@ -22,4 +22,9 @@ pub const LINE_SIZE: usize = 128;
 /// Number of lines in a block.
 pub const LINES_PER_BLOCK: usize = BLOCK_SIZE / LINE_SIZE;
 
-const LINE_MAP_BYTES: usize = LINES_PER_BLOCK / 8;
+// Each Immix block has a 1-bit-per-line liveness bitmap ("line map"). We store it as 64-bit words
+// so:
+// - the GC can mark it concurrently during parallel major GC, and
+// - allocation/metrics can query/update it efficiently.
+pub(crate) const LINE_MAP_WORDS: usize = LINES_PER_BLOCK / 64;
+const _: () = assert!(LINES_PER_BLOCK % 64 == 0);

@@ -273,6 +273,10 @@ impl GcHeap {
     // allocate (see `tests/no_alloc_rt_gc_collect.rs`).
     heap.reserve_card_table_objects_for_minor_gc();
 
+    // Eagerly initialize the parallel major-GC marker pool so the first stop-the-world GC does not
+    // need to spawn threads or allocate mark-stack buffers while the world is stopped.
+    super::mark::ensure_parallel_marker_pool_init();
+
     heap
   }
 
@@ -1103,6 +1107,32 @@ impl GcHeap {
 
   pub fn is_in_los(&self, obj: *mut u8) -> bool {
     self.los.contains(obj)
+  }
+
+  /// Test/debug helper: whether `obj` is marked in the heap's current major-GC epoch.
+  ///
+  /// This is **not** a stable API. It exists to support determinism tests for the
+  /// parallel major-GC marker.
+  #[doc(hidden)]
+  pub fn debug_is_marked(&self, mut obj: *mut u8) -> bool {
+    if obj.is_null() {
+      return false;
+    }
+
+    // Follow forwarding pointers defensively (minor GC / optional compaction).
+    unsafe {
+      loop {
+        if !self.is_valid_obj_ptr_for_tracing(obj, true) {
+          return false;
+        }
+        let header = &*super::header_from_obj(obj);
+        if header.is_forwarded() {
+          obj = header.forwarding_ptr();
+          continue;
+        }
+        return header.is_marked(self.mark_epoch);
+      }
+    }
   }
 
   #[inline]
