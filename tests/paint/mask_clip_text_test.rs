@@ -1,5 +1,6 @@
 use super::util::{
-  create_stacking_context_bounds_renderer, create_stacking_context_bounds_renderer_legacy,
+  bounding_box_for_color, create_stacking_context_bounds_renderer,
+  create_stacking_context_bounds_renderer_legacy,
 };
 use fastrender::debug::runtime::RuntimeToggles;
 use fastrender::paint::display_list_renderer::{DisplayListRenderer, PaintParallelism};
@@ -33,6 +34,15 @@ fn assert_is_red(rgba: (u8, u8, u8, u8), msg: &str) {
     r > 200 && g < 50 && b < 50 && a > 240,
     "{msg}: expected red, got rgba=({r},{g},{b},{a})"
   );
+}
+
+fn assert_has_non_white_pixels(pixmap: &Pixmap, msg: &str) {
+  // `mask-clip:text` should preserve *some* pixels (the text itself) rather than masking out the
+  // entire element. Use a loose predicate so font raster differences don't make this flaky.
+  let bbox = bounding_box_for_color(pixmap, |(r, g, b, a)| {
+    a > 200 && (r < 240 || g < 240 || b < 240)
+  });
+  assert!(bbox.is_some(), "{msg}: expected some non-white pixels");
 }
 
 fn render_both(html: &str, width: u32, height: u32) -> (Pixmap, Pixmap) {
@@ -89,6 +99,43 @@ fn html_with_mask_clip(clip: &str, flavor: MaskPropertyFlavor) -> String {
   )
 }
 
+fn html_with_mask_clip_and_mask_border(clip: &str, flavor: MaskPropertyFlavor) -> String {
+  let (mask_image, mask_size, mask_repeat, mask_clip) = match flavor {
+    MaskPropertyFlavor::Standard => ("mask-image", "mask-size", "mask-repeat", "mask-clip"),
+    MaskPropertyFlavor::Webkit => (
+      "-webkit-mask-image",
+      "-webkit-mask-size",
+      "-webkit-mask-repeat",
+      "-webkit-mask-clip",
+    ),
+  };
+
+  // Use `mask-border-source` to ensure the mask-border path stays active. The gradient is fully
+  // opaque so it should not change the output (just exercise the integration).
+  format!(
+    r#"<!doctype html>
+      <style>
+        html, body {{ margin: 0; padding: 0; background: white; }}
+        #target {{
+          width: {WIDTH}px;
+          height: {HEIGHT}px;
+          background: rgb(255, 0, 0);
+          color: black;
+          font-family: "DejaVu Sans Subset";
+          font-size: 32px;
+          line-height: 32px;
+          {mask_image}: linear-gradient(#fff, #fff);
+          {mask_size}: 100% 100%;
+          {mask_repeat}: no-repeat;
+          {mask_clip}: {clip};
+          mask-border-source: linear-gradient(#fff, #fff);
+        }}
+      </style>
+      <div id="target">Hello</div>
+    "#
+  )
+}
+
 #[test]
 fn mask_clip_text_clips_mask_to_glyph_shapes() {
   for (label, flavor) in [
@@ -106,6 +153,10 @@ fn mask_clip_text_clips_mask_to_glyph_shapes() {
           "{label}/{backend}: mask-clip:text should mask out the element outside glyph shapes"
         ),
       );
+      assert_has_non_white_pixels(
+        &pixmap,
+        &format!("{label}/{backend}: mask-clip:text should preserve some painted pixels"),
+      );
     }
 
     let (dl, legacy) = render_both(&html_content_clip, WIDTH, HEIGHT);
@@ -114,6 +165,41 @@ fn mask_clip_text_clips_mask_to_glyph_shapes() {
         rgba_at(&pixmap, 10, 90),
         &format!(
           "{label}/{backend}: mask-clip:content-box should leave the element background visible"
+        ),
+      );
+    }
+  }
+}
+
+#[test]
+fn mask_clip_text_works_with_mask_border_active() {
+  for (label, flavor) in [
+    ("standard", MaskPropertyFlavor::Standard),
+    ("webkit", MaskPropertyFlavor::Webkit),
+  ] {
+    let html_text_clip = html_with_mask_clip_and_mask_border("text", flavor);
+    let html_content_clip = html_with_mask_clip_and_mask_border("content-box", flavor);
+
+    let (dl, legacy) = render_both(&html_text_clip, WIDTH, HEIGHT);
+    for (backend, pixmap) in [("display_list", dl), ("legacy", legacy)] {
+      assert_is_white(
+        rgba_at(&pixmap, 10, 90),
+        &format!(
+          "{label}/{backend}: mask-clip:text should still clip to glyphs when mask-border is active"
+        ),
+      );
+      assert_has_non_white_pixels(
+        &pixmap,
+        &format!("{label}/{backend}: expected some pixels to remain visible"),
+      );
+    }
+
+    let (dl, legacy) = render_both(&html_content_clip, WIDTH, HEIGHT);
+    for (backend, pixmap) in [("display_list", dl), ("legacy", legacy)] {
+      assert_is_red(
+        rgba_at(&pixmap, 10, 90),
+        &format!(
+          "{label}/{backend}: mask-clip:content-box should leave background visible even with mask-border"
         ),
       );
     }
