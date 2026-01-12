@@ -19,6 +19,7 @@ pub mod theme_parsing;
 pub mod cancel;
 pub mod context_menu;
 pub mod frame_upload;
+pub mod global_history;
 pub mod history;
 pub mod visited;
 pub mod omnibox;
@@ -117,6 +118,7 @@ pub use browser_app::{
   AppUpdate, BrowserAppState, BrowserTabState, ChromeState, ClosedTabState, FrameReadyUpdate,
   FindInPageState, LatestFrameMeta, OpenSelectDropdownUpdate,
 };
+pub use global_history::{GlobalHistoryEntry, GlobalHistoryStore};
 pub use history::{HistoryEntry, TabHistory};
 pub use visited::{VisitedUrlRecord, VisitedUrlStore};
 pub use zoom::{
@@ -140,5 +142,5 @@ pub use icons::{icon, icon_button, icon_tinted, spinner, BrowserIcon};
 #[cfg(feature = "browser_ui")]
 pub use profile_autosave::{
   bookmarks_path, history_path, load_bookmarks, load_history, save_bookmarks_atomic, save_history_atomic,
-  AutosaveMsg, BookmarkStore, GlobalHistoryEntry, GlobalHistoryStore, ProfileAutosaveHandle,
+  AutosaveMsg, BookmarkStore, ProfileAutosaveHandle,
 };

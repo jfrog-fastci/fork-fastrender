@@ -40,6 +40,10 @@ impl VisitedUrlStore {
     self.records.is_empty()
   }
 
+  pub fn clear(&mut self) {
+    self.records.clear();
+  }
+
   pub fn iter_recent(&self) -> impl Iterator<Item = &VisitedUrlRecord> {
     self.records.iter().rev()
   }

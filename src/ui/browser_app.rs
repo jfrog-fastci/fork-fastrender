@@ -5,7 +5,9 @@ use crate::ui::cancel::CancelGens;
 use crate::ui::messages::{
   CursorKind, NavigationReason, RenderedFrame, ScrollMetrics, TabId, UiToWorker, WorkerToUi,
 };
-use crate::ui::{resolve_omnibox_input, validate_user_navigation_url_scheme, VisitedUrlStore};
+use crate::ui::{
+  resolve_omnibox_input, validate_user_navigation_url_scheme, GlobalHistoryStore, VisitedUrlStore,
+};
 use std::collections::VecDeque;
 use url::Url;
 
@@ -24,6 +26,10 @@ pub struct LatestFrameMeta {
 pub struct AppUpdate {
   /// Whether the front-end should schedule a repaint/redraw.
   pub request_redraw: bool,
+  /// Whether the browser's global history store was mutated.
+  ///
+  /// Front-ends that persist history to disk can use this to decide when to flush new snapshots.
+  pub history_changed: bool,
   /// Recommended full window title for the host window.
   pub set_window_title: Option<String>,
   /// A new pixmap is ready for upload; the state model does not store pixel buffers.
@@ -426,6 +432,7 @@ pub struct BrowserAppState {
   pub tabs: Vec<BrowserTabState>,
   pub active_tab: Option<TabId>,
   pub closed_tabs: Vec<ClosedTabState>,
+  pub history: GlobalHistoryStore,
   pub visited: VisitedUrlStore,
   pub chrome: ChromeState,
 }
@@ -444,6 +451,7 @@ impl BrowserAppState {
       tabs: Vec::new(),
       active_tab: None,
       closed_tabs: Vec::new(),
+      history: GlobalHistoryStore::default(),
       visited: VisitedUrlStore::new(),
       chrome: ChromeState::default(),
     }
@@ -524,6 +532,11 @@ impl BrowserAppState {
 
   pub fn close_tab(&mut self, tab_id: TabId) {
     let _ = self.remove_tab(tab_id);
+  }
+
+  pub fn clear_history(&mut self) {
+    self.history.clear();
+    self.visited.clear();
   }
 
   /// Removes a tab, returning the new active tab if the active tab changed.
@@ -766,10 +779,12 @@ impl BrowserAppState {
         can_go_back,
         can_go_forward,
       } => {
-        // We intentionally ignore `about:` navigations so omnibox history doesn't get polluted by
+        // Ignore `about:` navigations so global history + omnibox suggestions don't get polluted by
         // internal pages like `about:newtab`.
         if !about_pages::is_about_url(&url) {
           self.visited.record_visit(url.clone(), title.clone());
+          self.history.record(url.clone(), title.clone());
+          update.history_changed = true;
         }
 
         if let Some(tab) = self.tab_mut(tab_id) {
@@ -1067,7 +1082,54 @@ mod browser_app_tests {
   }
 
   #[test]
-  fn navigation_committed_is_recorded_in_visited_store() {
+  fn navigation_committed_is_recorded_in_history_and_visited_stores() {
+    let mut app = BrowserAppState::new_with_initial_tab("about:newtab".to_string());
+    let tab_id = app.active_tab_id().unwrap();
+
+    let update = app.apply_worker_msg(WorkerToUi::NavigationCommitted {
+      tab_id,
+      url: "https://example.com/".to_string(),
+      title: Some("Example Domain".to_string()),
+      can_go_back: false,
+      can_go_forward: false,
+    });
+
+    assert!(update.history_changed);
+    assert_eq!(app.visited.len(), 1);
+    let record = app.visited.iter_recent().next().expect("expected visit");
+    assert_eq!(record.url, "https://example.com/");
+    assert_eq!(record.title.as_deref(), Some("Example Domain"));
+
+    assert_eq!(app.history.entries.len(), 1);
+    let entry = app.history.entries.last().expect("expected history entry");
+    assert_eq!(entry.url, "https://example.com/");
+    assert_eq!(entry.title.as_deref(), Some("Example Domain"));
+    assert!(
+      entry.visited_at_ms.is_some(),
+      "expected committed navigations to have a visit timestamp"
+    );
+  }
+
+  #[test]
+  fn about_pages_are_not_recorded_in_history_or_visited_stores() {
+    let mut app = BrowserAppState::new_with_initial_tab("about:newtab".to_string());
+    let tab_id = app.active_tab_id().unwrap();
+
+    let update = app.apply_worker_msg(WorkerToUi::NavigationCommitted {
+      tab_id,
+      url: "about:blank".to_string(),
+      title: Some("Blank".to_string()),
+      can_go_back: false,
+      can_go_forward: false,
+    });
+
+    assert!(!update.history_changed);
+    assert!(app.visited.is_empty());
+    assert!(app.history.entries.is_empty());
+  }
+
+  #[test]
+  fn clear_history_empties_history_and_visited_stores() {
     let mut app = BrowserAppState::new_with_initial_tab("about:newtab".to_string());
     let tab_id = app.active_tab_id().unwrap();
 
@@ -1078,11 +1140,12 @@ mod browser_app_tests {
       can_go_back: false,
       can_go_forward: false,
     });
+    assert!(!app.visited.is_empty());
+    assert!(!app.history.entries.is_empty());
 
-    assert_eq!(app.visited.len(), 1);
-    let record = app.visited.iter_recent().next().expect("expected visit");
-    assert_eq!(record.url, "https://example.com/");
-    assert_eq!(record.title.as_deref(), Some("Example Domain"));
+    app.clear_history();
+    assert!(app.visited.is_empty());
+    assert!(app.history.entries.is_empty());
   }
 
   #[test]

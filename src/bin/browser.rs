@@ -739,7 +739,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
               app.bookmarks_path.display()
             );
           }
-          if let Err(err) = fastrender::ui::save_history_atomic(&app.history_path, &app.history) {
+          if let Err(err) =
+            fastrender::ui::save_history_atomic(&app.history_path, &app.browser_state.history)
+          {
             eprintln!(
               "failed to save history to {}: {err}",
               app.history_path.display()
@@ -1503,7 +1505,6 @@ struct App {
   bookmarks_path: std::path::PathBuf,
   history_path: std::path::PathBuf,
   bookmarks: fastrender::ui::BookmarkStore,
-  history: fastrender::ui::GlobalHistoryStore,
   profile_autosave: Option<fastrender::ui::ProfileAutosaveHandle>,
   history_panel_open: bool,
   bookmarks_panel_open: bool,
@@ -1775,6 +1776,9 @@ impl App {
     let egui_renderer = egui_wgpu::Renderer::new(&device, surface_format, None, 1);
     let debug_log_ui_enabled = debug_log_ui_enabled();
 
+    let mut browser_state = fastrender::ui::BrowserAppState::new();
+    browser_state.history = history;
+
     Ok(Self {
       window,
       window_title_cache: String::new(),
@@ -1794,11 +1798,10 @@ impl App {
       clear_color,
       ui_to_worker_tx,
       worker_join: Some(worker_join),
-      browser_state: fastrender::ui::BrowserAppState::new(),
+      browser_state,
       bookmarks_path,
       history_path,
       bookmarks,
-      history,
       profile_autosave: None,
       history_panel_open: false,
       bookmarks_panel_open: false,
@@ -2579,13 +2582,6 @@ impl App {
       _ => {}
     }
 
-    if let fastrender::ui::WorkerToUi::NavigationCommitted { url, title, .. } = &msg {
-      self.history.record(url.clone(), title.clone());
-      if let Some(autosave) = self.profile_autosave.as_ref() {
-        let _ = autosave.send(fastrender::ui::AutosaveMsg::UpdateHistory(self.history.clone()));
-      }
-    }
-
     let mut request_redraw = false;
 
     if let fastrender::ui::WorkerToUi::DebugLog { tab_id, line } = &msg {
@@ -2639,6 +2635,14 @@ impl App {
     }
 
     let update = self.browser_state.apply_worker_msg(msg);
+
+    if update.history_changed {
+      if let Some(autosave) = self.profile_autosave.as_ref() {
+        let _ = autosave.send(fastrender::ui::AutosaveMsg::UpdateHistory(
+          self.browser_state.history.clone(),
+        ));
+      }
+    }
 
     if let Some(frame_ready) = update.frame_ready {
       // Ignore stale frames for tabs that have already been closed.
@@ -3927,13 +3931,15 @@ impl App {
   }
 
   fn clear_history(&mut self) {
-    self.history.clear();
+    self.browser_state.clear_history();
 
     let Some(autosave) = self.profile_autosave.as_ref() else {
       return;
     };
 
-    let _ = autosave.send(fastrender::ui::AutosaveMsg::UpdateHistory(self.history.clone()));
+    let _ = autosave.send(fastrender::ui::AutosaveMsg::UpdateHistory(
+      self.browser_state.history.clone(),
+    ));
 
     // Force an immediate write of the cleared state, but don't block the UI thread waiting for the
     // ack.
