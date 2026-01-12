@@ -25,6 +25,18 @@ fn object_prototype_to_string_tags_arrays() {
 }
 
 #[test]
+fn object_prototype_to_string_tags_arguments_objects() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"Object.prototype.toString.call(function() { return arguments; }()) === "[object Arguments]" &&
+         Object.prototype.toString.call(function() { "use strict"; return arguments; }()) === "[object Arguments]""#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn object_prototype_to_string_tags_promises() {
   let mut rt = new_runtime();
   let value = rt

@@ -1079,6 +1079,18 @@ impl Heap {
     }
   }
 
+  /// Returns `true` if `obj` currently points to a live Arguments object allocation.
+  ///
+  /// This is the `[[ParameterMap]]` brand check used by `Object.prototype.toString` builtin-tag
+  /// selection. `vm-js` currently uses a minimal arguments object implementation (not mapped), but
+  /// it still must be branded for spec-correct `Object.prototype.toString`.
+  pub fn is_arguments_object(&self, obj: GcObject) -> bool {
+    match self.get_heap_object(obj.0) {
+      Ok(HeapObject::Object(o)) => matches!(o.base.kind, ObjectKind::Arguments),
+      Ok(_) | Err(_) => false,
+    }
+  }
+
   /// Returns `true` if `obj` currently points to a live Date object allocation.
   pub fn is_date_object(&self, obj: GcObject) -> bool {
     matches!(self.date_value(obj), Ok(Some(_)))
@@ -5655,6 +5667,22 @@ impl<'a> Scope<'a> {
     Ok(GcObject(self.heap.alloc_unchecked(HeapObject::Object(obj), new_bytes)?))
   }
 
+  /// Allocates a JavaScript Arguments object on the heap.
+  pub fn alloc_arguments_object(&mut self) -> Result<GcObject, VmError> {
+    let new_bytes = JsObject::heap_size_bytes_for_property_count(0);
+    self.heap.ensure_can_allocate(new_bytes)?;
+
+    let obj = JsObject {
+      base: ObjectBase {
+        prototype: None,
+        extensible: true,
+        properties: Box::default(),
+        kind: ObjectKind::Arguments,
+      },
+    };
+    Ok(GcObject(self.heap.alloc_unchecked(HeapObject::Object(obj), new_bytes)?))
+  }
+
   /// Allocates a JavaScript Date object on the heap.
   pub fn alloc_date(&mut self, value: f64) -> Result<GcObject, VmError> {
     let new_bytes = JsObject::heap_size_bytes_for_property_count(0);
@@ -7049,7 +7077,7 @@ impl ObjectBase {
   fn array_length(&self) -> Option<u32> {
     match &self.kind {
       ObjectKind::Array(a) => Some(a.length),
-      ObjectKind::Ordinary | ObjectKind::Date(_) | ObjectKind::Error => None,
+      ObjectKind::Ordinary | ObjectKind::Date(_) | ObjectKind::Error | ObjectKind::Arguments => None,
     }
   }
 
@@ -7550,6 +7578,7 @@ enum ObjectKind {
   Array(ArrayObject),
   Date(DateObject),
   Error,
+  Arguments,
 }
 
 #[derive(Debug)]

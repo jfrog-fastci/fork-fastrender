@@ -8309,6 +8309,17 @@ pub fn object_prototype_to_string(
   const TAG_STRING: [u16; 6] = [b'S' as u16, b't' as u16, b'r' as u16, b'i' as u16, b'n' as u16, b'g' as u16];
   const TAG_SYMBOL: [u16; 6] = [b'S' as u16, b'y' as u16, b'm' as u16, b'b' as u16, b'o' as u16, b'l' as u16];
   const TAG_ARRAY: [u16; 5] = [b'A' as u16, b'r' as u16, b'r' as u16, b'a' as u16, b'y' as u16];
+  const TAG_ARGUMENTS: [u16; 9] = [
+    b'A' as u16,
+    b'r' as u16,
+    b'g' as u16,
+    b'u' as u16,
+    b'm' as u16,
+    b'e' as u16,
+    b'n' as u16,
+    b't' as u16,
+    b's' as u16,
+  ];
   const TAG_DATE: [u16; 4] = [b'D' as u16, b'a' as u16, b't' as u16, b'e' as u16];
   const TAG_ERROR: [u16; 5] = [b'E' as u16, b'r' as u16, b'r' as u16, b'o' as u16, b'r' as u16];
   const TAG_REGEXP: [u16; 6] = [b'R' as u16, b'e' as u16, b'g' as u16, b'E' as u16, b'x' as u16, b'p' as u16];
@@ -8363,6 +8374,8 @@ pub fn object_prototype_to_string(
     Value::Object(_) => {
       if crate::spec_ops::is_array_with_host_and_hooks(vm, &mut scope, host, hooks, receiver)? {
         &TAG_ARRAY
+      } else if scope.heap().is_arguments_object(o) {
+        &TAG_ARGUMENTS
       } else if scope.heap().is_callable(receiver)? {
         // `IsCallable` follows Proxy chains (and is intentionally non-throwing for revoked proxies).
         &TAG_FUNCTION

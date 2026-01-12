@@ -1959,7 +1959,7 @@ impl<'a> Evaluator<'a> {
         .intrinsics()
         .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
 
-      let args_obj = scope.alloc_object()?;
+      let args_obj = scope.alloc_arguments_object()?;
       scope.push_root(Value::Object(args_obj))?;
       scope
         .heap_mut()
