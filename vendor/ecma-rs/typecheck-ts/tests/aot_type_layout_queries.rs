@@ -274,3 +274,54 @@ type FnObj = { (x: number): boolean; x: string };
 
   assert_eq!(store.gc_ptr_offsets(payload_layout_id), vec![8, 16]);
 }
+
+#[test]
+fn layout_of_interned_for_callable_intersection_is_gc_object_with_closure_header() {
+  let mut host = aot_host();
+  let file = FileKey::new("main.ts");
+  host.insert(
+    file.clone(),
+    r#"
+type FnWithProp = ((x: number) => boolean) & { x: string };
+"#,
+  );
+
+  let program = Program::new(host, vec![file.clone()]);
+  let file_id = program.file_id(&file).expect("file id");
+  let def = def_in_file(&program, file_id, "FnWithProp");
+
+  let store = program.interned_type_store();
+  let ty = program.type_of_def_interned(def);
+  let layout_id = program.layout_of_interned(ty);
+  let layout = store.layout(layout_id);
+
+  let payload_layout_id = match layout {
+    Layout::Ptr {
+      to: PtrKind::GcObject { layout },
+    } => layout,
+    other => panic!("expected pointer-to-gc-object layout, got {other:?}"),
+  };
+
+  let Layout::Struct { fields, .. } = store.layout(payload_layout_id) else {
+    panic!("expected struct payload layout");
+  };
+
+  assert_eq!(fields.len(), 3);
+  assert_eq!(fields[0].key, FieldKey::Internal("fn_ptr".to_string()));
+  assert_eq!(fields[0].offset, 0);
+  assert_eq!(fields[1].key, FieldKey::Internal("env".to_string()));
+  assert_eq!(fields[1].offset, 8);
+
+  let prop_name = match &fields[2].key {
+    FieldKey::Prop(PropKey::String(id)) => store.name(*id),
+    other => panic!("expected string prop key, got {other:?}"),
+  };
+  assert_eq!(prop_name, "x");
+  assert_eq!(fields[2].offset, 16);
+  assert!(matches!(
+    store.layout(fields[2].layout),
+    Layout::Ptr { to: PtrKind::GcString }
+  ));
+
+  assert_eq!(store.gc_ptr_offsets(payload_layout_id), vec![8, 16]);
+}
