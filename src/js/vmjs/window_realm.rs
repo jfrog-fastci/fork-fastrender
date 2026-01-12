@@ -37,7 +37,7 @@ use base64::Engine as _;
 use parking_lot::Mutex;
 use selectors::context::QuirksMode;
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::marker::PhantomData;
 use std::ptr::NonNull;
 use std::rc::Rc;
@@ -49,7 +49,7 @@ use url::Url;
 use vm_js::{
   GcObject, GcString, Heap, HeapLimits, HostSlots, JsRuntime as VmJsRuntime, ModuleGraph,
   PropertyDescriptor, PropertyKey, PropertyKind, Realm, RealmId, RootId, Scope, SourceText, Value,
-  Vm, VmError, VmHost, VmHostHooks, VmOptions,
+  Vm, VmError, VmHost, VmHostHooks, VmOptions, WeakGcObject,
 };
 use webidl_vm_js::VmJsHostHooksPayload;
 use webidl_vm_js::WebIdlBindingsHost;
@@ -295,7 +295,14 @@ pub(crate) struct WindowRealmUserData {
   ///
   /// This is used for DOMs created from JS (e.g. `document.implementation.createHTMLDocument()`)
   /// which are not backed by the embedder/renderer.
-  owned_dom2_documents: HashMap<DocumentId, Box<dom2::Document>>,
+  owned_dom2_documents: Rc<RefCell<HashMap<DocumentId, Box<dom2::Document>>>>,
+  /// Documents that had `dataset` mutations while running without direct access to `&mut Vm`.
+  ///
+  /// `Element.dataset` is implemented via `VmHostHooks::{host_exotic_get,host_exotic_set,host_exotic_delete}`.
+  /// Those hooks cannot safely borrow `&mut Vm` (the VM is already mutably borrowed by the engine),
+  /// so we record which documents need mutation-observer microtask queueing and drain this set at a
+  /// safe execution boundary.
+  pub(crate) pending_dataset_mutation_observer_microtasks: Rc<RefCell<HashSet<WeakGcObject>>>,
   /// Deterministic per-realm PRNG state used by `window.crypto` RNG APIs.
   pub(crate) crypto_rng_state: u64,
   /// Fallback `dom2::Document` used for events when the realm is not backed by a host DOM.
@@ -376,6 +383,14 @@ impl std::fmt::Debug for WindowRealmUserData {
       .field("has_history_obj", &self.history_obj.is_some())
       .field("has_document_obj", &self.document_obj.is_some())
       .field("has_location_obj", &self.location_obj.is_some())
+      .field(
+        "pending_dataset_mutation_observer_microtasks_len",
+        &self.pending_dataset_mutation_observer_microtasks.borrow().len(),
+      )
+      .field(
+        "owned_dom2_documents_len",
+        &self.owned_dom2_documents.borrow().len(),
+      )
       .finish()
   }
 }
@@ -425,7 +440,8 @@ impl WindowRealmUserData {
       module_graph: None,
       worker_registry: crate::js::window_worker::WorkerRegistry::default(),
       dom_platform: None,
-      owned_dom2_documents: HashMap::new(),
+      owned_dom2_documents: Rc::new(RefCell::new(HashMap::new())),
+      pending_dataset_mutation_observer_microtasks: Rc::new(RefCell::new(HashSet::new())),
       crypto_rng_state,
       events_dom_fallback: dom2::Document::new(QuirksMode::NoQuirks),
       realm_document_registry: RealmDocumentRegistry::default(),
@@ -622,6 +638,10 @@ impl WindowRealm {
 
   pub fn vm_mut(&mut self) -> &mut Vm {
     &mut self.runtime.vm
+  }
+
+  pub(crate) fn dataset_exotic_context(&self) -> DatasetExoticContext {
+    DatasetExoticContext::for_vm(&self.runtime.vm)
   }
 
   pub fn vm_and_heap_mut(&mut self) -> (&mut Vm, &mut Heap) {
@@ -994,11 +1014,18 @@ impl WindowRealm {
     // If the realm does not have module loading enabled, skip the extra execution-context work:
     // dynamic `import()` will reject immediately and module loading hooks will never be invoked.
     if self.runtime.vm.module_graph_ptr().is_none() {
-      return self
-        .with_vm_budget(|rt| {
-          Self::ensure_window_inherits_event_target(rt)?;
-          rt.exec_script_source_with_host_and_hooks(host, hooks, source)
-        });
+      return self.with_vm_budget(|rt| {
+        Self::ensure_window_inherits_event_target(rt)?;
+        let result = rt.exec_script_source_with_host_and_hooks(host, hooks, source);
+        let drain_result = {
+          let mut scope = rt.heap.scope();
+          drain_pending_dataset_mutation_observer_microtasks(&mut rt.vm, &mut scope, host, hooks)
+        };
+        if result.is_ok() {
+          drain_result?;
+        }
+        result
+      });
     }
 
     let script_id = vm_js::ScriptId::from_raw(self.next_script_id_raw);
@@ -1084,10 +1111,26 @@ impl WindowRealm {
         }
       }
 
-      let _guard =
-        ScriptReferrerGuard::new(&mut rt.vm, module_loader, realm_id, script_id, script_url)?;
+      let result = {
+        let _guard = ScriptReferrerGuard::new(
+          &mut rt.vm,
+          module_loader,
+          realm_id,
+          script_id,
+          script_url,
+        )?;
+        rt.exec_script_source_with_host_and_hooks(host, hooks, source)
+      };
 
-      rt.exec_script_source_with_host_and_hooks(host, hooks, source)
+      let drain_result = {
+        let mut scope = rt.heap.scope();
+        drain_pending_dataset_mutation_observer_microtasks(&mut rt.vm, &mut scope, host, hooks)
+      };
+      if result.is_ok() {
+        drain_result?;
+      }
+
+      result
     })
   }
 
@@ -1146,6 +1189,7 @@ impl WindowRealm {
     struct WindowRealmDomShimHooks<'a> {
       microtasks: &'a mut vm_js::MicrotaskQueue,
       any: VmJsHostHooksPayload,
+      dataset_ctx: DatasetExoticContext,
     }
 
     impl vm_js::VmHostHooks for WindowRealmDomShimHooks<'_> {
@@ -1161,7 +1205,9 @@ impl WindowRealm {
         receiver: Value,
       ) -> Result<Option<Value>, VmError> {
         let _ = receiver;
-        if let Some(value) = dataset_exotic_get(scope, self.any.vm_host_mut(), obj, key)? {
+        if let Some(value) =
+          dataset_exotic_get(scope, self.any.vm_host_mut(), &self.dataset_ctx, obj, key)?
+        {
           return Ok(Some(value));
         }
         if let Some(value) = dom_token_list_exotic_get(scope, self.any.vm_host_mut(), obj, key)? {
@@ -1179,7 +1225,9 @@ impl WindowRealm {
         receiver: Value,
       ) -> Result<Option<bool>, VmError> {
         let _ = receiver;
-        if let Some(ok) = dataset_exotic_set(scope, self.any.vm_host_mut(), obj, key, value)? {
+        if let Some(ok) =
+          dataset_exotic_set(scope, self.any.vm_host_mut(), &self.dataset_ctx, obj, key, value)?
+        {
           return Ok(Some(ok));
         }
         dom_token_list_exotic_set(scope, self.any.vm_host_mut(), obj, key, value)
@@ -1191,7 +1239,9 @@ impl WindowRealm {
         obj: GcObject,
         key: PropertyKey,
       ) -> Result<Option<bool>, VmError> {
-        if let Some(ok) = dataset_exotic_delete(scope, self.any.vm_host_mut(), obj, key)? {
+        if let Some(ok) =
+          dataset_exotic_delete(scope, self.any.vm_host_mut(), &self.dataset_ctx, obj, key)?
+        {
           return Ok(Some(ok));
         }
         dom_token_list_exotic_delete(scope, self.any.vm_host_mut(), obj, key)
@@ -1243,11 +1293,20 @@ impl WindowRealm {
       any
         .webidl_bindings_host_slot_mut()
         .set(&mut webidl_bindings_host);
+      let dataset_ctx = DatasetExoticContext::for_vm(&rt.vm);
       let mut hooks = WindowRealmDomShimHooks {
         microtasks: &mut guard.queue,
         any,
+        dataset_ctx,
       };
       let result = rt.exec_script_source_with_host_and_hooks(&mut host_ctx, &mut hooks, source);
+      let drain_result = {
+        let mut scope = rt.heap.scope();
+        drain_pending_dataset_mutation_observer_microtasks(&mut rt.vm, &mut scope, &mut host_ctx, &mut hooks)
+      };
+      if result.is_ok() {
+        drain_result?;
+      }
       // Ensure the bindings host outlives the JS execution boundary: the hooks payload stores a raw
       // pointer to it.
       let _ = &mut webidl_bindings_host;
@@ -1287,15 +1346,17 @@ impl WindowRealm {
       struct DomShimMicrotaskHooks {
         any: VmJsHostHooksPayload,
         pending: Vec<(Option<RealmId>, vm_js::Job)>,
+        dataset_ctx: DatasetExoticContext,
       }
 
       impl DomShimMicrotaskHooks {
-        fn new(host_ctx: &mut dyn VmHost) -> Self {
+        fn new(host_ctx: &mut dyn VmHost, dataset_ctx: DatasetExoticContext) -> Self {
           let mut any = VmJsHostHooksPayload::default();
           any.set_vm_host(host_ctx);
           Self {
             any,
             pending: Vec::new(),
+            dataset_ctx,
           }
         }
 
@@ -1319,7 +1380,9 @@ impl WindowRealm {
           receiver: Value,
         ) -> Result<Option<Value>, VmError> {
           let _ = receiver;
-          if let Some(value) = dataset_exotic_get(scope, self.any.vm_host_mut(), obj, key)? {
+          if let Some(value) =
+            dataset_exotic_get(scope, self.any.vm_host_mut(), &self.dataset_ctx, obj, key)?
+          {
             return Ok(Some(value));
           }
           if let Some(value) = dom_token_list_exotic_get(scope, self.any.vm_host_mut(), obj, key)? {
@@ -1337,7 +1400,9 @@ impl WindowRealm {
           receiver: Value,
         ) -> Result<Option<bool>, VmError> {
           let _ = receiver;
-          if let Some(ok) = dataset_exotic_set(scope, self.any.vm_host_mut(), obj, key, value)? {
+          if let Some(ok) =
+            dataset_exotic_set(scope, self.any.vm_host_mut(), &self.dataset_ctx, obj, key, value)?
+          {
             return Ok(Some(ok));
           }
           dom_token_list_exotic_set(scope, self.any.vm_host_mut(), obj, key, value)
@@ -1349,7 +1414,9 @@ impl WindowRealm {
           obj: GcObject,
           key: PropertyKey,
         ) -> Result<Option<bool>, VmError> {
-          if let Some(ok) = dataset_exotic_delete(scope, self.any.vm_host_mut(), obj, key)? {
+          if let Some(ok) =
+            dataset_exotic_delete(scope, self.any.vm_host_mut(), &self.dataset_ctx, obj, key)?
+          {
             return Ok(Some(ok));
           }
           dom_token_list_exotic_delete(scope, self.any.vm_host_mut(), obj, key)
@@ -1486,7 +1553,8 @@ impl WindowRealm {
       // `HostDocumentState` carries the `Document.currentScript` handle, so Promise jobs run in this
       // fallback path can still observe/override `currentScript` when needed.
       let mut host_ctx = DocumentHostState::new(dom2::Document::new(QuirksMode::NoQuirks));
-      let mut hooks = DomShimMicrotaskHooks::new(&mut host_ctx);
+      let dataset_ctx = DatasetExoticContext::for_vm(&rt.vm);
+      let mut hooks = DomShimMicrotaskHooks::new(&mut host_ctx, dataset_ctx);
       let mut webidl_bindings_host = WindowRealmWebIdlBindingsHost::default();
       hooks
         .any
@@ -2704,9 +2772,78 @@ fn with_active_event_for_host<R>(
   None
 }
 
+/// Per-call execution context for `Element.dataset` exotic hooks.
+///
+/// `vm-js` `VmHostHooks::{host_exotic_get,host_exotic_set,host_exotic_delete}` are invoked while the
+/// engine already holds a mutable borrow of the VM. This means the exotic hook implementation cannot
+/// safely borrow `&mut Vm` to access per-realm state (like extra-document registries) or queue DOM
+/// mutation observer microtasks.
+///
+/// To support multi-document realms, hook adapters capture this context at a safe boundary (before
+/// entering the VM) and pass it into `dataset_exotic_*`.
+#[derive(Clone, Debug)]
+pub(crate) struct DatasetExoticContext {
+  primary_document_id: Option<DocumentId>,
+  owned_dom2_documents: Rc<RefCell<HashMap<DocumentId, Box<dom2::Document>>>>,
+  pending_dataset_mutation_observer_microtasks: Rc<RefCell<HashSet<WeakGcObject>>>,
+}
+
+impl DatasetExoticContext {
+  fn empty() -> Self {
+    Self {
+      primary_document_id: None,
+      owned_dom2_documents: Rc::new(RefCell::new(HashMap::new())),
+      pending_dataset_mutation_observer_microtasks: Rc::new(RefCell::new(HashSet::new())),
+    }
+  }
+
+  pub(crate) fn for_vm(vm: &Vm) -> Self {
+    let Some(data) = vm.user_data::<WindowRealmUserData>() else {
+      return Self::empty();
+    };
+    Self {
+      primary_document_id: data.document_obj.map(gc_object_id),
+      owned_dom2_documents: Rc::clone(&data.owned_dom2_documents),
+      pending_dataset_mutation_observer_microtasks: Rc::clone(
+        &data.pending_dataset_mutation_observer_microtasks,
+      ),
+    }
+  }
+
+  fn record_dataset_mutation(&self, document_obj: GcObject) {
+    self
+      .pending_dataset_mutation_observer_microtasks
+      .borrow_mut()
+      .insert(WeakGcObject::new(document_obj));
+  }
+}
+
+impl Default for DatasetExoticContext {
+  fn default() -> Self {
+    Self::empty()
+  }
+}
+
+fn dataset_prop_is_valid(prop: &str) -> bool {
+  if prop.is_empty() {
+    return false;
+  }
+  let bytes = prop.as_bytes();
+  if bytes[0].is_ascii_uppercase() {
+    // Real DOMStringMap only exposes lower-camel-case properties.
+    return false;
+  }
+  if bytes.iter().any(|b| *b == b'-') {
+    // Hyphens are represented via camelCase in JS (`fooBar` <-> `data-foo-bar`).
+    return false;
+  }
+  prop.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+}
+
 pub(crate) fn dataset_exotic_get(
   scope: &mut Scope<'_>,
   mut host: Option<&mut dyn VmHost>,
+  ctx: &DatasetExoticContext,
   obj: GcObject,
   key: PropertyKey,
 ) -> Result<Option<Value>, VmError> {
@@ -2729,32 +2866,65 @@ pub(crate) fn dataset_exotic_get(
     return Ok(None);
   };
 
-  let Some(host) = host.as_deref_mut() else {
-    return Ok(None);
-  };
-  let Some(host) = crate::js::dom_host::dom_host_vmjs(host) else {
-    return Ok(None);
-  };
-
   let node_index = match usize::try_from(slots.a) {
     Ok(v) => v,
     Err(_) => return Ok(None),
   };
   let prop = scope.heap().get_string(prop_s)?.to_utf8_lossy();
 
-  let node_id = match host.node_id_from_index(node_index) {
+  // Resolve the owning document for this dataset object.
+  scope.push_root(Value::Object(obj))?;
+  let wrapper_document_key = alloc_key(scope, WRAPPER_DOCUMENT_KEY)?;
+  let document_obj = match scope
+    .heap()
+    .object_get_own_data_property_value(obj, &wrapper_document_key)?
+  {
+    Some(Value::Object(obj)) => obj,
+    _ => return Ok(None),
+  };
+
+  let document_id = gc_object_id(document_obj);
+
+  // Active host document.
+  if ctx
+    .primary_document_id
+    .is_some_and(|primary| primary == document_id)
+  {
+    let Some(host) = host.as_deref_mut() else {
+      return Ok(None);
+    };
+    let Some(host) = crate::js::dom_host::dom_host_vmjs(host) else {
+      return Ok(None);
+    };
+    let node_id = match host.node_id_from_index(node_index) {
+      Ok(id) => id,
+      Err(_) => return Ok(None),
+    };
+    let Some(value) = host.dataset_get(node_id, &prop) else {
+      return Ok(None);
+    };
+    return Ok(Some(Value::String(scope.alloc_string(&value)?)));
+  }
+
+  // Realm-owned (non-host) document.
+  let owned_dom2_documents = ctx.owned_dom2_documents.borrow();
+  let Some(dom) = owned_dom2_documents.get(&document_id) else {
+    return Ok(None);
+  };
+  let node_id = match dom.node_id_from_index(node_index) {
     Ok(id) => id,
     Err(_) => return Ok(None),
   };
-  let Some(value) = host.dataset_get(node_id, &prop) else {
+  let Some(value) = dom.dataset_get(node_id, &prop) else {
     return Ok(None);
   };
-  Ok(Some(Value::String(scope.alloc_string(&value)?)))
+  Ok(Some(Value::String(scope.alloc_string(value)?)))
 }
 
 pub(crate) fn dataset_exotic_set(
   scope: &mut Scope<'_>,
   mut host: Option<&mut dyn VmHost>,
+  ctx: &DatasetExoticContext,
   obj: GcObject,
   key: PropertyKey,
   value: Value,
@@ -2775,18 +2945,17 @@ pub(crate) fn dataset_exotic_set(
     return Ok(None);
   };
 
-  let Some(host) = host.as_deref_mut() else {
-    return Ok(None);
-  };
-  let Some(host) = crate::js::dom_host::dom_host_vmjs(host) else {
-    return Ok(None);
-  };
   let node_index = match usize::try_from(slots.a) {
     Ok(v) => v,
     Err(_) => return Ok(None),
   };
 
   let prop = scope.heap().get_string(prop_s)?.to_utf8_lossy();
+  if !dataset_prop_is_valid(&prop) {
+    // Invalid dataset property names behave like ordinary expando properties.
+    return Ok(None);
+  }
+
   let value_value = scope.heap_mut().to_string(value)?;
   let value = scope
     .heap()
@@ -2794,13 +2963,53 @@ pub(crate) fn dataset_exotic_set(
     .map(|s| s.to_utf8_lossy())
     .unwrap_or_default();
 
-  let node_id = match host.node_id_from_index(node_index) {
+  scope.push_root(Value::Object(obj))?;
+  let wrapper_document_key = alloc_key(scope, WRAPPER_DOCUMENT_KEY)?;
+  let document_obj = match scope
+    .heap()
+    .object_get_own_data_property_value(obj, &wrapper_document_key)?
+  {
+    Some(Value::Object(obj)) => obj,
+    _ => return Ok(None),
+  };
+
+  let document_id = gc_object_id(document_obj);
+
+  // Active host document.
+  if ctx
+    .primary_document_id
+    .is_some_and(|primary| primary == document_id)
+  {
+    let Some(host) = host.as_deref_mut() else {
+      return Ok(None);
+    };
+    let Some(host_dom) = crate::js::dom_host::dom_host_vmjs(host) else {
+      return Ok(None);
+    };
+    let node_id = match host_dom.node_id_from_index(node_index) {
+      Ok(id) => id,
+      Err(_) => return Ok(None),
+    };
+    if let Err(err) = host_dom.dataset_set(node_id, &prop, &value) {
+      return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
+    }
+    ctx.record_dataset_mutation(document_obj);
+    return Ok(Some(true));
+  }
+
+  // Realm-owned (non-host) document.
+  let mut owned_dom2_documents = ctx.owned_dom2_documents.borrow_mut();
+  let Some(dom) = owned_dom2_documents.get_mut(&document_id) else {
+    return Ok(None);
+  };
+  let node_id = match dom.node_id_from_index(node_index) {
     Ok(id) => id,
     Err(_) => return Ok(None),
   };
-  if let Err(err) = host.dataset_set(node_id, &prop, &value) {
+  if let Err(err) = dom.dataset_set(node_id, &prop, &value) {
     return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
   }
+  ctx.record_dataset_mutation(document_obj);
 
   Ok(Some(true))
 }
@@ -2808,6 +3017,7 @@ pub(crate) fn dataset_exotic_set(
 pub(crate) fn dataset_exotic_delete(
   scope: &mut Scope<'_>,
   mut host: Option<&mut dyn VmHost>,
+  ctx: &DatasetExoticContext,
   obj: GcObject,
   key: PropertyKey,
 ) -> Result<Option<bool>, VmError> {
@@ -2827,26 +3037,64 @@ pub(crate) fn dataset_exotic_delete(
     return Ok(None);
   };
 
-  let Some(host) = host.as_deref_mut() else {
-    return Ok(None);
-  };
-  let Some(host) = crate::js::dom_host::dom_host_vmjs(host) else {
-    return Ok(None);
-  };
   let node_index = match usize::try_from(slots.a) {
     Ok(v) => v,
     Err(_) => return Ok(None),
   };
 
   let prop = scope.heap().get_string(prop_s)?.to_utf8_lossy();
+  if !dataset_prop_is_valid(&prop) {
+    // Invalid dataset property names behave like ordinary expando properties.
+    return Ok(None);
+  }
 
-  let node_id = match host.node_id_from_index(node_index) {
+  scope.push_root(Value::Object(obj))?;
+  let wrapper_document_key = alloc_key(scope, WRAPPER_DOCUMENT_KEY)?;
+  let document_obj = match scope
+    .heap()
+    .object_get_own_data_property_value(obj, &wrapper_document_key)?
+  {
+    Some(Value::Object(obj)) => obj,
+    _ => return Ok(None),
+  };
+
+  let document_id = gc_object_id(document_obj);
+
+  // Active host document.
+  if ctx
+    .primary_document_id
+    .is_some_and(|primary| primary == document_id)
+  {
+    let Some(host) = host.as_deref_mut() else {
+      return Ok(None);
+    };
+    let Some(host_dom) = crate::js::dom_host::dom_host_vmjs(host) else {
+      return Ok(None);
+    };
+    let node_id = match host_dom.node_id_from_index(node_index) {
+      Ok(id) => id,
+      Err(_) => return Ok(None),
+    };
+    if let Err(err) = host_dom.dataset_delete(node_id, &prop) {
+      return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
+    }
+    ctx.record_dataset_mutation(document_obj);
+    return Ok(Some(true));
+  }
+
+  // Realm-owned (non-host) document.
+  let mut owned_dom2_documents = ctx.owned_dom2_documents.borrow_mut();
+  let Some(dom) = owned_dom2_documents.get_mut(&document_id) else {
+    return Ok(None);
+  };
+  let node_id = match dom.node_id_from_index(node_index) {
     Ok(id) => id,
     Err(_) => return Ok(None),
   };
-  if let Err(err) = host.dataset_delete(node_id, &prop) {
+  if let Err(err) = dom.dataset_delete(node_id, &prop) {
     return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
   }
+  ctx.record_dataset_mutation(document_obj);
 
   Ok(Some(true))
 }
@@ -7670,6 +7918,28 @@ fn get_or_create_node_wrapper(
         },
       )?;
 
+      // Store document identity so dataset exotic hooks can resolve non-host documents correctly.
+      let wrapper_document_key = alloc_key(scope, WRAPPER_DOCUMENT_KEY)?;
+      scope.define_property(
+        dataset,
+        wrapper_document_key,
+        PropertyDescriptor {
+          enumerable: false,
+          configurable: false,
+          kind: PropertyKind::Data {
+            value: Value::Object(document_obj),
+            writable: false,
+          },
+        },
+      )?;
+
+      let node_id_key = alloc_key(scope, NODE_ID_KEY)?;
+      scope.define_property(
+        dataset,
+        node_id_key,
+        data_desc(Value::Number(node_id.index() as f64)),
+      )?;
+
       scope.define_property(wrapper, dataset_key, data_desc(Value::Object(dataset)))?;
     }
 
@@ -8827,6 +9097,59 @@ fn maybe_queue_mutation_observer_microtask(
   if needs_microtask {
     queue_mutation_observer_microtask(vm, scope, host, hooks, document_obj)?;
   }
+  Ok(())
+}
+
+pub(crate) fn drain_pending_dataset_mutation_observer_microtasks(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+) -> Result<(), VmError> {
+  // Without an EventLoop-backed `queueMicrotask` implementation, we cannot deliver mutation observer
+  // callbacks. Avoid consuming `microtask_needs_queueing` so delivery can happen later once the
+  // realm is wired into an event loop.
+  if !hooks_have_event_loop(hooks) {
+    return Ok(());
+  }
+
+  let (pending, owned_dom2_documents) = {
+    let Some(data) = vm.user_data_mut::<WindowRealmUserData>() else {
+      return Ok(());
+    };
+
+    let pending: Vec<WeakGcObject> = {
+      let mut pending = data.pending_dataset_mutation_observer_microtasks.borrow_mut();
+      if pending.is_empty() {
+        return Ok(());
+      }
+      pending.drain().collect()
+    };
+    (pending, Rc::clone(&data.owned_dom2_documents))
+  };
+
+  for doc_key in pending {
+    let Some(document_obj) = doc_key.upgrade(scope.heap()) else {
+      continue;
+    };
+    let document_id = gc_object_id(document_obj);
+
+    let needs_microtask = if is_host_document_id(vm, document_id) {
+      dom_from_vm_host_mut(host).map(|dom| dom.take_mutation_observer_microtask_needed())
+    } else {
+      // Avoid holding the `owned_dom2_documents` `RefCell` borrow while queueing microtasks (which can
+      // re-enter JS and cause nested `dataset` accesses).
+      let mut owned_dom2_documents = owned_dom2_documents.borrow_mut();
+      owned_dom2_documents
+        .get_mut(&document_id)
+        .map(|dom| dom.take_mutation_observer_microtask_needed())
+    };
+
+    if let Some(needs_microtask) = needs_microtask {
+      maybe_queue_mutation_observer_microtask(vm, scope, host, hooks, document_obj, needs_microtask)?;
+    }
+  }
+
   Ok(())
 }
 
@@ -15256,7 +15579,8 @@ fn mutation_observer_observe_native(
   } else {
     let Some(mut dom_ptr) = (|| {
       let data = vm.user_data_mut::<WindowRealmUserData>()?;
-      let dom = data.owned_dom2_documents.get_mut(&document_id)?;
+      let mut owned_dom2_documents = data.owned_dom2_documents.borrow_mut();
+      let dom = owned_dom2_documents.get_mut(&document_id)?;
       Some(NonNull::from(dom.as_mut()))
     })() else {
       return Err(VmError::TypeError(
@@ -15319,7 +15643,8 @@ fn mutation_observer_disconnect_native(
     }
   } else if let Some(mut dom_ptr) = (|| {
     let data = vm.user_data_mut::<WindowRealmUserData>()?;
-    let dom = data.owned_dom2_documents.get_mut(&document_id)?;
+    let mut owned_dom2_documents = data.owned_dom2_documents.borrow_mut();
+    let dom = owned_dom2_documents.get_mut(&document_id)?;
     Some(NonNull::from(dom.as_mut()))
   })() {
     // SAFETY: `dom_ptr` is owned by the realm's document registry.
@@ -15392,7 +15717,8 @@ fn mutation_observer_take_records_native(
   } else {
     let Some(mut dom_ptr) = (|| {
       let data = vm.user_data_mut::<WindowRealmUserData>()?;
-      let dom = data.owned_dom2_documents.get_mut(&document_id)?;
+      let mut owned_dom2_documents = data.owned_dom2_documents.borrow_mut();
+      let dom = owned_dom2_documents.get_mut(&document_id)?;
       Some(NonNull::from(dom.as_mut()))
     })() else {
       let empty = alloc_mutation_records_array(vm, scope, document_obj, None, &[])?;
@@ -15441,7 +15767,8 @@ fn mutation_observer_notify_native(
   } else {
     let Some(mut dom_ptr) = (|| {
       let data = vm.user_data_mut::<WindowRealmUserData>()?;
-      let dom = data.owned_dom2_documents.get_mut(&document_id)?;
+      let mut owned_dom2_documents = data.owned_dom2_documents.borrow_mut();
+      let dom = owned_dom2_documents.get_mut(&document_id)?;
       Some(NonNull::from(dom.as_mut()))
     })() else {
       return Ok(Value::Undefined);
@@ -17000,8 +17327,8 @@ fn resolve_dom_event_target(
     // Other documents are realm-owned `dom2::Document` instances that are not backed by the embedder
     // host DOM.
     let document_id = gc_object_id(owning_document_obj);
-    let dom = data
-      .owned_dom2_documents
+    let mut owned_dom2_documents = data.owned_dom2_documents.borrow_mut();
+    let dom = owned_dom2_documents
       .get_mut(&document_id)
       .ok_or(VmError::TypeError("Illegal invocation"))?;
     NonNull::from(dom.as_mut())
@@ -23598,7 +23925,8 @@ pub(crate) fn dom_ptr_for_document_id_read(
     return dom_from_vm_host(host).map(NonNull::from);
   }
   let data = vm.user_data::<WindowRealmUserData>()?;
-  let dom = data.owned_dom2_documents.get(&document_id)?;
+  let owned_dom2_documents = data.owned_dom2_documents.borrow();
+  let dom = owned_dom2_documents.get(&document_id)?;
   Some(NonNull::from(dom.as_ref()))
 }
 
@@ -23612,7 +23940,8 @@ fn dom_ptr_for_document_id_mut(
   }
   let dom_ptr = {
     let data = vm.user_data_mut::<WindowRealmUserData>()?;
-    let dom = data.owned_dom2_documents.get_mut(&document_id)?;
+    let mut owned_dom2_documents = data.owned_dom2_documents.borrow_mut();
+    let dom = owned_dom2_documents.get_mut(&document_id)?;
     NonNull::from(dom.as_mut())
   };
   Some(dom_ptr)
@@ -36504,13 +36833,14 @@ mod tests {
   /// This provides the DOM shim exotic hooks (`Element.dataset`) while discarding Promise jobs.
   struct DomShimHostHooks {
     any: VmJsHostHooksPayload,
+    dataset_ctx: DatasetExoticContext,
   }
 
   impl DomShimHostHooks {
-    fn new(host_ctx: &mut dyn VmHost) -> Self {
+    fn new(host_ctx: &mut dyn VmHost, dataset_ctx: DatasetExoticContext) -> Self {
       let mut any = VmJsHostHooksPayload::default();
       any.set_vm_host(host_ctx);
-      Self { any }
+      Self { any, dataset_ctx }
     }
   }
 
@@ -36529,7 +36859,9 @@ mod tests {
       receiver: Value,
     ) -> Result<Option<Value>, VmError> {
       let _ = receiver;
-      if let Some(value) = dataset_exotic_get(scope, self.any.vm_host_mut(), obj, key)? {
+      if let Some(value) =
+        dataset_exotic_get(scope, self.any.vm_host_mut(), &self.dataset_ctx, obj, key)?
+      {
         return Ok(Some(value));
       }
       if let Some(value) = dom_token_list_exotic_get(scope, self.any.vm_host_mut(), obj, key)? {
@@ -36547,7 +36879,9 @@ mod tests {
       receiver: Value,
     ) -> Result<Option<bool>, VmError> {
       let _ = receiver;
-      if let Some(ok) = dataset_exotic_set(scope, self.any.vm_host_mut(), obj, key, value)? {
+      if let Some(ok) =
+        dataset_exotic_set(scope, self.any.vm_host_mut(), &self.dataset_ctx, obj, key, value)?
+      {
         return Ok(Some(ok));
       }
       dom_token_list_exotic_set(scope, self.any.vm_host_mut(), obj, key, value)
@@ -36559,7 +36893,9 @@ mod tests {
       obj: GcObject,
       key: PropertyKey,
     ) -> Result<Option<bool>, VmError> {
-      if let Some(ok) = dataset_exotic_delete(scope, self.any.vm_host_mut(), obj, key)? {
+      if let Some(ok) =
+        dataset_exotic_delete(scope, self.any.vm_host_mut(), &self.dataset_ctx, obj, key)?
+      {
         return Ok(Some(ok));
       }
       dom_token_list_exotic_delete(scope, self.any.vm_host_mut(), obj, key)
@@ -36640,7 +36976,8 @@ mod tests {
     host: &mut dyn VmHost,
     source: &str,
   ) -> Result<Value, VmError> {
-    let mut hooks = DomShimHostHooks::new(host);
+    let dataset_ctx = realm.dataset_exotic_context();
+    let mut hooks = DomShimHostHooks::new(host, dataset_ctx);
     realm.exec_script_with_host_and_hooks(host, &mut hooks, source)
   }
 
@@ -37335,6 +37672,122 @@ mod tests {
       get_string(host.host().window().heap(), events_after_go),
       "[[\"popstate\",1],[\"hashchange\",\"https://example.com/#two\",\"https://example.com/#one\"]]"
     );
+
+    Ok(())
+  }
+
+  #[test]
+  fn element_dataset_resolves_extra_document_by_wrapper_document_identity() -> Result<(), VmError> {
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+
+    // Active host document.
+    let mut host = DocumentHostState::new(dom2::Document::new(QuirksMode::NoQuirks));
+    let node1 = {
+      let dom = host.dom_mut();
+      let root = dom.root();
+      let el = dom.create_element("div", "");
+      dom
+        .append_child(root, el)
+        .expect("append child into host document");
+      el
+    };
+
+    // Create a second JS-owned `Document` object with its own `dom2::Document` backing.
+    let (doc2_dom_ptr, node2_id) = {
+      let (vm, realm_ref, heap) = realm.vm_realm_and_heap_mut();
+      let mut scope = heap.scope();
+      let global = realm_ref.global_object();
+      scope.push_root(Value::Object(global))?;
+
+      let doc2_obj = scope.alloc_object()?;
+      scope.push_root(Value::Object(doc2_obj))?;
+
+      let (doc2_dom_ptr, node2_id) = {
+        let Some(data) = vm.user_data_mut::<WindowRealmUserData>() else {
+          return Err(VmError::InvariantViolation(
+            "WindowRealm is missing required VM user data",
+          ));
+        };
+        let Some(platform) = data.dom_platform.as_mut() else {
+          return Err(VmError::InvariantViolation(
+            "WindowRealm is missing required DomPlatform for dataset multi-document test",
+          ));
+        };
+
+        scope.heap_mut().object_set_prototype(
+          doc2_obj,
+          Some(platform.prototype_for(DomInterface::Document)),
+        )?;
+
+        // Register a unique document id so wrapper caching is document-aware. Document IDs are
+        // derived from the JS Document wrapper identity.
+        let doc2_id = gc_object_id(doc2_obj);
+        platform.register_wrapper(
+          scope.heap(),
+          doc2_obj,
+          DomNodeKey::new(doc2_id, NodeId::from_index(0)),
+          DomInterface::Document,
+        );
+
+        let mut dom2 = dom2::Document::new(QuirksMode::NoQuirks);
+        let root = dom2.root();
+        let node2_id = dom2.create_element("div", "");
+        dom2
+          .append_child(root, node2_id)
+          .expect("append child into extra document");
+
+        // Store in the realm registry keyed by `DocumentId` so dataset exotic hooks can resolve it
+        // by wrapper identity.
+        let mut dom2_box = Box::new(dom2);
+        let dom2_ptr = NonNull::from(dom2_box.as_mut());
+        data
+          .owned_dom2_documents
+          .borrow_mut()
+          .insert(doc2_id, dom2_box);
+        (dom2_ptr, node2_id)
+      };
+
+      assert_eq!(
+        node1.index(),
+        node2_id.index(),
+        "test requires NodeId index collision across documents"
+      );
+
+      // SAFETY: `doc2_dom_ptr` points at the boxed `dom2::Document` owned by `WindowRealmUserData`.
+      let doc2_dom = unsafe { doc2_dom_ptr.as_ref() };
+      let node2_obj =
+        match get_or_create_node_wrapper(vm, &mut scope, doc2_obj, Some(doc2_dom), node2_id)? {
+          Value::Object(obj) => obj,
+          _ => {
+            return Err(VmError::InvariantViolation(
+              "expected get_or_create_node_wrapper to return an object",
+            ))
+          }
+        };
+      scope.push_root(Value::Object(node2_obj))?;
+
+      let node2_key = alloc_key(&mut scope, "__node2")?;
+      scope.define_property(global, node2_key, data_desc(Value::Object(node2_obj)))?;
+
+      (doc2_dom_ptr, node2_id)
+    };
+
+    exec_script_with_dom_host(&mut realm, &mut host, "__node2.dataset.foo = '1';")?;
+
+    // Regression test: without document identity, dataset mutations would target the host document's
+    // node with the same index.
+    assert_eq!(
+      host
+        .dom()
+        .get_attribute(node1, "data-foo")
+        .expect("host get_attribute"),
+      None
+    );
+
+    let value = unsafe { doc2_dom_ptr.as_ref() }
+      .get_attribute(node2_id, "data-foo")
+      .expect("extra get_attribute");
+    assert_eq!(value, Some("1"));
 
     Ok(())
   }
@@ -38519,7 +38972,10 @@ mod tests {
         let node2_id = dom2.create_element("div", "");
         let mut dom2_box = Box::new(dom2);
         let dom2_ptr = NonNull::from(dom2_box.as_mut());
-        data.owned_dom2_documents.insert(doc2_id, dom2_box);
+        data
+          .owned_dom2_documents
+          .borrow_mut()
+          .insert(doc2_id, dom2_box);
         (dom2_ptr, node2_id)
       };
 
@@ -41613,6 +42069,7 @@ mod tests {
         .user_data_mut::<WindowRealmUserData>()
         .expect("expected WindowRealmUserData")
         .owned_dom2_documents
+        .borrow_mut()
         .insert(document_id, boxed);
 
       // Create a JS wrapper for the secondary-document node and expose it as a global so scripts can

@@ -2692,6 +2692,48 @@ mod tests {
   }
 
   #[test]
+  fn dataset_mutation_schedules_mutation_observer_microtask() -> Result<()> {
+    // Build a tiny DOM with a single element so `document.getElementById` can find it.
+    let mut dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let target = dom.create_element("div", "");
+    dom
+      .set_attribute(target, "id", "target")
+      .expect("set id attribute");
+    dom.append_child(dom.root(), target).expect("append child");
+
+    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+
+    host.exec_script(
+      "globalThis.__called = 0;\n\
+       globalThis.__attr = '';\n\
+       const el = document.getElementById('target');\n\
+       const obs = new MutationObserver((records) => {\n\
+         globalThis.__called = records.length;\n\
+         globalThis.__attr = records[0] && records[0].attributeName || '';\n\
+       });\n\
+       obs.observe(el, { attributes: true });\n\
+       el.dataset.foo = '1';",
+    )?;
+
+    // Mutation observer delivery is microtask-based; it must not run synchronously during the
+    // script evaluation "turn".
+    assert!(matches!(
+      get_global_prop(&mut host, "__called"),
+      Value::Number(n) if n == 0.0
+    ));
+
+    host.perform_microtask_checkpoint()?;
+
+    assert!(matches!(
+      get_global_prop(&mut host, "__called"),
+      Value::Number(n) if n == 1.0
+    ));
+    assert_eq!(get_global_prop_utf8(&mut host, "__attr").as_deref(), Some("data-foo"));
+
+    Ok(())
+  }
+
+  #[test]
   fn exec_script_installs_event_loop_for_queue_microtask() -> Result<()> {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
     let mut host = WindowHost::new(dom, "https://example.invalid/")?;

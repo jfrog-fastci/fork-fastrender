@@ -14,7 +14,9 @@ use crate::js::vm_error_format;
 use crate::js::window_realm::{
   computed_style_exotic_get,
   dataset_exotic_delete, dataset_exotic_get, dataset_exotic_set, dom_token_list_exotic_delete,
-  dom_token_list_exotic_get, dom_token_list_exotic_set, WindowRealmHost, WindowRealmUserData,
+  dom_token_list_exotic_get, dom_token_list_exotic_set,
+  drain_pending_dataset_mutation_observer_microtasks, DatasetExoticContext, WindowRealmHost,
+  WindowRealmUserData,
 };
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -372,6 +374,7 @@ pub struct VmJsEventLoopHooks<Host: WindowRealmHost + 'static> {
   heap_ptr: Option<NonNull<Heap>>,
   heap_alive: Option<Arc<AtomicBool>>,
   enqueue_error: Option<crate::error::Error>,
+  dataset_ctx: DatasetExoticContext,
   _marker: std::marker::PhantomData<fn() -> Host>,
 }
 
@@ -435,6 +438,7 @@ impl<Host: WindowRealmHost + 'static> VmJsEventLoopHooks<Host> {
       heap_ptr: None,
       heap_alive: None,
       enqueue_error: None,
+      dataset_ctx: DatasetExoticContext::default(),
       _marker: std::marker::PhantomData,
     }
   }
@@ -444,6 +448,7 @@ impl<Host: WindowRealmHost + 'static> VmJsEventLoopHooks<Host> {
     let mut hooks = {
       let (host_ctx, window_realm) = host.vm_host_and_window_realm()?;
       let mut hooks = Self::new(host_ctx);
+      hooks.dataset_ctx = window_realm.dataset_exotic_context();
       hooks.heap_ptr = Some(NonNull::from(window_realm.heap_mut()));
       hooks.heap_alive = Some(Arc::clone(window_realm.heap_alive_flag()));
       hooks
@@ -478,6 +483,7 @@ impl<Host: WindowRealmHost + 'static> VmJsEventLoopHooks<Host> {
     webidl_bindings_host: Option<&mut dyn WebIdlBindingsHost>,
   ) -> Self {
     let mut hooks = Self::new(vm_host);
+    hooks.dataset_ctx = window_realm.dataset_exotic_context();
     hooks.heap_ptr = Some(NonNull::from(window_realm.heap_mut()));
     hooks.heap_alive = Some(Arc::clone(window_realm.heap_alive_flag()));
     if let Some(bindings_host) = webidl_bindings_host {
@@ -565,6 +571,23 @@ fn mutation_observer_notify_microtask<Host: WindowRealmHost + 'static>(
     .map_err(|err| vm_error_to_event_loop_error(heap, err))
     .map(|_| ());
 
+  let drain_result: crate::error::Result<()> = {
+    let drain_result = {
+      let mut scope = heap.scope();
+      drain_pending_dataset_mutation_observer_microtasks(&mut vm, &mut scope, vm_host, &mut hooks)
+    };
+    drain_result
+      .map_err(|err| vm_error_to_event_loop_error(heap, err))
+      .map(|_| ())
+  };
+
+  // If the notify microtask succeeded, surface any failure to schedule pending dataset mutation
+  // observer delivery. If notify already failed, preserve the original error.
+  let result = match (result, drain_result) {
+    (Ok(()), Err(err)) => Err(err),
+    (other, _) => other,
+  };
+
   let finish_err = hooks.finish(&mut *heap);
   if let Some(err) = finish_err {
     return Err(err);
@@ -631,6 +654,23 @@ impl<Host: WindowRealmHost + 'static> VmHostHooks for VmJsEventLoopHooks<Host> {
         let result: crate::error::Result<()> = job_result
           .map_err(|err| vm_error_to_event_loop_error(heap, err))
           .map(|_| ());
+
+        let drain_result: crate::error::Result<()> = {
+          let drain_result = {
+            let mut scope = heap.scope();
+            drain_pending_dataset_mutation_observer_microtasks(&mut vm, &mut scope, vm_host, &mut hooks)
+          };
+          drain_result
+            .map_err(|err| vm_error_to_event_loop_error(heap, err))
+            .map(|_| ())
+        };
+
+        // If the job succeeded, propagate any failure to schedule mutation observer delivery.
+        // If the job already failed (or terminated), preserve the original error.
+        let result = match (result, drain_result) {
+          (Ok(()), Err(err)) => Err(err),
+          (other, _) => other,
+        };
 
         if let Some(err) = hooks.finish(heap) {
           return Err(err);
@@ -933,7 +973,7 @@ impl<Host: WindowRealmHost + 'static> VmHostHooks for VmJsEventLoopHooks<Host> {
     key: vm_js::PropertyKey,
     receiver: vm_js::Value,
   ) -> Result<Option<vm_js::Value>, VmError> {
-    if let Some(value) = dataset_exotic_get(scope, self.any.vm_host_mut(), obj, key)? {
+    if let Some(value) = dataset_exotic_get(scope, self.any.vm_host_mut(), &self.dataset_ctx, obj, key)? {
       return Ok(Some(value));
     }
 
@@ -959,7 +999,7 @@ impl<Host: WindowRealmHost + 'static> VmHostHooks for VmJsEventLoopHooks<Host> {
     value: vm_js::Value,
     receiver: vm_js::Value,
   ) -> Result<Option<bool>, VmError> {
-    let result = dataset_exotic_set(scope, self.any.vm_host_mut(), obj, key, value)?;
+    let result = dataset_exotic_set(scope, self.any.vm_host_mut(), &self.dataset_ctx, obj, key, value)?;
     if result.is_some() {
       self.maybe_queue_mutation_observer_notify_microtask();
       return Ok(result);
@@ -982,7 +1022,7 @@ impl<Host: WindowRealmHost + 'static> VmHostHooks for VmJsEventLoopHooks<Host> {
     obj: vm_js::GcObject,
     key: vm_js::PropertyKey,
   ) -> Result<Option<bool>, VmError> {
-    let result = dataset_exotic_delete(scope, self.any.vm_host_mut(), obj, key)?;
+    let result = dataset_exotic_delete(scope, self.any.vm_host_mut(), &self.dataset_ctx, obj, key)?;
     if result.is_some() {
       self.maybe_queue_mutation_observer_notify_microtask();
       return Ok(result);
@@ -1396,6 +1436,23 @@ fn set_timeout_native<Host: WindowRealmHost + 'static>(
       let result: crate::error::Result<()> = call_result
         .map_err(|err| vm_error_to_event_loop_error(heap, err))
         .map(|_| ());
+
+      let drain_result: crate::error::Result<()> = {
+        let drain_result = {
+          let mut scope = heap.scope();
+          drain_pending_dataset_mutation_observer_microtasks(&mut vm, &mut scope, vm_host, &mut hooks)
+        };
+        drain_result
+          .map_err(|err| vm_error_to_event_loop_error(heap, err))
+          .map(|_| ())
+      };
+
+      // If the callback succeeded, surface any failure to schedule pending dataset mutation observer
+      // delivery. If the callback already failed, preserve the original error.
+      let result = match (result, drain_result) {
+        (Ok(()), Err(err)) => Err(err),
+        (other, _) => other,
+      };
       let finish_err = hooks.finish(&mut *heap);
 
       {
@@ -1535,6 +1592,23 @@ fn set_interval_native<Host: WindowRealmHost + 'static>(
       let result: crate::error::Result<()> = call_result
         .map_err(|err| vm_error_to_event_loop_error(heap, err))
         .map(|_| ());
+
+      let drain_result: crate::error::Result<()> = {
+        let drain_result = {
+          let mut scope = heap.scope();
+          drain_pending_dataset_mutation_observer_microtasks(&mut vm, &mut scope, vm_host, &mut hooks)
+        };
+        drain_result
+          .map_err(|err| vm_error_to_event_loop_error(heap, err))
+          .map(|_| ())
+      };
+
+      // If the callback succeeded, surface any failure to schedule pending dataset mutation observer
+      // delivery. If the callback already failed, preserve the original error.
+      let result = match (result, drain_result) {
+        (Ok(()), Err(err)) => Err(err),
+        (other, _) => other,
+      };
       let finish_err = hooks.finish(&mut *heap);
 
       if let Some(err) = finish_err {
@@ -1666,6 +1740,23 @@ fn queue_microtask_native<Host: WindowRealmHost + 'static>(
       let result: crate::error::Result<()> = call_result
         .map_err(|err| vm_error_to_event_loop_error(heap, err))
         .map(|_| ());
+
+      let drain_result: crate::error::Result<()> = {
+        let drain_result = {
+          let mut scope = heap.scope();
+          drain_pending_dataset_mutation_observer_microtasks(&mut vm, &mut scope, vm_host, &mut hooks)
+        };
+        drain_result
+          .map_err(|err| vm_error_to_event_loop_error(heap, err))
+          .map(|_| ())
+      };
+
+      // If the callback succeeded, surface any failure to schedule pending dataset mutation observer
+      // delivery. If the callback already failed, preserve the original error.
+      let result = match (result, drain_result) {
+        (Ok(()), Err(err)) => Err(err),
+        (other, _) => other,
+      };
 
       let finish_err = hooks.finish(&mut *heap);
       heap.remove_root(root);
