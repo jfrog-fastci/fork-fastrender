@@ -661,11 +661,32 @@ pub fn chrome_ui(
   // Always reserve space for the status bar so showing/hiding the hovered URL doesn't change the
   // page viewport size (which would trigger needless repaints and can cause hover flicker).
   const STATUS_BAR_HEIGHT: f32 = 24.0;
-  let hovered_url = app
+  let (hovered_url, status_loading, status_stage, status_zoom) = app
     .active_tab()
-    .and_then(|t| t.hovered_url.as_deref())
-    .map(str::trim)
-    .filter(|s| !s.is_empty());
+    .map(|t| {
+      (
+        t.hovered_url
+          .as_deref()
+          .map(str::trim)
+          .filter(|s| !s.is_empty()),
+        t.loading,
+        t.stage,
+        t.zoom,
+      )
+    })
+    .unwrap_or((None, false, None, zoom::DEFAULT_ZOOM));
+
+  let loading_text = if status_loading {
+    let stage = status_stage.filter(|s| *s != StageHeartbeat::Done);
+    match stage {
+      Some(stage) => Some(format!("Loading… {}", stage.as_str())),
+      None => Some("Loading…".to_string()),
+    }
+  } else {
+    None
+  };
+
+  let zoom_text = format!("{}%", zoom::zoom_percent(status_zoom));
 
   egui::TopBottomPanel::bottom("status_bar")
     .resizable(false)
@@ -673,41 +694,65 @@ pub fn chrome_ui(
     .min_height(STATUS_BAR_HEIGHT)
     .max_height(STATUS_BAR_HEIGHT)
     .show(ctx, |ui| {
-      ui.horizontal(|ui| {
-        ui.add_space(4.0);
+      // Use right-to-left layout so we can add right-side fields (zoom/loading) and then allocate
+      // the remaining space to the hovered URL preview, which will elide when it doesn't fit.
+      ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        // Right: zoom level.
+        ui.add(
+          egui::Label::new(egui::RichText::new(&zoom_text).small()).wrap(false),
+        );
 
-        if let Some(url) = hovered_url {
-          let visuals = ui.visuals();
-          let frame = egui::Frame::none()
-            .fill(visuals.widgets.inactive.bg_fill)
-            .stroke(visuals.widgets.inactive.bg_stroke)
-            .rounding(egui::Rounding::same(4.0))
-            .inner_margin(egui::Margin::symmetric(8.0, 2.0));
-          frame.show(ui, |ui| {
-            // Use a read-only `TextEdit` so the hovered URL is selectable/copyable.
-            let mut url_owned = url.to_string();
-            let max_width = ui.available_width().min(600.0);
-            let desired_width = ui
-              .fonts(|f| {
-                let font_id = egui::TextStyle::Small.resolve(ui.style());
-                f.layout_no_wrap(url_owned.clone(), font_id, ui.visuals().text_color())
-              })
-              .size()
-              .x
-              .min(max_width);
-            ui.add(
-              egui::TextEdit::singleline(&mut url_owned)
-                .id(ui.make_persistent_id("hovered_url_status_text"))
-                .font(egui::TextStyle::Small)
-                .desired_width(desired_width)
-                .interactive(false)
-                .frame(false),
-            );
-          });
-        } else {
-          // Preserve the bar height even when no URL is displayed.
-          ui.add(egui::Label::new(egui::RichText::new(" ").small()));
+        // Right (optional): loading stage/progress.
+        if let Some(loading_text) = loading_text.as_deref() {
+          ui.add_space(8.0);
+          ui.add(
+            egui::Label::new(egui::RichText::new(loading_text).small()).wrap(false),
+          );
         }
+
+        ui.add_space(8.0);
+
+        // Left: hovered URL preview.
+        ui.allocate_ui_with_layout(
+          egui::vec2(ui.available_width(), ui.available_height()),
+          egui::Layout::left_to_right(egui::Align::Center),
+          |ui| {
+            ui.add_space(4.0);
+
+            if let Some(url) = hovered_url {
+              let visuals = ui.visuals();
+              let frame = egui::Frame::none()
+                .fill(visuals.widgets.inactive.bg_fill)
+                .stroke(visuals.widgets.inactive.bg_stroke)
+                .rounding(egui::Rounding::same(4.0))
+                .inner_margin(egui::Margin::symmetric(8.0, 2.0));
+              frame.show(ui, |ui| {
+                // Use a read-only `TextEdit` so the hovered URL is selectable/copyable.
+                let mut url_owned = url.to_string();
+                let max_width = ui.available_width().min(600.0);
+                let desired_width = ui
+                  .fonts(|f| {
+                    let font_id = egui::TextStyle::Small.resolve(ui.style());
+                    f.layout_no_wrap(url_owned.clone(), font_id, ui.visuals().text_color())
+                  })
+                  .size()
+                  .x
+                  .min(max_width);
+                ui.add(
+                  egui::TextEdit::singleline(&mut url_owned)
+                    .id(ui.make_persistent_id("hovered_url_status_text"))
+                    .font(egui::TextStyle::Small)
+                    .desired_width(desired_width)
+                    .interactive(false)
+                    .frame(false),
+                );
+              });
+            } else {
+              // Preserve the bar height even when no URL is displayed.
+              ui.add(egui::Label::new(egui::RichText::new(" ").small()));
+            }
+          },
+        );
       });
     });
 
@@ -796,6 +841,35 @@ mod tests {
     ]
   }
 
+  fn collect_text_shapes(shape: &egui::Shape, out: &mut Vec<(String, egui::Pos2)>) {
+    match shape {
+      egui::Shape::Text(t) => {
+        out.push((t.galley.text().to_string(), t.pos));
+      }
+      egui::Shape::Vec(shapes) => {
+        for s in shapes {
+          collect_text_shapes(s, out);
+        }
+      }
+      _ => {}
+    }
+  }
+
+  fn status_bar_texts(output: &egui::FullOutput) -> Vec<String> {
+    let mut texts = Vec::new();
+    for clipped in &output.shapes {
+      collect_text_shapes(&clipped.shape, &mut texts);
+    }
+
+    // `new_context` uses an 800x600 screen rect, and the status bar panel is anchored at the
+    // bottom. Filter by Y position to avoid matching the zoom percent button in the top chrome.
+    texts
+      .into_iter()
+      .filter(|(_text, pos)| pos.y > 560.0)
+      .map(|(text, _pos)| text)
+      .collect()
+  }
+
   #[test]
   fn address_bar_blur_reverts_uncommitted_text() {
     let mut app = BrowserAppState::new();
@@ -816,6 +890,46 @@ mod tests {
     assert_eq!(app.chrome.address_bar_text, "https://example.com");
     assert!(!app.chrome.address_bar_has_focus);
     assert!(!app.chrome.address_bar_editing);
+  }
+
+  #[test]
+  fn status_bar_shows_hovered_url() {
+    let mut app = BrowserAppState::new();
+    let tab_id = TabId(1);
+    app.push_tab(BrowserTabState::new(tab_id, "about:newtab".to_string()), true);
+    app.active_tab_mut().unwrap().hovered_url = Some("https://example.com/".to_string());
+
+    let ctx = new_context();
+    let _actions = chrome_ui(&ctx, &mut app, |_| None);
+    let output = ctx.end_frame();
+
+    let texts = status_bar_texts(&output);
+    assert!(
+      texts.iter().any(|t| t.contains("https://example.com/")),
+      "expected hovered URL in status bar texts, got {texts:?}"
+    );
+  }
+
+  #[test]
+  fn status_bar_shows_zoom_percent_when_non_default() {
+    let mut app = BrowserAppState::new();
+    let tab_id = TabId(1);
+    app.push_tab(BrowserTabState::new(tab_id, "about:newtab".to_string()), true);
+    app.active_tab_mut().unwrap().zoom = crate::ui::zoom::zoom_in(crate::ui::zoom::DEFAULT_ZOOM);
+    let expected = format!(
+      "{}%",
+      crate::ui::zoom::zoom_percent(app.active_tab().unwrap().zoom)
+    );
+
+    let ctx = new_context();
+    let _actions = chrome_ui(&ctx, &mut app, |_| None);
+    let output = ctx.end_frame();
+
+    let texts = status_bar_texts(&output);
+    assert!(
+      texts.iter().any(|t| t.contains(&expected)),
+      "expected zoom percent {expected:?} in status bar texts, got {texts:?}"
+    );
   }
 
   #[test]
