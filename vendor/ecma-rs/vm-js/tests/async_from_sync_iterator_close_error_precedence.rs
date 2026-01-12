@@ -2,7 +2,9 @@ use vm_js::{Heap, HeapLimits, JsRuntime, Value, Vm, VmError, VmOptions};
 
 fn new_runtime() -> JsRuntime {
   let vm = Vm::new(VmOptions::default());
-  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  // Use an aggressively low GC threshold so these tests exercise code paths where `IteratorClose`
+  // allocates (and may trigger GC) after an error has been captured.
+  let heap = Heap::new(HeapLimits::new(4 * 1024 * 1024, 64 * 1024));
   JsRuntime::new(vm, heap).unwrap()
 }
 
@@ -19,11 +21,11 @@ fn for_await_of_sync_iterator_suppresses_iterator_close_error_when_promise_resol
 
   let value = rt.exec_script(
     r#"
-      var out = "";
+      var out = null;
 
       var thenable = {};
       Object.defineProperty(thenable, "then", {
-        get: function () { throw "then"; },
+        get: function () { throw { tag: "then" }; },
       });
 
       var iterable = {};
@@ -45,11 +47,11 @@ fn for_await_of_sync_iterator_suppresses_iterator_close_error_when_promise_resol
       out
     "#,
   )?;
-  assert_eq!(value_to_string(&rt, value), "");
+  assert_eq!(value, Value::Null);
 
   rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
 
-  let value = rt.exec_script("out")?;
+  let value = rt.exec_script("out.tag")?;
   assert_eq!(value_to_string(&rt, value), "then");
   Ok(())
 }
@@ -60,12 +62,12 @@ fn for_await_of_sync_iterator_suppresses_iterator_close_error_when_awaited_value
 
   let value = rt.exec_script(
     r#"
-      var out = "";
+      var out = null;
 
       var iterable = {};
       iterable[Symbol.iterator] = function () {
         return {
-          next: function () { return { value: Promise.reject("reason"), done: false }; },
+          next: function () { return { value: Promise.reject({ tag: "reason" }), done: false }; },
           return: function () { throw "close"; },
         };
       };
@@ -81,12 +83,11 @@ fn for_await_of_sync_iterator_suppresses_iterator_close_error_when_awaited_value
       out
     "#,
   )?;
-  assert_eq!(value_to_string(&rt, value), "");
+  assert_eq!(value, Value::Null);
 
   rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
 
-  let value = rt.exec_script("out")?;
+  let value = rt.exec_script("out.tag")?;
   assert_eq!(value_to_string(&rt, value), "reason");
   Ok(())
 }
-

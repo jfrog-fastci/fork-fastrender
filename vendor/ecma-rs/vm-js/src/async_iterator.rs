@@ -230,18 +230,12 @@ pub fn async_iterator_next(
         Ok(p) => p,
         Err(err) => {
           if !done {
-            // `AsyncFromSyncIteratorContinuation` calls
-            // `IteratorClose(syncIteratorRecord, valueWrapper)` where `valueWrapper` is a throw
-            // completion (`PromiseResolve` failed).
-            //
             // Root the pending thrown value across `IteratorClose`, which can allocate and trigger
-            // GC. Values on the Rust stack are not traced by the GC.
+            // GC. Values on the Rust stack (including `VmError`) are not traced.
             let original_is_throw = err.is_throw_completion();
             if original_is_throw {
               if let Some(thrown) = err.thrown_value() {
-                if let Err(root_err) = next_scope.push_root(thrown) {
-                  return Err(root_err);
-                }
+                next_scope.push_root(thrown)?;
               }
             }
 
@@ -250,17 +244,20 @@ pub fn async_iterator_next(
               next_method: Value::Undefined,
               done: false,
             };
-            if let Err(close_err) = iterator::iterator_close(
+            let close_res = iterator::iterator_close(
               vm,
               host,
               hooks,
               &mut next_scope,
               &record,
               iterator::CloseCompletionKind::Throw,
-            ) {
-              // Never let iterator-close errors replace fatal VM failures (termination, OOM, etc).
-              // For throw completions, a fatal close error overrides the original throw.
-              if original_is_throw {
+            );
+            if let Err(close_err) = close_res {
+              // `IteratorClose` suppression rules:
+              // - If the original completion is a throw completion, suppress JS-visible close
+              //   errors.
+              // - Never suppress fatal VM errors (OOM/termination/etc).
+              if original_is_throw && !close_err.is_throw_completion() {
                 return reject_promise_from_vm_error(vm, host, hooks, &mut next_scope, close_err);
               }
             }
