@@ -1845,7 +1845,6 @@ impl WebIdlBindingsHost for BrowserDocumentDom2 {
     ))
   }
 }
-
 #[cfg(test)]
 mod tests {
   use super::*;

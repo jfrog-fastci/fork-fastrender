@@ -1788,6 +1788,7 @@ mod tests {
     let kind = NodeKind::Element {
       tag_name: "INPUT".into(),
       namespace: "".into(),
+      prefix: None,
       attributes: vec![],
     };
     assert_eq!(
@@ -1798,6 +1799,7 @@ mod tests {
     let kind = NodeKind::Element {
       tag_name: "textarea".into(),
       namespace: HTML_NAMESPACE.into(),
+      prefix: None,
       attributes: vec![],
     };
     assert_eq!(
@@ -1808,6 +1810,7 @@ mod tests {
     let kind = NodeKind::Element {
       tag_name: "select".into(),
       namespace: "".into(),
+      prefix: None,
       attributes: vec![],
     };
     assert_eq!(
@@ -1818,6 +1821,7 @@ mod tests {
     let kind = NodeKind::Element {
       tag_name: "option".into(),
       namespace: "".into(),
+      prefix: None,
       attributes: vec![],
     };
     assert_eq!(
@@ -1828,6 +1832,7 @@ mod tests {
     let kind = NodeKind::Element {
       tag_name: "form".into(),
       namespace: "".into(),
+      prefix: None,
       attributes: vec![],
     };
     assert_eq!(
@@ -1838,6 +1843,7 @@ mod tests {
     let kind = NodeKind::Element {
       tag_name: "img".into(),
       namespace: "".into(),
+      prefix: None,
       attributes: vec![],
     };
     assert_eq!(
@@ -1848,6 +1854,7 @@ mod tests {
     let kind = NodeKind::Element {
       tag_name: "a".into(),
       namespace: "".into(),
+      prefix: None,
       attributes: vec![],
     };
     assert_eq!(
@@ -1858,6 +1865,7 @@ mod tests {
     let kind = NodeKind::Element {
       tag_name: "link".into(),
       namespace: "".into(),
+      prefix: None,
       attributes: vec![],
     };
     assert_eq!(
@@ -1868,6 +1876,7 @@ mod tests {
     let kind = NodeKind::Element {
       tag_name: "script".into(),
       namespace: "".into(),
+      prefix: None,
       attributes: vec![],
     };
     assert_eq!(
@@ -1878,6 +1887,7 @@ mod tests {
     let kind = NodeKind::Element {
       tag_name: "div".into(),
       namespace: HTML_NAMESPACE.into(),
+      prefix: None,
       attributes: vec![],
     };
     assert_eq!(
@@ -1889,6 +1899,7 @@ mod tests {
     let kind = NodeKind::Element {
       tag_name: "article".into(),
       namespace: HTML_NAMESPACE.into(),
+      prefix: None,
       attributes: vec![],
     };
     assert_eq!(
@@ -1900,6 +1911,7 @@ mod tests {
     let kind = NodeKind::Element {
       tag_name: "input".into(),
       namespace: SVG_NAMESPACE.into(),
+      prefix: None,
       attributes: vec![],
     };
     assert_eq!(DomInterface::primary_for_node_kind(&kind), DomInterface::Element);

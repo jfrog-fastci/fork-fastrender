@@ -2527,6 +2527,7 @@ const NODE_TEXT_CONTENT_SET_KEY: &str = "__fastrender_node_text_content_set";
 const NODE_CHILD_NODES_KEY: &str = "__fastrender_node_child_nodes";
 const NODE_CHILDREN_KEY: &str = "__fastrender_node_children";
 const HTML_COLLECTION_PROTOTYPE_KEY: &str = "__fastrender_html_collection_prototype";
+const HTML_OPTIONS_COLLECTION_PROTOTYPE_KEY: &str = "__fastrender_html_options_collection_prototype";
 const HTML_COLLECTION_ROOT_KEY: &str = "__fastrender_html_collection_root";
 const ELEMENT_GET_ATTRIBUTE_KEY: &str = "__fastrender_element_get_attribute";
 const ELEMENT_SET_ATTRIBUTE_KEY: &str = "__fastrender_element_set_attribute";
@@ -2617,6 +2618,10 @@ const WRAPPER_SHARED_METHOD_KEYS: &[&str] = &[
   NODE_REMOVE_KEY,
   NODE_TEXT_CONTENT_GET_KEY,
   NODE_TEXT_CONTENT_SET_KEY,
+  // NodeList / HTMLCollection prototypes (used when allocating live collections for this document).
+  NODE_LIST_PROTOTYPE_KEY,
+  HTML_COLLECTION_PROTOTYPE_KEY,
+  HTML_OPTIONS_COLLECTION_PROTOTYPE_KEY,
   // EventTarget shared methods.
   EVENT_TARGET_ADD_EVENT_LISTENER_KEY,
   EVENT_TARGET_REMOVE_EVENT_LISTENER_KEY,
@@ -2675,6 +2680,14 @@ const WRAPPER_SHARED_METHOD_KEYS: &[&str] = &[
   TEXTAREA_VALUE_GET_KEY,
   TEXTAREA_VALUE_SET_KEY,
   FORM_RESET_KEY,
+  // HTMLSelectElement / HTMLOptionElement helpers.
+  SELECT_OPTIONS_GET_KEY,
+  SELECT_SELECTED_INDEX_GET_KEY,
+  SELECT_SELECTED_INDEX_SET_KEY,
+  SELECT_VALUE_GET_KEY,
+  SELECT_VALUE_SET_KEY,
+  OPTION_SELECTED_GET_KEY,
+  OPTION_SELECTED_SET_KEY,
   // CSSStyleDeclaration helpers.
   CSS_STYLE_DECL_PROTOTYPE_KEY,
   STYLE_GET_PROPERTY_VALUE_KEY,
@@ -8877,6 +8890,98 @@ fn sync_cached_children_for_node_id(
     return Ok(());
   };
   sync_cached_children_for_wrapper(vm, scope, document_obj, dom, wrapper_obj, node_id)
+}
+
+fn sync_cached_select_options_for_wrapper(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  document_obj: GcObject,
+  dom: &dom2::Document,
+  wrapper_obj: GcObject,
+  node_id: NodeId,
+) -> Result<(), VmError> {
+  match &dom.node(node_id).kind {
+    NodeKind::Element {
+      tag_name,
+      namespace,
+      ..
+    } if tag_name.eq_ignore_ascii_case("select")
+      && (namespace.is_empty() || namespace == crate::dom::HTML_NAMESPACE) => {}
+    _ => return Ok(()),
+  };
+
+  let key = alloc_key(scope, SELECT_OPTIONS_CACHE_KEY)?;
+  let Some(Value::Object(collection)) = scope
+    .heap()
+    .object_get_own_data_property_value(wrapper_obj, &key)?
+  else {
+    return Ok(());
+  };
+  sync_select_options_array(vm, scope, document_obj, dom, node_id, collection)
+}
+
+fn sync_cached_select_options_for_node_id(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  document_obj: GcObject,
+  dom: &dom2::Document,
+  node_id: NodeId,
+) -> Result<(), VmError> {
+  let wrapper_obj = if node_id.index() == 0 {
+    Some(document_obj)
+  } else {
+    let document_key = vm_js::WeakGcObject::from(document_obj);
+    dom_platform_mut(vm)
+      .and_then(|platform| platform.get_existing_wrapper(scope.heap(), document_key, node_id))
+  };
+  let Some(wrapper_obj) = wrapper_obj else {
+    return Ok(());
+  };
+  let document_obj = node_wrapper_document_obj(scope, wrapper_obj, node_id)?;
+  sync_cached_select_options_for_wrapper(vm, scope, document_obj, dom, wrapper_obj, node_id)
+}
+
+fn sync_cached_select_options_for_select_ancestor(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  document_obj: GcObject,
+  dom: &dom2::Document,
+  node_id: NodeId,
+) -> Result<(), VmError> {
+  // `HTMLSelectElement.options` is derived from the select element's descendant `<option>` nodes,
+  // so we need to sync whenever any descendant subtree mutates (e.g. when inserting into an
+  // `<optgroup>`). Walk ancestors (including `node_id` itself) and update any cached options
+  // collections for select elements we encounter.
+  let mut cur = Some(node_id);
+  let mut remaining = dom.nodes_len().saturating_add(1);
+  while let Some(id) = cur {
+    if remaining == 0 {
+      break;
+    }
+    remaining -= 1;
+    if id.index() >= dom.nodes_len() {
+      break;
+    }
+
+    let is_select = match &dom.node(id).kind {
+      NodeKind::Element {
+        tag_name,
+        namespace,
+        ..
+      } if tag_name.eq_ignore_ascii_case("select")
+        && (namespace.is_empty() || namespace == crate::dom::HTML_NAMESPACE) =>
+      {
+        true
+      }
+      _ => false,
+    };
+    if is_select {
+      sync_cached_select_options_for_node_id(vm, scope, document_obj, dom, id)?;
+    }
+    cur = dom.parent_node(id);
+  }
+
+  Ok(())
 }
 
 fn document_window_from_document(
@@ -22023,12 +22128,14 @@ fn node_append_child_native(
 
   sync_cached_child_nodes_for_wrapper(vm, scope, document_obj, dom, parent_obj, parent_handle.node_id)?;
   sync_cached_children_for_wrapper(vm, scope, document_obj, dom, parent_obj, parent_handle.node_id)?;
+  sync_cached_select_options_for_select_ancestor(vm, scope, document_obj, dom, parent_handle.node_id)?;
   if let Some(old_parent) = old_parent {
     if !(child_handle.document_id == parent_handle.document_id && old_parent == parent_handle.node_id) {
       let old_parent_document_obj = child_document_obj;
       let old_parent_dom = if child_dom_ptr == dom_ptr { dom } else { unsafe { child_dom_ptr.as_ref() } };
       sync_cached_child_nodes_for_node_id(vm, scope, old_parent_document_obj, old_parent_dom, old_parent)?;
       sync_cached_children_for_node_id(vm, scope, old_parent_document_obj, old_parent_dom, old_parent)?;
+      sync_cached_select_options_for_select_ancestor(vm, scope, old_parent_document_obj, old_parent_dom, old_parent)?;
     }
   }
   if child_is_fragment {
@@ -22268,12 +22375,14 @@ fn node_insert_before_native(
 
   sync_cached_child_nodes_for_wrapper(vm, scope, document_obj, dom, parent_obj, parent_handle.node_id)?;
   sync_cached_children_for_wrapper(vm, scope, document_obj, dom, parent_obj, parent_handle.node_id)?;
+  sync_cached_select_options_for_select_ancestor(vm, scope, document_obj, dom, parent_handle.node_id)?;
   if let Some(old_parent) = old_parent {
     if !(new_child_handle.document_id == parent_handle.document_id && old_parent == parent_handle.node_id) {
       let old_parent_document_obj = new_child_document_obj;
       let old_parent_dom = if new_child_dom_ptr == dom_ptr { dom } else { unsafe { new_child_dom_ptr.as_ref() } };
       sync_cached_child_nodes_for_node_id(vm, scope, old_parent_document_obj, old_parent_dom, old_parent)?;
       sync_cached_children_for_node_id(vm, scope, old_parent_document_obj, old_parent_dom, old_parent)?;
+      sync_cached_select_options_for_select_ancestor(vm, scope, old_parent_document_obj, old_parent_dom, old_parent)?;
     }
   }
   if new_child_is_fragment {
@@ -22395,6 +22504,7 @@ fn node_remove_child_native(
 
     sync_cached_child_nodes_for_wrapper(vm, scope, document_obj, dom, parent_obj, parent_node_id)?;
     sync_cached_children_for_wrapper(vm, scope, document_obj, dom, parent_obj, parent_node_id)?;
+    sync_cached_select_options_for_select_ancestor(vm, scope, document_obj, dom, parent_node_id)?;
   }
 
   if run_side_effects {
@@ -22579,12 +22689,14 @@ fn node_replace_child_native(
 
   sync_cached_child_nodes_for_wrapper(vm, scope, document_obj, dom, parent_obj, parent_handle.node_id)?;
   sync_cached_children_for_wrapper(vm, scope, document_obj, dom, parent_obj, parent_handle.node_id)?;
+  sync_cached_select_options_for_select_ancestor(vm, scope, document_obj, dom, parent_handle.node_id)?;
   if let Some(old_parent) = old_parent {
     if !(new_child_handle.document_id == parent_handle.document_id && old_parent == parent_handle.node_id) {
       let old_parent_document_obj = new_child_document_obj;
       let old_parent_dom = if new_child_dom_ptr == dom_ptr { dom } else { unsafe { new_child_dom_ptr.as_ref() } };
       sync_cached_child_nodes_for_node_id(vm, scope, old_parent_document_obj, old_parent_dom, old_parent)?;
       sync_cached_children_for_node_id(vm, scope, old_parent_document_obj, old_parent_dom, old_parent)?;
+      sync_cached_select_options_for_select_ancestor(vm, scope, old_parent_document_obj, old_parent_dom, old_parent)?;
     }
   }
   if new_child_is_fragment {
@@ -23596,6 +23708,7 @@ fn node_remove_native(
     // Keep cached `childNodes` live NodeLists updated.
     sync_cached_child_nodes_for_node_id(vm, scope, document_obj, dom, parent)?;
     sync_cached_children_for_node_id(vm, scope, document_obj, dom, parent)?;
+    sync_cached_select_options_for_select_ancestor(vm, scope, document_obj, dom, parent)?;
     dom.take_mutation_observer_microtask_needed()
   };
 
@@ -23862,6 +23975,7 @@ fn node_text_content_set_native(
     if did_replace_children {
       sync_cached_child_nodes_for_wrapper(vm, scope, document_obj, dom, wrapper_obj, node_id)?;
       sync_cached_children_for_wrapper(vm, scope, document_obj, dom, wrapper_obj, node_id)?;
+      sync_cached_select_options_for_select_ancestor(vm, scope, document_obj, dom, node_id)?;
     }
   }
 
@@ -25897,19 +26011,42 @@ fn select_options_get_native(
   let document_obj = node_wrapper_document_obj(scope, wrapper_obj, node_id)?;
 
   let options_key = alloc_key(scope, SELECT_OPTIONS_CACHE_KEY)?;
-  let array = match scope
+  let collection = match scope
     .heap()
     .object_get_own_data_property_value(wrapper_obj, &options_key)?
   {
     Some(Value::Object(obj)) => obj,
     _ => {
-      let array = scope.alloc_array(0)?;
-      scope.push_root(Value::Object(array))?;
-      if let Some(intrinsics) = vm.intrinsics() {
-        scope
-          .heap_mut()
-          .object_set_prototype(array, Some(intrinsics.array_prototype()))?;
-      }
+      let collection = scope.alloc_object()?;
+      scope.push_root(Value::Object(collection))?;
+
+      let proto_key = alloc_key(scope, HTML_OPTIONS_COLLECTION_PROTOTYPE_KEY)?;
+      let proto = match scope
+        .heap()
+        .object_get_own_data_property_value(document_obj, &proto_key)?
+      {
+        Some(Value::Object(obj)) => obj,
+        _ => return Err(VmError::InvariantViolation("missing HTMLOptionsCollection prototype")),
+      };
+      scope
+        .heap_mut()
+        .object_set_prototype(collection, Some(proto))?;
+
+      // Keep the select wrapper alive even if the caller only holds the collection object.
+      let root_key = alloc_key(scope, HTML_COLLECTION_ROOT_KEY)?;
+      scope.define_property(
+        collection,
+        root_key,
+        PropertyDescriptor {
+          enumerable: false,
+          configurable: false,
+          kind: PropertyKind::Data {
+            value: Value::Object(wrapper_obj),
+            writable: false,
+          },
+        },
+      )?;
+
       scope.define_property(
         wrapper_obj,
         options_key,
@@ -25917,17 +26054,17 @@ fn select_options_get_native(
           enumerable: false,
           configurable: false,
           kind: PropertyKind::Data {
-            value: Value::Object(array),
+            value: Value::Object(collection),
             writable: false,
           },
         },
       )?;
-      array
+      collection
     }
   };
 
-  sync_select_options_array(vm, scope, document_obj, dom, node_id, array)?;
-  Ok(Value::Object(array))
+  sync_select_options_array(vm, scope, document_obj, dom, node_id, collection)?;
+  Ok(Value::Object(collection))
 }
 
 fn select_selected_index_get_native(
@@ -28816,6 +28953,7 @@ fn element_inner_html_set_native(
 
   sync_cached_child_nodes_for_wrapper(vm, scope, document_obj, dom, wrapper_obj, node_id)?;
   sync_cached_children_for_wrapper(vm, scope, document_obj, dom, wrapper_obj, node_id)?;
+  sync_cached_select_options_for_select_ancestor(vm, scope, document_obj, dom, node_id)?;
 
   let needs_microtask = dom.take_mutation_observer_microtask_needed();
   maybe_queue_mutation_observer_microtask(vm, scope, host, hooks, document_obj, needs_microtask)?;
@@ -28928,6 +29066,7 @@ fn element_outer_html_set_native(
   if let Some(parent_node_id) = parent_node_id {
     sync_cached_child_nodes_for_node_id(vm, scope, document_obj, dom, parent_node_id)?;
     sync_cached_children_for_node_id(vm, scope, document_obj, dom, parent_node_id)?;
+    sync_cached_select_options_for_select_ancestor(vm, scope, document_obj, dom, parent_node_id)?;
   }
 
   let needs_microtask = dom.take_mutation_observer_microtask_needed();
@@ -29008,11 +29147,13 @@ fn element_insert_adjacent_html_native(
     if let Some(parent_node_id) = dom.parent_node(node_id) {
       sync_cached_child_nodes_for_node_id(vm, scope, document_obj, dom, parent_node_id)?;
       sync_cached_children_for_node_id(vm, scope, document_obj, dom, parent_node_id)?;
+      sync_cached_select_options_for_select_ancestor(vm, scope, document_obj, dom, parent_node_id)?;
     }
   } else if position.eq_ignore_ascii_case("afterbegin") || position.eq_ignore_ascii_case("beforeend")
   {
     sync_cached_child_nodes_for_wrapper(vm, scope, document_obj, dom, wrapper_obj, node_id)?;
     sync_cached_children_for_wrapper(vm, scope, document_obj, dom, wrapper_obj, node_id)?;
+    sync_cached_select_options_for_select_ancestor(vm, scope, document_obj, dom, node_id)?;
   }
 
   let needs_microtask = dom.take_mutation_observer_microtask_needed();
@@ -29074,11 +29215,27 @@ fn element_insert_adjacent_element_native(
     .require_element_handle(scope.heap(), Value::Object(element_obj))
     .map_err(|_| VmError::TypeError("Element.insertAdjacentElement requires an element argument"))?;
 
+  let element_document_obj =
+    node_wrapper_document_obj(scope, element_obj, element_handle.node_id).map_err(|_| {
+      VmError::TypeError("Element.insertAdjacentElement requires an element argument")
+    })?;
+
   let mut dom_ptr = dom_ptr_for_document_id_mut(vm, host, target_handle.document_id)
     .or_else(|| dom_from_vm_host_mut(host).map(NonNull::from))
     .ok_or(VmError::TypeError(
       "Element.insertAdjacentElement requires a DOM-backed document",
     ))?;
+
+  let element_dom_ptr = dom_ptr_for_document_id_mut(vm, host, element_handle.document_id)
+    .or_else(|| dom_from_vm_host_mut(host).map(NonNull::from))
+    .ok_or(VmError::TypeError(
+      "Element.insertAdjacentElement requires a DOM-backed document",
+    ))?;
+
+  // Track the old parent so we can keep live collections in sync if the node is moved.
+  // SAFETY: `element_dom_ptr` is valid for the duration of this native call.
+  let element_dom = unsafe { element_dom_ptr.as_ref() };
+  let old_parent = element_dom.parent_node(element_handle.node_id);
 
   let adopted = maybe_adopt_node_into_document(vm, scope, host, document_obj, dom_ptr, element_handle).map_err(
     |_| VmError::TypeError("Element.insertAdjacentElement requires an element argument"),
@@ -29089,6 +29246,44 @@ fn element_insert_adjacent_element_native(
     Ok(None) => Value::Null,
     Err(err) => return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?)),
   };
+
+  // SAFETY: `dom_ptr` is valid for the duration of this native call.
+  let dom = unsafe { dom_ptr.as_ref() };
+
+  if position.eq_ignore_ascii_case("beforebegin") || position.eq_ignore_ascii_case("afterend") {
+    if let Some(parent_node_id) = dom.parent_node(target_handle.node_id) {
+      sync_cached_child_nodes_for_node_id(vm, scope, document_obj, dom, parent_node_id)?;
+      sync_cached_children_for_node_id(vm, scope, document_obj, dom, parent_node_id)?;
+      sync_cached_select_options_for_select_ancestor(vm, scope, document_obj, dom, parent_node_id)?;
+    }
+  } else if position.eq_ignore_ascii_case("afterbegin") || position.eq_ignore_ascii_case("beforeend")
+  {
+    sync_cached_child_nodes_for_wrapper(vm, scope, document_obj, dom, wrapper_obj, target_handle.node_id)?;
+    sync_cached_children_for_wrapper(vm, scope, document_obj, dom, wrapper_obj, target_handle.node_id)?;
+    sync_cached_select_options_for_select_ancestor(vm, scope, document_obj, dom, target_handle.node_id)?;
+  }
+
+  if let Some(old_parent) = old_parent {
+    let new_parent = if position.eq_ignore_ascii_case("afterbegin") || position.eq_ignore_ascii_case("beforeend") {
+      Some(target_handle.node_id)
+    } else if position.eq_ignore_ascii_case("beforebegin") || position.eq_ignore_ascii_case("afterend") {
+      dom.parent_node(target_handle.node_id)
+    } else {
+      None
+    };
+    // If the node was moved within the same parent, the sync above already covered the new parent.
+    if !(element_handle.document_id == target_handle.document_id && new_parent == Some(old_parent)) {
+      let old_parent_dom = if element_dom_ptr == dom_ptr {
+        dom
+      } else {
+        // SAFETY: `element_dom_ptr` is valid for the duration of this native call.
+        unsafe { element_dom_ptr.as_ref() }
+      };
+      sync_cached_child_nodes_for_node_id(vm, scope, element_document_obj, old_parent_dom, old_parent)?;
+      sync_cached_children_for_node_id(vm, scope, element_document_obj, old_parent_dom, old_parent)?;
+      sync_cached_select_options_for_select_ancestor(vm, scope, element_document_obj, old_parent_dom, old_parent)?;
+    }
+  }
 
   let needs_microtask = unsafe { dom_ptr.as_mut() }.take_mutation_observer_microtask_needed();
   maybe_queue_mutation_observer_microtask(vm, scope, host, hooks, document_obj, needs_microtask)?;
@@ -33290,6 +33485,57 @@ fn init_window_globals(
       },
     )?;
 
+    // HTMLOptionsCollection constructor + prototype.
+    //
+    // This is needed for `HTMLSelectElement.options` (`instanceof HTMLOptionsCollection`).
+    let html_options_collection_proto = scope.alloc_object()?;
+    scope.push_root(Value::Object(html_options_collection_proto))?;
+    scope.heap_mut().object_set_prototype(
+      html_options_collection_proto,
+      Some(html_collection_proto),
+    )?;
+
+    let html_options_collection_ctor = make_illegal_ctor(&mut scope, "HTMLOptionsCollection")?;
+    scope.push_root(Value::Object(html_options_collection_ctor))?;
+    scope.define_property(
+      html_options_collection_ctor,
+      prototype_key,
+      data_desc(Value::Object(html_options_collection_proto)),
+    )?;
+    scope.define_property(
+      html_options_collection_proto,
+      constructor_key,
+      data_desc(Value::Object(html_options_collection_ctor)),
+    )?;
+    // Inherit the interface constructor chain so `Object.getPrototypeOf(HTMLOptionsCollection)` is
+    // `HTMLCollection` (spec-ish).
+    scope
+      .heap_mut()
+      .object_set_prototype(html_options_collection_ctor, Some(html_collection_ctor))?;
+    let html_options_collection_key = alloc_key(&mut scope, "HTMLOptionsCollection")?;
+    scope.define_property(
+      global,
+      html_options_collection_key,
+      data_desc(Value::Object(html_options_collection_ctor)),
+    )?;
+
+    // Store the HTMLOptionsCollection prototype on `document` so node wrappers can create
+    // collections without walking the global object.
+    let html_options_collection_proto_key =
+      alloc_key(&mut scope, HTML_OPTIONS_COLLECTION_PROTOTYPE_KEY)?;
+    scope.define_property(
+      document_obj,
+      html_options_collection_proto_key,
+      PropertyDescriptor {
+        enumerable: false,
+        configurable: false,
+        kind: PropertyKind::Data {
+          value: Value::Object(html_options_collection_proto),
+          writable: false,
+        },
+      },
+    )?;
+
     // NodeList prototype + constructor.
     let node_list_proto = scope.alloc_object()?;
     scope.push_root(Value::Object(node_list_proto))?;
@@ -33345,6 +33591,22 @@ fn init_window_globals(
     let iterator_sym = realm.intrinsics().well_known_symbols().iterator;
     scope.define_property(
       node_list_proto,
+      PropertyKey::from_symbol(iterator_sym),
+      data_desc(Value::Object(node_list_iter_func)),
+    )?;
+
+    // HTMLCollection iterator (`for..of`, spread, etc).
+    //
+    // Keep this in sync with `NodeList` by reusing the same iterator implementation, which reads
+    // `length` + numeric indices via dynamic property lookups.
+    let html_collection_values_key = alloc_key(&mut scope, "values")?;
+    scope.define_property(
+      html_collection_proto,
+      html_collection_values_key,
+      data_desc(Value::Object(node_list_iter_func)),
+    )?;
+    scope.define_property(
+      html_collection_proto,
       PropertyKey::from_symbol(iterator_sym),
       data_desc(Value::Object(node_list_iter_func)),
     )?;
@@ -37367,7 +37629,6 @@ fn test_unimplemented_native(
 mod tests {
   use super::*;
   use crate::js::clock::VirtualClock;
-  use crate::js::vm_error_format;
   use crate::js::window_env::FASTRENDER_USER_AGENT;
   use crate::js::RunLimits;
   use crate::js::window::WindowHost;
@@ -39740,32 +40001,41 @@ mod tests {
       &mut host,
       "(() => {\n\
         const s = document.createElement('select');\n\
+        const opts = s.options;\n\
+\n\
+        const ok0 = s instanceof HTMLSelectElement;\n\
+        const ok1 = opts instanceof HTMLOptionsCollection && opts instanceof HTMLCollection;\n\
+        const ok2 = opts === s.options && opts.length === 0;\n\
+\n\
+        const g = document.createElement('optgroup');\n\
+        s.appendChild(g);\n\
+        const ok3 = opts.length === 0;\n\
+\n\
         const o1 = document.createElement('option');\n\
         o1.setAttribute('value', 'a');\n\
+        g.appendChild(o1);\n\
+        const ok4 = o1 instanceof HTMLOptionElement && opts.length === 1 && opts[0] === o1;\n\
+\n\
         const o2 = document.createElement('option');\n\
         o2.setAttribute('value', 'b');\n\
-        s.appendChild(o1);\n\
         s.appendChild(o2);\n\
+        const ok5 = o2 instanceof HTMLOptionElement && opts.length === 2 && opts[0] === o1 && opts[1] === o2;\n\
+        const spread = [...opts];\n\
+        const ok5b = spread.length === 2 && spread[0] === o1 && spread[1] === o2;\n\
 \n\
-        const opts = s.options;\n\
-        const ok0 = s instanceof HTMLSelectElement;\n\
-        const ok0b = o1 instanceof HTMLOptionElement && o2 instanceof HTMLOptionElement;\n\
-        const ok1 = opts === s.options;\n\
-        const ok2 = opts.length === 2 && opts[0] === o1 && opts[1] === o2;\n\
-\n\
-        const ok3 = s.selectedIndex === 0;\n\
-        const ok4 = s.value === 'a';\n\
+        const ok6 = s.selectedIndex === 0;\n\
+        const ok7 = s.value === 'a';\n\
 \n\
         o2.selected = true;\n\
-        const ok5 = s.selectedIndex === 1 && s.value === 'b' && o2.selected === true && o1.selected === false;\n\
+        const ok8 = s.selectedIndex === 1 && s.value === 'b' && o2.selected === true && o1.selected === false;\n\
 \n\
         s.selectedIndex = 0;\n\
-        const ok6 = o1.selected === true && o2.selected === false && s.value === 'a';\n\
+        const ok9 = o1.selected === true && o2.selected === false && s.value === 'a';\n\
 \n\
         s.value = 'b';\n\
-        const ok7 = s.selectedIndex === 1 && o2.selected === true;\n\
+        const ok10 = s.selectedIndex === 1 && o2.selected === true;\n\
 \n\
-        return ok0 && ok0b && ok1 && ok2 && ok3 && ok4 && ok5 && ok6 && ok7;\n\
+        return ok0 && ok1 && ok2 && ok3 && ok4 && ok5 && ok5b && ok6 && ok7 && ok8 && ok9 && ok10;\n\
       })()",
     )?;
     assert_eq!(ok, Value::Bool(true));
