@@ -34,6 +34,24 @@ pub fn get_element_by_id<Host: DomHost + ?Sized>(host: &Host, id: &str) -> Optio
   host.with_dom(|dom| dom.get_element_by_id(id))
 }
 
+/// `Document.getElementsByTagName(qualifiedName)` / `Element.getElementsByTagName(qualifiedName)`.
+pub fn get_elements_by_tag_name<Host: DomHost + ?Sized>(
+  host: &Host,
+  root: NodeId,
+  qualified_name: &str,
+) -> Vec<NodeId> {
+  host.with_dom(|dom| dom.get_elements_by_tag_name_from(root, qualified_name))
+}
+
+/// `Document.getElementsByClassName(classNames)` / `Element.getElementsByClassName(classNames)`.
+pub fn get_elements_by_class_name<Host: DomHost + ?Sized>(
+  host: &Host,
+  root: NodeId,
+  class_names: &str,
+) -> Vec<NodeId> {
+  host.with_dom(|dom| dom.get_elements_by_class_name_from(root, class_names))
+}
+
 // -----------------------------------------------------------------------------------------------
 // Read-only node traversal/metadata.
 
@@ -195,6 +213,30 @@ pub fn query_selector_all<Host: DomHost + ?Sized>(
   scope: Option<NodeId>,
 ) -> std::result::Result<Vec<NodeId>, DomException> {
   host.mutate_dom(|dom| (dom.query_selector_all(selectors, scope), false))
+}
+
+/// `Element.matches(selectors)` for a `dom2` element.
+///
+/// Note: `dom2::Document::matches_selector` requires `&mut self` (it snapshots into renderer DOM
+/// structures for selector matching), so this is routed through [`DomHost::mutate_dom`] but always
+/// reports `changed=false`.
+pub fn matches_selector<Host: DomHost + ?Sized>(
+  host: &mut Host,
+  element: NodeId,
+  selectors: &str,
+) -> std::result::Result<bool, DomException> {
+  host.mutate_dom(|dom| (dom.matches_selector(element, selectors), false))
+}
+
+/// `Element.closest(selectors)` for a `dom2` element.
+///
+/// See [`matches_selector`] for notes on DOM mutation tracking.
+pub fn closest<Host: DomHost + ?Sized>(
+  host: &mut Host,
+  element: NodeId,
+  selectors: &str,
+) -> std::result::Result<Option<NodeId>, DomException> {
+  host.mutate_dom(|dom| (dom.closest(element, selectors), false))
 }
 
 // -----------------------------------------------------------------------------------------------
@@ -817,5 +859,42 @@ mod tests {
     assert!(names.contains(&"id".to_string()));
     assert!(names.contains(&"class".to_string()));
     assert!(names.contains(&"data-x".to_string()));
+  }
+
+  #[test]
+  fn selector_helpers_work() {
+    let root = crate::dom::parse_html(
+      "<!doctype html><div id=host><span id=a class='foo bar'></span></div>",
+    )
+    .unwrap();
+    let mut host = HostDocumentState::from_renderer_dom(&root);
+
+    let a = host.dom().get_element_by_id("a").expect("a element");
+    let host_el = host.dom().get_element_by_id("host").expect("host element");
+
+    assert!(matches_selector(&mut host, a, ".foo").unwrap());
+    assert!(!matches_selector(&mut host, a, "#host").unwrap());
+    assert_eq!(closest(&mut host, a, "span").unwrap(), Some(a));
+    assert_eq!(closest(&mut host, a, "div").unwrap(), Some(host_el));
+
+    assert!(matches_selector(&mut host, a, "???").is_err());
+    assert!(closest(&mut host, a, "???").is_err());
+  }
+
+  #[test]
+  fn get_elements_by_helpers_work() {
+    let root = crate::dom::parse_html(
+      "<!doctype html><div id=outer class='foo bar'><span id=a class=foo></span></div>",
+    )
+    .unwrap();
+    let host = HostDocumentState::from_renderer_dom(&root);
+    let doc = host.dom().root();
+
+    let outer = host.dom().get_element_by_id("outer").expect("outer element");
+    let a = host.dom().get_element_by_id("a").expect("a element");
+
+    assert_eq!(get_elements_by_tag_name(&host, doc, "div"), vec![outer]);
+    assert_eq!(get_elements_by_class_name(&host, doc, "foo"), vec![outer, a]);
+    assert_eq!(get_elements_by_class_name(&host, doc, "foo bar"), vec![outer]);
   }
 }
