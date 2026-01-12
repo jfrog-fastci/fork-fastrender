@@ -81,8 +81,8 @@ LLVM stackmaps can describe live values as either:
 - registers (`Register R#N`, encoded as DWARF register numbers).
 
 For our current `runtime-native` stack-walking implementation, **GC roots at statepoints must not be
-encoded as `Register` locations**: we require addressable spill slots (SP-relative `Indirect`
-locations) so the GC can update pointers in-place by walking frames.
+encoded as `Register` locations**: we require addressable `Indirect` spill slots relative to SP/FP
+so the GC can update pointers in-place by walking frames.
 
 To enforce this:
 
@@ -95,7 +95,8 @@ To enforce this:
   - `llc-18 --fixup-allow-gcptr-in-csr=false --fixup-max-csr-statepoints=0`
   - `clang-18 -mllvm --fixup-allow-gcptr-in-csr=false -mllvm --fixup-max-csr-statepoints=0`
 - `runtime-native` has a verifier (`runtime-native/src/statepoint_verify.rs`) that rejects any
-  statepoint record whose GC roots are not SP-relative `Indirect` stack slots.
+  statepoint record whose GC roots are not pointer-sized `Indirect` spill slots relative to SP or FP
+  (no `Register`/`Direct` roots).
 
 See `vendor/ecma-rs/docs/stackmaps.md` for the full contract and the regression tests that assert
 no `Register` roots appear in `.llvm_stackmaps`.
