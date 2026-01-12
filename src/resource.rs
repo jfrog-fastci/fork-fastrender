@@ -1195,12 +1195,22 @@ pub(crate) fn http_browser_request_profile_for_url(url: &str) -> FetchDestinatio
       if ext.eq_ignore_ascii_case("png")
         || ext.eq_ignore_ascii_case("jpg")
         || ext.eq_ignore_ascii_case("jpeg")
+        || ext.eq_ignore_ascii_case("jfif")
+        || ext.eq_ignore_ascii_case("pjp")
+        || ext.eq_ignore_ascii_case("pjpeg")
         || ext.eq_ignore_ascii_case("gif")
+        || ext.eq_ignore_ascii_case("apng")
         || ext.eq_ignore_ascii_case("webp")
         || ext.eq_ignore_ascii_case("avif")
+        || ext.eq_ignore_ascii_case("jxl")
+        || ext.eq_ignore_ascii_case("heic")
+        || ext.eq_ignore_ascii_case("heif")
         || ext.eq_ignore_ascii_case("svg")
+        || ext.eq_ignore_ascii_case("svgz")
         || ext.eq_ignore_ascii_case("ico")
-        || ext.eq_ignore_ascii_case("bmp") =>
+        || ext.eq_ignore_ascii_case("bmp")
+        || ext.eq_ignore_ascii_case("tif")
+        || ext.eq_ignore_ascii_case("tiff") =>
     {
       FetchDestination::Image
     }
@@ -15836,6 +15846,18 @@ mod tests {
     assert_eq!(image.sec_fetch_site(), "same-origin");
     assert_eq!(image.sec_fetch_user(), None);
     assert_eq!(image.upgrade_insecure_requests(), None);
+
+    let image_svgz = http_browser_request_profile_for_url("https://example.com/icon.svgz");
+    assert_eq!(image_svgz, FetchDestination::Image);
+    assert_eq!(image_svgz.accept(), BROWSER_ACCEPT_IMAGE);
+
+    let image_tiff = http_browser_request_profile_for_url("https://example.com/photo.tiff");
+    assert_eq!(image_tiff, FetchDestination::Image);
+    assert_eq!(image_tiff.accept(), BROWSER_ACCEPT_IMAGE);
+
+    let image_jxl = http_browser_request_profile_for_url("https://example.com/image.jxl");
+    assert_eq!(image_jxl, FetchDestination::Image);
+    assert_eq!(image_jxl.accept(), BROWSER_ACCEPT_IMAGE);
   }
 
   #[test]
