@@ -1712,7 +1712,7 @@ pub fn proxy_revoker(
     ));
   };
 
-  scope.heap_mut().proxy_revoke(proxy)?;
+  scope.revoke_proxy(proxy)?;
   Ok(Value::Undefined)
 }
 
