@@ -140,8 +140,10 @@ pub fn filename_from_url(url: &str) -> String {
 
 /// Resolve the base download directory for the browser UI worker.
 ///
-/// The integration tests override this via the `FASTR_BROWSER_DOWNLOAD_DIR` runtime toggle to keep
-/// downloads deterministic and self-contained.
+/// Front-ends can override this per-worker via [`crate::ui::messages::UiToWorker::SetDownloadDirectory`].
+///
+/// For convenience (e.g. local debugging), this default can also be overridden process-wide via the
+/// `FASTR_BROWSER_DOWNLOAD_DIR` runtime toggle (or the legacy `FASTR_DOWNLOAD_DIR` alias).
 pub fn default_download_dir() -> PathBuf {
   let toggles = crate::debug::runtime::runtime_toggles();
   // Prefer the browser CLI/env knob, but keep the old `FASTR_DOWNLOAD_DIR` key as an alias for
