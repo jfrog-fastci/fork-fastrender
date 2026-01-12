@@ -646,6 +646,7 @@ impl<'ctx, 'p> ProgramCodegen<'ctx, 'p> {
       CodegenMode::FileInit,
       TsAbiKind::Void,
     );
+    cg.init_debug_subprogram_file_init();
 
     let mut fallthrough = true;
     for (_, item) in items {
@@ -1195,7 +1196,30 @@ struct FnCodegen<'ctx, 'p, 'a> {
   mode: CodegenMode,
   return_kind: TsAbiKind,
   debug_subprogram: Option<inkwell::debug_info::DISubprogram<'ctx>>,
-  debug_vars: HashMap<BindingId, inkwell::debug_info::DILocalVariable<'ctx>>,
+  /// Stack of nested spans used to drive `!dbg` locations on emitted LLVM instructions.
+  ///
+  /// When debug info is enabled, we maintain a simple stack discipline:
+  /// - `init_debug_subprogram*` seeds the stack with a "base" location for the function.
+  /// - `codegen_stmt`/`codegen_expr` push a location for the node they're emitting and pop on exit.
+  debug_span_stack: Vec<TextRange>,
+}
+
+struct DebugLocationGuard<'ctx, 'p, 'a> {
+  cg: *mut FnCodegen<'ctx, 'p, 'a>,
+  active: bool,
+}
+
+impl<'ctx, 'p, 'a> Drop for DebugLocationGuard<'ctx, 'p, 'a> {
+  fn drop(&mut self) {
+    if !self.active {
+      return;
+    }
+    // SAFETY: `DebugLocationGuard` is only constructed from `&mut FnCodegen` and is dropped before
+    // that mutable borrow ends (stack discipline within codegen methods).
+    unsafe {
+      (*self.cg).pop_debug_location();
+    }
+  }
 }
 
 impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
@@ -1230,7 +1254,7 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
       mode,
       return_kind,
       debug_subprogram: None,
-      debug_vars: HashMap::new(),
+      debug_span_stack: Vec::new(),
     }
   }
 
@@ -1262,6 +1286,79 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
       self.func,
     );
     self.debug_subprogram = Some(sp);
+
+    // Seed the location stack so nested spans can reliably restore back to a "function" location.
+    let base = self
+      .cg
+      .program
+      .span_of_def(def)
+      .map(|s| s.range)
+      .unwrap_or_else(|| TextRange::new(0, 0));
+    self.push_debug_location(base);
+  }
+
+  fn init_debug_subprogram_file_init(&mut self) {
+    let Some(debug) = self.cg.debug.as_mut() else {
+      return;
+    };
+
+    let name = crate::llvm_symbol_for_file_init(self.file);
+    let (line, _col) = debuginfo::line_col(self.cg.program, self.file, 0);
+    let sp = debug.create_subprogram(
+      self.cg.program,
+      self.file,
+      &name,
+      line,
+      TsAbiKind::Void,
+      &[],
+      self.func,
+    );
+    self.debug_subprogram = Some(sp);
+
+    self.push_debug_location(TextRange::new(0, 0));
+  }
+
+  fn push_debug_location(&mut self, span: TextRange) {
+    let Some(debug) = self.cg.debug.as_ref() else {
+      return;
+    };
+    let Some(scope) = self.debug_subprogram else {
+      return;
+    };
+
+    self.debug_span_stack.push(span);
+    let (line, col) = debuginfo::line_col(self.cg.program, self.file, span.start);
+    let loc = debug.location(self.cg.context, line, col, scope);
+    self.builder.set_current_debug_location(loc);
+    self.alloca_builder.set_current_debug_location(loc);
+  }
+
+  fn pop_debug_location(&mut self) {
+    let Some(debug) = self.cg.debug.as_ref() else {
+      return;
+    };
+    let Some(scope) = self.debug_subprogram else {
+      return;
+    };
+
+    self.debug_span_stack.pop();
+    if let Some(prev) = self.debug_span_stack.last().copied() {
+      let (line, col) = debuginfo::line_col(self.cg.program, self.file, prev.start);
+      let loc = debug.location(self.cg.context, line, col, scope);
+      self.builder.set_current_debug_location(loc);
+      self.alloca_builder.set_current_debug_location(loc);
+    }
+  }
+
+  fn debug_location_guard(&mut self, span: TextRange) -> DebugLocationGuard<'ctx, 'p, 'a> {
+    let active = self.cg.debug.is_some() && self.debug_subprogram.is_some();
+    if active {
+      self.push_debug_location(span);
+    }
+    DebugLocationGuard {
+      cg: self as *mut Self,
+      active,
+    }
   }
 
   fn dbg_declare_param(
@@ -1273,32 +1370,15 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
     slot: PointerValue<'ctx>,
     span: TextRange,
   ) {
-    let Some(debug) = self.cg.debug.as_mut() else {
-      return;
-    };
-    let Some(scope) = self.debug_subprogram else {
-      return;
-    };
-    if matches!(kind, TsAbiKind::Void) {
-      return;
-    }
-
-    let (line, col) = debuginfo::line_col(self.cg.program, self.file, span.start);
-    let di_file = debug.file(self.cg.program, self.file);
-    let ty = debug.basic_type(kind);
-    let var = debug.declare_parameter(
-      self.cg.context,
-      &self.builder,
-      scope,
-      di_file,
-      line,
-      col,
-      name,
-      arg_no,
-      ty,
-      slot,
-    );
-    self.debug_vars.insert(binding, var);
+    // NOTE: Intentionally omitted.
+    //
+    // `llvm.dbg.*` intrinsics are calls. In practice LLVM's GC/statepoint pipeline
+    // (`place-safepoints` + `rewrite-statepoints-for-gc`) can segfault when these calls are
+    // present in GC-managed functions (which includes TS-generated native-js functions).
+    //
+    // Until the pipeline is robust in the presence of debug intrinsics, native-js focuses on
+    // source-level line tables (`!dbg` locations) and function/subprogram metadata.
+    let _ = (binding, name, arg_no, kind, slot, span);
   }
 
   fn dbg_declare_local(
@@ -1309,51 +1389,13 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
     slot: PointerValue<'ctx>,
     span: TextRange,
   ) {
-    let Some(debug) = self.cg.debug.as_mut() else {
-      return;
-    };
-    let Some(scope) = self.debug_subprogram else {
-      return;
-    };
-    if matches!(kind, TsAbiKind::Void) {
-      return;
-    }
-
-    let (line, col) = debuginfo::line_col(self.cg.program, self.file, span.start);
-    let di_file = debug.file(self.cg.program, self.file);
-    let ty = debug.basic_type(kind);
-    let var = debug.declare_local(
-      self.cg.context,
-      &self.builder,
-      scope,
-      di_file,
-      line,
-      col,
-      name,
-      ty,
-      slot,
-    );
-    self.debug_vars.insert(binding, var);
+    // NOTE: Intentionally omitted. See `dbg_declare_param` for rationale.
+    let _ = (binding, name, kind, slot, span);
   }
 
   fn dbg_value(&self, binding: BindingId, value: NativeValue<'ctx>, span: TextRange) {
-    let Some(value) = value.as_basic_value() else {
-      return;
-    };
-    let Some(debug) = self.cg.debug.as_ref() else {
-      return;
-    };
-    if !debug.optimized() {
-      return;
-    }
-    let Some(scope) = self.debug_subprogram else {
-      return;
-    };
-    let Some(var) = self.debug_vars.get(&binding).copied() else {
-      return;
-    };
-    let (line, col) = debuginfo::line_col(self.cg.program, self.file, span.start);
-    debug.insert_value(self.cg.context, &self.builder, &self.cg.module, scope, var, value, line, col);
+    // NOTE: Intentionally omitted. See `dbg_declare_param` for rationale.
+    let _ = (binding, value, span);
   }
 
   fn dbg_value_locals_from_slots(&self, span: TextRange) {
@@ -1617,6 +1659,7 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
       (stmt.kind.clone(), Span::new(self.file, stmt.span))
     };
 
+    let _dbg = self.debug_location_guard(span.range);
     match kind {
       StmtKind::Empty | StmtKind::Debugger => Ok(true),
       StmtKind::Expr(expr) => {
@@ -2566,6 +2609,7 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
       (expr_data.kind.clone(), Span::new(self.file, expr_data.span))
     };
 
+    let _dbg = self.debug_location_guard(span.range);
     match kind {
       ExprKind::TypeAssertion { expr, .. }
       | ExprKind::NonNull { expr }

@@ -23,9 +23,19 @@ use super::TsAbiKind;
 
 /// Debug info state for the HIR-driven native-js codegen backend.
 ///
-/// This is intentionally minimal: just enough DWARF structure (compile unit, files, basic types,
-/// subprograms) to hang parameter/local variable info off `llvm.dbg.declare`.
+/// This intentionally focuses on *source-level mapping*:
+/// - DWARF compile unit + file entries
+/// - function/subprogram metadata
+/// - instruction-level `!dbg` locations for line tables
+///
+/// NOTE: We currently do *not* emit local/parameter variable locations via `llvm.dbg.declare`/
+/// `llvm.dbg.value` because LLVM's GC/statepoint pipeline (`place-safepoints` +
+/// `rewrite-statepoints-for-gc`) has been observed to segfault when these debug intrinsics are
+/// present in GC-managed functions.
 pub(crate) struct CodegenDebug<'ctx> {
+  // NOTE: This is currently unused because native-js intentionally omits `llvm.dbg.value`
+  // emission (see module docs). Keep it around for future variable-level debug work.
+  #[allow(dead_code)]
   optimized: bool,
   builder: DebugInfoBuilder<'ctx>,
   compile_unit: DICompileUnit<'ctx>,
@@ -103,6 +113,7 @@ impl<'ctx> CodegenDebug<'ctx> {
     self.builder.finalize();
   }
 
+  #[allow(dead_code)]
   pub(crate) fn optimized(&self) -> bool {
     self.optimized
   }
@@ -183,6 +194,7 @@ impl<'ctx> CodegenDebug<'ctx> {
       .create_debug_location(context, line, col, scope.as_debug_info_scope(), None)
   }
 
+  #[allow(dead_code)]
   pub(crate) fn declare_parameter(
     &self,
     context: &'ctx Context,
@@ -211,6 +223,7 @@ impl<'ctx> CodegenDebug<'ctx> {
     var
   }
 
+  #[allow(dead_code)]
   pub(crate) fn declare_local(
     &self,
     context: &'ctx Context,
@@ -271,6 +284,7 @@ impl<'ctx> CodegenDebug<'ctx> {
     global.set_metadata(gv_expr.as_metadata_value(context), dbg_kind_id);
   }
 
+  #[allow(dead_code)]
   fn insert_declare(
     &self,
     context: &'ctx Context,
@@ -293,6 +307,7 @@ impl<'ctx> CodegenDebug<'ctx> {
     }
   }
 
+  #[allow(dead_code)]
   pub(crate) fn insert_value(
     &self,
     context: &'ctx Context,
@@ -369,18 +384,18 @@ impl<'ctx> CodegenDebug<'ctx> {
 
 pub(crate) fn line_col(program: &Program, file: FileId, offset: u32) -> (u32, u32) {
   let Some(text) = program.file_text(file) else {
-    return (1, 0);
+    return (1, 1);
   };
 
   let mut line: u32 = 1;
-  let mut col: u32 = 0;
+  let mut col: u32 = 1;
   for (idx, b) in text.as_bytes().iter().enumerate() {
     if idx as u32 >= offset {
       break;
     }
     if *b == b'\n' {
       line += 1;
-      col = 0;
+      col = 1;
     } else {
       col += 1;
     }
