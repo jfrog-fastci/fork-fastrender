@@ -19,6 +19,10 @@ fn assert_is_type_error(
   intr: &vm_js::Intrinsics,
   err: VmError,
 ) -> Result<(), VmError> {
+  // Root the thrown value only for the duration of this assertion. These tests intentionally run
+  // with small heap limits, so leaking roots across many error-path calls can spuriously trip
+  // `VmError::OutOfMemory` instead of exercising the intended TypeError throws.
+  let mut scope = scope.reborrow();
   let thrown = match err {
     VmError::Throw(v) => v,
     VmError::ThrowWithStack { value, .. } => value,
