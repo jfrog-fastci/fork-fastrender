@@ -38,7 +38,6 @@ section in sync with `ls tests/*.rs`.
 | `tests/css_font_feature_values_test.rs` | unit | `src/style/font_feature_values.rs` | Parser-level tests for `@font-feature-values`. | TODO |
 | `tests/css_integration_tests.rs` | unit | `src/css/loader.rs` | “Integration” in name only; tests internal CSS loading/URL rewrite/import logic. | TODO |
 | `tests/determinism_tests.rs` | integration | `tests/integration.rs::fixtures::determinism` | Renders fixtures repeatedly + compares PNG output. Uses env vars (`FASTR_IN_PROCESS_DETERMINISM_*`) and Rayon scheduling. | TODO |
-| `tests/display_list_tests.rs` | unit | `src/paint/display_list.rs` | Display-list builder/renderer internals under `tests/display_list/**`. | TODO |
 | `tests/dom_integration_tests.rs` | unit | `src/dom/` | DOM parsing/query/range tests under `tests/dom_integration/**` (split across `src/dom/**` + `src/dom2/**`). | TODO |
 | `tests/fixtures_test.rs` | integration | `tests/integration.rs::fixtures::runner` | Reads `tests/fixtures/html/**` and compares against `tests/fixtures/golden/**`; mutates env (`FASTR_USE_BUNDLED_FONTS`, `UPDATE_GOLDEN`). | TODO |
 | `tests/font_tests.rs` | unit | `src/text/` | Font loader/resolver/shaping + font-related style parsing (`src/text/**`, some `src/style/**`). | TODO |
@@ -54,7 +53,6 @@ section in sync with `ls tests/*.rs`.
 | `tests/misc_tests.rs` | unit | `src/**` (split) | Mixed grab-bag; many tests mutate env/process-wide knobs. Repo-only guardrails may stay under `tests/integration.rs`. | TODO |
 | `tests/paged_media.rs` | unit | `src/layout/pagination.rs` | Dedicated paged-media regression target; remove standalone binary after moving into `src/layout/**`. | TODO |
 | `tests/paint_tests.rs` | unit | `src/paint/` | Paint/backdrop/ref-image tests under `tests/paint/**`, `tests/backdrop/**`. | TODO |
-| `tests/pipeline_churn_guardrail.rs` | special | `tests/isolation.rs` | Depends on process-isolated global debug counters (layout churn); should live in an isolation binary (or be refactored to be resettable). | TODO |
 | `tests/progress_tests.rs` | integration | `tests/integration.rs::fixtures::progress` | Repo artifact guardrail tests for `progress/pages/*.json` (no library code). | TODO |
 | `tests/quirks_body_percent_height_tests.rs` | integration | `tests/integration.rs::api::quirks` | End-to-end render regression; spawns large-stack thread. | TODO |
 | `tests/ref_tests.rs` | integration | `tests/integration.rs::common::ref` | Reference image diff/test harness tests; serializes env var changes via mutex. | TODO |
@@ -84,6 +82,7 @@ section in sync with `ls tests/*.rs`.
 | `tests/container_scroll_state_queries_test.rs` | delete | delete | Pure `#[path]` shim removed; test remains under `tests/style/**`. | DONE |
 | `tests/container_style_queries.rs` | delete | delete | Pure `#[path]` shim removed; test remains under `tests/style/**`. | DONE |
 | `tests/content_visibility_tests.rs` | unit | `src/layout/contexts/*` | Migrated into layout context unit tests (block/flex/grid). | DONE |
+| `tests/display_list_tests.rs` | unit | `src/paint/display_list_renderer/tests/display_list/mod.rs` | Migrated the display-list backend regression suite into unit tests under `src/paint/display_list_renderer/tests/display_list/**` and removed the standalone test binary. | DONE |
 | `tests/flex_nowrap_negative_margins_do_not_trigger_monotonic_fallback.rs` | delete | delete | Pure `#[path]` shim removed; test remains under `tests/layout/**`. | DONE |
 | `tests/flex_wrap_order_does_not_trigger_manual_placement.rs` | delete | delete | Pure `#[path]` shim removed; test remains under `tests/layout/**`. | DONE |
 | `tests/grid_tests.rs` | unit | `src/layout/contexts/grid.rs` | Migrated to grid context unit tests (and `tests/grid/**` directory removed). | DONE |
@@ -92,6 +91,7 @@ section in sync with `ls tests/*.rs`.
 | `tests/js_webidl_union_record_enum.rs` | unit | `src/js/webidl/bindings/webidl_union_record_tests.rs` | Migrated to unit tests alongside WebIDL bindings. | DONE |
 | `tests/llvm_statepoint_stackmap_llvm18.rs` | integration | `tests/integration.rs::tooling::llvm_stackmaps` | Moved into `tests/tooling/llvm_stackmaps.rs` (requires LLVM 18 tools; skips when missing). | DONE |
 | `tests/overflow_tests.rs` | unit | `src/paint/stacking.rs` | Migrated into `src/paint/stacking/tests/**`. | DONE |
+| `tests/pipeline_churn_guardrail.rs` | unit | `src/layout/tests/pipeline_churn_guardrail.rs` | Migrated into unit tests under `src/layout/tests/**`; uses `crate::testing::global_test_lock()` to keep counter-reset assertions deterministic, so a dedicated binary is no longer required. | DONE |
 | `tests/regression_tests.rs` | integration | `tests/integration.rs::regression` | Top-level harness removed; suite now lives under `tests/regression/**`. | DONE |
 | `tests/render_control_test_render_delay_smoke.rs` | integration | `tests/integration.rs::api::render_control` | Moved into `tests/api/render_control.rs`. | DONE |
 | `tests/resource_tests.rs` | integration | `tests/integration.rs::resource` | Top-level harness removed; suite now lives under `tests/resource/**` and is pulled into `tests/integration.rs`. | DONE |
