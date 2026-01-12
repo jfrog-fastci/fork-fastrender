@@ -2394,7 +2394,13 @@ pub mod body_check {
                 result.call_signatures[idx] = Some(sig);
               }
               crate::check::hir_body::CallSignatureState::Conflict => {
-                result.call_signatures[idx] = None;
+                // Preserve the base checker's signature choice when flow sees a
+                // conflict. The flow checker can observe transient conflicts
+                // during fixpoint iteration (e.g. loop back-edges) even when the
+                // base checker’s union-based resolution is correct.
+                if result.call_signatures[idx].is_none() {
+                  result.call_signatures[idx] = None;
+                }
               }
               crate::check::hir_body::CallSignatureState::Unresolved => {}
             }
