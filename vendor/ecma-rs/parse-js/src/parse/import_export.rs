@@ -313,9 +313,9 @@ impl<'a> Parser<'a> {
       }
     };
 
-    // Allow ASI - semicolon not required at EOF or before line terminator
+    // Allow ASI - semicolon not required at EOF, before a line terminator, or before `}`.
     let t = self.peek();
-    if t.typ != TT::EOF && !t.preceded_by_line_terminator {
+    if t.typ != TT::EOF && t.typ != TT::BraceClose && !t.preceded_by_line_terminator {
       self.require(TT::Semicolon)?;
     } else {
       let _ = self.consume_if(TT::Semicolon);
@@ -546,9 +546,9 @@ impl<'a> Parser<'a> {
       node.assoc.set(LegacyOctalEscapeSequence(from_escape));
     }
 
-    // Allow ASI - semicolon not required at EOF or before line terminator.
+    // Allow ASI - semicolon not required at EOF, before a line terminator, or before `}`.
     let t = self.peek();
-    if t.typ != TT::EOF && !t.preceded_by_line_terminator {
+    if t.typ != TT::EOF && t.typ != TT::BraceClose && !t.preceded_by_line_terminator {
       self.require(TT::Semicolon)?;
     } else {
       let _ = self.consume_if(TT::Semicolon);
@@ -612,9 +612,9 @@ impl<'a> Parser<'a> {
           p.require(TT::KeywordExport)?;
           p.require(TT::Equals)?;
           let expression = p.expr_with_asi(ctx, [TT::Semicolon], &mut super::expr::Asi::can())?;
-          // Allow ASI
+          // Allow ASI (including before `}`).
           let t = p.peek();
-          if t.typ != TT::EOF && !t.preceded_by_line_terminator {
+          if t.typ != TT::EOF && t.typ != TT::BraceClose && !t.preceded_by_line_terminator {
             p.require(TT::Semicolon)?;
           } else {
             let _ = p.consume_if(TT::Semicolon);
