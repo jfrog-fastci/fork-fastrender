@@ -601,6 +601,12 @@ The runtime does not take the compiler's semantic `ShapeId` (`u128`) directly. I
 code passes a compact `RtShapeId` (`uint32_t`) which is a runtime-local index into the shape
 descriptor table registered via `rt_register_shape_table`.
 
+For multi-module / dlopen / JIT-style embeddings, additional shapes can be appended to the
+process-global shape-id space at runtime via:
+
+- `rt_register_shape_table_extend` (preferred name for new code), or
+- `rt_register_shape_table_append` (older alias).
+
 ## Legacy coroutine ABI (`RtCoroutineHeader`)
 
 Generated coroutine frames are `#[repr(C)]` structs whose **first field** (prefix) is
