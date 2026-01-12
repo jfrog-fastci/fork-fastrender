@@ -78,6 +78,8 @@ pub struct Intrinsics {
   float32_array: GcObject,
   float64_array: GcObject,
   data_view: GcObject,
+  weak_map: GcObject,
+  weak_set: GcObject,
   is_nan: GcObject,
   is_finite: GcObject,
   eval: GcObject,
@@ -3422,6 +3424,189 @@ impl Intrinsics {
       )?;
     }
 
+    // `%WeakMap%`
+    let weak_map_call = vm.register_native_call(builtins::weak_map_constructor_call)?;
+    let weak_map_construct = vm.register_native_construct(builtins::weak_map_constructor_construct)?;
+    let weak_map_name = scope.alloc_string("WeakMap")?;
+    let weak_map = alloc_rooted_native_function(
+      scope,
+      roots,
+      weak_map_call,
+      Some(weak_map_construct),
+      weak_map_name,
+      0,
+    )?;
+    scope
+      .heap_mut()
+      .object_set_prototype(weak_map, Some(function_prototype))?;
+    scope.define_property(
+      weak_map,
+      common.prototype,
+      data_desc(Value::Object(weak_map_prototype), true, false, false),
+    )?;
+    scope.define_property(
+      weak_map,
+      common.name,
+      data_desc(Value::String(weak_map_name), false, false, true),
+    )?;
+    scope.define_property(
+      weak_map,
+      common.length,
+      data_desc(Value::Number(0.0), false, false, true),
+    )?;
+    scope.define_property(
+      weak_map_prototype,
+      common.constructor,
+      data_desc(Value::Object(weak_map), true, false, true),
+    )?;
+
+    // WeakMap.prototype.get / set / has / delete
+    {
+      let get_call = vm.register_native_call(builtins::weak_map_prototype_get)?;
+      let get_s = scope.alloc_string("get")?;
+      scope.push_root(Value::String(get_s))?;
+      let key = PropertyKey::from_string(get_s);
+      let func = scope.alloc_native_function(get_call, None, get_s, 1)?;
+      scope.push_root(Value::Object(func))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(func, Some(function_prototype))?;
+      scope.define_property(
+        weak_map_prototype,
+        key,
+        data_desc(Value::Object(func), true, false, true),
+      )?;
+
+      let set_call = vm.register_native_call(builtins::weak_map_prototype_set)?;
+      let set_s = scope.alloc_string("set")?;
+      scope.push_root(Value::String(set_s))?;
+      let key = PropertyKey::from_string(set_s);
+      let func = scope.alloc_native_function(set_call, None, set_s, 2)?;
+      scope.push_root(Value::Object(func))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(func, Some(function_prototype))?;
+      scope.define_property(
+        weak_map_prototype,
+        key,
+        data_desc(Value::Object(func), true, false, true),
+      )?;
+
+      let has_call = vm.register_native_call(builtins::weak_map_prototype_has)?;
+      let has_s = scope.alloc_string("has")?;
+      scope.push_root(Value::String(has_s))?;
+      let key = PropertyKey::from_string(has_s);
+      let func = scope.alloc_native_function(has_call, None, has_s, 1)?;
+      scope.push_root(Value::Object(func))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(func, Some(function_prototype))?;
+      scope.define_property(
+        weak_map_prototype,
+        key,
+        data_desc(Value::Object(func), true, false, true),
+      )?;
+
+      let delete_call = vm.register_native_call(builtins::weak_map_prototype_delete)?;
+      let delete_s = scope.alloc_string("delete")?;
+      scope.push_root(Value::String(delete_s))?;
+      let key = PropertyKey::from_string(delete_s);
+      let func = scope.alloc_native_function(delete_call, None, delete_s, 1)?;
+      scope.push_root(Value::Object(func))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(func, Some(function_prototype))?;
+      scope.define_property(
+        weak_map_prototype,
+        key,
+        data_desc(Value::Object(func), true, false, true),
+      )?;
+    }
+
+    // `%WeakSet%`
+    let weak_set_call = vm.register_native_call(builtins::weak_set_constructor_call)?;
+    let weak_set_construct = vm.register_native_construct(builtins::weak_set_constructor_construct)?;
+    let weak_set_name = scope.alloc_string("WeakSet")?;
+    let weak_set = alloc_rooted_native_function(
+      scope,
+      roots,
+      weak_set_call,
+      Some(weak_set_construct),
+      weak_set_name,
+      0,
+    )?;
+    scope
+      .heap_mut()
+      .object_set_prototype(weak_set, Some(function_prototype))?;
+    scope.define_property(
+      weak_set,
+      common.prototype,
+      data_desc(Value::Object(weak_set_prototype), true, false, false),
+    )?;
+    scope.define_property(
+      weak_set,
+      common.name,
+      data_desc(Value::String(weak_set_name), false, false, true),
+    )?;
+    scope.define_property(
+      weak_set,
+      common.length,
+      data_desc(Value::Number(0.0), false, false, true),
+    )?;
+    scope.define_property(
+      weak_set_prototype,
+      common.constructor,
+      data_desc(Value::Object(weak_set), true, false, true),
+    )?;
+
+    // WeakSet.prototype.add / has / delete
+    {
+      let add_call = vm.register_native_call(builtins::weak_set_prototype_add)?;
+      let add_s = scope.alloc_string("add")?;
+      scope.push_root(Value::String(add_s))?;
+      let key = PropertyKey::from_string(add_s);
+      let func = scope.alloc_native_function(add_call, None, add_s, 1)?;
+      scope.push_root(Value::Object(func))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(func, Some(function_prototype))?;
+      scope.define_property(
+        weak_set_prototype,
+        key,
+        data_desc(Value::Object(func), true, false, true),
+      )?;
+
+      let has_call = vm.register_native_call(builtins::weak_set_prototype_has)?;
+      let has_s = scope.alloc_string("has")?;
+      scope.push_root(Value::String(has_s))?;
+      let key = PropertyKey::from_string(has_s);
+      let func = scope.alloc_native_function(has_call, None, has_s, 1)?;
+      scope.push_root(Value::Object(func))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(func, Some(function_prototype))?;
+      scope.define_property(
+        weak_set_prototype,
+        key,
+        data_desc(Value::Object(func), true, false, true),
+      )?;
+
+      let delete_call = vm.register_native_call(builtins::weak_set_prototype_delete)?;
+      let delete_s = scope.alloc_string("delete")?;
+      scope.push_root(Value::String(delete_s))?;
+      let key = PropertyKey::from_string(delete_s);
+      let func = scope.alloc_native_function(delete_call, None, delete_s, 1)?;
+      scope.push_root(Value::Object(func))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(func, Some(function_prototype))?;
+      scope.define_property(
+        weak_set_prototype,
+        key,
+        data_desc(Value::Object(func), true, false, true),
+      )?;
+    }
+
     // --- TypedArray prototype accessors/methods ---
     let typed_array_byte_length_get_call =
       vm.register_native_call(builtins::typed_array_prototype_byte_length_get)?;
@@ -4380,6 +4565,8 @@ impl Intrinsics {
       float32_array,
       float64_array,
       data_view,
+      weak_map,
+      weak_set,
       is_nan,
       is_finite,
       eval,
@@ -4621,6 +4808,14 @@ impl Intrinsics {
 
   pub fn data_view(&self) -> GcObject {
     self.data_view
+  }
+
+  pub fn weak_map(&self) -> GcObject {
+    self.weak_map
+  }
+
+  pub fn weak_set(&self) -> GcObject {
+    self.weak_set
   }
 
   pub fn is_nan(&self) -> GcObject {

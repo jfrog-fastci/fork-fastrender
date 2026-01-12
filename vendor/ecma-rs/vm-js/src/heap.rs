@@ -680,6 +680,26 @@ impl Heap {
       // Slot `bytes` accounting remains unchanged because the allocation capacity is unchanged.
     }
 
+    // WeakMap hygiene: remove entries whose keys are dead.
+    //
+    // Like WeakSet hygiene, this prevents the internal entry list from growing without bound across
+    // GC cycles.
+    for idx in 0..self.slots.len() {
+      let mut entries = {
+        let Some(HeapObject::WeakMap(wm)) = self.slots[idx].value.as_mut() else {
+          continue;
+        };
+        mem::take(&mut wm.entries)
+      };
+      entries.retain(|entry| entry.key.upgrade(&*self).is_some());
+      let Some(HeapObject::WeakMap(wm)) = self.slots[idx].value.as_mut() else {
+        continue;
+      };
+      wm.entries = entries;
+      // Note: we do not shrink the underlying allocation here; `retain` only updates length.
+      // Slot `bytes` accounting remains unchanged because the allocation capacity is unchanged.
+    }
+
     #[cfg(debug_assertions)]
     self.debug_assert_used_bytes_is_correct();
   }
@@ -852,6 +872,7 @@ impl Heap {
           | HeapObject::Function(_)
           | HeapObject::Proxy(_)
           | HeapObject::Promise(_)
+          | HeapObject::WeakMap(_)
           | HeapObject::WeakSet(_)
           | HeapObject::Generator(_)
       )
@@ -929,6 +950,16 @@ impl Heap {
   /// Returns `true` if `obj` currently points to a live DataView object allocation.
   pub fn is_data_view_object(&self, obj: GcObject) -> bool {
     matches!(self.get_heap_object(obj.0), Ok(HeapObject::DataView(_)))
+  }
+
+  /// Returns `true` if `obj` currently points to a live WeakMap object allocation.
+  pub fn is_weak_map_object(&self, obj: GcObject) -> bool {
+    matches!(self.get_heap_object(obj.0), Ok(HeapObject::WeakMap(_)))
+  }
+
+  /// Returns `true` if `obj` currently points to a live WeakSet object allocation.
+  pub fn is_weak_set_object(&self, obj: GcObject) -> bool {
+    matches!(self.get_heap_object(obj.0), Ok(HeapObject::WeakSet(_)))
   }
 
   /// Returns `true` if `obj` currently points to a live ArrayBuffer view (typed array or DataView).
@@ -1200,6 +1231,7 @@ impl Heap {
         | HeapObject::Function(_)
         | HeapObject::Proxy(_)
         | HeapObject::Promise(_)
+        | HeapObject::WeakMap(_)
         | HeapObject::WeakSet(_)
         | HeapObject::Generator(_),
       ) => {
@@ -1225,6 +1257,7 @@ impl Heap {
         | HeapObject::Function(_)
         | HeapObject::Proxy(_)
         | HeapObject::Promise(_)
+        | HeapObject::WeakMap(_)
         | HeapObject::WeakSet(_)
         | HeapObject::Generator(_),
       ) => Ok(self.slots[idx].host_slots),
@@ -1247,6 +1280,7 @@ impl Heap {
         | HeapObject::Function(_)
         | HeapObject::Proxy(_)
         | HeapObject::Promise(_)
+        | HeapObject::WeakMap(_)
         | HeapObject::WeakSet(_)
         | HeapObject::Generator(_),
       ) => {
@@ -1393,6 +1427,7 @@ impl Heap {
       HeapObject::DataView(v) => Ok(&v.base),
       HeapObject::Function(f) => Ok(&f.base),
       HeapObject::Promise(p) => Ok(&p.object.base),
+      HeapObject::WeakMap(wm) => Ok(&wm.base),
       HeapObject::WeakSet(ws) => Ok(&ws.base),
       HeapObject::Generator(g) => Ok(&g.object.base),
       _ => Err(VmError::invalid_handle()),
@@ -1407,10 +1442,171 @@ impl Heap {
       HeapObject::DataView(v) => Ok(&mut v.base),
       HeapObject::Function(f) => Ok(&mut f.base),
       HeapObject::Promise(p) => Ok(&mut p.object.base),
+      HeapObject::WeakMap(wm) => Ok(&mut wm.base),
       HeapObject::WeakSet(ws) => Ok(&mut ws.base),
       HeapObject::Generator(g) => Ok(&mut g.object.base),
       _ => Err(VmError::invalid_handle()),
     }
+  }
+
+  /// Returns the value associated with `key` in `map`, if present.
+  ///
+  /// Dead/stale keys are treated as absent.
+  pub fn weak_map_get(&self, map: GcObject, key: GcObject) -> Result<Option<Value>, VmError> {
+    if !self.is_valid_object(key) {
+      return Ok(None);
+    }
+
+    let HeapObject::WeakMap(wm) = self.get_heap_object(map.0)? else {
+      return Err(VmError::invalid_handle());
+    };
+
+    let key_weak = WeakGcObject::from(key);
+    for entry in wm.entries.iter() {
+      if entry.key != key_weak {
+        continue;
+      }
+      // WeakMap operations must treat dead keys as absent. Entries are expected to be GC-pruned,
+      // but this check prevents stale keys from being observed even if pruning falls behind.
+      if entry.key.upgrade(self).is_none() {
+        continue;
+      }
+      return Ok(Some(entry.value));
+    }
+    Ok(None)
+  }
+
+  /// Returns whether `key` is present in `map`.
+  ///
+  /// Dead/stale keys are treated as absent.
+  pub fn weak_map_has(&self, map: GcObject, key: GcObject) -> Result<bool, VmError> {
+    Ok(self.weak_map_get(map, key)?.is_some())
+  }
+
+  /// Sets `map[key] = value`.
+  ///
+  /// Dead/stale keys are ignored.
+  pub fn weak_map_set(&mut self, map: GcObject, key: GcObject, value: Value) -> Result<(), VmError> {
+    debug_assert!(self.debug_value_is_valid_or_primitive(value));
+
+    if !self.is_valid_object(map) {
+      return Err(VmError::invalid_handle());
+    }
+    if !self.is_valid_object(key) {
+      return Ok(());
+    }
+
+    // Root inputs across any potential GC while growing the entry vector.
+    let mut scope = self.scope();
+    scope.push_roots(&[Value::Object(map), Value::Object(key), value])?;
+    scope.heap.weak_map_set_rooted(map, key, value)
+  }
+
+  fn weak_map_set_rooted(&mut self, map: GcObject, key: GcObject, value: Value) -> Result<(), VmError> {
+    let slot_idx = self
+      .validate(map.0)
+      .ok_or_else(|| VmError::invalid_handle())?;
+
+    let key_weak = WeakGcObject::from(key);
+
+    let (existing_idx, entry_len, entry_cap, property_count, old_bytes) = {
+      let slot = &self.slots[slot_idx];
+      let Some(HeapObject::WeakMap(wm)) = slot.value.as_ref() else {
+        return Err(VmError::invalid_handle());
+      };
+
+      let existing_idx = wm
+        .entries
+        .iter()
+        .position(|entry| entry.key == key_weak && entry.key.upgrade(self).is_some());
+
+      (
+        existing_idx,
+        wm.entries.len(),
+        wm.entries.capacity(),
+        wm.base.properties.len(),
+        slot.bytes,
+      )
+    };
+
+    if let Some(existing_idx) = existing_idx {
+      let Some(HeapObject::WeakMap(wm)) = self.slots[slot_idx].value.as_mut() else {
+        return Err(VmError::invalid_handle());
+      };
+      if let Some(entry) = wm.entries.get_mut(existing_idx) {
+        entry.value = value;
+      }
+      return Ok(());
+    }
+
+    let required_len = entry_len.checked_add(1).ok_or(VmError::OutOfMemory)?;
+    let desired_capacity = grown_capacity(entry_cap, required_len);
+    if desired_capacity == usize::MAX {
+      return Err(VmError::OutOfMemory);
+    }
+
+    let expected_new_bytes = JsWeakMap::heap_size_bytes_for_counts(property_count, desired_capacity);
+    let grow_by = expected_new_bytes.saturating_sub(old_bytes);
+    if grow_by != 0 {
+      self.ensure_can_allocate(grow_by)?;
+      let Some(HeapObject::WeakMap(wm)) = self.slots[slot_idx].value.as_mut() else {
+        return Err(VmError::invalid_handle());
+      };
+      reserve_vec_to_len::<WeakMapEntry>(&mut wm.entries, required_len)?;
+    }
+
+    let Some(HeapObject::WeakMap(wm)) = self.slots[slot_idx].value.as_mut() else {
+      return Err(VmError::invalid_handle());
+    };
+    wm.entries.push(WeakMapEntry { key: key_weak, value });
+    let new_bytes = wm.heap_size_bytes();
+    self.update_slot_bytes(slot_idx, new_bytes);
+
+    #[cfg(debug_assertions)]
+    self.debug_assert_used_bytes_is_correct();
+    Ok(())
+  }
+
+  /// Removes `key` from `map`, returning whether it was present.
+  ///
+  /// Dead/stale keys are treated as absent.
+  pub fn weak_map_delete(&mut self, map: GcObject, key: GcObject) -> Result<bool, VmError> {
+    if !self.is_valid_object(key) {
+      return Ok(false);
+    }
+
+    let slot_idx = self
+      .validate(map.0)
+      .ok_or_else(|| VmError::invalid_handle())?;
+
+    let key_weak = WeakGcObject::from(key);
+    let mut removed = false;
+
+    // No allocation: `retain` is in-place.
+    let mut entries = {
+      let Some(HeapObject::WeakMap(wm)) = self.slots[slot_idx].value.as_mut() else {
+        return Err(VmError::invalid_handle());
+      };
+      mem::take(&mut wm.entries)
+    };
+
+    entries.retain(|entry| {
+      let Some(obj) = entry.key.upgrade(&*self) else {
+        return false;
+      };
+      if entry.key == key_weak && obj == key {
+        removed = true;
+        return false;
+      }
+      true
+    });
+
+    let Some(HeapObject::WeakMap(wm)) = self.slots[slot_idx].value.as_mut() else {
+      return Err(VmError::invalid_handle());
+    };
+    wm.entries = entries;
+
+    Ok(removed)
   }
 
   /// Returns `true` if `key` is present in `set`.
@@ -1784,6 +1980,9 @@ impl Heap {
       ArrayBuffer,
       TypedArray,
       DataView,
+      WeakMap {
+        entry_capacity: usize,
+      },
       Function {
         bound_args_len: usize,
         native_slots_len: usize,
@@ -1842,6 +2041,17 @@ impl Heap {
             .position(|prop| self.property_key_eq(&prop.key, key)),
           TargetKind::DataView,
           view.base.properties.len(),
+        ),
+        HeapObject::WeakMap(wm) => (
+          wm
+            .base
+            .properties
+            .iter()
+            .position(|prop| self.property_key_eq(&prop.key, key)),
+          TargetKind::WeakMap {
+            entry_capacity: wm.entries.capacity(),
+          },
+          wm.base.properties.len(),
         ),
         HeapObject::Function(func) => (
           func
@@ -1904,6 +2114,9 @@ impl Heap {
       TargetKind::ArrayBuffer => JsArrayBuffer::heap_size_bytes_for_property_count(new_property_count),
       TargetKind::TypedArray => JsTypedArray::heap_size_bytes_for_property_count(new_property_count),
       TargetKind::DataView => JsDataView::heap_size_bytes_for_property_count(new_property_count),
+      TargetKind::WeakMap { entry_capacity } => {
+        JsWeakMap::heap_size_bytes_for_counts(new_property_count, entry_capacity)
+      }
       TargetKind::Function {
         bound_args_len,
         native_slots_len,
@@ -1951,6 +2164,10 @@ impl Heap {
           buf.extend_from_slice(&obj.base.properties[..idx]);
           buf.extend_from_slice(&obj.base.properties[idx + 1..]);
         }
+        Some(HeapObject::WeakMap(wm)) => {
+          buf.extend_from_slice(&wm.base.properties[..idx]);
+          buf.extend_from_slice(&wm.base.properties[idx + 1..]);
+        }
         Some(HeapObject::Function(func)) => {
           buf.extend_from_slice(&func.base.properties[..idx]);
           buf.extend_from_slice(&func.base.properties[idx + 1..]);
@@ -1980,6 +2197,7 @@ impl Heap {
       HeapObject::ArrayBuffer(obj) => obj.base.properties = properties,
       HeapObject::TypedArray(obj) => obj.base.properties = properties,
       HeapObject::DataView(obj) => obj.base.properties = properties,
+      HeapObject::WeakMap(wm) => wm.base.properties = properties,
       HeapObject::Function(func) => func.base.properties = properties,
       HeapObject::Promise(p) => p.object.base.properties = properties,
       HeapObject::WeakSet(ws) => ws.base.properties = properties,
@@ -3694,6 +3912,9 @@ impl Heap {
       ArrayBuffer,
       TypedArray,
       DataView,
+      WeakMap {
+        entry_capacity: usize,
+      },
       Function {
         bound_args_len: usize,
         native_slots_len: usize,
@@ -3767,6 +3988,22 @@ impl Heap {
             .position(|entry| self.property_key_eq(&entry.key, &key));
           (
             TargetKind::DataView,
+            obj.base.properties.len(),
+            slot.bytes,
+            existing_idx,
+            None,
+          )
+        }
+        HeapObject::WeakMap(obj) => {
+          let existing_idx = obj
+            .base
+            .properties
+            .iter()
+            .position(|entry| self.property_key_eq(&entry.key, &key));
+          (
+            TargetKind::WeakMap {
+              entry_capacity: obj.entries.capacity(),
+            },
             obj.base.properties.len(),
             slot.bytes,
             existing_idx,
@@ -3881,6 +4118,7 @@ impl Heap {
           Some(HeapObject::ArrayBuffer(obj)) => obj.base.properties[existing_idx].desc = desc,
           Some(HeapObject::TypedArray(obj)) => obj.base.properties[existing_idx].desc = desc,
           Some(HeapObject::DataView(obj)) => obj.base.properties[existing_idx].desc = desc,
+          Some(HeapObject::WeakMap(wm)) => wm.base.properties[existing_idx].desc = desc,
           Some(HeapObject::Function(func)) => func.base.properties[existing_idx].desc = desc,
           Some(HeapObject::Promise(p)) => p.object.base.properties[existing_idx].desc = desc,
           Some(HeapObject::WeakSet(ws)) => ws.base.properties[existing_idx].desc = desc,
@@ -3897,6 +4135,9 @@ impl Heap {
           TargetKind::ArrayBuffer => JsArrayBuffer::heap_size_bytes_for_property_count(new_property_count),
           TargetKind::TypedArray => JsTypedArray::heap_size_bytes_for_property_count(new_property_count),
           TargetKind::DataView => JsDataView::heap_size_bytes_for_property_count(new_property_count),
+          TargetKind::WeakMap { entry_capacity } => {
+            JsWeakMap::heap_size_bytes_for_counts(new_property_count, entry_capacity)
+          }
           TargetKind::Function {
             bound_args_len,
             native_slots_len,
@@ -3936,6 +4177,7 @@ impl Heap {
             Some(HeapObject::ArrayBuffer(obj)) => buf.extend_from_slice(&obj.base.properties),
             Some(HeapObject::TypedArray(obj)) => buf.extend_from_slice(&obj.base.properties),
             Some(HeapObject::DataView(obj)) => buf.extend_from_slice(&obj.base.properties),
+            Some(HeapObject::WeakMap(wm)) => buf.extend_from_slice(&wm.base.properties),
             Some(HeapObject::Function(func)) => buf.extend_from_slice(&func.base.properties),
             Some(HeapObject::Promise(p)) => buf.extend_from_slice(&p.object.base.properties),
             Some(HeapObject::WeakSet(ws)) => buf.extend_from_slice(&ws.base.properties),
@@ -3952,6 +4194,7 @@ impl Heap {
           Some(HeapObject::ArrayBuffer(obj)) => obj.base.properties = properties,
           Some(HeapObject::TypedArray(obj)) => obj.base.properties = properties,
           Some(HeapObject::DataView(obj)) => obj.base.properties = properties,
+          Some(HeapObject::WeakMap(wm)) => wm.base.properties = properties,
           Some(HeapObject::Function(func)) => func.base.properties = properties,
           Some(HeapObject::Promise(p)) => p.object.base.properties = properties,
           Some(HeapObject::WeakSet(ws)) => ws.base.properties = properties,
@@ -4740,11 +4983,48 @@ impl<'a> Scope<'a> {
   }
   /// Allocates an empty `WeakSet` object on the heap.
   pub fn alloc_weak_set(&mut self) -> Result<GcObject, VmError> {
-    let new_bytes = JsWeakSet::heap_size_bytes_for_counts(0, 0);
-    self.heap.ensure_can_allocate(new_bytes)?;
+    self.alloc_weak_set_with_prototype(None)
+  }
 
-    let obj = HeapObject::WeakSet(JsWeakSet::new(None));
-    Ok(GcObject(self.heap.alloc_unchecked(obj, new_bytes)?))
+  /// Allocates an empty `WeakSet` object on the heap with an explicit `[[Prototype]]`.
+  pub fn alloc_weak_set_with_prototype(
+    &mut self,
+    prototype: Option<GcObject>,
+  ) -> Result<GcObject, VmError> {
+    // Root inputs during allocation in case `ensure_can_allocate` triggers a GC.
+    let mut scope = self.reborrow();
+    if let Some(proto) = prototype {
+      scope.push_root(Value::Object(proto))?;
+    }
+
+    let new_bytes = JsWeakSet::heap_size_bytes_for_counts(0, 0);
+    scope.heap.ensure_can_allocate(new_bytes)?;
+
+    let obj = HeapObject::WeakSet(JsWeakSet::new(prototype));
+    Ok(GcObject(scope.heap.alloc_unchecked(obj, new_bytes)?))
+  }
+
+  /// Allocates an empty `WeakMap` object on the heap.
+  pub fn alloc_weak_map(&mut self) -> Result<GcObject, VmError> {
+    self.alloc_weak_map_with_prototype(None)
+  }
+
+  /// Allocates an empty `WeakMap` object on the heap with an explicit `[[Prototype]]`.
+  pub fn alloc_weak_map_with_prototype(
+    &mut self,
+    prototype: Option<GcObject>,
+  ) -> Result<GcObject, VmError> {
+    // Root inputs during allocation in case `ensure_can_allocate` triggers a GC.
+    let mut scope = self.reborrow();
+    if let Some(proto) = prototype {
+      scope.push_root(Value::Object(proto))?;
+    }
+
+    let new_bytes = JsWeakMap::heap_size_bytes_for_counts(0, 0);
+    scope.heap.ensure_can_allocate(new_bytes)?;
+
+    let obj = HeapObject::WeakMap(JsWeakMap::new(prototype));
+    Ok(GcObject(scope.heap.alloc_unchecked(obj, new_bytes)?))
   }
 
   /// Allocates a JavaScript Date object on the heap.
@@ -5868,6 +6148,7 @@ enum HeapObject {
   Proxy(JsProxy),
   Env(EnvRecord),
   Promise(JsPromise),
+  WeakMap(JsWeakMap),
   WeakSet(JsWeakSet),
   Generator(JsGenerator),
 }
@@ -5885,6 +6166,7 @@ impl Trace for HeapObject {
       HeapObject::Proxy(p) => p.trace(tracer),
       HeapObject::Env(e) => e.trace(tracer),
       HeapObject::Promise(p) => p.trace(tracer),
+      HeapObject::WeakMap(wm) => wm.trace(tracer),
       HeapObject::WeakSet(ws) => ws.trace(tracer),
       HeapObject::Generator(g) => g.trace(tracer),
     }
@@ -6305,6 +6587,49 @@ impl Trace for JsDataView {
   fn trace(&self, tracer: &mut Tracer<'_>) {
     self.base.trace(tracer);
     tracer.trace_value(Value::Object(self.viewed_array_buffer));
+  }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct WeakMapEntry {
+  key: WeakGcObject,
+  value: Value,
+}
+
+#[derive(Debug)]
+struct JsWeakMap {
+  base: ObjectBase,
+  entries: Vec<WeakMapEntry>,
+}
+
+impl JsWeakMap {
+  fn new(prototype: Option<GcObject>) -> Self {
+    Self {
+      base: ObjectBase::new(prototype),
+      entries: Vec::new(),
+    }
+  }
+
+  fn heap_size_bytes(&self) -> usize {
+    Self::heap_size_bytes_for_counts(self.base.properties.len(), self.entries.capacity())
+  }
+
+  fn heap_size_bytes_for_counts(property_count: usize, entry_capacity: usize) -> usize {
+    let props_bytes = ObjectBase::properties_heap_size_bytes_for_count(property_count);
+    let entries_bytes = entry_capacity
+      .checked_mul(mem::size_of::<WeakMapEntry>())
+      .unwrap_or(usize::MAX);
+    props_bytes.saturating_add(entries_bytes)
+  }
+}
+
+impl Trace for JsWeakMap {
+  fn trace(&self, tracer: &mut Tracer<'_>) {
+    // WeakMap keys are weak: do not trace `entries`.
+    //
+    // Note: values are intentionally not traced here; ephemeron processing will be added in a
+    // follow-up task.
+    self.base.trace(tracer);
   }
 }
 

@@ -15211,6 +15211,422 @@ pub fn json_stringify(
   Ok(Value::String(scope.alloc_string_from_u16_vec(out.buf)?))
 }
 
+pub fn weak_map_constructor_call(
+  _vm: &mut Vm,
+  _scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  Err(VmError::TypeError("WeakMap constructor requires 'new'"))
+}
+
+pub fn weak_map_constructor_construct(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  args: &[Value],
+  _new_target: Value,
+) -> Result<Value, VmError> {
+  let mut scope = scope.reborrow();
+  let intr = require_intrinsics(vm)?;
+
+  let map = scope.alloc_weak_map_with_prototype(Some(intr.weak_map_prototype()))?;
+  scope.push_root(Value::Object(map))?;
+
+  let iterable = args.get(0).copied().unwrap_or(Value::Undefined);
+  if matches!(iterable, Value::Undefined | Value::Null) {
+    return Ok(Value::Object(map));
+  }
+
+  // AddEntriesFromIterable (ECMA-262) (minimal).
+  scope.push_root(iterable)?;
+
+  // adder = Get(map, "set")
+  let set_key = string_key(&mut scope, "set")?;
+  let adder =
+    scope.ordinary_get_with_host_and_hooks(vm, host, hooks, map, set_key, Value::Object(map))?;
+  if !scope.heap().is_callable(adder)? {
+    return Err(VmError::TypeError("WeakMap constructor set method is not callable"));
+  }
+  scope.push_root(adder)?;
+
+  // iteratorRecord = GetIterator(iterable)
+  let mut iterator_record = crate::iterator::get_iterator(vm, host, hooks, &mut scope, iterable)?;
+  scope.push_roots(&[iterator_record.iterator, iterator_record.next_method])?;
+
+  let result: Result<(), VmError> = (|| {
+    loop {
+      let next_value =
+        crate::iterator::iterator_step_value(vm, host, hooks, &mut scope, &mut iterator_record)?;
+      let Some(next_value) = next_value else {
+        return Ok(());
+      };
+
+      // Use a nested scope so per-entry roots do not accumulate.
+      let mut step_scope = scope.reborrow();
+      step_scope.push_root(next_value)?;
+
+      let Value::Object(entry_obj) = next_value else {
+        return Err(VmError::TypeError("WeakMap constructor: iterator value is not an object"));
+      };
+
+      let zero_key = string_key(&mut step_scope, "0")?;
+      let key = step_scope.ordinary_get_with_host_and_hooks(
+        vm,
+        host,
+        hooks,
+        entry_obj,
+        zero_key,
+        next_value,
+      )?;
+      step_scope.push_root(key)?;
+
+      let one_key = string_key(&mut step_scope, "1")?;
+      let value = step_scope.ordinary_get_with_host_and_hooks(
+        vm,
+        host,
+        hooks,
+        entry_obj,
+        one_key,
+        next_value,
+      )?;
+      step_scope.push_root(value)?;
+
+      let _ = vm.call_with_host_and_hooks(
+        host,
+        &mut step_scope,
+        hooks,
+        adder,
+        Value::Object(map),
+        &[key, value],
+      )?;
+    }
+  })();
+
+  match result {
+    Ok(()) => Ok(Value::Object(map)),
+    Err(err) => {
+      if !iterator_record.done {
+        // If iterator close throws, it overrides the original error (ECMA-262 `IteratorClose`),
+        // but it must not replace VM-internal fatal errors (termination, OOM, etc).
+        let original_is_throw = err.is_throw_completion();
+        let pending_root = err
+          .thrown_value()
+          .map(|v| scope.heap_mut().add_root(v))
+          .transpose()?;
+        let close_res =
+          crate::iterator::iterator_close(vm, host, hooks, &mut scope, &iterator_record);
+        if let Some(root) = pending_root {
+          scope.heap_mut().remove_root(root);
+        }
+        if let Err(close_err) = close_res {
+          if original_is_throw {
+            return Err(close_err);
+          }
+        }
+      }
+      Err(err)
+    }
+  }
+}
+
+pub fn weak_set_constructor_call(
+  _vm: &mut Vm,
+  _scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  Err(VmError::TypeError("WeakSet constructor requires 'new'"))
+}
+
+pub fn weak_set_constructor_construct(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  args: &[Value],
+  _new_target: Value,
+) -> Result<Value, VmError> {
+  let mut scope = scope.reborrow();
+  let intr = require_intrinsics(vm)?;
+
+  let set = scope.alloc_weak_set_with_prototype(Some(intr.weak_set_prototype()))?;
+  scope.push_root(Value::Object(set))?;
+
+  let iterable = args.get(0).copied().unwrap_or(Value::Undefined);
+  if matches!(iterable, Value::Undefined | Value::Null) {
+    return Ok(Value::Object(set));
+  }
+
+  // AddEntriesFromIterable (ECMA-262) (minimal).
+  scope.push_root(iterable)?;
+
+  // adder = Get(set, "add")
+  let add_key = string_key(&mut scope, "add")?;
+  let adder =
+    scope.ordinary_get_with_host_and_hooks(vm, host, hooks, set, add_key, Value::Object(set))?;
+  if !scope.heap().is_callable(adder)? {
+    return Err(VmError::TypeError("WeakSet constructor add method is not callable"));
+  }
+  scope.push_root(adder)?;
+
+  // iteratorRecord = GetIterator(iterable)
+  let mut iterator_record = crate::iterator::get_iterator(vm, host, hooks, &mut scope, iterable)?;
+  scope.push_roots(&[iterator_record.iterator, iterator_record.next_method])?;
+
+  let result: Result<(), VmError> = (|| {
+    loop {
+      let next_value =
+        crate::iterator::iterator_step_value(vm, host, hooks, &mut scope, &mut iterator_record)?;
+      let Some(next_value) = next_value else {
+        return Ok(());
+      };
+
+      // Use a nested scope so per-entry roots do not accumulate.
+      let mut step_scope = scope.reborrow();
+      step_scope.push_root(next_value)?;
+      let _ = vm.call_with_host_and_hooks(
+        host,
+        &mut step_scope,
+        hooks,
+        adder,
+        Value::Object(set),
+        &[next_value],
+      )?;
+    }
+  })();
+
+  match result {
+    Ok(()) => Ok(Value::Object(set)),
+    Err(err) => {
+      if !iterator_record.done {
+        // If iterator close throws, it overrides the original error (ECMA-262 `IteratorClose`),
+        // but it must not replace VM-internal fatal errors (termination, OOM, etc).
+        let original_is_throw = err.is_throw_completion();
+        let pending_root = err
+          .thrown_value()
+          .map(|v| scope.heap_mut().add_root(v))
+          .transpose()?;
+        let close_res =
+          crate::iterator::iterator_close(vm, host, hooks, &mut scope, &iterator_record);
+        if let Some(root) = pending_root {
+          scope.heap_mut().remove_root(root);
+        }
+        if let Err(close_err) = close_res {
+          if original_is_throw {
+            return Err(close_err);
+          }
+        }
+      }
+      Err(err)
+    }
+  }
+}
+
+pub fn weak_map_prototype_get(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let scope = scope.reborrow();
+  let Value::Object(map) = this else {
+    return Err(VmError::TypeError("WeakMap.prototype.get called on non-object"));
+  };
+  if !scope.heap().is_weak_map_object(map) {
+    return Err(VmError::TypeError(
+      "WeakMap.prototype.get called on incompatible receiver",
+    ));
+  }
+
+  let key = args.get(0).copied().unwrap_or(Value::Undefined);
+  let Value::Object(key_obj) = key else {
+    return Ok(Value::Undefined);
+  };
+
+  Ok(scope
+    .heap()
+    .weak_map_get(map, key_obj)?
+    .unwrap_or(Value::Undefined))
+}
+
+pub fn weak_map_prototype_set(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let mut scope = scope.reborrow();
+  let Value::Object(map) = this else {
+    return Err(VmError::TypeError("WeakMap.prototype.set called on non-object"));
+  };
+  if !scope.heap().is_weak_map_object(map) {
+    return Err(VmError::TypeError(
+      "WeakMap.prototype.set called on incompatible receiver",
+    ));
+  }
+
+  let key = args.get(0).copied().unwrap_or(Value::Undefined);
+  let value = args.get(1).copied().unwrap_or(Value::Undefined);
+  let Value::Object(key_obj) = key else {
+    return Err(VmError::TypeError("WeakMap key must be an object"));
+  };
+
+  scope.heap_mut().weak_map_set(map, key_obj, value)?;
+  Ok(Value::Object(map))
+}
+
+pub fn weak_map_prototype_has(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let scope = scope.reborrow();
+  let Value::Object(map) = this else {
+    return Err(VmError::TypeError("WeakMap.prototype.has called on non-object"));
+  };
+  if !scope.heap().is_weak_map_object(map) {
+    return Err(VmError::TypeError(
+      "WeakMap.prototype.has called on incompatible receiver",
+    ));
+  }
+
+  let key = args.get(0).copied().unwrap_or(Value::Undefined);
+  let Value::Object(key_obj) = key else {
+    return Ok(Value::Bool(false));
+  };
+
+  Ok(Value::Bool(scope.heap().weak_map_has(map, key_obj)?))
+}
+
+pub fn weak_map_prototype_delete(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let mut scope = scope.reborrow();
+  let Value::Object(map) = this else {
+    return Err(VmError::TypeError("WeakMap.prototype.delete called on non-object"));
+  };
+  if !scope.heap().is_weak_map_object(map) {
+    return Err(VmError::TypeError(
+      "WeakMap.prototype.delete called on incompatible receiver",
+    ));
+  }
+
+  let key = args.get(0).copied().unwrap_or(Value::Undefined);
+  let Value::Object(key_obj) = key else {
+    return Ok(Value::Bool(false));
+  };
+
+  Ok(Value::Bool(scope.heap_mut().weak_map_delete(map, key_obj)?))
+}
+
+pub fn weak_set_prototype_add(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let mut scope = scope.reborrow();
+  let Value::Object(set) = this else {
+    return Err(VmError::TypeError("WeakSet.prototype.add called on non-object"));
+  };
+  if !scope.heap().is_weak_set_object(set) {
+    return Err(VmError::TypeError(
+      "WeakSet.prototype.add called on incompatible receiver",
+    ));
+  }
+
+  let key = args.get(0).copied().unwrap_or(Value::Undefined);
+  let Value::Object(key_obj) = key else {
+    return Err(VmError::TypeError("WeakSet key must be an object"));
+  };
+
+  scope.heap_mut().weak_set_add(set, key_obj)?;
+  Ok(Value::Object(set))
+}
+
+pub fn weak_set_prototype_has(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let scope = scope.reborrow();
+  let Value::Object(set) = this else {
+    return Err(VmError::TypeError("WeakSet.prototype.has called on non-object"));
+  };
+  if !scope.heap().is_weak_set_object(set) {
+    return Err(VmError::TypeError(
+      "WeakSet.prototype.has called on incompatible receiver",
+    ));
+  }
+
+  let key = args.get(0).copied().unwrap_or(Value::Undefined);
+  let Value::Object(key_obj) = key else {
+    return Ok(Value::Bool(false));
+  };
+
+  Ok(Value::Bool(scope.heap().weak_set_has(set, key_obj)?))
+}
+
+pub fn weak_set_prototype_delete(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let mut scope = scope.reborrow();
+  let Value::Object(set) = this else {
+    return Err(VmError::TypeError("WeakSet.prototype.delete called on non-object"));
+  };
+  if !scope.heap().is_weak_set_object(set) {
+    return Err(VmError::TypeError(
+      "WeakSet.prototype.delete called on incompatible receiver",
+    ));
+  }
+
+  let key = args.get(0).copied().unwrap_or(Value::Undefined);
+  let Value::Object(key_obj) = key else {
+    return Ok(Value::Bool(false));
+  };
+
+  Ok(Value::Bool(scope.heap_mut().weak_set_delete(set, key_obj)?))
+}
+
 #[cfg(test)]
 mod date_tests {
   use crate::{Heap, HeapLimits, JsRuntime, Job, RealmId, Value, Vm, VmError, VmHostHooks, VmOptions};
