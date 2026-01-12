@@ -754,14 +754,19 @@ fn load_case_for_run(
     Err(err) => return Err((case, err.into())),
   };
   let split = crate::split_test_file(&case.path, &content);
-  let options = HarnessOptions::from_directives(&split.directives);
+  let parsed = HarnessOptions::from_directives_with_options(
+    &split.directives,
+    crate::directives::DirectiveParseOptions::from_env(),
+  );
+  let mut notes = split.notes;
+  notes.extend(parsed.notes);
   Ok(TestCase {
     id: case.id,
     path: case.path,
     files: split.files,
     directives: split.directives,
-    options,
-    notes: split.notes,
+    options: parsed.options,
+    notes,
   })
 }
 

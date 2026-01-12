@@ -188,14 +188,20 @@ pub(crate) fn discover_conformance_test_paths(
 fn load_conformance_test_from_path(case: TestCasePath) -> Result<TestCase> {
   let content = read_utf8_file(&case.path)?;
   let split = split_test_file(&case.path, &content);
+  let parsed = HarnessOptions::from_directives_with_options(
+    &split.directives,
+    crate::directives::DirectiveParseOptions::from_env(),
+  );
+  let mut notes = split.notes;
+  notes.extend(parsed.notes);
 
   Ok(TestCase {
     id: case.id,
     path: case.path,
     files: split.files,
     directives: split.directives.clone(),
-    options: HarnessOptions::from_directives(&split.directives),
-    notes: split.notes,
+    options: parsed.options,
+    notes,
   })
 }
 
@@ -298,14 +304,20 @@ pub fn load_conformance_test(root: &Path, id: &str) -> Result<TestCase> {
   } else {
     raw_id.into_owned()
   };
+  let parsed = HarnessOptions::from_directives_with_options(
+    &split.directives,
+    crate::directives::DirectiveParseOptions::from_env(),
+  );
+  let mut notes = split.notes;
+  notes.extend(parsed.notes);
 
   Ok(TestCase {
     id: normalized_id,
     path: canonical_path,
     files: split.files,
     directives: split.directives.clone(),
-    options: HarnessOptions::from_directives(&split.directives),
-    notes: split.notes,
+    options: parsed.options,
+    notes,
   })
 }
 

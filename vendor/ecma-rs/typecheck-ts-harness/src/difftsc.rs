@@ -2,7 +2,9 @@ use crate::diagnostic_norm::{
   diagnostic_code_display, normalize_path_for_compare, normalize_tsc_diagnostics_with_options,
   normalize_type_string, sort_diagnostics, NormalizationOptions, NormalizedDiagnostic,
 };
-use crate::directives::{parse_directive, HarnessOptions};
+use crate::directives::{
+  parse_directive, DirectiveParseOptions, HarnessOptions, HarnessOptionsParseResult,
+};
 use crate::expectations::{AppliedExpectation, ExpectationKind, Expectations};
 use crate::multifile::{is_normalized_virtual_path, normalize_name_cow, normalize_name_into};
 use crate::read_utf8_file;
@@ -666,12 +668,14 @@ fn run_single_test(
   timeout: Duration,
 ) -> CaseReport {
   let baseline_path = baselines_root.join(format!("{}.json", test.name));
-  let mut notes = Vec::new();
-  let harness_options = harness_options_from_files(&test.files);
+  let parsed = harness_options_from_files(&test.files);
+  let mut notes = parsed.notes;
+  let harness_options = parsed.options;
   let tsc_options = harness_options.to_tsc_options_map();
   let file_set = HarnessFileSet::new(&test.files);
 
   if Instant::now() >= deadline {
+    notes.push(format!("timed out after {}ms", timeout.as_millis()));
     return CaseReport {
       name: test.name.clone(),
       status: CaseStatus::Timeout,
@@ -685,12 +689,13 @@ fn run_single_test(
       actual_types: None,
       type_diff: None,
       report: None,
-      notes: vec![format!("timed out after {}ms", timeout.as_millis())],
+      notes,
     };
   }
 
   let live_tsc = if needs_live_tsc(args) {
     let Some(pool) = tsc_pool else {
+      notes.push("tsc runner unavailable".to_string());
       return CaseReport {
         name: test.name.clone(),
         status: CaseStatus::TscFailed,
@@ -704,7 +709,7 @@ fn run_single_test(
         actual_types: None,
         type_diff: None,
         report: None,
-        notes: vec!["tsc runner unavailable".to_string()],
+        notes,
       };
     };
 
@@ -712,6 +717,7 @@ fn run_single_test(
     match pool.run_request(request, deadline) {
       Ok(diags) => Some(diags),
       Err(TscPoolError::Timeout) => {
+        notes.push(format!("timed out after {}ms", timeout.as_millis()));
         return CaseReport {
           name: test.name.clone(),
           status: CaseStatus::Timeout,
@@ -725,10 +731,11 @@ fn run_single_test(
           actual_types: None,
           type_diff: None,
           report: None,
-          notes: vec![format!("timed out after {}ms", timeout.as_millis())],
+          notes,
         };
       }
       Err(TscPoolError::Crashed(err)) => {
+        notes.push(err);
         return CaseReport {
           name: test.name.clone(),
           status: CaseStatus::TscFailed,
@@ -742,7 +749,7 @@ fn run_single_test(
           actual_types: None,
           type_diff: None,
           report: None,
-          notes: vec![err],
+          notes,
         };
       }
     }
@@ -753,6 +760,7 @@ fn run_single_test(
   if args.update_baselines {
     if let Some(tsc) = &live_tsc {
       if let Err(err) = write_baseline(&baseline_path, tsc) {
+        notes.push(err.to_string());
         return CaseReport {
           name: test.name.clone(),
           status: CaseStatus::TscFailed,
@@ -766,7 +774,7 @@ fn run_single_test(
           actual_types: None,
           type_diff: None,
           report: None,
-          notes: vec![err.to_string()],
+          notes,
         };
       }
     }
@@ -794,6 +802,7 @@ fn run_single_test(
     let baseline = match read_baseline(&baseline_path) {
       Ok(data) => data,
       Err(err) => {
+        notes.push(err.to_string());
         return CaseReport {
           name: test.name.clone(),
           status: CaseStatus::BaselineMissing,
@@ -807,7 +816,7 @@ fn run_single_test(
           actual_types: None,
           type_diff: None,
           report: None,
-          notes: vec![err.to_string()],
+          notes,
         };
       }
     };
@@ -861,6 +870,7 @@ fn run_single_test(
     match read_baseline(&baseline_path) {
       Ok(data) => data,
       Err(err) => {
+        notes.push(err.to_string());
         return CaseReport {
           name: test.name.clone(),
           status: CaseStatus::BaselineMissing,
@@ -874,7 +884,7 @@ fn run_single_test(
           actual_types: None,
           type_diff: None,
           report: None,
-          notes: vec![err.to_string()],
+          notes,
         };
       }
     }
@@ -896,6 +906,7 @@ fn run_single_test(
   let marker_queries = marker_queries_from_type_facts(&tsc_diags.type_facts);
 
   if Instant::now() >= deadline {
+    notes.push(format!("timed out after {}ms", timeout.as_millis()));
     return CaseReport {
       name: test.name.clone(),
       status: CaseStatus::Timeout,
@@ -909,7 +920,7 @@ fn run_single_test(
       actual_types: None,
       type_diff: None,
       report: None,
-      notes: vec![format!("timed out after {}ms", timeout.as_millis())],
+      notes,
     };
   }
 
@@ -923,6 +934,7 @@ fn run_single_test(
   let rust = run_rust_check(&program, &file_set, timeout);
 
   if rust.status == EngineStatus::Timeout || Instant::now() >= deadline {
+    notes.push(format!("timed out after {}ms", timeout.as_millis()));
     return CaseReport {
       name: test.name.clone(),
       status: CaseStatus::Timeout,
@@ -936,11 +948,12 @@ fn run_single_test(
       actual_types: None,
       type_diff: None,
       report: None,
-      notes: vec![format!("timed out after {}ms", timeout.as_millis())],
+      notes,
     };
   }
 
   if rust.status != EngineStatus::Ok {
+    notes.extend(rust.error.into_iter());
     return CaseReport {
       name: test.name.clone(),
       status: CaseStatus::RustFailed,
@@ -954,7 +967,7 @@ fn run_single_test(
       diff: None,
       type_diff: None,
       report: None,
-      notes: rust.error.into_iter().collect(),
+      notes,
     };
   }
 
@@ -969,6 +982,7 @@ fn run_single_test(
     ) {
       Some(types) => types,
       None => {
+        notes.push(format!("timed out after {}ms", timeout.as_millis()));
         return CaseReport {
           name: test.name.clone(),
           status: CaseStatus::Timeout,
@@ -982,7 +996,7 @@ fn run_single_test(
           actual_types: None,
           type_diff: None,
           report: None,
-          notes: vec![format!("timed out after {}ms", timeout.as_millis())],
+          notes,
         };
       }
     }
@@ -991,6 +1005,7 @@ fn run_single_test(
   };
 
   if Instant::now() >= deadline {
+    notes.push(format!("timed out after {}ms", timeout.as_millis()));
     return CaseReport {
       name: test.name.clone(),
       status: CaseStatus::Timeout,
@@ -1004,7 +1019,7 @@ fn run_single_test(
       actual_types: None,
       type_diff: None,
       report: None,
-      notes: vec![format!("timed out after {}ms", timeout.as_millis())],
+      notes,
     };
   }
 
@@ -1819,7 +1834,7 @@ fn marker_queries_from_type_facts(type_facts: &Option<TypeFacts>) -> Vec<TypeQue
     .collect()
 }
 
-fn harness_options_from_files(files: &[VirtualFile]) -> HarnessOptions {
+fn harness_options_from_files(files: &[VirtualFile]) -> HarnessOptionsParseResult {
   let mut ordered: Vec<(Cow<'_, str>, &VirtualFile)> = files
     .iter()
     .map(|file| (normalize_name_cow(&file.name), file))
@@ -1841,7 +1856,7 @@ fn harness_options_from_files(files: &[VirtualFile]) -> HarnessOptions {
     }
   }
 
-  HarnessOptions::from_directives(&directives)
+  HarnessOptions::from_directives_with_options(&directives, DirectiveParseOptions::from_env())
 }
 
 fn baseline_option_mismatch_notes(
@@ -2812,9 +2827,9 @@ span mismatches:
       .join("this_param_call");
     let files = collect_files_recursively(&case_dir).expect("collect fixture files");
     let options = harness_options_from_files(&files);
-    assert_eq!(options.strict, Some(true));
+    assert_eq!(options.options.strict, Some(true));
 
-    let tsc = options.to_tsc_options_map();
+    let tsc = options.options.to_tsc_options_map();
     assert_eq!(tsc.get("strict"), Some(&Value::Bool(true)));
     assert_eq!(tsc.get("noImplicitAny"), Some(&Value::Bool(true)));
   }

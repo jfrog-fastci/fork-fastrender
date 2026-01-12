@@ -2,6 +2,7 @@ use crate::tsc::apply_default_tsc_options;
 use serde::Deserialize;
 use serde::Serialize;
 use serde_json::{Map, Value};
+use std::collections::BTreeMap;
 use typecheck_ts::lib_support::{CompilerOptions, JsxMode, LibName, ModuleKind, ScriptTarget};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -107,6 +108,8 @@ pub struct HarnessOptions {
   #[serde(skip_serializing_if = "Option::is_none")]
   pub jsx: Option<String>,
   #[serde(skip_serializing_if = "Option::is_none")]
+  pub jsx_import_source: Option<String>,
+  #[serde(skip_serializing_if = "Option::is_none")]
   pub strict: Option<bool>,
   #[serde(skip_serializing_if = "Option::is_none")]
   pub no_implicit_any: Option<bool>,
@@ -135,18 +138,75 @@ pub struct HarnessOptions {
   #[serde(skip_serializing_if = "Option::is_none")]
   pub module_resolution: Option<String>,
   #[serde(default, skip_serializing_if = "Vec::is_empty")]
+  pub type_roots: Vec<String>,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub base_url: Option<String>,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub paths: Option<Value>,
+  #[serde(default, skip_serializing_if = "Vec::is_empty")]
   pub types: Vec<String>,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub es_module_interop: Option<bool>,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub allow_synthetic_default_imports: Option<bool>,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub resolve_json_module: Option<bool>,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub experimental_decorators: Option<bool>,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub emit_decorator_metadata: Option<bool>,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct DirectiveParseOptions {
+  /// When enabled, unknown directives are surfaced as notes for easier triage.
+  pub strict: bool,
+}
+
+impl DirectiveParseOptions {
+  pub const STRICT_DIRECTIVES_ENV: &str = "TYPECHECK_TS_HARNESS_STRICT_DIRECTIVES";
+
+  pub fn from_env() -> Self {
+    let strict = std::env::var(Self::STRICT_DIRECTIVES_ENV)
+      .ok()
+      .and_then(|raw| parse_bool(Some(raw.as_str())))
+      .unwrap_or(false);
+    Self { strict }
+  }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct HarnessOptionsParseResult {
+  pub options: HarnessOptions,
+  pub notes: Vec<String>,
 }
 
 impl HarnessOptions {
   pub fn from_directives(directives: &[HarnessDirective]) -> HarnessOptions {
+    Self::from_directives_with_options(directives, DirectiveParseOptions::default()).options
+  }
+
+  pub fn from_directives_with_options(
+    directives: &[HarnessDirective],
+    parse_options: DirectiveParseOptions,
+  ) -> HarnessOptionsParseResult {
     let mut options = HarnessOptions::default();
+    let mut notes = Vec::new();
+
+    let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
+    let mut unknown_notes = Vec::new();
+
     for directive in directives {
       let value = directive.value.as_deref();
+      let mut recognized = true;
       match directive.name.as_str() {
-        "target" => options.target = value.map(str::to_string),
-        "module" => options.module = value.map(str::to_string),
-        "jsx" => options.jsx = value.map(str::to_string),
+        "target" => options.target = value.map(|v| normalize_scalar(v).to_string()),
+        "module" => options.module = value.map(|v| normalize_scalar(v).to_string()),
+        "jsx" => options.jsx = value.map(|v| normalize_scalar(v).to_string()),
+        "jsximportsource" => {
+          options.jsx_import_source = value.map(|v| normalize_scalar(v).to_string())
+        }
+        "baseurl" => options.base_url = value.map(|v| normalize_scalar(v).to_string()),
         "strict" => options.strict = parse_bool(value),
         "strictfunctiontypes" => options.strict_function_types = parse_bool(value),
         "noimplicitany" => options.no_implicit_any = parse_bool(value),
@@ -161,14 +221,61 @@ impl HarnessOptions {
         "noemitonerror" => options.no_emit_on_error = parse_bool(value),
         "declaration" => options.declaration = parse_bool(value),
         "moduleresolution" => {
-          options.module_resolution = value.map(|v| v.trim().to_ascii_lowercase())
+          options.module_resolution = value.map(|v| normalize_scalar(v).to_ascii_lowercase())
         }
+        "typeroots" => options.type_roots = parse_list(value),
+        "paths" => match value.and_then(|v| parse_jsonish_value(v, &mut notes)) {
+          Some(parsed) => options.paths = Some(parsed),
+          None => options.paths = None,
+        },
         "types" => options.types = parse_list(value),
-        _ => {}
+        "esmoduleinterop" => options.es_module_interop = parse_bool(value),
+        "allowsyntheticdefaultimports" => {
+          options.allow_synthetic_default_imports = parse_bool(value)
+        }
+        "resolvejsonmodule" => options.resolve_json_module = parse_bool(value),
+        "experimentaldecorators" => options.experimental_decorators = parse_bool(value),
+        "emitdecoratormetadata" => options.emit_decorator_metadata = parse_bool(value),
+        _ => {
+          recognized = false;
+        }
+      }
+
+      if recognized {
+        if directive.name != "filename" {
+          *counts.entry(directive.name.as_str()).or_insert(0) += 1;
+        }
+      } else if parse_options.strict {
+        let line = directive.line.unwrap_or(0);
+        if let Some(value) = directive.value.as_deref() {
+          unknown_notes.push(format!(
+            "unrecognized directive @{} at line {} (value: {})",
+            directive.name, line, value
+          ));
+        } else {
+          unknown_notes.push(format!(
+            "unrecognized directive @{} at line {}",
+            directive.name, line
+          ));
+        }
       }
     }
 
-    options
+    for (name, count) in counts {
+      if count > 1 {
+        notes.push(format!(
+          "duplicate @{name} directive ({count} occurrences); last one wins"
+        ));
+      }
+    }
+
+    notes.extend(tsc_only_option_notes(&options));
+    if !unknown_notes.is_empty() {
+      unknown_notes.sort();
+      notes.extend(unknown_notes);
+    }
+
+    HarnessOptionsParseResult { options, notes }
   }
 
   /// Convert parsed harness options to `typecheck-ts` compiler options.
@@ -310,6 +417,9 @@ impl HarnessOptions {
     } else if let Some(raw) = &self.jsx {
       map.insert("jsx".to_string(), Value::String(raw.clone()));
     }
+    if let Some(source) = self.jsx_import_source.as_ref() {
+      map.insert("jsxImportSource".to_string(), Value::String(source.clone()));
+    }
 
     if !self.lib.is_empty() {
       let libs: Vec<String> = if compiler.libs.is_empty() {
@@ -347,19 +457,53 @@ impl HarnessOptions {
         Value::Array(self.types.iter().cloned().map(Value::String).collect()),
       );
     }
+    if !self.type_roots.is_empty() {
+      map.insert(
+        "typeRoots".to_string(),
+        Value::Array(self.type_roots.iter().cloned().map(Value::String).collect()),
+      );
+    }
+    if let Some(base_url) = self.base_url.as_ref() {
+      map.insert("baseUrl".to_string(), Value::String(base_url.clone()));
+    }
+    if let Some(paths) = self.paths.as_ref() {
+      map.insert("paths".to_string(), paths.clone());
+    }
+    if let Some(value) = self.es_module_interop {
+      map.insert("esModuleInterop".to_string(), Value::Bool(value));
+    }
+    if let Some(value) = self.allow_synthetic_default_imports {
+      map.insert(
+        "allowSyntheticDefaultImports".to_string(),
+        Value::Bool(value),
+      );
+    }
+    if let Some(value) = self.resolve_json_module {
+      map.insert("resolveJsonModule".to_string(), Value::Bool(value));
+    }
+    if let Some(value) = self.experimental_decorators {
+      map.insert("experimentalDecorators".to_string(), Value::Bool(value));
+    }
+    if let Some(value) = self.emit_decorator_metadata {
+      map.insert("emitDecoratorMetadata".to_string(), Value::Bool(value));
+    }
 
     map
   }
 }
 
 fn parse_bool(raw: Option<&str>) -> Option<bool> {
-  match raw.map(|s| s.trim().to_ascii_lowercase()) {
+  match raw.map(|s| normalize_scalar(s).to_ascii_lowercase()) {
     None => Some(true),
     Some(value) if value.is_empty() => Some(true),
     Some(value) if matches!(value.as_str(), "true" | "1" | "yes" | "on") => Some(true),
     Some(value) if matches!(value.as_str(), "false" | "0" | "no" | "off") => Some(false),
     _ => None,
   }
+}
+
+fn normalize_scalar(raw: &str) -> &str {
+  raw.split(',').next().unwrap_or(raw).trim()
 }
 
 fn parse_list(raw: Option<&str>) -> Vec<String> {
@@ -376,7 +520,7 @@ fn parse_list(raw: Option<&str>) -> Vec<String> {
 }
 
 fn parse_script_target(raw: &str) -> Option<ScriptTarget> {
-  match raw.trim().to_ascii_lowercase().as_str() {
+  match normalize_scalar(raw).to_ascii_lowercase().as_str() {
     "es3" => Some(ScriptTarget::Es3),
     "es5" => Some(ScriptTarget::Es5),
     "es2015" => Some(ScriptTarget::Es2015),
@@ -409,7 +553,7 @@ fn script_target_str(target: ScriptTarget) -> &'static str {
 }
 
 fn parse_jsx_mode(raw: &str) -> Option<JsxMode> {
-  match raw.trim().to_ascii_lowercase().as_str() {
+  match normalize_scalar(raw).to_ascii_lowercase().as_str() {
     "preserve" => Some(JsxMode::Preserve),
     "react" => Some(JsxMode::React),
     "react-jsx" => Some(JsxMode::ReactJsx),
@@ -428,7 +572,7 @@ fn jsx_mode_str(mode: JsxMode) -> &'static str {
 }
 
 fn parse_module_kind(raw: &str) -> Option<ModuleKind> {
-  match raw.trim().to_ascii_lowercase().as_str() {
+  match normalize_scalar(raw).to_ascii_lowercase().as_str() {
     "none" => Some(ModuleKind::None),
     "commonjs" => Some(ModuleKind::CommonJs),
     "amd" => Some(ModuleKind::Amd),
@@ -442,6 +586,77 @@ fn parse_module_kind(raw: &str) -> Option<ModuleKind> {
     "nodenext" => Some(ModuleKind::NodeNext),
     _ => None,
   }
+}
+
+fn parse_jsonish_value(raw: &str, notes: &mut Vec<String>) -> Option<Value> {
+  let raw = raw.trim();
+  if raw.is_empty() {
+    return None;
+  }
+  match json5::from_str::<Value>(raw) {
+    Ok(value) => Some(value),
+    Err(err) => {
+      notes.push(format!("failed to parse JSON-ish directive value: {err}"));
+      Some(Value::String(raw.to_string()))
+    }
+  }
+}
+
+fn tsc_only_option_notes(options: &HarnessOptions) -> Vec<String> {
+  let mut notes = Vec::new();
+  if !options.type_roots.is_empty() {
+    notes.push(
+      "tsc option typeRoots is set via directives but is ignored by the Rust checker".to_string(),
+    );
+  }
+  if options.base_url.is_some() {
+    notes.push(
+      "tsc option baseUrl is set via directives but is ignored by the Rust checker".to_string(),
+    );
+  }
+  if options.paths.is_some() {
+    notes.push(
+      "tsc option paths is set via directives but is ignored by the Rust checker".to_string(),
+    );
+  }
+  if options.jsx_import_source.is_some() {
+    notes.push(
+      "tsc option jsxImportSource is set via directives but is ignored by the Rust checker"
+        .to_string(),
+    );
+  }
+  if options.es_module_interop.is_some() {
+    notes.push(
+      "tsc option esModuleInterop is set via directives but is ignored by the Rust checker"
+        .to_string(),
+    );
+  }
+  if options.allow_synthetic_default_imports.is_some() {
+    notes.push(
+      "tsc option allowSyntheticDefaultImports is set via directives but is ignored by the Rust checker"
+        .to_string(),
+    );
+  }
+  if options.resolve_json_module.is_some() {
+    notes.push(
+      "tsc option resolveJsonModule is set via directives but is ignored by the Rust checker"
+        .to_string(),
+    );
+  }
+  if options.experimental_decorators.is_some() {
+    notes.push(
+      "tsc option experimentalDecorators is set via directives but is ignored by the Rust checker"
+        .to_string(),
+    );
+  }
+  if options.emit_decorator_metadata.is_some() {
+    notes.push(
+      "tsc option emitDecoratorMetadata is set via directives but is ignored by the Rust checker"
+        .to_string(),
+    );
+  }
+  notes.sort();
+  notes
 }
 
 #[cfg(test)]
@@ -502,8 +717,17 @@ mod tests {
   #[test]
   fn duplicate_directives_last_one_wins() {
     let directives = vec![dir("module", Some("commonjs")), dir("module", Some("amd"))];
-    let options = HarnessOptions::from_directives(&directives);
-    assert_eq!(options.module.as_deref(), Some("amd"));
+    let parsed =
+      HarnessOptions::from_directives_with_options(&directives, DirectiveParseOptions::default());
+    assert_eq!(parsed.options.module.as_deref(), Some("amd"));
+    assert!(
+      parsed
+        .notes
+        .iter()
+        .any(|note| note.contains("duplicate @module directive")),
+      "expected duplicate directive note; notes={:?}",
+      parsed.notes
+    );
   }
 
   #[test]
@@ -627,5 +851,65 @@ mod tests {
     assert!(compiler.strict_function_types);
     assert!(compiler.no_implicit_any);
     assert!(!compiler.strict_null_checks);
+  }
+
+  #[test]
+  fn parses_type_roots_list() {
+    let directives = vec![dir("typeroots", Some("/types,/node_modules/@types"))];
+    let options = HarnessOptions::from_directives(&directives);
+    assert_eq!(options.type_roots, vec!["/types", "/node_modules/@types"]);
+    let tsc = options.to_tsc_options_map();
+    assert_eq!(
+      tsc
+        .get("typeRoots")
+        .and_then(|v| v.as_array())
+        .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>()),
+      Some(vec!["/types", "/node_modules/@types"])
+    );
+  }
+
+  #[test]
+  fn parses_paths_as_jsonish() {
+    let directives = vec![dir("paths", Some(r#"{ "foo/*": ["bar/*"] }"#))];
+    let options = HarnessOptions::from_directives(&directives);
+    let tsc = options.to_tsc_options_map();
+    let paths = tsc
+      .get("paths")
+      .and_then(|v| v.as_object())
+      .expect("paths should parse as object");
+    let foo = paths
+      .get("foo/*")
+      .and_then(|v| v.as_array())
+      .expect("foo array");
+    assert_eq!(
+      foo.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>(),
+      vec!["bar/*"]
+    );
+  }
+
+  #[test]
+  fn parses_case_insensitive_directive_names() {
+    let dir = parse_directive("// @EsModuleInterop: true,", 1).expect("directive");
+    assert_eq!(dir.name, "esmoduleinterop");
+    let parsed =
+      HarnessOptions::from_directives_with_options(&[dir], DirectiveParseOptions::default());
+    assert_eq!(parsed.options.es_module_interop, Some(true));
+    let tsc = parsed.options.to_tsc_options_map();
+    assert_eq!(tsc.get("esModuleInterop"), Some(&Value::Bool(true)));
+  }
+
+  #[test]
+  fn strict_directives_surfaces_unknown_directives_as_notes() {
+    let dir = parse_directive("// @unknownOption: true", 3).expect("directive");
+    let parsed =
+      HarnessOptions::from_directives_with_options(&[dir], DirectiveParseOptions { strict: true });
+    assert!(
+      parsed
+        .notes
+        .iter()
+        .any(|note| note.contains("unrecognized directive @unknownoption")),
+      "expected unknown directive note; notes={:?}",
+      parsed.notes
+    );
   }
 }
