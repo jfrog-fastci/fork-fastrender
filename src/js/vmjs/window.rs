@@ -1681,7 +1681,7 @@ mod tests {
          })()
          "#,
        )?
-     };
+    };
     assert!(matches!(got, Value::Number(n) if n == 1.0));
 
     let got = {
@@ -1700,7 +1700,7 @@ mod tests {
          })()
          "#,
        )?
-     };
+    };
     assert!(matches!(got, Value::Number(n) if n == 1.0));
 
     let got = {
@@ -2800,10 +2800,18 @@ mod tests {
       globalThis.__host_ok_cb = false;
       globalThis.__type = "";
       globalThis.__err = "";
+      globalThis.__host_ok_type = false;
       try {
         const t = new EventTarget();
-        t.addEventListener('x', (ev) => { globalThis.__host_ok_cb = recordHost(); globalThis.__type = ev.type; });
+        t.addEventListener('x', () => { globalThis.__host_ok_cb = recordHost(); });
         const e = new Event("x");
+        Object.defineProperty(e, "type", {
+          get() {
+            globalThis.__host_ok_type = recordHost();
+            globalThis.__type = "x";
+            return "x";
+          }
+        });
         t.dispatchEvent(e);
       } catch (e) {
         globalThis.__err = String(e && (e.stack || e.message) || e);
@@ -2817,6 +2825,10 @@ mod tests {
     );
     assert!(matches!(
       get_global_prop(&mut host, "__host_ok_cb"),
+      Value::Bool(true)
+    ));
+    assert!(matches!(
+      get_global_prop(&mut host, "__host_ok_type"),
       Value::Bool(true)
     ));
     assert_eq!(get_global_prop_utf8(&mut host, "__type").as_deref(), Some("x"));
