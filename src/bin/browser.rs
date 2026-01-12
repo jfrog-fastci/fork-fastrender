@@ -734,39 +734,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
   // Seed the process-global about-page snapshot so `about:newtab` can render bookmarks + history
   // immediately (including persisted state) before any new navigation commits happen.
-  {
-    use fastrender::ui::about_pages::{AboutPageSnapshot, BookmarkSnapshot};
-
-    let bookmarks_snapshot: Vec<BookmarkSnapshot> = bookmarks
-      .roots
-      .iter()
-      .filter_map(|id| match bookmarks.nodes.get(id) {
-        Some(fastrender::ui::BookmarkNode::Bookmark(entry)) => {
-          let url = entry.url.trim();
-          if url.is_empty() {
-            return None;
-          }
-          let title = entry
-            .title
-            .as_deref()
-            .map(str::trim)
-            .filter(|t| !t.is_empty())
-            .map(str::to_string);
-          Some(BookmarkSnapshot {
-            title,
-            url: url.to_string(),
-          })
-        }
-        _ => None,
-      })
-      .collect();
-
-    fastrender::ui::about_pages::set_about_page_snapshot(AboutPageSnapshot {
-      bookmarks: bookmarks_snapshot,
-      history: Vec::new(),
-    });
-    fastrender::ui::about_pages::sync_about_page_snapshot_history_from_global_history_store(&history);
-  }
+  fastrender::ui::about_pages::set_about_snapshot_from_stores(&bookmarks, &history);
 
   use winit::dpi::{LogicalSize, PhysicalPosition, PhysicalSize};
   let mut session_autosave =
@@ -3095,7 +3063,8 @@ impl App {
     let update = self.browser_state.apply_worker_msg(msg);
 
     if update.history_changed {
-      fastrender::ui::about_pages::sync_about_page_snapshot_history_from_global_history_store(
+      fastrender::ui::about_pages::set_about_snapshot_from_stores(
+        &self.bookmarks,
         &self.browser_state.history,
       );
       if let Some(autosave) = self.profile_autosave.as_ref() {
@@ -4796,32 +4765,10 @@ impl App {
   }
 
   fn sync_about_newtab_bookmarks_snapshot(&self) {
-    let mut snapshot = fastrender::ui::about_pages::about_page_snapshot();
-    snapshot.bookmarks = self
-      .bookmarks
-      .roots
-      .iter()
-      .filter_map(|id| match self.bookmarks.nodes.get(id) {
-        Some(fastrender::ui::BookmarkNode::Bookmark(entry)) => {
-          let url = entry.url.trim();
-          if url.is_empty() {
-            return None;
-          }
-          let title = entry
-            .title
-            .as_deref()
-            .map(str::trim)
-            .filter(|t| !t.is_empty())
-            .map(str::to_string);
-          Some(fastrender::ui::about_pages::BookmarkSnapshot {
-            title,
-            url: url.to_string(),
-          })
-        }
-        _ => None,
-      })
-      .collect();
-    fastrender::ui::about_pages::set_about_page_snapshot(snapshot);
+    fastrender::ui::about_pages::set_about_snapshot_from_stores(
+      &self.bookmarks,
+      &self.browser_state.history,
+    );
   }
 
   fn toggle_bookmark_for_active_tab(&mut self) {
@@ -4849,7 +4796,8 @@ impl App {
 
   fn clear_history(&mut self) {
     self.browser_state.clear_history();
-    fastrender::ui::about_pages::sync_about_page_snapshot_history_from_global_history_store(
+    fastrender::ui::about_pages::set_about_snapshot_from_stores(
+      &self.bookmarks,
       &self.browser_state.history,
     );
     self.window.request_redraw();

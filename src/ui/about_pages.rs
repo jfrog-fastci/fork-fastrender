@@ -13,7 +13,7 @@ pub const ABOUT_TEST_FORM: &str = "about:test-form";
 use std::sync::{OnceLock, RwLock};
 use std::time::SystemTime;
 
-use crate::ui::GlobalHistoryStore;
+use crate::ui::{BookmarkNode, BookmarkStore, GlobalHistoryStore};
 
 #[derive(Debug, Clone, Default)]
 pub struct AboutPageSnapshot {
@@ -61,12 +61,45 @@ pub fn set_about_page_snapshot(snapshot: AboutPageSnapshot) {
   *guard = snapshot;
 }
 
+pub fn set_about_snapshot_from_stores(bookmarks: &BookmarkStore, history: &GlobalHistoryStore) {
+  set_about_page_snapshot(AboutPageSnapshot {
+    bookmarks: bookmark_snapshots_from_store(bookmarks),
+    history: history_snapshots_from_global_history_store(history),
+  });
+}
+
 pub fn sync_about_page_snapshot_history_from_global_history_store(store: &GlobalHistoryStore) {
   let history = history_snapshots_from_global_history_store(store);
   let mut guard = about_page_snapshot_lock()
     .write()
     .unwrap_or_else(|poisoned| poisoned.into_inner());
   guard.history = history;
+}
+
+fn bookmark_snapshots_from_store(bookmarks: &BookmarkStore) -> Vec<BookmarkSnapshot> {
+  bookmarks
+    .roots
+    .iter()
+    .filter_map(|id| match bookmarks.nodes.get(id) {
+      Some(BookmarkNode::Bookmark(entry)) => {
+        let url = entry.url.trim();
+        if url.is_empty() {
+          return None;
+        }
+        let title = entry
+          .title
+          .as_deref()
+          .map(str::trim)
+          .filter(|t| !t.is_empty())
+          .map(str::to_string);
+        Some(BookmarkSnapshot {
+          title,
+          url: url.to_string(),
+        })
+      }
+      _ => None,
+    })
+    .collect()
 }
 
 fn history_snapshots_from_global_history_store(store: &GlobalHistoryStore) -> Vec<HistorySnapshot> {
