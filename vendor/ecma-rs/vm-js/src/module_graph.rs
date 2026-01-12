@@ -1522,6 +1522,17 @@ impl ModuleGraph {
     let idx = module_index(module);
     if let Some(record) = self.modules.get(idx) {
       if record.status == ModuleStatus::EvaluatingAsync {
+        if !record.has_tla {
+          return Err(VmError::InvariantViolation(
+            "module is evaluating-async but does not have top-level await",
+          ));
+        }
+
+        let Some(_state) = self.tla_states.get(idx).and_then(|s| s.as_ref()) else {
+          return Err(VmError::InvariantViolation(
+            "module is evaluating-async but has no stored TLA evaluation state",
+          ));
+        };
         let scc_root = record.cycle_root.unwrap_or(module);
         let root_idx = module_index(scc_root);
         // The spec-visible evaluation promise is cached on the SCC root's module record (the one
@@ -1532,7 +1543,7 @@ impl ModuleGraph {
           .and_then(|r| r.top_level_capability.as_ref())
         else {
           return Err(VmError::InvariantViolation(
-            "module is evaluating-async but has no stored evaluation promise roots",
+            "module is evaluating-async but has no stored evaluation promise capability",
           ));
         };
         let promise = roots
