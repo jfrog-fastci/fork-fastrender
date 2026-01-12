@@ -821,10 +821,13 @@ Implementation approach:
 - At GC time, when inspecting a suspended thread, find the record matching its
   current safepoint `pc` and interpret its `Locations[]` to enumerate roots.
 
-**Important:** the runtime must understand how to read values from DWARF
-register numbers on the target ABI (x86_64 and later aarch64). For the first
-implementation, keep register support minimal: only what LLVM emits for statepoints
-(typically stack slots via RSP/RBP + offset, plus a few callee-saved registers).
+**Important:** stackmap locations use DWARF register numbers to describe where values live at a
+safepoint.
+
+For the Milestone 1 precise GC design, `runtime-native` only supports GC roots as addressable
+`Indirect` spill slots relative to **SP** or **FP** (no `Register` / `Direct` roots). This means the
+runtime only needs to understand the target DWARF register numbers for the stack pointer and frame
+pointer to evaluate root slots.
 
 ### 5.5 Object metadata requirements (headers + shapes)
 To trace and potentially move objects, the GC needs:
