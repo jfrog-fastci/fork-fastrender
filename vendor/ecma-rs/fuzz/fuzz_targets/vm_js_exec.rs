@@ -21,13 +21,34 @@ const HEAP_GC_THRESHOLD: usize = 8 * 1024 * 1024;
 
 struct FuzzHostHooks;
 
+fn panic_on_vm_bug(err: VmError) {
+  // The fuzz harness should treat "engine bug" error variants as crashes so they are minimized and
+  // preserved as libFuzzer findings.
+  //
+  // Many other `VmError` variants represent:
+  // - expected termination (fuel/deadline/interrupt/OOM),
+  // - syntax errors,
+  // - JS exceptions,
+  // - or unimplemented features.
+  //
+  // Those are not fuzz "crashes" and are ignored by this harness.
+  match err {
+    VmError::InvariantViolation(_) | VmError::InvalidHandle { .. } | VmError::LimitExceeded(_) => {
+      panic!("vm-js bug: {err:?}");
+    }
+    _ => {}
+  }
+}
+
 impl HostHooks for FuzzHostHooks {
   fn microtask_checkpoint(&mut self, agent: &mut Agent) -> Result<(), VmError> {
     // Drain any queued Promise jobs so fuzzing covers Promise job execution paths too.
     //
     // Ignore errors here: the fuzz harness is primarily interested in panics and invariant
     // violations. VM termination/OOM are expected outcomes under tight budgets/heap limits.
-    let _ = agent.perform_microtask_checkpoint();
+    if let Err(err) = agent.perform_microtask_checkpoint() {
+      panic_on_vm_bug(err);
+    }
     Ok(())
   }
 }
@@ -75,6 +96,7 @@ fn wrapper_script(input: &str) -> String {
   s.push_str("  try { JSON.stringify({a: src, b: [src, 1, 2, 3]}); } catch (e) {}\n");
   s.push_str("  try { parseInt(src, 0); } catch (e) {}\n");
   s.push_str("  try { parseFloat(src); } catch (e) {}\n");
+  s.push_str("  try { Math.random(); } catch (e) {}\n");
 
   // String operations (keep allocations bounded).
   s.push_str("  try { (src + src).toUpperCase(); } catch (e) {}\n");
@@ -109,7 +131,9 @@ fn drain_microtasks(agent: &mut Agent) {
   // Before dropping the Agent (which drops the VM-owned microtask queue), drain it so jobs can
   // clean up their persistent roots via `Job::run`/`Job::discard`.
   let prev_budget = agent.vm_mut().swap_budget_state(make_budget());
-  let _ = agent.perform_microtask_checkpoint();
+  if let Err(err) = agent.perform_microtask_checkpoint() {
+    panic_on_vm_bug(err);
+  }
   agent.vm_mut().restore_budget_state(prev_budget);
 }
 
@@ -122,11 +146,12 @@ fuzz_target!(|data: &[u8]| {
 
   let source = String::from_utf8_lossy(data);
 
-  let interrupt_flag = Arc::new(AtomicBool::new(false));
   let mut seed_bytes = [0u8; 8];
   let seed_len = data.len().min(seed_bytes.len());
   seed_bytes[..seed_len].copy_from_slice(&data[..seed_len]);
   let math_random_seed = u64::from_le_bytes(seed_bytes);
+
+  let interrupt_flag = Arc::new(AtomicBool::new(false));
   let vm_options = VmOptions {
     max_stack_depth: 256,
     // These defaults are mostly irrelevant because we install a per-run budget in `Agent::run_script`,
@@ -136,7 +161,7 @@ fuzz_target!(|data: &[u8]| {
     check_time_every: 50,
     math_random_seed,
     interrupt_flag: Some(interrupt_flag.clone()),
-    external_interrupt_flag: None,
+    ..VmOptions::default()
   };
 
   let heap_limits = HeapLimits::new(HEAP_MAX_BYTES, HEAP_GC_THRESHOLD);
@@ -150,7 +175,9 @@ fuzz_target!(|data: &[u8]| {
   if data.first().is_some_and(|b| (b & 1) != 0) {
     interrupt_flag.store(true, Ordering::Relaxed);
   }
-  let _ = agent.run_script("<fuzz>", source.as_ref(), make_budget(), Some(&mut hooks));
+  if let Err(err) = agent.run_script("<fuzz>", source.as_ref(), make_budget(), Some(&mut hooks)) {
+    panic_on_vm_bug(err);
+  }
   drain_microtasks(&mut agent);
 
   // Clear any interrupt requested above so subsequent runs can proceed.
@@ -161,6 +188,8 @@ fuzz_target!(|data: &[u8]| {
     interrupt_flag.store(true, Ordering::Relaxed);
   }
   let wrapper = wrapper_script(source.as_ref());
-  let _ = agent.run_script("<fuzz-wrapper>", wrapper, make_budget(), Some(&mut hooks));
+  if let Err(err) = agent.run_script("<fuzz-wrapper>", wrapper, make_budget(), Some(&mut hooks)) {
+    panic_on_vm_bug(err);
+  }
   drain_microtasks(&mut agent);
-}); 
+});
