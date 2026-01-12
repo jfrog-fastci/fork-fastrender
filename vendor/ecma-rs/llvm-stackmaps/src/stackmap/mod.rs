@@ -3,6 +3,8 @@ mod loader;
 mod parser;
 mod statepoint;
 
+pub(crate) const MAX_STACKMAP_SECTION_BYTES: usize = parser::ParseOptions::DEFAULT_MAX_SECTION_BYTES;
+
 pub use format::{Callsite, Location, LocationKind, LiveOut, StackMapRecord};
 pub(crate) use format::records_semantically_equal;
 pub use loader::{stackmaps_bytes, LoadError};

@@ -8,7 +8,7 @@
 //! - It must never panic on malformed input.
 //! - It returns a structured report with best-effort diagnostics.
 
-use crate::stackmap::records_semantically_equal;
+use crate::stackmap::{records_semantically_equal, MAX_STACKMAP_SECTION_BYTES};
 use crate::{Location, LocationKind, ParseError, StackMapRecord, StackMaps, StatepointRecordView};
 
 #[derive(Debug, Clone, Copy)]
@@ -161,12 +161,18 @@ pub fn verify_stackmaps_bytes(bytes: &[u8], opts: VerifyOptions) -> Verification
 
             // Best-effort enrichment: map the byte offset back to an inferred record and callsite PC.
             if let Some(off) = failure.offset {
-                if let Ok(metas) = scan_record_offsets(bytes) {
-                    if let Some((idx, meta)) = record_meta_at_offset(&metas, off) {
-                        failure.pc = Some(meta.callsite_pc);
-                        failure.function_address = Some(meta.function_address);
-                        // Note: this record index refers to the record order within the raw stackmaps bytes.
-                        failure.record_index = Some(idx);
+                // `StackMaps::parse` refuses to handle sections above `MAX_STACKMAP_SECTION_BYTES`
+                // (hostile input hardening). The offset scanner should follow the same rule so we
+                // don't accidentally spend unbounded time/allocations trying to enrich an error for
+                // a section we won't parse anyway.
+                if bytes.len() <= MAX_STACKMAP_SECTION_BYTES {
+                    if let Ok(metas) = scan_record_offsets(bytes) {
+                        if let Some((idx, meta)) = record_meta_at_offset(&metas, off) {
+                            failure.pc = Some(meta.callsite_pc);
+                            failure.function_address = Some(meta.function_address);
+                            // Note: this record index refers to the record order within the raw stackmaps bytes.
+                            failure.record_index = Some(idx);
+                        }
                     }
                 }
             }
@@ -840,7 +846,15 @@ impl<'a> Cursor<'a> {
                 message: "align must be power of two".to_string(),
             });
         }
-        let new_pos = (self.pos + (align - 1)) & !(align - 1);
+        let add = align - 1;
+        let new_pos = self
+            .pos
+            .checked_add(add)
+            .ok_or_else(|| ParseError {
+                offset: self.pos,
+                message: "offset overflow while aligning".to_string(),
+            })?
+            & !add;
         if new_pos > self.bytes.len() {
             return Err(ParseError {
                 offset: self.pos,
@@ -858,10 +872,13 @@ impl<'a> Cursor<'a> {
 /// avoids interpreting record location kinds so it can still succeed on some malformed inputs (e.g.
 /// unknown location kinds) in order to produce best-effort diagnostics.
 fn scan_record_offsets(bytes: &[u8]) -> Result<Vec<RecordMeta>, ParseError> {
-    // Keep this in sync with the parser's `MAX_STACKMAP_SECTION_BYTES` (see
-    // `stackmap/parser.rs`). The offset scanner is only for diagnostics and should not spend
-    // unbounded time or allocate unbounded memory on arbitrary input.
-    const MAX_STACKMAP_SECTION_BYTES: usize = 64 * 1024 * 1024;
+    const STACKMAP_VERSION: u8 = 3;
+    const STACKMAP_V3_HEADER_SIZE: usize = 16;
+    const FUNCTION_ENTRY_SIZE: usize = 24;
+    const CONSTANT_ENTRY_SIZE: usize = 8;
+    const LOCATION_ENTRY_SIZE: usize = 12;
+    const LIVEOUT_ENTRY_SIZE: usize = 4;
+
     if bytes.len() > MAX_STACKMAP_SECTION_BYTES {
         return Err(ParseError {
             offset: 0,
@@ -871,13 +888,6 @@ fn scan_record_offsets(bytes: &[u8]) -> Result<Vec<RecordMeta>, ParseError> {
             ),
         });
     }
-
-    const STACKMAP_VERSION: u8 = 3;
-    const STACKMAP_V3_HEADER_SIZE: usize = 16;
-    const FUNCTION_ENTRY_SIZE: usize = 24;
-    const CONSTANT_ENTRY_SIZE: usize = 8;
-    const LOCATION_ENTRY_SIZE: usize = 12;
-    const LIVEOUT_ENTRY_SIZE: usize = 4;
 
     let mut out: Vec<RecordMeta> = Vec::new();
     let mut off: usize = 0;
@@ -955,10 +965,10 @@ fn scan_record_offsets(bytes: &[u8]) -> Result<Vec<RecordMeta>, ParseError> {
         }
         let mut functions: Vec<(u64, u64)> = Vec::new();
         functions
-            .try_reserve(num_functions_usize)
-            .map_err(|_| ParseError {
+            .try_reserve_exact(num_functions_usize)
+            .map_err(|e| ParseError {
                 offset: off + c.pos(),
-                message: format!("functions table allocation failed (len={num_functions_usize})"),
+                message: format!("failed to reserve space for functions table ({num_functions_usize} entries): {e}"),
             })?;
         for _ in 0..num_functions_usize {
             let address = c.read_u64()?;
@@ -983,9 +993,11 @@ fn scan_record_offsets(bytes: &[u8]) -> Result<Vec<RecordMeta>, ParseError> {
                 ),
             });
         }
-        out.try_reserve(num_records_usize).map_err(|_| ParseError {
+        out.try_reserve_exact(num_records_usize).map_err(|e| ParseError {
             offset: off + c.pos(),
-            message: format!("record metadata allocation failed (len={num_records_usize})"),
+            message: format!(
+                "failed to reserve space for record metadata ({num_records_usize} records): {e}"
+            ),
         })?;
 
         // Constants.
