@@ -298,6 +298,7 @@ pub struct Vm {
   module_tla_on_fulfilled_call: Option<NativeFunctionId>,
   module_tla_on_rejected_call: Option<NativeFunctionId>,
   module_tla_init_default_export_on_fulfilled_call: Option<NativeFunctionId>,
+  module_tla_throw_on_fulfilled_call: Option<NativeFunctionId>,
   dynamic_import_eval_on_fulfilled_call: Option<NativeFunctionId>,
   dynamic_import_eval_on_rejected_call: Option<NativeFunctionId>,
   module_namespace_getter_call: Option<NativeFunctionId>,
@@ -545,6 +546,7 @@ impl Vm {
       module_tla_on_fulfilled_call: None,
       module_tla_on_rejected_call: None,
       module_tla_init_default_export_on_fulfilled_call: None,
+      module_tla_throw_on_fulfilled_call: None,
       dynamic_import_eval_on_fulfilled_call: None,
       dynamic_import_eval_on_rejected_call: None,
       module_namespace_getter_call: None,
@@ -660,6 +662,15 @@ impl Vm {
     let id =
       self.register_native_call(crate::exec::module_tla_init_default_export_on_fulfilled)?;
     self.module_tla_init_default_export_on_fulfilled_call = Some(id);
+    Ok(id)
+  }
+
+  pub(crate) fn module_tla_throw_on_fulfilled_call_id(&mut self) -> Result<NativeFunctionId, VmError> {
+    if let Some(id) = self.module_tla_throw_on_fulfilled_call {
+      return Ok(id);
+    }
+    let id = self.register_native_call(crate::exec::module_tla_throw_on_fulfilled)?;
+    self.module_tla_throw_on_fulfilled_call = Some(id);
     Ok(id)
   }
 

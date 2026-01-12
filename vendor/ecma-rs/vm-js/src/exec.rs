@@ -20721,6 +20721,22 @@ pub(crate) fn module_tla_init_default_export_on_fulfilled(
   Ok(Value::Undefined)
 }
 
+pub(crate) fn module_tla_throw_on_fulfilled(
+  _vm: &mut Vm,
+  _scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  // Fulfillment of `throw await <expr>` throws the awaited value. This lets the module evaluation
+  // machinery (which already treats rejected awaited promises as fatal) reuse the same path by
+  // converting fulfillment into rejection.
+  let value = args.get(0).copied().unwrap_or(Value::Undefined);
+  Err(VmError::Throw(value))
+}
+
 /// Result of executing a module statement list until a supported top-level `await` boundary.
 ///
 /// This is used to model a minimal subset of top-level await by executing a module in "chunks"
@@ -20743,6 +20759,7 @@ pub(crate) enum ModuleTlaStepResult {
 /// - Only the following forms are treated as suspension points:
 ///   - `await <expr>;`
 ///   - `export default await <expr>;`
+///   - `throw await <expr>;`
 /// - Other uses of `await` (e.g. in variable initializers) remain unimplemented.
 pub(crate) fn run_module_until_await(
   vm: &mut Vm,
@@ -20911,6 +20928,66 @@ pub(crate) fn run_module_until_await(
                 1,
                 Some(module_env),
               )?;
+              promise_scope.push_root(Value::Object(on_fulfilled))?;
+              promise_scope
+                .heap_mut()
+                .object_set_prototype(on_fulfilled, Some(intr.function_prototype()))?;
+              promise_scope
+                .heap_mut()
+                .set_function_realm(on_fulfilled, global_object)?;
+              if let Some(realm) = job_realm {
+                promise_scope
+                  .heap_mut()
+                  .set_function_job_realm(on_fulfilled, realm)?;
+              }
+
+              let promise = crate::promise_ops::perform_promise_then_with_host_and_hooks(
+                &mut *vm_frame,
+                &mut promise_scope,
+                host,
+                hooks,
+                awaited_promise,
+                Some(Value::Object(on_fulfilled)),
+                None,
+              )?;
+              return Ok(ModuleTlaStepResult::Await {
+                promise,
+                resume_index: idx.saturating_add(1),
+              });
+            }
+          }
+        }
+
+        // Minimal top-level await support: suspend on `throw await <expr>;`.
+        if let Stmt::Throw(throw_stmt) = &*stmt.stx {
+          if let Expr::Unary(unary) = &*throw_stmt.stx.value.stx {
+            if unary.stx.operator == OperatorName::Await {
+              // Clean up the per-step completion root before suspending.
+              scope.heap_mut().remove_root(last_root);
+
+              // Evaluate the awaited expression (argument) and coerce it with `PromiseResolve`.
+              let awaited_value = evaluator.eval_expr(scope, &unary.stx.argument)?;
+              let intr = vm_frame
+                .intrinsics()
+                .ok_or(VmError::Unimplemented("module evaluation requires intrinsics"))?;
+              let job_realm = vm_frame.current_realm();
+
+              let mut promise_scope = scope.reborrow();
+              promise_scope.push_root(awaited_value)?;
+              let awaited_promise = crate::promise_ops::promise_resolve_with_host_and_hooks(
+                &mut *vm_frame,
+                &mut promise_scope,
+                host,
+                hooks,
+                awaited_value,
+              )?;
+              promise_scope.push_root(awaited_promise)?;
+
+              // Convert fulfillment into rejection so the module resume machinery can treat it as
+              // an abrupt completion (matching the semantics of `throw await <expr>`).
+              let call_id = vm_frame.module_tla_throw_on_fulfilled_call_id()?;
+              let name = promise_scope.alloc_string("")?;
+              let on_fulfilled = promise_scope.alloc_native_function(call_id, None, name, 1)?;
               promise_scope.push_root(Value::Object(on_fulfilled))?;
               promise_scope
                 .heap_mut()
