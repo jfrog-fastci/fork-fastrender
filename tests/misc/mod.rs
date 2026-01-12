@@ -55,7 +55,6 @@ mod integration_test;
 mod is_alias_matches_test;
 #[cfg(feature = "quickjs")]
 mod js_current_script;
-mod js_diagnostics;
 mod js_dom_exception;
 mod js_dom_integration_export;
 #[cfg(feature = "quickjs")]
