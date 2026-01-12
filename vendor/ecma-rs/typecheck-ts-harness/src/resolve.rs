@@ -6,6 +6,7 @@ use typecheck_ts::lib_support::{CompilerOptions, ModuleKind};
 use typecheck_ts::resolve::{ModuleResolutionMode, ResolveFs, ResolveOptions, Resolver};
 use typecheck_ts::FileKey;
 
+use crate::resolution_trace::ResolutionTraceMode;
 use crate::runner::HarnessFileSet;
 
 fn resolve_options_for_compiler_options(compiler_options: &CompilerOptions) -> ResolveOptions {
@@ -68,6 +69,18 @@ impl ResolveFs for HarnessResolveFs {
     let normalized = normalize_ts_path(&path.to_string_lossy());
     let key = self.files.resolve_ref(&normalized)?;
     self.files.content(key).map(|content| content.to_string())
+  }
+}
+
+pub(crate) fn harness_resolve_mode(module_resolution: Option<&str>) -> ResolutionTraceMode {
+  let normalized = module_resolution.map(|value| value.trim().to_ascii_lowercase());
+  match normalized.as_deref() {
+    None | Some("") | Some("classic") => ResolutionTraceMode::Classic,
+    Some("node") | Some("nodejs") | Some("node10") => ResolutionTraceMode::Node10,
+    Some("node16") => ResolutionTraceMode::Node16,
+    Some("nodenext") => ResolutionTraceMode::NodeNext,
+    Some("bundler") => ResolutionTraceMode::Bundler,
+    Some(_) => ResolutionTraceMode::Classic,
   }
 }
 

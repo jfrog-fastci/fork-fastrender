@@ -11,6 +11,7 @@ pub mod expectations;
 mod file_kind;
 pub mod multifile;
 pub mod profile;
+pub mod resolution_trace;
 mod resolve;
 pub mod runner;
 mod serde_helpers;

@@ -247,7 +247,7 @@ fn verify_case(
   };
 
   let deadline = Instant::now() + timeout;
-  let live = match tsc_pool.run(&file_set, &options, deadline) {
+  let live = match tsc_pool.run(&file_set, &options, deadline, false) {
     Ok(diags) => diags,
     Err(TscPoolError::Timeout) => {
       return VerifySnapshotsCaseResult {

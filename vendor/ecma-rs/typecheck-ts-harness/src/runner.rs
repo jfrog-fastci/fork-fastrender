@@ -11,6 +11,7 @@ use crate::discover::{
 use crate::expectations::{AppliedExpectation, ExpectationKind, Expectations};
 use crate::multifile::{is_normalized_virtual_path, normalize_name_into};
 use crate::profile::ProfileBuilder;
+use crate::resolution_trace::{ResolutionTraceCollector, ResolutionTraceEntry};
 use crate::resolve::{resolve_at_types_entry, resolve_module_specifier};
 use crate::tsc::{
   node_available, typescript_available, TscDiagnostics, TscKillSwitch, TscRequest, TscRunner,
@@ -292,33 +293,6 @@ pub struct EngineDiagnostics {
   pub error: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ResolutionTraceEntry {
-  pub from: String,
-  pub specifier: String,
-  #[serde(default)]
-  pub resolved: Option<String>,
-}
-
-#[derive(Clone, Debug, Default)]
-pub(crate) struct ResolutionTraceHandle {
-  inner: Arc<Mutex<Vec<ResolutionTraceEntry>>>,
-}
-
-impl ResolutionTraceHandle {
-  fn push(&self, entry: ResolutionTraceEntry) {
-    self.inner.lock().unwrap().push(entry);
-  }
-
-  pub(crate) fn sorted(&self) -> Vec<ResolutionTraceEntry> {
-    let mut entries = self.inner.lock().unwrap().clone();
-    entries.sort_by(|a, b| {
-      (&a.from, &a.specifier, &a.resolved).cmp(&(&b.from, &b.specifier, &b.resolved))
-    });
-    entries
-  }
-}
-
 impl EngineDiagnostics {
   fn ok(mut diagnostics: Vec<NormalizedDiagnostic>) -> Self {
     sort_diagnostics(&mut diagnostics);
@@ -389,7 +363,7 @@ pub struct TestResult {
   #[serde(default, skip_serializing_if = "Option::is_none")]
   pub rust_resolution_trace: Option<Vec<ResolutionTraceEntry>>,
   #[serde(default, skip_serializing_if = "Option::is_none")]
-  pub tsc_resolution_trace: Option<Vec<String>>,
+  pub tsc_resolution_trace: Option<Vec<ResolutionTraceEntry>>,
   #[serde(default, skip_serializing_if = "Vec::is_empty")]
   pub notes: Vec<String>,
   #[serde(skip_serializing_if = "Option::is_none")]
@@ -1156,10 +1130,7 @@ fn execute_case(
       HarnessHost::new_with_resolution_trace(file_set.clone(), compiler_options.clone(), type_roots);
     (host, Some(trace))
   } else {
-    (
-      HarnessHost::new(file_set.clone(), compiler_options.clone(), type_roots),
-      None,
-    )
+    (HarnessHost::new(file_set.clone(), compiler_options.clone(), type_roots), None)
   };
   let roots = file_set.root_keys();
   let program = Arc::new(Program::new(host, roots));
@@ -1178,10 +1149,7 @@ fn execute_case(
   if Instant::now() >= deadline {
     return build_timeout_result(id, path, harness_options, notes, timeout);
   }
-  let mut tsc_options = harness_options.to_tsc_options_map();
-  if trace_resolution {
-    tsc_options.insert("traceResolution".to_string(), Value::Bool(true));
-  }
+  let tsc_options = harness_options.to_tsc_options_map();
 
   let mut tsc_raw: Option<TscDiagnostics> = None;
   let mut tsc_ms: Option<u128> = None;
@@ -1200,7 +1168,7 @@ fn execute_case(
     };
 
     let tsc_start = Instant::now();
-    match run_tsc_with_raw(tsc_pool, &file_set, &tsc_options, deadline) {
+    match run_tsc_with_raw(tsc_pool, &file_set, &tsc_options, deadline, trace_resolution) {
       TscRunResult::Completed { diagnostics, raw } => {
         tsc_ms = Some(tsc_start.elapsed().as_millis());
         diff_start = Instant::now();
@@ -1259,8 +1227,8 @@ fn execute_case(
   let rust_resolution_trace = trace_resolution.then(|| {
     rust_trace
       .as_ref()
-      .expect("trace handle should exist when trace_resolution is enabled")
-      .sorted()
+      .map(|trace| trace.snapshot())
+      .unwrap_or_default()
   });
   let tsc_resolution_trace = trace_resolution.then(|| {
     tsc_raw
@@ -1414,8 +1382,9 @@ fn run_tsc_with_raw(
   file_set: &HarnessFileSet,
   options: &Map<String, Value>,
   deadline: Instant,
+  trace_resolution: bool,
 ) -> TscRunResult {
-  match pool.run(file_set, options, deadline) {
+  match pool.run(file_set, options, deadline, trace_resolution) {
     Ok(diags) => match &diags.crash {
       Some(crash) => TscRunResult::Completed {
         diagnostics: EngineDiagnostics::crashed(crash.message.clone()),
@@ -1744,7 +1713,7 @@ pub(crate) struct HarnessHost {
   files: HarnessFileSet,
   compiler_options: CompilerOptions,
   type_roots: Vec<String>,
-  resolution_trace: Option<ResolutionTraceHandle>,
+  resolution_trace: Option<Arc<ResolutionTraceCollector>>,
 }
 
 impl HarnessHost {
@@ -1765,15 +1734,31 @@ impl HarnessHost {
     files: HarnessFileSet,
     compiler_options: CompilerOptions,
     type_roots: Vec<String>,
-  ) -> (Self, ResolutionTraceHandle) {
-    let trace = ResolutionTraceHandle::default();
-    let host = Self {
+  ) -> (Self, Arc<ResolutionTraceCollector>) {
+    let trace = Arc::new(ResolutionTraceCollector::default());
+    (
+      Self::with_resolution_trace(
+        files,
+        compiler_options,
+        type_roots,
+        Arc::clone(&trace),
+      ),
+      trace,
+    )
+  }
+
+  pub(crate) fn with_resolution_trace(
+    files: HarnessFileSet,
+    compiler_options: CompilerOptions,
+    type_roots: Vec<String>,
+    resolution_trace: Arc<ResolutionTraceCollector>,
+  ) -> Self {
+    Self {
       files,
       compiler_options,
       type_roots,
-      resolution_trace: Some(trace.clone()),
-    };
-    (host, trace)
+      resolution_trace: Some(resolution_trace),
+    }
   }
 }
 
@@ -1808,11 +1793,13 @@ impl Host for HarnessHost {
       resolved
     };
     if let Some(trace) = self.resolution_trace.as_ref() {
-      trace.push(ResolutionTraceEntry {
-        from: from.as_str().to_string(),
-        specifier: specifier.to_string(),
-        resolved: resolved.as_ref().map(|key| key.as_str().to_string()),
-      });
+      trace.record(
+        from.as_str(),
+        specifier,
+        resolved.as_ref().map(|key| key.as_str()),
+        None,
+        crate::resolve::harness_resolve_mode(self.compiler_options.module_resolution.as_deref()),
+      );
     }
     resolved
   }
@@ -1833,10 +1820,11 @@ fn print_resolution_traces_for_mismatches(results: &[TestResult]) {
       }
     }
     if let Some(trace) = &result.tsc_resolution_trace {
-      if !trace.is_empty() {
-        eprintln!("tsc --traceResolution output:");
-        for line in trace {
-          eprintln!("  {line}");
+      eprintln!("tsc resolve trace:");
+      for entry in trace {
+        match &entry.resolved {
+          Some(resolved) => eprintln!("  {} + {:?} -> {}", entry.from, entry.specifier, resolved),
+          None => eprintln!("  {} + {:?} -> <unresolved>", entry.from, entry.specifier),
         }
       }
     }
@@ -1900,8 +1888,9 @@ impl TscRunnerPool {
     file_set: &HarnessFileSet,
     options: &Map<String, Value>,
     deadline: Instant,
+    trace_resolution: bool,
   ) -> std::result::Result<TscDiagnostics, TscPoolError> {
-    let request = build_tsc_request(file_set, options, true);
+    let request = build_tsc_request(file_set, options, true, trace_resolution);
     self.run_request(request, deadline)
   }
 
@@ -2120,6 +2109,7 @@ pub(crate) fn build_tsc_request(
   file_set: &HarnessFileSet,
   options: &Map<String, Value>,
   diagnostics_only: bool,
+  trace_resolution: bool,
 ) -> TscRequest {
   let mut files = HashMap::with_capacity(file_set.inner.files.len());
 
@@ -2144,6 +2134,7 @@ pub(crate) fn build_tsc_request(
     files,
     options,
     diagnostics_only,
+    trace_resolution,
     type_queries: Vec::new(),
   }
 }
@@ -2685,6 +2676,131 @@ mod tests {
   }
 
   #[test]
+  fn resolution_trace_is_deterministic_and_does_not_affect_outputs() {
+    let files = vec![
+      VirtualFile {
+        name: "/a.ts".to_string(),
+        content: "import { b } from \"./b\";\nexport const a = b;\n".into(),
+      },
+      VirtualFile {
+        name: "/b.ts".to_string(),
+        content: "import { c } from \"./c\";\nexport const b = c;\n".into(),
+      },
+      VirtualFile {
+        name: "/c.ts".to_string(),
+        content: "export const c = 1;\n".into(),
+      },
+    ];
+    let file_set = HarnessFileSet::new(&files);
+    let roots = file_set.root_keys();
+
+    let mut compiler_options = CompilerOptions::default();
+    compiler_options.no_default_lib = true;
+    let expected_mode =
+      crate::resolve::harness_resolve_mode(compiler_options.module_resolution.as_deref());
+
+    let host_no_trace = HarnessHost::new(file_set.clone(), compiler_options.clone(), Vec::new());
+    let program_no_trace = Program::new(host_no_trace, roots.clone());
+    let diags_no_trace = program_no_trace.check();
+
+    let a_file_no_trace = program_no_trace
+      .file_id(&FileKey::new("/a.ts"))
+      .expect("/a.ts file id");
+    let exports_no_trace = program_no_trace.exports_of(a_file_no_trace);
+
+    let trace = Arc::new(ResolutionTraceCollector::default());
+    let host_trace =
+      HarnessHost::with_resolution_trace(file_set.clone(), compiler_options, Vec::new(), Arc::clone(&trace));
+    let program_trace = Program::new(host_trace, roots);
+    let diags_trace = program_trace.check();
+
+    let a_file_trace = program_trace
+      .file_id(&FileKey::new("/a.ts"))
+      .expect("/a.ts file id");
+    let exports_trace = program_trace.exports_of(a_file_trace);
+
+    let mut normalized_no_trace = normalize_rust_diagnostics(&diags_no_trace, |id| {
+      program_no_trace
+        .file_key(id)
+        .map(|key| key.as_str().to_string())
+    });
+    let mut normalized_trace = normalize_rust_diagnostics(&diags_trace, |id| {
+      program_trace
+        .file_key(id)
+        .map(|key| key.as_str().to_string())
+    });
+    sort_diagnostics(&mut normalized_no_trace);
+    sort_diagnostics(&mut normalized_trace);
+    assert_eq!(
+      normalized_no_trace, normalized_trace,
+      "expected trace mode to not affect diagnostics"
+    );
+    assert_eq!(
+      exports_no_trace, exports_trace,
+      "expected trace mode to not affect export/type facts"
+    );
+
+    let trace_entries = trace.snapshot();
+    assert!(
+      !trace_entries.is_empty(),
+      "expected trace to record at least one resolution"
+    );
+
+    // Snapshot output should be deterministic and grouped. We avoid asserting an
+    // exact count because internal checker behavior can legitimately change
+    // (e.g. resolving modules more than once), but the grouped ordering must
+    // remain stable for diff-friendly JSON output.
+    let mut prev: Option<(&str, &str)> = None;
+    for entry in &trace_entries {
+      let key = (entry.from.as_str(), entry.specifier.as_str());
+      if let Some(prev_key) = prev {
+        assert!(
+          prev_key <= key,
+          "expected snapshot to be sorted/grouped, but saw {:?} then {:?}",
+          prev_key,
+          key
+        );
+      }
+      prev = Some(key);
+      assert_eq!(
+        entry.mode,
+        expected_mode,
+        "expected trace to record the harness module resolution mode"
+      );
+    }
+
+    let mut unique: Vec<ResolutionTraceEntry> = Vec::new();
+    for entry in &trace_entries {
+      if unique.last().is_none()
+        || unique.last().unwrap().from != entry.from
+        || unique.last().unwrap().specifier != entry.specifier
+      {
+        unique.push(entry.clone());
+      }
+    }
+    assert_eq!(
+      unique,
+      vec![
+        ResolutionTraceEntry {
+          from: "/a.ts".to_string(),
+          specifier: "./b".to_string(),
+          resolved: Some("/b.ts".to_string()),
+          kind: None,
+          mode: expected_mode,
+        },
+        ResolutionTraceEntry {
+          from: "/b.ts".to_string(),
+          specifier: "./c".to_string(),
+          resolved: Some("/c.ts".to_string()),
+          kind: None,
+          mode: expected_mode,
+        },
+      ],
+      "expected trace to include grouped entries for each import"
+    );
+  }
+
+  #[test]
   fn build_tsc_request_does_not_inject_triple_slash_directives_into_compiler_options() {
     let files = vec![VirtualFile {
       name: "main.ts".to_string(),
@@ -2693,7 +2809,7 @@ mod tests {
     let file_set = HarnessFileSet::new(&files);
     let options = HarnessOptions::default().to_tsc_options_map();
 
-    let request = build_tsc_request(&file_set, &options, true);
+    let request = build_tsc_request(&file_set, &options, true, false);
     assert!(
       !request.options.contains_key("types"),
       "build_tsc_request should not translate triple-slash directives into compiler options"
@@ -3271,9 +3387,9 @@ mod tests {
           category: None,
           message: None,
         }],
-        resolution_trace: None,
         crash: None,
         type_facts: None,
+        resolution_trace: None,
       };
       let json = serde_json::to_string(&payload).unwrap();
       std::fs::write(legacy_path, json).unwrap();
@@ -3412,7 +3528,7 @@ echo '{"diagnostics":[]}'
     let options = Map::new();
 
     let first_deadline = Instant::now() + Duration::from_millis(200);
-    let first = pool.run(&file_set, &options, first_deadline);
+    let first = pool.run(&file_set, &options, first_deadline, false);
     assert!(matches!(first, Err(TscPoolError::Timeout)));
     assert!(
       state_path.exists(),
@@ -3420,7 +3536,7 @@ echo '{"diagnostics":[]}'
     );
 
     let second_deadline = Instant::now() + Duration::from_secs(1);
-    let second = pool.run(&file_set, &options, second_deadline);
+    let second = pool.run(&file_set, &options, second_deadline, false);
     assert!(second.is_ok(), "expected runner to recover: {second:?}");
   }
 

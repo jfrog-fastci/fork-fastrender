@@ -107,7 +107,7 @@ enum Commands {
     #[arg(long)]
     trace: bool,
 
-    /// Capture module resolution traces from both tsc (`--traceResolution`) and the Rust host resolver.
+    /// Record module resolution traces for both Rust and tsc runs.
     #[arg(long)]
     trace_resolution: bool,
 

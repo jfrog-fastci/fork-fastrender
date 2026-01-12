@@ -27,6 +27,7 @@ fn diagnostics_report_utf8_byte_offsets() {
     files,
     options: Map::new(),
     diagnostics_only: true,
+    trace_resolution: false,
     type_queries: Vec::new(),
   };
 
@@ -60,6 +61,7 @@ fn auto_scanned_type_queries_use_utf8_byte_offsets() {
     files,
     options: Map::new(),
     diagnostics_only: false,
+    trace_resolution: false,
     type_queries: Vec::new(),
   };
 
@@ -92,6 +94,7 @@ fn provided_type_queries_convert_utf8_offsets_for_typescript() {
     files,
     options: Map::new(),
     diagnostics_only: false,
+    trace_resolution: false,
     type_queries: vec![TypeQuery {
       file: "main.ts".to_string(),
       offset: expected_offset as u32,

@@ -248,6 +248,269 @@ function collectTypeQueries(files) {
 const TYPE_FORMAT_FLAGS =
   ts.TypeFormatFlags.NoTruncation | ts.TypeFormatFlags.WriteArrowStyleSignature;
 
+function moduleResolutionKindToString(kind) {
+  if (kind === undefined || kind === null) {
+    return "node10";
+  }
+  if (kind === ts.ModuleResolutionKind.Classic) {
+    return "classic";
+  }
+  // `NodeJs` was renamed to `Node10` but is still present in older versions.
+  if (
+    kind === ts.ModuleResolutionKind.Node10 ||
+    kind === ts.ModuleResolutionKind.NodeJs
+  ) {
+    return "node10";
+  }
+  if (kind === ts.ModuleResolutionKind.Node16) {
+    return "node16";
+  }
+  if (kind === ts.ModuleResolutionKind.NodeNext) {
+    return "nodenext";
+  }
+  if (kind === ts.ModuleResolutionKind.Bundler) {
+    return "bundler";
+  }
+  return "node10";
+}
+
+function moduleResolutionModeString(options) {
+  // TypeScript does not always materialize defaults into the plain `options`
+  // object, so prefer querying the helper when available.
+  let kind = options?.moduleResolution;
+  if (
+    (kind === undefined || kind === null) &&
+    typeof ts.getEmitModuleResolutionKind === "function"
+  ) {
+    try {
+      kind = ts.getEmitModuleResolutionKind(options);
+    } catch {
+      // ignore
+    }
+  }
+  if (
+    (kind === undefined || kind === null) &&
+    options?.module === ts.ModuleKind.Node16
+  ) {
+    kind = ts.ModuleResolutionKind.Node16;
+  }
+  if (
+    (kind === undefined || kind === null) &&
+    options?.module === ts.ModuleKind.NodeNext
+  ) {
+    kind = ts.ModuleResolutionKind.NodeNext;
+  }
+  return moduleResolutionKindToString(kind);
+}
+
+function createResolutionTraceCollector(mode) {
+  return { mode, byFrom: new Map() };
+}
+
+function recordResolutionTrace(collector, entry) {
+  const from = entry.from;
+  const specifier = entry.specifier;
+  let bySpecifier = collector.byFrom.get(from);
+  if (!bySpecifier) {
+    bySpecifier = new Map();
+    collector.byFrom.set(from, bySpecifier);
+  }
+  let list = bySpecifier.get(specifier);
+  if (!list) {
+    list = [];
+    bySpecifier.set(specifier, list);
+  }
+  list.push(entry);
+}
+
+function finalizeResolutionTrace(collector) {
+  const out = [];
+  const fromKeys = Array.from(collector.byFrom.keys()).sort();
+  for (const from of fromKeys) {
+    const bySpecifier = collector.byFrom.get(from);
+    const specKeys = Array.from(bySpecifier.keys()).sort();
+    for (const specifier of specKeys) {
+      const entries = bySpecifier.get(specifier) || [];
+      for (const entry of entries) {
+        out.push(entry);
+      }
+    }
+  }
+  return out;
+}
+
+function installResolutionTracing(host, options, collector) {
+  const mode = collector.mode;
+
+  const originalResolveModuleNameLiterals = host.resolveModuleNameLiterals
+    ? host.resolveModuleNameLiterals.bind(host)
+    : null;
+  if (originalResolveModuleNameLiterals) {
+    host.resolveModuleNameLiterals = (
+      moduleLiterals,
+      containingFile,
+      redirectedReference,
+      compilerOptions,
+      containingSourceFile,
+      reusedNames,
+    ) => {
+      const results = originalResolveModuleNameLiterals(
+        moduleLiterals,
+        containingFile,
+        redirectedReference,
+        compilerOptions,
+        containingSourceFile,
+        reusedNames,
+      );
+      for (let i = 0; i < moduleLiterals.length; i++) {
+        const literal = moduleLiterals[i];
+        const specifier =
+          literal && typeof literal.text === "string" ? literal.text : String(literal);
+        const resolved = results?.[i]?.resolvedModule?.resolvedFileName ?? null;
+        let kind = null;
+        if (
+          containingSourceFile &&
+          typeof ts.getModeForResolutionAtIndex === "function"
+        ) {
+          try {
+            const resolutionMode = ts.getModeForResolutionAtIndex(
+              containingSourceFile,
+              i,
+              compilerOptions ?? options,
+            );
+            if (resolutionMode === ts.ModuleKind.CommonJS) {
+              kind = "require";
+            } else if (resolutionMode != null) {
+              kind = "import";
+            }
+          } catch {
+            // ignore
+          }
+        }
+        recordResolutionTrace(collector, {
+          from: normalizePath(containingFile),
+          specifier,
+          resolved: resolved ? normalizePath(resolved) : null,
+          kind,
+          mode,
+        });
+      }
+      return results;
+    };
+  }
+
+  const originalResolveModuleNames = host.resolveModuleNames
+    ? host.resolveModuleNames.bind(host)
+    : null;
+  if (originalResolveModuleNames) {
+    host.resolveModuleNames = (
+      moduleNames,
+      containingFile,
+      reusedNames,
+      redirectedReference,
+      compilerOptions,
+      containingSourceFile,
+    ) => {
+      const results = originalResolveModuleNames(
+        moduleNames,
+        containingFile,
+        reusedNames,
+        redirectedReference,
+        compilerOptions,
+        containingSourceFile,
+      );
+      for (let i = 0; i < moduleNames.length; i++) {
+        const specifier = moduleNames[i];
+        const resolved = results?.[i]?.resolvedFileName ?? null;
+        recordResolutionTrace(collector, {
+          from: normalizePath(containingFile),
+          specifier,
+          resolved: resolved ? normalizePath(resolved) : null,
+          kind: null,
+          mode,
+        });
+      }
+      return results;
+    };
+  }
+
+  const originalResolveTypeReferenceDirectives = host.resolveTypeReferenceDirectives
+    ? host.resolveTypeReferenceDirectives.bind(host)
+    : null;
+  if (originalResolveTypeReferenceDirectives) {
+    host.resolveTypeReferenceDirectives = (
+      typeDirectiveNames,
+      containingFile,
+      redirectedReference,
+      compilerOptions,
+    ) => {
+      const results = originalResolveTypeReferenceDirectives(
+        typeDirectiveNames,
+        containingFile,
+        redirectedReference,
+        compilerOptions,
+      );
+      for (let i = 0; i < typeDirectiveNames.length; i++) {
+        const specifier = typeDirectiveNames[i];
+        const resolved = results?.[i]?.resolvedFileName ?? null;
+        recordResolutionTrace(collector, {
+          from: normalizePath(containingFile),
+          specifier,
+          resolved: resolved ? normalizePath(resolved) : null,
+          kind: null,
+          mode,
+        });
+      }
+      return results;
+    };
+  }
+
+  const originalResolveTypeReferenceDirectiveReferences =
+    host.resolveTypeReferenceDirectiveReferences
+      ? host.resolveTypeReferenceDirectiveReferences.bind(host)
+      : null;
+  if (originalResolveTypeReferenceDirectiveReferences) {
+    host.resolveTypeReferenceDirectiveReferences = (
+      typeDirectiveReferences,
+      containingFile,
+      redirectedReference,
+      compilerOptions,
+      containingSourceFile,
+      reusedNames,
+    ) => {
+      const results = originalResolveTypeReferenceDirectiveReferences(
+        typeDirectiveReferences,
+        containingFile,
+        redirectedReference,
+        compilerOptions,
+        containingSourceFile,
+        reusedNames,
+      );
+      for (let i = 0; i < typeDirectiveReferences.length; i++) {
+        const ref = typeDirectiveReferences[i];
+        const specifier =
+          ref && typeof ref.fileName === "string"
+            ? ref.fileName
+            : ref && typeof ref.text === "string"
+              ? ref.text
+              : String(ref);
+        const resolved =
+          results?.[i]?.resolvedTypeReferenceDirective?.resolvedFileName ??
+          results?.[i]?.resolvedFileName ??
+          null;
+        recordResolutionTrace(collector, {
+          from: normalizePath(containingFile),
+          specifier,
+          resolved: resolved ? normalizePath(resolved) : null,
+          kind: null,
+          mode,
+        });
+      }
+      return results;
+    };
+  }
+}
+
 function renderType(checker, type, context) {
   return checker.typeToString(type, context, TYPE_FORMAT_FLAGS).trim();
 }
@@ -513,15 +776,30 @@ function runRequest(request) {
   const { options, errors: optionErrors } = parseOptions(request.options);
   const rootNames = (request.rootNames ?? []).map(toAbsolute);
   const host = createInMemoryHost(request.files ?? {}, options);
+
+  // Harness-level structured resolution tracing. This is opt-in to avoid slowing
+  // down normal runs.
+  const traceResolutionRequest =
+    request.traceResolution === true || request.trace_resolution === true;
+  const resolutionTraceCollector = traceResolutionRequest
+    ? createResolutionTraceCollector(moduleResolutionModeString(options))
+    : null;
+  if (resolutionTraceCollector) {
+    installResolutionTracing(host, options, resolutionTraceCollector);
+  }
+
   const diagnosticsOnly = request.diagnosticsOnly === true || request.diagnostics_only === true;
-  const traceResolution = options.traceResolution === true;
+  // TypeScript also supports a `traceResolution` compiler option which emits a
+  // verbose text trace. When enabled via compiler options, capture that output
+  // (primarily useful for debugging).
+  const traceResolutionOption = options.traceResolution === true;
 
   let program;
   let diagnostics;
   let typeFacts = null;
-  let resolutionTrace = null;
+  let traceResolutionLog = null;
 
-  if (traceResolution) {
+  if (traceResolutionOption) {
     const trace = createTraceCollector();
     const originalSysWrite = ts.sys.write;
     const originalHostTrace = host.trace;
@@ -559,7 +837,7 @@ function runRequest(request) {
       }
     } finally {
       trace.finalize();
-      resolutionTrace = trace.lines;
+      traceResolutionLog = trace.lines;
       ts.sys.write = originalSysWrite;
       host.trace = originalHostTrace;
       console.log = originalConsoleLog;
@@ -595,11 +873,14 @@ function runRequest(request) {
     },
     diagnostics: serializeDiagnostics(diagnostics),
   };
-  if (traceResolution) {
-    response.resolutionTrace = resolutionTrace ?? [];
+  if (traceResolutionOption) {
+    response.traceResolutionLog = traceResolutionLog ?? [];
   }
   if (typeFacts) {
     response.type_facts = typeFacts;
+  }
+  if (resolutionTraceCollector) {
+    response.resolutionTrace = finalizeResolutionTrace(resolutionTraceCollector);
   }
   return response;
 }

@@ -9,9 +9,10 @@ use crate::directives::{
 use crate::expectations::{AppliedExpectation, ExpectationKind, Expectations};
 use crate::multifile::{is_normalized_virtual_path, normalize_name_cow, normalize_name_into};
 use crate::read_utf8_file;
+use crate::resolution_trace::ResolutionTraceEntry;
 use crate::runner::{
   build_tsc_request, is_source_root, EngineDiagnostics, EngineStatus, ExpectationOutcome,
-  HarnessFileSet, HarnessHost, ResolutionTraceEntry, TimeoutManager, TscPoolError, TscRunnerPool,
+  HarnessFileSet, HarnessHost, TimeoutManager, TscPoolError, TscRunnerPool,
 };
 use crate::tsc::{
   node_available, ExportTypeFact, TscDiagnostics, TypeAtFact, TypeFacts, TypeQuery,
@@ -87,7 +88,7 @@ pub struct DifftscArgs {
   #[arg(long)]
   pub print_tsc: bool,
 
-  /// Capture module resolution traces from both tsc (`--traceResolution`) and the Rust host resolver.
+  /// Record module resolution traces for both Rust and tsc runs.
   #[arg(long)]
   pub trace_resolution: bool,
 
@@ -285,7 +286,7 @@ struct CaseReport {
   #[serde(default, skip_serializing_if = "Option::is_none")]
   rust_resolution_trace: Option<Vec<ResolutionTraceEntry>>,
   #[serde(default, skip_serializing_if = "Option::is_none")]
-  tsc_resolution_trace: Option<Vec<String>>,
+  tsc_resolution_trace: Option<Vec<ResolutionTraceEntry>>,
   #[serde(skip_serializing_if = "Option::is_none")]
   expected: Option<Vec<NormalizedDiagnostic>>,
   #[serde(skip_serializing_if = "Option::is_none")]
@@ -667,9 +668,14 @@ fn print_human_summary(
       }
       if let Some(trace) = &case.tsc_resolution_trace {
         if !trace.is_empty() {
-          eprintln!("  tsc --traceResolution output:");
-          for line in trace {
-            eprintln!("    {line}");
+          eprintln!("  tsc resolve trace:");
+          for entry in trace {
+            match &entry.resolved {
+              Some(resolved) => {
+                eprintln!("    {} + {:?} -> {}", entry.from, entry.specifier, resolved)
+              }
+              None => eprintln!("    {} + {:?} -> <unresolved>", entry.from, entry.specifier),
+            }
           }
         }
       }
@@ -731,10 +737,7 @@ fn run_single_test(
   if let Some(note) = harness_options.directives.ignored_directives_note() {
     notes.push(note);
   }
-  let mut tsc_options = harness_options.to_tsc_options_map();
-  if args.trace_resolution {
-    tsc_options.insert("traceResolution".to_string(), Value::Bool(true));
-  }
+  let tsc_options = harness_options.to_tsc_options_map();
   let file_set = HarnessFileSet::new(&test.files);
 
   if args.fail_on_unknown_directives && harness_options.directives.has_unknown() {
@@ -801,14 +804,14 @@ fn run_single_test(
         actual: None,
         diff: None,
         expected_types: None,
-        actual_types: None,
-        type_diff: None,
-        report: None,
-        notes,
-      };
-    };
+         actual_types: None,
+         type_diff: None,
+         report: None,
+         notes,
+       };
+     };
 
-    let request = build_tsc_request(&file_set, &tsc_options, false);
+    let request = build_tsc_request(&file_set, &tsc_options, false, args.trace_resolution);
     match pool.run_request(request, deadline) {
       Ok(diags) => Some(diags),
       Err(TscPoolError::Timeout) => {
@@ -824,13 +827,13 @@ fn run_single_test(
           expected: None,
           actual: None,
           diff: None,
-          expected_types: None,
-          actual_types: None,
-          type_diff: None,
-          report: None,
-          notes,
-        };
-      }
+           expected_types: None,
+           actual_types: None,
+           type_diff: None,
+           report: None,
+           notes,
+         };
+       }
       Err(TscPoolError::Crashed(err)) => {
         notes.push(err);
         return CaseReport {
@@ -996,13 +999,13 @@ fn run_single_test(
           actual: None,
           diff: None,
           expected_types: None,
-          actual_types: None,
-          type_diff: None,
-          report: None,
-          notes,
-        };
-      }
-    }
+           actual_types: None,
+           type_diff: None,
+           report: None,
+           notes,
+         };
+       }
+     }
   };
   notes.extend(baseline_option_mismatch_notes(
     &tsc_options,
@@ -1071,8 +1074,8 @@ fn run_single_test(
   let rust_resolution_trace = args.trace_resolution.then(|| {
     rust_trace
       .as_ref()
-      .expect("trace handle should exist when --trace-resolution is enabled")
-      .sorted()
+      .map(|trace| trace.snapshot())
+      .unwrap_or_default()
   });
 
   if rust.status == EngineStatus::Timeout || Instant::now() >= deadline {
@@ -1140,14 +1143,14 @@ fn run_single_test(
           expected: Some(expected),
           actual: None,
           diff: None,
-          expected_types: None,
-          actual_types: None,
-          type_diff: None,
-          report: None,
-          notes,
-        };
-      }
-    }
+           expected_types: None,
+           actual_types: None,
+           type_diff: None,
+           report: None,
+           notes,
+         };
+       }
+     }
   } else {
     NormalizedTypeFacts::default()
   };
@@ -2932,7 +2935,6 @@ span mismatches:
           message: None,
         },
       ],
-      resolution_trace: None,
       crash: None,
       type_facts: Some(TypeFacts {
         exports: vec![
@@ -2964,6 +2966,7 @@ span mismatches:
           },
         ],
       }),
+      resolution_trace: None,
     };
 
     write_baseline(&path, &diagnostics).unwrap();

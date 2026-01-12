@@ -41,6 +41,10 @@ pub struct TscRequest {
   /// for large conformance suites that only diff diagnostics.
   #[serde(default, skip_serializing_if = "crate::serde_helpers::is_false")]
   pub diagnostics_only: bool,
+  /// When set, the node runner will record module resolution attempts and
+  /// return them in the response.
+  #[serde(default, skip_serializing_if = "crate::serde_helpers::is_false")]
+  pub trace_resolution: bool,
   #[serde(default, skip_serializing_if = "Vec::is_empty")]
   pub type_queries: Vec<TypeQuery>,
 }
@@ -77,16 +81,12 @@ pub struct TscDiagnostics {
   #[serde(default)]
   pub metadata: TscMetadata,
   pub diagnostics: Vec<TscDiagnostic>,
-  #[serde(
-    default,
-    alias = "resolutionTrace",
-    skip_serializing_if = "Option::is_none"
-  )]
-  pub resolution_trace: Option<Vec<String>>,
   #[serde(default, skip_serializing_if = "Option::is_none")]
   pub crash: Option<TscCrash>,
   #[serde(default, alias = "typeFacts", skip_serializing_if = "Option::is_none")]
   pub type_facts: Option<TypeFacts>,
+  #[serde(default, alias = "resolutionTrace", skip_serializing_if = "Option::is_none")]
+  pub resolution_trace: Option<Vec<crate::resolution_trace::ResolutionTraceEntry>>,
 }
 
 impl TscDiagnostics {
@@ -652,6 +652,7 @@ mod json_tests {
       files,
       options: Map::new(),
       diagnostics_only: true,
+      trace_resolution: false,
       type_queries: Vec::new(),
     };
 

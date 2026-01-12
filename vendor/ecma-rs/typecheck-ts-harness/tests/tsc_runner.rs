@@ -25,6 +25,7 @@ fn reports_single_file_error() {
     files,
     options: Map::new(),
     diagnostics_only: true,
+    trace_resolution: false,
     type_queries: Vec::new(),
   };
 
@@ -64,6 +65,7 @@ fn resolves_relative_imports_across_files() {
     files,
     options: Map::new(),
     diagnostics_only: true,
+    trace_resolution: false,
     type_queries: Vec::new(),
   };
 
@@ -115,6 +117,7 @@ fn does_not_read_arbitrary_host_fs() {
     files,
     options,
     diagnostics_only: true,
+    trace_resolution: false,
     type_queries: Vec::new(),
   };
 

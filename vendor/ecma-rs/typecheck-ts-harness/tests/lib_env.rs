@@ -111,6 +111,7 @@ fn run_tsc(
     files,
     options,
     diagnostics_only: true,
+    trace_resolution: false,
     type_queries: Vec::new(),
   };
 
@@ -268,6 +269,7 @@ fn default_libs_match_tsc_for_scripthost_globals() {
       files,
       options,
       diagnostics_only: false,
+      trace_resolution: false,
       type_queries: vec![TypeQuery {
         file: fixture.name.clone(),
         offset,
