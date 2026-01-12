@@ -119,6 +119,9 @@ pub mod window_url;
 #[path = "vmjs/window_xhr.rs"]
 pub mod window_xhr;
 
+#[path = "vmjs/window_structured_clone.rs"]
+pub mod window_structured_clone;
+
 #[cfg(test)]
 #[path = "vmjs/regression_tests.rs"]
 mod vmjs_regression_tests;

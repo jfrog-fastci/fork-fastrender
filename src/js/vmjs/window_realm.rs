@@ -20215,6 +20215,14 @@ fn init_window_globals(
   let btoa_key = alloc_key(&mut scope, "btoa")?;
   scope.define_property(global, btoa_key, data_desc(Value::Object(btoa_func)))?;
 
+  // structuredClone(value[, options])
+  crate::js::window_structured_clone::install_window_structured_clone(
+    vm,
+    &mut scope,
+    realm,
+    global,
+  )?;
+
   // reportError(e)
   let report_error_call_id = vm.register_native_call(window_report_error_native)?;
   let report_error_name = scope.alloc_string("reportError")?;
@@ -23238,6 +23246,21 @@ mod tests {
 
     let decoded = realm.exec_script("atob('aGVsbG8=')")?;
     assert_eq!(get_string(realm.heap(), decoded), "hello");
+    Ok(())
+  }
+
+  #[test]
+  fn structured_clone_ignores_symbol_keyed_properties() -> Result<(), VmError> {
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+    let ok = realm.exec_script(
+      r#"
+      const sym = Symbol('k');
+      const o = { [sym]: 1, a: 2 };
+      const c = structuredClone(o);
+      c.a === 2 && Object.getOwnPropertySymbols(c).length === 0 && c[sym] === undefined;
+      "#,
+    )?;
+    assert_eq!(ok, Value::Bool(true));
     Ok(())
   }
 
