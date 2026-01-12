@@ -268,6 +268,127 @@ fn is_banned_constructor(path: &str) -> bool {
   matches!(path, "Function" | "Proxy" | "globalThis.Function" | "globalThis.Proxy")
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum BannedUse {
+  Call { path: String },
+  Construct { ctor: String },
+}
+
+#[cfg(feature = "semantic-ops")]
+static REFLECT_CONSTRUCT_API: Lazy<hir_js::ApiId> =
+  Lazy::new(|| hir_js::ApiId::from_name("Reflect.construct"));
+
+/// Try to determine whether `inst` (a `Call`) would end up calling or constructing a banned builtin.
+///
+/// This intentionally recognizes a small set of *built-in call forwarding* patterns that are used
+/// to indirectly invoke restricted operations:
+/// - `Function.prototype.call` / `Function.prototype.apply`
+/// - `Reflect.apply`
+/// - `Reflect.construct`
+/// - `.call` / `.apply` on any of the above (e.g. `Function.prototype.call.call(...)`,
+///   `Reflect.apply.call(...)`)
+///
+/// The goal is not to fully emulate JS semantics, but to prevent obvious strict-native escapes such
+/// as `Function.prototype.call.call(eval, ...)` when typecheck-ts native-strict checking is not
+/// available (e.g. JS inputs or typed builds without `nativeStrict`).
+fn banned_call_from_call_inst(inst: &Inst, vars: &HashMap<u32, ValueState>) -> Option<BannedUse> {
+  if inst.t != InstTyp::Call {
+    return None;
+  }
+
+  let (_tgt, callee_arg, this_arg, args, _spreads) = inst.as_call();
+
+  let mut callee = callee_arg.clone();
+  let mut this = this_arg.clone();
+  let mut args: Vec<Arg> = args.to_vec();
+
+  // Keep the recursion bounded: we only need a few hops for patterns like
+  // `Reflect.apply.call(Reflect, Function.prototype.call, eval, [...])`.
+  for _ in 0..8 {
+    let Some(callee_path) = resolve_builtin_path(&callee, vars) else {
+      return None;
+    };
+
+    if callee_path == "__optimize_js_new" {
+      if let Some(ctor) = resolve_builtin_path(&this, vars) {
+        if is_banned_constructor(&ctor) {
+          return Some(BannedUse::Construct { ctor });
+        }
+      }
+      return None;
+    }
+
+    if is_banned_builtin_call(&callee_path) {
+      return Some(BannedUse::Call { path: callee_path });
+    }
+
+    // Builtin forwarding helpers.
+    match callee_path.as_str() {
+      "Function.prototype.call" | "Function.prototype.apply" => {
+        if let Some(target) = resolve_builtin_path(&this, vars) {
+          if is_banned_builtin_call(&target) {
+            return Some(BannedUse::Call { path: target });
+          }
+        }
+        return None;
+      }
+      "Reflect.apply" => {
+        // Reflect.apply(target, thisArg, argsArray)
+        let (Some(target), Some(this_arg)) = (args.get(0), args.get(1)) else {
+          return None;
+        };
+        callee = target.clone();
+        this = this_arg.clone();
+        args.clear();
+        continue;
+      }
+      "Reflect.construct" => {
+        // Reflect.construct(target, argsArray)
+        if let Some(ctor) = args.get(0).and_then(|arg| resolve_builtin_path(arg, vars)) {
+          if is_banned_constructor(&ctor) {
+            return Some(BannedUse::Construct { ctor });
+          }
+        }
+        return None;
+      }
+      _ => {}
+    }
+
+    // General `f.call(thisArg, ...)` / `f.apply(thisArg, argsArray)` rewriting.
+    //
+    // Note that we must check the exact builtin names above first: `Function.prototype.call` is a
+    // forwarding function itself, but it also ends with ".call".
+    if callee_path.ends_with(".call") {
+      // `this` is the base function being invoked via its `.call` method.
+      let new_callee = this.clone();
+      let new_this = args.get(0).cloned().unwrap_or(Arg::Const(Const::Undefined));
+      let new_args = args.get(1..).unwrap_or_default().to_vec();
+      callee = new_callee;
+      this = new_this;
+      args = new_args;
+      continue;
+    }
+
+    if callee_path.ends_with(".apply") {
+      // `this` is the base function being invoked via its `.apply` method.
+      //
+      // We intentionally drop the argument array here: strict-native bans are currently based on
+      // the *identity* of the ultimately-called builtin (eval/Function/Proxy/etc), which does not
+      // require reconstructing the full spread list.
+      let new_callee = this.clone();
+      let new_this = args.get(0).cloned().unwrap_or(Arg::Const(Const::Undefined));
+      callee = new_callee;
+      this = new_this;
+      args.clear();
+      continue;
+    }
+
+    return None;
+  }
+
+  None
+}
+
 #[cfg(feature = "semantic-ops")]
 fn banned_known_api_call(api: hir_js::ApiId) -> Option<&'static str> {
   // NOTE: Keep in sync with `is_banned_builtin_call` / `is_banned_constructor`.
@@ -407,25 +528,20 @@ fn validate_cfg(program: &Program, cfg: &Cfg, scopes: &SymbolScopes, opts: Stric
             ));
           }
 
-          if let Some(path) = resolve_builtin_path(&inst.args[0], &vars) {
-            if path == "__optimize_js_new" {
-              if let Some(ctor) = resolve_builtin_path(&inst.args[1], &vars) {
-                if is_banned_constructor(&ctor) {
-                  diagnostics.push(diag(
-                    program,
-                    inst,
-                    CODE_BANNED_BUILTIN,
-                    format!("strict-native forbids constructing `{ctor}`"),
-                  ));
-                }
-              }
-            } else if is_banned_builtin_call(&path) {
-              diagnostics.push(diag(
+          if let Some(banned) = banned_call_from_call_inst(inst, &vars) {
+            match banned {
+              BannedUse::Call { path } => diagnostics.push(diag(
                 program,
                 inst,
                 CODE_BANNED_BUILTIN,
                 format!("strict-native forbids calling `{path}`"),
-              ));
+              )),
+              BannedUse::Construct { ctor } => diagnostics.push(diag(
+                program,
+                inst,
+                CODE_BANNED_BUILTIN,
+                format!("strict-native forbids constructing `{ctor}`"),
+              )),
             }
           }
         }
@@ -447,6 +563,23 @@ fn validate_cfg(program: &Program, cfg: &Cfg, scopes: &SymbolScopes, opts: Stric
               CODE_BANNED_BUILTIN,
               format!("strict-native forbids calling `{name}`"),
             ));
+          }
+
+          if api == *REFLECT_CONSTRUCT_API {
+            if let Some(ctor) = inst
+              .args
+              .get(0)
+              .and_then(|arg| resolve_builtin_path(arg, &vars))
+            {
+              if is_banned_constructor(&ctor) {
+                diagnostics.push(diag(
+                  program,
+                  inst,
+                  CODE_BANNED_BUILTIN,
+                  format!("strict-native forbids constructing `{ctor}`"),
+                ));
+              }
+            }
           }
         }
         InstTyp::Bin if inst.bin_op == BinOp::GetProp => {
