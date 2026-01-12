@@ -6074,6 +6074,39 @@ fn get_or_create_node_wrapper(
     },
   )?;
 
+  // DocumentType attributes (`name`, `publicId`, `systemId`).
+  if let Some(dom) = dom {
+    if let NodeKind::Doctype {
+      name,
+      public_id,
+      system_id,
+    } = &dom.node(node_id).kind
+    {
+      let name_s = scope.alloc_string(name)?;
+      scope.push_root(Value::String(name_s))?;
+      let name_key = alloc_key(scope, "name")?;
+      scope.define_property(wrapper, name_key, read_only_data_desc(Value::String(name_s)))?;
+
+      let public_id_s = scope.alloc_string(public_id)?;
+      scope.push_root(Value::String(public_id_s))?;
+      let public_id_key = alloc_key(scope, "publicId")?;
+      scope.define_property(
+        wrapper,
+        public_id_key,
+        read_only_data_desc(Value::String(public_id_s)),
+      )?;
+
+      let system_id_s = scope.alloc_string(system_id)?;
+      scope.push_root(Value::String(system_id_s))?;
+      let system_id_key = alloc_key(scope, "systemId")?;
+      scope.define_property(
+        wrapper,
+        system_id_key,
+        read_only_data_desc(Value::String(system_id_s)),
+      )?;
+    }
+  }
+
   if let Some(Value::Object(func)) = element_query_selector {
     let key = alloc_key(scope, "querySelector")?;
     if !proto_chain_has_own_property(scope.heap(), wrapper, &key)? {
@@ -8878,6 +8911,72 @@ fn document_create_document_fragment_native(
     "document.createDocumentFragment requires a DOM-backed document",
   ))?;
   let node_id = dom.create_document_fragment();
+
+  get_or_create_node_wrapper(vm, scope, document_obj, Some(dom), node_id)
+}
+
+fn dom_implementation_create_document_type_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(this_obj) = this else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+
+  let slots = scope.heap().get_function_native_slots(callee)?;
+  let expected_this = match slots.get(0).copied().unwrap_or(Value::Undefined) {
+    Value::Object(obj) => obj,
+    _ => return Err(VmError::TypeError("Illegal invocation")),
+  };
+  if this_obj != expected_this {
+    return Err(VmError::TypeError("Illegal invocation"));
+  }
+  let document_obj = match slots.get(1).copied().unwrap_or(Value::Undefined) {
+    Value::Object(obj) => obj,
+    _ => return Err(VmError::TypeError("Illegal invocation")),
+  };
+
+  let name_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let name_value = scope.heap_mut().to_string(name_value)?;
+  let name = scope
+    .heap()
+    .get_string(name_value)
+    .map(|s| s.to_utf8_lossy())
+    .unwrap_or_default();
+
+  let public_id_value = args.get(1).copied().unwrap_or(Value::Undefined);
+  let public_id_value = scope.heap_mut().to_string(public_id_value)?;
+  let public_id = scope
+    .heap()
+    .get_string(public_id_value)
+    .map(|s| s.to_utf8_lossy())
+    .unwrap_or_default();
+
+  let system_id_value = args.get(2).copied().unwrap_or(Value::Undefined);
+  let system_id_value = scope.heap_mut().to_string(system_id_value)?;
+  let system_id = scope
+    .heap()
+    .get_string(system_id_value)
+    .map(|s| s.to_utf8_lossy())
+    .unwrap_or_default();
+
+  let dom = dom_from_vm_host_mut(host).ok_or(VmError::TypeError(
+    "document.implementation.createDocumentType requires a DOM-backed document",
+  ))?;
+
+  // `dom2` does not currently expose a dedicated doctype construction API, but `NodeKind::Doctype`
+  // is supported throughout the tree. Create a detached node and set its kind.
+  let node_id = dom.create_comment("");
+  dom.node_mut(node_id).kind = NodeKind::Doctype {
+    name,
+    public_id,
+    system_id,
+  };
 
   get_or_create_node_wrapper(vm, scope, document_obj, Some(dom), node_id)
 }
@@ -23319,6 +23418,41 @@ fn init_window_globals(
     data_desc(Value::Object(create_fragment_func)),
   )?;
 
+  // document.implementation / DOMImplementation (partial).
+  //
+  // WPT expects `document.implementation.createDocumentType()` to exist and return a `DocumentType`
+  // node.
+  let dom_implementation_obj = scope.alloc_object()?;
+  scope.push_root(Value::Object(dom_implementation_obj))?;
+  let create_document_type_call_id =
+    vm.register_native_call(dom_implementation_create_document_type_native)?;
+  let create_document_type_name = scope.alloc_string("createDocumentType")?;
+  scope.push_root(Value::String(create_document_type_name))?;
+  let create_document_type_func = scope.alloc_native_function_with_slots(
+    create_document_type_call_id,
+    None,
+    create_document_type_name,
+    3,
+    &[Value::Object(dom_implementation_obj), Value::Object(document_obj)],
+  )?;
+  scope.heap_mut().object_set_prototype(
+    create_document_type_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(create_document_type_func))?;
+  let create_document_type_key = alloc_key(&mut scope, "createDocumentType")?;
+  scope.define_property(
+    dom_implementation_obj,
+    create_document_type_key,
+    data_desc(Value::Object(create_document_type_func)),
+  )?;
+  let implementation_key = alloc_key(&mut scope, "implementation")?;
+  scope.define_property(
+    document_obj,
+    implementation_key,
+    read_only_data_desc(Value::Object(dom_implementation_obj)),
+  )?;
+
   // --- DOM Events (MVP): Event / CustomEvent / StorageEvent / document.createEvent --------------
   //
   // Many real-world bundles include the "CustomEvent polyfill" pattern that calls
@@ -24427,7 +24561,7 @@ fn init_window_globals(
     }
   }
 
-  // --- Core DOM constructors + prototypes (Node/Element/Document/DocumentFragment/Text) ----------
+  // --- Core DOM constructors + prototypes (Node/DocumentType/Element/Document/DocumentFragment/Text) ----------
   //
   // These are needed for `instanceof` checks in the curated WPT DOM tests.
   if let Some(platform) = dom_platform.as_ref() {
@@ -24436,6 +24570,7 @@ fn init_window_globals(
       vm.register_native_construct(illegal_dom_constructor_construct_native)?;
 
     let node_proto = platform.prototype_for(DomInterface::Node);
+    let document_type_proto = platform.prototype_for(DomInterface::DocumentType);
     let element_proto = platform.prototype_for(DomInterface::Element);
     let document_proto = platform.prototype_for(DomInterface::Document);
     let document_fragment_proto = platform.prototype_for(DomInterface::DocumentFragment);
@@ -24488,6 +24623,25 @@ fn init_window_globals(
       scope.define_property(node_ctor, key, desc.clone())?;
       scope.define_property(node_proto, key, desc)?;
     }
+
+    let document_type_ctor = make_illegal_ctor(&mut scope, "DocumentType")?;
+    scope.push_root(Value::Object(document_type_ctor))?;
+    scope.define_property(
+      document_type_ctor,
+      prototype_key,
+      data_desc(Value::Object(document_type_proto)),
+    )?;
+    scope.define_property(
+      document_type_proto,
+      constructor_key,
+      data_desc(Value::Object(document_type_ctor)),
+    )?;
+    let document_type_key = alloc_key(&mut scope, "DocumentType")?;
+    scope.define_property(
+      global,
+      document_type_key,
+      data_desc(Value::Object(document_type_ctor)),
+    )?;
 
     let element_ctor = make_illegal_ctor(&mut scope, "Element")?;
     scope.push_root(Value::Object(element_ctor))?;
@@ -31512,6 +31666,29 @@ mod tests {
       r#"<b><i></i></b><span id="target"></span>"#
     );
 
+    Ok(())
+  }
+
+  #[test]
+  fn dom_implementation_create_document_type_exposes_doctype_attributes() -> Result<(), VmError> {
+    let renderer_dom = crate::dom::parse_html("<!doctype html><html></html>").unwrap();
+    let mut host = crate::js::HostDocumentState::from_renderer_dom(&renderer_dom);
+
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+
+    let ok = exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      "(() => {\n\
+        const dt = document.implementation.createDocumentType('html', 'p', 's');\n\
+        return dt.name === 'html'\n\
+          && dt.publicId === 'p'\n\
+          && dt.systemId === 's'\n\
+          && (dt instanceof DocumentType)\n\
+          && (dt instanceof Node);\n\
+      })()",
+    )?;
+    assert_eq!(ok, Value::Bool(true));
     Ok(())
   }
 

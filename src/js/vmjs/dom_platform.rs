@@ -53,6 +53,7 @@ impl From<NodeId> for DomNodeKey {
 pub enum DomInterface {
   EventTarget,
   Node,
+  DocumentType,
   Text,
   Element,
   HTMLElement,
@@ -123,6 +124,7 @@ impl DomInterface {
         Self::HTMLElement
       }
       NodeKind::Slot { .. } => Self::Element,
+      NodeKind::Doctype { .. } => Self::DocumentType,
       _ => Self::Node,
     }
   }
@@ -131,7 +133,9 @@ impl DomInterface {
     match self {
       Self::EventTarget => None,
       Self::Node => Some(Self::EventTarget),
-      Self::Text | Self::Element | Self::Document | Self::DocumentFragment => Some(Self::Node),
+      Self::Text | Self::Element | Self::Document | Self::DocumentFragment | Self::DocumentType => {
+        Some(Self::Node)
+      }
       Self::HTMLElement => Some(Self::Element),
       Self::HTMLInputElement
       | Self::HTMLSelectElement
@@ -171,6 +175,7 @@ pub struct DomWrapperMeta {
 struct DomPrototypes {
   event_target: GcObject,
   node: GcObject,
+  document_type: GcObject,
   text: GcObject,
   element: GcObject,
   html_element: GcObject,
@@ -227,6 +232,8 @@ impl DomPlatform {
     );
     let proto_node = scope.alloc_object()?;
     prototype_roots.push(scope.heap_mut().add_root(Value::Object(proto_node))?);
+    let proto_document_type = scope.alloc_object()?;
+    prototype_roots.push(scope.heap_mut().add_root(Value::Object(proto_document_type))?);
     let proto_text = scope.alloc_object()?;
     prototype_roots.push(scope.heap_mut().add_root(Value::Object(proto_text))?);
     let proto_element = scope.alloc_object()?;
@@ -267,6 +274,7 @@ impl DomPlatform {
     // WebIDL / WHATWG DOM inheritance chain:
     //   EventTarget -> Object
     //   Node -> EventTarget
+    //   DocumentType -> Node
     //   Text -> Node
     //   Element -> Node
     //   HTMLElement -> Element
@@ -280,6 +288,9 @@ impl DomPlatform {
     scope
       .heap_mut()
       .object_set_prototype(proto_node, Some(proto_event_target))?;
+    scope
+      .heap_mut()
+      .object_set_prototype(proto_document_type, Some(proto_node))?;
     scope
       .heap_mut()
       .object_set_prototype(proto_text, Some(proto_node))?;
@@ -318,6 +329,7 @@ impl DomPlatform {
       prototypes: DomPrototypes {
         event_target: proto_event_target,
         node: proto_node,
+        document_type: proto_document_type,
         text: proto_text,
         element: proto_element,
         html_element: proto_html_element,
@@ -356,6 +368,7 @@ impl DomPlatform {
     match interface {
       DomInterface::EventTarget => self.prototypes.event_target,
       DomInterface::Node => self.prototypes.node,
+      DomInterface::DocumentType => self.prototypes.document_type,
       DomInterface::Text => self.prototypes.text,
       DomInterface::Element => self.prototypes.element,
       DomInterface::HTMLElement => self.prototypes.html_element,
@@ -656,6 +669,18 @@ impl DomPlatform {
     Ok(DomNodeKey::new(meta.document_id, meta.node_id))
   }
 
+  pub fn require_document_type_handle(
+    &mut self,
+    heap: &Heap,
+    value: Value,
+  ) -> Result<DomNodeKey, VmError> {
+    let meta = self.require_wrapper_meta(heap, value)?;
+    if !meta.primary_interface.implements(DomInterface::DocumentType) {
+      return Err(VmError::TypeError("Illegal invocation"));
+    }
+    Ok(DomNodeKey::new(meta.document_id, meta.node_id))
+  }
+
   pub fn require_document_handle(&mut self, heap: &Heap, value: Value) -> Result<DomNodeKey, VmError> {
     let meta = self.require_wrapper_meta(heap, value)?;
     if !meta.primary_interface.implements(DomInterface::Document) {
@@ -691,6 +716,10 @@ impl DomPlatform {
     Ok(self.require_text_handle(heap, value)?.node_id)
   }
 
+  pub fn require_document_type_id(&mut self, heap: &Heap, value: Value) -> Result<NodeId, VmError> {
+    Ok(self.require_document_type_handle(heap, value)?.node_id)
+  }
+
   pub fn require_document_id(&mut self, heap: &Heap, value: Value) -> Result<NodeId, VmError> {
     Ok(self.require_document_handle(heap, value)?.node_id)
   }
@@ -716,7 +745,7 @@ impl DomPlatform {
 #[cfg(test)]
 mod tests {
   use super::{DomInterface, DomNodeKey, DomPlatform};
-  use crate::dom2::NodeId;
+  use crate::dom2::{NodeId, NodeKind};
   use std::collections::HashMap;
   use vm_js::{
     GcObject, Heap, HeapLimits, PropertyKey, Realm, Value, Vm, VmError, VmOptions, WeakGcObject,
@@ -911,6 +940,32 @@ mod tests {
     assert_eq!(
       scope.heap().object_prototype(html_input_proto)?,
       Some(html_element_proto)
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn doctype_nodes_use_document_type_primary_interface() -> Result<(), VmError> {
+    let mut runtime = make_runtime()?;
+    let (realm, heap) = split_runtime_realm(&mut runtime);
+    let mut scope = heap.scope();
+    let mut platform = DomPlatform::new(&mut scope, realm)?;
+
+    let node_kind = NodeKind::Doctype {
+      name: "html".to_string(),
+      public_id: "p".to_string(),
+      system_id: "s".to_string(),
+    };
+    let primary = DomInterface::primary_for_node_kind(&node_kind);
+    assert_eq!(primary, DomInterface::DocumentType);
+
+    let key = DomNodeKey::new(1, NodeId::from_index(1));
+    let wrapper = platform.get_or_create_wrapper(&mut scope, key, primary)?;
+    let _root = scope.heap_mut().add_root(Value::Object(wrapper))?;
+
+    assert_eq!(
+      platform.require_document_type_handle(scope.heap(), Value::Object(wrapper))?,
+      key
     );
     Ok(())
   }
