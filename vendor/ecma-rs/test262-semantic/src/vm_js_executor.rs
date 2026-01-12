@@ -1271,4 +1271,56 @@ var assert = {
       js.message
     );
   }
+
+  #[test]
+  fn microtask_checkpoint_runs_jobs_with_module_loading_hooks_for_dynamic_import() {
+    let temp = tempdir().unwrap();
+    let test_dir = temp.path().join("test");
+    fs::create_dir_all(&test_dir).unwrap();
+    let test_path = test_dir.join("case.js");
+    fs::write(&test_path, "/* placeholder */").unwrap();
+    fs::write(test_dir.join("dep.js"), "export const x = 1;\n").unwrap();
+
+    let vm = Vm::new(VmOptions::default());
+    let heap = Heap::new(HeapLimits::new(DEFAULT_HEAP_MAX_BYTES, DEFAULT_HEAP_GC_THRESHOLD_BYTES));
+    let mut runtime = vm_js::JsRuntime::new(vm, heap).unwrap();
+    let mut hooks = Test262ModuleHooks::new(&test_path);
+
+    let source = r#"
+      globalThis.__import_ok = false;
+      Promise.resolve()
+        .then(() => import("./dep.js"))
+        .then(
+          ns => { globalThis.__import_ok = (ns.x === 1); },
+          err => { throw err; }
+        );
+    "#;
+
+    runtime
+      .exec_script_source_with_hooks(
+        &mut hooks,
+        Arc::new(SourceText::new("case.js", source)),
+      )
+      .unwrap();
+
+    // Drain the host-owned queue and ensure the Promise job runs with `Test262ModuleHooks` as the
+    // host hook implementation (so dynamic `import()` inside the callback can resolve modules).
+    drain_microtasks_into_hooks(&mut runtime, &mut hooks);
+    let errors = hooks.perform_microtask_checkpoint(&mut runtime);
+    if !errors.is_empty() {
+      hooks.microtasks.teardown(&mut runtime);
+      panic!("unexpected microtask errors: {errors:?}");
+    }
+
+    assert!(
+      !hooks.module_cache.is_empty(),
+      "expected dynamic import to invoke the module loader"
+    );
+
+    let global = runtime.realm().global_object();
+    let mut scope = runtime.heap.scope();
+    let key = PropertyKey::from_string(scope.alloc_string("__import_ok").unwrap());
+    let value = scope.heap().get(global, &key).unwrap();
+    assert_eq!(value, Value::Bool(true));
+  }
 }
