@@ -215,6 +215,8 @@ impl WindowRealmConfig {
 pub struct WindowRealm {
   runtime: Box<VmJsRuntime>,
   realm_id: RealmId,
+  console_obj: GcObject,
+  console_sink_id_key_s: GcString,
   console_sink_id: Option<u64>,
   match_media_env_id: Option<u64>,
   time_bindings: Option<TimeBindings>,
@@ -382,7 +384,8 @@ impl WindowRealm {
 
     let (vm, realm, heap) = runtime.vm_realm_and_heap_mut();
 
-    let (console_sink_id, match_media_env_id) = init_window_globals(vm, heap, realm, &config)?;
+    let (console_sink_id, match_media_env_id, console_obj, console_sink_id_key_s) =
+      init_window_globals(vm, heap, realm, &config)?;
     let time_bindings = match crate::js::time::install_time_bindings(
       vm,
       realm,
@@ -412,6 +415,8 @@ impl WindowRealm {
     Ok(Self {
       runtime,
       realm_id,
+      console_obj,
+      console_sink_id_key_s,
       console_sink_id,
       match_media_env_id,
       time_bindings: Some(time_bindings),
@@ -626,6 +631,63 @@ impl WindowRealm {
       .module_loader
       .borrow_mut()
       .set_document_url(effective_for_module_loader);
+  }
+
+  pub fn set_console_sink(&mut self, sink: Option<ConsoleSink>) -> Result<(), VmError> {
+    let old_id = self.console_sink_id;
+
+    match sink {
+      Some(sink) => {
+        let new_id = register_console_sink(sink);
+        if let Err(err) = self.set_console_sink_id_on_console_obj(Some(new_id)) {
+          unregister_console_sink(new_id);
+          return Err(err);
+        }
+
+        if let Some(old_id) = old_id {
+          unregister_console_sink(old_id);
+        }
+        self.console_sink_id = Some(new_id);
+        Ok(())
+      }
+      None => {
+        self.set_console_sink_id_on_console_obj(None)?;
+
+        if let Some(old_id) = old_id {
+          unregister_console_sink(old_id);
+        }
+        self.console_sink_id = None;
+        Ok(())
+      }
+    }
+  }
+
+  fn set_console_sink_id_on_console_obj(&mut self, sink_id: Option<u64>) -> Result<(), VmError> {
+    let console_obj = self.console_obj;
+    let sink_key_s = self.console_sink_id_key_s;
+
+    let (_vm, _realm, heap) = self.vm_realm_and_heap_mut();
+    let mut scope = heap.scope();
+    if !scope.heap().is_valid_object(console_obj) || !scope.heap().is_valid_string(sink_key_s) {
+      return Ok(());
+    }
+
+    // Ensure the console object + sink key survive any allocation/GC triggered by `define_property`.
+    scope.push_root(Value::Object(console_obj))?;
+    scope.push_root(Value::String(sink_key_s))?;
+
+    let sink_key = PropertyKey::from_string(sink_key_s);
+    match sink_id {
+      Some(id) => scope.define_property(
+        console_obj,
+        sink_key,
+        data_desc(Value::Number(id as f64)),
+      ),
+      None => {
+        let _ = scope.ordinary_delete(console_obj, sink_key)?;
+        Ok(())
+      }
+    }
   }
 
   pub fn module_loader_handle(&self) -> ModuleLoaderHandle {
@@ -16969,7 +17031,7 @@ fn init_window_globals(
   heap: &mut Heap,
   realm: &Realm,
   config: &WindowRealmConfig,
-) -> Result<(Option<u64>, Option<u64>), VmError> {
+) -> Result<(Option<u64>, Option<u64>, GcObject, GcString), VmError> {
   let mut scope = heap.scope();
   let global = realm.global_object();
 
@@ -21663,6 +21725,8 @@ fn init_window_globals(
   Ok((
     console_sink_guard.map(ConsoleSinkGuard::disarm),
     Some(match_media_guard.disarm()),
+    console_obj,
+    sink_id_key_s,
   ))
 }
 
@@ -24738,6 +24802,85 @@ mod tests {
           .iter()
           .all(|(level, _)| *level == ConsoleMessageLevel::Log),
       "expected console.dir/table to emit log messages, got {calls:?}"
+    );
+
+    Ok(())
+  }
+
+  #[test]
+  fn console_sink_can_be_swapped_and_cleared_without_leaking() -> Result<(), VmError> {
+    let _lock = console_sink_test_lock()
+      .lock()
+      .expect("console sink test mutex should not be poisoned");
+    let initial_len = console_sinks().lock().len();
+
+    let captured_a: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let captured_b: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+
+    let sink_a_captured = Arc::clone(&captured_a);
+    let sink_a: ConsoleSink = Arc::new(move |_level, heap, args| {
+      let msg = match args.get(0).copied().unwrap_or(Value::Undefined) {
+        Value::String(s) => heap
+          .get_string(s)
+          .expect("string handle should be valid")
+          .to_utf8_lossy(),
+        _ => "<non-string>".to_string(),
+      };
+      sink_a_captured.lock().push(msg);
+    });
+
+    let sink_b_captured = Arc::clone(&captured_b);
+    let sink_b: ConsoleSink = Arc::new(move |_level, heap, args| {
+      let msg = match args.get(0).copied().unwrap_or(Value::Undefined) {
+        Value::String(s) => heap
+          .get_string(s)
+          .expect("string handle should be valid")
+          .to_utf8_lossy(),
+        _ => "<non-string>".to_string(),
+      };
+      sink_b_captured.lock().push(msg);
+    });
+
+    let mut config = WindowRealmConfig::new("https://example.com/");
+    config.console_sink = Some(Arc::clone(&sink_a));
+    let mut realm = new_realm(config)?;
+    assert_eq!(
+      console_sinks().lock().len(),
+      initial_len + 1,
+      "expected realm construction to register its console sink"
+    );
+
+    realm.exec_script("console.log('a')")?;
+    assert_eq!(&*captured_a.lock(), &["a".to_string()]);
+    assert!(captured_b.lock().is_empty());
+
+    realm.set_console_sink(Some(Arc::clone(&sink_b)))?;
+    assert_eq!(
+      console_sinks().lock().len(),
+      initial_len + 1,
+      "expected sink swap to unregister the old sink"
+    );
+
+    realm.exec_script("console.log('b')")?;
+    assert_eq!(&*captured_a.lock(), &["a".to_string()]);
+    assert_eq!(&*captured_b.lock(), &["b".to_string()]);
+
+    realm.set_console_sink(None)?;
+    assert_eq!(
+      console_sinks().lock().len(),
+      initial_len,
+      "expected sink clear to unregister the active sink"
+    );
+
+    realm.exec_script("console.log('c')")?;
+    assert_eq!(&*captured_a.lock(), &["a".to_string()]);
+    assert_eq!(&*captured_b.lock(), &["b".to_string()]);
+
+    drop(realm);
+    assert_eq!(
+      console_sinks().lock().len(),
+      initial_len,
+      "expected realm drop to not leak console sinks"
     );
 
     Ok(())

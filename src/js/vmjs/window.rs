@@ -7,7 +7,7 @@ use crate::js::import_maps::{
 use crate::js::orchestrator::CurrentScriptHost;
 use crate::js::vm_error_format;
 use crate::js::webidl::VmJsWebIdlBindingsHostDispatch;
-use crate::js::window_realm::{WindowRealm, WindowRealmConfig, WindowRealmHost};
+use crate::js::window_realm::{ConsoleSink, WindowRealm, WindowRealmConfig, WindowRealmHost};
 use crate::js::{
   install_window_animation_frame_bindings, install_window_fetch_bindings_with_guard,
   install_window_timers_bindings, install_window_xhr_bindings_with_guard, DomHost, EventLoop,
@@ -197,6 +197,10 @@ impl WindowHost {
 
   pub fn event_loop_mut(&mut self) -> &mut EventLoop<WindowHostState> {
     &mut self.event_loop
+  }
+
+  pub fn set_console_sink(&mut self, sink: Option<ConsoleSink>) -> Result<()> {
+    self.host.set_console_sink(sink)
   }
 
   pub fn queue_task<F>(&mut self, source: TaskSource, runnable: F) -> Result<()>
@@ -463,6 +467,13 @@ impl WindowHostState {
     // Keep the JS realm state in sync: `document.baseURI` and relative URL resolution in `fetch`
     // read from `WindowRealmUserData.base_url`.
     self.window.set_base_url(self.base_url.clone());
+  }
+
+  pub fn set_console_sink(&mut self, sink: Option<ConsoleSink>) -> Result<()> {
+    self
+      .window
+      .set_console_sink(sink)
+      .map_err(|err| Error::Other(err.to_string()))
   }
 
   pub fn import_map_state(&self) -> &ImportMapState {
