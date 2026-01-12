@@ -660,8 +660,9 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
     _event_loop: &mut crate::js::EventLoop<BrowserTabHost>,
   ) -> Result<()> {
     let base_url = spec.base_url.as_deref().unwrap_or("about:blank");
-    let base_url =
-      url::Url::parse(base_url).unwrap_or_else(|_| url::Url::parse("about:blank").unwrap());
+    let base_url = url::Url::parse(base_url)
+      .or_else(|_| url::Url::parse("about:blank"))
+      .map_err(|err| Error::Other(format!("failed to parse import map base URL: {err}")))?;
 
     let limits = &self.js_execution_options.import_map_limits;
     let result = create_import_map_parse_result_with_limits(script_text, &base_url, limits);

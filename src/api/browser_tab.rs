@@ -385,6 +385,13 @@ pub struct BrowserTabHost {
   trace: TraceHandle,
   document: Box<BrowserDocumentDom2>,
   executor: Box<dyn BrowserTabJsExecutor>,
+  /// Lazily-created vm-js [`crate::js::WindowRealm`] used when the active executor does not expose a
+  /// realm.
+  ///
+  /// Most production paths use [`super::VmJsBrowserTabExecutor`], which provides its own realm. This slot
+  /// exists to keep `WindowRealmHost::vm_host_and_window_realm` non-panicking for executors that do
+  /// not support vm-js, and for defensive handling when a realm is unexpectedly absent.
+  vmjs_fallback_realm: Option<crate::js::WindowRealm>,
   event_invoker: Box<dyn crate::web::events::EventListenerInvoker>,
   js_events: JsDomEvents,
   current_script: CurrentScriptStateHandle,
@@ -471,6 +478,7 @@ impl BrowserTabHost {
       trace,
       document: Box::new(document),
       executor,
+      vmjs_fallback_realm: None,
       event_invoker,
       js_events: JsDomEvents::new()?,
       current_script,
@@ -3532,12 +3540,36 @@ impl DocumentLifecycleHost for BrowserTabHost {
 impl crate::js::window_realm::WindowRealmHost for BrowserTabHost {
   fn vm_host_and_window_realm(&mut self) -> (&mut dyn vm_js::VmHost, &mut crate::js::WindowRealm) {
     let BrowserTabHost {
-      document, executor, ..
+      document,
+      executor,
+      vmjs_fallback_realm,
+      js_execution_options,
+      current_script,
+      ..
     } = self;
-    let Some(realm) = executor.window_realm_mut() else {
-      panic!(
-        "BrowserTabHost does not have an active vm-js WindowRealm for timer/microtask callbacks"
-      );
+    let realm = match executor.window_realm_mut() {
+      Some(realm) => realm,
+      None => {
+        if vmjs_fallback_realm.is_none() {
+          let config = crate::js::WindowRealmConfig::new("about:blank")
+            .with_current_script_state(current_script.clone());
+          let created = match crate::js::WindowRealm::new_with_js_execution_options(
+            config,
+            *js_execution_options,
+          ) {
+            Ok(realm) => realm,
+            // `WindowRealmHost::vm_host_and_window_realm` cannot return a `Result`, but downstream
+            // timer/microtask callbacks require a realm reference. If we cannot allocate even the
+            // fallback realm (typically: OOM), terminate immediately.
+            Err(_) => std::process::abort(),
+          };
+          *vmjs_fallback_realm = Some(created);
+        }
+        match vmjs_fallback_realm.as_mut() {
+          Some(realm) => realm,
+          None => std::process::abort(),
+        }
+      }
     };
     (document.as_mut(), realm)
   }
@@ -8089,6 +8121,56 @@ mod tests {
       .exec_script("globalThis.__host_ok")
       .map_err(|err| Error::Other(err.to_string()))?;
     assert!(matches!(ok, Value::Bool(true)));
+    Ok(())
+  }
+
+  #[test]
+  fn vmjs_window_realm_host_fallback_realm_executes_promise_jobs() -> Result<()> {
+    // Construct a host whose executor does not expose a WindowRealm. `BrowserTabHost` must still be
+    // able to service `WindowRealmHost::vm_host_and_window_realm` for vm-js Promise jobs routed
+    // through the host event loop.
+    let document =
+      BrowserDocumentDom2::from_html("<!doctype html><html></html>", RenderOptions::default())?;
+    let mut host = BrowserTabHost::new(
+      document,
+      Box::new(NoopExecutor::default()),
+      TraceHandle::default(),
+      JsExecutionOptions::default(),
+    )?;
+    let mut event_loop = EventLoop::<BrowserTabHost>::new();
+
+    // Execute a script in the host's fallback realm and enqueue a Promise job onto the host event
+    // loop microtask queue.
+    {
+      let (host_ctx, realm) = host.vm_host_and_window_realm();
+      let mut hooks = VmJsEventLoopHooks::<BrowserTabHost>::new_with_vm_host_and_window_realm(
+        host_ctx,
+        realm,
+        None,
+      );
+      hooks.set_event_loop(&mut event_loop);
+      realm
+        .exec_script_with_host_and_hooks(
+          host_ctx,
+          &mut hooks,
+          "globalThis.__x = 0; Promise.resolve().then(() => { globalThis.__x = 1; });",
+        )
+        .map_err(|err| Error::Other(err.to_string()))?;
+      if let Some(err) = hooks.finish(realm.heap_mut()) {
+        return Err(err);
+      }
+    }
+
+    assert_eq!(
+      event_loop.run_until_idle(&mut host, RunLimits::unbounded())?,
+      RunUntilIdleOutcome::Idle
+    );
+
+    let x = {
+      let (_host_ctx, realm) = host.vm_host_and_window_realm();
+      realm.exec_script("globalThis.__x").map_err(|err| Error::Other(err.to_string()))?
+    };
+    assert_eq!(x, Value::Number(1.0));
     Ok(())
   }
 
