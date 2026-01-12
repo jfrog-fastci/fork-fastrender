@@ -59,3 +59,13 @@ reason = "Element.setAttribute currently does not validate qualified names / thr
 id = "dom/queryselector_invalid_selector_domexception.window.js"
 status = "xfail"
 reason = "querySelector currently throws a non-DOMException error; should be a DOMException SyntaxError once DOMException is implemented."
+
+[[expectations]]
+id = "domparsing/innerhtml-comments.window.js"
+status = "xfail"
+reason = "Comment node parsing/serialization is not implemented until dom2 materializes Comment nodes."
+
+[[expectations]]
+id = "dom/document_doctype.window.js"
+status = "xfail"
+reason = "DocumentType node + document.doctype binding is not implemented until dom2 materializes the document doctype."
