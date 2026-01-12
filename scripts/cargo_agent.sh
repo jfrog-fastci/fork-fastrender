@@ -47,6 +47,7 @@ fi
 #   scripts/cargo_agent.sh build --release
 #   scripts/cargo_agent.sh test --lib
 #   scripts/cargo_agent.sh test --test integration -- --exact wpt_local_suite_passes
+#   WPT_FILTER=layout/floats scripts/cargo_agent.sh test --test integration -- --exact wpt_local_suite_passes
 #   scripts/cargo_agent.sh test --test allocation_failure
 #
 # Tuning knobs (env vars):
@@ -73,6 +74,7 @@ Examples:
   scripts/cargo_agent.sh build --release
   scripts/cargo_agent.sh test --lib
   scripts/cargo_agent.sh test --test integration -- --exact wpt_local_suite_passes
+  WPT_FILTER=layout/floats scripts/cargo_agent.sh test --test integration -- --exact wpt_local_suite_passes
   scripts/cargo_agent.sh test --test allocation_failure
 
 Environment:
