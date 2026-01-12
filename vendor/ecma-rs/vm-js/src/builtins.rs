@@ -3911,7 +3911,10 @@ pub(crate) fn promise_resolve_abstract(
       let ctor_key_s = scope.alloc_string("constructor")?;
       scope.push_root(Value::String(ctor_key_s))?;
       let ctor_key = PropertyKey::from_string(ctor_key_s);
-      let x_ctor = vm.get_with_host_and_hooks(host, &mut scope, hooks, obj, ctor_key)?;
+      let x_ctor = match vm.get_with_host_and_hooks(host, &mut scope, hooks, obj, ctor_key) {
+        Ok(v) => v,
+        Err(err) => return Err(crate::vm::coerce_error_to_throw(vm, &mut scope, err)),
+      };
       if x_ctor.same_value(constructor, scope.heap()) {
         return Ok(obj);
       }

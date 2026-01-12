@@ -108,3 +108,41 @@ fn promise_resolve_observes_constructor_get_via_proxy_trap() -> Result<(), VmErr
   rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
   Ok(())
 }
+
+#[test]
+fn await_rejects_when_constructor_lookup_hits_revoked_proxy() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  // A revoked Proxy in the prototype chain must throw (as a JS exception), and `await` must turn
+  // that throw into a rejection of the async function's promise (not a synchronous throw).
+  let value = rt.exec_script(
+    r#"
+      var out = 0;
+
+      var p = Promise.resolve(1);
+
+      // Force PromiseResolve(%Promise%, p) to consult the prototype chain for `constructor` and
+      // hit a revoked Proxy.
+      var r = Proxy.revocable({ constructor: Promise }, {});
+      var proto = {};
+      Object.setPrototypeOf(proto, r.proxy);
+      Object.setPrototypeOf(p, proto);
+      r.revoke();
+
+      async function f() { return await p; }
+      f().then(
+        function () { out = 1; },
+        function (e) { out = e instanceof TypeError ? 2 : 3; }
+      );
+
+      out
+    "#,
+  )?;
+  assert_eq!(value, Value::Number(0.0));
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let out = rt.exec_script("out")?;
+  assert_eq!(out, Value::Number(2.0));
+  Ok(())
+}
