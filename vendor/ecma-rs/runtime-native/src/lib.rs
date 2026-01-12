@@ -936,6 +936,9 @@ mod tests {
       "PromiseRef rt_parallel_spawn_promise_with_shape_rooted(void (*task)(uint8_t*, PromiseRef), uint8_t* data, size_t promise_size, size_t promise_align, RtShapeId promise_shape);",
       "PromiseRef rt_parallel_spawn_promise_with_shape_rooted_h(void (*task)(uint8_t*, PromiseRef), GcHandle data, size_t promise_size, size_t promise_align, RtShapeId promise_shape);",
       "LegacyPromiseRef rt_spawn_blocking(void (*task)(uint8_t*, LegacyPromiseRef), uint8_t* data);",
+      "PromiseRef rt_spawn_blocking_promise(uint8_t (*task)(uint8_t* data, uint8_t* out_payload), uint8_t* data, PromiseLayout layout);",
+      "PromiseRef rt_spawn_blocking_promise_rooted(uint8_t (*task)(uint8_t* data, uint8_t* out_payload), uint8_t* data, PromiseLayout layout);",
+      "PromiseRef rt_spawn_blocking_promise_rooted_h(uint8_t (*task)(uint8_t* data, uint8_t* out_payload), GcHandle data, PromiseLayout layout);",
       "void rt_promise_init(PromiseRef p);",
       "void rt_promise_fulfill(PromiseRef p);",
       "bool rt_promise_try_fulfill(PromiseRef p);",
@@ -1142,6 +1145,15 @@ mod tests {
       *mut u8,
     ) -> abi::LegacyPromiseRef =
       rt_spawn_blocking;
+    let _spawn_blocking_promise: extern "C" fn(extern "C" fn(*mut u8, *mut u8) -> u8, *mut u8, PromiseLayout) -> abi::PromiseRef =
+      rt_spawn_blocking_promise;
+    let _spawn_blocking_promise_rooted: extern "C" fn(extern "C" fn(*mut u8, *mut u8) -> u8, *mut u8, PromiseLayout) -> abi::PromiseRef =
+      rt_spawn_blocking_promise_rooted;
+    let _spawn_blocking_promise_rooted_h: unsafe extern "C" fn(
+      extern "C" fn(*mut u8, *mut u8) -> u8,
+      crate::roots::GcHandle,
+      PromiseLayout,
+    ) -> abi::PromiseRef = rt_spawn_blocking_promise_rooted_h;
     let _promise_init: unsafe extern "C" fn(PromiseRef) = rt_promise_init;
     let _promise_fulfill: unsafe extern "C" fn(PromiseRef) = rt_promise_fulfill;
     let _promise_try_fulfill: unsafe extern "C" fn(PromiseRef) -> bool = rt_promise_try_fulfill;
@@ -1320,6 +1332,9 @@ mod tests {
       _for,
       _spawn_promise,
       _spawn_blocking,
+      _spawn_blocking_promise,
+      _spawn_blocking_promise_rooted,
+      _spawn_blocking_promise_rooted_h,
       _promise_init,
       _promise_fulfill,
       _promise_try_fulfill,

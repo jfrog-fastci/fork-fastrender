@@ -575,6 +575,15 @@ pub type RtParallelForBodyFn = extern "C" fn(usize, *mut u8);
 /// Function pointer type for tasks spawned via [`rt_parallel_spawn_promise`].
 pub type RtParallelPromiseTaskFn = extern "C" fn(*mut u8, PromiseRef);
 
+/// Function pointer type for tasks spawned via [`rt_spawn_blocking_promise`].
+///
+/// The callback writes its result payload into `out_payload` (a temporary non-GC buffer owned by the
+/// runtime) and returns a status tag:
+/// - `0` => fulfill
+/// - `1` => reject
+/// - any other value is treated as reject
+pub type RtBlockingPromiseTaskFn = extern "C" fn(data: *mut u8, out_payload: *mut u8) -> u8;
+
 extern "C" {
   // Thread registration / state
   pub fn rt_thread_init(kind: u32);
@@ -731,6 +740,21 @@ extern "C" {
     task: extern "C" fn(*mut u8, LegacyPromiseRef),
     data: *mut u8,
   ) -> LegacyPromiseRef;
+  pub fn rt_spawn_blocking_promise(
+    task: RtBlockingPromiseTaskFn,
+    data: *mut u8,
+    layout: PromiseLayout,
+  ) -> PromiseRef;
+  pub fn rt_spawn_blocking_promise_rooted(
+    task: RtBlockingPromiseTaskFn,
+    data: GcPtr,
+    layout: PromiseLayout,
+  ) -> PromiseRef;
+  pub fn rt_spawn_blocking_promise_rooted_h(
+    task: RtBlockingPromiseTaskFn,
+    data: GcHandle,
+    layout: PromiseLayout,
+  ) -> PromiseRef;
 
   // Async
   pub fn rt_promise_init(p: PromiseRef);

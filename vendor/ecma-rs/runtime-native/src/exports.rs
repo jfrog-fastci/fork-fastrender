@@ -1915,6 +1915,57 @@ pub extern "C" fn rt_spawn_blocking(
   })
 }
 
+/// Spawn blocking work and return a GC-managed payload promise.
+///
+/// Unlike `rt_spawn_blocking`, this returns a GC-managed promise allocation that can be reclaimed by
+/// GC once unreachable.
+#[no_mangle]
+pub extern "C" fn rt_spawn_blocking_promise(
+  task: extern "C" fn(*mut u8, *mut u8) -> u8,
+  data: *mut u8,
+  promise_layout: PromiseLayout,
+) -> PromiseRef {
+  abort_on_panic(|| {
+    let _ = crate::rt_ensure_init();
+    ensure_event_loop_thread_registered();
+    crate::blocking_pool::spawn_promise(task, data, promise_layout)
+  })
+}
+
+/// Like [`rt_spawn_blocking_promise`], but `data` is a GC-managed object base pointer that must be
+/// kept alive (and kept up-to-date across moves) until the task finishes.
+#[no_mangle]
+pub extern "C" fn rt_spawn_blocking_promise_rooted(
+  task: extern "C" fn(*mut u8, *mut u8) -> u8,
+  data: *mut u8,
+  promise_layout: PromiseLayout,
+) -> PromiseRef {
+  abort_on_panic(|| {
+    let _ = crate::rt_ensure_init();
+    ensure_event_loop_thread_registered();
+    crate::blocking_pool::spawn_promise_rooted(task, data, promise_layout)
+  })
+}
+
+/// Like [`rt_spawn_blocking_promise_rooted`], but takes the GC-managed `data` pointer as a
+/// `GcHandle` (pointer-to-slot).
+///
+/// # Safety
+/// `data` must be a valid, aligned pointer to a writable `*mut u8` slot containing a GC-managed
+/// object base pointer.
+#[no_mangle]
+pub unsafe extern "C" fn rt_spawn_blocking_promise_rooted_h(
+  task: extern "C" fn(*mut u8, *mut u8) -> u8,
+  data: crate::roots::GcHandle,
+  promise_layout: PromiseLayout,
+) -> PromiseRef {
+  abort_on_panic(|| {
+    let _ = crate::rt_ensure_init();
+    ensure_event_loop_thread_registered();
+    // Safety: caller contract.
+    unsafe { crate::blocking_pool::spawn_promise_rooted_h(task, data, promise_layout) }
+  })
+}
 #[no_mangle]
 pub extern "C" fn rt_async_spawn_legacy(coro: *mut RtCoroutineHeader) -> LegacyPromiseRef {
   abort_on_panic(|| {
@@ -3869,8 +3920,8 @@ pub extern "C" fn rt_promise_new_legacy() -> LegacyPromiseRef {
 
 /// Return a pointer to a promise's payload.
 ///
-/// - For payload promises created by `rt_parallel_spawn_promise*`, this returns the out-of-line
-///   payload buffer pointer.
+/// - For payload promises created by `rt_parallel_spawn_promise*` or `rt_spawn_blocking_promise*`,
+///   this returns the out-of-line payload buffer pointer.
 /// - For GC-managed native async-ABI promises (allocated via `rt_alloc`, including promises created
 ///   by `rt_parallel_spawn_promise_with_shape*`), this returns a pointer to the **inline** payload
 ///   immediately after the `PromiseHeader` prefix.
@@ -3898,9 +3949,10 @@ pub extern "C" fn rt_promise_payload_ptr(p: PromiseRef) -> *mut u8 {
 
     // Promises that set `PROMISE_FLAG_HAS_PAYLOAD` carry an out-of-line payload buffer.
     //
-    // Today this covers payload promises created by `rt_parallel_spawn_promise*` (GC-managed
-    // `payload_promise::PayloadPromise`). It also supports historical legacy payload promises that
-    // used the same `PromiseHeader + payload_ptr` prefix layout.
+    // Today this covers payload promises created by `rt_parallel_spawn_promise*` or
+    // `rt_spawn_blocking_promise*` (GC-managed `payload_promise::PayloadPromise`). It also supports
+    // historical legacy payload promises that used the same `PromiseHeader + payload_ptr` prefix
+    // layout.
     //
     // `async_rt::promise::promise_payload_ptr` treats the `PromiseRef` as an opaque `PromiseHeader`
     // prefix and reads the payload pointer from the shared payload-promise layout.

@@ -877,10 +877,11 @@ PromiseRef rt_parallel_spawn_promise_with_shape_rooted_h(
 // - `data` must remain valid until `task` runs.
 // - `data` must point to non-GC-managed memory: blocking tasks run in a GC-safe ("NativeSafe")
 //   region and must not dereference GC pointers.
-// - There is intentionally no rooted `rt_spawn_blocking_*` API: blocking tasks may block in syscalls
-//   or long waits, so they must always run NativeSafe and therefore cannot safely dereference GC
-//   pointers. If GC-managed state is required, copy it out of the GC heap before spawning the task
-//   (or arrange for a GC-unsafe continuation to run on the event-loop thread).
+// - There is intentionally no rooted variant of `rt_spawn_blocking`: blocking tasks may block in
+//   syscalls or long waits, so they must always run NativeSafe and therefore cannot safely
+//   dereference movable GC pointers. If GC-managed state is required, copy it out of the GC heap
+//   before spawning the task (or arrange for a GC-unsafe continuation to run on the event-loop
+//   thread).
 //
 // Blocking tasks execute in a GC-safe ("NativeSafe") region: they must not touch the GC heap (no
 // GC allocations, no write barriers, and no dereferencing GC-managed pointers).
@@ -889,6 +890,47 @@ PromiseRef rt_parallel_spawn_promise_with_shape_rooted_h(
 // - default: min(available_parallelism, 4)
 // - override: set `ECMA_RS_RUNTIME_NATIVE_BLOCKING_THREADS` (or legacy `RT_BLOCKING_THREADS`)
 LegacyPromiseRef rt_spawn_blocking(void (*task)(uint8_t*, LegacyPromiseRef), uint8_t* data);
+
+// Spawn a GC-managed payload promise whose completion is produced by a blocking-thread-pool task.
+//
+// This is the GC-managed alternative to `rt_spawn_blocking`: it returns a `PromiseRef` allocated in
+// the GC heap (collectible by GC) instead of a legacy `RtPromise` allocated on the Rust heap (which
+// is intentionally leaked in production builds).
+//
+// The blocking task must:
+// - write its result payload bytes into `out_payload` (layout described by `layout`), and
+// - return a status tag:
+//   - `0` => fulfill the promise
+//   - `1` => reject the promise
+//   - any other value is treated as reject
+//
+// Important:
+// - The task runs in a GC-safe ("NativeSafe") region and must not touch the GC heap.
+// - `out_payload` points to a temporary, non-GC buffer owned by the runtime (described by
+//   `layout`). It is only valid for the duration of the callback; do not store it.
+// - After the task returns, the runtime schedules a microtask on the event-loop thread to settle
+//   the promise. The payload buffer is accessible via `rt_promise_payload_ptr(promise)`.
+PromiseRef rt_spawn_blocking_promise(
+  uint8_t (*task)(uint8_t* data, uint8_t* out_payload),
+  uint8_t* data,
+  PromiseLayout layout
+);
+// Like `rt_spawn_blocking_promise`, but keeps a GC-managed `data` object alive until the blocking
+// task finishes.
+//
+// Note: the task still runs GC-safe; `data` must be pinned (or treated as an opaque address) if the
+// task dereferences it.
+PromiseRef rt_spawn_blocking_promise_rooted(
+  uint8_t (*task)(uint8_t* data, uint8_t* out_payload),
+  uint8_t* data,
+  PromiseLayout layout
+);
+// Like `rt_spawn_blocking_promise_rooted`, but takes the GC pointer as a `GcHandle` (pointer-to-slot).
+PromiseRef rt_spawn_blocking_promise_rooted_h(
+  uint8_t (*task)(uint8_t* data, uint8_t* out_payload),
+  GcHandle data,
+  PromiseLayout layout
+);
 
 // -----------------------------------------------------------------------------
 // Native promise ABI (PromiseHeader prefix)
@@ -902,8 +944,8 @@ bool rt_promise_try_reject(PromiseRef p);
 void rt_promise_mark_handled(PromiseRef p);
 // Return a pointer to a promise's payload.
 //
-// - For payload promises created by `rt_parallel_spawn_promise*`, this returns the out-of-line
-//   payload buffer pointer.
+// - For payload promises created by `rt_parallel_spawn_promise*` or `rt_spawn_blocking_promise*`,
+//   this returns the out-of-line payload buffer pointer.
 // - For GC-managed native async-ABI promises (allocated via `rt_alloc`, including promises created
 //   by `rt_parallel_spawn_promise_with_shape*`), this returns a pointer to the **inline** payload
 //   immediately after the `PromiseHeader` prefix.

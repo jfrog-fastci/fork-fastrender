@@ -1,5 +1,8 @@
 use crate::async_rt;
-use crate::abi::LegacyPromiseRef;
+use crate::abi::{LegacyPromiseRef, PromiseRef};
+use crate::async_abi::{PromiseHeader, PROMISE_FLAG_EXTERNAL_PENDING};
+use crate::async_runtime::PromiseLayout;
+use crate::gc::HandleId;
 use crate::sync::GcAwareMutex;
 use crate::threading;
 use crate::threading::ThreadKind;
@@ -10,17 +13,31 @@ use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
+enum WorkData {
+  Unrooted(*mut u8),
+  Rooted(async_rt::gc::Root),
+}
+
+enum WorkKind {
+  /// Legacy `rt_spawn_blocking` task: callback receives a legacy `RtPromise` handle and settles it
+  /// directly (not GC-managed).
+  Legacy {
+    task: extern "C" fn(*mut u8, LegacyPromiseRef),
+    promise: LegacyPromiseRef,
+  },
+
+  /// GC-managed payload promise task: callback writes into an out-of-line payload buffer and
+  /// returns a status tag; a microtask hop settles the promise on the event-loop thread.
+  Promise {
+    task: extern "C" fn(*mut u8, *mut u8) -> u8,
+    promise: HandleId,
+    out_payload: *mut u8,
+  },
+}
+
 struct WorkItem {
-  task: extern "C" fn(*mut u8, LegacyPromiseRef),
-  data: *mut u8,
-  // `rt_spawn_blocking` currently returns a **legacy** `async_rt::promise::RtPromise` allocated on
-  // the Rust heap (not GC-managed and therefore not relocatable). Storing the raw pointer across
-  // the blocking queue is therefore safe today.
-  //
-  // If `rt_spawn_blocking` is ever changed to return a GC-managed promise, this field must store a
-  // GC-stable handle/root (e.g. a persistent handle) instead of a raw pointer: blocking worker
-  // threads are plain Rust frames and are not covered by LLVM stackmaps.
-  promise: LegacyPromiseRef,
+  data: WorkData,
+  kind: WorkKind,
 }
 
 // Raw pointers are not `Send` by default; in the runtime ABI the caller is responsible for
@@ -42,6 +59,69 @@ static POOL: OnceCell<BlockingPool> = OnceCell::new();
 
 pub(crate) fn global() -> &'static BlockingPool {
   POOL.get_or_init(BlockingPool::new)
+}
+
+#[inline]
+fn maybe_clear_external_pending(promise: *mut PromiseHeader) {
+  if promise.is_null() {
+    return;
+  }
+  if (promise as usize) % core::mem::align_of::<PromiseHeader>() != 0 {
+    std::process::abort();
+  }
+  let prev = unsafe { &(*promise).flags }.fetch_and(!PROMISE_FLAG_EXTERNAL_PENDING, Ordering::AcqRel);
+  if (prev & PROMISE_FLAG_EXTERNAL_PENDING) != 0 {
+    async_rt::external_pending_dec();
+  }
+}
+
+#[repr(C)]
+struct BlockingPromiseMicrotask {
+  promise: HandleId,
+  tag: u8,
+  ran: bool,
+}
+
+extern "C" fn run_blocking_promise_microtask(data: *mut u8) {
+  if data.is_null() {
+    return;
+  }
+  // Safety: allocated by `Box::into_raw` when enqueuing the microtask and freed by
+  // `drop_blocking_promise_microtask`.
+  let task = unsafe { &mut *(data as *mut BlockingPromiseMicrotask) };
+  task.ran = true;
+
+  let promise_ptr = crate::roots::global_persistent_handle_table()
+    .get(task.promise)
+    .unwrap_or_else(|| std::process::abort());
+  let promise = PromiseRef(promise_ptr.cast());
+
+  unsafe {
+    if task.tag == 0 {
+      crate::rt_promise_fulfill(promise);
+    } else {
+      crate::rt_promise_reject(promise);
+    }
+  }
+}
+
+extern "C" fn drop_blocking_promise_microtask(data: *mut u8) {
+  if data.is_null() {
+    return;
+  }
+
+  // Safety: allocated by `Box::into_raw` when enqueuing the microtask.
+  let task = unsafe { Box::from_raw(data as *mut BlockingPromiseMicrotask) };
+
+  if !task.ran {
+    // If the microtask was discarded (e.g. `rt_async_cancel_all`), the promise never settles. Clear
+    // the external-pending flag and decrement the global count so the runtime can report idle.
+    if let Some(promise_ptr) = crate::roots::global_persistent_handle_table().get(task.promise) {
+      maybe_clear_external_pending(promise_ptr.cast::<PromiseHeader>());
+    }
+  }
+
+  let _ = crate::roots::global_persistent_handle_table().free(task.promise);
 }
 
 #[doc(hidden)]
@@ -113,13 +193,92 @@ impl BlockingPool {
     {
       let mut q = self.shared.queue.lock();
       q.push_back(WorkItem {
-        task,
-        data,
-        promise: promise_legacy,
+        data: WorkData::Unrooted(data),
+        kind: WorkKind::Legacy {
+          task,
+          promise: promise_legacy,
+        },
       });
     }
     self.shared.cv.notify_one();
     promise_legacy
+  }
+
+  fn spawn_promise_impl(&self, task: extern "C" fn(*mut u8, *mut u8) -> u8, data: WorkData, layout: PromiseLayout) -> PromiseRef {
+    // Ensure the async runtime is initialized so microtask settlement can wake a blocked
+    // `epoll_wait`.
+    let _ = async_rt::global();
+
+    // Allocate a GC-managed payload promise (out-of-line payload buffer). The external-pending flag
+    // is cleared and the counter decremented by `rt_promise_{fulfill,reject}`.
+    let promise = crate::payload_promise::alloc_payload_promise(layout, true);
+    let out_payload = async_rt::promise::promise_payload_ptr(promise);
+
+    // Keep the promise object alive (and relocatable) while the blocking task is outstanding. Even
+    // if the caller drops the returned `PromiseRef` immediately, the blocking task still needs to
+    // write into the payload buffer and the runtime needs to settle the promise.
+    //
+    // Use a temporary handle-stack root so `alloc_from_slot` reads the promise pointer after
+    // acquiring its lock (moving-GC safe under lock contention).
+    let promise_handle = {
+      let tmp = crate::roots::Root::<u8>::new(promise.0.cast::<u8>());
+      // Safety: `tmp.handle()` is a valid pointer-to-slot (`GcHandle`) containing a GC object base
+      // pointer.
+      unsafe { crate::roots::global_persistent_handle_table().alloc_from_slot(tmp.handle()) }
+      // `tmp` dropped here, removing the handle-stack root before any further potentially-blocking
+      // operations (e.g. queue lock acquisition).
+    };
+
+    {
+      let mut q = self.shared.queue.lock();
+      q.push_back(WorkItem {
+        data,
+        kind: WorkKind::Promise {
+          task,
+          promise: promise_handle,
+          out_payload,
+        },
+      });
+    }
+    self.shared.cv.notify_one();
+
+    let promise_ptr = crate::roots::global_persistent_handle_table()
+      .get(promise_handle)
+      .unwrap_or_else(|| std::process::abort());
+    PromiseRef(promise_ptr.cast())
+  }
+
+  pub(crate) fn spawn_promise(
+    &self,
+    task: extern "C" fn(*mut u8, *mut u8) -> u8,
+    data: *mut u8,
+    layout: PromiseLayout,
+  ) -> PromiseRef {
+    self.spawn_promise_impl(task, WorkData::Unrooted(data), layout)
+  }
+
+  pub(crate) fn spawn_promise_rooted(
+    &self,
+    task: extern "C" fn(*mut u8, *mut u8) -> u8,
+    data: *mut u8,
+    layout: PromiseLayout,
+  ) -> PromiseRef {
+    // Safety: caller must uphold the rooted-task contract that `data` is the base pointer of a
+    // GC-managed object.
+    let root = unsafe { async_rt::gc::Root::new_unchecked(data) };
+    self.spawn_promise_impl(task, WorkData::Rooted(root), layout)
+  }
+
+  pub(crate) unsafe fn spawn_promise_rooted_h(
+    &self,
+    task: extern "C" fn(*mut u8, *mut u8) -> u8,
+    slot: crate::roots::GcHandle,
+    layout: PromiseLayout,
+  ) -> PromiseRef {
+    // Safety: caller must uphold the rooted-task contract that `slot` is a valid pointer to a
+    // writable `GcPtr` slot containing the base pointer of a GC-managed object.
+    let root = unsafe { async_rt::gc::Root::new_from_slot_unchecked(slot) };
+    self.spawn_promise_impl(task, WorkData::Rooted(root), layout)
   }
 }
 
@@ -152,17 +311,56 @@ fn worker_loop(shared: Arc<Shared>) {
     // Before running mutator code, poll the GC safepoint.
     threading::safepoint_poll();
 
-    // Blocking tasks execute in a GC-safe region so stop-the-world GC doesn't deadlock on a worker
-    // thread blocked in a syscall or long wait.
-    //
-    // Contract: the task must not touch or mutate the GC heap while running (no GC allocations, no
-    // dereferencing GC pointers, no write barriers).
-    let gc_safe = threading::enter_gc_safe_region();
+    let WorkItem { data, kind } = work;
+    match kind {
+      WorkKind::Legacy { task, promise } => {
+        let data = match &data {
+          WorkData::Unrooted(ptr) => *ptr,
+          WorkData::Rooted(root) => root.ptr(),
+        };
 
-    // The task is responsible for settling the promise. If it panics we abort the process
-    // deterministically instead of unwinding into the runtime.
-    crate::ffi::invoke_cb2_legacy_promise(work.task, work.data, work.promise);
+        // Blocking tasks execute in a GC-safe region so stop-the-world GC doesn't deadlock on a
+        // worker thread blocked in a syscall or long wait.
+        //
+        // Contract: the task must not touch or mutate the GC heap while running (no GC allocations,
+        // no dereferencing GC pointers, no write barriers).
+        let gc_safe = threading::enter_gc_safe_region();
 
-    drop(gc_safe);
+        // The task is responsible for settling the legacy promise. If it panics we abort the
+        // process deterministically instead of unwinding into the runtime.
+        crate::ffi::invoke_cb2_legacy_promise(task, data, promise);
+
+        drop(gc_safe);
+      }
+
+      WorkKind::Promise {
+        task,
+        promise,
+        out_payload,
+      } => {
+        let data = match &data {
+          WorkData::Unrooted(ptr) => *ptr,
+          WorkData::Rooted(root) => root.ptr(),
+        };
+
+        let gc_safe = threading::enter_gc_safe_region();
+
+        let tag = crate::ffi::invoke_cb2_blocking_promise_task(task, data, out_payload);
+
+        // Hop back to the event-loop thread to settle the GC-managed promise.
+        let micro = Box::new(BlockingPromiseMicrotask {
+          promise,
+          tag,
+          ran: false,
+        });
+        async_rt::global().enqueue_microtask(async_rt::Task::new_with_drop(
+          run_blocking_promise_microtask,
+          Box::into_raw(micro) as *mut u8,
+          drop_blocking_promise_microtask,
+        ));
+
+        drop(gc_safe);
+      }
+    }
   }
 }
