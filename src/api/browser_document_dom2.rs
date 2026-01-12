@@ -750,9 +750,48 @@ impl BrowserDocumentDom2 {
 
   /// Updates the viewport scroll offset (in CSS px), marking paint dirty.
   pub fn set_scroll(&mut self, scroll_x: f32, scroll_y: f32) {
-    self.options.scroll_x = scroll_x;
-    self.options.scroll_y = scroll_y;
-    self.paint_dirty = true;
+    if self.options.scroll_x != scroll_x || self.options.scroll_y != scroll_y {
+      self.options.scroll_delta = Point::new(
+        scroll_x - self.options.scroll_x,
+        scroll_y - self.options.scroll_y,
+      );
+      self.options.scroll_x = scroll_x;
+      self.options.scroll_y = scroll_y;
+      self.paint_dirty = true;
+    }
+  }
+
+  /// Updates the full scroll state (viewport + element scroll offsets), marking paint dirty.
+  pub fn set_scroll_state(&mut self, state: ScrollState) {
+    let ScrollState {
+      viewport,
+      elements,
+      viewport_delta,
+      elements_delta,
+    } = state;
+    let changed = self.options.scroll_x != viewport.x
+      || self.options.scroll_y != viewport.y
+      || self.options.element_scroll_offsets != elements
+      || self.options.scroll_delta != viewport_delta
+      || self.options.element_scroll_deltas != elements_delta;
+    if changed {
+      self.options.scroll_x = viewport.x;
+      self.options.scroll_y = viewport.y;
+      self.options.element_scroll_offsets = elements;
+      self.options.scroll_delta = viewport_delta;
+      self.options.element_scroll_deltas = elements_delta;
+      self.paint_dirty = true;
+    }
+  }
+
+  /// Returns the current scroll state used by this document.
+  pub fn scroll_state(&self) -> ScrollState {
+    ScrollState::from_parts_with_deltas(
+      Point::new(self.options.scroll_x, self.options.scroll_y),
+      self.options.element_scroll_offsets.clone(),
+      self.options.scroll_delta,
+      self.options.element_scroll_deltas.clone(),
+    )
   }
 
   /// Updates the animation/transition sampling timestamp in milliseconds since document load.
@@ -1476,6 +1515,27 @@ mod tests {
       }
     }
     None
+  }
+
+  #[test]
+  fn set_scroll_updates_scroll_delta_and_noops_when_unchanged() {
+    let renderer = renderer_for_tests();
+    let mut doc = BrowserDocumentDom2::new(
+      renderer,
+      "<!doctype html><html><body><div>Hello</div></body></html>",
+      RenderOptions::new().with_viewport(32, 32),
+    )
+    .expect("document");
+
+    doc.set_scroll(0.0, 0.0);
+    assert_eq!(doc.options.scroll_delta, Point::ZERO);
+
+    doc.set_scroll(10.0, 20.0);
+    assert_eq!(doc.options.scroll_delta, Point::new(10.0, 20.0));
+
+    let before = doc.options.scroll_delta;
+    doc.set_scroll(10.0, 20.0);
+    assert_eq!(doc.options.scroll_delta, before);
   }
 
   #[test]
