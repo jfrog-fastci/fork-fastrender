@@ -26,6 +26,7 @@ fn lld_linker_script_defines_stackmaps_range_symbols() {
     // lld + linker-script behavior.
     return;
   };
+  let timeout = find_cmd(&["timeout"]);
   let Some(clang) = find_cmd(&["clang-18", "clang"]) else {
     // Allow building in minimal environments; this test is specifically about
     // lld + linker-script behavior.
@@ -138,8 +139,18 @@ fn main() {
   ));
 
   let cargo_agent = workspace_root.join("scripts").join("cargo_agent.sh");
-  let status = Command::new("bash")
-    .arg(cargo_agent)
+  let mut cmd = if let Some(timeout) = timeout {
+    // Guard the nested Cargo invocation with a timeout so a regression can't hang the full test
+    // suite indefinitely.
+    let mut cmd = Command::new(timeout);
+    cmd.args(["-k", "10", "600", "bash"]).arg(cargo_agent);
+    cmd
+  } else {
+    let mut cmd = Command::new("bash");
+    cmd.arg(cargo_agent);
+    cmd
+  };
+  let status = cmd
     .arg("build")
     .arg("--offline")
     .arg("--quiet")

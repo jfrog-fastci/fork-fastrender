@@ -144,6 +144,7 @@ fn runtime_native_release_has_frame_pointers() {
     eprintln!("skipping: ar not found in PATH");
     return;
   };
+  let timeout = find_on_path(&["timeout", "gtimeout"]);
 
   let crate_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
   let workspace_root = crate_dir
@@ -204,10 +205,21 @@ pub fn entry() -> u64 {
   // slower and unnecessary for this regression test).
   let cargo_agent = workspace_root.join("scripts").join("cargo_agent.sh");
   let manifest_path = project_dir.join("Cargo.toml");
-  let mut cmd = Command::new("bash");
-  cmd
-    .arg(cargo_agent)
-    .current_dir(workspace_root)
+  let mut cmd = timeout.map_or_else(
+    || {
+      let mut cmd = Command::new("bash");
+      cmd.arg(&cargo_agent);
+      cmd
+    },
+    |timeout| {
+      // `cargo_agent.sh` itself does not impose a wall-clock limit. Guard this nested build with a
+      // timeout so regressions can't hang the entire test suite indefinitely.
+      let mut cmd = Command::new(timeout);
+      cmd.args(["-k", "10", "900", "bash"]).arg(&cargo_agent);
+      cmd
+    },
+  );
+  cmd.current_dir(workspace_root)
     .env("CARGO_TARGET_DIR", &target_dir)
     // Ensure the `.rlib` contains disassemblable object files (not LLVM bitcode).
     .env("CARGO_PROFILE_RELEASE_LTO", "false")
