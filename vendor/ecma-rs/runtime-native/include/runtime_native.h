@@ -362,7 +362,10 @@ RtShapeId rt_register_shape_table_append(const RtShapeDescriptor* table, size_t 
 // (i.e. before the first `rt_thread_init`, `rt_alloc`, `rt_gc_collect`, etc).
 // If the heap has already been initialized, setters return false.
 //
-// Optional environment-variable overrides (read once at heap initialization):
+// Optional environment-variable overrides (read once at heap initialization).
+//
+// These override the runtime defaults only; if an embedder successfully calls `rt_gc_set_config` /
+// `rt_gc_set_limits` before heap initialization, the corresponding env vars are ignored.
 // - ECMA_RS_GC_NURSERY_MB
 // - ECMA_RS_GC_MAX_HEAP_MB
 // - ECMA_RS_GC_MAX_TOTAL_MB

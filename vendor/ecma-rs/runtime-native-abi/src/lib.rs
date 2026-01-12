@@ -605,6 +605,8 @@ extern "C" {
   pub fn rt_write_barrier(obj: GcPtr, slot: *mut u8);
   pub fn rt_write_barrier_range(obj: GcPtr, start_slot: *mut u8, len: usize);
   pub fn rt_gc_collect();
+  pub fn rt_gc_collect_minor();
+  pub fn rt_gc_collect_major();
   pub fn rt_backing_store_external_bytes() -> usize;
   pub fn rt_gc_set_config(cfg: *const RtGcConfig) -> bool;
   pub fn rt_gc_set_limits(limits: *const RtGcLimits) -> bool;
@@ -1202,6 +1204,8 @@ mod tests {
       "rt_write_barrier(",
       "rt_write_barrier_range(",
       "rt_gc_collect(",
+      "rt_gc_collect_minor(",
+      "rt_gc_collect_major(",
       "rt_backing_store_external_bytes(",
       "rt_gc_set_config(",
       "rt_gc_set_limits(",
