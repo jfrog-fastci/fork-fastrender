@@ -1,0 +1,417 @@
+use std::collections::HashMap;
+use std::path::Path;
+use std::sync::Arc;
+
+use crate::css::parser::parse_stylesheet;
+use crate::css::types::{
+  CssRule, Declaration, FontPaletteBase, FontPaletteOverride, FontPaletteValuesRule, PropertyValue,
+};
+use crate::paint::text_rasterize::TextRasterizer;
+use crate::style::color::{Color, Rgba};
+use crate::style::font_palette::{resolve_font_palette_for_font, FontPaletteRegistry};
+use crate::style::media::MediaContext;
+use crate::style::properties::{apply_declaration_with_base, DEFAULT_VIEWPORT};
+use crate::style::types::FontPalette;
+use crate::style::ComputedStyle;
+use crate::text::font_db::FontDatabase;
+use crate::text::font_loader::FontContext;
+use crate::text::pipeline::ShapingPipeline;
+use tiny_skia::Pixmap;
+
+#[test]
+fn parses_font_palette_values_rules() {
+  let css = "@font-palette-values --emoji { font-family: Foo, \"Bar\"; base-palette: dark; override-colors: 0 rgb(10 20 30), 3 currentColor; }";
+  let sheet = parse_stylesheet(css).expect("stylesheet should parse");
+  assert_eq!(sheet.rules.len(), 1);
+
+  let rule = match &sheet.rules[0] {
+    CssRule::FontPaletteValues(rule) => rule,
+    other => panic!("unexpected rule parsed: {other:?}"),
+  };
+
+  assert_eq!(rule.name, "--emoji");
+  assert_eq!(
+    rule.font_families,
+    vec!["Foo".to_string(), "Bar".to_string()]
+  );
+  assert_eq!(rule.base_palette, FontPaletteBase::Dark);
+  assert_eq!(
+    rule.overrides,
+    vec![
+      FontPaletteOverride {
+        index: 0,
+        color: Color::Rgba(Rgba::from_rgba8(10, 20, 30, 255))
+      },
+      FontPaletteOverride {
+        index: 3,
+        color: Color::CurrentColor
+      }
+    ]
+  );
+}
+
+#[test]
+fn font_palette_property_accepts_named_identifiers() {
+  let mut styles = ComputedStyle::default();
+  let parent = ComputedStyle::default();
+  let declaration = Declaration {
+    property: "font-palette".into(),
+    value: PropertyValue::Keyword("--Custom-Palette".into()),
+    contains_var: false,
+    raw_value: "--Custom-Palette".into(),
+    important: false,
+  };
+
+  apply_declaration_with_base(
+    &mut styles,
+    &declaration,
+    &parent,
+    &ComputedStyle::default(),
+    None,
+    parent.font_size,
+    parent.root_font_size,
+    DEFAULT_VIEWPORT,
+    false,
+  );
+
+  assert_eq!(
+    styles.font_palette,
+    FontPalette::Named("--custom-palette".into())
+  );
+}
+
+fn load_test_font() -> (FontContext, String) {
+  let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fonts/ColorTestCOLR.ttf");
+  let bytes = std::fs::read(path).expect("test color font should load");
+
+  let mut db = FontDatabase::empty();
+  db.load_font_data(bytes).expect("font should parse");
+  let family = db
+    .first_font()
+    .expect("font should be present")
+    .family
+    .clone();
+
+  (FontContext::with_database(Arc::new(db)), family)
+}
+
+fn build_palette_registry(family: &str) -> Arc<FontPaletteRegistry> {
+  let css = format!(
+    "@font-palette-values --custom {{ font-family: {family}; base-palette: 0; override-colors: 1 rgb(0 255 0); }}"
+  );
+  let sheet = parse_stylesheet(&css).expect("palette rule should parse");
+  let mut collected = sheet.collect_font_palette_rules(&MediaContext::default());
+  assert_eq!(collected.len(), 1, "expected a single palette rule");
+
+  let mut registry = FontPaletteRegistry::default();
+  registry.register(collected.pop().unwrap().rule.clone());
+  Arc::new(registry)
+}
+
+fn build_current_color_palette_registry(family: &str) -> Arc<FontPaletteRegistry> {
+  let css = format!(
+    "@font-palette-values --current {{ font-family: {family}; base-palette: 0; override-colors: 1 currentColor; }}"
+  );
+  let sheet = parse_stylesheet(&css).expect("palette rule should parse");
+  let mut collected = sheet.collect_font_palette_rules(&MediaContext::default());
+  assert_eq!(collected.len(), 1, "expected a single palette rule");
+
+  let mut registry = FontPaletteRegistry::default();
+  registry.register(collected.pop().unwrap().rule.clone());
+  Arc::new(registry)
+}
+
+fn build_light_dark_palette_registry(family: &str) -> Arc<FontPaletteRegistry> {
+  let css = format!(
+    "@font-palette-values --ld {{ font-family: {family}; base-palette: 0; override-colors: 1 light-dark(rgb(255 0 0), rgb(0 0 255)); }}"
+  );
+  let sheet = parse_stylesheet(&css).expect("palette rule should parse");
+  let mut collected = sheet.collect_font_palette_rules(&MediaContext::default());
+  assert_eq!(collected.len(), 1, "expected a single palette rule");
+
+  let mut registry = FontPaletteRegistry::default();
+  registry.register(collected.pop().unwrap().rule.clone());
+  Arc::new(registry)
+}
+
+fn unpremultiply(channel: u8, alpha: u8) -> u8 {
+  if alpha == 0 {
+    return 0;
+  }
+  (((channel as u16) * 255 + (alpha as u16 / 2)) / alpha as u16).min(255) as u8
+}
+
+fn color_histogram(pixmap: &Pixmap) -> HashMap<[u8; 3], usize> {
+  let mut hist = HashMap::new();
+  for px in pixmap.data().chunks_exact(4) {
+    let alpha = px[3];
+    if alpha == 0 {
+      continue;
+    }
+    let entry = hist
+      .entry([
+        unpremultiply(px[2], alpha),
+        unpremultiply(px[1], alpha),
+        unpremultiply(px[0], alpha),
+      ])
+      .or_insert(0);
+    *entry += 1;
+  }
+  hist
+}
+
+#[test]
+fn resolve_font_palette_current_color_override_ignores_text_alpha() {
+  let mut registry = FontPaletteRegistry::default();
+  let mut rule = FontPaletteValuesRule::new("--test");
+  rule.font_families = vec!["TestFont".to_string()];
+  rule.base_palette = FontPaletteBase::Index(0);
+  rule.overrides = vec![
+    FontPaletteOverride {
+      index: 1,
+      color: Color::CurrentColor,
+    },
+    FontPaletteOverride {
+      index: 2,
+      color: Color::Rgba(Rgba::new(1, 2, 3, 0.25)),
+    },
+  ];
+  registry.register(rule);
+
+  let palette = FontPalette::Named("--test".into());
+  let current_a = Rgba::new(10, 20, 30, 0.5);
+  let current_b = Rgba::new(10, 20, 30, 0.25);
+
+  let resolved_a =
+    resolve_font_palette_for_font(&palette, &registry, "TestFont", current_a, false, false);
+  let resolved_b =
+    resolve_font_palette_for_font(&palette, &registry, "TestFont", current_b, false, false);
+
+  assert_eq!(
+    resolved_a.overrides,
+    vec![
+      (1, Rgba::new(10, 20, 30, 1.0)),
+      (2, Rgba::new(1, 2, 3, 0.25))
+    ]
+  );
+  assert_eq!(resolved_b.overrides, resolved_a.overrides);
+  assert_eq!(resolved_b.override_hash, resolved_a.override_hash);
+}
+
+#[test]
+fn palette_overrides_recolor_colr_glyphs() {
+  let (font_context, family) = load_test_font();
+  let palette_registry = build_palette_registry(&family);
+
+  let mut normal_style = ComputedStyle::default();
+  normal_style.font_family = vec![family.clone()].into();
+  normal_style.font_size = 32.0;
+  normal_style.font_palettes = palette_registry.clone();
+  normal_style.font_palette = FontPalette::Normal;
+
+  let mut custom_style = normal_style.clone();
+  custom_style.font_palette = FontPalette::Named("--custom".into());
+
+  let pipeline = ShapingPipeline::new();
+  let normal_runs = pipeline
+    .shape("A", &normal_style, &font_context)
+    .expect("shaping should succeed");
+  let custom_runs = pipeline
+    .shape("A", &custom_style, &font_context)
+    .expect("shaping should succeed");
+
+  assert!(!normal_runs.is_empty());
+  assert!(normal_runs[0].palette_overrides.is_empty());
+  assert_eq!(
+    custom_runs[0].palette_overrides.as_ref(),
+    &vec![(1, Rgba::from_rgba8(0, 255, 0, 255))]
+  );
+
+  let mut rasterizer = TextRasterizer::new();
+  let mut normal_pixmap = Pixmap::new(64, 64).unwrap();
+  rasterizer
+    .render_runs(
+      &normal_runs,
+      8.0,
+      48.0,
+      normal_style.color,
+      &mut normal_pixmap,
+    )
+    .unwrap();
+
+  let mut custom_pixmap = Pixmap::new(64, 64).unwrap();
+  rasterizer
+    .render_runs(
+      &custom_runs,
+      8.0,
+      48.0,
+      custom_style.color,
+      &mut custom_pixmap,
+    )
+    .unwrap();
+
+  let red = [255, 0, 0];
+  let blue = [0, 0, 255];
+  let green = [0, 255, 0];
+
+  let normal_hist = color_histogram(&normal_pixmap);
+  let custom_hist = color_histogram(&custom_pixmap);
+
+  assert!(normal_hist.contains_key(&red));
+  assert!(normal_hist.contains_key(&blue));
+  assert!(!normal_hist.contains_key(&green));
+
+  assert!(custom_hist.contains_key(&green));
+  assert!(custom_hist.contains_key(&blue));
+  assert!(!custom_hist.contains_key(&red));
+}
+
+#[test]
+fn palette_overrides_follow_current_color_across_cached_runs() {
+  let (font_context, family) = load_test_font();
+  let palette_registry = build_current_color_palette_registry(&family);
+
+  let mut red_style = ComputedStyle::default();
+  red_style.font_family = vec![family.clone()].into();
+  red_style.font_size = 32.0;
+  red_style.font_palette = FontPalette::Named("--current".into());
+  red_style.font_palettes = palette_registry.clone();
+  red_style.color = Rgba::from_rgba8(200, 0, 0, 255);
+
+  let pipeline = ShapingPipeline::new();
+  let red_runs = pipeline
+    .shape("A", &red_style, &font_context)
+    .expect("shaping should succeed");
+  assert_eq!(
+    red_runs[0].palette_overrides.as_ref(),
+    &vec![(1, red_style.color)]
+  );
+
+  let mut green_style = red_style.clone();
+  green_style.color = Rgba::from_rgba8(0, 200, 0, 255);
+
+  let green_runs = pipeline
+    .shape("A", &green_style, &font_context)
+    .expect("shaping should succeed");
+  assert_eq!(
+    green_runs[0].palette_overrides.as_ref(),
+    &vec![(1, green_style.color)]
+  );
+}
+
+#[test]
+fn palette_overrides_follow_used_color_scheme_across_cached_runs() {
+  let (font_context, family) = load_test_font();
+  let palette_registry = build_light_dark_palette_registry(&family);
+
+  let mut light_style = ComputedStyle::default();
+  light_style.font_family = vec![family.clone()].into();
+  light_style.font_size = 32.0;
+  light_style.font_palette = FontPalette::Named("--ld".into());
+  light_style.font_palettes = palette_registry.clone();
+  light_style.used_dark_color_scheme = false;
+
+  let pipeline = ShapingPipeline::new();
+  let light_runs = pipeline
+    .shape("A", &light_style, &font_context)
+    .expect("shaping should succeed");
+  assert_eq!(
+    light_runs[0].palette_overrides.as_ref(),
+    &vec![(1, Rgba::from_rgba8(255, 0, 0, 255))]
+  );
+  assert_eq!(pipeline.cache_len(), 1);
+
+  let mut dark_style = light_style.clone();
+  dark_style.used_dark_color_scheme = true;
+
+  let dark_runs = pipeline
+    .shape("A", &dark_style, &font_context)
+    .expect("shaping should succeed");
+  assert_eq!(
+    dark_runs[0].palette_overrides.as_ref(),
+    &vec![(1, Rgba::from_rgba8(0, 0, 255, 255))]
+  );
+
+  // With the shaping cache enabled and a shared pipeline instance, palette overrides must not be
+  // reused across a light↔dark scheme flip.
+  assert_eq!(pipeline.cache_len(), 2);
+}
+
+#[test]
+fn current_color_palette_overrides_do_not_double_apply_text_alpha() {
+  let (font_context, family) = load_test_font();
+  let palette_registry = build_current_color_palette_registry(&family);
+
+  let mut style = ComputedStyle::default();
+  style.font_family = vec![family.clone()].into();
+  style.font_size = 32.0;
+  style.font_palette = FontPalette::Named("--current".into());
+  style.font_palettes = palette_registry;
+  style.color = Rgba::new(0, 255, 0, 0.5);
+
+  let pipeline = ShapingPipeline::new();
+  let runs = pipeline
+    .shape("A", &style, &font_context)
+    .expect("shaping should succeed");
+
+  let mut rasterizer = TextRasterizer::new();
+  let mut pixmap = Pixmap::new(64, 64).unwrap();
+  rasterizer
+    .render_runs(&runs, 8.0, 48.0, style.color, &mut pixmap)
+    .unwrap();
+
+  let mut green_count = 0usize;
+  let mut green_sum = 0u64;
+  let mut green_max = 0u8;
+  let mut blue_count = 0usize;
+  let mut blue_sum = 0u64;
+  let mut blue_max = 0u8;
+
+  for px in pixmap.data().chunks_exact(4) {
+    let alpha = px[3];
+    if alpha == 0 {
+      continue;
+    }
+
+    let rgb = [
+      unpremultiply(px[2], alpha),
+      unpremultiply(px[1], alpha),
+      unpremultiply(px[0], alpha),
+    ];
+
+    let is_green = rgb[1] >= 200 && rgb[0] <= 60 && rgb[2] <= 60;
+    let is_blue = rgb[2] >= 200 && rgb[0] <= 60 && rgb[1] <= 60;
+
+    if is_green {
+      green_count += 1;
+      green_sum += alpha as u64;
+      green_max = green_max.max(alpha);
+    } else if is_blue {
+      blue_count += 1;
+      blue_sum += alpha as u64;
+      blue_max = blue_max.max(alpha);
+    }
+  }
+
+  assert!(
+    green_count > 0 && blue_count > 0,
+    "expected both green (currentColor override) and blue (unmodified palette) pixels; got green={green_count} blue={blue_count}"
+  );
+
+  let green_mean = green_sum as f32 / green_count as f32;
+  let blue_mean = blue_sum as f32 / blue_count as f32;
+  let expected_alpha = (style.color.a * 255.0).round();
+
+  assert!(
+    (blue_max as f32) >= expected_alpha - 30.0,
+    "expected blue pixels near CSS alpha (~{expected_alpha}) but max alpha was {blue_max}"
+  );
+  assert!(
+    (green_max as f32) >= expected_alpha - 30.0,
+    "expected currentColor override pixels near CSS alpha (~{expected_alpha}) but max alpha was {green_max} (likely double-applied)"
+  );
+  assert!(
+    green_mean >= blue_mean * 0.8,
+    "expected currentColor override alpha similar to other palette colors; got mean alpha green={green_mean:.1} blue={blue_mean:.1}"
+  );
+}

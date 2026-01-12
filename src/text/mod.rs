@@ -109,3 +109,6 @@ pub use pipeline::ShapedRun;
 pub use pipeline::ShapingPipeline;
 pub use segmentation::segment_grapheme_clusters;
 pub use variations::{apply_rustybuzz_variations, apply_variations_to_face, FontVariation};
+
+#[cfg(test)]
+mod tests;
