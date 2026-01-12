@@ -2818,6 +2818,15 @@ properties:
       Some("node/web_events.yaml")
     );
 
+    let message_event = kb
+      .api_for_target("MessageEvent", &node_20)
+      .expect("MessageEvent should resolve for Node targets with web event globals");
+    assert_eq!(message_event.name, "MessageEvent");
+    assert_eq!(
+      kb.source_for_target("MessageEvent", &node_20),
+      Some("node/web_events.yaml")
+    );
+
     let add_listener = kb
       .api_for_target("EventTarget.prototype.addEventListener", &node_20)
       .expect("EventTarget.prototype.addEventListener should resolve for modern Node targets");
