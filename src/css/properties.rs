@@ -360,6 +360,7 @@ const KNOWN_STYLE_PROPERTIES: &[&str] = &[
   "marker-mid",
   "marker-start",
   "mask",
+  "-webkit-mask",
   "mask-border",
   "mask-border-source",
   "mask-border-slice",
@@ -368,13 +369,21 @@ const KNOWN_STYLE_PROPERTIES: &[&str] = &[
   "mask-border-repeat",
   "mask-border-mode",
   "mask-image",
+  "-webkit-mask-image",
   "mask-position",
+  "-webkit-mask-position",
   "mask-size",
+  "-webkit-mask-size",
   "mask-repeat",
+  "-webkit-mask-repeat",
   "mask-clip",
+  "-webkit-mask-clip",
   "mask-origin",
+  "-webkit-mask-origin",
   "mask-composite",
+  "-webkit-mask-composite",
   "mask-mode",
+  "-webkit-mask-mode",
   "margin",
   "margin-block",
   "margin-block-end",
@@ -1739,7 +1748,10 @@ fn parse_known_property_value(property: &str, value_str: &str) -> Option<Propert
   }
 
   let is_background_longhand = property.starts_with("background-") || property == "background";
-  let is_mask_longhand = property.starts_with("mask-") || property == "mask";
+  let is_mask_longhand = property.starts_with("mask-")
+    || property == "mask"
+    || property == "-webkit-mask"
+    || property.starts_with("-webkit-mask-");
   let allow_commas = is_background_longhand || is_mask_longhand || property == "cursor";
 
   if property == "text-shadow" {
@@ -1911,7 +1923,9 @@ fn parse_known_property_value(property: &str, value_str: &str) -> Option<Propert
         if !p.is_exhausted() {
           return Err(p.new_custom_error(()));
         }
-        Ok((axis.unwrap(), angle.unwrap()))
+        let axis = axis.ok_or_else(|| p.new_custom_error(()))?;
+        let angle = angle.ok_or_else(|| p.new_custom_error(()))?;
+        Ok((axis, angle))
       });
 
       if let Ok(((x, y, z), angle)) = axis_angle {
@@ -2070,14 +2084,23 @@ fn parse_known_property_value(property: &str, value_str: &str) -> Option<Propert
       | "mask-border-outset"
       | "mask-border-repeat"
       | "mask-border-mode"
+      | "-webkit-mask"
       | "mask-image"
+      | "-webkit-mask-image"
       | "mask-position"
+      | "-webkit-mask-position"
       | "mask-size"
+      | "-webkit-mask-size"
       | "mask-repeat"
+      | "-webkit-mask-repeat"
       | "mask-mode"
+      | "-webkit-mask-mode"
       | "mask-origin"
+      | "-webkit-mask-origin"
       | "mask-clip"
+      | "-webkit-mask-clip"
       | "mask-composite"
+      | "-webkit-mask-composite"
       | "border"
       | "border-top"
       | "border-right"
@@ -3879,7 +3902,9 @@ fn unescape_css_string_fragment(value: &str) -> String {
         if !ch.is_ascii_hexdigit() {
           break;
         }
-        let digit = ch.to_digit(16).unwrap();
+        let Some(digit) = ch.to_digit(16) else {
+          break;
+        };
         value = (value << 4) | digit;
         digits += 1;
         iter.next();
@@ -3897,7 +3922,12 @@ fn unescape_css_string_fragment(value: &str) -> String {
       continue;
     }
 
-    out.push(iter.next().unwrap());
+    if let Some(escaped) = iter.next() {
+      out.push(escaped);
+    } else {
+      out.push(char::REPLACEMENT_CHARACTER);
+      break;
+    }
   }
 
   out
@@ -4645,13 +4675,13 @@ fn parse_radial_position(text: &str) -> Option<GradientPosition> {
 
   match parts_len {
     1 => {
-      let part = parts_buf[0].unwrap();
+      let part = parts_buf[0]?;
       x = component_from_single(&part, AxisKind::Horizontal);
       y = component_from_single(&part, AxisKind::Vertical);
     }
     2 => {
-      let part0 = parts_buf[0].unwrap();
-      let part1 = parts_buf[1].unwrap();
+      let part0 = parts_buf[0]?;
+      let part1 = parts_buf[1]?;
       // First token determines axis, second fills the other.
       if let Some(cx) = component_from_single(&part0, AxisKind::Horizontal) {
         x = Some(cx);
@@ -4669,9 +4699,9 @@ fn parse_radial_position(text: &str) -> Option<GradientPosition> {
       }
     }
     3 => {
-      let part0 = parts_buf[0].unwrap();
-      let part1 = parts_buf[1].unwrap();
-      let part2 = parts_buf[2].unwrap();
+      let part0 = parts_buf[0]?;
+      let part1 = parts_buf[1]?;
+      let part2 = parts_buf[2]?;
       // x keyword [offset] y keyword
       if let Some(cx) = component_from_single(&part0, AxisKind::Horizontal) {
         x = Some(component_from_keyword(
@@ -4694,10 +4724,10 @@ fn parse_radial_position(text: &str) -> Option<GradientPosition> {
       }
     }
     4 => {
-      let part0 = parts_buf[0].unwrap();
-      let part1 = parts_buf[1].unwrap();
-      let part2 = parts_buf[2].unwrap();
-      let part3 = parts_buf[3].unwrap();
+      let part0 = parts_buf[0]?;
+      let part1 = parts_buf[1]?;
+      let part2 = parts_buf[2]?;
+      let part3 = parts_buf[3]?;
 
       x = component_from_single(&part0, AxisKind::Horizontal);
       y = component_from_single(&part2, AxisKind::Vertical);
