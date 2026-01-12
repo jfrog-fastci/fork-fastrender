@@ -1288,11 +1288,8 @@ impl Heap {
   /// `index` is out of bounds or `bytes` is empty, this returns `Ok(0)` (mirroring typed array
   /// out-of-bounds write semantics).
   ///
-  /// If the backing buffer is detached, this returns a TypeError.
-  ///
-  /// If the backing buffer is detached and the write is in-bounds, this returns a `TypeError`.
-  ///
-  /// If the view is out of bounds, this returns `Ok(0)` (defensive no-op).
+  /// Returns a `TypeError` if the backing `ArrayBuffer` is detached or if the view is out of
+  /// bounds.
   ///
   /// # Errors
   ///
@@ -1333,7 +1330,7 @@ impl Heap {
       data.len()
     };
     if view_end > buf_len {
-      return Ok(0);
+      return Err(VmError::TypeError("Uint8Array view out of bounds"));
     }
 
     let buf = self.get_array_buffer_mut(buffer)?;
