@@ -22,6 +22,10 @@ use hir_js::{DefKind, FileKind, StmtKind};
 use inkwell::basic_block::BasicBlock;
 use inkwell::builder::Builder;
 use inkwell::context::Context;
+use inkwell::debug_info::{
+  AsDIScope, DICompileUnit, DIFile, DILocation, DISubprogram, DIType, DWARFEmissionKind, DWARFSourceLanguage,
+  DebugInfoBuilder,
+};
 use inkwell::module::Linkage;
 use inkwell::module::Module;
 use inkwell::types::IntType;
@@ -34,6 +38,7 @@ use optimize_js::il::inst::{Arg, BinOp, Const, Inst, InstTyp, UnOp};
 use optimize_js::symbol::semantics::SymbolId;
 use optimize_js::{CompileCfgOptions, Program as OptProgram, TopLevelMode};
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 use typecheck_ts::{DefId, FileId, Program};
 
 /// Options controlling SSA backend codegen.
@@ -131,7 +136,17 @@ pub fn codegen<'ctx>(
       )]
     })?;
 
-  let mut cg = ProgramCodegen::new(context, program, &opt_program, analyses, fn_defs, &options.module_name)?;
+  let mut cg = ProgramCodegen::new(
+    context,
+    program,
+    entry_file,
+    source.clone(),
+    &opt_program,
+    analyses,
+    fn_defs,
+    &options.module_name,
+    debug,
+  )?;
   cg.codegen_all_functions()?;
   cg.build_c_main(main_fnid);
   Ok(cg.finish())
@@ -171,6 +186,161 @@ fn collect_hoisted_function_defs(lowered: &hir_js::LowerResult) -> Result<Vec<De
   Ok(out)
 }
 
+#[derive(Clone)]
+struct LineIndex {
+  text: Arc<str>,
+  /// 0-based byte offsets of the start of each line.
+  line_starts: Vec<usize>,
+}
+
+impl LineIndex {
+  fn new(text: Arc<str>) -> Self {
+    let mut line_starts = vec![0usize];
+    for (idx, b) in text.as_bytes().iter().enumerate() {
+      if *b == b'\n' {
+        line_starts.push(idx + 1);
+      }
+    }
+    Self { text, line_starts }
+  }
+
+  fn clamp_offset_to_char_boundary(&self, mut offset: usize) -> usize {
+    if offset > self.text.len() {
+      offset = self.text.len();
+    }
+    while offset > 0 && !self.text.is_char_boundary(offset) {
+      offset -= 1;
+    }
+    offset
+  }
+
+  fn line_col(&self, offset: u32) -> (u32, u32) {
+    let offset = self.clamp_offset_to_char_boundary(offset as usize);
+
+    // Find the last line start that is <= offset.
+    let line_idx = match self.line_starts.binary_search(&offset) {
+      Ok(idx) => idx.min(self.line_starts.len().saturating_sub(1)),
+      Err(0) => 0,
+      Err(idx) => idx - 1,
+    };
+    let line_start = *self.line_starts.get(line_idx).unwrap_or(&0);
+
+    // DWARF columns are 1-based UTF-8 byte offsets within the line (0 means unknown).
+    let line = (line_idx + 1) as u32;
+    let col = offset.saturating_sub(line_start).saturating_add(1) as u32;
+    (line, col)
+  }
+}
+
+struct SsaDebug<'ctx> {
+  builder: DebugInfoBuilder<'ctx>,
+  #[allow(dead_code)]
+  compile_unit: DICompileUnit<'ctx>,
+  file: DIFile<'ctx>,
+  i32_ty: DIType<'ctx>,
+  line_index: LineIndex,
+}
+
+impl<'ctx> SsaDebug<'ctx> {
+  fn new(module: &Module<'ctx>, program: &Program, entry_file: FileId, source: Arc<str>) -> Self {
+    let entry_name = program
+      .file_key(entry_file)
+      .map(|k| k.to_string())
+      .unwrap_or_else(|| "entry.ts".to_string());
+
+    // Keep the module-level `source_filename` in sync with the DWARF compile-unit file so tools
+    // that inspect LLVM IR (or fall back to the module header) see a meaningful entry filename.
+    module.set_source_file_name(&entry_name);
+
+    // See `codegen::debuginfo` for the rationale behind these debug-info defaults.
+    let (builder, compile_unit) = module.create_debug_info_builder(
+      true,
+      DWARFSourceLanguage::CPlusPlus,
+      &entry_name,
+      ".",
+      "native-js",
+      false,
+      "",
+      0,
+      "",
+      DWARFEmissionKind::Full,
+      0,
+      false,
+      false,
+      "",
+      "",
+    );
+
+    let file = builder.create_file(&entry_name, ".");
+    let i32_ty = builder
+      .create_basic_type("i32", 32, 0x05, 0)
+      .expect("failed to create `i32` debug type")
+      .as_type();
+
+    Self {
+      builder,
+      compile_unit,
+      file,
+      i32_ty,
+      line_index: LineIndex::new(source),
+    }
+  }
+
+  fn finalize(&self) {
+    self.builder.finalize();
+  }
+
+  fn line_col_from_span(&self, span: Option<TextRange>) -> (u32, u32) {
+    let Some(span) = span else {
+      return (1, 0);
+    };
+    self.line_index.line_col(span.start)
+  }
+
+  fn create_subprogram(
+    &self,
+    program: &Program,
+    def: DefId,
+    line: u32,
+    allow_void_return: bool,
+    param_count: usize,
+    function: FunctionValue<'ctx>,
+    is_local_to_unit: bool,
+  ) -> DISubprogram<'ctx> {
+    let linkage_name = crate::llvm_symbol_for_def(program, def);
+    // Prefer a friendly TS name for debuggers, but still attach the stable symbol as `linkageName`.
+    let name = program.def_name(def).unwrap_or_else(|| linkage_name.clone());
+
+    let return_ty = (!allow_void_return).then_some(self.i32_ty);
+    let params: Vec<DIType<'ctx>> = std::iter::repeat(self.i32_ty).take(param_count).collect();
+    let subroutine_type = self
+      .builder
+      .create_subroutine_type(self.file, return_ty, &params, 0);
+
+    let sp = self.builder.create_function(
+      self.file.as_debug_info_scope(),
+      &name,
+      Some(&linkage_name),
+      self.file,
+      line,
+      subroutine_type,
+      is_local_to_unit,
+      true,
+      line,
+      0,
+      false,
+    );
+    function.set_subprogram(sp);
+    sp
+  }
+
+  fn location(&self, context: &'ctx Context, line: u32, col: u32, scope: DISubprogram<'ctx>) -> DILocation<'ctx> {
+    self
+      .builder
+      .create_debug_location(context, line, col, scope.as_debug_info_scope(), None)
+  }
+}
+
 struct ProgramCodegen<'ctx, 'p> {
   context: &'ctx Context,
   module: Module<'ctx>,
@@ -181,19 +351,24 @@ struct ProgramCodegen<'ctx, 'p> {
   analyses: ProgramAnalyses,
   fn_defs: Vec<DefId>,
   llvm_fns: Vec<FunctionValue<'ctx>>,
+  debug_subprograms: Vec<Option<DISubprogram<'ctx>>>,
   allow_void_return: Vec<bool>,
   foreign_fn_map: HashMap<SymbolId, usize>,
   exported_defs: HashSet<DefId>,
+  debug: Option<SsaDebug<'ctx>>,
 }
 
 impl<'ctx, 'p> ProgramCodegen<'ctx, 'p> {
   fn new(
     context: &'ctx Context,
     program: &'p Program,
+    entry_file: FileId,
+    source: Arc<str>,
     opt_program: &'p OptProgram,
     analyses: ProgramAnalyses,
     fn_defs: Vec<DefId>,
     module_name: &str,
+    debug: bool,
   ) -> Result<Self, Vec<Diagnostic>> {
     let i32_ty = context.i32_type();
 
@@ -206,18 +381,23 @@ impl<'ctx, 'p> ProgramCodegen<'ctx, 'p> {
 
     let foreign_fn_map = collect_foreign_fn_map(opt_program.top_level.analyzed_cfg());
 
+    let module = context.create_module(module_name);
+    let debug = debug.then_some(SsaDebug::new(&module, program, entry_file, source));
+
     let mut cg = Self {
       context,
-      module: context.create_module(module_name),
+      module,
       i32_ty,
       program,
       opt_program,
       analyses,
       fn_defs,
       llvm_fns: Vec::new(),
+      debug_subprograms: Vec::new(),
       allow_void_return: Vec::new(),
       foreign_fn_map,
       exported_defs,
+      debug,
     };
 
     cg.declare_functions()?;
@@ -225,13 +405,18 @@ impl<'ctx, 'p> ProgramCodegen<'ctx, 'p> {
   }
 
   fn finish(self) -> Module<'ctx> {
+    if let Some(debug) = self.debug.as_ref() {
+      debug.finalize();
+    }
     self.module
   }
 
   fn declare_functions(&mut self) -> Result<(), Vec<Diagnostic>> {
     self.llvm_fns.clear();
+    self.debug_subprograms.clear();
     self.allow_void_return.clear();
     self.llvm_fns.reserve(self.fn_defs.len());
+    self.debug_subprograms.reserve(self.fn_defs.len());
     self.allow_void_return.reserve(self.fn_defs.len());
 
     for (fnid, def) in self.fn_defs.iter().copied().enumerate() {
@@ -250,7 +435,26 @@ impl<'ctx, 'p> ProgramCodegen<'ctx, 'p> {
       };
       let f = self.module.add_function(&name, fn_ty, linkage);
       crate::stack_walking::apply_stack_walking_attrs(self.context, f);
+
+      let sp = if let Some(debug) = self.debug.as_ref() {
+        let span = self.program.span_of_def(def).map(|s| s.range);
+        let (line, _col) = debug.line_col_from_span(span);
+        let is_local_to_unit = f.get_linkage() == Linkage::Internal;
+        Some(debug.create_subprogram(
+          self.program,
+          def,
+          line,
+          sig.allow_void_return,
+          sig.param_count,
+          f,
+          is_local_to_unit,
+        ))
+      } else {
+        None
+      };
+
       self.llvm_fns.push(f);
+      self.debug_subprograms.push(sp);
     }
     Ok(())
   }
@@ -279,7 +483,8 @@ impl<'ctx, 'p> ProgramCodegen<'ctx, 'p> {
       )])?
       .analyzed_cfg();
 
-    let mut fc = FnCodegen::new(self, fnid, func, cfg, self.allow_void_return[fnid]);
+    let debug_scope = self.debug_subprograms.get(fnid).copied().unwrap_or(None);
+    let mut fc = FnCodegen::new(self, fnid, func, cfg, self.allow_void_return[fnid], debug_scope);
     fc.codegen()?;
     Ok(())
   }
@@ -441,6 +646,7 @@ struct FnCodegen<'ctx, 'a, 'p> {
   func: FunctionValue<'ctx>,
   cfg: &'a Cfg,
   allow_void_return: bool,
+  debug_scope: Option<DISubprogram<'ctx>>,
 
   builder: Builder<'ctx>,
   bbs: HashMap<u32, BasicBlock<'ctx>>,
@@ -457,6 +663,7 @@ impl<'ctx, 'a, 'p> FnCodegen<'ctx, 'a, 'p> {
     func: FunctionValue<'ctx>,
     cfg: &'a Cfg,
     allow_void_return: bool,
+    debug_scope: Option<DISubprogram<'ctx>>,
   ) -> Self {
     let mut used_vars = HashSet::new();
     for (_, insts) in cfg.bblocks.all() {
@@ -475,6 +682,7 @@ impl<'ctx, 'a, 'p> FnCodegen<'ctx, 'a, 'p> {
       func,
       cfg,
       allow_void_return,
+      debug_scope,
       builder: cg.context.create_builder(),
       bbs: HashMap::new(),
       values: HashMap::new(),
@@ -484,7 +692,32 @@ impl<'ctx, 'a, 'p> FnCodegen<'ctx, 'a, 'p> {
     }
   }
 
+  fn set_debug_location(&self, span: Option<TextRange>) {
+    let Some(debug) = self.cg.debug.as_ref() else {
+      return;
+    };
+    let Some(scope) = self.debug_scope else {
+      return;
+    };
+    let Some(span) = span else {
+      // No explicit span: keep the previous debug location so these instructions still map to the
+      // last known source location (instead of clobbering it with an "unknown" column).
+      return;
+    };
+    let (line, col) = debug.line_col_from_span(Some(span));
+    let loc = debug.location(self.cg.context, line, col, scope);
+    self.builder.set_current_debug_location(loc);
+  }
+
   fn codegen(&mut self) -> Result<(), Vec<Diagnostic>> {
+    let def_span = self
+      .cg
+      .program
+      .span_of_def(self.cg.fn_defs[self.fnid])
+      .map(|s| s.range)
+      .unwrap_or_else(|| TextRange::new(0, 0));
+    self.set_debug_location(Some(def_span));
+
     self.create_blocks();
     self.bind_params()?;
     self.create_phi_nodes()?;
@@ -618,6 +851,7 @@ impl<'ctx, 'a, 'p> FnCodegen<'ctx, 'a, 'p> {
       let mut terminated = false;
       let insts = self.cfg.bblocks.get(label);
       for inst in insts.iter() {
+        self.set_debug_location(inst.meta.span);
         match inst.t.clone() {
           InstTyp::Phi => {}
           InstTyp::VarAssign => self.codegen_var_assign(label, inst)?,

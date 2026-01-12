@@ -266,7 +266,7 @@ fn logical_and_or_short_circuit() {
   let value = run_main(
     r#"
     export function main(): number {
-      let x = 0;
+      let x: number = 0;
       // Short-circuit `&&` / `||` operators should skip evaluating (and therefore skip side effects
       // in) their RHS expressions when the LHS determines the result.
       0 && (x = x + 1);

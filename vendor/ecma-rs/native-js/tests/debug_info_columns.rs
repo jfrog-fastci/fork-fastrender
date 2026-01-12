@@ -2,7 +2,7 @@
 
 use gimli::read::{Dwarf, EndianSlice};
 use gimli::{RunTimeEndian, SectionId};
-use native_js::{compile_program, CompilerOptions, EmitKind, OptLevel};
+use native_js::{compile_program, BackendKind, CompilerOptions, EmitKind, OptLevel};
 use object::{Object, ObjectSection};
 use typecheck_ts::lib_support::{CompilerOptions as TsCompilerOptions, LibName};
 use typecheck_ts::{FileKey, MemoryHost, Program};
@@ -16,11 +16,12 @@ fn es5_host() -> MemoryHost {
   })
 }
 
-fn compile_to_obj(program: &Program, entry: typecheck_ts::FileId) -> Vec<u8> {
+fn compile_to_obj(program: &Program, entry: typecheck_ts::FileId, backend: BackendKind) -> Vec<u8> {
   let mut opts = CompilerOptions::default();
   opts.emit = EmitKind::Object;
   opts.debug = true;
   opts.opt_level = OptLevel::O0;
+  opts.backend = backend;
 
   let artifact = compile_program(program, entry, &opts).expect("compile_program");
   let bytes = std::fs::read(&artifact.path).expect("read object bytes");
@@ -79,13 +80,24 @@ fn row_file_name(
 }
 
 #[test]
-fn dwarf_line_table_columns_are_utf8_byte_offsets() {
+fn dwarf_line_table_columns_are_utf8_byte_offsets_hir_backend() {
+  dwarf_line_table_columns_are_utf8_byte_offsets(BackendKind::Hir);
+}
+
+#[test]
+fn dwarf_line_table_columns_are_utf8_byte_offsets_ssa_backend() {
+  dwarf_line_table_columns_are_utf8_byte_offsets(BackendKind::Ssa);
+}
+
+fn dwarf_line_table_columns_are_utf8_byte_offsets(backend: BackendKind) {
   let mut host = es5_host();
   let key = FileKey::new("main.ts");
-  let source = r#"export function main(): number {
-  const x: number = 1;
-  const y: number = 2;
+  let source = r#"export function add(x: number, y: number): number {
   /* α */ return x + y;
+}
+
+export function main(): number {
+  return add(1, 2);
 }"#;
   host.insert(key.clone(), source);
 
@@ -113,7 +125,7 @@ fn dwarf_line_table_columns_are_utf8_byte_offsets() {
     "expected the multibyte `α` to make byte and char columns differ"
   );
 
-  let obj = compile_to_obj(&program, entry);
+  let obj = compile_to_obj(&program, entry, backend);
   let dwarf = load_dwarf(&obj);
 
   let mut found_exact = false;
