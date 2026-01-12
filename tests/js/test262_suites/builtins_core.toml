@@ -13,6 +13,11 @@ include = [
   "built-ins/Object/values/**/*.js",
   "built-ins/Object/entries/**/*.js",
   "built-ins/Object/fromEntries/**/*.js",
+  # Property descriptor plumbing is core to a lot of test262 harness + language semantics.
+  "built-ins/Object/getOwnPropertyDescriptor/**/*.js",
+  "built-ins/Object/getOwnPropertyDescriptors/**/*.js",
+  "built-ins/Object/getOwnPropertyNames/**/*.js",
+  "built-ins/Object/getOwnPropertySymbols/**/*.js",
   "built-ins/Object/getPrototypeOf/**/*.js",
   "built-ins/Object/setPrototypeOf/**/*.js",
   "built-ins/Object/hasOwn/**/*.js",
@@ -44,6 +49,8 @@ include = [
   "built-ins/String/prototype/concat/**/*.js",
   "built-ins/String/prototype/includes/**/*.js",
   "built-ins/String/prototype/indexOf/**/*.js",
+  "built-ins/String/prototype/replace/**/*.js",
+  "built-ins/String/prototype/replaceAll/**/*.js",
   "built-ins/String/prototype/slice/**/*.js",
   "built-ins/String/prototype/substring/**/*.js",
 
@@ -75,4 +82,3 @@ exclude = [
   "language/export/**",
   "language/module-code/**",
 ]
-
