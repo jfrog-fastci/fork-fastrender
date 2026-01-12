@@ -63,14 +63,16 @@ fn spawn_promise_impl(
     let tmp = StackRoot::new(promise.0.cast::<u8>());
     // Safety: `tmp.handle()` is a valid pointer-to-slot (`GcHandle`) containing a GC object base
     // pointer.
-    let rooted = unsafe { PersistentRoot::new_from_slot_unchecked(tmp.handle()) };
-    drop(tmp);
-    rooted
+    unsafe { PersistentRoot::new_from_slot_unchecked(tmp.handle()) }
   };
+
+  // Clone the root so we can return the *current* relocated pointer (reading from the persistent
+  // handle table) even if the promise moves while queuing the detached worker task.
+  let promise_for_task = promise_root.clone();
   let wrapper = Box::new(PromiseTask {
     func,
     data,
-    promise_root,
+    promise_root: promise_for_task,
     data_root,
   });
   let wrapper_ptr = Box::into_raw(wrapper) as *mut u8;
@@ -78,7 +80,7 @@ fn spawn_promise_impl(
   // Run the wrapper on the work-stealing pool without requiring a `TaskId` join.
   crate::rt_parallel().spawn_detached(promise_task_trampoline, wrapper_ptr);
 
-  promise
+  PromiseRef(promise_root.ptr().cast())
 }
 
 pub(crate) fn spawn_promise(
@@ -94,6 +96,10 @@ pub(crate) fn spawn_promise_rooted(
   data: *mut u8,
   layout: PromiseLayout,
 ) -> PromiseRef {
+  // Ensure `PersistentRoot::new_unchecked` is moving-GC safe by registering this thread before it
+  // may contend on the persistent handle table lock.
+  crate::threading::register_current_thread(ThreadKind::External);
+
   // Safety: caller must uphold the rooted-task contract that `data` is the base pointer of a
   // GC-managed object.
   let root = unsafe { PersistentRoot::new_unchecked(data) };
