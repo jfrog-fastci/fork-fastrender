@@ -955,6 +955,7 @@ impl TreeSink for Dom2TreeSink {
     let moved_children_snapshot = doc.node(*node).children.clone();
     if !moved_children_snapshot.is_empty() {
       for (idx, &child) in moved_children_snapshot.iter().enumerate() {
+        doc.node_iterator_pre_remove_steps(child);
         doc.live_mutation.pre_remove(child, *node, idx);
       }
       doc
