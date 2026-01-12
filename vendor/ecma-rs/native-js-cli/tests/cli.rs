@@ -303,6 +303,44 @@ fn run_rejects_json_flag() {
 }
 
 #[test]
+fn json_bench_success_contains_schema_version_command_and_timings() {
+  let tmp = TempDir::new().unwrap();
+  let entry = tmp.path().join("entry.ts");
+  fs::write(&entry, "export function main(): number { return 0; }\n").unwrap();
+
+  let assert = native_js()
+    .timeout(CLI_TIMEOUT)
+    .arg("--json")
+    .arg("bench")
+    .arg(&entry)
+    .arg("--warmup")
+    .arg("0")
+    .arg("--iters")
+    .arg("2")
+    .assert()
+    .success()
+    .code(0);
+
+  assert!(
+    assert.get_output().stderr.is_empty(),
+    "expected stderr to be empty, got: {}",
+    String::from_utf8_lossy(&assert.get_output().stderr)
+  );
+
+  let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
+  let value: Value = serde_json::from_str(&stdout).expect("stdout to be valid JSON");
+  assert_eq!(value["schema_version"], 1);
+  assert_eq!(value["command"], "bench");
+  assert!(value["compile_time_ms"].as_f64().is_some());
+  assert!(value["run_times_ms"].as_array().is_some());
+  assert_eq!(value["run_times_ms"].as_array().unwrap().len(), 2);
+  assert!(value["mean_ms"].as_f64().is_some());
+  assert!(value["median_ms"].as_f64().is_some());
+  assert!(value["min_ms"].as_f64().is_some());
+  assert!(value["max_ms"].as_f64().is_some());
+}
+
+#[test]
 fn build_and_run_returns_exit_code() {
   let tmp = TempDir::new().unwrap();
   let entry = tmp.path().join("entry.ts");
