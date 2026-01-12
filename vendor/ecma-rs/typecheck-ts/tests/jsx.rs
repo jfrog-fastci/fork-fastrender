@@ -742,7 +742,7 @@ function Foo(props: Props): JSX.Element { return null as any; }
     diagnostics
       .iter()
       .any(|d| d.code.as_str() == codes::PROPERTY_DOES_NOT_EXIST.as_str()),
-    "expected PROPERTY_DOES_NOT_EXIST diagnostic for wrong discriminated union JSX prop usage, got {diagnostics:?}"
+    "expected PROPERTY_DOES_NOT_EXIST (TS2339) for wrong discriminated union JSX prop usage, got {diagnostics:?}"
   );
 }
 
@@ -1827,6 +1827,7 @@ declare namespace JSX {
 fn element_children_attribute_with_multiple_properties_emits_ts2608() {
   let mut options = CompilerOptions::default();
   options.no_default_lib = true;
+  options.skip_lib_check = false;
   options.jsx = Some(JsxMode::React);
 
   let jsx = LibFile {
@@ -2260,6 +2261,7 @@ const ok = <Foo x={1} />;
 fn element_attributes_property_multiple_properties_errors() {
   let mut options = CompilerOptions::default();
   options.no_default_lib = true;
+  options.skip_lib_check = false;
   options.jsx = Some(JsxMode::React);
 
   let jsx = LibFile {

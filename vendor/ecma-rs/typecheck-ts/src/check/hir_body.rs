@@ -5751,7 +5751,7 @@ impl<'a> Checker<'a> {
         self.check_jsx_props(tag_loc, actual_props, expected_props_ty);
       }
       _ => {
-        self.check_jsx_component(tag_ty, actual_props, element_ty, tag_loc);
+        self.check_jsx_component(tag_ty, actual_props, element_ty, elem_loc, tag_loc);
       }
     }
   }
@@ -6745,9 +6745,11 @@ impl<'a> Checker<'a> {
     component_ty: TypeId,
     actual_props: &JsxActualProps,
     element_ty: TypeId,
-    loc: Loc,
+    elem_loc: Loc,
+    tag_loc: Loc,
   ) {
-    let span = Span::new(self.file, loc_to_range(self.file, loc));
+    let span = Span::new(self.file, loc_to_range(self.file, tag_loc));
+    let elem_span = Span::new(self.file, loc_to_range(self.file, elem_loc));
     let prim = self.store.primitive_ids();
     if matches!(
       self.store.type_kind(component_ty),
@@ -6826,7 +6828,7 @@ impl<'a> Checker<'a> {
         }
       }
       if is_construct {
-        match self.jsx_element_attributes_prop_name(loc) {
+        match self.jsx_element_attributes_prop_name(elem_loc) {
           JsxAttributesPropertyName::Missing => {}
           JsxAttributesPropertyName::Empty => {
             props_ty = ret_ty;
@@ -6841,7 +6843,7 @@ impl<'a> Checker<'a> {
                   format!(
                     "JSX element class does not support attributes because it does not have a '{prop_name}' property.",
                   ),
-                  span,
+                  elem_span,
                 ));
                 return;
               }
@@ -6918,7 +6920,7 @@ impl<'a> Checker<'a> {
       return;
     }
     let expected_props = self.jsx_apply_intrinsic_attributes(expected_props);
-    self.check_jsx_props(loc, actual_props, expected_props);
+    self.check_jsx_props(tag_loc, actual_props, expected_props);
   }
 
   fn jsx_component_call_signatures(&self, ty: TypeId) -> Vec<SignatureId> {
@@ -8017,6 +8019,12 @@ impl<'a> Checker<'a> {
         }
         self.store.intersection(collected)
       }
+      // Indexing into `undefined`/`null` should not poison the entire access with `unknown`.
+      //
+      // This matters when optional properties (e.g. `children?: [...]`) are read as `T | undefined`
+      // and we later index into that union for JSX children contextual typing.
+      TypeKind::Undefined => prim.undefined,
+      TypeKind::Null => prim.null,
       TypeKind::Ref { .. } => prim.unknown,
       TypeKind::Object(obj_id) => {
         let shape = self.store.shape(self.store.object(obj_id).shape);
