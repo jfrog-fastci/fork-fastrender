@@ -82,14 +82,7 @@ impl<'a> Scope<'a> {
     let to_prim_key = PropertyKey::from_symbol(to_prim_sym);
 
     // `GetMethod` uses `GetV`/`ToObject`. Here `input` is already an object.
-    let exotic = scope.ordinary_get_with_host_and_hooks(
-      vm,
-      host,
-      hooks,
-      obj,
-      to_prim_key,
-      Value::Object(obj),
-    )?;
+    let exotic = vm.get_with_host_and_hooks(host, &mut scope, hooks, obj, to_prim_key)?;
 
     // 2. If exoticToPrim is not undefined, then
     if !matches!(exotic, Value::Undefined | Value::Null) {
@@ -155,14 +148,7 @@ impl<'a> Scope<'a> {
       scope.push_root(Value::String(key_s))?;
       let key = PropertyKey::from_string(key_s);
 
-      let method = scope.ordinary_get_with_host_and_hooks(
-        vm,
-        host,
-        hooks,
-        obj,
-        key,
-        Value::Object(obj),
-      )?;
+      let method = vm.get_with_host_and_hooks(host, &mut scope, hooks, obj, key)?;
 
       if matches!(method, Value::Undefined | Value::Null) {
         continue;

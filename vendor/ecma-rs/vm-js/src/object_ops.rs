@@ -282,6 +282,99 @@ impl<'a> Scope<'a> {
     )
   }
 
+  /// ECMAScript `[[Get]]` internal method dispatch, using an explicit embedder host context and
+  /// host hook implementation.
+  ///
+  /// This dispatches to Proxy objects' `[[Get]]` algorithm when `obj` is a Proxy.
+  pub fn get_with_host_and_hooks(
+    &mut self,
+    vm: &mut Vm,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    obj: GcObject,
+    key: PropertyKey,
+    receiver: Value,
+  ) -> Result<Value, VmError> {
+    // Fast path: non-Proxy objects use the ordinary `[[Get]]` internal method.
+    if !self.heap().is_proxy_object(obj) {
+      return self.ordinary_get_with_host_and_hooks(vm, host, hooks, obj, key, receiver);
+    }
+
+    // Root the inputs so host hook implementations and Proxy traps can allocate freely.
+    //
+    // Note: `obj` might be a Proxy object, which does not have an `ObjectBase`; rooting it keeps
+    // its `[[ProxyTarget]]` / `[[ProxyHandler]]` alive (until revoked).
+    let mut scope = self.reborrow();
+    let key_root = match key {
+      PropertyKey::String(s) => Value::String(s),
+      PropertyKey::Symbol(s) => Value::Symbol(s),
+    };
+    scope.push_roots(&[Value::Object(obj), key_root, receiver])?;
+
+    // Follow Proxy chains iteratively to avoid recursion.
+    let mut current = obj;
+    let mut steps = 0usize;
+
+    // Cache the `"get"` trap key across Proxy hops so we only allocate it once per operation.
+    let mut get_trap_key: Option<PropertyKey> = None;
+
+    loop {
+      // Budget Proxy chain traversal. Mirror the property-table scan budget in
+      // `Heap::object_get_own_property_with_tick`: avoid ticking on the first iteration so a simple
+      // `Get` does not double-charge fuel (the surrounding expression evaluation already ticks).
+      const TICK_EVERY: usize = 1024;
+      if steps != 0 && steps % TICK_EVERY == 0 {
+        vm.tick()?;
+      }
+      if steps >= crate::MAX_PROTOTYPE_CHAIN {
+        return Err(VmError::PrototypeChainTooDeep);
+      }
+      steps += 1;
+
+      if !scope.heap().is_proxy_object(current) {
+        return scope.ordinary_get_with_host_and_hooks(vm, host, hooks, current, key, receiver);
+      }
+
+      let Some(target) = scope.heap().proxy_target(current)? else {
+        return Err(VmError::TypeError("Cannot perform 'get' on a revoked Proxy"));
+      };
+      let Some(handler) = scope.heap().proxy_handler(current)? else {
+        return Err(VmError::TypeError("Cannot perform 'get' on a revoked Proxy"));
+      };
+
+      // Let trap be ? GetMethod(handler, "get").
+      let get_key = match get_trap_key {
+        Some(k) => k,
+        None => {
+          let s = scope.alloc_string("get")?;
+          scope.push_root(Value::String(s))?;
+          let k = PropertyKey::from_string(s);
+          get_trap_key = Some(k);
+          k
+        }
+      };
+
+      // `GetMethod` uses `GetV`/`ToObject`. Here `handler` is already an object.
+      let trap = scope.get_with_host_and_hooks(vm, host, hooks, handler, get_key, Value::Object(handler))?;
+
+      // If trap is undefined or null, forward to the target.
+      if matches!(trap, Value::Undefined | Value::Null) {
+        current = target;
+        continue;
+      }
+      if !scope.heap().is_callable(trap)? {
+        return Err(VmError::TypeError("Proxy get trap is not callable"));
+      }
+
+      let key_value = match key {
+        PropertyKey::String(s) => Value::String(s),
+        PropertyKey::Symbol(s) => Value::Symbol(s),
+      };
+      let args = [Value::Object(target), key_value, receiver];
+      return vm.call_with_host_and_hooks(host, &mut scope, hooks, trap, Value::Object(handler), &args);
+    }
+  }
+
   /// ECMAScript `[[Get]]` for ordinary objects.
   ///
   /// ## ⚠️ Dummy `VmHost` context

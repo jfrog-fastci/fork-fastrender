@@ -2520,8 +2520,9 @@ impl Vm {
     scope.ordinary_get(self, obj, key, Value::Object(obj))
   }
 
-  /// ECMAScript `Get(O, P)` for ordinary objects, using an explicit embedder host context and host
-  /// hook implementation.
+  /// ECMAScript `Get(O, P)` using an explicit embedder host context and host hook implementation.
+  ///
+  /// This dispatches to Proxy objects' `[[Get]]` algorithm when `obj` is a Proxy.
   pub fn get_with_host_and_hooks(
     &mut self,
     host: &mut dyn VmHost,
@@ -2530,7 +2531,7 @@ impl Vm {
     obj: GcObject,
     key: PropertyKey,
   ) -> Result<Value, VmError> {
-    scope.ordinary_get_with_host_and_hooks(self, host, hooks, obj, key, Value::Object(obj))
+    scope.get_with_host_and_hooks(self, host, hooks, obj, key, Value::Object(obj))
   }
 
   /// ECMAScript `GetMethod(O, P)` where `O` is already known to be an object.

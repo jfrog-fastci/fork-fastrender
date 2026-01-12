@@ -1,9 +1,37 @@
-use vm_js::{Heap, HeapLimits, JsRuntime, Value, Vm, VmError, VmOptions};
+use vm_js::{
+  GcObject, Heap, HeapLimits, JsRuntime, PropertyDescriptor, PropertyKey, PropertyKind, Scope,
+  Value, Vm, VmError, VmOptions,
+};
 
 fn new_runtime() -> JsRuntime {
   let vm = Vm::new(VmOptions::default());
   let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
   JsRuntime::new(vm, heap).unwrap()
+}
+
+fn global_var_desc(value: Value) -> PropertyDescriptor {
+  PropertyDescriptor {
+    enumerable: true,
+    configurable: true,
+    kind: PropertyKind::Data {
+      value,
+      writable: true,
+    },
+  }
+}
+
+fn define_global(
+  scope: &mut Scope<'_>,
+  global: GcObject,
+  name: &str,
+  value: Value,
+) -> Result<(), VmError> {
+  scope.push_root(Value::Object(global))?;
+  scope.push_root(value)?;
+  let key_s = scope.alloc_string(name)?;
+  scope.push_root(Value::String(key_s))?;
+  let key = PropertyKey::from_string(key_s);
+  scope.define_property(global, key, global_var_desc(value))
 }
 
 #[test]
@@ -88,6 +116,109 @@ fn abstract_equality_uses_symbol_to_primitive_and_typeerrors_are_catchable_with_
     }
     other => panic!("expected ThrowWithStack, got {other:?}"),
   }
+}
+
+#[test]
+fn plus_operator_uses_symbol_to_primitive_via_proxy_get_trap() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  // `vm-js` does not currently expose a JS `Proxy` constructor. Allocate a Proxy object from Rust
+  // and use a JS-level handler `get` trap to validate that interpreter coercions dispatch `Get`
+  // through Proxy internal methods.
+  rt.exec_script(
+    r#"
+      var log = [];
+      var target = {};
+      var handler = {
+        get: function (t, k, r) {
+          log.push(String(k));
+          if (k === Symbol.toPrimitive) {
+            return function () { return "x"; };
+          }
+        },
+      };
+    "#,
+  )?;
+
+  let target = match rt.exec_script("target")? {
+    Value::Object(o) => o,
+    other => panic!("expected target object, got {other:?}"),
+  };
+  let handler = match rt.exec_script("handler")? {
+    Value::Object(o) => o,
+    other => panic!("expected handler object, got {other:?}"),
+  };
+
+  let global = rt.realm().global_object();
+  {
+    let (_vm, _realm, heap) = rt.vm_realm_and_heap_mut();
+    let mut scope = heap.scope();
+    scope.push_root(Value::Object(target))?;
+    scope.push_root(Value::Object(handler))?;
+    let proxy = scope.alloc_proxy(Some(target), Some(handler))?;
+    define_global(&mut scope, global, "p", Value::Object(proxy))?;
+  }
+
+  let result = rt.exec_script(
+    r#"
+      (() => {
+        var out = p + "";
+        return out === "x" && log.join(",").includes("toPrimitive");
+      })()
+    "#,
+  )?;
+  assert_eq!(result, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn plus_operator_falls_back_to_valueof_via_proxy_get_trap() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  rt.exec_script(
+    r#"
+      var log = [];
+      var target = {};
+      var handler = {
+        get: function (t, k, r) {
+          log.push(String(k));
+          if (k === "valueOf") {
+            return function () { return 41; };
+          }
+        },
+      };
+    "#,
+  )?;
+
+  let target = match rt.exec_script("target")? {
+    Value::Object(o) => o,
+    other => panic!("expected target object, got {other:?}"),
+  };
+  let handler = match rt.exec_script("handler")? {
+    Value::Object(o) => o,
+    other => panic!("expected handler object, got {other:?}"),
+  };
+
+  let global = rt.realm().global_object();
+  {
+    let (_vm, _realm, heap) = rt.vm_realm_and_heap_mut();
+    let mut scope = heap.scope();
+    scope.push_root(Value::Object(target))?;
+    scope.push_root(Value::Object(handler))?;
+    let proxy = scope.alloc_proxy(Some(target), Some(handler))?;
+    define_global(&mut scope, global, "p", Value::Object(proxy))?;
+  }
+
+  let result = rt.exec_script(
+    r#"
+      (() => {
+        var out = p + 1;
+        return out === 42 && log.join(",").includes("valueOf");
+      })()
+    "#,
+  )?;
+  assert_eq!(result, Value::Bool(true));
+  Ok(())
 }
 
 #[test]
