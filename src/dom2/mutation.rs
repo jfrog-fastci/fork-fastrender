@@ -145,7 +145,7 @@ fn push_cloned_node(doc: &mut Document, parent: Option<NodeId>, data: CloneNodeD
 impl Document {
   fn clone_node_shallow(&mut self, src: NodeId, parent: Option<NodeId>) -> Result<NodeId, DomError> {
     let copy_form_state = self.is_html_document();
-    let (data, input_state, textarea_state) = {
+    let (data, input_state, textarea_state, option_state) = {
       let node = self.node_checked(src)?;
       (
         clone_node_data(self, node, parent),
@@ -159,6 +159,11 @@ impl Document {
         } else {
           None
         },
+        if copy_form_state {
+          self.option_states[src.index()].clone()
+        } else {
+          None
+        },
       )
     };
     let dst = push_cloned_node(self, parent, data);
@@ -172,6 +177,9 @@ impl Document {
       if textarea_state.is_some() {
         self.textarea_states[dst.index()] = textarea_state;
       }
+      if option_state.is_some() {
+        self.option_states[dst.index()] = option_state;
+      }
     }
     Ok(dst)
   }
@@ -183,7 +191,7 @@ impl Document {
     parent: Option<NodeId>,
   ) -> Result<NodeId, DomError> {
     let copy_form_state = self.is_html_document();
-    let (data, input_state, textarea_state) = {
+    let (data, input_state, textarea_state, option_state) = {
       let node = src_doc.node_checked(src)?;
       (
         clone_node_data(self, node, parent),
@@ -197,6 +205,11 @@ impl Document {
         } else {
           None
         },
+        if copy_form_state {
+          src_doc.option_states[src.index()].clone()
+        } else {
+          None
+        },
       )
     };
     let dst = push_cloned_node(self, parent, data);
@@ -209,6 +222,9 @@ impl Document {
       }
       if textarea_state.is_some() {
         self.textarea_states[dst.index()] = textarea_state;
+      }
+      if option_state.is_some() {
+        self.option_states[dst.index()] = option_state;
       }
     }
     Ok(dst)

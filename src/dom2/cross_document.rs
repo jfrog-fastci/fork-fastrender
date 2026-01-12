@@ -80,6 +80,11 @@ fn clone_node_shallow_from_other_document(
   } else {
     None
   };
+  let option_state = if dst_is_html {
+    src.option_states[src_id.index()].clone()
+  } else {
+    None
+  };
 
   let (
     kind,
@@ -208,6 +213,9 @@ fn clone_node_shallow_from_other_document(
     }
     if textarea_state.is_some() {
       dst.textarea_states[dst_id.index()] = textarea_state;
+    }
+    if option_state.is_some() {
+      dst.option_states[dst_id.index()] = option_state;
     }
   }
 

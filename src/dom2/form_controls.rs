@@ -14,6 +14,12 @@ pub(crate) struct TextareaState {
   pub(crate) dirty_value: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct OptionState {
+  pub(crate) selectedness: bool,
+  pub(crate) dirty_selectedness: bool,
+}
+
 #[inline]
 fn attrs_get_ci<'a>(attrs: &'a [(String, String)], name: &str) -> Option<&'a str> {
   attrs
@@ -36,7 +42,7 @@ impl Document {
   pub(crate) fn init_form_control_state_for_node_kind(
     &self,
     kind: &NodeKind,
-  ) -> (Option<InputState>, Option<TextareaState>) {
+  ) -> (Option<InputState>, Option<TextareaState>, Option<OptionState>) {
     let NodeKind::Element {
       tag_name,
       namespace,
@@ -44,10 +50,10 @@ impl Document {
       ..
     } = kind
     else {
-      return (None, None);
+      return (None, None, None);
     };
     if !self.is_html_case_insensitive_namespace(namespace) {
-      return (None, None);
+      return (None, None, None);
     }
 
     if tag_name.eq_ignore_ascii_case("input") {
@@ -63,6 +69,7 @@ impl Document {
           dirty_checkedness: false,
         }),
         None,
+        None,
       );
     }
 
@@ -76,10 +83,23 @@ impl Document {
           value: String::new(),
           dirty_value: false,
         }),
+        None,
       );
     }
 
-    (None, None)
+    if tag_name.eq_ignore_ascii_case("option") {
+      let selectedness = attrs_has_ci(attributes, "selected");
+      return (
+        None,
+        None,
+        Some(OptionState {
+          selectedness,
+          dirty_selectedness: false,
+        }),
+      );
+    }
+
+    (None, None, None)
   }
 
   fn input_state(&self, node: NodeId) -> Result<&InputState, DomError> {
@@ -114,52 +134,88 @@ impl Document {
       .ok_or(DomError::InvalidNodeType)
   }
 
+  fn option_state(&self, node: NodeId) -> Result<&OptionState, DomError> {
+    self
+      .option_states
+      .get(node.index())
+      .and_then(|s| s.as_ref())
+      .ok_or(DomError::InvalidNodeType)
+  }
+
+  fn option_state_mut(&mut self, node: NodeId) -> Result<&mut OptionState, DomError> {
+    self
+      .option_states
+      .get_mut(node.index())
+      .and_then(|s| s.as_mut())
+      .ok_or(DomError::InvalidNodeType)
+  }
+
   pub(crate) fn sync_form_control_state_after_attr_mutation(
     &mut self,
     node: NodeId,
     name: &str,
   ) -> Result<(), DomError> {
-    let Some(state) = self
+    let input_dirty = self
       .input_states
       .get(node.index())
       .and_then(|s| s.as_ref())
-    else {
-      return Ok(());
-    };
-    let dirty_value = state.dirty_value;
-    let dirty_checkedness = state.dirty_checkedness;
+      .map(|state| (state.dirty_value, state.dirty_checkedness));
 
     // Spec-ish: when the input's "dirty value flag" is false, mutations to the `value` content
     // attribute update the current value. Once dirty, the attribute only affects the default value
     // and the current value is preserved until form reset.
-    if name.eq_ignore_ascii_case("value") && !dirty_value {
-      let new_value = self.get_attribute(node, "value")?.unwrap_or("").to_string();
-      if let Some(state) = self
-        .input_states
-        .get_mut(node.index())
-        .and_then(|s| s.as_mut())
-      {
-        if !state.dirty_value {
-          state.value = new_value;
+    if let Some((dirty_value, dirty_checkedness)) = input_dirty {
+      if name.eq_ignore_ascii_case("value") && !dirty_value {
+        let new_value = self.get_attribute(node, "value")?.unwrap_or("").to_string();
+        if let Some(state) = self
+          .input_states
+          .get_mut(node.index())
+          .and_then(|s| s.as_mut())
+        {
+          if !state.dirty_value {
+            state.value = new_value;
+          }
+        }
+      }
+
+      // Spec-ish: checkedness only tracks the `checked` content attribute while the "dirty checkedness
+      // flag" is false.
+      //
+      // Checkedness depends on the input type, so also recompute when `type` changes.
+      if (name.eq_ignore_ascii_case("checked") || name.eq_ignore_ascii_case("type")) && !dirty_checkedness {
+        let checkable = is_input_checkable(self.get_attribute(node, "type")?);
+        let checked_attr = self.has_attribute(node, "checked")?;
+        let checkedness = checkable && checked_attr;
+        if let Some(state) = self
+          .input_states
+          .get_mut(node.index())
+          .and_then(|s| s.as_mut())
+        {
+          if !state.dirty_checkedness {
+            state.checkedness = checkedness;
+          }
         }
       }
     }
 
-    // Spec-ish: checkedness only tracks the `checked` content attribute while the "dirty checkedness
-    // flag" is false.
-    //
-    // Checkedness depends on the input type, so also recompute when `type` changes.
-    if (name.eq_ignore_ascii_case("checked") || name.eq_ignore_ascii_case("type")) && !dirty_checkedness {
-      let checkable = is_input_checkable(self.get_attribute(node, "type")?);
-      let checked_attr = self.has_attribute(node, "checked")?;
-      let checkedness = checkable && checked_attr;
-      if let Some(state) = self
-        .input_states
-        .get_mut(node.index())
-        .and_then(|s| s.as_mut())
-      {
-        if !state.dirty_checkedness {
-          state.checkedness = checkedness;
+    let option_dirty = self
+      .option_states
+      .get(node.index())
+      .and_then(|s| s.as_ref())
+      .map(|state| state.dirty_selectedness);
+    if let Some(dirty_selectedness) = option_dirty {
+      // Spec-ish: when the option's dirty selectedness flag is false, the selectedness follows the
+      // `selected` content attribute.
+      if name.eq_ignore_ascii_case("selected") && !dirty_selectedness {
+        let selectedness = self.has_attribute(node, "selected")?;
+        if let Some(state) = self
+          .option_states
+          .get_mut(node.index())
+          .and_then(|s| s.as_mut())
+        {
+          if !state.dirty_selectedness {
+            state.selectedness = selectedness;
+          }
         }
       }
     }
@@ -179,6 +235,7 @@ impl Document {
     state.dirty_value = true;
     state.value.clear();
     state.value.push_str(value);
+    self.bump_mutation_generation();
     Ok(())
   }
 
@@ -192,6 +249,7 @@ impl Document {
     let state = self.input_state_mut(input)?;
     state.dirty_checkedness = true;
     state.checkedness = checked;
+    self.bump_mutation_generation();
     Ok(())
   }
 
@@ -210,6 +268,55 @@ impl Document {
     state.dirty_value = true;
     state.value.clear();
     state.value.push_str(value);
+    self.bump_mutation_generation();
+    Ok(())
+  }
+
+  pub fn option_selected(&self, option: NodeId) -> Result<bool, DomError> {
+    let _ = self.node_checked(option)?;
+    Ok(self.option_state(option)?.selectedness)
+  }
+
+  pub fn set_option_selected(&mut self, option: NodeId, selected: bool) -> Result<(), DomError> {
+    let _ = self.node_checked(option)?;
+    let state = self.option_state_mut(option)?;
+    state.dirty_selectedness = true;
+    state.selectedness = selected;
+    self.bump_mutation_generation();
+    Ok(())
+  }
+
+  pub fn reset_input(&mut self, input: NodeId) -> Result<(), DomError> {
+    let _ = self.node_checked(input)?;
+    let default_value = self.get_attribute(input, "value")?.unwrap_or("").to_string();
+    let checkable = is_input_checkable(self.get_attribute(input, "type")?);
+    let checked_attr = self.has_attribute(input, "checked")?;
+    let default_checkedness = checkable && checked_attr;
+    let state = self.input_state_mut(input)?;
+    state.dirty_value = false;
+    state.value = default_value;
+    state.dirty_checkedness = false;
+    state.checkedness = default_checkedness;
+    self.bump_mutation_generation();
+    Ok(())
+  }
+
+  pub fn reset_textarea(&mut self, textarea: NodeId) -> Result<(), DomError> {
+    let _ = self.node_checked(textarea)?;
+    let state = self.textarea_state_mut(textarea)?;
+    state.dirty_value = false;
+    state.value.clear();
+    self.bump_mutation_generation();
+    Ok(())
+  }
+
+  pub fn reset_option(&mut self, option: NodeId) -> Result<(), DomError> {
+    let _ = self.node_checked(option)?;
+    let selectedness = self.has_attribute(option, "selected")?;
+    let state = self.option_state_mut(option)?;
+    state.dirty_selectedness = false;
+    state.selectedness = selectedness;
+    self.bump_mutation_generation();
     Ok(())
   }
 
@@ -249,8 +356,9 @@ impl Document {
       _ => return Err(DomError::InvalidNodeType),
     }
 
-    // Minimal: reset descendant <input> and <textarea> elements.
+    // Minimal: reset descendant <input>, <textarea>, and <option> elements.
     let mut stack: Vec<NodeId> = vec![form];
+    let mut any = false;
     while let Some(node_id) = stack.pop() {
       if self
         .input_states
@@ -271,6 +379,7 @@ impl Document {
           state.value = default_value;
           state.dirty_checkedness = false;
           state.checkedness = default_checkedness;
+          any = true;
         }
       }
 
@@ -288,6 +397,25 @@ impl Document {
         {
           state.dirty_value = false;
           state.value = default_value;
+          any = true;
+        }
+      }
+
+      if self
+        .option_states
+        .get(node_id.index())
+        .and_then(|s| s.as_ref())
+        .is_some()
+      {
+        let selectedness = self.has_attribute(node_id, "selected")?;
+        if let Some(state) = self
+          .option_states
+          .get_mut(node_id.index())
+          .and_then(|s| s.as_mut())
+        {
+          state.dirty_selectedness = false;
+          state.selectedness = selectedness;
+          any = true;
         }
       }
 
@@ -300,6 +428,9 @@ impl Document {
       }
     }
 
+    if any {
+      self.bump_mutation_generation();
+    }
     Ok(())
   }
 }

@@ -235,6 +235,7 @@ pub struct Document {
   // Form control state slots keyed by `NodeId` index.
   input_states: Vec<Option<form_controls::InputState>>,
   textarea_states: Vec<Option<form_controls::TextareaState>>,
+  option_states: Vec<Option<form_controls::OptionState>>,
   root: NodeId,
   ready_state: DocumentReadyState,
   events: web_events::EventListenerRegistry,
@@ -258,6 +259,7 @@ impl Clone for Document {
       nodes: self.nodes.clone(),
       input_states: self.input_states.clone(),
       textarea_states: self.textarea_states.clone(),
+      option_states: self.option_states.clone(),
       root: self.root,
       ready_state: self.ready_state,
       // Cloning a DOM tree should not implicitly clone active event listeners. Start with an empty
@@ -410,6 +412,7 @@ impl Document {
       nodes: self.nodes.clone(),
       input_states: self.input_states.clone(),
       textarea_states: self.textarea_states.clone(),
+      option_states: self.option_states.clone(),
       root: self.root,
       ready_state: self.ready_state,
       events: self.events.clone(),
@@ -501,6 +504,7 @@ impl Document {
       nodes: Vec::new(),
       input_states: Vec::new(),
       textarea_states: Vec::new(),
+      option_states: Vec::new(),
       root: NodeId(0),
       ready_state: DocumentReadyState::Loading,
       events: web_events::EventListenerRegistry::new(),
@@ -536,6 +540,7 @@ impl Document {
       nodes: Vec::new(),
       input_states: Vec::new(),
       textarea_states: Vec::new(),
+      option_states: Vec::new(),
       root: NodeId(0),
       ready_state: DocumentReadyState::Loading,
       events: web_events::EventListenerRegistry::new(),
@@ -1051,7 +1056,7 @@ impl Document {
   fn push_node(&mut self, kind: NodeKind, parent: Option<NodeId>, inert_subtree: bool) -> NodeId {
     let id = NodeId(self.nodes.len());
     let inert_subtree = inert_subtree || self.kind_implies_inert_subtree(&kind);
-    let (input_state, textarea_state) = self.init_form_control_state_for_node_kind(&kind);
+    let (input_state, textarea_state, option_state) = self.init_form_control_state_for_node_kind(&kind);
     self.nodes.push(Node {
       kind,
       parent,
@@ -1065,6 +1070,7 @@ impl Document {
     });
     self.input_states.push(input_state);
     self.textarea_states.push(textarea_state);
+    self.option_states.push(option_state);
     self.intersection_observers.on_node_added();
     self.resize_observers.on_node_added();
     if let Some(parent_id) = parent {
@@ -2414,6 +2420,7 @@ mod mutation_observer_remap_tests;
 mod mutation_observer_transient_tests;
 #[cfg(test)]
 mod mutation_observer_shared_agent_tests;
+mod forms_tests;
 #[cfg(test)]
 mod query_tests;
 #[cfg(test)]
