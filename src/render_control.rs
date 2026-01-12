@@ -305,6 +305,22 @@ impl StageHeartbeat {
       RenderStage::Paint => StageHeartbeat::PaintRasterize,
     }
   }
+
+  /// Returns all stage heartbeat variants in pipeline order.
+  ///
+  /// This is primarily intended for deterministic tooling/tests (e.g. monotonic progress mapping).
+  pub fn all() -> &'static [StageHeartbeat] {
+    &Self::ALL
+  }
+
+  /// Map the stage heartbeat to a monotonic progress fraction in `[0.0, 1.0]`.
+  ///
+  /// This is intended for UI loading indicators that want a lightweight, deterministic notion of
+  /// progress without relying on timing heuristics.
+  pub fn loading_progress(self) -> f32 {
+    let denom = (Self::VARIANT_COUNT.saturating_sub(1)).max(1) as f32;
+    (self.as_index() as f32) / denom
+  }
 }
 
 impl std::fmt::Display for StageHeartbeat {

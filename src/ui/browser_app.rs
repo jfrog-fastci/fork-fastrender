@@ -196,6 +196,14 @@ impl BrowserTabState {
       .unwrap_or_else(|| "New Tab".to_string())
   }
 
+  /// Returns a deterministic monotonic progress fraction for a chrome loading indicator.
+  ///
+  /// - `None` when this tab is not loading.
+  /// - `Some(0.0)` when loading but no stage heartbeat has been observed yet.
+  pub fn chrome_loading_progress(&self) -> Option<f32> {
+    crate::ui::chrome_loading_progress::chrome_loading_progress(self.loading, self.stage)
+  }
+
   /// Validate + normalize an address-bar navigation and produce a `UiToWorker::Navigate` message.
   ///
   /// This applies a scheme allowlist for typed URLs (http/https/file/about), rejecting
