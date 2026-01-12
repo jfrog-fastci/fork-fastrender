@@ -295,6 +295,31 @@ status = "xfail"
 reason = "Range is not implemented yet (createContextualFragment)."
 
 [[expectations]]
+glob = "dom/ranges/tentative/FormControlRange-*.html"
+status = "skip"
+reason = "FormControlRange is not implemented yet."
+
+[[expectations]]
+id = "dom/ranges/Range-in-shadow-after-the-shadow-removed.html"
+status = "skip"
+reason = "Times out in the offline runner (requires ShadowRoot + window load event support)."
+
+[[expectations]]
+id = "dom/ranges/Range-test-iframe.html"
+status = "skip"
+reason = "Support iframe for Range tests (not a testharness entrypoint)."
+
+[[expectations]]
+id = "dom/ranges/Range-compareBoundaryPoints-crash.html"
+status = "skip"
+reason = "Crash regression HTML does not use testharness.js (runner expects testharness tests)."
+
+[[expectations]]
+glob = "dom/ranges/*.html"
+status = "xfail"
+reason = "Range/StaticRange APIs are not implemented yet."
+
+[[expectations]]
 id = "dom/intersection-observer-basic.window.js"
 status = "xfail"
 reason = "IntersectionObserver is not implemented yet."
