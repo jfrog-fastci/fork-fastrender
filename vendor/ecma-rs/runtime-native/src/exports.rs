@@ -552,6 +552,9 @@ pub extern "C" fn rt_gc_set_config(cfg: *const crate::abi::RtGcConfig) -> bool {
     if cfg.is_null() {
       trap::rt_trap_invalid_arg("rt_gc_set_config: cfg was null");
     }
+    if (cfg as usize) % core::mem::align_of::<crate::abi::RtGcConfig>() != 0 {
+      trap::rt_trap_invalid_arg("rt_gc_set_config: cfg was misaligned");
+    }
     let config = crate::gc::config::HeapConfig::try_from(*cfg)
       .unwrap_or_else(|msg| trap::rt_trap_invalid_arg(msg));
     crate::rt_alloc::try_set_global_heap_config(config)
@@ -568,6 +571,9 @@ pub extern "C" fn rt_gc_set_limits(limits: *const crate::abi::RtGcLimits) -> boo
     if limits.is_null() {
       trap::rt_trap_invalid_arg("rt_gc_set_limits: limits was null");
     }
+    if (limits as usize) % core::mem::align_of::<crate::abi::RtGcLimits>() != 0 {
+      trap::rt_trap_invalid_arg("rt_gc_set_limits: limits was misaligned");
+    }
     let limits = crate::gc::config::HeapLimits::try_from(*limits)
       .unwrap_or_else(|msg| trap::rt_trap_invalid_arg(msg));
     crate::rt_alloc::try_set_global_heap_limits(limits)
@@ -582,6 +588,9 @@ pub unsafe extern "C" fn rt_gc_get_config(out_cfg: *mut crate::abi::RtGcConfig) 
     if out_cfg.is_null() {
       return false;
     }
+    if (out_cfg as usize) % core::mem::align_of::<crate::abi::RtGcConfig>() != 0 {
+      trap::rt_trap_invalid_arg("rt_gc_get_config: out_cfg was misaligned");
+    }
     *out_cfg = crate::rt_alloc::global_heap_config_snapshot().to_rt();
     true
   })
@@ -594,6 +603,9 @@ pub unsafe extern "C" fn rt_gc_get_limits(out_limits: *mut crate::abi::RtGcLimit
   abort_on_panic(|| unsafe {
     if out_limits.is_null() {
       return false;
+    }
+    if (out_limits as usize) % core::mem::align_of::<crate::abi::RtGcLimits>() != 0 {
+      trap::rt_trap_invalid_arg("rt_gc_get_limits: out_limits was misaligned");
     }
     *out_limits = crate::rt_alloc::global_heap_limits_snapshot().to_rt();
     true
