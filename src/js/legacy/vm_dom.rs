@@ -2196,18 +2196,14 @@ fn dom_node_text_content_setter(
       return Ok(Value::Undefined);
     }
     NodeKind::Comment { .. } => {
-      let node = dom.node_mut(node_id);
-      if let NodeKind::Comment { content } = &mut node.kind {
-        content.clear();
-        content.push_str(&new_text);
+      if let Err(err) = dom.set_comment_data(node_id, &new_text) {
+        return throw_dom_error(scope, host, err);
       }
       return Ok(Value::Undefined);
     }
     NodeKind::ProcessingInstruction { .. } => {
-      let node = dom.node_mut(node_id);
-      if let NodeKind::ProcessingInstruction { data, .. } = &mut node.kind {
-        data.clear();
-        data.push_str(&new_text);
+      if let Err(err) = dom.set_processing_instruction_data(node_id, &new_text) {
+        return throw_dom_error(scope, host, err);
       }
       return Ok(Value::Undefined);
     }
@@ -2222,20 +2218,34 @@ fn dom_node_text_content_setter(
   }
 
   // Replace all children.
+  //
+  // Keep this routed through `dom2` mutation APIs so any live-mutation hooks (e.g. Range /
+  // NodeIterator updates) and MutationObserver records are not bypassed.
+  let mut changed = false;
   let old_children = dom.node(node_id).children.clone();
-  for child in &old_children {
-    dom.node_mut(*child).parent = None;
+  let children_to_remove: Vec<NodeId> = old_children
+    .into_iter()
+    .filter(|&child| dom.node(child).parent == Some(node_id))
+    .collect();
+  for child in children_to_remove {
+    changed |= match dom.remove_child(node_id, child) {
+      Ok(v) => v,
+      Err(err) => return throw_dom_error(scope, host, err),
+    };
   }
-  dom.node_mut(node_id).children.clear();
 
   if !new_text.is_empty() {
     let text_id = dom.create_text(&new_text);
-    dom.node_mut(text_id).parent = Some(node_id);
-    dom.node_mut(node_id).children.push(text_id);
+    changed |= match dom.append_child(node_id, text_id) {
+      Ok(v) => v,
+      Err(err) => return throw_dom_error(scope, host, err),
+    };
   }
 
   drop(dom);
-  host.sync_live_collections(scope)?;
+  if changed {
+    host.sync_live_collections(scope)?;
+  }
   Ok(Value::Undefined)
 }
 
