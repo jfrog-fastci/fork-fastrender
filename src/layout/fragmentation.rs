@@ -109,7 +109,6 @@ enum BreakKind {
     container_id: usize,
     line_index_end: usize,
   },
-  EndOfContent,
 }
 
 #[derive(Debug, Clone)]
@@ -1816,7 +1815,6 @@ impl FragmentationAnalyzer {
       let kind_rank = match opportunity.kind {
         BreakKind::BetweenSiblings => 0,
         BreakKind::LineBoundary { .. } => 1,
-        BreakKind::EndOfContent => 2,
       };
 
       match best {
