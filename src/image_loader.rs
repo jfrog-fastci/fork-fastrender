@@ -3446,9 +3446,17 @@ fn inline_svg_style_imports<'a>(
 
   let mut budget = SvgCssImportBudget::new(MAX_IMPORT_DEPTH, MAX_IMPORT_RULES, MAX_IMPORTED_CSS_BYTES);
   let mut stack: Vec<String> = Vec::new();
+  let mut deadline_counter = 0usize;
   let mut replacements: Vec<(std::ops::Range<usize>, String)> = Vec::new();
 
   for node in doc.descendants().filter(|n| n.is_element()) {
+    check_root_periodic(
+      &mut deadline_counter,
+      256,
+      RenderStage::Paint,
+    )
+    .map_err(Error::Render)?;
+
     if node.tag_name().name() != "style" {
       continue;
     }
