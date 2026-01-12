@@ -260,6 +260,8 @@ where
   // - If either old pointer is `0`, treat the derived pointer as null.
   // - If the GC relocator returns `0` for a non-null base (should not happen), keep the derived
   //   slot consistent by writing `0`.
+  #[cfg(debug_assertions)]
+  let mut derived_new_by_loc: HashMap<StackMapLocation, usize> = HashMap::new();
   for pair in pairs {
     let base_new = *base_new_by_loc
       .get(&pair.base_loc)
@@ -271,6 +273,23 @@ where
       let delta = pair.derived_old.wrapping_sub(pair.base_old);
       base_new.wrapping_add(delta)
     };
+
+    #[cfg(debug_assertions)]
+    {
+      // If a derived location is duplicated in the record, it must be written consistently.
+      match derived_new_by_loc.entry(pair.derived_loc.clone()) {
+        Entry::Vacant(e) => {
+          e.insert(derived_new);
+        }
+        Entry::Occupied(e) => {
+          debug_assert_eq!(
+            *e.get(),
+            derived_new,
+            "derived location computed different relocated values"
+          );
+        }
+      }
+    }
 
     // Preserve any explicitly-null derived values.
     //
