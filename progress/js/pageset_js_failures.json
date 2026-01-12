@@ -1,5 +1,18 @@
 {
   "pages_total": 150,
   "pages_with_js": 0,
-  "js": {}
+  "js": {
+    "scripts_executed": 0,
+    "exceptions_thrown": 0,
+    "terminations_observed": 0,
+    "termination": {
+      "out_of_fuel": 0,
+      "deadline_exceeded": 0,
+      "interrupted": 0,
+      "stack_overflow": 0,
+      "out_of_memory": 0
+    },
+    "top_unimplemented": [],
+    "top_exceptions": []
+  }
 }
