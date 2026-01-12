@@ -2,10 +2,6 @@ use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use criterion::Criterion;
-pub use fastrender::bench::{
-  bench_limits, bench_print_config_once, bench_verbose, bench_verbose_from_lookup, env_byte_limit,
-  env_flag, env_usize, read_fixture_bytes_skip, read_fixture_bytes_truncate, BenchLimits,
-};
 use fastrender::{
   css::parser::{
     extract_css_sources, parse_stylesheet, rel_list_contains_stylesheet, StylesheetSource,
@@ -25,11 +21,6 @@ use fastrender::{
   text::{font_db::FontDatabase, font_loader::FontContext},
   tree::{box_generation::generate_box_tree, box_tree::BoxTree, fragment_tree::FragmentTree},
   LayoutConfig, LayoutEngine, Pixmap, Size,
-};
-
-pub use fastrender::bench_utils::{
-  bench_limits, bench_print_config_once, bench_verbose, bench_verbose_from_lookup, env_byte_limit,
-  env_flag, env_usize, read_fixture_bytes_skip, read_fixture_bytes_truncate, BenchLimits,
 };
 
 pub const BLOCK_SIMPLE_HTML: &str = include_str!("../tests/fixtures/html/block_simple.html");
@@ -241,7 +232,7 @@ pub fn perf_criterion() -> Criterion {
 // -----------------------------------------------------------------------------
 // Bench safety helpers
 // -----------------------------------------------------------------------------
-pub use fastrender::system::bench_limits::{
-  bench_limits, bench_print_config_once, bench_verbose, env_byte_limit, env_flag, env_usize,
-  parse_byte_size, read_fixture_bytes_skip, read_fixture_bytes_truncate, BenchLimits,
+pub use fastrender::bench::{
+  bench_limits, bench_print_config_once, bench_verbose, bench_verbose_from_lookup, env_byte_limit,
+  env_flag, env_usize, read_fixture_bytes_skip, read_fixture_bytes_truncate, BenchLimits,
 };
