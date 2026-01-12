@@ -9137,6 +9137,17 @@ impl FormattingContext for TableFormattingContext {
         let mut fragment =
           crate::layout::contexts::block::unconvert_fragment_axes_root(laid.fragment);
 
+        // In the collapsed border model, CSS border conflict resolution yields a single shared
+        // border stroke per grid edge (painted via `TableCollapsedBordersItem`).
+        //
+        // Individual cell borders must therefore not paint, otherwise adjacent cells will each
+        // contribute a 1px edge and the resulting "collapsed" border appears double-thick.
+        if structure.border_collapse == BorderCollapse::Collapse {
+          if let Some(style) = fragment.style.as_ref() {
+            fragment.style = Some(strip_borders_cached(style, &mut stripped_border_cache));
+          }
+        }
+
         // Table cells treat `height` as a *minimum* height (CSS 2.1 §17.5.3). When that minimum
         // height inflates the cell box, the cell's fragment height (`laid.height`) equals the row
         // height and a naive `(spanned_height - laid.height)` offset would be zero, preventing
@@ -14944,6 +14955,61 @@ mod tests {
     let expected_extent = expected_second_line + 2.0 + 50.0 + 3.0;
     assert!((line_pos[2] - expected_extent).abs() < 1e-6);
     assert!((extent - expected_extent).abs() < 1e-6);
+  }
+
+  #[test]
+  fn collapsed_border_tables_strip_cell_borders_from_fragments() {
+    let mut table_style = ComputedStyle::default();
+    table_style.display = Display::Table;
+    table_style.border_collapse = BorderCollapse::Collapse;
+    table_style.border_spacing_horizontal = Length::px(0.0);
+    table_style.border_spacing_vertical = Length::px(0.0);
+
+    let mut row_style = ComputedStyle::default();
+    row_style.display = Display::TableRow;
+
+    let mut cell_style = ComputedStyle::default();
+    cell_style.display = Display::TableCell;
+    apply_uniform_border(&mut cell_style, 1.0, Rgba::BLACK);
+
+    let cell = BoxNode::new_block(Arc::new(cell_style), FormattingContextType::Block, Vec::new());
+    let cell_id = cell.id;
+    let row = BoxNode::new_block(
+      Arc::new(row_style),
+      FormattingContextType::Block,
+      vec![cell],
+    );
+    let table = BoxNode::new_block(
+      Arc::new(table_style),
+      FormattingContextType::Table,
+      vec![row],
+    );
+
+    let tfc = TableFormattingContext::new();
+    let fragment = tfc
+      .layout(&table, &LayoutConstraints::definite_width(200.0))
+      .expect("table layout should succeed");
+
+    assert!(
+      fragment.table_borders.is_some(),
+      "collapsed border tables should produce `table_borders` metadata"
+    );
+
+    let cell_fragment =
+      find_fragment_by_box_id(&fragment, cell_id).expect("cell fragment should be present");
+    let style = cell_fragment
+      .style
+      .as_ref()
+      .expect("cell fragment should carry a style");
+    assert!(
+      matches!(style.border_top_style, BorderStyle::None),
+      "cell border styles should be stripped in collapsed border model"
+    );
+    assert_eq!(
+      style.used_border_top_width().to_px(),
+      0.0,
+      "cell border widths should be stripped in collapsed border model"
+    );
   }
 
   #[test]
