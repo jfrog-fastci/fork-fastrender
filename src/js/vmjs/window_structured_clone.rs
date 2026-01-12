@@ -802,8 +802,27 @@ fn serialize_object(
     return Ok(EncodedValue::Object(id));
   }
 
+  fn try_serialize_blob_object(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    state: &mut SerializeState,
+    obj: GcObject,
+  ) -> Result<Option<EncodedValue>, VmError> {
+    let Some(data) = clone_blob_data_for_fetch(vm, scope.heap(), Value::Object(obj))? else {
+      return Ok(None);
+    };
+    state.add_copied_bytes(vm, scope, data.bytes.len())?;
+    let id = state.push_node(Node::Blob { data: Some(data) }, vm, scope)?;
+    state.object_to_id.insert(obj, id);
+    Ok(Some(EncodedValue::Object(id)))
+  }
+
   // Reject platform objects branded via `HostSlots` (e.g. DOM helper interface objects).
   if scope.heap().object_host_slots(obj)?.is_some() {
+    // `Blob` is a platform object but structured-cloneable; allow it even if `HostSlots`-branded.
+    if let Some(encoded) = try_serialize_blob_object(vm, scope, state, obj)? {
+      return Ok(encoded);
+    }
     return Err(throw_data_clone_error(
       vm,
       scope,
@@ -995,11 +1014,8 @@ fn serialize_object(
   }
 
   // Blob.
-  if let Some(data) = clone_blob_data_for_fetch(vm, scope.heap(), Value::Object(obj))? {
-    state.add_copied_bytes(vm, scope, data.bytes.len())?;
-    let id = state.push_node(Node::Blob { data: Some(data) }, vm, scope)?;
-    state.object_to_id.insert(obj, id);
-    return Ok(EncodedValue::Object(id));
+  if let Some(encoded) = try_serialize_blob_object(vm, scope, state, obj)? {
+    return Ok(encoded);
   }
 
   // Boxed primitives.
@@ -1693,7 +1709,7 @@ fn throw_range_error(vm: &mut Vm, scope: &mut Scope<'_>, message: &str) -> VmErr
 mod tests {
   use super::*;
   use crate::js::window_realm::{WindowRealm, WindowRealmConfig};
-  use vm_js::Value;
+  use vm_js::{HostSlots, Value};
 
   fn get_string(realm: &WindowRealm, value: Value) -> String {
     let Value::String(s) = value else {
@@ -1904,9 +1920,20 @@ mod tests {
   fn structured_clone_clones_blob() -> Result<(), VmError> {
     let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
 
+    // Brand the Blob with `HostSlots` to ensure `structuredClone` still clones it.
+    let blob = realm.exec_script(
+      "globalThis.__sc_blob = new Blob(['hi'], { type: 'text/plain' }); globalThis.__sc_blob",
+    )?;
+    let Value::Object(blob_obj) = blob else {
+      return Err(VmError::InvariantViolation("expected Blob object"));
+    };
+    realm
+      .heap_mut()
+      .object_set_host_slots(blob_obj, HostSlots { a: 1, b: 2 })?;
+
     let ok = realm.exec_script(
       "(() => {\
-         const b = new Blob(['hi'], { type: 'text/plain' });\
+         const b = globalThis.__sc_blob;\
          const c = structuredClone(b);\
          if (c === b) return false;\
          if (c.size !== 2) return false;\
