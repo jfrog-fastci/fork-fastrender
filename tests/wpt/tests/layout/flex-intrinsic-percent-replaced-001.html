@@ -1,0 +1,42 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Flexbox intrinsic sizing: percent-sized replaced content contributes to min-width:auto</title>
+<style>
+  body {
+    margin: 0;
+    background: #fff;
+  }
+
+  .flex {
+    display: flex;
+    width: 90px;
+    height: 40px;
+    overflow: hidden;
+  }
+
+  .a {
+    flex: 1 1 auto;
+    min-width: auto;
+    background: #ef4444;
+  }
+
+  .a img {
+    display: block;
+    width: 50%;
+    height: 40px;
+  }
+
+  .b {
+    flex: 0 0 20px;
+    background: #22c55e;
+  }
+</style>
+<div class="flex">
+  <div class="a">
+    <img
+      alt=""
+      src="data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHdpZHRoPScxMDAnIGhlaWdodD0nNDAnPjxyZWN0IHdpZHRoPScxMDAnIGhlaWdodD0nNDAnIGZpbGw9J2JsYWNrJy8+PC9zdmc+"
+    >
+  </div>
+  <div class="b"></div>
+</div>

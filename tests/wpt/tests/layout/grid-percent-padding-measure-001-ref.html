@@ -1,0 +1,35 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Reference: Grid measurement: percentage padding affects item size</title>
+<style>
+  body {
+    margin: 0;
+    background: #fff;
+  }
+
+  .grid {
+    display: grid;
+    grid-template-columns: 50px 70px;
+    align-items: start;
+    background: #d1d5db;
+  }
+
+  .box {
+    width: 100%;
+    padding-top: 0;
+  }
+
+  .a {
+    height: 25px;
+    background: #ef4444;
+  }
+
+  .b {
+    height: 35px;
+    background: #22c55e;
+  }
+</style>
+<div class="grid">
+  <div class="box a"></div>
+  <div class="box b"></div>
+</div>

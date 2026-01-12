@@ -1,0 +1,36 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Reference: Flexbox intrinsic sizing: min-width:auto uses content-based minimum size</title>
+<style>
+  body {
+    margin: 0;
+    background: #fff;
+  }
+
+  .flex {
+    display: flex;
+    width: 200px;
+    height: 40px;
+    overflow: hidden;
+  }
+
+  .a {
+    flex: 1 1 auto;
+    min-width: 220px;
+    background: #ef4444;
+  }
+
+  .a .content {
+    width: 220px;
+    height: 40px;
+  }
+
+  .b {
+    flex: 0 0 40px;
+    background: #22c55e;
+  }
+</style>
+<div class="flex">
+  <div class="a"><div class="content"></div></div>
+  <div class="b"></div>
+</div>

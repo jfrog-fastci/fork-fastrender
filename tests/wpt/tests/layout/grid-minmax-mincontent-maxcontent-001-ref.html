@@ -1,0 +1,45 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Reference: Grid intrinsic sizing: minmax(min-content, max-content) track sizing</title>
+<style>
+  body {
+    margin: 0;
+    background: #fff;
+  }
+
+  .grid {
+    display: grid;
+    width: 200px;
+    grid-template-columns: 120px 80px;
+  }
+
+  .a,
+  .b {
+    height: 20px;
+  }
+
+  .a {
+    background: #ef4444;
+  }
+
+  .b {
+    background: #22c55e;
+  }
+
+  .intrinsic {
+    font-size: 0;
+    line-height: 0;
+  }
+
+  .seg {
+    display: inline-block;
+    width: 60px;
+    height: 20px;
+  }
+</style>
+<div class="grid">
+  <div class="a">
+    <div class="intrinsic"><span class="seg"></span><wbr><span class="seg"></span></div>
+  </div>
+  <div class="b"></div>
+</div>

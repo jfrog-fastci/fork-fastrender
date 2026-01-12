@@ -510,6 +510,100 @@ dpr = 1.0
 width = 240
 height = 140
 
+# Intrinsic sizing/alignment regression coverage (perf-sensitive):
+# - Flexbox: min-width:auto content-based minimum size, percent-sized replaced items, flex-basis:content wrapping.
+# - Grid: minmax(min-content, max-content), percent padding affecting measurement, baseline alignment, fit-content() sizing.
+[[tests]]
+id = "layout/flex-intrinsic-min-width-auto-001"
+path = "layout/flex-intrinsic-min-width-auto-001.html"
+reference = "layout/flex-intrinsic-min-width-auto-001-ref.html"
+test_type = "reftest"
+expected = "pass"
+timeout_ms = 8000
+dpr = 1.0
+
+[tests.viewport]
+width = 240
+height = 80
+
+[[tests]]
+id = "layout/flex-intrinsic-percent-replaced-001"
+path = "layout/flex-intrinsic-percent-replaced-001.html"
+reference = "layout/flex-intrinsic-percent-replaced-001-ref.html"
+test_type = "reftest"
+expected = "pass"
+timeout_ms = 8000
+dpr = 1.0
+
+[tests.viewport]
+width = 160
+height = 80
+
+[[tests]]
+id = "layout/flex-basis-content-wrap-001"
+path = "layout/flex-basis-content-wrap-001.html"
+reference = "layout/flex-basis-content-wrap-001-ref.html"
+test_type = "reftest"
+expected = "pass"
+timeout_ms = 8000
+dpr = 1.0
+
+[tests.viewport]
+width = 160
+height = 120
+
+[[tests]]
+id = "layout/grid-minmax-mincontent-maxcontent-001"
+path = "layout/grid-minmax-mincontent-maxcontent-001.html"
+reference = "layout/grid-minmax-mincontent-maxcontent-001-ref.html"
+test_type = "reftest"
+expected = "pass"
+timeout_ms = 8000
+dpr = 1.0
+
+[tests.viewport]
+width = 240
+height = 80
+
+[[tests]]
+id = "layout/grid-percent-padding-measure-001"
+path = "layout/grid-percent-padding-measure-001.html"
+reference = "layout/grid-percent-padding-measure-001-ref.html"
+test_type = "reftest"
+expected = "pass"
+timeout_ms = 8000
+dpr = 1.0
+
+[tests.viewport]
+width = 180
+height = 120
+
+[[tests]]
+id = "layout/grid-baseline-alignment-001"
+path = "layout/grid-baseline-alignment-001.html"
+reference = "layout/grid-baseline-alignment-001-ref.html"
+test_type = "reftest"
+expected = "pass"
+timeout_ms = 8000
+dpr = 1.0
+
+[tests.viewport]
+width = 160
+height = 120
+
+[[tests]]
+id = "layout/grid-item-fit-content-001"
+path = "layout/grid-item-fit-content-001.html"
+reference = "layout/grid-item-fit-content-001-ref.html"
+test_type = "reftest"
+expected = "pass"
+timeout_ms = 8000
+dpr = 1.0
+
+[tests.viewport]
+width = 240
+height = 120
+
 [[tests]]
 id = "layout/abs-inset-bottom-right-001"
 path = "layout/abs-inset-bottom-right-001.html"

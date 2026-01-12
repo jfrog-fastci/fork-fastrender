@@ -1,0 +1,38 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Flexbox intrinsic sizing: flex-basis:content affects wrapping</title>
+<style>
+  body {
+    margin: 0;
+    background: #fff;
+  }
+
+  .flex {
+    display: flex;
+    flex-wrap: wrap;
+    width: 120px;
+  }
+
+  .item {
+    flex: 0 0 content;
+    width: 0;
+    overflow: hidden;
+  }
+
+  .box {
+    width: 80px;
+    height: 40px;
+  }
+
+  .a .box {
+    background: #ef4444;
+  }
+
+  .b .box {
+    background: #3b82f6;
+  }
+</style>
+<div class="flex">
+  <div class="item a"><div class="box"></div></div>
+  <div class="item b"><div class="box"></div></div>
+</div>
