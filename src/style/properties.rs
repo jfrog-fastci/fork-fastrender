@@ -14315,6 +14315,9 @@ fn apply_declaration_with_base_internal_with_order(
       if let PropertyValue::Keyword(kw) = resolved_value {
         let kw = kw.to_ascii_lowercase();
         styles.text_orientation = match kw.as_str() {
+          // Legacy keyword. MDN still documents this for compatibility; browsers treat it like
+          // `mixed` (the initial value).
+          "use-glyph-orientation" => TextOrientation::Mixed,
           "mixed" => TextOrientation::Mixed,
           "upright" => TextOrientation::Upright,
           "sideways" => TextOrientation::Sideways,
@@ -28804,6 +28807,21 @@ mod tests {
       16.0,
     );
     assert_eq!(styles.text_orientation, TextOrientation::SidewaysLeft);
+
+    apply_declaration(
+      &mut styles,
+      &Declaration {
+        property: "text-orientation".into(),
+        value: PropertyValue::Keyword("use-glyph-orientation".into()),
+        contains_var: false,
+        raw_value: String::new(),
+        important: false,
+      },
+      &ComputedStyle::default(),
+      16.0,
+      16.0,
+    );
+    assert_eq!(styles.text_orientation, TextOrientation::Mixed);
   }
 
   #[test]
