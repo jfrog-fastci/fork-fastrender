@@ -2150,37 +2150,51 @@ fn aggregate_error_iterable_to_list_array(
   scope.push_root(Value::Object(array))?;
 
   let mut idx: u32 = 0;
-  loop {
-    if idx % 1024 == 0 {
-      vm.tick()?;
-    }
-
-    let next_value = match crate::iterator::iterator_step_value(vm, host, hooks, scope, &mut iterator_record) {
-      Ok(v) => v,
-      Err(err) => {
-        if !iterator_record.done {
-          let _ = crate::iterator::iterator_close(vm, host, hooks, scope, &iterator_record);
-        }
-        return Err(err);
+  let result: Result<(), VmError> = (|| {
+    loop {
+      if idx % 1024 == 0 {
+        vm.tick()?;
       }
-    };
-    let Some(next_value) = next_value else {
-      break;
-    };
 
-    // Root `array` and the per-element value while creating the property key.
-    let mut idx_scope = scope.reborrow();
-    idx_scope.push_root(Value::Object(array))?;
-    idx_scope.push_root(next_value)?;
+      let next_value = crate::iterator::iterator_step_value(vm, host, hooks, scope, &mut iterator_record)?;
+      let Some(next_value) = next_value else {
+        break;
+      };
 
-    let key_s = idx_scope.alloc_string(&idx.to_string())?;
-    idx_scope.push_root(Value::String(key_s))?;
-    let key = PropertyKey::from_string(key_s);
-    idx_scope.create_data_property_or_throw(array, key, next_value)?;
-    idx = idx.wrapping_add(1);
+      // Root `array` and the per-element value while creating the property key.
+      let mut idx_scope = scope.reborrow();
+      idx_scope.push_root(Value::Object(array))?;
+      idx_scope.push_root(next_value)?;
+
+      let key_s = idx_scope.alloc_string(&idx.to_string())?;
+      idx_scope.push_root(Value::String(key_s))?;
+      let key = PropertyKey::from_string(key_s);
+      idx_scope.create_data_property_or_throw(array, key, next_value)?;
+      idx = idx.wrapping_add(1);
+    }
+    Ok(())
+  })();
+
+  match result {
+    Ok(()) => Ok(array),
+    Err(err) => {
+      if !iterator_record.done {
+        // If iterator close throws, it overrides the original error (ECMA-262 `IteratorClose`).
+        let pending_root = err
+          .thrown_value()
+          .map(|v| scope.heap_mut().add_root(v))
+          .transpose()?;
+        let close_res = crate::iterator::iterator_close(vm, host, hooks, scope, &iterator_record);
+        if let Some(root) = pending_root {
+          scope.heap_mut().remove_root(root);
+        }
+        if let Err(close_err) = close_res {
+          return Err(close_err);
+        }
+      }
+      Err(err)
+    }
   }
-
-  Ok(array)
 }
 
 fn create_type_error(
