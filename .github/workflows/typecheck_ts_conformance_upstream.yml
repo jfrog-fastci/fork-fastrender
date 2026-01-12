@@ -205,10 +205,19 @@ jobs:
         run: |
           set -euo pipefail
           git config --global --unset-all submodule.active || true
-          # Matches the vendored layout (TypeScript suite submodule lives in the top-level repo).
+          # Git considers submodules "active" by default when they have a URL configured, even if
+          # `submodule.active` is present. Use explicit `:(exclude)` pathspecs to deactivate the
+          # heavyweight corpora/spec submodules so `actions/checkout` doesn't fetch them.
+          #
+          # TypeScript suite (needed):
+          # - current monorepo layout: vendor/ecma-rs/parse-js/tests/TypeScript
+          # - legacy layout where `vendor/ecma-rs` was itself a submodule: parse-js/tests/TypeScript
           git config --global --add submodule.active vendor/ecma-rs/parse-js/tests/TypeScript
-          # Matches the legacy layout where `vendor/ecma-rs` was itself a submodule.
           git config --global --add submodule.active parse-js/tests/TypeScript
+          # Exclude other heavyweight submodules we don't need for typecheck conformance CI.
+          git config --global --add submodule.active ":(exclude)specs/**"
+          git config --global --add submodule.active ":(exclude)vendor/ecma-rs/test262/**"
+          git config --global --add submodule.active ":(exclude)vendor/ecma-rs/test262-semantic/**"
 
       - name: Checkout (with TypeScript suite)
         uses: actions/checkout@v4
