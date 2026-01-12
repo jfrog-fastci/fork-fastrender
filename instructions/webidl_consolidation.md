@@ -7,6 +7,9 @@ FastRender’s WebIDL stack has been consolidated into the vendored ecma-rs work
 This document is now a contributor-facing “where does this live?” reference so new work does not
 re-introduce a parallel WebIDL stack under `crates/`.
 
+See also the consolidated stack doc in the internal wiki:
+[`docs/webidl_stack.md`](../docs/webidl_stack.md).
+
 ---
 
 ## Repository shape

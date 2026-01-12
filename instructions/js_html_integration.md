@@ -97,6 +97,9 @@ A change counts if it lands at least one of:
 - Sequence/record/union types
 - webidl-vm-js crate
 
+For the consolidated WebIDL crate layout and ownership boundaries (what belongs in `vendor/ecma-rs/`
+vs `src/js/`), see [`docs/webidl_stack.md`](../docs/webidl_stack.md).
+
 ### NOT owned (see other workstreams)
 
 - JavaScript language execution → `js_engine.md`
