@@ -1059,6 +1059,8 @@ fn run_single_test(
   // fixture directives; fixtures may still toggle `skipLibCheck` for the `tsc`
   // side when they need to assert specific diagnostics.
   compiler_options.skip_lib_check = true;
+  let base_url = harness_options.base_url.clone();
+  let paths = harness_options.paths.clone();
   let (host, rust_trace) = if args.trace_resolution {
     let (host, trace) =
       HarnessHost::new_with_resolution_trace(file_set.clone(), compiler_options, type_roots);
@@ -1067,6 +1069,7 @@ fn run_single_test(
     (HarnessHost::new(file_set.clone(), compiler_options, type_roots), None)
   };
   let roots = file_set.root_keys();
+  let host = host.with_base_url_and_paths(base_url, paths);
   let program = Arc::new(Program::new(host, roots));
   timeout_guard.set_program(Arc::clone(&program));
 

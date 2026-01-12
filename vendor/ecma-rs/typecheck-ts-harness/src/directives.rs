@@ -916,14 +916,10 @@ fn tsc_only_option_notes(options: &HarnessOptions) -> Vec<String> {
         .to_string(),
     );
   }
-  if options.base_url.is_some() {
+  if options.jsx_import_source.is_some() {
     notes.push(
-      "tsc option baseUrl is set via directives but is ignored by the Rust checker".to_string(),
-    );
-  }
-  if options.paths.is_some() {
-    notes.push(
-      "tsc option paths is set via directives but is ignored by the Rust checker".to_string(),
+      "tsc option jsxImportSource is set via directives but is ignored by the Rust checker"
+        .to_string(),
     );
   }
   if options.es_module_interop.is_some() {

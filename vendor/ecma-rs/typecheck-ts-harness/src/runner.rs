@@ -18,6 +18,7 @@ use crate::tsc::{
   TSC_BASELINE_SCHEMA_VERSION,
 };
 use crate::{FailOn, Result, VirtualFile};
+use diagnostics::paths::normalize_ts_path;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -1125,12 +1126,18 @@ fn execute_case(
   let rust_start = Instant::now();
   let compiler_options = harness_options.to_compiler_options();
   let type_roots = harness_options.type_roots.clone();
+  let base_url = harness_options.base_url.clone();
+  let paths = harness_options.paths.clone();
   let (host, rust_trace) = if trace_resolution {
     let (host, trace) =
       HarnessHost::new_with_resolution_trace(file_set.clone(), compiler_options.clone(), type_roots);
-    (host, Some(trace))
+    (host.with_base_url_and_paths(base_url, paths), Some(trace))
   } else {
-    (HarnessHost::new(file_set.clone(), compiler_options.clone(), type_roots), None)
+    (
+      HarnessHost::new(file_set.clone(), compiler_options.clone(), type_roots)
+        .with_base_url_and_paths(base_url, paths),
+      None,
+    )
   };
   let roots = file_set.root_keys();
   let program = Arc::new(Program::new(host, roots));
@@ -1265,7 +1272,8 @@ fn run_rust(file_set: &HarnessFileSet, options: &HarnessOptions) -> EngineDiagno
     file_set.clone(),
     compiler_options.clone(),
     options.type_roots.clone(),
-  );
+  )
+  .with_base_url_and_paths(options.base_url.clone(), options.paths.clone());
   let roots = file_set.root_keys();
   let program = Program::new(host, roots);
   match run_rust_with_profile(&program, file_set, false) {
@@ -1713,7 +1721,136 @@ pub(crate) struct HarnessHost {
   files: HarnessFileSet,
   compiler_options: CompilerOptions,
   type_roots: Vec<String>,
+  base_url: Option<String>,
+  paths: Vec<PathsMapping>,
   resolution_trace: Option<Arc<ResolutionTraceCollector>>,
+}
+
+#[derive(Debug, Clone)]
+struct PathsMapping {
+  pattern: String,
+  prefix: String,
+  suffix: String,
+  has_star: bool,
+  replacements: Vec<String>,
+}
+
+impl PathsMapping {
+  fn capture_range(&self, specifier: &str) -> Option<(usize, usize)> {
+    if !self.has_star {
+      return (specifier == self.pattern).then_some((0, 0));
+    }
+
+    if !specifier.starts_with(&self.prefix) || !specifier.ends_with(&self.suffix) {
+      return None;
+    }
+
+    let start = self.prefix.len();
+    let end = specifier.len().saturating_sub(self.suffix.len());
+    (end >= start).then_some((start, end))
+  }
+}
+
+fn parse_paths_mappings(value: Option<&Value>) -> Vec<PathsMapping> {
+  let Some(Value::Object(map)) = value else {
+    return Vec::new();
+  };
+
+  let mut out = Vec::new();
+  for (pattern, targets) in map {
+    let Some(targets) = targets.as_array() else {
+      continue;
+    };
+    let replacements: Vec<String> = targets
+      .iter()
+      .filter_map(|v| v.as_str())
+      .map(|s| s.trim())
+      .filter(|s| !s.is_empty())
+      .map(|s| s.to_string())
+      .collect();
+    if replacements.is_empty() {
+      continue;
+    }
+
+    if pattern.is_empty() {
+      continue;
+    }
+
+    let star_count = pattern.as_bytes().iter().filter(|&&b| b == b'*').count();
+    if star_count > 1 {
+      continue;
+    }
+
+    let (prefix, suffix, has_star) = match pattern.find('*') {
+      Some(idx) => (pattern[..idx].to_string(), pattern[idx + 1..].to_string(), true),
+      None => (pattern.clone(), String::new(), false),
+    };
+
+    out.push(PathsMapping {
+      pattern: pattern.clone(),
+      prefix,
+      suffix,
+      has_star,
+      replacements,
+    });
+  }
+
+  // TypeScript prioritizes exact matches before wildcard patterns, and prefers
+  // longer patterns when multiple candidates match. Preserve determinism by
+  // applying a stable tie-breaker on the pattern text.
+  out.sort_by(|a, b| {
+    a.has_star
+      .cmp(&b.has_star)
+      .then_with(|| b.pattern.len().cmp(&a.pattern.len()))
+      .then_with(|| a.pattern.cmp(&b.pattern))
+  });
+
+  out
+}
+
+fn starts_with_drive_letter(path: &str) -> bool {
+  let bytes = path.as_bytes();
+  bytes.len() >= 3
+    && bytes[0].is_ascii_alphabetic()
+    && bytes[1] == b':'
+    && (bytes[2] == b'/' || bytes[2] == b'\\')
+}
+
+fn looks_like_source_path(specifier: &str) -> bool {
+  const SUFFIXES: &[&str] = &[
+    ".ts", ".tsx", ".d.ts", ".mts", ".d.mts", ".cts", ".d.cts", ".js", ".jsx", ".mjs", ".cjs",
+  ];
+  SUFFIXES.iter().any(|suffix| specifier.ends_with(suffix))
+}
+
+fn should_apply_base_url(specifier: &str) -> bool {
+  !specifier.is_empty()
+    && !specifier.starts_with("./")
+    && !specifier.starts_with("../")
+    && !specifier.starts_with('/')
+    && !specifier.starts_with('\\')
+    && !specifier.starts_with('#')
+    && !specifier.starts_with("@types/")
+    && !starts_with_drive_letter(specifier)
+    && !looks_like_source_path(specifier)
+}
+
+fn join_base_url(base_url: &str, suffix: &str) -> String {
+  let suffix = suffix.trim();
+  if suffix.is_empty() {
+    return normalize_ts_path(base_url);
+  }
+
+  if suffix.starts_with('/') || suffix.starts_with('\\') || starts_with_drive_letter(suffix) {
+    return normalize_ts_path(suffix);
+  }
+
+  let base = base_url.trim_end_matches('/');
+  if base.is_empty() {
+    return normalize_ts_path(&format!("/{suffix}"));
+  }
+
+  normalize_ts_path(&format!("{base}/{suffix}"))
 }
 
 impl HarnessHost {
@@ -1726,8 +1863,25 @@ impl HarnessHost {
       files,
       compiler_options,
       type_roots,
+      base_url: None,
+      paths: Vec::new(),
       resolution_trace: None,
     }
+  }
+
+  pub(crate) fn with_base_url_and_paths(mut self, base_url: Option<String>, paths: Option<Value>) -> Self {
+    self.paths = parse_paths_mappings(paths.as_ref());
+    self.base_url = base_url
+      .as_deref()
+      .map(str::trim)
+      .filter(|s| !s.is_empty())
+      .map(normalize_ts_path);
+    if self.base_url.is_none() && !self.paths.is_empty() {
+      // TypeScript treats `paths` as relative to the compiler's current directory
+      // when `baseUrl` is not explicitly provided. The harness virtual root is `/`.
+      self.base_url = Some("/".to_string());
+    }
+    self
   }
 
   pub(crate) fn new_with_resolution_trace(
@@ -1757,8 +1911,47 @@ impl HarnessHost {
       files,
       compiler_options,
       type_roots,
+      base_url: None,
+      paths: Vec::new(),
       resolution_trace: Some(resolution_trace),
     }
+  }
+
+  fn resolve_via_base_url_and_paths(&self, from: &FileKey, specifier: &str) -> Option<FileKey> {
+    if self.base_url.is_none() {
+      return None;
+    }
+    if !should_apply_base_url(specifier) {
+      return None;
+    }
+
+    let base_url = self.base_url.as_deref().expect("checked above");
+
+    for mapping in &self.paths {
+      let Some((capture_start, capture_end)) = mapping.capture_range(specifier) else {
+        continue;
+      };
+      let capture = &specifier[capture_start..capture_end];
+      for target in &mapping.replacements {
+        let replaced = if mapping.has_star {
+          target.replace('*', capture)
+        } else {
+          target.replace('*', "")
+        };
+        let candidate = join_base_url(base_url, &replaced);
+        if let Some(resolved) = self
+          .files
+          .resolve_import(from, &candidate, &self.compiler_options)
+        {
+          return Some(resolved);
+        }
+      }
+    }
+
+    let candidate = join_base_url(base_url, specifier);
+    self
+      .files
+      .resolve_import(from, &candidate, &self.compiler_options)
   }
 }
 
@@ -1784,9 +1977,12 @@ impl Host for HarnessHost {
       // from those roots and does not fall back to `node_modules/@types`.
       resolve_at_types_entry(&self.files, from, &self.type_roots, specifier)
     } else {
-      let mut resolved = self
-        .files
-        .resolve_import(from, specifier, &self.compiler_options);
+      let mut resolved = self.resolve_via_base_url_and_paths(from, specifier);
+      if resolved.is_none() {
+        resolved = self
+          .files
+          .resolve_import(from, specifier, &self.compiler_options);
+      }
       if resolved.is_none() {
         resolved = resolve_at_types_entry(&self.files, from, &self.type_roots, specifier);
       }
@@ -3049,6 +3245,67 @@ mod tests {
       .resolve(&from, "@types/example")
       .expect("@types/example should resolve via explicit typeRoots");
     let expected = file_set.resolve("/custom_types/example/index.d.ts").unwrap();
+    assert_eq!(resolved, expected);
+  }
+
+  #[test]
+  fn resolves_bare_specifier_via_base_url() {
+    let files = vec![
+      VirtualFile {
+        name: "/project/src/main.ts".to_string(),
+        content: "import { x } from \"foo\";".into(),
+      },
+      VirtualFile {
+        name: "/project/src/foo.ts".to_string(),
+        content: "export const x: number = 1;".into(),
+      },
+    ];
+
+    let file_set = HarnessFileSet::new(&files);
+    let host = HarnessHost::new(
+      file_set.clone(),
+      compiler_options_with_module_resolution("node"),
+      Vec::new(),
+    )
+    .with_base_url_and_paths(Some("/project/src".to_string()), None);
+
+    let from = file_set.resolve("/project/src/main.ts").unwrap();
+    let resolved = host
+      .resolve(&from, "foo")
+      .expect("foo should resolve via baseUrl");
+    let expected = file_set.resolve("/project/src/foo.ts").unwrap();
+    assert_eq!(resolved, expected);
+  }
+
+  #[test]
+  fn resolves_bare_specifier_via_paths_mapping() {
+    let files = vec![
+      VirtualFile {
+        name: "/project/src/main.ts".to_string(),
+        content: "import { x } from \"foo/bar\";".into(),
+      },
+      VirtualFile {
+        name: "/project/src/lib/bar.ts".to_string(),
+        content: "export const x: number = 1;".into(),
+      },
+    ];
+
+    let file_set = HarnessFileSet::new(&files);
+    let host = HarnessHost::new(
+      file_set.clone(),
+      compiler_options_with_module_resolution("node"),
+      Vec::new(),
+    )
+    .with_base_url_and_paths(
+      Some("/project".to_string()),
+      Some(serde_json::json!({ "foo/*": ["src/lib/*"] })),
+    );
+
+    let from = file_set.resolve("/project/src/main.ts").unwrap();
+    let resolved = host
+      .resolve(&from, "foo/bar")
+      .expect("foo/bar should resolve via paths mapping");
+    let expected = file_set.resolve("/project/src/lib/bar.ts").unwrap();
     assert_eq!(resolved, expected);
   }
 
