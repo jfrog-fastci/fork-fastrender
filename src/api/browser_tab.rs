@@ -30,7 +30,6 @@ use crate::ui::TabHistory;
 use crate::web::dom::DocumentVisibilityState;
 use crate::web::events::{Event, EventInit, EventTargetId, MouseEvent};
 use crate::ui::{PointerButton, PointerModifiers};
-use crate::web::events::{Event, EventInit, EventTargetId, MouseEvent};
 
 use encoding_rs::{Encoding, UTF_8};
 

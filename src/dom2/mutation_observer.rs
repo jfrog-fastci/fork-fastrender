@@ -261,36 +261,6 @@ fn is_html_element_kind(kind: &NodeKind) -> bool {
 }
 
 impl Document {
-  /// Move mutation observer registrations from `old` to `new`.
-  ///
-  /// This is used by DOM operations that are implemented as clone+mapping (rather than in-place
-  /// moves) but must preserve JS-visible MutationObserver behavior. Callers should also remap the
-  /// observer agent's internal `NodeId` references via [`MutationObserverAgent::remap_node_ids`].
-  pub(crate) fn mutation_observer_move_registrations(&mut self, old: NodeId, new: NodeId) {
-    if old == new {
-      return;
-    }
-    let old_idx = old.index();
-    let new_idx = new.index();
-    if old_idx >= self.nodes.len() || new_idx >= self.nodes.len() {
-      return;
-    }
-
-    let moved = std::mem::take(&mut self.nodes[old_idx].registered_observers);
-    if moved.is_empty() {
-      return;
-    }
-    let new_list = &mut self.nodes[new_idx].registered_observers;
-    for reg in moved {
-      new_list.retain(|r| r.observer != reg.observer);
-      new_list.push(reg);
-    }
-  }
-
-  pub(crate) fn mutation_observer_remap_node_ids(&mut self, mapping: &HashMap<NodeId, NodeId>) {
-    self.mutation_observer_agent.borrow_mut().remap_node_ids(mapping);
-  }
-
   pub fn mutation_observer_limits(&self) -> MutationObserverLimits {
     self.mutation_observer_agent.borrow().limits()
   }
