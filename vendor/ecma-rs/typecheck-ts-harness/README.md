@@ -86,6 +86,12 @@ by `tsc` are surfaced as notes so comparisons remain auditable.
 Boolean directives accept `true/false` (plus common variants like `1/0`, `yes/no`)
 or omit the value to mean `true` (`// @strict:`, `// @skipLibCheck:`).
 
+The harness also accepts a few TypeScript aliases used in upstream tests:
+
+- `@target: ES6` is treated as `ES2015`.
+- `@jsx: react-native` is treated as `preserve` for the Rust checker, but the
+  `tsc` options map preserves the literal `react-native` value.
+
 ### Unknown / unsupported directives
 
 By default, unknown `@...:` directives are ignored, but the harness reports them
