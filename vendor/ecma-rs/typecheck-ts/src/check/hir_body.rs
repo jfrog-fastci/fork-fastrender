@@ -2712,14 +2712,17 @@ impl<'a> Checker<'a> {
               let span = Span::new(self.file, loc_to_range(self.file, expr.loc));
               let inner = self.store.canon(inner);
               let target = self.store.canon(target);
-              if inner == prim.any || target == prim.any {
-                self
-                  .diagnostics
-                  .push(codes::FORBIDDEN_ANY.error("forbidden `any` type", span));
-              } else if !self.relate.is_assignable(inner, target) {
-                self.diagnostics.push(codes::UNSAFE_TYPE_ASSERTION.error(
-                  format!(
-                    "Type '{}' is not assignable to type '{}'.",
+                if inner == prim.any || target == prim.any {
+                  self
+                    .diagnostics
+                    .push(codes::FORBIDDEN_ANY.error(
+                      "`any` is forbidden when `native_strict` is enabled",
+                      span,
+                    ));
+                } else if !self.relate.is_assignable(inner, target) {
+                  self.diagnostics.push(codes::UNSAFE_TYPE_ASSERTION.error(
+                    format!(
+                      "Type '{}' is not assignable to type '{}'.",
                     TypeDisplay::new(self.store.as_ref(), inner),
                     TypeDisplay::new(self.store.as_ref(), target)
                   ),
