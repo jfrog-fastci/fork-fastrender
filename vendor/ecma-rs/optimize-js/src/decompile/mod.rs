@@ -572,7 +572,7 @@ impl<'a> FunctionDecompiler<'a> {
         let init = self.target_init_for(tgt);
         Ok(Some(self.binding_stmt(tgt, expr, init)))
       }
-      InstTyp::Un | InstTyp::ForeignLoad | InstTyp::UnknownLoad => {
+      InstTyp::Un | InstTyp::ForeignLoad | InstTyp::UnknownLoad | InstTyp::StringConcat => {
         self.ensure_supported_args(inst.args.iter())?;
         let Some(value) = il::lower_value_inst(self, self, inst) else {
           return Ok(None);

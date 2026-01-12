@@ -317,16 +317,18 @@ impl EncodingAnalysis {
   }
 
   fn transfer_template_call(&self, state: &mut [StringEncoding], tgt: u32, args: &[Arg]) {
+    self.transfer_string_concat(state, tgt, args);
+  }
+
+  fn transfer_string_concat(&self, state: &mut [StringEncoding], tgt: u32, args: &[Arg]) {
     if args.is_empty() {
       self.set(state, tgt, StringEncoding::Unknown);
       return;
     }
 
-    // `__optimize_js_template` represents template literal concatenation, which
-    // stringifies non-string expressions via `ToString` and concatenates the
-    // result with the surrounding literal segments.
-    //
-    // We can reuse the same per-operand logic as string concatenation:
+    // `StringConcat` represents string concatenation (including template literal
+    // interpolation) as a first-class semantic op. This is similar to
+    // `__optimize_js_template` and string `+`:
     // - string literals contribute their literal encoding
     // - non-string primitives contribute ASCII (`ToString` is ASCII)
     // - typed vars can be treated as ASCII when their value types are proven to
@@ -413,6 +415,10 @@ impl DataFlowAnalysis for EncodingAnalysis {
         } else {
           self.set(state, tgt, StringEncoding::Unknown);
         }
+      }
+      InstTyp::StringConcat => {
+        let (tgt, parts) = inst.as_string_concat();
+        self.transfer_string_concat(state, tgt, parts);
       }
       InstTyp::Call => {
         let Some(tgt) = inst.tgts.get(0).copied() else {

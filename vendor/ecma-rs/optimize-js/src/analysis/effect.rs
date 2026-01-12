@@ -522,6 +522,12 @@ fn inst_local_effect_with_value_types(
         effects.summary.throws = ThrowBehavior::Maybe;
       }
     }
+    InstTyp::StringConcat => {
+      // String concatenation is treated as a pure allocation (same as the
+      // internal `__optimize_js_template` marker call it replaces in typed
+      // lowerings).
+      effects.summary.flags |= EffectFlags::ALLOCATES;
+    }
     InstTyp::Throw => {
       effects.summary.throws = ThrowBehavior::Always;
     }

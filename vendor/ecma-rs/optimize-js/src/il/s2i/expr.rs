@@ -34,6 +34,7 @@ impl<'p> HirSourceToInst<'p> {
   const INTERNAL_OBJECT_PROP_MARKER: &'static str = "__optimize_js_object_prop";
   const INTERNAL_OBJECT_COMPUTED_MARKER: &'static str = "__optimize_js_object_prop_computed";
   const INTERNAL_OBJECT_SPREAD_MARKER: &'static str = "__optimize_js_object_spread";
+  #[cfg(not(feature = "typed"))]
   const INTERNAL_TEMPLATE_CALLEE: &'static str = "__optimize_js_template";
   const INTERNAL_TAGGED_TEMPLATE_CALLEE: &'static str = "__optimize_js_tagged_template";
   #[cfg(not(feature = "native-async-ops"))]
@@ -614,6 +615,30 @@ impl<'p> HirSourceToInst<'p> {
     self.compile_expr(right)
   }
 
+  fn collect_string_add_chain_parts(&self, expr_id: ExprId, out: &mut Vec<ExprId>) {
+    let expr = &self.body.exprs[expr_id.0 as usize];
+    if let ExprKind::Binary {
+      op: BinaryOp::Add,
+      left,
+      right,
+    } = expr.kind
+    {
+      let summary = self
+        .program
+        .types
+        .expr_value_type_summary(self.body_id, expr_id);
+      // Only flatten chains that are *definitely* string concatenation. This
+      // keeps us conservative around mixed numeric/string `+` (e.g. `1 + 2 +
+      // "x"`) where earlier `+` operations may be numeric addition.
+      if summary.is_definitely_string() {
+        self.collect_string_add_chain_parts(left, out);
+        self.collect_string_add_chain_parts(right, out);
+        return;
+      }
+    }
+    out.push(expr_id);
+  }
+
   pub fn compile_binary_expr(
     &mut self,
     expr_id: ExprId,
@@ -651,6 +676,31 @@ impl<'p> HirSourceToInst<'p> {
         ),
       );
       return Ok(Arg::Var(res_tmp_var));
+    }
+
+    if operator == BinaryOp::Add {
+      let summary = self
+        .program
+        .types
+        .expr_value_type_summary(self.body_id, expr_id);
+      // Typed string `+` chains are lowered to a single `StringConcat` so that
+      // downstream encoding/native backends can see the full concatenation
+      // structure.
+      if summary.is_definitely_string() {
+        let mut parts_exprs = Vec::new();
+        self.collect_string_add_chain_parts(expr_id, &mut parts_exprs);
+        // `collect_string_add_chain_parts` always pushes at least one element,
+        // but we only care about actual `+` expressions.
+        if parts_exprs.len() >= 2 {
+          let mut parts = Vec::with_capacity(parts_exprs.len());
+          for part_expr in parts_exprs {
+            parts.push(self.compile_expr(part_expr)?);
+          }
+          let res_tmp_var = self.c_temp.bump();
+          self.push_value_inst(expr_id, Inst::string_concat(res_tmp_var, parts));
+          return Ok(Arg::Var(res_tmp_var));
+        }
+      }
     }
 
     let left_expr = &self.body.exprs[left.0 as usize];
@@ -1948,16 +1998,25 @@ impl<'p> HirSourceToInst<'p> {
           args.push(Arg::Const(Const::Str(span.literal.clone())));
         }
         let tmp = self.c_temp.bump();
-        self.push_value_inst(
-          expr_id,
-          Inst::call(
-            tmp,
-            Arg::Builtin(Self::INTERNAL_TEMPLATE_CALLEE.to_string()),
-            Arg::Const(Const::Undefined),
-            args,
-            Vec::new(),
-          ),
-        );
+        #[cfg(feature = "typed")]
+        {
+          let mut inst = Inst::string_concat(tmp, args);
+          inst.meta.string_concat_is_template = true;
+          self.push_value_inst(expr_id, inst);
+        }
+        #[cfg(not(feature = "typed"))]
+        {
+          self.push_value_inst(
+            expr_id,
+            Inst::call(
+              tmp,
+              Arg::Builtin(Self::INTERNAL_TEMPLATE_CALLEE.to_string()),
+              Arg::Const(Const::Undefined),
+              args,
+              Vec::new(),
+            ),
+          );
+        }
         Ok(Arg::Var(tmp))
       }
       ExprKind::TaggedTemplate { tag, template } => {

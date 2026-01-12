@@ -67,30 +67,51 @@ fn find_template_def(cfg: &Cfg, value: &str) -> (u32, u32) {
   let mut matches = Vec::new();
   for label in cfg_labels_sorted(cfg) {
     for inst in cfg.bblocks.get(label).iter() {
-      if inst.t != InstTyp::Call {
-        continue;
+      #[cfg(feature = "typed")]
+      {
+        if inst.t != InstTyp::StringConcat || !inst.meta.string_concat_is_template {
+          continue;
+        }
+        let (tgt, parts) = inst.as_string_concat();
+        if parts.len() != 1 {
+          continue;
+        }
+        if matches!(&parts[0], Arg::Const(Const::Str(s)) if s == value) {
+          matches.push((label, tgt));
+        }
       }
-      let Some(&tgt) = inst.tgts.get(0) else {
-        continue;
-      };
-      let (_call_tgt, callee, _this, args, spreads) = inst.as_call();
-      if !matches!(callee, Arg::Builtin(path) if path == "__optimize_js_template") {
-        continue;
-      }
-      if !spreads.is_empty() || args.len() != 1 {
-        continue;
-      }
-      if matches!(&args[0], Arg::Const(Const::Str(s)) if s == value) {
-        matches.push((label, tgt));
+      #[cfg(not(feature = "typed"))]
+      {
+        if inst.t != InstTyp::Call {
+          continue;
+        }
+        let Some(&tgt) = inst.tgts.get(0) else {
+          continue;
+        };
+        let (_call_tgt, callee, _this, args, spreads) = inst.as_call();
+        if !matches!(callee, Arg::Builtin(path) if path == "__optimize_js_template") {
+          continue;
+        }
+        if !spreads.is_empty() || args.len() != 1 {
+          continue;
+        }
+        if matches!(&args[0], Arg::Const(Const::Str(s)) if s == value) {
+          matches.push((label, tgt));
+        }
       }
     }
   }
   matches.sort_unstable();
   match matches.as_slice() {
     [single] => *single,
-    [] => panic!("missing __optimize_js_template({value:?}) call in CFG"),
+    [] => {
+      #[cfg(feature = "typed")]
+      panic!("missing StringConcat template literal for {value:?} in CFG");
+      #[cfg(not(feature = "typed"))]
+      panic!("missing __optimize_js_template({value:?}) call in CFG");
+    }
     _ => panic!(
-      "expected exactly one `Call` to __optimize_js_template({value:?}), found: {matches:?}"
+      "expected exactly one template literal definition for {value:?}, found: {matches:?}"
     ),
   }
 }
@@ -148,7 +169,8 @@ fn encoding_analysis_distinguishes_ascii_and_utf8() {
   assert_var_encoding(&result, y_label, y_var, StringEncoding::Utf8);
   assert_var_encoding(&result, pi_label, pi_var, StringEncoding::Utf8);
 
-  // Template literals lowered as `__optimize_js_template("...")`.
+  // Template literals lowered as either `__optimize_js_template("...")` (untyped)
+  // or `StringConcat` (typed builds).
   let (t0_label, t0_var) = find_template_def(cfg, "hello");
   let (t1_label, t1_var) = find_template_def(cfg, "ÿ");
   let (t2_label, t2_var) = find_template_def(cfg, "π");

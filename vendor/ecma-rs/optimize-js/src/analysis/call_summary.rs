@@ -243,6 +243,7 @@ fn build_var_defs(
         Arg::Fn(id) => VarDef::Fn(*id),
         _ => VarDef::Unknown,
       },
+      InstTyp::StringConcat => VarDef::FreshAlloc,
       InstTyp::ForeignLoad => foreign_fns
         .get(&inst.foreign)
         .copied()

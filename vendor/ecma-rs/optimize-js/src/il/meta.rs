@@ -608,6 +608,11 @@ pub struct InstMeta {
   /// explicit defining instruction).
   #[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "is_false"))]
   pub preserve_var_assign: bool,
+  /// For `InstTyp::StringConcat`, indicates the concatenation originated from a
+  /// template literal and should be decompiled back into a template literal
+  /// expression (instead of a `+` chain).
+  #[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "is_false"))]
+  pub string_concat_is_template: bool,
   /// For `InstTyp::Await`, records whether the awaited value is known to be
   /// already resolved (i.e. the await point is guaranteed not to suspend).
   ///
@@ -790,6 +795,7 @@ impl InstMeta {
       && self.numeric_repr.is_default()
       && !self.excludes_nullish
       && !self.preserve_var_assign
+      && !self.string_concat_is_template
       && self.ownership.is_default()
       && is_default_arg_use_modes(&self.arg_use_modes)
       && self.in_place_hint.is_none()

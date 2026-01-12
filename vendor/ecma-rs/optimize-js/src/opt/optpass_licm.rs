@@ -202,6 +202,9 @@ fn is_hoist_candidate(inst: &Inst) -> bool {
   match inst.t {
     InstTyp::Bin => inst.bin_op != crate::il::inst::BinOp::GetProp,
     InstTyp::Un | InstTyp::VarAssign => true,
+    // Treat concatenation as allocating (matching the old `__optimize_js_template`
+    // call lowering) and avoid hoisting it.
+    InstTyp::StringConcat => false,
     InstTyp::Call => {
       inst.meta.callee_purity == Purity::Pure && inst.meta.effects.is_pure()
     }

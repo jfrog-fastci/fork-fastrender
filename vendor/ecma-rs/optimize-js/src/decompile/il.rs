@@ -243,6 +243,51 @@ pub fn lower_value_inst<V: VarNamer, F: FnEmitter>(
     }
     InstTyp::ForeignLoad => Some(identifier(var_namer.name_foreign(inst.foreign))),
     InstTyp::UnknownLoad => Some(identifier(var_namer.name_unknown(&inst.unknown))),
+    InstTyp::StringConcat => {
+      let (_tgt, parts) = inst.as_string_concat();
+      // If this was a template literal, prefer emitting a template literal for
+      // readability and to preserve the `ToString` coercion semantics.
+      if inst.meta.string_concat_is_template
+        && !parts.is_empty()
+        && parts.len() % 2 == 1
+        && parts
+          .iter()
+          .enumerate()
+          .all(|(idx, arg)| idx % 2 == 1 || matches!(arg, Arg::Const(Const::Str(_))))
+      {
+        let mut tpl_parts = Vec::with_capacity(parts.len());
+        for (idx, arg) in parts.iter().enumerate() {
+          if idx % 2 == 0 {
+            let Arg::Const(Const::Str(segment)) = arg else {
+              unreachable!("validated above");
+            };
+            tpl_parts.push(LitTemplatePart::String(segment.clone()));
+          } else {
+            tpl_parts.push(LitTemplatePart::Substitution(lower_arg(
+              var_namer, fn_emitter, arg,
+            )));
+          }
+        }
+        return Some(node(Expr::LitTemplate(node(LitTemplateExpr { parts: tpl_parts }))));
+      }
+
+      // Otherwise emit a `+` chain.
+      let mut iter = parts.iter();
+      let Some(first) = iter.next() else {
+        return Some(node(Expr::LitStr(node(LitStrExpr {
+          value: String::new(),
+        }))));
+      };
+      let mut expr = lower_arg(var_namer, fn_emitter, first);
+      for part in iter {
+        expr = node(Expr::Binary(node(BinaryExpr {
+          operator: OperatorName::Addition,
+          left: expr,
+          right: lower_arg(var_namer, fn_emitter, part),
+        })));
+      }
+      Some(expr)
+    }
     _ => None,
   }
 }
@@ -1403,6 +1448,35 @@ pub fn decompile_function(func: &ProgramFunction) -> DecompileResult<Vec<Node<St
             },
           );
         }
+        InstTyp::StringConcat => {
+          let (tgt, parts) = inst.as_string_concat();
+          let mut iter = parts.iter();
+          let Some(first) = iter.next() else {
+            env.insert(
+              tgt,
+              VarValue {
+                expr: FlatExpr::Str(String::new()),
+                origin: ValueOrigin::Other,
+              },
+            );
+            continue;
+          };
+          let mut expr = expr_from_arg(first, &env);
+          for part in iter {
+            expr = FlatExpr::Binary {
+              op: OperatorName::Addition,
+              left: Box::new(expr),
+              right: Box::new(expr_from_arg(part, &env)),
+            };
+          }
+          env.insert(
+            tgt,
+            VarValue {
+              expr,
+              origin: ValueOrigin::Other,
+            },
+          );
+        }
         InstTyp::Call => {
           let (call_expr, tgt) = handle_call(inst, &env);
           if let Some(tgt) = tgt {
@@ -1615,6 +1689,11 @@ pub enum LoweredInst {
     op: BinOp,
     right: LoweredArg,
   },
+  StringConcat {
+    tgt: u32,
+    parts: Vec<LoweredArg>,
+    template: bool,
+  },
   #[cfg(feature = "native-async-ops")]
   Await {
     tgt: Option<u32>,
@@ -1721,6 +1800,11 @@ fn lower_inst(inst: &Inst, bindings: &ForeignBindings) -> LoweredInst {
       left: lowered_arg(&inst.args[0]),
       op: inst.bin_op,
       right: lowered_arg(&inst.args[1]),
+    },
+    InstTyp::StringConcat => LoweredInst::StringConcat {
+      tgt: inst.tgts[0],
+      parts: inst.args.iter().map(lowered_arg).collect(),
+      template: inst.meta.string_concat_is_template,
     },
     InstTyp::Un => LoweredInst::Un {
       tgt: inst.tgts[0],

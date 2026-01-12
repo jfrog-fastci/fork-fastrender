@@ -369,6 +369,13 @@ fn collect_local_alloc_flow_facts(
             facts.external_defs.insert(tgt);
           }
         }
+        InstTyp::StringConcat => {
+          // String concatenation produces a fresh string value. Treat it as a
+          // local allocation site (similar to the `__optimize_js_template`
+          // marker call used in untyped lowerings).
+          let tgt = inst.tgts[0];
+          facts.alloc_vars.insert(tgt);
+        }
         #[cfg(feature = "native-async-ops")]
         InstTyp::Await | InstTyp::PromiseAll | InstTyp::PromiseRace => {
           // These ops go through builtin/VM machinery (thenables / promises), so treat their

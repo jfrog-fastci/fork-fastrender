@@ -52,23 +52,27 @@ fn inst_defines_value(inst: &Inst) -> Option<u32> {
 }
  
 fn is_allocation_inst(inst: &Inst) -> bool {
-  if inst.t != InstTyp::Call {
-    return false;
-  }
-  if inst.tgts.is_empty() {
-    return false;
-  }
-  matches!(
-    inst.args.get(0),
-    Some(Arg::Builtin(name))
-      if matches!(
-        name.as_str(),
-        "__optimize_js_array"
-          | "__optimize_js_object"
-          | "__optimize_js_regex"
-          | "__optimize_js_template"
+  match inst.t {
+    InstTyp::Call => {
+      if inst.tgts.is_empty() {
+        return false;
+      }
+      matches!(
+        inst.args.get(0),
+        Some(Arg::Builtin(name))
+          if matches!(
+            name.as_str(),
+            "__optimize_js_array"
+              | "__optimize_js_object"
+              | "__optimize_js_regex"
+              | "__optimize_js_template"
+          )
       )
-  )
+    }
+    // String concatenation produces a fresh string value.
+    InstTyp::StringConcat => !inst.tgts.is_empty(),
+    _ => false,
+  }
 }
  
 fn call_return_kind(inst: &Inst, call_summaries: Option<&[FnSummary]>) -> ReturnKind {
@@ -171,11 +175,14 @@ fn collect_alloc_vars(cfg: &Cfg, call_summaries: Option<&[FnSummary]>) -> BTreeS
       continue;
     };
     for inst in block.iter() {
-      if inst.t != InstTyp::Call {
-        continue;
-      }
       if let Some(tgt) = inst_defines_value(inst) {
-        if is_allocation_inst(inst) || matches!(call_return_kind(inst, call_summaries), ReturnKind::FreshAlloc) {
+        if is_allocation_inst(inst)
+          || (inst.t == InstTyp::Call
+            && matches!(
+              call_return_kind(inst, call_summaries),
+              ReturnKind::FreshAlloc
+            ))
+        {
           allocs.insert(tgt);
         }
       }

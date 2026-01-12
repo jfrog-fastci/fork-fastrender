@@ -203,6 +203,13 @@ pub enum ArrayChainOpData {
 pub enum InstTyp {
   Bin,        // tgts[0] = args[0] bin_op args[1]
   Un,         // tgts[0] = un_op args[0]
+  /// String concatenation / template literal interpolation as a single semantic op.
+  ///
+  /// `tgts[0] = concat(args...)`.
+  ///
+  /// Lowering may use this for template literals and typed `+` chains so downstream
+  /// analyses/backends can reason about concatenation as a single allocation.
+  StringConcat,
   VarAssign,  // tgts[0] = args[0]
   PropAssign, // args[0][args[1]] = args[2]
   /// Branch-local assertion/assumption used for analysis-driven optimizations.
@@ -462,6 +469,16 @@ impl Inst {
     }
   }
 
+  pub fn string_concat(tgt: u32, parts: Vec<Arg>) -> Self {
+    Self {
+      t: InstTyp::StringConcat,
+      tgts: vec![tgt],
+      args: parts,
+      value_type: ValueTypeSummary::STRING,
+      ..Default::default()
+    }
+  }
+
   pub fn var_assign(tgt: u32, arg: Arg) -> Self {
     let value_type = match &arg {
       Arg::Const(c) => ValueTypeSummary::from_const(c),
@@ -711,6 +728,11 @@ impl Inst {
   pub fn as_un(&self) -> (u32, UnOp, &Arg) {
     assert_eq!(self.t, InstTyp::Un);
     (self.tgts[0], self.un_op, &self.args[0])
+  }
+
+  pub fn as_string_concat(&self) -> (u32, &[Arg]) {
+    assert_eq!(self.t, InstTyp::StringConcat);
+    (self.tgts[0], &self.args)
   }
 
   pub fn as_var_assign(&self) -> (u32, &Arg) {
