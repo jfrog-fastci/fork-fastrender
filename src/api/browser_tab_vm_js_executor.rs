@@ -1760,93 +1760,32 @@ mod tests {
     );
     let fetcher: Arc<dyn ResourceFetcher> = Arc::new(MapFetcher::new(map));
 
-    let renderer = FastRender::builder()
-      .dom_scripting_enabled(true)
-      .font_sources(FontConfig::bundled_only())
-      .fetcher(fetcher)
-      .build()?;
-    let mut document = BrowserDocumentDom2::new(
-      renderer,
-      "<!doctype html><html></html>",
-      RenderOptions::default(),
-    )?;
-
-    let current_script = CurrentScriptStateHandle::default();
-    let mut executor = VmJsBrowserTabExecutor::new();
-    let mut event_loop = crate::js::EventLoop::<BrowserTabHost>::new();
+    // Dynamic import resolution runs via Promise jobs/microtasks. Exercise this behavior through the
+    // full BrowserTab host pipeline so we also cover the microtask checkpoint integration.
+    let html = "<!doctype html><html><head><script>\
+      import('./dep.js').then(function (ns) {\
+        document.documentElement.setAttribute('data-value', ns.value);\
+      });\
+      </script></head><body></body></html>";
 
     let mut options = JsExecutionOptions::default();
     options.supports_module_scripts = true;
-    executor.reset_for_navigation(
-      Some("https://example.com/doc.html"),
-      &mut document,
-      &current_script,
+
+    let tab = BrowserTab::from_html_with_vmjs_and_document_url_and_fetcher_and_js_execution_options(
+      html,
+      "https://example.com/doc.html",
+      RenderOptions::default(),
+      fetcher,
       options,
     )?;
 
-    let script_text = "globalThis.__dynImportPromise = import('./dep.js');";
-    let spec = ScriptElementSpec {
-      base_url: Some("https://example.com/doc.html".to_string()),
-      src: None,
-      src_attr_present: false,
-      inline_text: script_text.to_string(),
-      async_attr: false,
-      force_async: false,
-      defer_attr: false,
-      nomodule_attr: false,
-      crossorigin: None,
-      integrity_attr_present: false,
-      integrity: None,
-      referrer_policy: None,
-      fetch_priority: None,
-      parser_inserted: true,
-      node_id: None,
-      script_type: crate::js::ScriptType::Classic,
-    };
-    executor.execute_classic_script(script_text, &spec, None, &mut document, &mut event_loop)?;
-
-    let realm = executor.realm.as_mut().expect("realm initialized");
-    let promise_value = get_global_prop(realm, "__dynImportPromise");
-    let Value::Object(promise_obj) = promise_value else {
-      panic!("expected dynamic import to return a Promise object");
-    };
+    let dom = tab.dom();
+    let document_element = dom.document_element().expect("document element");
     assert_eq!(
-      realm
-        .heap()
-        .promise_state(promise_obj)
-        .map_err(|err| Error::Other(err.to_string()))?,
-      PromiseState::Fulfilled,
-      "expected dynamic import promise to be fulfilled"
-    );
-
-    let ns_value = realm
-      .heap()
-      .promise_result(promise_obj)
-      .map_err(|err| Error::Other(err.to_string()))?
-      .unwrap_or(Value::Undefined);
-    let Value::Object(ns_obj) = ns_value else {
-      panic!("expected dynamic import promise to fulfill with a module namespace object");
-    };
-
-    let (_vm, _realm_ref, heap) = realm.vm_realm_and_heap_mut();
-    let mut scope = heap.scope();
-    scope
-      .push_root(Value::Object(ns_obj))
-      .map_err(|err| Error::Other(err.to_string()))?;
-    let key_s = scope
-      .alloc_string("value")
-      .map_err(|err| Error::Other(err.to_string()))?;
-    scope
-      .push_root(Value::String(key_s))
-      .map_err(|err| Error::Other(err.to_string()))?;
-    let key = PropertyKey::from_string(key_s);
-    assert!(
-      scope
-        .heap()
-        .object_get_own_property(ns_obj, &key)
-        .map_err(|err| Error::Other(err.to_string()))?
-        .is_some(),
-      "expected module namespace to expose exported binding"
+      dom.get_attribute(document_element, "data-value")
+        .expect("get attribute"),
+      Some("7"),
+      "expected dynamic import to resolve and expose module namespace exports",
     );
 
     Ok(())

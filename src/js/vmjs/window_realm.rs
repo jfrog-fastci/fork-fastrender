@@ -9696,6 +9696,10 @@ fn error_event_constructor_impl(
   let error_key = alloc_key(scope, "error")?;
   scope.define_property(obj, error_key, read_only_data_desc(error))?;
 
+  // Mark as a valid Event instance so `dispatchEvent(new ErrorEvent(...))` works.
+  //
+  // Note: `BrandedEventKind` is only used when dispatch needs to extract additional event-specific
+  // payload (e.g. CustomEvent.detail). Most specialized subclasses are branded as plain `Event`.
   brand_event_object(scope, obj, BrandedEventKind::Event)?;
 
   Ok(Value::Object(obj))
@@ -9794,6 +9798,7 @@ fn before_unload_event_constructor_impl(
     data_desc(Value::String(return_value)),
   )?;
 
+  // Mark as a valid Event instance so `dispatchEvent(new BeforeUnloadEvent(...))` works.
   brand_event_object(scope, obj, BrandedEventKind::Event)?;
 
   Ok(Value::Object(obj))
@@ -9898,6 +9903,7 @@ fn page_transition_event_constructor_impl(
     read_only_data_desc(Value::Bool(persisted)),
   )?;
 
+  // Mark as a valid Event instance so `dispatchEvent(new PageTransitionEvent(...))` works.
   brand_event_object(scope, obj, BrandedEventKind::Event)?;
 
   Ok(Value::Object(obj))
