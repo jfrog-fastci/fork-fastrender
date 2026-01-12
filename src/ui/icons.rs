@@ -321,8 +321,13 @@ pub fn icon_tinted(
   let pixels_per_point = ui.ctx().pixels_per_point();
   let side_px = points_to_pixels(side_points, pixels_per_point);
   let side_points = actual_points_for_pixels(side_px, pixels_per_point);
-  let (rect, response) = ui.allocate_exact_size(egui::vec2(side_points, side_points), egui::Sense::hover());
+  let (rect, response) =
+    ui.allocate_exact_size(egui::vec2(side_points, side_points), egui::Sense::hover());
   paint_icon(ui, rect, icon, side_points, tint);
+  // Expose a label for icon-only status indicators (e.g. security lock icon). Hover text alone is
+  // not sufficient for screen readers.
+  let label = icon.a11y_label();
+  response.widget_info(move || egui::WidgetInfo::labeled(egui::WidgetType::Label, label));
   response
 }
 
@@ -424,7 +429,12 @@ pub fn icon_button(
 /// Today this uses `egui::Spinner` directly (vector drawing, theme-aware). The SVG icon is still
 /// included in `assets/browser_icons/` for completeness and potential future use.
 pub fn spinner(ui: &mut egui::Ui, side_points: f32) -> egui::Response {
-  ui.add(egui::Spinner::new().size(side_points))
+  let response = ui.add(egui::Spinner::new().size(side_points));
+  // `egui::Spinner` is often used without accompanying text (e.g. in compact toolbars). Give it a
+  // stable label so assistive tech can announce what it represents.
+  let label = BrowserIcon::Spinner.a11y_label();
+  response.widget_info(move || egui::WidgetInfo::labeled(egui::WidgetType::Label, label));
+  response
 }
 
 #[cfg(test)]
@@ -441,6 +451,10 @@ mod tests {
       BrowserIcon::CloseTab,
       BrowserIcon::ZoomOut,
       BrowserIcon::ZoomIn,
+      BrowserIcon::LockSecure,
+      BrowserIcon::WarningInsecure,
+      BrowserIcon::Error,
+      BrowserIcon::Spinner,
     ] {
       let label = icon.a11y_label();
       assert!(

@@ -3763,8 +3763,14 @@ impl App {
               .hint_text("text")
               .desired_width(160.0),
           );
-          if !self.debug_log_filter.is_empty() && ui.small_button("×").clicked() {
-            self.debug_log_filter.clear();
+          if !self.debug_log_filter.is_empty() {
+            let clear_filter = ui.small_button("×").on_hover_text("Clear filter");
+            clear_filter.widget_info(|| {
+              egui::WidgetInfo::labeled(egui::WidgetType::Button, "Clear filter")
+            });
+            if clear_filter.clicked() {
+              self.debug_log_filter.clear();
+            }
           }
         });
 
@@ -4071,6 +4077,10 @@ impl App {
               egui::vec2(MENU_CONTENT_WIDTH, MENU_ITEM_HEIGHT),
               egui::Sense::click(),
             );
+            response.widget_info({
+              let label = item.label.clone();
+              move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label.clone())
+            });
 
             let is_selected = idx == selected_idx;
             let bg = if is_selected {
@@ -6207,7 +6217,11 @@ impl App {
           ui.horizontal(|ui| {
             ui.heading("Bookmarks");
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-              if ui.button("✕").clicked() {
+              let close_resp = ui.button("✕").on_hover_text("Close");
+              close_resp.widget_info(|| {
+                egui::WidgetInfo::labeled(egui::WidgetType::Button, "Close bookmarks panel")
+              });
+              if close_resp.clicked() {
                 close_bookmarks_panel = true;
               }
             });
@@ -6274,7 +6288,11 @@ impl App {
           ui.horizontal(|ui| {
             ui.heading("History");
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-              if ui.button("✕").clicked() {
+              let close_resp = ui.button("✕").on_hover_text("Close");
+              close_resp.widget_info(|| {
+                egui::WidgetInfo::labeled(egui::WidgetType::Button, "Close history panel")
+              });
+              if close_resp.clicked() {
                 close_history_panel = true;
               }
             });
