@@ -114,6 +114,7 @@ impl ProgramState {
         return true;
       }
       let code = diag.code.as_str();
+
       // `skipLibCheck` matches `tsc` by suppressing semantic diagnostics
       // originating from `.d.ts` files, including module resolution failures
       // and triple-slash reference errors inside declaration files.
@@ -123,6 +124,17 @@ impl ProgramState {
       //
       // Note: this intentionally supersedes an earlier plan (Task 183) to keep
       // some `.d.ts` resolution/reference errors when `skipLibCheck` is enabled.
+      //
+      // Some `.d.ts` diagnostics are produced as a result of checking user code
+      // (rather than while typechecking the declaration file itself). Keep these
+      // even under `skipLibCheck` so the user can fix their JSX typing setup.
+      //
+      // Note: TS2608 is triggered while checking user JSX, but can be attributed
+      // to a `.d.ts` file depending on how the JSX container type is resolved.
+      if code == "TS2608" {
+        return true;
+      }
+
       if code.starts_with("TC") || code.starts_with("BIND") || code.starts_with("TS") {
         return false;
       }

@@ -72,7 +72,7 @@ fn skip_lib_check_suppresses_dts_module_resolution_diagnostics() {
 
     host.insert(entry_key.clone(), "import \"./dep\";\nexport {};\n");
     host.link(entry_key.clone(), "./dep", lib_key.clone());
-     Program::new(host, vec![entry_key.clone()])
+    Program::new(host, vec![entry_key.clone()])
   };
 
   let program = build_program(false);
@@ -80,7 +80,6 @@ fn skip_lib_check_suppresses_dts_module_resolution_diagnostics() {
     .file_id(&lib_key)
     .expect("dep .d.ts file should be loaded");
   let diagnostics = program.check();
-
   assert!(
     diagnostics.iter().any(|diag| {
       diag.primary.file == lib_id && diag.code.as_str() == codes::UNRESOLVED_MODULE.as_str()
@@ -88,9 +87,9 @@ fn skip_lib_check_suppresses_dts_module_resolution_diagnostics() {
     "expected unresolved module diagnostics from .d.ts (import/export specifiers) when skip_lib_check is disabled, got {diagnostics:?}"
   );
   assert!(
-    diagnostics.iter().any(|diag| {
-      diag.primary.file == lib_id && diag.message.contains("missing2")
-    }),
+    diagnostics
+      .iter()
+      .any(|diag| diag.primary.file == lib_id && diag.message.contains("missing2")),
     "expected unresolved module diagnostics for import() type specifiers from .d.ts when skip_lib_check is disabled, got {diagnostics:?}"
   );
 
@@ -327,7 +326,12 @@ fn skip_lib_check_does_not_cascade_unresolved_import_types_in_dts() {
   assert!(
     diagnostics.iter().any(|diag| {
       diag.primary.file == lib_id
-        && matches!(diag.code.as_str(), code if code == codes::UNRESOLVED_IMPORT_TYPE.as_str())
+        && matches!(
+          diag.code.as_str(),
+          code
+            if code == codes::UNRESOLVED_IMPORT_TYPE.as_str()
+              || code == codes::UNRESOLVED_MODULE.as_str()
+        )
     }),
     "expected unresolved import type diagnostics from .d.ts when skip_lib_check is disabled, got {diagnostics:?}"
   );
@@ -342,7 +346,33 @@ fn skip_lib_check_does_not_cascade_unresolved_import_types_in_dts() {
   let diagnostics = program.check();
   assert!(
     diagnostics.is_empty(),
-    "expected unresolved import type diagnostics from .d.ts to be suppressed when skip_lib_check is enabled, got {diagnostics:?}"
+    "expected unresolved import types in .d.ts to be suppressed and not cascade when skip_lib_check is enabled, got {diagnostics:?}"
+  );
+}
+
+#[test]
+fn skip_lib_check_does_not_suppress_ts_module_resolution_diagnostics() {
+  let entry_key = FileKey::new("entry.ts");
+  let entry_source = "import \"missing\";\nexport {};\n";
+
+  let mut options = CompilerOptions::default();
+  options.no_default_lib = true;
+  options.skip_lib_check = true;
+
+  let mut host = MemoryHost::with_options(options);
+  host.add_lib(common::core_globals_lib());
+  host.insert(entry_key.clone(), entry_source);
+  let program = Program::new(host, vec![entry_key.clone()]);
+
+  let entry_id = program
+    .file_id(&entry_key)
+    .expect("entry file should be loaded");
+  let diagnostics = program.check();
+  assert!(
+    diagnostics.iter().any(|diag| {
+      diag.primary.file == entry_id && diag.code.as_str() == codes::UNRESOLVED_MODULE.as_str()
+    }),
+    "expected unresolved module diagnostics from .ts even when skip_lib_check is enabled, got {diagnostics:?}"
   );
 }
 

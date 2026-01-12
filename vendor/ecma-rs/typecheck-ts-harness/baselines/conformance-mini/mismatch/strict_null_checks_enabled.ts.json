@@ -22,8 +22,8 @@
     {
       "code": 2322,
       "file": "strict_null_checks_enabled.ts",
-      "start": 6,
-      "end": 11,
+      "start": 5,
+      "end": 10,
       "category": "error",
       "message": "Type 'null' is not assignable to type 'string'."
     }
