@@ -16069,6 +16069,36 @@ mod tests_inline {
   }
 
   #[test]
+  fn svg_style_import_works_with_cdata_and_literal_angle_brackets() {
+    let main_url = "https://example.test/main.svg";
+    let style_url = "https://example.test/style.css";
+
+    // `<style>` content can appear inside CDATA sections in the wild. CDATA allows literal `<`
+    // characters, so the import inliner must not treat those as XML tag boundaries when patching
+    // the original SVG source string.
+    let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"><style><![CDATA[@import url("style.css"); /* < */]]></style><rect class="r" width="1" height="1" fill="blue"/></svg>"#;
+
+    let mut css_res = FetchedResource::new(
+      b".r{fill:red !important;}".to_vec(),
+      Some("text/css".to_string()),
+    );
+    css_res.status = Some(200);
+    css_res.final_url = Some(style_url.to_string());
+
+    let fetcher = MapFetcher::with_entries([(style_url.to_string(), css_res)]);
+    let cache = ImageCache::with_fetcher(Arc::new(fetcher.clone()));
+
+    let pixmap = cache
+      .render_svg_pixmap_at_size(svg, 1, 1, main_url, 1.0)
+      .expect("rendered pixmap");
+    let pixel = pixmap.pixel(0, 0).expect("pixel");
+    assert_eq!(
+      (pixel.red(), pixel.green(), pixel.blue(), pixel.alpha()),
+      (255, 0, 0, 255)
+    );
+  }
+
+  #[test]
   fn svg_style_import_respects_xml_base() {
     let main_url = "https://example.test/main.svg";
     let style_url = "https://example.test/assets/theme.css";
