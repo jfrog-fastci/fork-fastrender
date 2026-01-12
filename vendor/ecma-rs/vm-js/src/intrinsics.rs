@@ -62,6 +62,7 @@ pub struct Intrinsics {
   decode_uri_component: GcObject,
   math: GcObject,
   json: GcObject,
+  reflect: GcObject,
 
   error: GcObject,
   error_prototype: GcObject,
@@ -515,6 +516,20 @@ impl Intrinsics {
     let math_log = vm.register_native_call(builtins::math_log)?;
     let math_exp = vm.register_native_call(builtins::math_exp)?;
     let math_random = vm.register_native_call(builtins::math_random)?;
+    let reflect_apply = vm.register_native_call(builtins::reflect_apply)?;
+    let reflect_construct = vm.register_native_call(builtins::reflect_construct)?;
+    let reflect_define_property = vm.register_native_call(builtins::reflect_define_property)?;
+    let reflect_delete_property = vm.register_native_call(builtins::reflect_delete_property)?;
+    let reflect_get = vm.register_native_call(builtins::reflect_get)?;
+    let reflect_get_own_property_descriptor =
+      vm.register_native_call(builtins::reflect_get_own_property_descriptor)?;
+    let reflect_get_prototype_of = vm.register_native_call(builtins::reflect_get_prototype_of)?;
+    let reflect_has = vm.register_native_call(builtins::reflect_has)?;
+    let reflect_is_extensible = vm.register_native_call(builtins::reflect_is_extensible)?;
+    let reflect_own_keys = vm.register_native_call(builtins::reflect_own_keys)?;
+    let reflect_prevent_extensions = vm.register_native_call(builtins::reflect_prevent_extensions)?;
+    let reflect_set = vm.register_native_call(builtins::reflect_set)?;
+    let reflect_set_prototype_of = vm.register_native_call(builtins::reflect_set_prototype_of)?;
 
     // `%Number%`, `%Boolean%`, `%Date%`, and global functions.
     let number_call = vm.register_native_call(builtins::number_constructor_call)?;
@@ -2259,6 +2274,41 @@ impl Intrinsics {
       scope.define_property(json, key, data_desc(Value::Object(func), true, false, true))?;
     }
 
+    // `%Reflect%`
+    let reflect = alloc_rooted_object(scope, roots)?;
+    scope
+      .heap_mut()
+      .object_set_prototype(reflect, Some(object_prototype))?;
+    {
+      let mut define_method =
+        |name: &str, call: NativeFunctionId, length: u32| -> Result<(), VmError> {
+          let name_s = scope.alloc_string(name)?;
+          scope.push_root(Value::String(name_s))?;
+          let key = PropertyKey::from_string(name_s);
+          let func = scope.alloc_native_function(call, None, name_s, length)?;
+          scope.push_root(Value::Object(func))?;
+          scope
+            .heap_mut()
+            .object_set_prototype(func, Some(function_prototype))?;
+          scope.define_property(reflect, key, data_desc(Value::Object(func), true, false, true))?;
+          Ok(())
+        };
+ 
+      define_method("apply", reflect_apply, 3)?;
+      define_method("construct", reflect_construct, 2)?;
+      define_method("defineProperty", reflect_define_property, 3)?;
+      define_method("deleteProperty", reflect_delete_property, 2)?;
+      define_method("get", reflect_get, 2)?;
+      define_method("getOwnPropertyDescriptor", reflect_get_own_property_descriptor, 2)?;
+      define_method("getPrototypeOf", reflect_get_prototype_of, 1)?;
+      define_method("has", reflect_has, 2)?;
+      define_method("isExtensible", reflect_is_extensible, 1)?;
+      define_method("ownKeys", reflect_own_keys, 1)?;
+      define_method("preventExtensions", reflect_prevent_extensions, 1)?;
+      define_method("set", reflect_set, 3)?;
+      define_method("setPrototypeOf", reflect_set_prototype_of, 2)?;
+    }
+
     // --- Error + subclasses ---
     let error_call = vm.register_native_call(builtins::error_constructor_call)?;
     let error_construct = vm.register_native_construct(builtins::error_constructor_construct)?;
@@ -2728,6 +2778,7 @@ impl Intrinsics {
       decode_uri_component,
       math,
       json,
+      reflect,
       error,
       error_prototype,
       type_error,
@@ -2889,6 +2940,10 @@ impl Intrinsics {
 
   pub fn json(&self) -> GcObject {
     self.json
+  }
+
+  pub fn reflect(&self) -> GcObject {
+    self.reflect
   }
 
   pub fn error(&self) -> GcObject {

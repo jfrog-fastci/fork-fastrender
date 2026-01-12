@@ -272,6 +272,13 @@ impl Realm {
         global_data_desc(Value::Object(intrinsics.json())),
       )?;
 
+      let reflect_key = PropertyKey::from_string(scope.alloc_string("Reflect")?);
+      scope.define_property(
+        global_object,
+        reflect_key,
+        global_data_desc(Value::Object(intrinsics.reflect())),
+      )?;
+
       let error_key = PropertyKey::from_string(scope.alloc_string("Error")?);
       scope.define_property(
         global_object,

@@ -106,8 +106,8 @@ fn host_context_is_preserved_when_ordinary_create_from_constructor_gets_new_targ
   // accessor getter. `Promise` uses this algorithm when allocating the promise object.
   //
   // `Promise.prototype` is non-configurable so we can't redefine it, and `vm-js` does not yet
-  // implement `Reflect.construct`. Instead, create a bound function (which has no `.prototype`
-  // property by default) and pass it as `new_target` from Rust.
+  // allow `Promise` to be constructed with a custom `newTarget`. Use `Reflect.construct` so the
+  // getter runs through the same host-aware internal methods as real-world scripts.
   rt.exec_script_with_host_and_hooks(
     &mut host,
     &mut hooks,
@@ -118,22 +118,8 @@ fn host_context_is_preserved_when_ordinary_create_from_constructor_gets_new_targ
         configurable: true,
       });
       globalThis.exec = () => {};
+      Reflect.construct(Promise, [exec], P2);
     "#,
-  )?;
-
-  let promise_ctor = rt.exec_script_with_host_and_hooks(&mut host, &mut hooks, "Promise")?;
-  let new_target = rt.exec_script_with_host_and_hooks(&mut host, &mut hooks, "P2")?;
-  let executor = rt.exec_script_with_host_and_hooks(&mut host, &mut hooks, "exec")?;
-
-  // Construct `Promise` with `new_target = P2`.
-  let mut scope = rt.heap.scope();
-  let _ = rt.vm.construct_with_host_and_hooks(
-    &mut host,
-    &mut scope,
-    &mut hooks,
-    promise_ctor,
-    &[executor],
-    new_target,
   )?;
 
   assert_eq!(host.counter, 1);

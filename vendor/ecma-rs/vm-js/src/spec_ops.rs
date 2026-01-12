@@ -6,6 +6,85 @@
 use crate::{GcObject, PropertyDescriptorPatch, PropertyKey, Scope, Value, Vm, VmError, VmHost, VmHostHooks};
 use std::mem;
 
+// https://tc39.es/ecma262/#sec-tolength
+fn to_length(n: f64) -> usize {
+  // `ToLength` clamps to the safe integer range.
+  const MAX_SAFE_INTEGER: f64 = 9_007_199_254_740_991.0; // 2^53 - 1
+
+  if n.is_nan() || n <= 0.0 {
+    return 0;
+  }
+  if !n.is_finite() {
+    // +Infinity
+    return MAX_SAFE_INTEGER as usize;
+  }
+
+  let int = n.trunc();
+  let clamped = int.min(MAX_SAFE_INTEGER);
+  if clamped >= usize::MAX as f64 {
+    usize::MAX
+  } else {
+    clamped as usize
+  }
+}
+
+/// `CreateListFromArrayLike(obj)` (ECMA-262).
+///
+/// Spec: <https://tc39.es/ecma262/#sec-createlistfromarraylike>
+///
+/// This implementation is host-aware because it performs `Get(obj, ...)`, which can invoke user JS
+/// via accessors.
+pub fn create_list_from_array_like_with_host_and_hooks(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  obj: GcObject,
+) -> Result<Vec<Value>, VmError> {
+  // Root `obj` across all allocations during list construction.
+  let mut scope = scope.reborrow();
+  scope.push_root(Value::Object(obj))?;
+
+  let length_key_s = scope.alloc_string("length")?;
+  scope.push_root(Value::String(length_key_s))?;
+  let length_key = PropertyKey::from_string(length_key_s);
+
+  // `LengthOfArrayLike(obj)`
+  let length_value = scope.ordinary_get_with_host_and_hooks(
+    vm,
+    host,
+    hooks,
+    obj,
+    length_key,
+    Value::Object(obj),
+  )?;
+  let length_number = scope.to_number(vm, host, hooks, length_value)?;
+  let len = to_length(length_number);
+
+  let mut out: Vec<Value> = Vec::new();
+  out.try_reserve_exact(len).map_err(|_| VmError::OutOfMemory)?;
+
+  for idx in 0..len {
+    if idx % 1024 == 0 {
+      vm.tick()?;
+    }
+
+    // `Get(obj, ToString(idx))`
+    let idx_s = scope.alloc_string(&idx.to_string())?;
+    let key = PropertyKey::from_string(idx_s);
+    let value =
+      scope.ordinary_get_with_host_and_hooks(vm, host, hooks, obj, key, Value::Object(obj))?;
+
+    // Root each element so accessors that return newly-allocated objects are kept alive across
+    // subsequent allocations and potential GC.
+    scope.push_root(value)?;
+
+    out.push(value);
+  }
+
+  Ok(out)
+}
+
 /// `GetPrototypeFromConstructor(constructor, intrinsicDefaultProto)` (ECMA-262).
 ///
 /// Spec: <https://tc39.es/ecma262/#sec-getprototypefromconstructor>

@@ -976,6 +976,426 @@ pub fn object_set_prototype_of(
   }
 }
 
+pub fn reflect_apply(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  // Spec: https://tc39.es/ecma262/#sec-reflect.apply
+  let target = args.get(0).copied().unwrap_or(Value::Undefined);
+  if !scope.heap().is_callable(target)? {
+    return Err(VmError::NotCallable);
+  }
+
+  let this_argument = args.get(1).copied().unwrap_or(Value::Undefined);
+  let arguments_list = args.get(2).copied().unwrap_or(Value::Undefined);
+  let Value::Object(arguments_obj) = arguments_list else {
+    return Err(VmError::TypeError("Reflect.apply argumentsList must be an object"));
+  };
+
+  let list = crate::spec_ops::create_list_from_array_like_with_host_and_hooks(
+    vm,
+    scope,
+    host,
+    hooks,
+    arguments_obj,
+  )?;
+
+  vm.call_with_host_and_hooks(host, scope, hooks, target, this_argument, &list)
+}
+
+pub fn reflect_construct(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  // Spec: https://tc39.es/ecma262/#sec-reflect.construct
+  let target = args.get(0).copied().unwrap_or(Value::Undefined);
+  if !scope.heap().is_constructor(target)? {
+    return Err(VmError::NotConstructable);
+  }
+
+  let arguments_list = args.get(1).copied().unwrap_or(Value::Undefined);
+  let Value::Object(arguments_obj) = arguments_list else {
+    return Err(VmError::TypeError(
+      "Reflect.construct argumentsList must be an object",
+    ));
+  };
+
+  let new_target = args.get(2).copied().unwrap_or(target);
+  if !scope.heap().is_constructor(new_target)? {
+    return Err(VmError::NotConstructable);
+  }
+
+  let list = crate::spec_ops::create_list_from_array_like_with_host_and_hooks(
+    vm,
+    scope,
+    host,
+    hooks,
+    arguments_obj,
+  )?;
+
+  vm.construct_with_host_and_hooks(host, scope, hooks, target, &list, new_target)
+}
+
+pub fn reflect_define_property(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  // Spec: https://tc39.es/ecma262/#sec-reflect.defineproperty
+  let mut scope = scope.reborrow();
+
+  let target_val = args.get(0).copied().unwrap_or(Value::Undefined);
+  let target = require_object(target_val)?;
+  scope.push_root(Value::Object(target))?;
+
+  let prop = args.get(1).copied().unwrap_or(Value::Undefined);
+  let key = scope.to_property_key(vm, host, hooks, prop)?;
+  root_property_key(&mut scope, key)?;
+
+  let desc_obj = require_object(args.get(2).copied().unwrap_or(Value::Undefined))?;
+  scope.push_root(Value::Object(desc_obj))?;
+
+  // Minimal `ToPropertyDescriptor` support: read own *data* properties only.
+  let value = get_own_data_property_value_by_name(&mut scope, desc_obj, "value")?;
+  let writable = get_own_data_property_value_by_name(&mut scope, desc_obj, "writable")?
+    .map(|v| scope.heap().to_boolean(v))
+    .transpose()?;
+  let enumerable = get_own_data_property_value_by_name(&mut scope, desc_obj, "enumerable")?
+    .map(|v| scope.heap().to_boolean(v))
+    .transpose()?;
+  let configurable = get_own_data_property_value_by_name(&mut scope, desc_obj, "configurable")?
+    .map(|v| scope.heap().to_boolean(v))
+    .transpose()?;
+  let get = get_own_data_property_value_by_name(&mut scope, desc_obj, "get")?;
+  let set = get_own_data_property_value_by_name(&mut scope, desc_obj, "set")?;
+
+  let patch = PropertyDescriptorPatch {
+    enumerable,
+    configurable,
+    value,
+    writable,
+    get,
+    set,
+  };
+  patch.validate()?;
+
+  let ok = scope.define_own_property_with_tick(target, key, patch, || vm.tick())?;
+  Ok(Value::Bool(ok))
+}
+
+pub fn reflect_delete_property(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  // Spec: https://tc39.es/ecma262/#sec-reflect.deleteproperty
+  let mut scope = scope.reborrow();
+
+  let target_val = args.get(0).copied().unwrap_or(Value::Undefined);
+  let target = require_object(target_val)?;
+  scope.push_root(Value::Object(target))?;
+
+  let prop = args.get(1).copied().unwrap_or(Value::Undefined);
+  let key = scope.to_property_key(vm, host, hooks, prop)?;
+  root_property_key(&mut scope, key)?;
+
+  let ok = scope.ordinary_delete_with_host_and_hooks(vm, host, hooks, target, key)?;
+  Ok(Value::Bool(ok))
+}
+
+pub fn reflect_get(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  // Spec: https://tc39.es/ecma262/#sec-reflect.get
+  let mut scope = scope.reborrow();
+
+  let target_val = args.get(0).copied().unwrap_or(Value::Undefined);
+  let target = require_object(target_val)?;
+  scope.push_root(Value::Object(target))?;
+
+  let prop = args.get(1).copied().unwrap_or(Value::Undefined);
+  let key = scope.to_property_key(vm, host, hooks, prop)?;
+  root_property_key(&mut scope, key)?;
+
+  let receiver = args.get(2).copied().unwrap_or(Value::Object(target));
+  scope.ordinary_get_with_host_and_hooks(vm, host, hooks, target, key, receiver)
+}
+
+pub fn reflect_get_own_property_descriptor(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  // Spec: https://tc39.es/ecma262/#sec-reflect.getownpropertydescriptor
+  let intr = require_intrinsics(vm)?;
+  let mut scope = scope.reborrow();
+
+  let target_val = args.get(0).copied().unwrap_or(Value::Undefined);
+  let target = require_object(target_val)?;
+  scope.push_root(Value::Object(target))?;
+
+  let prop = args.get(1).copied().unwrap_or(Value::Undefined);
+  let key = scope.to_property_key(vm, host, hooks, prop)?;
+  root_property_key(&mut scope, key)?;
+
+  let Some(desc) = scope.ordinary_get_own_property_with_tick(target, key, || vm.tick())? else {
+    return Ok(Value::Undefined);
+  };
+
+  // `FromPropertyDescriptor(desc)`
+  let desc_obj = scope.alloc_object()?;
+  scope.push_root(Value::Object(desc_obj))?;
+  scope
+    .heap_mut()
+    .object_set_prototype(desc_obj, Some(intr.object_prototype()))?;
+
+  // enumerable / configurable (always present)
+  {
+    let key_s = scope.alloc_string("enumerable")?;
+    scope.push_root(Value::String(key_s))?;
+    scope.define_property(desc_obj, PropertyKey::from_string(key_s), data_desc(Value::Bool(desc.enumerable), true, true, true))?;
+  }
+  {
+    let key_s = scope.alloc_string("configurable")?;
+    scope.push_root(Value::String(key_s))?;
+    scope.define_property(desc_obj, PropertyKey::from_string(key_s), data_desc(Value::Bool(desc.configurable), true, true, true))?;
+  }
+
+  match desc.kind {
+    PropertyKind::Data { value, writable } => {
+      let key_s = scope.alloc_string("value")?;
+      scope.push_root(Value::String(key_s))?;
+      scope.define_property(desc_obj, PropertyKey::from_string(key_s), data_desc(value, true, true, true))?;
+
+      let key_s = scope.alloc_string("writable")?;
+      scope.push_root(Value::String(key_s))?;
+      scope.define_property(desc_obj, PropertyKey::from_string(key_s), data_desc(Value::Bool(writable), true, true, true))?;
+    }
+    PropertyKind::Accessor { get, set } => {
+      let key_s = scope.alloc_string("get")?;
+      scope.push_root(Value::String(key_s))?;
+      scope.define_property(desc_obj, PropertyKey::from_string(key_s), data_desc(get, true, true, true))?;
+
+      let key_s = scope.alloc_string("set")?;
+      scope.push_root(Value::String(key_s))?;
+      scope.define_property(desc_obj, PropertyKey::from_string(key_s), data_desc(set, true, true, true))?;
+    }
+  }
+
+  Ok(Value::Object(desc_obj))
+}
+
+pub fn reflect_get_prototype_of(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  // Spec: https://tc39.es/ecma262/#sec-reflect.getprototypeof
+  let target_val = args.get(0).copied().unwrap_or(Value::Undefined);
+  let target = require_object(target_val)?;
+
+  match scope.object_get_prototype(target)? {
+    Some(proto) => Ok(Value::Object(proto)),
+    None => Ok(Value::Null),
+  }
+}
+
+pub fn reflect_has(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  // Spec: https://tc39.es/ecma262/#sec-reflect.has
+  let mut scope = scope.reborrow();
+
+  let target_val = args.get(0).copied().unwrap_or(Value::Undefined);
+  let target = require_object(target_val)?;
+  scope.push_root(Value::Object(target))?;
+
+  let prop = args.get(1).copied().unwrap_or(Value::Undefined);
+  let key = scope.to_property_key(vm, host, hooks, prop)?;
+  root_property_key(&mut scope, key)?;
+
+  let ok = scope.ordinary_has_property_with_tick(target, key, || vm.tick())?;
+  Ok(Value::Bool(ok))
+}
+
+pub fn reflect_is_extensible(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  // Spec: https://tc39.es/ecma262/#sec-reflect.isextensible
+  let target_val = args.get(0).copied().unwrap_or(Value::Undefined);
+  let target = require_object(target_val)?;
+  Ok(Value::Bool(scope.object_is_extensible(target)?))
+}
+
+pub fn reflect_own_keys(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  // Spec: https://tc39.es/ecma262/#sec-reflect.ownkeys
+  let mut scope = scope.reborrow();
+
+  let target_val = args.get(0).copied().unwrap_or(Value::Undefined);
+  let target = require_object(target_val)?;
+  scope.push_root(Value::Object(target))?;
+
+  let keys = scope.ordinary_own_property_keys_with_tick(target, || vm.tick())?;
+
+  let len = u32::try_from(keys.len()).map_err(|_| VmError::OutOfMemory)?;
+  let array = create_array_object(vm, &mut scope, len)?;
+  scope.push_root(Value::Object(array))?;
+
+  for (i, key) in keys.into_iter().enumerate() {
+    if i % 1024 == 0 {
+      vm.tick()?;
+    }
+    let idx_s = scope.alloc_string(&i.to_string())?;
+    scope.push_root(Value::String(idx_s))?;
+    let idx_key = PropertyKey::from_string(idx_s);
+
+    let value = match key {
+      PropertyKey::String(s) => Value::String(s),
+      PropertyKey::Symbol(s) => Value::Symbol(s),
+    };
+
+    scope.create_data_property_or_throw(array, idx_key, value)?;
+  }
+
+  Ok(Value::Object(array))
+}
+
+pub fn reflect_prevent_extensions(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  // Spec: https://tc39.es/ecma262/#sec-reflect.preventextensions
+  let target_val = args.get(0).copied().unwrap_or(Value::Undefined);
+  let target = require_object(target_val)?;
+  scope.object_prevent_extensions(target)?;
+  Ok(Value::Bool(true))
+}
+
+pub fn reflect_set(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  // Spec: https://tc39.es/ecma262/#sec-reflect.set
+  let mut scope = scope.reborrow();
+
+  let target_val = args.get(0).copied().unwrap_or(Value::Undefined);
+  let target = require_object(target_val)?;
+  scope.push_root(Value::Object(target))?;
+
+  let prop = args.get(1).copied().unwrap_or(Value::Undefined);
+  let key = scope.to_property_key(vm, host, hooks, prop)?;
+  root_property_key(&mut scope, key)?;
+
+  let value = args.get(2).copied().unwrap_or(Value::Undefined);
+  let receiver = args.get(3).copied().unwrap_or(Value::Object(target));
+
+  let ok = scope.ordinary_set_with_host_and_hooks(vm, host, hooks, target, key, value, receiver)?;
+  Ok(Value::Bool(ok))
+}
+
+pub fn reflect_set_prototype_of(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  // Spec: https://tc39.es/ecma262/#sec-reflect.setprototypeof
+  let target_val = args.get(0).copied().unwrap_or(Value::Undefined);
+  let target = require_object(target_val)?;
+
+  let proto_val = args.get(1).copied().unwrap_or(Value::Undefined);
+  let proto = match proto_val {
+    Value::Object(o) => Some(o),
+    Value::Null => None,
+    _ => {
+      return Err(VmError::TypeError(
+        "Reflect.setPrototypeOf prototype must be an object or null",
+      ))
+    }
+  };
+
+  let current_proto = scope.object_get_prototype(target)?;
+  if current_proto == proto {
+    return Ok(Value::Bool(true));
+  }
+
+  if !scope.object_is_extensible(target)? {
+    return Ok(Value::Bool(false));
+  }
+
+  match scope.object_set_prototype(target, proto) {
+    Ok(()) => Ok(Value::Bool(true)),
+    // A cycle (or hostile prototype chain) rejects the mutation.
+    Err(VmError::PrototypeCycle | VmError::PrototypeChainTooDeep) => Ok(Value::Bool(false)),
+    Err(e) => Err(e),
+  }
+}
+
 fn create_array_object(vm: &mut Vm, scope: &mut Scope<'_>, len: u32) -> Result<GcObject, VmError> {
   let intr = require_intrinsics(vm)?;
 
