@@ -103,8 +103,37 @@ pub(super) fn check_bodies_for_program(
   (cache_stats, results)
 }
 
+/// `hir-js` emits `LOWER0003` warnings for export statements that are not at
+/// module top level. TypeScript, however, permits parsing `export { ... }` /
+/// `export * ...` inside internal namespaces/modules and reports TS1194
+/// instead.
+///
+/// Once TS1194 is present, suppress redundant lowering warnings so callers see
+/// the tsc-aligned diagnostic set.
+pub(super) fn suppress_lower0003_covered_by_ts1194(diagnostics: &mut Vec<Diagnostic>) {
+  let ts1194_spans: Vec<Span> = diagnostics
+    .iter()
+    .filter(|diag| diag.code.as_str() == "TS1194")
+    .map(|diag| diag.primary)
+    .collect();
+  if ts1194_spans.is_empty() {
+    return;
+  }
+
+  diagnostics.retain(|diag| {
+    if diag.code.as_str() != "LOWER0003" {
+      return true;
+    }
+    !ts1194_spans.iter().any(|span| {
+      span.file == diag.primary.file
+        && ((span.range.start >= diag.primary.range.start && span.range.end <= diag.primary.range.end)
+          || (diag.primary.range.start >= span.range.start && diag.primary.range.end <= span.range.end))
+    })
+  });
+}
+
 impl ProgramState {
-  fn filter_skip_lib_check_diagnostics(&self, diagnostics: &mut Vec<Diagnostic>) {
+  pub(super) fn filter_skip_lib_check_diagnostics(&self, diagnostics: &mut Vec<Diagnostic>) {
     if !self.compiler_options.skip_lib_check {
       return;
     }
@@ -195,11 +224,12 @@ impl ProgramState {
     }))
   }
 
-  pub(super) fn finish_program_diagnostics(
+  #[cfg(feature = "serde")]
+  pub(super) fn commit_body_results_for_diagnostics(
     &mut self,
     cache_stats: CheckerCacheStats,
     mut results: Vec<(BodyId, Arc<BodyCheckResult>)>,
-  ) -> Result<Arc<[Diagnostic]>, FatalError> {
+  ) -> Result<(), FatalError> {
     // Preserve determinism regardless of parallel scheduling.
     results.sort_by_key(|(id, _)| id.0);
     {
@@ -210,55 +240,14 @@ impl ProgramState {
           db.set_body_result(body, res);
         }
       }
+      // `ensure_analyzed_result` uses `analysis_revision` to avoid redundant work.
+      // Body results are part of the salsa inputs, so they advance the revision.
+      // Keep `analysis_revision` in sync so subsequent queries can reuse analysis.
+      self.analysis_revision = Some(db::db_revision(&*db));
     }
     if matches!(self.compiler_options.cache.mode, CacheMode::PerBody) {
       self.cache_stats.lock().merge(&cache_stats);
     }
-
-    let db = self.typecheck_db.lock().clone();
-    let mut diagnostics: Vec<_> = db::program_diagnostics(&db).as_ref().to_vec();
-    diagnostics.extend(self.diagnostics.clone());
-    let mut seen = HashSet::new();
-    diagnostics.retain(|diag| {
-      seen.insert((
-        diag.code.clone(),
-        diag.severity,
-        diag.message.clone(),
-        diag.primary,
-      ))
-    });
-
-    // `hir-js` emits `LOWER0003` warnings for export statements that are not at
-    // module top level. TypeScript, however, permits parsing `export { ... }` /
-    // `export * ...` inside internal namespaces/modules and reports TS1194
-    // instead. Once TS1194 is present, suppress redundant lowering warnings so
-    // callers see the tsc-aligned diagnostic set.
-    let ts1194_spans: Vec<Span> = diagnostics
-      .iter()
-      .filter(|diag| diag.code.as_str() == "TS1194")
-      .map(|diag| diag.primary)
-      .collect();
-    if !ts1194_spans.is_empty() {
-      diagnostics.retain(|diag| {
-        if diag.code.as_str() != "LOWER0003" {
-          return true;
-        }
-        !ts1194_spans.iter().any(|span| {
-          span.file == diag.primary.file
-            && ((span.range.start >= diag.primary.range.start
-              && span.range.end <= diag.primary.range.end)
-              || (diag.primary.range.start >= span.range.start
-                && diag.primary.range.end <= span.range.end))
-        })
-      });
-    }
-
-    codes::normalize_diagnostics(&mut diagnostics);
-    self.filter_skip_lib_check_diagnostics(&mut diagnostics);
-    self.analysis_revision = Some({
-      let db = self.typecheck_db.lock().clone();
-      db::db_revision(&db)
-    });
-    Ok(Arc::from(diagnostics))
+    Ok(())
   }
 }

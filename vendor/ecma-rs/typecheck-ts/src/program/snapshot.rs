@@ -222,12 +222,26 @@ impl Program {
           plan.body_ids,
           plan.cached_seed_results,
         );
-        match state.finish_program_diagnostics(cache_stats, results) {
-          Ok(diags) => diags.to_vec(),
-          Err(fatal) => {
-            state.diagnostics.push(fatal_to_diagnostic(fatal));
-            state.diagnostics.clone()
-          }
+        if let Err(fatal) = state.commit_body_results_for_diagnostics(cache_stats, results) {
+          state.diagnostics.push(fatal_to_diagnostic(fatal));
+          state.diagnostics.clone()
+        } else {
+          let db = state.typecheck_db.lock().clone();
+          let mut diagnostics: Vec<_> = db::program_diagnostics(&db).as_ref().to_vec();
+          diagnostics.extend(state.diagnostics.clone());
+          let mut seen = HashSet::new();
+          diagnostics.retain(|diag| {
+            seen.insert((
+              diag.code.clone(),
+              diag.severity,
+              diag.message.clone(),
+              diag.primary,
+            ))
+          });
+          super::diagnostics::suppress_lower0003_covered_by_ts1194(&mut diagnostics);
+          codes::normalize_diagnostics(&mut diagnostics);
+          state.filter_skip_lib_check_diagnostics(&mut diagnostics);
+          diagnostics
         }
       }
       Err(fatal) => {
