@@ -19391,6 +19391,9 @@ impl<Host: WindowRealmHost + 'static> WindowRealmDomEventListenerInvoker<Host> {
       || matches!(
         event.type_.as_str(),
         "click"
+          | "auxclick"
+          | "dblclick"
+          | "contextmenu"
           | "mousedown"
           | "mouseup"
           | "mousemove"
@@ -19529,21 +19532,13 @@ impl<Host: WindowRealmHost + 'static> WindowRealmDomEventListenerInvoker<Host> {
       scope.define_property(event_obj, detail_key, data_desc(detail))?;
     } else if matches!(
       interface,
-      EventInterface::MouseEvent
-        | EventInterface::KeyboardEvent
-        | EventInterface::FocusEvent
-        | EventInterface::InputEvent
+      EventInterface::KeyboardEvent | EventInterface::FocusEvent | EventInterface::InputEvent
     ) {
       let detail_key = alloc_key(scope, "detail")?;
-      let detail = if interface == EventInterface::MouseEvent && event.type_ == "click" {
-        1.0
-      } else {
-        0.0
-      };
       scope.define_property(
         event_obj,
         detail_key,
-        read_only_data_desc(Value::Number(detail)),
+        read_only_data_desc(Value::Number(0.0)),
       )?;
     } else if wants_storage_event && event.storage.is_none() {
       // StorageEvent default fields for host-dispatched storage events without a payload.
@@ -19569,11 +19564,35 @@ impl<Host: WindowRealmHost + 'static> WindowRealmDomEventListenerInvoker<Host> {
       EventInterface::MouseEvent => {
         let mouse = event.mouse.unwrap_or_default();
 
+        // `detail` is exposed on UIEvent-derived types (MouseEvent, KeyboardEvent, ...). When a
+        // host provides a mouse payload, forward its click count; otherwise keep legacy defaults.
+        let detail_key = alloc_key(scope, "detail")?;
+        let detail = if event.mouse.is_some() {
+          mouse.detail as f64
+        } else if event.type_ == "click" {
+          1.0
+        } else {
+          0.0
+        };
+        scope.define_property(
+          event_obj,
+          detail_key,
+          read_only_data_desc(Value::Number(detail)),
+        )?;
+
         // WHATWG UI Events: minimal MouseEvent field surface used by common handlers.
         let screen_x_key = alloc_key(scope, "screenX")?;
-        scope.define_property(event_obj, screen_x_key, read_only_data_desc(Value::Number(0.0)))?;
+        scope.define_property(
+          event_obj,
+          screen_x_key,
+          read_only_data_desc(Value::Number(mouse.client_x)),
+        )?;
         let screen_y_key = alloc_key(scope, "screenY")?;
-        scope.define_property(event_obj, screen_y_key, read_only_data_desc(Value::Number(0.0)))?;
+        scope.define_property(
+          event_obj,
+          screen_y_key,
+          read_only_data_desc(Value::Number(mouse.client_y)),
+        )?;
 
         let client_x_key = alloc_key(scope, "clientX")?;
         scope.define_property(
@@ -19740,64 +19759,6 @@ impl<Host: WindowRealmHost + 'static> WindowRealmDomEventListenerInvoker<Host> {
         storage_area_key,
         read_only_data_desc(storage_area_v),
       )?;
-    }
-
-    if let Some(mouse) = event.mouse {
-      let client_x_key = alloc_key(scope, "clientX")?;
-      scope.define_property(
-        event_obj,
-        client_x_key,
-        data_desc(Value::Number(mouse.client_x)),
-      )?;
-      let client_y_key = alloc_key(scope, "clientY")?;
-      scope.define_property(
-        event_obj,
-        client_y_key,
-        data_desc(Value::Number(mouse.client_y)),
-      )?;
-      let screen_x_key = alloc_key(scope, "screenX")?;
-      scope.define_property(
-        event_obj,
-        screen_x_key,
-        data_desc(Value::Number(mouse.client_x)),
-      )?;
-      let screen_y_key = alloc_key(scope, "screenY")?;
-      scope.define_property(
-        event_obj,
-        screen_y_key,
-        data_desc(Value::Number(mouse.client_y)),
-      )?;
-      let button_key = alloc_key(scope, "button")?;
-      scope.define_property(
-        event_obj,
-        button_key,
-        data_desc(Value::Number(mouse.button as f64)),
-      )?;
-      let buttons_key = alloc_key(scope, "buttons")?;
-      scope.define_property(
-        event_obj,
-        buttons_key,
-        data_desc(Value::Number(mouse.buttons as f64)),
-      )?;
-      let detail_key = alloc_key(scope, "detail")?;
-      scope.define_property(
-        event_obj,
-        detail_key,
-        data_desc(Value::Number(mouse.detail as f64)),
-      )?;
-      let ctrl_key = alloc_key(scope, "ctrlKey")?;
-      scope.define_property(event_obj, ctrl_key, data_desc(Value::Bool(mouse.ctrl_key)))?;
-      let shift_key = alloc_key(scope, "shiftKey")?;
-      scope.define_property(event_obj, shift_key, data_desc(Value::Bool(mouse.shift_key)))?;
-      let alt_key = alloc_key(scope, "altKey")?;
-      scope.define_property(event_obj, alt_key, data_desc(Value::Bool(mouse.alt_key)))?;
-      let meta_key = alloc_key(scope, "metaKey")?;
-      scope.define_property(event_obj, meta_key, data_desc(Value::Bool(mouse.meta_key)))?;
-
-      // `relatedTarget` is best-effort: resolve it to a full JS wrapper in `sync_event_object` once
-      // we have access to the embedder's DOM host (if any).
-      let related_target_key = alloc_key(scope, "relatedTarget")?;
-      scope.define_property(event_obj, related_target_key, data_desc(Value::Null))?;
     }
 
     Ok(event_obj)
