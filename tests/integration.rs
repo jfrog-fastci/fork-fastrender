@@ -6,6 +6,7 @@
 
 mod common;
 mod api;
+mod accessibility;
 mod fixtures;
 mod guards;
 

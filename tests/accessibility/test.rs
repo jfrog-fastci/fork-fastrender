@@ -1,21 +1,12 @@
+use crate::common::accessibility::{
+  count_by_id, find_by_id, find_json_node, find_path, read_accessibility_fixture_html,
+  read_accessibility_fixture_json, render_accessibility_json, render_accessibility_json_with_options,
+};
 use fastrender::accessibility::{AccessibilityNode, CheckState, PressedState};
 use fastrender::api::{FastRender, RenderOptions};
 use fastrender::dom::{enumerate_dom_ids, DomNode};
 use fastrender::interaction::InteractionState;
 use serde_json::{json, Value};
-use std::fs;
-
-fn find_by_id<'a>(node: &'a AccessibilityNode, id: &str) -> Option<&'a AccessibilityNode> {
-  if node.id.as_deref() == Some(id) {
-    return Some(node);
-  }
-  for child in node.children.iter() {
-    if let Some(found) = find_by_id(child, id) {
-      return Some(found);
-    }
-  }
-  None
-}
 
 fn collect_by_role<'a>(
   node: &'a AccessibilityNode,
@@ -30,29 +21,6 @@ fn collect_by_role<'a>(
   }
 }
 
-fn count_by_id(node: &AccessibilityNode, id: &str) -> usize {
-  let mut count = 0usize;
-  if node.id.as_deref() == Some(id) {
-    count += 1;
-  }
-  for child in node.children.iter() {
-    count += count_by_id(child, id);
-  }
-  count
-}
-
-fn find_path<'a>(node: &'a AccessibilityNode, id: &str) -> Option<Vec<&'a AccessibilityNode>> {
-  if node.id.as_deref() == Some(id) {
-    return Some(vec![node]);
-  }
-  for child in node.children.iter() {
-    if let Some(mut path) = find_path(child, id) {
-      path.insert(0, node);
-      return Some(path);
-    }
-  }
-  None
-}
 
 fn find_dom_by_id<'a>(node: &'a DomNode, id: &str) -> Option<&'a DomNode> {
   if node
@@ -65,42 +33,6 @@ fn find_dom_by_id<'a>(node: &'a DomNode, id: &str) -> Option<&'a DomNode> {
     .children
     .iter()
     .find_map(|child| find_dom_by_id(child, id))
-}
-
-fn render_accessibility_json(html: &str) -> Value {
-  let mut renderer = FastRender::new().expect("renderer");
-  let dom = renderer.parse_html(html).expect("parse");
-  let json = renderer
-    .accessibility_tree_json(&dom, 800, 600)
-    .expect("accessibility tree json");
-  serde_json::from_str(&json).expect("parse json")
-}
-
-fn render_accessibility_json_with_options(html: &str, options: RenderOptions) -> Value {
-  let mut renderer = FastRender::new().expect("renderer");
-  renderer
-    .accessibility_tree_html_json(html, options)
-    .expect("accessibility tree json")
-}
-
-fn find_json_node<'a>(node: &'a Value, id: &str) -> Option<&'a Value> {
-  if node
-    .get("id")
-    .and_then(|v| v.as_str())
-    .is_some_and(|v| v == id)
-  {
-    return Some(node);
-  }
-
-  if let Some(children) = node.get("children").and_then(|c| c.as_array()) {
-    for child in children {
-      if let Some(found) = find_json_node(child, id) {
-        return Some(found);
-      }
-    }
-  }
-
-  None
 }
 
 fn snapshot_subset(root: &Value, ids: &[&str]) -> Value {
@@ -1013,8 +945,7 @@ fn accessibility_name_from_content_blocked_for_form_controls() {
 
 #[test]
 fn accessibility_aria_states() {
-  let html =
-    fs::read_to_string("tests/fixtures/accessibility/aria_states.html").expect("read fixture");
+  let html = read_accessibility_fixture_html("aria_states");
   let tree = render_accessibility_json(&html);
 
   let busy = find_json_node(&tree, "busy-region").expect("busy region");
@@ -2223,13 +2154,8 @@ fn accessibility_fixture_snapshots() {
   ];
 
   for name in fixtures {
-    let html = fs::read_to_string(format!("tests/fixtures/accessibility/{name}.html"))
-      .expect("read html fixture");
-    let expected: Value = serde_json::from_str(
-      &fs::read_to_string(format!("tests/fixtures/accessibility/{name}.json"))
-        .expect("read json fixture"),
-    )
-    .expect("parse expected json");
+    let html = read_accessibility_fixture_html(name);
+    let expected = read_accessibility_fixture_json(name);
 
     let tree =
       render_accessibility_json_with_options(&html, RenderOptions::new().with_viewport(800, 600));
@@ -2266,8 +2192,7 @@ fn accessibility_fixture_snapshots() {
 
 #[test]
 fn accessibility_shadow_dom_slotting() {
-  let html = fs::read_to_string("tests/fixtures/accessibility/shadow_dom_slotting.html")
-    .expect("read shadow dom fixture");
+  let html = read_accessibility_fixture_html("shadow_dom_slotting");
 
   let mut renderer = FastRender::new().expect("renderer");
   let dom = renderer.parse_html(&html).expect("parse html");

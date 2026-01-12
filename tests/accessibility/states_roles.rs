@@ -1,19 +1,8 @@
-use fastrender::accessibility::{AccessibilityNode, CheckState, PressedState};
+use crate::common::accessibility::find_by_id;
+use fastrender::accessibility::{CheckState, PressedState};
 use fastrender::api::FastRender;
 use fastrender::dom::{enumerate_dom_ids, DomNode};
 use fastrender::interaction::InteractionState;
-
-fn find_by_id<'a>(node: &'a AccessibilityNode, id: &str) -> Option<&'a AccessibilityNode> {
-  if node.id.as_deref() == Some(id) {
-    return Some(node);
-  }
-  for child in node.children.iter() {
-    if let Some(found) = find_by_id(child, id) {
-      return Some(found);
-    }
-  }
-  None
-}
 
 fn find_dom_by_id<'a>(node: &'a DomNode, id: &str) -> Option<&'a DomNode> {
   if node

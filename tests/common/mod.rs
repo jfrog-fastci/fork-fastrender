@@ -3,6 +3,7 @@
 use std::ffi::OsString;
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
+pub(crate) mod accessibility;
 pub(crate) mod rayon_test_util;
 
 /// Serialises tests that mutate process-wide state (environment variables, stage listeners, etc).

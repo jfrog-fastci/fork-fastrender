@@ -1,21 +1,7 @@
-use fastrender::accessibility::AccessibilityNode;
-use fastrender::api::FastRender;
-
-fn find_by_id<'a>(node: &'a AccessibilityNode, id: &str) -> Option<&'a AccessibilityNode> {
-  if node.id.as_deref() == Some(id) {
-    return Some(node);
-  }
-  for child in node.children.iter() {
-    if let Some(found) = find_by_id(child, id) {
-      return Some(found);
-    }
-  }
-  None
-}
+use crate::common::accessibility::{find_by_id, render_accessibility_tree};
 
 #[test]
 fn presentational_list_suppresses_listitem_role() {
-  let mut renderer = FastRender::new().expect("renderer");
   let html = r##"
     <html>
       <body>
@@ -25,11 +11,7 @@ fn presentational_list_suppresses_listitem_role() {
       </body>
     </html>
   "##;
-
-  let dom = renderer.parse_html(html).expect("parse");
-  let tree = renderer
-    .accessibility_tree(&dom, 800, 600)
-    .expect("accessibility tree");
+  let tree = render_accessibility_tree(html);
 
   assert!(
     find_by_id(&tree, "l").is_none(),
@@ -42,7 +24,6 @@ fn presentational_list_suppresses_listitem_role() {
 
 #[test]
 fn presentational_definition_list_suppresses_term_and_definition_roles() {
-  let mut renderer = FastRender::new().expect("renderer");
   let html = r##"
     <html>
       <body>
@@ -53,11 +34,7 @@ fn presentational_definition_list_suppresses_term_and_definition_roles() {
       </body>
     </html>
   "##;
-
-  let dom = renderer.parse_html(html).expect("parse");
-  let tree = renderer
-    .accessibility_tree(&dom, 800, 600)
-    .expect("accessibility tree");
+  let tree = render_accessibility_tree(html);
 
   assert!(
     find_by_id(&tree, "d").is_none(),

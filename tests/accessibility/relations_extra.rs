@@ -1,21 +1,7 @@
-use fastrender::accessibility::AccessibilityNode;
-use fastrender::api::FastRender;
-
-fn find_by_id<'a>(node: &'a AccessibilityNode, id: &str) -> Option<&'a AccessibilityNode> {
-  if node.id.as_deref() == Some(id) {
-    return Some(node);
-  }
-  for child in node.children.iter() {
-    if let Some(found) = find_by_id(child, id) {
-      return Some(found);
-    }
-  }
-  None
-}
+use crate::common::accessibility::{find_by_id, render_accessibility_tree};
 
 #[test]
 fn aria_details_relation_resolves_idref() {
-  let mut renderer = FastRender::new().expect("renderer");
   let html = r##"
     <html>
       <body>
@@ -24,11 +10,7 @@ fn aria_details_relation_resolves_idref() {
       </body>
     </html>
   "##;
-
-  let dom = renderer.parse_html(html).expect("parse");
-  let tree = renderer
-    .accessibility_tree(&dom, 800, 600)
-    .expect("accessibility tree");
+  let tree = render_accessibility_tree(html);
 
   let src = find_by_id(&tree, "src").expect("source node");
   let relations = src.relations.as_ref().expect("relations");
@@ -37,7 +19,6 @@ fn aria_details_relation_resolves_idref() {
 
 #[test]
 fn aria_errormessage_relation_gated_by_invalid() {
-  let mut renderer = FastRender::new().expect("renderer");
   let html = r##"
     <html>
       <body>
@@ -48,11 +29,7 @@ fn aria_errormessage_relation_gated_by_invalid() {
       </body>
     </html>
   "##;
-
-  let dom = renderer.parse_html(html).expect("parse");
-  let tree = renderer
-    .accessibility_tree(&dom, 800, 600)
-    .expect("accessibility tree");
+  let tree = render_accessibility_tree(html);
 
   let inv = find_by_id(&tree, "inv").expect("invalid input");
   assert!(inv.states.invalid);
@@ -72,7 +49,6 @@ fn aria_errormessage_relation_gated_by_invalid() {
 
 #[test]
 fn aria_details_idref_respects_shadow_scopes() {
-  let mut renderer = FastRender::new().expect("renderer");
   let html = r##"
     <html>
       <body>
@@ -87,11 +63,7 @@ fn aria_details_idref_respects_shadow_scopes() {
       </body>
     </html>
   "##;
-
-  let dom = renderer.parse_html(html).expect("parse");
-  let tree = renderer
-    .accessibility_tree(&dom, 800, 600)
-    .expect("accessibility tree");
+  let tree = render_accessibility_tree(html);
 
   let src_inside = find_by_id(&tree, "src-inside").expect("shadow source inside");
   let relations = src_inside.relations.as_ref().expect("relations");
@@ -110,7 +82,6 @@ fn aria_details_idref_respects_shadow_scopes() {
 
 #[test]
 fn aria_labelledby_and_describedby_relations_resolve_and_dedupe() {
-  let mut renderer = FastRender::new().expect("renderer");
   let html = r##"
     <html>
       <body>
@@ -127,11 +98,7 @@ fn aria_labelledby_and_describedby_relations_resolve_and_dedupe() {
       </body>
     </html>
   "##;
-
-  let dom = renderer.parse_html(html).expect("parse");
-  let tree = renderer
-    .accessibility_tree(&dom, 800, 600)
-    .expect("accessibility tree");
+  let tree = render_accessibility_tree(html);
 
   let target = find_by_id(&tree, "target").expect("target node");
   let relations = target.relations.as_ref().expect("relations");
@@ -147,7 +114,6 @@ fn aria_labelledby_and_describedby_relations_resolve_and_dedupe() {
 
 #[test]
 fn aria_labelledby_and_describedby_relations_ignore_unresolved_ids() {
-  let mut renderer = FastRender::new().expect("renderer");
   let html = r##"
     <html>
       <body>
@@ -155,11 +121,7 @@ fn aria_labelledby_and_describedby_relations_ignore_unresolved_ids() {
       </body>
     </html>
   "##;
-
-  let dom = renderer.parse_html(html).expect("parse");
-  let tree = renderer
-    .accessibility_tree(&dom, 800, 600)
-    .expect("accessibility tree");
+  let tree = render_accessibility_tree(html);
 
   let target = find_by_id(&tree, "target").expect("target node");
   assert!(
@@ -170,7 +132,6 @@ fn aria_labelledby_and_describedby_relations_ignore_unresolved_ids() {
 
 #[test]
 fn aria_labelledby_relation_respects_shadow_scopes() {
-  let mut renderer = FastRender::new().expect("renderer");
   let html = r##"
     <html>
       <body>
@@ -185,11 +146,7 @@ fn aria_labelledby_relation_respects_shadow_scopes() {
       </body>
     </html>
   "##;
-
-  let dom = renderer.parse_html(html).expect("parse");
-  let tree = renderer
-    .accessibility_tree(&dom, 800, 600)
-    .expect("accessibility tree");
+  let tree = render_accessibility_tree(html);
 
   let src_inside = find_by_id(&tree, "src-inside").expect("shadow source inside");
   let relations = src_inside.relations.as_ref().expect("relations");

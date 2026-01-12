@@ -1,34 +1,4 @@
-use fastrender::api::FastRender;
-use serde_json::Value;
-
-fn render_accessibility_json(html: &str) -> Value {
-  let mut renderer = FastRender::new().expect("renderer");
-  let dom = renderer.parse_html(html).expect("parse");
-  let json = renderer
-    .accessibility_tree_json(&dom, 800, 600)
-    .expect("accessibility tree json");
-  serde_json::from_str(&json).expect("parse json")
-}
-
-fn find_json_node<'a>(node: &'a Value, id: &str) -> Option<&'a Value> {
-  if node
-    .get("id")
-    .and_then(|v| v.as_str())
-    .is_some_and(|v| v == id)
-  {
-    return Some(node);
-  }
-
-  if let Some(children) = node.get("children").and_then(|c| c.as_array()) {
-    for child in children {
-      if let Some(found) = find_json_node(child, id) {
-        return Some(found);
-      }
-    }
-  }
-
-  None
-}
+use crate::common::accessibility::{find_json_node, render_accessibility_json};
 
 #[test]
 fn aria_has_popup_validates_tokens_and_ignores_empty() {

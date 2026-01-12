@@ -1,32 +1,4 @@
-use fastrender::api::{FastRender, RenderOptions};
-use serde_json::Value;
-
-fn render_accessibility_json(html: &str) -> Value {
-  let mut renderer = FastRender::new().expect("renderer");
-  renderer
-    .accessibility_tree_html_json(html, RenderOptions::new().with_viewport(800, 600))
-    .expect("accessibility tree json")
-}
-
-fn find_json_node<'a>(node: &'a Value, id: &str) -> Option<&'a Value> {
-  if node
-    .get("id")
-    .and_then(|v| v.as_str())
-    .is_some_and(|v| v == id)
-  {
-    return Some(node);
-  }
-
-  if let Some(children) = node.get("children").and_then(|c| c.as_array()) {
-    for child in children {
-      if let Some(found) = find_json_node(child, id) {
-        return Some(found);
-      }
-    }
-  }
-
-  None
-}
+use crate::common::accessibility::{find_json_node, render_accessibility_json};
 
 #[test]
 fn referenced_label_allows_display_none() {

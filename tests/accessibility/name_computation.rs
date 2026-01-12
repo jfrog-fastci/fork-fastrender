@@ -1,25 +1,4 @@
-use fastrender::accessibility::AccessibilityNode;
-use fastrender::api::FastRender;
-
-fn render_accessibility_tree(html: &str) -> AccessibilityNode {
-  let mut renderer = FastRender::new().expect("renderer");
-  let dom = renderer.parse_html(html).expect("parse html");
-  renderer
-    .accessibility_tree(&dom, 800, 600)
-    .expect("accessibility tree")
-}
-
-fn find_by_id<'a>(node: &'a AccessibilityNode, id: &str) -> Option<&'a AccessibilityNode> {
-  if node.id.as_deref() == Some(id) {
-    return Some(node);
-  }
-  for child in node.children.iter() {
-    if let Some(found) = find_by_id(child, id) {
-      return Some(found);
-    }
-  }
-  None
-}
+use crate::common::accessibility::{find_by_id, render_accessibility_tree};
 
 #[test]
 fn aria_labelledby_token_order_and_hidden() {
