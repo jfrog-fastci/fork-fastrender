@@ -622,6 +622,20 @@ pub fn js_round(value: f64) -> f64 {
   }
 }
 
+pub fn js_sign(value: f64) -> f64 {
+  // https://tc39.es/ecma262/multipage/numbers-and-dates.html#sec-math.sign
+  if value.is_nan() {
+    f64::NAN
+  } else if value == 0.0 {
+    // Preserve +0 / -0.
+    value
+  } else if value.is_sign_negative() {
+    -1.0
+  } else {
+    1.0
+  }
+}
+
 pub fn js_mod(a: f64, b: f64) -> f64 {
   match (a, b) {
     (_, 0.0) => f64::NAN,
@@ -838,6 +852,7 @@ pub fn maybe_eval_const_builtin_call(func: &str, args: &[Const]) -> Option<Const
       | ("Math.log1p", BigInt(_))
       | ("Math.log2", BigInt(_))
       | ("Math.round", BigInt(_))
+      | ("Math.sign", BigInt(_))
       | ("Math.sin", BigInt(_))
       | ("Math.sqrt", BigInt(_))
       | ("Math.tan", BigInt(_))
@@ -847,6 +862,7 @@ pub fn maybe_eval_const_builtin_call(func: &str, args: &[Const]) -> Option<Const
       ("Math.asin", a) => Num(JN(coerce_to_num(a).asin())),
       ("Math.atan", a) => Num(JN(coerce_to_num(a).atan())),
       ("Math.ceil", a) => Num(JN(coerce_to_num(a).ceil())),
+      ("Math.clz32", a) => Num(JN((coerce_to_uint32(a)?).leading_zeros() as f64)),
       ("Math.cos", a) => Num(JN(coerce_to_num(a).cos())),
       ("Math.floor", a) => Num(JN(coerce_to_num(a).floor())),
       ("Math.log", a) => Num(JN(coerce_to_num(a).ln())),
@@ -854,6 +870,7 @@ pub fn maybe_eval_const_builtin_call(func: &str, args: &[Const]) -> Option<Const
       ("Math.log1p", a) => Num(JN(coerce_to_num(a).ln_1p())),
       ("Math.log2", a) => Num(JN(coerce_to_num(a).log2())),
       ("Math.round", a) => Num(JN(js_round(coerce_to_num(a)))),
+      ("Math.sign", a) => Num(JN(js_sign(coerce_to_num(a)))),
       ("Math.sin", a) => Num(JN(coerce_to_num(a).sin())),
       ("Math.sqrt", a) => Num(JN(coerce_to_num(a).sqrt())),
       ("Math.tan", a) => Num(JN(coerce_to_num(a).tan())),

@@ -103,6 +103,63 @@ fn math_pow_coerces_to_number_and_rejects_bigint() {
 }
 
 #[test]
+fn math_sign_matches_ecmascript() {
+  let eval_sign = |arg: optimize_js::il::inst::Const| match maybe_eval_const_builtin_call("Math.sign", &[arg]) {
+    Some(ConstNum(JN(v))) => v,
+    other => panic!("unexpected eval result: {other:?}"),
+  };
+
+  assert_eq!(eval_sign(ConstNum(JN(3.0))), 1.0);
+  assert_eq!(eval_sign(ConstNum(JN(-3.0))), -1.0);
+
+  let pos_zero = eval_sign(ConstNum(JN(0.0)));
+  assert_eq!(pos_zero, 0.0);
+  assert!(
+    pos_zero.is_sign_positive(),
+    "Math.sign(0) should preserve +0"
+  );
+
+  let neg_zero = eval_sign(ConstNum(JN(-0.0)));
+  assert_eq!(neg_zero, 0.0);
+  assert!(
+    neg_zero.is_sign_negative(),
+    "Math.sign(-0) should preserve -0"
+  );
+
+  assert!(eval_sign(ConstNum(JN(f64::NAN))).is_nan());
+
+  assert_eq!(eval_sign(ConstStr("3".into())), 1.0);
+  assert_eq!(eval_sign(optimize_js::il::inst::Const::Null), 0.0);
+
+  // BigInt cannot be coerced to Number for Math.* builtins.
+  assert_eq!(
+    maybe_eval_const_builtin_call("Math.sign", &[ConstBigInt(BigInt::from(1))]),
+    None
+  );
+}
+
+#[test]
+fn math_clz32_matches_ecmascript() {
+  let eval_clz32 = |arg: optimize_js::il::inst::Const| match maybe_eval_const_builtin_call("Math.clz32", &[arg]) {
+    Some(ConstNum(JN(v))) => v,
+    other => panic!("unexpected eval result: {other:?}"),
+  };
+
+  assert_eq!(eval_clz32(ConstNum(JN(0.0))), 32.0);
+  assert_eq!(eval_clz32(ConstNum(JN(1.0))), 31.0);
+  assert_eq!(eval_clz32(ConstNum(JN(3.2))), 30.0);
+  assert_eq!(eval_clz32(ConstNum(JN(-1.0))), 0.0);
+  assert_eq!(eval_clz32(ConstStr("0x80000000".into())), 0.0);
+  assert_eq!(eval_clz32(optimize_js::il::inst::Const::Undefined), 32.0);
+
+  // BigInt cannot be coerced to Number for Math.* builtins.
+  assert_eq!(
+    maybe_eval_const_builtin_call("Math.clz32", &[ConstBigInt(BigInt::from(1))]),
+    None
+  );
+}
+
+#[test]
 fn bigint_and_string_loose_equality_follows_string_to_bigint() {
   assert!(js_loose_eq(
     &ConstBigInt(BigInt::from(1)),
