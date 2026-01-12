@@ -17,6 +17,7 @@ use crate::style::types::{BackgroundImage, BackgroundPosition, ReferenceBox, Sha
 use crate::style::values::Length;
 use crate::style::ComputedStyle;
 use crate::text::font_loader::FontContext;
+use image::imageops::{self, FilterType};
 use std::f32::consts::PI;
 use tiny_skia::{Mask, PathBuilder, Pixmap, SpreadMode, Transform};
 
@@ -449,44 +450,10 @@ fn image_mask(
         return None;
       }
 
-      // Fast path: the decoded image already matches the float's reference box.
-      if src_w == dst_w && src_h == dst_h {
-        let Some(bytes) = u64::from(src_w).checked_mul(u64::from(src_h)) else {
-          eprintln!(
-            "shape-outside mask dimensions overflow ({}x{})",
-            src_w, src_h
-          );
-          return None;
-        };
-        let mut alpha = match reserve_buffer(bytes, "shape-outside image alpha") {
-          Ok(buf) => buf,
-          Err(err) => {
-            eprintln!(
-              "shape-outside mask {}x{} ({} bytes) skipped: {}",
-              src_w, src_h, bytes, err
-            );
-            return None;
-          }
-        };
-        for chunk in rgba.as_raw().chunks_exact(4) {
-          alpha.push(chunk[3]);
-        }
-        return Some(AlphaBitmap {
-          width: src_w,
-          height: src_h,
-          data: alpha,
-        });
-      }
-
-      // When the intrinsic image dimensions differ from the float's reference box, pad/crop the
-      // alpha map into reference-box coordinates. This ensures float layout can observe a boundary
-      // where the shape spans switch to `None` (important for `next_change_after`).
-      let mask_w = src_w.min(dst_w);
-      let mask_h = dst_h;
-      let Some(bytes) = u64::from(mask_w).checked_mul(u64::from(mask_h)) else {
+      let Some(bytes) = u64::from(dst_w).checked_mul(u64::from(dst_h)) else {
         eprintln!(
           "shape-outside mask dimensions overflow ({}x{})",
-          mask_w, mask_h
+          dst_w, dst_h
         );
         return None;
       };
@@ -495,45 +462,25 @@ fn image_mask(
         Err(err) => {
           eprintln!(
             "shape-outside mask {}x{} ({} bytes) skipped: {}",
-            mask_w, mask_h, bytes, err
+            dst_w, dst_h, bytes, err
           );
           return None;
         }
       };
-      let dst_len = match usize::try_from(bytes) {
-        Ok(v) => v,
-        Err(_) => {
-          eprintln!(
-            "shape-outside mask dimensions overflow ({}x{})",
-            mask_w, mask_h
-          );
-          return None;
-        }
+
+      let scaled = if src_w == dst_w && src_h == dst_h {
+        rgba
+      } else {
+        imageops::resize(&rgba, dst_w, dst_h, FilterType::Nearest)
       };
-      alpha.resize(dst_len, 0);
 
-      let copy_h = (src_h.min(mask_h)) as usize;
-      let copy_w = usize::try_from(mask_w).ok()?;
-      let dst_stride = copy_w;
-      let src_w_usize = usize::try_from(src_w).ok()?;
-      let src_stride = src_w_usize.checked_mul(4)?;
-
-      for (row_idx, src_row) in rgba
-        .as_raw()
-        .chunks_exact(src_stride)
-        .take(copy_h)
-        .enumerate()
-      {
-        let dst_row_start = row_idx.checked_mul(dst_stride)?;
-        let dst_row = alpha.get_mut(dst_row_start..dst_row_start + dst_stride)?;
-        for (col_idx, chunk) in src_row.chunks_exact(4).take(dst_stride).enumerate() {
-          dst_row[col_idx] = chunk[3];
-        }
+      for chunk in scaled.as_raw().chunks_exact(4) {
+        alpha.push(chunk[3]);
       }
 
       Some(AlphaBitmap {
-        width: mask_w,
-        height: mask_h,
+        width: dst_w,
+        height: dst_h,
         data: alpha,
       })
     }
@@ -692,6 +639,10 @@ fn alpha_from_pixmap(pixmap: Pixmap, _origin: Point) -> AlphaBitmap {
 mod tests {
   use super::*;
   use crate::style::values::LengthUnit;
+  use base64::engine::general_purpose::STANDARD;
+  use base64::Engine;
+  use image::{DynamicImage, Rgba};
+  use std::io::Cursor;
 
   #[test]
   fn shape_outside_resolve_length_for_paint_requires_viewport_for_vw() {
@@ -704,7 +655,7 @@ mod tests {
   }
 
   #[test]
-  fn shape_outside_image_is_padded_to_reference_box() {
+  fn shape_outside_image_is_scaled_to_reference_box() {
     let svg = "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' width='2' height='2'><rect width='2' height='2' fill='black'/></svg>";
 
     let mut style = ComputedStyle::default();
@@ -731,10 +682,67 @@ mod tests {
 
     assert_eq!(shape.top(), 0.0);
     assert_eq!(shape.bottom(), 10.0);
-    assert_eq!(shape.span_at(0.0), Some((0.0, 2.0)));
-    assert_eq!(shape.span_at(1.0), Some((0.0, 2.0)));
-    assert_eq!(shape.span_at(2.0), None);
-    assert_eq!(shape.next_change_after(0.0), Some(2.0));
+    assert_eq!(shape.span_at(0.0), Some((0.0, 10.0)));
+    assert_eq!(shape.span_at(9.0), Some((0.0, 10.0)));
+    assert_eq!(shape.next_change_after(0.0), None);
+  }
+
+  fn make_png_data_url(pixels: &[[u8; 4]], width: u32, height: u32) -> String {
+    let mut buf = image::RgbaImage::new(width, height);
+    for y in 0..height {
+      for x in 0..width {
+        let idx = (y * width + x) as usize;
+        let px = pixels.get(idx).copied().unwrap_or([0, 0, 0, 0]);
+        buf.put_pixel(x, y, Rgba(px));
+      }
+    }
+
+    let dynimg = DynamicImage::ImageRgba8(buf);
+    let mut bytes = Vec::new();
+    dynimg
+      .write_to(&mut Cursor::new(&mut bytes), image::ImageFormat::Png)
+      .expect("PNG encode");
+    format!("data:image/png;base64,{}", STANDARD.encode(bytes))
+  }
+
+  #[test]
+  fn shape_outside_image_is_scaled_in_reference_box_coordinates() {
+    // 2×2 image with a single opaque pixel in the top-left corner.
+    // When scaled into a 10×10 reference box (nearest sampling), it should occupy a 5×5 region.
+    let png = make_png_data_url(
+      &[[0, 0, 0, 255], [0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0]],
+      2,
+      2,
+    );
+
+    let mut style = ComputedStyle::default();
+    style.shape_outside = ShapeOutside::Image(BackgroundImage::Url(png));
+
+    let margin_box = Rect::from_xywh(0.0, 0.0, 10.0, 10.0);
+    let border_box = margin_box;
+    let containing_block = Size::new(10.0, 10.0);
+    let viewport = Size::new(100.0, 100.0);
+    let font_ctx = FontContext::new();
+    let image_cache = ImageCache::new();
+
+    let shape = build_float_shape(
+      &style,
+      margin_box,
+      border_box,
+      containing_block,
+      viewport,
+      &font_ctx,
+      &image_cache,
+    )
+    .expect("expected shape-outside image resolution to succeed")
+    .expect("expected shape-outside image to produce a float shape");
+
+    assert_eq!(shape.top(), 0.0);
+    assert_eq!(shape.bottom(), 10.0);
+    assert_eq!(shape.span_at(0.0), Some((0.0, 5.0)));
+    assert_eq!(shape.span_at(4.0), Some((0.0, 5.0)));
+    assert_eq!(shape.span_at(5.0), None);
+    assert_eq!(shape.next_change_after(0.0), Some(5.0));
   }
 }
 
