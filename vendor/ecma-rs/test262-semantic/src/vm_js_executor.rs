@@ -25,6 +25,135 @@ use vm_js::{
 const DEFAULT_HEAP_MAX_BYTES: usize = 64 * 1024 * 1024;
 const DEFAULT_HEAP_GC_THRESHOLD_BYTES: usize = 32 * 1024 * 1024;
 
+#[derive(Debug, Clone, Default)]
+struct AsyncDoneError {
+  typ: Option<String>,
+  message: String,
+}
+
+#[derive(Debug, Default)]
+struct AsyncDoneState {
+  called: bool,
+  error: Option<AsyncDoneError>,
+}
+
+impl AsyncDoneState {
+  fn is_complete(&self) -> bool {
+    self.called
+  }
+}
+
+fn done_native_call(
+  vm: &mut Vm,
+  scope: &mut vm_js::Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  // First call wins; ignore repeats for determinism.
+  if vm
+    .user_data::<AsyncDoneState>()
+    .ok_or(VmError::InvariantViolation("$DONE state missing on VM"))?
+    .called
+  {
+    return Ok(Value::Undefined);
+  }
+
+  let arg = args.get(0).copied().unwrap_or(Value::Undefined);
+  let error = match arg {
+    Value::Undefined | Value::Null => None,
+    other => {
+      let (typ, message) = describe_done_argument(vm, scope, host, hooks, other)?;
+      Some(AsyncDoneError { typ, message })
+    }
+  };
+
+  let Some(state) = vm.user_data_mut::<AsyncDoneState>() else {
+    return Err(VmError::InvariantViolation("$DONE state missing on VM"));
+  };
+  state.called = true;
+  state.error = error;
+  Ok(Value::Undefined)
+}
+
+fn describe_done_argument(
+  vm: &mut Vm,
+  scope: &mut vm_js::Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  value: Value,
+) -> Result<(Option<String>, String), VmError> {
+  // Prefer `error.name` + `error.message` when they are plain string data properties.
+  //
+  // This keeps messages deterministic (avoids user-defined `toString` / accessors), matching what
+  // test262 async harnesses typically print for async failures.
+  if let Value::Object(obj) = value {
+    let mut inner = scope.reborrow();
+    inner.push_root(value)?;
+    let name = get_object_string_data_property(&mut inner, obj, "name");
+    let message = get_object_string_data_property(&mut inner, obj, "message");
+
+    if let Some(name) = name {
+      let rendered = match message {
+        Some(msg) => format!("{name}: {msg}"),
+        None => name.clone(),
+      };
+      return Ok((Some(name), rendered));
+    }
+    if let Some(message) = message {
+      return Ok((None, message));
+    }
+  }
+
+  // Fallback: spec `ToString(error)`.
+  let mut inner = scope.reborrow();
+  inner.push_root(value)?;
+  let s = inner.to_string(vm, host, hooks, value)?;
+  let msg = inner
+    .heap()
+    .get_string(s)
+    .map(|s| s.to_utf8_lossy())
+    .unwrap_or_else(|_| "<invalid string>".to_string());
+  Ok((None, msg))
+}
+
+fn install_done_global(runtime: &mut vm_js::JsRuntime) -> Result<(), VmError> {
+  runtime.vm.set_user_data(AsyncDoneState::default());
+
+  let call_id = runtime.vm.register_native_call(done_native_call)?;
+  let intr = runtime
+    .vm
+    .intrinsics()
+    .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+  let global_object = runtime.realm().global_object();
+
+  let mut scope = runtime.heap.scope();
+  let name = scope.alloc_string("$DONE")?;
+
+  let func = scope.alloc_native_function(call_id, None, name, 1)?;
+  scope.push_root(Value::Object(func))?;
+  scope
+    .heap_mut()
+    .object_set_prototype(func, Some(intr.function_prototype()))?;
+
+  scope.define_property(
+    global_object,
+    PropertyKey::from_string(name),
+    PropertyDescriptor {
+      enumerable: true,
+      configurable: true,
+      kind: PropertyKind::Data {
+        value: Value::Object(func),
+        writable: true,
+      },
+    },
+  )?;
+
+  Ok(())
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct ModuleCacheKey {
   path: PathBuf,
@@ -591,6 +720,8 @@ impl Executor for VmJsExecutor {
       return Err(ExecError::Cancelled);
     }
 
+    let is_async = case.metadata.flags.iter().any(|flag| flag == "async");
+
     let vm = Vm::new(VmOptions {
       interrupt_flag: Some(Arc::clone(cancel)),
       ..VmOptions::default()
@@ -614,6 +745,13 @@ impl Executor for VmJsExecutor {
         format!("failed to install $262 host object: {err}"),
       )));
     }
+
+    // Dynamic `import()` expression evaluation requires a module graph pointer on the VM, even for
+    // classic-script tests (the spec referrer defaults to the current realm).
+    {
+      let (vm, modules, _heap) = runtime.vm_modules_and_heap_mut();
+      vm.set_module_graph(modules);
+    }
   
     // Give the VM a useful/stable source name for stack traces.
     let file_name = if case.id.is_empty() {
@@ -623,9 +761,11 @@ impl Executor for VmJsExecutor {
     };
 
     if case.variant != Variant::Module {
-      let is_async = case.metadata.flags.iter().any(|flag| flag == "async");
-      let is_raw = case.metadata.flags.iter().any(|flag| flag == "raw");
-      let expects_done = is_async && !is_raw;
+      if is_async {
+        if let Err(err) = install_done_global(&mut runtime) {
+          return Err(map_vm_error(case, source, cancel, &mut runtime, err));
+        }
+      }
 
       let mut hooks = Test262ModuleHooks::new(&case.path);
       let source_text = Arc::new(SourceText::new(file_name, source));
@@ -640,9 +780,13 @@ impl Executor for VmJsExecutor {
 
       match result {
         Ok(_) => {
-          drain_microtasks_into_hooks(&mut runtime, &mut hooks);
-          if let Some(err) = handle_microtask_errors(case, source, cancel, &mut runtime, &mut hooks) {
-            return Err(err);
+          if is_async {
+            wait_for_done(case, source, cancel, &mut runtime, &mut hooks)?;
+          } else {
+            drain_microtasks_into_hooks(&mut runtime, &mut hooks);
+            if let Some(err) = handle_microtask_errors(case, source, cancel, &mut runtime, &mut hooks) {
+              return Err(err);
+            }
           }
         }
         Err(err) => {
@@ -657,24 +801,16 @@ impl Executor for VmJsExecutor {
         return Err(ExecError::Cancelled);
       }
 
-      // For async tests, require that `$DONE` was invoked (the harness injects a flag).
-      if expects_done {
-        let done = runtime
-          .exec_script("__test262AsyncDone__")
-          .map_err(|err| map_vm_error(case, source, cancel, &mut runtime, err))?;
-        if done != Value::Bool(true) {
-          return Err(ExecError::Js(JsError::new(
-            ExecPhase::Runtime,
-            None,
-            "async test did not call $DONE()",
-          )));
-        }
-      }
-
       return Ok(());
     }
 
-    execute_module(case, &file_name, source, cancel, &mut runtime)
+    if is_async {
+      if let Err(err) = install_done_global(&mut runtime) {
+        return Err(map_vm_error(case, source, cancel, &mut runtime, err));
+      }
+    }
+
+    execute_module(case, &file_name, source, cancel, is_async, &mut runtime)
   }
 }
 
@@ -889,6 +1025,7 @@ fn execute_module(
   file_name: &str,
   source: &str,
   cancel: &Arc<AtomicBool>,
+  is_async: bool,
   runtime: &mut vm_js::JsRuntime,
 ) -> ExecResult {
   let is_async = case.metadata.flags.iter().any(|flag| flag == "async");
@@ -1131,7 +1268,13 @@ fn execute_module(
   })();
 
   runtime.heap.remove_root(eval_promise_root);
-  eval_outcome
+  eval_outcome?;
+
+  if is_async {
+    wait_for_done(case, source, cancel, runtime, &mut hooks)?;
+  }
+
+  Ok(())
   })();
 
   if result.is_err() {
@@ -1204,6 +1347,85 @@ fn handle_microtask_errors(
     ExecPhase::Runtime,
     errors[0].clone(),
   ))
+}
+
+fn wait_for_done(
+  case: &TestCase,
+  source: &str,
+  cancel: &Arc<AtomicBool>,
+  runtime: &mut vm_js::JsRuntime,
+  hooks: &mut Test262ModuleHooks,
+) -> ExecResult {
+  // Ensure we always clear any queued jobs, even on early exit.
+  let discard_remaining_jobs = |runtime: &mut vm_js::JsRuntime, hooks: &mut Test262ModuleHooks| {
+    drain_microtasks_into_hooks(runtime, hooks);
+    hooks.microtasks.teardown(runtime);
+  };
+
+  let started = hooks.microtasks.begin_checkpoint();
+  // We should never re-enter microtask processing from this executor.
+  if !started {
+    discard_remaining_jobs(runtime, hooks);
+    return Err(ExecError::Js(JsError::new(
+      ExecPhase::Runtime,
+      None,
+      "microtask checkpoint already in progress while waiting for $DONE",
+    )));
+  }
+
+  let outcome: ExecResult = loop {
+    if cancel.load(Ordering::Relaxed) {
+      break Err(ExecError::Cancelled);
+    }
+
+    let Some(state) = runtime.vm.user_data::<AsyncDoneState>() else {
+      break Err(ExecError::Js(JsError::new(
+        ExecPhase::Runtime,
+        None,
+        "$DONE state missing on VM",
+      )));
+    };
+    if state.is_complete() {
+      break match &state.error {
+        None => Ok(()),
+        Some(err) => Err(ExecError::Js(JsError {
+          phase: ExecPhase::Runtime,
+          typ: err.typ.clone(),
+          message: err.message.clone(),
+          stack: None,
+        })),
+      };
+    }
+
+    // A safety net: some `vm-js` module-loading operations still temporarily route Promise jobs
+    // through the VM-owned queue (e.g. dummy-host helper APIs). Drain it into our hooks so jobs can
+    // run with `Test262ModuleHooks` (which implements module loading for dynamic `import()`).
+    drain_microtasks_into_hooks(runtime, hooks);
+
+    let Some((_realm, job)) = hooks.microtasks.pop_front() else {
+      break Err(ExecError::Js(JsError::new(
+        ExecPhase::Runtime,
+        None,
+        "async test did not call $DONE",
+      )));
+    };
+
+    if let Err(err) = job.run(runtime, hooks) {
+      break Err(map_vm_error_with_phase(
+        case,
+        source,
+        cancel,
+        runtime,
+        ExecPhase::Runtime,
+        err,
+      ));
+    }
+  };
+
+  hooks.microtasks.end_checkpoint();
+  discard_remaining_jobs(runtime, hooks);
+
+  outcome
 }
 
 fn module_load_type_error(vm: &mut Vm, scope: &mut vm_js::Scope<'_>, message: &str) -> Result<VmError, VmError> {
