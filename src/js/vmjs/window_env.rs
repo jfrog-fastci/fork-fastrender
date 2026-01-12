@@ -378,8 +378,13 @@ pub(crate) fn install_window_shims_vm_js(
   define_read_only_vm_js(scope, navigator, "hardwareConcurrency", Value::Number(4.0))?;
   define_read_only_vm_js(scope, navigator, "deviceMemory", Value::Number(8.0))?;
 
-  let languages = scope.alloc_object()?;
+  // `navigator.languages` is a `FrozenArray<DOMString>` in browsers. Model it as a real JS Array so
+  // feature detection (`Array.isArray`) and common methods (`includes`, `join`) work as expected.
+  let languages = scope.alloc_array(env.languages.len())?;
   scope.push_root(Value::Object(languages))?;
+  scope
+    .heap_mut()
+    .object_set_prototype(languages, Some(realm.intrinsics().array_prototype()))?;
   for (idx, lang) in env.languages.iter().enumerate() {
     let idx_key = alloc_key_vm_js(scope, &idx.to_string())?;
     let lang_s = scope.alloc_string(lang)?;
@@ -387,15 +392,16 @@ pub(crate) fn install_window_shims_vm_js(
     scope.define_property(
       languages,
       idx_key,
-      read_only_data_desc(Value::String(lang_s)),
+      PropertyDescriptor {
+        enumerable: true,
+        configurable: true,
+        kind: PropertyKind::Data {
+          value: Value::String(lang_s),
+          writable: false,
+        },
+      },
     )?;
   }
-  define_read_only_vm_js(
-    scope,
-    languages,
-    "length",
-    Value::Number(env.languages.len() as f64),
-  )?;
   define_read_only_vm_js(scope, navigator, "languages", Value::Object(languages))?;
 
   let send_beacon_call_id = vm.register_native_call(navigator_send_beacon_native)?;
@@ -732,4 +738,16 @@ mod tests {
       Value::Number(4.0)
     );
   }
-} 
+
+  #[test]
+  fn navigator_languages_is_array_and_supports_includes() {
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut host = WindowHost::new(dom, "https://example.invalid/").unwrap();
+
+    let is_array = host.exec_script("Array.isArray(navigator.languages)").unwrap();
+    assert_eq!(is_array, Value::Bool(true));
+
+    let includes_en = host.exec_script("navigator.languages.includes('en')").unwrap();
+    assert_eq!(includes_en, Value::Bool(true));
+  }
+}
