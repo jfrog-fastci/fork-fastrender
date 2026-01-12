@@ -137,6 +137,7 @@ pub fn supports_declaration(property: &str, value: &str) -> bool {
     || normalized_property.starts_with("-moz-")
     || normalized_property.starts_with("-ms-")
     || normalized_property.starts_with("-o-")
+    || normalized_property.starts_with("-khtml-")
   {
     match vendor_prefixed_property_alias(normalized_property) {
       Some(alias) => alias,
@@ -344,6 +345,12 @@ mod tests {
     assert!(supports_declaration("opacity", "-10%"));
 
     assert!(!supports_declaration("opacity", "50px"));
+  }
+
+  #[test]
+  fn supports_khtml_opacity_alias() {
+    assert!(supports_declaration("-khtml-opacity", "0.5"));
+    assert!(!supports_declaration("-khtml-opacity", "50px"));
   }
 
   #[test]

@@ -8200,6 +8200,152 @@ pub fn string_prototype_pad_end(
   string_pad(vm, scope, host, hooks, this, args, /* pad_at_start */ false)
 }
 
+/// `String.prototype.replaceAll(searchValue, replaceValue)` (ECMA-262) (minimal, string search only).
+pub fn string_prototype_replace_all(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  // Spec reference: ECMA-262 `String.prototype.replaceAll`.
+  //
+  // This is a minimal implementation that only supports string `searchValue` and string
+  // `replaceValue` (i.e. it does not support the `@@replace` protocol or replacement functions).
+  // This matches the existing style of vm-js string builtins (`split` is also string-only).
+  let mut scope = scope.reborrow();
+
+  let s = scope.to_string(vm, host, hooks, this)?;
+  scope.push_root(Value::String(s))?;
+
+  let search_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let replace_value = args.get(1).copied().unwrap_or(Value::Undefined);
+
+  let search_s = scope.to_string(vm, host, hooks, search_value)?;
+  scope.push_root(Value::String(search_s))?;
+  let replace_s = scope.to_string(vm, host, hooks, replace_value)?;
+  scope.push_root(Value::String(replace_s))?;
+
+  let haystack: Vec<u16> = {
+    let js = scope.heap().get_string(s)?;
+    js.as_code_units().to_vec()
+  };
+  let needle: Vec<u16> = {
+    let js = scope.heap().get_string(search_s)?;
+    js.as_code_units().to_vec()
+  };
+  let replacement: Vec<u16> = {
+    let js = scope.heap().get_string(replace_s)?;
+    js.as_code_units().to_vec()
+  };
+
+  // Special-case: empty search string inserts replacement between each UTF-16 code unit and at both ends.
+  if needle.is_empty() {
+    if replacement.is_empty() {
+      // Inserting an empty string changes nothing.
+      return Ok(Value::String(s));
+    }
+
+    let out_len = haystack
+      .len()
+      .checked_add(
+        haystack
+          .len()
+          .saturating_add(1)
+          .checked_mul(replacement.len())
+          .ok_or(VmError::OutOfMemory)?,
+      )
+      .ok_or(VmError::OutOfMemory)?;
+
+    let mut out: Vec<u16> = Vec::new();
+    out
+      .try_reserve_exact(out_len)
+      .map_err(|_| VmError::OutOfMemory)?;
+
+    out.extend_from_slice(&replacement);
+    for (i, &unit) in haystack.iter().enumerate() {
+      if i % 1024 == 0 {
+        vm.tick()?;
+      }
+      out.push(unit);
+      out.extend_from_slice(&replacement);
+    }
+
+    let out = scope.alloc_string_from_u16_vec(out)?;
+    return Ok(Value::String(out));
+  }
+
+  if needle.len() > haystack.len() {
+    return Ok(Value::String(s));
+  }
+
+  // First pass: count matches so we can allocate the output once.
+  let mut match_count: usize = 0;
+  let mut i: usize = 0;
+  let last_start = haystack.len() - needle.len();
+  while i <= last_start {
+    if i % 1024 == 0 {
+      vm.tick()?;
+    }
+    if &haystack[i..i + needle.len()] == needle.as_slice() {
+      match_count = match_count.saturating_add(1);
+      i = i.saturating_add(needle.len());
+    } else {
+      i = i.saturating_add(1);
+    }
+  }
+
+  if match_count == 0 {
+    return Ok(Value::String(s));
+  }
+
+  let removed = match_count
+    .checked_mul(needle.len())
+    .ok_or(VmError::OutOfMemory)?;
+  let added = match_count
+    .checked_mul(replacement.len())
+    .ok_or(VmError::OutOfMemory)?;
+  let out_len = haystack
+    .len()
+    .checked_sub(removed)
+    .and_then(|n| n.checked_add(added))
+    .ok_or(VmError::OutOfMemory)?;
+
+  let mut out: Vec<u16> = Vec::new();
+  out
+    .try_reserve_exact(out_len)
+    .map_err(|_| VmError::OutOfMemory)?;
+
+  // Second pass: emit the result.
+  let mut start: usize = 0;
+  let mut i: usize = 0;
+  while i <= last_start {
+    if i % 1024 == 0 {
+      vm.tick()?;
+    }
+    if &haystack[i..i + needle.len()] == needle.as_slice() {
+      out.extend_from_slice(&haystack[start..i]);
+      out.extend_from_slice(&replacement);
+      i = i.saturating_add(needle.len());
+      start = i;
+    } else {
+      i = i.saturating_add(1);
+    }
+  }
+  out.extend_from_slice(&haystack[start..]);
+
+  debug_assert_eq!(
+    out.len(),
+    out_len,
+    "string_prototype_replace_all output length mismatch"
+  );
+
+  let out = scope.alloc_string_from_u16_vec(out)?;
+  Ok(Value::String(out))
+}
+
 /// `String.prototype.toLowerCase` (ECMA-262) (minimal).
 pub fn string_prototype_to_lower_case(
   vm: &mut Vm,

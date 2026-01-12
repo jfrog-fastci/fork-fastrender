@@ -642,6 +642,9 @@ fn strip_vendor_prefix(property: &str) -> Option<&str> {
   if let Some(unprefixed) = property.strip_prefix("-webkit-") {
     return Some(unprefixed);
   }
+  if let Some(unprefixed) = property.strip_prefix("-khtml-") {
+    return Some(unprefixed);
+  }
   if let Some(unprefixed) = property.strip_prefix("-moz-") {
     // `-moz-line-clamp` appears in real-world stylesheets (often emitted by tooling), but is not a
     // supported alias in any major engine. Browsers treat it as an unknown property and ignore it;
@@ -5915,6 +5918,14 @@ mod tests {
   fn parse_property_value_keeps_parsing_numbers() {
     assert!(matches!(
       parse_property_value("opacity", "0.5"),
+      Some(PropertyValue::Number(n)) if (n - 0.5).abs() < 1e-6
+    ));
+  }
+
+  #[test]
+  fn parse_property_value_aliases_khtml_opacity_to_opacity() {
+    assert!(matches!(
+      parse_property_value("-khtml-opacity", "0.5"),
       Some(PropertyValue::Number(n)) if (n - 0.5).abs() < 1e-6
     ));
   }

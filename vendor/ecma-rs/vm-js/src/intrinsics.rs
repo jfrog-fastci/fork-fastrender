@@ -500,6 +500,7 @@ impl Intrinsics {
     let string_prototype_repeat = vm.register_native_call(builtins::string_prototype_repeat)?;
     let string_prototype_pad_start = vm.register_native_call(builtins::string_prototype_pad_start)?;
     let string_prototype_pad_end = vm.register_native_call(builtins::string_prototype_pad_end)?;
+    let string_prototype_replace_all = vm.register_native_call(builtins::string_prototype_replace_all)?;
     let string_prototype_to_lower_case =
       vm.register_native_call(builtins::string_prototype_to_lower_case)?;
     let string_prototype_to_upper_case =
@@ -1457,6 +1458,23 @@ impl Intrinsics {
         scope.push_root(Value::String(pad_end_s))?;
         let key = PropertyKey::from_string(pad_end_s);
         let func = scope.alloc_native_function(string_prototype_pad_end, None, pad_end_s, 1)?;
+        scope.push_root(Value::Object(func))?;
+        scope
+          .heap_mut()
+          .object_set_prototype(func, Some(function_prototype))?;
+        scope.define_property(
+          string_prototype,
+          key,
+          data_desc(Value::Object(func), true, false, true),
+        )?;
+      }
+
+      // String.prototype.replaceAll
+      {
+        let replace_all_s = scope.alloc_string("replaceAll")?;
+        scope.push_root(Value::String(replace_all_s))?;
+        let key = PropertyKey::from_string(replace_all_s);
+        let func = scope.alloc_native_function(string_prototype_replace_all, None, replace_all_s, 2)?;
         scope.push_root(Value::Object(func))?;
         scope
           .heap_mut()
