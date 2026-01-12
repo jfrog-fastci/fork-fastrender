@@ -18178,19 +18178,6 @@ fn node_remove_child_native(
     ));
   };
 
-  let node_id_key = alloc_key(scope, NODE_ID_KEY)?;
-  let parent_index = match scope
-    .heap()
-    .object_get_own_data_property_value(parent_obj, &node_id_key)?
-  {
-    Some(Value::Number(n)) if n.is_finite() && n >= 0.0 => n as usize,
-    _ => {
-      return Err(VmError::TypeError(
-        "Node.removeChild must be called on a node object",
-      ));
-    }
-  };
-
   let child_value = args.get(0).copied().unwrap_or(Value::Undefined);
   let Value::Object(child_obj) = child_value else {
     return Err(VmError::TypeError(
@@ -18198,45 +18185,46 @@ fn node_remove_child_native(
     ));
   };
 
-  let child_index = match scope
-    .heap()
-    .object_get_own_data_property_value(child_obj, &node_id_key)?
-  {
-    Some(Value::Number(n)) if n.is_finite() && n >= 0.0 => n as usize,
-    _ => {
-      return Err(VmError::TypeError(
-        "Node.removeChild requires a node argument",
-      ));
-    }
-  };
-
-  let dom = dom_from_vm_host_mut(host).ok_or(VmError::TypeError(
+  let platform = dom_platform_mut(vm).ok_or(VmError::TypeError(
     "Node.removeChild requires a DOM-backed document",
   ))?;
-  let mut dom_ptr = NonNull::from(&mut *dom);
-
-  let parent_node_id = dom
-    .node_id_from_index(parent_index)
+  let parent_handle = platform
+    .require_node_handle(scope.heap(), Value::Object(parent_obj))
     .map_err(|_| VmError::TypeError("Node.removeChild must be called on a node object"))?;
-  let child_node_id = dom
-    .node_id_from_index(child_index)
+  let child_handle = platform
+    .require_node_handle(scope.heap(), Value::Object(child_obj))
     .map_err(|_| VmError::TypeError("Node.removeChild requires a node argument"))?;
 
-  let document_obj = node_wrapper_document_obj(scope, parent_obj, parent_node_id)?;
-  let child_document_obj = node_wrapper_document_obj(scope, child_obj, child_node_id)
-    .map_err(|_| VmError::TypeError("Node.removeChild requires a node argument"))?;
-  if child_document_obj != document_obj {
-    return Err(VmError::TypeError(
-      "Node.removeChild cannot remove nodes between documents",
-    ));
+  // Avoid passing a foreign `NodeId` from a different document arena into this document's DOM.
+  //
+  // Spec-wise this is observable as a NotFoundError because the node cannot be a child of this
+  // parent when it belongs to a different document.
+  if child_handle.document_id != parent_handle.document_id {
+    return Err(VmError::Throw(make_dom_exception(
+      scope,
+      "NotFoundError",
+      "",
+    )?));
   }
 
-  if let Err(err) = dom.remove_child(parent_node_id, child_node_id) {
+  let document_obj = node_wrapper_document_obj(scope, parent_obj, parent_handle.node_id)
+    .map_err(|_| VmError::TypeError("Node.removeChild must be called on a node object"))?;
+
+  let mut dom_ptr = dom_ptr_for_document_id_mut(vm, host, parent_handle.document_id)
+    .or_else(|| dom_from_vm_host_mut(host).map(NonNull::from))
+    .ok_or(VmError::TypeError(
+      "Node.removeChild requires a DOM-backed document",
+    ))?;
+
+  if let Err(err) = unsafe { dom_ptr.as_mut() }.remove_child(parent_handle.node_id, child_handle.node_id) {
     return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
   }
 
-  sync_cached_child_nodes_for_wrapper(vm, scope, document_obj, dom, parent_obj, parent_node_id)?;
-  sync_cached_children_for_wrapper(vm, scope, document_obj, dom, parent_obj, parent_node_id)?;
+  // SAFETY: `dom_ptr` is valid for the duration of this native call.
+  let dom = unsafe { dom_ptr.as_ref() };
+
+  sync_cached_child_nodes_for_wrapper(vm, scope, document_obj, dom, parent_obj, parent_handle.node_id)?;
+  sync_cached_children_for_wrapper(vm, scope, document_obj, dom, parent_obj, parent_handle.node_id)?;
 
   run_dynamic_script_children_changed_steps(
     vm,
@@ -18245,7 +18233,7 @@ fn node_remove_child_native(
     hooks,
     document_obj,
     dom_ptr,
-    parent_node_id,
+    parent_handle.node_id,
   )?;
   let needs_microtask = unsafe { dom_ptr.as_mut() }.take_mutation_observer_microtask_needed();
   maybe_queue_mutation_observer_microtask(vm, scope, host, hooks, document_obj, needs_microtask)?;
