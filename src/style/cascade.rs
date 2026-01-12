@@ -11347,7 +11347,7 @@ pub struct CascadeOptions {
   /// fallback. This is a spec deviation: per Shadow DOM + CSS scoping rules, document author rules
   /// never apply within a shadow tree (regardless of whether the shadow root has stylesheets).
   pub fallback_document_rules_in_shadow_scopes: bool,
-  /// When true, treat custom elements as always defined for `:defined` pseudo-class matching.
+  /// When `true`, treat custom elements as always defined for `:defined` pseudo-class matching.
   ///
   /// The spec behavior is that elements with a valid custom element name are *not* `:defined`
   /// unless they have been upgraded by the custom elements registry. FastRender does not run the

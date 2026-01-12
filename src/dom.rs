@@ -7804,16 +7804,30 @@ impl<'a> Element for ElementRef<'a> {
       PseudoClass::Defined => {
         if _context.extra_data.treat_custom_elements_as_defined {
           true
+        } else if !self.is_html_element() {
+          // Spec behavior: host languages without custom elements treat all elements as `:defined`
+          // (Selectors 4).
+          true
         } else {
           // Spec-correct behavior: elements with a valid custom element name are undefined unless
           // upgraded by the custom elements registry, which FastRender does not run.
           //
+          // Additionally, customized built-in elements (e.g. `<button is="x-foo">`) are also
+          // undefined unless upgraded.
+          //
           // Elements without a valid custom element name remain `:defined`.
-          !(self.is_html_element()
-            && self
+          if self
+            .node
+            .tag_name()
+            .is_some_and(|tag| is_valid_custom_element_name(tag))
+          {
+            false
+          } else {
+            !self
               .node
-              .tag_name()
-              .is_some_and(|tag| is_valid_custom_element_name(tag)))
+              .get_attribute_ref("is")
+              .is_some_and(|is_value| is_valid_custom_element_name(is_value))
+          }
         }
       }
       PseudoClass::FirstChild => self.element_index(_context) == Some(0),
@@ -13659,6 +13673,37 @@ mod tests {
     assert!(selector_matches_with_custom_elements_defined(
       &node_ref, &selector, false
     ));
+  }
+
+  #[test]
+  fn defined_pseudo_class_matches_customized_built_in_elements() {
+    let selector_defined = parse_selector(":defined");
+    let selector_undefined = parse_selector(":not(:defined)");
+
+    let valid_is = element_with_attrs("button", vec![("is", "x-foo")], vec![]);
+    let valid_is_ref = ElementRef::with_ancestors(&valid_is, &[]);
+    assert!(
+      selector_matches_with_custom_elements_defined(&valid_is_ref, &selector_undefined, false),
+      "customized built-in elements should be treated as undefined when the custom element registry is not run"
+    );
+    assert!(
+      !selector_matches_with_custom_elements_defined(&valid_is_ref, &selector_defined, false),
+      "customized built-in elements should not match :defined in spec mode"
+    );
+
+    let invalid_is = element_with_attrs("button", vec![("is", "xfoo")], vec![]);
+    let invalid_is_ref = ElementRef::with_ancestors(&invalid_is, &[]);
+    assert!(
+      selector_matches_with_custom_elements_defined(&invalid_is_ref, &selector_defined, false),
+      "invalid custom element names (missing hyphen) should not affect :defined"
+    );
+
+    let reserved_is = element_with_attrs("button", vec![("is", "Annotation-xml")], vec![]);
+    let reserved_is_ref = ElementRef::with_ancestors(&reserved_is, &[]);
+    assert!(
+      selector_matches_with_custom_elements_defined(&reserved_is_ref, &selector_defined, false),
+      "reserved/invalid custom element names should not affect :defined"
+    );
   }
 
   #[test]
