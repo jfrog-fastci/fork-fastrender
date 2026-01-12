@@ -1301,6 +1301,20 @@ mod tests {
   }
 
   #[test]
+  fn window_inherits_from_event_target_prototype() -> Result<()> {
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+
+    let out = host.exec_script("window instanceof EventTarget")?;
+    assert_eq!(out, Value::Bool(true));
+
+    let out = host.exec_script("EventTarget.prototype.isPrototypeOf(window)")?;
+    assert_eq!(out, Value::Bool(true));
+
+    Ok(())
+  }
+
+  #[test]
   fn generated_vmjs_node_installer_can_patch_prototype_chain_after_event_target_install(
   ) -> Result<()> {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
