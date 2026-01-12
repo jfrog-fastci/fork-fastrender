@@ -1,8 +1,8 @@
-use crate::ui::browser_app::{BrowserAppState, BrowserTabState};
 use crate::ui::a11y;
+use crate::ui::browser_app::{BrowserAppState, BrowserTabState};
 use crate::ui::messages::TabId;
 use crate::ui::motion::UiMotion;
-use egui::{Align2, Color32, FontId, Pos2, Rect, Sense, Stroke, Vec2};
+use egui::{Align2, Color32, FontId, Pos2, Rect, Response, Sense, Stroke, Vec2};
 
 use super::ChromeAction;
 
@@ -112,7 +112,8 @@ fn placeholder_favicon(painter: &egui::Painter, rect: Rect, visuals: &egui::Visu
   let fill = visuals.widgets.inactive.bg_fill;
   let stroke = visuals.widgets.inactive.bg_stroke;
   // Keep favicon placeholders subtly rounded without looking fully pill-shaped.
-  let rounding = egui::Rounding::same((visuals.widgets.inactive.rounding.nw * 0.5).clamp(2.0, 4.0));
+  let rounding =
+    egui::Rounding::same((visuals.widgets.inactive.rounding.nw * 0.5).clamp(2.0, 4.0));
   painter.rect_filled(rect, rounding, fill);
   painter.rect_stroke(rect, rounding, stroke);
 }
@@ -125,13 +126,13 @@ fn tab_ui(
   can_close_tabs: bool,
   tab_width: f32,
   favicon_tex: Option<egui::TextureId>,
-) -> (Rect, Option<ChromeAction>) {
+) -> (Rect, Response, Option<ChromeAction>) {
   let (_, tab_rect) = ui.allocate_space(Vec2::new(tab_width, TAB_HEIGHT));
   let tab_id = ui.make_persistent_id(("tab_strip_tab", tab.id));
   let title = tab.display_title();
   let mut menu_action: Option<ChromeAction> = None;
   let response = ui
-    .interact(tab_rect, tab_id, Sense::click())
+    .interact(tab_rect, tab_id, Sense::click_and_drag())
     .on_hover_text(title.as_str())
     .context_menu(|ui| {
       let label = if tab.pinned { "Unpin Tab" } else { "Pin Tab" };
@@ -263,20 +264,20 @@ fn tab_ui(
 
   // Input semantics.
   if let Some(action) = menu_action {
-    return (tab_rect, Some(action));
+    return (tab_rect, response, Some(action));
   }
   if close_clicked && can_close_tabs {
-    return (tab_rect, Some(ChromeAction::CloseTab(tab.id)));
+    return (tab_rect, response, Some(ChromeAction::CloseTab(tab.id)));
   }
   if response.clicked_by(egui::PointerButton::Middle) {
     if can_close_tabs {
-      return (tab_rect, Some(ChromeAction::CloseTab(tab.id)));
+      return (tab_rect, response, Some(ChromeAction::CloseTab(tab.id)));
     }
   } else if response.clicked() {
-    return (tab_rect, Some(ChromeAction::ActivateTab(tab.id)));
+    return (tab_rect, response, Some(ChromeAction::ActivateTab(tab.id)));
   }
 
-  (tab_rect, None)
+  (tab_rect, response, None)
 }
 
 fn pinned_tab_ui(
@@ -286,13 +287,13 @@ fn pinned_tab_ui(
   is_active: bool,
   can_close_tabs: bool,
   favicon_tex: Option<egui::TextureId>,
-) -> (Rect, Option<ChromeAction>) {
+) -> (Rect, Response, Option<ChromeAction>) {
   let (_, tab_rect) = ui.allocate_space(Vec2::new(PINNED_TAB_WIDTH, TAB_HEIGHT));
   let tab_id = ui.make_persistent_id(("tab_strip_tab", tab.id));
   let title = tab.display_title();
   let mut menu_action: Option<ChromeAction> = None;
   let response = ui
-    .interact(tab_rect, tab_id, Sense::click())
+    .interact(tab_rect, tab_id, Sense::click_and_drag())
     .on_hover_text(title.as_str())
     .context_menu(|ui| {
       let label = if tab.pinned { "Unpin Tab" } else { "Pin Tab" };
@@ -365,26 +366,33 @@ fn pinned_tab_ui(
 
   // Input semantics.
   if let Some(action) = menu_action {
-    return (tab_rect, Some(action));
+    return (tab_rect, response, Some(action));
   }
   if response.clicked_by(egui::PointerButton::Middle) {
     if can_close_tabs {
-      return (tab_rect, Some(ChromeAction::CloseTab(tab.id)));
+      return (tab_rect, response, Some(ChromeAction::CloseTab(tab.id)));
     }
   } else if response.clicked() {
-    return (tab_rect, Some(ChromeAction::ActivateTab(tab.id)));
+    return (tab_rect, response, Some(ChromeAction::ActivateTab(tab.id)));
   }
 
-  (tab_rect, None)
+  (tab_rect, response, None)
 }
 
 pub(super) fn tab_strip_ui(
   ui: &mut egui::Ui,
-  app: &BrowserAppState,
+  app: &mut BrowserAppState,
   favicon_for_tab: &mut impl FnMut(TabId) -> Option<egui::TextureId>,
   motion: UiMotion,
 ) -> Vec<ChromeAction> {
   let mut actions = Vec::new();
+
+  // Defensive: if the dragged tab was closed mid-drag, clear the drag state.
+  if let Some(dragging_tab_id) = app.chrome.dragging_tab_id {
+    if app.tab(dragging_tab_id).is_none() {
+      app.chrome.clear_tab_drag();
+    }
+  }
 
   let strip_width = ui.available_width().max(0.0);
   let (_, strip_rect) = ui.allocate_space(Vec2::new(strip_width, TAB_STRIP_HEIGHT));
@@ -400,10 +408,8 @@ pub(super) fn tab_strip_ui(
 
   let tab_count = app.tabs.len();
   let can_close_tabs = tab_count > 1;
-  let pinned_len = app.tabs.iter().take_while(|t| t.pinned).count();
-  let (pinned_tabs, unpinned_tabs) = app.tabs.split_at(pinned_len);
-  let pinned_count = pinned_tabs.len();
-  let unpinned_count = unpinned_tabs.len();
+  let pinned_count = app.tabs.iter().take_while(|t| t.pinned).count();
+  let unpinned_count = tab_count - pinned_count;
 
   let pinned_content_width = if pinned_count == 0 {
     0.0
@@ -432,6 +438,10 @@ pub(super) fn tab_strip_ui(
   #[cfg(test)]
   let mut tab_rects_for_test: Vec<Rect> = Vec::new();
 
+  let mut pinned_tab_rects_for_drag: Vec<(TabId, Rect)> = Vec::with_capacity(pinned_count);
+  let mut unpinned_tab_rects_for_drag: Vec<(TabId, Rect)> = Vec::with_capacity(unpinned_count);
+  let mut dragged_tab_rect: Option<Rect> = None;
+
   let mut active_tab_rect: Option<Rect> = None;
   let mut active_tab_is_pinned = false;
   let mut scroll_offset_x: f32 = 0.0;
@@ -445,17 +455,33 @@ pub(super) fn tab_strip_ui(
       pinned_ui.set_clip_rect(pinned_viewport_rect);
       pinned_ui.spacing_mut().item_spacing = Vec2::new(TAB_GAP, 0.0);
       pinned_ui.horizontal(|ui| {
-        for tab in pinned_tabs {
-          let is_active = app.active_tab_id() == Some(tab.id);
-          let favicon_tex = favicon_for_tab(tab.id);
-          let (tab_rect, maybe_action) =
-            pinned_tab_ui(ui, motion, tab, is_active, can_close_tabs, favicon_tex);
+        for idx in 0..pinned_count {
+          let tab_id = app.tabs[idx].id;
+          let is_active = app.active_tab_id() == Some(tab_id);
+          let favicon_tex = favicon_for_tab(tab_id);
+          let (tab_rect, tab_response, maybe_action) = pinned_tab_ui(
+            ui,
+            motion,
+            &app.tabs[idx],
+            is_active,
+            can_close_tabs,
+            favicon_tex,
+          );
           if is_active {
             active_tab_rect = Some(tab_rect);
             active_tab_is_pinned = true;
           }
           #[cfg(test)]
           tab_rects_for_test.push(tab_rect);
+
+          pinned_tab_rects_for_drag.push((tab_id, tab_rect));
+          if tab_response.drag_started() && app.chrome.dragging_tab_id.is_none() {
+            app.chrome.dragging_tab_id = Some(tab_id);
+            app.chrome.drag_start_pointer_pos = ui.input(|i| i.pointer.interact_pos());
+          }
+          if app.chrome.dragging_tab_id == Some(tab_id) {
+            dragged_tab_rect = Some(tab_rect);
+          }
 
           if let Some(action) = maybe_action {
             actions.push(action);
@@ -477,13 +503,14 @@ pub(super) fn tab_strip_ui(
         .show(&mut unpinned_ui, |ui| {
           ui.spacing_mut().item_spacing = Vec2::new(TAB_GAP, 0.0);
           ui.horizontal(|ui| {
-            for tab in unpinned_tabs {
-              let is_active = app.active_tab_id() == Some(tab.id);
-              let favicon_tex = favicon_for_tab(tab.id);
-              let (tab_rect, maybe_action) = tab_ui(
+            for idx in pinned_count..tab_count {
+              let tab_id = app.tabs[idx].id;
+              let is_active = app.active_tab_id() == Some(tab_id);
+              let favicon_tex = favicon_for_tab(tab_id);
+              let (tab_rect, tab_response, maybe_action) = tab_ui(
                 ui,
                 motion,
-                tab,
+                &app.tabs[idx],
                 is_active,
                 can_close_tabs,
                 sizing.tab_width,
@@ -495,6 +522,15 @@ pub(super) fn tab_strip_ui(
               }
               #[cfg(test)]
               tab_rects_for_test.push(tab_rect);
+
+              unpinned_tab_rects_for_drag.push((tab_id, tab_rect));
+              if tab_response.drag_started() && app.chrome.dragging_tab_id.is_none() {
+                app.chrome.dragging_tab_id = Some(tab_id);
+                app.chrome.drag_start_pointer_pos = ui.input(|i| i.pointer.interact_pos());
+              }
+              if app.chrome.dragging_tab_id == Some(tab_id) {
+                dragged_tab_rect = Some(tab_rect);
+              }
 
               if let Some(action) = maybe_action {
                 actions.push(action);
@@ -546,6 +582,107 @@ pub(super) fn tab_strip_ui(
         [Pos2::new(x0, y), Pos2::new(x1, y)],
         Stroke::new(ACTIVE_UNDERLINE_HEIGHT, ui.visuals().selection.stroke.color),
       );
+  }
+
+  // Drag-to-reorder: apply the reorder while dragging, and draw an outline + drop indicator.
+  if let (Some(dragging_tab_id), Some(pos)) = (
+    app.chrome.dragging_tab_id,
+    ui.input(|i| i.pointer.interact_pos()),
+  ) {
+    // While dragging, ensure we keep repainting so hover/indicator stays responsive even if the
+    // host winit loop relies on egui repaint requests.
+    ui.ctx().request_repaint();
+
+    // Outline the dragged tab.
+    if let Some(rect) = dragged_tab_rect {
+      let stroke = Stroke::new(1.0, ui.visuals().widgets.active.bg_stroke.color);
+      ui
+        .painter()
+        .with_clip_rect(tabs_rect)
+        .rect_stroke(rect.expand(1.0), 8.0, stroke);
+    }
+
+    let dragging_is_pinned = app
+      .tab(dragging_tab_id)
+      .map(|t| t.pinned)
+      .unwrap_or(false);
+
+    let (tab_rects_for_drag, group_start_index, group_clip_rect) = if dragging_is_pinned {
+      (
+        &pinned_tab_rects_for_drag,
+        0usize,
+        pinned_viewport_rect,
+      )
+    } else {
+      (
+        &unpinned_tab_rects_for_drag,
+        pinned_count,
+        unpinned_viewport_rect,
+      )
+    };
+
+    if tab_rects_for_drag.len() >= 2 {
+      // Determine the insertion point by comparing the pointer x coordinate against the centers of
+      // each *other* tab.
+      let mut insertion_index: usize = 0;
+      for (tab_id, rect) in tab_rects_for_drag {
+        if *tab_id == dragging_tab_id {
+          continue;
+        }
+        if pos.x < rect.center().x {
+          break;
+        }
+        insertion_index += 1;
+      }
+
+      let target_index_in_group = insertion_index.min(tab_rects_for_drag.len() - 1);
+      let target_index = group_start_index + target_index_in_group;
+      app.chrome.drag_target_index = Some(target_index);
+
+      // Apply the reorder immediately while dragging (standard browser behaviour).
+      let _ = app.reorder_tab(dragging_tab_id, target_index);
+
+      // Draw drop indicator.
+      let tab_strip_rect = tab_rects_for_drag
+        .iter()
+        .map(|(_, rect)| *rect)
+        .reduce(|a, b| a.union(b))
+        .unwrap_or_else(|| Rect::NOTHING);
+
+      let drop_x = if insertion_index == 0 {
+        tab_rects_for_drag
+          .first()
+          .map(|(_, rect)| rect.left())
+          .unwrap_or(tab_strip_rect.left())
+      } else if insertion_index >= tab_rects_for_drag.len() - 1 {
+        tab_rects_for_drag
+          .last()
+          .map(|(_, rect)| rect.right())
+          .unwrap_or(tab_strip_rect.right())
+      } else {
+        let mut count = 0usize;
+        let mut x = tab_strip_rect.left();
+        for (tab_id, rect) in tab_rects_for_drag {
+          if *tab_id == dragging_tab_id {
+            continue;
+          }
+          if count == insertion_index {
+            x = rect.left();
+            break;
+          }
+          count += 1;
+        }
+        x
+      };
+
+      let stroke = Stroke::new(2.0, ui.visuals().widgets.active.bg_stroke.color);
+      let y1 = tab_strip_rect.top() + 1.0;
+      let y2 = tab_strip_rect.bottom() - 1.0;
+      ui
+        .painter()
+        .with_clip_rect(group_clip_rect)
+        .line_segment([Pos2::new(drop_x, y1), Pos2::new(drop_x, y2)], stroke);
+    }
   }
 
   // New tab button stays visible even when the tab list overflows.

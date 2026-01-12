@@ -385,6 +385,24 @@ pub fn chrome_ui_with_bookmarks(
   if forward {
     actions.push(ChromeAction::Forward);
   }
+
+  // Clear transient tab-drag state on mouse release.
+  if app.chrome.dragging_tab_id.is_some()
+    && ctx.input(|i| {
+      i.events.iter().any(|event| {
+        matches!(
+          event,
+          egui::Event::PointerButton {
+            pressed: false,
+            button: egui::PointerButton::Primary,
+            ..
+          }
+        )
+      })
+    })
+  {
+    app.chrome.clear_tab_drag();
+  }
   egui::TopBottomPanel::top("chrome").show(ctx, |ui| {
     actions.extend(tab_strip::tab_strip_ui(ui, app, &mut favicon_for_tab, motion));
 
@@ -2383,6 +2401,79 @@ mod tests {
 
     // Only the unpinned tab should render a close button ("×").
     assert_eq!(count_drawn_glyph_in_rect(&output, "×", strip_rect), 1);
+  }
+
+  #[test]
+  fn dragging_tab_label_reorders_tabs() {
+    let mut app = BrowserAppState::new();
+    let tab_a = TabId(1);
+    let tab_b = TabId(2);
+    app.push_tab(BrowserTabState::new(tab_a, "about:newtab".to_string()), true);
+    app.push_tab(BrowserTabState::new(tab_b, "about:newtab".to_string()), false);
+
+    let ctx = egui::Context::default();
+
+    // Frame 0: read the tab strip layout so we can target a specific tab rect (more robust than
+    // hard-coded coordinates).
+    begin_frame_with_screen_size(&ctx, egui::vec2(800.0, 600.0), Vec::new());
+    let _ = chrome_ui(&ctx, &mut app, |_| None);
+    let (_strip_rect, tab_rects) =
+      super::tab_strip::load_test_layout(&ctx).expect("missing tab strip layout metrics");
+    let _ = ctx.end_frame();
+
+    let press_pos = tab_rects.first().expect("expected first tab rect").center();
+    let second = tab_rects.get(1).expect("expected second tab rect");
+    let drag_pos = egui::pos2(second.center().x + 1.0, second.center().y);
+
+    // Frame 1: press on the first tab.
+    begin_frame_with_screen_size(
+      &ctx,
+      egui::vec2(800.0, 600.0),
+      vec![
+        egui::Event::PointerMoved(press_pos),
+        egui::Event::PointerButton {
+          pos: press_pos,
+          button: egui::PointerButton::Primary,
+          pressed: true,
+          modifiers: egui::Modifiers::default(),
+        },
+      ],
+    );
+    let _actions = chrome_ui(&ctx, &mut app, |_| None);
+    let _ = ctx.end_frame();
+
+    // Frame 2: drag to the right (past the second tab's center).
+    begin_frame_with_screen_size(
+      &ctx,
+      egui::vec2(800.0, 600.0),
+      vec![egui::Event::PointerMoved(drag_pos)],
+    );
+    let _actions = chrome_ui(&ctx, &mut app, |_| None);
+    let _ = ctx.end_frame();
+
+    // Frame 3: release.
+    begin_frame_with_screen_size(
+      &ctx,
+      egui::vec2(800.0, 600.0),
+      vec![
+        egui::Event::PointerMoved(drag_pos),
+        egui::Event::PointerButton {
+          pos: drag_pos,
+          button: egui::PointerButton::Primary,
+          pressed: false,
+          modifiers: egui::Modifiers::default(),
+        },
+      ],
+    );
+    let _actions = chrome_ui(&ctx, &mut app, |_| None);
+    let _ = ctx.end_frame();
+
+    assert_eq!(
+      app.tabs.iter().map(|t| t.id).collect::<Vec<_>>(),
+      vec![tab_b, tab_a]
+    );
+    assert_eq!(app.active_tab_id(), Some(tab_a));
+    assert!(app.chrome.dragging_tab_id.is_none());
   }
 
   #[test]

@@ -4777,6 +4777,10 @@ impl App {
           self.cancel_pointer_capture();
           self.window.request_redraw();
         }
+        if self.browser_state.chrome.dragging_tab_id.is_some() {
+          self.browser_state.chrome.clear_tab_drag();
+          self.window.request_redraw();
+        }
       }
       WindowEvent::CursorLeft { .. } => {
         let had_pointer_capture = self.pointer_captured;

@@ -434,6 +434,24 @@ pub struct ChromeState {
   pub request_focus_address_bar: bool,
   /// One-frame request flag consumed by `chrome_ui` to select all text in the address bar.
   pub request_select_all_address_bar: bool,
+  /// Transient tab-strip drag state (used by the optional egui chrome).
+  ///
+  /// Kept behind the `browser_ui` feature gate so the core renderer does not depend on egui types.
+  #[cfg(feature = "browser_ui")]
+  pub dragging_tab_id: Option<TabId>,
+  #[cfg(feature = "browser_ui")]
+  pub drag_start_pointer_pos: Option<egui::Pos2>,
+  #[cfg(feature = "browser_ui")]
+  pub drag_target_index: Option<usize>,
+}
+
+impl ChromeState {
+  #[cfg(feature = "browser_ui")]
+  pub fn clear_tab_drag(&mut self) {
+    self.dragging_tab_id = None;
+    self.drag_start_pointer_pos = None;
+    self.drag_target_index = None;
+  }
 }
 
 /// Egui-agnostic UI state for the address bar omnibox dropdown.
@@ -624,6 +642,40 @@ impl BrowserAppState {
     let tab_id = TabId::new();
     self.push_tab(BrowserTabState::new(tab_id, url), true);
     tab_id
+  }
+
+  /// Reorder a tab in-place within the tab strip.
+  ///
+  /// This is used by the egui chrome tab-strip drag-to-reorder implementation.
+  ///
+  /// Returns `true` if a reorder was applied.
+  pub fn reorder_tab(&mut self, tab_id: TabId, target_index: usize) -> bool {
+    let len = self.tabs.len();
+    if len == 0 {
+      return false;
+    }
+    let Some(from_idx) = self.tabs.iter().position(|t| t.id == tab_id) else {
+      return false;
+    };
+
+    // Preserve the invariant that pinned tabs are stored contiguously at the front of the tab
+    // list: pinned tabs can only be reordered within the pinned segment, and unpinned tabs can only
+    // be reordered within the unpinned segment.
+    let pinned_end = self.pinned_len();
+    let is_pinned = self.tabs[from_idx].pinned;
+    let mut target_index = target_index.min(len - 1);
+    if is_pinned {
+      target_index = target_index.min(pinned_end.saturating_sub(1));
+    } else {
+      target_index = target_index.max(pinned_end);
+    }
+    if from_idx == target_index {
+      return false;
+    }
+
+    let tab = self.tabs.remove(from_idx);
+    self.tabs.insert(target_index, tab);
+    true
   }
 
   pub fn close_tab(&mut self, tab_id: TabId) {
@@ -1632,6 +1684,54 @@ mod browser_app_tests {
     let b = app.tab(tab_b).unwrap();
     assert!(!b.find.open);
     assert_eq!(b.find, FindInPageState::default());
+
+  }
+
+  #[test]
+  fn reorder_tab_moves_tab_and_clamps_target_index() {
+    let mut app = BrowserAppState::new();
+    let a = TabId(1);
+    let b = TabId(2);
+    let c = TabId(3);
+
+    app.push_tab(BrowserTabState::new(a, about_pages::ABOUT_NEWTAB.to_string()), true);
+    app.push_tab(BrowserTabState::new(b, about_pages::ABOUT_NEWTAB.to_string()), false);
+    app.push_tab(BrowserTabState::new(c, about_pages::ABOUT_NEWTAB.to_string()), false);
+
+    assert_eq!(app.tabs.iter().map(|t| t.id).collect::<Vec<_>>(), vec![a, b, c]);
+
+    // Moving the first tab to an out-of-bounds index clamps to the last position.
+    assert!(app.reorder_tab(a, 999));
+    assert_eq!(app.tabs.iter().map(|t| t.id).collect::<Vec<_>>(), vec![b, c, a]);
+  }
+
+  #[test]
+  fn reorder_tab_is_noop_when_tab_not_found() {
+    let mut app = BrowserAppState::new();
+    let a = TabId(1);
+    let b = TabId(2);
+    app.push_tab(BrowserTabState::new(a, about_pages::ABOUT_NEWTAB.to_string()), true);
+    app.push_tab(BrowserTabState::new(b, about_pages::ABOUT_NEWTAB.to_string()), false);
+
+    assert!(!app.reorder_tab(TabId(999), 0));
+    assert_eq!(app.tabs.iter().map(|t| t.id).collect::<Vec<_>>(), vec![a, b]);
+  }
+
+  #[test]
+  fn reorder_tab_does_not_change_active_tab_id() {
+    let mut app = BrowserAppState::new();
+    let a = TabId(1);
+    let b = TabId(2);
+    let c = TabId(3);
+    app.push_tab(BrowserTabState::new(a, about_pages::ABOUT_NEWTAB.to_string()), false);
+    app.push_tab(BrowserTabState::new(b, about_pages::ABOUT_NEWTAB.to_string()), true);
+    app.push_tab(BrowserTabState::new(c, about_pages::ABOUT_NEWTAB.to_string()), false);
+
+    let active_before = app.active_tab_id();
+    assert_eq!(active_before, Some(b));
+
+    assert!(app.reorder_tab(a, 2));
+    assert_eq!(app.active_tab_id(), active_before);
   }
 
   fn assert_pinned_invariant(app: &BrowserAppState) {
