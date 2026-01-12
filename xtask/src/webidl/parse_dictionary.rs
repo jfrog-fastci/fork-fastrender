@@ -1,6 +1,6 @@
 use crate::webidl::ExtendedAttribute;
 use anyhow::{bail, Context, Result};
-use webidl_ir::DictionaryMemberSchema;
+use webidl::ir::DictionaryMemberSchema;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ParsedDictionaryMember {
@@ -21,7 +21,7 @@ pub fn parse_dictionary_member(input: &str) -> Result<ParsedDictionaryMember> {
     rest = super::strip_leading_ws_and_comments(after).trim_start();
   }
 
-  let (mut ty, rest_after_type) = webidl_ir::parse_idl_type(rest)
+  let (mut ty, rest_after_type) = webidl::ir::parse_idl_type(rest)
     .map_err(|e| anyhow::Error::new(e))
     .context("parse dictionary member type")?;
 
@@ -31,7 +31,7 @@ pub fn parse_dictionary_member(input: &str) -> Result<ParsedDictionaryMember> {
     .ok_or_else(|| anyhow::anyhow!("expected dictionary member name after type"))?;
   let mut rest = super::strip_leading_ws_and_comments(rest_after_name).trim_start();
 
-  let default: Option<webidl_ir::DefaultValue> = if rest.starts_with('=') {
+  let default: Option<webidl::ir::DefaultValue> = if rest.starts_with('=') {
     rest = &rest[1..];
     rest = super::strip_leading_ws_and_comments(rest).trim_start();
     let default_src = rest.trim();
@@ -39,7 +39,7 @@ pub fn parse_dictionary_member(input: &str) -> Result<ParsedDictionaryMember> {
       bail!("expected default value after `=`");
     }
     Some(
-      webidl_ir::parse_default_value(default_src)
+      webidl::ir::parse_default_value(default_src)
         .map_err(|e| anyhow::Error::new(e))
         .with_context(|| format!("parse dictionary member default value `{default_src}`"))?,
     )

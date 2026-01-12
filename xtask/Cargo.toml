@@ -24,7 +24,7 @@ fastrender = { path = "..", default-features = false }
 # `xtask js wpt-dom` defaults to exercising the in-tree vm-js backend, so ensure that backend is
 # compiled in when building xtask.
 js-wpt-dom-runner = { path = "../crates/js-wpt-dom-runner", features = ["vmjs"] }
-webidl-ir = { path = "../crates/webidl-ir" }
+webidl = { path = "../vendor/ecma-rs/webidl" }
 libc = "0.2"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }

@@ -1,9 +1,0 @@
-[package]
-name = "webidl-ir"
-version = "0.1.0"
-edition = "2021"
-rust-version = "1.70"
-publish = false
-
-[dependencies]
-webidl = { path = "../../vendor/ecma-rs/webidl" }

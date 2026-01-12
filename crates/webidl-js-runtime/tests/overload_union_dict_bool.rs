@@ -2,7 +2,7 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 use vm_js::{Value, VmError};
-use webidl_ir::{
+use webidl::ir::{
   DefaultValue, DictionaryMemberSchema, DictionarySchema, IdlType, NamedType, NamedTypeKind,
   StringType, TypeContext,
 };

@@ -1606,7 +1606,7 @@ impl WebIdlJsRuntime for VmJsRuntime {
     }
   }
 
-  fn platform_object_to_js_value(&mut self, value: &webidl_ir::PlatformObject) -> Option<Value> {
+  fn platform_object_to_js_value(&mut self, value: &webidl::ir::PlatformObject) -> Option<Value> {
     value.downcast_ref::<Value>().copied()
   }
 

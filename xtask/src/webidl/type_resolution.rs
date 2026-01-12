@@ -1,4 +1,4 @@
-//! WebIDL type resolution helpers bridging the `xtask` WebIDL snapshot/resolver and `webidl-ir`.
+//! WebIDL type resolution helpers bridging the `xtask` WebIDL snapshot/resolver and `webidl::ir`.
 //!
 //! The `xtask::webidl` parser stores most signatures/member bodies as raw text and uses a
 //! lightweight `ast::IdlType` for parsing a small subset of WebIDL. For bindings/codegen we need
@@ -6,19 +6,19 @@
 //! typedef expansion).
 //!
 //! This module:
-//! - builds a `webidl_ir::TypeContext` from a resolved WebIDL world, and
-//! - provides helpers to parse/resolve WebIDL type strings into `webidl_ir::IdlType`.
+//! - builds a `webidl::ir::TypeContext` from a resolved WebIDL world, and
+//! - provides helpers to parse/resolve WebIDL type strings into `webidl::ir::IdlType`.
 
 use super::resolve::{ResolvedDictionaryMember, ResolvedWebIdlWorld};
 use super::ExtendedAttribute;
 use anyhow::{bail, Context, Result};
 use std::collections::{BTreeMap, BTreeSet};
-use webidl_ir::{
+use webidl::ir::{
   parse_default_value, parse_idl_type, parse_idl_type_complete, DictionaryMemberSchema,
   DictionarySchema, IdlType, NamedType, NamedTypeKind, TypeAnnotation, TypeContext,
 };
 
-/// Build a `webidl_ir::TypeContext` from a resolved WebIDL world.
+/// Build a `webidl::ir::TypeContext` from a resolved WebIDL world.
 ///
 /// Deterministic ordering:
 /// - maps are stored as `BTreeMap`/`BTreeSet`, and
@@ -98,7 +98,7 @@ pub fn parse_type_with_world_and_typedefs(
   }
 }
 
-/// Parse a resolved dictionary member into a `webidl_ir::DictionaryMemberSchema`.
+/// Parse a resolved dictionary member into a `webidl::ir::DictionaryMemberSchema`.
 pub fn parse_dictionary_member_schema(
   world: &ResolvedWebIdlWorld,
   _ctx: &TypeContext,
@@ -323,7 +323,7 @@ pub fn expand_typedefs_in_type(ctx: &TypeContext, ty: &IdlType) -> Result<IdlTyp
 mod tests {
   use super::*;
   use crate::webidl::overload_ir;
-  use webidl_ir::DefaultValue;
+  use webidl::ir::DefaultValue;
 
   fn test_world() -> ResolvedWebIdlWorld {
     let idl = r#"
@@ -362,7 +362,7 @@ mod tests {
 
     assert_eq!(
       ctx.typedefs.get("Foo").cloned(),
-      Some(IdlType::String(webidl_ir::StringType::DomString))
+      Some(IdlType::String(webidl::ir::StringType::DomString))
     );
     assert_eq!(
       ctx.typedefs.get("Bar").cloned(),
@@ -394,7 +394,7 @@ mod tests {
     assert!(flattened[0].required);
     assert_eq!(
       flattened[0].ty,
-      IdlType::String(webidl_ir::StringType::DomString)
+      IdlType::String(webidl::ir::StringType::DomString)
     );
     assert_eq!(flattened[0].default, None);
 
@@ -403,12 +403,12 @@ mod tests {
       flattened[1].ty,
       IdlType::Annotated {
         annotations: vec![TypeAnnotation::Clamp],
-        inner: Box::new(IdlType::Numeric(webidl_ir::NumericType::UnsignedLong)),
+        inner: Box::new(IdlType::Numeric(webidl::ir::NumericType::UnsignedLong)),
       }
     );
     assert_eq!(
       flattened[1].default,
-      Some(DefaultValue::Number(webidl_ir::NumericLiteral::Integer(
+      Some(DefaultValue::Number(webidl::ir::NumericLiteral::Integer(
         "1".to_string()
       )))
     );
@@ -425,7 +425,7 @@ mod tests {
 
     // Typedef expansion.
     let ty = parse_type_with_world_and_typedefs(&world, &ctx, "Bar", &[], true).unwrap();
-    assert_eq!(ty, IdlType::String(webidl_ir::StringType::DomString));
+    assert_eq!(ty, IdlType::String(webidl::ir::StringType::DomString));
 
     // Callback function + annotation (legacy treat non-object as null affects distinguishability
     // vs dictionary types in WebIDL's table).
@@ -490,7 +490,7 @@ mod tests {
       parse_type_with_world(&world, "sequence<[Clamp] unsigned long>", &[]).unwrap(),
       IdlType::Sequence(Box::new(IdlType::Annotated {
         annotations: vec![TypeAnnotation::Clamp],
-        inner: Box::new(IdlType::Numeric(webidl_ir::NumericType::UnsignedLong)),
+        inner: Box::new(IdlType::Numeric(webidl::ir::NumericType::UnsignedLong)),
       }))
     );
 
@@ -508,7 +508,7 @@ mod tests {
       enforced,
       IdlType::Annotated {
         annotations: vec![TypeAnnotation::EnforceRange, TypeAnnotation::Clamp],
-        inner: Box::new(IdlType::Numeric(webidl_ir::NumericType::UnsignedLong)),
+        inner: Box::new(IdlType::Numeric(webidl::ir::NumericType::UnsignedLong)),
       }
     );
   }

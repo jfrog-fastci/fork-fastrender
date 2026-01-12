@@ -2,7 +2,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 use std::rc::Rc;
 use vm_js::{JsBigInt, PropertyKey, Value, VmError};
-use webidl_ir::{
+use webidl::ir::{
   parse_default_value, DictionaryMemberSchema, DictionarySchema, IdlType, NamedType, NamedTypeKind,
   NumericType, StringType, TypeAnnotation, TypeContext,
 };

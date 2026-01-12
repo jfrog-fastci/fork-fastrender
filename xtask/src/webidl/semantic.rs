@@ -7,7 +7,7 @@ use super::parse_interface_member;
 use super::resolve::{Exposure, ResolvedWebIdlWorld};
 use super::{type_resolution, ExtendedAttribute};
 use std::collections::{BTreeMap, BTreeSet};
-use webidl_ir::{
+use webidl::ir::{
   DictionaryMemberSchema, DictionarySchema, IdlType, NamedType, NamedTypeKind, TypeContext,
 };
 
@@ -45,7 +45,7 @@ impl SemanticWorld {
       .typedefs
       .values()
       .map(|td| {
-        let mut parsed: Option<IdlType> = match webidl_ir::parse_idl_type_complete(&td.type_) {
+        let mut parsed: Option<IdlType> = match webidl::ir::parse_idl_type_complete(&td.type_) {
           Ok(mut ty) => {
             resolve_named_types(
               &mut ty,
@@ -690,25 +690,25 @@ fn convert_builtin_type(b: AstBuiltinType) -> IdlType {
     AstBuiltinType::Undefined => IdlType::Undefined,
     AstBuiltinType::Any => IdlType::Any,
     AstBuiltinType::Boolean => IdlType::Boolean,
-    AstBuiltinType::Byte => IdlType::Numeric(webidl_ir::NumericType::Byte),
-    AstBuiltinType::Octet => IdlType::Numeric(webidl_ir::NumericType::Octet),
-    AstBuiltinType::Short => IdlType::Numeric(webidl_ir::NumericType::Short),
-    AstBuiltinType::UnsignedShort => IdlType::Numeric(webidl_ir::NumericType::UnsignedShort),
-    AstBuiltinType::Long => IdlType::Numeric(webidl_ir::NumericType::Long),
-    AstBuiltinType::UnsignedLong => IdlType::Numeric(webidl_ir::NumericType::UnsignedLong),
-    AstBuiltinType::LongLong => IdlType::Numeric(webidl_ir::NumericType::LongLong),
-    AstBuiltinType::UnsignedLongLong => IdlType::Numeric(webidl_ir::NumericType::UnsignedLongLong),
-    AstBuiltinType::Float => IdlType::Numeric(webidl_ir::NumericType::Float),
+    AstBuiltinType::Byte => IdlType::Numeric(webidl::ir::NumericType::Byte),
+    AstBuiltinType::Octet => IdlType::Numeric(webidl::ir::NumericType::Octet),
+    AstBuiltinType::Short => IdlType::Numeric(webidl::ir::NumericType::Short),
+    AstBuiltinType::UnsignedShort => IdlType::Numeric(webidl::ir::NumericType::UnsignedShort),
+    AstBuiltinType::Long => IdlType::Numeric(webidl::ir::NumericType::Long),
+    AstBuiltinType::UnsignedLong => IdlType::Numeric(webidl::ir::NumericType::UnsignedLong),
+    AstBuiltinType::LongLong => IdlType::Numeric(webidl::ir::NumericType::LongLong),
+    AstBuiltinType::UnsignedLongLong => IdlType::Numeric(webidl::ir::NumericType::UnsignedLongLong),
+    AstBuiltinType::Float => IdlType::Numeric(webidl::ir::NumericType::Float),
     AstBuiltinType::UnrestrictedFloat => {
-      IdlType::Numeric(webidl_ir::NumericType::UnrestrictedFloat)
+      IdlType::Numeric(webidl::ir::NumericType::UnrestrictedFloat)
     }
-    AstBuiltinType::Double => IdlType::Numeric(webidl_ir::NumericType::Double),
+    AstBuiltinType::Double => IdlType::Numeric(webidl::ir::NumericType::Double),
     AstBuiltinType::UnrestrictedDouble => {
-      IdlType::Numeric(webidl_ir::NumericType::UnrestrictedDouble)
+      IdlType::Numeric(webidl::ir::NumericType::UnrestrictedDouble)
     }
-    AstBuiltinType::DOMString => IdlType::String(webidl_ir::StringType::DomString),
-    AstBuiltinType::USVString => IdlType::String(webidl_ir::StringType::UsvString),
-    AstBuiltinType::ByteString => IdlType::String(webidl_ir::StringType::ByteString),
+    AstBuiltinType::DOMString => IdlType::String(webidl::ir::StringType::DomString),
+    AstBuiltinType::USVString => IdlType::String(webidl::ir::StringType::UsvString),
+    AstBuiltinType::ByteString => IdlType::String(webidl::ir::StringType::ByteString),
     AstBuiltinType::Object => IdlType::Object,
   }
 }

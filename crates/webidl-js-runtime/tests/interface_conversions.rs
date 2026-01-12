@@ -1,5 +1,5 @@
 use vm_js::Value;
-use webidl_ir::{IdlType, NamedType, NamedTypeKind};
+use webidl::ir::{IdlType, NamedType, NamedTypeKind};
 use webidl_js_runtime::conversions::{
   convert_to_interface, convert_to_interface_opaque, to_interface_opaque,
 };

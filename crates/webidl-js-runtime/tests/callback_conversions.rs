@@ -1,5 +1,5 @@
 use vm_js::Value;
-use webidl_ir::{IdlType, NamedType, NamedTypeKind, TypeAnnotation};
+use webidl::ir::{IdlType, NamedType, NamedTypeKind, TypeAnnotation};
 use webidl_js_runtime::conversions::{
   convert_to_callback, invoke_callback_interface, to_callback_function,
 };

@@ -2344,7 +2344,7 @@ impl<Host> webidl_js_runtime::WebIdlJsRuntime for VmJsWebIdlBindingsCx<'_, Host>
 
   fn platform_object_to_js_value(
     &mut self,
-    value: &webidl_ir::PlatformObject,
+    value: &webidl::ir::PlatformObject,
   ) -> Option<Self::JsValue> {
     value.downcast_ref::<Value>().copied()
   }

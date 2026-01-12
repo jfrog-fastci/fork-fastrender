@@ -1,5 +1,5 @@
 use vm_js::Value;
-use webidl_ir::{IdlType, StringType, TypeAnnotation, TypeContext};
+use webidl::ir::{IdlType, StringType, TypeAnnotation, TypeContext};
 use webidl_js_runtime::{convert_to_idl, ConvertedValue, JsRuntime, VmJsRuntime};
 
 #[test]

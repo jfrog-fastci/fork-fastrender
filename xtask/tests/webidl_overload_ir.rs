@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use webidl_ir::{
+use webidl::ir::{
   parse_default_value, parse_idl_type_complete, DefaultValue, IdlType, NamedType, NamedTypeKind,
   NumericType, StringType,
 };

@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use webidl_ir::{IdlType, NamedType, NamedTypeKind, StringType};
+use webidl::ir::{IdlType, NamedType, NamedTypeKind, StringType};
 use xtask::webidl::load::{load_combined_webidl, WebIdlSource};
 use xtask::webidl::resolve::resolve_webidl_world;
 use xtask::webidl::{parse_webidl, SemanticWorld};

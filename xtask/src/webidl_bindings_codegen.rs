@@ -16,9 +16,9 @@ use crate::webidl::resolve::{ExposureTarget, ResolvedWebIdlWorld};
 use crate::webidl::type_resolution;
 use crate::webidl::type_resolution::{build_type_context, expand_typedefs_in_type};
 use crate::webidl::ExtendedAttribute;
-use webidl_ir::{
-  DefaultValue as IrDefaultValue, IdlType as IrIdlType, NamedTypeKind,
-  NumericType as IrNumericType, TypeAnnotation as IrTypeAnnotation, TypeContext,
+use webidl::ir::{
+  DefaultValue as IrDefaultValue, IdlType as IrIdlType, NamedTypeKind, NumericType as IrNumericType,
+  TypeAnnotation as IrTypeAnnotation, TypeContext,
 };
 
 #[derive(Args, Debug)]
@@ -1301,7 +1301,7 @@ fn dom_validate_boolean_dictionary_overload_set(
   use crate::webidl::overload_ir::{
     validate_overload_set, Optionality, Overload, OverloadArgument, WorldContext,
   };
-  use webidl_ir::{IdlType, NamedType, NamedTypeKind, StringType};
+  use webidl::ir::{IdlType, NamedType, NamedTypeKind, StringType};
 
   struct SnapshotCtx<'a> {
     by_name: BTreeMap<&'a str, &'a str>,
@@ -1618,7 +1618,7 @@ fn generate_bindings_module_for_target_unformatted(
     "#[allow(unused_imports)]\nuse webidl_js_runtime::{convert_arguments, resolve_overload, ArgumentSchema, ConvertedValue, Optionality, OverloadArg, OverloadSig, WebIdlJsRuntime};\n",
   );
   out.push_str(
-    "#[allow(unused_imports)]\nuse webidl_ir::{DefaultValue, DictionaryMemberSchema, DictionarySchema, IdlType, NamedType, NamedTypeKind, NumericLiteral, NumericType, StringType, TypeAnnotation, TypeContext};\n\n",
+    "#[allow(unused_imports)]\nuse webidl::ir::{DefaultValue, DictionaryMemberSchema, DictionarySchema, IdlType, NamedType, NamedTypeKind, NumericLiteral, NumericType, StringType, TypeAnnotation, TypeContext};\n\n",
   );
 
   // The bindings runtime trait (`crate::js::webidl::WebIdlBindingsRuntime`) and the core WebIDL
@@ -3223,7 +3223,7 @@ fn write_dictionary_converter(
     return Ok(());
   };
 
-  for webidl_ir::DictionaryMemberSchema {
+  for webidl::ir::DictionaryMemberSchema {
     name: member_name,
     required,
     ty,
@@ -4024,57 +4024,57 @@ fn emit_default_value_ir(
   default: &IrDefaultValue,
 ) -> Result<String> {
   let evaluated =
-    webidl_ir::eval_default_value(ty, default, type_ctx).map_err(|e| anyhow::anyhow!("{e}"))?;
+    webidl::ir::eval_default_value(ty, default, type_ctx).map_err(|e| anyhow::anyhow!("{e}"))?;
   Ok(emit_binding_value_expr_from_webidl_value(&evaluated))
 }
 
-fn emit_binding_value_expr_from_webidl_value(v: &webidl_ir::WebIdlValue) -> String {
+fn emit_binding_value_expr_from_webidl_value(v: &webidl::ir::WebIdlValue) -> String {
   match v {
-    webidl_ir::WebIdlValue::Undefined => "BindingValue::Undefined".to_string(),
-    webidl_ir::WebIdlValue::Null => "BindingValue::Null".to_string(),
-    webidl_ir::WebIdlValue::Boolean(b) => {
+    webidl::ir::WebIdlValue::Undefined => "BindingValue::Undefined".to_string(),
+    webidl::ir::WebIdlValue::Null => "BindingValue::Null".to_string(),
+    webidl::ir::WebIdlValue::Boolean(b) => {
       format!("BindingValue::Bool({})", if *b { "true" } else { "false" })
     }
 
-    webidl_ir::WebIdlValue::Byte(n) => {
+    webidl::ir::WebIdlValue::Byte(n) => {
       format!("BindingValue::Number({})", emit_f64_literal(*n as f64))
     }
-    webidl_ir::WebIdlValue::Octet(n) => {
+    webidl::ir::WebIdlValue::Octet(n) => {
       format!("BindingValue::Number({})", emit_f64_literal(*n as f64))
     }
-    webidl_ir::WebIdlValue::Short(n) => {
+    webidl::ir::WebIdlValue::Short(n) => {
       format!("BindingValue::Number({})", emit_f64_literal(*n as f64))
     }
-    webidl_ir::WebIdlValue::UnsignedShort(n) => {
+    webidl::ir::WebIdlValue::UnsignedShort(n) => {
       format!("BindingValue::Number({})", emit_f64_literal(*n as f64))
     }
-    webidl_ir::WebIdlValue::Long(n) => {
+    webidl::ir::WebIdlValue::Long(n) => {
       format!("BindingValue::Number({})", emit_f64_literal(*n as f64))
     }
-    webidl_ir::WebIdlValue::UnsignedLong(n) => {
+    webidl::ir::WebIdlValue::UnsignedLong(n) => {
       format!("BindingValue::Number({})", emit_f64_literal(*n as f64))
     }
-    webidl_ir::WebIdlValue::LongLong(n) => {
+    webidl::ir::WebIdlValue::LongLong(n) => {
       format!("BindingValue::Number({})", emit_f64_literal(*n as f64))
     }
-    webidl_ir::WebIdlValue::UnsignedLongLong(n) => {
+    webidl::ir::WebIdlValue::UnsignedLongLong(n) => {
       format!("BindingValue::Number({})", emit_f64_literal(*n as f64))
     }
-    webidl_ir::WebIdlValue::Float(n) | webidl_ir::WebIdlValue::UnrestrictedFloat(n) => {
+    webidl::ir::WebIdlValue::Float(n) | webidl::ir::WebIdlValue::UnrestrictedFloat(n) => {
       format!("BindingValue::Number({})", emit_f64_literal(*n as f64))
     }
-    webidl_ir::WebIdlValue::Double(n) | webidl_ir::WebIdlValue::UnrestrictedDouble(n) => {
+    webidl::ir::WebIdlValue::Double(n) | webidl::ir::WebIdlValue::UnrestrictedDouble(n) => {
       format!("BindingValue::Number({})", emit_f64_literal(*n))
     }
 
-    webidl_ir::WebIdlValue::String(s) | webidl_ir::WebIdlValue::Enum(s) => {
+    webidl::ir::WebIdlValue::String(s) | webidl::ir::WebIdlValue::Enum(s) => {
       format!(
         "BindingValue::String({}.to_string())",
         rust_string_literal(s)
       )
     }
 
-    webidl_ir::WebIdlValue::Sequence { values, .. } => {
+    webidl::ir::WebIdlValue::Sequence { values, .. } => {
       if values.is_empty() {
         "BindingValue::Sequence(Vec::new())".to_string()
       } else {
@@ -4087,7 +4087,7 @@ fn emit_binding_value_expr_from_webidl_value(v: &webidl_ir::WebIdlValue) -> Stri
       }
     }
 
-    webidl_ir::WebIdlValue::Record { entries, .. } => {
+    webidl::ir::WebIdlValue::Record { entries, .. } => {
       if entries.is_empty() {
         "BindingValue::Dictionary(BTreeMap::new())".to_string()
       } else {
@@ -4105,7 +4105,7 @@ fn emit_binding_value_expr_from_webidl_value(v: &webidl_ir::WebIdlValue) -> Stri
       }
     }
 
-    webidl_ir::WebIdlValue::Dictionary { members, .. } => {
+    webidl::ir::WebIdlValue::Dictionary { members, .. } => {
       if members.is_empty() {
         "BindingValue::Dictionary(BTreeMap::new())".to_string()
       } else {
@@ -4123,8 +4123,8 @@ fn emit_binding_value_expr_from_webidl_value(v: &webidl_ir::WebIdlValue) -> Stri
       }
     }
 
-    webidl_ir::WebIdlValue::Union { value, .. } => emit_binding_value_expr_from_webidl_value(value),
-    webidl_ir::WebIdlValue::PlatformObject(_) => "BindingValue::Undefined".to_string(),
+    webidl::ir::WebIdlValue::Union { value, .. } => emit_binding_value_expr_from_webidl_value(value),
+    webidl::ir::WebIdlValue::PlatformObject(_) => "BindingValue::Undefined".to_string(),
   }
 }
 
@@ -4166,8 +4166,8 @@ fn ast_idl_type_to_webidl_ir_src(ty: &IdlType) -> String {
   }
 }
 
-fn idl_literal_to_webidl_ir_default_value(lit: &IdlLiteral) -> Option<webidl_ir::DefaultValue> {
-  use webidl_ir::{DefaultValue, NumericLiteral};
+fn idl_literal_to_webidl_ir_default_value(lit: &IdlLiteral) -> Option<webidl::ir::DefaultValue> {
+  use webidl::ir::{DefaultValue, NumericLiteral};
   match lit {
     IdlLiteral::Null => Some(DefaultValue::Null),
     IdlLiteral::Undefined => Some(DefaultValue::Undefined),
@@ -4180,8 +4180,8 @@ fn idl_literal_to_webidl_ir_default_value(lit: &IdlLiteral) -> Option<webidl_ir:
   }
 }
 
-fn render_webidl_ir_default_value(value: &webidl_ir::DefaultValue) -> String {
-  use webidl_ir::{DefaultValue, NumericLiteral};
+fn render_webidl_ir_default_value(value: &webidl::ir::DefaultValue) -> String {
+  use webidl::ir::{DefaultValue, NumericLiteral};
   match value {
     DefaultValue::Boolean(b) => format!(
       "DefaultValue::Boolean({})",
@@ -4215,8 +4215,8 @@ fn render_webidl_ir_default_value(value: &webidl_ir::DefaultValue) -> String {
   }
 }
 
-fn render_webidl_ir_type(ty: &webidl_ir::IdlType) -> String {
-  use webidl_ir::{IdlType, NamedType, NamedTypeKind, NumericType, StringType, TypeAnnotation};
+fn render_webidl_ir_type(ty: &webidl::ir::IdlType) -> String {
+  use webidl::ir::{IdlType, NamedType, NamedTypeKind, NumericType, StringType, TypeAnnotation};
 
   match ty {
     IdlType::Any => "IdlType::Any".to_string(),
@@ -4337,7 +4337,7 @@ fn render_webidl_ir_type(ty: &webidl_ir::IdlType) -> String {
 
 fn build_overload_ir_operation_set(
   resolved: &ResolvedWebIdlWorld,
-  type_ctx: &webidl_ir::TypeContext,
+  type_ctx: &webidl::ir::TypeContext,
   interface: &str,
   op_name: &str,
   overloads: &[OperationSig],
@@ -4399,7 +4399,7 @@ fn build_overload_ir_operation_set(
 
 fn build_overload_ir_constructor_set(
   resolved: &ResolvedWebIdlWorld,
-  type_ctx: &webidl_ir::TypeContext,
+  type_ctx: &webidl::ir::TypeContext,
   interface: &str,
   overloads: &[ArgumentList],
 ) -> Result<Vec<crate::webidl::overload_ir::Overload>> {
@@ -4509,14 +4509,14 @@ fn format_overload_validation_failure(
 }
 
 fn type_category_fast_path(
-  ty: &webidl_ir::IdlType,
+  ty: &webidl::ir::IdlType,
 ) -> crate::webidl::overload_ir::TypeCategoryFastPath {
   use crate::webidl::overload_ir::TypeCategoryFastPath;
   let flattened = ty.flattened_union_member_types();
   TypeCategoryFastPath {
     category: ty.category_for_distinguishability(),
     innermost_named_type: match ty.innermost_type() {
-      webidl_ir::IdlType::Named(named) => Some(named.clone()),
+      webidl::ir::IdlType::Named(named) => Some(named.clone()),
       _ => None,
     },
     includes_nullable_type: ty.includes_nullable_type(),
@@ -4531,7 +4531,7 @@ fn type_category_fast_path(
 
 fn fast_path_matches_category(
   fp: &crate::webidl::overload_ir::TypeCategoryFastPath,
-  cat: webidl_ir::DistinguishabilityCategory,
+  cat: webidl::ir::DistinguishabilityCategory,
 ) -> bool {
   if fp.category == Some(cat) {
     return true;
@@ -4551,8 +4551,8 @@ fn fast_path_matches_nullable_dictionary(
   fp.flattened_union_member_types.iter().any(|t| {
     matches!(
       t.innermost_type(),
-      webidl_ir::IdlType::Named(webidl_ir::NamedType {
-        kind: webidl_ir::NamedTypeKind::Dictionary,
+      webidl::ir::IdlType::Named(webidl::ir::NamedType {
+        kind: webidl::ir::NamedTypeKind::Dictionary,
         ..
       })
     )
@@ -4570,10 +4570,10 @@ fn interface_ids_for_fast_path(
   let mut out: Vec<(String, u32)> = Vec::new();
 
   for t in &fp.flattened_union_member_types {
-    let webidl_ir::IdlType::Named(named) = t.innermost_type() else {
+    let webidl::ir::IdlType::Named(named) = t.innermost_type() else {
       continue;
     };
-    if named.kind != webidl_ir::NamedTypeKind::Interface {
+    if named.kind != webidl::ir::NamedTypeKind::Interface {
       continue;
     }
     if out.iter().any(|(n, _)| n == &named.name) {
@@ -4587,7 +4587,7 @@ fn interface_ids_for_fast_path(
     if let Some(named) = fp
       .innermost_named_type
       .as_ref()
-      .filter(|n| n.kind == webidl_ir::NamedTypeKind::Interface)
+      .filter(|n| n.kind == webidl::ir::NamedTypeKind::Interface)
     {
       out.push((named.name.clone(), interface_id_from_name_u32(&named.name)));
     }
@@ -4775,7 +4775,7 @@ fn write_attribute_setter_wrapper(
 fn write_operation_wrapper(
   out: &mut String,
   resolved: &ResolvedWebIdlWorld,
-  type_ctx: &webidl_ir::TypeContext,
+  type_ctx: &webidl::ir::TypeContext,
   interface: &str,
   op_name: &str,
   _iterable: Option<&IterableInfo>,
@@ -4918,7 +4918,7 @@ fn write_operation_wrapper(
 fn write_operation_wrapper_old(
   out: &mut String,
   resolved: &ResolvedWebIdlWorld,
-  type_ctx: &webidl_ir::TypeContext,
+  type_ctx: &webidl::ir::TypeContext,
   interface: &str,
   op_name: &str,
   overloads: &[OperationSig],
@@ -5064,7 +5064,7 @@ fn write_operation_wrapper_old(
         }
       }
 
-      if fast_path_matches_category(fp, webidl_ir::DistinguishabilityCategory::String) {
+      if fast_path_matches_category(fp, webidl::ir::DistinguishabilityCategory::String) {
         if let Some(prev) = string_candidate.replace(overload_idx) {
           if prev != overload_idx {
             bail!(
@@ -5075,36 +5075,36 @@ fn write_operation_wrapper_old(
         }
       }
 
-      if fast_path_matches_category(fp, webidl_ir::DistinguishabilityCategory::CallbackFunction) {
+      if fast_path_matches_category(fp, webidl::ir::DistinguishabilityCategory::CallbackFunction) {
         callback_candidate = Some(overload_idx);
       }
-      if fast_path_matches_category(fp, webidl_ir::DistinguishabilityCategory::AsyncSequence) {
+      if fast_path_matches_category(fp, webidl::ir::DistinguishabilityCategory::AsyncSequence) {
         async_sequence_candidate = Some(overload_idx);
       }
-      if fast_path_matches_category(fp, webidl_ir::DistinguishabilityCategory::SequenceLike) {
+      if fast_path_matches_category(fp, webidl::ir::DistinguishabilityCategory::SequenceLike) {
         sequence_candidate = Some(overload_idx);
       }
 
-      if fast_path_matches_category(fp, webidl_ir::DistinguishabilityCategory::Object)
-        || fast_path_matches_category(fp, webidl_ir::DistinguishabilityCategory::DictionaryLike)
+      if fast_path_matches_category(fp, webidl::ir::DistinguishabilityCategory::Object)
+        || fast_path_matches_category(fp, webidl::ir::DistinguishabilityCategory::DictionaryLike)
       {
         object_like_candidate = Some(overload_idx);
       }
 
-      if fast_path_matches_category(fp, webidl_ir::DistinguishabilityCategory::Boolean) {
+      if fast_path_matches_category(fp, webidl::ir::DistinguishabilityCategory::Boolean) {
         boolean_candidate = Some(overload_idx);
       }
-      if fast_path_matches_category(fp, webidl_ir::DistinguishabilityCategory::Numeric) {
+      if fast_path_matches_category(fp, webidl::ir::DistinguishabilityCategory::Numeric) {
         numeric_candidate = Some(overload_idx);
       }
-      if fast_path_matches_category(fp, webidl_ir::DistinguishabilityCategory::BigInt) {
+      if fast_path_matches_category(fp, webidl::ir::DistinguishabilityCategory::BigInt) {
         bigint_candidate = Some(overload_idx);
       }
-      if fast_path_matches_category(fp, webidl_ir::DistinguishabilityCategory::Symbol) {
+      if fast_path_matches_category(fp, webidl::ir::DistinguishabilityCategory::Symbol) {
         symbol_candidate = Some(overload_idx);
       }
 
-      if fast_path_matches_category(fp, webidl_ir::DistinguishabilityCategory::InterfaceLike) {
+      if fast_path_matches_category(fp, webidl::ir::DistinguishabilityCategory::InterfaceLike) {
         interface_like_candidates.push((overload_idx, interface_ids_for_fast_path(fp)));
       }
     }
@@ -6159,7 +6159,7 @@ fn emit_type_predicate(resolved: &ResolvedWebIdlWorld, ty: &IdlType, value_expr:
 fn write_constructor_wrapper(
   out: &mut String,
   resolved: &ResolvedWebIdlWorld,
-  type_ctx: &webidl_ir::TypeContext,
+  type_ctx: &webidl::ir::TypeContext,
   interface: &str,
   overloads: &[ArgumentList],
   _config: &WebIdlBindingsCodegenConfig,
@@ -6277,7 +6277,7 @@ fn write_constructor_wrapper(
 fn write_constructor_wrapper_old(
   out: &mut String,
   resolved: &ResolvedWebIdlWorld,
-  type_ctx: &webidl_ir::TypeContext,
+  type_ctx: &webidl::ir::TypeContext,
   interface: &str,
   overloads: &[ArgumentList],
   _config: &WebIdlBindingsCodegenConfig,
@@ -6398,7 +6398,7 @@ fn write_constructor_wrapper_old(
         }
       }
 
-      if fast_path_matches_category(fp, webidl_ir::DistinguishabilityCategory::String) {
+      if fast_path_matches_category(fp, webidl::ir::DistinguishabilityCategory::String) {
         if let Some(prev) = string_candidate.replace(overload_idx) {
           if prev != overload_idx {
             bail!(
@@ -6409,36 +6409,36 @@ fn write_constructor_wrapper_old(
         }
       }
 
-      if fast_path_matches_category(fp, webidl_ir::DistinguishabilityCategory::CallbackFunction) {
+      if fast_path_matches_category(fp, webidl::ir::DistinguishabilityCategory::CallbackFunction) {
         callback_candidate = Some(overload_idx);
       }
-      if fast_path_matches_category(fp, webidl_ir::DistinguishabilityCategory::AsyncSequence) {
+      if fast_path_matches_category(fp, webidl::ir::DistinguishabilityCategory::AsyncSequence) {
         async_sequence_candidate = Some(overload_idx);
       }
-      if fast_path_matches_category(fp, webidl_ir::DistinguishabilityCategory::SequenceLike) {
+      if fast_path_matches_category(fp, webidl::ir::DistinguishabilityCategory::SequenceLike) {
         sequence_candidate = Some(overload_idx);
       }
 
-      if fast_path_matches_category(fp, webidl_ir::DistinguishabilityCategory::Object)
-        || fast_path_matches_category(fp, webidl_ir::DistinguishabilityCategory::DictionaryLike)
+      if fast_path_matches_category(fp, webidl::ir::DistinguishabilityCategory::Object)
+        || fast_path_matches_category(fp, webidl::ir::DistinguishabilityCategory::DictionaryLike)
       {
         object_like_candidate = Some(overload_idx);
       }
 
-      if fast_path_matches_category(fp, webidl_ir::DistinguishabilityCategory::Boolean) {
+      if fast_path_matches_category(fp, webidl::ir::DistinguishabilityCategory::Boolean) {
         boolean_candidate = Some(overload_idx);
       }
-      if fast_path_matches_category(fp, webidl_ir::DistinguishabilityCategory::Numeric) {
+      if fast_path_matches_category(fp, webidl::ir::DistinguishabilityCategory::Numeric) {
         numeric_candidate = Some(overload_idx);
       }
-      if fast_path_matches_category(fp, webidl_ir::DistinguishabilityCategory::BigInt) {
+      if fast_path_matches_category(fp, webidl::ir::DistinguishabilityCategory::BigInt) {
         bigint_candidate = Some(overload_idx);
       }
-      if fast_path_matches_category(fp, webidl_ir::DistinguishabilityCategory::Symbol) {
+      if fast_path_matches_category(fp, webidl::ir::DistinguishabilityCategory::Symbol) {
         symbol_candidate = Some(overload_idx);
       }
 
-      if fast_path_matches_category(fp, webidl_ir::DistinguishabilityCategory::InterfaceLike) {
+      if fast_path_matches_category(fp, webidl::ir::DistinguishabilityCategory::InterfaceLike) {
         interface_like_candidates.push((overload_idx, interface_ids_for_fast_path(fp)));
       }
     }

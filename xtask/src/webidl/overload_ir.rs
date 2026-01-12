@@ -1,4 +1,4 @@
-//! WHATWG WebIDL overload-set computation + validation, based on `webidl-ir`.
+//! WHATWG WebIDL overload-set computation + validation, based on `webidl::ir`.
 //!
 //! This module implements the algorithms in WebIDL's "Overloading" section:
 //! - compute the effective overload set
@@ -11,7 +11,7 @@
 use std::collections::BTreeMap;
 use std::fmt;
 
-use webidl_ir::{
+use webidl::ir::{
   DefaultValue, DistinguishabilityCategory, IdlType, NamedType, NamedTypeKind, TypeAnnotation,
 };
 

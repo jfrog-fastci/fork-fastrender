@@ -1,4 +1,4 @@
-use webidl_ir::{DefaultValue, IdlType, NumericType, TypeAnnotation};
+use webidl::ir::{DefaultValue, IdlType, NumericType, TypeAnnotation};
 use xtask::webidl::parse_dictionary_member;
 
 #[test]

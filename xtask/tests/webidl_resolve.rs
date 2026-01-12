@@ -532,9 +532,9 @@ fn prelude_provides_voidfunction_callback() {
   let ty = xtask::webidl::type_resolution::parse_type_with_world(&resolved, "VoidFunction", &[])
     .expect("parse VoidFunction type");
   match ty {
-    webidl_ir::IdlType::Named(webidl_ir::NamedType { name, kind }) => {
+    webidl::ir::IdlType::Named(webidl::ir::NamedType { name, kind }) => {
       assert_eq!(name, "VoidFunction");
-      assert_eq!(kind, webidl_ir::NamedTypeKind::CallbackFunction);
+      assert_eq!(kind, webidl::ir::NamedTypeKind::CallbackFunction);
     }
     other => panic!("expected VoidFunction to resolve to a named type, got {other:?}"),
   }

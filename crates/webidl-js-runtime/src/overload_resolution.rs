@@ -1,9 +1,9 @@
 //! WebIDL overload resolution and helpers.
 //!
 //! This module is a thin re-export of the runtime-agnostic algorithms in
-//! `webidl-bindings-core`.
+//! the vendored `webidl` crate (`vendor/ecma-rs/webidl`).
 
-pub use webidl_bindings_core::overload_resolution::*;
+pub use webidl::overload_resolution::*;
 
 #[cfg(test)]
 mod tests {
@@ -12,7 +12,7 @@ mod tests {
   use crate::VmJsRuntime;
   use crate::WebIdlJsRuntime;
   use vm_js::{PropertyKey, Value, VmError};
-  use webidl_ir::{DefaultValue, IdlType, NamedTypeKind, NumericType};
+  use webidl::ir::{DefaultValue, IdlType, NamedTypeKind, NumericType};
 
   fn as_utf8_lossy(rt: &VmJsRuntime, v: Value) -> String {
     let Value::String(s) = v else {
@@ -90,7 +90,7 @@ mod tests {
       // f1: f(DOMString a)
       OverloadSig {
         args: vec![OverloadArg {
-          ty: IdlType::String(webidl_ir::StringType::DomString),
+          ty: IdlType::String(webidl::ir::StringType::DomString),
           optionality: Optionality::Required,
           default: None,
         }],
@@ -101,7 +101,7 @@ mod tests {
       OverloadSig {
         args: vec![
           OverloadArg {
-            ty: IdlType::Named(webidl_ir::NamedType {
+            ty: IdlType::Named(webidl::ir::NamedType {
               name: "Node".into(),
               kind: NamedTypeKind::Interface,
             }),
@@ -109,7 +109,7 @@ mod tests {
             default: None,
           },
           OverloadArg {
-            ty: IdlType::String(webidl_ir::StringType::DomString),
+            ty: IdlType::String(webidl::ir::StringType::DomString),
             optionality: Optionality::Required,
             default: None,
           },
@@ -132,7 +132,7 @@ mod tests {
       OverloadSig {
         args: vec![
           OverloadArg {
-            ty: IdlType::Named(webidl_ir::NamedType {
+            ty: IdlType::Named(webidl::ir::NamedType {
               name: "Event".into(),
               kind: NamedTypeKind::Interface,
             }),
@@ -140,12 +140,12 @@ mod tests {
             default: None,
           },
           OverloadArg {
-            ty: IdlType::String(webidl_ir::StringType::DomString),
+            ty: IdlType::String(webidl::ir::StringType::DomString),
             optionality: Optionality::Required,
             default: None,
           },
           OverloadArg {
-            ty: IdlType::String(webidl_ir::StringType::DomString),
+            ty: IdlType::String(webidl::ir::StringType::DomString),
             optionality: Optionality::Optional,
             default: None,
           },
@@ -199,7 +199,7 @@ mod tests {
     let overloads = vec![
       OverloadSig {
         args: vec![OverloadArg {
-          ty: IdlType::String(webidl_ir::StringType::UsvString),
+          ty: IdlType::String(webidl::ir::StringType::UsvString),
           optionality: Optionality::Required,
           default: None,
         }],
@@ -209,12 +209,12 @@ mod tests {
       OverloadSig {
         args: vec![
           OverloadArg {
-            ty: IdlType::String(webidl_ir::StringType::UsvString),
+            ty: IdlType::String(webidl::ir::StringType::UsvString),
             optionality: Optionality::Required,
             default: None,
           },
           OverloadArg {
-            ty: IdlType::String(webidl_ir::StringType::UsvString),
+            ty: IdlType::String(webidl::ir::StringType::UsvString),
             optionality: Optionality::Required,
             default: None,
           },
@@ -258,7 +258,7 @@ mod tests {
     let overloads = vec![
       OverloadSig {
         args: vec![OverloadArg {
-          ty: IdlType::String(webidl_ir::StringType::DomString),
+          ty: IdlType::String(webidl::ir::StringType::DomString),
           optionality: Optionality::Required,
           default: None,
         }],
@@ -267,7 +267,7 @@ mod tests {
       },
       OverloadSig {
         args: vec![OverloadArg {
-          ty: IdlType::String(webidl_ir::StringType::UsvString),
+          ty: IdlType::String(webidl::ir::StringType::UsvString),
           optionality: Optionality::Required,
           default: None,
         }],
@@ -299,7 +299,7 @@ mod tests {
       },
       OverloadSig {
         args: vec![OverloadArg {
-          ty: IdlType::String(webidl_ir::StringType::DomString),
+          ty: IdlType::String(webidl::ir::StringType::DomString),
           optionality: Optionality::Required,
           default: None,
         }],
@@ -327,7 +327,7 @@ mod tests {
     let mut rt = VmJsRuntime::new();
     let overloads = vec![OverloadSig {
       args: vec![OverloadArg {
-        ty: IdlType::String(webidl_ir::StringType::DomString),
+        ty: IdlType::String(webidl::ir::StringType::DomString),
         optionality: Optionality::Optional,
         default: Some(DefaultValue::String("foo".to_string())),
       }],
