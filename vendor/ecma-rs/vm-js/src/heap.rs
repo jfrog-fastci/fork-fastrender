@@ -1322,22 +1322,21 @@ impl Heap {
   ///
   /// # Errors
   ///
-  /// Returns a `TypeError` if the backing `ArrayBuffer` is detached or if the view is out of
-  /// bounds.
+  /// Returns a `TypeError` if the backing `ArrayBuffer` is detached or if the view is out of bounds.
   pub fn uint8_array_data(&self, obj: GcObject) -> Result<&[u8], VmError> {
     let view = self.get_typed_array(obj)?;
     if view.kind != TypedArrayKind::Uint8 {
       return Err(VmError::invalid_handle());
     }
+    let start = view.byte_offset;
+    let end = start
+      .checked_add(view.byte_length()?)
+      .ok_or(VmError::InvariantViolation("Uint8Array byte offset overflow"))?;
     let buf = self.get_array_buffer(view.viewed_array_buffer)?;
     let data = buf
       .data
       .as_deref()
       .ok_or(VmError::TypeError("ArrayBuffer is detached"))?;
-    let start = view.byte_offset;
-    let end = start
-      .checked_add(view.byte_length()?)
-      .ok_or(VmError::InvariantViolation("Uint8Array byte offset overflow"))?;
     data
       .get(start..end)
       .ok_or(VmError::TypeError("Uint8Array view out of bounds"))
@@ -1352,15 +1351,12 @@ impl Heap {
   /// `index` is out of bounds or `bytes` is empty, this returns `Ok(0)` (mirroring typed array
   /// out-of-bounds write semantics).
   ///
-  /// If the view is out of bounds for its backing `ArrayBuffer`, this performs a safe no-op and
-  /// returns `Ok(0)` (mirroring the fact that out-of-bounds typed array views have length `0`).
-  ///
-  /// Returns a `TypeError` if the backing `ArrayBuffer` is detached.
+  /// Writes are ignored (returns `Ok(0)`) if the backing `ArrayBuffer` is detached or the view is
+  /// out of bounds.
   ///
   /// # Errors
   ///
-  /// Returns an error if `obj` is not a live `Uint8Array` object or if its backing `ArrayBuffer` is
-  /// detached.
+  /// Returns an error if `obj` is not a live `Uint8Array` object.
   pub fn uint8_array_write(&mut self, obj: GcObject, index: usize, bytes: &[u8]) -> Result<usize, VmError> {
     // Extract view fields without holding a mutable borrow across ArrayBuffer access.
     let (buffer, byte_offset, length) = {
@@ -1387,24 +1383,26 @@ impl Heap {
       .checked_add(max_write)
       .ok_or(VmError::InvariantViolation("Uint8Array byte offset overflow"))?;
 
-    // Validate the backing buffer is attached and compute its length.
+    // Detached buffers behave like out-of-bounds views; writes are ignored.
     let buf_len = {
       let buf = self.get_array_buffer(buffer)?;
-      let data = buf
-        .data
-        .as_deref()
-        .ok_or(VmError::TypeError("ArrayBuffer is detached"))?;
+      let Some(data) = buf.data.as_deref() else {
+        return Ok(0);
+      };
       data.len()
     };
     if view_end > buf_len {
+      // Out-of-bounds views behave like out-of-bounds indices: writes are ignored.
       return Ok(0);
     }
 
     let buf = self.get_array_buffer_mut(buffer)?;
-    let data = buf
-      .data
-      .as_deref_mut()
-      .ok_or(VmError::TypeError("ArrayBuffer is detached"))?;
+    let Some(data) = buf.data.as_deref_mut() else {
+      return Ok(0);
+    };
+    if abs_end > data.len() {
+      return Ok(0);
+    }
     data[abs_start..abs_end].copy_from_slice(&bytes[..max_write]);
     Ok(max_write)
   }
@@ -7722,11 +7720,7 @@ mod detached_array_buffer_tests {
       Ok(_) => panic!("expected error for Uint8Array backed by a detached ArrayBuffer"),
     }
 
-    match scope.heap_mut().uint8_array_write(view, 0, &[1, 2, 3]) {
-      Err(VmError::TypeError(_)) => {}
-      Err(other) => panic!("expected TypeError, got {other:?}"),
-      Ok(wrote) => panic!("expected TypeError for detached Uint8Array write, got Ok({wrote})"),
-    }
+    assert_eq!(scope.heap_mut().uint8_array_write(view, 0, &[1, 2, 3])?, 0);
 
     Ok(())
   }
@@ -7755,12 +7749,7 @@ mod detached_array_buffer_tests {
       Ok(_) => panic!("expected error for out-of-bounds Uint8Array view"),
     }
 
-    // Out-of-bounds views behave like empty typed arrays for host byte writes.
-    match scope.heap_mut().uint8_array_write(view, 0, &[1]) {
-      Ok(0) => {}
-      Ok(n) => panic!("expected out-of-bounds Uint8Array write to be a no-op, got Ok({n})"),
-      Err(other) => panic!("expected Ok(0), got {other:?}"),
-    }
+    assert_eq!(scope.heap_mut().uint8_array_write(view, 0, &[1])?, 0);
 
     Ok(())
   }
