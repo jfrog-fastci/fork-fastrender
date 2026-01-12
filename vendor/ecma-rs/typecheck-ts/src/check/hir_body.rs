@@ -7478,7 +7478,33 @@ impl<'a> Checker<'a> {
           Some(self.store.intersection(collected))
         }
       }
-      TypeKind::Tuple(elems) => Some(elems.get(0).map(|e| e.ty).unwrap_or(prim.unknown)),
+      TypeKind::Array { ty, .. } => {
+        if prop == "length" {
+          Some(prim.number)
+        } else if parse_canonical_index_str(prop).is_some() {
+          // Treat canonical numeric string keys (`"0"`, `"1"`, ...) as element access.
+          Some(ty)
+        } else {
+          // Keep this permissive: we don't fully model the Array prototype surface yet, and we
+          // prefer returning `unknown` over issuing "property does not exist" diagnostics.
+          Some(prim.unknown)
+        }
+      }
+      TypeKind::Tuple(_) => {
+        if prop == "length" {
+          // For fixed-length tuples `length` is a numeric literal in TypeScript, but `number` is a
+          // sufficient approximation for most internal uses (and for native-js codegen).
+          Some(prim.number)
+        } else if let Some(idx) = parse_canonical_index_str(prop) {
+          // Reuse the indexed-access helper so rest/optional element rules match computed access.
+          let key_ty = self
+            .store
+            .intern_type(TypeKind::NumberLiteral((idx as f64).into()));
+          Some(self.member_type_for_index_key(obj, key_ty))
+        } else {
+          Some(prim.unknown)
+        }
+      }
       _ => Some(prim.unknown),
     }
   }

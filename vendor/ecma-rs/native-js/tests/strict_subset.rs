@@ -162,10 +162,26 @@ fn rejects_array_literal_spread() {
 
 #[test]
 fn accepts_array_indexing_and_length() {
-  // Note: member-expression type inference is currently more complete in function bodies than in
-  // the root/module body, so exercise array indexing + `.length` inside a function.
   let ok = validate(
     "export function f(): number { const xs = [1, 2]; return xs[0] + xs.length; }\n",
+    FileKind::Ts,
+  );
+  assert!(ok.is_ok(), "expected strict-subset validation to pass, got: {ok:#?}");
+}
+
+#[test]
+fn accepts_array_indexing_in_var_initializer() {
+  let ok = validate(
+    "export function f(): number { const xs = [1, 2]; const a = xs[0]; return a + xs.length; }\n",
+    FileKind::Ts,
+  );
+  assert!(ok.is_ok(), "expected strict-subset validation to pass, got: {ok:#?}");
+}
+
+#[test]
+fn accepts_array_indexing_at_top_level() {
+  let ok = validate(
+    "const xs = [1, 2];\nconst a = xs[0];\nconst b = xs.length;\na;\nb;\n",
     FileKind::Ts,
   );
   assert!(ok.is_ok(), "expected strict-subset validation to pass, got: {ok:#?}");
