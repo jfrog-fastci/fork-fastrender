@@ -343,8 +343,7 @@ fn bind_object_pattern(
     root_property_key(scope, key)?;
     excluded.push(key);
 
-    let mut prop_value =
-      scope.ordinary_get_with_host_and_hooks(vm, host, hooks, obj, key, src_value)?;
+    let mut prop_value = scope.get_with_host_and_hooks(vm, host, hooks, obj, key, src_value)?;
     if matches!(prop_value, Value::Undefined) {
       if let Some(default_expr) = &prop.stx.default_value {
         prop_value = eval_expr(vm, host, hooks, env, strict, this, scope, default_expr)?;
@@ -395,7 +394,7 @@ fn bind_object_pattern(
     }
 
     // `CopyDataProperties` uses `Get` even though we already have the descriptor.
-    let v = scope.ordinary_get_with_host_and_hooks(vm, host, hooks, obj, key, Value::Object(obj))?;
+    let v = scope.get_with_host_and_hooks(vm, host, hooks, obj, key, Value::Object(obj))?;
     scope.create_data_property_or_throw(rest_obj, key, v)?;
   }
 

@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use vm_js::{
   Budget, CompiledFunctionRef, CompiledScript, Heap, HeapLimits, TerminationReason, Value, Vm,
-  VmError, VmOptions,
+  VmError, VmHost, VmHostHooks, VmOptions,
 };
 
 fn find_function_body(script: &Arc<CompiledScript>, name: &str) -> hir_js::BodyId {
@@ -175,5 +175,102 @@ fn compiled_execution_is_gc_safe_under_stress() -> Result<(), VmError> {
     "expected at least one GC cycle to run"
   );
 
+  Ok(())
+}
+
+fn proxy_get_trap(
+  _vm: &mut Vm,
+  _scope: &mut vm_js::Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: vm_js::GcObject,
+  _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  // Return a value that differs from any value stored on the target so tests can prove the trap
+  // was invoked.
+  Ok(Value::Number(2.0))
+}
+
+#[test]
+fn compiled_member_get_dispatches_proxy_get_trap() -> Result<(), VmError> {
+  let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let script = CompiledScript::compile_script(
+    &mut heap,
+    "test.js",
+    r#"
+      function f(o) { return o.x; }
+    "#,
+  )?;
+  let f_body = find_function_body(&script, "f");
+
+  let mut vm = Vm::new(VmOptions::default());
+  let call_id = vm.register_native_call(proxy_get_trap)?;
+
+  let mut scope = heap.scope();
+
+  // Target: { x: 1 }
+  let target = scope.alloc_object()?;
+  scope.push_root(Value::Object(target))?;
+  let x_key_s = scope.alloc_string("x")?;
+  scope.push_root(Value::String(x_key_s))?;
+  let x_key = vm_js::PropertyKey::from_string(x_key_s);
+  scope.define_property(
+    target,
+    x_key,
+    vm_js::PropertyDescriptor {
+      enumerable: true,
+      configurable: true,
+      kind: vm_js::PropertyKind::Data {
+        value: Value::Number(1.0),
+        writable: true,
+      },
+    },
+  )?;
+
+  // Handler: { get: <native trap> }
+  let handler = scope.alloc_object()?;
+  scope.push_root(Value::Object(handler))?;
+  let get_name = scope.alloc_string("get")?;
+  scope.push_root(Value::String(get_name))?;
+  let get_fn = scope.alloc_native_function(call_id, None, get_name, 3)?;
+  scope.push_root(Value::Object(get_fn))?;
+  let get_key_s = scope.alloc_string("get")?;
+  scope.push_root(Value::String(get_key_s))?;
+  let get_key = vm_js::PropertyKey::from_string(get_key_s);
+  scope.define_property(
+    handler,
+    get_key,
+    vm_js::PropertyDescriptor {
+      enumerable: true,
+      configurable: true,
+      kind: vm_js::PropertyKind::Data {
+        value: Value::Object(get_fn),
+        writable: true,
+      },
+    },
+  )?;
+
+  let proxy = scope.alloc_proxy(Some(target), Some(handler))?;
+  scope.push_root(Value::Object(proxy))?;
+
+  let f_name = scope.alloc_string("f")?;
+  let f = scope.alloc_user_function(
+    CompiledFunctionRef {
+      script,
+      body: f_body,
+    },
+    f_name,
+    1,
+  )?;
+
+  // f(proxy) should return the get-trap result (2), not the target's stored x (1).
+  let result = vm.call_without_host(
+    &mut scope,
+    Value::Object(f),
+    Value::Undefined,
+    &[Value::Object(proxy)],
+  )?;
+  assert_eq!(result, Value::Number(2.0));
   Ok(())
 }

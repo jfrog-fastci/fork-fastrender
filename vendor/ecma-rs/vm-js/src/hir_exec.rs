@@ -1056,14 +1056,7 @@ impl<'vm> HirEvaluator<'vm> {
     root_property_key(&mut scope, key)?;
     let receiver = Value::Object(obj);
 
-    scope.ordinary_get_with_host_and_hooks(
-      self.vm,
-      &mut *self.host,
-      &mut *self.hooks,
-      obj,
-      key,
-      receiver,
-    )
+    scope.get_with_host_and_hooks(self.vm, &mut *self.host, &mut *self.hooks, obj, key, receiver)
   }
 
   fn assign_to_member(
@@ -1189,14 +1182,8 @@ impl<'vm> HirEvaluator<'vm> {
         root_property_key(&mut scope, key)?;
 
         let receiver = Value::Object(obj);
-        let func = scope.ordinary_get_with_host_and_hooks(
-          self.vm,
-          &mut *self.host,
-          &mut *self.hooks,
-          obj,
-          key,
-          receiver,
-        )?;
+        let func =
+          scope.get_with_host_and_hooks(self.vm, &mut *self.host, &mut *self.hooks, obj, key, receiver)?;
         (func, receiver)
       }
       _ => {
