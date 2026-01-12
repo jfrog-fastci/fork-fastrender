@@ -1529,11 +1529,18 @@ impl<'a> Scope<'a> {
       return self.object_is_extensible(obj);
     }
 
+    // When walking Proxy chains, avoid recursion: attacker-controlled Proxy chains can be very deep
+    // and can otherwise overflow the Rust stack.
+    //
+    // We record each trap result while descending and validate Proxy invariants while unwinding
+    // (mirroring the recursive spec algorithm).
+    let mut trap_results: Vec<bool> = Vec::new();
+
     let mut current = obj;
     let mut steps = 0usize;
     let mut is_ext_trap_key: Option<PropertyKey> = None;
 
-    loop {
+    let mut result = loop {
       const TICK_EVERY: usize = 1024;
       if steps != 0 && steps % TICK_EVERY == 0 {
         vm.tick()?;
@@ -1544,7 +1551,7 @@ impl<'a> Scope<'a> {
       steps += 1;
 
       if !self.heap().is_proxy_object(current) {
-        return self.object_is_extensible(current);
+        break self.object_is_extensible(current)?;
       }
 
       let Some(target) = self.heap().proxy_target(current)? else {
@@ -1557,6 +1564,11 @@ impl<'a> Scope<'a> {
           "Cannot perform 'isExtensible' on a revoked Proxy",
         ));
       };
+
+      // Root `target`/`handler` across trap lookup + invocation. `GetMethod` can invoke user code
+      // via accessors which can revoke the proxy and trigger GC; we must still use the original
+      // slots for this operation.
+      self.push_roots(&[Value::Object(target), Value::Object(handler)])?;
 
       let trap_key = match is_ext_trap_key {
         Some(k) => k,
@@ -1586,15 +1598,26 @@ impl<'a> Scope<'a> {
       )?;
       let trap_bool = self.heap().to_boolean(trap_result)?;
 
-      // Proxy invariants: `isExtensible` must report the target's actual extensibility.
-      let target_bool = self.is_extensible_with_host_and_hooks(vm, host, hooks, target)?;
-      if trap_bool != target_bool {
+      // Defer invariant checks until we know the target's actual extensibility.
+      trap_results
+        .try_reserve(1)
+        .map_err(|_| VmError::OutOfMemory)?;
+      trap_results.push(trap_bool);
+
+      current = target;
+    };
+
+    // Validate Proxy invariants from inner-most Proxy to outer-most Proxy.
+    while let Some(trap_bool) = trap_results.pop() {
+      if trap_bool != result {
         return Err(VmError::TypeError(
           "Proxy isExtensible trap result does not reflect target extensibility",
         ));
       }
-      return Ok(trap_bool);
+      result = trap_bool;
     }
+
+    Ok(result)
   }
 
   /// ECMAScript `[[PreventExtensions]]` internal method dispatch.
