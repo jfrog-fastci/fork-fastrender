@@ -35,8 +35,8 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use vm_js::{
-  GcObject, Heap, NativeFunctionId, PropertyDescriptor, PropertyKey, PropertyKind, Realm, Scope,
-  Value, Vm, VmError, VmHost, VmHostHooks,
+  GcObject, Heap, NativeFunctionId, PropertyDescriptor, PropertyKey, PropertyKind, Realm, Scope, Value, Vm,
+  VmError, VmHost, VmHostHooks, WeakGcObject,
 };
 
 const SLOT_ENV_ID: usize = 0;
@@ -115,6 +115,13 @@ struct EnvState {
   response_body_streams: HashMap<u64, u64>,
   readable_streams: HashMap<u64, ReadableStreamState>,
   readable_stream_readers: HashMap<u64, ReadableStreamReaderState>,
+  owned_headers_wrappers: HashMap<u64, WeakGcObject>,
+  request_wrappers: HashMap<u64, RequestWrapperState>,
+  response_wrappers: HashMap<u64, ResponseWrapperState>,
+  headers_iterators_wrappers: HashMap<u64, WeakGcObject>,
+  readable_stream_wrappers: HashMap<u64, WeakGcObject>,
+  readable_stream_reader_wrappers: HashMap<u64, WeakGcObject>,
+  last_gc_runs: u64,
 }
 
 struct HeadersIteratorState {
@@ -135,8 +142,20 @@ struct ReadableStreamReaderState {
   stream_id: u64,
 }
 
+#[derive(Clone, Copy)]
+struct RequestWrapperState {
+  request: WeakGcObject,
+  headers: WeakGcObject,
+}
+
+#[derive(Clone, Copy)]
+struct ResponseWrapperState {
+  response: WeakGcObject,
+  headers: WeakGcObject,
+}
+
 impl EnvState {
-  fn new(env: WindowFetchEnv, promise_executor_call: NativeFunctionId) -> Self {
+  fn new(env: WindowFetchEnv, promise_executor_call: NativeFunctionId, last_gc_runs: u64) -> Self {
     Self {
       env,
       promise_executor_call,
@@ -149,6 +168,13 @@ impl EnvState {
       response_body_streams: HashMap::new(),
       readable_streams: HashMap::new(),
       readable_stream_readers: HashMap::new(),
+      owned_headers_wrappers: HashMap::new(),
+      request_wrappers: HashMap::new(),
+      response_wrappers: HashMap::new(),
+      headers_iterators_wrappers: HashMap::new(),
+      readable_stream_wrappers: HashMap::new(),
+      readable_stream_reader_wrappers: HashMap::new(),
+      last_gc_runs,
     }
   }
 
@@ -218,21 +244,166 @@ impl Drop for WindowFetchBindings {
   }
 }
 
+fn sweep_env_state_if_gc_ran_locked(state: &mut EnvState, heap: &Heap) {
+  let gc_runs = heap.gc_runs();
+  if gc_runs == state.last_gc_runs {
+    return;
+  }
+  state.last_gc_runs = gc_runs;
+
+  // Sweep ReadableStreamDefaultReader-backed state. If the reader wrapper has been collected, drop
+  // its backing state and ensure the corresponding stream is unlocked.
+  let readable_stream_readers = &mut state.readable_stream_readers;
+  let readable_streams = &mut state.readable_streams;
+  state
+    .readable_stream_reader_wrappers
+    .retain(|reader_id, weak| {
+      if weak.upgrade(heap).is_some() {
+        true
+      } else {
+        if let Some(reader) = readable_stream_readers.remove(reader_id) {
+          if let Some(stream) = readable_streams.get_mut(&reader.stream_id) {
+            if stream.current_reader_id == Some(*reader_id) {
+              stream.locked = false;
+              stream.current_reader_id = None;
+            }
+          }
+        }
+        false
+      }
+    });
+
+  // Sweep ReadableStream-backed state.
+  //
+  // If the stream wrapper has been collected but the stream is still locked, keep its backing
+  // state until the reader is released/collected (the reader wrapper can outlive the stream
+  // wrapper).
+  let response_body_streams = &mut state.response_body_streams;
+  let readable_stream_readers = &mut state.readable_stream_readers;
+  let readable_stream_reader_wrappers = &mut state.readable_stream_reader_wrappers;
+  state.readable_stream_wrappers.retain(|stream_id, weak| {
+    if weak.upgrade(heap).is_some() {
+      true
+    } else {
+      let locked = readable_streams.get(stream_id).is_some_and(|s| s.locked);
+      if locked {
+        true
+      } else {
+        if let Some(stream_state) = readable_streams.remove(stream_id) {
+          if let Some(reader_id) = stream_state.current_reader_id {
+            readable_stream_readers.remove(&reader_id);
+            readable_stream_reader_wrappers.remove(&reader_id);
+          }
+          if let Some(response_id) = stream_state.response_id {
+            if response_body_streams.get(&response_id) == Some(stream_id) {
+              response_body_streams.remove(&response_id);
+            }
+          }
+        }
+        false
+      }
+    }
+  });
+
+  // Sweep Request-backed state.
+  let requests = &mut state.requests;
+  state.request_wrappers.retain(|request_id, wrapper| {
+    if wrapper.request.upgrade(heap).is_some() || wrapper.headers.upgrade(heap).is_some() {
+      true
+    } else {
+      requests.remove(request_id);
+      // If additional per-request state maps are added (e.g. streaming bodies), ensure they are
+      // cleaned up here as well.
+      false
+    }
+  });
+
+  // Sweep Response-backed state.
+  let responses = &mut state.responses;
+  let response_body_streams = &mut state.response_body_streams;
+  let readable_streams = &mut state.readable_streams;
+  let readable_stream_wrappers = &mut state.readable_stream_wrappers;
+  let readable_stream_readers = &mut state.readable_stream_readers;
+  let readable_stream_reader_wrappers = &mut state.readable_stream_reader_wrappers;
+  state.response_wrappers.retain(|response_id, wrapper| {
+    let body_stream_alive = response_body_streams
+      .get(response_id)
+      .copied()
+      .is_some_and(|stream_id| {
+        readable_stream_wrappers
+          .get(&stream_id)
+          .is_some_and(|weak| weak.upgrade(heap).is_some())
+          || readable_streams.get(&stream_id).is_some_and(|s| s.locked)
+      });
+
+    if wrapper.response.upgrade(heap).is_some()
+      || wrapper.headers.upgrade(heap).is_some()
+      || body_stream_alive
+    {
+      true
+    } else {
+      responses.remove(response_id);
+      if let Some(stream_id) = response_body_streams.remove(response_id) {
+        if let Some(stream_state) = readable_streams.remove(&stream_id) {
+          if let Some(reader_id) = stream_state.current_reader_id {
+            readable_stream_readers.remove(&reader_id);
+            readable_stream_reader_wrappers.remove(&reader_id);
+          }
+        }
+        readable_stream_wrappers.remove(&stream_id);
+      }
+      false
+    }
+  });
+
+  // Sweep owned Headers.
+  let owned_headers = &mut state.owned_headers;
+  state.owned_headers_wrappers.retain(|headers_id, weak| {
+    if weak.upgrade(heap).is_some() {
+      true
+    } else {
+      owned_headers.remove(headers_id);
+      false
+    }
+  });
+
+  // Sweep Headers iterators.
+  let headers_iterators = &mut state.headers_iterators;
+  state.headers_iterators_wrappers.retain(|iter_id, weak| {
+    if weak.upgrade(heap).is_some() {
+      true
+    } else {
+      headers_iterators.remove(iter_id);
+      false
+    }
+  });
+}
+
+fn sweep_env_state_if_gc_ran(env_id: u64, heap: &Heap) -> Result<(), VmError> {
+  let mut lock = envs().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+  let state = lock
+    .get_mut(&env_id)
+    .ok_or(VmError::Unimplemented("fetch env id not registered"))?;
+  sweep_env_state_if_gc_ran_locked(state, heap);
+  Ok(())
+}
+
 fn with_env_state<R>(
   env_id: u64,
+  heap: &Heap,
   f: impl FnOnce(&EnvState) -> Result<R, VmError>,
 ) -> Result<R, VmError> {
-  let lock = envs()
-    .lock()
-    .unwrap_or_else(|poisoned| poisoned.into_inner());
+  let mut lock = envs().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
   let state = lock
-    .get(&env_id)
+    .get_mut(&env_id)
     .ok_or(VmError::Unimplemented("fetch env id not registered"))?;
+  sweep_env_state_if_gc_ran_locked(state, heap);
   f(state)
 }
 
 fn with_env_state_mut<R>(
   env_id: u64,
+  heap: &Heap,
   f: impl FnOnce(&mut EnvState) -> Result<R, VmError>,
 ) -> Result<R, VmError> {
   let mut lock = envs()
@@ -241,6 +412,7 @@ fn with_env_state_mut<R>(
   let state = lock
     .get_mut(&env_id)
     .ok_or(VmError::Unimplemented("fetch env id not registered"))?;
+  sweep_env_state_if_gc_ran_locked(state, heap);
   f(state)
 }
 
@@ -265,7 +437,7 @@ fn alloc_symbol_key(scope: &mut Scope<'_>, description: &str) -> Result<Property
   Ok(PropertyKey::from_symbol(sym))
 }
 
-fn current_document_base_url(vm: &mut Vm, env_id: u64) -> Result<Option<String>, VmError> {
+fn current_document_base_url(vm: &mut Vm, heap: &Heap, env_id: u64) -> Result<Option<String>, VmError> {
   if let Some(data) = vm.user_data_mut::<WindowRealmUserData>() {
     // `document.baseURI` falls back to the realm document URL when the embedder has not installed a
     // base URL (or explicitly cleared it). Keep fetch's relative URL resolution consistent with
@@ -277,7 +449,7 @@ fn current_document_base_url(vm: &mut Vm, env_id: u64) -> Result<Option<String>,
         .unwrap_or_else(|| data.document_url().to_string()),
     ));
   }
-  with_env_state(env_id, |state| Ok(state.env.document_url.clone()))
+  with_env_state(env_id, heap, |state| Ok(state.env.document_url.clone()))
 }
 
 fn serialized_origin_for_document_url(url: &str) -> String {
@@ -290,11 +462,15 @@ fn serialized_origin_for_document_url(url: &str) -> String {
   }
 }
 
-fn current_document_origin_for_object_urls(vm: &mut Vm, env_id: u64) -> Result<String, VmError> {
+fn current_document_origin_for_object_urls(
+  vm: &mut Vm,
+  heap: &Heap,
+  env_id: u64,
+) -> Result<String, VmError> {
   if let Some(data) = vm.user_data_mut::<WindowRealmUserData>() {
     return Ok(serialized_origin_for_document_url(data.document_url()));
   }
-  with_env_state(env_id, |state| {
+  with_env_state(env_id, heap, |state| {
     Ok(
       state
         .env
@@ -812,7 +988,7 @@ fn new_promise_capability_for_env(
     "Promise capability requires intrinsics (create a Realm first)",
   ))?;
 
-  let executor_call = with_env_state(env_id, |state| Ok(state.promise_executor_call))?;
+  let executor_call = with_env_state(env_id, scope.heap(), |state| Ok(state.promise_executor_call))?;
 
   let capture = scope.alloc_object_with_prototype(Some(intr.object_prototype()))?;
   scope.push_root(Value::Object(capture))?;
@@ -978,14 +1154,16 @@ fn is_fetch_readable_stream_object(scope: &mut Scope<'_>, obj: GcObject) -> Resu
     return Ok(false);
   };
 
-  match with_env_state(env_id, |state| Ok(state.readable_streams.contains_key(&stream_id))) {
+  match with_env_state(env_id, scope.heap(), |state| {
+    Ok(state.readable_streams.contains_key(&stream_id))
+  }) {
     Ok(found) => Ok(found),
     Err(_) => Ok(false),
   }
 }
 
-fn response_body_stream_locked(env_id: u64, response_id: u64) -> Result<bool, VmError> {
-  with_env_state(env_id, |state| {
+fn response_body_stream_locked(env_id: u64, response_id: u64, heap: &Heap) -> Result<bool, VmError> {
+  with_env_state(env_id, heap, |state| {
     let Some(stream_id) = state.response_body_streams.get(&response_id) else {
       return Ok(false);
     };
@@ -1076,7 +1254,7 @@ fn fill_headers_from_init(
   let maybe_env = get_data_prop(scope, obj, ENV_ID_KEY).ok();
   if let Some(Value::Number(_)) = maybe_env {
     if let Ok((other_env, kind, owner)) = headers_info_from_this(scope, Value::Object(obj)) {
-      let pairs = with_env_state(other_env, |state| {
+      let pairs = with_env_state(other_env, scope.heap(), |state| {
         let h = get_headers_ref(state, kind, owner)?;
         Ok(h.raw_pairs())
       })?;
@@ -1216,7 +1394,7 @@ fn headers_append_native(
   args: &[Value],
 ) -> Result<Value, VmError> {
   let (env_id, kind, owner) = headers_info_from_this(scope, this)?;
-  let max_header_bytes = with_env_state(env_id, |state| {
+  let max_header_bytes = with_env_state(env_id, scope.heap(), |state| {
     let headers = get_headers_ref(state, kind, owner)?;
     Ok(headers.limits().max_total_header_bytes)
   })?;
@@ -1233,13 +1411,11 @@ fn headers_append_native(
     FETCH_HEADER_VALUE_TOO_LONG_ERROR,
   )?;
 
-  with_env_state_mut(env_id, |state| {
+  let result: std::result::Result<(), WebFetchError> = with_env_state_mut(env_id, scope.heap(), |state| {
     let headers = get_headers_mut(state, kind, owner)?;
-    headers
-      .append(&name, &value)
-      .map_err(|err| map_web_fetch_error_to_throw(vm, scope, &mut *host, host_hooks, err))?;
-    Ok(())
+    Ok(headers.append(&name, &value))
   })?;
+  result.map_err(|err| map_web_fetch_error_to_throw(vm, scope, &mut *host, host_hooks, err))?;
 
   Ok(Value::Undefined)
 }
@@ -1254,7 +1430,7 @@ fn headers_set_native(
   args: &[Value],
 ) -> Result<Value, VmError> {
   let (env_id, kind, owner) = headers_info_from_this(scope, this)?;
-  let max_header_bytes = with_env_state(env_id, |state| {
+  let max_header_bytes = with_env_state(env_id, scope.heap(), |state| {
     let headers = get_headers_ref(state, kind, owner)?;
     Ok(headers.limits().max_total_header_bytes)
   })?;
@@ -1271,13 +1447,11 @@ fn headers_set_native(
     FETCH_HEADER_VALUE_TOO_LONG_ERROR,
   )?;
 
-  with_env_state_mut(env_id, |state| {
+  let result: std::result::Result<(), WebFetchError> = with_env_state_mut(env_id, scope.heap(), |state| {
     let headers = get_headers_mut(state, kind, owner)?;
-    headers
-      .set(&name, &value)
-      .map_err(|err| map_web_fetch_error_to_throw(vm, scope, &mut *host, host_hooks, err))?;
-    Ok(())
+    Ok(headers.set(&name, &value))
   })?;
+  result.map_err(|err| map_web_fetch_error_to_throw(vm, scope, &mut *host, host_hooks, err))?;
 
   Ok(Value::Undefined)
 }
@@ -1292,7 +1466,7 @@ fn headers_delete_native(
   args: &[Value],
 ) -> Result<Value, VmError> {
   let (env_id, kind, owner) = headers_info_from_this(scope, this)?;
-  let max_header_bytes = with_env_state(env_id, |state| {
+  let max_header_bytes = with_env_state(env_id, scope.heap(), |state| {
     let headers = get_headers_ref(state, kind, owner)?;
     Ok(headers.limits().max_total_header_bytes)
   })?;
@@ -1303,13 +1477,11 @@ fn headers_delete_native(
     FETCH_HEADER_NAME_TOO_LONG_ERROR,
   )?;
 
-  with_env_state_mut(env_id, |state| {
+  let result: std::result::Result<(), WebFetchError> = with_env_state_mut(env_id, scope.heap(), |state| {
     let headers = get_headers_mut(state, kind, owner)?;
-    headers
-      .delete(&name)
-      .map_err(|err| map_web_fetch_error_to_throw(vm, scope, &mut *host, host_hooks, err))?;
-    Ok(())
+    Ok(headers.delete(&name))
   })?;
+  result.map_err(|err| map_web_fetch_error_to_throw(vm, scope, &mut *host, host_hooks, err))?;
 
   Ok(Value::Undefined)
 }
@@ -1324,7 +1496,7 @@ fn headers_has_native(
   args: &[Value],
 ) -> Result<Value, VmError> {
   let (env_id, kind, owner) = headers_info_from_this(scope, this)?;
-  let max_header_bytes = with_env_state(env_id, |state| {
+  let max_header_bytes = with_env_state(env_id, scope.heap(), |state| {
     let headers = get_headers_ref(state, kind, owner)?;
     Ok(headers.limits().max_total_header_bytes)
   })?;
@@ -1334,12 +1506,11 @@ fn headers_has_native(
     max_header_bytes,
     FETCH_HEADER_NAME_TOO_LONG_ERROR,
   )?;
-  let has = with_env_state(env_id, |state| {
+  let has_result: std::result::Result<bool, WebFetchError> = with_env_state(env_id, scope.heap(), |state| {
     let headers = get_headers_ref(state, kind, owner)?;
-    headers
-      .has(&name)
-      .map_err(|err| map_web_fetch_error_to_throw(vm, scope, host, host_hooks, err))
+    Ok(headers.has(&name))
   })?;
+  let has = has_result.map_err(|err| map_web_fetch_error_to_throw(vm, scope, host, host_hooks, err))?;
   Ok(Value::Bool(has))
 }
 
@@ -1353,7 +1524,7 @@ fn headers_get_native(
   args: &[Value],
 ) -> Result<Value, VmError> {
   let (env_id, kind, owner) = headers_info_from_this(scope, this)?;
-  let max_header_bytes = with_env_state(env_id, |state| {
+  let max_header_bytes = with_env_state(env_id, scope.heap(), |state| {
     let headers = get_headers_ref(state, kind, owner)?;
     Ok(headers.limits().max_total_header_bytes)
   })?;
@@ -1363,12 +1534,13 @@ fn headers_get_native(
     max_header_bytes,
     FETCH_HEADER_NAME_TOO_LONG_ERROR,
   )?;
-  let value = with_env_state(env_id, |state| {
+  let value_result: std::result::Result<Option<String>, WebFetchError> =
+    with_env_state(env_id, scope.heap(), |state| {
     let headers = get_headers_ref(state, kind, owner)?;
-    headers
-      .get(&name)
-      .map_err(|err| map_web_fetch_error_to_throw(vm, scope, host, host_hooks, err))
+    Ok(headers.get(&name))
   })?;
+  let value =
+    value_result.map_err(|err| map_web_fetch_error_to_throw(vm, scope, host, host_hooks, err))?;
   match value {
     Some(v) => {
       let s = scope.alloc_string(&v)?;
@@ -1388,7 +1560,7 @@ fn headers_get_set_cookie_native(
   _args: &[Value],
 ) -> Result<Value, VmError> {
   let (env_id, kind, owner) = headers_info_from_this(scope, this)?;
-  let values = with_env_state(env_id, |state| {
+  let values = with_env_state(env_id, scope.heap(), |state| {
     let headers = get_headers_ref(state, kind, owner)?;
     Ok(headers.get_set_cookie())
   })?;
@@ -1436,7 +1608,7 @@ fn headers_for_each_native(
     ));
   }
 
-  let pairs = with_env_state(env_id, |state| {
+  let pairs = with_env_state(env_id, scope.heap(), |state| {
     let headers = get_headers_ref(state, kind, owner)?;
     Ok(headers.sort_and_combine())
   })?;
@@ -1491,11 +1663,11 @@ fn headers_entries_native(
 ) -> Result<Value, VmError> {
   let (env_id, kind, owner) = headers_info_from_this(scope, this)?;
   let iter_proto = headers_iter_proto_from_callee(scope, callee)?;
-  let pairs = with_env_state(env_id, |state| {
+  let pairs = with_env_state(env_id, scope.heap(), |state| {
     let headers = get_headers_ref(state, kind, owner)?;
     Ok(headers.sort_and_combine())
   })?;
-  let iter_id = with_env_state_mut(env_id, |state| {
+  let iter_id = with_env_state_mut(env_id, scope.heap(), |state| {
     let id = state.alloc_id();
     state
       .headers_iterators
@@ -1521,6 +1693,13 @@ fn headers_entries_native(
     false,
   )?;
   set_data_prop(scope, obj, HEADERS_ITER_DONE_KEY, Value::Bool(false), true)?;
+
+  with_env_state_mut(env_id, scope.heap(), |state| {
+    state
+      .headers_iterators_wrappers
+      .insert(iter_id, WeakGcObject::from(obj));
+    Ok(())
+  })?;
   Ok(Value::Object(obj))
 }
 
@@ -1535,11 +1714,11 @@ fn headers_keys_native(
 ) -> Result<Value, VmError> {
   let (env_id, kind, owner) = headers_info_from_this(scope, this)?;
   let iter_proto = headers_iter_proto_from_callee(scope, callee)?;
-  let pairs = with_env_state(env_id, |state| {
+  let pairs = with_env_state(env_id, scope.heap(), |state| {
     let headers = get_headers_ref(state, kind, owner)?;
     Ok(headers.sort_and_combine())
   })?;
-  let iter_id = with_env_state_mut(env_id, |state| {
+  let iter_id = with_env_state_mut(env_id, scope.heap(), |state| {
     let id = state.alloc_id();
     state
       .headers_iterators
@@ -1565,6 +1744,13 @@ fn headers_keys_native(
     false,
   )?;
   set_data_prop(scope, obj, HEADERS_ITER_DONE_KEY, Value::Bool(false), true)?;
+
+  with_env_state_mut(env_id, scope.heap(), |state| {
+    state
+      .headers_iterators_wrappers
+      .insert(iter_id, WeakGcObject::from(obj));
+    Ok(())
+  })?;
   Ok(Value::Object(obj))
 }
 
@@ -1579,11 +1765,11 @@ fn headers_values_native(
 ) -> Result<Value, VmError> {
   let (env_id, kind, owner) = headers_info_from_this(scope, this)?;
   let iter_proto = headers_iter_proto_from_callee(scope, callee)?;
-  let pairs = with_env_state(env_id, |state| {
+  let pairs = with_env_state(env_id, scope.heap(), |state| {
     let headers = get_headers_ref(state, kind, owner)?;
     Ok(headers.sort_and_combine())
   })?;
-  let iter_id = with_env_state_mut(env_id, |state| {
+  let iter_id = with_env_state_mut(env_id, scope.heap(), |state| {
     let id = state.alloc_id();
     state
       .headers_iterators
@@ -1609,6 +1795,13 @@ fn headers_values_native(
     false,
   )?;
   set_data_prop(scope, obj, HEADERS_ITER_DONE_KEY, Value::Bool(false), true)?;
+
+  with_env_state_mut(env_id, scope.heap(), |state| {
+    state
+      .headers_iterators_wrappers
+      .insert(iter_id, WeakGcObject::from(obj));
+    Ok(())
+  })?;
   Ok(Value::Object(obj))
 }
 
@@ -1659,7 +1852,7 @@ fn headers_iterator_next_native(
     .try_into()
     .map_err(|_| VmError::TypeError("Headers iterator: illegal invocation"))?;
 
-  let next_pair: Option<(String, String)> = with_env_state_mut(env_id, |state| {
+  let next_pair: Option<(String, String)> = with_env_state_mut(env_id, scope.heap(), |state| {
     let iter = state
       .headers_iterators
       .get_mut(&iter_id)
@@ -1668,6 +1861,7 @@ fn headers_iterator_next_native(
       ))?;
     if iter.index >= iter.pairs.len() {
       state.headers_iterators.remove(&iter_id);
+      state.headers_iterators_wrappers.remove(&iter_id);
       Ok(None)
     } else {
       let pair = iter
@@ -1765,7 +1959,7 @@ fn headers_ctor_construct(
   _new_target: Value,
 ) -> Result<Value, VmError> {
   let env_id = env_id_from_callee(scope, callee)?;
-  let limits = with_env_state(env_id, |state| Ok(state.env.limits.clone()))?;
+  let limits = with_env_state(env_id, scope.heap(), |state| Ok(state.env.limits.clone()))?;
 
   let mut core = CoreHeaders::new_with_guard_and_limits(HeadersGuard::None, &limits);
   if let Some(init) = args.get(0).copied() {
@@ -1773,7 +1967,7 @@ fn headers_ctor_construct(
     fill_headers_from_init(vm, scope, &mut *host, host_hooks, env_id, &mut core, init)?;
   }
 
-  let headers_id = with_env_state_mut(env_id, |state| {
+  let headers_id = with_env_state_mut(env_id, scope.heap(), |state| {
     let id = state.alloc_id();
     state.owned_headers.insert(id, core);
     Ok(id)
@@ -1811,6 +2005,13 @@ fn headers_ctor_construct(
     Value::Number(headers_id as f64),
     false,
   )?;
+
+  with_env_state_mut(env_id, scope.heap(), |state| {
+    state
+      .owned_headers_wrappers
+      .insert(headers_id, WeakGcObject::from(obj));
+    Ok(())
+  })?;
 
   Ok(Value::Object(obj))
 }
@@ -2356,7 +2557,7 @@ fn apply_request_init(
         } else if let Some(entries) =
           window_form_data::clone_form_data_entries_for_fetch(vm, scope.heap(), body_val)?
         {
-          let boundary_id = with_env_state_mut(env_id, |state| {
+          let boundary_id = with_env_state_mut(env_id, scope.heap(), |state| {
             let id = state.multipart_boundary_counter;
             state.multipart_boundary_counter = state.multipart_boundary_counter.saturating_add(1);
             Ok(id)
@@ -2475,7 +2676,7 @@ fn request_ctor_construct(
 ) -> Result<Value, VmError> {
   let env_id = env_id_from_callee(scope, callee)?;
   let headers_proto = headers_proto_from_callee(scope, callee)?;
-  let limits = with_env_state(env_id, |state| Ok(state.env.limits.clone()))?;
+  let limits = with_env_state(env_id, scope.heap(), |state| Ok(state.env.limits.clone()))?;
   let input = args.get(0).copied().unwrap_or(Value::Undefined);
   let init = args.get(1).copied().unwrap_or(Value::Undefined);
 
@@ -2486,24 +2687,29 @@ fn request_ctor_construct(
   };
 
   let mut request = if let Some((other_env_id, other_request_id)) = input_request_info {
-    with_env_state(other_env_id, |state| {
-      state
+    let cloned: Option<CoreRequest> = with_env_state(other_env_id, scope.heap(), |state| {
+      let req = state
         .requests
         .get(&other_request_id)
-        .ok_or(VmError::TypeError("Request: invalid backing request"))
-        .and_then(|req| {
-          if req.body.as_ref().map_or(false, |b| b.body_used()) {
-            return Err(throw_type_error(
-              vm,
-              scope,
-              host,
-              host_hooks,
-              "Request body is already used",
-            ));
-          }
-          Ok(req.clone())
-        })
-    })?
+        .ok_or(VmError::TypeError("Request: invalid backing request"))?;
+      if req.body.as_ref().map_or(false, |b| b.body_used()) {
+        Ok(None)
+      } else {
+        Ok(Some(req.clone()))
+      }
+    })?;
+    match cloned {
+      Some(req) => req,
+      None => {
+        return Err(throw_type_error(
+          vm,
+          scope,
+          host,
+          host_hooks,
+          "Request body is already used",
+        ));
+      }
+    }
   } else {
     let url = to_rust_string_limited(
       scope.heap_mut(),
@@ -2511,7 +2717,7 @@ fn request_ctor_construct(
       limits.max_url_bytes,
       FETCH_URL_TOO_LONG_ERROR,
     )?;
-    let base_url = current_document_base_url(vm, env_id)?;
+    let base_url = current_document_base_url(vm, scope.heap(), env_id)?;
     let url = resolve_url(&url, base_url.as_deref())
       .map_err(|err| throw_type_error(vm, scope, host, host_hooks, &err.to_string()))?;
     CoreRequest::new_with_limits("GET", url, &limits)
@@ -2625,7 +2831,7 @@ fn request_ctor_construct(
     }
   }
 
-  let request_id = with_env_state_mut(env_id, |state| {
+  let request_id = with_env_state_mut(env_id, scope.heap(), |state| {
     let id = state.alloc_id();
     state.requests.insert(id, request);
     Ok(id)
@@ -2673,24 +2879,28 @@ fn request_clone_native(
     other => other,
   };
 
-  let cloned = with_env_state(env_id, |state| {
+  let cloned: Option<CoreRequest> = with_env_state(env_id, scope.heap(), |state| {
     let req = state
       .requests
       .get(&request_id)
       .ok_or(VmError::TypeError("Request: invalid backing request"))?;
     if req.body.as_ref().map_or(false, |b| b.body_used()) {
-      return Err(throw_type_error(
-        vm,
-        scope,
-        &mut *host,
-        host_hooks,
-        "Request body is already used",
-      ));
+      Ok(None)
+    } else {
+      Ok(Some(req.clone()))
     }
-    Ok(req.clone())
   })?;
+  let Some(cloned) = cloned else {
+    return Err(throw_type_error(
+      vm,
+      scope,
+      &mut *host,
+      host_hooks,
+      "Request body is already used",
+    ));
+  };
 
-  let new_request_id = with_env_state_mut(env_id, |state| {
+  let new_request_id = with_env_state_mut(env_id, scope.heap(), |state| {
     let id = state.alloc_id();
     state.requests.insert(id, cloned);
     Ok(id)
@@ -2720,7 +2930,7 @@ fn request_text_native(
 
   let cap = new_promise_capability_for_env(vm, scope, &mut *host, host_hooks, env_id)?;
 
-  let result: std::result::Result<String, WebFetchError> = with_env_state_mut(env_id, |state| {
+  let result: std::result::Result<String, WebFetchError> = with_env_state_mut(env_id, scope.heap(), |state| {
     let req = state
       .requests
       .get_mut(&request_id)
@@ -2773,7 +2983,7 @@ fn request_array_buffer_native(
 
   let cap = new_promise_capability_for_env(vm, scope, &mut *host, host_hooks, env_id)?;
 
-  let result: std::result::Result<Vec<u8>, WebFetchError> = with_env_state_mut(env_id, |state| {
+  let result: std::result::Result<Vec<u8>, WebFetchError> = with_env_state_mut(env_id, scope.heap(), |state| {
     let req = state
       .requests
       .get_mut(&request_id)
@@ -2835,7 +3045,7 @@ fn request_blob_native(
   let (bytes_result, content_type_result): (
     std::result::Result<Vec<u8>, WebFetchError>,
     std::result::Result<Option<String>, WebFetchError>,
-  ) = with_env_state_mut(env_id, |state| {
+  ) = with_env_state_mut(env_id, scope.heap(), |state| {
     let req = state
       .requests
       .get_mut(&request_id)
@@ -2930,7 +3140,7 @@ fn request_form_data_native(
   let (bytes_result, content_type_result): (
     std::result::Result<Vec<u8>, WebFetchError>,
     std::result::Result<Option<String>, WebFetchError>,
-  ) = with_env_state_mut(env_id, |state| {
+  ) = with_env_state_mut(env_id, scope.heap(), |state| {
     let req = state
       .requests
       .get_mut(&request_id)
@@ -3035,7 +3245,7 @@ fn request_json_native(
   let cap = new_promise_capability_for_env(vm, scope, &mut *host, host_hooks, env_id)?;
 
   let parsed: Option<std::result::Result<serde_json::Value, WebFetchError>> =
-    with_env_state_mut(env_id, |state| {
+    with_env_state_mut(env_id, scope.heap(), |state| {
       let req = state
         .requests
         .get_mut(&request_id)
@@ -3106,7 +3316,7 @@ fn request_body_used_get_native(
   _args: &[Value],
 ) -> Result<Value, VmError> {
   let (env_id, request_id) = request_info_from_this(scope, this)?;
-  let used = with_env_state(env_id, |state| {
+  let used = with_env_state(env_id, scope.heap(), |state| {
     let req = state
       .requests
       .get(&request_id)
@@ -3151,7 +3361,7 @@ fn response_error_native(
   response.r#type = crate::resource::web_fetch::ResponseType::Error;
   response.headers.set_guard(HeadersGuard::Immutable);
 
-  let response_id = with_env_state_mut(env_id, |state| {
+  let response_id = with_env_state_mut(env_id, scope.heap(), |state| {
     let id = state.alloc_id();
     state.responses.insert(id, response);
     Ok(id)
@@ -3174,14 +3384,14 @@ fn response_redirect_native(
   let headers_proto = headers_proto_from_callee(scope, callee)?;
   let response_proto = response_proto_from_callee(scope, callee)?;
 
-  let max_url_bytes = with_env_state(env_id, |state| Ok(state.env.limits.max_url_bytes))?;
+  let max_url_bytes = with_env_state(env_id, scope.heap(), |state| Ok(state.env.limits.max_url_bytes))?;
   let url_input = to_rust_string_limited(
     scope.heap_mut(),
     args.get(0).copied().unwrap_or(Value::Undefined),
     max_url_bytes,
     FETCH_URL_TOO_LONG_ERROR,
   )?;
-  let base_url = current_document_base_url(vm, env_id)?;
+  let base_url = current_document_base_url(vm, scope.heap(), env_id)?;
   let resolved_url = match resolve_url(&url_input, base_url.as_deref()) {
     Ok(url) => url,
     Err(UrlResolveError::RelativeUrlWithoutBase) => {
@@ -3227,7 +3437,7 @@ fn response_redirect_native(
   let mut response = CoreResponse::new(status);
   response.headers = headers;
 
-  let response_id = with_env_state_mut(env_id, |state| {
+  let response_id = with_env_state_mut(env_id, scope.heap(), |state| {
     let id = state.alloc_id();
     state.responses.insert(id, response);
     Ok(id)
@@ -3249,7 +3459,7 @@ fn response_json_static_native(
   let env_id = env_id_from_callee(scope, callee)?;
   let headers_proto = headers_proto_from_callee(scope, callee)?;
   let response_proto = response_proto_from_callee(scope, callee)?;
-  let limits = with_env_state(env_id, |state| Ok(state.env.limits.clone()))?;
+  let limits = with_env_state(env_id, scope.heap(), |state| Ok(state.env.limits.clone()))?;
 
   let data = args.get(0).copied().unwrap_or(Value::Undefined);
   let init = args.get(1).copied().unwrap_or(Value::Undefined);
@@ -3392,7 +3602,7 @@ fn response_json_static_native(
   response.headers = headers;
   response.body = Some(body);
 
-  let response_id = with_env_state_mut(env_id, |state| {
+  let response_id = with_env_state_mut(env_id, scope.heap(), |state| {
     let id = state.alloc_id();
     state.responses.insert(id, response);
     Ok(id)
@@ -3415,7 +3625,7 @@ fn response_text_native(
 
   let cap = new_promise_capability_for_env(vm, scope, &mut *host, host_hooks, env_id)?;
 
-  if response_body_stream_locked(env_id, response_id)? {
+  if response_body_stream_locked(env_id, response_id, scope.heap())? {
     let err_value = create_type_error(vm, scope, &mut *host, host_hooks, "Response body is locked")?;
     vm.call_with_host_and_hooks(
       &mut *host,
@@ -3428,7 +3638,7 @@ fn response_text_native(
     return Ok(cap.promise);
   }
 
-  let result: std::result::Result<String, WebFetchError> = with_env_state_mut(env_id, |state| {
+  let result: std::result::Result<String, WebFetchError> = with_env_state_mut(env_id, scope.heap(), |state| {
     let res = state
       .responses
       .get_mut(&response_id)
@@ -3481,7 +3691,7 @@ fn response_array_buffer_native(
 
   let cap = new_promise_capability_for_env(vm, scope, &mut *host, host_hooks, env_id)?;
 
-  if response_body_stream_locked(env_id, response_id)? {
+  if response_body_stream_locked(env_id, response_id, scope.heap())? {
     let err_value = create_type_error(vm, scope, &mut *host, host_hooks, "Response body is locked")?;
     vm.call_with_host_and_hooks(
       &mut *host,
@@ -3494,7 +3704,7 @@ fn response_array_buffer_native(
     return Ok(cap.promise);
   }
 
-  let result: std::result::Result<Vec<u8>, WebFetchError> = with_env_state_mut(env_id, |state| {
+  let result: std::result::Result<Vec<u8>, WebFetchError> = with_env_state_mut(env_id, scope.heap(), |state| {
     let res = state
       .responses
       .get_mut(&response_id)
@@ -3553,7 +3763,7 @@ fn response_blob_native(
 
   let cap = new_promise_capability_for_env(vm, scope, &mut *host, host_hooks, env_id)?;
 
-  if response_body_stream_locked(env_id, response_id)? {
+  if response_body_stream_locked(env_id, response_id, scope.heap())? {
     let err_value = create_type_error(vm, scope, &mut *host, host_hooks, "Response body is locked")?;
     vm.call_with_host_and_hooks(
       &mut *host,
@@ -3569,7 +3779,7 @@ fn response_blob_native(
   let (bytes_result, content_type_result): (
     std::result::Result<Vec<u8>, WebFetchError>,
     std::result::Result<Option<String>, WebFetchError>,
-  ) = with_env_state_mut(env_id, |state| {
+  ) = with_env_state_mut(env_id, scope.heap(), |state| {
     let res = state
       .responses
       .get_mut(&response_id)
@@ -3661,7 +3871,7 @@ fn response_form_data_native(
 
   let cap = new_promise_capability_for_env(vm, scope, &mut *host, host_hooks, env_id)?;
 
-  if response_body_stream_locked(env_id, response_id)? {
+  if response_body_stream_locked(env_id, response_id, scope.heap())? {
     let err_value = create_type_error(vm, scope, &mut *host, host_hooks, "Response body is locked")?;
     vm.call_with_host_and_hooks(
       &mut *host,
@@ -3677,7 +3887,7 @@ fn response_form_data_native(
   let (bytes_result, content_type_result): (
     std::result::Result<Vec<u8>, WebFetchError>,
     std::result::Result<Option<String>, WebFetchError>,
-  ) = with_env_state_mut(env_id, |state| {
+  ) = with_env_state_mut(env_id, scope.heap(), |state| {
     let res = state
       .responses
       .get_mut(&response_id)
@@ -3823,7 +4033,7 @@ fn response_json_native(
 
   let cap = new_promise_capability_for_env(vm, scope, &mut *host, host_hooks, env_id)?;
 
-  if response_body_stream_locked(env_id, response_id)? {
+  if response_body_stream_locked(env_id, response_id, scope.heap())? {
     let err_value = create_type_error(vm, scope, &mut *host, host_hooks, "Response body is locked")?;
     vm.call_with_host_and_hooks(
       &mut *host,
@@ -3837,14 +4047,14 @@ fn response_json_native(
   }
 
   let parsed: Option<std::result::Result<serde_json::Value, WebFetchError>> =
-    with_env_state_mut(env_id, |state| {
-      let res = state
-        .responses
-        .get_mut(&response_id)
-        .ok_or(VmError::TypeError("Response: invalid backing response"))?;
-      let parsed = res.body.as_mut().map(|body| body.json());
-      Ok(parsed)
-    })?;
+    with_env_state_mut(env_id, scope.heap(), |state| {
+    let res = state
+      .responses
+      .get_mut(&response_id)
+      .ok_or(VmError::TypeError("Response: invalid backing response"))?;
+    let parsed = res.body.as_mut().map(|body| body.json());
+    Ok(parsed)
+  })?;
 
   match parsed {
     Some(Ok(value)) => {
@@ -3914,38 +4124,55 @@ fn response_clone_native(
   let (env_id, response_id) = response_info_from_this(scope, Value::Object(obj))?;
   let headers_proto = headers_proto_from_callee(scope, callee)?;
 
-  let cloned = with_env_state(env_id, |state| {
+  enum CloneResult {
+    Ok(CoreResponse),
+    BodyUsed,
+    Locked,
+  }
+
+  let cloned = with_env_state(env_id, scope.heap(), |state| {
     let res = state
       .responses
       .get(&response_id)
       .ok_or(VmError::TypeError("Response: invalid backing response"))?;
-    if state
+    let locked = state
       .response_body_streams
       .get(&response_id)
       .and_then(|id| state.readable_streams.get(id))
-      .is_some_and(|s| s.locked)
-    {
+      .is_some_and(|s| s.locked);
+    if locked {
+      return Ok(CloneResult::Locked);
+    }
+    if res.body.as_ref().map_or(false, |b| b.body_used()) {
+      Ok(CloneResult::BodyUsed)
+    } else {
+      Ok(CloneResult::Ok(res.clone()))
+    }
+  })?;
+
+  let cloned = match cloned {
+    CloneResult::Ok(res) => res,
+    CloneResult::Locked => {
       return Err(throw_type_error(
         vm,
         scope,
         &mut *host,
         host_hooks,
         "Response body is locked",
-      ));
+      ))
     }
-    if res.body.as_ref().map_or(false, |b| b.body_used()) {
+    CloneResult::BodyUsed => {
       return Err(throw_type_error(
         vm,
         scope,
         &mut *host,
         host_hooks,
         "Response body is already used",
-      ));
+      ))
     }
-    Ok(res.clone())
-  })?;
+  };
 
-  let new_response_id = with_env_state_mut(env_id, |state| {
+  let new_response_id = with_env_state_mut(env_id, scope.heap(), |state| {
     let id = state.alloc_id();
     state.responses.insert(id, cloned);
     Ok(id)
@@ -3983,7 +4210,7 @@ fn response_body_get_native(
 
   let readable_stream_proto = readable_stream_proto_from_callee(scope, callee)?;
 
-  let Some(stream_id) = with_env_state_mut(env_id, |state| {
+  let Some(stream_id) = with_env_state_mut(env_id, scope.heap(), |state| {
     let res = state
       .responses
       .get(&response_id)
@@ -4027,6 +4254,13 @@ fn response_body_get_native(
     false,
   )?;
 
+  with_env_state_mut(env_id, scope.heap(), |state| {
+    state
+      .readable_stream_wrappers
+      .insert(stream_id, WeakGcObject::from(stream_obj));
+    Ok(())
+  })?;
+
   set_data_prop(
     scope,
     resp_obj,
@@ -4048,7 +4282,7 @@ fn response_body_used_get_native(
   _args: &[Value],
 ) -> Result<Value, VmError> {
   let (env_id, response_id) = response_info_from_this(scope, this)?;
-  let used = with_env_state(env_id, |state| {
+  let used = with_env_state(env_id, scope.heap(), |state| {
     let res = state
       .responses
       .get(&response_id)
@@ -4081,7 +4315,7 @@ fn readable_stream_ctor_construct(
 ) -> Result<Value, VmError> {
   let env_id = env_id_from_callee(scope, callee)?;
 
-  let stream_id = with_env_state_mut(env_id, |state| {
+  let stream_id = with_env_state_mut(env_id, scope.heap(), |state| {
     let stream_id = state.alloc_id();
     state.readable_streams.insert(
       stream_id,
@@ -4119,6 +4353,12 @@ fn readable_stream_ctor_construct(
     Value::Number(stream_id as f64),
     false,
   )?;
+  with_env_state_mut(env_id, scope.heap(), |state| {
+    state
+      .readable_stream_wrappers
+      .insert(stream_id, WeakGcObject::from(stream_obj));
+    Ok(())
+  })?;
   Ok(Value::Object(stream_obj))
 }
 
@@ -4156,7 +4396,7 @@ fn readable_stream_locked_get_native(
   _args: &[Value],
 ) -> Result<Value, VmError> {
   let (env_id, stream_id) = readable_stream_info_from_this(scope, this)?;
-  let locked = with_env_state(env_id, |state| {
+  let locked = with_env_state(env_id, scope.heap(), |state| {
     let stream = state
       .readable_streams
       .get(&stream_id)
@@ -4205,26 +4445,31 @@ fn readable_stream_get_reader_native(
 
   let reader_proto = readable_stream_reader_proto_from_callee(scope, callee)?;
 
-  let reader_id = with_env_state_mut(env_id, |state| {
-    let reader_id = state.alloc_id();
-
-    {
-      let stream = state
-        .readable_streams
-        .get_mut(&stream_id)
-        .ok_or(VmError::TypeError("ReadableStream: invalid backing stream"))?;
-      if stream.locked {
-        return Err(throw_type_error(vm, scope, host, hooks, "ReadableStream is locked"));
-      }
-      stream.locked = true;
-      stream.current_reader_id = Some(reader_id);
+  let reader_id: Option<u64> = with_env_state_mut(env_id, scope.heap(), |state| {
+    let stream = state
+      .readable_streams
+      .get(&stream_id)
+      .ok_or(VmError::TypeError("ReadableStream: invalid backing stream"))?;
+    if stream.locked {
+      return Ok(None);
     }
+
+    let reader_id = state.alloc_id();
+    let stream = state
+      .readable_streams
+      .get_mut(&stream_id)
+      .ok_or(VmError::TypeError("ReadableStream: invalid backing stream"))?;
+    stream.locked = true;
+    stream.current_reader_id = Some(reader_id);
 
     state
       .readable_stream_readers
       .insert(reader_id, ReadableStreamReaderState { stream_id });
-    Ok(reader_id)
+    Ok(Some(reader_id))
   })?;
+  let Some(reader_id) = reader_id else {
+    return Err(throw_type_error(vm, scope, host, hooks, "ReadableStream is locked"));
+  };
 
   let reader_obj = scope.alloc_object_with_prototype(Some(reader_proto))?;
   scope.push_root(Value::Object(reader_obj))?;
@@ -4236,6 +4481,14 @@ fn readable_stream_get_reader_native(
     Value::Number(reader_id as f64),
     false,
   )?;
+
+  with_env_state_mut(env_id, scope.heap(), |state| {
+    state
+      .readable_stream_reader_wrappers
+      .insert(reader_id, WeakGcObject::from(reader_obj));
+    Ok(())
+  })?;
+
   Ok(Value::Object(reader_obj))
 }
 
@@ -4252,7 +4505,7 @@ fn readable_stream_cancel_native(
 
   let cap = new_promise_capability_for_env(vm, scope, host, hooks, env_id)?;
 
-  let locked = with_env_state_mut(env_id, |state| {
+  let locked = with_env_state_mut(env_id, scope.heap(), |state| {
     let stream = state
       .readable_streams
       .get_mut(&stream_id)
@@ -4305,14 +4558,16 @@ fn readable_stream_default_reader_read_native(
 ) -> Result<Value, VmError> {
   let (env_id, reader_id) = readable_stream_reader_info_from_this(scope, this)?;
 
-  let has_reader = with_env_state(env_id, |state| Ok(state.readable_stream_readers.contains_key(&reader_id)))?;
+  let has_reader = with_env_state(env_id, scope.heap(), |state| {
+    Ok(state.readable_stream_readers.contains_key(&reader_id))
+  })?;
   if !has_reader {
     return Err(VmError::TypeError("ReadableStreamDefaultReader has no stream"));
   }
 
   let cap = new_promise_capability_for_env(vm, scope, host, hooks, env_id)?;
 
-  let result = with_env_state_mut(env_id, |state| {
+  let result = with_env_state_mut(env_id, scope.heap(), |state| {
     let reader = state
       .readable_stream_readers
       .get(&reader_id)
@@ -4429,7 +4684,8 @@ fn readable_stream_default_reader_release_lock_native(
 ) -> Result<Value, VmError> {
   let (env_id, reader_id) = readable_stream_reader_info_from_this(scope, this)?;
 
-  with_env_state_mut(env_id, |state| {
+  with_env_state_mut(env_id, scope.heap(), |state| {
+    state.readable_stream_reader_wrappers.remove(&reader_id);
     let Some(reader) = state.readable_stream_readers.remove(&reader_id) else {
       return Ok(());
     };
@@ -4457,7 +4713,7 @@ fn readable_stream_default_reader_cancel_native(
   let (env_id, reader_id) = readable_stream_reader_info_from_this(scope, this)?;
 
   // `cancel()` after `releaseLock()` should throw.
-  let reader_stream_id = with_env_state(env_id, |state| {
+  let reader_stream_id = with_env_state(env_id, scope.heap(), |state| {
     state
       .readable_stream_readers
       .get(&reader_id)
@@ -4467,7 +4723,7 @@ fn readable_stream_default_reader_cancel_native(
 
   let cap = new_promise_capability_for_env(vm, scope, host, hooks, env_id)?;
 
-  with_env_state_mut(env_id, |state| {
+  with_env_state_mut(env_id, scope.heap(), |state| {
     let stream = state
       .readable_streams
       .get_mut(&reader_stream_id)
@@ -4543,21 +4799,21 @@ fn make_request_wrapper(
   )?;
 
   let (method, url, mode, credentials, redirect, referrer, referrer_policy) =
-    with_env_state(env_id, |state| {
-      let req = state
-        .requests
-        .get(&request_id)
-        .ok_or(VmError::InvariantViolation("Request state missing"))?;
-      Ok((
-        req.method.clone(),
-        req.url.clone(),
-        req.mode,
-        req.credentials,
-        req.redirect,
-        req.referrer.clone(),
-        req.referrer_policy,
-      ))
-    })?;
+    with_env_state(env_id, scope.heap(), |state| {
+    let req = state
+      .requests
+      .get(&request_id)
+      .ok_or(VmError::InvariantViolation("Request state missing"))?;
+    Ok((
+      req.method.clone(),
+      req.url.clone(),
+      req.mode,
+      req.credentials,
+      req.redirect,
+      req.referrer.clone(),
+      req.referrer_policy,
+    ))
+  })?;
 
   let method_s = scope.alloc_string(&method)?;
   let url_s = scope.alloc_string(&url)?;
@@ -4597,6 +4853,17 @@ fn make_request_wrapper(
   )?;
   set_data_prop(scope, obj, "headers", Value::Object(headers_obj), false)?;
 
+  with_env_state_mut(env_id, scope.heap(), |state| {
+    state.request_wrappers.insert(
+      request_id,
+      RequestWrapperState {
+        request: WeakGcObject::from(obj),
+        headers: WeakGcObject::from(headers_obj),
+      },
+    );
+    Ok(())
+  })?;
+
   Ok(obj)
 }
 
@@ -4619,7 +4886,7 @@ fn make_response_wrapper(
     false,
   )?;
 
-  let (status, url, status_text, r#type, redirected) = with_env_state(env_id, |state| {
+  let (status, url, status_text, r#type, redirected) = with_env_state(env_id, scope.heap(), |state| {
     let res = state
       .responses
       .get(&response_id)
@@ -4653,6 +4920,17 @@ fn make_response_wrapper(
   )?;
   set_data_prop(scope, obj, "headers", Value::Object(headers_obj), false)?;
 
+  with_env_state_mut(env_id, scope.heap(), |state| {
+    state.response_wrappers.insert(
+      response_id,
+      ResponseWrapperState {
+        response: WeakGcObject::from(obj),
+        headers: WeakGcObject::from(headers_obj),
+      },
+    );
+    Ok(())
+  })?;
+
   Ok(obj)
 }
 
@@ -4667,7 +4945,7 @@ fn response_ctor_construct(
 ) -> Result<Value, VmError> {
   let env_id = env_id_from_callee(scope, callee)?;
   let headers_proto = headers_proto_from_callee(scope, callee)?;
-  let limits = with_env_state(env_id, |state| Ok(state.env.limits.clone()))?;
+  let limits = with_env_state(env_id, scope.heap(), |state| Ok(state.env.limits.clone()))?;
 
   let init = args.get(1).copied().unwrap_or(Value::Undefined);
   let mut status: u16 = 200;
@@ -4724,7 +5002,7 @@ fn response_ctor_construct(
         } else if let Some(entries) =
           window_form_data::clone_form_data_entries_for_fetch(vm, scope.heap(), body)?
         {
-          let boundary_id = with_env_state_mut(env_id, |state| {
+          let boundary_id = with_env_state_mut(env_id, scope.heap(), |state| {
             let id = state.multipart_boundary_counter;
             state.multipart_boundary_counter = state.multipart_boundary_counter.saturating_add(1);
             Ok(id)
@@ -4842,7 +5120,7 @@ fn response_ctor_construct(
     );
   }
 
-  let response_id = with_env_state_mut(env_id, |state| {
+  let response_id = with_env_state_mut(env_id, scope.heap(), |state| {
     let id = state.alloc_id();
     state.responses.insert(id, response);
     Ok(id)
@@ -4875,7 +5153,7 @@ fn fetch_call<Host: WindowRealmHost + 'static>(
   let env_id = env_id_from_callee(scope, callee)?;
   let headers_proto = headers_proto_from_callee(scope, callee)?;
   let response_proto = response_proto_from_callee(scope, callee)?;
-  let limits = with_env_state(env_id, |state| Ok(state.env.limits.clone()))?;
+  let limits = with_env_state(env_id, scope.heap(), |state| Ok(state.env.limits.clone()))?;
   let input = args.get(0).copied().unwrap_or(Value::Undefined);
   let init = args.get(1).copied().unwrap_or(Value::Undefined);
 
@@ -4887,24 +5165,29 @@ fn fetch_call<Host: WindowRealmHost + 'static>(
   };
 
   let mut request = if let Some((other_env_id, other_request_id)) = input_request_info {
-    with_env_state(other_env_id, |state| {
-      state
+    let cloned: Option<CoreRequest> = with_env_state(other_env_id, scope.heap(), |state| {
+      let req = state
         .requests
         .get(&other_request_id)
-        .ok_or(VmError::TypeError("Request: invalid backing request"))
-        .and_then(|req| {
-          if req.body.as_ref().map_or(false, |b| b.body_used()) {
-            return Err(throw_type_error(
-              vm,
-              scope,
-              host,
-              host_hooks,
-              "Request body is already used",
-            ));
-          }
-          Ok(req.clone())
-        })
-    })?
+        .ok_or(VmError::TypeError("Request: invalid backing request"))?;
+      if req.body.as_ref().map_or(false, |b| b.body_used()) {
+        Ok(None)
+      } else {
+        Ok(Some(req.clone()))
+      }
+    })?;
+    match cloned {
+      Some(req) => req,
+      None => {
+        return Err(throw_type_error(
+          vm,
+          scope,
+          host,
+          host_hooks,
+          "Request body is already used",
+        ));
+      }
+    }
   } else {
     let url = to_rust_string_limited(
       scope.heap_mut(),
@@ -4912,7 +5195,7 @@ fn fetch_call<Host: WindowRealmHost + 'static>(
       limits.max_url_bytes,
       FETCH_URL_TOO_LONG_ERROR,
     )?;
-    let base_url = current_document_base_url(vm, env_id)?;
+    let base_url = current_document_base_url(vm, scope.heap(), env_id)?;
     let url = resolve_url(&url, base_url.as_deref())
       .map_err(|err| throw_type_error(vm, scope, host, host_hooks, &err.to_string()))?;
     CoreRequest::new_with_limits("GET", url, &limits)
@@ -5027,7 +5310,7 @@ fn fetch_call<Host: WindowRealmHost + 'static>(
 
   // `blob:` object URLs are origin-scoped. Capture the current origin so the networking task can
   // enforce same-origin access without needing to touch the JS heap.
-  let object_url_origin = current_document_origin_for_object_urls(vm, env_id)?;
+  let object_url_origin = current_document_origin_for_object_urls(vm, scope.heap(), env_id)?;
 
   // Create a Promise capability for the returned Promise.
   let cap = new_promise_capability_for_env(vm, scope, &mut *host, host_hooks, env_id)?;
@@ -5099,8 +5382,10 @@ fn fetch_call<Host: WindowRealmHost + 'static>(
 
   let enqueue_result = event_loop.queue_task(TaskSource::Networking, move |host, event_loop| {
     // Execute `execute_web_fetch` synchronously on this networking task.
-    let (fetcher, document_url, document_origin, referrer_policy) =
-      match with_env_state(env_id, |state| {
+    let (fetcher, document_url, document_origin, referrer_policy) = match with_env_state(
+      env_id,
+      host.window_realm().heap(),
+      |state| {
         let env = &state.env;
         Ok((
           Arc::clone(&env.fetcher),
@@ -5108,68 +5393,69 @@ fn fetch_call<Host: WindowRealmHost + 'static>(
           env.document_origin.clone(),
           env.referrer_policy,
         ))
-      }) {
-        Ok(tuple) => tuple,
-        Err(err) => {
-          let message = format!("fetch failed: {err}");
-          let queue_result = event_loop.queue_microtask(move |host, event_loop| {
-            let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host);
-            hooks.set_event_loop(event_loop);
-            let (vm_host, window_realm) = host.vm_host_and_window_realm();
-            window_realm.reset_interrupt();
-            let budget = window_realm.vm_budget_now();
-            let (vm, heap) = window_realm.vm_and_heap_mut();
-            let mut vm = vm.push_budget(budget);
-            let tick_result = vm.tick();
-            let call_result = tick_result.and_then(|_| {
-              let reject = heap
-                .get_root(reject_root)
-                .ok_or_else(|| VmError::invalid_handle())?;
-              let mut scope = heap.scope();
-              let type_error =
-                create_type_error(&mut vm, &mut scope, vm_host, &mut hooks, &message)?;
-              vm.call_with_host_and_hooks(
-                vm_host,
-                &mut scope,
-                &mut hooks,
-                reject,
-                Value::Undefined,
-                &[type_error],
-              )?;
-              Ok(())
-            });
-
-            // Remove roots even if the rejection throws/terminates.
-            heap.remove_root(resolve_root);
-            heap.remove_root(reject_root);
-            heap.remove_root(promise_root);
-            if let Some(signal_root) = signal_root {
-              heap.remove_root(signal_root);
-            }
-
-            if let Some(err) = hooks.finish(heap) {
-              return Err(err);
-            }
-            call_result
-              .map_err(|err| vm_error_to_event_loop_error(heap, err))
-              .map(|_| ())
+      },
+    ) {
+      Ok(tuple) => tuple,
+      Err(err) => {
+        let message = format!("fetch failed: {err}");
+        let queue_result = event_loop.queue_microtask(move |host, event_loop| {
+          let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host);
+          hooks.set_event_loop(event_loop);
+          let (vm_host, window_realm) = host.vm_host_and_window_realm();
+          window_realm.reset_interrupt();
+          let budget = window_realm.vm_budget_now();
+          let (vm, heap) = window_realm.vm_and_heap_mut();
+          let mut vm = vm.push_budget(budget);
+          let tick_result = vm.tick();
+          let call_result = tick_result.and_then(|_| {
+            let reject = heap
+              .get_root(reject_root)
+              .ok_or_else(|| VmError::invalid_handle())?;
+            let mut scope = heap.scope();
+            let type_error =
+              create_type_error(&mut vm, &mut scope, vm_host, &mut hooks, &message)?;
+            vm.call_with_host_and_hooks(
+              vm_host,
+              &mut scope,
+              &mut hooks,
+              reject,
+              Value::Undefined,
+              &[type_error],
+            )?;
+            Ok(())
           });
 
-          if let Err(queue_err) = queue_result {
-            // If we can't even enqueue the rejection microtask, tear down persistent roots now.
-            let window_realm = host.window_realm();
-            window_realm.heap_mut().remove_root(resolve_root);
-            window_realm.heap_mut().remove_root(reject_root);
-            window_realm.heap_mut().remove_root(promise_root);
-            if let Some(signal_root) = signal_root {
-              window_realm.heap_mut().remove_root(signal_root);
-            }
-            return Err(queue_err);
+          // Remove roots even if the rejection throws/terminates.
+          heap.remove_root(resolve_root);
+          heap.remove_root(reject_root);
+          heap.remove_root(promise_root);
+          if let Some(signal_root) = signal_root {
+            heap.remove_root(signal_root);
           }
 
-          return Ok(());
+          if let Some(err) = hooks.finish(heap) {
+            return Err(err);
+          }
+          call_result
+            .map_err(|err| vm_error_to_event_loop_error(heap, err))
+            .map(|_| ())
+        });
+
+        if let Err(queue_err) = queue_result {
+          // If we can't even enqueue the rejection microtask, tear down persistent roots now.
+          let window_realm = host.window_realm();
+          window_realm.heap_mut().remove_root(resolve_root);
+          window_realm.heap_mut().remove_root(reject_root);
+          window_realm.heap_mut().remove_root(promise_root);
+          if let Some(signal_root) = signal_root {
+            window_realm.heap_mut().remove_root(signal_root);
+          }
+          return Err(queue_err);
         }
-      };
+
+        return Ok(());
+      }
+    };
 
     // If the signal was aborted after `fetch()` returned but before this networking task begins,
     // reject and skip executing the underlying fetcher.
@@ -5356,7 +5642,7 @@ fn fetch_call<Host: WindowRealmHost + 'static>(
           }
         }
 
-        let response_id = match with_env_state_mut(env_id, |state| {
+        let response_id = match with_env_state_mut(env_id, host.window_realm().heap(), |state| {
           let id = state.alloc_id();
           state.responses.insert(id, response);
           Ok(id)
@@ -5447,23 +5733,29 @@ fn fetch_call<Host: WindowRealmHost + 'static>(
                 Value::Object(obj) => Some(obj),
                 _ => None,
               });
-            let mut scope = heap.scope();
 
             // If the signal was aborted after the networking task ran but before this completion
             // microtask settles the promise, reject instead of resolving.
             if let Some(signal_obj) = signal_obj {
-              let aborted_key = alloc_key(&mut scope, "aborted")?;
-              let aborted_val =
-                vm.get_with_host_and_hooks(vm_host, &mut scope, &mut hooks, signal_obj, aborted_key)?;
-              if scope.heap().to_boolean(aborted_val)? {
+              let aborted = {
+                let mut scope = heap.scope();
+                let aborted_key = alloc_key(&mut scope, "aborted")?;
+                let aborted_val =
+                  vm.get_with_host_and_hooks(vm_host, &mut scope, &mut hooks, signal_obj, aborted_key)?;
+                scope.heap().to_boolean(aborted_val)?
+              };
+
+              if aborted {
                 // Ensure we don't leak the stored response backing state.
-                let _ = with_env_state_mut(env_id, |state| {
+                let _ = with_env_state_mut(env_id, heap, |state| {
                   state.responses.remove(&response_id);
                   Ok(())
                 });
 
+                let mut scope = heap.scope();
                 let reason_key = alloc_key(&mut scope, "reason")?;
-                let reason = vm.get_with_host_and_hooks(vm_host, &mut scope, &mut hooks, signal_obj, reason_key)?;
+                let reason =
+                  vm.get_with_host_and_hooks(vm_host, &mut scope, &mut hooks, signal_obj, reason_key)?;
                 vm.call_with_host_and_hooks(
                   vm_host,
                   &mut scope,
@@ -5475,6 +5767,8 @@ fn fetch_call<Host: WindowRealmHost + 'static>(
                 return Ok(());
               }
             }
+
+            let mut scope = heap.scope();
 
             let resp_obj = make_response_wrapper(
               &mut scope,
@@ -5515,7 +5809,7 @@ fn fetch_call<Host: WindowRealmHost + 'static>(
 
         if let Err(queue_err) = queue_result {
           // Failed to enqueue the resolve microtask; tear down persistent roots now.
-          let _ = with_env_state_mut(env_id, |state| {
+          let _ = with_env_state_mut(env_id, host.window_realm().heap(), |state| {
             state.responses.remove(&response_id);
             Ok(())
           });
@@ -5635,10 +5929,8 @@ pub fn install_window_fetch_bindings_with_guard<Host: WindowRealmHost + 'static>
   let env_id = NEXT_ENV_ID.fetch_add(1, Ordering::Relaxed);
   let promise_executor_call = vm.register_native_call(promise_capability_executor_call)?;
   {
-    let mut lock = envs()
-      .lock()
-      .unwrap_or_else(|poisoned| poisoned.into_inner());
-    lock.insert(env_id, EnvState::new(env, promise_executor_call));
+    let mut lock = envs().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    lock.insert(env_id, EnvState::new(env, promise_executor_call, heap.gc_runs()));
   }
 
   let bindings = WindowFetchBindings::new(env_id);
@@ -6632,6 +6924,118 @@ mod tests {
 
     drop(fetch_bindings);
     window.teardown();
+    Ok(())
+  }
+
+  #[test]
+  fn gc_sweeps_unreferenced_responses() -> Result<(), VmError> {
+    let mut realm = WindowRealm::new(
+      WindowRealmConfig::new("https://example.invalid/")
+        .with_heap_limits(HeapLimits::new(16 * 1024 * 1024, 16 * 1024 * 1024)),
+    )?;
+
+    let env = WindowFetchEnv::for_document(Arc::new(crate::resource::HttpFetcher::new()), None);
+    let bindings = {
+      let (vm, vm_realm, heap) = realm.vm_realm_and_heap_mut();
+      install_window_fetch_bindings_with_guard::<DummyHost>(vm, vm_realm, heap, env)?
+    };
+    let env_id = bindings.env_id();
+
+    let baseline = {
+      let lock = envs().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+      let state = lock
+        .get(&env_id)
+        .ok_or(VmError::InvariantViolation("fetch env state missing"))?;
+      state.responses.len()
+    };
+
+    realm.exec_script("for (let i = 0; i < 50; i++) new Response('x');")?;
+
+    let before_gc = {
+      let lock = envs().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+      let state = lock
+        .get(&env_id)
+        .ok_or(VmError::InvariantViolation("fetch env state missing"))?;
+      state.responses.len()
+    };
+    assert!(
+      before_gc >= baseline + 50,
+      "expected responses to grow before GC; baseline={baseline} before_gc={before_gc}"
+    );
+
+    realm.heap_mut().collect_garbage();
+    sweep_env_state_if_gc_ran(env_id, realm.heap())?;
+
+    let after_gc = {
+      let lock = envs().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+      let state = lock
+        .get(&env_id)
+        .ok_or(VmError::InvariantViolation("fetch env state missing"))?;
+      state.responses.len()
+    };
+    assert_eq!(
+      after_gc, baseline,
+      "expected responses to be swept after GC; baseline={baseline} after_gc={after_gc}"
+    );
+
+    drop(bindings);
+    realm.teardown();
+    Ok(())
+  }
+
+  #[test]
+  fn gc_sweeps_unreferenced_owned_headers() -> Result<(), VmError> {
+    let mut realm = WindowRealm::new(
+      WindowRealmConfig::new("https://example.invalid/")
+        .with_heap_limits(HeapLimits::new(16 * 1024 * 1024, 16 * 1024 * 1024)),
+    )?;
+
+    let env = WindowFetchEnv::for_document(Arc::new(crate::resource::HttpFetcher::new()), None);
+    let bindings = {
+      let (vm, vm_realm, heap) = realm.vm_realm_and_heap_mut();
+      install_window_fetch_bindings_with_guard::<DummyHost>(vm, vm_realm, heap, env)?
+    };
+    let env_id = bindings.env_id();
+
+    let baseline = {
+      let lock = envs().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+      let state = lock
+        .get(&env_id)
+        .ok_or(VmError::InvariantViolation("fetch env state missing"))?;
+      state.owned_headers.len()
+    };
+
+    realm.exec_script("for (let i = 0; i < 50; i++) new Headers({ a: 'b' });")?;
+
+    let before_gc = {
+      let lock = envs().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+      let state = lock
+        .get(&env_id)
+        .ok_or(VmError::InvariantViolation("fetch env state missing"))?;
+      state.owned_headers.len()
+    };
+    assert!(
+      before_gc >= baseline + 50,
+      "expected owned headers to grow before GC; baseline={baseline} before_gc={before_gc}"
+    );
+
+    realm.heap_mut().collect_garbage();
+    sweep_env_state_if_gc_ran(env_id, realm.heap())?;
+
+    let after_gc = {
+      let lock = envs().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+      let state = lock
+        .get(&env_id)
+        .ok_or(VmError::InvariantViolation("fetch env state missing"))?;
+      state.owned_headers.len()
+    };
+    assert_eq!(
+      after_gc, baseline,
+      "expected owned headers to be swept after GC; baseline={baseline} after_gc={after_gc}"
+    );
+
+    drop(bindings);
+    realm.teardown();
     Ok(())
   }
 
@@ -8070,7 +8474,7 @@ mod tests {
     };
 
     let (env_id, response_id) = response_info_from_this(&mut scope, Value::Object(resp_obj))?;
-    with_env_state(env_id, |state| {
+    with_env_state(env_id, scope.heap(), |state| {
       let res = state
         .responses
         .get(&response_id)
@@ -8162,7 +8566,7 @@ mod tests {
     };
 
     let (env_id, response_id) = response_info_from_this(&mut scope, Value::Object(resp_obj))?;
-    with_env_state(env_id, |state| {
+    with_env_state(env_id, scope.heap(), |state| {
       let res = state
         .responses
         .get(&response_id)
@@ -8549,7 +8953,7 @@ mod tests {
 
     // Mark the body as used directly in the backing state.
     let request_id = number_to_u64(get_data_prop(&mut scope, req_obj, REQUEST_ID_KEY)?)?;
-    with_env_state_mut(env_id, |state| {
+    with_env_state_mut(env_id, scope.heap(), |state| {
       let req = state
         .requests
         .get_mut(&request_id)
@@ -8664,7 +9068,7 @@ mod tests {
     };
 
     let request_id = number_to_u64(get_data_prop(&mut scope, req_obj, REQUEST_ID_KEY)?)?;
-    with_env_state_mut(env_id, |state| {
+    with_env_state_mut(env_id, scope.heap(), |state| {
       let req = state
         .requests
         .get_mut(&request_id)
@@ -9798,7 +10202,7 @@ mod tests {
     )?;
     let env_id = bindings.env_id();
 
-    let response_id = with_env_state_mut(env_id, |state| {
+    let response_id = with_env_state_mut(env_id, &heap, |state| {
       let id = state.alloc_id();
       let mut response = CoreResponse::new(200);
       response.r#type = ResponseType::Cors;
@@ -10881,7 +11285,7 @@ mod tests {
     // The networking task has already stored a backing response; it must be removed if we reject
     // due to abort before settlement.
     assert_eq!(
-      with_env_state(env_id, |state| Ok(state.responses.len()))
+      with_env_state(env_id, host.window.heap(), |state| Ok(state.responses.len()))
         .map_err(|e| crate::error::Error::Other(e.to_string()))?,
       1
     );
@@ -10931,7 +11335,7 @@ mod tests {
     }
 
     assert_eq!(
-      with_env_state(env_id, |state| Ok(state.responses.len()))
+      with_env_state(env_id, host.window.heap(), |state| Ok(state.responses.len()))
         .map_err(|e| crate::error::Error::Other(e.to_string()))?,
       0
     );
