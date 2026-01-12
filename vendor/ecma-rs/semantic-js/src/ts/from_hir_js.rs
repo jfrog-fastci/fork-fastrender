@@ -335,11 +335,18 @@ fn lower_block(
                 let def = def_by_id(*def_id, &lower.defs, &lower.def_index);
                 match def.path.kind {
                   DefKind::Function | DefKind::Class | DefKind::Var | DefKind::Enum | DefKind::ImportBinding => {
-                    result
-                      .exported
-                      .entry(*def_id)
-                      .or_insert(Exported::Default);
-                    handled = true;
+                    // If the target is already exported (e.g. `export function foo() {}`),
+                    // we cannot overwrite its export kind without losing the named export.
+                    // In that case, fall back to the synthetic `ExportAlias` definition so
+                    // the module still records a default export.
+                    match result.exported.get(def_id).cloned() {
+                      None | Some(Exported::No) => {
+                        result.exported.insert(*def_id, Exported::Default);
+                        handled = true;
+                      }
+                      Some(Exported::Default) => handled = true,
+                      Some(Exported::Named) => {}
+                    }
                   }
                   _ => {}
                 }
