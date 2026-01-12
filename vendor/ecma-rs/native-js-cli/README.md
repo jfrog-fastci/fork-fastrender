@@ -16,6 +16,8 @@ If you have the `native-js` binary installed on your `PATH`, common commands are
 native-js check input.ts
 native-js run input.ts
 native-js bench input.ts --warmup 1 --iters 10
+# Machine-readable timing output:
+native-js --json bench input.ts --warmup 1 --iters 10
 ```
 
 Note: `native-js build`/`run`/`bench` emit and link native executables. This requires the

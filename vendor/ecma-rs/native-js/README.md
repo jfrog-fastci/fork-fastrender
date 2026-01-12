@@ -138,18 +138,22 @@ print!("{}", String::from_utf8_lossy(&output.stdout));
 
 See `native-js-cli` for the CLI front-ends:
 
-```bash
-# Minimal parse-js-driven emitter (default `native-js-cli --pipeline project`):
-bash vendor/ecma-rs/scripts/cargo_llvm.sh run -p native-js-cli -- path/to/file.ts
+  ```bash
+  # Minimal parse-js-driven emitter (default `native-js-cli --pipeline project`):
+  bash vendor/ecma-rs/scripts/cargo_llvm.sh run -p native-js-cli -- path/to/file.ts
 
-# Typechecked pipeline (single entry file; expects the entry module to export `main()`; does not load `tsconfig.json`):
-bash vendor/ecma-rs/scripts/cargo_llvm.sh run -p native-js-cli -- --pipeline checked check path/to/entry.ts
-bash vendor/ecma-rs/scripts/cargo_llvm.sh run -p native-js-cli -- --pipeline checked run path/to/entry.ts
+  # Typechecked pipeline (single entry file; expects the entry module to export `main()`; does not load `tsconfig.json`):
+  bash vendor/ecma-rs/scripts/cargo_llvm.sh run -p native-js-cli -- --pipeline checked check path/to/entry.ts
+  bash vendor/ecma-rs/scripts/cargo_llvm.sh run -p native-js-cli -- --pipeline checked run path/to/entry.ts
 
-# Typechecked AOT pipeline with `tsconfig.json` support (more flags):
-bash vendor/ecma-rs/scripts/cargo_llvm.sh run -p native-js-cli --bin native-js -- check path/to/entry.ts
-bash vendor/ecma-rs/scripts/cargo_llvm.sh run -p native-js-cli --bin native-js -- run path/to/entry.ts
-```
+  # Typechecked AOT pipeline with `tsconfig.json` support (more flags):
+  bash vendor/ecma-rs/scripts/cargo_llvm.sh run -p native-js-cli --bin native-js -- check path/to/entry.ts
+  bash vendor/ecma-rs/scripts/cargo_llvm.sh run -p native-js-cli --bin native-js -- run path/to/entry.ts
+  bash vendor/ecma-rs/scripts/cargo_llvm.sh run -p native-js-cli --bin native-js -- bench path/to/entry.ts --warmup 1 --iters 10
+
+  # Emit machine-readable benchmark timings (does not mix with program stdout/stderr):
+  bash vendor/ecma-rs/scripts/cargo_llvm.sh run -p native-js-cli --bin native-js -- --json bench path/to/entry.ts --warmup 1 --iters 10
+  ```
 
 ## Public API overview (current)
 

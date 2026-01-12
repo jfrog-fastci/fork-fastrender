@@ -1399,21 +1399,18 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
 
   fn with_body<R>(
     &mut self,
-    body_id: hir_js::BodyId,
+    _body_id: hir_js::BodyId,
     body: &'a hir_js::Body,
     types: &'a typecheck_ts::BodyCheckResult,
     f: impl FnOnce(&mut Self) -> R,
   ) -> R {
-    let prev_body_id = self.body_id;
     let prev_body = self.body;
     let prev_types = self.types;
-    self.body_id = body_id;
     self.body = body;
     self.types = types;
     let out = f(self);
     self.types = prev_types;
     self.body = prev_body;
-    self.body_id = prev_body_id;
     out
   }
 
