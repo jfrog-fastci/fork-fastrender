@@ -873,9 +873,9 @@ fn queue_ws_task<Host: WindowRealmHost + 'static>(
     }
     let _pending = PendingGuard { env_id, ws_id };
 
-    let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host);
+    let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host)?;
     hooks.set_event_loop(event_loop);
-    let (vm_host, window_realm) = host.vm_host_and_window_realm();
+    let (vm_host, window_realm) = host.vm_host_and_window_realm()?;
     window_realm.reset_interrupt();
     let budget = window_realm.vm_budget_now();
     let (vm, heap) = window_realm.vm_and_heap_mut();

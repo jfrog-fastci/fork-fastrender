@@ -570,9 +570,9 @@ fn file_reader_read_common<Host: WindowRealmHost + 'static>(
   let root: RootId = scope.heap_mut().add_root(Value::Object(reader_obj))?;
 
   let queue_result = event_loop.queue_task(TaskSource::DOMManipulation, move |host, event_loop| {
-    let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host);
+    let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host)?;
     hooks.set_event_loop(event_loop);
-    let (vm_host, window_realm) = host.vm_host_and_window_realm();
+    let (vm_host, window_realm) = host.vm_host_and_window_realm()?;
     window_realm.reset_interrupt();
     let budget = window_realm.vm_budget_now();
     let global = window_realm.global_object();
@@ -879,9 +879,9 @@ fn file_reader_abort_native<Host: WindowRealmHost + 'static>(
   let root: RootId = scope.heap_mut().add_root(Value::Object(reader_obj))?;
 
   let queue_result = event_loop.queue_task(TaskSource::DOMManipulation, move |host, event_loop| {
-    let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host);
+    let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host)?;
     hooks.set_event_loop(event_loop);
-    let (vm_host, window_realm) = host.vm_host_and_window_realm();
+    let (vm_host, window_realm) = host.vm_host_and_window_realm()?;
     window_realm.reset_interrupt();
     let budget = window_realm.vm_budget_now();
     let global = window_realm.global_object();

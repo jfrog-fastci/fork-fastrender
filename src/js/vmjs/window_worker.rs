@@ -776,9 +776,10 @@ fn run_window_delivery(
   };
 
   // Dispatch to `worker.onmessage` in the owning window realm.
-  let mut hooks = VmJsEventLoopHooks::<crate::js::window::WindowHostState>::new_with_host(host);
+  let mut hooks =
+    VmJsEventLoopHooks::<crate::js::window::WindowHostState>::new_with_host(host)?;
   hooks.set_event_loop(event_loop);
-  let (vm_host, window_realm) = host.vm_host_and_window_realm();
+  let (vm_host, window_realm) = host.vm_host_and_window_realm()?;
   let (vm, realm, heap) = window_realm.vm_realm_and_heap_mut();
 
   {
@@ -838,9 +839,10 @@ fn run_window_error_dispatch(
   worker: Rc<RefCell<WorkerInner>>,
   message: String,
 ) -> FastResult<()> {
-  let mut hooks = VmJsEventLoopHooks::<crate::js::window::WindowHostState>::new_with_host(host);
+  let mut hooks =
+    VmJsEventLoopHooks::<crate::js::window::WindowHostState>::new_with_host(host)?;
   hooks.set_event_loop(event_loop);
-  let (vm_host, window_realm) = host.vm_host_and_window_realm();
+  let (vm_host, window_realm) = host.vm_host_and_window_realm()?;
   let (vm, _realm, heap) = window_realm.vm_realm_and_heap_mut();
 
   {

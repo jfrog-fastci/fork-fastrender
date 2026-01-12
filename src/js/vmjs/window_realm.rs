@@ -3519,10 +3519,10 @@ fn dispatch_hashchange_event_task<Host: WindowRealmHost + 'static>(
   old_url: String,
   new_url: String,
 ) -> crate::error::Result<()> {
-  let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host);
+  let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host)?;
   hooks.set_event_loop(event_loop);
 
-  let (vm_host, window_realm) = host.vm_host_and_window_realm();
+  let (vm_host, window_realm) = host.vm_host_and_window_realm()?;
   let realm_id = window_realm.realm_id;
   let result = window_realm.with_vm_budget(|rt| {
     let (vm, realm, heap) = rt.vm_realm_and_heap_mut();
@@ -4901,9 +4901,9 @@ fn queue_history_traversal_task<Host: WindowRealmHost + 'static>(
 ) -> bool {
   event_loop
     .queue_task(TaskSource::DOMManipulation, move |host, event_loop| {
-      let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host);
+      let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host)?;
       hooks.set_event_loop(event_loop);
-      let (vm_host, window_realm) = host.vm_host_and_window_realm();
+      let (vm_host, window_realm) = host.vm_host_and_window_realm()?;
       window_realm.reset_interrupt();
       let budget = window_realm.vm_budget_now();
       let (vm, heap) = window_realm.vm_and_heap_mut();

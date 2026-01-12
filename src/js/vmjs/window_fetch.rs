@@ -54,6 +54,7 @@ const RESPONSE_ID_KEY: &str = "__fastrender_response_id";
 const REQUEST_BODY_STREAM_KEY: &str = "__fastrender_request_body_stream";
 
 // Hidden per-instance properties for stream wrappers.
+const REQUEST_BODY_STREAM_KEY: &str = "__fastrender_request_body_stream";
 const RESPONSE_BODY_STREAM_KEY: &str = "__fastrender_response_body_stream";
 const READABLE_STREAM_ID_KEY: &str = "__fastrender_readable_stream_id";
 const READABLE_STREAM_READER_ID_KEY: &str = "__fastrender_readable_stream_reader_id";
@@ -12569,7 +12570,7 @@ mod tests {
     };
 
     {
-      let mut hooks = VmJsEventLoopHooks::<EventLoopHost>::new_with_host(&mut host);
+      let mut hooks = VmJsEventLoopHooks::<EventLoopHost>::new_with_host(&mut host)?;
       hooks.set_event_loop(&mut event_loop);
       let EventLoopHost { host_ctx, window } = &mut host;
       window
@@ -12621,7 +12622,7 @@ mod tests {
 
     // Revoke + verify subsequent fetch rejects.
     {
-      let mut hooks = VmJsEventLoopHooks::<EventLoopHost>::new_with_host(&mut host);
+      let mut hooks = VmJsEventLoopHooks::<EventLoopHost>::new_with_host(&mut host)?;
       hooks.set_event_loop(&mut event_loop);
       let EventLoopHost { host_ctx, window } = &mut host;
       window

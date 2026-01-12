@@ -353,11 +353,11 @@ impl WindowHost {
     self.queue_task(TaskSource::MediaQueryList, move |host_state, event_loop| {
       use crate::js::window_timers::VmJsEventLoopHooks;
 
-      let mut hooks = VmJsEventLoopHooks::<WindowHostState>::new_with_host(host_state);
+      let mut hooks = VmJsEventLoopHooks::<WindowHostState>::new_with_host(host_state)?;
       hooks.set_event_loop(event_loop);
 
       let result: Result<()> = {
-        let (vm_host, window) = host_state.vm_host_and_window_realm();
+        let (vm_host, window) = host_state.vm_host_and_window_realm()?;
         let (vm, _realm, heap) = window.vm_realm_and_heap_mut();
         let vm_result = {
           let mut scope = heap.scope();
