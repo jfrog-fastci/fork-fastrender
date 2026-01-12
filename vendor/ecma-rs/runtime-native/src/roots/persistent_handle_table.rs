@@ -95,6 +95,28 @@ impl PersistentHandleTable {
     // `scope` drops here, truncating the shadow stack entry.
   }
 
+  /// Moving-GC-safe pointer update for a raw pointer value on a registered thread.
+  ///
+  /// See [`Self::alloc_movable`] for rationale and safety notes.
+  pub(crate) fn set_movable(&self, id: HandleId, ptr: *mut u8) -> bool {
+    let ts = registry::current_thread_state_ptr();
+    if ts.is_null() {
+      return self.set(id, ptr);
+    }
+
+    // Safety: `current_thread_state_ptr` returns a valid pointer to the current thread's registered
+    // `ThreadState` (it is null only if the thread is unregistered).
+    let ts = unsafe { &*ts };
+
+    let scope = crate::gc::shadow_stack::RootScope::new(ts);
+    let root = scope.root(ptr);
+
+    // Safety: `root.slot_ptr()` returns a valid, aligned pointer to a writable `*mut u8` slot in the
+    // current thread's shadow stack.
+    unsafe { self.set_from_slot(id, root.slot_ptr()) }
+    // `scope` drops here, truncating the shadow stack entry.
+  }
+
   /// Resolves `id` to the current object pointer, or `None` if the handle is stale/freed.
   pub fn get(&self, id: HandleId) -> Option<*mut u8> {
     self.inner.get(id).map(|p| p.as_ptr())
@@ -182,6 +204,8 @@ mod tests {
   use std::sync::mpsc;
   use std::time::Duration;
   use std::time::Instant;
+  use crate::gc::GcHeap;
+  use crate::gc::SimpleRememberedSet;
 
   #[test]
   fn global_persistent_handle_table_lock_is_gc_aware() {
@@ -404,5 +428,166 @@ mod tests {
       );
       let _ = global_persistent_handle_table().free(handle);
     });
+  }
+
+  #[repr(C)]
+  struct Obj {
+    header: crate::gc::ObjHeader,
+    value: usize,
+  }
+
+  static OBJ_DESC: crate::TypeDescriptor =
+    crate::TypeDescriptor::new(core::mem::size_of::<Obj>(), &[]);
+
+  #[test]
+  fn set_movable_reads_slot_after_lock_acquired_under_gc_safe_lock_contention() {
+    let _rt = crate::test_util::TestRuntimeGuard::new();
+    threading::register_current_thread(ThreadKind::Main);
+
+    // Keep the process-global persistent-handle table empty so minor GC doesn't contend on it while
+    // we intentionally hold a lock on a *local* table below.
+    assert_eq!(
+      global_persistent_handle_table().live_count(),
+      0,
+      "expected no live global persistent handles after test runtime reset"
+    );
+
+    // Allocate a nursery object that is guaranteed to move during minor GC.
+    let mut heap = GcHeap::new();
+    let obj = heap.alloc_young(&OBJ_DESC);
+    unsafe {
+      (*(obj as *mut Obj)).value = 0xC0FFEE;
+    }
+
+    // Root `obj` in the main thread so we can observe its relocated address after evacuation.
+    let ts = threading::registry::current_thread_state().expect("main thread must be registered");
+    let scope = crate::gc::shadow_stack::RootScope::new(&ts);
+    let rooted_obj = scope.root(obj);
+
+    // Create a local handle table and allocate a stable handle we can update later.
+    let table = std::sync::Arc::new(PersistentHandleTable::new());
+    let handle = table.alloc(0x1234usize as *mut u8);
+
+    // Stop-the-world handshakes can take much longer in debug builds (especially
+    // under parallel test execution on multi-agent hosts). Keep release builds
+    // strict, but give debug builds enough slack to avoid flaky timeouts.
+    const TIMEOUT: Duration = if cfg!(debug_assertions) {
+      Duration::from_secs(30)
+    } else {
+      Duration::from_secs(2)
+    };
+
+    std::thread::scope(|scope_threads| {
+      // Thread A holds a shared/read lock on the local persistent handle table.
+      let (a_locked_tx, a_locked_rx) = mpsc::channel::<()>();
+      let (a_release_tx, a_release_rx) = mpsc::channel::<()>();
+
+      // Thread C attempts to store a movable raw GC pointer while the lock is held.
+      let (c_registered_tx, c_registered_rx) = mpsc::channel::<threading::ThreadId>();
+      let (c_start_tx, c_start_rx) = mpsc::channel::<()>();
+      let (c_done_tx, c_done_rx) = mpsc::channel::<()>();
+
+      let table_a = table.clone();
+      scope_threads.spawn(move || {
+        threading::register_current_thread(ThreadKind::Worker);
+
+        table_a.debug_with_read_lock_for_tests(|| {
+          // Mark this thread as GC-safe while holding the lock so stop-the-world coordination can
+          // proceed even if the thread is blocked on this test channel.
+          let gc_safe = threading::enter_gc_safe_region();
+          a_locked_tx.send(()).unwrap();
+          a_release_rx.recv().unwrap();
+          drop(gc_safe);
+        });
+
+        threading::unregister_current_thread();
+      });
+
+      a_locked_rx
+        .recv_timeout(TIMEOUT)
+        .expect("thread A should acquire the local persistent handle table read lock");
+
+      let table_c = table.clone();
+      let obj_addr = obj as usize;
+      scope_threads.spawn(move || {
+        let id = threading::register_current_thread(ThreadKind::Worker);
+        c_registered_tx.send(id).unwrap();
+
+        c_start_rx.recv().unwrap();
+
+        // Safety: `ptr` points to the base of a GC-managed object allocated by `GcHeap::alloc_young`.
+        let ptr = obj_addr as *mut u8;
+        assert!(table_c.set_movable(handle, ptr));
+        c_done_tx.send(()).unwrap();
+
+        threading::unregister_current_thread();
+      });
+
+      let c_id = c_registered_rx
+        .recv_timeout(TIMEOUT)
+        .expect("thread C should register with the thread registry");
+
+      // Start thread C's store attempt (it should block on the table lock).
+      c_start_tx.send(()).unwrap();
+
+      // Wait until thread C is marked NativeSafe (meaning it is blocked on the GC-aware lock).
+      let start = Instant::now();
+      loop {
+        let mut native_safe = false;
+        threading::registry::for_each_thread(|t| {
+          if t.id() == c_id {
+            native_safe = t.is_native_safe();
+          }
+        });
+        if native_safe {
+          break;
+        }
+        if start.elapsed() > TIMEOUT {
+          panic!(
+            "thread C did not enter a GC-safe region while blocked on the persistent handle table lock"
+          );
+        }
+        std::thread::yield_now();
+      }
+
+      // Run a moving GC (minor evacuation) while thread C is blocked. This should relocate `obj` and
+      // update shadow-stack roots in-place.
+      let mut remembered = SimpleRememberedSet::new();
+      crate::with_world_stopped(|| {
+        heap
+          .collect_minor_with_shadow_stacks(&mut remembered)
+          .expect("minor GC");
+      });
+
+      let relocated = rooted_obj.get();
+      assert_ne!(
+        relocated as usize, obj_addr,
+        "expected the nursery object to be evacuated to a new address during minor GC"
+      );
+      assert!(
+        !heap.is_in_nursery(relocated),
+        "expected evacuated object to be out of the nursery"
+      );
+      unsafe {
+        assert_eq!((*(relocated as *const Obj)).value, 0xC0FFEE);
+      }
+
+      // Release the read lock so thread C can finish updating the handle.
+      a_release_tx.send(()).unwrap();
+      c_done_rx
+        .recv_timeout(TIMEOUT)
+        .expect("thread C should finish storing into the persistent handle");
+
+      assert_eq!(
+        table.get(handle).unwrap() as usize,
+        relocated as usize,
+        "handle table must store the relocated pointer, not the stale nursery address"
+      );
+    });
+
+    assert!(table.free(handle));
+    assert_eq!(table.live_count(), 0);
+
+    threading::unregister_current_thread();
   }
 }

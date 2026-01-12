@@ -1348,10 +1348,13 @@ pub extern "C" fn rt_gc_unregister_root_slot(handle: u32) {
 /// handle without managing slot storage themselves.
 ///
 /// ## Moving-GC safety
-/// This function accepts a raw pointer value. If `ptr` is a **movable** GC-managed pointer, prefer
-/// [`rt_gc_pin_h`] so the runtime reads the pointer from an addressable slot after acquiring the
-/// root registry lock (lock contention may temporarily enter a GC-safe region, allowing a moving GC
-/// to relocate objects).
+/// When the current thread is registered with the runtime thread registry, this function is
+/// moving-GC safe even for **movable** objects: it temporarily roots `ptr` in the thread's shadow
+/// stack and only reads the pointer value after acquiring the root registry lock.
+///
+/// If the current thread is **unregistered**, this function provides no moving-GC safety guarantees.
+/// In that case, prefer [`rt_gc_pin_h`] (pointer-to-slot) or ensure the pointer is stable (pinned) or
+/// that no GC can run concurrently.
 #[no_mangle]
 pub extern "C" fn rt_gc_pin(ptr: crate::roots::GcPtr) -> u32 {
   abort_on_panic(|| crate::roots::global_root_registry().pin(ptr))
@@ -1398,9 +1401,13 @@ pub extern "C" fn rt_gc_root_get(handle: u32) -> *mut u8 {
 /// Returns `false` if `handle` is invalid/stale/removed.
 ///
 /// ## Moving-GC safety
-/// This function accepts a raw pointer value. If `ptr` is a **movable** GC-managed pointer, prefer
-/// [`rt_gc_root_set_h`] so the runtime reads the pointer from an addressable slot after acquiring
-/// the root registry lock.
+/// When the current thread is registered with the runtime thread registry, this function is
+/// moving-GC safe even for **movable** objects: it temporarily roots `ptr` in the thread's shadow
+/// stack and only reads the pointer value after acquiring the root registry lock.
+///
+/// If the current thread is **unregistered**, this function provides no moving-GC safety guarantees.
+/// In that case, prefer [`rt_gc_root_set_h`] (pointer-to-slot) or ensure the pointer is stable
+/// (pinned) or that no GC can run concurrently.
 #[no_mangle]
 pub extern "C" fn rt_gc_root_set(handle: u32, ptr: *mut u8) -> bool {
   abort_on_panic(|| crate::roots::global_root_registry().set(handle, ptr))
@@ -1428,17 +1435,16 @@ pub unsafe extern "C" fn rt_gc_root_set_h(handle: u32, slot: crate::roots::GcHan
 /// Allocate a new persistent handle rooting `ptr`.
 ///
 /// ## Moving-GC safety
-/// This function accepts a raw pointer value. It is therefore only safe to use with:
-/// - pointers that are **not** GC-managed, or
-/// - GC-managed pointers that are known to be **stable** for the duration of the call (e.g. pinned
-///   objects).
+/// When the current thread is registered with the runtime thread registry, this function is
+/// moving-GC safe even for **movable** objects: it temporarily roots `ptr` in the thread's shadow
+/// stack and only reads the pointer value after acquiring the persistent handle table lock.
 ///
-/// If `ptr` refers to a **movable** GC-managed object, use [`rt_handle_alloc_h`] instead so the
-/// runtime can re-load the pointer from an addressable slot *after* acquiring internal locks (lock
-/// contention may temporarily enter a GC-safe region, allowing a moving GC to relocate objects).
+/// If the current thread is **unregistered**, this function provides no moving-GC safety guarantees.
+/// In that case, prefer [`rt_handle_alloc_h`] (pointer-to-slot) or ensure the pointer is stable
+/// (pinned) or that no GC can run concurrently.
 #[no_mangle]
 pub extern "C" fn rt_handle_alloc(ptr: *mut u8) -> u64 {
-  abort_on_panic(|| crate::roots::global_persistent_handle_table().alloc(ptr).to_u64())
+  abort_on_panic(|| crate::roots::global_persistent_handle_table().alloc_movable(ptr).to_u64())
 }
 
 /// Like [`rt_handle_alloc`], but takes the GC-managed pointer as a `GcHandle` (pointer-to-slot)
@@ -1487,13 +1493,17 @@ pub extern "C" fn rt_handle_load(handle: u64) -> *mut u8 {
 /// Invalid handles are ignored.
 ///
 /// ## Moving-GC safety
-/// This function accepts a raw pointer value. If the new value is a **movable** GC-managed object,
-/// prefer [`rt_handle_store_h`] so the runtime reads the pointer from a slot after acquiring the
-/// handle table lock.
+/// When the current thread is registered with the runtime thread registry, this function is
+/// moving-GC safe even for **movable** objects: it temporarily roots `ptr` in the thread's shadow
+/// stack and only reads the pointer value after acquiring the persistent handle table lock.
+///
+/// If the current thread is **unregistered**, this function provides no moving-GC safety guarantees.
+/// In that case, prefer [`rt_handle_store_h`] (pointer-to-slot) or ensure the pointer is stable
+/// (pinned) or that no GC can run concurrently.
 #[no_mangle]
 pub extern "C" fn rt_handle_store(handle: u64, ptr: *mut u8) {
   abort_on_panic(|| {
-    let _ = crate::roots::global_persistent_handle_table().set(HandleId::from_u64(handle), ptr);
+    let _ = crate::roots::global_persistent_handle_table().set_movable(HandleId::from_u64(handle), ptr);
   })
 }
 

@@ -1109,13 +1109,16 @@ pub fn for_each_reloc_pair_world_stopped_with_stackmaps(
   });
 
   // 4) Persistent handle-table roots.
-  crate::roots::global_persistent_handle_table().for_each_root_slot(|slot| {
-    let slot = slot.cast::<u8>();
-    f(crate::gc_roots::RelocPair {
-      base_slot: crate::statepoints::RootSlot::StackAddr(slot),
-      derived_slot: crate::statepoints::RootSlot::StackAddr(slot),
-    })
-  });
+  let persistent = crate::roots::global_persistent_handle_table();
+  if persistent.live_count() != 0 {
+    persistent.for_each_root_slot(|slot| {
+      let slot = slot.cast::<u8>();
+      f(crate::gc_roots::RelocPair {
+        base_slot: crate::statepoints::RootSlot::StackAddr(slot),
+        derived_slot: crate::statepoints::RootSlot::StackAddr(slot),
+      })
+    });
+  }
 
   // 5) Stack roots from stackmaps.
   let Some(stackmaps) = stackmaps else {
@@ -1232,7 +1235,10 @@ pub fn for_each_root_slot_world_stopped_with_stackmaps(
   crate::roots::global_root_registry().for_each_root_slot(|slot| f(slot));
 
   // 4) Persistent handle-table roots.
-  crate::roots::global_persistent_handle_table().for_each_root_slot(|slot| f(slot));
+  let persistent = crate::roots::global_persistent_handle_table();
+  if persistent.live_count() != 0 {
+    persistent.for_each_root_slot(|slot| f(slot));
+  }
 
   // 5) Stack roots from stackmaps.
   let Some(stackmaps) = stackmaps else {
