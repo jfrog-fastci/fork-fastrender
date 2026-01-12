@@ -20,6 +20,9 @@ use webidl_vm_js::WebIdlBindingsHost;
 use super::browser_document::prepare_dom_inner;
 use super::{PreparedDocument, PreparedPaintOptions, RenderOptions};
 
+use vm_js::{Scope, Value, Vm, VmError};
+use webidl_vm_js::WebIdlBindingsHost;
+
 /// Counters describing how `BrowserDocumentDom2` satisfied invalidations over time.
 ///
 /// These are intended for tests and performance diagnostics; they are conservative and prioritize
@@ -2375,6 +2378,13 @@ impl crate::js::DomHost for BrowserDocumentDom2 {
   }
 }
 
+// `BrowserDocumentDom2` is frequently used as the embedder `VmHost` context for vm-js execution
+// boundaries. Some code paths (notably legacy WebIDL host dispatch fallback) expect the active host
+// context to implement `webidl-vm-js`'s `WebIdlBindingsHost` trait.
+//
+// The full WebIDL binding surface for the browser document is still implemented elsewhere (native
+// DOM shims + explicit host dispatch). Keep this impl as a stub so non-WebIDL call sites can build
+// without requiring `BrowserDocumentDom2` to own WebIDL dispatch state.
 impl WebIdlBindingsHost for BrowserDocumentDom2 {
   fn call_operation(
     &mut self,
