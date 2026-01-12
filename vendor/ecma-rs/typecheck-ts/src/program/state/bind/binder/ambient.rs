@@ -217,6 +217,53 @@ impl ProgramState {
         );
       }
       Stmt::NamespaceDecl(ns) => {
+        // `declare namespace Foo { ... }` declarations inside ambient modules participate in
+        // declaration merging (`function Foo` + `namespace Foo`, etc). We need to emit a semantic
+        // declaration for the namespace itself so `semantic-js` can perform merges and surface
+        // diagnostics like TS2395 ("merged declarations must be all exported or all local").
+        let span = loc_to_span(file, stmt.loc);
+        let name = ns.stx.name.clone();
+        let symbol = self.alloc_symbol();
+        let def_id = self.alloc_def();
+        self.def_data.insert(
+          def_id,
+          DefData {
+            name: name.clone(),
+            file,
+            span: span.range,
+            symbol,
+            export: ns.stx.export,
+            kind: DefKind::Namespace(NamespaceData {
+              body: None,
+              value_type: None,
+              type_type: None,
+              declare: ns.stx.declare,
+            }),
+          },
+        );
+        self.record_def_symbol(def_id, symbol);
+        self.record_symbol(file, span.range, symbol);
+        defs.push(def_id);
+        bindings.insert(
+          name.clone(),
+          SymbolBinding {
+            symbol,
+            def: Some(def_id),
+            type_id: None,
+          },
+        );
+        builder.add_decl(
+          def_id,
+          name,
+          sem_ts::DeclKind::Namespace,
+          if ns.stx.export {
+            sem_ts::Exported::Named
+          } else {
+            sem_ts::Exported::No
+          },
+          span.range,
+        );
+
         self.bind_ambient_namespace_body(file, &ns.stx.body, builder, bindings, defs);
       }
       Stmt::ModuleDecl(module) => {

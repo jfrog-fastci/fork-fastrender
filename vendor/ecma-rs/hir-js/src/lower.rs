@@ -3386,6 +3386,16 @@ fn collect_stmt<'a>(
         for desc in descriptors.iter_mut().skip(body_start) {
           // Ambient modules export their declarations without `export` modifiers.
           if desc.parent == Some(module_raw) && members_exported_by_default {
+            // Match TypeScript: in external module declarations (`declare module "x" {}`), a
+            // `namespace Foo {}` declaration does *not* become an exported member unless it has an
+            // explicit `export` modifier. This matters for value/namespace merging diagnostics like
+            // TS2395 (export mismatch).
+            //
+            // Other ambient declarations (functions, interfaces, etc.) remain visible as module
+            // exports without `export` keywords.
+            if matches!(desc.kind, DefKind::Namespace | DefKind::Module) {
+              continue;
+            }
             desc.is_exported = true;
           }
         }
