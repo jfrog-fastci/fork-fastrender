@@ -354,7 +354,13 @@ vendor/ecma-rs/
 
 ```bash
 # Script processing tests
-timeout -k 10 600 bash scripts/cargo_agent.sh test --test html_script_processing
+# Script-processing tests are unit tests (live in `src/`), so run them via `--lib` with a
+# module-qualified filter.
+timeout -k 10 600 bash scripts/cargo_agent.sh test -p fastrender --lib js::html_script_processing
+
+# If you need to run a true integration test that exercises script processing end-to-end, it must
+# live under the unified integration-test binary (`tests/integration.rs`):
+# timeout -k 10 600 bash scripts/cargo_agent.sh test -p fastrender --test integration <filter>
 
 # Event loop tests
 timeout -k 10 600 bash scripts/cargo_agent.sh test -p fastrender --lib js::event_loop
