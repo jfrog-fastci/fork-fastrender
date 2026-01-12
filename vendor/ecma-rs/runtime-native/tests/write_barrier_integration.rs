@@ -123,7 +123,15 @@ fn remembered_entries_flush_when_thread_exits() {
   // dropped and the buffer must be flushed to the global remset so GC doesn't
   // miss the edge.
   std::thread::spawn(move || {
-    runtime_native::threading::register_current_thread(ThreadKind::External);
+    // Use the low-level thread registry API instead of
+    // `threading::register_current_thread`: the higher-level wrapper also
+    // initializes the global heap and resets the process-wide young range to the
+    // nursery backing that heap.
+    //
+    // This test uses a synthetic 1-byte "young range" around a dummy pointer;
+    // overwriting that range would make `rt_write_barrier` fast-path and skip
+    // recording the edge.
+    runtime_native::threading::registry::register_current_thread(ThreadKind::External);
     unsafe {
       runtime_native::rt_write_barrier(obj_addr as *mut u8, slot_addr as *mut u8);
     }
