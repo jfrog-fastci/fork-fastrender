@@ -72,15 +72,17 @@ use std::time::Instant;
 use url::Url;
 
 fn build_offline_renderer() -> fastrender::Result<fastrender::FastRender> {
-  super::init_rayon_for_wpt_tests();
-  fastrender::FastRender::builder()
-    .font_sources(fastrender::FontConfig::bundled_only())
-    .resource_policy(
+  crate::common::init_rayon_for_tests(1);
+  let config = fastrender::FastRenderConfig::default()
+    .with_font_sources(fastrender::FontConfig::bundled_only())
+    .with_resource_policy(
       ResourcePolicy::default()
         .allow_http(false)
         .allow_https(false),
     )
-    .build()
+    .with_paint_parallelism(fastrender::PaintParallelism::disabled())
+    .with_layout_parallelism(fastrender::LayoutParallelism::disabled());
+  fastrender::FastRender::with_config(config)
 }
 
 /// Main WPT test runner
