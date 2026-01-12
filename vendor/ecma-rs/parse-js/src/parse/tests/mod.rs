@@ -2,6 +2,7 @@ mod expr;
 mod stmt;
 mod type_member;
 mod class_await;
+mod class_static_block;
 
 use super::Parser;
 use crate::lex::LexMode;

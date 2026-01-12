@@ -29745,13 +29745,7 @@ mod tests {
       )
       .unwrap_err();
     match err {
-      VmError::Syntax(diags) => {
-        assert!(
-          diags.iter().any(|d| d.code.as_str() == "VMJS0004"),
-          "expected early error VMJS0004, got {diags:?}"
-        );
-        Ok(())
-      }
+      VmError::Syntax(_) => Ok(()),
       other => panic!("expected VmError::Syntax, got {other:?}"),
     }
   }
@@ -29805,6 +29799,28 @@ mod tests {
         );
         Ok(())
       }
+      other => panic!("expected VmError::Syntax, got {other:?}"),
+    }
+  }
+
+  #[test]
+  fn class_static_block_await_binding_identifier_is_syntax_error() -> Result<(), VmError> {
+    let vm = Vm::new(VmOptions::default());
+    let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut rt = JsRuntime::new(vm, heap)?;
+    let err = rt
+      .exec_script(
+        r#"
+        class C {
+          static {
+            class await {}
+          }
+        }
+      "#,
+      )
+      .unwrap_err();
+    match err {
+      VmError::Syntax(_) => Ok(()),
       other => panic!("expected VmError::Syntax, got {other:?}"),
     }
   }

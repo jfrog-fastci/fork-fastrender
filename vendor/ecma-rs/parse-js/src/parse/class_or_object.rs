@@ -262,14 +262,34 @@ impl<'a> Parser<'a> {
               let prev_new_target_allowed = p.new_target_allowed;
               let prev_super_prop_allowed = p.super_prop_allowed;
               let prev_super_call_allowed = p.super_call_allowed;
+              let prev_in_function = p.in_function;
               p.in_iteration = 0;
               p.in_switch = 0;
+              // Static blocks are not function bodies, even when nested inside a function, so
+              // `return` is always a syntax error within the block.
+              p.in_function = 0;
               p.new_target_allowed += 1;
               p.super_prop_allowed += 1;
               p.super_call_allowed = 0;
-              let body = p.stmts(ctx.non_top_level(), TT::BraceClose);
+              // Static blocks are parsed as:
+              // `StatementList[~Yield, +Await, ~Return]opt`
+              //
+              // This means:
+              // - `await` is treated as a keyword (it can begin an AwaitExpression) but is not
+              //   permitted as an identifier in the static block statement list.
+              // - `yield` is not treated as a keyword from an enclosing generator.
+              // - `return` is not permitted (handled above via `in_function = 0`).
+              let is_module = p.is_module();
+              let block_ctx = ctx.non_top_level().with_rules(ParsePatternRules {
+                await_allowed: false,
+                yield_allowed: !is_module,
+                await_expr_allowed: true,
+                yield_expr_allowed: false,
+              });
+              let body = p.stmts(block_ctx, TT::BraceClose);
               p.in_iteration = prev_in_iteration;
               p.in_switch = prev_in_switch;
+              p.in_function = prev_in_function;
               p.new_target_allowed = prev_new_target_allowed;
               p.super_prop_allowed = prev_super_prop_allowed;
               p.super_call_allowed = prev_super_call_allowed;
