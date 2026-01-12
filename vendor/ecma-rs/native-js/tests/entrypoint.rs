@@ -216,6 +216,43 @@ export { main };
 }
 
 #[test]
+fn entrypoint_renamed_local_reexported_main_returns_exit_code() {
+  if !require_executable_emission_or_skip() {
+    return;
+  }
+
+  let mut host = es5_host();
+  let entry = FileKey::new("entry.ts");
+  let impl_file = FileKey::new("impl.ts");
+  host.insert(
+    entry.clone(),
+    r#"import { run } from "./impl.ts";
+export { run as main };
+"#,
+  );
+  host.insert(impl_file.clone(), "export function run(): number { return 7; }");
+  host.link(entry.clone(), "./impl.ts", impl_file.clone());
+
+  let program = Program::new(host, vec![entry.clone()]);
+  let diags = program.check();
+  assert!(diags.is_empty(), "unexpected type errors: {diags:#?}");
+
+  let file_id = program.file_id(&entry).unwrap();
+  let dir = tempdir().unwrap();
+  let exe = dir.path().join("out");
+  let mut opts = CompilerOptions::default();
+  opts.emit = EmitKind::Executable;
+  opts.output = Some(exe.clone());
+  let artifact = compile_program(&program, file_id, &opts).unwrap();
+  assert_eq!(artifact.kind, EmitKind::Executable);
+  assert_eq!(artifact.path, exe);
+
+  let out = Command::new(&artifact.path).output().unwrap();
+  assert_eq!(out.status.code(), Some(7));
+  assert!(out.stdout.is_empty());
+}
+
+#[test]
 fn missing_entrypoint_reports_diagnostic() {
   let mut host = es5_host();
   let file = FileKey::new("main.ts");
