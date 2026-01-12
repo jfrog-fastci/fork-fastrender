@@ -1,131 +1,150 @@
 use crate::dom::HTML_NAMESPACE;
 
 use super::DomError;
-use super::{Document, NodeId, NodeKind};
+use super::{Document, Node, NodeId, NodeKind};
+
+struct CloneNodeData {
+  kind: NodeKind,
+  inert_subtree: bool,
+  is_html_script: bool,
+  script_force_async: bool,
+  script_already_started: bool,
+  mathml_annotation_xml_integration_point: bool,
+}
+
+fn clone_node_data(src: &Node, parent: Option<NodeId>) -> CloneNodeData {
+  let is_html_script = matches!(
+    &src.kind,
+    NodeKind::Element {
+      tag_name,
+      namespace,
+      ..
+    } if tag_name.eq_ignore_ascii_case("script")
+      && (namespace.is_empty() || namespace == HTML_NAMESPACE)
+  );
+
+  let script_force_async = if is_html_script {
+    let NodeKind::Element { attributes, .. } = &src.kind else {
+      unreachable!();
+    };
+    !attributes
+      .iter()
+      .any(|(name, _)| name.eq_ignore_ascii_case("async"))
+  } else {
+    false
+  };
+
+  let kind = match &src.kind {
+    NodeKind::Document { quirks_mode } => {
+      // A `dom2::Document` stores its primary document node at `Document::root()`, but cloning a
+      // document node is still useful (e.g. `Document.cloneNode()` in JS). The cloned `Document`
+      // node must remain detached: `Document` nodes cannot be inserted into the tree.
+      debug_assert!(
+        parent.is_none(),
+        "Document nodes cannot have a parent; clone_node() must only clone them as detached roots"
+      );
+      NodeKind::Document {
+        quirks_mode: *quirks_mode,
+      }
+    }
+    NodeKind::DocumentFragment => NodeKind::DocumentFragment,
+    NodeKind::Comment { content } => NodeKind::Comment {
+      content: content.clone(),
+    },
+    NodeKind::ProcessingInstruction { target, data } => NodeKind::ProcessingInstruction {
+      target: target.clone(),
+      data: data.clone(),
+    },
+    NodeKind::Doctype {
+      name,
+      public_id,
+      system_id,
+    } => NodeKind::Doctype {
+      name: name.clone(),
+      public_id: public_id.clone(),
+      system_id: system_id.clone(),
+    },
+    NodeKind::ShadowRoot {
+      mode,
+      delegates_focus,
+    } => NodeKind::ShadowRoot {
+      mode: *mode,
+      delegates_focus: *delegates_focus,
+    },
+    NodeKind::Slot {
+      namespace,
+      attributes,
+      ..
+    } => NodeKind::Slot {
+      namespace: namespace.clone(),
+      attributes: attributes.clone(),
+      // Slot assignment is derived state; cloned nodes start detached.
+      assigned: false,
+    },
+    NodeKind::Element {
+      tag_name,
+      namespace,
+      prefix,
+      attributes,
+    } => NodeKind::Element {
+      tag_name: tag_name.clone(),
+      namespace: namespace.clone(),
+      prefix: prefix.clone(),
+      attributes: attributes.clone(),
+    },
+    NodeKind::Text { content } => NodeKind::Text {
+      content: content.clone(),
+    },
+  };
+
+  CloneNodeData {
+    kind,
+    inert_subtree: src.inert_subtree,
+    is_html_script,
+    script_force_async,
+    script_already_started: src.script_already_started,
+    mathml_annotation_xml_integration_point: src.mathml_annotation_xml_integration_point,
+  }
+}
+
+fn push_cloned_node(doc: &mut Document, parent: Option<NodeId>, data: CloneNodeData) -> NodeId {
+  let dst = doc.push_node(data.kind, parent, data.inert_subtree);
+
+  // Preserve HTML parser flags that affect future parsing behavior.
+  doc.nodes[dst.index()].mathml_annotation_xml_integration_point =
+    data.mathml_annotation_xml_integration_point;
+
+  if data.is_html_script {
+    // HTML: script element cloning steps copy the "already started" flag only.
+    //
+    // https://html.spec.whatwg.org/multipage/scripting.html#script-processing-model
+    doc.nodes[dst.index()].script_force_async = data.script_force_async;
+    doc.nodes[dst.index()].script_already_started = data.script_already_started;
+  }
+
+  dst
+}
 
 impl Document {
-  fn clone_node_shallow(
+  fn clone_node_shallow(&mut self, src: NodeId, parent: Option<NodeId>) -> Result<NodeId, DomError> {
+    let data = {
+      let node = self.node_checked(src)?;
+      clone_node_data(node, parent)
+    };
+    Ok(push_cloned_node(self, parent, data))
+  }
+
+  fn clone_node_shallow_from_document(
     &mut self,
+    src_doc: &Document,
     src: NodeId,
     parent: Option<NodeId>,
   ) -> Result<NodeId, DomError> {
-    self.node_checked(src)?;
-
-    let (
-      kind,
-      inert_subtree,
-      is_html_script,
-      script_force_async,
-      script_already_started,
-      mathml_annotation_xml_integration_point,
-    ) = {
-      let node = &self.nodes[src.index()];
-      let is_html_script = matches!(
-        &node.kind,
-        NodeKind::Element {
-          tag_name,
-          namespace,
-          ..
-        } if tag_name.eq_ignore_ascii_case("script")
-          && (namespace.is_empty() || namespace == HTML_NAMESPACE)
-      );
-      let script_force_async = if is_html_script {
-        match &node.kind {
-          NodeKind::Element { attributes, .. } => !attributes
-            .iter()
-            .any(|(name, _)| name.eq_ignore_ascii_case("async")),
-          _ => false,
-        }
-      } else {
-        false
-      };
-      let kind = match &node.kind {
-        NodeKind::Document { quirks_mode } => {
-          // A `dom2::Document` stores its primary document node at `self.root()`, but cloning a
-          // document node is still useful (e.g. `Document.cloneNode()` in JS). The cloned `Document`
-          // node must remain detached: `Document` nodes cannot be inserted into the tree.
-          debug_assert!(
-            parent.is_none(),
-            "Document nodes cannot have a parent; clone_node() must only clone them as detached roots"
-          );
-          NodeKind::Document {
-            quirks_mode: *quirks_mode,
-          }
-        }
-        NodeKind::DocumentFragment => NodeKind::DocumentFragment,
-        NodeKind::Comment { content } => NodeKind::Comment {
-          content: content.clone(),
-        },
-        NodeKind::ProcessingInstruction { target, data } => NodeKind::ProcessingInstruction {
-          target: target.clone(),
-          data: data.clone(),
-        },
-        NodeKind::Doctype {
-          name,
-          public_id,
-          system_id,
-        } => NodeKind::Doctype {
-          name: name.clone(),
-          public_id: public_id.clone(),
-          system_id: system_id.clone(),
-        },
-        NodeKind::ShadowRoot {
-          mode,
-          delegates_focus,
-        } => NodeKind::ShadowRoot {
-          mode: *mode,
-          delegates_focus: *delegates_focus,
-        },
-        NodeKind::Slot {
-          namespace,
-          attributes,
-          ..
-        } => NodeKind::Slot {
-          namespace: namespace.clone(),
-          attributes: attributes.clone(),
-          // Slot assignment is derived state; cloned nodes start detached.
-          assigned: false,
-        },
-        NodeKind::Element {
-          tag_name,
-          namespace,
-          prefix,
-          attributes,
-        } => NodeKind::Element {
-          tag_name: tag_name.clone(),
-          namespace: namespace.clone(),
-          prefix: prefix.clone(),
-          attributes: attributes.clone(),
-        },
-        NodeKind::Text { content } => NodeKind::Text {
-          content: content.clone(),
-        },
-      };
-
-      (
-        kind,
-        node.inert_subtree,
-        is_html_script,
-        script_force_async,
-        node.script_already_started,
-        node.mathml_annotation_xml_integration_point,
-      )
+    let data = {
+      let node = src_doc.node_checked(src)?;
+      clone_node_data(node, parent)
     };
-
-    let dst = self.push_node(kind, parent, inert_subtree);
-
-    // Preserve HTML parser flags that affect future parsing behavior.
-    self.nodes[dst.index()].mathml_annotation_xml_integration_point =
-      mathml_annotation_xml_integration_point;
-
-    if is_html_script {
-      // HTML: script element cloning steps copy the "already started" flag only.
-      //
-      // https://html.spec.whatwg.org/multipage/scripting.html#script-processing-model
-      self.nodes[dst.index()].script_force_async = script_force_async;
-      self.nodes[dst.index()].script_already_started = script_already_started;
-    }
-    Ok(dst)
+    Ok(push_cloned_node(self, parent, data))
   }
 
   /// Clone a single node, optionally cloning its descendant subtree.
@@ -179,6 +198,67 @@ impl Document {
     }
 
     Ok(dst_root)
+  }
+
+  /// Clone a node from a different `dom2::Document` into this document.
+  ///
+  /// This mirrors the behaviour of `Document.importNode()` in the DOM Standard for the node kinds
+  /// represented by `dom2`. The returned subtree is always detached (`parent == None`) and belongs
+  /// to the destination document (`self`).
+  ///
+  /// Returns the new root `NodeId` in this document plus a mapping of all cloned nodes in pre-order
+  /// traversal order (including the root).
+  ///
+  /// Deep cloning is implemented iteratively to avoid recursion overflow on degenerate trees.
+  pub fn import_node_from_document(
+    &mut self,
+    src: &Document,
+    src_root: NodeId,
+    deep: bool,
+  ) -> Result<(NodeId, Vec<(NodeId, NodeId)>), DomError> {
+    let dst_root = self.clone_node_shallow_from_document(src, src_root, None)?;
+    let mut mapping: Vec<(NodeId, NodeId)> = vec![(src_root, dst_root)];
+
+    if !deep {
+      return Ok((dst_root, mapping));
+    }
+
+    struct Frame {
+      src: NodeId,
+      dst: NodeId,
+      next_child: usize,
+    }
+
+    let mut stack: Vec<Frame> = vec![Frame {
+      src: src_root,
+      dst: dst_root,
+      next_child: 0,
+    }];
+
+    while let Some(mut frame) = stack.pop() {
+      let child_src = src.nodes[frame.src.index()]
+        .children
+        .get(frame.next_child)
+        .copied();
+
+      let Some(child_src) = child_src else {
+        continue;
+      };
+
+      frame.next_child += 1;
+      let parent_dst = frame.dst;
+      stack.push(frame);
+
+      let child_dst = self.clone_node_shallow_from_document(src, child_src, Some(parent_dst))?;
+      mapping.push((child_src, child_dst));
+      stack.push(Frame {
+        src: child_src,
+        dst: child_dst,
+        next_child: 0,
+      });
+    }
+
+    Ok((dst_root, mapping))
   }
 
   fn validate_insert_hierarchy(&self, parent: NodeId, child: NodeId) -> Result<(), DomError> {
@@ -604,6 +684,10 @@ impl Document {
       None,
       /* inert_subtree */ false,
     )
+  }
+
+  pub fn create_document_type(&mut self, name: &str, public_id: &str, system_id: &str) -> NodeId {
+    self.create_doctype(name, public_id, system_id)
   }
 
   pub fn text_data(&self, node: NodeId) -> Result<&str, DomError> {

@@ -843,3 +843,123 @@ fn clone_node_deep_clones_iteratively() {
   }
   assert_eq!(doc.children(current).unwrap().len(), 0);
 }
+
+#[test]
+fn create_document_type_creates_detached_doctype_node() {
+  let mut doc = Document::new(QuirksMode::NoQuirks);
+  let doctype = doc.create_document_type("html", "pub", "sys");
+  assert_eq!(doc.parent(doctype).unwrap(), None);
+  assert_eq!(doc.children(doctype).unwrap(), &[]);
+  match &doc.node(doctype).kind {
+    NodeKind::Doctype {
+      name,
+      public_id,
+      system_id,
+    } => {
+      assert_eq!(name, "html");
+      assert_eq!(public_id, "pub");
+      assert_eq!(system_id, "sys");
+    }
+    other => panic!("expected Doctype node, got {other:?}"),
+  }
+}
+
+#[test]
+fn import_node_from_document_clones_subtree_and_returns_mapping() {
+  let mut src = Document::new(QuirksMode::NoQuirks);
+  let src_root = src.root();
+
+  let template = src.create_element("template", "");
+  src.set_attribute(template, "id", "t").unwrap();
+  src.append_child(src_root, template).unwrap();
+
+  let span = src.create_element("span", "");
+  src.set_attribute(span, "class", "b").unwrap();
+  src.append_child(template, span).unwrap();
+  let text = src.create_text("Hello");
+  src.append_child(span, text).unwrap();
+
+  let script = src.create_element("script", "");
+  src.set_bool_attribute(script, "async", true).unwrap();
+  src.set_script_already_started(script, true).unwrap();
+  src.append_child(template, script).unwrap();
+
+  // Shallow import should only clone the root.
+  let mut dst_shallow = Document::new(QuirksMode::NoQuirks);
+  let (dst_template_shallow, shallow_mapping) = dst_shallow
+    .import_node_from_document(&src, template, false)
+    .unwrap();
+  assert_eq!(shallow_mapping, vec![(template, dst_template_shallow)]);
+  assert_eq!(dst_shallow.parent(dst_template_shallow).unwrap(), None);
+  assert_eq!(dst_shallow.children(dst_template_shallow).unwrap(), &[]);
+  assert_eq!(dst_shallow.children(dst_shallow.root()).unwrap(), &[]);
+
+  // Deep import should clone the entire subtree (iteratively).
+  let mut dst = Document::new(QuirksMode::NoQuirks);
+  let (dst_template, mapping) = dst.import_node_from_document(&src, template, true).unwrap();
+  assert_eq!(dst.parent(dst_template).unwrap(), None);
+  assert_eq!(
+    dst.children(dst.root()).unwrap(),
+    &[],
+    "imported nodes must be detached until explicitly inserted"
+  );
+
+  assert_eq!(mapping.len(), 4);
+  assert_eq!(mapping[0].0, template);
+  assert_eq!(mapping[1].0, span);
+  assert_eq!(mapping[2].0, text);
+  assert_eq!(mapping[3].0, script);
+
+  let dst_span = mapping[1].1;
+  let dst_text = mapping[2].1;
+  let dst_script = mapping[3].1;
+
+  assert_eq!(dst.get_attribute(dst_template, "id").unwrap(), Some("t"));
+  assert!(
+    dst.node(dst_template).inert_subtree,
+    "template elements should preserve inert_subtree when imported"
+  );
+  assert_eq!(dst.children(dst_template).unwrap(), &[dst_span, dst_script]);
+  assert_eq!(dst.get_attribute(dst_span, "class").unwrap(), Some("b"));
+  assert_eq!(dst.children(dst_span).unwrap(), &[dst_text]);
+  assert_eq!(dst.text_data(dst_text).unwrap(), "Hello");
+
+  assert!(
+    dst.node(dst_script).script_already_started,
+    "import should clone script 'already started' internal slot"
+  );
+  assert!(
+    !dst.node(dst_script).script_force_async,
+    "import should clone script force_async flag using clone_node semantics"
+  );
+}
+
+#[test]
+fn import_node_from_document_handles_deep_trees_iteratively() {
+  // Large enough to overflow typical call stacks if implemented recursively.
+  const DEPTH: usize = 10_000;
+
+  let mut src = Document::new(QuirksMode::NoQuirks);
+  let top = src.create_element("div", "");
+  src.append_child(src.root(), top).unwrap();
+
+  let mut current = top;
+  for _ in 0..DEPTH {
+    let next = src.create_element("div", "");
+    src.append_child(current, next).unwrap();
+    current = next;
+  }
+
+  let mut dst = Document::new(QuirksMode::NoQuirks);
+  let (cloned_top, mapping) = dst.import_node_from_document(&src, top, true).unwrap();
+  assert_eq!(dst.parent(cloned_top).unwrap(), None);
+  assert_eq!(mapping.len(), DEPTH + 1);
+
+  let mut current = cloned_top;
+  for _ in 0..DEPTH {
+    let children = dst.children(current).unwrap();
+    assert_eq!(children.len(), 1);
+    current = children[0];
+  }
+  assert_eq!(dst.children(current).unwrap().len(), 0);
+}
