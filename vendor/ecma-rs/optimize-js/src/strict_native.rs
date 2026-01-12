@@ -350,9 +350,23 @@ fn banned_call_from_call_inst(inst: &Inst, vars: &HashMap<u32, ValueState>) -> O
         // Binding `Reflect.apply` with a banned `target` produces a callable wrapper around
         // `eval`/`Function`/`Proxy`/etc.
         "Reflect.apply" => {
-          if let Some(target) = args.get(1).and_then(|arg| resolve_builtin_path(arg, vars)) {
-            if is_banned_builtin_call(&target) {
-              return Some(BannedUse::Bind { target });
+          let Some(target) = args.get(1).and_then(|arg| resolve_builtin_path(arg, vars)) else {
+            return None;
+          };
+          if is_banned_builtin_call(&target) {
+            return Some(BannedUse::Bind { target });
+          }
+
+          // `Reflect.apply(Function.prototype.call, eval, [...])` is a common way to call `eval`
+          // indirectly. When `Reflect.apply` is itself bound, the `target` and `thisArg` are both
+          // provided as bound arguments.
+          if matches!(target.as_str(), "Function.prototype.call" | "Function.prototype.apply") {
+            if let Some(bound_this_arg) = args.get(2).and_then(|arg| resolve_builtin_path(arg, vars)) {
+              if is_banned_builtin_call(&bound_this_arg) {
+                return Some(BannedUse::Bind {
+                  target: bound_this_arg,
+                });
+              }
             }
           }
         }

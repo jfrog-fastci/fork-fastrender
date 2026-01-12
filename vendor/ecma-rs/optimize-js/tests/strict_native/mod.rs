@@ -216,6 +216,28 @@ fn rejects_eval_via_reflect_apply_bind() {
 }
 
 #[test]
+fn rejects_eval_via_reflect_apply_bind_function_prototype_call() {
+  let src = r#"
+    Reflect.apply.bind(Reflect, Function.prototype.call, eval, [null, "1 + 1"])();
+  "#;
+
+  let err = optimize_js::compile_source_typed_strict_native(
+    src,
+    TopLevelMode::Module,
+    false,
+    StrictNativeOpts::default(),
+  )
+  .expect_err("Reflect.apply.bind(Reflect, Function.prototype.call, eval, ...)(...) should be rejected");
+
+  assert!(
+    err
+      .iter()
+      .any(|d| d.code == "OPTN0005" && d.message.contains("eval")),
+    "expected OPTN0005 diagnostic mentioning eval, got {err:?}"
+  );
+}
+
+#[test]
 fn rejects_eval_via_reflect_apply_function_prototype_bind() {
   let src = r#"
     Reflect.apply(Function.prototype.bind, eval, [null, "1 + 1"]);

@@ -3788,6 +3788,26 @@ impl<'a> Checker<'a> {
     }
   }
 
+  fn check_super_call_expr(
+    &mut self,
+    call: &Node<parse_js::ast::expr::CallExpr>,
+    _contextual_return: Option<TypeId>,
+  ) -> TypeId {
+    // `super(...)` is only valid inside derived class constructors, where it invokes the base
+    // class constructor.
+    //
+    // This checker currently does not implement the full `super()` call typing rules (including
+    // definite assignment and ordering constraints for `this`), but we still:
+    // - type-check the argument expressions,
+    // - record a placeholder call signature (none),
+    // - return the current `this` type (JS semantics: `super()` produces the constructed instance).
+    for arg in call.stx.arguments.iter() {
+      let _ = self.check_expr(&arg.stx.value);
+    }
+    self.record_call_signature(call.loc, None);
+    self.current_this_ty
+  }
+
   fn check_call_expr(
     &mut self,
     call: &Node<parse_js::ast::expr::CallExpr>,
