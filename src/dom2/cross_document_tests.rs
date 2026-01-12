@@ -48,6 +48,17 @@ fn assert_subtree_kinds_match(src: &Document, src_root: NodeId, dst: &Document, 
   }
 }
 
+fn find_first_shadow_root(doc: &Document) -> NodeId {
+  doc
+    .nodes()
+    .iter()
+    .enumerate()
+    .find_map(|(idx, node)| {
+      matches!(&node.kind, NodeKind::ShadowRoot { .. }).then_some(NodeId::from_index(idx))
+    })
+    .expect("expected a ShadowRoot node")
+}
+
 #[test]
 fn import_basic_element_and_text_subtree() {
   let mut src = Document::new(QuirksMode::NoQuirks);
@@ -177,3 +188,55 @@ fn import_handles_deep_trees_without_recursion_overflow() {
   assert_eq!(dst.text_data(leaf).unwrap(), "leaf");
 }
 
+#[test]
+fn import_shadow_root_node_is_not_supported() {
+  let html = concat!(
+    "<!doctype html>",
+    "<div id=host>",
+    "<template shadowroot=open><span>shadow</span></template>",
+    "<p>light</p>",
+    "</div>",
+  );
+  let src = crate::dom2::parse_html(html).unwrap();
+  let shadow_root = find_first_shadow_root(&src);
+
+  let mut dst = Document::new(QuirksMode::NoQuirks);
+  assert_eq!(
+    dst.import_node_from(&src, shadow_root, /* deep */ false)
+      .unwrap_err(),
+    DomError::NotSupportedError
+  );
+  assert_eq!(
+    dst.import_node_from(&src, shadow_root, /* deep */ true)
+      .unwrap_err(),
+    DomError::NotSupportedError
+  );
+}
+
+#[test]
+fn import_shadow_host_element_deep_clones_shadow_root_descendants() {
+  let html = concat!(
+    "<!doctype html>",
+    "<div id=host>",
+    "<template shadowroot=open><span id=shadow>shadow</span></template>",
+    "<p id=light>light</p>",
+    "</div>",
+  );
+  let src = crate::dom2::parse_html(html).unwrap();
+  let host = src.get_element_by_id("host").expect("host element not found");
+
+  let mut dst = Document::new(QuirksMode::NoQuirks);
+  let imported = dst.import_node_from(&src, host, /* deep */ true).unwrap();
+  assert_eq!(dst.parent(imported).unwrap(), None);
+  assert_subtree_kinds_match(&src, host, &dst, imported);
+
+  assert!(
+    dst
+      .node(imported)
+      .children
+      .iter()
+      .copied()
+      .any(|child| matches!(dst.node(child).kind, NodeKind::ShadowRoot { .. })),
+    "expected imported host subtree to contain a ShadowRoot child"
+  );
+}

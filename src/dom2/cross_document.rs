@@ -214,7 +214,8 @@ impl Document {
   /// - If `deep` is `false`, only the node itself is cloned.
   /// - If `deep` is `true`, the full descendant subtree is cloned iteratively (no recursion).
   ///
-  /// Note: importing a document node is not supported (mirrors the DOM Standard's `importNode`).
+  /// Note: importing a document node or a shadow root is not supported (mirrors the DOM Standard's
+  /// `importNode`).
   pub fn import_node_from(
     &mut self,
     src: &Document,
@@ -222,7 +223,10 @@ impl Document {
     deep: bool,
   ) -> Result<NodeId, DomError> {
     let src_node = src.node_checked(node)?;
-    if node == src.root() || matches!(src_node.kind, NodeKind::Document { .. }) {
+    if node == src.root()
+      || matches!(&src_node.kind, NodeKind::Document { .. })
+      || matches!(&src_node.kind, NodeKind::ShadowRoot { .. })
+    {
       return Err(DomError::NotSupportedError);
     }
 
