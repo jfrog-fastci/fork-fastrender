@@ -714,24 +714,6 @@ pub mod window {
   }
 
   #[allow(dead_code)]
-  fn u_r_l_get_attribute_origin<Host, R>(
-    rt: &mut R,
-    host: &mut Host,
-    this: R::JsValue,
-    _args: &[R::JsValue],
-  ) -> Result<R::JsValue, R::Error>
-  where
-    R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
-    Host: WebHostBindings<R>,
-  {
-    if !rt_is_object::<Host, R>(rt, this) {
-      return Err(rt_throw_type_error::<Host, R>(rt, "Illegal invocation"));
-    }
-    let result = host.get_attribute(rt, Some(this), "URL", "origin")?;
-    binding_value_to_js::<Host, R>(rt, result)
-  }
-
-  #[allow(dead_code)]
   fn u_r_l_set_attribute_href<Host, R>(
     rt: &mut R,
     host: &mut Host,
@@ -769,6 +751,42 @@ pub mod window {
     let converted = converted_value_to_binding_value::<Host, R>(rt, ctx, &schemas[0].ty, value)?;
     host.set_attribute(rt, Some(this), "URL", "href", converted)?;
     Ok(rt_js_undefined::<Host, R>(rt))
+  }
+
+  #[allow(dead_code)]
+  fn u_r_l_get_attribute_origin<Host, R>(
+    rt: &mut R,
+    host: &mut Host,
+    this: R::JsValue,
+    _args: &[R::JsValue],
+  ) -> Result<R::JsValue, R::Error>
+  where
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
+    Host: WebHostBindings<R>,
+  {
+    if !rt_is_object::<Host, R>(rt, this) {
+      return Err(rt_throw_type_error::<Host, R>(rt, "Illegal invocation"));
+    }
+    let result = host.get_attribute(rt, Some(this), "URL", "origin")?;
+    binding_value_to_js::<Host, R>(rt, result)
+  }
+
+  #[allow(dead_code)]
+  fn u_r_l_get_attribute_search_params<Host, R>(
+    rt: &mut R,
+    host: &mut Host,
+    this: R::JsValue,
+    _args: &[R::JsValue],
+  ) -> Result<R::JsValue, R::Error>
+  where
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
+    Host: WebHostBindings<R>,
+  {
+    if !rt_is_object::<Host, R>(rt, this) {
+      return Err(rt_throw_type_error::<Host, R>(rt, "Illegal invocation"));
+    }
+    let result = host.get_attribute(rt, Some(this), "URL", "searchParams")?;
+    binding_value_to_js::<Host, R>(rt, result)
   }
 
   #[allow(dead_code)]
@@ -2007,6 +2025,13 @@ pub mod window {
     let get = rt.create_function("get origin", 0, u_r_l_get_attribute_origin::<Host, R>)?;
     let set = rt_js_undefined::<Host, R>(rt);
     rt.define_attribute_accessor(proto_u_r_l, "origin", get, set)?;
+    let get = rt.create_function(
+      "get searchParams",
+      0,
+      u_r_l_get_attribute_search_params::<Host, R>,
+    )?;
+    let set = rt_js_undefined::<Host, R>(rt);
+    rt.define_attribute_accessor(proto_u_r_l, "searchParams", get, set)?;
     let ctor_u_r_l = rt.create_constructor(
       "URL",
       1,
@@ -2777,24 +2802,6 @@ pub mod worker {
   }
 
   #[allow(dead_code)]
-  fn u_r_l_get_attribute_origin<Host, R>(
-    rt: &mut R,
-    host: &mut Host,
-    this: R::JsValue,
-    _args: &[R::JsValue],
-  ) -> Result<R::JsValue, R::Error>
-  where
-    R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
-    Host: WebHostBindings<R>,
-  {
-    if !rt_is_object::<Host, R>(rt, this) {
-      return Err(rt_throw_type_error::<Host, R>(rt, "Illegal invocation"));
-    }
-    let result = host.get_attribute(rt, Some(this), "URL", "origin")?;
-    binding_value_to_js::<Host, R>(rt, result)
-  }
-
-  #[allow(dead_code)]
   fn u_r_l_set_attribute_href<Host, R>(
     rt: &mut R,
     host: &mut Host,
@@ -2832,6 +2839,42 @@ pub mod worker {
     let converted = converted_value_to_binding_value::<Host, R>(rt, ctx, &schemas[0].ty, value)?;
     host.set_attribute(rt, Some(this), "URL", "href", converted)?;
     Ok(rt_js_undefined::<Host, R>(rt))
+  }
+
+  #[allow(dead_code)]
+  fn u_r_l_get_attribute_origin<Host, R>(
+    rt: &mut R,
+    host: &mut Host,
+    this: R::JsValue,
+    _args: &[R::JsValue],
+  ) -> Result<R::JsValue, R::Error>
+  where
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
+    Host: WebHostBindings<R>,
+  {
+    if !rt_is_object::<Host, R>(rt, this) {
+      return Err(rt_throw_type_error::<Host, R>(rt, "Illegal invocation"));
+    }
+    let result = host.get_attribute(rt, Some(this), "URL", "origin")?;
+    binding_value_to_js::<Host, R>(rt, result)
+  }
+
+  #[allow(dead_code)]
+  fn u_r_l_get_attribute_search_params<Host, R>(
+    rt: &mut R,
+    host: &mut Host,
+    this: R::JsValue,
+    _args: &[R::JsValue],
+  ) -> Result<R::JsValue, R::Error>
+  where
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
+    Host: WebHostBindings<R>,
+  {
+    if !rt_is_object::<Host, R>(rt, this) {
+      return Err(rt_throw_type_error::<Host, R>(rt, "Illegal invocation"));
+    }
+    let result = host.get_attribute(rt, Some(this), "URL", "searchParams")?;
+    binding_value_to_js::<Host, R>(rt, result)
   }
 
   #[allow(dead_code)]
@@ -3556,6 +3599,13 @@ pub mod worker {
     let get = rt.create_function("get origin", 0, u_r_l_get_attribute_origin::<Host, R>)?;
     let set = rt_js_undefined::<Host, R>(rt);
     rt.define_attribute_accessor(proto_u_r_l, "origin", get, set)?;
+    let get = rt.create_function(
+      "get searchParams",
+      0,
+      u_r_l_get_attribute_search_params::<Host, R>,
+    )?;
+    let set = rt_js_undefined::<Host, R>(rt);
+    rt.define_attribute_accessor(proto_u_r_l, "searchParams", get, set)?;
     let ctor_u_r_l = rt.create_constructor(
       "URL",
       1,
