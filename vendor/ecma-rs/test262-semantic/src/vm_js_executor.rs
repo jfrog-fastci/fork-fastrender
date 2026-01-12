@@ -1015,10 +1015,6 @@ fn execute_module(
   is_async: bool,
   runtime: &mut vm_js::JsRuntime,
 ) -> ExecResult {
-  let is_async = case.metadata.flags.iter().any(|flag| flag == "async");
-  let is_raw = case.metadata.flags.iter().any(|flag| flag == "raw");
-  let expects_done = is_async && !is_raw;
-
   let (harness_src, module_src) = split_module_source(source);
 
   let mut hooks = Test262ModuleHooks::new(&case.path);
@@ -1203,21 +1199,7 @@ fn execute_module(
     }
 
       match runtime.heap.promise_state(eval_promise_obj) {
-        Ok(PromiseState::Fulfilled) => {
-          if expects_done {
-            let done = runtime
-              .exec_script("__test262AsyncDone__")
-              .map_err(|err| map_vm_error(case, module_src, cancel, runtime, err))?;
-            if done != Value::Bool(true) {
-              return Err(ExecError::Js(JsError::new(
-                ExecPhase::Runtime,
-                None,
-                "async test did not call $DONE()",
-              )));
-            }
-          }
-          Ok(())
-        }
+        Ok(PromiseState::Fulfilled) => Ok(()),
         Ok(PromiseState::Rejected) => {
           let reason = runtime
             .heap
@@ -1951,7 +1933,7 @@ var assert = {
     };
     assert_eq!(js.phase, ExecPhase::Runtime);
     assert!(
-      js.message.contains("async test did not call $DONE()"),
+      js.message.contains("async test did not call $DONE"),
       "unexpected error message: {}",
       js.message
     );
