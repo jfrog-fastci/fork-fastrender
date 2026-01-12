@@ -37190,6 +37190,15 @@ fn init_window_globals(
     }
   }
 
+  // Test-only hook for deterministic failure injection from JS.
+  //
+  // This allows integration tests to exercise the full JS execution plumbing + telemetry capture
+  // without depending on specific VM feature gaps (which will change over time).
+  #[cfg(test)]
+  {
+    install_test_failure_injection(vm, &mut scope, realm, global)?;
+  }
+
   // Install WHATWG URL bindings (`URL`/`URLSearchParams`) so real-world scripts can parse and
   // manipulate URLs. This must happen after `scope` is dropped because it borrows `heap` mutably.
   drop(scope);
@@ -37221,6 +37230,42 @@ fn init_window_globals(
     console_obj,
     sink_id_key_s,
   ))
+}
+
+#[cfg(test)]
+const TEST_UNIMPLEMENTED_HOOK_NAME: &str = "__fastrender_test_unimplemented";
+
+#[cfg(test)]
+fn install_test_failure_injection(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  realm: &Realm,
+  global: GcObject,
+) -> Result<(), VmError> {
+  let key = alloc_key(scope, TEST_UNIMPLEMENTED_HOOK_NAME)?;
+  let call_id = vm.register_native_call(test_unimplemented_native)?;
+  let name_s = scope.alloc_string(TEST_UNIMPLEMENTED_HOOK_NAME)?;
+  scope.push_root(Value::String(name_s))?;
+  let func = scope.alloc_native_function(call_id, None, name_s, 0)?;
+  scope
+    .heap_mut()
+    .object_set_prototype(func, Some(realm.intrinsics().function_prototype()))?;
+  scope.push_root(Value::Object(func))?;
+  scope.define_property(global, key, data_desc(Value::Object(func)))?;
+  Ok(())
+}
+
+#[cfg(test)]
+fn test_unimplemented_native(
+  _vm: &mut Vm,
+  _scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  Err(VmError::Unimplemented("telemetry test"))
 }
 
 #[cfg(test)]

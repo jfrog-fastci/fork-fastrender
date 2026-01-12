@@ -2405,10 +2405,10 @@ mod tests {
       JsExecutionOptions::default(),
     )?;
 
-    // Pick a `vm-js` feature that is intentionally unimplemented so the executor records a
-    // `VmError::Unimplemented` telemetry entry. Class fields are parsed but rejected during
-    // evaluation.
-    let script_text = "class C { x = 1; }";
+    // Use the test-only host hook installed by the vm-js WindowRealm embedding so this test does
+    // not depend on any particular JavaScript feature being unimplemented (which will change as the
+    // engine becomes more complete).
+    let script_text = "__fastrender_test_unimplemented();";
     let spec = ScriptElementSpec {
       base_url: Some("https://example.com/doc.html".to_string()),
       src: None,
@@ -2430,7 +2430,7 @@ mod tests {
 
     let _err = executor
       .execute_classic_script(script_text, &spec, None, &mut document, &mut event_loop)
-      .expect_err("expected class fields to be unimplemented");
+      .expect_err("expected injected VmError::Unimplemented");
 
     let snapshot = diag.into_inner();
     assert!(
@@ -2445,8 +2445,70 @@ mod tests {
     assert!(
       js.top_unimplemented
         .iter()
-        .any(|entry| entry.message == "class fields"),
-      "expected class fields unimplemented reason in telemetry, got {js:?}"
+        .any(|entry| entry.message == "telemetry test"),
+      "expected injected unimplemented reason in telemetry, got {js:?}"
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn vm_js_browser_tab_executor_records_js_exception_telemetry() -> Result<()> {
+    let diag = SharedRenderDiagnostics::new();
+    let mut document =
+      BrowserDocumentDom2::from_html("<!doctype html><html></html>", RenderOptions::default())?;
+    document
+      .renderer_mut()
+      .set_diagnostics_sink(Some(Arc::clone(&diag.inner)));
+
+    let current_script = CurrentScriptStateHandle::default();
+    let mut executor = VmJsBrowserTabExecutor::new();
+    let mut event_loop = crate::js::EventLoop::<BrowserTabHost>::new();
+    executor.reset_for_navigation(
+      Some("https://example.com/doc.html"),
+      &mut document,
+      &current_script,
+      JsExecutionOptions::default(),
+    )?;
+
+    let script_text = r#"throw new TypeError("x");"#;
+    let spec = ScriptElementSpec {
+      base_url: Some("https://example.com/doc.html".to_string()),
+      src: None,
+      src_attr_present: false,
+      inline_text: script_text.to_string(),
+      async_attr: false,
+      force_async: false,
+      defer_attr: false,
+      nomodule_attr: false,
+      crossorigin: None,
+      integrity_attr_present: false,
+      integrity: None,
+      referrer_policy: None,
+      fetch_priority: None,
+      parser_inserted: true,
+      node_id: None,
+      script_type: crate::js::ScriptType::Classic,
+    };
+
+    // Uncaught JS exceptions are intentionally treated as non-fatal for the render pipeline; the
+    // embedder captures them for diagnostics and continues running.
+    executor.execute_classic_script(script_text, &spec, None, &mut document, &mut event_loop)?;
+
+    let snapshot = diag.into_inner();
+    assert!(
+      snapshot.stats.is_none(),
+      "expected diagnostics.stats to remain None without diagnostics stats recorder"
+    );
+    let js = snapshot.js_failure;
+    assert!(
+      js.scripts_executed > 0,
+      "expected scripts_executed > 0, got {js:?}"
+    );
+    assert!(
+      js.top_exceptions
+        .iter()
+        .any(|entry| entry.type_ == "TypeError" && entry.message == "x"),
+      "expected thrown TypeError in telemetry, got {js:?}"
     );
     Ok(())
   }
