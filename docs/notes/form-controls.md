@@ -83,10 +83,11 @@ When `appearance:none` is computed, the control stops using the native form-cont
   - `src/tree/box_generation.rs::range_appearance_none_generates_slider_track_and_thumb_boxes`
   - `src/tree/box_generation.rs::file_input_appearance_none_generates_file_selector_button_box`
 - Paint tests:
-  - `src/paint/tests`/`paint/form_control_appearance_none_affordances.rs`: `appearance_none_suppresses_number_spinner_glyphs` / `appearance_none_suppresses_date_dropdown_glyph` assert `appearance:none` suppresses number/date affordance glyphs.
-  - `src/paint/tests`/`paint/range_track_pseudo_element.rs`: `range_track_pseudo_element_paints_under_appearance_none` asserts the range track pseudo-element paints under `appearance:none` (both paint backends).
-  - `src/paint/tests`/`paint/range_pseudo_opacity.rs`: `range_slider_track_and_thumb_pseudo_opacity_is_applied` asserts range track/thumb pseudo-element `opacity` is applied (both paint backends).
-  - `src/paint/tests`/`paint/file_selector_button_pseudo_element.rs`: `file_selector_button_pseudo_element_paints_under_appearance_none` asserts `::file-selector-button` paints under `appearance:none` (both paint backends).
+  - Integration tests (in the `paint_tests` integration test crate):
+    - `appearance_none_suppresses_number_spinner_glyphs` / `appearance_none_suppresses_date_dropdown_glyph` assert `appearance:none` suppresses number/date affordance glyphs.
+    - `range_track_pseudo_element_paints_under_appearance_none` asserts the range track pseudo-element paints under `appearance:none` (both paint backends).
+    - `range_slider_track_and_thumb_pseudo_opacity_is_applied` asserts range track/thumb pseudo-element `opacity` is applied (both paint backends).
+    - `file_selector_button_pseudo_element_paints_under_appearance_none` asserts `::file-selector-button` paints under `appearance:none` (both paint backends).
   - `tests/misc/form_control_placeholder_opacity.rs` asserts `::placeholder` opacity is applied (both paint backends).
 - Offline page fixtures:
   - `tests/pages/fixtures/form_controls_appearance` includes `appearance:none` custom controls (including vendor slider pseudos like `::-webkit-slider-thumb` / `::-moz-range-thumb`).
