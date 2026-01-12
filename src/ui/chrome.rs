@@ -6,6 +6,8 @@ use crate::ui::messages::TabId;
 use crate::ui::motion::UiMotion;
 use crate::ui::shortcuts::{map_shortcut, Key, KeyEvent, Modifiers, ShortcutAction};
 use crate::ui::zoom;
+use crate::ui::{icon_button, icon_tinted, spinner, BrowserIcon};
+use url::Url;
 
 #[derive(Debug, Clone)]
 pub enum ChromeAction {
@@ -349,9 +351,13 @@ pub fn chrome_ui(
             actions.push(ChromeAction::ActivateTab(tab.id));
           }
 
-          if ui
-            .add_enabled(can_close_tabs, egui::Button::new("×"))
-            .clicked()
+          if icon_button(
+            ui,
+            BrowserIcon::CloseTab,
+            "Close tab (Ctrl/Cmd+W)",
+            can_close_tabs,
+          )
+          .clicked()
           {
             actions.push(ChromeAction::CloseTab(tab.id));
           }
@@ -401,7 +407,7 @@ pub fn chrome_ui(
         ui.separator();
       }
 
-      if ui.button("+").clicked() {
+      if icon_button(ui, BrowserIcon::NewTab, "New tab (Ctrl/Cmd+T)", true).clicked() {
         actions.push(ChromeAction::NewTab);
       }
     });
@@ -425,16 +431,13 @@ pub fn chrome_ui(
         })
         .unwrap_or((false, false, false, None, None, None, zoom::DEFAULT_ZOOM));
 
-      if ui.add_enabled(can_back, egui::Button::new("←")).clicked() {
+      if icon_button(ui, BrowserIcon::Back, "Back", can_back).clicked() {
         actions.push(ChromeAction::Back);
       }
-      if ui
-        .add_enabled(can_forward, egui::Button::new("→"))
-        .clicked()
-      {
+      if icon_button(ui, BrowserIcon::Forward, "Forward", can_forward).clicked() {
         actions.push(ChromeAction::Forward);
       }
-      if ui.button("⟳").clicked() {
+      if icon_button(ui, BrowserIcon::Reload, "Reload (Ctrl/Cmd+R)", true).clicked() {
         actions.push(ChromeAction::Reload);
       }
 
@@ -458,6 +461,33 @@ pub fn chrome_ui(
       if ui.small_button("+").clicked() {
         if let Some(tab) = app.active_tab_mut() {
           tab.zoom = zoom::zoom_in(tab.zoom);
+        }
+      }
+
+      // Security indicator (non-interactive).
+      if let Some(committed) = app.active_tab().and_then(|t| t.committed_url.as_deref()) {
+        if let Ok(parsed) = Url::parse(committed) {
+          match parsed.scheme() {
+            "https" => {
+              let _ = icon_tinted(
+                ui,
+                BrowserIcon::LockSecure,
+                ui.spacing().icon_width,
+                ui.visuals().text_color(),
+              )
+              .on_hover_text("Secure connection (HTTPS)");
+            }
+            "http" => {
+              let _ = icon_tinted(
+                ui,
+                BrowserIcon::WarningInsecure,
+                ui.spacing().icon_width,
+                ui.visuals().text_color(),
+              )
+              .on_hover_text("Not secure (HTTP)");
+            }
+            _ => {}
+          }
         }
       }
 
@@ -555,7 +585,7 @@ pub fn chrome_ui(
       }
 
       if loading {
-        ui.add(egui::Spinner::new());
+        let _ = spinner(ui, ui.spacing().icon_width);
         let stage = stage.filter(|s| *s != StageHeartbeat::Done);
         match stage {
           Some(stage) => {
@@ -566,21 +596,27 @@ pub fn chrome_ui(
       }
 
       if let Some(warn) = warning.as_deref().filter(|s| !s.trim().is_empty()) {
-        ui.label(
-          egui::RichText::new("⚠")
-            .color(egui::Color32::BLACK)
-            .background_color(egui::Color32::from_rgb(250, 230, 150)),
-        )
-        .on_hover_text(warn);
+        let resp = egui::Frame::none()
+          .fill(egui::Color32::from_rgb(250, 230, 150))
+          .rounding(egui::Rounding::same(3.0))
+          .inner_margin(egui::Margin::same(2.0))
+          .show(ui, |ui| {
+            let _ = icon_tinted(ui, BrowserIcon::WarningInsecure, ui.spacing().icon_width, egui::Color32::BLACK);
+          })
+          .response;
+        let _ = resp.on_hover_text(warn);
       }
 
       if let Some(err) = error.as_deref().filter(|s| !s.trim().is_empty()) {
-        ui.label(
-          egui::RichText::new("Error")
-            .color(egui::Color32::WHITE)
-            .background_color(egui::Color32::from_rgb(160, 0, 0)),
-        )
-        .on_hover_text(err);
+        let resp = egui::Frame::none()
+          .fill(egui::Color32::from_rgb(160, 0, 0))
+          .rounding(egui::Rounding::same(3.0))
+          .inner_margin(egui::Margin::same(2.0))
+          .show(ui, |ui| {
+            let _ = icon_tinted(ui, BrowserIcon::CloseTab, ui.spacing().icon_width, egui::Color32::WHITE);
+          })
+          .response;
+        let _ = resp.on_hover_text(err);
       }
     });
   });

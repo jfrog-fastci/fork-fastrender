@@ -33,6 +33,10 @@ pub mod motion;
 #[cfg(feature = "browser_ui")]
 pub mod chrome;
 
+// SVG→egui icon rasterization + caching for browser chrome widgets.
+#[cfg(feature = "browser_ui")]
+pub mod icons;
+
 #[cfg(feature = "browser_ui")]
 pub mod session;
 
@@ -88,3 +92,5 @@ pub use crate::select_dropdown::{SelectDropdown, SelectDropdownChoice};
 pub use chrome::{chrome_ui, ChromeAction};
 #[cfg(feature = "browser_ui")]
 pub use session::{BrowserSession, BrowserSessionTab};
+#[cfg(feature = "browser_ui")]
+pub use icons::{icon, icon_button, icon_tinted, spinner, BrowserIcon};
