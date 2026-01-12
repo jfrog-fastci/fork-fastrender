@@ -1,7 +1,8 @@
 /* Linker script fragment (Linux/ELF) for retaining and exposing LLVM stack maps.
  *
  * NOTE: Prefer `runtime-native/link/stackmaps.ld`. This file is kept for
- * backwards compatibility with older build scripts and external link commands.
+ * backwards compatibility with older build scripts and external link commands,
+ * and should remain in sync with `link/stackmaps.ld` (lld-oriented, PIE/DSO).
  *
  * See `link/stackmaps.ld` for detailed rationale and documentation.
  */
