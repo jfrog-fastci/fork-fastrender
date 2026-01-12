@@ -184,6 +184,9 @@ vendor/ecma-rs/webidl-runtime/ — Legacy heap-only runtime adapter (re-exported
 crates/js-wpt-dom-runner/      — Tooling (offline WPT `testharness.js` runner)
 ```
 
+For a single source-of-truth description of the consolidated WebIDL stack (what each crate does, and
+what belongs in `vendor/ecma-rs/` vs `src/js/`), see [`docs/webidl_stack.md`](../docs/webidl_stack.md).
+
 ### WebIDL workflow
 
 DOM APIs are defined in WebIDL. The binding generator extracts shapes from specs and generates Rust glue.
