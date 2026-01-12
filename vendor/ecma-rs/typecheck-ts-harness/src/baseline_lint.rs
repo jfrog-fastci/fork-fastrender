@@ -78,8 +78,17 @@ fn pinned_typescript_version(manifest_dir: &Path) -> Result<String> {
   //   "node_modules/typescript": { "version": "5.x.y", ... }
   // }
   //
-  // Use the pinned dependency string from the root package entry when present;
-  // it matches `typecheck-ts-harness/package.json`.
+  // Prefer the resolved `node_modules/typescript` version; this is the actual
+  // installed `tsc` version that generated baselines.
+  if let Some(version) = lock
+    .pointer("/packages/node_modules~1typescript/version")
+    .and_then(|v| v.as_str())
+  {
+    return Ok(version.to_string());
+  }
+
+  // Fallback: use the pinned dependency string from the root package entry when
+  // present; it should match `typecheck-ts-harness/package.json`.
   if let Some(version) = lock
     .pointer("/packages//dependencies/typescript")
     .and_then(|v| v.as_str())
@@ -96,16 +105,8 @@ fn pinned_typescript_version(manifest_dir: &Path) -> Result<String> {
     return Ok(version.to_string());
   }
 
-  // Last resort: use the resolved `node_modules/typescript` version if present.
-  if let Some(version) = lock
-    .pointer("/packages/node_modules~1typescript/version")
-    .and_then(|v| v.as_str())
-  {
-    return Ok(version.to_string());
-  }
-
   anyhow::bail!(
-    "failed to locate TypeScript version in {}; expected npm lockfile v3 (packages[\"\"] deps) or v1/v2 (dependencies.typescript.version)",
+    "failed to locate TypeScript version in {}; expected npm lockfile v3 (packages[\"node_modules/typescript\"].version or packages[\"\"] deps) or v1/v2 (dependencies.typescript.version)",
     lock_path.display()
   )
 }
@@ -224,4 +225,47 @@ fn lint_strict_native_baseline(raw: &str) -> Vec<String> {
   }
 
   errors
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use tempfile::Builder;
+
+  #[test]
+  fn lint_baselines_errors_on_typescript_version_mismatch() {
+    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let baselines_root = manifest_dir.join("baselines");
+    let pinned =
+      pinned_typescript_version(manifest_dir).expect("read pinned TypeScript version");
+
+    let temp_dir = Builder::new()
+      .prefix("lint-baselines-ts-version-mismatch-")
+      .tempdir_in(&baselines_root)
+      .expect("create temp baseline dir");
+    let baseline_path = temp_dir.path().join("bad.json");
+    std::fs::write(
+      &baseline_path,
+      format!(
+        r#"{{
+  "schema_version": {TSC_BASELINE_SCHEMA_VERSION},
+  "metadata": {{
+    "typescript_version": "0.0.0"
+  }},
+  "diagnostics": []
+}}
+"#
+      ),
+    )
+    .expect("write baseline");
+
+    let err = lint_baselines().expect_err("lint-baselines should fail on mismatch");
+    let msg = err.to_string();
+    assert!(
+      msg.contains(&format!(
+        "metadata.typescript_version mismatch (expected {pinned}, got 0.0.0)"
+      )),
+      "expected mismatch message mentioning pinned version {pinned}; got:\n{msg}"
+    );
+  }
 }

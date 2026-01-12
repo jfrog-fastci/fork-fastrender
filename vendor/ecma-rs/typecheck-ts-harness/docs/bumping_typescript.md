@@ -1,20 +1,24 @@
 # Bumping the pinned TypeScript version
 
-This repo intentionally pins a single TypeScript version and keeps **three**
+This repo intentionally pins a single TypeScript version and keeps **four**
 things in sync:
 
 1. **Rust bundled lib `.d.ts` files** (used by `typecheck-ts` when built with the
-   `bundled-libs` feature)
-   - `typecheck-ts/build.rs` (`TYPESCRIPT_VERSION`)
-   - `typecheck-ts/fixtures/typescript-libs/<ver>/…`
-2. **Node.js oracle (`tsc`) used by the harness**
-   - `typecheck-ts-harness/package.json`
-   - `typecheck-ts-harness/package-lock.json`
-3. **Baselines/snapshots generated from that exact `tsc`**
-   - `typecheck-ts-harness/baselines/**`
+    `bundled-libs` feature)
+    - `typecheck-ts/build.rs` (`TYPESCRIPT_VERSION`)
+    - `typecheck-ts/fixtures/typescript-libs/<ver>/…`
+2. **Rust resolver semver default** (used for `typesVersions` selection when the
+   host doesn’t specify a compiler version)
+   - `typecheck-ts/src/resolve/ts_node.rs` (`TypeScriptVersion::default()`)
+3. **Node.js oracle (`tsc`) used by the harness**
+    - `typecheck-ts-harness/package.json`
+    - `typecheck-ts-harness/package-lock.json`
+4. **Baselines/snapshots generated from that exact `tsc`**
+    - `typecheck-ts-harness/baselines/**`
 
-CI runs `scripts/check_typescript_version_sync.sh` to prevent drift between (1)
-and (2).
+CI runs `scripts/check_typescript_version_sync.sh` to prevent drift between (1),
+(2) and (3). CI also runs `typecheck-ts-harness lint-baselines` to ensure
+baselines match the pinned `tsc` version.
 
 ## Procedure (checklist)
 
@@ -113,7 +117,8 @@ bash scripts/cargo_agent.sh run -p typecheck-ts-harness --release -- \
 
 Note: CI runs `typecheck-ts-harness lint-baselines` which checks that committed
 baseline JSON includes `metadata.typescript_version` matching the pinned version
-from `typecheck-ts-harness/package-lock.json`. If you bump TypeScript but forget
+from `typecheck-ts-harness/package-lock.json` (specifically
+`packages["node_modules/typescript"].version`). If you bump TypeScript but forget
 to regenerate baselines, CI will fail with a mismatch error.
 
 ### 6) Verify (and/or update) conformance snapshots

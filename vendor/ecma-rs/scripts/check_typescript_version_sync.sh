@@ -23,12 +23,18 @@ repo_root="$(cd -- "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 
 build_rs="typecheck-ts/build.rs"
+resolver_rs="typecheck-ts/src/resolve/ts_node.rs"
 harness_dir="typecheck-ts-harness"
 package_json="${harness_dir}/package.json"
 package_lock="${harness_dir}/package-lock.json"
 
 if [[ ! -f "$build_rs" ]]; then
   echo "error: missing ${build_rs} (expected to run from the ecma-rs repo root)" >&2
+  exit 1
+fi
+
+if [[ ! -f "$resolver_rs" ]]; then
+  echo "error: missing ${resolver_rs} (expected to run from the ecma-rs repo root)" >&2
   exit 1
 fi
 
@@ -86,6 +92,25 @@ data = json.loads(Path("typecheck-ts-harness/package-lock.json").read_text(encod
 print(data["packages"]["node_modules/typescript"]["version"])
 PY
   )"
+
+  resolver_default_version="$(
+    python3 - <<'PY'
+import re
+from pathlib import Path
+
+path = Path("typecheck-ts/src/resolve/ts_node.rs")
+text = path.read_text(encoding="utf-8")
+
+matches = re.findall(
+  r"impl\s+Default\s+for\s+TypeScriptVersion\s*\{\s*fn\s+default\(\)\s*->\s*Self\s*\{[\s\S]*?TypeScriptVersion::new\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\)",
+  text,
+)
+if len(matches) != 1:
+  raise SystemExit(f"error: expected exactly 1 TypeScriptVersion::new(M,m,p) inside TypeScriptVersion::default() in {path}, found {len(matches)}")
+major, minor, patch = matches[0]
+print(f"{major}.{minor}.{patch}")
+PY
+  )"
 elif [[ "$json_runtime" == "node" ]]; then
   rust_version="$(
     node - <<'NODE'
@@ -107,6 +132,25 @@ NODE
   harness_package_json_version="$(node -p "require('./${package_json}').dependencies.typescript")"
   harness_package_lock_root_version="$(node -p "require('./${package_lock}').packages[''].dependencies.typescript")"
   harness_package_lock_module_version="$(node -p "require('./${package_lock}').packages['node_modules/typescript'].version")"
+
+  resolver_default_version="$(
+    node - <<'NODE'
+const fs = require("fs");
+
+const path = "typecheck-ts/src/resolve/ts_node.rs";
+const text = fs.readFileSync(path, "utf8");
+const re =
+  /impl\s+Default\s+for\s+TypeScriptVersion\s*\{\s*fn\s+default\(\)\s*->\s*Self\s*\{[\s\S]*?TypeScriptVersion::new\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\)/g;
+const matches = [...text.matchAll(re)];
+if (matches.length !== 1) {
+  console.error(
+    `error: expected exactly 1 TypeScriptVersion::new(M,m,p) inside TypeScriptVersion::default() in ${path}, found ${matches.length}`,
+  );
+  process.exit(1);
+}
+process.stdout.write(`${matches[0][1]}.${matches[0][2]}.${matches[0][3]}`);
+NODE
+  )"
 else
   echo "error: unreachable: unknown json runtime '${json_runtime}'" >&2
   exit 2
@@ -140,6 +184,15 @@ if [[ "$rust_version" != "$harness_package_lock_root_version" ]]; then
   echo "  - Rust (typecheck-ts/build.rs):              ${rust_version}" >&2
   echo "  - Node harness (typecheck-ts-harness/*lock*): ${harness_package_lock_root_version}" >&2
   echo "help: keep these in sync when bumping TypeScript." >&2
+  echo "help: see typecheck-ts-harness/docs/bumping_typescript.md" >&2
+  errors=1
+fi
+
+if [[ "$resolver_default_version" != "$harness_package_lock_module_version" ]]; then
+  echo "error: TypeScript version drift detected in resolver default:" >&2
+  echo "  - Rust resolver (TypeScriptVersion::default in ${resolver_rs}): ${resolver_default_version}" >&2
+  echo "  - Pinned TypeScript (package-lock.json node_modules):          ${harness_package_lock_module_version}" >&2
+  echo "help: update TypeScriptVersion::default() to match the pinned TypeScript version." >&2
   echo "help: see typecheck-ts-harness/docs/bumping_typescript.md" >&2
   errors=1
 fi
