@@ -347,6 +347,7 @@ impl LayoutStore {
         }
       }
       TypeKind::Union(members) => self.layout_union(store, &members),
+      TypeKind::Intersection(members) => self.layout_intersection(store, &members),
       TypeKind::Object(obj) => {
         let shape = store.object(obj).shape;
         let payload = self.layout_of_shape(store, shape);
@@ -369,6 +370,88 @@ impl LayoutStore {
     let id = self.intern_layout(layout);
     self.by_type.insert(ty, id);
     id
+  }
+
+  fn layout_intersection(&self, store: &TypeStore, members: &[TypeId]) -> Layout {
+    // Special-case callable intersections so we can represent common TypeScript
+    // patterns like function values with additional properties
+    // (`((x: T) => U) & { foo: string }`) or namespace-merged function symbols.
+    //
+    // We intentionally do not attempt to represent arbitrary intersections; if
+    // the intersection contains unknown/non-object-like members we fall back to
+    // the opaque pointer representation until the native backend models a
+    // richer JSValue ABI.
+
+    let mut has_callable = false;
+    let mut props: Vec<(PropKey, TypeId)> = Vec::new();
+
+    for member in members {
+      match store.type_kind(*member) {
+        TypeKind::Callable { .. } => {
+          has_callable = true;
+        }
+        TypeKind::Object(obj) => {
+          let shape_id = store.object(obj).shape;
+          let shape = store.shape(shape_id);
+          if !shape.call_signatures.is_empty() || !shape.construct_signatures.is_empty() {
+            has_callable = true;
+          }
+          for prop in shape.properties {
+            props.push((prop.key, prop.data.ty));
+          }
+        }
+        _ => {
+          return Layout::Ptr { to: PtrKind::Opaque };
+        }
+      }
+    }
+
+    if !has_callable {
+      return Layout::Ptr { to: PtrKind::Opaque };
+    }
+
+    // Merge properties by key deterministically; for duplicate keys, compute an
+    // intersection type.
+    props.sort_by(|(a, _), (b, _)| store.compare_prop_keys(a, b));
+
+    let mut merged: Vec<(PropKey, TypeId)> = Vec::new();
+    for (key, ty) in props {
+      if let Some((last_key, last_ty)) = merged.last_mut() {
+        if *last_key == key {
+          *last_ty = store.intersection(vec![*last_ty, ty]);
+          continue;
+        }
+      }
+      merged.push((key, ty));
+    }
+
+    let mut fields: Vec<FieldLayout> = self.closure_header_fields();
+    fields.reserve(merged.len());
+    let mut offset: u32 = PTR_SIZE * 2;
+    let mut align: u32 = PTR_ALIGN;
+
+    for (key, ty) in merged {
+      let child = self.layout_of_type(store, ty);
+      let child_layout = self.layout(child);
+      let field_align = child_layout.align();
+      let field_size = child_layout.size();
+      offset = align_up(offset, field_align);
+      fields.push(FieldLayout {
+        key: FieldKey::Prop(key),
+        offset,
+        size: field_size,
+        align: field_align,
+        layout: child,
+      });
+      offset = offset.saturating_add(field_size);
+      align = align.max(field_align);
+    }
+
+    let size = align_up(offset, align);
+    let payload = self.intern_layout(Layout::Struct { fields, size, align });
+    Layout::Ptr {
+      to: PtrKind::GcObject { layout: payload },
+    }
   }
 
   pub(crate) fn gc_trace(&self, layout: LayoutId) -> Vec<GcTraceStep> {

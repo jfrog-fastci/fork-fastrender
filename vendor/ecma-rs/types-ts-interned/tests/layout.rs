@@ -434,6 +434,57 @@ fn callable_object_layout_is_deterministic_across_stores() {
 }
 
 #[test]
+fn callable_and_object_intersection_lowers_to_callable_object_layout() {
+  use types_ts_interned::Signature;
+
+  let store = TypeStore::new();
+  let primitives = store.primitive_ids();
+
+  let sig = store.intern_signature(Signature::new(Vec::new(), primitives.number));
+  let callable = store.intern_type(TypeKind::Callable {
+    overloads: vec![sig],
+  });
+
+  let name_x = store.intern_name("x");
+  let mut shape = Shape::new();
+  shape.properties.push(Property {
+    key: PropKey::String(name_x),
+    data: PropData {
+      ty: primitives.string,
+      optional: false,
+      readonly: false,
+      accessibility: None,
+      is_method: false,
+      origin: None,
+      declared_on: None,
+    },
+  });
+  let shape = store.intern_shape(shape);
+  let obj = store.intern_object(ObjectType { shape });
+  let obj_ty = store.intern_type(TypeKind::Object(obj));
+
+  let intersection = store.intern_type(TypeKind::Intersection(vec![callable, obj_ty]));
+  let layout = store.layout_of(intersection);
+  let Layout::Ptr { to } = store.layout(layout) else {
+    panic!("expected callable/object intersection to lower to Ptr layout");
+  };
+  let types_ts_interned::PtrKind::GcObject { layout: payload } = to else {
+    panic!("expected callable/object intersection to lower to PtrKind::GcObject");
+  };
+
+  let Layout::Struct { fields, .. } = store.layout(payload) else {
+    panic!("expected intersection payload layout to be Struct");
+  };
+  assert_eq!(fields[0].key, FieldKey::Internal("fn_ptr".to_string()));
+  assert_eq!(fields[1].key, FieldKey::Internal("env".to_string()));
+  assert_eq!(fields[2].key, FieldKey::Prop(PropKey::String(name_x)));
+  assert_eq!(fields[2].offset, 16);
+
+  // `env` + the string property are GC pointers.
+  assert_eq!(store.gc_ptr_offsets(payload), vec![8, 16]);
+}
+
+#[test]
 fn closure_layout_ids_are_deterministic_across_stores() {
   use types_ts_interned::Signature;
 
