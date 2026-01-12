@@ -234,18 +234,38 @@ impl RawEntry {
     }
 
     if let Some(id) = &self.id {
+      if id.starts_with('/') {
+        return Err(HarnessError::Manifest(format!(
+          "invalid id '{id}': ids must be relative to the suite root (no leading slash)"
+        )));
+      }
       if id.contains('\\') {
         return Err(HarnessError::Manifest(format!(
           "invalid id '{id}': ids must use forward slashes"
+        )));
+      }
+      if id.split('/').next().is_some_and(|seg| seg.contains(':')) {
+        return Err(HarnessError::Manifest(format!(
+          "invalid id '{id}': ids must be relative to the suite root (no drive letter)"
         )));
       }
       return Ok(Matcher::Exact(id.clone()));
     }
 
     if let Some(glob) = &self.glob {
+      if glob.starts_with('/') {
+        return Err(HarnessError::Manifest(format!(
+          "invalid glob '{glob}': globs must be relative to the suite root (no leading slash)"
+        )));
+      }
       if glob.contains('\\') {
         return Err(HarnessError::Manifest(format!(
           "invalid glob '{glob}': globs must use forward slashes"
+        )));
+      }
+      if glob.split('/').next().is_some_and(|seg| seg.contains(':')) {
+        return Err(HarnessError::Manifest(format!(
+          "invalid glob '{glob}': globs must be relative to the suite root (no drive letter)"
         )));
       }
       let compiled = Glob::new(glob)
@@ -373,6 +393,61 @@ status = "xfail"
     .unwrap_err();
     assert!(
       err.to_string().contains("forward slashes"),
+      "unexpected error: {err}"
+    );
+  }
+
+  #[test]
+  fn manifest_rejects_non_relative_id_and_glob() {
+    let err = Expectations::from_str(
+      r#"
+[[expectations]]
+id = "/a/b.ts"
+status = "xfail"
+"#,
+    )
+    .unwrap_err();
+    assert!(
+      err.to_string().contains("relative"),
+      "unexpected error: {err}"
+    );
+
+    let err = Expectations::from_str(
+      r#"
+[[expectations]]
+glob = "/**"
+status = "xfail"
+"#,
+    )
+    .unwrap_err();
+    assert!(
+      err.to_string().contains("relative"),
+      "unexpected error: {err}"
+    );
+
+    let err = Expectations::from_str(
+      r#"
+[[expectations]]
+id = "C:/a/b.ts"
+status = "xfail"
+"#,
+    )
+    .unwrap_err();
+    assert!(
+      err.to_string().contains("drive letter"),
+      "unexpected error: {err}"
+    );
+
+    let err = Expectations::from_str(
+      r#"
+[[expectations]]
+glob = "C:/**"
+status = "xfail"
+"#,
+    )
+    .unwrap_err();
+    assert!(
+      err.to_string().contains("drive letter"),
       "unexpected error: {err}"
     );
   }
