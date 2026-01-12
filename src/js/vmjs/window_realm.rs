@@ -1887,6 +1887,8 @@ const HISTORY_TRAVERSE_WINDOW_OBJ_SLOT: usize = 0;
 const HISTORY_TRAVERSE_HISTORY_OBJ_SLOT: usize = 1;
 const HISTORY_TRAVERSE_LOCATION_OBJ_SLOT: usize = 2;
 const HISTORY_TRAVERSE_DOCUMENT_OBJ_SLOT: usize = 3;
+const DOM_RECT_FROM_RECT_CTOR_SLOT: usize = 0;
+const DOM_RECT_FROM_RECT_READ_ONLY_SLOT: usize = 1;
 const STORAGE_METHOD_THIS_SLOT: usize = 0;
 const STORAGE_METHOD_KIND_SLOT: usize = 1;
 const STORAGE_ILLEGAL_INVOCATION_ERROR: &str = "Illegal invocation";
@@ -2014,6 +2016,7 @@ const ELEMENT_QUERY_SELECTOR_KEY: &str = "__fastrender_element_query_selector";
 const ELEMENT_QUERY_SELECTOR_ALL_KEY: &str = "__fastrender_element_query_selector_all";
 const ELEMENT_MATCHES_KEY: &str = "__fastrender_element_matches";
 const ELEMENT_CLOSEST_KEY: &str = "__fastrender_element_closest";
+const ELEMENT_GET_BOUNDING_CLIENT_RECT_KEY: &str = "__fastrender_element_get_bounding_client_rect";
 const INPUT_VALUE_GET_KEY: &str = "__fastrender_input_value_get";
 const INPUT_VALUE_SET_KEY: &str = "__fastrender_input_value_set";
 const INPUT_CHECKED_GET_KEY: &str = "__fastrender_input_checked_get";
@@ -5077,6 +5080,14 @@ fn get_or_create_node_wrapper(
       .heap()
       .object_get_own_data_property_value(document_obj, &key)?
   };
+
+  let element_get_bounding_client_rect = {
+    let key = alloc_key(scope, ELEMENT_GET_BOUNDING_CLIENT_RECT_KEY)?;
+    scope
+      .heap()
+      .object_get_own_data_property_value(document_obj, &key)?
+  };
+
   let input_value_get = {
     let key = alloc_key(scope, INPUT_VALUE_GET_KEY)?;
     scope
@@ -5621,6 +5632,11 @@ fn get_or_create_node_wrapper(
 
   if let Some(Value::Object(func)) = element_closest {
     let key = alloc_key(scope, "closest")?;
+    scope.define_property(wrapper, key, data_desc(Value::Object(func)))?;
+  }
+
+  if let Some(Value::Object(func)) = element_get_bounding_client_rect {
+    let key = alloc_key(scope, "getBoundingClientRect")?;
     scope.define_property(wrapper, key, data_desc(Value::Object(func)))?;
   }
 
@@ -7542,6 +7558,386 @@ fn element_closest_native(
       Err(VmError::Throw(make_dom_exception(scope, name, &message)?))
     }
   }
+}
+
+fn dom_rect_value_to_number_or_zero(scope: &mut Scope<'_>, value: Value) -> Result<f64, VmError> {
+  match value {
+    Value::Undefined => Ok(0.0),
+    other => scope.heap_mut().to_number(other),
+  }
+}
+
+fn dom_rect_arg_to_number_or_zero(
+  scope: &mut Scope<'_>,
+  args: &[Value],
+  idx: usize,
+) -> Result<f64, VmError> {
+  dom_rect_value_to_number_or_zero(scope, args.get(idx).copied().unwrap_or(Value::Undefined))
+}
+
+fn dom_rect_get_own_number_or_zero(
+  scope: &mut Scope<'_>,
+  obj: GcObject,
+  name: &str,
+) -> Result<f64, VmError> {
+  // Root `obj` while allocating the property key: string allocation can trigger GC.
+  let mut scope = scope.reborrow();
+  scope.push_root(Value::Object(obj))?;
+  let key = alloc_key(&mut scope, name)?;
+  let value = scope
+    .heap()
+    .object_get_own_data_property_value(obj, &key)?
+    .unwrap_or(Value::Undefined);
+  dom_rect_value_to_number_or_zero(&mut scope, value)
+}
+
+fn dom_rect_create_instance(
+  scope: &mut Scope<'_>,
+  ctor: GcObject,
+  read_only: bool,
+  x: f64,
+  y: f64,
+  width: f64,
+  height: f64,
+) -> Result<Value, VmError> {
+  // Root `ctor` while allocating property keys: string allocation can trigger GC.
+  let mut scope = scope.reborrow();
+  scope.push_root(Value::Object(ctor))?;
+
+  let prototype_key = alloc_key(&mut scope, "prototype")?;
+  let proto = scope
+    .heap()
+    .object_get_own_data_property_value(ctor, &prototype_key)?
+    .and_then(|v| match v {
+      Value::Object(obj) => Some(obj),
+      _ => None,
+    });
+
+  let obj = scope.alloc_object()?;
+  scope.push_root(Value::Object(obj))?;
+  if let Some(proto) = proto {
+    scope.heap_mut().object_set_prototype(obj, Some(proto))?;
+  }
+
+  for (name, value) in [("x", x), ("y", y), ("width", width), ("height", height)] {
+    let key = alloc_key(&mut scope, name)?;
+    let desc = if read_only {
+      read_only_data_desc(Value::Number(value))
+    } else {
+      data_desc(Value::Number(value))
+    };
+    scope.define_property(obj, key, desc)?;
+  }
+
+  Ok(Value::Object(obj))
+}
+
+fn dom_rect_top_get_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(obj) = this else {
+    return Err(VmError::TypeError("DOMRectReadOnly.top must be called on an object"));
+  };
+  Ok(Value::Number(dom_rect_get_own_number_or_zero(scope, obj, "y")?))
+}
+
+fn dom_rect_left_get_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(obj) = this else {
+    return Err(VmError::TypeError("DOMRectReadOnly.left must be called on an object"));
+  };
+  Ok(Value::Number(dom_rect_get_own_number_or_zero(scope, obj, "x")?))
+}
+
+fn dom_rect_right_get_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(obj) = this else {
+    return Err(VmError::TypeError(
+      "DOMRectReadOnly.right must be called on an object",
+    ));
+  };
+  let x = dom_rect_get_own_number_or_zero(scope, obj, "x")?;
+  let width = dom_rect_get_own_number_or_zero(scope, obj, "width")?;
+  Ok(Value::Number(x + width))
+}
+
+fn dom_rect_bottom_get_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(obj) = this else {
+    return Err(VmError::TypeError(
+      "DOMRectReadOnly.bottom must be called on an object",
+    ));
+  };
+  let y = dom_rect_get_own_number_or_zero(scope, obj, "y")?;
+  let height = dom_rect_get_own_number_or_zero(scope, obj, "height")?;
+  Ok(Value::Number(y + height))
+}
+
+fn dom_rect_to_json_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(obj) = this else {
+    return Err(VmError::TypeError(
+      "DOMRectReadOnly.toJSON must be called on an object",
+    ));
+  };
+
+  let x = dom_rect_get_own_number_or_zero(scope, obj, "x")?;
+  let y = dom_rect_get_own_number_or_zero(scope, obj, "y")?;
+  let width = dom_rect_get_own_number_or_zero(scope, obj, "width")?;
+  let height = dom_rect_get_own_number_or_zero(scope, obj, "height")?;
+  let left = x;
+  let top = y;
+  let right = x + width;
+  let bottom = y + height;
+
+  let out = scope.alloc_object()?;
+  scope.push_root(Value::Object(out))?;
+
+  let mut define = |scope: &mut Scope<'_>, name: &str, value: f64| -> Result<(), VmError> {
+    let key = alloc_key(scope, name)?;
+    scope.define_property(
+      out,
+      key,
+      PropertyDescriptor {
+        enumerable: true,
+        configurable: true,
+        kind: PropertyKind::Data {
+          value: Value::Number(value),
+          writable: true,
+        },
+      },
+    )
+  };
+
+  // Root `out` while allocating property keys.
+  let mut scope = scope.reborrow();
+  scope.push_root(Value::Object(out))?;
+  define(&mut scope, "x", x)?;
+  define(&mut scope, "y", y)?;
+  define(&mut scope, "width", width)?;
+  define(&mut scope, "height", height)?;
+  define(&mut scope, "top", top)?;
+  define(&mut scope, "right", right)?;
+  define(&mut scope, "bottom", bottom)?;
+  define(&mut scope, "left", left)?;
+
+  Ok(Value::Object(out))
+}
+
+fn dom_rect_read_only_constructor_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let x = dom_rect_arg_to_number_or_zero(scope, args, 0)?;
+  let y = dom_rect_arg_to_number_or_zero(scope, args, 1)?;
+  let width = dom_rect_arg_to_number_or_zero(scope, args, 2)?;
+  let height = dom_rect_arg_to_number_or_zero(scope, args, 3)?;
+  dom_rect_create_instance(scope, callee, true, x, y, width, height)
+}
+
+fn dom_rect_read_only_constructor_construct_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  args: &[Value],
+  new_target: Value,
+) -> Result<Value, VmError> {
+  let ctor = match new_target {
+    Value::Object(obj) => obj,
+    _ => callee,
+  };
+  dom_rect_read_only_constructor_native(vm, scope, host, hooks, ctor, Value::Undefined, args)
+}
+
+fn dom_rect_constructor_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let x = dom_rect_arg_to_number_or_zero(scope, args, 0)?;
+  let y = dom_rect_arg_to_number_or_zero(scope, args, 1)?;
+  let width = dom_rect_arg_to_number_or_zero(scope, args, 2)?;
+  let height = dom_rect_arg_to_number_or_zero(scope, args, 3)?;
+  dom_rect_create_instance(scope, callee, false, x, y, width, height)
+}
+
+fn dom_rect_constructor_construct_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  args: &[Value],
+  new_target: Value,
+) -> Result<Value, VmError> {
+  let ctor = match new_target {
+    Value::Object(obj) => obj,
+    _ => callee,
+  };
+  dom_rect_constructor_native(vm, scope, host, hooks, ctor, Value::Undefined, args)
+}
+
+fn dom_rect_from_rect_slots(scope: &Scope<'_>, callee: GcObject) -> Result<(GcObject, bool), VmError> {
+  let slots = scope.heap().get_function_native_slots(callee)?;
+  let ctor = slots
+    .get(DOM_RECT_FROM_RECT_CTOR_SLOT)
+    .copied()
+    .unwrap_or(Value::Undefined);
+  let read_only = slots
+    .get(DOM_RECT_FROM_RECT_READ_ONLY_SLOT)
+    .copied()
+    .unwrap_or(Value::Bool(false));
+  let Value::Object(ctor_obj) = ctor else {
+    return Err(VmError::InvariantViolation(
+      "DOMRect.fromRect missing constructor slot",
+    ));
+  };
+  let read_only = matches!(read_only, Value::Bool(true));
+  Ok((ctor_obj, read_only))
+}
+
+fn dom_rect_init_get_number_or_zero(
+  scope: &mut Scope<'_>,
+  init: GcObject,
+  name: &str,
+) -> Result<f64, VmError> {
+  // Root `init` while allocating the property key: string allocation can trigger GC.
+  let mut scope = scope.reborrow();
+  scope.push_root(Value::Object(init))?;
+  let key = alloc_key(&mut scope, name)?;
+  let value = scope
+    .heap()
+    .object_get_own_data_property_value(init, &key)?
+    .unwrap_or(Value::Undefined);
+  dom_rect_value_to_number_or_zero(&mut scope, value)
+}
+
+fn dom_rect_from_rect_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let (ctor, read_only) = dom_rect_from_rect_slots(scope, callee)?;
+  let init = args.get(0).copied().unwrap_or(Value::Undefined);
+
+  let (x, y, width, height) = match init {
+    Value::Object(obj) => (
+      dom_rect_init_get_number_or_zero(scope, obj, "x")?,
+      dom_rect_init_get_number_or_zero(scope, obj, "y")?,
+      dom_rect_init_get_number_or_zero(scope, obj, "width")?,
+      dom_rect_init_get_number_or_zero(scope, obj, "height")?,
+    ),
+    _ => (0.0, 0.0, 0.0, 0.0),
+  };
+
+  dom_rect_create_instance(scope, ctor, read_only, x, y, width, height)
+}
+
+fn element_get_bounding_client_rect_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(wrapper_obj) = this else {
+    return Err(VmError::TypeError(
+      "Element.getBoundingClientRect must be called on an element object",
+    ));
+  };
+
+  let wrapper_document_key = alloc_key(scope, WRAPPER_DOCUMENT_KEY)?;
+  let document_obj = match scope
+    .heap()
+    .object_get_own_data_property_value(wrapper_obj, &wrapper_document_key)?
+  {
+    Some(Value::Object(obj)) => obj,
+    _ => {
+      return Err(VmError::TypeError(
+        "Element.getBoundingClientRect must be called on an element object",
+      ))
+    }
+  };
+
+  let document_window_key = alloc_key(scope, DOCUMENT_WINDOW_KEY)?;
+  let window_obj = match scope
+    .heap()
+    .object_get_own_data_property_value(document_obj, &document_window_key)?
+  {
+    Some(Value::Object(obj)) => obj,
+    _ => {
+      return Err(VmError::TypeError(
+        "Element.getBoundingClientRect requires a DOM-backed document",
+      ))
+    }
+  };
+
+  // Read the constructor off the global object so the returned instance has the right prototype.
+  let mut scope = scope.reborrow();
+  scope.push_root(Value::Object(window_obj))?;
+  let dom_rect_ctor_key = alloc_key(&mut scope, "DOMRectReadOnly")?;
+  let dom_rect_ctor = scope
+    .heap()
+    .object_get_own_data_property_value(window_obj, &dom_rect_ctor_key)?
+    .unwrap_or(Value::Undefined);
+  let Value::Object(dom_rect_ctor) = dom_rect_ctor else {
+    return Err(VmError::TypeError(
+      "DOMRectReadOnly constructor is not available",
+    ));
+  };
+
+  dom_rect_create_instance(&mut scope, dom_rect_ctor, true, 0.0, 0.0, 0.0, 0.0)
 }
 
 fn document_create_element_native(
@@ -22648,6 +23044,158 @@ fn init_window_globals(
     data_desc(Value::Object(mutation_observer_ctor_func)),
   )?;
 
+  // --- DOMRectReadOnly / DOMRect ------------------------------------------------
+  //
+  // These geometry types are used by layout APIs like `Element.getBoundingClientRect()`.
+  let dom_rect_read_only_proto = scope.alloc_object()?;
+  scope.push_root(Value::Object(dom_rect_read_only_proto))?;
+  scope.heap_mut().object_set_prototype(
+    dom_rect_read_only_proto,
+    Some(realm.intrinsics().object_prototype()),
+  )?;
+
+  let dom_rect_proto = scope.alloc_object()?;
+  scope.push_root(Value::Object(dom_rect_proto))?;
+  scope
+    .heap_mut()
+    .object_set_prototype(dom_rect_proto, Some(dom_rect_read_only_proto))?;
+
+  // DOMRectReadOnly.prototype.{top,left,right,bottom}
+  for (prop, native) in [
+    ("top", dom_rect_top_get_native as _),
+    ("left", dom_rect_left_get_native as _),
+    ("right", dom_rect_right_get_native as _),
+    ("bottom", dom_rect_bottom_get_native as _),
+  ] {
+    let call_id = vm.register_native_call(native)?;
+    let name = scope.alloc_string(&format!("get {prop}"))?;
+    scope.push_root(Value::String(name))?;
+    let func = scope.alloc_native_function(call_id, None, name, 0)?;
+    scope.heap_mut().object_set_prototype(
+      func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(func))?;
+    let key = alloc_key(&mut scope, prop)?;
+    scope.define_property(
+      dom_rect_read_only_proto,
+      key,
+      PropertyDescriptor {
+        enumerable: false,
+        configurable: true,
+        kind: PropertyKind::Accessor {
+          get: Value::Object(func),
+          set: Value::Undefined,
+        },
+      },
+    )?;
+  }
+
+  // DOMRectReadOnly.prototype.toJSON()
+  let dom_rect_to_json_call_id = vm.register_native_call(dom_rect_to_json_native)?;
+  let dom_rect_to_json_name = scope.alloc_string("toJSON")?;
+  scope.push_root(Value::String(dom_rect_to_json_name))?;
+  let dom_rect_to_json_func =
+    scope.alloc_native_function(dom_rect_to_json_call_id, None, dom_rect_to_json_name, 0)?;
+  scope.heap_mut().object_set_prototype(
+    dom_rect_to_json_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(dom_rect_to_json_func))?;
+  let dom_rect_to_json_key = alloc_key(&mut scope, "toJSON")?;
+  scope.define_property(
+    dom_rect_read_only_proto,
+    dom_rect_to_json_key,
+    data_desc(Value::Object(dom_rect_to_json_func)),
+  )?;
+
+  // Constructors.
+  let dom_rect_read_only_ctor_call_id = vm.register_native_call(dom_rect_read_only_constructor_native)?;
+  let dom_rect_read_only_ctor_construct_id =
+    vm.register_native_construct(dom_rect_read_only_constructor_construct_native)?;
+  let dom_rect_read_only_ctor_name = scope.alloc_string("DOMRectReadOnly")?;
+  scope.push_root(Value::String(dom_rect_read_only_ctor_name))?;
+  let dom_rect_read_only_ctor_func = scope.alloc_native_function(
+    dom_rect_read_only_ctor_call_id,
+    Some(dom_rect_read_only_ctor_construct_id),
+    dom_rect_read_only_ctor_name,
+    0,
+  )?;
+  scope.heap_mut().object_set_prototype(
+    dom_rect_read_only_ctor_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(dom_rect_read_only_ctor_func))?;
+  scope.define_property(
+    dom_rect_read_only_ctor_func,
+    prototype_key,
+    data_desc(Value::Object(dom_rect_read_only_proto)),
+  )?;
+  scope.define_property(
+    dom_rect_read_only_proto,
+    constructor_key,
+    data_desc(Value::Object(dom_rect_read_only_ctor_func)),
+  )?;
+  let dom_rect_read_only_ctor_key = alloc_key(&mut scope, "DOMRectReadOnly")?;
+  scope.define_property(
+    global,
+    dom_rect_read_only_ctor_key,
+    data_desc(Value::Object(dom_rect_read_only_ctor_func)),
+  )?;
+
+  let dom_rect_ctor_call_id = vm.register_native_call(dom_rect_constructor_native)?;
+  let dom_rect_ctor_construct_id = vm.register_native_construct(dom_rect_constructor_construct_native)?;
+  let dom_rect_ctor_name = scope.alloc_string("DOMRect")?;
+  scope.push_root(Value::String(dom_rect_ctor_name))?;
+  let dom_rect_ctor_func = scope.alloc_native_function(
+    dom_rect_ctor_call_id,
+    Some(dom_rect_ctor_construct_id),
+    dom_rect_ctor_name,
+    0,
+  )?;
+  scope.heap_mut().object_set_prototype(
+    dom_rect_ctor_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(dom_rect_ctor_func))?;
+  scope.define_property(
+    dom_rect_ctor_func,
+    prototype_key,
+    data_desc(Value::Object(dom_rect_proto)),
+  )?;
+  scope.define_property(
+    dom_rect_proto,
+    constructor_key,
+    data_desc(Value::Object(dom_rect_ctor_func)),
+  )?;
+  let dom_rect_ctor_key = alloc_key(&mut scope, "DOMRect")?;
+  scope.define_property(global, dom_rect_ctor_key, data_desc(Value::Object(dom_rect_ctor_func)))?;
+
+  // DOMRect{ReadOnly}.fromRect(other = {})
+  let dom_rect_from_rect_call_id = vm.register_native_call(dom_rect_from_rect_native)?;
+  let dom_rect_from_rect_name = scope.alloc_string("fromRect")?;
+  scope.push_root(Value::String(dom_rect_from_rect_name))?;
+
+  for (ctor, read_only) in [
+    (dom_rect_read_only_ctor_func, true),
+    (dom_rect_ctor_func, false),
+  ] {
+    let func = scope.alloc_native_function_with_slots(
+      dom_rect_from_rect_call_id,
+      None,
+      dom_rect_from_rect_name,
+      1,
+      &[Value::Object(ctor), Value::Bool(read_only)],
+    )?;
+    scope.heap_mut().object_set_prototype(
+      func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(func))?;
+    let key = alloc_key(&mut scope, "fromRect")?;
+    scope.define_property(ctor, key, data_desc(Value::Object(func)))?;
+  }
+
   // Store shared function objects on document so wrappers can reuse them.
   let add_event_listener_internal_key = alloc_key(&mut scope, EVENT_TARGET_ADD_EVENT_LISTENER_KEY)?;
   scope.define_property(
@@ -22991,6 +23539,29 @@ fn init_window_globals(
     document_obj,
     element_closest_key,
     data_desc(Value::Object(element_closest_func)),
+  )?;
+
+  let element_get_bounding_client_rect_call_id =
+    vm.register_native_call(element_get_bounding_client_rect_native)?;
+  let element_get_bounding_client_rect_name = scope.alloc_string("getBoundingClientRect")?;
+  scope.push_root(Value::String(element_get_bounding_client_rect_name))?;
+  let element_get_bounding_client_rect_func = scope.alloc_native_function(
+    element_get_bounding_client_rect_call_id,
+    None,
+    element_get_bounding_client_rect_name,
+    0,
+  )?;
+  scope.heap_mut().object_set_prototype(
+    element_get_bounding_client_rect_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(element_get_bounding_client_rect_func))?;
+  let element_get_bounding_client_rect_key =
+    alloc_key(&mut scope, ELEMENT_GET_BOUNDING_CLIENT_RECT_KEY)?;
+  scope.define_property(
+    document_obj,
+    element_get_bounding_client_rect_key,
+    data_desc(Value::Object(element_get_bounding_client_rect_func)),
   )?;
 
   // Store shared Element.getAttribute/setAttribute functions on `document` so wrappers can reuse them.
@@ -25213,6 +25784,20 @@ mod tests {
   }
 
   #[test]
+  fn dom_rect_constructors_exist_and_compute_right_edge() -> Result<(), VmError> {
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+    assert_eq!(
+      realm.exec_script("typeof DOMRectReadOnly === 'function'")?,
+      Value::Bool(true)
+    );
+    assert_eq!(
+      realm.exec_script("new DOMRectReadOnly(1, 2, 3, 4).right === 4")?,
+      Value::Bool(true)
+    );
+    Ok(())
+  }
+
+  #[test]
   fn window_text_encoding_exists_and_round_trips() -> Result<(), VmError> {
     let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
 
@@ -27193,6 +27778,24 @@ mod tests {
     )?;
     assert_eq!(get_string(realm.heap(), add_null_is_noop), "ok");
 
+    Ok(())
+  }
+
+  #[test]
+  fn element_get_bounding_client_rect_returns_dom_rect_read_only() -> Result<(), VmError> {
+    let renderer_dom = crate::dom::parse_html(
+      "<!doctype html><html><body><div id=x></div></body></html>",
+    )
+    .unwrap();
+    let mut host = crate::js::HostDocumentState::from_renderer_dom(&renderer_dom);
+
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+    let ok = exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      "document.getElementById('x').getBoundingClientRect() instanceof DOMRectReadOnly",
+    )?;
+    assert_eq!(ok, Value::Bool(true));
     Ok(())
   }
 
