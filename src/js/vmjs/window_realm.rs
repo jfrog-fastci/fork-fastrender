@@ -7570,8 +7570,17 @@ fn queue_mutation_observer_microtask(
     return Ok(());
   }
 
-  let Some(global) = document_window_from_document(scope, document_obj)? else {
-    return Ok(());
+  let global = match document_window_from_document(scope, document_obj)? {
+    Some(global) => global,
+    None => {
+      let Some(data) = vm.user_data_mut::<WindowRealmUserData>() else {
+        return Ok(());
+      };
+      let Some(global) = data.window_obj else {
+        return Ok(());
+      };
+      global
+    }
   };
 
   // Find the internal queueMicrotask implementation (preferred) or fall back to the user-visible
@@ -7600,15 +7609,47 @@ fn queue_mutation_observer_microtask(
   let notify = {
     scope.push_root(Value::Object(document_obj))?;
     let notify_key = alloc_key(scope, MUTATION_OBSERVER_NOTIFY_KEY)?;
-    scope
+    let existing = scope
       .heap()
       .object_get_own_data_property_value(document_obj, &notify_key)?
-      .unwrap_or(Value::Undefined)
+      .unwrap_or(Value::Undefined);
+    if matches!(existing, Value::Object(_)) && scope.heap().is_callable(existing)? {
+      existing
+    } else {
+      // Some `Document` wrapper objects can be created without going through `init_window_globals`
+      // (e.g. registered secondary documents). Create the notify shim lazily so mutation observer
+      // microtasks can still be queued.
+      let notify_call_id = vm.register_native_call(mutation_observer_notify_native)?;
+      let notify_name = scope.alloc_string("notify mutation observers")?;
+      scope.push_root(Value::String(notify_name))?;
+      let func = scope.alloc_native_function_with_slots(
+        notify_call_id,
+        None,
+        notify_name,
+        0,
+        &[Value::Object(document_obj)],
+      )?;
+      if let Some(intrinsics) = vm.intrinsics() {
+        scope
+          .heap_mut()
+          .object_set_prototype(func, Some(intrinsics.function_prototype()))?;
+      }
+      scope.push_root(Value::Object(func))?;
+      scope.define_property(
+        document_obj,
+        notify_key,
+        PropertyDescriptor {
+          enumerable: false,
+          configurable: false,
+          kind: PropertyKind::Data {
+            value: Value::Object(func),
+            writable: false,
+          },
+        },
+      )?;
+      Value::Object(func)
+    }
   };
-
-  if !matches!(notify, Value::Object(_)) || !scope.heap().is_callable(notify)? {
-    return Ok(());
-  }
 
   // This is an internal scheduling primitive; don't let failures (missing queueMicrotask binding,
   // full microtask queue, etc) perturb DOM mutations.
@@ -12041,16 +12082,37 @@ fn mutation_observer_observe_native(
   let options_value = args.get(1).copied().unwrap_or(Value::Undefined);
   let options = mutation_observer_parse_options(vm, scope, host, hooks, options_value)?;
 
-  let Some(dom_host) = crate::js::dom_host::dom_host_vmjs(host) else {
-    return Err(VmError::TypeError(
-      "MutationObserver.observe requires a DOM-backed node",
-    ));
-  };
-  let target_id = dom_host
-    .node_id_from_index(node_index)
-    .map_err(|_| VmError::TypeError("MutationObserver.observe requires a DOM-backed node"))?;
+  let document_id = gc_object_id(document_obj);
 
-  if let Err(err) = dom_host.mutation_observer_observe(observer_id, target_id, options) {
+  let observe_result = if is_host_document_id(vm, document_id) {
+    let Some(dom_host) = crate::js::dom_host::dom_host_vmjs(host) else {
+      return Err(VmError::TypeError(
+        "MutationObserver.observe requires a DOM-backed node",
+      ));
+    };
+    let target_id = dom_host
+      .node_id_from_index(node_index)
+      .map_err(|_| VmError::TypeError("MutationObserver.observe requires a DOM-backed node"))?;
+    dom_host.mutation_observer_observe(observer_id, target_id, options)
+  } else {
+    let Some(mut dom_ptr) = (|| {
+      let data = vm.user_data_mut::<WindowRealmUserData>()?;
+      let dom = data.owned_dom2_documents.get_mut(&document_id)?;
+      Some(NonNull::from(dom.as_mut()))
+    })() else {
+      return Err(VmError::TypeError(
+        "MutationObserver.observe requires a DOM-backed node",
+      ));
+    };
+    // SAFETY: `dom_ptr` is owned by the realm's document registry.
+    let dom = unsafe { dom_ptr.as_mut() };
+    let target_id = dom
+      .node_id_from_index(node_index)
+      .map_err(|_| VmError::TypeError("MutationObserver.observe requires a DOM-backed node"))?;
+    dom.mutation_observer_observe(observer_id, target_id, options)
+  };
+
+  if let Err(err) = observe_result {
     return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
   }
 
@@ -12074,7 +12136,7 @@ fn mutation_observer_observe_native(
 }
 
 fn mutation_observer_disconnect_native(
-  _vm: &mut Vm,
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
   host: &mut dyn VmHost,
   _hooks: &mut dyn VmHostHooks,
@@ -12091,8 +12153,18 @@ fn mutation_observer_disconnect_native(
     return Ok(Value::Undefined);
   };
 
-  if let Some(dom_host) = crate::js::dom_host::dom_host_vmjs(host) {
-    dom_host.mutation_observer_disconnect(observer_id);
+  let document_id = gc_object_id(document_obj);
+  if is_host_document_id(vm, document_id) {
+    if let Some(dom_host) = crate::js::dom_host::dom_host_vmjs(host) {
+      dom_host.mutation_observer_disconnect(observer_id);
+    }
+  } else if let Some(mut dom_ptr) = (|| {
+    let data = vm.user_data_mut::<WindowRealmUserData>()?;
+    let dom = data.owned_dom2_documents.get_mut(&document_id)?;
+    Some(NonNull::from(dom.as_mut()))
+  })() {
+    // SAFETY: `dom_ptr` is owned by the realm's document registry.
+    unsafe { dom_ptr.as_mut() }.mutation_observer_disconnect(observer_id);
   }
 
   if let Ok(registry) = mutation_observer_registry_from_document(scope, document_obj) {
@@ -12147,12 +12219,28 @@ fn mutation_observer_take_records_native(
     return Ok(Value::Object(empty));
   };
 
-  let Some(dom_host) = crate::js::dom_host::dom_host_vmjs(host) else {
-    let empty = alloc_mutation_records_array(vm, scope, document_obj, None, &[])?;
-    return Ok(Value::Object(empty));
+  let document_id = gc_object_id(document_obj);
+  let (records, dom_for_wrappers) = if is_host_document_id(vm, document_id) {
+    let Some(dom_host) = crate::js::dom_host::dom_host_vmjs(host) else {
+      let empty = alloc_mutation_records_array(vm, scope, document_obj, None, &[])?;
+      return Ok(Value::Object(empty));
+    };
+    (dom_host.mutation_observer_take_records(observer_id), dom_from_vm_host(host))
+  } else {
+    let Some(mut dom_ptr) = (|| {
+      let data = vm.user_data_mut::<WindowRealmUserData>()?;
+      let dom = data.owned_dom2_documents.get_mut(&document_id)?;
+      Some(NonNull::from(dom.as_mut()))
+    })() else {
+      let empty = alloc_mutation_records_array(vm, scope, document_obj, None, &[])?;
+      return Ok(Value::Object(empty));
+    };
+    // SAFETY: `dom_ptr` is owned by the realm's document registry.
+    let records = unsafe { dom_ptr.as_mut() }.mutation_observer_take_records(observer_id);
+    // SAFETY: `dom_ptr` remains valid while the owning document stays registered.
+    let dom_for_wrappers = Some(unsafe { dom_ptr.as_ref() });
+    (records, dom_for_wrappers)
   };
-  let records = dom_host.mutation_observer_take_records(observer_id);
-  let dom_for_wrappers = dom_from_vm_host(host);
   let array = alloc_mutation_records_array(vm, scope, document_obj, dom_for_wrappers, &records)?;
   Ok(Value::Object(array))
 }
@@ -12176,11 +12264,28 @@ fn mutation_observer_notify_native(
     _ => return Ok(Value::Undefined),
   };
 
-  let deliveries = {
+  let document_id = gc_object_id(document_obj);
+  let (deliveries, dom_for_wrappers) = if is_host_document_id(vm, document_id) {
     let Some(dom_host) = crate::js::dom_host::dom_host_vmjs(host) else {
       return Ok(Value::Undefined);
     };
-    dom_host.mutation_observer_take_deliveries()
+    (
+      dom_host.mutation_observer_take_deliveries(),
+      dom_from_vm_host(host),
+    )
+  } else {
+    let Some(mut dom_ptr) = (|| {
+      let data = vm.user_data_mut::<WindowRealmUserData>()?;
+      let dom = data.owned_dom2_documents.get_mut(&document_id)?;
+      Some(NonNull::from(dom.as_mut()))
+    })() else {
+      return Ok(Value::Undefined);
+    };
+    // SAFETY: `dom_ptr` is owned by the realm's document registry.
+    let deliveries = unsafe { dom_ptr.as_mut() }.mutation_observer_take_deliveries();
+    // SAFETY: `dom_ptr` remains valid while the owning document stays registered.
+    let dom_for_wrappers = Some(unsafe { dom_ptr.as_ref() });
+    (deliveries, dom_for_wrappers)
   };
   if deliveries.is_empty() {
     return Ok(Value::Undefined);
@@ -12213,7 +12318,6 @@ fn mutation_observer_notify_native(
     }
 
     let records_array = {
-      let dom_for_wrappers = dom_from_vm_host(host);
       alloc_mutation_records_array(vm, scope, document_obj, dom_for_wrappers, &records)?
     };
     let args = [Value::Object(records_array), Value::Object(observer_obj)];
@@ -34496,6 +34600,119 @@ mod tests {
       host.dom().get_attribute(div, "style").unwrap(),
       Some("background-color: red; cursor: pointer; height: 10px;")
     );
+
+    Ok(())
+  }
+
+  #[test]
+  fn mutation_observer_take_records_supports_registered_secondary_documents() -> Result<(), VmError> {
+    let mut host = crate::js::HostDocumentState::new(dom2::Document::new(QuirksMode::NoQuirks));
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+
+    // Create a secondary DOM + JS wrapper document that is not the host-backed `window.document`.
+    let (mut dom2_ptr, node_id, node_obj) = {
+      let realm_id = realm.realm_id;
+      let (vm, realm_ref, heap) = realm.vm_realm_and_heap_mut();
+      let mut scope = heap.scope();
+      let mut vm = vm.execution_context_guard(vm_js::ExecutionContext {
+        realm: realm_id,
+        script_or_module: None,
+      });
+
+      let global = realm_ref.global_object();
+
+      let document_obj = scope.alloc_object()?;
+      scope.push_root(Value::Object(document_obj))?;
+
+      // Treat this `Document` object as the canonical wrapper for `NodeId(0)` in the secondary
+      // document so mutation records can wrap the document node if needed.
+      let node_id_key = alloc_key(&mut scope, NODE_ID_KEY)?;
+      scope.define_property(document_obj, node_id_key, data_desc(Value::Number(0.0)))?;
+      let wrapper_document_key = alloc_key(&mut scope, WRAPPER_DOCUMENT_KEY)?;
+      scope.define_property(
+        document_obj,
+        wrapper_document_key,
+        PropertyDescriptor {
+          enumerable: false,
+          configurable: false,
+          kind: PropertyKind::Data {
+            value: Value::Object(document_obj),
+            writable: false,
+          },
+        },
+      )?;
+
+      let mut dom2 = dom2::Document::new(QuirksMode::NoQuirks);
+      let node_id = dom2.create_element("div", "");
+      // Keep the node detached; observing + mutating should still queue records.
+
+      let document_id = gc_object_id(document_obj);
+      let mut boxed = Box::new(dom2);
+      let dom2_ptr = NonNull::from(boxed.as_mut());
+      vm
+        .user_data_mut::<WindowRealmUserData>()
+        .expect("expected WindowRealmUserData")
+        .owned_dom2_documents
+        .insert(document_id, boxed);
+
+      // Create a JS wrapper for the secondary-document node and expose it as a global so scripts can
+      // observe it.
+      let node_value = get_or_create_node_wrapper(
+        &mut vm,
+        &mut scope,
+        document_obj,
+        Some(unsafe { dom2_ptr.as_ref() }),
+        node_id,
+      )?;
+      let Value::Object(node_obj) = node_value else {
+        panic!("expected node wrapper object");
+      };
+      scope.push_root(Value::Object(node_obj))?;
+      let node_key = alloc_key(&mut scope, "node")?;
+      scope.define_property(global, node_key, data_desc(Value::Object(node_obj)))?;
+
+      (dom2_ptr, node_id, node_obj)
+    };
+
+    exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      "globalThis.__records = null;\n\
+       const obs = new MutationObserver((records) => { __records = records; });\n\
+       obs.observe(node, { attributes: true });\n\
+       globalThis.__obs = obs;",
+    )?;
+
+    // Mutate the secondary DOM directly (outside the host-backed document) and then synchronously
+    // drain records via `takeRecords()`.
+    unsafe { dom2_ptr.as_mut() }
+      .set_attribute(node_id, "data-x", "y")
+      .expect("set_attribute should succeed");
+
+    let taken = exec_script_with_dom_host(&mut realm, &mut host, "__obs.takeRecords()")?;
+    let Value::Object(taken_obj) = taken else {
+      panic!("expected takeRecords() to return an array object");
+    };
+
+    let realm_id = realm.realm_id;
+    let (vm, _realm_ref, heap) = realm.vm_realm_and_heap_mut();
+    let mut scope = heap.scope();
+    let mut vm = vm.execution_context_guard(vm_js::ExecutionContext {
+      realm: realm_id,
+      script_or_module: None,
+    });
+    scope.push_root(Value::Object(taken_obj))?;
+
+    let len = get_prop(&mut vm, &mut scope, taken_obj, "length")?;
+    assert_eq!(len, Value::Number(1.0));
+    let record = get_prop(&mut vm, &mut scope, taken_obj, "0")?;
+    let Value::Object(record_obj) = record else {
+      panic!("expected mutation record object");
+    };
+    let record_type = get_prop(&mut vm, &mut scope, record_obj, "type")?;
+    assert_eq!(get_string(scope.heap(), record_type), "attributes");
+    let record_target = get_prop(&mut vm, &mut scope, record_obj, "target")?;
+    assert_eq!(record_target, Value::Object(node_obj));
 
     Ok(())
   }
