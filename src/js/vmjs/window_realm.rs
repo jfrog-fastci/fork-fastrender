@@ -21397,7 +21397,7 @@ fn node_remove_native(
 }
 
 fn node_text_content_get_native(
-  _vm: &mut Vm,
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
   host: &mut dyn VmHost,
   _hooks: &mut dyn VmHostHooks,
@@ -21424,9 +21424,27 @@ fn node_text_content_get_native(
     }
   };
 
-  let dom = dom_from_vm_host(host).ok_or(VmError::TypeError(
-    "Node.textContent requires a DOM-backed document",
-  ))?;
+  let wrapper_document_key = alloc_key(scope, WRAPPER_DOCUMENT_KEY)?;
+  let document_obj = match scope
+    .heap()
+    .object_get_own_data_property_value(wrapper_obj, &wrapper_document_key)?
+  {
+    Some(Value::Object(obj)) => obj,
+    _ => {
+      return Err(VmError::TypeError(
+        "Node.textContent must be called on a node object",
+      ));
+    }
+  };
+
+  let document_id = gc_object_id(document_obj);
+  let dom_ptr = dom_ptr_for_document_id_read(vm, host, document_id)
+    .or_else(|| dom_from_vm_host(host).map(NonNull::from))
+    .ok_or(VmError::TypeError(
+      "Node.textContent requires a DOM-backed document",
+    ))?;
+  // SAFETY: `dom_ptr` is valid for the duration of this native call.
+  let dom = unsafe { dom_ptr.as_ref() };
   let node_id = dom
     .node_id_from_index(node_index)
     .map_err(|_| VmError::TypeError("Node.textContent must be called on a node object"))?;
@@ -21525,6 +21543,19 @@ fn node_text_content_set_native(
     }
   };
 
+  let wrapper_document_key = alloc_key(scope, WRAPPER_DOCUMENT_KEY)?;
+  let document_obj = match scope
+    .heap()
+    .object_get_own_data_property_value(wrapper_obj, &wrapper_document_key)?
+  {
+    Some(Value::Object(obj)) => obj,
+    _ => {
+      return Err(VmError::TypeError(
+        "Node.textContent must be called on a node object",
+      ));
+    }
+  };
+
   let value_value = args.get(0).copied().unwrap_or(Value::Undefined);
   let value = match value_value {
     // `textContent` is `DOMString?`; `null` and `undefined` act as the empty string.
@@ -21539,14 +21570,20 @@ fn node_text_content_set_native(
     }
   };
 
-  let dom = dom_from_vm_host_mut(host).ok_or(VmError::TypeError(
-    "Node.textContent requires a DOM-backed document",
-  ))?;
-  let mut dom_ptr = NonNull::from(&mut *dom);
-  let node_id = dom
-    .node_id_from_index(node_index)
-    .map_err(|_| VmError::TypeError("Node.textContent must be called on a node object"))?;
-  let document_obj = node_wrapper_document_obj(scope, wrapper_obj, node_id)?;
+  let document_id = gc_object_id(document_obj);
+  let (mut dom_ptr, is_host_document) = if let Some(dom_ptr) =
+    dom_ptr_for_document_id_mut(vm, host, document_id)
+  {
+    (dom_ptr, is_host_document_id(vm, document_id))
+  } else if let Some(dom) = dom_from_vm_host_mut(host) {
+    // Fall back to the host DOM for nodes whose `ownerDocument` wrapper is not registered with the
+    // realm document registry (e.g. objects that inherit DOM methods via `Object.create(document)`).
+    (NonNull::from(dom), true)
+  } else {
+    return Err(VmError::TypeError(
+      "Node.textContent requires a DOM-backed document",
+    ));
+  };
 
   #[derive(Clone, Copy)]
   enum TextContentTarget {
@@ -21557,24 +21594,35 @@ fn node_text_content_set_native(
     NoOp,
   }
 
-  let target = match &dom.node(node_id).kind {
-    NodeKind::Text { .. } => TextContentTarget::Text,
-    NodeKind::Comment { .. } => TextContentTarget::Comment,
-    NodeKind::ProcessingInstruction { .. } => TextContentTarget::ProcessingInstruction,
-    NodeKind::Element { .. } | NodeKind::Slot { .. } => TextContentTarget::ReplaceChildren {
-      preserve_shadow_roots: true,
-    },
-    NodeKind::DocumentFragment | NodeKind::ShadowRoot { .. } => {
-      TextContentTarget::ReplaceChildren {
+  let (node_id, target) = {
+    // SAFETY: `dom_ptr` is valid for the duration of this native call.
+    let dom = unsafe { dom_ptr.as_ref() };
+
+    let node_id = dom
+      .node_id_from_index(node_index)
+      .map_err(|_| VmError::TypeError("Node.textContent must be called on a node object"))?;
+
+    let target = match &dom.node(node_id).kind {
+      NodeKind::Text { .. } => TextContentTarget::Text,
+      NodeKind::Comment { .. } => TextContentTarget::Comment,
+      NodeKind::ProcessingInstruction { .. } => TextContentTarget::ProcessingInstruction,
+      NodeKind::Element { .. } | NodeKind::Slot { .. } => TextContentTarget::ReplaceChildren {
+        preserve_shadow_roots: true,
+      },
+      NodeKind::DocumentFragment | NodeKind::ShadowRoot { .. } => TextContentTarget::ReplaceChildren {
         preserve_shadow_roots: false,
-      }
-    }
-    NodeKind::Document { .. } | NodeKind::Doctype { .. } => TextContentTarget::NoOp,
+      },
+      NodeKind::Document { .. } | NodeKind::Doctype { .. } => TextContentTarget::NoOp,
+    };
+
+    (node_id, target)
   };
 
   let mut maybe_script_children_changed: Option<NodeId> = None;
   match target {
     TextContentTarget::Text => {
+      // SAFETY: `dom_ptr` is valid for the duration of this native call.
+      let dom = unsafe { dom_ptr.as_mut() };
       if let Err(err) = dom.replace_data(node_id, 0, usize::MAX, &value) {
         return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
       }
@@ -21585,11 +21633,15 @@ fn node_text_content_set_native(
       }
     }
     TextContentTarget::Comment => {
+      // SAFETY: `dom_ptr` is valid for the duration of this native call.
+      let dom = unsafe { dom_ptr.as_mut() };
       if let Err(err) = dom.set_comment_data(node_id, &value) {
         return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
       }
     }
     TextContentTarget::ProcessingInstruction => {
+      // SAFETY: `dom_ptr` is valid for the duration of this native call.
+      let dom = unsafe { dom_ptr.as_mut() };
       if let Err(err) = dom.set_processing_instruction_data(node_id, &value) {
         return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
       }
@@ -21600,6 +21652,8 @@ fn node_text_content_set_native(
       // IMPORTANT: remove/insert operations must route through `dom2::Document` primitives so any
       // DOM Standard hooks (MutationObserver, live Range updates) run.
       let to_remove: Vec<NodeId> = {
+        // SAFETY: `dom_ptr` is valid for the duration of this native call.
+        let dom = unsafe { dom_ptr.as_ref() };
         let node = dom.node(node_id);
         node
           .children
@@ -21622,22 +21676,33 @@ fn node_text_content_set_native(
           .collect()
       };
 
-      for child in to_remove {
-        if let Err(err) = dom.remove_child(node_id, child) {
-          return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
+      {
+        // SAFETY: `dom_ptr` is valid for the duration of this native call.
+        let dom = unsafe { dom_ptr.as_mut() };
+        for child in to_remove {
+          if let Err(err) = dom.remove_child(node_id, child) {
+            return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
+          }
         }
-      }
-      if !value.is_empty() {
-        let text_node = dom.create_text(&value);
-        if let Err(err) = dom.append_child(node_id, text_node) {
-          return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
+
+        if !value.is_empty() {
+          let text_node = dom.create_text(&value);
+          if let Err(err) = dom.append_child(node_id, text_node) {
+            return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
+          }
         }
       }
 
-      // Keep cached `childNodes`/`children` live NodeLists updated.
-      sync_cached_child_nodes_for_node_id(vm, scope, document_obj, dom, node_id)?;
-      sync_cached_children_for_node_id(vm, scope, document_obj, dom, node_id)?;
+      // Keep cached `childNodes` live NodeLists updated.
+      {
+        // SAFETY: `dom_ptr` is valid for the duration of this native call.
+        let dom = unsafe { dom_ptr.as_ref() };
+        sync_cached_child_nodes_for_node_id(vm, scope, document_obj, dom, node_id)?;
+        sync_cached_children_for_node_id(vm, scope, document_obj, dom, node_id)?;
+      }
 
+      // SAFETY: `dom_ptr` is valid for the duration of this native call.
+      let dom = unsafe { dom_ptr.as_ref() };
       if is_html_script_element(dom, node_id) {
         maybe_script_children_changed = Some(node_id);
       }
@@ -21645,19 +21710,24 @@ fn node_text_content_set_native(
     TextContentTarget::NoOp => {}
   }
 
-  if let Some(script) = maybe_script_children_changed {
-    run_dynamic_script_children_changed_steps(
-      vm,
-      scope,
-      host,
-      hooks,
-      document_obj,
-      dom_ptr,
-      script,
-    )?;
+  if is_host_document {
+    if let Some(script) = maybe_script_children_changed {
+      run_dynamic_script_children_changed_steps(
+        vm,
+        scope,
+        host,
+        hooks,
+        document_obj,
+        dom_ptr,
+        script,
+      )?;
+    }
+    let needs_microtask = unsafe { dom_ptr.as_mut() }.take_mutation_observer_microtask_needed();
+    maybe_queue_mutation_observer_microtask(vm, scope, host, hooks, document_obj, needs_microtask)?;
+  } else {
+    // Owned documents: skip MutationObserver microtask scheduling.
+    let _ = unsafe { dom_ptr.as_mut() }.take_mutation_observer_microtask_needed();
   }
-  let needs_microtask = unsafe { dom_ptr.as_mut() }.take_mutation_observer_microtask_needed();
-  maybe_queue_mutation_observer_microtask(vm, scope, host, hooks, document_obj, needs_microtask)?;
 
   Ok(Value::Undefined)
 }
@@ -40450,6 +40520,134 @@ mod tests {
     )?;
     assert_eq!(get_string(realm.heap(), ok), "ok");
 
+    Ok(())
+  }
+
+  #[test]
+  fn detached_document_node_text_content_and_element_attribute_accessors_use_detached_dom(
+  ) -> Result<(), VmError> {
+    let renderer_dom = crate::dom::parse_html(
+      "<!doctype html><html><body><div id=host>HOST</div></body></html>",
+    )
+    .unwrap();
+    let mut host = crate::js::HostDocumentState::from_renderer_dom(&renderer_dom);
+
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+
+    {
+      let (vm, realm_state, heap) = realm.vm_realm_and_heap_mut();
+      let mut scope = heap.scope();
+      let global = realm_state.global_object();
+
+      let mut detached_dom = dom2::Document::new_with_scripting(QuirksMode::NoQuirks, false);
+      let root = detached_dom.create_element("root", "");
+      let text = detached_dom.create_text("DETACHED");
+      detached_dom.append_child(root, text).unwrap();
+      detached_dom.set_attribute(root, "data-x", "y").unwrap();
+      detached_dom.append_child(detached_dom.root(), root).unwrap();
+
+      let detached_document_obj = scope.alloc_object()?;
+      scope.push_root(Value::Object(detached_document_obj))?;
+
+      // Treat this wrapper object as the canonical `NodeId(0)` for the detached document.
+      let node_id_key = alloc_key(&mut scope, NODE_ID_KEY)?;
+      scope.define_property(detached_document_obj, node_id_key, data_desc(Value::Number(0.0)))?;
+
+      // Mirror the internal `__fastrender_wrapper_document` backreference used by host documents.
+      let wrapper_document_key = alloc_key(&mut scope, WRAPPER_DOCUMENT_KEY)?;
+      scope.define_property(
+        detached_document_obj,
+        wrapper_document_key,
+        PropertyDescriptor {
+          enumerable: false,
+          configurable: false,
+          kind: PropertyKind::Data {
+            value: Value::Object(detached_document_obj),
+            writable: false,
+          },
+        },
+      )?;
+
+      // Copy Node.textContent accessor function objects from the host document so wrappers in the
+      // detached document can reuse them.
+      let host_document_obj = vm
+        .user_data::<WindowRealmUserData>()
+        .and_then(|data| data.document_obj)
+        .expect("missing host document object");
+      for internal_key in [NODE_TEXT_CONTENT_GET_KEY, NODE_TEXT_CONTENT_SET_KEY] {
+        let key = alloc_key(&mut scope, internal_key)?;
+        let value = scope
+          .heap()
+          .object_get_own_data_property_value(host_document_obj, &key)?
+          .unwrap_or(Value::Undefined);
+        let Value::Object(func) = value else {
+          panic!("missing {internal_key} function on host document");
+        };
+        scope.define_property(
+          detached_document_obj,
+          key,
+          data_desc(Value::Object(func)),
+        )?;
+      }
+
+      // Register the detached DOM so document-aware accessors resolve the correct `dom2::Document`
+      // instead of falling back to the host document.
+      let detached_document_id = gc_object_id(detached_document_obj);
+      let detached_dom_ptr = {
+        let data = vm
+          .user_data_mut::<WindowRealmUserData>()
+          .expect("expected WindowRealmUserData");
+        let mut boxed = Box::new(detached_dom);
+        let dom_ptr = NonNull::from(boxed.as_mut());
+        data.owned_dom2_documents.insert(detached_document_id, boxed);
+        dom_ptr
+      };
+
+      // SAFETY: `detached_dom_ptr` points at the boxed `dom2::Document` owned by `WindowRealmUserData`.
+      let detached_dom_ref = unsafe { detached_dom_ptr.as_ref() };
+      let detached_root_wrapper = match get_or_create_node_wrapper(
+        vm,
+        &mut scope,
+        detached_document_obj,
+        Some(detached_dom_ref),
+        root,
+      )? {
+        Value::Object(obj) => obj,
+        _ => {
+          return Err(VmError::InvariantViolation(
+            "expected get_or_create_node_wrapper to return an object",
+          ))
+        }
+      };
+      scope.push_root(Value::Object(detached_root_wrapper))?;
+
+      let detached_key = alloc_key(&mut scope, "detachedRoot")?;
+      scope.define_property(
+        global,
+        detached_key,
+        data_desc(Value::Object(detached_root_wrapper)),
+      )?;
+    }
+
+    let result = exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      "(() => {\n\
+        const hostEl = document.getElementById('host');\n\
+        if (hostEl.textContent !== 'HOST') return 'host1:' + hostEl.textContent;\n\
+        if (detachedRoot.textContent !== 'DETACHED') return 'text1:' + detachedRoot.textContent;\n\
+        if (detachedRoot.getAttribute('data-x') !== 'y') return 'attr1:' + detachedRoot.getAttribute('data-x');\n\
+        detachedRoot.textContent = 'CHANGED';\n\
+        if (detachedRoot.textContent !== 'CHANGED') return 'text2:' + detachedRoot.textContent;\n\
+        if (hostEl.textContent !== 'HOST') return 'host2:' + hostEl.textContent;\n\
+        detachedRoot.setAttribute('data-x', 'z');\n\
+        if (detachedRoot.getAttribute('data-x') !== 'z') return 'attr2:' + detachedRoot.getAttribute('data-x');\n\
+        detachedRoot.removeAttribute('data-x');\n\
+        if (detachedRoot.getAttribute('data-x') !== null) return 'attr3:' + detachedRoot.getAttribute('data-x');\n\
+        return 'ok';\n\
+      })()",
+    )?;
+    assert_eq!(get_string(realm.heap(), result), "ok");
     Ok(())
   }
 
