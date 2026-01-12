@@ -2038,11 +2038,9 @@ impl App {
         }
       }
     };
-    fastrender::ui::theme::apply_browser_theme_with_ui_scale(
-      &self.egui_ctx,
-      &self.theme,
-      self.ui_scale,
-    );
+    // UI scale is applied via `egui_ctx.set_pixels_per_point(system_pixels_per_point * ui_scale)`.
+    // Avoid also applying it through the theme system, otherwise text would scale quadratically.
+    fastrender::ui::theme::apply_browser_theme(&self.egui_ctx, &self.theme);
 
     let bg = self.theme.colors.bg;
     self.clear_color = wgpu::Color {
@@ -2253,7 +2251,9 @@ impl App {
         }
       }
     };
-    fastrender::ui::theme::apply_browser_theme_with_ui_scale(&egui_ctx, &theme, ui_scale);
+    // UI scale is applied via `egui_ctx.set_pixels_per_point(system_pixels_per_point * ui_scale)`.
+    // Avoid also applying it through the theme system, otherwise text would scale quadratically.
+    fastrender::ui::theme::apply_browser_theme(&egui_ctx, &theme);
     let clear_color = {
       let bg = theme.colors.bg;
       wgpu::Color {
