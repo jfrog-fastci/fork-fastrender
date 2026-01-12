@@ -10,6 +10,7 @@ When using `render_pages`/`fetch_and_render`, per-page logs are written to `fetc
 - `FASTR_TRACE_OUT=/tmp/trace.json`
   - Writes a Chrome trace of the render pipeline (fetch/decode/parse/style/layout/paint). Open it in `chrome://tracing` or Perfetto to inspect spans.
   - `fetch_and_render` also supports `--trace-out trace.json`, and library consumers can set `RenderOptions::with_trace_output`.
+  - Use `FASTR_TRACE_MAX_EVENTS=<N>` to cap the number of events retained per render (default 200000).
 
 - Container query second-pass logging (used in `render_pages`/`fetch_and_render`):
   - `FASTR_LOG_CONTAINER_PASS=1` prints the number of query containers (size vs inline-size) and a few samples of their dimensions/names when the second cascade/layout runs.

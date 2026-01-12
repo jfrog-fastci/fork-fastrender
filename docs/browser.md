@@ -104,6 +104,7 @@ Most renderer debug knobs are environment variables; the canonical list is
 
 - `FASTR_RENDER_TIMINGS=1` – log per-stage timings to stderr.
 - `FASTR_TRACE_OUT=/tmp/trace.json` – write Chrome trace events for a render.
+- `FASTR_TRACE_MAX_EVENTS=<N>` – cap the number of trace events retained per render (default 200000).
 - `FASTR_PAINT_BACKEND=display_list|legacy` – switch paint backend.
 
 ### Where to look for logs

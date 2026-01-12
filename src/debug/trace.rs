@@ -9,6 +9,9 @@ use std::time::Instant;
 
 use serde_json::{Map as JsonMap, Value as JsonValue};
 
+const DEFAULT_MAX_TRACE_EVENTS: usize = 200_000;
+const TRACE_MAX_EVENTS_ENV: &str = "FASTR_TRACE_MAX_EVENTS";
+
 /// Maximum number of bytes captured for trace metadata strings.
 ///
 /// Trace data is primarily for debugging and perf analysis, and may include URLs or other
@@ -28,6 +31,17 @@ fn cap_trace_string(value: &str) -> String {
 }
 
 type TraceArgs = JsonMap<String, JsonValue>;
+
+fn max_trace_events_from_env() -> Option<usize> {
+  let raw = std::env::var_os(TRACE_MAX_EVENTS_ENV)?;
+  let raw = raw.to_string_lossy();
+  let trimmed = raw.trim();
+  if trimmed.is_empty() {
+    return None;
+  }
+  let parsed: u64 = trimmed.parse().ok()?;
+  usize::try_from(parsed).ok()
+}
 
 fn current_thread_numeric_id() -> u64 {
   static NEXT_ID: AtomicU64 = AtomicU64::new(1);
@@ -51,8 +65,13 @@ pub(crate) struct TraceHandle {
 
 impl TraceHandle {
   pub(crate) fn enabled() -> Self {
+    let max_events = max_trace_events_from_env().unwrap_or(DEFAULT_MAX_TRACE_EVENTS);
+    Self::enabled_with_max_events(max_events)
+  }
+
+  pub(crate) fn enabled_with_max_events(max_events: usize) -> Self {
     Self {
-      inner: Some(Arc::new(TraceState::new())),
+      inner: Some(Arc::new(TraceState::new(max_events))),
     }
   }
 
@@ -89,13 +108,17 @@ impl TraceHandle {
       }
     }
 
-    let events = match state.events.lock() {
-      Ok(events) => events.clone(),
-      Err(err) => err.into_inner().clone(),
-    };
+    let dropped_events = state.dropped_events.load(Ordering::Relaxed);
+    let max_events = state.max_events as u64;
     let mut file = std::fs::File::create(path)?;
+    let events = match state.events.lock() {
+      Ok(events) => events,
+      Err(err) => err.into_inner(),
+    };
     let trace_file = TraceFile {
-      trace_events: events,
+      trace_events: events.as_slice(),
+      fastrender_trace_max_events: max_events,
+      fastrender_trace_dropped_events: dropped_events,
     };
     serde_json::to_writer(&mut file, &trace_file)?;
     file.write_all(b"\n")
@@ -104,13 +127,17 @@ impl TraceHandle {
 
 struct TraceState {
   start: Instant,
+  max_events: usize,
+  dropped_events: AtomicU64,
   events: Mutex<Vec<TraceEvent>>,
 }
 
 impl TraceState {
-  fn new() -> Self {
+  fn new(max_events: usize) -> Self {
     Self {
       start: Instant::now(),
+      max_events,
+      dropped_events: AtomicU64::new(0),
       events: Mutex::new(Vec::new()),
     }
   }
@@ -127,21 +154,27 @@ impl TraceState {
     end: Instant,
     args: Option<TraceArgs>,
   ) {
-    let ts = start.duration_since(self.start).as_micros() as u64;
-    let dur = end.duration_since(start).as_micros() as u64;
+    let ts = start.saturating_duration_since(self.start).as_micros() as u64;
+    let dur = end.saturating_duration_since(start).as_micros() as u64;
     let tid = current_thread_numeric_id();
-    if let Ok(mut events) = self.events.lock() {
-      events.push(TraceEvent {
-        name: name.into_owned(),
-        cat: cat.to_string(),
-        ph: "X",
-        ts,
-        dur,
-        pid: std::process::id(),
-        tid,
-        args,
-      });
+    let mut events = match self.events.lock() {
+      Ok(events) => events,
+      Err(err) => err.into_inner(),
+    };
+    if events.len() >= self.max_events {
+      self.dropped_events.fetch_add(1, Ordering::Relaxed);
+      return;
     }
+    events.push(TraceEvent {
+      name,
+      cat,
+      ph: "X",
+      ts,
+      dur,
+      pid: std::process::id(),
+      tid,
+      args,
+    });
   }
 }
 
@@ -227,8 +260,8 @@ impl Drop for TraceSpan {
 
 #[derive(Serialize, Clone)]
 struct TraceEvent {
-  name: String,
-  cat: String,
+  name: Cow<'static, str>,
+  cat: &'static str,
   ph: &'static str,
   ts: u64,
   dur: u64,
@@ -239,7 +272,62 @@ struct TraceEvent {
 }
 
 #[derive(Serialize)]
-struct TraceFile {
+struct TraceFile<'a> {
   #[serde(rename = "traceEvents")]
-  trace_events: Vec<TraceEvent>,
+  trace_events: &'a [TraceEvent],
+  #[serde(rename = "fastrenderTraceMaxEvents")]
+  fastrender_trace_max_events: u64,
+  #[serde(rename = "fastrenderTraceDroppedEvents")]
+  fastrender_trace_dropped_events: u64,
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn trace_event_cap_drops_excess_and_writes_valid_json() {
+    let max_events = 10;
+    let generated_events = 25;
+    let handle = TraceHandle::enabled_with_max_events(max_events);
+
+    for _ in 0..generated_events {
+      let _span = handle.span("test", "cat");
+    }
+
+    let state = handle.inner.as_ref().expect("trace enabled");
+    let events = match state.events.lock() {
+      Ok(events) => events,
+      Err(err) => err.into_inner(),
+    };
+    assert_eq!(events.len(), max_events);
+    drop(events);
+    assert_eq!(
+      state.dropped_events.load(Ordering::Relaxed),
+      (generated_events - max_events) as u64
+    );
+
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = dir.path().join("trace.json");
+    handle.write_chrome_trace(&path).expect("write trace");
+
+    let json = std::fs::read_to_string(&path).expect("read trace");
+    let value: serde_json::Value = serde_json::from_str(&json).expect("parse trace json");
+    let trace_events = value["traceEvents"]
+      .as_array()
+      .expect("traceEvents array");
+    assert_eq!(trace_events.len(), max_events);
+    assert_eq!(
+      value["fastrenderTraceMaxEvents"]
+        .as_u64()
+        .expect("max events metadata"),
+      max_events as u64
+    );
+    assert_eq!(
+      value["fastrenderTraceDroppedEvents"]
+        .as_u64()
+        .expect("dropped events metadata"),
+      (generated_events - max_events) as u64
+    );
+  }
 }
