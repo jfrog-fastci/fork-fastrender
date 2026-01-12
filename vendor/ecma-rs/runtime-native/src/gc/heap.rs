@@ -220,6 +220,29 @@ impl GcHeap {
     let nursery =
       nursery::NurserySpace::new(config.nursery_size_bytes).expect("failed to reserve nursery space");
 
+    // `card_table_objects` is a registry of old-generation pointer arrays that have an associated
+    // per-object card table. Minor GC promotion may install new card tables while the world is
+    // stopped, so the registry must never rely on the Rust global allocator during GC (a stopped
+    // mutator might be holding allocator locks, which would deadlock).
+    //
+    // Instead, reserve enough capacity up-front for:
+    // - the maximum number of card-table-eligible arrays that could fit in the heap (based on the
+    //   heap hard limit), plus
+    // - the maximum number of *new* promoted arrays that could become card-table objects during a
+    //   single minor GC (based on nursery size).
+    //
+    // GC entrypoints verify this invariant via `reserve_card_table_objects_for_minor_gc` without
+    // performing any allocations.
+    let card_table_objects = {
+      let min_obj_size = array::RT_ARRAY_DATA_OFFSET
+        .saturating_add(super::CARD_TABLE_MIN_BYTES)
+        .max(1);
+      let max_new = config.nursery_size_bytes.div_ceil(min_obj_size);
+      let max_total = limits.max_heap_bytes.div_ceil(min_obj_size);
+      let cap = max_total.saturating_add(max_new).saturating_add(1);
+      Vec::with_capacity(cap)
+    };
+
     let mut heap = Self {
       config,
       limits,
@@ -234,7 +257,7 @@ impl GcHeap {
       backing_store_alloc: Box::new(backing_store_alloc),
       external_bytes: 0,
       finalizers: Vec::new(),
-      card_table_objects: Vec::new(),
+      card_table_objects,
       mark_epoch: 0,
       major_compaction: MajorCompactionConfig::default(),
       stats: GcStats::default(),
@@ -779,7 +802,17 @@ impl GcHeap {
     // remains "no global allocator".
     let min_obj_size = array::RT_ARRAY_DATA_OFFSET.saturating_add(super::CARD_TABLE_MIN_BYTES).max(1);
     let max_new = self.config.nursery_size_bytes.div_ceil(min_obj_size);
-    self.card_table_objects.reserve(max_new.saturating_add(1));
+    let required = self
+      .card_table_objects
+      .len()
+      .saturating_add(max_new)
+      .saturating_add(1);
+    if required > self.card_table_objects.capacity() {
+      trap::rt_trap_oom(
+        required.saturating_mul(core::mem::size_of::<*mut u8>()),
+        "card table registry",
+      );
+    }
   }
 
   pub(super) fn sweep_card_table_objects_major(&mut self, epoch: u8) {
