@@ -327,3 +327,202 @@ fn browser_tab_module_script_exception_stack_includes_external_module_url() -> f
   );
   Ok(())
 }
+
+#[test]
+fn browser_tab_console_substitution_string_formatting_is_recorded_in_diagnostics() -> fastrender::Result<()> {
+  let html = r#"<!doctype html>
+    <html>
+      <body>
+        <script>
+          console.log('x=%d', 1);
+          console.log('%cHello', 'color:red');
+          console.log('%%s', 'tail');
+        </script>
+      </body>
+    </html>"#;
+
+  let options = RenderOptions::new()
+    .with_viewport(32, 32)
+    .with_diagnostics_level(DiagnosticsLevel::Basic);
+  let executor = VmJsBrowserTabExecutor::default();
+  let mut tab = BrowserTab::from_html(html, options, executor)?;
+  let _ = tab.render_frame()?;
+
+  let diagnostics = tab
+    .diagnostics_snapshot()
+    .expect("expected diagnostics to be enabled");
+  assert!(
+    diagnostics
+      .console_messages
+      .iter()
+      .any(|m| m.level == ConsoleMessageLevel::Log && m.message == "x=1"),
+    "expected formatted %d substitution to be recorded; got {:?}",
+    diagnostics.console_messages
+  );
+  assert!(
+    diagnostics
+      .console_messages
+      .iter()
+      .any(|m| m.level == ConsoleMessageLevel::Log && m.message == "Hello"),
+    "expected %c style substitution to be stripped; got {:?}",
+    diagnostics.console_messages
+  );
+  assert!(
+    diagnostics
+      .console_messages
+      .iter()
+      .any(|m| m.level == ConsoleMessageLevel::Log && m.message == "%s tail"),
+    "expected %% escape substitution to be recorded; got {:?}",
+    diagnostics.console_messages
+  );
+  Ok(())
+}
+
+#[test]
+fn browser_tab_console_assert_records_error_message() -> fastrender::Result<()> {
+  let html = r#"<!doctype html>
+    <html>
+      <body>
+        <script>console.assert(false, 'bad');</script>
+      </body>
+    </html>"#;
+
+  let options = RenderOptions::new()
+    .with_viewport(32, 32)
+    .with_diagnostics_level(DiagnosticsLevel::Basic);
+  let executor = VmJsBrowserTabExecutor::default();
+  let mut tab = BrowserTab::from_html(html, options, executor)?;
+  let _ = tab.render_frame()?;
+
+  let diagnostics = tab
+    .diagnostics_snapshot()
+    .expect("expected diagnostics to be enabled");
+  assert!(
+    diagnostics.js_exceptions.is_empty(),
+    "expected console.assert to not throw; got {:?}",
+    diagnostics.js_exceptions
+  );
+  assert!(
+    diagnostics
+      .console_messages
+      .iter()
+      .any(|m| m.level == ConsoleMessageLevel::Error && m.message == "Assertion failed: bad"),
+    "expected console.assert(false, 'bad') to record an error message; got {:?}",
+    diagnostics.console_messages
+  );
+  Ok(())
+}
+
+#[test]
+fn browser_tab_console_count_increments_per_label() -> fastrender::Result<()> {
+  let html = r#"<!doctype html>
+    <html>
+      <body>
+        <script>
+          console.count('x');
+          console.count('x');
+        </script>
+      </body>
+    </html>"#;
+
+  let options = RenderOptions::new()
+    .with_viewport(32, 32)
+    .with_diagnostics_level(DiagnosticsLevel::Basic);
+  let executor = VmJsBrowserTabExecutor::default();
+  let mut tab = BrowserTab::from_html(html, options, executor)?;
+  let _ = tab.render_frame()?;
+
+  let diagnostics = tab
+    .diagnostics_snapshot()
+    .expect("expected diagnostics to be enabled");
+  let log_messages: Vec<&str> = diagnostics
+    .console_messages
+    .iter()
+    .filter(|m| m.level == ConsoleMessageLevel::Log)
+    .map(|m| m.message.as_str())
+    .collect();
+  assert_eq!(
+    log_messages,
+    vec!["x: 1", "x: 2"],
+    "expected console.count label increments; got {:?}",
+    diagnostics.console_messages
+  );
+  Ok(())
+}
+
+#[test]
+fn browser_tab_console_time_end_warns_when_timer_missing() -> fastrender::Result<()> {
+  let html = r#"<!doctype html>
+    <html>
+      <body>
+        <script>console.timeEnd('missing');</script>
+      </body>
+    </html>"#;
+
+  let options = RenderOptions::new()
+    .with_viewport(32, 32)
+    .with_diagnostics_level(DiagnosticsLevel::Basic);
+  let executor = VmJsBrowserTabExecutor::default();
+  let mut tab = BrowserTab::from_html(html, options, executor)?;
+  let _ = tab.render_frame()?;
+
+  let diagnostics = tab
+    .diagnostics_snapshot()
+    .expect("expected diagnostics to be enabled");
+  assert!(
+    diagnostics
+      .console_messages
+      .iter()
+      .any(|m| m.level == ConsoleMessageLevel::Warn && m.message == "Timer 'missing' does not exist"),
+    "expected console.timeEnd('missing') warning; got {:?}",
+    diagnostics.console_messages
+  );
+  Ok(())
+}
+
+#[test]
+fn browser_tab_console_dir_and_table_emit_log_messages() -> fastrender::Result<()> {
+  let html = r#"<!doctype html>
+    <html>
+      <body>
+        <script>
+          console.dir({a: 1});
+          console.table({a: 1});
+        </script>
+      </body>
+    </html>"#;
+
+  let options = RenderOptions::new()
+    .with_viewport(32, 32)
+    .with_diagnostics_level(DiagnosticsLevel::Basic);
+  let executor = VmJsBrowserTabExecutor::default();
+  let mut tab = BrowserTab::from_html(html, options, executor)?;
+  let _ = tab.render_frame()?;
+
+  let diagnostics = tab
+    .diagnostics_snapshot()
+    .expect("expected diagnostics to be enabled");
+  assert!(
+    diagnostics.js_exceptions.is_empty(),
+    "expected console.dir/table to not throw; got {:?}",
+    diagnostics.js_exceptions
+  );
+  let log_messages: Vec<&str> = diagnostics
+    .console_messages
+    .iter()
+    .filter(|m| m.level == ConsoleMessageLevel::Log)
+    .map(|m| m.message.as_str())
+    .collect();
+  assert_eq!(
+    log_messages.len(),
+    2,
+    "expected console.dir + console.table to each record a log message; got {:?}",
+    diagnostics.console_messages
+  );
+  assert!(
+    log_messages.iter().all(|msg| !msg.is_empty()),
+    "expected console.dir/table log messages to be non-empty; got {:?}",
+    diagnostics.console_messages
+  );
+  Ok(())
+}
