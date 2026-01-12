@@ -6,6 +6,7 @@
 mod common;
 mod api;
 mod accessibility;
+mod animation;
 mod interaction;
 mod animation;
 mod fixtures;
