@@ -111,6 +111,13 @@ pub struct SourceTextModuleRecord {
   pub requested_modules: Vec<ModuleRequest>,
   pub import_entries: Vec<ImportEntry>,
   pub status: ModuleStatus,
+  /// `[[EvaluationError]]` – stored error completion for a module that finished evaluation with an
+  /// error.
+  ///
+  /// This is currently represented as the message for a `VmError::Unimplemented` rejection reason.
+  /// It is used to make repeated `Evaluate()` calls deterministic, and to support host embeddings
+  /// (like FastRender) that abort in-progress top-level await evaluation.
+  pub(crate) evaluation_error: Option<&'static str>,
   /// `[[HasTLA]]` – whether this module contains top-level `await`.
   pub has_tla: bool,
   pub local_export_entries: Vec<LocalExportEntry>,

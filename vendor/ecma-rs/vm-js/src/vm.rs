@@ -688,6 +688,18 @@ impl Vm {
     Ok(())
   }
 
+  /// Removes an async continuation from the VM and tears down all of its persistent roots.
+  ///
+  /// This is used by embeddings that abort in-progress async module evaluation (top-level await),
+  /// ensuring we do not leak rooted async state when the host will not drive the event loop.
+  pub(crate) fn abort_async_continuation(&mut self, heap: &mut Heap, id: u32) {
+    let Some(cont) = self.take_async_continuation(id) else {
+      return;
+    };
+    let mut scope = heap.scope();
+    crate::exec::async_teardown_continuation(&mut scope, cont);
+  }
+
   /// Temporarily override the host hook implementation used by [`Vm::call`] / [`Vm::construct`].
   ///
   /// This is primarily used by embedding entry points that need `vm-js` evaluation to enqueue

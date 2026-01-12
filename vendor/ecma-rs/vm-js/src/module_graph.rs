@@ -15,6 +15,7 @@ use std::sync::Arc;
 
 const MAX_REJECTION_STACK_FRAMES: usize = 32;
 const MAX_REJECTION_STACK_BYTES: usize = 16 * 1024;
+const TLA_ABORT_REASON: &str = "asynchronous module loading/evaluation is not supported";
 
 fn format_rejection_stack_trace_limited(frames: &[StackFrame]) -> String {
   let slice = &frames[..frames.len().min(MAX_REJECTION_STACK_FRAMES)];
@@ -169,14 +170,88 @@ impl ModuleGraph {
     let Some(slot) = self.tla_states.get_mut(idx) else {
       return;
     };
-    let Some(state) = slot.take() else {
+    let Some(mut state) = slot.take() else {
       return;
     };
 
-    state.teardown(vm, heap);
-    // Mark the module as errored so further evaluation attempts fail deterministically.
+    // Restore the previous module graph pointer early: once we abort, any queued resume callbacks
+    // should no-op (they will early-return because their evaluation state is removed).
+    state.restore_module_graph(vm);
+
+    // Best-effort: abort any pending async continuations that belong to the in-progress module
+    // evaluation. When the host calls `abort_tla_evaluation`, it is explicitly not going to drive
+    // the event loop further, so we must ensure no rooted async state remains.
+    for id in state.async_continuation_ids.drain(..) {
+      vm.abort_async_continuation(heap, id);
+    }
+
+    if let Some(roots) = state.promise_roots.take() {
+      let mut scope = heap.scope();
+
+      let reason = match vm.intrinsics() {
+        Some(intr) => crate::new_error(&mut scope, intr.error_prototype(), "Error", TLA_ABORT_REASON)
+          .unwrap_or(Value::Undefined),
+        None => Value::Undefined,
+      };
+
+      if let Some(reject) = scope.heap().get_root(roots.reject) {
+        // Best-effort: ensure the promise settles deterministically so embeddings that inspect the
+        // evaluation promise see a rejection instead of a forever-pending promise.
+        //
+        // Route any resulting Promise jobs into a local queue and discard them immediately: hosts
+        // that call `abort_tla_evaluation` are explicitly *not* going to drive the event loop, but
+        // we still need to clean up any persistent roots owned by queued jobs.
+        let mut abort_hooks = crate::MicrotaskQueue::new();
+        let _ = vm.call_with_host(&mut scope, &mut abort_hooks, reject, Value::Undefined, &[reason]);
+
+        struct AbortJobCtx<'a> {
+          heap: &'a mut Heap,
+        }
+
+        impl crate::VmJobContext for AbortJobCtx<'_> {
+          fn call(
+            &mut self,
+            _host: &mut dyn VmHostHooks,
+            _callee: Value,
+            _this: Value,
+            _args: &[Value],
+          ) -> Result<Value, VmError> {
+            Err(VmError::Unimplemented("abort_tla_evaluation job call"))
+          }
+
+          fn construct(
+            &mut self,
+            _host: &mut dyn VmHostHooks,
+            _callee: Value,
+            _args: &[Value],
+            _new_target: Value,
+          ) -> Result<Value, VmError> {
+            Err(VmError::Unimplemented("abort_tla_evaluation job construct"))
+          }
+
+          fn add_root(&mut self, value: Value) -> Result<RootId, VmError> {
+            self.heap.add_root(value)
+          }
+
+          fn remove_root(&mut self, id: RootId) {
+            self.heap.remove_root(id);
+          }
+        }
+
+        {
+          let mut ctx = AbortJobCtx { heap: scope.heap_mut() };
+          abort_hooks.teardown(&mut ctx);
+        }
+      }
+
+      roots.teardown(scope.heap_mut());
+    }
+
+    // Mark the module as evaluated-with-error so further evaluation attempts fail deterministically
+    // (mirrors ECMA-262's "evaluated with error" pattern).
     if let Some(record) = self.modules.get_mut(idx) {
-      record.status = ModuleStatus::Errored;
+      record.status = ModuleStatus::Evaluated;
+      record.evaluation_error = Some(TLA_ABORT_REASON);
     }
   }
 
@@ -740,6 +815,7 @@ impl ModuleGraph {
             global_object,
             realm_id,
             prev_graph,
+            async_continuation_ids: Vec::new(),
           });
 
           // Schedule the first resume step.
@@ -870,8 +946,12 @@ impl ModuleGraph {
   ) -> Result<(), VmError> {
     let idx = module_index(module);
     let status = self.modules[idx].status;
+    let evaluation_error = self.modules[idx].evaluation_error;
     match status {
-      ModuleStatus::Evaluated => return Ok(()),
+      ModuleStatus::Evaluated => match evaluation_error {
+        Some(msg) => return Err(VmError::Unimplemented(msg)),
+        None => return Ok(()),
+      },
       ModuleStatus::Evaluating => return Ok(()),
       ModuleStatus::Linked => {}
       ModuleStatus::Errored => return Err(VmError::Unimplemented("module is in an errored state")),
@@ -950,8 +1030,12 @@ impl ModuleGraph {
   ) -> Result<ModuleTlaStepResult, VmError> {
     let idx = module_index(module);
     let status = self.modules[idx].status;
+    let evaluation_error = self.modules[idx].evaluation_error;
     match status {
-      ModuleStatus::Evaluated => return Ok(ModuleTlaStepResult::Completed),
+      ModuleStatus::Evaluated => match evaluation_error {
+        Some(msg) => return Err(VmError::Unimplemented(msg)),
+        None => return Ok(ModuleTlaStepResult::Completed),
+      },
       ModuleStatus::Evaluating => return Ok(ModuleTlaStepResult::Completed),
       ModuleStatus::Linked => {}
       ModuleStatus::Errored => return Err(VmError::Unimplemented("module is in an errored state")),
@@ -1135,17 +1219,14 @@ struct TlaEvaluationState {
   global_object: GcObject,
   realm_id: RealmId,
   prev_graph: Option<*mut ModuleGraph>,
+  /// Async continuation ids created solely for this module's top-level await evaluation.
+  ///
+  /// When an embedding aborts async module evaluation, these continuations must be torn down so
+  /// their persistent roots do not leak.
+  async_continuation_ids: Vec<u32>,
 }
 
 impl TlaEvaluationState {
-  fn teardown(self, vm: &mut Vm, heap: &mut Heap) {
-    let mut this = self;
-    this.restore_module_graph(vm);
-    if let Some(roots) = this.promise_roots.take() {
-      roots.teardown(heap);
-    }
-  }
-
   fn restore_module_graph(self: &Self, vm: &mut Vm) {
     match self.prev_graph {
       Some(ptr) => unsafe {

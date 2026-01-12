@@ -7877,7 +7877,7 @@ pub(crate) struct AsyncContinuation {
   frames: VecDeque<AsyncFrame>,
 }
 
-fn async_teardown_continuation(scope: &mut Scope<'_>, mut cont: AsyncContinuation) {
+pub(crate) fn async_teardown_continuation(scope: &mut Scope<'_>, mut cont: AsyncContinuation) {
   cont.env.teardown(scope.heap_mut());
   scope.heap_mut().remove_root(cont.this_root);
   scope.heap_mut().remove_root(cont.new_target_root);
