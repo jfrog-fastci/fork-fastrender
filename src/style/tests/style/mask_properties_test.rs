@@ -1,13 +1,13 @@
-use fastrender::css::parser::parse_stylesheet;
-use fastrender::dom;
-use fastrender::style::cascade::apply_styles_with_media;
-use fastrender::style::cascade::StyledNode;
-use fastrender::style::media::MediaContext;
-use fastrender::style::types::{
+use crate::css::parser::parse_stylesheet;
+use crate::dom;
+use crate::style::cascade::apply_styles_with_media;
+use crate::style::cascade::StyledNode;
+use crate::style::media::MediaContext;
+use crate::style::types::{
   BackgroundImage, BackgroundPosition, BackgroundRepeatKeyword, BackgroundSize,
   BackgroundSizeComponent, BackgroundSizeKeyword, MaskClip, MaskComposite, MaskOrigin,
 };
-use fastrender::style::values::Length;
+use crate::style::values::Length;
 
 fn find_first<'a>(node: &'a StyledNode, tag: &str) -> Option<&'a StyledNode> {
   if let Some(name) = node.node.tag_name() {

@@ -1,8 +1,8 @@
-use fastrender::css::types::PropertyValue;
-use fastrender::geometry::Size;
-use fastrender::style::types::LineHeight;
-use fastrender::style::values::{CustomPropertyValue, LengthUnit};
-use fastrender::style::{ComputedStyle, VarDependentDeclaration};
+use crate::css::types::PropertyValue;
+use crate::geometry::Size;
+use crate::style::types::LineHeight;
+use crate::style::values::{CustomPropertyValue, LengthUnit};
+use crate::style::{ComputedStyle, VarDependentDeclaration};
 use std::collections::HashMap;
 use std::sync::Arc;
 

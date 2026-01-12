@@ -1,9 +1,9 @@
-use fastrender::css::parser::parse_stylesheet;
-use fastrender::dom;
-use fastrender::style::cascade::{apply_styles_with_media, StyledNode};
-use fastrender::style::media::MediaContext;
-use fastrender::tree::box_generation::generate_box_tree;
-use fastrender::tree::box_tree::{BoxNode, BoxType, GeneratedPseudoElement};
+use crate::css::parser::parse_stylesheet;
+use crate::dom;
+use crate::style::cascade::{apply_styles_with_media, StyledNode};
+use crate::style::media::MediaContext;
+use crate::tree::box_generation::generate_box_tree;
+use crate::tree::box_tree::{BoxNode, BoxType, GeneratedPseudoElement};
 
 fn find_by_id<'a>(node: &'a StyledNode, id: &str) -> Option<&'a StyledNode> {
   if node
@@ -41,7 +41,7 @@ fn collect_pseudo_text(
 }
 
 fn generated_before_text(
-  tree: &fastrender::tree::box_tree::BoxTree,
+  tree: &crate::tree::box_tree::BoxTree,
   styled_node_id: usize,
 ) -> String {
   let mut out = String::new();

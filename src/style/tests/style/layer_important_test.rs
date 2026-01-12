@@ -1,9 +1,9 @@
-use fastrender::css::parser::parse_stylesheet;
-use fastrender::dom::DomNode;
-use fastrender::dom::DomNodeType;
-use fastrender::dom::HTML_NAMESPACE;
-use fastrender::style::cascade::apply_styles;
-use fastrender::Rgba;
+use crate::css::parser::parse_stylesheet;
+use crate::dom::DomNode;
+use crate::dom::DomNodeType;
+use crate::dom::HTML_NAMESPACE;
+use crate::style::cascade::apply_styles;
+use crate::Rgba;
 
 fn target_node() -> DomNode {
   DomNode {

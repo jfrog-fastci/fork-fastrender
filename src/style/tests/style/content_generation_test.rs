@@ -3,14 +3,14 @@
 //! These tests verify the content generation system works correctly
 //! for generating text content for pseudo-elements.
 
-use fastrender::style::content::parse_content;
-use fastrender::style::content::ContentContext;
-use fastrender::style::content::ContentGenerator;
-use fastrender::style::content::ContentItem;
-use fastrender::style::content::ContentValue;
-use fastrender::style::content::CounterStyle;
-use fastrender::style::counter_styles::CounterStyleName;
-use fastrender::style::types::BackgroundImageUrl;
+use crate::style::content::parse_content;
+use crate::style::content::ContentContext;
+use crate::style::content::ContentGenerator;
+use crate::style::content::ContentItem;
+use crate::style::content::ContentValue;
+use crate::style::content::CounterStyle;
+use crate::style::counter_styles::CounterStyleName;
+use crate::style::types::BackgroundImageUrl;
 use std::collections::HashMap;
 
 // ============================================================================

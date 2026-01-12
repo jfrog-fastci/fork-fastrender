@@ -3,11 +3,11 @@
 //! These tests verify the counter system works correctly in various real-world
 //! scenarios and edge cases.
 
-use fastrender::style::content::CounterStyle;
-use fastrender::style::counters::CounterManager;
-use fastrender::style::counters::CounterProperties;
-use fastrender::style::counters::CounterSet;
-use fastrender::style::counters::CounterSetItem;
+use crate::style::content::CounterStyle;
+use crate::style::counters::CounterManager;
+use crate::style::counters::CounterProperties;
+use crate::style::counters::CounterSet;
+use crate::style::counters::CounterSetItem;
 
 // ============================================================================
 // CounterSet Parsing Tests

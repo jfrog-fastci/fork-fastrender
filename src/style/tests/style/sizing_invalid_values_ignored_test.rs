@@ -1,7 +1,7 @@
-use fastrender::css::parser::parse_declarations;
-use fastrender::style::properties::apply_declaration;
-use fastrender::style::values::Length;
-use fastrender::style::ComputedStyle;
+use crate::css::parser::parse_declarations;
+use crate::style::properties::apply_declaration;
+use crate::style::values::Length;
+use crate::style::ComputedStyle;
 
 #[test]
 fn invalid_width_keyword_does_not_override_prior_valid_width() {

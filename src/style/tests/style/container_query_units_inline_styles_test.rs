@@ -1,13 +1,13 @@
-use fastrender::api::FastRender;
-use fastrender::debug::runtime::RuntimeToggles;
-use fastrender::style::cascade::StyledNode;
-use fastrender::style::media::MediaType;
-use fastrender::tree::box_tree::BoxNode;
-use fastrender::tree::fragment_tree::{FragmentContent, FragmentNode};
-use fastrender::Length;
+use crate::api::FastRender;
+use crate::debug::runtime::RuntimeToggles;
+use crate::style::cascade::StyledNode;
+use crate::style::media::MediaType;
+use crate::tree::box_tree::BoxNode;
+use crate::tree::fragment_tree::{FragmentContent, FragmentNode};
+use crate::Length;
 use std::collections::HashMap;
 
-fn layout_intermediates_for(html: &str) -> fastrender::api::LayoutIntermediates {
+fn layout_intermediates_for(html: &str) -> crate::api::LayoutIntermediates {
   let mut renderer = FastRender::new().expect("renderer");
   let dom = renderer.parse_html(html).expect("parsed dom");
   renderer
@@ -18,7 +18,7 @@ fn layout_intermediates_for(html: &str) -> fastrender::api::LayoutIntermediates 
 fn layout_intermediates_for_with_toggles(
   html: &str,
   toggles: RuntimeToggles,
-) -> fastrender::api::LayoutIntermediates {
+) -> crate::api::LayoutIntermediates {
   let mut renderer = FastRender::builder()
     .runtime_toggles(toggles)
     .build()

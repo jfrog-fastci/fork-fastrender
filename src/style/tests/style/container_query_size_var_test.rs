@@ -1,13 +1,13 @@
-use fastrender::css::parser::parse_stylesheet;
-use fastrender::dom::{self, DomNode};
-use fastrender::geometry::Point;
-use fastrender::style::cascade::{
+use crate::css::parser::parse_stylesheet;
+use crate::dom::{self, DomNode};
+use crate::geometry::Point;
+use crate::style::cascade::{
   apply_styles_with_media_target_and_imports, ContainerQueryContext, ContainerQueryInfo, StyledNode,
 };
-use fastrender::style::media::MediaContext;
-use fastrender::style::types::ContainerType;
-use fastrender::style::values::CustomPropertyValue;
-use fastrender::style::ComputedStyle;
+use crate::style::media::MediaContext;
+use crate::style::types::ContainerType;
+use crate::style::values::CustomPropertyValue;
+use crate::style::ComputedStyle;
 use std::collections::HashMap;
 use std::sync::Arc;
 

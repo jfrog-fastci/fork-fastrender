@@ -1,21 +1,21 @@
-use fastrender::css::properties::parse_length;
-use fastrender::css::types::Declaration;
-use fastrender::css::types::PropertyValue;
-use fastrender::style::color::Color;
-use fastrender::style::color::Rgba;
-use fastrender::style::properties::apply_declaration;
-use fastrender::style::properties::resolve_pending_logical_properties;
-use fastrender::style::types::BorderCornerRadius;
-use fastrender::style::types::Direction;
-use fastrender::style::types::InsetValue;
-use fastrender::style::types::WritingMode;
-use fastrender::style::values::Length;
-use fastrender::style::ComputedStyle;
+use crate::css::properties::parse_length;
+use crate::css::types::Declaration;
+use crate::css::types::PropertyValue;
+use crate::style::color::Color;
+use crate::style::color::Rgba;
+use crate::style::properties::apply_declaration;
+use crate::style::properties::resolve_pending_logical_properties;
+use crate::style::types::BorderCornerRadius;
+use crate::style::types::Direction;
+use crate::style::types::InsetValue;
+use crate::style::types::WritingMode;
+use crate::style::values::Length;
+use crate::style::ComputedStyle;
 
 fn decl(property: &'static str, value: PropertyValue) -> Declaration {
   let contains_var = match &value {
     PropertyValue::Keyword(raw) | PropertyValue::Custom(raw) => {
-      fastrender::style::var_resolution::contains_var(raw)
+      crate::style::var_resolution::contains_var(raw)
     }
     _ => false,
   };

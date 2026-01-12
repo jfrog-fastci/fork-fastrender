@@ -1,10 +1,10 @@
-use fastrender::css::parser::{extract_scoped_css_sources, StylesheetSource};
-use fastrender::css::types::StyleSheet;
-use fastrender::dom::parse_html;
-use fastrender::style::cascade::{apply_style_set_with_media_target_and_imports, StyledNode};
-use fastrender::style::media::MediaContext;
-use fastrender::style::style_set::StyleSet;
-use fastrender::Rgba;
+use crate::css::parser::{extract_scoped_css_sources, StylesheetSource};
+use crate::css::types::StyleSheet;
+use crate::dom::parse_html;
+use crate::style::cascade::{apply_style_set_with_media_target_and_imports, StyledNode};
+use crate::style::media::MediaContext;
+use crate::style::style_set::StyleSet;
+use crate::Rgba;
 use std::collections::HashMap;
 
 fn stylesheet_from_sources(sources: &[StylesheetSource]) -> StyleSheet {
@@ -16,7 +16,7 @@ fn stylesheet_from_sources(sources: &[StylesheetSource]) -> StyleSheet {
     if inline.disabled || inline.css.trim().is_empty() {
       continue;
     }
-    if let Ok(sheet) = fastrender::css::parser::parse_stylesheet(&inline.css) {
+    if let Ok(sheet) = crate::css::parser::parse_stylesheet(&inline.css) {
       combined.extend(sheet.rules);
     }
   }
@@ -33,7 +33,7 @@ fn find_by_id<'a>(node: &'a StyledNode, id: &str) -> Option<&'a StyledNode> {
   node.children.iter().find_map(|child| find_by_id(child, id))
 }
 
-fn style_set_from_html(html: &str) -> (StyleSet, fastrender::dom::DomNode) {
+fn style_set_from_html(html: &str) -> (StyleSet, crate::dom::DomNode) {
   let dom = parse_html(html).expect("parsed html");
   let scoped_sources = extract_scoped_css_sources(&dom);
   let mut shadows = HashMap::new();

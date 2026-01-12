@@ -1,6 +1,6 @@
-use fastrender::css::types::StyleSheet;
-use fastrender::dom::{parse_html, DomNode, DomNodeType};
-use fastrender::style::cascade::{apply_styles, StyledNode};
+use crate::css::types::StyleSheet;
+use crate::dom::{parse_html, DomNode, DomNodeType};
+use crate::style::cascade::{apply_styles, StyledNode};
 
 fn assert_styled_shape_matches_dom(dom: &DomNode, styled: &StyledNode) {
   match (&dom.node_type, &styled.node.node_type) {

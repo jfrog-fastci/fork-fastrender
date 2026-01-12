@@ -1,12 +1,12 @@
-use fastrender::css::properties::parse_property_value;
-use fastrender::css::types::Declaration;
-use fastrender::css::types::PropertyValue;
-use fastrender::style::properties::apply_declaration;
-use fastrender::style::types::GridTrack;
-use fastrender::ComputedStyle;
+use crate::css::properties::parse_property_value;
+use crate::css::types::Declaration;
+use crate::css::types::PropertyValue;
+use crate::style::properties::apply_declaration;
+use crate::style::types::GridTrack;
+use crate::ComputedStyle;
 
 fn decl(name: &'static str, value: &str) -> Declaration {
-  let contains_var = fastrender::style::var_resolution::contains_var(value);
+  let contains_var = crate::style::var_resolution::contains_var(value);
   Declaration {
     property: name.into(),
     value: parse_property_value(name, value).expect("parse property value"),
@@ -38,7 +38,7 @@ fn grid_track_list_properties_preserve_single_token_values_for_downstream_parsin
 
   assert_eq!(styles.grid_template_columns.len(), 1);
   assert!(
-    matches!(styles.grid_template_columns[0], GridTrack::Length(ref len) if len.unit == fastrender::style::values::LengthUnit::Percent),
+    matches!(styles.grid_template_columns[0], GridTrack::Length(ref len) if len.unit == crate::style::values::LengthUnit::Percent),
     "expected a percent track, got {:?}",
     styles.grid_template_columns[0]
   );
@@ -61,7 +61,7 @@ fn grid_track_list_properties_preserve_single_token_values_for_downstream_parsin
 
   assert_eq!(styles.grid_auto_columns.len(), 1);
   assert!(
-    matches!(styles.grid_auto_columns[0], GridTrack::Length(ref len) if len.unit == fastrender::style::values::LengthUnit::Percent),
+    matches!(styles.grid_auto_columns[0], GridTrack::Length(ref len) if len.unit == crate::style::values::LengthUnit::Percent),
     "expected a percent track, got {:?}",
     styles.grid_auto_columns[0]
   );

@@ -1,8 +1,8 @@
-use fastrender::css::types::PropertyValue;
-use fastrender::geometry::Size;
-use fastrender::style::values::CustomPropertyValue;
-use fastrender::style::{ComputedStyle, VarDependentDeclaration};
-use fastrender::Rgba;
+use crate::css::types::PropertyValue;
+use crate::geometry::Size;
+use crate::style::values::CustomPropertyValue;
+use crate::style::{ComputedStyle, VarDependentDeclaration};
+use crate::Rgba;
 use std::collections::hash_map::RandomState;
 use std::collections::HashMap;
 use std::sync::Arc;

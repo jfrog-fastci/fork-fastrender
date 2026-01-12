@@ -1,12 +1,12 @@
-use fastrender::css::parser::parse_stylesheet;
-use fastrender::dom::parse_html;
-use fastrender::style::cascade::{
+use crate::css::parser::parse_stylesheet;
+use crate::dom::parse_html;
+use crate::style::cascade::{
   apply_style_set_with_media_target_and_imports, capture_cascade_profile, cascade_profile_enabled,
   reset_cascade_profile, set_cascade_profile_enabled, StyledNode,
 };
-use fastrender::style::media::MediaContext;
-use fastrender::style::style_set::StyleSet;
-use fastrender::Rgba;
+use crate::style::media::MediaContext;
+use crate::style::style_set::StyleSet;
+use crate::Rgba;
 use std::collections::HashMap;
 
 fn find_by_id<'a>(node: &'a StyledNode, id: &str) -> Option<&'a StyledNode> {

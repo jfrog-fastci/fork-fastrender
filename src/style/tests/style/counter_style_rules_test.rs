@@ -1,9 +1,9 @@
-use fastrender::css::parser::parse_stylesheet;
-use fastrender::dom::{DomNode, DomNodeType, HTML_NAMESPACE};
-use fastrender::style::cascade::apply_styles;
-use fastrender::style::content::{ContentContext, ContentGenerator};
-use fastrender::style::counter_styles::CounterStyleName;
-use fastrender::style::types::ListStyleType;
+use crate::css::parser::parse_stylesheet;
+use crate::dom::{DomNode, DomNodeType, HTML_NAMESPACE};
+use crate::style::cascade::apply_styles;
+use crate::style::content::{ContentContext, ContentGenerator};
+use crate::style::counter_styles::CounterStyleName;
+use crate::style::types::ListStyleType;
 
 fn simple_list_dom() -> DomNode {
   DomNode {

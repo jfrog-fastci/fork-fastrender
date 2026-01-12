@@ -1,8 +1,8 @@
-use fastrender::css::types::Declaration;
-use fastrender::css::types::PropertyValue;
-use fastrender::style::properties::apply_declaration;
-use fastrender::style::types::TextCombineUpright;
-use fastrender::style::ComputedStyle;
+use crate::css::types::Declaration;
+use crate::css::types::PropertyValue;
+use crate::style::properties::apply_declaration;
+use crate::style::types::TextCombineUpright;
+use crate::style::ComputedStyle;
 
 #[test]
 fn text_combine_upright_rejects_out_of_range_digits() {

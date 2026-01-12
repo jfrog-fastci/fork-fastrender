@@ -1,9 +1,9 @@
-use fastrender::css::types::StyleSheet;
-use fastrender::dom;
-use fastrender::style::cascade::{apply_styles, StyledNode};
-use fastrender::style::display::Display;
-use fastrender::style::types::{FontStyle, TextAlign, VerticalAlign, WhiteSpace};
-use fastrender::style::values::Length;
+use crate::css::types::StyleSheet;
+use crate::dom;
+use crate::style::cascade::{apply_styles, StyledNode};
+use crate::style::display::Display;
+use crate::style::types::{FontStyle, TextAlign, VerticalAlign, WhiteSpace};
+use crate::style::values::Length;
 
 fn find_styled_by_id<'a>(node: &'a StyledNode, id: &str) -> Option<&'a StyledNode> {
   if node

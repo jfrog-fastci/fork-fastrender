@@ -1,16 +1,16 @@
-use fastrender::css::parser::parse_stylesheet;
-use fastrender::dom::parse_html;
-use fastrender::style::cascade::apply_style_set_with_media_target_and_imports;
-use fastrender::style::media::MediaContext;
-use fastrender::style::style_set::StyleSet;
-use fastrender::style::types::LineHeight;
-use fastrender::LengthUnit;
+use crate::css::parser::parse_stylesheet;
+use crate::dom::parse_html;
+use crate::style::cascade::apply_style_set_with_media_target_and_imports;
+use crate::style::media::MediaContext;
+use crate::style::style_set::StyleSet;
+use crate::style::types::LineHeight;
+use crate::LengthUnit;
 use std::collections::HashMap;
 
 fn find_by_id<'a>(
-  node: &'a fastrender::style::cascade::StyledNode,
+  node: &'a crate::style::cascade::StyledNode,
   id: &str,
-) -> Option<&'a fastrender::style::cascade::StyledNode> {
+) -> Option<&'a crate::style::cascade::StyledNode> {
   if node
     .node
     .get_attribute_ref("id")

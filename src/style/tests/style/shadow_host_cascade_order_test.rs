@@ -1,10 +1,10 @@
-use fastrender::css::parser::{extract_scoped_css_sources, parse_stylesheet, StylesheetSource};
-use fastrender::css::types::StyleSheet;
-use fastrender::dom::parse_html;
-use fastrender::style::cascade::{apply_style_set_with_media_target_and_imports, StyledNode};
-use fastrender::style::media::MediaContext;
-use fastrender::style::style_set::StyleSet;
-use fastrender::Rgba;
+use crate::css::parser::{extract_scoped_css_sources, parse_stylesheet, StylesheetSource};
+use crate::css::types::StyleSheet;
+use crate::dom::parse_html;
+use crate::style::cascade::{apply_style_set_with_media_target_and_imports, StyledNode};
+use crate::style::media::MediaContext;
+use crate::style::style_set::StyleSet;
+use crate::Rgba;
 use std::collections::HashMap;
 
 fn stylesheet_from_sources(sources: &[StylesheetSource]) -> StyleSheet {

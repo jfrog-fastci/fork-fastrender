@@ -65,3 +65,89 @@ fn grid_auto_flow_rejects_invalid_identifiers_instead_of_substring_matching() {
   assert_eq!(styles.grid_auto_flow, GridAutoFlow::Column);
 }
 
+#[test]
+fn grid_auto_flow_tokenizes_whitespace_comments_and_is_case_insensitive() {
+  let mut styles = ComputedStyle::default();
+
+  apply_declaration(
+    &mut styles,
+    &decl("grid-auto-flow", "row"),
+    &ComputedStyle::default(),
+    16.0,
+    16.0,
+  );
+  assert_eq!(styles.grid_auto_flow, GridAutoFlow::Row);
+
+  apply_declaration(
+    &mut styles,
+    &decl("grid-auto-flow", "CoLuMn"),
+    &ComputedStyle::default(),
+    16.0,
+    16.0,
+  );
+  assert_eq!(styles.grid_auto_flow, GridAutoFlow::Column);
+
+  // `dense` without an explicit `row`/`column` defaults to `row dense`.
+  apply_declaration(
+    &mut styles,
+    &decl("grid-auto-flow", "dense"),
+    &ComputedStyle::default(),
+    16.0,
+    16.0,
+  );
+  assert_eq!(styles.grid_auto_flow, GridAutoFlow::RowDense);
+
+  // CSS comments are treated as whitespace, so `column/*x*/dense` is equivalent to `column dense`.
+  apply_declaration(
+    &mut styles,
+    &decl("grid-auto-flow", "column/*comment*/dense"),
+    &ComputedStyle::default(),
+    16.0,
+    16.0,
+  );
+  assert_eq!(styles.grid_auto_flow, GridAutoFlow::ColumnDense);
+}
+
+#[test]
+fn grid_auto_flow_ignores_invalid_values() {
+  let mut styles = ComputedStyle::default();
+
+  apply_declaration(
+    &mut styles,
+    &decl("grid-auto-flow", "column"),
+    &ComputedStyle::default(),
+    16.0,
+    16.0,
+  );
+  let expected = styles.grid_auto_flow;
+
+  // Invalid: multiple primary keywords.
+  apply_declaration(
+    &mut styles,
+    &decl("grid-auto-flow", "row column"),
+    &ComputedStyle::default(),
+    16.0,
+    16.0,
+  );
+  assert_eq!(styles.grid_auto_flow, expected);
+
+  // Invalid: duplicate `dense`.
+  apply_declaration(
+    &mut styles,
+    &decl("grid-auto-flow", "dense dense"),
+    &ComputedStyle::default(),
+    16.0,
+    16.0,
+  );
+  assert_eq!(styles.grid_auto_flow, expected);
+
+  // Invalid: unknown identifier.
+  apply_declaration(
+    &mut styles,
+    &decl("grid-auto-flow", "wat"),
+    &ComputedStyle::default(),
+    16.0,
+    16.0,
+  );
+  assert_eq!(styles.grid_auto_flow, expected);
+}

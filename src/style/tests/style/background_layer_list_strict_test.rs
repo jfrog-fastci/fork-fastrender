@@ -1,8 +1,8 @@
-use fastrender::css::properties::parse_property_value;
-use fastrender::css::types::Declaration;
-use fastrender::style::properties::apply_declaration;
-use fastrender::style::types::BackgroundImage;
-use fastrender::style::ComputedStyle;
+use crate::css::properties::parse_property_value;
+use crate::css::types::Declaration;
+use crate::style::properties::apply_declaration;
+use crate::style::types::BackgroundImage;
+use crate::style::ComputedStyle;
 
 #[test]
 fn background_layer_lists_reject_empty_items() {

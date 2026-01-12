@@ -1,15 +1,15 @@
-use fastrender::css::parser::parse_stylesheet;
-use fastrender::dom;
-use fastrender::style::cascade::apply_styles;
-use fastrender::style::cascade::StyledNode;
-use fastrender::style::types::BorderCollapse;
-use fastrender::style::types::CaptionSide;
-use fastrender::style::types::EmptyCells;
-use fastrender::style::types::FontKerning;
-use fastrender::style::types::FontSynthesis;
-use fastrender::style::types::FontWeight;
-use fastrender::style::types::TableLayout;
-use fastrender::style::types::TextWrap;
+use crate::css::parser::parse_stylesheet;
+use crate::dom;
+use crate::style::cascade::apply_styles;
+use crate::style::cascade::StyledNode;
+use crate::style::types::BorderCollapse;
+use crate::style::types::CaptionSide;
+use crate::style::types::EmptyCells;
+use crate::style::types::FontKerning;
+use crate::style::types::FontSynthesis;
+use crate::style::types::FontWeight;
+use crate::style::types::TableLayout;
+use crate::style::types::TextWrap;
 
 fn find_by_id<'a>(node: &'a StyledNode, id: &str) -> Option<&'a StyledNode> {
   if node

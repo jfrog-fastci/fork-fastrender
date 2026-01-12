@@ -1,5 +1,5 @@
-use fastrender::css::loader::extract_css_links;
-use fastrender::style::media::MediaType;
+use crate::css::loader::extract_css_links;
+use crate::style::media::MediaType;
 
 #[test]
 fn extract_css_links_skips_print_only_for_screen() {

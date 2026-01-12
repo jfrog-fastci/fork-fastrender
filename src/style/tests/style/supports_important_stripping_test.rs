@@ -1,8 +1,8 @@
-use fastrender::css::parser::parse_stylesheet;
-use fastrender::css::supports::supports_declaration;
-use fastrender::dom;
-use fastrender::style::cascade::{apply_styles_with_media, StyledNode};
-use fastrender::style::media::MediaContext;
+use crate::css::parser::parse_stylesheet;
+use crate::css::supports::supports_declaration;
+use crate::dom;
+use crate::style::cascade::{apply_styles_with_media, StyledNode};
+use crate::style::media::MediaContext;
 
 fn find_by_id<'a>(node: &'a StyledNode, id: &str) -> Option<&'a StyledNode> {
   if node.node.get_attribute_ref("id") == Some(id) {

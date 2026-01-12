@@ -1,9 +1,9 @@
-use fastrender::css::parser::parse_stylesheet;
-use fastrender::dom;
-use fastrender::style::cascade::apply_styles;
-use fastrender::style::cascade::StyledNode;
-use fastrender::style::content::ContentValue;
-use fastrender::Rgba;
+use crate::css::parser::parse_stylesheet;
+use crate::dom;
+use crate::style::cascade::apply_styles;
+use crate::style::cascade::StyledNode;
+use crate::style::content::ContentValue;
+use crate::Rgba;
 
 fn find_by_id<'a>(node: &'a StyledNode, id: &str) -> Option<&'a StyledNode> {
   if node

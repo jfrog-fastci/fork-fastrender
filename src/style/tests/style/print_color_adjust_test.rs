@@ -1,9 +1,9 @@
-use fastrender::css::parser::parse_stylesheet;
-use fastrender::dom;
-use fastrender::style::cascade::apply_styles_with_media_target_and_imports;
-use fastrender::style::cascade::StyledNode;
-use fastrender::style::media::MediaContext;
-use fastrender::style::types::PrintColorAdjust;
+use crate::css::parser::parse_stylesheet;
+use crate::dom;
+use crate::style::cascade::apply_styles_with_media_target_and_imports;
+use crate::style::cascade::StyledNode;
+use crate::style::media::MediaContext;
+use crate::style::types::PrintColorAdjust;
 
 fn find_by_id<'a>(node: &'a StyledNode, id: &str) -> Option<&'a StyledNode> {
   if node

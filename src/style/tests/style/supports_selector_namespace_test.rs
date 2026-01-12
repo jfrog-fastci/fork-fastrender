@@ -1,9 +1,9 @@
-use fastrender::css::parser::parse_stylesheet;
-use fastrender::css::types::CssImportLoader;
-use fastrender::dom;
-use fastrender::style::cascade::{apply_styles_with_media, StyledNode};
-use fastrender::style::display::Display;
-use fastrender::style::media::MediaContext;
+use crate::css::parser::parse_stylesheet;
+use crate::css::types::CssImportLoader;
+use crate::dom;
+use crate::style::cascade::{apply_styles_with_media, StyledNode};
+use crate::style::display::Display;
+use crate::style::media::MediaContext;
 use std::collections::HashMap;
 use std::io;
 
@@ -27,12 +27,12 @@ impl MapImportLoader {
 }
 
 impl CssImportLoader for MapImportLoader {
-  fn load(&self, url: &str) -> fastrender::error::Result<String> {
+  fn load(&self, url: &str) -> crate::error::Result<String> {
     self
       .styles
       .get(url)
       .cloned()
-      .ok_or(fastrender::error::Error::Io(io::Error::new(
+      .ok_or(crate::error::Error::Io(io::Error::new(
         io::ErrorKind::NotFound,
         format!("missing import {url}"),
       )))

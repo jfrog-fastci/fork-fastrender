@@ -1,15 +1,15 @@
-use fastrender::css::properties::parse_property_value;
-use fastrender::css::types::Declaration;
-use fastrender::style::properties::apply_declaration;
-use fastrender::style::types::MotionPathCommand;
-use fastrender::style::types::MotionPosition;
-use fastrender::style::types::OffsetPath;
-use fastrender::style::types::Ray;
-use fastrender::style::values::Length;
-use fastrender::ComputedStyle;
+use crate::css::properties::parse_property_value;
+use crate::css::types::Declaration;
+use crate::style::properties::apply_declaration;
+use crate::style::types::MotionPathCommand;
+use crate::style::types::MotionPosition;
+use crate::style::types::OffsetPath;
+use crate::style::types::Ray;
+use crate::style::values::Length;
+use crate::ComputedStyle;
 
 fn decl(name: &'static str, value: &str) -> Declaration {
-  let contains_var = fastrender::style::var_resolution::contains_var(value);
+  let contains_var = crate::style::var_resolution::contains_var(value);
   Declaration {
     property: name.into(),
     value: parse_property_value(name, value).expect("parse property value"),

@@ -1,4 +1,4 @@
-use fastrender::style::media::MediaQuery;
+use crate::style::media::MediaQuery;
 
 #[test]
 fn rejects_unknown_media_type() {
@@ -9,8 +9,8 @@ fn rejects_unknown_media_type() {
 
 #[test]
 fn unitless_zero_parses_for_numeric_properties() {
-  use fastrender::css::properties::parse_property_value;
-  use fastrender::css::types::PropertyValue;
+  use crate::css::properties::parse_property_value;
+  use crate::css::types::PropertyValue;
 
   assert!(matches!(
       parse_property_value("opacity", "0"),

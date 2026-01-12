@@ -1,14 +1,14 @@
-use fastrender::css::parser::parse_stylesheet;
-use fastrender::dom;
-use fastrender::style::cascade::apply_styles_with_media_target_and_imports;
-use fastrender::style::cascade::StyledNode;
-use fastrender::style::color::Rgba;
-use fastrender::style::color::SystemColor;
-use fastrender::style::media::ColorScheme;
-use fastrender::style::media::MediaContext;
-use fastrender::style::types::FilterColor;
-use fastrender::style::types::FilterFunction;
-use fastrender::style::types::OutlineColor;
+use crate::css::parser::parse_stylesheet;
+use crate::dom;
+use crate::style::cascade::apply_styles_with_media_target_and_imports;
+use crate::style::cascade::StyledNode;
+use crate::style::color::Rgba;
+use crate::style::color::SystemColor;
+use crate::style::media::ColorScheme;
+use crate::style::media::MediaContext;
+use crate::style::types::FilterColor;
+use crate::style::types::FilterFunction;
+use crate::style::types::OutlineColor;
 
 fn find_by_id<'a>(node: &'a StyledNode, id: &str) -> Option<&'a StyledNode> {
   if node

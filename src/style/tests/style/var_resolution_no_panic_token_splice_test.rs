@@ -1,7 +1,7 @@
-use fastrender::style::custom_property_store::CustomPropertyStore;
-use fastrender::style::values::CustomPropertyValue;
-use fastrender::style::var_resolution::resolve_var_for_property;
-use fastrender::PropertyValue;
+use crate::style::custom_property_store::CustomPropertyStore;
+use crate::style::values::CustomPropertyValue;
+use crate::style::var_resolution::resolve_var_for_property;
+use crate::PropertyValue;
 use std::panic::AssertUnwindSafe;
 
 fn make_props(pairs: &[(&str, &str)]) -> CustomPropertyStore {

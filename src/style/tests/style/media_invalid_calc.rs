@@ -1,4 +1,4 @@
-use fastrender::style::media::MediaQuery;
+use crate::style::media::MediaQuery;
 
 #[test]
 fn media_width_accepts_calc() {

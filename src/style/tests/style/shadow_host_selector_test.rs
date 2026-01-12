@@ -1,15 +1,15 @@
-use fastrender::css::parser::parse_stylesheet;
-use fastrender::css::selectors::ShadowMatchData;
-use fastrender::css::types::CssRule;
-use fastrender::dom::{
+use crate::css::parser::parse_stylesheet;
+use crate::css::selectors::ShadowMatchData;
+use crate::css::types::CssRule;
+use crate::dom::{
   self, next_selector_cache_epoch, DomNode, DomNodeType, ElementRef, HTML_NAMESPACE,
 };
-use fastrender::style::cascade::{
+use crate::style::cascade::{
   apply_style_set_with_media_target_and_imports, apply_styles, StyledNode,
 };
-use fastrender::style::defaults::get_default_styles_for_element;
-use fastrender::style::media::MediaContext;
-use fastrender::style::style_set::StyleSet;
+use crate::style::defaults::get_default_styles_for_element;
+use crate::style::media::MediaContext;
+use crate::style::style_set::StyleSet;
 use selectors::matching::{
   matches_selector, MatchingContext, MatchingForInvalidation, MatchingMode, NeedsSelectorFlags,
   QuirksMode, SelectorCaches,

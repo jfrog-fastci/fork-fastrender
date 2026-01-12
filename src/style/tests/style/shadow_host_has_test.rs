@@ -1,9 +1,9 @@
-use fastrender::css::parser::{extract_scoped_css_sources, parse_stylesheet, StylesheetSource};
-use fastrender::css::types::StyleSheet;
-use fastrender::dom;
-use fastrender::style::cascade::{apply_style_set_with_media_target_and_imports, StyledNode};
-use fastrender::style::media::MediaContext;
-use fastrender::style::style_set::StyleSet;
+use crate::css::parser::{extract_scoped_css_sources, parse_stylesheet, StylesheetSource};
+use crate::css::types::StyleSheet;
+use crate::dom;
+use crate::style::cascade::{apply_style_set_with_media_target_and_imports, StyledNode};
+use crate::style::media::MediaContext;
+use crate::style::style_set::StyleSet;
 
 fn stylesheet_from_sources(sources: &[StylesheetSource]) -> StyleSheet {
   let mut combined = Vec::new();

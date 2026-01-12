@@ -1,15 +1,16 @@
-use fastrender::animation;
-use fastrender::{FastRender, FontConfig, RenderOptions};
-use fastrender::css::types::{BoxShadow, TextShadow};
-use fastrender::style::cascade::StyledNode;
-use fastrender::style::computed::Visibility;
-use fastrender::style::types::{
+use crate::animation;
+use crate::api::{FastRender, RenderOptions};
+use crate::css::types::{BoxShadow, TextShadow};
+use crate::style::cascade::StyledNode;
+use crate::style::computed::Visibility;
+use crate::style::types::{
   BackgroundPosition, BackgroundSize, BackgroundSizeComponent, BasicShape, BorderStyle,
   ClipComponent, ClipPath, ClipRect, FillRule, FilterFunction, OutlineStyle,
 };
-use fastrender::style::values::CustomPropertyTypedValue;
-use fastrender::tree::box_tree::{BoxNode, BoxTree};
-use fastrender::tree::fragment_tree::{FragmentNode, FragmentTree};
+use crate::style::values::CustomPropertyTypedValue;
+use crate::tree::box_tree::{BoxNode, BoxTree};
+use crate::tree::fragment_tree::{FragmentNode, FragmentTree};
+use crate::FontConfig;
 use std::fs;
 use std::path::PathBuf;
 use svgtypes::{PathParser, PathSegment};
@@ -83,7 +84,7 @@ fn find_fragment<'a>(fragment: &'a FragmentNode, box_id: usize) -> Option<&'a Fr
     }
   }
   if let FragmentNode {
-    content: fastrender::tree::fragment_tree::FragmentContent::RunningAnchor { snapshot, .. },
+    content: crate::tree::fragment_tree::FragmentContent::RunningAnchor { snapshot, .. },
     ..
   } = fragment
   {
@@ -109,7 +110,7 @@ fn find_fragment_absolute<'a>(
     }
   }
   if let FragmentNode {
-    content: fastrender::tree::fragment_tree::FragmentContent::RunningAnchor { snapshot, .. },
+    content: crate::tree::fragment_tree::FragmentContent::RunningAnchor { snapshot, .. },
     ..
   } = fragment
   {
@@ -136,7 +137,7 @@ fn fragment_visibility(tree: &FragmentTree, box_id: usize) -> Visibility {
     .expect("style present")
 }
 
-fn fragment_color(tree: &FragmentTree, box_id: usize) -> fastrender::Rgba {
+fn fragment_color(tree: &FragmentTree, box_id: usize) -> crate::Rgba {
   let frag = find_fragment(&tree.root, box_id).expect("fragment present");
   frag.style.as_ref().map(|s| s.color).expect("style present")
 }
@@ -145,7 +146,7 @@ fn fragment_transform_x(tree: &FragmentTree, box_id: usize) -> f32 {
   let frag = find_fragment(&tree.root, box_id).expect("fragment present");
   let style = frag.style.as_ref().expect("style present");
   match style.transform.as_slice() {
-    [fastrender::css::types::Transform::TranslateX(len)] => len.to_px(),
+    [crate::css::types::Transform::TranslateX(len)] => len.to_px(),
     _ => 0.0,
   }
 }
@@ -184,13 +185,13 @@ fn fragment_border_top_style(tree: &FragmentTree, box_id: usize) -> BorderStyle 
   style.border_top_style
 }
 
-fn fragment_border_top_color(tree: &FragmentTree, box_id: usize) -> fastrender::Rgba {
+fn fragment_border_top_color(tree: &FragmentTree, box_id: usize) -> crate::Rgba {
   let frag = find_fragment(&tree.root, box_id).expect("fragment present");
   let style = frag.style.as_ref().expect("style present");
   style.border_top_color
 }
 
-fn fragment_border_right_color(tree: &FragmentTree, box_id: usize) -> fastrender::Rgba {
+fn fragment_border_right_color(tree: &FragmentTree, box_id: usize) -> crate::Rgba {
   let frag = find_fragment(&tree.root, box_id).expect("fragment present");
   let style = frag.style.as_ref().expect("style present");
   style.border_right_color
@@ -240,7 +241,7 @@ fn fragment_perspective_origin(tree: &FragmentTree, box_id: usize) -> (f32, f32)
   )
 }
 
-fn fragment_outline_color(tree: &FragmentTree, box_id: usize) -> (fastrender::Rgba, bool) {
+fn fragment_outline_color(tree: &FragmentTree, box_id: usize) -> (crate::Rgba, bool) {
   let frag = find_fragment(&tree.root, box_id).expect("fragment present");
   let style = frag.style.as_ref().expect("style present");
   style.outline_color.resolve(style.color)
@@ -432,7 +433,7 @@ fn transitions_inherit_color_current_value() {
   let mut mid = fragment_tree.clone();
   let viewport = mid.viewport_size();
   animation::apply_transitions(&mut mid, 500.0, viewport);
-  let expected = fastrender::Rgba::new(128, 0, 128, 1.0);
+  let expected = crate::Rgba::new(128, 0, 128, 1.0);
   let inherited_frag = find_fragment(&mid.root, inherited_box).expect("fragment present");
   let inherited_style = inherited_frag.style.as_ref().expect("style present");
   assert!(
@@ -457,7 +458,7 @@ fn transitions_inherit_color_current_value() {
   );
   assert_eq!(
     fragment_color(&mid, explicit_box),
-    fastrender::Rgba::GREEN,
+    crate::Rgba::GREEN,
     "explicit box id {explicit_box}"
   );
 }
@@ -627,11 +628,11 @@ fn transitions_transition_all_animates_border_color_longhands() {
   animation::apply_transitions(&mut mid, 500.0, viewport);
   assert_eq!(
     fragment_border_top_color(&mid, box_id),
-    fastrender::Rgba::new(128, 0, 128, 1.0)
+    crate::Rgba::new(128, 0, 128, 1.0)
   );
   assert_eq!(
     fragment_border_right_color(&mid, box_id),
-    fastrender::Rgba::new(128, 255, 0, 1.0)
+    crate::Rgba::new(128, 255, 0, 1.0)
   );
 }
 
@@ -782,11 +783,11 @@ fn transitions_recompute_currentcolor_dependent_border_color_when_color_transiti
   animation::apply_transitions(&mut mid, 500.0, viewport);
   assert_eq!(
     fragment_color(&mid, box_id),
-    fastrender::Rgba::new(128, 0, 128, 1.0)
+    crate::Rgba::new(128, 0, 128, 1.0)
   );
   assert_eq!(
     fragment_border_top_color(&mid, box_id),
-    fastrender::Rgba::new(128, 0, 128, 1.0)
+    crate::Rgba::new(128, 0, 128, 1.0)
   );
 }
 
@@ -816,11 +817,11 @@ fn transitions_recompute_currentcolor_dependent_border_color_through_var_when_co
   animation::apply_transitions(&mut mid, 500.0, viewport);
   assert_eq!(
     fragment_color(&mid, box_id),
-    fastrender::Rgba::new(128, 0, 128, 1.0)
+    crate::Rgba::new(128, 0, 128, 1.0)
   );
   assert_eq!(
     fragment_border_top_color(&mid, box_id),
-    fastrender::Rgba::new(128, 0, 128, 1.0)
+    crate::Rgba::new(128, 0, 128, 1.0)
   );
 }
 
@@ -848,11 +849,11 @@ fn transitions_do_not_recompute_border_color_without_currentcolor_dependency() {
   animation::apply_transitions(&mut mid, 500.0, viewport);
   assert_eq!(
     fragment_color(&mid, box_id),
-    fastrender::Rgba::new(128, 0, 128, 1.0)
+    crate::Rgba::new(128, 0, 128, 1.0)
   );
   assert_eq!(
     fragment_border_top_color(&mid, box_id),
-    fastrender::Rgba::new(0, 255, 0, 1.0)
+    crate::Rgba::new(0, 255, 0, 1.0)
   );
 }
 
@@ -874,14 +875,14 @@ fn transitions_interpolate_outline_color_over_time() {
   animation::apply_transitions(&mut start, 0.0, viewport);
   let (color, invert) = fragment_outline_color(&start, box_id);
   assert!(!invert);
-  assert_eq!(color, fastrender::Rgba::new(255, 0, 0, 1.0));
+  assert_eq!(color, crate::Rgba::new(255, 0, 0, 1.0));
 
   let mut mid = fragment_tree.clone();
   let viewport = mid.viewport_size();
   animation::apply_transitions(&mut mid, 500.0, viewport);
   let (color, invert) = fragment_outline_color(&mid, box_id);
   assert!(!invert);
-  assert_eq!(color, fastrender::Rgba::new(128, 0, 128, 1.0));
+  assert_eq!(color, crate::Rgba::new(128, 0, 128, 1.0));
 }
 
 #[test]
@@ -953,7 +954,7 @@ fn transition_behavior_gates_outline_color_invert_transitions() {
   animation::apply_transitions(&mut mid, 400.0, viewport);
   let (color, invert) = fragment_outline_color(&mid, box_id);
   assert!(!invert);
-  assert_eq!(color, fastrender::Rgba::new(255, 0, 0, 1.0));
+  assert_eq!(color, crate::Rgba::new(255, 0, 0, 1.0));
 
   let html_allow = r#"
     <style>
@@ -977,7 +978,7 @@ fn transition_behavior_gates_outline_color_invert_transitions() {
   animation::apply_transitions(&mut late, 600.0, viewport);
   let (color, invert) = fragment_outline_color(&late, box_id);
   assert!(!invert);
-  assert_eq!(color, fastrender::Rgba::new(255, 0, 0, 1.0));
+  assert_eq!(color, crate::Rgba::new(255, 0, 0, 1.0));
 }
 
 #[test]
@@ -999,7 +1000,7 @@ fn transitions_interpolate_outline_shorthand_over_time() {
   assert!((fragment_outline_width(&mid, box_id) - 5.0).abs() < 1e-3);
   let (color, invert) = fragment_outline_color(&mid, box_id);
   assert!(!invert);
-  assert_eq!(color, fastrender::Rgba::new(128, 0, 128, 1.0));
+  assert_eq!(color, crate::Rgba::new(128, 0, 128, 1.0));
 }
 
 #[test]
@@ -1022,7 +1023,7 @@ fn transitions_interpolate_outline_shorthand_style_is_not_animated_without_allow
   assert_eq!(fragment_outline_style(&start, box_id), OutlineStyle::Dashed);
   let (color, invert) = fragment_outline_color(&start, box_id);
   assert!(!invert);
-  assert_eq!(color, fastrender::Rgba::new(255, 0, 0, 1.0));
+  assert_eq!(color, crate::Rgba::new(255, 0, 0, 1.0));
 
   let mut early = fragment_tree.clone();
   let viewport = early.viewport_size();
@@ -1031,7 +1032,7 @@ fn transitions_interpolate_outline_shorthand_style_is_not_animated_without_allow
   assert_eq!(fragment_outline_style(&early, box_id), OutlineStyle::Dashed);
   let (color, invert) = fragment_outline_color(&early, box_id);
   assert!(!invert);
-  assert_eq!(color, fastrender::Rgba::new(153, 0, 102, 1.0));
+  assert_eq!(color, crate::Rgba::new(153, 0, 102, 1.0));
 }
 
 #[test]
@@ -1081,7 +1082,7 @@ fn transitions_interpolate_border_shorthand_over_time_without_allow_discrete() {
   );
   assert_eq!(
     fragment_border_top_color(&start, box_id),
-    fastrender::Rgba::new(255, 0, 0, 1.0)
+    crate::Rgba::new(255, 0, 0, 1.0)
   );
 
   let mut early = fragment_tree.clone();
@@ -1094,7 +1095,7 @@ fn transitions_interpolate_border_shorthand_over_time_without_allow_discrete() {
   );
   assert_eq!(
     fragment_border_top_color(&early, box_id),
-    fastrender::Rgba::new(153, 0, 102, 1.0)
+    crate::Rgba::new(153, 0, 102, 1.0)
   );
 }
 
@@ -1121,7 +1122,7 @@ fn transitions_interpolate_border_shorthand_over_time_with_allow_discrete() {
   );
   assert_eq!(
     fragment_border_top_color(&start, box_id),
-    fastrender::Rgba::new(255, 0, 0, 1.0)
+    crate::Rgba::new(255, 0, 0, 1.0)
   );
 
   let mut early = fragment_tree.clone();
@@ -1134,7 +1135,7 @@ fn transitions_interpolate_border_shorthand_over_time_with_allow_discrete() {
   );
   assert_eq!(
     fragment_border_top_color(&early, box_id),
-    fastrender::Rgba::new(153, 0, 102, 1.0)
+    crate::Rgba::new(153, 0, 102, 1.0)
   );
 
   let mut late = fragment_tree.clone();
@@ -1147,7 +1148,7 @@ fn transitions_interpolate_border_shorthand_over_time_with_allow_discrete() {
   );
   assert_eq!(
     fragment_border_top_color(&late, box_id),
-    fastrender::Rgba::new(102, 0, 153, 1.0)
+    crate::Rgba::new(102, 0, 153, 1.0)
   );
 }
 
@@ -1266,7 +1267,7 @@ fn transitions_do_not_start_border_style_transition_without_allow_discrete() {
   assert!((fragment_border_top_width(&start, box_id) - 4.0).abs() < 1e-3);
   assert_eq!(
     fragment_border_top_color(&start, box_id),
-    fastrender::Rgba::new(0, 0, 0, 1.0)
+    crate::Rgba::new(0, 0, 0, 1.0)
   );
 }
 
@@ -1335,7 +1336,7 @@ fn transition_behavior_blocks_border_style_by_default() {
   assert!((fragment_border_top_width(&mid, box_id) - 4.0).abs() < 1e-3);
   assert_eq!(
     fragment_border_top_color(&mid, box_id),
-    fastrender::Rgba::new(0, 0, 0, 1.0)
+    crate::Rgba::new(0, 0, 0, 1.0)
   );
 }
 
@@ -1680,18 +1681,18 @@ fn transitions_interpolate_clip_rect_over_time() {
   let viewport = mid.viewport_size();
   animation::apply_transitions(&mut mid, 500.0, viewport);
   let rect = fragment_clip_rect(&mid, box_id).expect("clip rect");
-  assert_eq!(rect.top, ClipComponent::Length(fastrender::Length::px(0.0)));
+  assert_eq!(rect.top, ClipComponent::Length(crate::Length::px(0.0)));
   assert_eq!(
     rect.left,
-    ClipComponent::Length(fastrender::Length::px(0.0))
+    ClipComponent::Length(crate::Length::px(0.0))
   );
   assert_eq!(
     rect.right,
-    ClipComponent::Length(fastrender::Length::px(15.0))
+    ClipComponent::Length(crate::Length::px(15.0))
   );
   assert_eq!(
     rect.bottom,
-    ClipComponent::Length(fastrender::Length::px(15.0))
+    ClipComponent::Length(crate::Length::px(15.0))
   );
 }
 
@@ -2069,7 +2070,7 @@ fn transition_starting_style_fixture_box_layout_is_untransformed() {
   assert!((abs_x - 40.0).abs() < 1e-3, "abs_x={abs_x}");
   assert!((abs_y - 32.0).abs() < 1e-3, "abs_y={abs_y}");
   match style.transform.as_slice() {
-    [fastrender::css::types::Transform::TranslateX(len)] => {
+    [crate::css::types::Transform::TranslateX(len)] => {
       // 800ms ease @ 400ms should be ~80px translateX (box starts at x=40, painted at x≈120).
       let tx = len.to_px();
       assert!((tx - 80.0).abs() < 1.0, "translateX={tx}");

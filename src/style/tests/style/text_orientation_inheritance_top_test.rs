@@ -1,13 +1,13 @@
-use fastrender::css::parser::parse_stylesheet;
-use fastrender::dom;
-use fastrender::style::cascade::apply_styles_with_media;
-use fastrender::style::cascade::StyledNode;
-use fastrender::style::media::MediaContext;
-use fastrender::style::types::TextOrientation;
-use fastrender::style::types::WritingMode;
+use crate::css::parser::parse_stylesheet;
+use crate::dom;
+use crate::style::cascade::apply_styles_with_media;
+use crate::style::cascade::StyledNode;
+use crate::style::media::MediaContext;
+use crate::style::types::TextOrientation;
+use crate::style::types::WritingMode;
 
 fn find_tag(node: &StyledNode, tag: &str) -> Option<StyledNode> {
-  if let fastrender::dom::DomNodeType::Element { tag_name, .. } = &node.node.node_type {
+  if let crate::dom::DomNodeType::Element { tag_name, .. } = &node.node.node_type {
     if tag_name.eq_ignore_ascii_case(tag) {
       return Some(node.clone());
     }

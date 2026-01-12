@@ -1,13 +1,13 @@
 use std::time::{Duration, Instant};
 
-use fastrender::css::parser::parse_stylesheet;
-use fastrender::dom::parse_html;
-use fastrender::style::cascade::{
+use crate::css::parser::parse_stylesheet;
+use crate::dom::parse_html;
+use crate::style::cascade::{
   apply_styles_with_media, capture_style_sharing_stats, reset_style_sharing_stats,
   set_style_sharing_stats_enabled, StyledNode,
 };
-use fastrender::style::color::Rgba;
-use fastrender::style::media::MediaContext;
+use crate::style::color::Rgba;
+use crate::style::media::MediaContext;
 
 const MAX_CASCADE_PERF_RUNS: usize = 5;
 
@@ -218,7 +218,7 @@ fn cascade_handles_many_custom_properties_under_budget() {
 
   let first = find_by_id(&styled, "item0").expect("item0 styled");
   assert_eq!(first.styles.padding_left.value, 1.0);
-  assert_eq!(first.styles.padding_left.unit, fastrender::LengthUnit::Px);
+  assert_eq!(first.styles.padding_left.unit, crate::LengthUnit::Px);
 }
 
 #[test]
@@ -303,7 +303,7 @@ fn style_sharing_hits_for_repeated_simple_elements() {
     .first()
     .expect("root should contain repeated children");
   assert_eq!(first.styles.padding_left.value, 4.0);
-  assert_eq!(first.styles.padding_left.unit, fastrender::LengthUnit::Px);
+  assert_eq!(first.styles.padding_left.unit, crate::LengthUnit::Px);
 
   assert!(
     stats.hits >= (count.saturating_sub(1) as u64),

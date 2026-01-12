@@ -3,27 +3,14 @@
 //! These tests verify the media query parser and evaluator against
 //! real-world use cases and CSS specification requirements.
 
-use fastrender::css::parser::parse_stylesheet;
-use fastrender::debug::runtime::with_thread_runtime_toggles;
-use fastrender::debug::runtime::RuntimeToggles;
-use fastrender::style::media::ColorScheme;
-use fastrender::style::media::ContrastPreference;
-use fastrender::style::media::DisplayMode;
-use fastrender::style::media::DynamicRange;
-use fastrender::style::media::LightLevel;
-use fastrender::style::media::MediaContext;
-use fastrender::style::media::MediaFeature;
-use fastrender::style::media::MediaQuery;
-use fastrender::style::media::MediaQueryCache;
-use fastrender::style::media::MediaType;
-use fastrender::style::media::PointerCapability;
-use fastrender::style::media::Scripting;
-use fastrender::style::media::UpdateFrequency;
-use fastrender::style::types::WritingMode;
-use fastrender::FastRender;
-use fastrender::FastRenderConfig;
-use fastrender::FragmentContent;
-use fastrender::Length;
+use crate::css::parser::parse_stylesheet;
+use crate::debug::runtime::{with_thread_runtime_toggles, RuntimeToggles};
+use crate::style::media::{
+  ColorScheme, ContrastPreference, DisplayMode, DynamicRange, LightLevel, MediaContext, MediaFeature,
+  MediaQuery, MediaQueryCache, MediaType, PointerCapability, Scripting, UpdateFrequency,
+};
+use crate::style::types::WritingMode;
+use crate::{FastRender, FastRenderConfig, FragmentContent, Length};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -35,7 +22,7 @@ fn with_test_toggles<T>(pairs: &[(&str, &str)], f: impl FnOnce() -> T) -> T {
   with_thread_runtime_toggles(Arc::new(RuntimeToggles::from_map(raw)), f)
 }
 
-fn collect_text(fragment: &fastrender::FragmentNode, texts: &mut Vec<String>) {
+fn collect_text(fragment: &crate::FragmentNode, texts: &mut Vec<String>) {
   if let FragmentContent::Text { text, .. } = &fragment.content {
     texts.push(text.to_string());
   }

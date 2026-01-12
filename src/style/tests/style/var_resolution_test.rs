@@ -8,22 +8,22 @@
 //! - Embedded var() in other CSS functions
 //! - Edge cases and error handling
 
-use fastrender::css::parser::parse_declarations;
-use fastrender::css::types::Declaration;
-use fastrender::style::custom_property_store::CustomPropertyStore;
-use fastrender::style::properties::apply_declaration;
-use fastrender::style::values::CustomPropertyValue;
-use fastrender::style::values::LengthUnit;
-use fastrender::style::var_resolution::contains_var;
-use fastrender::style::var_resolution::extract_var_references;
-use fastrender::style::var_resolution::is_valid_custom_property_name;
-use fastrender::style::var_resolution::resolve_var;
-use fastrender::style::var_resolution::resolve_var_for_property;
-use fastrender::style::var_resolution::resolve_var_with_depth;
-use fastrender::style::var_resolution::VarResolutionResult;
-use fastrender::style::ComputedStyle;
-use fastrender::Length;
-use fastrender::PropertyValue;
+use crate::css::parser::parse_declarations;
+use crate::css::types::Declaration;
+use crate::style::custom_property_store::CustomPropertyStore;
+use crate::style::properties::apply_declaration;
+use crate::style::values::CustomPropertyValue;
+use crate::style::values::LengthUnit;
+use crate::style::var_resolution::contains_var;
+use crate::style::var_resolution::extract_var_references;
+use crate::style::var_resolution::is_valid_custom_property_name;
+use crate::style::var_resolution::resolve_var;
+use crate::style::var_resolution::resolve_var_for_property;
+use crate::style::var_resolution::resolve_var_with_depth;
+use crate::style::var_resolution::VarResolutionResult;
+use crate::style::ComputedStyle;
+use crate::Length;
+use crate::PropertyValue;
 
 /// Helper function to create a custom properties map from pairs
 fn make_props(pairs: &[(&str, &str)]) -> CustomPropertyStore {
@@ -84,7 +84,7 @@ fn test_resolve_var_with_px_length() {
   match resolved {
     PropertyValue::Length(len) => {
       assert_eq!(len.value, 16.0);
-      assert_eq!(len.unit, fastrender::LengthUnit::Px);
+      assert_eq!(len.unit, crate::LengthUnit::Px);
     }
     _ => panic!("Expected Length, got {:?}", resolved),
   }
@@ -99,7 +99,7 @@ fn test_resolve_var_with_em_length() {
   match resolved {
     PropertyValue::Length(len) => {
       assert_eq!(len.value, 1.5);
-      assert_eq!(len.unit, fastrender::LengthUnit::Em);
+      assert_eq!(len.unit, crate::LengthUnit::Em);
     }
     _ => panic!("Expected Length, got {:?}", resolved),
   }
@@ -283,7 +283,7 @@ fn test_replacement_containing_var_continues_resolving() {
   match resolved {
     PropertyValue::Length(len) => {
       assert!((len.value - 10.0).abs() < f32::EPSILON);
-      assert_eq!(len.unit, fastrender::LengthUnit::Px);
+      assert_eq!(len.unit, crate::LengthUnit::Px);
     }
     _ => panic!(
       "Expected Length from nested var replacement, got {:?}",

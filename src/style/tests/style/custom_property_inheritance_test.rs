@@ -1,7 +1,7 @@
-use fastrender::css::parser::parse_stylesheet;
-use fastrender::dom::{DomNode, DomNodeType, HTML_NAMESPACE};
-use fastrender::style::cascade::apply_styles;
-use fastrender::LengthUnit;
+use crate::css::parser::parse_stylesheet;
+use crate::dom::{DomNode, DomNodeType, HTML_NAMESPACE};
+use crate::style::cascade::apply_styles;
+use crate::LengthUnit;
 
 fn dom_with_child() -> DomNode {
   DomNode {

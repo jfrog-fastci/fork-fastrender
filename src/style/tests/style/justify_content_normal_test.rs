@@ -1,8 +1,8 @@
-use fastrender::css::parser::parse_stylesheet;
-use fastrender::dom;
-use fastrender::style::cascade::{apply_styles_with_media, StyledNode};
-use fastrender::style::media::MediaContext;
-use fastrender::style::types::JustifyContent;
+use crate::css::parser::parse_stylesheet;
+use crate::dom;
+use crate::style::cascade::{apply_styles_with_media, StyledNode};
+use crate::style::media::MediaContext;
+use crate::style::types::JustifyContent;
 
 fn find_by_id<'a>(node: &'a StyledNode, id: &str) -> Option<&'a StyledNode> {
   if node.node.get_attribute_ref("id") == Some(id) {
@@ -33,7 +33,7 @@ fn justify_content_normal_overrides_previous_declarations() {
 
 #[test]
 fn supports_declaration_accepts_justify_content_normal() {
-  assert!(fastrender::css::supports::supports_declaration(
+  assert!(crate::css::supports::supports_declaration(
     "justify-content",
     "normal"
   ));

@@ -1,8 +1,8 @@
-use fastrender::css::parser::parse_stylesheet;
-use fastrender::dom;
-use fastrender::style::cascade::apply_styles_with_media;
-use fastrender::style::cascade::StyledNode;
-use fastrender::style::media::MediaContext;
+use crate::css::parser::parse_stylesheet;
+use crate::dom;
+use crate::style::cascade::apply_styles_with_media;
+use crate::style::cascade::StyledNode;
+use crate::style::media::MediaContext;
 
 fn find_first<'a>(node: &'a StyledNode, tag: &str) -> Option<&'a StyledNode> {
   if let Some(name) = node.node.tag_name() {
@@ -31,11 +31,11 @@ fn text_decoration_skip_ink_inherits() {
 
   assert_eq!(
     parent.styles.text_decoration_skip_ink,
-    fastrender::style::types::TextDecorationSkipInk::None
+    crate::style::types::TextDecorationSkipInk::None
   );
   assert_eq!(
     child.styles.text_decoration_skip_ink,
-    fastrender::style::types::TextDecorationSkipInk::None
+    crate::style::types::TextDecorationSkipInk::None
   );
 }
 
@@ -53,10 +53,10 @@ fn text_decoration_skip_ink_initial_resets_to_auto() {
 
   assert_eq!(
     parent.styles.text_decoration_skip_ink,
-    fastrender::style::types::TextDecorationSkipInk::All
+    crate::style::types::TextDecorationSkipInk::All
   );
   assert_eq!(
     child.styles.text_decoration_skip_ink,
-    fastrender::style::types::TextDecorationSkipInk::Auto
+    crate::style::types::TextDecorationSkipInk::Auto
   );
 }

@@ -1,7 +1,7 @@
-use fastrender::tree::fragment_tree::FragmentContent;
-use fastrender::{FastRender, FastRenderConfig};
+use crate::tree::fragment_tree::FragmentContent;
+use crate::{FastRender, FastRenderConfig};
 
-fn collect_text(fragment: &fastrender::FragmentNode, texts: &mut Vec<String>) {
+fn collect_text(fragment: &crate::FragmentNode, texts: &mut Vec<String>) {
   if let FragmentContent::Text { text, .. } = &fragment.content {
     texts.push(text.to_string());
   }

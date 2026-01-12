@@ -1,11 +1,11 @@
-use fastrender::css::parser::parse_stylesheet;
-use fastrender::dom;
-use fastrender::style::cascade::apply_styles_with_media_target_and_imports;
-use fastrender::style::cascade::StyledNode;
-use fastrender::style::color::Rgba;
-use fastrender::style::media::MediaContext;
-use fastrender::style::types::{BackgroundImage, BackgroundImageUrl, CalcSizeBasis, IntrinsicSizeKeyword};
-use fastrender::style::values::Length;
+use crate::css::parser::parse_stylesheet;
+use crate::dom;
+use crate::style::cascade::apply_styles_with_media_target_and_imports;
+use crate::style::cascade::StyledNode;
+use crate::style::color::Rgba;
+use crate::style::media::MediaContext;
+use crate::style::types::{BackgroundImage, BackgroundImageUrl, CalcSizeBasis, IntrinsicSizeKeyword};
+use crate::style::values::Length;
 
 fn find_by_id<'a>(node: &'a StyledNode, id: &str) -> Option<&'a StyledNode> {
   if node

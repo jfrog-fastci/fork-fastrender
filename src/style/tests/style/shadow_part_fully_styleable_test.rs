@@ -1,13 +1,13 @@
-use fastrender::css::parser::parse_stylesheet;
-use fastrender::dom;
-use fastrender::dom::enumerate_dom_ids;
-use fastrender::dom::DomNode;
-use fastrender::interaction::InteractionState;
-use fastrender::style::cascade::apply_styles;
-use fastrender::style::cascade::apply_styles_with_interaction_state;
-use fastrender::style::cascade::StyledNode;
-use fastrender::style::content::ContentValue;
-use fastrender::Rgba;
+use crate::css::parser::parse_stylesheet;
+use crate::dom;
+use crate::dom::enumerate_dom_ids;
+use crate::dom::DomNode;
+use crate::interaction::InteractionState;
+use crate::style::cascade::apply_styles;
+use crate::style::cascade::apply_styles_with_interaction_state;
+use crate::style::cascade::StyledNode;
+use crate::style::content::ContentValue;
+use crate::Rgba;
 
 fn find_by_id<'a>(node: &'a StyledNode, id: &str) -> Option<&'a StyledNode> {
   if node

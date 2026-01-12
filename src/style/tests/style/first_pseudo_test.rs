@@ -1,15 +1,15 @@
-use fastrender::css::parser::parse_stylesheet;
-use fastrender::dom;
-use fastrender::style::cascade::apply_styles_with_media;
-use fastrender::style::cascade::StyledNode;
-use fastrender::style::float::Float;
-use fastrender::style::media::MediaContext;
-use fastrender::style::types::BorderStyle;
-use fastrender::style::types::CaseTransform;
-use fastrender::style::types::TextTransform;
-use fastrender::style::values::Length;
-use fastrender::ComputedStyle;
-use fastrender::Rgba;
+use crate::css::parser::parse_stylesheet;
+use crate::dom;
+use crate::style::cascade::apply_styles_with_media;
+use crate::style::cascade::StyledNode;
+use crate::style::float::Float;
+use crate::style::media::MediaContext;
+use crate::style::types::BorderStyle;
+use crate::style::types::CaseTransform;
+use crate::style::types::TextTransform;
+use crate::style::values::Length;
+use crate::ComputedStyle;
+use crate::Rgba;
 
 fn find_first<'a>(node: &'a StyledNode, tag: &str) -> Option<&'a StyledNode> {
   if let Some(name) = node.node.tag_name() {

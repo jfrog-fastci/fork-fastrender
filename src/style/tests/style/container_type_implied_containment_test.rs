@@ -1,6 +1,6 @@
-use fastrender::api::FastRender;
-use fastrender::style::cascade::StyledNode;
-use fastrender::style::media::MediaType;
+use crate::api::FastRender;
+use crate::style::cascade::StyledNode;
+use crate::style::media::MediaType;
 
 fn styled_tree_for(html: &str) -> StyledNode {
   let mut renderer = FastRender::new().expect("renderer");
@@ -63,7 +63,7 @@ fn container_type_folds_implied_containment_into_computed_style() {
   let scroll = find_by_id(&styled, "scroll").expect("scroll element");
   assert_eq!(
     scroll.styles.containment,
-    fastrender::style::types::Containment::none()
+    crate::style::types::Containment::none()
   );
 
   let size_scroll = find_by_id(&styled, "size_scroll").expect("size_scroll element");
@@ -90,6 +90,6 @@ fn container_type_folds_implied_containment_into_computed_style() {
   let normal = find_by_id(&styled, "normal").expect("normal element");
   assert_eq!(
     normal.styles.containment,
-    fastrender::style::types::Containment::none()
+    crate::style::types::Containment::none()
   );
 }

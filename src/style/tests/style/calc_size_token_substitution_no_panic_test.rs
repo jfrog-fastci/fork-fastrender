@@ -1,4 +1,4 @@
-use fastrender::style::values::substitute_calc_size_expr;
+use crate::style::values::substitute_calc_size_expr;
 
 #[test]
 fn calc_size_token_substitution_never_panics_on_gnarly_token_streams() {

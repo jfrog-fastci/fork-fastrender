@@ -1,20 +1,20 @@
-use fastrender::css::parser::parse_stylesheet;
-use fastrender::dom;
-use fastrender::style::cascade::apply_styles;
-use fastrender::style::cascade::StyledNode;
-use fastrender::style::types::EastAsianVariant;
-use fastrender::style::types::EastAsianWidth;
-use fastrender::style::types::FontStretch;
-use fastrender::style::types::FontStyle;
-use fastrender::style::types::FontVariant;
-use fastrender::style::types::FontVariantCaps;
-use fastrender::style::types::FontVariantLigatures;
-use fastrender::style::types::FontVariantPosition;
-use fastrender::style::types::NumericFigure;
-use fastrender::style::types::NumericFraction;
-use fastrender::style::types::NumericSpacing;
-use fastrender::style::types::{FontVariantAlternateValue, FontVariantAlternates, FontWeight};
-use fastrender::style::types::{FontVariantEastAsian, FontVariantNumeric};
+use crate::css::parser::parse_stylesheet;
+use crate::dom;
+use crate::style::cascade::apply_styles;
+use crate::style::cascade::StyledNode;
+use crate::style::types::EastAsianVariant;
+use crate::style::types::EastAsianWidth;
+use crate::style::types::FontStretch;
+use crate::style::types::FontStyle;
+use crate::style::types::FontVariant;
+use crate::style::types::FontVariantCaps;
+use crate::style::types::FontVariantLigatures;
+use crate::style::types::FontVariantPosition;
+use crate::style::types::NumericFigure;
+use crate::style::types::NumericFraction;
+use crate::style::types::NumericSpacing;
+use crate::style::types::{FontVariantAlternateValue, FontVariantAlternates, FontWeight};
+use crate::style::types::{FontVariantEastAsian, FontVariantNumeric};
 
 fn find_by_id<'a>(node: &'a StyledNode, id: &str) -> Option<&'a StyledNode> {
   if node

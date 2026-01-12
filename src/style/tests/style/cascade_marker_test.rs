@@ -1,12 +1,12 @@
-use fastrender::css::parser::parse_stylesheet;
-use fastrender::dom;
-use fastrender::style::cascade::apply_styles_with_media;
-use fastrender::style::cascade::StyledNode;
-use fastrender::style::display::Display;
-use fastrender::style::media::MediaContext;
-use fastrender::style::types::CaseTransform;
-use fastrender::style::types::TextTransform;
-use fastrender::ComputedStyle;
+use crate::css::parser::parse_stylesheet;
+use crate::dom;
+use crate::style::cascade::apply_styles_with_media;
+use crate::style::cascade::StyledNode;
+use crate::style::display::Display;
+use crate::style::media::MediaContext;
+use crate::style::types::CaseTransform;
+use crate::style::types::TextTransform;
+use crate::ComputedStyle;
 
 fn find_first<'a>(node: &'a StyledNode, tag: &str) -> Option<&'a StyledNode> {
   if let Some(name) = node.node.tag_name() {
@@ -78,7 +78,7 @@ fn marker_allows_text_affecting_properties() {
   let li = styled_list_item(rules, "<ul><li></li></ul>");
   let marker_style = li.marker_styles.as_ref().expect("marker styles");
 
-  assert_eq!(marker_style.color, fastrender::Rgba::rgb(10, 20, 30));
+  assert_eq!(marker_style.color, crate::Rgba::rgb(10, 20, 30));
   assert_eq!(marker_style.font_size, 24.0);
   assert_eq!(
     marker_style.text_transform,
@@ -97,12 +97,12 @@ fn marker_ignores_outline_properties() {
   // Outline on markers should be cleared to defaults and not inherit from the list item.
   assert!(matches!(
     marker_style.outline_style,
-    fastrender::style::types::OutlineStyle::None
+    crate::style::types::OutlineStyle::None
   ));
   assert_eq!(marker_style.outline_width, defaults.outline_width);
   assert!(matches!(
     marker_style.outline_color,
-    fastrender::style::types::OutlineColor::Invert
+    crate::style::types::OutlineColor::Invert
   ));
   assert_eq!(marker_style.outline_offset, defaults.outline_offset);
 }
@@ -131,6 +131,6 @@ fn marker_ignores_vertical_align() {
 
   assert!(matches!(
     marker_style.vertical_align,
-    fastrender::style::types::VerticalAlign::Baseline
+    crate::style::types::VerticalAlign::Baseline
   ));
 }

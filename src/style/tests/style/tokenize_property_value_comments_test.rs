@@ -1,8 +1,8 @@
-use fastrender::css::properties::parse_property_value;
-use fastrender::css::types::PropertyValue;
-use fastrender::style::color::Color;
-use fastrender::style::color::Rgba;
-use fastrender::style::values::Length;
+use crate::css::properties::parse_property_value;
+use crate::css::types::PropertyValue;
+use crate::style::color::Color;
+use crate::style::color::Rgba;
+use crate::style::values::Length;
 
 #[test]
 fn tokenize_property_value_skips_css_comments() {

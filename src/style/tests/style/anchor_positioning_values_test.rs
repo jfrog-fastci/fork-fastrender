@@ -1,8 +1,8 @@
-use fastrender::api::FastRender;
-use fastrender::style::cascade::StyledNode;
-use fastrender::style::media::MediaType;
-use fastrender::style::types::{AlignItems, AnchorSide, InsetValue};
-use fastrender::style::values::Length;
+use crate::api::FastRender;
+use crate::style::cascade::StyledNode;
+use crate::style::media::MediaType;
+use crate::style::types::{AlignItems, AnchorSide, InsetValue};
+use crate::style::values::Length;
 
 fn styled_tree_for(html: &str) -> StyledNode {
   let mut renderer = FastRender::new().expect("renderer");

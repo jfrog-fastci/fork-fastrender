@@ -1,8 +1,8 @@
 use cssparser::{Parser, ParserInput, Token};
-use fastrender::css::types::PropertyValue;
-use fastrender::style::custom_property_store::CustomPropertyStore;
-use fastrender::style::values::CustomPropertyValue;
-use fastrender::style::var_resolution::{resolve_var_for_property, VarResolutionResult};
+use crate::css::types::PropertyValue;
+use crate::style::custom_property_store::CustomPropertyStore;
+use crate::style::values::CustomPropertyValue;
+use crate::style::var_resolution::{resolve_var_for_property, VarResolutionResult};
 
 fn make_props(pairs: &[(&str, &str)]) -> CustomPropertyStore {
   let mut store = CustomPropertyStore::default();

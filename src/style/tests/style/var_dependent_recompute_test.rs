@@ -1,10 +1,10 @@
-use fastrender::css::parser::parse_stylesheet;
-use fastrender::dom::{DomNode, DomNodeType, HTML_NAMESPACE};
-use fastrender::style::cascade::apply_styles;
-use fastrender::style::properties::DEFAULT_VIEWPORT;
-use fastrender::style::values::CustomPropertyValue;
-use fastrender::style::ComputedStyle;
-use fastrender::Length;
+use crate::css::parser::parse_stylesheet;
+use crate::dom::{DomNode, DomNodeType, HTML_NAMESPACE};
+use crate::style::cascade::apply_styles;
+use crate::style::properties::DEFAULT_VIEWPORT;
+use crate::style::values::CustomPropertyValue;
+use crate::style::ComputedStyle;
+use crate::Length;
 
 #[test]
 fn recompute_updates_var_dependent_property_after_custom_property_change() {

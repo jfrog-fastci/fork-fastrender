@@ -1,9 +1,9 @@
-use fastrender::css::parser::parse_stylesheet;
-use fastrender::dom;
-use fastrender::style::cascade::apply_styles_with_media;
-use fastrender::style::cascade::StyledNode;
-use fastrender::style::media::MediaContext;
-use fastrender::style::types::TimelineAxis;
+use crate::css::parser::parse_stylesheet;
+use crate::dom;
+use crate::style::cascade::apply_styles_with_media;
+use crate::style::cascade::StyledNode;
+use crate::style::media::MediaContext;
+use crate::style::types::TimelineAxis;
 
 fn find_by_tag<'a>(node: &'a StyledNode, tag: &str) -> Option<&'a StyledNode> {
   if let Some(name) = node.node.tag_name() {
@@ -188,9 +188,9 @@ fn view_timeline_inset_rejects_invalid_tokens() {
   assert_eq!(div.styles.view_timelines.len(), 1);
   assert_eq!(
     div.styles.view_timelines[0].inset,
-    Some(fastrender::style::types::ViewTimelineInset {
-      start: Some(fastrender::Length::px(0.0)),
-      end: Some(fastrender::Length::px(0.0)),
+    Some(crate::style::types::ViewTimelineInset {
+      start: Some(crate::Length::px(0.0)),
+      end: Some(crate::Length::px(0.0)),
     })
   );
 }

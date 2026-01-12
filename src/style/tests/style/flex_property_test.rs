@@ -1,8 +1,8 @@
-use fastrender::css::parser::parse_stylesheet;
-use fastrender::dom;
-use fastrender::style::cascade::apply_styles_with_media;
-use fastrender::style::cascade::StyledNode;
-use fastrender::style::media::MediaContext;
+use crate::css::parser::parse_stylesheet;
+use crate::dom;
+use crate::style::cascade::apply_styles_with_media;
+use crate::style::cascade::StyledNode;
+use crate::style::media::MediaContext;
 
 fn find_first<'a>(node: &'a StyledNode, tag: &str) -> Option<&'a StyledNode> {
   if let Some(name) = node.node.tag_name() {
@@ -65,22 +65,22 @@ fn flex_shorthand_none_and_auto_keywords() {
   assert_eq!(children[0].styles.flex_shrink, 0.0);
   assert!(matches!(
     children[0].styles.flex_basis,
-    fastrender::style::types::FlexBasis::Auto
+    crate::style::types::FlexBasis::Auto
   ));
 
   assert_eq!(children[1].styles.flex_grow, 1.0);
   assert_eq!(children[1].styles.flex_shrink, 1.0);
   assert!(matches!(
     children[1].styles.flex_basis,
-    fastrender::style::types::FlexBasis::Auto
+    crate::style::types::FlexBasis::Auto
   ));
 }
 
 #[test]
 fn flex_shorthand_numbers_and_basis() {
-  use fastrender::style::types::FlexBasis;
-  use fastrender::style::values::Length;
-  use fastrender::style::values::LengthUnit;
+  use crate::style::types::FlexBasis;
+  use crate::style::values::Length;
+  use crate::style::values::LengthUnit;
 
   let children = styled_children(
     r#"<div style="display:flex">
@@ -122,7 +122,7 @@ fn flex_shorthand_numbers_and_basis() {
 
 #[test]
 fn flex_basis_content_parses_in_longhand_and_shorthand() {
-  use fastrender::style::types::FlexBasis;
+  use crate::style::types::FlexBasis;
 
   let children = styled_children(
     r#"<div style="display:flex">

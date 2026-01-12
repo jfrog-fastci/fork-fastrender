@@ -1,12 +1,12 @@
-use fastrender::api::FastRender;
-use fastrender::api::FastRenderConfig;
-use fastrender::debug::runtime::RuntimeToggles;
-use fastrender::dom::DomNodeType;
-use fastrender::style::cascade::StyledNode;
-use fastrender::style::color::Rgba;
-use fastrender::style::media::MediaType;
-use fastrender::style::types::ColorSchemeEntry;
-use fastrender::style::types::ColorSchemePreference;
+use crate::api::FastRender;
+use crate::api::FastRenderConfig;
+use crate::debug::runtime::RuntimeToggles;
+use crate::dom::DomNodeType;
+use crate::style::cascade::StyledNode;
+use crate::style::color::Rgba;
+use crate::style::media::MediaType;
+use crate::style::types::ColorSchemeEntry;
+use crate::style::types::ColorSchemePreference;
 use std::collections::HashMap;
 
 fn styled_tree_for(html: &str, apply_meta_color_scheme: bool) -> StyledNode {

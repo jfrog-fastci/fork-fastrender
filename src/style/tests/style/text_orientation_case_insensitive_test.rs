@@ -1,8 +1,8 @@
-use fastrender::css::types::Declaration;
-use fastrender::css::types::PropertyValue;
-use fastrender::style::properties::apply_declaration;
-use fastrender::style::types::TextOrientation;
-use fastrender::style::ComputedStyle;
+use crate::css::types::Declaration;
+use crate::css::types::PropertyValue;
+use crate::style::properties::apply_declaration;
+use crate::style::types::TextOrientation;
+use crate::style::ComputedStyle;
 
 #[test]
 fn text_orientation_keywords_are_case_insensitive() {

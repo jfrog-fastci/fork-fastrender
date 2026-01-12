@@ -1,11 +1,11 @@
-use fastrender::css::properties::parse_property_value;
-use fastrender::css::types::Declaration;
-use fastrender::css::types::PropertyValue;
-use fastrender::style::properties::apply_declaration;
-use fastrender::ComputedStyle;
+use crate::css::properties::parse_property_value;
+use crate::css::types::Declaration;
+use crate::css::types::PropertyValue;
+use crate::style::properties::apply_declaration;
+use crate::ComputedStyle;
 
 fn decl(name: &'static str, value: &str) -> Declaration {
-  let contains_var = fastrender::style::var_resolution::contains_var(value);
+  let contains_var = crate::style::var_resolution::contains_var(value);
   Declaration {
     property: name.into(),
     value: parse_property_value(name, value).expect("parse property value"),

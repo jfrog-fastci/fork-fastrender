@@ -1,13 +1,13 @@
-use fastrender::css::parser::parse_stylesheet;
-use fastrender::dom;
-use fastrender::style::cascade::apply_styles;
-use fastrender::style::cascade::StyledNode;
-use fastrender::style::types::AlignContent;
-use fastrender::style::types::AlignItems;
-use fastrender::style::types::FlexBasis;
-use fastrender::style::types::FlexDirection;
-use fastrender::style::types::FlexWrap;
-use fastrender::style::types::JustifyContent;
+use crate::css::parser::parse_stylesheet;
+use crate::dom;
+use crate::style::cascade::apply_styles;
+use crate::style::cascade::StyledNode;
+use crate::style::types::AlignContent;
+use crate::style::types::AlignItems;
+use crate::style::types::FlexBasis;
+use crate::style::types::FlexDirection;
+use crate::style::types::FlexWrap;
+use crate::style::types::JustifyContent;
 
 fn find_by_id<'a>(node: &'a StyledNode, id: &str) -> Option<&'a StyledNode> {
   if node

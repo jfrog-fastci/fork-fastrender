@@ -1,13 +1,13 @@
-use fastrender::css::types::Declaration;
-use fastrender::css::types::PropertyValue;
-use fastrender::style::properties::apply_declaration;
-use fastrender::style::types::GridTrack;
-use fastrender::style::ComputedStyle;
+use crate::css::types::Declaration;
+use crate::css::types::PropertyValue;
+use crate::style::properties::apply_declaration;
+use crate::style::types::GridTrack;
+use crate::style::ComputedStyle;
 
 fn decl(name: &'static str, value: PropertyValue) -> Declaration {
   let contains_var = match &value {
     PropertyValue::Keyword(raw) | PropertyValue::Custom(raw) => {
-      fastrender::style::var_resolution::contains_var(raw)
+      crate::style::var_resolution::contains_var(raw)
     }
     _ => false,
   };

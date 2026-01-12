@@ -1,11 +1,11 @@
-use fastrender::css::parser::parse_stylesheet;
-use fastrender::css::properties::parse_length;
-use fastrender::dom::{DomNode, DomNodeType, HTML_NAMESPACE};
-use fastrender::style::cascade::apply_styles;
-use fastrender::style::color::Rgba;
-use fastrender::style::properties::DEFAULT_VIEWPORT;
-use fastrender::style::types::{LengthOrNumber, StrokeDasharray};
-use fastrender::style::values::Length;
+use crate::css::parser::parse_stylesheet;
+use crate::css::properties::parse_length;
+use crate::dom::{DomNode, DomNodeType, HTML_NAMESPACE};
+use crate::style::cascade::apply_styles;
+use crate::style::color::Rgba;
+use crate::style::properties::DEFAULT_VIEWPORT;
+use crate::style::types::{LengthOrNumber, StrokeDasharray};
+use crate::style::values::Length;
 
 fn dom_with_child() -> DomNode {
   DomNode {

@@ -1,6 +1,6 @@
-use fastrender::style::content::CounterStyle;
-use fastrender::Display;
-use fastrender::Position;
+use crate::style::content::CounterStyle;
+use crate::Display;
+use crate::Position;
 
 #[test]
 fn css_keywords_are_ascii_case_insensitive_only() {

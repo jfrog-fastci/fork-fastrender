@@ -1,13 +1,13 @@
-use fastrender::css::parser::{extract_scoped_css_sources, parse_stylesheet, StylesheetSource};
-use fastrender::css::types::PropertyValue;
-use fastrender::css::types::StyleSheet;
-use fastrender::dom;
-use fastrender::style::cascade::apply_style_set_with_media_target_and_imports;
-use fastrender::style::cascade::StyledNode;
-use fastrender::style::color::Rgba;
-use fastrender::style::media::MediaContext;
-use fastrender::style::style_set::StyleSet;
-use fastrender::style::values::{CustomPropertySyntax, CustomPropertyTypedValue, Length};
+use crate::css::parser::{extract_scoped_css_sources, parse_stylesheet, StylesheetSource};
+use crate::css::types::PropertyValue;
+use crate::css::types::StyleSheet;
+use crate::dom;
+use crate::style::cascade::apply_style_set_with_media_target_and_imports;
+use crate::style::cascade::StyledNode;
+use crate::style::color::Rgba;
+use crate::style::media::MediaContext;
+use crate::style::style_set::StyleSet;
+use crate::style::values::{CustomPropertySyntax, CustomPropertyTypedValue, Length};
 
 fn stylesheet_from_sources(sources: &[StylesheetSource]) -> StyleSheet {
   let mut combined = Vec::new();

@@ -1,9 +1,9 @@
-use fastrender::css::parser::parse_stylesheet;
-use fastrender::css::types::{
+use crate::css::parser::parse_stylesheet;
+use crate::css::types::{
   ContainerQuery, CssRule, ScrollStateDirection, ScrollStateFeature, ScrollStateQueryExpr,
   ScrollStateSnappedAxis,
 };
-use fastrender::style::media::MediaContext;
+use crate::style::media::MediaContext;
 
 #[test]
 fn unknown_container_queries_do_not_drop_nested_keyframes() {

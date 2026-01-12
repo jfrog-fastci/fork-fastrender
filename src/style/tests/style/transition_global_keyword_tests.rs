@@ -1,7 +1,7 @@
-use fastrender::css::types::{Declaration, PropertyValue};
-use fastrender::style::properties::{apply_declaration_with_base, DEFAULT_VIEWPORT};
-use fastrender::style::types::{TransitionBehavior, TransitionProperty, TransitionTimingFunction};
-use fastrender::style::ComputedStyle;
+use crate::css::types::{Declaration, PropertyValue};
+use crate::style::properties::{apply_declaration_with_base, DEFAULT_VIEWPORT};
+use crate::style::types::{TransitionBehavior, TransitionProperty, TransitionTimingFunction};
+use crate::style::ComputedStyle;
 
 #[test]
 fn transition_shorthand_initial_resets_all_subproperties() {

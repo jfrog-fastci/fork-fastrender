@@ -1,7 +1,7 @@
-use fastrender::dom;
-use fastrender::style::cascade::apply_styles;
-use fastrender::style::cascade::StyledNode;
-use fastrender::style::color::Rgba;
+use crate::dom;
+use crate::style::cascade::apply_styles;
+use crate::style::cascade::StyledNode;
+use crate::style::color::Rgba;
 
 fn find_by_id<'a>(node: &'a StyledNode, id: &str) -> Option<&'a StyledNode> {
   if node
@@ -29,7 +29,7 @@ fn slotted_only_matches_assigned_light_dom() {
     <span id="outside" class="target">outside</span>
   "#;
   let dom = dom::parse_html(html).expect("parse html");
-  let stylesheet = fastrender::css::parser::parse_stylesheet("").expect("empty stylesheet");
+  let stylesheet = crate::css::parser::parse_stylesheet("").expect("empty stylesheet");
   let styled = apply_styles(&dom, &stylesheet);
 
   let assigned = find_by_id(&styled, "assigned").expect("assigned element");
@@ -55,7 +55,7 @@ fn slotted_order_respected_for_structural_pseudos() {
     </div>
   "#;
   let dom = dom::parse_html(html).expect("parse html");
-  let stylesheet = fastrender::css::parser::parse_stylesheet("").expect("empty stylesheet");
+  let stylesheet = crate::css::parser::parse_stylesheet("").expect("empty stylesheet");
   let styled = apply_styles(&dom, &stylesheet);
 
   let first = find_by_id(&styled, "first").expect("first child");

@@ -1,6 +1,6 @@
-use fastrender::css::properties::{parse_length, parse_property_value};
-use fastrender::css::types::{PropertyValue, Transform};
-use fastrender::style::values::{Length, LengthCalc, LengthUnit};
+use crate::css::properties::{parse_length, parse_property_value};
+use crate::css::types::{PropertyValue, Transform};
+use crate::style::values::{Length, LengthCalc, LengthUnit};
 
 fn as_number(prop: &str, value: &str) -> Option<f32> {
   match parse_property_value(prop, value)? {

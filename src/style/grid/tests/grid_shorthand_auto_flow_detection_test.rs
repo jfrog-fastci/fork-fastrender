@@ -17,7 +17,7 @@ fn decl(name: &'static str, value: &str) -> Declaration {
 }
 
 #[test]
-fn grid_shorthand_auto_flow_detection_ignores_quoted_area_strings() {
+fn grid_shorthand_auto_flow_detection_ignores_area_strings() {
   let mut styles = ComputedStyle::default();
 
   apply_declaration(
@@ -42,3 +42,40 @@ fn grid_shorthand_auto_flow_detection_ignores_quoted_area_strings() {
   );
 }
 
+#[test]
+fn grid_shorthand_auto_flow_detection_ignores_bracketed_line_names() {
+  let mut styles = ComputedStyle::default();
+
+  // The token `auto-flow` inside `[ ... ]` is a line name, not the `grid` auto-flow shorthand
+  // keyword. Ensure we parse as the grid-template form.
+  apply_declaration(
+    &mut styles,
+    &decl("grid", "[auto-flow] 1fr / 2fr"),
+    &ComputedStyle::default(),
+    16.0,
+    16.0,
+  );
+
+  assert_eq!(styles.grid_template_rows, vec![GridTrack::Fr(1.0)]);
+  assert_eq!(styles.grid_template_columns, vec![GridTrack::Fr(2.0)]);
+}
+
+#[test]
+fn grid_shorthand_auto_flow_detection_triggers_on_keyword_outside_strings() {
+  let mut styles = ComputedStyle::default();
+
+  apply_declaration(
+    &mut styles,
+    &decl("grid", "auto-flow 1fr / 2fr"),
+    &ComputedStyle::default(),
+    16.0,
+    16.0,
+  );
+
+  // Auto-flow form resets the explicit template track lists.
+  assert!(styles.grid_template_rows.is_empty());
+  assert!(styles.grid_template_columns.is_empty());
+
+  assert_eq!(styles.grid_auto_rows, vec![GridTrack::Fr(1.0)]);
+  assert_eq!(styles.grid_auto_columns, vec![GridTrack::Fr(2.0)]);
+}

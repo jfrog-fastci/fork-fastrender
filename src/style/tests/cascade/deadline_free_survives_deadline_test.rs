@@ -1,19 +1,19 @@
-use fastrender::css::parser::parse_stylesheet;
-use fastrender::css::types::CssImportLoader;
-use fastrender::dom::{DomNode, DomNodeType};
-use fastrender::render_control::{DeadlineGuard, RenderDeadline};
-use fastrender::style::cascade::{
+use crate::css::parser::parse_stylesheet;
+use crate::css::types::CssImportLoader;
+use crate::dom::{DomNode, DomNodeType};
+use crate::render_control::{DeadlineGuard, RenderDeadline};
+use crate::style::cascade::{
   apply_style_set_with_media_target_and_imports_cached,
   apply_styles_with_media_target_and_imports_cached,
 };
-use fastrender::style::media::MediaContext;
-use fastrender::style::style_set::StyleSet;
+use crate::style::media::MediaContext;
+use crate::style::style_set::StyleSet;
 use std::time::Duration;
 
 struct DummyImportLoader;
 
 impl CssImportLoader for DummyImportLoader {
-  fn load(&self, _url: &str) -> fastrender::Result<String> {
+  fn load(&self, _url: &str) -> crate::Result<String> {
     Ok(String::new())
   }
 }

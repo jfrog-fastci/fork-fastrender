@@ -1,10 +1,10 @@
 use cssparser::ToCss;
-use fastrender::css::parser::parse_stylesheet;
-use fastrender::css::types::StyleRule;
-use fastrender::dom::{DomNode, DomNodeType, HTML_NAMESPACE};
-use fastrender::style::cascade::apply_styles_with_media;
-use fastrender::style::color::Rgba;
-use fastrender::style::media::MediaContext;
+use crate::css::parser::parse_stylesheet;
+use crate::css::types::StyleRule;
+use crate::dom::{DomNode, DomNodeType, HTML_NAMESPACE};
+use crate::style::cascade::apply_styles_with_media;
+use crate::style::color::Rgba;
+use crate::style::media::MediaContext;
 
 fn selector_strings(rule: &StyleRule) -> Vec<String> {
   rule

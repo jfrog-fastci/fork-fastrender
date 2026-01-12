@@ -1,18 +1,18 @@
-use fastrender::css::parser::parse_stylesheet;
-use fastrender::css::properties::parse_property_value;
-use fastrender::css::types::PropertyValue;
-use fastrender::css::types::Transform;
-use fastrender::dom;
-use fastrender::style::cascade::apply_styles_with_media;
-use fastrender::style::cascade::StyledNode;
-use fastrender::style::media::MediaContext;
-use fastrender::style::types::AlignContent;
-use fastrender::style::types::FilterFunction;
-use fastrender::style::types::TextSizeAdjust;
-use fastrender::style::types::UserSelect;
-use fastrender::ComputedStyle;
-use fastrender::Length;
-use fastrender::LengthUnit;
+use crate::css::parser::parse_stylesheet;
+use crate::css::properties::parse_property_value;
+use crate::css::types::PropertyValue;
+use crate::css::types::Transform;
+use crate::dom;
+use crate::style::cascade::apply_styles_with_media;
+use crate::style::cascade::StyledNode;
+use crate::style::media::MediaContext;
+use crate::style::types::AlignContent;
+use crate::style::types::FilterFunction;
+use crate::style::types::TextSizeAdjust;
+use crate::style::types::UserSelect;
+use crate::ComputedStyle;
+use crate::Length;
+use crate::LengthUnit;
 use std::sync::Arc;
 
 fn find_first<'a>(node: &'a StyledNode, tag: &str) -> Option<&'a StyledNode> {

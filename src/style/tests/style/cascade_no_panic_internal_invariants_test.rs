@@ -1,7 +1,7 @@
-use fastrender::css::parser::parse_stylesheet;
-use fastrender::dom;
-use fastrender::style::cascade::apply_styles_with_media_target_and_imports;
-use fastrender::style::media::MediaContext;
+use crate::css::parser::parse_stylesheet;
+use crate::dom;
+use crate::style::cascade::apply_styles_with_media_target_and_imports;
+use crate::style::media::MediaContext;
 
 #[test]
 fn cascade_and_styled_node_clone_do_not_panic_on_internal_invariants() {

@@ -1,10 +1,10 @@
 use cssparser::{Parser, ParserInput, ToCss};
-use fastrender::css::parser::parse_stylesheet;
-use fastrender::css::selectors::{PseudoClassParser, ShadowMatchData};
-use fastrender::dom::{next_selector_cache_epoch, DomNode, ElementRef};
-use fastrender::style::cascade::{apply_styles_with_media, StyledNode};
-use fastrender::style::color::Rgba;
-use fastrender::style::media::MediaContext;
+use crate::css::parser::parse_stylesheet;
+use crate::css::selectors::{PseudoClassParser, ShadowMatchData};
+use crate::dom::{next_selector_cache_epoch, DomNode, ElementRef};
+use crate::style::cascade::{apply_styles_with_media, StyledNode};
+use crate::style::color::Rgba;
+use crate::style::media::MediaContext;
 use selectors::parser::SelectorList;
 use selectors::Element;
 
@@ -96,7 +96,7 @@ fn matches_host_and_host_context_selectors() {
           </div>
         </div>
       "#;
-      let dom = fastrender::dom::parse_html(html).unwrap();
+      let dom = crate::dom::parse_html(html).unwrap();
       let stylesheet = parse_stylesheet("").unwrap();
 
       let (host_node, host_ancestors) =

@@ -1,13 +1,13 @@
-use fastrender::css::parser::parse_stylesheet;
-use fastrender::dom;
-use fastrender::style::cascade::apply_styles_with_media;
-use fastrender::style::cascade::StyledNode;
-use fastrender::style::media::MediaContext;
-use fastrender::style::types::BackgroundPosition;
-use fastrender::style::types::BackgroundPositionComponent;
-use fastrender::style::types::BackgroundSize;
-use fastrender::style::types::BackgroundSizeComponent;
-use fastrender::style::values::LengthUnit;
+use crate::css::parser::parse_stylesheet;
+use crate::dom;
+use crate::style::cascade::apply_styles_with_media;
+use crate::style::cascade::StyledNode;
+use crate::style::media::MediaContext;
+use crate::style::types::BackgroundPosition;
+use crate::style::types::BackgroundPositionComponent;
+use crate::style::types::BackgroundSize;
+use crate::style::types::BackgroundSizeComponent;
+use crate::style::values::LengthUnit;
 
 fn bg_pos(node: &StyledNode) -> (BackgroundPositionComponent, BackgroundPositionComponent) {
   match node
@@ -272,11 +272,11 @@ fn background_size_logical_maps_inline_and_block_horizontal_tb() {
   let (x, y) = bg_size(node);
   assert_eq!(
     x,
-    BackgroundSizeComponent::Length(fastrender::style::values::Length::px(10.0))
+    BackgroundSizeComponent::Length(crate::style::values::Length::px(10.0))
   );
   assert_eq!(
     y,
-    BackgroundSizeComponent::Length(fastrender::style::values::Length::px(20.0))
+    BackgroundSizeComponent::Length(crate::style::values::Length::px(20.0))
   );
 }
 
@@ -294,11 +294,11 @@ fn background_size_logical_maps_inline_and_block_vertical_rl() {
   let (x, y) = bg_size(node);
   assert_eq!(
     x,
-    BackgroundSizeComponent::Length(fastrender::style::values::Length::px(5.0))
+    BackgroundSizeComponent::Length(crate::style::values::Length::px(5.0))
   );
   assert_eq!(
     y,
-    BackgroundSizeComponent::Length(fastrender::style::values::Length::percent(30.0))
+    BackgroundSizeComponent::Length(crate::style::values::Length::percent(30.0))
   );
 }
 
@@ -316,11 +316,11 @@ fn background_size_logical_maps_inline_and_block_vertical_lr() {
   let (x, y) = bg_size(node);
   assert_eq!(
     x,
-    BackgroundSizeComponent::Length(fastrender::style::values::Length::px(7.0))
+    BackgroundSizeComponent::Length(crate::style::values::Length::px(7.0))
   );
   assert_eq!(
     y,
-    BackgroundSizeComponent::Length(fastrender::style::values::Length::percent(12.0))
+    BackgroundSizeComponent::Length(crate::style::values::Length::percent(12.0))
   );
 }
 
@@ -338,11 +338,11 @@ fn background_size_logical_maps_inline_and_block_sideways_lr() {
   let (x, y) = bg_size(node);
   assert_eq!(
     x,
-    BackgroundSizeComponent::Length(fastrender::style::values::Length::percent(15.0))
+    BackgroundSizeComponent::Length(crate::style::values::Length::percent(15.0))
   );
   assert_eq!(
     y,
-    BackgroundSizeComponent::Length(fastrender::style::values::Length::px(40.0))
+    BackgroundSizeComponent::Length(crate::style::values::Length::px(40.0))
   );
 }
 
@@ -360,11 +360,11 @@ fn background_size_logical_maps_inline_and_block_sideways_rl() {
   let (x, y) = bg_size(node);
   assert_eq!(
     x,
-    BackgroundSizeComponent::Length(fastrender::style::values::Length::percent(18.0))
+    BackgroundSizeComponent::Length(crate::style::values::Length::percent(18.0))
   );
   assert_eq!(
     y,
-    BackgroundSizeComponent::Length(fastrender::style::values::Length::px(25.0))
+    BackgroundSizeComponent::Length(crate::style::values::Length::px(25.0))
   );
 }
 

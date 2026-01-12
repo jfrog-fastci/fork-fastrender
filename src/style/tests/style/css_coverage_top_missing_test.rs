@@ -1,13 +1,13 @@
-use fastrender::css::parser::parse_stylesheet;
-use fastrender::css::supports::supports_declaration;
-use fastrender::dom;
-use fastrender::style::cascade::apply_styles_with_media;
-use fastrender::style::cascade::StyledNode;
-use fastrender::style::media::MediaContext;
-use fastrender::style::types::{
+use crate::css::parser::parse_stylesheet;
+use crate::css::supports::supports_declaration;
+use crate::dom;
+use crate::style::cascade::apply_styles_with_media;
+use crate::style::cascade::StyledNode;
+use crate::style::media::MediaContext;
+use crate::style::types::{
   AlignContent, AlignItems, FlexBasis, FlexWrap, JustifyContent, TextAlign,
 };
-use fastrender::style::values::Length;
+use crate::style::values::Length;
 
 fn find_first<'a>(node: &'a StyledNode, tag: &str) -> Option<&'a StyledNode> {
   if let Some(name) = node.node.tag_name() {
@@ -29,7 +29,7 @@ fn styled_root(html: &str) -> StyledNode {
   apply_styles_with_media(&dom, &stylesheet, &MediaContext::screen(800.0, 600.0))
 }
 
-fn styles_for_first(html: &str, tag: &str) -> std::sync::Arc<fastrender::style::ComputedStyle> {
+fn styles_for_first(html: &str, tag: &str) -> std::sync::Arc<crate::style::ComputedStyle> {
   let styled = styled_root(html);
   find_first(&styled, tag)
     .unwrap_or_else(|| panic!("expected to find <{tag}>"))
@@ -40,8 +40,8 @@ fn styles_for_first(html: &str, tag: &str) -> std::sync::Arc<fastrender::style::
 fn styles_for_div_and_span(
   html: &str,
 ) -> (
-  std::sync::Arc<fastrender::style::ComputedStyle>,
-  std::sync::Arc<fastrender::style::ComputedStyle>,
+  std::sync::Arc<crate::style::ComputedStyle>,
+  std::sync::Arc<crate::style::ComputedStyle>,
 ) {
   let styled = styled_root(html);
   let div = find_first(&styled, "div").expect("div");

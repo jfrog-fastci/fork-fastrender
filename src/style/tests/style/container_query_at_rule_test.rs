@@ -1,19 +1,19 @@
-use fastrender::css::parser::parse_stylesheet;
-use fastrender::dom::{self, DomNode};
-use fastrender::geometry::Point;
-use fastrender::style::cascade::{
+use crate::css::parser::parse_stylesheet;
+use crate::dom::{self, DomNode};
+use crate::geometry::Point;
+use crate::style::cascade::{
   apply_styles_with_media_target_and_imports, ContainerQueryContext, ContainerQueryInfo, StyledNode,
 };
-use fastrender::style::custom_properties::CustomPropertyRegistry;
-use fastrender::style::custom_properties::PropertyRule;
-use fastrender::style::media::MediaContext;
-use fastrender::style::types::{ContainerType, LineHeight, WritingMode};
-use fastrender::style::values::CustomPropertySyntax;
-use fastrender::style::values::CustomPropertyTypedValue;
-use fastrender::style::values::CustomPropertyValue;
-use fastrender::style::values::Length;
-use fastrender::style::values::LengthUnit;
-use fastrender::style::ComputedStyle;
+use crate::style::custom_properties::CustomPropertyRegistry;
+use crate::style::custom_properties::PropertyRule;
+use crate::style::media::MediaContext;
+use crate::style::types::{ContainerType, LineHeight, WritingMode};
+use crate::style::values::CustomPropertySyntax;
+use crate::style::values::CustomPropertyTypedValue;
+use crate::style::values::CustomPropertyValue;
+use crate::style::values::Length;
+use crate::style::values::LengthUnit;
+use crate::style::ComputedStyle;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -1684,7 +1684,7 @@ fn line_height_container_query_units_resolve_against_container_context() {
 
   let target = find_by_id(&styled, "t").expect("target");
   match &target.styles.line_height {
-    fastrender::style::types::LineHeight::Length(len) => {
+    crate::style::types::LineHeight::Length(len) => {
       assert_eq!(len.unit, LengthUnit::Px);
       assert!(
         (len.value - 20.0).abs() < 0.01,

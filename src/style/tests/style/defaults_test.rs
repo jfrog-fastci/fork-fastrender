@@ -1,5 +1,5 @@
-use fastrender::dom::{DomNode, DomNodeType, HTML_NAMESPACE};
-use fastrender::style::defaults::get_default_styles_for_element;
+use crate::dom::{DomNode, DomNodeType, HTML_NAMESPACE};
+use crate::style::defaults::get_default_styles_for_element;
 
 fn element(tag: &str) -> DomNode {
   DomNode {
