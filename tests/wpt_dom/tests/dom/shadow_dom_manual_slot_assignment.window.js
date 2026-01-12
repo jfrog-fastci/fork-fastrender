@@ -57,6 +57,34 @@ test(() => {
   const host = document.createElement("div");
   body.appendChild(host);
 
+  const shadow = host.attachShadow({ mode: "open", slotAssignment: "manual" });
+
+  // <slot id=outer><slot id=inner></slot></slot>
+  const outer = document.createElement("slot");
+  const inner = document.createElement("slot");
+  outer.appendChild(inner);
+  shadow.appendChild(outer);
+
+  const a = document.createElement("span");
+  host.appendChild(a);
+
+  inner.assign(a);
+
+  // Without flattening, `outer` has no assigned nodes so it returns its fallback children (the inner slot).
+  assert_array_equals(outer.assignedNodes(), [inner]);
+
+  // With flattening, the nested slot should be expanded to its assigned nodes.
+  assert_array_equals(outer.assignedNodes({ flatten: true }), [a]);
+  assert_array_equals(outer.assignedElements({ flatten: true }), [a]);
+}, "assignedNodes({flatten:true}) flattens nested slots");
+
+test(() => {
+  const body = document.body;
+  clear_children(body);
+
+  const host = document.createElement("div");
+  body.appendChild(host);
+
   const shadow = host.attachShadow({ mode: "closed", slotAssignment: "manual" });
   assert_equals(shadow.slotAssignment, "manual");
 
