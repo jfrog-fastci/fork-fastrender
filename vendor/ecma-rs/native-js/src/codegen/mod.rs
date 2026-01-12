@@ -51,6 +51,7 @@ use crate::runtime_abi::{RuntimeAbi, RuntimeFn};
 use crate::strict::Entrypoint;
 use crate::codes;
 use crate::Resolver;
+mod debuginfo;
 use diagnostics::{Diagnostic, Span, TextRange};
 use hir_js::{
   AssignOp, BinaryOp, ExprId, ExprKind, FileKind, ForInit, ImportKind, Literal, NameId, PatKind,
@@ -72,12 +73,14 @@ use typecheck_ts::{DefId, FileId, Program, TypeKindSummary};
 
 pub struct CodegenOptions {
   pub module_name: String,
+  pub debug: bool,
 }
 
 impl Default for CodegenOptions {
   fn default() -> Self {
     Self {
       module_name: "native_js".to_string(),
+      debug: false,
     }
   }
 }
@@ -89,7 +92,7 @@ pub fn codegen<'ctx>(
   entrypoint: Entrypoint,
   options: CodegenOptions,
 ) -> Result<Module<'ctx>, Vec<Diagnostic>> {
-  let mut cg = ProgramCodegen::new(context, program, &options.module_name);
+  let mut cg = ProgramCodegen::new(context, program, entry_file, &options);
   cg.compile(entry_file, entrypoint)?;
   Ok(cg.finish())
 }
@@ -282,13 +285,18 @@ struct ProgramCodegen<'ctx, 'p> {
   functions: HashMap<DefId, FunctionValue<'ctx>>,
   function_sigs: HashMap<DefId, TsFunctionSigKind>,
   file_inits: HashMap<FileId, FunctionValue<'ctx>>,
+  debug: Option<debuginfo::CodegenDebug<'ctx>>,
 }
 
 impl<'ctx, 'p> ProgramCodegen<'ctx, 'p> {
-  fn new(context: &'ctx Context, program: &'p Program, module_name: &str) -> Self {
+  fn new(context: &'ctx Context, program: &'p Program, entry_file: FileId, options: &CodegenOptions) -> Self {
+    let module = context.create_module(&options.module_name);
+    let debug = options
+      .debug
+      .then(|| debuginfo::CodegenDebug::new(&module, program, entry_file));
     Self {
       context,
-      module: context.create_module(module_name),
+      module,
       f64_ty: context.f64_type(),
       i32_ty: context.i32_type(),
       i64_ty: context.i64_type(),
@@ -300,10 +308,14 @@ impl<'ctx, 'p> ProgramCodegen<'ctx, 'p> {
       functions: HashMap::new(),
       function_sigs: HashMap::new(),
       file_inits: HashMap::new(),
+      debug,
     }
   }
 
   fn finish(self) -> Module<'ctx> {
+    if let Some(debug) = self.debug.as_ref() {
+      debug.finalize();
+    }
     self.module
   }
 
@@ -618,6 +630,8 @@ impl<'ctx, 'p> ProgramCodegen<'ctx, 'p> {
       sig.ret,
     );
 
+    cg.init_debug_subprogram(def, &sig);
+
     // Parameters.
     for (idx, param) in function_meta.params.iter().enumerate() {
       let binding = cg
@@ -663,6 +677,13 @@ impl<'ctx, 'p> ProgramCodegen<'ctx, 'p> {
         }
         TsAbiKind::Void => unreachable!("void is not a valid parameter ABI kind"),
       }
+
+      let pat_span = hir_body
+        .pats
+        .get(param.pat.0 as usize)
+        .map(|pat| pat.span)
+        .unwrap_or(hir_body.span);
+      cg.dbg_declare_param(debug_name, (idx + 1) as u32, param_kind, slot, pat_span);
 
       if let Some(name) = cg.pat_ident_name(param.pat) {
         cg.env.bind(name, binding);
@@ -1017,6 +1038,7 @@ struct FnCodegen<'ctx, 'p, 'a> {
   loop_stack: Vec<LoopContext<'ctx>>,
   mode: CodegenMode,
   return_kind: TsAbiKind,
+  debug_subprogram: Option<inkwell::debug_info::DISubprogram<'ctx>>,
 }
 
 impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
@@ -1052,7 +1074,100 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
       loop_stack: Vec::new(),
       mode,
       return_kind,
+      debug_subprogram: None,
     }
+  }
+
+  fn init_debug_subprogram(&mut self, def: DefId, sig: &TsFunctionSigKind) {
+    let Some(debug) = self.cg.debug.as_mut() else {
+      return;
+    };
+
+    let (line, _col) = debuginfo::line_col(
+      self.cg.program,
+      self.file,
+      self.cg
+        .program
+        .span_of_def(def)
+        .map(|s| s.range.start)
+        .unwrap_or(0),
+    );
+
+    // Prefer the stable LLVM symbol name; it includes the original TS identifier when available.
+    let name = crate::llvm_symbol_for_def(self.cg.program, def);
+
+    let sp = debug.create_subprogram(
+      self.cg.program,
+      self.file,
+      &name,
+      line,
+      sig.ret,
+      &sig.params,
+      self.func,
+    );
+    self.debug_subprogram = Some(sp);
+  }
+
+  fn dbg_declare_param(
+    &mut self,
+    name: &str,
+    arg_no: u32,
+    kind: TsAbiKind,
+    slot: PointerValue<'ctx>,
+    span: TextRange,
+  ) {
+    let Some(debug) = self.cg.debug.as_mut() else {
+      return;
+    };
+    let Some(scope) = self.debug_subprogram else {
+      return;
+    };
+    if matches!(kind, TsAbiKind::Void) {
+      return;
+    }
+
+    let (line, col) = debuginfo::line_col(self.cg.program, self.file, span.start);
+    let di_file = debug.file(self.cg.program, self.file);
+    let ty = debug.basic_type(kind);
+    debug.declare_parameter(
+      self.cg.context,
+      &self.builder,
+      scope,
+      di_file,
+      line,
+      col,
+      name,
+      arg_no,
+      ty,
+      slot,
+    );
+  }
+
+  fn dbg_declare_local(&mut self, name: &str, kind: TsAbiKind, slot: PointerValue<'ctx>, span: TextRange) {
+    let Some(debug) = self.cg.debug.as_mut() else {
+      return;
+    };
+    let Some(scope) = self.debug_subprogram else {
+      return;
+    };
+    if matches!(kind, TsAbiKind::Void) {
+      return;
+    }
+
+    let (line, col) = debuginfo::line_col(self.cg.program, self.file, span.start);
+    let di_file = debug.file(self.cg.program, self.file);
+    let ty = debug.basic_type(kind);
+    debug.declare_local(
+      self.cg.context,
+      &self.builder,
+      scope,
+      di_file,
+      line,
+      col,
+      name,
+      ty,
+      slot,
+    );
   }
 
   fn stmt(&self, stmt: StmtId) -> Result<&hir_js::Stmt, Vec<Diagnostic>> {
@@ -2054,6 +2169,17 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
               self.builder.build_store(slot, v).expect("failed to build store");
             }
             NativeValue::Void => unreachable!("void locals are rejected in ensure_local_slot"),
+          }
+
+          if let Some(name_id) = self.pat_ident_name(declarator.pat) {
+            let name = self.names.resolve(name_id).unwrap_or("local");
+            let pat_span = self
+              .body
+              .pats
+              .get(declarator.pat.0 as usize)
+              .map(|pat| pat.span)
+              .unwrap_or(span.range);
+            self.dbg_declare_local(name, expected_kind, slot, pat_span);
           }
 
           if let Some(name) = self.pat_ident_name(declarator.pat) {

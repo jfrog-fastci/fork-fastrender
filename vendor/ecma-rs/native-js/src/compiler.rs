@@ -499,6 +499,7 @@ impl<'a> Compiler<'a> {
       loaded.entrypoint,
       crate::codegen::CodegenOptions {
         module_name: "native-js".to_string(),
+        debug: self.opts.debug,
       },
     )
     .map_err(|diagnostics| NativeJsError::Rejected { diagnostics })
