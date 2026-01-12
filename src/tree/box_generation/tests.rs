@@ -9058,7 +9058,7 @@ fn css_transform_overrides_svg_transform_attribute_in_serialized_svg() {
 
   let svg_markup = r#"
   <svg>
-    <g id="g" transform="translate(200 0)">
+  <g id="g" transform="translate(200 0)">
       <rect width="10" height="10"></rect>
     </g>
   </svg>
@@ -9079,7 +9079,7 @@ fn css_transform_none_removes_svg_transform_attribute_in_serialized_svg() {
 
   let svg_markup = r#"
   <svg>
-    <g id="g" transform="translate(200 0)">
+  <g id="g" transform="translate(200 0)">
       <rect width="10" height="10"></rect>
     </g>
   </svg>
