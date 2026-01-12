@@ -417,3 +417,7 @@ pub use tree::fragment_tree::FragmentContent;
 pub use tree::fragment_tree::FragmentNode;
 pub use tree::fragment_tree::FragmentTree;
 pub use tree::fragment_tree::FragmentainerPath;
+
+// Cross-cutting unit tests that need access to crate internals but aren't tied to a single module.
+#[cfg(test)]
+mod integration_tests;

@@ -1,6 +1,6 @@
-use fastrender::api::FastRender;
-use fastrender::tree::fragment_tree::FragmentContent;
-use tiny_skia::Pixmap;
+use crate::tree::fragment_tree::FragmentContent;
+use crate::FastRender;
+use crate::Pixmap;
 
 fn pixel(pixmap: &Pixmap, x: u32, y: u32) -> (u8, u8, u8, u8) {
   let p = pixmap.pixel(x, y).unwrap();
