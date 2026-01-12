@@ -6,7 +6,7 @@
 //! - `new XMLHttpRequest()`
 //! - `open()` / `setRequestHeader()` / `send()` / `abort()`
 //! - `getResponseHeader()` / `getAllResponseHeaders()`
-//! - `readyState`, `status`, `statusText`, `responseType`, `timeout`, `responseText`, `response`
+//! - `readyState`, `status`, `statusText`, `responseURL`, `responseType`, `timeout`, `responseText`, `response`
 //! - Event handler properties (`onload`, `onerror`, etc) and `addEventListener`/`removeEventListener`
 //!
 //! The primary goal is to avoid `ReferenceError: XMLHttpRequest is not defined` crashes when
@@ -128,6 +128,7 @@ struct XhrState {
   response_bytes: Vec<u8>,
   response_text: String,
   response_headers: Vec<(String, String)>,
+  response_url: String,
   status: u16,
   status_text: String,
   with_credentials: bool,
@@ -152,6 +153,7 @@ impl Default for XhrState {
       response_bytes: Vec::new(),
       response_text: String::new(),
       response_headers: Vec::new(),
+      response_url: String::new(),
       status: 0,
       status_text: String::new(),
       with_credentials: false,
@@ -557,6 +559,32 @@ fn xhr_status_text_get(
   Ok(Value::String(s))
 }
 
+fn xhr_response_url_get(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let (env_id, xhr_id, _) = xhr_info_from_this(scope, this)?;
+  let (ready_state, status, url) = with_env_state(env_id, |state| {
+    let xhr = state
+      .xhrs
+      .get(&xhr_id)
+      .ok_or(VmError::TypeError("XMLHttpRequest: invalid backing state"))?;
+    Ok((xhr.ready_state, xhr.status, xhr.response_url.clone()))
+  })?;
+  let value = if ready_state < XHR_HEADERS_RECEIVED || status == 0 {
+    ""
+  } else {
+    url.as_str()
+  };
+  let s = scope.alloc_string(value)?;
+  Ok(Value::String(s))
+}
+
 fn xhr_response_type_get(
   _vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -906,6 +934,7 @@ fn xhr_open_native<Host: WindowRealmHost + 'static>(
     xhr.response_bytes.clear();
     xhr.response_text.clear();
     xhr.response_headers.clear();
+    xhr.response_url.clear();
     xhr.send_in_progress = false;
     xhr.aborted = false;
     xhr.async_flag = async_flag;
@@ -1239,6 +1268,7 @@ fn xhr_send_native<Host: WindowRealmHost + 'static>(
     let mut status_text: String = String::new();
     let mut bytes: Vec<u8> = Vec::new();
     let mut response_headers: Vec<(String, String)> = Vec::new();
+    let mut response_url: String = String::new();
     match result {
       Ok(res) => {
         bytes = res.bytes;
@@ -1255,6 +1285,7 @@ fn xhr_send_native<Host: WindowRealmHost + 'static>(
             status_text.truncate(XHR_STATUS_TEXT_MAX_BYTES);
           }
           response_headers = clamp_response_headers(res.response_headers.unwrap_or_default(), &limits);
+          response_url = res.final_url.unwrap_or_else(|| request.url.clone());
         }
       }
       Err(_) => {
@@ -1279,12 +1310,14 @@ fn xhr_send_native<Host: WindowRealmHost + 'static>(
         xhr.response_bytes.clear();
         xhr.response_text.clear();
         xhr.response_headers.clear();
+        xhr.response_url.clear();
       } else {
         xhr.status = status;
         xhr.status_text = status_text;
         xhr.response_text = String::from_utf8_lossy(&bytes).to_string();
         xhr.response_bytes = bytes;
         xhr.response_headers = response_headers;
+        xhr.response_url = response_url;
       }
       Ok(true)
     })?;
@@ -1492,9 +1525,11 @@ fn xhr_send_native<Host: WindowRealmHost + 'static>(
     let mut status_text: String = String::new();
     let mut bytes: Vec<u8> = Vec::new();
     let mut response_headers: Vec<(String, String)> = Vec::new();
+    let mut response_url: String = String::new();
 
     match recv_result {
       Ok(Ok(res)) => {
+        let final_url = res.final_url.unwrap_or_else(|| request.url.clone());
         bytes = res.bytes;
         if bytes.len() > limits.max_response_body_bytes {
           is_error = true;
@@ -1509,6 +1544,7 @@ fn xhr_send_native<Host: WindowRealmHost + 'static>(
             status_text.truncate(XHR_STATUS_TEXT_MAX_BYTES);
           }
           response_headers = clamp_response_headers(res.response_headers.unwrap_or_default(), &limits);
+          response_url = final_url;
         }
       }
       Ok(Err(_)) | Err(mpsc::RecvTimeoutError::Disconnected) => {
@@ -1535,6 +1571,7 @@ fn xhr_send_native<Host: WindowRealmHost + 'static>(
         xhr.response_bytes.clear();
         xhr.response_text.clear();
         xhr.response_headers.clear();
+        xhr.response_url.clear();
       } else {
         // Ensure `status` isn't observable while `readyState` is still OPENED.
         xhr.ready_state = XHR_HEADERS_RECEIVED;
@@ -1543,6 +1580,7 @@ fn xhr_send_native<Host: WindowRealmHost + 'static>(
         xhr.response_text = String::from_utf8_lossy(&bytes).to_string();
         xhr.response_bytes = bytes;
         xhr.response_headers = response_headers;
+        xhr.response_url = response_url;
       }
       Ok(true)
     }) {
@@ -1745,6 +1783,7 @@ fn xhr_abort_native<Host: WindowRealmHost + 'static>(
       xhr.response_bytes.clear();
       xhr.response_text.clear();
       xhr.response_headers.clear();
+      xhr.response_url.clear();
       xhr.request = None;
       return Ok((xhr.request_seq, false, old_root));
     }
@@ -1756,6 +1795,7 @@ fn xhr_abort_native<Host: WindowRealmHost + 'static>(
     xhr.response_bytes.clear();
     xhr.response_text.clear();
     xhr.response_headers.clear();
+    xhr.response_url.clear();
     xhr.request_seq = xhr.request_seq.saturating_add(1);
     Ok((xhr.request_seq, true, None))
   })?;
@@ -2474,6 +2514,22 @@ pub fn install_window_xhr_bindings_with_guard<Host: WindowRealmHost + 'static>(
     Value::Undefined,
   )?;
 
+  let response_url_get_id = vm.register_native_call(xhr_response_url_get)?;
+  let response_url_get_name = scope.alloc_string("get responseURL")?;
+  scope.push_root(Value::String(response_url_get_name))?;
+  let response_url_get_fn =
+    scope.alloc_native_function(response_url_get_id, None, response_url_get_name, 0)?;
+  scope
+    .heap_mut()
+    .object_set_prototype(response_url_get_fn, Some(func_proto))?;
+  set_accessor_prop(
+    &mut scope,
+    proto,
+    "responseURL",
+    Value::Object(response_url_get_fn),
+    Value::Undefined,
+  )?;
+
   let rt_get_id = vm.register_native_call(xhr_response_type_get)?;
   let rt_get_name = scope.alloc_string("get responseType")?;
   scope.push_root(Value::String(rt_get_name))?;
@@ -2846,6 +2902,42 @@ mod tests {
     assert_eq!(reqs.len(), 1);
     assert_eq!(reqs[0].method, "GET");
     assert_eq!(reqs[0].url, "https://example.invalid/ok");
+    Ok(())
+  }
+
+  #[test]
+  fn xhr_response_url_is_exposed() -> crate::Result<()> {
+    let fetcher = Arc::new(MockFetcher::default());
+    let mut host = Host::new(fetcher);
+    let mut event_loop = EventLoop::<Host>::new();
+
+    event_loop.queue_task(TaskSource::Script, |host, event_loop| {
+      let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host);
+      hooks.set_event_loop(event_loop);
+      let (vm_host, window) = host.vm_host_and_window_realm();
+      window.reset_interrupt();
+      let result = window.exec_script_with_host_and_hooks(
+        vm_host,
+        &mut hooks,
+        "var xhr = new XMLHttpRequest();\n\
+         xhr.onload = function(){ globalThis.__url = xhr.responseURL; };\n\
+         xhr.open('GET', '/ok', true);\n\
+         xhr.send();",
+      );
+      if let Some(err) = hooks.finish(window.heap_mut()) {
+        return Err(err);
+      }
+      result.map(|_| ()).map_err(|e| vm_error_to_event_loop_error(window.heap_mut(), e))
+    })?;
+
+    let outcome = event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;
+    assert_eq!(outcome, RunUntilIdleOutcome::Idle);
+
+    let (_vm, realm, heap) = host.window.vm_realm_and_heap_mut();
+    let mut scope = heap.scope();
+    let global = realm.global_object();
+    let url = get_string(scope.heap(), get_prop(&mut scope, global, "__url"));
+    assert_eq!(url, "https://example.invalid/ok");
     Ok(())
   }
 
