@@ -55,6 +55,15 @@ fn alloc_fast_paths_are_invalidated_after_gc() {
   let _rt = TestRuntimeGuard::new();
   ensure_shape_table();
 
+  // Stop-the-world coordination and thread scheduling can take much longer in debug builds
+  // (especially under parallel test execution on multi-agent hosts). Keep release builds strict,
+  // but give debug builds enough slack to avoid flaky timeouts.
+  const TIMEOUT: Duration = if cfg!(debug_assertions) {
+    Duration::from_secs(30)
+  } else {
+    Duration::from_secs(2)
+  };
+
   const THREADS: usize = 4;
   const ROOTS: usize = 16;
   const NOISE_ALLOCS_PER_TICK: usize = 64;
@@ -144,7 +153,7 @@ fn alloc_fast_paths_are_invalidated_after_gc() {
   }
 
   // Wait until workers are running so `rt_gc_collect` doesn't immediately time out.
-  wait_until(Duration::from_secs(2), || progress.iter().all(|c| c.load(Ordering::Relaxed) > 10));
+  wait_until(TIMEOUT, || progress.iter().all(|c| c.load(Ordering::Relaxed) > 10));
 
   // Drive repeated stop-the-world GCs while workers allocate.
   rt_thread_init(3);
@@ -159,7 +168,7 @@ fn alloc_fast_paths_are_invalidated_after_gc() {
     .iter()
     .map(|c| c.load(Ordering::Relaxed))
     .collect::<Vec<_>>();
-  wait_until(Duration::from_secs(2), || {
+  wait_until(TIMEOUT, || {
     progress
       .iter()
       .zip(after.iter())

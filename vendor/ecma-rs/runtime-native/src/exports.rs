@@ -1248,6 +1248,17 @@ pub extern "C" fn rt_backing_store_external_bytes() -> usize {
   abort_on_panic(|| crate::buffer::backing_store::global_backing_store_allocator().external_bytes())
 }
 
+/// Test/debug helper: return the total number of externally allocated bytes tracked by the
+/// process-global GC heap.
+///
+/// This includes:
+/// - backing store allocations (ArrayBuffer, etc), and
+/// - other external allocations tracked directly by the GC heap (e.g. payload-promise buffers).
+#[doc(hidden)]
+pub fn rt_debug_heap_external_bytes() -> usize {
+  crate::rt_alloc::with_heap_lock_mutator(|heap| heap.external_bytes())
+}
+
 // -----------------------------------------------------------------------------
 // Per-thread shadow stack roots (temporary roots)
 // -----------------------------------------------------------------------------

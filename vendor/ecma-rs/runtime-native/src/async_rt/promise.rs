@@ -6,8 +6,7 @@ use crate::async_abi::{PromiseHeader, PROMISE_FLAG_EXTERNAL_PENDING, PROMISE_FLA
 use crate::async_runtime::PromiseLayout;
 use crate::gc::HandleId;
 use crate::promise_reactions::{
-  decode_waiters_ptr, enqueue_reaction_jobs, reverse_list, PromiseReactionNode,
-  PromiseReactionVTable,
+  decode_waiters_ptr, enqueue_reaction_jobs, reverse_list, PromiseReactionNode, PromiseReactionVTable,
 };
 use crate::sync::GcAwareMutex;
 use crate::threading;
@@ -331,14 +330,6 @@ pub(crate) fn untrack_pending_reactions(promise: *mut PromiseHeader) {
 /// `PromiseHeader::{PENDING,FULFILLED,REJECTED}`.
 const STATE_FULFILLING: u8 = 3;
 const STATE_REJECTING: u8 = 4;
-
-/// Promise header flag indicating the promise has an associated out-of-line payload buffer.
-///
-/// Currently this is used by `rt_parallel_spawn_promise` promises: the worker writes its result into
-/// the payload returned by `rt_promise_payload_ptr` and then settles the promise via
-/// `rt_promise_fulfill` / `rt_promise_reject`.
-///
-/// This flag is stored in [`PromiseHeader::flags`] (see [`PROMISE_FLAG_HAS_PAYLOAD`]).
 
 /// Raw sentinel value stored in `value_root`/`error_root` to represent `None`.
 ///
@@ -680,7 +671,6 @@ pub(crate) fn promise_try_reject_payload(p: PromiseRef) -> bool {
 pub(crate) fn promise_reject_payload(p: PromiseRef) {
   let _ = promise_try_reject_payload(p);
 }
-
 #[repr(C)]
 struct CallbackReaction {
   node: PromiseReactionNode,
@@ -1153,9 +1143,8 @@ pub(crate) fn debug_with_pending_reactions_lock<R>(f: impl FnOnce() -> R) -> R {
 /// Test-only helper: destroy a legacy `RtPromise` allocated by this module.
 ///
 /// # Safety
-/// `p` must be a promise handle previously returned by [`promise_new`] or
-/// [`promise_new_with_payload`]. Passing a non-`RtPromise` allocation (e.g. a native async-ABI
-/// `PromiseHeader + payload`) is UB.
+/// `p` must be a promise handle previously returned by [`promise_new`]. Passing a non-`RtPromise`
+/// allocation (e.g. a native async-ABI `PromiseHeader`-backed promise) is UB.
 #[doc(hidden)]
 pub(crate) unsafe fn debug_drop_promise(p: PromiseRef) {
   promise_drop(p);

@@ -18,10 +18,8 @@ struct CallSpawnPayloadPromiseOnDrop;
 
 impl Drop for CallSpawnPayloadPromiseOnDrop {
   fn drop(&mut self) {
-    // Regression test: the async runtime uses a per-thread bump allocator (`alloc::LOCAL_BUMP`) for
-    // out-of-line promise payload buffers. If that TLS key is accessed with `LocalKey::with`,
-    // calling payload-promise entrypoints from other TLS destructors after the bump cursor has been
-    // destroyed aborts the process (`abort_on_dtor_unwind`).
+    // Regression test: calling `rt_parallel_spawn_promise` from *other* TLS destructors during
+    // thread teardown must not abort due to inaccessible TLS keys (`abort_on_dtor_unwind`).
     unsafe {
       let promise = runtime_native::rt_parallel_spawn_promise(
         fulfill_task,
@@ -29,7 +27,6 @@ impl Drop for CallSpawnPayloadPromiseOnDrop {
         PromiseLayout { size: 1, align: 1 },
       );
       runtime_native::rt_async_block_on(promise);
-      runtime_native::rt_promise_drop_legacy(promise);
     }
   }
 }
@@ -53,10 +50,8 @@ fn alloc_bump_tls_is_safe_to_access_during_tls_teardown() {
         PromiseLayout { size: 1, align: 1 },
       );
       runtime_native::rt_async_block_on(promise);
-      runtime_native::rt_promise_drop_legacy(promise);
     }
   })
   .join()
   .unwrap();
 }
-

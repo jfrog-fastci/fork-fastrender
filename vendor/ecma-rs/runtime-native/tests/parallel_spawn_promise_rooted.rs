@@ -400,8 +400,8 @@ fn parallel_spawn_promise_rooted_h_reads_slot_after_lock_acquired() {
 
   assert_eq!(
     runtime_native::roots::global_persistent_handle_table().live_count(),
-    base_roots + 1,
-    "rooted-h parallel_spawn_promise should allocate exactly one persistent handle while task is pending"
+    base_roots + 2,
+    "rooted-h parallel_spawn_promise should allocate one persistent handle for `data` and one for the promise while task is pending"
   );
 
   assert_eq!(

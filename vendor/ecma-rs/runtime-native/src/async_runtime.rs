@@ -143,7 +143,7 @@ pub(crate) fn rt_async_run_until_idle_under_driver_guard() -> bool {
 ///
 /// The runtime uses this to allocate a payload buffer; the parallel task writes
 /// its result into the buffer (via `rt_promise_payload_ptr`) and then settles the
-/// promise (via `rt_promise_fulfill` / `rt_promise_reject_payload`).
+/// promise (via `rt_promise_fulfill` / `rt_promise_reject`).
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct PromiseLayout {

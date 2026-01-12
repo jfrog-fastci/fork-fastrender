@@ -120,6 +120,7 @@ mod blocking_pool;
 mod ffi;
 mod exports;
 mod parallel_integration;
+mod payload_promise;
 mod interner;
 mod native_async;
 mod platform;
@@ -439,18 +440,11 @@ pub unsafe extern "C" fn rt_promise_fulfill(_p: PromiseRef) {
       return;
     }
 
-    // Payload promises created by `rt_parallel_spawn_promise` are implemented by the legacy promise
-    // runtime (`async_rt::promise`) and carry an out-of-line payload buffer.
     let header = _p.0 as *mut async_abi::PromiseHeader;
     if (header as usize) % core::mem::align_of::<async_abi::PromiseHeader>() != 0 {
       std::process::abort();
     }
-    let flags = unsafe { &(*header).flags }.load(core::sync::atomic::Ordering::Acquire);
-    if (flags & async_abi::PROMISE_FLAG_HAS_PAYLOAD) != 0 {
-      crate::async_rt::promise::promise_fulfill_payload(_p);
-    } else {
-      crate::native_async::promise_fulfill(_p);
-    }
+    crate::native_async::promise_fulfill(_p);
   })
 }
 
@@ -472,12 +466,7 @@ pub unsafe extern "C" fn rt_promise_try_fulfill(p: PromiseRef) -> bool {
     if (header as usize) % core::mem::align_of::<async_abi::PromiseHeader>() != 0 {
       std::process::abort();
     }
-    let flags = (*header).flags.load(core::sync::atomic::Ordering::Acquire);
-    if (flags & async_abi::PROMISE_FLAG_HAS_PAYLOAD) != 0 {
-      crate::async_rt::promise::promise_try_fulfill_payload(p)
-    } else {
-      crate::native_async::promise_try_fulfill(p)
-    }
+    crate::native_async::promise_try_fulfill(p)
   })
 }
 
@@ -496,12 +485,7 @@ pub unsafe extern "C" fn rt_promise_reject(_p: PromiseRef) {
     if (header as usize) % core::mem::align_of::<async_abi::PromiseHeader>() != 0 {
       std::process::abort();
     }
-    let flags = unsafe { &(*header).flags }.load(core::sync::atomic::Ordering::Acquire);
-    if (flags & async_abi::PROMISE_FLAG_HAS_PAYLOAD) != 0 {
-      crate::async_rt::promise::promise_reject_payload(_p);
-    } else {
-      crate::native_async::promise_reject(_p);
-    }
+    crate::native_async::promise_reject(_p);
   })
 }
 
@@ -520,12 +504,7 @@ pub unsafe extern "C" fn rt_promise_try_reject(p: PromiseRef) -> bool {
     if (header as usize) % core::mem::align_of::<async_abi::PromiseHeader>() != 0 {
       std::process::abort();
     }
-    let flags = (*header).flags.load(core::sync::atomic::Ordering::Acquire);
-    if (flags & async_abi::PROMISE_FLAG_HAS_PAYLOAD) != 0 {
-      crate::async_rt::promise::promise_try_reject_payload(p)
-    } else {
-      crate::native_async::promise_try_reject(p)
-    }
+    crate::native_async::promise_try_reject(p)
   })
 }
 
@@ -2216,29 +2195,22 @@ int main(void) {
     if std::env::var_os(OOM_CHILD_ENV).is_some() {
       extern "C" fn noop_task(_data: *mut u8, _promise: PromiseRef) {}
 
-      // Force a deterministic OOM via the runtime-native bump arena (Linux) or
-      // by asking the allocator for an absurdly large allocation (non-Linux
-      // fallback).
-      let size = if cfg!(target_os = "linux") {
-        128 * 1024
-      } else {
-        // `alloc::alloc_bytes` uses `Layout::from_size_align`, which rejects
-        // sizes > `isize::MAX`. Pick a still-ridiculous size that's within that
-        // bound so we get an OOM (not an "invalid layout" trap).
-        (isize::MAX as usize) / 2
-      };
-
-      let _ = rt_parallel_spawn_promise(noop_task, core::ptr::null_mut(), PromiseLayout { size, align: 1 });
+      // Force a deterministic OOM by requesting an absurdly large payload buffer.
+      //
+      // This must be <= `isize::MAX` so `Layout::from_size_align` accepts it; the allocation should
+      // still fail because it far exceeds the process' virtual address space.
+      let size = (isize::MAX as usize) / 2;
+      let _ = rt_parallel_spawn_promise(
+        noop_task,
+        core::ptr::null_mut(),
+        PromiseLayout { size, align: 16 },
+      );
       unreachable!("rt_parallel_spawn_promise must abort the process on OOM");
     }
 
     let exe = std::env::current_exe().expect("failed to get current test executable path");
     let status = std::process::Command::new(exe)
       .env(OOM_CHILD_ENV, "1")
-      // Make the bump arena tiny so an allocation deterministically overflows
-      // it and triggers `rt_trap_oom`.
-      .env("RUNTIME_NATIVE_BUMP_ARENA_SIZE", "64K")
-      .env("RUNTIME_NATIVE_BUMP_CHUNK_SIZE", "32K")
       .arg("--exact")
       .arg("tests::exported_ffi_functions_abort_on_oom")
       .status()

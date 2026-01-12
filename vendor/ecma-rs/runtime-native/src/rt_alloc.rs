@@ -355,7 +355,7 @@ fn should_trigger_major() -> bool {
   })
 }
 
-fn with_heap_lock_mutator<R>(f: impl FnOnce(&mut crate::gc::GcHeap) -> R) -> R {
+pub(crate) fn with_heap_lock_mutator<R>(f: impl FnOnce(&mut crate::gc::GcHeap) -> R) -> R {
   let global = global_heap();
   let _guard = global.heap_lock.lock();
   // SAFETY: `_guard` serializes access to the non-thread-safe parts of `GcHeap`.
