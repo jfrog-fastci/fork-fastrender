@@ -38,3 +38,98 @@ reason = "Excess property diagnostics differ from tsc (code/span)."
 id = "mismatch/overload_no_match.ts"
 status = "xfail"
 reason = "Overload resolution diagnostics differ from tsc (code/span)."
+
+[[expectations]]
+id = "match/literal_widening.ts"
+status = "xfail"
+reason = "Literal widening for `let` initializers does not match tsc yet."
+
+[[expectations]]
+id = "match/namespaces/namespace_value_type.ts"
+status = "xfail"
+reason = "Namespace value/type separation does not match tsc yet."
+
+[[expectations]]
+glob = "match/narrowing/**"
+status = "xfail"
+reason = "Flow narrowing for discriminated unions is not implemented yet."
+
+[[expectations]]
+id = "match/narrowing_discriminant.ts"
+status = "xfail"
+reason = "Flow narrowing for discriminated unions is not implemented yet."
+
+[[expectations]]
+id = "match/narrowing_instanceof.ts"
+status = "xfail"
+reason = "Flow narrowing for `instanceof` checks is not implemented yet."
+
+[[expectations]]
+id = "match/unions/case_001.ts"
+status = "xfail"
+reason = "Flow narrowing for `in` checks is not implemented yet."
+
+[[expectations]]
+id = "match/unions/case_003.ts"
+status = "xfail"
+reason = "Flow narrowing for `in` checks is not implemented yet."
+
+[[expectations]]
+id = "match/unions/case_005.ts"
+status = "xfail"
+reason = "Flow narrowing for `in` checks is not implemented yet."
+
+[[expectations]]
+id = "match/unions/case_007.ts"
+status = "xfail"
+reason = "Flow narrowing for `in` checks is not implemented yet."
+
+[[expectations]]
+id = "match/unions/case_009.ts"
+status = "xfail"
+reason = "Flow narrowing for `in` checks is not implemented yet."
+
+[[expectations]]
+id = "match/unions/case_011.ts"
+status = "xfail"
+reason = "Flow narrowing for `in` checks is not implemented yet."
+
+[[expectations]]
+id = "match/unions/case_013.ts"
+status = "xfail"
+reason = "Flow narrowing for `in` checks is not implemented yet."
+
+[[expectations]]
+id = "match/unions/case_015.ts"
+status = "xfail"
+reason = "Flow narrowing for `in` checks is not implemented yet."
+
+[[expectations]]
+id = "match/unions/case_017.ts"
+status = "xfail"
+reason = "Flow narrowing for `in` checks is not implemented yet."
+
+[[expectations]]
+id = "match/unions/case_019.ts"
+status = "xfail"
+reason = "Flow narrowing for `in` checks is not implemented yet."
+
+[[expectations]]
+id = "match/unions/case_021.ts"
+status = "xfail"
+reason = "Flow narrowing for `in` checks is not implemented yet."
+
+[[expectations]]
+id = "match/unions/case_023.ts"
+status = "xfail"
+reason = "Flow narrowing for `in` checks is not implemented yet."
+
+[[expectations]]
+id = "match/unions/case_025.ts"
+status = "xfail"
+reason = "Flow narrowing for `in` checks is not implemented yet."
+
+[[expectations]]
+id = "mismatch/contextual_overload_return.ts"
+status = "xfail"
+reason = "Rust emits an extra ambiguity diagnostic (TC2001) compared to tsc."
