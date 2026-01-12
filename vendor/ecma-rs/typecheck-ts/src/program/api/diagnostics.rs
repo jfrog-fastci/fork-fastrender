@@ -50,40 +50,43 @@ impl Program {
             state.snapshot_loaded
           };
 
-          // Commit the body results into the salsa DB without holding the
-          // `ProgramState` write lock. This keeps read-only queries responsive
-          // while `Program::check()` is finalizing results.
+          // Commit the body results into the salsa DB.
+          //
+          // Important: writing salsa inputs must be done under the `ProgramState`
+          // write lock. Many read-only queries clone the salsa DB and execute
+          // queries outside the `typecheck_db` mutex; mutating the shared salsa
+          // storage concurrently can panic (see `tests/concurrent_reads.rs`).
           if !snapshot_loaded {
-            let revision = {
-              let state = self.read_state();
-              for (idx, (body, res)) in results.into_iter().enumerate() {
+            for (idx, (body, res)) in results.into_iter().enumerate() {
+              {
+                let state = self.lock_state();
                 let db = state.typecheck_db.lock();
                 let mut db = db;
                 db.set_body_result(body, res);
                 parking_lot::MutexGuard::unlock_fair(db);
-                if idx % 64 == 0 {
-                  std::thread::yield_now();
-                }
               }
+              if idx % 64 == 0 {
+                std::thread::yield_now();
+              }
+            }
+            {
+              let mut state = self.lock_state();
               let db = state.typecheck_db.lock();
-              db::db_revision(&*db)
-            };
-            let mut state = self.lock_state();
-            state.analysis_revision = Some(revision);
+              let revision = db::db_revision(&*db);
+              drop(db);
+              state.analysis_revision = Some(revision);
+            }
           }
 
-          let (db, diagnostics) = {
-            let state = self.read_state();
-            let db = state.typecheck_db.lock().clone();
-            let diagnostics = state.diagnostics.clone();
-            (db, diagnostics)
-          };
+          // Hold a state read guard while we run salsa diagnostics aggregation to
+          // prevent concurrent callers from mutating the shared salsa storage
+          // while queries are executing on cloned DB handles.
+          let state = self.read_state();
+          let db = state.typecheck_db.lock().clone();
+          let diagnostics = state.diagnostics.clone();
 
           let mut merged = super::super::diagnostics::merge_program_diagnostics(&db, diagnostics);
-          {
-            let state = self.read_state();
-            state.filter_skip_lib_check_diagnostics(&mut merged);
-          }
+          state.filter_skip_lib_check_diagnostics(&mut merged);
 
           Ok(Arc::from(merged))
         }
