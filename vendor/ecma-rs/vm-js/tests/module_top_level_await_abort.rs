@@ -151,3 +151,74 @@ fn abort_tla_evaluation_rejects_pending_module_evaluation_promise() -> Result<()
   realm.teardown(&mut heap);
   Ok(())
 }
+
+#[test]
+fn evaluate_returns_same_promise_while_tla_pending() -> Result<(), VmError> {
+  let (mut vm, mut heap, mut realm) = new_vm_heap_realm()?;
+  let mut hooks = MicrotaskQueue::new();
+  let mut host = ();
+
+  let mut graph = ModuleGraph::new();
+  let entry = graph.add_module(SourceTextModuleRecord::parse(
+    "await new Promise(() => {}); export const x = 1;",
+  )?);
+
+  let promise1 = graph.evaluate(
+    &mut vm,
+    &mut heap,
+    realm.global_object(),
+    realm.id(),
+    entry,
+    &mut host,
+    &mut hooks,
+  )?;
+  let promise1_root = heap.add_root(promise1)?;
+  let Value::Object(promise1_obj) = promise1 else {
+    return Err(VmError::InvariantViolation(
+      "ModuleGraph::evaluate should return a Promise object",
+    ));
+  };
+  assert_eq!(heap.promise_state(promise1_obj)?, PromiseState::Pending);
+  assert_eq!(vm.async_continuation_count(), 1);
+
+  // Calling `evaluate` again while evaluation is suspended should return the same evaluation
+  // promise (spec `Evaluate()` idempotency for `~evaluating-async~` modules).
+  let promise2 = graph.evaluate(
+    &mut vm,
+    &mut heap,
+    realm.global_object(),
+    realm.id(),
+    entry,
+    &mut host,
+    &mut hooks,
+  )?;
+  let Value::Object(promise2_obj) = promise2 else {
+    return Err(VmError::InvariantViolation(
+      "ModuleGraph::evaluate should return a Promise object",
+    ));
+  };
+  assert_eq!(promise1_obj, promise2_obj);
+  assert_eq!(heap.promise_state(promise2_obj)?, PromiseState::Pending);
+  assert_eq!(vm.async_continuation_count(), 1);
+
+  graph.abort_tla_evaluation(&mut vm, &mut heap, entry);
+
+  {
+    let mut scope = heap.scope();
+    let promise1_value = scope
+      .heap()
+      .get_root(promise1_root)
+      .ok_or_else(|| VmError::invalid_handle())?;
+    let Value::Object(promise_obj) = promise1_value else {
+      return Err(VmError::InvariantViolation("promise root must reference an object"));
+    };
+    assert_eq!(scope.heap().promise_state(promise_obj)?, PromiseState::Rejected);
+  }
+
+  assert_eq!(vm.async_continuation_count(), 0);
+
+  heap.remove_root(promise1_root);
+  graph.teardown(&mut vm, &mut heap);
+  realm.teardown(&mut heap);
+  Ok(())
+}

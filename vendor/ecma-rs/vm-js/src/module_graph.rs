@@ -1514,6 +1514,42 @@ impl ModuleGraph {
     // directly (without constructing a `JsRuntime`, which sets this pointer at runtime creation).
     let mut graph_guard = ModuleGraphPtrGuard::install(vm, self);
 
+    // If async module evaluation is already in progress for this module, return the existing
+    // (spec-visible) evaluation promise.
+    //
+    // Spec: `Evaluate()` must be idempotent for in-progress top-level await evaluation: callers
+    // observe the same Promise rather than a new Promise that could settle inconsistently.
+    let idx = module_index(module);
+    if let Some(record) = self.modules.get(idx) {
+      if record.status == ModuleStatus::EvaluatingAsync {
+        if !record.has_tla {
+          return Err(VmError::InvariantViolation(
+            "module is evaluating-async but does not have top-level await",
+          ));
+        }
+
+        let Some(state) = self.tla_states.get(idx).and_then(|s| s.as_ref()) else {
+          return Err(VmError::InvariantViolation(
+            "module is evaluating-async but has no stored TLA evaluation state",
+          ));
+        };
+        let Some(roots) = state.promise_roots.as_ref() else {
+          return Err(VmError::InvariantViolation(
+            "module is evaluating-async but has no stored evaluation promise roots",
+          ));
+        };
+        let promise = roots
+          .capability(scope.heap())
+          .ok_or_else(VmError::invalid_handle)?
+          .promise;
+
+        // Keep the module graph pointer installed until the in-progress evaluation completes (it
+        // will be restored using `state.prev_graph` on settle/abort).
+        graph_guard.disarm();
+        return Ok(promise);
+      }
+    }
+
     let result = (|| -> Result<Value, VmError> {
       let mut eval_scope = scope.reborrow();
 
