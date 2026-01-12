@@ -2335,6 +2335,7 @@ const DOCUMENT_WINDOW_KEY: &str = "__fastrender_document_window";
 const DOCUMENT_SELECTION_KEY: &str = "__fastrender_document_selection";
 const EVENT_BRAND_KEY: &str = "__fastrender_event";
 const EVENT_KIND_KEY: &str = "__fastrender_event_kind";
+const EVENT_INITIALIZED_KEY: &str = "__fastrender_event_initialized";
 const EVENT_IS_TRUSTED_VALUE_KEY: &str = "__fastrender_event_is_trusted";
 const EVENT_IS_TRUSTED_GETTER_KEY: &str = "__fastrender_event_is_trusted_getter";
 const EVENT_PROTOTYPE_KEY: &str = "__fastrender_event_prototype";
@@ -11221,6 +11222,675 @@ fn event_constructor_impl(
   Ok(Value::Object(obj))
 }
 
+fn ui_event_constructor_native(
+  _vm: &mut Vm,
+  _scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  Err(VmError::TypeError(
+    "UIEvent constructor cannot be invoked without 'new'",
+  ))
+}
+
+fn ui_event_constructor_impl(
+  scope: &mut Scope<'_>,
+  ctor: GcObject,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let type_arg = args.get(0).copied().unwrap_or(Value::Undefined);
+  let type_string = scope.heap_mut().to_string(type_arg)?;
+
+  let mut bubbles = false;
+  let mut cancelable = false;
+  let mut composed = false;
+  let mut detail = 0.0;
+  let mut view = Value::Null;
+  if let Some(init_value) = args.get(1).copied() {
+    if let Value::Object(init_obj) = init_value {
+      let bubbles_key = alloc_key(scope, "bubbles")?;
+      if let Some(value) = scope
+        .heap()
+        .object_get_own_data_property_value(init_obj, &bubbles_key)?
+      {
+        bubbles = scope.heap().to_boolean(value)?;
+      }
+
+      let cancelable_key = alloc_key(scope, "cancelable")?;
+      if let Some(value) = scope
+        .heap()
+        .object_get_own_data_property_value(init_obj, &cancelable_key)?
+      {
+        cancelable = scope.heap().to_boolean(value)?;
+      }
+
+      let composed_key = alloc_key(scope, "composed")?;
+      if let Some(value) = scope
+        .heap()
+        .object_get_own_data_property_value(init_obj, &composed_key)?
+      {
+        composed = scope.heap().to_boolean(value)?;
+      }
+
+      let detail_key = alloc_key(scope, "detail")?;
+      if let Some(value) = scope
+        .heap()
+        .object_get_own_data_property_value(init_obj, &detail_key)?
+      {
+        let mut n = scope.heap_mut().to_number(value)?;
+        if !n.is_finite() || n.is_nan() {
+          n = 0.0;
+        }
+        detail = n.trunc();
+      }
+
+      let view_key = alloc_key(scope, "view")?;
+      if let Some(value) = scope
+        .heap()
+        .object_get_own_data_property_value(init_obj, &view_key)?
+      {
+        if !matches!(value, Value::Undefined) {
+          view = value;
+        }
+      }
+    }
+  }
+
+  let prototype_key = alloc_key(scope, "prototype")?;
+  let proto = scope
+    .heap()
+    .object_get_own_data_property_value(ctor, &prototype_key)?
+    .and_then(|v| match v {
+      Value::Object(obj) => Some(obj),
+      _ => None,
+    });
+
+  let obj = scope.alloc_object()?;
+  scope.push_root(Value::Object(obj))?;
+  if let Some(proto) = proto {
+    scope.heap_mut().object_set_prototype(obj, Some(proto))?;
+  }
+
+  let type_key = alloc_key(scope, "type")?;
+  scope.define_property(obj, type_key, data_desc(Value::String(type_string)))?;
+
+  let bubbles_key = alloc_key(scope, "bubbles")?;
+  scope.define_property(obj, bubbles_key, data_desc(Value::Bool(bubbles)))?;
+
+  let cancelable_key = alloc_key(scope, "cancelable")?;
+  scope.define_property(obj, cancelable_key, data_desc(Value::Bool(cancelable)))?;
+
+  let composed_key = alloc_key(scope, "composed")?;
+  scope.define_property(obj, composed_key, data_desc(Value::Bool(composed)))?;
+
+  define_event_default_properties(scope, obj)?;
+
+  let detail_key = alloc_key(scope, "detail")?;
+  scope.define_property(obj, detail_key, data_desc(Value::Number(detail)))?;
+  let view_key = alloc_key(scope, "view")?;
+  scope.define_property(obj, view_key, data_desc(view))?;
+
+  brand_event_object(scope, obj, BrandedEventKind::UIEvent)?;
+  set_event_initialized(scope, obj, true)?;
+
+  Ok(Value::Object(obj))
+}
+
+fn ui_event_constructor_construct_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  args: &[Value],
+  new_target: Value,
+) -> Result<Value, VmError> {
+  let ctor = match new_target {
+    Value::Object(obj) => obj,
+    _ => callee,
+  };
+  ui_event_constructor_impl(scope, ctor, args)
+}
+
+fn keyboard_event_constructor_native(
+  _vm: &mut Vm,
+  _scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  Err(VmError::TypeError(
+    "KeyboardEvent constructor cannot be invoked without 'new'",
+  ))
+}
+
+fn keyboard_event_constructor_impl(
+  scope: &mut Scope<'_>,
+  ctor: GcObject,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let type_arg = args.get(0).copied().unwrap_or(Value::Undefined);
+  let type_string = scope.heap_mut().to_string(type_arg)?;
+
+  let mut bubbles = false;
+  let mut cancelable = false;
+  let mut composed = false;
+  let mut detail = 0.0;
+  let mut view = Value::Null;
+  let mut key = scope.alloc_string("")?;
+  let mut code = scope.alloc_string("")?;
+  let mut location = 0.0;
+  let mut ctrl_key = false;
+  let mut shift_key = false;
+  let mut alt_key = false;
+  let mut meta_key = false;
+  let mut repeat = false;
+
+  if let Some(init_value) = args.get(1).copied() {
+    if let Value::Object(init_obj) = init_value {
+      let bubbles_key = alloc_key(scope, "bubbles")?;
+      if let Some(value) = scope
+        .heap()
+        .object_get_own_data_property_value(init_obj, &bubbles_key)?
+      {
+        bubbles = scope.heap().to_boolean(value)?;
+      }
+
+      let cancelable_key = alloc_key(scope, "cancelable")?;
+      if let Some(value) = scope
+        .heap()
+        .object_get_own_data_property_value(init_obj, &cancelable_key)?
+      {
+        cancelable = scope.heap().to_boolean(value)?;
+      }
+
+      let composed_key = alloc_key(scope, "composed")?;
+      if let Some(value) = scope
+        .heap()
+        .object_get_own_data_property_value(init_obj, &composed_key)?
+      {
+        composed = scope.heap().to_boolean(value)?;
+      }
+
+      let detail_key = alloc_key(scope, "detail")?;
+      if let Some(value) = scope
+        .heap()
+        .object_get_own_data_property_value(init_obj, &detail_key)?
+      {
+        let mut n = scope.heap_mut().to_number(value)?;
+        if !n.is_finite() || n.is_nan() {
+          n = 0.0;
+        }
+        detail = n.trunc();
+      }
+
+      let view_key = alloc_key(scope, "view")?;
+      if let Some(value) = scope
+        .heap()
+        .object_get_own_data_property_value(init_obj, &view_key)?
+      {
+        if !matches!(value, Value::Undefined) {
+          view = value;
+        }
+      }
+
+      let key_key = alloc_key(scope, "key")?;
+      if let Some(value) = scope
+        .heap()
+        .object_get_own_data_property_value(init_obj, &key_key)?
+      {
+        key = match value {
+          Value::String(s) => s,
+          other => scope.heap_mut().to_string(other)?,
+        };
+      }
+      let code_key = alloc_key(scope, "code")?;
+      if let Some(value) = scope
+        .heap()
+        .object_get_own_data_property_value(init_obj, &code_key)?
+      {
+        code = match value {
+          Value::String(s) => s,
+          other => scope.heap_mut().to_string(other)?,
+        };
+      }
+
+      let location_key = alloc_key(scope, "location")?;
+      if let Some(value) = scope
+        .heap()
+        .object_get_own_data_property_value(init_obj, &location_key)?
+      {
+        let mut n = scope.heap_mut().to_number(value)?;
+        if !n.is_finite() || n.is_nan() {
+          n = 0.0;
+        }
+        location = n.trunc();
+      }
+
+      let ctrl_key_key = alloc_key(scope, "ctrlKey")?;
+      if let Some(value) = scope
+        .heap()
+        .object_get_own_data_property_value(init_obj, &ctrl_key_key)?
+      {
+        ctrl_key = scope.heap().to_boolean(value)?;
+      }
+      let shift_key_key = alloc_key(scope, "shiftKey")?;
+      if let Some(value) = scope
+        .heap()
+        .object_get_own_data_property_value(init_obj, &shift_key_key)?
+      {
+        shift_key = scope.heap().to_boolean(value)?;
+      }
+      let alt_key_key = alloc_key(scope, "altKey")?;
+      if let Some(value) = scope
+        .heap()
+        .object_get_own_data_property_value(init_obj, &alt_key_key)?
+      {
+        alt_key = scope.heap().to_boolean(value)?;
+      }
+      let meta_key_key = alloc_key(scope, "metaKey")?;
+      if let Some(value) = scope
+        .heap()
+        .object_get_own_data_property_value(init_obj, &meta_key_key)?
+      {
+        meta_key = scope.heap().to_boolean(value)?;
+      }
+
+      let repeat_key = alloc_key(scope, "repeat")?;
+      if let Some(value) = scope
+        .heap()
+        .object_get_own_data_property_value(init_obj, &repeat_key)?
+      {
+        repeat = scope.heap().to_boolean(value)?;
+      }
+    }
+  }
+
+  let prototype_key = alloc_key(scope, "prototype")?;
+  let proto = scope
+    .heap()
+    .object_get_own_data_property_value(ctor, &prototype_key)?
+    .and_then(|v| match v {
+      Value::Object(obj) => Some(obj),
+      _ => None,
+    });
+
+  let obj = scope.alloc_object()?;
+  scope.push_root(Value::Object(obj))?;
+  if let Some(proto) = proto {
+    scope.heap_mut().object_set_prototype(obj, Some(proto))?;
+  }
+
+  let type_key = alloc_key(scope, "type")?;
+  scope.define_property(obj, type_key, data_desc(Value::String(type_string)))?;
+  let bubbles_key = alloc_key(scope, "bubbles")?;
+  scope.define_property(obj, bubbles_key, data_desc(Value::Bool(bubbles)))?;
+  let cancelable_key = alloc_key(scope, "cancelable")?;
+  scope.define_property(obj, cancelable_key, data_desc(Value::Bool(cancelable)))?;
+  let composed_key = alloc_key(scope, "composed")?;
+  scope.define_property(obj, composed_key, data_desc(Value::Bool(composed)))?;
+
+  define_event_default_properties(scope, obj)?;
+
+  let view_key = alloc_key(scope, "view")?;
+  scope.define_property(obj, view_key, data_desc(view))?;
+  let detail_key = alloc_key(scope, "detail")?;
+  scope.define_property(obj, detail_key, data_desc(Value::Number(detail)))?;
+
+  let key_key = alloc_key(scope, "key")?;
+  scope.define_property(obj, key_key, data_desc(Value::String(key)))?;
+  let code_key = alloc_key(scope, "code")?;
+  scope.define_property(obj, code_key, data_desc(Value::String(code)))?;
+  let location_key = alloc_key(scope, "location")?;
+  scope.define_property(obj, location_key, data_desc(Value::Number(location)))?;
+  let ctrl_key_key = alloc_key(scope, "ctrlKey")?;
+  scope.define_property(obj, ctrl_key_key, data_desc(Value::Bool(ctrl_key)))?;
+  let shift_key_key = alloc_key(scope, "shiftKey")?;
+  scope.define_property(obj, shift_key_key, data_desc(Value::Bool(shift_key)))?;
+  let alt_key_key = alloc_key(scope, "altKey")?;
+  scope.define_property(obj, alt_key_key, data_desc(Value::Bool(alt_key)))?;
+  let meta_key_key = alloc_key(scope, "metaKey")?;
+  scope.define_property(obj, meta_key_key, data_desc(Value::Bool(meta_key)))?;
+  let repeat_key = alloc_key(scope, "repeat")?;
+  scope.define_property(obj, repeat_key, data_desc(Value::Bool(repeat)))?;
+
+  brand_event_object(scope, obj, BrandedEventKind::KeyboardEvent)?;
+  set_event_initialized(scope, obj, true)?;
+  Ok(Value::Object(obj))
+}
+
+fn keyboard_event_constructor_construct_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  args: &[Value],
+  new_target: Value,
+) -> Result<Value, VmError> {
+  let ctor = match new_target {
+    Value::Object(obj) => obj,
+    _ => callee,
+  };
+  keyboard_event_constructor_impl(scope, ctor, args)
+}
+
+fn focus_event_constructor_native(
+  _vm: &mut Vm,
+  _scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  Err(VmError::TypeError(
+    "FocusEvent constructor cannot be invoked without 'new'",
+  ))
+}
+
+fn focus_event_constructor_impl(
+  scope: &mut Scope<'_>,
+  ctor: GcObject,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let type_arg = args.get(0).copied().unwrap_or(Value::Undefined);
+  let type_string = scope.heap_mut().to_string(type_arg)?;
+
+  let mut bubbles = false;
+  let mut cancelable = false;
+  let mut composed = false;
+  let mut detail = 0.0;
+  let mut view = Value::Null;
+  let mut related_target = Value::Null;
+
+  if let Some(init_value) = args.get(1).copied() {
+    if let Value::Object(init_obj) = init_value {
+      let bubbles_key = alloc_key(scope, "bubbles")?;
+      if let Some(value) = scope
+        .heap()
+        .object_get_own_data_property_value(init_obj, &bubbles_key)?
+      {
+        bubbles = scope.heap().to_boolean(value)?;
+      }
+      let cancelable_key = alloc_key(scope, "cancelable")?;
+      if let Some(value) = scope
+        .heap()
+        .object_get_own_data_property_value(init_obj, &cancelable_key)?
+      {
+        cancelable = scope.heap().to_boolean(value)?;
+      }
+      let composed_key = alloc_key(scope, "composed")?;
+      if let Some(value) = scope
+        .heap()
+        .object_get_own_data_property_value(init_obj, &composed_key)?
+      {
+        composed = scope.heap().to_boolean(value)?;
+      }
+
+      let detail_key = alloc_key(scope, "detail")?;
+      if let Some(value) = scope
+        .heap()
+        .object_get_own_data_property_value(init_obj, &detail_key)?
+      {
+        let mut n = scope.heap_mut().to_number(value)?;
+        if !n.is_finite() || n.is_nan() {
+          n = 0.0;
+        }
+        detail = n.trunc();
+      }
+
+      let view_key = alloc_key(scope, "view")?;
+      if let Some(value) = scope
+        .heap()
+        .object_get_own_data_property_value(init_obj, &view_key)?
+      {
+        if !matches!(value, Value::Undefined) {
+          view = value;
+        }
+      }
+
+      let related_target_key = alloc_key(scope, "relatedTarget")?;
+      if let Some(value) = scope
+        .heap()
+        .object_get_own_data_property_value(init_obj, &related_target_key)?
+      {
+        if !matches!(value, Value::Undefined) {
+          related_target = value;
+        }
+      }
+    }
+  }
+
+  let prototype_key = alloc_key(scope, "prototype")?;
+  let proto = scope
+    .heap()
+    .object_get_own_data_property_value(ctor, &prototype_key)?
+    .and_then(|v| match v {
+      Value::Object(obj) => Some(obj),
+      _ => None,
+    });
+
+  let obj = scope.alloc_object()?;
+  scope.push_root(Value::Object(obj))?;
+  if let Some(proto) = proto {
+    scope.heap_mut().object_set_prototype(obj, Some(proto))?;
+  }
+
+  let type_key = alloc_key(scope, "type")?;
+  scope.define_property(obj, type_key, data_desc(Value::String(type_string)))?;
+  let bubbles_key = alloc_key(scope, "bubbles")?;
+  scope.define_property(obj, bubbles_key, data_desc(Value::Bool(bubbles)))?;
+  let cancelable_key = alloc_key(scope, "cancelable")?;
+  scope.define_property(obj, cancelable_key, data_desc(Value::Bool(cancelable)))?;
+  let composed_key = alloc_key(scope, "composed")?;
+  scope.define_property(obj, composed_key, data_desc(Value::Bool(composed)))?;
+
+  define_event_default_properties(scope, obj)?;
+
+  let view_key = alloc_key(scope, "view")?;
+  scope.define_property(obj, view_key, data_desc(view))?;
+  let detail_key = alloc_key(scope, "detail")?;
+  scope.define_property(obj, detail_key, data_desc(Value::Number(detail)))?;
+  let related_target_key = alloc_key(scope, "relatedTarget")?;
+  scope.define_property(obj, related_target_key, data_desc(related_target))?;
+
+  brand_event_object(scope, obj, BrandedEventKind::FocusEvent)?;
+  set_event_initialized(scope, obj, true)?;
+  Ok(Value::Object(obj))
+}
+
+fn focus_event_constructor_construct_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  args: &[Value],
+  new_target: Value,
+) -> Result<Value, VmError> {
+  let ctor = match new_target {
+    Value::Object(obj) => obj,
+    _ => callee,
+  };
+  focus_event_constructor_impl(scope, ctor, args)
+}
+
+fn input_event_constructor_native(
+  _vm: &mut Vm,
+  _scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  Err(VmError::TypeError(
+    "InputEvent constructor cannot be invoked without 'new'",
+  ))
+}
+
+fn input_event_constructor_impl(
+  scope: &mut Scope<'_>,
+  ctor: GcObject,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let type_arg = args.get(0).copied().unwrap_or(Value::Undefined);
+  let type_string = scope.heap_mut().to_string(type_arg)?;
+
+  let mut bubbles = false;
+  let mut cancelable = false;
+  let mut composed = false;
+  let mut detail = 0.0;
+  let mut view = Value::Null;
+  let mut data = Value::Null;
+  let mut input_type = scope.alloc_string("")?;
+  let mut is_composing = false;
+
+  if let Some(init_value) = args.get(1).copied() {
+    if let Value::Object(init_obj) = init_value {
+      let bubbles_key = alloc_key(scope, "bubbles")?;
+      if let Some(value) = scope
+        .heap()
+        .object_get_own_data_property_value(init_obj, &bubbles_key)?
+      {
+        bubbles = scope.heap().to_boolean(value)?;
+      }
+      let cancelable_key = alloc_key(scope, "cancelable")?;
+      if let Some(value) = scope
+        .heap()
+        .object_get_own_data_property_value(init_obj, &cancelable_key)?
+      {
+        cancelable = scope.heap().to_boolean(value)?;
+      }
+      let composed_key = alloc_key(scope, "composed")?;
+      if let Some(value) = scope
+        .heap()
+        .object_get_own_data_property_value(init_obj, &composed_key)?
+      {
+        composed = scope.heap().to_boolean(value)?;
+      }
+
+      let detail_key = alloc_key(scope, "detail")?;
+      if let Some(value) = scope
+        .heap()
+        .object_get_own_data_property_value(init_obj, &detail_key)?
+      {
+        let mut n = scope.heap_mut().to_number(value)?;
+        if !n.is_finite() || n.is_nan() {
+          n = 0.0;
+        }
+        detail = n.trunc();
+      }
+
+      let view_key = alloc_key(scope, "view")?;
+      if let Some(value) = scope
+        .heap()
+        .object_get_own_data_property_value(init_obj, &view_key)?
+      {
+        if !matches!(value, Value::Undefined) {
+          view = value;
+        }
+      }
+
+      let data_key = alloc_key(scope, "data")?;
+      if let Some(value) = scope
+        .heap()
+        .object_get_own_data_property_value(init_obj, &data_key)?
+      {
+        if !matches!(value, Value::Undefined) {
+          data = match value {
+            Value::Null => Value::Null,
+            Value::String(s) => Value::String(s),
+            other => Value::String(scope.heap_mut().to_string(other)?),
+          };
+        }
+      }
+
+      let input_type_key = alloc_key(scope, "inputType")?;
+      if let Some(value) = scope
+        .heap()
+        .object_get_own_data_property_value(init_obj, &input_type_key)?
+      {
+        if !matches!(value, Value::Undefined) {
+          input_type = scope.heap_mut().to_string(value)?;
+        }
+      }
+
+      let is_composing_key = alloc_key(scope, "isComposing")?;
+      if let Some(value) = scope
+        .heap()
+        .object_get_own_data_property_value(init_obj, &is_composing_key)?
+      {
+        is_composing = scope.heap().to_boolean(value)?;
+      }
+    }
+  }
+
+  let prototype_key = alloc_key(scope, "prototype")?;
+  let proto = scope
+    .heap()
+    .object_get_own_data_property_value(ctor, &prototype_key)?
+    .and_then(|v| match v {
+      Value::Object(obj) => Some(obj),
+      _ => None,
+    });
+
+  let obj = scope.alloc_object()?;
+  scope.push_root(Value::Object(obj))?;
+  if let Some(proto) = proto {
+    scope.heap_mut().object_set_prototype(obj, Some(proto))?;
+  }
+
+  let type_key = alloc_key(scope, "type")?;
+  scope.define_property(obj, type_key, data_desc(Value::String(type_string)))?;
+  let bubbles_key = alloc_key(scope, "bubbles")?;
+  scope.define_property(obj, bubbles_key, data_desc(Value::Bool(bubbles)))?;
+  let cancelable_key = alloc_key(scope, "cancelable")?;
+  scope.define_property(obj, cancelable_key, data_desc(Value::Bool(cancelable)))?;
+  let composed_key = alloc_key(scope, "composed")?;
+  scope.define_property(obj, composed_key, data_desc(Value::Bool(composed)))?;
+
+  define_event_default_properties(scope, obj)?;
+
+  let view_key = alloc_key(scope, "view")?;
+  scope.define_property(obj, view_key, data_desc(view))?;
+  let detail_key = alloc_key(scope, "detail")?;
+  scope.define_property(obj, detail_key, data_desc(Value::Number(detail)))?;
+
+  let data_key = alloc_key(scope, "data")?;
+  scope.define_property(obj, data_key, data_desc(data))?;
+  let input_type_key = alloc_key(scope, "inputType")?;
+  scope.define_property(obj, input_type_key, data_desc(Value::String(input_type)))?;
+  let is_composing_key = alloc_key(scope, "isComposing")?;
+  scope.define_property(obj, is_composing_key, data_desc(Value::Bool(is_composing)))?;
+
+  brand_event_object(scope, obj, BrandedEventKind::InputEvent)?;
+  set_event_initialized(scope, obj, true)?;
+  Ok(Value::Object(obj))
+}
+
+fn input_event_constructor_construct_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  args: &[Value],
+  new_target: Value,
+) -> Result<Value, VmError> {
+  let ctor = match new_target {
+    Value::Object(obj) => obj,
+    _ => callee,
+  };
+  input_event_constructor_impl(scope, ctor, args)
+}
+
 fn custom_event_constructor_native(
   _vm: &mut Vm,
   _scope: &mut Scope<'_>,
@@ -11713,11 +12383,21 @@ fn hash_change_event_constructor_impl(
 
 fn mouse_event_constructor_native(
   _vm: &mut Vm,
-  scope: &mut Scope<'_>,
+  _scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
   _hooks: &mut dyn VmHostHooks,
-  callee: GcObject,
+  _callee: GcObject,
   _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  Err(VmError::TypeError(
+    "MouseEvent constructor cannot be invoked without 'new'",
+  ))
+}
+
+fn mouse_event_constructor_impl(
+  scope: &mut Scope<'_>,
+  ctor: GcObject,
   args: &[Value],
 ) -> Result<Value, VmError> {
   let type_arg = args.get(0).copied().unwrap_or(Value::Undefined);
@@ -11727,11 +12407,15 @@ fn mouse_event_constructor_native(
   let mut cancelable = false;
   let mut composed = false;
 
+  let mut detail = 0.0f64;
+  let mut view = Value::Null;
+
+  let mut screen_x = 0.0f64;
+  let mut screen_y = 0.0f64;
   let mut client_x = 0.0f64;
   let mut client_y = 0.0f64;
   let mut button = 0.0f64;
   let mut buttons = 0.0f64;
-  let mut detail = 0.0f64;
   let mut ctrl_key = false;
   let mut shift_key = false;
   let mut alt_key = false;
@@ -11764,6 +12448,43 @@ fn mouse_event_constructor_native(
         composed = scope.heap().to_boolean(value)?;
       }
 
+      let detail_key = alloc_key(scope, "detail")?;
+      if let Some(value) = scope
+        .heap()
+        .object_get_own_data_property_value(init_obj, &detail_key)?
+      {
+        let mut n = scope.heap_mut().to_number(value)?;
+        if !n.is_finite() || n.is_nan() {
+          n = 0.0;
+        }
+        detail = n.trunc();
+      }
+
+      let view_key = alloc_key(scope, "view")?;
+      if let Some(value) = scope
+        .heap()
+        .object_get_own_data_property_value(init_obj, &view_key)?
+      {
+        if !matches!(value, Value::Undefined) {
+          view = value;
+        }
+      }
+
+      let screen_x_key = alloc_key(scope, "screenX")?;
+      if let Some(value) = scope
+        .heap()
+        .object_get_own_data_property_value(init_obj, &screen_x_key)?
+      {
+        screen_x = scope.heap_mut().to_number(value)?;
+      }
+      let screen_y_key = alloc_key(scope, "screenY")?;
+      if let Some(value) = scope
+        .heap()
+        .object_get_own_data_property_value(init_obj, &screen_y_key)?
+      {
+        screen_y = scope.heap_mut().to_number(value)?;
+      }
+
       let client_x_key = alloc_key(scope, "clientX")?;
       if let Some(value) = scope
         .heap()
@@ -11792,14 +12513,6 @@ fn mouse_event_constructor_native(
         .object_get_own_data_property_value(init_obj, &buttons_key)?
       {
         buttons = scope.heap_mut().to_number(value)?;
-      }
-
-      let detail_key = alloc_key(scope, "detail")?;
-      if let Some(value) = scope
-        .heap()
-        .object_get_own_data_property_value(init_obj, &detail_key)?
-      {
-        detail = scope.heap_mut().to_number(value)?;
       }
 
       let ctrl_key_key = alloc_key(scope, "ctrlKey")?;
@@ -11846,7 +12559,7 @@ fn mouse_event_constructor_native(
   let prototype_key = alloc_key(scope, "prototype")?;
   let proto = scope
     .heap()
-    .object_get_own_data_property_value(callee, &prototype_key)?
+    .object_get_own_data_property_value(ctor, &prototype_key)?
     .and_then(|v| match v {
       Value::Object(obj) => Some(obj),
       _ => None,
@@ -11857,9 +12570,6 @@ fn mouse_event_constructor_native(
   if let Some(proto) = proto {
     scope.heap_mut().object_set_prototype(obj, Some(proto))?;
   }
-
-  brand_event_object(scope, obj, BrandedEventKind::MouseEvent)?;
-
   let type_key = alloc_key(scope, "type")?;
   scope.define_property(obj, type_key, data_desc(Value::String(type_string)))?;
 
@@ -11872,12 +12582,17 @@ fn mouse_event_constructor_native(
   let composed_key = alloc_key(scope, "composed")?;
   scope.define_property(obj, composed_key, data_desc(Value::Bool(composed)))?;
 
-  let default_prevented_key = alloc_key(scope, "defaultPrevented")?;
-  scope.define_property(obj, default_prevented_key, data_desc(Value::Bool(false)))?;
+  define_event_default_properties(scope, obj)?;
 
-  let cancel_bubble_key = alloc_key(scope, "cancelBubble")?;
-  scope.define_property(obj, cancel_bubble_key, data_desc(Value::Bool(false)))?;
+  let detail_key = alloc_key(scope, "detail")?;
+  scope.define_property(obj, detail_key, data_desc(Value::Number(detail)))?;
+  let view_key = alloc_key(scope, "view")?;
+  scope.define_property(obj, view_key, data_desc(view))?;
 
+  let screen_x_key = alloc_key(scope, "screenX")?;
+  scope.define_property(obj, screen_x_key, data_desc(Value::Number(screen_x)))?;
+  let screen_y_key = alloc_key(scope, "screenY")?;
+  scope.define_property(obj, screen_y_key, data_desc(Value::Number(screen_y)))?;
   let client_x_key = alloc_key(scope, "clientX")?;
   scope.define_property(obj, client_x_key, data_desc(Value::Number(client_x)))?;
   let client_y_key = alloc_key(scope, "clientY")?;
@@ -11886,8 +12601,6 @@ fn mouse_event_constructor_native(
   scope.define_property(obj, button_key, data_desc(Value::Number(button)))?;
   let buttons_key = alloc_key(scope, "buttons")?;
   scope.define_property(obj, buttons_key, data_desc(Value::Number(buttons)))?;
-  let detail_key = alloc_key(scope, "detail")?;
-  scope.define_property(obj, detail_key, data_desc(Value::Number(detail)))?;
 
   let ctrl_key_key = alloc_key(scope, "ctrlKey")?;
   scope.define_property(obj, ctrl_key_key, data_desc(Value::Bool(ctrl_key)))?;
@@ -11900,6 +12613,9 @@ fn mouse_event_constructor_native(
 
   let related_target_key = alloc_key(scope, "relatedTarget")?;
   scope.define_property(obj, related_target_key, data_desc(related_target))?;
+
+  brand_event_object(scope, obj, BrandedEventKind::MouseEvent)?;
+  set_event_initialized(scope, obj, true)?;
 
   Ok(Value::Object(obj))
 }
@@ -12478,10 +13194,10 @@ fn hash_change_event_constructor_construct_native(
 }
 
 fn mouse_event_constructor_construct_native(
-  vm: &mut Vm,
+  _vm: &mut Vm,
   scope: &mut Scope<'_>,
-  host: &mut dyn VmHost,
-  hooks: &mut dyn VmHostHooks,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
   callee: GcObject,
   args: &[Value],
   new_target: Value,
@@ -12490,7 +13206,7 @@ fn mouse_event_constructor_construct_native(
     Value::Object(obj) => obj,
     _ => callee,
   };
-  mouse_event_constructor_native(vm, scope, host, hooks, ctor, Value::Undefined, args)
+  mouse_event_constructor_impl(scope, ctor, args)
 }
 
 fn promise_rejection_event_constructor_construct_native(
@@ -12571,6 +13287,11 @@ fn event_init_event_native(
       "Event.initEvent must be called on an Event object",
     ));
   };
+  if !is_branded_event(scope, event_obj)? {
+    return Err(VmError::TypeError(
+      "Event.initEvent must be called on an Event object",
+    ));
+  }
 
   let type_arg = args.get(0).copied().unwrap_or(Value::Undefined);
   let type_string = scope.heap_mut().to_string(type_arg)?;
@@ -12608,6 +13329,522 @@ fn event_init_event_native(
   let cancel_bubble_key = alloc_key(scope, "cancelBubble")?;
   scope.define_property(event_obj, cancel_bubble_key, data_desc(Value::Bool(false)))?;
 
+  let immediate_stop_key = alloc_key(scope, EVENT_IMMEDIATE_STOP_KEY)?;
+  scope.define_property(event_obj, immediate_stop_key, data_desc(Value::Bool(false)))?;
+
+  set_event_initialized(scope, event_obj, true)?;
+
+  Ok(Value::Undefined)
+}
+
+fn ui_event_init_ui_event_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(event_obj) = this else {
+    return Err(VmError::TypeError(
+      "UIEvent.initUIEvent must be called on a UIEvent object",
+    ));
+  };
+  if !matches!(
+    branded_event_kind(scope, event_obj)?,
+    Some(
+      BrandedEventKind::UIEvent
+        | BrandedEventKind::MouseEvent
+        | BrandedEventKind::KeyboardEvent
+        | BrandedEventKind::FocusEvent
+        | BrandedEventKind::InputEvent
+    )
+  ) {
+    return Err(VmError::TypeError(
+      "UIEvent.initUIEvent must be called on a UIEvent object",
+    ));
+  }
+
+  let type_arg = args.get(0).copied().unwrap_or(Value::Undefined);
+  let type_string = scope.heap_mut().to_string(type_arg)?;
+
+  let bubbles_arg = args.get(1).copied().unwrap_or(Value::Undefined);
+  let bubbles = scope.heap().to_boolean(bubbles_arg)?;
+
+  let cancelable_arg = args.get(2).copied().unwrap_or(Value::Undefined);
+  let cancelable = scope.heap().to_boolean(cancelable_arg)?;
+
+  let view_arg = args.get(3).copied().unwrap_or(Value::Undefined);
+  let view = if matches!(view_arg, Value::Undefined) {
+    Value::Null
+  } else {
+    view_arg
+  };
+
+  let detail_arg = args.get(4).copied().unwrap_or(Value::Undefined);
+  let mut detail = if matches!(detail_arg, Value::Undefined) {
+    0.0
+  } else {
+    scope.heap_mut().to_number(detail_arg)?
+  };
+  if !detail.is_finite() || detail.is_nan() {
+    detail = 0.0;
+  }
+  detail = detail.trunc();
+
+  let type_key = alloc_key(scope, "type")?;
+  scope.define_property(event_obj, type_key, data_desc(Value::String(type_string)))?;
+
+  let bubbles_key = alloc_key(scope, "bubbles")?;
+  scope.define_property(event_obj, bubbles_key, data_desc(Value::Bool(bubbles)))?;
+
+  let cancelable_key = alloc_key(scope, "cancelable")?;
+  scope.define_property(
+    event_obj,
+    cancelable_key,
+    data_desc(Value::Bool(cancelable)),
+  )?;
+
+  // `initUIEvent` does not expose `composed`; reset to false per DOM.
+  let composed_key = alloc_key(scope, "composed")?;
+  scope.define_property(event_obj, composed_key, data_desc(Value::Bool(false)))?;
+
+  let default_prevented_key = alloc_key(scope, "defaultPrevented")?;
+  scope.define_property(
+    event_obj,
+    default_prevented_key,
+    data_desc(Value::Bool(false)),
+  )?;
+
+  let cancel_bubble_key = alloc_key(scope, "cancelBubble")?;
+  scope.define_property(event_obj, cancel_bubble_key, data_desc(Value::Bool(false)))?;
+
+  let immediate_stop_key = alloc_key(scope, EVENT_IMMEDIATE_STOP_KEY)?;
+  scope.define_property(event_obj, immediate_stop_key, data_desc(Value::Bool(false)))?;
+
+  let view_key = alloc_key(scope, "view")?;
+  scope.define_property(event_obj, view_key, data_desc(view))?;
+
+  let detail_key = alloc_key(scope, "detail")?;
+  scope.define_property(event_obj, detail_key, data_desc(Value::Number(detail)))?;
+
+  set_event_initialized(scope, event_obj, true)?;
+
+  Ok(Value::Undefined)
+}
+
+fn mouse_event_init_mouse_event_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(event_obj) = this else {
+    return Err(VmError::TypeError(
+      "MouseEvent.initMouseEvent must be called on a MouseEvent object",
+    ));
+  };
+  if !matches!(
+    branded_event_kind(scope, event_obj)?,
+    Some(BrandedEventKind::MouseEvent)
+  ) {
+    return Err(VmError::TypeError(
+      "MouseEvent.initMouseEvent must be called on a MouseEvent object",
+    ));
+  }
+
+  let type_arg = args.get(0).copied().unwrap_or(Value::Undefined);
+  let type_string = scope.heap_mut().to_string(type_arg)?;
+
+  let bubbles_arg = args.get(1).copied().unwrap_or(Value::Undefined);
+  let bubbles = scope.heap().to_boolean(bubbles_arg)?;
+
+  let cancelable_arg = args.get(2).copied().unwrap_or(Value::Undefined);
+  let cancelable = scope.heap().to_boolean(cancelable_arg)?;
+
+  let view_arg = args.get(3).copied().unwrap_or(Value::Undefined);
+  let view = if matches!(view_arg, Value::Undefined) {
+    Value::Null
+  } else {
+    view_arg
+  };
+
+  let detail_arg = args.get(4).copied().unwrap_or(Value::Undefined);
+  let mut detail = if matches!(detail_arg, Value::Undefined) {
+    0.0
+  } else {
+    scope.heap_mut().to_number(detail_arg)?
+  };
+  if !detail.is_finite() || detail.is_nan() {
+    detail = 0.0;
+  }
+  detail = detail.trunc();
+
+  let num_or_zero = |scope: &mut Scope<'_>, idx: usize| -> Result<f64, VmError> {
+    let arg = args.get(idx).copied().unwrap_or(Value::Undefined);
+    let mut n = if matches!(arg, Value::Undefined) {
+      0.0
+    } else {
+      scope.heap_mut().to_number(arg)?
+    };
+    if !n.is_finite() || n.is_nan() {
+      n = 0.0;
+    }
+    Ok(n)
+  };
+
+  let screen_x = num_or_zero(scope, 5)?;
+  let screen_y = num_or_zero(scope, 6)?;
+  let client_x = num_or_zero(scope, 7)?;
+  let client_y = num_or_zero(scope, 8)?;
+
+  let ctrl_key = scope
+    .heap()
+    .to_boolean(args.get(9).copied().unwrap_or(Value::Undefined))?;
+  let alt_key = scope
+    .heap()
+    .to_boolean(args.get(10).copied().unwrap_or(Value::Undefined))?;
+  let shift_key = scope
+    .heap()
+    .to_boolean(args.get(11).copied().unwrap_or(Value::Undefined))?;
+  let meta_key = scope
+    .heap()
+    .to_boolean(args.get(12).copied().unwrap_or(Value::Undefined))?;
+
+  let mut button = num_or_zero(scope, 13)?;
+  button = button.trunc();
+
+  let related_target_arg = args.get(14).copied().unwrap_or(Value::Undefined);
+  let related_target = if matches!(related_target_arg, Value::Undefined) {
+    Value::Null
+  } else {
+    related_target_arg
+  };
+
+  let type_key = alloc_key(scope, "type")?;
+  scope.define_property(event_obj, type_key, data_desc(Value::String(type_string)))?;
+
+  let bubbles_key = alloc_key(scope, "bubbles")?;
+  scope.define_property(event_obj, bubbles_key, data_desc(Value::Bool(bubbles)))?;
+
+  let cancelable_key = alloc_key(scope, "cancelable")?;
+  scope.define_property(
+    event_obj,
+    cancelable_key,
+    data_desc(Value::Bool(cancelable)),
+  )?;
+
+  // `initMouseEvent` does not expose `composed`; reset to false per DOM.
+  let composed_key = alloc_key(scope, "composed")?;
+  scope.define_property(event_obj, composed_key, data_desc(Value::Bool(false)))?;
+
+  let default_prevented_key = alloc_key(scope, "defaultPrevented")?;
+  scope.define_property(
+    event_obj,
+    default_prevented_key,
+    data_desc(Value::Bool(false)),
+  )?;
+
+  let cancel_bubble_key = alloc_key(scope, "cancelBubble")?;
+  scope.define_property(event_obj, cancel_bubble_key, data_desc(Value::Bool(false)))?;
+
+  let immediate_stop_key = alloc_key(scope, EVENT_IMMEDIATE_STOP_KEY)?;
+  scope.define_property(event_obj, immediate_stop_key, data_desc(Value::Bool(false)))?;
+
+  let view_key = alloc_key(scope, "view")?;
+  scope.define_property(event_obj, view_key, data_desc(view))?;
+  let detail_key = alloc_key(scope, "detail")?;
+  scope.define_property(event_obj, detail_key, data_desc(Value::Number(detail)))?;
+
+  let screen_x_key = alloc_key(scope, "screenX")?;
+  scope.define_property(event_obj, screen_x_key, data_desc(Value::Number(screen_x)))?;
+  let screen_y_key = alloc_key(scope, "screenY")?;
+  scope.define_property(event_obj, screen_y_key, data_desc(Value::Number(screen_y)))?;
+  let client_x_key = alloc_key(scope, "clientX")?;
+  scope.define_property(event_obj, client_x_key, data_desc(Value::Number(client_x)))?;
+  let client_y_key = alloc_key(scope, "clientY")?;
+  scope.define_property(event_obj, client_y_key, data_desc(Value::Number(client_y)))?;
+
+  let ctrl_key_key = alloc_key(scope, "ctrlKey")?;
+  scope.define_property(event_obj, ctrl_key_key, data_desc(Value::Bool(ctrl_key)))?;
+  let shift_key_key = alloc_key(scope, "shiftKey")?;
+  scope.define_property(event_obj, shift_key_key, data_desc(Value::Bool(shift_key)))?;
+  let alt_key_key = alloc_key(scope, "altKey")?;
+  scope.define_property(event_obj, alt_key_key, data_desc(Value::Bool(alt_key)))?;
+  let meta_key_key = alloc_key(scope, "metaKey")?;
+  scope.define_property(event_obj, meta_key_key, data_desc(Value::Bool(meta_key)))?;
+
+  let button_key = alloc_key(scope, "button")?;
+  scope.define_property(event_obj, button_key, data_desc(Value::Number(button)))?;
+  // `buttons` is not part of the legacy `initMouseEvent` signature; default to 0.
+  let buttons_key = alloc_key(scope, "buttons")?;
+  scope.define_property(event_obj, buttons_key, data_desc(Value::Number(0.0)))?;
+
+  let related_target_key = alloc_key(scope, "relatedTarget")?;
+  scope.define_property(event_obj, related_target_key, data_desc(related_target))?;
+
+  set_event_initialized(scope, event_obj, true)?;
+
+  Ok(Value::Undefined)
+}
+
+fn keyboard_event_init_keyboard_event_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(event_obj) = this else {
+    return Err(VmError::TypeError(
+      "KeyboardEvent.initKeyboardEvent must be called on a KeyboardEvent object",
+    ));
+  };
+  if !matches!(
+    branded_event_kind(scope, event_obj)?,
+    Some(BrandedEventKind::KeyboardEvent)
+  ) {
+    return Err(VmError::TypeError(
+      "KeyboardEvent.initKeyboardEvent must be called on a KeyboardEvent object",
+    ));
+  }
+
+  let type_arg = args.get(0).copied().unwrap_or(Value::Undefined);
+  let type_string = scope.heap_mut().to_string(type_arg)?;
+
+  let bubbles_arg = args.get(1).copied().unwrap_or(Value::Undefined);
+  let bubbles = scope.heap().to_boolean(bubbles_arg)?;
+
+  let cancelable_arg = args.get(2).copied().unwrap_or(Value::Undefined);
+  let cancelable = scope.heap().to_boolean(cancelable_arg)?;
+
+  let view_arg = args.get(3).copied().unwrap_or(Value::Undefined);
+  let view = if matches!(view_arg, Value::Undefined) {
+    Value::Null
+  } else {
+    view_arg
+  };
+
+  let key_arg = args.get(4).copied().unwrap_or(Value::Undefined);
+  let key = if matches!(key_arg, Value::Undefined) {
+    scope.alloc_string("")?
+  } else {
+    scope.heap_mut().to_string(key_arg)?
+  };
+  scope.push_root(Value::String(key))?;
+
+  let location_arg = args.get(5).copied().unwrap_or(Value::Undefined);
+  let mut location = if matches!(location_arg, Value::Undefined) {
+    0.0
+  } else {
+    scope.heap_mut().to_number(location_arg)?
+  };
+  if !location.is_finite() || location.is_nan() {
+    location = 0.0;
+  }
+  location = location.trunc();
+
+  // Legacy signature (`initKeyboardEvent`) historically uses a modifiers list string.
+  let modifiers_arg = args.get(6).copied().unwrap_or(Value::Undefined);
+  let modifiers = if matches!(modifiers_arg, Value::Undefined) {
+    None
+  } else {
+    Some(scope.heap_mut().to_string(modifiers_arg)?)
+  };
+  if let Some(modifiers) = modifiers {
+    scope.push_root(Value::String(modifiers))?;
+  }
+
+  let repeat_arg = args.get(7).copied().unwrap_or(Value::Undefined);
+  let repeat = scope.heap().to_boolean(repeat_arg)?;
+
+  let mut ctrl_key = false;
+  let mut shift_key = false;
+  let mut alt_key = false;
+  let mut meta_key = false;
+  if let Some(modifiers) = modifiers {
+    let list = scope
+      .heap()
+      .get_string(modifiers)
+      .map(|s| s.to_utf8_lossy())
+      .unwrap_or_default();
+    for tok in list.split_whitespace() {
+      match tok.to_ascii_lowercase().as_str() {
+        "control" | "ctrl" => ctrl_key = true,
+        "shift" => shift_key = true,
+        "alt" => alt_key = true,
+        "meta" => meta_key = true,
+        _ => {}
+      }
+    }
+  }
+
+  let type_key = alloc_key(scope, "type")?;
+  scope.define_property(event_obj, type_key, data_desc(Value::String(type_string)))?;
+
+  let bubbles_key = alloc_key(scope, "bubbles")?;
+  scope.define_property(event_obj, bubbles_key, data_desc(Value::Bool(bubbles)))?;
+
+  let cancelable_key = alloc_key(scope, "cancelable")?;
+  scope.define_property(
+    event_obj,
+    cancelable_key,
+    data_desc(Value::Bool(cancelable)),
+  )?;
+
+  // `initKeyboardEvent` does not expose `composed`; reset to false per DOM.
+  let composed_key = alloc_key(scope, "composed")?;
+  scope.define_property(event_obj, composed_key, data_desc(Value::Bool(false)))?;
+
+  let default_prevented_key = alloc_key(scope, "defaultPrevented")?;
+  scope.define_property(
+    event_obj,
+    default_prevented_key,
+    data_desc(Value::Bool(false)),
+  )?;
+
+  let cancel_bubble_key = alloc_key(scope, "cancelBubble")?;
+  scope.define_property(event_obj, cancel_bubble_key, data_desc(Value::Bool(false)))?;
+
+  let immediate_stop_key = alloc_key(scope, EVENT_IMMEDIATE_STOP_KEY)?;
+  scope.define_property(event_obj, immediate_stop_key, data_desc(Value::Bool(false)))?;
+
+  let view_key = alloc_key(scope, "view")?;
+  scope.define_property(event_obj, view_key, data_desc(view))?;
+  let detail_key = alloc_key(scope, "detail")?;
+  scope.define_property(event_obj, detail_key, data_desc(Value::Number(0.0)))?;
+
+  let key_key = alloc_key(scope, "key")?;
+  scope.define_property(event_obj, key_key, data_desc(Value::String(key)))?;
+
+  let code_s = scope.alloc_string("")?;
+  scope.push_root(Value::String(code_s))?;
+  let code_key = alloc_key(scope, "code")?;
+  scope.define_property(event_obj, code_key, data_desc(Value::String(code_s)))?;
+
+  let location_key = alloc_key(scope, "location")?;
+  scope.define_property(event_obj, location_key, data_desc(Value::Number(location)))?;
+
+  let ctrl_key_key = alloc_key(scope, "ctrlKey")?;
+  scope.define_property(event_obj, ctrl_key_key, data_desc(Value::Bool(ctrl_key)))?;
+  let shift_key_key = alloc_key(scope, "shiftKey")?;
+  scope.define_property(event_obj, shift_key_key, data_desc(Value::Bool(shift_key)))?;
+  let alt_key_key = alloc_key(scope, "altKey")?;
+  scope.define_property(event_obj, alt_key_key, data_desc(Value::Bool(alt_key)))?;
+  let meta_key_key = alloc_key(scope, "metaKey")?;
+  scope.define_property(event_obj, meta_key_key, data_desc(Value::Bool(meta_key)))?;
+
+  let repeat_key = alloc_key(scope, "repeat")?;
+  scope.define_property(event_obj, repeat_key, data_desc(Value::Bool(repeat)))?;
+
+  set_event_initialized(scope, event_obj, true)?;
+
+  Ok(Value::Undefined)
+}
+
+fn focus_event_init_focus_event_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(event_obj) = this else {
+    return Err(VmError::TypeError(
+      "FocusEvent.initFocusEvent must be called on a FocusEvent object",
+    ));
+  };
+  if !matches!(
+    branded_event_kind(scope, event_obj)?,
+    Some(BrandedEventKind::FocusEvent)
+  ) {
+    return Err(VmError::TypeError(
+      "FocusEvent.initFocusEvent must be called on a FocusEvent object",
+    ));
+  }
+
+  let type_arg = args.get(0).copied().unwrap_or(Value::Undefined);
+  let type_string = scope.heap_mut().to_string(type_arg)?;
+
+  let bubbles_arg = args.get(1).copied().unwrap_or(Value::Undefined);
+  let bubbles = scope.heap().to_boolean(bubbles_arg)?;
+
+  let cancelable_arg = args.get(2).copied().unwrap_or(Value::Undefined);
+  let cancelable = scope.heap().to_boolean(cancelable_arg)?;
+
+  let view_arg = args.get(3).copied().unwrap_or(Value::Undefined);
+  let view = if matches!(view_arg, Value::Undefined) {
+    Value::Null
+  } else {
+    view_arg
+  };
+
+  let detail_arg = args.get(4).copied().unwrap_or(Value::Undefined);
+  let mut detail = if matches!(detail_arg, Value::Undefined) {
+    0.0
+  } else {
+    scope.heap_mut().to_number(detail_arg)?
+  };
+  if !detail.is_finite() || detail.is_nan() {
+    detail = 0.0;
+  }
+  detail = detail.trunc();
+
+  let related_target_arg = args.get(5).copied().unwrap_or(Value::Undefined);
+  let related_target = if matches!(related_target_arg, Value::Undefined) {
+    Value::Null
+  } else {
+    related_target_arg
+  };
+
+  let type_key = alloc_key(scope, "type")?;
+  scope.define_property(event_obj, type_key, data_desc(Value::String(type_string)))?;
+
+  let bubbles_key = alloc_key(scope, "bubbles")?;
+  scope.define_property(event_obj, bubbles_key, data_desc(Value::Bool(bubbles)))?;
+
+  let cancelable_key = alloc_key(scope, "cancelable")?;
+  scope.define_property(
+    event_obj,
+    cancelable_key,
+    data_desc(Value::Bool(cancelable)),
+  )?;
+
+  // `initFocusEvent` does not expose `composed`; reset to false per DOM.
+  let composed_key = alloc_key(scope, "composed")?;
+  scope.define_property(event_obj, composed_key, data_desc(Value::Bool(false)))?;
+
+  let default_prevented_key = alloc_key(scope, "defaultPrevented")?;
+  scope.define_property(
+    event_obj,
+    default_prevented_key,
+    data_desc(Value::Bool(false)),
+  )?;
+
+  let cancel_bubble_key = alloc_key(scope, "cancelBubble")?;
+  scope.define_property(event_obj, cancel_bubble_key, data_desc(Value::Bool(false)))?;
+
+  let immediate_stop_key = alloc_key(scope, EVENT_IMMEDIATE_STOP_KEY)?;
+  scope.define_property(event_obj, immediate_stop_key, data_desc(Value::Bool(false)))?;
+
+  let view_key = alloc_key(scope, "view")?;
+  scope.define_property(event_obj, view_key, data_desc(view))?;
+  let detail_key = alloc_key(scope, "detail")?;
+  scope.define_property(event_obj, detail_key, data_desc(Value::Number(detail)))?;
+
+  let related_target_key = alloc_key(scope, "relatedTarget")?;
+  scope.define_property(event_obj, related_target_key, data_desc(related_target))?;
+
+  set_event_initialized(scope, event_obj, true)?;
+
   Ok(Value::Undefined)
 }
 
@@ -12625,6 +13862,14 @@ fn custom_event_init_custom_event_native(
       "CustomEvent.initCustomEvent must be called on a CustomEvent object",
     ));
   };
+  if !matches!(
+    branded_event_kind(scope, event_obj)?,
+    Some(BrandedEventKind::CustomEvent)
+  ) {
+    return Err(VmError::TypeError(
+      "CustomEvent.initCustomEvent must be called on a CustomEvent object",
+    ));
+  }
 
   let type_arg = args.get(0).copied().unwrap_or(Value::Undefined);
   let type_string = scope.heap_mut().to_string(type_arg)?;
@@ -12669,8 +13914,13 @@ fn custom_event_init_custom_event_native(
   let cancel_bubble_key = alloc_key(scope, "cancelBubble")?;
   scope.define_property(event_obj, cancel_bubble_key, data_desc(Value::Bool(false)))?;
 
+  let immediate_stop_key = alloc_key(scope, EVENT_IMMEDIATE_STOP_KEY)?;
+  scope.define_property(event_obj, immediate_stop_key, data_desc(Value::Bool(false)))?;
+
   let detail_key = alloc_key(scope, "detail")?;
   scope.define_property(event_obj, detail_key, data_desc(detail))?;
+
+  set_event_initialized(scope, event_obj, true)?;
 
   Ok(Value::Undefined)
 }
@@ -12689,6 +13939,14 @@ fn storage_event_init_storage_event_native(
       "StorageEvent.initStorageEvent must be called on a StorageEvent object",
     ));
   };
+  if !matches!(
+    branded_event_kind(scope, event_obj)?,
+    Some(BrandedEventKind::StorageEvent)
+  ) {
+    return Err(VmError::TypeError(
+      "StorageEvent.initStorageEvent must be called on a StorageEvent object",
+    ));
+  }
 
   let type_arg = args.get(0).copied().unwrap_or(Value::Undefined);
   let type_string = scope.heap_mut().to_string(type_arg)?;
@@ -12761,6 +14019,9 @@ fn storage_event_init_storage_event_native(
   let cancel_bubble_key = alloc_key(scope, "cancelBubble")?;
   scope.define_property(event_obj, cancel_bubble_key, data_desc(Value::Bool(false)))?;
 
+  let immediate_stop_key = alloc_key(scope, EVENT_IMMEDIATE_STOP_KEY)?;
+  scope.define_property(event_obj, immediate_stop_key, data_desc(Value::Bool(false)))?;
+
   let key_key = alloc_key(scope, "key")?;
   scope.define_property(event_obj, key_key, read_only_data_desc(key))?;
 
@@ -12779,6 +14040,8 @@ fn storage_event_init_storage_event_native(
     storage_area_key,
     read_only_data_desc(storage_area),
   )?;
+
+  set_event_initialized(scope, event_obj, true)?;
 
   Ok(Value::Undefined)
 }
@@ -15861,6 +17124,41 @@ fn is_branded_abort_signal(scope: &mut Scope<'_>, obj: GcObject) -> Result<bool,
   ))
 }
 
+fn is_event_initialized(scope: &mut Scope<'_>, obj: GcObject) -> Result<bool, VmError> {
+  // `document.createEvent()` returns uninitialized events that must be initialized via legacy
+  // `init*Event` methods before dispatch.
+  //
+  // For compatibility with older event objects (or host-dispatched events) that predate this slot,
+  // treat a missing flag as initialized.
+  scope.push_root(Value::Object(obj))?;
+  let key = alloc_key(scope, EVENT_INITIALIZED_KEY)?;
+  Ok(!matches!(
+    scope.heap().object_get_own_data_property_value(obj, &key)?,
+    Some(Value::Bool(false))
+  ))
+}
+
+fn set_event_initialized(
+  scope: &mut Scope<'_>,
+  obj: GcObject,
+  initialized: bool,
+) -> Result<(), VmError> {
+  scope.push_root(Value::Object(obj))?;
+  let key = alloc_key(scope, EVENT_INITIALIZED_KEY)?;
+  scope.define_property(
+    obj,
+    key,
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: false,
+      kind: PropertyKind::Data {
+        value: Value::Bool(initialized),
+        writable: true,
+      },
+    },
+  )?;
+  Ok(())
+}
 fn abort_signal_is_aborted(scope: &mut Scope<'_>, obj: GcObject) -> Result<bool, VmError> {
   let aborted_key = alloc_key(scope, "aborted")?;
   Ok(matches!(
@@ -19184,6 +20482,13 @@ pub(crate) fn event_target_dispatch_event_dom2(
       "EventTarget.dispatchEvent: event is not an Event",
     ));
   }
+  if !is_event_initialized(scope, event_obj)? {
+    return Err(VmError::Throw(make_dom_exception(
+      scope,
+      "InvalidStateError",
+      "Event has not been initialized",
+    )?));
+  }
 
   let mut rust_event = rust_event_from_js_event(vm, scope, vm_host, hooks, event_obj)?;
 
@@ -19587,7 +20892,11 @@ fn document_create_event_native(
   enum Kind {
     Event,
     CustomEvent,
+    UIEvent,
     MouseEvent,
+    KeyboardEvent,
+    FocusEvent,
+    InputEvent,
     PopStateEvent,
     HashChangeEvent,
     StorageEvent,
@@ -19597,8 +20906,16 @@ fn document_create_event_native(
     Kind::Event
   } else if name.eq_ignore_ascii_case("CustomEvent") {
     Kind::CustomEvent
+  } else if name.eq_ignore_ascii_case("UIEvent") {
+    Kind::UIEvent
   } else if name.eq_ignore_ascii_case("MouseEvent") {
     Kind::MouseEvent
+  } else if name.eq_ignore_ascii_case("KeyboardEvent") {
+    Kind::KeyboardEvent
+  } else if name.eq_ignore_ascii_case("FocusEvent") {
+    Kind::FocusEvent
+  } else if name.eq_ignore_ascii_case("InputEvent") {
+    Kind::InputEvent
   } else if name.eq_ignore_ascii_case("PopStateEvent") {
     Kind::PopStateEvent
   } else if name.eq_ignore_ascii_case("HashChangeEvent") {
@@ -19616,7 +20933,11 @@ fn document_create_event_native(
   let proto_key = match kind {
     Kind::Event => EVENT_PROTOTYPE_KEY,
     Kind::CustomEvent => CUSTOM_EVENT_PROTOTYPE_KEY,
+    Kind::UIEvent => UI_EVENT_PROTOTYPE_KEY,
     Kind::MouseEvent => MOUSE_EVENT_PROTOTYPE_KEY,
+    Kind::KeyboardEvent => KEYBOARD_EVENT_PROTOTYPE_KEY,
+    Kind::FocusEvent => FOCUS_EVENT_PROTOTYPE_KEY,
+    Kind::InputEvent => INPUT_EVENT_PROTOTYPE_KEY,
     Kind::PopStateEvent => POP_STATE_EVENT_PROTOTYPE_KEY,
     Kind::HashChangeEvent => HASH_CHANGE_EVENT_PROTOTYPE_KEY,
     Kind::StorageEvent => STORAGE_EVENT_PROTOTYPE_KEY,
@@ -19655,6 +20976,15 @@ fn document_create_event_native(
   if matches!(kind, Kind::CustomEvent) {
     let detail_key = alloc_key(scope, "detail")?;
     scope.define_property(obj, detail_key, data_desc(Value::Null))?;
+  }
+  if matches!(
+    kind,
+    Kind::UIEvent | Kind::MouseEvent | Kind::KeyboardEvent | Kind::FocusEvent | Kind::InputEvent
+  ) {
+    let detail_key = alloc_key(scope, "detail")?;
+    scope.define_property(obj, detail_key, data_desc(Value::Number(0.0)))?;
+    let view_key = alloc_key(scope, "view")?;
+    scope.define_property(obj, view_key, data_desc(Value::Null))?;
   }
   if matches!(kind, Kind::PopStateEvent) {
     let state_key = alloc_key(scope, "state")?;
@@ -19695,14 +21025,23 @@ fn document_create_event_native(
   let branded_kind = match kind {
     Kind::Event => BrandedEventKind::Event,
     Kind::CustomEvent => BrandedEventKind::CustomEvent,
+    Kind::UIEvent => BrandedEventKind::UIEvent,
     Kind::MouseEvent => BrandedEventKind::MouseEvent,
+    Kind::KeyboardEvent => BrandedEventKind::KeyboardEvent,
+    Kind::FocusEvent => BrandedEventKind::FocusEvent,
+    Kind::InputEvent => BrandedEventKind::InputEvent,
     Kind::PopStateEvent => BrandedEventKind::PopStateEvent,
     Kind::HashChangeEvent => BrandedEventKind::HashChangeEvent,
     Kind::StorageEvent => BrandedEventKind::StorageEvent,
   };
   brand_event_object(scope, obj, branded_kind)?;
+  set_event_initialized(scope, obj, false)?;
 
   if matches!(kind, Kind::MouseEvent) {
+    let screen_x_key = alloc_key(scope, "screenX")?;
+    scope.define_property(obj, screen_x_key, data_desc(Value::Number(0.0)))?;
+    let screen_y_key = alloc_key(scope, "screenY")?;
+    scope.define_property(obj, screen_y_key, data_desc(Value::Number(0.0)))?;
     let client_x_key = alloc_key(scope, "clientX")?;
     scope.define_property(obj, client_x_key, data_desc(Value::Number(0.0)))?;
     let client_y_key = alloc_key(scope, "clientY")?;
@@ -19711,8 +21050,6 @@ fn document_create_event_native(
     scope.define_property(obj, button_key, data_desc(Value::Number(0.0)))?;
     let buttons_key = alloc_key(scope, "buttons")?;
     scope.define_property(obj, buttons_key, data_desc(Value::Number(0.0)))?;
-    let detail_key = alloc_key(scope, "detail")?;
-    scope.define_property(obj, detail_key, data_desc(Value::Number(0.0)))?;
     let ctrl_key = alloc_key(scope, "ctrlKey")?;
     scope.define_property(obj, ctrl_key, data_desc(Value::Bool(false)))?;
     let shift_key = alloc_key(scope, "shiftKey")?;
@@ -19723,6 +21060,40 @@ fn document_create_event_native(
     scope.define_property(obj, meta_key, data_desc(Value::Bool(false)))?;
     let related_target_key = alloc_key(scope, "relatedTarget")?;
     scope.define_property(obj, related_target_key, data_desc(Value::Null))?;
+  }
+  if matches!(kind, Kind::KeyboardEvent) {
+    let empty = scope.alloc_string("")?;
+    scope.push_root(Value::String(empty))?;
+    let key_key = alloc_key(scope, "key")?;
+    scope.define_property(obj, key_key, data_desc(Value::String(empty)))?;
+    let code_key = alloc_key(scope, "code")?;
+    scope.define_property(obj, code_key, data_desc(Value::String(empty)))?;
+    let location_key = alloc_key(scope, "location")?;
+    scope.define_property(obj, location_key, data_desc(Value::Number(0.0)))?;
+    let ctrl_key = alloc_key(scope, "ctrlKey")?;
+    scope.define_property(obj, ctrl_key, data_desc(Value::Bool(false)))?;
+    let shift_key = alloc_key(scope, "shiftKey")?;
+    scope.define_property(obj, shift_key, data_desc(Value::Bool(false)))?;
+    let alt_key = alloc_key(scope, "altKey")?;
+    scope.define_property(obj, alt_key, data_desc(Value::Bool(false)))?;
+    let meta_key = alloc_key(scope, "metaKey")?;
+    scope.define_property(obj, meta_key, data_desc(Value::Bool(false)))?;
+    let repeat_key = alloc_key(scope, "repeat")?;
+    scope.define_property(obj, repeat_key, data_desc(Value::Bool(false)))?;
+  }
+  if matches!(kind, Kind::FocusEvent) {
+    let related_target_key = alloc_key(scope, "relatedTarget")?;
+    scope.define_property(obj, related_target_key, data_desc(Value::Null))?;
+  }
+  if matches!(kind, Kind::InputEvent) {
+    let data_key = alloc_key(scope, "data")?;
+    scope.define_property(obj, data_key, data_desc(Value::Null))?;
+    let empty = scope.alloc_string("")?;
+    scope.push_root(Value::String(empty))?;
+    let input_type_key = alloc_key(scope, "inputType")?;
+    scope.define_property(obj, input_type_key, data_desc(Value::String(empty)))?;
+    let is_composing_key = alloc_key(scope, "isComposing")?;
+    scope.define_property(obj, is_composing_key, data_desc(Value::Bool(false)))?;
   }
 
   Ok(Value::Object(obj))
@@ -29352,6 +30723,78 @@ fn init_window_globals(
     .heap_mut()
     .object_set_prototype(mouse_event_proto, Some(ui_event_proto))?;
 
+  let init_ui_event_call_id = vm.register_native_call(ui_event_init_ui_event_native)?;
+  let init_ui_event_name = scope.alloc_string("initUIEvent")?;
+  scope.push_root(Value::String(init_ui_event_name))?;
+  let init_ui_event_func =
+    scope.alloc_native_function(init_ui_event_call_id, None, init_ui_event_name, 5)?;
+  scope.heap_mut().object_set_prototype(
+    init_ui_event_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(init_ui_event_func))?;
+  let init_ui_event_key = alloc_key(&mut scope, "initUIEvent")?;
+  scope.define_property(
+    ui_event_proto,
+    init_ui_event_key,
+    data_desc(Value::Object(init_ui_event_func)),
+  )?;
+
+  let init_mouse_event_call_id = vm.register_native_call(mouse_event_init_mouse_event_native)?;
+  let init_mouse_event_name = scope.alloc_string("initMouseEvent")?;
+  scope.push_root(Value::String(init_mouse_event_name))?;
+  let init_mouse_event_func =
+    scope.alloc_native_function(init_mouse_event_call_id, None, init_mouse_event_name, 15)?;
+  scope.heap_mut().object_set_prototype(
+    init_mouse_event_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(init_mouse_event_func))?;
+  let init_mouse_event_key = alloc_key(&mut scope, "initMouseEvent")?;
+  scope.define_property(
+    mouse_event_proto,
+    init_mouse_event_key,
+    data_desc(Value::Object(init_mouse_event_func)),
+  )?;
+
+  let init_keyboard_event_call_id = vm.register_native_call(keyboard_event_init_keyboard_event_native)?;
+  let init_keyboard_event_name = scope.alloc_string("initKeyboardEvent")?;
+  scope.push_root(Value::String(init_keyboard_event_name))?;
+  let init_keyboard_event_func = scope.alloc_native_function(
+    init_keyboard_event_call_id,
+    None,
+    init_keyboard_event_name,
+    9,
+  )?;
+  scope.heap_mut().object_set_prototype(
+    init_keyboard_event_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(init_keyboard_event_func))?;
+  let init_keyboard_event_key = alloc_key(&mut scope, "initKeyboardEvent")?;
+  scope.define_property(
+    keyboard_event_proto,
+    init_keyboard_event_key,
+    data_desc(Value::Object(init_keyboard_event_func)),
+  )?;
+
+  let init_focus_event_call_id = vm.register_native_call(focus_event_init_focus_event_native)?;
+  let init_focus_event_name = scope.alloc_string("initFocusEvent")?;
+  scope.push_root(Value::String(init_focus_event_name))?;
+  let init_focus_event_func =
+    scope.alloc_native_function(init_focus_event_call_id, None, init_focus_event_name, 6)?;
+  scope.heap_mut().object_set_prototype(
+    init_focus_event_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(init_focus_event_func))?;
+  let init_focus_event_key = alloc_key(&mut scope, "initFocusEvent")?;
+  scope.define_property(
+    focus_event_proto,
+    init_focus_event_key,
+    data_desc(Value::Object(init_focus_event_func)),
+  )?;
+
   let init_custom_event_call_id = vm.register_native_call(custom_event_init_custom_event_native)?;
   let init_custom_event_name = scope.alloc_string("initCustomEvent")?;
   scope.push_root(Value::String(init_custom_event_name))?;
@@ -29549,11 +30992,13 @@ fn init_window_globals(
     )?;
   }
 
+  let ui_event_ctor_call_id = vm.register_native_call(ui_event_constructor_native)?;
+  let ui_event_ctor_construct_id = vm.register_native_construct(ui_event_constructor_construct_native)?;
   let ui_event_ctor_name = scope.alloc_string("UIEvent")?;
   scope.push_root(Value::String(ui_event_ctor_name))?;
   let ui_event_ctor_func = scope.alloc_native_function(
-    event_ctor_call_id,
-    Some(event_ctor_construct_id),
+    ui_event_ctor_call_id,
+    Some(ui_event_ctor_construct_id),
     ui_event_ctor_name,
     1,
   )?;
@@ -29579,11 +31024,14 @@ fn init_window_globals(
     data_desc(Value::Object(ui_event_ctor_func)),
   )?;
 
+  let keyboard_event_ctor_call_id = vm.register_native_call(keyboard_event_constructor_native)?;
+  let keyboard_event_ctor_construct_id =
+    vm.register_native_construct(keyboard_event_constructor_construct_native)?;
   let keyboard_event_ctor_name = scope.alloc_string("KeyboardEvent")?;
   scope.push_root(Value::String(keyboard_event_ctor_name))?;
   let keyboard_event_ctor_func = scope.alloc_native_function(
-    event_ctor_call_id,
-    Some(event_ctor_construct_id),
+    keyboard_event_ctor_call_id,
+    Some(keyboard_event_ctor_construct_id),
     keyboard_event_ctor_name,
     1,
   )?;
@@ -29609,11 +31057,14 @@ fn init_window_globals(
     data_desc(Value::Object(keyboard_event_ctor_func)),
   )?;
 
+  let focus_event_ctor_call_id = vm.register_native_call(focus_event_constructor_native)?;
+  let focus_event_ctor_construct_id =
+    vm.register_native_construct(focus_event_constructor_construct_native)?;
   let focus_event_ctor_name = scope.alloc_string("FocusEvent")?;
   scope.push_root(Value::String(focus_event_ctor_name))?;
   let focus_event_ctor_func = scope.alloc_native_function(
-    event_ctor_call_id,
-    Some(event_ctor_construct_id),
+    focus_event_ctor_call_id,
+    Some(focus_event_ctor_construct_id),
     focus_event_ctor_name,
     1,
   )?;
@@ -29639,11 +31090,14 @@ fn init_window_globals(
     data_desc(Value::Object(focus_event_ctor_func)),
   )?;
 
+  let input_event_ctor_call_id = vm.register_native_call(input_event_constructor_native)?;
+  let input_event_ctor_construct_id =
+    vm.register_native_construct(input_event_constructor_construct_native)?;
   let input_event_ctor_name = scope.alloc_string("InputEvent")?;
   scope.push_root(Value::String(input_event_ctor_name))?;
   let input_event_ctor_func = scope.alloc_native_function(
-    event_ctor_call_id,
-    Some(event_ctor_construct_id),
+    input_event_ctor_call_id,
+    Some(input_event_ctor_construct_id),
     input_event_ctor_name,
     1,
   )?;
