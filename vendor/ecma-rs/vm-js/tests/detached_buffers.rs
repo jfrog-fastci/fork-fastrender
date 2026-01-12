@@ -3,7 +3,7 @@ use vm_js::{GcObject, Heap, HeapLimits, JsRuntime, Scope, Value, Vm, VmError, Vm
 fn new_runtime() -> JsRuntime {
   let vm = Vm::new(VmOptions::default());
   let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
-  JsRuntime::new(vm, heap).unwrap()
+  JsRuntime::new(vm, heap).expect("create runtime")
 }
 
 fn detach_array_buffer(
@@ -28,7 +28,7 @@ fn slice_on_detached_buffers_throws_type_error() {
   let mut rt = new_runtime();
   rt
     .register_global_native_function("detachArrayBuffer", detach_array_buffer, 1)
-    .unwrap();
+    .expect("register detachArrayBuffer");
 
   let out = rt
     .exec_script(
@@ -36,12 +36,17 @@ fn slice_on_detached_buffers_throws_type_error() {
         var ab = new ArrayBuffer(4);
         var u = new Uint8Array(ab);
         detachArrayBuffer(ab);
+
+        // Integer-indexed access on detached typed arrays should return `undefined`, not crash.
+        var idxOk = u[0] === undefined;
+
         var abOk = (() => { try { ab.slice(0); } catch(e) { return e.name === 'TypeError'; } return false; })();
         var uOk = (() => { try { u.slice(0); } catch(e) { return e.name === 'TypeError'; } return false; })();
-        abOk && uOk
+
+        abOk && uOk && idxOk
       "#,
     )
-    .unwrap();
+    .expect("script should run");
   assert_eq!(out, Value::Bool(true));
 }
 
@@ -80,3 +85,4 @@ fn heap_byte_access_helpers_throw_type_error_on_detached_and_writes_are_noop() -
 
   Ok(())
 }
+
