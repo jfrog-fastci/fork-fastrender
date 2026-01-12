@@ -5486,6 +5486,41 @@ fn document_body_get_native(
   get_or_create_node_wrapper(vm, scope, document_obj, Some(dom), node_id)
 }
 
+fn document_scrolling_element_get_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(document_obj) = this else {
+    return Ok(Value::Null);
+  };
+
+  let Some(dom) = dom_from_vm_host(host) else {
+    return Ok(Value::Null);
+  };
+
+  let quirks_mode = match &dom.node(dom.root()).kind {
+    NodeKind::Document { quirks_mode } => *quirks_mode,
+    _ => QuirksMode::NoQuirks,
+  };
+
+  if quirks_mode == QuirksMode::Quirks {
+    if let Some(node_id) = dom.body() {
+      return get_or_create_node_wrapper(vm, scope, document_obj, Some(dom), node_id);
+    }
+  }
+
+  let Some(node_id) = dom.document_element() else {
+    return Ok(Value::Null);
+  };
+
+  get_or_create_node_wrapper(vm, scope, document_obj, Some(dom), node_id)
+}
+
 fn document_get_element_by_id_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -17983,6 +18018,36 @@ fn init_window_globals(
     },
   )?;
 
+  // document.scrollingElement
+  let document_scrolling_element_key = alloc_key(&mut scope, "scrollingElement")?;
+  let document_scrolling_element_call_id =
+    vm.register_native_call(document_scrolling_element_get_native)?;
+  let document_scrolling_element_name = scope.alloc_string("get scrollingElement")?;
+  scope.push_root(Value::String(document_scrolling_element_name))?;
+  let document_scrolling_element_func = scope.alloc_native_function(
+    document_scrolling_element_call_id,
+    None,
+    document_scrolling_element_name,
+    0,
+  )?;
+  scope.heap_mut().object_set_prototype(
+    document_scrolling_element_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(document_scrolling_element_func))?;
+  scope.define_property(
+    document_obj,
+    document_scrolling_element_key,
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: true,
+      kind: PropertyKind::Accessor {
+        get: Value::Object(document_scrolling_element_func),
+        set: Value::Undefined,
+      },
+    },
+  )?;
+
   // document.write / document.writeln
   let write_key = alloc_key(&mut scope, "write")?;
   let write_call_id = vm.register_native_call(document_write_native)?;
@@ -23503,6 +23568,33 @@ mod tests {
       .document_element()
       .expect("document element should exist");
     assert_eq!(host.dom().element_class_name(doc_el), "hello");
+    Ok(())
+  }
+
+  #[test]
+  fn document_scrolling_element_is_document_element_in_no_quirks_mode() -> Result<(), VmError> {
+    let renderer_dom = crate::dom::parse_html("<!doctype html><html><body></body></html>").unwrap();
+    let mut host = crate::js::HostDocumentState::from_renderer_dom(&renderer_dom);
+
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+    let ok = exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      "document.scrollingElement === document.documentElement",
+    )?;
+    assert_eq!(ok, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn document_scrolling_element_is_body_in_quirks_mode() -> Result<(), VmError> {
+    let renderer_dom = crate::dom::parse_html("<html><body></body></html>").unwrap();
+    let mut host = crate::js::HostDocumentState::from_renderer_dom(&renderer_dom);
+
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+    let ok =
+      exec_script_with_dom_host(&mut realm, &mut host, "document.scrollingElement === document.body")?;
+    assert_eq!(ok, Value::Bool(true));
     Ok(())
   }
 
