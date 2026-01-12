@@ -38,25 +38,20 @@ fn find_on_path(candidates: &[&str]) -> Option<PathBuf> {
   None
 }
 
-fn disassemble(path: &Path) -> String {
-  let objdump = find_on_path(&["llvm-objdump-18", "llvm-objdump", "objdump"]).unwrap_or_else(|| {
-    panic!(
-      "no objdump found in PATH (need llvm-objdump or binutils objdump) to disassemble {path:?}"
-    )
-  });
+fn disassemble(objdump: &Path, path: &Path) -> String {
   let mut cmd = Command::new(objdump);
   cmd.arg("-d").arg(path);
   cmd_output(cmd)
 }
 
-fn disassemble_rlib(rlib_path: &Path, extract_dir: &Path) -> String {
+fn disassemble_rlib(objdump: &Path, ar: &Path, rlib_path: &Path, extract_dir: &Path) -> String {
   fs::create_dir_all(extract_dir).unwrap();
 
   // Extract archive members so we can disassemble the actual `.o` file(s).
   // `llvm-objdump` can be picky about `.rlib` archives (it may only print the
   // `lib.rmeta` member), so disassembling the extracted objects is more
   // portable.
-  let mut cmd = Command::new("ar");
+  let mut cmd = Command::new(ar);
   cmd.current_dir(extract_dir).arg("x").arg(rlib_path);
   cmd_output(cmd);
 
@@ -93,7 +88,7 @@ fn disassemble_rlib(rlib_path: &Path, extract_dir: &Path) -> String {
       continue;
     }
 
-    out.push_str(&disassemble(&path));
+    out.push_str(&disassemble(objdump, &path));
     out.push('\n');
     for name in found_here {
       remaining.remove(name);
@@ -141,6 +136,15 @@ fn assert_has_fp_prologue(disasm: &str, symbol: &str) {
 #[test]
 #[cfg(target_arch = "x86_64")]
 fn runtime_native_release_has_frame_pointers() {
+  let Some(objdump) = find_on_path(&["llvm-objdump-18", "llvm-objdump", "objdump"]) else {
+    eprintln!("skipping: objdump not found in PATH (need llvm-objdump-18/llvm-objdump/objdump)");
+    return;
+  };
+  let Some(ar) = find_on_path(&["ar"]) else {
+    eprintln!("skipping: ar not found in PATH");
+    return;
+  };
+
   let crate_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
   let workspace_root = crate_dir
     .parent()
@@ -237,7 +241,7 @@ pub fn entry() -> u64 {
   }
   let rlib_path = rlib_path.unwrap_or_else(|| panic!("unable to find runtime-native rlib in {deps_dir:?}"));
 
-  let disasm = disassemble_rlib(&rlib_path, &tmp.path().join("rlib_extract"));
+  let disasm = disassemble_rlib(&objdump, &ar, &rlib_path, &tmp.path().join("rlib_extract"));
   assert_has_fp_prologue(&disasm, "rt_fp_test_entry");
   assert_has_fp_prologue(&disasm, "rt_fp_test_mid");
   assert_has_fp_prologue(&disasm, "rt_fp_test_leaf");
@@ -250,6 +254,10 @@ fn llc_generated_object_has_frame_pointers() {
     eprintln!("skipping: llc not found in PATH");
     return;
   }
+  let Some(objdump) = find_on_path(&["llvm-objdump-18", "llvm-objdump", "objdump"]) else {
+    eprintln!("skipping: objdump not found in PATH (need llvm-objdump-18/llvm-objdump/objdump)");
+    return;
+  };
 
   let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
     .parent()
@@ -314,7 +322,7 @@ attributes #0 = { nocallback nofree nosync nounwind willreturn memory(none) }
     .arg(&ll_path);
   cmd_output(cmd);
 
-  let disasm = disassemble(&obj_path);
+  let disasm = disassemble(&objdump, &obj_path);
   assert_has_fp_prologue(&disasm, "managed_fp_test");
   assert_has_fp_prologue(&disasm, "managed_fp_leaf");
 }
