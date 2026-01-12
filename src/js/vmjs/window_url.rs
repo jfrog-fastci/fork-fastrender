@@ -15,8 +15,8 @@ use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 use vm_js::iterator;
 use vm_js::{
-  GcObject, GcString, GcSymbol, Heap, PropertyDescriptor, PropertyKey, PropertyKind, Realm,
-  RealmId, RootId, Scope, Value, Vm, VmError, VmHost, VmHostHooks, WeakGcObject,
+  GcObject, GcString, GcSymbol, Heap, HostSlots, PropertyDescriptor, PropertyKey, PropertyKind,
+  Realm, RealmId, RootId, Scope, Value, Vm, VmError, VmHost, VmHostHooks, WeakGcObject,
 };
 
 const ILLEGAL_CONSTRUCTOR_ERROR: &str = "Illegal constructor";
@@ -38,6 +38,12 @@ const OBJECT_URL_QUOTA_EXCEEDED_ERROR: &str = "URL.createObjectURL exceeded obje
 /// The actual symbol is allocated with this description but is not exposed anywhere, so it remains
 /// effectively private to the realm.
 const SEARCH_PARAMS_SLOT_DESC: &str = "__fastrender_url_search_params_slot";
+
+// Brand `URL`/`URLSearchParams` wrappers as platform objects via HostSlots so structuredClone rejects
+// them with DataCloneError.
+const URL_HOST_TAG: u64 = 0x5552_4C5F_5F5F_5F5F; // "URL_____"
+const URL_SEARCH_PARAMS_HOST_TAG: u64 = 0x5552_4C53_5041_5253; // "URLSPARS"
+const URL_SEARCH_PARAMS_ITERATOR_HOST_TAG: u64 = 0x5552_4C53_5049_5452; // "URLSPITR"
 
 fn data_desc(value: Value) -> PropertyDescriptor {
   PropertyDescriptor {
@@ -180,10 +186,17 @@ fn with_realm_state_mut<R>(
   f(vm, state, scope)
 }
 
-fn require_url(state: &UrlRealmState, this: Value) -> Result<Url, VmError> {
+fn require_url(scope: &Scope<'_>, state: &UrlRealmState, this: Value) -> Result<Url, VmError> {
   let Value::Object(obj) = this else {
     return Err(VmError::TypeError("Illegal invocation"));
   };
+  let slots = scope
+    .heap()
+    .object_host_slots(obj)?
+    .ok_or(VmError::TypeError("Illegal invocation"))?;
+  if slots.a != URL_HOST_TAG {
+    return Err(VmError::TypeError("Illegal invocation"));
+  }
   state
     .urls
     .get(&WeakGcObject::from(obj))
@@ -191,10 +204,21 @@ fn require_url(state: &UrlRealmState, this: Value) -> Result<Url, VmError> {
     .ok_or(VmError::TypeError("Illegal invocation"))
 }
 
-fn require_params(state: &UrlRealmState, this: Value) -> Result<UrlSearchParams, VmError> {
+fn require_params(
+  scope: &Scope<'_>,
+  state: &UrlRealmState,
+  this: Value,
+) -> Result<UrlSearchParams, VmError> {
   let Value::Object(obj) = this else {
     return Err(VmError::TypeError("Illegal invocation"));
   };
+  let slots = scope
+    .heap()
+    .object_host_slots(obj)?
+    .ok_or(VmError::TypeError("Illegal invocation"))?;
+  if slots.a != URL_SEARCH_PARAMS_HOST_TAG {
+    return Err(VmError::TypeError("Illegal invocation"));
+  }
   state
     .params
     .get(&WeakGcObject::from(obj))
@@ -436,6 +460,13 @@ fn url_construct_native(
     scope
       .heap_mut()
       .object_set_prototype(obj, Some(state.url_proto))?;
+    scope.heap_mut().object_set_host_slots(
+      obj,
+      HostSlots {
+        a: URL_HOST_TAG,
+        b: 0,
+      },
+    )?;
     state.urls.insert(WeakGcObject::from(obj), url);
     Ok(Value::Object(obj))
   })
@@ -489,6 +520,13 @@ fn url_parse_native(
     scope
       .heap_mut()
       .object_set_prototype(obj, Some(state.url_proto))?;
+    scope.heap_mut().object_set_host_slots(
+      obj,
+      HostSlots {
+        a: URL_HOST_TAG,
+        b: 0,
+      },
+    )?;
     state.urls.insert(WeakGcObject::from(obj), url);
     Ok(Value::Object(obj))
   })
@@ -585,7 +623,7 @@ fn url_href_get_native(
   _args: &[Value],
 ) -> Result<Value, VmError> {
   with_realm_state_mut(vm, scope, callee, |_vm, state, scope| {
-    let url = require_url(state, this)?;
+    let url = require_url(scope, state, this)?;
     let href = url.href().map_err(map_url_error)?;
     let s = scope.alloc_string(&href)?;
     Ok(Value::String(s))
@@ -601,8 +639,8 @@ fn url_href_set_native(
   this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
-  let (url, max_bytes) = with_realm_state_mut(vm, scope, callee, |_vm, state, _scope| {
-    let url = require_url(state, this)?;
+  let (url, max_bytes) = with_realm_state_mut(vm, scope, callee, |_vm, state, scope| {
+    let url = require_url(scope, state, this)?;
     Ok((url, state.limits.max_input_bytes))
   })?;
 
@@ -629,7 +667,7 @@ fn url_origin_get_native(
   _args: &[Value],
 ) -> Result<Value, VmError> {
   with_realm_state_mut(vm, scope, callee, |_vm, state, scope| {
-    let url = require_url(state, this)?;
+    let url = require_url(scope, state, this)?;
     let origin = url.origin();
     let s = scope.alloc_string(&origin)?;
     Ok(Value::String(s))
@@ -646,7 +684,7 @@ fn url_protocol_get_native(
   _args: &[Value],
 ) -> Result<Value, VmError> {
   with_realm_state_mut(vm, scope, callee, |_vm, state, scope| {
-    let url = require_url(state, this)?;
+    let url = require_url(scope, state, this)?;
     let protocol = url.protocol().map_err(map_url_error)?;
     let s = scope.alloc_string(&protocol)?;
     Ok(Value::String(s))
@@ -662,8 +700,8 @@ fn url_protocol_set_native(
   this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
-  let (url, max_bytes) = with_realm_state_mut(vm, scope, callee, |_vm, state, _scope| {
-    let url = require_url(state, this)?;
+  let (url, max_bytes) = with_realm_state_mut(vm, scope, callee, |_vm, state, scope| {
+    let url = require_url(scope, state, this)?;
     Ok((url, state.limits.max_input_bytes))
   })?;
 
@@ -690,7 +728,7 @@ fn url_username_get_native(
   _args: &[Value],
 ) -> Result<Value, VmError> {
   with_realm_state_mut(vm, scope, callee, |_vm, state, scope| {
-    let url = require_url(state, this)?;
+    let url = require_url(scope, state, this)?;
     let username = url.username().map_err(map_url_error)?;
     let s = scope.alloc_string(&username)?;
     Ok(Value::String(s))
@@ -706,8 +744,8 @@ fn url_username_set_native(
   this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
-  let (url, max_bytes) = with_realm_state_mut(vm, scope, callee, |_vm, state, _scope| {
-    let url = require_url(state, this)?;
+  let (url, max_bytes) = with_realm_state_mut(vm, scope, callee, |_vm, state, scope| {
+    let url = require_url(scope, state, this)?;
     Ok((url, state.limits.max_input_bytes))
   })?;
 
@@ -927,7 +965,7 @@ fn url_password_get_native(
   _args: &[Value],
 ) -> Result<Value, VmError> {
   with_realm_state_mut(vm, scope, callee, |_vm, state, scope| {
-    let url = require_url(state, this)?;
+    let url = require_url(scope, state, this)?;
     let password = url.password().map_err(map_url_error)?;
     let s = scope.alloc_string(&password)?;
     Ok(Value::String(s))
@@ -943,8 +981,8 @@ fn url_password_set_native(
   this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
-  let (url, max_bytes) = with_realm_state_mut(vm, scope, callee, |_vm, state, _scope| {
-    let url = require_url(state, this)?;
+  let (url, max_bytes) = with_realm_state_mut(vm, scope, callee, |_vm, state, scope| {
+    let url = require_url(scope, state, this)?;
     Ok((url, state.limits.max_input_bytes))
   })?;
 
@@ -971,7 +1009,7 @@ fn url_host_get_native(
   _args: &[Value],
 ) -> Result<Value, VmError> {
   with_realm_state_mut(vm, scope, callee, |_vm, state, scope| {
-    let url = require_url(state, this)?;
+    let url = require_url(scope, state, this)?;
     let host = url.host().map_err(map_url_error)?;
     let s = scope.alloc_string(&host)?;
     Ok(Value::String(s))
@@ -987,8 +1025,8 @@ fn url_host_set_native(
   this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
-  let (url, max_bytes) = with_realm_state_mut(vm, scope, callee, |_vm, state, _scope| {
-    let url = require_url(state, this)?;
+  let (url, max_bytes) = with_realm_state_mut(vm, scope, callee, |_vm, state, scope| {
+    let url = require_url(scope, state, this)?;
     Ok((url, state.limits.max_input_bytes))
   })?;
 
@@ -1015,7 +1053,7 @@ fn url_hostname_get_native(
   _args: &[Value],
 ) -> Result<Value, VmError> {
   with_realm_state_mut(vm, scope, callee, |_vm, state, scope| {
-    let url = require_url(state, this)?;
+    let url = require_url(scope, state, this)?;
     let hostname = url.hostname().map_err(map_url_error)?;
     let s = scope.alloc_string(&hostname)?;
     Ok(Value::String(s))
@@ -1031,8 +1069,8 @@ fn url_hostname_set_native(
   this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
-  let (url, max_bytes) = with_realm_state_mut(vm, scope, callee, |_vm, state, _scope| {
-    let url = require_url(state, this)?;
+  let (url, max_bytes) = with_realm_state_mut(vm, scope, callee, |_vm, state, scope| {
+    let url = require_url(scope, state, this)?;
     Ok((url, state.limits.max_input_bytes))
   })?;
 
@@ -1059,7 +1097,7 @@ fn url_port_get_native(
   _args: &[Value],
 ) -> Result<Value, VmError> {
   with_realm_state_mut(vm, scope, callee, |_vm, state, scope| {
-    let url = require_url(state, this)?;
+    let url = require_url(scope, state, this)?;
     let port = url.port().map_err(map_url_error)?;
     let s = scope.alloc_string(&port)?;
     Ok(Value::String(s))
@@ -1075,8 +1113,8 @@ fn url_port_set_native(
   this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
-  let (url, max_bytes) = with_realm_state_mut(vm, scope, callee, |_vm, state, _scope| {
-    let url = require_url(state, this)?;
+  let (url, max_bytes) = with_realm_state_mut(vm, scope, callee, |_vm, state, scope| {
+    let url = require_url(scope, state, this)?;
     Ok((url, state.limits.max_input_bytes))
   })?;
 
@@ -1103,7 +1141,7 @@ fn url_pathname_get_native(
   _args: &[Value],
 ) -> Result<Value, VmError> {
   with_realm_state_mut(vm, scope, callee, |_vm, state, scope| {
-    let url = require_url(state, this)?;
+    let url = require_url(scope, state, this)?;
     let pathname = url.pathname().map_err(map_url_error)?;
     let s = scope.alloc_string(&pathname)?;
     Ok(Value::String(s))
@@ -1119,8 +1157,8 @@ fn url_pathname_set_native(
   this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
-  let (url, max_bytes) = with_realm_state_mut(vm, scope, callee, |_vm, state, _scope| {
-    let url = require_url(state, this)?;
+  let (url, max_bytes) = with_realm_state_mut(vm, scope, callee, |_vm, state, scope| {
+    let url = require_url(scope, state, this)?;
     Ok((url, state.limits.max_input_bytes))
   })?;
 
@@ -1147,7 +1185,7 @@ fn url_search_get_native(
   _args: &[Value],
 ) -> Result<Value, VmError> {
   with_realm_state_mut(vm, scope, callee, |_vm, state, scope| {
-    let url = require_url(state, this)?;
+    let url = require_url(scope, state, this)?;
     let search = url.search().map_err(map_url_error)?;
     let s = scope.alloc_string(&search)?;
     Ok(Value::String(s))
@@ -1163,8 +1201,8 @@ fn url_search_set_native(
   this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
-  let (url, max_bytes) = with_realm_state_mut(vm, scope, callee, |_vm, state, _scope| {
-    let url = require_url(state, this)?;
+  let (url, max_bytes) = with_realm_state_mut(vm, scope, callee, |_vm, state, scope| {
+    let url = require_url(scope, state, this)?;
     Ok((url, state.limits.max_input_bytes))
   })?;
 
@@ -1191,7 +1229,7 @@ fn url_hash_get_native(
   _args: &[Value],
 ) -> Result<Value, VmError> {
   with_realm_state_mut(vm, scope, callee, |_vm, state, scope| {
-    let url = require_url(state, this)?;
+    let url = require_url(scope, state, this)?;
     let hash = url.hash().map_err(map_url_error)?;
     let s = scope.alloc_string(&hash)?;
     Ok(Value::String(s))
@@ -1207,8 +1245,8 @@ fn url_hash_set_native(
   this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
-  let (url, max_bytes) = with_realm_state_mut(vm, scope, callee, |_vm, state, _scope| {
-    let url = require_url(state, this)?;
+  let (url, max_bytes) = with_realm_state_mut(vm, scope, callee, |_vm, state, scope| {
+    let url = require_url(scope, state, this)?;
     Ok((url, state.limits.max_input_bytes))
   })?;
 
@@ -1240,6 +1278,13 @@ fn url_search_params_get_native(
     };
 
     // Brand check.
+    let slots = scope
+      .heap()
+      .object_host_slots(url_obj)?
+      .ok_or(VmError::TypeError("Illegal invocation"))?;
+    if slots.a != URL_HOST_TAG {
+      return Err(VmError::TypeError("Illegal invocation"));
+    }
     let url = state
       .urls
       .get(&WeakGcObject::from(url_obj))
@@ -1260,6 +1305,13 @@ fn url_search_params_get_native(
     scope
       .heap_mut()
       .object_set_prototype(params_obj, Some(state.params_proto))?;
+    scope.heap_mut().object_set_host_slots(
+      params_obj,
+      HostSlots {
+        a: URL_SEARCH_PARAMS_HOST_TAG,
+        b: 0,
+      },
+    )?;
     let params = url.search_params();
     state.params.insert(WeakGcObject::from(params_obj), params);
 
@@ -1292,7 +1344,7 @@ fn url_to_string_native(
   _args: &[Value],
 ) -> Result<Value, VmError> {
   with_realm_state_mut(vm, scope, callee, |_vm, state, scope| {
-    let url = require_url(state, this)?;
+    let url = require_url(scope, state, this)?;
     let href = url.href().map_err(map_url_error)?;
     let s = scope.alloc_string(&href)?;
     Ok(Value::String(s))
@@ -1408,6 +1460,13 @@ fn urlsp_construct_native(
     scope
       .heap_mut()
       .object_set_prototype(obj, Some(state.params_proto))?;
+    scope.heap_mut().object_set_host_slots(
+      obj,
+      HostSlots {
+        a: URL_SEARCH_PARAMS_HOST_TAG,
+        b: 0,
+      },
+    )?;
     state.params.insert(WeakGcObject::from(obj), params);
     Ok(Value::Object(obj))
   })
@@ -1422,8 +1481,8 @@ fn urlsp_append_native(
   this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
-  let (params, max_bytes) = with_realm_state_mut(vm, scope, callee, |_vm, state, _scope| {
-    let params = require_params(state, this)?;
+  let (params, max_bytes) = with_realm_state_mut(vm, scope, callee, |_vm, state, scope| {
+    let params = require_params(scope, state, this)?;
     Ok((params, state.limits.max_input_bytes))
   })?;
 
@@ -1458,8 +1517,8 @@ fn urlsp_delete_native(
   this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
-  let (params, max_bytes) = with_realm_state_mut(vm, scope, callee, |_vm, state, _scope| {
-    let params = require_params(state, this)?;
+  let (params, max_bytes) = with_realm_state_mut(vm, scope, callee, |_vm, state, scope| {
+    let params = require_params(scope, state, this)?;
     Ok((params, state.limits.max_input_bytes))
   })?;
 
@@ -1499,8 +1558,8 @@ fn urlsp_get_native(
   this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
-  let (params, max_bytes) = with_realm_state_mut(vm, scope, callee, |_vm, state, _scope| {
-    let params = require_params(state, this)?;
+  let (params, max_bytes) = with_realm_state_mut(vm, scope, callee, |_vm, state, scope| {
+    let params = require_params(scope, state, this)?;
     Ok((params, state.limits.max_input_bytes))
   })?;
 
@@ -1534,8 +1593,8 @@ fn urlsp_get_all_native(
   let intrinsics = vm
     .intrinsics()
     .ok_or(VmError::InvariantViolation("vm intrinsics not initialized"))?;
-  let (params, max_bytes) = with_realm_state_mut(vm, scope, callee, |_vm, state, _scope| {
-    let params = require_params(state, this)?;
+  let (params, max_bytes) = with_realm_state_mut(vm, scope, callee, |_vm, state, scope| {
+    let params = require_params(scope, state, this)?;
     Ok((params, state.limits.max_input_bytes))
   })?;
 
@@ -1584,8 +1643,8 @@ fn urlsp_has_native(
   this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
-  let (params, max_bytes) = with_realm_state_mut(vm, scope, callee, |_vm, state, _scope| {
-    let params = require_params(state, this)?;
+  let (params, max_bytes) = with_realm_state_mut(vm, scope, callee, |_vm, state, scope| {
+    let params = require_params(scope, state, this)?;
     Ok((params, state.limits.max_input_bytes))
   })?;
 
@@ -1637,8 +1696,8 @@ fn urlsp_for_each_native(
     ));
   }
 
-  let pairs = with_realm_state_mut(vm, scope, callee, |_vm, state, _scope| {
-    let params = require_params(state, this)?;
+  let pairs = with_realm_state_mut(vm, scope, callee, |_vm, state, scope| {
+    let params = require_params(scope, state, this)?;
     params.pairs().map_err(map_url_error)
   })?;
 
@@ -1689,10 +1748,17 @@ fn urlsp_entries_native(
 ) -> Result<Value, VmError> {
   let iter_proto = urlsp_iter_proto_from_callee(scope, callee)?;
   with_realm_state_mut(vm, scope, callee, |_vm, state, scope| {
-    let params = require_params(state, this)?;
+    let params = require_params(scope, state, this)?;
     let pairs = params.pairs().map_err(map_url_error)?;
 
     let obj = scope.alloc_object_with_prototype(Some(iter_proto))?;
+    scope.heap_mut().object_set_host_slots(
+      obj,
+      HostSlots {
+        a: URL_SEARCH_PARAMS_ITERATOR_HOST_TAG,
+        b: 0,
+      },
+    )?;
     scope.push_root(Value::Object(obj))?;
     state.params_iterators.insert(
       WeakGcObject::from(obj),
@@ -1717,10 +1783,17 @@ fn urlsp_keys_native(
 ) -> Result<Value, VmError> {
   let iter_proto = urlsp_iter_proto_from_callee(scope, callee)?;
   with_realm_state_mut(vm, scope, callee, |_vm, state, scope| {
-    let params = require_params(state, this)?;
+    let params = require_params(scope, state, this)?;
     let pairs = params.pairs().map_err(map_url_error)?;
 
     let obj = scope.alloc_object_with_prototype(Some(iter_proto))?;
+    scope.heap_mut().object_set_host_slots(
+      obj,
+      HostSlots {
+        a: URL_SEARCH_PARAMS_ITERATOR_HOST_TAG,
+        b: 0,
+      },
+    )?;
     scope.push_root(Value::Object(obj))?;
     state.params_iterators.insert(
       WeakGcObject::from(obj),
@@ -1745,10 +1818,17 @@ fn urlsp_values_native(
 ) -> Result<Value, VmError> {
   let iter_proto = urlsp_iter_proto_from_callee(scope, callee)?;
   with_realm_state_mut(vm, scope, callee, |_vm, state, scope| {
-    let params = require_params(state, this)?;
+    let params = require_params(scope, state, this)?;
     let pairs = params.pairs().map_err(map_url_error)?;
 
     let obj = scope.alloc_object_with_prototype(Some(iter_proto))?;
+    scope.heap_mut().object_set_host_slots(
+      obj,
+      HostSlots {
+        a: URL_SEARCH_PARAMS_ITERATOR_HOST_TAG,
+        b: 0,
+      },
+    )?;
     scope.push_root(Value::Object(obj))?;
     state.params_iterators.insert(
       WeakGcObject::from(obj),
@@ -1776,6 +1856,17 @@ fn urlsp_iterator_next_native(
       "URLSearchParams iterator: illegal invocation",
     ));
   };
+  let slots = scope
+    .heap()
+    .object_host_slots(iter_obj)?
+    .ok_or(VmError::TypeError(
+      "URLSearchParams iterator: illegal invocation",
+    ))?;
+  if slots.a != URL_SEARCH_PARAMS_ITERATOR_HOST_TAG {
+    return Err(VmError::TypeError(
+      "URLSearchParams iterator: illegal invocation",
+    ));
+  }
 
   let intr = vm
     .intrinsics()
@@ -1867,13 +1958,29 @@ fn urlsp_iterator_next_native(
 
 fn urlsp_iterator_iterator_native(
   _vm: &mut Vm,
-  _scope: &mut Scope<'_>,
+  scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
   _hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
+  let Value::Object(iter_obj) = this else {
+    return Err(VmError::TypeError(
+      "URLSearchParams iterator: illegal invocation",
+    ));
+  };
+  let slots = scope
+    .heap()
+    .object_host_slots(iter_obj)?
+    .ok_or(VmError::TypeError(
+      "URLSearchParams iterator: illegal invocation",
+    ))?;
+  if slots.a != URL_SEARCH_PARAMS_ITERATOR_HOST_TAG {
+    return Err(VmError::TypeError(
+      "URLSearchParams iterator: illegal invocation",
+    ));
+  }
   Ok(this)
 }
 
@@ -1886,8 +1993,8 @@ fn urlsp_sort_native(
   this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
-  with_realm_state_mut(vm, scope, callee, |_vm, state, _scope| {
-    let params = require_params(state, this)?;
+  with_realm_state_mut(vm, scope, callee, |_vm, state, scope| {
+    let params = require_params(scope, state, this)?;
     params.sort().map_err(map_url_error)?;
     Ok(Value::Undefined)
   })
@@ -1902,8 +2009,8 @@ fn urlsp_set_native(
   this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
-  let (params, max_bytes) = with_realm_state_mut(vm, scope, callee, |_vm, state, _scope| {
-    let params = require_params(state, this)?;
+  let (params, max_bytes) = with_realm_state_mut(vm, scope, callee, |_vm, state, scope| {
+    let params = require_params(scope, state, this)?;
     Ok((params, state.limits.max_input_bytes))
   })?;
 
@@ -1938,8 +2045,8 @@ fn urlsp_size_get_native(
   this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
-  with_realm_state_mut(vm, scope, callee, |_vm, state, _scope| {
-    let params = require_params(state, this)?;
+  with_realm_state_mut(vm, scope, callee, |_vm, state, scope| {
+    let params = require_params(scope, state, this)?;
     let size = params.size().map_err(map_url_error)?;
     Ok(Value::Number(size as f64))
   })
@@ -1955,7 +2062,7 @@ fn urlsp_to_string_native(
   _args: &[Value],
 ) -> Result<Value, VmError> {
   with_realm_state_mut(vm, scope, callee, |_vm, state, scope| {
-    let params = require_params(state, this)?;
+    let params = require_params(scope, state, this)?;
     let s = params.serialize().map_err(map_url_error)?;
     let out = scope.alloc_string(&s)?;
     Ok(Value::String(out))

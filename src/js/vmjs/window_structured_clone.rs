@@ -2106,6 +2106,28 @@ mod tests {
   }
 
   #[test]
+  fn structured_clone_rejects_url_and_url_search_params() -> Result<(), VmError> {
+    let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
+
+    let url = realm.exec_script(
+      "try { structuredClone(new URL('https://example.com')); 'no' } catch (e) { e.name }",
+    )?;
+    assert_eq!(get_string(&realm, url), "DataCloneError");
+
+    let params = realm.exec_script(
+      "try { structuredClone(new URLSearchParams('a=1')); 'no' } catch (e) { e.name }",
+    )?;
+    assert_eq!(get_string(&realm, params), "DataCloneError");
+
+    let iter = realm.exec_script(
+      "try { structuredClone(new URLSearchParams('a=1').entries()); 'no' } catch (e) { e.name }",
+    )?;
+    assert_eq!(get_string(&realm, iter), "DataCloneError");
+
+    Ok(())
+  }
+
+  #[test]
   fn structured_clone_clones_blob() -> Result<(), VmError> {
     let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
 
