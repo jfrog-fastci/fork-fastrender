@@ -7610,7 +7610,10 @@ fn parse_min_max<'i, 't>(
     return Err(input.new_custom_error(()));
   }
   if values.len() == 1 {
-    return Ok(values.pop().expect("length checked"));
+    // `values.len() == 1` guarantees `pop()` succeeds, but keep this total so hostile inputs (or
+    // future refactors) can't trigger a panic in property parsing.
+    let value = values.pop().ok_or_else(|| input.new_custom_error(()))?;
+    return Ok(value);
   }
 
   reduce_components(values, func, input.current_source_location())

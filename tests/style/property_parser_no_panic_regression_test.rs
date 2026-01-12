@@ -79,10 +79,7 @@ fn property_parser_does_not_panic_on_hostile_inputs() {
         parsed.is_some(),
         "expected `{property}: {value}` to parse successfully"
       ),
-      Expectation::None => assert!(
-        parsed.is_none(),
-        "expected `{property}: {value}` to be rejected"
-      ),
+      Expectation::None => assert!(parsed.is_none(), "expected `{property}: {value}` to be rejected"),
       Expectation::Either => {}
     }
   }
@@ -138,3 +135,4 @@ fn stylesheet_with_many_malformed_declarations_does_not_panic_in_cascade() {
   let node = find_by_id(&styled, "t").expect("node");
   assert!((node.styles.opacity - 0.5).abs() < 1e-6);
 }
+

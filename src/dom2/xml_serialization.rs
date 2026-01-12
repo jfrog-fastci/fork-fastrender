@@ -199,6 +199,7 @@ fn serialize_node(doc: &Document, node: NodeId) -> Result<String, DomException> 
           NodeKind::Element {
             tag_name,
             namespace,
+            prefix: _,
             attributes,
             ..
           } => {

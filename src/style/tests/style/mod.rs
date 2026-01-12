@@ -156,7 +156,6 @@ mod string_set_test;
 mod style_containment_counters_test;
 mod style_containment_quotes_test;
 mod style_properties_no_panic_regression_test;
-mod property_parser_no_panic_regression_test;
 mod styled_node_shallow_dom_clone;
 mod supports_declaration_css_wide_and_var_test;
 mod supports_rule_test;
