@@ -1,5 +1,5 @@
 use fastrender::debug::runtime::RuntimeToggles;
-use fastrender::render_control::{set_stage_listener, StageHeartbeat};
+use fastrender::render_control::{GlobalStageListenerGuard, StageHeartbeat};
 use fastrender::{
   DiagnosticsLevel, FastRender, FastRenderConfig, FontConfig, FragmentContent, FragmentNode, Point,
   Rect, RenderArtifactRequest, RenderOptions,
@@ -7,21 +7,6 @@ use fastrender::{
 use std::collections::HashMap;
 use std::sync::{mpsc, Arc, Condvar, Mutex};
 use std::time::Duration;
-
-struct StageListenerGuard;
-
-impl StageListenerGuard {
-  fn set(listener: Option<Arc<dyn Fn(StageHeartbeat) + Send + Sync>>) -> Self {
-    set_stage_listener(listener);
-    Self
-  }
-}
-
-impl Drop for StageListenerGuard {
-  fn drop(&mut self) {
-    set_stage_listener(None);
-  }
-}
 
 fn find_text_fragment_bounds(fragment: &FragmentNode, offset: Point, needle: &str) -> Option<Rect> {
   let abs = Rect::from_xywh(
@@ -268,8 +253,27 @@ fn taffy_perf_counters_do_not_leak_between_overlapping_diagnostics_renders() {
   ));
   let blocker_listener = Arc::clone(&blocker);
 
-  let _stage_listener = StageListenerGuard::set(Some(Arc::new(move |stage| {
+  let (a_start_tx, a_start_rx) = mpsc::channel();
+  let handle_a = std::thread::spawn({
+    let options = options.clone();
+    move || {
+      a_start_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("expected thread A start signal");
+      let config = FastRenderConfig::default().with_font_sources(FontConfig::bundled_only());
+      let mut renderer = FastRender::with_config(config).expect("renderer");
+      renderer
+        .render_html_with_diagnostics(flex_html, options)
+        .expect("render flex document")
+    }
+  });
+  let render_thread = handle_a.thread().id();
+
+  let _stage_listener = GlobalStageListenerGuard::new(Arc::new(move |stage| {
     if stage != StageHeartbeat::DomParse {
+      return;
+    }
+    if std::thread::current().id() != render_thread {
       return;
     }
     let (lock, cv) = &*blocker_listener;
@@ -286,18 +290,8 @@ fn taffy_perf_counters_do_not_leak_between_overlapping_diagnostics_renders() {
         .wait(state)
         .expect("diagnostics overlap blocker lock poisoned");
     }
-  })));
-
-  let handle_a = std::thread::spawn({
-    let options = options.clone();
-    move || {
-      let config = FastRenderConfig::default().with_font_sources(FontConfig::bundled_only());
-      let mut renderer = FastRender::with_config(config).expect("renderer");
-      renderer
-        .render_html_with_diagnostics(flex_html, options)
-        .expect("render flex document")
-    }
-  });
+  }));
+  a_start_tx.send(()).expect("expected thread A start signal send");
 
   // Wait until thread A reaches the first DOM parse stage and is blocked by the stage listener.
   {

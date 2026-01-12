@@ -1,31 +1,26 @@
 use fastrender::api::FastRender;
 use fastrender::api::RenderOptions;
 use fastrender::error::{Error, RenderError, RenderStage};
-use fastrender::render_control::{set_stage_listener, StageHeartbeat};
+use fastrender::render_control::{GlobalStageListenerGuard, StageHeartbeat};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-
-struct StageListenerGuard;
-
-impl Drop for StageListenerGuard {
-  fn drop(&mut self) {
-    set_stage_listener(None);
-  }
-}
 
 #[test]
 fn cascade_selector_matching_obeys_timeout() {
   let cascade_active = Arc::new(AtomicBool::new(false));
   let cascade_checks = Arc::new(AtomicUsize::new(0));
+  let render_thread = std::thread::current().id();
 
   // Use stage heartbeats to only trip the cancel callback once cascade begins. This avoids relying
   // on fragile wall-clock thresholds and makes the test independent of HTML parse speed.
   let cascade_active_listener = Arc::clone(&cascade_active);
-  set_stage_listener(Some(Arc::new(move |stage| {
+  let _stage_listener_guard = GlobalStageListenerGuard::new(Arc::new(move |stage| {
+    if std::thread::current().id() != render_thread {
+      return;
+    }
     cascade_active_listener.store(stage == StageHeartbeat::Cascade, Ordering::Relaxed);
-  })));
-  let _stage_listener_guard = StageListenerGuard;
+  }));
 
   // Cancel on the *second* deadline check observed during the cascade stage. This ensures that at
   // least one deadline check happened within cascade selector matching (not only at stage

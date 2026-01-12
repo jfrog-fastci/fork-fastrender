@@ -3,18 +3,10 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use fastrender::api::{FastRender, RenderOptions};
-use fastrender::render_control::{set_stage_listener, StageHeartbeat};
+use fastrender::render_control::{GlobalStageListenerGuard, StageHeartbeat};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use url::Url;
-
-struct StageListenerGuard;
-
-impl Drop for StageListenerGuard {
-  fn drop(&mut self) {
-    set_stage_listener(None);
-  }
-}
 
 #[test]
 fn css_inlining_respects_deadline() {
@@ -22,16 +14,21 @@ fn css_inlining_respects_deadline() {
   let css_active = Arc::new(AtomicBool::new(false));
   let css_checks = Arc::new(AtomicUsize::new(0));
   let cancel_fired = Arc::new(AtomicBool::new(false));
+  let render_thread = std::thread::current().id();
 
   // Use stage heartbeats to trip cancellation while CSS inlining/parsing is active, avoiding
   // fragile wall-clock thresholds.
   let css_active_listener = Arc::clone(&css_active);
-  set_stage_listener(Some(Arc::new(move |stage| match stage {
-    StageHeartbeat::CssInline => css_active_listener.store(true, Ordering::Relaxed),
-    StageHeartbeat::Cascade => css_active_listener.store(false, Ordering::Relaxed),
-    _ => {}
-  })));
-  let _stage_listener_guard = StageListenerGuard;
+  let _stage_listener_guard = GlobalStageListenerGuard::new(Arc::new(move |stage| {
+    if std::thread::current().id() != render_thread {
+      return;
+    }
+    match stage {
+      StageHeartbeat::CssInline => css_active_listener.store(true, Ordering::Relaxed),
+      StageHeartbeat::Cascade => css_active_listener.store(false, Ordering::Relaxed),
+      _ => {}
+    }
+  }));
 
   let css_active_cancel = Arc::clone(&css_active);
   let css_checks_cancel = Arc::clone(&css_checks);

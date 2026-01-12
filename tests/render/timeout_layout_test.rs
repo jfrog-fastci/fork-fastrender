@@ -1,25 +1,9 @@
 use fastrender::api::{FastRender, RenderOptions};
 use fastrender::error::{Error, RenderError, RenderStage};
-use fastrender::render_control::{set_stage_listener, StageHeartbeat};
+use fastrender::render_control::{GlobalStageListenerGuard, StageHeartbeat};
 use fastrender::LayoutParallelism;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
-
-fn stage_listener_lock() -> std::sync::MutexGuard<'static, ()> {
-  static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-  LOCK
-    .get_or_init(|| Mutex::new(()))
-    .lock()
-    .unwrap_or_else(|poisoned| poisoned.into_inner())
-}
-
-struct StageListenerGuard;
-
-impl Drop for StageListenerGuard {
-  fn drop(&mut self) {
-    set_stage_listener(None);
-  }
-}
+use std::sync::Arc;
 
 fn heavy_inline_html(count: usize) -> String {
   let mut html = String::from("<div>");
@@ -32,20 +16,21 @@ fn heavy_inline_html(count: usize) -> String {
 
 #[test]
 fn layout_loops_respect_timeout() {
-  let _lock = stage_listener_lock();
-
   let layout_active = Arc::new(AtomicBool::new(false));
   let layout_checks = Arc::new(AtomicUsize::new(0));
+  let render_thread = std::thread::current().id();
   let layout_active_listener = Arc::clone(&layout_active);
   let layout_checks_listener = Arc::clone(&layout_checks);
-  set_stage_listener(Some(Arc::new(move |stage| {
+  let _stage_guard = GlobalStageListenerGuard::new(Arc::new(move |stage| {
+    if std::thread::current().id() != render_thread {
+      return;
+    }
     let active = stage == StageHeartbeat::Layout;
     layout_active_listener.store(active, Ordering::Relaxed);
     if active {
       layout_checks_listener.store(0, Ordering::Relaxed);
     }
-  })));
-  let _stage_guard = StageListenerGuard;
+  }));
 
   // Cancel on the second deadline check observed during layout. This exercises layout's periodic
   // deadline checks while avoiding fragile wall-clock thresholds (DOM parse speed varies).
@@ -85,20 +70,21 @@ fn layout_loops_respect_timeout() {
 
 #[test]
 fn layout_timeout_records_diagnostics() {
-  let _lock = stage_listener_lock();
-
   let layout_active = Arc::new(AtomicBool::new(false));
   let layout_checks = Arc::new(AtomicUsize::new(0));
+  let render_thread = std::thread::current().id();
   let layout_active_listener = Arc::clone(&layout_active);
   let layout_checks_listener = Arc::clone(&layout_checks);
-  set_stage_listener(Some(Arc::new(move |stage| {
+  let _stage_guard = GlobalStageListenerGuard::new(Arc::new(move |stage| {
+    if std::thread::current().id() != render_thread {
+      return;
+    }
     let active = stage == StageHeartbeat::Layout;
     layout_active_listener.store(active, Ordering::Relaxed);
     if active {
       layout_checks_listener.store(0, Ordering::Relaxed);
     }
-  })));
-  let _stage_guard = StageListenerGuard;
+  }));
 
   let layout_active_cancel = Arc::clone(&layout_active);
   let layout_checks_cancel = Arc::clone(&layout_checks);
