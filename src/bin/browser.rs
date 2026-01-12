@@ -1861,6 +1861,7 @@ struct App {
   profile_autosave: Option<fastrender::ui::ProfileAutosaveHandle>,
   history_panel_open: bool,
   bookmarks_panel_open: bool,
+  clear_browsing_data_dialog_open: bool,
 
   tab_textures: std::collections::HashMap<fastrender::ui::TabId, fastrender::ui::WgpuPixmapTexture>,
   tab_favicons: std::collections::HashMap<fastrender::ui::TabId, fastrender::ui::WgpuPixmapTexture>,
@@ -2223,6 +2224,7 @@ impl App {
       profile_autosave: None,
       history_panel_open: false,
       bookmarks_panel_open: false,
+      clear_browsing_data_dialog_open: false,
       tab_textures: std::collections::HashMap::new(),
       tab_favicons: std::collections::HashMap::new(),
       tab_cancel: std::collections::HashMap::new(),
@@ -5807,6 +5809,10 @@ impl App {
           }
           self.window.request_redraw();
         }
+        ChromeAction::OpenClearBrowsingDataDialog => {
+          self.clear_browsing_data_dialog_open = true;
+          self.window.request_redraw();
+        }
         ChromeAction::NewTab => {
           session_dirty = true;
           let tab_id = fastrender::ui::TabId::new();
@@ -6191,7 +6197,7 @@ impl App {
     let mut panel_actions: Vec<fastrender::ui::ChromeAction> = Vec::new();
     let mut close_bookmarks_panel = false;
     let mut close_history_panel = false;
-    let mut clear_history = false;
+    let mut open_clear_browsing_data_dialog = false;
 
     if self.bookmarks_panel_open {
       egui::SidePanel::right("fastr_bookmarks_panel")
@@ -6275,8 +6281,8 @@ impl App {
           });
 
           ui.horizontal(|ui| {
-            if ui.button("Clear").clicked() {
-              clear_history = true;
+            if ui.button("Clear browsing data…").clicked() {
+              open_clear_browsing_data_dialog = true;
             }
           });
 
@@ -6310,11 +6316,49 @@ impl App {
     if close_history_panel {
       self.history_panel_open = false;
     }
-    if clear_history {
-      self.clear_history();
+    if open_clear_browsing_data_dialog {
+      self.clear_browsing_data_dialog_open = true;
     }
     if !panel_actions.is_empty() {
       self.handle_chrome_actions(panel_actions);
+    }
+
+    if self.clear_browsing_data_dialog_open {
+      let mut open = self.clear_browsing_data_dialog_open;
+      let mut clear_now = false;
+      let mut close_dialog = false;
+      if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+        open = false;
+      }
+
+      egui::Window::new("Clear browsing data")
+        .collapsible(false)
+        .resizable(false)
+        .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+        .open(&mut open)
+        .show(&ctx, |ui| {
+          ui.label("Clear browsing history for this profile?");
+          ui.add_space(8.0);
+          ui.label("This will clear the History panel and Recently visited suggestions.");
+          ui.add_space(12.0);
+          ui.horizontal(|ui| {
+            if ui.button("Cancel").clicked() {
+              close_dialog = true;
+            }
+            if ui.button("Clear").clicked() {
+              clear_now = true;
+              close_dialog = true;
+            }
+          });
+        });
+
+      if close_dialog {
+        open = false;
+      }
+      self.clear_browsing_data_dialog_open = open;
+      if clear_now {
+        self.clear_history();
+      }
     }
 
     let central_response = egui::CentralPanel::default().show(&ctx, |ui| {

@@ -50,6 +50,8 @@ pub enum ChromeAction {
   ToggleHistoryPanel,
   /// Toggle visibility of the bookmarks manager UI.
   ToggleBookmarksManager,
+  /// Open the clear browsing data dialog.
+  OpenClearBrowsingDataDialog,
 }
 
 fn egui_modifiers_to_shortcuts_modifiers(modifiers: egui::Modifiers) -> Modifiers {
@@ -471,6 +473,7 @@ pub fn chrome_ui_with_bookmarks(
       // ---------------------------------------------------------------------------
       // Address bar (pill + truncation + security indicator)
       // ---------------------------------------------------------------------------
+      ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
       let address_bar_id = ui.make_persistent_id("address_bar");
       let egui_focus = ctx.memory(|mem| mem.has_focus(address_bar_id));
       let show_text_edit =
@@ -498,6 +501,9 @@ pub fn chrome_ui_with_bookmarks(
         .and_then(|t| t.committed_url.as_deref().or_else(|| t.current_url()))
         .unwrap_or("")
         .to_string();
+      let active_url_trim = active_url.trim();
+      let active_url_is_bookmarked = !active_url_trim.is_empty()
+        && omnibox_bookmarks.is_some_and(|store| store.contains_url(active_url_trim));
       let formatted_url = format_address_bar_url(&active_url);
       let indicator = match formatted_url.security_state {
         AddressBarSecurityState::Https => security_indicator::SecurityIndicator::Secure,
@@ -512,6 +518,69 @@ pub fn chrome_ui_with_bookmarks(
         Some(stage) => format!("Loading… {}", stage.as_str()),
         None => "Loading…".to_string(),
       };
+
+      let menu = ui.menu_button("≡", |ui| {
+        ui.set_min_width(220.0);
+
+        if ui.input_mut(|i| i.consume_key(Default::default(), egui::Key::Escape)) {
+          ui.close_menu();
+        }
+
+        ui.label(egui::RichText::new("Bookmarks").strong());
+        let toggle_bookmark_label = if active_url_is_bookmarked {
+          "Remove bookmark"
+        } else {
+          "Bookmark this page"
+        };
+        let toggle_bookmark = ui.add_enabled(
+          !active_url_trim.is_empty(),
+          egui::Button::new(toggle_bookmark_label),
+        );
+        #[cfg(test)]
+        store_test_rect(ctx, "chrome_menu_item_toggle_bookmark_rect", toggle_bookmark.rect);
+        if toggle_bookmark.clicked() {
+          actions.push(ChromeAction::ToggleBookmarkForActiveTab);
+          ui.close_menu();
+        }
+
+        let bookmarks_mgr = ui.button("Show bookmarks manager");
+        #[cfg(test)]
+        store_test_rect(
+          ctx,
+          "chrome_menu_item_toggle_bookmarks_manager_rect",
+          bookmarks_mgr.rect,
+        );
+        if bookmarks_mgr.clicked() {
+          actions.push(ChromeAction::ToggleBookmarksManager);
+          ui.close_menu();
+        }
+
+        ui.separator();
+
+        ui.label(egui::RichText::new("History").strong());
+        let history = ui.button("Show history");
+        #[cfg(test)]
+        store_test_rect(ctx, "chrome_menu_item_toggle_history_rect", history.rect);
+        if history.clicked() {
+          actions.push(ChromeAction::ToggleHistoryPanel);
+          ui.close_menu();
+        }
+
+        let clear = ui.button("Clear browsing data…");
+        #[cfg(test)]
+        store_test_rect(
+          ctx,
+          "chrome_menu_item_open_clear_browsing_data_rect",
+          clear.rect,
+        );
+        if clear.clicked() {
+          actions.push(ChromeAction::OpenClearBrowsingDataDialog);
+          ui.close_menu();
+        }
+      });
+      let _menu_button = menu.response.on_hover_text("Menu");
+      #[cfg(test)]
+      store_test_rect(ctx, "chrome_menu_button_rect", _menu_button.rect);
 
       let bar_height = ui.spacing().interact_size.y;
       let (bar_rect, bar_response) = ui.allocate_exact_size(
@@ -918,6 +987,7 @@ pub fn chrome_ui_with_bookmarks(
 
         address_bar_text_edit_response = Some(response.clone());
       }
+      });
     });
   });
 
@@ -1172,6 +1242,13 @@ pub fn chrome_ui_with_bookmarks(
     });
 
   actions
+}
+
+#[cfg(test)]
+fn store_test_rect(ctx: &egui::Context, key: &'static str, rect: egui::Rect) {
+  ctx.data_mut(|d| {
+    d.insert_temp(egui::Id::new(key), rect);
+  });
 }
 
 #[cfg(test)]
@@ -2809,6 +2886,129 @@ mod tests {
         .iter()
         .any(|action| matches!(action, ChromeAction::NavigateTo(url) if url == "https://example.com/")),
       "expected ChromeAction::NavigateTo(\"https://example.com/\"), got {actions:?}"
+    );
+  }
+
+  fn expect_temp_rect(ctx: &egui::Context, key: &'static str) -> egui::Rect {
+    ctx
+      .data(|d| d.get_temp::<egui::Rect>(egui::Id::new(key)))
+      .unwrap_or_else(|| panic!("expected temp rect {key:?}"))
+  }
+
+  fn click_menu_item(
+    ctx: &egui::Context,
+    app: &mut BrowserAppState,
+    bookmarks: Option<&BookmarkStore>,
+    item_rect_key: &'static str,
+  ) -> Vec<ChromeAction> {
+    // Frame 1: layout, capture the menu button rect.
+    begin_frame(ctx, Vec::new());
+    let _ = chrome_ui_with_bookmarks(ctx, app, bookmarks, |_| None);
+    let _ = ctx.end_frame();
+    let menu_button_rect = expect_temp_rect(ctx, "chrome_menu_button_rect");
+
+    // Frame 2: click the menu button, capture the menu item rect.
+    begin_frame(ctx, left_click_at(menu_button_rect.center()));
+    let _ = chrome_ui_with_bookmarks(ctx, app, bookmarks, |_| None);
+    let _ = ctx.end_frame();
+    let item_rect = expect_temp_rect(ctx, item_rect_key);
+
+    // Frame 3: click the menu item and return emitted actions.
+    begin_frame(ctx, left_click_at(item_rect.center()));
+    let actions = chrome_ui_with_bookmarks(ctx, app, bookmarks, |_| None);
+    let _ = ctx.end_frame();
+    actions
+  }
+
+  #[test]
+  fn chrome_menu_toggle_bookmark_emits_action() {
+    let mut app = BrowserAppState::new();
+    let tab_id = TabId(1);
+    app.push_tab(
+      BrowserTabState::new(tab_id, "https://example.com/".to_string()),
+      true,
+    );
+    let bookmarks = BookmarkStore::default();
+    let ctx = egui::Context::default();
+
+    let actions = click_menu_item(
+      &ctx,
+      &mut app,
+      Some(&bookmarks),
+      "chrome_menu_item_toggle_bookmark_rect",
+    );
+    assert!(
+      matches!(actions.as_slice(), [ChromeAction::ToggleBookmarkForActiveTab]),
+      "expected ChromeAction::ToggleBookmarkForActiveTab, got {actions:?}"
+    );
+  }
+
+  #[test]
+  fn chrome_menu_toggle_bookmarks_manager_emits_action() {
+    let mut app = BrowserAppState::new();
+    let tab_id = TabId(1);
+    app.push_tab(
+      BrowserTabState::new(tab_id, "https://example.com/".to_string()),
+      true,
+    );
+    let bookmarks = BookmarkStore::default();
+    let ctx = egui::Context::default();
+
+    let actions = click_menu_item(
+      &ctx,
+      &mut app,
+      Some(&bookmarks),
+      "chrome_menu_item_toggle_bookmarks_manager_rect",
+    );
+    assert!(
+      matches!(actions.as_slice(), [ChromeAction::ToggleBookmarksManager]),
+      "expected ChromeAction::ToggleBookmarksManager, got {actions:?}"
+    );
+  }
+
+  #[test]
+  fn chrome_menu_toggle_history_emits_action() {
+    let mut app = BrowserAppState::new();
+    let tab_id = TabId(1);
+    app.push_tab(
+      BrowserTabState::new(tab_id, "https://example.com/".to_string()),
+      true,
+    );
+    let bookmarks = BookmarkStore::default();
+    let ctx = egui::Context::default();
+
+    let actions = click_menu_item(
+      &ctx,
+      &mut app,
+      Some(&bookmarks),
+      "chrome_menu_item_toggle_history_rect",
+    );
+    assert!(
+      matches!(actions.as_slice(), [ChromeAction::ToggleHistoryPanel]),
+      "expected ChromeAction::ToggleHistoryPanel, got {actions:?}"
+    );
+  }
+
+  #[test]
+  fn chrome_menu_open_clear_browsing_data_dialog_emits_action() {
+    let mut app = BrowserAppState::new();
+    let tab_id = TabId(1);
+    app.push_tab(
+      BrowserTabState::new(tab_id, "https://example.com/".to_string()),
+      true,
+    );
+    let bookmarks = BookmarkStore::default();
+    let ctx = egui::Context::default();
+
+    let actions = click_menu_item(
+      &ctx,
+      &mut app,
+      Some(&bookmarks),
+      "chrome_menu_item_open_clear_browsing_data_rect",
+    );
+    assert!(
+      matches!(actions.as_slice(), [ChromeAction::OpenClearBrowsingDataDialog]),
+      "expected ChromeAction::OpenClearBrowsingDataDialog, got {actions:?}"
     );
   }
 }
