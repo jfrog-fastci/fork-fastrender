@@ -351,18 +351,31 @@ function assert_throws_js(constructor, func, message) {
   return thrown;
 }
 //
-function assert_throws_dom(name, func, message) {
-  if (typeof name !== "string") {
-    throw Error(message || "assert_throws_dom: expected DOMException name must be a string");
+function assert_throws_dom(name, target, func, message) {
+  // Support both upstream call patterns:
+  //   assert_throws_dom("InvalidStateError", () => { ... }, "optional message")
+  //   assert_throws_dom("InvalidStateError", someGlobal, () => { ... }, "optional message")
+  //
+  // The offline runner executes in a single realm, so the `target` is currently ignored. We keep
+  // it solely for compatibility with imported WPT tests.
+  var resolved_func = func;
+  var resolved_message = message;
+  if (typeof target === "function") {
+    resolved_func = target;
+    resolved_message = func;
   }
-  if (typeof func !== "function") {
-    throw Error(message || "assert_throws_dom: function is not callable");
+  //
+  if (typeof name !== "string") {
+    throw Error(resolved_message || "assert_throws_dom: expected DOMException name must be a string");
+  }
+  if (typeof resolved_func !== "function") {
+    throw Error(resolved_message || "assert_throws_dom: function is not callable");
   }
   //
   var threw = false;
   var thrown = null;
   try {
-    func();
+    resolved_func();
   } catch (e) {
     threw = true;
     thrown = e;
@@ -371,7 +384,7 @@ function assert_throws_dom(name, func, message) {
   if (threw !== true) {
     throw Error(
       __format_assertion_message(
-        message,
+        resolved_message,
         [
           "assert_throws_dom: expected DOMException \"",
           name,
@@ -399,7 +412,7 @@ function assert_throws_dom(name, func, message) {
     }
     throw Error(
       __format_assertion_message(
-        message,
+        resolved_message,
         [
           "assert_throws_dom: expected DOMException \"",
           name,
@@ -416,82 +429,6 @@ function assert_throws_dom(name, func, message) {
 //
 function assert_unreached(message) {
   throw Error(message || "assert_unreached");
-}
-//
-function assert_throws_dom(expected_name, target, fn, message) {
-  // Minimal subset of upstream WPT `assert_throws_dom` used by the offline DOM corpus.
-  //
-  // Supported call patterns:
-  //   assert_throws_dom("InvalidCharacterError", () => { ... })
-  //   assert_throws_dom("InvalidCharacterError", someGlobal, () => { ... })
-  //
-  // Note: The second form exists in upstream WPT so tests can assert the exception comes from the
-  // correct global object; the offline runner executes in a single realm, but we keep it for
-  // compatibility with imported tests.
-  var resolved_target = target;
-  var resolved_fn = fn;
-  var resolved_message = message;
-  //
-  if (typeof target === "function") {
-    resolved_target = null;
-    resolved_fn = target;
-    resolved_message = fn;
-  }
-  //
-  if (typeof resolved_fn !== "function") {
-    throw Error(resolved_message || "assert_throws_dom: callback is not callable");
-  }
-  //
-  var threw = false;
-  var exception = null;
-  try {
-    resolved_fn();
-  } catch (e) {
-    threw = true;
-    exception = e;
-  }
-  //
-  if (threw !== true) {
-    throw Error(resolved_message || "assert_throws_dom: did not throw");
-  }
-  //
-  // Resolve the DOMException constructor (prefer the supplied target, then fall back to the global
-  // binding). If DOMException does not exist yet, this assertion should fail loudly so the test
-  // suite encodes the DOMException bring-up requirement.
-  var dom_exception_ctor = null;
-  try {
-    if (
-      resolved_target !== null &&
-      resolved_target !== undefined &&
-      resolved_target.DOMException !== undefined &&
-      resolved_target.DOMException !== null
-    ) {
-      dom_exception_ctor = resolved_target.DOMException;
-    }
-  } catch (_e) {}
-  //
-  if (dom_exception_ctor === null) {
-    try {
-      if (typeof DOMException === "function") dom_exception_ctor = DOMException;
-    } catch (_e) {}
-  }
-  //
-  if (dom_exception_ctor === null) {
-    throw Error(resolved_message || "assert_throws_dom: DOMException is not defined");
-  }
-  //
-  if (!(exception instanceof dom_exception_ctor)) {
-    throw Error(resolved_message || "assert_throws_dom: not a DOMException");
-  }
-  //
-  var actual_name = "";
-  try {
-    actual_name = exception.name;
-  } catch (_e) {}
-  //
-  if (actual_name !== expected_name) {
-    throw Error(resolved_message || "assert_throws_dom: wrong exception name");
-  }
 }
 //
 // ---------------------------------------------------------------------------
