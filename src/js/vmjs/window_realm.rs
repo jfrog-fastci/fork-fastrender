@@ -237,7 +237,7 @@ pub struct WindowRealm {
   next_script_id_raw: u64,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct SessionHistoryEntry {
   url: String,
   state_root: RootId,
@@ -582,6 +582,8 @@ impl WindowRealm {
     }
     if let Some(data) = self.runtime.vm.user_data_mut::<WindowRealmUserData>() {
       data.worker_registry.terminate_all(&mut self.runtime.heap);
+      // `history.pushState` stores entry state values as persistent roots; clear them before the heap
+      // is dropped to avoid leaking root slots.
       for entry in data.session_history.entries.drain(..) {
         self.runtime.heap.remove_root(entry.state_root);
       }
@@ -1870,6 +1872,10 @@ const HISTORY_OBJ_SLOT: usize = 0;
 const HISTORY_LOCATION_OBJ_SLOT: usize = 1;
 const HISTORY_DOCUMENT_OBJ_SLOT: usize = 2;
 const HISTORY_REPLACE_SLOT: usize = 3;
+const HISTORY_TRAVERSE_WINDOW_OBJ_SLOT: usize = 0;
+const HISTORY_TRAVERSE_HISTORY_OBJ_SLOT: usize = 1;
+const HISTORY_TRAVERSE_LOCATION_OBJ_SLOT: usize = 2;
+const HISTORY_TRAVERSE_DOCUMENT_OBJ_SLOT: usize = 3;
 const STORAGE_METHOD_THIS_SLOT: usize = 0;
 const STORAGE_METHOD_KIND_SLOT: usize = 1;
 const STORAGE_ILLEGAL_INVOCATION_ERROR: &str = "Illegal invocation";
@@ -3867,33 +3873,43 @@ fn history_state_change_native(
     }
   }
 
-  let session_history_len = {
+  // Update the per-realm session history after URL validation so failures do not partially apply.
+  //
+  // This stores the entry state value as a persistent root so `history.back/forward/go` can restore
+  // it later.
+  let history_len = {
     let Some(data) = vm.user_data_mut::<WindowRealmUserData>() else {
-      return Err(VmError::InvariantViolation("window realm missing user data"));
+      return Err(VmError::InvariantViolation(
+        "window realm missing user data",
+      ));
     };
+    // Defensively initialize the session history if `init_window_globals` did not.
     if data.session_history.entries.is_empty() {
-      return Err(VmError::InvariantViolation(
-        "window realm missing session history state",
-      ));
-    }
-    if data.session_history.index >= data.session_history.entries.len() {
-      return Err(VmError::InvariantViolation(
-        "window realm session history index out of bounds",
-      ));
+      data
+        .session_history
+        .entries
+        .try_reserve(1)
+        .map_err(|_| VmError::OutOfMemory)?;
+      let root = scope.heap_mut().add_root(Value::Null)?;
+      data.session_history.entries.push(SessionHistoryEntry {
+        url: data.document_url.clone(),
+        state_root: root,
+      });
+      data.session_history.index = 0;
     }
 
-    let state_root = scope.heap_mut().add_root(state_value)?;
+    let url = data.document_url.clone();
+    let idx = data.session_history.index;
     if replace {
-      let entry = &mut data.session_history.entries[data.session_history.index];
-      if url_provided {
-        entry.url = data.document_url.clone();
+      if let Some(entry) = data.session_history.entries.get_mut(idx) {
+        entry.url = url;
+        scope.heap_mut().set_root(entry.state_root, state_value);
       }
-      let old_root = std::mem::replace(&mut entry.state_root, state_root);
-      scope.heap_mut().remove_root(old_root);
     } else {
-      let forward_start = data.session_history.index + 1;
-      if forward_start < data.session_history.entries.len() {
-        for entry in data.session_history.entries.drain(forward_start..) {
+      // Discard any forward history entries.
+      let truncate_from = idx.saturating_add(1);
+      if truncate_from < data.session_history.entries.len() {
+        for entry in data.session_history.entries.drain(truncate_from..) {
           scope.heap_mut().remove_root(entry.state_root);
         }
       }
@@ -3902,18 +3918,18 @@ fn history_state_change_native(
         .entries
         .try_reserve(1)
         .map_err(|_| VmError::OutOfMemory)?;
-      data.session_history.entries.push(SessionHistoryEntry {
-        url: data.document_url.clone(),
-        state_root,
-      });
-      data.session_history.index = data.session_history.entries.len() - 1;
+      let state_root = scope.heap_mut().add_root(state_value)?;
+      data
+        .session_history
+        .entries
+        .push(SessionHistoryEntry { url, state_root });
+      data.session_history.index = data.session_history.entries.len().saturating_sub(1);
     }
 
     data.session_history.entries.len()
   };
 
-  // Update `history.state` after URL validation/session history changes so failures do not partially
-  // apply.
+  // Update `history.state` after URL/session history updates so failures do not partially apply.
   {
     // Root the receiver while allocating the property key: `alloc_key` can trigger GC.
     let mut scope = scope.reborrow();
@@ -3921,54 +3937,543 @@ fn history_state_change_native(
     scope.push_root(state_value)?;
     let state_key = alloc_key(&mut scope, "state")?;
     scope.define_property(history_obj, state_key, read_only_data_desc(state_value))?;
-  }
 
-  if !replace {
-    // Keep `history.length` in sync with the host-side session history stack.
-    let mut scope = scope.reborrow();
-    scope.push_root(Value::Object(history_obj))?;
     let length_key = alloc_key(&mut scope, "length")?;
     scope.define_property(
       history_obj,
       length_key,
-      read_only_data_desc(Value::Number(session_history_len as f64)),
+      read_only_data_desc(Value::Number(history_len as f64)),
     )?;
   }
 
   Ok(Value::Undefined)
 }
 
-fn history_noop_native(
-  _vm: &mut Vm,
-  _scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
-  _callee: GcObject,
+#[derive(Debug, Clone)]
+struct HistoryTraversalOutcome {
+  old_url: String,
+  new_url: String,
+  state: Value,
+}
+
+fn history_traverse_delta(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  history_obj: GcObject,
+  location_obj: GcObject,
+  document_obj: GcObject,
+  delta: isize,
+) -> Result<Option<HistoryTraversalOutcome>, VmError> {
+  if delta == 0 {
+    return Ok(None);
+  }
+
+  let (old_url, new_url, state_value, history_len) = {
+    let Some(data) = vm.user_data_mut::<WindowRealmUserData>() else {
+      return Err(VmError::InvariantViolation(
+        "window realm missing user data",
+      ));
+    };
+
+    let entries_len = data.session_history.entries.len();
+    let Some(current_entry) = data.session_history.entries.get(data.session_history.index) else {
+      return Ok(None);
+    };
+
+    let target = (data.session_history.index as isize).saturating_add(delta);
+    if target < 0 || target as usize >= entries_len {
+      return Ok(None);
+    }
+    let target = target as usize;
+    if target == data.session_history.index {
+      return Ok(None);
+    }
+
+    let old_url = current_entry.url.clone();
+    let new_entry = data
+      .session_history
+      .entries
+      .get(target)
+      .cloned()
+      .ok_or_else(|| VmError::InvariantViolation("session history target out of bounds"))?;
+    data.session_history.index = target;
+
+    let old_doc_url = data.document_url.clone();
+    data.document_url = new_entry.url.clone();
+
+    let update_base =
+      data.base_url.is_none() || data.base_url.as_deref() == Some(old_doc_url.as_str());
+    if update_base {
+      data.base_url = Some(new_entry.url.clone());
+      data
+        .module_loader
+        .borrow_mut()
+        .set_document_url(data.base_url.clone());
+    }
+
+    let state_value = scope
+      .heap()
+      .get_root(new_entry.state_root)
+      .unwrap_or(Value::Null);
+    (old_url, new_entry.url, state_value, entries_len)
+  };
+
+  // Update `location.href`/`document.URL`/`history.state`.
+  let new_url_s = scope.alloc_string(&new_url)?;
+  scope.push_root(Value::String(new_url_s))?;
+  {
+    // Root objects while allocating property keys: `alloc_key` can trigger GC.
+    let mut scope = scope.reborrow();
+    scope.push_root(Value::Object(location_obj))?;
+    scope.push_root(Value::Object(document_obj))?;
+    scope.push_root(Value::Object(history_obj))?;
+    scope.push_root(state_value)?;
+
+    let location_url_key = alloc_key(&mut scope, LOCATION_URL_KEY)?;
+    scope.define_property(
+      location_obj,
+      location_url_key,
+      data_desc(Value::String(new_url_s)),
+    )?;
+
+    let doc_url_key = alloc_key(&mut scope, "URL")?;
+    scope.define_property(
+      document_obj,
+      doc_url_key,
+      data_desc(Value::String(new_url_s)),
+    )?;
+
+    let state_key = alloc_key(&mut scope, "state")?;
+    scope.define_property(history_obj, state_key, read_only_data_desc(state_value))?;
+
+    let length_key = alloc_key(&mut scope, "length")?;
+    scope.define_property(
+      history_obj,
+      length_key,
+      read_only_data_desc(Value::Number(history_len as f64)),
+    )?;
+  }
+
+  Ok(Some(HistoryTraversalOutcome {
+    old_url,
+    new_url,
+    state: state_value,
+  }))
+}
+
+fn make_history_event_object(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  vm_host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  window_obj: GcObject,
+  preferred_ctor_name: &str,
+  type_name: &'static str,
+  init_obj: GcObject,
+) -> Result<(GcObject, bool), VmError> {
+  let type_s = scope.alloc_string(type_name)?;
+  scope.push_root(Value::String(type_s))?;
+
+  // Root `window`/`init_obj` while allocating keys: `alloc_key` can trigger GC.
+  scope.push_root(Value::Object(window_obj))?;
+  scope.push_root(Value::Object(init_obj))?;
+
+  let preferred_ctor_key = alloc_key(scope, preferred_ctor_name)?;
+  let preferred_ctor =
+    vm.get_with_host_and_hooks(vm_host, scope, hooks, window_obj, preferred_ctor_key)?;
+  scope.push_root(preferred_ctor)?;
+
+  let (event_value, needs_payload_define) = if scope
+    .heap()
+    .is_constructor(preferred_ctor)
+    .unwrap_or(false)
+  {
+    (
+      vm.construct_with_host_and_hooks(
+        vm_host,
+        scope,
+        hooks,
+        preferred_ctor,
+        &[Value::String(type_s), Value::Object(init_obj)],
+        preferred_ctor,
+      )?,
+      false,
+    )
+  } else {
+    let event_ctor_key = alloc_key(scope, "Event")?;
+    let event_ctor =
+      vm.get_with_host_and_hooks(vm_host, scope, hooks, window_obj, event_ctor_key)?;
+    scope.push_root(event_ctor)?;
+    (
+      vm.construct_with_host_and_hooks(
+        vm_host,
+        scope,
+        hooks,
+        event_ctor,
+        &[Value::String(type_s), Value::Object(init_obj)],
+        event_ctor,
+      )?,
+      true,
+    )
+  };
+
+  let Value::Object(event_obj) = event_value else {
+    return Err(VmError::Unimplemented(
+      "PopStateEvent/HashChangeEvent/Event constructor returned non-object",
+    ));
+  };
+  Ok((event_obj, needs_payload_define))
+}
+
+fn dispatch_history_traversal_events(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  vm_host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  window_obj: GcObject,
+  traversal: &HistoryTraversalOutcome,
+) -> Result<(), VmError> {
+  let old_fragment = traversal.old_url.split_once('#').map(|(_, frag)| frag);
+  let new_fragment = traversal.new_url.split_once('#').map(|(_, frag)| frag);
+  let hash_changed = old_fragment != new_fragment;
+
+  {
+    let init_obj = scope.alloc_object()?;
+    scope.push_root(Value::Object(init_obj))?;
+    scope.push_root(traversal.state)?;
+    let state_key = alloc_key(scope, "state")?;
+    scope.define_property(init_obj, state_key, data_desc(traversal.state))?;
+
+    let (event_obj, needs_payload_define) = make_history_event_object(
+      vm,
+      scope,
+      vm_host,
+      hooks,
+      window_obj,
+      "PopStateEvent",
+      "popstate",
+      init_obj,
+    )?;
+    scope.push_root(Value::Object(event_obj))?;
+    if needs_payload_define {
+      scope.define_property(event_obj, state_key, read_only_data_desc(traversal.state))?;
+    }
+
+    let dispatch_key = alloc_key(scope, "dispatchEvent")?;
+    let dispatch = vm.get_with_host_and_hooks(vm_host, scope, hooks, window_obj, dispatch_key)?;
+    let _ = vm.call_with_host_and_hooks(
+      vm_host,
+      scope,
+      hooks,
+      dispatch,
+      Value::Object(window_obj),
+      &[Value::Object(event_obj)],
+    )?;
+  }
+
+  if hash_changed {
+    let init_obj = scope.alloc_object()?;
+    scope.push_root(Value::Object(init_obj))?;
+    let old_url_s = scope.alloc_string(&traversal.old_url)?;
+    scope.push_root(Value::String(old_url_s))?;
+    let new_url_s = scope.alloc_string(&traversal.new_url)?;
+    scope.push_root(Value::String(new_url_s))?;
+
+    let old_url_key = alloc_key(scope, "oldURL")?;
+    scope.define_property(init_obj, old_url_key, data_desc(Value::String(old_url_s)))?;
+    let new_url_key = alloc_key(scope, "newURL")?;
+    scope.define_property(init_obj, new_url_key, data_desc(Value::String(new_url_s)))?;
+
+    let (event_obj, needs_payload_define) = make_history_event_object(
+      vm,
+      scope,
+      vm_host,
+      hooks,
+      window_obj,
+      "HashChangeEvent",
+      "hashchange",
+      init_obj,
+    )?;
+    scope.push_root(Value::Object(event_obj))?;
+    if needs_payload_define {
+      scope.define_property(
+        event_obj,
+        old_url_key,
+        read_only_data_desc(Value::String(old_url_s)),
+      )?;
+      scope.define_property(
+        event_obj,
+        new_url_key,
+        read_only_data_desc(Value::String(new_url_s)),
+      )?;
+    }
+
+    let dispatch_key = alloc_key(scope, "dispatchEvent")?;
+    let dispatch = vm.get_with_host_and_hooks(vm_host, scope, hooks, window_obj, dispatch_key)?;
+    let _ = vm.call_with_host_and_hooks(
+      vm_host,
+      scope,
+      hooks,
+      dispatch,
+      Value::Object(window_obj),
+      &[Value::Object(event_obj)],
+    )?;
+  }
+
+  Ok(())
+}
+
+fn queue_history_traversal_task<Host: WindowRealmHost + 'static>(
+  event_loop: &mut EventLoop<Host>,
+  delta: isize,
+  window_obj: GcObject,
+  history_obj: GcObject,
+  location_obj: GcObject,
+  document_obj: GcObject,
+) -> bool {
+  event_loop
+    .queue_task(TaskSource::DOMManipulation, move |host, event_loop| {
+      let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host);
+      hooks.set_event_loop(event_loop);
+      let (vm_host, window_realm) = host.vm_host_and_window_realm();
+      window_realm.reset_interrupt();
+      let budget = window_realm.vm_budget_now();
+      let (vm, heap) = window_realm.vm_and_heap_mut();
+
+      let result: crate::error::Result<()> = (|| {
+        let mut vm = vm.push_budget(budget);
+        vm.tick()
+          .map_err(|err| crate::js::window_timers::vm_error_to_event_loop_error(heap, err))?;
+
+        let traversal_and_dispatch: Result<(), VmError> = (|| {
+          let mut scope = heap.scope();
+
+          let traversal = history_traverse_delta(
+            &mut vm,
+            &mut scope,
+            history_obj,
+            location_obj,
+            document_obj,
+            delta,
+          )?;
+          if let Some(traversal) = traversal.as_ref() {
+            dispatch_history_traversal_events(
+              &mut vm,
+              &mut scope,
+              vm_host,
+              &mut hooks,
+              window_obj,
+              traversal,
+            )?;
+          }
+          Ok(())
+        })();
+
+        traversal_and_dispatch
+          .map_err(|err| crate::js::window_timers::vm_error_to_event_loop_error(heap, err))
+      })();
+
+      let finish_err = hooks.finish(heap);
+      if let Some(err) = finish_err {
+        return Err(err);
+      }
+
+      result
+    })
+    .is_ok()
+}
+
+fn schedule_history_traversal(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  vm_host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  window_obj: GcObject,
+  history_obj: GcObject,
+  location_obj: GcObject,
+  document_obj: GcObject,
+  delta: isize,
+) -> Result<(), VmError> {
+  if delta == 0 {
+    return Ok(());
+  }
+
+  // Queue a DOM manipulation task when an HTML event loop is available.
+  let queued =
+    if let Some(event_loop) = event_loop_mut_from_hooks::<crate::api::BrowserTabHost>(hooks) {
+      queue_history_traversal_task::<crate::api::BrowserTabHost>(
+        event_loop,
+        delta,
+        window_obj,
+        history_obj,
+        location_obj,
+        document_obj,
+      )
+    } else if let Some(event_loop) = event_loop_mut_from_hooks::<WindowHostState>(hooks) {
+      queue_history_traversal_task::<WindowHostState>(
+        event_loop,
+        delta,
+        window_obj,
+        history_obj,
+        location_obj,
+        document_obj,
+      )
+    } else {
+      false
+    };
+
+  if queued {
+    return Ok(());
+  }
+
+  // Best-effort fallback when no event loop is available.
+  if let Some(traversal) =
+    history_traverse_delta(vm, scope, history_obj, location_obj, document_obj, delta)?
+  {
+    dispatch_history_traversal_events(vm, scope, vm_host, hooks, window_obj, &traversal)?;
+  }
+  Ok(())
+}
+
+fn history_back_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  vm_host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
   _this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
+  let slots = scope.heap().get_function_native_slots(callee)?;
+  let window_obj = match slots
+    .get(HISTORY_TRAVERSE_WINDOW_OBJ_SLOT)
+    .copied()
+    .unwrap_or(Value::Undefined)
+  {
+    Value::Object(obj) => obj,
+    _ => return Ok(Value::Undefined),
+  };
+  let history_obj = match slots
+    .get(HISTORY_TRAVERSE_HISTORY_OBJ_SLOT)
+    .copied()
+    .unwrap_or(Value::Undefined)
+  {
+    Value::Object(obj) => obj,
+    _ => return Ok(Value::Undefined),
+  };
+  let location_obj = match slots
+    .get(HISTORY_TRAVERSE_LOCATION_OBJ_SLOT)
+    .copied()
+    .unwrap_or(Value::Undefined)
+  {
+    Value::Object(obj) => obj,
+    _ => return Ok(Value::Undefined),
+  };
+  let document_obj = match slots
+    .get(HISTORY_TRAVERSE_DOCUMENT_OBJ_SLOT)
+    .copied()
+    .unwrap_or(Value::Undefined)
+  {
+    Value::Object(obj) => obj,
+    _ => return Ok(Value::Undefined),
+  };
+
+  schedule_history_traversal(
+    vm,
+    scope,
+    vm_host,
+    hooks,
+    window_obj,
+    history_obj,
+    location_obj,
+    document_obj,
+    -1,
+  )?;
+  Ok(Value::Undefined)
+}
+
+fn history_forward_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  vm_host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let slots = scope.heap().get_function_native_slots(callee)?;
+  let window_obj = match slots
+    .get(HISTORY_TRAVERSE_WINDOW_OBJ_SLOT)
+    .copied()
+    .unwrap_or(Value::Undefined)
+  {
+    Value::Object(obj) => obj,
+    _ => return Ok(Value::Undefined),
+  };
+  let history_obj = match slots
+    .get(HISTORY_TRAVERSE_HISTORY_OBJ_SLOT)
+    .copied()
+    .unwrap_or(Value::Undefined)
+  {
+    Value::Object(obj) => obj,
+    _ => return Ok(Value::Undefined),
+  };
+  let location_obj = match slots
+    .get(HISTORY_TRAVERSE_LOCATION_OBJ_SLOT)
+    .copied()
+    .unwrap_or(Value::Undefined)
+  {
+    Value::Object(obj) => obj,
+    _ => return Ok(Value::Undefined),
+  };
+  let document_obj = match slots
+    .get(HISTORY_TRAVERSE_DOCUMENT_OBJ_SLOT)
+    .copied()
+    .unwrap_or(Value::Undefined)
+  {
+    Value::Object(obj) => obj,
+    _ => return Ok(Value::Undefined),
+  };
+
+  schedule_history_traversal(
+    vm,
+    scope,
+    vm_host,
+    hooks,
+    window_obj,
+    history_obj,
+    location_obj,
+    document_obj,
+    1,
+  )?;
   Ok(Value::Undefined)
 }
 
 fn history_go_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
-  _callee: GcObject,
+  vm_host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
   _this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
-  // Per web platform behavior:
-  // - history.go() / history.go(0) reloads the current document.
-  // - Non-zero deltas perform a session history traversal (FastRender may implement this later).
   let delta_value = args.get(0).copied().unwrap_or(Value::Undefined);
   let mut delta = scope.heap_mut().to_number(delta_value)?;
-  if !delta.is_finite() || delta.is_nan() {
+  if delta.is_nan() {
     delta = 0.0;
   }
+  // `ToIntegerOrInfinity` rounds toward zero; keep infinities so they clamp below.
   let delta = delta.trunc();
-  if delta == 0.0 {
+  let delta = if delta >= isize::MAX as f64 {
+    isize::MAX
+  } else if delta <= isize::MIN as f64 {
+    isize::MIN
+  } else {
+    delta as isize
+  };
+
+  if delta == 0 {
     let current_url = {
       let Some(data) = vm.user_data::<WindowRealmUserData>() else {
         return Err(VmError::InvariantViolation("window realm missing user data"));
@@ -3987,8 +4492,54 @@ fn history_go_native(
 
     vm.interrupt_handle().interrupt();
     vm.tick()?;
+    return Ok(Value::Undefined);
   }
 
+  let slots = scope.heap().get_function_native_slots(callee)?;
+  let window_obj = match slots
+    .get(HISTORY_TRAVERSE_WINDOW_OBJ_SLOT)
+    .copied()
+    .unwrap_or(Value::Undefined)
+  {
+    Value::Object(obj) => obj,
+    _ => return Ok(Value::Undefined),
+  };
+  let history_obj = match slots
+    .get(HISTORY_TRAVERSE_HISTORY_OBJ_SLOT)
+    .copied()
+    .unwrap_or(Value::Undefined)
+  {
+    Value::Object(obj) => obj,
+    _ => return Ok(Value::Undefined),
+  };
+  let location_obj = match slots
+    .get(HISTORY_TRAVERSE_LOCATION_OBJ_SLOT)
+    .copied()
+    .unwrap_or(Value::Undefined)
+  {
+    Value::Object(obj) => obj,
+    _ => return Ok(Value::Undefined),
+  };
+  let document_obj = match slots
+    .get(HISTORY_TRAVERSE_DOCUMENT_OBJ_SLOT)
+    .copied()
+    .unwrap_or(Value::Undefined)
+  {
+    Value::Object(obj) => obj,
+    _ => return Ok(Value::Undefined),
+  };
+
+  schedule_history_traversal(
+    vm,
+    scope,
+    vm_host,
+    hooks,
+    window_obj,
+    history_obj,
+    location_obj,
+    document_obj,
+    delta,
+  )?;
   Ok(Value::Undefined)
 }
 
@@ -23475,9 +24026,22 @@ fn init_window_globals(
     .heap_mut()
     .object_set_prototype(location_obj, Some(location_proto))?;
 
+  // Initialize the per-realm session history with the initial document entry.
+  if let Some(user_data) = vm.user_data_mut::<WindowRealmUserData>() {
+    if user_data.session_history.entries.is_empty() {
+      let state_root = scope.heap_mut().add_root(Value::Null)?;
+      user_data.session_history.entries.push(SessionHistoryEntry {
+        url: user_data.document_url.clone(),
+        state_root,
+      });
+      user_data.session_history.index = 0;
+    }
+  }
+
   let history_state_call_id = vm.register_native_call(history_state_change_native)?;
+  let history_back_call_id = vm.register_native_call(history_back_native)?;
+  let history_forward_call_id = vm.register_native_call(history_forward_native)?;
   let history_go_call_id = vm.register_native_call(history_go_native)?;
-  let history_noop_call_id = vm.register_native_call(history_noop_native)?;
 
   let push_state_key = alloc_key(&mut scope, "pushState")?;
   let push_state_name = scope.alloc_string("pushState")?;
@@ -23536,7 +24100,19 @@ fn init_window_globals(
   let back_key = alloc_key(&mut scope, "back")?;
   let back_name = scope.alloc_string("back")?;
   scope.push_root(Value::String(back_name))?;
-  let back_func = scope.alloc_native_function(history_noop_call_id, None, back_name, 0)?;
+  let history_traverse_slots = [
+    Value::Object(global),
+    Value::Object(history_obj),
+    Value::Object(location_obj),
+    Value::Object(document_obj),
+  ];
+  let back_func = scope.alloc_native_function_with_slots(
+    history_back_call_id,
+    None,
+    back_name,
+    0,
+    &history_traverse_slots,
+  )?;
   scope
     .heap_mut()
     .object_set_prototype(back_func, Some(realm.intrinsics().function_prototype()))?;
@@ -23546,7 +24122,13 @@ fn init_window_globals(
   let forward_key = alloc_key(&mut scope, "forward")?;
   let forward_name = scope.alloc_string("forward")?;
   scope.push_root(Value::String(forward_name))?;
-  let forward_func = scope.alloc_native_function(history_noop_call_id, None, forward_name, 0)?;
+  let forward_func = scope.alloc_native_function_with_slots(
+    history_forward_call_id,
+    None,
+    forward_name,
+    0,
+    &history_traverse_slots,
+  )?;
   scope
     .heap_mut()
     .object_set_prototype(forward_func, Some(realm.intrinsics().function_prototype()))?;
@@ -23560,7 +24142,13 @@ fn init_window_globals(
   let go_key = alloc_key(&mut scope, "go")?;
   let go_name = scope.alloc_string("go")?;
   scope.push_root(Value::String(go_name))?;
-  let go_func = scope.alloc_native_function(history_go_call_id, None, go_name, 1)?;
+  let go_func = scope.alloc_native_function_with_slots(
+    history_go_call_id,
+    None,
+    go_name,
+    1,
+    &history_traverse_slots,
+  )?;
   scope
     .heap_mut()
     .object_set_prototype(go_func, Some(realm.intrinsics().function_prototype()))?;
@@ -23902,6 +24490,7 @@ mod tests {
   use crate::js::clock::VirtualClock;
   use crate::js::vm_error_format;
   use crate::js::window_env::FASTRENDER_USER_AGENT;
+  use crate::js::RunLimits;
   use crate::js::window::WindowHost;
   use std::sync::{Mutex as StdMutex, OnceLock as StdOnceLock};
   use std::time::Duration;
@@ -24222,6 +24811,130 @@ mod tests {
 
     realm.perform_microtask_checkpoint()?;
     assert_eq!(realm.exec_script("globalThis.__x")?, Value::Number(1.0));
+    Ok(())
+  }
+
+  #[test]
+  fn history_traversal_queues_task_and_dispatches_events() -> crate::error::Result<()> {
+    let mut host = WindowHost::new(
+      dom2::Document::new(QuirksMode::NoQuirks),
+      "https://example.com/",
+    )?;
+
+    host.exec_script(
+      "globalThis.__events = [];\n\
+       onpopstate = (e) => { __events.push(['popstate', e.state]); };\n\
+       onhashchange = (e) => { __events.push(['hashchange', e.oldURL, e.newURL]); };\n\
+       history.pushState(1, '', '#one');\n\
+       history.pushState(2, '', '#two');\n\
+       globalThis.__len_after_push = history.length;\n\
+       globalThis.__url_after_push = location.href;\n\
+       globalThis.__state_after_push = history.state;\n\
+       history.back();\n\
+       globalThis.__url_after_back_call = location.href;\n\
+       globalThis.__state_after_back_call = history.state;\n\
+       globalThis.__events_len_after_back_call = __events.length;\n",
+    )?;
+
+    assert_eq!(host.exec_script("__len_after_push")?, Value::Number(3.0));
+    let url_after_push = host.exec_script("__url_after_push")?;
+    assert_eq!(
+      get_string(host.host().window().heap(), url_after_push),
+      "https://example.com/#two"
+    );
+    assert_eq!(host.exec_script("__state_after_push")?, Value::Number(2.0));
+    // `history.back()` queues a task; it should not apply synchronously.
+    let url_after_back_call = host.exec_script("__url_after_back_call")?;
+    assert_eq!(
+      get_string(host.host().window().heap(), url_after_back_call),
+      "https://example.com/#two"
+    );
+    assert_eq!(
+      host.exec_script("__state_after_back_call")?,
+      Value::Number(2.0)
+    );
+    assert_eq!(
+      host.exec_script("__events_len_after_back_call")?,
+      Value::Number(0.0)
+    );
+
+    host.run_until_idle(RunLimits::unbounded())?;
+
+    let href_after_back = host.exec_script("location.href")?;
+    assert_eq!(
+      get_string(host.host().window().heap(), href_after_back),
+      "https://example.com/#one"
+    );
+    assert_eq!(host.exec_script("history.state")?, Value::Number(1.0));
+    let document_url_after_back = host.exec_script("document.URL")?;
+    assert_eq!(
+      get_string(host.host().window().heap(), document_url_after_back),
+      "https://example.com/#one"
+    );
+    let events_after_back = host.exec_script("JSON.stringify(__events)")?;
+    assert_eq!(
+      get_string(host.host().window().heap(), events_after_back),
+      "[[\"popstate\",1],[\"hashchange\",\"https://example.com/#two\",\"https://example.com/#one\"]]"
+    );
+
+    // `history.forward()` should also be async + fire the same events.
+    host.exec_script(
+      "__events = [];\n\
+       history.forward();\n\
+       globalThis.__url_after_forward_call = location.href;\n\
+       globalThis.__events_len_after_forward_call = __events.length;\n",
+    )?;
+    let url_after_forward_call = host.exec_script("__url_after_forward_call")?;
+    assert_eq!(
+      get_string(host.host().window().heap(), url_after_forward_call),
+      "https://example.com/#one"
+    );
+    assert_eq!(
+      host.exec_script("__events_len_after_forward_call")?,
+      Value::Number(0.0)
+    );
+    host.run_until_idle(RunLimits::unbounded())?;
+    let href_after_forward = host.exec_script("location.href")?;
+    assert_eq!(
+      get_string(host.host().window().heap(), href_after_forward),
+      "https://example.com/#two"
+    );
+    assert_eq!(host.exec_script("history.state")?, Value::Number(2.0));
+    let events_after_forward = host.exec_script("JSON.stringify(__events)")?;
+    assert_eq!(
+      get_string(host.host().window().heap(), events_after_forward),
+      "[[\"popstate\",2],[\"hashchange\",\"https://example.com/#one\",\"https://example.com/#two\"]]"
+    );
+
+    // `history.go(-1)` should behave like `history.back()`.
+    host.exec_script(
+      "__events = [];\n\
+       history.go(-1);\n\
+       globalThis.__url_after_go_call = location.href;\n\
+       globalThis.__events_len_after_go_call = __events.length;\n",
+    )?;
+    let url_after_go_call = host.exec_script("__url_after_go_call")?;
+    assert_eq!(
+      get_string(host.host().window().heap(), url_after_go_call),
+      "https://example.com/#two"
+    );
+    assert_eq!(
+      host.exec_script("__events_len_after_go_call")?,
+      Value::Number(0.0)
+    );
+    host.run_until_idle(RunLimits::unbounded())?;
+    let href_after_go = host.exec_script("location.href")?;
+    assert_eq!(
+      get_string(host.host().window().heap(), href_after_go),
+      "https://example.com/#one"
+    );
+    assert_eq!(host.exec_script("history.state")?, Value::Number(1.0));
+    let events_after_go = host.exec_script("JSON.stringify(__events)")?;
+    assert_eq!(
+      get_string(host.host().window().heap(), events_after_go),
+      "[[\"popstate\",1],[\"hashchange\",\"https://example.com/#two\",\"https://example.com/#one\"]]"
+    );
+
     Ok(())
   }
 
