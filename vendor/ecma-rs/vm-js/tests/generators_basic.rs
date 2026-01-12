@@ -228,3 +228,45 @@ fn generator_throw_triggers_finally_and_finally_can_yield() {
     .unwrap();
   assert_eq!(value, Value::Bool(true));
 }
+
+#[test]
+fn generator_do_while_yield_in_body() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      function* g() {
+        do { yield 1; } while (false);
+        return 2;
+      }
+      var it = g();
+      var r1 = it.next();
+      var r2 = it.next();
+      r1.value === 1 && r1.done === false &&
+      r2.value === 2 && r2.done === true
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_do_while_yield_in_condition() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      function* g() {
+        do { } while (yield 1);
+        return 2;
+      }
+      var it = g();
+      var r1 = it.next();
+      var r2 = it.next(false);
+      r1.value === 1 && r1.done === false &&
+      r2.value === 2 && r2.done === true
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}

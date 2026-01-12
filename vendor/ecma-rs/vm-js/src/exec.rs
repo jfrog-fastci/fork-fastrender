@@ -10039,6 +10039,19 @@ pub(crate) enum GenFrame {
     v: Value,
   },
 
+  /// Continue a `do...while` loop after evaluating the body statement.
+  DoWhileAfterBody {
+    stmt: *const DoWhileStmt,
+    label_set: Vec<String>,
+    v: Value,
+  },
+  /// Continue a `do...while` loop after evaluating the test expression.
+  DoWhileAfterTest {
+    stmt: *const DoWhileStmt,
+    label_set: Vec<String>,
+    v: Value,
+  },
+
   /// Continue a `try` statement after evaluating the wrapped block.
   TryAfterWrapped {
     stmt: *const TryStmt,
@@ -10132,7 +10145,10 @@ impl Trace for GenFrame {
         }
       }
       GenFrame::RestoreLexEnv { outer } => tracer.trace_env(*outer),
-      GenFrame::WhileAfterTest { v, .. } | GenFrame::WhileAfterBody { v, .. } => tracer.trace_value(*v),
+      GenFrame::WhileAfterTest { v, .. }
+      | GenFrame::WhileAfterBody { v, .. }
+      | GenFrame::DoWhileAfterBody { v, .. }
+      | GenFrame::DoWhileAfterTest { v, .. } => tracer.trace_value(*v),
       GenFrame::TryAfterFinally { pending } => pending.trace(tracer),
       GenFrame::ComputedMemberAfterMember { base, .. } => tracer.trace_value(*base),
       GenFrame::CallComputedMemberAfterMember { base, .. } => tracer.trace_value(*base),
@@ -11287,6 +11303,9 @@ fn stmt_contains_yield(stmt: &Node<Stmt>) -> bool {
     }
     Stmt::While(while_stmt) => {
       expr_contains_yield(&while_stmt.stx.condition) || stmt_contains_yield(&while_stmt.stx.body)
+    }
+    Stmt::DoWhile(do_while) => {
+      expr_contains_yield(&do_while.stx.condition) || stmt_contains_yield(&do_while.stx.body)
     }
     // Conservatively assume unsupported statement kinds do not contain yield so we preserve the
     // existing synchronous evaluator behaviour for them.
@@ -24667,6 +24686,122 @@ fn gen_while_after_body(
   }
 }
 
+fn gen_eval_do_while(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  stmt: &DoWhileStmt,
+  label_set: &[String],
+) -> Result<GenEval<Completion>, VmError> {
+  // Root `V` across the loop so it can't be collected between iterations. Use a stack root so it
+  // does not survive across yields.
+  let mut loop_scope = scope.reborrow();
+  let v_root_idx = loop_scope.heap().root_stack.len();
+  loop_scope.push_root(Value::Undefined)?;
+  let v = Value::Undefined;
+
+  let mut label_vec: Vec<String> = Vec::new();
+  label_vec
+    .try_reserve_exact(label_set.len())
+    .map_err(|_| VmError::OutOfMemory)?;
+  label_vec.extend_from_slice(label_set);
+
+  match gen_eval_stmt_labelled(evaluator, &mut loop_scope, &stmt.body, &[])? {
+    GenEval::Complete(c) => gen_do_while_after_body(evaluator, &mut loop_scope, stmt, label_vec, v_root_idx, v, c),
+    GenEval::Suspend(mut suspend) => {
+      gen_frames_push(
+        &mut suspend.frames,
+        GenFrame::DoWhileAfterBody {
+          stmt: stmt as *const DoWhileStmt,
+          label_set: label_vec,
+          v,
+        },
+      )?;
+      Ok(GenEval::Suspend(suspend))
+    }
+  }
+}
+
+fn gen_do_while_after_body(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  stmt: &DoWhileStmt,
+  label_set: Vec<String>,
+  v_root_idx: usize,
+  v: Value,
+  body_completion: Completion,
+) -> Result<GenEval<Completion>, VmError> {
+  scope.heap_mut().root_stack[v_root_idx] = v;
+  let mut v = scope.heap().root_stack[v_root_idx];
+
+  if !Evaluator::loop_continues(&body_completion, &label_set) {
+    let result = Evaluator::normalise_iteration_break(body_completion.update_empty(Some(v)));
+    return Ok(GenEval::Complete(result));
+  }
+
+  if let Some(value) = body_completion.value() {
+    v = value;
+    scope.heap_mut().root_stack[v_root_idx] = value;
+  }
+
+  match gen_eval_expr(evaluator, scope, &stmt.condition)? {
+    GenEval::Complete(c) => match c {
+      Completion::Normal(test) => gen_do_while_after_test(
+        evaluator,
+        scope,
+        stmt,
+        label_set,
+        v_root_idx,
+        v,
+        test.unwrap_or(Value::Undefined),
+      ),
+      abrupt => Ok(GenEval::Complete(abrupt)),
+    },
+    GenEval::Suspend(mut suspend) => {
+      gen_frames_push(
+        &mut suspend.frames,
+        GenFrame::DoWhileAfterTest {
+          stmt: stmt as *const DoWhileStmt,
+          label_set,
+          v,
+        },
+      )?;
+      Ok(GenEval::Suspend(suspend))
+    }
+  }
+}
+
+fn gen_do_while_after_test(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  stmt: &DoWhileStmt,
+  label_set: Vec<String>,
+  v_root_idx: usize,
+  v: Value,
+  test_value: Value,
+) -> Result<GenEval<Completion>, VmError> {
+  scope.heap_mut().root_stack[v_root_idx] = v;
+
+  if !to_boolean(scope.heap(), test_value)? {
+    let result = Evaluator::normalise_iteration_break(Completion::normal(v));
+    return Ok(GenEval::Complete(result));
+  }
+
+  match gen_eval_stmt_labelled(evaluator, scope, &stmt.body, &[])? {
+    GenEval::Complete(c) => gen_do_while_after_body(evaluator, scope, stmt, label_set, v_root_idx, v, c),
+    GenEval::Suspend(mut suspend) => {
+      gen_frames_push(
+        &mut suspend.frames,
+        GenFrame::DoWhileAfterBody {
+          stmt: stmt as *const DoWhileStmt,
+          label_set,
+          v,
+        },
+      )?;
+      Ok(GenEval::Suspend(suspend))
+    }
+  }
+}
+
 fn gen_eval_stmt_labelled(
   evaluator: &mut Evaluator<'_>,
   scope: &mut Scope<'_>,
@@ -24736,6 +24871,7 @@ fn gen_eval_stmt_labelled(
     },
     Stmt::Try(try_stmt) => gen_eval_try(evaluator, scope, &try_stmt.stx),
     Stmt::While(while_stmt) => gen_eval_while(evaluator, scope, &while_stmt.stx, label_set),
+    Stmt::DoWhile(do_while) => gen_eval_do_while(evaluator, scope, &do_while.stx, label_set),
     // Conservatively punt on other statement forms for now.
     _ => Err(VmError::Unimplemented("yield in statement type")),
   };
@@ -26098,6 +26234,43 @@ fn gen_resume_from_frames(
         }
       }
 
+      GenFrame::DoWhileAfterBody { stmt, label_set, v } => {
+        let v_root_idx = scope.heap().root_stack.len();
+        scope.push_root(v)?;
+        let stmt = unsafe { &*stmt };
+        match gen_do_while_after_body(evaluator, scope, stmt, label_set, v_root_idx, v, state)? {
+          GenEval::Complete(c) => state = c,
+          GenEval::Suspend(mut suspend) => {
+            suspend.frames.append(&mut frames);
+            return Ok(GenEval::Suspend(suspend));
+          }
+        }
+      }
+
+      GenFrame::DoWhileAfterTest { stmt, label_set, v } => match state {
+        Completion::Normal(test) => {
+          let v_root_idx = scope.heap().root_stack.len();
+          scope.push_root(v)?;
+          let stmt = unsafe { &*stmt };
+          match gen_do_while_after_test(
+            evaluator,
+            scope,
+            stmt,
+            label_set,
+            v_root_idx,
+            v,
+            test.unwrap_or(Value::Undefined),
+          )? {
+            GenEval::Complete(c) => state = c,
+            GenEval::Suspend(mut suspend) => {
+              suspend.frames.append(&mut frames);
+              return Ok(GenEval::Suspend(suspend));
+            }
+          }
+        }
+        abrupt => state = abrupt,
+      },
+
       GenFrame::TryAfterWrapped { stmt } => {
         let stmt = unsafe { &*stmt };
         match gen_try_after_wrapped(evaluator, scope, stmt, state)? {
@@ -26155,7 +26328,10 @@ fn gen_root_values_for_continuation(
         values.push(iterator_record.iterator);
         values.push(iterator_record.next_method);
       }
-      GenFrame::WhileAfterTest { v, .. } | GenFrame::WhileAfterBody { v, .. } => values.push(*v),
+      GenFrame::WhileAfterTest { v, .. }
+      | GenFrame::WhileAfterBody { v, .. }
+      | GenFrame::DoWhileAfterBody { v, .. }
+      | GenFrame::DoWhileAfterTest { v, .. } => values.push(*v),
       GenFrame::TryAfterFinally { pending } => {
         if let Some(v) = pending.value() {
           values.push(v);
