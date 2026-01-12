@@ -1,21 +1,9 @@
-use std::sync::Once;
-
 use fastrender::animation;
 use fastrender::api::FastRender;
 use fastrender::style::types::{BasicShape, ClipPath, ShapeRadius};
 use fastrender::{BoxNode, FragmentNode, FragmentTree, RenderOptions};
 
-static INIT_ENV: Once = Once::new();
-
-fn ensure_test_env() {
-  INIT_ENV.call_once(|| {
-    // FastRender uses Rayon for parallel layout/paint. Rayon defaults to the host CPU count, which
-    // can exceed sandbox thread budgets and cause the global pool init to fail.
-    if std::env::var("RAYON_NUM_THREADS").is_err() {
-      std::env::set_var("RAYON_NUM_THREADS", "1");
-    }
-  });
-}
+use super::support::ensure_test_env;
 
 fn find_box_id_by_dom_id(node: &BoxNode, id: &str) -> Option<usize> {
   if node.debug_info.as_ref().and_then(|info| info.id.as_deref()) == Some(id) {

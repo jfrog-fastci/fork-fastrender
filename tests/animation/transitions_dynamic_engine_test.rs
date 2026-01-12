@@ -12,24 +12,8 @@ use fastrender::style::values::CustomPropertyTypedValue;
 use fastrender::tree::box_tree::{BoxNode, GeneratedPseudoElement};
 use fastrender::tree::fragment_tree::{FragmentNode, FragmentTree};
 use fastrender::{BrowserDocument, PreparedDocument, RenderOptions, Result};
-use std::sync::Once;
 
-static INIT_ENV: Once = Once::new();
-
-fn ensure_test_env() {
-  INIT_ENV.call_once(|| {
-    // FastRender uses Rayon for parallel layout/paint. Rayon defaults to the host CPU count, which
-    // can exceed sandbox thread budgets and cause the global pool init to fail.
-    if std::env::var("RAYON_NUM_THREADS").is_err() {
-      std::env::set_var("RAYON_NUM_THREADS", "1");
-    }
-
-    // Keep tests deterministic and avoid expensive system font discovery in sandbox environments.
-    if std::env::var("FASTR_USE_BUNDLED_FONTS").is_err() {
-      std::env::set_var("FASTR_USE_BUNDLED_FONTS", "1");
-    }
-  });
-}
+use super::support::{ensure_test_env, pixel};
 
 fn styled_node_id_by_id(styled: &StyledNode, target_id: &str) -> Option<usize> {
   if styled
@@ -763,11 +747,6 @@ fn transitions_are_keyed_by_pseudo_element() -> Result<()> {
   );
 
   Ok(())
-}
-
-fn pixel(pixmap: &fastrender::Pixmap, x: u32, y: u32) -> (u8, u8, u8, u8) {
-  let px = pixmap.pixel(x, y).unwrap();
-  (px.red(), px.green(), px.blue(), px.alpha())
 }
 
 fn assert_mid_grey(px: (u8, u8, u8, u8)) {
