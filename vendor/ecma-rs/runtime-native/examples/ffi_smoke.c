@@ -2,11 +2,13 @@
 
 #include "runtime_native.h"
 
+#include <fcntl.h>
 #include <pthread.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <unistd.h>
 
 #define BYTES_LIT(s) ((const uint8_t*)(s)), (sizeof(s) - 1)
 
@@ -79,6 +81,30 @@ static void handle_microtask_record(GcPtr data) {
 static void handle_microtask_drop(GcPtr data) {
   handle_microtask_drop_count += 1;
   handle_microtask_dropped = data;
+}
+
+static IoWatcherId io_watcher = 0;
+static int io_watcher_ran = 0;
+static GcPtr io_watcher_expected = NULL;
+
+static void io_check_rooted(uint32_t events, uint8_t* data) {
+  if ((events & RT_IO_READABLE) == 0) {
+    return;
+  }
+  io_watcher_ran = (data == io_watcher_expected) ? 1 : 2;
+  rt_io_unregister(io_watcher);
+  io_watcher = 0;
+}
+
+static int set_nonblocking(int fd) {
+  int flags = fcntl(fd, F_GETFL);
+  if (flags < 0) {
+    return 1;
+  }
+  if (fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0) {
+    return 1;
+  }
+  return 0;
 }
 
 static void par_for_body(size_t i, uint8_t* data) {
@@ -364,6 +390,41 @@ int main(void) {
   if (check(handle_microtask_drop_count == 1)) { rc = 48; goto done; }
   if (check(handle_microtask_dropped == handle_obj2)) { rc = 49; goto done; }
   if (check(rt_handle_load(handle_id2) == NULL)) { rc = 50; goto done; }
+
+  // I/O watcher rooted-h API: register a watcher that stores the callback userdata as a GC-rooted
+  // persistent handle (created from a `GcHandle` / pointer-to-slot at registration time). After a
+  // GC, both our rooted slot and the watcher userdata should observe the relocated pointer.
+  int io_fds[2];
+  if (pipe(io_fds) != 0) { rc = 51; goto done; }
+  if (set_nonblocking(io_fds[0]) != 0) { rc = 52; goto done; }
+  if (set_nonblocking(io_fds[1]) != 0) { rc = 53; goto done; }
+
+  GcPtr slot = rt_alloc(16, shape);
+  if (check(slot != NULL)) { rc = 54; goto done; }
+
+  rt_root_push(&slot);
+  io_watcher_ran = 0;
+  io_watcher = rt_io_register_rooted_h(io_fds[0], RT_IO_READABLE, io_check_rooted, &slot);
+  if (check(io_watcher != 0)) { rc = 55; goto done; }
+
+  rt_gc_collect();
+  io_watcher_expected = slot;
+
+  // `rt_root_push` roots are only valid across non-blocking runtime calls. The async reactor
+  // (`rt_async_poll` / `rt_async_wait`) may park the current thread, which requires there to be no
+  // outstanding handle-stack roots.
+  rt_root_pop(&slot);
+
+  uint8_t io_byte = 1;
+  if (write(io_fds[1], &io_byte, 1) != 1) { rc = 56; goto done; }
+
+  // Drive one event-loop turn: should run the readiness callback without blocking.
+  (void)rt_async_poll();
+  rt_drain_microtasks();
+  if (check(io_watcher_ran == 1)) { rc = 57; goto done; }
+
+  (void)close(io_fds[0]);
+  (void)close(io_fds[1]);
 
   // Cross-thread enqueue should wake an event loop thread blocked in `rt_async_wait`.
   int wake_microtask_ran = 0;
