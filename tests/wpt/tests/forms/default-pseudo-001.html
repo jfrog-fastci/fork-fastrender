@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>:default pseudo-class</title>
+    <style>
+      body {
+        margin: 0;
+        padding: 20px;
+        background: white;
+      }
+
+      button {
+        display: inline-block;
+        width: 80px;
+        height: 80px;
+        border: 0;
+        margin-right: 10px;
+      }
+
+      button:default {
+        background: rgb(0, 160, 0);
+      }
+
+      button:not(:default) {
+        background: rgb(210, 0, 0);
+      }
+    </style>
+  </head>
+  <body>
+    <form><button type="submit"></button><button type="submit"></button></form>
+  </body>
+</html>
