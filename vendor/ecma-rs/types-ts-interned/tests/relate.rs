@@ -382,7 +382,7 @@ fn strict_null_checks_propagate_through_objects() {
       store,
       Shape {
         properties: vec![Property {
-          key: PropKey::String(store.intern_name("a")),
+          key: PropKey::String(store.intern_name_ref("a")),
           data: PropData {
             ty: nullable_number,
             optional: false,
@@ -402,7 +402,7 @@ fn strict_null_checks_propagate_through_objects() {
       store,
       Shape {
         properties: vec![Property {
-          key: PropKey::String(store.intern_name("a")),
+          key: PropKey::String(store.intern_name_ref("a")),
           data: PropData {
             ty: primitives.number,
             optional: false,
@@ -446,7 +446,7 @@ fn unions_and_intersections() {
   let num_str_bool = store.union(vec![num_or_str, boolean]);
 
   let prop_a = Property {
-    key: PropKey::String(store.intern_name("a")),
+    key: PropKey::String(store.intern_name_ref("a")),
     data: PropData {
       ty: str_ty,
       optional: false,
@@ -458,7 +458,7 @@ fn unions_and_intersections() {
     },
   };
   let prop_b = Property {
-    key: PropKey::String(store.intern_name("b")),
+    key: PropKey::String(store.intern_name_ref("b")),
     data: PropData {
       ty: num,
       optional: false,
@@ -581,7 +581,7 @@ fn function_variance_and_methods() {
   let method_num_or_str = callable(&strict_store, vec![param_num_or_str], num);
 
   let prop_method_n = Property {
-    key: PropKey::String(strict_store.intern_name("m")),
+    key: PropKey::String(strict_store.intern_name_ref("m")),
     data: PropData {
       ty: method_num,
       optional: false,
@@ -593,7 +593,7 @@ fn function_variance_and_methods() {
     },
   };
   let prop_method_ns = Property {
-    key: PropKey::String(strict_store.intern_name("m")),
+    key: PropKey::String(strict_store.intern_name_ref("m")),
     data: PropData {
       ty: method_num_or_str,
       optional: false,
@@ -681,7 +681,7 @@ fn function_properties_respect_strict_function_types() {
   let fn_wide = callable(&store, vec![param_num_or_str.clone()], num);
 
   let prop_narrow = Property {
-    key: PropKey::String(store.intern_name("f")),
+    key: PropKey::String(store.intern_name_ref("f")),
     data: PropData {
       ty: fn_narrow,
       optional: false,
@@ -693,7 +693,7 @@ fn function_properties_respect_strict_function_types() {
     },
   };
   let prop_wide = Property {
-    key: PropKey::String(store.intern_name("f")),
+    key: PropKey::String(store.intern_name_ref("f")),
     data: PropData {
       ty: fn_wide,
       optional: false,
@@ -820,7 +820,7 @@ fn index_signatures_cover_properties() {
   let primitives = store.primitive_ids();
   let num = primitives.number;
   let prop = Property {
-    key: PropKey::String(store.intern_name("a")),
+    key: PropKey::String(store.intern_name_ref("a")),
     data: PropData {
       ty: num,
       optional: false,
@@ -926,7 +926,7 @@ fn number_indexer_satisfies_string_numeric_property() {
     &store,
     Shape {
       properties: vec![Property {
-        key: PropKey::String(store.intern_name("0")),
+        key: PropKey::String(store.intern_name_ref("0")),
         data: PropData {
           ty: primitives.string,
           optional: false,
@@ -1211,7 +1211,7 @@ fn no_unchecked_indexed_access_makes_indexers_optional() {
   let primitives = store.primitive_ids();
   let num = primitives.number;
   let target_prop = Property {
-    key: PropKey::String(store.intern_name("a")),
+    key: PropKey::String(store.intern_name_ref("a")),
     data: PropData {
       ty: num,
       optional: false,
@@ -1254,7 +1254,7 @@ fn private_member_hook() {
   let store = TypeStore::new();
   let primitives = store.primitive_ids();
   let private_prop = Property {
-    key: PropKey::String(store.intern_name("x")),
+    key: PropKey::String(store.intern_name_ref("x")),
     data: PropData {
       ty: primitives.number,
       optional: false,
@@ -1266,7 +1266,7 @@ fn private_member_hook() {
     },
   };
   let extra_prop = Property {
-    key: PropKey::String(store.intern_name("y")),
+    key: PropKey::String(store.intern_name_ref("y")),
     data: PropData {
       ty: primitives.string,
       optional: false,
@@ -1312,7 +1312,7 @@ fn private_members_with_same_origin_are_compatible_by_default() {
   let store = TypeStore::new();
   let primitives = store.primitive_ids();
   let private_prop_src = Property {
-    key: PropKey::String(store.intern_name("p")),
+    key: PropKey::String(store.intern_name_ref("p")),
     data: PropData {
       ty: primitives.number,
       optional: false,
@@ -1324,7 +1324,7 @@ fn private_members_with_same_origin_are_compatible_by_default() {
     },
   };
   let private_prop_dst = Property {
-    key: PropKey::String(store.intern_name("p")),
+    key: PropKey::String(store.intern_name_ref("p")),
     data: PropData {
       ty: primitives.number,
       optional: false,
@@ -1363,7 +1363,7 @@ fn protected_members_require_same_origin() {
   let store = TypeStore::new();
   let primitives = store.primitive_ids();
   let protected_prop_src = Property {
-    key: PropKey::String(store.intern_name("p")),
+    key: PropKey::String(store.intern_name_ref("p")),
     data: PropData {
       ty: primitives.number,
       optional: false,
@@ -1375,7 +1375,7 @@ fn protected_members_require_same_origin() {
     },
   };
   let protected_prop_dst = Property {
-    key: PropKey::String(store.intern_name("p")),
+    key: PropKey::String(store.intern_name_ref("p")),
     data: PropData {
       ty: primitives.number,
       optional: false,
@@ -1418,7 +1418,7 @@ fn derived_types_are_normalized_during_relation() {
     &store,
     Shape {
       properties: vec![Property {
-        key: PropKey::String(store.intern_name("a")),
+        key: PropKey::String(store.intern_name_ref("a")),
         data: PropData {
           ty: primitives.number,
           optional: false,
@@ -1435,7 +1435,7 @@ fn derived_types_are_normalized_during_relation() {
     },
   );
 
-  let key_a = store.intern_type(TypeKind::StringLiteral(store.intern_name("a")));
+  let key_a = store.intern_type(TypeKind::StringLiteral(store.intern_name_ref("a")));
   let keyof_obj = store.intern_type(TypeKind::KeyOf(base_obj));
   let indexed = store.intern_type(TypeKind::IndexedAccess {
     obj: base_obj,
@@ -1461,7 +1461,7 @@ fn derived_types_are_normalized_during_relation() {
     &store,
     Shape {
       properties: vec![Property {
-        key: PropKey::String(store.intern_name("a")),
+        key: PropKey::String(store.intern_name_ref("a")),
         data: PropData {
           ty: primitives.string,
           optional: false,
@@ -1498,7 +1498,7 @@ fn conditional_normalization_uses_relation_ctx_hooks() {
   let primitives = store.primitive_ids();
 
   let private_prop = Property {
-    key: PropKey::String(store.intern_name("x")),
+    key: PropKey::String(store.intern_name_ref("x")),
     data: PropData {
       ty: primitives.number,
       optional: false,
@@ -1511,7 +1511,7 @@ fn conditional_normalization_uses_relation_ctx_hooks() {
   };
 
   let public_prop = Property {
-    key: PropKey::String(store.intern_name("y")),
+    key: PropKey::String(store.intern_name_ref("y")),
     data: PropData {
       ty: primitives.string,
       optional: false,
@@ -1578,7 +1578,7 @@ fn conditional_normalization_uses_structural_assignability() {
     Shape {
       properties: vec![
         Property {
-          key: PropKey::String(store.intern_name("a")),
+          key: PropKey::String(store.intern_name_ref("a")),
           data: PropData {
             ty: primitives.number,
             optional: false,
@@ -1590,7 +1590,7 @@ fn conditional_normalization_uses_structural_assignability() {
           },
         },
         Property {
-          key: PropKey::String(store.intern_name("b")),
+          key: PropKey::String(store.intern_name_ref("b")),
           data: PropData {
             ty: primitives.string,
             optional: false,
@@ -1611,7 +1611,7 @@ fn conditional_normalization_uses_structural_assignability() {
     &store,
     Shape {
       properties: vec![Property {
-        key: PropKey::String(store.intern_name("a")),
+        key: PropKey::String(store.intern_name_ref("a")),
         data: PropData {
           ty: primitives.number,
           optional: false,
@@ -1901,7 +1901,7 @@ fn cyclic_reference_conditional_normalization_terminates() {
     Shape {
       properties: vec![
         Property {
-          key: PropKey::String(store.intern_name("a")),
+          key: PropKey::String(store.intern_name_ref("a")),
           data: PropData {
             ty: primitives.number,
             optional: false,
@@ -1913,7 +1913,7 @@ fn cyclic_reference_conditional_normalization_terminates() {
           },
         },
         Property {
-          key: PropKey::String(store.intern_name("b")),
+          key: PropKey::String(store.intern_name_ref("b")),
           data: PropData {
             ty: primitives.string,
             optional: false,
@@ -1934,7 +1934,7 @@ fn cyclic_reference_conditional_normalization_terminates() {
     &store,
     Shape {
       properties: vec![Property {
-        key: PropKey::String(store.intern_name("a")),
+        key: PropKey::String(store.intern_name_ref("a")),
         data: PropData {
           ty: primitives.number,
           optional: false,
@@ -1993,8 +1993,8 @@ fn string_literal_assignable_to_template_literal_pattern() {
   let primitives = store.primitive_ids();
   let ctx = RelateCtx::new(store.clone(), default_options());
 
-  let foo_bar = store.intern_type(TypeKind::StringLiteral(store.intern_name("foo_bar")));
-  let foo = store.intern_type(TypeKind::StringLiteral(store.intern_name("foo")));
+  let foo_bar = store.intern_type(TypeKind::StringLiteral(store.intern_name_ref("foo_bar")));
+  let foo = store.intern_type(TypeKind::StringLiteral(store.intern_name_ref("foo")));
 
   let template = store.intern_type(TypeKind::TemplateLiteral(TemplateLiteralType {
     head: "foo".into(),
@@ -2014,7 +2014,7 @@ fn string_literal_not_assignable_to_template_literal_pattern() {
   let primitives = store.primitive_ids();
   let ctx = RelateCtx::new(store.clone(), default_options());
 
-  let bar = store.intern_type(TypeKind::StringLiteral(store.intern_name("bar")));
+  let bar = store.intern_type(TypeKind::StringLiteral(store.intern_name_ref("bar")));
 
   let template = store.intern_type(TypeKind::TemplateLiteral(TemplateLiteralType {
     head: "foo".into(),

@@ -13,7 +13,7 @@ fn collide_shapes(raw: u128, domain: u64, salt: u64) -> u128 {
 fn shape_with_prop(store: &TypeStore, prop: &str) -> Shape {
   let primitives = store.primitive_ids();
   let mut shape = Shape::new();
-  let prop = store.intern_name(prop);
+  let prop = store.intern_name_ref(prop);
   shape.properties.push(Property {
     key: PropKey::String(prop),
     data: PropData {

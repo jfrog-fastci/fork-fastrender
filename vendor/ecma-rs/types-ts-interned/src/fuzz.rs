@@ -217,7 +217,7 @@ fn resolve_index(
       store.intern_type(TypeKind::NumberLiteral(OrderedFloat::from(value)))
     }
     SerializedType::StringLiteral { value } => {
-      store.intern_type(TypeKind::StringLiteral(store.intern_name(value.as_str())))
+      store.intern_type(TypeKind::StringLiteral(store.intern_name_ref(value.as_str())))
     }
     SerializedType::BigIntLiteral { value } => {
       store.intern_type(TypeKind::BigIntLiteral(BigInt::from(value)))
@@ -265,7 +265,7 @@ fn resolve_index(
       let mut shape = Shape::new();
       for prop in properties.iter() {
         shape.properties.push(Property {
-          key: PropKey::String(store.intern_name(&prop.name)),
+          key: PropKey::String(store.intern_name_ref(&prop.name)),
           data: PropData {
             ty: resolve_index(graph, store, cache, visiting, prop.ty, depth + 1),
             optional: prop.optional,
@@ -292,7 +292,7 @@ fn resolve_index(
       let params: Vec<_> = params
         .iter()
         .map(|param| Param {
-          name: param.name.as_ref().map(|name| store.intern_name(name)),
+          name: param.name.as_ref().map(|name| store.intern_name_ref(name)),
           ty: resolve_index(graph, store, cache, visiting, param.ty, depth + 1),
           optional: param.optional,
           rest: param.rest,

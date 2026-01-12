@@ -76,7 +76,7 @@ fn union_absorbs_literals_and_unique_symbols() {
     primitives.number
   );
 
-  let str_lit = store.intern_type(TypeKind::StringLiteral(store.intern_name("a")));
+  let str_lit = store.intern_type(TypeKind::StringLiteral(store.intern_name_ref("a")));
   assert_eq!(store.union(vec![str_lit]), str_lit);
   assert_eq!(
     store.union(vec![primitives.string, str_lit]),
@@ -124,7 +124,7 @@ fn intersection_prefers_literals() {
     bool_lit
   );
 
-  let str_lit = store.intern_type(TypeKind::StringLiteral(store.intern_name("b")));
+  let str_lit = store.intern_type(TypeKind::StringLiteral(store.intern_name_ref("b")));
   assert_eq!(
     store.intersection(vec![primitives.string, str_lit]),
     str_lit
@@ -193,8 +193,8 @@ fn intersection_contradictions_reduce_to_never() {
     primitives.never
   );
 
-  let str_a = store.intern_type(TypeKind::StringLiteral(store.intern_name("a")));
-  let str_b = store.intern_type(TypeKind::StringLiteral(store.intern_name("b")));
+  let str_a = store.intern_type(TypeKind::StringLiteral(store.intern_name_ref("a")));
+  let str_b = store.intern_type(TypeKind::StringLiteral(store.intern_name_ref("b")));
   assert_eq!(store.intersection(vec![str_a, str_b]), primitives.never);
 
   let one = store.intern_type(TypeKind::NumberLiteral(OrderedFloat::from(1.0)));
@@ -216,7 +216,7 @@ fn union_of_boolean_literals_collapses_to_boolean() {
 fn shape_canonicalization_merges_duplicate_properties() {
   let store = TypeStore::new();
   let primitives = store.primitive_ids();
-  let name = store.intern_name("x");
+  let name = store.intern_name_ref("x");
 
   let shape = Shape {
     properties: vec![
@@ -267,7 +267,7 @@ fn shape_canonicalization_merges_duplicate_properties() {
 fn shape_canonicalization_declared_on_merge_is_order_independent() {
   let store = TypeStore::new();
   let primitives = store.primitive_ids();
-  let name = store.intern_name("x");
+  let name = store.intern_name_ref("x");
 
   let prop_a = Property {
     key: PropKey::String(name),
@@ -473,7 +473,7 @@ fn shape_indexer_readonly_merge_is_deterministic() {
 fn union_canonicalization_is_deterministic_when_type_cmp_collides() {
   let store = TypeStore::new();
   let primitives = store.primitive_ids();
-  let name = store.intern_name("x");
+  let name = store.intern_name_ref("x");
 
   let mut shape_a = Shape::new();
   shape_a.properties.push(Property {

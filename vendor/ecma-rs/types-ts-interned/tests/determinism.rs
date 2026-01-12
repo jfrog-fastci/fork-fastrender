@@ -54,11 +54,11 @@ struct Snapshot {
 
 impl Snapshot {
   fn ensure_alpha(&mut self, store: &TypeStore) -> NameId {
-    *self.alpha.get_or_insert_with(|| store.intern_name("alpha"))
+    *self.alpha.get_or_insert_with(|| store.intern_name_ref("alpha"))
   }
 
   fn ensure_beta(&mut self, store: &TypeStore) -> NameId {
-    *self.beta.get_or_insert_with(|| store.intern_name("beta"))
+    *self.beta.get_or_insert_with(|| store.intern_name_ref("beta"))
   }
 
   fn ensure_sig_number(&mut self, store: &TypeStore) -> SignatureId {

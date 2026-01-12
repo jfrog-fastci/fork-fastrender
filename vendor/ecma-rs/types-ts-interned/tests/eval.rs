@@ -180,7 +180,7 @@ fn recursive_promise_like_evaluation_terminates() {
 
   let shape_id = store.intern_shape(Shape {
     properties: vec![Property {
-      key: PropKey::String(store.intern_name("then")),
+      key: PropKey::String(store.intern_name_ref("then")),
       data: PropData {
         ty: then_callable,
         optional: false,
@@ -244,7 +244,7 @@ fn conditional_distributes_over_union_with_substitution() {
   );
 
   let arg_union = store.union(vec![
-    store.intern_type(TypeKind::StringLiteral(store.intern_name("ok"))),
+    store.intern_type(TypeKind::StringLiteral(store.intern_name_ref("ok"))),
     store.intern_type(TypeKind::NumberLiteral(OrderedFloat::from(1.0))),
   ]);
   let ref_ty = store.intern_type(TypeKind::Ref {
@@ -784,7 +784,7 @@ fn conditional_with_unresolved_nested_type_param_is_preserved() {
   let primitives = store.primitive_ids();
 
   let tp = store.intern_type(TypeKind::TypeParam(TypeParamId(0)));
-  let key = store.intern_name("a");
+  let key = store.intern_name_ref("a");
   let shape = store.intern_shape(Shape {
     properties: vec![Property {
       key: PropKey::String(key),
@@ -921,7 +921,7 @@ fn distributive_conditional_substitutes_extends_per_member() {
 fn distributive_conditional_substitutes_in_extends_per_member() {
   let store = TypeStore::new();
   let primitives = store.primitive_ids();
-  let name_a = store.intern_name("a");
+  let name_a = store.intern_name_ref("a");
 
   let m1_shape = store.intern_shape(Shape {
     properties: vec![Property {
@@ -1009,8 +1009,8 @@ fn conditional_uses_structural_object_assignability() {
   let store = TypeStore::new();
   let primitives = store.primitive_ids();
 
-  let foo = store.intern_name("foo");
-  let bar = store.intern_name("bar");
+  let foo = store.intern_name_ref("foo");
+  let bar = store.intern_name_ref("bar");
 
   let true_ty = store.intern_type(TypeKind::NumberLiteral(OrderedFloat::from(1.0)));
   let false_ty = store.intern_type(TypeKind::BooleanLiteral(false));
@@ -1148,7 +1148,7 @@ fn conditional_uses_structural_object_assignability_for_index_signatures() {
   let store = TypeStore::new();
   let primitives = store.primitive_ids();
 
-  let foo = store.intern_name("foo");
+  let foo = store.intern_name_ref("foo");
   let true_ty = primitives.number;
   let false_ty = primitives.boolean;
 
@@ -1366,7 +1366,7 @@ fn conditional_respects_strict_function_types_option() {
 fn conditional_respects_exact_optional_property_types_option() {
   let loose_store = TypeStore::new();
   let loose_primitives = loose_store.primitive_ids();
-  let foo = loose_store.intern_name("foo");
+  let foo = loose_store.intern_name_ref("foo");
   let num_or_undef = loose_store.union(vec![loose_primitives.number, loose_primitives.undefined]);
 
   let src_obj = loose_store.intern_type(TypeKind::Object(loose_store.intern_object(ObjectType {
@@ -1425,7 +1425,7 @@ fn conditional_respects_exact_optional_property_types_option() {
     ..TypeOptions::default()
   });
   let exact_primitives = exact_store.primitive_ids();
-  let foo = exact_store.intern_name("foo");
+  let foo = exact_store.intern_name_ref("foo");
   let num_or_undef = exact_store.union(vec![exact_primitives.number, exact_primitives.undefined]);
 
   let src_obj = exact_store.intern_type(TypeKind::Object(exact_store.intern_object(ObjectType {
@@ -1601,7 +1601,7 @@ fn conditional_respects_method_bivariance_under_strict_function_types() {
     ))],
   });
 
-  let method_name = store.intern_name("method");
+  let method_name = store.intern_name_ref("method");
   let make_object = |is_method: bool, ty: TypeId| {
     store.intern_type(TypeKind::Object(store.intern_object(ObjectType {
       shape: store.intern_shape(Shape {
@@ -1650,8 +1650,8 @@ fn conditional_respects_private_member_origin_by_default() {
   let store = TypeStore::new();
   let primitives = store.primitive_ids();
 
-  let private_key = store.intern_name("x");
-  let extra_key = store.intern_name("y");
+  let private_key = store.intern_name_ref("x");
+  let extra_key = store.intern_name_ref("y");
 
   let make_src = |declared_on: DefId| {
     store.intern_type(TypeKind::Object(store.intern_object(ObjectType {
@@ -1740,7 +1740,7 @@ fn conditional_respects_protected_member_origin_by_default() {
   let store = TypeStore::new();
   let primitives = store.primitive_ids();
 
-  let key = store.intern_name("p");
+  let key = store.intern_name_ref("p");
   let make_obj = |declared_on: DefId| {
     store.intern_type(TypeKind::Object(store.intern_object(ObjectType {
       shape: store.intern_shape(Shape {
@@ -1790,7 +1790,7 @@ fn conditional_treats_private_and_protected_members_as_incompatible() {
   let store = TypeStore::new();
   let primitives = store.primitive_ids();
 
-  let key = store.intern_name("x");
+  let key = store.intern_name_ref("x");
   let make_obj = |accessibility| {
     store.intern_type(TypeKind::Object(store.intern_object(ObjectType {
       shape: store.intern_shape(Shape {
@@ -2188,8 +2188,8 @@ fn mapped_type_applies_modifiers_and_remaps() {
   let store = TypeStore::new();
   let primitives = store.primitive_ids();
 
-  let name_a = store.intern_name("a");
-  let name_b = store.intern_name("b");
+  let name_a = store.intern_name_ref("a");
+  let name_b = store.intern_name_ref("b");
   let shape_id = store.intern_shape(Shape {
     properties: vec![
       Property {
@@ -2281,8 +2281,8 @@ fn mapped_type_remap_as_never_filters_keys() {
   let store = TypeStore::new();
   let primitives = store.primitive_ids();
 
-  let name_a = store.intern_name("a");
-  let name_b = store.intern_name("b");
+  let name_a = store.intern_name_ref("a");
+  let name_b = store.intern_name_ref("b");
   let shape_id = store.intern_shape(Shape {
     properties: vec![
       Property {
@@ -2382,7 +2382,7 @@ fn mapped_remap_as_any_widens_to_broad_indexers() {
   let store = TypeStore::new();
   let primitives = store.primitive_ids();
 
-  let key_a = store.intern_type(TypeKind::StringLiteral(store.intern_name("a")));
+  let key_a = store.intern_type(TypeKind::StringLiteral(store.intern_name_ref("a")));
   let mapped = store.intern_type(TypeKind::Mapped(MappedType {
     param: TypeParamId(0),
     source: key_a,
@@ -2422,7 +2422,7 @@ fn mapped_as_string_produces_string_indexer() {
   let store = TypeStore::new();
   let primitives = store.primitive_ids();
 
-  let key_a = store.intern_type(TypeKind::StringLiteral(store.intern_name("a")));
+  let key_a = store.intern_type(TypeKind::StringLiteral(store.intern_name_ref("a")));
   let mapped = store.intern_type(TypeKind::Mapped(MappedType {
     param: TypeParamId(0),
     source: key_a,
@@ -2453,7 +2453,7 @@ fn mapped_as_number_produces_number_indexer() {
   let store = TypeStore::new();
   let primitives = store.primitive_ids();
 
-  let key_a = store.intern_type(TypeKind::StringLiteral(store.intern_name("a")));
+  let key_a = store.intern_type(TypeKind::StringLiteral(store.intern_name_ref("a")));
   let mapped = store.intern_type(TypeKind::Mapped(MappedType {
     param: TypeParamId(0),
     source: key_a,
@@ -2484,7 +2484,7 @@ fn mapped_as_union_emits_indexer_and_literals() {
   let store = TypeStore::new();
   let primitives = store.primitive_ids();
 
-  let key_a_name = store.intern_name("a");
+  let key_a_name = store.intern_name_ref("a");
   let key_a = store.intern_type(TypeKind::StringLiteral(key_a_name));
 
   let literal_num = store.intern_type(TypeKind::NumberLiteral(OrderedFloat::from(123.0)));
@@ -2530,8 +2530,8 @@ fn template_literal_distributes_over_union_parts() {
     spans: vec![TemplateChunk {
       literal: "bar".into(),
       ty: store.union(vec![
-        store.intern_type(TypeKind::StringLiteral(store.intern_name("x"))),
-        store.intern_type(TypeKind::StringLiteral(store.intern_name("y"))),
+        store.intern_type(TypeKind::StringLiteral(store.intern_name_ref("x"))),
+        store.intern_type(TypeKind::StringLiteral(store.intern_name_ref("y"))),
       ]),
     }],
   }));
@@ -2737,14 +2737,14 @@ fn template_literal_expansion_bails_out_on_blowup() {
   let primitives = store.primitive_ids();
 
   let union1 = store.union(vec![
-    store.intern_type(TypeKind::StringLiteral(store.intern_name("a"))),
-    store.intern_type(TypeKind::StringLiteral(store.intern_name("b"))),
-    store.intern_type(TypeKind::StringLiteral(store.intern_name("c"))),
+    store.intern_type(TypeKind::StringLiteral(store.intern_name_ref("a"))),
+    store.intern_type(TypeKind::StringLiteral(store.intern_name_ref("b"))),
+    store.intern_type(TypeKind::StringLiteral(store.intern_name_ref("c"))),
   ]);
   let union2 = store.union(vec![
-    store.intern_type(TypeKind::StringLiteral(store.intern_name("x"))),
-    store.intern_type(TypeKind::StringLiteral(store.intern_name("y"))),
-    store.intern_type(TypeKind::StringLiteral(store.intern_name("z"))),
+    store.intern_type(TypeKind::StringLiteral(store.intern_name_ref("x"))),
+    store.intern_type(TypeKind::StringLiteral(store.intern_name_ref("y"))),
+    store.intern_type(TypeKind::StringLiteral(store.intern_name_ref("z"))),
   ]);
 
   // 3×3 = 9 possible strings; with a low limit, we should bail out and widen to
@@ -2778,8 +2778,8 @@ fn indexed_access_collects_optional_properties() {
   let store = TypeStore::new();
   let primitives = store.primitive_ids();
 
-  let name_a = store.intern_name("a");
-  let name_b = store.intern_name("b");
+  let name_a = store.intern_name_ref("a");
+  let name_b = store.intern_name_ref("b");
   let shape_id = store.intern_shape(Shape {
     properties: vec![
       Property {
@@ -2840,7 +2840,7 @@ fn indexed_access_over_union_collects_member_properties() {
   let store = TypeStore::new();
   let primitives = store.primitive_ids();
 
-  let name_a = store.intern_name("a");
+  let name_a = store.intern_name_ref("a");
 
   let shape1 = store.intern_shape(Shape {
     properties: vec![Property {
@@ -2911,7 +2911,7 @@ fn array_length_indexed_access_is_number() {
     ty: primitives.boolean,
     readonly: false,
   });
-  let length = store.intern_type(TypeKind::StringLiteral(store.intern_name("length")));
+  let length = store.intern_type(TypeKind::StringLiteral(store.intern_name_ref("length")));
   let indexed = store.intern_type(TypeKind::IndexedAccess {
     obj: array,
     index: length,
@@ -2940,7 +2940,7 @@ fn tuple_length_indexed_access_fixed_is_number_literal() {
       readonly: false,
     },
   ]));
-  let length = store.intern_type(TypeKind::StringLiteral(store.intern_name("length")));
+  let length = store.intern_type(TypeKind::StringLiteral(store.intern_name_ref("length")));
   let indexed = store.intern_type(TypeKind::IndexedAccess {
     obj: tuple,
     index: length,
@@ -2972,7 +2972,7 @@ fn tuple_length_indexed_access_optional_is_union() {
       readonly: false,
     },
   ]));
-  let length = store.intern_type(TypeKind::StringLiteral(store.intern_name("length")));
+  let length = store.intern_type(TypeKind::StringLiteral(store.intern_name_ref("length")));
   let indexed = store.intern_type(TypeKind::IndexedAccess {
     obj: tuple,
     index: length,
@@ -3011,7 +3011,7 @@ fn tuple_length_indexed_access_variadic_is_number() {
       readonly: false,
     },
   ]));
-  let length = store.intern_type(TypeKind::StringLiteral(store.intern_name("length")));
+  let length = store.intern_type(TypeKind::StringLiteral(store.intern_name_ref("length")));
   let indexed = store.intern_type(TypeKind::IndexedAccess {
     obj: tuple,
     index: length,
@@ -3054,9 +3054,9 @@ fn tuple_indexed_access_fractional_number_literal_is_union_of_elements() {
 fn keyof_respects_union_and_intersection_semantics() {
   let store = TypeStore::new();
 
-  let name_a = store.intern_name("a");
-  let name_b = store.intern_name("b");
-  let name_c = store.intern_name("c");
+  let name_a = store.intern_name_ref("a");
+  let name_b = store.intern_name_ref("b");
+  let name_c = store.intern_name_ref("c");
 
   let shape1 = store.intern_shape(Shape {
     properties: vec![
@@ -3219,7 +3219,7 @@ fn keyof_fractional_number_literal_in_mapped_remap_widens_to_number() {
   let store = TypeStore::new();
   let primitives = store.primitive_ids();
 
-  let source = store.intern_type(TypeKind::StringLiteral(store.intern_name("a")));
+  let source = store.intern_type(TypeKind::StringLiteral(store.intern_name_ref("a")));
   let remap = store.intern_type(TypeKind::NumberLiteral(OrderedFloat::from(1.5)));
   let mapped = store.intern_type(TypeKind::Mapped(MappedType {
     param: TypeParamId(0),
@@ -3314,8 +3314,8 @@ fn keyof_union_with_disjoint_keys_is_never() {
   let store = TypeStore::new();
   let primitives = store.primitive_ids();
 
-  let name_a = store.intern_name("a");
-  let name_b = store.intern_name("b");
+  let name_a = store.intern_name_ref("a");
+  let name_b = store.intern_name_ref("b");
 
   let shape1 = store.intern_shape(Shape {
     properties: vec![Property {
@@ -3372,7 +3372,7 @@ fn keyof_union_intersects_literals_against_broad_keys() {
   let store = TypeStore::new();
   let primitives = store.primitive_ids();
 
-  let name_a = store.intern_name("a");
+  let name_a = store.intern_name_ref("a");
 
   let with_indexer_shape = store.intern_shape(Shape {
     properties: Vec::new(),
@@ -3426,8 +3426,8 @@ fn recursive_conditional_terminates() {
   let store = TypeStore::new();
   let primitives = store.primitive_ids();
 
-  let name_a = store.intern_name("a");
-  let name_b = store.intern_name("b");
+  let name_a = store.intern_name_ref("a");
+  let name_b = store.intern_name_ref("b");
 
   let extends_obj = store.intern_type(TypeKind::Object(store.intern_object(ObjectType {
     shape: store.intern_shape(Shape {
@@ -3689,7 +3689,7 @@ fn indexed_access_string_numeric_key_matches_numeric_property() {
     store.intern_object(ObjectType { shape: shape_id }),
   ));
 
-  let index_ty = store.intern_type(TypeKind::StringLiteral(store.intern_name("0")));
+  let index_ty = store.intern_type(TypeKind::StringLiteral(store.intern_name_ref("0")));
   let indexed = store.intern_type(TypeKind::IndexedAccess {
     obj: obj_ty,
     index: index_ty,
@@ -3708,7 +3708,7 @@ fn indexed_access_number_key_matches_string_numeric_property() {
 
   let shape_id = store.intern_shape(Shape {
     properties: vec![Property {
-      key: PropKey::String(store.intern_name("0")),
+      key: PropKey::String(store.intern_name_ref("0")),
       data: PropData {
         ty: primitives.string,
         optional: false,
@@ -3748,7 +3748,7 @@ fn array_indexed_access_accepts_string_numeric_literal() {
     ty: primitives.string,
     readonly: false,
   });
-  let index_ty = store.intern_type(TypeKind::StringLiteral(store.intern_name("0")));
+  let index_ty = store.intern_type(TypeKind::StringLiteral(store.intern_name_ref("0")));
   let indexed = store.intern_type(TypeKind::IndexedAccess {
     obj: array_ty,
     index: index_ty,

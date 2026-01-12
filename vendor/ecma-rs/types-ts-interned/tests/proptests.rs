@@ -121,7 +121,7 @@ where
           let mut shape = Shape::new();
           for (name, ty, optional, readonly, is_method) in props {
             shape.properties.push(Property {
-              key: PropKey::String(object_store.intern_name(name)),
+              key: PropKey::String(object_store.intern_name_ref(name)),
               data: PropData {
                 ty,
                 optional,

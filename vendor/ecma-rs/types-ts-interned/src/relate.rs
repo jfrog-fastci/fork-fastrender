@@ -3939,7 +3939,7 @@ mod tests {
     let src_ty = store.intern_type(TypeKind::Object(src_obj));
 
     // dst: { foo: number }
-    let foo = store.intern_name("foo");
+    let foo = store.intern_name_ref("foo");
     let mut dst_shape = Shape::new();
     dst_shape.properties.push(Property {
       key: PropKey::String(foo),
@@ -3972,7 +3972,7 @@ mod tests {
     let ctx = RelateCtx::new(store.clone(), store.options());
     let primitives = store.primitive_ids();
 
-    let key = store.intern_name("a");
+    let key = store.intern_name_ref("a");
     let base_obj = {
       let shape_id = store.intern_shape(Shape {
         properties: vec![Property {

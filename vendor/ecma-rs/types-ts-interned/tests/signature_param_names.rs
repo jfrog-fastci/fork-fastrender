@@ -7,7 +7,7 @@ fn signatures_ignore_parameter_names_when_interned() {
 
   let sig_a = store.intern_signature(Signature::new(
     vec![Param {
-      name: Some(store.intern_name("x")),
+      name: Some(store.intern_name_ref("x")),
       ty: primitives.number,
       optional: false,
       rest: false,
@@ -16,7 +16,7 @@ fn signatures_ignore_parameter_names_when_interned() {
   ));
   let sig_b = store.intern_signature(Signature::new(
     vec![Param {
-      name: Some(store.intern_name("y")),
+      name: Some(store.intern_name_ref("y")),
       ty: primitives.number,
       optional: false,
       rest: false,
@@ -35,7 +35,7 @@ fn callable_types_ignore_signature_parameter_names() {
 
   let sig_a = store.intern_signature(Signature::new(
     vec![Param {
-      name: Some(store.intern_name("x")),
+      name: Some(store.intern_name_ref("x")),
       ty: primitives.boolean,
       optional: false,
       rest: false,
@@ -44,7 +44,7 @@ fn callable_types_ignore_signature_parameter_names() {
   ));
   let sig_b = store.intern_signature(Signature::new(
     vec![Param {
-      name: Some(store.intern_name("y")),
+      name: Some(store.intern_name_ref("y")),
       ty: primitives.boolean,
       optional: false,
       rest: false,

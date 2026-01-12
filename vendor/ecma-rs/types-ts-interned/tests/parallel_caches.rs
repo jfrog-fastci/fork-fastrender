@@ -49,7 +49,7 @@ impl TestExpander {
 
     let box_def = DefId(1);
     let box_param = TypeParamId(100);
-    let value_name = store.intern_name("value");
+    let value_name = store.intern_name_ref("value");
     let box_param_ty = store.intern_type(TypeKind::TypeParam(box_param));
     let box_shape = Shape {
       properties: vec![Property {
@@ -113,9 +113,9 @@ impl TypeExpander for TestExpander {
 fn build_evaluator_inputs(store: &Arc<TypeStore>, expander: &TestExpander) -> Vec<TypeId> {
   let primitives = store.primitive_ids();
 
-  let foo = store.intern_name("foo");
-  let bar = store.intern_name("bar");
-  let baz = store.intern_name("baz");
+  let foo = store.intern_name_ref("foo");
+  let bar = store.intern_name_ref("bar");
+  let baz = store.intern_name_ref("baz");
 
   let obj_shape = Shape {
     properties: vec![
@@ -218,7 +218,7 @@ fn build_evaluator_inputs(store: &Arc<TypeStore>, expander: &TestExpander) -> Ve
     keyof_remap,
   ];
 
-  let value_key = store.intern_type(TypeKind::StringLiteral(store.intern_name("value")));
+  let value_key = store.intern_type(TypeKind::StringLiteral(store.intern_name_ref("value")));
 
   for i in 0..24u32 {
     let name = store.intern_name(format!("s{i}"));
@@ -311,9 +311,9 @@ fn evaluator_caches_are_deterministic_under_concurrency() {
 fn build_relation_pairs(store: &Arc<TypeStore>) -> Vec<(TypeId, TypeId)> {
   let primitives = store.primitive_ids();
 
-  let a = store.intern_name("a");
-  let b = store.intern_name("b");
-  let c = store.intern_name("c");
+  let a = store.intern_name_ref("a");
+  let b = store.intern_name_ref("b");
+  let c = store.intern_name_ref("c");
 
   let obj_a_shape = Shape {
     properties: vec![
@@ -380,7 +380,7 @@ fn build_relation_pairs(store: &Arc<TypeStore>) -> Vec<(TypeId, TypeId)> {
   });
   let obj_indexer_ty = store.intern_type(TypeKind::Object(obj_indexer_id));
 
-  let x = store.intern_name("x");
+  let x = store.intern_name_ref("x");
   let sig1 = store.intern_signature(Signature::new(
     vec![Param {
       name: Some(x),

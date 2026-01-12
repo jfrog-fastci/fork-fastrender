@@ -234,7 +234,7 @@ fn relate_ctx_normalizer_caches_are_reused_across_relation_checks() {
   let primitives = store.primitive_ids();
   let ctx = RelateCtx::new(store.clone(), default_options());
 
-  let key = store.intern_name("a");
+  let key = store.intern_name_ref("a");
   let mut shape = Shape::new();
   shape.properties.push(Property {
     key: PropKey::String(key),
@@ -299,7 +299,7 @@ fn relate_ctx_normalizer_caches_can_be_shared_across_contexts() {
     shared_caches.clone(),
   );
 
-  let key = store.intern_name("a");
+  let key = store.intern_name_ref("a");
   let mut shape = Shape::new();
   shape.properties.push(Property {
     key: PropKey::String(key),

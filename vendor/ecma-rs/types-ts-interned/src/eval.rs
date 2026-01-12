@@ -2172,7 +2172,7 @@ impl<'a, E: TypeExpander> TypeEvaluator<'a, E> {
             })
             .or_insert((prop.data.optional, prop.data.readonly));
         }
-        let dummy_name = self.store.intern_name("");
+        let dummy_name = self.store.intern_name_ref("");
         for idxer in shape.indexers.iter() {
           // Index signatures can use non-primitive key types (e.g. `(string | number) & string`),
           // so derive the broad keys they accept by probing with representative property keys.
@@ -2266,7 +2266,7 @@ impl<'a, E: TypeExpander> TypeEvaluator<'a, E> {
         for prop in shape.properties.iter() {
           keys.push(Key::Literal(prop.key.clone()));
         }
-        let dummy_name = self.store.intern_name("");
+        let dummy_name = self.store.intern_name_ref("");
         for idx in shape.indexers.iter() {
           if self.indexer_accepts_key(&PropKey::String(dummy_name), idx.key_type) {
             keys.push(Key::String);

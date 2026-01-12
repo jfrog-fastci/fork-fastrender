@@ -106,9 +106,9 @@ fn build_complex_operator_type(store: &TypeStore, prop_count: usize) -> TypeId {
 
   let obj_k = store.intern_type(TypeKind::IndexedAccess { obj, index: k_ty });
 
-  let tag_s = store.intern_type(TypeKind::StringLiteral(store.intern_name("S")));
-  let tag_n = store.intern_type(TypeKind::StringLiteral(store.intern_name("N")));
-  let tag_o = store.intern_type(TypeKind::StringLiteral(store.intern_name("O")));
+  let tag_s = store.intern_type(TypeKind::StringLiteral(store.intern_name_ref("S")));
+  let tag_n = store.intern_type(TypeKind::StringLiteral(store.intern_name_ref("N")));
+  let tag_o = store.intern_type(TypeKind::StringLiteral(store.intern_name_ref("O")));
 
   // `Obj[K] extends string ? "S" : Obj[K] extends number ? "N" : "O"`
   let cond_num = store.intern_type(TypeKind::Conditional {

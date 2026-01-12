@@ -10,8 +10,8 @@ fn signature_interning_ignores_param_names() {
   let store = TypeStore::new();
   let primitives = store.primitive_ids();
 
-  let name_a = store.intern_name("a");
-  let name_b = store.intern_name("b");
+  let name_a = store.intern_name_ref("a");
+  let name_b = store.intern_name_ref("b");
 
   let sig_a = store.intern_signature(Signature::new(
     vec![Param {
@@ -45,8 +45,8 @@ fn types_differing_only_by_param_names_intern_to_same_id() {
   let store = TypeStore::new();
   let primitives = store.primitive_ids();
 
-  let name_a = store.intern_name("a");
-  let name_b = store.intern_name("b");
+  let name_a = store.intern_name_ref("a");
+  let name_b = store.intern_name_ref("b");
 
   let sig_a = store.intern_signature(Signature::new(
     vec![Param {

@@ -18,8 +18,8 @@ use types_ts_interned::TypeStore;
 
 fn make_object_type(store: &TypeStore) -> (types_ts_interned::TypeId, Shape) {
   let primitives = store.primitive_ids();
-  let name_a = store.intern_name("a");
-  let name_b = store.intern_name("b");
+  let name_a = store.intern_name_ref("a");
+  let name_b = store.intern_name_ref("b");
   let shape = Shape {
     properties: vec![
       types_ts_interned::Property {
@@ -70,7 +70,7 @@ fn formats_complex_object_shape() {
 
   let call_sig = store.intern_signature(Signature::new(
     vec![types_ts_interned::Param {
-      name: Some(store.intern_name("arg")),
+      name: Some(store.intern_name_ref("arg")),
       ty: primitives.boolean,
       optional: false,
       rest: false,
@@ -157,7 +157,7 @@ fn formats_nested_combinations() {
 fn escapes_string_literals_and_property_keys() {
   let store = TypeStore::new();
   let primitives = store.primitive_ids();
-  let name = store.intern_name("line\"one\"\nline\\two");
+  let name = store.intern_name_ref("line\"one\"\nline\\two");
 
   let shape_id = store.intern_shape(Shape {
     properties: vec![Property {
@@ -213,7 +213,7 @@ fn escapes_template_literal_chunks() {
 fn formats_unicode_identifier_property() {
   let store = TypeStore::new();
   let primitives = store.primitive_ids();
-  let pi = store.intern_name("π");
+  let pi = store.intern_name_ref("π");
 
   let shape_id = store.intern_shape(Shape {
     properties: vec![Property {
@@ -399,7 +399,7 @@ fn formats_signature_with_this_param() {
 
   let sig = store.intern_signature(Signature {
     params: vec![Param {
-      name: Some(store.intern_name("value")),
+      name: Some(store.intern_name_ref("value")),
       ty: primitives.number,
       optional: false,
       rest: false,

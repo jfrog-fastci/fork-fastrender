@@ -20,7 +20,7 @@ fn type_store_snapshot_roundtrips_deterministically() {
     prim.number,
   ));
 
-  let name = store.intern_name("prop");
+  let name = store.intern_name_ref("prop");
   let mut shape = Shape::new();
   shape.properties.push(Property {
     key: PropKey::String(name),

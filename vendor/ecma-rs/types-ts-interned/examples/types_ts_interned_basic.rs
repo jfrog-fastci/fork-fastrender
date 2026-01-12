@@ -9,8 +9,8 @@ fn main() {
   let store = TypeStore::new();
   let primitives = store.primitive_ids();
 
-  let name_x = store.intern_name("x");
-  let name_y = store.intern_name("y");
+  let name_x = store.intern_name_ref("x");
+  let name_y = store.intern_name_ref("y");
 
   let prop_x = Property {
     key: PropKey::String(name_x),

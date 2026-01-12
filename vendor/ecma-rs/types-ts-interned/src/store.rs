@@ -9,9 +9,10 @@ use crate::signature::{Param, Signature, TypeParamDecl};
 use ahash::RandomState;
 use dashmap::mapref::entry::Entry;
 use dashmap::DashMap;
-use parking_lot::RwLock;
+use parking_lot::{RwLock, RwLockUpgradableReadGuard};
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::collections::HashSet;
 use std::hash::{BuildHasher, Hash, Hasher};
@@ -73,6 +74,10 @@ struct NameInterner {
 impl NameInterner {
   fn hash_name(name: &str, salt: u64) -> NameId {
     NameId(stable_hash64(&name, NAME_DOMAIN, salt))
+  }
+
+  fn get(&self, name: &str) -> Option<NameId> {
+    self.by_name.get(name).copied()
   }
 
   fn intern(&mut self, name: impl Into<String>) -> NameId {
@@ -508,8 +513,30 @@ impl TypeStore {
     guard.name(id).to_string()
   }
 
+  fn intern_name_impl(&self, name: Cow<'_, str>) -> NameId {
+    // Fast path: avoid taking an exclusive lock when the name is already
+    // interned (common for property keys, intrinsic names, and string literals).
+    if let Some(id) = self.names.read().get(name.as_ref()) {
+      return id;
+    }
+
+    // Slow path: take an upgradable read lock so we can re-check without
+    // allocating, then upgrade to a write lock only if insertion is required.
+    let guard = self.names.upgradable_read();
+    if let Some(id) = guard.get(name.as_ref()) {
+      return id;
+    }
+
+    let mut guard = RwLockUpgradableReadGuard::upgrade(guard);
+    guard.intern(name.into_owned())
+  }
+
+  pub fn intern_name_ref(&self, name: &str) -> NameId {
+    self.intern_name_impl(Cow::Borrowed(name))
+  }
+
   pub fn intern_name(&self, name: impl Into<String>) -> NameId {
-    self.names.write().intern(name)
+    self.intern_name_impl(Cow::Owned(name.into()))
   }
 
   pub fn signature(&self, id: SignatureId) -> Signature {
@@ -1752,7 +1779,7 @@ mod tests {
   fn parallel_interning_retries_collisions() {
     let store =
       TypeStore::with_options_and_fingerprint(TypeOptions::default(), colliding_fingerprint);
-    let name = store.intern_name("parallel");
+    let name = store.intern_name_ref("parallel");
 
     let kinds = vec![
       TypeKind::BooleanLiteral(true),

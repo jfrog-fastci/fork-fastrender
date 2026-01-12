@@ -4,8 +4,8 @@ use types_ts_interned::{IntrinsicKind, TemplateChunk, TemplateLiteralType, TypeK
 fn uppercase_distributes_over_unions_deterministically() {
   let store = TypeStore::new();
 
-  let a = store.intern_type(TypeKind::StringLiteral(store.intern_name("a")));
-  let b = store.intern_type(TypeKind::StringLiteral(store.intern_name("b")));
+  let a = store.intern_type(TypeKind::StringLiteral(store.intern_name_ref("a")));
+  let b = store.intern_type(TypeKind::StringLiteral(store.intern_name_ref("b")));
   let union = store.union(vec![b, a]);
 
   let ty = store.intern_type(TypeKind::Intrinsic {

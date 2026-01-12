@@ -63,8 +63,8 @@ fn determinism_across_stores() {
       },
     ]));
 
-    let name_a = store.intern_name("a");
-    let name_b = store.intern_name("b");
+    let name_a = store.intern_name_ref("a");
+    let name_b = store.intern_name_ref("b");
     let mut shape = Shape::new();
     // Intentionally unsorted insertion order.
     shape.properties.push(Property {
@@ -187,8 +187,8 @@ fn object_shape_field_ordering_is_stable() {
   let store = TypeStore::new();
   let primitives = store.primitive_ids();
 
-  let name_a = store.intern_name("a");
-  let name_b = store.intern_name("b");
+  let name_a = store.intern_name_ref("a");
+  let name_b = store.intern_name_ref("b");
   let mut shape = Shape::new();
 
   // Insert out-of-order; `intern_shape` canonicalizes by `PropKey::cmp_with`.

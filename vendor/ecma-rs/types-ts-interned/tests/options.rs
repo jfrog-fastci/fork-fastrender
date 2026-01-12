@@ -33,7 +33,7 @@ fn method_object(store: &Arc<TypeStore>, param: TypeId, is_method: bool) -> Type
   let callable = callable(store, param);
   let mut shape = Shape::new();
   shape.properties.push(Property {
-    key: PropKey::String(store.intern_name("method")),
+    key: PropKey::String(store.intern_name_ref("method")),
     data: PropData {
       ty: callable,
       optional: false,
@@ -52,7 +52,7 @@ fn method_object(store: &Arc<TypeStore>, param: TypeId, is_method: bool) -> Type
 fn optional_object(store: &Arc<TypeStore>, ty: TypeId) -> TypeId {
   let mut shape = Shape::new();
   shape.properties.push(Property {
-    key: PropKey::String(store.intern_name("value")),
+    key: PropKey::String(store.intern_name_ref("value")),
     data: PropData {
       ty,
       optional: true,
@@ -71,7 +71,7 @@ fn optional_object(store: &Arc<TypeStore>, ty: TypeId) -> TypeId {
 fn indexed_access(store: &Arc<TypeStore>, obj: TypeId, key: &str) -> TypeId {
   let access = store.intern_type(TypeKind::IndexedAccess {
     obj,
-    index: store.intern_type(TypeKind::StringLiteral(store.intern_name(key))),
+    index: store.intern_type(TypeKind::StringLiteral(store.intern_name_ref(key))),
   });
   let mut evaluator = TypeEvaluator::new(store.clone(), &NoopExpander);
   evaluator.evaluate(access)
@@ -175,7 +175,7 @@ fn no_unchecked_indexed_access_adds_undefined() {
   let required_obj = {
     let mut shape = Shape::new();
     shape.properties.push(Property {
-      key: PropKey::String(store.intern_name("present")),
+      key: PropKey::String(store.intern_name_ref("present")),
       data: PropData {
         ty: prim.number,
         optional: false,

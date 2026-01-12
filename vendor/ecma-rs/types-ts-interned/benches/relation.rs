@@ -192,7 +192,7 @@ fn build_object_pair(store: &TypeStore, base_props: usize, extra_props: usize) -
 fn build_deep_object_chain(store: &TypeStore, depth: usize, extra_props: bool) -> TypeId {
   let prim = store.primitive_ids();
 
-  let value_name = store.intern_name("value");
+  let value_name = store.intern_name_ref("value");
   let mut leaf = Shape::new();
   leaf.properties.push(Property {
     key: PropKey::String(value_name),
@@ -208,7 +208,7 @@ fn build_deep_object_chain(store: &TypeStore, depth: usize, extra_props: bool) -
   });
   if extra_props {
     leaf.properties.push(Property {
-      key: PropKey::String(store.intern_name("extra_leaf")),
+      key: PropKey::String(store.intern_name_ref("extra_leaf")),
       data: PropData {
         ty: prim.string,
         optional: true,
@@ -224,7 +224,7 @@ fn build_deep_object_chain(store: &TypeStore, depth: usize, extra_props: bool) -
   let leaf_obj = store.intern_object(types_ts_interned::ObjectType { shape: leaf_shape });
   let mut current = store.intern_type(TypeKind::Object(leaf_obj));
 
-  let next_name = store.intern_name("next");
+  let next_name = store.intern_name_ref("next");
   for level in 0..depth {
     let mut shape = Shape::new();
     shape.properties.push(Property {
