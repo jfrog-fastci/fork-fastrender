@@ -75,6 +75,7 @@ fuzz_target!(|data: &[u8]| {
   let cfg_options = CompileCfgOptions {
     keep_ssa: (first & 4) != 0,
     run_opt_passes: (first & 8) == 0,
+    ..Default::default()
   };
 
   let Ok(program) = Program::compile_with_cfg_options(ast, mode, false, cfg_options) else {
@@ -101,4 +102,3 @@ fuzz_target!(|data: &[u8]| {
     let _ = annotate_escape_and_ownership(&mut cloned, &program.top_level.params);
   }
 });
-
