@@ -75,7 +75,7 @@ required:
 | `tests/scroll_tests.rs` | unit | `src/scroll.rs` | Scroll state/behavior tests under `tests/scroll/**`. | TODO |
 | `tests/shadow_tests.rs` | unit | `src/dom/` | Shadow DOM behavior tests under `tests/shadow/**`. | TODO |
 | `tests/style_tests.rs` | unit | `src/style/` | Large style regression suite under `tests/style/**` (some use ref-image utilities). | TODO |
-| `tests/svg_integration_tests.rs` | unit | `src/image_loader.rs` | SVG rasterization/filter regressions (`ImageCache::render_svg_pixmap_at_size`, SVG filters). | TODO |
+| `tests/svg_integration_tests.rs` | unit | `src/paint/svg_filter/tests/` | Migrated SVG filter tests (incl. resvg comparisons) into `src/paint/svg_filter/tests/**` and removed the standalone test binary. | DONE |
 | `tests/taffy_cache_tests.rs` | special | `tests/isolation.rs` | `src/layout/taffy_integration.rs` snapshots env-driven cache limits on first use; needs process isolation unless refactored to be resettable. | TODO |
 | `tests/text_tests.rs` | unit | `src/text/` | Text/shaping regressions under `tests/text/**`. | TODO |
 | `tests/tree_tests.rs` | unit | `src/tree/` | Box/tree generation tests under `tests/tree/**`. | TODO |
@@ -107,7 +107,7 @@ migrations.
 | `tests/regression/` | cross-cutting regressions | `src/**` (split) | Many unit tests; some may remain fixture-driven integration tests. |
 | `tests/resource/` | resource fetching/cache/CORS tests | `src/resource/**` | Unit tests; some use local HTTP server helpers. |
 | `tests/style/` | cascade/values/layout-affecting style regressions | `src/style/**` | Unit tests. |
-| `tests/svg_integration/` | SVG rasterization/filter tests | `src/image_loader.rs` + `src/paint/svg_filter/**` | Unit tests despite “integration” name. |
+| (deleted) legacy SVG integration dir | SVG rasterization tests | `src/paint/svg_filter/tests/` | Migrated into `src/paint/svg_filter/tests/**` and deleted the old integration-style directory. |
 | `tests/taffy_cache/` | env-driven cache limit override tests | `tests/isolation.rs` (or refactor → `src/layout/taffy_integration.rs`) | Needs process isolation unless the env snapshot becomes resettable. |
 | `tests/test_support/` | shared test helpers (net, etc) | `tests/common/` | Must not compile as its own binary. |
 | `tests/text/` | shaping/text regressions | `src/text/**` | Unit tests. |
