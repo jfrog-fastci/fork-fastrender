@@ -472,7 +472,6 @@ impl Document {
       else {
         continue;
       };
-
       agent.total_records = agent.total_records.saturating_sub(record_count);
 
       // DOM: notify mutation observers removes all transient registered observers for `observer`.

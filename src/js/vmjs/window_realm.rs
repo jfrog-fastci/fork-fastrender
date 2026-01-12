@@ -41571,4 +41571,89 @@ mod tests {
     assert_eq!(ok, Value::Bool(true));
     Ok(())
   }
+
+  #[test]
+  fn structured_clone_handles_deep_object_graphs_without_host_stack_overflow() -> Result<(), VmError> {
+    // Regression guard: structuredClone must not overflow the host stack for deep object graphs.
+    //
+    // A naive recursive implementation can overflow the host stack (and abort the process) for
+    // deeply nested objects like `{a:{a:{...}}}` when depth is large. This test uses a depth that is
+    // large enough to trip typical recursion, while still staying within practical time/memory
+    // budgets for CI. Implementations may either:
+    // - successfully clone the graph (iterative traversal), or
+    // - fail deterministically with a `RangeError`/`DataCloneError` once a safe depth cap is hit.
+    // Keep this large enough to overflow typical Rust recursion stacks in naive recursive
+    // implementations, but small enough to keep this unit test reasonably fast.
+    const DEPTH: usize = 20_000;
+
+    let mut realm = new_realm(
+      WindowRealmConfig::new("https://example.com/").with_heap_limits(HeapLimits::new(
+        256 * 1024 * 1024,
+        128 * 1024 * 1024,
+      )),
+    )?;
+
+    // Build the deep object graph *from Rust* so the test runs quickly; `vm-js` is relatively slow
+    // at executing 50k-iteration JS loops in debug builds.
+    {
+      let (_vm, realm_ref, heap) = realm.vm_realm_and_heap_mut();
+      let global = realm_ref.global_object();
+      let mut scope = heap.scope();
+
+      // Keep the root object live while we construct the chain (GC may run during allocations).
+      let root_obj = scope.alloc_object()?;
+      scope.push_root(Value::Object(root_obj))?;
+
+      let a_key = alloc_key(&mut scope, "a")?;
+      let mut cur = root_obj;
+      for _ in 0..DEPTH {
+        let next = scope.alloc_object()?;
+        scope.define_property(
+          cur,
+          a_key,
+          PropertyDescriptor {
+            enumerable: true,
+            configurable: true,
+            kind: PropertyKind::Data {
+              value: Value::Object(next),
+              writable: true,
+            },
+          },
+        )?;
+        cur = next;
+      }
+
+      let root_key = alloc_key(&mut scope, "__root")?;
+      scope.define_property(global, root_key, data_desc(Value::Object(root_obj)))?;
+      // Ensure the graph stays reachable after the scope is dropped (via globalThis.__root).
+    }
+
+    let script = r#"
+      (function () {
+        try {
+          const cloned = structuredClone(globalThis.__root);
+          // If cloning succeeds, sanity-check that we got a deep-ish structure (we don't need to
+          // traverse the entire graph in JS).
+          let cur = cloned;
+          for (let i = 0; i < 512; i++) {
+            if (typeof cur !== "object" || cur === null || !("a" in cur)) return "bad";
+            cur = cur.a;
+          }
+          return "ok";
+        } catch (e) {
+          return (e && e.name) || String(e);
+        }
+      })()
+    "#;
+
+    let out = realm.exec_script(&script)?;
+    let out = get_string(realm.heap(), out);
+    assert!(
+      matches!(out.as_str(), "ok" | "RangeError" | "DataCloneError"),
+      "unexpected structuredClone() result: {out}"
+    );
+
+    realm.teardown();
+    Ok(())
+  }
 }
