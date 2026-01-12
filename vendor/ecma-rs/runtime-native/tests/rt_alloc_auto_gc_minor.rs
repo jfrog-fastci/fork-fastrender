@@ -78,8 +78,15 @@ fn rt_alloc_triggers_minor_gc_without_explicit_rt_gc_collect() {
   }
   std::hint::black_box(sink);
 
+  // `rt_root_push` stores the address of `root` in the runtime's handle stack so the GC can update
+  // it during relocation. However, the Rust compiler is free to keep the last loaded value of
+  // `root` in a register across calls to `rt_alloc` (the pointer escapes through FFI, so this is
+  // not something we can rely on in an optimized build).
+  //
+  // Use a volatile read to observe the post-GC value written through the handle stack slot.
+  let root_after = unsafe { core::ptr::read_volatile(&root) };
   assert!(
-    !nursery_contains(root, young_start, young_end),
+    !nursery_contains(root_after, young_start, young_end),
     "expected rooted object to be evacuated out of nursery without calling rt_gc_collect"
   );
 
