@@ -906,6 +906,11 @@ pub(crate) fn parallel_flow_content_extent(
       //
       // Prefer the logical bounding box (which includes the root) when finite, but fall back to the
       // union of descendants when the root bounds are non-finite.
+      //
+      // Additionally, account for *physical* overflow that may extend beyond the logical flow
+      // extents. This is important when layout rewrites logical positions (e.g. paged multicol)
+      // while leaving descendant bounds in physical space: visible overflow can otherwise be clipped
+      // away at the end of the document.
       let bbox = root.logical_bounding_box();
       let mut extent = axis.block_size(&bbox);
       if !extent.is_finite() || extent < 0.0 {
@@ -915,10 +920,33 @@ pub(crate) fn parallel_flow_content_extent(
         }
         extent = axis.block_size(&child_bbox);
       }
-      if !extent.is_finite() || extent < 0.0 {
-        0.0
+      if extent.is_finite() && extent >= 0.0 {
+        // `Rect::bounding_box` includes descendant overflow in physical coordinates. Only include
+        // overflow that extends in the *flow direction* (so content that paints before the start
+        // edge doesn't create extra trailing pages).
+        let root_block_size = axis.block_size(&root.bounds);
+        let flow_overflow = if root_block_size.is_finite() && root_block_size > 0.0 {
+          let physical_bbox = root.bounding_box();
+          let bbox_block_start = axis.block_start(&physical_bbox);
+          let bbox_block_end = bbox_block_start + axis.block_size(&physical_bbox);
+          let root_block_start = axis.block_start(&root.bounds);
+          let root_block_end = root_block_start + root_block_size;
+          let overflow_extent = if axis.block_positive {
+            bbox_block_end - root_block_start
+          } else {
+            root_block_end - bbox_block_start
+          };
+          if overflow_extent.is_finite() && overflow_extent > 0.0 {
+            overflow_extent
+          } else {
+            0.0
+          }
+        } else {
+          0.0
+        };
+        extent.max(flow_overflow)
       } else {
-        extent
+        0.0
       }
     }
   };
