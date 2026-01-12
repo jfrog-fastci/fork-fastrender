@@ -69,6 +69,51 @@ if [[ -n "${cargo_test_entries}" ]]; then
   exit 1
 fi
 
+# Check 2) Unified harness files must be pure module lists.
+#
+# `tests/integration.rs` exists to *consolidate* the integration-test module tree into a single
+# binary. Reintroducing `#[test] fn ...` wrappers (or other helper functions) in the harness file
+# brings back the "top-level harness code" pattern we are deleting (see Rule 5 in
+# `instructions/test_cleanup.md`).
+#
+# Run focused subsets via the standard test filter instead of creating new `tests/*.rs` binaries:
+#   bash scripts/cargo_agent.sh test --test integration ui::appearance_settings
+harness_files=(
+  "tests/integration.rs"
+)
+if [[ -f tests/allocation_failure.rs ]]; then
+  harness_files+=("tests/allocation_failure.rs")
+fi
+
+if [[ "${have_rg}" -eq 1 ]]; then
+  harness_fn_matches="$(rg -n '^\s*(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?fn\b' "${harness_files[@]}" || true)"
+  harness_test_matches="$(rg -n '^\s*#\[\s*test\s*\]' "${harness_files[@]}" || true)"
+else
+  harness_fn_matches="$(grep -nE '^[[:space:]]*(pub(\([^)]*\))?[[:space:]]+)?(async[[:space:]]+)?fn[[:space:]]' "${harness_files[@]}" || true)"
+  harness_test_matches="$(grep -nE '^[[:space:]]*#\\[[[:space:]]*test[[:space:]]*\\]' "${harness_files[@]}" || true)"
+fi
+
+if [[ -n "${harness_fn_matches}" || -n "${harness_test_matches}" ]]; then
+  echo "error: unified integration harness files must not contain test/helper functions:" >&2
+  echo "  - tests/integration.rs (and tests/allocation_failure.rs) should be module declarations only" >&2
+  echo >&2
+  if [[ -n "${harness_test_matches}" ]]; then
+    echo "found #[test] in harness files:" >&2
+    echo "${harness_test_matches}" >&2
+    echo >&2
+  fi
+  if [[ -n "${harness_fn_matches}" ]]; then
+    echo "found fn definitions in harness files:" >&2
+    echo "${harness_fn_matches}" >&2
+    echo >&2
+  fi
+  echo "see: ${doc_ref}" >&2
+  echo "hint: move the test body into a module under tests/ and include it from tests/integration.rs" >&2
+  echo "hint: run subsets via filters, e.g.:" >&2
+  echo "  bash scripts/cargo_agent.sh test --test integration ui::appearance_settings" >&2
+  exit 1
+fi
+
 allowed_test_binaries=(
   "tests/allocation_failure.rs"
   "tests/integration.rs"
