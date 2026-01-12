@@ -3946,6 +3946,187 @@ mod tests {
   }
 
   #[test]
+  fn node_text_content_setter_updates_node_iterator_pre_remove_steps() -> Result<(), VmError> {
+    let limits = HeapLimits::new(64 * 1024 * 1024, 64 * 1024 * 1024);
+    let mut heap = Heap::new(limits);
+    let mut vm = Vm::new(VmOptions::default());
+    let mut realm = Realm::new(&mut vm, &mut heap)?;
+    let dom = Rc::new(RefCell::new(Document::new(QuirksMode::NoQuirks)));
+    let current_script = Rc::new(RefCell::new(CurrentScriptState::default()));
+    install_dom_bindings(&mut vm, &mut heap, &realm, dom.clone(), current_script)?;
+ 
+    let mut scope = heap.scope();
+    let key_document = PropertyKey::from_string(scope.alloc_string("document")?);
+    let document_val = scope
+      .heap()
+      .object_get_own_data_property_value(realm.global_object(), &key_document)?
+      .expect("globalThis.document should exist");
+    let Value::Object(document_obj) = document_val else {
+      panic!("document should be an object");
+    };
+ 
+    let key_create_element = PropertyKey::from_string(scope.alloc_string("createElement")?);
+    let create_element = get_data_property_value(scope.heap(), document_obj, &key_create_element)
+      .expect("document.createElement should exist");
+ 
+    let tag_parent = Value::String(scope.alloc_string("div")?);
+    let parent_val = vm.call_without_host(&mut scope, create_element, document_val, &[tag_parent])?;
+    let Value::Object(parent_obj) = parent_val else {
+      panic!("createElement should return an object");
+    };
+ 
+    let tag_a = Value::String(scope.alloc_string("a")?);
+    let a_val = vm.call_without_host(&mut scope, create_element, document_val, &[tag_a])?;
+    let tag_b = Value::String(scope.alloc_string("b")?);
+    let b_val = vm.call_without_host(&mut scope, create_element, document_val, &[tag_b])?;
+ 
+    let key_append_child = PropertyKey::from_string(scope.alloc_string("appendChild")?);
+    let append_child = get_data_property_value(scope.heap(), parent_obj, &key_append_child)
+      .expect("appendChild exists on nodes");
+ 
+    // parent.appendChild(a); parent.appendChild(b)
+    vm.call_without_host(&mut scope, append_child, parent_val, &[a_val])?;
+    vm.call_without_host(&mut scope, append_child, parent_val, &[b_val])?;
+ 
+    // Create a NodeIterator rooted at `parent` and point it at the soon-to-be-removed child.
+    let host = host_mut(&mut vm)?;
+    let (_kind, parent_id) = wrapper_meta(&mut scope, host, parent_val)?;
+    let (_kind, a_id) = wrapper_meta(&mut scope, host, a_val)?;
+    let node_iter = dom.borrow_mut().create_node_iterator(parent_id);
+    dom
+      .borrow_mut()
+      .set_node_iterator_reference_and_pointer(node_iter, a_id, true);
+ 
+    let key_text_content = PropertyKey::from_string(scope.alloc_string("textContent")?);
+    let text_content_set = get_accessor_setter(scope.heap(), parent_obj, &key_text_content)
+      .expect("textContent setter exists");
+    let arg_replaced = Value::String(scope.alloc_string("x")?);
+    vm.call_without_host(&mut scope, text_content_set, parent_val, &[arg_replaced])?;
+ 
+    // If the legacy setter bypasses dom2 removal APIs, NodeIterator pre-removing steps won't run
+    // and the iterator will keep pointing at the removed child. It should instead be updated to
+    // point at the root with pointer_before_reference=false.
+    let doc = dom.borrow();
+    assert_eq!(doc.node_iterator_reference(node_iter), Some(parent_id));
+    assert_eq!(doc.node_iterator_pointer_before_reference(node_iter), Some(false));
+ 
+    drop(scope);
+    realm.teardown(&mut heap);
+    Ok(())
+  }
+ 
+  #[test]
+  fn node_text_content_setter_for_comment_queues_character_data_mutation_record() -> Result<(), VmError> {
+    use crate::dom2::{MutationObserverInit, MutationRecordType};
+ 
+    let limits = HeapLimits::new(64 * 1024 * 1024, 64 * 1024 * 1024);
+    let mut heap = Heap::new(limits);
+    let mut vm = Vm::new(VmOptions::default());
+    let mut realm = Realm::new(&mut vm, &mut heap)?;
+    let dom = Rc::new(RefCell::new(Document::new(QuirksMode::NoQuirks)));
+    let current_script = Rc::new(RefCell::new(CurrentScriptState::default()));
+    install_dom_bindings(&mut vm, &mut heap, &realm, dom.clone(), current_script)?;
+ 
+    let comment_id = dom.borrow_mut().create_comment("hi");
+    dom
+      .borrow_mut()
+      .mutation_observer_observe(
+        1,
+        comment_id,
+        MutationObserverInit {
+          character_data: true,
+          character_data_old_value: true,
+          ..MutationObserverInit::default()
+        },
+      )
+      .expect("observe");
+ 
+    let mut scope = heap.scope();
+    let host = host_mut(&mut vm)?;
+    let comment_val = wrap_node(host, &mut scope, comment_id, DomKind::Node)?;
+    let Value::Object(comment_obj) = comment_val else {
+      panic!("expected comment wrapper object");
+    };
+ 
+    let key_text_content = PropertyKey::from_string(scope.alloc_string("textContent")?);
+    let text_content_set = get_accessor_setter(scope.heap(), comment_obj, &key_text_content)
+      .expect("textContent setter exists");
+ 
+    let arg_replaced = Value::String(scope.alloc_string("bye")?);
+    vm.call_without_host(&mut scope, text_content_set, comment_val, &[arg_replaced])?;
+ 
+    let records = dom.borrow_mut().mutation_observer_take_records(1);
+    assert_eq!(records.len(), 1);
+    let record = &records[0];
+    assert_eq!(record.type_, MutationRecordType::CharacterData);
+    assert_eq!(record.target, comment_id);
+    assert_eq!(record.old_value.as_deref(), Some("hi"));
+ 
+    drop(scope);
+    realm.teardown(&mut heap);
+    Ok(())
+  }
+ 
+  #[test]
+  fn node_text_content_setter_for_processing_instruction_queues_character_data_mutation_record() -> Result<(), VmError> {
+    use crate::dom2::{MutationObserverInit, MutationRecordType};
+ 
+    let limits = HeapLimits::new(64 * 1024 * 1024, 64 * 1024 * 1024);
+    let mut heap = Heap::new(limits);
+    let mut vm = Vm::new(VmOptions::default());
+    let mut realm = Realm::new(&mut vm, &mut heap)?;
+    let dom = Rc::new(RefCell::new(Document::new(QuirksMode::NoQuirks)));
+    let current_script = Rc::new(RefCell::new(CurrentScriptState::default()));
+    install_dom_bindings(&mut vm, &mut heap, &realm, dom.clone(), current_script)?;
+ 
+    // dom2 doesn't currently expose a public ProcessingInstruction constructor; build one by
+    // repurposing a detached node for the purposes of this test.
+    let pi_id = dom.borrow_mut().create_comment("");
+    dom.borrow_mut().node_mut(pi_id).kind = NodeKind::ProcessingInstruction {
+      target: "x".to_string(),
+      data: "hi".to_string(),
+    };
+ 
+    dom
+      .borrow_mut()
+      .mutation_observer_observe(
+        1,
+        pi_id,
+        MutationObserverInit {
+          character_data: true,
+          character_data_old_value: true,
+          ..MutationObserverInit::default()
+        },
+      )
+      .expect("observe");
+ 
+    let mut scope = heap.scope();
+    let host = host_mut(&mut vm)?;
+    let pi_val = wrap_node(host, &mut scope, pi_id, DomKind::Node)?;
+    let Value::Object(pi_obj) = pi_val else {
+      panic!("expected PI wrapper object");
+    };
+ 
+    let key_text_content = PropertyKey::from_string(scope.alloc_string("textContent")?);
+    let text_content_set =
+      get_accessor_setter(scope.heap(), pi_obj, &key_text_content).expect("textContent setter exists");
+ 
+    let arg_replaced = Value::String(scope.alloc_string("bye")?);
+    vm.call_without_host(&mut scope, text_content_set, pi_val, &[arg_replaced])?;
+ 
+    let records = dom.borrow_mut().mutation_observer_take_records(1);
+    assert_eq!(records.len(), 1);
+    let record = &records[0];
+    assert_eq!(record.type_, MutationRecordType::CharacterData);
+    assert_eq!(record.target, pi_id);
+    assert_eq!(record.old_value.as_deref(), Some("hi"));
+ 
+    drop(scope);
+    realm.teardown(&mut heap);
+    Ok(())
+  }
+ 
+  #[test]
   fn element_inner_html_and_outer_html_round_trip() -> Result<(), VmError> {
     let limits = HeapLimits::new(64 * 1024 * 1024, 64 * 1024 * 1024);
     let mut heap = Heap::new(limits);
