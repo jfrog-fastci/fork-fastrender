@@ -7,6 +7,7 @@ use crate::js::import_maps::{
 use crate::js::orchestrator::CurrentScriptHost;
 use crate::js::vm_error_format;
 use crate::js::webidl::VmJsWebIdlBindingsHostDispatch;
+use crate::js::window_file_reader::install_window_file_reader_bindings;
 use crate::js::window_realm::{ConsoleSink, WindowRealm, WindowRealmConfig, WindowRealmHost};
 use crate::js::{
   install_window_animation_frame_bindings, install_window_fetch_bindings_with_guard,
@@ -358,6 +359,9 @@ impl WindowHostState {
       }
       if let Err(err) = install_window_animation_frame_bindings::<WindowHostState>(vm, realm, heap)
       {
+        return Err(Error::Other(err.to_string()));
+      }
+      if let Err(err) = install_window_file_reader_bindings::<WindowHostState>(vm, realm, heap) {
         return Err(Error::Other(err.to_string()));
       }
       let fetch_bindings = match install_window_fetch_bindings_with_guard::<WindowHostState>(
