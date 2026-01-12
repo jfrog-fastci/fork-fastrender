@@ -1049,17 +1049,17 @@ fn parse_dynamic_range_limit_value<'i, 't>(
       } else if ident.eq_ignore_ascii_case("no-limit") || ident.eq_ignore_ascii_case("high") {
         Ok(DynamicRangeLimit::NoLimit)
       } else {
-        Err(parser.new_custom_error(()))
+        Err(parser.new_custom_error::<(), ()>(()))
       }
     }
     Token::Function(name) => {
       if !name.eq_ignore_ascii_case("dynamic-range-limit-mix") {
-        return Err(parser.new_custom_error(()));
+        return Err(parser.new_custom_error::<(), ()>(()));
       }
       let components = parser.parse_nested_block(parse_dynamic_range_limit_mix)?;
       Ok(DynamicRangeLimit::Mix(components))
     }
-    _ => Err(parser.new_custom_error(())),
+    _ => Err(parser.new_custom_error::<(), ()>(())),
   }
 }
 
@@ -1069,7 +1069,7 @@ fn parse_dynamic_range_limit_mix<'i, 't>(
   parser.skip_whitespace();
   let components = parser.parse_comma_separated(parse_dynamic_range_limit_mix_component)?;
   if components.len() < 2 {
-    return Err(parser.new_custom_error(()));
+    return Err(parser.new_custom_error::<(), ()>(()));
   }
   Ok(components)
 }
@@ -1094,11 +1094,11 @@ fn parse_dynamic_range_limit_mix_component<'i, 't>(
         continue;
       }
     }
-    return Err(parser.new_custom_error(()));
+    return Err(parser.new_custom_error::<(), ()>(()));
   }
 
-  let value = value.ok_or_else(|| parser.new_custom_error(()))?;
-  let percentage = percentage.ok_or_else(|| parser.new_custom_error(()))?;
+  let value = value.ok_or_else(|| parser.new_custom_error::<(), ()>(()))?;
+  let percentage = percentage.ok_or_else(|| parser.new_custom_error::<(), ()>(()))?;
   Ok(DynamicRangeLimitMixComponent {
     value: Box::new(value),
     percentage,
@@ -1115,10 +1115,10 @@ fn parse_dynamic_range_limit_mix_percentage<'i, 't>(
       if value.is_finite() {
         Ok(value)
       } else {
-        Err(parser.new_custom_error(()))
+        Err(parser.new_custom_error::<(), ()>(()))
       }
     }
-    _ => Err(parser.new_custom_error(())),
+    _ => Err(parser.new_custom_error::<(), ()>(())),
   }
 }
 

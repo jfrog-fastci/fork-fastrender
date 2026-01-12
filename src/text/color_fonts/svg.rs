@@ -546,7 +546,7 @@ fn contains_disallowed_svg_css_in_parser<'i, 't>(
           let parse_result = parser.parse_nested_block(|nested| {
             bad = parse_url_nested_block(nested);
             if bad {
-              return Err(nested.new_custom_error(()));
+              return Err(nested.new_custom_error::<(), ()>(()));
             }
             Ok::<_, cssparser::ParseError<'i, ()>>(())
           });
@@ -563,7 +563,7 @@ fn contains_disallowed_svg_css_in_parser<'i, 't>(
         let parse_result = parser.parse_nested_block(|nested| {
           disallowed = contains_disallowed_svg_css_in_parser(nested, policy, budget, depth + 1);
           if disallowed {
-            return Err(nested.new_custom_error(()));
+            return Err(nested.new_custom_error::<(), ()>(()));
           }
           Ok::<_, cssparser::ParseError<'i, ()>>(())
         });
@@ -591,7 +591,7 @@ fn parse_and_check_url_function_args<'i, 't>(
   let parse_result = parser.parse_nested_block(|nested| {
     disallowed = parse_url_nested_block(nested);
     if disallowed {
-      return Err(nested.new_custom_error(()));
+      return Err(nested.new_custom_error::<(), ()>(()));
     }
     Ok::<_, cssparser::ParseError<'i, ()>>(())
   });

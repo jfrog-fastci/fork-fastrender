@@ -29,12 +29,12 @@ pub(crate) fn parse_ident_function_contents<'i, 't>(
         saw_arg = true;
         out.push_str(&value.to_string());
       }
-      _ => return Err(parser.new_custom_error(())),
+      _ => return Err(parser.new_custom_error::<(), ()>(())),
     }
   }
 
   if !saw_arg {
-    return Err(parser.new_custom_error(()));
+    return Err(parser.new_custom_error::<(), ()>(()));
   }
 
   Ok(out)

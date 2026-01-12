@@ -2648,7 +2648,8 @@ impl App {
           | UiToWorker::SetDownloadDirectory { .. }
           | UiToWorker::CancelDownload { .. }
           | UiToWorker::Copy { .. }
-          | UiToWorker::SelectAll { .. } => {}
+          | UiToWorker::SelectAll { .. }
+          | UiToWorker::CancelDownload { .. } => {}
         }
       }
     }
@@ -6588,6 +6589,120 @@ impl App {
     }
 
     let zoom_before = self.browser_state.active_tab().map(|t| t.zoom);
+    // -----------------------------------------------------------------------------
+    // Top menu bar (browser-style)
+    // -----------------------------------------------------------------------------
+    //
+    // Render this before `ui::chrome_ui` so clipboard commands can inject egui events for the
+    // address bar (TextEdit reads input during widget construction).
+    let page_url = self
+      .browser_state
+      .active_tab()
+      .and_then(|tab| tab.committed_url.as_deref().or(tab.current_url.as_deref()));
+    let page_bookmarked = page_url
+      .map(|url| self.bookmarks.contains_url(url))
+      .unwrap_or(false);
+    let menu_commands = fastrender::ui::menu_bar_ui(
+      &ctx,
+      &self.browser_state,
+      fastrender::ui::MenuBarState {
+        debug_log_open: self.debug_log_ui_enabled && self.debug_log_ui_open,
+        history_panel_open: self.history_panel_open,
+        bookmarks_panel_open: self.bookmarks_panel_open,
+        page_bookmarked,
+      },
+    );
+    if !menu_commands.is_empty() {
+      let mut chrome_actions = Vec::new();
+      for cmd in menu_commands {
+        match cmd {
+          fastrender::ui::MenuCommand::ToggleDebugLogPanel => {
+            if !self.debug_log_ui_enabled {
+              self.debug_log_ui_enabled = true;
+              self.debug_log_ui_open = true;
+            } else {
+              self.debug_log_ui_open = !self.debug_log_ui_open;
+            }
+          }
+          fastrender::ui::MenuCommand::ToggleHistoryPanel => {
+            self.history_panel_open = !self.history_panel_open;
+            if self.history_panel_open {
+              self.bookmarks_panel_open = false;
+            }
+          }
+          fastrender::ui::MenuCommand::ToggleBookmarksPanel => {
+            self.bookmarks_panel_open = !self.bookmarks_panel_open;
+            if self.bookmarks_panel_open {
+              self.history_panel_open = false;
+            }
+          }
+          fastrender::ui::MenuCommand::ToggleBookmarkThisPage => {
+            self.toggle_bookmark_for_active_tab();
+          }
+          fastrender::ui::MenuCommand::Quit => {
+            self.shutdown();
+            *control_flow = winit::event_loop::ControlFlow::Exit;
+            return session_dirty;
+          }
+          fastrender::ui::MenuCommand::Copy
+          | fastrender::ui::MenuCommand::Cut
+          | fastrender::ui::MenuCommand::Paste => {
+            // Match our shortcut routing semantics:
+            // - when egui has an active text field (address bar), prefer egui editing;
+            // - otherwise, when the rendered page has focus, route to the worker.
+            let egui_target = self.egui_ctx.wants_keyboard_input()
+              || self.browser_state.chrome.address_bar_has_focus;
+            if egui_target {
+              match cmd {
+                fastrender::ui::MenuCommand::Copy => {
+                  ctx.input_mut(|i| i.events.push(egui::Event::Copy));
+                }
+                fastrender::ui::MenuCommand::Cut => {
+                  ctx.input_mut(|i| i.events.push(egui::Event::Cut));
+                }
+                fastrender::ui::MenuCommand::Paste => {
+                  if let Ok(mut clipboard) = Clipboard::new() {
+                    if let Ok(text) = clipboard.get_text() {
+                      ctx.input_mut(|i| i.events.push(egui::Event::Paste(text)));
+                    }
+                  }
+                }
+                _ => {}
+              }
+            } else if self.page_has_focus {
+              let Some(tab_id) = self.browser_state.active_tab_id() else {
+                continue;
+              };
+              match cmd {
+                fastrender::ui::MenuCommand::Copy => {
+                  self.send_worker_msg(fastrender::ui::UiToWorker::Copy { tab_id });
+                }
+                fastrender::ui::MenuCommand::Cut => {
+                  self.send_worker_msg(fastrender::ui::UiToWorker::Cut { tab_id });
+                }
+                fastrender::ui::MenuCommand::Paste => {
+                  if let Ok(mut clipboard) = Clipboard::new() {
+                    if let Ok(text) = clipboard.get_text() {
+                      self
+                        .send_worker_msg(fastrender::ui::UiToWorker::Paste { tab_id, text });
+                    }
+                  }
+                }
+                _ => {}
+              }
+            }
+          }
+          other => {
+            chrome_actions
+              .extend(fastrender::ui::dispatch_menu_command(other, &mut self.browser_state));
+          }
+        }
+      }
+      if !chrome_actions.is_empty() {
+        session_dirty |= self.handle_chrome_actions(chrome_actions);
+      }
+    }
+
     let chrome_actions = fastrender::ui::chrome_ui_with_bookmarks(
       &ctx,
       &mut self.browser_state,

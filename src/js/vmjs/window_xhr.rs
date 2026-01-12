@@ -1645,6 +1645,10 @@ fn xhr_send_native<Host: WindowRealmHost + 'static>(
     return Err(throw_error(scope, &format!("{e}")));
   }
 
+  // Keep request data alive across the networking task and (optional) worker thread without
+  // duplicating potentially large request bodies.
+  let request = Arc::new(request);
+
   let queue_result = event_loop.queue_task(TaskSource::Networking, move |host, event_loop| {
     // Check the request is still current (not aborted/re-opened) before doing any network work.
     let should_run = with_env_state(env_id, |state| {

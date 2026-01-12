@@ -57,6 +57,10 @@ pub mod chrome;
 #[cfg(feature = "browser_ui")]
 pub mod bookmarks_manager;
 
+// `menu_bar` depends on egui and is only used by the windowed browser UI.
+#[cfg(feature = "browser_ui")]
+pub mod menu_bar;
+
 // SVG→egui icon rasterization + caching for browser chrome widgets.
 #[cfg(feature = "browser_ui")]
 pub mod icons;
@@ -145,6 +149,8 @@ pub use crate::select_dropdown;
 pub use crate::select_dropdown::{SelectDropdown, SelectDropdownChoice};
 #[cfg(feature = "browser_ui")]
 pub use chrome::{chrome_ui, chrome_ui_with_bookmarks, ChromeAction};
+#[cfg(feature = "browser_ui")]
+pub use menu_bar::{dispatch_menu_command, menu_bar_ui, MenuBarState, MenuCommand};
 #[cfg(feature = "browser_ui")]
 pub use session::{BrowserSession, BrowserSessionTab, BrowserSessionWindow, BrowserWindowState};
 #[cfg(feature = "browser_ui")]

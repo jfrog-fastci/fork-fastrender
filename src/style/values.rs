@@ -575,7 +575,7 @@ fn substitute_calc_size_tokens<'i, 't>(
         output.push('}');
       }
       other => {
-        other.to_css(&mut output).map_err(|_| parser.new_custom_error(()))?;
+        other.to_css(&mut output).map_err(|_| parser.new_custom_error::<(), ()>(()))?;
       }
     }
   }

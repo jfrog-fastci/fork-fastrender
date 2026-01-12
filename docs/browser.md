@@ -38,6 +38,7 @@ The `browser` UI is intentionally minimal, but the core chrome/navigation loop i
 end-to-end:
 
 - **Tabs**: create/close/switch tabs.
+- **Menu bar**: browser-style menu bar (File/Edit/View/History/Bookmarks/Window/Help) for discoverability.
 - **Navigation**:
   - address bar URL entry (press Enter to navigate; user input is normalized, e.g. `example.com`
     → `https://example.com/`, filesystem paths → `file://...`)

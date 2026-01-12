@@ -1459,12 +1459,12 @@ fn parse_attr_function_arguments<'i, 't>(
         name = Some(ident.as_ref().to_string());
         break;
       }
-      _ => return Err(parser.new_custom_error(())),
+      _ => return Err(parser.new_custom_error::<(), ()>(())),
     }
   }
 
   let Some(name) = name else {
-    return Err(parser.new_custom_error(()));
+    return Err(parser.new_custom_error::<(), ()>(()));
   };
 
   // Optional type/unit + optional fallback.
@@ -1490,7 +1490,7 @@ fn parse_attr_function_arguments<'i, 't>(
     Some(Token::Ident(ident)) => {
       ty = Some(ident.as_ref().to_string());
     }
-    _ => return Err(parser.new_custom_error(())),
+    _ => return Err(parser.new_custom_error::<(), ()>(())),
   }
 
   // After type, expect optional comma + fallback or end.
@@ -1510,7 +1510,7 @@ fn parse_attr_function_arguments<'i, 't>(
       fallback = Some(parser.slice_from(start).to_string());
       Ok((name, ty, fallback))
     }
-    _ => Err(parser.new_custom_error(())),
+    _ => Err(parser.new_custom_error::<(), ()>(())),
   }
 }
 
@@ -1652,7 +1652,7 @@ fn parse_if_branches<'i, 't>(
   ) -> Result<(), ParseError<'i, ()>> {
     let cond_trimmed = trim_css_whitespace(condition);
     if *saw_colon && cond_trimmed.is_empty() {
-      return Err(parser.new_custom_error(()));
+      return Err(parser.new_custom_error::<(), ()>(()));
     }
 
     if *saw_colon {
@@ -1680,7 +1680,7 @@ fn parse_if_branches<'i, 't>(
         // Only conditional branches use `;` separators. An else branch (no colon) must be the final
         // branch and therefore cannot be terminated by `;`.
         if !saw_colon {
-          return Err(parser.new_custom_error(()));
+          return Err(parser.new_custom_error::<(), ()>(()));
         }
         flush_branch(
           parser,
@@ -1760,7 +1760,7 @@ fn parse_if_branches<'i, 't>(
   if branches.iter().all(|b| b.condition.is_none()) {
     // Reject `if(<else-value>)` since it's indistinguishable from authoring the else value
     // directly, and browsers currently treat it as invalid.
-    return Err(parser.new_custom_error(()));
+    return Err(parser.new_custom_error::<(), ()>(()));
   }
 
   Ok(branches)
@@ -1915,7 +1915,7 @@ fn parse_if_term<'i, 't>(parser: &mut Parser<'i, 't>) -> Result<bool, ParseError
       } else if ident.eq_ignore_ascii_case("false") {
         Ok(false)
       } else {
-        Err(parser.new_custom_error(()))
+        Err(parser.new_custom_error::<(), ()>(()))
       }
     }
     Token::ParenthesisBlock => parser.parse_nested_block(|nested| {
@@ -1924,10 +1924,10 @@ fn parse_if_term<'i, 't>(parser: &mut Parser<'i, 't>) -> Result<bool, ParseError
       if nested.is_exhausted() {
         Ok(value)
       } else {
-        Err(nested.new_custom_error(()))
+        Err(nested.new_custom_error::<(), ()>(()))
       }
     }),
-    _ => Err(parser.new_custom_error(())),
+    _ => Err(parser.new_custom_error::<(), ()>(())),
   }
 }
 

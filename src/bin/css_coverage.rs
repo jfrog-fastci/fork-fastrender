@@ -336,7 +336,7 @@ fn parse_declaration_in_style_block<'i, 't>(
 ) -> std::result::Result<Option<(String, &'i str)>, ParseError<'i, ()>> {
   let property = match parser.expect_ident() {
     Ok(ident) => normalize_property_name(ident.as_ref().to_string()),
-    Err(_) => return Err(parser.new_custom_error(())),
+    Err(_) => return Err(parser.new_custom_error::<(), ()>(())),
   };
   let is_custom_property = property.starts_with("--");
 
@@ -358,7 +358,7 @@ fn parse_declaration_in_style_block<'i, 't>(
     }
 
     if saw_curly_block {
-      return Err(parser.new_custom_error(()));
+      return Err(parser.new_custom_error::<(), ()>(()));
     }
 
     return Ok(None);
@@ -385,7 +385,7 @@ fn parse_declaration_in_style_block<'i, 't>(
       }
       Ok(Token::CurlyBracketBlock) if !is_custom_property => {
         // Nested rules like `a:hover {}` contain a colon, but must not be treated as declarations.
-        return Err(parser.new_custom_error(()));
+        return Err(parser.new_custom_error::<(), ()>(()));
       }
       Ok(Token::Function(_))
       | Ok(Token::ParenthesisBlock)

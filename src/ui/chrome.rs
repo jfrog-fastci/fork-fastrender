@@ -1742,9 +1742,7 @@ mod tests {
   use super::{chrome_ui, chrome_ui_with_bookmarks, ChromeAction};
   use crate::ui::bookmarks::BookmarkStore;
   use crate::ui::browser_app::{BrowserAppState, BrowserTabState};
-  use crate::ui::BookmarkStore;
-  use crate::ui::messages::TabId;
-  use crate::ui::omnibox::{OmniboxSuggestionSource, OmniboxUrlSource};
+  use crate::ui::{BookmarkStore, OmniboxSuggestionSource, OmniboxUrlSource, TabId};
 
   fn new_context() -> egui::Context {
     let ctx = egui::Context::default();

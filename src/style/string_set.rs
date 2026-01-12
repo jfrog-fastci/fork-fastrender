@@ -67,7 +67,7 @@ pub fn parse_string_set(input: &str) -> Option<Vec<StringSetAssignment>> {
             if nested.is_exhausted() {
               Ok::<(), cssparser::ParseError<'_, ()>>(())
             } else {
-              Err(nested.new_custom_error(()))
+              Err(nested.new_custom_error::<(), ()>(()))
             }
           })
           .is_ok();

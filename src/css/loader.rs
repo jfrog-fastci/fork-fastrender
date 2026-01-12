@@ -829,7 +829,7 @@ pub fn absolutize_css_urls_cow<'a>(
               Ok(r) => r,
               Err(err) => {
                 nested_error = Some(err);
-                return Err(nested.new_custom_error(()));
+                return Err(nested.new_custom_error::<(), ()>(()));
               }
             };
             let changed = matches!(rewritten, Cow::Owned(_));
@@ -881,7 +881,7 @@ pub fn absolutize_css_urls_cow<'a>(
               Ok(r) => r,
               Err(err) => {
                 nested_error = Some(err);
-                return Err(nested.new_custom_error(()));
+                return Err(nested.new_custom_error::<(), ()>(()));
               }
             };
             let changed = matches!(rewritten, Cow::Owned(_));
@@ -1022,7 +1022,7 @@ fn parse_import_modifiers_and_media(
       parser.skip_whitespace();
       match parser.next_including_whitespace() {
         Ok(Token::Ident(id)) => components.push(id.to_string()),
-        _ => return Err(parser.new_custom_error(())),
+        _ => return Err(parser.new_custom_error::<(), ()>(())),
       }
 
       parser.skip_whitespace();
@@ -1036,7 +1036,7 @@ fn parse_import_modifiers_and_media(
 
     parser.skip_whitespace();
     if components.is_empty() || !parser.is_exhausted() {
-      return Err(parser.new_custom_error(()));
+      return Err(parser.new_custom_error::<(), ()>(()));
     }
     Ok(components)
   }

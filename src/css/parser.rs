@@ -1092,11 +1092,11 @@ fn parse_namespace_rule<'i, 't>(
           nested.skip_whitespace();
           match nested.next_including_whitespace()? {
             Token::QuotedString(s) | Token::Ident(s) | Token::UnquotedUrl(s) => Ok(s.to_string()),
-            _ => Err(nested.new_custom_error(())),
+            _ => Err(nested.new_custom_error::<(), ()>(())),
           }
         })
       }
-      _ => Err(parser.new_custom_error(())),
+      _ => Err(parser.new_custom_error::<(), ()>(())),
     }
   }
 
@@ -1118,7 +1118,7 @@ fn parse_namespace_rule<'i, 't>(
     // `@namespace` rules are terminated by semicolon.
     match parser.next_including_whitespace()? {
       Token::Semicolon => {}
-      _ => return Err(parser.new_custom_error(())),
+      _ => return Err(parser.new_custom_error::<(), ()>(())),
     }
 
     Ok((prefix, url))
@@ -1461,7 +1461,7 @@ fn parse_container_condition_item<'i, 't>(
   let query = parser.try_parse(parse_container_condition).ok();
 
   if name.is_none() && query.is_none() {
-    return Err(parser.new_custom_error(()));
+    return Err(parser.new_custom_error::<(), ()>(()));
   }
 
   Ok(ContainerCondition { name, query })
@@ -1491,7 +1491,7 @@ fn parse_container_name<'i, 't>(
     || ident_ref.eq_ignore_ascii_case("revert")
     || ident_ref.eq_ignore_ascii_case("revert-layer")
   {
-    return Err(parser.new_custom_error(()));
+    return Err(parser.new_custom_error::<(), ()>(()));
   }
   Ok(ident)
 }
@@ -1517,7 +1517,7 @@ fn parse_container_disjunction<'i, 't>(
   }
 
   if conditions.len() == 1 {
-    conditions.pop().ok_or_else(|| parser.new_custom_error(()))
+    conditions.pop().ok_or_else(|| parser.new_custom_error::<(), ()>(()))
   } else {
     Ok(ContainerQuery::Or(conditions))
   }
@@ -1538,7 +1538,7 @@ fn parse_container_conjunction<'i, 't>(
   }
 
   if conditions.len() == 1 {
-    conditions.pop().ok_or_else(|| parser.new_custom_error(()))
+    conditions.pop().ok_or_else(|| parser.new_custom_error::<(), ()>(()))
   } else {
     Ok(ContainerQuery::And(conditions))
   }
@@ -1583,7 +1583,7 @@ fn parse_container_query_in_parens<'i, 't>(
         if p.is_exhausted() {
           Ok(query)
         } else {
-          Err(p.new_custom_error(()))
+          Err(p.new_custom_error::<(), ()>(()))
         }
       }) {
         return Ok(grouped);
@@ -1621,7 +1621,7 @@ fn parse_container_query_in_parens<'i, 't>(
       let args = parser.parse_nested_block(stringify_nested_tokens)?;
       Ok(ContainerQuery::Unknown(format!("{name}({args})")))
     }
-    _ => Err(parser.new_custom_error(())),
+    _ => Err(parser.new_custom_error::<(), ()>(())),
   }
 }
 
@@ -1980,7 +1980,7 @@ fn parse_style_in_parens<'i, 't>(
       parser.parse_nested_block(consume_nested_tokens)?;
       Ok(StyleQueryExpr::Unknown)
     }
-    _ => Err(parser.new_custom_error(())),
+    _ => Err(parser.new_custom_error::<(), ()>(())),
   }
 }
 
@@ -1998,7 +1998,7 @@ fn parse_style_feature_name<'i, 't>(
   parser.skip_whitespace();
   match parser.next_including_whitespace()? {
     Token::Ident(ident) => Ok(ident.to_string()),
-    _ => Err(parser.new_custom_error(())),
+    _ => Err(parser.new_custom_error::<(), ()>(())),
   }
 }
 
@@ -2016,7 +2016,7 @@ fn parse_style_feature<'i, 't>(
       let value = normalize_style_query_value(parser.slice_from(start));
       let value = trim_ascii_whitespace(&value).to_string();
       if value.is_empty() {
-        return Err(parser.new_custom_error(()));
+        return Err(parser.new_custom_error::<(), ()>(()));
       }
       return Ok(StyleQueryFeature::Plain { name, value });
     }
@@ -2058,7 +2058,7 @@ fn parse_style_range_op<'i, 't>(
       }
     }
     Token::Delim('=') => Ok(StyleRangeOp::Eq),
-    _ => Err(parser.new_custom_error(())),
+    _ => Err(parser.new_custom_error::<(), ()>(())),
   }
 }
 
@@ -2073,7 +2073,7 @@ fn parse_style_range_strict_op<'i, 't>(
       let state = parser.state();
       if matches!(parser.next_including_whitespace(), Ok(Token::Delim('='))) {
         parser.reset(&state);
-        return Err(parser.new_custom_error(()));
+        return Err(parser.new_custom_error::<(), ()>(()));
       }
       parser.reset(&state);
       Ok(StyleRangeOp::Lt)
@@ -2083,12 +2083,12 @@ fn parse_style_range_strict_op<'i, 't>(
       let state = parser.state();
       if matches!(parser.next_including_whitespace(), Ok(Token::Delim('='))) {
         parser.reset(&state);
-        return Err(parser.new_custom_error(()));
+        return Err(parser.new_custom_error::<(), ()>(()));
       }
       parser.reset(&state);
       Ok(StyleRangeOp::Gt)
     }
-    _ => Err(parser.new_custom_error(())),
+    _ => Err(parser.new_custom_error::<(), ()>(())),
   }
 }
 
@@ -2140,7 +2140,7 @@ fn parse_style_range_value<'i, 't>(
 
   let raw = trim_ascii_whitespace(parser.slice_from(start));
   if raw.is_empty() {
-    return Err(parser.new_custom_error(()));
+    return Err(parser.new_custom_error::<(), ()>(()));
   }
   Ok(style_range_value_from_text(raw))
 }
@@ -2163,17 +2163,17 @@ fn parse_style_range<'i, 't>(
   }
 
   if !matches!(op1, StyleRangeOp::Lt | StyleRangeOp::Gt) {
-    return Err(parser.new_custom_error(()));
+    return Err(parser.new_custom_error::<(), ()>(()));
   }
 
   let op2 = parse_style_range_strict_op(parser)?;
   if op2 != op1 {
-    return Err(parser.new_custom_error(()));
+    return Err(parser.new_custom_error::<(), ()>(()));
   }
   let right = parse_style_range_value(parser)?;
   parser.skip_whitespace();
   if !parser.is_exhausted() {
-    return Err(parser.new_custom_error(()));
+    return Err(parser.new_custom_error::<(), ()>(()));
   }
 
   Ok(StyleRange::Double {
@@ -2261,7 +2261,7 @@ fn parse_scroll_state_in_parens<'i, 't>(
       parser.parse_nested_block(consume_nested_tokens)?;
       Ok(ScrollStateQueryExpr::Unknown)
     }
-    _ => Err(parser.new_custom_error(())),
+    _ => Err(parser.new_custom_error::<(), ()>(())),
   }
 }
 
@@ -2302,7 +2302,7 @@ fn parse_scroll_state_feature<'i, 't>(
   parser.skip_whitespace();
   let raw_name = match parser.next_including_whitespace()? {
     Token::Ident(ident) => ident.to_string(),
-    _ => return Err(parser.new_custom_error(())),
+    _ => return Err(parser.new_custom_error::<(), ()>(())),
   };
   let name = normalize_scroll_state_feature_name(&raw_name);
   parser.skip_whitespace();
@@ -2370,7 +2370,7 @@ fn parse_scroll_state_feature<'i, 't>(
     return Ok(ScrollStateFeature::Unknown { name, value: None });
   }
 
-  Err(parser.new_custom_error(()))
+  Err(parser.new_custom_error::<(), ()>(()))
 }
 
 /// Parse an @starting-style rule which simply wraps a nested rule list.
@@ -2597,7 +2597,7 @@ fn parse_supports_disjunction<'i, 't>(
   }
 
   if conditions.len() == 1 {
-    conditions.pop().ok_or_else(|| parser.new_custom_error(()))
+    conditions.pop().ok_or_else(|| parser.new_custom_error::<(), ()>(()))
   } else {
     Ok(SupportsCondition::Or(conditions))
   }
@@ -2625,7 +2625,7 @@ fn parse_supports_conjunction<'i, 't>(
   }
 
   if conditions.len() == 1 {
-    conditions.pop().ok_or_else(|| parser.new_custom_error(()))
+    conditions.pop().ok_or_else(|| parser.new_custom_error::<(), ()>(()))
   } else {
     Ok(SupportsCondition::And(conditions))
   }
@@ -2674,7 +2674,7 @@ fn parse_supports_condition_in_parens<'i, 't>(
 
   parser
     .try_parse(|p| parse_supports_parenthesized_condition(p))
-    .map_err(|_| parser.new_custom_error(()))
+    .map_err(|_| parser.new_custom_error::<(), ()>(()))
 }
 
 fn parse_supports_selector_function<'i, 't>(
@@ -2690,12 +2690,12 @@ fn parse_supports_selector_function<'i, 't>(
   parser.try_parse(|p| {
     let ident = p.expect_ident()?;
     if !ident.as_ref().eq_ignore_ascii_case("selector") {
-      return Err(p.new_custom_error(()));
+      return Err(p.new_custom_error::<(), ()>(()));
     }
     p.skip_whitespace();
     match p.next_including_whitespace()? {
       Token::ParenthesisBlock => parse_supports_selector_arguments(p),
-      _ => Err(p.new_custom_error(())),
+      _ => Err(p.new_custom_error::<(), ()>(())),
     }
   })
 }
@@ -2713,12 +2713,12 @@ fn parse_supports_font_tech_function<'i, 't>(
   parser.try_parse(|p| {
     let ident = p.expect_ident()?;
     if !ident.as_ref().eq_ignore_ascii_case("font-tech") {
-      return Err(p.new_custom_error(()));
+      return Err(p.new_custom_error::<(), ()>(()));
     }
     p.skip_whitespace();
     match p.next_including_whitespace()? {
       Token::ParenthesisBlock => parse_supports_font_tech_arguments(p),
-      _ => Err(p.new_custom_error(())),
+      _ => Err(p.new_custom_error::<(), ()>(())),
     }
   })
 }
@@ -2745,7 +2745,7 @@ fn parse_supports_font_tech_arguments<'i, 't>(
           let _ = nested.try_parse(|p| p.expect_comma());
         }
         Ok(Token::Comma) => {}
-        Ok(_) => return Err(nested.new_custom_error(())),
+        Ok(_) => return Err(nested.new_custom_error::<(), ()>(())),
         Err(_) => break,
       }
     }
@@ -2754,7 +2754,7 @@ fn parse_supports_font_tech_arguments<'i, 't>(
   })?;
 
   if techs.is_empty() {
-    return Err(parser.new_custom_error(()));
+    return Err(parser.new_custom_error::<(), ()>(()));
   }
 
   Ok(SupportsCondition::FontTech(techs))
@@ -2773,12 +2773,12 @@ fn parse_supports_font_format_function<'i, 't>(
   parser.try_parse(|p| {
     let ident = p.expect_ident()?;
     if !ident.as_ref().eq_ignore_ascii_case("font-format") {
-      return Err(p.new_custom_error(()));
+      return Err(p.new_custom_error::<(), ()>(()));
     }
     p.skip_whitespace();
     match p.next_including_whitespace()? {
       Token::ParenthesisBlock => parse_supports_font_format_arguments(p),
-      _ => Err(p.new_custom_error(())),
+      _ => Err(p.new_custom_error::<(), ()>(())),
     }
   })
 }
@@ -2805,7 +2805,7 @@ fn parse_supports_font_format_arguments<'i, 't>(
           let _ = nested.try_parse(|p| p.expect_comma());
         }
         Ok(Token::Comma) => {}
-        Ok(_) => return Err(nested.new_custom_error(())),
+        Ok(_) => return Err(nested.new_custom_error::<(), ()>(())),
         Err(_) => break,
       }
     }
@@ -2814,7 +2814,7 @@ fn parse_supports_font_format_arguments<'i, 't>(
   })?;
 
   if formats.is_empty() {
-    return Err(parser.new_custom_error(()));
+    return Err(parser.new_custom_error::<(), ()>(()));
   }
 
   Ok(SupportsCondition::FontFormat(formats))
@@ -2830,7 +2830,7 @@ fn parse_supports_selector_arguments<'i, 't>(
   })?;
 
   if selector_list.is_empty() {
-    return Err(parser.new_custom_error(()));
+    return Err(parser.new_custom_error::<(), ()>(()));
   }
 
   Ok(SupportsCondition::selector(selector_list))
@@ -2849,12 +2849,12 @@ fn parse_supports_at_rule_function<'i, 't>(
   parser.try_parse(|p| {
     let ident = p.expect_ident()?;
     if !ident.as_ref().eq_ignore_ascii_case("at-rule") {
-      return Err(p.new_custom_error(()));
+      return Err(p.new_custom_error::<(), ()>(()));
     }
     p.skip_whitespace();
     match p.next_including_whitespace()? {
       Token::ParenthesisBlock => parse_supports_at_rule_arguments(p),
-      _ => Err(p.new_custom_error(())),
+      _ => Err(p.new_custom_error::<(), ()>(())),
     }
   })
 }
@@ -2869,7 +2869,7 @@ fn parse_supports_at_rule_arguments<'i, 't>(
   })?;
 
   if at_rule.is_empty() {
-    return Err(parser.new_custom_error(()));
+    return Err(parser.new_custom_error::<(), ()>(()));
   }
 
   Ok(SupportsCondition::AtRule(at_rule))
@@ -2901,7 +2901,7 @@ fn parse_supports_parenthesized_condition<'i, 't>(
 ) -> std::result::Result<SupportsCondition, ParseError<'i, ()>> {
   match parser.next_including_whitespace() {
     Ok(Token::ParenthesisBlock) => parser.parse_nested_block(parse_supports_parenthesized_contents),
-    _ => Err(parser.new_custom_error(())),
+    _ => Err(parser.new_custom_error::<(), ()>(())),
   }
 }
 
@@ -2957,7 +2957,7 @@ fn parse_supports_conjunction_tail<'i, 't>(
   }
 
   if conditions.len() == 1 {
-    conditions.pop().ok_or_else(|| parser.new_custom_error(()))
+    conditions.pop().ok_or_else(|| parser.new_custom_error::<(), ()>(()))
   } else {
     Ok(SupportsCondition::And(conditions))
   }
@@ -2979,7 +2979,7 @@ fn parse_supports_bare_disjunction<'i, 't>(
   }
 
   if conditions.len() == 1 {
-    conditions.pop().ok_or_else(|| parser.new_custom_error(()))
+    conditions.pop().ok_or_else(|| parser.new_custom_error::<(), ()>(()))
   } else {
     Ok(SupportsCondition::Or(conditions))
   }
@@ -3001,7 +3001,7 @@ fn parse_supports_bare_conjunction<'i, 't>(
   }
 
   if conditions.len() == 1 {
-    conditions.pop().ok_or_else(|| parser.new_custom_error(()))
+    conditions.pop().ok_or_else(|| parser.new_custom_error::<(), ()>(()))
   } else {
     Ok(SupportsCondition::And(conditions))
   }
@@ -3041,7 +3041,7 @@ fn parse_supports_bare_term<'i, 't>(
     return Ok(cond);
   }
 
-  parse_supports_bare_declaration(parser).ok_or_else(|| parser.new_custom_error(()))
+  parse_supports_bare_declaration(parser).ok_or_else(|| parser.new_custom_error::<(), ()>(()))
 }
 
 fn parse_supports_bare_declaration<'i, 't>(
@@ -5266,9 +5266,9 @@ fn parse_font_feature_setting<'i, 't>(
     {
       s.as_bytes()
         .try_into()
-        .map_err(|_| location.new_custom_error(()))?
+        .map_err(|_| location.new_custom_error::<(), ()>(()))?
     }
-    _ => return Err(location.new_custom_error(())),
+    _ => return Err(location.new_custom_error::<(), ()>(())),
   };
 
   parser.skip_whitespace();
@@ -5281,7 +5281,7 @@ fn parse_font_feature_setting<'i, 't>(
     match ident.as_str() {
       "on" => 1,
       "off" => 0,
-      _ => return Err(location.new_custom_error(())),
+      _ => return Err(location.new_custom_error::<(), ()>(())),
     }
   } else {
     1
@@ -5305,9 +5305,9 @@ fn parse_font_variation_setting<'i, 't>(
     {
       s.as_bytes()
         .try_into()
-        .map_err(|_| location.new_custom_error(()))?
+        .map_err(|_| location.new_custom_error::<(), ()>(()))?
     }
-    _ => return Err(location.new_custom_error(())),
+    _ => return Err(location.new_custom_error::<(), ()>(())),
   };
 
   parser.skip_whitespace();
@@ -5351,7 +5351,7 @@ fn parse_font_variation_setting<'i, 't>(
             '*' => left *= right,
             '/' => {
               if right == 0.0 {
-                return Err(input.new_custom_error(()));
+                return Err(input.new_custom_error::<(), ()>(()));
               }
               left /= right;
             }
@@ -5374,13 +5374,13 @@ fn parse_font_variation_setting<'i, 't>(
           Token::ParenthesisBlock => input.parse_nested_block(parse_calc_number_sum),
           Token::Delim('+') => parse_calc_number_factor(input),
           Token::Delim('-') => parse_calc_number_factor(input).map(|v| -v),
-          _ => Err(location.new_custom_error(())),
+          _ => Err(location.new_custom_error::<(), ()>(())),
         }
       }
 
       parser.parse_nested_block(parse_calc_number_sum)?
     }
-    _ => return Err(location.new_custom_error(())),
+    _ => return Err(location.new_custom_error::<(), ()>(())),
   };
 
   Ok(FontVariationSetting {

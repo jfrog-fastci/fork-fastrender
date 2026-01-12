@@ -8332,7 +8332,7 @@ impl ImageCache {
                   nested_in_font_face,
                 ) {
                   nested_error = Some(err);
-                  return Err(nested.new_custom_error(()));
+                  return Err(nested.new_custom_error::<(), ()>(()));
                 }
                 Ok::<_, cssparser::ParseError<'i, ()>>(())
               });
@@ -8347,7 +8347,7 @@ impl ImageCache {
                   scan_parser(nested, include_imports, svg_url, record, depth + 1, in_font_face)
                 {
                   nested_error = Some(err);
-                  return Err(nested.new_custom_error(()));
+                  return Err(nested.new_custom_error::<(), ()>(()));
                 }
                 Ok::<_, cssparser::ParseError<'i, ()>>(())
               });

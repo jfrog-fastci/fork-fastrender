@@ -298,6 +298,24 @@ The browser also requests `Theme::Dark` on Linux:
 
 Note: zoom is tracked per-tab and persisted in the browser session file (see `src/ui/session.rs`).
 
+## Menu bar
+
+The windowed `browser` UI includes a browser-style menu bar for discoverability and keyboard parity:
+
+- **File**
+- **Edit**
+- **View**
+- **History**
+- **Bookmarks**
+- **Window**
+- **Help**
+
+Implemented items are wired up to existing browser UI actions (tabs, navigation, reload, zoom,
+clipboard). Some menu entries may remain disabled as additional features (multi-window, downloads,
+etc.) are implemented.
+
+Help/About items open `about:help` / `about:version` in a new tab.
+
 ## Bookmarks / History
 
 FastRender’s experimental desktop browser UI supports **bookmarks** and a basic **history** panel.

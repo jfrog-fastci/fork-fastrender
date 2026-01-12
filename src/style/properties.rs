@@ -2124,7 +2124,7 @@ pub(crate) fn parse_animation_timeline_list(raw: &str) -> Option<Vec<AnimationTi
             "none" => AnimationTimeline::None,
             _ => {
               if custom_ident_is_excluded_keyword(&lower) {
-                return Err(p.new_custom_error(()));
+                return Err(p.new_custom_error::<(), ()>(()));
               }
               AnimationTimeline::Named(ident.to_string())
             }
@@ -2138,10 +2138,10 @@ pub(crate) fn parse_animation_timeline_list(raw: &str) -> Option<Vec<AnimationTi
             let parsed = p.parse_nested_block(parse_view_function_timeline)?;
             AnimationTimeline::View(parsed)
           } else {
-            return Err(p.new_custom_error(()));
+            return Err(p.new_custom_error::<(), ()>(()));
           }
         }
-        _ => return Err(p.new_custom_error(())),
+        _ => return Err(p.new_custom_error::<(), ()>(())),
       };
       p.skip_whitespace();
       Ok(timeline)
@@ -2785,7 +2785,7 @@ fn parse_scroll_function_timeline<'i, 't>(
       }
     }
 
-    return Err(input.new_custom_error(()));
+    return Err(input.new_custom_error::<(), ()>(()));
   }
 
   Ok(ScrollFunctionTimeline {
@@ -2849,7 +2849,7 @@ fn parse_view_function_timeline<'i, 't>(
       }
     }
 
-    return Err(input.new_custom_error(()));
+    return Err(input.new_custom_error::<(), ()>(()));
   }
 
   let inset = match inset_values.len() {
@@ -2931,7 +2931,7 @@ fn combine_calc_time_sum<'i>(
     (CalcTimeComponent::Number(0.0), CalcTimeComponent::Time(b)) => {
       Ok(CalcTimeComponent::Time(b * sign))
     }
-    _ => Err(location.new_custom_error(())),
+    _ => Err(location.new_custom_error::<(), ()>(())),
   }
 }
 
@@ -2950,11 +2950,11 @@ fn combine_calc_time_product<'i>(
       | (CalcTimeComponent::Number(n), CalcTimeComponent::Time(t)) => {
         Ok(CalcTimeComponent::Time(t * n))
       }
-      _ => Err(location.new_custom_error(())),
+      _ => Err(location.new_custom_error::<(), ()>(())),
     },
     '/' => match (left, right) {
-      (_, CalcTimeComponent::Number(0.0)) => Err(location.new_custom_error(())),
-      (_, CalcTimeComponent::Time(0.0)) => Err(location.new_custom_error(())),
+      (_, CalcTimeComponent::Number(0.0)) => Err(location.new_custom_error::<(), ()>(())),
+      (_, CalcTimeComponent::Time(0.0)) => Err(location.new_custom_error::<(), ()>(())),
       (CalcTimeComponent::Number(a), CalcTimeComponent::Number(b)) => {
         Ok(CalcTimeComponent::Number(a / b))
       }
@@ -2965,9 +2965,9 @@ fn combine_calc_time_product<'i>(
       (CalcTimeComponent::Time(a), CalcTimeComponent::Time(b)) => {
         Ok(CalcTimeComponent::Number(a / b))
       }
-      _ => Err(location.new_custom_error(())),
+      _ => Err(location.new_custom_error::<(), ()>(())),
     },
-    _ => Err(location.new_custom_error(())),
+    _ => Err(location.new_custom_error::<(), ()>(())),
   }
 }
 
@@ -3027,7 +3027,7 @@ fn parse_calc_time_factor<'i, 't>(
       } else if unit.eq_ignore_ascii_case("s") {
         Ok(CalcTimeComponent::Time(*value * 1000.0))
       } else {
-        Err(location.new_custom_error(()))
+        Err(location.new_custom_error::<(), ()>(()))
       }
     }
     Token::Function(ref name) => {
@@ -3044,7 +3044,7 @@ fn parse_calc_time_factor<'i, 't>(
       if name.eq_ignore_ascii_case("clamp") {
         return input.parse_nested_block(parse_clamp_time);
       }
-      Err(location.new_custom_error(()))
+      Err(location.new_custom_error::<(), ()>(()))
     }
     Token::ParenthesisBlock => input.parse_nested_block(parse_calc_time_sum),
     Token::Delim('+') => parse_calc_time_factor(input),
@@ -3055,7 +3055,7 @@ fn parse_calc_time_factor<'i, 't>(
         CalcTimeComponent::Time(ms) => Ok(CalcTimeComponent::Time(-ms)),
       }
     }
-    _ => Err(location.new_custom_error(())),
+    _ => Err(location.new_custom_error::<(), ()>(())),
   }
 }
 
@@ -3081,14 +3081,14 @@ fn parse_min_max_time<'i, 't>(
 
   // Per CSS Values & Units, `min()`/`max()` accept 1+ arguments (one-arg is identity).
   if values.is_empty() {
-    return Err(input.new_custom_error(()));
+    return Err(input.new_custom_error::<(), ()>(()));
   }
   if values.len() == 1 {
     if let Some(value) = values.pop() {
       return Ok(value);
     }
     debug_assert!(false, "min()/max() values unexpectedly empty after length check");
-    return Err(input.new_custom_error(()));
+    return Err(input.new_custom_error::<(), ()>(()));
   }
 
   let location = input.current_source_location();
@@ -3101,10 +3101,10 @@ fn parse_min_max_time<'i, 't>(
     let first = iter
       .next()
       .and_then(calc_time_component_to_ms)
-      .ok_or_else(|| location.new_custom_error(()))?;
+      .ok_or_else(|| location.new_custom_error::<(), ()>(()))?;
     let mut extremum = first;
     for component in iter {
-      let ms = calc_time_component_to_ms(component).ok_or_else(|| location.new_custom_error(()))?;
+      let ms = calc_time_component_to_ms(component).ok_or_else(|| location.new_custom_error::<(), ()>(()))?;
       extremum = match func {
         TimeMathFn::Min => extremum.min(ms),
         TimeMathFn::Max => extremum.max(ms),
@@ -3115,12 +3115,12 @@ fn parse_min_max_time<'i, 't>(
     let mut iter = values.into_iter();
     let first = match iter.next() {
       Some(CalcTimeComponent::Number(v)) => v,
-      _ => return Err(location.new_custom_error(())),
+      _ => return Err(location.new_custom_error::<(), ()>(())),
     };
     let mut extremum = first;
     for component in iter {
       let CalcTimeComponent::Number(v) = component else {
-        return Err(location.new_custom_error(()));
+        return Err(location.new_custom_error::<(), ()>(()));
       };
       extremum = match func {
         TimeMathFn::Min => extremum.min(v),
@@ -3151,21 +3151,21 @@ fn parse_clamp_time<'i, 't>(
     || matches!(max, CalcTimeComponent::Time(_));
 
   if has_time {
-    let min_ms = calc_time_component_to_ms(min).ok_or_else(|| location.new_custom_error(()))?;
+    let min_ms = calc_time_component_to_ms(min).ok_or_else(|| location.new_custom_error::<(), ()>(()))?;
     let preferred_ms =
-      calc_time_component_to_ms(preferred).ok_or_else(|| location.new_custom_error(()))?;
-    let max_ms = calc_time_component_to_ms(max).ok_or_else(|| location.new_custom_error(()))?;
+      calc_time_component_to_ms(preferred).ok_or_else(|| location.new_custom_error::<(), ()>(()))?;
+    let max_ms = calc_time_component_to_ms(max).ok_or_else(|| location.new_custom_error::<(), ()>(()))?;
     let upper = if max_ms < min_ms { min_ms } else { max_ms };
     Ok(CalcTimeComponent::Time(preferred_ms.max(min_ms).min(upper)))
   } else {
     let CalcTimeComponent::Number(min_value) = min else {
-      return Err(location.new_custom_error(()));
+      return Err(location.new_custom_error::<(), ()>(()));
     };
     let CalcTimeComponent::Number(preferred_value) = preferred else {
-      return Err(location.new_custom_error(()));
+      return Err(location.new_custom_error::<(), ()>(()));
     };
     let CalcTimeComponent::Number(max_value) = max else {
-      return Err(location.new_custom_error(()));
+      return Err(location.new_custom_error::<(), ()>(()));
     };
     let upper = if max_value < min_value {
       min_value
@@ -3196,11 +3196,11 @@ fn parse_math_time_ms(raw: &str) -> Option<f32> {
           } else if name.eq_ignore_ascii_case("clamp") {
             input.parse_nested_block(parse_clamp_time)?
           } else {
-            return Err(location.new_custom_error(()));
+            return Err(location.new_custom_error::<(), ()>(()));
           };
-          calc_time_component_to_ms(component).ok_or_else(|| location.new_custom_error(()))
+          calc_time_component_to_ms(component).ok_or_else(|| location.new_custom_error::<(), ()>(()))
         }
-        _ => Err(location.new_custom_error(())),
+        _ => Err(location.new_custom_error::<(), ()>(())),
       }
     })
     .ok()
@@ -3255,7 +3255,7 @@ fn parse_number_or_calc(raw: &str) -> Option<f32> {
         '*' => left *= right,
         '/' => {
           if right == 0.0 {
-            return Err(input.new_custom_error(()));
+            return Err(input.new_custom_error::<(), ()>(()));
           }
           left /= right;
         }
@@ -3276,13 +3276,13 @@ fn parse_number_or_calc(raw: &str) -> Option<f32> {
         if name.as_ref().eq_ignore_ascii_case("calc") {
           input.parse_nested_block(parse_calc_number_sum)
         } else {
-          Err(location.new_custom_error(()))
+          Err(location.new_custom_error::<(), ()>(()))
         }
       }
       Token::ParenthesisBlock => input.parse_nested_block(parse_calc_number_sum),
       Token::Delim('+') => parse_calc_number_factor(input),
       Token::Delim('-') => parse_calc_number_factor(input).map(|v| -v),
-      _ => Err(location.new_custom_error(())),
+      _ => Err(location.new_custom_error::<(), ()>(())),
     }
   }
 
@@ -3293,7 +3293,7 @@ fn parse_number_or_calc(raw: &str) -> Option<f32> {
       Token::Function(name) if name.as_ref().eq_ignore_ascii_case("calc") => {
         input.parse_nested_block(parse_calc_number_sum)
       }
-      _ => Err(input.new_custom_error(())),
+      _ => Err(input.new_custom_error::<(), ()>(())),
     })
     .ok()
 }
@@ -20857,11 +20857,11 @@ fn parse_filter_function<'i, 't>(
     }
     let v = parse_number_or_percentage(input)?;
     if v < 0.0 {
-      return Err(input.new_custom_error(()));
+      return Err(input.new_custom_error::<(), ()>(()));
     }
     input.skip_whitespace();
     if !input.is_exhausted() {
-      return Err(input.new_custom_error(()));
+      return Err(input.new_custom_error::<(), ()>(()));
     }
     Ok(v)
   }
@@ -20871,7 +20871,7 @@ fn parse_filter_function<'i, 't>(
   ) -> Result<Length, cssparser::ParseError<'i, ()>> {
     let len = parse_length_component(input)?;
     if matches!(len.unit, LengthUnit::Percent) {
-      return Err(input.new_custom_error(()));
+      return Err(input.new_custom_error::<(), ()>(()));
     }
     Ok(len)
   }
@@ -20881,7 +20881,7 @@ fn parse_filter_function<'i, 't>(
   ) -> Result<Length, cssparser::ParseError<'i, ()>> {
     let len = parse_filter_length(input)?;
     if len.value < 0.0 {
-      return Err(input.new_custom_error(()));
+      return Err(input.new_custom_error::<(), ()>(()));
     }
     Ok(len)
   }
@@ -20897,19 +20897,19 @@ fn parse_filter_function<'i, 't>(
           input.try_parse(|p| -> Result<String, cssparser::ParseError<'_, ()>> {
             let hash = match p.next()? {
               Token::IDHash(value) | Token::Hash(value) => value.as_ref().to_string(),
-              _ => return Err(p.new_custom_error(())),
+              _ => return Err(p.new_custom_error::<(), ()>(())),
             };
             p.skip_whitespace();
             if !p.is_exhausted() {
-              return Err(p.new_custom_error(()));
+              return Err(p.new_custom_error::<(), ()>(()));
             }
             Ok(format!("#{}", hash))
           })
         })
-        .map_err(|_| input.new_custom_error(()))?;
+        .map_err(|_| input.new_custom_error::<(), ()>(()))?;
       input.skip_whitespace();
       if !input.is_exhausted() {
-        return Err(input.new_custom_error(()));
+        return Err(input.new_custom_error::<(), ()>(()));
       }
       Ok(FilterFunction::Url(url))
     }
@@ -20921,7 +20921,7 @@ fn parse_filter_function<'i, 't>(
         let len = parse_non_negative_filter_length(input)?;
         input.skip_whitespace();
         if !input.is_exhausted() {
-          return Err(input.new_custom_error(()));
+          return Err(input.new_custom_error::<(), ()>(()));
         }
         len
       };
@@ -20955,7 +20955,7 @@ fn parse_filter_function<'i, 't>(
         let v = parse_angle_degrees(input)?;
         input.skip_whitespace();
         if !input.is_exhausted() {
-          return Err(input.new_custom_error(()));
+          return Err(input.new_custom_error::<(), ()>(()));
         }
         v
       };
@@ -20970,7 +20970,7 @@ fn parse_filter_function<'i, 't>(
       Ok(FilterFunction::Opacity(v))
     }
     "drop-shadow" => parse_drop_shadow(input, current_color, is_dark_color_scheme, forced_colors),
-    _ => Err(input.new_custom_error(())),
+    _ => Err(input.new_custom_error::<(), ()>(())),
   }
 }
 
@@ -20981,7 +20981,7 @@ fn parse_number_or_percentage<'i, 't>(
   match input.next()? {
     Token::Number { value, .. } => Ok(*value),
     Token::Percentage { unit_value, .. } => Ok(*unit_value),
-    _ => Err(location.new_custom_error(())),
+    _ => Err(location.new_custom_error::<(), ()>(())),
   }
 }
 
@@ -21485,7 +21485,7 @@ fn length_from_token(token: &Token) -> Option<Length> {
 fn parse_angle_degrees<'i, 't>(
   input: &mut Parser<'i, 't>,
 ) -> Result<f32, cssparser::ParseError<'i, ()>> {
-  crate::css::properties::parse_angle_component(input).map_err(|_| input.new_custom_error(()))
+  crate::css::properties::parse_angle_component(input).map_err(|_| input.new_custom_error::<(), ()>(()))
 }
 
 fn parse_length_component<'i, 't>(
@@ -21549,7 +21549,7 @@ fn parse_length_component<'i, 't>(
         "lvb" => Length::new(*value, LengthUnit::Vb),
         "lvmin" => Length::new(*value, LengthUnit::Vmin),
         "lvmax" => Length::new(*value, LengthUnit::Vmax),
-        _ => return Err(location.new_custom_error(())),
+        _ => return Err(location.new_custom_error::<(), ()>(())),
       };
       Ok(len)
     }
@@ -21573,7 +21573,7 @@ fn parse_length_component<'i, 't>(
     }
     Token::Percentage { unit_value, .. } => Ok(Length::percent(*unit_value * 100.0)),
     Token::Number { value, .. } if *value == 0.0 => Ok(Length::px(0.0)),
-    _ => Err(location.new_custom_error(())),
+    _ => Err(location.new_custom_error::<(), ()>(())),
   }
 }
 
@@ -21615,11 +21615,11 @@ fn parse_css_color_value<'i, 't>(
       })?;
       format!("{}({})", func, inner)
     }
-    _ => return Err(location.new_custom_error(())),
+    _ => return Err(location.new_custom_error::<(), ()>(())),
   };
 
   let parsed =
-    crate::style::color::Color::parse(&raw).map_err(|_| location.new_custom_error(()))?;
+    crate::style::color::Color::parse(&raw).map_err(|_| location.new_custom_error::<(), ()>(()))?;
 
   if matches!(parsed, crate::style::color::Color::CurrentColor) {
     return Ok(FilterColor::CurrentColor);
@@ -21665,21 +21665,21 @@ fn parse_drop_shadow<'i, 't>(
 
     // Unexpected token
     let _ = input.next();
-    return Err(input.new_custom_error(()));
+    return Err(input.new_custom_error::<(), ()>(()));
   }
 
   if lengths.len() < 2 {
-    return Err(input.new_custom_error(()));
+    return Err(input.new_custom_error::<(), ()>(()));
   }
 
   if lengths.len() > 4 {
-    return Err(input.new_custom_error(()));
+    return Err(input.new_custom_error::<(), ()>(()));
   }
 
   let blur = lengths.get(2).copied().unwrap_or_else(|| Length::px(0.0));
   let spread = lengths.get(3).copied().unwrap_or_else(|| Length::px(0.0));
   if blur.value < 0.0 {
-    return Err(input.new_custom_error(()));
+    return Err(input.new_custom_error::<(), ()>(()));
   }
 
   Ok(FilterFunction::DropShadow(Box::new(FilterShadow {
@@ -21696,7 +21696,7 @@ fn parse_filter_function_length<'i, 't>(
 ) -> Result<Length, cssparser::ParseError<'i, ()>> {
   let len = parse_length_component(input)?;
   if matches!(len.unit, LengthUnit::Percent) {
-    return Err(input.new_custom_error(()));
+    return Err(input.new_custom_error::<(), ()>(()));
   }
   Ok(len)
 }
@@ -23884,23 +23884,23 @@ fn parse_symbols_counter_style<'i, 't>(
       Token::Ident(ident) if !saw_system && symbols.is_empty() => {
         let lower = ident.as_ref().to_ascii_lowercase();
         let Some(parsed) = parse_symbols_type(&lower) else {
-          return Err(input.new_custom_error(()));
+          return Err(input.new_custom_error::<(), ()>(()));
         };
         system = parsed;
         saw_system = true;
       }
       Token::QuotedString(s) => symbols.push(s.to_string()),
-      _ => return Err(input.new_custom_error(())),
+      _ => return Err(input.new_custom_error::<(), ()>(())),
     }
   }
 
   if symbols.is_empty() {
-    return Err(input.new_custom_error(()));
+    return Err(input.new_custom_error::<(), ()>(()));
   }
 
   if matches!(system, SymbolsType::Numeric | SymbolsType::Alphabetic) && symbols.len() < 2 {
     // The `symbols()` function is invalid when numeric/alphabetic have fewer than 2 symbols.
-    return Err(input.new_custom_error(()));
+    return Err(input.new_custom_error::<(), ()>(()));
   }
 
   Ok(SymbolsCounterStyle { system, symbols })
@@ -38787,9 +38787,9 @@ fn parse_feature_setting<'i, 't>(
     {
       s.as_bytes()
         .try_into()
-        .map_err(|_| location.new_custom_error(()))?
+        .map_err(|_| location.new_custom_error::<(), ()>(()))?
     }
-    _ => return Err(location.new_custom_error(())),
+    _ => return Err(location.new_custom_error::<(), ()>(())),
   };
 
   parser.skip_whitespace();
@@ -38802,7 +38802,7 @@ fn parse_feature_setting<'i, 't>(
     match ident.as_str() {
       "on" => 1,
       "off" => 0,
-      _ => return Err(location.new_custom_error(())),
+      _ => return Err(location.new_custom_error::<(), ()>(())),
     }
   } else {
     1
@@ -38826,9 +38826,9 @@ fn parse_variation_setting<'i, 't>(
     {
       s.as_bytes()
         .try_into()
-        .map_err(|_| location.new_custom_error(()))?
+        .map_err(|_| location.new_custom_error::<(), ()>(()))?
     }
-    _ => return Err(location.new_custom_error(())),
+    _ => return Err(location.new_custom_error::<(), ()>(())),
   };
 
   parser.skip_whitespace();
@@ -38872,7 +38872,7 @@ fn parse_variation_setting<'i, 't>(
             '*' => left *= right,
             '/' => {
               if right == 0.0 {
-                return Err(input.new_custom_error(()));
+                return Err(input.new_custom_error::<(), ()>(()));
               }
               left /= right;
             }
@@ -38895,13 +38895,13 @@ fn parse_variation_setting<'i, 't>(
           Token::ParenthesisBlock => input.parse_nested_block(parse_calc_number_sum),
           Token::Delim('+') => parse_calc_number_factor(input),
           Token::Delim('-') => parse_calc_number_factor(input).map(|v| -v),
-          _ => Err(location.new_custom_error(())),
+          _ => Err(location.new_custom_error::<(), ()>(())),
         }
       }
 
       parser.parse_nested_block(parse_calc_number_sum)?
     }
-    _ => return Err(location.new_custom_error(())),
+    _ => return Err(location.new_custom_error::<(), ()>(())),
   };
 
   Ok(FontVariationSetting {
