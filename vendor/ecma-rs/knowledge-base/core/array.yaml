@@ -1,3 +1,10 @@
+# NOTE: Array pipeline metadata is being standardized under nested `properties.*` maps.
+# Canonical keys consumed by `effect-js`:
+# - `properties.fusion.fusable_with`
+# - `properties.output.length_relation`
+# - `properties.parallel.*` (e.g. `requires_callback_pure`)
+#
+# Some entries still carry legacy/compat keys (`properties.fusable`, `properties.output_length`).
 - name: Array.prototype.map
   semantics: Map
   effects:
@@ -59,8 +66,18 @@
       base: Allocating
       args: [0]
   properties:
+    fusion:
+      fusable_with:
+        - Array.prototype.map
+        - Array.prototype.filter
+        - Array.prototype.flatMap
+        - Array.prototype.reduce
     output:
       length_relation: unknown
+    parallel:
+      requires_callback_pure: true
+      forbid_uses_index: true
+      forbid_uses_array: true
 
 - name: Array.prototype.flat
   semantics: Flat
@@ -84,8 +101,17 @@
       base: Pure
       args: [0]
   properties:
+    array:
+      terminal: true
     output:
       length_relation: unknown
+    parallel:
+      requires_callback_pure: true
+      # Parallel reduction requires an associative callback.
+      # (Legacy: `properties.reduce.associative_if_callback_associative`.)
+      requires_callback_associative: true
+      forbid_uses_index: true
+      forbid_uses_array: true
     reduce:
       associative_if_callback_associative: true
 
@@ -97,6 +123,8 @@
       args: [0]
   purity: Impure
   properties:
+    array:
+      terminal: true
     output:
       length_relation: unknown
 
@@ -110,6 +138,10 @@
     depends_on_args:
       base: Pure
       args: [0]
+  properties:
+    array:
+      terminal: true
+      short_circuit: true
 
 - name: Array.prototype.some
   semantics: Some
@@ -121,6 +153,10 @@
     depends_on_args:
       base: Pure
       args: [0]
+  properties:
+    array:
+      terminal: true
+      short_circuit: true
 
 - name: Array.prototype.find
   semantics: Find
@@ -132,6 +168,10 @@
     depends_on_args:
       base: Pure
       args: [0]
+  properties:
+    array:
+      terminal: true
+      short_circuit: true
 
 - name: Array.prototype.findIndex
   semantics: FindIndex
@@ -143,6 +183,10 @@
     depends_on_args:
       base: Pure
       args: [0]
+  properties:
+    array:
+      terminal: true
+      short_circuit: true
 
 - name: Array.prototype.includes
   semantics: Includes

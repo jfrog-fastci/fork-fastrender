@@ -291,9 +291,19 @@ and parallelization decisions.
 - `properties.fusion.fusable_with: [<canonical api name>, ...]`
 - `properties.output.length_relation: same_as_input | le_input | unknown`
 - `properties.parallel.requires_callback_pure: bool`
+- `properties.parallel.requires_callback_associative: bool` (for parallel reduction/aggregation)
 - `properties.parallel.forbid_uses_index: bool`
 - `properties.parallel.forbid_uses_array: bool`
-- `properties.reduce.associative_if_callback_associative: bool` (optional; placeholder)
+- `properties.array.terminal: bool` (callback-consuming terminal ops like `reduce`/`find`/`some`)
+- `properties.array.short_circuit: bool` (terminal ops that may exit early like `find`/`some`/`every`)
+- `properties.reduce.associative_if_callback_associative: bool` (legacy; prefer `parallel.requires_callback_associative`)
+
+Some older entries may still include legacy/compat keys such as:
+
+- `properties.fusable: bool`
+- `properties.output_length: same_as_input | at_most_input | unknown`
+
+New metadata should prefer the canonical nested keys listed above.
 ## Contributing
 
 - Pick a directory (`core/`, `node/`, `web/`, `ecosystem/`).

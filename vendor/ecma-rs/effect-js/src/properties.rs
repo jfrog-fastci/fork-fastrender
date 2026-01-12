@@ -90,6 +90,23 @@ pub fn is_parallelizable(api: &Api, callsite: &CallSiteInfo) -> bool {
     return false;
   }
 
+  // Associativity is required for safe parallel reduction/aggregation. Prefer the
+  // canonical `parallel.requires_callback_associative` key but accept the legacy
+  // `reduce.associative_if_callback_associative` too.
+  let requires_callback_associative =
+    get_path(&api.properties, &["parallel", "requires_callback_associative"])
+      .and_then(get_bool)
+      .unwrap_or(false)
+      || get_path(
+        &api.properties,
+        &["reduce", "associative_if_callback_associative"],
+      )
+      .and_then(get_bool)
+      .unwrap_or(false);
+  if requires_callback_associative && callsite.callback_is_associative != Some(true) {
+    return false;
+  }
+
   let forbid_uses_index = get_path(&api.properties, &["parallel", "forbid_uses_index"])
     .and_then(get_bool)
     .unwrap_or(false);
@@ -151,6 +168,63 @@ mod tests {
     let map = db.get("Array.prototype.map").unwrap();
     let filter = db.get("Array.prototype.filter").unwrap();
     assert!(fusable_with(map, filter));
+  }
+
+  #[test]
+  fn flat_map_is_parallelizable_when_callback_is_pure_and_does_not_use_index_or_array() {
+    let db = array_db();
+    let flat_map = db.get("Array.prototype.flatMap").unwrap();
+
+    let callsite = CallSiteInfo {
+      callback_is_pure: Some(true),
+      callback_uses_index: Some(false),
+      callback_uses_array: Some(false),
+      ..Default::default()
+    };
+    assert!(is_parallelizable(flat_map, &callsite));
+  }
+
+  #[test]
+  fn reduce_requires_callback_associative_to_be_parallelizable() {
+    let db = array_db();
+    let reduce = db.get("Array.prototype.reduce").unwrap();
+
+    let non_associative = CallSiteInfo {
+      callback_is_pure: Some(true),
+      callback_is_associative: Some(false),
+      callback_uses_index: Some(false),
+      callback_uses_array: Some(false),
+    };
+    assert!(!is_parallelizable(reduce, &non_associative));
+
+    let associative = CallSiteInfo {
+      callback_is_pure: Some(true),
+      callback_is_associative: Some(true),
+      callback_uses_index: Some(false),
+      callback_uses_array: Some(false),
+    };
+    assert!(is_parallelizable(reduce, &associative));
+  }
+
+  #[test]
+  fn array_terminal_properties_exist_for_find_some_every_for_each() {
+    fn prop_bool(api: &Api, path: &[&str]) -> Option<bool> {
+      get_path(&api.properties, path).and_then(get_bool)
+    }
+
+    let db = array_db();
+    let for_each = db.get("Array.prototype.forEach").unwrap();
+    let every = db.get("Array.prototype.every").unwrap();
+    let some = db.get("Array.prototype.some").unwrap();
+    let find = db.get("Array.prototype.find").unwrap();
+
+    for api in [for_each, every, some, find] {
+      assert_eq!(prop_bool(api, &["array", "terminal"]), Some(true));
+    }
+
+    for api in [every, some, find] {
+      assert_eq!(prop_bool(api, &["array", "short_circuit"]), Some(true));
+    }
   }
 
   #[test]
