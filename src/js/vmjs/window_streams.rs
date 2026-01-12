@@ -453,6 +453,14 @@ fn readable_stream_ctor_construct(
   })?;
 
   if has_start {
+    // Root the start function and underlying source across controller allocation. In the common case
+    // `start` is a data property on `underlyingSource` and remains reachable, but it could also be a
+    // getter that returns an otherwise-unreachable callable.
+    scope.push_root(start_fn)?;
+    if let Some(source_obj) = underlying_source_obj {
+      scope.push_root(Value::Object(source_obj))?;
+    }
+
     let controller_proto = with_realm_state_mut(vm, scope, callee, |state, _heap| {
       Ok(state.readable_stream_controller_proto)
     })?;
