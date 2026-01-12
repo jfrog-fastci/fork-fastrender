@@ -680,10 +680,7 @@ pub fn object_define_property(
   scope.push_root(Value::Object(desc_obj))?;
 
   let patch = crate::to_property_descriptor_with_host_and_hooks(vm, &mut scope, host, hooks, desc_obj)?;
-  let ok = scope.define_own_property_with_tick(target, key, patch, || vm.tick())?;
-  if !ok {
-    return Err(VmError::TypeError("DefineOwnProperty rejected"));
-  }
+  scope.define_property_or_throw_with_host_and_hooks(vm, host, hooks, target, key, patch)?;
   Ok(Value::Object(target))
 }
 
@@ -887,7 +884,23 @@ pub fn object_get_own_property_names(
   let obj = scope.to_object(vm, host, hooks, obj_val)?;
   scope.push_root(Value::Object(obj))?;
 
-  let own_keys = scope.ordinary_own_property_keys_with_tick(obj, || vm.tick())?;
+  let mut tick = Vm::tick;
+  let own_keys =
+    scope.own_property_keys_with_host_and_hooks_with_tick(vm, host, hooks, obj, &mut tick)?;
+  // Root keys eagerly: for Proxy objects, keys can be synthesized by the `ownKeys` trap and may not
+  // be reachable from `obj` itself.
+  let mut key_roots: Vec<Value> = Vec::new();
+  key_roots
+    .try_reserve_exact(own_keys.len())
+    .map_err(|_| VmError::OutOfMemory)?;
+  for key in &own_keys {
+    key_roots.push(match *key {
+      PropertyKey::String(s) => Value::String(s),
+      PropertyKey::Symbol(s) => Value::Symbol(s),
+    });
+  }
+  scope.push_roots(&key_roots)?;
+
   let mut names: Vec<crate::GcString> = Vec::new();
   names
     .try_reserve_exact(own_keys.len())
@@ -931,11 +944,29 @@ pub fn object_get_own_property_symbols(
   args: &[Value],
 ) -> Result<Value, VmError> {
   // https://tc39.es/ecma262/#sec-object.getownpropertysymbols
+  let mut scope = scope.reborrow();
+
   let obj_val = args.get(0).copied().unwrap_or(Value::Undefined);
   let obj = scope.to_object(vm, host, hooks, obj_val)?;
   scope.push_root(Value::Object(obj))?;
 
-  let own_keys = scope.ordinary_own_property_keys_with_tick(obj, || vm.tick())?;
+  let mut tick = Vm::tick;
+  let own_keys =
+    scope.own_property_keys_with_host_and_hooks_with_tick(vm, host, hooks, obj, &mut tick)?;
+  // Root keys eagerly: for Proxy objects, keys can be synthesized by the `ownKeys` trap and may not
+  // be reachable from `obj` itself.
+  let mut key_roots: Vec<Value> = Vec::new();
+  key_roots
+    .try_reserve_exact(own_keys.len())
+    .map_err(|_| VmError::OutOfMemory)?;
+  for key in &own_keys {
+    key_roots.push(match *key {
+      PropertyKey::String(s) => Value::String(s),
+      PropertyKey::Symbol(s) => Value::Symbol(s),
+    });
+  }
+  scope.push_roots(&key_roots)?;
+
   let mut symbols: Vec<crate::GcSymbol> = Vec::new();
   symbols
     .try_reserve_exact(own_keys.len())
@@ -952,15 +983,15 @@ pub fn object_get_own_property_symbols(
   }
 
   let len = u32::try_from(symbols.len()).map_err(|_| VmError::OutOfMemory)?;
-  let array = create_array_object(vm, scope, len)?;
+  let array = create_array_object(vm, &mut scope, len)?;
+  scope.push_root(Value::Object(array))?;
 
   for (i, sym) in symbols.iter().copied().enumerate() {
     if i % 1024 == 0 {
       vm.tick()?;
     }
     let mut idx_scope = scope.reborrow();
-    idx_scope.push_root(Value::Object(array))?;
-    idx_scope.push_root(Value::Symbol(sym))?;
+    idx_scope.push_roots(&[Value::Object(array), Value::Symbol(sym)])?;
 
     let key = PropertyKey::from_string(idx_scope.alloc_string(&i.to_string())?);
     idx_scope.define_property(array, key, data_desc(Value::Symbol(sym), true, true, true))?;
@@ -1162,7 +1193,22 @@ pub fn object_keys(
   // remain reachable during GC.
   scope.push_root(Value::Object(obj))?;
 
-  let own_keys = scope.ordinary_own_property_keys_with_tick(obj, || vm.tick())?;
+  let mut tick = Vm::tick;
+  let own_keys = scope.own_property_keys_with_host_and_hooks_with_tick(vm, host, hooks, obj, &mut tick)?;
+  // Root keys eagerly: for Proxy objects, keys can be synthesized by the `ownKeys` trap and may not
+  // be reachable from `obj` itself.
+  let mut key_roots: Vec<Value> = Vec::new();
+  key_roots
+    .try_reserve_exact(own_keys.len())
+    .map_err(|_| VmError::OutOfMemory)?;
+  for key in &own_keys {
+    key_roots.push(match *key {
+      PropertyKey::String(s) => Value::String(s),
+      PropertyKey::Symbol(s) => Value::Symbol(s),
+    });
+  }
+  scope.push_roots(&key_roots)?;
+
   let mut names: Vec<crate::GcString> = Vec::new();
   names
     .try_reserve_exact(own_keys.len())
@@ -1175,7 +1221,9 @@ pub fn object_keys(
     let PropertyKey::String(key_str) = key else {
       continue;
     };
-    let Some(desc) = scope.ordinary_get_own_property_with_tick(obj, key, || vm.tick())? else {
+    let Some(desc) =
+      scope.get_own_property_with_host_and_hooks_with_tick(vm, host, hooks, obj, key, &mut tick)?
+    else {
       continue;
     };
     if desc.enumerable {
@@ -1215,7 +1263,22 @@ pub fn object_values(
   scope.push_root(Value::Object(obj))?;
 
   // Snapshot enumerable own string keys.
-  let own_keys = scope.ordinary_own_property_keys_with_tick(obj, || vm.tick())?;
+  let mut tick = Vm::tick;
+  let own_keys = scope.own_property_keys_with_host_and_hooks_with_tick(vm, host, hooks, obj, &mut tick)?;
+  // Root keys eagerly: for Proxy objects, keys can be synthesized by the `ownKeys` trap and may not
+  // be reachable from `obj` itself.
+  let mut key_roots: Vec<Value> = Vec::new();
+  key_roots
+    .try_reserve_exact(own_keys.len())
+    .map_err(|_| VmError::OutOfMemory)?;
+  for key in &own_keys {
+    key_roots.push(match *key {
+      PropertyKey::String(s) => Value::String(s),
+      PropertyKey::Symbol(s) => Value::Symbol(s),
+    });
+  }
+  scope.push_roots(&key_roots)?;
+
   let mut keys: Vec<crate::GcString> = Vec::new();
   keys
     .try_reserve_exact(own_keys.len())
@@ -1228,7 +1291,9 @@ pub fn object_values(
     let PropertyKey::String(key_str) = key else {
       continue;
     };
-    let Some(desc) = scope.ordinary_get_own_property_with_tick(obj, key, || vm.tick())? else {
+    let Some(desc) =
+      scope.get_own_property_with_host_and_hooks_with_tick(vm, host, hooks, obj, key, &mut tick)?
+    else {
       continue;
     };
     if desc.enumerable {
@@ -1258,7 +1323,7 @@ pub fn object_values(
     iter_scope.push_root(Value::String(idx_s))?;
     let idx_key = PropertyKey::from_string(idx_s);
 
-    let value = iter_scope.ordinary_get_with_host_and_hooks(
+    let value = iter_scope.get_with_host_and_hooks(
       vm,
       host,
       hooks,
@@ -1288,7 +1353,22 @@ pub fn object_entries(
   scope.push_root(Value::Object(obj))?;
 
   // Snapshot enumerable own string keys.
-  let own_keys = scope.ordinary_own_property_keys_with_tick(obj, || vm.tick())?;
+  let mut tick = Vm::tick;
+  let own_keys = scope.own_property_keys_with_host_and_hooks_with_tick(vm, host, hooks, obj, &mut tick)?;
+  // Root keys eagerly: for Proxy objects, keys can be synthesized by the `ownKeys` trap and may not
+  // be reachable from `obj` itself.
+  let mut key_roots: Vec<Value> = Vec::new();
+  key_roots
+    .try_reserve_exact(own_keys.len())
+    .map_err(|_| VmError::OutOfMemory)?;
+  for key in &own_keys {
+    key_roots.push(match *key {
+      PropertyKey::String(s) => Value::String(s),
+      PropertyKey::Symbol(s) => Value::Symbol(s),
+    });
+  }
+  scope.push_roots(&key_roots)?;
+
   let mut keys: Vec<crate::GcString> = Vec::new();
   keys
     .try_reserve_exact(own_keys.len())
@@ -1301,7 +1381,7 @@ pub fn object_entries(
     let PropertyKey::String(key_str) = key else {
       continue;
     };
-    let Some(desc) = scope.ordinary_get_own_property_with_tick(obj, key, || vm.tick())? else {
+    let Some(desc) = scope.get_own_property_with_host_and_hooks_with_tick(vm, host, hooks, obj, key, &mut tick)? else {
       continue;
     };
     if desc.enumerable {
@@ -1339,7 +1419,7 @@ pub fn object_entries(
     iter_scope.push_root(Value::String(idx_s))?;
     let idx_key = PropertyKey::from_string(idx_s);
 
-    let value = iter_scope.ordinary_get_with_host_and_hooks(
+    let value = iter_scope.get_with_host_and_hooks(
       vm,
       host,
       hooks,
@@ -1481,8 +1561,9 @@ pub fn object_assign(
   args: &[Value],
 ) -> Result<Value, VmError> {
   // Spec: Object.assign performs `ToObject` on the target and each source, and uses `Get`/`Set`
-  // semantics (invoking accessors).
+  // semantics (invoking accessors and Proxy traps).
   let mut scope = scope.reborrow();
+  let mut tick = Vm::tick;
   let target_val = args.get(0).copied().unwrap_or(Value::Undefined);
   let target = scope.to_object(vm, host, hooks, target_val)?;
   scope.push_root(Value::Object(target))?;
@@ -1495,22 +1576,47 @@ pub fn object_assign(
       Value::Undefined | Value::Null => continue,
       other => scope.to_object(vm, host, hooks, other)?,
     };
-    scope.push_root(Value::Object(source))?;
+    // Use a nested scope so per-source key roots do not accumulate.
+    let mut source_scope = scope.reborrow();
+    source_scope.push_root(Value::Object(source))?;
 
-    let keys = scope.ordinary_own_property_keys_with_tick(source, || vm.tick())?;
+    let keys =
+      source_scope.own_property_keys_with_host_and_hooks_with_tick(vm, host, hooks, source, &mut tick)?;
+    // Root all keys in one batch: keys returned from a Proxy `ownKeys` trap may not be reachable from
+    // any object once the trap result array becomes unreachable.
+    let mut key_roots: Vec<Value> = Vec::new();
+    key_roots
+      .try_reserve_exact(keys.len())
+      .map_err(|_| VmError::OutOfMemory)?;
+    for key in &keys {
+      key_roots.push(match *key {
+        PropertyKey::String(s) => Value::String(s),
+        PropertyKey::Symbol(s) => Value::Symbol(s),
+      });
+    }
+    source_scope.push_roots(&key_roots)?;
+
     for (j, key) in keys.into_iter().enumerate() {
       if j % 1024 == 0 {
         vm.tick()?;
       }
-      let Some(desc) = scope.ordinary_get_own_property_with_tick(source, key, || vm.tick())? else {
+      let Some(desc) = source_scope.get_own_property_with_host_and_hooks_with_tick(
+        vm,
+        host,
+        hooks,
+        source,
+        key,
+        &mut tick,
+      )?
+      else {
         continue;
       };
       if !desc.enumerable {
         continue;
       }
 
-      // Spec: `Get(from, key)` (invokes getters).
-      let value = scope.ordinary_get_with_host_and_hooks(
+      // Spec: `Get(from, key)` (invokes getters / Proxy traps).
+      let value = source_scope.get_with_host_and_hooks(
         vm,
         host,
         hooks,
@@ -1518,8 +1624,8 @@ pub fn object_assign(
         key,
         Value::Object(source),
       )?;
-      // Spec: `Set(to, key, value, true)` (invokes setters, throws on failure).
-      let ok = scope.ordinary_set_with_host_and_hooks(
+      // Spec: `Set(to, key, value, true)` (invokes setters / Proxy traps, throws on failure).
+      let ok = source_scope.set_with_host_and_hooks(
         vm,
         host,
         hooks,
@@ -1546,19 +1652,21 @@ pub fn object_get_prototype_of(
   _this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
+  let mut scope = scope.reborrow();
   let obj_val = args.get(0).copied().unwrap_or(Value::Undefined);
   let obj = scope.to_object(vm, host, hooks, obj_val)?;
-  match scope.heap().object_prototype(obj)? {
+  scope.push_root(Value::Object(obj))?;
+  match scope.get_prototype_of_with_host_and_hooks(vm, host, hooks, obj)? {
     Some(proto) => Ok(Value::Object(proto)),
     None => Ok(Value::Null),
   }
 }
 
 pub fn object_set_prototype_of(
-  _vm: &mut Vm,
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   _this: Value,
   args: &[Value],
@@ -1585,8 +1693,17 @@ pub fn object_set_prototype_of(
 
   match obj_val {
     Value::Object(obj) => {
-      scope.heap_mut().object_set_prototype(obj, proto)?;
-      Ok(Value::Object(obj))
+      // Root `obj`/`proto` across Proxy trap invocations.
+      let mut scope = scope.reborrow();
+      let roots = [Value::Object(obj), proto_val];
+      scope.push_roots(&roots)?;
+
+      let ok = scope.set_prototype_of_with_host_and_hooks(vm, host, hooks, obj, proto)?;
+      if ok {
+        Ok(Value::Object(obj))
+      } else {
+        Err(VmError::TypeError("Object.setPrototypeOf failed"))
+      }
     }
     // If `O` is not an object, the spec returns it unchanged.
     other => Ok(other),

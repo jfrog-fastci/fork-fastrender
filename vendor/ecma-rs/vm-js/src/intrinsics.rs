@@ -1582,6 +1582,13 @@ impl Intrinsics {
     scope
       .heap_mut()
       .object_set_prototype(proxy_constructor, Some(function_prototype))?;
+    // `Proxy` is constructable but does not have a meaningful `.prototype`. Set it to `undefined` so
+    // `Proxy.prototype === undefined`, and so we don't retain the auto-created prototype object.
+    scope.define_property(
+      proxy_constructor,
+      common.prototype,
+      data_desc(Value::Undefined, false, false, false),
+    )?;
     scope.define_property(
       proxy_constructor,
       common.name,

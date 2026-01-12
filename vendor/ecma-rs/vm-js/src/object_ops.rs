@@ -54,7 +54,150 @@ fn proxy_own_keys_result_to_property_keys(
   Ok(out)
 }
 
+fn data_desc(value: Value) -> PropertyDescriptor {
+  PropertyDescriptor {
+    enumerable: true,
+    configurable: true,
+    kind: PropertyKind::Data {
+      value,
+      writable: true,
+    },
+  }
+}
+
+fn property_key_to_value(key: PropertyKey) -> Value {
+  match key {
+    PropertyKey::String(s) => Value::String(s),
+    PropertyKey::Symbol(s) => Value::Symbol(s),
+  }
+}
+
+fn proxy_target_and_handler(scope: &Scope<'_>, proxy: GcObject) -> Result<(GcObject, GcObject), VmError> {
+  let target = scope.heap().proxy_target(proxy)?;
+  let handler = scope.heap().proxy_handler(proxy)?;
+  match (target, handler) {
+    (Some(t), Some(h)) => Ok((t, h)),
+    _ => Err(VmError::TypeError(
+      "Cannot perform operation on revoked Proxy",
+    )),
+  }
+}
+
 impl<'a> Scope<'a> {
+  /// Internal method `[[SetPrototypeOf]]`, dispatching on Proxy objects.
+  pub fn set_prototype_of_with_host_and_hooks(
+    &mut self,
+    vm: &mut Vm,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    obj: GcObject,
+    proto: Option<GcObject>,
+  ) -> Result<bool, VmError> {
+    if self.heap().is_proxy_object(obj) {
+      return proxy_set_prototype_of(vm, self, host, hooks, obj, proto);
+    }
+
+    // OrdinarySetPrototypeOf (ECMA-262).
+    let current = self.heap().object_prototype(obj)?;
+    if current == proto {
+      return Ok(true);
+    }
+    if !self.heap().object_is_extensible(obj)? {
+      return Ok(false);
+    }
+
+    match self.heap_mut().object_set_prototype(obj, proto) {
+      Ok(()) => Ok(true),
+      Err(VmError::PrototypeCycle | VmError::PrototypeChainTooDeep) => Ok(false),
+      Err(e) => Err(e),
+    }
+  }
+
+  /// Internal method `[[OwnPropertyKeys]]`, dispatching on Proxy objects.
+  pub fn own_property_keys_with_host_and_hooks_with_tick(
+    &mut self,
+    vm: &mut Vm,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    obj: GcObject,
+    tick: &mut impl FnMut(&mut Vm) -> Result<(), VmError>,
+  ) -> Result<Vec<PropertyKey>, VmError> {
+    if self.heap().is_proxy_object(obj) {
+      return proxy_own_property_keys_with_tick(vm, self, host, hooks, obj, tick);
+    }
+    let mut tick0 = || tick(vm);
+    self.ordinary_own_property_keys_with_tick(obj, &mut tick0)
+  }
+
+  /// Internal method `[[GetOwnProperty]]`, dispatching on Proxy objects.
+  pub fn get_own_property_with_host_and_hooks_with_tick(
+    &mut self,
+    vm: &mut Vm,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    obj: GcObject,
+    key: PropertyKey,
+    tick: &mut impl FnMut(&mut Vm) -> Result<(), VmError>,
+  ) -> Result<Option<PropertyDescriptor>, VmError> {
+    if self.heap().is_proxy_object(obj) {
+      return proxy_get_own_property_with_tick(vm, self, host, hooks, obj, key, tick);
+    }
+    let mut tick0 = || tick(vm);
+    self.ordinary_get_own_property_with_tick(obj, key, &mut tick0)
+  }
+
+  /// Internal method `[[DefineOwnProperty]]`, dispatching on Proxy objects.
+  pub fn define_own_property_with_host_and_hooks_with_tick(
+    &mut self,
+    vm: &mut Vm,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    obj: GcObject,
+    key: PropertyKey,
+    desc: PropertyDescriptorPatch,
+    tick: &mut impl FnMut(&mut Vm) -> Result<(), VmError>,
+  ) -> Result<bool, VmError> {
+    if self.heap().is_proxy_object(obj) {
+      return proxy_define_own_property_with_tick(vm, self, host, hooks, obj, key, desc);
+    }
+    let mut tick0 = || tick(vm);
+    self.define_own_property_with_tick(obj, key, desc, &mut tick0)
+  }
+
+  /// Internal method `[[Set]]`, dispatching on Proxy objects.
+  pub fn set_with_host_and_hooks(
+    &mut self,
+    vm: &mut Vm,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    obj: GcObject,
+    key: PropertyKey,
+    value: Value,
+    receiver: Value,
+  ) -> Result<bool, VmError> {
+    if self.heap().is_proxy_object(obj) {
+      return proxy_set(vm, self, host, hooks, obj, key, value, receiver);
+    }
+    self.ordinary_set_with_host_and_hooks(vm, host, hooks, obj, key, value, receiver)
+  }
+
+  /// Internal method `[[HasProperty]]`, dispatching on Proxy objects.
+  pub fn has_property_with_host_and_hooks_with_tick(
+    &mut self,
+    vm: &mut Vm,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    obj: GcObject,
+    key: PropertyKey,
+    tick: &mut impl FnMut(&mut Vm) -> Result<(), VmError>,
+  ) -> Result<bool, VmError> {
+    if self.heap().is_proxy_object(obj) {
+      return proxy_has_property_with_tick(vm, self, host, hooks, obj, key, tick);
+    }
+    let mut tick0 = || tick(vm);
+    self.ordinary_has_property_with_tick(obj, key, &mut tick0)
+  }
+
   pub fn object_get_prototype(&self, obj: GcObject) -> Result<Option<GcObject>, VmError> {
     self.heap().object_prototype(obj)
   }
@@ -728,6 +871,52 @@ impl<'a> Scope<'a> {
     scope.push_roots(&roots[..root_count])?;
 
     let ok = scope.define_own_property(obj, key, desc)?;
+    if ok {
+      Ok(())
+    } else {
+      Err(VmError::TypeError("DefinePropertyOrThrow rejected"))
+    }
+  }
+
+  /// ECMAScript `DefinePropertyOrThrow`, using `[[DefineOwnProperty]]` dispatch that can invoke user
+  /// code (Proxy traps).
+  pub fn define_property_or_throw_with_host_and_hooks(
+    &mut self,
+    vm: &mut Vm,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    obj: GcObject,
+    key: PropertyKey,
+    desc: PropertyDescriptorPatch,
+  ) -> Result<(), VmError> {
+    // Root `obj`, `key`, and any `desc` values for the duration of the operation.
+    let mut scope = self.reborrow();
+    let mut roots = [Value::Undefined; 5];
+    let mut root_count = 0usize;
+    roots[root_count] = Value::Object(obj);
+    root_count += 1;
+    roots[root_count] = match key {
+      PropertyKey::String(s) => Value::String(s),
+      PropertyKey::Symbol(s) => Value::Symbol(s),
+    };
+    root_count += 1;
+    if let Some(v) = desc.value {
+      roots[root_count] = v;
+      root_count += 1;
+    }
+    if let Some(v) = desc.get {
+      roots[root_count] = v;
+      root_count += 1;
+    }
+    if let Some(v) = desc.set {
+      roots[root_count] = v;
+      root_count += 1;
+    }
+    scope.push_roots(&roots[..root_count])?;
+
+    let mut tick = Vm::tick;
+    let ok =
+      scope.define_own_property_with_host_and_hooks_with_tick(vm, host, hooks, obj, key, desc, &mut tick)?;
     if ok {
       Ok(())
     } else {
@@ -2393,6 +2582,406 @@ impl<'a> Scope<'a> {
 
     Ok(true)
   }
+}
+
+fn proxy_get_method(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  handler: GcObject,
+  name: &'static str,
+) -> Result<Option<Value>, VmError> {
+  // Root `handler` so allocating the trap name string can't collect it.
+  scope.push_root(Value::Object(handler))?;
+  let key_s = scope.alloc_string(name)?;
+  scope.push_root(Value::String(key_s))?;
+  let key = PropertyKey::from_string(key_s);
+  let value = scope.get_with_host_and_hooks(vm, host, hooks, handler, key, Value::Object(handler))?;
+  if matches!(value, Value::Undefined | Value::Null) {
+    return Ok(None);
+  }
+  if !scope.heap().is_callable(value)? {
+    return Err(VmError::TypeError("Proxy trap is not callable"));
+  }
+  Ok(Some(value))
+}
+
+fn proxy_get_prototype_of(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  proxy: GcObject,
+) -> Result<Option<GcObject>, VmError> {
+  let (target, handler) = proxy_target_and_handler(scope, proxy)?;
+
+  // Root the proxy/target/handler across allocations and trap calls.
+  let mut scope = scope.reborrow();
+  scope.push_roots(&[
+    Value::Object(proxy),
+    Value::Object(target),
+    Value::Object(handler),
+  ])?;
+
+  let Some(trap) = proxy_get_method(vm, &mut scope, host, hooks, handler, "getPrototypeOf")? else {
+    return scope.get_prototype_of_with_host_and_hooks(vm, host, hooks, target);
+  };
+
+  let result = vm.call_with_host_and_hooks(
+    host,
+    &mut scope,
+    hooks,
+    trap,
+    Value::Object(handler),
+    &[Value::Object(target)],
+  )?;
+
+  match result {
+    Value::Object(o) => Ok(Some(o)),
+    Value::Null => Ok(None),
+    _ => Err(VmError::TypeError(
+      "Proxy getPrototypeOf trap returned non-object",
+    )),
+  }
+}
+
+fn proxy_set_prototype_of(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  proxy: GcObject,
+  proto: Option<GcObject>,
+) -> Result<bool, VmError> {
+  let (target, handler) = proxy_target_and_handler(scope, proxy)?;
+
+  let proto_val = match proto {
+    Some(p) => Value::Object(p),
+    None => Value::Null,
+  };
+
+  let mut scope = scope.reborrow();
+  scope.push_roots(&[
+    Value::Object(proxy),
+    Value::Object(target),
+    Value::Object(handler),
+    proto_val,
+  ])?;
+
+  let Some(trap) = proxy_get_method(vm, &mut scope, host, hooks, handler, "setPrototypeOf")? else {
+    return scope.set_prototype_of_with_host_and_hooks(vm, host, hooks, target, proto);
+  };
+
+  let result = vm.call_with_host_and_hooks(
+    host,
+    &mut scope,
+    hooks,
+    trap,
+    Value::Object(handler),
+    &[Value::Object(target), proto_val],
+  )?;
+  Ok(scope.heap().to_boolean(result)?)
+}
+
+fn proxy_own_property_keys_with_tick(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  proxy: GcObject,
+  tick: &mut impl FnMut(&mut Vm) -> Result<(), VmError>,
+) -> Result<Vec<PropertyKey>, VmError> {
+  let (target, handler) = proxy_target_and_handler(scope, proxy)?;
+
+  let mut scope = scope.reborrow();
+  scope.push_roots(&[
+    Value::Object(proxy),
+    Value::Object(target),
+    Value::Object(handler),
+  ])?;
+
+  let Some(trap) = proxy_get_method(vm, &mut scope, host, hooks, handler, "ownKeys")? else {
+    return scope.own_property_keys_with_host_and_hooks_with_tick(vm, host, hooks, target, tick);
+  };
+
+  let trap_result = vm.call_with_host_and_hooks(
+    host,
+    &mut scope,
+    hooks,
+    trap,
+    Value::Object(handler),
+    &[Value::Object(target)],
+  )?;
+  let Value::Object(trap_result_obj) = trap_result else {
+    return Err(VmError::TypeError(
+      "Proxy ownKeys trap returned non-object",
+    ));
+  };
+  scope.push_root(trap_result)?;
+
+  let list = crate::spec_ops::create_list_from_array_like_with_host_and_hooks(
+    vm,
+    &mut scope,
+    host,
+    hooks,
+    trap_result_obj,
+  )?;
+
+  let mut out: Vec<PropertyKey> = Vec::new();
+  out.try_reserve_exact(list.len()).map_err(|_| VmError::OutOfMemory)?;
+
+  for (i, v) in list.into_iter().enumerate() {
+    if i % 1024 == 0 {
+      tick(vm)?;
+    }
+    match v {
+      Value::String(s) => out.push(PropertyKey::from_string(s)),
+      Value::Symbol(s) => out.push(PropertyKey::from_symbol(s)),
+      _ => return Err(VmError::TypeError("Proxy ownKeys trap returned invalid key")),
+    }
+  }
+
+  Ok(out)
+}
+
+fn proxy_get_own_property_with_tick(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  proxy: GcObject,
+  key: PropertyKey,
+  tick: &mut impl FnMut(&mut Vm) -> Result<(), VmError>,
+) -> Result<Option<PropertyDescriptor>, VmError> {
+  let (target, handler) = proxy_target_and_handler(scope, proxy)?;
+
+  let key_val = property_key_to_value(key);
+  let mut scope = scope.reborrow();
+  scope.push_roots(&[
+    Value::Object(proxy),
+    Value::Object(target),
+    Value::Object(handler),
+    key_val,
+  ])?;
+
+  let Some(trap) =
+    proxy_get_method(vm, &mut scope, host, hooks, handler, "getOwnPropertyDescriptor")?
+  else {
+    return scope.get_own_property_with_host_and_hooks_with_tick(vm, host, hooks, target, key, tick);
+  };
+
+  let trap_result = vm.call_with_host_and_hooks(
+    host,
+    &mut scope,
+    hooks,
+    trap,
+    Value::Object(handler),
+    &[Value::Object(target), key_val],
+  )?;
+
+  if matches!(trap_result, Value::Undefined) {
+    return Ok(None);
+  }
+  let Value::Object(desc_obj) = trap_result else {
+    return Err(VmError::TypeError(
+      "Proxy getOwnPropertyDescriptor trap returned non-object",
+    ));
+  };
+
+  let patch = crate::property_descriptor_ops::to_property_descriptor_with_host_and_hooks(
+    vm,
+    &mut scope,
+    host,
+    hooks,
+    desc_obj,
+  )?;
+  Ok(Some(crate::property_descriptor_ops::complete_property_descriptor(
+    patch,
+  )))
+}
+
+fn proxy_define_own_property_with_tick(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  proxy: GcObject,
+  key: PropertyKey,
+  desc: PropertyDescriptorPatch,
+) -> Result<bool, VmError> {
+  let (target, handler) = proxy_target_and_handler(scope, proxy)?;
+
+  desc.validate()?;
+  let key_val = property_key_to_value(key);
+
+  let mut scope = scope.reborrow();
+  // Root all values that might otherwise only exist in local variables while we allocate call the
+  // trap or allocate the descriptor object.
+  let mut roots = [Value::Undefined; 7];
+  let mut root_count = 0usize;
+  roots[root_count] = Value::Object(proxy);
+  root_count += 1;
+  roots[root_count] = Value::Object(target);
+  root_count += 1;
+  roots[root_count] = Value::Object(handler);
+  root_count += 1;
+  roots[root_count] = key_val;
+  root_count += 1;
+  if let Some(v) = desc.value {
+    roots[root_count] = v;
+    root_count += 1;
+  }
+  if let Some(v) = desc.get {
+    roots[root_count] = v;
+    root_count += 1;
+  }
+  if let Some(v) = desc.set {
+    roots[root_count] = v;
+    root_count += 1;
+  }
+  scope.push_roots(&roots[..root_count])?;
+
+  let Some(trap) = proxy_get_method(vm, &mut scope, host, hooks, handler, "defineProperty")? else {
+    let mut tick = Vm::tick;
+    return scope.define_own_property_with_host_and_hooks_with_tick(
+      vm,
+      host,
+      hooks,
+      target,
+      key,
+      desc,
+      &mut tick,
+    );
+  };
+  // `trap` can come from an accessor on `handler`, so root it across allocations while building the
+  // descriptor argument object.
+  scope.push_root(trap)?;
+
+  // `FromPropertyDescriptor(desc)` (partial): create a fresh descriptor object with only present fields.
+  let intr = vm
+    .intrinsics()
+    .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+
+  let desc_obj = scope.alloc_object()?;
+  scope.push_root(Value::Object(desc_obj))?;
+  scope
+    .heap_mut()
+    .object_set_prototype(desc_obj, Some(intr.object_prototype()))?;
+
+  macro_rules! maybe_define {
+    ($name:literal, $value:expr) => {{
+      let key_s = scope.alloc_string($name)?;
+      scope.push_root(Value::String(key_s))?;
+      scope.define_property(desc_obj, PropertyKey::from_string(key_s), data_desc($value))?;
+    }};
+  }
+
+  if let Some(enumerable) = desc.enumerable {
+    maybe_define!("enumerable", Value::Bool(enumerable));
+  }
+  if let Some(configurable) = desc.configurable {
+    maybe_define!("configurable", Value::Bool(configurable));
+  }
+  if let Some(value) = desc.value {
+    maybe_define!("value", value);
+  }
+  if let Some(writable) = desc.writable {
+    maybe_define!("writable", Value::Bool(writable));
+  }
+  if let Some(get) = desc.get {
+    maybe_define!("get", get);
+  }
+  if let Some(set) = desc.set {
+    maybe_define!("set", set);
+  }
+
+  let trap_result = vm.call_with_host_and_hooks(
+    host,
+    &mut scope,
+    hooks,
+    trap,
+    Value::Object(handler),
+    &[Value::Object(target), key_val, Value::Object(desc_obj)],
+  )?;
+
+  Ok(scope.heap().to_boolean(trap_result)?)
+}
+
+fn proxy_has_property_with_tick(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  proxy: GcObject,
+  key: PropertyKey,
+  tick: &mut impl FnMut(&mut Vm) -> Result<(), VmError>,
+) -> Result<bool, VmError> {
+  tick(vm)?;
+  let (target, handler) = proxy_target_and_handler(scope, proxy)?;
+
+  let key_val = property_key_to_value(key);
+  let mut scope = scope.reborrow();
+  scope.push_roots(&[
+    Value::Object(proxy),
+    Value::Object(target),
+    Value::Object(handler),
+    key_val,
+  ])?;
+
+  let Some(trap) = proxy_get_method(vm, &mut scope, host, hooks, handler, "has")? else {
+    return scope.has_property_with_host_and_hooks_with_tick(vm, host, hooks, target, key, tick);
+  };
+
+  let trap_result = vm.call_with_host_and_hooks(
+    host,
+    &mut scope,
+    hooks,
+    trap,
+    Value::Object(handler),
+    &[Value::Object(target), key_val],
+  )?;
+
+  Ok(scope.heap().to_boolean(trap_result)?)
+}
+
+fn proxy_set(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  proxy: GcObject,
+  key: PropertyKey,
+  value: Value,
+  receiver: Value,
+) -> Result<bool, VmError> {
+  let (target, handler) = proxy_target_and_handler(scope, proxy)?;
+
+  let key_val = property_key_to_value(key);
+  let mut scope = scope.reborrow();
+  scope.push_roots(&[
+    Value::Object(proxy),
+    Value::Object(target),
+    Value::Object(handler),
+    receiver,
+    value,
+    key_val,
+  ])?;
+
+  let Some(trap) = proxy_get_method(vm, &mut scope, host, hooks, handler, "set")? else {
+    return scope.set_with_host_and_hooks(vm, host, hooks, target, key, value, receiver);
+  };
+
+  let trap_result = vm.call_with_host_and_hooks(
+    host,
+    &mut scope,
+    hooks,
+    trap,
+    Value::Object(handler),
+    &[Value::Object(target), key_val, value, receiver],
+  )?;
+
+  Ok(scope.heap().to_boolean(trap_result)?)
 }
 
 fn array_length_from_value(value: Value) -> Option<u32> {
