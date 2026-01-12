@@ -615,6 +615,38 @@ impl Trace for RuntimeEnv {
   }
 }
 
+/// A pre-resolved identifier reference for assignment.
+///
+/// This is used by destructuring assignment to preserve spec evaluation order:
+/// - The assignment target reference is evaluated (including `ResolveBinding` / `HasBinding`)
+///   *before* consuming RHS iterator values or accessing RHS properties.
+/// - The resulting reference is then used for `PutValue` without re-resolving the binding.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum ResolvedBinding<'a> {
+  /// A binding in a declarative environment record.
+  Declarative { env: GcEnv, name: &'a str },
+  /// A binding in an object environment record (`with`), backed by a property on `binding_object`.
+  Object {
+    binding_object: GcObject,
+    name: &'a str,
+  },
+  /// A global-object property that existed at reference-evaluation time.
+  GlobalProperty { name: &'a str },
+  /// No lexical binding and no existing global-object property at reference-evaluation time.
+  Unresolvable { name: &'a str },
+}
+
+impl<'a> ResolvedBinding<'a> {
+  pub(crate) fn name(self) -> &'a str {
+    match self {
+      ResolvedBinding::Declarative { name, .. }
+      | ResolvedBinding::Object { name, .. }
+      | ResolvedBinding::GlobalProperty { name }
+      | ResolvedBinding::Unresolvable { name } => name,
+    }
+  }
+}
+
 impl RuntimeEnv {
   fn new(heap: &mut Heap, global_object: GcObject, lexical_env: GcEnv) -> Result<Self, VmError> {
     // Root the global object and lexical environment across root registration in case it triggers
@@ -727,6 +759,177 @@ impl RuntimeEnv {
 
   pub(crate) fn lexical_env(&self) -> GcEnv {
     self.lexical_env
+  }
+
+  /// Resolves an identifier reference for assignment without reading its value.
+  ///
+  /// This mirrors ECMA-262 `ResolveBinding` / `GetIdentifierReference` for the subset needed by
+  /// vm-js:
+  /// - search the lexical environment chain (including `with` object env records)
+  /// - if not found, check whether the global object currently has the property
+  ///
+  /// The returned [`ResolvedBinding`] can then be passed to [`RuntimeEnv::set_resolved_binding`] to
+  /// perform `PutValue` without performing a second binding resolution step.
+  pub(crate) fn resolve_binding_reference<'a>(
+    &self,
+    vm: &mut Vm,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    scope: &mut Scope<'_>,
+    name: &'a str,
+  ) -> Result<ResolvedBinding<'a>, VmError> {
+    if let Some(env) = self.resolve_lexical_binding(vm, host, hooks, scope, name)? {
+      return match scope.heap().get_env_record(env)? {
+        crate::env::EnvRecord::Declarative(_) => Ok(ResolvedBinding::Declarative { env, name }),
+        crate::env::EnvRecord::Object(obj) => Ok(ResolvedBinding::Object {
+          binding_object: obj.binding_object,
+          name,
+        }),
+      };
+    }
+
+    // No lexical binding. Check whether the global object currently has a property binding.
+    let global_object = self.global_object;
+    let mut key_scope = scope.reborrow();
+    key_scope.push_root(Value::Object(global_object))?;
+    let key_s = key_scope.alloc_string(name)?;
+    key_scope.push_root(Value::String(key_s))?;
+    let key = PropertyKey::from_string(key_s);
+    let has_binding = crate::spec_ops::internal_has_property_with_host_and_hooks(
+      vm,
+      &mut key_scope,
+      host,
+      hooks,
+      global_object,
+      key,
+    )?;
+    if has_binding {
+      Ok(ResolvedBinding::GlobalProperty { name })
+    } else {
+      Ok(ResolvedBinding::Unresolvable { name })
+    }
+  }
+
+  /// Assigns to a pre-resolved identifier reference (ECMA-262 `PutValue`).
+  pub(crate) fn set_resolved_binding(
+    &mut self,
+    vm: &mut Vm,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    scope: &mut Scope<'_>,
+    reference: ResolvedBinding<'_>,
+    value: Value,
+    strict: bool,
+  ) -> Result<(), VmError> {
+    match reference {
+      ResolvedBinding::Declarative { env, name } => match scope.heap_mut().env_set_mutable_binding(env, name, value, strict) {
+        Ok(()) => Ok(()),
+        // TDZ sentinel from `Heap::{env_get_binding_value, env_set_mutable_binding}`.
+        Err(VmError::Throw(Value::Null)) => {
+          let msg = crate::fallible_format::try_format_error_message(
+            "Cannot access '",
+            name,
+            "' before initialization",
+          )?;
+          Err(throw_reference_error(vm, scope, &msg)?)
+        }
+        // `const` assignment sentinel from `Heap::env_set_mutable_binding`.
+        Err(VmError::Throw(Value::Undefined)) => {
+          Err(throw_type_error(vm, scope, "Assignment to constant variable.")?)
+        }
+        Err(err) => Err(err),
+      },
+      ResolvedBinding::Object {
+        binding_object,
+        name,
+      } => {
+        let receiver = Value::Object(binding_object);
+        let mut key_scope = scope.reborrow();
+        key_scope.push_root(receiver)?;
+        // Root `value` across key allocation and property assignment in case it triggers a GC.
+        key_scope.push_root(value)?;
+        let key_s = key_scope.alloc_string(name)?;
+        key_scope.push_root(Value::String(key_s))?;
+        let key = PropertyKey::from_string(key_s);
+        let ok = crate::spec_ops::internal_set_with_host_and_hooks(
+          vm,
+          &mut key_scope,
+          host,
+          hooks,
+          binding_object,
+          key,
+          value,
+          receiver,
+        )?;
+        if ok {
+          Ok(())
+        } else if strict {
+          Err(throw_type_error(vm, &mut key_scope, "Cannot assign to read-only property")?)
+        } else {
+          Ok(())
+        }
+      }
+      ResolvedBinding::GlobalProperty { name } => {
+        let global_object = self.global_object;
+        let receiver = Value::Object(global_object);
+        let mut key_scope = scope.reborrow();
+        key_scope.push_root(receiver)?;
+        // Root `value` across key allocation and `[[Set]]` in case they trigger a GC.
+        key_scope.push_root(value)?;
+        let key_s = key_scope.alloc_string(name)?;
+        key_scope.push_root(Value::String(key_s))?;
+        let key = PropertyKey::from_string(key_s);
+        let ok = crate::spec_ops::internal_set_with_host_and_hooks(
+          vm,
+          &mut key_scope,
+          host,
+          hooks,
+          global_object,
+          key,
+          value,
+          receiver,
+        )?;
+        if ok {
+          Ok(())
+        } else if strict {
+          Err(throw_type_error(vm, &mut key_scope, "Cannot assign to read-only property")?)
+        } else {
+          Ok(())
+        }
+      }
+      ResolvedBinding::Unresolvable { name } => {
+        if strict {
+          let msg = crate::fallible_format::try_format_error_message("", name, " is not defined")?;
+          return Err(throw_reference_error(vm, scope, &msg)?);
+        }
+
+        // Sloppy-mode unresolvable assignment performs `Set(globalThis, name, value, false)`.
+        let global_object = self.global_object;
+        let receiver = Value::Object(global_object);
+        let mut key_scope = scope.reborrow();
+        key_scope.push_root(receiver)?;
+        // Root `value` across key allocation and `[[Set]]` in case they trigger a GC.
+        key_scope.push_root(value)?;
+        let key_s = key_scope.alloc_string(name)?;
+        key_scope.push_root(Value::String(key_s))?;
+        let key = PropertyKey::from_string(key_s);
+        let ok = crate::spec_ops::internal_set_with_host_and_hooks(
+          vm,
+          &mut key_scope,
+          host,
+          hooks,
+          global_object,
+          key,
+          value,
+          receiver,
+        )?;
+        if ok {
+          Ok(())
+        } else {
+          Ok(())
+        }
+      }
+    }
   }
 
   fn var_env(&self) -> VarEnv {

@@ -326,6 +326,43 @@ fn object_destructuring_assignment_can_assign_to_member() {
 }
 
 #[test]
+fn object_destructuring_assignment_identifier_target_evaluation_order() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      var log = [];
+
+      var source = {
+        get p() {
+          log.push("get");
+          return 0;
+        },
+      };
+
+      var env = new Proxy({}, {
+        has(_t, pk) {
+          log.push("binding::" + pk);
+        },
+      });
+
+      // Spec: identifier target reference (ResolveBinding/HasBinding) is evaluated before GetV.
+      with (env) {
+        ({p: x} = source);
+      }
+
+      log.join(",")
+      "#,
+    )
+    .unwrap();
+  let Value::String(s) = value else {
+    panic!("expected string, got {value:?}");
+  };
+  let log = rt.heap().get_string(s).unwrap().to_utf8_lossy();
+  assert_eq!(log, "binding::source,binding::x,get");
+}
+
+#[test]
 fn object_destructuring_assignment_property_reference_evaluation_order() {
   let mut rt = new_runtime();
   let value = rt
@@ -801,6 +838,59 @@ fn array_destructuring_assignment_property_reference_evaluation_order() {
     )
     .unwrap();
   assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn array_destructuring_assignment_identifier_target_evaluation_order() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      var log = [];
+      var iterable = {};
+      iterable[Symbol.iterator] = function() {
+        log.push("iterator");
+        return {
+          next() {
+            log.push("iterator-step");
+            return {
+              get done() {
+                log.push("iterator-done");
+                return true;
+              },
+              get value() {
+                // This getter should not be called when `done` is true.
+                log.push("iterator-value");
+                return 0;
+              },
+            };
+          },
+        };
+      };
+
+      var env = new Proxy({}, {
+        has(_t, pk) {
+          log.push("binding::" + pk);
+        },
+      });
+
+      // Spec: identifier target reference (ResolveBinding/HasBinding) is evaluated before IteratorStep.
+      with (env) {
+        ([x] = iterable);
+      }
+
+      log.join(",")
+      "#,
+    )
+    .unwrap();
+  let Value::String(s) = value else {
+    panic!("expected string, got {value:?}");
+  };
+  let log = rt.heap().get_string(s).unwrap().to_utf8_lossy();
+  assert_eq!(
+    log,
+    "binding::iterable,iterator,binding::x,iterator-step,iterator-done"
+  );
 }
 
 #[test]

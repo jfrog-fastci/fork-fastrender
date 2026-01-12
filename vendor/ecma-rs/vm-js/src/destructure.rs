@@ -1,4 +1,4 @@
-use crate::exec::{eval_expr, RuntimeEnv};
+use crate::exec::{eval_expr, ResolvedBinding, RuntimeEnv};
 use crate::property::PropertyKey;
 use crate::{Scope, Value, Vm, VmError, VmHost, VmHostHooks};
 use parse_js::ast::class_or_object::ClassOrObjKey;
@@ -375,64 +375,87 @@ fn bind_object_pattern(
     // `language/expressions/assignment/destructuring/keyed-destructuring-property-reference-target-evaluation-order.js`
     // and `...-with-bindings.js`.
     enum PropertyAssignmentTarget<'a> {
+      Binding(ResolvedBinding<'a>),
       Member { base: Value, key: &'a str },
       ComputedMember { base: Value, key_value: Value },
     }
 
     let mut assignment_target: Option<PropertyAssignmentTarget<'_>> = None;
     if matches!(kind, BindingKind::Assignment) {
-      if let Pat::AssignTarget(target) = &*prop.stx.target.stx {
-        let target_ref = (|| -> Result<Option<PropertyAssignmentTarget<'_>>, VmError> {
-          match &*target.stx {
-            Expr::Member(member) => {
-              if member.stx.optional_chaining {
-                return Err(VmError::Unimplemented("optional chaining assignment target"));
-              }
-
-              let base = eval_expr(
-                vm,
-                host,
-                hooks,
-                env,
-                strict,
-                this,
-                &mut prop_scope,
-                &member.stx.left,
-              )?;
-              let base = prop_scope.push_root(base)?;
-              Ok(Some(PropertyAssignmentTarget::Member {
-                base,
-                key: &member.stx.right,
-              }))
-            }
-            Expr::ComputedMember(member) => {
-              if member.stx.optional_chaining {
-                return Err(VmError::Unimplemented("optional chaining assignment target"));
-              }
-
-              let base = eval_expr(
-                vm,
-                host,
-                hooks,
-                env,
-                strict,
-                this,
-                &mut prop_scope,
-                &member.stx.object,
-              )?;
-              let base = prop_scope.push_root(base)?;
-              let key_value =
-                eval_expr(vm, host, hooks, env, strict, this, &mut prop_scope, &member.stx.member)?;
-              let key_value = prop_scope.push_root(key_value)?;
-              Ok(Some(PropertyAssignmentTarget::ComputedMember { base, key_value }))
-            }
-            _ => Ok(None),
-          }
-        })();
-        match target_ref {
-          Ok(v) => assignment_target = v,
-          Err(err) => return Err(err),
+      match &*prop.stx.target.stx {
+        Pat::Id(id) => {
+          let binding =
+            env.resolve_binding_reference(vm, host, hooks, &mut prop_scope, &id.stx.name)?;
+          assignment_target = Some(PropertyAssignmentTarget::Binding(binding));
         }
+        Pat::AssignTarget(target) => {
+          let target_ref = (|| -> Result<Option<PropertyAssignmentTarget<'_>>, VmError> {
+            match &*target.stx {
+              Expr::Id(id) => Ok(Some(PropertyAssignmentTarget::Binding(
+                env.resolve_binding_reference(vm, host, hooks, &mut prop_scope, &id.stx.name)?,
+              ))),
+              Expr::IdPat(id) => Ok(Some(PropertyAssignmentTarget::Binding(
+                env.resolve_binding_reference(vm, host, hooks, &mut prop_scope, &id.stx.name)?,
+              ))),
+              Expr::Member(member) => {
+                if member.stx.optional_chaining {
+                  return Err(VmError::Unimplemented("optional chaining assignment target"));
+                }
+
+                let base = eval_expr(
+                  vm,
+                  host,
+                  hooks,
+                  env,
+                  strict,
+                  this,
+                  &mut prop_scope,
+                  &member.stx.left,
+                )?;
+                let base = prop_scope.push_root(base)?;
+                Ok(Some(PropertyAssignmentTarget::Member {
+                  base,
+                  key: &member.stx.right,
+                }))
+              }
+              Expr::ComputedMember(member) => {
+                if member.stx.optional_chaining {
+                  return Err(VmError::Unimplemented("optional chaining assignment target"));
+                }
+
+                let base = eval_expr(
+                  vm,
+                  host,
+                  hooks,
+                  env,
+                  strict,
+                  this,
+                  &mut prop_scope,
+                  &member.stx.object,
+                )?;
+                let base = prop_scope.push_root(base)?;
+                let key_value = eval_expr(
+                  vm,
+                  host,
+                  hooks,
+                  env,
+                  strict,
+                  this,
+                  &mut prop_scope,
+                  &member.stx.member,
+                )?;
+                let key_value = prop_scope.push_root(key_value)?;
+                Ok(Some(PropertyAssignmentTarget::ComputedMember { base, key_value }))
+              }
+              _ => Ok(None),
+            }
+          })();
+          match target_ref {
+            Ok(v) => assignment_target = v,
+            Err(err) => return Err(err),
+          }
+        }
+        _ => {}
       }
     }
 
@@ -451,6 +474,10 @@ fn bind_object_pattern(
       let prop_value = prop_scope.push_root(prop_value)?;
 
       let res = match target {
+        PropertyAssignmentTarget::Binding(binding) => {
+          maybe_set_anonymous_function_name(&mut prop_scope, prop_value, binding.name())?;
+          env.set_resolved_binding(vm, host, hooks, &mut prop_scope, binding, prop_value, strict)
+        }
         PropertyAssignmentTarget::Member { base, key } => {
           let key_s = prop_scope.alloc_string(key)?;
           prop_scope.push_root(Value::String(key_s))?;
@@ -589,74 +616,108 @@ fn bind_array_pattern(
     // delayed until `PutValue`, after the iterator step/default evaluation. This matches test262:
     // `language/expressions/assignment/destructuring/iterator-destructuring-property-reference-target-evaluation-order.js`.
     enum ElementAssignmentTarget<'a> {
+      Binding(ResolvedBinding<'a>),
       Member { base: Value, key: &'a str },
       ComputedMember { base: Value, key_value: Value },
     }
 
     let mut assignment_target: Option<ElementAssignmentTarget<'_>> = None;
     if matches!(kind, BindingKind::Assignment) {
-      if let Pat::AssignTarget(target) = &*elem.target.stx {
-        let target_ref = (|| -> Result<Option<ElementAssignmentTarget<'_>>, VmError> {
-          match &*target.stx {
-            Expr::Member(member) => {
-              if member.stx.optional_chaining {
-                return Err(VmError::Unimplemented("optional chaining assignment target"));
+      match &*elem.target.stx {
+        Pat::Id(id) => {
+          let binding =
+            match env.resolve_binding_reference(vm, host, hooks, &mut elem_scope, &id.stx.name) {
+              Ok(b) => b,
+              Err(err) => {
+                return iterator_close_on_err(
+                  vm,
+                  host,
+                  hooks,
+                  &mut elem_scope,
+                  &iterator_record,
+                  err,
+                )
               }
+            };
+          assignment_target = Some(ElementAssignmentTarget::Binding(binding));
+        }
+        Pat::AssignTarget(target) => {
+          let target_ref = (|| -> Result<Option<ElementAssignmentTarget<'_>>, VmError> {
+            match &*target.stx {
+              Expr::Id(id) => Ok(Some(ElementAssignmentTarget::Binding(
+                env.resolve_binding_reference(vm, host, hooks, &mut elem_scope, &id.stx.name)?,
+              ))),
+              Expr::IdPat(id) => Ok(Some(ElementAssignmentTarget::Binding(
+                env.resolve_binding_reference(vm, host, hooks, &mut elem_scope, &id.stx.name)?,
+              ))),
+              Expr::Member(member) => {
+                if member.stx.optional_chaining {
+                  return Err(VmError::Unimplemented("optional chaining assignment target"));
+                }
 
-              let base = eval_expr(
-                vm,
-                host,
-                hooks,
-                env,
-                strict,
-                this,
-                &mut elem_scope,
-                &member.stx.left,
-              )?;
-              let base = elem_scope.push_root(base)?;
-              Ok(Some(ElementAssignmentTarget::Member {
-                base,
-                key: &member.stx.right,
-              }))
-            }
-            Expr::ComputedMember(member) => {
-              if member.stx.optional_chaining {
-                return Err(VmError::Unimplemented("optional chaining assignment target"));
+                let base = eval_expr(
+                  vm,
+                  host,
+                  hooks,
+                  env,
+                  strict,
+                  this,
+                  &mut elem_scope,
+                  &member.stx.left,
+                )?;
+                let base = elem_scope.push_root(base)?;
+                Ok(Some(ElementAssignmentTarget::Member {
+                  base,
+                  key: &member.stx.right,
+                }))
               }
+              Expr::ComputedMember(member) => {
+                if member.stx.optional_chaining {
+                  return Err(VmError::Unimplemented("optional chaining assignment target"));
+                }
 
-              let base = eval_expr(
-                vm,
-                host,
-                hooks,
-                env,
-                strict,
-                this,
-                &mut elem_scope,
-                &member.stx.object,
-              )?;
-              let base = elem_scope.push_root(base)?;
-              let key_value = eval_expr(
-                vm,
-                host,
-                hooks,
-                env,
-                strict,
-                this,
-                &mut elem_scope,
-                &member.stx.member,
-              )?;
-              let key_value = elem_scope.push_root(key_value)?;
-              Ok(Some(ElementAssignmentTarget::ComputedMember { base, key_value }))
+                let base = eval_expr(
+                  vm,
+                  host,
+                  hooks,
+                  env,
+                  strict,
+                  this,
+                  &mut elem_scope,
+                  &member.stx.object,
+                )?;
+                let base = elem_scope.push_root(base)?;
+                let key_value = eval_expr(
+                  vm,
+                  host,
+                  hooks,
+                  env,
+                  strict,
+                  this,
+                  &mut elem_scope,
+                  &member.stx.member,
+                )?;
+                let key_value = elem_scope.push_root(key_value)?;
+                Ok(Some(ElementAssignmentTarget::ComputedMember { base, key_value }))
+              }
+              _ => Ok(None),
             }
-            _ => Ok(None),
-          }
-        })();
-        match target_ref {
-          Ok(v) => assignment_target = v,
-          Err(err) => {
-            return iterator_close_on_err(vm, host, hooks, &mut elem_scope, &iterator_record, err)
+          })();
+          match target_ref {
+            Ok(v) => assignment_target = v,
+            Err(err) => {
+              return iterator_close_on_err(
+                vm,
+                host,
+                hooks,
+                &mut elem_scope,
+                &iterator_record,
+                err,
+              )
+            }
           }
         }
+        _ => {}
       }
     }
 
@@ -697,6 +758,12 @@ fn bind_array_pattern(
       };
 
       let res = match target {
+        ElementAssignmentTarget::Binding(binding) => {
+          if let Err(err) = maybe_set_anonymous_function_name(&mut elem_scope, item, binding.name()) {
+            return iterator_close_on_err(vm, host, hooks, &mut elem_scope, &iterator_record, err);
+          }
+          env.set_resolved_binding(vm, host, hooks, &mut elem_scope, binding, item, strict)
+        }
         ElementAssignmentTarget::Member { base, key } => {
           let key_s = match elem_scope.alloc_string(key) {
             Ok(s) => s,
@@ -782,55 +849,69 @@ fn bind_array_pattern(
   //
   // This ordering is observable in test262 `staging/sm/destructuring/array-iterator-close.js`.
   enum RestAssignmentTarget<'a> {
-    Id(&'a str),
+    Binding(ResolvedBinding<'a>),
     Property { base: Value, key: PropertyKey },
   }
 
   let mut rest_assignment_target: Option<RestAssignmentTarget<'_>> = None;
   if matches!(kind, BindingKind::Assignment) {
-    if let Pat::AssignTarget(target) = &*rest_pat.stx {
-      let target_ref = (|| -> Result<Option<RestAssignmentTarget<'_>>, VmError> {
-        match &*target.stx {
-          Expr::Id(id) => Ok(Some(RestAssignmentTarget::Id(&id.stx.name))),
-          Expr::IdPat(id) => Ok(Some(RestAssignmentTarget::Id(&id.stx.name))),
-          Expr::Member(member) => {
-            if member.stx.optional_chaining {
-              return Err(VmError::Unimplemented("optional chaining assignment target"));
-            }
- 
-            let base = eval_expr(vm, host, hooks, env, strict, this, scope, &member.stx.left)?;
-            let base = scope.push_root(base)?;
- 
-            let key_s = scope.alloc_string(&member.stx.right)?;
-            scope.push_root(Value::String(key_s))?;
-            let key = PropertyKey::from_string(key_s);
-            Ok(Some(RestAssignmentTarget::Property { base, key }))
-          }
-          Expr::ComputedMember(member) => {
-            if member.stx.optional_chaining {
-              return Err(VmError::Unimplemented("optional chaining assignment target"));
-            }
- 
-            let base = eval_expr(vm, host, hooks, env, strict, this, scope, &member.stx.object)?;
-            let base = scope.push_root(base)?;
-            let key_value =
-              eval_expr(vm, host, hooks, env, strict, this, scope, &member.stx.member)?;
-            let key_value = scope.push_root(key_value)?;
-            let key = match scope.to_property_key(vm, host, hooks, key_value) {
-              Ok(key) => key,
-              Err(VmError::TypeError(msg)) => return Err(throw_type_error(vm, scope, msg)?),
-              Err(err) => return Err(err),
-            };
-            root_property_key(scope, key)?;
-            Ok(Some(RestAssignmentTarget::Property { base, key }))
-          }
-          _ => Ok(None),
+    match &*rest_pat.stx {
+      Pat::Id(id) => {
+        match env.resolve_binding_reference(vm, host, hooks, scope, &id.stx.name) {
+          Ok(binding) => rest_assignment_target = Some(RestAssignmentTarget::Binding(binding)),
+          Err(err) => return iterator_close_on_err(vm, host, hooks, scope, &iterator_record, err),
         }
-      })();
-      match target_ref {
-        Ok(v) => rest_assignment_target = v,
-        Err(err) => return iterator_close_on_err(vm, host, hooks, scope, &iterator_record, err),
       }
+      Pat::AssignTarget(target) => {
+        let target_ref = (|| -> Result<Option<RestAssignmentTarget<'_>>, VmError> {
+          match &*target.stx {
+            Expr::Id(id) => Ok(Some(RestAssignmentTarget::Binding(
+              env.resolve_binding_reference(vm, host, hooks, scope, &id.stx.name)?,
+            ))),
+            Expr::IdPat(id) => Ok(Some(RestAssignmentTarget::Binding(
+              env.resolve_binding_reference(vm, host, hooks, scope, &id.stx.name)?,
+            ))),
+            Expr::Member(member) => {
+              if member.stx.optional_chaining {
+                return Err(VmError::Unimplemented("optional chaining assignment target"));
+              }
+  
+              let base = eval_expr(vm, host, hooks, env, strict, this, scope, &member.stx.left)?;
+              let base = scope.push_root(base)?;
+  
+              let key_s = scope.alloc_string(&member.stx.right)?;
+              scope.push_root(Value::String(key_s))?;
+              let key = PropertyKey::from_string(key_s);
+              Ok(Some(RestAssignmentTarget::Property { base, key }))
+            }
+            Expr::ComputedMember(member) => {
+              if member.stx.optional_chaining {
+                return Err(VmError::Unimplemented("optional chaining assignment target"));
+              }
+  
+              let base =
+                eval_expr(vm, host, hooks, env, strict, this, scope, &member.stx.object)?;
+              let base = scope.push_root(base)?;
+              let key_value =
+                eval_expr(vm, host, hooks, env, strict, this, scope, &member.stx.member)?;
+              let key_value = scope.push_root(key_value)?;
+              let key = match scope.to_property_key(vm, host, hooks, key_value) {
+                Ok(key) => key,
+                Err(VmError::TypeError(msg)) => return Err(throw_type_error(vm, scope, msg)?),
+                Err(err) => return Err(err),
+              };
+              root_property_key(scope, key)?;
+              Ok(Some(RestAssignmentTarget::Property { base, key }))
+            }
+            _ => Ok(None),
+          }
+        })();
+        match target_ref {
+          Ok(v) => rest_assignment_target = v,
+          Err(err) => return iterator_close_on_err(vm, host, hooks, scope, &iterator_record, err),
+        }
+      }
+      _ => {}
     }
   }
 
@@ -889,17 +970,9 @@ fn bind_array_pattern(
 
   if let Some(target) = rest_assignment_target {
     let res = match target {
-      RestAssignmentTarget::Id(name) => bind_identifier(
-        vm,
-        host,
-        hooks,
-        env,
-        scope,
-        name,
-        Value::Object(rest_arr),
-        BindingKind::Assignment,
-        strict,
-      ),
+      RestAssignmentTarget::Binding(binding) => {
+        env.set_resolved_binding(vm, host, hooks, scope, binding, Value::Object(rest_arr), strict)
+      }
       RestAssignmentTarget::Property { base, key } => {
         assign_to_property_key(vm, host, hooks, scope, base, key, Value::Object(rest_arr), strict)
       }
