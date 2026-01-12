@@ -907,6 +907,8 @@ pub extern "C" fn rt_gc_collect() {
     // Tests (and some embedders) may reset the exported young range between runs.
     // Ensure it always reflects the nursery backing the process-global heap before
     // starting a collection.
+    //
+    // This must remain allocation-free after `rt_thread_init` (see `tests/no_alloc_rt_gc_collect.rs`).
     crate::rt_alloc::ensure_global_heap_init();
 
     // If a stop-the-world is already active, join it as a mutator safepoint at
@@ -916,11 +918,6 @@ pub extern "C" fn rt_gc_collect() {
       join_stop_the_world(entry_fp, fallback_ctx, epoch);
       return;
     }
-
-    // Tests may reset the exported young-generation range (`rt_gc_set_young_range`) between runs.
-    // Ensure it is set to the global heap's nursery so write-barrier checks remain sound, and so
-    // tests that query `rt_gc_get_young_range` immediately after a GC observe a valid range.
-    crate::rt_alloc::ensure_global_heap_init();
 
     // Attempt to become the stop-the-world coordinator.
     let Some(stop_epoch) = crate::threading::safepoint::rt_gc_try_request_stop_the_world() else {
