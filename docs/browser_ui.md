@@ -257,6 +257,7 @@ The browser also requests `Theme::Dark` on Linux:
 | Ctrl/Cmd+F | Find in page |
 | Ctrl/Cmd+T | New tab |
 | Ctrl/Cmd+Shift+T | Reopen last closed tab |
+| Ctrl/Cmd+Shift+A | Search tabs / quick switcher |
 | Ctrl/Cmd+W | Close active tab (no-op if only one tab) |
 | Ctrl/Cmd+F4 | Close active tab (no-op if only one tab) |
 | Ctrl/Cmd+Tab | Next tab |

@@ -448,6 +448,7 @@ pub struct ChromeState {
   pub bookmarks_manager_open: bool,
   /// Search/filter query for the Bookmarks Manager panel.
   pub bookmarks_manager_search_text: String,
+  pub tab_search: TabSearchState,
   /// The currently open tab-strip context menu (right-click on a tab label/icon), if any.
   ///
   /// This is chrome-only UI state (not part of the worker protocol).
@@ -495,6 +496,13 @@ impl Default for RemoteSearchSuggestCache {
       fetched_at: SystemTime::UNIX_EPOCH,
     }
   }
+}
+
+#[derive(Debug, Default)]
+pub struct TabSearchState {
+  pub open: bool,
+  pub query: String,
+  pub selected: usize,
 }
 
 /// Egui-agnostic UI state for the address bar omnibox dropdown.

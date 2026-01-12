@@ -10,6 +10,8 @@ pub enum ShortcutAction {
   FindInPage,
   ToggleBookmarksManager,
   NewWindow,
+  /// Open the tab search / quick switcher overlay (Ctrl/Cmd+Shift+A).
+  OpenTabSearch,
   NewTab,
   CloseTab,
   ReopenClosedTab,
@@ -212,6 +214,8 @@ pub fn map_shortcut_with_platform(event: KeyEvent, platform: Platform) -> Option
     (Key::N, Modifiers { shift: false, .. }) if cmd => Some(ShortcutAction::NewWindow),
     (Key::T, Modifiers { shift: true, .. }) if cmd => Some(ShortcutAction::ReopenClosedTab),
     (Key::T, _) if cmd => Some(ShortcutAction::NewTab),
+    // Chrome/Chromium: Ctrl/Cmd+Shift+A opens "Search tabs" / tab switcher.
+    (Key::A, Modifiers { shift: true, .. }) if cmd => Some(ShortcutAction::OpenTabSearch),
     (Key::W, _) if cmd => Some(ShortcutAction::CloseTab),
     (Key::F4, _) if cmd => Some(ShortcutAction::CloseTab),
     (Key::Tab, Modifiers { shift: true, .. }) if cmd => Some(ShortcutAction::PrevTab),
@@ -828,6 +832,17 @@ mod tests {
   }
 
   #[test]
+  fn ctrl_shift_a_opens_tab_search() {
+    assert_eq!(
+      map_shortcut_with_platform(
+        KeyEvent::new(Key::A, Modifiers::new(true, true, false, false)),
+        Platform::Other
+      ),
+      Some(ShortcutAction::OpenTabSearch)
+    );
+  }
+
+  #[test]
   fn mac_cmd_shift_h_goes_to_browser_home() {
     assert_eq!(
       map_shortcut_with_platform(
@@ -835,6 +850,28 @@ mod tests {
         Platform::Mac
       ),
       Some(ShortcutAction::GoHome)
+    );
+  }
+
+  #[test]
+  fn mac_cmd_shift_a_opens_tab_search() {
+    assert_eq!(
+      map_shortcut_with_platform(
+        KeyEvent::new(Key::A, Modifiers::new(false, true, false, true)),
+        Platform::Mac
+      ),
+      Some(ShortcutAction::OpenTabSearch)
+    );
+  }
+
+  #[test]
+  fn ctrl_shift_a_is_not_select_all() {
+    assert_ne!(
+      map_shortcut_with_platform(
+        KeyEvent::new(Key::A, Modifiers::new(true, true, false, false)),
+        Platform::Other
+      ),
+      Some(ShortcutAction::SelectAll)
     );
   }
 

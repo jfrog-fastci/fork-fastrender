@@ -5139,6 +5139,12 @@ impl App {
         self.cursor_in_page = now_in_page;
       }
       WindowEvent::MouseInput { state, button, .. } => {
+        // While the tab search overlay is open, treat mouse interactions as UI-only (handled by
+        // egui) and do not forward them to the page worker.
+        if self.browser_state.chrome.tab_search.open {
+          return;
+        }
+
         let mapped_button = map_mouse_button(*button);
         if matches!(
           mapped_button,
@@ -5648,6 +5654,7 @@ impl App {
               | ShortcutAction::NewTab
               | ShortcutAction::CloseTab
               | ShortcutAction::ReopenClosedTab
+              | ShortcutAction::OpenTabSearch
               | ShortcutAction::NextTab
               | ShortcutAction::PrevTab
               | ShortcutAction::Reload
@@ -6027,6 +6034,21 @@ impl App {
           self.page_has_focus = !self.browser_state.chrome.address_bar_has_focus
             && !self.bookmarks_panel_open
             && !self.history_panel_open;
+          self.window.request_redraw();
+        }
+        ChromeAction::OpenTabSearch => {
+          // The tab search overlay owns keyboard focus while open; keep page focus disabled so the
+          // rendered page doesn't steal egui focus from the overlay input.
+          self.page_has_focus = false;
+          self.window.request_redraw();
+        }
+        ChromeAction::CloseTabSearch => {
+          // After dismissing the overlay, restore page focus so keyboard scrolling works without an
+          // extra click.
+          self.page_has_focus = !self.browser_state.chrome.address_bar_has_focus
+            && !self.bookmarks_panel_open
+            && !self.history_panel_open
+            && !self.browser_state.active_tab().is_some_and(|tab| tab.find.open);
           self.window.request_redraw();
         }
         ChromeAction::AddressBarFocusChanged(has_focus) => {

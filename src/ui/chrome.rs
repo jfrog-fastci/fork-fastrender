@@ -3,7 +3,7 @@
 use crate::render_control::StageHeartbeat;
 use crate::ui::a11y;
 use crate::ui::address_bar::{format_address_bar_url, AddressBarSecurityState};
-use crate::ui::browser_app::BrowserAppState;
+use crate::ui::browser_app::{BrowserAppState, BrowserTabState};
 use crate::ui::bookmarks::{bookmarks_bar_ui, BookmarkId, BookmarkStore};
 use crate::ui::load_progress::{load_progress_indicator, LoadProgressIndicator};
 use crate::ui::messages::TabId;
@@ -19,6 +19,7 @@ use crate::ui::url::{resolve_omnibox_input, search_url_for_query, OmniboxInputRe
 use crate::ui::url_display;
 use crate::ui::zoom;
 use crate::ui::{icon_button, icon_tinted, spinner, BrowserIcon};
+use url::Url;
 
 const ADDRESS_BAR_DISPLAY_MAX_CHARS: usize = 80;
 const COMPACT_MODE_THRESHOLD_PX: f32 = 640.0;
@@ -63,6 +64,10 @@ pub enum ChromeAction {
   Reload,
   StopLoading,
   Home,
+  /// Open the tab search / quick switcher overlay (Ctrl/Cmd+Shift+A).
+  OpenTabSearch,
+  /// Close the tab search / quick switcher overlay (Escape, selection, click-away).
+  CloseTabSearch,
   AddressBarFocusChanged(bool),
   /// Toggle a bookmark for the currently active tab.
   ToggleBookmarkForActiveTab,
@@ -192,6 +197,236 @@ fn omnibox_suggestion_accept_action(suggestion: &OmniboxSuggestion) -> ChromeAct
   }
 }
 
+fn tab_search_input_id() -> egui::Id {
+  egui::Id::new("tab_search_input")
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct TabSearchMatch {
+  tab_id: TabId,
+  tab_index: usize,
+  score: u8,
+}
+
+fn tab_search_ranked_matches(query: &str, tabs: &[BrowserTabState]) -> Vec<TabSearchMatch> {
+  let query = query.trim();
+  if query.is_empty() {
+    return tabs
+      .iter()
+      .enumerate()
+      .map(|(idx, tab)| TabSearchMatch {
+        tab_id: tab.id,
+        tab_index: idx,
+        score: 0,
+      })
+      .collect();
+  }
+
+  let q = query.to_lowercase();
+  let mut out = Vec::new();
+
+  for (idx, tab) in tabs.iter().enumerate() {
+    let title = tab
+      .title
+      .as_deref()
+      .filter(|s| !s.trim().is_empty())
+      .or_else(|| tab.committed_title.as_deref().filter(|s| !s.trim().is_empty()))
+      .unwrap_or("");
+    let url = tab
+      .committed_url
+      .as_deref()
+      .or_else(|| tab.current_url.as_deref())
+      .unwrap_or("");
+
+    let mut best: Option<u8> = None;
+    let title_lc = title.to_lowercase();
+    let url_lc = url.to_lowercase();
+
+    if let Some(pos) = title_lc.find(&q) {
+      best = Some(if pos == 0 { 0 } else { 2 });
+    }
+    if let Some(pos) = url_lc.find(&q) {
+      let score = if pos == 0 { 1 } else { 3 };
+      best = Some(best.map_or(score, |existing| existing.min(score)));
+    }
+
+    if let Some(score) = best {
+      out.push(TabSearchMatch {
+        tab_id: tab.id,
+        tab_index: idx,
+        score,
+      });
+    }
+  }
+
+  out.sort_by_key(|m| m.score);
+  out
+}
+
+fn tab_search_secondary_text(tab: &BrowserTabState) -> String {
+  let url = tab
+    .committed_url
+    .as_deref()
+    .or_else(|| tab.current_url.as_deref())
+    .unwrap_or_default();
+
+  if let Ok(parsed) = Url::parse(url) {
+    if let Some(host) = parsed.host_str() {
+      let host = host.trim();
+      if !host.is_empty() {
+        return host.to_string();
+      }
+    }
+  }
+
+  url.to_string()
+}
+
+fn tab_search_overlay_ui(
+  ctx: &egui::Context,
+  app: &mut BrowserAppState,
+  actions: &mut Vec<ChromeAction>,
+  favicon_for_tab: &mut impl FnMut(TabId) -> Option<egui::TextureId>,
+) {
+  if !app.chrome.tab_search.open {
+    return;
+  }
+
+  if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+    app.chrome.tab_search.open = false;
+    actions.push(ChromeAction::CloseTabSearch);
+    return;
+  }
+
+  let area = egui::Area::new(egui::Id::new("tab_search_overlay"))
+    .order(egui::Order::Foreground)
+    .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, 80.0));
+
+  let action = area
+    .show(ctx, |ui| {
+      let frame = egui::Frame::popup(ui.style()).show(ui, |ui| {
+        ui.set_min_width(520.0);
+
+        let input = ui.add(
+          egui::TextEdit::singleline(&mut app.chrome.tab_search.query)
+            .id(tab_search_input_id())
+            .desired_width(f32::INFINITY)
+            .hint_text("Search tabs…"),
+        );
+        // Keep focus in the search box while the overlay is open.
+        input.request_focus();
+
+        let query_changed = input.changed();
+
+        ui.separator();
+
+        let matches = tab_search_ranked_matches(&app.chrome.tab_search.query, &app.tabs);
+
+        if query_changed {
+          app.chrome.tab_search.selected = 0;
+        }
+
+        if matches.is_empty() {
+          ui.label(egui::RichText::new("No matching tabs").italics().weak());
+          return None::<TabId>;
+        }
+
+        if app.chrome.tab_search.selected >= matches.len() {
+          app.chrome.tab_search.selected = matches.len() - 1;
+        }
+
+        let down = ctx.input(|i| i.key_pressed(egui::Key::ArrowDown));
+        let up = ctx.input(|i| i.key_pressed(egui::Key::ArrowUp));
+        if down {
+          app.chrome.tab_search.selected =
+            (app.chrome.tab_search.selected + 1).min(matches.len() - 1);
+        } else if up {
+          app.chrome.tab_search.selected = app.chrome.tab_search.selected.saturating_sub(1);
+        }
+
+        let enter = ctx.input(|i| i.key_pressed(egui::Key::Enter));
+        if enter {
+          let tab_id = matches[app.chrome.tab_search.selected].tab_id;
+          return Some(tab_id);
+        }
+
+        let mut clicked: Option<TabId> = None;
+        egui::ScrollArea::vertical()
+          .max_height(360.0)
+          .auto_shrink([false, false])
+          .show(ui, |ui| {
+            for (idx, m) in matches.iter().enumerate() {
+              let tab = &app.tabs[m.tab_index];
+              let is_selected = idx == app.chrome.tab_search.selected;
+
+              let title = tab.display_title();
+              let secondary = tab_search_secondary_text(tab);
+
+              let fill = if is_selected {
+                ui.visuals().selection.bg_fill
+              } else {
+                egui::Color32::TRANSPARENT
+              };
+
+              let row = egui::Frame::none()
+                .fill(fill)
+                .rounding(egui::Rounding::same(4.0))
+                .inner_margin(egui::Margin::symmetric(6.0, 4.0))
+                .show(ui, |ui| {
+                  ui.horizontal(|ui| {
+                    let mut drew_favicon = false;
+                    if let Some(tex_id) = favicon_for_tab(tab.id) {
+                      if let Some(meta) = tab.favicon_meta {
+                        let (w, h) = meta.size_px;
+                        if w > 0 && h > 0 {
+                          let height_points = 16.0;
+                          let aspect = (w as f32) / (h as f32);
+                          let width_points = (height_points * aspect).clamp(8.0, 32.0);
+                          ui.add(egui::Image::new((
+                            tex_id,
+                            egui::vec2(width_points, height_points),
+                          )));
+                          drew_favicon = true;
+                        }
+                      }
+                      if !drew_favicon {
+                        ui.add(egui::Image::new((tex_id, egui::vec2(16.0, 16.0))));
+                        drew_favicon = true;
+                      }
+                    }
+                    if !drew_favicon {
+                      ui.add_space(16.0);
+                    }
+
+                    ui.vertical(|ui| {
+                      ui.label(egui::RichText::new(title).strong());
+                      ui.label(egui::RichText::new(secondary).small().weak());
+                    });
+                  });
+                });
+
+              let response = row.response.interact(egui::Sense::click());
+              if response.clicked() {
+                clicked = Some(tab.id);
+              }
+            }
+          });
+
+        clicked
+      });
+
+      frame.inner
+    })
+    .inner;
+
+  if let Some(tab_id) = action {
+    app.chrome.tab_search.open = false;
+    actions.push(ChromeAction::ActivateTab(tab_id));
+    actions.push(ChromeAction::CloseTabSearch);
+    return;
+  }
+}
+
 pub fn chrome_ui(
   ctx: &egui::Context,
   app: &mut BrowserAppState,
@@ -272,6 +507,7 @@ pub fn chrome_ui_with_bookmarks(
     new_tab,
     close_tab,
     reopen_closed_tab,
+    open_tab_search,
     reload,
     home,
     toggle_bookmark,
@@ -290,6 +526,7 @@ pub fn chrome_ui_with_bookmarks(
     let mut new_tab = false;
     let mut close_tab = false;
     let mut reopen_closed_tab = false;
+    let mut open_tab_search = false;
     let mut reload = false;
     let mut home = false;
     let mut toggle_bookmark = false;
@@ -329,6 +566,7 @@ pub fn chrome_ui_with_bookmarks(
         ShortcutAction::NewTab => new_tab = true,
         ShortcutAction::CloseTab => close_tab = true,
         ShortcutAction::ReopenClosedTab => reopen_closed_tab = true,
+        ShortcutAction::OpenTabSearch => open_tab_search = true,
         ShortcutAction::Reload => reload = true,
         ShortcutAction::GoHome => home = true,
         ShortcutAction::ToggleBookmark => toggle_bookmark = true,
@@ -353,6 +591,7 @@ pub fn chrome_ui_with_bookmarks(
       new_tab,
       close_tab,
       reopen_closed_tab,
+      open_tab_search,
       reload,
       home,
       toggle_bookmark,
@@ -431,6 +670,18 @@ pub fn chrome_ui_with_bookmarks(
   if reopen_closed_tab {
     actions.push(ChromeAction::ReopenClosedTab);
   }
+  if open_tab_search && !app.chrome.tab_search.open {
+    app.chrome.tab_search.open = true;
+    app.chrome.tab_search.query.clear();
+    app.chrome.tab_search.selected = 0;
+    // Opening tab search is a modal interaction; cancel address bar editing/focus so typed input
+    // doesn't stay "stuck" in the address bar behind the overlay.
+    app.set_address_bar_editing(false);
+    app.chrome.request_focus_address_bar = false;
+    app.chrome.request_select_all_address_bar = false;
+    app.chrome.omnibox.reset();
+    actions.push(ChromeAction::OpenTabSearch);
+  }
   if reload {
     actions.push(ChromeAction::Reload);
   }
@@ -507,6 +758,8 @@ pub fn chrome_ui_with_bookmarks(
   {
     app.chrome.clear_tab_drag();
   }
+
+  tab_search_overlay_ui(ctx, app, &mut actions, &mut favicon_for_tab);
   egui::TopBottomPanel::top("chrome").show(ctx, |ui| {
     actions.extend(tab_strip::tab_strip_ui(ui, app, &mut favicon_for_tab, motion));
 
@@ -1740,8 +1993,7 @@ fn store_test_rect(ctx: &egui::Context, key: &'static str, rect: egui::Rect) {
 
 #[cfg(test)]
 mod tests {
-  use super::{chrome_ui, chrome_ui_with_bookmarks, ChromeAction};
-  use crate::ui::bookmarks::BookmarkStore;
+  use super::{chrome_ui, chrome_ui_with_bookmarks, tab_search_ranked_matches, ChromeAction};
   use crate::ui::browser_app::{BrowserAppState, BrowserTabState};
   use crate::ui::{BookmarkStore, OmniboxSuggestionSource, OmniboxUrlSource, TabId};
 
@@ -2148,6 +2400,117 @@ mod tests {
       texts.iter().any(|t| t.contains(&expected)),
       "expected zoom percent {expected:?} in status bar texts, got {texts:?}"
     );
+  }
+
+  #[test]
+  fn tab_search_ranks_title_prefix_above_infix() {
+    let tab_a = TabId(1);
+    let tab_b = TabId(2);
+    let mut a = BrowserTabState::new(tab_a, "https://a.example/".to_string());
+    a.title = Some("GitHub".to_string());
+    let mut b = BrowserTabState::new(tab_b, "https://b.example/".to_string());
+    b.title = Some("My git repo".to_string());
+
+    let matches = tab_search_ranked_matches("git", &[a, b]);
+    assert_eq!(matches.len(), 2);
+    assert_eq!(matches[0].tab_id, tab_a);
+    assert_eq!(matches[1].tab_id, tab_b);
+  }
+
+  #[test]
+  fn tab_search_matches_url_when_title_does_not_match() {
+    let tab_a = TabId(1);
+    let mut a = BrowserTabState::new(tab_a, "https://example.com/path".to_string());
+    a.title = Some("Unrelated".to_string());
+
+    let matches = tab_search_ranked_matches("example.com", &[a]);
+    assert_eq!(matches.len(), 1);
+    assert_eq!(matches[0].tab_id, tab_a);
+  }
+
+  #[test]
+  fn tab_search_empty_query_returns_all_tabs_in_order() {
+    let tab_a = TabId(1);
+    let tab_b = TabId(2);
+    let a = BrowserTabState::new(tab_a, "https://a.example/".to_string());
+    let b = BrowserTabState::new(tab_b, "https://b.example/".to_string());
+
+    let matches = tab_search_ranked_matches("", &[a, b]);
+    assert_eq!(matches.len(), 2);
+    assert_eq!(matches[0].tab_id, tab_a);
+    assert_eq!(matches[1].tab_id, tab_b);
+  }
+
+  #[test]
+  fn ctrl_shift_a_opens_tab_search_overlay() {
+    let mut app = BrowserAppState::new();
+
+    let ctx = new_context_with_key(
+      egui::Key::A,
+      egui::Modifiers {
+        command: true,
+        shift: true,
+        ..Default::default()
+      },
+    );
+    let actions = chrome_ui(&ctx, &mut app, |_| None);
+    let _ = ctx.end_frame();
+
+    assert!(
+      actions
+        .iter()
+        .any(|action| matches!(action, ChromeAction::OpenTabSearch)),
+      "expected ChromeAction::OpenTabSearch, got {actions:?}"
+    );
+    assert!(app.chrome.tab_search.open, "expected tab search to be open");
+  }
+
+  #[test]
+  fn enter_activates_selected_tab_from_tab_search_overlay() {
+    let mut app = BrowserAppState::new();
+    let tab_a = TabId(1);
+    let tab_b = TabId(2);
+    app.push_tab(BrowserTabState::new(tab_a, "https://a.example/".to_string()), true);
+    app.push_tab(BrowserTabState::new(tab_b, "https://b.example/".to_string()), false);
+
+    app.chrome.tab_search.open = true;
+    app.chrome.tab_search.query.clear();
+    app.chrome.tab_search.selected = 1;
+
+    let ctx = new_context_with_key(egui::Key::Enter, Default::default());
+    let actions = chrome_ui(&ctx, &mut app, |_| None);
+    let _ = ctx.end_frame();
+
+    assert!(
+      actions
+        .iter()
+        .any(|action| matches!(action, &ChromeAction::ActivateTab(id) if id == tab_b)),
+      "expected Enter to activate tab {tab_b:?}, got {actions:?}"
+    );
+    assert!(
+      !app.chrome.tab_search.open,
+      "expected tab search to be closed after activation"
+    );
+  }
+
+  #[test]
+  fn escape_closes_tab_search_overlay() {
+    let mut app = BrowserAppState::new();
+    app.chrome.tab_search.open = true;
+    app.chrome.tab_search.query = "anything".to_string();
+    app.chrome.tab_search.selected = 0;
+
+    let ctx = new_context_with_key(egui::Key::Escape, Default::default());
+    let actions = chrome_ui(&ctx, &mut app, |_| None);
+    let _ = ctx.end_frame();
+
+    assert!(
+      actions
+        .iter()
+        .any(|action| matches!(action, ChromeAction::CloseTabSearch)),
+      "expected ChromeAction::CloseTabSearch, got {actions:?}"
+    );
+    assert!(!app.chrome.tab_search.open, "expected tab search to be closed");
   }
 
   #[test]
@@ -2575,7 +2938,7 @@ mod tests {
     assert!(
       actions
         .iter()
-        .any(|action| matches!(action, ChromeAction::CloseTab(id) if *id == tab_a)),
+        .any(|action| matches!(action, &ChromeAction::CloseTab(id) if id == tab_a)),
       "expected ChromeAction::CloseTab({tab_a:?}), got {actions:?}"
     );
   }
@@ -2609,7 +2972,7 @@ mod tests {
     assert!(
       actions
         .iter()
-        .any(|action| matches!(action, ChromeAction::CloseTab(id) if *id == tab_a)),
+        .any(|action| matches!(action, &ChromeAction::CloseTab(id) if id == tab_a)),
       "expected ChromeAction::CloseTab({tab_a:?}), got {actions:?}"
     );
   }
@@ -2778,7 +3141,7 @@ mod tests {
     assert!(
       actions
         .iter()
-        .any(|action| matches!(action, ChromeAction::ActivateTab(id) if *id == tab_b)),
+        .any(|action| matches!(action, &ChromeAction::ActivateTab(id) if id == tab_b)),
       "expected ChromeAction::ActivateTab({tab_b:?}), got {actions:?}"
     );
   }
@@ -2812,7 +3175,7 @@ mod tests {
     assert!(
       actions
         .iter()
-        .any(|action| matches!(action, ChromeAction::ActivateTab(id) if *id == tab_b)),
+        .any(|action| matches!(action, &ChromeAction::ActivateTab(id) if id == tab_b)),
       "expected ChromeAction::ActivateTab({tab_b:?}), got {actions:?}"
     );
   }
@@ -2846,7 +3209,7 @@ mod tests {
     assert!(
       actions
         .iter()
-        .any(|action| matches!(action, ChromeAction::ActivateTab(id) if *id == tab_a)),
+        .any(|action| matches!(action, &ChromeAction::ActivateTab(id) if id == tab_a)),
       "expected ChromeAction::ActivateTab({tab_a:?}), got {actions:?}"
     );
   }
@@ -2881,7 +3244,7 @@ mod tests {
     assert!(
       actions
         .iter()
-        .any(|action| matches!(action, ChromeAction::ActivateTab(id) if *id == tab_a)),
+        .any(|action| matches!(action, &ChromeAction::ActivateTab(id) if id == tab_a)),
       "expected ChromeAction::ActivateTab({tab_a:?}), got {actions:?}"
     );
   }
@@ -2915,7 +3278,7 @@ mod tests {
     assert!(
       actions
         .iter()
-        .any(|action| matches!(action, ChromeAction::ActivateTab(id) if *id == tab_a)),
+        .any(|action| matches!(action, &ChromeAction::ActivateTab(id) if id == tab_a)),
       "expected ChromeAction::ActivateTab({tab_a:?}), got {actions:?}"
     );
   }
@@ -2947,7 +3310,7 @@ mod tests {
     assert!(
       actions
         .iter()
-        .any(|action| matches!(action, ChromeAction::ActivateTab(id) if *id == tab_b)),
+        .any(|action| matches!(action, &ChromeAction::ActivateTab(id) if id == tab_b)),
       "expected ChromeAction::ActivateTab({tab_b:?}), got {actions:?}"
     );
   }
@@ -3129,13 +3492,13 @@ mod tests {
     assert!(
       actions
         .iter()
-        .any(|action| matches!(action, ChromeAction::CloseTab(id) if *id == tab_a)),
+        .any(|action| matches!(action, &ChromeAction::CloseTab(id) if id == tab_a)),
       "expected middle-click to close tab {tab_a:?}, got {actions:?}"
     );
     assert!(
       !actions
         .iter()
-        .any(|action| matches!(action, ChromeAction::ActivateTab(id) if *id == tab_a)),
+        .any(|action| matches!(action, &ChromeAction::ActivateTab(id) if id == tab_a)),
       "expected middle-click not to activate the tab it closes, got {actions:?}"
     );
   }
@@ -3311,7 +3674,7 @@ mod tests {
     assert!(
       actions
         .iter()
-        .any(|action| matches!(action, ChromeAction::ActivateTab(id) if *id == tab_a)),
+        .any(|action| matches!(action, &ChromeAction::ActivateTab(id) if id == tab_a)),
       "expected click to activate pinned tab {tab_a:?}, got {actions:?}"
     );
   }
