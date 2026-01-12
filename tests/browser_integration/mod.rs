@@ -127,6 +127,7 @@ mod ui_worker_interaction;
 mod ui_worker_keyboard;
 mod ui_worker_navigation_errors;
 mod ui_worker_navigation_messages;
+mod ui_worker_number_input;
 mod ui_worker_open_in_new_tab;
 mod ui_worker_prioritization_preemption;
 mod ui_worker_protocol_smoke;

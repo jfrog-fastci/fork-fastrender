@@ -1196,21 +1196,50 @@ impl BrowserRuntime {
           let mut wheel_handled = false;
 
           if let Some(pointer_css) = pointer_pos_css {
-            // Apply scroll wheel deltas to the scroll container under the pointer (including element
-            // scroll offsets like `<select size>` listboxes).
-            match doc.wheel_scroll_at_viewport_point(
-              Point::new(pointer_css.0, pointer_css.1),
-              (delta_x, delta_y),
-            ) {
-              Ok(scrolled) => {
+            // Give a focused `<input type=number>` under the pointer a chance to consume the wheel
+            // gesture for numeric stepping (instead of scrolling the page).
+            let scroll_snapshot = tab.scroll_state.clone();
+            let engine = &mut tab.interaction;
+            if let Ok(step_result) = doc.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
+              let scrolled = (!scroll_snapshot.elements.is_empty())
+                .then(|| fragment_tree_with_scroll(fragment_tree, &scroll_snapshot));
+              let hit_tree = scrolled.as_ref().unwrap_or(fragment_tree);
+              let step_result = engine.wheel_step_number_input(
+                dom,
+                box_tree,
+                hit_tree,
+                &scroll_snapshot,
+                Point::new(pointer_css.0, pointer_css.1),
+                delta_y,
+              );
+              let changed = step_result.unwrap_or(false);
+              (changed, step_result)
+            }) {
+              if let Some(dom_changed) = step_result {
                 wheel_handled = true;
-                if scrolled {
-                  tab.scroll_state = doc.scroll_state();
-                  changed = true;
-                }
+                changed |= dom_changed;
               }
-              Err(_) => {
-                // No cached layout yet; fall back to basic viewport scrolling below.
+            }
+
+            if wheel_handled {
+              // Numeric stepping does not update scroll state.
+            } else {
+              // Apply scroll wheel deltas to the scroll container under the pointer (including element
+              // scroll offsets like `<select size>` listboxes).
+              match doc.wheel_scroll_at_viewport_point(
+                Point::new(pointer_css.0, pointer_css.1),
+                (delta_x, delta_y),
+              ) {
+                Ok(scrolled) => {
+                  wheel_handled = true;
+                  if scrolled {
+                    tab.scroll_state = doc.scroll_state();
+                    changed = true;
+                  }
+                }
+                Err(_) => {
+                  // No cached layout yet; fall back to basic viewport scrolling below.
+                }
               }
             }
           }

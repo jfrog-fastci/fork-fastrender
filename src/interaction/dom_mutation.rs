@@ -292,6 +292,86 @@ pub fn step_range_value(node: &mut DomNode, delta_steps: i32) -> bool {
   set_range_value(node, next)
 }
 
+pub fn step_number_value(node: &mut DomNode, delta_steps: i32) -> bool {
+  if delta_steps == 0 {
+    return false;
+  }
+  if !is_input_of_type(node, "number") {
+    return false;
+  }
+
+  if is_disabled_or_inert(node) || node.get_attribute_ref("readonly").is_some() {
+    return false;
+  }
+
+  let step_attr = node.get_attribute_ref("step");
+  let step = if matches!(
+    step_attr,
+    Some(step) if trim_ascii_whitespace(step).eq_ignore_ascii_case("any")
+  ) {
+    1.0
+  } else {
+    step_attr
+      .and_then(parse_finite_number)
+      .filter(|step| *step > 0.0)
+      .unwrap_or(1.0)
+  };
+  let step = if step.is_finite() && step > 0.0 { step } else { 1.0 };
+
+  let min = node.get_attribute_ref("min").and_then(parse_finite_number);
+  let max = node.get_attribute_ref("max").and_then(parse_finite_number);
+  let (min, max) = match (min, max) {
+    (Some(min), Some(max)) if max < min => (Some(min), Some(min)),
+    other => other,
+  };
+
+  // HTML number controls use the `min` value as the step base when present; otherwise 0.
+  let step_base = min.unwrap_or(0.0);
+
+  // Treat missing/invalid/non-finite values as 0. (Downstream clamping handles a positive `min`.)
+  let current = node
+    .get_attribute_ref("value")
+    .and_then(parse_finite_number)
+    .unwrap_or(0.0);
+
+  let mut q = (current - step_base) / step;
+  if !q.is_finite() {
+    q = 0.0;
+  } else {
+    // Avoid pathological stepping for common decimal step sizes (e.g. 0.1) where floating-point
+    // division produces a value that is extremely close to an integer.
+    let nearest = q.round();
+    if (q - nearest).abs() <= 1e-9 {
+      q = nearest;
+    }
+  }
+
+  let q = if delta_steps > 0 {
+    q.floor() + delta_steps as f64
+  } else {
+    q.ceil() + delta_steps as f64
+  };
+  let mut next = step_base + q * step;
+
+  if let Some(min) = min {
+    if next < min {
+      next = min;
+    }
+  }
+  if let Some(max) = max {
+    if next > max {
+      next = max;
+    }
+  }
+
+  if !next.is_finite() {
+    return false;
+  }
+
+  let next_value = format_number(next);
+  set_attr(node, "value", &next_value)
+}
+
 struct PreorderFrame {
   ptr: *mut DomNode,
   next_child: usize,

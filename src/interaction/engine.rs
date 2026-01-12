@@ -6,6 +6,7 @@ use crate::layout::contexts::inline::baseline::compute_line_height_with_metrics_
 use crate::layout::contexts::inline::line_builder::TextItem;
 use crate::scroll::ScrollState;
 use crate::style::ComputedStyle;
+use crate::style::types::Appearance;
 use crate::text::caret::CaretAffinity;
 use crate::tree::box_tree::BoxNode;
 use crate::tree::box_tree::BoxTree;
@@ -84,6 +85,7 @@ pub struct InteractionEngine {
   state: InteractionState,
   pointer_down_target: Option<usize>,
   range_drag: Option<RangeDragState>,
+  number_spin: Option<NumberSpinState>,
   text_drag: Option<TextDragState>,
   text_edit: Option<TextEditState>,
   modality: InputModality,
@@ -95,6 +97,19 @@ pub struct InteractionEngine {
 struct RangeDragState {
   node_id: usize,
   box_id: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NumberSpinDirection {
+  Up,
+  Down,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct NumberSpinState {
+  node_id: usize,
+  box_id: usize,
+  direction: NumberSpinDirection,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1685,6 +1700,25 @@ fn inset_rect_uniform(rect: Rect, inset: f32) -> Rect {
   )
 }
 
+const NUMBER_INPUT_AFFORDANCE_WIDTH: f32 = 14.0;
+const DATE_LIKE_INPUT_AFFORDANCE_WIDTH: f32 = 12.0;
+
+fn input_affordance_space(input_type: &str, style: &ComputedStyle) -> f32 {
+  if matches!(style.appearance, Appearance::None) {
+    return 0.0;
+  }
+  if input_type.eq_ignore_ascii_case("number") {
+    return NUMBER_INPUT_AFFORDANCE_WIDTH;
+  }
+  if matches!(
+    input_type.to_ascii_lowercase().as_str(),
+    "date" | "datetime-local" | "month" | "week" | "time"
+  ) {
+    return DATE_LIKE_INPUT_AFFORDANCE_WIDTH;
+  }
+  0.0
+}
+
 fn effective_text_align(style: &ComputedStyle) -> crate::style::types::TextAlign {
   use crate::style::types::{Direction, TextAlign};
   match style.text_align {
@@ -1906,17 +1940,9 @@ fn caret_index_for_text_control_point(
 
     let mut rect = inset_rect_uniform(content_rect, 2.0);
 
-    // Mirror the painter's reserved affordance space for some input types.
-    let affordance_space = if input_type.eq_ignore_ascii_case("number") {
-      14.0
-    } else if matches!(
-      input_type.to_ascii_lowercase().as_str(),
-      "date" | "datetime-local" | "month" | "week" | "time"
-    ) {
-      12.0
-    } else {
-      0.0
-    };
+    // Mirror the painter's reserved affordance space for some input types (and honor
+    // `appearance: none` which hides these affordances).
+    let affordance_space = input_affordance_space(input_type, style);
     if affordance_space > 0.0 {
       rect = Rect::from_xywh(
         rect.x(),
@@ -2130,6 +2156,64 @@ fn update_range_value_from_pointer(
     return false;
   };
   dom_mutation::set_range_value_from_ratio(node_mut, fraction)
+}
+
+fn number_input_spin_direction_at_point(
+  index: &DomIndexMut,
+  box_tree: &BoxTree,
+  fragment_tree: &FragmentTree,
+  node_id: usize,
+  box_id: usize,
+  page_point: Point,
+) -> Option<NumberSpinDirection> {
+  if !page_point.x.is_finite() || !page_point.y.is_finite() {
+    return None;
+  }
+  let node = index.node(node_id)?;
+  if !(is_input(node) && input_type(node).eq_ignore_ascii_case("number")) {
+    return None;
+  }
+
+  let box_node = box_node_by_id(box_tree, box_id)?;
+  let style = box_node.style.as_ref();
+
+  let border_rect = fragment_rect_for_box_id(fragment_tree, box_id)?;
+  let viewport_size = fragment_tree.viewport_size();
+  let content_rect = content_rect_for_border_rect(border_rect, style, viewport_size);
+  let inner_rect = inset_rect_uniform(content_rect, 2.0);
+  if inner_rect.width() <= 0.0 || inner_rect.height() <= 0.0 {
+    return None;
+  }
+
+  let affordance_space = input_affordance_space("number", style);
+  if affordance_space <= 0.0 || !affordance_space.is_finite() {
+    return None;
+  }
+
+  let start_x = inner_rect.x() + (inner_rect.width() - affordance_space).max(0.0);
+  let spinner_rect = Rect::from_xywh(
+    start_x,
+    inner_rect.y(),
+    (inner_rect.max_x() - start_x).max(0.0),
+    inner_rect.height(),
+  );
+  if spinner_rect.width() <= 0.0 || spinner_rect.height() <= 0.0 {
+    return None;
+  }
+  if !spinner_rect.contains_point(page_point) {
+    return None;
+  }
+
+  let half = spinner_rect.height() / 2.0;
+  if !half.is_finite() || half <= 0.0 {
+    return None;
+  }
+
+  if page_point.y < spinner_rect.y() + half {
+    Some(NumberSpinDirection::Up)
+  } else {
+    Some(NumberSpinDirection::Down)
+  }
 }
 
 fn apply_select_listbox_click(
@@ -2517,6 +2601,7 @@ impl InteractionEngine {
       state: InteractionState::default(),
       pointer_down_target: None,
       range_drag: None,
+      number_spin: None,
       text_drag: None,
       text_edit: None,
       modality: InputModality::Pointer,
@@ -2674,6 +2759,60 @@ impl InteractionEngine {
   fn mark_form_user_validity(&mut self, index: &DomIndexMut, control_node_id: usize) -> bool {
     resolve_form_owner(index, control_node_id)
       .is_some_and(|form_id| self.mark_user_validity(form_id))
+  }
+
+  fn step_number_input(&mut self, index: &mut DomIndexMut, node_id: usize, delta_steps: i32) -> bool {
+    if delta_steps == 0 {
+      return false;
+    }
+    if node_or_ancestor_is_inert(index, node_id)
+      || node_is_disabled(index, node_id)
+      || node_is_readonly(index, node_id)
+    {
+      return false;
+    }
+    if !index
+      .node(node_id)
+      .is_some_and(|node| is_input(node) && input_type(node).eq_ignore_ascii_case("number"))
+    {
+      return false;
+    }
+
+    // Any direct value mutation cancels an in-progress IME preedit string.
+    let mut changed = self.ime_cancel_internal();
+
+    let value_changed = if let Some(node_mut) = index.node_mut(node_id) {
+      dom_mutation::step_number_value(node_mut, delta_steps)
+    } else {
+      false
+    };
+    changed |= value_changed;
+    if value_changed {
+      changed |= self.mark_user_validity(node_id);
+    }
+
+    // Keep caret/selection state consistent with the new value when the control is focused.
+    if self.state.focused == Some(node_id) {
+      let new_len = index
+        .node(node_id)
+        .and_then(|node| node.get_attribute_ref("value"))
+        .unwrap_or("")
+        .chars()
+        .count();
+      if let Some(edit) = self.text_edit.as_mut().filter(|edit| edit.node_id == node_id) {
+        let prev = (edit.caret, edit.caret_affinity, edit.selection_anchor, edit.preferred_column);
+        edit.caret = new_len;
+        edit.caret_affinity = CaretAffinity::Downstream;
+        edit.selection_anchor = None;
+        edit.preferred_column = None;
+        if (edit.caret, edit.caret_affinity, edit.selection_anchor, edit.preferred_column) != prev {
+          changed = true;
+        }
+      }
+      changed |= self.sync_text_edit_paint_state();
+    }
+
+    changed
   }
 
   /// Update `<select>` selection and mark HTML "user validity" when the selection changes.
@@ -2902,6 +3041,7 @@ impl InteractionEngine {
     self.state.active_chain.clear();
     self.pointer_down_target = None;
     self.range_drag = None;
+    self.number_spin = None;
     self.text_drag = None;
     hover_changed | active_changed
   }
@@ -2911,6 +3051,7 @@ impl InteractionEngine {
     self.state.active_chain.clear();
     self.pointer_down_target = None;
     self.range_drag = None;
+    self.number_spin = None;
     self.text_drag = None;
   }
 
@@ -3015,6 +3156,54 @@ impl InteractionEngine {
     dom_changed | changed
   }
 
+  /// Handle mouse wheel stepping for a focused `<input type="number">`.
+  ///
+  /// Returns `Some(dom_changed)` when the wheel was consumed for numeric stepping, or `None` when
+  /// the wheel should be treated as a normal page/element scroll gesture.
+  ///
+  /// The provided `fragment_tree` must already have element scroll offsets applied (e.g. via
+  /// [`crate::interaction::fragment_tree_with_scroll`]).
+  pub fn wheel_step_number_input(
+    &mut self,
+    dom: &mut DomNode,
+    box_tree: &BoxTree,
+    fragment_tree: &FragmentTree,
+    scroll: &ScrollState,
+    viewport_point: Point,
+    delta_y_css: f32,
+  ) -> Option<bool> {
+    self.modality = InputModality::Pointer;
+
+    let Some(focused) = self.state.focused else {
+      return None;
+    };
+
+    let delta_steps = if delta_y_css < 0.0 {
+      1
+    } else if delta_y_css > 0.0 {
+      -1
+    } else {
+      return None;
+    };
+
+    let mut index = DomIndexMut::new(dom);
+    if !index
+      .node(focused)
+      .is_some_and(|node| is_input(node) && input_type(node).eq_ignore_ascii_case("number"))
+    {
+      return None;
+    }
+
+    let page_point = viewport_point.translate(scroll.viewport);
+    let hit = hit_test_dom(dom, box_tree, fragment_tree, page_point)?;
+    if hit.dom_node_id != focused {
+      return None;
+    }
+
+    let dom_changed = self.step_number_input(&mut index, focused, delta_steps);
+    Some(dom_changed)
+  }
+
   /// Begin active state (pointer down target + ancestors) and set modality=Pointer.
   /// `viewport_point` is in viewport coordinates; this method converts it to a page point by
   /// translating it by `scroll.viewport`.
@@ -3032,6 +3221,7 @@ impl InteractionEngine {
     self.modality = InputModality::Pointer;
 
     self.range_drag = None;
+    self.number_spin = None;
     self.text_drag = None;
 
     let page_point = viewport_point.translate(scroll.viewport);
@@ -3073,12 +3263,30 @@ impl InteractionEngine {
         .is_some_and(|node| is_text_input(node) || is_textarea(node))
       {
         let focus_before = self.state.focused;
+        let spin_direction = number_input_spin_direction_at_point(
+          &index,
+          box_tree,
+          fragment_tree,
+          hit.dom_node_id,
+          hit.box_id,
+          page_point,
+        );
         if is_focusable_interactive_element(&index, hit.dom_node_id) {
           dom_changed |= self.set_focus(&mut index, Some(hit.dom_node_id), false);
         }
 
         // Only update caret/selection state when the text control is (now) focused.
         if self.state.focused == Some(hit.dom_node_id) {
+          // Clicking the number input spinner should not move the caret or start selection dragging.
+          if let Some(direction) = spin_direction {
+            self.number_spin = Some(NumberSpinState {
+              node_id: hit.dom_node_id,
+              box_id: hit.box_id,
+              direction,
+            });
+            return dom_changed;
+          }
+
           let (caret, caret_affinity) = caret_index_for_text_control_point(
             &index,
             box_tree,
@@ -3276,6 +3484,7 @@ impl InteractionEngine {
     self.last_form_submitter = None;
 
     let range_drag = self.range_drag.take();
+    let number_spin = self.number_spin.take();
     let text_drag = self.text_drag.take();
     let prev_focus = text_drag
       .as_ref()
@@ -3457,6 +3666,27 @@ impl InteractionEngine {
               } else {
                 InteractionAction::Navigate { href: resolved }
               };
+            }
+          } else if let Some(spin) = number_spin.filter(|spin| spin.node_id == target_id) {
+            let up_dir = up_hit
+              .as_ref()
+              .filter(|hit| hit.dom_node_id == target_id)
+              .and_then(|hit| {
+                number_input_spin_direction_at_point(
+                  &index,
+                  box_tree,
+                  fragment_tree,
+                  target_id,
+                  hit.box_id,
+                  page_point,
+                )
+              });
+            if up_dir == Some(spin.direction) {
+              let delta_steps = match spin.direction {
+                NumberSpinDirection::Up => 1,
+                NumberSpinDirection::Down => -1,
+              };
+              dom_changed |= self.step_number_input(&mut index, target_id, delta_steps);
             }
           } else if index.node(target_id).is_some_and(is_checkbox_input) {
             if !node_is_disabled(&index, target_id) {
@@ -4154,6 +4384,21 @@ impl InteractionEngine {
       }
 
       let can_edit_value = !node_is_readonly(&index, focused);
+
+      // `<input type=number>` uses ArrowUp/ArrowDown to increment/decrement (like browsers).
+      if focused_is_text_input
+        && matches!(key, KeyAction::ArrowUp | KeyAction::ArrowDown)
+        && index
+          .node(focused)
+          .is_some_and(|node| input_type(node).eq_ignore_ascii_case("number"))
+      {
+        if !can_edit_value {
+          return changed;
+        }
+        let delta_steps = if matches!(key, KeyAction::ArrowUp) { 1 } else { -1 };
+        changed |= self.step_number_input(&mut index, focused, delta_steps);
+        return changed;
+      }
       let current = if focused_is_textarea {
         index
           .node(focused)
