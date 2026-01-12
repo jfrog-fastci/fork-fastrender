@@ -33,6 +33,7 @@
 //! [`streaming`]) and feed it into the scheduler/event loop pipeline described in the doc above.
 
 pub mod cookie_jar;
+pub mod web_storage;
 pub mod dom2_bindings;
 pub mod dom_host;
 pub mod dom_scripts;
