@@ -951,6 +951,17 @@ impl<'a, E: TypeExpander> TypeEvaluator<'a, E> {
       return primitives.never;
     }
 
+    if has_empty_object && options.strict_null_checks {
+      // Push the `{}` constraint into each member before doing any union
+      // distribution. This ensures we can eliminate `null`/`undefined` from
+      // unions even when distribution is skipped due to size limits, and avoids
+      // keeping impossible distributed branches like `undefined & string`.
+      base_members = base_members
+        .into_iter()
+        .map(|member| self.intersect_with_empty_object(member, depth + 1))
+        .collect();
+    }
+
     let mut result = if base_members.is_empty() {
       primitives.unknown
     } else {
@@ -960,10 +971,6 @@ impl<'a, E: TypeExpander> TypeEvaluator<'a, E> {
     // Distribute intersections over unions in small cases so that common
     // narrowing patterns (like `(string|number) & (string|boolean)`) reduce.
     result = self.distribute_intersection_over_unions(result, depth + 1);
-
-    if has_empty_object {
-      result = self.intersect_with_empty_object(result, depth + 1);
-    }
 
     result
   }

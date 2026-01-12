@@ -4244,6 +4244,21 @@ fn intersection_with_empty_object_removes_nullish() {
 }
 
 #[test]
+fn intersection_distribution_with_empty_object_filters_nullish_branches() {
+  let store = TypeStore::new();
+  let primitives = store.primitive_ids();
+
+  // The `{}` constraint should remove `undefined` before distribution so we
+  // don't keep impossible `undefined & string` style intersection members.
+  let empty_object = store.intern_type(TypeKind::EmptyObject);
+  let a = store.union(vec![primitives.string, primitives.undefined]);
+  let b = store.union(vec![primitives.string, primitives.boolean]);
+  let intersection = store.intern_type(TypeKind::Intersection(vec![a, b, empty_object]));
+
+  assert_eq!(store.evaluate(intersection), primitives.string);
+}
+
+#[test]
 fn intersection_nullish_only_with_empty_object_is_never() {
   let store = TypeStore::new();
   let primitives = store.primitive_ids();
