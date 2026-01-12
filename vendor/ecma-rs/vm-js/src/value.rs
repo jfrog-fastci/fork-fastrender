@@ -792,6 +792,23 @@ impl JsBigInt {
   }
 }
 
+impl Ord for JsBigInt {
+  fn cmp(&self, other: &Self) -> Ordering {
+    match (self.is_negative(), other.is_negative()) {
+      (true, false) => Ordering::Less,
+      (false, true) => Ordering::Greater,
+      (false, false) => self.magnitude.cmp(&other.magnitude),
+      (true, true) => other.magnitude.cmp(&self.magnitude),
+    }
+  }
+}
+
+impl PartialOrd for JsBigInt {
+  fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+    Some(self.cmp(other))
+  }
+}
+
 /// A JavaScript value.
 ///
 /// This is the VM's canonical value representation. Heap-allocated values are represented using

@@ -1,12 +1,11 @@
 use crate::destructure::{bind_assignment_target, bind_pattern, BindingKind};
 use crate::error_object::new_error;
 use crate::iterator;
-use crate::ops::{abstract_equality, to_number};
 use crate::{
   EnvRootId, ExecutionContext, GcEnv, GcObject, GcString, Heap, JsBigInt, ModuleGraph, ModuleId,
   NativeCall, PropertyDescriptor, PropertyDescriptorPatch, PropertyKey, PropertyKind, Realm,
   RealmId, RootId, Scope, ScriptOrModule, SourceText, StackFrame, Value, Vm, VmError, VmHost,
-  VmHostHooks, VmJobContext,
+  VmHostHooks, VmJobContext, ToPrimitiveHint,
 };
 use diagnostics::{Diagnostic, FileId};
 use parse_js::ast::class_or_object::{ClassMember, ClassOrObjKey, ClassOrObjVal, ObjMemberType};
@@ -30,6 +29,7 @@ use parse_js::ast::stmt::{
 use parse_js::operator::OperatorName;
 use parse_js::token::TT;
 use parse_js::{Dialect, ParseOptions, SourceType};
+use std::cmp::Ordering;
 use std::collections::{HashSet, VecDeque};
 use std::mem;
 use std::sync::Arc;
@@ -1234,23 +1234,6 @@ enum Reference<'a> {
     base: Value,
     key: PropertyKey,
   },
-}
-
-#[derive(Clone, Copy, Debug)]
-enum ToPrimitiveHint {
-  Default,
-  String,
-  Number,
-}
-
-impl ToPrimitiveHint {
-  fn as_str(self) -> &'static str {
-    match self {
-      ToPrimitiveHint::Default => "default",
-      ToPrimitiveHint::String => "string",
-      ToPrimitiveHint::Number => "number",
-    }
-  }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -6478,11 +6461,9 @@ impl<'a> Evaluator<'a> {
         let mut rhs_scope = scope.reborrow();
         rhs_scope.push_root(left)?;
         let right = self.eval_expr(&mut rhs_scope, &expr.right)?;
-        Ok(Value::Bool(abstract_equality(
-          rhs_scope.heap_mut(),
-          left,
-          right,
-        )?))
+        Ok(Value::Bool(
+          self.abstract_equality_comparison(&mut rhs_scope, left, right)?,
+        ))
       }
       OperatorName::Inequality => {
         let left = self.eval_expr(scope, &expr.left)?;
@@ -6490,11 +6471,9 @@ impl<'a> Evaluator<'a> {
         let mut rhs_scope = scope.reborrow();
         rhs_scope.push_root(left)?;
         let right = self.eval_expr(&mut rhs_scope, &expr.right)?;
-        Ok(Value::Bool(!abstract_equality(
-          rhs_scope.heap_mut(),
-          left,
-          right,
-        )?))
+        Ok(Value::Bool(
+          !self.abstract_equality_comparison(&mut rhs_scope, left, right)?,
+        ))
       }
       OperatorName::In => {
         let left = self.eval_expr(scope, &expr.left)?;
@@ -6783,24 +6762,8 @@ impl<'a> Evaluator<'a> {
         let mut rhs_scope = scope.reborrow();
         rhs_scope.push_root(left)?;
         let right = self.eval_expr(&mut rhs_scope, &expr.right)?;
-        // Root `right` for the duration of numeric conversion: `ToNumber` may allocate when called
-        // on objects (via `ToPrimitive`).
-        rhs_scope.push_root(right)?;
-        let left_n = self.to_number_operator(&mut rhs_scope, left)?;
-        let right_n = self.to_number_operator(&mut rhs_scope, right)?;
-
-        Ok(match expr.operator {
-          OperatorName::LessThan => Value::Bool(left_n < right_n),
-          OperatorName::LessThanOrEqual => Value::Bool(left_n <= right_n),
-          OperatorName::GreaterThan => Value::Bool(left_n > right_n),
-          OperatorName::GreaterThanOrEqual => Value::Bool(left_n >= right_n),
-          _ => {
-            debug_assert!(false, "unexpected operator in numeric binary op fast path");
-            return Err(VmError::InvariantViolation(
-              "internal error: unexpected operator in numeric binary op",
-            ));
-          }
-        })
+        let result = self.relational_comparison_operator(&mut rhs_scope, expr.operator, left, right)?;
+        Ok(Value::Bool(result))
       }
       OperatorName::Comma => {
         let _ = self.eval_expr(scope, &expr.left)?;
@@ -6946,128 +6909,25 @@ impl<'a> Evaluator<'a> {
     Ok(false)
   }
 
-  fn is_primitive_value(&self, value: Value) -> bool {
-    !matches!(value, Value::Object(_))
-  }
-
   fn to_primitive(
     &mut self,
     scope: &mut Scope<'_>,
     value: Value,
     hint: ToPrimitiveHint,
   ) -> Result<Value, VmError> {
-    let Value::Object(obj) = value else {
-      return Ok(value);
-    };
-
-    // Root `obj` across property lookups / calls (which may allocate and trigger GC).
-    let mut prim_scope = scope.reborrow();
-    prim_scope.push_root(Value::Object(obj))?;
-
-    // 1. GetMethod(input, @@toPrimitive).
-    let to_prim_sym = self
-      .vm
-      .intrinsics()
-      .ok_or(VmError::Unimplemented("intrinsics not initialized"))?
-      .well_known_symbols()
-      .to_primitive;
-    let to_prim_key = PropertyKey::from_symbol(to_prim_sym);
-    let exotic = prim_scope.ordinary_get_with_host_and_hooks(
-      self.vm,
-      &mut *self.host,
-      &mut *self.hooks,
-      obj,
-      to_prim_key,
-      Value::Object(obj),
-    )?;
-
-    if !matches!(exotic, Value::Undefined | Value::Null) {
-      if !prim_scope.heap().is_callable(exotic)? {
-        return Err(throw_type_error(
-          self.vm,
-          &mut prim_scope,
-          "@@toPrimitive is not callable",
-        )?);
-      }
-
-      let hint_s = prim_scope.alloc_string(hint.as_str())?;
-      prim_scope.push_root(Value::String(hint_s))?;
-      let out = self.call(
-        &mut prim_scope,
-        exotic,
-        Value::Object(obj),
-        &[Value::String(hint_s)],
-      )?;
-      if self.is_primitive_value(out) {
-        return Ok(out);
-      }
-      return Err(throw_type_error(
-        self.vm,
-        &mut prim_scope,
-        "Cannot convert object to primitive value",
-      )?);
+    let mut scope = scope.reborrow();
+    scope.push_root(value)?;
+    match scope.to_primitive(self.vm, &mut *self.host, &mut *self.hooks, value, hint) {
+      Ok(v) => Ok(v),
+      Err(VmError::TypeError(msg)) => Err(throw_type_error(self.vm, &mut scope, msg)?),
+      Err(err) => Err(err),
     }
-
-    // 2. OrdinaryToPrimitive.
-    self.ordinary_to_primitive(&mut prim_scope, obj, hint)
-  }
-
-  fn ordinary_to_primitive(
-    &mut self,
-    scope: &mut Scope<'_>,
-    obj: GcObject,
-    hint: ToPrimitiveHint,
-  ) -> Result<Value, VmError> {
-    let hint = match hint {
-      ToPrimitiveHint::Default => ToPrimitiveHint::Number,
-      other => other,
-    };
-    let methods = match hint {
-      ToPrimitiveHint::String => ["toString", "valueOf"],
-      ToPrimitiveHint::Number | ToPrimitiveHint::Default => ["valueOf", "toString"],
-    };
-
-    for name in methods {
-      let key_s = scope.alloc_string(name)?;
-      scope.push_root(Value::String(key_s))?;
-      let key = PropertyKey::from_string(key_s);
-      let method = scope.ordinary_get_with_host_and_hooks(
-        self.vm,
-        &mut *self.host,
-        &mut *self.hooks,
-        obj,
-        key,
-        Value::Object(obj),
-      )?;
-
-      if matches!(method, Value::Undefined | Value::Null) {
-        continue;
-      }
-      if !scope.heap().is_callable(method)? {
-        continue;
-      }
-
-      let result = self.call(scope, method, Value::Object(obj), &[])?;
-      if self.is_primitive_value(result) {
-        return Ok(result);
-      }
-    }
-
-    Err(throw_type_error(
-      self.vm,
-      scope,
-      "Cannot convert object to primitive value",
-    )?)
   }
 
   fn to_number_operator(&mut self, scope: &mut Scope<'_>, value: Value) -> Result<f64, VmError> {
-    // `ToNumber` includes `ToPrimitive` with a Number hint.
     let mut num_scope = scope.reborrow();
     num_scope.push_root(value)?;
-    let prim = self.to_primitive(&mut num_scope, value, ToPrimitiveHint::Number)?;
-    num_scope.push_root(prim)?;
-
-    match to_number(num_scope.heap_mut(), prim) {
+    match num_scope.to_number(self.vm, &mut *self.host, &mut *self.hooks, value) {
       Ok(n) => Ok(n),
       Err(VmError::TypeError(msg)) => Err(throw_type_error(self.vm, &mut num_scope, msg)?),
       Err(err) => Err(err),
@@ -7079,17 +6939,9 @@ impl<'a> Evaluator<'a> {
     scope: &mut Scope<'_>,
     value: Value,
   ) -> Result<GcString, VmError> {
-    // `ToString` includes `ToPrimitive` with a String hint.
     let mut string_scope = scope.reborrow();
     string_scope.push_root(value)?;
-    let prim = self.to_primitive(&mut string_scope, value, ToPrimitiveHint::String)?;
-    string_scope.push_root(prim)?;
-    debug_assert!(
-      self.is_primitive_value(prim),
-      "to_primitive returned object"
-    );
-
-    match string_scope.heap_mut().to_string(prim) {
+    match string_scope.to_string(self.vm, &mut *self.host, &mut *self.hooks, value) {
       Ok(s) => Ok(s),
       Err(VmError::TypeError(msg)) => Err(throw_type_error(self.vm, &mut string_scope, msg)?),
       Err(err) => Err(err),
@@ -7101,35 +6953,12 @@ impl<'a> Evaluator<'a> {
     scope: &mut Scope<'_>,
     value: Value,
   ) -> Result<GcObject, VmError> {
-    match value {
-      Value::Object(obj) => Ok(obj),
-      Value::Undefined | Value::Null => Err(throw_type_error(
-        self.vm,
-        scope,
-        "Cannot convert undefined or null to object",
-      )?),
-      other => {
-        // Use the intrinsic `Object` constructor to box primitives. This matches `ToObject` for
-        // non-nullish primitives and shares wrapper marker semantics with our built-in prototype
-        // methods.
-        let intr = self
-          .vm
-          .intrinsics()
-          .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
-        let object_ctor = Value::Object(intr.object_constructor());
-
-        let mut to_obj_scope = scope.reborrow();
-        to_obj_scope.push_root(other)?;
-        to_obj_scope.push_root(object_ctor)?;
-        let args = [other];
-        let value = self.call(&mut to_obj_scope, object_ctor, Value::Undefined, &args)?;
-        match value {
-          Value::Object(obj) => Ok(obj),
-          _ => Err(VmError::InvariantViolation(
-            "Object(..) conversion returned non-object",
-          )),
-        }
-      }
+    let mut scope = scope.reborrow();
+    scope.push_root(value)?;
+    match scope.to_object(self.vm, &mut *self.host, &mut *self.hooks, value) {
+      Ok(obj) => Ok(obj),
+      Err(VmError::TypeError(msg)) => Err(throw_type_error(self.vm, &mut scope, msg)?),
+      Err(err) => Err(err),
     }
   }
 
@@ -7138,23 +6967,183 @@ impl<'a> Evaluator<'a> {
     scope: &mut Scope<'_>,
     value: Value,
   ) -> Result<PropertyKey, VmError> {
-    // `ToPropertyKey` includes `ToPrimitive` with a String hint, and may allocate.
     let mut key_scope = scope.reborrow();
     key_scope.push_root(value)?;
-    let prim = self.to_primitive(&mut key_scope, value, ToPrimitiveHint::String)?;
-    key_scope.push_root(prim)?;
-    debug_assert!(
-      self.is_primitive_value(prim),
-      "to_primitive returned object"
-    );
+    match key_scope.to_property_key(self.vm, &mut *self.host, &mut *self.hooks, value) {
+      Ok(key) => Ok(key),
+      Err(VmError::TypeError(msg)) => Err(throw_type_error(self.vm, &mut key_scope, msg)?),
+      Err(err) => Err(err),
+    }
+  }
 
-    match prim {
-      Value::Symbol(sym) => Ok(PropertyKey::Symbol(sym)),
-      other => {
-        let s = self.to_string_operator(&mut key_scope, other)?;
-        Ok(PropertyKey::String(s))
+  /// ECMA-262 Abstract Equality Comparison (`==`).
+  fn abstract_equality_comparison(
+    &mut self,
+    scope: &mut Scope<'_>,
+    a: Value,
+    b: Value,
+  ) -> Result<bool, VmError> {
+    use Value::*;
+
+    // Root inputs for the duration of the comparison: `ToPrimitive` can invoke user code and
+    // allocate.
+    let mut scope = scope.reborrow();
+    scope.push_root(a)?;
+    scope.push_root(b)?;
+
+    let mut x = a;
+    let mut y = b;
+    loop {
+      match (x, y) {
+        // 1. Same type => strict equality.
+        (Undefined, Undefined) => return Ok(true),
+        (Null, Null) => return Ok(true),
+        (Bool(ax), Bool(by)) => return Ok(ax == by),
+        (Number(ax), Number(by)) => return Ok(ax == by),
+        (BigInt(ax), BigInt(by)) => return Ok(ax == by),
+        (String(ax), String(by)) => return Ok(scope.heap().get_string(ax)? == scope.heap().get_string(by)?),
+        (Symbol(ax), Symbol(by)) => return Ok(ax == by),
+        (Object(ax), Object(by)) => return Ok(ax == by),
+
+        // 2. `null == undefined`.
+        (Undefined, Null) | (Null, Undefined) => return Ok(true),
+
+        // 3/4. Number/String.
+        (Number(_), String(_)) => {
+          let n = scope.heap_mut().to_number(y)?;
+          y = Number(n);
+        }
+        (String(_), Number(_)) => {
+          let n = scope.heap_mut().to_number(x)?;
+          x = Number(n);
+        }
+
+        // 5/6. BigInt/String.
+        (BigInt(ax), String(bs)) => {
+          let Some(bi) = string_to_bigint(scope.heap(), bs)? else {
+            return Ok(false);
+          };
+          return Ok(ax == bi);
+        }
+        (String(as_), BigInt(by)) => {
+          let Some(bi) = string_to_bigint(scope.heap(), as_)? else {
+            return Ok(false);
+          };
+          return Ok(bi == by);
+        }
+
+        // 7/8. Boolean => ToNumber.
+        (Bool(ax), _) => {
+          x = Number(if ax { 1.0 } else { 0.0 });
+        }
+        (_, Bool(by)) => {
+          y = Number(if by { 1.0 } else { 0.0 });
+        }
+
+        // 9/10. Object => ToPrimitive (default hint).
+        (Object(_), String(_) | Number(_) | BigInt(_) | Symbol(_)) => {
+          x = self.to_primitive(&mut scope, x, ToPrimitiveHint::Default)?;
+          scope.push_root(x)?;
+        }
+        (String(_) | Number(_) | BigInt(_) | Symbol(_), Object(_)) => {
+          y = self.to_primitive(&mut scope, y, ToPrimitiveHint::Default)?;
+          scope.push_root(y)?;
+        }
+
+        // 11/12. BigInt/Number.
+        (BigInt(ax), Number(by)) => return Ok(matches!(bigint_compare_number(ax, by), Some(Ordering::Equal))),
+        (Number(ax), BigInt(by)) => return Ok(matches!(bigint_compare_number(by, ax), Some(Ordering::Equal))),
+
+        // Everything else is false.
+        _ => return Ok(false),
       }
     }
+  }
+
+  /// ECMA-262 Abstract Relational Comparison.
+  ///
+  /// Returns `Ok(None)` for the spec's `undefined` result (e.g. when comparing NaN).
+  fn abstract_relational_comparison(
+    &mut self,
+    scope: &mut Scope<'_>,
+    x: Value,
+    y: Value,
+    left_first: bool,
+  ) -> Result<Option<bool>, VmError> {
+    // Root inputs for the duration of the comparison: `ToPrimitive`/`ToNumeric` can allocate.
+    let mut scope = scope.reborrow();
+    scope.push_root(x)?;
+    scope.push_root(y)?;
+
+    // 1. ToPrimitive, hint Number (order depends on `left_first`).
+    let (px, py) = if left_first {
+      let px = self.to_primitive(&mut scope, x, ToPrimitiveHint::Number)?;
+      scope.push_root(px)?;
+      let py = self.to_primitive(&mut scope, y, ToPrimitiveHint::Number)?;
+      scope.push_root(py)?;
+      (px, py)
+    } else {
+      let py = self.to_primitive(&mut scope, y, ToPrimitiveHint::Number)?;
+      scope.push_root(py)?;
+      let px = self.to_primitive(&mut scope, x, ToPrimitiveHint::Number)?;
+      scope.push_root(px)?;
+      (px, py)
+    };
+
+    // 2. String/string => lexicographic code-unit comparison.
+    if let (Value::String(sx), Value::String(sy)) = (px, py) {
+      let a = scope.heap().get_string(sx)?.as_code_units();
+      let b = scope.heap().get_string(sy)?.as_code_units();
+      return Ok(Some(a < b));
+    }
+
+    // 3. Otherwise => ToNumeric then numeric comparison.
+    let nx = self.to_numeric(&mut scope, px)?;
+    let ny = self.to_numeric(&mut scope, py)?;
+    Ok(match (nx, ny) {
+      (NumericValue::Number(a), NumericValue::Number(b)) => {
+        if a.is_nan() || b.is_nan() {
+          None
+        } else {
+          Some(a < b)
+        }
+      }
+      (NumericValue::BigInt(a), NumericValue::BigInt(b)) => Some(a < b),
+      (NumericValue::BigInt(a), NumericValue::Number(b)) => bigint_compare_number(a, b).map(|ord| ord == Ordering::Less),
+      (NumericValue::Number(a), NumericValue::BigInt(b)) => bigint_compare_number(b, a).map(|ord| ord == Ordering::Greater),
+    })
+  }
+
+  fn relational_comparison_operator(
+    &mut self,
+    scope: &mut Scope<'_>,
+    operator: OperatorName,
+    left: Value,
+    right: Value,
+  ) -> Result<bool, VmError> {
+    use OperatorName::*;
+
+    Ok(match operator {
+      LessThan => self
+        .abstract_relational_comparison(scope, left, right, /* left_first */ true)?
+        .unwrap_or(false),
+      GreaterThan => self
+        .abstract_relational_comparison(scope, right, left, /* left_first */ false)?
+        .unwrap_or(false),
+      LessThanOrEqual => match self.abstract_relational_comparison(scope, right, left, false)? {
+        None => false,
+        Some(r) => !r,
+      },
+      GreaterThanOrEqual => match self.abstract_relational_comparison(scope, left, right, true)? {
+        None => false,
+        Some(r) => !r,
+      },
+      _ => {
+        return Err(VmError::InvariantViolation(
+          "internal error: unexpected operator in relational comparison",
+        ));
+      }
+    })
   }
 
   fn addition_operator(
@@ -7226,13 +7215,191 @@ impl<'a> Evaluator<'a> {
     let prim = self.to_primitive(scope, value, ToPrimitiveHint::Number)?;
     match prim {
       Value::BigInt(b) => Ok(NumericValue::BigInt(b)),
-      other => match to_number(scope.heap_mut(), other) {
+      other => match scope.heap_mut().to_number(other) {
         Ok(n) => Ok(NumericValue::Number(n)),
         Err(VmError::TypeError(msg)) => Err(throw_type_error(self.vm, scope, msg)?),
         Err(err) => Err(err),
       },
     }
   }
+}
+
+fn string_to_bigint(heap: &Heap, s: GcString) -> Result<Option<JsBigInt>, VmError> {
+  let raw = heap.get_string(s)?.to_utf8_lossy();
+  let trimmed = raw.trim_matches(crate::ops::is_ecma_whitespace);
+  if trimmed.is_empty() {
+    return Ok(None);
+  }
+
+  let (negative, rest) = match trimmed.strip_prefix('-') {
+    Some(rest) => (true, rest),
+    None => match trimmed.strip_prefix('+') {
+      Some(rest) => (false, rest),
+      None => (false, trimmed),
+    },
+  };
+  if rest.is_empty() {
+    return Ok(None);
+  }
+
+  let (radix, digits) = if let Some(hex) = rest.strip_prefix("0x").or_else(|| rest.strip_prefix("0X")) {
+    (16u32, hex)
+  } else if let Some(bin) = rest.strip_prefix("0b").or_else(|| rest.strip_prefix("0B")) {
+    (2u32, bin)
+  } else if let Some(oct) = rest.strip_prefix("0o").or_else(|| rest.strip_prefix("0O")) {
+    (8u32, oct)
+  } else {
+    (10u32, rest)
+  };
+  if digits.is_empty() {
+    return Ok(None);
+  }
+
+  let radix_bi = JsBigInt::from_u128(radix as u128);
+  let mut out = JsBigInt::zero();
+  for b in digits.bytes() {
+    let digit = match b {
+      b'0'..=b'9' => (b - b'0') as u32,
+      b'a'..=b'z' => (b - b'a' + 10) as u32,
+      b'A'..=b'Z' => (b - b'A' + 10) as u32,
+      _ => return Ok(None),
+    };
+    if digit >= radix {
+      return Ok(None);
+    }
+    out = out.checked_mul(radix_bi).ok_or(VmError::Unimplemented("BigInt parse overflow"))?;
+    out = out
+      .checked_add(JsBigInt::from_u128(digit as u128))
+      .ok_or(VmError::Unimplemented("BigInt parse overflow"))?;
+  }
+
+  if negative {
+    out = out.negate();
+  }
+  Ok(Some(out))
+}
+
+fn bigint_compare_number(bi: JsBigInt, n: f64) -> Option<Ordering> {
+  if n.is_nan() {
+    return None;
+  }
+  if n == f64::INFINITY {
+    return Some(Ordering::Less);
+  }
+  if n == f64::NEG_INFINITY {
+    return Some(Ordering::Greater);
+  }
+
+  // Treat +0 and -0 as equal.
+  if n == 0.0 {
+    if bi.is_zero() {
+      return Some(Ordering::Equal);
+    }
+    if bi.is_negative() {
+      return Some(Ordering::Less);
+    }
+    return Some(Ordering::Greater);
+  }
+
+  let bi_neg = bi.is_negative();
+  let n_neg = n.is_sign_negative();
+  if bi_neg != n_neg {
+    return Some(if bi_neg { Ordering::Less } else { Ordering::Greater });
+  }
+
+  let bi_abs = if bi_neg { bi.negate() } else { bi };
+  let n_abs = n.abs();
+  let ord = compare_positive_bigint_and_positive_number(bi_abs, n_abs);
+  Some(if bi_neg { ord.reverse() } else { ord })
+}
+
+fn compare_positive_bigint_and_positive_number(bi: JsBigInt, n: f64) -> Ordering {
+  debug_assert!(!bi.is_negative());
+  debug_assert!(n.is_finite());
+  debug_assert!(n >= 0.0);
+
+  if n == 0.0 {
+    return if bi.is_zero() {
+      Ordering::Equal
+    } else {
+      Ordering::Greater
+    };
+  }
+
+  if n.fract() != 0.0 {
+    let floor = n.floor();
+    let Some(floor_bi) = f64_to_bigint_integral(floor) else {
+      // If we can't represent floor(n) as a BigInt, then `n` is larger than our bounded BigInt
+      // representation, so `bi < n`.
+      return Ordering::Less;
+    };
+    if bi <= floor_bi {
+      Ordering::Less
+    } else {
+      Ordering::Greater
+    }
+  } else {
+    match f64_to_bigint_integral(n) {
+      Some(n_bi) => bi.cmp(&n_bi),
+      None => Ordering::Less,
+    }
+  }
+}
+
+fn f64_to_bigint_integral(n: f64) -> Option<JsBigInt> {
+  if !n.is_finite() {
+    return None;
+  }
+  if n.fract() != 0.0 {
+    return None;
+  }
+  if n == 0.0 {
+    return Some(JsBigInt::zero());
+  }
+
+  let negative = n.is_sign_negative();
+  let abs = n.abs();
+
+  // Integer values in the subnormal range (0 < abs < 2^-1022) cannot exist.
+  if abs < 1.0 {
+    return None;
+  }
+
+  let bits = abs.to_bits();
+  let exp_bits = ((bits >> 52) & 0x7ff) as i32;
+  let frac_bits = bits & ((1u64 << 52) - 1);
+  if exp_bits == 0 {
+    // Subnormal.
+    return None;
+  }
+
+  let e = exp_bits - 1023;
+  debug_assert!(e >= 0);
+
+  // Normalized mantissa: implicit leading 1.
+  let m = (1u64 << 52) | frac_bits;
+
+  let mut out = if e <= 52 {
+    let shift = (52 - e) as u32;
+    debug_assert!(shift <= 52);
+    if shift != 0 {
+      let mask = (1u64 << shift) - 1;
+      if (m & mask) != 0 {
+        return None;
+      }
+    }
+    let int = m >> shift;
+    JsBigInt::from_u128(int as u128)
+  } else {
+    let shift = (e - 52) as u32;
+    let base = JsBigInt::from_u128(m as u128);
+    base.checked_shl(shift)?
+  };
+
+  if negative {
+    out = out.negate();
+  }
+  Some(out)
 }
 
 fn alloc_string_from_lit_str(

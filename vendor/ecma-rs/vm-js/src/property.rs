@@ -269,8 +269,10 @@ impl Heap {
   /// This covers the primitive cases needed by WebIDL conversions:
   /// - `undefined`, `null`, booleans, numbers, strings.
   ///
-  /// For `Object`, this uses [`crate::ops::to_primitive`] (currently a placeholder) and then
-  /// converts the resulting primitive.
+  /// For `Object`, this is intentionally unimplemented because full `ToNumber` requires
+  /// `ToPrimitive`, which can invoke user code (`@@toPrimitive`, `valueOf`, `toString`) and
+  /// therefore requires a [`Vm`] + host context. Use [`Scope::to_number`] for the spec-shaped
+  /// operation.
   ///
   /// For `Symbol`, this throws a TypeError.
   pub fn to_number(&mut self, value: Value) -> Result<f64, VmError> {

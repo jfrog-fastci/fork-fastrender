@@ -1,4 +1,4 @@
-use vm_js::{Heap, HeapLimits, JsRuntime, Value, Vm, VmOptions};
+use vm_js::{Heap, HeapLimits, JsRuntime, Value, Vm, VmError, VmOptions};
 
 fn new_runtime() -> JsRuntime {
   let vm = Vm::new(VmOptions::default());
@@ -38,6 +38,83 @@ fn abstract_equality_matches_ecmascript_primitives() {
   assert_eq!(value, Value::Bool(true));
 
   let value = rt.exec_script(r#""0" == 0"#).unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn abstract_equality_coerces_objects_via_to_primitive() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      "(() => {\n\
+        const o = { valueOf() { return 1; } };\n\
+        return o == 1;\n\
+      })()",
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn abstract_equality_uses_symbol_to_primitive_and_typeerrors_are_catchable_with_stack() {
+  let mut rt = new_runtime();
+
+  // `==` should observe `@@toPrimitive` and throw if it is non-callable.
+  let ok = rt
+    .exec_script(
+      "(() => {\n\
+        try {\n\
+          return ({ [Symbol.toPrimitive]: 123 }) == 1;\n\
+        } catch (e) {\n\
+          return e && e.name === 'TypeError';\n\
+        }\n\
+      })()",
+    )
+    .unwrap();
+  assert_eq!(ok, Value::Bool(true));
+
+  // Uncaught conversion TypeErrors should be surfaced as ThrowWithStack.
+  let err = rt
+    .exec_script(
+      "let o = { [Symbol.toPrimitive]: 123 };\n\
+       \n\
+       o == 1;",
+    )
+    .unwrap_err();
+  match err {
+    VmError::ThrowWithStack { stack, .. } => {
+      assert!(!stack.is_empty(), "expected ThrowWithStack frames");
+      assert_eq!(stack[0].line, 3);
+    }
+    other => panic!("expected ThrowWithStack, got {other:?}"),
+  }
+}
+
+#[test]
+fn relational_comparison_uses_string_comparison_when_both_operands_are_strings() {
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(r#""2" < "10""#).unwrap();
+  assert_eq!(value, Value::Bool(false));
+
+  let value = rt.exec_script(r#""2" > "10""#).unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn relational_comparison_coerces_objects_to_primitives_and_compares_strings_lexicographically() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      "(() => {\n\
+        const o = {\n\
+          valueOf() { return {}; },\n\
+          toString() { return 'b'; },\n\
+        };\n\
+        return o < 'c';\n\
+      })()",
+    )
+    .unwrap();
   assert_eq!(value, Value::Bool(true));
 }
 

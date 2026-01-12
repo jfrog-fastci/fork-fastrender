@@ -1072,8 +1072,8 @@ pub fn array_buffer_constructor_call(
 pub fn array_buffer_constructor_construct(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   args: &[Value],
   _new_target: Value,
@@ -1081,7 +1081,7 @@ pub fn array_buffer_constructor_construct(
   let intr = require_intrinsics(vm)?;
 
   let length_val = args.get(0).copied().unwrap_or(Value::Number(0.0));
-  let length_num = scope.heap_mut().to_number(length_val)?;
+  let length_num = scope.to_number(vm, host, hooks, length_val)?;
   if !length_num.is_finite() || length_num < 0.0 || length_num.fract() != 0.0 {
     return Err(VmError::TypeError("ArrayBuffer length must be a non-negative integer"));
   }
@@ -1186,8 +1186,8 @@ pub fn uint8_array_constructor_call(
 pub fn uint8_array_constructor_construct(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   args: &[Value],
   _new_target: Value,
@@ -1201,7 +1201,7 @@ pub fn uint8_array_constructor_construct(
     let length_num = if matches!(arg0, Value::Undefined) {
       0.0
     } else {
-      scope.heap_mut().to_number(arg0)?
+      scope.to_number(vm, host, hooks, arg0)?
     };
     if !length_num.is_finite() || length_num < 0.0 || length_num.fract() != 0.0 {
       return Err(VmError::TypeError("Uint8Array length must be a non-negative integer"));
@@ -1234,7 +1234,7 @@ pub fn uint8_array_constructor_construct(
   let byte_offset = if matches!(byte_offset_val, Value::Undefined) {
     0usize
   } else {
-    let n = scope.heap_mut().to_number(byte_offset_val)?;
+    let n = scope.to_number(vm, host, hooks, byte_offset_val)?;
     if !n.is_finite() || n < 0.0 || n.fract() != 0.0 {
       return Err(VmError::TypeError("Uint8Array byteOffset must be a non-negative integer"));
     }
@@ -1245,7 +1245,7 @@ pub fn uint8_array_constructor_construct(
   let length = if matches!(length_val, Value::Undefined) {
     buf_len.saturating_sub(byte_offset)
   } else {
-    let n = scope.heap_mut().to_number(length_val)?;
+    let n = scope.to_number(vm, host, hooks, length_val)?;
     if !n.is_finite() || n < 0.0 || n.fract() != 0.0 {
       return Err(VmError::TypeError("Uint8Array length must be a non-negative integer"));
     }
@@ -6177,10 +6177,10 @@ pub fn string_prototype_to_string(
 
 /// `String.prototype.charCodeAt(pos)` (minimal).
 pub fn string_prototype_char_code_at(
-  _vm: &mut Vm,
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   this: Value,
   args: &[Value],
@@ -6205,7 +6205,7 @@ pub fn string_prototype_char_code_at(
   let pos_value = args.get(0).copied().unwrap_or(Value::Undefined);
   let mut n = match pos_value {
     Value::Undefined => 0.0,
-    other => scope.heap_mut().to_number(other)?,
+    other => scope.to_number(vm, host, hooks, other)?,
   };
 
   // `ToIntegerOrInfinity` rounds toward zero.
