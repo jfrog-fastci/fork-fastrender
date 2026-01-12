@@ -2690,6 +2690,184 @@ impl BrowserRuntime {
     // but the dom2 `NodeId` for an element remains stable across insertions/removals.
     let hover_changed = prev_target != current_target;
 
+    if hover_changed {
+      let should_mouseout = prev_target.is_some_and(|prev_node_id| {
+        let dom = js_tab.dom();
+        dom.events().has_listeners_for_dispatch(
+          web_events::EventTargetId::Node(prev_node_id),
+          "mouseout",
+          dom,
+          /* bubbles */ true,
+          /* composed */ false,
+        )
+      });
+
+      // out on previous target.
+      if let Some(prev_node_id) = prev_target {
+        let related = current_target.map(|id| web_events::EventTargetId::Node(id).normalize());
+
+        let mut mouse = mouse_base;
+        mouse.related_target = related;
+
+        if should_mouseout {
+          let _ = js_tab.dispatch_mouse_event(
+            prev_node_id,
+            "mouseout",
+            web_events::EventInit {
+              bubbles: true,
+              cancelable: true,
+              composed: false,
+            },
+            mouse,
+          );
+        }
+      }
+
+      // `mouseleave`/`mouseenter` are dispatched for each element boundary crossed.
+      //
+      // For example, moving from a parent to its child should dispatch:
+      // - `mouseout` (parent → child)
+      // - `mouseover` (child ← parent)
+      // - `mouseenter` (child)
+      // but should NOT dispatch `mouseleave` on the parent, since the pointer is still within it.
+      let (prev_chain, current_chain) = {
+        fn element_chain(
+          dom: &crate::dom2::Document,
+          start: crate::dom2::NodeId,
+        ) -> Vec<crate::dom2::NodeId> {
+          let mut chain = Vec::new();
+          let mut current = Some(start);
+          while let Some(id) = current {
+            let node = dom.node(id);
+            if matches!(node.kind, crate::dom2::NodeKind::Element { .. }) {
+              chain.push(id);
+            }
+            current = node.parent;
+          }
+          chain
+        }
+
+        let dom = js_tab.dom();
+        (
+          prev_target.map(|id| element_chain(dom, id)).unwrap_or_default(),
+          current_target
+            .map(|id| element_chain(dom, id))
+            .unwrap_or_default(),
+        )
+      };
+
+      // Find the lowest common ancestor in the (target → root) chains.
+      let lca_indices = current_chain
+        .iter()
+        .enumerate()
+        .find_map(|(current_idx, node_id)| {
+          prev_chain
+            .iter()
+            .position(|prev_id| prev_id == node_id)
+            .map(|prev_idx| (prev_idx, current_idx))
+        });
+
+      let prev_exited = match lca_indices {
+        Some((prev_idx, _)) => &prev_chain[..prev_idx],
+        None => &prev_chain[..],
+      };
+      let current_entered = match lca_indices {
+        Some((_, current_idx)) => &current_chain[..current_idx],
+        None => &current_chain[..],
+      };
+
+      let related_for_leave =
+        current_target.map(|id| web_events::EventTargetId::Node(id).normalize());
+      for &node_id in prev_exited {
+        let should_mouseleave = {
+          let dom = js_tab.dom();
+          dom.events().has_listeners_for_dispatch(
+            web_events::EventTargetId::Node(node_id),
+            "mouseleave",
+            dom,
+            /* bubbles */ false,
+            /* composed */ false,
+          )
+        };
+        if should_mouseleave {
+          let mut mouse = mouse_base;
+          mouse.related_target = related_for_leave;
+          let _ = js_tab.dispatch_mouse_event(
+            node_id,
+            "mouseleave",
+            web_events::EventInit {
+              bubbles: false,
+              cancelable: false,
+              composed: false,
+            },
+            mouse,
+          );
+        }
+      }
+
+      let should_mouseover = current_target.is_some_and(|new_node_id| {
+        let dom = js_tab.dom();
+        dom.events().has_listeners_for_dispatch(
+          web_events::EventTargetId::Node(new_node_id),
+          "mouseover",
+          dom,
+          /* bubbles */ true,
+          /* composed */ false,
+        )
+      });
+
+      // over on new target.
+      if let Some(new_node_id) = current_target {
+        let related = prev_target.map(|id| web_events::EventTargetId::Node(id).normalize());
+
+        let mut mouse = mouse_base;
+        mouse.related_target = related;
+
+        if should_mouseover {
+          let _ = js_tab.dispatch_mouse_event(
+            new_node_id,
+            "mouseover",
+            web_events::EventInit {
+              bubbles: true,
+              cancelable: true,
+              composed: false,
+            },
+            mouse,
+          );
+        }
+      }
+
+      let related_for_enter = prev_target.map(|id| web_events::EventTargetId::Node(id).normalize());
+      for &node_id in current_entered.iter().rev() {
+        let should_mouseenter = {
+          let dom = js_tab.dom();
+          dom.events().has_listeners_for_dispatch(
+            web_events::EventTargetId::Node(node_id),
+            "mouseenter",
+            dom,
+            /* bubbles */ false,
+            /* composed */ false,
+          )
+        };
+        if should_mouseenter {
+          let mut mouse = mouse_base;
+          mouse.related_target = related_for_enter;
+          let _ = js_tab.dispatch_mouse_event(
+            node_id,
+            "mouseenter",
+            web_events::EventInit {
+              bubbles: false,
+              cancelable: false,
+              composed: false,
+            },
+            mouse,
+          );
+        }
+      }
+    }
+
+    // `mousemove` should be dispatched after hover-transition events (`mouseout`/`mouseover`, etc.)
+    // for browser-like ordering.
     let should_mousemove = current_target.is_some_and(|target_node_id| {
       let dom = js_tab.dom();
       dom.events().has_listeners_for_dispatch(
@@ -2711,180 +2889,6 @@ impl BrowserRuntime {
             composed: false,
           },
           mouse_base,
-        );
-      }
-    }
-
-    if !hover_changed {
-      return;
-    }
-
-    let should_mouseout = prev_target.is_some_and(|prev_node_id| {
-      let dom = js_tab.dom();
-      dom.events().has_listeners_for_dispatch(
-        web_events::EventTargetId::Node(prev_node_id),
-        "mouseout",
-        dom,
-        /* bubbles */ true,
-        /* composed */ false,
-      )
-    });
-
-    // out on previous target.
-    if let Some(prev_node_id) = prev_target {
-      let related = current_target.map(|id| web_events::EventTargetId::Node(id).normalize());
-
-      let mut mouse = mouse_base;
-      mouse.related_target = related;
-
-      if should_mouseout {
-        let _ = js_tab.dispatch_mouse_event(
-          prev_node_id,
-          "mouseout",
-          web_events::EventInit {
-            bubbles: true,
-            cancelable: true,
-            composed: false,
-          },
-          mouse,
-        );
-      }
-    }
-
-    // `mouseleave`/`mouseenter` are dispatched for each element boundary crossed.
-    //
-    // For example, moving from a parent to its child should dispatch:
-    // - `mouseout` (parent → child)
-    // - `mouseover` (child ← parent)
-    // - `mouseenter` (child)
-    // but should NOT dispatch `mouseleave` on the parent, since the pointer is still within it.
-    let (prev_chain, current_chain) = {
-      fn element_chain(dom: &crate::dom2::Document, start: crate::dom2::NodeId) -> Vec<crate::dom2::NodeId> {
-        let mut chain = Vec::new();
-        let mut current = Some(start);
-        while let Some(id) = current {
-          let node = dom.node(id);
-          if matches!(node.kind, crate::dom2::NodeKind::Element { .. }) {
-            chain.push(id);
-          }
-          current = node.parent;
-        }
-        chain
-      }
-
-      let dom = js_tab.dom();
-      (
-        prev_target.map(|id| element_chain(dom, id)).unwrap_or_default(),
-        current_target
-          .map(|id| element_chain(dom, id))
-          .unwrap_or_default(),
-      )
-    };
-
-    // Find the lowest common ancestor in the (target → root) chains.
-    let lca_indices = current_chain
-      .iter()
-      .enumerate()
-      .find_map(|(current_idx, node_id)| {
-        prev_chain
-          .iter()
-          .position(|prev_id| prev_id == node_id)
-          .map(|prev_idx| (prev_idx, current_idx))
-      });
-
-    let prev_exited = match lca_indices {
-      Some((prev_idx, _)) => &prev_chain[..prev_idx],
-      None => &prev_chain[..],
-    };
-    let current_entered = match lca_indices {
-      Some((_, current_idx)) => &current_chain[..current_idx],
-      None => &current_chain[..],
-    };
-
-    let related_for_leave = current_target.map(|id| web_events::EventTargetId::Node(id).normalize());
-    for &node_id in prev_exited {
-      let should_mouseleave = {
-        let dom = js_tab.dom();
-        dom.events().has_listeners_for_dispatch(
-          web_events::EventTargetId::Node(node_id),
-          "mouseleave",
-          dom,
-          /* bubbles */ false,
-          /* composed */ false,
-        )
-      };
-      if should_mouseleave {
-        let mut mouse = mouse_base;
-        mouse.related_target = related_for_leave;
-        let _ = js_tab.dispatch_mouse_event(
-          node_id,
-          "mouseleave",
-          web_events::EventInit {
-            bubbles: false,
-            cancelable: false,
-            composed: false,
-          },
-          mouse,
-        );
-      }
-    }
-
-    let should_mouseover = current_target.is_some_and(|new_node_id| {
-      let dom = js_tab.dom();
-      dom.events().has_listeners_for_dispatch(
-        web_events::EventTargetId::Node(new_node_id),
-        "mouseover",
-        dom,
-        /* bubbles */ true,
-        /* composed */ false,
-      )
-    });
-
-    // over on new target.
-    if let Some(new_node_id) = current_target {
-      let related = prev_target.map(|id| web_events::EventTargetId::Node(id).normalize());
-
-      let mut mouse = mouse_base;
-      mouse.related_target = related;
-
-      if should_mouseover {
-        let _ = js_tab.dispatch_mouse_event(
-          new_node_id,
-          "mouseover",
-          web_events::EventInit {
-            bubbles: true,
-            cancelable: true,
-            composed: false,
-          },
-          mouse,
-        );
-      }
-    }
-
-    let related_for_enter = prev_target.map(|id| web_events::EventTargetId::Node(id).normalize());
-    for &node_id in current_entered.iter().rev() {
-      let should_mouseenter = {
-        let dom = js_tab.dom();
-        dom.events().has_listeners_for_dispatch(
-          web_events::EventTargetId::Node(node_id),
-          "mouseenter",
-          dom,
-          /* bubbles */ false,
-          /* composed */ false,
-        )
-      };
-      if should_mouseenter {
-        let mut mouse = mouse_base;
-        mouse.related_target = related_for_enter;
-        let _ = js_tab.dispatch_mouse_event(
-          node_id,
-          "mouseenter",
-          web_events::EventInit {
-            bubbles: false,
-            cancelable: false,
-            composed: false,
-          },
-          mouse,
         );
       }
     }
