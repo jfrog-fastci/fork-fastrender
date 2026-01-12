@@ -198,3 +198,177 @@ fn proxy_get_trap_observed_for_error_cause_option() -> Result<(), VmError> {
   assert_eq!(value, Value::Bool(true));
   Ok(())
 }
+
+#[test]
+fn proxy_get_trap_observed_for_reflect_get() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let global = rt.realm().global_object();
+
+  rt.exec_script(
+    r#"
+      var sawGet = false;
+      var sawReceiver = false;
+      var target = { x: 1 };
+      function getTrap(t, k, r) {
+        if (k === "x") { sawGet = true; sawReceiver = (r === P); return 42; }
+        return Reflect.get(t, k, r);
+      }
+      var handler = { get: getTrap };
+    "#,
+  )?;
+
+  let target = rt.exec_script("target")?;
+  let handler = rt.exec_script("handler")?;
+  let Value::Object(target_obj) = target else {
+    panic!("expected target to be an object, got {target:?}");
+  };
+  let Value::Object(handler_obj) = handler else {
+    panic!("expected handler to be an object, got {handler:?}");
+  };
+
+  // Install proxy as global `P`.
+  {
+    let (_vm, _realm, heap) = rt.vm_realm_and_heap_mut();
+    let mut scope = heap.scope();
+    let proxy = scope.alloc_proxy(Some(target_obj), Some(handler_obj))?;
+    define_global(&mut scope, global, "P", Value::Object(proxy))?;
+  }
+
+  let value = rt.exec_script(
+    r#"
+      Reflect.get(P, "x") === 42 && sawGet && sawReceiver
+    "#,
+  )?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn proxy_set_trap_observed_for_reflect_set() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let global = rt.realm().global_object();
+
+  rt.exec_script(
+    r#"
+      var sawSet = false;
+      var sawReceiver = false;
+      var target = {};
+      function setTrap(t, k, v, r) {
+        if (k === "x" && v === 5) { sawSet = true; sawReceiver = (r === P); return true; }
+        return false;
+      }
+      var handler = { set: setTrap };
+    "#,
+  )?;
+
+  let target = rt.exec_script("target")?;
+  let handler = rt.exec_script("handler")?;
+  let Value::Object(target_obj) = target else {
+    panic!("expected target to be an object, got {target:?}");
+  };
+  let Value::Object(handler_obj) = handler else {
+    panic!("expected handler to be an object, got {handler:?}");
+  };
+
+  // Install proxy as global `P`.
+  {
+    let (_vm, _realm, heap) = rt.vm_realm_and_heap_mut();
+    let mut scope = heap.scope();
+    let proxy = scope.alloc_proxy(Some(target_obj), Some(handler_obj))?;
+    define_global(&mut scope, global, "P", Value::Object(proxy))?;
+  }
+
+  let value = rt.exec_script(
+    r#"
+      Reflect.set(P, "x", 5) === true && sawSet && sawReceiver
+    "#,
+  )?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn proxy_has_trap_observed_for_reflect_has() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let global = rt.realm().global_object();
+
+  rt.exec_script(
+    r#"
+      var sawHas = false;
+      var target = {};
+      function hasTrap(t, k) {
+        if (k === "x") { sawHas = true; return true; }
+        return false;
+      }
+      var handler = { has: hasTrap };
+    "#,
+  )?;
+
+  let target = rt.exec_script("target")?;
+  let handler = rt.exec_script("handler")?;
+  let Value::Object(target_obj) = target else {
+    panic!("expected target to be an object, got {target:?}");
+  };
+  let Value::Object(handler_obj) = handler else {
+    panic!("expected handler to be an object, got {handler:?}");
+  };
+
+  // Install proxy as global `P`.
+  {
+    let (_vm, _realm, heap) = rt.vm_realm_and_heap_mut();
+    let mut scope = heap.scope();
+    let proxy = scope.alloc_proxy(Some(target_obj), Some(handler_obj))?;
+    define_global(&mut scope, global, "P", Value::Object(proxy))?;
+  }
+
+  let value = rt.exec_script(
+    r#"
+      Reflect.has(P, "x") === true && sawHas
+    "#,
+  )?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn proxy_delete_property_trap_observed_for_reflect_delete_property() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let global = rt.realm().global_object();
+
+  rt.exec_script(
+    r#"
+      var sawDelete = false;
+      var target = { x: 1 };
+      function deleteTrap(t, k) {
+        if (k === "x") { sawDelete = true; return true; }
+        return false;
+      }
+      var handler = { deleteProperty: deleteTrap };
+    "#,
+  )?;
+
+  let target = rt.exec_script("target")?;
+  let handler = rt.exec_script("handler")?;
+  let Value::Object(target_obj) = target else {
+    panic!("expected target to be an object, got {target:?}");
+  };
+  let Value::Object(handler_obj) = handler else {
+    panic!("expected handler to be an object, got {handler:?}");
+  };
+
+  // Install proxy as global `P`.
+  {
+    let (_vm, _realm, heap) = rt.vm_realm_and_heap_mut();
+    let mut scope = heap.scope();
+    let proxy = scope.alloc_proxy(Some(target_obj), Some(handler_obj))?;
+    define_global(&mut scope, global, "P", Value::Object(proxy))?;
+  }
+
+  let value = rt.exec_script(
+    r#"
+      Reflect.deleteProperty(P, "x") === true && sawDelete
+    "#,
+  )?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
