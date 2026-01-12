@@ -12482,6 +12482,20 @@ fn dom_parser_constructor_native(
   ))
 }
 
+fn dom_parser_constructor_native(
+  _vm: &mut Vm,
+  _scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  Err(VmError::TypeError(
+    "DOMParser constructor cannot be invoked without 'new'",
+  ))
+}
+
 fn dom_parser_constructor_construct_native(
   _vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -34257,6 +34271,10 @@ fn init_window_globals(
   // separate `dom2::Document` instances stored in `WindowRealmUserData::owned_dom2_documents`.
   let dom_parser_proto = scope.alloc_object()?;
   scope.push_root(Value::Object(dom_parser_proto))?;
+  scope.heap_mut().object_set_prototype(
+    dom_parser_proto,
+    Some(realm.intrinsics().object_prototype()),
+  )?;
 
   let parse_from_string_call_id = vm.register_native_call(dom_parser_parse_from_string_native)?;
   let parse_from_string_name = scope.alloc_string("parseFromString")?;
