@@ -280,6 +280,24 @@ impl Document {
     let mut doc = Document::new_with_scripting(quirks_mode, scripting_enabled);
     let doc_root = doc.root();
 
+    // The renderer DOM snapshot format (currently) does not preserve the document's doctype node;
+    // it only stores the computed quirks mode. However, `document.doctype` is observable from JS
+    // and required by WPT and real-world scripts.
+    //
+    // Materialize a default HTML doctype node for non-quirks documents so `document.doctype` is
+    // non-null in the common case (e.g. `<!doctype html>` documents parsed through the renderer).
+    if quirks_mode != QuirksMode::Quirks {
+      doc.push_node(
+        NodeKind::Doctype {
+          name: "html".to_string(),
+          public_id: String::new(),
+          system_id: String::new(),
+        },
+        Some(doc_root),
+        /* inert_subtree */ false,
+      );
+    }
+
     match &root.node_type {
       DomNodeType::Document { .. } => {
         for child in &root.children {
@@ -369,6 +387,12 @@ mod tests {
     let root = crate::dom::parse_html(html).unwrap();
     let doc = Document::from_renderer_dom(&root);
     assert_parent_child_invariants(&doc);
+    assert!(
+      doc.node(doc.root()).children.iter().any(|&id| {
+        matches!(&doc.node(id).kind, NodeKind::Doctype { name, .. } if name == "html")
+      }),
+      "expected Document::from_renderer_dom to materialize an HTML doctype node"
+    );
 
     let roundtrip = doc.to_renderer_dom();
     assert_eq!(snapshot_dom(&root), snapshot_dom(&roundtrip));
