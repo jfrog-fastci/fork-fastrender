@@ -1372,6 +1372,19 @@ width = 120
 height = 30
 
 [[tests]]
+id = "style/default-pseudo-001"
+path = "style/default-pseudo-001.html"
+reference = "style/default-pseudo-001-ref.html"
+test_type = "reftest"
+expected = "pass"
+timeout_ms = 12000
+dpr = 1.0
+
+[tests.viewport]
+width = 260
+height = 60
+
+[[tests]]
 id = "style/conditional/supports-true-001"
 path = "style/conditional/supports-true-001.html"
 reference = "style/conditional/supports-true-001-ref.html"

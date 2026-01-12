@@ -1,0 +1,52 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>:default pseudo-class (forms)</title>
+<style>
+  body {
+    margin: 0;
+    background: white;
+  }
+
+  #row {
+    display: flex;
+    font-size: 0;
+  }
+
+  form,
+  select {
+    display: flex;
+    margin: 0;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    overflow: visible;
+    background: transparent;
+  }
+
+  button,
+  option,
+  input[type="checkbox"] {
+    width: 50px;
+    height: 50px;
+    margin: 0;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: rgb(255, 0, 0);
+  }
+
+  :default {
+    background: rgb(0, 160, 0);
+  }
+</style>
+<div id="row">
+  <form>
+    <button id="b1"></button>
+    <button id="b2" type="submit"></button>
+  </form>
+  <select>
+    <option id="o1" selected></option>
+    <option id="o2"></option>
+  </select>
+  <input id="c" type="checkbox" checked>
+</div>
