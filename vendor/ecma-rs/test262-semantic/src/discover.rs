@@ -27,6 +27,18 @@ pub fn discover_tests(test262_dir: &Path) -> Result<Vec<DiscoveredTest>> {
     if path.extension().and_then(|ext| ext.to_str()) != Some("js") {
       continue;
     }
+    // tc39/test262 stores various helper modules (fixtures) alongside tests.
+    // Those files are not test cases and often contain module syntax without test frontmatter.
+    //
+    // The upstream runner excludes them; treat them similarly here so that filtering by a glob
+    // like `json-*.js` does not accidentally include `*_FIXTURE.js`.
+    if path
+      .file_name()
+      .and_then(|name| name.to_str())
+      .is_some_and(|name| name.contains("_FIXTURE"))
+    {
+      continue;
+    }
 
     let id = normalize_id(&test_dir, &path);
     out.push(DiscoveredTest { id, path });
@@ -74,5 +86,18 @@ mod tests {
     let tests = discover_tests(temp.path()).unwrap();
     let ids: Vec<_> = tests.iter().map(|t| t.id.as_str()).collect();
     assert_eq!(ids, vec!["b.js", "nested/a.js"]);
+  }
+
+  #[test]
+  fn discovery_skips_fixture_files() {
+    let temp = tempdir().unwrap();
+    let test_dir = temp.path().join("test");
+    fs::create_dir_all(&test_dir).unwrap();
+    fs::write(test_dir.join("real.js"), "").unwrap();
+    fs::write(test_dir.join("helper_FIXTURE.js"), "import './other.js';\n").unwrap();
+
+    let tests = discover_tests(temp.path()).unwrap();
+    let ids: Vec<_> = tests.iter().map(|t| t.id.as_str()).collect();
+    assert_eq!(ids, vec!["real.js"]);
   }
 }
