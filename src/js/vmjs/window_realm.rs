@@ -27111,6 +27111,8 @@ fn init_window_globals(
     // Form events.
     ("onsubmit", "submit"),
     ("onchange", "change"),
+    // Storage events.
+    ("onstorage", "storage"),
   ] {
     let type_s = scope.alloc_string(type_)?;
     scope.push_root(Value::String(type_s))?;
@@ -33095,6 +33097,79 @@ mod tests {
       ])
     );
 
+    Ok(())
+  }
+
+  #[test]
+  fn host_dispatched_storage_event_invokes_window_onstorage_handler() -> Result<(), VmError> {
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+    // Install the EventHandler property in a realm without a DOM host so the listener is registered
+    // on the realm-owned fallback event registry.
+    let mut vm_host_ctx = ();
+    let mut hooks = NoopHostHooks::default();
+    realm.exec_script_with_host_and_hooks(
+      &mut vm_host_ctx,
+      &mut hooks,
+      "globalThis.__seen = null;\n\
+       onstorage = (e) => { globalThis.__seen = e.type + ':' + e.key; };",
+    )?;
+
+    struct DummyHost;
+    impl WindowRealmHost for DummyHost {
+      fn vm_host_and_window_realm(&mut self) -> (&mut dyn VmHost, &mut WindowRealm) {
+        unreachable!("DummyHost is only used as a type parameter for VmJsEventLoopHooks");
+      }
+    }
+
+    let mut realm_slot = Some(realm);
+    let dom_ptr = {
+      // SAFETY: `events_dom_fallback` is owned by the realm's VM user data and outlives this test.
+      let realm = realm_slot.as_mut().expect("expected realm slot");
+      let data = realm
+        .vm_mut()
+        .user_data_mut::<WindowRealmUserData>()
+        .expect("window realm missing user data");
+      NonNull::from(&mut data.events_dom_fallback)
+    };
+    // SAFETY: `dom_ptr` points into `realm_slot` and remains valid for the duration of this test.
+    let dom = unsafe { dom_ptr.as_ref() };
+
+    let mut vm_host_slot: Option<NonNull<dyn VmHost>> =
+      Some(NonNull::from(&mut vm_host_ctx as &mut dyn VmHost));
+    let mut webidl_bindings_host_slot: Option<NonNull<dyn WebIdlBindingsHost>> = None;
+    let mut invoker = WindowRealmDomEventListenerInvoker::<DummyHost>::new(
+      &mut realm_slot,
+      &mut vm_host_slot,
+      &mut webidl_bindings_host_slot,
+    );
+
+    let mut ev = web_events::Event::new(
+      "storage",
+      web_events::EventInit {
+        bubbles: false,
+        cancelable: false,
+        composed: false,
+      },
+    );
+    ev.storage = Some(web_events::StorageEventData {
+      key: Some("k".into()),
+      old_value: None,
+      new_value: None,
+      url: "https://example.com/".into(),
+      storage_kind: web_events::StorageKind::Local,
+    });
+    web_events::dispatch_event(
+      web_events::EventTargetId::Window,
+      &mut ev,
+      dom,
+      dom.events(),
+      &mut invoker,
+    )
+    .expect("dispatch_event should succeed");
+
+    let realm = realm_slot.as_mut().expect("expected realm slot");
+    let seen_v = realm.exec_script("__seen")?;
+    assert_eq!(get_string(realm.heap(), seen_v), "storage:k");
     Ok(())
   }
 
