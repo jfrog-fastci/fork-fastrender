@@ -110,6 +110,10 @@ fn variants_for(metadata: &Frontmatter) -> Vec<Variant> {
     return vec![Variant::Module];
   }
 
+  if flags.contains("raw") {
+    return vec![Variant::NonStrict];
+  }
+
   if flags.contains("onlyStrict") {
     return vec![Variant::Strict];
   }
@@ -190,6 +194,12 @@ fn run_single_case(
       flaky: false,
     };
   }
+
+  let harness_mode = if case.metadata.flags.iter().any(|flag| flag == "raw") {
+    HarnessMode::None
+  } else {
+    harness_mode
+  };
 
   let source = match assemble_source(
     test262_dir,
@@ -498,6 +508,15 @@ status = "skip"
     let cases = expand_cases(&discovered, &Filter::All).unwrap();
     let variants: Vec<_> = cases.iter().map(|c| c.variant).collect();
     assert_eq!(variants, vec![Variant::NonStrict, Variant::Strict]);
+  }
+
+  #[test]
+  fn variants_for_raw_generates_only_non_strict() {
+    let metadata = Frontmatter {
+      flags: vec!["raw".to_string()],
+      ..Frontmatter::default()
+    };
+    assert_eq!(variants_for(&metadata), vec![Variant::NonStrict]);
   }
 
   #[derive(Debug, Clone)]

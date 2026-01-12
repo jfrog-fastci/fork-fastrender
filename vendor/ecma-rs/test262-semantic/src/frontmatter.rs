@@ -27,36 +27,41 @@ pub struct ParsedTestSource {
 }
 
 pub fn parse_test_source(source: &str) -> Result<ParsedTestSource> {
-  let source = source.strip_prefix('\u{feff}').unwrap_or(source);
-  let Some(start) = find_frontmatter_start(source) else {
+  let source_no_bom = source.strip_prefix('\u{feff}').unwrap_or(source);
+  let Some(start) = find_frontmatter_start(source_no_bom) else {
     return Ok(ParsedTestSource {
       frontmatter: None,
-      body: source.to_string(),
+      body: source_no_bom.to_string(),
     });
   };
 
   let yaml_start = start + "/*---".len();
-  let Some(end_rel) = source[yaml_start..].find("---*/") else {
+  let Some(end_rel) = source_no_bom[yaml_start..].find("---*/") else {
     bail!("frontmatter begins with `/*---` but is missing terminating `---*/`");
   };
   let yaml_end = yaml_start + end_rel;
-  let yaml = &source[yaml_start..yaml_end];
+  let yaml = &source_no_bom[yaml_start..yaml_end];
   let after = yaml_end + "---*/".len();
 
   let frontmatter: Frontmatter =
     serde_yaml::from_str(yaml).context("deserialize test262 YAML frontmatter")?;
+  let is_raw = frontmatter.flags.iter().any(|flag| flag == "raw");
 
   Ok(ParsedTestSource {
     frontmatter: Some(frontmatter),
-    body: {
-      let after = source
+    body: if is_raw {
+      // `raw` tests must not have their source modified, which includes
+      // preserving the `/*--- ... ---*/` frontmatter comment.
+      source.to_string()
+    } else {
+      let after = source_no_bom
         .get(after..)
         .ok_or_else(|| anyhow!("frontmatter terminator offset out of bounds"))?;
 
       // Preserve any leading whitespace/comments before the frontmatter block, but remove the
       // frontmatter block itself.
       let mut body = String::with_capacity(start + after.len());
-      body.push_str(&source[..start]);
+      body.push_str(&source_no_bom[..start]);
       body.push_str(after);
       body
     },
@@ -268,5 +273,18 @@ let x = 1;
     assert_eq!(parsed.frontmatter.unwrap().flags, vec!["onlyStrict"]);
     assert!(parsed.body.starts_with("#!/usr/bin/env node\n"));
     assert!(!parsed.body.contains("flags:"));
+  }
+
+  #[test]
+  fn raw_flag_preserves_frontmatter_comment_in_body() {
+    let src = r#"/*---
+flags: [raw]
+---*/
+let x = 1;
+"#;
+
+    let parsed = parse_test_source(src).unwrap();
+    assert_eq!(parsed.frontmatter.unwrap().flags, vec!["raw"]);
+    assert_eq!(parsed.body, src);
   }
 }
