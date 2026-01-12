@@ -392,12 +392,12 @@ When working on JavaScript parsing (via the vendored `vendor/ecma-rs`), the repo
 
 There is a self-contained WPT-style runner under `tests/wpt/` for local “render and compare” tests. It does not talk to upstream WPT and never fetches from the network.
 
-- Run: `bash scripts/cargo_agent.sh xtask test wpt` (or `bash scripts/cargo_agent.sh test --quiet -p fastrender --test integration wpt_local_suite_passes -- --exact`)
+- Run: `bash scripts/cargo_agent.sh xtask test wpt` (or `bash scripts/cargo_agent.sh test --quiet -p fastrender --test integration wpt::wpt_local_suite_passes -- --exact`)
 - Run a scoped subset (fast iteration) via `WPT_FILTER`:
-  - `WPT_FILTER=layout/floats bash scripts/cargo_agent.sh test --quiet -p fastrender --test integration wpt_local_suite_passes -- --exact`
-  - `WPT_FILTER=paint/stacking bash scripts/cargo_agent.sh test --quiet -p fastrender --test integration wpt_local_suite_passes -- --exact`
-  - `WPT_FILTER=paint/overflow bash scripts/cargo_agent.sh test --quiet -p fastrender --test integration wpt_local_suite_passes -- --exact`
-  - `WPT_FILTER=css/tables bash scripts/cargo_agent.sh test --quiet -p fastrender --test integration wpt_local_suite_passes -- --exact`
+  - `WPT_FILTER=layout/floats bash scripts/cargo_agent.sh test --quiet -p fastrender --test integration wpt::wpt_local_suite_passes -- --exact`
+  - `WPT_FILTER=paint/stacking bash scripts/cargo_agent.sh test --quiet -p fastrender --test integration wpt::wpt_local_suite_passes -- --exact`
+  - `WPT_FILTER=paint/overflow bash scripts/cargo_agent.sh test --quiet -p fastrender --test integration wpt::wpt_local_suite_passes -- --exact`
+  - `WPT_FILTER=css/tables bash scripts/cargo_agent.sh test --quiet -p fastrender --test integration wpt::wpt_local_suite_passes -- --exact`
 - Each rendered document is given a per-document `file://` base URL (the test HTML path for the test render, and the reference HTML path for the reference render) so relative resources like `support/*.css`, images, and fonts resolve reliably regardless of the current working directory.
 - `WptRunnerBuilder::build()` defaults to an offline renderer (`ResourcePolicy` with `http/https` disabled). Advanced callers can still inject a custom renderer via `.renderer(...)`.
 

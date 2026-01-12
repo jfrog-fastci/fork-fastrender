@@ -11,34 +11,18 @@ pub mod runner;
 #[cfg(test)]
 mod validate_manifest;
 
-pub(crate) fn init_rayon_for_wpt_tests() {
-  use std::sync::Once;
-
-  static INIT: Once = Once::new();
-  INIT.call_once(|| {
-    if let Err(err) = rayon::ThreadPoolBuilder::new()
-      .num_threads(1)
-      .build_global()
-    {
-      let already_initialized = std::panic::catch_unwind(|| rayon::current_num_threads()).is_ok();
-      if !already_initialized {
-        panic!("failed to initialize Rayon global pool for WPT tests: {err}");
-      }
-    }
-  });
-}
-
 pub(crate) fn create_test_renderer() -> fastrender::FastRender {
-  init_rayon_for_wpt_tests();
-  fastrender::FastRender::builder()
-    .font_sources(fastrender::FontConfig::bundled_only())
-    .resource_policy(
+  crate::common::init_rayon_for_tests(1);
+  let config = fastrender::FastRenderConfig::default()
+    .with_font_sources(fastrender::FontConfig::bundled_only())
+    .with_resource_policy(
       fastrender::ResourcePolicy::default()
         .allow_http(false)
         .allow_https(false),
     )
-    .build()
-    .expect("build renderer")
+    .with_paint_parallelism(fastrender::PaintParallelism::disabled())
+    .with_layout_parallelism(fastrender::LayoutParallelism::disabled());
+  fastrender::FastRender::with_config(config).expect("build renderer")
 }
 
 // Re-export main types for convenience
@@ -59,6 +43,57 @@ pub use harness::TestType;
 pub use runner::RunnerStats;
 pub use runner::WptRunner;
 pub use runner::WptRunnerBuilder;
+
+#[test]
+fn wpt_local_suite_passes() {
+  use std::path::{Path, PathBuf};
+
+  crate::common::with_large_stack(|| {
+    let renderer = create_test_renderer();
+    let mut config = HarnessConfig::default();
+    // The discovery directory under `tests/wpt/tests/` contains harness-focused metadata fixtures
+    // (expected failures, disables, etc.). Keep the smoke-test suite focused on the curated
+    // manifest entries so UPDATE_WPT_EXPECTED mode doesn't trip over those fixtures.
+    config.discovery_mode = DiscoveryMode::ManifestOnly;
+    config.expected_dir = std::env::var_os("WPT_EXPECTED_DIR")
+      .map(PathBuf::from)
+      .unwrap_or_else(|| PathBuf::from("tests/wpt/expected"));
+    config.update_expected = std::env::var_os("UPDATE_WPT_EXPECTED").is_some();
+    let filter = std::env::var("WPT_FILTER")
+      .ok()
+      .map(|value| value.trim().to_string())
+      .and_then(|value| (!value.is_empty()).then_some(value));
+    config.filter = filter.clone();
+
+    let mut runner = WptRunner::with_config(renderer, config);
+
+    let results = runner.run_suite(Path::new("tests/wpt/tests"));
+    assert!(
+      !results.is_empty(),
+      "WPT run produced no results (WPT_FILTER={})",
+      filter.as_deref().unwrap_or("<unset>")
+    );
+
+    let runnable = results
+      .iter()
+      .filter(|result| result.status != TestStatus::Skip)
+      .count();
+    assert!(
+      runnable > 0,
+      "WPT filter matched no runnable tests (WPT_FILTER={})",
+      filter.as_deref().unwrap_or("<unset>")
+    );
+
+    for result in &results {
+      assert!(
+        !result.status.is_failure(),
+        "{} failed with status {:?}",
+        result.metadata.id,
+        result.status
+      );
+    }
+  });
+}
 
 #[cfg(test)]
 mod tests;

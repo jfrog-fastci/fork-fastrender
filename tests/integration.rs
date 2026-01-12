@@ -23,3 +23,5 @@ mod tooling;
 mod regression;
 mod bin;
 mod bundled;
+
+mod wpt;
