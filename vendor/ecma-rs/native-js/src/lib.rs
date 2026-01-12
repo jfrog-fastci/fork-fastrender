@@ -52,6 +52,7 @@ extern crate runtime_native as _;
 pub mod builtins;
 pub mod backend_ssa;
 pub mod codegen;
+mod codegen_optimize_js;
 pub mod codes;
 pub mod compiler;
 pub(crate) mod array_abi;

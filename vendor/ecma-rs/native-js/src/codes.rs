@@ -202,6 +202,28 @@ pub const LEGACY_TYPE_ERROR: Code = Code::new("NJS0204", "type error in native-j
 pub const HIR_CODEGEN_UNSUPPORTED_SHAPE_GC_TRACE: Code =
   Code::new("NJS0205", "HIR codegen: unsupported GC trace layout for object shape");
 
+/// NJS0300: Optimize-js backend rejected a GC object layout that requires conditional/tag-dispatch tracing.
+pub const OPTIMIZE_JS_UNTRACEABLE_GC_LAYOUT: Code = Code::new(
+  "NJS0300",
+  "optimize-js backend: untraceable GC layout (requires tag dispatch)",
+);
+
+/// NJS0301: Optimize-js backend rejected an array element layout that would require boxing.
+pub const OPTIMIZE_JS_ARRAY_ELEM_NEEDS_BOXING: Code =
+  Code::new("NJS0301", "optimize-js backend: array element needs boxing");
+
+/// NJS0302: Optimize-js backend encountered an unsupported property access form.
+pub const OPTIMIZE_JS_UNSUPPORTED_PROPERTY_ACCESS: Code =
+  Code::new("NJS0302", "optimize-js backend: unsupported property access");
+
+/// NJS0303: Optimize-js backend encountered an unsupported IL instruction.
+pub const OPTIMIZE_JS_UNSUPPORTED_IL: Code =
+  Code::new("NJS0303", "optimize-js backend: unsupported optimize-js IL instruction");
+
+/// NJS0304: Optimize-js backend failed to emit a runtime call due to an ABI/GC-safety mismatch.
+pub const OPTIMIZE_JS_RUNTIME_CALL_ERROR: Code =
+  Code::new("NJS0304", "optimize-js backend: invalid runtime call ABI");
+
 impl Code {
   pub const fn new(id: &'static str, description: &'static str) -> Self {
     Self { id, description }

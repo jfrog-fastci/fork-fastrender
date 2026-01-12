@@ -17,7 +17,7 @@ use crate::emit::TargetConfig;
 use crate::resolve::Resolver;
 use crate::{
   compile_typescript_to_llvm_ir, emit, link, Artifact, CompileOptions, CompilerOptions, EmitKind,
-  NativeJsError, OptLevel, Toolchain,
+  BackendKind, NativeJsError, OptLevel, Toolchain,
 };
 use diagnostics::{Diagnostic, Severity, Span, TextRange};
 use hir_js::{BodyId, ExprKind, FileKind};
@@ -399,7 +399,14 @@ impl<'a> Compiler<'a> {
 
   fn compile_checked(&self) -> Result<Artifact, NativeJsError> {
     let loaded = self.load_hir_and_types()?;
-    self.validate_strict_subset()?;
+    match self.opts.backend {
+      BackendKind::Hir => {
+        self.validate_strict_subset()?;
+      }
+      BackendKind::Ssa => {
+        self.validate_strict_dialect()?;
+      }
+    }
     self.reject_disabled_builtins()?;
 
     let context = Context::create();
@@ -460,6 +467,17 @@ impl<'a> Compiler<'a> {
   fn validate_strict_subset(&self) -> Result<(), NativeJsError> {
     crate::validate::validate_strict_subset(self.program)
       .map_err(|diagnostics| NativeJsError::Rejected { diagnostics })
+  }
+
+  fn validate_strict_dialect(&self) -> Result<(), NativeJsError> {
+    let files = self.program.reachable_files();
+    let mut diagnostics = crate::strict::validate(self.program, &files);
+    if diagnostics.is_empty() {
+      Ok(())
+    } else {
+      codes::normalize_diagnostics(&mut diagnostics);
+      Err(NativeJsError::Rejected { diagnostics })
+    }
   }
 
   fn reject_disabled_builtins(&self) -> Result<(), NativeJsError> {
@@ -549,15 +567,17 @@ impl<'a> Compiler<'a> {
         },
       )
       .map_err(|diagnostics| NativeJsError::Rejected { diagnostics }),
-      crate::BackendKind::Ssa => crate::backend_ssa::codegen(
+      crate::BackendKind::Ssa => crate::codegen_optimize_js::codegen(
         context,
         self.program,
         self.entry,
         loaded.entrypoint,
-        crate::backend_ssa::CodegenOptions {
+        crate::codegen::CodegenOptions {
           module_name: "native-js".to_string(),
+          debug: self.opts.debug,
+          debug_path_prefix_map: self.opts.debug_path_prefix_map.clone(),
+          opt_level: self.opts.opt_level,
         },
-        self.opts.debug,
       )
       .map_err(|diagnostics| NativeJsError::Rejected { diagnostics }),
     }

@@ -443,6 +443,99 @@ impl TypeContext {
       expr_types,
     }
   }
+
+  /// Build a [`TypeContext`] from a `typecheck-ts` program **without** retaining an `Arc` to the
+  /// program.
+  ///
+  /// This is intended for downstream consumers that already own a `&typecheck_ts::Program` but
+  /// cannot (or do not want to) wrap it in an `Arc` just to satisfy the optimizer API.
+  ///
+  /// Note: in this mode `TypeContext` can still provide `expr_type()` lookups (so the optimizer can
+  /// populate `InstMeta.type_id`), but helpers that need access to the full program
+  /// (`expr_value_type_summary`, truthiness checks, etc.) will conservatively return
+  /// unknown/`None`.
+  pub fn from_typecheck_program_aligned_programless(
+    program: &typecheck_ts::Program,
+    file: typecheck_ts::FileId,
+    lower: &hir_js::LowerResult,
+  ) -> Self {
+    use ahash::HashMapExt;
+
+    let _ = file;
+    let mut expr_types = ahash::HashMap::new();
+
+    for (body_id, idx) in lower.body_index.iter() {
+      let checked = program.check_body(*body_id);
+      let body = &lower.bodies[*idx];
+      let mut body_types = Vec::with_capacity(body.exprs.len());
+      for idx in 0..body.exprs.len() {
+        body_types.push(checked.expr_types().get(idx).copied());
+      }
+      expr_types.insert(*body_id, body_types);
+    }
+
+    Self {
+      program: None,
+      expr_types,
+    }
+  }
+
+  /// Like [`TypeContext::from_typecheck_program`], but does not retain an `Arc` to the type program.
+  pub fn from_typecheck_program_programless(
+    program: &typecheck_ts::Program,
+    file: typecheck_ts::FileId,
+    lower: &hir_js::LowerResult,
+  ) -> Self {
+    use ahash::HashMapExt;
+    use diagnostics::TextRange;
+
+    let mut checked_expr_types: ahash::HashMap<BodyId, Vec<Option<typecheck_ts::TypeId>>> =
+      ahash::HashMap::new();
+    let mut span_to_ty: ahash::HashMap<TextRange, Option<typecheck_ts::TypeId>> =
+      ahash::HashMap::new();
+
+    for body_id in program.bodies_in_file(file) {
+      let checked = program.check_body(body_id);
+      checked_expr_types.insert(
+        body_id,
+        checked.expr_types().iter().copied().map(Some).collect(),
+      );
+      for (&span, &ty) in checked.expr_spans().iter().zip(checked.expr_types().iter()) {
+        span_to_ty
+          .entry(span)
+          .and_modify(|existing| {
+            if existing.map(|existing| existing != ty).unwrap_or(false) {
+              *existing = None;
+            }
+          })
+          .or_insert(Some(ty));
+      }
+    }
+
+    let mut expr_types = ahash::HashMap::new();
+    for (body_id, idx) in lower.body_index.iter() {
+      let body = &lower.bodies[*idx];
+      if let Some(types) = checked_expr_types
+        .get(body_id)
+        .filter(|types| types.len() == body.exprs.len())
+      {
+        expr_types.insert(*body_id, types.clone());
+        continue;
+      }
+
+      let mut body_types = Vec::with_capacity(body.exprs.len());
+      for expr in body.exprs.iter() {
+        let ty = span_to_ty.get(&expr.span).and_then(|ty| *ty);
+        body_types.push(ty);
+      }
+      expr_types.insert(*body_id, body_types);
+    }
+
+    Self {
+      program: None,
+      expr_types,
+    }
+  }
 }
 
 #[cfg(feature = "typed")]

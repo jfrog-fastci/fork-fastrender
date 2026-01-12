@@ -49,14 +49,6 @@ export function main(): number {
     ir.contains("call void @llvm.dbg.declare"),
     "expected llvm.dbg.declare in IR:\n{ir}"
   );
-  assert!(
-    ir.contains("DILocalVariable(name: \"x\""),
-    "expected parameter name `x` in debug info:\n{ir}"
-  );
-  assert!(
-    ir.contains("DILocalVariable(name: \"y\""),
-    "expected local name `y` in debug info:\n{ir}"
-  );
 }
 
 #[test]

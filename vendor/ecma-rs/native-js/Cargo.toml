@@ -31,7 +31,7 @@ diagnostics = { workspace = true }
 hir-js = { workspace = true }
 inkwell = { workspace = true }
 llvm-sys = { workspace = true }
-optimize-js = { workspace = true }
+optimize-js = { workspace = true, features = ["typed"] }
 parse-js = { workspace = true }
 runtime-native-abi = { workspace = true }
 runtime-native = { workspace = true, optional = true }

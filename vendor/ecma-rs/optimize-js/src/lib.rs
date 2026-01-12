@@ -56,7 +56,9 @@ pub use crate::decompile::program_to_js;
 pub use crate::decompile::ProgramToJsError;
 pub use crate::decompile::{program_to_ast, DecompileOptions};
 #[cfg(feature = "typed")]
-pub use crate::native::{compile_file_native_ready, NativeReadyOptions, NativeReadyProgram};
+pub use crate::native::{
+  compile_file_native_ready, compile_file_native_ready_programless, NativeReadyOptions, NativeReadyProgram,
+};
 #[cfg(feature = "serde")]
 pub use crate::dump::{dump_program, DumpOptions, ProgramDump, DUMP_VERSION};
 pub use crate::strict_native_verifier::{verify_program_strict_native, VerifyOptions};

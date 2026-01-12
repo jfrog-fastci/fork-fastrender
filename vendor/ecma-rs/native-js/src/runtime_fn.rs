@@ -131,6 +131,18 @@ pub enum RuntimeFn {
   StringPinInterned,
 
   // -----------------------------------------------------------------------------
+  // Strings
+  // -----------------------------------------------------------------------------
+  /// Allocate a GC-managed UTF-8 string and copy `bytes`.
+  ///
+  /// `rt_string_new_utf8(bytes: *const u8, len: usize) -> GcPtr`
+  StringNewUtf8,
+  /// Return the length (in UTF-8 bytes) of a GC-managed string.
+  ///
+  /// `rt_string_len(s: GcPtr) -> usize`
+  StringLen,
+
+  // -----------------------------------------------------------------------------
   // Parallel scheduler (worker pool)
   // -----------------------------------------------------------------------------
   //
@@ -693,6 +705,36 @@ impl RuntimeFn {
           runtime_params: &[AbiTy::I32],
           codegen_ret: AbiTy::Void,
           codegen_params: &[AbiTy::I32],
+        },
+      },
+      RuntimeFn::StringNewUtf8 => RuntimeFnDecl {
+        spec: RuntimeFnSpec {
+          name: "rt_string_new_utf8",
+          may_gc: true,
+          gc_ptr_args: 0,
+          gc_handle_args: 0,
+          arg_rooting: ArgRootingPolicy::NoGcPointersAllowedIfMayGc,
+        },
+        abi: RuntimeFnAbi {
+          runtime_ret: AbiTy::RawPtr,
+          runtime_params: &[AbiTy::RawPtr, AbiTy::I64],
+          codegen_ret: AbiTy::GcPtr,
+          codegen_params: &[AbiTy::RawPtr, AbiTy::I64],
+        },
+      },
+      RuntimeFn::StringLen => RuntimeFnDecl {
+        spec: RuntimeFnSpec {
+          name: "rt_string_len",
+          may_gc: false,
+          gc_ptr_args: 1,
+          gc_handle_args: 0,
+          arg_rooting: ArgRootingPolicy::NoGcPointersAllowedIfMayGc,
+        },
+        abi: RuntimeFnAbi {
+          runtime_ret: AbiTy::I64,
+          runtime_params: &[AbiTy::RawPtr],
+          codegen_ret: AbiTy::I64,
+          codegen_params: &[AbiTy::GcPtr],
         },
       },
       RuntimeFn::ParallelSpawn => RuntimeFnDecl {
