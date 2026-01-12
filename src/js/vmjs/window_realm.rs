@@ -41765,12 +41765,31 @@ mod tests {
       "(() => {\n\
         const doc2 = document.implementation.createHTMLDocument();\n\
 \n\
-        // Use both existing nodes (documentElement) and freshly created nodes (createElement) so\n\
-        // multi-document EventTarget resolution works consistently.\n\
+        // Use both existing nodes (documentElement) and freshly created nodes (createElement).\n\
+        //\n\
+        // IMPORTANT: this test forces a `NodeId` collision between the host document and the owned\n\
+        // document so using the wrong event registry would cross-fire listeners.\n\
         const hostEl = document.documentElement;\n\
         const ownedEl = doc2.documentElement;\n\
-        const hostDiv = document.createElement('div');\n\
-        const ownedDiv = doc2.createElement('div');\n\
+        if (hostEl.ownerDocument !== document) return 'bad-host-owner';\n\
+        if (ownedEl.ownerDocument !== doc2) return 'bad-owned-owner';\n\
+\n\
+        const idKey = '__fastrender_node_id';\n\
+        let hostDiv = document.createElement('div');\n\
+        let ownedDiv = doc2.createElement('div');\n\
+        let hostId = hostDiv[idKey];\n\
+        let ownedId = ownedDiv[idKey];\n\
+        if (typeof hostId !== 'number' || typeof ownedId !== 'number') return 'missing-node-id';\n\
+        const targetId = Math.max(hostId, ownedId) + 3;\n\
+        while (hostId < targetId) {\n\
+          hostDiv = document.createElement('div');\n\
+          hostId = hostDiv[idKey];\n\
+        }\n\
+        while (ownedId < targetId) {\n\
+          ownedDiv = doc2.createElement('div');\n\
+          ownedId = ownedDiv[idKey];\n\
+        }\n\
+        if (hostId !== ownedId) return 'no-collision:' + hostId + ',' + ownedId;\n\
 \n\
         let hostElCount = 0;\n\
         let ownedElCount = 0;\n\
