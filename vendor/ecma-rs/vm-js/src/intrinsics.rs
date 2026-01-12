@@ -715,8 +715,6 @@ impl Intrinsics {
     let array_is_array = vm.register_native_call(builtins::array_is_array)?;
     let array_prototype_keys = vm.register_native_call(builtins::array_prototype_keys)?;
     let array_prototype_entries = vm.register_native_call(builtins::array_prototype_entries)?;
-    let proxy_revocable = vm.register_native_call(builtins::proxy_revocable)?;
-    let proxy_revoker_call = vm.register_native_call(builtins::proxy_revoker)?;
     let array_prototype_values = vm.register_native_call(builtins::array_prototype_values)?;
     let array_iterator_next_call = vm.register_native_call(builtins::array_iterator_next)?;
     let iterator_prototype_iterator = vm.register_native_call(builtins::iterator_prototype_iterator)?;
@@ -833,7 +831,6 @@ impl Intrinsics {
     let generator_prototype_next = vm.register_native_call(builtins::generator_prototype_next)?;
     let generator_prototype_return = vm.register_native_call(builtins::generator_prototype_return)?;
     let generator_prototype_throw = vm.register_native_call(builtins::generator_prototype_throw)?;
-
     // `%Number%`, `%Boolean%`, `%Date%`, and global functions.
     let number_call = vm.register_native_call(builtins::number_constructor_call)?;
     let number_construct = vm.register_native_construct(builtins::number_constructor_construct)?;
@@ -1342,6 +1339,8 @@ impl Intrinsics {
     // interaction, but does not implement Proxy trap semantics.
     let proxy_call = vm.register_native_call(builtins::proxy_constructor_call)?;
     let proxy_construct = vm.register_native_construct(builtins::proxy_constructor_construct)?;
+    let proxy_revocable = vm.register_native_call(builtins::proxy_revocable)?;
+    let proxy_revoker_call = vm.register_native_call(builtins::proxy_revoker)?;
     let proxy_name = scope.alloc_string("Proxy")?;
     let proxy_constructor = alloc_rooted_native_function(
       scope,

@@ -22,6 +22,8 @@
 
 pub mod expectations;
 pub mod fixtures;
+#[cfg(feature = "native-js-runner")]
+pub mod native_js_runner;
 
 use std::fs;
 use std::path::{Path, PathBuf};
