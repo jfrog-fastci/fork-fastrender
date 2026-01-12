@@ -61,6 +61,31 @@ id = "language/expressions/comma/tco-final.js"
 status = "xfail"
 reason = "vm-js does not yet implement named function expression binding / proper tail calls."
 
+# --- Tagged template literals (newly green) ---
+[[expectations]]
+glob = "language/expressions/tagged-template/**"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/tagged-template/cache-realm.js"
+status = "xfail"
+reason = "vm-js does not yet expose the test262 $262 host realm API (createRealm)."
+
+[[expectations]]
+id = "language/expressions/tagged-template/tco-call.js"
+status = "xfail"
+reason = "vm-js does not yet implement proper tail calls (PTC)."
+
+[[expectations]]
+id = "language/expressions/tagged-template/tco-member.js"
+status = "xfail"
+reason = "vm-js does not yet implement proper tail calls (PTC)."
+
+[[expectations]]
+id = "language/expressions/tagged-template/template-object.js"
+status = "xfail"
+reason = "vm-js does not yet implement Object.getOwnPropertyDescriptor, which is used by the test262 harness."
+
 # --- Broad xfail fallback (keep below any `pass` globs) ---
 [[expectations]]
 glob = "language/expressions/**"

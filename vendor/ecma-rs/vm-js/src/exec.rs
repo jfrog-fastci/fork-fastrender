@@ -19,7 +19,7 @@ use parse_js::ast::expr::{
   IdExpr, ImportExpr, MemberExpr, TaggedTemplateExpr, UnaryExpr, UnaryPostfixExpr,
 };
 use parse_js::ast::func::{Func, FuncBody};
-use parse_js::ast::node::{literal_string_code_units, Node, ParenthesizedExpr};
+use parse_js::ast::node::{literal_string_code_units, template_string_parts, Node, ParenthesizedExpr};
 use parse_js::ast::stmt::decl::{ClassDecl, FuncDecl, PatDecl, VarDecl, VarDeclMode};
 use parse_js::ast::stmt::{
   BlockStmt, CatchBlock, DoWhileStmt, ExprStmt, ForBody, ForInOfLhs, ForInStmt, ForOfStmt,
@@ -4339,7 +4339,7 @@ impl<'a> Evaluator<'a> {
       Expr::LitArr(node) => self.eval_lit_arr(scope, &node.stx),
       Expr::LitObj(node) => self.eval_lit_obj(scope, &node.stx),
       Expr::LitTemplate(node) => self.eval_lit_template(scope, &node.stx),
-      Expr::TaggedTemplate(node) => self.eval_tagged_template(scope, &node.stx),
+      Expr::TaggedTemplate(node) => self.eval_tagged_template(scope, node),
       Expr::This(_) => Ok(self.this),
       Expr::NewTarget(_) => Ok(self.new_target),
       Expr::Id(node) => self.eval_id(scope, &node.stx),
@@ -4874,10 +4874,14 @@ impl<'a> Evaluator<'a> {
   fn eval_tagged_template(
     &mut self,
     scope: &mut Scope<'_>,
-    expr: &TaggedTemplateExpr,
+    expr: &Node<TaggedTemplateExpr>,
   ) -> Result<Value, VmError> {
+    let template_parts = template_string_parts(&expr.assoc).ok_or(VmError::InvariantViolation(
+      "TaggedTemplateExpr is missing TemplateStringParts association",
+    ))?;
+
     // Compute `callee` and `this` similarly to `CallExpression` evaluation.
-    let (callee_value, this_value) = match &*expr.function.stx {
+    let (callee_value, this_value) = match &*expr.stx.function.stx {
       Expr::Member(member) if member.stx.optional_chaining => {
         let base = self.eval_expr(scope, &member.stx.left)?;
         if is_nullish(base) {
@@ -4916,7 +4920,7 @@ impl<'a> Evaluator<'a> {
         (callee_value, base)
       }
       Expr::Member(_) | Expr::ComputedMember(_) | Expr::Id(_) | Expr::IdPat(_) => {
-        let reference = self.eval_reference(scope, &expr.function)?;
+        let reference = self.eval_reference(scope, &expr.stx.function)?;
         let this_value = match reference {
           Reference::Property { base, .. } => base,
           _ => Value::Undefined,
@@ -4928,7 +4932,7 @@ impl<'a> Evaluator<'a> {
         (callee_value, this_value)
       }
       _ => {
-        let callee_value = self.eval_expr(scope, &expr.function)?;
+        let callee_value = self.eval_expr(scope, &expr.stx.function)?;
         (callee_value, Value::Undefined)
       }
     };
@@ -4937,20 +4941,31 @@ impl<'a> Evaluator<'a> {
     let mut call_scope = scope.reborrow();
     call_scope.push_roots(&[callee_value, this_value])?;
 
-    let template_obj = self.create_template_object(&mut call_scope, &expr.parts)?;
+    let rel_start = expr.loc.start_u32().saturating_sub(self.env.prefix_len());
+    let rel_end = expr.loc.end_u32().saturating_sub(self.env.prefix_len());
+    let span_start = self.env.base_offset().saturating_add(rel_start);
+    let span_end = self.env.base_offset().saturating_add(rel_end);
+
+    let template_obj = self.vm.get_or_create_template_object(
+      &mut call_scope,
+      self.env.source(),
+      span_start,
+      span_end,
+      template_parts,
+    )?;
     call_scope.push_root(Value::Object(template_obj))?;
 
     let mut args: Vec<Value> = Vec::new();
     // Pre-reserve based on the total part count (an upper bound on the number of substitutions) so
     // we don't need an extra unbudgeted scan over the parts list.
-    let subst_count = expr.parts.len();
+    let subst_count = expr.stx.parts.len();
     args
       .try_reserve_exact(subst_count.saturating_add(1))
       .map_err(|_| VmError::OutOfMemory)?;
     args.push(Value::Object(template_obj));
 
     // Evaluate substitutions left-to-right.
-    for part in &expr.parts {
+    for part in &expr.stx.parts {
       let LitTemplatePart::Substitution(sub_expr) = part else {
         continue;
       };
@@ -4960,73 +4975,6 @@ impl<'a> Evaluator<'a> {
     }
 
     self.call(&mut call_scope, callee_value, this_value, &args)
-  }
-
-  fn create_template_object(
-    &mut self,
-    scope: &mut Scope<'_>,
-    parts: &[LitTemplatePart],
-  ) -> Result<GcObject, VmError> {
-    let intr = self
-      .vm
-      .intrinsics()
-      .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
-
-    // Allocate with `length = 0` and let `CreateDataProperty` grow the array length as we define
-    // indexed elements. This avoids an extra `O(N)` segment-count scan before we start ticking in
-    // the main segment loop.
-    let cooked = scope.alloc_array(0)?;
-    scope.push_root(Value::Object(cooked))?;
-    scope
-      .heap_mut()
-      .object_set_prototype(cooked, Some(intr.array_prototype()))?;
-
-    let raw = scope.alloc_array(0)?;
-    scope.push_root(Value::Object(raw))?;
-    scope
-      .heap_mut()
-      .object_set_prototype(raw, Some(intr.array_prototype()))?;
-
-    let mut idx: u32 = 0;
-    for part in parts {
-      let LitTemplatePart::String(s) = part else {
-        continue;
-      };
-
-      // Per-segment tick: tagged templates can contain large numbers of segments, and creating the
-      // template object involves allocation + property definition even when no nested expressions
-      // are evaluated.
-      self.tick()?;
-
-      let mut elem_scope = scope.reborrow();
-      let cooked_s = elem_scope.alloc_string(s)?;
-      elem_scope.push_root(Value::String(cooked_s))?;
-      let key_s = elem_scope.alloc_string(&idx.to_string())?;
-      elem_scope.push_root(Value::String(key_s))?;
-      let key = PropertyKey::from_string(key_s);
-
-      elem_scope.create_data_property_or_throw(cooked, key, Value::String(cooked_s))?;
-      elem_scope.create_data_property_or_throw(raw, key, Value::String(cooked_s))?;
-
-      idx = idx.saturating_add(1);
-    }
-
-    let raw_key_s = scope.alloc_string("raw")?;
-    scope.push_root(Value::String(raw_key_s))?;
-    scope.define_property(
-      cooked,
-      PropertyKey::from_string(raw_key_s),
-      PropertyDescriptor {
-        enumerable: false,
-        configurable: false,
-        kind: PropertyKind::Data {
-          value: Value::Object(raw),
-          writable: false,
-        },
-      },
-    )?;
-
-    Ok(cooked)
   }
 
   fn eval_lit_arr(&mut self, scope: &mut Scope<'_>, expr: &LitArrExpr) -> Result<Value, VmError> {

@@ -1243,6 +1243,36 @@ impl<'a> Parser<'a> {
                   )));
                 }
 
+                // Tagged template application takes precedence over `new` invocation:
+                // `new tag\`x\`` should parse as `new (tag\`x\`)`, not `(new tag)\`x\``.
+                //
+                // `parse-js` represents `new <expr>` as `UnaryExpr(New, argument=<expr>)`, so we
+                // need to parse tagged templates *into* the `new` operand before returning, rather
+                // than letting the postfix parser attach the template to the already-built
+                // `UnaryExpr(New, ...)`.
+                let next = p.peek();
+                if !next.preceded_by_line_terminator
+                  && matches!(
+                    next.typ,
+                    TT::LiteralTemplatePartString | TT::LiteralTemplatePartStringEnd
+                  )
+                {
+                  let loc = next.loc;
+                  // ES2018: Tagged templates allow invalid escape sequences (cooked value is
+                  // undefined, raw is still available).
+                  let function = callee;
+                  let (parts, template_parts) = p.lit_template_parts_with_template_data(ctx, true)?;
+                  let mut node = Node::new(
+                    function.loc + loc,
+                    TaggedTemplateExpr {
+                      function,
+                      parts,
+                    },
+                  );
+                  node.assoc.set(template_parts);
+                  callee = node.into_wrapped();
+                }
+
                 // Optional argument list (`new Foo(...)` / `new Foo?.(...)`).
                 if matches!(
                   p.peek().typ,

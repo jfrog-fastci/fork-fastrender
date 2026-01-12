@@ -23,7 +23,9 @@ use crate::ExternalMemoryToken;
 use crate::GcObject;
 use crate::Heap;
 use crate::Intrinsics;
+use crate::PropertyDescriptor;
 use crate::PropertyKey;
+use crate::PropertyKind;
 use crate::RealmId;
 use crate::RootId;
 use crate::Scope;
@@ -34,7 +36,7 @@ use parse_js::ast::class_or_object::{
 };
 use parse_js::ast::expr::Expr as AstExpr;
 use parse_js::ast::func::Func;
-use parse_js::ast::node::Node;
+use parse_js::ast::node::{Node, TemplateStringParts};
 use parse_js::ast::stmt::Stmt;
 use parse_js::error::SyntaxErrorType;
 use parse_js::{parse_with_options_cancellable_by_with_init, Dialect, ParseOptions, SourceType};
@@ -148,6 +150,21 @@ struct EcmaFunctionKey {
   span_start: u32,
   span_end: u32,
   kind: EcmaFunctionKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct TemplateRegistryKey {
+  realm: RealmId,
+  source: *const SourceText,
+  span_start: u32,
+  span_end: u32,
+}
+
+#[derive(Debug)]
+struct TemplateRegistryEntry {
+  #[allow(dead_code)]
+  source: Arc<SourceText>,
+  root: RootId,
 }
 
 /// Construction-time VM options.
@@ -268,6 +285,7 @@ pub struct Vm {
   ecma_functions: Vec<EcmaFunctionCode>,
   ecma_function_cache: HashMap<EcmaFunctionKey, EcmaFunctionId>,
   import_meta_cache: HashMap<ModuleId, RootId>,
+  template_registry: HashMap<TemplateRegistryKey, TemplateRegistryEntry>,
   async_resume_call: Option<NativeFunctionId>,
   next_async_continuation_id: u32,
   async_continuations: HashMap<u32, AsyncContinuation>,
@@ -310,6 +328,7 @@ impl std::fmt::Debug for Vm {
     ds.field("ecma_functions", &self.ecma_functions.len());
     ds.field("ecma_function_cache", &self.ecma_function_cache.len());
     ds.field("import_meta_cache", &self.import_meta_cache.len());
+    ds.field("template_registry", &self.template_registry.len());
     ds.field("async_continuations", &self.async_continuations.len());
     ds.field("module_graph", &self.module_graph.is_some());
     ds.field("intrinsics", &self.intrinsics);
@@ -492,6 +511,7 @@ impl Vm {
       ecma_functions: Vec::new(),
       ecma_function_cache: HashMap::new(),
       import_meta_cache: HashMap::new(),
+      template_registry: HashMap::new(),
       async_resume_call: None,
       next_async_continuation_id: 0,
       async_continuations: HashMap::new(),
@@ -1489,6 +1509,183 @@ impl Vm {
     }
     self.import_meta_cache.insert(module, root);
     Ok(import_meta)
+  }
+
+  pub(crate) fn get_or_create_template_object(
+    &mut self,
+    scope: &mut Scope<'_>,
+    source: Arc<SourceText>,
+    span_start: u32,
+    span_end: u32,
+    parts: &TemplateStringParts,
+  ) -> Result<GcObject, VmError> {
+    let realm = self
+      .current_realm()
+      .ok_or(VmError::Unimplemented("template literal requires active realm"))?;
+
+    let source_ptr = Arc::as_ptr(&source);
+    let key = TemplateRegistryKey {
+      realm,
+      source: source_ptr,
+      span_start,
+      span_end,
+    };
+
+    if let Some(entry) = self.template_registry.get(&key) {
+      let Some(Value::Object(obj)) = scope.heap().get_root(entry.root) else {
+        return Err(VmError::invalid_handle());
+      };
+      return Ok(obj);
+    }
+
+    let intr = self
+      .intrinsics()
+      .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+
+    // Helper: allocate a canonical array index property key for `idx` without intermediate heap
+    // allocations (avoid `idx.to_string()`, which can abort the host process on allocator OOM).
+    fn alloc_array_index_key(scope: &mut Scope<'_>, idx: u32) -> Result<PropertyKey, VmError> {
+      let mut buf = [0u8; 10];
+      let mut n = idx;
+      let mut pos = buf.len();
+      if n == 0 {
+        pos -= 1;
+        buf[pos] = b'0';
+      } else {
+        while n != 0 {
+          pos -= 1;
+          buf[pos] = b'0' + (n % 10) as u8;
+          n /= 10;
+        }
+      }
+      let s = std::str::from_utf8(&buf[pos..]).expect("u32 decimal digits are valid UTF-8");
+      let key_s = scope.alloc_string_from_utf8(s)?;
+      Ok(PropertyKey::from_string(key_s))
+    }
+
+    if parts.raw.len() != parts.cooked.len() {
+      return Err(VmError::InvariantViolation(
+        "TemplateStringParts raw/cooked length mismatch",
+      ));
+    }
+
+    // Allocate with `length = 0` and let the array exotic `length` semantics update as we define
+    // indexed elements. This avoids an extra `O(N)` scan before we start ticking in the main
+    // segment loop.
+    let cooked = scope.alloc_array(0)?;
+    scope.push_root(Value::Object(cooked))?;
+    scope
+      .heap_mut()
+      .object_set_prototype(cooked, Some(intr.array_prototype()))?;
+
+    let raw = scope.alloc_array(0)?;
+    scope.push_root(Value::Object(raw))?;
+    scope
+      .heap_mut()
+      .object_set_prototype(raw, Some(intr.array_prototype()))?;
+
+    let segments = parts
+      .raw
+      .iter()
+      .zip(parts.cooked.iter())
+      .enumerate();
+
+    for (idx, (raw_units, cooked_units)) in segments {
+      // Per-segment tick: tagged templates can contain large numbers of segments, and creating the
+      // template object involves allocation + property definition even when no nested expressions
+      // are evaluated.
+      self.tick()?;
+
+      let idx_u32 = u32::try_from(idx).map_err(|_| {
+        VmError::Unimplemented("tagged template with more than 2^32-1 segments")
+      })?;
+
+      let mut elem_scope = scope.reborrow();
+
+      let key = alloc_array_index_key(&mut elem_scope, idx_u32)?;
+      let key_root = match key {
+        PropertyKey::String(s) => Value::String(s),
+        PropertyKey::Symbol(s) => Value::Symbol(s),
+      };
+      elem_scope.push_root(key_root)?;
+
+      let cooked_value = match cooked_units {
+        Some(units) => {
+          let s = elem_scope.alloc_string_from_code_units(units.as_ref())?;
+          elem_scope.push_root(Value::String(s))?;
+          Value::String(s)
+        }
+        None => Value::Undefined,
+      };
+
+      elem_scope.define_property(
+        cooked,
+        key,
+        PropertyDescriptor {
+          enumerable: true,
+          configurable: false,
+          kind: PropertyKind::Data {
+            value: cooked_value,
+            writable: false,
+          },
+        },
+      )?;
+
+      let raw_s = elem_scope.alloc_string_from_code_units(raw_units.as_ref())?;
+      elem_scope.push_root(Value::String(raw_s))?;
+      elem_scope.define_property(
+        raw,
+        key,
+        PropertyDescriptor {
+          enumerable: true,
+          configurable: false,
+          kind: PropertyKind::Data {
+            value: Value::String(raw_s),
+            writable: false,
+          },
+        },
+      )?;
+    }
+
+    // Define the non-enumerable `.raw` property.
+    let raw_key_s = scope.alloc_string("raw")?;
+    scope.push_root(Value::String(raw_key_s))?;
+    scope.define_property(
+      cooked,
+      PropertyKey::from_string(raw_key_s),
+      PropertyDescriptor {
+        enumerable: false,
+        configurable: false,
+        kind: PropertyKind::Data {
+          value: Value::Object(raw),
+          writable: false,
+        },
+      },
+    )?;
+
+    // Freeze both arrays (spec `SetIntegrityLevel(..., frozen)`).
+    scope.heap_mut().array_set_length_writable(cooked, false)?;
+    scope.heap_mut().array_set_length_writable(raw, false)?;
+    scope.object_prevent_extensions(cooked)?;
+    scope.object_prevent_extensions(raw)?;
+
+    // Keep the template object alive across GC by storing it as a persistent root.
+    let root = scope.heap_mut().add_root(Value::Object(cooked))?;
+
+    if self.template_registry.try_reserve(1).is_err() {
+      scope.heap_mut().remove_root(root);
+      return Err(VmError::OutOfMemory);
+    }
+
+    self.template_registry.insert(
+      key,
+      TemplateRegistryEntry {
+        source,
+        root,
+      },
+    );
+
+    Ok(cooked)
   }
 
   /// Returns the realm of the currently-running execution context, if any.
