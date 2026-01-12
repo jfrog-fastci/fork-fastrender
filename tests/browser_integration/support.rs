@@ -942,7 +942,7 @@ mod tests {
     }
   }
   #[test]
-  fn browser_integration_tests_use_deterministic_font_config() {
+  fn browser_integration_uses_deterministic_font_config() {
     let config = deterministic_font_config();
     assert!(
       !config.use_system_fonts,

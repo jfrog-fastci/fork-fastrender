@@ -16,11 +16,9 @@ required:
 
 - `tests/integration.rs` — one integration test binary (`mod common; mod api; mod fixtures; mod wpt;`)
 - `tests/allocation_failure.rs` — special: `#[global_allocator]` (must be its own binary)
-- `tests/browser_integration_tests.rs` — temporary shim: kept for `cargo test --features browser_ui --test browser_integration_tests`
 
-**Goal: keep total `tests/*.rs` at ≤3** (and eventually get back to 2 once the temporary
-`browser_integration_tests` shim can be removed). Any additional test binaries must be justified
-and treated as temporary exceptions.
+**Goal: keep total `tests/*.rs` at 2.** Any additional test binaries must be justified and treated
+as temporary exceptions.
 
 ## Top-level `tests/*.rs` inventory
 
@@ -141,6 +139,6 @@ migrations.
 
 ## End-state invariants to verify
 
-- `ls tests/*.rs | wc -l` is **≤3** (and **2** once the temporary `browser_integration_tests` shim can be removed)
+- `ls tests/*.rs | wc -l` is **2**
 - No `#[path = "..."]` in `tests/` (shims removed): `rg '#\\[path\\s*=' tests/` returns nothing
 - No internal-module imports in `tests/` (integration tests use public API only)
