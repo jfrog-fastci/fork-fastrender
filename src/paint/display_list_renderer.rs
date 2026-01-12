@@ -14825,13 +14825,12 @@ impl DisplayListRenderer {
           || opacity < 1.0 - f32::EPSILON
           || mask.is_some()
           || mask_border.is_some()
-          || item.has_clip_path
           || projective_transform.is_some()
           // Filter Effects Level 2 Backdrop Roots must isolate backdrop sampling for descendant
-          // `backdrop-filter` / `mix-blend-mode` effects. Some triggers (notably `will-change`)
-          // can establish a backdrop root without otherwise requiring an offscreen surface, so
-          // only force a layer boundary when a descendant would observe it (and never for the
-          // document root).
+          // `backdrop-filter` / `mix-blend-mode` effects. Some triggers (notably `will-change` and
+          // `clip-path`) can establish a backdrop root without otherwise requiring an offscreen
+          // surface, so only force a layer boundary when a descendant would observe it (and never
+          // for the document root).
           || establishes_backdrop_root_layer;
         let mut layer_bounds = needs_layer
           .then(|| {
@@ -27759,6 +27758,83 @@ mod tests {
     assert_eq!(
       report.layer_alloc_bytes, 0,
       "expected fully clipped stacking contexts to avoid offscreen layer allocations"
+    );
+  }
+
+  #[test]
+  fn clip_path_only_stacking_context_avoids_layer_allocation() {
+    crate::paint::painter::enable_paint_diagnostics();
+    struct DiagnosticsGuard;
+    impl Drop for DiagnosticsGuard {
+      fn drop(&mut self) {
+        let _ = crate::paint::painter::take_paint_diagnostics();
+      }
+    }
+    let _guard = DiagnosticsGuard;
+
+    const SIZE: u32 = 8;
+    let renderer = DisplayListRenderer::new(SIZE, SIZE, Rgba::WHITE, FontContext::new())
+      .unwrap()
+      .with_parallelism(PaintParallelism::disabled());
+
+    let bounds = Rect::from_xywh(0.0, 0.0, SIZE as f32, SIZE as f32);
+    let mut list = DisplayList::new();
+
+    list.push(DisplayItem::PushStackingContext(StackingContextItem {
+      z_index: 0,
+      creates_stacking_context: true,
+      is_root: false,
+      establishes_backdrop_root: true,
+      has_backdrop_sensitive_descendants: false,
+      bounds,
+      plane_rect: bounds,
+      mix_blend_mode: BlendMode::Normal,
+      opacity: 1.0,
+      is_isolated: false,
+      transform: None,
+      child_perspective: None,
+      transform_style: TransformStyle::Flat,
+      backface_visibility: BackfaceVisibility::Visible,
+      filters: Vec::new(),
+      backdrop_filters: Vec::new(),
+      radii: BorderRadii::ZERO,
+      mask: None,
+      mask_border: None,
+      has_clip_path: true,
+    }));
+
+    let clip_rect = Rect::from_xywh(2.0, 2.0, 4.0, 4.0);
+    list.push(DisplayItem::PushClip(ClipItem {
+      shape: ClipShape::Path {
+        path: ResolvedClipPath::Inset {
+          rect: clip_rect,
+          radii: BorderRadii::ZERO,
+        },
+      },
+    }));
+    list.push(DisplayItem::FillRect(FillRectItem {
+      rect: bounds,
+      color: Rgba::BLUE,
+    }));
+    list.push(DisplayItem::PopClip);
+    list.push(DisplayItem::PopStackingContext);
+
+    let report = renderer.render_with_report(&list).unwrap();
+    assert_eq!(
+      report.layer_allocations, 0,
+      "expected clip-path-only stacking contexts to avoid allocating an offscreen layer"
+    );
+
+    let pixmap = report.pixmap;
+    assert_eq!(
+      pixel(&pixmap, 3, 3),
+      (0, 0, 255, 255),
+      "expected clipped content to render inside the clip-path"
+    );
+    assert_eq!(
+      pixel(&pixmap, 0, 0),
+      (255, 255, 255, 255),
+      "expected clipped content to not render outside the clip-path"
     );
   }
 
