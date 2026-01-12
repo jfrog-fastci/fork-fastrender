@@ -51,26 +51,24 @@ static GLOBAL_HEAP_LIMITS_SET: AtomicBool = AtomicBool::new(false);
 static GLOBAL_HEAP_INIT_STATE: AtomicU8 = AtomicU8::new(0);
 
 pub(crate) fn try_set_global_heap_config(config: crate::gc::config::HeapConfig) -> bool {
+  let mut guard = GLOBAL_HEAP_CONFIG.lock();
+  // Re-check under the config lock to avoid races where initialization starts between an unlocked
+  // `GLOBAL_HEAP_INIT_STATE` check and updating the config value.
   if GLOBAL_HEAP_INIT_STATE.load(Ordering::Acquire) != 0 {
     return false;
   }
-  {
-    let mut guard = GLOBAL_HEAP_CONFIG.lock();
-    *guard = config;
-    GLOBAL_HEAP_CONFIG_SET.store(true, Ordering::Release);
-  }
+  *guard = config;
+  GLOBAL_HEAP_CONFIG_SET.store(true, Ordering::Release);
   true
 }
 
 pub(crate) fn try_set_global_heap_limits(limits: crate::gc::config::HeapLimits) -> bool {
+  let mut guard = GLOBAL_HEAP_LIMITS.lock();
   if GLOBAL_HEAP_INIT_STATE.load(Ordering::Acquire) != 0 {
     return false;
   }
-  {
-    let mut guard = GLOBAL_HEAP_LIMITS.lock();
-    *guard = limits;
-    GLOBAL_HEAP_LIMITS_SET.store(true, Ordering::Release);
-  }
+  *guard = limits;
+  GLOBAL_HEAP_LIMITS_SET.store(true, Ordering::Release);
   true
 }
 
@@ -242,12 +240,19 @@ struct GlobalHeap {
 fn global_heap() -> &'static GlobalHeap {
   static GLOBAL: OnceLock<GlobalHeap> = OnceLock::new();
   GLOBAL.get_or_init(|| {
-    GLOBAL_HEAP_INIT_STATE.store(1, Ordering::Release);
+    let (mut config, mut limits, apply_config, apply_limits) = {
+      let config_guard = GLOBAL_HEAP_CONFIG.lock();
+      let limits_guard = GLOBAL_HEAP_LIMITS.lock();
+      // Freeze config/limits for this process-global heap instance. From this point onward, setter
+      // calls must fail, and initialization must see a consistent snapshot.
+      GLOBAL_HEAP_INIT_STATE.store(1, Ordering::Release);
+      let config = *config_guard;
+      let limits = *limits_guard;
+      let apply_config = !GLOBAL_HEAP_CONFIG_SET.load(Ordering::Acquire);
+      let apply_limits = !GLOBAL_HEAP_LIMITS_SET.load(Ordering::Acquire);
+      (config, limits, apply_config, apply_limits)
+    };
 
-    let mut config = *GLOBAL_HEAP_CONFIG.lock();
-    let mut limits = *GLOBAL_HEAP_LIMITS.lock();
-    let apply_config = !GLOBAL_HEAP_CONFIG_SET.load(Ordering::Acquire);
-    let apply_limits = !GLOBAL_HEAP_LIMITS_SET.load(Ordering::Acquire);
     crate::gc::config::apply_env_overrides(&mut config, &mut limits, apply_config, apply_limits);
     if let Err(msg) = config.validate() {
       crate::trap::rt_trap_invalid_arg(msg);
