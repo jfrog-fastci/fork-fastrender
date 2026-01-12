@@ -2534,24 +2534,12 @@ pub fn uint8_array_constructor_construct(
   let Value::Object(buffer) = arg0 else {
     return Err(VmError::TypeError("Uint8Array constructor expects an ArrayBuffer"));
   };
-  // Brand check first (buffer must be an ArrayBuffer), then reject detached buffers per
-  // ECMA-262 `InitializeTypedArrayFromArrayBuffer`.
+  // Brand check first (buffer must be an ArrayBuffer). Note: per ECMA-262
+  // `InitializeTypedArrayFromArrayBuffer`, the `byteOffset`/`length` arguments are converted
+  // before checking for a detached buffer.
   if !scope.heap().is_array_buffer_object(buffer) {
     return Err(VmError::TypeError("Uint8Array constructor expects an ArrayBuffer"));
   }
-  if scope
-    .heap()
-    .is_detached_array_buffer(buffer)
-    .map_err(|_| VmError::TypeError("Uint8Array constructor expects an ArrayBuffer"))?
-  {
-    return Err(VmError::TypeError(
-      "Uint8Array constructor cannot use a detached ArrayBuffer",
-    ));
-  }
-  let buf_len = scope
-    .heap()
-    .array_buffer_byte_length(buffer)
-    .map_err(|_| VmError::TypeError("Uint8Array constructor expects an ArrayBuffer"))?;
 
   let byte_offset_val = args.get(1).copied().unwrap_or(Value::Undefined);
   let byte_offset = if matches!(byte_offset_val, Value::Undefined) {
@@ -2566,13 +2554,32 @@ pub fn uint8_array_constructor_construct(
 
   let length_val = args.get(2).copied().unwrap_or(Value::Undefined);
   let length = if matches!(length_val, Value::Undefined) {
-    buf_len.saturating_sub(byte_offset)
+    None
   } else {
     let n = scope.to_number(vm, host, hooks, length_val)?;
     if !n.is_finite() || n < 0.0 || n.fract() != 0.0 {
       return Err(VmError::TypeError("Uint8Array length must be a non-negative integer"));
     }
-    n as usize
+    Some(n as usize)
+  };
+
+  if scope
+    .heap()
+    .is_detached_array_buffer(buffer)
+    .map_err(|_| VmError::TypeError("Uint8Array constructor expects an ArrayBuffer"))?
+  {
+    return Err(VmError::TypeError(
+      "Uint8Array constructor cannot use a detached ArrayBuffer",
+    ));
+  }
+  let buf_len = scope
+    .heap()
+    .array_buffer_byte_length(buffer)
+    .map_err(|_| VmError::TypeError("Uint8Array constructor expects an ArrayBuffer"))?;
+
+  let length = match length {
+    None => buf_len.saturating_sub(byte_offset),
+    Some(length) => length,
   };
 
   let view = scope.alloc_uint8_array(buffer, byte_offset, length)?;
