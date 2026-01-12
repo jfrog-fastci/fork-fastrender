@@ -707,20 +707,15 @@ fn array_destructuring_rest_consumes_fuel() {
   let mut rt = new_runtime_with_vm(vm);
 
   let global = rt.realm().global_object();
+  let intr = *rt.realm().intrinsics();
   {
     let mut scope = rt.heap_mut().scope();
-    let src = scope.alloc_object().unwrap();
+    let src = scope.alloc_array(4096).unwrap();
     scope.push_root(Value::Object(src)).unwrap();
-
-    {
-      let mut len_scope = scope.reborrow();
-      let len_key_s = len_scope.alloc_string("length").unwrap();
-      len_scope.push_root(Value::String(len_key_s)).unwrap();
-      let len_key = PropertyKey::from_string(len_key_s);
-      assert!(len_scope
-        .create_data_property(src, len_key, Value::Number(4096.0))
-        .unwrap());
-    }
+    scope
+      .heap_mut()
+      .object_set_prototype(src, Some(intr.array_prototype()))
+      .unwrap();
 
     {
       let mut global_scope = scope.reborrow();
@@ -736,7 +731,7 @@ fn array_destructuring_rest_consumes_fuel() {
   // `bind_array_pattern`'s rest loop can perform large amounts of work within a single expression.
   // Ensure that it is budgeted.
   rt.vm.set_budget(Budget {
-    fuel: Some(12),
+    fuel: Some(50),
     deadline: None,
     check_time_every: 1,
   });
@@ -750,6 +745,11 @@ fn array_destructuring_assignment_elements_consume_fuel() {
   let vm = Vm::new(VmOptions::default());
   let mut rt = new_runtime_with_vm(vm);
 
+  // Create the RHS with an unlimited budget so this test isolates the cost of the destructuring
+  // pattern traversal/binding in the second script.
+  rt.vm.set_budget(Budget::unlimited(1));
+  rt.exec_script("var src = []; src.length = 2000;").unwrap();
+
   // Destructuring *assignment* does not participate in declaration instantiation/hoisting, so the
   // only scalable work here is runtime destructuring. Ensure the per-element binding work is
   // budgeted even when the RHS expression is trivial (`src`).
@@ -759,7 +759,7 @@ fn array_destructuring_assignment_elements_consume_fuel() {
     check_time_every: 1,
   });
 
-  let mut src = String::from("var src = { length: 2000 }; [");
+  let mut src = String::from("[");
   for i in 0..2000 {
     if i != 0 {
       src.push(',');

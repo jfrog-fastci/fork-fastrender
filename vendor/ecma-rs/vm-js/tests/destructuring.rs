@@ -174,6 +174,15 @@ fn object_destructuring_accepts_number_primitives() {
 }
 
 #[test]
+fn array_destructuring_uses_iterator_protocol_for_strings() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(r#"var [a,b,c] = "a\uD834\uDF06b"; a==="a" && b==="\uD834\uDF06" && c==="b""#)
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn object_destructuring_accepts_string_primitives() {
   let mut rt = new_runtime();
   let value = rt.exec_script(r#"var {length:l} = "ab"; l === 2"#).unwrap();
@@ -185,6 +194,54 @@ fn object_destructuring_throws_for_null() {
   let mut rt = new_runtime();
   let value = rt
     .exec_script(r#"try { var {x} = null; false } catch(e) { e instanceof TypeError }"#)
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn array_destructuring_non_iterable_array_like_throws() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(r#"try { var [x] = {0:1,length:1}; false } catch(e) { e instanceof TypeError }"#)
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn array_destructuring_rest_produces_real_array() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(r#"var [x,...r] = "ab"; Array.isArray(r) && r.length===1 && r[0]==="b""#)
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn array_destructuring_abrupt_completion_closes_iterator() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      var closed = false;
+      var iterable = {};
+      iterable[Symbol.iterator] = function() {
+        var i = 0;
+        return {
+          next: function() {
+            i++;
+            if (i === 1) return { value: "a", done: false };
+            if (i === 2) return { value: undefined, done: false };
+            return { value: "c", done: false };
+          },
+          return: function() { closed = true; return {}; }
+        };
+      };
+      try {
+        var [x, y = (function(){ throw 1; })()] = iterable;
+      } catch (e) {}
+      closed === true
+      "#,
+    )
     .unwrap();
   assert_eq!(value, Value::Bool(true));
 }

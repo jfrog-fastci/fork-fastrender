@@ -1,6 +1,6 @@
 use crate::exec::{eval_expr, RuntimeEnv};
-use crate::property::{PropertyDescriptor, PropertyKey, PropertyKind};
-use crate::{GcObject, Scope, Value, Vm, VmError, VmHost, VmHostHooks};
+use crate::property::PropertyKey;
+use crate::{Scope, Value, Vm, VmError, VmHost, VmHostHooks};
 use parse_js::ast::class_or_object::ClassOrObjKey;
 use parse_js::ast::expr::pat::{ArrPat, ObjPat, Pat};
 use parse_js::ast::expr::{ComputedMemberExpr, Expr, MemberExpr};
@@ -18,6 +18,24 @@ fn throw_type_error(vm: &Vm, scope: &mut Scope<'_>, message: &str) -> Result<VmE
     message,
   )?;
   Ok(VmError::Throw(value))
+}
+
+fn iterator_close_on_err(
+  vm: &mut Vm,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  scope: &mut Scope<'_>,
+  iterator_record: &crate::iterator::IteratorRecord,
+  err: VmError,
+) -> Result<(), VmError> {
+  if !iterator_record.done {
+    match crate::iterator::iterator_close(vm, host, hooks, scope, iterator_record) {
+      Ok(()) => {}
+      // Per spec, errors from `IteratorClose` override the original abrupt completion.
+      Err(close_err) => return Err(close_err),
+    }
+  }
+  Err(err)
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -389,36 +407,67 @@ fn bind_array_pattern(
   strict: bool,
   this: Value,
 ) -> Result<(), VmError> {
-  let Value::Object(obj) = value else {
-    return Err(throw_type_error(vm, scope, "array destructuring requires object")?);
-  };
-  scope.push_root(Value::Object(obj))?;
+  // RequireObjectCoercible (ECMA-262): array destructuring disallows null/undefined but supports
+  // primitives like String via iterator protocol.
+  if matches!(value, Value::Undefined | Value::Null) {
+    return Err(throw_type_error(
+      vm,
+      scope,
+      "array destructuring requires object coercible",
+    )?);
+  }
 
-  let len = array_like_length(vm, host, hooks, scope, obj)?;
-  let mut idx: u32 = 0;
+  // --- Iterator-based destructuring (no array-like fallback) ---
+  let mut iterator_record =
+    crate::iterator::get_iterator(vm, host, hooks, scope, value)?;
+  // Root the iterator record across evaluation of defaults / nested bindings, which can allocate.
+  scope.push_roots(&[iterator_record.iterator, iterator_record.next_method])?;
 
   for elem in &pat.elements {
     // Budget array destructuring by pattern size: holes and identifiers don't evaluate nested
-    // expressions, but still advance the iterator/index.
-    vm.tick()?;
+    // expressions, but still advance the iterator.
+    if let Err(err) = vm.tick() {
+      return iterator_close_on_err(vm, host, hooks, scope, &iterator_record, err);
+    }
+
     let Some(elem) = elem else {
-      idx = idx.saturating_add(1);
+      // Elision: still advance the iterator and discard the value.
+      if let Err(err) = crate::iterator::iterator_step_value(
+        vm,
+        host,
+        hooks,
+        scope,
+        &mut iterator_record,
+      ) {
+        return iterator_close_on_err(vm, host, hooks, scope, &iterator_record, err);
+      }
       continue;
     };
 
-    let mut item = if idx < len {
-      array_like_get(vm, host, hooks, scope, obj, idx)?
-    } else {
-      Value::Undefined
+    let mut item = match crate::iterator::iterator_step_value(
+      vm,
+      host,
+      hooks,
+      scope,
+      &mut iterator_record,
+    ) {
+      Ok(Some(v)) => v,
+      Ok(None) => Value::Undefined,
+      Err(err) => return iterator_close_on_err(vm, host, hooks, scope, &iterator_record, err),
     };
 
     if matches!(item, Value::Undefined) {
       if let Some(default_expr) = &elem.default_value {
-        item = eval_expr(vm, host, hooks, env, strict, this, scope, default_expr)?;
+        item = match eval_expr(vm, host, hooks, env, strict, this, scope, default_expr) {
+          Ok(v) => v,
+          Err(err) => {
+            return iterator_close_on_err(vm, host, hooks, scope, &iterator_record, err)
+          }
+        };
       }
     }
 
-    bind_pattern(
+    if let Err(err) = bind_pattern(
       vm,
       host,
       hooks,
@@ -429,51 +478,78 @@ fn bind_array_pattern(
       kind,
       strict,
       this,
-    )?;
-    idx = idx.saturating_add(1);
+    ) {
+      return iterator_close_on_err(vm, host, hooks, scope, &iterator_record, err);
+    }
   }
 
   let Some(rest_pat) = &pat.rest else {
+    // Iterator binding initialization performs IteratorClose on normal completion when the
+    // iterator is not exhausted.
+    if !iterator_record.done {
+      crate::iterator::iterator_close(vm, host, hooks, scope, &iterator_record)?;
+    }
     return Ok(());
   };
 
-  let rest_arr = scope.alloc_object()?;
-  scope.push_root(Value::Object(rest_arr))?;
+  let intr = vm
+    .intrinsics()
+    .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
 
-  let mut rest_idx: u32 = 0;
-  while idx < len {
-    // Budget rest-element copying: `...rest` can iterate many remaining indices.
-    vm.tick()?;
-    let v = array_like_get(vm, host, hooks, scope, obj, idx)?;
-    {
-      // Root the element value while allocating the property key and defining the property:
-      // `array_like_get` can invoke getters which may return newly-allocated objects that are not
-      // reachable from `obj` itself.
-      let mut elem_scope = scope.reborrow();
-      let v = elem_scope.push_root(v)?;
-      let key_str = rest_idx.to_string();
-      let key_s = elem_scope.alloc_string(&key_str)?;
-      let key = PropertyKey::from_string(key_s);
-      let _ = elem_scope.create_data_property(rest_arr, key, v)?;
-    }
-    idx += 1;
-    rest_idx += 1;
+  // Rest element must produce a real Array exotic object.
+  let rest_arr = match scope.alloc_array(0) {
+    Ok(arr) => arr,
+    Err(err) => return iterator_close_on_err(vm, host, hooks, scope, &iterator_record, err),
+  };
+  if let Err(err) = scope.push_root(Value::Object(rest_arr)) {
+    return iterator_close_on_err(vm, host, hooks, scope, &iterator_record, err);
+  }
+  if let Err(err) = scope
+    .heap_mut()
+    .object_set_prototype(rest_arr, Some(intr.array_prototype()))
+  {
+    return iterator_close_on_err(vm, host, hooks, scope, &iterator_record, err);
   }
 
-  // Define `length` as non-enumerable to match real arrays closely enough for rest patterns.
-  let length_s = scope.alloc_string("length")?;
-  let length_key = PropertyKey::from_string(length_s);
-  let length_desc = PropertyDescriptor {
-    enumerable: false,
-    configurable: true,
-    kind: PropertyKind::Data {
-      value: Value::Number(rest_idx as f64),
-      writable: true,
-    },
-  };
-  scope.define_property(rest_arr, length_key, length_desc)?;
+  let mut rest_idx: u32 = 0;
+  loop {
+    // Budget rest-element copying: `...rest` can iterate many remaining indices.
+    if let Err(err) = vm.tick() {
+      return iterator_close_on_err(vm, host, hooks, scope, &iterator_record, err);
+    }
 
-  bind_pattern(
+    let next = match crate::iterator::iterator_step_value(
+      vm,
+      host,
+      hooks,
+      scope,
+      &mut iterator_record,
+    ) {
+      Ok(v) => v,
+      Err(err) => return iterator_close_on_err(vm, host, hooks, scope, &iterator_record, err),
+    };
+    let Some(v) = next else {
+      break;
+    };
+
+    // Root the element value while allocating the property key and defining the property: the
+    // iterator's `next` method may return newly-allocated objects that are not reachable from any
+    // heap object other than this local binding.
+    let create_res = {
+      let mut elem_scope = scope.reborrow();
+      elem_scope.push_roots(&[Value::Object(rest_arr), v])?;
+
+      let key_s = elem_scope.alloc_string(&rest_idx.to_string())?;
+      let key = PropertyKey::from_string(key_s);
+      elem_scope.create_data_property_or_throw(rest_arr, key, v)
+    };
+    if let Err(err) = create_res {
+      return iterator_close_on_err(vm, host, hooks, scope, &iterator_record, err);
+    }
+    rest_idx = rest_idx.saturating_add(1);
+  }
+
+  let bind_res = bind_pattern(
     vm,
     host,
     hooks,
@@ -484,7 +560,11 @@ fn bind_array_pattern(
     kind,
     strict,
     this,
-  )
+  );
+  match bind_res {
+    Ok(()) => Ok(()),
+    Err(err) => iterator_close_on_err(vm, host, hooks, scope, &iterator_record, err),
+  }
 }
 
 fn resolve_obj_pat_key(
@@ -527,37 +607,6 @@ fn resolve_obj_pat_key(
   }
 }
 
-fn array_like_length(
-  vm: &mut Vm,
-  host: &mut dyn VmHost,
-  hooks: &mut dyn VmHostHooks,
-  scope: &mut Scope<'_>,
-  obj: GcObject,
-) -> Result<u32, VmError> {
-  let key_s = scope.alloc_string("length")?;
-  let key = PropertyKey::from_string(key_s);
-  let v = scope.ordinary_get_with_host_and_hooks(vm, host, hooks, obj, key, Value::Object(obj))?;
-  match v {
-    Value::Number(n) if n.is_finite() && n >= 0.0 => Ok(n as u32),
-    Value::Undefined => Ok(0),
-    _ => Err(VmError::Unimplemented("array-like length")),
-  }
-}
-
-fn array_like_get(
-  vm: &mut Vm,
-  host: &mut dyn VmHost,
-  hooks: &mut dyn VmHostHooks,
-  scope: &mut Scope<'_>,
-  obj: GcObject,
-  idx: u32,
-) -> Result<Value, VmError> {
-  let key_str = idx.to_string();
-  let key_s = scope.alloc_string(&key_str)?;
-  let key = PropertyKey::from_string(key_s);
-  scope.ordinary_get_with_host_and_hooks(vm, host, hooks, obj, key, Value::Object(obj))
-}
-
 fn assign_to_property_key(
   vm: &mut Vm,
   host: &mut dyn VmHost,
@@ -598,7 +647,6 @@ fn assign_to_property_key(
     Ok(())
   }
 }
-
 fn assign_to_member(
   vm: &mut Vm,
   host: &mut dyn VmHost,
