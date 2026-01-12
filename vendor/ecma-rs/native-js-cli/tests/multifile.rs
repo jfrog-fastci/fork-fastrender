@@ -1023,3 +1023,32 @@ fn type_only_export_all_namespace_reexport_does_not_execute_module() {
     .success()
     .stdout(predicate::eq("main\n"));
 }
+
+#[test]
+fn type_only_reexport_cycles_do_not_trigger_cycle_detection() {
+  let dir = tempdir().unwrap();
+  let a = dir.path().join("a.ts");
+  let b = dir.path().join("b.ts");
+  let main = dir.path().join("main.ts");
+
+  fs::write(&a, "console.log(\"a\");\nexport type * from './b';\n").unwrap();
+  fs::write(
+    &b,
+    "console.log(\"b\");\nexport type T = number;\nexport type * from './a';\n",
+  )
+  .unwrap();
+  fs::write(
+    &main,
+    "export type * from './a';\nexport function main(){console.log(\"main\");}\n",
+  )
+  .unwrap();
+
+  native_js_cli()
+    .timeout(CLI_TIMEOUT)
+    .arg("--entry-fn")
+    .arg("main")
+    .arg(main)
+    .assert()
+    .success()
+    .stdout(predicate::eq("main\n"));
+}

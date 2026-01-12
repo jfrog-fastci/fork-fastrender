@@ -1837,6 +1837,36 @@ export function main(): number { return 0; }
 }
 
 #[test]
+fn type_only_reexport_cycles_do_not_trigger_cycle_detection() {
+  let tmp = TempDir::new().unwrap();
+
+  let a = tmp.path().join("a.ts");
+  fs::write(&a, "print(1);\nexport type * from \"./b\";\n").unwrap();
+
+  let b = tmp.path().join("b.ts");
+  fs::write(
+    &b,
+    "print(2);\nexport type T = number;\nexport type * from \"./a\";\n",
+  )
+  .unwrap();
+
+  let entry = tmp.path().join("entry.ts");
+  fs::write(
+    &entry,
+    "export type * from \"./a\";\nexport function main(): number { print(3); return 0; }\n",
+  )
+  .unwrap();
+
+  native_js()
+    .timeout(CLI_TIMEOUT)
+    .arg("run")
+    .arg(&entry)
+    .assert()
+    .success()
+    .stdout(predicate::eq("3\n"));
+}
+
+#[test]
 fn type_only_reexport_does_not_execute_module() {
   let tmp = TempDir::new().unwrap();
 
