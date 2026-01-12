@@ -1795,7 +1795,10 @@ impl BrowserTabHost {
     }
 
     let base_url = self.base_url.clone();
-    let (discovered, clear_state): (Vec<(NodeId, String, Option<crate::resource::CorsMode>)>, Vec<NodeId>) = {
+    let (discovered, clear_state): (
+      Vec<(NodeId, String, Option<crate::resource::CorsMode>)>,
+      Vec<NodeId>,
+    ) = {
       let dom = self.document.dom();
       let mut out = Vec::new();
       let mut clear_state = Vec::new();
@@ -1809,7 +1812,18 @@ impl BrowserTabHost {
         else {
           continue;
         };
-        if !tag_name.eq_ignore_ascii_case("img") || !is_html_namespace(namespace) {
+        if !is_html_namespace(namespace) {
+          continue;
+        }
+        let is_img = tag_name.eq_ignore_ascii_case("img");
+        let is_input_image = tag_name.eq_ignore_ascii_case("input")
+          && dom
+            .get_attribute(node_id, "type")
+            .ok()
+            .flatten()
+            .map(super::trim_ascii_whitespace)
+            .is_some_and(|t| t.eq_ignore_ascii_case("image"));
+        if !(is_img || is_input_image) {
           continue;
         }
         let maybe_url = dom
@@ -1861,30 +1875,45 @@ impl BrowserTabHost {
     //
     // `dom2` node ids are stable indices, so pages that create/remove many images could otherwise
     // accumulate unbounded bookkeeping. Removing state also ensures queued loads for disconnected
-    // images become deterministic no-ops (they will still clear their registered load blocker).
-    {
-      let dom = self.document.dom();
-      fn is_html_namespace(namespace: &str) -> bool {
-        namespace.is_empty() || namespace == HTML_NAMESPACE
-      }
-      let mut to_remove = Vec::new();
-      for (&node_id, _state) in &self.image_load_state {
-        if !dom.is_connected_for_scripting(node_id) {
-          to_remove.push(node_id);
-          continue;
+      // images become deterministic no-ops (they will still clear their registered load blocker).
+      {
+        let dom = self.document.dom();
+        fn is_html_namespace(namespace: &str) -> bool {
+          namespace.is_empty() || namespace == HTML_NAMESPACE
         }
-        match &dom.node(node_id).kind {
-          NodeKind::Element { tag_name, namespace, .. }
-            if tag_name.eq_ignore_ascii_case("img") && is_html_namespace(namespace) => {}
-          _ => {
+        let mut to_remove = Vec::new();
+        for (&node_id, _state) in &self.image_load_state {
+          if !dom.is_connected_for_scripting(node_id) {
             to_remove.push(node_id);
+            continue;
+          }
+          match &dom.node(node_id).kind {
+            NodeKind::Element { tag_name, namespace, .. } if is_html_namespace(namespace) => {
+              if tag_name.eq_ignore_ascii_case("img") {
+                // keep
+              } else if tag_name.eq_ignore_ascii_case("input") {
+                let is_input_image = dom
+                  .get_attribute(node_id, "type")
+                  .ok()
+                  .flatten()
+                  .map(super::trim_ascii_whitespace)
+                  .is_some_and(|t| t.eq_ignore_ascii_case("image"));
+                if !is_input_image {
+                  to_remove.push(node_id);
+                }
+              } else {
+                to_remove.push(node_id);
+              }
+            }
+            _ => {
+              to_remove.push(node_id);
+            }
           }
         }
+        for node_id in to_remove {
+          self.image_load_state.remove(&node_id);
+        }
       }
-      for node_id in to_remove {
-        self.image_load_state.remove(&node_id);
-      }
-    }
     for (node_id, url, cors_mode) in discovered {
       self.start_image_load(node_id, url, cors_mode, event_loop)?;
     }
@@ -10557,6 +10586,107 @@ html, body { margin: 0; padding: 0; }
         .expect("get_attribute"),
       None
     );
+
+    // Final turn: `load` event dispatch.
+    {
+      let BrowserTab { host, event_loop, .. } = &mut tab;
+      assert!(event_loop.run_next_task(host)?); // load
+    }
+
+    assert_eq!(
+      tab.dom()
+        .get_attribute(body, "data-load")
+        .expect("get_attribute"),
+      Some("1")
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn window_load_waits_for_input_type_image_src() -> Result<()> {
+    #[derive(Debug, Default, Clone)]
+    struct ImageFetcher {
+      image_fetches: Arc<AtomicUsize>,
+    }
+
+    impl ImageFetcher {
+      fn image_fetch_count(&self) -> usize {
+        self.image_fetches.load(Ordering::SeqCst)
+      }
+    }
+
+    impl ResourceFetcher for ImageFetcher {
+      fn fetch(&self, _url: &str) -> Result<FetchedResource> {
+        Err(Error::Other("ImageFetcher::fetch should not be used".to_string()))
+      }
+
+      fn fetch_with_request(&self, req: FetchRequest<'_>) -> Result<FetchedResource> {
+        if matches!(req.destination, FetchDestination::Image | FetchDestination::ImageCors) {
+          self.image_fetches.fetch_add(1, Ordering::SeqCst);
+          Ok(FetchedResource::new(
+            b"fake-png-bytes".to_vec(),
+            Some("image/png".to_string()),
+          ))
+        } else {
+          Err(Error::Other(format!(
+            "unexpected fetch destination {:?} for url={}",
+            req.destination, req.url
+          )))
+        }
+      }
+    }
+
+    let fetcher = Arc::new(ImageFetcher::default());
+    let html = r#"<!doctype html><body>
+      <input type="image" src="https://example.com/a.png">
+      <script>
+        document.addEventListener('DOMContentLoaded', function () {
+          document.body.setAttribute('data-dom', '1');
+        });
+        window.addEventListener('load', function () {
+          document.body.setAttribute('data-load', '1');
+        });
+      </script>
+    </body>"#;
+
+    let mut tab = BrowserTab::from_html_with_vmjs_and_document_url_and_fetcher(
+      html,
+      "https://example.com/",
+      RenderOptions::default(),
+      Arc::clone(&fetcher) as Arc<dyn ResourceFetcher>,
+    )?;
+
+    let body = tab.dom().body().expect("body should exist");
+
+    // DocumentLifecycle queues two tasks at parsing completion:
+    // - DOMContentLoaded barrier
+    // - DOMContentLoaded
+    {
+      let BrowserTab { host, event_loop, .. } = &mut tab;
+      assert!(event_loop.run_next_task(host)?); // barrier
+      assert!(event_loop.run_next_task(host)?); // DOMContentLoaded
+    }
+
+    assert_eq!(
+      tab.dom()
+        .get_attribute(body, "data-dom")
+        .expect("get_attribute"),
+      Some("1")
+    );
+    assert_eq!(
+      tab.dom()
+        .get_attribute(body, "data-load")
+        .expect("get_attribute"),
+      None
+    );
+    assert_eq!(fetcher.image_fetch_count(), 0);
+
+    // Next turn: image networking task runs and completes the load blocker, which queues `load`.
+    {
+      let BrowserTab { host, event_loop, .. } = &mut tab;
+      assert!(event_loop.run_next_task(host)?); // image fetch task
+    }
+    assert_eq!(fetcher.image_fetch_count(), 1);
 
     // Final turn: `load` event dispatch.
     {
