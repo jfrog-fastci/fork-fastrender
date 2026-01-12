@@ -96,4 +96,3 @@ fn vmjs_host_exotic_get_delegates_to_webidl_bindings_host() -> Result<(), VmErro
 
   Ok(())
 }
-
