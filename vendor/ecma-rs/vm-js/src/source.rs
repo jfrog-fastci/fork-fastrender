@@ -1,3 +1,6 @@
+use crate::heap::ExternalMemoryToken;
+use crate::{Heap, VmError};
+use core::mem;
 use std::fmt::Display;
 use std::sync::Arc;
 
@@ -7,6 +10,8 @@ pub struct SourceText {
   pub name: Arc<str>,
   pub text: Arc<str>,
   line_starts: Vec<u32>,
+  #[allow(dead_code)]
+  external_memory: Option<Arc<ExternalMemoryToken>>,
 }
 
 impl SourceText {
@@ -28,7 +33,49 @@ impl SourceText {
       name,
       text,
       line_starts,
+      external_memory: None,
     }
+  }
+
+  pub fn new_charged(
+    heap: &mut Heap,
+    name: impl Into<Arc<str>>,
+    text: impl Into<Arc<str>>,
+  ) -> Result<Self, VmError> {
+    let name = name.into();
+    let text = text.into();
+
+    // Pre-allocate `line_starts` using a cheap newline count over bytes (since `\n` is ASCII).
+    let newline_count = text.as_bytes().iter().filter(|&&b| b == b'\n').count();
+    let line_starts_capacity = newline_count.saturating_add(1);
+
+    let bytes = name
+      .len()
+      .saturating_add(text.len())
+      .saturating_add(line_starts_capacity.saturating_mul(mem::size_of::<u32>()));
+    let token = heap.charge_external(bytes)?;
+
+    let mut line_starts: Vec<u32> = Vec::new();
+    line_starts
+      .try_reserve_exact(line_starts_capacity)
+      .map_err(|_| VmError::OutOfMemory)?;
+    line_starts.push(0u32);
+
+    for (idx, ch) in text.char_indices() {
+      if ch == '\n' {
+        let next = (idx + 1).min(text.len());
+        if let Ok(next) = u32::try_from(next) {
+          line_starts.push(next);
+        }
+      }
+    }
+
+    Ok(Self {
+      name,
+      text,
+      line_starts,
+      external_memory: Some(Arc::new(token)),
+    })
   }
 
   /// Convert a UTF-8 byte offset into 1-based `(line, col)` numbers.
@@ -99,4 +146,3 @@ pub fn format_stack_trace(frames: &[StackFrame]) -> String {
     .collect::<Vec<_>>()
     .join("\n")
 }
-

@@ -3,7 +3,8 @@ use vm_js::{CompiledFunctionRef, CompiledScript, Heap, HeapLimits, Value, Vm, Vm
 
 #[test]
 fn user_function_keeps_compiled_script_alive_and_releases_on_gc() -> Result<(), VmError> {
-  let script = CompiledScript::compile_script("test.js", "function f() {}")?;
+  let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let script = CompiledScript::compile_script(&mut heap, "test.js", "function f() {}")?;
 
   let function_body = {
     let hir = script.hir.as_ref();
@@ -20,7 +21,6 @@ fn user_function_keeps_compiled_script_alive_and_releases_on_gc() -> Result<(), 
 
   let weak = Arc::downgrade(&script);
 
-  let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
   let mut vm = Vm::new(VmOptions::default());
 
   let func_obj;

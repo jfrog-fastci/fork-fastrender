@@ -12,8 +12,10 @@ use crate::{
   EnvRootId, GcEnv, GcObject, GcString, GcSymbol, HeapId, RealmId, RootId, Value, Vm, VmError,
   VmHost, VmHostHooks,
 };
+use std::cell::Cell;
 use core::mem;
 use semantic_js::js::SymbolId;
+use std::rc::Rc;
 use std::collections::HashSet;
 
 /// Hard upper bound for `[[Prototype]]` chain traversals.
@@ -48,6 +50,9 @@ pub struct HeapLimits {
   /// This is enforced against [`Heap::estimated_total_bytes`], which includes live heap payload
   /// bytes, external allocations owned by heap objects (e.g. `ArrayBuffer` backing stores), and
   /// GC/heap metadata overhead (slot table, mark bits, root stacks, etc).
+  ///
+  /// It also includes VM-managed off-heap allocations charged via [`Heap::charge_external`], such
+  /// as `SourceText`, compiled code caches, and module metadata.
   pub max_bytes: usize,
   /// When an allocation would cause [`Heap::estimated_total_bytes`] to exceed this threshold, the
   /// heap will trigger a GC cycle before attempting the allocation.
@@ -68,6 +73,54 @@ impl HeapLimits {
 struct SymbolRegistryEntry {
   key: GcString,
   sym: GcSymbol,
+}
+
+#[derive(Debug)]
+struct ExternalMemoryTracker {
+  bytes: Cell<usize>,
+}
+
+impl ExternalMemoryTracker {
+  fn new() -> Self {
+    Self { bytes: Cell::new(0) }
+  }
+
+  fn bytes(&self) -> usize {
+    self.bytes.get()
+  }
+
+  fn add(&self, bytes: usize) {
+    self.bytes.set(self.bytes.get().saturating_add(bytes));
+  }
+
+  fn sub(&self, bytes: usize) {
+    // Never panic in a destructor path; be conservative and saturate.
+    self.bytes.set(self.bytes.get().saturating_sub(bytes));
+  }
+}
+
+/// RAII token returned by [`Heap::charge_external`].
+///
+/// While this token is alive, its charged bytes contribute to [`Heap::estimated_total_bytes`].
+/// Dropping the token releases the charge.
+#[derive(Debug)]
+pub struct ExternalMemoryToken {
+  tracker: Rc<ExternalMemoryTracker>,
+  bytes: usize,
+}
+
+impl ExternalMemoryToken {
+  /// The number of bytes charged by this token.
+  #[inline]
+  pub fn bytes(&self) -> usize {
+    self.bytes
+  }
+}
+
+impl Drop for ExternalMemoryToken {
+  fn drop(&mut self) {
+    self.tracker.sub(self.bytes);
+  }
 }
 
 /// A non-moving mark/sweep GC heap.
@@ -99,6 +152,12 @@ pub struct Heap {
   /// This is tracked separately from [`Heap::used_bytes`] so the GC can account for non-GC memory
   /// (e.g. `ArrayBuffer` backing stores) when deciding when to collect.
   external_bytes: usize,
+  /// Bytes used by VM-managed allocations that live outside the GC heap.
+  ///
+  /// This covers large off-heap structures such as source text, compiled code caches, and module
+  /// graph metadata. Bytes are added via [`Heap::charge_external`], and are released when the
+  /// returned [`ExternalMemoryToken`] is dropped.
+  vm_external_bytes: Rc<ExternalMemoryTracker>,
   gc_runs: u64,
 
   // GC-managed allocations.
@@ -196,6 +255,7 @@ impl Heap {
       default_object_prototype: None,
       used_bytes: 0,
       external_bytes: 0,
+      vm_external_bytes: Rc::new(ExternalMemoryTracker::new()),
       gc_runs: 0,
       slots: Vec::new(),
       marks: Vec::new(),
@@ -312,6 +372,14 @@ impl Heap {
     self.external_bytes
   }
 
+  /// Bytes currently charged for VM-managed off-heap allocations.
+  ///
+  /// This does **not** include external allocations owned by heap objects (see
+  /// [`Heap::external_bytes`]).
+  pub fn vm_external_bytes(&self) -> usize {
+    self.vm_external_bytes.bytes()
+  }
+
   /// Increments the external allocation counter.
   ///
   /// Callers should pair this with [`Heap::sub_external_bytes`] when the external allocation is
@@ -331,6 +399,36 @@ impl Heap {
     self.external_bytes = self.external_bytes.saturating_sub(bytes);
   }
 
+  /// Charges `bytes` against this heap's [`HeapLimits`], returning a token that releases the charge
+  /// on drop.
+  ///
+  /// This is intended for:
+  /// - VM-internal allocations that live outside the GC heap (e.g. `SourceText`, compiled code
+  ///   caches, module metadata).
+  /// - Embedder allocations that should count toward the VM's memory limit (DOM wrapper caches,
+  ///   module source caches, etc).
+  ///
+  /// If charging would exceed [`HeapLimits::gc_threshold`], this triggers a GC cycle before failing
+  /// with [`VmError::OutOfMemory`].
+  pub fn charge_external(&mut self, bytes: usize) -> Result<ExternalMemoryToken, VmError> {
+    let additional = bytes;
+    let after = self.estimated_total_bytes().saturating_add(additional);
+    if after > self.limits.gc_threshold {
+      self.collect_garbage();
+    }
+
+    let after = self.estimated_total_bytes().saturating_add(additional);
+    if after > self.limits.max_bytes {
+      return Err(VmError::OutOfMemory);
+    }
+
+    self.vm_external_bytes.add(bytes);
+    Ok(ExternalMemoryToken {
+      tracker: self.vm_external_bytes.clone(),
+      bytes,
+    })
+  }
+
   /// The heap's configured memory limits.
   pub fn limits(&self) -> HeapLimits {
     self.limits
@@ -348,6 +446,10 @@ impl Heap {
 
     // External allocations owned by live heap objects (e.g. `ArrayBuffer` backing stores).
     total = total.saturating_add(self.external_bytes);
+
+    // VM-managed off-heap allocations (source text, compiled code, module metadata, embedder
+    // caches, etc).
+    total = total.saturating_add(self.vm_external_bytes.bytes());
 
     // Slot table + mark bits + free lists + GC worklist.
     total = total.saturating_add(self.slots.capacity().saturating_mul(mem::size_of::<Slot>()));
@@ -5022,4 +5124,43 @@ fn reserve_vec_to_len<T>(vec: &mut Vec<T>, required_len: usize) -> Result<(), Vm
     .try_reserve_exact(additional)
     .map_err(|_| VmError::OutOfMemory)?;
   Ok(())
+}
+
+#[cfg(test)]
+mod external_memory_accounting_tests {
+  use super::*;
+
+  #[test]
+  fn charge_external_blocks_heap_allocations_until_dropped() -> Result<(), VmError> {
+    let max_bytes = 1024;
+    let mut heap = Heap::new(HeapLimits::new(max_bytes, max_bytes));
+
+    let token = heap.charge_external(max_bytes)?;
+    assert!(
+      heap.estimated_total_bytes() >= max_bytes,
+      "expected charged bytes to contribute to estimated_total_bytes"
+    );
+
+    {
+      let mut scope = heap.scope();
+      match scope.alloc_object() {
+        Err(VmError::OutOfMemory) => {}
+        Ok(_) => panic!("expected allocation to fail due to charged external bytes"),
+        Err(e) => return Err(e),
+      }
+    }
+
+    drop(token);
+    assert!(
+      heap.estimated_total_bytes() < max_bytes,
+      "expected dropping the token to release charged bytes"
+    );
+
+    {
+      let mut scope = heap.scope();
+      scope.alloc_object()?;
+    }
+
+    Ok(())
+  }
 }

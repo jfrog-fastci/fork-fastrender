@@ -86,7 +86,7 @@ impl Agent {
     budget: Budget,
     mut host_hooks: Option<&mut dyn HostHooks>,
   ) -> Result<Value, VmError> {
-    let source = Arc::new(SourceText::new(source_name, source_text));
+    let source = Arc::new(SourceText::new_charged(self.heap_mut(), source_name, source_text)?);
 
     // Swap the VM budget in/out without holding a borrow across `exec_script`.
     let prev_budget = self.runtime.vm.swap_budget_state(budget);

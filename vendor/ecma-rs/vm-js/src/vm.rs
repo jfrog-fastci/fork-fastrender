@@ -19,6 +19,7 @@ use crate::microtasks::MicrotaskQueue;
 use crate::module_graph::ModuleGraph;
 use crate::source::SourceText;
 use crate::source::StackFrame;
+use crate::ExternalMemoryToken;
 use crate::GcObject;
 use crate::Heap;
 use crate::Intrinsics;
@@ -137,6 +138,8 @@ pub(crate) struct EcmaFunctionCode {
   /// source text (e.g. function expressions are parsed by wrapping them in parentheses).
   pub(crate) prefix_len: u32,
   parsed: Option<Arc<Node<Func>>>,
+  #[allow(dead_code)]
+  parsed_memory: Option<ExternalMemoryToken>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -1071,6 +1074,7 @@ impl Vm {
       kind,
       prefix_len,
       parsed: None,
+      parsed_memory: None,
     });
 
     let id = EcmaFunctionId(idx);
@@ -1078,7 +1082,11 @@ impl Vm {
     Ok(id)
   }
 
-  fn ecma_function_ast(&mut self, id: EcmaFunctionId) -> Result<Arc<Node<Func>>, VmError> {
+  fn ecma_function_ast(
+    &mut self,
+    heap: &mut Heap,
+    id: EcmaFunctionId,
+  ) -> Result<Arc<Node<Func>>, VmError> {
     let (source, span_start, span_end, kind) = {
       let code = self
         .ecma_functions
@@ -1246,6 +1254,18 @@ impl Vm {
       }
     };
 
+    let parsed_source_len = if wrapped.is_empty() {
+      snippet.len()
+    } else {
+      wrapped.len()
+    };
+
+    // `parse-js` AST nodes can be significantly larger than the original source (each token and
+    // syntactic construct becomes one-or-more Rust structs). Use a conservative multiplier so
+    // hostile input can't bypass heap limits by forcing large cached ASTs.
+    let estimated_ast_bytes = parsed_source_len.saturating_mul(4);
+    let token = heap.charge_external(estimated_ast_bytes)?;
+
     let mut body = top.stx.body;
     if body.len() != 1 {
       return Err(VmError::Unimplemented(
@@ -1343,6 +1363,7 @@ impl Vm {
       .get_mut(id.0 as usize)
       .ok_or_else(|| VmError::invalid_handle())?;
     slot.parsed = Some(func.clone());
+    slot.parsed_memory = Some(token);
     Ok(func)
   }
 
@@ -2505,7 +2526,7 @@ impl Vm {
       "ECMAScript function missing [[Realm]]",
     ))?;
 
-    let func_ast = self.ecma_function_ast(code_id)?;
+    let func_ast = self.ecma_function_ast(scope.heap_mut(), code_id)?;
     let code_meta = self
       .ecma_functions
       .get(code_id.0 as usize)
@@ -2595,7 +2616,7 @@ impl Vm {
     let mut env =
       RuntimeEnv::new_with_var_env(this_scope.heap_mut(), global_object, func_env, func_env)?;
 
-    let func_ast = self.ecma_function_ast(code_id)?;
+    let func_ast = self.ecma_function_ast(this_scope.heap_mut(), code_id)?;
     let code_meta = self
       .ecma_functions
       .get(code_id.0 as usize)

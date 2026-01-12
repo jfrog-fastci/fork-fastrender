@@ -10,6 +10,8 @@ use crate::{
   VmError,
 };
 use crate::{Heap, VmHost, VmHostHooks};
+use core::mem;
+use std::sync::Arc;
 
 const MAX_REJECTION_STACK_FRAMES: usize = 32;
 const MAX_REJECTION_STACK_BYTES: usize = 16 * 1024;
@@ -219,12 +221,30 @@ impl ModuleGraph {
     let (namespace_obj, exports_sorted) =
       self.module_namespace_create(vm, scope, module, &unambiguous_names)?;
 
+    // Charge external bytes for the cached `[[Exports]]` list. This can be large for modules with
+    // many exports.
+    let exports_vec_bytes = exports_sorted
+      .capacity()
+      .saturating_mul(mem::size_of::<String>());
+    let exports_string_bytes = exports_sorted
+      .iter()
+      .fold(0usize, |acc, s| acc.saturating_add(s.capacity()));
+    let exports_total_bytes = exports_vec_bytes.saturating_add(exports_string_bytes);
+
+    // Root the namespace object while charging: `charge_external` can trigger GC.
+    let token = {
+      let mut tmp = scope.reborrow();
+      tmp.push_root(Value::Object(namespace_obj))?;
+      tmp.heap_mut().charge_external(exports_total_bytes)?
+    };
+
     // Cache the namespace object via a persistent root so it remains live across GC.
     let root = scope.heap_mut().add_root(Value::Object(namespace_obj))?;
 
     self.modules[idx].namespace = Some(ModuleNamespaceCache {
       object: root,
       exports: exports_sorted,
+      external_memory: Some(Arc::new(token)),
     });
 
     Ok(namespace_obj)

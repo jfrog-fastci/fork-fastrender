@@ -205,6 +205,7 @@ pub use crate::handle::RootId;
 pub use crate::handle::WeakGcObject;
 pub use crate::env::EnvBindingValue;
 pub use crate::heap::Heap;
+pub use crate::heap::ExternalMemoryToken;
 pub use crate::heap::HeapLimits;
 pub use crate::heap::HostSlots;
 pub use crate::heap::PersistentRoot;

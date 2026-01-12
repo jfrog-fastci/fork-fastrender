@@ -866,10 +866,11 @@ impl JsRuntime {
     hooks: &mut dyn VmHostHooks,
     source: &str,
   ) -> Result<Value, VmError> {
+    let source = Arc::new(SourceText::new_charged(&mut self.heap, "<inline>", source)?);
     self.exec_script_source_with_host_and_hooks(
       host,
       hooks,
-      Arc::new(SourceText::new("<inline>", source)),
+      source,
     )
   }
 
@@ -892,7 +893,8 @@ impl JsRuntime {
     hooks: &mut dyn VmHostHooks,
     source: &str,
   ) -> Result<Value, VmError> {
-    self.exec_script_source_with_hooks(hooks, Arc::new(SourceText::new("<inline>", source)))
+    let source = Arc::new(SourceText::new_charged(&mut self.heap, "<inline>", source)?);
+    self.exec_script_source_with_hooks(hooks, source)
   }
 
   /// Parse and execute a classic script (ECMAScript dialect, `SourceType::Script`).
@@ -917,7 +919,8 @@ impl JsRuntime {
     host: &mut dyn VmHost,
     source: &str,
   ) -> Result<Value, VmError> {
-    self.exec_script_source_with_host(host, Arc::new(SourceText::new("<inline>", source)))
+    let source = Arc::new(SourceText::new_charged(&mut self.heap, "<inline>", source)?);
+    self.exec_script_source_with_host(host, source)
   }
 
   /// Parse and execute a classic script (ECMAScript dialect, `SourceType::Script`) with an explicit
@@ -6119,7 +6122,7 @@ impl<'a> Evaluator<'a> {
   ) -> Result<Value, VmError> {
     let source = scope.heap().get_string(source_string)?.to_utf8_lossy();
 
-    let source = Arc::new(SourceText::new("<eval>", source));
+    let source = Arc::new(SourceText::new_charged(scope.heap_mut(), "<eval>", source)?);
     let opts = ParseOptions {
       dialect: Dialect::Ecma,
       source_type: SourceType::Script,

@@ -4,7 +4,7 @@ use crate::ImportAttribute;
 use crate::LoadedModuleRequest;
 use crate::ModuleRequest;
 use crate::SourceText;
-use crate::{EnvRootId, RootId, Vm, VmError};
+use crate::{EnvRootId, ExternalMemoryToken, RootId, Vm, VmError};
 use diagnostics::{Diagnostic, FileId};
 use parse_js::ast::class_or_object::{
   ClassMember, ClassOrObjKey, ClassOrObjVal, ObjMember, ObjMemberType,
@@ -97,6 +97,8 @@ pub enum ResolveExportResult {
 pub(crate) struct ModuleNamespaceCache {
   pub object: RootId,
   pub exports: Vec<String>,
+  #[allow(dead_code)]
+  pub external_memory: Option<Arc<ExternalMemoryToken>>,
 }
 
 /// Source Text Module Record (ECMA-262).

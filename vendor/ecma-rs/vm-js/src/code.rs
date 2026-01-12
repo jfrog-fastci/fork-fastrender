@@ -4,11 +4,13 @@
 //! Since `CompiledFunctionRef` contains an `Arc<CompiledScript>`, function objects keep their
 //! underlying compiled source/HIR alive even after the original compilation API returns.
 //!
-//! Note that [`CompiledScript`] lives **outside** the GC heap. The GC's [`crate::Heap::used_bytes`]
-//! accounting includes the size of the `Arc` pointer stored inside the function object, but does
-//! *not* include the memory used by the compiled HIR itself.
+//! Note that [`CompiledScript`] lives **outside** the GC heap. To ensure compiled code is included
+//! in [`crate::HeapLimits`], compilation charges estimated off-heap bytes via
+//! [`crate::Heap::charge_external`].
 
+use crate::heap::ExternalMemoryToken;
 use crate::source::SourceText;
+use crate::Heap;
 use crate::VmError;
 use diagnostics::FileId;
 use parse_js::{parse_with_options, Dialect, ParseOptions, SourceType};
@@ -19,15 +21,18 @@ use std::sync::Arc;
 pub struct CompiledScript {
   pub source: SourceText,
   pub hir: Arc<hir_js::LowerResult>,
+  #[allow(dead_code)]
+  external_memory: ExternalMemoryToken,
 }
 
 impl CompiledScript {
   /// Parse and lower a classic script (ECMAScript dialect, `SourceType::Script`).
   pub fn compile_script(
+    heap: &mut Heap,
     name: impl Into<Arc<str>>,
     text: impl Into<Arc<str>>,
   ) -> Result<Arc<CompiledScript>, VmError> {
-    let source = SourceText::new(name, text);
+    let source = SourceText::new_charged(heap, name, text)?;
     let opts = ParseOptions {
       dialect: Dialect::Ecma,
       source_type: SourceType::Script,
@@ -37,9 +42,14 @@ impl CompiledScript {
       .map_err(|err| VmError::Syntax(vec![err.to_diagnostic(FileId(0))]))?;
 
     let hir = hir_js::lower_file(FileId(0), hir_js::FileKind::Js, &parsed);
+    // HIR can be significantly larger than the source text; use a conservative estimate to ensure
+    // heap limits apply to compiled code.
+    let estimated_hir_bytes = source.text.len().saturating_mul(8);
+    let external_memory = heap.charge_external(estimated_hir_bytes)?;
     Ok(Arc::new(Self {
       source,
       hir: Arc::new(hir),
+      external_memory,
     }))
   }
 }
@@ -53,4 +63,3 @@ pub struct CompiledFunctionRef {
   pub script: Arc<CompiledScript>,
   pub body: hir_js::BodyId,
 }
-
