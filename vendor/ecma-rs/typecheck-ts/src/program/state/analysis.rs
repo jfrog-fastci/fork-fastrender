@@ -95,16 +95,18 @@ impl ProgramState {
     let mut lib_queue = VecDeque::new();
     self.process_libs(&libs, host, &mut lib_queue)?;
 
+    let mut type_packages = self.compiler_options.types.clone();
+    type_packages.sort();
+    type_packages.dedup();
+
     let mut root_keys: Vec<FileKey> = roots.to_vec();
-    let mut root_ids: Vec<FileId> = roots
+    root_keys.sort_unstable_by(|a, b| a.as_str().cmp(b.as_str()));
+    root_keys.dedup_by(|a, b| a.as_str() == b.as_str());
+    let root_ids_by_key: Vec<FileId> = root_keys
       .iter()
       .map(|key| self.intern_file_key(key.clone(), FileOrigin::Source))
       .collect();
-
-    let type_packages = self.compiler_options.types.clone();
-
-    root_keys.sort_unstable_by(|a, b| a.as_str().cmp(b.as_str()));
-    root_keys.dedup_by(|a, b| a.as_str() == b.as_str());
+    let mut root_ids: Vec<FileId> = root_ids_by_key.clone();
     root_ids.sort_unstable_by_key(|id| id.0);
     root_ids.dedup();
     self.root_ids = root_ids;
@@ -113,36 +115,45 @@ impl ProgramState {
       .set_roots(Arc::<[FileKey]>::from(root_keys));
     let mut queue: VecDeque<FileId> = self.root_ids.iter().copied().collect();
     queue.extend(lib_queue);
+
     if !type_packages.is_empty() {
-      if self.root_ids.is_empty() {
-        for name in type_packages.iter() {
-          self.check_cancelled()?;
+      // Match `tsc` by reporting missing `compilerOptions.types` entries as TS2688.
+      // These errors are not tied to a specific source location in TypeScript, so
+      // use a placeholder span (file-less) for deterministic comparisons.
+      let primary = Span::new(FileId(u32::MAX), TextRange::new(0, 0));
+      let mut type_package_targets: Vec<FileId> = Vec::new();
+
+      for name in type_packages.iter() {
+        self.check_cancelled()?;
+        let mut resolved = None;
+        for root in root_ids_by_key.iter().copied() {
+          if let Some(target) = self.record_type_package_resolution(root, name.as_str(), host) {
+            resolved = Some(target);
+            break;
+          }
+        }
+
+        for root in self.root_ids.iter().copied() {
+          self
+            .typecheck_db
+            .set_module_resolution_ref(root, name.as_str(), resolved);
+        }
+
+        if let Some(target) = resolved {
+          type_package_targets.push(target);
+        } else {
           self.push_program_diagnostic(codes::TYPE_DEFINITION_FILE_NOT_FOUND.error(
             format!("cannot find type definition file for \"{name}\""),
-            Span::new(FileId(u32::MAX), TextRange::new(0, 0)),
+            primary,
           ));
         }
-      } else {
-        let root_ids = self.root_ids.clone();
-        for name in type_packages.iter() {
-          self.check_cancelled()?;
-          let mut resolved_any = false;
-          for root in root_ids.iter().copied() {
-            if let Some(target) = self.record_type_package_resolution(root, name.as_str(), host) {
-              resolved_any = true;
-              queue.push_back(target);
-            }
-          }
-          if !resolved_any {
-            let primary_file = self.root_ids.first().copied().unwrap_or(FileId(u32::MAX));
-            self.push_program_diagnostic(codes::TYPE_DEFINITION_FILE_NOT_FOUND.error(
-              format!("cannot find type definition file for \"{name}\""),
-              Span::new(primary_file, TextRange::new(0, 0)),
-            ));
-          }
-        }
       }
+
+      type_package_targets.sort_unstable_by_key(|id| id.0);
+      type_package_targets.dedup();
+      queue.extend(type_package_targets);
     }
+
     let mut seen: AHashSet<FileId> = AHashSet::new();
     while let Some(file) = queue.pop_front() {
       self.check_cancelled()?;

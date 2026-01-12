@@ -29,6 +29,33 @@ fn compiler_options_types_includes_ambient_type_packages() {
 }
 
 #[test]
+fn compiler_options_types_missing_reports_ts2688_once_with_multiple_roots() {
+  let mut options = CompilerOptions::default();
+  options.types = vec!["definitely_missing_type_pkg".to_string()];
+  options.no_default_lib = true;
+
+  let mut host = MemoryHost::with_options(options);
+  host.add_lib(common::core_globals_lib());
+  let root_a = FileKey::new("a.ts");
+  let root_b = FileKey::new("b.ts");
+
+  host.insert(root_a.clone(), Arc::from("export {};"));
+  host.insert(root_b.clone(), Arc::from("export {};"));
+
+  let program = Program::new(host, vec![root_a, root_b]);
+  let diagnostics = program.check();
+  let ts2688: Vec<_> = diagnostics
+    .iter()
+    .filter(|diag| diag.code.as_str() == "TS2688")
+    .collect();
+  assert_eq!(
+    ts2688.len(),
+    1,
+    "expected exactly one TS2688 diagnostic for missing compilerOptions.types entry, got {diagnostics:?}"
+  );
+}
+
+#[test]
 fn compiler_options_types_resolves_via_at_types_fallback() {
   let mut options = CompilerOptions::default();
   options.types = vec!["node".to_string()];
