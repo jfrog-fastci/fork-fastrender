@@ -755,8 +755,13 @@ pub(crate) fn alloc_pinned(size: usize, shape: RtShapeId, entry_fp: u64) -> *mut
 ///
 /// Prefer using [`alloc_typed_old`] for new runtime-owned types; this function is kept for
 /// compatibility with existing runtime-native subsystems.
+#[allow(dead_code)]
 pub(crate) fn alloc_old_with_type_desc(desc: &'static TypeDescriptor) -> *mut u8 {
-  alloc_typed_old(desc)
+  // This function is retained for backwards compatibility with existing runtime-native subsystems.
+  // Prefer `alloc_typed_old`, which requires the caller to supply an `entry_fp` for stackmap fixups
+  // when allocator-triggered GC runs inside `abort_on_panic` / `catch_unwind` frames.
+  let entry_fp = crate::stackwalk::current_frame_pointer();
+  alloc_typed_old_with_entry(desc, entry_fp, "alloc_old_with_type_desc")
 }
 
 /// Allocate a GC-managed object using a runtime-owned [`TypeDescriptor`].
@@ -764,7 +769,22 @@ pub(crate) fn alloc_old_with_type_desc(desc: &'static TypeDescriptor) -> *mut u8
 /// This mirrors the behavior of [`alloc`] (nursery preferred → old-gen → LOS),
 /// but bypasses the shape table. It exists for runtime-owned allocation kinds
 /// like `RtString` that are not part of the compiler shape table.
+#[allow(dead_code)]
 pub(crate) fn alloc_typed(desc: &'static TypeDescriptor) -> *mut u8 {
+  let entry_fp = crate::stackwalk::current_frame_pointer();
+  alloc_typed_with_entry(desc, entry_fp, "alloc_typed")
+}
+
+/// Like [`alloc_typed`], but allows the caller to supply the outer runtime entrypoint's frame
+/// pointer.
+///
+/// Providing an `entry_fp` captured **before** entering `abort_on_panic` keeps stackmap fixups
+/// reliable even when `catch_unwind` frames do not maintain a consistent frame-pointer chain.
+pub(crate) fn alloc_typed_with_entry(
+  desc: &'static TypeDescriptor,
+  entry_fp: u64,
+  entry_name: &'static str,
+) -> *mut u8 {
   ensure_thread_registered_for_alloc();
   crate::threading::safepoint_poll();
   ensure_global_heap_init();
@@ -781,6 +801,9 @@ pub(crate) fn alloc_typed(desc: &'static TypeDescriptor) -> *mut u8 {
   let global = global_heap();
 
   if size > IMMIX_MAX_OBJECT_SIZE || align > IMMIX_BLOCK_SIZE {
+    if should_trigger_major() {
+      crate::exports::gc_collect_major_for_alloc(entry_name, entry_fp);
+    }
     return with_heap_lock_mutator(|heap| {
       let epoch = current_mark_epoch(global);
       let obj = heap.los.alloc(size, align);
@@ -789,30 +812,61 @@ pub(crate) fn alloc_typed(desc: &'static TypeDescriptor) -> *mut u8 {
     });
   }
 
-  // Fast path: per-thread nursery TLAB.
-  if let Some(obj) = TLS_ALLOC
-    .try_with(|alloc| unsafe {
-      let alloc = &mut *alloc.get();
-      alloc.refresh_nursery_epoch();
-      alloc.nursery.alloc(size, align, nursery(global))
-    })
-    .ok()
-    .flatten()
-  {
-    let epoch = current_mark_epoch(global);
-    unsafe { init_object(obj, size, desc, epoch, false) };
-    return obj;
+  if should_trigger_minor(global) {
+    crate::exports::gc_collect_minor_for_alloc(entry_name, entry_fp);
   }
 
-  // Nursery exhausted: fall back to old-gen allocation.
-  alloc_old_no_gc(size, align, desc)
+  // Fast path: per-thread nursery TLAB.
+  match TLS_ALLOC.try_with(|alloc| unsafe {
+    let alloc = &mut *alloc.get();
+    alloc.refresh_nursery_epoch();
+    alloc.nursery.alloc(size, align, nursery(global))
+  }) {
+    Ok(Some(obj)) => {
+      let epoch = current_mark_epoch(global);
+      unsafe { init_object(obj, size, desc, epoch, false) };
+      return obj;
+    }
+    Ok(None) => {
+      // Nursery exhausted: trigger a stop-the-world minor GC and retry nursery allocation.
+      crate::exports::gc_collect_minor_for_alloc(entry_name, entry_fp);
+      if let Ok(Some(obj)) = TLS_ALLOC.try_with(|alloc| unsafe {
+        let alloc = &mut *alloc.get();
+        alloc.refresh_nursery_epoch();
+        alloc.nursery.alloc(size, align, nursery(global))
+      }) {
+        let epoch = current_mark_epoch(global);
+        unsafe { init_object(obj, size, desc, epoch, false) };
+        return obj;
+      }
+    }
+    Err(_) => {
+      // If allocator TLS is inaccessible during thread teardown, fall back to allocating in the old
+      // generation without attempting to trigger GC.
+      return alloc_old_no_gc(size, align, desc);
+    }
+  }
+
+  // Fall back to old-gen allocation (may trigger major GC on failure/pressure).
+  alloc_old_may_gc(size, align, desc, entry_fp, entry_name)
 }
 
 /// Allocate a GC-managed object directly into the old generation (Immix/LOS).
 ///
 /// This is intended for runtime-owned allocations that should avoid nursery
 /// evacuation overhead (e.g. weakly-interned strings).
+#[allow(dead_code)]
 pub(crate) fn alloc_typed_old(desc: &'static TypeDescriptor) -> *mut u8 {
+  let entry_fp = crate::stackwalk::current_frame_pointer();
+  alloc_typed_old_with_entry(desc, entry_fp, "alloc_typed_old")
+}
+
+/// Like [`alloc_typed_old`], but allows supplying the outer runtime entrypoint's frame pointer.
+pub(crate) fn alloc_typed_old_with_entry(
+  desc: &'static TypeDescriptor,
+  entry_fp: u64,
+  entry_name: &'static str,
+) -> *mut u8 {
   ensure_thread_registered_for_alloc();
   crate::threading::safepoint_poll();
   ensure_global_heap_init();
@@ -829,6 +883,9 @@ pub(crate) fn alloc_typed_old(desc: &'static TypeDescriptor) -> *mut u8 {
   let global = global_heap();
 
   if size > IMMIX_MAX_OBJECT_SIZE || align > IMMIX_BLOCK_SIZE {
+    if should_trigger_major() {
+      crate::exports::gc_collect_major_for_alloc(entry_name, entry_fp);
+    }
     return with_heap_lock_mutator(|heap| {
       let epoch = current_mark_epoch(global);
       let obj = heap.los.alloc(size, align);
@@ -837,7 +894,7 @@ pub(crate) fn alloc_typed_old(desc: &'static TypeDescriptor) -> *mut u8 {
     });
   }
 
-  alloc_old_no_gc(size, align, desc)
+  alloc_old_may_gc(size, align, desc, entry_fp, entry_name)
 }
 
 fn alloc_old_no_gc(size: usize, align: usize, desc: &'static TypeDescriptor) -> *mut u8 {

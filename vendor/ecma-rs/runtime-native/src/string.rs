@@ -71,14 +71,19 @@ fn rt_string_object_size_for_len(len: usize) -> usize {
     .unwrap_or_else(|| trap::rt_trap_invalid_arg("rt_string: object size overflow"))
 }
 
-fn alloc_rt_string_with_len(len: usize, old_only: bool) -> *mut u8 {
+fn alloc_rt_string_with_len(
+  len: usize,
+  old_only: bool,
+  entry_fp: u64,
+  entry_name: &'static str,
+) -> *mut u8 {
   let size = rt_string_object_size_for_len(len);
   let desc = rt_string_desc_for_size(size);
 
   let obj = if old_only {
-    crate::rt_alloc::alloc_typed_old(desc)
+    crate::rt_alloc::alloc_typed_old_with_entry(desc, entry_fp, entry_name)
   } else {
-    crate::rt_alloc::alloc_typed(desc)
+    crate::rt_alloc::alloc_typed_with_entry(desc, entry_fp, entry_name)
   };
 
   // SAFETY: `obj` points to a valid allocation of `desc.size` bytes.
@@ -93,9 +98,14 @@ fn alloc_rt_string_with_len(len: usize, old_only: bool) -> *mut u8 {
   obj
 }
 
-fn alloc_rt_string_from_utf8(bytes: &[u8], old_only: bool) -> *mut u8 {
+fn alloc_rt_string_from_utf8(
+  bytes: &[u8],
+  old_only: bool,
+  entry_fp: u64,
+  entry_name: &'static str,
+) -> *mut u8 {
   let len = bytes.len();
-  let obj = alloc_rt_string_with_len(len, old_only);
+  let obj = alloc_rt_string_with_len(len, old_only, entry_fp, entry_name);
 
   // SAFETY: `obj` points to an allocation with capacity >= `len`.
   unsafe {
@@ -113,7 +123,8 @@ fn alloc_rt_string_from_utf8(bytes: &[u8], old_only: bool) -> *mut u8 {
 /// being cleared by minor GC unless the runtime runs a major sweep.
 #[allow(dead_code)] // Used by future interner integration.
 pub(crate) fn alloc_rt_string_from_utf8_old(bytes: &[u8]) -> *mut u8 {
-  alloc_rt_string_from_utf8(bytes, true)
+  let entry_fp = crate::stackwalk::current_frame_pointer();
+  alloc_rt_string_from_utf8(bytes, true, entry_fp, "alloc_rt_string_from_utf8_old")
 }
 
 #[inline]
@@ -295,6 +306,9 @@ pub extern "C" fn rt_stringref_free(s: StringRef) {
 /// Allocate a GC-managed UTF-8 string and copy `bytes`.
 #[no_mangle]
 pub extern "C" fn rt_string_new_utf8(bytes: *const u8, len: usize) -> GcPtr {
+  // Capture the frame pointer of this runtime entrypoint before entering `abort_on_panic`, which
+  // may wrap the body in `catch_unwind` and break frame-pointer walking used by stackmap fixups.
+  let entry_fp = crate::stackwalk::current_frame_pointer();
   abort_on_panic(|| {
     let bytes = bytes_from_raw(
       bytes,
@@ -305,7 +319,7 @@ pub extern "C" fn rt_string_new_utf8(bytes: *const u8, len: usize) -> GcPtr {
       trap::rt_trap_invalid_arg("rt_string_new_utf8: input was not valid UTF-8");
     }
 
-    alloc_rt_string_from_utf8(bytes, false)
+    alloc_rt_string_from_utf8(bytes, false, entry_fp, "rt_string_new_utf8")
   })
 }
 
@@ -384,6 +398,7 @@ pub extern "C" fn rt_string_to_owned_utf8(s: GcPtr) -> StringRef {
 /// Concatenate two GC-managed UTF-8 strings into a new GC-managed string.
 #[no_mangle]
 pub extern "C" fn rt_string_concat_gc(a: GcPtr, b: GcPtr) -> GcPtr {
+  let entry_fp = crate::stackwalk::current_frame_pointer();
   abort_on_panic(|| {
     if a.is_null() {
       trap::rt_trap_invalid_arg("rt_string_concat_gc: `a` was null");
@@ -440,7 +455,7 @@ pub extern "C" fn rt_string_concat_gc(a: GcPtr, b: GcPtr) -> GcPtr {
       .checked_add(b_len)
       .unwrap_or_else(|| trap::rt_trap_invalid_arg("rt_string_concat_gc: length overflow"));
 
-    let out = alloc_rt_string_with_len(len, false);
+    let out = alloc_rt_string_with_len(len, false, entry_fp, "rt_string_concat_gc");
 
     // SAFETY: `out` has capacity >= `len` by construction.
     unsafe {
@@ -456,6 +471,7 @@ pub extern "C" fn rt_string_concat_gc(a: GcPtr, b: GcPtr) -> GcPtr {
 /// Intern a UTF-8 byte string and return a stable ID.
 #[no_mangle]
 pub extern "C" fn rt_string_intern(s: *const u8, len: usize) -> InternedId {
+  let entry_fp = crate::stackwalk::current_frame_pointer();
   abort_on_panic(|| {
     let bytes = bytes_from_raw(
       s,
@@ -467,7 +483,7 @@ pub extern "C" fn rt_string_intern(s: *const u8, len: usize) -> InternedId {
       trap::rt_trap_invalid_arg("rt_string_intern: input was not valid UTF-8");
     }
 
-    interner::intern(bytes)
+    interner::intern_with_entry(bytes, entry_fp)
   })
 }
 

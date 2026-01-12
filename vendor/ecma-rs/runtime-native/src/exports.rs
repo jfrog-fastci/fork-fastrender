@@ -2174,7 +2174,7 @@ pub extern "C" fn rt_drain_microtasks_abi() -> bool {
 }
 
 #[inline]
-fn rt_async_sleep_impl(delay_ms: u64) -> PromiseRef {
+fn rt_async_sleep_impl(delay_ms: u64, entry_fp: u64) -> PromiseRef {
   let _ = crate::rt_ensure_init();
   ensure_event_loop_thread_registered();
 
@@ -2189,7 +2189,7 @@ fn rt_async_sleep_impl(delay_ms: u64) -> PromiseRef {
     &ASYNC_SLEEP_PROMISE_PTR_OFFSETS,
   );
 
-  let obj = crate::rt_alloc::alloc_typed(&ASYNC_SLEEP_PROMISE_TYPE_DESC);
+  let obj = crate::rt_alloc::alloc_typed_with_entry(&ASYNC_SLEEP_PROMISE_TYPE_DESC, entry_fp, "rt_async_sleep");
   let promise = PromiseRef(obj.cast());
   unsafe {
     // Initialize the `PromiseHeader` atomics without creating references to uninitialized `Atomic*`
@@ -2246,7 +2246,10 @@ fn rt_async_sleep_legacy_impl(delay_ms: u64) -> PromiseRef {
 /// The returned promise is compatible with the native async/await ABI (`PromiseHeader` prefix).
 #[no_mangle]
 pub extern "C" fn rt_async_sleep(delay_ms: u64) -> PromiseRef {
-  abort_on_panic(|| rt_async_sleep_impl(delay_ms))
+  // Capture the outer runtime entrypoint's frame pointer before entering `abort_on_panic` so any
+  // allocator-triggered GC inside the body can recover the nearest managed stackmap callsite.
+  let entry_fp = crate::stackwalk::current_frame_pointer();
+  abort_on_panic(|| rt_async_sleep_impl(delay_ms, entry_fp))
 }
 
 #[no_mangle]

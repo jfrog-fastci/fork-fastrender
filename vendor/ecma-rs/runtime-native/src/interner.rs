@@ -107,14 +107,14 @@ fn ensure_thread_registered() {
   crate::threading::register_current_thread(crate::threading::ThreadKind::External);
 }
 
-fn alloc_interned_object(bytes: &[u8]) -> (gc::WeakHandle, usize) {
+fn alloc_interned_object(bytes: &[u8], entry_fp: u64) -> (gc::WeakHandle, usize) {
   let len = bytes.len();
   let size = interned_object_size_for_len(len);
   let desc = interned_desc_for_size(size);
 
   // Allocate interned bytes in the process-global heap so global GC pressure can reclaim them and
   // clear the corresponding global weak-handle slots.
-  let mut obj = crate::rt_alloc::alloc_old_with_type_desc(desc);
+  let mut obj = crate::rt_alloc::alloc_typed_old_with_entry(desc, entry_fp, "rt_string_intern");
 
   // Root the object while initializing and while installing its weak-handle slot. This prevents the
   // object from being collected or moved if we block (e.g. on the global weak-handle lock) and a GC
@@ -277,7 +277,12 @@ fn interner_weak_cleanup(_heap: &mut gc::GcHeap) {
 /// Intern a UTF-8 byte string.
 ///
 /// Thread-safe and optimized for concurrent reads.
+#[allow(dead_code)]
 pub(crate) fn intern(bytes: &[u8]) -> InternedId {
+  intern_with_entry(bytes, crate::stackwalk::current_frame_pointer())
+}
+
+pub(crate) fn intern_with_entry(bytes: &[u8], entry_fp: u64) -> InternedId {
   ensure_thread_registered();
   let hash = hash_bytes(bytes);
 
@@ -298,7 +303,7 @@ pub(crate) fn intern(bytes: &[u8]) -> InternedId {
   let id_u32 = u32::try_from(tables.entries.len()).expect("too many interned strings");
   let id = InternedId(id_u32);
 
-  let (handle, len) = alloc_interned_object(bytes);
+  let (handle, len) = alloc_interned_object(bytes, entry_fp);
 
   let mut next = (*tables).clone();
   next.entries.push(Entry::Weak { len, handle });
