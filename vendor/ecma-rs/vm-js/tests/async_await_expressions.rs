@@ -240,6 +240,58 @@ fn await_in_delete_expression_optional_chain_skips_key() -> Result<(), VmError> 
 }
 
 #[test]
+fn await_in_class_decl_computed_method_name() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(
+    r#"
+      var out = "";
+      async function f() {
+        class C {
+          [(await Promise.resolve("m"))]() { return "ok"; }
+        }
+        return new C().m();
+      }
+      f().then(function (v) { out = v; });
+      out
+    "#,
+  )?;
+  assert_eq!(value_to_string(&rt, value), "");
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let value = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, value), "ok");
+  Ok(())
+}
+
+#[test]
+fn await_in_named_class_expr_computed_key_can_reference_class_binding() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(
+    r#"
+      var out = "";
+      async function f() {
+        let C = class D {
+          [(await Promise.resolve(D.name))]() { return "ok"; }
+        };
+        return new C().D();
+      }
+      f().then(function (v) { out = v; });
+      out
+    "#,
+  )?;
+  assert_eq!(value_to_string(&rt, value), "");
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let value = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, value), "ok");
+  Ok(())
+}
+
+#[test]
 fn await_in_comma_expression() -> Result<(), VmError> {
   let mut rt = new_runtime();
 

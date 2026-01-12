@@ -1,6 +1,7 @@
 mod expr;
 mod stmt;
 mod type_member;
+mod class_await;
 
 use super::Parser;
 use crate::lex::LexMode;
