@@ -16,6 +16,12 @@ fn assert_module_syntax_error(source: &str) {
 // - language/module-code/parse-err-hoist-lex-gen.js
 // - language/module-code/early-lex-and-var.js
 // - language/module-code/early-dup-lex.js
+// - language/module-code/early-import-eval.js
+// - language/module-code/early-import-arguments.js
+// - language/module-code/early-import-as-eval.js
+// - language/module-code/early-import-as-arguments.js
+// - language/module-code/early-dup-export-id.js
+// - language/module-code/early-export-unresolvable.js
 #[test]
 fn rejects_duplicate_top_level_function_decls() {
   assert_module_syntax_error(
@@ -104,4 +110,40 @@ fn rejects_duplicate_lexical_names_in_module_scope() {
       const x = 0;
     "#,
   );
+}
+
+#[test]
+fn rejects_import_binding_named_eval() {
+  assert_module_syntax_error(r#"import { eval } from "./m.js";"#);
+}
+
+#[test]
+fn rejects_import_binding_named_arguments() {
+  assert_module_syntax_error(r#"import { arguments } from "./m.js";"#);
+}
+
+#[test]
+fn rejects_import_binding_aliased_to_eval() {
+  assert_module_syntax_error(r#"import { x as eval } from "./m.js";"#);
+}
+
+#[test]
+fn rejects_import_binding_aliased_to_arguments() {
+  assert_module_syntax_error(r#"import { x as arguments } from "./m.js";"#);
+}
+
+#[test]
+fn rejects_duplicate_exported_names() {
+  assert_module_syntax_error(
+    r#"
+      var x;
+      export { x };
+      export { x };
+    "#,
+  );
+}
+
+#[test]
+fn rejects_exporting_unresolvable_binding() {
+  assert_module_syntax_error(r#"export { unresolvable };"#);
 }
