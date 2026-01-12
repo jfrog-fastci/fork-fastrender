@@ -366,9 +366,9 @@ struct StreamingParseState {
 enum ParseUntilBlockedContinueReason {
   /// Parsing yielded because the per-task HTML parse budget was exhausted.
   BudgetExhausted,
-  /// Parsing yielded at an async external `<script>` boundary to allow "fast" async scripts to
-  /// interleave with parsing before later scripts are discovered.
-  AsyncScriptInterleaving,
+  /// Parsing yielded because an "as soon as possible" (`async` / ordered-asap) script is ready to
+  /// execute and should run before parsing continues.
+  PendingAsapScriptExecution,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -410,6 +410,7 @@ pub struct BrowserTabHost {
   deferred_scripts: HashSet<HtmlScriptId>,
   executed: HashSet<HtmlScriptId>,
   pending_script_load_blockers: HashSet<HtmlScriptId>,
+  pending_asap_script_executions: HashSet<HtmlScriptId>,
   pending_image_load_blockers: HashSet<(NodeId, u64)>,
   image_load_state: HashMap<NodeId, ImageLoadState>,
   next_image_load_request_id: u64,
@@ -498,6 +499,7 @@ impl BrowserTabHost {
       deferred_scripts: HashSet::new(),
       executed: HashSet::new(),
       pending_script_load_blockers: HashSet::new(),
+      pending_asap_script_executions: HashSet::new(),
       pending_image_load_blockers: HashSet::new(),
       image_load_state: HashMap::new(),
       next_image_load_request_id: 1,
@@ -717,6 +719,7 @@ impl BrowserTabHost {
     self.deferred_scripts.clear();
     self.executed.clear();
     self.pending_script_load_blockers.clear();
+    self.pending_asap_script_executions.clear();
     self.pending_image_load_blockers.clear();
     self.image_load_state.clear();
     self.next_image_load_request_id = 1;
@@ -924,6 +927,53 @@ impl BrowserTabHost {
     !spec.async_attr && !spec.defer_attr
   }
 
+  fn has_pending_asap_script_execution(&self) -> bool {
+    self.streaming_parse_active && !self.pending_asap_script_executions.is_empty()
+  }
+
+  fn script_should_preempt_streaming_parse(&self, script_id: HtmlScriptId) -> bool {
+    let Some(entry) = self.scripts.get(&script_id) else {
+      return false;
+    };
+    let spec = &entry.spec;
+    match spec.script_type {
+      ScriptType::Classic => {
+        // Inline classic scripts execute synchronously during parsing and do not participate in
+        // ASAP task scheduling.
+        if !spec.src_attr_present {
+          return false;
+        }
+        if spec.src.as_deref().is_none_or(|src| src.is_empty()) {
+          return false;
+        }
+        let is_async = spec.async_attr || spec.force_async;
+        if spec.parser_inserted {
+          // Parser-inserted classic scripts are parser-blocking unless `async`-like, and `defer`
+          // scripts run only after parsing completes.
+          is_async
+        } else {
+          // Dynamically inserted external classic scripts are either async or ordered-asap; both can
+          // execute before parsing completes.
+          true
+        }
+      }
+      ScriptType::Module => {
+        let is_async = spec.async_attr || spec.force_async;
+        if is_async {
+          return true;
+        }
+        if spec.parser_inserted {
+          // Parser-inserted module scripts are deferred-by-default when `async` is absent.
+          return false;
+        }
+        // Non-parser-inserted module scripts without `async` execute in insertion order as soon as
+        // possible.
+        true
+      }
+      ScriptType::ImportMap | ScriptType::Unknown => false,
+    }
+  }
+
   fn queue_parse_task(&mut self, event_loop: &mut EventLoop<Self>) -> Result<()> {
     if self.streaming_parse_in_progress {
       // Avoid scheduling nested parse tasks when parsing is already on the stack (for example when a
@@ -939,6 +989,16 @@ impl BrowserTabHost {
     state.parse_task_scheduled = true;
 
     let queued = event_loop.queue_task(TaskSource::DOMManipulation, |host, event_loop| {
+      if host.has_pending_asap_script_execution()
+        && host.pending_parser_blocking_script.is_none()
+        && host.parser_blocked_on.is_none()
+      {
+        if let Some(state) = host.streaming_parse.as_mut() {
+          state.parse_task_scheduled = false;
+        }
+        host.queue_parse_resume_task(event_loop)?;
+        return Ok(());
+      }
       let task_result = host.parse_until_blocked(event_loop);
       if let Some(state) = host.streaming_parse.as_mut() {
         state.parse_task_scheduled = false;
@@ -1172,12 +1232,25 @@ impl BrowserTabHost {
       self.sync_host_dom_to_streaming_parser(&mut state)?;
     }
 
+    // HTML: async/ordered-asap scripts can become ready while parsing is paused between tasks (e.g.
+    // a networking task completes and queues script execution). When such a script is ready to
+    // execute, parsing must not continue until the script's execution task has run ("still blocks at
+    // its execution point"). Yield back to the event loop so the pending script task can run first.
+    if self.pending_parser_blocking_script.is_none()
+      && self.parser_blocked_on.is_none()
+      && self.has_pending_asap_script_execution()
+    {
+      self.streaming_parse = Some(state);
+      return Ok(ParseUntilBlockedResult::Continue(
+        ParseUntilBlockedContinueReason::PendingAsapScriptExecution,
+      ));
+    }
+
     enum Outcome {
       Blocked,
       Finished,
       AbortedForNavigation,
       BudgetExhausted,
-      YieldedForAsyncScriptInterleaving,
     }
 
     let outcome = (|| -> Result<Outcome> {
@@ -1405,35 +1478,6 @@ impl BrowserTabHost {
               continue;
             }
 
-            // In real browsers, async external scripts can execute before later parser-inserted
-            // scripts when they load quickly (e.g. from cache). FastRender does not have true
-            // background network concurrency, so we yield back to the event loop so the async
-            // fetch + execution tasks can run before we resume parsing.
-            //
-            // Avoid yielding for scripts whose sources are not immediately available. Many tests
-            // register in-memory script sources *after* construction (before running the event
-            // loop), so yielding here would not help interleaving and would instead stall parsing
-            // on a script fetch that is guaranteed to fail.
-            let should_yield_for_async = spec.script_type == ScriptType::Classic
-              && spec.src_attr_present
-              && spec.async_attr
-              && spec
-                .src
-                .as_deref()
-                .filter(|src| !src.is_empty())
-                .is_some_and(|src| {
-                  // Avoid eager network fetches during parsing when the script source is not
-                  // immediately available. Many tests register in-memory script sources *after*
-                  // construction (before running the event loop), so only yield for "fast" sources.
-                  self
-                    .external_script_sources
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner())
-                    .contains_key(src)
-                    || Url::parse(src)
-                      .ok()
-                      .is_some_and(|parsed| parsed.scheme() == "file")
-                });
             let base_url_at_discovery = spec.base_url.clone();
 
             let _script_id = with_active_streaming_parser(&state.parser, || {
@@ -1460,17 +1504,6 @@ impl BrowserTabHost {
             // Sync any DOM mutations from the executed script back into the streaming parser's live
             // DOM before resuming parsing.
             self.sync_host_dom_to_streaming_parser(&mut state)?;
-
-            if should_yield_for_async {
-              // Yield back to the event loop so the async script tasks can run before we parse more
-              // HTML (and potentially discover later parser-inserted scripts).
-              return Ok(Outcome::YieldedForAsyncScriptInterleaving);
-            }
-
-            // Note: when parsing is initiated outside the event loop (e.g. HTML-string entry points),
-            // we intentionally avoid running pending networking tasks here. This keeps construction
-            // deterministic and ensures embeddings can attach listeners (e.g. `<script>` error/load)
-            // before async fetch tasks are serviced.
           }
           StreamingParserYield::Finished { document } => {
             // Parsing has completed; any subsequent scripts (deferred/async) should treat
@@ -1521,14 +1554,6 @@ impl BrowserTabHost {
         self.streaming_parse = Some(state);
         Ok(ParseUntilBlockedResult::Continue(
           ParseUntilBlockedContinueReason::BudgetExhausted,
-        ))
-      }
-      Ok(Outcome::YieldedForAsyncScriptInterleaving) => {
-        // We already committed a DOM snapshot at the `</script>` boundary above; just stash the
-        // parser state and yield so queued async script tasks can run.
-        self.streaming_parse = Some(state);
-        Ok(ParseUntilBlockedResult::Continue(
-          ParseUntilBlockedContinueReason::AsyncScriptInterleaving,
         ))
       }
       Ok(Outcome::Finished | Outcome::AbortedForNavigation) => {
@@ -2726,6 +2751,10 @@ impl BrowserTabHost {
 
             Ok(())
           })?;
+
+          if self.streaming_parse_active && self.script_should_preempt_streaming_parse(script_id) {
+            self.pending_asap_script_executions.insert(script_id);
+          }
         }
         HtmlScriptSchedulerAction::QueueScriptEventTask { node_id, event, .. } => {
           let type_str = match event {
@@ -2750,6 +2779,7 @@ impl BrowserTabHost {
     event_loop: &mut EventLoop<Self>,
   ) -> Result<()> {
     let newly_executed = self.executed.insert(script_id);
+    self.pending_asap_script_executions.remove(&script_id);
     if self.parser_blocked_on == Some(script_id) {
       self.parser_blocked_on = None;
     }
@@ -3207,49 +3237,6 @@ impl BrowserTabHost {
             script_id.as_u64()
           ))
         })?;
-      match self.fetch_script_source(script_id, &url, destination) {
-        Ok(source) => {
-          let actions = self.scheduler.classic_fetch_completed(script_id, source)?;
-          self.apply_scheduler_actions(actions, event_loop)?;
-        }
-        Err(err) => {
-          self.fail_external_script_fetch(script_id, event_loop)?;
-          if matches!(err, Error::Render(_)) {
-            return Err(err);
-          }
-        }
-      }
-      return Ok(());
-    }
-
-    let is_fast_async = self.scripts.get(&script_id).is_some_and(|entry| {
-      if !self.streaming_parse_active {
-        return false;
-      }
-      let spec = &entry.spec;
-      if spec.script_type != ScriptType::Classic || !spec.src_attr_present {
-        return false;
-      }
-      if !(spec.async_attr || spec.force_async) {
-        return false;
-      }
-      // In-memory sources and `file:` URLs are effectively instantaneous. Fetch them synchronously
-      // so the queued execution task observes a lower global event-loop sequence number than the
-      // parse-resume task scheduled after yielding at the script boundary.
-      if self
-        .external_script_sources
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .contains_key(&url)
-      {
-        return true;
-      }
-      Url::parse(&url)
-        .ok()
-        .is_some_and(|parsed| parsed.scheme() == "file")
-    });
-
-    if is_fast_async {
       match self.fetch_script_source(script_id, &url, destination) {
         Ok(source) => {
           let actions = self.scheduler.classic_fetch_completed(script_id, source)?;
@@ -3924,48 +3911,6 @@ impl BrowserTab {
     self.host.document_write_state.set_parsing_active(true);
 
     let outcome = self.host.parse_until_blocked(&mut self.event_loop)?;
-    if matches!(
-      outcome,
-      ParseUntilBlockedResult::Continue(ParseUntilBlockedContinueReason::AsyncScriptInterleaving)
-    ) && document_url.is_some()
-    {
-      let _deadline_guard = self
-        .host
-        .streaming_parse
-        .as_ref()
-        .and_then(|state| state.deadline.as_ref())
-        .map(|deadline| DeadlineGuard::install(Some(deadline)));
-      // When navigation parsing is initiated outside the event loop (document URL is provided), we
-      // still want "fast" async scripts to be able to execute before we enqueue the parse-resume
-      // task.
-      //
-      // The async script's execution task is queued *after* its fetch task runs. If we scheduled the
-      // parse-resume task immediately, it could receive a lower task sequence number than the async
-      // script's eventual execution task, causing parsing to resume and discover later scripts
-      // before the async script executes.
-      //
-      // Instead, run the event loop once now (draining any currently queued work, including the
-      // async script's fetch + execution tasks) and then enqueue the parse-resume task.
-      let trace = self.trace.clone();
-      let diagnostics = self.diagnostics.clone();
-      let _ = self.run_event_loop_until_idle_handling_errors_with_pending_navigation_abort(
-        self.host.js_execution_options.event_loop_run_limits,
-        /*render_between_turns=*/ false,
-        move |err| {
-          // Match `run_event_loop_until_idle`: report uncaught task errors but keep going. This
-          // one-off interleaving spin is still part of the navigation's JS execution.
-          let message = err.to_string();
-          if let Some(diag) = &diagnostics {
-            diag.record_js_exception(message.clone(), None);
-          }
-          if trace.is_enabled() {
-            let mut span = trace.span("js.uncaught_exception", "js");
-            span.arg_str("message", &message);
-          }
-        },
-        || {},
-      )?;
-    }
     if outcome.should_continue() {
       self.host.queue_parse_resume_task(&mut self.event_loop)?;
     }
@@ -7275,21 +7220,21 @@ mod tests {
   }
 
   #[test]
-  fn streaming_parser_yields_for_fast_async_external_scripts_so_they_can_run_before_later_scripts(
+  fn streaming_parser_allows_async_external_scripts_to_execute_before_later_parser_scripts(
   ) -> Result<()> {
-    // If an async external script is effectively "instant" (file:// or a pre-registered in-memory
-    // source), allow it to run before later parser-inserted scripts even when the HTML would
-    // otherwise parse to completion in a single parse slice. This keeps deterministic fixtures
-    // aligned with browser behavior (async scripts can execute mid-parse when they load quickly).
     let log = Rc::new(RefCell::new(Vec::<String>::new()));
     let executor = TestExecutor {
       log: Rc::clone(&log),
     };
     let mut tab = BrowserTab::from_html("", RenderOptions::default(), executor)?;
 
-    tab
-      .host
-      .reset_scripting_state(None, ReferrerPolicy::default())?;
+    // Force parsing to yield to the event loop so async scripts can interleave with streaming parse
+    // slices (mirroring how browsers can execute fast async scripts mid-parse).
+    let mut js_execution_options = tab.js_execution_options();
+    js_execution_options.dom_parse_budget = crate::js::ParseBudget::new(1);
+    tab.set_js_execution_options(js_execution_options);
+
+    tab.host.reset_scripting_state(None, ReferrerPolicy::default())?;
     tab.register_script_source("https://example.com/a.js", "A");
 
     let html = "<!doctype html><html><body>\
@@ -7302,22 +7247,67 @@ mod tests {
       &RenderOptions::default(),
     )?;
 
-    // `parse_html_streaming_and_schedule_scripts` runs the event loop once when it yields for async
-    // script interleaving during navigations (document URL is provided). The async script should
-    // execute before parsing resumes and discovers later parser-inserted scripts.
-    assert_eq!(
-      &*log.borrow(),
-      &["script:A".to_string(), "microtask:A".to_string()],
-      "expected async script to execute before the parser continues"
+    assert!(
+      log.borrow().is_empty(),
+      "expected parse initialization to queue work without running the event loop"
     );
 
-    tab.run_event_loop_until_idle(RunLimits::unbounded())?;
+    assert_eq!(
+      tab.run_event_loop_until_idle(RunLimits::unbounded())?,
+      RunUntilIdleOutcome::Idle
+    );
 
     assert_eq!(
       &*log.borrow(),
       &[
         "script:A".to_string(),
         "microtask:A".to_string(),
+        "script:B".to_string(),
+        "microtask:B".to_string()
+      ]
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn streaming_parser_allows_async_module_scripts_to_execute_before_later_parser_scripts(
+  ) -> Result<()> {
+    let log = Rc::new(RefCell::new(Vec::<String>::new()));
+    let executor = TestExecutor { log: Rc::clone(&log) };
+    let mut tab = BrowserTab::from_html("", RenderOptions::default(), executor)?;
+
+    // Enable module scripts and force parsing to yield so the async module script can execute before
+    // the later parser-inserted classic script is discovered.
+    let mut js_execution_options = tab.js_execution_options();
+    js_execution_options.dom_parse_budget = crate::js::ParseBudget::new(1);
+    js_execution_options.supports_module_scripts = true;
+    tab.set_js_execution_options(js_execution_options);
+
+    tab.host.reset_scripting_state(None, ReferrerPolicy::default())?;
+    tab.register_script_source("https://example.com/m.js", "M");
+
+    let html = "<!doctype html><html><body>\
+      <script type=\"module\" async src=\"https://example.com/m.js\"></script>\
+      <script>B</script>\
+      </body></html>";
+    let _ =
+      tab.parse_html_streaming_and_schedule_scripts(html, Some("https://example.com/"), &RenderOptions::default())?;
+
+    assert!(
+      log.borrow().is_empty(),
+      "expected parse initialization to queue work without running the event loop"
+    );
+
+    assert_eq!(
+      tab.run_event_loop_until_idle(RunLimits::unbounded())?,
+      RunUntilIdleOutcome::Idle
+    );
+
+    assert_eq!(
+      &*log.borrow(),
+      &[
+        "module:M".to_string(),
+        "microtask:M".to_string(),
         "script:B".to_string(),
         "microtask:B".to_string()
       ]
@@ -7364,8 +7354,7 @@ mod tests {
 
     let executed = Rc::new(Cell::new(false));
     // Use a fetcher-backed script source instead of `register_script_source` so this regression test
-    // proves async scripts can interleave with parsing via event-loop tasks (rather than relying on
-    // the "spin for fast async sources" heuristic).
+    // proves async scripts can interleave with parsing via event-loop tasks.
     let fetcher: Arc<dyn ResourceFetcher> = Arc::new(SingleResourceFetcher {
       url: "https://example.com/a.js".to_string(),
       bytes: Arc::new(b"A".to_vec()),
@@ -7397,6 +7386,60 @@ mod tests {
     assert!(
       tab.host.dom().get_element_by_id("late").is_some(),
       "expected parsing to eventually reach the late marker"
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn streaming_parser_does_not_deadlock_when_async_script_fetch_fails() -> Result<()> {
+    #[derive(Default)]
+    struct RejectingFetcher;
+
+    impl ResourceFetcher for RejectingFetcher {
+      fn fetch(&self, url: &str) -> Result<FetchedResource> {
+        Err(Error::Other(format!("fetch blocked in test for {url}")))
+      }
+
+      fn fetch_with_request(&self, req: FetchRequest<'_>) -> Result<FetchedResource> {
+        self.fetch(req.url)
+      }
+    }
+
+    let log = Rc::new(RefCell::new(Vec::<String>::new()));
+    let executor = TestExecutor { log: Rc::clone(&log) };
+
+    // Force parsing to yield so we exercise parse-resume scheduling even though the async script
+    // never successfully fetches.
+    let mut js_execution_options = JsExecutionOptions::default();
+    js_execution_options.dom_parse_budget = crate::js::ParseBudget::new(1);
+
+    let html = "<!doctype html><html><body>\
+      <script async src=\"https://example.com/missing.js\"></script>\
+      <script>B</script>\
+      </body></html>";
+
+    let mut tab = BrowserTab::from_html_with_document_url_and_fetcher_and_js_execution_options(
+      html,
+      "https://example.com/",
+      RenderOptions::default(),
+      executor,
+      Arc::new(RejectingFetcher),
+      js_execution_options,
+    )?;
+
+    assert!(
+      log.borrow().is_empty(),
+      "expected initial parse slice to yield before reaching the later inline script"
+    );
+
+    assert_eq!(
+      tab.run_event_loop_until_idle(RunLimits::unbounded())?,
+      RunUntilIdleOutcome::Idle
+    );
+
+    assert_eq!(
+      &*log.borrow(),
+      &["script:B".to_string(), "microtask:B".to_string()]
     );
     Ok(())
   }

@@ -794,13 +794,9 @@ fn browser_tab_navigate_to_url_honors_async_and_defer_scheduling() -> Result<()>
   let mut tab = BrowserTab::from_html("", options.clone(), ExecutorWithWindow::new(executor))?;
   tab.navigate_to_url(&index_url, options)?;
 
-  assert_eq!(
-    log
-      .lock()
-      .unwrap_or_else(|poisoned| poisoned.into_inner())
-      .as_slice(),
-    &["ASYNC".to_string()],
-    "expected async script to execute during parsing for fast sources, while defer remains pending"
+  assert!(
+    log.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).is_empty(),
+    "expected navigate_to_url to queue async/defer work without running the event loop"
   );
 
   assert_eq!(
