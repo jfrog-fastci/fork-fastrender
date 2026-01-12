@@ -78,11 +78,11 @@ fn find_fragment_height_for_box_id(node: &FragmentNode, box_id: usize) -> Option
 
 #[test]
 fn font_display_swap_web_font_participates_in_layout() {
-  let font_path = std::path::Path::new("tests/fixtures/fonts/NotoSansMono-subset.ttf");
+  let font_path = crate::testing::fixtures_dir().join("fonts/NotoSansMono-subset.ttf");
   if !font_path.exists() {
     return;
   }
-  let abs = std::fs::canonicalize(font_path).expect("canonicalize font fixture");
+  let abs = std::fs::canonicalize(&font_path).expect("canonicalize font fixture");
   let font_url = Url::from_file_path(&abs)
     .map_err(|()| ())
     .expect("file url for font fixture")
@@ -148,11 +148,11 @@ fn font_display_swap_web_font_participates_in_layout() {
 
 #[test]
 fn local_web_fonts_are_not_capped_by_max_web_fonts() {
-  let font_path = std::path::Path::new("tests/fixtures/fonts/NotoSansMono-subset.ttf");
+  let font_path = crate::testing::fixtures_dir().join("fonts/NotoSansMono-subset.ttf");
   if !font_path.exists() {
     return;
   }
-  let abs = std::fs::canonicalize(font_path).expect("canonicalize font fixture");
+  let abs = std::fs::canonicalize(&font_path).expect("canonicalize font fixture");
   let font_url = Url::from_file_path(&abs)
     .map_err(|()| ())
     .expect("file url for font fixture")

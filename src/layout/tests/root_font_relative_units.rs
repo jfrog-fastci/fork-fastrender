@@ -130,8 +130,8 @@ fn rlh_resolves_using_root_computed_line_height() {
 
 #[test]
 fn rcap_uses_root_font_cap_height_metrics() {
-  let font_path = std::path::Path::new("tests/fixtures/fonts/mvar-metrics-test.ttf");
-  let abs = std::fs::canonicalize(font_path).expect("canonicalize font fixture");
+  let font_path = crate::testing::fixtures_dir().join("fonts/mvar-metrics-test.ttf");
+  let abs = std::fs::canonicalize(&font_path).expect("canonicalize font fixture");
   let font_url = Url::from_file_path(&abs)
     .map_err(|()| ())
     .expect("file url for font fixture")
