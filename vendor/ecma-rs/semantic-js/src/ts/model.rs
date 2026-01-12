@@ -328,6 +328,8 @@ pub struct AmbientModule {
   pub name: String,
   pub name_span: TextRange,
   pub export_modifier: bool,
+  /// Span of the `export` modifier, when this ambient module declaration was
+  /// written with `export`.
   pub export_modifier_span: Option<TextRange>,
   pub decls: Vec<Decl>,
   pub imports: Vec<Import>,

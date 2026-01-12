@@ -542,21 +542,11 @@ fn lower_block(
         ModuleName::String(spec) => {
           let name_span = to_range(module.stx.name_loc);
           let export_modifier = module.stx.export;
-          let export_modifier_span = if export_modifier {
-            const EXPORT_LEN: u32 = 6;
-            const DECLARE_LEN: u32 = 7;
-            const SEP_LEN: u32 = 1;
-            let mut offset = EXPORT_LEN + SEP_LEN;
-            if module.stx.declare {
-              offset += DECLARE_LEN + SEP_LEN;
-            }
-            let start = stmt_range.start.saturating_sub(offset);
-            let end = start.saturating_add(EXPORT_LEN);
-            let span = TextRange::new(start, end);
-            Some(if span.is_empty() { stmt_range } else { span })
-          } else {
-            None
-          };
+          let export_modifier_span = module
+            .stx
+            .export
+            .then(|| export_modifier_span(source, stmt_range, name_span))
+            .flatten();
           let nested = lower_block(
             module.stx.body.as_deref().unwrap_or(&[]),
             lower,
@@ -999,4 +989,167 @@ fn span_for_name(loc: Loc, name: &str) -> TextRange {
   let end = range.start;
   let start = end.saturating_sub(len);
   TextRange::new(start, end)
+}
+
+fn export_modifier_span(
+  source: &str,
+  stmt_span: TextRange,
+  name_span: TextRange,
+) -> Option<TextRange> {
+  if stmt_span.is_empty() {
+    return None;
+  }
+
+  // Keep the search window before the module name so we don't accidentally pick
+  // up `export` keywords from inside the module body.
+  //
+  // Note: `parse-js` statement spans for `module "..."` declarations do not
+  // always include leading modifiers (`export`/`declare`). We therefore scan a
+  // small lookbehind window to recover a stable `export` token span.
+  let search_end = std::cmp::min(stmt_span.end, name_span.start);
+  let search_start = stmt_span.start.saturating_sub(64);
+  let search_span = TextRange::new(search_start, search_end);
+  if let Some(found) = find_token_outside_strings_and_comments(source, search_span, b"export") {
+    return Some(found);
+  }
+
+  // Fall back to the start of the statement to avoid losing the fact that the
+  // declaration was parsed as `export ...`. This is best-effort and should only
+  // trigger when the slice is out of bounds or contains unexpected trivia.
+  let start = std::cmp::min(stmt_span.start, search_end);
+  let end = std::cmp::min(search_end, start.saturating_add(6));
+  Some(TextRange::new(start, end))
+}
+
+fn find_token_outside_strings_and_comments(
+  source: &str,
+  span: TextRange,
+  token: &[u8],
+) -> Option<TextRange> {
+  let bytes = source.as_bytes();
+  let start = span.start as usize;
+  let mut end = span.end as usize;
+  if start >= bytes.len() {
+    return None;
+  }
+  end = std::cmp::min(end, bytes.len());
+  if start >= end || token.is_empty() || token.len() > end - start {
+    return None;
+  }
+
+  #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+  enum State {
+    Code,
+    LineComment,
+    BlockComment,
+    SingleString,
+    DoubleString,
+    TemplateString,
+  }
+
+  fn is_ident_char(byte: u8) -> bool {
+    matches!(byte, b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'_' | b'$')
+  }
+
+  let mut state = State::Code;
+  let mut found = None;
+  let mut i = start;
+  while i < end {
+    match state {
+      State::Code => {
+        if bytes[i] == b'/' && i + 1 < end {
+          match bytes[i + 1] {
+            b'/' => {
+              state = State::LineComment;
+              i += 2;
+              continue;
+            }
+            b'*' => {
+              state = State::BlockComment;
+              i += 2;
+              continue;
+            }
+            _ => {}
+          }
+        }
+
+        match bytes[i] {
+          b'\'' => {
+            state = State::SingleString;
+            i += 1;
+            continue;
+          }
+          b'"' => {
+            state = State::DoubleString;
+            i += 1;
+            continue;
+          }
+          b'`' => {
+            state = State::TemplateString;
+            i += 1;
+            continue;
+          }
+          _ => {}
+        }
+
+        if i + token.len() <= end && &bytes[i..i + token.len()] == token {
+          let prev = if i == start { None } else { Some(bytes[i - 1]) };
+          let next = bytes.get(i + token.len()).copied();
+          let prev_ok = prev.map(|b| !is_ident_char(b)).unwrap_or(true);
+          let next_ok = next.map(|b| !is_ident_char(b)).unwrap_or(true);
+          if prev_ok && next_ok {
+            found = Some(TextRange::new(i as u32, (i + token.len()) as u32));
+          }
+        }
+
+        i += 1;
+      }
+      State::LineComment => {
+        if bytes[i] == b'\n' {
+          state = State::Code;
+        }
+        i += 1;
+      }
+      State::BlockComment => {
+        if bytes[i] == b'*' && i + 1 < end && bytes[i + 1] == b'/' {
+          state = State::Code;
+          i += 2;
+        } else {
+          i += 1;
+        }
+      }
+      State::SingleString => {
+        if bytes[i] == b'\\' && i + 1 < end {
+          i += 2;
+        } else if bytes[i] == b'\'' {
+          state = State::Code;
+          i += 1;
+        } else {
+          i += 1;
+        }
+      }
+      State::DoubleString => {
+        if bytes[i] == b'\\' && i + 1 < end {
+          i += 2;
+        } else if bytes[i] == b'"' {
+          state = State::Code;
+          i += 1;
+        } else {
+          i += 1;
+        }
+      }
+      State::TemplateString => {
+        if bytes[i] == b'\\' && i + 1 < end {
+          i += 2;
+        } else if bytes[i] == b'`' {
+          state = State::Code;
+          i += 1;
+        } else {
+          i += 1;
+        }
+      }
+    }
+  }
+
+  found
 }

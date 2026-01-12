@@ -487,7 +487,7 @@ impl<'a, HP: Fn(FileId) -> Arc<HirFile>> Binder<'a, HP> {
           }
         }
       } else {
-        // Relative module declarations inside modules are treated as augmentations
+        // Module declarations inside external modules are treated as augmentations
         // and must resolve to an existing file or ambient module.
         state.module_edges.push(ModuleEdge {
           kind: ModuleEdgeKind::ModuleAugmentation,

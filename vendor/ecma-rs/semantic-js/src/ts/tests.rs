@@ -3417,6 +3417,47 @@ fn ambient_import_diagnostic_points_to_specifier() {
 }
 
 #[test]
+fn ts2668_export_modifier_points_at_export_keyword() {
+  let file = FileId(900);
+  let source = r#"export declare module "M" { }"#;
+  let ast = parse(source).expect("parse");
+  let lowered = lower_file(file, HirFileKind::Dts, &ast);
+  let hir = lower_to_ts_hir(&ast, &lowered, source);
+
+  let files: HashMap<FileId, Arc<HirFile>> = HashMap::from([(file, Arc::new(hir))]);
+  let resolver = StaticResolver::new(HashMap::new());
+  let (_semantics, diags) = bind_ts_program(&[file], &resolver, |f| files.get(&f).unwrap().clone());
+
+  assert_eq!(diags.len(), 1);
+  let diag = &diags[0];
+  assert_eq!(diag.code, "TS2668");
+  assert_eq!(diag.primary.file, file);
+  let span = &source[diag.primary.range.start as usize..diag.primary.range.end as usize];
+  assert_eq!(span, "export");
+}
+
+#[test]
+fn ts2664_invalid_module_name_points_at_specifier_literal() {
+  let file = FileId(901);
+  let source = r#"export {};
+declare module "ext" { }"#;
+  let ast = parse(source).expect("parse");
+  let lowered = lower_file(file, HirFileKind::Ts, &ast);
+  let hir = lower_to_ts_hir(&ast, &lowered, source);
+
+  let files: HashMap<FileId, Arc<HirFile>> = HashMap::from([(file, Arc::new(hir))]);
+  let resolver = StaticResolver::new(HashMap::new());
+  let (_semantics, diags) = bind_ts_program(&[file], &resolver, |f| files.get(&f).unwrap().clone());
+
+  assert_eq!(diags.len(), 1);
+  let diag = &diags[0];
+  assert_eq!(diag.code, "TS2664");
+  assert_eq!(diag.primary.file, file);
+  let span = &source[diag.primary.range.start as usize..diag.primary.range.end as usize];
+  assert_eq!(span.trim_matches(|c| c == '"' || c == '\''), "ext");
+}
+
+#[test]
 fn script_exports_report_single_diagnostic_with_span() {
   let file = FileId(93);
   let mut hir = HirFile::script(file);

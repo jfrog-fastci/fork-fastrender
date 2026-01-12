@@ -2332,9 +2332,7 @@ fn sem_hir_for(db: &dyn Db, file: FileInput) -> sem_ts::HirFile {
   let parsed = parse_for(db, file);
   let source = file_text_for(db, file);
   match (parsed.ast.as_ref(), lowered.lowered.as_ref()) {
-    (Some(ast), Some(lowered)) => {
-      sem_ts::from_hir_js::lower_to_ts_hir(ast, lowered, source.as_ref())
-    }
+    (Some(ast), Some(lowered)) => sem_ts::from_hir_js::lower_to_ts_hir(ast, lowered, source.as_ref()),
     _ => empty_sem_hir(file.file_id(db), lowered.file_kind),
   }
 }
