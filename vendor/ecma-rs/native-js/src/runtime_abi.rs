@@ -355,10 +355,9 @@ impl<'ctx, 'm> RuntimeAbi<'ctx, 'm> {
     args: &[BasicMetadataValueEnum<'ctx>],
     name: &str,
   ) -> Result<CallSiteValue<'ctx>, RuntimeCallError> {
-    let spec = f.spec();
-    validate_runtime_call_abi(spec, args)?;
-
     let abi = f.abi();
+    let spec = f.spec();
+    validate_runtime_call_abi(spec, Some(abi), args)?;
 
     // NoGC + signature mismatch: call the leaf wrapper.
     if !spec.may_gc && !abi.signatures_match() {
@@ -420,6 +419,7 @@ pub enum RuntimeCallError {
 
 fn validate_runtime_call_abi<'ctx>(
   spec: RuntimeFnSpec,
+  abi: Option<RuntimeFnAbi>,
   args: &[BasicMetadataValueEnum<'ctx>],
 ) -> Result<(), RuntimeCallError> {
   // Don't rely solely on the manually-maintained `gc_ptr_args` metadata; also validate against the
@@ -443,23 +443,64 @@ fn validate_runtime_call_abi<'ctx>(
   // Similar defensive check for handle ABI (`GcHandle = *mut *mut u8`) arguments.
   //
   // We can't reliably validate the pointee type in opaque-pointer mode, so we instead enforce a
-  // simple convention: any handle args appear at the end of the argument list and must be
-  // addrspace(0) pointers (i.e. not `ptr addrspace(1)` GC references).
+  // simple convention:
+  //
+  // - If we have an explicit `RuntimeFnAbi`, validate handle args at the positions marked
+  //   `AbiTy::GcHandle`.
+  // - Otherwise (legacy callers), assume handle args appear at the end of the argument list.
+  //
+  // In both cases, handle args must be addrspace(0) pointers (i.e. not `ptr addrspace(1)` GC
+  // references).
   if spec.gc_handle_args > 0 {
-    let handle_slice = &args[args.len().saturating_sub(spec.gc_handle_args)..];
-    let actual_handle_args = handle_slice
-      .iter()
-      .filter(|arg| match arg {
-        BasicMetadataValueEnum::PointerValue(ptr) => {
-          ptr.get_type().get_address_space() == AddressSpace::default()
-        }
-        _ => false,
-      })
-      .count();
+    let validation_kind = if abi.is_some() {
+      "ABI signature"
+    } else {
+      "legacy last-args convention"
+    };
+    let actual_handle_args = match abi {
+      Some(abi) => {
+        debug_assert_eq!(
+          abi.codegen_params.len(),
+          args.len(),
+          "runtime fn spec mismatch for `{}`: ABI expects {} arg(s) but call has {}",
+          spec.name,
+          abi.codegen_params.len(),
+          args.len()
+        );
+        abi
+          .codegen_params
+          .iter()
+          .zip(args.iter())
+          .filter(|(&ty, arg)| {
+            if ty != AbiTy::GcHandle {
+              return false;
+            }
+            match arg {
+              BasicMetadataValueEnum::PointerValue(ptr) => {
+                ptr.get_type().get_address_space() == AddressSpace::default()
+              }
+              _ => false,
+            }
+          })
+          .count()
+      }
+      None => {
+        let handle_slice = &args[args.len().saturating_sub(spec.gc_handle_args)..];
+        handle_slice
+          .iter()
+          .filter(|arg| match arg {
+            BasicMetadataValueEnum::PointerValue(ptr) => {
+              ptr.get_type().get_address_space() == AddressSpace::default()
+            }
+            _ => false,
+          })
+          .count()
+      }
+    };
     debug_assert_eq!(
       actual_handle_args, spec.gc_handle_args,
-      "runtime fn spec mismatch for `{}`: spec.gc_handle_args={} but last {} arg(s) contained {} addrspace(0) pointer(s)",
-      spec.name, spec.gc_handle_args, spec.gc_handle_args, actual_handle_args
+      "runtime fn spec mismatch for `{}`: spec.gc_handle_args={} but {validation_kind} observed {} handle arg(s) (addrspace(0) pointers)",
+      spec.name, spec.gc_handle_args, actual_handle_args
     );
   }
 
@@ -484,7 +525,7 @@ pub fn emit_runtime_call<'ctx>(
   args: &[BasicMetadataValueEnum<'ctx>],
   name: &str,
 ) -> Result<CallSiteValue<'ctx>, RuntimeCallError> {
-  validate_runtime_call_abi(spec, args)?;
+  validate_runtime_call_abi(spec, None, args)?;
 
   let call = builder.build_call(callee, args, name).map_err(|e| RuntimeCallError::BuildCall {
     name: spec.name,
