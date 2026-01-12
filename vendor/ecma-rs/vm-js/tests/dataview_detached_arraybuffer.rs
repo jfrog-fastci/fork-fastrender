@@ -1,9 +1,28 @@
-use vm_js::{Heap, HeapLimits, JsRuntime, Value, Vm, VmError, VmOptions};
+use vm_js::{
+  GcObject, Heap, HeapLimits, JsRuntime, Scope, Value, Vm, VmError, VmHost, VmHostHooks, VmOptions,
+};
 
 fn new_runtime() -> JsRuntime {
   let vm = Vm::new(VmOptions::default());
   let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
   JsRuntime::new(vm, heap).unwrap()
+}
+
+fn detach_array_buffer(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let arg0 = args.get(0).copied().unwrap_or(Value::Undefined);
+  let Value::Object(obj) = arg0 else {
+    return Err(VmError::TypeError("detachArrayBuffer expects an ArrayBuffer"));
+  };
+  scope.heap_mut().detach_array_buffer(obj)?;
+  Ok(Value::Undefined)
 }
 
 #[test]
@@ -136,6 +155,57 @@ fn dataview_set_coerces_value_before_throwing_on_detached_arraybuffer() -> Resul
       threw = e.name === "TypeError";
     }
     called && threw
+  "#,
+  )?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn dataview_get_coerces_offset_before_detached_check_when_detached_during_toindex() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  rt.register_global_native_function("detachArrayBuffer", detach_array_buffer, 1)?;
+
+  let value = rt.exec_script(
+    r#"
+    var ab = new ArrayBuffer(8);
+    var dv = new DataView(ab, 0, 8);
+    var called = false;
+    var threw = false;
+    try {
+      dv.getUint8({ valueOf(){ called = true; detachArrayBuffer(ab); return 0; } });
+    } catch (e) {
+      threw = e.name === "TypeError";
+    }
+    called && threw
+  "#,
+  )?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn dataview_set_coerces_offset_and_value_before_detached_check_when_detached_during_toindex(
+) -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  rt.register_global_native_function("detachArrayBuffer", detach_array_buffer, 1)?;
+
+  let value = rt.exec_script(
+    r#"
+    var ab = new ArrayBuffer(8);
+    var dv = new DataView(ab, 0, 8);
+    var calledOffset = false;
+    var calledValue = false;
+    var threw = false;
+    try {
+      dv.setUint8(
+        { valueOf(){ calledOffset = true; detachArrayBuffer(ab); return 0; } },
+        { valueOf(){ calledValue = true; return 1; } }
+      );
+    } catch (e) {
+      threw = e.name === "TypeError";
+    }
+    calledOffset && calledValue && threw
   "#,
   )?;
   assert_eq!(value, Value::Bool(true));
