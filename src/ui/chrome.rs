@@ -9,8 +9,8 @@ use crate::ui::load_progress::{load_progress_indicator, LoadProgressIndicator};
 use crate::ui::messages::TabId;
 use crate::ui::motion::UiMotion;
 use crate::ui::omnibox::{
-  build_omnibox_suggestions, OmniboxAction, OmniboxContext, OmniboxSearchSource, OmniboxSuggestion,
-  OmniboxSuggestionSource, OmniboxUrlSource,
+  build_omnibox_suggestions_default_limit, OmniboxAction, OmniboxContext, OmniboxSearchSource,
+  OmniboxSuggestion, OmniboxSuggestionSource, OmniboxUrlSource,
 };
 use crate::ui::security_indicator;
 use crate::ui::shortcuts::{map_shortcut, Key, KeyEvent, Modifiers, ShortcutAction};
@@ -116,7 +116,11 @@ fn with_alpha(color: egui::Color32, alpha: f32) -> egui::Color32 {
 
 fn omnibox_suggestion_icon(suggestion: &OmniboxSuggestion) -> &'static str {
   match suggestion.source {
-    OmniboxSuggestionSource::Primary => "↵",
+    OmniboxSuggestionSource::Primary => match &suggestion.action {
+      OmniboxAction::Search(_) => "S",
+      OmniboxAction::NavigateToUrl(_) => "↵",
+      OmniboxAction::ActivateTab(_) => "T",
+    },
     OmniboxSuggestionSource::Url(OmniboxUrlSource::About) => "ⓘ",
     OmniboxSuggestionSource::Url(OmniboxUrlSource::OpenTab) => "T",
     OmniboxSuggestionSource::Url(OmniboxUrlSource::Bookmark) => "★",
@@ -774,17 +778,17 @@ pub fn chrome_ui_with_bookmarks(
           app.chrome.omnibox.original_input = None;
 
           let input = app.chrome.address_bar_text.clone();
-           let suggestions = {
-             let ctx = OmniboxContext {
-               open_tabs: &app.tabs,
-               closed_tabs: &app.closed_tabs,
-               visited: &app.visited,
-               active_tab_id: app.active_tab_id(),
-               bookmarks: omnibox_bookmarks,
-               remote_search_suggest: None,
-             };
-             build_omnibox_suggestions(&ctx, &input)
-           };
+          let suggestions = {
+            let ctx = OmniboxContext {
+              open_tabs: &app.tabs,
+              closed_tabs: &app.closed_tabs,
+              visited: &app.visited,
+              active_tab_id: app.active_tab_id(),
+              bookmarks: omnibox_bookmarks,
+              remote_search_suggest: None,
+            };
+            build_omnibox_suggestions_default_limit(&ctx, &input)
+          };
           app.chrome.omnibox.suggestions = suggestions;
           app.chrome.omnibox.last_built_for_input = input;
           if app.chrome.omnibox.suggestions.is_empty() {
@@ -802,17 +806,17 @@ pub fn chrome_ui_with_bookmarks(
               || app.chrome.omnibox.suggestions.is_empty()
             {
               let input = app.chrome.address_bar_text.clone();
-               let suggestions = {
-                 let ctx = OmniboxContext {
-                   open_tabs: &app.tabs,
-                   closed_tabs: &app.closed_tabs,
-                   visited: &app.visited,
-                   active_tab_id: app.active_tab_id(),
-                   bookmarks: omnibox_bookmarks,
-                   remote_search_suggest: None,
-                 };
-                 build_omnibox_suggestions(&ctx, &input)
-               };
+              let suggestions = {
+                let ctx = OmniboxContext {
+                  open_tabs: &app.tabs,
+                  closed_tabs: &app.closed_tabs,
+                  visited: &app.visited,
+                  active_tab_id: app.active_tab_id(),
+                  bookmarks: omnibox_bookmarks,
+                  remote_search_suggest: None,
+                };
+                build_omnibox_suggestions_default_limit(&ctx, &input)
+              };
               app.chrome.omnibox.suggestions = suggestions;
               app.chrome.omnibox.last_built_for_input = input;
             }
@@ -1148,9 +1152,11 @@ pub fn chrome_ui_with_bookmarks(
 
 #[cfg(test)]
 mod tests {
-  use super::{chrome_ui, ChromeAction};
+  use super::{chrome_ui, chrome_ui_with_bookmarks, ChromeAction};
   use crate::ui::browser_app::{BrowserAppState, BrowserTabState};
   use crate::ui::messages::TabId;
+  use crate::ui::omnibox::{OmniboxSuggestionSource, OmniboxUrlSource};
+  use crate::ui::profile_autosave::BookmarkStore;
 
   fn new_context() -> egui::Context {
     let ctx = egui::Context::default();
@@ -2389,6 +2395,87 @@ mod tests {
   }
 
   #[test]
+  fn omnibox_typing_builds_primary_suggestion() {
+    let mut app = BrowserAppState::new();
+    let tab_id = TabId(1);
+    app.push_tab(
+      BrowserTabState::new(tab_id, "about:newtab".to_string()),
+      true,
+    );
+
+    // Seed history so the omnibox has local providers available in addition to the primary action.
+    app
+      .visited
+      .record_visit("https://example.com/".to_string(), Some("Example".to_string()));
+
+    app.chrome.address_bar_text.clear();
+    let ctx = egui::Context::default();
+
+    // Focus address bar.
+    app.chrome.request_focus_address_bar = true;
+    begin_frame(&ctx, Vec::new());
+    let _ = chrome_ui(&ctx, &mut app, |_| None);
+    let _ = ctx.end_frame();
+    assert!(app.chrome.address_bar_has_focus);
+
+    // Type input that produces a primary (search) suggestion.
+    begin_frame(&ctx, vec![egui::Event::Text("cats".into())]);
+    let _ = chrome_ui(&ctx, &mut app, |_| None);
+    let _ = ctx.end_frame();
+
+    assert!(
+      !app.chrome.omnibox.suggestions.is_empty(),
+      "expected omnibox suggestions to be populated"
+    );
+    assert!(
+      app
+        .chrome
+        .omnibox
+        .suggestions
+        .iter()
+        .any(|s| s.source == OmniboxSuggestionSource::Primary),
+      "expected at least one OmniboxSuggestionSource::Primary, got {:?}",
+      app.chrome.omnibox.suggestions
+    );
+  }
+
+  #[test]
+  fn omnibox_typing_about_produces_about_suggestions() {
+    let mut app = BrowserAppState::new();
+    let tab_id = TabId(1);
+    app.push_tab(
+      BrowserTabState::new(tab_id, "about:newtab".to_string()),
+      true,
+    );
+
+    app.chrome.address_bar_text.clear();
+    let ctx = egui::Context::default();
+
+    // Focus address bar.
+    app.chrome.request_focus_address_bar = true;
+    begin_frame(&ctx, Vec::new());
+    let _ = chrome_ui(&ctx, &mut app, |_| None);
+    let _ = ctx.end_frame();
+    assert!(app.chrome.address_bar_has_focus);
+
+    // Type input that matches about pages provider.
+    begin_frame(&ctx, vec![egui::Event::Text("about".into())]);
+    let _ = chrome_ui(&ctx, &mut app, |_| None);
+    let _ = ctx.end_frame();
+
+    assert!(
+      app
+        .chrome
+        .omnibox
+        .suggestions
+        .iter()
+        .any(|s| s.source == OmniboxSuggestionSource::Url(OmniboxUrlSource::About)),
+      "expected at least one OmniboxSuggestionSource::Url(About), got {:?}",
+      app.chrome.omnibox.suggestions
+    );
+  }
+
+  #[test]
   fn omnibox_typing_opens_and_arrow_down_previews_first_suggestion() {
     let mut app = BrowserAppState::new();
     let tab_id = TabId(1);
@@ -2414,7 +2501,7 @@ mod tests {
     assert!(app.chrome.address_bar_has_focus);
 
     // Type input.
-    begin_frame(&ctx, vec![egui::Event::Text("exam".into())]);
+    begin_frame(&ctx, vec![egui::Event::Text("example.com".into())]);
     let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
     let _ = ctx.end_frame();
 
@@ -2492,7 +2579,7 @@ mod tests {
     let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
     let _ = ctx.end_frame();
 
-    begin_frame(&ctx, vec![egui::Event::Text("exam".into())]);
+    begin_frame(&ctx, vec![egui::Event::Text("example.com".into())]);
     let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
     let _ = ctx.end_frame();
 
@@ -2508,7 +2595,7 @@ mod tests {
     let _ = ctx.end_frame();
 
     assert!(!app.chrome.omnibox.open);
-    assert_eq!(app.chrome.address_bar_text, "exam");
+    assert_eq!(app.chrome.address_bar_text, "example.com");
     assert!(app.chrome.address_bar_has_focus);
   }
 
@@ -2532,7 +2619,7 @@ mod tests {
     let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
     let _ = ctx.end_frame();
 
-    begin_frame(&ctx, vec![egui::Event::Text("exam".into())]);
+    begin_frame(&ctx, vec![egui::Event::Text("example.com".into())]);
     let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
     let _ = ctx.end_frame();
 
@@ -2575,7 +2662,7 @@ mod tests {
     let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
     let _ = ctx.end_frame();
 
-    begin_frame(&ctx, vec![egui::Event::Text("exam".into())]);
+    begin_frame(&ctx, vec![egui::Event::Text("example.com".into())]);
     let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
     let _ = ctx.end_frame();
 
