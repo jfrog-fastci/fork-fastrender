@@ -98,6 +98,7 @@ mod ui_cancellation;
 mod ui_clipboard;
 mod ui_document_selection_clipboard;
 mod ui_context_menu;
+mod ui_context_menu_bookmarks;
 mod ui_fragment_navigation;
 mod ui_frame_upload_coalescing;
 mod ui_input_routing;

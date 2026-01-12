@@ -1300,6 +1300,8 @@ struct App {
   bookmarks: fastrender::ui::BookmarkStore,
   history: fastrender::ui::GlobalHistoryStore,
   profile_autosave: Option<fastrender::ui::ProfileAutosaveHandle>,
+  history_panel_open: bool,
+  bookmarks_panel_open: bool,
 
   tab_textures: std::collections::HashMap<fastrender::ui::TabId, fastrender::ui::WgpuPixmapTexture>,
   tab_favicons: std::collections::HashMap<fastrender::ui::TabId, fastrender::ui::WgpuPixmapTexture>,
@@ -1672,6 +1674,8 @@ error: {err}",
       bookmarks,
       history,
       profile_autosave: None,
+      history_panel_open: false,
+      bookmarks_panel_open: false,
       tab_textures: std::collections::HashMap::new(),
       tab_favicons: std::collections::HashMap::new(),
       tab_cancel: std::collections::HashMap::new(),
@@ -2928,6 +2932,10 @@ error: {err}",
 
   fn render_context_menu(&mut self, ctx: &egui::Context) {
     use fastrender::ui::ChromeAction;
+    use fastrender::ui::context_menu::{
+      apply_page_context_menu_action, build_page_context_menu_entries, PageContextMenuAction,
+      PageContextMenuBuildInput, PageContextMenuEntry,
+    };
 
     let (tab_id, pos_css, anchor_points, link_url, selected_idx) = match self.open_context_menu.as_ref() {
       Some(menu) => (
@@ -2955,17 +2963,30 @@ error: {err}",
       return;
     }
 
-    #[derive(Clone)]
-    enum Action {
-      OpenInNewTab(String),
-      CopyLink(String),
-      Reload,
-    }
+    let page_url = self
+      .browser_state
+      .active_tab()
+      .and_then(|tab| tab.committed_url.as_deref().or(tab.current_url.as_deref()));
 
+    let entries = build_page_context_menu_entries(PageContextMenuBuildInput {
+      link_url: link_url.as_deref(),
+      page_url,
+      bookmarks: &self.bookmarks,
+      history_panel_open: self.history_panel_open,
+      bookmarks_panel_open: self.bookmarks_panel_open,
+    });
+
+    #[derive(Clone)]
     struct MenuItem {
       icon: &'static str,
-      label: &'static str,
-      action: Action,
+      label: String,
+      action: PageContextMenuAction,
+    }
+
+    #[derive(Clone)]
+    enum MenuEntry {
+      Item(MenuItem),
+      Separator,
     }
 
     const MENU_CONTENT_WIDTH: f32 = 220.0;
@@ -2974,25 +2995,42 @@ error: {err}",
     const MENU_SEPARATOR_HEIGHT: f32 = 9.0;
     const MENU_EDGE_MARGIN: f32 = 4.0;
 
-    let mut items: Vec<MenuItem> = Vec::new();
-    let show_separator = link_url.is_some();
-    if let Some(url) = link_url.as_deref() {
-      items.push(MenuItem {
-        icon: "↗",
-        label: "Open Link in New Tab",
-        action: Action::OpenInNewTab(url.to_string()),
-      });
-      items.push(MenuItem {
-        icon: "⧉",
-        label: "Copy Link Address",
-        action: Action::CopyLink(url.to_string()),
-      });
+    let mut menu_entries = Vec::with_capacity(entries.len());
+    for entry in entries {
+      match entry {
+        PageContextMenuEntry::Separator => {
+          menu_entries.push(MenuEntry::Separator);
+        }
+        PageContextMenuEntry::Action(item) => {
+          let icon = match (&item.action, item.checked) {
+            (PageContextMenuAction::OpenLinkInNewTab(_), _) => "↗",
+            (PageContextMenuAction::CopyLinkAddress(_), _) => "⧉",
+            (PageContextMenuAction::BookmarkLink(_), true)
+            | (PageContextMenuAction::BookmarkPage(_), true) => "★",
+            (PageContextMenuAction::BookmarkLink(_), false)
+            | (PageContextMenuAction::BookmarkPage(_), false) => "☆",
+            (PageContextMenuAction::ToggleHistoryPanel, true) => "✓",
+            (PageContextMenuAction::ToggleHistoryPanel, false) => "⌛",
+            (PageContextMenuAction::ToggleBookmarksPanel, true) => "✓",
+            (PageContextMenuAction::ToggleBookmarksPanel, false) => "☆",
+            (PageContextMenuAction::Reload, _) => "⟳",
+          };
+          menu_entries.push(MenuEntry::Item(MenuItem {
+            icon,
+            label: item.label.to_string(),
+            action: item.action,
+          }));
+        }
+      }
     }
-    items.push(MenuItem {
-      icon: "⟳",
-      label: "Reload",
-      action: Action::Reload,
-    });
+
+    let items: Vec<&MenuItem> = menu_entries
+      .iter()
+      .filter_map(|entry| match entry {
+        MenuEntry::Item(item) => Some(item),
+        MenuEntry::Separator => None,
+      })
+      .collect();
 
     if items.is_empty() {
       self.close_context_menu();
@@ -3080,12 +3118,13 @@ error: {err}",
       screen_rect.height(),
     );
 
-    let content_height = (items.len() as f32) * MENU_ITEM_HEIGHT
-      + if show_separator {
-        MENU_SEPARATOR_HEIGHT
-      } else {
-        0.0
-      };
+    let content_height = menu_entries
+      .iter()
+      .map(|entry| match entry {
+        MenuEntry::Item(_) => MENU_ITEM_HEIGHT,
+        MenuEntry::Separator => MENU_SEPARATOR_HEIGHT,
+      })
+      .sum::<f32>();
     let menu_size = fastrender::Size::new(
       MENU_CONTENT_WIDTH + MENU_INNER_MARGIN * 2.0,
       content_height + MENU_INNER_MARGIN * 2.0,
@@ -3145,7 +3184,7 @@ error: {err}",
           ui.set_max_width(MENU_CONTENT_WIDTH);
           ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
 
-          let mut action: Option<Action> = None;
+          let mut action: Option<PageContextMenuAction> = None;
           let mut selected_idx = selected_idx;
 
           let item_rounding = egui::Rounding::same(4.0);
@@ -3180,7 +3219,7 @@ error: {err}",
                   egui::Label::new(egui::RichText::new(item.icon)),
                 );
                 ui.add_space(8.0);
-                ui.label(item.label);
+                ui.label(&item.label);
               });
             });
 
@@ -3196,28 +3235,34 @@ error: {err}",
             }
           };
 
-          for (idx, item) in items.iter().enumerate() {
-            if show_separator && idx == 2 {
-              let (sep_rect, _) = ui.allocate_exact_size(
-                egui::vec2(MENU_CONTENT_WIDTH, MENU_SEPARATOR_HEIGHT),
-                egui::Sense::hover(),
-              );
-              let y = sep_rect.center().y;
-              let inset = 8.0;
-              let separator_color = if dark_mode {
-                egui::Color32::from_rgb(70, 70, 70)
-              } else {
-                egui::Color32::from_rgb(200, 200, 200)
-              };
-              ui.painter().line_segment(
-                [
-                  egui::pos2(sep_rect.min.x + inset, y),
-                  egui::pos2(sep_rect.max.x - inset, y),
-                ],
-                egui::Stroke::new(1.0, separator_color),
-              );
+          let mut item_idx: usize = 0;
+          for entry in &menu_entries {
+            match entry {
+              MenuEntry::Separator => {
+                let (sep_rect, _) = ui.allocate_exact_size(
+                  egui::vec2(MENU_CONTENT_WIDTH, MENU_SEPARATOR_HEIGHT),
+                  egui::Sense::hover(),
+                );
+                let y = sep_rect.center().y;
+                let inset = 8.0;
+                let separator_color = if dark_mode {
+                  egui::Color32::from_rgb(70, 70, 70)
+                } else {
+                  egui::Color32::from_rgb(200, 200, 200)
+                };
+                ui.painter().line_segment(
+                  [
+                    egui::pos2(sep_rect.min.x + inset, y),
+                    egui::pos2(sep_rect.max.x - inset, y),
+                  ],
+                  egui::Stroke::new(1.0, separator_color),
+                );
+              }
+              MenuEntry::Item(item) => {
+                draw_item(ui, item_idx, item);
+                item_idx += 1;
+              }
             }
-            draw_item(ui, idx, item);
           }
 
           (action.or(keyboard_action), selected_idx)
@@ -3238,13 +3283,13 @@ error: {err}",
     };
 
     match action {
-      Action::CopyLink(url) => {
+      PageContextMenuAction::CopyLinkAddress(url) => {
         ctx.output_mut(|o| o.copied_text = url);
       }
-      Action::Reload => {
+      PageContextMenuAction::Reload => {
         self.handle_chrome_actions(vec![ChromeAction::Reload]);
       }
-      Action::OpenInNewTab(url) => {
+      PageContextMenuAction::OpenLinkInNewTab(url) => {
         use fastrender::ui::RepaintReason;
         use fastrender::ui::UiToWorker;
 
@@ -3274,6 +3319,20 @@ error: {err}",
           tab_id,
           reason: RepaintReason::Explicit,
         });
+      }
+      action @ (PageContextMenuAction::BookmarkLink(_)
+      | PageContextMenuAction::BookmarkPage(_)
+      | PageContextMenuAction::ToggleHistoryPanel
+      | PageContextMenuAction::ToggleBookmarksPanel) => {
+        let result = apply_page_context_menu_action(
+          &mut self.bookmarks,
+          &mut self.history_panel_open,
+          &mut self.bookmarks_panel_open,
+          &action,
+        );
+        if result.bookmarks_changed {
+          self.autosave_bookmarks();
+        }
       }
     }
 
@@ -3691,6 +3750,14 @@ error: {err}",
     false
   }
 
+  fn autosave_bookmarks(&self) {
+    if let Some(autosave) = self.profile_autosave.as_ref() {
+      let _ = autosave.send(fastrender::ui::AutosaveMsg::UpdateBookmarks(
+        self.bookmarks.clone(),
+      ));
+    }
+  }
+
   fn toggle_bookmark_for_active_tab(&mut self) {
     let Some(url) = self
       .browser_state
@@ -3702,12 +3769,7 @@ error: {err}",
     };
 
     self.bookmarks.toggle_url(&url);
-
-    if let Some(autosave) = self.profile_autosave.as_ref() {
-      let _ = autosave.send(fastrender::ui::AutosaveMsg::UpdateBookmarks(
-        self.bookmarks.clone(),
-      ));
-    }
+    self.autosave_bookmarks();
   }
 
   fn clear_history(&mut self) {
@@ -5107,6 +5169,104 @@ error: {err}",
           self.send_worker_msg(fastrender::ui::UiToWorker::Paste { tab_id, text });
         }
       }
+    }
+
+    // ---------------------------------------------------------------------------
+    // Bookmarks / History panels (simple browser-ui-only views)
+    // ---------------------------------------------------------------------------
+    //
+    // These are toggled by the page context menu. They live in the windowed UI so they can reuse
+    // the in-memory stores + autosave plumbing without needing renderer-level `about:` pages.
+    let mut panel_actions: Vec<fastrender::ui::ChromeAction> = Vec::new();
+    let mut close_bookmarks_panel = false;
+    let mut close_history_panel = false;
+    let mut clear_history = false;
+
+    if self.bookmarks_panel_open {
+      egui::SidePanel::right("fastr_bookmarks_panel")
+        .resizable(true)
+        .default_width(320.0)
+        .show(&ctx, |ui| {
+          ui.horizontal(|ui| {
+            ui.heading("Bookmarks");
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+              if ui.button("✕").clicked() {
+                close_bookmarks_panel = true;
+              }
+            });
+          });
+          ui.separator();
+
+          if self.bookmarks.urls.is_empty() {
+            ui.label("No bookmarks.");
+            return;
+          }
+
+          egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+              for url in &self.bookmarks.urls {
+                if ui.button(url).clicked() {
+                  panel_actions.push(fastrender::ui::ChromeAction::NavigateTo(url.clone()));
+                }
+              }
+            });
+        });
+    } else if self.history_panel_open {
+      egui::SidePanel::right("fastr_history_panel")
+        .resizable(true)
+        .default_width(360.0)
+        .show(&ctx, |ui| {
+          ui.horizontal(|ui| {
+            ui.heading("History");
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+              if ui.button("✕").clicked() {
+                close_history_panel = true;
+              }
+            });
+          });
+
+          ui.horizontal(|ui| {
+            if ui.button("Clear").clicked() {
+              clear_history = true;
+            }
+          });
+
+          ui.separator();
+
+          if self.history.entries.is_empty() {
+            ui.label("No history.");
+            return;
+          }
+
+          egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+              for entry in self.history.entries.iter().rev().take(200) {
+                let label = entry
+                  .title
+                  .as_deref()
+                  .filter(|t| !t.trim().is_empty())
+                  .unwrap_or(entry.url.as_str());
+                if ui.button(label).clicked() {
+                  panel_actions.push(fastrender::ui::ChromeAction::NavigateTo(entry.url.clone()));
+                }
+              }
+            });
+        });
+    }
+
+    if close_bookmarks_panel {
+      self.bookmarks_panel_open = false;
+    }
+    if close_history_panel {
+      self.history_panel_open = false;
+    }
+    if clear_history {
+      self.clear_history();
+    }
+    if !panel_actions.is_empty() {
+      self.handle_chrome_actions(panel_actions);
     }
 
     egui::CentralPanel::default().show(&ctx, |ui| {

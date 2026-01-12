@@ -96,3 +96,155 @@ mod tests {
   }
 }
 
+// -----------------------------------------------------------------------------
+// Page context menu actions (windowed browser UI)
+// -----------------------------------------------------------------------------
+
+#[cfg(feature = "browser_ui")]
+use crate::ui::BookmarkStore;
+
+#[cfg(feature = "browser_ui")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PageContextMenuAction {
+  OpenLinkInNewTab(String),
+  CopyLinkAddress(String),
+  BookmarkLink(String),
+  BookmarkPage(String),
+  ToggleHistoryPanel,
+  ToggleBookmarksPanel,
+  Reload,
+}
+
+#[cfg(feature = "browser_ui")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PageContextMenuItem {
+  pub label: &'static str,
+  pub action: PageContextMenuAction,
+  pub checked: bool,
+}
+
+#[cfg(feature = "browser_ui")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PageContextMenuEntry {
+  Action(PageContextMenuItem),
+  Separator,
+}
+
+#[cfg(feature = "browser_ui")]
+#[derive(Debug, Clone, Copy)]
+pub struct PageContextMenuBuildInput<'a> {
+  pub link_url: Option<&'a str>,
+  pub page_url: Option<&'a str>,
+  pub bookmarks: &'a BookmarkStore,
+  pub history_panel_open: bool,
+  pub bookmarks_panel_open: bool,
+}
+
+#[cfg(feature = "browser_ui")]
+pub fn build_page_context_menu_entries(
+  input: PageContextMenuBuildInput<'_>,
+) -> Vec<PageContextMenuEntry> {
+  let mut out = Vec::new();
+
+  if let Some(url) = input.link_url.map(str::trim).filter(|s| !s.is_empty()) {
+    out.push(PageContextMenuEntry::Action(PageContextMenuItem {
+      label: "Open Link in New Tab",
+      action: PageContextMenuAction::OpenLinkInNewTab(url.to_string()),
+      checked: false,
+    }));
+    out.push(PageContextMenuEntry::Action(PageContextMenuItem {
+      label: "Copy Link Address",
+      action: PageContextMenuAction::CopyLinkAddress(url.to_string()),
+      checked: false,
+    }));
+    out.push(PageContextMenuEntry::Action(PageContextMenuItem {
+      label: "Bookmark Link",
+      action: PageContextMenuAction::BookmarkLink(url.to_string()),
+      checked: input.bookmarks.contains(url),
+    }));
+    out.push(PageContextMenuEntry::Separator);
+  }
+
+  let page_url = input.page_url.map(str::trim).unwrap_or("");
+  out.push(PageContextMenuEntry::Action(PageContextMenuItem {
+    label: "Bookmark Page",
+    action: PageContextMenuAction::BookmarkPage(page_url.to_string()),
+    checked: !page_url.is_empty() && input.bookmarks.contains(page_url),
+  }));
+
+  out.push(PageContextMenuEntry::Action(PageContextMenuItem {
+    label: "Show History",
+    action: PageContextMenuAction::ToggleHistoryPanel,
+    checked: input.history_panel_open,
+  }));
+  out.push(PageContextMenuEntry::Action(PageContextMenuItem {
+    label: "Show Bookmarks",
+    action: PageContextMenuAction::ToggleBookmarksPanel,
+    checked: input.bookmarks_panel_open,
+  }));
+  out.push(PageContextMenuEntry::Separator);
+
+  out.push(PageContextMenuEntry::Action(PageContextMenuItem {
+    label: "Reload",
+    action: PageContextMenuAction::Reload,
+    checked: false,
+  }));
+
+  out
+}
+
+#[cfg(feature = "browser_ui")]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct ApplyPageContextMenuActionResult {
+  pub bookmarks_changed: bool,
+  pub ui_changed: bool,
+}
+
+#[cfg(feature = "browser_ui")]
+pub fn apply_page_context_menu_action(
+  bookmarks: &mut BookmarkStore,
+  history_panel_open: &mut bool,
+  bookmarks_panel_open: &mut bool,
+  action: &PageContextMenuAction,
+) -> ApplyPageContextMenuActionResult {
+  match action {
+    PageContextMenuAction::BookmarkLink(url) | PageContextMenuAction::BookmarkPage(url) => {
+      let url = url.trim();
+      if url.is_empty() {
+        return ApplyPageContextMenuActionResult::default();
+      }
+      bookmarks.toggle_url(url);
+      ApplyPageContextMenuActionResult {
+        bookmarks_changed: true,
+        ui_changed: false,
+      }
+    }
+    PageContextMenuAction::ToggleHistoryPanel => {
+      let prev_history = *history_panel_open;
+      let prev_bookmarks = *bookmarks_panel_open;
+      *history_panel_open = !*history_panel_open;
+      if *history_panel_open {
+        *bookmarks_panel_open = false;
+      }
+      ApplyPageContextMenuActionResult {
+        bookmarks_changed: false,
+        ui_changed: prev_history != *history_panel_open || prev_bookmarks != *bookmarks_panel_open,
+      }
+    }
+    PageContextMenuAction::ToggleBookmarksPanel => {
+      let prev_history = *history_panel_open;
+      let prev_bookmarks = *bookmarks_panel_open;
+      *bookmarks_panel_open = !*bookmarks_panel_open;
+      if *bookmarks_panel_open {
+        *history_panel_open = false;
+      }
+      ApplyPageContextMenuActionResult {
+        bookmarks_changed: false,
+        ui_changed: prev_history != *history_panel_open || prev_bookmarks != *bookmarks_panel_open,
+      }
+    }
+    PageContextMenuAction::OpenLinkInNewTab(_)
+    | PageContextMenuAction::CopyLinkAddress(_)
+    | PageContextMenuAction::Reload => ApplyPageContextMenuActionResult::default(),
+  }
+}
