@@ -72,6 +72,32 @@ pub enum RuntimeFn {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum AbiTy {
+  Void,
+  I1,
+  I32,
+  I64,
+  /// Raw runtime pointer (addrspace(0)).
+  RawPtr,
+  /// GC pointer in generated code (addrspace(1)).
+  GcPtr,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct RuntimeFnAbi {
+  pub runtime_ret: AbiTy,
+  pub runtime_params: &'static [AbiTy],
+  pub codegen_ret: AbiTy,
+  pub codegen_params: &'static [AbiTy],
+}
+
+impl RuntimeFnAbi {
+  pub fn signatures_match(self) -> bool {
+    self.runtime_ret == self.codegen_ret && self.runtime_params == self.codegen_params
+  }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GcEffect {
   /// Guaranteed not to trigger GC (leaf, no allocation, no safepoint polls).
   NoGc,
@@ -113,7 +139,213 @@ pub struct RuntimeFnSpec {
   pub arg_rooting: ArgRootingPolicy,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct RuntimeFnDecl {
+  pub spec: RuntimeFnSpec,
+  pub abi: RuntimeFnAbi,
+}
+
 impl RuntimeFn {
+  pub(crate) const fn decl(self) -> RuntimeFnDecl {
+    match self {
+      RuntimeFn::Alloc => RuntimeFnDecl {
+        spec: RuntimeFnSpec {
+          name: "rt_alloc",
+          may_gc: true,
+          gc_ptr_args: 0,
+          gc_handle_args: 0,
+          arg_rooting: ArgRootingPolicy::NoGcPointersAllowedIfMayGc,
+        },
+        abi: RuntimeFnAbi {
+          runtime_ret: AbiTy::RawPtr,
+          runtime_params: &[AbiTy::I64, AbiTy::I32],
+          codegen_ret: AbiTy::GcPtr,
+          codegen_params: &[AbiTy::I64, AbiTy::I32],
+        },
+      },
+      RuntimeFn::AllocPinned => RuntimeFnDecl {
+        spec: RuntimeFnSpec {
+          name: "rt_alloc_pinned",
+          may_gc: true,
+          gc_ptr_args: 0,
+          gc_handle_args: 0,
+          arg_rooting: ArgRootingPolicy::NoGcPointersAllowedIfMayGc,
+        },
+        abi: RuntimeFnAbi {
+          runtime_ret: AbiTy::RawPtr,
+          runtime_params: &[AbiTy::I64, AbiTy::I32],
+          codegen_ret: AbiTy::GcPtr,
+          codegen_params: &[AbiTy::I64, AbiTy::I32],
+        },
+      },
+      RuntimeFn::AllocArray => RuntimeFnDecl {
+        spec: RuntimeFnSpec {
+          name: "rt_alloc_array",
+          may_gc: true,
+          gc_ptr_args: 0,
+          gc_handle_args: 0,
+          arg_rooting: ArgRootingPolicy::NoGcPointersAllowedIfMayGc,
+        },
+        abi: RuntimeFnAbi {
+          runtime_ret: AbiTy::RawPtr,
+          runtime_params: &[AbiTy::I64, AbiTy::I64],
+          codegen_ret: AbiTy::GcPtr,
+          codegen_params: &[AbiTy::I64, AbiTy::I64],
+        },
+      },
+      RuntimeFn::GlobalRootRegister => RuntimeFnDecl {
+        spec: RuntimeFnSpec {
+          name: "rt_global_root_register",
+          may_gc: true,
+          gc_ptr_args: 0,
+          gc_handle_args: 0,
+          arg_rooting: ArgRootingPolicy::NoGcPointersAllowedIfMayGc,
+        },
+        abi: RuntimeFnAbi {
+          runtime_ret: AbiTy::Void,
+          runtime_params: &[AbiTy::RawPtr],
+          codegen_ret: AbiTy::Void,
+          codegen_params: &[AbiTy::RawPtr],
+        },
+      },
+      RuntimeFn::GlobalRootUnregister => RuntimeFnDecl {
+        spec: RuntimeFnSpec {
+          name: "rt_global_root_unregister",
+          may_gc: true,
+          gc_ptr_args: 0,
+          gc_handle_args: 0,
+          arg_rooting: ArgRootingPolicy::NoGcPointersAllowedIfMayGc,
+        },
+        abi: RuntimeFnAbi {
+          runtime_ret: AbiTy::Void,
+          runtime_params: &[AbiTy::RawPtr],
+          codegen_ret: AbiTy::Void,
+          codegen_params: &[AbiTy::RawPtr],
+        },
+      },
+      RuntimeFn::GcSafepoint => RuntimeFnDecl {
+        spec: RuntimeFnSpec {
+          name: "rt_gc_safepoint",
+          may_gc: true,
+          gc_ptr_args: 0,
+          gc_handle_args: 0,
+          arg_rooting: ArgRootingPolicy::NoGcPointersAllowedIfMayGc,
+        },
+        abi: RuntimeFnAbi {
+          runtime_ret: AbiTy::Void,
+          runtime_params: &[],
+          codegen_ret: AbiTy::Void,
+          codegen_params: &[],
+        },
+      },
+      RuntimeFn::GcSafepointSlow => RuntimeFnDecl {
+        spec: RuntimeFnSpec {
+          name: "rt_gc_safepoint_slow",
+          may_gc: true,
+          gc_ptr_args: 0,
+          gc_handle_args: 0,
+          arg_rooting: ArgRootingPolicy::NoGcPointersAllowedIfMayGc,
+        },
+        abi: RuntimeFnAbi {
+          runtime_ret: AbiTy::Void,
+          runtime_params: &[AbiTy::I64],
+          codegen_ret: AbiTy::Void,
+          codegen_params: &[AbiTy::I64],
+        },
+      },
+      RuntimeFn::GcSafepointRelocateH => RuntimeFnDecl {
+        spec: RuntimeFnSpec {
+          name: "rt_gc_safepoint_relocate_h",
+          may_gc: true,
+          gc_ptr_args: 0,
+          gc_handle_args: 1,
+          arg_rooting: ArgRootingPolicy::RuntimeRootsPointers,
+        },
+        abi: RuntimeFnAbi {
+          runtime_ret: AbiTy::RawPtr,
+          runtime_params: &[AbiTy::RawPtr],
+          codegen_ret: AbiTy::GcPtr,
+          codegen_params: &[AbiTy::RawPtr],
+        },
+      },
+      RuntimeFn::GcCollect => RuntimeFnDecl {
+        spec: RuntimeFnSpec {
+          name: "rt_gc_collect",
+          may_gc: true,
+          gc_ptr_args: 0,
+          gc_handle_args: 0,
+          arg_rooting: ArgRootingPolicy::NoGcPointersAllowedIfMayGc,
+        },
+        abi: RuntimeFnAbi {
+          runtime_ret: AbiTy::Void,
+          runtime_params: &[],
+          codegen_ret: AbiTy::Void,
+          codegen_params: &[],
+        },
+      },
+      RuntimeFn::GcPoll => RuntimeFnDecl {
+        spec: RuntimeFnSpec {
+          name: "rt_gc_poll",
+          may_gc: false,
+          gc_ptr_args: 0,
+          gc_handle_args: 0,
+          arg_rooting: ArgRootingPolicy::NoGcPointersAllowedIfMayGc,
+        },
+        abi: RuntimeFnAbi {
+          runtime_ret: AbiTy::I1,
+          runtime_params: &[],
+          codegen_ret: AbiTy::I1,
+          codegen_params: &[],
+        },
+      },
+      RuntimeFn::WriteBarrier => RuntimeFnDecl {
+        spec: RuntimeFnSpec {
+          name: "rt_write_barrier",
+          may_gc: false,
+          gc_ptr_args: 2,
+          gc_handle_args: 0,
+          arg_rooting: ArgRootingPolicy::NoGcPointersAllowedIfMayGc,
+        },
+        abi: RuntimeFnAbi {
+          runtime_ret: AbiTy::Void,
+          runtime_params: &[AbiTy::RawPtr, AbiTy::RawPtr],
+          codegen_ret: AbiTy::Void,
+          codegen_params: &[AbiTy::GcPtr, AbiTy::GcPtr],
+        },
+      },
+      RuntimeFn::WriteBarrierRange => RuntimeFnDecl {
+        spec: RuntimeFnSpec {
+          name: "rt_write_barrier_range",
+          may_gc: false,
+          gc_ptr_args: 2,
+          gc_handle_args: 0,
+          arg_rooting: ArgRootingPolicy::NoGcPointersAllowedIfMayGc,
+        },
+        abi: RuntimeFnAbi {
+          runtime_ret: AbiTy::Void,
+          runtime_params: &[AbiTy::RawPtr, AbiTy::RawPtr, AbiTy::I64],
+          codegen_ret: AbiTy::Void,
+          codegen_params: &[AbiTy::GcPtr, AbiTy::GcPtr, AbiTy::I64],
+        },
+      },
+      RuntimeFn::KeepAliveGcRef => RuntimeFnDecl {
+        spec: RuntimeFnSpec {
+          name: "rt_keep_alive_gc_ref",
+          may_gc: false,
+          gc_ptr_args: 1,
+          gc_handle_args: 0,
+          arg_rooting: ArgRootingPolicy::NoGcPointersAllowedIfMayGc,
+        },
+        abi: RuntimeFnAbi {
+          runtime_ret: AbiTy::Void,
+          runtime_params: &[AbiTy::RawPtr],
+          codegen_ret: AbiTy::Void,
+          codegen_params: &[AbiTy::GcPtr],
+        },
+      },
+    }
+  }
+
   pub fn llvm_name(self) -> &'static str {
     self.spec().name
   }
@@ -127,98 +359,10 @@ impl RuntimeFn {
   }
 
   pub const fn spec(self) -> RuntimeFnSpec {
-    match self {
-      RuntimeFn::Alloc => RuntimeFnSpec {
-        name: "rt_alloc",
-        may_gc: true,
-        gc_ptr_args: 0,
-        gc_handle_args: 0,
-        arg_rooting: ArgRootingPolicy::NoGcPointersAllowedIfMayGc,
-      },
-      RuntimeFn::AllocPinned => RuntimeFnSpec {
-        name: "rt_alloc_pinned",
-        may_gc: true,
-        gc_ptr_args: 0,
-        gc_handle_args: 0,
-        arg_rooting: ArgRootingPolicy::NoGcPointersAllowedIfMayGc,
-      },
-      RuntimeFn::AllocArray => RuntimeFnSpec {
-        name: "rt_alloc_array",
-        may_gc: true,
-        gc_ptr_args: 0,
-        gc_handle_args: 0,
-        arg_rooting: ArgRootingPolicy::NoGcPointersAllowedIfMayGc,
-      },
-      RuntimeFn::GlobalRootRegister => RuntimeFnSpec {
-        name: "rt_global_root_register",
-        may_gc: true,
-        gc_ptr_args: 0,
-        gc_handle_args: 0,
-        arg_rooting: ArgRootingPolicy::NoGcPointersAllowedIfMayGc,
-      },
-      RuntimeFn::GlobalRootUnregister => RuntimeFnSpec {
-        name: "rt_global_root_unregister",
-        may_gc: true,
-        gc_ptr_args: 0,
-        gc_handle_args: 0,
-        arg_rooting: ArgRootingPolicy::NoGcPointersAllowedIfMayGc,
-      },
-      RuntimeFn::GcSafepoint => RuntimeFnSpec {
-        name: "rt_gc_safepoint",
-        may_gc: true,
-        gc_ptr_args: 0,
-        gc_handle_args: 0,
-        arg_rooting: ArgRootingPolicy::NoGcPointersAllowedIfMayGc,
-      },
-      RuntimeFn::GcSafepointSlow => RuntimeFnSpec {
-        name: "rt_gc_safepoint_slow",
-        may_gc: true,
-        gc_ptr_args: 0,
-        gc_handle_args: 0,
-        arg_rooting: ArgRootingPolicy::NoGcPointersAllowedIfMayGc,
-      },
-      RuntimeFn::GcSafepointRelocateH => RuntimeFnSpec {
-        name: "rt_gc_safepoint_relocate_h",
-        may_gc: true,
-        gc_ptr_args: 0,
-        gc_handle_args: 1,
-        arg_rooting: ArgRootingPolicy::RuntimeRootsPointers,
-      },
-      RuntimeFn::GcCollect => RuntimeFnSpec {
-        name: "rt_gc_collect",
-        may_gc: true,
-        gc_ptr_args: 0,
-        gc_handle_args: 0,
-        arg_rooting: ArgRootingPolicy::NoGcPointersAllowedIfMayGc,
-      },
-      RuntimeFn::GcPoll => RuntimeFnSpec {
-        name: "rt_gc_poll",
-        may_gc: false,
-        gc_ptr_args: 0,
-        gc_handle_args: 0,
-        arg_rooting: ArgRootingPolicy::NoGcPointersAllowedIfMayGc,
-      },
-      RuntimeFn::WriteBarrier => RuntimeFnSpec {
-        name: "rt_write_barrier",
-        may_gc: false,
-        gc_ptr_args: 2,
-        gc_handle_args: 0,
-        arg_rooting: ArgRootingPolicy::NoGcPointersAllowedIfMayGc,
-      },
-      RuntimeFn::WriteBarrierRange => RuntimeFnSpec {
-        name: "rt_write_barrier_range",
-        may_gc: false,
-        gc_ptr_args: 2,
-        gc_handle_args: 0,
-        arg_rooting: ArgRootingPolicy::NoGcPointersAllowedIfMayGc,
-      },
-      RuntimeFn::KeepAliveGcRef => RuntimeFnSpec {
-        name: "rt_keep_alive_gc_ref",
-        may_gc: false,
-        gc_ptr_args: 1,
-        gc_handle_args: 0,
-        arg_rooting: ArgRootingPolicy::NoGcPointersAllowedIfMayGc,
-      },
-    }
+    self.decl().spec
+  }
+
+  pub(crate) const fn abi(self) -> RuntimeFnAbi {
+    self.decl().abi
   }
 }

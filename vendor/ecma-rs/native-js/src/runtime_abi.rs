@@ -41,6 +41,7 @@ use inkwell::AddressSpace;
 use runtime_native_abi::RtShapeId;
 
 use crate::llvm::gc;
+use crate::runtime_fn::{AbiTy, RuntimeFnAbi};
 pub use crate::runtime_fn::{ArgRootingPolicy, RuntimeFn, RuntimeFnSpec};
 
 // Keep `native-js`'s LLVM declarations in sync with the runtime ABI.
@@ -49,128 +50,7 @@ pub use crate::runtime_fn::{ArgRootingPolicy, RuntimeFn, RuntimeFnSpec};
 // If this ever changes, update the `i32` LLVM types in this module accordingly.
 const _: [(); 4] = [(); core::mem::size_of::<RtShapeId>()];
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum AbiTy {
-  Void,
-  I1,
-  I32,
-  I64,
-  /// Raw runtime pointer (addrspace(0)).
-  RawPtr,
-  /// GC pointer in generated code (addrspace(1)).
-  GcPtr,
-}
-
-#[derive(Clone, Copy, Debug)]
-struct RuntimeFnMeta {
-  symbol: &'static str,
-  runtime_ret: AbiTy,
-  runtime_params: &'static [AbiTy],
-  codegen_ret: AbiTy,
-  codegen_params: &'static [AbiTy],
-}
-
-impl RuntimeFnMeta {
-  fn signatures_match(self) -> bool {
-    self.runtime_ret == self.codegen_ret && self.runtime_params == self.codegen_params
-  }
-}
-
-fn runtime_meta(f: RuntimeFn) -> RuntimeFnMeta {
-  match f {
-    RuntimeFn::Alloc => RuntimeFnMeta {
-      symbol: "rt_alloc",
-      runtime_ret: AbiTy::RawPtr,
-      runtime_params: &[AbiTy::I64, AbiTy::I32],
-      codegen_ret: AbiTy::GcPtr,
-      codegen_params: &[AbiTy::I64, AbiTy::I32],
-    },
-    RuntimeFn::AllocPinned => RuntimeFnMeta {
-      symbol: "rt_alloc_pinned",
-      runtime_ret: AbiTy::RawPtr,
-      runtime_params: &[AbiTy::I64, AbiTy::I32],
-      codegen_ret: AbiTy::GcPtr,
-      codegen_params: &[AbiTy::I64, AbiTy::I32],
-    },
-    RuntimeFn::AllocArray => RuntimeFnMeta {
-      symbol: "rt_alloc_array",
-      runtime_ret: AbiTy::RawPtr,
-      runtime_params: &[AbiTy::I64, AbiTy::I64],
-      codegen_ret: AbiTy::GcPtr,
-      codegen_params: &[AbiTy::I64, AbiTy::I64],
-    },
-    RuntimeFn::GlobalRootRegister => RuntimeFnMeta {
-      symbol: "rt_global_root_register",
-      runtime_ret: AbiTy::Void,
-      runtime_params: &[AbiTy::RawPtr],
-      codegen_ret: AbiTy::Void,
-      codegen_params: &[AbiTy::RawPtr],
-    },
-    RuntimeFn::GlobalRootUnregister => RuntimeFnMeta {
-      symbol: "rt_global_root_unregister",
-      runtime_ret: AbiTy::Void,
-      runtime_params: &[AbiTy::RawPtr],
-      codegen_ret: AbiTy::Void,
-      codegen_params: &[AbiTy::RawPtr],
-    },
-    RuntimeFn::GcSafepoint => RuntimeFnMeta {
-      symbol: "rt_gc_safepoint",
-      runtime_ret: AbiTy::Void,
-      runtime_params: &[],
-      codegen_ret: AbiTy::Void,
-      codegen_params: &[],
-    },
-    RuntimeFn::GcSafepointSlow => RuntimeFnMeta {
-      symbol: "rt_gc_safepoint_slow",
-      runtime_ret: AbiTy::Void,
-      runtime_params: &[AbiTy::I64],
-      codegen_ret: AbiTy::Void,
-      codegen_params: &[AbiTy::I64],
-    },
-    RuntimeFn::GcSafepointRelocateH => RuntimeFnMeta {
-      symbol: "rt_gc_safepoint_relocate_h",
-      runtime_ret: AbiTy::RawPtr,
-      runtime_params: &[AbiTy::RawPtr],
-      codegen_ret: AbiTy::GcPtr,
-      codegen_params: &[AbiTy::RawPtr],
-    },
-    RuntimeFn::GcCollect => RuntimeFnMeta {
-      symbol: "rt_gc_collect",
-      runtime_ret: AbiTy::Void,
-      runtime_params: &[],
-      codegen_ret: AbiTy::Void,
-      codegen_params: &[],
-    },
-    RuntimeFn::GcPoll => RuntimeFnMeta {
-      symbol: "rt_gc_poll",
-      runtime_ret: AbiTy::I1,
-      runtime_params: &[],
-      codegen_ret: AbiTy::I1,
-      codegen_params: &[],
-    },
-    RuntimeFn::WriteBarrier => RuntimeFnMeta {
-      symbol: "rt_write_barrier",
-      runtime_ret: AbiTy::Void,
-      runtime_params: &[AbiTy::RawPtr, AbiTy::RawPtr],
-      codegen_ret: AbiTy::Void,
-      codegen_params: &[AbiTy::GcPtr, AbiTy::GcPtr],
-    },
-    RuntimeFn::WriteBarrierRange => RuntimeFnMeta {
-      symbol: "rt_write_barrier_range",
-      runtime_ret: AbiTy::Void,
-      runtime_params: &[AbiTy::RawPtr, AbiTy::RawPtr, AbiTy::I64],
-      codegen_ret: AbiTy::Void,
-      codegen_params: &[AbiTy::GcPtr, AbiTy::GcPtr, AbiTy::I64],
-    },
-    RuntimeFn::KeepAliveGcRef => RuntimeFnMeta {
-      symbol: "rt_keep_alive_gc_ref",
-      runtime_ret: AbiTy::Void,
-      runtime_params: &[AbiTy::RawPtr],
-      codegen_ret: AbiTy::Void,
-      codegen_params: &[AbiTy::GcPtr],
-    },
-  }
-}
+// Runtime function signature metadata lives in `runtime_fn.rs` (`RuntimeFn::abi()`).
 
 /// Declared runtime entrypoints and helpers for a module.
 #[derive(Clone, Copy)]
@@ -304,27 +184,27 @@ impl<'ctx, 'm> RuntimeAbi<'ctx, 'm> {
     func.add_attribute(AttributeLoc::Function, leaf);
   }
 
-  fn codegen_fn_type(&self, meta: RuntimeFnMeta) -> FunctionType<'ctx> {
-    let params: Vec<BasicMetadataTypeEnum<'ctx>> = meta
+  fn codegen_fn_type(&self, abi: RuntimeFnAbi) -> FunctionType<'ctx> {
+    let params: Vec<BasicMetadataTypeEnum<'ctx>> = abi
       .codegen_params
       .iter()
       .copied()
       .map(|t| self.abi_ty_codegen_param(t))
       .collect();
-    match self.abi_ty_codegen_ret(meta.codegen_ret) {
+    match self.abi_ty_codegen_ret(abi.codegen_ret) {
       Some(ret) => ret.fn_type(&params, false),
       None => self.context.void_type().fn_type(&params, false),
     }
   }
 
-  fn runtime_fn_type(&self, meta: RuntimeFnMeta) -> FunctionType<'ctx> {
-    let params: Vec<BasicMetadataTypeEnum<'ctx>> = meta
+  fn runtime_fn_type(&self, abi: RuntimeFnAbi) -> FunctionType<'ctx> {
+    let params: Vec<BasicMetadataTypeEnum<'ctx>> = abi
       .runtime_params
       .iter()
       .copied()
       .map(|t| self.abi_ty_runtime_param(t))
       .collect();
-    match self.abi_ty_runtime_ret(meta.runtime_ret) {
+    match self.abi_ty_runtime_ret(abi.runtime_ret) {
       Some(ret) => ret.fn_type(&params, false),
       None => self.context.void_type().fn_type(&params, false),
     }
@@ -335,15 +215,17 @@ impl<'ctx, 'm> RuntimeAbi<'ctx, 'm> {
   /// For `!may_gc` entrypoints we apply `"gc-leaf-function"` to ensure LLVM does not rewrite calls
   /// to them into statepoints.
   pub fn get_or_declare_raw(&self, f: RuntimeFn) -> FunctionValue<'ctx> {
-    let meta = runtime_meta(f);
-    let func = if let Some(existing) = self.module.get_function(meta.symbol) {
+    let spec = f.spec();
+    let abi = f.abi();
+
+    let func = if let Some(existing) = self.module.get_function(spec.name) {
       existing
     } else {
-      let fn_ty = self.runtime_fn_type(meta);
-      self.module.add_function(meta.symbol, fn_ty, None)
+      let fn_ty = self.runtime_fn_type(abi);
+      self.module.add_function(spec.name, fn_ty, None)
     };
 
-    if !f.spec().may_gc {
+    if !spec.may_gc {
       self.mark_gc_leaf(func);
     }
 
@@ -413,14 +295,15 @@ impl<'ctx, 'm> RuntimeAbi<'ctx, 'm> {
   }
 
   fn get_or_define_leaf_wrapper(&self, f: RuntimeFn) -> FunctionValue<'ctx> {
-    let meta = runtime_meta(f);
-    if f.spec().may_gc || meta.signatures_match() {
+    let spec = f.spec();
+    let abi = f.abi();
+    if spec.may_gc || abi.signatures_match() {
       // No wrapper needed.
       return self.get_or_declare_raw(f);
     }
 
-    let wrapper_name = format!("{}_gc", meta.symbol);
-    let wrapper_ty = self.codegen_fn_type(meta);
+    let wrapper_name = format!("{}_gc", spec.name);
+    let wrapper_ty = self.codegen_fn_type(abi);
 
     self.get_or_define_internal(&wrapper_name, wrapper_ty, |func| {
       // Wrapper functions are leaf (NoGC) and must not be rewritten into statepoints.
@@ -435,8 +318,8 @@ impl<'ctx, 'm> RuntimeAbi<'ctx, 'm> {
       let raw = self.get_or_declare_raw(f);
       let callee_ptr = self.load_indirect_callee_ptr(&builder, raw, &wrapper_name);
 
-      let mut args: Vec<BasicMetadataValueEnum<'ctx>> = Vec::with_capacity(meta.codegen_params.len());
-      for i in 0..meta.codegen_params.len() {
+      let mut args: Vec<BasicMetadataValueEnum<'ctx>> = Vec::with_capacity(abi.codegen_params.len());
+      for i in 0..abi.codegen_params.len() {
         args.push(func.get_nth_param(i as u32).expect("param").into());
       }
 
@@ -445,7 +328,7 @@ impl<'ctx, 'm> RuntimeAbi<'ctx, 'm> {
         .expect("build indirect call");
       crate::stack_walking::mark_call_notail(call);
 
-      match self.abi_ty_codegen_ret(meta.codegen_ret) {
+      match self.abi_ty_codegen_ret(abi.codegen_ret) {
         None => {
           builder.build_return(None).expect("ret void");
         }
@@ -475,11 +358,10 @@ impl<'ctx, 'm> RuntimeAbi<'ctx, 'm> {
     let spec = f.spec();
     validate_runtime_call_abi(spec, args)?;
 
-    let meta = runtime_meta(f);
-    debug_assert_eq!(meta.symbol, spec.name, "runtime_fn spec/name mismatch");
+    let abi = f.abi();
 
     // NoGC + signature mismatch: call the leaf wrapper.
-    if !spec.may_gc && !meta.signatures_match() {
+    if !spec.may_gc && !abi.signatures_match() {
       let wrapper = self.get_or_define_leaf_wrapper(f);
       let call = builder
         .build_call(wrapper, args, name)
@@ -493,7 +375,7 @@ impl<'ctx, 'm> RuntimeAbi<'ctx, 'm> {
 
     let raw = self.get_or_declare_raw(f);
 
-    let call = if meta.signatures_match() {
+    let call = if abi.signatures_match() {
       builder
         .build_call(raw, args, name)
         .map_err(|e| RuntimeCallError::BuildCall {
@@ -502,8 +384,8 @@ impl<'ctx, 'm> RuntimeAbi<'ctx, 'm> {
         })?
     } else {
       // MayGC call with an addrspace(1) signature mismatch: emit an indirect call to the raw symbol.
-      let codegen_ty = self.codegen_fn_type(meta);
-      let callee_ptr = self.load_indirect_callee_ptr(builder, raw, meta.symbol);
+      let codegen_ty = self.codegen_fn_type(abi);
+      let callee_ptr = self.load_indirect_callee_ptr(builder, raw, spec.name);
       builder
         .build_indirect_call(codegen_ty, callee_ptr, args, name)
         .map_err(|e| RuntimeCallError::BuildCall {
