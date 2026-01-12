@@ -80,6 +80,12 @@ impl SourceText {
 
   /// Convert a UTF-8 byte offset into 1-based `(line, col)` numbers.
   ///
+  /// Columns are reported as 1-based UTF-8 byte offsets from the start of the
+  /// line. This is exact for ASCII sources and avoids scanning potentially huge
+  /// single-line scripts during stack trace / diagnostic mapping; for non-ASCII
+  /// text the reported columns are only an approximation of user-visible
+  /// character columns.
+  ///
   /// Offsets that fall outside the text are clamped; offsets that fall inside a
   /// UTF-8 sequence are clamped backwards to the nearest valid char boundary.
   pub fn line_col(&self, offset: u32) -> (u32, u32) {
@@ -101,9 +107,8 @@ impl SourceText {
       .get(line_idx)
       .unwrap_or(&u32::try_from(self.text.len()).unwrap_or(u32::MAX)) as usize;
 
-    let slice = &self.text[line_start..offset];
-    let col0 = slice.chars().count() as u32;
-    (line_idx as u32 + 1, col0 + 1)
+    let col0 = u32::try_from(offset.saturating_sub(line_start)).unwrap_or(u32::MAX);
+    (line_idx as u32 + 1, col0.saturating_add(1))
   }
 }
 

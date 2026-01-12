@@ -8,8 +8,8 @@ fn source_text_line_col_handles_newlines_tabs_and_utf8() {
   let text = "a\té\nb🙂c\n";
   let source = SourceText::new("<inline>", text);
 
-  // Byte offsets are used as the input; reported columns are Unicode scalar
-  // values (tab counts as 1).
+  // Byte offsets are used as the input; reported columns are 1-based UTF-8
+  // byte offsets from the start of the line (exact for ASCII).
   let offset_e = text.find('é').unwrap() as u32;
   assert_eq!(source.line_col(offset_e), (1, 3));
 
@@ -17,11 +17,31 @@ fn source_text_line_col_handles_newlines_tabs_and_utf8() {
   assert_eq!(source.line_col(offset_b), (2, 1));
 
   let offset_c = text.find('c').unwrap() as u32;
-  assert_eq!(source.line_col(offset_c), (2, 3));
+  assert_eq!(source.line_col(offset_c), (2, 6));
 
   // Clamp offsets that point inside a UTF-8 sequence.
   let offset_emoji = text.find('🙂').unwrap();
   assert_eq!(source.line_col((offset_emoji + 1) as u32), (2, 2));
+}
+
+#[test]
+fn source_text_line_col_is_dos_safe_on_huge_single_line_sources() {
+  const SIZE: usize = 5 * 1024 * 1024;
+  let text = String::from_utf8(vec![b'a'; SIZE]).unwrap();
+  let source = SourceText::new("<inline>", text);
+
+  let end_offset = SIZE as u32;
+
+  // This loop is intentionally large: the implementation must not scan the
+  // source linearly per call (which would make this test prohibitively slow and
+  // allow O(n^2) behavior for stack trace / diagnostic mapping on huge single-
+  // line sources).
+  for _ in 0..50_000 {
+    assert_eq!(source.line_col(end_offset), (1, end_offset + 1));
+  }
+
+  // Offsets outside the text are clamped.
+  assert_eq!(source.line_col(end_offset.saturating_add(123)), (1, end_offset + 1));
 }
 
 #[test]
@@ -45,4 +65,3 @@ fn stack_trace_formatting_is_stable() {
   let expected = "at foo (script.js:1:5)\nat script.js:2:1";
   assert_eq!(rendered, expected);
 }
-
