@@ -361,7 +361,7 @@ mod tests {
   use super::{verify_statepoint_stackmap, LLVM_STATEPOINT_PATCHPOINT_ID};
   use crate::stackmaps::{StackMap, StackMapRecord, StackSize, StackSizeRecord, STACKMAP_VERSION};
   use crate::stackmaps::Location;
-  use crate::statepoints::X86_64_DWARF_REG_FP;
+  use crate::statepoints::{AARCH64_DWARF_REG_FP, X86_64_DWARF_REG_FP};
 
   fn push_u8(buf: &mut Vec<u8>, v: u8) {
     buf.push(v);
@@ -505,6 +505,48 @@ mod tests {
       },
     )
     .expect("FP-relative Indirect roots must be accepted");
+  }
+
+  #[test]
+  fn verify_statepoint_stackmap_accepts_aarch64_fp_relative_indirect_roots() {
+    let stackmap = StackMap {
+      version: STACKMAP_VERSION,
+      functions: vec![StackSizeRecord {
+        address: 0x1000,
+        stack_size: StackSize::Known(64),
+        record_count: 1,
+      }],
+      constants: vec![],
+      records: vec![StackMapRecord {
+        patchpoint_id: LLVM_STATEPOINT_PATCHPOINT_ID,
+        instruction_offset: 0,
+        locations: vec![
+          Location::Constant { size: 8, value: 0 },
+          Location::Constant { size: 8, value: 0 },
+          Location::Constant { size: 8, value: 0 },
+          Location::Indirect {
+            size: 8,
+            dwarf_reg: AARCH64_DWARF_REG_FP,
+            offset: -16,
+          },
+          Location::Indirect {
+            size: 8,
+            dwarf_reg: AARCH64_DWARF_REG_FP,
+            offset: -16,
+          },
+        ],
+        live_outs: vec![],
+      }],
+    };
+
+    verify_statepoint_stackmap(
+      &stackmap,
+      VerifyStatepointOptions {
+        arch: DwarfArch::AArch64,
+        mode: VerifyMode::AllRecords,
+      },
+    )
+    .expect("AArch64 FP-relative Indirect roots must be accepted");
   }
 }
 
