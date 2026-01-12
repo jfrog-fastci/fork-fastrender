@@ -1906,6 +1906,8 @@ impl<'a> Evaluator<'a> {
       }
     }
 
+    self.label_early_errors_in_stmt_list(stmts)?;
+
     // Minimal early error checks:
     // - Duplicate lexical declarations (let/const) in the same statement list.
     // - Lexical declarations may not collide with var-scoped names (var + function declarations).
@@ -2099,6 +2101,225 @@ impl<'a> Evaluator<'a> {
       }
       _ => Ok(()),
     }
+  }
+
+  fn label_early_errors_in_stmt_list(&mut self, stmts: &[Node<Stmt>]) -> Result<(), VmError> {
+    #[derive(Default)]
+    struct Ctx<'a> {
+      /// Active labels (labelSet).
+      labels: HashSet<&'a str>,
+      /// Labels that denote an iteration statement (iterationSet).
+      iteration_labels: HashSet<&'a str>,
+      /// Depth of enclosing iteration statements (`while`, `for`, etc).
+      iteration_depth: usize,
+      /// Depth of enclosing breakable statements (`switch` + iterations).
+      breakable_depth: usize,
+    }
+
+    fn is_iteration_stmt(stmt: &Stmt) -> bool {
+      matches!(
+        stmt,
+        Stmt::While(_)
+          | Stmt::DoWhile(_)
+          | Stmt::ForTriple(_)
+          | Stmt::ForIn(_)
+          | Stmt::ForOf(_)
+      )
+    }
+
+    fn first_non_label_stmt<'a>(mut stmt: &'a Node<Stmt>) -> &'a Node<Stmt> {
+      loop {
+        match &*stmt.stx {
+          Stmt::Label(label) => stmt = &label.stx.statement,
+          _ => return stmt,
+        }
+      }
+    }
+
+    fn collect_label_chain<'a>(
+      mut stmt: &'a Node<Stmt>,
+      out: &mut Vec<(&'a str, parse_js::loc::Loc)>,
+    ) -> &'a Node<Stmt> {
+      loop {
+        match &*stmt.stx {
+          Stmt::Label(label) => {
+            out.push((label.stx.name.as_str(), stmt.loc));
+            stmt = &label.stx.statement;
+          }
+          _ => return stmt,
+        }
+      }
+    }
+
+    fn pop_label_chain<'a>(
+      ctx: &mut Ctx<'a>,
+      labels: &[(&'a str, parse_js::loc::Loc)],
+      is_iteration: bool,
+    ) {
+      for (name, _) in labels.iter().rev() {
+        ctx.labels.remove(name);
+        if is_iteration {
+          ctx.iteration_labels.remove(name);
+        }
+      }
+    }
+
+    fn check_stmt<'a>(
+      this: &mut Evaluator<'_>,
+      stmt: &'a Node<Stmt>,
+      ctx: &mut Ctx<'a>,
+    ) -> Result<(), VmError> {
+      this.tick()?;
+
+      match &*stmt.stx {
+        Stmt::Label(_) => {
+          let mut labels: Vec<(&'a str, parse_js::loc::Loc)> = Vec::new();
+          let base = collect_label_chain(stmt, &mut labels);
+          let base_non_label = first_non_label_stmt(base);
+          let is_iteration = is_iteration_stmt(&base_non_label.stx);
+
+          for (name, loc) in &labels {
+            this.tick()?;
+            if ctx.labels.contains(name) {
+              return Err(syntax_error(*loc, format!("Duplicate label '{name}'")));
+            }
+            ctx.labels.insert(*name);
+            if is_iteration {
+              ctx.iteration_labels.insert(*name);
+            }
+          }
+
+          check_stmt(this, base, ctx)?;
+          pop_label_chain(ctx, &labels, is_iteration);
+          Ok(())
+        }
+        Stmt::Break(break_stmt) => match break_stmt.stx.label.as_deref() {
+          None => {
+            if ctx.breakable_depth == 0 {
+              return Err(syntax_error(stmt.loc, "Illegal break statement"));
+            }
+            Ok(())
+          }
+          Some(label) => {
+            if !ctx.labels.contains(label) {
+              return Err(syntax_error(stmt.loc, format!("Undefined label '{label}'")));
+            }
+            Ok(())
+          }
+        },
+        Stmt::Continue(continue_stmt) => match continue_stmt.stx.label.as_deref() {
+          None => {
+            if ctx.iteration_depth == 0 {
+              return Err(syntax_error(stmt.loc, "Illegal continue statement"));
+            }
+            Ok(())
+          }
+          Some(label) => {
+            if !ctx.iteration_labels.contains(label) {
+              return Err(syntax_error(
+                stmt.loc,
+                format!("Illegal continue statement: '{label}' does not denote an iteration statement"),
+              ));
+            }
+            Ok(())
+          }
+        },
+        Stmt::Block(block) => check_stmt_list(this, &block.stx.body, ctx),
+        Stmt::If(stmt) => {
+          check_stmt(this, &stmt.stx.consequent, ctx)?;
+          if let Some(alt) = &stmt.stx.alternate {
+            check_stmt(this, alt, ctx)?;
+          }
+          Ok(())
+        }
+        Stmt::Try(stmt) => {
+          check_stmt_list(this, &stmt.stx.wrapped.stx.body, ctx)?;
+          if let Some(catch) = &stmt.stx.catch {
+            check_stmt_list(this, &catch.stx.body, ctx)?;
+          }
+          if let Some(finally) = &stmt.stx.finally {
+            check_stmt_list(this, &finally.stx.body, ctx)?;
+          }
+          Ok(())
+        }
+        Stmt::With(stmt) => check_stmt(this, &stmt.stx.body, ctx),
+        Stmt::While(stmt) => {
+          ctx.iteration_depth = ctx.iteration_depth.saturating_add(1);
+          ctx.breakable_depth = ctx.breakable_depth.saturating_add(1);
+          let res = check_stmt(this, &stmt.stx.body, ctx);
+          ctx.iteration_depth = ctx.iteration_depth.saturating_sub(1);
+          ctx.breakable_depth = ctx.breakable_depth.saturating_sub(1);
+          res
+        }
+        Stmt::DoWhile(stmt) => {
+          ctx.iteration_depth = ctx.iteration_depth.saturating_add(1);
+          ctx.breakable_depth = ctx.breakable_depth.saturating_add(1);
+          let res = check_stmt(this, &stmt.stx.body, ctx);
+          ctx.iteration_depth = ctx.iteration_depth.saturating_sub(1);
+          ctx.breakable_depth = ctx.breakable_depth.saturating_sub(1);
+          res
+        }
+        Stmt::ForTriple(stmt) => {
+          ctx.iteration_depth = ctx.iteration_depth.saturating_add(1);
+          ctx.breakable_depth = ctx.breakable_depth.saturating_add(1);
+          let res = check_stmt_list(this, &stmt.stx.body.stx.body, ctx);
+          ctx.iteration_depth = ctx.iteration_depth.saturating_sub(1);
+          ctx.breakable_depth = ctx.breakable_depth.saturating_sub(1);
+          res
+        }
+        Stmt::ForIn(stmt) => {
+          ctx.iteration_depth = ctx.iteration_depth.saturating_add(1);
+          ctx.breakable_depth = ctx.breakable_depth.saturating_add(1);
+          let res = check_stmt_list(this, &stmt.stx.body.stx.body, ctx);
+          ctx.iteration_depth = ctx.iteration_depth.saturating_sub(1);
+          ctx.breakable_depth = ctx.breakable_depth.saturating_sub(1);
+          res
+        }
+        Stmt::ForOf(stmt) => {
+          ctx.iteration_depth = ctx.iteration_depth.saturating_add(1);
+          ctx.breakable_depth = ctx.breakable_depth.saturating_add(1);
+          let res = check_stmt_list(this, &stmt.stx.body.stx.body, ctx);
+          ctx.iteration_depth = ctx.iteration_depth.saturating_sub(1);
+          ctx.breakable_depth = ctx.breakable_depth.saturating_sub(1);
+          res
+        }
+        Stmt::Switch(stmt) => {
+          ctx.breakable_depth = ctx.breakable_depth.saturating_add(1);
+          const BRANCH_TICK_EVERY: usize = 32;
+          let mut result = Ok(());
+          for (i, branch) in stmt.stx.branches.iter().enumerate() {
+            if i % BRANCH_TICK_EVERY == 0 && i != 0 {
+              this.tick()?;
+            }
+            result = check_stmt_list(this, &branch.stx.body, ctx);
+            if result.is_err() {
+              break;
+            }
+          }
+          ctx.breakable_depth = ctx.breakable_depth.saturating_sub(1);
+          result
+        }
+        _ => Ok(()),
+      }
+    }
+
+    fn check_stmt_list<'a>(
+      this: &mut Evaluator<'_>,
+      stmts: &'a [Node<Stmt>],
+      ctx: &mut Ctx<'a>,
+    ) -> Result<(), VmError> {
+      const TICK_EVERY: usize = 32;
+      for (i, stmt) in stmts.iter().enumerate() {
+        if i % TICK_EVERY == 0 {
+          this.tick()?;
+        }
+        check_stmt(this, stmt, ctx)?;
+      }
+      Ok(())
+    }
+
+    let mut ctx = Ctx::default();
+    check_stmt_list(self, stmts, &mut ctx)
   }
 
   fn strict_mode_with_early_error(&mut self, stmt: &Node<Stmt>) -> Result<(), VmError> {
@@ -18282,20 +18503,22 @@ pub(crate) fn instantiate_module_decls(
   // logic to create bindings and pre-create function objects.
   let mut dummy_host = ();
   let mut dummy_hooks = crate::MicrotaskQueue::new();
-  let mut evaluator = Evaluator {
-    vm,
-    host: &mut dummy_host,
-    hooks: &mut dummy_hooks,
-    env: &mut env,
-    // Modules are always strict mode.
-    strict: true,
-    this: Value::Undefined,
-    new_target: Value::Undefined,
-  };
+  let result = {
+    let mut evaluator = Evaluator {
+      vm,
+      host: &mut dummy_host,
+      hooks: &mut dummy_hooks,
+      env: &mut env,
+      // Modules are always strict mode.
+      strict: true,
+      this: Value::Undefined,
+      new_target: Value::Undefined,
+    };
 
-  evaluator.instantiate_stmt_list(scope, stmts)?;
+    evaluator.instantiate_stmt_list(scope, stmts)
+  };
   env.teardown(scope.heap_mut());
-  Ok(())
+  result
 }
 
 pub(crate) fn run_module(
@@ -18736,6 +18959,171 @@ fn strict_equal(heap: &Heap, a: Value, b: Value) -> Result<bool, VmError> {
 mod tests {
   use super::*;
   use crate::{HeapLimits, VmOptions};
+
+  fn assert_module_instantiate_syntax_error(stmts: Vec<Node<Stmt>>) -> Result<(), VmError> {
+    let vm = Vm::new(VmOptions::default());
+    let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut rt = JsRuntime::new(vm, heap)?;
+
+    let (vm, realm, heap) = rt.vm_realm_and_heap_mut();
+    let global_object = realm.global_object();
+
+    let mut scope = heap.scope();
+    let module_env = scope.env_create(None)?;
+    let source = Arc::new(SourceText::new("<inline>", ""));
+
+    let err = instantiate_module_decls(
+      vm,
+      &mut scope,
+      global_object,
+      module_env,
+      source,
+      &stmts,
+    )
+    .unwrap_err();
+    match err {
+      VmError::Syntax(_) => Ok(()),
+      other => panic!("expected VmError::Syntax, got {other:?}"),
+    }
+  }
+
+  #[test]
+  fn module_duplicate_labels_is_syntax_error() -> Result<(), VmError> {
+    use parse_js::ast::stmt::EmptyStmt;
+    use parse_js::loc::Loc;
+
+    let loc = Loc(0, 0);
+
+    let inner_label = Node::new(
+      loc,
+      Stmt::Label(Node::new(
+        loc,
+        LabelStmt {
+          name: "label".to_string(),
+          statement: Node::new(loc, Stmt::Empty(Node::new(loc, EmptyStmt {}))),
+        },
+      )),
+    );
+
+    let stmts = vec![Node::new(
+      loc,
+      Stmt::Label(Node::new(
+        loc,
+        LabelStmt {
+          name: "label".to_string(),
+          statement: Node::new(
+            loc,
+            Stmt::Block(Node::new(
+              loc,
+              BlockStmt {
+                body: vec![inner_label],
+              },
+            )),
+          ),
+        },
+      )),
+    )];
+
+    assert_module_instantiate_syntax_error(stmts)
+  }
+
+  #[test]
+  fn module_undefined_break_label_is_syntax_error() -> Result<(), VmError> {
+    use parse_js::ast::expr::lit::LitBoolExpr;
+    use parse_js::ast::stmt::BreakStmt;
+    use parse_js::loc::Loc;
+
+    let loc = Loc(0, 0);
+    let cond = Node::new(
+      loc,
+      Expr::LitBool(Node::new(
+        loc,
+        LitBoolExpr {
+          value: false,
+        },
+      )),
+    );
+
+    let break_stmt = Node::new(
+      loc,
+      Stmt::Break(Node::new(
+        loc,
+        BreakStmt {
+          label: Some("undef".to_string()),
+        },
+      )),
+    );
+
+    let stmts = vec![Node::new(
+      loc,
+      Stmt::While(Node::new(
+        loc,
+        WhileStmt {
+          condition: cond,
+          body: Node::new(
+            loc,
+            Stmt::Block(Node::new(
+              loc,
+              BlockStmt {
+                body: vec![break_stmt],
+              },
+            )),
+          ),
+        },
+      )),
+    )];
+
+    assert_module_instantiate_syntax_error(stmts)
+  }
+
+  #[test]
+  fn module_undefined_continue_label_is_syntax_error() -> Result<(), VmError> {
+    use parse_js::ast::expr::lit::LitBoolExpr;
+    use parse_js::ast::stmt::ContinueStmt;
+    use parse_js::loc::Loc;
+
+    let loc = Loc(0, 0);
+    let cond = Node::new(
+      loc,
+      Expr::LitBool(Node::new(
+        loc,
+        LitBoolExpr {
+          value: false,
+        },
+      )),
+    );
+
+    let continue_stmt = Node::new(
+      loc,
+      Stmt::Continue(Node::new(
+        loc,
+        ContinueStmt {
+          label: Some("undef".to_string()),
+        },
+      )),
+    );
+
+    let stmts = vec![Node::new(
+      loc,
+      Stmt::While(Node::new(
+        loc,
+        WhileStmt {
+          condition: cond,
+          body: Node::new(
+            loc,
+            Stmt::Block(Node::new(
+              loc,
+              BlockStmt {
+                body: vec![continue_stmt],
+              },
+            )),
+          ),
+        },
+      )),
+    )];
+
+    assert_module_instantiate_syntax_error(stmts)
+  }
 
   #[test]
   fn prototype_cycle_throw_captures_statement_location() -> Result<(), VmError> {

@@ -91,7 +91,6 @@ pub struct Intrinsics {
   json: GcObject,
   reflect: GcObject,
   proxy: GcObject,
-  proxy_revoke_call: NativeFunctionId,
 
   error: GcObject,
   error_prototype: GcObject,
@@ -738,12 +737,6 @@ impl Intrinsics {
     let generator_prototype_next = vm.register_native_call(builtins::generator_prototype_next)?;
     let generator_prototype_return = vm.register_native_call(builtins::generator_prototype_return)?;
     let generator_prototype_throw = vm.register_native_call(builtins::generator_prototype_throw)?;
-
-    // `%Proxy%`
-    let proxy_call = vm.register_native_call(builtins::proxy_constructor_call)?;
-    let proxy_construct = vm.register_native_construct(builtins::proxy_constructor_construct)?;
-    let proxy_revocable = vm.register_native_call(builtins::proxy_revocable)?;
-    let proxy_revoke_call = vm.register_native_call(builtins::proxy_revoke)?;
 
     // `%Number%`, `%Boolean%`, `%Date%`, and global functions.
     let number_call = vm.register_native_call(builtins::number_constructor_call)?;
@@ -4353,7 +4346,6 @@ impl Intrinsics {
       json,
       reflect,
       proxy,
-      proxy_revoke_call,
       error,
       error_prototype,
       type_error,
@@ -4634,10 +4626,6 @@ impl Intrinsics {
 
   pub fn proxy(&self) -> GcObject {
     self.proxy
-  }
-
-  pub(crate) fn proxy_revoke_call(&self) -> NativeFunctionId {
-    self.proxy_revoke_call
   }
 
   pub fn error(&self) -> GcObject {
