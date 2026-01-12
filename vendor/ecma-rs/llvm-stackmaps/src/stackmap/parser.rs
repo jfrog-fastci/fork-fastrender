@@ -6,25 +6,79 @@ use super::statepoint::StatepointRecordView;
 const STACKMAP_VERSION: u8 = 3;
 const STACKMAP_V3_HEADER_SIZE: usize = 16;
 
-// Stackmaps are trusted metadata in our own build pipeline, but `StackMaps::parse` is also used as
-// a general-purpose parser (e.g. in fuzz targets). Treat the input as hostile and cap how much
-// memory we are willing to reserve for parsed structures so corrupted sections can't trigger OOM.
-//
-// 64 MiB is comfortably above the size of stackmaps we expect in practice, while still preventing
-// pathological allocations on arbitrary input bytes.
-const MAX_PARSE_ALLOC_BYTES: usize = 64 * 1024 * 1024;
-// Also cap the input slice length so we don't spend unbounded time scanning long runs of padding.
-const MAX_STACKMAP_SECTION_BYTES: usize = 64 * 1024 * 1024;
+/// Parse-time limits for `.llvm_stackmaps` sections.
+///
+/// Stackmaps are trusted metadata in our own build pipeline, but `StackMaps::parse` is also used as
+/// a general-purpose parser (e.g. in fuzz targets). Treat the input as hostile and cap how much
+/// memory we are willing to reserve for parsed structures so corrupted sections can't trigger OOM.
+#[derive(Debug, Clone, Copy)]
+pub struct ParseOptions {
+    /// Maximum input length accepted by the parser.
+    pub max_section_bytes: usize,
+    /// Maximum amount of memory we will reserve for decoded structures (across the entire parse).
+    pub max_alloc_bytes: usize,
+    /// Maximum number of function table entries in a single v3 blob.
+    pub max_functions_per_blob: usize,
+    /// Maximum number of constants in a single v3 blob.
+    pub max_constants_per_blob: usize,
+    /// Maximum number of records in a single v3 blob.
+    pub max_records_per_blob: usize,
+    /// Maximum number of locations in a single record.
+    pub max_locations_per_record: usize,
+    /// Maximum number of live-outs in a single record.
+    pub max_live_outs_per_record: usize,
+}
+
+impl ParseOptions {
+    // 64 MiB is comfortably above the size of stackmaps we expect in practice, while still
+    // preventing pathological allocations on arbitrary input bytes.
+    pub const DEFAULT_MAX_ALLOC_BYTES: usize = 64 * 1024 * 1024;
+    // Also cap the input slice length so we don't spend unbounded time scanning long runs of
+    // padding.
+    pub const DEFAULT_MAX_SECTION_BYTES: usize = 64 * 1024 * 1024;
+
+    pub const DEFAULT: Self = Self {
+        max_section_bytes: Self::DEFAULT_MAX_SECTION_BYTES,
+        max_alloc_bytes: Self::DEFAULT_MAX_ALLOC_BYTES,
+        // These are primarily sanity limits; the allocation budget is the primary guardrail.
+        max_functions_per_blob: 1_000_000,
+        max_constants_per_blob: 1_000_000,
+        max_records_per_blob: 1_000_000,
+        // Record-local counts are u16 in the binary format; keep defaults permissive and allow
+        // callers (e.g. fuzz targets) to dial them down.
+        max_locations_per_record: u16::MAX as usize,
+        max_live_outs_per_record: u16::MAX as usize,
+    };
+
+    /// Tighter limits suitable for fuzzing.
+    pub const FUZZING: Self = Self {
+        max_section_bytes: 1 * 1024 * 1024, // 1 MiB
+        max_alloc_bytes: 1 * 1024 * 1024,   // 1 MiB
+        max_functions_per_blob: 100_000,
+        max_constants_per_blob: 100_000,
+        max_records_per_blob: 100_000,
+        max_locations_per_record: 4096,
+        max_live_outs_per_record: 4096,
+    };
+}
+
+impl Default for ParseOptions {
+    fn default() -> Self {
+        Self::DEFAULT
+    }
+}
 
 #[derive(Clone, Copy)]
 struct ParseBudget {
     remaining: usize,
+    cap: usize,
 }
 
 impl ParseBudget {
-    fn new() -> Self {
+    fn new(cap: usize) -> Self {
         Self {
-            remaining: MAX_PARSE_ALLOC_BYTES,
+            remaining: cap,
+            cap,
         }
     }
 
@@ -33,8 +87,9 @@ impl ParseBudget {
             return Err(ParseError::new(
                 offset,
                 format!(
-                    "{what} allocation would exceed parser budget: requested {bytes} bytes, remaining {}, cap {MAX_PARSE_ALLOC_BYTES}",
-                    self.remaining
+                    "{what} allocation would exceed parser budget: requested {bytes} bytes, remaining {}, cap {}",
+                    self.remaining,
+                    self.cap
                 ),
             ));
         }
@@ -195,17 +250,22 @@ pub struct StackMaps {
 
 impl StackMaps {
     pub fn parse(bytes: &[u8]) -> Result<Self, ParseError> {
-        if bytes.len() > MAX_STACKMAP_SECTION_BYTES {
+        Self::parse_with_options(bytes, &ParseOptions::DEFAULT)
+    }
+
+    pub fn parse_with_options(bytes: &[u8], options: &ParseOptions) -> Result<Self, ParseError> {
+        if bytes.len() > options.max_section_bytes {
             return Err(ParseError::new(
                 0,
                 format!(
-                    ".llvm_stackmaps section too large to parse safely: {} bytes (cap {MAX_STACKMAP_SECTION_BYTES})",
-                    bytes.len()
+                    ".llvm_stackmaps section too large to parse safely: {} bytes (cap {})",
+                    bytes.len(),
+                    options.max_section_bytes
                 ),
             ));
         }
 
-        let mut budget = ParseBudget::new();
+        let mut budget = ParseBudget::new(options.max_alloc_bytes);
         let mut functions: Vec<StackMapFunction> = Vec::new();
         let mut constants: Vec<u64> = Vec::new();
         let mut records: Vec<StackMapRecord> = Vec::new();
@@ -241,7 +301,8 @@ impl StackMaps {
                 // Limit the scan so we don't accidentally resync into the middle of a valid blob
                 // if our offset accounting is wrong.
                 const MAX_PADDING_SCAN: usize = 256;
-                let scan_end = (off + MAX_PADDING_SCAN)
+                let scan_end = off
+                    .saturating_add(MAX_PADDING_SCAN)
                     .min(bytes.len().saturating_sub(STACKMAP_V3_HEADER_SIZE));
                 let mut found: Option<usize> = None;
                 for i in off + 1..=scan_end {
@@ -268,6 +329,7 @@ impl StackMaps {
                 &bytes[off..],
                 const_base,
                 record_base,
+                options,
                 &mut budget,
                 &mut functions,
                 &mut constants,
@@ -385,6 +447,7 @@ fn parse_blob(
     bytes: &[u8],
     const_base: u32,
     record_base: usize,
+    options: &ParseOptions,
     budget: &mut ParseBudget,
     functions: &mut Vec<StackMapFunction>,
     constants: &mut Vec<u64>,
@@ -426,6 +489,34 @@ fn parse_blob(
         usize::try_from(num_constants).map_err(|_| ParseError::new(c.pos(), "num_constants does not fit in usize"))?;
     let num_records_usize =
         usize::try_from(num_records).map_err(|_| ParseError::new(c.pos(), "num_records does not fit in usize"))?;
+
+    if num_functions_usize > options.max_functions_per_blob {
+        return Err(ParseError::new(
+            c.pos(),
+            format!(
+                "num_functions ({num_functions_usize}) exceeds limit ({})",
+                options.max_functions_per_blob
+            ),
+        ));
+    }
+    if num_constants_usize > options.max_constants_per_blob {
+        return Err(ParseError::new(
+            c.pos(),
+            format!(
+                "num_constants ({num_constants_usize}) exceeds limit ({})",
+                options.max_constants_per_blob
+            ),
+        ));
+    }
+    if num_records_usize > options.max_records_per_blob {
+        return Err(ParseError::new(
+            c.pos(),
+            format!(
+                "num_records ({num_records_usize}) exceeds limit ({})",
+                options.max_records_per_blob
+            ),
+        ));
+    }
 
     // Defensive validation of header counts against remaining bytes.
     //
@@ -519,6 +610,16 @@ fn parse_blob(
             let _reserved = c.read_u16()?;
             let num_locations = c.read_u16()? as usize;
 
+            if num_locations > options.max_locations_per_record {
+                return Err(ParseError::new(
+                    record_start,
+                    format!(
+                        "num_locations ({num_locations}) exceeds limit ({})",
+                        options.max_locations_per_record
+                    ),
+                ));
+            }
+
             const LOCATION_ENTRY_SIZE: usize = 12;
             if num_locations > c.remaining() / LOCATION_ENTRY_SIZE {
                 return Err(ParseError::new(
@@ -602,6 +703,16 @@ fn parse_blob(
             c.align_to(8)?;
             let _padding = c.read_u16()?;
             let num_live_outs = c.read_u16()? as usize;
+
+            if num_live_outs > options.max_live_outs_per_record {
+                return Err(ParseError::new(
+                    record_start,
+                    format!(
+                        "num_live_outs ({num_live_outs}) exceeds limit ({})",
+                        options.max_live_outs_per_record
+                    ),
+                ));
+            }
 
             const LIVEOUT_ENTRY_SIZE: usize = 4;
             if num_live_outs > c.remaining() / LIVEOUT_ENTRY_SIZE {

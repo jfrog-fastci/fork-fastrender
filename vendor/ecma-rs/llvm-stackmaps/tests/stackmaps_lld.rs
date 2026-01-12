@@ -89,7 +89,7 @@ global_asm!(
 
 fn main() {
     let expected: &[u8] = &[1, 2, 3, 4, 5, 6, 7, 8];
-    let bytes = llvm_stackmaps::stackmaps_bytes();
+    let bytes = llvm_stackmaps::stackmaps_bytes().expect("read .llvm_stackmaps bytes");
     assert_eq!(bytes, expected, "unexpected .llvm_stackmaps bytes");
 }
 "##,

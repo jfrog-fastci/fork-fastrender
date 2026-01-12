@@ -6,11 +6,10 @@ use llvm_stackmaps::StackMaps;
 // still being "structurally valid" enough to pass the parser's EOF checks.
 #[test]
 fn rejects_record_count_exceeding_allocation_budget() {
-    // Keep in sync with the parser's documented allocation cap.
-    const MAX_PARSE_ALLOC_BYTES: usize = 64 * 1024 * 1024;
+    let max_alloc_bytes = llvm_stackmaps::ParseOptions::DEFAULT.max_alloc_bytes;
 
     let per_record = size_of::<llvm_stackmaps::StackMapRecord>() + size_of::<llvm_stackmaps::Callsite>();
-    let num_records: usize = (MAX_PARSE_ALLOC_BYTES / per_record) + 1;
+    let num_records: usize = (max_alloc_bytes / per_record) + 1;
     let num_records_u32: u32 = num_records.try_into().expect("num_records must fit u32");
 
     // Minimal StackMap v3 blob:
@@ -35,4 +34,3 @@ fn rejects_record_count_exceeding_allocation_budget() {
         "unexpected error (wanted budget rejection): {err}"
     );
 }
-

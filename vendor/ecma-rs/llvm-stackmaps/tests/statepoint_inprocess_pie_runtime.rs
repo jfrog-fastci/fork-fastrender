@@ -200,7 +200,7 @@ fn main() {
     let ra = LAST_RA.load(Ordering::Relaxed) as u64;
     assert_ne!(ra, 0, "expected allocate() to capture a non-zero return address");
 
-    let bytes = stackmaps_bytes();
+    let bytes = stackmaps_bytes().expect("read .llvm_stackmaps bytes");
     assert!(
         !bytes.is_empty(),
         "expected stackmaps_bytes() to find an in-process stackmaps section"

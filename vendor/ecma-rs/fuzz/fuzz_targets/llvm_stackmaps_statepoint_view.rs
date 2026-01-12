@@ -3,7 +3,8 @@
 use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|data: &[u8]| {
-    let Ok(maps) = llvm_stackmaps::StackMaps::parse(data) else {
+    let opts = llvm_stackmaps::ParseOptions::FUZZING;
+    let Ok(maps) = llvm_stackmaps::StackMaps::parse_with_options(data, &opts) else {
         return;
     };
 

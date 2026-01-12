@@ -31,9 +31,27 @@ pub mod stackmap;
 pub mod verify;
 
 pub use stackmap::{
-    stackmaps_bytes, Callsite, GcRootPair, LiveOut, Location, LocationKind, ParseError,
+    stackmaps_bytes, Callsite, GcRootPair, LiveOut, LoadError, Location, LocationKind, ParseError,
+    ParseOptions,
     StackMapFunction, StackMapHeader, StackMapRecord, StackMaps, StatepointRecordView,
 };
+
+#[derive(Debug)]
+pub enum StackMapsError {
+    Load(LoadError),
+    Parse(ParseError),
+}
+
+impl std::fmt::Display for StackMapsError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            StackMapsError::Load(err) => write!(f, "failed to locate .llvm_stackmaps: {err}"),
+            StackMapsError::Parse(err) => write!(f, "{err}"),
+        }
+    }
+}
+
+impl std::error::Error for StackMapsError {}
 
 #[cfg(any(
     all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")),
@@ -42,12 +60,16 @@ pub use stackmap::{
 mod global {
     use std::sync::OnceLock;
 
-    use crate::stackmap::{stackmaps_bytes, ParseError, StackMaps};
+    use crate::stackmap::stackmaps_bytes;
+    use crate::{StackMaps, StackMapsError};
 
-    static STACKMAPS: OnceLock<Result<StackMaps, ParseError>> = OnceLock::new();
+    static STACKMAPS: OnceLock<Result<StackMaps, StackMapsError>> = OnceLock::new();
 
-    pub fn stackmaps() -> Result<&'static StackMaps, &'static ParseError> {
-        match STACKMAPS.get_or_init(|| StackMaps::parse(stackmaps_bytes())) {
+    pub fn stackmaps() -> Result<&'static StackMaps, &'static StackMapsError> {
+        match STACKMAPS.get_or_init(|| {
+            let bytes = stackmaps_bytes().map_err(StackMapsError::Load)?;
+            StackMaps::parse(bytes).map_err(StackMapsError::Parse)
+        }) {
             Ok(maps) => Ok(maps),
             Err(err) => Err(err),
         }
@@ -61,10 +83,21 @@ mod global {
     all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")),
     all(target_os = "macos", any(target_arch = "x86_64", target_arch = "aarch64")),
 ))]
+pub fn try_stackmaps() -> Result<&'static StackMaps, &'static StackMapsError> {
+    global::stackmaps()
+}
+
+/// Parse the in-process `.llvm_stackmaps` section and return a cached [`StackMaps`].
+///
+/// This is the typical entry point for a native runtime.
+#[cfg(any(
+    all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")),
+    all(target_os = "macos", any(target_arch = "x86_64", target_arch = "aarch64")),
+))]
 pub fn stackmaps() -> &'static StackMaps {
-    match global::stackmaps() {
+    match try_stackmaps() {
         Ok(maps) => maps,
-        Err(err) => panic!("failed to parse .llvm_stackmaps: {err}"),
+        Err(err) => panic!("failed to initialize .llvm_stackmaps: {err}"),
     }
 }
 

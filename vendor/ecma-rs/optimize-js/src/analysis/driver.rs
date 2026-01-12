@@ -692,7 +692,7 @@ where
     }
     analyses.escape.insert(key, escapes);
   }
-  for &key in &keys {
+  for &key in keys {
     let deconstructed_escape = deconstructed_escapes
       .get(&key)
       .expect("deconstructed escape results should be populated");
@@ -700,7 +700,7 @@ where
   }
 
   // 4.5) array element representation + vectorization hints (analyzed CFG only)
-  for &key in &keys {
+  for &key in keys {
     let alias = analyses
       .alias
       .get(&key)

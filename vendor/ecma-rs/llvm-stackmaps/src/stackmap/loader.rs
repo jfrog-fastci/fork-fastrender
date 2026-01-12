@@ -2,11 +2,43 @@
 // unknown cfg names in normal builds, so allow it in this module.
 #![allow(unexpected_cfgs)]
 
+use core::fmt;
+
 #[cfg(any(
     all(not(fuzzing), target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")),
     all(not(fuzzing), target_os = "macos", any(target_arch = "x86_64", target_arch = "aarch64")),
 ))]
 use core::{ptr, slice};
+
+#[derive(Debug, Clone, Copy)]
+pub enum LoadError {
+    InvalidRange { start: usize, end: usize },
+    TooLarge { len: usize, max: usize },
+    Misaligned { addr: usize },
+    SizeOverflow { size: u64 },
+}
+
+impl fmt::Display for LoadError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            LoadError::InvalidRange { start, end } => write!(
+                f,
+                "invalid .llvm_stackmaps range: end ({end:#x}) < start ({start:#x})"
+            ),
+            LoadError::TooLarge { len, max } => {
+                write!(f, "invalid .llvm_stackmaps length: {len} bytes (max {max})")
+            }
+            LoadError::Misaligned { addr } => {
+                write!(f, ".llvm_stackmaps pointer misaligned: addr={addr:#x}")
+            }
+            LoadError::SizeOverflow { size } => {
+                write!(f, ".llvm_stackmaps size overflow: size={size}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for LoadError {}
 
 /// Return the in-memory `.llvm_stackmaps` section as a byte slice.
 ///
@@ -31,10 +63,13 @@ use core::{ptr, slice};
 /// - **macOS/Mach-O:** uses `getsectdatafromheader_64` to locate the stackmaps section in the
 ///   main image (`__LLVM_STACKMAPS,__llvm_stackmaps`).
 ///
-/// # Panics / Safety
+/// # Errors / Safety
 /// This function assumes the section is present and mapped into memory. If the
 /// final binary was linked without applying a linker script that defines these
 /// symbols, linking will fail due to missing `__start_llvm_stackmaps`/`__stop_llvm_stackmaps`.
+///
+/// If the linker symbols resolve but produce an invalid range (misaligned, inverted, or
+/// implausibly large), this function returns an error instead of panicking.
 //
 // When fuzzing, we do not link an executable with a real `.llvm_stackmaps` section or linker script
 // range symbols; provide a stub to keep the parser fuzz targets buildable.
@@ -45,8 +80,8 @@ use core::{ptr, slice};
         all(target_os = "macos", any(target_arch = "x86_64", target_arch = "aarch64")),
     )
 ))]
-pub fn stackmaps_bytes() -> &'static [u8] {
-    &[]
+pub fn stackmaps_bytes() -> Result<&'static [u8], LoadError> {
+    Ok(&[])
 }
 
 #[cfg(all(
@@ -54,7 +89,7 @@ pub fn stackmaps_bytes() -> &'static [u8] {
     target_os = "linux",
     any(target_arch = "x86_64", target_arch = "aarch64")
 ))]
-pub fn stackmaps_bytes() -> &'static [u8] {
+pub fn stackmaps_bytes() -> Result<&'static [u8], LoadError> {
     // SAFETY:
     // - The linker script defines `__start_llvm_stackmaps`/`__stop_llvm_stackmaps` as byte pointers.
     // - The section is mapped read-only into the process.
@@ -68,31 +103,29 @@ pub fn stackmaps_bytes() -> &'static [u8] {
         let end = ptr::addr_of!(__stop_llvm_stackmaps);
         let start_addr = start as usize;
         let end_addr = end as usize;
-        assert!(
-            end_addr >= start_addr,
-            "invalid .llvm_stackmaps range: __stop_llvm_stackmaps ({end_addr:#x}) < __start_llvm_stackmaps ({start_addr:#x})"
-        );
-
-        let len = end_addr - start_addr;
+        let len = end_addr
+            .checked_sub(start_addr)
+            .ok_or(LoadError::InvalidRange {
+                start: start_addr,
+                end: end_addr,
+            })?;
 
         // Stack maps are metadata; if this is enormous something went very wrong (e.g. the linker
         // script wasn't applied and the symbols resolved to unrelated addresses).
         const MAX_LEN: usize = 512 * 1024 * 1024; // 512 MiB
-        assert!(
-            len <= MAX_LEN,
-            "invalid .llvm_stackmaps length: {len} bytes (max {MAX_LEN}); linker script probably not applied"
-        );
+        if len > MAX_LEN {
+            return Err(LoadError::TooLarge { len, max: MAX_LEN });
+        }
 
         // StackMap v3 records are 8-byte aligned, so the section start should be aligned.
         //
         // However, some toolchains/linkers have been observed to leave short trailing padding/noise
         // bytes at the end of the output section, so don't require `len % 8 == 0`.
-        assert!(
-            start_addr % 8 == 0,
-            ".llvm_stackmaps pointer misaligned: start={start_addr:#x}"
-        );
+        if start_addr % 8 != 0 {
+            return Err(LoadError::Misaligned { addr: start_addr });
+        }
 
-        slice::from_raw_parts(start, len)
+        Ok(slice::from_raw_parts(start, len))
     }
 }
 
@@ -101,7 +134,7 @@ pub fn stackmaps_bytes() -> &'static [u8] {
     target_os = "macos",
     any(target_arch = "x86_64", target_arch = "aarch64")
 ))]
-pub fn stackmaps_bytes() -> &'static [u8] {
+pub fn stackmaps_bytes() -> Result<&'static [u8], LoadError> {
     unsafe {
         #[repr(C)]
         struct MachHeader64 {
@@ -121,7 +154,7 @@ pub fn stackmaps_bytes() -> &'static [u8] {
         // Main image is index 0.
         let header = _dyld_get_image_header(0);
         if header.is_null() {
-            return &[];
+            return Ok(&[]);
         }
 
         let mut size: u64 = 0;
@@ -132,29 +165,24 @@ pub fn stackmaps_bytes() -> &'static [u8] {
             &mut size,
         );
         if ptr.is_null() || size == 0 {
-            return &[];
+            return Ok(&[]);
         }
 
-        let len = match usize::try_from(size) {
-            Ok(len) => len,
-            Err(_) => panic!(".llvm_stackmaps size overflow on macOS: size={size}"),
-        };
+        let len = usize::try_from(size).map_err(|_| LoadError::SizeOverflow { size })?;
 
         // Stack maps are metadata; if this is enormous something went very wrong.
         const MAX_LEN: usize = 512 * 1024 * 1024; // 512 MiB
-        assert!(
-            len <= MAX_LEN,
-            "invalid .llvm_stackmaps length: {len} bytes (max {MAX_LEN})"
-        );
+        if len > MAX_LEN {
+            return Err(LoadError::TooLarge { len, max: MAX_LEN });
+        }
 
         // StackMap v3 payload contains 64-bit fields and records are 8-byte aligned.
-        assert!(
-            (ptr as usize) % 8 == 0,
-            ".llvm_stackmaps pointer misaligned: ptr={:#x}",
-            ptr as usize
-        );
+        let addr = ptr as usize;
+        if addr % 8 != 0 {
+            return Err(LoadError::Misaligned { addr });
+        }
 
-        slice::from_raw_parts(ptr, len)
+        Ok(slice::from_raw_parts(ptr, len))
     }
 }
 
@@ -162,8 +190,8 @@ pub fn stackmaps_bytes() -> &'static [u8] {
     all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")),
     all(target_os = "macos", any(target_arch = "x86_64", target_arch = "aarch64")),
 )))]
-pub fn stackmaps_bytes() -> &'static [u8] {
-    &[]
+pub fn stackmaps_bytes() -> Result<&'static [u8], LoadError> {
+    Ok(&[])
 }
 
 #[cfg(all(test, target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")))]
@@ -189,7 +217,7 @@ mod tests {
     #[test]
     fn stackmaps_bytes_reads_section_range() {
         assert_eq!(
-            stackmaps_bytes(),
+            stackmaps_bytes().unwrap(),
             &[0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE, 0xBA, 0xBE, 0xAA]
         );
     }
@@ -214,7 +242,7 @@ mod macos_tests {
 
     #[test]
     fn stackmaps_bytes_discovers_macho_section() {
-        let bytes = stackmaps_bytes();
+        let bytes = stackmaps_bytes().unwrap();
         assert!(
             bytes.len() >= TEST_STACKMAP_BLOB.0.len(),
             "expected stackmaps_bytes() to locate __LLVM_STACKMAPS,__llvm_stackmaps section"
