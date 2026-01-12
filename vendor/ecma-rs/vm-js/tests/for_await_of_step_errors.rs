@@ -277,6 +277,60 @@ fn for_await_of_await_next_promise_constructor_getter_throw_does_not_close_itera
 }
 
 #[test]
+fn for_await_of_await_next_thenable_resolve_non_object_does_not_close_iterator(
+) -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(
+    r#"
+       var out = "";
+       var returnCalls = 0;
+
+       const iterable = {};
+       iterable[Symbol.asyncIterator] = function () {
+         return {
+           next() {
+             // Thenable resolution can fulfill to a non-object; the subsequent iterator-result
+             // object check must throw without calling AsyncIteratorClose.
+             return {
+               then(resolve, _reject) {
+                 resolve(1);
+               },
+             };
+           },
+           return() {
+             returnCalls++;
+             return { done: true };
+           },
+         };
+       };
+
+       async function f() {
+         for await (const _ of iterable) {}
+       }
+
+       f().then(function () { out = "resolved"; }, function (e) { out = e.name; });
+       out
+    "#,
+  )?;
+  assert_eq!(value_to_string(&rt, value), "");
+  assert_eq!(rt.exec_script("returnCalls")?, Value::Number(0.0));
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let out = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, out), "TypeError");
+
+  let return_calls = rt.exec_script("returnCalls")?;
+  assert_eq!(return_calls, Value::Number(0.0));
+  assert!(
+    rt.vm.microtask_queue().is_empty(),
+    "expected microtask queue to be empty after checkpoint"
+  );
+  Ok(())
+}
+
+#[test]
 fn for_await_of_next_result_non_object_does_not_close_iterator() -> Result<(), VmError> {
   let mut rt = new_runtime();
 
