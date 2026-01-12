@@ -28,6 +28,117 @@ fn to_length(n: f64) -> usize {
   }
 }
 
+fn get_with_host_and_hooks_internal(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  obj: GcObject,
+  key: PropertyKey,
+  receiver: Value,
+) -> Result<Value, VmError> {
+  // Proxy-aware `[[Get]]` internal method dispatch.
+  //
+  // This is intentionally minimal today: `vm-js` does not yet implement full Proxy trap semantics,
+  // but Proxy objects can still exist as host-created values (or future builtins). Per spec, any
+  // attempt to perform `[[Get]]` on a revoked Proxy must throw a TypeError.
+  let mut current = obj;
+  let mut steps = 0usize;
+  loop {
+    if steps != 0 && steps % 1024 == 0 {
+      vm.tick()?;
+    }
+    steps = steps.saturating_add(1);
+    if !scope.heap().is_proxy_object(current) {
+      return scope.ordinary_get_with_host_and_hooks(vm, host, hooks, current, key, receiver);
+    }
+    let Some(target) = scope.heap().proxy_target(current)? else {
+      return Err(VmError::TypeError("Cannot perform 'get' on a revoked Proxy"));
+    };
+    current = target;
+  }
+}
+
+/// `IsArray(argument)` (ECMA-262).
+///
+/// Spec: <https://tc39.es/ecma262/#sec-isarray>
+pub fn is_array_with_host_and_hooks(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  value: Value,
+) -> Result<bool, VmError> {
+  // `IsArray` is observable for Proxy objects: it must recurse through Proxy targets and throw if
+  // the Proxy is revoked.
+  let Value::Object(mut obj) = value else {
+    return Ok(false);
+  };
+
+  let mut steps = 0usize;
+  loop {
+    if scope.heap().is_proxy_object(obj) {
+      if steps != 0 && steps % 1024 == 0 {
+        vm.tick()?;
+      }
+      steps = steps.saturating_add(1);
+
+      let Some(target) = scope.heap().proxy_target(obj)? else {
+        return Err(VmError::TypeError("Cannot perform 'IsArray' on a revoked Proxy"));
+      };
+      obj = target;
+      continue;
+    }
+    return scope.heap().object_is_array(obj);
+  }
+}
+
+/// `IsConcatSpreadable(O)` (ECMA-262).
+///
+/// Spec: <https://tc39.es/ecma262/#sec-isconcatspreadable>
+pub fn is_concat_spreadable_with_host_and_hooks(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  value: Value,
+) -> Result<bool, VmError> {
+  let Value::Object(obj) = value else {
+    return Ok(false);
+  };
+
+  // Root `obj` across potential allocations from `Get` (accessors).
+  let mut scope = scope.reborrow();
+  scope.push_root(Value::Object(obj))?;
+
+  let intr = vm
+    .intrinsics()
+    .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+  let sym = intr.well_known_symbols().is_concat_spreadable;
+  scope.push_root(Value::Symbol(sym))?;
+  let key = PropertyKey::from_symbol(sym);
+
+  // 1. Let spreadable be ? Get(O, @@isConcatSpreadable).
+  let spreadable = get_with_host_and_hooks_internal(
+    vm,
+    &mut scope,
+    host,
+    hooks,
+    obj,
+    key,
+    Value::Object(obj),
+  )?;
+  scope.push_root(spreadable)?;
+
+  // 2. If spreadable is not undefined, return ToBoolean(spreadable).
+  if !matches!(spreadable, Value::Undefined) {
+    return scope.heap().to_boolean(spreadable);
+  }
+
+  // 3. Return ? IsArray(O).
+  is_array_with_host_and_hooks(vm, &mut scope, host, hooks, Value::Object(obj))
+}
+
 /// `CreateListFromArrayLike(obj)` (ECMA-262).
 ///
 /// Spec: <https://tc39.es/ecma262/#sec-createlistfromarraylike>
