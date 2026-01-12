@@ -149,7 +149,7 @@ jobs:
           rm -f "${report_path}" "${stderr_path}"
 
           status=0
-          cargo run -p typecheck-ts-harness --release --locked -- \
+          timeout -k 10 1800 cargo run -p typecheck-ts-harness --release --locked -- \
             conformance \
             --root parse-js/tests/TypeScript/tests/cases/conformance \
             --manifest typecheck-ts-harness/fixtures/conformance-upstream/manifest.toml \
