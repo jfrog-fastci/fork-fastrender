@@ -10121,24 +10121,10 @@ impl Painter {
         (rect.height() - 2.0 * inset).max(0.0),
       )
     };
-    let highlight = if control.invalid {
-      Some(muted_accent.with_alpha((muted_accent.a * 0.25).max(0.18)))
-    } else if control.focus_visible {
-      Some(muted_accent.with_alpha((muted_accent.a * 0.22).max(0.14)))
-    } else if control.focused {
-      Some(muted_accent.with_alpha((muted_accent.a * 0.16).max(0.1)))
-    } else if control.required {
-      Some(muted_accent.with_alpha(0.08))
-    } else {
-      None
-    };
-    if let Some(tint) = highlight {
-      let rect = inset_rect(content_rect, 1.0);
-      let radii = BorderRadii::uniform((rect.height().min(rect.width()) / 6.0).max(2.0));
-      let device_rect = self.device_rect(rect);
-      let radii = self.device_radii(radii);
-      fill_rounded_rect_masked(&mut self.pixmap, device_rect, radii, tint, clip_mask);
-    }
+    // Do not paint internal focus/required/invalid "tint" overlays for native controls.
+    //
+    // These states are exposed via pseudo-classes (e.g. `:focus-visible`, `:required`, `:invalid`)
+    // and should be styled via CSS rather than added as extra paint operations.
 
     let measure_shaped_advance = |painter: &mut Self, text: &str, style: &ComputedStyle| -> f32 {
       if text.is_empty() {
@@ -22588,6 +22574,56 @@ mod tests {
       color_at(&pixmap, 10, 5),
       (255, 255, 255, 255),
       "expected background pixels outside the track"
+    );
+  }
+
+  #[test]
+  fn focused_text_control_does_not_paint_internal_tint_overlay_painter() {
+    // Regression test: native control painting used to apply a semi-transparent "state tint" fill
+    // for focused/focus-visible controls. This is not driven by CSS and should not be painted as an
+    // extra overlay.
+    let mut style = ComputedStyle::default();
+    style.accent_color = AccentColor::Color(Rgba::from_rgba8(26, 115, 232, 255));
+
+    let control = FormControl {
+      control: FormControlKind::Text {
+        value: String::new(),
+        placeholder: None,
+        placeholder_style: None,
+        size_attr: None,
+        kind: TextControlKind::Plain,
+        caret: 0,
+        caret_affinity: CaretAffinity::Downstream,
+        selection: None,
+      },
+      appearance: Appearance::Auto,
+      disabled: false,
+      focused: true,
+      focus_visible: true,
+      required: false,
+      invalid: false,
+      ime_preedit: None,
+      placeholder_style: None,
+      slider_thumb_style: None,
+      slider_track_style: None,
+      progress_bar_style: None,
+      progress_value_style: None,
+      meter_bar_style: None,
+      meter_optimum_value_style: None,
+      meter_suboptimum_value_style: None,
+      meter_even_less_good_value_style: None,
+      file_selector_button_style: None,
+    };
+
+    let mut painter = Painter::new(200, 40, Rgba::WHITE).expect("painter");
+    painter.fill_background();
+    let content_rect = Rect::from_xywh(10.0, 10.0, 180.0, 20.0);
+    painter.paint_form_control(&control, &style, content_rect, content_rect, None, None);
+
+    assert_eq!(
+      color_at(&painter.pixmap, 100, 20),
+      (255, 255, 255, 255),
+      "expected form control painting to not add internal tint overlays"
     );
   }
 

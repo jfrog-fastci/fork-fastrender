@@ -16,7 +16,7 @@
     "layout": 8.002919129251701,
     "paint": 40.014595646258506
   },
-  "notes": "",
+  "notes": "Diff was dominated by a non-standard internal focus/required/invalid tint overlay painted inside native text controls (e.g. the search field). Control state visuals should be driven by CSS pseudo-classes instead, so the internal tint overlay was removed.",
   "accuracy": {
     "baseline": "chrome",
     "diff_pixels": 78107,
