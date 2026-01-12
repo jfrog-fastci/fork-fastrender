@@ -4,7 +4,10 @@
 //! module preserves the original `resolve::node::*` paths used by downstream
 //! hosts.
 
-pub use super::ts_node::{RealFs, ResolveFs, ResolveOptions, Resolver, DEFAULT_EXTENSIONS};
+pub use super::ts_node::{
+  ModuleResolutionMode, RealFs, ResolveFs, ResolutionKind, ResolveOptions, Resolver, TypeScriptVersion,
+  DEFAULT_EXTENSIONS,
+};
 
 /// Backwards-compatible alias for [`Resolver`].
 pub type NodeResolver<F = RealFs> = Resolver<F>;

@@ -12,9 +12,14 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use super::path::canonicalize_path;
+use crate::lib_support::ModuleKind;
 use crate::resolve::path::normalize_path;
 
-const EXPORT_CONDITIONS: [&str; 4] = ["types", "import", "require", "default"];
+const CONDITIONS_NODE10_IMPORT: [&str; 4] = ["types", "import", "require", "default"];
+const CONDITIONS_NODE10_REQUIRE: [&str; 4] = ["types", "require", "import", "default"];
+const CONDITIONS_NODE16_IMPORT: [&str; 3] = ["types", "import", "default"];
+const CONDITIONS_NODE16_REQUIRE: [&str; 3] = ["types", "require", "default"];
+const CONDITIONS_BUNDLER: [&str; 3] = ["types", "import", "default"];
 
 /// TypeScript-aware extension search order for module resolution.
 pub const DEFAULT_EXTENSIONS: &[&str] = &[
@@ -35,6 +40,47 @@ const INDEX_FILES: [&str; 11] = [
   "index.cjs",
 ];
 
+/// TypeScript's `moduleResolution` modes that affect package.json resolution.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ModuleResolutionMode {
+  #[default]
+  Node10,
+  Node16,
+  NodeNext,
+  Bundler,
+}
+
+/// Whether a module specifier is being resolved from an `import`-like or
+/// `require`-like context (affects conditional exports selection).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ResolutionKind {
+  #[default]
+  Import,
+  Require,
+}
+
+/// Minimal semver version used for `typesVersions` range selection.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct TypeScriptVersion {
+  pub major: u32,
+  pub minor: u32,
+  pub patch: u32,
+}
+
+impl TypeScriptVersion {
+  pub const fn new(major: u32, minor: u32, patch: u32) -> Self {
+    Self { major, minor, patch }
+  }
+}
+
+impl Default for TypeScriptVersion {
+  fn default() -> Self {
+    // Keep in sync with `typecheck-ts/build.rs` which pins the bundled lib
+    // TypeScript version.
+    TypeScriptVersion::new(5, 9, 3)
+  }
+}
+
 /// Options controlling module resolution behaviour.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct ResolveOptions {
@@ -42,6 +88,14 @@ pub struct ResolveOptions {
   pub node_modules: bool,
   /// Whether to resolve `#imports` specifiers using the nearest package.json.
   pub package_imports: bool,
+  /// TypeScript `moduleResolution` mode (affects exports conditions and `typesVersions`).
+  pub module_resolution: ModuleResolutionMode,
+  /// TypeScript `module` kind for inferring import vs require context.
+  pub module_kind: Option<ModuleKind>,
+  /// TypeScript compiler version used for `typesVersions` range selection.
+  ///
+  /// Note: defaults to the workspace-pinned TypeScript version.
+  pub typescript_version: TypeScriptVersion,
 }
 
 /// Filesystem abstraction for resolution to allow testing and non-disk hosts.
@@ -115,13 +169,75 @@ impl<F: ResolveFs> Resolver<F> {
   /// Resolve a module specifier relative to `from`.
   pub fn resolve(&self, from: &Path, specifier: &str) -> Option<PathBuf> {
     let from_name = normalize_path(from);
-    if is_relative_specifier(specifier) {
-      return self.resolve_relative(&from_name, specifier);
-    }
-    self.resolve_non_relative(&from_name, specifier)
+    let kind = self.infer_resolution_kind(&from_name);
+    self.resolve_inner(&from_name, specifier, kind)
   }
 
-  fn resolve_relative(&self, from: &str, specifier: &str) -> Option<PathBuf> {
+  /// Resolve a module specifier relative to `from`, using an explicit `import`/`require` context.
+  pub fn resolve_with_kind(
+    &self,
+    from: &Path,
+    specifier: &str,
+    kind: ResolutionKind,
+  ) -> Option<PathBuf> {
+    let from_name = normalize_path(from);
+    self.resolve_inner(&from_name, specifier, kind)
+  }
+
+  fn resolve_inner(&self, from: &str, specifier: &str, kind: ResolutionKind) -> Option<PathBuf> {
+    let conditions = self.export_conditions(kind);
+    if is_relative_specifier(specifier) {
+      return self.resolve_relative(from, specifier, conditions);
+    }
+    self.resolve_non_relative(from, specifier, conditions)
+  }
+
+  fn export_conditions(&self, kind: ResolutionKind) -> &'static [&'static str] {
+    match self.options.module_resolution {
+      ModuleResolutionMode::Node16 | ModuleResolutionMode::NodeNext => match kind {
+        ResolutionKind::Import => &CONDITIONS_NODE16_IMPORT,
+        ResolutionKind::Require => &CONDITIONS_NODE16_REQUIRE,
+      },
+      ModuleResolutionMode::Bundler => &CONDITIONS_BUNDLER,
+      ModuleResolutionMode::Node10 => match kind {
+        ResolutionKind::Import => &CONDITIONS_NODE10_IMPORT,
+        ResolutionKind::Require => &CONDITIONS_NODE10_REQUIRE,
+      },
+    }
+  }
+
+  fn infer_resolution_kind(&self, from: &str) -> ResolutionKind {
+    // File extensions that force a module format.
+    if from.ends_with(".cts") || from.ends_with(".cjs") || from.ends_with(".d.cts") {
+      return ResolutionKind::Require;
+    }
+    if from.ends_with(".mts") || from.ends_with(".mjs") || from.ends_with(".d.mts") {
+      return ResolutionKind::Import;
+    }
+
+    // The compiler `module` option reflects the source module system more directly than
+    // `moduleResolution` and helps disambiguate `.ts` files.
+    match self.options.module_kind {
+      Some(ModuleKind::CommonJs) => return ResolutionKind::Require,
+      Some(ModuleKind::Node16) => return ResolutionKind::Require,
+      Some(ModuleKind::NodeNext) => return ResolutionKind::Import,
+      _ => {}
+    }
+
+    // Fall back to `moduleResolution` defaults when no stronger signal is available.
+    match self.options.module_resolution {
+      ModuleResolutionMode::Node16 => ResolutionKind::Require,
+      ModuleResolutionMode::NodeNext | ModuleResolutionMode::Bundler => ResolutionKind::Import,
+      ModuleResolutionMode::Node10 => ResolutionKind::Import,
+    }
+  }
+
+  fn resolve_relative(
+    &self,
+    from: &str,
+    specifier: &str,
+    conditions: &[&str],
+  ) -> Option<PathBuf> {
     let parent = virtual_parent_dir_str(from);
     let mut resolve_scratch = String::new();
 
@@ -131,31 +247,42 @@ impl<F: ResolveFs> Resolver<F> {
           parent,
           0,
           &mut resolve_scratch,
+          conditions,
         );
       }
 
       let mut joined = virtual_join(parent, entry);
       return if entry.starts_with('/') || subpath_needs_normalization(entry) {
         normalize_ts_path_into(&joined, &mut resolve_scratch);
-        self.resolve_as_file_or_directory_normalized_with_scratch(&resolve_scratch, 0, &mut joined)
+        self.resolve_as_file_or_directory_normalized_with_scratch(
+          &resolve_scratch,
+          0,
+          &mut joined,
+          conditions,
+        )
       } else {
-        self.resolve_as_file_or_directory_normalized_with_scratch(&joined, 0, &mut resolve_scratch)
+        self.resolve_as_file_or_directory_normalized_with_scratch(
+          &joined,
+          0,
+          &mut resolve_scratch,
+          conditions,
+        )
       };
     }
 
     let mut joined = virtual_join(parent, specifier);
     normalize_ts_path_into(&joined, &mut resolve_scratch);
-    self.resolve_as_file_or_directory_normalized_with_scratch(&resolve_scratch, 0, &mut joined)
+    self.resolve_as_file_or_directory_normalized_with_scratch(&resolve_scratch, 0, &mut joined, conditions)
   }
 
-  fn resolve_non_relative(&self, from: &str, specifier: &str) -> Option<PathBuf> {
+  fn resolve_non_relative(&self, from: &str, specifier: &str, conditions: &[&str]) -> Option<PathBuf> {
     let mut resolve_scratch = String::new();
 
     if specifier.starts_with('#') {
       if !self.options.package_imports {
         return None;
       }
-      return self.resolve_imports_specifier(from, specifier);
+      return self.resolve_imports_specifier(from, specifier, conditions);
     }
 
     if is_source_root(specifier)
@@ -168,6 +295,7 @@ impl<F: ResolveFs> Resolver<F> {
         &normalized,
         0,
         &mut resolve_scratch,
+        conditions,
       ) {
         return Some(found);
       }
@@ -214,10 +342,17 @@ impl<F: ResolveFs> Resolver<F> {
                   0,
                   &mut types_base,
                   &mut resolve_scratch,
+                  conditions,
                 ) {
                   return Some(found);
                 }
               }
+            }
+
+            if let Some(found) =
+              self.resolve_types_versions(&package_dir, parsed.as_ref(), subpath, 0, &mut types_base, &mut resolve_scratch, conditions)
+            {
+              return Some(found);
             }
           }
         }
@@ -229,12 +364,14 @@ impl<F: ResolveFs> Resolver<F> {
             &resolve_scratch,
             0,
             &mut types_base,
+            conditions,
           )
         } else {
           self.resolve_as_file_or_directory_normalized_with_scratch(
             &package_dir,
             0,
             &mut resolve_scratch,
+            conditions,
           )
         };
         package_dir.truncate(package_dir_len);
@@ -245,6 +382,7 @@ impl<F: ResolveFs> Resolver<F> {
         &package_dir,
         0,
         &mut resolve_scratch,
+        conditions,
       ) {
         return Some(found);
       }
@@ -259,6 +397,7 @@ impl<F: ResolveFs> Resolver<F> {
           &types_base,
           0,
           &mut resolve_scratch,
+          conditions,
         ) {
           return Some(found);
         }
@@ -274,14 +413,19 @@ impl<F: ResolveFs> Resolver<F> {
     None
   }
 
-  fn resolve_imports_specifier(&self, from: &str, specifier: &str) -> Option<PathBuf> {
+  fn resolve_imports_specifier(
+    &self,
+    from: &str,
+    specifier: &str,
+    conditions: &[&str],
+  ) -> Option<PathBuf> {
     let mut dir = virtual_parent_dir_str(from);
     let mut package_json_path = String::with_capacity(dir.len() + 1 + "package.json".len());
     let mut resolve_scratch = String::new();
     loop {
       virtual_join_into(&mut package_json_path, dir, "package.json");
       if let Some(found) =
-        self.resolve_imports_in_dir(dir, &mut package_json_path, &mut resolve_scratch, specifier)
+        self.resolve_imports_in_dir(dir, &mut package_json_path, &mut resolve_scratch, specifier, conditions)
       {
         return Some(found);
       }
@@ -302,6 +446,7 @@ impl<F: ResolveFs> Resolver<F> {
     package_json_path: &mut String,
     resolve_scratch: &mut String,
     specifier: &str,
+    conditions: &[&str],
   ) -> Option<PathBuf> {
     let parsed = self.package_json(package_json_path.as_str())?;
     let imports = parsed.get("imports")?.as_object()?;
@@ -320,6 +465,7 @@ impl<F: ResolveFs> Resolver<F> {
       0,
       package_json_path,
       resolve_scratch,
+      conditions,
     )
   }
 
@@ -328,6 +474,7 @@ impl<F: ResolveFs> Resolver<F> {
     base_candidate: &str,
     depth: usize,
     scratch: &mut String,
+    conditions: &[&str],
   ) -> Option<PathBuf> {
     if depth > 16 {
       return None;
@@ -425,6 +572,7 @@ impl<F: ResolveFs> Resolver<F> {
                 scratch,
                 depth + 1,
                 resolve_scratch,
+                conditions,
               );
             }
 
@@ -434,6 +582,7 @@ impl<F: ResolveFs> Resolver<F> {
                 base_candidate,
                 depth + 1,
                 resolve_scratch,
+                conditions,
               );
             }
 
@@ -447,15 +596,29 @@ impl<F: ResolveFs> Resolver<F> {
                 resolve_scratch,
                 depth + 1,
                 scratch,
+                conditions,
               )
             } else {
               self.resolve_as_file_or_directory_normalized_with_scratch(
                 scratch,
                 depth + 1,
                 resolve_scratch,
+                conditions,
               )
             }
           };
+
+          if let Some(found) = self.resolve_types_versions(
+            base_candidate,
+            parsed.as_ref(),
+            "",
+            depth,
+            scratch,
+            &mut resolve_scratch,
+            conditions,
+          ) {
+            return Some(found);
+          }
 
           if let Some(entry) = parsed.get("types").and_then(|v| v.as_str()) {
             if let Some(found) = resolve_target(entry, scratch, &mut resolve_scratch) {
@@ -478,6 +641,7 @@ impl<F: ResolveFs> Resolver<F> {
                 depth,
                 scratch,
                 &mut resolve_scratch,
+                conditions,
               ) {
                 return Some(found);
               }
@@ -510,6 +674,82 @@ impl<F: ResolveFs> Resolver<F> {
     None
   }
 
+  fn resolve_types_versions(
+    &self,
+    package_dir: &str,
+    package_json: &Value,
+    subpath: &str,
+    depth: usize,
+    scratch: &mut String,
+    resolve_scratch: &mut String,
+    conditions: &[&str],
+  ) -> Option<PathBuf> {
+    let types_versions = package_json.get("typesVersions")?.as_object()?;
+    if types_versions.is_empty() {
+      return None;
+    }
+
+    let ts_version = self.options.typescript_version;
+    let mut best: Option<(&str, TypesVersionsRangeScore, &Value)> = None;
+    for (range, paths) in types_versions {
+      let Some(score) = types_versions_range_score(range, ts_version) else {
+        continue;
+      };
+      if paths.as_object().is_none() {
+        continue;
+      }
+      let replace = match best {
+        None => true,
+        Some((best_range, best_score, _)) => {
+          score.is_better_than(&best_score) || (score == best_score && range.as_str() < best_range)
+        }
+      };
+      if replace {
+        best = Some((range.as_str(), score, paths));
+      }
+    }
+
+    let (_, _, paths) = best?;
+    let paths = paths.as_object()?;
+    let (targets, star_match) = if let Some(target) = paths.get(subpath) {
+      (target, None)
+    } else {
+      let (pattern_key, star_match) = best_exports_subpath_pattern(paths, subpath)?;
+      (paths.get(pattern_key)?, Some(star_match))
+    };
+
+    let targets = targets.as_array()?;
+    for target in targets {
+      let Some(entry) = target.as_str() else {
+        continue;
+      };
+      let found = match star_match {
+        Some(star) if entry.contains('*') => self.resolve_json_string_to_file_with_star(
+          package_dir,
+          entry,
+          star,
+          depth + 1,
+          scratch,
+          resolve_scratch,
+          conditions,
+        ),
+        Some(_) | None => self.resolve_json_string_to_file(
+          package_dir,
+          entry,
+          depth + 1,
+          scratch,
+          resolve_scratch,
+          conditions,
+        ),
+      };
+      if found.is_some() {
+        return found;
+      }
+    }
+
+    None
+  }
+
   fn resolve_json_target_to_file(
     &self,
     base_dir: &str,
@@ -518,6 +758,7 @@ impl<F: ResolveFs> Resolver<F> {
     depth: usize,
     scratch: &mut String,
     resolve_scratch: &mut String,
+    conditions: &[&str],
   ) -> Option<PathBuf> {
     if depth > 16 {
       return None;
@@ -532,11 +773,12 @@ impl<F: ResolveFs> Resolver<F> {
           depth + 1,
           scratch,
           resolve_scratch,
+          conditions,
         ),
         Some(_) => {
-          self.resolve_json_string_to_file(base_dir, s, depth + 1, scratch, resolve_scratch)
+          self.resolve_json_string_to_file(base_dir, s, depth + 1, scratch, resolve_scratch, conditions)
         }
-        None => self.resolve_json_string_to_file(base_dir, s, depth + 1, scratch, resolve_scratch),
+        None => self.resolve_json_string_to_file(base_dir, s, depth + 1, scratch, resolve_scratch, conditions),
       },
       Value::Array(items) => items.iter().find_map(|item| {
         self.resolve_json_target_to_file(
@@ -546,9 +788,10 @@ impl<F: ResolveFs> Resolver<F> {
           depth + 1,
           scratch,
           resolve_scratch,
+          conditions,
         )
       }),
-      Value::Object(map) => EXPORT_CONDITIONS.iter().find_map(|cond| {
+      Value::Object(map) => conditions.iter().find_map(|cond| {
         map.get(*cond).and_then(|next| {
           self.resolve_json_target_to_file(
             base_dir,
@@ -557,6 +800,7 @@ impl<F: ResolveFs> Resolver<F> {
             depth + 1,
             scratch,
             resolve_scratch,
+            conditions,
           )
         })
       }),
@@ -572,6 +816,7 @@ impl<F: ResolveFs> Resolver<F> {
     depth: usize,
     scratch: &mut String,
     resolve_scratch: &mut String,
+    conditions: &[&str],
   ) -> Option<PathBuf> {
     if entry.is_empty() {
       return None;
@@ -582,6 +827,7 @@ impl<F: ResolveFs> Resolver<F> {
         scratch,
         depth,
         resolve_scratch,
+        conditions,
       );
     }
 
@@ -591,15 +837,16 @@ impl<F: ResolveFs> Resolver<F> {
         base_dir,
         depth,
         resolve_scratch,
+        conditions,
       );
     }
 
     virtual_join_into(scratch, base_dir, entry);
     if entry.starts_with('/') || subpath_needs_normalization(entry) {
       normalize_ts_path_into(scratch.as_str(), resolve_scratch);
-      self.resolve_as_file_or_directory_normalized_with_scratch(resolve_scratch, depth, scratch)
+      self.resolve_as_file_or_directory_normalized_with_scratch(resolve_scratch, depth, scratch, conditions)
     } else {
-      self.resolve_as_file_or_directory_normalized_with_scratch(scratch, depth, resolve_scratch)
+      self.resolve_as_file_or_directory_normalized_with_scratch(scratch, depth, resolve_scratch, conditions)
     }
   }
 
@@ -611,6 +858,7 @@ impl<F: ResolveFs> Resolver<F> {
     depth: usize,
     scratch: &mut String,
     resolve_scratch: &mut String,
+    conditions: &[&str],
   ) -> Option<PathBuf> {
     if entry.is_empty() {
       return None;
@@ -625,6 +873,7 @@ impl<F: ResolveFs> Resolver<F> {
         resolve_scratch,
         depth,
         scratch,
+        conditions,
       );
     }
 
@@ -634,6 +883,7 @@ impl<F: ResolveFs> Resolver<F> {
         base_dir,
         depth,
         resolve_scratch,
+        conditions,
       );
     }
 
@@ -653,9 +903,9 @@ impl<F: ResolveFs> Resolver<F> {
 
     if replaced_entry.starts_with('/') || subpath_needs_normalization(replaced_entry) {
       normalize_ts_path_into(scratch.as_str(), resolve_scratch);
-      self.resolve_as_file_or_directory_normalized_with_scratch(resolve_scratch, depth, scratch)
+      self.resolve_as_file_or_directory_normalized_with_scratch(resolve_scratch, depth, scratch, conditions)
     } else {
-      self.resolve_as_file_or_directory_normalized_with_scratch(scratch, depth, resolve_scratch)
+      self.resolve_as_file_or_directory_normalized_with_scratch(scratch, depth, resolve_scratch, conditions)
     }
   }
 
@@ -700,6 +950,164 @@ fn push_star_replaced(out: &mut String, template: &str, star: &str) {
     for part in parts {
       out.push_str(star);
       out.push_str(part);
+    }
+  }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct TypesVersionsRangeScore {
+  min: TypeScriptVersion,
+  min_inclusive: bool,
+  max: Option<TypeScriptVersion>,
+  max_inclusive: bool,
+}
+
+impl TypesVersionsRangeScore {
+  fn is_better_than(&self, other: &Self) -> bool {
+    if self.min != other.min {
+      return self.min > other.min;
+    }
+    if self.min_inclusive != other.min_inclusive {
+      // Prefer exclusive lower bounds (`>`) over inclusive (`>=`) when equal.
+      return !self.min_inclusive;
+    }
+
+    match (self.max, other.max) {
+      (Some(_), None) => return true,
+      (None, Some(_)) => return false,
+      (Some(a), Some(b)) => {
+        if a != b {
+          // Prefer smaller upper bounds.
+          return a < b;
+        }
+        if self.max_inclusive != other.max_inclusive {
+          // Prefer exclusive upper bounds (`<`) over inclusive (`<=`) when equal.
+          return !self.max_inclusive;
+        }
+      }
+      (None, None) => {}
+    }
+
+    false
+  }
+}
+
+fn types_versions_range_score(
+  raw: &str,
+  current: TypeScriptVersion,
+) -> Option<TypesVersionsRangeScore> {
+  let raw = raw.trim();
+  if raw.is_empty() || raw == "*" {
+    return Some(TypesVersionsRangeScore {
+      min: TypeScriptVersion::new(0, 0, 0),
+      min_inclusive: true,
+      max: None,
+      max_inclusive: false,
+    });
+  }
+  if raw.contains("||") {
+    return None;
+  }
+
+  let mut min: Option<(TypeScriptVersion, bool)> = None;
+  let mut max: Option<(TypeScriptVersion, bool)> = None;
+
+  for token in raw.split_whitespace() {
+    let (op, version_str) = token
+      .strip_prefix(">=")
+      .map(|s| (RangeOp::Gte, s))
+      .or_else(|| token.strip_prefix('>').map(|s| (RangeOp::Gt, s)))
+      .or_else(|| token.strip_prefix("<=").map(|s| (RangeOp::Lte, s)))
+      .or_else(|| token.strip_prefix('<').map(|s| (RangeOp::Lt, s)))
+      .or_else(|| token.strip_prefix('=').map(|s| (RangeOp::Eq, s)))
+      .unwrap_or((RangeOp::Eq, token));
+    let version = parse_typescript_version(version_str)?;
+
+    let matches = match op {
+      RangeOp::Lt => current < version,
+      RangeOp::Lte => current <= version,
+      RangeOp::Gt => current > version,
+      RangeOp::Gte => current >= version,
+      RangeOp::Eq => current == version,
+    };
+    if !matches {
+      return None;
+    }
+
+    match op {
+      RangeOp::Gt => update_min(&mut min, version, false),
+      RangeOp::Gte => update_min(&mut min, version, true),
+      RangeOp::Lt => update_max(&mut max, version, false),
+      RangeOp::Lte => update_max(&mut max, version, true),
+      RangeOp::Eq => {
+        update_min(&mut min, version, true);
+        update_max(&mut max, version, true);
+      }
+    }
+  }
+
+  let (min, min_inclusive) = min.unwrap_or((TypeScriptVersion::new(0, 0, 0), true));
+  let (max, max_inclusive) = max.map_or((None, false), |(v, inclusive)| (Some(v), inclusive));
+  Some(TypesVersionsRangeScore {
+    min,
+    min_inclusive,
+    max,
+    max_inclusive,
+  })
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RangeOp {
+  Lt,
+  Lte,
+  Gt,
+  Gte,
+  Eq,
+}
+
+fn parse_typescript_version(raw: &str) -> Option<TypeScriptVersion> {
+  let raw = raw.trim();
+  if raw.is_empty() {
+    return None;
+  }
+  let mut parts = raw.split('.');
+  let major = parts.next()?.parse::<u32>().ok()?;
+  let minor = parts.next().unwrap_or("0").parse::<u32>().ok()?;
+  let patch_raw = parts.next().unwrap_or("0");
+  let end = patch_raw
+    .find(|c: char| !c.is_ascii_digit())
+    .unwrap_or(patch_raw.len());
+  let patch_digits = patch_raw.get(..end).unwrap_or("");
+  let patch = if patch_digits.is_empty() {
+    0
+  } else {
+    patch_digits.parse::<u32>().ok()?
+  };
+  Some(TypeScriptVersion::new(major, minor, patch))
+}
+
+fn update_min(min: &mut Option<(TypeScriptVersion, bool)>, next: TypeScriptVersion, inclusive: bool) {
+  match min {
+    None => {
+      *min = Some((next, inclusive));
+    }
+    Some((cur, cur_inclusive)) => {
+      if next > *cur || (next == *cur && !inclusive && *cur_inclusive) {
+        *min = Some((next, inclusive));
+      }
+    }
+  }
+}
+
+fn update_max(max: &mut Option<(TypeScriptVersion, bool)>, next: TypeScriptVersion, inclusive: bool) {
+  match max {
+    None => {
+      *max = Some((next, inclusive));
+    }
+    Some((cur, cur_inclusive)) => {
+      if next < *cur || (next == *cur && !inclusive && *cur_inclusive) {
+        *max = Some((next, inclusive));
+      }
     }
   }
 }
@@ -1071,6 +1479,7 @@ mod tests {
       ResolveOptions {
         node_modules: true,
         package_imports: true,
+        ..ResolveOptions::default()
       },
     );
     let resolved = resolver
@@ -1120,6 +1529,131 @@ mod tests {
     assert_eq!(
       resolved,
       PathBuf::from("c:/project/node_modules/pkg/index.d.ts")
+    );
+  }
+
+  #[test]
+  fn selects_exports_conditions_based_on_module_resolution_mode() {
+    let mut fs = FakeFs::default();
+    fs.insert("/src/app.ts", "");
+    fs.insert(
+      "/node_modules/pkg/package.json",
+      r#"{ "exports": { ".": { "import": { "types": "./dist/index.d.mts" }, "require": { "types": "./dist/index.d.cts" } } } }"#,
+    );
+    fs.insert("/node_modules/pkg/dist/index.d.mts", "export {};\n");
+    fs.insert("/node_modules/pkg/dist/index.d.cts", "export {};\n");
+
+    let node16 = Resolver::with_fs(
+      fs.clone(),
+      ResolveOptions {
+        node_modules: true,
+        module_resolution: ModuleResolutionMode::Node16,
+        ..ResolveOptions::default()
+      },
+    );
+    let nodenext = Resolver::with_fs(
+      fs,
+      ResolveOptions {
+        node_modules: true,
+        module_resolution: ModuleResolutionMode::NodeNext,
+        ..ResolveOptions::default()
+      },
+    );
+
+    let resolved_node16 = node16
+      .resolve(Path::new("/src/app.ts"), "pkg")
+      .expect("node16 should resolve");
+    let resolved_nodenext = nodenext
+      .resolve(Path::new("/src/app.ts"), "pkg")
+      .expect("nodenext should resolve");
+
+    assert_eq!(resolved_node16, PathBuf::from("/node_modules/pkg/dist/index.d.cts"));
+    assert_eq!(
+      resolved_nodenext,
+      PathBuf::from("/node_modules/pkg/dist/index.d.mts")
+    );
+  }
+
+  #[test]
+  fn selects_exports_conditions_based_on_import_vs_require() {
+    let mut fs = FakeFs::default();
+    fs.insert("/src/app.ts", "");
+    fs.insert(
+      "/node_modules/pkg/package.json",
+      r#"{ "exports": { ".": { "import": { "types": "./dist/import.d.ts" }, "require": { "types": "./dist/require.d.ts" } } } }"#,
+    );
+    fs.insert("/node_modules/pkg/dist/import.d.ts", "export {};\n");
+    fs.insert("/node_modules/pkg/dist/require.d.ts", "export {};\n");
+
+    let resolver = Resolver::with_fs(
+      fs,
+      ResolveOptions {
+        node_modules: true,
+        module_resolution: ModuleResolutionMode::Node16,
+        ..ResolveOptions::default()
+      },
+    );
+
+    let resolved_import = resolver
+      .resolve_with_kind(Path::new("/src/app.ts"), "pkg", ResolutionKind::Import)
+      .expect("import should resolve");
+    let resolved_require = resolver
+      .resolve_with_kind(Path::new("/src/app.ts"), "pkg", ResolutionKind::Require)
+      .expect("require should resolve");
+
+    assert_eq!(resolved_import, PathBuf::from("/node_modules/pkg/dist/import.d.ts"));
+    assert_eq!(
+      resolved_require,
+      PathBuf::from("/node_modules/pkg/dist/require.d.ts")
+    );
+  }
+
+  #[test]
+  fn resolves_types_versions_mappings() {
+    let mut fs = FakeFs::default();
+    fs.insert("/src/app.ts", "");
+    fs.insert(
+      "/node_modules/pkg/package.json",
+      r#"{ "typesVersions": { ">=5.0": { "*": ["ts5.0/*"] }, ">=5.1": { "*": ["ts5.1/*"] } } }"#,
+    );
+    fs.insert("/node_modules/pkg/ts5.0/subpath.d.ts", "export {};\n");
+    fs.insert("/node_modules/pkg/ts5.1/subpath.d.ts", "export {};\n");
+
+    let resolver = Resolver::with_fs(
+      fs,
+      ResolveOptions {
+        node_modules: true,
+        ..ResolveOptions::default()
+      },
+    );
+    let resolved = resolver
+      .resolve(Path::new("/src/app.ts"), "pkg/subpath")
+      .expect("typesVersions subpath should resolve");
+    assert_eq!(resolved, PathBuf::from("/node_modules/pkg/ts5.1/subpath.d.ts"));
+  }
+
+  #[test]
+  fn falls_back_to_at_types_for_scoped_packages() {
+    let mut fs = FakeFs::default();
+    fs.insert("/src/app.ts", "");
+    fs.insert(
+      "/node_modules/@types/scope__pkg/index.d.ts",
+      "export {};\n",
+    );
+
+    let resolver = Resolver::with_fs(
+      fs,
+      ResolveOptions {
+        node_modules: true,
+        ..ResolveOptions::default()
+      },
+    );
+    let resolved = resolver
+      .resolve(Path::new("/src/app.ts"), "@scope/pkg")
+      .expect("@types fallback should resolve for scoped package");
+    assert_eq!(
+      resolved,
+      PathBuf::from("/node_modules/@types/scope__pkg/index.d.ts")
     );
   }
 }

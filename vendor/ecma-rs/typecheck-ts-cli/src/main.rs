@@ -14,9 +14,9 @@ use std::time::Duration;
 use tracing::Level;
 use tracing_subscriber::fmt::format::FmtSpan;
 use typecheck_ts::lib_support::{
-  CompilerOptions, FileKind, JsxMode, LibFile, LibName, ScriptTarget,
+  CompilerOptions, FileKind, JsxMode, LibFile, LibName, ModuleKind, ScriptTarget,
 };
-use typecheck_ts::resolve::{canonicalize_path, NodeResolver, ResolveOptions};
+use typecheck_ts::resolve::{canonicalize_path, ModuleResolutionMode, NodeResolver, ResolveOptions};
 use typecheck_ts::tsconfig;
 use typecheck_ts::{FileKey, Host, HostError, Program};
 
@@ -304,19 +304,34 @@ fn run_typecheck(args: TypecheckArgs) -> ExitCode {
       return ExitCode::FAILURE;
     }
   };
+  let module_resolution = options
+    .module_resolution
+    .as_deref()
+    .map(|s| s.trim().to_ascii_lowercase());
   let node_resolve = args.node_resolve
     || matches!(
-      options
-        .module_resolution
-        .as_deref()
-        .map(|s| s.trim().to_ascii_lowercase())
-        .as_deref(),
+      module_resolution.as_deref(),
       Some("node" | "node10" | "node16" | "nodenext" | "bundler")
     )
+    || matches!(options.module, Some(ModuleKind::Node16 | ModuleKind::NodeNext))
     || !options.types.is_empty();
+  let module_resolution_mode = match module_resolution.as_deref() {
+    Some("node16") => ModuleResolutionMode::Node16,
+    Some("nodenext") => ModuleResolutionMode::NodeNext,
+    Some("bundler") => ModuleResolutionMode::Bundler,
+    Some("node" | "node10") => ModuleResolutionMode::Node10,
+    _ => match options.module {
+      Some(ModuleKind::Node16) => ModuleResolutionMode::Node16,
+      Some(ModuleKind::NodeNext) => ModuleResolutionMode::NodeNext,
+      _ => ModuleResolutionMode::Node10,
+    },
+  };
   let resolve_options = ResolveOptions {
     node_modules: node_resolve,
     package_imports: node_resolve,
+    module_resolution: module_resolution_mode,
+    module_kind: options.module,
+    ..ResolveOptions::default()
   };
 
   let mut root_paths = Vec::new();
@@ -1478,6 +1493,7 @@ mod tests {
     let node = NodeResolver::new(ResolveOptions {
       node_modules: false,
       package_imports: false,
+      ..ResolveOptions::default()
     });
 
     let resolved = resolver

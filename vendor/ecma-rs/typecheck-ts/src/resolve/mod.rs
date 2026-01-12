@@ -12,6 +12,9 @@ pub mod path;
 pub mod ts_node;
 
 #[cfg(feature = "resolve")]
-pub use node::{NodeResolver, RealFs, ResolveFs, ResolveOptions, Resolver, DEFAULT_EXTENSIONS};
+pub use node::{
+  ModuleResolutionMode, NodeResolver, RealFs, ResolveFs, ResolutionKind, ResolveOptions, Resolver,
+  TypeScriptVersion, DEFAULT_EXTENSIONS,
+};
 #[cfg(feature = "resolve")]
 pub use path::{canonicalize_path, normalize_path, normalize_path_str};
