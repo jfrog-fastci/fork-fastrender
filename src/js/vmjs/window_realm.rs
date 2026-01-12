@@ -284,6 +284,8 @@ pub(crate) struct WindowRealmUserData {
   document_url: String,
   pub(crate) base_url: Option<String>,
   session_history: SessionHistory,
+  fallback_scroll_x: f64,
+  fallback_scroll_y: f64,
   pending_navigation: Option<LocationNavigationRequest>,
   cookie_fetcher: Option<Arc<dyn ResourceFetcher>>,
   cookie_jar: CookieJar,
@@ -376,6 +378,10 @@ impl std::fmt::Debug for WindowRealmUserData {
       .field("base_url", &self.base_url)
       .field("session_history_len", &self.session_history.entries.len())
       .field("session_history_index", &self.session_history.index)
+      .field(
+        "fallback_scroll",
+        &(self.fallback_scroll_x, self.fallback_scroll_y),
+      )
       .field("has_cookie_fetcher", &self.cookie_fetcher.is_some())
       .field("cookie_jar", &self.cookie_jar)
       .field("has_module_graph", &self.module_graph.is_some())
@@ -435,6 +441,8 @@ impl WindowRealmUserData {
       session_storage_area,
       base_url: Some(document_url.clone()),
       session_history: SessionHistory::default(),
+      fallback_scroll_x: 0.0,
+      fallback_scroll_y: 0.0,
       pending_navigation: None,
       document_url,
       cookie_fetcher: None,
@@ -4283,6 +4291,12 @@ fn sanitize_scroll_coord(n: f64) -> f32 {
   n.clamp(min, max) as f32
 }
 
+const DEFAULT_SCROLL_LINE_HEIGHT_PX: f64 = 40.0;
+
+fn sanitize_scroll_multiplier(n: f64) -> f64 {
+  if n.is_finite() { n } else { 0.0 }
+}
+
 fn parse_scroll_offsets_from_options_object(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -4356,6 +4370,34 @@ fn window_scroll_y_get_native(
   Ok(Value::Number(offset.y as f64))
 }
 
+fn viewport_height_for_scroll_by_pages(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+) -> Result<f64, VmError> {
+  if let Some(document) = host.as_any_mut().downcast_mut::<BrowserDocumentDom2>() {
+    if let Some((_w, h)) = document.options().viewport {
+      return Ok(h as f64);
+    }
+  }
+
+  let Some(window_obj) = vm
+    .user_data::<WindowRealmUserData>()
+    .and_then(|data| data.window_obj)
+  else {
+    return Ok(0.0);
+  };
+
+  // Root the window object while allocating the property key: `alloc_key` can trigger GC.
+  let mut scope = scope.reborrow();
+  scope.push_root(Value::Object(window_obj))?;
+  let key = alloc_key(&mut scope, "innerHeight")?;
+  let raw = vm.get(&mut scope, window_obj, key)?;
+  let n = scope.to_number(vm, host, hooks, raw)?;
+  Ok(sanitize_scroll_multiplier(n))
+}
+
 fn window_scroll_to_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -4405,6 +4447,40 @@ fn window_scroll_by_native(
   Ok(Value::Undefined)
 }
 
+fn window_scroll_by_lines_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let lines_raw =
+    scope.to_number(vm, host, hooks, args.get(0).copied().unwrap_or(Value::Undefined))?;
+  let lines = sanitize_scroll_multiplier(lines_raw);
+  let delta_y = sanitize_scroll_multiplier(lines * DEFAULT_SCROLL_LINE_HEIGHT_PX);
+  let args = [Value::Number(0.0), Value::Number(delta_y)];
+  window_scroll_by_native(vm, scope, host, hooks, _callee, _this, &args)
+}
+
+fn window_scroll_by_pages_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let pages_raw =
+    scope.to_number(vm, host, hooks, args.get(0).copied().unwrap_or(Value::Undefined))?;
+  let pages = sanitize_scroll_multiplier(pages_raw);
+  let viewport_h = viewport_height_for_scroll_by_pages(vm, scope, host, hooks)?;
+  let delta_y = sanitize_scroll_multiplier(pages * viewport_h);
+  let args = [Value::Number(0.0), Value::Number(delta_y)];
+  window_scroll_by_native(vm, scope, host, hooks, _callee, _this, &args)
+}
 fn serialized_origin_for_document_url(url: &str) -> String {
   let Ok(url) = Url::parse(url) else {
     return "null".to_string();
@@ -4906,161 +4982,6 @@ fn request_location_navigation(
   // termination propagates out of this native call immediately.
   vm.tick()?;
   Ok(Value::Undefined)
-}
-
-fn queue_hashchange_task(
-  vm: &mut Vm,
-  scope: &mut Scope<'_>,
-  host: &mut dyn VmHost,
-  hooks: &mut dyn VmHostHooks,
-  old_url: String,
-  new_url: String,
-) -> Result<(), VmError> {
-  if let Some(event_loop) = event_loop_mut_from_hooks::<WindowHostState>(hooks) {
-    return event_loop
-      .queue_task(TaskSource::Script, move |host, event_loop| {
-        dispatch_hashchange_event(host, event_loop, &old_url, &new_url)
-      })
-      .map_err(|err| throw_type_error(vm, scope, host, hooks, &err.to_string()));
-  }
-  if let Some(event_loop) = event_loop_mut_from_hooks::<BrowserTabHost>(hooks) {
-    return event_loop
-      .queue_task(TaskSource::Script, move |host, event_loop| {
-        dispatch_hashchange_event(host, event_loop, &old_url, &new_url)
-      })
-      .map_err(|err| throw_type_error(vm, scope, host, hooks, &err.to_string()));
-  }
-
-  Ok(())
-}
-
-fn dispatch_hashchange_event_in_realm(
-  vm: &mut Vm,
-  heap: &mut Heap,
-  vm_host: &mut dyn VmHost,
-  hooks: &mut dyn VmHostHooks,
-  global_obj: GcObject,
-  old_url: &str,
-  new_url: &str,
-) -> Result<(), VmError> {
-  let mut scope = heap.scope();
-  scope.push_root(Value::Object(global_obj))?;
-
-  let type_s = scope.alloc_string("hashchange")?;
-  scope.push_root(Value::String(type_s))?;
-
-  let old_url_s = scope.alloc_string(old_url)?;
-  let new_url_s = scope.alloc_string(new_url)?;
-  scope.push_root(Value::String(old_url_s))?;
-  scope.push_root(Value::String(new_url_s))?;
-
-  let init_obj = scope.alloc_object()?;
-  scope.push_root(Value::Object(init_obj))?;
-  let old_url_key = alloc_key(&mut scope, "oldURL")?;
-  scope.define_property(init_obj, old_url_key, data_desc(Value::String(old_url_s)))?;
-  let new_url_key = alloc_key(&mut scope, "newURL")?;
-  scope.define_property(init_obj, new_url_key, data_desc(Value::String(new_url_s)))?;
-
-  let hash_change_ctor_key = alloc_key(&mut scope, "HashChangeEvent")?;
-  let hash_change_ctor =
-    vm.get_with_host_and_hooks(vm_host, &mut scope, hooks, global_obj, hash_change_ctor_key)?;
-  scope.push_root(hash_change_ctor)?;
-
-  let (event_value, needs_payload_define) =
-    if scope.heap().is_callable(hash_change_ctor).unwrap_or(false) {
-      (
-        vm.construct_with_host_and_hooks(
-          vm_host,
-          &mut scope,
-          hooks,
-          hash_change_ctor,
-          &[Value::String(type_s), Value::Object(init_obj)],
-          hash_change_ctor,
-        )?,
-        false,
-      )
-    } else {
-      let event_ctor_key = alloc_key(&mut scope, "Event")?;
-      let event_ctor =
-        vm.get_with_host_and_hooks(vm_host, &mut scope, hooks, global_obj, event_ctor_key)?;
-      scope.push_root(event_ctor)?;
-      (
-        vm.construct_with_host_and_hooks(
-          vm_host,
-          &mut scope,
-          hooks,
-          event_ctor,
-          &[Value::String(type_s), Value::Object(init_obj)],
-          event_ctor,
-        )?,
-        true,
-      )
-    };
-
-  let Value::Object(event_obj) = event_value else {
-    return Err(VmError::Unimplemented(
-      "HashChangeEvent/Event constructor returned non-object",
-    ));
-  };
-  scope.push_root(Value::Object(event_obj))?;
-
-  if needs_payload_define {
-    scope.define_property(
-      event_obj,
-      old_url_key,
-      read_only_data_desc(Value::String(old_url_s)),
-    )?;
-    scope.define_property(
-      event_obj,
-      new_url_key,
-      read_only_data_desc(Value::String(new_url_s)),
-    )?;
-  }
-
-  let dispatch_key = alloc_key(&mut scope, "dispatchEvent")?;
-  let dispatch = vm.get_with_host_and_hooks(vm_host, &mut scope, hooks, global_obj, dispatch_key)?;
-  let _ = vm.call_with_host_and_hooks(
-    vm_host,
-    &mut scope,
-    hooks,
-    dispatch,
-    Value::Object(global_obj),
-    &[Value::Object(event_obj)],
-  )?;
-
-  Ok(())
-}
-
-fn dispatch_hashchange_event<Host: WindowRealmHost + 'static>(
-  host: &mut Host,
-  event_loop: &mut EventLoop<Host>,
-  old_url: &str,
-  new_url: &str,
-) -> crate::error::Result<()> {
-  let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host)?;
-  hooks.set_event_loop(event_loop);
-  let (vm_host, window_realm) = host.vm_host_and_window_realm()?;
-  window_realm.reset_interrupt();
-
-  let global_obj = window_realm.global_object();
-  let budget = window_realm.vm_budget_now();
-  let (vm, heap) = window_realm.vm_and_heap_mut();
-
-  let result: Result<(), VmError> = (|| {
-    let mut vm = vm.push_budget(budget);
-    vm.tick()?;
-    dispatch_hashchange_event_in_realm(&mut *vm, heap, vm_host, &mut hooks, global_obj, old_url, new_url)
-  })();
-
-  let finish_err = hooks.finish(heap);
-  if let Some(err) = finish_err {
-    return Err(err);
-  }
-
-  match result {
-    Ok(()) => Ok(()),
-    Err(err) => Err(crate::js::vm_error_format::vm_error_to_error(heap, err)),
-  }
 }
 
 fn window_location_set_native(
@@ -37555,6 +37476,114 @@ fn init_window_globals(
   let scroll_by_key = alloc_key(&mut scope, "scrollBy")?;
   scope.define_property(global, scroll_by_key, data_desc(Value::Object(scroll_by_func)))?;
 
+  let scroll_by_lines_call_id = vm.register_native_call(window_scroll_by_lines_native)?;
+  let scroll_by_lines_name = scope.alloc_string("scrollByLines")?;
+  scope.push_root(Value::String(scroll_by_lines_name))?;
+  let scroll_by_lines_func =
+    scope.alloc_native_function(scroll_by_lines_call_id, None, scroll_by_lines_name, 1)?;
+  scope.heap_mut().object_set_prototype(
+    scroll_by_lines_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(scroll_by_lines_func))?;
+  let scroll_by_lines_key = alloc_key(&mut scope, "scrollByLines")?;
+  scope.define_property(
+    global,
+    scroll_by_lines_key,
+    data_desc(Value::Object(scroll_by_lines_func)),
+  )?;
+
+  let scroll_by_pages_call_id = vm.register_native_call(window_scroll_by_pages_native)?;
+  let scroll_by_pages_name = scope.alloc_string("scrollByPages")?;
+  scope.push_root(Value::String(scroll_by_pages_name))?;
+  let scroll_by_pages_func =
+    scope.alloc_native_function(scroll_by_pages_call_id, None, scroll_by_pages_name, 1)?;
+  scope.heap_mut().object_set_prototype(
+    scroll_by_pages_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(scroll_by_pages_func))?;
+  let scroll_by_pages_key = alloc_key(&mut scope, "scrollByPages")?;
+  scope.define_property(
+    global,
+    scroll_by_pages_key,
+    data_desc(Value::Object(scroll_by_pages_func)),
+  )?;
+
+  let scroll_x_get_call_id = vm.register_native_call(window_scroll_x_get_native)?;
+  let scroll_x_get_name = scope.alloc_string("get scrollX")?;
+  scope.push_root(Value::String(scroll_x_get_name))?;
+  let scroll_x_get_func =
+    scope.alloc_native_function(scroll_x_get_call_id, None, scroll_x_get_name, 0)?;
+  scope.heap_mut().object_set_prototype(
+    scroll_x_get_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(scroll_x_get_func))?;
+  let scroll_x_key = alloc_key(&mut scope, "scrollX")?;
+  scope.define_property(
+    global,
+    scroll_x_key,
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: true,
+      kind: PropertyKind::Accessor {
+        get: Value::Object(scroll_x_get_func),
+        set: Value::Undefined,
+      },
+    },
+  )?;
+  let page_x_offset_key = alloc_key(&mut scope, "pageXOffset")?;
+  scope.define_property(
+    global,
+    page_x_offset_key,
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: true,
+      kind: PropertyKind::Accessor {
+        get: Value::Object(scroll_x_get_func),
+        set: Value::Undefined,
+      },
+    },
+  )?;
+
+  let scroll_y_get_call_id = vm.register_native_call(window_scroll_y_get_native)?;
+  let scroll_y_get_name = scope.alloc_string("get scrollY")?;
+  scope.push_root(Value::String(scroll_y_get_name))?;
+  let scroll_y_get_func =
+    scope.alloc_native_function(scroll_y_get_call_id, None, scroll_y_get_name, 0)?;
+  scope.heap_mut().object_set_prototype(
+    scroll_y_get_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(scroll_y_get_func))?;
+  let scroll_y_key = alloc_key(&mut scope, "scrollY")?;
+  scope.define_property(
+    global,
+    scroll_y_key,
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: true,
+      kind: PropertyKind::Accessor {
+        get: Value::Object(scroll_y_get_func),
+        set: Value::Undefined,
+      },
+    },
+  )?;
+  let page_y_offset_key = alloc_key(&mut scope, "pageYOffset")?;
+  scope.define_property(
+    global,
+    page_y_offset_key,
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: true,
+      kind: PropertyKind::Accessor {
+        get: Value::Object(scroll_y_get_func),
+        set: Value::Undefined,
+      },
+    },
+  )?;
+
   // getComputedStyle(element[, pseudoElt])
   let computed_style_get_property_value_call_id =
     vm.register_native_call(computed_style_get_property_value_native)?;
@@ -37779,6 +37808,7 @@ mod tests {
   use crate::js::window_env::FASTRENDER_USER_AGENT;
   use crate::js::RunLimits;
   use crate::js::window::WindowHost;
+  use crate::{FastRender, FontConfig, RenderOptions};
   use std::sync::{Mutex as StdMutex, OnceLock as StdOnceLock};
   use std::time::Duration;
 
@@ -38867,7 +38897,7 @@ mod tests {
   {
     let mut host = BrowserDocumentDom2::from_html(
       "<!doctype html><html><body></body></html>",
-      crate::api::RenderOptions::default(),
+      RenderOptions::default(),
     )
     .expect("document");
     host.set_scroll(5.0, 7.0);
@@ -38890,6 +38920,55 @@ mod tests {
       exec_script_with_dom_host(&mut realm, &mut host, "window.pageYOffset")?,
       Value::Number(7.0)
     );
+    Ok(())
+  }
+
+  #[test]
+  fn window_scroll_by_lines_and_pages_update_scroll_state() -> Result<(), VmError> {
+    let renderer = FastRender::builder()
+      .font_sources(FontConfig::bundled_only())
+      .build()
+      .expect("expected renderer to build with bundled fonts");
+    let mut document = BrowserDocumentDom2::new(
+      renderer,
+      "<!doctype html><html><body><div style=\"height: 10000px\"></div></body></html>",
+      RenderOptions::new().with_viewport(100, 200),
+    )
+    .expect("expected document to parse");
+
+    let media = MediaContext::screen(100.0, 200.0);
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/").with_media_context(media))?;
+
+    assert_eq!(
+      exec_script_with_dom_host(
+        &mut realm,
+        &mut document,
+        "typeof scrollByLines === 'function' && typeof scrollByPages === 'function'",
+      )?,
+      Value::Bool(true)
+    );
+
+    assert_eq!(
+      exec_script_with_dom_host(&mut realm, &mut document, "scrollY")?,
+      Value::Number(0.0)
+    );
+
+    exec_script_with_dom_host(&mut realm, &mut document, "scrollByLines(2)")?;
+    assert_eq!(document.options().scroll_y, 80.0_f32);
+    assert_eq!(document.options().scroll_delta.y, 80.0_f32);
+    assert_eq!(
+      exec_script_with_dom_host(&mut realm, &mut document, "pageYOffset")?,
+      Value::Number(80.0)
+    );
+
+    exec_script_with_dom_host(&mut realm, &mut document, "scrollByPages(1)")?;
+    assert_eq!(document.options().scroll_y, 280.0_f32);
+    assert_eq!(document.options().scroll_delta.y, 200.0_f32);
+    assert_eq!(
+      exec_script_with_dom_host(&mut realm, &mut document, "scrollY")?,
+      Value::Number(280.0)
+    );
+
     Ok(())
   }
 
