@@ -54,6 +54,11 @@ status = "xfail"
 reason = "Multi-document DOMImplementation APIs not implemented yet"
 
 [[expectations]]
+id = "dom/range_basics.window.js"
+status = "xfail"
+reason = "Range/AbstractRange not implemented yet (tracked by DOM Range workstream)"
+
+[[expectations]]
 id = "vmjs/time_determinism.window.js"
 backend = "quickjs"
 status = "skip"
