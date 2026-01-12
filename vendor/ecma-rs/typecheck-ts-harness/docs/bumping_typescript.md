@@ -50,10 +50,10 @@ Create a new directory:
 Populate it with the upstream TypeScript libs from the `typescript` npm package:
 
 - Copy `typescript/lib/lib*.d.ts` into that directory
-- Also copy the license/readme files for auditing:
-  - `LICENSE.txt`
+- Also copy the license files for auditing:
+  - `LICENSE.txt` (TypeScript, Apache 2.0)
   - `ThirdPartyNoticeText.txt`
-  - `README.md`
+- Add/update `README.md` in that directory (see the existing `5.x.y/README.md` for the expected format).
 
 Notes:
 

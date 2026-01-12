@@ -109,7 +109,7 @@ fi
 
 mkdir -p "$dest_dir"
 
-for f in LICENSE.txt ThirdPartyNoticeText.txt README.md; do
+for f in LICENSE.txt ThirdPartyNoticeText.txt; do
   if [[ -f "${src_dir}/${f}" ]]; then
     cp "${src_dir}/${f}" "${dest_dir}/${f}"
   fi
@@ -125,6 +125,22 @@ if [[ ${#lib_files[@]} -eq 0 ]]; then
 fi
 
 cp "${lib_files[@]}" "$dest_dir/"
+
+cat >"${dest_dir}/README.md" <<EOF
+# TypeScript standard library declarations (${new_version})
+
+This directory vendors the upstream TypeScript \`lib*.d.ts\` files from the
+official \`typescript@${new_version}\` npm package (the contents of \`typescript/lib/\`).
+
+These files are used by \`typecheck-ts\` when built with the \`bundled-libs\`
+feature so tests and offline runs can typecheck against the real TypeScript
+standard library without relying on a local Node installation.
+
+License information:
+
+- \`LICENSE.txt\` (TypeScript, Apache 2.0)
+- \`ThirdPartyNoticeText.txt\`
+EOF
 
 (
   cd typecheck-ts-harness

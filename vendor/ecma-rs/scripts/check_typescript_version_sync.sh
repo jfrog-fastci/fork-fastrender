@@ -150,6 +150,23 @@ if [[ ! -d "$vendored_dir" ]]; then
   echo "help: vendor \`lib.*.d.ts\` from the TypeScript npm package into that directory." >&2
   echo "help: see typecheck-ts-harness/docs/bumping_typescript.md" >&2
   errors=1
+else
+  shopt -s nullglob
+  libs=("${vendored_dir}"/lib.*.d.ts)
+  shopt -u nullglob
+
+  if [[ ${#libs[@]} -eq 0 ]]; then
+    echo "error: vendored TypeScript libs directory is missing \`lib.*.d.ts\` files: ${vendored_dir}" >&2
+    echo "help: copy TypeScript's \`lib/lib*.d.ts\` from the \`typescript\` npm package into that directory." >&2
+    errors=1
+  fi
+
+  for required in LICENSE.txt ThirdPartyNoticeText.txt README.md; do
+    if [[ ! -f "${vendored_dir}/${required}" ]]; then
+      echo "error: vendored TypeScript libs directory is missing required file: ${vendored_dir}/${required}" >&2
+      errors=1
+    fi
+  done
 fi
 
 if [[ $errors -ne 0 ]]; then
