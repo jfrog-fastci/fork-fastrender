@@ -4,6 +4,7 @@
 //! etc.) rather than behavioural renderer tests.
 
 mod browser_stub_feature_gate;
+mod crates_directory_guard;
 mod debug_info_semantics_guard;
 mod docs_conformance_presence;
 mod docs_presence;

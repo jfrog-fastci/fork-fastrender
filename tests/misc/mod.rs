@@ -10,7 +10,6 @@ mod color_glyph_opacity;
 mod composed_dom_snapshot_test;
 mod containment_intrinsic_inline_size_test;
 mod css_content_url_replaced_element;
-mod crates_directory_guard;
 mod data_url_svg;
 mod datalist_hidden;
 mod debug_snapshot_tests;
