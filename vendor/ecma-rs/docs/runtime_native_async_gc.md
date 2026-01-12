@@ -2,14 +2,15 @@
 
 This document describes the minimum GC-facing invariants required for the **runtime-native async
 runtime** (event loop + suspended coroutines + Promise jobs) described in
-[`vendor/ecma-rs/EXEC.plan.md`](../EXEC.plan.md) (§5.5 “Async Runtime”).
+[`instructions/native_aot.md`](../instructions/native_aot.md) (§5.5 “Async Runtime”; reachable via the
+stable permalink `EXEC.plan.md`).
 
 The target is a **moving, precise GC** (compacting / generational) where compiled JS/TS uses LLVM
 statepoints, while runtime-native code (Rust) participates via explicit rooting APIs.
 
 ## Why async lowering must be stackless (heap frame)
 
-`EXEC.plan.md` commits us to “**stackless coroutines + event loop**” with “state stored in a
+`instructions/native_aot.md` commits us to “**stackless coroutines + event loop**” with “state stored in a
 heap-allocated frame”.
 
 This is not just an implementation preference; it is a GC requirement:

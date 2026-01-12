@@ -26,8 +26,9 @@ use crate::trap;
 /// Re-interning the same bytes after reclamation yields a **new** `InternedId` (i.e. this interner
 /// is "weak" and does not guarantee that equal strings always map to the same ID forever).
 ///
-/// This matches the design goal in `EXEC.plan.md §5.3`: pin common strings (keywords/property
-/// names) permanently, but allow opportunistic reclamation of unused interned strings.
+/// This matches the design goal in `instructions/native_aot.md` (§5.3): pin common strings
+/// (keywords/property names) permanently, but allow opportunistic reclamation of unused interned
+/// strings.
 
 // -----------------------------------------------------------------------------
 // Hashing

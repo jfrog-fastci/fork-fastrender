@@ -34,7 +34,8 @@ This repository also includes a detailed execution plan for a future **TypeScrip
 
 - [`docs/native_compiler_quickstart.md`](./docs/native_compiler_quickstart.md) — strict-native rules, system checks, strict-native typecheck CLI usage, and the `vm-js` oracle harness flow.
 
-The source of truth for requirements and scope is [`EXEC.plan.md`](./EXEC.plan.md).
+The source of truth for requirements and scope is [`EXEC.plan.md`](./EXEC.plan.md) (a stable entry
+point that links to the current workstream plans under [`instructions/`](./instructions/)).
 
 ## Quick start
 
