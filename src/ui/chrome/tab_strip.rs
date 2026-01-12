@@ -279,6 +279,20 @@ fn tab_ui(
     );
   } else {
     placeholder_favicon(ui.painter(), icon_rect, &visuals);
+    // Show a small deterministic glyph so blank favicons are still distinguishable at a glance.
+    let glyph = title
+      .trim()
+      .chars()
+      .next()
+      .map(|ch| ch.to_ascii_uppercase().to_string())
+      .unwrap_or_else(|| "□".to_string());
+    ui.painter().text(
+      icon_rect.center(),
+      Align2::CENTER_CENTER,
+      glyph,
+      FontId::proportional(12.0),
+      with_alpha(visuals.text_color(), 0.75),
+    );
   }
 
   if tab.loading {
