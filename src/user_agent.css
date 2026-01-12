@@ -470,6 +470,7 @@ input[type="file"]::-webkit-file-upload-button {
 
 textarea {
     white-space: pre-wrap;
+    overflow: auto;
     cursor: text;
 }
 

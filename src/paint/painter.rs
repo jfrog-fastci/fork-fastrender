@@ -124,7 +124,7 @@ use crate::style::values::Length;
 use crate::style::values::LengthUnit;
 use crate::style::ComputedStyle;
 use crate::style::PhysicalSide;
-use crate::text::caret::{caret_stops_for_runs, caret_x_for_position, CaretAffinity};
+use crate::text::caret::{caret_stops_for_runs, caret_x_for_position};
 use crate::text::font_db::FontStretch;
 use crate::text::font_db::FontStyle;
 use crate::text::font_db::ScaledMetrics;
@@ -10271,6 +10271,9 @@ impl Painter {
           Some(Size::new(self.css_width, self.css_height)),
           self.font_ctx.root_font_metrics(),
         );
+        if line_height <= 0.0 || !line_height.is_finite() {
+          return true;
+        }
         let baseline_offset_y = if line_height.is_finite() {
           (rect.height() - line_height) / 2.0
         } else {
@@ -10495,6 +10498,9 @@ impl Painter {
           Some(Size::new(self.css_width, self.css_height)),
           self.font_ctx.root_font_metrics(),
         );
+        if line_height <= 0.0 || !line_height.is_finite() {
+          return true;
+        }
 
         let display_text = paint_text.unwrap_or("");
         let max_chars = display_text.chars().count();
@@ -10520,28 +10526,71 @@ impl Painter {
           CaretColor::Auto => style.color,
         };
 
-        let mut y = rect.y();
-        let mut line_start = 0usize;
-        let mut last_visible_line: Option<(
-          /*line*/ &str,
-          /*len*/ usize,
-          Rect,
-          f32,
-          f32,
-          f32,
-          f32,
-          f32,
-        )> = None;
-        for line in display_text.split('\n') {
-          if y > rect.y() + rect.height() {
-            break;
+        let mut scroll_y = box_id
+          .map(|id| self.scroll_state.element_offset(id).y)
+          .unwrap_or(0.0);
+        if !scroll_y.is_finite() {
+          scroll_y = 0.0;
+        }
+        scroll_y = scroll_y.max(0.0);
+
+        let chars_per_line = crate::textarea::textarea_chars_per_line(&text_style, rect.width());
+        let layout = crate::textarea::build_textarea_visual_lines(display_text, chars_per_line);
+        let content_height = layout.lines.len() as f32 * line_height;
+        let viewport_height = rect.height().max(0.0);
+        let max_scroll_y = if content_height.is_finite() {
+          (content_height - viewport_height).max(0.0)
+        } else {
+          0.0
+        };
+        if max_scroll_y.is_finite() {
+          scroll_y = scroll_y.clamp(0.0, max_scroll_y);
+        }
+
+        let mut local_clip_mask: Option<Mask> = None;
+        let textarea_clip_mask = clip_mask.or_else(|| {
+          let canvas_w = self.pixmap.width();
+          let canvas_h = self.pixmap.height();
+          local_clip_mask = build_rounded_rect_mask(
+            self.device_rect(rect),
+            BorderRadii::ZERO,
+            canvas_w,
+            canvas_h,
+          );
+          local_clip_mask.as_ref()
+        });
+
+        let caret_line_idx = crate::textarea::textarea_visual_line_index_for_caret(
+          display_text,
+          &layout,
+          caret_idx,
+        );
+
+        let start_line = (scroll_y / line_height).floor().max(0.0) as usize;
+        let end_line = ((scroll_y + viewport_height) / line_height)
+          .ceil()
+          .max(start_line as f32) as usize;
+        let end_line = end_line.min(layout.lines.len());
+        let y_offset = scroll_y - start_line as f32 * line_height;
+        let mut y = rect.y() - y_offset;
+
+        for line_idx in start_line..end_line {
+          let Some(line) = layout.lines.get(line_idx).copied() else {
+            continue;
+          };
+          let line_text = line.text(display_text);
+          let line_len = line.len_chars();
+          let line_rect = Rect::from_xywh(rect.x(), y, rect.width(), line_height);
+          y += line_height;
+
+          if line_rect.max_y() <= rect.y() || line_rect.y() >= rect.max_y() {
+            continue;
+          }
+          if line_rect.width() <= 0.0 || line_rect.height() <= 0.0 {
+            continue;
           }
 
-          let line_len = line.chars().count();
-          let line_end = line_start + line_len;
-          let line_rect = Rect::from_xywh(rect.x(), y, rect.width(), line_height);
-
-          let line_runs = shape_text_runs(self, line, &text_style);
+          let line_runs = shape_text_runs(self, line_text, &text_style);
           let fallback_advance = line_len as f32 * text_style.font_size * 0.6;
           let total_advance: f32 = if !line_runs.is_empty() {
             line_runs.iter().map(|run| run.advance).sum()
@@ -10549,43 +10598,19 @@ impl Painter {
             fallback_advance
           };
           let start_x = Self::aligned_text_start_x(&text_style, line_rect, total_advance);
-          let caret_stops = caret_stops_for_runs(line, &line_runs, total_advance);
+          let caret_stops = caret_stops_for_runs(line_text, &line_runs, total_advance);
 
-          let baseline_y = y + half_leading + metrics.baseline_offset;
+          let baseline_y = line_rect.y() + half_leading + metrics.baseline_offset;
           let top = baseline_y - metrics.ascent;
           let bottom = baseline_y + metrics.descent;
 
-          // Track the last line whose caret vertical range intersects the textarea clip rect; if
-          // the actual caret ends up on a fully clipped line (e.g. trailing newline with a large
-          // `line-height`), we'll clamp it to this line.
-          let caret_height = (bottom - top).max(0.0);
-          if caret_height > 0.0 {
-            let caret_band = Rect::from_xywh(line_rect.x(), top, 1.0, caret_height);
-            if let Some(intersection) = caret_band.intersection(rect) {
-              if intersection.height() > 0.0 {
-                last_visible_line = Some((
-                  line,
-                  line_len,
-                  line_rect,
-                  start_x,
-                  total_advance,
-                  fallback_advance,
-                  top,
-                  bottom,
-                ));
-              }
-            }
-          }
-
           if control.focused && !control.disabled {
             if let Some((sel_start, sel_end)) = selection {
-              // Selection is stored as a global character range (across the full textarea value,
-              // including newline characters). Highlight the intersection with this line.
-              let seg_start = sel_start.max(line_start).min(line_end);
-              let seg_end = sel_end.max(line_start).min(line_end);
-              if seg_start < seg_end {
-                let start_col = seg_start - line_start;
-                let end_col = seg_end - line_start;
+              let seg_start = sel_start.max(line.start_char).min(line.end_char);
+              let seg_end = sel_end.max(line.start_char).min(line.end_char);
+              if seg_start < seg_end && line_len > 0 {
+                let start_col = seg_start - line.start_char;
+                let end_col = seg_end - line.start_char;
                 let fallback_char_advance = if line_len > 0 {
                   (fallback_advance / line_len as f32).max(0.0)
                 } else {
@@ -10597,7 +10622,10 @@ impl Painter {
                   vec![(x1.min(x2), x1.max(x2))]
                 } else {
                   crate::text::caret::selection_segments_for_char_range(
-                    line, &line_runs, start_col, end_col,
+                    line_text,
+                    &line_runs,
+                    start_col,
+                    end_col,
                   )
                 };
                 for (seg_start, seg_end) in segments {
@@ -10608,7 +10636,12 @@ impl Painter {
                   if let Some(clipped) = sel_rect.intersection(rect) {
                     if clipped.width() > 0.0 && clipped.height() > 0.0 {
                       let device_rect = self.device_rect(clipped);
-                      fill_rect_masked(&mut self.pixmap, device_rect, selection_color, clip_mask);
+                      fill_rect_masked(
+                        &mut self.pixmap,
+                        device_rect,
+                        selection_color,
+                        textarea_clip_mask,
+                      );
                     }
                   }
                 }
@@ -10616,55 +10649,27 @@ impl Painter {
             }
           }
 
-          if text_style.color.a > f32::EPSILON && !line.is_empty() {
-            let _ = self.paint_alt_text_raw(line, &text_style, line_rect, clip_mask);
+          if text_style.color.a > f32::EPSILON && !line_text.is_empty() {
+            let _ = self.paint_alt_text_raw(
+              line_text,
+              &text_style,
+              line_rect,
+              textarea_clip_mask,
+            );
           }
 
-          if caret_rect.is_none() && caret_idx <= line_end && control.focused && !control.disabled {
-            if !caret_color.is_transparent() {
-              let caret_col = caret_idx.saturating_sub(line_start).min(line_len);
-              let caret_x = start_x
-                + caret_x_for_position(&caret_stops, caret_col, *caret_affinity).unwrap_or(0.0);
-              let max_caret_x = (line_rect.max_x() - 1.0).max(line_rect.x());
-              let caret_x = caret_x.clamp(line_rect.x(), max_caret_x);
-              let caret_rect_raw = Rect::from_xywh(caret_x, top, 1.0, (bottom - top).max(0.0));
-              caret_rect = caret_rect_raw
-                .intersection(rect)
-                .filter(|r| r.width() > 0.0 && r.height() > 0.0)
-                .map(|r| (r, caret_color));
-            }
-          }
-
-          y += line_height;
-          line_start = line_end.saturating_add(1);
-        }
-
-        if caret_rect.is_none()
-          && control.focused
-          && !control.disabled
-          && !caret_color.is_transparent()
-        {
-          // If the caret lands on a line that is completely clipped out of the textarea, clamp it
-          // to the last visible line so it remains paintable without implementing textarea
-          // scrolling.
-          if let Some((
-            line,
-            line_len,
-            line_rect,
-            start_x,
-            total_advance,
-            _fallback_advance,
-            top,
-            bottom,
-          )) = last_visible_line
+          if caret_rect.is_none()
+            && line_idx == caret_line_idx
+            && control.focused
+            && !control.disabled
+            && !caret_color.is_transparent()
           {
-            let line_runs = shape_text_runs(self, line, &text_style);
-            let caret_stops = caret_stops_for_runs(line, &line_runs, total_advance);
+            let caret_col = caret_idx.saturating_sub(line.start_char).min(line_len);
             let caret_x = start_x
-              + caret_x_for_position(&caret_stops, line_len, CaretAffinity::Downstream)
-                .unwrap_or(0.0);
+              + caret_x_for_position(&caret_stops, caret_col, *caret_affinity).unwrap_or(0.0);
             let max_caret_x = (line_rect.max_x() - 1.0).max(line_rect.x());
             let caret_x = caret_x.clamp(line_rect.x(), max_caret_x);
+
             let caret_rect_raw = Rect::from_xywh(caret_x, top, 1.0, (bottom - top).max(0.0));
             caret_rect = caret_rect_raw
               .intersection(rect)

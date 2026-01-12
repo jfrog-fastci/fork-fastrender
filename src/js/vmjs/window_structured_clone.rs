@@ -542,7 +542,7 @@ fn parse_transfer_list(
       scope,
       global,
       "structuredClone: transfer must be an array",
-    ));
+      ));
   }
 
   let length_key = alloc_key(scope, "length")?;

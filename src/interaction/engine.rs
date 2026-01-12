@@ -122,7 +122,7 @@ struct NumberSpinState {
   direction: NumberSpinDirection,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 struct TextEditState {
   /// The pre-order DOM id of the focused `<input>`/`<textarea>`.
   node_id: usize,
@@ -133,8 +133,9 @@ struct TextEditState {
   /// Anchor for selection extension. When present and differs from `caret`, the control has an
   /// active selection.
   selection_anchor: Option<usize>,
-  /// Preferred column (character offset within the current line) for textarea vertical movement.
-  preferred_column: Option<usize>,
+  /// Preferred x position (CSS px, relative to the textarea's text rect) for vertical caret
+  /// movement in `<textarea>`.
+  preferred_x: Option<f32>,
 }
 
 impl TextEditState {
@@ -157,13 +158,13 @@ impl TextEditState {
   fn set_caret(&mut self, caret: usize) {
     self.caret = caret;
     self.caret_affinity = CaretAffinity::Downstream;
-    self.preferred_column = None;
+    self.preferred_x = None;
   }
 
   fn set_caret_with_affinity(&mut self, caret: usize, affinity: CaretAffinity) {
     self.caret = caret;
     self.caret_affinity = affinity;
-    self.preferred_column = None;
+    self.preferred_x = None;
   }
 
   fn set_caret_with_affinity_and_maybe_extend_selection(
@@ -183,7 +184,7 @@ impl TextEditState {
       self.caret = caret;
       self.caret_affinity = affinity;
     }
-    self.preferred_column = None;
+    self.preferred_x = None;
   }
 
   fn set_caret_and_maybe_extend_selection(&mut self, caret: usize, extend_selection: bool) {
@@ -396,7 +397,7 @@ mod tests {
       caret,
       caret_affinity: CaretAffinity::Downstream,
       selection_anchor: None,
-      preferred_column: None,
+      preferred_x: None,
     });
   }
 
@@ -412,7 +413,7 @@ mod tests {
       caret: end,
       caret_affinity: CaretAffinity::Downstream,
       selection_anchor: Some(start),
-      preferred_column: None,
+      preferred_x: None,
     });
   }
 
@@ -911,7 +912,7 @@ mod tests {
       caret: 4,
       caret_affinity: CaretAffinity::Upstream,
       selection_anchor: Some(5),
-      preferred_column: None,
+      preferred_x: None,
     });
 
     let (changed, text) = engine.clipboard_cut(&mut dom);
@@ -2418,6 +2419,7 @@ fn caret_index_for_text_control_point(
   index: &DomIndexMut,
   box_tree: &BoxTree,
   fragment_tree: &FragmentTree,
+  scroll: &ScrollState,
   node_id: usize,
   box_id: usize,
   page_point: Point,
@@ -2452,35 +2454,39 @@ fn caret_index_for_text_control_point(
       return Some((0, CaretAffinity::Downstream));
     }
 
-    let mut local_y = page_point.y - rect.y();
+    let mut scroll_y = scroll.element_offset(box_id).y;
+    if !scroll_y.is_finite() {
+      scroll_y = 0.0;
+    }
+    scroll_y = scroll_y.max(0.0);
+
+    let chars_per_line = crate::textarea::textarea_chars_per_line(style, rect.width());
+    let layout = crate::textarea::build_textarea_visual_lines(&value, chars_per_line);
+    let content_height = layout.lines.len() as f32 * line_height;
+
+    let mut local_y = page_point.y - rect.y() + scroll_y;
     if !local_y.is_finite() {
       local_y = 0.0;
     }
-    local_y = local_y.clamp(0.0, rect.height().max(0.0));
+    local_y = local_y.clamp(0.0, content_height.max(0.0));
 
-    let lines: Vec<&str> = value.split('\n').collect();
     let line_idx = ((local_y / line_height).floor() as isize).max(0) as usize;
-    let line_idx = line_idx.min(lines.len().saturating_sub(1));
+    let line_idx = line_idx.min(layout.lines.len().saturating_sub(1));
 
-    let caret_line = lines.get(line_idx).copied().unwrap_or("");
-    let line_y = rect.y() + line_idx as f32 * line_height;
+    let line = layout.lines.get(line_idx).copied().unwrap_or(crate::textarea::TextareaVisualLine {
+      start_char: 0,
+      end_char: 0,
+      start_byte: 0,
+      end_byte: 0,
+    });
+    let caret_line = line.text(&value);
+    let line_y = rect.y() + line_idx as f32 * line_height - scroll_y;
     let line_rect = Rect::from_xywh(rect.x(), line_y, rect.width(), line_height);
     let (caret_in_line, affinity) =
       caret_position_for_x_in_text(caret_line, style, line_rect, page_point.x);
 
-    // Map line-local caret index to global character index (including newline characters).
-    let mut global = 0usize;
-    for (idx, line) in lines.iter().enumerate() {
-      if idx == line_idx {
-        break;
-      }
-      global += line.chars().count();
-      // Account for the '\n' separator between lines.
-      global += 1;
-    }
-
     let total_chars = value.chars().count();
-    let caret = (global + caret_in_line).min(total_chars);
+    let caret = line.start_char.saturating_add(caret_in_line).min(total_chars);
     return Some((caret, affinity));
   }
 
@@ -2918,6 +2924,31 @@ fn select_control_snapshot_from_box_tree(
               form_control.disabled,
               node.style.clone(),
             ));
+          }
+        }
+      }
+    }
+    if let Some(body) = node.footnote_body.as_deref() {
+      stack.push(body);
+    }
+    for child in node.children.iter().rev() {
+      stack.push(child);
+    }
+  }
+  None
+}
+
+fn textarea_control_snapshot_from_box_tree(
+  box_tree: &BoxTree,
+  textarea_node_id: usize,
+) -> Option<(usize, Arc<ComputedStyle>)> {
+  let mut stack: Vec<&BoxNode> = vec![&box_tree.root];
+  while let Some(node) = stack.pop() {
+    if node.styled_node_id == Some(textarea_node_id) {
+      if let BoxType::Replaced(replaced) = &node.box_type {
+        if let ReplacedType::FormControl(form_control) = &replaced.replaced_type {
+          if matches!(form_control.control, FormControlKind::TextArea { .. }) {
+            return Some((node.id, node.style.clone()));
           }
         }
       }
@@ -3389,12 +3420,12 @@ impl InteractionEngine {
         .chars()
         .count();
       if let Some(edit) = self.text_edit.as_mut().filter(|edit| edit.node_id == node_id) {
-        let prev = (edit.caret, edit.caret_affinity, edit.selection_anchor, edit.preferred_column);
+        let prev = (edit.caret, edit.caret_affinity, edit.selection_anchor, edit.preferred_x);
         edit.caret = new_len;
         edit.caret_affinity = CaretAffinity::Downstream;
         edit.selection_anchor = None;
-        edit.preferred_column = None;
-        if (edit.caret, edit.caret_affinity, edit.selection_anchor, edit.preferred_column) != prev {
+        edit.preferred_x = None;
+        if (edit.caret, edit.caret_affinity, edit.selection_anchor, edit.preferred_x) != prev {
           changed = true;
         }
       }
@@ -3518,7 +3549,7 @@ impl InteractionEngine {
             caret,
             caret_affinity: CaretAffinity::Downstream,
             selection_anchor: None,
-            preferred_column: None,
+            preferred_x: None,
           });
         }
       }
@@ -3576,7 +3607,7 @@ impl InteractionEngine {
         edit.caret = caret;
         edit.caret_affinity = CaretAffinity::Downstream;
         edit.selection_anchor = None;
-        edit.preferred_column = None;
+        edit.preferred_x = None;
       }
       _ => {
         self.text_edit = Some(TextEditState {
@@ -3584,7 +3615,7 @@ impl InteractionEngine {
           caret,
           caret_affinity: CaretAffinity::Downstream,
           selection_anchor: None,
-          preferred_column: None,
+          preferred_x: None,
         });
       }
     }
@@ -3610,7 +3641,7 @@ impl InteractionEngine {
         edit.caret = end;
         edit.caret_affinity = CaretAffinity::Downstream;
         edit.selection_anchor = Some(start);
-        edit.preferred_column = None;
+        edit.preferred_x = None;
       }
       _ => {
         self.text_edit = Some(TextEditState {
@@ -3618,7 +3649,7 @@ impl InteractionEngine {
           caret: end,
           caret_affinity: CaretAffinity::Downstream,
           selection_anchor: Some(start),
-          preferred_column: None,
+          preferred_x: None,
         });
       }
     }
@@ -3704,18 +3735,19 @@ impl InteractionEngine {
           .as_mut()
           .filter(|edit| edit.node_id == state.node_id)
         {
-          if let Some((caret, affinity)) = caret_index_for_text_control_point(
-            &index,
-            box_tree,
-            fragment_tree,
-            state.node_id,
-            state.box_id,
-            page_point,
-          ) {
+           if let Some((caret, affinity)) = caret_index_for_text_control_point(
+             &index,
+             box_tree,
+             fragment_tree,
+             scroll,
+             state.node_id,
+             state.box_id,
+             page_point,
+           ) {
             let prev_caret = edit.caret;
             let prev_affinity = edit.caret_affinity;
             let prev_anchor = edit.selection_anchor;
-            edit.preferred_column = None;
+            edit.preferred_x = None;
             edit.caret = caret;
             edit.caret_affinity = affinity;
             if caret == state.anchor {
@@ -3911,6 +3943,7 @@ impl InteractionEngine {
             &index,
             box_tree,
             fragment_tree,
+            scroll,
             hit.dom_node_id,
             hit.box_id,
             page_point,
@@ -3961,7 +3994,7 @@ impl InteractionEngine {
                   state.caret = end.min(current_len);
                   state.caret_affinity = CaretAffinity::Downstream;
                   state.selection_anchor = Some(start.min(current_len));
-                  state.preferred_column = None;
+                  state.preferred_x = None;
                 } else {
                   state.set_caret_with_affinity(caret.min(current_len), caret_affinity);
                   state.clear_selection();
@@ -3978,17 +4011,17 @@ impl InteractionEngine {
                   } else {
                     Some(start.min(current_len))
                   };
-                  state.preferred_column = None;
+                  state.preferred_x = None;
                 } else if current_len == 0 {
                   state.caret = 0;
                   state.caret_affinity = CaretAffinity::Downstream;
                   state.selection_anchor = None;
-                  state.preferred_column = None;
+                  state.preferred_x = None;
                 } else {
                   state.caret = current_len;
                   state.caret_affinity = CaretAffinity::Downstream;
                   state.selection_anchor = Some(0);
-                  state.preferred_column = None;
+                  state.preferred_x = None;
                 }
               }
             }
@@ -4001,7 +4034,7 @@ impl InteractionEngine {
               caret,
               caret_affinity,
               selection_anchor: None,
-              preferred_column: None,
+              preferred_x: None,
             };
 
             match click_count {
@@ -4601,7 +4634,7 @@ impl InteractionEngine {
       caret: current_len,
       caret_affinity: CaretAffinity::Downstream,
       selection_anchor: None,
-      preferred_column: None,
+      preferred_x: None,
     });
     if edit.node_id != focused {
       edit = TextEditState {
@@ -4609,7 +4642,7 @@ impl InteractionEngine {
         caret: current_len,
         caret_affinity: CaretAffinity::Downstream,
         selection_anchor: None,
-        preferred_column: None,
+        preferred_x: None,
       };
     }
     edit.caret = edit.caret.min(current_len);
@@ -4658,7 +4691,7 @@ impl InteractionEngine {
       // x positions.
       caret_affinity: CaretAffinity::Upstream,
       selection_anchor: None,
-      preferred_column: None,
+      preferred_x: None,
     });
     changed |= self.sync_text_edit_paint_state();
 
@@ -4798,7 +4831,7 @@ impl InteractionEngine {
               caret: len,
               caret_affinity: CaretAffinity::Downstream,
               selection_anchor: None,
-              preferred_column: None,
+              preferred_x: None,
             });
             if edit.node_id != focused {
               edit = TextEditState {
@@ -4806,10 +4839,10 @@ impl InteractionEngine {
                 caret: len,
                 caret_affinity: CaretAffinity::Downstream,
                 selection_anchor: None,
-                preferred_column: None,
+                preferred_x: None,
               };
             }
-            edit.preferred_column = None;
+            edit.preferred_x = None;
 
             if len == 0 {
               edit.caret = 0;
@@ -4952,7 +4985,7 @@ impl InteractionEngine {
       caret: current_len,
       caret_affinity: CaretAffinity::Downstream,
       selection_anchor: None,
-      preferred_column: None,
+      preferred_x: None,
     });
     if edit.node_id != focused {
       edit = TextEditState {
@@ -4960,7 +4993,7 @@ impl InteractionEngine {
         caret: current_len,
         caret_affinity: CaretAffinity::Downstream,
         selection_anchor: None,
-        preferred_column: None,
+        preferred_x: None,
       };
     }
     edit.caret = edit.caret.min(current_len);
@@ -5015,7 +5048,7 @@ impl InteractionEngine {
       CaretAffinity::Downstream
     };
     edit.selection_anchor = None;
-    edit.preferred_column = None;
+    edit.preferred_x = None;
     self.text_edit = Some(edit);
     dom_changed |= self.sync_text_edit_paint_state();
 
@@ -5031,7 +5064,7 @@ impl InteractionEngine {
   ///
   /// Element activation (links, form submission, etc.) is handled by [`InteractionEngine::key_activate`].
   pub fn key_action(&mut self, dom: &mut DomNode, key: KeyAction) -> bool {
-    self.key_action_with_box_tree(dom, None, key)
+    self.key_action_internal(dom, None, None, key)
   }
 
   /// Like [`InteractionEngine::key_action`], but optionally supplies the cached [`BoxTree`].
@@ -5043,6 +5076,31 @@ impl InteractionEngine {
     &mut self,
     dom: &mut DomNode,
     box_tree: Option<&BoxTree>,
+    key: KeyAction,
+  ) -> bool {
+    self.key_action_internal(dom, box_tree, None, key)
+  }
+
+  /// Like [`InteractionEngine::key_action_with_box_tree`], but also supplies the cached
+  /// [`FragmentTree`].
+  ///
+  /// This enables interactions that require layout geometry, such as soft-wrap-aware `<textarea>`
+  /// caret movement.
+  pub fn key_action_with_layout_artifacts(
+    &mut self,
+    dom: &mut DomNode,
+    box_tree: Option<&BoxTree>,
+    fragment_tree: &FragmentTree,
+    key: KeyAction,
+  ) -> bool {
+    self.key_action_internal(dom, box_tree, Some(fragment_tree), key)
+  }
+
+  fn key_action_internal(
+    &mut self,
+    dom: &mut DomNode,
+    box_tree: Option<&BoxTree>,
+    fragment_tree: Option<&FragmentTree>,
     key: KeyAction,
   ) -> bool {
     self.modality = InputModality::Keyboard;
@@ -5114,7 +5172,7 @@ impl InteractionEngine {
         caret: current_len,
         caret_affinity: CaretAffinity::Downstream,
         selection_anchor: None,
-        preferred_column: None,
+        preferred_x: None,
       });
       if edit.node_id != focused {
         edit = TextEditState {
@@ -5122,7 +5180,7 @@ impl InteractionEngine {
           caret: current_len,
           caret_affinity: CaretAffinity::Downstream,
           selection_anchor: None,
-          preferred_column: None,
+          preferred_x: None,
         };
       }
       edit.caret = edit.caret.min(current_len);
@@ -5175,7 +5233,7 @@ impl InteractionEngine {
             CaretAffinity::Downstream
           };
           edit.selection_anchor = None;
-          edit.preferred_column = None;
+          edit.preferred_x = None;
 
           if let Some(node_mut) = index.node_mut(focused) {
             let changed_value = if focused_is_text_input {
@@ -5226,7 +5284,7 @@ impl InteractionEngine {
           edit.caret = target_caret.min(next_len);
           edit.caret_affinity = target_affinity;
           edit.selection_anchor = target_selection_anchor.map(|a| a.min(next_len));
-          edit.preferred_column = None;
+          edit.preferred_x = None;
 
           if let Some(node_mut) = index.node_mut(focused) {
             let changed_value = if focused_is_text_input {
@@ -5528,7 +5586,7 @@ impl InteractionEngine {
           edit.set_caret_and_maybe_extend_selection(next, true);
         }
         KeyAction::SelectAll => {
-          edit.preferred_column = None;
+          edit.preferred_x = None;
           if current_len == 0 {
             edit.selection_anchor = None;
             edit.caret = 0;
@@ -5562,44 +5620,152 @@ impl InteractionEngine {
               edit.set_caret_with_affinity_and_maybe_extend_selection(next, next_affinity, false);
             }
           } else if focused_is_textarea {
-            // Vertical caret movement between newline-separated lines (no soft-wrap support yet).
-            let mut line_starts: Vec<usize> = vec![0];
-            let mut idx = 0usize;
-            for ch in current.chars() {
-              if ch == '\n' {
-                line_starts.push(idx + 1);
+            let mut moved = false;
+
+            if let (Some(box_tree), Some(fragment_tree)) = (box_tree, fragment_tree) {
+              if let Some((textarea_box_id, style)) =
+                textarea_control_snapshot_from_box_tree(box_tree, focused)
+              {
+                if let Some(border_rect) = fragment_rect_for_box_id(fragment_tree, textarea_box_id) {
+                  let style = style.as_ref();
+                  let viewport_size = fragment_tree.viewport_size();
+                  let content_rect = content_rect_for_border_rect(border_rect, style, viewport_size);
+                  let rect = inset_rect_uniform(content_rect, 2.0);
+
+                  if rect.width() > 0.0 && rect.height() > 0.0 {
+                    let metrics = if matches!(
+                      style.line_height,
+                      crate::style::types::LineHeight::Normal
+                    ) {
+                      super::resolve_scaled_metrics_for_interaction(style)
+                    } else {
+                      None
+                    };
+                    let line_height = compute_line_height_with_metrics_viewport(
+                      style,
+                      metrics.as_ref(),
+                      Some(viewport_size),
+                      None,
+                    );
+
+                    if line_height.is_finite() && line_height > 0.0 {
+                      let total_chars = current_len;
+                      let caret = edit.caret.min(total_chars);
+                      let chars_per_line = crate::textarea::textarea_chars_per_line(style, rect.width());
+                      let layout = crate::textarea::build_textarea_visual_lines(&current, chars_per_line);
+
+                      let line_idx =
+                        crate::textarea::textarea_visual_line_index_for_caret(&current, &layout, caret);
+
+                      let target_idx = match key {
+                        KeyAction::ArrowUp => line_idx.checked_sub(1),
+                        KeyAction::ArrowDown => Some(line_idx.saturating_add(1)),
+                        _ => None,
+                      }
+                      .filter(|idx| *idx < layout.lines.len());
+
+                      if let Some(target_idx) = target_idx {
+                        let line_rect = Rect::from_xywh(rect.x(), rect.y(), rect.width(), line_height);
+
+                        // Maintain a preferred x position across vertical moves (like browsers).
+                        let preferred_x = if let Some(px) = edit.preferred_x {
+                          px
+                        } else {
+                          let cur_line =
+                            layout.lines.get(line_idx).copied().unwrap_or(layout.lines[0]);
+                          let cur_text = cur_line.text(&current);
+                          let caret_in_line =
+                            caret.saturating_sub(cur_line.start_char).min(cur_line.len_chars());
+
+                          let fallback_advance = fallback_text_advance(cur_text, style);
+                          let runs = shape_text_runs_for_interaction(cur_text, style).unwrap_or_default();
+                          let total_advance = shaped_total_advance(&runs, fallback_advance);
+                          let start_x = aligned_text_start_x(style, line_rect, total_advance);
+                          let stops =
+                            crate::text::caret::caret_stops_for_runs(cur_text, &runs, total_advance);
+                          let caret_x_local = crate::text::caret::caret_x_for_position(
+                            &stops,
+                            caret_in_line,
+                            edit.caret_affinity,
+                          )
+                          .unwrap_or(0.0);
+                          let mut px = start_x + caret_x_local - rect.x();
+                          if !px.is_finite() {
+                            px = 0.0;
+                          }
+                          px = px.clamp(0.0, rect.width().max(0.0));
+                          edit.preferred_x = Some(px);
+                          px
+                        };
+
+                        let target_line = layout.lines.get(target_idx).copied().unwrap_or(layout.lines[0]);
+                        let target_text = target_line.text(&current);
+
+                        let x = rect.x() + preferred_x;
+                        let x = if x.is_finite() { x } else { rect.x() };
+                        let (caret_in_line, affinity) =
+                          caret_position_for_x_in_text(target_text, style, line_rect, x);
+
+                        edit.caret =
+                          target_line.start_char.saturating_add(caret_in_line).min(total_chars);
+                        edit.caret_affinity = affinity;
+                        edit.selection_anchor = None;
+                        moved = true;
+                      }
+                    }
+                  }
+                }
               }
-              idx += 1;
             }
-            let total_chars = idx;
 
-            let caret = edit.caret.min(total_chars);
-            let line_idx = line_starts
-              .partition_point(|&start| start <= caret)
-              .saturating_sub(1);
-            let line_start = *line_starts.get(line_idx).unwrap_or(&0);
-            let col = caret.saturating_sub(line_start);
-            let preferred = edit.preferred_column.unwrap_or(col);
+            if !moved {
+              // Fallback: vertical caret movement between newline-separated lines.
+              let mut line_starts: Vec<usize> = vec![0];
+              let mut idx = 0usize;
+              for ch in current.chars() {
+                if ch == '\n' {
+                  line_starts.push(idx + 1);
+                }
+                idx += 1;
+              }
+              let total_chars = idx;
 
-            let target_line = match key {
-              KeyAction::ArrowUp => line_idx.checked_sub(1),
-              KeyAction::ArrowDown => Some(line_idx + 1),
-              _ => None,
-            }
-            .filter(|&idx| idx < line_starts.len());
+              let caret = edit.caret.min(total_chars);
+              let line_idx = line_starts
+                .partition_point(|&start| start <= caret)
+                .saturating_sub(1);
+              let line_start = *line_starts.get(line_idx).unwrap_or(&0);
+              let col = caret.saturating_sub(line_start);
 
-            if let Some(target_idx) = target_line {
-              let target_start = line_starts[target_idx];
-              let target_end = if let Some(next_start) = line_starts.get(target_idx + 1) {
-                next_start.saturating_sub(1)
-              } else {
-                total_chars
-              };
-              let target_len = target_end.saturating_sub(target_start);
-              edit.caret = target_start + preferred.min(target_len);
-              edit.caret_affinity = CaretAffinity::Downstream;
-              edit.selection_anchor = None;
-              edit.preferred_column = Some(preferred);
+              let char_advance = box_tree
+                .and_then(|tree| style_for_styled_node_id(tree, focused))
+                .map(|style| (style.font_size * 0.6).max(f32::EPSILON))
+                .unwrap_or(1.0);
+              let preferred_col = edit
+                .preferred_x
+                .and_then(|x| (x / char_advance).is_finite().then_some((x / char_advance).round() as usize))
+                .unwrap_or(col);
+
+              let target_line = match key {
+                KeyAction::ArrowUp => line_idx.checked_sub(1),
+                KeyAction::ArrowDown => Some(line_idx + 1),
+                _ => None,
+              }
+              .filter(|&idx| idx < line_starts.len());
+
+              if let Some(target_idx) = target_line {
+                let target_start = line_starts[target_idx];
+                let target_end = if let Some(next_start) = line_starts.get(target_idx + 1) {
+                  next_start.saturating_sub(1)
+                } else {
+                  total_chars
+                };
+                let target_len = target_end.saturating_sub(target_start);
+                edit.caret = target_start + preferred_col.min(target_len);
+                edit.caret_affinity = CaretAffinity::Downstream;
+                edit.selection_anchor = None;
+                edit.preferred_x = Some(preferred_col as f32 * char_advance);
+              }
             }
           }
         }
@@ -5988,6 +6154,247 @@ impl InteractionEngine {
                   action = InteractionAction::NavigateRequest {
                     request: submission,
                   };
+                }
+              }
+            }
+          }
+        } else if index.node(focused).is_some_and(is_button) {
+          // MVP: no-op for non-submit buttons (no JS event dispatch yet).
+        }
+      }
+      _ => {}
+    }
+
+    if !matches!(
+      action,
+      InteractionAction::Navigate { .. }
+        | InteractionAction::OpenInNewTab { .. }
+        | InteractionAction::NavigateRequest { .. }
+    ) && self.state.focused != prev_focus
+    {
+      action = InteractionAction::FocusChanged {
+        node_id: self.state.focused,
+      };
+    }
+
+    (changed, action)
+  }
+
+  /// Like [`InteractionEngine::key_activate_with_box_tree`], but also supplies the cached
+  /// [`FragmentTree`].
+  ///
+  /// This enables activation paths that depend on layout geometry, such as soft-wrap-aware
+  /// `<textarea>` caret movement in response to ArrowUp/ArrowDown.
+  pub fn key_activate_with_layout_artifacts(
+    &mut self,
+    dom: &mut DomNode,
+    box_tree: Option<&BoxTree>,
+    fragment_tree: &FragmentTree,
+    key: KeyAction,
+    document_url: &str,
+    base_url: &str,
+  ) -> (bool, InteractionAction) {
+    self.last_form_submitter = None;
+    let prev_focus = self.state.focused;
+
+    self.modality = InputModality::Keyboard;
+
+    // Delegate text-editing keys to `key_action` so behaviour stays consistent.
+    match key {
+      KeyAction::Backspace
+      | KeyAction::Delete
+      | KeyAction::WordBackspace
+      | KeyAction::WordDelete
+      | KeyAction::ArrowLeft
+      | KeyAction::ArrowRight
+      | KeyAction::WordLeft
+      | KeyAction::WordRight
+      | KeyAction::ShiftArrowLeft
+      | KeyAction::ShiftArrowRight
+      | KeyAction::ShiftHome
+      | KeyAction::ShiftEnd
+      | KeyAction::SelectAll
+      | KeyAction::Undo
+      | KeyAction::Redo => {
+        return (
+          self.key_action_with_layout_artifacts(dom, box_tree, fragment_tree, key),
+          InteractionAction::None,
+        );
+      }
+      KeyAction::Tab | KeyAction::ShiftTab => {
+        let dom_changed = self.key_action_with_layout_artifacts(dom, box_tree, fragment_tree, key);
+        let action = if self.state.focused != prev_focus {
+          InteractionAction::FocusChanged {
+            node_id: self.state.focused,
+          }
+        } else {
+          InteractionAction::None
+        };
+        return (dom_changed, action);
+      }
+      KeyAction::Enter => {
+        let Some(focused) = self.state.focused else {
+          return (false, InteractionAction::None);
+        };
+        let index = DomIndexMut::new(dom);
+        if index.node(focused).is_some_and(is_textarea) {
+          return (
+            self.key_action_with_layout_artifacts(dom, box_tree, fragment_tree, KeyAction::Enter),
+            InteractionAction::None,
+          );
+        }
+      }
+      KeyAction::Space | KeyAction::ShiftSpace => {}
+      KeyAction::ArrowUp | KeyAction::ArrowDown | KeyAction::Home | KeyAction::End => {
+        return (
+          self.key_action_with_layout_artifacts(dom, box_tree, fragment_tree, key),
+          InteractionAction::None,
+        );
+      }
+    }
+
+    let Some(focused) = self.state.focused else {
+      return (false, InteractionAction::None);
+    };
+
+    // Ensure focus-visible when activation is driven by the keyboard.
+    let mut index = DomIndexMut::new(dom);
+    let mut changed = false;
+    changed |= self.set_focus(&mut index, Some(focused), true);
+
+    let mut action = InteractionAction::None;
+
+    match key {
+      KeyAction::Enter => {
+        if node_or_ancestor_is_inert(&index, focused) {
+          // Inert subtrees are not interactive.
+        } else if let Some(href) = index
+          .node(focused)
+          .filter(|node| is_anchor_with_href(node))
+          .and_then(|node| node.get_attribute_ref("href"))
+        {
+          if let Some(resolved) = resolve_url(base_url, href) {
+            if self.state.visited_links.insert(focused) {
+              changed = true;
+            }
+            let target_blank = index
+              .node(focused)
+              .and_then(|node| node.get_attribute_ref("target"))
+              .is_some_and(|target| trim_ascii_whitespace(target).eq_ignore_ascii_case("_blank"));
+            action = if target_blank {
+              InteractionAction::OpenInNewTab { href: resolved }
+            } else {
+              InteractionAction::Navigate { href: resolved }
+            };
+          }
+        } else if index.node(focused).is_some_and(is_checkbox_input) {
+          if !node_is_disabled(&index, focused) {
+            if let Some(node_mut) = index.node_mut(focused) {
+              let dom_changed = dom_mutation::toggle_checkbox(node_mut);
+              changed |= dom_changed;
+              if dom_changed {
+                changed |= self.mark_user_validity(focused);
+              }
+            }
+          }
+        } else if index.node(focused).is_some_and(is_radio_input) {
+          if !node_is_disabled(&index, focused) {
+            let dom_changed = dom_mutation::activate_radio(dom, focused);
+            changed |= dom_changed;
+            if dom_changed {
+              changed |= self.mark_user_validity(focused);
+            }
+          }
+        } else if index.node(focused).is_some_and(is_submit_control) {
+          if is_disabled_or_inert(&index, focused) {
+            // Disabled submit controls do not submit.
+          } else {
+            // A form submission attempt flips HTML "user validity" so `:user-invalid` matches.
+            changed |= self.mark_user_validity(focused);
+            changed |= self.mark_form_user_validity(&index, focused);
+            if let Some(submission) = form_submission(dom, focused, document_url, base_url) {
+              self.last_form_submitter = Some(focused);
+              match submission.method {
+                FormSubmissionMethod::Get => {
+                  action = InteractionAction::Navigate {
+                    href: submission.url,
+                  };
+                }
+                FormSubmissionMethod::Post => {
+                  action = InteractionAction::NavigateRequest { request: submission };
+                }
+              }
+            }
+          }
+        } else if index.node(focused).is_some_and(is_text_input) {
+          if is_disabled_or_inert(&index, focused) {
+            // Disabled controls do not submit.
+          } else {
+            // Pressing Enter in a text field can submit the form; flip user validity as well.
+            changed |= self.mark_user_validity(focused);
+            changed |= self.mark_form_user_validity(&index, focused);
+            if let Some(form_id) = resolve_form_owner(&index, focused) {
+              let submitter_id = find_default_form_submitter(&index, form_id);
+              let submission = match submitter_id {
+                Some(submitter_id) => form_submission(dom, submitter_id, document_url, base_url),
+                None => form_submission_without_submitter(dom, form_id, document_url, base_url),
+              };
+              if let Some(submission) = submission {
+                if let Some(submitter_id) = submitter_id {
+                  self.last_form_submitter = Some(submitter_id);
+                }
+                match submission.method {
+                  FormSubmissionMethod::Get => {
+                    action = InteractionAction::Navigate {
+                      href: submission.url,
+                    };
+                  }
+                  FormSubmissionMethod::Post => {
+                    action = InteractionAction::NavigateRequest { request: submission };
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+      KeyAction::Space | KeyAction::ShiftSpace => {
+        if node_or_ancestor_is_inert(&index, focused) {
+          // Inert subtrees are not interactive.
+        } else if index.node(focused).is_some_and(is_checkbox_input) {
+          if !node_is_disabled(&index, focused) {
+            if let Some(node_mut) = index.node_mut(focused) {
+              let dom_changed = dom_mutation::toggle_checkbox(node_mut);
+              changed |= dom_changed;
+              if dom_changed {
+                changed |= self.mark_user_validity(focused);
+              }
+            }
+          }
+        } else if index.node(focused).is_some_and(is_radio_input) {
+          if !node_is_disabled(&index, focused) {
+            let dom_changed = dom_mutation::activate_radio(dom, focused);
+            changed |= dom_changed;
+            if dom_changed {
+              changed |= self.mark_user_validity(focused);
+            }
+          }
+        } else if index.node(focused).is_some_and(is_submit_control) {
+          if is_disabled_or_inert(&index, focused) {
+            // Disabled submit controls do not submit.
+          } else {
+            changed |= self.mark_user_validity(focused);
+            changed |= self.mark_form_user_validity(&index, focused);
+            if let Some(submission) = form_submission(dom, focused, document_url, base_url) {
+              self.last_form_submitter = Some(focused);
+              match submission.method {
+                FormSubmissionMethod::Get => {
+                  action = InteractionAction::Navigate {
+                    href: submission.url,
+                  };
+                }
+                FormSubmissionMethod::Post => {
+                  action = InteractionAction::NavigateRequest { request: submission };
                 }
               }
             }

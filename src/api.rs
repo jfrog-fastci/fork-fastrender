@@ -5880,64 +5880,186 @@ fn paint_fragment_tree_with_state(
   {
     scroll_state.viewport = bounds.clamp(scroll_state.viewport);
   }
-  if !scroll_state.elements.is_empty() {
-    fn clamp_element_offsets(
-      node: &FragmentNode,
-      scroll_state: &mut ScrollState,
-      viewport_size: Size,
-      has_fixed_cb_ancestor: bool,
-    ) {
-      let establishes_fixed_cb = node
-        .style
-        .as_deref()
-        .is_some_and(|style| style.establishes_fixed_containing_block());
-      let has_fixed_cb_ancestor_for_children = has_fixed_cb_ancestor || establishes_fixed_cb;
-      if let Some(box_id) = node.box_id() {
-        if let Some(offset_ref) = scroll_state.elements.get_mut(&box_id) {
-          let mut offset = Point::new(
-            if offset_ref.x.is_finite() {
-              offset_ref.x
-            } else {
-              0.0
-            },
-            if offset_ref.y.is_finite() {
-              offset_ref.y
-            } else {
-              0.0
-            },
-          );
-          let mut bounds = crate::scroll::scroll_bounds_for_fragment(
-            node,
-            Point::ZERO,
-            node.bounds.size,
-            viewport_size,
-            false,
-            has_fixed_cb_ancestor,
-          );
-          // Listbox <select> controls are painted from their `SelectControl` model rather than real
-          // `<option>` fragments, so their `scroll_overflow` is not representative. Mirror the
-          // wheel-scroll logic and approximate the scroll range from row height * total rows.
-          if let Some(style) = node.style.as_deref() {
-            if let crate::tree::fragment_tree::FragmentContent::Replaced { replaced_type, .. } =
-              &node.content
-            {
-              if let crate::tree::box_tree::ReplacedType::FormControl(control) = replaced_type {
-                if let crate::tree::box_tree::FormControlKind::Select(select) = &control.control {
-                  if select.multiple || select.size > 1 {
-                    let row_height = crate::layout::contexts::inline::baseline::compute_line_height_with_metrics_viewport(
+
+  fn resolve_scaled_metrics_for_style(
+    font_context: &FontContext,
+    style: &ComputedStyle,
+  ) -> Option<ScaledMetrics> {
+    let italic = matches!(style.font_style, crate::style::types::FontStyle::Italic);
+    let oblique = matches!(style.font_style, crate::style::types::FontStyle::Oblique(_));
+    let stretch = FontStretch::from_percentage(style.font_stretch.to_percentage());
+    let preferred_aspect = crate::text::pipeline::preferred_font_aspect(style, font_context);
+    font_context
+      .get_font_full(
+        &style.font_family,
+        style.font_weight.to_u16(),
+        if italic {
+          DbFontStyle::Italic
+        } else if oblique {
+          DbFontStyle::Oblique
+        } else {
+          DbFontStyle::Normal
+        },
+        stretch,
+      )
+      .or_else(|| font_context.get_sans_serif())
+      .and_then(|font| {
+        let used_font_size =
+          crate::text::pipeline::compute_adjusted_font_size(style, &font, preferred_aspect);
+        let authored = crate::text::variations::authored_variations_from_style(style);
+        let variations = crate::text::face_cache::with_face(&font, |face| {
+          crate::text::variations::collect_variations_for_face(
+            face,
+            style,
+            &font,
+            used_font_size,
+            &authored,
+          )
+        })
+        .unwrap_or_else(|| authored.clone());
+        font_context.get_scaled_metrics_with_variations(&font, used_font_size, &variations)
+      })
+  }
+
+  fn clamp_element_offsets(
+    node: &FragmentNode,
+    scroll_state: &mut ScrollState,
+    viewport_size: Size,
+    has_fixed_cb_ancestor: bool,
+    font_context: &FontContext,
+  ) {
+    let establishes_fixed_cb = node
+      .style
+      .as_deref()
+      .is_some_and(|style| style.establishes_fixed_containing_block());
+    let has_fixed_cb_ancestor_for_children = has_fixed_cb_ancestor || establishes_fixed_cb;
+
+    if let Some(box_id) = node.box_id() {
+      let has_stored_offset = scroll_state.elements.contains_key(&box_id);
+
+      let mut is_focused_textarea = false;
+      let mut textarea_value: Option<&str> = None;
+      if let FragmentContent::Replaced { replaced_type, .. } = &node.content {
+        if let crate::tree::box_tree::ReplacedType::FormControl(control) = replaced_type {
+          if let crate::tree::box_tree::FormControlKind::TextArea { value, .. } = &control.control {
+            textarea_value = Some(value);
+            is_focused_textarea = control.focused && !control.disabled;
+          }
+        }
+      }
+
+      // Only pay the cost of computing scroll bounds if we have scroll state to clamp or if we may
+      // need to auto-scroll a focused textarea to keep the caret visible.
+      if has_stored_offset || textarea_value.is_some() && is_focused_textarea {
+        let existing = scroll_state.elements.get(&box_id).copied().unwrap_or(Point::ZERO);
+        let mut offset = Point::new(
+          if existing.x.is_finite() { existing.x } else { 0.0 },
+          if existing.y.is_finite() { existing.y } else { 0.0 },
+        );
+
+        let mut bounds = crate::scroll::scroll_bounds_for_fragment(
+          node,
+          Point::ZERO,
+          node.bounds.size,
+          viewport_size,
+          false,
+          has_fixed_cb_ancestor,
+        );
+
+        if let Some(style) = node.style.as_deref() {
+          if let FragmentContent::Replaced { replaced_type, .. } = &node.content {
+            if let crate::tree::box_tree::ReplacedType::FormControl(control) = replaced_type {
+              // Listbox <select> controls are painted from their `SelectControl` model rather than
+              // real `<option>` fragments, so their `scroll_overflow` is not representative. Mirror
+              // the wheel-scroll logic and approximate the scroll range from row height * total
+              // rows.
+              if let crate::tree::box_tree::FormControlKind::Select(select) = &control.control {
+                if select.multiple || select.size > 1 {
+                  let row_height =
+                    crate::layout::contexts::inline::baseline::compute_line_height_with_metrics_viewport(
                       style,
                       None,
                       Some(viewport_size),
                       None,
                     );
-                    if row_height.is_finite() && row_height > 0.0 {
-                      let content_height = row_height * select.items.len() as f32;
-                      if content_height.is_finite() {
-                        let viewport_height = node.bounds.height();
-                        if viewport_height.is_finite() {
-                          bounds.min_y = 0.0;
-                          bounds.max_y = (content_height - viewport_height).max(0.0);
-                        }
+                  if row_height.is_finite() && row_height > 0.0 {
+                    let content_height = row_height * select.items.len() as f32;
+                    if content_height.is_finite() {
+                      let viewport_height = node.bounds.height();
+                      if viewport_height.is_finite() {
+                        bounds.min_y = 0.0;
+                        bounds.max_y = (content_height - viewport_height).max(0.0);
+                      }
+                    }
+                  }
+                }
+              }
+
+              if let crate::tree::box_tree::FormControlKind::TextArea { value, caret, .. } =
+                &control.control
+              {
+                let metrics =
+                  matches!(style.line_height, crate::style::types::LineHeight::Normal)
+                    .then(|| resolve_scaled_metrics_for_style(font_context, style))
+                    .flatten();
+                let line_height = compute_line_height_with_metrics_viewport(
+                  style,
+                  metrics.as_ref(),
+                  Some(viewport_size),
+                  font_context.root_font_metrics(),
+                );
+
+                if line_height.is_finite() && line_height > 0.0 {
+                  let border_rect = Rect::from_xywh(0.0, 0.0, node.bounds.width(), node.bounds.height());
+                  let content_rect =
+                    crate::interaction::content_rect_for_border_rect(border_rect, style, viewport_size);
+                  let text_rect = Rect::from_xywh(
+                    content_rect.x() + 2.0,
+                    content_rect.y() + 2.0,
+                    (content_rect.width() - 4.0).max(0.0),
+                    (content_rect.height() - 4.0).max(0.0),
+                  );
+                  let viewport_height = text_rect.height().max(0.0);
+                  if viewport_height.is_finite() && viewport_height > 0.0 {
+                    let chars_per_line =
+                      crate::textarea::textarea_chars_per_line(style, text_rect.width());
+                    let layout =
+                      crate::textarea::build_textarea_visual_lines(value, chars_per_line);
+                    let content_height = layout.lines.len() as f32 * line_height;
+                    let max_scroll_y = if content_height.is_finite() {
+                      (content_height - viewport_height).max(0.0)
+                    } else {
+                      0.0
+                    };
+                    if max_scroll_y.is_finite() {
+                      bounds.min_y = 0.0;
+                      bounds.max_y = max_scroll_y;
+                    }
+
+                    if control.focused && !control.disabled {
+                      let caret_idx = (*caret).min(value.chars().count());
+                      let line_idx = crate::textarea::textarea_visual_line_index_for_caret(
+                        value,
+                        &layout,
+                        caret_idx,
+                      );
+                      let caret_top = line_idx as f32 * line_height;
+                      let caret_bottom = caret_top + line_height;
+
+                      let mut next_scroll_y = if offset.y.is_finite() { offset.y } else { 0.0 };
+                      next_scroll_y = next_scroll_y.max(0.0);
+
+                      let visible_top = next_scroll_y;
+                      let visible_bottom = next_scroll_y + viewport_height;
+                      if caret_top < visible_top {
+                        next_scroll_y = caret_top;
+                      } else if caret_bottom > visible_bottom {
+                        next_scroll_y = caret_bottom - viewport_height;
+                      }
+                      if next_scroll_y.is_finite() {
+                        offset.y = next_scroll_y;
+                      } else {
+                        offset.y = 0.0;
                       }
                     }
                   }
@@ -5945,33 +6067,36 @@ fn paint_fragment_tree_with_state(
               }
             }
           }
-
-          offset = bounds.clamp(offset);
-          *offset_ref = offset;
         }
-      }
-      for child in node.children.iter() {
-        clamp_element_offsets(
-          child,
-          scroll_state,
-          viewport_size,
-          has_fixed_cb_ancestor_for_children,
-        );
+
+        offset = bounds.clamp(offset);
+        scroll_state.elements.insert(box_id, offset);
       }
     }
-    clamp_element_offsets(
-      &fragment_tree.root,
-      &mut scroll_state,
-      scrollport_viewport,
-      false,
-    );
-    for root in &fragment_tree.additional_fragments {
-      clamp_element_offsets(root, &mut scroll_state, scrollport_viewport, false);
+
+    for child in node.children.iter() {
+      clamp_element_offsets(
+        child,
+        scroll_state,
+        viewport_size,
+        has_fixed_cb_ancestor_for_children,
+        font_context,
+      );
     }
-    scroll_state
-      .elements
-      .retain(|_, offset| *offset != Point::ZERO);
   }
+
+  clamp_element_offsets(
+    &fragment_tree.root,
+    &mut scroll_state,
+    scrollport_viewport,
+    false,
+    font_context,
+  );
+  for root in &fragment_tree.additional_fragments {
+    clamp_element_offsets(root, &mut scroll_state, scrollport_viewport, false, font_context);
+  }
+
+  scroll_state.elements.retain(|_, offset| *offset != Point::ZERO);
   let scroll = scroll_state.viewport;
 
   // Sticky positioning affects the geometry used by view timelines. Apply sticky offsets before

@@ -803,10 +803,11 @@ impl BrowserTabController {
   fn handle_key_action(&mut self, key: crate::interaction::KeyAction) -> Result<Vec<WorkerToUi>> {
     let result = self
       .document
-      .mutate_dom_with_layout_artifacts(|dom, box_tree, _fragment_tree| {
-        let (dom_changed, action) = self.interaction.key_activate_with_box_tree(
+      .mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
+        let (dom_changed, action) = self.interaction.key_activate_with_layout_artifacts(
           dom,
           Some(box_tree),
+          fragment_tree,
           key,
           &self.current_url,
           &self.base_url,

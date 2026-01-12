@@ -199,7 +199,58 @@ fn select_listbox_max_scroll_y(
   max_scroll_y.is_finite().then_some(max_scroll_y)
 }
 
-fn patch_listbox_scroll_bounds(
+/// Computes the max vertical scroll offset for `<textarea>` controls.
+///
+/// Like listbox `<select>`, textareas are painted from their `FormControlKind` model rather than
+/// real laid-out text fragments, so layout does not currently produce a meaningful scroll overflow
+/// size. Wheel scrolling needs an approximate scroll range, so we mirror textarea paint/wrapping
+/// heuristics.
+fn textarea_max_scroll_y(
+  viewport_size: Size,
+  fragment: &crate::tree::fragment_tree::FragmentNode,
+  style: &crate::style::ComputedStyle,
+) -> Option<f32> {
+  let FragmentContent::Replaced { replaced_type, .. } = &fragment.content else {
+    return None;
+  };
+  let BoxReplacedType::FormControl(control) = replaced_type else {
+    return None;
+  };
+  let FormControlKind::TextArea { value, .. } = &control.control else {
+    return None;
+  };
+
+  let metrics = if matches!(style.line_height, crate::style::types::LineHeight::Normal) {
+    super::resolve_scaled_metrics_for_interaction(style)
+  } else {
+    None
+  };
+  let line_height =
+    compute_line_height_with_metrics_viewport(style, metrics.as_ref(), Some(viewport_size), None);
+  if line_height <= 0.0 || !line_height.is_finite() {
+    return None;
+  }
+
+  let border_rect = Rect::from_xywh(0.0, 0.0, fragment.bounds.width(), fragment.bounds.height());
+  let content_rect = select_content_rect(border_rect, style, viewport_size);
+  let text_rect = inset_rect(content_rect, 2.0, 2.0, 2.0, 2.0);
+  let viewport_height = text_rect.height().max(0.0);
+  if viewport_height <= 0.0 || !viewport_height.is_finite() {
+    return None;
+  }
+
+  let chars_per_line = crate::textarea::textarea_chars_per_line(style, text_rect.width());
+  let layout = crate::textarea::build_textarea_visual_lines(value, chars_per_line);
+  let content_height = layout.lines.len() as f32 * line_height;
+  if !content_height.is_finite() {
+    return None;
+  }
+
+  let max_scroll_y = (content_height - viewport_height).max(0.0);
+  max_scroll_y.is_finite().then_some(max_scroll_y)
+}
+
+fn patch_form_control_scroll_bounds(
   viewport_size: Size,
   chain: &mut [crate::scroll::ScrollChainState<'_>],
 ) {
@@ -207,13 +258,14 @@ fn patch_listbox_scroll_bounds(
     let Some(style) = state.container.style.as_deref() else {
       continue;
     };
-    let Some(max_scroll_y) = select_listbox_max_scroll_y(viewport_size, state.container, style)
-    else {
-      continue;
-    };
-    if max_scroll_y.is_finite() {
-      state.bounds.min_y = 0.0;
-      state.bounds.max_y = max_scroll_y;
+
+    let max_scroll_y = select_listbox_max_scroll_y(viewport_size, state.container, style)
+      .or_else(|| textarea_max_scroll_y(viewport_size, state.container, style));
+    if let Some(max_scroll_y) = max_scroll_y {
+      if max_scroll_y.is_finite() {
+        state.bounds.min_y = 0.0;
+        state.bounds.max_y = max_scroll_y;
+      }
     }
   }
 }
@@ -293,7 +345,7 @@ pub fn apply_wheel_scroll_at_point(
           state.scroll = sanitize_scroll(scroll_state.element_offset(id));
         }
       }
-      patch_listbox_scroll_bounds(viewport_size, &mut chain);
+      patch_form_control_scroll_bounds(viewport_size, &mut chain);
 
       apply_scroll_chain(&mut chain, delta, options);
 
@@ -324,7 +376,7 @@ pub fn apply_wheel_scroll_at_point(
           state.scroll = sanitize_scroll(scroll_state.element_offset(id));
         }
       }
-      patch_listbox_scroll_bounds(viewport_size, &mut chain);
+      patch_form_control_scroll_bounds(viewport_size, &mut chain);
 
       let result = apply_scroll_chain(&mut chain, delta, options);
 

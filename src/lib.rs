@@ -190,6 +190,7 @@ pub mod render_control;
 pub mod scroll;
 pub mod style;
 pub mod text;
+mod textarea;
 pub mod tree;
 
 // ============================================================================

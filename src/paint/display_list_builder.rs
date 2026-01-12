@@ -12414,6 +12414,9 @@ impl DisplayListBuilder {
           viewport,
           self.font_ctx.root_font_metrics(),
         );
+        if line_height <= 0.0 || !line_height.is_finite() {
+          return None;
+        }
 
         let display_text = paint_text.unwrap_or("");
         let max_chars = display_text.chars().count();
@@ -13220,6 +13223,9 @@ impl DisplayListBuilder {
           viewport,
           self.font_ctx.root_font_metrics(),
         );
+        if line_height <= 0.0 || !line_height.is_finite() {
+          return true;
+        }
 
         let selection_color = Rgba {
           r: 0,
@@ -13245,16 +13251,6 @@ impl DisplayListBuilder {
           CaretColor::Auto => style.color,
         };
         let mut caret_rect: Option<Rect> = None;
-        let mut last_visible_line: Option<(
-          /*line*/ &str,
-          /*len*/ usize,
-          Rect,
-          f32,
-          f32,
-          f32,
-          f32,
-          f32,
-        )> = None;
         let preedit_range = preedit.map(|_| {
           let committed_len = value.chars().count();
           let start = if committed_is_empty { 0 } else { committed_len };
@@ -13281,18 +13277,54 @@ impl DisplayListBuilder {
         };
         let half_leading = (metrics.line_height - (metrics.ascent + metrics.descent)) / 2.0;
 
-        let mut y = rect.y();
-        let mut line_start = 0usize;
-        for line in display_text.split('\n') {
-          if y > rect.y() + rect.height() {
-            break;
+        let mut scroll_y = self.element_scroll_offset(fragment).y;
+        if !scroll_y.is_finite() {
+          scroll_y = 0.0;
+        }
+        scroll_y = scroll_y.max(0.0);
+
+        let chars_per_line = crate::textarea::textarea_chars_per_line(&text_style, rect.width());
+        let layout = crate::textarea::build_textarea_visual_lines(display_text, chars_per_line);
+        let content_height = layout.lines.len() as f32 * line_height;
+        let viewport_height = rect.height().max(0.0);
+        let max_scroll_y = if content_height.is_finite() {
+          (content_height - viewport_height).max(0.0)
+        } else {
+          0.0
+        };
+        if max_scroll_y.is_finite() {
+          scroll_y = scroll_y.clamp(0.0, max_scroll_y);
+        }
+
+        let caret_line_idx =
+          crate::textarea::textarea_visual_line_index_for_caret(display_text, &layout, caret_idx);
+
+        let start_line = (scroll_y / line_height).floor().max(0.0) as usize;
+        let end_line = ((scroll_y + viewport_height) / line_height)
+          .ceil()
+          .max(start_line as f32) as usize;
+        let end_line = end_line.min(layout.lines.len());
+        let y_offset = scroll_y - start_line as f32 * line_height;
+        let mut y = rect.y() - y_offset;
+
+        self.push_clip(rect);
+        for line_idx in start_line..end_line {
+          let Some(line) = layout.lines.get(line_idx).copied() else {
+            continue;
+          };
+          let line_text = line.text(display_text);
+          let line_len = line.len_chars();
+          let line_rect = Rect::from_xywh(rect.x(), y, rect.width(), line_height);
+          y += line_height;
+
+          if line_rect.max_y() <= rect.y() || line_rect.y() >= rect.max_y() {
+            continue;
+          }
+          if line_rect.width() <= 0.0 || line_rect.height() <= 0.0 {
+            continue;
           }
 
-          let line_len = line.chars().count();
-          let line_end = line_start + line_len;
-          let line_rect = Rect::from_xywh(rect.x(), y, rect.width(), line_height);
-
-          let line_runs = shape_text_runs(self, line, &text_style).unwrap_or_default();
+          let line_runs = shape_text_runs(self, line_text, &text_style).unwrap_or_default();
           let fallback_advance = line_len as f32 * text_style.font_size * 0.6;
           let total_advance: f32 = if !line_runs.is_empty() {
             line_runs.iter().map(|run| run.advance).sum()
@@ -13300,41 +13332,19 @@ impl DisplayListBuilder {
             fallback_advance
           };
           let start_x = Self::aligned_text_start_x(&text_style, line_rect, total_advance);
-          let caret_stops = caret_stops_for_runs(line, &line_runs, total_advance);
+          let caret_stops = caret_stops_for_runs(line_text, &line_runs, total_advance);
 
-          let baseline_y = y + half_leading + metrics.baseline_offset;
+          let baseline_y = line_rect.y() + half_leading + metrics.baseline_offset;
           let top = baseline_y - metrics.ascent;
           let bottom = baseline_y + metrics.descent;
 
-          // Track the last line whose caret vertical range intersects the textarea clip rect; if
-          // the actual caret ends up on a fully clipped line (e.g. trailing newline with a large
-          // `line-height`), we'll clamp it to this line.
-          let caret_height = (bottom - top).max(0.0);
-          if caret_height > 0.0 {
-            let caret_band = Rect::from_xywh(line_rect.x(), top, 1.0, caret_height);
-            if let Some(intersection) = caret_band.intersection(rect) {
-              if intersection.height() > 0.0 {
-                last_visible_line = Some((
-                  line,
-                  line_len,
-                  line_rect,
-                  start_x,
-                  total_advance,
-                  fallback_advance,
-                  top,
-                  bottom,
-                ));
-              }
-            }
-          }
-
           if control.focused && !control.disabled {
             if let Some((sel_start, sel_end)) = selection {
-              let seg_start = sel_start.max(line_start).min(line_end);
-              let seg_end = sel_end.max(line_start).min(line_end);
-              if seg_start < seg_end {
-                let start_col = seg_start - line_start;
-                let end_col = seg_end - line_start;
+              let seg_start = sel_start.max(line.start_char).min(line.end_char);
+              let seg_end = sel_end.max(line.start_char).min(line.end_char);
+              if seg_start < seg_end && line_len > 0 {
+                let start_col = seg_start - line.start_char;
+                let end_col = seg_end - line.start_char;
                 let fallback_char_advance = if line_len > 0 {
                   (fallback_advance / line_len as f32).max(0.0)
                 } else {
@@ -13346,7 +13356,7 @@ impl DisplayListBuilder {
                   vec![(x1.min(x2), x1.max(x2))]
                 } else {
                   crate::text::caret::selection_segments_for_char_range(
-                    line,
+                    line_text,
                     &line_runs,
                     start_col,
                     end_col,
@@ -13372,21 +13382,21 @@ impl DisplayListBuilder {
             }
           }
 
-          if text_style.color.a > f32::EPSILON && !line.is_empty() {
-            let _ = self.emit_text_with_style_raw(line, Some(&text_style), line_rect);
+          if text_style.color.a > f32::EPSILON && !line_text.is_empty() {
+            let _ = self.emit_text_with_style_raw(line_text, Some(&text_style), line_rect);
           }
 
           if control.focused && !control.disabled {
             if let Some((pre_start, pre_end)) = preedit_range {
-                let seg_start = pre_start.max(line_start).min(line_end);
-                let seg_end = pre_end.max(line_start).min(line_end);
-                if seg_start < seg_end && text_style.color.a > f32::EPSILON {
-                  let start_col = seg_start - line_start;
-                  let end_col = seg_end - line_start;
-                  let underline_y = (bottom - 1.0).max(top);
-                  let fallback_char_advance = if line_len > 0 {
-                    (fallback_advance / line_len as f32).max(0.0)
-                  } else {
+              let seg_start = pre_start.max(line.start_char).min(line.end_char);
+              let seg_end = pre_end.max(line.start_char).min(line.end_char);
+              if seg_start < seg_end && text_style.color.a > f32::EPSILON && line_len > 0 {
+                let start_col = seg_start - line.start_char;
+                let end_col = seg_end - line.start_char;
+                let underline_y = (bottom - 1.0).max(top);
+                let fallback_char_advance = if line_len > 0 {
+                  (fallback_advance / line_len as f32).max(0.0)
+                } else {
                   0.0
                 };
                 let segments = if line_runs.is_empty() {
@@ -13395,7 +13405,7 @@ impl DisplayListBuilder {
                   vec![(x1.min(x2), x1.max(x2))]
                 } else {
                   crate::text::caret::selection_segments_for_char_range(
-                    line,
+                    line_text,
                     &line_runs,
                     start_col,
                     end_col,
@@ -13421,53 +13431,16 @@ impl DisplayListBuilder {
             }
           }
 
-          if caret_rect.is_none() && caret_idx <= line_end && control.focused && !control.disabled {
-            if !caret_color.is_transparent() {
-              let caret_col = caret_idx.saturating_sub(line_start).min(line_len);
-              let caret_x = start_x
-                + caret_x_for_position(&caret_stops, caret_col, caret_affinity_for_paint)
-                  .unwrap_or(0.0);
-              let max_caret_x = (line_rect.max_x() - 1.0).max(line_rect.x());
-              let caret_x = caret_x.clamp(line_rect.x(), max_caret_x);
-              let caret_rect_raw = Rect::from_xywh(caret_x, top, 1.0, (bottom - top).max(0.0));
-              let caret_rect_raw = self.snap_form_control_caret_rect(caret_rect_raw);
-              caret_rect = caret_rect_raw
-                .intersection(rect)
-                .filter(|r| r.width() > 0.0 && r.height() > 0.0);
-            }
-          }
-
-          y += line_height;
-          line_start = line_end.saturating_add(1);
-        }
-
-        if caret_rect.is_none()
-          && control.focused
-          && !control.disabled
-          && !caret_color.is_transparent()
-        {
-          // If the caret is positioned on a line that is fully clipped out of the textarea (common
-          // when `line-height: normal` grows due to variable font MVAR metrics), clamp the caret to
-          // the last visible line so it remains paintable.
-          if let Some((
-            line,
-            line_len,
-            line_rect,
-            start_x,
-            total_advance,
-            _fallback_advance,
-            top,
-            bottom,
-          )) = last_visible_line
+          if caret_rect.is_none()
+            && line_idx == caret_line_idx
+            && control.focused
+            && !control.disabled
+            && !caret_color.is_transparent()
           {
-            let line_runs = shape_text_runs(self, line, &text_style).unwrap_or_default();
+            let caret_col = caret_idx.saturating_sub(line.start_char).min(line_len);
             let caret_x = start_x
-              + caret_x_for_position(
-                &caret_stops_for_runs(line, &line_runs, total_advance),
-                line_len,
-                CaretAffinity::Downstream,
-              )
-              .unwrap_or(0.0);
+              + caret_x_for_position(&caret_stops, caret_col, caret_affinity_for_paint)
+                .unwrap_or(0.0);
             let max_caret_x = (line_rect.max_x() - 1.0).max(line_rect.x());
             let caret_x = caret_x.clamp(line_rect.x(), max_caret_x);
             let caret_rect_raw = Rect::from_xywh(caret_x, top, 1.0, (bottom - top).max(0.0));
@@ -13477,6 +13450,7 @@ impl DisplayListBuilder {
               .filter(|r| r.width() > 0.0 && r.height() > 0.0);
           }
         }
+        self.pop_clip();
 
         if let Some(caret_rect) = caret_rect {
           self.list.push(DisplayItem::FillRect(FillRectItem {

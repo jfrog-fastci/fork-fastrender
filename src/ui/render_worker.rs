@@ -2874,9 +2874,10 @@ impl BrowserRuntime {
 
       let scroll_snapshot = tab.scroll_state.clone();
       let result = doc.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
-        let (dom_changed, action) = tab.interaction.key_activate_with_box_tree(
+        let (dom_changed, action) = tab.interaction.key_activate_with_layout_artifacts(
           dom,
           Some(box_tree),
+          fragment_tree,
           key,
           &document_url,
           &base_url,

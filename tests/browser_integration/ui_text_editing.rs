@@ -506,3 +506,213 @@ fn undo_redo_restores_text_input_value() -> Result<()> {
 
   Ok(())
 }
+
+#[test]
+fn textarea_arrow_down_moves_by_visual_lines_when_wrapped() -> Result<()> {
+  let _lock = super::stage_listener_test_lock();
+  let tab_id = TabId(1);
+  let viewport_css = (240, 160);
+  let url = "https://example.com/index.html";
+  let initial = "012345678901234567890123456789";
+
+  let html = format!(
+    r#"<!doctype html>
+      <html>
+        <head>
+          <meta charset="utf-8">
+          <style>
+            html, body {{ margin: 0; padding: 0; }}
+            #ta {{
+              position: absolute;
+              left: 0;
+              top: 0;
+              width: 120px;
+              height: 80px;
+              font-family: "Noto Sans Mono";
+              font-size: 20px;
+            }}
+          </style>
+        </head>
+        <body>
+          <textarea id="ta">{initial}</textarea>
+        </body>
+      </html>
+    "#
+  );
+
+  let mut controller = BrowserTabController::from_html_with_renderer(
+    support::deterministic_renderer(),
+    tab_id,
+    &html,
+    url,
+    viewport_css,
+    1.0,
+  )?;
+  let _ = controller.handle_message(support::request_repaint(tab_id, RepaintReason::Explicit))?;
+
+  // Focus the textarea, then force caret to the beginning.
+  let click = (10.0, 10.0);
+  let _ = controller.handle_message(support::pointer_down(tab_id, click, PointerButton::Primary))?;
+  let _ = controller.handle_message(support::pointer_up(tab_id, click, PointerButton::Primary))?;
+  let _ = controller.handle_message(support::key_action(tab_id, KeyAction::Home))?;
+
+  // ArrowDown should move to the next *visual* line (soft wrap), not be a no-op.
+  let _ = controller.handle_message(support::key_action(tab_id, KeyAction::ArrowDown))?;
+  let _ = controller.handle_message(support::text_input(tab_id, "X"))?;
+
+  let textarea = find_element_by_id(controller.document().dom(), "ta");
+  let value = textarea
+    .get_attribute_ref("data-fastr-value")
+    .expect("expected textarea value after insertion");
+  let x_pos = value
+    .chars()
+    .position(|ch| ch == 'X')
+    .expect("expected inserted character to appear in textarea value");
+  assert!(
+    x_pos > 0,
+    "expected ArrowDown to move caret to a wrapped line (inserted X at {x_pos})"
+  );
+
+  Ok(())
+}
+
+#[test]
+fn wheel_scroll_over_textarea_scrolls_textarea_before_page() -> Result<()> {
+  let _lock = super::stage_listener_test_lock();
+  let tab_id = TabId(1);
+  let viewport_css = (240, 160);
+  let url = "https://example.com/index.html";
+
+  let mut textarea_lines = String::new();
+  for idx in 0..80 {
+    textarea_lines.push_str(&format!("line {idx}\n"));
+  }
+
+  let html = format!(
+    r#"<!doctype html>
+      <html>
+        <head>
+          <meta charset="utf-8">
+          <style>
+            html, body {{ margin: 0; padding: 0; }}
+            #ta {{
+              position: absolute;
+              left: 0;
+              top: 0;
+              width: 180px;
+              height: 60px;
+              font-family: "Noto Sans Mono";
+              font-size: 20px;
+            }}
+            #spacer {{ height: 2000px; }}
+          </style>
+        </head>
+        <body>
+          <textarea id="ta">{textarea_lines}</textarea>
+          <div id="spacer"></div>
+        </body>
+      </html>
+    "#
+  );
+
+  let mut controller = BrowserTabController::from_html_with_renderer(
+    support::deterministic_renderer(),
+    tab_id,
+    &html,
+    url,
+    viewport_css,
+    1.0,
+  )?;
+  let _ = controller.handle_message(support::request_repaint(tab_id, RepaintReason::Explicit))?;
+
+  // First wheel scroll: textarea should consume it without scrolling the page.
+  let _ = controller.handle_message(support::scroll_at_pointer(
+    tab_id,
+    (0.0, 120.0),
+    (10.0, 10.0),
+  ))?;
+  assert!(
+    controller.scroll_state().viewport.y.abs() <= f32::EPSILON,
+    "expected page scroll to remain at 0 after scrolling textarea; got {:?}",
+    controller.scroll_state().viewport
+  );
+  assert!(
+    controller
+      .scroll_state()
+      .elements
+      .values()
+      .any(|offset| offset.y > 0.0),
+    "expected textarea to have a non-zero element scroll offset after wheel scroll; got {:?}",
+    controller.scroll_state().elements
+  );
+
+  // Large wheel scroll: textarea should hit its max and bubble the remaining scroll to the page.
+  let _ = controller.handle_message(support::scroll_at_pointer(
+    tab_id,
+    (0.0, 10_000.0),
+    (10.0, 10.0),
+  ))?;
+  assert!(
+    controller.scroll_state().viewport.y > 0.0,
+    "expected page to scroll after textarea reaches bounds; got {:?}",
+    controller.scroll_state().viewport
+  );
+
+  Ok(())
+}
+
+#[test]
+fn textarea_auto_scrolls_to_keep_caret_visible_after_typing_many_lines() -> Result<()> {
+  let _lock = super::stage_listener_test_lock();
+  let tab_id = TabId(1);
+  let viewport_css = (240, 160);
+  let url = "https://example.com/index.html";
+
+  let html = r#"<!doctype html>
+    <html>
+      <head>
+        <meta charset="utf-8">
+        <style>
+          html, body { margin: 0; padding: 0; }
+          #ta { position: absolute; left: 0; top: 0; width: 180px; height: 60px; font-family: "Noto Sans Mono"; font-size: 20px; }
+        </style>
+      </head>
+      <body>
+        <textarea id="ta"></textarea>
+      </body>
+    </html>
+  "#;
+
+  let mut controller = BrowserTabController::from_html_with_renderer(
+    support::deterministic_renderer(),
+    tab_id,
+    html,
+    url,
+    viewport_css,
+    1.0,
+  )?;
+  let _ = controller.handle_message(support::request_repaint(tab_id, RepaintReason::Explicit))?;
+
+  // Focus the textarea.
+  let click = (10.0, 10.0);
+  let _ = controller.handle_message(support::pointer_down(tab_id, click, PointerButton::Primary))?;
+  let _ = controller.handle_message(support::pointer_up(tab_id, click, PointerButton::Primary))?;
+
+  // Insert enough lines to overflow the textarea height. Paint should auto-scroll so the caret
+  // remains visible at the bottom.
+  for _ in 0..40 {
+    let _ = controller.handle_message(support::key_action(tab_id, KeyAction::Enter))?;
+  }
+
+  assert!(
+    controller
+      .scroll_state()
+      .elements
+      .values()
+      .any(|offset| offset.y > 0.0),
+    "expected textarea to auto-scroll after inserting many lines; got {:?}",
+    controller.scroll_state().elements
+  );
+
+  Ok(())
+}
