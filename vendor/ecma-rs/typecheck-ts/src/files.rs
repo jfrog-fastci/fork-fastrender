@@ -293,4 +293,25 @@ mod tests {
     // change and should be accompanied by an incremental cache version bump.
     assert_eq!(id_a, FileId(0xb39a4ce5));
   }
+
+  #[test]
+  fn hash_derived_file_ids_are_stable() {
+    // These values are derived from the stable hashing algorithm in
+    // `stable_hash_u32` (FNV-1a 64-bit, folded to `u32`, then OR'd with
+    // `FALLBACK_START`). This test ensures we don't accidentally change the
+    // hashing inputs or algorithm.
+    let mut registry = FileRegistry::new();
+
+    let source_key = FileKey::new("/a.ts");
+    let lib_key = FileKey::new("lib:lib.es5.d.ts");
+
+    assert_eq!(
+      registry.intern(&source_key, FileOrigin::Source),
+      FileId(0xa121_1524)
+    );
+    assert_eq!(
+      registry.intern(&lib_key, FileOrigin::Lib),
+      FileId(0xdd1b_de45)
+    );
+  }
 }
