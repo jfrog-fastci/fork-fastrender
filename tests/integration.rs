@@ -9,6 +9,7 @@ mod accessibility;
 mod fixtures;
 mod browser_integration;
 mod guards;
+mod interaction;
 mod js;
 mod resource;
 
