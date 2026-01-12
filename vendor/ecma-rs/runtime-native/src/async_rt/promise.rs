@@ -1160,7 +1160,7 @@ mod tests {
 
         c_start_rx.recv().unwrap();
 
-        track_pending_reactions(ptr.cast::<PromiseHeader>());
+        track_pending_reactions(ptr);
         // Drop cleans up the tracking set entry too.
         promise_drop(p);
 

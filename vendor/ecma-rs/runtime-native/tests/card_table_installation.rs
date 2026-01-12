@@ -1,6 +1,16 @@
+use once_cell::sync::Lazy;
+use parking_lot::Mutex;
 use runtime_native::array::RT_ARRAY_ELEM_PTR_FLAG;
 use runtime_native::gc::{ObjHeader, RememberedSet, RootStack, CARD_TABLE_MIN_BYTES};
 use runtime_native::GcHeap;
+
+/// `GcHeap` instances currently share some process-global GC state (e.g. card table / GC-in-progress
+/// invariants). Running multiple independent `GcHeap` allocations/collections concurrently in the
+/// same process can therefore trigger intermittent aborts.
+///
+/// Rust integration tests run in parallel threads by default (`RUST_TEST_THREADS`), so serialize
+/// these tests to keep them deterministic.
+static TEST_MUTEX: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
 
 #[derive(Default)]
 struct NullRememberedSet;
@@ -18,6 +28,7 @@ fn card_table_ptr(obj: *mut u8) -> *mut std::sync::atomic::AtomicU64 {
 
 #[test]
 fn promoted_large_pointer_array_gets_card_table() {
+  let _guard = TEST_MUTEX.lock();
   let mut heap = GcHeap::new();
 
   let ptr_size = core::mem::size_of::<*mut u8>();
@@ -44,6 +55,7 @@ fn promoted_large_pointer_array_gets_card_table() {
 
 #[test]
 fn promoted_small_pointer_array_does_not_get_card_table() {
+  let _guard = TEST_MUTEX.lock();
   let mut heap = GcHeap::new();
 
   let ptr_size = core::mem::size_of::<*mut u8>();
@@ -68,6 +80,7 @@ fn promoted_small_pointer_array_does_not_get_card_table() {
 
 #[test]
 fn promoted_non_pointer_array_does_not_get_card_table() {
+  let _guard = TEST_MUTEX.lock();
   let mut heap = GcHeap::new();
 
   // Use pointer-sized raw elements (no RT_ARRAY_ELEM_PTR_FLAG) so the payload
@@ -93,6 +106,7 @@ fn promoted_non_pointer_array_does_not_get_card_table() {
 
 #[test]
 fn old_large_pointer_array_gets_card_table() {
+  let _guard = TEST_MUTEX.lock();
   let mut heap = GcHeap::new();
 
   let ptr_size = core::mem::size_of::<*mut u8>();
