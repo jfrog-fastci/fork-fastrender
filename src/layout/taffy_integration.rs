@@ -1173,6 +1173,10 @@ fn taffy_cache_limit_overrides() -> TaffyTemplateCacheLimitOverrides {
   TaffyTemplateCacheLimitOverrides::from_runtime_toggles(&toggles)
 }
 
+fn taffy_template_cache_limit_override(adapter: TaffyAdapterKind) -> Option<usize> {
+  taffy_cache_limit_overrides().resolve(adapter)
+}
+
 fn adaptive_taffy_cache_limit(box_tree_nodes: usize) -> usize {
   // Heuristic: large pages tend to create many flex/grid containers and the corresponding
   // style-to-Taffy conversion is expensive. Keeping the template cache large enough avoids churn
@@ -1193,17 +1197,14 @@ fn adaptive_taffy_cache_limit(box_tree_nodes: usize) -> usize {
 }
 
 pub(crate) fn taffy_template_cache_limit(adapter: TaffyAdapterKind) -> usize {
-  taffy_cache_limit_overrides()
-    .resolve(adapter)
-    .unwrap_or(DEFAULT_TAFFY_CACHE_LIMIT)
+  taffy_template_cache_limit_override(adapter).unwrap_or(DEFAULT_TAFFY_CACHE_LIMIT)
 }
 
 pub(crate) fn taffy_template_cache_limit_for_box_tree(
   adapter: TaffyAdapterKind,
   box_tree_nodes: usize,
 ) -> usize {
-  taffy_cache_limit_overrides()
-    .resolve(adapter)
+  taffy_template_cache_limit_override(adapter)
     .unwrap_or_else(|| adaptive_taffy_cache_limit(box_tree_nodes))
 }
 
@@ -1320,6 +1321,8 @@ impl TaffyNodeCache {
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  mod taffy_template_cache_evictions_test;
 
   fn template() -> Arc<CachedTaffyTemplate> {
     Arc::new(CachedTaffyTemplate {
