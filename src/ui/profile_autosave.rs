@@ -95,7 +95,7 @@ pub fn load_bookmarks(path: &Path) -> Result<Option<BookmarkStore>, String> {
 
 /// Attempt to read + parse a history file. Missing file is not an error.
 pub fn load_history(path: &Path) -> Result<Option<GlobalHistoryStore>, String> {
-  let Some(mut history) = load_json(path)? else {
+  let Some(mut history) = load_json::<GlobalHistoryStore>(path)? else {
     return Ok(None);
   };
   history.normalize_in_place();
