@@ -14320,6 +14320,10 @@ fn apply_declaration_with_base_internal_with_order(
           "sideways" => TextOrientation::Sideways,
           "sideways-left" => TextOrientation::SidewaysLeft,
           "sideways-right" => TextOrientation::Sideways,
+          // Legacy SVG keyword (MDN compat). Historically, `use-glyph-orientation` interacted with
+          // the deprecated `glyph-orientation-*` properties. We do not implement those, so treat
+          // this as the safe fallback `mixed`.
+          "use-glyph-orientation" => TextOrientation::Mixed,
           _ => styles.text_orientation,
         };
       }
@@ -28748,6 +28752,40 @@ mod tests {
       16.0,
     );
     assert_eq!(styles.text_orientation, TextOrientation::SidewaysLeft);
+  }
+
+  #[test]
+  fn parses_text_orientation_use_glyph_orientation_legacy_keyword() {
+    let mut styles = ComputedStyle::default();
+    apply_declaration(
+      &mut styles,
+      &Declaration {
+        property: "text-orientation".into(),
+        value: PropertyValue::Keyword("upright".into()),
+        contains_var: false,
+        raw_value: String::new(),
+        important: false,
+      },
+      &ComputedStyle::default(),
+      16.0,
+      16.0,
+    );
+
+    apply_declaration(
+      &mut styles,
+      &Declaration {
+        property: "text-orientation".into(),
+        value: PropertyValue::Keyword("use-glyph-orientation".into()),
+        contains_var: false,
+        raw_value: String::new(),
+        important: false,
+      },
+      &ComputedStyle::default(),
+      16.0,
+      16.0,
+    );
+
+    assert_eq!(styles.text_orientation, TextOrientation::Mixed);
   }
 
   #[test]
