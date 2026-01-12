@@ -1,55 +1,43 @@
 #![cfg(test)]
 
-use std::sync::Once;
+//! Shared helpers for unit-style tests that live in `src/`.
+//!
+//! These utilities exist so tests migrated from `tests/**` into `src/**` can keep using stable
+//! fixture paths and common image comparison logic without depending on integration-test-only
+//! modules.
 
-/// Initialize the Rayon global thread pool for tests.
-///
-/// This is intentionally:
-/// - **Idempotent** (safe to call from many tests/modules).
-/// - **Non-panicking** if another part of the process already initialized Rayon.
-/// - **Pure** with respect to environment variables (does not set/modify them).
-pub(crate) fn init_rayon_for_tests(num_threads: usize) {
-  static INIT: Once = Once::new();
-  let num_threads = num_threads.max(1);
+#![allow(dead_code)]
 
-  INIT.call_once(|| {
-    // If the global pool was already initialized (e.g. by another test that raced, or by
-    // production code invoked by a test), Rayon returns `GlobalPoolAlreadyInitialized`. Tests
-    // should remain deterministic and not panic in that scenario.
-    let _ = rayon::ThreadPoolBuilder::new()
-      .num_threads(num_threads)
-      .build_global();
-  });
-}
+mod golden;
+mod paths;
+mod pixmap;
+mod rayon;
+mod stack;
+
+pub(crate) use golden::{compare_config_from_env, compare_pngs, ArtifactPaths, CompareEnvVars};
+pub(crate) use paths::{fixtures_dir, manifest_dir, ref_fixtures_dir, tests_dir};
+pub(crate) use pixmap::{
+  assert_pixmap_eq, compare_pixmaps, pixmap_from_rgba_image, pixmap_to_rgba_image,
+};
+pub(crate) use rayon::init_rayon_for_tests;
+pub(crate) use stack::{run_with_large_stack, run_with_stack_size, LARGE_STACK_BYTES};
 
 /// Run `f` on a freshly spawned thread with a larger-than-default stack size.
 ///
-/// This is useful for layout/paint tests which can traverse deeply nested trees and overflow the
-/// default stack in debug builds.
-///
-/// Panics inside `f` are propagated to the caller.
+/// Prefer [`run_with_stack_size`] for new call sites; this wrapper exists for compatibility with
+/// older tests.
 pub(crate) fn with_large_stack<R: Send + 'static>(
   stack_size: usize,
   f: impl FnOnce() -> R + Send + 'static,
 ) -> R {
-  let handle = std::thread::Builder::new()
-    .stack_size(stack_size)
-    .spawn(f)
-    .expect("failed to spawn test thread");
-
-  match handle.join() {
-    Ok(result) => result,
-    Err(panic) => std::panic::resume_unwind(panic),
-  }
+  stack::run_with_stack_size(stack_size, f)
 }
 
 /// Assert that two floats are approximately equal within `eps`.
 pub(crate) fn assert_approx_eq(actual: f32, expected: f32, eps: f32, context: &str) {
   let diff = (actual - expected).abs();
   if !(diff <= eps) {
-    panic!(
-      "{context}: expected {expected} ± {eps}, got {actual} (diff: {diff})"
-    );
+    panic!("{context}: expected {expected} ± {eps}, got {actual} (diff: {diff})");
   }
 }
 
@@ -123,3 +111,4 @@ mod tests {
     assert!(result.is_err());
   }
 }
+
