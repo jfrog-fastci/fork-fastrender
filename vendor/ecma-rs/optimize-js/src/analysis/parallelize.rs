@@ -2,6 +2,8 @@ use crate::analysis::effect::FnEffectMap;
 use crate::analysis::purity::FnPurityMap;
 use crate::cfg::cfg::Cfg;
 use crate::il::inst::{Arg, BinOp, EffectLocation, EffectSet, Inst, InstTyp, ParallelPlan, ParallelReason, Purity};
+#[cfg(any(feature = "native-fusion", feature = "native-array-ops"))]
+use crate::il::inst::ArrayChainOp;
 use crate::symbol::semantics::SymbolId;
 use crate::{FnId, Program};
 use std::collections::BTreeMap;
@@ -10,9 +12,6 @@ use std::collections::BTreeMap;
 use effect_model::ThrowBehavior;
 #[cfg(feature = "native-async-ops")]
 use std::collections::BTreeSet;
-
-#[cfg(any(feature = "native-fusion", feature = "native-array-ops"))]
-use crate::il::inst::ArrayChainOp;
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct CallbackInfo {
@@ -629,6 +628,59 @@ pub fn annotate_cfg_parallelize(
           continue;
         }
         _ => {}
+      }
+
+      #[cfg(any(feature = "native-fusion", feature = "native-array-ops"))]
+      if inst.t == InstTyp::ArrayChain {
+        // Apply parallelization hints to the fused semantic ArrayChain representation.
+        //
+        // We currently only model `map`/`filter`/`reduce` because other array
+        // ops (`find`/`some`/`every`) have short-circuit semantics and may need
+        // more sophisticated lowering to parallelize.
+        let mut chain_plan = ParallelPlan::Parallelizable;
+        let mut should_annotate = true;
+
+        for op in inst.array_chain.iter() {
+          let op_plan = match op {
+            ArrayChainOp::Map { callback } | ArrayChainOp::Filter { callback } => match inst.args.get(*callback) {
+              None => ParallelPlan::NotParallelizable(ParallelReason::UnknownCallback),
+              Some(callback_arg) => match resolve_fn_id(callback_arg, &defs, &mut Vec::new()) {
+                None => ParallelPlan::NotParallelizable(ParallelReason::UnknownCallback),
+                Some(id) => map_filter_plan(id, fn_effects, fn_purities, callback_infos),
+              },
+            },
+            ArrayChainOp::Reduce { callback, .. } => match inst.args.get(*callback) {
+              None => ParallelPlan::NotParallelizable(ParallelReason::UnknownCallback),
+              Some(callback_arg) => match resolve_fn_id(callback_arg, &defs, &mut Vec::new()) {
+                None => ParallelPlan::NotParallelizable(ParallelReason::UnknownCallback),
+                Some(id) => reduce_plan(id, fn_effects, fn_purities, callback_infos),
+              },
+            },
+            // For now, do not attach parallelization hints to unsupported ops.
+            _ => {
+              should_annotate = false;
+              break;
+            }
+          };
+
+          match op_plan {
+            ParallelPlan::Parallelizable => {}
+            ParallelPlan::NotParallelizable(_) => {
+              chain_plan = op_plan;
+              break;
+            }
+            // No other ParallelPlan variants should be produced by array semantic ops.
+            _ => {
+              chain_plan = op_plan;
+              break;
+            }
+          }
+        }
+
+        if should_annotate {
+          inst.meta.parallel = Some(chain_plan);
+        }
+        continue;
       }
 
       if inst.t != InstTyp::Call {

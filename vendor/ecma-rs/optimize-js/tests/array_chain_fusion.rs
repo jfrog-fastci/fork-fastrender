@@ -1,4 +1,7 @@
-#![cfg(feature = "semantic-ops")]
+#![cfg(all(
+  feature = "semantic-ops",
+  any(feature = "native-fusion", not(feature = "native-array-ops"))
+))]
 
 #[path = "common/mod.rs"]
 mod common;
@@ -95,7 +98,10 @@ fn lowers_map_reduce_chain_to_single_il_inst() {
   );
 }
 
-#[cfg(all(feature = "semantic-ops", not(feature = "native-fusion")))]
+#[cfg(all(
+  feature = "semantic-ops",
+  not(any(feature = "native-fusion", feature = "native-array-ops"))
+))]
 #[test]
 fn lowers_array_chain_to_builtin_calls_when_fusion_is_disabled() {
   let src = r#"

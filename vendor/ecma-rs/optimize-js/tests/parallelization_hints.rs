@@ -8,6 +8,8 @@ use optimize_js::analysis::driver::annotate_program;
 use optimize_js::il::inst::{Inst, InstTyp, ParallelPlan};
 #[cfg(not(any(feature = "native-fusion", feature = "native-array-ops")))]
 use optimize_js::il::inst::Arg;
+#[cfg(any(feature = "native-fusion", feature = "native-array-ops"))]
+use optimize_js::il::inst::ArrayChainOp;
 use optimize_js::TopLevelMode;
 use optimize_js::Program;
 
@@ -24,6 +26,28 @@ fn find_inst<'a>(program: &'a Program, pred: impl Fn(&Inst) -> bool) -> Option<&
     }
   }
   None
+}
+
+fn find_array_map_inst(program: &Program) -> &Inst {
+  #[cfg(any(feature = "native-fusion", feature = "native-array-ops"))]
+  {
+    find_inst(program, |inst| {
+      inst.t == InstTyp::ArrayChain
+        && inst
+          .array_chain
+          .iter()
+          .any(|op| matches!(op, ArrayChainOp::Map { .. }))
+    })
+    .expect("expected ArrayChain map instruction")
+  }
+  #[cfg(not(any(feature = "native-fusion", feature = "native-array-ops")))]
+  {
+    find_inst(program, |inst| {
+      inst.t == InstTyp::Call
+        && matches!(inst.args.get(0), Some(Arg::Builtin(path)) if path == "Array.prototype.map")
+    })
+    .expect("expected Array.prototype.map call instruction")
+  }
 }
 
 #[cfg(feature = "native-async-ops")]
@@ -87,11 +111,7 @@ fn array_map_with_pure_callback_is_parallelizable() {
   let mut program = compile_source(source, TopLevelMode::Module, false);
   let _analyses = annotate_program(&mut program);
 
-  let inst = find_inst(&program, |inst| {
-    inst.t == InstTyp::Call
-      && matches!(inst.args.get(0), Some(Arg::Builtin(path)) if path == "Array.prototype.map")
-  })
-  .expect("expected Array.prototype.map call instruction");
+  let inst = find_array_map_inst(&program);
 
   assert!(
     matches!(inst.meta.parallel, Some(ParallelPlan::Parallelizable)),
@@ -137,11 +157,7 @@ fn array_map_with_impure_callback_is_not_parallelizable() {
   let mut program = compile_source(source, TopLevelMode::Module, false);
   let _analyses = annotate_program(&mut program);
 
-  let inst = find_inst(&program, |inst| {
-    inst.t == InstTyp::Call
-      && matches!(inst.args.get(0), Some(Arg::Builtin(path)) if path == "Array.prototype.map")
-  })
-  .expect("expected Array.prototype.map call instruction");
+  let inst = find_array_map_inst(&program);
 
   assert!(
     matches!(inst.meta.parallel, Some(ParallelPlan::NotParallelizable(_))),
