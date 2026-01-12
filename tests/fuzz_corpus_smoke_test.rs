@@ -3,8 +3,8 @@ use base64::Engine as _;
 use fastrender::debug::runtime::RuntimeToggles;
 use fastrender::render_control::{DeadlineGuard, RenderDeadline};
 use fastrender::{
-  parse_stylesheet_with_errors, FastRender, FastRenderConfig, LayoutParallelism, PaintParallelism,
-  RenderOptions, ResourcePolicy,
+  parse_stylesheet_with_errors, FastRender, FastRenderConfig, FontConfig, LayoutParallelism,
+  PaintParallelism, RenderOptions, ResourcePolicy,
 };
 use std::collections::HashMap;
 use std::fs;
@@ -31,24 +31,7 @@ const REQUIRED_CORPUS_FILES: &[&str] = &[
 fn corpus_dir() -> PathBuf {
   PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fuzz_corpus")
 }
- 
-fn configure_process_for_smoke() {
-  // Keep smoke runs deterministic and avoid spawning a large Rayon pool in CI.
-  //
-  // `fastrender` also disables layout/paint parallelism via per-render options, but initializing
-  // Rayon to a single thread keeps incidental parallel work (and stack usage) bounded.
-  if std::env::var_os("RAYON_NUM_THREADS").is_none() {
-    std::env::set_var("RAYON_NUM_THREADS", "1");
-  }
-  let _ = rayon::ThreadPoolBuilder::new().num_threads(1).build_global();
- 
-  // Font discovery can be expensive and platform-dependent. Prefer bundled fonts for stable test
-  // runtimes unless the caller explicitly configured something else.
-  if std::env::var_os("FASTR_USE_BUNDLED_FONTS").is_none() {
-    std::env::set_var("FASTR_USE_BUNDLED_FONTS", "1");
-  }
-}
- 
+
 fn build_renderer() -> FastRender {
   let policy = ResourcePolicy::new()
     .allow_http(false)
@@ -69,6 +52,8 @@ fn build_renderer() -> FastRender {
     .with_resource_policy(policy)
     .with_max_iframe_depth(1)
     .with_runtime_toggles(runtime_toggles)
+    // Prefer bundled fixture fonts for stable render output (no host font discovery).
+    .with_font_sources(FontConfig::bundled_only())
     .with_paint_parallelism(PaintParallelism::disabled())
     .with_layout_parallelism(LayoutParallelism::disabled());
   // Avoid pixmap blow-ups from pathological layout bounds.
@@ -160,11 +145,9 @@ fn corpus_file_name(path: &Path) -> String {
     .to_string_lossy()
     .to_string()
 }
- 
+
 #[test]
 fn fuzz_corpus_smoke_test() {
-  configure_process_for_smoke();
- 
   let corpus_dir = corpus_dir();
   for file in REQUIRED_CORPUS_FILES {
     let path = corpus_dir.join(file);
