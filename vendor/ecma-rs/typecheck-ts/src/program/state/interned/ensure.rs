@@ -74,6 +74,17 @@ impl ProgramState {
       }
       self.diagnostics.extend(decls.diagnostics.iter().cloned());
     }
+
+    // `type_of_def` / body checking may be invoked while building the interned
+    // type tables (e.g. for namespace/module export types). Seed the in-progress
+    // maps so ref expansion during those checks can see declared interface/type
+    // shapes like `ImportMeta`.
+    //
+    // Note: these are overwritten with the final `def_types`/`type_params` maps
+    // at the end of `ensure_interned_types`.
+    self.interned_def_types = def_types.clone();
+    self.interned_type_params = type_params.clone();
+    self.interned_type_param_decls = type_param_decls.clone();
     let mut namespace_types: HashMap<(FileId, String), TypeId> = HashMap::new();
     let mut declared_type_cache: HashMap<(FileId, TextRange), Option<TypeId>> = HashMap::new();
     let def_by_name = self.canonical_defs()?;
@@ -602,10 +613,19 @@ impl ProgramState {
         .and_then(|semantics| semantics.exports_of_opt(sem_ts::FileId(file.0)));
       if let (Some(semantics), Some(exports)) = (self.semantics.as_deref(), sem_exports) {
         let symbols = semantics.symbols();
+        #[derive(Clone, Copy, Debug)]
+        struct NamespaceImport {
+          file: FileId,
+        }
+
+        struct ExportMember {
+          name: String,
+          best_def: Option<DefId>,
+          namespace_import: Option<NamespaceImport>,
+        }
+
+        let mut members: Vec<ExportMember> = Vec::new();
         for (name, group) in exports.iter() {
-          if name == "default" {
-            continue;
-          }
           let Some(symbol) = group.symbol_for(sem_ts::Namespace::VALUE, symbols) else {
             continue;
           };
@@ -628,34 +648,61 @@ impl ProgramState {
             };
           }
 
-          let ty = if let Some((_, def)) = best_def {
-            def_types.get(&def).copied().unwrap_or(unknown)
-          } else if let sem_ts::SymbolOrigin::Import { from, imported } =
-            &symbols.symbol(symbol).origin
-          {
-            if imported == "*" {
-              match from {
-                sem_ts::ModuleRef::File(dep_file) => self
-                  .module_namespace_defs
-                  .get(&FileId(dep_file.0))
-                  .copied()
-                  .map(|dep_def| {
-                    store.canon(store.intern_type(tti::TypeKind::Ref {
-                      def: tti::DefId(dep_def.0),
-                      args: Vec::new(),
-                    }))
-                  })
-                  .unwrap_or(unknown),
-                _ => unknown,
+          let namespace_import = if best_def.is_none() {
+            if let sem_ts::SymbolOrigin::Import { from, imported } = &symbols.symbol(symbol).origin {
+              if imported == "*" {
+                match from {
+                  sem_ts::ModuleRef::File(dep_file) => {
+                    Some(NamespaceImport {
+                      file: FileId(dep_file.0),
+                    })
+                  }
+                  _ => None,
+                }
+              } else {
+                None
               }
             } else {
-              unknown
+              None
             }
+          } else {
+            None
+          };
+
+          members.push(ExportMember {
+            name: name.clone(),
+            best_def: best_def.map(|(_, def)| def),
+            namespace_import,
+          });
+        }
+
+        for member in members {
+          let ty = if let Some(def) = member.best_def {
+            let mut ty = def_types.get(&def).copied().unwrap_or(unknown);
+            ty = store.canon(ty);
+            if matches!(store.type_kind(ty), tti::TypeKind::Unknown) {
+              ty = store.canon(self.type_of_def(def)?);
+              def_types.insert(def, ty);
+            }
+            ty
+          } else if let Some(import) = member.namespace_import {
+            self
+              .module_namespace_defs
+              .get(&import.file)
+              .copied()
+              .map(|dep_def| {
+                store.canon(store.intern_type(tti::TypeKind::Ref {
+                  def: tti::DefId(dep_def.0),
+                  args: Vec::new(),
+                }))
+              })
+              .unwrap_or(unknown)
           } else {
             unknown
           };
 
-          let key = PropKey::String(store.intern_name_ref(name));
+          let ty = crate::check::widen::widen_literal(store.as_ref(), ty);
+          let key = PropKey::String(store.intern_name_ref(member.name.as_str()));
           shape.properties.push(Property {
             key,
             data: PropData {
@@ -691,6 +738,7 @@ impl ProgramState {
             .and_then(|def| def_types.get(&def).copied())
             .or_else(|| entry.type_id.map(|ty| store.canon(ty)))
             .unwrap_or(unknown);
+          let ty = crate::check::widen::widen_literal(store.as_ref(), ty);
           let key = PropKey::String(store.intern_name_ref(name));
           shape.properties.push(Property {
             key,

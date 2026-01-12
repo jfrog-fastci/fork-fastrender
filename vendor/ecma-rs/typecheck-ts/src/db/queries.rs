@@ -157,6 +157,7 @@ fn module_specifiers_for(db: &dyn Db, file: FileInput) -> Arc<[Arc<str>]> {
   if let Some(ast) = parsed.ast.as_deref() {
     collect_type_only_module_specifier_values_from_ast(ast, &mut specs);
     collect_module_augmentation_specifier_values_from_ast(ast, &mut specs);
+    collect_dynamic_import_specifier_values_from_ast(ast, &mut specs);
   }
   for reference in triple_slash.references.iter() {
     let value = reference.value(source.as_ref());
@@ -3365,6 +3366,39 @@ fn collect_type_only_module_specifier_values_from_ast(
         }
         _ => {}
       }
+    }
+  }
+
+  let mut collector = Collector { specs };
+  ast.drive(&mut collector);
+}
+
+fn collect_dynamic_import_specifier_values_from_ast(
+  ast: &parse_js::ast::node::Node<parse_js::ast::stx::TopLevel>,
+  specs: &mut Vec<Arc<str>>,
+) {
+  use derive_visitor::Drive;
+  use derive_visitor::Visitor;
+  use parse_js::ast::expr::Expr;
+  use parse_js::ast::node::Node;
+
+  type ExprNode = Node<Expr>;
+
+  #[derive(Visitor)]
+  #[visitor(ExprNode(enter))]
+  struct Collector<'a> {
+    specs: &'a mut Vec<Arc<str>>,
+  }
+
+  impl<'a> Collector<'a> {
+    fn enter_expr_node(&mut self, node: &ExprNode) {
+      let Expr::Import(import) = node.stx.as_ref() else {
+        return;
+      };
+      let Expr::LitStr(spec) = import.stx.module.stx.as_ref() else {
+        return;
+      };
+      self.specs.push(Arc::<str>::from(spec.stx.value.as_str()));
     }
   }
 

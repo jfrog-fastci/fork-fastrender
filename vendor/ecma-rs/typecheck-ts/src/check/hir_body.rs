@@ -2140,8 +2140,7 @@ impl<'a> Checker<'a> {
       let (mut this_ty, super_ty) =
         if let Some(ctx) = func.class_member {
           // Constructors currently share the same `this`/`super` model as other
-          // instance members. (We don't implement `super()` call typing here, but
-          // we still track constructor-ness for future improvements.)
+          // instance members.
           let _is_constructor = matches!(ctx.kind, MemberKind::Constructor);
           self.this_super_for_class(ctx.class_index, ctx.is_static)
         } else {
@@ -3349,6 +3348,16 @@ impl<'a> Checker<'a> {
       }
       AstExpr::This(_) => self.current_this_ty,
       AstExpr::Super(_) => self.current_super_ty,
+      AstExpr::ImportMeta(_) => self
+        .resolve_type_ref(&["ImportMeta"])
+        .unwrap_or(self.store.primitive_ids().unknown),
+      AstExpr::NewTarget(_) => {
+        let prim = self.store.primitive_ids();
+        self
+          .resolve_type_ref(&["Function"])
+          .map(|function_ty| self.store.union(vec![function_ty, prim.undefined]))
+          .unwrap_or(prim.unknown)
+      }
       AstExpr::Unary(un) => {
         if matches!(un.stx.operator, OperatorName::New) {
           self.check_new_expr(un, expr.loc, None)
@@ -3397,23 +3406,23 @@ impl<'a> Checker<'a> {
           if let Some(resolver) = self.type_resolver.as_ref() {
             let specifier = str_lit.stx.value.as_str();
             match resolver.resolve_import_typeof(specifier, None) {
-              Some(def) => self.store.intern_type(TypeKind::Ref {
+              Some(def) => self.store.canon(self.store.intern_type(TypeKind::Ref {
                 def,
                 args: Vec::new(),
-              }),
+              })),
               None => {
                 self.diagnostics.push(codes::UNRESOLVED_MODULE.error(
                   format!("unresolved module specifier \"{specifier}\""),
                   Span::new(self.file, loc_to_range(self.file, import.stx.module.loc)),
                 ));
-                prim.any
+                prim.unknown
               }
             }
           } else {
-            prim.any
+            prim.unknown
           }
         } else {
-          prim.any
+          prim.unknown
         };
 
         self.promise_type(inner_ty).unwrap_or(prim.unknown)
@@ -3783,6 +3792,116 @@ impl<'a> Checker<'a> {
 
     if resolution.diagnostics.is_empty() {
       resolution.return_type
+    } else {
+      prim.unknown
+    }
+  }
+
+  fn check_super_call_expr(
+    &mut self,
+    call: &Node<parse_js::ast::expr::CallExpr>,
+    contextual_return: Option<TypeId>,
+  ) -> TypeId {
+    let prim = self.store.primitive_ids();
+    let callee_ty = self.expand_callable_type(self.current_super_ctor_ty);
+    let candidate_sigs =
+      construct_signatures_with_expander(self.store.as_ref(), callee_ty, self.ref_expander);
+
+    let mut arg_types = Vec::with_capacity(call.stx.arguments.len());
+    let mut const_arg_types = Vec::with_capacity(call.stx.arguments.len());
+    for (idx, arg) in call.stx.arguments.iter().enumerate() {
+      if arg.stx.spread {
+        let spread_ty = self.check_expr(&arg.stx.value);
+        arg_types.push(CallArgType::spread(spread_ty));
+        const_arg_types.push(spread_ty);
+        continue;
+      }
+
+      let mut expected_tys = Vec::new();
+      for sig_id in candidate_sigs.iter().copied() {
+        let sig = self.store.signature(sig_id);
+        if let Some(param_ty) = expected_arg_type_at(self.store.as_ref(), &sig, idx) {
+          expected_tys.push(param_ty);
+        }
+      }
+      let expected = if expected_tys.is_empty() {
+        prim.unknown
+      } else {
+        self.store.union(expected_tys)
+      };
+      let ty = self.check_expr_with_expected(&arg.stx.value, expected);
+      arg_types.push(CallArgType::new(ty));
+      const_arg_types.push(self.const_inference_type(&arg.stx.value));
+    }
+
+    let span = Span {
+      file: self.file,
+      range: loc_to_range(self.file, call.loc),
+    };
+    let resolution = resolve_construct(
+      &self.store,
+      &self.relate,
+      &self.instantiation_cache,
+      callee_ty,
+      &arg_types,
+      Some(&const_arg_types),
+      None,
+      contextual_return,
+      span,
+      self.ref_expander,
+    );
+
+    let allow_assignable_fallback = resolution.diagnostics.len() == 1
+      && resolution.diagnostics[0].code.as_str() == codes::NO_OVERLOAD.as_str()
+      && candidate_sigs.len() == 1;
+    let mut reported_assignability = false;
+    if allow_assignable_fallback {
+      if let Some(sig_id) = resolution
+        .contextual_signature
+        .or_else(|| candidate_sigs.first().copied())
+      {
+        let sig = self.store.signature(sig_id);
+        let before = self.diagnostics.len();
+        for (idx, arg) in call.stx.arguments.iter().enumerate() {
+          if arg.stx.spread {
+            continue;
+          }
+          let Some(param_ty) = expected_arg_type_at(self.store.as_ref(), &sig, idx) else {
+            continue;
+          };
+          let arg_ty = arg_types.get(idx).map(|arg| arg.ty).unwrap_or(prim.unknown);
+          let expected = match self.store.type_kind(param_ty) {
+            TypeKind::TypeParam(id) => sig
+              .type_params
+              .iter()
+              .find(|tp| tp.id == id)
+              .and_then(|tp| tp.constraint)
+              .unwrap_or(param_ty),
+            _ => param_ty,
+          };
+          self.check_assignable_with_code(
+            &arg.stx.value,
+            arg_ty,
+            expected,
+            None,
+            &codes::ARGUMENT_TYPE_MISMATCH,
+          );
+        }
+        reported_assignability = self.diagnostics.len() > before;
+      }
+    }
+
+    if !reported_assignability {
+      for diag in &resolution.diagnostics {
+        self.diagnostics.push(diag.clone());
+      }
+    }
+    self.record_call_signature(call.loc, resolution.signature.or(resolution.contextual_signature));
+
+    if resolution.diagnostics.is_empty() {
+      // `super()` evaluates to the derived instance (`this`), not the base
+      // constructor's instance type.
+      self.current_this_ty
     } else {
       prim.unknown
     }
