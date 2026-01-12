@@ -34,6 +34,18 @@ fn object_prototype_to_string_tags_promises() {
 }
 
 #[test]
+fn object_prototype_to_string_tags_promise_prototype_via_symbol_to_string_tag() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"Object.prototype.toString.call(Promise.prototype) === "[object Promise]" &&
+         Object.prototype.toString.call(Object.create(Promise.prototype)) === "[object Promise]""#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn object_prototype_to_string_tags_generator_objects() {
   let mut rt = new_runtime();
   let value = rt

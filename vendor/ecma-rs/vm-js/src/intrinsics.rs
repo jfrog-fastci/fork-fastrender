@@ -4521,6 +4521,12 @@ impl Intrinsics {
     scope
       .heap_mut()
       .object_set_prototype(promise_prototype, Some(object_prototype))?;
+    install_to_string_tag(
+      scope,
+      promise_prototype,
+      well_known_symbols.to_string_tag,
+      "Promise",
+    )?;
 
     let promise_capability_executor_call =
       vm.register_native_call(builtins::promise_capability_executor_call)?;
