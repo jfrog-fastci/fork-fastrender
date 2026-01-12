@@ -45,18 +45,6 @@ if [[ -n "${cargo_test_entries}" ]]; then
   exit 1
 fi
 
-# The strict 2-binary + no-shims checks are only valid once the test-cleanup migration lands.
-# Use the presence of BOTH new harness roots as the activation signal.
-#
-# This lets the guardrails merge early without permanently breaking CI while the migration is in
-# flight; once `tests/allocation_failure.rs` exists, we enforce the final architecture.
-if [[ ! -f tests/integration.rs || ! -f tests/allocation_failure.rs ]]; then
-  echo "info: unified integration-test harness not active yet; skipping strict test-architecture checks" >&2
-  echo "info: (will enforce once both tests/integration.rs and tests/allocation_failure.rs exist)" >&2
-  echo "info: see ${doc_ref}" >&2
-  exit 0
-fi
-
 allowed_test_binaries=(
   "tests/allocation_failure.rs"
   "tests/integration.rs"
@@ -66,6 +54,22 @@ found_test_binaries=()
 while IFS= read -r path; do
   found_test_binaries+=("${path}")
 done < <(find tests -maxdepth 1 -type f -name '*.rs' -print | sort)
+
+# The strict 2-binary + no-shims checks are only valid once the test-cleanup migration lands.
+#
+# To avoid permanently breaking CI while the migration is still in-flight, we only enforce once:
+# - `tests/allocation_failure.rs` exists (final harness name), OR
+# - the top-level harness count has dropped low enough that we should not silently accept a
+#   near-final-but-wrong layout (e.g. `allocation_failure_tests.rs`).
+#
+# Keep this threshold conservative so intermediate cleanups can land without being forced to
+# complete the entire migration in one PR.
+if [[ ! -f tests/allocation_failure.rs && "${#found_test_binaries[@]}" -gt 3 ]]; then
+  echo "info: test-cleanup migration still in-flight; skipping strict test-architecture checks" >&2
+  echo "info: (found ${#found_test_binaries[@]} top-level tests/*.rs files; strict checks activate once tests/allocation_failure.rs exists or tests/*.rs count <= 3)" >&2
+  echo "info: see ${doc_ref}" >&2
+  exit 0
+fi
 
 missing=()
 for allowed in "${allowed_test_binaries[@]}"; do
