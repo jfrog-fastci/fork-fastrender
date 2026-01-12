@@ -1834,16 +1834,23 @@ pub fn reflect_own_keys(
     if i % 1024 == 0 {
       vm.tick()?;
     }
-    let idx_s = scope.alloc_string(&i.to_string())?;
-    scope.push_root(Value::String(idx_s))?;
-    let idx_key = PropertyKey::from_string(idx_s);
-
     let value = match key {
       PropertyKey::String(s) => Value::String(s),
       PropertyKey::Symbol(s) => Value::Symbol(s),
     };
 
-    scope.create_data_property_or_throw(array, idx_key, value)?;
+    // Root `array` and the element value during key string allocation and property creation.
+    //
+    // This matters in particular for Proxy `ownKeys` trap results, where keys can be freshly
+    // allocated and not reachable from any other heap object until inserted into the output array.
+    let mut idx_scope = scope.reborrow();
+    idx_scope.push_roots(&[Value::Object(array), value])?;
+
+    let idx_s = idx_scope.alloc_string(&i.to_string())?;
+    idx_scope.push_root(Value::String(idx_s))?;
+    let idx_key = PropertyKey::from_string(idx_s);
+
+    idx_scope.create_data_property_or_throw(array, idx_key, value)?;
   }
 
   Ok(Value::Object(array))
