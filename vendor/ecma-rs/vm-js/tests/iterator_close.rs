@@ -87,3 +87,78 @@ fn iterator_close_return_non_object_throws_type_error() {
   assert_eq!(value, Value::Bool(true));
 }
 
+#[test]
+fn iterator_close_calls_return_on_array_destructuring() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      var closed = false;
+      var iterable = {};
+      iterable[Symbol.iterator] = function () {
+        var i = 0;
+        return {
+          next: function () { return { value: i++, done: false }; },
+          "return": function () { closed = true; return {}; }
+        };
+      };
+      var x;
+      var [x] = iterable;
+      closed
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn iterator_close_return_throw_overrides_array_destructuring() {
+  let mut rt = new_runtime();
+  let err = rt
+    .exec_script(
+      r#"
+      var iterable = {};
+      iterable[Symbol.iterator] = function () {
+        return {
+          next: function () { return { value: 1, done: false }; },
+          "return": function () { throw "close"; }
+        };
+      };
+      var x;
+      var [x] = iterable;
+    "#,
+    )
+    .unwrap_err();
+
+  let thrown = err
+    .thrown_value()
+    .unwrap_or_else(|| panic!("expected thrown exception, got {err:?}"));
+  assert_value_is_utf8(&rt, thrown, "close");
+}
+
+#[test]
+fn iterator_close_return_non_object_throws_type_error_in_array_destructuring() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      var ok = false;
+      var iterable = {};
+      iterable[Symbol.iterator] = function () {
+        return {
+          next: function () { return { value: 1, done: false }; },
+          "return": function () { return 1; }
+        };
+      };
+      try {
+        var x;
+        var [x] = iterable;
+      } catch (e) {
+        ok = e && e.name === "TypeError";
+      }
+      ok
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
