@@ -16,6 +16,16 @@ pub enum ValidationError {
     field: String,
     value: String,
   },
+  InvalidPropertyValue {
+    api: String,
+    field: String,
+    value: String,
+  },
+  UnknownApiReference {
+    api: String,
+    field: String,
+    referenced: String,
+  },
   InvalidDependsOnArgsIndex {
     api: String,
     index: usize,
@@ -42,6 +52,17 @@ impl fmt::Display for ValidationError {
       ValidationError::UnknownEnumString { api, field, value } => {
         write!(f, "API `{api}` has unknown value `{value}` for `{field}`")
       }
+      ValidationError::InvalidPropertyValue { api, field, value } => {
+        write!(f, "API `{api}` has invalid value `{value}` for `{field}`")
+      }
+      ValidationError::UnknownApiReference {
+        api,
+        field,
+        referenced,
+      } => write!(
+        f,
+        "API `{api}` references unknown API `{referenced}` in `{field}`"
+      ),
       ValidationError::InvalidDependsOnArgsIndex { api, index } => {
         write!(f, "API `{api}` has invalid depends_on_args index {index}")
       }
@@ -131,7 +152,8 @@ fn get_property_path<'a>(
     }
   }
 
-  // For resilience, also accept dotted key spellings (e.g. `parallel.forbid_may_throw`).
+  // Keep validation resilient by accepting both nested + dotted spellings (e.g. `encoding.output`,
+  // `parallel.forbid_may_throw`).
   if path.len() > 1 {
     let dotted = path.join(".");
     return props.get(&dotted);
@@ -140,25 +162,35 @@ fn get_property_path<'a>(
   None
 }
 
+fn parse_bool(raw: &JsonValue) -> Option<bool> {
+  raw.as_bool().or_else(|| match raw.as_str()? {
+    "true" | "True" | "TRUE" => Some(true),
+    "false" | "False" | "FALSE" => Some(false),
+    _ => None,
+  })
+}
+
+fn value_as_token(raw: &JsonValue) -> String {
+  raw
+    .as_str()
+    .map(|s| s.to_string())
+    .unwrap_or_else(|| raw.to_string())
+}
+
 fn validate_boolish_property(
   api: &ApiSemantics,
   field: &str,
   value: &JsonValue,
   errors: &mut Vec<ValidationError>,
 ) {
-  if value.as_bool().is_some() {
+  if parse_bool(value).is_some() {
     return;
   }
-  if let Some(s) = value.as_str() {
-    if matches!(s, "true" | "True" | "TRUE" | "false" | "False" | "FALSE") {
-      return;
-    }
-  }
 
-  errors.push(ValidationError::UnknownEnumString {
+  errors.push(ValidationError::InvalidPropertyValue {
     api: api.name.clone(),
     field: field.to_string(),
-    value: value.to_string(),
+    value: value_as_token(value),
   });
 }
 
@@ -324,9 +356,67 @@ pub fn validate(db: &ApiDatabase) -> Result<(), Vec<ValidationError>> {
       }
     }
 
+    // Validate property schemas consumed by optimization passes.
+    if let Some(value) = get_property_path(&api.properties, &["output", "length_relation"]) {
+      if let Some(value) = value.as_str() {
+        if !matches!(value, "same_as_input" | "le_input" | "unknown") {
+          errors.push(ValidationError::InvalidPropertyValue {
+            api: api.name.clone(),
+            field: "output.length_relation".to_string(),
+            value: value.to_string(),
+          });
+        }
+      } else {
+        errors.push(ValidationError::InvalidPropertyValue {
+          api: api.name.clone(),
+          field: "output.length_relation".to_string(),
+          value: value_as_token(value),
+        });
+      }
+    }
+
+    if let Some(raw) = get_property_path(&api.properties, &["fusion", "fusable_with"]) {
+      let mut refs = Vec::<String>::new();
+      if let Some(name) = raw.as_str() {
+        refs.push(name.to_string());
+      } else if let Some(items) = raw.as_array() {
+        for item in items {
+          let Some(name) = item.as_str() else {
+            errors.push(ValidationError::InvalidPropertyValue {
+              api: api.name.clone(),
+              field: "fusion.fusable_with".to_string(),
+              value: value_as_token(item),
+            });
+            continue;
+          };
+          refs.push(name.to_string());
+        }
+      } else {
+        errors.push(ValidationError::InvalidPropertyValue {
+          api: api.name.clone(),
+          field: "fusion.fusable_with".to_string(),
+          value: value_as_token(raw),
+        });
+      }
+
+      for referenced in refs {
+        if db.canonical_name(&referenced).is_none() {
+          errors.push(ValidationError::UnknownApiReference {
+            api: api.name.clone(),
+            field: "fusion.fusable_with".to_string(),
+            referenced,
+          });
+        }
+      }
+    }
+
     // Validate boolean-ish metadata that `effect-js` interprets for parallelism/associativity.
     for (path, field) in [
       (&["parallel", "requires_callback_pure"][..], "parallel.requires_callback_pure"),
+      (
+        &["parallel", "requires_callback_associative"][..],
+        "parallel.requires_callback_associative",
+      ),
       (&["parallel", "forbid_uses_index"][..], "parallel.forbid_uses_index"),
       (&["parallel", "forbid_uses_array"][..], "parallel.forbid_uses_array"),
       (&["parallel", "forbid_may_throw"][..], "parallel.forbid_may_throw"),
@@ -706,6 +796,59 @@ mod tests {
     assert!(errs.iter().any(|e| matches!(
       e,
       ValidationError::UnknownEnumString { field, .. } if field == "encoding.output"
+    )));
+  }
+
+  #[test]
+  fn validates_output_length_relation_enum() {
+    let db = ApiDatabase::from_entries([api(
+      "Array.prototype.map",
+      EffectTemplate::Custom(EffectSet::ALLOCATES),
+      PurityTemplate::Pure,
+      &[(
+        "output",
+        JsonValue::Object(
+          [(
+            "length_relation".to_string(),
+            JsonValue::String("definitely_not_valid".to_string()),
+          )]
+          .into_iter()
+          .collect(),
+        ),
+      )],
+    )]);
+
+    let errs = validate(&db).unwrap_err();
+    assert!(errs.iter().any(|e| matches!(
+      e,
+      ValidationError::InvalidPropertyValue { field, .. } if field == "output.length_relation"
+    )));
+  }
+
+  #[test]
+  fn validates_fusion_fusable_with_references() {
+    let db = ApiDatabase::from_entries([api(
+      "Array.prototype.map",
+      EffectTemplate::Custom(EffectSet::ALLOCATES),
+      PurityTemplate::Pure,
+      &[(
+        "fusion",
+        JsonValue::Object(
+          [(
+            "fusable_with".to_string(),
+            JsonValue::String("Array.prototype.nope".to_string()),
+          )]
+          .into_iter()
+          .collect(),
+        ),
+      )],
+    )]);
+
+    let errs = validate(&db).unwrap_err();
+    assert!(errs.iter().any(|e| matches!(
+      e,
+      ValidationError::UnknownApiReference { referenced, field, .. }
+        if field == "fusion.fusable_with" && referenced == "Array.prototype.nope"
     )));
   }
 

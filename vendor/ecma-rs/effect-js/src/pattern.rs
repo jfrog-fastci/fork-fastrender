@@ -538,6 +538,7 @@ fn visit_expr(
     ExprKind::Yield { expr: Some(expr), .. } => visit_expr(lowered, names, body_id, body, *expr, out),
     ExprKind::Yield { expr: None, .. } => {}
     ExprKind::TypeAssertion { expr, .. } => visit_expr(lowered, names, body_id, body, *expr, out),
+    ExprKind::Instantiation { expr, .. } => visit_expr(lowered, names, body_id, body, *expr, out),
     ExprKind::Satisfies { expr, .. } => visit_expr(lowered, names, body_id, body, *expr, out),
     ExprKind::ImportCall { argument, attributes } => {
       visit_expr(lowered, names, body_id, body, *argument, out);

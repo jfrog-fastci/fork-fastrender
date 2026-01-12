@@ -210,6 +210,8 @@ mod tests {
       callback_may_throw: Some(false),
       callback_is_pure: Some(true),
       callback_is_associative: Some(true),
+      callback_uses_index: Some(false),
+      callback_uses_array: Some(false),
       ..Default::default()
     };
     assert!(is_parallelizable(reduce, &callsite));
@@ -264,6 +266,7 @@ mod tests {
       callback_is_associative: Some(false),
       callback_uses_index: Some(false),
       callback_uses_array: Some(false),
+      ..Default::default()
     };
     assert!(!is_parallelizable(reduce, &non_associative));
 
@@ -272,6 +275,7 @@ mod tests {
       callback_is_associative: Some(true),
       callback_uses_index: Some(false),
       callback_uses_array: Some(false),
+      ..Default::default()
     };
     assert!(is_parallelizable(reduce, &associative));
   }

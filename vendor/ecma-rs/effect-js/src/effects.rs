@@ -139,6 +139,7 @@ impl<'a> EffectsAnalyzer<'a> {
       ExprKind::Super | ExprKind::ImportMeta | ExprKind::NewTarget => (EffectSet::empty(), Purity::Pure),
 
       ExprKind::TypeAssertion { expr, .. }
+      | ExprKind::Instantiation { expr, .. }
       | ExprKind::NonNull { expr }
       | ExprKind::Satisfies { expr, .. } => self.analyze_expr(*expr),
 
