@@ -72,6 +72,22 @@ prlimit --version
 
 **Context:** Hundreds of concurrent coding agents on one system (192 vCPU, 1.5TB RAM, 110TB disk).
 
+### Assume every process can misbehave
+
+This codebase implements a JavaScript engine — code designed to execute arbitrary, potentially hostile programs. **Any test or binary can hang, explode memory, or refuse to terminate:**
+
+- Parser bugs can cause infinite loops or exponential backtracking
+- Runtime tests can trigger `while(true){}` in generated code
+- LLVM compilation can hang on pathological IR
+- Tests that worked yesterday can regress into livelocks today
+
+**Every command needs hard external limits that the code being run cannot bypass:**
+- `timeout -k 10 <seconds>` — time limit with **guaranteed SIGKILL** (plain `timeout` sends SIGTERM which can be ignored)
+- Memory limits via `run_limited.sh` / `cargo_agent.sh` (kernel-enforced)
+- Scoped builds/tests (don't compile the universe)
+
+If something exceeds limits, that's a **bug to investigate** — not a limit to raise.
+
 **Critical constraint:** RAM. Too many concurrent memory-heavy processes will OOM-kill everything.
 
 **Not a constraint:** CPU and disk I/O. Scheduler handles contention fine. Don't be overly conservative.
@@ -82,16 +98,22 @@ already `cd vendor/ecma-rs`, drop the `vendor/ecma-rs/` prefix from paths (scrip
 
 ### Rules
 
-**1. Always use the wrapper scripts:**
+**1. Always use timeout + wrapper scripts:**
 ```bash
-# CORRECT:
-bash vendor/ecma-rs/scripts/cargo_agent.sh build --release -p native-js
-bash vendor/ecma-rs/scripts/cargo_agent.sh test -p effect-js --lib
+# CORRECT — time limit + memory limit + scoped:
+timeout -k 10 600 bash vendor/ecma-rs/scripts/cargo_agent.sh build --release -p native-js
+timeout -k 10 600 bash vendor/ecma-rs/scripts/cargo_agent.sh test -p effect-js --lib
 
-# WRONG (will spawn uncontrolled parallelism):
+# WRONG — no time limit (can hang forever):
+bash vendor/ecma-rs/scripts/cargo_agent.sh build --release -p native-js
+
+# WRONG — no wrapper (uncontrolled parallelism + no memory limit):
 cargo build
 cargo test
 ```
+
+The `-k 10` is critical: it sends SIGKILL 10 seconds after SIGTERM if the process doesn't exit.
+Plain `timeout` only sends SIGTERM, which pathological code can catch and ignore forever.
 
 The wrapper (`vendor/ecma-rs/scripts/cargo_agent.sh`) `cd`s into `vendor/ecma-rs/` and delegates to
 the top-level `scripts/cargo_agent.sh` wrapper. It enforces:
@@ -101,28 +123,28 @@ the top-level `scripts/cargo_agent.sh` wrapper. It enforces:
 
 **2. Scope your cargo commands:**
 ```bash
-# CORRECT (scoped to specific crate):
-bash vendor/ecma-rs/scripts/cargo_agent.sh test -p native-js --lib
-bash vendor/ecma-rs/scripts/cargo_agent.sh build -p effect-js
+# CORRECT (scoped to specific crate + timeout):
+timeout -k 10 600 bash vendor/ecma-rs/scripts/cargo_agent.sh test -p native-js --lib
+timeout -k 10 600 bash vendor/ecma-rs/scripts/cargo_agent.sh build -p effect-js
 
-# WRONG (compiles entire workspace):
+# WRONG (compiles entire workspace — combinatorial explosion):
 bash vendor/ecma-rs/scripts/cargo_agent.sh build --all
 bash vendor/ecma-rs/scripts/cargo_agent.sh test
 ```
 
-**3. LLVM operations need extra RAM:**
+**3. LLVM operations need extra RAM + longer timeouts:**
 
-LLVM compilation is memory-hungry. Use the LLVM wrapper for native codegen:
+LLVM compilation is memory-hungry and can hang on pathological IR. Use the LLVM wrapper for native codegen:
 ```bash
-# Preferred: use the LLVM wrapper (sets 96GB limit automatically):
-bash vendor/ecma-rs/scripts/cargo_llvm.sh build -p native-js
-bash vendor/ecma-rs/scripts/cargo_llvm.sh test -p native-js --lib
+# Preferred: LLVM wrapper (96GB limit) + timeout:
+timeout -k 10 900 bash vendor/ecma-rs/scripts/cargo_llvm.sh build -p native-js
+timeout -k 10 900 bash vendor/ecma-rs/scripts/cargo_llvm.sh test -p native-js --lib
 
 # Or set manually:
-FASTR_CARGO_LIMIT_AS=96G bash vendor/ecma-rs/scripts/cargo_agent.sh test -p native-js --lib
+timeout -k 10 900 FASTR_CARGO_LIMIT_AS=96G bash vendor/ecma-rs/scripts/cargo_agent.sh test -p native-js --lib
 
-# For full release builds with LTO (very hungry):
-FASTR_CARGO_LIMIT_AS=128G bash vendor/ecma-rs/scripts/cargo_agent.sh build --release -p native-js
+# For full release builds with LTO (very hungry, longer timeout):
+timeout -k 10 1800 FASTR_CARGO_LIMIT_AS=128G bash vendor/ecma-rs/scripts/cargo_agent.sh build --release -p native-js
 ```
 
 **Frame pointers are mandatory for runtime-native stack walking:**
@@ -145,13 +167,19 @@ bash vendor/ecma-rs/scripts/cargo_agent.sh build ...
 FASTR_CARGO_JOBS=8 bash vendor/ecma-rs/scripts/cargo_agent.sh test ...
 ```
 
-**5. Long-running processes need timeouts:**
-```bash
-# Running compiled binaries - always with limits:
-bash vendor/ecma-rs/scripts/run_limited.sh --as 32G --cpu 300 -- ./vendor/ecma-rs/target/release/my_binary
+**5. ALL processes need time limits (not just "long-running"):**
 
-# Don't run indefinitely:
+Any process can hang — including ones that "should" be fast. Always use `timeout -k`:
+```bash
+# CORRECT — timeout with SIGKILL fallback + memory limit:
+timeout -k 10 600 bash vendor/ecma-rs/scripts/run_limited.sh --as 32G -- \
+  ./vendor/ecma-rs/target/release/my_binary
+
+# WRONG — no SIGKILL fallback (process can ignore SIGTERM forever):
 timeout 600 bash vendor/ecma-rs/scripts/run_limited.sh --as 32G -- ./vendor/ecma-rs/target/release/my_binary
+
+# WRONG — no time limit at all:
+bash vendor/ecma-rs/scripts/run_limited.sh --as 32G -- ./vendor/ecma-rs/target/release/my_binary
 ```
 
 **6. Clean up disk when over budget:**
@@ -188,21 +216,24 @@ fi
 
 ### Quick Reference
 
+**Every command needs `timeout -k` — no exceptions:**
+
 ```bash
 # Standard build/test (most operations):
-bash vendor/ecma-rs/scripts/cargo_agent.sh build -p <crate>
-bash vendor/ecma-rs/scripts/cargo_agent.sh test -p <crate> --lib
+timeout -k 10 600 bash vendor/ecma-rs/scripts/cargo_agent.sh build -p <crate>
+timeout -k 10 600 bash vendor/ecma-rs/scripts/cargo_agent.sh test -p <crate> --lib
 
-# LLVM-heavy operations (native-js, runtime-native):
-bash vendor/ecma-rs/scripts/cargo_llvm.sh build -p native-js
-bash vendor/ecma-rs/scripts/cargo_llvm.sh test -p native-js --lib
+# LLVM-heavy operations (native-js, runtime-native) — longer timeout:
+timeout -k 10 900 bash vendor/ecma-rs/scripts/cargo_llvm.sh build -p native-js
+timeout -k 10 900 bash vendor/ecma-rs/scripts/cargo_llvm.sh test -p native-js --lib
 # (This wrapper also injects `-C force-frame-pointers=yes` for runtime-native stack walking.)
 
 # Or with explicit limit:
-FASTR_CARGO_LIMIT_AS=96G bash vendor/ecma-rs/scripts/cargo_agent.sh <command>
+timeout -k 10 900 FASTR_CARGO_LIMIT_AS=96G bash vendor/ecma-rs/scripts/cargo_agent.sh <command>
 
 # Running binaries:
-bash vendor/ecma-rs/scripts/run_limited.sh --as 32G --cpu 300 -- ./vendor/ecma-rs/target/release/binary
+timeout -k 10 600 bash vendor/ecma-rs/scripts/run_limited.sh --as 32G -- \
+  ./vendor/ecma-rs/target/release/binary
 
 # Check if target/ needs cleaning:
 du -sh vendor/ecma-rs/target/

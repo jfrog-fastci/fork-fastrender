@@ -11,8 +11,24 @@ Assumptions:
 ## Cargo usage (non-negotiable in this monorepo)
 
 This repository is vendored into a multi-agent monorepo. **Never run `cargo` directly** here—always
-use the resource-limited wrappers:
+use the resource-limited wrappers **with `timeout -k`**:
 
+```bash
+# CORRECT — time limit (with SIGKILL fallback) + memory limit + scoped:
+timeout -k 10 600 bash ./scripts/cargo_agent.sh test -p typecheck-ts --lib
+timeout -k 10 900 bash ./scripts/cargo_llvm.sh build -p native-js
+
+# WRONG — no time limit (can hang forever on pathological code):
+bash ./scripts/cargo_agent.sh test -p typecheck-ts --lib
+
+# WRONG — no wrapper (uncontrolled parallelism + no memory limit):
+cargo test
+```
+
+The `-k 10` sends SIGKILL 10 seconds after SIGTERM if the process doesn't exit. Plain `timeout` only
+sends SIGTERM, which pathological code (infinite loops, livelocks, signal handlers) can ignore forever.
+
+**Wrappers:**
 - Standard build/test/check: `bash ./scripts/cargo_agent.sh <subcommand> ...`
 - LLVM-heavy crates (e.g. `native-js`, `runtime-native`): `bash ./scripts/cargo_llvm.sh <subcommand> ...`
   (higher RAM cap + LLVM env)
@@ -785,7 +801,8 @@ Assume a “one-shot” rebuild with unlimited resources. The phases below are *
   - stable codes + labels + notes
 - Make the workspace **build/test green**:
   - eliminate drift/rot between crates by stabilizing AST/HIR boundaries
-  - enforce `bash scripts/cargo_agent.sh check --workspace` and `bash scripts/cargo_agent.sh test --workspace` in CI
+  - enforce `timeout -k 10 900 bash scripts/cargo_agent.sh check --workspace` and
+    `timeout -k 10 900 bash scripts/cargo_agent.sh test --workspace` in CI
 - Add `tracing` instrumentation policy and a `--profile` JSON output mode in `typecheck-ts-harness`.
 
 ### Phase B — Unified semantics (`semantic-js`) + stable IDs (`hir-js`)
