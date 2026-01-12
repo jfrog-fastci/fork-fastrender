@@ -90,3 +90,53 @@ fn yield_star_over_array_delegates_values() -> Result<(), VmError> {
   assert_eq!(v, Value::Bool(true));
   Ok(())
 }
+
+#[test]
+fn yield_star_yields_iterator_result_object_directly() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let script = r#"
+    var valueGetterCalls = 0;
+
+    var iterResult = {};
+    Object.defineProperty(iterResult, "done", { value: false });
+    Object.defineProperty(iterResult, "value", {
+      get: function () {
+        valueGetterCalls++;
+        return 1;
+      }
+    });
+    iterResult.extra = 123;
+
+    var nextCount = 0;
+    var iterator = {
+      next: function () {
+        nextCount++;
+        if (nextCount === 1) return iterResult;
+        return { value: 2, done: true };
+      }
+    };
+    var iterable = {};
+    iterable[Symbol.iterator] = function () { return iterator; };
+
+    function* g() { yield* iterable; }
+
+    var it = g();
+    var r1 = it.next();
+    var ok1 =
+      r1 === iterResult &&
+      r1.extra === 123 &&
+      valueGetterCalls === 0;
+    var v = r1.value;
+    var ok2 = v === 1 && valueGetterCalls === 1;
+
+    var r2 = it.next();
+    var ok3 = r2.done === true && r2.value === undefined;
+
+    ok1 && ok2 && ok3
+  "#;
+
+  let v = rt.exec_script(script)?;
+  assert_eq!(v, Value::Bool(true));
+  Ok(())
+}

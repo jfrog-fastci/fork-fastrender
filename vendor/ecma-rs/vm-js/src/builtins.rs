@@ -11652,6 +11652,7 @@ pub fn generator_prototype_next(
     GeneratorResumeInput::Next(arg0),
   )? {
     GeneratorResumeOutcome::Yield(v) => create_iterator_result_object(vm, scope, v, false),
+    GeneratorResumeOutcome::YieldIteratorResult(v) => Ok(v),
     GeneratorResumeOutcome::Done(v) => create_iterator_result_object(vm, scope, v, true),
   }
 }
@@ -11682,6 +11683,7 @@ pub fn generator_prototype_return(
     GeneratorResumeInput::Return(arg0),
   )? {
     GeneratorResumeOutcome::Yield(v) => create_iterator_result_object(vm, scope, v, false),
+    GeneratorResumeOutcome::YieldIteratorResult(v) => Ok(v),
     GeneratorResumeOutcome::Done(v) => create_iterator_result_object(vm, scope, v, true),
   }
 }
@@ -11712,6 +11714,7 @@ pub fn generator_prototype_throw(
     GeneratorResumeInput::Throw(arg0),
   )? {
     GeneratorResumeOutcome::Yield(v) => create_iterator_result_object(vm, scope, v, false),
+    GeneratorResumeOutcome::YieldIteratorResult(v) => Ok(v),
     GeneratorResumeOutcome::Done(v) => create_iterator_result_object(vm, scope, v, true),
   }
 }

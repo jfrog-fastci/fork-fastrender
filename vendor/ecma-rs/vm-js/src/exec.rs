@@ -10174,8 +10174,14 @@ impl Trace for GenFrame {
 }
 
 #[derive(Debug)]
+enum GenYield {
+  Value(Value),
+  IteratorResult(Value),
+}
+
+#[derive(Debug)]
 struct GenSuspend {
-  yield_value: Value,
+  yielded: GenYield,
   frames: VecDeque<GenFrame>,
 }
 
@@ -24184,6 +24190,7 @@ pub(crate) enum GeneratorResumeInput {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) enum GeneratorResumeOutcome {
   Yield(Value),
+  YieldIteratorResult(Value),
   Done(Value),
 }
 
@@ -24978,7 +24985,7 @@ fn gen_eval_expr(
         );
       if is_synthetic_undefined {
         return Ok(GenEval::Suspend(GenSuspend {
-          yield_value: Value::Undefined,
+          yielded: GenYield::Value(Value::Undefined),
           frames: VecDeque::new(),
         }));
       }
@@ -24986,7 +24993,7 @@ fn gen_eval_expr(
       match gen_eval_expr(evaluator, scope, &unary.stx.argument)? {
         GenEval::Complete(c) => match c {
           Completion::Normal(v) => Ok(GenEval::Suspend(GenSuspend {
-            yield_value: v.unwrap_or(Value::Undefined),
+            yielded: GenYield::Value(v.unwrap_or(Value::Undefined)),
             frames: VecDeque::new(),
           })),
           abrupt => Ok(GenEval::Complete(abrupt)),
@@ -25184,15 +25191,18 @@ fn gen_yield_star_begin(
       iter_result,
     )?;
 
-    let value = iterator::iterator_value(
-      evaluator.vm,
-      &mut *evaluator.host,
-      &mut *evaluator.hooks,
-      &mut iter_scope,
-      iter_result,
-    )?;
-
-    (iterator_record, done, value)
+    if done {
+      let value = iterator::iterator_value(
+        evaluator.vm,
+        &mut *evaluator.host,
+        &mut *evaluator.hooks,
+        &mut iter_scope,
+        iter_result,
+      )?;
+      (iterator_record, done, value)
+    } else {
+      (iterator_record, done, iter_result)
+    }
   };
 
   if done {
@@ -25208,7 +25218,7 @@ fn gen_yield_star_begin(
   gen_frames_push(&mut frames, GenFrame::YieldStar { iterator_record })?;
 
   Ok(GenEval::Suspend(GenSuspend {
-    yield_value: value,
+    yielded: GenYield::IteratorResult(value),
     frames,
   }))
 }
@@ -25771,7 +25781,7 @@ fn gen_resume_from_frames(
       GenFrame::YieldAfterOperand => match state {
         Completion::Normal(v) => {
           return Ok(GenEval::Suspend(GenSuspend {
-            yield_value: v.unwrap_or(Value::Undefined),
+            yielded: GenYield::Value(v.unwrap_or(Value::Undefined)),
             frames,
           }))
         }
@@ -25822,21 +25832,20 @@ fn gen_resume_from_frames(
             }
           };
 
-          let value = match iterator::iterator_value(
-            evaluator.vm,
-            &mut *evaluator.host,
-            &mut *evaluator.hooks,
-            scope,
-            iter_result,
-          ) {
-            Ok(v) => v,
-            Err(err) => {
-              state = gen_error_to_completion(evaluator, scope, err)?;
-              continue;
-            }
-          };
-
           if done {
+            let value = match iterator::iterator_value(
+              evaluator.vm,
+              &mut *evaluator.host,
+              &mut *evaluator.hooks,
+              scope,
+              iter_result,
+            ) {
+              Ok(v) => v,
+              Err(err) => {
+                state = gen_error_to_completion(evaluator, scope, err)?;
+                continue;
+              }
+            };
             state = Completion::normal(value);
             continue;
           }
@@ -25845,7 +25854,7 @@ fn gen_resume_from_frames(
           gen_frames_push(&mut out_frames, GenFrame::YieldStar { iterator_record })?;
           out_frames.append(&mut frames);
           return Ok(GenEval::Suspend(GenSuspend {
-            yield_value: value,
+            yielded: GenYield::IteratorResult(iter_result),
             frames: out_frames,
           }));
         }
@@ -26434,7 +26443,10 @@ pub(crate) fn generator_resume(
             scope
               .heap_mut()
               .generator_set_continuation(gen_obj, Some(cont))?;
-            Ok(GeneratorResumeOutcome::Yield(suspend.yield_value))
+            Ok(match suspend.yielded {
+              GenYield::Value(v) => GeneratorResumeOutcome::Yield(v),
+              GenYield::IteratorResult(v) => GeneratorResumeOutcome::YieldIteratorResult(v),
+            })
           }
           Ok(GenEval::Complete(completion)) => {
             cont.env.teardown(scope.heap_mut());
@@ -26516,7 +26528,10 @@ pub(crate) fn generator_resume(
           scope
             .heap_mut()
             .generator_set_continuation(gen_obj, Some(cont))?;
-          Ok(GeneratorResumeOutcome::Yield(suspend.yield_value))
+          Ok(match suspend.yielded {
+            GenYield::Value(v) => GeneratorResumeOutcome::Yield(v),
+            GenYield::IteratorResult(v) => GeneratorResumeOutcome::YieldIteratorResult(v),
+          })
         }
         Ok(GenEval::Complete(completion)) => {
           cont.env.teardown(scope.heap_mut());
