@@ -71,8 +71,6 @@ impl VmJsBrowserTabExecutor {
       document_url: "about:blank".to_string(),
       document_referrer_policy: ReferrerPolicy::default(),
       session_storage_namespace: WindowRealmConfig::new("about:blank").session_storage_namespace,
-      document_referrer_policy: ReferrerPolicy::default(),
-      session_storage_namespace: WindowRealmConfig::new("about:blank").session_storage_namespace,
       pending_module_evaluation: None,
       pending_navigation: None,
       diagnostics: None,
