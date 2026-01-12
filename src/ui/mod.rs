@@ -109,10 +109,11 @@ pub use url::{
 pub use wgpu_pixmap_texture::WgpuPixmapTexture;
 
 pub use omnibox::{
-  build_omnibox_suggestions, BookmarkEntry, BookmarksProvider, BrowserBookmarks, ClosedTabsProvider,
+  build_omnibox_suggestions, build_omnibox_suggestions_default_limit, AboutPagesProvider,
+  BookmarkEntry, BookmarksProvider, BrowserBookmarks, ClosedTabsProvider, DEFAULT_OMNIBOX_LIMIT,
   OmniboxAction, OmniboxContext, OmniboxProvider, OmniboxSearchSource, OmniboxSuggestion,
-  OmniboxSuggestionSource, OmniboxUrlSource, OpenTabsProvider, RemoteSearchSuggestCache,
-  RemoteSearchSuggestProvider, VisitedProvider,
+  OmniboxSuggestionSource, OmniboxUrlSource, OpenTabsProvider, PrimaryActionProvider,
+  RemoteSearchSuggestCache, RemoteSearchSuggestProvider, VisitedProvider,
 };
 pub use browser_app::{
   AppUpdate, BrowserAppState, BrowserTabState, ChromeState, ClosedTabState, FrameReadyUpdate,

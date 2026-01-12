@@ -1,5 +1,7 @@
 use crate::ui::browser_app::{BrowserTabState, ClosedTabState};
+use crate::ui::url::{resolve_omnibox_input, OmniboxInputResolution};
 use crate::ui::messages::TabId;
+use crate::ui::about_pages;
 use crate::ui::visited::VisitedUrlStore;
 use std::cmp::Ordering;
 use std::collections::HashSet;
@@ -48,6 +50,7 @@ pub enum OmniboxAction {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum OmniboxUrlSource {
+  About,
   Bookmark,
   OpenTab,
   ClosedTab,
@@ -73,6 +76,7 @@ pub struct OmniboxSuggestion {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum OmniboxSuggestionSource {
+  Primary,
   Url(OmniboxUrlSource),
   Search(OmniboxSearchSource),
 }
@@ -151,6 +155,80 @@ impl RemoteSearchSuggestCache {
 // -----------------------------------------------------------------------------
 // Providers
 // -----------------------------------------------------------------------------
+
+pub struct PrimaryActionProvider;
+
+impl OmniboxProvider for PrimaryActionProvider {
+  fn suggestions(&self, _ctx: &OmniboxContext<'_>, input: &str) -> Vec<OmniboxSuggestion> {
+    let input = input.trim();
+    if input.is_empty() {
+      return Vec::new();
+    }
+
+    let suggestion = match resolve_omnibox_input(input) {
+      Ok(OmniboxInputResolution::Url { url }) => OmniboxSuggestion {
+        action: OmniboxAction::NavigateToUrl(url.clone()),
+        title: None,
+        url: Some(url),
+        source: OmniboxSuggestionSource::Primary,
+      },
+      Ok(OmniboxInputResolution::Search { query, .. }) => OmniboxSuggestion {
+        // Store the raw query in the action; navigation code is responsible for resolving it into
+        // a concrete search engine URL.
+        action: OmniboxAction::Search(query.clone()),
+        title: Some(query),
+        url: None,
+        source: OmniboxSuggestionSource::Primary,
+      },
+      Err(_) => OmniboxSuggestion {
+        action: OmniboxAction::Search(input.to_string()),
+        title: Some(input.to_string()),
+        url: None,
+        source: OmniboxSuggestionSource::Primary,
+      },
+    };
+
+    vec![suggestion]
+  }
+}
+
+pub struct AboutPagesProvider;
+
+impl OmniboxProvider for AboutPagesProvider {
+  fn suggestions(&self, _ctx: &OmniboxContext<'_>, input: &str) -> Vec<OmniboxSuggestion> {
+    let input = input.trim();
+    if input.is_empty() {
+      return Vec::new();
+    }
+    let input_lower = input.to_ascii_lowercase();
+
+    const PAGES: &[(&str, &str)] = &[
+      (about_pages::ABOUT_NEWTAB, "New Tab"),
+      (about_pages::ABOUT_HELP, "Help"),
+      (about_pages::ABOUT_VERSION, "Version"),
+      (about_pages::ABOUT_GPU, "GPU"),
+    ];
+
+    let mut out = Vec::new();
+    for (url, title) in PAGES {
+      let url_lower = url.to_ascii_lowercase();
+      let title_lower = title.to_ascii_lowercase();
+
+      if !url_lower.contains(&input_lower) && !title_lower.contains(&input_lower) {
+        continue;
+      }
+
+      out.push(OmniboxSuggestion {
+        action: OmniboxAction::NavigateToUrl((*url).to_string()),
+        title: Some((*title).to_string()),
+        url: Some((*url).to_string()),
+        source: OmniboxSuggestionSource::Url(OmniboxUrlSource::About),
+      });
+    }
+
+    out
+  }
+}
 
 pub struct OpenTabsProvider;
 
@@ -265,13 +343,30 @@ impl OmniboxProvider for RemoteSearchSuggestProvider {
 // -----------------------------------------------------------------------------
 
 /// Build omnibox suggestions for `input` using the default provider set.
-pub fn build_omnibox_suggestions(ctx: &OmniboxContext<'_>, input: &str) -> Vec<OmniboxSuggestion> {
-  build_omnibox_suggestions_with_providers(ctx, input, default_providers())
+pub const DEFAULT_OMNIBOX_LIMIT: usize = 10;
+
+/// Build omnibox suggestions for `input` using the default provider set, capped at `limit`.
+pub fn build_omnibox_suggestions(
+  ctx: &OmniboxContext<'_>,
+  input: &str,
+  limit: usize,
+) -> Vec<OmniboxSuggestion> {
+  build_omnibox_suggestions_with_providers(ctx, input, limit, default_providers())
+}
+
+/// Build omnibox suggestions using [`DEFAULT_OMNIBOX_LIMIT`].
+pub fn build_omnibox_suggestions_default_limit(
+  ctx: &OmniboxContext<'_>,
+  input: &str,
+) -> Vec<OmniboxSuggestion> {
+  build_omnibox_suggestions(ctx, input, DEFAULT_OMNIBOX_LIMIT)
 }
 
 fn default_providers() -> Vec<Box<dyn OmniboxProvider>> {
   vec![
+    Box::new(PrimaryActionProvider),
     Box::new(OpenTabsProvider),
+    Box::new(AboutPagesProvider),
     Box::new(ClosedTabsProvider),
     Box::new(VisitedProvider),
     Box::new(BookmarksProvider),
@@ -282,6 +377,7 @@ fn default_providers() -> Vec<Box<dyn OmniboxProvider>> {
 fn build_omnibox_suggestions_with_providers(
   ctx: &OmniboxContext<'_>,
   input: &str,
+  limit: usize,
   providers: Vec<Box<dyn OmniboxProvider>>,
 ) -> Vec<OmniboxSuggestion> {
   let input = input.trim();
@@ -309,6 +405,10 @@ fn build_omnibox_suggestions_with_providers(
       out.push(scored.suggestion);
     }
   }
+
+  if out.len() > limit {
+    out.truncate(limit);
+  }
   out
 }
 
@@ -320,7 +420,9 @@ struct ScoredSuggestion {
 
 fn score_suggestion(suggestion: &OmniboxSuggestion, input_lower: &str) -> Option<i64> {
   let base = match suggestion.source {
-    OmniboxSuggestionSource::Url(OmniboxUrlSource::OpenTab) => 3_000,
+    OmniboxSuggestionSource::Primary => 1_000_000,
+    OmniboxSuggestionSource::Url(OmniboxUrlSource::OpenTab) => 4_000,
+    OmniboxSuggestionSource::Url(OmniboxUrlSource::About) => 2_700,
     OmniboxSuggestionSource::Url(OmniboxUrlSource::Bookmark) => 2_500,
     OmniboxSuggestionSource::Url(OmniboxUrlSource::ClosedTab) => 2_000,
     OmniboxSuggestionSource::Url(OmniboxUrlSource::Visited) => 1_000,
@@ -362,7 +464,8 @@ fn compare_scored_suggestions(a: &ScoredSuggestion, b: &ScoredSuggestion) -> Ord
     ord => return ord,
   }
 
-  // Secondary: source (OpenTab > Bookmark > ClosedTab > Visited > Search), consistent with base.
+  // Secondary: source, consistent with base score (Primary > OpenTab > About > Bookmark >
+  // ClosedTab > Visited > Search).
   match suggestion_source_rank(b.suggestion.source).cmp(&suggestion_source_rank(a.suggestion.source)) {
     Ordering::Equal => {}
     ord => return ord,
@@ -377,11 +480,13 @@ fn compare_scored_suggestions(a: &ScoredSuggestion, b: &ScoredSuggestion) -> Ord
 
 fn suggestion_source_rank(source: OmniboxSuggestionSource) -> i64 {
   match source {
+    OmniboxSuggestionSource::Primary => 6,
     OmniboxSuggestionSource::Url(OmniboxUrlSource::OpenTab) => 5,
-    OmniboxSuggestionSource::Url(OmniboxUrlSource::Bookmark) => 4,
-    OmniboxSuggestionSource::Url(OmniboxUrlSource::ClosedTab) => 3,
-    OmniboxSuggestionSource::Url(OmniboxUrlSource::Visited) => 2,
-    OmniboxSuggestionSource::Search(OmniboxSearchSource::RemoteSuggest) => 1,
+    OmniboxSuggestionSource::Url(OmniboxUrlSource::About) => 4,
+    OmniboxSuggestionSource::Url(OmniboxUrlSource::Bookmark) => 3,
+    OmniboxSuggestionSource::Url(OmniboxUrlSource::ClosedTab) => 2,
+    OmniboxSuggestionSource::Url(OmniboxUrlSource::Visited) => 1,
+    OmniboxSuggestionSource::Search(OmniboxSearchSource::RemoteSuggest) => 0,
   }
 }
 
@@ -417,7 +522,7 @@ fn suggestion_sort_key(s: &OmniboxSuggestion) -> SuggestionSortKey {
 // -----------------------------------------------------------------------------
 
 #[cfg(test)]
-  mod tests {
+mod tests {
   use super::*;
 
   #[test]
@@ -457,11 +562,17 @@ fn suggestion_sort_key(s: &OmniboxSuggestion) -> SuggestionSortKey {
       bookmarks: None,
       remote_search_suggest: None,
     };
-    let suggestions = build_omnibox_suggestions(&ctx, "example");
+    let suggestions = build_omnibox_suggestions_default_limit(&ctx, "example");
 
     assert_eq!(
       suggestions,
       vec![
+        OmniboxSuggestion {
+          action: OmniboxAction::Search("example".to_string()),
+          title: Some("example".to_string()),
+          url: None,
+          source: OmniboxSuggestionSource::Primary,
+        },
         OmniboxSuggestion {
           action: OmniboxAction::ActivateTab(tab_a),
           title: Some("Example Domain".to_string()),
@@ -525,23 +636,214 @@ fn suggestion_sort_key(s: &OmniboxSuggestion) -> SuggestionSortKey {
     let a_first = build_omnibox_suggestions_with_providers(
       &ctx,
       "example",
-      vec![Box::new(ProviderVisited), Box::new(ProviderOpenTab)],
+      100,
+      vec![
+        Box::new(ProviderVisited),
+        Box::new(PrimaryActionProvider),
+        Box::new(ProviderOpenTab),
+      ],
     );
     let b_first = build_omnibox_suggestions_with_providers(
       &ctx,
       "example",
-      vec![Box::new(ProviderOpenTab), Box::new(ProviderVisited)],
+      100,
+      vec![
+        Box::new(ProviderOpenTab),
+        Box::new(ProviderVisited),
+        Box::new(PrimaryActionProvider),
+      ],
     );
 
     assert_eq!(a_first, b_first);
     assert_eq!(
       a_first,
-      vec![OmniboxSuggestion {
-        action: OmniboxAction::ActivateTab(TabId(99)),
-        title: Some("Example (tab)".to_string()),
-        url: Some("https://example.com/".to_string()),
-        source: OmniboxSuggestionSource::Url(OmniboxUrlSource::OpenTab),
-      }]
+      vec![
+        OmniboxSuggestion {
+          action: OmniboxAction::Search("example".to_string()),
+          title: Some("example".to_string()),
+          url: None,
+          source: OmniboxSuggestionSource::Primary,
+        },
+        OmniboxSuggestion {
+          action: OmniboxAction::ActivateTab(TabId(99)),
+          title: Some("Example (tab)".to_string()),
+          url: Some("https://example.com/".to_string()),
+          source: OmniboxSuggestionSource::Url(OmniboxUrlSource::OpenTab),
+        }
+      ]
+    );
+  }
+
+  #[test]
+  fn primary_action_is_first_and_uses_resolver() {
+    let open_tabs = Vec::new();
+    let closed_tabs = Vec::new();
+    let visited = VisitedUrlStore::new();
+    let ctx = OmniboxContext {
+      open_tabs: &open_tabs,
+      closed_tabs: &closed_tabs,
+      visited: &visited,
+      active_tab_id: None,
+      bookmarks: None,
+      remote_search_suggest: None,
+    };
+
+    let cats = build_omnibox_suggestions(&ctx, "cats", 10);
+    assert!(
+      cats.first().is_some_and(|s| s.source == OmniboxSuggestionSource::Primary),
+      "expected a primary suggestion for non-empty input"
+    );
+    assert!(
+      cats.iter().filter(|s| s.source == OmniboxSuggestionSource::Primary).count() == 1,
+      "expected exactly one primary suggestion"
+    );
+    assert!(
+      matches!(cats[0].action, OmniboxAction::Search(ref q) if q == "cats"),
+      "expected primary action for `cats` to be Search"
+    );
+
+    let example = build_omnibox_suggestions(&ctx, "example.com", 10);
+    assert!(
+      matches!(example[0].action, OmniboxAction::NavigateToUrl(ref url) if url == "https://example.com/"),
+      "expected primary action for `example.com` to be a navigation"
+    );
+  }
+
+  #[test]
+  fn about_pages_are_suggested() {
+    let open_tabs = Vec::new();
+    let closed_tabs = Vec::new();
+    let visited = VisitedUrlStore::new();
+    let ctx = OmniboxContext {
+      open_tabs: &open_tabs,
+      closed_tabs: &closed_tabs,
+      visited: &visited,
+      active_tab_id: None,
+      bookmarks: None,
+      remote_search_suggest: None,
+    };
+
+    let suggestions = build_omnibox_suggestions(&ctx, "about", 10);
+    for url in [
+      about_pages::ABOUT_NEWTAB,
+      about_pages::ABOUT_HELP,
+      about_pages::ABOUT_VERSION,
+      about_pages::ABOUT_GPU,
+    ] {
+      assert!(
+        suggestions.iter().any(|s| matches!(&s.action, OmniboxAction::NavigateToUrl(u) if u == url)),
+        "expected suggestions for {url}"
+      );
+    }
+
+    let suggestions = build_omnibox_suggestions(&ctx, "help", 10);
+    assert!(
+      suggestions
+        .iter()
+        .any(|s| matches!(&s.action, OmniboxAction::NavigateToUrl(u) if u == about_pages::ABOUT_HELP)),
+      "expected about:help suggestion for input `help`"
+    );
+  }
+
+  #[test]
+  fn limit_is_enforced_after_dedup_and_deterministic() {
+    struct ProviderA;
+    impl OmniboxProvider for ProviderA {
+      fn suggestions(&self, _ctx: &OmniboxContext<'_>, _input: &str) -> Vec<OmniboxSuggestion> {
+        vec![
+          // Duplicate URL should be deduped *before* limiting.
+          OmniboxSuggestion {
+            action: OmniboxAction::NavigateToUrl("https://a.com/".to_string()),
+            title: Some("A2".to_string()),
+            url: Some("https://a.com/".to_string()),
+            source: OmniboxSuggestionSource::Url(OmniboxUrlSource::Visited),
+          },
+          OmniboxSuggestion {
+            action: OmniboxAction::NavigateToUrl("https://a.com/".to_string()),
+            title: Some("A1".to_string()),
+            url: Some("https://a.com/".to_string()),
+            source: OmniboxSuggestionSource::Url(OmniboxUrlSource::Visited),
+          },
+          OmniboxSuggestion {
+            action: OmniboxAction::NavigateToUrl("https://b.com/".to_string()),
+            title: None,
+            url: Some("https://b.com/".to_string()),
+            source: OmniboxSuggestionSource::Url(OmniboxUrlSource::Visited),
+          },
+          OmniboxSuggestion {
+            action: OmniboxAction::NavigateToUrl("https://c.com/".to_string()),
+            title: None,
+            url: Some("https://c.com/".to_string()),
+            source: OmniboxSuggestionSource::Url(OmniboxUrlSource::Visited),
+          },
+        ]
+      }
+    }
+
+    struct ProviderB;
+    impl OmniboxProvider for ProviderB {
+      fn suggestions(&self, _ctx: &OmniboxContext<'_>, _input: &str) -> Vec<OmniboxSuggestion> {
+        vec![
+          OmniboxSuggestion {
+            action: OmniboxAction::NavigateToUrl("https://c.com/".to_string()),
+            title: None,
+            url: Some("https://c.com/".to_string()),
+            source: OmniboxSuggestionSource::Url(OmniboxUrlSource::Visited),
+          },
+          OmniboxSuggestion {
+            action: OmniboxAction::NavigateToUrl("https://b.com/".to_string()),
+            title: None,
+            url: Some("https://b.com/".to_string()),
+            source: OmniboxSuggestionSource::Url(OmniboxUrlSource::Visited),
+          },
+          OmniboxSuggestion {
+            action: OmniboxAction::NavigateToUrl("https://a.com/".to_string()),
+            title: Some("A1".to_string()),
+            url: Some("https://a.com/".to_string()),
+            source: OmniboxSuggestionSource::Url(OmniboxUrlSource::Visited),
+          },
+        ]
+      }
+    }
+
+    let open_tabs = Vec::new();
+    let closed_tabs = Vec::new();
+    let visited = VisitedUrlStore::new();
+    let ctx = OmniboxContext {
+      open_tabs: &open_tabs,
+      closed_tabs: &closed_tabs,
+      visited: &visited,
+      active_tab_id: None,
+      bookmarks: None,
+      remote_search_suggest: None,
+    };
+
+    // Input chosen so all URLs match with the same match score (prefix match on "https").
+    let a = build_omnibox_suggestions_with_providers(
+      &ctx,
+      "https",
+      3,
+      vec![Box::new(PrimaryActionProvider), Box::new(ProviderA)],
+    );
+    let b = build_omnibox_suggestions_with_providers(
+      &ctx,
+      "https",
+      3,
+      vec![Box::new(PrimaryActionProvider), Box::new(ProviderB)],
+    );
+
+    assert_eq!(a, b);
+    assert_eq!(a.len(), 3, "expected hard limit to be enforced");
+    assert_eq!(a[0].source, OmniboxSuggestionSource::Primary);
+    assert_eq!(
+      a[1].url.as_deref(),
+      Some("https://a.com/"),
+      "expected lexicographic ordering for stable suggestions"
+    );
+    assert_eq!(
+      a[2].url.as_deref(),
+      Some("https://b.com/"),
+      "expected dedup to run before truncation"
     );
   }
 }
