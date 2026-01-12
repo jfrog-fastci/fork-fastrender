@@ -1147,6 +1147,21 @@ fn xhr_send_native<Host: WindowRealmHost + 'static>(
   if !async_flag {
     // Synchronous XHR: run the fetch inline and dispatch events synchronously. This keeps FastRender
     // compatible with scripts that still rely on `open(..., false)`.
+
+    // Fire `loadstart` before performing any network work (matches browser-ish behavior and lets
+    // callers abort synchronously before the fetch begins).
+    dispatch_xhr_event(vm, scope, host, hooks, xhr_obj, "loadstart")?;
+    let should_run = with_env_state(env_id, |state| {
+      let xhr = state
+        .xhrs
+        .get(&xhr_id)
+        .ok_or(VmError::TypeError("XMLHttpRequest: invalid backing state"))?;
+      Ok(xhr.send_in_progress && !xhr.aborted && xhr.request_seq == request_seq)
+    })?;
+    if !should_run {
+      return Ok(Value::Undefined);
+    }
+
     let fetch_req = {
       let mut fr = FetchRequest::new(&request.url, FetchDestination::Fetch)
         .with_credentials_mode(credentials_mode);
@@ -1203,9 +1218,13 @@ fn xhr_send_native<Host: WindowRealmHost + 'static>(
         .xhrs
         .get_mut(&xhr_id)
         .ok_or(VmError::TypeError("XMLHttpRequest: invalid backing state"))?;
-      xhr.send_in_progress = false;
-      xhr.ready_state = XHR_DONE;
+      // If the request was aborted/reopened while the fetcher ran, ignore the result.
+      if xhr.request_seq != request_seq || xhr.aborted {
+        return Ok(false);
+      }
       if is_error {
+        xhr.send_in_progress = false;
+        xhr.ready_state = XHR_DONE;
         xhr.status = 0;
         xhr.status_text.clear();
         xhr.response_bytes.clear();
@@ -1225,11 +1244,79 @@ fn xhr_send_native<Host: WindowRealmHost + 'static>(
       return Ok(Value::Undefined);
     }
 
-    let outcome_event: &'static str = if is_error { "error" } else { "load" };
-    let events = ["loadstart", "readystatechange", outcome_event, "loadend"];
+    if is_error {
+      // Terminal state for synchronous error.
+      let _ = with_env_state_mut(env_id, |state| {
+        let xhr = state
+          .xhrs
+          .get_mut(&xhr_id)
+          .ok_or(VmError::TypeError("XMLHttpRequest: invalid backing state"))?;
+        if xhr.request_seq != request_seq || xhr.aborted {
+          return Ok(false);
+        }
+        xhr.ready_state = XHR_DONE;
+        Ok(true)
+      })?;
+      let events = ["readystatechange", "error", "loadend"];
+      for event_type in events {
+        dispatch_xhr_event(vm, scope, host, hooks, xhr_obj, event_type)?;
+      }
+      return Ok(Value::Undefined);
+    }
+
+    // Simulate readyState transitions after successful completion.
+    let should_dispatch_headers = with_env_state_mut(env_id, |state_map| {
+      let xhr = state_map
+        .xhrs
+        .get_mut(&xhr_id)
+        .ok_or(VmError::TypeError("XMLHttpRequest: invalid backing state"))?;
+      if xhr.request_seq != request_seq || xhr.aborted {
+        return Ok(false);
+      }
+      xhr.ready_state = XHR_HEADERS_RECEIVED;
+      Ok(true)
+    })?;
+    if !should_dispatch_headers {
+      return Ok(Value::Undefined);
+    }
+    dispatch_xhr_event(vm, scope, host, hooks, xhr_obj, "readystatechange")?;
+
+    let should_dispatch_loading = with_env_state_mut(env_id, |state_map| {
+      let xhr = state_map
+        .xhrs
+        .get_mut(&xhr_id)
+        .ok_or(VmError::TypeError("XMLHttpRequest: invalid backing state"))?;
+      if xhr.request_seq != request_seq || xhr.aborted {
+        return Ok(false);
+      }
+      xhr.ready_state = XHR_LOADING;
+      Ok(true)
+    })?;
+    if !should_dispatch_loading {
+      return Ok(Value::Undefined);
+    }
+    dispatch_xhr_event(vm, scope, host, hooks, xhr_obj, "readystatechange")?;
+
+    let should_dispatch_done = with_env_state_mut(env_id, |state_map| {
+      let xhr = state_map
+        .xhrs
+        .get_mut(&xhr_id)
+        .ok_or(VmError::TypeError("XMLHttpRequest: invalid backing state"))?;
+      if xhr.request_seq != request_seq || xhr.aborted {
+        return Ok(false);
+      }
+      xhr.ready_state = XHR_DONE;
+      xhr.send_in_progress = false;
+      Ok(true)
+    })?;
+    if !should_dispatch_done {
+      return Ok(Value::Undefined);
+    }
+    let events = ["readystatechange", "load", "loadend"];
     for event_type in events {
       dispatch_xhr_event(vm, scope, host, hooks, xhr_obj, event_type)?;
     }
+
     return Ok(Value::Undefined);
   }
 
@@ -1253,7 +1340,16 @@ fn xhr_send_native<Host: WindowRealmHost + 'static>(
   // Dispatch `loadstart` in its own task so user callbacks never run inside the networking work.
   let queue_loadstart = event_loop.queue_task(TaskSource::Networking, move |host, event_loop| {
     let events = ["loadstart"];
-    dispatch_xhr_events::<Host>(host, event_loop, env_id, xhr_id, request_seq, &events, false)
+    dispatch_xhr_events::<Host>(
+      host,
+      event_loop,
+      env_id,
+      xhr_id,
+      request_seq,
+      None,
+      &events,
+      false,
+    )
   });
 
   if let Err(e) = queue_loadstart {
@@ -1408,16 +1504,122 @@ fn xhr_send_native<Host: WindowRealmHost + 'static>(
       return Ok(());
     }
 
-    // Dispatch events on a follow-up task so user callbacks never run inside the networking work.
+    if !is_timeout && !is_error {
+      // Dispatch readystatechange transitions to mimic browser readyState progression.
+      // Note: since FastRender XHR performs a full-body fetch, these are simulated as discrete
+      // tasks (HEADERS_RECEIVED -> LOADING -> DONE) after the fetch completes.
+      let events_headers = ["readystatechange"];
+      let queue_headers = event_loop.queue_task(TaskSource::Networking, move |host, event_loop| {
+        dispatch_xhr_events::<Host>(
+          host,
+          event_loop,
+          env_id,
+          xhr_id,
+          request_seq,
+          Some(XHR_HEADERS_RECEIVED),
+          &events_headers,
+          false,
+        )
+      });
+      if let Err(queue_err) = queue_headers {
+        // If we couldn't enqueue event dispatch, tear down the persistent root so we don't leak.
+        let root = with_env_state_mut(env_id, |state| {
+          let xhr = state
+            .xhrs
+            .get_mut(&xhr_id)
+            .ok_or(VmError::TypeError("XMLHttpRequest: invalid backing state"))?;
+          Ok(xhr.root.take())
+        })
+        .ok()
+        .flatten();
+        if let Some(root) = root {
+          let window_realm = host.window_realm();
+          window_realm.heap_mut().remove_root(root);
+        }
+        return Err(queue_err);
+      }
+
+      let events_loading = ["readystatechange"];
+      let queue_loading = event_loop.queue_task(TaskSource::Networking, move |host, event_loop| {
+        dispatch_xhr_events::<Host>(
+          host,
+          event_loop,
+          env_id,
+          xhr_id,
+          request_seq,
+          Some(XHR_LOADING),
+          &events_loading,
+          false,
+        )
+      });
+      if let Err(queue_err) = queue_loading {
+        let root = with_env_state_mut(env_id, |state| {
+          let xhr = state
+            .xhrs
+            .get_mut(&xhr_id)
+            .ok_or(VmError::TypeError("XMLHttpRequest: invalid backing state"))?;
+          Ok(xhr.root.take())
+        })
+        .ok()
+        .flatten();
+        if let Some(root) = root {
+          let window_realm = host.window_realm();
+          window_realm.heap_mut().remove_root(root);
+        }
+        return Err(queue_err);
+      }
+
+      let events_done = ["readystatechange", "load", "loadend"];
+      let queue_done = event_loop.queue_task(TaskSource::Networking, move |host, event_loop| {
+        dispatch_xhr_events::<Host>(
+          host,
+          event_loop,
+          env_id,
+          xhr_id,
+          request_seq,
+          Some(XHR_DONE),
+          &events_done,
+          true,
+        )
+      });
+      if let Err(queue_err) = queue_done {
+        let root = with_env_state_mut(env_id, |state| {
+          let xhr = state
+            .xhrs
+            .get_mut(&xhr_id)
+            .ok_or(VmError::TypeError("XMLHttpRequest: invalid backing state"))?;
+          Ok(xhr.root.take())
+        })
+        .ok()
+        .flatten();
+        if let Some(root) = root {
+          let window_realm = host.window_realm();
+          window_realm.heap_mut().remove_root(root);
+        }
+        return Err(queue_err);
+      }
+
+      return Ok(());
+    }
+
+    // Timeout or network error: dispatch terminal events.
     let events: [&'static str; 3] = if is_timeout {
       ["readystatechange", "timeout", "loadend"]
     } else {
-      let outcome_event: &'static str = if is_error { "error" } else { "load" };
-      ["readystatechange", outcome_event, "loadend"]
+      ["readystatechange", "error", "loadend"]
     };
 
     let queue_dispatch = event_loop.queue_task(TaskSource::Networking, move |host, event_loop| {
-      dispatch_xhr_events::<Host>(host, event_loop, env_id, xhr_id, request_seq, &events, true)
+      dispatch_xhr_events::<Host>(
+        host,
+        event_loop,
+        env_id,
+        xhr_id,
+        request_seq,
+        Some(XHR_DONE),
+        &events,
+        true,
+      )
     });
 
     if let Err(queue_err) = queue_dispatch {
@@ -1501,7 +1703,16 @@ fn xhr_abort_native<Host: WindowRealmHost + 'static>(
 
   let events = ["readystatechange", "abort", "loadend"];
   let queue_result = event_loop.queue_task(TaskSource::Networking, move |host, event_loop| {
-    dispatch_xhr_events::<Host>(host, event_loop, env_id, xhr_id, request_seq, &events, true)
+    dispatch_xhr_events::<Host>(
+      host,
+      event_loop,
+      env_id,
+      xhr_id,
+      request_seq,
+      Some(XHR_DONE),
+      &events,
+      true,
+    )
   });
 
   if let Err(e) = queue_result {
@@ -1843,6 +2054,7 @@ fn dispatch_xhr_events<Host: WindowRealmHost + 'static>(
   env_id: u64,
   xhr_id: u64,
   request_seq: u64,
+  ready_state: Option<u8>,
   events: &[&'static str],
   finalize: bool,
 ) -> crate::error::Result<()> {
@@ -1865,6 +2077,9 @@ fn dispatch_xhr_events<Host: WindowRealmHost + 'static>(
         .ok_or(VmError::TypeError("XMLHttpRequest: invalid backing state"))?;
       if xhr.request_seq != request_seq {
         return Ok((Value::Undefined, None));
+      }
+      if let Some(ready_state) = ready_state {
+        xhr.ready_state = ready_state;
       }
       let root_id = xhr.root;
       let root_to_remove = if finalize { xhr.root.take() } else { None };
@@ -2542,6 +2757,46 @@ mod tests {
     assert_eq!(reqs.len(), 1);
     assert_eq!(reqs[0].method, "GET");
     assert_eq!(reqs[0].url, "https://example.invalid/ok");
+    Ok(())
+  }
+
+  #[test]
+  fn xhr_send_fires_readystatechange_transitions() -> crate::Result<()> {
+    let fetcher = Arc::new(MockFetcher::default());
+    let mut host = Host::new(fetcher);
+    let mut event_loop = EventLoop::<Host>::new();
+
+    event_loop.queue_task(TaskSource::Script, |host, event_loop| {
+      let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host);
+      hooks.set_event_loop(event_loop);
+      let (vm_host, window) = host.vm_host_and_window_realm();
+      window.reset_interrupt();
+      let result = window.exec_script_with_host_and_hooks(
+        vm_host,
+        &mut hooks,
+        "globalThis.__log = [];\n\
+         var xhr = new XMLHttpRequest();\n\
+         xhr.open('GET', '/ok', true);\n\
+         xhr.onreadystatechange = function(){ globalThis.__log.push('rs:' + xhr.readyState); };\n\
+         xhr.send();",
+      );
+      if let Some(err) = hooks.finish(window.heap_mut()) {
+        return Err(err);
+      }
+      result.map(|_| ()).map_err(|e| vm_error_to_event_loop_error(window.heap_mut(), e))
+    })?;
+
+    let outcome = event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;
+    assert_eq!(outcome, RunUntilIdleOutcome::Idle);
+
+    let (vm, realm, heap) = host.window.vm_realm_and_heap_mut();
+    let mut scope = heap.scope();
+    let global = realm.global_object();
+    let Value::Object(arr) = get_prop(&mut scope, global, "__log") else {
+      panic!("expected array");
+    };
+    let log = read_log(vm, &mut scope, arr);
+    assert_eq!(log, vec!["rs:2", "rs:3", "rs:4"], "log={log:?}");
     Ok(())
   }
 
