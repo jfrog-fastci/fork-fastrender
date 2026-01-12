@@ -115,7 +115,7 @@ impl<'table, T> OwnedAsyncHandle<'table, T> {
   /// The handle table stores a stable, relocatable pointer to a GC-managed
   /// object. The pointee is **not** owned by the handle table.
   pub fn new(table: &'table HandleTable<T>, ptr: NonNull<T>) -> Self {
-    let id = table.alloc(ptr);
+    let id = table.alloc_movable(ptr);
     Self {
       table,
       id,

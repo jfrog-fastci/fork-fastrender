@@ -6,6 +6,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use crate::sync::GcAwareRwLock;
+use crate::threading::registry;
 
 /// A stable identifier for an entry in a [`HandleTable`].
 ///
@@ -169,9 +170,45 @@ impl<T> HandleTable<T> {
   /// Allocates a new handle for `ptr` and returns its stable [`HandleId`].
   ///
   /// The allocated entry is considered a **GC root** until it is freed via [`HandleTable::free`].
+  ///
+  /// ## Moving-GC safety
+  /// If `ptr` is a **movable** GC-managed pointer and the calling thread is registered, prefer
+  /// [`HandleTable::alloc_movable`] or [`HandleTable::alloc_from_slot`]. Lock contention can
+  /// temporarily enter a GC-safe region, allowing a moving GC to relocate objects; storing a raw
+  /// pointer captured before lock acquisition can become stale.
   pub fn alloc(&self, ptr: NonNull<T>) -> HandleId {
     let mut inner = self.inner.write();
     Self::alloc_inner(&mut *inner, ptr)
+  }
+
+  /// Moving-GC-safe allocation for a raw pointer value on a registered thread.
+  ///
+  /// If lock acquisition blocks on contention, the thread may enter a GC-safe ("NativeSafe") region
+  /// while waiting. A moving GC can then relocate objects. To avoid capturing a stale pre-relocation
+  /// address, this helper temporarily stores `ptr` in the current thread's shadow stack and calls
+  /// [`Self::alloc_from_slot`] so the pointer is read only *after* the lock is acquired.
+  ///
+  /// If the current thread is not registered with the runtime thread registry, this falls back to
+  /// [`Self::alloc`]. In that case the caller must ensure `ptr` is either non-GC-managed or otherwise
+  /// stable (pinned/non-moving) for the duration of the call.
+  pub fn alloc_movable(&self, ptr: NonNull<T>) -> HandleId {
+    let ts = registry::current_thread_state_ptr();
+    if ts.is_null() {
+      return self.alloc(ptr);
+    }
+
+    // SAFETY: `current_thread_state_ptr` returns a valid pointer to the current thread's registered
+    // `ThreadState` (it is null only if the thread is unregistered).
+    let ts = unsafe { &*ts };
+
+    let scope = crate::gc::shadow_stack::RootScope::new(ts);
+    let root = scope.root(ptr.as_ptr().cast::<u8>());
+
+    // SAFETY: `root.slot_ptr()` returns a valid, aligned pointer to a writable `*mut u8` slot in the
+    // current thread's shadow stack. Pointer alignment is independent of pointee type, so it is also
+    // a valid slot pointer for `*mut T`.
+    unsafe { self.alloc_from_slot(root.slot_ptr().cast::<*mut T>()) }
+    // `scope` drops here, truncating the shadow stack entry.
   }
 
   /// Like [`HandleTable::alloc`], but reads the pointer value from an addressable slot *after*
@@ -230,9 +267,33 @@ impl<T> HandleTable<T> {
   /// Update the pointer stored in `id`'s slot.
   ///
   /// Returns `true` if `id` was live and successfully updated.
+  ///
+  /// ## Moving-GC safety
+  /// If `ptr` is a **movable** GC-managed pointer and the calling thread is registered, prefer
+  /// [`HandleTable::set_movable`] or [`HandleTable::set_from_slot`]. Lock contention can temporarily
+  /// enter a GC-safe region, allowing relocation; storing a raw pointer captured before lock
+  /// acquisition can become stale.
   pub fn set(&self, id: HandleId, ptr: NonNull<T>) -> bool {
     let mut inner = self.inner.write();
     Self::set_inner(&mut *inner, id, ptr)
+  }
+
+  /// Moving-GC-safe variant of [`HandleTable::set`] for a raw pointer value on a registered thread.
+  ///
+  /// See [`HandleTable::alloc_movable`] for the motivation and safety considerations.
+  pub fn set_movable(&self, id: HandleId, ptr: NonNull<T>) -> bool {
+    let ts = registry::current_thread_state_ptr();
+    if ts.is_null() {
+      return self.set(id, ptr);
+    }
+
+    // SAFETY: see `alloc_movable`.
+    let ts = unsafe { &*ts };
+    let scope = crate::gc::shadow_stack::RootScope::new(ts);
+    let root = scope.root(ptr.as_ptr().cast::<u8>());
+
+    // SAFETY: see `alloc_movable`.
+    unsafe { self.set_from_slot(id, root.slot_ptr().cast::<*mut T>()) }
   }
 
   /// Like [`HandleTable::set`], but reads the pointer value from an addressable slot *after*

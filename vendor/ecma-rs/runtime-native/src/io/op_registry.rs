@@ -35,7 +35,7 @@ pub struct RootPin {
 impl RootPin {
   pub fn new(ptr: *mut u8) -> Self {
     Self {
-      handle: roots::global_root_registry().pin(ptr),
+      handle: roots::global_root_registry().pin_movable(ptr),
     }
   }
 }

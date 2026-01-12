@@ -128,6 +128,35 @@ impl RootRegistry {
     handle
   }
 
+  /// Moving-GC-safe pinning for a raw pointer value on a registered thread.
+  ///
+  /// If lock acquisition blocks on contention, the thread may enter a GC-safe ("NativeSafe") region
+  /// while waiting. A moving GC can then relocate objects. To avoid capturing a stale pre-relocation
+  /// address, this helper temporarily stores `ptr` in the current thread's shadow stack and calls
+  /// [`Self::pin_from_slot`] so the pointer is read only *after* the lock is acquired.
+  ///
+  /// If the current thread is not registered with the runtime thread registry, this falls back to
+  /// [`Self::pin`]. In that case the caller must ensure `ptr` is either non-GC-managed or otherwise
+  /// stable (pinned/non-moving) for the duration of the call.
+  pub(crate) fn pin_movable(&self, ptr: *mut u8) -> u32 {
+    let ts = crate::threading::registry::current_thread_state_ptr();
+    if ts.is_null() {
+      return self.pin(ptr);
+    }
+
+    // SAFETY: `current_thread_state_ptr` returns a valid pointer to the current thread's registered
+    // `ThreadState` (it is null only if the thread is unregistered).
+    let ts = unsafe { &*ts };
+
+    let scope = crate::gc::shadow_stack::RootScope::new(ts);
+    let root = scope.root(ptr);
+
+    // SAFETY: `root.slot_ptr()` returns a valid, aligned pointer to a writable `*mut u8` slot in the
+    // current thread's shadow stack.
+    unsafe { self.pin_from_slot(root.slot_ptr()) }
+    // `scope` drops here, truncating the shadow stack entry.
+  }
+
   /// Unregister a previously registered root slot handle.
   pub fn unregister(&self, handle: u32) {
     let mut inner = self.inner.lock();
