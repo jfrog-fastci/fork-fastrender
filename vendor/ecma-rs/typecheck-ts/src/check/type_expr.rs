@@ -769,7 +769,10 @@ impl TypeLowerer {
         message.push_str(&path.join("."));
       }
       self.push_diag(outer_loc, &codes::UNRESOLVED_TYPE_QUERY, message);
-      return self.store.primitive_ids().unknown;
+      // Match TypeScript's "error type" behaviour: unresolved typeof queries
+      // still behave like `any` so they don't cascade into follow-on diagnostics
+      // (for example TS2322 assignability errors).
+      return self.store.primitive_ids().any;
     }
     let Some(path) = entity_name_segments(&query.stx.expr_name) else {
       self.push_diag(
@@ -777,7 +780,7 @@ impl TypeLowerer {
         &codes::UNRESOLVED_TYPE_QUERY,
         "unsupported typeof query target",
       );
-      return self.store.primitive_ids().unknown;
+      return self.store.primitive_ids().any;
     };
     if let Some(resolved) = self.resolve_to_ref(&path, Vec::new(), true) {
       return resolved;
@@ -787,7 +790,7 @@ impl TypeLowerer {
       &codes::UNRESOLVED_TYPE_QUERY,
       format!("cannot resolve typeof {}", path.join(".")),
     );
-    self.store.primitive_ids().unknown
+    self.store.primitive_ids().any
   }
 
   fn lower_import_type(
@@ -819,7 +822,9 @@ impl TypeLowerer {
       message.push_str(&format!(" for {}", path.join(".")));
     }
     self.push_diag(outer_loc, &codes::UNRESOLVED_IMPORT_TYPE, message);
-    self.store.primitive_ids().unknown
+    // Match TypeScript's "error type" behaviour: unresolved `import("...")`
+    // types behave like `any` so they don't cascade into follow-on diagnostics.
+    self.store.primitive_ids().any
   }
 
   fn lower_infer_type(&mut self, infer: &Node<TypeInfer>) -> TypeId {

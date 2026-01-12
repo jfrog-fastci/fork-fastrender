@@ -1453,17 +1453,17 @@ impl<'a, 'diag> HirDeclLowerer<'a, 'diag> {
     names: &hir_js::NameInterner,
   ) -> TypeId {
     let Some(host) = self.host else {
-      return self.store.primitive_ids().unknown;
+      return self.store.primitive_ids().any;
     };
 
     let Some(from_key) = self.file_key.as_ref() else {
-      return self.store.primitive_ids().unknown;
+      return self.store.primitive_ids().any;
     };
     let Some(target_key) = host.resolve(from_key, &import.module) else {
-      return self.store.primitive_ids().unknown;
+      return self.store.primitive_ids().any;
     };
     let Some(target_file) = self.key_to_id.and_then(|resolver| resolver(&target_key)) else {
-      return self.store.primitive_ids().unknown;
+      return self.store.primitive_ids().any;
     };
 
     let args: Vec<_> = import
@@ -1496,7 +1496,9 @@ impl<'a, 'diag> HirDeclLowerer<'a, 'diag> {
       }
     }
 
-    self.store.primitive_ids().unknown
+    // Match TypeScript's "error type" behaviour: unresolved import types behave
+    // like `any` so they don't cascade into follow-on diagnostics.
+    self.store.primitive_ids().any
   }
 
   fn resolve_type_name(
