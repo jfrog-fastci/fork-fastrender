@@ -5,11 +5,10 @@ use vm_js::{
 
 fn new_runtime() -> JsRuntime {
   let vm = Vm::new(VmOptions::default());
-  // `instanceof` on Proxies can allocate intermediate objects/functions (Proxy traps can synthesize
-  // fresh values) and performs prototype-chain walks that may temporarily root multiple objects.
-  // Keep the heap limit comfortably above the engine's intrinsic initialization footprint so these
-  // tests exercise semantics rather than OOM thresholds.
-  let heap = Heap::new(HeapLimits::new(8 * 1024 * 1024, 8 * 1024 * 1024));
+  // These tests exercise Proxy traps + bound function delegation paths, which can allocate
+  // additional transient objects/functions beyond the engine intrinsic graph. Use a slightly larger
+  // heap than the default 1MiB used by many unit tests to avoid OOM masking semantic regressions.
+  let heap = Heap::new(HeapLimits::new(2 * 1024 * 1024, 2 * 1024 * 1024));
   JsRuntime::new(vm, heap).unwrap()
 }
 
