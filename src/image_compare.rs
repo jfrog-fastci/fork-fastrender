@@ -1088,6 +1088,10 @@ mod tests {
 
     let strict = compare_images(&img_a, &img_b, &CompareConfig::strict());
     assert!(!strict.is_match());
+    // Regression test: perceptual distance must be alpha-sensitive when `compare_alpha=true`.
+    // The RGB channels are identical, so if alpha is accidentally ignored in the perceptual
+    // metric this will drop to ~0.
+    assert!(strict.statistics.perceptual_distance > 0.05);
 
     let ignore_alpha = CompareConfig::strict().with_compare_alpha(false);
     let diff = compare_images(&img_a, &img_b, &ignore_alpha);
