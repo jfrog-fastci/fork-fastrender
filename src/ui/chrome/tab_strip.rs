@@ -33,21 +33,21 @@ fn paint_tab_status_badges(
   painter: &egui::Painter,
   icon_rect: Rect,
   visuals: &egui::Visuals,
-  has_error: bool,
-  has_warning: bool,
+  error_t: f32,
+  warning_t: f32,
 ) {
-  if !has_error && !has_warning {
+  if error_t <= 0.0 && warning_t <= 0.0 {
     return;
   }
 
   // Overlay small status dots on the favicon rect so error/warning states are discoverable even for
   // background tabs (without stealing horizontal space from titles).
   let mut colors = Vec::new();
-  if has_error {
-    colors.push(visuals.error_fg_color);
+  if error_t > 0.0 {
+    colors.push(with_alpha(visuals.error_fg_color, error_t));
   }
-  if has_warning {
-    colors.push(visuals.warn_fg_color);
+  if warning_t > 0.0 {
+    colors.push(with_alpha(visuals.warn_fg_color, warning_t));
   }
 
   let radius = 3.0;
@@ -55,7 +55,11 @@ fn paint_tab_status_badges(
   let inset = 1.0;
   let mut x = icon_rect.right() - radius - inset;
   let y = icon_rect.bottom() - radius - inset;
-  let stroke = Stroke::new(1.0, visuals.widgets.inactive.bg_stroke.color);
+  let stroke_t = error_t.max(warning_t).clamp(0.0, 1.0);
+  let stroke = Stroke::new(
+    1.0,
+    with_alpha(visuals.widgets.inactive.bg_stroke.color, stroke_t),
+  );
   for color in colors {
     let center = Pos2::new(x, y);
     painter.circle_filled(center, radius, color);
@@ -286,7 +290,19 @@ fn tab_ui(
     paint_spinner(ui.painter(), icon_rect.expand(2.0), time, visuals.text_color());
   }
 
-  paint_tab_status_badges(ui.painter(), icon_rect, &visuals, err.is_some(), warn.is_some());
+  let err_t = motion.animate_bool(
+    ui.ctx(),
+    tab_id.with("status_error"),
+    err.is_some(),
+    motion.durations.progress_fade,
+  );
+  let warn_t = motion.animate_bool(
+    ui.ctx(),
+    tab_id.with("status_warning"),
+    warn.is_some(),
+    motion.durations.progress_fade,
+  );
+  paint_tab_status_badges(ui.painter(), icon_rect, &visuals, err_t, warn_t);
 
   // Close button (only when more than one tab exists).
   let mut close_clicked = false;
@@ -506,7 +522,19 @@ fn pinned_tab_ui(
     paint_spinner(ui.painter(), icon_rect.expand(2.0), time, visuals.text_color());
   }
 
-  paint_tab_status_badges(ui.painter(), icon_rect, &visuals, err.is_some(), warn.is_some());
+  let err_t = motion.animate_bool(
+    ui.ctx(),
+    tab_id.with("status_error"),
+    err.is_some(),
+    motion.durations.progress_fade,
+  );
+  let warn_t = motion.animate_bool(
+    ui.ctx(),
+    tab_id.with("status_warning"),
+    warn.is_some(),
+    motion.durations.progress_fade,
+  );
+  paint_tab_status_badges(ui.painter(), icon_rect, &visuals, err_t, warn_t);
 
   // Input semantics.
   if response.clicked_by(egui::PointerButton::Secondary) {
