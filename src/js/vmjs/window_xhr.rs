@@ -1856,15 +1856,15 @@ fn xhr_send_native<Host: WindowRealmHost + 'static>(
 }
 
 fn xhr_abort_native<Host: WindowRealmHost + 'static>(
-  _vm: &mut Vm,
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
+  host: &mut dyn VmHost,
   hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
-  let (env_id, xhr_id, _) = xhr_info_from_this(scope, this)?;
+  let (env_id, xhr_id, xhr_obj) = xhr_info_from_this(scope, this)?;
 
   // Mark as aborted synchronously so any queued networking task can observe the flag and skip work.
   let (request_seq, should_dispatch, old_root) = with_env_state_mut(env_id, |state| {
@@ -1909,9 +1909,24 @@ fn xhr_abort_native<Host: WindowRealmHost + 'static>(
   }
 
   let Some(event_loop) = event_loop_mut_from_hooks::<Host>(hooks) else {
-    return Err(VmError::TypeError(
-      "XMLHttpRequest.abort called without an active EventLoop",
-    ));
+    // No event loop available: dispatch abort events synchronously (best effort) and ensure any
+    // keepalive root is released to avoid leaking the wrapper.
+    scope.push_root(Value::Object(xhr_obj))?;
+    let events = ["readystatechange", "abort", "loadend"];
+    for event_type in events {
+      dispatch_xhr_event(vm, scope, host, hooks, xhr_obj, event_type)?;
+    }
+    let root_to_remove = with_env_state_mut(env_id, |state| {
+      let xhr = state
+        .xhrs
+        .get_mut(&xhr_id)
+        .ok_or(VmError::TypeError("XMLHttpRequest: invalid backing state"))?;
+      Ok(xhr.root.take())
+    })?;
+    if let Some(root) = root_to_remove {
+      scope.heap_mut().remove_root(root);
+    }
+    return Ok(Value::Undefined);
   };
 
   let events = ["readystatechange", "abort", "loadend"];
