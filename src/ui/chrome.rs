@@ -523,7 +523,7 @@ pub fn chrome_ui_with_bookmarks(
       let mut key_arrow_up = false;
       let mut key_enter = false;
       let mut key_escape = false;
-      if egui_focus || app.chrome.address_bar_has_focus {
+      if egui_focus || app.chrome.address_bar_has_focus || app.chrome.request_focus_address_bar {
         ui.input_mut(|i| {
           key_arrow_down = i.consume_key(Default::default(), egui::Key::ArrowDown);
           key_arrow_up = i.consume_key(Default::default(), egui::Key::ArrowUp);
@@ -692,6 +692,29 @@ pub fn chrome_ui_with_bookmarks(
           }
 
           if show_text_edit {
+            // Apply focus/selection requests *before* constructing the `TextEdit` so they take
+            // effect in the same frame.
+            //
+            // This avoids flaky behaviour where a click/Ctrl+L would first show the widget, then
+            // require an additional frame (and another OS event) before the actual egui focus was
+            // applied. It also ensures select-all is active before the first typed character is
+            // processed.
+            if app.chrome.request_focus_address_bar {
+              ui.memory_mut(|mem| mem.request_focus(address_bar_id));
+              app.chrome.request_focus_address_bar = false;
+            }
+            if app.chrome.request_select_all_address_bar {
+              let end = app.chrome.address_bar_text.chars().count();
+              let mut state =
+                egui::text_edit::TextEditState::load(ctx, address_bar_id).unwrap_or_default();
+              state.set_ccursor_range(Some(egui::text::CCursorRange::two(
+                egui::text::CCursor::new(0),
+                egui::text::CCursor::new(end),
+              )));
+              state.store(ctx, address_bar_id);
+              app.chrome.request_select_all_address_bar = false;
+            }
+
             let response = ui.add(
               egui::TextEdit::singleline(&mut app.chrome.address_bar_text)
                 .id(address_bar_id)
@@ -888,6 +911,12 @@ pub fn chrome_ui_with_bookmarks(
         if bar_response.clicked() {
           app.chrome.request_focus_address_bar = true;
           app.chrome.request_select_all_address_bar = true;
+          // Clicking the non-editing address bar flips state that is only observed on the *next*
+          // egui frame (because we don't build the `TextEdit` in the same frame as the click).
+          //
+          // Without an explicit repaint request, the windowed browser can stay stuck in display
+          // mode until another OS event arrives (making the address bar feel flaky).
+          ctx.request_repaint();
         }
       }
 
@@ -904,22 +933,7 @@ pub fn chrome_ui_with_bookmarks(
           response.request_focus();
         }
 
-        if app.chrome.request_focus_address_bar {
-          response.request_focus();
-          app.chrome.request_focus_address_bar = false;
-        }
-
-        if app.chrome.request_select_all_address_bar {
-          if let Some(mut state) = egui::text_edit::TextEditState::load(ctx, address_bar_id) {
-            let end = app.chrome.address_bar_text.chars().count();
-            state.set_ccursor_range(Some(egui::text::CCursorRange::two(
-              egui::text::CCursor::new(0),
-              egui::text::CCursor::new(end),
-            )));
-            state.store(ctx, address_bar_id);
-          }
-          app.chrome.request_select_all_address_bar = false;
-        }
+        // Note: focus/select-all requests are applied before constructing the TextEdit above.
 
         let has_focus = response.has_focus();
         if has_focus != app.chrome.address_bar_has_focus {
@@ -1579,10 +1593,80 @@ mod tests {
     let ctx = egui::Context::default();
     begin_frame(&ctx, left_click_at(egui::pos2(400.0, 60.0)));
     let _actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
-    let _ = ctx.end_frame();
+    let output = ctx.end_frame();
 
     assert!(app.chrome.request_focus_address_bar);
     assert!(app.chrome.request_select_all_address_bar);
+    assert_eq!(
+      output.repaint_after,
+      std::time::Duration::ZERO,
+      "expected click-to-focus to request a follow-up repaint so the address bar can enter editing mode"
+    );
+  }
+
+  #[test]
+  fn clicking_address_bar_focuses_on_first_follow_up_frame() {
+    let mut app = BrowserAppState::new();
+    let tab_id = TabId(1);
+    app.push_tab(
+      BrowserTabState::new(tab_id, "https://example.com/path?x=1#y".to_string()),
+      true,
+    );
+
+    let ctx = egui::Context::default();
+
+    // Frame 1: click-to-focus sets request flags but does not build the `TextEdit` yet.
+    begin_frame(&ctx, left_click_at(egui::pos2(400.0, 60.0)));
+    let _actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
+    let _ = ctx.end_frame();
+    assert!(app.chrome.request_focus_address_bar);
+    assert!(app.chrome.request_select_all_address_bar);
+    assert!(!app.chrome.address_bar_has_focus);
+
+    // Frame 2: follow-up repaint should apply the focus request immediately (no extra frame).
+    begin_frame(&ctx, Vec::new());
+    let _actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
+    let _ = ctx.end_frame();
+
+    assert!(app.chrome.address_bar_has_focus);
+    assert!(app.chrome.address_bar_editing);
+    assert!(!app.chrome.request_focus_address_bar);
+    assert!(!app.chrome.request_select_all_address_bar);
+  }
+
+  #[test]
+  fn ctrl_l_select_all_is_applied_before_first_typed_character() {
+    let mut app = BrowserAppState::new();
+    let tab_id = TabId(1);
+    app.push_tab(
+      BrowserTabState::new(tab_id, "https://example.com/path?x=1#y".to_string()),
+      true,
+    );
+
+    // Simulate the user pressing Ctrl/Cmd+L and typing immediately before the next redraw.
+    let events = vec![
+      egui::Event::Key {
+        key: egui::Key::L,
+        pressed: true,
+        repeat: false,
+        modifiers: egui::Modifiers {
+          command: true,
+          ..Default::default()
+        },
+      },
+      egui::Event::Text("x".to_string()),
+    ];
+
+    let ctx = egui::Context::default();
+    begin_frame(&ctx, events);
+    let _actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
+    let _ = ctx.end_frame();
+
+    assert!(app.chrome.address_bar_has_focus);
+    assert!(app.chrome.address_bar_editing);
+    assert!(!app.chrome.request_focus_address_bar);
+    assert!(!app.chrome.request_select_all_address_bar);
+    assert_eq!(app.chrome.address_bar_text, "x");
   }
 
   #[test]
