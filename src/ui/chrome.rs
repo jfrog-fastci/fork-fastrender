@@ -1152,31 +1152,28 @@ pub fn chrome_ui_with_bookmarks(
       // ---------------------------------------------------------------------------
       // Address bar (pill + truncation + security indicator)
       // ---------------------------------------------------------------------------
-      ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-      let address_bar_id = ui.make_persistent_id("address_bar");
-      let egui_focus = ctx.memory(|mem| mem.has_focus(address_bar_id));
-      let show_text_edit_initial =
-        egui_focus || app.chrome.address_bar_has_focus || app.chrome.request_focus_address_bar;
+       ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+       let address_bar_id = ui.make_persistent_id("address_bar");
+       let egui_focus = ctx.memory(|mem| mem.has_focus(address_bar_id));
+       let show_text_edit_initial =
+         egui_focus || app.chrome.address_bar_has_focus || app.chrome.request_focus_address_bar;
 
-      // Capture + consume navigation keys before building the text edit so they don't reach the
-      // `TextEdit` (cursor movement) or bubble up to the page.
-      let mut key_arrow_down = false;
-      let mut key_arrow_up = false;
-      let mut key_enter = false;
-      let mut key_escape = false;
-      if egui_focus || app.chrome.address_bar_has_focus || app.chrome.request_focus_address_bar {
-        ui.input_mut(|i| {
-          key_arrow_down = i.consume_key(Default::default(), egui::Key::ArrowDown);
-          key_arrow_up = i.consume_key(Default::default(), egui::Key::ArrowUp);
-          key_enter = i.consume_key(Default::default(), egui::Key::Enter);
-          key_escape = i.consume_key(Default::default(), egui::Key::Escape);
-        });
-      }
+       // Capture + consume navigation keys (ArrowUp/Down/Enter/Escape) when the address bar is in
+       // text-edit mode so they don't reach the `TextEdit` (cursor movement) or bubble up to the
+       // page.
+       //
+       // NOTE: We intentionally *don't* consume keys based solely on the initial focus state:
+       // winit/egui can batch a click-to-focus and the first keystroke into the same frame, so we
+       // need to wait until after `clicked_display_mode` is computed below.
+       let mut key_arrow_down = false;
+       let mut key_arrow_up = false;
+       let mut key_enter = false;
+       let mut key_escape = false;
 
-      // Derive the URL for display/indicator from the active tab (not from in-progress address bar
-      // edits).
-      let active_url = app
-        .active_tab()
+       // Derive the URL for display/indicator from the active tab (not from in-progress address bar
+       // edits).
+       let active_url = app
+         .active_tab()
         .and_then(|t| t.committed_url.as_deref().or_else(|| t.current_url()))
         .unwrap_or("")
         .to_string();
@@ -1340,17 +1337,26 @@ pub fn chrome_ui_with_bookmarks(
           egui::Sense::click()
         },
       );
-      let clicked_display_mode = !show_text_edit_initial && bar_response.clicked();
-      if clicked_display_mode {
-        app.chrome.request_focus_address_bar = true;
-        app.chrome.request_select_all_address_bar = true;
-        ctx.request_repaint();
-      }
-      let show_text_edit = show_text_edit_initial || clicked_display_mode;
-      address_bar_rect = Some(bar_rect);
-      if !show_text_edit {
-        // When the address bar is in display mode (non-editing), still expose a focusable element
-        // for assistive tech to activate.
+       let clicked_display_mode = !show_text_edit_initial && bar_response.clicked();
+       if clicked_display_mode {
+         app.chrome.request_focus_address_bar = true;
+         app.chrome.request_select_all_address_bar = true;
+         ctx.request_repaint();
+       }
+       let show_text_edit = show_text_edit_initial || clicked_display_mode;
+
+       if show_text_edit {
+         ui.input_mut(|i| {
+           key_arrow_down = i.consume_key(Default::default(), egui::Key::ArrowDown);
+           key_arrow_up = i.consume_key(Default::default(), egui::Key::ArrowUp);
+           key_enter = i.consume_key(Default::default(), egui::Key::Enter);
+           key_escape = i.consume_key(Default::default(), egui::Key::Escape);
+         });
+       }
+       address_bar_rect = Some(bar_rect);
+       if !show_text_edit {
+         // When the address bar is in display mode (non-editing), still expose a focusable element
+         // for assistive tech to activate.
         bar_response.widget_info(|| {
           egui::WidgetInfo::labeled(egui::WidgetType::Button, a11y::ADDRESS_BAR_LABEL)
         });
@@ -3078,6 +3084,34 @@ mod tests {
     assert!(!app.chrome.request_focus_address_bar);
     assert!(!app.chrome.request_select_all_address_bar);
     assert_eq!(app.chrome.address_bar_text, "x");
+  }
+
+  #[test]
+  fn click_type_enter_in_same_frame_emits_navigate_action() {
+    let mut app = BrowserAppState::new();
+    let tab_id = TabId(1);
+    app.push_tab(
+      BrowserTabState::new(tab_id, "https://example.com/path?x=1#y".to_string()),
+      true,
+    );
+ 
+    // Simulate a click-to-focus address bar interaction where winit batches the click and first
+    // keystrokes (text + Enter) into the same egui frame.
+    let mut events = left_click_at(egui::pos2(400.0, 60.0));
+    events.push(egui::Event::Text("example.com".to_string()));
+    events.push(key_press(egui::Key::Enter));
+ 
+    let ctx = egui::Context::default();
+    begin_frame(&ctx, events);
+    let actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
+    let _ = ctx.end_frame();
+ 
+    assert!(
+      actions
+        .iter()
+        .any(|action| matches!(action, ChromeAction::NavigateTo(url) if url == "example.com")),
+      "expected ChromeAction::NavigateTo(\"example.com\"), got {actions:?}"
+    );
   }
 
   #[test]

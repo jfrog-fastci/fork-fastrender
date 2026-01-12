@@ -5281,7 +5281,6 @@ impl BrowserTab {
       client_y: pos_css.1 as f64,
       button: dom_button,
       buttons: dom_buttons,
-      detail: 1,
       ctrl_key: modifiers.ctrl(),
       shift_key: modifiers.shift(),
       alt_key: modifiers.alt(),
