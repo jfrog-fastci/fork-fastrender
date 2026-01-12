@@ -3249,27 +3249,6 @@ impl<'a> Checker<'a> {
           let inner = self.check_expr(&assert.stx.expression);
           if let Some(annotation) = assert.stx.type_annotation.as_ref() {
             let target = self.lowerer.lower_type_expr(annotation);
-            if self.strict_native {
-              let prim = self.store.primitive_ids();
-              let span = Span::new(self.file, loc_to_range(self.file, expr.loc));
-              let inner = self.store.canon(inner);
-              let target = self.store.canon(target);
-              if inner == prim.any || target == prim.any {
-                self.diagnostics.push(
-                  codes::FORBIDDEN_ANY
-                    .error("`any` is forbidden when `native_strict` is enabled", span),
-                );
-              } else if !self.relate.is_assignable(inner, target) {
-                self.diagnostics.push(codes::UNSAFE_TYPE_ASSERTION.error(
-                  format!(
-                    "Type '{}' is not assignable to type '{}'.",
-                    TypeDisplay::new(self.store.as_ref(), inner),
-                    TypeDisplay::new(self.store.as_ref(), target)
-                  ),
-                  span,
-                ));
-              }
-            }
             target
           } else {
             inner
@@ -9447,7 +9426,6 @@ struct FlowBodyChecker<'a> {
   return_types: Vec<TypeId>,
   return_indices: HashMap<StmtId, usize>,
   widen_object_literals: bool,
-  strict_native: bool,
   ref_expander: Option<&'a dyn types_ts_interned::RelateTypeExpander>,
   initial: HashMap<FlowBindingId, TypeId>,
   param_bindings: HashSet<BindingKey>,
@@ -10158,7 +10136,7 @@ impl<'a> FlowBodyChecker<'a> {
     flow_bindings: Option<&'a FlowBindings>,
     relate: RelateCtx<'a>,
     ref_expander: Option<&'a dyn types_ts_interned::RelateTypeExpander>,
-    strict_native: bool,
+    _strict_native: bool,
   ) -> Self {
     let prim = store.primitive_ids();
     let expr_types = vec![prim.unknown; body.exprs.len()];
@@ -10228,7 +10206,6 @@ impl<'a> FlowBodyChecker<'a> {
       return_types,
       return_indices,
       widen_object_literals: true,
-      strict_native,
       ref_expander,
       initial: initial_flow,
       param_bindings: bindings.param_bindings.clone(),
@@ -11236,17 +11213,6 @@ impl<'a> FlowBodyChecker<'a> {
       }
       ExprKind::NonNull { expr: inner_expr } => {
         let inner_ty = self.eval_expr(*inner_expr, env).0;
-        if self.strict_native {
-          let (_, nullish) = narrow_non_nullish(inner_ty, &self.store);
-          if self.store.canon(nullish) != prim.never {
-            self
-              .diagnostics
-              .push(codes::INVALID_NON_NULL_ASSERTION.error(
-                "non-null assertion discards `null` or `undefined`",
-                Span::new(self.file, expr.span),
-              ));
-          }
-        }
         let (_, nonnull) = narrow_by_nullish_equality(
           inner_ty,
           BinaryOp::Equality,
