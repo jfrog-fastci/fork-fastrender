@@ -1,0 +1,32 @@
+# WHATWG Streams (Web Streams API) that are available in Node.js as globals.
+#
+# These entries are duplicated from `web/streams.yaml` so that `TargetEnv::Node` lookups can resolve
+# them without matching browser-only web APIs.
+#
+# Version notes:
+# - Node's Web Streams globals are used by the built-in fetch implementation and have been
+#   available in modern Node releases; we conservatively gate them to Node 18+.
+
+- name: ReadableStream
+  kind: constructor
+  since: "v18.0.0"
+  effects:
+    allocates: true
+    may_throw: true
+  purity: Allocating
+
+- name: WritableStream
+  kind: constructor
+  since: "v18.0.0"
+  effects:
+    allocates: true
+    may_throw: true
+  purity: Allocating
+
+- name: TransformStream
+  kind: constructor
+  since: "v18.0.0"
+  effects:
+    allocates: true
+    may_throw: true
+  purity: Allocating

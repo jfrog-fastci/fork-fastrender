@@ -1,0 +1,42 @@
+# WHATWG Streams (Web Streams API).
+#
+# These constructors exist as browser globals and are used by modern web APIs such as fetch().
+
+- name: ReadableStream
+  kind: constructor
+  aliases:
+    - ReadableStream
+    - window.ReadableStream
+    - globalThis.ReadableStream
+    - self.ReadableStream
+  since: "baseline"
+  effects:
+    allocates: true
+    may_throw: true
+  purity: Allocating
+
+- name: WritableStream
+  kind: constructor
+  aliases:
+    - WritableStream
+    - window.WritableStream
+    - globalThis.WritableStream
+    - self.WritableStream
+  since: "baseline"
+  effects:
+    allocates: true
+    may_throw: true
+  purity: Allocating
+
+- name: TransformStream
+  kind: constructor
+  aliases:
+    - TransformStream
+    - window.TransformStream
+    - globalThis.TransformStream
+    - self.TransformStream
+  since: "baseline"
+  effects:
+    allocates: true
+    may_throw: true
+  purity: Allocating

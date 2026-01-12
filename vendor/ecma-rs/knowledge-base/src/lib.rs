@@ -2597,15 +2597,26 @@ properties:
   #[test]
   fn api_for_target_selects_web_entries_with_baseline_versions() {
     let kb = KnowledgeBase::load_default().expect("load bundled knowledge base");
+    let target = TargetEnv::Web {
+      platform: WebPlatform::Generic,
+    };
+
     let fetch = kb
       .api_for_target(
         "fetch",
-        &TargetEnv::Web {
-          platform: WebPlatform::Generic,
-        },
+        &target,
       )
       .expect("fetch should resolve for web targets");
     assert_eq!(fetch.name, "fetch");
+
+    let rs = kb
+      .api_for_target("ReadableStream", &target)
+      .expect("ReadableStream should resolve for web targets");
+    assert_eq!(rs.name, "ReadableStream");
+    assert_eq!(
+      kb.source_for_target("ReadableStream", &target),
+      Some("web/streams.yaml")
+    );
   }
 
   #[test]
@@ -2624,12 +2635,25 @@ properties:
       Some("node/web_fetch.yaml")
     );
 
+    let readable = kb
+      .api_for_target("ReadableStream", &node_20)
+      .expect("ReadableStream should resolve for Node targets >= 18");
+    assert_eq!(readable.name, "ReadableStream");
+    assert_eq!(
+      kb.source_for_target("ReadableStream", &node_20),
+      Some("node/web_streams.yaml")
+    );
+
     let node_16 = TargetEnv::Node {
       version: Version::parse("16.0.0").unwrap(),
     };
     assert!(
       kb.api_for_target("fetch", &node_16).is_none(),
       "fetch should not resolve for Node < 18"
+    );
+    assert!(
+      kb.api_for_target("ReadableStream", &node_16).is_none(),
+      "ReadableStream should not resolve for Node < 18"
     );
   }
 
