@@ -2,8 +2,9 @@
 //!
 //! ## Why this exists
 //! LLVM statepoint stackmaps are keyed by the *return address* of the safepoint callsite and stack
-//! slots are typically described as `Indirect [SP + off]`, where `SP` is the *caller* frame's stack
-//! pointer at that return address.
+//! slots are typically described as `Indirect [SP/FP + off]`.
+//!
+//! For `Indirect [SP + off]`, `SP` is the *caller* frame's stack pointer at that return address.
 //!
 //! If a thread is stopped inside the safepoint callee (common for stop-the-world GC), we must
 //! recover the caller's `SP` (and the return address) for each frame.
