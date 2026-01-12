@@ -23,12 +23,18 @@ fn object_prototype_to_string_honors_symbol_to_string_tag_for_generators() -> Re
   let value = rt.exec_script("const it = g();\nObject.prototype.toString.call(it)")?;
   assert_eq!(value_to_utf8(&rt, value), "[object Generator]");
 
+  let value = rt.exec_script("String(it)")?;
+  assert_eq!(value_to_utf8(&rt, value), "[object Generator]");
+
   // Non-string @@toStringTag values must be ignored.
   let value = rt.exec_script(
     "Object.defineProperty(g.prototype, Symbol.toStringTag, { get() { return {}; } });\n\
      Object.prototype.toString.call(it)",
   )?;
-  assert_eq!(value_to_utf8(&rt, value), "[object Object]");
+  assert_eq!(value_to_utf8(&rt, value), "[object Generator]");
+
+  let value = rt.exec_script("String(it)")?;
+  assert_eq!(value_to_utf8(&rt, value), "[object Generator]");
 
   Ok(())
 }
