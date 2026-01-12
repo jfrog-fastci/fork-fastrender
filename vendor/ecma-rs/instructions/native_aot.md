@@ -3918,7 +3918,7 @@ pub fn rt_string_intern(s: *const u8, len: usize) -> InternedId;
 pub fn rt_string_pin_interned(id: InternedId);
 
 // Parallel
-pub fn rt_parallel_spawn(task: fn(*mut u8), data: *mut u8) -> TaskId;
+pub fn rt_parallel_spawn(task: extern "C" fn(*mut u8), data: *mut u8) -> TaskId;
 pub fn rt_parallel_join(tasks: *const TaskId, count: usize);
 pub fn rt_parallel_for(
   start: usize,
