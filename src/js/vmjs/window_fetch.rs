@@ -35,8 +35,8 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use vm_js::{
-  GcObject, Heap, NativeFunctionId, PropertyDescriptor, PropertyKey, PropertyKind, Realm, Scope, Value, Vm,
-  VmError, VmHost, VmHostHooks, WeakGcObject,
+  GcObject, Heap, HostSlots, NativeFunctionId, PropertyDescriptor, PropertyKey, PropertyKind, Realm,
+  Scope, Value, Vm, VmError, VmHost, VmHostHooks, WeakGcObject,
 };
 
 const SLOT_ENV_ID: usize = 0;
@@ -51,9 +51,9 @@ const HEADERS_OWNER_KEY: &str = "__fastrender_headers_owner";
 
 const REQUEST_ID_KEY: &str = "__fastrender_request_id";
 const RESPONSE_ID_KEY: &str = "__fastrender_response_id";
-const REQUEST_BODY_STREAM_KEY: &str = "__fastrender_request_body_stream";
 
 // Hidden per-instance properties for stream wrappers.
+const REQUEST_BODY_STREAM_KEY: &str = "__fastrender_request_body_stream";
 const RESPONSE_BODY_STREAM_KEY: &str = "__fastrender_response_body_stream";
 
 // Internal helper keys for Promise capability construction via `new Promise(executor)`.
@@ -73,6 +73,11 @@ const HEADERS_ITER_DONE_KEY: &str = "__fastrender_headers_iter_done";
 const HEADERS_ITER_KIND_ENTRIES: u8 = 0;
 const HEADERS_ITER_KIND_KEYS: u8 = 1;
 const HEADERS_ITER_KIND_VALUES: u8 = 2;
+
+const FETCH_HEADERS_HOST_TAG: u64 = 0x4645_5443_4848_4452; // "FETCHHDR"
+const FETCH_HEADERS_ITERATOR_HOST_TAG: u64 = 0x4643_4848_4452_4954; // "FCHHDRIT"
+const FETCH_REQUEST_HOST_TAG: u64 = 0x4645_5443_4852_4551; // "FETCHREQ"
+const FETCH_RESPONSE_HOST_TAG: u64 = 0x4645_5443_4852_5350; // "FETCHRSP"
 
 #[derive(Clone)]
 pub struct WindowFetchEnv {
@@ -889,6 +894,12 @@ fn request_info_from_value(scope: &mut Scope<'_>, value: Value) -> Option<(u64, 
   let Value::Object(obj) = value else {
     return None;
   };
+  let Some(slots) = scope.heap().object_host_slots(obj).ok().flatten() else {
+    return None;
+  };
+  if slots.a != FETCH_REQUEST_HOST_TAG {
+    return None;
+  }
   let env_id = get_data_prop(scope, obj, ENV_ID_KEY).ok()?;
   let request_id = get_data_prop(scope, obj, REQUEST_ID_KEY).ok()?;
   let env_id = number_to_u64(env_id).ok()?;
@@ -900,6 +911,12 @@ fn request_info_from_this(scope: &mut Scope<'_>, this: Value) -> Result<(u64, u6
   let Value::Object(obj) = this else {
     return Err(VmError::TypeError("Request: illegal invocation"));
   };
+  let Some(slots) = scope.heap().object_host_slots(obj)? else {
+    return Err(VmError::TypeError("Request: illegal invocation"));
+  };
+  if slots.a != FETCH_REQUEST_HOST_TAG {
+    return Err(VmError::TypeError("Request: illegal invocation"));
+  }
 
   let env_val = get_data_prop(scope, obj, ENV_ID_KEY)?;
   let request_val = get_data_prop(scope, obj, REQUEST_ID_KEY)?;
@@ -1013,6 +1030,12 @@ fn headers_info_from_this(scope: &mut Scope<'_>, this: Value) -> Result<(u64, u8
   let Value::Object(obj) = this else {
     return Err(VmError::TypeError("Headers: illegal invocation"));
   };
+  let Some(slots) = scope.heap().object_host_slots(obj)? else {
+    return Err(VmError::TypeError("Headers: illegal invocation"));
+  };
+  if slots.a != FETCH_HEADERS_HOST_TAG {
+    return Err(VmError::TypeError("Headers: illegal invocation"));
+  }
   let env_val = get_data_prop(scope, obj, ENV_ID_KEY)?;
   let kind_val = get_data_prop(scope, obj, HEADERS_KIND_KEY)?;
   let owner_val = get_data_prop(scope, obj, HEADERS_OWNER_KEY)?;
@@ -1039,6 +1062,12 @@ fn response_info_from_this(scope: &mut Scope<'_>, this: Value) -> Result<(u64, u
   let Value::Object(obj) = this else {
     return Err(VmError::TypeError("Response: illegal invocation"));
   };
+  let Some(slots) = scope.heap().object_host_slots(obj)? else {
+    return Err(VmError::TypeError("Response: illegal invocation"));
+  };
+  if slots.a != FETCH_RESPONSE_HOST_TAG {
+    return Err(VmError::TypeError("Response: illegal invocation"));
+  }
 
   let env_val = get_data_prop(scope, obj, ENV_ID_KEY)?;
   let response_val = get_data_prop(scope, obj, RESPONSE_ID_KEY)?;
@@ -1556,6 +1585,13 @@ fn headers_entries_native(
 
   let obj = scope.alloc_object_with_prototype(Some(iter_proto))?;
   scope.push_root(Value::Object(obj))?;
+  scope.heap_mut().object_set_host_slots(
+    obj,
+    HostSlots {
+      a: FETCH_HEADERS_ITERATOR_HOST_TAG,
+      b: 0,
+    },
+  )?;
   set_data_prop(scope, obj, ENV_ID_KEY, Value::Number(env_id as f64), false)?;
   set_data_prop(
     scope,
@@ -1607,6 +1643,13 @@ fn headers_keys_native(
 
   let obj = scope.alloc_object_with_prototype(Some(iter_proto))?;
   scope.push_root(Value::Object(obj))?;
+  scope.heap_mut().object_set_host_slots(
+    obj,
+    HostSlots {
+      a: FETCH_HEADERS_ITERATOR_HOST_TAG,
+      b: 0,
+    },
+  )?;
   set_data_prop(scope, obj, ENV_ID_KEY, Value::Number(env_id as f64), false)?;
   set_data_prop(
     scope,
@@ -1658,6 +1701,13 @@ fn headers_values_native(
 
   let obj = scope.alloc_object_with_prototype(Some(iter_proto))?;
   scope.push_root(Value::Object(obj))?;
+  scope.heap_mut().object_set_host_slots(
+    obj,
+    HostSlots {
+      a: FETCH_HEADERS_ITERATOR_HOST_TAG,
+      b: 0,
+    },
+  )?;
   set_data_prop(scope, obj, ENV_ID_KEY, Value::Number(env_id as f64), false)?;
   set_data_prop(
     scope,
@@ -1696,6 +1746,12 @@ fn headers_iterator_next_native(
   let Value::Object(iter_obj) = this else {
     return Err(VmError::TypeError("Headers iterator: illegal invocation"));
   };
+  let Some(slots) = scope.heap().object_host_slots(iter_obj)? else {
+    return Err(VmError::TypeError("Headers iterator: illegal invocation"));
+  };
+  if slots.a != FETCH_HEADERS_ITERATOR_HOST_TAG {
+    return Err(VmError::TypeError("Headers iterator: illegal invocation"));
+  }
 
   let done_val = get_data_prop(scope, iter_obj, HEADERS_ITER_DONE_KEY)?;
   let done = matches!(done_val, Value::Bool(true));
@@ -1868,6 +1924,13 @@ fn headers_ctor_construct(
   let obj = scope.alloc_object()?;
   scope.push_root(Value::Object(obj))?;
   scope.heap_mut().object_set_prototype(obj, Some(proto))?;
+  scope.heap_mut().object_set_host_slots(
+    obj,
+    HostSlots {
+      a: FETCH_HEADERS_HOST_TAG,
+      b: 0,
+    },
+  )?;
 
   set_data_prop(scope, obj, ENV_ID_KEY, Value::Number(env_id as f64), false)?;
   set_data_prop(
@@ -4369,6 +4432,13 @@ fn make_headers_wrapper(
 ) -> Result<GcObject, VmError> {
   let obj = scope.alloc_object_with_prototype(Some(headers_proto))?;
   scope.push_root(Value::Object(obj))?;
+  scope.heap_mut().object_set_host_slots(
+    obj,
+    HostSlots {
+      a: FETCH_HEADERS_HOST_TAG,
+      b: 0,
+    },
+  )?;
   set_data_prop(scope, obj, ENV_ID_KEY, Value::Number(env_id as f64), false)?;
   set_data_prop(
     scope,
@@ -4396,6 +4466,13 @@ fn make_request_wrapper(
 ) -> Result<GcObject, VmError> {
   let obj = scope.alloc_object_with_prototype(Some(request_proto))?;
   scope.push_root(Value::Object(obj))?;
+  scope.heap_mut().object_set_host_slots(
+    obj,
+    HostSlots {
+      a: FETCH_REQUEST_HOST_TAG,
+      b: 0,
+    },
+  )?;
 
   set_data_prop(scope, obj, ENV_ID_KEY, Value::Number(env_id as f64), false)?;
   set_data_prop(
@@ -4484,6 +4561,13 @@ fn make_response_wrapper(
 ) -> Result<GcObject, VmError> {
   let obj = scope.alloc_object_with_prototype(Some(response_proto))?;
   scope.push_root(Value::Object(obj))?;
+  scope.heap_mut().object_set_host_slots(
+    obj,
+    HostSlots {
+      a: FETCH_RESPONSE_HOST_TAG,
+      b: 0,
+    },
+  )?;
 
   set_data_prop(scope, obj, ENV_ID_KEY, Value::Number(env_id as f64), false)?;
   set_data_prop(
@@ -6464,6 +6548,56 @@ mod tests {
 
     let response = window.exec_script("Object.prototype.toString.call(new Response())")?;
     assert_eq!(get_string(window.heap(), response), "[object Response]");
+
+    drop(fetch_bindings);
+    window.teardown();
+    Ok(())
+  }
+
+  #[test]
+  fn structured_clone_rejects_fetch_wrappers() -> Result<(), VmError> {
+    let mut window = WindowRealm::new(WindowRealmConfig::new("https://example.invalid/"))?;
+    let fetch_bindings = {
+      let (vm, realm, heap) = window.vm_realm_and_heap_mut();
+      install_window_fetch_bindings_with_guard::<DummyHost>(
+        vm,
+        realm,
+        heap,
+        WindowFetchEnv::for_document(Arc::new(crate::resource::HttpFetcher::new()), None),
+      )?
+    };
+
+    let headers = window.exec_script(
+      "(() => {\
+         try { structuredClone(new Headers()); return 'no'; }\
+         catch (e) { return e.name; }\
+       })()",
+    )?;
+    assert_eq!(get_string(window.heap(), headers), "DataCloneError");
+
+    let headers_iter = window.exec_script(
+      "(() => {\
+         try { structuredClone(new Headers().entries()); return 'no'; }\
+         catch (e) { return e.name; }\
+       })()",
+    )?;
+    assert_eq!(get_string(window.heap(), headers_iter), "DataCloneError");
+
+    let request = window.exec_script(
+      "(() => {\
+         try { structuredClone(new Request('/')); return 'no'; }\
+         catch (e) { return e.name; }\
+       })()",
+    )?;
+    assert_eq!(get_string(window.heap(), request), "DataCloneError");
+
+    let response = window.exec_script(
+      "(() => {\
+         try { structuredClone(new Response('x')); return 'no'; }\
+         catch (e) { return e.name; }\
+       })()",
+    )?;
+    assert_eq!(get_string(window.heap(), response), "DataCloneError");
 
     drop(fetch_bindings);
     window.teardown();
