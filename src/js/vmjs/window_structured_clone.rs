@@ -10,6 +10,8 @@
 //! - ArrayBuffer (copy or transfer)
 //! - Uint8Array (clones underlying ArrayBuffer and re-creates the view)
 //! - Date
+//! - boxed primitives (`new Boolean(...)`, `new Number(...)`, `new String(...)`, `Object(1n)`)
+//! - Error objects (preserves intrinsic error prototypes + `name`/`message`)
 //! - Blob (FastRender host implementation)
 //!
 //! Unsupported values throw a `DataCloneError` DOMException.
@@ -21,8 +23,8 @@ use crate::js::window_blob::{
 use crate::js::window_realm::make_dom_exception;
 use std::collections::{HashMap, HashSet};
 use vm_js::{
-  GcObject, GcString, GcSymbol, PropertyDescriptor, PropertyKey, PropertyKind, Realm, RealmId,
-  Scope, Value, Vm, VmError, VmHost, VmHostHooks,
+  GcObject, GcString, GcSymbol, Intrinsics, PropertyDescriptor, PropertyKey, PropertyKind, Realm,
+  RealmId, Scope, Value, Vm, VmError, VmHost, VmHostHooks,
 };
 
 /// Native slot index for the `structuredClone` function's realm global object.
@@ -38,6 +40,78 @@ const MAX_RECURSION_DEPTH: usize = 256;
 const MAX_VISITED_NODES: usize = 100_000;
 const MAX_ENUMERABLE_PROPS: usize = 1_000_000;
 const MAX_COPIED_BYTES: usize = 32 * 1024 * 1024; // 32MiB (copied ArrayBuffer/Blob bytes only)
+
+#[derive(Clone, Copy)]
+struct MarkerSymbols {
+  boolean_data: GcSymbol,
+  number_data: GcSymbol,
+  string_data: GcSymbol,
+  bigint_data: GcSymbol,
+}
+
+impl MarkerSymbols {
+  fn new(scope: &mut Scope<'_>) -> Result<Self, VmError> {
+    let boolean_key = scope.alloc_string("vm-js.internal.BooleanData")?;
+    scope.push_root(Value::String(boolean_key))?;
+    let boolean_data = scope.heap_mut().symbol_for(boolean_key)?;
+
+    let number_key = scope.alloc_string("vm-js.internal.NumberData")?;
+    scope.push_root(Value::String(number_key))?;
+    let number_data = scope.heap_mut().symbol_for(number_key)?;
+
+    let string_key = scope.alloc_string("vm-js.internal.StringData")?;
+    scope.push_root(Value::String(string_key))?;
+    let string_data = scope.heap_mut().symbol_for(string_key)?;
+
+    let bigint_key = scope.alloc_string("vm-js.internal.BigIntData")?;
+    scope.push_root(Value::String(bigint_key))?;
+    let bigint_data = scope.heap_mut().symbol_for(bigint_key)?;
+
+    Ok(Self {
+      boolean_data,
+      number_data,
+      string_data,
+      bigint_data,
+    })
+  }
+}
+
+#[derive(Clone, Copy, Debug)]
+enum ErrorTag {
+  Error,
+  EvalError,
+  RangeError,
+  ReferenceError,
+  SyntaxError,
+  TypeError,
+  URIError,
+}
+
+impl ErrorTag {
+  fn as_str(self) -> &'static str {
+    match self {
+      Self::Error => "Error",
+      Self::EvalError => "EvalError",
+      Self::RangeError => "RangeError",
+      Self::ReferenceError => "ReferenceError",
+      Self::SyntaxError => "SyntaxError",
+      Self::TypeError => "TypeError",
+      Self::URIError => "URIError",
+    }
+  }
+
+  fn prototype(self, intr: Intrinsics) -> GcObject {
+    match self {
+      Self::Error => intr.error_prototype(),
+      Self::EvalError => intr.eval_error_prototype(),
+      Self::RangeError => intr.range_error_prototype(),
+      Self::ReferenceError => intr.reference_error_prototype(),
+      Self::SyntaxError => intr.syntax_error_prototype(),
+      Self::TypeError => intr.type_error_prototype(),
+      Self::URIError => intr.uri_error_prototype(),
+    }
+  }
+}
 
 fn alloc_key(scope: &mut Scope<'_>, name: &str) -> Result<PropertyKey, VmError> {
   let s = scope.alloc_string(name)?;
@@ -204,6 +278,28 @@ enum Node {
   Object {
     props: Vec<(GcString, EncodedValue)>,
   },
+  BooleanObject {
+    value: bool,
+    props: Vec<(GcString, EncodedValue)>,
+  },
+  NumberObject {
+    value: f64,
+    props: Vec<(GcString, EncodedValue)>,
+  },
+  StringObject {
+    value: GcString,
+    props: Vec<(GcString, EncodedValue)>,
+  },
+  BigIntObject {
+    value: Value,
+    props: Vec<(GcString, EncodedValue)>,
+  },
+  Error {
+    kind: ErrorTag,
+    name: ErrorTag,
+    message: String,
+    props: Vec<(GcString, EncodedValue)>,
+  },
   ArrayBuffer {
     source: GcObject,
     /// If `transferred` is true, the data is moved from `source` after validation and stored in the
@@ -238,6 +334,9 @@ struct SerializeState {
   uint8_buffer_key: PropertyKey,
   uint8_byte_offset_key: PropertyKey,
   uint8_length_key: PropertyKey,
+  error_name_key: PropertyKey,
+  error_message_key: PropertyKey,
+  markers: MarkerSymbols,
 }
 
 impl SerializeState {
@@ -247,6 +346,9 @@ impl SerializeState {
     uint8_buffer_key: PropertyKey,
     uint8_byte_offset_key: PropertyKey,
     uint8_length_key: PropertyKey,
+    error_name_key: PropertyKey,
+    error_message_key: PropertyKey,
+    markers: MarkerSymbols,
   ) -> Self {
     Self {
       global,
@@ -258,6 +360,9 @@ impl SerializeState {
       uint8_buffer_key,
       uint8_byte_offset_key,
       uint8_length_key,
+      error_name_key,
+      error_message_key,
+      markers,
     }
   }
 
@@ -289,6 +394,7 @@ impl SerializeState {
 struct DeserializeState {
   global: GcObject,
   realm_id: Option<RealmId>,
+  markers: MarkerSymbols,
 
   nodes: Vec<Node>,
   clones: HashMap<NodeId, GcObject>,
@@ -339,6 +445,10 @@ fn structured_clone_native(
   }
   let transfer_set: HashSet<GcObject> = transfer_list.iter().copied().collect();
 
+  let markers = MarkerSymbols::new(&mut scope)?;
+  let error_name_key = alloc_key(&mut scope, "name")?;
+  let error_message_key = alloc_key(&mut scope, "message")?;
+
   // --- Serialize/validate the input graph ---
   let mut state = SerializeState::new(
     global,
@@ -346,6 +456,9 @@ fn structured_clone_native(
     uint8_buffer_key,
     uint8_byte_offset_key,
     uint8_length_key,
+    error_name_key,
+    error_message_key,
+    markers,
   );
   let root = serialize_value(vm, &mut scope, host, hooks, &mut state, value, 0)?;
 
@@ -356,6 +469,7 @@ fn structured_clone_native(
   let mut deser = DeserializeState {
     global,
     realm_id,
+    markers,
     nodes: state.nodes,
     clones: HashMap::new(),
     transfer_data,
@@ -527,6 +641,154 @@ fn serialize_value(
   }
 }
 
+fn is_platform_object(scope: &Scope<'_>, obj: GcObject) -> Result<bool, VmError> {
+  let slots = match scope.heap().object_host_slots(obj) {
+    Ok(slots) => slots,
+    Err(VmError::InvalidHandle { .. }) if scope.heap().is_valid_object(obj) => None,
+    Err(err) => return Err(err),
+  };
+  Ok(slots.is_some())
+}
+
+fn utf16_units_eq_str(units: &[u16], expected: &str) -> bool {
+  let mut it = expected.encode_utf16();
+  for &u in units {
+    match it.next() {
+      Some(e) if e == u => {}
+      _ => return false,
+    }
+  }
+  it.next().is_none()
+}
+
+fn gc_string_eq_str(scope: &Scope<'_>, s: GcString, expected: &str) -> Result<bool, VmError> {
+  let units = scope.heap().get_string(s)?.as_code_units();
+  Ok(utf16_units_eq_str(units, expected))
+}
+
+fn error_tag_from_utf16(units: &[u16]) -> Option<ErrorTag> {
+  if utf16_units_eq_str(units, "Error") {
+    Some(ErrorTag::Error)
+  } else if utf16_units_eq_str(units, "EvalError") {
+    Some(ErrorTag::EvalError)
+  } else if utf16_units_eq_str(units, "RangeError") {
+    Some(ErrorTag::RangeError)
+  } else if utf16_units_eq_str(units, "ReferenceError") {
+    Some(ErrorTag::ReferenceError)
+  } else if utf16_units_eq_str(units, "SyntaxError") {
+    Some(ErrorTag::SyntaxError)
+  } else if utf16_units_eq_str(units, "TypeError") {
+    Some(ErrorTag::TypeError)
+  } else if utf16_units_eq_str(units, "URIError") {
+    Some(ErrorTag::URIError)
+  } else {
+    None
+  }
+}
+
+fn error_kind_for_object(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  intr: Intrinsics,
+  obj: GcObject,
+) -> Result<Option<ErrorTag>, VmError> {
+  let mut current = scope.heap().object_prototype(obj)?;
+  let mut steps = 0usize;
+  while let Some(proto) = current {
+    vm.tick()?;
+    steps += 1;
+    if steps > 1024 {
+      return Err(VmError::PrototypeChainTooDeep);
+    }
+
+    if proto == intr.eval_error_prototype() {
+      return Ok(Some(ErrorTag::EvalError));
+    }
+    if proto == intr.range_error_prototype() {
+      return Ok(Some(ErrorTag::RangeError));
+    }
+    if proto == intr.reference_error_prototype() {
+      return Ok(Some(ErrorTag::ReferenceError));
+    }
+    if proto == intr.syntax_error_prototype() {
+      return Ok(Some(ErrorTag::SyntaxError));
+    }
+    if proto == intr.type_error_prototype() {
+      return Ok(Some(ErrorTag::TypeError));
+    }
+    if proto == intr.uri_error_prototype() {
+      return Ok(Some(ErrorTag::URIError));
+    }
+    if proto == intr.error_prototype() {
+      return Ok(Some(ErrorTag::Error));
+    }
+
+    current = scope.heap().object_prototype(proto)?;
+  }
+  Ok(None)
+}
+
+fn serialize_enumerable_own_string_keys_into_node(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  state: &mut SerializeState,
+  obj: GcObject,
+  depth: usize,
+  node_id: NodeId,
+  skip_error_name_and_message: bool,
+) -> Result<(), VmError> {
+  let mut scope = scope.reborrow();
+  scope.push_root(Value::Object(obj))?;
+
+  let keys = scope.heap().own_property_keys(obj)?;
+  for (i, key) in keys.iter().copied().enumerate() {
+    if i % 1024 == 0 {
+      vm.tick()?;
+    }
+
+    let PropertyKey::String(key_s) = key else {
+      continue;
+    };
+    if skip_error_name_and_message
+      && (gc_string_eq_str(&scope, key_s, "name")? || gc_string_eq_str(&scope, key_s, "message")?)
+    {
+      continue;
+    }
+
+    let Some(desc) = scope
+      .heap()
+      .object_get_own_property_with_tick(obj, &key, || vm.tick())?
+    else {
+      continue;
+    };
+    if !desc.enumerable {
+      continue;
+    }
+
+    state.count_prop(vm, &mut scope)?;
+
+    // Root key while we perform `Get`, which can invoke user code.
+    scope.push_root(Value::String(key_s))?;
+    let prop_val = vm.get_with_host_and_hooks(host, &mut scope, hooks, obj, key)?;
+    let encoded = serialize_value(vm, &mut scope, host, hooks, state, prop_val, depth + 1)?;
+
+    match state.nodes.get_mut(node_id) {
+      Some(Node::Array { props, .. }
+      | Node::Object { props }
+      | Node::BooleanObject { props, .. }
+      | Node::NumberObject { props, .. }
+      | Node::StringObject { props, .. }
+      | Node::BigIntObject { props, .. }
+      | Node::Error { props, .. }) => props.push((key_s, encoded)),
+      _ => return Err(VmError::InvariantViolation("structuredClone node kind mismatch")),
+    }
+  }
+
+  Ok(())
+}
+
 fn serialize_object(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -565,6 +827,16 @@ fn serialize_object(
       scope,
       state.global,
       "structuredClone: cannot clone Promise",
+    ));
+  }
+
+  // Reject platform objects (FastRender host slots).
+  if is_platform_object(scope, obj)? {
+    return Err(throw_data_clone_error(
+      vm,
+      scope,
+      state.global,
+      "structuredClone: cannot clone platform object",
     ));
   }
 
@@ -730,6 +1002,96 @@ fn serialize_object(
     return Ok(EncodedValue::Object(id));
   }
 
+  // Boxed primitives.
+  let boolean_marker_key = PropertyKey::from_symbol(state.markers.boolean_data);
+  if let Some(Value::Bool(b)) = scope
+    .heap()
+    .object_get_own_data_property_value(obj, &boolean_marker_key)?
+  {
+    let id = state.push_node(Node::BooleanObject { value: b, props: Vec::new() }, vm, scope)?;
+    state.object_to_id.insert(obj, id);
+    serialize_enumerable_own_string_keys_into_node(vm, scope, host, hooks, state, obj, depth, id, false)?;
+    return Ok(EncodedValue::Object(id));
+  }
+
+  let number_marker_key = PropertyKey::from_symbol(state.markers.number_data);
+  if let Some(Value::Number(n)) = scope
+    .heap()
+    .object_get_own_data_property_value(obj, &number_marker_key)?
+  {
+    let id = state.push_node(Node::NumberObject { value: n, props: Vec::new() }, vm, scope)?;
+    state.object_to_id.insert(obj, id);
+    serialize_enumerable_own_string_keys_into_node(vm, scope, host, hooks, state, obj, depth, id, false)?;
+    return Ok(EncodedValue::Object(id));
+  }
+
+  let string_marker_key = PropertyKey::from_symbol(state.markers.string_data);
+  if let Some(Value::String(s)) = scope
+    .heap()
+    .object_get_own_data_property_value(obj, &string_marker_key)?
+  {
+    let id = state.push_node(Node::StringObject { value: s, props: Vec::new() }, vm, scope)?;
+    state.object_to_id.insert(obj, id);
+    serialize_enumerable_own_string_keys_into_node(vm, scope, host, hooks, state, obj, depth, id, false)?;
+    return Ok(EncodedValue::Object(id));
+  }
+
+  let bigint_marker_key = PropertyKey::from_symbol(state.markers.bigint_data);
+  if let Some(v @ Value::BigInt(_)) = scope
+    .heap()
+    .object_get_own_data_property_value(obj, &bigint_marker_key)?
+  {
+    let id = state.push_node(Node::BigIntObject { value: v, props: Vec::new() }, vm, scope)?;
+    state.object_to_id.insert(obj, id);
+    serialize_enumerable_own_string_keys_into_node(vm, scope, host, hooks, state, obj, depth, id, false)?;
+    return Ok(EncodedValue::Object(id));
+  }
+
+  // Error objects.
+  if let Some(intr) = vm.intrinsics() {
+    if let Some(kind) = error_kind_for_object(vm, scope, intr, obj)? {
+      let name_value = vm.get_with_host_and_hooks(host, scope, hooks, obj, state.error_name_key)?;
+      let name = match name_value {
+        Value::Undefined | Value::Null => ErrorTag::Error,
+        Value::String(s) => error_tag_from_utf16(scope.heap().get_string(s)?.as_code_units())
+          .unwrap_or(ErrorTag::Error),
+        other => {
+          let s = scope.to_string(vm, host, hooks, other)?;
+          scope.push_root(Value::String(s))?;
+          error_tag_from_utf16(scope.heap().get_string(s)?.as_code_units()).unwrap_or(ErrorTag::Error)
+        }
+      };
+
+      // HTML structured clone reads the message from the *own* `message` data property.
+      // When absent, use the empty string (matching default `Error` instances).
+      let message_value =
+        scope.heap().object_get_own_data_property_value(obj, &state.error_message_key)?;
+      let message = match message_value {
+        Some(Value::String(s)) => scope.heap().get_string(s)?.to_utf8_lossy(),
+        Some(other) => {
+          let s = scope.to_string(vm, host, hooks, other)?;
+          scope.push_root(Value::String(s))?;
+          scope.heap().get_string(s)?.to_utf8_lossy()
+        }
+        None => String::new(),
+      };
+
+      let id = state.push_node(
+        Node::Error {
+          kind,
+          name,
+          message,
+          props: Vec::new(),
+        },
+        vm,
+        scope,
+      )?;
+      state.object_to_id.insert(obj, id);
+      serialize_enumerable_own_string_keys_into_node(vm, scope, host, hooks, state, obj, depth, id, true)?;
+      return Ok(EncodedValue::Object(id));
+    }
+  }
+
   // Array / ordinary object.
   let is_array = scope.heap().object_is_array(obj)?;
 
@@ -768,41 +1130,17 @@ fn serialize_object(
   };
   state.object_to_id.insert(obj, placeholder_id);
 
-  let mut scope = scope.reborrow();
-  scope.push_root(Value::Object(obj))?;
-
-  let keys = scope.heap().own_property_keys(obj)?;
-  for (i, key) in keys.iter().copied().enumerate() {
-    if i % 1024 == 0 {
-      vm.tick()?;
-    }
-
-    let PropertyKey::String(key_s) = key else {
-      continue;
-    };
-
-    let Some(desc) = scope
-      .heap()
-      .object_get_own_property_with_tick(obj, &key, || vm.tick())?
-    else {
-      continue;
-    };
-    if !desc.enumerable {
-      continue;
-    }
-
-    state.count_prop(vm, &mut scope)?;
-
-    // Root key while we perform `Get`, which can invoke user code.
-    scope.push_root(Value::String(key_s))?;
-    let prop_val = vm.get_with_host_and_hooks(host, &mut scope, hooks, obj, key)?;
-    let encoded = serialize_value(vm, &mut scope, host, hooks, state, prop_val, depth + 1)?;
-
-    match state.nodes.get_mut(placeholder_id) {
-      Some(Node::Array { props, .. } | Node::Object { props }) => props.push((key_s, encoded)),
-      _ => return Err(VmError::InvariantViolation("structuredClone node kind mismatch")),
-    }
-  }
+  serialize_enumerable_own_string_keys_into_node(
+    vm,
+    scope,
+    host,
+    hooks,
+    state,
+    obj,
+    depth,
+    placeholder_id,
+    false,
+  )?;
 
   Ok(EncodedValue::Object(placeholder_id))
 }
@@ -909,6 +1247,11 @@ fn deserialize_node(
     Some(Node::Uint8Array { .. }) => 4u8,
     Some(Node::Date { .. }) => 5u8,
     Some(Node::Blob { .. }) => 6u8,
+    Some(Node::BooleanObject { .. }) => 7u8,
+    Some(Node::NumberObject { .. }) => 8u8,
+    Some(Node::StringObject { .. }) => 9u8,
+    Some(Node::BigIntObject { .. }) => 10u8,
+    Some(Node::Error { .. }) => 11u8,
     None => return Err(VmError::InvariantViolation("structuredClone node id out of bounds")),
   };
 
@@ -1070,6 +1413,250 @@ fn deserialize_node(
       scope.push_root(Value::Object(blob_obj))?;
       state.clones.insert(id, blob_obj);
       blob_obj
+    }
+    7 => {
+      // Boolean object.
+      let (value, props) = match state.nodes.get_mut(id) {
+        Some(Node::BooleanObject { value, props }) => (*value, std::mem::take(props)),
+        _ => return Err(VmError::InvariantViolation("structuredClone node kind mismatch")),
+      };
+
+      let obj = scope.alloc_object()?;
+      scope.push_root(Value::Object(obj))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(obj, Some(intr.boolean_prototype()))?;
+      state.clones.insert(id, obj);
+
+      let marker_key = PropertyKey::from_symbol(state.markers.boolean_data);
+      scope.define_property(
+        obj,
+        marker_key,
+        PropertyDescriptor {
+          enumerable: false,
+          configurable: false,
+          kind: PropertyKind::Data {
+            value: Value::Bool(value),
+            writable: true,
+          },
+        },
+      )?;
+
+      for (i, (key_s, val)) in props.into_iter().enumerate() {
+        if i % 1024 == 0 {
+          vm.tick()?;
+        }
+        let cloned_val = deserialize_value(vm, scope, state, callee, val, depth + 1)?;
+        let key = PropertyKey::from_string(key_s);
+        scope.define_property(
+          obj,
+          key,
+          PropertyDescriptor {
+            enumerable: true,
+            configurable: true,
+            kind: PropertyKind::Data {
+              value: cloned_val,
+              writable: true,
+            },
+          },
+        )?;
+      }
+
+      obj
+    }
+    8 => {
+      // Number object.
+      let (value, props) = match state.nodes.get_mut(id) {
+        Some(Node::NumberObject { value, props }) => (*value, std::mem::take(props)),
+        _ => return Err(VmError::InvariantViolation("structuredClone node kind mismatch")),
+      };
+
+      let obj = scope.alloc_object()?;
+      scope.push_root(Value::Object(obj))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(obj, Some(intr.number_prototype()))?;
+      state.clones.insert(id, obj);
+
+      let marker_key = PropertyKey::from_symbol(state.markers.number_data);
+      scope.define_property(
+        obj,
+        marker_key,
+        PropertyDescriptor {
+          enumerable: false,
+          configurable: false,
+          kind: PropertyKind::Data {
+            value: Value::Number(value),
+            writable: true,
+          },
+        },
+      )?;
+
+      for (i, (key_s, val)) in props.into_iter().enumerate() {
+        if i % 1024 == 0 {
+          vm.tick()?;
+        }
+        let cloned_val = deserialize_value(vm, scope, state, callee, val, depth + 1)?;
+        let key = PropertyKey::from_string(key_s);
+        scope.define_property(
+          obj,
+          key,
+          PropertyDescriptor {
+            enumerable: true,
+            configurable: true,
+            kind: PropertyKind::Data {
+              value: cloned_val,
+              writable: true,
+            },
+          },
+        )?;
+      }
+
+      obj
+    }
+    9 => {
+      // String object.
+      let (value, props) = match state.nodes.get_mut(id) {
+        Some(Node::StringObject { value, props }) => (*value, std::mem::take(props)),
+        _ => return Err(VmError::InvariantViolation("structuredClone node kind mismatch")),
+      };
+
+      let obj = scope.alloc_object()?;
+      scope.push_root(Value::Object(obj))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(obj, Some(intr.string_prototype()))?;
+      state.clones.insert(id, obj);
+
+      let marker_key = PropertyKey::from_symbol(state.markers.string_data);
+      scope.define_property(
+        obj,
+        marker_key,
+        PropertyDescriptor {
+          enumerable: false,
+          configurable: false,
+          kind: PropertyKind::Data {
+            value: Value::String(value),
+            writable: true,
+          },
+        },
+      )?;
+
+      for (i, (key_s, val)) in props.into_iter().enumerate() {
+        if i % 1024 == 0 {
+          vm.tick()?;
+        }
+        let cloned_val = deserialize_value(vm, scope, state, callee, val, depth + 1)?;
+        let key = PropertyKey::from_string(key_s);
+        scope.define_property(
+          obj,
+          key,
+          PropertyDescriptor {
+            enumerable: true,
+            configurable: true,
+            kind: PropertyKind::Data {
+              value: cloned_val,
+              writable: true,
+            },
+          },
+        )?;
+      }
+
+      obj
+    }
+    10 => {
+      // BigInt object.
+      let (value, props) = match state.nodes.get_mut(id) {
+        Some(Node::BigIntObject { value, props }) => (*value, std::mem::take(props)),
+        _ => return Err(VmError::InvariantViolation("structuredClone node kind mismatch")),
+      };
+
+      let obj = scope.alloc_object()?;
+      scope.push_root(Value::Object(obj))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(obj, Some(intr.bigint_prototype()))?;
+      state.clones.insert(id, obj);
+
+      let marker_key = PropertyKey::from_symbol(state.markers.bigint_data);
+      scope.define_property(
+        obj,
+        marker_key,
+        PropertyDescriptor {
+          enumerable: false,
+          configurable: false,
+          kind: PropertyKind::Data {
+            value,
+            writable: true,
+          },
+        },
+      )?;
+
+      for (i, (key_s, val)) in props.into_iter().enumerate() {
+        if i % 1024 == 0 {
+          vm.tick()?;
+        }
+        let cloned_val = deserialize_value(vm, scope, state, callee, val, depth + 1)?;
+        let key = PropertyKey::from_string(key_s);
+        scope.define_property(
+          obj,
+          key,
+          PropertyDescriptor {
+            enumerable: true,
+            configurable: true,
+            kind: PropertyKind::Data {
+              value: cloned_val,
+              writable: true,
+            },
+          },
+        )?;
+      }
+
+      obj
+    }
+    11 => {
+      // Error object.
+      let (kind, name, message, props) = match state.nodes.get_mut(id) {
+        Some(Node::Error {
+          kind,
+          name,
+          message,
+          props,
+        }) => (*kind, *name, std::mem::take(message), std::mem::take(props)),
+        _ => return Err(VmError::InvariantViolation("structuredClone node kind mismatch")),
+      };
+
+      let proto = kind.prototype(intr);
+      let err = vm_js::new_error(scope, proto, name.as_str(), &message)?;
+      let Value::Object(obj) = err else {
+        return Err(VmError::InvariantViolation(
+          "structuredClone Error node did not allocate an object",
+        ));
+      };
+      scope.push_root(Value::Object(obj))?;
+      state.clones.insert(id, obj);
+
+      for (i, (key_s, val)) in props.into_iter().enumerate() {
+        if i % 1024 == 0 {
+          vm.tick()?;
+        }
+        let cloned_val = deserialize_value(vm, scope, state, callee, val, depth + 1)?;
+        let key = PropertyKey::from_string(key_s);
+        scope.define_property(
+          obj,
+          key,
+          PropertyDescriptor {
+            enumerable: true,
+            configurable: true,
+            kind: PropertyKind::Data {
+              value: cloned_val,
+              writable: true,
+            },
+          },
+        )?;
+      }
+
+      obj
     }
     _ => return Err(VmError::InvariantViolation("structuredClone invalid node kind tag")),
   };
@@ -1248,6 +1835,68 @@ mod tests {
     let fun = realm.exec_script("try { structuredClone(function(){}); 'no' } catch (e) { e.name }")?;
     assert_eq!(get_string(&realm, fun), "DataCloneError");
 
+    Ok(())
+  }
+
+  #[test]
+  fn structured_clone_clones_boxed_primitives() -> Result<(), VmError> {
+    let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
+
+    let ok = realm.exec_script(
+      "(() => {\
+         const b = new Boolean(true); b.extra = 1;\
+         const n = new Number(5); n.extra = 2;\
+         const s = new String('hi'); s.extra = 3;\
+         const bi = Object(1n); bi.extra = 4;\
+         const cb = structuredClone(b);\
+         const cn = structuredClone(n);\
+         const cs = structuredClone(s);\
+         const cbi = structuredClone(bi);\
+         return cb !== b && Object.getPrototypeOf(cb) === Boolean.prototype && cb.valueOf() === true && cb.extra === 1 &&\
+                cn !== n && Object.getPrototypeOf(cn) === Number.prototype && cn.valueOf() === 5 && cn.extra === 2 &&\
+                cs !== s && Object.getPrototypeOf(cs) === String.prototype && cs.valueOf() === 'hi' && cs.extra === 3 &&\
+                cbi !== bi && Object.getPrototypeOf(cbi) === BigInt.prototype && cbi.valueOf() === 1n && cbi.extra === 4;\
+       })()",
+    )?;
+    assert_eq!(ok, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn structured_clone_clones_error_objects() -> Result<(), VmError> {
+    let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
+
+    let ok = realm.exec_script(
+      "(() => {\
+         const e = new TypeError('boom');\
+         e.extra = 1;\
+         const c = structuredClone(e);\
+         if (c === e) return false;\
+         if (!(c instanceof TypeError)) return false;\
+         if (c.name !== 'TypeError') return false;\
+         if (c.message !== 'boom') return false;\
+         if (c.extra !== 1) return false;\
+         const cyc = new Error('x');\
+         cyc.self = cyc;\
+         const cyc2 = structuredClone(cyc);\
+         return cyc2 !== cyc && cyc2.self === cyc2 && cyc2.name === 'Error' && cyc2.message === 'x';\
+       })()",
+    )?;
+    assert_eq!(ok, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn structured_clone_rejects_platform_objects() -> Result<(), VmError> {
+    let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
+
+    let name = realm.exec_script(
+      "(() => {\
+         try { structuredClone(document.createElement('div')); return 'no'; }\
+         catch (e) { return e.name; }\
+       })()",
+    )?;
+    assert_eq!(get_string(&realm, name), "DataCloneError");
     Ok(())
   }
 

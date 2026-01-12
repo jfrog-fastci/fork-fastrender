@@ -29800,6 +29800,114 @@ mod tests {
   }
 
   #[test]
+  fn window_structured_clone_primitives_objects_and_cycles() -> Result<(), VmError> {
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+
+    assert_eq!(
+      realm.exec_script("typeof structuredClone === 'function'")?,
+      Value::Bool(true)
+    );
+
+    assert_eq!(
+      realm.exec_script(
+        "structuredClone(123) === 123 && structuredClone('hi') === 'hi' && structuredClone(1n) === 1n",
+      )?,
+      Value::Bool(true)
+    );
+
+    assert_eq!(
+      realm.exec_script(
+        "(() => { const o = { a: 1 }; const c = structuredClone(o); return c !== o && c.a === 1; })()",
+      )?,
+      Value::Bool(true)
+    );
+
+    assert_eq!(
+      realm.exec_script(
+        "(() => { const a = {}; a.self = a; const b = structuredClone(a); return b !== a && b.self === b; })()",
+      )?,
+      Value::Bool(true)
+    );
+
+    assert_eq!(
+      realm.exec_script(
+        "(() => { const o = {}; Object.defineProperty(o, 'x', { value: 1, enumerable: false }); const c = structuredClone(o); return c.x === undefined; })()",
+      )?,
+      Value::Bool(true)
+    );
+
+    Ok(())
+  }
+
+  #[test]
+  fn window_structured_clone_array_buffer_and_uint8_array() -> Result<(), VmError> {
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+
+    assert_eq!(
+      realm.exec_script(
+        "(() => {\n\
+          const ab = new ArrayBuffer(4);\n\
+          const u = new Uint8Array(ab);\n\
+          u[0] = 1; u[1] = 2; u[2] = 3; u[3] = 4;\n\
+          const ab2 = structuredClone(ab);\n\
+          const u2 = new Uint8Array(ab2);\n\
+          const abOk = ab2 !== ab && u2[0] === 1 && u2[1] === 2 && u2[2] === 3 && u2[3] === 4;\n\
+          u2[0] = 9;\n\
+          const abIndependent = u[0] === 1 && u2[0] === 9;\n\
+\n\
+          const v = new Uint8Array(3);\n\
+          v[0] = 5; v[1] = 6; v[2] = 7;\n\
+          const v2 = structuredClone(v);\n\
+          const vOk = v2 !== v && (v2 instanceof Uint8Array) && v2.length === 3 && v2[0] === 5 && v2[1] === 6 && v2[2] === 7;\n\
+          v2[0] = 8;\n\
+          const vIndependent = v[0] === 5 && v2[0] === 8;\n\
+\n\
+          const buf = new ArrayBuffer(4);\n\
+          const a = new Uint8Array(buf, 0, 2);\n\
+          const b = new Uint8Array(buf, 2, 2);\n\
+          a[0] = 1; a[1] = 2; b[0] = 3; b[1] = 4;\n\
+          const obj = { a, b };\n\
+          const c = structuredClone(obj);\n\
+          const shared = c.a.buffer === c.b.buffer && c.a.buffer !== buf;\n\
+          const sharedBytes = c.a[0] === 1 && c.a[1] === 2 && c.b[0] === 3 && c.b[1] === 4;\n\
+\n\
+          return abOk && abIndependent && vOk && vIndependent && shared && sharedBytes;\n\
+        })()",
+      )?,
+      Value::Bool(true)
+    );
+
+    Ok(())
+  }
+
+  #[test]
+  fn window_structured_clone_date_and_errors() -> Result<(), VmError> {
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+
+    assert_eq!(
+      realm.exec_script(
+        "(() => { const d = new Date(123); const c = structuredClone(d); return c !== d && (c instanceof Date) && c.valueOf() === 123; })()",
+      )?,
+      Value::Bool(true)
+    );
+
+    assert_eq!(
+      realm.exec_script(
+        "(() => {\n\
+          let ok1 = false;\n\
+          try { structuredClone(Symbol('x')); } catch (e) { ok1 = e && e.name === 'DataCloneError'; }\n\
+          let ok2 = false;\n\
+          try { structuredClone(() => {}); } catch (e) { ok2 = e && e.name === 'DataCloneError'; }\n\
+          return ok1 && ok2;\n\
+        })()",
+      )?,
+      Value::Bool(true)
+    );
+
+    Ok(())
+  }
+
+  #[test]
   fn external_interrupt_flag_interrupts_window_realm_and_is_not_reset() -> Result<(), VmError> {
     struct RestoreFlag {
       flag: Arc<AtomicBool>,
