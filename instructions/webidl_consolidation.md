@@ -1,33 +1,30 @@
-# WebIDL Stack Consolidation
+# WebIDL Stack Consolidation (post-consolidation)
 
-FastRender’s WebIDL stack is being consolidated into the vendored ecma-rs workspace.
+FastRender’s WebIDL stack has been consolidated into the vendored ecma-rs workspace.
 
-**Status: IN PROGRESS**
+**Status: COMPLETE**
 
-This document is now a contributor-facing “where does this live?” reference so new work does not
+This document is a contributor-facing “where does this live?” reference so new work does not
 re-introduce a parallel WebIDL stack under `crates/`.
 
-See also the consolidated stack doc in the internal wiki:
-[`docs/webidl_stack.md`](../docs/webidl_stack.md).
+See also: [`docs/webidl_stack.md`](../docs/webidl_stack.md).
 
 ---
 
 ## Repository shape
 
-Current shape (during migration):
+After consolidation:
 
 ```
 vendor/ecma-rs/
 ├── webidl/               ← WebIDL IR + parsing + spec algorithms (exports `webidl::ir`)
 ├── webidl-vm-js/         ← vm-js adapter + realm bindings helpers
+└── webidl-runtime/       ← legacy heap-only runtime adapter (compat/migration)
 
 src/js/webidl/            ← FastRender-specific bindings integration (re-exports, host dispatch,
-                             realm installation/runtime glue)
+                            realm installation/runtime glue)
 
 crates/
-├── webidl-js-runtime/    ← legacy heap-only runtime adapter (compat/migration; Cargo package `webidl-js-runtime`)
-├── webidl-ir/            ← legacy WebIDL IR crate (being migrated into `vendor/ecma-rs/webidl::ir`)
-├── webidl-bindings-core/ ← legacy conversions/overload scaffolding (being migrated into `vendor/ecma-rs/webidl`)
 └── js-wpt-dom-runner/    ← FastRender-specific tooling (offline WPT runner)
 ```
 
@@ -58,12 +55,11 @@ Put it in `vendor/ecma-rs/webidl-vm-js/`:
 
 ### Legacy heap-only runtime adapter
 
-If you need the legacy heap-only runtime (used by early scaffolding and some unit tests), it
-currently lives in `crates/webidl-js-runtime/` (Cargo package name: `webidl-js-runtime`, Rust crate
-name: `webidl_js_runtime`).
+If you need the legacy heap-only runtime (used by early scaffolding and some unit tests), it lives
+in `vendor/ecma-rs/webidl-runtime/`.
 
-FastRender continues to expose it via `fastrender::js::webidl::legacy` while migration is in
-progress.
+- Cargo package name: `webidl-js-runtime` (Rust crate name: `webidl_js_runtime`).
+- FastRender exposes it via `fastrender::js::webidl::legacy` while migration is in progress.
 
 ### FastRender-specific DOM bindings integration
 

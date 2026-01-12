@@ -31,18 +31,19 @@ For an overview of the consolidated WebIDL crate layout (and where new code belo
     - `VmJsWebIdlBindingsCx`
     - `VmJsWebIdlBindingsState`
     - `WebIdlBindingsRuntime`
-- **Binding installation / host scaffolding (legacy heap-only runtime)**: `crates/webidl-js-runtime`
+- **Binding installation / host scaffolding (legacy heap-only runtime)**: `vendor/ecma-rs/webidl-runtime`
   - This provides a heap-only `vm-js` value/object model (`VmJsRuntime`) used by early scaffolding
     code. It cannot execute author scripts and should not be used for new bindings work.
   - Cargo package name: `webidl-js-runtime` (Rust crate name: `webidl_js_runtime`).
   - It remains available under `fastrender::js::webidl::legacy` while migration is in progress.
-  - Note: `scripts/cargo_agent.sh` supports running the crate directly:
+  - Note: run it via the vendored ecma-rs workspace wrapper:
 
     ```bash
-    bash scripts/cargo_agent.sh test -p webidl-js-runtime
-    bash scripts/cargo_agent.sh build -p webidl-js-runtime
+    bash vendor/ecma-rs/scripts/cargo_agent.sh test -p webidl-js-runtime
+    bash vendor/ecma-rs/scripts/cargo_agent.sh build -p webidl-js-runtime
     ```
-  - Note: FastRender’s real DOM bindings are `vm-js` realm-based (`src/js/legacy/vm_dom.rs`) and do not use this legacy heap-only runtime.
+  - Note: FastRender’s canonical author-script execution is realm-based (`vm-js` + `WindowRealm`).
+    The heap-only runtime exists mainly for migration and targeted unit tests.
 - **Committed generated snapshot**: `src/webidl/generated/mod.rs`
   - Contains `pub const WORLD: WebIdlWorld = ...`.
   - Marked `@generated` and must not be edited by hand.
@@ -195,7 +196,7 @@ world:
     against the committed snapshot world).
 - **Legacy `webidl-js-runtime` (heap-only) bindings** (`--backend legacy --out src/js/webidl/bindings/generated_legacy.rs`):
   `src/js/webidl/bindings/generated_legacy.rs`
-  - Backed by `fastrender::js::webidl::legacy` (implemented by `crates/webidl-js-runtime`).
+  - Backed by `fastrender::js::webidl::legacy` (vendored in `vendor/ecma-rs/webidl-runtime`).
   - Kept temporarily for migration and for unit tests that still exercise the older bindings/runtime
     surface.
   - Regenerate with:

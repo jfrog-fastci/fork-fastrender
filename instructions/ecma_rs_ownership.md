@@ -98,7 +98,7 @@ This is a one-time fix. Don't create parallel crates to avoid it.
 | JS runtime/VM | `vendor/ecma-rs/vm-js/` | Language infrastructure |
 | WebIDL IR + algorithms | `vendor/ecma-rs/webidl/` | Spec infrastructure |
 | WebIDL ↔ vm-js adapter | `vendor/ecma-rs/webidl-vm-js/` | Engine integration |
-| Legacy heap-only WebIDL runtime adapter | `crates/webidl-js-runtime/` (migration target: `vendor/ecma-rs/webidl-runtime/`) | Compatibility layer |
+| Legacy heap-only WebIDL runtime adapter | `vendor/ecma-rs/webidl-runtime/` | Compatibility layer |
 | DOM/Web API bindings integration (FastRender) | `src/js/webidl/` | FastRender-specific glue |
 | Browser APIs (timers, fetch, URL, ...) | `src/js/` + `src/web/` | FastRender-specific |
 | Event loop | `src/js/event_loop.rs` | FastRender-specific |
@@ -106,12 +106,9 @@ This is a one-time fix. Don't create parallel crates to avoid it.
 
 ---
 
-## Repository shape (target)
+## Repository shape (post-consolidation)
 
-The target is that `crates/` exists only for FastRender-specific tooling (currently
-`crates/js-wpt-dom-runner/`). During the WebIDL consolidation, legacy WebIDL crates may still exist
-under `crates/`; see [`instructions/webidl_consolidation.md`](webidl_consolidation.md) for the
-current migration state.
+`crates/` exists only for FastRender-specific tooling (currently `crates/js-wpt-dom-runner/`).
 
 All generic JS/WebIDL infrastructure lives in `vendor/ecma-rs/`. If you find yourself reaching for
 `crates/` to add WebIDL parsing/conversions/VM integration, that is almost certainly a design

@@ -1,15 +1,12 @@
-# WebIDL stack (consolidation guide)
+# WebIDL stack (post-consolidation)
 
 FastRender’s WebIDL implementation is split into:
 
 - **Generic JS/WebIDL infrastructure** in `vendor/ecma-rs/` (owned by FastRender; modify it freely).
 - **FastRender-specific bindings and embedding glue** in `src/js/`.
 
-This document is the contributor-facing “where does this live?” reference for FastRender’s WebIDL
-stack (and the boundary between `vendor/ecma-rs/` vs `src/`).
-
-Note: the consolidation is still in progress; some legacy WebIDL crates may still exist under
-`crates/`, but **new** WebIDL infrastructure should follow the rules below (see also:
+This document is the contributor-facing “where does this live?” reference for the consolidated
+stack (and the boundary between `vendor/ecma-rs/` vs `src/`; see also:
 [`instructions/ecma_rs_ownership.md`](../instructions/ecma_rs_ownership.md)).
 
 ## Crate / code layout
@@ -43,7 +40,7 @@ belongs here.
 If you need a new feature in the `webidl` ↔ `vm-js` adapter (rooting, iterator helpers, host dispatch
 plumbing), it belongs here.
 
-### Legacy heap-only runtime (compat): `crates/webidl-js-runtime` (migration target: `vendor/ecma-rs/webidl-runtime`)
+### Legacy heap-only runtime (compat): `vendor/ecma-rs/webidl-runtime`
 
 The legacy heap-only runtime adapter is used by early scaffolding and some unit tests. It cannot
 execute author scripts and should not be used for new bindings work.
