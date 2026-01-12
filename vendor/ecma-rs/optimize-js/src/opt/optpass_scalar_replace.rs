@@ -14,8 +14,11 @@ static ALLOC_MARKER_BUILTINS: LazyLock<HashSet<&'static str>> = LazyLock::new(||
     "__optimize_js_array",
     "__optimize_js_regex",
     "__optimize_js_template",
-    "__optimize_js_tagged_template",
-    "__optimize_js_new",
+    // NOTE: We intentionally exclude helpers like `__optimize_js_new` /
+    // `__optimize_js_tagged_template` here because they can invoke user code and/or
+    // have complex semantics beyond "allocate a fresh container". Even if escape
+    // analysis reports `NoEscape`, stack-allocating such values can be unsound if
+    // the callee leaks the allocation via hidden paths.
   ])
 });
  
@@ -703,8 +706,9 @@ fn mark_stack_alloc_candidates(cfg: &mut Cfg) -> bool {
 /// - the allocation must be marked `NoEscape` by escape analysis (`InstMeta.result_escape`)
 /// - the object reference must only be used via `GetProp`, `PropAssign`, or SSA alias copies
 ///
-/// For any allocation call (`__optimize_js_*`) marked `NoEscape` that is not scalar-replaced, the
-/// pass sets `InstMeta.stack_alloc_candidate=true` as a backend hint.
+/// For any non-escaping internal literal allocation call (e.g. `__optimize_js_object`,
+/// `__optimize_js_array`) that is not scalar-replaced, the pass sets
+/// `InstMeta.stack_alloc_candidate=true` as a backend hint.
 pub fn optpass_scalar_replace(cfg: &mut Cfg) -> PassResult {
   let dom = Dom::calculate(cfg);
   let domfront = compute_domfront_btree(&dom, cfg);
