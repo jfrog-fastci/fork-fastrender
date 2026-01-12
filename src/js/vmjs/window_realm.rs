@@ -42136,7 +42136,9 @@ mod tests {
       fn vm_host_and_window_realm(
         &mut self,
       ) -> crate::error::Result<(&mut dyn VmHost, &mut WindowRealm)> {
-        unreachable!("DummyHost is only used as a type parameter for VmJsEventLoopHooks");
+        Err(crate::error::Error::Other(
+          "DummyHost is only used as a type parameter for VmJsEventLoopHooks".to_string(),
+        ))
       }
     }
 
