@@ -556,7 +556,6 @@ impl RegExpProgram {
         Inst::Any => Inst::Any,
         Inst::Class(cls) => Inst::Class(cls.try_clone().map_err(|e| match e {
           RegExpCompileError::OutOfMemory => VmError::OutOfMemory,
-          RegExpCompileError::Vm(err) => err,
           // Cloning an already-compiled class should never fail with a syntax error.
           RegExpCompileError::Syntax(_) => {
             VmError::InvariantViolation("RegExpProgram clone syntax error")
@@ -589,8 +588,7 @@ impl RegExpProgram {
         },
         Inst::Match => Inst::Match,
       };
-      // `try_reserve_exact` above ensures we can push without triggering an infallible allocation.
-      insts.push(cloned);
+      vec_try_push_vm(&mut insts, cloned)?;
     }
 
     Ok(Self {
