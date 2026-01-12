@@ -4102,36 +4102,51 @@ fn keyof_tuple_deterministic_across_stores() {
 }
 
 #[test]
-fn intersection_with_empty_object_removes_nullish_union_members() {
+fn intersection_with_empty_object_removes_nullish() {
   let store = TypeStore::new();
   let primitives = store.primitive_ids();
 
   let empty_object = store.intern_type(TypeKind::EmptyObject);
+  let nullable = store.union(vec![primitives.string, primitives.null, primitives.undefined]);
+  let intersection = store.intern_type(TypeKind::Intersection(vec![nullable, empty_object]));
 
-  let t = store.union(vec![primitives.string, primitives.null]);
-  let nonnullable = store.intersection(vec![t, empty_object]);
-
-  let default_expander = MockExpander::default();
-  let mut eval = evaluator(store.clone(), &default_expander);
-  assert_eq!(eval.evaluate(nonnullable), primitives.string);
-
-  let nullish = store.union(vec![primitives.null, primitives.undefined]);
-  let nullish_nonnullable = store.intersection(vec![nullish, empty_object]);
-  assert_eq!(eval.evaluate(nullish_nonnullable), primitives.never);
+  assert_eq!(store.evaluate(intersection), primitives.string);
 }
 
 #[test]
-fn intersection_of_unions_reduces_to_common_subset() {
+fn intersection_nullish_only_with_empty_object_is_never() {
+  let store = TypeStore::new();
+  let primitives = store.primitive_ids();
+
+  let empty_object = store.intern_type(TypeKind::EmptyObject);
+  let nullish = store.union(vec![primitives.null, primitives.undefined]);
+  let intersection = store.intern_type(TypeKind::Intersection(vec![nullish, empty_object]));
+
+  assert_eq!(store.evaluate(intersection), primitives.never);
+}
+
+#[test]
+fn unknown_intersection_empty_object_is_empty_object() {
+  let store = TypeStore::new();
+  let primitives = store.primitive_ids();
+
+  let empty_object = store.intern_type(TypeKind::EmptyObject);
+  let intersection =
+    store.intern_type(TypeKind::Intersection(vec![primitives.unknown, empty_object]));
+
+  assert_eq!(store.evaluate(intersection), empty_object);
+}
+
+#[test]
+fn intersection_distributes_over_unions_to_narrow() {
   let store = TypeStore::new();
   let primitives = store.primitive_ids();
 
   let a = store.union(vec![primitives.string, primitives.number]);
   let b = store.union(vec![primitives.string, primitives.boolean]);
-  let inter = store.intersection(vec![a, b]);
+  let intersection = store.intern_type(TypeKind::Intersection(vec![a, b]));
 
-  let default_expander = MockExpander::default();
-  let mut eval = evaluator(store.clone(), &default_expander);
-  assert_eq!(eval.evaluate(inter), primitives.string);
+  assert_eq!(store.evaluate(intersection), primitives.string);
 }
 
 #[test]
@@ -4146,18 +4161,15 @@ fn intersection_distribution_respects_limit() {
   // 3×3×3 = 27 combinations, which exceeds the low cap below.
   let inter = store.intersection(vec![u1, u2, u3]);
 
-  let default_expander = MockExpander::default();
-  let mut eval = evaluator(store.clone(), &default_expander).with_limits(EvaluatorLimits {
-    max_intersection_distribution: 4,
-    ..EvaluatorLimits::default()
-  });
+  let expander = MockExpander::default();
+  let mut eval = evaluator(store.clone(), &expander).with_max_intersection_distribution(4);
 
-  let result = eval.evaluate(inter);
-  assert!(matches!(
-    store.type_kind(result),
-    TypeKind::Intersection(_) | TypeKind::Union(_)
-  ));
-
-  // Ensure termination is stable across repeated evaluations.
-  assert_eq!(result, eval.evaluate(inter));
+  let result_a = eval.evaluate(inter);
+  let result_b = eval.evaluate(inter);
+  assert_eq!(result_a, result_b);
+  assert!(
+    matches!(store.type_kind(result_a), TypeKind::Intersection(_) | TypeKind::Union(_)),
+    "expected a non-distributed intersection result, got {:?}",
+    store.type_kind(result_a)
+  );
 }

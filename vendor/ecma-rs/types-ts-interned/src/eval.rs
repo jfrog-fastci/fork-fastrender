@@ -290,7 +290,7 @@ impl EvaluatorLimits {
   pub const DEFAULT_MAX_TEMPLATE_STRINGS: usize = 1024;
   pub const DEFAULT_MAX_TEMPLATE_STRING_LEN: usize = 16 * 1024;
   pub const DEFAULT_MAX_TEMPLATE_TOTAL_BYTES: usize = 1024 * 1024;
-  pub const DEFAULT_MAX_INTERSECTION_DISTRIBUTION: usize = 1024;
+  pub const DEFAULT_MAX_INTERSECTION_DISTRIBUTION: usize = 256;
   pub const DEFAULT_STEP_LIMIT: usize = usize::MAX;
 }
 
@@ -688,6 +688,7 @@ impl<'a, E: TypeExpander> TypeEvaluator<'a, E> {
         max_template_strings = self.limits.max_template_strings as u64,
         max_template_string_len = self.limits.max_template_string_len as u64,
         max_template_total_bytes = self.limits.max_template_total_bytes as u64,
+        max_intersection_distribution = self.limits.max_intersection_distribution as u64,
         steps = tracing::field::Empty,
         eval_cache_hits = tracing::field::Empty,
         eval_cache_misses = tracing::field::Empty,
