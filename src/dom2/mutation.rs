@@ -806,6 +806,8 @@ impl Document {
     let node_id = node;
     self.node_checked(node_id)?;
 
+    let has_live_subscribers = self.live_mutation.has_subscribers();
+ 
     #[derive(Clone, Copy)]
     enum ReplaceTarget {
       Text,
@@ -827,11 +829,6 @@ impl Document {
     let offset = offset.min(units.len());
     let end = offset.saturating_add(count).min(units.len());
     let removed_len = end.saturating_sub(offset);
-
-    // Drive live Range/NodeIterator updates via the DOM "replace data" primitive. Call the hook
-    // after computing the final splice parameters, but before applying the mutation to the actual
-    // `dom2` node's string storage.
-    let has_live_subscribers = self.live_mutation.has_subscribers();
     let inserted_len = has_live_subscribers.then(|| utf16_len(data)).unwrap_or(0);
 
     // `Vec::splice` applies its mutation when the returned iterator is dropped; we discard it.
@@ -875,19 +872,23 @@ impl Document {
     // Implement `setTextData` in terms of the DOM "replace data" primitive so live Range updates can
     // be driven by `replace_data(offset, removed_len, inserted_len)`.
     let old_value = match &self.node_checked(node_id)?.kind {
-      NodeKind::Text { content } => content.clone(),
+      NodeKind::Text { content } => {
+        if content == data {
+          return Ok(false);
+        }
+        content.clone()
+      }
       _ => return Err(DomError::InvalidNodeType),
     };
-    if old_value == data {
-      return Ok(false);
-    }
 
-    self.live_mutation.replace_data(
-      node_id,
-      /* offset */ 0,
-      /* removed_len */ utf16_len(&old_value),
-      /* inserted_len */ utf16_len(data),
-    );
+    if self.live_mutation.has_subscribers() {
+      self.live_mutation.replace_data(
+        node_id,
+        /* offset */ 0,
+        /* removed_len */ utf16_len(&old_value),
+        /* inserted_len */ utf16_len(data),
+      );
+    }
 
     {
       let node = self.node_checked_mut(node_id)?;
@@ -908,19 +909,23 @@ impl Document {
     let node_id = node;
     // Drive live Range/NodeIterator updates via the DOM "replace data" primitive.
     let old_value = match &self.node_checked(node_id)?.kind {
-      NodeKind::Comment { content } => content.clone(),
+      NodeKind::Comment { content } => {
+        if content == data {
+          return Ok(false);
+        }
+        content.clone()
+      }
       _ => return Err(DomError::InvalidNodeType),
     };
-    if old_value == data {
-      return Ok(false);
-    }
 
-    self.live_mutation.replace_data(
-      node_id,
-      /* offset */ 0,
-      /* removed_len */ utf16_len(&old_value),
-      /* inserted_len */ utf16_len(data),
-    );
+    if self.live_mutation.has_subscribers() {
+      self.live_mutation.replace_data(
+        node_id,
+        /* offset */ 0,
+        /* removed_len */ utf16_len(&old_value),
+        /* inserted_len */ utf16_len(data),
+      );
+    }
 
     {
       let node = self.node_checked_mut(node_id)?;
@@ -942,19 +947,23 @@ impl Document {
     let node_id = node;
     // Drive live Range/NodeIterator updates via the DOM "replace data" primitive.
     let old_value = match &self.node_checked(node_id)?.kind {
-      NodeKind::ProcessingInstruction { data: value, .. } => value.clone(),
+      NodeKind::ProcessingInstruction { data: value, .. } => {
+        if value == data {
+          return Ok(false);
+        }
+        value.clone()
+      }
       _ => return Err(DomError::InvalidNodeType),
     };
-    if old_value == data {
-      return Ok(false);
-    }
 
-    self.live_mutation.replace_data(
-      node_id,
-      /* offset */ 0,
-      /* removed_len */ utf16_len(&old_value),
-      /* inserted_len */ utf16_len(data),
-    );
+    if self.live_mutation.has_subscribers() {
+      self.live_mutation.replace_data(
+        node_id,
+        /* offset */ 0,
+        /* removed_len */ utf16_len(&old_value),
+        /* inserted_len */ utf16_len(data),
+      );
+    }
 
     {
       let node = self.node_checked_mut(node_id)?;
