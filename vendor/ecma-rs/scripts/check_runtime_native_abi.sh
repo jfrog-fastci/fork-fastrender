@@ -7,8 +7,25 @@ SUPER_ROOT="$(cd "${ECMA_RS_ROOT}/../.." && pwd)"
 
 cd "${ECMA_RS_ROOT}"
 
-if ! command -v clang-18 >/dev/null 2>&1; then
-  echo "clang-18 not found in PATH" >&2
+pick_cmd() {
+  for c in "$@"; do
+    if command -v "${c}" >/dev/null 2>&1; then
+      echo "${c}"
+      return 0
+    fi
+  done
+  return 1
+}
+
+CLANG="${ECMA_RS_NATIVE_CLANG:-}"
+if [[ -z "${CLANG}" ]]; then
+  if ! CLANG="$(pick_cmd clang-18 clang)"; then
+    echo "clang not found in PATH (expected clang-18 or clang)" >&2
+    exit 1
+  fi
+fi
+if ! command -v "${CLANG}" >/dev/null 2>&1; then
+  echo "clang not found in PATH: ${CLANG}" >&2
   exit 1
 fi
 
@@ -37,7 +54,7 @@ derive_required_symbols() {
   preprocessed_header="$(mktemp)"
   tmp_files+=("${preprocessed_header}")
 
-  clang-18 \
+  "${CLANG}" \
     -E -P \
     -x c -std=c11 \
     -I "${runtime_native_include_dir}" \
@@ -141,10 +158,6 @@ required_syms_file="$(mktemp)"
 tmp_files+=("${required_syms_file}")
 derive_required_symbols "${required_syms_file}" -U RUNTIME_NATIVE_GC_STATS -U RUNTIME_NATIVE_GC_DEBUG
 check_missing_exports "default build" "${required_syms_file}" "${nm_syms_file}"
-if ! command -v clang-18 >/dev/null 2>&1; then
-  echo "clang-18 not found in PATH" >&2
-  exit 1
-fi
 
 out_dir="${ECMA_RS_ROOT}/target/runtime-native-abi-check"
 mkdir -p "${out_dir}"
@@ -156,7 +169,7 @@ if [[ ! -f "${stackmaps_ld}" ]]; then
 fi
 
 echo "[runtime-native] Compiling C smoke test..."
-clang-18 \
+"${CLANG}" \
   -std=c11 \
   -Wall -Wextra -Werror \
   -I "${runtime_native_include_dir}" \
