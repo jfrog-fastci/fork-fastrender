@@ -17,6 +17,71 @@
   idempotent: false
   deterministic: true
 
+- name: Event
+  kind: constructor
+  aliases:
+    - Event
+    - window.Event
+    - globalThis.Event
+    - self.Event
+  since: "baseline"
+  effects:
+    allocates: true
+    may_throw: true
+  purity: Allocating
+
+- name: CustomEvent
+  kind: constructor
+  aliases:
+    - CustomEvent
+    - window.CustomEvent
+    - globalThis.CustomEvent
+    - self.CustomEvent
+  since: "baseline"
+  effects:
+    allocates: true
+    may_throw: true
+  purity: Allocating
+
+- name: MessageEvent
+  kind: constructor
+  aliases:
+    - MessageEvent
+    - window.MessageEvent
+    - globalThis.MessageEvent
+    - self.MessageEvent
+  since: "baseline"
+  effects:
+    allocates: true
+    may_throw: true
+  purity: Allocating
+
+- name: CloseEvent
+  kind: constructor
+  aliases:
+    - CloseEvent
+    - window.CloseEvent
+    - globalThis.CloseEvent
+    - self.CloseEvent
+  since: "baseline"
+  effects:
+    allocates: true
+    may_throw: true
+  purity: Allocating
+
+- name: ErrorEvent
+  kind: constructor
+  aliases:
+    - ErrorEvent
+    - window.ErrorEvent
+    - globalThis.ErrorEvent
+    - self.ErrorEvent
+  since: "baseline"
+  effects:
+    allocates: true
+    may_throw: true
+  purity: Allocating
+
 - name: EventTarget.prototype.addEventListener
   kind: function
   aliases:

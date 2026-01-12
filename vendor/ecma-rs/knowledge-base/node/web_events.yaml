@@ -1,4 +1,4 @@
-# Web-standard EventTarget methods that are available in Node.js.
+# Web-standard event constructors and EventTarget methods that are available in Node.js.
 #
 # These entries are duplicated from `web/events.yaml` so that `TargetEnv::Node` lookups can resolve
 # them without matching DOM-specific event APIs.
@@ -14,6 +14,46 @@
   parallelizable: true
   idempotent: false
   deterministic: true
+
+- name: Event
+  kind: constructor
+  since: "v18.0.0"
+  effects:
+    allocates: true
+    may_throw: true
+  purity: Allocating
+
+- name: CustomEvent
+  kind: constructor
+  since: "v18.0.0"
+  effects:
+    allocates: true
+    may_throw: true
+  purity: Allocating
+
+- name: MessageEvent
+  kind: constructor
+  since: "v18.0.0"
+  effects:
+    allocates: true
+    may_throw: true
+  purity: Allocating
+
+- name: CloseEvent
+  kind: constructor
+  since: "v18.0.0"
+  effects:
+    allocates: true
+    may_throw: true
+  purity: Allocating
+
+- name: ErrorEvent
+  kind: constructor
+  since: "v18.0.0"
+  effects:
+    allocates: true
+    may_throw: true
+  purity: Allocating
 
 - name: EventTarget.prototype.addEventListener
   kind: function

@@ -2751,6 +2751,10 @@ properties:
       kb.api_for_target("DOMException", &node_16).is_none(),
       "DOMException should not resolve for Node < 17"
     );
+    assert!(
+      kb.api_for_target("Event", &node_16).is_none(),
+      "Event should not resolve for Node < 18"
+    );
 
     let abort = kb
       .api_for_target("AbortController", &node_20)
@@ -2767,6 +2771,15 @@ properties:
     assert_eq!(event_target.name, "EventTarget");
     assert_eq!(
       kb.source_for_target("EventTarget", &node_20),
+      Some("node/web_events.yaml")
+    );
+
+    let event = kb
+      .api_for_target("Event", &node_20)
+      .expect("Event should resolve for Node targets with web event globals");
+    assert_eq!(event.name, "Event");
+    assert_eq!(
+      kb.source_for_target("Event", &node_20),
       Some("node/web_events.yaml")
     );
 
