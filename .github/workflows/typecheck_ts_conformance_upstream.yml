@@ -175,6 +175,20 @@ jobs:
         with:
           submodules: recursive
 
+      - name: Assert TypeScript conformance suite is present
+        shell: bash
+        run: |
+          set -euo pipefail
+          suite="vendor/ecma-rs/parse-js/tests/TypeScript/tests/cases/conformance"
+          if [[ ! -d "${suite}" ]]; then
+            echo "::error::Missing TypeScript conformance suite directory (${suite}). Did the submodule checkout fail?" >&2
+            exit 1
+          fi
+          if ! find "${suite}" -type f | head -n 1 | rg -q .; then
+            echo "::error::TypeScript conformance suite appears empty (${suite}). Did the submodule checkout fail?" >&2
+            exit 1
+          fi
+
       - name: Install Rust toolchain (vendor/ecma-rs)
         uses: dtolnay/rust-toolchain@master
         with:
