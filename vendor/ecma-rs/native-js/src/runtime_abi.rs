@@ -111,6 +111,52 @@ impl<'ctx, 'm> RuntimeAbi<'ctx, 'm> {
     let rt_write_barrier_range_gc = self.get_or_define_leaf_wrapper(RuntimeFn::WriteBarrierRange);
     let rt_keep_alive_gc_ref_gc = self.get_or_define_leaf_wrapper(RuntimeFn::KeepAliveGcRef);
 
+    // Declare the full set of stable runtime-native entrypoints known to `native-js`.
+    // Note: wrappers are created lazily by `emit_runtime_call` for NoGC entrypoints with an ABI
+    // mismatch (addrspace(1) pointers), so we only pre-create wrappers for the core leaf helpers
+    // above (tests assert their presence).
+    for f in [
+      RuntimeFn::HandleAlloc,
+      RuntimeFn::HandleAllocH,
+      RuntimeFn::HandleFree,
+      RuntimeFn::HandleLoad,
+      RuntimeFn::HandleStore,
+      RuntimeFn::HandleStoreH,
+      RuntimeFn::WeakAdd,
+      RuntimeFn::WeakAddH,
+      RuntimeFn::WeakGet,
+      RuntimeFn::WeakRemove,
+      RuntimeFn::AsyncSpawn,
+      RuntimeFn::AsyncSpawnDeferred,
+      RuntimeFn::AsyncCancelAll,
+      RuntimeFn::AsyncPoll,
+      RuntimeFn::AsyncWait,
+      RuntimeFn::AsyncSetStrictAwaitYields,
+      RuntimeFn::AsyncRunUntilIdle,
+      RuntimeFn::AsyncBlockOn,
+      RuntimeFn::AsyncSleep,
+      RuntimeFn::DrainMicrotasks,
+      RuntimeFn::PromiseInit,
+      RuntimeFn::PromiseFulfill,
+      RuntimeFn::PromiseTryFulfill,
+      RuntimeFn::PromiseReject,
+      RuntimeFn::PromiseTryReject,
+      RuntimeFn::PromiseMarkHandled,
+      RuntimeFn::PromisePayloadPtr,
+      RuntimeFn::QueueMicrotaskHandle,
+      RuntimeFn::QueueMicrotaskHandleWithDrop,
+      RuntimeFn::SetTimeoutHandle,
+      RuntimeFn::SetTimeoutHandleWithDrop,
+      RuntimeFn::SetIntervalHandle,
+      RuntimeFn::SetIntervalHandleWithDrop,
+      RuntimeFn::IoRegisterHandle,
+      RuntimeFn::IoRegisterHandleWithDrop,
+      RuntimeFn::IoUpdate,
+      RuntimeFn::IoUnregister,
+    ] {
+      self.get_or_declare_raw(f);
+    }
+
     RuntimeFns {
       rt_thread_init: self.get_or_declare_raw(RuntimeFn::ThreadInit),
       rt_thread_deinit: self.get_or_declare_raw(RuntimeFn::ThreadDeinit),

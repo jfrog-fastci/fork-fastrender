@@ -124,6 +124,100 @@ pub enum RuntimeFn {
   ParallelJoin,
   /// `rt_parallel_for(start: usize, end: usize, body: extern "C" fn(usize, *mut u8), data: *mut u8)`
   ParallelFor,
+
+  // -----------------------------------------------------------------------------
+  // Persistent handles (stable u64 ids)
+  // -----------------------------------------------------------------------------
+  /// `rt_handle_alloc(ptr: *mut u8) -> HandleId`
+  HandleAlloc,
+  /// `rt_handle_alloc_h(ptr: GcHandle) -> HandleId`
+  HandleAllocH,
+  /// `rt_handle_free(handle: HandleId)`
+  HandleFree,
+  /// `rt_handle_load(handle: HandleId) -> GcPtr`
+  HandleLoad,
+  /// `rt_handle_store(handle: HandleId, ptr: *mut u8)`
+  HandleStore,
+  /// `rt_handle_store_h(handle: HandleId, ptr: GcHandle)`
+  HandleStoreH,
+
+  // -----------------------------------------------------------------------------
+  // Weak handles (non-owning references)
+  // -----------------------------------------------------------------------------
+  /// `rt_weak_add(value: *mut u8) -> u64`
+  WeakAdd,
+  /// `rt_weak_add_h(value: GcHandle) -> u64`
+  WeakAddH,
+  /// `rt_weak_get(handle: u64) -> GcPtr`
+  WeakGet,
+  /// `rt_weak_remove(handle: u64)`
+  WeakRemove,
+
+  // -----------------------------------------------------------------------------
+  // Native async runtime ABI v2
+  // -----------------------------------------------------------------------------
+  /// `rt_async_spawn(coro: CoroutineId) -> PromiseRef`
+  AsyncSpawn,
+  /// `rt_async_spawn_deferred(coro: CoroutineId) -> PromiseRef`
+  AsyncSpawnDeferred,
+  /// `rt_async_cancel_all()`
+  AsyncCancelAll,
+  /// `rt_async_poll() -> bool`
+  AsyncPoll,
+  /// `rt_async_wait()`
+  AsyncWait,
+  /// `rt_async_set_strict_await_yields(strict: bool)`
+  AsyncSetStrictAwaitYields,
+  /// `rt_async_run_until_idle() -> bool`
+  AsyncRunUntilIdle,
+  /// `rt_async_block_on(p: PromiseRef)`
+  AsyncBlockOn,
+  /// `rt_async_sleep(delay_ms: u64) -> PromiseRef`
+  AsyncSleep,
+  /// `rt_drain_microtasks() -> bool`
+  DrainMicrotasks,
+
+  // -----------------------------------------------------------------------------
+  // Native promise ABI v2 (PromiseHeader prefix)
+  // -----------------------------------------------------------------------------
+  /// `rt_promise_init(p: PromiseRef)`
+  PromiseInit,
+  /// `rt_promise_fulfill(p: PromiseRef)`
+  PromiseFulfill,
+  /// `rt_promise_try_fulfill(p: PromiseRef) -> bool`
+  PromiseTryFulfill,
+  /// `rt_promise_reject(p: PromiseRef)`
+  PromiseReject,
+  /// `rt_promise_try_reject(p: PromiseRef) -> bool`
+  PromiseTryReject,
+  /// `rt_promise_mark_handled(p: PromiseRef)`
+  PromiseMarkHandled,
+  /// `rt_promise_payload_ptr(p: PromiseRef) -> *mut u8`
+  PromisePayloadPtr,
+
+  // -----------------------------------------------------------------------------
+  // Rooted scheduling APIs (HandleId-based)
+  // -----------------------------------------------------------------------------
+  /// `rt_queue_microtask_handle(cb: extern "C" fn(*mut u8), data: HandleId)`
+  QueueMicrotaskHandle,
+  /// `rt_queue_microtask_handle_with_drop(cb: extern "C" fn(*mut u8), data: HandleId, drop_data: extern "C" fn(*mut u8))`
+  QueueMicrotaskHandleWithDrop,
+  /// `rt_set_timeout_handle(cb: extern "C" fn(*mut u8), data: HandleId, delay_ms: u64) -> TimerId`
+  SetTimeoutHandle,
+  /// `rt_set_timeout_handle_with_drop(cb: extern "C" fn(*mut u8), data: HandleId, drop_data: extern "C" fn(*mut u8), delay_ms: u64) -> TimerId`
+  SetTimeoutHandleWithDrop,
+  /// `rt_set_interval_handle(cb: extern "C" fn(*mut u8), data: HandleId, interval_ms: u64) -> TimerId`
+  SetIntervalHandle,
+  /// `rt_set_interval_handle_with_drop(cb: extern "C" fn(*mut u8), data: HandleId, drop_data: extern "C" fn(*mut u8), interval_ms: u64) -> TimerId`
+  SetIntervalHandleWithDrop,
+  /// `rt_io_register_handle(fd: i32, interests: u32, cb: extern "C" fn(u32, *mut u8), data: HandleId) -> IoWatcherId`
+  IoRegisterHandle,
+  /// `rt_io_register_handle_with_drop(fd: i32, interests: u32, cb: extern "C" fn(u32, *mut u8), data: HandleId, drop_data: extern "C" fn(*mut u8)) -> IoWatcherId`
+  IoRegisterHandleWithDrop,
+  /// `rt_io_update(id: IoWatcherId, interests: u32)`
+  IoUpdate,
+  /// `rt_io_unregister(id: IoWatcherId)`
+  IoUnregister,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -543,6 +637,581 @@ impl RuntimeFn {
           codegen_params: &[AbiTy::I64, AbiTy::I64, AbiTy::RawPtr, AbiTy::RawPtr],
         },
       },
+
+      // -----------------------------------------------------------------------------
+      // Persistent handles
+      // -----------------------------------------------------------------------------
+      RuntimeFn::HandleAlloc => RuntimeFnDecl {
+        spec: RuntimeFnSpec {
+          name: "rt_handle_alloc",
+          may_gc: true,
+          gc_ptr_args: 0,
+          gc_handle_args: 0,
+          arg_rooting: ArgRootingPolicy::NoGcPointersAllowedIfMayGc,
+        },
+        abi: RuntimeFnAbi {
+          runtime_ret: AbiTy::I64,
+          runtime_params: &[AbiTy::RawPtr],
+          codegen_ret: AbiTy::I64,
+          codegen_params: &[AbiTy::RawPtr],
+        },
+      },
+      RuntimeFn::HandleAllocH => RuntimeFnDecl {
+        spec: RuntimeFnSpec {
+          name: "rt_handle_alloc_h",
+          may_gc: true,
+          gc_ptr_args: 0,
+          gc_handle_args: 1,
+          arg_rooting: ArgRootingPolicy::NoGcPointersAllowedIfMayGc,
+        },
+        abi: RuntimeFnAbi {
+          runtime_ret: AbiTy::I64,
+          runtime_params: &[AbiTy::GcHandle],
+          codegen_ret: AbiTy::I64,
+          codegen_params: &[AbiTy::GcHandle],
+        },
+      },
+      RuntimeFn::HandleFree => RuntimeFnDecl {
+        spec: RuntimeFnSpec {
+          name: "rt_handle_free",
+          may_gc: true,
+          gc_ptr_args: 0,
+          gc_handle_args: 0,
+          arg_rooting: ArgRootingPolicy::NoGcPointersAllowedIfMayGc,
+        },
+        abi: RuntimeFnAbi {
+          runtime_ret: AbiTy::Void,
+          runtime_params: &[AbiTy::I64],
+          codegen_ret: AbiTy::Void,
+          codegen_params: &[AbiTy::I64],
+        },
+      },
+      RuntimeFn::HandleLoad => RuntimeFnDecl {
+        spec: RuntimeFnSpec {
+          name: "rt_handle_load",
+          may_gc: true,
+          gc_ptr_args: 0,
+          gc_handle_args: 0,
+          arg_rooting: ArgRootingPolicy::NoGcPointersAllowedIfMayGc,
+        },
+        abi: RuntimeFnAbi {
+          runtime_ret: AbiTy::RawPtr,
+          runtime_params: &[AbiTy::I64],
+          codegen_ret: AbiTy::GcPtr,
+          codegen_params: &[AbiTy::I64],
+        },
+      },
+      RuntimeFn::HandleStore => RuntimeFnDecl {
+        spec: RuntimeFnSpec {
+          name: "rt_handle_store",
+          may_gc: true,
+          gc_ptr_args: 0,
+          gc_handle_args: 0,
+          arg_rooting: ArgRootingPolicy::NoGcPointersAllowedIfMayGc,
+        },
+        abi: RuntimeFnAbi {
+          runtime_ret: AbiTy::Void,
+          runtime_params: &[AbiTy::I64, AbiTy::RawPtr],
+          codegen_ret: AbiTy::Void,
+          codegen_params: &[AbiTy::I64, AbiTy::RawPtr],
+        },
+      },
+      RuntimeFn::HandleStoreH => RuntimeFnDecl {
+        spec: RuntimeFnSpec {
+          name: "rt_handle_store_h",
+          may_gc: true,
+          gc_ptr_args: 0,
+          gc_handle_args: 1,
+          arg_rooting: ArgRootingPolicy::NoGcPointersAllowedIfMayGc,
+        },
+        abi: RuntimeFnAbi {
+          runtime_ret: AbiTy::Void,
+          runtime_params: &[AbiTy::I64, AbiTy::GcHandle],
+          codegen_ret: AbiTy::Void,
+          codegen_params: &[AbiTy::I64, AbiTy::GcHandle],
+        },
+      },
+
+      // -----------------------------------------------------------------------------
+      // Weak handles
+      // -----------------------------------------------------------------------------
+      RuntimeFn::WeakAdd => RuntimeFnDecl {
+        spec: RuntimeFnSpec {
+          name: "rt_weak_add",
+          may_gc: true,
+          gc_ptr_args: 0,
+          gc_handle_args: 0,
+          arg_rooting: ArgRootingPolicy::NoGcPointersAllowedIfMayGc,
+        },
+        abi: RuntimeFnAbi {
+          runtime_ret: AbiTy::I64,
+          runtime_params: &[AbiTy::RawPtr],
+          codegen_ret: AbiTy::I64,
+          codegen_params: &[AbiTy::RawPtr],
+        },
+      },
+      RuntimeFn::WeakAddH => RuntimeFnDecl {
+        spec: RuntimeFnSpec {
+          name: "rt_weak_add_h",
+          may_gc: true,
+          gc_ptr_args: 0,
+          gc_handle_args: 1,
+          arg_rooting: ArgRootingPolicy::NoGcPointersAllowedIfMayGc,
+        },
+        abi: RuntimeFnAbi {
+          runtime_ret: AbiTy::I64,
+          runtime_params: &[AbiTy::GcHandle],
+          codegen_ret: AbiTy::I64,
+          codegen_params: &[AbiTy::GcHandle],
+        },
+      },
+      RuntimeFn::WeakGet => RuntimeFnDecl {
+        spec: RuntimeFnSpec {
+          name: "rt_weak_get",
+          may_gc: true,
+          gc_ptr_args: 0,
+          gc_handle_args: 0,
+          arg_rooting: ArgRootingPolicy::NoGcPointersAllowedIfMayGc,
+        },
+        abi: RuntimeFnAbi {
+          runtime_ret: AbiTy::RawPtr,
+          runtime_params: &[AbiTy::I64],
+          codegen_ret: AbiTy::GcPtr,
+          codegen_params: &[AbiTy::I64],
+        },
+      },
+      RuntimeFn::WeakRemove => RuntimeFnDecl {
+        spec: RuntimeFnSpec {
+          name: "rt_weak_remove",
+          may_gc: true,
+          gc_ptr_args: 0,
+          gc_handle_args: 0,
+          arg_rooting: ArgRootingPolicy::NoGcPointersAllowedIfMayGc,
+        },
+        abi: RuntimeFnAbi {
+          runtime_ret: AbiTy::Void,
+          runtime_params: &[AbiTy::I64],
+          codegen_ret: AbiTy::Void,
+          codegen_params: &[AbiTy::I64],
+        },
+      },
+
+      // -----------------------------------------------------------------------------
+      // Native async runtime ABI v2
+      // -----------------------------------------------------------------------------
+      RuntimeFn::AsyncSpawn => RuntimeFnDecl {
+        spec: RuntimeFnSpec {
+          name: "rt_async_spawn",
+          may_gc: true,
+          gc_ptr_args: 0,
+          gc_handle_args: 0,
+          arg_rooting: ArgRootingPolicy::NoGcPointersAllowedIfMayGc,
+        },
+        abi: RuntimeFnAbi {
+          runtime_ret: AbiTy::RawPtr,
+          runtime_params: &[AbiTy::I64],
+          codegen_ret: AbiTy::GcPtr,
+          codegen_params: &[AbiTy::I64],
+        },
+      },
+      RuntimeFn::AsyncSpawnDeferred => RuntimeFnDecl {
+        spec: RuntimeFnSpec {
+          name: "rt_async_spawn_deferred",
+          may_gc: true,
+          gc_ptr_args: 0,
+          gc_handle_args: 0,
+          arg_rooting: ArgRootingPolicy::NoGcPointersAllowedIfMayGc,
+        },
+        abi: RuntimeFnAbi {
+          runtime_ret: AbiTy::RawPtr,
+          runtime_params: &[AbiTy::I64],
+          codegen_ret: AbiTy::GcPtr,
+          codegen_params: &[AbiTy::I64],
+        },
+      },
+      RuntimeFn::AsyncCancelAll => RuntimeFnDecl {
+        spec: RuntimeFnSpec {
+          name: "rt_async_cancel_all",
+          may_gc: true,
+          gc_ptr_args: 0,
+          gc_handle_args: 0,
+          arg_rooting: ArgRootingPolicy::NoGcPointersAllowedIfMayGc,
+        },
+        abi: RuntimeFnAbi {
+          runtime_ret: AbiTy::Void,
+          runtime_params: &[],
+          codegen_ret: AbiTy::Void,
+          codegen_params: &[],
+        },
+      },
+      RuntimeFn::AsyncPoll => RuntimeFnDecl {
+        spec: RuntimeFnSpec {
+          name: "rt_async_poll",
+          may_gc: true,
+          gc_ptr_args: 0,
+          gc_handle_args: 0,
+          arg_rooting: ArgRootingPolicy::NoGcPointersAllowedIfMayGc,
+        },
+        abi: RuntimeFnAbi {
+          runtime_ret: AbiTy::I1,
+          runtime_params: &[],
+          codegen_ret: AbiTy::I1,
+          codegen_params: &[],
+        },
+      },
+      RuntimeFn::AsyncWait => RuntimeFnDecl {
+        spec: RuntimeFnSpec {
+          name: "rt_async_wait",
+          may_gc: true,
+          gc_ptr_args: 0,
+          gc_handle_args: 0,
+          arg_rooting: ArgRootingPolicy::NoGcPointersAllowedIfMayGc,
+        },
+        abi: RuntimeFnAbi {
+          runtime_ret: AbiTy::Void,
+          runtime_params: &[],
+          codegen_ret: AbiTy::Void,
+          codegen_params: &[],
+        },
+      },
+      RuntimeFn::AsyncSetStrictAwaitYields => RuntimeFnDecl {
+        spec: RuntimeFnSpec {
+          name: "rt_async_set_strict_await_yields",
+          may_gc: false,
+          gc_ptr_args: 0,
+          gc_handle_args: 0,
+          arg_rooting: ArgRootingPolicy::NoGcPointersAllowedIfMayGc,
+        },
+        abi: RuntimeFnAbi {
+          runtime_ret: AbiTy::Void,
+          runtime_params: &[AbiTy::I1],
+          codegen_ret: AbiTy::Void,
+          codegen_params: &[AbiTy::I1],
+        },
+      },
+      RuntimeFn::AsyncRunUntilIdle => RuntimeFnDecl {
+        spec: RuntimeFnSpec {
+          name: "rt_async_run_until_idle",
+          may_gc: true,
+          gc_ptr_args: 0,
+          gc_handle_args: 0,
+          arg_rooting: ArgRootingPolicy::NoGcPointersAllowedIfMayGc,
+        },
+        abi: RuntimeFnAbi {
+          runtime_ret: AbiTy::I1,
+          runtime_params: &[],
+          codegen_ret: AbiTy::I1,
+          codegen_params: &[],
+        },
+      },
+      RuntimeFn::AsyncBlockOn => RuntimeFnDecl {
+        spec: RuntimeFnSpec {
+          name: "rt_async_block_on",
+          may_gc: true,
+          gc_ptr_args: 1,
+          gc_handle_args: 0,
+          arg_rooting: ArgRootingPolicy::RuntimeRootsPointers,
+        },
+        abi: RuntimeFnAbi {
+          runtime_ret: AbiTy::Void,
+          runtime_params: &[AbiTy::RawPtr],
+          codegen_ret: AbiTy::Void,
+          codegen_params: &[AbiTy::GcPtr],
+        },
+      },
+      RuntimeFn::AsyncSleep => RuntimeFnDecl {
+        spec: RuntimeFnSpec {
+          name: "rt_async_sleep",
+          may_gc: true,
+          gc_ptr_args: 0,
+          gc_handle_args: 0,
+          arg_rooting: ArgRootingPolicy::NoGcPointersAllowedIfMayGc,
+        },
+        abi: RuntimeFnAbi {
+          runtime_ret: AbiTy::RawPtr,
+          runtime_params: &[AbiTy::I64],
+          codegen_ret: AbiTy::GcPtr,
+          codegen_params: &[AbiTy::I64],
+        },
+      },
+      RuntimeFn::DrainMicrotasks => RuntimeFnDecl {
+        spec: RuntimeFnSpec {
+          name: "rt_drain_microtasks",
+          may_gc: true,
+          gc_ptr_args: 0,
+          gc_handle_args: 0,
+          arg_rooting: ArgRootingPolicy::NoGcPointersAllowedIfMayGc,
+        },
+        abi: RuntimeFnAbi {
+          runtime_ret: AbiTy::I1,
+          runtime_params: &[],
+          codegen_ret: AbiTy::I1,
+          codegen_params: &[],
+        },
+      },
+
+      // -----------------------------------------------------------------------------
+      // Native promise ABI v2
+      // -----------------------------------------------------------------------------
+      RuntimeFn::PromiseInit => RuntimeFnDecl {
+        spec: RuntimeFnSpec {
+          name: "rt_promise_init",
+          may_gc: false,
+          gc_ptr_args: 1,
+          gc_handle_args: 0,
+          arg_rooting: ArgRootingPolicy::NoGcPointersAllowedIfMayGc,
+        },
+        abi: RuntimeFnAbi {
+          runtime_ret: AbiTy::Void,
+          runtime_params: &[AbiTy::RawPtr],
+          codegen_ret: AbiTy::Void,
+          codegen_params: &[AbiTy::GcPtr],
+        },
+      },
+      RuntimeFn::PromiseFulfill => RuntimeFnDecl {
+        spec: RuntimeFnSpec {
+          name: "rt_promise_fulfill",
+          may_gc: true,
+          gc_ptr_args: 1,
+          gc_handle_args: 0,
+          arg_rooting: ArgRootingPolicy::RuntimeRootsPointers,
+        },
+        abi: RuntimeFnAbi {
+          runtime_ret: AbiTy::Void,
+          runtime_params: &[AbiTy::RawPtr],
+          codegen_ret: AbiTy::Void,
+          codegen_params: &[AbiTy::GcPtr],
+        },
+      },
+      RuntimeFn::PromiseTryFulfill => RuntimeFnDecl {
+        spec: RuntimeFnSpec {
+          name: "rt_promise_try_fulfill",
+          may_gc: true,
+          gc_ptr_args: 1,
+          gc_handle_args: 0,
+          arg_rooting: ArgRootingPolicy::RuntimeRootsPointers,
+        },
+        abi: RuntimeFnAbi {
+          runtime_ret: AbiTy::I1,
+          runtime_params: &[AbiTy::RawPtr],
+          codegen_ret: AbiTy::I1,
+          codegen_params: &[AbiTy::GcPtr],
+        },
+      },
+      RuntimeFn::PromiseReject => RuntimeFnDecl {
+        spec: RuntimeFnSpec {
+          name: "rt_promise_reject",
+          may_gc: true,
+          gc_ptr_args: 1,
+          gc_handle_args: 0,
+          arg_rooting: ArgRootingPolicy::RuntimeRootsPointers,
+        },
+        abi: RuntimeFnAbi {
+          runtime_ret: AbiTy::Void,
+          runtime_params: &[AbiTy::RawPtr],
+          codegen_ret: AbiTy::Void,
+          codegen_params: &[AbiTy::GcPtr],
+        },
+      },
+      RuntimeFn::PromiseTryReject => RuntimeFnDecl {
+        spec: RuntimeFnSpec {
+          name: "rt_promise_try_reject",
+          may_gc: true,
+          gc_ptr_args: 1,
+          gc_handle_args: 0,
+          arg_rooting: ArgRootingPolicy::RuntimeRootsPointers,
+        },
+        abi: RuntimeFnAbi {
+          runtime_ret: AbiTy::I1,
+          runtime_params: &[AbiTy::RawPtr],
+          codegen_ret: AbiTy::I1,
+          codegen_params: &[AbiTy::GcPtr],
+        },
+      },
+      RuntimeFn::PromiseMarkHandled => RuntimeFnDecl {
+        spec: RuntimeFnSpec {
+          name: "rt_promise_mark_handled",
+          may_gc: true,
+          gc_ptr_args: 1,
+          gc_handle_args: 0,
+          arg_rooting: ArgRootingPolicy::RuntimeRootsPointers,
+        },
+        abi: RuntimeFnAbi {
+          runtime_ret: AbiTy::Void,
+          runtime_params: &[AbiTy::RawPtr],
+          codegen_ret: AbiTy::Void,
+          codegen_params: &[AbiTy::GcPtr],
+        },
+      },
+      RuntimeFn::PromisePayloadPtr => RuntimeFnDecl {
+        spec: RuntimeFnSpec {
+          name: "rt_promise_payload_ptr",
+          may_gc: true,
+          gc_ptr_args: 1,
+          gc_handle_args: 0,
+          arg_rooting: ArgRootingPolicy::RuntimeRootsPointers,
+        },
+        abi: RuntimeFnAbi {
+          runtime_ret: AbiTy::RawPtr,
+          runtime_params: &[AbiTy::RawPtr],
+          codegen_ret: AbiTy::RawPtr,
+          codegen_params: &[AbiTy::GcPtr],
+        },
+      },
+
+      // -----------------------------------------------------------------------------
+      // Rooted scheduling APIs (HandleId-based)
+      // -----------------------------------------------------------------------------
+      RuntimeFn::QueueMicrotaskHandle => RuntimeFnDecl {
+        spec: RuntimeFnSpec {
+          name: "rt_queue_microtask_handle",
+          may_gc: true,
+          gc_ptr_args: 0,
+          gc_handle_args: 0,
+          arg_rooting: ArgRootingPolicy::NoGcPointersAllowedIfMayGc,
+        },
+        abi: RuntimeFnAbi {
+          runtime_ret: AbiTy::Void,
+          runtime_params: &[AbiTy::RawPtr, AbiTy::I64],
+          codegen_ret: AbiTy::Void,
+          codegen_params: &[AbiTy::RawPtr, AbiTy::I64],
+        },
+      },
+      RuntimeFn::QueueMicrotaskHandleWithDrop => RuntimeFnDecl {
+        spec: RuntimeFnSpec {
+          name: "rt_queue_microtask_handle_with_drop",
+          may_gc: true,
+          gc_ptr_args: 0,
+          gc_handle_args: 0,
+          arg_rooting: ArgRootingPolicy::NoGcPointersAllowedIfMayGc,
+        },
+        abi: RuntimeFnAbi {
+          runtime_ret: AbiTy::Void,
+          runtime_params: &[AbiTy::RawPtr, AbiTy::I64, AbiTy::RawPtr],
+          codegen_ret: AbiTy::Void,
+          codegen_params: &[AbiTy::RawPtr, AbiTy::I64, AbiTy::RawPtr],
+        },
+      },
+      RuntimeFn::SetTimeoutHandle => RuntimeFnDecl {
+        spec: RuntimeFnSpec {
+          name: "rt_set_timeout_handle",
+          may_gc: true,
+          gc_ptr_args: 0,
+          gc_handle_args: 0,
+          arg_rooting: ArgRootingPolicy::NoGcPointersAllowedIfMayGc,
+        },
+        abi: RuntimeFnAbi {
+          runtime_ret: AbiTy::I64,
+          runtime_params: &[AbiTy::RawPtr, AbiTy::I64, AbiTy::I64],
+          codegen_ret: AbiTy::I64,
+          codegen_params: &[AbiTy::RawPtr, AbiTy::I64, AbiTy::I64],
+        },
+      },
+      RuntimeFn::SetTimeoutHandleWithDrop => RuntimeFnDecl {
+        spec: RuntimeFnSpec {
+          name: "rt_set_timeout_handle_with_drop",
+          may_gc: true,
+          gc_ptr_args: 0,
+          gc_handle_args: 0,
+          arg_rooting: ArgRootingPolicy::NoGcPointersAllowedIfMayGc,
+        },
+        abi: RuntimeFnAbi {
+          runtime_ret: AbiTy::I64,
+          runtime_params: &[AbiTy::RawPtr, AbiTy::I64, AbiTy::RawPtr, AbiTy::I64],
+          codegen_ret: AbiTy::I64,
+          codegen_params: &[AbiTy::RawPtr, AbiTy::I64, AbiTy::RawPtr, AbiTy::I64],
+        },
+      },
+      RuntimeFn::SetIntervalHandle => RuntimeFnDecl {
+        spec: RuntimeFnSpec {
+          name: "rt_set_interval_handle",
+          may_gc: true,
+          gc_ptr_args: 0,
+          gc_handle_args: 0,
+          arg_rooting: ArgRootingPolicy::NoGcPointersAllowedIfMayGc,
+        },
+        abi: RuntimeFnAbi {
+          runtime_ret: AbiTy::I64,
+          runtime_params: &[AbiTy::RawPtr, AbiTy::I64, AbiTy::I64],
+          codegen_ret: AbiTy::I64,
+          codegen_params: &[AbiTy::RawPtr, AbiTy::I64, AbiTy::I64],
+        },
+      },
+      RuntimeFn::SetIntervalHandleWithDrop => RuntimeFnDecl {
+        spec: RuntimeFnSpec {
+          name: "rt_set_interval_handle_with_drop",
+          may_gc: true,
+          gc_ptr_args: 0,
+          gc_handle_args: 0,
+          arg_rooting: ArgRootingPolicy::NoGcPointersAllowedIfMayGc,
+        },
+        abi: RuntimeFnAbi {
+          runtime_ret: AbiTy::I64,
+          runtime_params: &[AbiTy::RawPtr, AbiTy::I64, AbiTy::RawPtr, AbiTy::I64],
+          codegen_ret: AbiTy::I64,
+          codegen_params: &[AbiTy::RawPtr, AbiTy::I64, AbiTy::RawPtr, AbiTy::I64],
+        },
+      },
+      RuntimeFn::IoRegisterHandle => RuntimeFnDecl {
+        spec: RuntimeFnSpec {
+          name: "rt_io_register_handle",
+          may_gc: true,
+          gc_ptr_args: 0,
+          gc_handle_args: 0,
+          arg_rooting: ArgRootingPolicy::NoGcPointersAllowedIfMayGc,
+        },
+        abi: RuntimeFnAbi {
+          runtime_ret: AbiTy::I64,
+          runtime_params: &[AbiTy::I32, AbiTy::I32, AbiTy::RawPtr, AbiTy::I64],
+          codegen_ret: AbiTy::I64,
+          codegen_params: &[AbiTy::I32, AbiTy::I32, AbiTy::RawPtr, AbiTy::I64],
+        },
+      },
+      RuntimeFn::IoRegisterHandleWithDrop => RuntimeFnDecl {
+        spec: RuntimeFnSpec {
+          name: "rt_io_register_handle_with_drop",
+          may_gc: true,
+          gc_ptr_args: 0,
+          gc_handle_args: 0,
+          arg_rooting: ArgRootingPolicy::NoGcPointersAllowedIfMayGc,
+        },
+        abi: RuntimeFnAbi {
+          runtime_ret: AbiTy::I64,
+          runtime_params: &[AbiTy::I32, AbiTy::I32, AbiTy::RawPtr, AbiTy::I64, AbiTy::RawPtr],
+          codegen_ret: AbiTy::I64,
+          codegen_params: &[AbiTy::I32, AbiTy::I32, AbiTy::RawPtr, AbiTy::I64, AbiTy::RawPtr],
+        },
+      },
+      RuntimeFn::IoUpdate => RuntimeFnDecl {
+        spec: RuntimeFnSpec {
+          name: "rt_io_update",
+          may_gc: true,
+          gc_ptr_args: 0,
+          gc_handle_args: 0,
+          arg_rooting: ArgRootingPolicy::NoGcPointersAllowedIfMayGc,
+        },
+        abi: RuntimeFnAbi {
+          runtime_ret: AbiTy::Void,
+          runtime_params: &[AbiTy::I64, AbiTy::I32],
+          codegen_ret: AbiTy::Void,
+          codegen_params: &[AbiTy::I64, AbiTy::I32],
+        },
+      },
+      RuntimeFn::IoUnregister => RuntimeFnDecl {
+        spec: RuntimeFnSpec {
+          name: "rt_io_unregister",
+          may_gc: true,
+          gc_ptr_args: 0,
+          gc_handle_args: 0,
+          arg_rooting: ArgRootingPolicy::NoGcPointersAllowedIfMayGc,
+        },
+        abi: RuntimeFnAbi {
+          runtime_ret: AbiTy::Void,
+          runtime_params: &[AbiTy::I64],
+          codegen_ret: AbiTy::Void,
+          codegen_params: &[AbiTy::I64],
+        },
+      },
     }
   }
 
@@ -602,6 +1271,43 @@ mod tests {
       RuntimeFn::ParallelSpawn,
       RuntimeFn::ParallelJoin,
       RuntimeFn::ParallelFor,
+      RuntimeFn::HandleAlloc,
+      RuntimeFn::HandleAllocH,
+      RuntimeFn::HandleFree,
+      RuntimeFn::HandleLoad,
+      RuntimeFn::HandleStore,
+      RuntimeFn::HandleStoreH,
+      RuntimeFn::WeakAdd,
+      RuntimeFn::WeakAddH,
+      RuntimeFn::WeakGet,
+      RuntimeFn::WeakRemove,
+      RuntimeFn::AsyncSpawn,
+      RuntimeFn::AsyncSpawnDeferred,
+      RuntimeFn::AsyncCancelAll,
+      RuntimeFn::AsyncPoll,
+      RuntimeFn::AsyncWait,
+      RuntimeFn::AsyncSetStrictAwaitYields,
+      RuntimeFn::AsyncRunUntilIdle,
+      RuntimeFn::AsyncBlockOn,
+      RuntimeFn::AsyncSleep,
+      RuntimeFn::DrainMicrotasks,
+      RuntimeFn::PromiseInit,
+      RuntimeFn::PromiseFulfill,
+      RuntimeFn::PromiseTryFulfill,
+      RuntimeFn::PromiseReject,
+      RuntimeFn::PromiseTryReject,
+      RuntimeFn::PromiseMarkHandled,
+      RuntimeFn::PromisePayloadPtr,
+      RuntimeFn::QueueMicrotaskHandle,
+      RuntimeFn::QueueMicrotaskHandleWithDrop,
+      RuntimeFn::SetTimeoutHandle,
+      RuntimeFn::SetTimeoutHandleWithDrop,
+      RuntimeFn::SetIntervalHandle,
+      RuntimeFn::SetIntervalHandleWithDrop,
+      RuntimeFn::IoRegisterHandle,
+      RuntimeFn::IoRegisterHandleWithDrop,
+      RuntimeFn::IoUpdate,
+      RuntimeFn::IoUnregister,
     ] {
       let decl = f.decl();
       let spec = decl.spec;
