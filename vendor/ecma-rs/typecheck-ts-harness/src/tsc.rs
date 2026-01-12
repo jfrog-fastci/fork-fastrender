@@ -279,6 +279,21 @@ pub struct TscRunner {
   process: Option<RunnerProcess>,
 }
 
+fn escape_json_for_node(mut json: String) -> String {
+  // TypeScript conformance tests can contain U+2028 (LINE SEPARATOR) and U+2029
+  // (PARAGRAPH SEPARATOR) characters. Rust's `serde_json` permits these
+  // unescaped, but Node's `JSON.parse` rejects them when they appear literally
+  // in a string. The harness speaks NDJSON to a Node runner, so ensure those
+  // characters are escaped as `\\u2028` / `\\u2029` before writing the request.
+  //
+  // See: parse failures in upstream test
+  // `es2019/allowUnescapedParagraphAndLineSeparatorsInStringLiteral.ts`.
+  if json.contains('\u{2028}') || json.contains('\u{2029}') {
+    json = json.replace('\u{2028}', "\\u2028").replace('\u{2029}', "\\u2029");
+  }
+  json
+}
+
 #[cfg(feature = "with-node")]
 impl TscRunner {
   pub fn new(node_path: PathBuf) -> anyhow::Result<Self> {
@@ -435,7 +450,8 @@ impl TscRunner {
       .as_mut()
       .context("tsc runner process missing")?;
 
-    serde_json::to_writer(&mut runner.stdin, request)?;
+    let json = escape_json_for_node(serde_json::to_string(request)?);
+    runner.stdin.write_all(json.as_bytes())?;
     runner.stdin.write_all(b"\n")?;
     runner.stdin.flush()?;
 
@@ -588,6 +604,43 @@ pub fn node_available(_node_path: &Path) -> bool {
 #[cfg(not(feature = "with-node"))]
 pub fn typescript_available(_node_path: &Path) -> bool {
   false
+}
+
+#[cfg(test)]
+mod json_tests {
+  use super::*;
+  use serde_json::Map;
+  use std::collections::HashMap;
+  use std::sync::Arc;
+
+  #[test]
+  fn escape_json_for_node_escapes_line_separators() {
+    let content: Arc<str> = format!("const s = \"a{}b{}c\";\n", '\u{2028}', '\u{2029}').into();
+    let mut files = HashMap::new();
+    files.insert(Arc::<str>::from("a.ts"), content);
+    let request = TscRequest {
+      root_names: vec![Arc::<str>::from("a.ts")],
+      files,
+      options: Map::new(),
+      diagnostics_only: true,
+      type_queries: Vec::new(),
+    };
+
+    let json = escape_json_for_node(serde_json::to_string(&request).expect("serialize request"));
+    assert!(
+      !json.contains('\u{2028}') && !json.contains('\u{2029}'),
+      "expected request JSON to escape U+2028/U+2029, got: {json:?}"
+    );
+
+    // Ensure the escaped JSON round-trips back to the same payload.
+    let parsed: serde_json::Value = serde_json::from_str(&json).expect("parse escaped json");
+    let text = parsed
+      .get("files")
+      .and_then(|m| m.get("a.ts"))
+      .and_then(|v| v.as_str())
+      .expect("files.a.ts");
+    assert!(text.contains('\u{2028}') && text.contains('\u{2029}'));
+  }
 }
 
 #[cfg(all(test, unix, feature = "with-node"))]

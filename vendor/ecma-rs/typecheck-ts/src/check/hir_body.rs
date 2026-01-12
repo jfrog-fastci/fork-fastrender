@@ -9435,6 +9435,7 @@ impl<'a> FlowBodyChecker<'a> {
       ExprKind::Yield { expr, .. } => expr
         .map(|id| self.eval_expr(id, env).0)
         .unwrap_or(prim.undefined),
+      ExprKind::Instantiation { expr, .. } => self.eval_expr(*expr, env).0,
       ExprKind::TypeAssertion {
         expr,
         const_assertion,
@@ -10014,7 +10015,24 @@ impl<'a> FlowBodyChecker<'a> {
       });
     }
 
-    let this_arg = match &self.body.exprs[call.callee.0 as usize].kind {
+    let mut callee_for_this = call.callee;
+    loop {
+      let Some(expr) = self.body.exprs.get(callee_for_this.0 as usize) else {
+        break;
+      };
+      match &expr.kind {
+        // TypeScript-only wrappers; preserve the runtime call target for `this` typing.
+        ExprKind::Instantiation { expr, .. }
+        | ExprKind::TypeAssertion { expr, .. }
+        | ExprKind::NonNull { expr }
+        | ExprKind::Satisfies { expr, .. } => {
+          callee_for_this = *expr;
+        }
+        _ => break,
+      }
+    }
+
+    let this_arg = match &self.body.exprs[callee_for_this.0 as usize].kind {
       ExprKind::Member(MemberExpr { object, .. }) => {
         let mut ty = self.expr_types[object.0 as usize];
         if chain_short_circuit {
@@ -10142,7 +10160,7 @@ impl<'a> FlowBodyChecker<'a> {
                 }
               }
               PredicateParam::This => {
-                if let Some(this_expr) = match &self.body.exprs[call.callee.0 as usize].kind {
+                if let Some(this_expr) = match &self.body.exprs[callee_for_this.0 as usize].kind {
                   ExprKind::Member(MemberExpr { object, .. }) => Some(*object),
                   _ => None,
                 } {

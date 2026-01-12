@@ -120,6 +120,7 @@ pub fn validate_native_strict_body(
         };
         match &expr.kind {
           ExprKind::TypeAssertion { expr: inner, .. }
+          | ExprKind::Instantiation { expr: inner, .. }
           | ExprKind::NonNull { expr: inner }
           | ExprKind::Satisfies { expr: inner, .. } => {
             expr_id = *inner;
