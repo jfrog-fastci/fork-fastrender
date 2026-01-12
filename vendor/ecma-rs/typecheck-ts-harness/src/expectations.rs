@@ -249,6 +249,16 @@ impl RawEntry {
           "invalid id '{id}': ids must be relative to the suite root (no drive letter)"
         )));
       }
+      if id.contains("//") {
+        return Err(HarnessError::Manifest(format!(
+          "invalid id '{id}': ids must be normalized (no empty path segments)"
+        )));
+      }
+      if id.split('/').any(|seg| seg == "." || seg == "..") {
+        return Err(HarnessError::Manifest(format!(
+          "invalid id '{id}': ids must be normalized (no '.' or '..' segments)"
+        )));
+      }
       return Ok(Matcher::Exact(id.clone()));
     }
 
@@ -266,6 +276,16 @@ impl RawEntry {
       if glob.split('/').next().is_some_and(|seg| seg.contains(':')) {
         return Err(HarnessError::Manifest(format!(
           "invalid glob '{glob}': globs must be relative to the suite root (no drive letter)"
+        )));
+      }
+      if glob.contains("//") {
+        return Err(HarnessError::Manifest(format!(
+          "invalid glob '{glob}': globs must be normalized (no empty path segments)"
+        )));
+      }
+      if glob.split('/').any(|seg| seg == "." || seg == "..") {
+        return Err(HarnessError::Manifest(format!(
+          "invalid glob '{glob}': globs must be normalized (no '.' or '..' segments)"
         )));
       }
       let compiled = Glob::new(glob)
@@ -448,6 +468,61 @@ status = "xfail"
     .unwrap_err();
     assert!(
       err.to_string().contains("drive letter"),
+      "unexpected error: {err}"
+    );
+  }
+
+  #[test]
+  fn manifest_rejects_non_normalized_id_and_glob() {
+    let err = Expectations::from_str(
+      r#"
+[[expectations]]
+id = "a//b.ts"
+status = "xfail"
+"#,
+    )
+    .unwrap_err();
+    assert!(
+      err.to_string().contains("empty path segments"),
+      "unexpected error: {err}"
+    );
+
+    let err = Expectations::from_str(
+      r#"
+[[expectations]]
+glob = "a//**"
+status = "xfail"
+"#,
+    )
+    .unwrap_err();
+    assert!(
+      err.to_string().contains("empty path segments"),
+      "unexpected error: {err}"
+    );
+
+    let err = Expectations::from_str(
+      r#"
+[[expectations]]
+id = "../a.ts"
+status = "xfail"
+"#,
+    )
+    .unwrap_err();
+    assert!(
+      err.to_string().contains("normalized"),
+      "unexpected error: {err}"
+    );
+
+    let err = Expectations::from_str(
+      r#"
+[[expectations]]
+glob = "./**"
+status = "xfail"
+"#,
+    )
+    .unwrap_err();
+    assert!(
+      err.to_string().contains("normalized"),
       "unexpected error: {err}"
     );
   }
