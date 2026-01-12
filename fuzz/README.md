@@ -72,14 +72,14 @@ timeouts/offline resource policies, not pixel-perfect output comparison).
 Run it scoped:
 
 ```
-bash scripts/cargo_agent.sh test -p fastrender --test fuzz_corpus_smoke_test
+bash scripts/cargo_agent.sh test -p fastrender --test integration tooling::fuzz_corpus_smoke::fuzz_corpus_smoke_test
 ```
 
 Debug builds skip the heaviest corpus cases (currently `render_pipeline_stress.html`)
 unless you opt in:
 
 ```
-FUZZ_CORPUS_SMOKE_IN_DEBUG=1 bash scripts/cargo_agent.sh test -p fastrender --test fuzz_corpus_smoke_test
+FUZZ_CORPUS_SMOKE_IN_DEBUG=1 bash scripts/cargo_agent.sh test -p fastrender --test integration tooling::fuzz_corpus_smoke::fuzz_corpus_smoke_test
 ```
 
 Note: corpora live under `fuzz/corpus/<target>/` once you start fuzzing; these

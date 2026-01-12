@@ -31,13 +31,9 @@ section in sync with `ls tests/*.rs`.
 |---|---|---|---|---|
 | `tests/allocation_failure_tests.rs` | special | `tests/allocation_failure.rs` | Contains `#[global_allocator]` (via `tests/allocation_failure/mod.rs`); must remain separate. Rename from `*_tests.rs`. | TODO |
 | `tests/animation_tests.rs` | unit | `src/animation/mod.rs` | Not just a harness (large file). Also uses `#[path]` to include `tests/animation/mod.rs`; migrate all to `src/animation/**`. | TODO |
-| `tests/css_font_feature_values_test.rs` | unit | `src/style/font_feature_values.rs` | Parser-level tests for `@font-feature-values`. | TODO |
 | `tests/fixtures_test.rs` | integration | `tests/integration.rs::fixtures::runner` | Reads `tests/fixtures/html/**` and compares against `tests/fixtures/golden/**`; mutates env (`FASTR_USE_BUNDLED_FONTS`, `UPDATE_GOLDEN`). | TODO |
-| `tests/fuzz_corpus_smoke_test.rs` | integration | `tests/integration.rs::tooling::fuzz_corpus_smoke` | Drives the renderer against checked-in `tests/fuzz_corpus/**` inputs with tight timeouts. | TODO |
 | `tests/integration.rs` | integration | keep | Unified integration test binary. Should become the default home for remaining integration suites. | DONE |
-| `tests/js_html_integration.rs` | integration | `tests/integration.rs::api::js_html_integration` | End-to-end HTML+JS execution behavior via `BrowserTab` and `EventLoop`. Fold into `tests/api/`. | TODO |
-| `tests/paged_media.rs` | unit | `src/layout/pagination.rs` | Dedicated paged-media regression target; remove standalone binary after moving into `src/layout/**`. | TODO |
-| `tests/user_agent_placeholder_pseudo_test.rs` | unit | `src/style/color.rs` | Placeholder pseudo default color (`GrayText`) regression; uses cascade helpers. | TODO |
+| `tests/svg_integration.rs` | delete | delete | Empty placeholder integration-test crate; delete to avoid a no-op extra test binary. | TODO |
 ### Completed (top-level crate removed)
 
 | File | Type | Destination (new architecture) | Notes | Status |
@@ -72,6 +68,10 @@ section in sync with `ls tests/*.rs`.
 | `tests/render_tests.rs` | delete | delete | Top-level harness removed; suite now lives under `tests/render/**` and is pulled into `tests/integration.rs`. | DONE |
 | `tests/scroll_tests.rs` | delete | delete | Top-level harness removed; suite now lives under `tests/scroll/**` and is pulled into `tests/integration.rs`. | DONE |
 | `tests/style_tests.rs` | delete | `src/style/tests/style/` | Top-level harness removed; suite moved out of `tests/` into lib unit tests. | DONE |
+| `tests/css_font_feature_values_test.rs` | unit | `src/style/tests/style/css_font_feature_values_test.rs` | Top-level crate removed; test now runs as a lib unit test under `src/style/tests/style/`. | DONE |
+| `tests/user_agent_placeholder_pseudo_test.rs` | unit | `src/style/tests/style/user_agent_placeholder_pseudo_test.rs` | Top-level crate removed; test now runs as a lib unit test under `src/style/tests/style/`. | DONE |
+| `tests/paged_media.rs` | unit | `src/layout/tests/paged_media.rs` | Top-level crate removed; tests migrated into layout unit tests (`src/layout/tests/`). | DONE |
+| `tests/js_html_integration.rs` | integration | `tests/integration.rs::js::js_html_integration` | Moved into `tests/js/js_html_integration.rs` and included from `tests/js/mod.rs`. | DONE |
 | `tests/text_tests.rs` | delete | delete | Top-level harness removed; suite now lives under `tests/text/**` and is pulled into `tests/integration.rs`. | DONE |
 | `tests/tree_tests.rs` | delete | delete | Top-level harness removed; tree/box generation tests migrated to unit tests under `src/tree/**`. | DONE |
 | `tests/ui_tests.rs` | delete | delete | Top-level harness removed; suite now lives under `tests/ui/**` and is pulled into `tests/integration.rs`. | DONE |
@@ -79,6 +79,7 @@ section in sync with `ls tests/*.rs`.
 | `tests/weibo_web_font_relative_url_test.rs` | delete | delete | Migrated to unit tests (`src/text/font_loader.rs`) as `weibo_fixture_font_face_relative_url_resolves_against_document_base_url`. | DONE |
 | `tests/flex_nowrap_negative_margins_do_not_trigger_monotonic_fallback.rs` | delete | delete | Pure `#[path]` shim removed; test remains under `tests/layout/**`. | DONE |
 | `tests/flex_wrap_order_does_not_trigger_manual_placement.rs` | delete | delete | Pure `#[path]` shim removed; test remains under `tests/layout/**`. | DONE |
+| `tests/fuzz_corpus_smoke_test.rs` | integration | `tests/integration.rs::tooling::fuzz_corpus_smoke` | Moved into `tests/tooling/fuzz_corpus_smoke.rs` and included from `tests/tooling/mod.rs`. | DONE |
 | `tests/grid_tests.rs` | unit | `src/layout/contexts/grid.rs` | Migrated to grid context unit tests (and `tests/grid/**` directory removed). | DONE |
 | `tests/headless_chrome_media_features_test.rs` | integration | `tests/integration.rs::browser_integration::headless_chrome_media_features` | Moved into `tests/browser_integration/headless_chrome_media_features.rs`. | DONE |
 | `tests/html_script_processing.rs` | unit | `src/js/html_classic_scripts.rs` | Migrated to unit tests for `parse_and_run_classic_scripts`. | DONE |
@@ -114,7 +115,7 @@ migrations.
 | `tests/bundled/` | bundled font fixture tests | `tests/integration.rs::bundled` | Integration-style fixture assertions. |
 | `tests/common/` | shared helpers for integration tests | keep (not a binary) | Replaces the old `tests/test_support/**` helpers. |
 | `tests/css_integration/` | css loader/import/url rewrite tests | `src/css/loader.rs` (+ friends) | Despite name, these are mostly unit tests. |
-| `tests/fuzz_corpus/` | checked-in corpus inputs for smoke testing | `tests/integration.rs::tooling::fuzz_corpus_smoke` | Exercised by `tests/fuzz_corpus_smoke_test.rs`. |
+| `tests/fuzz_corpus/` | checked-in corpus inputs for smoke testing | `tests/integration.rs::tooling::fuzz_corpus_smoke` | Exercised by `tests/tooling/fuzz_corpus_smoke.rs`. |
 | `tests/dom_integration/` | DOM parsing/query integration tests | `src/dom/**` + `src/dom2/**` | Unit tests. |
 | `tests/fixtures/` | HTML + golden-image fixtures | `tests/integration.rs::fixtures` | Stays in `tests/` (data-driven integration). |
 | `tests/guards/` | repo invariants / consolidation guards | `tests/integration.rs::guards` | Integration-style checks for repo structure. |
