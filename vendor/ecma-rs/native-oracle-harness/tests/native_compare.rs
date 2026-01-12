@@ -69,10 +69,27 @@ fn run_native_outcome(tc: &LlvmToolchain, ts_source: &str) -> Result<RunOutcome,
   }
 
   let out = run_with_timeout(Command::new(&exe_path), Duration::from_secs(2))
-    .map_err(|err| format!("failed to run {}: {err}", exe_path.display()))?;
+    .map_err(|err| format!("failed to run {}: {err}", exe_path.display()));
+  let out = match out {
+    Ok(out) => out,
+    Err(err) => {
+      return Ok(RunOutcome::Terminated {
+        message: err,
+        stdout: String::new(),
+        stderr: String::new(),
+      });
+    }
+  };
 
   let stdout = String::from_utf8_lossy(&out.stdout).trim_end().to_string();
   let stderr = String::from_utf8_lossy(&out.stderr).trim_end().to_string();
+  if !out.status.success() {
+    return Ok(RunOutcome::Terminated {
+      message: format!("native program exited with status {}", out.status),
+      stdout,
+      stderr,
+    });
+  }
   Ok(RunOutcome::Ok {
     // The `native_compare` fixture corpus only compares stdout. The oracle side uses the
     // `globalThis.__native_result` observation protocol, which yields `"undefined"` for these

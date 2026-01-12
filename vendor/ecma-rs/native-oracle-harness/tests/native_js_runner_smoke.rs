@@ -33,8 +33,7 @@ fn native_js_runner_smoke() {
 
   let runner = NativeJsRunner::new();
 
-  let out = runner
-    .compile_and_run("console.log(1 + 2 * 3);")
+  let out = NativeRunner::compile_and_run(&runner, "console.log(1 + 2 * 3);")
     .expect("compile_and_run arithmetic");
   assert_eq!(out, "7");
 
