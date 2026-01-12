@@ -281,6 +281,11 @@
   color: #555;
 }
 
+.inst-span-decoration {
+  background: rgba(255, 235, 59, 0.35);
+  border-bottom: 1px solid rgba(255, 193, 7, 0.9);
+}
+
 .App .pane .editor {
   flex-shrink: 0;
   border: 1px solid #ccc;

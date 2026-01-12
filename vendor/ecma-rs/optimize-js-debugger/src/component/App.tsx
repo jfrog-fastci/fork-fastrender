@@ -1,6 +1,6 @@
 import { Editor } from "@monaco-editor/react";
 import { decode, encode } from "@msgpack/msgpack";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Graph } from "./Graph";
 import { InstMetaPanel } from "./InstMetaPanel";
 import { SymbolsPanel } from "./SymbolsPanel";
@@ -44,6 +44,29 @@ const errorMessage = (raw: unknown, status: number): string => {
   return `HTTP ${status}`;
 };
 
+const utf8ByteOffsetToUtf16Offset = (text: string, byteOffset: number): number => {
+  // `diagnostics::TextRange` is a byte range. Monaco offsets are UTF-16 code units.
+  // Convert by walking code points and counting UTF-8 bytes vs UTF-16 units.
+  let bytes = 0;
+  for (let i = 0; i < text.length; ) {
+    const cp = text.codePointAt(i);
+    if (cp == undefined) {
+      break;
+    }
+    const utf16Units = cp > 0xffff ? 2 : 1;
+    const utf8Bytes = cp <= 0x7f ? 1 : cp <= 0x7ff ? 2 : cp <= 0xffff ? 3 : 4;
+    if (bytes + utf8Bytes > byteOffset) {
+      return i;
+    }
+    bytes += utf8Bytes;
+    i += utf16Units;
+    if (bytes === byteOffset) {
+      return i;
+    }
+  }
+  return text.length;
+};
+
 export const App = () => {
   const [source, setSource] = useState(INIT_SOURCE);
   const [dump, setDump] = useState<ProgramDump>();
@@ -63,9 +86,67 @@ export const App = () => {
   const [analysisCfg, setAnalysisCfg] = useState<"ssa" | "deconstructed">("ssa");
   const [hoveredInst, setHoveredInst] = useState<GraphInst>();
 
+  const editorRef = useRef<any>();
+  const monacoRef = useRef<any>();
+  const spanDecorationsRef = useRef<string[]>([]);
+
+  const hoveredSpan = useMemo(() => {
+    const span = (hoveredInst as any)?.meta?.span;
+    if (
+      span &&
+      typeof span === "object" &&
+      typeof (span as any).start === "number" &&
+      typeof (span as any).end === "number"
+    ) {
+      return { start: (span as any).start as number, end: (span as any).end as number };
+    }
+    return undefined;
+  }, [hoveredInst]);
+
   useEffect(() => {
-    const src = source.trim();
-    if (!src) {
+    const editor = editorRef.current;
+    const monaco = monacoRef.current;
+    if (!editor || !monaco) {
+      return;
+    }
+    const model = editor.getModel?.();
+    if (!model) {
+      return;
+    }
+
+    const nextDecorations =
+      hoveredSpan && hoveredSpan.end > hoveredSpan.start
+        ? (() => {
+            const start = utf8ByteOffsetToUtf16Offset(source, hoveredSpan.start);
+            const end = utf8ByteOffsetToUtf16Offset(source, hoveredSpan.end);
+            const startPos = model.getPositionAt(start);
+            const endPos = model.getPositionAt(end);
+            const range = new monaco.Range(
+              startPos.lineNumber,
+              startPos.column,
+              endPos.lineNumber,
+              endPos.column,
+            );
+            return [
+              {
+                range,
+                options: {
+                  inlineClassName: "inst-span-decoration",
+                },
+              },
+            ];
+          })()
+        : [];
+
+    spanDecorationsRef.current = editor.deltaDecorations(
+      spanDecorationsRef.current,
+      nextDecorations,
+    );
+  }, [hoveredSpan, source]);
+
+  useEffect(() => {
+    const src = source;
+    if (!src.trim()) {
       return;
     }
     const ac = new AbortController();
@@ -373,7 +454,11 @@ export const App = () => {
               width="40vw"
               defaultLanguage="javascript"
               defaultValue={INIT_SOURCE}
-              onChange={(e) => setSource(e?.trim() ?? "")}
+              onMount={(editor, monaco) => {
+                editorRef.current = editor;
+                monacoRef.current = monaco;
+              }}
+              onChange={(e) => setSource(e ?? "")}
             />
             {compileProgram?.symbols && (
               <div className="legend">
