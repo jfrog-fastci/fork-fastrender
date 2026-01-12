@@ -606,6 +606,7 @@ impl Document {
     };
 
     self.live_mutation.pre_remove(child, old_parent, pos);
+    self.node_iterator_pre_remove_steps(child);
     self.nodes[old_parent.index()].children.remove(pos);
     let _ = self.mutation_observer_add_transient_observers_on_remove(child, old_parent);
     self.nodes[child.index()].parent = None;
@@ -930,13 +931,16 @@ impl Document {
         .live_mutation
         .pre_insert(parent, insertion_idx, moved_children.len());
 
-      let children_to_move = std::mem::take(&mut self.nodes[new_child.index()].children);
+      let mut children_to_move: Vec<NodeId> = Vec::with_capacity(moved_children.len());
+      while let Some(child) = self.nodes[new_child.index()].children.first().copied() {
+        self.node_iterator_pre_remove_steps(child);
+        self.nodes[new_child.index()].children.remove(0);
+        let _ = self.mutation_observer_add_transient_observers_on_remove(child, new_child);
+        self.nodes[child.index()].parent = None;
+        children_to_move.push(child);
+      }
       // Fragments are always detached.
       self.nodes[new_child.index()].parent = None;
-
-      for &child in &children_to_move {
-        let _ = self.mutation_observer_add_transient_observers_on_remove(child, new_child);
-      }
 
       // Per DOM: inserting a DocumentFragment queues a childList record on the fragment itself for
       // the removal of its children.
@@ -1041,6 +1045,7 @@ impl Document {
     };
 
     self.live_mutation.pre_remove(child, parent, idx);
+    self.node_iterator_pre_remove_steps(child);
     self.nodes[parent.index()].children.remove(idx);
     let _ = self.mutation_observer_add_transient_observers_on_remove(child, parent);
     self.nodes[child.index()].parent = None;
@@ -1115,6 +1120,7 @@ impl Document {
       )?;
 
       self.live_mutation.pre_remove(old_child, parent, old_child_idx);
+      self.node_iterator_pre_remove_steps(old_child);
       self.nodes[parent.index()].children.remove(old_child_idx);
       let _ = self.mutation_observer_add_transient_observers_on_remove(old_child, parent);
       self.nodes[old_child.index()].parent = None;
@@ -1129,12 +1135,15 @@ impl Document {
           .pre_insert(parent, old_child_idx, moved_children.len());
       }
 
-      let children_to_move = std::mem::take(&mut self.nodes[new_child.index()].children);
-      self.nodes[new_child.index()].parent = None;
-
-      for &child in &children_to_move {
+      let mut children_to_move: Vec<NodeId> = Vec::with_capacity(moved_children.len());
+      while let Some(child) = self.nodes[new_child.index()].children.first().copied() {
+        self.node_iterator_pre_remove_steps(child);
+        self.nodes[new_child.index()].children.remove(0);
         let _ = self.mutation_observer_add_transient_observers_on_remove(child, new_child);
+        self.nodes[child.index()].parent = None;
+        children_to_move.push(child);
       }
+      self.nodes[new_child.index()].parent = None;
 
       // Per DOM: inserting a DocumentFragment queues a childList record on the fragment itself for
       // the removal of its children.
@@ -1185,6 +1194,7 @@ impl Document {
     }
 
     self.live_mutation.pre_remove(old_child, parent, old_child_idx);
+    self.node_iterator_pre_remove_steps(old_child);
     self.nodes[parent.index()].children.remove(old_child_idx);
     let _ = self.mutation_observer_add_transient_observers_on_remove(old_child, parent);
     self.nodes[old_child.index()].parent = None;

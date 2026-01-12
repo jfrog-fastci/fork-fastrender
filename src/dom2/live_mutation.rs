@@ -13,7 +13,22 @@ pub(crate) struct LiveRangeId(u64);
 ///
 /// Host-side only: the ID is used by the embedding / bindings layer and is not exposed to JS.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) struct NodeIteratorId(u64);
+pub struct NodeIteratorId(u64);
+
+impl NodeIteratorId {
+  /// Construct a `NodeIteratorId` from a raw integer.
+  ///
+  /// This is primarily used by JS binding layers to store an id in host slots and reconstruct it
+  /// later without exposing internal `dom2` state.
+  pub fn from_u64(id: u64) -> Self {
+    Self(id)
+  }
+
+  /// Extract the raw integer value of this id.
+  pub fn as_u64(self) -> u64 {
+    self.0
+  }
+}
 
 /// Hook surface for "live" DOM traversal state (e.g. `Range`, `NodeIterator`) that must stay in
 /// sync with `dom2` mutations.

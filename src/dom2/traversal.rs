@@ -240,6 +240,72 @@ impl Document {
       })
   }
 
+  pub fn last_inclusive_descendant(&self, node: NodeId) -> NodeId {
+    if !self.contains_node(node) {
+      return node;
+    }
+
+    let mut current = node;
+    let mut remaining = self.nodes.len() + 1;
+    while remaining > 0 {
+      remaining -= 1;
+      let Some(last_child) = self.last_child(current) else {
+        break;
+      };
+      current = last_child;
+    }
+    current
+  }
+
+  pub fn following_in_subtree(&self, root: NodeId, node: NodeId) -> Option<NodeId> {
+    if !self.contains_node(root) || !self.contains_node(node) {
+      return None;
+    }
+
+    if !self.ancestors(node).any(|ancestor| ancestor == root) {
+      return None;
+    }
+
+    if let Some(first_child) = self.first_child(node) {
+      return Some(first_child);
+    }
+
+    let mut current = node;
+    let mut remaining = self.nodes.len() + 1;
+    while remaining > 0 {
+      remaining -= 1;
+      if current == root {
+        return None;
+      }
+      if let Some(next_sibling) = self.next_sibling(current) {
+        return Some(next_sibling);
+      }
+      current = self.parent_node(current)?;
+    }
+
+    None
+  }
+
+  pub fn preceding_in_subtree(&self, root: NodeId, node: NodeId) -> Option<NodeId> {
+    if !self.contains_node(root) || !self.contains_node(node) {
+      return None;
+    }
+
+    if root == node {
+      return None;
+    }
+
+    if !self.ancestors(node).any(|ancestor| ancestor == root) {
+      return None;
+    }
+
+    if let Some(previous_sibling) = self.previous_sibling(node) {
+      return Some(self.last_inclusive_descendant(previous_sibling));
+    }
+
+    self.parent_node(node)
+  }
+
   pub fn is_connected(&self, node: NodeId) -> bool {
     let root = self.root();
     self.ancestors(node).any(|ancestor| ancestor == root)

@@ -5,7 +5,7 @@ use crate::web::dom::selectors::{node_matches_selector_list, parse_selector_list
 use crate::web::dom::DocumentReadyState;
 use crate::web::dom::DomException;
 use crate::web::events as web_events;
-use rustc_hash::FxHashSet;
+use rustc_hash::{FxHashMap, FxHashSet};
 use selectors::context::QuirksMode;
 use selectors::matching::SelectorCaches;
 use selectors::parser::SelectorList;
@@ -60,7 +60,8 @@ pub use resize_observer::{
   ResizeObserverBoxOptions, ResizeObserverEntry, ResizeObserverId, ResizeObserverLimits, ResizeObserverSize,
 };
 pub use scripting_parser::parse_html_with_scripting_dom2;
-pub(crate) use live_mutation::{LiveRangeId, NodeIteratorId};
+pub use live_mutation::NodeIteratorId;
+pub(crate) use live_mutation::LiveRangeId;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct NodeId(usize);
@@ -73,6 +74,13 @@ impl NodeId {
   pub fn index(self) -> usize {
     self.0
   }
+}
+
+#[derive(Debug, Clone)]
+struct NodeIteratorState {
+  root: NodeId,
+  reference: NodeId,
+  pointer_before_reference: bool,
 }
 
 /// Internal sentinel namespace string representing "no namespace" (`null` in DOM terms).
@@ -229,6 +237,8 @@ pub struct Document {
   live_mutation: live_mutation::LiveMutation,
   intersection_observers: intersection_observer::IntersectionObserverRegistry,
   resize_observers: resize_observer::ResizeObserverRegistry,
+  node_iterators: FxHashMap<NodeIteratorId, NodeIteratorState>,
+  next_node_iterator_id: u64,
 }
 
 impl Clone for Document {
@@ -252,6 +262,8 @@ impl Clone for Document {
       live_mutation: live_mutation::LiveMutation::default(),
       intersection_observers: intersection_observer::IntersectionObserverRegistry::new(self.nodes.len()),
       resize_observers: resize_observer::ResizeObserverRegistry::new(self.nodes.len()),
+      node_iterators: FxHashMap::default(),
+      next_node_iterator_id: 1,
     }
   }
 }
@@ -426,6 +438,8 @@ impl Document {
       live_mutation: live_mutation::LiveMutation::default(),
       intersection_observers: intersection_observer::IntersectionObserverRegistry::new(self.nodes.len()),
       resize_observers: resize_observer::ResizeObserverRegistry::new(self.nodes.len()),
+      node_iterators: FxHashMap::default(),
+      next_node_iterator_id: 1,
     }
   }
 
@@ -510,6 +524,8 @@ impl Document {
       live_mutation: live_mutation::LiveMutation::default(),
       intersection_observers: intersection_observer::IntersectionObserverRegistry::new(0),
       resize_observers: resize_observer::ResizeObserverRegistry::new(0),
+      node_iterators: FxHashMap::default(),
+      next_node_iterator_id: 1,
     };
     let root = doc.push_node(
       NodeKind::Document { quirks_mode },
@@ -583,7 +599,99 @@ impl Document {
     &mut self.nodes[id.0]
   }
 
-  pub(crate) fn node_iterator_pre_remove_steps(&mut self, _target: NodeId) {}
+  pub fn create_node_iterator(&mut self, root: NodeId) -> NodeIteratorId {
+    let id = NodeIteratorId::from_u64(self.next_node_iterator_id);
+    self.next_node_iterator_id = self.next_node_iterator_id.wrapping_add(1);
+    self.node_iterators.insert(
+      id,
+      NodeIteratorState {
+        root,
+        reference: root,
+        pointer_before_reference: true,
+      },
+    );
+    id
+  }
+
+  pub fn node_iterator_root(&self, id: NodeIteratorId) -> Option<NodeId> {
+    self.node_iterators.get(&id).map(|state| state.root)
+  }
+
+  pub fn node_iterator_reference(&self, id: NodeIteratorId) -> Option<NodeId> {
+    self.node_iterators.get(&id).map(|state| state.reference)
+  }
+
+  pub fn node_iterator_pointer_before_reference(&self, id: NodeIteratorId) -> Option<bool> {
+    self
+      .node_iterators
+      .get(&id)
+      .map(|state| state.pointer_before_reference)
+  }
+
+  pub fn set_node_iterator_reference_and_pointer(
+    &mut self,
+    id: NodeIteratorId,
+    reference: NodeId,
+    pointer_before_reference: bool,
+  ) {
+    let Some(state) = self.node_iterators.get_mut(&id) else {
+      return;
+    };
+    state.reference = reference;
+    state.pointer_before_reference = pointer_before_reference;
+  }
+
+  pub fn remove_node_iterator(&mut self, id: NodeIteratorId) {
+    self.node_iterators.remove(&id);
+  }
+
+  /// Spec: <https://dom.spec.whatwg.org/#nodeiterator-pre-removing-steps>
+  pub(crate) fn node_iterator_pre_remove_steps(&mut self, to_be_removed: NodeId) {
+    if self.node_iterators.is_empty() {
+      return;
+    }
+
+    let last_descendant = self.last_inclusive_descendant(to_be_removed);
+    let mut updates: Vec<(NodeIteratorId, NodeId, bool)> = Vec::new();
+
+    for (&id, state) in &self.node_iterators {
+      if state.root == to_be_removed {
+        continue;
+      }
+
+      if !self
+        .ancestors(state.reference)
+        .any(|ancestor| ancestor == to_be_removed)
+      {
+        continue;
+      }
+
+      let mut pointer_before_reference = state.pointer_before_reference;
+      if pointer_before_reference {
+        if let Some(next) = self.following_in_subtree(state.root, last_descendant) {
+          updates.push((id, next, pointer_before_reference));
+          continue;
+        }
+        pointer_before_reference = false;
+      }
+
+      let reference = if let Some(previous_sibling) = self.previous_sibling(to_be_removed) {
+        self.last_inclusive_descendant(previous_sibling)
+      } else {
+        self.parent_node(to_be_removed).unwrap_or(state.root)
+      };
+
+      updates.push((id, reference, pointer_before_reference));
+    }
+
+    for (id, reference, pointer_before_reference) in updates {
+      let Some(state) = self.node_iterators.get_mut(&id) else {
+        continue;
+      };
+      state.reference = reference;
+      state.pointer_before_reference = pointer_before_reference;
+    }
+  }
 
   pub fn script_already_started(&self, node: NodeId) -> Result<bool, DomError> {
     let node = self.node_checked(node)?;
@@ -2074,6 +2182,8 @@ mod html_tests;
 mod inner_html_tests;
 #[cfg(test)]
 mod live_mutation_tests;
+#[cfg(test)]
+mod node_iterator_tests;
 #[cfg(test)]
 mod mapping_tests;
 #[cfg(test)]
