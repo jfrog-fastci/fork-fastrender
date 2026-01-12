@@ -76,6 +76,21 @@ impl Default for CustomEventInit {
   }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StorageKind {
+  Local,
+  Session,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StorageEventData {
+  pub key: Option<String>,
+  pub old_value: Option<String>,
+  pub new_value: Option<String>,
+  pub url: String,
+  pub storage_kind: StorageKind,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum EventTargetId {
   Window,
@@ -205,6 +220,10 @@ pub struct Event {
   ///
   /// For non-`CustomEvent` events, this remains `None`.
   pub detail: Option<JsValue>,
+  /// `StorageEvent` payload.
+  ///
+  /// For non-`storage` events, this remains `None`.
+  pub storage: Option<StorageEventData>,
   pub(crate) in_passive_listener: bool,
 }
 
@@ -226,6 +245,7 @@ impl Event {
       // Only user agent-dispatched events are trusted; all synthetic events are not.
       is_trusted: false,
       detail: None,
+      storage: None,
       in_passive_listener: false,
     }
   }
