@@ -10,6 +10,8 @@ pub mod harness;
 pub mod runner;
 #[cfg(test)]
 mod validate_manifest;
+#[cfg(test)]
+mod offline_invariants;
 
 fn init_rayon_for_wpt_tests() {
   crate::common::init_rayon_for_tests(1);

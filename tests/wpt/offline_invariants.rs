@@ -1,5 +1,7 @@
 //! Offline invariants for the vendored Web Platform Tests corpus.
 //!
+//! Note: this test is part of the unified `tests/integration.rs` binary (via `tests/wpt/mod.rs`).
+//!
 //! The WPT runner is intended to run fully offline. The importer (`src/bin/import_wpt.rs`)
 //! already validates offline invariants for imported files, but tests can also be added/edited
 //! manually. This test fails fast (with file/line/column diagnostics) if any test references

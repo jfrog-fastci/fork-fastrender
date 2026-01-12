@@ -63,6 +63,7 @@ section in sync with `ls tests/*.rs`.
 | `tests/user_agent_placeholder_pseudo_test.rs` | unit | `src/style/color.rs` | Placeholder pseudo default color (`GrayText`) regression; uses cascade helpers. | TODO |
 | `tests/var_tests.rs` | unit | `src/style/var_resolution.rs` | CSS custom property (`var()`) resolution tests. | TODO |
 | `tests/weibo_web_font_relative_url_test.rs` | unit | `src/text/font_loader.rs` | Uses fixtures; ensures `@font-face url(...)` in inline styles resolves against document base URL. | TODO |
+
 ### Completed (top-level crate removed)
 
 | File | Type | Destination (new architecture) | Notes | Status |
@@ -97,7 +98,7 @@ section in sync with `ls tests/*.rs`.
 | `tests/svg_integration_tests.rs` | unit | `src/image_loader/tests.rs` + `src/paint/svg_filter/tests/**` | Migrated SVG rasterization + filter tests into unit tests and removed the standalone test binary. | DONE |
 | `tests/taffy_cache_tests.rs` | unit | `src/layout/taffy_integration.rs` | Migrated to unit tests; old `tests/taffy_cache/**` directory removed. | DONE |
 | `tests/wpt_test.rs` | integration | `tests/wpt/tests.rs` | Top-level harness removed; runner tests now live under `tests/wpt/**` (must be wired into `tests/integration.rs`). | DONE |
-| `tests/wpt_offline_invariants_test.rs` | integration | `tests/integration.rs::wpt::offline_invariants` | Repo invariant: WPT corpus should remain offline-only. Moved into `tests/wpt/offline_invariants.rs` (no longer a standalone test binary). | DONE |
+| `tests/wpt_offline_invariants_test.rs` | delete | delete | Top-level harness removed; offline invariants now live under `tests/wpt/offline_invariants.rs` and run via `tests/integration.rs::wpt`. | DONE |
 
 ## `tests/` subdirectory summary (first pass)
 
