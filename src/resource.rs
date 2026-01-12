@@ -4168,43 +4168,30 @@ fn is_cors_safelisted_method(method: &str) -> bool {
 
 fn cors_unsafe_request_header_names(headers: &[(String, String)]) -> Vec<String> {
   // https://fetch.spec.whatwg.org/#cors-unsafe-request-header-names
-  // Combine duplicate header names before checking safelist semantics. This matches how the Fetch
-  // `Headers` API exposes values (comma+space concatenation) and ensures size/byte checks are
-  // applied to the effective value.
-  let mut combined_values: HashMap<String, String> = HashMap::new();
-  for (name, value) in headers {
-    let name = name.to_ascii_lowercase();
-    if let Some(existing) = combined_values.get_mut(&name) {
-      existing.push_str(", ");
-      existing.push_str(value);
-    } else {
-      combined_values.insert(name, value.clone());
-    }
-  }
-
-  let mut unsafe_names: HashSet<String> = HashSet::new();
+  // Note: this algorithm is defined over the request's *header list*; duplicates are processed as
+  // distinct entries (including for the 1024-byte safelist value size cap).
+  let mut unsafe_names: Vec<String> = Vec::new();
   let mut potentially_unsafe: Vec<String> = Vec::new();
   let mut safelist_value_size: usize = 0;
 
-  for (name, combined_value) in combined_values {
-    if !web_fetch::is_cors_safelisted_request_header(name.as_str(), &combined_value) {
-      unsafe_names.insert(name);
+  for (name, value) in headers {
+    let name = name.to_ascii_lowercase();
+    if !web_fetch::is_cors_safelisted_request_header(name.as_str(), value) {
+      unsafe_names.push(name);
     } else {
-      safelist_value_size = safelist_value_size.saturating_add(combined_value.as_bytes().len());
       potentially_unsafe.push(name);
+      safelist_value_size = safelist_value_size.saturating_add(value.as_bytes().len());
     }
   }
 
   // Fetch Standard: treat all safelisted headers as unsafe when their total size is too large.
   if safelist_value_size > 1024 {
-    for name in potentially_unsafe {
-      unsafe_names.insert(name);
-    }
+    unsafe_names.extend(potentially_unsafe);
   }
 
-  let mut out: Vec<String> = unsafe_names.into_iter().collect();
-  out.sort();
-  out
+  unsafe_names.sort();
+  unsafe_names.dedup();
+  unsafe_names
 }
 
 fn cors_preflight_extract_methods(
@@ -5283,11 +5270,6 @@ impl HttpFetcher {
       return Ok(());
     };
     if client_origin.same_origin(&target_origin) {
-      return Ok(());
-    }
-
-    // Avoid pathological recursion / nonsense: a preflight request is itself an OPTIONS request.
-    if method.eq_ignore_ascii_case("OPTIONS") {
       return Ok(());
     }
 

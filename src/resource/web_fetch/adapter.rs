@@ -4292,6 +4292,74 @@ mod tests {
   }
 
   #[test]
+  fn cors_preflight_not_sent_for_duplicate_safelisted_accept_headers() {
+    if skip_if_curl_backend_missing(
+      "cors_preflight_not_sent_for_duplicate_safelisted_accept_headers",
+    ) {
+      return;
+    }
+    let Some(listener) =
+      try_bind_localhost("cors_preflight_not_sent_for_duplicate_safelisted_accept_headers")
+    else {
+      return;
+    };
+    let addr = listener.local_addr().unwrap();
+    let handle = thread::spawn(move || {
+      let (mut stream, _) = listener.accept().unwrap();
+      stream
+        .set_read_timeout(Some(Duration::from_millis(500)))
+        .unwrap();
+      let (headers, _body) = read_http_request(&mut stream);
+      let lower = headers.to_ascii_lowercase();
+
+      let body = b"ok";
+      let response = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nAccess-Control-Allow-Origin: http://client.example\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+      );
+      stream.write_all(response.as_bytes()).unwrap();
+      stream.write_all(body).unwrap();
+      drop(stream);
+
+      assert!(
+        lower.starts_with("get /dupaccept"),
+        "expected GET request line, got:\n{headers}"
+      );
+
+      // Ensure no preflight request arrives (only a single GET should be sent).
+      listener.set_nonblocking(true).unwrap();
+      let start = Instant::now();
+      while start.elapsed() < Duration::from_millis(200) {
+        match listener.accept() {
+          Ok(_) => panic!("unexpected second request (preflight should not be sent)"),
+          Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+            thread::sleep(Duration::from_millis(5));
+          }
+          Err(err) => panic!("accept after request: {err}"),
+        }
+      }
+    });
+
+    let fetcher = test_http_fetcher();
+    let url = format!("http://{addr}/dupaccept");
+    let mut request = Request::new("GET", &url);
+    request.set_mode(RequestMode::Cors);
+    let value = "a".repeat(64);
+    request.headers.append("Accept", &value).unwrap();
+    request.headers.append("Accept", &value).unwrap();
+    let origin = origin_from_url("http://client.example/").expect("origin");
+    let ctx = WebFetchExecutionContext {
+      client_origin: Some(&origin),
+      ..WebFetchExecutionContext::default()
+    };
+    let mut response = execute_web_fetch(&fetcher, &request, ctx).expect("expected response");
+    assert_eq!(response.status, 200);
+    assert_eq!(response.body.as_mut().unwrap().consume_bytes().unwrap(), b"ok");
+
+    handle.join().unwrap();
+  }
+
+  #[test]
   fn cors_preflight_sent_for_put_with_custom_header() {
     if skip_if_curl_backend_missing("cors_preflight_sent_for_put_with_custom_header") {
       return;
