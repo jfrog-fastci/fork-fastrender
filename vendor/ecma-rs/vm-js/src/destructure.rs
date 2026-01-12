@@ -380,7 +380,7 @@ fn bind_object_pattern(
   let rest_obj = scope.alloc_object_with_prototype(Some(intr.object_prototype()))?;
   scope.push_root(Value::Object(rest_obj))?;
 
-  let keys = scope.ordinary_own_property_keys_with_tick(obj, || vm.tick())?;
+  let keys = scope.object_own_property_keys_with_host_and_hooks(vm, host, hooks, obj)?;
   for key in keys {
     // Budget rest-property copying: `...rest` can iterate many keys even for a small pattern.
     vm.tick()?;
@@ -391,7 +391,7 @@ fn bind_object_pattern(
       continue;
     }
 
-    let Some(desc) = scope.ordinary_get_own_property(obj, key)? else {
+    let Some(desc) = scope.object_get_own_property_with_host_and_hooks(vm, host, hooks, obj, key)? else {
       continue;
     };
     if !desc.enumerable {

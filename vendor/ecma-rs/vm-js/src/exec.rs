@@ -6234,7 +6234,12 @@ impl<'a> Evaluator<'a> {
           };
           member_scope.push_root(Value::Object(src_obj))?;
 
-          let keys = member_scope.ordinary_own_property_keys_with_tick(src_obj, || self.tick())?;
+          let keys = member_scope.object_own_property_keys_with_host_and_hooks(
+            self.vm,
+            &mut *self.host,
+            &mut *self.hooks,
+            src_obj,
+          )?;
           for key in keys {
             // Per-copied-property tick: spreading a large object can be `O(N)` without evaluating
             // nested expressions.
@@ -6247,7 +6252,14 @@ impl<'a> Evaluator<'a> {
               PropertyKey::Symbol(s) => key_scope.push_root(Value::Symbol(s))?,
             };
 
-            let Some(desc) = key_scope.ordinary_get_own_property(src_obj, key)? else {
+            let Some(desc) = key_scope.object_get_own_property_with_host_and_hooks(
+              self.vm,
+              &mut *self.host,
+              &mut *self.hooks,
+              src_obj,
+              key,
+            )?
+            else {
               continue;
             };
             if !desc.enumerable {
@@ -12628,8 +12640,12 @@ fn async_eval_lit_obj_from(
               _ => return Err(VmError::Unimplemented("object spread source type")),
             };
 
-            let keys =
-              member_scope.ordinary_own_property_keys_with_tick(src_obj, || evaluator.tick())?;
+            let keys = member_scope.object_own_property_keys_with_host_and_hooks(
+              evaluator.vm,
+              &mut *evaluator.host,
+              &mut *evaluator.hooks,
+              src_obj,
+            )?;
             for key in keys {
               evaluator.tick()?;
 
@@ -12640,14 +12656,21 @@ fn async_eval_lit_obj_from(
                 PropertyKey::Symbol(s) => key_scope.push_root(Value::Symbol(s))?,
               };
 
-              let Some(desc) = key_scope.ordinary_get_own_property(src_obj, key)? else {
+              let Some(desc) = key_scope.object_get_own_property_with_host_and_hooks(
+                evaluator.vm,
+                &mut *evaluator.host,
+                &mut *evaluator.hooks,
+                src_obj,
+                key,
+              )?
+              else {
                 continue;
               };
               if !desc.enumerable {
                 continue;
               }
 
-              let value = key_scope.ordinary_get_with_host_and_hooks(
+              let value = key_scope.get_with_host_and_hooks(
                 evaluator.vm,
                 &mut *evaluator.host,
                 &mut *evaluator.hooks,
@@ -15947,8 +15970,12 @@ fn async_resume_from_frames(
                   _ => return Err(VmError::Unimplemented("object spread source type")),
                 };
 
-                let keys =
-                  spread_scope.ordinary_own_property_keys_with_tick(src_obj, || evaluator.tick())?;
+                let keys = spread_scope.object_own_property_keys_with_host_and_hooks(
+                  evaluator.vm,
+                  &mut *evaluator.host,
+                  &mut *evaluator.hooks,
+                  src_obj,
+                )?;
                 for key in keys {
                   evaluator.tick()?;
 
@@ -15959,14 +15986,21 @@ fn async_resume_from_frames(
                     PropertyKey::Symbol(s) => key_scope.push_root(Value::Symbol(s))?,
                   };
 
-                  let Some(desc) = key_scope.ordinary_get_own_property(src_obj, key)? else {
+                  let Some(desc) = key_scope.object_get_own_property_with_host_and_hooks(
+                    evaluator.vm,
+                    &mut *evaluator.host,
+                    &mut *evaluator.hooks,
+                    src_obj,
+                    key,
+                  )?
+                  else {
                     continue;
                   };
                   if !desc.enumerable {
                     continue;
                   }
 
-                  let value = key_scope.ordinary_get_with_host_and_hooks(
+                  let value = key_scope.get_with_host_and_hooks(
                     evaluator.vm,
                     &mut *evaluator.host,
                     &mut *evaluator.hooks,

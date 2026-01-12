@@ -115,6 +115,54 @@ fn object_destructuring_uses_proxy_get_trap_for_property_binding() -> Result<(),
 }
 
 #[test]
+fn object_destructuring_rest_uses_proxy_own_keys_trap() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  rt.exec_script(
+    r#"
+      var log = [];
+      var target = { a: 1, b: 2 };
+      var handler = {
+        ownKeys: function (t) {
+          log.push("ownKeys");
+          return ["a", "b"];
+        },
+      };
+    "#,
+  )?;
+
+  let target = match rt.exec_script("target")? {
+    Value::Object(o) => o,
+    other => panic!("expected target object, got {other:?}"),
+  };
+  let handler = match rt.exec_script("handler")? {
+    Value::Object(o) => o,
+    other => panic!("expected handler object, got {other:?}"),
+  };
+
+  let global = rt.realm().global_object();
+  {
+    let (_vm, _realm, heap) = rt.vm_realm_and_heap_mut();
+    let mut scope = heap.scope();
+    scope.push_root(Value::Object(target))?;
+    scope.push_root(Value::Object(handler))?;
+    let proxy = scope.alloc_proxy(Some(target), Some(handler))?;
+    define_global(&mut scope, global, "p", Value::Object(proxy))?;
+  }
+
+  let ok = rt.exec_script(
+    r#"
+      (() => {
+        var { a, ...r } = p;
+        return a === 1 && r.b === 2 && r.a === undefined && log.join(",").includes("ownKeys");
+      })()
+    "#,
+  )?;
+  assert_eq!(ok, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
 fn object_destructuring_rest_object_has_object_prototype() {
   let mut rt = new_runtime();
   let value = rt
