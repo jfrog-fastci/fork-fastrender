@@ -337,12 +337,19 @@ struct Codegen {
   dbg_main_subprogram: Option<u32>,
   tmp_counter: usize,
   block_counter: usize,
+  loop_stack: Vec<LoopContext>,
   vars: HashMap<String, (Ty, String)>,
   body: Vec<String>,
   /// If `Some`, we're compiling a user-defined function body and this is its return type.
   current_return_ty: Option<Ty>,
   /// Whether the current basic block is terminated (e.g. by `br`, `ret`, or `unreachable`).
   block_terminated: bool,
+}
+
+#[derive(Clone, Debug)]
+struct LoopContext {
+  break_label: String,
+  continue_label: String,
 }
 
 impl Codegen {
@@ -360,6 +367,7 @@ impl Codegen {
       dbg_main_subprogram: None,
       tmp_counter: 0,
       block_counter: 0,
+      loop_stack: Vec::new(),
       vars: HashMap::new(),
       body: Vec::new(),
       current_return_ty: None,
@@ -945,7 +953,12 @@ impl Codegen {
           ));
 
           self.emit(format!("{body_label}:"));
+          self.loop_stack.push(LoopContext {
+            break_label: end_label.clone(),
+            continue_label: cond_label.clone(),
+          });
           self.compile_stmt(&while_stmt.stx.body)?;
+          self.loop_stack.pop();
           if !self.block_terminated {
             self.emit(format!("  br label %{cond_label}"));
           }
@@ -962,7 +975,12 @@ impl Codegen {
           self.emit(format!("  br label %{body_label}"));
 
           self.emit(format!("{body_label}:"));
+          self.loop_stack.push(LoopContext {
+            break_label: end_label.clone(),
+            continue_label: cond_label.clone(),
+          });
           self.compile_stmt(&do_while_stmt.stx.body)?;
+          self.loop_stack.pop();
           if !self.block_terminated {
             self.emit(format!("  br label %{cond_label}"));
           }
@@ -975,6 +993,32 @@ impl Codegen {
           ));
 
           self.emit(format!("{end_label}:"));
+          Ok(())
+        }
+        Stmt::Break(brk) => {
+          if brk.stx.label.is_some() {
+            return Err(CodegenError::UnsupportedStmt { loc: brk.loc });
+          }
+          let Some(ctx) = self.loop_stack.last() else {
+            return Err(CodegenError::TypeError {
+              message: "`break` is only supported inside loops in this backend".to_string(),
+              loc: brk.loc,
+            });
+          };
+          self.emit(format!("  br label %{}", ctx.break_label));
+          Ok(())
+        }
+        Stmt::Continue(cont) => {
+          if cont.stx.label.is_some() {
+            return Err(CodegenError::UnsupportedStmt { loc: cont.loc });
+          }
+          let Some(ctx) = self.loop_stack.last() else {
+            return Err(CodegenError::TypeError {
+              message: "`continue` is only supported inside loops in this backend".to_string(),
+              loc: cont.loc,
+            });
+          };
+          self.emit(format!("  br label %{}", ctx.continue_label));
           Ok(())
         }
         Stmt::ForTriple(for_stmt) => {
@@ -1012,9 +1056,14 @@ impl Codegen {
           }
 
           self.emit(format!("{body_label}:"));
+          self.loop_stack.push(LoopContext {
+            break_label: end_label.clone(),
+            continue_label: post_label.clone(),
+          });
           for stmt in &for_stmt.stx.body.stx.body {
             self.compile_stmt(stmt)?;
           }
+          self.loop_stack.pop();
           if !self.block_terminated {
             self.emit(format!("  br label %{post_label}"));
           }
@@ -1944,6 +1993,7 @@ struct FunctionSig {
 struct FnCtx {
   tmp_counter: usize,
   block_counter: usize,
+  loop_stack: Vec<LoopContext>,
   vars: HashMap<String, (Ty, String)>,
   body: Vec<String>,
   current_return_ty: Option<Ty>,
@@ -1954,6 +2004,7 @@ impl Codegen {
   fn reset_fn_ctx(&mut self, ret: Option<Ty>) {
     self.tmp_counter = 0;
     self.block_counter = 0;
+    self.loop_stack.clear();
     self.vars.clear();
     self.body.clear();
     self.current_return_ty = ret;
@@ -1964,6 +2015,7 @@ impl Codegen {
     FnCtx {
       tmp_counter: self.tmp_counter,
       block_counter: self.block_counter,
+      loop_stack: std::mem::take(&mut self.loop_stack),
       vars: std::mem::take(&mut self.vars),
       body: std::mem::take(&mut self.body),
       current_return_ty: self.current_return_ty,
@@ -1974,6 +2026,7 @@ impl Codegen {
   fn restore_fn_ctx(&mut self, ctx: FnCtx) {
     self.tmp_counter = ctx.tmp_counter;
     self.block_counter = ctx.block_counter;
+    self.loop_stack = ctx.loop_stack;
     self.vars = ctx.vars;
     self.body = ctx.body;
     self.current_return_ty = ctx.current_return_ty;
