@@ -6,6 +6,8 @@ use crate::js::host_document::{ActiveEventGuard, ActiveEventStack};
 use crate::js::CurrentScriptStateHandle;
 use crate::resource::ReferrerPolicy;
 use crate::scroll::ScrollState;
+use crate::style::cascade::StyledNode;
+use crate::style::ComputedStyle;
 use crate::tree::box_tree::{BoxNode, BoxType};
 use crate::web::dom::DocumentVisibilityState;
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -747,7 +749,6 @@ impl BrowserDocumentDom2 {
 
     Ok(bounds.clamp(desired))
   }
-
   /// Updates the viewport scroll offset (in CSS px), marking paint dirty.
   pub fn set_scroll(&mut self, scroll_x: f32, scroll_y: f32) {
     if self.options.scroll_x != scroll_x || self.options.scroll_y != scroll_y {
@@ -814,6 +815,21 @@ impl BrowserDocumentDom2 {
   /// available.
   pub fn last_dom_mapping(&self) -> Option<&crate::dom2::RendererDomMapping> {
     self.last_dom_mapping.as_ref()
+  }
+
+  /// Returns the renderer computed style for a `dom2` node using the latest prepared layout.
+  ///
+  /// This is intended for DOM query APIs like `getComputedStyle()`. It prefers the style attached
+  /// to the node's **principal box** (so used-value adjustments like blockification are observed).
+  /// If the node does not generate a principal box (e.g. `display: contents`), it falls back to
+  /// scanning the styled tree.
+  pub fn computed_style_for_dom_node(&self, node_id: crate::dom2::NodeId) -> Option<Arc<ComputedStyle>> {
+    let prepared = self.prepared.as_ref()?;
+    let mapping = self.last_dom_mapping.as_ref()?;
+    let preorder = mapping.preorder_for_node_id(node_id)?;
+
+    principal_box_style_for_styled_node_id(&prepared.box_tree.root, preorder)
+      .or_else(|| styled_tree_style_for_preorder_id(&prepared.styled_tree, preorder))
   }
 
   /// Returns counters describing how invalidations have been satisfied over this document's
@@ -1597,6 +1613,40 @@ fn apply_text_updates_to_box_tree(root: &mut BoxNode, updates: &FxHashMap<usize,
       }
     }
   }
+}
+
+fn principal_box_style_for_styled_node_id(
+  root: &BoxNode,
+  styled_node_id: usize,
+) -> Option<Arc<ComputedStyle>> {
+  let mut stack: Vec<&BoxNode> = vec![root];
+  while let Some(node) = stack.pop() {
+    // A "principal box" is the first non-pseudo box generated for this element in a pre-order walk
+    // of the box tree.
+    if node.generated_pseudo.is_none() && node.styled_node_id == Some(styled_node_id) {
+      return Some(Arc::clone(&node.style));
+    }
+    if let Some(body) = node.footnote_body.as_deref() {
+      stack.push(body);
+    }
+    for child in node.children.iter().rev() {
+      stack.push(child);
+    }
+  }
+  None
+}
+
+fn styled_tree_style_for_preorder_id(root: &StyledNode, preorder_id: usize) -> Option<Arc<ComputedStyle>> {
+  let mut stack: Vec<&StyledNode> = vec![root];
+  while let Some(node) = stack.pop() {
+    if node.node_id == preorder_id {
+      return Some(Arc::clone(&node.styles));
+    }
+    for child in node.children.iter().rev() {
+      stack.push(child);
+    }
+  }
+  None
 }
 
 impl crate::js::DomHost for BrowserDocumentDom2 {

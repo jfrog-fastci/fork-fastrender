@@ -1950,6 +1950,9 @@ const STYLE_HEIGHT_SET_KEY: &str = "__fastrender_style_height_set";
 const STYLE_WIDTH_GET_KEY: &str = "__fastrender_style_width_get";
 const STYLE_WIDTH_SET_KEY: &str = "__fastrender_style_width_set";
 const CSS_STYLE_DECL_PROTOTYPE_KEY: &str = "__fastrender_css_style_declaration_prototype";
+const COMPUTED_STYLE_BRAND_KEY: &str = "__fastrender_computed_style";
+const GET_COMPUTED_STYLE_GET_PROPERTY_VALUE_SLOT: usize = 0;
+const GET_COMPUTED_STYLE_CSS_STYLE_DECL_PROTO_SLOT: usize = 1;
 const NODE_APPEND_CHILD_KEY: &str = "__fastrender_node_append_child";
 const NODE_INSERT_BEFORE_KEY: &str = "__fastrender_node_insert_before";
 const NODE_REMOVE_CHILD_KEY: &str = "__fastrender_node_remove_child";
@@ -16208,6 +16211,232 @@ fn css_style_named_set_native(
   Ok(Value::Undefined)
 }
 
+fn is_branded_computed_style(scope: &mut Scope<'_>, obj: GcObject) -> Result<bool, VmError> {
+  let key = alloc_key(scope, COMPUTED_STYLE_BRAND_KEY)?;
+  Ok(matches!(
+    scope.heap().object_get_own_data_property_value(obj, &key)?,
+    Some(Value::Bool(true))
+  ))
+}
+
+fn computed_style_property_value(
+  style: &crate::style::ComputedStyle,
+  name: &str,
+) -> Option<String> {
+  use crate::style::computed::Visibility;
+  use crate::style::types::{LineHeight, Overflow};
+
+  fn overflow_to_css(v: Overflow) -> &'static str {
+    match v {
+      Overflow::Visible => "visible",
+      Overflow::Hidden => "hidden",
+      Overflow::Scroll => "scroll",
+      Overflow::Auto => "auto",
+      Overflow::Clip => "clip",
+    }
+  }
+
+  fn visibility_to_css(v: Visibility) -> &'static str {
+    match v {
+      Visibility::Visible => "visible",
+      Visibility::Hidden => "hidden",
+      Visibility::Collapse => "collapse",
+    }
+  }
+
+  fn option_length_or_auto(v: Option<crate::style::values::Length>) -> String {
+    v.map(|v| v.to_css()).unwrap_or_else(|| "auto".to_string())
+  }
+
+  match name {
+    "display" => Some(style.display.to_string()),
+    "position" => Some(style.position.to_string()),
+    "visibility" => Some(visibility_to_css(style.visibility).to_string()),
+    "overflow-x" => Some(overflow_to_css(style.overflow_x).to_string()),
+    "overflow-y" => Some(overflow_to_css(style.overflow_y).to_string()),
+    "color" => Some(style.color.to_string()),
+    "background-color" => Some(style.background_color.to_string()),
+    // Font size is stored in computed styles as a px value.
+    "font-size" => Some(format!("{}px", style.font_size)),
+    "line-height" => match &style.line_height {
+      LineHeight::Normal => Some("normal".to_string()),
+      LineHeight::Number(v) => Some(v.to_string()),
+      LineHeight::Length(v) => Some(v.to_css()),
+      LineHeight::Percentage(v) => Some(format!("{v}%")),
+    },
+    // MVP: return the computed `width` / `height` fields (or `auto`), not the used/layout px value.
+    "width" => Some(option_length_or_auto(style.width)),
+    "height" => Some(option_length_or_auto(style.height)),
+    "margin-top" => Some(option_length_or_auto(style.margin_top)),
+    "margin-right" => Some(option_length_or_auto(style.margin_right)),
+    "margin-bottom" => Some(option_length_or_auto(style.margin_bottom)),
+    "margin-left" => Some(option_length_or_auto(style.margin_left)),
+    "padding-top" => Some(style.padding_top.to_css()),
+    "padding-right" => Some(style.padding_right.to_css()),
+    "padding-bottom" => Some(style.padding_bottom.to_css()),
+    "padding-left" => Some(style.padding_left.to_css()),
+    "border-top-width" => Some(style.border_top_width.to_css()),
+    "border-right-width" => Some(style.border_right_width.to_css()),
+    "border-bottom-width" => Some(style.border_bottom_width.to_css()),
+    "border-left-width" => Some(style.border_left_width.to_css()),
+    _ => None,
+  }
+}
+
+fn computed_style_get_property_value_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(style_obj) = this else {
+    return Err(VmError::TypeError(
+      "getComputedStyle(...).getPropertyValue must be called on a computed style object",
+    ));
+  };
+  if !is_branded_computed_style(scope, style_obj)? {
+    return Err(VmError::TypeError(
+      "getComputedStyle(...).getPropertyValue must be called on a computed style object",
+    ));
+  }
+
+  let name_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let name_value = scope.heap_mut().to_string(name_value)?;
+  let name_raw = scope
+    .heap()
+    .get_string(name_value)
+    .map(|s| s.to_utf8_lossy())
+    .unwrap_or_default();
+  let name = crate::js::trim_ascii_whitespace(&name_raw)
+    .to_ascii_lowercase();
+
+  let node_id_key = alloc_key(scope, NODE_ID_KEY)?;
+  let node_index = match scope
+    .heap()
+    .object_get_own_data_property_value(style_obj, &node_id_key)?
+  {
+    Some(Value::Number(n)) if n.is_finite() && n >= 0.0 => n as usize,
+    _ => return Ok(Value::String(scope.alloc_string("")?)),
+  };
+
+  let Some(document) = host.as_any_mut().downcast_mut::<BrowserDocumentDom2>() else {
+    return Ok(Value::String(scope.alloc_string("")?));
+  };
+
+  let node_id = match document.dom().node_id_from_index(node_index) {
+    Ok(id) => id,
+    Err(_) => return Ok(Value::String(scope.alloc_string("")?)),
+  };
+
+  if document.ensure_layout_for_dom_queries().is_err() {
+    return Ok(Value::String(scope.alloc_string("")?));
+  }
+
+  let Some(style) = document.computed_style_for_dom_node(node_id) else {
+    return Ok(Value::String(scope.alloc_string("")?));
+  };
+
+  let value = computed_style_property_value(&style, &name).unwrap_or_default();
+  Ok(Value::String(scope.alloc_string(&value)?))
+}
+
+fn window_get_computed_style_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(element_obj) = args.get(0).copied().unwrap_or(Value::Undefined) else {
+    return Err(VmError::TypeError(
+      "getComputedStyle requires an element object",
+    ));
+  };
+
+  let node_id_key = alloc_key(scope, NODE_ID_KEY)?;
+  let node_index = match scope
+    .heap()
+    .object_get_own_data_property_value(element_obj, &node_id_key)?
+  {
+    Some(Value::Number(n)) if n.is_finite() && n >= 0.0 => n as usize,
+    _ => {
+      return Err(VmError::TypeError(
+        "getComputedStyle requires an element object",
+      ))
+    }
+  };
+
+  // `pseudoElt` parameter is accepted for now but ignored. Convert it to string to ensure callers
+  // that pass non-empty values do not crash.
+  if let Some(pseudo) = args.get(1).copied() {
+    if !matches!(pseudo, Value::Undefined | Value::Null) {
+      let _ = scope.heap_mut().to_string(pseudo)?;
+    }
+  }
+
+  let slots = scope.heap().get_function_native_slots(callee)?;
+  let get_property_value = slots
+    .get(GET_COMPUTED_STYLE_GET_PROPERTY_VALUE_SLOT)
+    .copied()
+    .unwrap_or(Value::Undefined);
+  let css_style_decl_proto = slots
+    .get(GET_COMPUTED_STYLE_CSS_STYLE_DECL_PROTO_SLOT)
+    .copied()
+    .unwrap_or(Value::Undefined);
+  let Value::Object(get_property_value) = get_property_value else {
+    return Err(VmError::InvariantViolation(
+      "getComputedStyle missing getPropertyValue slot",
+    ));
+  };
+
+  let computed_style = scope.alloc_object()?;
+  scope.push_root(Value::Object(computed_style))?;
+  scope.push_root(Value::Object(get_property_value))?;
+
+  if let Value::Object(proto) = css_style_decl_proto {
+    scope
+      .heap_mut()
+      .object_set_prototype(computed_style, Some(proto))
+      .map_err(|_| VmError::TypeError("failed to set CSSStyleDeclaration prototype"))?;
+  }
+
+  // Brand-check for `getPropertyValue` so borrowing the method onto random objects throws.
+  let brand_key = alloc_key(scope, COMPUTED_STYLE_BRAND_KEY)?;
+  scope.define_property(
+    computed_style,
+    brand_key,
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: false,
+      kind: PropertyKind::Data {
+        value: Value::Bool(true),
+        writable: false,
+      },
+    },
+  )?;
+
+  let node_id_key = alloc_key(scope, NODE_ID_KEY)?;
+  scope.define_property(
+    computed_style,
+    node_id_key,
+    data_desc(Value::Number(node_index as f64)),
+  )?;
+
+  let key = alloc_key(scope, "getPropertyValue")?;
+  scope.define_property(
+    computed_style,
+    key,
+    data_desc(Value::Object(get_property_value)),
+  )?;
+
+  Ok(Value::Object(computed_style))
+}
+
 fn element_class_list_add_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -23533,6 +23762,56 @@ fn init_window_globals(
   // structuredClone(value[, options])
   crate::js::window_structured_clone::install_window_structured_clone(vm, &mut scope, realm, global)?;
 
+  // getComputedStyle(element[, pseudoElt])
+  let computed_style_get_property_value_call_id =
+    vm.register_native_call(computed_style_get_property_value_native)?;
+  let computed_style_get_property_value_name = scope.alloc_string("getPropertyValue")?;
+  scope.push_root(Value::String(computed_style_get_property_value_name))?;
+  let computed_style_get_property_value_func = scope.alloc_native_function(
+    computed_style_get_property_value_call_id,
+    None,
+    computed_style_get_property_value_name,
+    1,
+  )?;
+  scope.heap_mut().object_set_prototype(
+    computed_style_get_property_value_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(computed_style_get_property_value_func))?;
+
+  let get_computed_style_call_id = vm.register_native_call(window_get_computed_style_native)?;
+  let get_computed_style_name = scope.alloc_string("getComputedStyle")?;
+  scope.push_root(Value::String(get_computed_style_name))?;
+  let css_style_decl_proto = {
+    let key = alloc_key(&mut scope, CSS_STYLE_DECL_PROTOTYPE_KEY)?;
+    scope
+      .heap()
+      .object_get_own_data_property_value(document_obj, &key)?
+      .unwrap_or(Value::Undefined)
+  };
+  let get_computed_style_slots = [
+    Value::Object(computed_style_get_property_value_func),
+    css_style_decl_proto,
+  ];
+  let get_computed_style_func = scope.alloc_native_function_with_slots(
+    get_computed_style_call_id,
+    None,
+    get_computed_style_name,
+    1,
+    &get_computed_style_slots,
+  )?;
+  scope.heap_mut().object_set_prototype(
+    get_computed_style_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(get_computed_style_func))?;
+  let get_computed_style_key = alloc_key(&mut scope, "getComputedStyle")?;
+  scope.define_property(
+    global,
+    get_computed_style_key,
+    data_desc(Value::Object(get_computed_style_func)),
+  )?;
+
   // reportError(e)
   let report_error_call_id = vm.register_native_call(window_report_error_native)?;
   let report_error_name = scope.alloc_string("reportError")?;
@@ -26158,6 +26437,40 @@ mod tests {
     );
     assert_eq!(host.dom().element_class_name(target), "a");
     assert_eq!(host.dom().style_get_property_value(target, "color"), "red");
+    Ok(())
+  }
+
+  #[test]
+  fn get_computed_style_reads_renderer_computed_style() -> Result<(), VmError> {
+    let html =
+      "<!doctype html><style>#x{display:block;color:rgb(1,2,3);}</style><div id=x></div>";
+    let renderer = crate::api::FastRender::builder()
+      .font_sources(crate::text::font_db::FontConfig::bundled_only())
+      .build()
+      .expect("renderer");
+    let mut host = BrowserDocumentDom2::new(
+      renderer,
+      html,
+      crate::api::RenderOptions::new().with_viewport(32, 32),
+    )
+    .expect("document");
+
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+
+    let display = exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      "getComputedStyle(document.getElementById('x')).getPropertyValue('display')",
+    )?;
+    assert_eq!(get_string(realm.heap(), display), "block");
+
+    let color = exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      "getComputedStyle(document.getElementById('x')).getPropertyValue('color')",
+    )?;
+    assert_eq!(get_string(realm.heap(), color), "rgb(1, 2, 3)");
+
     Ok(())
   }
 
