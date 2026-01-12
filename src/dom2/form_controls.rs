@@ -45,6 +45,7 @@ impl Document {
       tag_name,
       namespace,
       attributes,
+      ..
     } = kind
     else {
       return (None, None);
