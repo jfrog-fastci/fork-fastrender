@@ -1104,14 +1104,12 @@ pub fn chrome_ui_with_bookmarks(
       if loading {
         let response = icon_button(ui, BrowserIcon::StopLoading, "Stop loading (Esc)", true);
         show_tooltip_on_focus(ui, &response, "Stop loading (Esc)");
-        paint_focus_ring(ui, &response, focus_ring);
         if response.clicked() {
           actions.push(ChromeAction::StopLoading);
         }
       } else {
         let response = icon_button(ui, BrowserIcon::Reload, "Reload (Ctrl/Cmd+R)", true);
         show_tooltip_on_focus(ui, &response, "Reload (Ctrl/Cmd+R)");
-        paint_focus_ring(ui, &response, focus_ring);
         if response.clicked() {
           actions.push(ChromeAction::Reload);
         }
@@ -1132,7 +1130,6 @@ pub fn chrome_ui_with_bookmarks(
       if !is_compact {
         let response = icon_button(ui, BrowserIcon::ZoomOut, "Zoom out (Ctrl/Cmd+-)", true);
         show_tooltip_on_focus(ui, &response, "Zoom out (Ctrl/Cmd+-)");
-        paint_focus_ring(ui, &response, focus_ring);
         if response.clicked() {
           if let Some(tab) = app.active_tab_mut() {
             tab.zoom = zoom::zoom_out(tab.zoom);
@@ -1158,7 +1155,6 @@ pub fn chrome_ui_with_bookmarks(
         }
         let response = icon_button(ui, BrowserIcon::ZoomIn, "Zoom in (Ctrl/Cmd++)", true);
         show_tooltip_on_focus(ui, &response, "Zoom in (Ctrl/Cmd++)");
-        paint_focus_ring(ui, &response, focus_ring);
         if response.clicked() {
           if let Some(tab) = app.active_tab_mut() {
             tab.zoom = zoom::zoom_in(tab.zoom);
