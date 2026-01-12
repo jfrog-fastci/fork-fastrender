@@ -633,6 +633,49 @@ impl JsBigInt {
     }
   }
 
+  /// Returns this BigInt value modulo `2^width` as an unsigned value.
+  ///
+  /// This is the primitive operation behind `BigInt.asUintN`.
+  ///
+  /// Returns `None` if `width > 256`, as this VM intentionally bounds BigInts to 256 bits for the
+  /// curated test262 suite.
+  pub fn as_uint_n(self, width: u32) -> Option<Self> {
+    if width == 0 {
+      return Some(Self::zero());
+    }
+    if width > 256 {
+      return None;
+    }
+    let magnitude = self.to_twos_complement_u256(width);
+    if magnitude.is_zero() {
+      Some(Self::zero())
+    } else {
+      Some(Self {
+        negative: false,
+        magnitude,
+      })
+    }
+  }
+
+  /// Returns this BigInt value modulo `2^width` as a signed two's complement value.
+  ///
+  /// This is the primitive operation behind `BigInt.asIntN`.
+  ///
+  /// Returns `None` if `width > 256`, as this VM intentionally bounds BigInts to 256 bits for the
+  /// curated test262 suite.
+  pub fn as_int_n(self, width: u32) -> Option<Self> {
+    if width == 0 {
+      return Some(Self::zero());
+    }
+    if width > 256 {
+      return None;
+    }
+    Some(Self::from_twos_complement_u256(
+      self.to_twos_complement_u256(width),
+      width,
+    ))
+  }
+
   fn to_twos_complement_257(self) -> (bool, U256) {
     if self.is_negative() {
       (true, self.magnitude.wrapping_neg())

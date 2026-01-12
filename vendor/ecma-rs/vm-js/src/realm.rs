@@ -288,6 +288,13 @@ impl Realm {
         global_data_desc(Value::Object(intrinsics.boolean_constructor())),
       )?;
 
+      let bigint_key = PropertyKey::from_string(scope.alloc_string("BigInt")?);
+      scope.define_property(
+        global_object,
+        bigint_key,
+        global_data_desc(Value::Object(intrinsics.bigint_constructor())),
+      )?;
+
       let date_key = PropertyKey::from_string(scope.alloc_string("Date")?);
       scope.define_property(
         global_object,

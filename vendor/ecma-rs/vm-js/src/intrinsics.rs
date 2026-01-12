@@ -68,6 +68,7 @@ pub struct Intrinsics {
   regexp_constructor: GcObject,
   number_constructor: GcObject,
   boolean_constructor: GcObject,
+  bigint_constructor: GcObject,
   date_constructor: GcObject,
   symbol_constructor: GcObject,
   array_buffer: GcObject,
@@ -905,6 +906,13 @@ impl Intrinsics {
     let number_is_integer = vm.register_native_call(builtins::number_is_integer)?;
     let number_is_safe_integer = vm.register_native_call(builtins::number_is_safe_integer)?;
     let bigint_prototype_value_of = vm.register_native_call(builtins::bigint_prototype_value_of)?;
+    let bigint_prototype_to_string = vm.register_native_call(builtins::bigint_prototype_to_string)?;
+    let bigint_prototype_to_locale_string =
+      vm.register_native_call(builtins::bigint_prototype_to_locale_string)?;
+    let bigint_prototype_to_primitive =
+      vm.register_native_call(builtins::bigint_prototype_to_primitive)?;
+    let bigint_as_int_n = vm.register_native_call(builtins::bigint_as_int_n)?;
+    let bigint_as_uint_n = vm.register_native_call(builtins::bigint_as_uint_n)?;
     let date_prototype_to_string = vm.register_native_call(builtins::date_prototype_to_string)?;
     let date_prototype_to_utc_string = vm.register_native_call(builtins::date_prototype_to_utc_string)?;
     let date_prototype_to_iso_string = vm.register_native_call(builtins::date_prototype_to_iso_string)?;
@@ -985,11 +993,12 @@ impl Intrinsics {
     let generator_prototype_return = vm.register_native_call(builtins::generator_prototype_return)?;
     let generator_prototype_throw = vm.register_native_call(builtins::generator_prototype_throw)?;
 
-    // `%Number%`, `%Boolean%`, `%Date%`, and global functions.
+    // `%Number%`, `%Boolean%`, `%BigInt%`, `%Date%`, and global functions.
     let number_call = vm.register_native_call(builtins::number_constructor_call)?;
     let number_construct = vm.register_native_construct(builtins::number_constructor_construct)?;
     let boolean_call = vm.register_native_call(builtins::boolean_constructor_call)?;
     let boolean_construct = vm.register_native_construct(builtins::boolean_constructor_construct)?;
+    let bigint_call = vm.register_native_call(builtins::bigint_constructor_call)?;
     let date_call = vm.register_native_call(builtins::date_constructor_call)?;
     let date_construct = vm.register_native_construct(builtins::date_constructor_construct)?;
     let eval_call = vm.register_native_call(builtins::global_eval)?;
@@ -3230,6 +3239,75 @@ impl Intrinsics {
       )?;
     }
 
+    // `%BigInt%`
+    let bigint_name = scope.alloc_string("BigInt")?;
+    let bigint_constructor =
+      alloc_rooted_native_function(scope, roots, bigint_call, None, bigint_name, 1)?;
+    scope
+      .heap_mut()
+      .object_set_prototype(bigint_constructor, Some(function_prototype))?;
+    scope.define_property(
+      bigint_constructor,
+      common.prototype,
+      data_desc(Value::Object(bigint_prototype), false, false, false),
+    )?;
+    scope.define_property(
+      bigint_constructor,
+      common.name,
+      data_desc(Value::String(bigint_name), false, false, true),
+    )?;
+    scope.define_property(
+      bigint_constructor,
+      common.length,
+      data_desc(Value::Number(1.0), false, false, true),
+    )?;
+    scope.define_property(
+      bigint_prototype,
+      common.constructor,
+      data_desc(Value::Object(bigint_constructor), true, false, true),
+    )?;
+
+    // BigInt.asIntN / BigInt.asUintN
+    {
+      let as_int_n_s = scope.alloc_string("asIntN")?;
+      scope.push_root(Value::String(as_int_n_s))?;
+      let key = PropertyKey::from_string(as_int_n_s);
+      let func = scope.alloc_native_function(bigint_as_int_n, None, as_int_n_s, 2)?;
+      scope.push_root(Value::Object(func))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(func, Some(function_prototype))?;
+      scope.define_property(
+        bigint_constructor,
+        key,
+        data_desc(Value::Object(func), true, false, true),
+      )?;
+
+      let as_uint_n_s = scope.alloc_string("asUintN")?;
+      scope.push_root(Value::String(as_uint_n_s))?;
+      let key = PropertyKey::from_string(as_uint_n_s);
+      let func = scope.alloc_native_function(bigint_as_uint_n, None, as_uint_n_s, 2)?;
+      scope.push_root(Value::Object(func))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(func, Some(function_prototype))?;
+      scope.define_property(
+        bigint_constructor,
+        key,
+        data_desc(Value::Object(func), true, false, true),
+      )?;
+    }
+
+    // BigInt.prototype[@@toStringTag]
+    {
+      let tag_value = scope.alloc_string("BigInt")?;
+      scope.push_root(Value::String(tag_value))?;
+      scope.define_property(
+        bigint_prototype,
+        PropertyKey::Symbol(well_known_symbols.to_string_tag),
+        data_desc(Value::String(tag_value), false, false, true),
+      )?;
+    }
     // BigInt.prototype.valueOf
     {
       let value_of_s = scope.alloc_string("valueOf")?;
@@ -3244,6 +3322,59 @@ impl Intrinsics {
         bigint_prototype,
         key,
         data_desc(Value::Object(func), true, false, true),
+      )?;
+    }
+
+    // BigInt.prototype.toString
+    {
+      let to_string_s = scope.alloc_string("toString")?;
+      scope.push_root(Value::String(to_string_s))?;
+      let key = PropertyKey::from_string(to_string_s);
+      let func = scope.alloc_native_function(bigint_prototype_to_string, None, to_string_s, 1)?;
+      scope.push_root(Value::Object(func))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(func, Some(function_prototype))?;
+      scope.define_property(
+        bigint_prototype,
+        key,
+        data_desc(Value::Object(func), true, false, true),
+      )?;
+    }
+
+    // BigInt.prototype.toLocaleString
+    {
+      let to_locale_s = scope.alloc_string("toLocaleString")?;
+      scope.push_root(Value::String(to_locale_s))?;
+      let key = PropertyKey::from_string(to_locale_s);
+      let func =
+        scope.alloc_native_function(bigint_prototype_to_locale_string, None, to_locale_s, 0)?;
+      scope.push_root(Value::Object(func))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(func, Some(function_prototype))?;
+      scope.define_property(
+        bigint_prototype,
+        key,
+        data_desc(Value::Object(func), true, false, true),
+      )?;
+    }
+
+    // BigInt.prototype[Symbol.toPrimitive]
+    {
+      let to_prim_s = scope.alloc_string("[Symbol.toPrimitive]")?;
+      scope.push_root(Value::String(to_prim_s))?;
+      let to_prim_fn =
+        scope.alloc_native_function(bigint_prototype_to_primitive, None, to_prim_s, 1)?;
+      scope.push_root(Value::Object(to_prim_fn))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(to_prim_fn, Some(function_prototype))?;
+      scope.define_property(
+        bigint_prototype,
+        PropertyKey::Symbol(well_known_symbols.to_primitive),
+        // Per ECMA-262, `BigInt.prototype[@@toPrimitive]` is non-writable.
+        data_desc(Value::Object(to_prim_fn), false, false, true),
       )?;
     }
 
@@ -5338,6 +5469,7 @@ impl Intrinsics {
       regexp_constructor,
       number_constructor,
       boolean_constructor,
+      bigint_constructor,
       date_constructor,
       symbol_constructor,
       array_buffer,
@@ -5552,6 +5684,10 @@ impl Intrinsics {
 
   pub fn boolean_constructor(&self) -> GcObject {
     self.boolean_constructor
+  }
+
+  pub fn bigint_constructor(&self) -> GcObject {
+    self.bigint_constructor
   }
 
   pub fn date_constructor(&self) -> GcObject {

@@ -15371,9 +15371,232 @@ pub fn number_is_safe_integer(
   Ok(Value::Bool(n.abs() <= 9007199254740991.0))
 }
 
-/// `BigInt.prototype.valueOf` (minimal).
+fn this_bigint_value(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  this: Value,
+  method: &'static str,
+) -> Result<crate::JsBigInt, VmError> {
+  match this {
+    Value::BigInt(b) => Ok(b),
+    Value::Object(obj) => {
+      let marker_sym = match scope.heap().internal_bigint_data_symbol() {
+        Some(sym) => sym,
+        None => {
+          // Fall back to creating the marker symbol if it hasn't been interned yet (should be rare;
+          // primarily reachable if a host created a BigInt wrapper without going through
+          // `Object(1n)`).
+          let marker = scope.alloc_string("vm-js.internal.BigIntData")?;
+          scope.heap_mut().symbol_for_with_tick(marker, || vm.tick())?
+        }
+      };
+      let marker_key = PropertyKey::from_symbol(marker_sym);
+      match scope
+        .heap()
+        .object_get_own_data_property_value(obj, &marker_key)?
+      {
+        Some(Value::BigInt(b)) => Ok(b),
+        _ => Err(VmError::TypeError(method)),
+      }
+    }
+    _ => Err(VmError::TypeError(method)),
+  }
+}
+
+/// ECMAScript `ToBigInt` (minimal).
+fn to_bigint(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  value: Value,
+) -> Result<crate::JsBigInt, VmError> {
+  // 1. Let prim be ? ToPrimitive(argument, hint Number).
+  let prim = scope.to_primitive(vm, host, hooks, value, crate::ToPrimitiveHint::Number)?;
+
+  match prim {
+    Value::BigInt(b) => Ok(b),
+    Value::Bool(b) => Ok(crate::JsBigInt::from_u128(if b { 1 } else { 0 })),
+    Value::Number(n) => match crate::exec::f64_to_bigint_integral(n) {
+      Some(bi) => Ok(bi),
+      None => {
+        let intr = require_intrinsics(vm)?;
+        let err = crate::new_range_error(scope, intr, "Cannot convert number to BigInt")?;
+        Err(VmError::Throw(err))
+      }
+    },
+    Value::String(s) => {
+      let mut tick = || vm.tick();
+      match crate::exec::string_to_bigint(scope.heap(), s, &mut tick) {
+        Ok(Some(bi)) => Ok(bi),
+        Ok(None) => {
+          let intr = require_intrinsics(vm)?;
+          let err = crate::new_syntax_error_object(scope, &intr, "Cannot convert string to BigInt")?;
+          Err(VmError::Throw(err))
+        }
+        Err(VmError::Unimplemented("BigInt parse overflow")) => {
+          let intr = require_intrinsics(vm)?;
+          let err = crate::new_range_error(scope, intr, "BigInt overflow")?;
+          Err(VmError::Throw(err))
+        }
+        Err(err) => Err(err),
+      }
+    }
+    _ => Err(VmError::TypeError("Cannot convert value to BigInt")),
+  }
+}
+
+/// `BigInt(value)` (ECMA-262).
+pub fn bigint_constructor_call(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let arg0 = args.get(0).copied().unwrap_or(Value::Undefined);
+  let bi = to_bigint(vm, scope, host, hooks, arg0)?;
+  Ok(Value::BigInt(bi))
+}
+
+/// `BigInt.asIntN(bits, bigint)` (ECMA-262).
+pub fn bigint_as_int_n(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let intr = require_intrinsics(vm)?;
+
+  let bits_val = args.get(0).copied().unwrap_or(Value::Undefined);
+  let mut bits = scope.to_number(vm, host, hooks, bits_val)?;
+  if bits.is_nan() {
+    bits = 0.0;
+  }
+  if !bits.is_finite() {
+    let err = crate::new_range_error(scope, intr, "Invalid bits")?;
+    return Err(VmError::Throw(err));
+  }
+  bits = bits.trunc();
+  if bits < 0.0 || bits > 256.0 {
+    let err = crate::new_range_error(scope, intr, "Invalid bits")?;
+    return Err(VmError::Throw(err));
+  }
+  let bits_u32 = bits as u32;
+
+  let bigint_val = args.get(1).copied().unwrap_or(Value::Undefined);
+  let bi = to_bigint(vm, scope, host, hooks, bigint_val)?;
+  let Some(out) = bi.as_int_n(bits_u32) else {
+    let err = crate::new_range_error(scope, intr, "Invalid bits")?;
+    return Err(VmError::Throw(err));
+  };
+  Ok(Value::BigInt(out))
+}
+
+/// `BigInt.asUintN(bits, bigint)` (ECMA-262).
+pub fn bigint_as_uint_n(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let intr = require_intrinsics(vm)?;
+
+  let bits_val = args.get(0).copied().unwrap_or(Value::Undefined);
+  let mut bits = scope.to_number(vm, host, hooks, bits_val)?;
+  if bits.is_nan() {
+    bits = 0.0;
+  }
+  if !bits.is_finite() {
+    let err = crate::new_range_error(scope, intr, "Invalid bits")?;
+    return Err(VmError::Throw(err));
+  }
+  bits = bits.trunc();
+  if bits < 0.0 || bits > 256.0 {
+    let err = crate::new_range_error(scope, intr, "Invalid bits")?;
+    return Err(VmError::Throw(err));
+  }
+  let bits_u32 = bits as u32;
+
+  let bigint_val = args.get(1).copied().unwrap_or(Value::Undefined);
+  let bi = to_bigint(vm, scope, host, hooks, bigint_val)?;
+  let Some(out) = bi.as_uint_n(bits_u32) else {
+    let err = crate::new_range_error(scope, intr, "Invalid bits")?;
+    return Err(VmError::Throw(err));
+  };
+  Ok(Value::BigInt(out))
+}
+
+fn bigint_to_string_radix(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  x: crate::JsBigInt,
+  radix: u32,
+) -> Result<GcString, VmError> {
+  debug_assert!((2..=36).contains(&radix));
+
+  if x.is_zero() {
+    return scope.alloc_string("0");
+  }
+  if radix == 10 {
+    let s = x.to_decimal_string();
+    return scope.alloc_string(&s);
+  }
+
+  let negative = x.is_negative();
+  let mut n = if negative { x.negate() } else { x };
+  let radix_bi = crate::JsBigInt::from_u128(radix as u128);
+
+  // Worst-case (radix 2) a 256-bit integer has 256 digits, plus an optional `-`.
+  let mut out: Vec<u16> = Vec::new();
+  out
+    .try_reserve_exact(260)
+    .map_err(|_| VmError::OutOfMemory)?;
+
+  let mut steps = 0usize;
+  while !n.is_zero() {
+    if steps % 32 == 0 {
+      vm.tick()?;
+    }
+    steps += 1;
+
+    let rem = n
+      .checked_rem(radix_bi)
+      .ok_or(VmError::InvariantViolation("BigInt remainder failed"))?;
+    let div = n
+      .checked_div(radix_bi)
+      .ok_or(VmError::InvariantViolation("BigInt division failed"))?;
+
+    let Some(rem_i128) = rem.try_to_i128() else {
+      return Err(VmError::InvariantViolation("BigInt remainder does not fit in i128"));
+    };
+    if rem_i128 < 0 {
+      return Err(VmError::InvariantViolation("BigInt remainder is negative"));
+    }
+    let digit = rem_i128 as u32;
+    out.push(digit_to_ascii(digit) as u16);
+
+    n = div;
+  }
+
+  if negative {
+    out.push(b'-' as u16);
+  }
+  out.reverse();
+  scope.alloc_string_from_u16_vec(out)
+}
+
+/// `BigInt.prototype.valueOf` (ECMA-262).
 pub fn bigint_prototype_value_of(
-  _vm: &mut Vm,
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
   _hooks: &mut dyn VmHostHooks,
@@ -15381,26 +15604,90 @@ pub fn bigint_prototype_value_of(
   this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
-  match this {
-    Value::BigInt(b) => Ok(Value::BigInt(b)),
-    Value::Object(obj) => {
-      let marker = scope.alloc_string("vm-js.internal.BigIntData")?;
-      let marker_sym = scope.heap_mut().symbol_for(marker)?;
-      let marker_key = PropertyKey::from_symbol(marker_sym);
-      match scope
-        .heap()
-        .object_get_own_data_property_value(obj, &marker_key)?
-      {
-        Some(Value::BigInt(b)) => Ok(Value::BigInt(b)),
-        _ => Err(VmError::Unimplemented(
-          "BigInt.prototype.valueOf on non-BigInt object",
-        )),
-      }
+  Ok(Value::BigInt(this_bigint_value(
+    vm,
+    scope,
+    this,
+    "BigInt.prototype.valueOf called on incompatible receiver",
+  )?))
+}
+
+/// `BigInt.prototype.toString` (ECMA-262).
+pub fn bigint_prototype_to_string(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let x = this_bigint_value(
+    vm,
+    scope,
+    this,
+    "BigInt.prototype.toString called on incompatible receiver",
+  )?;
+
+  let radix_val = args.get(0).copied().unwrap_or(Value::Undefined);
+  let radix_u32 = if matches!(radix_val, Value::Undefined) {
+    10
+  } else {
+    let intr = require_intrinsics(vm)?;
+    let mut radix = scope.to_number(vm, host, hooks, radix_val)?;
+    if radix.is_nan() {
+      radix = 0.0;
     }
-    _ => Err(VmError::Unimplemented(
-      "BigInt.prototype.valueOf on non-bigint",
-    )),
+    if !radix.is_finite() {
+      let err = crate::new_range_error(scope, intr, "Invalid radix")?;
+      return Err(VmError::Throw(err));
+    }
+    radix = radix.trunc();
+    if radix < 2.0 || radix > 36.0 {
+      let err = crate::new_range_error(scope, intr, "Invalid radix")?;
+      return Err(VmError::Throw(err));
+    }
+    radix as u32
+  };
+
+  if radix_u32 == 10 {
+    return Ok(Value::String(scope.alloc_string(&x.to_decimal_string())?));
   }
+
+  let s = bigint_to_string_radix(vm, scope, x, radix_u32)?;
+  Ok(Value::String(s))
+}
+
+/// `BigInt.prototype.toLocaleString` (placeholder).
+pub fn bigint_prototype_to_locale_string(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  bigint_prototype_to_string(vm, scope, host, hooks, callee, this, &[])
+}
+
+/// `BigInt.prototype[Symbol.toPrimitive]` (minimal).
+pub fn bigint_prototype_to_primitive(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  // The spec ignores the hint and returns the BigInt value.
+  Ok(Value::BigInt(this_bigint_value(
+    vm,
+    scope,
+    this,
+    "BigInt.prototype[@@toPrimitive] called on incompatible receiver",
+  )?))
 }
 
 /// `Symbol.prototype.valueOf` (minimal).

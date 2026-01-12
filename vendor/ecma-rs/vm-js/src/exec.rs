@@ -8497,7 +8497,7 @@ fn is_ecma_whitespace_unit(unit: u16) -> bool {
   ) || matches!(unit, 0x2000..=0x200A)
 }
 
-fn string_to_bigint(
+pub(crate) fn string_to_bigint(
   heap: &Heap,
   s: GcString,
   tick: &mut impl FnMut() -> Result<(), VmError>,
@@ -8659,7 +8659,7 @@ fn compare_positive_bigint_and_positive_number(bi: JsBigInt, n: f64) -> Ordering
   }
 }
 
-fn f64_to_bigint_integral(n: f64) -> Option<JsBigInt> {
+pub(crate) fn f64_to_bigint_integral(n: f64) -> Option<JsBigInt> {
   if !n.is_finite() {
     return None;
   }
