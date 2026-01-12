@@ -37,7 +37,7 @@ section in sync with `ls tests/*.rs`.
 
 | File | Type | Destination (new architecture) | Notes | Status |
 |---|---|---|---|---|
-| `tests/browser_integration_tests.rs` | integration (shim) | delete | Compatibility shim for `--test browser_integration_tests` (extra binary). Suite runs via `tests/integration.rs::browser_integration` (`--features browser_ui`). Removed to satisfy the [end-state invariant](#end-state-invariants-to-verify) <code>ls tests/*.rs &#124; wc -l == 2</code>. | DONE |
+| `tests/browser_integration_tests.rs` | integration (shim) | delete | Compatibility shim for the standalone `browser_integration_tests` test binary (extra binary). Run via `cargo test --features browser_ui --test integration browser_integration::...`. Removed to satisfy the [end-state invariant](#end-state-invariants-to-verify) <code>ls tests/*.rs &#124; wc -l == 2</code>. | DONE |
 | `tests/style_tests.rs` | integration (shim) | delete | Standalone harness for running style regressions via `--test style_tests`. Removed because it is an extra integration-test binary and relied on forbidden `#[path = "..."]` shims. Style regressions now run as lib unit tests under `src/style/tests/**`. | DONE |
 | `tests/accessibility_tests.rs` | integration | `tests/integration.rs::accessibility` | Top-level harness removed; suite now lives under `tests/accessibility/**` and uses `tests/common/accessibility`. | DONE |
 | `tests/bin_tests.rs` | integration | `tests/integration.rs::bin` | Top-level harness removed; suite now lives under `tests/bin/**`. | DONE |
