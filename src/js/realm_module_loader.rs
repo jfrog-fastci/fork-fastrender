@@ -3,9 +3,9 @@ use crate::js::import_maps::{
 };
 use crate::js::options::JsExecutionOptions;
 use crate::resource::{
-  cors_enforcement_enabled, ensure_cors_allows_origin, ensure_http_success,
-  ensure_script_mime_sane, origin_from_url, CorsMode, DocumentOrigin, FetchDestination,
-  FetchRequest, ResourceFetcher,
+  cors_enforcement_enabled, ensure_cors_allows_origin, ensure_http_success, ensure_script_mime_sane,
+  is_data_url, origin_from_url, CorsMode, DocumentOrigin, FetchDestination, FetchRequest,
+  ResourceFetcher,
 };
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -282,30 +282,40 @@ impl ModuleLoader {
       ));
     }
 
-    let Some(fetcher) = &self.fetcher else {
-      return Err(VmError::Unimplemented(MODULE_FETCHER_MISSING_ERROR));
-    };
-
     let remaining_total = self
       .max_module_graph_total_bytes
       .saturating_sub(self.loaded_bytes_total);
     let max_fetch = self.max_script_bytes.min(remaining_total);
     let max_fetch = max_fetch.saturating_add(1);
-    let mut req = FetchRequest::new(&key.url, FetchDestination::ScriptCors);
-    if let Some(referrer_url) = self.document_url.as_deref() {
-      req = req.with_referrer_url(referrer_url);
-    }
-    if let Some(origin) = self.document_origin.as_ref() {
-      req = req.with_client_origin(origin);
-    }
-    req = req.with_credentials_mode(self.cors_mode.credentials_mode());
 
-    let fetched = if self.max_script_bytes == usize::MAX && remaining_total == usize::MAX {
-      fetcher.fetch_with_request(req)
+    let fetched = if is_data_url(&key.url) {
+      // `data:` URL module scripts are fully self-contained and must not use the network fetcher.
+      //
+      // Decode only up to `max_fetch` so oversized inline payloads fail deterministically instead
+      // of attempting to allocate unbounded memory.
+      crate::resource::data_url::decode_data_url_prefix(&key.url, max_fetch)
+        .map_err(|_| VmError::TypeError(MODULE_FETCH_FAILED_TYPE_ERROR))?
     } else {
-      fetcher.fetch_partial_with_request(req, max_fetch)
-    }
-    .map_err(|_| VmError::TypeError(MODULE_FETCH_FAILED_TYPE_ERROR))?;
+      let Some(fetcher) = &self.fetcher else {
+        return Err(VmError::Unimplemented(MODULE_FETCHER_MISSING_ERROR));
+      };
+
+      let mut req = FetchRequest::new(&key.url, FetchDestination::ScriptCors);
+      if let Some(referrer_url) = self.document_url.as_deref() {
+        req = req.with_referrer_url(referrer_url);
+      }
+      if let Some(origin) = self.document_origin.as_ref() {
+        req = req.with_client_origin(origin);
+      }
+      req = req.with_credentials_mode(self.cors_mode.credentials_mode());
+
+      if self.max_script_bytes == usize::MAX && remaining_total == usize::MAX {
+        fetcher.fetch_with_request(req)
+      } else {
+        fetcher.fetch_partial_with_request(req, max_fetch)
+      }
+      .map_err(|_| VmError::TypeError(MODULE_FETCH_FAILED_TYPE_ERROR))?
+    };
 
     ensure_http_success(&fetched, &key.url)
       .and_then(|_| ensure_script_mime_sane(&fetched, &key.url))
@@ -617,10 +627,6 @@ impl ModuleLoader {
         ));
       }
 
-      let Some(fetcher) = &self.fetcher else {
-        return Err(VmError::Unimplemented(MODULE_FETCHER_MISSING_ERROR));
-      };
-
       let referrer_url = waiters.first().and_then(|waiter| match waiter.referrer {
         ModuleReferrer::Module(m) => self.module_id_to_url.get(&m).cloned(),
         ModuleReferrer::Realm(_) => self.document_url.clone(),
@@ -636,20 +642,32 @@ impl ModuleLoader {
         .saturating_sub(self.loaded_bytes_total);
       let max_fetch = self.max_script_bytes.min(remaining_total);
       let max_fetch = max_fetch.saturating_add(1);
-      let mut req = FetchRequest::new(&key.url, FetchDestination::ScriptCors);
-      if let Some(referrer_url) = referrer_url.as_deref() {
-        req = req.with_referrer_url(referrer_url);
-      }
-      if let Some(origin) = self.document_origin.as_ref() {
-        req = req.with_client_origin(origin);
-      }
-      req = req.with_credentials_mode(self.cors_mode.credentials_mode());
-      let fetched = if self.max_script_bytes == usize::MAX && remaining_total == usize::MAX {
-        fetcher.fetch_with_request(req)
+      let fetched = if is_data_url(&key.url) {
+        // Inline `data:` URL modules bypass the network fetcher. Decode with the same bounded
+        // prefix strategy used for `fetch_partial_with_request` so large payloads fail
+        // deterministically.
+        crate::resource::data_url::decode_data_url_prefix(&key.url, max_fetch)
+          .map_err(|_| VmError::TypeError(MODULE_FETCH_FAILED_TYPE_ERROR))?
       } else {
-        fetcher.fetch_partial_with_request(req, max_fetch)
-      }
-      .map_err(|_| VmError::TypeError(MODULE_FETCH_FAILED_TYPE_ERROR))?;
+        let Some(fetcher) = &self.fetcher else {
+          return Err(VmError::Unimplemented(MODULE_FETCHER_MISSING_ERROR));
+        };
+
+        let mut req = FetchRequest::new(&key.url, FetchDestination::ScriptCors);
+        if let Some(referrer_url) = referrer_url.as_deref() {
+          req = req.with_referrer_url(referrer_url);
+        }
+        if let Some(origin) = self.document_origin.as_ref() {
+          req = req.with_client_origin(origin);
+        }
+        req = req.with_credentials_mode(self.cors_mode.credentials_mode());
+        if self.max_script_bytes == usize::MAX && remaining_total == usize::MAX {
+          fetcher.fetch_with_request(req)
+        } else {
+          fetcher.fetch_partial_with_request(req, max_fetch)
+        }
+        .map_err(|_| VmError::TypeError(MODULE_FETCH_FAILED_TYPE_ERROR))?
+      };
 
       // Keep behavior aligned with classic script loading: avoid feeding obvious HTML error pages
       // into the module parser.

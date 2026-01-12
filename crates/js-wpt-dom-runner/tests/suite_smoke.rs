@@ -289,6 +289,37 @@ fn suite_dom_tests_pass() {
 
 #[test]
 #[cfg(feature = "vmjs")]
+fn suite_modules_tests_pass() {
+  let corpus_root = corpus_root();
+
+  let report = run_suite(&SuiteConfig {
+    wpt_root: corpus_root.clone(),
+    manifest_path: corpus_root.join("expectations.toml"),
+    shard: None,
+    filter: Some("modules/**".to_string()),
+    timeout: Duration::from_millis(500),
+    long_timeout: Duration::from_secs(2),
+    fail_on: FailOn::New,
+    backend: BackendSelection::VmJs,
+  })
+  .expect("run suite");
+
+  assert_eq!(report.summary.failed, 0, "modules suite should not fail");
+  assert_eq!(report.summary.timed_out, 0, "modules suite should not time out");
+  assert_eq!(report.summary.errored, 0, "modules suite should not error");
+  assert_eq!(report.summary.skipped, 0, "modules suite should not skip");
+  assert_eq!(
+    report.summary.total, report.summary.passed,
+    "all modules tests should pass: {report:#?}"
+  );
+  assert!(
+    report.summary.mismatches.is_none(),
+    "modules suite should have no mismatches: {report:#?}"
+  );
+}
+
+#[test]
+#[cfg(feature = "vmjs")]
 fn suite_filter_supports_comma_separated_globs() {
   let corpus_root = corpus_root();
 

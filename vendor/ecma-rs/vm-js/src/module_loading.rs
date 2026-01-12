@@ -387,10 +387,97 @@ impl GraphLoadingState {
             .reject(vm, &mut eval_scope, host_ctx, hooks, reason)?;
         }
         PromiseState::Pending => {
-          dynamic_import.state.teardown_roots(eval_scope.heap_mut());
-          return Err(VmError::Unimplemented(
-            "dynamic import: module evaluation returned a pending promise",
-          ));
+          // Top-level await: module evaluation is still pending.
+          //
+          // Per ECMA-262 `ContinueDynamicImport`, the `import()` promise should resolve once module
+          // evaluation completes. We implement this by attaching promise reactions to the module
+          // evaluation promise.
+          //
+          // Note: `ModuleGraph` restores `vm.module_graph_ptr` back to `prev_graph` *before* settling
+          // the evaluation promise, so these reactions cannot rely on `vm.module_graph_ptr` pointing
+          // at the correct graph. Capture the namespace object eagerly (it's available after linking).
+          let setup = (|| -> Result<(), VmError> {
+            let intr = vm.intrinsics().ok_or(VmError::Unimplemented(
+              "dynamic import requires intrinsics (create a Realm first)",
+            ))?;
+
+            let ns = modules.get_module_namespace(dynamic_import.module, vm, &mut eval_scope)?;
+            let ns_value = Value::Object(ns);
+
+            let cap = dynamic_import.state.0.borrow().promise_capability;
+            let resolve = cap.resolve;
+            let reject = cap.reject;
+
+            let on_fulfilled_call = vm.register_native_call(dynamic_import_eval_on_fulfilled)?;
+            let on_rejected_call = vm.register_native_call(dynamic_import_eval_on_rejected)?;
+
+            let on_fulfilled_name = eval_scope.alloc_string("dynamicImportEvalOnFulfilled")?;
+            eval_scope.push_root(Value::String(on_fulfilled_name))?;
+            let on_rejected_name = eval_scope.alloc_string("dynamicImportEvalOnRejected")?;
+            eval_scope.push_root(Value::String(on_rejected_name))?;
+
+            let on_fulfilled_slots = [resolve, ns_value];
+            let on_fulfilled = eval_scope.alloc_native_function_with_slots(
+              on_fulfilled_call,
+              None,
+              on_fulfilled_name,
+              1,
+              &on_fulfilled_slots,
+            )?;
+            eval_scope
+              .heap_mut()
+              .object_set_prototype(on_fulfilled, Some(intr.function_prototype()))?;
+            eval_scope
+              .heap_mut()
+              .set_function_realm(on_fulfilled, global_object)?;
+            eval_scope
+              .heap_mut()
+              .set_function_job_realm(on_fulfilled, realm_id)?;
+            eval_scope.push_root(Value::Object(on_fulfilled))?;
+
+            let on_rejected_slots = [reject];
+            let on_rejected = eval_scope.alloc_native_function_with_slots(
+              on_rejected_call,
+              None,
+              on_rejected_name,
+              1,
+              &on_rejected_slots,
+            )?;
+            eval_scope
+              .heap_mut()
+              .object_set_prototype(on_rejected, Some(intr.function_prototype()))?;
+            eval_scope
+              .heap_mut()
+              .set_function_realm(on_rejected, global_object)?;
+            eval_scope
+              .heap_mut()
+              .set_function_job_realm(on_rejected, realm_id)?;
+            eval_scope.push_root(Value::Object(on_rejected))?;
+
+            let _ = crate::promise_ops::perform_promise_then_with_host_and_hooks(
+              vm,
+              &mut eval_scope,
+              host_ctx,
+              hooks,
+              eval_promise,
+              Some(Value::Object(on_fulfilled)),
+              Some(Value::Object(on_rejected)),
+            )?;
+
+            Ok(())
+          })();
+
+          match setup {
+            Ok(()) => {
+              // The dynamic import promise capability no longer needs persistent roots once its
+              // resolving functions are captured by the evaluation promise reactions.
+              dynamic_import.state.teardown_roots(eval_scope.heap_mut());
+            }
+            Err(err) => {
+              dynamic_import.state.teardown_roots(eval_scope.heap_mut());
+              return Err(err);
+            }
+          }
         }
       }
     }
@@ -485,6 +572,52 @@ impl GraphLoadingState {
 struct DynamicImportContinuation {
   state: DynamicImportState,
   module: ModuleId,
+}
+
+fn dynamic_import_eval_on_fulfilled(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let slots = scope.heap().get_function_native_slots(callee)?;
+  if slots.len() != 2 {
+    return Err(VmError::InvariantViolation(
+      "dynamic import eval onFulfilled callback expected two native slots",
+    ));
+  }
+  let resolve = slots[0];
+  let ns = slots[1];
+  scope.push_root(resolve)?;
+  scope.push_root(ns)?;
+  let _ = vm.call_with_host_and_hooks(host, scope, hooks, resolve, Value::Undefined, &[ns])?;
+  Ok(Value::Undefined)
+}
+
+fn dynamic_import_eval_on_rejected(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let slots = scope.heap().get_function_native_slots(callee)?;
+  if slots.len() != 1 {
+    return Err(VmError::InvariantViolation(
+      "dynamic import eval onRejected callback expected one native slot",
+    ));
+  }
+  let reject = slots[0];
+  let reason = args.get(0).copied().unwrap_or(Value::Undefined);
+  scope.push_root(reject)?;
+  scope.push_root(reason)?;
+  let _ = vm.call_with_host_and_hooks(host, scope, hooks, reject, Value::Undefined, &[reason])?;
+  Ok(Value::Undefined)
 }
 
 #[derive(Debug)]
