@@ -134,6 +134,7 @@ pub struct ConformanceOptions {
   pub update_snapshots: bool,
   pub timeout: Duration,
   pub trace: bool,
+  pub trace_resolution: bool,
   pub profile: bool,
   pub profile_out: PathBuf,
   pub extensions: Vec<String>,
@@ -159,6 +160,7 @@ impl ConformanceOptions {
       update_snapshots: false,
       timeout: Duration::from_secs(10),
       trace: false,
+      trace_resolution: false,
       profile: false,
       profile_out: crate::DEFAULT_PROFILE_OUT.into(),
       extensions: Vec::new(),
@@ -285,6 +287,31 @@ pub struct EngineDiagnostics {
   pub error: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ResolutionTraceEntry {
+  pub from: String,
+  pub specifier: String,
+  #[serde(default)]
+  pub resolved: Option<String>,
+}
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct ResolutionTraceHandle {
+  inner: Arc<Mutex<Vec<ResolutionTraceEntry>>>,
+}
+
+impl ResolutionTraceHandle {
+  fn push(&self, entry: ResolutionTraceEntry) {
+    self.inner.lock().unwrap().push(entry);
+  }
+
+  pub(crate) fn sorted(&self) -> Vec<ResolutionTraceEntry> {
+    let mut entries = self.inner.lock().unwrap().clone();
+    entries.sort_by(|a, b| (&a.from, &a.specifier, &a.resolved).cmp(&(&b.from, &b.specifier, &b.resolved)));
+    entries
+  }
+}
+
 impl EngineDiagnostics {
   fn ok(mut diagnostics: Vec<NormalizedDiagnostic>) -> Self {
     sort_diagnostics(&mut diagnostics);
@@ -352,6 +379,10 @@ pub struct TestResult {
   pub options: TestOptions,
   #[serde(skip_serializing_if = "Option::is_none")]
   pub query_stats: Option<QueryStats>,
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  pub rust_resolution_trace: Option<Vec<ResolutionTraceEntry>>,
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  pub tsc_resolution_trace: Option<Vec<String>>,
   #[serde(default, skip_serializing_if = "Vec::is_empty")]
   pub notes: Vec<String>,
   #[serde(skip_serializing_if = "Option::is_none")]
@@ -698,6 +729,10 @@ pub fn run_conformance(opts: ConformanceOptions) -> Result<ConformanceReport> {
     summary.mismatches = Some(mismatch_summary);
   }
 
+  if opts.trace_resolution && !opts.json {
+    print_resolution_traces_for_mismatches(&results);
+  }
+
   let wall_time = wall_start.elapsed();
   if let Some(builder) = profile_builder {
     builder.write(&summary, wall_time, &opts.profile_out)?;
@@ -739,6 +774,8 @@ fn build_skipped_result(case: TestCase) -> TestResult {
     tsc: EngineDiagnostics::skipped(Some("skipped by manifest".into())),
     options: build_test_options(harness_options, rust_options, tsc_options),
     query_stats: None,
+    rust_resolution_trace: None,
+    tsc_resolution_trace: None,
     notes,
     detail: None,
     expectation: None,
@@ -787,6 +824,8 @@ fn build_load_error_result(case: TestCasePath, err: &crate::HarnessError) -> Tes
     tsc: EngineDiagnostics::skipped(Some("skipped: failed to load test input".to_string())),
     options: build_test_options(harness_options, rust_options, tsc_options),
     query_stats: None,
+    rust_resolution_trace: None,
+    tsc_resolution_trace: None,
     notes: Vec::new(),
     detail: None,
     expectation: None,
@@ -815,6 +854,8 @@ fn build_timeout_result(
     tsc: EngineDiagnostics::timeout(Some(format!("timed out after {}ms", timeout.as_millis()))),
     options: build_test_options(harness_options, rust_options, tsc_options),
     query_stats: None,
+    rust_resolution_trace: None,
+    tsc_resolution_trace: None,
     notes,
     detail: None,
     expectation: None,
@@ -1027,6 +1068,7 @@ fn run_single_case(
     tsc_available,
     snapshots,
     opts.span_tolerance,
+    opts.trace_resolution,
     opts.update_snapshots,
     opts.profile,
     total_start,
@@ -1043,6 +1085,7 @@ fn execute_case(
   tsc_available: bool,
   snapshots: &SnapshotStore,
   span_tolerance: u32,
+  trace_resolution: bool,
   update_snapshots: bool,
   collect_query_stats: bool,
   total_start: Instant,
@@ -1079,7 +1122,13 @@ fn execute_case(
 
   let rust_start = Instant::now();
   let compiler_options = harness_options.to_compiler_options();
-  let host = HarnessHost::new(file_set.clone(), compiler_options.clone());
+  let (host, rust_trace) = if trace_resolution {
+    let (host, trace) =
+      HarnessHost::new_with_resolution_trace(file_set.clone(), compiler_options.clone());
+    (host, Some(trace))
+  } else {
+    (HarnessHost::new(file_set.clone(), compiler_options.clone()), None)
+  };
   let roots = file_set.root_keys();
   let program = Arc::new(Program::new(host, roots));
   timeout_guard.set_program(Arc::clone(&program));
@@ -1097,7 +1146,10 @@ fn execute_case(
   if Instant::now() >= deadline {
     return build_timeout_result(id, path, harness_options, notes, timeout);
   }
-  let tsc_options = harness_options.to_tsc_options_map();
+  let mut tsc_options = harness_options.to_tsc_options_map();
+  if trace_resolution {
+    tsc_options.insert("traceResolution".to_string(), Value::Bool(true));
+  }
 
   let mut tsc_raw: Option<TscDiagnostics> = None;
   let mut tsc_ms: Option<u128> = None;
@@ -1172,6 +1224,18 @@ fn execute_case(
 
   let options = build_test_options(harness_options, compiler_options, tsc_options);
   let path_display = path.display().to_string();
+  let rust_resolution_trace = trace_resolution.then(|| {
+    rust_trace
+      .as_ref()
+      .expect("trace handle should exist when trace_resolution is enabled")
+      .sorted()
+  });
+  let tsc_resolution_trace = trace_resolution.then(|| {
+    tsc_raw
+      .as_ref()
+      .and_then(|raw| raw.resolution_trace.clone())
+      .unwrap_or_default()
+  });
 
   TestResult {
     id,
@@ -1185,6 +1249,8 @@ fn execute_case(
     tsc,
     options,
     query_stats,
+    rust_resolution_trace,
+    tsc_resolution_trace,
     notes,
     detail,
     expectation: None,
@@ -1641,6 +1707,7 @@ fn summarize(results: &[TestResult]) -> Summary {
 pub(crate) struct HarnessHost {
   files: HarnessFileSet,
   compiler_options: CompilerOptions,
+  resolution_trace: Option<ResolutionTraceHandle>,
 }
 
 impl HarnessHost {
@@ -1648,7 +1715,21 @@ impl HarnessHost {
     Self {
       files,
       compiler_options,
+      resolution_trace: None,
     }
+  }
+
+  pub(crate) fn new_with_resolution_trace(
+    files: HarnessFileSet,
+    compiler_options: CompilerOptions,
+  ) -> (Self, ResolutionTraceHandle) {
+    let trace = ResolutionTraceHandle::default();
+    let host = Self {
+      files,
+      compiler_options,
+      resolution_trace: Some(trace.clone()),
+    };
+    (host, trace)
   }
 }
 
@@ -1669,11 +1750,44 @@ impl Host for HarnessHost {
   }
 
   fn resolve(&self, from: &FileKey, specifier: &str) -> Option<FileKey> {
-    self.files.resolve_import(
+    let resolved = self.files.resolve_import(
       from,
       specifier,
       self.compiler_options.module_resolution.as_deref(),
-    )
+    );
+    if let Some(trace) = self.resolution_trace.as_ref() {
+      trace.push(ResolutionTraceEntry {
+        from: from.as_str().to_string(),
+        specifier: specifier.to_string(),
+        resolved: resolved.as_ref().map(|key| key.as_str().to_string()),
+      });
+    }
+    resolved
+  }
+}
+
+fn print_resolution_traces_for_mismatches(results: &[TestResult]) {
+  for result in results.iter().filter(|r| r.mismatched) {
+    let header = format!("resolution trace for {} ({})", result.id, result.path);
+    eprintln!("\n{header}");
+    eprintln!("{}", "-".repeat(header.len()));
+    if let Some(trace) = &result.rust_resolution_trace {
+      eprintln!("rust resolve trace:");
+      for entry in trace {
+        match &entry.resolved {
+          Some(resolved) => eprintln!("  {} + {:?} -> {}", entry.from, entry.specifier, resolved),
+          None => eprintln!("  {} + {:?} -> <unresolved>", entry.from, entry.specifier),
+        }
+      }
+    }
+    if let Some(trace) = &result.tsc_resolution_trace {
+      if !trace.is_empty() {
+        eprintln!("tsc --traceResolution output:");
+        for line in trace {
+          eprintln!("  {line}");
+        }
+      }
+    }
   }
 }
 
@@ -3039,6 +3153,7 @@ mod tests {
           category: None,
           message: None,
         }],
+        resolution_trace: None,
         crash: None,
         type_facts: None,
       };
@@ -3329,6 +3444,7 @@ echo '{"diagnostics":[]}'
       update_snapshots: false,
       timeout: Duration::from_secs(5),
       trace: false,
+      trace_resolution: false,
       profile: false,
       profile_out: crate::DEFAULT_PROFILE_OUT.into(),
       extensions: DEFAULT_EXTENSIONS.iter().map(|s| s.to_string()).collect(),
@@ -3402,6 +3518,7 @@ echo '{"diagnostics":[]}'
       update_snapshots: false,
       timeout: Duration::from_secs(6),
       trace: false,
+      trace_resolution: false,
       profile: false,
       profile_out: crate::DEFAULT_PROFILE_OUT.into(),
       extensions: DEFAULT_EXTENSIONS.iter().map(|s| s.to_string()).collect(),

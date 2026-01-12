@@ -472,28 +472,119 @@ function createInMemoryHost(files, options) {
   return host;
 }
 
+function createTraceCollector() {
+  const lines = [];
+  let buffer = "";
+
+  function pushLine(line) {
+    const normalized = line.replace(/\r$/, "");
+    if (normalized.trim().length === 0) {
+      return;
+    }
+    lines.push(normalized);
+  }
+
+  function write(chunk) {
+    buffer += String(chunk ?? "");
+    // Split on `\n` but keep any remainder buffered so we correctly handle
+    // partial writes (ts.sys.write can write without trailing newlines).
+    while (true) {
+      const index = buffer.indexOf("\n");
+      if (index === -1) {
+        break;
+      }
+      const line = buffer.slice(0, index);
+      buffer = buffer.slice(index + 1);
+      pushLine(line);
+    }
+  }
+
+  function finalize() {
+    if (buffer.length > 0) {
+      pushLine(buffer);
+      buffer = "";
+    }
+  }
+
+  return { write, finalize, lines };
+}
+
 function runRequest(request) {
   const { options, errors: optionErrors } = parseOptions(request.options);
   const rootNames = (request.rootNames ?? []).map(toAbsolute);
   const host = createInMemoryHost(request.files ?? {}, options);
-  const program = ts.createProgram({ rootNames, options, host });
-  const diagnostics = [...optionErrors, ...ts.getPreEmitDiagnostics(program)];
   const diagnosticsOnly = request.diagnosticsOnly === true || request.diagnostics_only === true;
+  const traceResolution = options.traceResolution === true;
 
+  let program;
+  let diagnostics;
   let typeFacts = null;
-  if (!diagnosticsOnly) {
-    const providedMarkers =
-      (request.type_queries && request.type_queries.length
-        ? request.type_queries
-        : request.typeQueries && request.typeQueries.length
-          ? request.typeQueries
-          : null) ?? null;
-    const markers =
-      providedMarkers && providedMarkers.length
-        ? providedMarkers
-        : collectTypeQueries(request.files);
-    const checker = program.getTypeChecker();
-    typeFacts = collectTypeFacts(program, checker, markers, request.files ?? {});
+  let resolutionTrace = null;
+
+  if (traceResolution) {
+    const trace = createTraceCollector();
+    const originalSysWrite = ts.sys.write;
+    const originalHostTrace = host.trace;
+    const originalConsoleLog = console.log;
+    const originalConsoleError = console.error;
+    const originalConsoleInfo = console.info;
+    const originalConsoleWarn = console.warn;
+
+    const writeLine = (...args) => trace.write(`${args.map(String).join(" ")}\n`);
+
+    ts.sys.write = trace.write;
+    host.trace = trace.write;
+    console.log = writeLine;
+    console.error = writeLine;
+    console.info = writeLine;
+    console.warn = writeLine;
+
+    try {
+      program = ts.createProgram({ rootNames, options, host });
+      diagnostics = [...optionErrors, ...ts.getPreEmitDiagnostics(program)];
+
+      if (!diagnosticsOnly) {
+        const providedMarkers =
+          (request.type_queries && request.type_queries.length
+            ? request.type_queries
+            : request.typeQueries && request.typeQueries.length
+              ? request.typeQueries
+              : null) ?? null;
+        const markers =
+          providedMarkers && providedMarkers.length
+            ? providedMarkers
+            : collectTypeQueries(request.files);
+        const checker = program.getTypeChecker();
+        typeFacts = collectTypeFacts(program, checker, markers, request.files ?? {});
+      }
+    } finally {
+      trace.finalize();
+      resolutionTrace = trace.lines;
+      ts.sys.write = originalSysWrite;
+      host.trace = originalHostTrace;
+      console.log = originalConsoleLog;
+      console.error = originalConsoleError;
+      console.info = originalConsoleInfo;
+      console.warn = originalConsoleWarn;
+    }
+  } else {
+    program = ts.createProgram({ rootNames, options, host });
+    diagnostics = [...optionErrors, ...ts.getPreEmitDiagnostics(program)];
+
+    if (!diagnosticsOnly) {
+      const providedMarkers =
+        (request.type_queries && request.type_queries.length
+          ? request.type_queries
+          : request.typeQueries && request.typeQueries.length
+            ? request.typeQueries
+            : null) ?? null;
+      const markers =
+        providedMarkers && providedMarkers.length
+          ? providedMarkers
+          : collectTypeQueries(request.files);
+      const checker = program.getTypeChecker();
+      typeFacts = collectTypeFacts(program, checker, markers, request.files ?? {});
+    }
   }
 
   const response = {
@@ -504,6 +595,9 @@ function runRequest(request) {
     },
     diagnostics: serializeDiagnostics(diagnostics),
   };
+  if (traceResolution) {
+    response.resolutionTrace = resolutionTrace ?? [];
+  }
   if (typeFacts) {
     response.type_facts = typeFacts;
   }

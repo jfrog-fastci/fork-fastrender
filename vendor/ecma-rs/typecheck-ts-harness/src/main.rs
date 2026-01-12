@@ -107,6 +107,10 @@ enum Commands {
     #[arg(long)]
     trace: bool,
 
+    /// Capture module resolution traces from both tsc (`--traceResolution`) and the Rust host resolver.
+    #[arg(long)]
+    trace_resolution: bool,
+
     /// Enable profiling output (passthrough)
     #[arg(long)]
     profile: bool,
@@ -250,6 +254,7 @@ fn main() -> ExitCode {
       span_tolerance,
       timeout_secs,
       trace,
+      trace_resolution,
       profile,
       profile_out,
       root,
@@ -291,6 +296,7 @@ fn main() -> ExitCode {
       options.update_snapshots = update_snapshots;
       options.timeout = Duration::from_secs(timeout_secs);
       options.trace = trace;
+      options.trace_resolution = trace_resolution;
       options.profile = profile;
       options.profile_out = profile_out;
       options.compare = compare.into();

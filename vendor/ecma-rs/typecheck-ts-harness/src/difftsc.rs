@@ -10,7 +10,7 @@ use crate::multifile::{is_normalized_virtual_path, normalize_name_cow, normalize
 use crate::read_utf8_file;
 use crate::runner::{
   build_tsc_request, is_source_root, EngineDiagnostics, EngineStatus, ExpectationOutcome,
-  HarnessFileSet, HarnessHost, TimeoutManager, TscPoolError, TscRunnerPool,
+  HarnessFileSet, HarnessHost, ResolutionTraceEntry, TimeoutManager, TscPoolError, TscRunnerPool,
 };
 use crate::tsc::{
   node_available, ExportTypeFact, TscDiagnostics, TypeAtFact, TypeFacts, TypeQuery,
@@ -85,6 +85,10 @@ pub struct DifftscArgs {
   /// Print the raw tsc response for mismatched cases.
   #[arg(long)]
   pub print_tsc: bool,
+
+  /// Capture module resolution traces from both tsc (`--traceResolution`) and the Rust host resolver.
+  #[arg(long)]
+  pub trace_resolution: bool,
 
   /// Path to the Node.js executable.
   #[arg(long, default_value = "node")]
@@ -273,6 +277,10 @@ struct CaseReport {
   harness_options: Option<HarnessOptions>,
   #[serde(skip_serializing_if = "Option::is_none")]
   tsc_options: Option<Map<String, Value>>,
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  rust_resolution_trace: Option<Vec<ResolutionTraceEntry>>,
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  tsc_resolution_trace: Option<Vec<String>>,
   #[serde(skip_serializing_if = "Option::is_none")]
   expected: Option<Vec<NormalizedDiagnostic>>,
   #[serde(skip_serializing_if = "Option::is_none")]
@@ -434,17 +442,19 @@ fn run_impl(args: DifftscArgs) -> Result<CommandStatus> {
       .map(|test| {
         let expectation = expectations.lookup(&test.id);
         let report = if expectation.expectation.kind == ExpectationKind::Skip {
-          CaseReport {
-            name: test.case.name.clone(),
-            status: CaseStatus::Skipped,
-            expectation: None,
-            harness_options: None,
-            tsc_options: None,
-            expected: None,
-            actual: None,
-            diff: None,
-            expected_types: None,
-            actual_types: None,
+           CaseReport {
+             name: test.case.name.clone(),
+             status: CaseStatus::Skipped,
+             expectation: None,
+             harness_options: None,
+             tsc_options: None,
+             rust_resolution_trace: None,
+             tsc_resolution_trace: None,
+             expected: None,
+             actual: None,
+             diff: None,
+             expected_types: None,
+             actual_types: None,
             type_diff: None,
             report: None,
             notes: vec!["skipped by manifest".to_string()],
@@ -520,7 +530,7 @@ fn run_impl(args: DifftscArgs) -> Result<CommandStatus> {
     .context("serialize JSON output")?;
     writeln!(handle).context("write JSON output")?;
   } else {
-    print_human_summary(&suite_name, &summary, &results);
+    print_human_summary(&suite_name, &summary, &results, args.trace_resolution);
   }
 
   let should_fail = if args.fail_on != FailOn::None && summary.xpass > 0 {
@@ -559,7 +569,12 @@ fn summarize(results: &[CaseReport]) -> Summary {
   summary
 }
 
-fn print_human_summary(suite: &str, summary: &Summary, results: &[CaseReport]) {
+fn print_human_summary(
+  suite: &str,
+  summary: &Summary,
+  results: &[CaseReport],
+  trace_resolution: bool,
+) {
   println!(
     "difftsc: suite `{suite}` — total={}, matched={}, mismatched={}, updated={}, errors={}, skipped={}, xpass={}",
     summary.total,
@@ -617,6 +632,27 @@ fn print_human_summary(suite: &str, summary: &Summary, results: &[CaseReport]) {
     if let Some(report) = &case.report {
       eprintln!("{report}");
     }
+    if trace_resolution {
+      if let Some(trace) = &case.rust_resolution_trace {
+        eprintln!("  rust resolve trace:");
+        for entry in trace {
+          match &entry.resolved {
+            Some(resolved) => {
+              eprintln!("    {} + {:?} -> {}", entry.from, entry.specifier, resolved)
+            }
+            None => eprintln!("    {} + {:?} -> <unresolved>", entry.from, entry.specifier),
+          }
+        }
+      }
+      if let Some(trace) = &case.tsc_resolution_trace {
+        if !trace.is_empty() {
+          eprintln!("  tsc --traceResolution output:");
+          for line in trace {
+            eprintln!("    {line}");
+          }
+        }
+      }
+    }
   }
 }
 
@@ -671,7 +707,10 @@ fn run_single_test(
   let parsed = harness_options_from_files(&test.files);
   let mut notes = parsed.notes;
   let harness_options = parsed.options;
-  let tsc_options = harness_options.to_tsc_options_map();
+  let mut tsc_options = harness_options.to_tsc_options_map();
+  if args.trace_resolution {
+    tsc_options.insert("traceResolution".to_string(), Value::Bool(true));
+  }
   let file_set = HarnessFileSet::new(&test.files);
 
   if Instant::now() >= deadline {
@@ -682,6 +721,8 @@ fn run_single_test(
       expectation: None,
       harness_options: Some(harness_options),
       tsc_options: Some(tsc_options),
+      rust_resolution_trace: None,
+      tsc_resolution_trace: None,
       expected: None,
       actual: None,
       diff: None,
@@ -702,6 +743,8 @@ fn run_single_test(
         expectation: None,
         harness_options: Some(harness_options),
         tsc_options: Some(tsc_options),
+        rust_resolution_trace: None,
+        tsc_resolution_trace: None,
         expected: None,
         actual: None,
         diff: None,
@@ -724,6 +767,8 @@ fn run_single_test(
           expectation: None,
           harness_options: Some(harness_options),
           tsc_options: Some(tsc_options),
+          rust_resolution_trace: None,
+          tsc_resolution_trace: None,
           expected: None,
           actual: None,
           diff: None,
@@ -742,6 +787,8 @@ fn run_single_test(
           expectation: None,
           harness_options: Some(harness_options),
           tsc_options: Some(tsc_options),
+          rust_resolution_trace: None,
+          tsc_resolution_trace: None,
           expected: None,
           actual: None,
           diff: None,
@@ -756,6 +803,12 @@ fn run_single_test(
   } else {
     None
   };
+  let live_tsc_resolution_trace = args.trace_resolution.then(|| {
+    live_tsc
+      .as_ref()
+      .and_then(|diags| diags.resolution_trace.clone())
+      .unwrap_or_default()
+  });
 
   if args.update_baselines {
     if let Some(tsc) = &live_tsc {
@@ -767,6 +820,8 @@ fn run_single_test(
           expectation: None,
           harness_options: Some(harness_options),
           tsc_options: Some(tsc_options),
+          rust_resolution_trace: None,
+          tsc_resolution_trace: live_tsc_resolution_trace.clone(),
           expected: None,
           actual: None,
           diff: None,
@@ -788,6 +843,8 @@ fn run_single_test(
         expectation: None,
         harness_options: Some(harness_options),
         tsc_options: Some(tsc_options),
+        rust_resolution_trace: None,
+        tsc_resolution_trace: live_tsc_resolution_trace.clone(),
         expected: None,
         actual: None,
         diff: None,
@@ -809,6 +866,8 @@ fn run_single_test(
           expectation: None,
           harness_options: Some(harness_options),
           tsc_options: Some(tsc_options),
+          rust_resolution_trace: None,
+          tsc_resolution_trace: live_tsc_resolution_trace.clone(),
           expected: None,
           actual: None,
           diff: None,
@@ -853,6 +912,8 @@ fn run_single_test(
       expectation: None,
       harness_options: Some(harness_options),
       tsc_options: Some(tsc_options),
+      rust_resolution_trace: None,
+      tsc_resolution_trace: live_tsc_resolution_trace.clone(),
       expected: Some(expected),
       actual: Some(actual),
       expected_types: (!expected_types.is_empty()).then_some(expected_types),
@@ -877,6 +938,8 @@ fn run_single_test(
           expectation: None,
           harness_options: Some(harness_options),
           tsc_options: Some(tsc_options),
+          rust_resolution_trace: None,
+          tsc_resolution_trace: live_tsc_resolution_trace.clone(),
           expected: None,
           actual: None,
           diff: None,
@@ -893,6 +956,12 @@ fn run_single_test(
     &tsc_options,
     &tsc_diags.metadata.options,
   ));
+  let tsc_resolution_trace = args.trace_resolution.then(|| {
+    tsc_diags
+      .resolution_trace
+      .clone()
+      .unwrap_or_default()
+  });
 
   let mut expected = normalize_tsc_diagnostics_with_options(&tsc_diags.diagnostics, normalization);
   sort_diagnostics(&mut expected);
@@ -913,6 +982,8 @@ fn run_single_test(
       expectation: None,
       harness_options: Some(harness_options),
       tsc_options: Some(tsc_options),
+      rust_resolution_trace: None,
+      tsc_resolution_trace: tsc_resolution_trace.clone(),
       expected: Some(expected),
       actual: None,
       diff: None,
@@ -926,12 +997,23 @@ fn run_single_test(
 
   let timeout_guard = timeout_manager.register(deadline);
   let compiler_options = harness_options.to_compiler_options();
-  let host = HarnessHost::new(file_set.clone(), compiler_options);
+  let (host, rust_trace) = if args.trace_resolution {
+    let (host, trace) = HarnessHost::new_with_resolution_trace(file_set.clone(), compiler_options);
+    (host, Some(trace))
+  } else {
+    (HarnessHost::new(file_set.clone(), compiler_options), None)
+  };
   let roots = file_set.root_keys();
   let program = Arc::new(Program::new(host, roots));
   timeout_guard.set_program(Arc::clone(&program));
 
   let rust = run_rust_check(&program, &file_set, timeout);
+  let rust_resolution_trace = args.trace_resolution.then(|| {
+    rust_trace
+      .as_ref()
+      .expect("trace handle should exist when --trace-resolution is enabled")
+      .sorted()
+  });
 
   if rust.status == EngineStatus::Timeout || Instant::now() >= deadline {
     notes.push(format!("timed out after {}ms", timeout.as_millis()));
@@ -941,6 +1023,8 @@ fn run_single_test(
       expectation: None,
       harness_options: Some(harness_options),
       tsc_options: Some(tsc_options),
+      rust_resolution_trace,
+      tsc_resolution_trace: tsc_resolution_trace.clone(),
       expected: Some(expected),
       actual: None,
       diff: None,
@@ -960,6 +1044,8 @@ fn run_single_test(
       expectation: None,
       harness_options: Some(harness_options),
       tsc_options: Some(tsc_options),
+      rust_resolution_trace,
+      tsc_resolution_trace: tsc_resolution_trace.clone(),
       expected: Some(expected),
       actual: None,
       expected_types: (!expected_types.is_empty()).then_some(expected_types),
@@ -989,6 +1075,8 @@ fn run_single_test(
           expectation: None,
           harness_options: Some(harness_options),
           tsc_options: Some(tsc_options),
+          rust_resolution_trace,
+          tsc_resolution_trace: tsc_resolution_trace.clone(),
           expected: Some(expected),
           actual: None,
           diff: None,
@@ -1012,6 +1100,8 @@ fn run_single_test(
       expectation: None,
       harness_options: Some(harness_options),
       tsc_options: Some(tsc_options),
+      rust_resolution_trace,
+      tsc_resolution_trace: tsc_resolution_trace.clone(),
       expected: Some(expected),
       actual: None,
       diff: None,
@@ -1046,6 +1136,8 @@ fn run_single_test(
     expectation: None,
     harness_options: Some(harness_options),
     tsc_options: Some(tsc_options),
+    rust_resolution_trace,
+    tsc_resolution_trace,
     expected: Some(expected),
     actual: Some(actual),
     expected_types: (!expected_types.is_empty()).then_some(expected_types),
@@ -2344,6 +2436,8 @@ mod tests {
       }),
       harness_options: None,
       tsc_options: None,
+      rust_resolution_trace: None,
+      tsc_resolution_trace: None,
       expected: None,
       actual: None,
       diff: None,
@@ -2774,6 +2868,7 @@ span mismatches:
           message: None,
         },
       ],
+      resolution_trace: None,
       crash: None,
       type_facts: Some(TypeFacts {
         exports: vec![

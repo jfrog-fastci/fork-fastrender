@@ -77,6 +77,8 @@ pub struct TscDiagnostics {
   #[serde(default)]
   pub metadata: TscMetadata,
   pub diagnostics: Vec<TscDiagnostic>,
+  #[serde(default, alias = "resolutionTrace", skip_serializing_if = "Option::is_none")]
+  pub resolution_trace: Option<Vec<String>>,
   #[serde(default, skip_serializing_if = "Option::is_none")]
   pub crash: Option<TscCrash>,
   #[serde(default, alias = "typeFacts", skip_serializing_if = "Option::is_none")]
@@ -86,6 +88,7 @@ pub struct TscDiagnostics {
 impl TscDiagnostics {
   pub(crate) fn canonicalize_for_baseline(&mut self) {
     self.schema_version = Some(TSC_BASELINE_SCHEMA_VERSION);
+    self.resolution_trace = None;
     if self.metadata.bundled_typescript_version.is_none() {
       if let Some(version) = typecheck_ts::lib_support::bundled_typescript_version() {
         self.metadata.bundled_typescript_version = Some(version.to_string());
