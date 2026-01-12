@@ -2,12 +2,12 @@
 //!
 //! FastRender's generic WebIDL infrastructure is vendored in `vendor/ecma-rs/` (see
 //! `instructions/webidl_consolidation.md`). The pre-consolidation, workspace-local WebIDL crates
-//! under `crates/` must not be reintroduced:
+//! under `crates/` must not be reintroduced (these were moved into `vendor/ecma-rs/`):
 //!
-//! - `crates/webidl-ir`
-//! - `crates/webidl-bindings-core`
-//! - `crates/webidl-vm-js`
-//! - `crates/webidl-js-runtime`
+//! - `webidl-ir`
+//! - `webidl-bindings-core`
+//! - `webidl-vm-js`
+//! - `webidl-js-runtime`
 
 use std::fs;
 use std::path::{Path, PathBuf};
