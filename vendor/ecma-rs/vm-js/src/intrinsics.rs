@@ -713,6 +713,7 @@ impl Intrinsics {
     let array_prototype_unshift = vm.register_native_call(builtins::array_prototype_unshift)?;
     let array_prototype_splice = vm.register_native_call(builtins::array_prototype_splice)?;
     let array_is_array = vm.register_native_call(builtins::array_is_array)?;
+    let array_constructor_from = vm.register_native_call(builtins::array_constructor_from)?;
     let array_prototype_keys = vm.register_native_call(builtins::array_prototype_keys)?;
     let array_prototype_entries = vm.register_native_call(builtins::array_prototype_entries)?;
     let array_prototype_values = vm.register_native_call(builtins::array_prototype_values)?;
@@ -1335,6 +1336,23 @@ impl Intrinsics {
       scope.push_root(Value::String(is_array_s))?;
       let key = PropertyKey::from_string(is_array_s);
       let func = scope.alloc_native_function(array_is_array, None, is_array_s, 1)?;
+      scope.push_root(Value::Object(func))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(func, Some(function_prototype))?;
+      scope.define_property(
+        array_constructor,
+        key,
+        data_desc(Value::Object(func), true, false, true),
+      )?;
+    }
+
+    // Array.from
+    {
+      let from_s = scope.alloc_string("from")?;
+      scope.push_root(Value::String(from_s))?;
+      let key = PropertyKey::from_string(from_s);
+      let func = scope.alloc_native_function(array_constructor_from, None, from_s, 1)?;
       scope.push_root(Value::Object(func))?;
       scope
         .heap_mut()

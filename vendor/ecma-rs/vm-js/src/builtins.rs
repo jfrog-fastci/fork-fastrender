@@ -1573,6 +1573,161 @@ pub fn array_is_array(
   Ok(Value::Bool(is_array))
 }
 
+/// `Array.from(items, mapFn?, thisArg?)` (partial).
+///
+/// This is implemented primarily to support iterator consumption with correct Proxy semantics:
+/// - `GetMethod(items, @@iterator)` to select iterable vs array-like
+/// - `Get` for `"length"` and element keys using internal-method dispatch
+///
+/// Spec: <https://tc39.es/ecma262/#sec-array.from>
+pub fn array_constructor_from(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let mut scope = scope.reborrow();
+
+  let items = args.get(0).copied().unwrap_or(Value::Undefined);
+  scope.push_root(items)?;
+
+  // Optional mapping function.
+  let mapfn = args.get(1).copied().unwrap_or(Value::Undefined);
+  let mapping = !matches!(mapfn, Value::Undefined);
+  if mapping && !scope.heap().is_callable(mapfn)? {
+    return Err(VmError::TypeError("Array.from mapfn is not callable"));
+  }
+  if mapping {
+    scope.push_root(mapfn)?;
+  }
+  let this_arg = args.get(2).copied().unwrap_or(Value::Undefined);
+  if mapping {
+    scope.push_root(this_arg)?;
+  }
+
+  // `usingIterator = ? GetMethod(items, @@iterator)`.
+  let intr = require_intrinsics(vm)?;
+  let iterator_sym = intr.well_known_symbols().iterator;
+  let using_iterator = crate::spec_ops::get_method_with_host_and_hooks(
+    vm,
+    &mut scope,
+    host,
+    hooks,
+    items,
+    PropertyKey::from_symbol(iterator_sym),
+  )?;
+
+  // If `items` is iterable, follow the iterator protocol.
+  if let Some(method) = using_iterator {
+    scope.push_root(method)?;
+
+    let out = create_array_object(vm, &mut scope, 0)?;
+    scope.push_root(Value::Object(out))?;
+
+    let mut iterator_record =
+      crate::iterator::get_iterator_from_method(vm, host, hooks, &mut scope, items, method)?;
+    scope.push_roots(&[iterator_record.iterator, iterator_record.next_method])?;
+
+    let result: Result<Value, VmError> = (|| {
+      let mut k: usize = 0;
+      loop {
+        if k % 1024 == 0 {
+          vm.tick()?;
+        }
+
+        let next_value =
+          crate::iterator::iterator_step_value(vm, host, hooks, &mut scope, &mut iterator_record)?;
+        let Some(next_value) = next_value else {
+          return Ok(Value::Object(out));
+        };
+
+        // Use a nested scope so per-iteration roots do not accumulate.
+        let mut step_scope = scope.reborrow();
+        step_scope.push_root(next_value)?;
+
+        let mut mapped = next_value;
+        if mapping {
+          let args = [next_value, Value::Number(k as f64)];
+          mapped = vm.call_with_host_and_hooks(host, &mut step_scope, hooks, mapfn, this_arg, &args)?;
+        }
+        step_scope.push_root(mapped)?;
+
+        let idx_s = alloc_string_from_usize(&mut step_scope, k)?;
+        step_scope.push_root(Value::String(idx_s))?;
+        let idx_key = PropertyKey::from_string(idx_s);
+        step_scope.create_data_property_or_throw(out, idx_key, mapped)?;
+
+        k = k.checked_add(1).ok_or(VmError::OutOfMemory)?;
+      }
+    })();
+
+    match result {
+      Ok(v) => Ok(v),
+      Err(err) => {
+        // IteratorClose on abrupt completion, matching other iterator-consuming builtins.
+        if !iterator_record.done {
+          // If iterator close throws, it overrides the original error (ECMA-262 `IteratorClose`),
+          // but it must not replace VM-internal fatal errors (termination, OOM, etc).
+          let original_is_throw = err.is_throw_completion();
+          let pending_root = err
+            .thrown_value()
+            .map(|v| scope.heap_mut().add_root(v))
+            .transpose()?;
+          let close_res = crate::iterator::iterator_close(vm, host, hooks, &mut scope, &iterator_record);
+          if let Some(root) = pending_root {
+            scope.heap_mut().remove_root(root);
+          }
+          if let Err(close_err) = close_res {
+            if original_is_throw {
+              return Err(close_err);
+            }
+          }
+        }
+        Err(err)
+      }
+    }
+  } else {
+    // Array-like path: `obj = ToObject(items)` then `len = ToLength(Get(obj, "length"))`.
+    let obj = scope.to_object(vm, host, hooks, items)?;
+    scope.push_root(Value::Object(obj))?;
+
+    let out = create_array_object(vm, &mut scope, 0)?;
+    scope.push_root(Value::Object(out))?;
+
+    let length_key = string_key(&mut scope, "length")?;
+    let len_value = scope.get_with_host_and_hooks(vm, host, hooks, obj, length_key, Value::Object(obj))?;
+    let len = scope.to_length(vm, host, hooks, len_value)?;
+
+    for k in 0..len {
+      if k % 1024 == 0 {
+        vm.tick()?;
+      }
+
+      // Use a nested scope so per-iteration roots do not accumulate.
+      let mut step_scope = scope.reborrow();
+
+      let idx_s = alloc_string_from_usize(&mut step_scope, k)?;
+      step_scope.push_root(Value::String(idx_s))?;
+      let idx_key = PropertyKey::from_string(idx_s);
+
+      let value = step_scope.get_with_host_and_hooks(vm, host, hooks, obj, idx_key, Value::Object(obj))?;
+      step_scope.push_root(value)?;
+
+      let mut mapped = value;
+      if mapping {
+        let args = [value, Value::Number(k as f64)];
+        mapped = vm.call_with_host_and_hooks(host, &mut step_scope, hooks, mapfn, this_arg, &args)?;
+      }
+      step_scope.create_data_property_or_throw(out, idx_key, mapped)?;
+    }
+
+    Ok(Value::Object(out))
+  }
+}
+
 pub fn array_constructor_construct(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -9435,15 +9590,13 @@ enum ArrayIteratorKind {
 fn create_array_iterator_with_kind(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   this: Value,
   kind: ArrayIteratorKind,
-  non_object_message: &'static str,
 ) -> Result<Value, VmError> {
   let intr = require_intrinsics(vm)?;
-  let this_obj = match this {
-    Value::Object(o) => o,
-    _ => return Err(VmError::TypeError(non_object_message)),
-  };
+  let this_obj = scope.to_object(vm, host, hooks, this)?;
 
   // Root `this` while allocating/defining properties on the iterator object.
   let mut scope = scope.reborrow();
@@ -9485,8 +9638,8 @@ fn create_array_iterator_with_kind(
 pub fn array_prototype_values(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   this: Value,
   _args: &[Value],
@@ -9494,9 +9647,10 @@ pub fn array_prototype_values(
   create_array_iterator_with_kind(
     vm,
     scope,
+    host,
+    hooks,
     this,
     ArrayIteratorKind::Values,
-    "Array.prototype.values called on non-object",
   )
 }
 
@@ -9504,8 +9658,8 @@ pub fn array_prototype_values(
 pub fn array_prototype_keys(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   this: Value,
   _args: &[Value],
@@ -9513,9 +9667,10 @@ pub fn array_prototype_keys(
   create_array_iterator_with_kind(
     vm,
     scope,
+    host,
+    hooks,
     this,
     ArrayIteratorKind::Keys,
-    "Array.prototype.keys called on non-object",
   )
 }
 
@@ -9523,8 +9678,8 @@ pub fn array_prototype_keys(
 pub fn array_prototype_entries(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   this: Value,
   _args: &[Value],
@@ -9532,9 +9687,10 @@ pub fn array_prototype_entries(
   create_array_iterator_with_kind(
     vm,
     scope,
+    host,
+    hooks,
     this,
     ArrayIteratorKind::Entries,
-    "Array.prototype.entries called on non-object",
   )
 }
 
@@ -9624,7 +9780,17 @@ pub fn array_iterator_next(
     _ => return Err(VmError::TypeError("Array iterator internal kind is not a number")),
   };
 
-  let len = get_array_length(vm, &mut scope, host, hooks, array_obj)?;
+  // LengthOfArrayLike: `ToLength(Get(obj, "length"))`.
+  let length_key = string_key(&mut scope, "length")?;
+  let len_value = scope.get_with_host_and_hooks(
+    vm,
+    host,
+    hooks,
+    array_obj,
+    length_key,
+    Value::Object(array_obj),
+  )?;
+  let len = scope.to_length(vm, host, hooks, len_value)?;
   if idx >= len {
     // End-of-iteration: clear `[[IteratedObject]]` so the underlying array can be collected if this
     // iterator is retained.
@@ -9646,19 +9812,20 @@ pub fn array_iterator_next(
     return Ok(Value::Object(out));
   }
 
-  // Update `[[ArrayIteratorNextIndex]]`.
-  let next_idx = idx.saturating_add(1);
-  scope.define_property(
-    this_obj,
-    index_key,
-    data_desc(Value::Number(next_idx as f64), true, false, true),
-  )?;
-
   let out_value = match kind {
-    ArrayIteratorKind::Keys => Value::Number(idx as f64),
+    ArrayIteratorKind::Keys => {
+      // Update `[[ArrayIteratorNextIndex]]`.
+      let next_idx = idx.saturating_add(1);
+      scope.define_property(
+        this_obj,
+        index_key,
+        data_desc(Value::Number(next_idx as f64), true, false, true),
+      )?;
+      Value::Number(idx as f64)
+    }
     ArrayIteratorKind::Values | ArrayIteratorKind::Entries => {
-      // Root `array_obj` and the index string across allocation for the property key.
-      let idx_s = scope.alloc_string(&idx.to_string())?;
+      // `value = Get(iteratedObject, ToString(nextIndex))` (Proxy-aware).
+      let idx_s = alloc_string_from_usize(&mut scope, idx)?;
       scope.push_root(Value::String(idx_s))?;
       let key = PropertyKey::from_string(idx_s);
       let value =
@@ -9666,6 +9833,15 @@ pub fn array_iterator_next(
       // Root the retrieved value across subsequent allocations/GC. This matters in particular for
       // accessors that return freshly allocated objects/strings.
       scope.push_root(value)?;
+
+      // Update `[[ArrayIteratorNextIndex]]` *after* `Get`, matching the spec order and ensuring
+      // re-entrancy observes the previous index.
+      let next_idx = idx.saturating_add(1);
+      scope.define_property(
+        this_obj,
+        index_key,
+        data_desc(Value::Number(next_idx as f64), true, false, true),
+      )?;
 
       match kind {
         ArrayIteratorKind::Values => value,
