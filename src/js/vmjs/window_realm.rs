@@ -20437,6 +20437,9 @@ fn element_inner_html_set_native(
     return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
   }
 
+  sync_cached_child_nodes_for_wrapper(vm, scope, document_obj, dom, wrapper_obj, node_id)?;
+  sync_cached_children_for_wrapper(vm, scope, document_obj, dom, wrapper_obj, node_id)?;
+
   let needs_microtask = dom.take_mutation_observer_microtask_needed();
   maybe_queue_mutation_observer_microtask(vm, scope, host, hooks, document_obj, needs_microtask)?;
 
@@ -20539,9 +20542,15 @@ fn element_outer_html_set_native(
   let node_id = dom
     .node_id_from_index(node_index)
     .map_err(|_| VmError::TypeError("Element.outerHTML must be called on an element object"))?;
+  let parent_node_id = dom.parent_node(node_id);
 
   if let Err(err) = dom.set_outer_html(node_id, &html) {
     return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
+  }
+
+  if let Some(parent_node_id) = parent_node_id {
+    sync_cached_child_nodes_for_node_id(vm, scope, document_obj, dom, parent_node_id)?;
+    sync_cached_children_for_node_id(vm, scope, document_obj, dom, parent_node_id)?;
   }
 
   let needs_microtask = dom.take_mutation_observer_microtask_needed();
@@ -20616,6 +20625,17 @@ fn element_insert_adjacent_html_native(
 
   if let Err(err) = dom.insert_adjacent_html(node_id, &position, &html) {
     return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
+  }
+
+  if position.eq_ignore_ascii_case("beforebegin") || position.eq_ignore_ascii_case("afterend") {
+    if let Some(parent_node_id) = dom.parent_node(node_id) {
+      sync_cached_child_nodes_for_node_id(vm, scope, document_obj, dom, parent_node_id)?;
+      sync_cached_children_for_node_id(vm, scope, document_obj, dom, parent_node_id)?;
+    }
+  } else if position.eq_ignore_ascii_case("afterbegin") || position.eq_ignore_ascii_case("beforeend")
+  {
+    sync_cached_child_nodes_for_wrapper(vm, scope, document_obj, dom, wrapper_obj, node_id)?;
+    sync_cached_children_for_wrapper(vm, scope, document_obj, dom, wrapper_obj, node_id)?;
   }
 
   let needs_microtask = dom.take_mutation_observer_microtask_needed();

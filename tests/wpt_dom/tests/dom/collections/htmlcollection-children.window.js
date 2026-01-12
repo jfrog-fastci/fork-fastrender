@@ -65,3 +65,63 @@ test(() => {
   assert_equals(parent.firstElementChild, b);
   assert_equals(parent.lastElementChild, b);
 }, "Element.children HTMLCollection updates live on DOM mutation");
+
+test(() => {
+  const parent = document.createElement("div");
+  const children = parent.children;
+  assert_equals(children.length, 0);
+
+  parent.innerHTML = "<span></span><span></span>";
+  assert_equals(parent.children, children, "Element.children is [SameObject] after innerHTML");
+  assert_equals(children.length, 2, "HTMLCollection.length after innerHTML insertion");
+  assert_equals(children[0], parent.firstElementChild, "children[0] tracks firstElementChild");
+  assert_equals(children[1], parent.lastElementChild, "children[1] tracks lastElementChild");
+
+  parent.innerHTML = "";
+  assert_equals(children.length, 0, "HTMLCollection.length after innerHTML clears children");
+}, "Element.children updates live on Element.innerHTML mutations");
+
+test(() => {
+  const parent = document.createElement("div");
+  parent.innerHTML = "<p></p>";
+  const ref = parent.firstElementChild;
+
+  const parent_children = parent.children;
+  const ref_children = ref.children;
+
+  assert_equals(parent_children.length, 1);
+  assert_equals(ref_children.length, 0);
+
+  ref.insertAdjacentHTML("beforebegin", "<span></span>");
+  assert_equals(parent_children.length, 2, "parent.children length after beforebegin");
+  assert_equals(parent_children[0], parent.firstElementChild, "parent.children[0] after beforebegin");
+  assert_equals(parent_children[1], ref, "parent.children[1] after beforebegin");
+  assert_equals(ref_children.length, 0, "ref.children unchanged by beforebegin");
+
+  ref.insertAdjacentHTML("afterend", "<span></span>");
+  assert_equals(parent_children.length, 3, "parent.children length after afterend");
+  assert_equals(parent_children[2], parent.lastElementChild, "parent.children[2] after afterend");
+
+  ref.insertAdjacentHTML("afterbegin", "<em></em>");
+  assert_equals(ref_children.length, 1, "ref.children length after afterbegin");
+  assert_equals(ref_children[0], ref.firstElementChild, "ref.children[0] after afterbegin");
+
+  ref.insertAdjacentHTML("beforeend", "<strong></strong>");
+  assert_equals(ref_children.length, 2, "ref.children length after beforeend");
+  assert_equals(ref_children[1], ref.lastElementChild, "ref.children[1] after beforeend");
+}, "Element.children updates live on Element.insertAdjacentHTML mutations");
+
+test(() => {
+  const parent = document.createElement("div");
+  parent.innerHTML = "<a></a><b></b>";
+
+  const a = parent.firstElementChild;
+  const children = parent.children;
+
+  assert_equals(children.length, 2);
+  a.outerHTML = "<span></span><span></span>";
+
+  assert_equals(children.length, 3, "parent.children length after outerHTML replaces node with fragment");
+  assert_equals(children[0], parent.firstElementChild, "parent.children[0] after outerHTML");
+  assert_equals(children[2], parent.lastElementChild, "parent.children[2] after outerHTML");
+}, "Element.children updates live on Element.outerHTML mutations");
