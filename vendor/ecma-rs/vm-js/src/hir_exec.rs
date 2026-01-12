@@ -951,7 +951,11 @@ impl<'vm> HirEvaluator<'vm> {
         (Null, Null) => return Ok(true),
         (Bool(ax), Bool(by)) => return Ok(ax == by),
         (Number(ax), Number(by)) => return Ok(ax == by),
-        (BigInt(ax), BigInt(by)) => return Ok(ax == by),
+        (BigInt(ax), BigInt(by)) => {
+          let ax = scope.heap().get_bigint(ax)?;
+          let by = scope.heap().get_bigint(by)?;
+          return Ok(ax == by);
+        }
         (String(ax), String(by)) => {
           let a = scope.heap().get_string(ax)?.as_code_units();
           let b = scope.heap().get_string(by)?.as_code_units();
@@ -979,14 +983,14 @@ impl<'vm> HirEvaluator<'vm> {
           let Some(bi) = string_to_bigint(scope.heap(), bs, &mut tick)? else {
             return Ok(false);
           };
-          return Ok(ax == bi);
+          return Ok(scope.heap().get_bigint(ax)? == &bi);
         }
         (String(as_), BigInt(by)) => {
           let mut tick = || self.vm.tick();
           let Some(bi) = string_to_bigint(scope.heap(), as_, &mut tick)? else {
             return Ok(false);
           };
-          return Ok(bi == by);
+          return Ok(scope.heap().get_bigint(by)? == &bi);
         }
 
         // Boolean => ToNumber.
@@ -1021,10 +1025,16 @@ impl<'vm> HirEvaluator<'vm> {
 
         // BigInt/Number.
         (BigInt(ax), Number(by)) => {
-          return Ok(matches!(bigint_compare_number(ax, by), Some(Ordering::Equal)));
+          return Ok(matches!(
+            bigint_compare_number(scope.heap(), ax, by)?,
+            Some(Ordering::Equal)
+          ));
         }
         (Number(ax), BigInt(by)) => {
-          return Ok(matches!(bigint_compare_number(by, ax), Some(Ordering::Equal)));
+          return Ok(matches!(
+            bigint_compare_number(scope.heap(), by, ax)?,
+            Some(Ordering::Equal)
+          ));
         }
 
         _ => return Ok(false),
@@ -1289,236 +1299,75 @@ impl<'vm> HirEvaluator<'vm> {
   }
 }
 
-fn is_ecma_whitespace_unit(unit: u16) -> bool {
-  matches!(
-    unit,
-    // WhiteSpace (ECMA-262)
-    0x0009
-      | 0x000B
-      | 0x000C
-      | 0x0020
-      | 0x00A0
-      | 0x1680
-      | 0x202F
-      | 0x205F
-      | 0x3000
-      | 0xFEFF
-      // LineTerminator (ECMA-262)
-      | 0x000A
-      | 0x000D
-      | 0x2028
-      | 0x2029
-  ) || matches!(unit, 0x2000..=0x200A)
-}
-
 fn string_to_bigint(
   heap: &crate::Heap,
   s: crate::GcString,
   tick: &mut impl FnMut() -> Result<(), VmError>,
 ) -> Result<Option<crate::JsBigInt>, VmError> {
   let units = heap.get_string(s)?.as_code_units();
-
-  // TrimString (ECMA-262): trim ECMAScript WhiteSpace + LineTerminator.
-  let mut start = 0usize;
-  let mut steps = 0usize;
-  while start < units.len() && is_ecma_whitespace_unit(units[start]) {
-    if steps % 1024 == 0 {
-      tick()?;
-    }
-    steps += 1;
-    start += 1;
-  }
-  let mut end = units.len();
-  while end > start && is_ecma_whitespace_unit(units[end - 1]) {
-    if steps % 1024 == 0 {
-      tick()?;
-    }
-    steps += 1;
-    end -= 1;
-  }
-
-  let trimmed = &units[start..end];
-  if trimmed.is_empty() {
-    return Ok(None);
-  }
-
-  let mut negative = false;
-  let mut idx = 0usize;
-  if trimmed[idx] == b'+' as u16 {
-    idx += 1;
-  } else if trimmed[idx] == b'-' as u16 {
-    negative = true;
-    idx += 1;
-  }
-  if idx >= trimmed.len() {
-    return Ok(None);
-  }
-
-  let mut radix: u32 = 10;
-  if idx + 1 < trimmed.len() && trimmed[idx] == b'0' as u16 {
-    match trimmed[idx + 1] {
-      u if u == b'x' as u16 || u == b'X' as u16 => {
-        radix = 16;
-        idx += 2;
-      }
-      u if u == b'b' as u16 || u == b'B' as u16 => {
-        radix = 2;
-        idx += 2;
-      }
-      u if u == b'o' as u16 || u == b'O' as u16 => {
-        radix = 8;
-        idx += 2;
-      }
-      _ => {}
-    }
-  }
-  if idx >= trimmed.len() {
-    return Ok(None);
-  }
-
-  let radix_bi = crate::JsBigInt::from_u128(radix as u128);
-  let mut out = crate::JsBigInt::zero();
-  for (i, &u) in trimmed[idx..].iter().enumerate() {
-    if i % 1024 == 0 {
-      tick()?;
-    }
-    let digit = match u {
-      u if (b'0' as u16..=b'9' as u16).contains(&u) => (u - b'0' as u16) as u32,
-      u if (b'a' as u16..=b'z' as u16).contains(&u) => (u - b'a' as u16 + 10) as u32,
-      u if (b'A' as u16..=b'Z' as u16).contains(&u) => (u - b'A' as u16 + 10) as u32,
-      _ => return Ok(None),
-    };
-    if digit >= radix {
-      return Ok(None);
-    }
-    out = out
-      .checked_mul(radix_bi)
-      .ok_or(VmError::Unimplemented("BigInt parse overflow"))?;
-    out = out
-      .checked_add(crate::JsBigInt::from_u128(digit as u128))
-      .ok_or(VmError::Unimplemented("BigInt parse overflow"))?;
-  }
-
-  if negative {
-    out = out.negate();
-  }
-  Ok(Some(out))
+  crate::JsBigInt::parse_utf16_string_with_tick(units, tick)
 }
 
-fn bigint_compare_number(bi: crate::JsBigInt, n: f64) -> Option<Ordering> {
+fn bigint_compare_number(
+  heap: &crate::Heap,
+  bi: crate::GcBigInt,
+  n: f64,
+) -> Result<Option<Ordering>, VmError> {
   if n.is_nan() {
-    return None;
+    return Ok(None);
   }
   if n == f64::INFINITY {
-    return Some(Ordering::Less);
+    return Ok(Some(Ordering::Less));
   }
   if n == f64::NEG_INFINITY {
-    return Some(Ordering::Greater);
+    return Ok(Some(Ordering::Greater));
   }
 
+  let bi = heap.get_bigint(bi)?;
+
+  // Treat +0 and -0 as equal.
   if n == 0.0 {
     if bi.is_zero() {
-      return Some(Ordering::Equal);
+      return Ok(Some(Ordering::Equal));
     }
-    if bi.is_negative() {
-      return Some(Ordering::Less);
-    }
-    return Some(Ordering::Greater);
-  }
-
-  let bi_neg = bi.is_negative();
-  let n_neg = n.is_sign_negative();
-  if bi_neg != n_neg {
-    return Some(if bi_neg { Ordering::Less } else { Ordering::Greater });
-  }
-
-  let bi_abs = if bi_neg { bi.negate() } else { bi };
-  let n_abs = n.abs();
-  let ord = compare_positive_bigint_and_positive_number(bi_abs, n_abs);
-  Some(if bi_neg { ord.reverse() } else { ord })
-}
-
-fn compare_positive_bigint_and_positive_number(bi: crate::JsBigInt, n: f64) -> Ordering {
-  debug_assert!(!bi.is_negative());
-  debug_assert!(n.is_finite());
-  debug_assert!(n >= 0.0);
-
-  if n == 0.0 {
-    return if bi.is_zero() {
-      Ordering::Equal
-    } else {
-      Ordering::Greater
-    };
-  }
-
-  if n.fract() != 0.0 {
-    let floor = n.floor();
-    let Some(floor_bi) = f64_to_bigint_integral(floor) else {
-      return Ordering::Less;
-    };
-    if bi <= floor_bi {
+    return Ok(Some(if bi.is_negative() {
       Ordering::Less
     } else {
       Ordering::Greater
-    }
-  } else {
-    match f64_to_bigint_integral(n) {
-      Some(n_bi) => bi.cmp(&n_bi),
-      None => Ordering::Less,
-    }
-  }
-}
-
-fn f64_to_bigint_integral(n: f64) -> Option<crate::JsBigInt> {
-  if !n.is_finite() {
-    return None;
-  }
-  if n.fract() != 0.0 {
-    return None;
-  }
-  if n == 0.0 {
-    return Some(crate::JsBigInt::zero());
+    }));
   }
 
-  let negative = n.is_sign_negative();
-  let abs = n.abs();
-  if abs < 1.0 {
-    return None;
+  if n.fract() == 0.0 {
+    let Some(n_big) = crate::JsBigInt::from_f64_exact(n)? else {
+      return Ok(None);
+    };
+    return Ok(Some(bi.cmp(&n_big)));
   }
 
-  let bits = abs.to_bits();
-  let exp_bits = ((bits >> 52) & 0x7ff) as i32;
-  let frac_bits = bits & ((1u64 << 52) - 1);
-  if exp_bits == 0 {
-    return None;
+  if n > 0.0 {
+    let floor = n.floor();
+    let Some(floor_big) = crate::JsBigInt::from_f64_exact(floor)? else {
+      return Ok(None);
+    };
+    let ord = bi.cmp(&floor_big);
+    return Ok(Some(if ord == Ordering::Greater {
+      Ordering::Greater
+    } else {
+      Ordering::Less
+    }));
   }
 
-  let e = exp_bits - 1023;
-  debug_assert!(e >= 0);
-
-  let m = (1u64 << 52) | frac_bits;
-
-  let mut out = if e <= 52 {
-    let shift = (52 - e) as u32;
-    debug_assert!(shift <= 52);
-    if shift != 0 {
-      let mask = (1u64 << shift) - 1;
-      if (m & mask) != 0 {
-        return None;
-      }
-    }
-    let int = m >> shift;
-    crate::JsBigInt::from_u128(int as u128)
-  } else {
-    let shift = (e - 52) as u32;
-    let base = crate::JsBigInt::from_u128(m as u128);
-    base.checked_shl(shift)?
+  // n < 0.0
+  let ceil = n.ceil();
+  let Some(ceil_big) = crate::JsBigInt::from_f64_exact(ceil)? else {
+    return Ok(None);
   };
-
-  if negative {
-    out = out.negate();
-  }
-  Some(out)
+  let ord = bi.cmp(&ceil_big);
+  Ok(Some(if ord == Ordering::Less {
+    Ordering::Less
+  } else {
+    Ordering::Greater
+  }))
 }
 
 pub(crate) fn run_compiled_function(

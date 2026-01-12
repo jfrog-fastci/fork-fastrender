@@ -175,10 +175,12 @@ fn format_thrown_value(heap: &mut Heap, value: Value) -> Option<String> {
       }
       return Some(format_number_fallback(n));
     }
-    // BigInts are currently bounded (inline u128) in `vm-js`; format them directly so `throw 1n`
-    // surfaces a useful value.
     Value::BigInt(b) => {
-      let mut out = b.to_decimal_string();
+      let mut out = heap
+        .get_bigint(b)
+        .ok()
+        .and_then(|bi| bi.to_string_radix_with_tick(10, &mut || Ok(())).ok())
+        .unwrap_or_else(|| "[bigint]".to_string());
       // Match common JS console output (`1n`) and disambiguate from Numbers.
       out.push('n');
       return Some(out);
@@ -518,7 +520,14 @@ fn decode_utf16_scalar(units: &[u16], idx: usize) -> (char, usize) {
 fn console_number_from_primitive_limited(heap: &mut Heap, value: Value) -> f64 {
   match value {
     Value::Object(_) | Value::Symbol(_) => f64::NAN,
-    Value::BigInt(b) => b.to_decimal_string().parse::<f64>().unwrap_or(f64::NAN),
+    Value::BigInt(b) => match heap.get_bigint(b) {
+      Ok(bi) => bi
+        .to_string_radix_with_tick(10, &mut || Ok(()))
+        .ok()
+        .and_then(|s| s.parse::<f64>().ok())
+        .unwrap_or(f64::NAN),
+      Err(_) => f64::NAN,
+    },
     Value::String(s) => {
       let len = match heap.get_string(s) {
         Ok(js) => js.len_code_units(),
@@ -535,7 +544,12 @@ fn console_number_from_primitive_limited(heap: &mut Heap, value: Value) -> f64 {
 
 fn format_console_number_substitution(heap: &mut Heap, value: Value, spec: char) -> String {
   if let Value::BigInt(b) = value {
-    return b.to_decimal_string();
+    if let Ok(bi) = heap.get_bigint(b) {
+      if let Ok(s) = bi.to_string_radix_with_tick(10, &mut || Ok(())) {
+        return s;
+      }
+    }
+    return "NaN".to_string();
   }
   let n = console_number_from_primitive_limited(heap, value);
   match spec {

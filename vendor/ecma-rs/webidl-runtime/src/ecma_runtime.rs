@@ -4,12 +4,11 @@ use crate::runtime::{
 };
 use std::any::TypeId;
 use std::collections::HashMap;
-use std::num::IntErrorKind;
 use std::ptr::NonNull;
 use std::rc::Rc;
 use vm_js::{
-  GcObject, GcString, GcSymbol, Heap, HeapLimits, JsBigInt, NativeFunctionId, PropertyDescriptor,
-  PropertyKey, PropertyKind, Value, VmError, WeakGcObject,
+  GcBigInt, GcObject, GcString, GcSymbol, Heap, HeapLimits, JsBigInt, NativeFunctionId,
+  PropertyDescriptor, PropertyKey, PropertyKind, Value, VmError, WeakGcObject,
 };
 use webidl_vm_js::{CallbackHandle, CallbackKind};
 
@@ -569,14 +568,17 @@ impl VmJsRuntime {
     Ok(Value::Object(obj))
   }
 
-  fn alloc_bigint_object_value(&mut self, bigint_data: JsBigInt) -> Result<Value, VmError> {
-    let sym = self.bigint_data_symbol()?;
-    let obj = {
-      let mut scope = self.heap.scope();
-      scope.alloc_object()?
-    };
-    self.define_hidden_slot(obj, sym, Value::BigInt(bigint_data))?;
-    Ok(Value::Object(obj))
+  fn alloc_bigint_object_value(&mut self, bigint_data: GcBigInt) -> Result<Value, VmError> {
+    // Root `bigint_data` before allocating the hidden-slot symbol (see `alloc_string_object_from_handle`).
+    self.with_stack_roots([Value::BigInt(bigint_data)], |rt| {
+      let sym = rt.bigint_data_symbol()?;
+      let obj = {
+        let mut scope = rt.heap.scope();
+        scope.alloc_object()?
+      };
+      rt.define_hidden_slot(obj, sym, Value::BigInt(bigint_data))?;
+      Ok(Value::Object(obj))
+    })
   }
 
   fn alloc_symbol_object_value(&mut self, symbol_data: GcSymbol) -> Result<Value, VmError> {
@@ -765,67 +767,20 @@ impl VmJsRuntime {
     }
   }
 
-  fn bigint_from_string(&mut self, s: GcString) -> Result<JsBigInt, VmError> {
+  fn bigint_from_string(&mut self, s: GcString) -> Result<GcBigInt, VmError> {
     let js = self.heap.get_string(s)?;
-    // BigInt parsing allocates a UTF-8 string in the host. Keep this bounded so hostile input
-    // cannot force unbounded host allocations.
     if js.len_code_units() > self.webidl_limits.max_string_code_units {
       return Err(self.throw_range_error("BigInt string exceeds maximum length"));
     }
-    let text = js.to_utf8_lossy();
-    let trimmed = text.trim_matches(is_ecma_whitespace);
-    if trimmed.is_empty() {
-      return Ok(JsBigInt::zero());
-    }
 
-    let has_sign = trimmed.starts_with('-') || trimmed.starts_with('+');
-    let (negative, rest) = if let Some(rest) = trimmed.strip_prefix('-') {
-      (true, rest)
-    } else if let Some(rest) = trimmed.strip_prefix('+') {
-      (false, rest)
-    } else {
-      (false, trimmed)
-    };
-
-    if rest.is_empty() {
+    let units = js.as_code_units();
+    let parsed = JsBigInt::parse_utf16_string_with_tick(units, &mut || Ok(()))?;
+    let Some(bi) = parsed else {
       return Err(self.throw_syntax_error("Cannot convert string to a BigInt"));
-    }
-
-    let parse_mag =
-      |rt: &mut Self, digits: &str, radix: u32| match u128::from_str_radix(digits, radix) {
-        Ok(v) => Ok(v),
-        Err(err) => match err.kind() {
-          IntErrorKind::PosOverflow => Err(rt.throw_range_error("BigInt value is too large")),
-          _ => Err(rt.throw_syntax_error("Cannot convert string to a BigInt")),
-        },
-      };
-
-    let magnitude = if has_sign {
-      parse_mag(self, rest, 10)?
-    } else if let Some(rest) = rest.strip_prefix("0x").or_else(|| rest.strip_prefix("0X")) {
-      if rest.is_empty() {
-        return Err(self.throw_syntax_error("Cannot convert string to a BigInt"));
-      }
-      parse_mag(self, rest, 16)?
-    } else if let Some(rest) = rest.strip_prefix("0b").or_else(|| rest.strip_prefix("0B")) {
-      if rest.is_empty() {
-        return Err(self.throw_syntax_error("Cannot convert string to a BigInt"));
-      }
-      parse_mag(self, rest, 2)?
-    } else if let Some(rest) = rest.strip_prefix("0o").or_else(|| rest.strip_prefix("0O")) {
-      if rest.is_empty() {
-        return Err(self.throw_syntax_error("Cannot convert string to a BigInt"));
-      }
-      parse_mag(self, rest, 8)?
-    } else {
-      parse_mag(self, rest, 10)?
     };
 
-    let mut bigint = JsBigInt::from_u128(magnitude);
-    if negative {
-      bigint = bigint.negate();
-    }
-    Ok(bigint)
+    let mut scope = self.heap.scope();
+    scope.alloc_bigint(bi)
   }
 
   fn to_string_from_number(&mut self, n: f64) -> Result<GcString, VmError> {
@@ -937,7 +892,7 @@ impl VmJsRuntime {
     }
   }
 
-  fn bigint_object_data(&self, obj: GcObject) -> Result<Option<JsBigInt>, VmError> {
+  fn bigint_object_data(&self, obj: GcObject) -> Result<Option<GcBigInt>, VmError> {
     let Some(sym) = self.bigint_data_symbol else {
       return Ok(None);
     };
@@ -1226,7 +1181,7 @@ impl JsRuntime for VmJsRuntime {
       Value::Undefined | Value::Null => false,
       Value::Bool(b) => b,
       Value::Number(n) => !(n == 0.0 || n.is_nan()),
-      Value::BigInt(n) => !n.is_zero(),
+      Value::BigInt(n) => !self.heap.get_bigint(n)?.is_zero(),
       Value::String(s) => !self.heap.get_string(s)?.is_empty(),
       Value::Symbol(_) | Value::Object(_) => true,
     })
@@ -1284,7 +1239,18 @@ impl JsRuntime for VmJsRuntime {
         Value::Bool(true) => rt.alloc_string_handle("true")?,
         Value::Bool(false) => rt.alloc_string_handle("false")?,
         Value::Number(n) => rt.to_string_from_number(n)?,
-        Value::BigInt(n) => rt.alloc_string_handle(&n.to_decimal_string())?,
+        Value::BigInt(n) => {
+          let bi = rt.heap.get_bigint(n)?;
+          let est_units = bi.estimated_byte_len().saturating_mul(3).saturating_add(1);
+          if est_units > rt.webidl_limits.max_string_code_units {
+            return Err(rt.throw_range_error("BigInt string exceeds maximum length"));
+          }
+          let s = bi.to_string_radix_with_tick(10, &mut || Ok(()))?;
+          if s.len() > rt.webidl_limits.max_string_code_units {
+            return Err(rt.throw_range_error("BigInt string exceeds maximum length"));
+          }
+          rt.alloc_string_handle(&s)?
+        }
         Value::Symbol(_) => {
           return Err(rt.throw_type_error("Cannot convert a Symbol value to a string"));
         }
@@ -1300,7 +1266,16 @@ impl JsRuntime for VmJsRuntime {
           } else if let Some(number_data) = rt.number_object_data(obj)? {
             rt.to_string_from_number(number_data)?
           } else if let Some(bigint_data) = rt.bigint_object_data(obj)? {
-            rt.alloc_string_handle(&bigint_data.to_decimal_string())?
+            let bi = rt.heap.get_bigint(bigint_data)?;
+            let est_units = bi.estimated_byte_len().saturating_mul(3).saturating_add(1);
+            if est_units > rt.webidl_limits.max_string_code_units {
+              return Err(rt.throw_range_error("BigInt string exceeds maximum length"));
+            }
+            let s = bi.to_string_radix_with_tick(10, &mut || Ok(()))?;
+            if s.len() > rt.webidl_limits.max_string_code_units {
+              return Err(rt.throw_range_error("BigInt string exceeds maximum length"));
+            }
+            rt.alloc_string_handle(&s)?
           } else if let Some(symbol_data) = rt.symbol_object_data(obj)? {
             return Err(rt.throw_symbol_to_string(symbol_data));
           } else if rt.heap.is_valid_object(obj) {
@@ -1384,8 +1359,14 @@ impl JsRuntime for VmJsRuntime {
 
       let bigint = match prim {
         Value::BigInt(b) => b,
-        Value::Bool(true) => JsBigInt::from_u128(1),
-        Value::Bool(false) => JsBigInt::zero(),
+        Value::Bool(true) => {
+          let mut scope = rt.heap.scope();
+          scope.alloc_bigint_from_u128(1)?
+        }
+        Value::Bool(false) => {
+          let mut scope = rt.heap.scope();
+          scope.alloc_bigint_from_u128(0)?
+        }
         Value::String(s) => rt.bigint_from_string(s)?,
         Value::Undefined | Value::Null => {
           return Err(rt.throw_type_error("Cannot convert null or undefined to a BigInt"));
@@ -1812,6 +1793,29 @@ mod tests {
     rt.heap.get_string(s).unwrap().to_utf8_lossy()
   }
 
+  fn alloc_bigint_u128(rt: &mut VmJsRuntime, value: u128) -> Value {
+    let handle = {
+      let mut scope = rt.heap_mut().scope();
+      scope.alloc_bigint_from_u128(value).unwrap()
+    };
+    Value::BigInt(handle)
+  }
+
+  fn alloc_bigint_i128(rt: &mut VmJsRuntime, value: i128) -> Value {
+    let handle = {
+      let mut scope = rt.heap_mut().scope();
+      scope.alloc_bigint_from_i128(value).unwrap()
+    };
+    Value::BigInt(handle)
+  }
+
+  fn assert_bigint_eq(rt: &VmJsRuntime, value: Value, expected: &JsBigInt) {
+    let Value::BigInt(handle) = value else {
+      panic!("expected BigInt");
+    };
+    assert_eq!(rt.heap().get_bigint(handle).unwrap(), expected);
+  }
+
   #[test]
   fn alloc_function_value_creates_vmjs_function_object() {
     let mut rt = VmJsRuntime::with_limits(HeapLimits::new(16 * 1024 * 1024, 16 * 1024 * 1024));
@@ -1891,13 +1895,11 @@ mod tests {
     assert_eq!(as_utf8_lossy(&rt, s), "0.000001");
     let s = rt.to_string(Value::Number(1e-7)).unwrap();
     assert_eq!(as_utf8_lossy(&rt, s), "1e-7");
-    let s = rt
-      .to_string(Value::BigInt(JsBigInt::from_u128(42)))
-      .unwrap();
+    let bigint = alloc_bigint_u128(&mut rt, 42);
+    let s = rt.to_string(bigint).unwrap();
     assert_eq!(as_utf8_lossy(&rt, s), "42");
-    let s = rt
-      .to_string(Value::BigInt(JsBigInt::from_u128(42).negate()))
-      .unwrap();
+    let bigint = alloc_bigint_i128(&mut rt, -42);
+    let s = rt.to_string(bigint).unwrap();
     assert_eq!(as_utf8_lossy(&rt, s), "-42");
   }
 
@@ -1928,18 +1930,16 @@ mod tests {
   #[test]
   fn to_string_bigint_primitive() {
     let mut rt = VmJsRuntime::with_limits(HeapLimits::new(16 * 1024 * 1024, 16 * 1024 * 1024));
-    let s = rt
-      .to_string(Value::BigInt(vm_js::JsBigInt::from_u128(123)))
-      .unwrap();
+    let bigint = alloc_bigint_u128(&mut rt, 123);
+    let s = rt.to_string(bigint).unwrap();
     assert_eq!(as_utf8_lossy(&rt, s), "123");
   }
 
   #[test]
   fn to_object_wraps_bigint_and_to_string_roundtrips() {
     let mut rt = VmJsRuntime::with_limits(HeapLimits::new(16 * 1024 * 1024, 16 * 1024 * 1024));
-    let obj = rt
-      .to_object(Value::BigInt(vm_js::JsBigInt::from_u128(7)))
-      .unwrap();
+    let bigint = alloc_bigint_u128(&mut rt, 7);
+    let obj = rt.to_object(bigint).unwrap();
     assert!(rt.is_object(obj));
     let s = rt.to_string(obj).unwrap();
     assert_eq!(as_utf8_lossy(&rt, s), "7");
@@ -1974,19 +1974,20 @@ mod tests {
   #[test]
   fn to_number_primitives() {
     let mut rt = VmJsRuntime::with_limits(HeapLimits::new(16 * 1024 * 1024, 16 * 1024 * 1024));
+    let bigint_one = alloc_bigint_u128(&mut rt, 1);
     assert!(rt.to_number(Value::Undefined).unwrap().is_nan());
     assert_eq!(rt.to_number(Value::Null).unwrap(), 0.0);
     assert_eq!(rt.to_number(Value::Bool(true)).unwrap(), 1.0);
     assert_eq!(rt.to_number(Value::Bool(false)).unwrap(), 0.0);
     assert!(rt
-      .to_number(Value::BigInt(JsBigInt::from_u128(1)))
+      .to_number(bigint_one)
       .unwrap_err()
       .thrown_value()
       .is_some());
     let s = rt.alloc_string_value("  123  ").unwrap();
     assert_eq!(rt.to_number(s).unwrap(), 123.0);
     assert!(matches!(
-      rt.to_number(Value::BigInt(JsBigInt::from_u128(1))),
+      rt.to_number(bigint_one),
       Err(err) if err.thrown_value().is_some()
     ));
 
@@ -2021,7 +2022,7 @@ mod tests {
     assert_eq!(rt.to_number(s).unwrap(), expected);
 
     let err = rt
-      .to_number(Value::BigInt(JsBigInt::from_u128(1)))
+      .to_number(bigint_one)
       .unwrap_err();
     let Some(thrown) = err.thrown_value() else {
       panic!("expected thrown TypeError, got {err:?}");
@@ -2037,7 +2038,8 @@ mod tests {
   #[test]
   fn to_object_bigint_allocates_wrapper() {
     let mut rt = VmJsRuntime::with_limits(HeapLimits::new(16 * 1024 * 1024, 16 * 1024 * 1024));
-    let obj = rt.to_object(Value::BigInt(JsBigInt::from_u128(7))).unwrap();
+    let bigint = alloc_bigint_u128(&mut rt, 7);
+    let obj = rt.to_object(bigint).unwrap();
     assert!(matches!(obj, Value::Object(_)));
 
     let s = rt.to_string(obj).unwrap();
@@ -2067,8 +2069,9 @@ mod tests {
   #[test]
   fn to_number_on_bigint_throws_type_error() {
     let mut rt = VmJsRuntime::with_limits(HeapLimits::new(16 * 1024 * 1024, 16 * 1024 * 1024));
+    let bigint_one = alloc_bigint_u128(&mut rt, 1);
     let err = rt
-      .to_number(Value::BigInt(JsBigInt::from_u128(1)))
+      .to_number(bigint_one)
       .unwrap_err();
     assert_eq!(thrown_error_name(&mut rt, err), "TypeError");
   }
@@ -2076,47 +2079,39 @@ mod tests {
   #[test]
   fn to_bigint_conversions() {
     let mut rt = VmJsRuntime::with_limits(HeapLimits::new(16 * 1024 * 1024, 16 * 1024 * 1024));
-    assert_eq!(
-      rt.to_bigint(Value::Bool(true)).unwrap(),
-      Value::BigInt(JsBigInt::from_u128(1))
-    );
-    assert_eq!(
-      rt.to_bigint(Value::Bool(false)).unwrap(),
-      Value::BigInt(JsBigInt::zero())
-    );
+    let v = rt.to_bigint(Value::Bool(true)).unwrap();
+    assert_bigint_eq(&rt, v, &JsBigInt::from_u128(1).unwrap());
+    let v = rt.to_bigint(Value::Bool(false)).unwrap();
+    assert_bigint_eq(&rt, v, &JsBigInt::zero());
 
     let s = rt.alloc_string_value("  123  ").unwrap();
-    assert_eq!(
-      rt.to_bigint(s).unwrap(),
-      Value::BigInt(JsBigInt::from_u128(123))
-    );
+    let v = rt.to_bigint(s).unwrap();
+    assert_bigint_eq(&rt, v, &JsBigInt::from_u128(123).unwrap());
     let s = rt.alloc_string_value("-123").unwrap();
-    assert_eq!(
-      rt.to_bigint(s).unwrap(),
-      Value::BigInt(JsBigInt::from_u128(123).negate())
-    );
+    let v = rt.to_bigint(s).unwrap();
+    assert_bigint_eq(&rt, v, &JsBigInt::from_u128(123).unwrap().negate());
     let s = rt.alloc_string_value("0x10").unwrap();
-    assert_eq!(
-      rt.to_bigint(s).unwrap(),
-      Value::BigInt(JsBigInt::from_u128(16))
-    );
+    let v = rt.to_bigint(s).unwrap();
+    assert_bigint_eq(&rt, v, &JsBigInt::from_u128(16).unwrap());
 
     let s = rt.alloc_string_value("   ").unwrap();
-    assert_eq!(rt.to_bigint(s).unwrap(), Value::BigInt(JsBigInt::zero()));
+    let v = rt.to_bigint(s).unwrap();
+    assert_bigint_eq(&rt, v, &JsBigInt::zero());
 
     let s = rt.alloc_string_value("+7").unwrap();
-    assert_eq!(
-      rt.to_bigint(s).unwrap(),
-      Value::BigInt(JsBigInt::from_u128(7))
-    );
+    let v = rt.to_bigint(s).unwrap();
+    assert_bigint_eq(&rt, v, &JsBigInt::from_u128(7).unwrap());
 
-    // `vm-js` BigInt currently uses a fixed-size magnitude. Ensure we surface overflow as a
-    // RangeError so callers can distinguish it from syntax failures.
+    // BigInts should support arbitrarily large values (beyond `u128`/`i128`).
     let s = rt
       .alloc_string_value("340282366920938463463374607431768211456")
       .unwrap(); // u128::MAX + 1
-    let err = rt.to_bigint(s).unwrap_err();
-    assert_eq!(thrown_error_name(&mut rt, err), "RangeError");
+    let v = rt.to_bigint(s).unwrap();
+    let s = rt.to_string(v).unwrap();
+    assert_eq!(
+      as_utf8_lossy(&rt, s),
+      "340282366920938463463374607431768211456"
+    );
     let s = rt.alloc_string_value("-0x10").unwrap();
     let err = rt.to_bigint(s).unwrap_err();
     assert_eq!(thrown_error_name(&mut rt, err), "SyntaxError");
@@ -2124,11 +2119,9 @@ mod tests {
     let err = rt.to_bigint(Value::Number(1.0)).unwrap_err();
     assert_eq!(thrown_error_name(&mut rt, err), "TypeError");
 
-    let obj = rt.to_object(Value::BigInt(JsBigInt::from_u128(7))).unwrap();
-    assert_eq!(
-      rt.to_bigint(obj).unwrap(),
-      Value::BigInt(JsBigInt::from_u128(7))
-    );
+    let bigint = alloc_bigint_u128(&mut rt, 7);
+    let obj = rt.to_object(bigint).unwrap();
+    assert_eq!(rt.to_bigint(obj).unwrap(), bigint);
 
     let obj = rt.to_object(Value::Number(7.0)).unwrap();
     let err = rt.to_bigint(obj).unwrap_err();
@@ -2138,10 +2131,10 @@ mod tests {
   #[test]
   fn to_boolean_bigint() {
     let mut rt = VmJsRuntime::new();
-    assert!(!rt.to_boolean(Value::BigInt(JsBigInt::zero())).unwrap());
-    assert!(rt
-      .to_boolean(Value::BigInt(JsBigInt::from_u128(1)))
-      .unwrap());
+    let bigint = alloc_bigint_u128(&mut rt, 0);
+    assert!(!rt.to_boolean(bigint).unwrap());
+    let bigint = alloc_bigint_u128(&mut rt, 1);
+    assert!(rt.to_boolean(bigint).unwrap());
   }
 
   #[test]

@@ -34340,7 +34340,13 @@ mod tests {
           Value::Null => CapturedConsoleArg::Null,
           Value::Bool(b) => CapturedConsoleArg::Bool(b),
           Value::Number(n) => CapturedConsoleArg::Number(n),
-          Value::BigInt(n) => CapturedConsoleArg::BigInt(n.to_decimal_string()),
+          Value::BigInt(n) => CapturedConsoleArg::BigInt(
+            heap
+              .get_bigint(n)
+              .expect("bigint handle should be valid")
+              .to_string_radix_with_tick(10, &mut || Ok(()))
+              .expect("BigInt toString should succeed"),
+          ),
           Value::String(s) => CapturedConsoleArg::String(
             heap
               .get_string(s)

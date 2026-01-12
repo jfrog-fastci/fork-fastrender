@@ -784,6 +784,25 @@ impl<'a> VmJsWebIdlCx<'a> {
     Ok(())
   }
 
+  fn throw_syntax_error(&mut self, message: &str) -> VmError {
+    let value = match self.vm.intrinsics() {
+      Some(intr) => vm_js::new_error(
+        &mut self.scope,
+        intr.syntax_error_prototype(),
+        "SyntaxError",
+        message,
+      ),
+      None => fallback_error_object(&mut self.scope, "SyntaxError", message),
+    };
+    match value {
+      Ok(value) => match self.root(value) {
+        Ok(()) => VmError::Throw(value),
+        Err(err) => err,
+      },
+      Err(err) => err,
+    }
+  }
+
   fn call_js(&mut self, callee: Value, this: Value, args: &[Value]) -> Result<Value, VmError> {
     // Prefer the currently-active host hooks override if one is installed on the VM.
     //
@@ -1310,77 +1329,34 @@ impl webidl::WebIdlJsRuntime for VmJsWebIdlCx<'_> {
   }
 
   fn to_bigint(&mut self, value: Self::Value) -> Result<Self::Value, Self::Error> {
-    // Minimal ECMAScript `ToBigInt`: support BigInt, boolean, and integral finite numbers.
-    let out = match value {
-      Value::BigInt(_) => value,
-      Value::Bool(b) => Value::BigInt(if b {
-        JsBigInt::from_u128(1)
-      } else {
-        JsBigInt::zero()
-      }),
-      Value::Number(n) => {
-        if !n.is_finite() {
-          return Err(self.throw_range_error("Cannot convert non-finite number to a BigInt"));
-        }
-        if n.fract() != 0.0 {
-          return Err(self.throw_range_error("Cannot convert non-integer number to a BigInt"));
-        }
+    // ECMAScript `ToBigInt(argument)` (ECMA-262).
+    //
+    // This can invoke user code via `ToPrimitive`, so root the input value for the duration of the
+    // conversion.
+    self.root(value)?;
+    let prim = match value {
+      Value::Object(_) => self.to_primitive(value, ToPrimitiveHint::Number)?,
+      other => other,
+    };
+    self.root(prim)?;
 
-        let abs = n.abs();
-        if abs > (u128::MAX as f64) {
-          return Err(self.throw_range_error("BigInt value is out of range"));
-        }
-        let mag = abs as u128;
-        let mut bi = JsBigInt::from_u128(mag);
-        if n.is_sign_negative() {
-          bi = bi.negate();
-        }
-        Value::BigInt(bi)
+    let out = match prim {
+      Value::BigInt(_) => prim,
+      Value::Bool(true) => Value::BigInt(self.scope.alloc_bigint_from_u128(1)?),
+      Value::Bool(false) => Value::BigInt(self.scope.alloc_bigint_from_u128(0)?),
+      Value::Number(n) => {
+        let Some(bi) = JsBigInt::from_f64_exact(n)? else {
+          return Err(self.throw_range_error("Cannot convert a Number value to a BigInt"));
+        };
+        Value::BigInt(self.scope.alloc_bigint(bi)?)
       }
       Value::String(s) => {
-        // Parse a base-10/0x/0o/0b BigInt string. We accept leading/trailing whitespace.
-        let raw = self.scope.heap().get_string(s)?.to_utf8_lossy();
-        let trimmed = raw.trim();
-        let Some(first) = trimmed.chars().next() else {
-          return Err(self.throw_type_error("Cannot convert empty string to a BigInt"));
+        let units = self.scope.heap().get_string(s)?.as_code_units();
+        let parsed = JsBigInt::parse_utf16_string_with_tick(units, &mut || self.vm.tick())?;
+        let Some(bi) = parsed else {
+          return Err(self.throw_syntax_error("Cannot convert string to a BigInt"));
         };
-
-        let (negative, digits) = match first {
-          '+' => (false, &trimmed[1..]),
-          '-' => (true, &trimmed[1..]),
-          _ => (false, trimmed),
-        };
-
-        let (radix, digits) = if let Some(rest) = digits
-          .strip_prefix("0x")
-          .or_else(|| digits.strip_prefix("0X"))
-        {
-          (16u32, rest)
-        } else if let Some(rest) = digits
-          .strip_prefix("0o")
-          .or_else(|| digits.strip_prefix("0O"))
-        {
-          (8u32, rest)
-        } else if let Some(rest) = digits
-          .strip_prefix("0b")
-          .or_else(|| digits.strip_prefix("0B"))
-        {
-          (2u32, rest)
-        } else {
-          (10u32, digits)
-        };
-
-        if digits.is_empty() {
-          return Err(self.throw_type_error("Cannot convert string to a BigInt"));
-        }
-
-        let mag = u128::from_str_radix(digits, radix)
-          .map_err(|_| self.throw_type_error("Cannot convert string to a BigInt"))?;
-        let mut bi = JsBigInt::from_u128(mag);
-        if negative {
-          bi = bi.negate();
-        }
-        Value::BigInt(bi)
+        Value::BigInt(self.scope.alloc_bigint(bi)?)
       }
       _ => return Err(self.throw_type_error("Cannot convert value to a BigInt")),
     };

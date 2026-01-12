@@ -239,7 +239,10 @@ fn bigint_conversion_uses_to_bigint() {
   let ctx = TypeContext::default();
   let ty = IdlType::BigInt;
 
-  let bigint = Value::BigInt(JsBigInt::from_u128(42));
+  let bigint = {
+    let mut scope = rt.heap_mut().scope();
+    Value::BigInt(scope.alloc_bigint_from_u128(42).unwrap())
+  };
   let converted = convert_to_idl(&mut rt, bigint, &ty, &ctx).unwrap();
   assert_eq!(converted, ConvertedValue::Any(bigint));
 
@@ -255,18 +258,22 @@ fn bigint_conversion_parses_ecmascript_string_numeric_literals() {
   let ty = IdlType::BigInt;
 
   for (input, expected) in [
-    ("0x10", JsBigInt::from_u128(16)),
-    ("0b101", JsBigInt::from_u128(5)),
-    ("0o10", JsBigInt::from_u128(8)),
-    ("\u{FEFF}123\u{FEFF}", JsBigInt::from_u128(123)),
-    ("-123", JsBigInt::from_u128(123).negate()),
+    ("0x10", JsBigInt::from_u128(16).unwrap()),
+    ("0b101", JsBigInt::from_u128(5).unwrap()),
+    ("0o10", JsBigInt::from_u128(8).unwrap()),
+    ("\u{FEFF}123\u{FEFF}", JsBigInt::from_u128(123).unwrap()),
+    ("-123", JsBigInt::from_u128(123).unwrap().negate()),
   ] {
     let v = rt.alloc_string_value(input).unwrap();
     let converted = convert_to_idl(&mut rt, v, &ty, &ctx).unwrap();
     let ConvertedValue::Any(Value::BigInt(actual)) = converted else {
       panic!("expected BigInt Any conversion, got {converted:?}");
     };
-    assert_eq!(actual, expected, "input={input:?}");
+    assert_eq!(
+      rt.heap().get_bigint(actual).unwrap(),
+      &expected,
+      "input={input:?}"
+    );
   }
 }
 

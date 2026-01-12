@@ -531,7 +531,13 @@ impl Evaluator<'_> {
       Value::Null => Ok(ScriptValue::Null),
       Value::Bool(b) => Ok(ScriptValue::Bool(b)),
       Value::Number(n) => Ok(ScriptValue::Number(n)),
-      Value::BigInt(b) => Ok(ScriptValue::BigInt(b.to_decimal_string())),
+      Value::BigInt(b) => Ok(ScriptValue::BigInt(
+        heap
+          .get_bigint(b)
+          .map_err(vm_error_to_runtime)?
+          .to_string_radix_with_tick(10, &mut || Ok(()))
+          .map_err(vm_error_to_runtime)?,
+      )),
       Value::String(s) => Ok(ScriptValue::String({
         let js = heap.get_string(s).map_err(vm_error_to_runtime)?;
         const MAX_SCRIPT_VALUE_STRING_CODE_UNITS: usize = 1 << 20;
@@ -576,11 +582,12 @@ impl Evaluator<'_> {
           message: "invalid BigInt string".to_string(),
           stack_trace: vm_error_format::format_stack_trace_limited(&self.vm.capture_stack()),
         })?;
-        let mut b = vm_js::JsBigInt::from_u128(magnitude);
+        let mut b = vm_js::JsBigInt::from_u128(magnitude).map_err(vm_error_to_runtime)?;
         if negative {
           b = b.negate();
         }
-        Value::BigInt(b)
+        let handle = scope.alloc_bigint(b).map_err(vm_error_to_runtime)?;
+        Value::BigInt(handle)
       }
       ScriptValue::String(s) => {
         let handle = scope.alloc_string(&s).map_err(vm_error_to_runtime)?;
@@ -688,14 +695,12 @@ impl Evaluator<'_> {
 
   fn eval_expr(&mut self, scope: &mut Scope<'_>, expr: &Node<Expr>) -> Result<Value, ScriptError> {
     match &*expr.stx {
-      Expr::LitBigInt(node) => {
-        self
-          .eval_lit_bigint(&node.stx)
-          .map_err(|msg| ScriptError::Runtime {
-            message: msg,
-            stack_trace: self.stack_trace_at_loc(expr.loc),
-          })
-      }
+      Expr::LitBigInt(node) => self
+        .eval_lit_bigint(scope, &node.stx)
+        .map_err(|msg| ScriptError::Runtime {
+          message: msg,
+          stack_trace: self.stack_trace_at_loc(expr.loc),
+        }),
       Expr::LitNum(node) => self.eval_lit_num(&node.stx),
       Expr::LitBool(node) => Ok(Value::Bool(node.stx.value)),
       Expr::LitNull(_) => Ok(Value::Null),
@@ -719,12 +724,14 @@ impl Evaluator<'_> {
     Ok(Value::Number(expr.value.0))
   }
 
-  fn eval_lit_bigint(&self, expr: &LitBigIntExpr) -> Result<Value, String> {
+  fn eval_lit_bigint(&self, scope: &mut Scope<'_>, expr: &LitBigIntExpr) -> Result<Value, String> {
     let magnitude: u128 = expr
       .value
       .parse()
       .map_err(|_| format!("BigInt literal out of supported range: {:?}", expr.value))?;
-    Ok(Value::BigInt(vm_js::JsBigInt::from_u128(magnitude)))
+    let bi = vm_js::JsBigInt::from_u128(magnitude).map_err(|e| e.to_string())?;
+    let handle = scope.alloc_bigint(bi).map_err(|e| e.to_string())?;
+    Ok(Value::BigInt(handle))
   }
 
   fn eval_lit_str(
@@ -967,7 +974,7 @@ fn to_boolean(heap: &Heap, value: Value) -> Result<bool, VmError> {
     Value::Undefined | Value::Null => false,
     Value::Bool(b) => b,
     Value::Number(n) => n != 0.0 && !n.is_nan(),
-    Value::BigInt(bi) => !bi.is_zero(),
+    Value::BigInt(bi) => !heap.get_bigint(bi)?.is_zero(),
     Value::String(s) => !heap.get_string(s)?.as_code_units().is_empty(),
     Value::Symbol(_) | Value::Object(_) => true,
   })
@@ -1047,7 +1054,7 @@ fn strict_equality(scope: &mut Scope<'_>, a: Value, b: Value) -> Result<bool, Vm
     (Null, Null) => Ok(true),
     (Bool(x), Bool(y)) => Ok(x == y),
     (Number(x), Number(y)) => Ok(x == y),
-    (BigInt(x), BigInt(y)) => Ok(x == y),
+    (BigInt(x), BigInt(y)) => Ok(scope.heap().get_bigint(x)? == scope.heap().get_bigint(y)?),
     (String(x), String(y)) => Ok(scope.heap().get_string(x)? == scope.heap().get_string(y)?),
     (Symbol(x), Symbol(y)) => Ok(x == y),
     (Object(x), Object(y)) => Ok(x == y),
@@ -1071,10 +1078,8 @@ fn abstract_equality(scope: &mut Scope<'_>, a: Value, b: Value) -> Result<bool, 
       (Null, Null) => return Ok(true),
       (Bool(x), Bool(y)) => return Ok(x == y),
       (Number(x), Number(y)) => return Ok(x == y),
-      (BigInt(x), BigInt(y)) => return Ok(x == y),
-      (String(x), String(y)) => {
-        return Ok(scope.heap().get_string(x)? == scope.heap().get_string(y)?)
-      }
+      (BigInt(x), BigInt(y)) => return Ok(scope.heap().get_bigint(x)? == scope.heap().get_bigint(y)?),
+      (String(x), String(y)) => return Ok(scope.heap().get_string(x)? == scope.heap().get_string(y)?),
       (Symbol(x), Symbol(y)) => return Ok(x == y),
       (Object(x), Object(y)) => return Ok(x == y),
 

@@ -1,3 +1,4 @@
+use crate::bigint::JsBigInt;
 use crate::exec::{generator_resume, GeneratorResumeInput, GeneratorResumeOutcome};
 use crate::function::{CallHandler, FunctionData, ThisMode};
 use crate::property::{PropertyDescriptor, PropertyDescriptorPatch, PropertyKey, PropertyKind};
@@ -16387,7 +16388,7 @@ fn this_bigint_value(
   scope: &mut Scope<'_>,
   this: Value,
   method: &'static str,
-) -> Result<crate::JsBigInt, VmError> {
+) -> Result<crate::GcBigInt, VmError> {
   match this {
     Value::BigInt(b) => Ok(b),
     Value::Object(obj) => {
@@ -16408,47 +16409,82 @@ fn this_bigint_value(
   }
 }
 
-/// ECMAScript `ToBigInt` (minimal).
+/// ECMAScript `ToBigInt(argument)` (ECMA-262).
 fn to_bigint(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
   host: &mut dyn VmHost,
   hooks: &mut dyn VmHostHooks,
   value: Value,
-) -> Result<crate::JsBigInt, VmError> {
-  // 1. Let prim be ? ToPrimitive(argument, hint Number).
-  let prim = scope.to_primitive(vm, host, hooks, value, crate::ToPrimitiveHint::Number)?;
+) -> Result<crate::GcBigInt, VmError> {
+  // `ToBigInt` can invoke user code (via `ToPrimitive`), so root `value` for the duration of the
+  // conversion.
+  let mut scope = scope.reborrow();
+  scope.push_root(value)?;
+
+  let prim = match value {
+    Value::Object(_) => scope.to_primitive(vm, host, hooks, value, crate::ToPrimitiveHint::Number)?,
+    other => other,
+  };
+  scope.push_root(prim)?;
 
   match prim {
     Value::BigInt(b) => Ok(b),
-    Value::Bool(b) => Ok(crate::JsBigInt::from_u128(if b { 1 } else { 0 })),
-    Value::Number(n) => match crate::exec::f64_to_bigint_integral(n) {
-      Some(bi) => Ok(bi),
-      None => {
+    Value::Bool(true) => scope.alloc_bigint_from_u128(1),
+    Value::Bool(false) => scope.alloc_bigint_from_u128(0),
+    Value::Number(n) => {
+      let Some(bi) = JsBigInt::from_f64_exact(n)? else {
         let intr = require_intrinsics(vm)?;
-        let err = crate::new_range_error(scope, intr, "Cannot convert number to BigInt")?;
-        Err(VmError::Throw(err))
-      }
-    },
-    Value::String(s) => {
-      let mut tick = || vm.tick();
-      match crate::exec::string_to_bigint(scope.heap(), s, &mut tick) {
-        Ok(Some(bi)) => Ok(bi),
-        Ok(None) => {
-          let intr = require_intrinsics(vm)?;
-          let err = crate::new_syntax_error_object(scope, &intr, "Cannot convert string to BigInt")?;
-          Err(VmError::Throw(err))
-        }
-        Err(VmError::Unimplemented("BigInt parse overflow")) => {
-          let intr = require_intrinsics(vm)?;
-          let err = crate::new_range_error(scope, intr, "BigInt overflow")?;
-          Err(VmError::Throw(err))
-        }
-        Err(err) => Err(err),
-      }
+        let err =
+          crate::error_object::new_range_error(&mut scope, intr, "Cannot convert a Number value to a BigInt")?;
+        return Err(VmError::Throw(err));
+      };
+      scope.alloc_bigint(bi)
     }
-    _ => Err(VmError::TypeError("Cannot convert value to BigInt")),
+    Value::String(s) => {
+      let units = scope.heap().get_string(s)?.as_code_units();
+      let parsed = JsBigInt::parse_utf16_string_with_tick(units, &mut || vm.tick())?;
+      let Some(bi) = parsed else {
+        let err = create_syntax_error(vm, &mut scope, "Cannot convert string to a BigInt")?;
+        return Err(VmError::Throw(err));
+      };
+      scope.alloc_bigint(bi)
+    }
+    Value::Undefined => Err(VmError::TypeError("Cannot convert undefined to a BigInt")),
+    Value::Null => Err(VmError::TypeError("Cannot convert null to a BigInt")),
+    Value::Symbol(_) => Err(VmError::TypeError("Cannot convert a Symbol value to a BigInt")),
+    Value::Object(_) => Err(VmError::InvariantViolation("ToPrimitive returned object")),
   }
+}
+
+fn to_index(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  value: Value,
+) -> Result<u64, VmError> {
+  // ECMA-262 `ToIndex`.
+  if matches!(value, Value::Undefined) {
+    return Ok(0);
+  }
+
+  let n = scope.to_number(vm, host, hooks, value)?;
+  let integer = if n.is_nan() { 0.0 } else { n.trunc() };
+  if !integer.is_finite() || integer < 0.0 {
+    let intr = require_intrinsics(vm)?;
+    let err = crate::error_object::new_range_error(scope, intr, "Invalid index")?;
+    return Err(VmError::Throw(err));
+  }
+
+  const MAX_SAFE_INTEGER: f64 = 9_007_199_254_740_991.0; // 2^53 - 1
+  if integer > MAX_SAFE_INTEGER {
+    let intr = require_intrinsics(vm)?;
+    let err = crate::error_object::new_range_error(scope, intr, "Invalid index")?;
+    return Err(VmError::Throw(err));
+  }
+
+  Ok(integer as u64)
 }
 
 /// `BigInt(value)` (ECMA-262).
@@ -16476,30 +16512,17 @@ pub fn bigint_as_int_n(
   _this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
-  let intr = require_intrinsics(vm)?;
-
   let bits_val = args.get(0).copied().unwrap_or(Value::Undefined);
-  let mut bits = scope.to_number(vm, host, hooks, bits_val)?;
-  if bits.is_nan() {
-    bits = 0.0;
-  }
-  if !bits.is_finite() {
-    let err = crate::new_range_error(scope, intr, "Invalid bits")?;
-    return Err(VmError::Throw(err));
-  }
-  bits = bits.trunc();
-  if bits < 0.0 || bits > 256.0 {
-    let err = crate::new_range_error(scope, intr, "Invalid bits")?;
-    return Err(VmError::Throw(err));
-  }
-  let bits_u32 = bits as u32;
-
   let bigint_val = args.get(1).copied().unwrap_or(Value::Undefined);
+  let bits = to_index(vm, scope, host, hooks, bits_val)?;
   let bi = to_bigint(vm, scope, host, hooks, bigint_val)?;
-  let Some(out) = bi.as_int_n(bits_u32) else {
-    let err = crate::new_range_error(scope, intr, "Invalid bits")?;
-    return Err(VmError::Throw(err));
+  scope.push_root(Value::BigInt(bi))?;
+
+  let out = {
+    let bi_ref = scope.heap().get_bigint(bi)?;
+    bi_ref.as_int_n(bits)?
   };
+  let out = scope.alloc_bigint(out)?;
   Ok(Value::BigInt(out))
 }
 
@@ -16513,90 +16536,30 @@ pub fn bigint_as_uint_n(
   _this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
-  let intr = require_intrinsics(vm)?;
-
   let bits_val = args.get(0).copied().unwrap_or(Value::Undefined);
-  let mut bits = scope.to_number(vm, host, hooks, bits_val)?;
-  if bits.is_nan() {
-    bits = 0.0;
-  }
-  if !bits.is_finite() {
-    let err = crate::new_range_error(scope, intr, "Invalid bits")?;
-    return Err(VmError::Throw(err));
-  }
-  bits = bits.trunc();
-  if bits < 0.0 || bits > 256.0 {
-    let err = crate::new_range_error(scope, intr, "Invalid bits")?;
-    return Err(VmError::Throw(err));
-  }
-  let bits_u32 = bits as u32;
-
   let bigint_val = args.get(1).copied().unwrap_or(Value::Undefined);
+  let bits = to_index(vm, scope, host, hooks, bits_val)?;
   let bi = to_bigint(vm, scope, host, hooks, bigint_val)?;
-  let Some(out) = bi.as_uint_n(bits_u32) else {
-    let err = crate::new_range_error(scope, intr, "Invalid bits")?;
-    return Err(VmError::Throw(err));
+  scope.push_root(Value::BigInt(bi))?;
+
+  let out = {
+    let bi_ref = scope.heap().get_bigint(bi)?;
+    bi_ref.as_uint_n(bits)?
   };
+  let out = scope.alloc_bigint(out)?;
   Ok(Value::BigInt(out))
 }
 
 fn bigint_to_string_radix(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  x: crate::JsBigInt,
+  x: crate::GcBigInt,
   radix: u32,
 ) -> Result<GcString, VmError> {
   debug_assert!((2..=36).contains(&radix));
-
-  if x.is_zero() {
-    return scope.alloc_string("0");
-  }
-  if radix == 10 {
-    let s = x.to_decimal_string();
-    return scope.alloc_string(&s);
-  }
-
-  let negative = x.is_negative();
-  let mut n = if negative { x.negate() } else { x };
-  let radix_bi = crate::JsBigInt::from_u128(radix as u128);
-
-  // Worst-case (radix 2) a 256-bit integer has 256 digits, plus an optional `-`.
-  let mut out: Vec<u16> = Vec::new();
-  out
-    .try_reserve_exact(260)
-    .map_err(|_| VmError::OutOfMemory)?;
-
-  let mut steps = 0usize;
-  while !n.is_zero() {
-    if steps % 32 == 0 {
-      vm.tick()?;
-    }
-    steps += 1;
-
-    let rem = n
-      .checked_rem(radix_bi)
-      .ok_or(VmError::InvariantViolation("BigInt remainder failed"))?;
-    let div = n
-      .checked_div(radix_bi)
-      .ok_or(VmError::InvariantViolation("BigInt division failed"))?;
-
-    let Some(rem_i128) = rem.try_to_i128() else {
-      return Err(VmError::InvariantViolation("BigInt remainder does not fit in i128"));
-    };
-    if rem_i128 < 0 {
-      return Err(VmError::InvariantViolation("BigInt remainder is negative"));
-    }
-    let digit = rem_i128 as u32;
-    out.push(digit_to_ascii(digit) as u16);
-
-    n = div;
-  }
-
-  if negative {
-    out.push(b'-' as u16);
-  }
-  out.reverse();
-  scope.alloc_string_from_u16_vec(out)
+  let bi = scope.heap().get_bigint(x)?;
+  let s = bi.to_string_radix_with_tick(radix, &mut || vm.tick())?;
+  scope.alloc_string(&s)
 }
 
 /// `BigInt.prototype.valueOf` (ECMA-262).
@@ -16654,10 +16617,6 @@ pub fn bigint_prototype_to_string(
     }
     radix as u32
   };
-
-  if radix_u32 == 10 {
-    return Ok(Value::String(scope.alloc_string(&x.to_decimal_string())?));
-  }
 
   let s = bigint_to_string_radix(vm, scope, x, radix_u32)?;
   Ok(Value::String(s))

@@ -1657,7 +1657,15 @@ fn describe_thrown_value(runtime: &mut vm_js::JsRuntime, value: Value) -> (Optio
     Value::Null => (None, "null".to_string()),
     Value::Bool(b) => (None, b.to_string()),
     Value::Number(n) => (None, format_js_number(n)),
-    Value::BigInt(b) => (None, b.to_decimal_string()),
+    Value::BigInt(b) => {
+      let msg = scope
+        .heap()
+        .get_bigint(b)
+        .ok()
+        .and_then(|bi| bi.to_string_radix_with_tick(10, &mut || Ok(())).ok())
+        .unwrap_or_else(|| "<bigint>".to_string());
+      (None, msg)
+    }
     Value::String(s) => {
       let msg = scope
         .heap()

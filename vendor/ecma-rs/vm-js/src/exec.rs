@@ -5,11 +5,13 @@ use crate::heap::{GeneratorContinuation, GeneratorState, Trace, Tracer};
 use crate::iterator;
 use crate::tick::vec_try_extend_from_slice_with_ticks;
 use crate::{
-  EnvRootId, ExecutionContext, GcEnv, GcObject, GcString, Heap, JsBigInt, ModuleGraph, ModuleId,
+  EnvRootId, ExecutionContext, GcBigInt, GcEnv, GcObject, GcString, Heap, ModuleGraph, ModuleId,
   NativeCall, PropertyDescriptor, PropertyDescriptorPatch, PropertyKey, PropertyKind, Realm,
   RealmId, RootId, Scope, ScriptOrModule, SourceText, StackFrame, Value, Vm, VmError, VmHost,
   VmHostHooks, VmJobContext, ToPrimitiveHint,
 };
+use crate::bigint::JsBigInt;
+use core::cmp::Ordering;
 use diagnostics::{Diagnostic, FileId};
 use parse_js::ast::class_or_object::{ClassMember, ClassOrObjKey, ClassOrObjVal, ObjMemberType};
 use parse_js::ast::expr::lit::{
@@ -32,7 +34,6 @@ use parse_js::ast::stmt::{
 use parse_js::operator::OperatorName;
 use parse_js::token::TT;
 use parse_js::{Dialect, ParseOptions, SourceType};
-use std::cmp::Ordering;
 use std::collections::{HashSet, VecDeque};
 use std::mem;
 use std::sync::Arc;
@@ -2760,7 +2761,7 @@ enum Reference<'a> {
 #[derive(Clone, Copy, Debug)]
 enum NumericValue {
   Number(f64),
-  BigInt(JsBigInt),
+  BigInt(GcBigInt),
 }
 
 impl<'a> Evaluator<'a> {
@@ -6966,7 +6967,7 @@ impl<'a> Evaluator<'a> {
     match &*expr.stx {
       Expr::LitStr(node) => self.eval_lit_str(scope, node),
       Expr::LitNum(node) => self.eval_lit_num(&node.stx),
-      Expr::LitBigInt(node) => self.eval_lit_bigint(&node.stx),
+      Expr::LitBigInt(node) => self.eval_lit_bigint(scope, &node.stx),
       Expr::LitBool(node) => self.eval_lit_bool(&node.stx),
       Expr::LitNull(_) => Ok(Value::Null),
       Expr::LitRegex(node) => self.eval_lit_regex(scope, node),
@@ -7612,11 +7613,14 @@ impl<'a> Evaluator<'a> {
     Ok(Value::Number(expr.value.0))
   }
 
-  fn eval_lit_bigint(&self, expr: &LitBigIntExpr) -> Result<Value, VmError> {
-    let Some(b) = JsBigInt::from_decimal_str(&expr.value) else {
-      return Err(VmError::Unimplemented("BigInt literal out of range"));
-    };
-    Ok(Value::BigInt(b))
+  fn eval_lit_bigint(
+    &mut self,
+    scope: &mut Scope<'_>,
+    expr: &LitBigIntExpr,
+  ) -> Result<Value, VmError> {
+    let b = JsBigInt::parse_ascii_radix_with_tick(&expr.value, 10, &mut || self.tick())?;
+    let handle = scope.alloc_bigint(b)?;
+    Ok(Value::BigInt(handle))
   }
 
   fn eval_lit_bool(&self, expr: &LitBoolExpr) -> Result<Value, VmError> {
@@ -8587,21 +8591,32 @@ impl<'a> Evaluator<'a> {
       }
       OperatorName::UnaryNegation => {
         let argument = self.eval_expr(scope, &expr.argument)?;
-        let num = self.to_numeric(scope, argument)?;
+        let mut neg_scope = scope.reborrow();
+        neg_scope.push_root(argument)?;
+        let num = self.to_numeric(&mut neg_scope, argument)?;
         Ok(match num {
           NumericValue::Number(n) => Value::Number(-n),
-          NumericValue::BigInt(b) => Value::BigInt(b.negate()),
+          NumericValue::BigInt(b) => {
+            neg_scope.push_root(Value::BigInt(b))?;
+            let bi = neg_scope.heap().get_bigint(b)?;
+            let out = bi.neg()?;
+            let out = neg_scope.alloc_bigint(out)?;
+            Value::BigInt(out)
+          }
         })
       }
       OperatorName::BitwiseNot => {
         let argument = self.eval_expr(scope, &expr.argument)?;
-        let num = self.to_numeric(scope, argument)?;
+        let mut not_scope = scope.reborrow();
+        not_scope.push_root(argument)?;
+        let num = self.to_numeric(&mut not_scope, argument)?;
         Ok(match num {
           NumericValue::Number(n) => Value::Number((!to_int32(n)) as f64),
           NumericValue::BigInt(b) => {
-            let Some(out) = b.checked_bitwise_not() else {
-              return Err(VmError::Unimplemented("BigInt bitwise not out of range"));
-            };
+            not_scope.push_root(Value::BigInt(b))?;
+            let bi = not_scope.heap().get_bigint(b)?;
+            let out = bi.bitwise_not()?;
+            let out = not_scope.alloc_bigint(out)?;
             Value::BigInt(out)
           }
         })
@@ -8785,11 +8800,7 @@ impl<'a> Evaluator<'a> {
     update_scope.push_root(old_value)?;
 
     let old_numeric = self.to_numeric(&mut update_scope, old_value)?;
-    let delta_bigint = if delta >= 0 {
-      JsBigInt::from_u128(delta as u128)
-    } else {
-      JsBigInt::from_u128((-delta) as u128).negate()
-    };
+    let delta_bigint = JsBigInt::from_i128(delta as i128)?;
 
     let (old_out, new_value) = match old_numeric {
       NumericValue::Number(n) => {
@@ -8797,11 +8808,10 @@ impl<'a> Evaluator<'a> {
         (Value::Number(n), Value::Number(new_n))
       }
       NumericValue::BigInt(b) => {
-        let Some(out) = b.checked_add(delta_bigint) else {
-          return Err(VmError::Unimplemented(
-            "BigInt increment/decrement overflow",
-          ));
-        };
+        update_scope.push_root(Value::BigInt(b))?;
+        let bi = update_scope.heap().get_bigint(b)?;
+        let out = bi.add(&delta_bigint)?;
+        let out = update_scope.alloc_bigint(out)?;
         (Value::BigInt(b), Value::BigInt(out))
       }
     };
@@ -9315,9 +9325,47 @@ impl<'a> Evaluator<'a> {
         match (left_num, right_num) {
           (NumericValue::Number(a), NumericValue::Number(b)) => Ok(Value::Number(a * b)),
           (NumericValue::BigInt(a), NumericValue::BigInt(b)) => {
-            let Some(out) = a.checked_mul(b) else {
-              return Err(VmError::Unimplemented("BigInt multiplication overflow"));
+            let out = {
+              let a = rhs_scope.heap().get_bigint(a)?;
+              let b = rhs_scope.heap().get_bigint(b)?;
+              a.mul_with_tick(b, &mut || self.tick())?
             };
+            let out = rhs_scope.alloc_bigint(out)?;
+            Ok(Value::BigInt(out))
+          }
+          _ => Err(throw_type_error(
+            self.vm,
+            &mut rhs_scope,
+            "Cannot mix BigInt and other types",
+          )?),
+        }
+      }
+      OperatorName::Exponentiation => {
+        let left = self.eval_expr(scope, &expr.left)?;
+        // Root `left` across evaluation of `right` in case the RHS allocates and triggers GC.
+        let mut rhs_scope = scope.reborrow();
+        rhs_scope.push_root(left)?;
+        let right = self.eval_expr(&mut rhs_scope, &expr.right)?;
+        rhs_scope.push_root(right)?;
+
+        let left_num = self.to_numeric(&mut rhs_scope, left)?;
+        let right_num = self.to_numeric(&mut rhs_scope, right)?;
+        match (left_num, right_num) {
+          (NumericValue::Number(a), NumericValue::Number(b)) => Ok(Value::Number(a.powf(b))),
+          (NumericValue::BigInt(a), NumericValue::BigInt(b)) => {
+            let out = {
+              let base = rhs_scope.heap().get_bigint(a)?;
+              let exp = rhs_scope.heap().get_bigint(b)?;
+              if exp.is_negative() {
+                return Err(throw_range_error(
+                  self.vm,
+                  &mut rhs_scope,
+                  "Exponent must be positive",
+                )?);
+              }
+              base.pow_with_tick(exp, &mut || self.tick())?
+            };
+            let out = rhs_scope.alloc_bigint(out)?;
             Ok(Value::BigInt(out))
           }
           _ => Err(throw_type_error(
@@ -9354,19 +9402,17 @@ impl<'a> Evaluator<'a> {
             Ok(Value::Number(out as f64))
           }
           (NumericValue::BigInt(a), NumericValue::BigInt(b)) => {
-            let out = match expr.operator {
-              OperatorName::BitwiseAnd => a.checked_bitwise_and(b),
-              OperatorName::BitwiseOr => a.checked_bitwise_or(b),
-              OperatorName::BitwiseXor => a.checked_bitwise_xor(b),
-              _ => {
-                return Err(VmError::InvariantViolation(
-                  "unexpected operator in bitwise BigInt binary op",
-                ));
+            let out = {
+              let a = rhs_scope.heap().get_bigint(a)?;
+              let b = rhs_scope.heap().get_bigint(b)?;
+              match expr.operator {
+                OperatorName::BitwiseAnd => a.bitwise_and(b)?,
+                OperatorName::BitwiseOr => a.bitwise_or(b)?,
+                OperatorName::BitwiseXor => a.bitwise_xor(b)?,
+                _ => unreachable!(),
               }
             };
-            let Some(out) = out else {
-              return Err(VmError::Unimplemented("BigInt bitwise out of range"));
-            };
+            let out = rhs_scope.alloc_bigint(out)?;
             Ok(Value::BigInt(out))
           }
           _ => Err(throw_type_error(
@@ -9420,53 +9466,46 @@ impl<'a> Evaluator<'a> {
               )?);
             }
 
-            let (shift_negative, shift) = match b.try_to_i128() {
-              Some(shift_i) => {
-                let shift_mag: u128 = if shift_i == i128::MIN {
-                  1u128 << 127
-                } else if shift_i < 0 {
-                  (-shift_i) as u128
-                } else {
-                  shift_i as u128
-                };
-                let shift = u32::try_from(shift_mag).unwrap_or(u32::MAX).min(256);
-                (shift_i < 0, shift)
-              }
-              None => (b.is_negative(), 256),
-            };
+            let out = {
+              let a = rhs_scope.heap().get_bigint(a)?;
+              let b = rhs_scope.heap().get_bigint(b)?;
 
-            match expr.operator {
-              OperatorName::BitwiseLeftShift => {
-                if shift_negative {
-                  Ok(Value::BigInt(a.shr(shift)))
-                } else {
-                  let Some(out) = a.checked_shl(shift) else {
-                    return Err(VmError::Unimplemented("BigInt left shift overflow"));
+              let (shift_negative, shift): (bool, u64) = match b.try_to_i128() {
+                Some(shift_i) => {
+                  let shift_mag: u128 = if shift_i == i128::MIN {
+                    1u128 << 127
+                  } else if shift_i < 0 {
+                    (-shift_i) as u128
+                  } else {
+                    shift_i as u128
                   };
-                  Ok(Value::BigInt(out))
+                  let shift = u64::try_from(shift_mag).unwrap_or(u64::MAX);
+                  (shift_i < 0, shift)
                 }
-              }
-              OperatorName::BitwiseRightShift => {
-                if shift_negative {
-                  let Some(out) = a.checked_shl(shift) else {
-                    return Err(VmError::Unimplemented("BigInt left shift overflow"));
-                  };
-                  Ok(Value::BigInt(out))
-                } else {
-                  Ok(Value::BigInt(a.shr(shift)))
+                None => (b.is_negative(), u64::MAX),
+              };
+
+              match expr.operator {
+                OperatorName::BitwiseLeftShift => {
+                  if shift_negative {
+                    a.shr(shift)?
+                  } else {
+                    a.shl(shift)?
+                  }
                 }
+                OperatorName::BitwiseRightShift => {
+                  if shift_negative {
+                    a.shl(shift)?
+                  } else {
+                    a.shr(shift)?
+                  }
+                }
+                OperatorName::BitwiseUnsignedRightShift => unreachable!(),
+                _ => unreachable!(),
               }
-              OperatorName::BitwiseUnsignedRightShift => {
-                return Err(VmError::InvariantViolation(
-                  "BigInt unsigned right shift should be rejected above",
-                ));
-              }
-              _ => {
-                return Err(VmError::InvariantViolation(
-                  "unexpected operator in BigInt shift binary op",
-                ));
-              }
-            }
+            };
+            let out = rhs_scope.alloc_bigint(out)?;
+            Ok(Value::BigInt(out))
           }
           _ => Err(throw_type_error(
             self.vm,
@@ -9486,47 +9525,44 @@ impl<'a> Evaluator<'a> {
         let left_num = self.to_numeric(&mut rhs_scope, left)?;
         let right_num = self.to_numeric(&mut rhs_scope, right)?;
 
-          match (left_num, right_num) {
-            (NumericValue::Number(a), NumericValue::Number(b)) => Ok(match expr.operator {
-              OperatorName::Subtraction => Value::Number(a - b),
-              OperatorName::Division => Value::Number(a / b),
-              OperatorName::Remainder => Value::Number(a % b),
-              _ => {
-                return Err(VmError::InvariantViolation(
-                  "unexpected operator in numeric binary op fast path",
-                ));
-              }
-            }),
-            (NumericValue::BigInt(a), NumericValue::BigInt(b)) => {
+        match (left_num, right_num) {
+          (NumericValue::Number(a), NumericValue::Number(b)) => Ok(match expr.operator {
+            OperatorName::Subtraction => Value::Number(a - b),
+            OperatorName::Division => Value::Number(a / b),
+            OperatorName::Remainder => Value::Number(a % b),
+            _ => unreachable!(),
+          }),
+          (NumericValue::BigInt(a), NumericValue::BigInt(b)) => {
+            let out = {
+              let a = rhs_scope.heap().get_bigint(a)?;
+              let b = rhs_scope.heap().get_bigint(b)?;
               if b.is_zero()
                 && matches!(
-                expr.operator,
-                OperatorName::Division | OperatorName::Remainder
-              )
-            {
-              return Err(throw_range_error(
-                self.vm,
-                &mut rhs_scope,
-                "Division by zero",
-              )?);
-            }
+                  expr.operator,
+                  OperatorName::Division | OperatorName::Remainder
+                )
+              {
+                return Err(throw_range_error(
+                  self.vm,
+                  &mut rhs_scope,
+                  "Division by zero",
+                )?);
+              }
 
-            let out = match expr.operator {
-              OperatorName::Subtraction => a
-                .checked_sub(b)
-                .ok_or(VmError::Unimplemented("BigInt subtraction overflow"))?,
-              OperatorName::Division => a
-                .checked_div(b)
-                .ok_or(VmError::InvariantViolation("BigInt division returned None"))?,
-              OperatorName::Remainder => a.checked_rem(b).ok_or(VmError::InvariantViolation(
-                "BigInt remainder returned None",
-              ))?,
-              _ => {
-                return Err(VmError::InvariantViolation(
-                  "unexpected operator in BigInt arithmetic binary op",
-                ));
+              match expr.operator {
+                OperatorName::Subtraction => a.sub(b)?,
+                OperatorName::Division => {
+                  let (q, _) = a.div_mod_with_tick(b, &mut || self.tick())?;
+                  q
+                }
+                OperatorName::Remainder => {
+                  let (_, r) = a.div_mod_with_tick(b, &mut || self.tick())?;
+                  r
+                }
+                _ => unreachable!(),
               }
             };
+            let out = rhs_scope.alloc_bigint(out)?;
             Ok(Value::BigInt(out))
           }
           _ => Err(throw_type_error(
@@ -9545,7 +9581,8 @@ impl<'a> Evaluator<'a> {
         let mut rhs_scope = scope.reborrow();
         rhs_scope.push_root(left)?;
         let right = self.eval_expr(&mut rhs_scope, &expr.right)?;
-        let result = self.relational_comparison_operator(&mut rhs_scope, expr.operator, left, right)?;
+        let result =
+          self.relational_comparison_operator(&mut rhs_scope, expr.operator, left, right)?;
         Ok(Value::Bool(result))
       }
       OperatorName::Comma => {
@@ -9843,7 +9880,11 @@ impl<'a> Evaluator<'a> {
         (Null, Null) => return Ok(true),
         (Bool(ax), Bool(by)) => return Ok(ax == by),
         (Number(ax), Number(by)) => return Ok(ax == by),
-        (BigInt(ax), BigInt(by)) => return Ok(ax == by),
+        (BigInt(ax), BigInt(by)) => {
+          let ax = scope.heap().get_bigint(ax)?;
+          let by = scope.heap().get_bigint(by)?;
+          return Ok(ax == by);
+        }
         (String(ax), String(by)) => {
           let a = scope.heap().get_string(ax)?.as_code_units();
           let b = scope.heap().get_string(by)?.as_code_units();
@@ -9871,14 +9912,14 @@ impl<'a> Evaluator<'a> {
           let Some(bi) = string_to_bigint(scope.heap(), bs, &mut tick)? else {
             return Ok(false);
           };
-          return Ok(ax == bi);
+          return Ok(scope.heap().get_bigint(ax)? == &bi);
         }
         (String(as_), BigInt(by)) => {
           let mut tick = || self.tick();
           let Some(bi) = string_to_bigint(scope.heap(), as_, &mut tick)? else {
             return Ok(false);
           };
-          return Ok(bi == by);
+          return Ok(scope.heap().get_bigint(by)? == &bi);
         }
 
         // 7/8. Boolean => ToNumber.
@@ -9900,8 +9941,18 @@ impl<'a> Evaluator<'a> {
         }
 
         // 11/12. BigInt/Number.
-        (BigInt(ax), Number(by)) => return Ok(matches!(bigint_compare_number(ax, by), Some(Ordering::Equal))),
-        (Number(ax), BigInt(by)) => return Ok(matches!(bigint_compare_number(by, ax), Some(Ordering::Equal))),
+        (BigInt(ax), Number(by)) => {
+          return Ok(matches!(
+            bigint_compare_number(scope.heap(), ax, by)?,
+            Some(Ordering::Equal)
+          ))
+        }
+        (Number(ax), BigInt(by)) => {
+          return Ok(matches!(
+            bigint_compare_number(scope.heap(), by, ax)?,
+            Some(Ordering::Equal)
+          ))
+        }
 
         // Everything else is false.
         _ => return Ok(false),
@@ -9957,14 +10008,14 @@ impl<'a> Evaluator<'a> {
         let Some(bi) = string_to_bigint(scope.heap(), bs, &mut tick)? else {
           return Ok(None);
         };
-        return Ok(Some(a < bi));
+        return Ok(Some(scope.heap().get_bigint(a)? < &bi));
       }
       (Value::String(as_), Value::BigInt(b)) => {
         let mut tick = || self.tick();
         let Some(ai) = string_to_bigint(scope.heap(), as_, &mut tick)? else {
           return Ok(None);
         };
-        return Ok(Some(ai < b));
+        return Ok(Some(&ai < scope.heap().get_bigint(b)?));
       }
       _ => {}
     }
@@ -9980,9 +10031,17 @@ impl<'a> Evaluator<'a> {
           Some(a < b)
         }
       }
-      (NumericValue::BigInt(a), NumericValue::BigInt(b)) => Some(a < b),
-      (NumericValue::BigInt(a), NumericValue::Number(b)) => bigint_compare_number(a, b).map(|ord| ord == Ordering::Less),
-      (NumericValue::Number(a), NumericValue::BigInt(b)) => bigint_compare_number(b, a).map(|ord| ord == Ordering::Greater),
+      (NumericValue::BigInt(a), NumericValue::BigInt(b)) => {
+        let a = scope.heap().get_bigint(a)?;
+        let b = scope.heap().get_bigint(b)?;
+        Some(a < b)
+      }
+      (NumericValue::BigInt(a), NumericValue::Number(b)) => {
+        bigint_compare_number(scope.heap(), a, b)?.map(|ord| ord == Ordering::Less)
+      }
+      (NumericValue::Number(a), NumericValue::BigInt(b)) => {
+        bigint_compare_number(scope.heap(), b, a)?.map(|ord| ord == Ordering::Greater)
+      }
     })
   }
 
@@ -10064,9 +10123,12 @@ impl<'a> Evaluator<'a> {
       Ok(match (left_num, right_num) {
         (NumericValue::Number(a), NumericValue::Number(b)) => Value::Number(a + b),
         (NumericValue::BigInt(a), NumericValue::BigInt(b)) => {
-          let Some(out) = a.checked_add(b) else {
-            return Err(VmError::Unimplemented("BigInt addition overflow"));
+          let out = {
+            let a = add_scope.heap().get_bigint(a)?;
+            let b = add_scope.heap().get_bigint(b)?;
+            a.add(b)?
           };
+          let out = add_scope.alloc_bigint(out)?;
           Value::BigInt(out)
         }
         _ => {
@@ -10084,6 +10146,11 @@ impl<'a> Evaluator<'a> {
     // ECMA-262 `ToNumeric`: ToPrimitive (hint Number), then return BigInt directly or convert to
     // Number.
     let prim = self.to_primitive(scope, value, ToPrimitiveHint::Number)?;
+    // If `prim` is a heap-managed primitive (BigInt), root it for the remainder of this scope so
+    // subsequent allocations (BigInt arithmetic, string conversions, etc) cannot collect it.
+    if let Value::BigInt(b) = prim {
+      scope.push_root(Value::BigInt(b))?;
+    }
     match prim {
       Value::BigInt(b) => Ok(NumericValue::BigInt(b)),
       other => match scope.heap_mut().to_number_with_tick(other, || self.tick()) {
@@ -10095,244 +10162,76 @@ impl<'a> Evaluator<'a> {
   }
 }
 
-fn is_ecma_whitespace_unit(unit: u16) -> bool {
-  matches!(
-    unit,
-    // WhiteSpace (ECMA-262)
-    0x0009
-      | 0x000B
-      | 0x000C
-      | 0x0020
-      | 0x00A0
-      | 0x1680
-      | 0x202F
-      | 0x205F
-      | 0x3000
-      | 0xFEFF
-      // LineTerminator (ECMA-262)
-      | 0x000A
-      | 0x000D
-      | 0x2028
-      | 0x2029
-  ) || matches!(unit, 0x2000..=0x200A)
-}
-
 pub(crate) fn string_to_bigint(
   heap: &Heap,
   s: GcString,
   tick: &mut impl FnMut() -> Result<(), VmError>,
 ) -> Result<Option<JsBigInt>, VmError> {
   let units = heap.get_string(s)?.as_code_units();
-
-  // TrimString (ECMA-262): trim ECMAScript WhiteSpace + LineTerminator.
-  let mut start = 0usize;
-  let mut steps = 0usize;
-  while start < units.len() && is_ecma_whitespace_unit(units[start]) {
-    if steps % 1024 == 0 {
-      tick()?;
-    }
-    steps += 1;
-    start += 1;
-  }
-  let mut end = units.len();
-  while end > start && is_ecma_whitespace_unit(units[end - 1]) {
-    if steps % 1024 == 0 {
-      tick()?;
-    }
-    steps += 1;
-    end -= 1;
-  }
-
-  let trimmed = &units[start..end];
-  if trimmed.is_empty() {
-    // ECMA-262 `StringToBigInt` parses the empty string (after trimming) as `0n`.
-    return Ok(Some(JsBigInt::zero()));
-  }
-
-  let mut negative = false;
-  let mut idx = 0usize;
-  if trimmed[idx] == b'+' as u16 {
-    idx += 1;
-  } else if trimmed[idx] == b'-' as u16 {
-    negative = true;
-    idx += 1;
-  }
-  if idx >= trimmed.len() {
-    return Ok(None);
-  }
-
-  let mut radix: u32 = 10;
-  if idx + 1 < trimmed.len() && trimmed[idx] == b'0' as u16 {
-    match trimmed[idx + 1] {
-      u if u == b'x' as u16 || u == b'X' as u16 => {
-        radix = 16;
-        idx += 2;
-      }
-      u if u == b'b' as u16 || u == b'B' as u16 => {
-        radix = 2;
-        idx += 2;
-      }
-      u if u == b'o' as u16 || u == b'O' as u16 => {
-        radix = 8;
-        idx += 2;
-      }
-      _ => {}
-    }
-  }
-  if idx >= trimmed.len() {
-    return Ok(None);
-  }
-
-  let radix_bi = JsBigInt::from_u128(radix as u128);
-  let mut out = JsBigInt::zero();
-  for (i, &u) in trimmed[idx..].iter().enumerate() {
-    if i % 1024 == 0 {
-      tick()?;
-    }
-    let digit = match u {
-      u if (b'0' as u16..=b'9' as u16).contains(&u) => (u - b'0' as u16) as u32,
-      u if (b'a' as u16..=b'z' as u16).contains(&u) => (u - b'a' as u16 + 10) as u32,
-      u if (b'A' as u16..=b'Z' as u16).contains(&u) => (u - b'A' as u16 + 10) as u32,
-      _ => return Ok(None),
-    };
-    if digit >= radix {
-      return Ok(None);
-    }
-    out = out
-      .checked_mul(radix_bi)
-      .ok_or(VmError::Unimplemented("BigInt parse overflow"))?;
-    out = out
-      .checked_add(JsBigInt::from_u128(digit as u128))
-      .ok_or(VmError::Unimplemented("BigInt parse overflow"))?;
-  }
-
-  if negative {
-    out = out.negate();
-  }
-  Ok(Some(out))
+  JsBigInt::parse_utf16_string_with_tick(units, tick)
 }
 
-fn bigint_compare_number(bi: JsBigInt, n: f64) -> Option<Ordering> {
+fn bigint_compare_number(heap: &Heap, bi: GcBigInt, n: f64) -> Result<Option<Ordering>, VmError> {
   if n.is_nan() {
-    return None;
+    return Ok(None);
   }
   if n == f64::INFINITY {
-    return Some(Ordering::Less);
+    return Ok(Some(Ordering::Less));
   }
   if n == f64::NEG_INFINITY {
-    return Some(Ordering::Greater);
+    return Ok(Some(Ordering::Greater));
   }
+
+  let bi = heap.get_bigint(bi)?;
 
   // Treat +0 and -0 as equal.
   if n == 0.0 {
     if bi.is_zero() {
-      return Some(Ordering::Equal);
+      return Ok(Some(Ordering::Equal));
     }
-    if bi.is_negative() {
-      return Some(Ordering::Less);
-    }
-    return Some(Ordering::Greater);
-  }
-
-  let bi_neg = bi.is_negative();
-  let n_neg = n.is_sign_negative();
-  if bi_neg != n_neg {
-    return Some(if bi_neg { Ordering::Less } else { Ordering::Greater });
-  }
-
-  let bi_abs = if bi_neg { bi.negate() } else { bi };
-  let n_abs = n.abs();
-  let ord = compare_positive_bigint_and_positive_number(bi_abs, n_abs);
-  Some(if bi_neg { ord.reverse() } else { ord })
-}
-
-fn compare_positive_bigint_and_positive_number(bi: JsBigInt, n: f64) -> Ordering {
-  debug_assert!(!bi.is_negative());
-  debug_assert!(n.is_finite());
-  debug_assert!(n >= 0.0);
-
-  if n == 0.0 {
-    return if bi.is_zero() {
-      Ordering::Equal
-    } else {
-      Ordering::Greater
-    };
-  }
-
-  if n.fract() != 0.0 {
-    let floor = n.floor();
-    let Some(floor_bi) = f64_to_bigint_integral(floor) else {
-      // If we can't represent floor(n) as a BigInt, then `n` is larger than our bounded BigInt
-      // representation, so `bi < n`.
-      return Ordering::Less;
-    };
-    if bi <= floor_bi {
+    return Ok(Some(if bi.is_negative() {
       Ordering::Less
     } else {
       Ordering::Greater
-    }
-  } else {
-    match f64_to_bigint_integral(n) {
-      Some(n_bi) => bi.cmp(&n_bi),
-      None => Ordering::Less,
-    }
-  }
-}
-
-pub(crate) fn f64_to_bigint_integral(n: f64) -> Option<JsBigInt> {
-  if !n.is_finite() {
-    return None;
-  }
-  if n.fract() != 0.0 {
-    return None;
-  }
-  if n == 0.0 {
-    return Some(JsBigInt::zero());
+    }));
   }
 
-  let negative = n.is_sign_negative();
-  let abs = n.abs();
-
-  // Integer values in the subnormal range (0 < abs < 2^-1022) cannot exist.
-  if abs < 1.0 {
-    return None;
+  // Integral number: compare directly.
+  if n.fract() == 0.0 {
+    let Some(n_big) = JsBigInt::from_f64_exact(n)? else {
+      // `n` is finite and integral, so this should be unreachable.
+      return Ok(None);
+    };
+    return Ok(Some(bi.cmp(&n_big)));
   }
 
-  let bits = abs.to_bits();
-  let exp_bits = ((bits >> 52) & 0x7ff) as i32;
-  let frac_bits = bits & ((1u64 << 52) - 1);
-  if exp_bits == 0 {
-    // Subnormal.
-    return None;
+  // Non-integral number: since `bi` is integral, compare against floor/ceil.
+  if n > 0.0 {
+    let floor = n.floor();
+    let Some(floor_big) = JsBigInt::from_f64_exact(floor)? else {
+      return Ok(None);
+    };
+    let ord = bi.cmp(&floor_big);
+    return Ok(Some(if ord == Ordering::Greater {
+      Ordering::Greater
+    } else {
+      // `bi == floor(n)` is still < n.
+      Ordering::Less
+    }));
   }
 
-  let e = exp_bits - 1023;
-  debug_assert!(e >= 0);
-
-  // Normalized mantissa: implicit leading 1.
-  let m = (1u64 << 52) | frac_bits;
-
-  let mut out = if e <= 52 {
-    let shift = (52 - e) as u32;
-    debug_assert!(shift <= 52);
-    if shift != 0 {
-      let mask = (1u64 << shift) - 1;
-      if (m & mask) != 0 {
-        return None;
-      }
-    }
-    let int = m >> shift;
-    JsBigInt::from_u128(int as u128)
-  } else {
-    let shift = (e - 52) as u32;
-    let base = JsBigInt::from_u128(m as u128);
-    base.checked_shl(shift)?
+  // n < 0.0
+  let ceil = n.ceil();
+  let Some(ceil_big) = JsBigInt::from_f64_exact(ceil)? else {
+    return Ok(None);
   };
-
-  if negative {
-    out = out.negate();
-  }
-  Some(out)
+  let ord = bi.cmp(&ceil_big);
+  Ok(Some(if ord == Ordering::Less {
+    Ordering::Less
+  } else {
+    // `bi == ceil(n)` is still > n.
+    Ordering::Greater
+  }))
 }
 
 fn alloc_string_from_lit_str(
@@ -18579,11 +18478,7 @@ fn async_apply_update_to_reference(
   update_scope.push_root(old_value)?;
 
   let old_numeric = evaluator.to_numeric(&mut update_scope, old_value)?;
-  let delta_bigint = if delta >= 0 {
-    JsBigInt::from_u128(delta as u128)
-  } else {
-    JsBigInt::from_u128((-delta) as u128).negate()
-  };
+  let delta_bigint = JsBigInt::from_i128(delta as i128)?;
 
   let (old_out, new_value) = match old_numeric {
     NumericValue::Number(n) => {
@@ -18591,11 +18486,10 @@ fn async_apply_update_to_reference(
       (Value::Number(n), Value::Number(new_n))
     }
     NumericValue::BigInt(b) => {
-      let Some(out) = b.checked_add(delta_bigint) else {
-        return Err(VmError::Unimplemented(
-          "BigInt increment/decrement overflow",
-        ));
-      };
+      update_scope.push_root(Value::BigInt(b))?;
+      let bi = update_scope.heap().get_bigint(b)?;
+      let out = bi.add(&delta_bigint)?;
+      let out = update_scope.alloc_bigint(out)?;
       (Value::BigInt(b), Value::BigInt(out))
     }
   };
@@ -19305,20 +19199,31 @@ fn async_apply_unary_operator(
     OperatorName::LogicalNot => Ok(Value::Bool(!to_boolean(scope.heap(), argument)?)),
     OperatorName::UnaryPlus => Ok(Value::Number(evaluator.to_number_operator(scope, argument)?)),
     OperatorName::UnaryNegation => {
-      let num = evaluator.to_numeric(scope, argument)?;
+      let mut neg_scope = scope.reborrow();
+      neg_scope.push_root(argument)?;
+      let num = evaluator.to_numeric(&mut neg_scope, argument)?;
       Ok(match num {
         NumericValue::Number(n) => Value::Number(-n),
-        NumericValue::BigInt(b) => Value::BigInt(b.negate()),
+        NumericValue::BigInt(b) => {
+          neg_scope.push_root(Value::BigInt(b))?;
+          let bi = neg_scope.heap().get_bigint(b)?;
+          let out = bi.neg()?;
+          let out = neg_scope.alloc_bigint(out)?;
+          Value::BigInt(out)
+        }
       })
     }
     OperatorName::BitwiseNot => {
-      let num = evaluator.to_numeric(scope, argument)?;
+      let mut not_scope = scope.reborrow();
+      not_scope.push_root(argument)?;
+      let num = evaluator.to_numeric(&mut not_scope, argument)?;
       Ok(match num {
         NumericValue::Number(n) => Value::Number((!to_int32(n)) as f64),
         NumericValue::BigInt(b) => {
-          let Some(out) = b.checked_bitwise_not() else {
-            return Err(VmError::Unimplemented("BigInt bitwise not out of range"));
-          };
+          not_scope.push_root(Value::BigInt(b))?;
+          let bi = not_scope.heap().get_bigint(b)?;
+          let out = bi.bitwise_not()?;
+          let out = not_scope.alloc_bigint(out)?;
           Value::BigInt(out)
         }
       })
@@ -19506,9 +19411,13 @@ fn async_apply_binary_operator(
       match (left_num, right_num) {
         (NumericValue::Number(a), NumericValue::Number(b)) => Ok(Value::Number(a * b)),
         (NumericValue::BigInt(a), NumericValue::BigInt(b)) => {
-          let Some(out) = a.checked_mul(b) else {
-            return Err(VmError::Unimplemented("BigInt multiplication overflow"));
-          };
+          let out = {
+            let a = op_scope.heap().get_bigint(a)?;
+            let b = op_scope.heap().get_bigint(b)?;
+            a.mul_with_tick(b, &mut || evaluator.tick())
+          }
+          .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut op_scope, err))?;
+          let out = op_scope.alloc_bigint(out)?;
           Ok(Value::BigInt(out))
         }
         _ => Err(throw_type_error(
@@ -19538,15 +19447,18 @@ fn async_apply_binary_operator(
           Ok(Value::Number(out as f64))
         }
         (NumericValue::BigInt(a), NumericValue::BigInt(b)) => {
-          let out = match operator {
-            OperatorName::BitwiseAnd => a.checked_bitwise_and(b),
-            OperatorName::BitwiseOr => a.checked_bitwise_or(b),
-            OperatorName::BitwiseXor => a.checked_bitwise_xor(b),
-            _ => unreachable!(),
-          };
-          let Some(out) = out else {
-            return Err(VmError::Unimplemented("BigInt bitwise out of range"));
-          };
+          let out = {
+            let a = op_scope.heap().get_bigint(a)?;
+            let b = op_scope.heap().get_bigint(b)?;
+            match operator {
+              OperatorName::BitwiseAnd => a.bitwise_and(b),
+              OperatorName::BitwiseOr => a.bitwise_or(b),
+              OperatorName::BitwiseXor => a.bitwise_xor(b),
+              _ => unreachable!(),
+            }
+          }
+          .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut op_scope, err))?;
+          let out = op_scope.alloc_bigint(out)?;
           Ok(Value::BigInt(out))
         }
         _ => Err(throw_type_error(
@@ -19594,45 +19506,47 @@ fn async_apply_binary_operator(
             )?);
           }
 
-          let (shift_negative, shift) = match b.try_to_i128() {
-            Some(shift_i) => {
-              let shift_mag: u128 = if shift_i == i128::MIN {
-                1u128 << 127
-              } else if shift_i < 0 {
-                (-shift_i) as u128
-              } else {
-                shift_i as u128
-              };
-              let shift = u32::try_from(shift_mag).unwrap_or(u32::MAX).min(256);
-              (shift_i < 0, shift)
-            }
-            None => (b.is_negative(), 256),
-          };
+          let out = {
+            let a = op_scope.heap().get_bigint(a)?;
+            let b = op_scope.heap().get_bigint(b)?;
 
-          match operator {
-            OperatorName::BitwiseLeftShift => {
-              if shift_negative {
-                Ok(Value::BigInt(a.shr(shift)))
-              } else {
-                let Some(out) = a.checked_shl(shift) else {
-                  return Err(VmError::Unimplemented("BigInt left shift overflow"));
+            let (shift_negative, shift): (bool, u64) = match b.try_to_i128() {
+              Some(shift_i) => {
+                let shift_mag: u128 = if shift_i == i128::MIN {
+                  1u128 << 127
+                } else if shift_i < 0 {
+                  (-shift_i) as u128
+                } else {
+                  shift_i as u128
                 };
-                Ok(Value::BigInt(out))
+                let shift = u64::try_from(shift_mag).unwrap_or(u64::MAX);
+                (shift_i < 0, shift)
               }
-            }
-            OperatorName::BitwiseRightShift => {
-              if shift_negative {
-                let Some(out) = a.checked_shl(shift) else {
-                  return Err(VmError::Unimplemented("BigInt left shift overflow"));
-                };
-                Ok(Value::BigInt(out))
-              } else {
-                Ok(Value::BigInt(a.shr(shift)))
+              None => (b.is_negative(), u64::MAX),
+            };
+
+            match operator {
+              OperatorName::BitwiseLeftShift => {
+                if shift_negative {
+                  a.shr(shift)
+                } else {
+                  a.shl(shift)
+                }
               }
+              OperatorName::BitwiseRightShift => {
+                if shift_negative {
+                  a.shl(shift)
+                } else {
+                  a.shr(shift)
+                }
+              }
+              OperatorName::BitwiseUnsignedRightShift => unreachable!(),
+              _ => unreachable!(),
             }
-            OperatorName::BitwiseUnsignedRightShift => unreachable!(),
-            _ => unreachable!(),
           }
+          .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut op_scope, err))?;
+          let out = op_scope.alloc_bigint(out)?;
+          Ok(Value::BigInt(out))
         }
         _ => Err(throw_type_error(
           evaluator.vm,
@@ -19657,22 +19571,29 @@ fn async_apply_binary_operator(
           _ => unreachable!(),
         }),
         (NumericValue::BigInt(a), NumericValue::BigInt(b)) => {
-          if b.is_zero() && matches!(operator, OperatorName::Division | OperatorName::Remainder) {
-            return Err(throw_range_error(evaluator.vm, &mut op_scope, "Division by zero")?);
-          }
+          let out = {
+            let a = op_scope.heap().get_bigint(a)?;
+            let b = op_scope.heap().get_bigint(b)?;
 
-          let out = match operator {
-            OperatorName::Subtraction => a
-              .checked_sub(b)
-              .ok_or(VmError::Unimplemented("BigInt subtraction overflow"))?,
-            OperatorName::Division => a
-              .checked_div(b)
-              .ok_or(VmError::InvariantViolation("BigInt division returned None"))?,
-            OperatorName::Remainder => a.checked_rem(b).ok_or(VmError::InvariantViolation(
-              "BigInt remainder returned None",
-            ))?,
-            _ => unreachable!(),
-          };
+            if b.is_zero() && matches!(operator, OperatorName::Division | OperatorName::Remainder) {
+              return Err(throw_range_error(evaluator.vm, &mut op_scope, "Division by zero")?);
+            }
+
+            match operator {
+              OperatorName::Subtraction => a.sub(b),
+              OperatorName::Division => {
+                let (q, _) = a.div_mod_with_tick(b, &mut || evaluator.tick())?;
+                Ok(q)
+              }
+              OperatorName::Remainder => {
+                let (_, r) = a.div_mod_with_tick(b, &mut || evaluator.tick())?;
+                Ok(r)
+              }
+              _ => unreachable!(),
+            }
+          }
+          .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut op_scope, err))?;
+          let out = op_scope.alloc_bigint(out)?;
           Ok(Value::BigInt(out))
         }
         _ => Err(throw_type_error(
@@ -28888,7 +28809,7 @@ fn to_boolean(heap: &Heap, value: Value) -> Result<bool, VmError> {
     Value::Undefined | Value::Null => false,
     Value::Bool(b) => b,
     Value::Number(n) => n != 0.0 && !n.is_nan(),
-    Value::BigInt(n) => !n.is_zero(),
+    Value::BigInt(n) => !heap.get_bigint(n)?.is_zero(),
     Value::String(s) => !heap.get_string(s)?.as_code_units().is_empty(),
     Value::Symbol(_) | Value::Object(_) => true,
   })
@@ -28958,7 +28879,7 @@ fn strict_equal_with_tick(
     (Value::Null, Value::Null) => true,
     (Value::Bool(x), Value::Bool(y)) => x == y,
     (Value::Number(x), Value::Number(y)) => x == y,
-    (Value::BigInt(x), Value::BigInt(y)) => x == y,
+    (Value::BigInt(x), Value::BigInt(y)) => heap.get_bigint(x)? == heap.get_bigint(y)?,
     (Value::String(x), Value::String(y)) => {
       let a = heap.get_string(x)?.as_code_units();
       let b = heap.get_string(y)?.as_code_units();

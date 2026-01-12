@@ -124,6 +124,7 @@
 //! [`docs::webidl_host_objects`](crate::docs::webidl_host_objects).
 
 mod agent;
+mod bigint;
 mod builtins;
 mod code;
 mod conversion_ops;
@@ -207,6 +208,7 @@ pub use crate::function_properties::make_generator_function_instance_prototype;
 pub use crate::function_properties::set_function_length;
 pub use crate::function_properties::set_function_name;
 pub use crate::handle::GcEnv;
+pub use crate::handle::GcBigInt;
 pub use crate::handle::GcObject;
 pub use crate::handle::GcString;
 pub use crate::handle::GcSymbol;
@@ -337,7 +339,7 @@ pub use crate::spec_ops::species_constructor;
 pub use crate::spec_ops::species_constructor_with_host_and_hooks;
 pub use crate::string::JsString;
 pub use crate::symbol::JsSymbol;
-pub use crate::value::JsBigInt;
+pub use crate::bigint::JsBigInt;
 pub use crate::value::Value;
 pub use crate::vm::Budget;
 pub use crate::vm::BudgetGuard;

@@ -11171,6 +11171,8 @@ mod tests {
 
     let mut host_state = ();
     let mut hooks = NoopHooks;
+    let one = scope.alloc_bigint_from_u128(1)?;
+    scope.push_root(Value::BigInt(one))?;
     let err = response_json_static_native(
       &mut vm,
       &mut scope,
@@ -11178,7 +11180,7 @@ mod tests {
       &mut hooks,
       json_fn,
       Value::Object(response_ctor),
-      &[Value::BigInt(vm_js::JsBigInt::from_u128(1))],
+      &[Value::BigInt(one)],
     )
     .expect_err("expected Response.json(BigInt) to throw");
 

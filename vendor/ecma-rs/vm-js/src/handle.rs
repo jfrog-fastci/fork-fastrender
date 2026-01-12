@@ -179,6 +179,31 @@ impl GcSymbol {
 #[repr(transparent)]
 pub struct GcEnv(pub(crate) HeapId);
 
+/// A GC-managed JavaScript BigInt.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+#[repr(transparent)]
+pub struct GcBigInt(pub(crate) HeapId);
+
+impl GcBigInt {
+  /// The underlying [`HeapId`].
+  #[inline]
+  pub fn id(self) -> HeapId {
+    self.0
+  }
+
+  /// The slot index within the heap.
+  #[inline]
+  pub fn index(self) -> u32 {
+    self.0.index()
+  }
+
+  /// The slot generation within the heap.
+  #[inline]
+  pub fn generation(self) -> u32 {
+    self.0.generation()
+  }
+}
+
 impl GcEnv {
   /// The underlying [`HeapId`].
   #[inline]

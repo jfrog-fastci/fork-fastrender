@@ -243,7 +243,13 @@ impl Heap {
       Value::Bool(true) => scope.alloc_string("true"),
       Value::Bool(false) => scope.alloc_string("false"),
       Value::Number(n) => scope.alloc_string(&number_to_string(n)),
-      Value::BigInt(n) => scope.alloc_string(&n.to_decimal_string()),
+      Value::BigInt(b) => {
+        let s = {
+          let bi = scope.heap().get_bigint(b)?;
+          bi.to_string_radix_with_tick(10, &mut || Ok(()))?
+        };
+        scope.alloc_string(&s)
+      }
       Value::String(s) => Ok(s),
       Value::Symbol(_) => Err(VmError::TypeError("Cannot convert a Symbol value to a string")),
       Value::Object(_) => Err(VmError::Unimplemented(
@@ -258,7 +264,7 @@ impl Heap {
       Value::Undefined | Value::Null => false,
       Value::Bool(b) => b,
       Value::Number(n) => n != 0.0 && !n.is_nan(),
-      Value::BigInt(n) => !n.is_zero(),
+      Value::BigInt(b) => !self.get_bigint(b)?.is_zero(),
       Value::String(s) => !self.get_string(s)?.as_code_units().is_empty(),
       Value::Symbol(_) | Value::Object(_) => true,
     })

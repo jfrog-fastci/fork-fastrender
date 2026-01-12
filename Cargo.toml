@@ -137,7 +137,7 @@ read-fonts = "0.20"
 skrifa = "0.20"
 walkdir = "2"
 # Legacy heap-only WebIDL runtime adapter (vendored ecma-rs workspace).
-webidl-js-runtime = { path = "vendor/ecma-rs/webidl-runtime" }
+webidl_js_runtime = { package = "webidl-js-runtime", path = "vendor/ecma-rs/webidl-runtime" }
 webidl-vm-js = { path = "vendor/ecma-rs/webidl-vm-js" }
 vm-js = { path = "vendor/ecma-rs/vm-js" }
 parse-js = { path = "vendor/ecma-rs/parse-js", features = ["diagnostics"] }

@@ -175,7 +175,7 @@ fn channel_registry_key(scope: &mut Scope<'_>, obj: GcObject) -> Result<Registry
 
 // --- Structured clone (subset) ---------------------------------------------------------------
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 enum SerializedValue {
   Undefined,
   Null,
@@ -241,7 +241,11 @@ fn serialize_value(
     Value::Null => Ok(SerializedValue::Null),
     Value::Bool(b) => Ok(SerializedValue::Bool(b)),
     Value::Number(n) => Ok(SerializedValue::Number(n)),
-    Value::BigInt(b) => Ok(SerializedValue::BigInt(b)),
+    Value::BigInt(b) => {
+      let bi = scope.heap().get_bigint(b)?;
+      budget_add_bytes(budget, bi.estimated_byte_len())?;
+      Ok(SerializedValue::BigInt(bi.try_clone()?))
+    }
     Value::String(s) => Ok(SerializedValue::String(string_to_code_units(
       scope.heap(),
       s,
@@ -333,7 +337,7 @@ fn deserialize_value(vm: &mut Vm, scope: &mut Scope<'_>, value: &SerializedValue
     SerializedValue::Null => Ok(Value::Null),
     SerializedValue::Bool(b) => Ok(Value::Bool(*b)),
     SerializedValue::Number(n) => Ok(Value::Number(*n)),
-    SerializedValue::BigInt(b) => Ok(Value::BigInt(*b)),
+    SerializedValue::BigInt(b) => Ok(Value::BigInt(scope.alloc_bigint(b.try_clone()?)?)),
     SerializedValue::String(units) => {
       let s = scope.alloc_string_from_code_units(units)?;
       scope.push_root(Value::String(s))?;

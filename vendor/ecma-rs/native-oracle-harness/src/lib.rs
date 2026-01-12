@@ -1358,7 +1358,11 @@ fn value_to_string_in_heap(heap: &Heap, value: Value) -> String {
     Value::Null => "null".to_string(),
     Value::Bool(b) => b.to_string(),
     Value::Number(n) => n.to_string(),
-    Value::BigInt(b) => b.to_decimal_string(),
+    Value::BigInt(b) => heap
+      .get_bigint(b)
+      .ok()
+      .and_then(|bi| bi.to_string_radix_with_tick(10, &mut || Ok(())).ok())
+      .unwrap_or_else(|| "<invalid bigint>".to_string()),
     Value::String(s) => heap
       .get_string(s)
       .map(|s| s.to_utf8_lossy())

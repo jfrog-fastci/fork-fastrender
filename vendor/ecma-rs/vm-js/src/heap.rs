@@ -7,12 +7,14 @@ use crate::function::{
 use crate::property::{PropertyDescriptor, PropertyDescriptorPatch, PropertyKey, PropertyKind};
 use crate::promise::{PromiseReaction, PromiseReactionType, PromiseState};
 use crate::regexp::{RegExpFlags, RegExpProgram};
+use crate::bigint::JsBigInt;
 use crate::string::JsString;
 use crate::symbol::JsSymbol;
 use crate::CompiledFunctionRef;
 use crate::handle::GcModuleNamespaceExports;
 use crate::{
-  EnvRootId, GcEnv, GcObject, GcString, GcSymbol, HeapId, Job, JobKind, RealmId, RootId, Value, Vm,
+  EnvRootId, GcBigInt, GcEnv, GcObject, GcString, GcSymbol, HeapId, Job, JobKind, RealmId, RootId,
+  Value, Vm,
   VmError, VmHost, VmHostHooks, WeakGcObject,
 };
 use std::cell::Cell;
@@ -2084,6 +2086,11 @@ impl Heap {
     matches!(self.get_heap_object(s.0), Ok(HeapObject::String(_)))
   }
 
+  /// Returns `true` if `b` currently points to a live BigInt allocation.
+  pub fn is_valid_bigint(&self, b: GcBigInt) -> bool {
+    matches!(self.get_heap_object(b.0), Ok(HeapObject::BigInt(_)))
+  }
+
   /// Returns `true` if `sym` currently points to a live symbol allocation.
   pub fn is_valid_symbol(&self, sym: GcSymbol) -> bool {
     matches!(self.get_heap_object(sym.0), Ok(HeapObject::Symbol(_)))
@@ -2154,6 +2161,14 @@ impl Heap {
   pub fn get_string(&self, s: GcString) -> Result<&JsString, VmError> {
     match self.get_heap_object(s.0)? {
       HeapObject::String(s) => Ok(s),
+      _ => Err(VmError::invalid_handle()),
+    }
+  }
+
+  /// Gets the BigInt contents for `b`.
+  pub fn get_bigint(&self, b: GcBigInt) -> Result<&JsBigInt, VmError> {
+    match self.get_heap_object(b.0)? {
+      HeapObject::BigInt(b) => Ok(b),
       _ => Err(VmError::invalid_handle()),
     }
   }
@@ -6891,7 +6906,8 @@ impl Heap {
 
   fn debug_value_is_valid_or_primitive(&self, value: Value) -> bool {
     match value {
-      Value::Undefined | Value::Null | Value::Bool(_) | Value::Number(_) | Value::BigInt(_) => true,
+      Value::Undefined | Value::Null | Value::Bool(_) | Value::Number(_) => true,
+      Value::BigInt(b) => self.is_valid_bigint(b),
       Value::String(s) => self.is_valid_string(s),
       Value::Symbol(s) => self.is_valid_symbol(s),
       Value::Object(o) => self.is_valid_object(o),
@@ -7406,6 +7422,22 @@ impl<'a> Scope<'a> {
   #[inline]
   pub fn alloc_array_index_key(&mut self, idx: u32) -> Result<PropertyKey, VmError> {
     Ok(PropertyKey::from_string(self.alloc_u32_index_string(idx)?))
+  }
+
+  /// Allocates a JavaScript BigInt on the heap.
+  pub fn alloc_bigint(&mut self, bigint: JsBigInt) -> Result<GcBigInt, VmError> {
+    let new_bytes = bigint.heap_size_bytes();
+    self.heap.ensure_can_allocate(new_bytes)?;
+    let obj = HeapObject::BigInt(bigint);
+    Ok(GcBigInt(self.heap.alloc_unchecked(obj, new_bytes)?))
+  }
+
+  pub fn alloc_bigint_from_u128(&mut self, value: u128) -> Result<GcBigInt, VmError> {
+    self.alloc_bigint(JsBigInt::from_u128(value)?)
+  }
+
+  pub fn alloc_bigint_from_i128(&mut self, value: i128) -> Result<GcBigInt, VmError> {
+    self.alloc_bigint(JsBigInt::from_i128(value)?)
   }
 
   /// Allocates a JavaScript symbol on the heap.
@@ -8890,6 +8922,7 @@ impl Slot {
 enum HeapObject {
   String(JsString),
   Symbol(JsSymbol),
+  BigInt(JsBigInt),
   Object(JsObject),
   ModuleNamespaceExports(ModuleNamespaceExportsData),
   ArrayBuffer(JsArrayBuffer),
@@ -8914,6 +8947,7 @@ impl Trace for HeapObject {
     match self {
       HeapObject::String(s) => s.trace(tracer),
       HeapObject::Symbol(s) => s.trace(tracer),
+      HeapObject::BigInt(b) => b.trace(tracer),
       HeapObject::Object(o) => o.trace(tracer),
       HeapObject::ModuleNamespaceExports(ns) => ns.trace(tracer),
       HeapObject::ArrayBuffer(b) => b.trace(tracer),
@@ -8957,6 +8991,12 @@ impl HeapObject {
 impl Trace for JsString {
   fn trace(&self, _tracer: &mut Tracer<'_>) {
     // Strings have no outgoing GC references.
+  }
+}
+
+impl Trace for JsBigInt {
+  fn trace(&self, _tracer: &mut Tracer<'_>) {
+    // BigInts have no outgoing GC references.
   }
 }
 
@@ -9840,7 +9880,8 @@ impl<'a> Tracer<'a> {
 
   pub(crate) fn trace_value(&mut self, value: Value) {
     match value {
-      Value::Undefined | Value::Null | Value::Bool(_) | Value::Number(_) | Value::BigInt(_) => {}
+      Value::Undefined | Value::Null | Value::Bool(_) | Value::Number(_) => {}
+      Value::BigInt(b) => self.trace_heap_id(b.0),
       Value::String(s) => self.trace_heap_id(s.0),
       Value::Symbol(s) => self.trace_heap_id(s.0),
       Value::Object(o) => self.trace_heap_id(o.0),

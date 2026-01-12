@@ -3436,12 +3436,12 @@ impl Intrinsics {
       scope
         .heap_mut()
         .object_set_prototype(func, Some(function_prototype))?;
-      scope.define_property(
-        boolean_prototype,
-        key,
-        data_desc(Value::Object(func), true, false, true),
-      )?;
-    }
+    scope.define_property(
+      boolean_prototype,
+      key,
+      data_desc(Value::Object(func), true, false, true),
+    )?;
+  }
 
     // Boolean.prototype.toString
     {
@@ -3453,12 +3453,12 @@ impl Intrinsics {
       scope
         .heap_mut()
         .object_set_prototype(func, Some(function_prototype))?;
-      scope.define_property(
-        boolean_prototype,
-        key,
-        data_desc(Value::Object(func), true, false, true),
-      )?;
-    }
+    scope.define_property(
+      boolean_prototype,
+      key,
+      data_desc(Value::Object(func), true, false, true),
+    )?;
+  }
 
     // Boolean.prototype[Symbol.toPrimitive]
     {
@@ -3478,7 +3478,7 @@ impl Intrinsics {
       )?;
     }
 
-    // `%BigInt%`
+    // `%BigInt%` (callable, not constructable).
     let bigint_name = scope.alloc_string("BigInt")?;
     let bigint_constructor =
       alloc_rooted_native_function(scope, roots, bigint_call, None, bigint_name, 1)?;
@@ -3506,34 +3506,34 @@ impl Intrinsics {
       data_desc(Value::Object(bigint_constructor), true, false, true),
     )?;
 
-    // BigInt.asIntN / BigInt.asUintN
+    // BigInt static methods: asIntN / asUintN.
     {
       let as_int_n_s = scope.alloc_string("asIntN")?;
       scope.push_root(Value::String(as_int_n_s))?;
-      let key = PropertyKey::from_string(as_int_n_s);
-      let func = scope.alloc_native_function(bigint_as_int_n, None, as_int_n_s, 2)?;
-      scope.push_root(Value::Object(func))?;
+      let as_int_n_key = PropertyKey::from_string(as_int_n_s);
+      let as_int_n_fn = scope.alloc_native_function(bigint_as_int_n, None, as_int_n_s, 2)?;
+      scope.push_root(Value::Object(as_int_n_fn))?;
       scope
         .heap_mut()
-        .object_set_prototype(func, Some(function_prototype))?;
+        .object_set_prototype(as_int_n_fn, Some(function_prototype))?;
       scope.define_property(
         bigint_constructor,
-        key,
-        data_desc(Value::Object(func), true, false, true),
+        as_int_n_key,
+        data_desc(Value::Object(as_int_n_fn), true, false, true),
       )?;
 
       let as_uint_n_s = scope.alloc_string("asUintN")?;
       scope.push_root(Value::String(as_uint_n_s))?;
-      let key = PropertyKey::from_string(as_uint_n_s);
-      let func = scope.alloc_native_function(bigint_as_uint_n, None, as_uint_n_s, 2)?;
-      scope.push_root(Value::Object(func))?;
+      let as_uint_n_key = PropertyKey::from_string(as_uint_n_s);
+      let as_uint_n_fn = scope.alloc_native_function(bigint_as_uint_n, None, as_uint_n_s, 2)?;
+      scope.push_root(Value::Object(as_uint_n_fn))?;
       scope
         .heap_mut()
-        .object_set_prototype(func, Some(function_prototype))?;
+        .object_set_prototype(as_uint_n_fn, Some(function_prototype))?;
       scope.define_property(
         bigint_constructor,
-        key,
-        data_desc(Value::Object(func), true, false, true),
+        as_uint_n_key,
+        data_desc(Value::Object(as_uint_n_fn), true, false, true),
       )?;
     }
 
@@ -3547,20 +3547,21 @@ impl Intrinsics {
         data_desc(Value::String(tag_value), false, false, true),
       )?;
     }
+
     // BigInt.prototype.valueOf
     {
       let value_of_s = scope.alloc_string("valueOf")?;
       scope.push_root(Value::String(value_of_s))?;
-      let key = PropertyKey::from_string(value_of_s);
-      let func = scope.alloc_native_function(bigint_prototype_value_of, None, value_of_s, 0)?;
-      scope.push_root(Value::Object(func))?;
+      let value_of_key = PropertyKey::from_string(value_of_s);
+      let value_of_fn = scope.alloc_native_function(bigint_prototype_value_of, None, value_of_s, 0)?;
+      scope.push_root(Value::Object(value_of_fn))?;
       scope
         .heap_mut()
-        .object_set_prototype(func, Some(function_prototype))?;
+        .object_set_prototype(value_of_fn, Some(function_prototype))?;
       scope.define_property(
         bigint_prototype,
-        key,
-        data_desc(Value::Object(func), true, false, true),
+        value_of_key,
+        data_desc(Value::Object(value_of_fn), true, false, true),
       )?;
     }
 
