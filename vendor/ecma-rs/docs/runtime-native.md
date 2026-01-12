@@ -283,6 +283,7 @@ pub static RT_GC_EPOCH: u64;
 pub fn rt_gc_poll() -> bool;
 pub fn rt_gc_safepoint_slow(epoch: u64);
 pub fn rt_gc_safepoint();
+pub fn rt_gc_safepoint_relocate_h(slot: GcHandle) -> *mut u8;
 /// Keep a GC object alive until after the last use of a raw pointer derived from it.
 ///
 /// This is the native equivalent of Go's `runtime.KeepAlive`. It is used when compiled code
