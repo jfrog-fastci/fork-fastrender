@@ -1,7 +1,5 @@
 use crate::api::{FileId, FileKey};
 use ahash::AHashMap;
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
 
 const FALLBACK_START: u32 = 1 << 31;
 const RESERVED_FILE_ID: u32 = u32::MAX;
@@ -35,12 +33,63 @@ fn preferred_file_id(key: &FileKey) -> Option<u32> {
   Some(preferred)
 }
 
-fn stable_hash(key: &FileKey, origin: FileOrigin, salt: u64) -> u64 {
-  let mut hasher = DefaultHasher::new();
+/// Deterministic hash used for fallback [`FileId`] allocation.
+///
+/// Rust's `std::collections::hash_map::DefaultHasher` is explicitly *not* a
+/// cross-version stability contract, so using it for `FileId` generation breaks
+/// reproducibility and incremental caching.
+///
+/// This uses a 64-bit FNV-1a hash with the same parameters as `hir-js`'s stable
+/// hasher (offset basis `0xcbf29ce484222325`, prime `0x100000001b3`). The input
+/// stream is:
+/// - [`FileOrigin`] discriminant (`u8`)
+/// - file key bytes (`&str`, UTF-8)
+/// - deterministic collision salt (`u64`, little-endian bytes)
+///
+/// The final value is folded to `u32` by XORing the high and low 32-bit halves,
+/// mirroring other stable IDs in the toolchain.
+fn stable_hash_u32(key: &FileKey, origin: FileOrigin, salt: u64) -> u32 {
+  const OFFSET_BASIS: u64 = 0xcbf29ce484222325;
+  const PRIME: u64 = 0x100000001b3;
+
+  struct StableHasher(u64);
+
+  impl StableHasher {
+    fn new() -> Self {
+      Self(OFFSET_BASIS)
+    }
+
+    fn write_byte(&mut self, byte: u8) {
+      self.0 ^= byte as u64;
+      self.0 = self.0.wrapping_mul(PRIME);
+    }
+
+    fn write_u8(&mut self, value: u8) {
+      self.write_byte(value);
+    }
+
+    fn write_u64(&mut self, value: u64) {
+      for byte in value.to_le_bytes() {
+        self.write_byte(byte);
+      }
+    }
+
+    fn write_str(&mut self, value: &str) {
+      for &byte in value.as_bytes() {
+        self.write_byte(byte);
+      }
+    }
+
+    fn finish_u32(self) -> u32 {
+      (self.0 ^ (self.0 >> 32)) as u32
+    }
+  }
+
+  let mut hasher = StableHasher::new();
   hasher.write_u8(origin.stable_discriminant());
+  hasher.write_str(key.as_str());
   hasher.write_u64(salt);
-  key.as_str().hash(&mut hasher);
-  hasher.finish()
+  hasher.finish_u32()
 }
 
 /// Deterministic registry mapping [`FileKey`]s to [`FileId`]s.
@@ -141,8 +190,8 @@ impl FileRegistry {
   fn allocate_fallback(&mut self, key: &FileKey, origin: FileOrigin) -> FileId {
     let mut salt = 0u64;
     loop {
-      let raw = stable_hash(key, origin, salt);
-      let mut candidate = (raw as u32) | FALLBACK_START;
+      let raw = stable_hash_u32(key, origin, salt);
+      let mut candidate = raw | FALLBACK_START;
       if candidate == u32::MAX {
         candidate = FALLBACK_START;
       }
@@ -189,12 +238,21 @@ mod tests {
   #[test]
   fn origin_distinguishes_colliding_keys() {
     let key = FileKey::new("lib:lib.es5.d.ts");
-    let mut registry = FileRegistry::new();
-    let source = registry.intern(&key, FileOrigin::Source);
-    let lib = registry.intern(&key, FileOrigin::Lib);
-    assert_ne!(source, lib);
-    assert_eq!(registry.lookup_id(&key), Some(source));
-    assert_eq!(registry.ids_for_key(&key), vec![source, lib]);
+    let mut registry_a = FileRegistry::new();
+    let source_a = registry_a.intern(&key, FileOrigin::Source);
+    let lib_a = registry_a.intern(&key, FileOrigin::Lib);
+    assert_ne!(source_a, lib_a);
+    assert_eq!(registry_a.lookup_id(&key), Some(source_a));
+    assert_eq!(registry_a.ids_for_key(&key), vec![source_a, lib_a]);
+
+    // Swapping interning order must not change which ID is assigned to which
+    // origin. This relies on the origin discriminant being included in the
+    // stable hash, rather than only being handled by collision resolution.
+    let mut registry_b = FileRegistry::new();
+    let lib_b = registry_b.intern(&key, FileOrigin::Lib);
+    let source_b = registry_b.intern(&key, FileOrigin::Source);
+    assert_eq!(source_a, source_b);
+    assert_eq!(lib_a, lib_b);
   }
 
   #[test]
@@ -215,5 +273,24 @@ mod tests {
     assert_ne!(reserved_id_a, FileId(RESERVED_FILE_ID));
     assert_ne!(reserved_id_b, FileId(RESERVED_FILE_ID));
     assert_eq!(reserved_id_a, reserved_id_b);
+  }
+
+  #[test]
+  fn fallback_id_is_stable_and_versioned() {
+    let key = FileKey::new("x.ts");
+
+    let mut registry_a = FileRegistry::new();
+    registry_a.intern(&FileKey::new("file0.ts"), FileOrigin::Source);
+    let id_a = registry_a.intern(&key, FileOrigin::Source);
+
+    let mut registry_b = FileRegistry::new();
+    let id_b = registry_b.intern(&key, FileOrigin::Source);
+    registry_b.intern(&FileKey::new("file0.ts"), FileOrigin::Source);
+
+    assert_eq!(id_a, id_b);
+    // Pinned numeric value to ensure the fallback allocation stays stable across
+    // Rust versions. If this changes, it is likely a deliberate hashing scheme
+    // change and should be accompanied by an incremental cache version bump.
+    assert_eq!(id_a, FileId(0xb39a4ce5));
   }
 }
