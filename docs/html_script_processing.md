@@ -102,7 +102,7 @@ The relevant unit tests live in the `fastrender` crate’s `--lib` test binary. 
 
 Some end-to-end scheduling/currentScript coverage lives in integration tests (example):
 
-`bash scripts/cargo_agent.sh test -p fastrender --test misc_tests js_current_script`
+`bash scripts/cargo_agent.sh test -p fastrender --test integration js_current_script`
 
 ---
 
