@@ -557,9 +557,7 @@ Contract:
 - Readiness notifications are **edge-triggered**. Consumers must drain reads/writes until the
   operation returns `EAGAIN`/`WouldBlock`; otherwise the reactor may not deliver another edge.
 - `rt_io_register*` returns 0 on failure; errors are not returned over the stable C ABI.
--
-  Handle-based variants (`rt_io_register_handle*`) use persistent-handle userdata:
-
+- Handle-based variants (`rt_io_register_handle*`) use persistent-handle userdata:
   - The runtime consumes `data` and treats it as a strong GC root while the watcher is registered.
   - The runtime frees the handle exactly once when the watcher is unregistered (or if registration
     fails).
