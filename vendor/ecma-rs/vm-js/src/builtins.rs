@@ -9781,16 +9781,16 @@ pub fn array_prototype_join(
     None | Some(Value::Undefined) => scope.alloc_string(",")?,
     Some(v) => scope.to_string(vm, host, hooks, v)?,
   };
-  scope.push_root(Value::String(sep))?;
-  let sep_slice = scope.heap().get_string(sep)?.as_code_units();
-  let mut sep_units: Vec<u16> = Vec::new();
-  sep_units
-    .try_reserve_exact(sep_slice.len())
-    .map_err(|_| VmError::OutOfMemory)?;
-  vec_try_extend_from_slice(&mut sep_units, sep_slice, || vm.tick())?;
 
-  let empty = scope.alloc_string("")?;
-  scope.push_root(Value::String(empty))?;
+  if len == 0 {
+    return Ok(Value::String(scope.alloc_string("")?));
+  }
+
+  let mut sep_units: Vec<u16> = Vec::new();
+  if len > 1 {
+    let sep_slice = scope.heap().get_string(sep)?.as_code_units();
+    vec_try_extend_from_slice(&mut sep_units, sep_slice, || vm.tick())?;
+  }
 
   let mut out: Vec<u16> = Vec::new();
   let max_bytes = scope.heap().limits().max_bytes;
@@ -9800,26 +9800,26 @@ pub fn array_prototype_join(
       vm.tick()?;
     }
 
-    if i > 0 {
+    if i > 0 && !sep_units.is_empty() {
       if JsString::heap_size_bytes_for_len(out.len().saturating_add(sep_units.len())) > max_bytes {
         return Err(VmError::OutOfMemory);
       }
       vec_try_extend_from_slice(&mut out, &sep_units, || vm.tick())?;
     }
 
+    // Use a nested scope so per-iteration roots do not accumulate.
     let mut iter_scope = scope.reborrow();
-    iter_scope.push_root(Value::Object(obj))?;
 
-    let idx_s = iter_scope.alloc_string(&i.to_string())?;
-    iter_scope.push_root(Value::String(idx_s))?;
-    let key = PropertyKey::from_string(idx_s);
-    let value =
-      iter_scope.get_with_host_and_hooks(vm, host, hooks, obj, key, Value::Object(obj))?;
-    let part = match value {
-      Value::Undefined | Value::Null => empty,
-      other => iter_scope.to_string(vm, host, hooks, other)?,
-    };
+    let key_s = alloc_string_from_usize(&mut iter_scope, i)?;
+    iter_scope.push_root(Value::String(key_s))?;
+    let key = PropertyKey::from_string(key_s);
 
+    let value = vm.get_with_host_and_hooks(host, &mut iter_scope, hooks, obj, key)?;
+    if matches!(value, Value::Undefined | Value::Null) {
+      continue;
+    }
+
+    let part = iter_scope.to_string(vm, host, hooks, value)?;
     let units = iter_scope.heap().get_string(part)?.as_code_units();
     if JsString::heap_size_bytes_for_len(out.len().saturating_add(units.len())) > max_bytes {
       return Err(VmError::OutOfMemory);

@@ -19,6 +19,21 @@
 # As features land, carve out newly-green areas with `pass` entries and keep remaining failures
 # narrow so regressions are still caught.
 
+[[expectations]]
+id = "built-ins/Array/prototype/join/coerced-separator-grow.js"
+status = "skip"
+reason = "vm-js does not yet implement resizable ArrayBuffer / full TypedArray constructors"
+
+[[expectations]]
+id = "built-ins/Array/prototype/join/coerced-separator-shrink.js"
+status = "skip"
+reason = "vm-js does not yet implement resizable ArrayBuffer / full TypedArray constructors"
+
+[[expectations]]
+id = "built-ins/Array/prototype/join/resizable-buffer.js"
+status = "skip"
+reason = "vm-js does not yet implement resizable ArrayBuffer / full TypedArray constructors"
+
 # --- Expression operator coverage (newly green) ---
 [[expectations]]
 glob = "language/expressions/bitwise-and/**"
