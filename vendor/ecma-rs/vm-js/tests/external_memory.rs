@@ -48,6 +48,42 @@ fn array_buffer_finalizer_runs_once() -> Result<(), VmError> {
 }
 
 #[test]
+fn array_buffer_detach_frees_external_bytes_once() -> Result<(), VmError> {
+  let mut heap = Heap::new(HeapLimits::new(1024 * 1024 * 1024, 1024 * 1024 * 1024));
+
+  let size = 256 * 1024;
+  {
+    let mut scope = heap.scope();
+    let buf = scope.alloc_array_buffer(size)?;
+    scope.push_root(Value::Object(buf))?;
+
+    assert_eq!(scope.heap().external_bytes(), size);
+    assert!(!scope.heap().is_detached_array_buffer(buf)?);
+
+    scope.heap_mut().detach_array_buffer(buf)?;
+    assert_eq!(scope.heap().external_bytes(), 0);
+    assert!(scope.heap().is_detached_array_buffer(buf)?);
+
+    // Detachment is idempotent.
+    scope.heap_mut().detach_array_buffer(buf)?;
+    assert_eq!(scope.heap().external_bytes(), 0);
+
+    // GC while still reachable should not affect external memory accounting.
+    scope.heap_mut().collect_garbage();
+    assert_eq!(scope.heap().external_bytes(), 0);
+  }
+
+  // Once the scope is dropped the ArrayBuffer becomes unreachable; GC should not "free" the
+  // detached backing store again.
+  heap.collect_garbage();
+  assert_eq!(heap.external_bytes(), 0);
+
+  heap.collect_garbage();
+  assert_eq!(heap.external_bytes(), 0);
+  Ok(())
+}
+
+#[test]
 fn heap_limits_account_for_external_bytes() -> Result<(), VmError> {
   // Keep the limit comfortably above metadata overhead but below 2x the buffer size so the second
   // allocation must fail due to external memory usage.

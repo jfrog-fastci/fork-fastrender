@@ -1643,6 +1643,9 @@ pub fn proxy_revocable(
   let handler = require_object(handler_val)?;
 
   let intr = require_intrinsics(vm)?;
+  // Root inputs across allocations in this operation.
+  let mut scope = scope.reborrow();
+  scope.push_roots(&[Value::Object(target), Value::Object(handler)])?;
 
   // Root inputs across allocation/GC while creating the proxy object.
   let mut scope = scope.reborrow();

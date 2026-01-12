@@ -1017,8 +1017,10 @@ impl Heap {
 
   /// Returns `true` if `obj` is a detached `ArrayBuffer`.
   ///
+  /// This corresponds to ECMA-262 `IsDetachedBuffer` (`[[ArrayBufferData]] == null`).
+  ///
   /// `vm-js` represents detachment by clearing the backing store (`data: None`), which also makes
-  /// `ArrayBufferByteLength` report `0`.
+  /// `byteLength` report `0`.
   pub fn is_detached_array_buffer(&self, obj: GcObject) -> Result<bool, VmError> {
     Ok(self.get_array_buffer(obj)?.data.is_none())
   }
@@ -2070,7 +2072,7 @@ impl Heap {
         }
       }
     }
- 
+
     let obj = self.get_object_base(obj)?;
     // Property lookups can scan very large property tables (especially for missing keys). Budget
     // the scan so deadline/interrupt checks can be observed inside a single `Get(O, P)` operation.
