@@ -107,6 +107,18 @@ pub enum RuntimeFn {
   KeepAliveGcRef,
 
   // -----------------------------------------------------------------------------
+  // Interned strings
+  // -----------------------------------------------------------------------------
+  /// Intern a UTF-8 byte string and return a stable `InternedId` (`u32`).
+  ///
+  /// `rt_string_intern(const uint8_t* s, size_t len) -> InternedId`
+  StringIntern,
+  /// Permanently pin an interned string so it survives GC sweeps and interner pruning.
+  ///
+  /// `rt_string_pin_interned(InternedId id) -> void`
+  StringPinInterned,
+
+  // -----------------------------------------------------------------------------
   // Parallel scheduler (worker pool)
   // -----------------------------------------------------------------------------
   //
@@ -590,6 +602,40 @@ impl RuntimeFn {
           runtime_params: &[AbiTy::RawPtr],
           codegen_ret: AbiTy::Void,
           codegen_params: &[AbiTy::GcPtr],
+        },
+      },
+      RuntimeFn::StringIntern => RuntimeFnDecl {
+        spec: RuntimeFnSpec {
+          name: "rt_string_intern",
+          // Conservatively treat string interning as MayGC: it may allocate and it can block on
+          // GC-aware locks, during which stop-the-world GC may occur.
+          may_gc: true,
+          gc_ptr_args: 0,
+          gc_handle_args: 0,
+          arg_rooting: ArgRootingPolicy::NoGcPointersAllowedIfMayGc,
+        },
+        abi: RuntimeFnAbi {
+          runtime_ret: AbiTy::I32,
+          runtime_params: &[AbiTy::RawPtr, AbiTy::I64],
+          codegen_ret: AbiTy::I32,
+          codegen_params: &[AbiTy::RawPtr, AbiTy::I64],
+        },
+      },
+      RuntimeFn::StringPinInterned => RuntimeFnDecl {
+        spec: RuntimeFnSpec {
+          name: "rt_string_pin_interned",
+          // Conservatively treat pinning as MayGC: it may allocate/copy, and it can block on
+          // GC-aware locks, during which stop-the-world GC may occur.
+          may_gc: true,
+          gc_ptr_args: 0,
+          gc_handle_args: 0,
+          arg_rooting: ArgRootingPolicy::NoGcPointersAllowedIfMayGc,
+        },
+        abi: RuntimeFnAbi {
+          runtime_ret: AbiTy::Void,
+          runtime_params: &[AbiTy::I32],
+          codegen_ret: AbiTy::Void,
+          codegen_params: &[AbiTy::I32],
         },
       },
       RuntimeFn::ParallelSpawn => RuntimeFnDecl {
@@ -1268,6 +1314,8 @@ mod tests {
       RuntimeFn::WriteBarrier,
       RuntimeFn::WriteBarrierRange,
       RuntimeFn::KeepAliveGcRef,
+      RuntimeFn::StringIntern,
+      RuntimeFn::StringPinInterned,
       RuntimeFn::ParallelSpawn,
       RuntimeFn::ParallelJoin,
       RuntimeFn::ParallelFor,

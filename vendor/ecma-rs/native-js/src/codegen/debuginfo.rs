@@ -88,6 +88,7 @@ pub(crate) struct CodegenDebug<'ctx> {
 struct DebugTypes<'ctx> {
   number: DIType<'ctx>,
   boolean: DIType<'ctx>,
+  string: DIType<'ctx>,
 }
 
 impl<'ctx> CodegenDebug<'ctx> {
@@ -151,6 +152,13 @@ impl<'ctx> CodegenDebug<'ctx> {
         .create_basic_type("boolean", 8, 0x02, 0)
         .expect("failed to create `boolean` debug type")
         .as_type(),
+      // `string` values are represented as a runtime-native interned ID (`u32`) in the current
+      // backend. Use an unsigned 32-bit DWARF type so debuggers display it as an integer.
+      // DW_ATE_unsigned = 0x07.
+      string: builder
+        .create_basic_type("string", 32, 0x07, 0)
+        .expect("failed to create `string` debug type")
+        .as_type(),
     };
 
     Self {
@@ -203,6 +211,7 @@ impl<'ctx> CodegenDebug<'ctx> {
     match kind {
       TsAbiKind::Number => self.types.number,
       TsAbiKind::Boolean => self.types.boolean,
+      TsAbiKind::String => self.types.string,
       // Treat GC pointers as `number` for now; the checked pipeline does not yet emit rich debug
       // info for managed object graphs.
       TsAbiKind::GcPtr => self.types.number,

@@ -533,7 +533,11 @@ deterministic.
 
 Currently supported intrinsics:
 
-- `declare function print(value: number): void;`
+- `declare function print(value: number | string): void;`
+
+> Note: in the checked pipeline, `string` values are represented as runtime-native interned IDs
+> (`InternedId` / `u32`). When passed to `print`, native-js prints the numeric interned ID (not the
+> string bytes). Full string printing would require a runtime lookup API.
 
 ## Strict compilation subset (`native_js::validate`)
 
@@ -563,7 +567,8 @@ The strict subset validator currently rejects (non-exhaustive, but directly
 matching the validator’s checks):
 
 - Unsupported syntax (`NJS0009`), including:
-  - string literals, `null`, and `undefined` (the current checked backend is still primitive-only)
+  - `null` and `undefined` (the current checked backend does not represent these values yet)
+  - string concatenation (`+`/`+=`) and string truthiness (`if (s)`, `!s`, `s && t`) are not supported yet
   - `this`
   - classes / class expressions
   - `async` / generator functions, `await`, `yield`
@@ -599,8 +604,8 @@ matching the validator’s checks):
   - e.g. unions/intersections, object types, function types, nominal/reference
     types, `bigint`, `symbol`, template-literal types, etc.
   - builtin intrinsics may provide exceptions:
-    - the `native-js` CLI injects a small `.d.ts` builtin library that declares
-      `print(value: number): void` (see `native-js-cli/src/builtins.rs`)
+    - the checked pipeline injects a small `.d.ts` builtin library that declares
+      `print(value: number | string): void` (see `native-js/src/builtins.rs`)
     - callable/function types are otherwise rejected, but the strict subset
       validator allows the `print(...)` identifier only when it is used as a
       direct call callee
@@ -611,8 +616,8 @@ errors, including:
 
 - functions must have exactly one non-generic call signature (no overloads / no `this` parameters)
 - no optional/rest parameters
-- parameters must be `number`/`boolean`
-- return type must be `number`/`boolean`/`void`/`undefined`/`never`
+- parameters must be `number`/`boolean`/`string`
+- return type must be `number`/`boolean`/`string`/`void`/`undefined`/`never`
 
 > Note: TypeScript-only, runtime-inert expression wrappers such as `satisfies`,
 > type assertions (`as`), and non-null assertions (`!`) are allowed by this

@@ -22,6 +22,8 @@ fn runtime_call_registry_has_gc_safety_metadata() {
     RuntimeFn::GcSafepoint,
     RuntimeFn::GcSafepointSlow,
     RuntimeFn::GcCollect,
+    RuntimeFn::StringIntern,
+    RuntimeFn::StringPinInterned,
     RuntimeFn::ParallelSpawn,
     RuntimeFn::ParallelJoin,
     RuntimeFn::ParallelFor,

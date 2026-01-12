@@ -529,9 +529,6 @@ fn validate_body_syntax(
           }
         }
       }
-      ExprKind::Literal(Literal::String(_)) => {
-        push_unsupported_syntax(out, Span::new(file, expr.span), "string literals are not supported by native-js yet");
-      }
       ExprKind::Literal(Literal::Null) => {
         push_unsupported_syntax(out, Span::new(file, expr.span), "`null` literals are not supported by native-js yet");
       }
@@ -895,13 +892,13 @@ fn validate_body_types(
           let asserted_elem_kind =
             array_or_tuple_elem_kind(program, asserted_ty, &mut supported_cache, &mut supported_visiting);
           if actual_elem_kind.is_some() && asserted_elem_kind.is_some() && actual_elem_kind != asserted_elem_kind {
-            out.push(
+              out.push(
               codes::STRICT_SUBSET_UNSAFE_TYPE_ASSERTION
                 .error(
                   "unsafe type assertion changes array/tuple element ABI in native-js strict subset",
                   Span::new(file, expr.span),
                 )
-                .with_note("type assertions are erased by native-js codegen; array/tuple assertions must preserve element ABI (number vs boolean vs GC pointer)"),
+                .with_note("type assertions are erased by native-js codegen; array/tuple assertions must preserve element ABI (number vs boolean vs string vs GC pointer)"),
             );
           }
         }
@@ -978,6 +975,140 @@ fn validate_body_types(
     }
   }
 
+  // Operator-level validation that depends on operand types.
+  //
+  // The strict subset validator generally accepts a small set of operators syntactically, but some
+  // of those operators change meaning when applied to `string` operands (e.g. `+` becomes string
+  // concatenation). The checked backend represents strings as an interned `u32` id, so we must
+  // explicitly reject those cases until proper lowering exists.
+  for expr in hir.exprs.iter() {
+    match &expr.kind {
+      ExprKind::Binary { op, left, right } => {
+        let lhs_ty = result.expr_types().get(left.0 as usize).copied();
+        let rhs_ty = result.expr_types().get(right.0 as usize).copied();
+        let lhs_is_string = lhs_ty
+          .map(|ty| is_string_type_kind(&program.type_kind(ty)))
+          .unwrap_or(false);
+        let rhs_is_string = rhs_ty
+          .map(|ty| is_string_type_kind(&program.type_kind(ty)))
+          .unwrap_or(false);
+
+        // Disallow `+` on strings (string concatenation).
+        if *op == BinaryOp::Add && (lhs_is_string || rhs_is_string) {
+          push_unsupported_syntax(
+            out,
+            Span::new(file, expr.span),
+            "string concatenation (`+`) is not supported by native-js yet",
+          );
+        }
+
+        // For strings, only allow `===` / `!==` when both sides are string-like.
+        if matches!(op, BinaryOp::Equality | BinaryOp::Inequality) && (lhs_is_string || rhs_is_string) {
+          push_unsupported_syntax(
+            out,
+            Span::new(file, expr.span),
+            "string equality is only supported via `===` / `!==` in native-js yet",
+          );
+        }
+        if matches!(op, BinaryOp::StrictEquality | BinaryOp::StrictInequality) && (lhs_is_string ^ rhs_is_string) {
+          push_unsupported_syntax(
+            out,
+            Span::new(file, expr.span),
+            "string `===` / `!==` comparisons are only supported when both operands are strings",
+          );
+        }
+      }
+      ExprKind::Assignment { op, target, value } => {
+        // Disallow `+=` on strings (string concatenation).
+        if *op == AssignOp::AddAssign {
+          let target_ty = result.pat_types().get(target.0 as usize).copied();
+          let value_ty = result.expr_types().get(value.0 as usize).copied();
+          let target_is_string = target_ty
+            .map(|ty| is_string_type_kind(&program.type_kind(ty)))
+            .unwrap_or(false);
+          let value_is_string = value_ty
+            .map(|ty| is_string_type_kind(&program.type_kind(ty)))
+            .unwrap_or(false);
+          if target_is_string || value_is_string {
+            push_unsupported_syntax(
+              out,
+              Span::new(file, expr.span),
+              "string concatenation (`+=`) is not supported by native-js yet",
+            );
+          }
+        }
+      }
+      _ => {}
+    }
+  }
+
+  // `native-js` currently uses JavaScript truthiness semantics for `number`/`boolean` values, but
+  // `string` values in the checked backend are represented as interned `u32` IDs. Until we implement
+  // string truthiness (`""` is falsy, all other strings truthy), reject `string` values in
+  // truthiness contexts.
+  let is_string_expr = |expr: ExprId| {
+    result
+      .expr_types()
+      .get(expr.0 as usize)
+      .copied()
+      .map(|ty| is_string_type_kind(&program.type_kind(ty)))
+      .unwrap_or(false)
+  };
+
+  for stmt in hir.stmts.iter() {
+    match &stmt.kind {
+      StmtKind::If { test, .. }
+      | StmtKind::While { test, .. }
+      | StmtKind::DoWhile { test, .. } => {
+        if is_string_expr(*test) {
+          push_unsupported_syntax(
+            out,
+            Span::new(file, stmt.span),
+            "using `string` values as conditions is not supported by native-js yet",
+          );
+        }
+      }
+      StmtKind::For { test, .. } => {
+        if test.is_some_and(is_string_expr) {
+          push_unsupported_syntax(
+            out,
+            Span::new(file, stmt.span),
+            "using `string` values as conditions is not supported by native-js yet",
+          );
+        }
+      }
+      _ => {}
+    }
+  }
+
+  for expr in hir.exprs.iter() {
+    match &expr.kind {
+      ExprKind::Unary {
+        op: UnaryOp::Not,
+        expr: inner,
+      } => {
+        if is_string_expr(*inner) {
+          push_unsupported_syntax(
+            out,
+            Span::new(file, expr.span),
+            "string truthiness (e.g. `!s`) is not supported by native-js yet",
+          );
+        }
+      }
+      ExprKind::Binary { op, left, right }
+        if matches!(op, BinaryOp::LogicalAnd | BinaryOp::LogicalOr)
+          && (is_string_expr(*left) || is_string_expr(*right)) =>
+      {
+        push_unsupported_syntax(
+          out,
+          Span::new(file, expr.span),
+          "string truthiness (e.g. `s && t`) is not supported by native-js yet",
+        );
+      }
+      _ => {}
+    }
+  }
+
   for (idx, ty) in result.expr_types().iter().copied().enumerate() {
     let Some(expr) = hir.exprs.get(idx) else { continue };
     if skip_expr_type_check.get(idx).copied().unwrap_or(false) {
@@ -1010,6 +1141,7 @@ fn validate_body_types(
 enum SupportedAbiKind {
   Number,
   Boolean,
+  String,
   Void,
   /// GC-managed pointer (`ptr addrspace(1)`).
   GcPtr,
@@ -1032,7 +1164,7 @@ fn validate_type_kind(
   out.push(
     codes::STRICT_SUBSET_UNSUPPORTED_TYPE
       .error(message, span)
-      .with_note("supported types are currently limited to: number, boolean, void/undefined, never, arrays, tuples"),
+      .with_note("supported types are currently limited to: number, boolean, string, void/undefined, never, arrays, tuples"),
   );
 }
 
@@ -1054,10 +1186,11 @@ fn supported_abi_kind(
     tti::TypeKind::Never | tti::TypeKind::Void | tti::TypeKind::Undefined => Some(SupportedAbiKind::Void),
     tti::TypeKind::Boolean | tti::TypeKind::BooleanLiteral(_) => Some(SupportedAbiKind::Boolean),
     tti::TypeKind::Number | tti::TypeKind::NumberLiteral(_) => Some(SupportedAbiKind::Number),
+    tti::TypeKind::String | tti::TypeKind::StringLiteral(_) => Some(SupportedAbiKind::String),
 
     // Arrays: GC pointer + uniform element stride. Element type must be representable.
     tti::TypeKind::Array { ty: elem_ty, .. } => match supported_abi_kind(program, elem_ty, cache, visiting) {
-      Some(SupportedAbiKind::Number | SupportedAbiKind::Boolean | SupportedAbiKind::GcPtr) => {
+      Some(SupportedAbiKind::Number | SupportedAbiKind::Boolean | SupportedAbiKind::String | SupportedAbiKind::GcPtr) => {
         Some(SupportedAbiKind::GcPtr)
       }
       _ => None,
@@ -1144,14 +1277,15 @@ fn array_or_tuple_elem_kind(
   }
 }
 
+fn is_string_type_kind(kind: &TypeKindSummary) -> bool {
+  matches!(kind, TypeKindSummary::String | TypeKindSummary::StringLiteral(_))
+}
+
 fn unsupported_type_message(kind: &TypeKindSummary) -> String {
   match kind {
     TypeKindSummary::Any => "`any` is not supported by native-js strict subset".to_string(),
     TypeKindSummary::Unknown => "`unknown` is not supported by native-js strict subset".to_string(),
     TypeKindSummary::Null => "`null` is not supported by native-js strict subset".to_string(),
-    TypeKindSummary::String | TypeKindSummary::StringLiteral(_) => {
-      "`string` is not supported by native-js strict subset".to_string()
-    }
     TypeKindSummary::Union { .. } => "union types are not supported by native-js strict subset yet".to_string(),
     TypeKindSummary::Intersection { .. } => {
       "intersection types are not supported by native-js strict subset yet".to_string()

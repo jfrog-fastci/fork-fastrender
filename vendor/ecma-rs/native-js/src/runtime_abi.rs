@@ -74,6 +74,8 @@ pub struct RuntimeFns<'ctx> {
   pub rt_write_barrier: FunctionValue<'ctx>,
   pub rt_write_barrier_range: FunctionValue<'ctx>,
   pub rt_keep_alive_gc_ref: FunctionValue<'ctx>,
+  pub rt_string_intern: FunctionValue<'ctx>,
+  pub rt_string_pin_interned: FunctionValue<'ctx>,
 
   // Leaf wrappers for NoGC runtime fns that want addrspace(1) parameters.
   pub rt_write_barrier_gc: FunctionValue<'ctx>,
@@ -176,6 +178,8 @@ impl<'ctx, 'm> RuntimeAbi<'ctx, 'm> {
       rt_write_barrier: self.get_or_declare_raw(RuntimeFn::WriteBarrier),
       rt_write_barrier_range: self.get_or_declare_raw(RuntimeFn::WriteBarrierRange),
       rt_keep_alive_gc_ref: self.get_or_declare_raw(RuntimeFn::KeepAliveGcRef),
+      rt_string_intern: self.get_or_declare_raw(RuntimeFn::StringIntern),
+      rt_string_pin_interned: self.get_or_declare_raw(RuntimeFn::StringPinInterned),
       rt_write_barrier_gc,
       rt_write_barrier_range_gc,
       rt_keep_alive_gc_ref_gc,

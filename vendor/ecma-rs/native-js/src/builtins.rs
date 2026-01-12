@@ -27,7 +27,7 @@ pub const NATIVE_JS_BUILTINS_LIB_KEY: &str = CHECKED_BUILTINS_FILE_KEY;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum NativeJsIntrinsic {
-  /// Print a number to stdout with a trailing newline.
+  /// Print a `number` (or interned `string` id) to stdout with a trailing newline.
   Print,
 }
 
@@ -77,7 +77,7 @@ pub const CHECKED_BUILTINS_D_TS: &str = r#"// native-js intrinsic declarations (
 //
 // Note: keep signatures free of `any` so they are accepted by the strict validator.
 
-declare function print(value: number): void;
+declare function print(value: number | string): void;
 "#;
 
 /// Return the checked-pipeline `.d.ts` source for intrinsic declarations.
@@ -193,7 +193,7 @@ mod tests {
   fn checked_builtins_d_ts_has_expected_decls() {
     let text = CHECKED_BUILTINS_D_TS;
     assert!(
-      text.contains("declare function print(value: number): void;"),
+      text.contains("declare function print(value: number | string): void;"),
       "expected print builtin, got:\n{text}"
     );
     let code_only = text
@@ -212,4 +212,3 @@ mod tests {
     assert_eq!(lib.text.as_ref(), CHECKED_BUILTINS_D_TS);
   }
 }
-

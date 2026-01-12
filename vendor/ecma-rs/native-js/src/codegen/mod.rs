@@ -70,7 +70,7 @@ use inkwell::values::{
 };
 use inkwell::{AddressSpace, FloatPredicate, IntPredicate};
 use parse_js::num::JsNumber;
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use typecheck_ts::{DefId, FileId, Program, TypeKindSummary};
 use types_ts_interned as tti;
 
@@ -113,6 +113,7 @@ pub fn codegen<'ctx>(
 enum TsAbiKind {
   Number,
   Boolean,
+  String,
   Void,
   /// GC-managed pointer value (`ptr addrspace(1)`).
   ///
@@ -126,6 +127,7 @@ impl TsAbiKind {
     match kind {
       TypeKindSummary::Number | TypeKindSummary::NumberLiteral(_) => Some(Self::Number),
       TypeKindSummary::Boolean | TypeKindSummary::BooleanLiteral(_) => Some(Self::Boolean),
+      TypeKindSummary::String | TypeKindSummary::StringLiteral(_) => Some(Self::String),
       TypeKindSummary::Object
       | TypeKindSummary::EmptyObject
       | TypeKindSummary::Array { .. }
@@ -139,6 +141,7 @@ impl TsAbiKind {
     match kind {
       TypeKindSummary::Number | TypeKindSummary::NumberLiteral(_) => Some(Self::Number),
       TypeKindSummary::Boolean | TypeKindSummary::BooleanLiteral(_) => Some(Self::Boolean),
+      TypeKindSummary::String | TypeKindSummary::StringLiteral(_) => Some(Self::String),
       _ => None,
     }
   }
@@ -147,6 +150,7 @@ impl TsAbiKind {
     match kind {
       TypeKindSummary::Number | TypeKindSummary::NumberLiteral(_) => Some(Self::Number),
       TypeKindSummary::Boolean | TypeKindSummary::BooleanLiteral(_) => Some(Self::Boolean),
+      TypeKindSummary::String | TypeKindSummary::StringLiteral(_) => Some(Self::String),
       TypeKindSummary::Void | TypeKindSummary::Undefined | TypeKindSummary::Never => Some(Self::Void),
       _ => None,
     }
@@ -157,6 +161,7 @@ impl TsAbiKind {
 enum NativeValue<'ctx> {
   Number(FloatValue<'ctx>),
   Boolean(IntValue<'ctx>),
+  String(IntValue<'ctx>),
   GcPtr(PointerValue<'ctx>),
   Void,
 }
@@ -166,6 +171,7 @@ impl<'ctx> NativeValue<'ctx> {
     match self {
       NativeValue::Number(_) => TsAbiKind::Number,
       NativeValue::Boolean(_) => TsAbiKind::Boolean,
+      NativeValue::String(_) => TsAbiKind::String,
       NativeValue::GcPtr(_) => TsAbiKind::GcPtr,
       NativeValue::Void => TsAbiKind::Void,
     }
@@ -175,6 +181,7 @@ impl<'ctx> NativeValue<'ctx> {
     match self {
       NativeValue::Number(v) => Some(v.into()),
       NativeValue::Boolean(v) => Some(v.into()),
+      NativeValue::String(v) => Some(v.into()),
       NativeValue::GcPtr(v) => Some(v.into()),
       NativeValue::Void => None,
     }
@@ -202,6 +209,13 @@ struct GlobalSlot<'ctx> {
 struct LocalSlot<'ctx> {
   ptr: PointerValue<'ctx>,
   kind: TsAbiKind,
+}
+
+#[derive(Clone, Copy)]
+struct StringLiteralGlobals<'ctx> {
+  bytes: GlobalValue<'ctx>,
+  id: GlobalValue<'ctx>,
+  len: u64,
 }
 
 fn ts_function_sig_kind(
@@ -272,7 +286,7 @@ fn ts_function_sig_kind(
     let Some(kind) = TsAbiKind::from_param_type_kind(&kind) else {
       return Err(vec![codes::UNSUPPORTED_NATIVE_TYPE.error(
         format!(
-          "unsupported parameter type for native-js ABI (expected number|boolean): {}",
+          "unsupported parameter type for native-js ABI (expected number|boolean|string): {}",
           program.display_type(param.ty)
         ),
         span,
@@ -285,7 +299,7 @@ fn ts_function_sig_kind(
   let Some(ret) = TsAbiKind::from_return_type_kind(&ret_kind) else {
     return Err(vec![codes::UNSUPPORTED_NATIVE_TYPE.error(
       format!(
-        "unsupported return type for native-js ABI (expected number|boolean|void): {}",
+        "unsupported return type for native-js ABI (expected number|boolean|string|void): {}",
         program.display_type(sig.ret)
       ),
       span,
@@ -314,6 +328,7 @@ struct ProgramCodegen<'ctx, 'p> {
   functions: HashMap<DefId, FunctionValue<'ctx>>,
   function_sigs: HashMap<DefId, TsFunctionSigKind>,
   file_inits: HashMap<FileId, FunctionValue<'ctx>>,
+  string_literals: HashMap<FileId, BTreeMap<String, StringLiteralGlobals<'ctx>>>,
   debug: Option<debuginfo::CodegenDebug<'ctx>>,
 }
 
@@ -340,6 +355,7 @@ impl<'ctx, 'p> ProgramCodegen<'ctx, 'p> {
       functions: HashMap::new(),
       function_sigs: HashMap::new(),
       file_inits: HashMap::new(),
+      string_literals: HashMap::new(),
       debug,
     }
   }
@@ -374,6 +390,13 @@ impl<'ctx, 'p> ProgramCodegen<'ctx, 'p> {
 
     for file in &files {
       self.ensure_file_init(*file);
+    }
+
+    // Pre-scan and declare per-file string literal globals so:
+    // - file initializers can intern+pin string literals at startup, and
+    // - expression codegen can lower string literals to a cheap `i32` load.
+    for file in &files {
+      self.collect_string_literals_for_file(*file);
     }
 
     // Predeclare all top-level functions (so calls can reference them).
@@ -577,6 +600,7 @@ impl<'ctx, 'p> ProgramCodegen<'ctx, 'p> {
       let ty = match p {
         TsAbiKind::Number => self.f64_ty.into(),
         TsAbiKind::Boolean => self.i1_ty.into(),
+        TsAbiKind::String => self.i32_ty.into(),
         TsAbiKind::GcPtr => unreachable!("GC pointer parameters are not supported by native-js ABI yet"),
         TsAbiKind::Void => unreachable!("void is not a valid parameter ABI kind"),
       };
@@ -586,8 +610,9 @@ impl<'ctx, 'p> ProgramCodegen<'ctx, 'p> {
     let fn_ty = match sig.ret {
       TsAbiKind::Number => self.f64_ty.fn_type(&params, false),
       TsAbiKind::Boolean => self.i1_ty.fn_type(&params, false),
-      TsAbiKind::GcPtr => unreachable!("GC pointer returns are not supported by native-js ABI yet"),
+      TsAbiKind::String => self.i32_ty.fn_type(&params, false),
       TsAbiKind::Void => self.context.void_type().fn_type(&params, false),
+      TsAbiKind::GcPtr => unreachable!("GC pointer returns are not supported by native-js ABI yet"),
     };
 
     let linkage = if self.exported_defs.contains(&def) {
@@ -602,6 +627,75 @@ impl<'ctx, 'p> ProgramCodegen<'ctx, 'p> {
     }
     self.functions.insert(def, func);
     self.function_sigs.insert(def, sig);
+  }
+
+  fn collect_string_literals_for_file(&mut self, file: FileId) {
+    if self.string_literals.contains_key(&file) {
+      return;
+    }
+    let Some(lowered) = self.program.hir_lowered(file) else {
+      return;
+    };
+    if matches!(lowered.hir.file_kind, FileKind::Dts) {
+      return;
+    }
+
+    let mut literals = BTreeSet::<String>::new();
+    for body_id in self.program.bodies_in_file(file) {
+      let Some(body) = lowered.body(body_id) else {
+        continue;
+      };
+      for expr in body.exprs.iter() {
+        let ExprKind::Literal(Literal::String(lit)) = &expr.kind else {
+          continue;
+        };
+        literals.insert(lit.lossy.clone());
+      }
+    }
+
+    if literals.is_empty() {
+      return;
+    }
+
+    let i8_ty = self.context.i8_type();
+    let mut globals = BTreeMap::<String, StringLiteralGlobals<'ctx>>::new();
+
+    for (idx, value) in literals.into_iter().enumerate() {
+      let bytes = value.as_bytes();
+      let bytes_len = bytes.len() as u64;
+
+      // Constant byte storage for the literal (exactly the UTF-8 bytes of `lossy`).
+      let bytes_sym = format!("__nativejs_strlit_bytes_{:08x}_{idx:04}", file.0);
+      let arr_ty = i8_ty.array_type(bytes.len() as u32);
+      let bytes_global = self.module.add_global(arr_ty, None, &bytes_sym);
+      bytes_global.set_linkage(Linkage::Internal);
+      bytes_global.set_constant(true);
+      let elems: Vec<_> = bytes
+        .iter()
+        .copied()
+        .map(|b| i8_ty.const_int(b as u64, false))
+        .collect();
+      bytes_global.set_initializer(&i8_ty.const_array(&elems));
+
+      // Storage for the interned ID (filled in by the file initializer).
+      let id_sym = format!("__nativejs_strlit_id_{:08x}_{idx:04}", file.0);
+      let id_global = self.module.add_global(self.i32_ty, None, &id_sym);
+      id_global.set_linkage(Linkage::Internal);
+      // Initialize to the runtime-native invalid sentinel (`u32::MAX`) to make missing initialization
+      // easier to spot in debug output/IR.
+      id_global.set_initializer(&self.i32_ty.const_int(u64::from(u32::MAX), false));
+
+      globals.insert(
+        value,
+        StringLiteralGlobals {
+          bytes: bytes_global,
+          id: id_global,
+          len: bytes_len,
+        },
+      );
+    }
+
+    self.string_literals.insert(file, globals);
   }
 
   fn build_file_init(&mut self, file: FileId) -> Result<(), Vec<Diagnostic>> {
@@ -678,6 +772,10 @@ impl<'ctx, 'p> ProgramCodegen<'ctx, 'p> {
       TsAbiKind::Void,
     );
     cg.init_debug_subprogram_file_init();
+
+    // Intern + pin all string literals in this file before executing any other module initializer
+    // statements. String literal expressions in the checked backend lower to loads of these IDs.
+    cg.codegen_string_literal_inits();
 
     let mut fallthrough = true;
     for (_, item) in items {
@@ -835,8 +933,13 @@ impl<'ctx, 'p> ProgramCodegen<'ctx, 'p> {
           cg.builder.build_store(slot, v).expect("store param");
           NativeValue::Boolean(v)
         }
-        TsAbiKind::GcPtr => unreachable!("GC pointer parameters are not supported by native-js ABI yet"),
+        TsAbiKind::String => {
+          let v = value.into_int_value();
+          cg.builder.build_store(slot, v).expect("store param");
+          NativeValue::String(v)
+        }
         TsAbiKind::Void => unreachable!("void is not a valid parameter ABI kind"),
+        TsAbiKind::GcPtr => unreachable!("GC pointer parameters are not supported by native-js ABI yet"),
       };
 
       let pat_span = hir_body
@@ -863,6 +966,9 @@ impl<'ctx, 'p> ProgramCodegen<'ctx, 'p> {
             cg.builder.build_return(Some(&v)).expect("failed to build return");
           }
           (TsAbiKind::Boolean, NativeValue::Boolean(v)) => {
+            cg.builder.build_return(Some(&v)).expect("failed to build return");
+          }
+          (TsAbiKind::String, NativeValue::String(v)) => {
             cg.builder.build_return(Some(&v)).expect("failed to build return");
           }
           (expected, actual) => {
@@ -1014,6 +1120,11 @@ impl<'ctx, 'p> ProgramCodegen<'ctx, 'p> {
           .build_int_z_extend(v, self.i32_ty, "exitcode")
           .expect("failed to build zext")
       }
+      TsAbiKind::String => call
+        .try_as_basic_value()
+        .left()
+        .expect("non-void TS main should return a value")
+        .into_int_value(),
       TsAbiKind::GcPtr => {
         return Err(vec![diagnostics::ice(
           ice_span,
@@ -1058,7 +1169,7 @@ impl<'ctx, 'p> ProgramCodegen<'ctx, 'p> {
         let Some(abi_kind) = TsAbiKind::from_value_type_kind(&ts_kind) else {
           return Err(vec![codes::UNSUPPORTED_NATIVE_TYPE.error(
             format!(
-              "unsupported global type for native-js ABI (expected number|boolean|gc pointer): {}",
+              "unsupported global type for native-js ABI (expected number|boolean|string|gc pointer): {}",
               self.program.display_type(ts_ty)
             ),
             span,
@@ -1076,6 +1187,7 @@ impl<'ctx, 'p> ProgramCodegen<'ctx, 'p> {
           TsAbiKind::Number => self.f64_ty.into(),
           TsAbiKind::Boolean => self.i1_ty.into(),
           TsAbiKind::GcPtr => self.gc_ptr_ty.into(),
+          TsAbiKind::String => self.i32_ty.into(),
           TsAbiKind::Void => unreachable!(),
         };
         let global = self.module.add_global(global_ty, None, &name);
@@ -1083,6 +1195,7 @@ impl<'ctx, 'p> ProgramCodegen<'ctx, 'p> {
           TsAbiKind::Number => global.set_initializer(&self.f64_ty.const_float(0.0)),
           TsAbiKind::Boolean => global.set_initializer(&self.i1_ty.const_int(0, false)),
           TsAbiKind::GcPtr => global.set_initializer(&self.gc_ptr_ty.const_null()),
+          TsAbiKind::String => global.set_initializer(&self.i32_ty.const_int(u64::from(u32::MAX), false)),
           TsAbiKind::Void => unreachable!(),
         };
         if matches!(abi_kind, TsAbiKind::GcPtr) {
@@ -1599,6 +1712,13 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
             .expect("failed to build dbg load")
             .into_int_value(),
         ),
+        TsAbiKind::String => NativeValue::String(
+          self
+            .builder
+            .build_load(self.cg.i32_ty, slot.ptr, "dbg.load")
+            .expect("failed to build dbg load")
+            .into_int_value(),
+        ),
         TsAbiKind::GcPtr => continue,
         TsAbiKind::Void => continue,
       };
@@ -1728,6 +1848,7 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
       TsAbiKind::Number => self.cg.f64_ty.as_basic_type_enum(),
       TsAbiKind::Boolean => self.cg.i1_ty.as_basic_type_enum(),
       TsAbiKind::GcPtr => self.cg.gc_ptr_ty.as_basic_type_enum(),
+      TsAbiKind::String => self.cg.i32_ty.as_basic_type_enum(),
       TsAbiKind::Void => unreachable!(),
     };
 
@@ -1746,6 +1867,7 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
         .builder
         .build_float_compare(FloatPredicate::ONE, v, self.cg.f64_ty.const_float(0.0), "truthy")
         .expect("failed to build truthy compare"),
+      NativeValue::String(_) => self.cg.i1_ty.const_int(1, false),
       // Objects are truthy; we treat null pointers as falsy.
       NativeValue::GcPtr(v) => self.builder.build_is_not_null(v, "truthy").expect("isnotnull"),
       // `undefined` is falsy in JS; we treat `void` expressions similarly when used in a truthy
@@ -1978,6 +2100,49 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
     Ok(())
   }
 
+  fn codegen_string_literal_inits(&mut self) {
+    let Some(literals) = self.cg.string_literals.get(&self.file) else {
+      return;
+    };
+    if literals.is_empty() {
+      return;
+    }
+
+    let rt = crate::runtime_abi::RuntimeAbi::new(self.cg.context, &self.cg.module);
+    let i64_ty = self.cg.context.i64_type();
+
+    for globals in literals.values() {
+      let len = i64_ty.const_int(globals.len, false);
+      let call = rt
+        .emit_runtime_call(
+          &self.builder,
+          crate::runtime_abi::RuntimeFn::StringIntern,
+          &[globals.bytes.as_pointer_value().into(), len.into()],
+          "str.intern",
+        )
+        .expect("failed to emit rt_string_intern call");
+      let id = call
+        .try_as_basic_value()
+        .left()
+        .expect("rt_string_intern should return an InternedId")
+        .into_int_value();
+
+      self
+        .builder
+        .build_store(globals.id.as_pointer_value(), id)
+        .expect("failed to store interned id");
+
+      let _ = rt
+        .emit_runtime_call(
+          &self.builder,
+          crate::runtime_abi::RuntimeFn::StringPinInterned,
+          &[id.into()],
+          "str.pin",
+        )
+        .expect("failed to emit rt_string_pin_interned call");
+    }
+  }
+
   fn codegen_stmt(&mut self, stmt_id: StmtId) -> Result<bool, Vec<Diagnostic>> {
     let (kind, span) = {
       let stmt = self.stmt(stmt_id)?;
@@ -2005,6 +2170,11 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
               .expect("failed to build return");
           }
           (TsAbiKind::Boolean, NativeValue::Boolean(v)) => {
+            self.builder
+              .build_return(Some(&v))
+              .expect("failed to build return");
+          }
+          (TsAbiKind::String, NativeValue::String(v)) => {
             self.builder
               .build_return(Some(&v))
               .expect("failed to build return");
@@ -2130,13 +2300,19 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
     }
 
     let value = self.codegen_expr(arg_expr)?;
-    let NativeValue::Number(value) = value else {
-      return Err(vec![codes::UNSUPPORTED_NATIVE_TYPE.error(
-        "the `print` intrinsic currently only supports `number` arguments",
-        Span::new(self.file, expr_span),
-      )]);
-    };
-    self.emit_print_f64(value);
+    match value {
+      NativeValue::Number(v) => self.emit_print_f64(v),
+      NativeValue::String(v) => self.emit_print_i32(v),
+      other => {
+        return Err(vec![codes::UNSUPPORTED_NATIVE_TYPE.error(
+          format!(
+            "the `print` intrinsic currently only supports `number` or `string` arguments (got {got:?})",
+            got = other.kind()
+          ),
+          Span::new(self.file, expr_span),
+        )]);
+      }
+    }
     Ok(true)
   }
 
@@ -2174,6 +2350,15 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
     let call = self
       .builder
       .build_call(rt_print, &[value.into()], "native_js_print_f64")
+      .expect("failed to build print call");
+    crate::stack_walking::mark_call_notail(call);
+  }
+
+  fn emit_print_i32(&self, value: IntValue<'ctx>) {
+    let rt_print = declare_rt_print_i32(self.cg.context, &self.cg.module);
+    let call = self
+      .builder
+      .build_call(rt_print, &[value.into()], "native_js_print_i32")
       .expect("failed to build print call");
     crate::stack_walking::mark_call_notail(call);
   }
@@ -2341,6 +2526,12 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
         phi.add_incoming(&[(&lhs, lhs_bb), (&rhs, rhs_end_bb)]);
         NativeValue::Boolean(phi.as_basic_value().into_int_value())
       }
+      TsAbiKind::String => {
+        return Err(vec![codes::UNSUPPORTED_NATIVE_TYPE.error(
+          "`&&` is not supported for `string` values in native-js yet",
+          span,
+        )]);
+      }
       TsAbiKind::GcPtr => {
         let (NativeValue::GcPtr(lhs), NativeValue::GcPtr(rhs)) = (lhs, rhs) else {
           return Err(vec![codes::UNSUPPORTED_NATIVE_TYPE.error(
@@ -2434,6 +2625,12 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
           .expect("failed to build phi");
         phi.add_incoming(&[(&lhs, lhs_bb), (&rhs, rhs_end_bb)]);
         NativeValue::Boolean(phi.as_basic_value().into_int_value())
+      }
+      TsAbiKind::String => {
+        return Err(vec![codes::UNSUPPORTED_NATIVE_TYPE.error(
+          "`||` is not supported for `string` values in native-js yet",
+          span,
+        )]);
       }
       TsAbiKind::GcPtr => {
         let (NativeValue::GcPtr(lhs), NativeValue::GcPtr(rhs)) = (lhs, rhs) else {
@@ -2829,6 +3026,12 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
                 .build_store(global.global.as_pointer_value(), v)
                 .expect("failed to build store");
             }
+            NativeValue::String(v) => {
+              self
+                .builder
+                .build_store(global.global.as_pointer_value(), v)
+                .expect("failed to build store");
+            }
             NativeValue::GcPtr(v) => {
               self
                 .builder
@@ -2845,6 +3048,9 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
               self.builder.build_store(slot, v).expect("failed to build store");
             }
             NativeValue::Boolean(v) => {
+              self.builder.build_store(slot, v).expect("failed to build store");
+            }
+            NativeValue::String(v) => {
               self.builder.build_store(slot, v).expect("failed to build store");
             }
             NativeValue::GcPtr(v) => {
@@ -3006,6 +3212,24 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
         Ok(NativeValue::Number(self.cg.f64_ty.const_float(number)))
       }
 
+      ExprKind::Literal(Literal::String(lit)) => {
+        let globals = self
+          .cg
+          .string_literals
+          .get(&self.file)
+          .and_then(|m| m.get(&lit.lossy))
+          .copied()
+          .ok_or_else(|| {
+            vec![codes::HIR_CODEGEN_UNSUPPORTED_EXPR.error("missing string literal global", span)]
+          })?;
+        let id = self
+          .builder
+          .build_load(self.cg.i32_ty, globals.id.as_pointer_value(), "str.lit")
+          .expect("failed to load interned string id")
+          .into_int_value();
+        Ok(NativeValue::String(id))
+      }
+
       ExprKind::Literal(Literal::Boolean(b)) => Ok(NativeValue::Boolean(self.cg.i1_ty.const_int(u64::from(b), false))),
 
       ExprKind::Array(arr) => {
@@ -3072,6 +3296,7 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
         let elem_size_bytes: u64 = match elem_kind {
           TsAbiKind::Number => 8,
           TsAbiKind::Boolean => 1,
+          TsAbiKind::String => 4,
           TsAbiKind::GcPtr => 8,
           TsAbiKind::Void => unreachable!(),
         };
@@ -3125,6 +3350,16 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
               let slot = self.array_elem_ptr(arr_ptr, idx_i64, elem_size_bytes)?;
               self.builder.build_store(slot, v).expect("store array init");
             }
+            TsAbiKind::String => {
+              let NativeValue::String(v) = value else {
+                return Err(vec![codes::UNSUPPORTED_NATIVE_TYPE.error(
+                  "array element initializer type mismatch (expected `string`)",
+                  span,
+                )]);
+              };
+              let slot = self.array_elem_ptr(arr_ptr, idx_i64, elem_size_bytes)?;
+              self.builder.build_store(slot, v).expect("store array init");
+            }
             TsAbiKind::GcPtr => {
               let NativeValue::GcPtr(v) = value else {
                 return Err(vec![codes::UNSUPPORTED_NATIVE_TYPE.error(
@@ -3144,7 +3379,6 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
 
         Ok(NativeValue::GcPtr(arr_ptr))
       }
-
       ExprKind::Unary { op, expr } => {
         let inner = self.codegen_expr(expr)?;
         match op {
@@ -3323,6 +3557,23 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
                   .expect("icmp");
                 Ok(NativeValue::Boolean(cmp))
               }
+              (NativeValue::String(lhs), NativeValue::String(rhs)) => {
+                let pred = match op {
+                  BinaryOp::StrictEquality => IntPredicate::EQ,
+                  BinaryOp::StrictInequality => IntPredicate::NE,
+                  _ => {
+                    return Err(vec![codes::HIR_CODEGEN_UNSUPPORTED_BINARY_OP.error(
+                      "string equality is only supported via `===` / `!==` in this codegen subset",
+                      span,
+                    )]);
+                  }
+                };
+                let cmp = self
+                  .builder
+                  .build_int_compare(pred, lhs, rhs, "icmp")
+                  .expect("icmp");
+                Ok(NativeValue::Boolean(cmp))
+              }
               _ => Err(vec![codes::UNSUPPORTED_NATIVE_TYPE.error(
                 "equality comparisons currently require both operands to have the same primitive type",
                 span,
@@ -3387,6 +3638,7 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
                 let elem_size_bytes = match elem_kind {
                   TsAbiKind::Number => 8,
                   TsAbiKind::Boolean => 1,
+                  TsAbiKind::String => 4,
                   TsAbiKind::GcPtr => 8,
                   TsAbiKind::Void => {
                     return Err(vec![codes::UNSUPPORTED_NATIVE_TYPE.error(
@@ -3408,6 +3660,13 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
                     self
                       .builder
                       .build_load(self.cg.i1_ty, slot, "elem")
+                      .expect("load elem")
+                      .into_int_value(),
+                  ),
+                  TsAbiKind::String => NativeValue::String(
+                    self
+                      .builder
+                      .build_load(self.cg.i32_ty, slot, "elem")
                       .expect("load elem")
                       .into_int_value(),
                   ),
@@ -3457,6 +3716,13 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
             self
               .builder
               .build_load(self.cg.i1_ty, global.global.as_pointer_value(), "ns.load")
+              .expect("failed to build load")
+              .into_int_value(),
+          )),
+          TsAbiKind::String => Ok(NativeValue::String(
+            self
+              .builder
+              .build_load(self.cg.i32_ty, global.global.as_pointer_value(), "ns.load")
               .expect("failed to build load")
               .into_int_value(),
           )),
@@ -3527,6 +3793,13 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
             self
               .builder
               .build_load(self.cg.i1_ty, slot.ptr, "load")
+              .expect("failed to build load")
+              .into_int_value(),
+          ),
+          TsAbiKind::String => NativeValue::String(
+            self
+              .builder
+              .build_load(self.cg.i32_ty, slot.ptr, "load")
               .expect("failed to build load")
               .into_int_value(),
           ),
@@ -3632,6 +3905,7 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
                 let elem_size_bytes = match elem_kind {
                   TsAbiKind::Number => 8,
                   TsAbiKind::Boolean => 1,
+                  TsAbiKind::String => 4,
                   TsAbiKind::GcPtr => 8,
                   TsAbiKind::Void => {
                     return Err(vec![codes::UNSUPPORTED_NATIVE_TYPE.error(
@@ -3651,6 +3925,11 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
                     let NativeValue::Boolean(rhs_b) = rhs else { unreachable!() };
                     let slot = self.array_elem_ptr(arr, idx_i64, elem_size_bytes)?;
                     self.builder.build_store(slot, rhs_b).expect("store array elem");
+                  }
+                  TsAbiKind::String => {
+                    let NativeValue::String(rhs_s) = rhs else { unreachable!() };
+                    let slot = self.array_elem_ptr(arr, idx_i64, elem_size_bytes)?;
+                    self.builder.build_store(slot, rhs_s).expect("store array elem");
                   }
                   TsAbiKind::GcPtr => {
                     let NativeValue::GcPtr(rhs_p) = rhs else { unreachable!() };
@@ -3907,6 +4186,13 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
               .expect("non-void call should return a value")
               .into_int_value(),
           )),
+          TsAbiKind::String => Ok(NativeValue::String(
+            call
+              .try_as_basic_value()
+              .left()
+              .expect("non-void call should return a value")
+              .into_int_value(),
+          )),
           TsAbiKind::GcPtr => unreachable!("GC pointer returns are not supported by native-js ABI yet"),
         }
       }
@@ -3983,6 +4269,12 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
           .expect("failed to build store");
       }
       NativeValue::Boolean(v) => {
+        self
+          .builder
+          .build_store(slot.ptr, v)
+          .expect("failed to build store");
+      }
+      NativeValue::String(v) => {
         self
           .builder
           .build_store(slot.ptr, v)
@@ -4183,6 +4475,47 @@ fn is_toplevel_def(program: &Program, def: DefId) -> bool {
     cur = parent;
   }
   true
+}
+
+fn declare_rt_print_i32<'ctx>(context: &'ctx Context, module: &Module<'ctx>) -> FunctionValue<'ctx> {
+  if let Some(existing) = module.get_function("rt_print_i32") {
+    return existing;
+  }
+
+  let void_ty = context.void_type();
+  let i32_ty = context.i32_type();
+  let func = module.add_function(
+    "rt_print_i32",
+    void_ty.fn_type(&[i32_ty.into()], false),
+    Some(Linkage::Internal),
+  );
+  // Keep frame pointers / disable tail calls for stack walking, but do not mark
+  // this helper as GC-managed. It must not contain statepoints/stackmaps.
+  crate::stack_walking::apply_stack_walking_frame_attrs(context, func);
+
+  let builder = context.create_builder();
+  let bb = context.append_basic_block(func, "entry");
+  builder.position_at_end(bb);
+
+  let printf = declare_printf(context, module);
+  let fmt = builder
+    .build_global_string_ptr("%u\n", "native_js_print_i32_fmt")
+    .expect("failed to create printf format string");
+  let value = func
+    .get_nth_param(0)
+    .expect("missing print arg")
+    .into_int_value();
+  let call = builder
+    .build_call(
+      printf,
+      &[fmt.as_pointer_value().into(), value.into()],
+      "native_js_print_i32",
+    )
+    .expect("failed to build printf call");
+  crate::stack_walking::mark_call_notail(call);
+  builder.build_return(None).expect("failed to build return");
+
+  func
 }
 
 fn declare_rt_print_f64<'ctx>(context: &'ctx Context, module: &Module<'ctx>) -> FunctionValue<'ctx> {
