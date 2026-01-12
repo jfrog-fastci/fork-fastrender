@@ -19280,15 +19280,6 @@ fn async_iterator_close_on_error(
   }
 }
 
-fn async_iterator_close_on_error_force_close(
-  evaluator: &mut Evaluator<'_>,
-  scope: &mut Scope<'_>,
-  iter: &iterator::IteratorRecord,
-  err: VmError,
-) -> VmError {
-  async_iterator_close_on_error(evaluator, scope, iter, err)
-}
-
 fn async_call_store_arg_value(
   evaluator: &mut Evaluator<'_>,
   scope: &mut Scope<'_>,

@@ -227,7 +227,9 @@ fn revoked_proxy_iterable_throws_type_error_in_for_of() -> Result<(), VmError> {
 #[test]
 fn for_await_of_observes_proxy_get_trap_for_next_method() -> Result<(), VmError> {
   let vm = Vm::new(VmOptions::default());
-  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  // This test drives `for await...of` + Promise resolution via microtasks, which can allocate
+  // enough internal bookkeeping that a 1MB heap is too small.
+  let heap = Heap::new(HeapLimits::new(4 * 1024 * 1024, 4 * 1024 * 1024));
   let mut rt = JsRuntime::new(vm, heap)?;
   let global = rt.realm().global_object();
 

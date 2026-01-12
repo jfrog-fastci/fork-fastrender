@@ -24,6 +24,7 @@ use crate::ast::expr::TaggedTemplateExpr;
 use crate::ast::expr::ThisExpr;
 use crate::ast::expr::UnaryExpr;
 use crate::ast::expr::UnaryPostfixExpr;
+use crate::ast::expr::lit::LitNumExpr;
 use crate::ast::func::Func;
 use crate::ast::node::Node;
 use crate::ast::node::ParenthesizedExpr;
@@ -39,6 +40,7 @@ use crate::operator::OperatorName;
 use crate::operator::OPERATORS;
 use crate::parse::operator::MULTARY_OPERATOR_MAPPING;
 use crate::parse::operator::UNARY_OPERATOR_MAPPING;
+use crate::num::JsNumber;
 use crate::token::TT;
 use pat::is_valid_pattern_identifier;
 use pat::ParsePatternRules;
@@ -73,6 +75,24 @@ impl<'a> Parser<'a> {
       loc,
       IdExpr {
         name: "undefined".to_string(),
+      },
+    )
+    .into_wrapped()
+  }
+
+  /// Creates a synthetic expression that evaluates to the `undefined` *value*.
+  ///
+  /// This is distinct from [`Self::create_synthetic_undefined`], which returns an
+  /// `undefined` *identifier* for error recovery. An `undefined` identifier is
+  /// shadowable (`function* g(){ var undefined = 1; yield; }`), but `yield`
+  /// without an operand must yield the true `undefined` value.
+  fn create_synthetic_undefined_value(&self, loc: crate::loc::Loc) -> Node<Expr> {
+    let zero = Node::new(loc, LitNumExpr { value: JsNumber(0.0) }).into_wrapped();
+    Node::new(
+      loc,
+      UnaryExpr {
+        operator: OperatorName::Void,
+        argument: zero,
       },
     )
     .into_wrapped()
@@ -1304,6 +1324,7 @@ impl<'a> Parser<'a> {
                     next_token.error(SyntaxErrorType::ExpectedSyntax("expression operand")),
                   );
                 }
+                OperatorName::Yield => p.create_synthetic_undefined_value(op_tok.loc),
                 _ => {
                   // For unary operators without operand, use `undefined` identifier for error recovery
                   p.create_synthetic_undefined(op_tok.loc)
