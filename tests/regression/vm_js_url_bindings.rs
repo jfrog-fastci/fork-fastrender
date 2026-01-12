@@ -1,7 +1,7 @@
 use fastrender::js::{
   install_url_bindings, install_url_bindings_with_limits, webidl::legacy::VmJsRuntime, UrlLimits,
 };
-use vm_js::{HeapLimits, PropertyKey, Value};
+use vm_js::{HeapLimits, PropertyKey, Value, VmError};
 use webidl_js_runtime::{JsRuntime as _, WebIdlJsRuntime as _};
 use webidl_js_runtime::runtime::JsPropertyKind;
 
@@ -425,6 +425,75 @@ fn urlsearchparams_iterators_are_iterable() {
       "expected URLSearchParams.{method_name}() iterator [Symbol.iterator]() to return itself"
     );
   }
+}
+
+#[test]
+fn urlsearchparams_iterator_rejects_fractional_internal_state() {
+  let mut rt = VmJsRuntime::new();
+  let global = rt.alloc_object_value().unwrap();
+  install_url_bindings(&mut rt, global).unwrap();
+
+  let params = new_url_search_params(&mut rt, global, Some("a=1&b=2"));
+
+  fn check_throw(
+    rt: &mut VmJsRuntime,
+    iter: Value,
+    prop: &str,
+    value: f64,
+    expected_substr: &str,
+  ) {
+    let iter_root = rt.heap_mut().add_root(iter).unwrap();
+
+    // Mutate the internal iterator state stored on plain properties. This iterator implementation
+    // exists because `vm-js` does not have interpreter-backed array iterators yet, so we must be
+    // robust against scripts that tamper with these properties.
+    let prop_key = key(rt, prop);
+    let key_root = match prop_key {
+      PropertyKey::String(s) => Some(rt.heap_mut().add_root(Value::String(s)).unwrap()),
+      PropertyKey::Symbol(s) => Some(rt.heap_mut().add_root(Value::Symbol(s)).unwrap()),
+    };
+    rt.define_data_property(iter, prop_key, Value::Number(value), true)
+      .unwrap();
+    if let Some(id) = key_root {
+      rt.heap_mut().remove_root(id);
+    }
+
+    let next = get(rt, iter, "next");
+    let err = rt.call_function(next, iter, &[]).unwrap_err();
+    let msg = match err {
+      VmError::Throw(value) | VmError::ThrowWithStack { value, .. } => {
+        let value_root = rt.heap_mut().add_root(value).unwrap();
+        let s = rt.to_string(value).unwrap();
+        rt.heap_mut().remove_root(value_root);
+        rt.string_to_utf8_lossy(s).unwrap()
+      }
+      other => panic!("expected throw, got {other:?}"),
+    };
+    assert!(
+      msg.contains(expected_substr),
+      "expected {expected_substr:?} in error message, got {msg:?}"
+    );
+
+    rt.heap_mut().remove_root(iter_root);
+  }
+
+  let iter = call_method(&mut rt, params, "entries", &[]);
+  check_throw(
+    &mut rt,
+    iter,
+    "__fastrender_iter_index",
+    0.5,
+    "Iterator: invalid index",
+  );
+
+  let iter = call_method(&mut rt, params, "entries", &[]);
+  check_throw(
+    &mut rt,
+    iter,
+    "__fastrender_iter_len",
+    1.5,
+    "Iterator: invalid length",
+  );
 }
 
 #[test]

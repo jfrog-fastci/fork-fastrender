@@ -158,7 +158,7 @@ fn array_to_iterator(
       let Value::Number(index) = index else {
         return Err(type_error(rt, "Iterator: invalid index"));
       };
-      if !index.is_finite() || index < 0.0 || index > u32::MAX as f64 {
+      if !index.is_finite() || index < 0.0 || index.fract() != 0.0 || index > u32::MAX as f64 {
         return Err(type_error(rt, "Iterator: invalid index"));
       }
       let idx_u32: u32 = index as u32;
@@ -169,7 +169,7 @@ fn array_to_iterator(
       let Value::Number(len) = len else {
         return Err(type_error(rt, "Iterator: invalid length"));
       };
-      if !len.is_finite() || len < 0.0 || len > u32::MAX as f64 {
+      if !len.is_finite() || len < 0.0 || len.fract() != 0.0 || len > u32::MAX as f64 {
         return Err(type_error(rt, "Iterator: invalid length"));
       }
       let len_u32: u32 = len as u32;
