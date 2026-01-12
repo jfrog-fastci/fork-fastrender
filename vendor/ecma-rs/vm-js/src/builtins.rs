@@ -2531,12 +2531,60 @@ pub fn array_buffer_constructor_construct(
 ) -> Result<Value, VmError> {
   let intr = require_intrinsics(vm)?;
 
-  let length_val = args.get(0).copied().unwrap_or(Value::Number(0.0));
-  let length_num = scope.to_number(vm, host, hooks, length_val)?;
-  if !length_num.is_finite() || length_num < 0.0 || length_num.fract() != 0.0 {
-    return Err(VmError::TypeError("ArrayBuffer length must be a non-negative integer"));
-  }
-  let byte_length = length_num as usize;
+  // Spec: https://tc39.es/ecma262/#sec-arraybuffer-constructor
+  //
+  // `new ArrayBuffer(length)` uses `ToIndex(length)`, so it:
+  // - treats `undefined` as 0
+  // - truncates fractional lengths (`1.9` → `1`)
+  // - treats `NaN` as 0
+  // - rejects negative values and +∞ with RangeError
+  // - rejects values > 2^53 - 1 with RangeError
+  let length_val = args.get(0).copied().unwrap_or(Value::Undefined);
+  let byte_length: usize = if matches!(length_val, Value::Undefined) {
+    0
+  } else {
+    let num = scope.to_number(vm, host, hooks, length_val)?;
+    // `ToIntegerOrInfinity`.
+    let integer = if num.is_nan() {
+      0.0
+    } else if num.is_infinite() {
+      num
+    } else {
+      num.trunc()
+    };
+
+    if integer < 0.0 {
+      let err = crate::error_object::new_range_error(scope, intr, "Invalid array buffer length")?;
+      return Err(VmError::Throw(err));
+    }
+
+    const MAX_SAFE_INTEGER: f64 = 9_007_199_254_740_991.0; // 2^53 - 1
+    let index = if integer <= 0.0 {
+      0.0
+    } else if integer > MAX_SAFE_INTEGER {
+      MAX_SAFE_INTEGER
+    } else {
+      integer
+    };
+
+    // `ToIndex` requires the clamped `ToLength` result to be exactly equal to the integer.
+    if index != integer {
+      let err = crate::error_object::new_range_error(scope, intr, "Invalid array buffer length")?;
+      return Err(VmError::Throw(err));
+    }
+
+    // `index` is an integral f64 in [0, 2^53 - 1], so casting to u64 is exact.
+    let index_u64 = index as u64;
+    match usize::try_from(index_u64) {
+      Ok(n) => n,
+      Err(_) => {
+        // If the host `usize` can't represent `index`, treat it as an invalid (too large) length.
+        let err =
+          crate::error_object::new_range_error(scope, intr, "Invalid array buffer length")?;
+        return Err(VmError::Throw(err));
+      }
+    }
+  };
 
   let ab = scope.alloc_array_buffer(byte_length)?;
   scope

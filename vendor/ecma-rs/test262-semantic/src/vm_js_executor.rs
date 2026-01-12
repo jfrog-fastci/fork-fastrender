@@ -13,10 +13,12 @@ use std::sync::Arc;
 use vm_js::format_stack_trace;
 use vm_js::{
   finish_loading_imported_module, HostDefined, ImportAttribute, ImportMetaProperty, Job, ModuleGraph, ModuleId,
-  ModuleLoadPayload, ModuleReferrer, ModuleRequest, PromiseState, RealmId, RootId, VmHostHooks, VmJobContext,
+  ModuleLoadPayload, ModuleReferrer, ModuleRequest, PromiseState, RealmId, RootId, VmHost, VmHostHooks,
+  VmJobContext,
 };
 use vm_js::{
-  Heap, HeapLimits, MicrotaskQueue, PropertyKey, PropertyKind, SourceText, SourceTextModuleRecord,
+  GcObject, Heap, HeapLimits, MicrotaskQueue, PropertyDescriptor, PropertyKey, PropertyKind, SourceText,
+  SourceTextModuleRecord,
   StackFrame, TerminationReason, Value, Vm, VmError, VmOptions,
 };
   
@@ -605,33 +607,12 @@ impl Executor for VmJsExecutor {
       }
     };
 
-    // Provide the host-defined `$262` object expected by many test262 tests.
-    //
-    // Upstream test262 harnesses often inject `$262` from the embedding rather than via a harness
-    // JS include. `test262-semantic` does not currently ship that include file, so install a small
-    // stub here to unblock tests that use `$262.createRealm()`.
-    //
-    // This is intentionally minimal: `createRealm()` returns the current realm. This is sufficient
-    // for many feature/prototype checks (including generator tests that require `Reflect.construct`)
-    // without requiring full multi-realm support in vm-js yet.
-    let test262_host_src = r#"
-// Minimal test262 host hooks.
-//
-// Note: This is a stub (createRealm returns the current realm). It exists to prevent tests from
-// failing with `$262 is not defined` before the engine implements real cross-realm semantics.
-var $262 = {
-  createRealm: function () {
-    return { global: globalThis };
-  }
-};
-"#;
-    let test262_host_source = Arc::new(SourceText::new("<test262:$262>", test262_host_src));
-    let result = runtime.exec_script_source(test262_host_source);
-    if cancel.load(Ordering::Relaxed) {
-      return Err(ExecError::Cancelled);
-    }
-    if let Err(err) = result {
-      return Err(map_vm_error(case, test262_host_src, cancel, &mut runtime, err));
+    if let Err(err) = install_test262_host_object(&mut runtime) {
+      return Err(ExecError::Js(JsError::new(
+        ExecPhase::Runtime,
+        None,
+        format!("failed to install $262 host object: {err}"),
+      )));
     }
   
     // Give the VM a useful/stable source name for stack traces.
@@ -673,6 +654,212 @@ var $262 = {
 
     execute_module(case, &file_name, source, cancel, &mut runtime)
   }
+}
+
+fn data_desc(
+  value: Value,
+  writable: bool,
+  enumerable: bool,
+  configurable: bool,
+) -> PropertyDescriptor {
+  PropertyDescriptor {
+    enumerable,
+    configurable,
+    kind: PropertyKind::Data { value, writable },
+  }
+}
+
+fn global_data_desc(value: Value) -> PropertyDescriptor {
+  data_desc(value, /* writable */ true, /* enumerable */ false, /* configurable */ true)
+}
+
+fn install_test262_host_object(runtime: &mut vm_js::JsRuntime) -> Result<(), VmError> {
+  let (vm, realm, heap) = runtime.vm_realm_and_heap_mut();
+  let global_object = realm.global_object();
+  let intr = *realm.intrinsics();
+
+  // Register native call handlers.
+  //
+  // Note: `VmJsExecutor` creates a fresh `Vm` per test case, so registering these handlers on every
+  // invocation does not leak ids across tests.
+  let create_realm_call = vm.register_native_call(test262_create_realm)?;
+  let gc_call = vm.register_native_call(test262_gc)?;
+  let detach_array_buffer_call = vm.register_native_call(test262_detach_array_buffer)?;
+  let eval_script_call = vm.register_native_call(test262_eval_script)?;
+
+  let mut scope = heap.scope();
+  scope.push_root(Value::Object(global_object))?;
+
+  // Allocate `$262` as a regular object.
+  let obj_262 = scope.alloc_object()?;
+  scope.push_root(Value::Object(obj_262))?;
+  scope
+    .heap_mut()
+    .object_set_prototype(obj_262, Some(intr.object_prototype()))?;
+
+  // `$262.global = globalThis` (best-effort).
+  {
+    let key_s = scope.alloc_string("global")?;
+    scope.push_root(Value::String(key_s))?;
+    scope.define_property(
+      obj_262,
+      PropertyKey::from_string(key_s),
+      data_desc(Value::Object(global_object), true, true, true),
+    )?;
+  }
+
+  // `$262.IsHTMLDDA` (stubbed to `undefined`).
+  {
+    let key_s = scope.alloc_string("IsHTMLDDA")?;
+    scope.push_root(Value::String(key_s))?;
+    scope.define_property(
+      obj_262,
+      PropertyKey::from_string(key_s),
+      data_desc(Value::Undefined, true, true, true),
+    )?;
+  }
+
+  // Define native methods on `$262`.
+  let mut define_native = |name: &str,
+                           call: vm_js::NativeFunctionId,
+                           length: u32,
+                           slots: &[Value]|
+   -> Result<(), VmError> {
+    let name_s = scope.alloc_string(name)?;
+    scope.push_root(Value::String(name_s))?;
+
+    let func = if slots.is_empty() {
+      scope.alloc_native_function(call, None, name_s, length)?
+    } else {
+      scope.alloc_native_function_with_slots(call, None, name_s, length, slots)?
+    };
+    scope.push_root(Value::Object(func))?;
+    scope
+      .heap_mut()
+      .object_set_prototype(func, Some(intr.function_prototype()))?;
+
+    scope.define_property(
+      obj_262,
+      PropertyKey::from_string(name_s),
+      data_desc(Value::Object(func), true, true, true),
+    )?;
+    Ok(())
+  };
+
+  let global_slot = [Value::Object(global_object)];
+  define_native("createRealm", create_realm_call, 0, &global_slot)?;
+  define_native("gc", gc_call, 0, &[])?;
+  define_native("detachArrayBuffer", detach_array_buffer_call, 1, &[])?;
+  define_native("evalScript", eval_script_call, 1, &[])?;
+
+  // Define global `$262` binding.
+  let key_s = scope.alloc_string("$262")?;
+  scope.push_root(Value::String(key_s))?;
+  scope.define_property(
+    global_object,
+    PropertyKey::from_string(key_s),
+    global_data_desc(Value::Object(obj_262)),
+  )?;
+
+  Ok(())
+}
+
+fn test262_create_realm(
+  vm: &mut Vm,
+  scope: &mut vm_js::Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  // Stubbed realm creation: return the current realm.
+  //
+  // `$262.createRealm().global` is widely used for cross-realm tests, but vm-js is currently
+  // single-realm. Keep the tests running by returning the current global object.
+  let slots = scope.heap().get_function_native_slots(callee)?;
+  let Some(Value::Object(global_object)) = slots.first().copied() else {
+    return Err(VmError::InvariantViolation(
+      "$262.createRealm missing global-object slot",
+    ));
+  };
+
+  let out = scope.alloc_object()?;
+  scope.push_root(Value::Object(out))?;
+  if let Some(intr) = vm.intrinsics() {
+    scope
+      .heap_mut()
+      .object_set_prototype(out, Some(intr.object_prototype()))?;
+  }
+
+  let key_s = scope.alloc_string("global")?;
+  scope.push_root(Value::String(key_s))?;
+  scope.define_property(
+    out,
+    PropertyKey::from_string(key_s),
+    data_desc(Value::Object(global_object), true, true, true),
+  )?;
+  Ok(Value::Object(out))
+}
+
+fn test262_gc(
+  _vm: &mut Vm,
+  scope: &mut vm_js::Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  scope.heap_mut().collect_garbage();
+  Ok(Value::Undefined)
+}
+
+fn test262_detach_array_buffer(
+  _vm: &mut Vm,
+  scope: &mut vm_js::Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let arg0 = args.get(0).copied().unwrap_or(Value::Undefined);
+  let Value::Object(obj) = arg0 else {
+    return Err(VmError::TypeError("$262.detachArrayBuffer requires an ArrayBuffer object"));
+  };
+  if !scope.heap().is_array_buffer_object(obj) {
+    return Err(VmError::TypeError("$262.detachArrayBuffer requires an ArrayBuffer object"));
+  }
+  scope.heap_mut().detach_array_buffer(obj)?;
+  Ok(Value::Undefined)
+}
+
+fn test262_eval_script(
+  vm: &mut Vm,
+  scope: &mut vm_js::Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  // Implement as an indirect-eval in the current realm.
+  let source_val = args.get(0).copied().unwrap_or(Value::Undefined);
+  let source = scope.to_string(vm, host, hooks, source_val)?;
+  scope.push_root(Value::String(source))?;
+
+  let intr = vm
+    .intrinsics()
+    .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+  vm.call_with_host_and_hooks(
+    host,
+    scope,
+    hooks,
+    Value::Object(intr.eval()),
+    Value::Undefined,
+    &[Value::String(source)],
+  )
 }
 
 fn execute_module(
