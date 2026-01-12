@@ -276,10 +276,10 @@ fn tab_ui(
   let icon_min = Pos2::new(tab_rect.min.x + TAB_PADDING_X, tab_rect.center().y - ICON_SIZE * 0.5);
   let icon_rect = Rect::from_min_size(icon_min, Vec2::splat(ICON_SIZE));
   if let Some(tex_id) = favicon_tex {
-    let _ = ui.put(
-      icon_rect,
-      egui::Image::new((tex_id, icon_rect.size())).sense(Sense::hover()),
-    );
+    if ui.is_rect_visible(icon_rect) {
+      let uv = Rect::from_min_max(Pos2::new(0.0, 0.0), Pos2::new(1.0, 1.0));
+      ui.painter().image(tex_id, icon_rect, uv, Color32::WHITE);
+    }
   } else {
     placeholder_favicon(ui.painter(), icon_rect, &visuals);
     // Show a small deterministic glyph so blank favicons are still distinguishable at a glance.
@@ -520,10 +520,10 @@ fn pinned_tab_ui(
   );
   let icon_rect = Rect::from_min_size(icon_min, Vec2::splat(ICON_SIZE));
   if let Some(tex_id) = favicon_tex {
-    let _ = ui.put(
-      icon_rect,
-      egui::Image::new((tex_id, icon_rect.size())).sense(Sense::hover()),
-    );
+    if ui.is_rect_visible(icon_rect) {
+      let uv = Rect::from_min_max(Pos2::new(0.0, 0.0), Pos2::new(1.0, 1.0));
+      ui.painter().image(tex_id, icon_rect, uv, Color32::WHITE);
+    }
   } else {
     placeholder_favicon(ui.painter(), icon_rect, &visuals);
     let glyph = title

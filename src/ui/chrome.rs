@@ -588,21 +588,29 @@ fn tab_search_overlay_ui(
                 ui.horizontal(|ui| {
                   let mut drew_favicon = false;
                   if let Some(tex_id) = favicon_for_tab(tab.id) {
+                    let uv = egui::Rect::from_min_max(
+                      egui::pos2(0.0, 0.0),
+                      egui::pos2(1.0, 1.0),
+                    );
                     if let Some(meta) = tab.favicon_meta {
                       let (w, h) = meta.size_px;
                       if w > 0 && h > 0 {
                         let height_points = 16.0;
                         let aspect = (w as f32) / (h as f32);
                         let width_points = (height_points * aspect).clamp(8.0, 32.0);
-                        ui.add(egui::Image::new((
-                          tex_id,
-                          egui::vec2(width_points, height_points),
-                        )));
+                        let (_id, rect) =
+                          ui.allocate_space(egui::vec2(width_points, height_points));
+                        if ui.is_rect_visible(rect) {
+                          ui.painter().image(tex_id, rect, uv, egui::Color32::WHITE);
+                        }
                         drew_favicon = true;
                       }
                     }
                     if !drew_favicon {
-                      ui.add(egui::Image::new((tex_id, egui::vec2(16.0, 16.0))));
+                      let (_id, rect) = ui.allocate_space(egui::vec2(16.0, 16.0));
+                      if ui.is_rect_visible(rect) {
+                        ui.painter().image(tex_id, rect, uv, egui::Color32::WHITE);
+                      }
                       drew_favicon = true;
                     }
                   }
