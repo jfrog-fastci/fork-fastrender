@@ -428,3 +428,45 @@ fn gc_get_limits_misaligned_out_ptr_aborts() {
     "expected stderr to mention misaligned out_limits, got:\n{stderr}"
   );
 }
+
+#[test]
+fn gc_limits_env_overrides_do_not_override_explicit_setter_child() {
+  let _rt = TestRuntimeGuard::new();
+  if std::env::var_os("RT_GC_LIMITS_ENV_SETTER_CHILD").is_none() {
+    return;
+  }
+
+  let limits = RtGcLimits {
+    // Must be >= default nursery size (32 MiB), otherwise heap initialization will trap when it
+    // validates `nursery_size_bytes <= max_heap_bytes`.
+    max_heap_bytes: 64 * 1024 * 1024,
+    max_total_bytes: 128 * 1024 * 1024,
+  };
+
+  assert!(rt_gc_set_limits(&limits));
+
+  ensure_shape_table();
+  let _ = rt_alloc(256, RtShapeId(1));
+
+  let after = read_limits();
+  assert_eq!(
+    after, limits,
+    "env overrides must not override explicit rt_gc_set_limits"
+  );
+}
+
+#[test]
+fn gc_limits_env_overrides_do_not_override_explicit_setter() {
+  let exe = std::env::current_exe().expect("current_exe");
+
+  let status = Command::new(exe)
+    .env("RT_GC_LIMITS_ENV_SETTER_CHILD", "1")
+    .env("ECMA_RS_GC_MAX_HEAP_MB", "1")
+    .env("ECMA_RS_GC_MAX_TOTAL_MB", "2")
+    .arg("--exact")
+    .arg("gc_limits_env_overrides_do_not_override_explicit_setter_child")
+    .status()
+    .expect("spawn child");
+
+  assert!(status.success(), "expected child to exit successfully");
+}
