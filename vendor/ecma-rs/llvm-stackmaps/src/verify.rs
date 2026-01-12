@@ -166,7 +166,7 @@ pub fn verify_stackmaps_bytes(bytes: &[u8], opts: VerifyOptions) -> Verification
     report.records = maps.records.len();
     report.callsites = maps.callsites().len();
 
-    let record_function_addresses = map_record_function_addresses(&maps);
+    let record_function_info = map_record_function_info(&maps);
 
     // Best-effort mapping from record index to section byte offsets for actionable diagnostics.
     let record_offsets: Option<Vec<usize>> = match scan_record_offsets(bytes) {
@@ -204,7 +204,7 @@ pub fn verify_stackmaps_bytes(bytes: &[u8], opts: VerifyOptions) -> Verification
 
     // Callsite index invariants.
     verify_callsites_sorted_and_unique(&maps, &mut report, &record_offsets);
-    verify_callsite_record_linkage(&maps, &mut report, &record_offsets);
+    verify_callsite_record_linkage(&maps, &mut report, &record_offsets, &record_function_info);
 
     // Statepoint-specific invariants.
     verify_statepoints(
@@ -212,7 +212,7 @@ pub fn verify_stackmaps_bytes(bytes: &[u8], opts: VerifyOptions) -> Verification
         opts,
         &mut report,
         &record_offsets,
-        &record_function_addresses,
+        &record_function_info,
     );
 
     report
@@ -274,6 +274,7 @@ fn verify_callsite_record_linkage(
     maps: &StackMaps,
     report: &mut VerificationReport,
     record_offsets: &Option<Vec<usize>>,
+    record_function_info: &[Option<RecordFunctionInfo>],
 ) {
     for callsite in maps.callsites() {
         let Some(rec) = maps.records.get(callsite.record_index) else {
@@ -291,6 +292,53 @@ fn verify_callsite_record_linkage(
             });
             continue;
         };
+
+        let expected_func = record_function_info
+            .get(callsite.record_index)
+            .and_then(|v| *v);
+        if let Some(info) = expected_func {
+            if info.address != callsite.function_address {
+                report.failures.push(VerificationFailure {
+                    kind: "callsite_function_address_mismatch",
+                    message: format!(
+                        "callsite function_address mismatch: expected 0x{:x}, got 0x{:x}",
+                        info.address, callsite.function_address
+                    ),
+                    offset: record_offsets
+                        .as_ref()
+                        .and_then(|v| v.get(callsite.record_index).copied()),
+                    pc: Some(callsite.pc),
+                    function_address: Some(callsite.function_address),
+                    record_index: Some(callsite.record_index),
+                });
+            }
+            if info.stack_size != callsite.stack_size {
+                report.failures.push(VerificationFailure {
+                    kind: "callsite_stack_size_mismatch",
+                    message: format!(
+                        "callsite stack_size mismatch: expected {}, got {}",
+                        info.stack_size, callsite.stack_size
+                    ),
+                    offset: record_offsets
+                        .as_ref()
+                        .and_then(|v| v.get(callsite.record_index).copied()),
+                    pc: Some(callsite.pc),
+                    function_address: Some(callsite.function_address),
+                    record_index: Some(callsite.record_index),
+                });
+            }
+        } else {
+            report.failures.push(VerificationFailure {
+                kind: "callsite_record_function_info_missing",
+                message: "failed to map record_index back to a function entry".to_string(),
+                offset: record_offsets
+                    .as_ref()
+                    .and_then(|v| v.get(callsite.record_index).copied()),
+                pc: Some(callsite.pc),
+                function_address: Some(callsite.function_address),
+                record_index: Some(callsite.record_index),
+            });
+        }
 
         // Recompute pc and check for overflow.
         let expected_pc = match callsite
@@ -355,7 +403,7 @@ fn verify_statepoints(
     opts: VerifyOptions,
     report: &mut VerificationReport,
     record_offsets: &Option<Vec<usize>>,
-    record_function_addresses: &[Option<u64>],
+    record_function_info: &[Option<RecordFunctionInfo>],
 ) {
     for (record_index, rec) in maps.records.iter().enumerate() {
         if !looks_like_statepoint_record(rec) {
@@ -368,9 +416,9 @@ fn verify_statepoints(
                 message: "record has constant statepoint header but does not match expected statepoint layout".to_string(),
                 offset: record_offsets.as_ref().and_then(|v| v.get(record_index).copied()),
                 pc: Some(rec.callsite_pc),
-                function_address: record_function_addresses
+                function_address: record_function_info
                     .get(record_index)
-                    .and_then(|v| *v),
+                    .and_then(|v| v.map(|i| i.address)),
                 record_index: Some(record_index),
             });
             continue;
@@ -385,9 +433,9 @@ fn verify_statepoints(
                 message: format!("statepoint flags out of range: {} (expected 0..=3)", sp.flags),
                 offset: record_offsets.as_ref().and_then(|v| v.get(record_index).copied()),
                 pc: Some(rec.callsite_pc),
-                function_address: record_function_addresses
+                function_address: record_function_info
                     .get(record_index)
-                    .and_then(|v| *v),
+                    .and_then(|v| v.map(|i| i.address)),
                 record_index: Some(record_index),
             });
         }
@@ -402,17 +450,17 @@ fn verify_statepoints(
                 ),
                 offset: record_offsets.as_ref().and_then(|v| v.get(record_index).copied()),
                 pc: Some(rec.callsite_pc),
-                function_address: record_function_addresses
+                function_address: record_function_info
                     .get(record_index)
-                    .and_then(|v| *v),
+                    .and_then(|v| v.map(|i| i.address)),
                 record_index: Some(record_index),
             });
         }
 
         for (pair_idx, pair) in sp.gc_root_pairs().enumerate() {
-            let function_address = record_function_addresses
+            let function_address = record_function_info
                 .get(record_index)
-                .and_then(|v| *v);
+                .and_then(|v| v.map(|i| i.address));
             verify_gc_root_location(
                 opts.pointer_width,
                 report,
@@ -787,8 +835,14 @@ fn scan_record_offsets(bytes: &[u8]) -> Result<Vec<usize>, ParseError> {
     Ok(out)
 }
 
-fn map_record_function_addresses(maps: &StackMaps) -> Vec<Option<u64>> {
-    let mut out: Vec<Option<u64>> = vec![None; maps.records.len()];
+#[derive(Debug, Clone, Copy)]
+struct RecordFunctionInfo {
+    address: u64,
+    stack_size: u64,
+}
+
+fn map_record_function_info(maps: &StackMaps) -> Vec<Option<RecordFunctionInfo>> {
+    let mut out: Vec<Option<RecordFunctionInfo>> = vec![None; maps.records.len()];
 
     let mut record_index: usize = 0;
     for func in &maps.functions {
@@ -800,7 +854,10 @@ fn map_record_function_addresses(maps: &StackMaps) -> Vec<Option<u64>> {
             let Some(slot) = out.get_mut(record_index) else {
                 return out;
             };
-            *slot = Some(func.address);
+            *slot = Some(RecordFunctionInfo {
+                address: func.address,
+                stack_size: func.stack_size,
+            });
             record_index += 1;
         }
     }
