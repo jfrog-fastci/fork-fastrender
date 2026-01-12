@@ -106,6 +106,7 @@ RULES = [
     Rule("ORACLE", r"^ORACLE\d{4}$", allowed_crates={"native-oracle-harness"}),
     Rule("TS", r"^TS\d{4,5}$", shared=True),
     Rule("OPT", r"^OPT\d{4}$", allowed_crates={"optimize-js"}),
+    Rule("OPTN", r"^OPTN\d{4}$", allowed_crates={"optimize-js"}),
     Rule("EMIT", r"^EMIT\d{4}$", allowed_crates={"emit-js"}),
     Rule("MINIFYTS", r"^MINIFYTS\d{4}$", allowed_crates={"ts-erase"}),
     Rule("MINIFY", r"^MINIFY\d{4}$", allowed_crates={"bench/minify-js"}),

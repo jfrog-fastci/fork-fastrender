@@ -61,6 +61,8 @@ fn passing_alloc_to_helper_returning_param_does_not_force_global_escape() {
   );
 
   let program = Program {
+    source_file: optimize_js::FileId(0),
+    source_len: 0,
     functions: vec![helper, caller],
     top_level: func(cfg_single_block(Vec::new()), Vec::new()),
     top_level_mode: TopLevelMode::Module,
@@ -105,6 +107,8 @@ fn returning_helper_call_result_marks_alloc_as_return_escape() {
   );
 
   let program = Program {
+    source_file: optimize_js::FileId(0),
+    source_len: 0,
     functions: vec![helper, caller],
     top_level: func(cfg_single_block(Vec::new()), Vec::new()),
     top_level_mode: TopLevelMode::Module,
@@ -149,6 +153,8 @@ fn calling_helper_that_throws_param_marks_alloc_as_return_escape() {
   );
 
   let program = Program {
+    source_file: optimize_js::FileId(0),
+    source_len: 0,
     functions: vec![helper, caller],
     top_level: func(cfg_single_block(Vec::new()), Vec::new()),
     top_level_mode: TopLevelMode::Module,
@@ -208,6 +214,8 @@ fn wrapper_call_chain_propagates_thrown_param() {
   );
 
   let program = Program {
+    source_file: optimize_js::FileId(0),
+    source_len: 0,
     functions: vec![helper, wrapper, caller],
     top_level: func(cfg_single_block(Vec::new()), Vec::new()),
     top_level_mode: TopLevelMode::Module,
@@ -271,6 +279,8 @@ fn storing_into_local_receiver_arg_propagates_receiver_escape() {
   );
 
   let program = Program {
+    source_file: optimize_js::FileId(0),
+    source_len: 0,
     functions: vec![helper, caller],
     top_level: func(cfg_single_block(Vec::new()), Vec::new()),
     top_level_mode: TopLevelMode::Module,
@@ -326,6 +336,8 @@ fn helper_storing_param_to_global_forces_global_escape() {
   );
 
   let program = Program {
+    source_file: optimize_js::FileId(0),
+    source_len: 0,
     functions: vec![helper, caller],
     top_level: func(cfg_single_block(Vec::new()), Vec::new()),
     top_level_mode: TopLevelMode::Module,
@@ -366,6 +378,8 @@ fn summaries_are_deterministic() {
     Vec::new(),
   );
   let program = Program {
+    source_file: optimize_js::FileId(0),
+    source_len: 0,
     functions: vec![helper, caller],
     top_level: func(cfg_single_block(Vec::new()), Vec::new()),
     top_level_mode: TopLevelMode::Module,

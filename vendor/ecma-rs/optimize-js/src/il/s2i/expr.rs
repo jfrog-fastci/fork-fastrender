@@ -239,6 +239,7 @@ impl<'p> HirSourceToInst<'p> {
             if assign_inst.t == InstTyp::VarAssign {
               self.push_value_inst(assign_expr_id, assign_inst);
             } else {
+              assign_inst.meta.span = Some(self.body.exprs[assign_expr_id.0 as usize].span);
               self.out.push(assign_inst);
             }
             Ok(Arg::Var(value_tmp_var))
@@ -313,6 +314,7 @@ impl<'p> HirSourceToInst<'p> {
             if assign_inst.t == InstTyp::VarAssign {
               self.push_value_inst(assign_expr_id, assign_inst);
             } else {
+              assign_inst.meta.span = Some(self.body.exprs[assign_expr_id.0 as usize].span);
               self.out.push(assign_inst);
             }
             self.out.push(Inst::label(converge_label_id));
@@ -373,6 +375,7 @@ impl<'p> HirSourceToInst<'p> {
             if assign_inst.t == InstTyp::VarAssign {
               self.push_value_inst(assign_expr_id, assign_inst);
             } else {
+              assign_inst.meta.span = Some(self.body.exprs[assign_expr_id.0 as usize].span);
               self.out.push(assign_inst);
             }
             Ok(Arg::Var(value_tmp_var))
@@ -412,6 +415,7 @@ impl<'p> HirSourceToInst<'p> {
               Inst::var_assign(value_tmp_var, value_arg.clone()),
             );
             *assign_inst.args.last_mut().unwrap() = value_arg;
+            assign_inst.meta.span = Some(self.body.exprs[assign_expr_id.0 as usize].span);
             self.out.push(assign_inst);
             Ok(Arg::Var(value_tmp_var))
           }
@@ -465,6 +469,7 @@ impl<'p> HirSourceToInst<'p> {
               Inst::var_assign(value_tmp_var, rhs.clone()),
             );
             *assign_inst.args.last_mut().unwrap() = rhs;
+            assign_inst.meta.span = Some(self.body.exprs[assign_expr_id.0 as usize].span);
             self.out.push(assign_inst);
             self.out.push(Inst::label(converge_label_id));
 
@@ -504,6 +509,7 @@ impl<'p> HirSourceToInst<'p> {
             let rhs_inst = Inst::bin(value_tmp_var, Arg::Var(left_tmp_var), op, value_arg);
             self.push_value_inst(assign_expr_id, rhs_inst);
             *assign_inst.args.last_mut().unwrap() = Arg::Var(value_tmp_var);
+            assign_inst.meta.span = Some(self.body.exprs[assign_expr_id.0 as usize].span);
             self.out.push(assign_inst);
             Ok(Arg::Var(value_tmp_var))
           }

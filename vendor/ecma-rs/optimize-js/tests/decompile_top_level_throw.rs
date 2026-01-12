@@ -13,6 +13,8 @@ fn program_throw_one() -> Program {
   );
   let cfg = Cfg::from_bblocks(bblocks, vec![0]);
   Program {
+    source_file: optimize_js::FileId(0),
+    source_len: 0,
     functions: Vec::new(),
     top_level: ProgramFunction {
       debug: None,

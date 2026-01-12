@@ -10,6 +10,7 @@
 use crate::symbol::semantics::SymbolId;
 use crate::types::{TypeId, ValueTypeSummary};
 use effect_model::{EffectFlags, EffectSummary, ThrowBehavior};
+use diagnostics::TextRange;
 use hir_js::ExprId;
 use std::cmp::Ordering;
 use std::collections::BTreeSet;
@@ -544,6 +545,17 @@ pub struct InstMeta {
     )
   )]
   pub hir_expr: Option<ExprId>,
+  /// Best-effort source span for this instruction.
+  ///
+  /// This is intended for post-lowering validators (e.g. strict-native checks
+  /// operating on optimized IL) which need to attach stable spans to
+  /// diagnostics without retaining the full `hir-js` lowering in the public
+  /// [`crate::Program`].
+  #[cfg_attr(
+    feature = "serde",
+    serde(default, skip_serializing_if = "Option::is_none")
+  )]
+  pub span: Option<TextRange>,
   #[cfg_attr(
     feature = "serde",
     serde(default, skip_serializing_if = "Option::is_none")
@@ -671,6 +683,7 @@ impl InstMeta {
       self.native_layout = src.native_layout;
     }
     self.hir_expr = src.hir_expr;
+    self.span = src.span;
     self.type_summary = src.type_summary;
     self.excludes_nullish = src.excludes_nullish;
     self.ownership = src.ownership;
@@ -709,6 +722,7 @@ impl InstMeta {
         }
       }
       && self.hir_expr.is_none()
+      && self.span.is_none()
       && self.type_summary.is_none()
       && !self.excludes_nullish
       && !self.preserve_var_assign

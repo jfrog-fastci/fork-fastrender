@@ -1229,6 +1229,8 @@ mod tests {
     let caller = func(cfg_single_block(vec![call_inst]));
 
     let mut program = Program {
+      source_file: crate::FileId(0),
+      source_len: 0,
       functions: vec![callee, caller],
       top_level: func(cfg_single_block(Vec::new())),
       top_level_mode: TopLevelMode::Module,
@@ -1266,6 +1268,8 @@ mod tests {
       Vec::new(),
     );
     let mut program = Program {
+      source_file: crate::FileId(0),
+      source_len: 0,
       functions: vec![callee, func(cfg_single_block(vec![call_inst]))],
       top_level: func(cfg_single_block(Vec::new())),
       top_level_mode: TopLevelMode::Module,
@@ -1312,6 +1316,8 @@ mod tests {
     ]));
 
     let mut program = Program {
+      source_file: crate::FileId(0),
+      source_len: 0,
       functions: vec![callee, caller],
       top_level,
       top_level_mode: TopLevelMode::Module,

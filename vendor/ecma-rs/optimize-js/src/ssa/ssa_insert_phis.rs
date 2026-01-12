@@ -4,6 +4,7 @@ use crate::il::inst::Inst;
 use crate::types::{TypeId, ValueTypeSummary};
 use ahash::HashMap;
 use ahash::HashSet;
+use diagnostics::TextRange;
 use hir_js::ExprId;
 use itertools::Itertools;
 use std::collections::VecDeque;
@@ -50,6 +51,7 @@ pub fn insert_phis_for_ssa_construction(
     #[cfg(feature = "typed")]
     native_layout: FactState<types_ts_interned::LayoutId>,
     hir_expr: FactState<ExprId>,
+    span: FactState<TextRange>,
     type_summary: FactState<ValueTypeSummary>,
     excludes_nullish: FactState<bool>,
   }
@@ -61,6 +63,7 @@ pub fn insert_phis_for_ssa_construction(
         #[cfg(feature = "typed")]
         native_layout: FactState::Unknown,
         hir_expr: FactState::Unknown,
+        span: FactState::Unknown,
         type_summary: FactState::Unknown,
         excludes_nullish: FactState::Unknown,
       }
@@ -86,6 +89,9 @@ pub fn insert_phis_for_ssa_construction(
         if let Some(expr_id) = inst.meta.hir_expr {
           state.hir_expr.update(expr_id);
         }
+        if let Some(span) = inst.meta.span {
+          state.span.update(span);
+        }
         if let Some(summary) = inst.meta.type_summary {
           state.type_summary.update(summary);
         }
@@ -100,21 +106,30 @@ pub fn insert_phis_for_ssa_construction(
   }
 
   #[cfg(not(feature = "typed"))]
-  let facts: HashMap<u32, (Option<TypeId>, Option<ExprId>, Option<ValueTypeSummary>, bool)> =
-    fact_state
-      .into_iter()
-      .map(|(v, state)| {
+  let facts: HashMap<
+    u32,
+    (
+      Option<TypeId>,
+      Option<ExprId>,
+      Option<TextRange>,
+      Option<ValueTypeSummary>,
+      bool,
+    ),
+  > = fact_state
+    .into_iter()
+    .map(|(v, state)| {
+      (
+        v,
         (
-          v,
-          (
-            state.type_id.into_option(),
-            state.hir_expr.into_option(),
-            state.type_summary.into_option(),
-            matches!(state.excludes_nullish, FactState::Known(true)),
-          ),
-        )
-      })
-      .collect();
+          state.type_id.into_option(),
+          state.hir_expr.into_option(),
+          state.span.into_option(),
+          state.type_summary.into_option(),
+          matches!(state.excludes_nullish, FactState::Known(true)),
+        ),
+      )
+    })
+    .collect();
 
   #[cfg(feature = "typed")]
   let facts: HashMap<
@@ -123,6 +138,7 @@ pub fn insert_phis_for_ssa_construction(
       Option<TypeId>,
       Option<types_ts_interned::LayoutId>,
       Option<ExprId>,
+      Option<TextRange>,
       Option<ValueTypeSummary>,
       bool,
     ),
@@ -135,6 +151,7 @@ pub fn insert_phis_for_ssa_construction(
           state.type_id.into_option(),
           state.native_layout.into_option(),
           state.hir_expr.into_option(),
+          state.span.into_option(),
           state.type_summary.into_option(),
           matches!(state.excludes_nullish, FactState::Known(true)),
         ),
@@ -167,9 +184,10 @@ pub fn insert_phis_for_ssa_construction(
         // We'll populate this new Phi inst later.
         let mut phi = Inst::phi_empty(v);
         #[cfg(not(feature = "typed"))]
-        if let Some((type_id, hir_expr, type_summary, excludes_nullish)) = facts.get(&v).copied() {
+        if let Some((type_id, hir_expr, span, type_summary, excludes_nullish)) = facts.get(&v).copied() {
           phi.meta.type_id = type_id;
           phi.meta.hir_expr = hir_expr;
+          phi.meta.span = span;
           phi.meta.type_summary = type_summary;
           phi.meta.excludes_nullish = excludes_nullish;
           if let Some(summary) = type_summary {
@@ -177,12 +195,13 @@ pub fn insert_phis_for_ssa_construction(
           }
         }
         #[cfg(feature = "typed")]
-        if let Some((type_id, native_layout, hir_expr, type_summary, excludes_nullish)) =
+        if let Some((type_id, native_layout, hir_expr, span, type_summary, excludes_nullish)) =
           facts.get(&v).copied()
         {
           phi.meta.type_id = type_id;
           phi.meta.native_layout = native_layout;
           phi.meta.hir_expr = hir_expr;
+          phi.meta.span = span;
           phi.meta.type_summary = type_summary;
           phi.meta.excludes_nullish = excludes_nullish;
           if let Some(summary) = type_summary {

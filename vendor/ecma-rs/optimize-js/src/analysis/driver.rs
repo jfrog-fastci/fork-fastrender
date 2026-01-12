@@ -778,6 +778,8 @@ mod tests {
       &[],
     );
     let program = Program {
+      source_file: crate::FileId(0),
+      source_len: 0,
       functions: Vec::new(),
       top_level: ProgramFunction {
         debug: None,
@@ -821,6 +823,8 @@ mod tests {
       &[],
     );
     let mut program = Program {
+      source_file: crate::FileId(0),
+      source_len: 0,
       functions: Vec::new(),
       top_level: ProgramFunction {
         debug: None,
@@ -867,6 +871,8 @@ mod tests {
       &[(0, 1), (0, 2)],
     );
     let mut program = Program {
+      source_file: crate::FileId(0),
+      source_len: 0,
       functions: Vec::new(),
       top_level: ProgramFunction {
         debug: None,
@@ -910,6 +916,8 @@ mod tests {
       &[(0, 1), (0, 2)],
     );
     let mut program = Program {
+      source_file: crate::FileId(0),
+      source_len: 0,
       functions: Vec::new(),
       top_level: ProgramFunction {
         debug: None,
@@ -957,6 +965,8 @@ mod tests {
       &[(0, 1), (0, 2)],
     );
     let mut program = Program {
+      source_file: crate::FileId(0),
+      source_len: 0,
       functions: Vec::new(),
       top_level: ProgramFunction {
         debug: None,

@@ -152,6 +152,7 @@ impl<'p> HirSourceToInst<'p> {
       .types
       .expr_value_type_summary(self.body_id, expr);
     inst.meta.type_id = self.expr_type_id(expr);
+    inst.meta.span = Some(self.body.exprs[expr.0 as usize].span);
     #[cfg(feature = "typed")]
     {
       inst.meta.native_layout = inst.meta.type_id.and_then(|ty| {
@@ -184,6 +185,7 @@ impl<'p> HirSourceToInst<'p> {
       .types
       .expr_value_type_summary(self.body_id, expr);
     inst.meta.type_id = self.expr_type_id(expr);
+    inst.meta.span = Some(self.body.exprs[expr.0 as usize].span);
     #[cfg(feature = "typed")]
     {
       inst.meta.native_layout = inst.meta.type_id.and_then(|ty| {

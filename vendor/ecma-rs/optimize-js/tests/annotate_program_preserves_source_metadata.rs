@@ -39,6 +39,8 @@ fn annotate_program_preserves_lowering_metadata_fields() {
   };
 
   let mut program = Program {
+    source_file: optimize_js::FileId(0),
+    source_len: 0,
     functions: Vec::new(),
     top_level: ProgramFunction {
       debug: None,

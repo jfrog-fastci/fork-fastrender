@@ -42,6 +42,7 @@ pub mod graph;
 pub mod il;
 #[cfg(feature = "serde")]
 pub mod dump;
+pub mod strict_native;
 pub mod opt;
 pub mod ssa;
 pub mod symbol;
@@ -292,7 +293,7 @@ pub struct ProgramFreeSymbols {
   pub functions: Vec<Vec<SymbolId>>, // Index aligned with Program::functions.
 }
 
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
 pub enum ProgramScopeKind {
@@ -815,6 +816,18 @@ impl ProgramCompiler {
 
 #[derive(Debug)]
 pub struct Program {
+  /// The source file id associated with this program.
+  ///
+  /// When `optimize-js` is invoked via [`compile_source`], this is always
+  /// `FileId(0)`. When invoked via typed entry points (e.g.
+  /// [`compile_source_with_typecheck`]) this comes from the upstream
+  /// `typecheck-ts` program.
+  pub source_file: FileId,
+  /// Length of the source file in UTF-8 bytes, when available.
+  ///
+  /// This is used for "whole-file" fallback spans in diagnostics emitted after
+  /// lowering (e.g. strict-native validation on optimized IL).
+  pub source_len: u32,
   pub functions: Vec<ProgramFunction>,
   pub top_level: ProgramFunction,
   pub top_level_mode: TopLevelMode,
@@ -829,6 +842,21 @@ pub struct Program {
 pub fn compile_source(source: &str, mode: TopLevelMode, debug: bool) -> OptimizeResult<Program> {
   let top_level_node = parse_source(source, SOURCE_FILE, mode)?;
   Program::compile(top_level_node, mode, debug)
+}
+
+/// Parse, symbolize, compile, and strict-native validate source text in one step.
+///
+/// This is a convenience wrapper around [`compile_source`] +
+/// [`strict_native::validate_program`].
+pub fn compile_source_strict_native(
+  source: &str,
+  mode: TopLevelMode,
+  debug: bool,
+  opts: strict_native::StrictNativeOpts,
+) -> OptimizeResult<Program> {
+  let program = compile_source(source, mode, debug)?;
+  strict_native::validate_program(&program, opts)?;
+  Ok(program)
 }
 
 /// Parse, symbolize, and compile source text with explicit CFG pipeline options.
@@ -967,6 +995,22 @@ pub fn compile_source_typed(
   debug: bool,
 ) -> OptimizeResult<Program> {
   compile_source_typed_cfg_options(source, mode, debug, CompileCfgOptions::default())
+}
+
+/// Compile and type-check a single source string then strict-native validate the optimized IL.
+///
+/// This is a convenience wrapper around [`compile_source_typed`] +
+/// [`strict_native::validate_program`].
+#[cfg(feature = "typed")]
+pub fn compile_source_typed_strict_native(
+  source: &str,
+  mode: TopLevelMode,
+  debug: bool,
+  opts: strict_native::StrictNativeOpts,
+) -> OptimizeResult<Program> {
+  let program = compile_source_typed(source, mode, debug)?;
+  strict_native::validate_program(&program, opts)?;
+  Ok(program)
 }
 
 #[cfg(feature = "typed")]
@@ -1214,7 +1258,10 @@ impl Program {
       None
     };
 
+    let source_len = top_level_node.loc.end_u32();
     let mut program = Self {
+      source_file,
+      source_len,
       functions,
       top_level,
       top_level_mode,

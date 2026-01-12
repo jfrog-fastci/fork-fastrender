@@ -467,6 +467,8 @@ mod tests {
   #[test]
   fn fn_call_uses_computed_purity() {
     let program = Program {
+      source_file: crate::FileId(0),
+      source_len: 0,
       functions: vec![empty_program_function()],
       top_level: empty_program_function(),
       top_level_mode: TopLevelMode::Module,
@@ -503,6 +505,8 @@ mod tests {
     ]));
 
     let mut program = Program {
+      source_file: crate::FileId(0),
+      source_len: 0,
       functions: vec![callee, caller],
       top_level: func(cfg_single_block(vec![Inst::foreign_store(callee_sym, Arg::Fn(0))])),
       top_level_mode: TopLevelMode::Module,

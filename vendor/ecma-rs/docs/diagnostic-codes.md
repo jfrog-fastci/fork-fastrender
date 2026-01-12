@@ -52,6 +52,7 @@ prefixes for planned crates) and where they come from.
 | `ORACLE####` | `native-oracle-harness` | Native oracle harness diagnostics (internal test runner / fallback pipeline). |
 | `TS####` / `TS#####` | TypeScript | Upstream `tsc` diagnostic codes used for parity. |
 | `OPT####` | `optimize-js` | Optimizer diagnostics. |
+| `OPTN####` | `optimize-js` | Strict-native validation at the optimized IL boundary. |
 | `EMIT####` | `emit-js` | Emitter/printer diagnostics. |
 | `MINIFYTS####` | `ts-erase` | TypeScript erasure/lowering diagnostics. |
 | `MINIFY####` | `minify-js` tooling | Currently used by the benchmark harness (`bench/minify-js`). |
