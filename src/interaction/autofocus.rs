@@ -1,4 +1,5 @@
 use crate::dom::DomNode;
+use crate::dom::ElementRef;
 use crate::interaction::InteractionState;
 
 fn trim_ascii_whitespace(value: &str) -> &str {
@@ -57,16 +58,14 @@ fn node_self_is_inert_like(node: &DomNode) -> bool {
   {
     return true;
   }
-  // MVP heuristic (mirrors interaction engine): treat `disabled` as pruning focusability for the
-  // subtree. This is important for `<fieldset disabled>` without needing special-casing.
-  node.get_attribute_ref("disabled").is_some()
+  false
 }
 
-fn is_focusable_element_for_autofocus(node: &DomNode) -> bool {
+fn is_focusable_element_for_autofocus(node: &DomNode, disabled: bool) -> bool {
   if !node.is_element() {
     return false;
   }
-  if node.get_attribute_ref("disabled").is_some() {
+  if disabled {
     return false;
   }
   if node.get_attribute_ref("hidden").is_some() {
@@ -99,6 +98,10 @@ fn is_focusable_element_for_autofocus(node: &DomNode) -> bool {
   })
 }
 
+fn node_is_disabled(node: &DomNode, ancestors: &[&DomNode]) -> bool {
+  ElementRef::with_ancestors(node, ancestors).accessibility_disabled()
+}
+
 /// Build an [`InteractionState`] reflecting initial autofocus selection, if any.
 ///
 /// This is a best-effort approximation of HTML's autofocus behavior that enables correct `:focus`
@@ -107,10 +110,16 @@ fn is_focusable_element_for_autofocus(node: &DomNode) -> bool {
 ///
 /// Returns `None` when no eligible autofocus element is present.
 pub fn interaction_state_for_autofocus(dom: &DomNode) -> Option<InteractionState> {
+  #[derive(Clone, Copy)]
+  enum TraversalState {
+    Enter,
+    Exit,
+  }
   struct Frame<'a> {
     node: &'a DomNode,
     parent_id: usize,
     inert: bool,
+    state: TraversalState,
   }
 
   // We need stable pre-order ids matching `crate::dom::enumerate_dom_ids`. Keep a lightweight
@@ -125,31 +134,50 @@ pub fn interaction_state_for_autofocus(dom: &DomNode) -> Option<InteractionState
     node: dom,
     parent_id: 0,
     inert: false,
+    state: TraversalState::Enter,
   }];
+  let mut ancestors: Vec<&DomNode> = Vec::new();
   while let Some(frame) = stack.pop() {
-    let id = next_id;
-    next_id = next_id.saturating_add(1);
-    parent.push(frame.parent_id);
-    let self_is_element = frame.node.is_element();
-    is_element.push(self_is_element);
+    match frame.state {
+      TraversalState::Enter => {
+        let id = next_id;
+        next_id = next_id.saturating_add(1);
+        parent.push(frame.parent_id);
+        let self_is_element = frame.node.is_element();
+        is_element.push(self_is_element);
 
-    let self_inert = frame.inert || node_self_is_inert_like(frame.node);
+        let self_inert = frame.inert || node_self_is_inert_like(frame.node);
 
-    if focused_id.is_none()
-      && self_is_element
-      && !self_inert
-      && frame.node.get_attribute_ref("autofocus").is_some()
-      && is_focusable_element_for_autofocus(frame.node)
-    {
-      focused_id = Some(id);
-    }
+        if focused_id.is_none()
+          && self_is_element
+          && !self_inert
+          && frame.node.get_attribute_ref("autofocus").is_some()
+        {
+          let disabled = node_is_disabled(frame.node, &ancestors);
+          if is_focusable_element_for_autofocus(frame.node, disabled) {
+            focused_id = Some(id);
+          }
+        }
 
-    for child in frame.node.children.iter().rev() {
-      stack.push(Frame {
-        node: child,
-        parent_id: id,
-        inert: self_inert,
-      });
+        stack.push(Frame {
+          node: frame.node,
+          parent_id: 0,
+          inert: false,
+          state: TraversalState::Exit,
+        });
+        for child in frame.node.children.iter().rev() {
+          stack.push(Frame {
+            node: child,
+            parent_id: id,
+            inert: self_inert,
+            state: TraversalState::Enter,
+          });
+        }
+        ancestors.push(frame.node);
+      }
+      TraversalState::Exit => {
+        ancestors.pop();
+      }
     }
   }
 
@@ -181,31 +209,126 @@ pub fn interaction_state_for_autofocus(dom: &DomNode) -> Option<InteractionState
 /// their own [`crate::interaction::InteractionEngine`] state but still want spec-ish autofocus
 /// target selection.
 pub fn autofocus_target_node_id(dom: &DomNode) -> Option<usize> {
+  #[derive(Clone, Copy)]
+  enum TraversalState {
+    Enter,
+    Exit,
+  }
   struct Frame<'a> {
     node: &'a DomNode,
     inert: bool,
+    state: TraversalState,
   }
   let mut next_id = 1usize;
-  let mut stack = vec![Frame { node: dom, inert: false }];
+  let mut stack = vec![Frame {
+    node: dom,
+    inert: false,
+    state: TraversalState::Enter,
+  }];
+  let mut ancestors: Vec<&DomNode> = Vec::new();
   while let Some(frame) = stack.pop() {
-    let id = next_id;
-    next_id = next_id.saturating_add(1);
-    let self_inert = frame.inert || node_self_is_inert_like(frame.node);
-    if frame.node.is_element()
-      && !self_inert
-      && frame.node.get_attribute_ref("autofocus").is_some()
-      && is_focusable_element_for_autofocus(frame.node)
-    {
-      return Some(id);
-    }
+    match frame.state {
+      TraversalState::Enter => {
+        let id = next_id;
+        next_id = next_id.saturating_add(1);
+        let self_inert = frame.inert || node_self_is_inert_like(frame.node);
 
-    for child in frame.node.children.iter().rev() {
-      stack.push(Frame {
-        node: child,
-        inert: self_inert,
-      });
+        if frame.node.is_element()
+          && !self_inert
+          && frame.node.get_attribute_ref("autofocus").is_some()
+        {
+          let disabled = node_is_disabled(frame.node, &ancestors);
+          if is_focusable_element_for_autofocus(frame.node, disabled) {
+            return Some(id);
+          }
+        }
+
+        stack.push(Frame {
+          node: frame.node,
+          inert: false,
+          state: TraversalState::Exit,
+        });
+        for child in frame.node.children.iter().rev() {
+          stack.push(Frame {
+            node: child,
+            inert: self_inert,
+            state: TraversalState::Enter,
+          });
+        }
+        ancestors.push(frame.node);
+      }
+      TraversalState::Exit => {
+        ancestors.pop();
+      }
     }
   }
 
   None
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  fn find_node_by_id<'a>(root: &'a DomNode, id: &str) -> &'a DomNode {
+    let mut stack: Vec<&DomNode> = vec![root];
+    while let Some(node) = stack.pop() {
+      if node.get_attribute_ref("id") == Some(id) {
+        return node;
+      }
+      for child in node.children.iter().rev() {
+        stack.push(child);
+      }
+    }
+    panic!("missing id={id}");
+  }
+
+  #[test]
+  fn autofocus_respects_disabled_fieldset_first_legend_exception() {
+    let dom = crate::dom::parse_html(
+      "<html><body><fieldset disabled>\
+         <input id=\"a\" autofocus>\
+         <legend><input id=\"b\" autofocus></legend>\
+       </fieldset></body></html>",
+    )
+    .expect("parse");
+
+    let ids = crate::dom::enumerate_dom_ids(&dom);
+    let input_a = find_node_by_id(&dom, "a");
+    let input_b = find_node_by_id(&dom, "b");
+    let id_a = *ids.get(&(input_a as *const DomNode)).expect("id a");
+    let id_b = *ids.get(&(input_b as *const DomNode)).expect("id b");
+    assert_ne!(id_a, id_b);
+
+    assert_eq!(autofocus_target_node_id(&dom), Some(id_b));
+    let state = interaction_state_for_autofocus(&dom).expect("state");
+    assert_eq!(state.focused, Some(id_b));
+  }
+
+  #[test]
+  fn autofocus_does_not_treat_disabled_fieldset_as_inert_for_tabindex_elements() {
+    let dom = crate::dom::parse_html(
+      "<html><body><fieldset disabled><div id=\"d\" tabindex=\"0\" autofocus></div></fieldset></body></html>",
+    )
+    .expect("parse");
+
+    let ids = crate::dom::enumerate_dom_ids(&dom);
+    let div = find_node_by_id(&dom, "d");
+    let div_id = *ids.get(&(div as *const DomNode)).expect("div id");
+
+    assert_eq!(autofocus_target_node_id(&dom), Some(div_id));
+    let state = interaction_state_for_autofocus(&dom).expect("state");
+    assert_eq!(state.focused, Some(div_id));
+  }
+
+  #[test]
+  fn autofocus_ignores_controls_disabled_by_fieldset() {
+    let dom = crate::dom::parse_html(
+      "<html><body><fieldset disabled><input id=\"a\" autofocus></fieldset></body></html>",
+    )
+    .expect("parse");
+
+    assert_eq!(autofocus_target_node_id(&dom), None);
+    assert!(interaction_state_for_autofocus(&dom).is_none());
+  }
 }
