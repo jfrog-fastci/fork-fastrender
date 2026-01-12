@@ -1,3 +1,19 @@
+//! Visited URL history for omnibox/autocomplete.
+//!
+//! This is intentionally *not* the same as per-tab back/forward history (`ui::history::TabHistory`).
+//! The omnibox wants a global list of "things the user has visited" that can be searched/filtered
+//! for suggestions.
+//!
+//! ## `about:` URLs policy
+//!
+//! Internal `about:*` pages are a mix of:
+//! - user-facing destinations that are useful to keep discoverable (`about:help`, `about:version`),
+//! - and transient/internal pages that are created automatically (`about:newtab`, `about:error`) or
+//!   exist only for tests (`about:test-*`).
+//!
+//! Recording all `about:*` pages quickly pollutes history and makes omnibox suggestions noisy.
+//! We therefore keep a small allowlist of useful `about:` pages and ignore the rest.
+
 use std::collections::VecDeque;
 use std::time::SystemTime;
 
@@ -6,9 +22,47 @@ use super::GlobalHistoryStore;
 
 /// Default maximum number of unique visited URLs stored in-memory.
 ///
-/// This is intentionally bounded so the UI thread can offer omnibox suggestions without
-/// unbounded memory growth.
+/// This is intentionally bounded so the UI thread can offer omnibox suggestions without unbounded
+/// memory growth.
 pub const DEFAULT_VISITED_URL_CAPACITY: usize = 5000;
+
+/// Decide whether a committed navigation should be added to omnibox visited history.
+///
+/// Rationale:
+/// - `about:newtab`, `about:blank`, and `about:error` are often created automatically and would
+///   dominate the history list.
+/// - `about:test-*` pages exist for deterministic UI/worker tests and should never leak into user
+///   history.
+/// - Some `about:` pages are genuinely useful to revisit/auto-complete (`about:help`,
+///   `about:version`, `about:gpu`), so we keep them.
+///
+/// Unknown `about:` pages default to **not** being recorded: internal pages are more likely to be
+/// transient than user-facing. If a new `about:` page should be discoverable via visited history,
+/// add it to the allowlist below.
+pub fn should_record_visit_in_history(url: &str) -> bool {
+  let trimmed = url.trim();
+  if trimmed.is_empty() {
+    return false;
+  }
+
+  let lower = trimmed.to_ascii_lowercase();
+  if !lower.starts_with("about:") {
+    return true;
+  }
+
+  // `about:` pages may be used with query strings/fragments; the base identifier defines policy.
+  let base = lower
+    .split(|c| matches!(c, '?' | '#'))
+    .next()
+    .unwrap_or(lower.as_str());
+
+  match base {
+    about_pages::ABOUT_HELP | about_pages::ABOUT_VERSION | about_pages::ABOUT_GPU => true,
+    about_pages::ABOUT_NEWTAB | about_pages::ABOUT_BLANK | about_pages::ABOUT_ERROR => false,
+    _ if base.starts_with("about:test-") => false,
+    _ => false,
+  }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VisitedUrlRecord {
@@ -81,6 +135,19 @@ impl VisitedUrlStore {
       return;
     }
 
+    let trimmed = url.trim();
+    if trimmed.is_empty() {
+      return;
+    }
+    if !should_record_visit_in_history(trimmed) {
+      return;
+    }
+
+    let url = if trimmed.len() == url.len() {
+      url
+    } else {
+      trimmed.to_string()
+    };
     let visit_count = visit_count.max(1);
 
     if let Some(idx) = self.records.iter().position(|r| r.url == url) {
@@ -493,5 +560,45 @@ mod tests {
 
     let urls: Vec<&str> = store.iter_recent().map(|r| r.url.as_str()).collect();
     assert_eq!(urls, vec!["https://c.example/", "https://b.example/"]);
+
+  }
+
+  #[test]
+  fn should_record_visit_in_history_filters_noisy_about_pages_and_allows_useful_ones() {
+    for url in [
+      "about:newtab",
+      "about:blank",
+      "about:error",
+      "about:test-scroll",
+      "about:test-heavy",
+      "about:test-form",
+      // Query/fragment variants should behave the same.
+      "about:newtab#foo",
+      "about:test-heavy?q=1",
+    ] {
+      assert!(
+        !should_record_visit_in_history(url),
+        "expected {url} not to be recorded"
+      );
+    }
+
+    for url in [
+      "about:help",
+      "about:version",
+      "about:gpu",
+      "about:help#shortcuts",
+      "about:version?q=1",
+      // Case-insensitive.
+      "ABOUT:HELP",
+    ] {
+      assert!(
+        should_record_visit_in_history(url),
+        "expected {url} to be recorded"
+      );
+    }
+
+    // Non-about URLs should be recorded normally.
+    assert!(should_record_visit_in_history("https://example.com/"));
+    assert!(should_record_visit_in_history("file:///tmp/a.html"));
   }
 }

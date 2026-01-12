@@ -1068,6 +1068,39 @@ mod tests {
   }
 
   #[test]
+  fn about_pages_are_suggested_even_if_not_recorded_in_visited_history() {
+    let open_tabs = Vec::new();
+    let closed_tabs = Vec::new();
+    let mut visited = VisitedUrlStore::with_capacity(10);
+
+    // Transient about:newtab should be filtered out of visited history…
+    visited.record_visit(
+      about_pages::ABOUT_NEWTAB.to_string(),
+      Some("New Tab".to_string()),
+    );
+    assert_eq!(visited.len(), 0);
+
+    let ctx = OmniboxContext {
+      open_tabs: &open_tabs,
+      closed_tabs: &closed_tabs,
+      visited: &visited,
+      active_tab_id: None,
+      bookmarks: None,
+      remote_search_suggest: None,
+    };
+
+    // …but it should still be suggested by the about-pages provider (independent of history).
+    let suggestions = build_omnibox_suggestions(&ctx, "about:n", 10);
+    assert!(
+      suggestions.iter().any(|s| {
+        matches!(&s.action, OmniboxAction::NavigateToUrl(u) if u == about_pages::ABOUT_NEWTAB)
+          && s.source == OmniboxSuggestionSource::Url(OmniboxUrlSource::About)
+      }),
+      "expected about:newtab suggestion, got {suggestions:?}"
+    );
+  }
+
+  #[test]
   fn limit_is_enforced_after_dedup_and_deterministic() {
     struct ProviderA;
     impl OmniboxProvider for ProviderA {

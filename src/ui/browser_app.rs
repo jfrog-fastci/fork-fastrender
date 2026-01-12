@@ -1193,8 +1193,12 @@ impl BrowserAppState {
         update.history_changed = self.history.record(url.clone(), title.clone());
 
         // Keep the omnibox visited store consistent with the global history store by recording the
-        // normalized URL (e.g. fragment stripped). Only record when the global store accepted the
-        // navigation.
+        // normalized URL (e.g. fragment stripped).
+        //
+        // When global history rejects a navigation (notably internal `about:` pages), we still
+        // record a small allowlist of useful `about:` pages so they remain discoverable via omnibox
+        // autocomplete. The visited store enforces the policy (see
+        // `ui::visited::should_record_visit_in_history`).
         if update.history_changed {
           let normalized_url = self
             .history
@@ -1204,6 +1208,15 @@ impl BrowserAppState {
             // avoid losing visited entries in release builds if invariants change.
             .unwrap_or_else(|| url.clone());
           self.visited.record_visit(normalized_url, title.clone());
+        } else if about_pages::is_about_url(&url) {
+          // Normalize internal pages by stripping any query/fragment so e.g. `about:help#foo` and
+          // `about:history?q=rust` do not create separate visited entries.
+          let normalized_about = url
+            .split(|c| matches!(c, '?' | '#'))
+            .next()
+            .unwrap_or(url.as_str())
+            .to_string();
+          self.visited.record_visit(normalized_about, title.clone());
         }
         if let Some(tab) = self.tab_mut(tab_id) {
           tab.current_url = Some(url.clone());
@@ -1772,6 +1785,38 @@ mod browser_app_tests {
     });
     assert!(!update.history_changed);
     assert_eq!(app.history.entries.len(), 1);
+  }
+
+  #[test]
+  fn navigation_committed_records_useful_about_pages_but_not_transient_ones() {
+    let mut app = BrowserAppState::new_with_initial_tab("about:newtab".to_string());
+    let tab_id = app.active_tab_id().unwrap();
+
+    assert_eq!(app.visited.len(), 0);
+
+    // `about:newtab` is a transient internal page and should not pollute visited history.
+    app.apply_worker_msg(WorkerToUi::NavigationCommitted {
+      tab_id,
+      url: about_pages::ABOUT_NEWTAB.to_string(),
+      title: Some("New Tab".to_string()),
+      can_go_back: false,
+      can_go_forward: false,
+    });
+    assert_eq!(app.visited.len(), 0);
+
+    // User-facing `about:` pages should still be recorded so they can autocomplete.
+    app.apply_worker_msg(WorkerToUi::NavigationCommitted {
+      tab_id,
+      url: about_pages::ABOUT_HELP.to_string(),
+      title: Some("Help".to_string()),
+      can_go_back: false,
+      can_go_forward: false,
+    });
+
+    assert_eq!(app.visited.len(), 1);
+    let record = app.visited.iter_recent().next().expect("expected visit");
+    assert_eq!(record.url, about_pages::ABOUT_HELP);
+    assert_eq!(record.title.as_deref(), Some("Help"));
   }
 
   #[test]

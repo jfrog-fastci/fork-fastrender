@@ -136,7 +136,7 @@ pub use global_history::{
   ClearBrowsingDataRange, GlobalHistoryEntry, GlobalHistoryStore, DEFAULT_GLOBAL_HISTORY_CAPACITY,
 };
 pub use history::{HistoryEntry, TabHistory};
-pub use visited::{VisitedUrlRecord, VisitedUrlStore};
+pub use visited::{should_record_visit_in_history, VisitedUrlRecord, VisitedUrlStore};
 pub use zoom::{
   clamp_zoom, viewport_css_and_dpr_for_zoom, zoom_in, zoom_out, zoom_percent, zoom_reset,
   DEFAULT_ZOOM, MAX_ZOOM, MIN_ZOOM, ZOOM_STEP,

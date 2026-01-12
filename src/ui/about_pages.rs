@@ -10,6 +10,24 @@ pub const ABOUT_TEST_SCROLL: &str = "about:test-scroll";
 pub const ABOUT_TEST_HEAVY: &str = "about:test-heavy";
 pub const ABOUT_TEST_FORM: &str = "about:test-form";
 
+/// Known `about:` page URLs.
+///
+/// This list exists for omnibox/autocomplete providers so built-in pages can be suggested even when
+/// they are intentionally excluded from visited history (e.g. `about:newtab`, `about:error`).
+pub const ABOUT_PAGE_URLS: &[&str] = &[
+  ABOUT_BLANK,
+  ABOUT_NEWTAB,
+  ABOUT_HELP,
+  ABOUT_VERSION,
+  ABOUT_GPU,
+  ABOUT_ERROR,
+  ABOUT_HISTORY,
+  ABOUT_BOOKMARKS,
+  ABOUT_TEST_SCROLL,
+  ABOUT_TEST_HEAVY,
+  ABOUT_TEST_FORM,
+];
+
 use parking_lot::RwLock;
 use std::sync::OnceLock;
 use std::time::SystemTime;
@@ -399,6 +417,26 @@ pub const ABOUT_BASE_URL: &str = ABOUT_BLANK;
 
 pub fn is_about_url(url: &str) -> bool {
   url.trim_start().to_ascii_lowercase().starts_with("about:")
+}
+
+/// Return known `about:` pages that match a user-typed prefix (case-insensitive).
+///
+/// This is intended to be used by omnibox/autocomplete code and is deliberately independent of any
+/// visited-history state.
+pub fn suggest_about_pages(prefix: &str) -> Vec<&'static str> {
+  let query = prefix.trim().to_ascii_lowercase();
+  if query.is_empty() {
+    return Vec::new();
+  }
+  // Avoid suggesting `about:` pages unless the user is clearly heading in that direction.
+  if !query.starts_with("about") {
+    return Vec::new();
+  }
+  ABOUT_PAGE_URLS
+    .iter()
+    .copied()
+    .filter(|url| url.starts_with(&query))
+    .collect()
 }
 
 pub fn html_for_about_url(url: &str) -> Option<String> {
@@ -1728,5 +1766,34 @@ mod tests {
     );
 
     set_about_page_snapshot(before);
+  }
+
+  #[test]
+  fn suggest_about_pages_matches_prefix_and_includes_unrecorded_pages() {
+    let suggestions = suggest_about_pages("about:");
+    for url in [
+      ABOUT_NEWTAB,
+      ABOUT_BLANK,
+      ABOUT_HELP,
+      ABOUT_VERSION,
+      ABOUT_GPU,
+      ABOUT_ERROR,
+      ABOUT_HISTORY,
+      ABOUT_BOOKMARKS,
+    ] {
+      assert!(
+        suggestions.contains(&url),
+        "expected suggestions to contain {url}, got {suggestions:?}"
+      );
+    }
+
+    assert!(
+      suggest_about_pages("help").is_empty(),
+      "expected non-about prefix not to suggest about pages"
+    );
+    assert!(
+      suggest_about_pages("ABOUT:H").contains(&ABOUT_HELP),
+      "expected suggestions to be case-insensitive"
+    );
   }
 }
