@@ -634,5 +634,8 @@ bash ../scripts/cargo_agent.sh run -p typecheck-ts-harness --release -- triage \
 - `triage` prints suggested `[[expectations]]` entries for common mismatch
   clusters; copy the entries you accept into
   `fixtures/conformance-upstream/manifest.toml`.
+- For a pasteable TOML snippet, pass `--emit-manifest` (stdout) and redirect it
+  into a scratch file before copying into the manifest:
+  `... triage --input report.json --emit-manifest > suggestions.toml`.
 - XPASS means a manifest entry is now stale; remove it (or narrow the `glob`) so
   the passing case is covered by the default `pass` behavior.
