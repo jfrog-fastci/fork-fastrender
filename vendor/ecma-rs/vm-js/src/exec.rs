@@ -7905,6 +7905,28 @@ fn async_handle_body_result(
         await_value,
       ) {
         Ok(p) => p,
+        Err(VmError::Throw(reason)) => {
+          // `Await` uses `? PromiseResolve(%Promise%, value)`. If that throws, the async function
+          // promise must be rejected (and the resume callback must not throw synchronously).
+          let mut call_scope = await_scope.reborrow();
+          if let Err(err) = call_scope.push_roots(&[reject, reason]) {
+            async_teardown_continuation(&mut call_scope, cont);
+            return Err(err);
+          }
+          let res = vm.call_with_host_and_hooks(host, &mut call_scope, hooks, reject, Value::Undefined, &[reason]);
+          async_teardown_continuation(&mut call_scope, cont);
+          return res.map(|_| Value::Undefined);
+        }
+        Err(VmError::ThrowWithStack { value: reason, .. }) => {
+          let mut call_scope = await_scope.reborrow();
+          if let Err(err) = call_scope.push_roots(&[reject, reason]) {
+            async_teardown_continuation(&mut call_scope, cont);
+            return Err(err);
+          }
+          let res = vm.call_with_host_and_hooks(host, &mut call_scope, hooks, reject, Value::Undefined, &[reason]);
+          async_teardown_continuation(&mut call_scope, cont);
+          return res.map(|_| Value::Undefined);
+        }
         Err(err) => {
           async_teardown_continuation(&mut await_scope, cont);
           return Err(err);
@@ -12859,6 +12881,34 @@ pub(crate) fn run_ecma_function(
           await_value,
         ) {
           Ok(p) => p,
+          Err(VmError::Throw(reason)) => {
+            // `Await` uses `? PromiseResolve(%Promise%, value)`. If that throws, the async function
+            // promise must be rejected (the call must not throw synchronously).
+            let reason = root_scope.push_root(reason)?;
+            let reject_result = evaluator.vm.call_with_host_and_hooks(
+              &mut *evaluator.host,
+              &mut root_scope,
+              &mut *evaluator.hooks,
+              cap.reject,
+              Value::Undefined,
+              &[reason],
+            );
+            evaluator.env.teardown(root_scope.heap_mut());
+            return reject_result.map(|_| promise);
+          }
+          Err(VmError::ThrowWithStack { value: reason, .. }) => {
+            let reason = root_scope.push_root(reason)?;
+            let reject_result = evaluator.vm.call_with_host_and_hooks(
+              &mut *evaluator.host,
+              &mut root_scope,
+              &mut *evaluator.hooks,
+              cap.reject,
+              Value::Undefined,
+              &[reason],
+            );
+            evaluator.env.teardown(root_scope.heap_mut());
+            return reject_result.map(|_| promise);
+          }
           Err(e) => {
             evaluator.env.teardown(root_scope.heap_mut());
             return Err(e);
