@@ -1020,6 +1020,9 @@ impl AstIndex {
       }
       AstPat::Obj(obj) => {
         for prop in obj.stx.properties.iter() {
+          if let ClassOrObjKey::Computed(expr) = &prop.stx.key {
+            self.index_expr(expr, file, cancelled);
+          }
           self.index_pat(&prop.stx.target, file, cancelled);
           if let Some(default) = &prop.stx.default_value {
             self.index_expr(default, file, cancelled);
@@ -8619,9 +8622,41 @@ impl<'a> Checker<'a> {
     let value_is_any = matches!(self.store.type_kind(value), TypeKind::Any);
     for prop in obj.stx.properties.iter() {
       let mut prop_ty = if value_is_any { prim.any } else { prim.unknown };
-      if !value_is_any {
-        if let ClassOrObjKey::Direct(direct) = &prop.stx.key {
-          prop_ty = self.member_type(value, &direct.stx.key);
+      match &prop.stx.key {
+        ClassOrObjKey::Direct(direct) => {
+          if !value_is_any {
+            prop_ty = self.member_type(value, &direct.stx.key);
+          }
+        }
+        ClassOrObjKey::Computed(expr) => {
+          // Always type-check the key expression so identifier resolution and
+          // other nested diagnostics are produced.
+          let _ = self.check_expr(expr);
+
+          if !value_is_any {
+            let literal_key = match expr.stx.as_ref() {
+              AstExpr::LitStr(str_lit) => Some(str_lit.stx.value.clone()),
+              AstExpr::LitNum(num_lit) => Some(num_lit.stx.value.0.to_string()),
+              AstExpr::LitTemplate(tpl) => {
+                let mut out = String::new();
+                let mut has_substitution = false;
+                for part in tpl.stx.parts.iter() {
+                  match part {
+                    parse_js::ast::expr::lit::LitTemplatePart::String(s) => out.push_str(s),
+                    parse_js::ast::expr::lit::LitTemplatePart::Substitution(_) => {
+                      has_substitution = true;
+                      break;
+                    }
+                  }
+                }
+                if has_substitution { None } else { Some(out) }
+              }
+              _ => None,
+            };
+            if let Some(key) = literal_key {
+              prop_ty = self.member_type(value, &key);
+            }
+          }
         }
       }
       if let Some(default) = &prop.stx.default_value {
@@ -13423,16 +13458,48 @@ impl<'a> FlowBodyChecker<'a> {
       }
       PatKind::Object(obj) => {
         for prop in obj.props.iter() {
-          let prop_name = match &prop.key {
-            ObjectKey::Ident(id) => Some(self.hir_name(*id)),
-            ObjectKey::String(s) => Some(s.clone()),
-            ObjectKey::Number(n) => Some(n.clone()),
-            _ => None,
-          };
           let mut prop_ty = prim.unknown;
-          if let Some(name) = prop_name {
-            if let Some(found) = self.object_prop_type(value_ty, &name) {
-              prop_ty = found;
+          match &prop.key {
+            ObjectKey::Ident(id) => {
+              let name = self.hir_name(*id);
+              if let Some(found) = self.object_prop_type(value_ty, &name) {
+                prop_ty = found;
+              }
+            }
+            ObjectKey::String(s) => {
+              if let Some(found) = self.object_prop_type(value_ty, s) {
+                prop_ty = found;
+              }
+            }
+            ObjectKey::Number(n) => {
+              if let Some(found) = self.object_prop_type(value_ty, n) {
+                prop_ty = found;
+              }
+            }
+            ObjectKey::Computed(expr) => {
+              let key_ty = self.eval_expr(*expr, env).0;
+
+              let literal_key = self
+                .literal_value(*expr)
+                .and_then(|lit| match lit {
+                  LiteralValue::String(s) | LiteralValue::Number(s) => Some(s),
+                  _ => None,
+                })
+                .or_else(|| match self.store.type_kind(key_ty) {
+                  TypeKind::StringLiteral(id) => Some(self.store.name(id).to_string()),
+                  TypeKind::NumberLiteral(num) => Some(num.0.to_string()),
+                  _ => None,
+                });
+
+              prop_ty = if let Some(key) = literal_key {
+                self.member_type_for_known_key(value_ty, &key)
+              } else {
+                self.member_type_for_index_key(value_ty, key_ty)
+              };
+
+              if self.relate.options.no_unchecked_indexed_access {
+                prop_ty = self.store.union(vec![prop_ty, prim.undefined]);
+              }
             }
           }
           prop_ty = self.apply_binding_mode(prop_ty, mode);
