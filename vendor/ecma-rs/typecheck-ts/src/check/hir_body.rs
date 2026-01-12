@@ -8372,9 +8372,6 @@ impl<'a> Checker<'a> {
           .is_some_and(|constraint| inner(checker, constraint, prop, seen)),
         TypeKind::Object(obj_id) => {
           let shape = checker.store.shape(checker.store.object(obj_id).shape);
-          if !shape.indexers.is_empty() {
-            return true;
-          }
           if matches!(prop, "call" | "apply" | "bind") && !shape.call_signatures.is_empty() {
             return true;
           }
@@ -8392,6 +8389,19 @@ impl<'a> Checker<'a> {
               }
               _ => {}
             }
+          }
+          if !shape.indexers.is_empty() {
+            let key = if let Some(idx) = parse_canonical_index_str(prop) {
+              PropKey::Number(idx)
+            } else {
+              PropKey::String(checker.store.intern_name_ref(prop))
+            };
+            return shape
+              .indexers
+              .iter()
+              .any(|idxer| {
+                crate::type_queries::indexer_accepts_key(&key, idxer.key_type, checker.store.as_ref())
+              });
           }
           false
         }
