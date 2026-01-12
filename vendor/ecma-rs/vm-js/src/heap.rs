@@ -7637,11 +7637,7 @@ mod detached_array_buffer_tests {
       Err(other) => panic!("expected Ok(empty), got {other:?}"),
     }
 
-    match scope.heap_mut().uint8_array_write(view, 0, &[1, 2, 3]) {
-      Err(VmError::TypeError(_)) => {}
-      Err(other) => panic!("expected TypeError, got {other:?}"),
-      Ok(wrote) => panic!("expected TypeError for detached Uint8Array write, got Ok({wrote})"),
-    }
+    assert_eq!(scope.heap_mut().uint8_array_write(view, 0, &[1, 2, 3])?, 0);
 
     Ok(())
   }
@@ -7670,11 +7666,8 @@ mod detached_array_buffer_tests {
       Ok(_) => panic!("expected error for out-of-bounds Uint8Array view"),
     }
 
-    match scope.heap_mut().uint8_array_write(view, 0, &[1]) {
-      Err(VmError::TypeError(msg)) => assert_eq!(msg, "Uint8Array view out of bounds"),
-      Err(other) => panic!("expected TypeError, got {other:?}"),
-      Ok(n) => panic!("expected TypeError, got Ok({n})"),
-    }
+    // Out-of-bounds views behave like empty typed arrays for host byte writes.
+    assert_eq!(scope.heap_mut().uint8_array_write(view, 0, &[1])?, 0);
 
     Ok(())
   }
