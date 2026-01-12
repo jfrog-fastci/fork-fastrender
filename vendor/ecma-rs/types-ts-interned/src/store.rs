@@ -198,6 +198,523 @@ pub struct TypeStoreSnapshot {
   names: Vec<(NameId, String)>,
 }
 
+#[derive(Clone)]
+enum CachedTypeKind {
+  Simple(SimpleTypeKind),
+  Complex(std::rc::Rc<TypeKind>),
+}
+
+impl CachedTypeKind {
+  fn discriminant(&self) -> u8 {
+    match self {
+      CachedTypeKind::Simple(kind) => kind.discriminant(),
+      CachedTypeKind::Complex(kind) => kind.discriminant(),
+    }
+  }
+}
+
+#[derive(Clone, Copy)]
+enum SimpleTypeKind {
+  Any,
+  Unknown,
+  Never,
+  Void,
+  Null,
+  Undefined,
+  Boolean,
+  Number,
+  String,
+  BigInt,
+  Symbol,
+  UniqueSymbol,
+  BooleanLiteral(bool),
+  NumberLiteral(ordered_float::OrderedFloat<f64>),
+  StringLiteral(NameId),
+  This,
+  TypeParam(crate::TypeParamId),
+  EmptyObject,
+}
+
+impl SimpleTypeKind {
+  fn discriminant(&self) -> u8 {
+    match self {
+      SimpleTypeKind::Any => 0,
+      SimpleTypeKind::Unknown => 1,
+      SimpleTypeKind::Never => 2,
+      SimpleTypeKind::Void => 3,
+      SimpleTypeKind::Null => 4,
+      SimpleTypeKind::Undefined => 5,
+      SimpleTypeKind::Boolean => 6,
+      SimpleTypeKind::Number => 7,
+      SimpleTypeKind::String => 8,
+      SimpleTypeKind::BigInt => 9,
+      SimpleTypeKind::Symbol => 10,
+      SimpleTypeKind::UniqueSymbol => 11,
+      SimpleTypeKind::BooleanLiteral(_) => 12,
+      SimpleTypeKind::NumberLiteral(_) => 13,
+      SimpleTypeKind::StringLiteral(_) => 14,
+      SimpleTypeKind::This => 16,
+      SimpleTypeKind::TypeParam(_) => 25,
+      SimpleTypeKind::EmptyObject => 32,
+    }
+  }
+}
+
+struct CanonicalizeCmp<'a> {
+  store: &'a TypeStore,
+  names: parking_lot::RwLockReadGuard<'a, NameInterner>,
+  types: ahash::AHashMap<TypeId, CachedTypeKind>,
+  shapes: ahash::AHashMap<ShapeId, std::rc::Rc<Shape>>,
+  objects: ahash::AHashMap<ObjectId, ShapeId>,
+  signatures: ahash::AHashMap<SignatureId, std::rc::Rc<Signature>>,
+}
+
+impl<'a> CanonicalizeCmp<'a> {
+  fn new(store: &'a TypeStore) -> Self {
+    Self {
+      store,
+      names: store.names.read(),
+      types: Default::default(),
+      shapes: Default::default(),
+      objects: Default::default(),
+      signatures: Default::default(),
+    }
+  }
+
+  fn reserve_types(&mut self, additional: usize) {
+    self.types.reserve(additional);
+  }
+
+  fn reserve_signatures(&mut self, additional: usize) {
+    self.signatures.reserve(additional);
+  }
+
+  fn type_kind(&mut self, id: TypeId) -> CachedTypeKind {
+    if let Some(kind) = self.types.get(&id) {
+      return kind.clone();
+    }
+    let kind = self.store.type_kind(id);
+    let cached = match kind {
+      TypeKind::Any => CachedTypeKind::Simple(SimpleTypeKind::Any),
+      TypeKind::Unknown => CachedTypeKind::Simple(SimpleTypeKind::Unknown),
+      TypeKind::Never => CachedTypeKind::Simple(SimpleTypeKind::Never),
+      TypeKind::Void => CachedTypeKind::Simple(SimpleTypeKind::Void),
+      TypeKind::Null => CachedTypeKind::Simple(SimpleTypeKind::Null),
+      TypeKind::Undefined => CachedTypeKind::Simple(SimpleTypeKind::Undefined),
+      TypeKind::Boolean => CachedTypeKind::Simple(SimpleTypeKind::Boolean),
+      TypeKind::Number => CachedTypeKind::Simple(SimpleTypeKind::Number),
+      TypeKind::String => CachedTypeKind::Simple(SimpleTypeKind::String),
+      TypeKind::BigInt => CachedTypeKind::Simple(SimpleTypeKind::BigInt),
+      TypeKind::Symbol => CachedTypeKind::Simple(SimpleTypeKind::Symbol),
+      TypeKind::UniqueSymbol => CachedTypeKind::Simple(SimpleTypeKind::UniqueSymbol),
+      TypeKind::BooleanLiteral(v) => CachedTypeKind::Simple(SimpleTypeKind::BooleanLiteral(v)),
+      TypeKind::NumberLiteral(v) => CachedTypeKind::Simple(SimpleTypeKind::NumberLiteral(v)),
+      TypeKind::StringLiteral(v) => CachedTypeKind::Simple(SimpleTypeKind::StringLiteral(v)),
+      TypeKind::This => CachedTypeKind::Simple(SimpleTypeKind::This),
+      TypeKind::TypeParam(v) => CachedTypeKind::Simple(SimpleTypeKind::TypeParam(v)),
+      TypeKind::EmptyObject => CachedTypeKind::Simple(SimpleTypeKind::EmptyObject),
+      other => CachedTypeKind::Complex(std::rc::Rc::new(other)),
+    };
+    self.types.insert(id, cached.clone());
+    cached
+  }
+
+  fn signature(&mut self, id: SignatureId) -> std::rc::Rc<Signature> {
+    if let Some(sig) = self.signatures.get(&id) {
+      return sig.clone();
+    }
+    let sig = std::rc::Rc::new(self.store.signature(id));
+    self.signatures.insert(id, sig.clone());
+    sig
+  }
+
+  fn shape(&mut self, id: ShapeId) -> std::rc::Rc<Shape> {
+    if let Some(shape) = self.shapes.get(&id) {
+      return shape.clone();
+    }
+    let shape = std::rc::Rc::new(self.store.shape(id));
+    self.shapes.insert(id, shape.clone());
+    shape
+  }
+
+  fn object_shape(&mut self, id: ObjectId) -> ShapeId {
+    if let Some(shape) = self.objects.get(&id) {
+      return *shape;
+    }
+    let shape = self.store.object(id).shape;
+    self.objects.insert(id, shape);
+    shape
+  }
+
+  fn type_cmp(&mut self, a: TypeId, b: TypeId) -> Ordering {
+    if a == b {
+      return Ordering::Equal;
+    }
+    let a_kind = self.type_kind(a);
+    let b_kind = self.type_kind(b);
+    let discr = a_kind.discriminant().cmp(&b_kind.discriminant());
+    if discr != Ordering::Equal {
+      return discr;
+    }
+    let ord = match (a_kind, b_kind) {
+      (
+        CachedTypeKind::Simple(SimpleTypeKind::BooleanLiteral(a)),
+        CachedTypeKind::Simple(SimpleTypeKind::BooleanLiteral(b)),
+      ) => a.cmp(&b),
+      (
+        CachedTypeKind::Simple(SimpleTypeKind::NumberLiteral(a)),
+        CachedTypeKind::Simple(SimpleTypeKind::NumberLiteral(b)),
+      ) => a.cmp(&b),
+      (
+        CachedTypeKind::Simple(SimpleTypeKind::StringLiteral(a)),
+        CachedTypeKind::Simple(SimpleTypeKind::StringLiteral(b)),
+      ) => self.names.name(a).cmp(self.names.name(b)),
+      (
+        CachedTypeKind::Simple(SimpleTypeKind::TypeParam(a)),
+        CachedTypeKind::Simple(SimpleTypeKind::TypeParam(b)),
+      ) => a.0.cmp(&b.0),
+      (CachedTypeKind::Simple(_), CachedTypeKind::Simple(_)) => Ordering::Equal,
+      (CachedTypeKind::Complex(a_kind), CachedTypeKind::Complex(b_kind)) => {
+        match (&*a_kind, &*b_kind) {
+          (TypeKind::BigIntLiteral(a), TypeKind::BigIntLiteral(b)) => a.cmp(b),
+          (TypeKind::Union(a), TypeKind::Union(b)) => {
+            self.composite_cmp(CompositeKind::Union(a), CompositeKind::Union(b))
+          }
+          (TypeKind::Intersection(a), TypeKind::Intersection(b)) => self.composite_cmp(
+            CompositeKind::Intersection(a),
+            CompositeKind::Intersection(b),
+          ),
+          (TypeKind::Object(a), TypeKind::Object(b)) => {
+            let a_shape = self.object_shape(*a);
+            let b_shape = self.object_shape(*b);
+            let a_shape = self.shape(a_shape);
+            let b_shape = self.shape(b_shape);
+            self.composite_cmp(
+              CompositeKind::Object(&a_shape),
+              CompositeKind::Object(&b_shape),
+            )
+          }
+          (TypeKind::Callable { overloads: a }, TypeKind::Callable { overloads: b }) => {
+            self.compare_signature_slices(a, b)
+          }
+          (
+            TypeKind::Ref {
+              def: a_def,
+              args: a_args,
+            },
+            TypeKind::Ref {
+              def: b_def,
+              args: b_args,
+            },
+          ) => a_def
+            .0
+            .cmp(&b_def.0)
+            .then_with(|| self.compare_slices(a_args, b_args)),
+          (
+            TypeKind::Infer {
+              param: a,
+              constraint: a_c,
+            },
+            TypeKind::Infer {
+              param: b,
+              constraint: b_c,
+            },
+          ) => a.0.cmp(&b.0).then_with(|| self.option_type_cmp(*a_c, *b_c)),
+          (TypeKind::Tuple(a), TypeKind::Tuple(b)) => {
+            let mut idx = 0;
+            loop {
+              let Some(a_elem) = a.get(idx) else {
+                break a.len().cmp(&b.len());
+              };
+              let Some(b_elem) = b.get(idx) else {
+                break a.len().cmp(&b.len());
+              };
+              let ord = self
+                .type_cmp(a_elem.ty, b_elem.ty)
+                .then_with(|| a_elem.optional.cmp(&b_elem.optional))
+                .then_with(|| a_elem.rest.cmp(&b_elem.rest))
+                .then_with(|| a_elem.readonly.cmp(&b_elem.readonly));
+              if ord != Ordering::Equal {
+                break ord;
+              }
+              idx += 1;
+            }
+          }
+          (
+            TypeKind::Array {
+              ty: a,
+              readonly: ar,
+            },
+            TypeKind::Array {
+              ty: b,
+              readonly: br,
+            },
+          ) => ar.cmp(br).then_with(|| self.type_cmp(*a, *b)),
+          (
+            TypeKind::Predicate {
+              parameter: a_param,
+              asserted: a_asserted,
+              asserts: a_asserts,
+            },
+            TypeKind::Predicate {
+              parameter: b_param,
+              asserted: b_asserted,
+              asserts: b_asserts,
+            },
+          ) => a_param
+            .cmp(b_param)
+            .then_with(|| self.option_type_cmp(*a_asserted, *b_asserted))
+            .then_with(|| a_asserts.cmp(b_asserts)),
+          (
+            TypeKind::Conditional {
+              check: a_c,
+              extends: a_e,
+              true_ty: a_t,
+              false_ty: a_f,
+              distributive: a_d,
+            },
+            TypeKind::Conditional {
+              check: b_c,
+              extends: b_e,
+              true_ty: b_t,
+              false_ty: b_f,
+              distributive: b_d,
+            },
+          ) => self
+            .type_cmp(*a_c, *b_c)
+            .then_with(|| self.type_cmp(*a_e, *b_e))
+            .then_with(|| self.type_cmp(*a_t, *b_t))
+            .then_with(|| self.type_cmp(*a_f, *b_f))
+            .then_with(|| a_d.cmp(b_d)),
+          (TypeKind::Mapped(a), TypeKind::Mapped(b)) => a
+            .param
+            .0
+            .cmp(&b.param.0)
+            .then_with(|| self.type_cmp(a.source, b.source))
+            .then_with(|| self.type_cmp(a.value, b.value))
+            .then_with(|| a.readonly.cmp(&b.readonly))
+            .then_with(|| a.optional.cmp(&b.optional))
+            .then_with(|| self.option_type_cmp(a.name_type, b.name_type))
+            .then_with(|| self.option_type_cmp(a.as_type, b.as_type)),
+          (TypeKind::TemplateLiteral(a), TypeKind::TemplateLiteral(b)) => {
+            a.head.cmp(&b.head).then_with(|| {
+              let mut idx = 0;
+              loop {
+                let Some(left) = a.spans.get(idx) else {
+                  return a.spans.len().cmp(&b.spans.len());
+                };
+                let Some(right) = b.spans.get(idx) else {
+                  return a.spans.len().cmp(&b.spans.len());
+                };
+                let ord = self
+                  .type_cmp(left.ty, right.ty)
+                  .then_with(|| left.literal.cmp(&right.literal));
+                if ord != Ordering::Equal {
+                  return ord;
+                }
+                idx += 1;
+              }
+            })
+          }
+          (
+            TypeKind::Intrinsic { kind: a_k, ty: a_t },
+            TypeKind::Intrinsic { kind: b_k, ty: b_t },
+          ) => a_k.cmp(b_k).then_with(|| self.type_cmp(*a_t, *b_t)),
+          (
+            TypeKind::IndexedAccess {
+              obj: a_o,
+              index: a_i,
+            },
+            TypeKind::IndexedAccess {
+              obj: b_o,
+              index: b_i,
+            },
+          ) => self
+            .type_cmp(*a_o, *b_o)
+            .then_with(|| self.type_cmp(*a_i, *b_i)),
+          (TypeKind::KeyOf(a), TypeKind::KeyOf(b)) => self.type_cmp(*a, *b),
+          _ => Ordering::Equal,
+        }
+      }
+      _ => Ordering::Equal,
+    };
+    ord.then_with(|| a.0.cmp(&b.0))
+  }
+
+  fn signature_cmp(&mut self, a: SignatureId, b: SignatureId) -> Ordering {
+    if a == b {
+      return Ordering::Equal;
+    }
+    let a_sig = self.signature(a);
+    let b_sig = self.signature(b);
+    self
+      .compare_params(&a_sig.params, &b_sig.params)
+      .then_with(|| self.type_cmp(a_sig.ret, b_sig.ret))
+      .then_with(|| self.compare_type_params(&a_sig.type_params, &b_sig.type_params))
+      .then_with(|| self.option_type_cmp(a_sig.this_param, b_sig.this_param))
+      .then_with(|| a.cmp(&b))
+  }
+
+  fn compare_params(&mut self, a: &[Param], b: &[Param]) -> Ordering {
+    let mut idx = 0;
+    loop {
+      let Some(a_param) = a.get(idx) else {
+        return a.len().cmp(&b.len());
+      };
+      let Some(b_param) = b.get(idx) else {
+        return a.len().cmp(&b.len());
+      };
+      let ord = a_param
+        .optional
+        .cmp(&b_param.optional)
+        .then_with(|| a_param.rest.cmp(&b_param.rest))
+        .then_with(|| self.type_cmp(a_param.ty, b_param.ty));
+      if ord != Ordering::Equal {
+        return ord;
+      }
+      idx += 1;
+    }
+  }
+
+  fn compare_type_params(&mut self, a: &[TypeParamDecl], b: &[TypeParamDecl]) -> Ordering {
+    let mut idx = 0;
+    loop {
+      let Some(a_param) = a.get(idx) else {
+        return a.len().cmp(&b.len());
+      };
+      let Some(b_param) = b.get(idx) else {
+        return a.len().cmp(&b.len());
+      };
+      let ord = a_param
+        .id
+        .cmp(&b_param.id)
+        .then_with(|| self.option_type_cmp(a_param.constraint, b_param.constraint))
+        .then_with(|| self.option_type_cmp(a_param.default, b_param.default));
+      if ord != Ordering::Equal {
+        return ord;
+      }
+      idx += 1;
+    }
+  }
+
+  fn option_type_cmp(&mut self, a: Option<TypeId>, b: Option<TypeId>) -> Ordering {
+    match (a, b) {
+      (Some(a), Some(b)) => self.type_cmp(a, b),
+      (None, None) => Ordering::Equal,
+      (Some(_), None) => Ordering::Greater,
+      (None, Some(_)) => Ordering::Less,
+    }
+  }
+
+  fn composite_cmp(&mut self, a: CompositeKind<'_>, b: CompositeKind<'_>) -> Ordering {
+    match (a, b) {
+      (CompositeKind::Union(a), CompositeKind::Union(b))
+      | (CompositeKind::Intersection(a), CompositeKind::Intersection(b)) => self.compare_slices(a, b),
+      (CompositeKind::Object(a), CompositeKind::Object(b)) => {
+        let mut idx = 0;
+        loop {
+          let Some(a_prop) = a.properties.get(idx) else {
+            return a
+              .properties
+              .len()
+              .cmp(&b.properties.len())
+              .then_with(|| self.compare_signature_slices(&a.call_signatures, &b.call_signatures))
+              .then_with(|| {
+                self.compare_signature_slices(&a.construct_signatures, &b.construct_signatures)
+              })
+              .then_with(|| self.compare_indexers(&a.indexers, &b.indexers));
+          };
+          let Some(b_prop) = b.properties.get(idx) else {
+            return a
+              .properties
+              .len()
+              .cmp(&b.properties.len())
+              .then_with(|| self.compare_signature_slices(&a.call_signatures, &b.call_signatures))
+              .then_with(|| {
+                self.compare_signature_slices(&a.construct_signatures, &b.construct_signatures)
+              })
+              .then_with(|| self.compare_indexers(&a.indexers, &b.indexers));
+          };
+          let ord = self.compare_props(a_prop, b_prop);
+          if ord != Ordering::Equal {
+            return ord;
+          }
+          idx += 1;
+        }
+      }
+      _ => Ordering::Equal,
+    }
+  }
+
+  fn compare_props(&mut self, a: &Property, b: &Property) -> Ordering {
+    let ord = a.key.cmp_with(&b.key, &|id| self.names.name(id));
+    if ord != Ordering::Equal {
+      return ord;
+    }
+    self
+      .type_cmp(a.data.ty, b.data.ty)
+      .then_with(|| a.data.optional.cmp(&b.data.optional))
+      .then_with(|| a.data.readonly.cmp(&b.data.readonly))
+      .then_with(|| a.data.is_method.cmp(&b.data.is_method))
+      .then_with(|| a.data.accessibility.cmp(&b.data.accessibility))
+      .then_with(|| a.data.declared_on.cmp(&b.data.declared_on))
+  }
+
+  fn compare_indexers(&mut self, a: &[Indexer], b: &[Indexer]) -> Ordering {
+    let mut idx = 0;
+    loop {
+      let Some(ai) = a.get(idx) else {
+        return a.len().cmp(&b.len());
+      };
+      let Some(bi) = b.get(idx) else {
+        return a.len().cmp(&b.len());
+      };
+      let ord = self
+        .type_cmp(ai.key_type, bi.key_type)
+        .then_with(|| self.type_cmp(ai.value_type, bi.value_type))
+        .then_with(|| ai.readonly.cmp(&bi.readonly));
+      if ord != Ordering::Equal {
+        return ord;
+      }
+      idx += 1;
+    }
+  }
+
+  fn compare_signature_slices(&mut self, a: &[SignatureId], b: &[SignatureId]) -> Ordering {
+    let mut idx = 0;
+    loop {
+      let Some(asig) = a.get(idx) else {
+        return a.len().cmp(&b.len());
+      };
+      let Some(bsig) = b.get(idx) else {
+        return a.len().cmp(&b.len());
+      };
+      let ord = self.signature_cmp(*asig, *bsig);
+      if ord != Ordering::Equal {
+        return ord;
+      }
+      idx += 1;
+    }
+  }
+
+  fn compare_slices(&mut self, a: &[TypeId], b: &[TypeId]) -> Ordering {
+    let mut idx = 0;
+    loop {
+      let Some(at) = a.get(idx) else {
+        return a.len().cmp(&b.len());
+      };
+      let Some(bt) = b.get(idx) else {
+        return a.len().cmp(&b.len());
+      };
+      let ord = self.type_cmp(*at, *bt);
+      if ord != Ordering::Equal {
+        return ord;
+      }
+      idx += 1;
+    }
+  }
+}
+
 impl TypeStore {
   fn stable_dedup_signatures(signatures: &mut Vec<SignatureId>) {
     let mut seen = HashSet::new();
@@ -846,19 +1363,29 @@ impl TypeStore {
     }
     shape.properties = merged_properties;
     Self::stable_dedup_signatures(&mut shape.call_signatures);
-    shape
-      .call_signatures
-      .sort_by(|a, b| self.signature_cmp(*a, *b));
     Self::stable_dedup_signatures(&mut shape.construct_signatures);
-    shape
-      .construct_signatures
-      .sort_by(|a, b| self.signature_cmp(*a, *b));
-    shape.indexers.sort_by(|a, b| {
-      self
-        .type_cmp(a.key_type, b.key_type)
-        .then_with(|| self.type_cmp(a.value_type, b.value_type))
-        .then_with(|| a.readonly.cmp(&b.readonly))
-    });
+
+    let needs_sort = shape.call_signatures.len() > 1
+      || shape.construct_signatures.len() > 1
+      || shape.indexers.len() > 1;
+    if needs_sort {
+      let mut cmp = CanonicalizeCmp::new(self);
+      cmp.reserve_signatures(shape.call_signatures.len() + shape.construct_signatures.len());
+      cmp.reserve_types(shape.indexers.len() * 2);
+
+      shape
+        .call_signatures
+        .sort_by(|a, b| cmp.signature_cmp(*a, *b));
+      shape
+        .construct_signatures
+        .sort_by(|a, b| cmp.signature_cmp(*a, *b));
+      shape.indexers.sort_by(|a, b| {
+        cmp
+          .type_cmp(a.key_type, b.key_type)
+          .then_with(|| cmp.type_cmp(a.value_type, b.value_type))
+          .then_with(|| a.readonly.cmp(&b.readonly))
+      });
+    }
 
     // Merge duplicate index signatures deterministically. Shapes should contain
     // at most one effective indexer per key type (string/number/symbol). When
@@ -979,7 +1506,11 @@ impl TypeStore {
       TypeKind::KeyOf(inner) => TypeKind::KeyOf(self.canon(inner)),
       TypeKind::Callable { mut overloads } => {
         Self::stable_dedup_signatures(&mut overloads);
-        overloads.sort_by(|a, b| self.signature_cmp(*a, *b));
+        if overloads.len() > 1 {
+          let mut cmp = CanonicalizeCmp::new(self);
+          cmp.reserve_signatures(overloads.len());
+          overloads.sort_by(|a, b| cmp.signature_cmp(*a, *b));
+        }
         TypeKind::Callable { overloads }
       }
       other => other,
@@ -1184,7 +1715,18 @@ impl TypeStore {
   }
 
   fn sort_and_dedup(&self, members: &mut Vec<TypeId>) {
-    members.sort_by(|a, b| self.type_cmp(*a, *b));
+    if members.len() <= 1 {
+      return;
+    }
+    const CACHE_THRESHOLD: usize = 32;
+    if members.len() < CACHE_THRESHOLD {
+      members.sort_by(|a, b| self.type_cmp(*a, *b));
+      members.dedup();
+      return;
+    }
+    let mut cmp = CanonicalizeCmp::new(self);
+    cmp.reserve_types(members.len());
+    members.sort_by(|a, b| cmp.type_cmp(*a, *b));
     members.dedup();
   }
 
