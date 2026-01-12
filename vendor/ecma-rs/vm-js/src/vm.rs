@@ -73,7 +73,7 @@ impl CallSite {
 ///
 /// This is primarily needed for non-evaluator call sites (e.g. Promise jobs/microtasks), which
 /// treat only `VmError::Throw*` as catchable exceptions.
-fn coerce_error_to_throw(vm: &Vm, scope: &mut Scope<'_>, err: VmError) -> VmError {
+pub(crate) fn coerce_error_to_throw(vm: &Vm, scope: &mut Scope<'_>, err: VmError) -> VmError {
   let Some(intr) = vm.intrinsics() else {
     return err;
   };

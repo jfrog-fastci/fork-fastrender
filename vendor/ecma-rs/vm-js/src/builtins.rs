@@ -3983,6 +3983,7 @@ fn resolve_promise(
   // Get `thenable.then`.
   //
   // Spec: this must perform `Get(thenable, "then")`, which means it must:
+  // - invoke Proxy `get` traps,
   // - consult host exotic getters after an own-property miss and before walking the prototype chain,
   // - traverse the prototype chain,
   // - and invoke accessor getters.
@@ -3997,58 +3998,9 @@ fn resolve_promise(
     key_scope.push_roots(&[Value::String(then_key_s), receiver])?;
     let then_key = PropertyKey::from_string(then_key_s);
 
-    // `Get(thenable, "then")` ordering (ECMA-262):
-    // 1) own property
-    // 2) host exotic getter
-    // 3) prototype chain
-    if let Some(desc) = key_scope
-      .heap()
-      .object_get_own_property_with_tick(thenable_obj, &then_key, || vm.tick())?
-    {
-      match desc.kind {
-        PropertyKind::Data { value, .. } => Ok(value),
-        PropertyKind::Accessor { get, .. } => {
-          if matches!(get, Value::Undefined) {
-            Ok(Value::Undefined)
-          } else if !key_scope.heap().is_callable(get)? {
-            // Model `Get(thenable, "then")` throwing a TypeError when an accessor getter exists but
-            // is not callable. This must reject the promise rather than propagate as a VM error
-            // from `resolve()`.
-            Err(crate::throw_type_error(
-              &mut key_scope,
-              intr,
-              "accessor getter is not callable",
-            ))
-          } else {
-            vm.call_with_host_and_hooks(host, &mut key_scope, hooks, get, receiver, &[])
-          }
-        }
-      }
-    } else if let Some(value) = hooks.host_exotic_get(&mut key_scope, thenable_obj, then_key, receiver)? {
-      Ok(value)
-    } else {
-      match key_scope
-        .heap()
-        .get_property_from_prototype_with_tick(thenable_obj, &then_key, || vm.tick())?
-      {
-        None => Ok(Value::Undefined),
-        Some(desc) => match desc.kind {
-          PropertyKind::Data { value, .. } => Ok(value),
-          PropertyKind::Accessor { get, .. } => {
-            if matches!(get, Value::Undefined) {
-              Ok(Value::Undefined)
-            } else if !key_scope.heap().is_callable(get)? {
-              Err(crate::throw_type_error(
-                &mut key_scope,
-                intr,
-                "accessor getter is not callable",
-              ))
-            } else {
-              vm.call_with_host_and_hooks(host, &mut key_scope, hooks, get, receiver, &[])
-            }
-          }
-        },
-      }
+    match key_scope.get_with_host_and_hooks(vm, host, hooks, thenable_obj, then_key, receiver) {
+      Ok(v) => Ok(v),
+      Err(err) => Err(crate::vm::coerce_error_to_throw(vm, &mut key_scope, err)),
     }
   };
 
