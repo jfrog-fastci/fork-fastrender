@@ -45087,10 +45087,23 @@ mod tests {
     let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
 
     let forged_obj = {
-      let (_vm, realm_ref, heap) = realm.vm_realm_and_heap_mut();
+      let (vm, realm_ref, heap) = realm.vm_realm_and_heap_mut();
       let mut scope = heap.scope();
       let global = realm_ref.global_object();
       scope.push_root(Value::Object(global))?;
+
+      // Point the forged object at the real `window.document` wrapper so that if the dataset shim
+      // ever mis-routes based on a small `HostSlots.b` value, it would *actually* return a dataset
+      // value (and thus prevent WebIDL exotic dispatch). This makes the test sensitive to the
+      // collision bug rather than merely exercising the "fall through" path.
+      let document_obj = {
+        let document_v = get_prop(vm, &mut scope, global, "document")?;
+        let Value::Object(document_obj) = document_v else {
+          panic!("expected window.document to be an object");
+        };
+        scope.push_root(Value::Object(document_obj))?;
+        document_obj
+      };
 
       let obj = scope.alloc_object()?;
       scope.push_root(Value::Object(obj))?;
@@ -45100,6 +45113,13 @@ mod tests {
           a: target.index() as u64,
           b: 4,
         },
+      )?;
+
+      let wrapper_document_key = alloc_key(&mut scope, WRAPPER_DOCUMENT_KEY)?;
+      scope.define_property(
+        obj,
+        wrapper_document_key,
+        data_desc(Value::Object(document_obj)),
       )?;
 
       let key = alloc_key(&mut scope, "forged")?;

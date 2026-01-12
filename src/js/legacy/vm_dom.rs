@@ -34,9 +34,17 @@ impl DomKind {
   }
 }
 
-const DOM_TOKEN_LIST_HOST_KIND: u64 = 3;
-const DOM_STRING_MAP_HOST_KIND: u64 = 4;
-const CSS_STYLE_DECL_HOST_KIND: u64 = 5;
+// Host-slot `b` tags for objects handled by `VmHostHooks::host_exotic_*`.
+//
+// These hooks are invoked for *all* objects, including objects that use host slots for unrelated
+// purposes (e.g. TextDecoder flags/encoding ids). Use collision-resistant tags so our DOM shims do
+// not accidentally treat other objects as platform shims.
+//
+// We use an 8-byte ASCII namespace ("FRDOM...") encoded as a big-endian `u64`. This makes collisions
+// across independent shims vanishingly unlikely.
+const DOM_TOKEN_LIST_HOST_KIND: u64 = u64::from_be_bytes(*b"FRDOMDTL");
+const DOM_STRING_MAP_HOST_KIND: u64 = u64::from_be_bytes(*b"FRDOMDSM");
+const CSS_STYLE_DECL_HOST_KIND: u64 = u64::from_be_bytes(*b"FRDOMCSS");
 
 fn dom_kind_for_node_kind(kind: &NodeKind) -> DomKind {
   match kind {
