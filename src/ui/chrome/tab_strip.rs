@@ -738,6 +738,18 @@ pub(super) fn tab_strip_ui(
     }
   }
 
+  // Visual separator between pinned and unpinned tabs.
+  if pinned_count > 0 && unpinned_count > 0 && pinned_viewport_rect.width() > 0.0 && unpinned_viewport_rect.width() > 0.0 {
+    let x = pinned_viewport_rect.max.x + segment_gap * 0.5;
+    let y0 = tabs_rect.top() + 6.0;
+    let y1 = tabs_rect.bottom() - 6.0;
+    let stroke = Stroke::new(1.0, with_alpha(ui.visuals().widgets.inactive.bg_stroke.color, 0.6));
+    ui
+      .painter()
+      .with_clip_rect(tabs_rect)
+      .line_segment([Pos2::new(x, y0), Pos2::new(x, y1)], stroke);
+  }
+
   // Micro-interaction: animate the active tab underline position/width.
   if sizing.overflow && unpinned_viewport_rect.width() > 0.0 {
     let max_scroll_x = (sizing.total_content_width - unpinned_viewport_width).max(0.0);
