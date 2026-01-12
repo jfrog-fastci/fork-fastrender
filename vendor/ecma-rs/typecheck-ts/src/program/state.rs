@@ -906,6 +906,52 @@ function onlyObjects(val: object | number) {
       }
     }
   }
+
+  #[test]
+  fn body_check_result_consistent_across_entrypoints() {
+    let source = r#"
+export function add(a: number, b: number) {
+  const c = a + b;
+  return c;
+}
+"#;
+
+    let mut host = crate::MemoryHost::new();
+    let file_key = FileKey::new("main.ts");
+    host.insert(file_key.clone(), source);
+
+    let program = Program::new(host, vec![file_key.clone()]);
+    let file_id = program.file_id(&file_key).expect("file id");
+    let add_def = program
+      .exports_of(file_id)
+      .get("add")
+      .and_then(|entry| entry.def)
+      .expect("exported add def");
+    let add_body = program.body_of_def(add_def).expect("add body");
+
+    let by_check_body = program.check_body(add_body);
+
+    // Force an internal body check via `type_of_expr` by clearing cached body results.
+    {
+      let mut state = program.lock_state();
+      state.body_results.clear();
+      state.typecheck_db.clear_body_results();
+    }
+
+    let _ = program.type_of_expr(add_body, ExprId(0));
+    let by_type_of_expr = program.check_body(add_body);
+    assert_eq!(
+      by_check_body, by_type_of_expr,
+      "Program::type_of_expr should observe the same BodyCheckResult as Program::check_body"
+    );
+
+    let _ = program.check();
+    let by_check = program.check_body(add_body);
+    assert_eq!(
+      by_check_body, by_check,
+      "Program::check should compute the same BodyCheckResult as Program::check_body"
+    );
+  }
 }
 
 fn fatal_to_diagnostic(fatal: FatalError) -> Diagnostic {
