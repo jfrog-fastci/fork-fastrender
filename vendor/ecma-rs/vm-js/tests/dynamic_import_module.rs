@@ -29,67 +29,6 @@ impl TestHostHooks {
     }
   }
 
-  fn perform_microtask_checkpoint(&mut self, vm: &mut Vm, heap: &mut Heap) -> Vec<VmError> {
-    struct Ctx<'a> {
-      vm: &'a mut Vm,
-      heap: &'a mut Heap,
-    }
-    impl VmJobContext for Ctx<'_> {
-      fn call(
-        &mut self,
-        host: &mut dyn VmHostHooks,
-        callee: Value,
-        this: Value,
-        args: &[Value],
-      ) -> Result<Value, VmError> {
-        let mut scope = self.heap.scope();
-        self.vm.call_with_host(&mut scope, host, callee, this, args)
-      }
-
-      fn construct(
-        &mut self,
-        host: &mut dyn VmHostHooks,
-        callee: Value,
-        args: &[Value],
-        new_target: Value,
-      ) -> Result<Value, VmError> {
-        let mut scope = self.heap.scope();
-        self
-          .vm
-          .construct_with_host(&mut scope, host, callee, args, new_target)
-      }
-
-      fn add_root(&mut self, value: Value) -> Result<vm_js::RootId, VmError> {
-        self.heap.add_root(value)
-      }
-
-      fn remove_root(&mut self, id: vm_js::RootId) {
-        self.heap.remove_root(id)
-      }
-    }
-
-    if !self.microtasks.begin_checkpoint() {
-      return Vec::new();
-    }
-
-    let mut errors = Vec::new();
-    while let Some((_realm, job)) = self.microtasks.pop_front() {
-      let mut ctx = Ctx { vm, heap };
-      if let Err(err) = job.run(&mut ctx, self) {
-        let is_termination = matches!(err, VmError::Termination(_));
-        errors.push(err);
-        if is_termination {
-          // Termination is a hard stop: discard the rest of the queue so we don't leak roots.
-          self.microtasks.teardown(&mut ctx);
-          break;
-        }
-      }
-    }
-
-    self.microtasks.end_checkpoint();
-    errors
-  }
-
   fn register_module(&mut self, specifier: &str, module: ModuleId) {
     self.modules.insert(specifier.to_string(), module);
   }
@@ -441,8 +380,7 @@ fn dynamic_import_works_after_tla_resumption_without_attached_graph() -> Result<
   assert!(vm.module_graph_ptr().is_some());
 
   // Drain microtasks so `await 0;` resumes and executes `import('./m.js')`.
-  let errors = host_hooks.perform_microtask_checkpoint(&mut vm, &mut heap);
-  assert!(errors.is_empty(), "microtask errors: {errors:?}");
+  host_hooks.perform_microtask_checkpoint(&mut vm, &mut heap)?;
 
   assert_eq!(host_hooks.pending.len(), 1);
   assert_eq!(host_hooks.pending[0].request.specifier, "./m.js");
@@ -484,8 +422,7 @@ fn dynamic_import_works_after_tla_resumption_without_attached_graph() -> Result<
   host_hooks.complete_load_for(&mut vm, &mut heap, &mut modules, "./dep.js")?;
 
   // Drain microtasks again in case module loading enqueued any promise jobs.
-  let errors = host_hooks.perform_microtask_checkpoint(&mut vm, &mut heap);
-  assert!(errors.is_empty(), "microtask errors: {errors:?}");
+  host_hooks.perform_microtask_checkpoint(&mut vm, &mut heap)?;
 
   // The promise stored in `p` should now be fulfilled to the imported module namespace.
   let mut scope = heap.scope();
