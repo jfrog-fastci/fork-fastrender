@@ -7501,15 +7501,15 @@ impl<'a> Checker<'a> {
       self.jsx_element_attributes_prop_name = Some(name);
       return name;
     };
-    // These diagnostics are surfaced while checking JSX usage. When `skipLibCheck` is enabled
-    // (the default), diagnostics anchored inside `.d.ts` files are filtered out. Prefer to
-    // anchor on the JSX usage site whenever the container declaration lives in another file.
+    // TypeScript reports TS2608 (global JSX type has multiple properties) at the
+    // declaration site. When `skipLibCheck` is enabled, those diagnostics are
+    // suppressed because they originate from a `.d.ts` file; mirror that by
+    // anchoring diagnostics on the resolved declaration span whenever possible.
     let container_span = match self.store.type_kind(attrs_ty) {
       TypeKind::Ref { def, args } if args.is_empty() => self
         .type_resolver
         .as_ref()
         .and_then(|resolver| resolver.span_of_def(def))
-        .filter(|span| span.file == self.file)
         .unwrap_or_else(|| Span::new(self.file, loc_to_range(self.file, loc))),
       _ => Span::new(self.file, loc_to_range(self.file, loc)),
     };
@@ -7555,14 +7555,13 @@ impl<'a> Checker<'a> {
       self.jsx_children_prop_name = Some(selected);
       return selected;
     };
-    // See note in `jsx_element_attributes_prop_name` about anchoring diagnostics when
-    // `skipLibCheck` is enabled.
+    // See note in `jsx_element_attributes_prop_name` about anchoring diagnostics
+    // for `skipLibCheck` fidelity.
     let container_span = match self.store.type_kind(children_attr_ty) {
       TypeKind::Ref { def, args } if args.is_empty() => self
         .type_resolver
         .as_ref()
         .and_then(|resolver| resolver.span_of_def(def))
-        .filter(|span| span.file == self.file)
         .unwrap_or_else(|| Span::new(self.file, loc_to_range(self.file, loc))),
       _ => Span::new(self.file, loc_to_range(self.file, loc)),
     };
