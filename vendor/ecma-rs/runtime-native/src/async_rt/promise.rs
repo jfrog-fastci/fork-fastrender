@@ -63,28 +63,33 @@ fn track_pending_reactions_keepalive(promise: *mut PromiseHeader, keepalive: Pen
   // Promises can be GC-movable; track them via stable persistent handle IDs (and keep them alive)
   // instead of raw pointers, which become stale after relocation.
   //
-  // The optional `keepalive` policy determines whether it is safe to dereference this pointer
-  // during teardown if cancellation races with the promise being dropped on another thread.
-  let root = threading::registry::current_thread_state().is_some().then(|| crate::roots::Root::new(promise));
+  // Important: contended `GcAwareMutex::lock()` acquisition may enter a GC-safe ("NativeSafe")
+  // region while blocked. While a thread is NativeSafe, a moving GC will not relocate raw GC
+  // pointers in its registers/locals. Therefore, we must not block on the pending-reactions lock
+  // while holding an unrooted raw `promise` pointer.
+  //
+  // Strategy:
+  // - Fast path: attempt a non-blocking `try_lock`. If it succeeds, we did not block and can use
+  //   the raw pointer for lookup.
+  // - Slow path (contended): first materialize a stable persistent handle ID, then drop any
+  //   temporary handle-stack roots and only then block on the mutex so the thread can transition
+  //   into a GC-safe region while waiting.
   let table = crate::roots::global_persistent_handle_table();
-  let current_ptr = || {
-    // Re-load from the root slot in case this thread was GC-stopped while blocked on a GC-aware
-    // lock (a moving GC may have relocated the promise in the meantime).
-    root
-      .as_ref()
-      .map(|r| r.get().cast::<u8>())
-      .unwrap_or(promise.cast::<u8>())
-  };
 
-  let mut ids_to_free: Vec<HandleId> = Vec::new();
+  // Addressable slot holding the promise pointer. Root it via the per-thread handle stack while we
+  // do any potentially blocking work (e.g. handle-table lock acquisition).
+  let mut promise_ptr: *mut u8 = promise.cast::<u8>();
+  let mut scope = crate::roots::RootScope::new();
+  scope.push(&mut promise_ptr as *mut *mut u8);
 
-  {
-    let mut map = PROMISES_WITH_PENDING_REACTIONS.lock();
+  // Uncontended fast path: acquire the lock without blocking.
+  if let Some(mut map) = PROMISES_WITH_PENDING_REACTIONS.try_lock() {
+    let mut ids_to_free: Vec<HandleId> = Vec::new();
 
     let mut found: Option<HandleId> = None;
     for id in map.keys().copied() {
       match table.get(id) {
-        Some(p) if p == current_ptr() => {
+        Some(p) if p == promise_ptr => {
           if found.is_none() {
             found = Some(id);
           } else {
@@ -115,13 +120,75 @@ fn track_pending_reactions_keepalive(promise: *mut PromiseHeader, keepalive: Pen
         }
       }
       None => {
-        let id = if let Some(r) = &root {
-          // Safety: `r.handle()` is a valid pointer to an addressable GC pointer slot.
-          unsafe { table.alloc_from_slot(r.handle()) }
-        } else {
-          table.alloc(current_ptr())
-        };
+        // Safety: `promise_ptr` is a valid pointer slot rooted via `RootScope`.
+        let id = unsafe { table.alloc_from_slot(&mut promise_ptr as *mut *mut u8) };
         map.insert(id, keepalive);
+      }
+    }
+
+    drop(map);
+    drop(scope);
+
+    for id in ids_to_free {
+      let _ = table.free(id);
+    }
+    return;
+  }
+
+  // Contended slow path: create a stable handle ID *before* blocking on the mutex.
+  //
+  // Safety: `promise_ptr` is a valid pointer slot rooted via `RootScope`.
+  let id_new = unsafe { table.alloc_from_slot(&mut promise_ptr as *mut *mut u8) };
+  // Drop the handle-stack root before blocking so `GcAwareMutex` can enter a GC-safe region.
+  drop(scope);
+
+  let mut ids_to_free: Vec<HandleId> = Vec::new();
+  {
+    let mut map = PROMISES_WITH_PENDING_REACTIONS.lock();
+
+    // Root the comparison pointer so if a GC runs while contending on handle-table locks (inside
+    // `table.get`), the slot is updated.
+    let mut want_ptr = table.get(id_new).unwrap_or(null_mut());
+    let mut scope = crate::roots::RootScope::new();
+    scope.push(&mut want_ptr as *mut *mut u8);
+
+    let mut found: Option<HandleId> = None;
+    for id in map.keys().copied() {
+      match table.get(id) {
+        Some(p) if p == want_ptr => {
+          if found.is_none() {
+            found = Some(id);
+          } else {
+            // Defensive: remove duplicates so we don't leak persistent handles if tracking raced.
+            ids_to_free.push(id);
+          }
+        }
+        None => {
+          // Stale handle (freed elsewhere); remove it so it doesn't bloat the map.
+          ids_to_free.push(id);
+        }
+        _ => {}
+      }
+    }
+
+    for id in &ids_to_free {
+      map.remove(id);
+    }
+
+    match found {
+      Some(id) => {
+        // Preserve any existing keepalive (it may have been upgraded to `Weak` by another caller).
+        if let Some(existing) = map.get_mut(&id) {
+          if matches!(existing, PendingPromiseKeepAlive::None) && matches!(keepalive, PendingPromiseKeepAlive::Weak(_))
+          {
+            *existing = keepalive;
+          }
+        }
+        // We already had a handle for this promise; free the one we just allocated.
+        ids_to_free.push(id_new);
+      }
+      None => {
+        map.insert(id_new, keepalive);
       }
     }
   }
