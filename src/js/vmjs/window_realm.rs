@@ -28136,8 +28136,16 @@ fn init_window_globals(
       |scope: &mut Scope<'_>, name: &str, proto: GcObject| -> Result<GcObject, VmError> {
         let ctor = make_illegal_ctor(scope, name)?;
         scope.push_root(Value::Object(ctor))?;
-        scope.define_property(ctor, prototype_key, data_desc(Value::Object(proto)))?;
-        scope.define_property(proto, constructor_key, data_desc(Value::Object(ctor)))?;
+        scope.define_property(
+          ctor,
+          prototype_key,
+          ctor_link_desc(Value::Object(proto)),
+        )?;
+        scope.define_property(
+          proto,
+          constructor_key,
+          ctor_link_desc(Value::Object(ctor)),
+        )?;
         let key = alloc_key(scope, name)?;
         scope.define_property(global, key, data_desc(Value::Object(ctor)))?;
         Ok(ctor)

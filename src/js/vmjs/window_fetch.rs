@@ -583,6 +583,23 @@ fn request_wrapper_cached_body_stream_is_locked(
   readable_stream_is_locked(vm, &mut scope, host, host_hooks, body_stream_obj)
 }
 
+fn request_body_stream_locked(
+  vm: &Vm,
+  env_id: u64,
+  request_id: u64,
+  heap: &Heap,
+) -> Result<bool, VmError> {
+  with_env_state(env_id, heap, |state| {
+    let Some(weak) = state.request_body_stream_wrappers.get(&request_id) else {
+      return Ok(false);
+    };
+    let Some(stream_obj) = weak.upgrade(heap) else {
+      return Ok(false);
+    };
+    Ok(window_streams::readable_stream_is_locked(vm, heap, stream_obj))
+  })
+}
+
 fn response_wrapper_cached_body_stream_is_locked(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -3849,6 +3866,16 @@ fn request_clone_native(
     other => other,
   };
   if request_wrapper_cached_body_stream_is_locked(vm, scope, host, host_hooks, original_obj)? {
+    return Err(throw_type_error(
+      vm,
+      scope,
+      &mut *host,
+      host_hooks,
+      "Request body is locked",
+    ));
+  }
+
+  if request_body_stream_locked(vm, env_id, request_id, scope.heap())? {
     return Err(throw_type_error(
       vm,
       scope,
