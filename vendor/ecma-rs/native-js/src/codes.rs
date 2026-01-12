@@ -56,6 +56,14 @@ pub const UNSUPPORTED_NATIVE_TYPE: Code = Code::new("NJS0011", "unsupported type
 /// NJS0012: Builtin intrinsics are disabled by compiler options.
 pub const BUILTINS_DISABLED: Code = Code::new("NJS0012", "builtin intrinsics disabled");
 
+/// NJS0013: Type assertion changes runtime representation in an unsafe way.
+pub const STRICT_SUBSET_UNSAFE_TYPE_ASSERTION: Code =
+  Code::new("NJS0013", "unsafe type assertion in native-js strict subset");
+
+/// NJS0014: Non-null assertion (`!`) used on a nullable value.
+pub const STRICT_SUBSET_UNSAFE_NON_NULL_ASSERTION: Code =
+  Code::new("NJS0014", "unsafe non-null assertion in native-js strict subset");
+
 /// NJS0100: Failed to access lowered HIR for the entry file.
 pub const HIR_CODEGEN_MISSING_ENTRY_HIR: Code =
   Code::new("NJS0100", "HIR codegen: missing entry file HIR");

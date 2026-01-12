@@ -18,9 +18,215 @@ use crate::resolve::{BindingId, Resolver};
 use diagnostics::{Diagnostic, Span, TextRange};
 use hir_js::{
   AssignOp, BinaryOp, Body, BodyId, BodyKind, ExprId, ExprKind, FileKind, ForInit, FunctionBody, Literal, NameId,
-  PatKind, StmtId, StmtKind, UnaryOp, VarDecl, VarDeclKind,
+  PatKind, StmtId, StmtKind, TypeExprId, TypeExprKind, UnaryOp, VarDecl, VarDeclKind,
 };
+use std::collections::{HashMap, HashSet};
 use typecheck_ts::{Program, TypeKindSummary};
+use types_ts_interned as tti;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TypeKindGroup {
+  Any,
+  Unknown,
+  Never,
+  Void,
+  Null,
+  Undefined,
+  Boolean,
+  Number,
+  String,
+  BigInt,
+  Symbol,
+  Object,
+  Tuple,
+  Array,
+  Union,
+  Intersection,
+  Callable,
+  Ref,
+  Other,
+}
+
+impl TypeKindGroup {
+  fn as_str(self) -> &'static str {
+    match self {
+      TypeKindGroup::Any => "any",
+      TypeKindGroup::Unknown => "unknown",
+      TypeKindGroup::Never => "never",
+      TypeKindGroup::Void => "void",
+      TypeKindGroup::Null => "null",
+      TypeKindGroup::Undefined => "undefined",
+      TypeKindGroup::Boolean => "boolean",
+      TypeKindGroup::Number => "number",
+      TypeKindGroup::String => "string",
+      TypeKindGroup::BigInt => "bigint",
+      TypeKindGroup::Symbol => "symbol",
+      TypeKindGroup::Object => "object",
+      TypeKindGroup::Tuple => "tuple",
+      TypeKindGroup::Array => "array",
+      TypeKindGroup::Union => "union",
+      TypeKindGroup::Intersection => "intersection",
+      TypeKindGroup::Callable => "callable",
+      TypeKindGroup::Ref => "ref",
+      TypeKindGroup::Other => "other",
+    }
+  }
+}
+
+fn type_kind_group_from_summary(kind: &TypeKindSummary) -> TypeKindGroup {
+  match kind {
+    TypeKindSummary::Any => TypeKindGroup::Any,
+    TypeKindSummary::Unknown => TypeKindGroup::Unknown,
+    TypeKindSummary::Never => TypeKindGroup::Never,
+    TypeKindSummary::Void => TypeKindGroup::Void,
+    TypeKindSummary::Null => TypeKindGroup::Null,
+    TypeKindSummary::Undefined => TypeKindGroup::Undefined,
+    TypeKindSummary::Boolean | TypeKindSummary::BooleanLiteral(_) => TypeKindGroup::Boolean,
+    TypeKindSummary::Number | TypeKindSummary::NumberLiteral(_) => TypeKindGroup::Number,
+    TypeKindSummary::String | TypeKindSummary::StringLiteral(_) | TypeKindSummary::TemplateLiteral => TypeKindGroup::String,
+    TypeKindSummary::BigInt | TypeKindSummary::BigIntLiteral(_) => TypeKindGroup::BigInt,
+    TypeKindSummary::Symbol | TypeKindSummary::UniqueSymbol => TypeKindGroup::Symbol,
+    TypeKindSummary::EmptyObject | TypeKindSummary::Object => TypeKindGroup::Object,
+    TypeKindSummary::Tuple { .. } => TypeKindGroup::Tuple,
+    TypeKindSummary::Array { .. } => TypeKindGroup::Array,
+    TypeKindSummary::Union { .. } => TypeKindGroup::Union,
+    TypeKindSummary::Intersection { .. } => TypeKindGroup::Intersection,
+    TypeKindSummary::Callable { .. } => TypeKindGroup::Callable,
+    TypeKindSummary::Ref { .. } => TypeKindGroup::Ref,
+    _ => TypeKindGroup::Other,
+  }
+}
+
+fn type_expr_kind_group(
+  arenas: &hir_js::TypeArenas,
+  type_expr: TypeExprId,
+) -> Option<TypeKindGroup> {
+  let expr = arenas.type_exprs.get(type_expr.0 as usize)?;
+  Some(match &expr.kind {
+    TypeExprKind::Any => TypeKindGroup::Any,
+    TypeExprKind::Unknown => TypeKindGroup::Unknown,
+    TypeExprKind::Never => TypeKindGroup::Never,
+    TypeExprKind::Void => TypeKindGroup::Void,
+    TypeExprKind::Null => TypeKindGroup::Null,
+    TypeExprKind::Undefined => TypeKindGroup::Undefined,
+    TypeExprKind::Boolean => TypeKindGroup::Boolean,
+    TypeExprKind::Number => TypeKindGroup::Number,
+    TypeExprKind::String => TypeKindGroup::String,
+    TypeExprKind::BigInt => TypeKindGroup::BigInt,
+    TypeExprKind::Symbol | TypeExprKind::UniqueSymbol => TypeKindGroup::Symbol,
+    TypeExprKind::Object | TypeExprKind::TypeLiteral(_) => TypeKindGroup::Object,
+    TypeExprKind::Literal(lit) => match lit {
+      hir_js::TypeLiteral::String(_) => TypeKindGroup::String,
+      hir_js::TypeLiteral::Number(_) => TypeKindGroup::Number,
+      hir_js::TypeLiteral::BigInt(_) => TypeKindGroup::BigInt,
+      hir_js::TypeLiteral::Boolean(_) => TypeKindGroup::Boolean,
+      hir_js::TypeLiteral::Null => TypeKindGroup::Null,
+    },
+    TypeExprKind::Array(_) => TypeKindGroup::Array,
+    TypeExprKind::Tuple(_) => TypeKindGroup::Tuple,
+    TypeExprKind::Union(_) => TypeKindGroup::Union,
+    TypeExprKind::Intersection(_) => TypeKindGroup::Intersection,
+    TypeExprKind::Function(_) | TypeExprKind::Constructor(_) => TypeKindGroup::Callable,
+    TypeExprKind::Parenthesized(inner) => return type_expr_kind_group(arenas, *inner),
+    // Type references (and other advanced type operators) require resolution/expansion. Fall back
+    // to the checker-provided expression type when we can't classify directly.
+    TypeExprKind::TypeRef(_)
+    | TypeExprKind::Intrinsic
+    | TypeExprKind::This
+    | TypeExprKind::TypeQuery(_)
+    | TypeExprKind::KeyOf(_)
+    | TypeExprKind::IndexedAccess { .. }
+    | TypeExprKind::Conditional(_)
+    | TypeExprKind::Infer(_)
+    | TypeExprKind::Mapped(_)
+    | TypeExprKind::TemplateLiteral(_)
+    | TypeExprKind::TypePredicate(_)
+    | TypeExprKind::Import(_) => return None,
+  })
+}
+
+fn type_may_be_nullish(
+  program: &Program,
+  ty: typecheck_ts::TypeId,
+  cache: &mut HashMap<typecheck_ts::TypeId, bool>,
+  visiting: &mut HashSet<typecheck_ts::TypeId>,
+) -> bool {
+  if let Some(hit) = cache.get(&ty) {
+    return *hit;
+  }
+  if !visiting.insert(ty) {
+    // Break cycles conservatively (no nullish found along this path).
+    return false;
+  }
+
+  let result = match program.interned_type_kind(ty) {
+    tti::TypeKind::Any | tti::TypeKind::Unknown => true,
+    tti::TypeKind::Null | tti::TypeKind::Undefined | tti::TypeKind::Void => true,
+    tti::TypeKind::Never => false,
+    tti::TypeKind::Infer { constraint, .. } => constraint.is_some_and(|inner| {
+      type_may_be_nullish(program, inner, cache, visiting)
+    }),
+    tti::TypeKind::Tuple(elems) => elems
+      .iter()
+      .any(|elem| type_may_be_nullish(program, elem.ty, cache, visiting)),
+    tti::TypeKind::Array { ty, .. } => type_may_be_nullish(program, ty, cache, visiting),
+    tti::TypeKind::Union(members) | tti::TypeKind::Intersection(members) => members
+      .iter()
+      .any(|member| type_may_be_nullish(program, *member, cache, visiting)),
+    tti::TypeKind::Ref { def, args } => {
+      if args
+        .iter()
+        .any(|arg| type_may_be_nullish(program, *arg, cache, visiting))
+      {
+        true
+      } else {
+        let declared = program.declared_type_of_def_interned(def);
+        type_may_be_nullish(program, declared, cache, visiting)
+      }
+    }
+    tti::TypeKind::Predicate { asserted, .. } => asserted.is_some_and(|inner| {
+      type_may_be_nullish(program, inner, cache, visiting)
+    }),
+    tti::TypeKind::Conditional {
+      check,
+      extends,
+      true_ty,
+      false_ty,
+      ..
+    } => {
+      type_may_be_nullish(program, check, cache, visiting)
+        || type_may_be_nullish(program, extends, cache, visiting)
+        || type_may_be_nullish(program, true_ty, cache, visiting)
+        || type_may_be_nullish(program, false_ty, cache, visiting)
+    }
+    tti::TypeKind::Mapped(mapped) => {
+      type_may_be_nullish(program, mapped.source, cache, visiting)
+        || type_may_be_nullish(program, mapped.value, cache, visiting)
+        || mapped
+          .name_type
+          .is_some_and(|inner| type_may_be_nullish(program, inner, cache, visiting))
+        || mapped
+          .as_type
+          .is_some_and(|inner| type_may_be_nullish(program, inner, cache, visiting))
+    }
+    tti::TypeKind::TemplateLiteral(tpl) => tpl
+      .spans
+      .iter()
+      .any(|chunk| type_may_be_nullish(program, chunk.ty, cache, visiting)),
+    tti::TypeKind::Intrinsic { ty, .. } => type_may_be_nullish(program, ty, cache, visiting),
+    tti::TypeKind::IndexedAccess { obj, index } => {
+      type_may_be_nullish(program, obj, cache, visiting)
+        || type_may_be_nullish(program, index, cache, visiting)
+    }
+    tti::TypeKind::KeyOf(inner) => type_may_be_nullish(program, inner, cache, visiting),
+    tti::TypeKind::TypeParam(_) => true,
+    _ => false,
+  };
+
+  visiting.remove(&ty);
+  cache.insert(ty, result);
+  result
+}
 
 /// Validate that all files reachable from `program`'s roots use only the strict
 /// subset currently supported by the native compiler backend.
@@ -524,6 +730,9 @@ fn validate_body_types(
   out: &mut Vec<Diagnostic>,
 ) {
   let file_resolver = resolver.for_file(file);
+  let type_arenas = lowered.type_arenas(hir.owner);
+  let mut nullish_cache: HashMap<typecheck_ts::TypeId, bool> = HashMap::new();
+  let mut nullish_visiting: HashSet<typecheck_ts::TypeId> = HashSet::new();
 
   // The strict subset validator generally rejects callable/reference types. However, direct calls such as `foo(1)`
   // require the callee identifier to have a callable type, and in the direct-call lowering path we never materialize
@@ -580,6 +789,70 @@ fn validate_body_types(
 
     if ok {
       skip_expr_type_check[callee_idx] = true;
+    }
+  }
+
+  // Enforce soundness of TypeScript-only "no-op" wrappers. These are erased by codegen, so the
+  // types flowing out of them must not claim a different runtime representation.
+  for (idx, expr) in hir.exprs.iter().enumerate() {
+    let expr_id = ExprId(idx as u32);
+    match &expr.kind {
+      ExprKind::TypeAssertion {
+        expr: inner,
+        const_assertion,
+        type_annotation,
+      } => {
+        if *const_assertion {
+          continue;
+        }
+        let Some(actual_ty) = result.expr_type(*inner) else {
+          continue;
+        };
+        let Some(asserted_ty) = result.expr_type(expr_id) else {
+          continue;
+        };
+
+        let actual_group = type_kind_group_from_summary(&program.type_kind(actual_ty));
+        let fallback_asserted_group = type_kind_group_from_summary(&program.type_kind(asserted_ty));
+        let asserted_group = type_annotation
+          .and_then(|ann| type_arenas.and_then(|arenas| type_expr_kind_group(arenas, ann)))
+          .unwrap_or(fallback_asserted_group);
+
+        if actual_group != asserted_group {
+          out.push(
+            codes::STRICT_SUBSET_UNSAFE_TYPE_ASSERTION
+              .error(
+                format!(
+                  "unsafe type assertion changes runtime type category ({} → {})",
+                  actual_group.as_str(),
+                  asserted_group.as_str()
+                ),
+                Span::new(file, expr.span),
+              )
+              .with_note("type assertions are erased by native-js codegen; asserted types must match the expression's runtime representation"),
+          );
+        }
+      }
+      ExprKind::NonNull { expr: inner } => {
+        let Some(inner_ty) = result.expr_type(*inner) else {
+          continue;
+        };
+        if type_may_be_nullish(program, inner_ty, &mut nullish_cache, &mut nullish_visiting) {
+          out.push(
+            codes::STRICT_SUBSET_UNSAFE_NON_NULL_ASSERTION
+              .error(
+                "unsafe non-null assertion on a value that may be null or undefined",
+                Span::new(file, expr.span),
+              )
+              .with_note("add an explicit null/undefined check or refine the type so the value is proven non-nullable here"),
+          );
+        }
+      }
+      ExprKind::Satisfies { .. } => {
+        // `satisfies` is a type-only construct that does not change runtime semantics; validate the
+        // inner expression normally via the per-expression type checks below.
+      }
+      _ => {}
     }
   }
 

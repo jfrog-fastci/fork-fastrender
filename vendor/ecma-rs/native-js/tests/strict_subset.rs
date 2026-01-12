@@ -439,3 +439,38 @@ fn accepts_basic_numeric_function() {
   );
   assert!(ok.is_ok(), "expected strict-subset validation to pass, got: {ok:#?}");
 }
+
+#[test]
+fn rejects_lying_type_assertion() {
+  let err = validate("const x = (1 as unknown as boolean);\nx;\n", FileKind::Ts).unwrap_err();
+  assert_has_code(&err, "NJS0013");
+}
+
+#[test]
+fn rejects_unsafe_non_null() {
+  let err = validate(
+    r#"
+      function f(): void {}
+      const x = f();
+      x!;
+    "#,
+    FileKind::Ts,
+  )
+  .unwrap_err();
+  assert_has_code(&err, "NJS0014");
+}
+
+#[test]
+fn accepts_non_null_after_check() {
+  let ok = validate(
+    r#"
+      const x: number = 1;
+      if (x !== 0) {
+        x!;
+      }
+      x;
+    "#,
+    FileKind::Ts,
+  );
+  assert!(ok.is_ok(), "expected strict-subset validation to pass, got: {ok:#?}");
+}
