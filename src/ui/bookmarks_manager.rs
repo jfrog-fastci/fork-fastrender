@@ -7,7 +7,7 @@
 
 use std::collections::HashMap;
 
-use super::{BookmarkId, BookmarkNode, BookmarkStore};
+use super::{icon_button, BookmarkId, BookmarkNode, BookmarkStore, BrowserIcon};
 
 #[derive(Debug, Clone)]
 pub enum BookmarksManagerAction {
@@ -83,7 +83,7 @@ pub fn bookmarks_manager_side_panel(
       ui.horizontal(|ui| {
         ui.heading("Bookmarks");
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-          let close_resp = ui.button("✕").on_hover_text("Close");
+          let close_resp = icon_button(ui, BrowserIcon::Close, "Close", true);
           close_resp.widget_info(|| {
             egui::WidgetInfo::labeled(egui::WidgetType::Button, "Close bookmarks manager")
           });
@@ -524,4 +524,3 @@ fn normalize_optional_string(raw: &str) -> Option<String> {
     Some(trimmed.to_string())
   }
 }
-

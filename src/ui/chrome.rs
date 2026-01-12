@@ -1322,7 +1322,11 @@ pub fn chrome_ui_with_bookmarks(
             });
           }
 
-          let close_clicked = ui.button("✕").on_hover_text("Close (Esc)").clicked();
+          let close_resp = icon_button(ui, BrowserIcon::Close, "Close (Esc)", true);
+          close_resp.widget_info(|| {
+            egui::WidgetInfo::labeled(egui::WidgetType::Button, "Close find in page")
+          });
+          let close_clicked = close_resp.clicked();
           if close_clicked || (key_escape && show_text_edit) {
             tab.find = crate::ui::browser_app::FindInPageState::default();
             actions.push(ChromeAction::CloseFindInPage(tab_id));
