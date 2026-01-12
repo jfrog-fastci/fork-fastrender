@@ -1,6 +1,8 @@
 use fastrender::dom2::{Document, NodeId};
 use fastrender::js::RunLimits;
-use fastrender::{BrowserTab, Error, RenderOptions, Result, RunUntilStableOutcome, VmJsBrowserTabExecutor};
+use fastrender::{
+  BrowserTab, Error, RenderOptions, Result, RunUntilStableOutcome, VmJsBrowserTabExecutor,
+};
 use std::time::Duration;
 
 fn attr(dom: &Document, node: NodeId, name: &str) -> Result<Option<String>> {

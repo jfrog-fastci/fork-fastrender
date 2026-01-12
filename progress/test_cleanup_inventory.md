@@ -75,6 +75,7 @@ section in sync with `ls tests/*.rs`.
 | `tests/user_agent_placeholder_pseudo_test.rs` | unit | `src/style/tests/style/user_agent_placeholder_pseudo_test.rs` | Top-level crate removed; test now runs as a lib unit test under `src/style/tests/style/`. | DONE |
 | `tests/paged_media.rs` | unit | `src/layout/tests/paged_media.rs` | Top-level crate removed; tests migrated into layout unit tests (`src/layout/tests/`). | DONE |
 | `tests/js_html_integration.rs` | integration | `tests/integration.rs::js::js_html_integration` | Moved into `tests/js/js_html_integration.rs` and included from `tests/js/mod.rs`. | DONE |
+| `tests/observers_scheduling.rs` | integration | `tests/integration.rs::js::observers_scheduling` | Top-level crate removed; suite now lives under `tests/js/observers_scheduling.rs` and is included from `tests/js/mod.rs`. | DONE |
 | `tests/text_tests.rs` | delete | `src/text/tests/` | Top-level harness removed; suite moved out of `tests/` into `src/text/tests/**` unit tests. | DONE |
 | `tests/tree_tests.rs` | delete | delete | Top-level harness removed; tree/box generation tests migrated to unit tests under `src/tree/**`. | DONE |
 | `tests/ui_tests.rs` | delete | delete | Top-level harness removed; suite now lives under `tests/ui/**` and is pulled into `tests/integration.rs`. | DONE |
