@@ -81,3 +81,40 @@ fn destructuring_decls_in_for_in_of_headers_are_allowed() {
   assert_value_is_utf8(&rt, value, "function");
 }
 
+#[test]
+fn dynamic_function_constructors_reject_const_decls_without_initializers() {
+  let mut rt = new_runtime();
+
+  // %Function%
+  let value = rt
+    .exec_script(
+      r#"
+        try {
+          Function("const x;");
+          "no";
+        } catch (e) {
+          e.name;
+        }
+      "#,
+    )
+    .unwrap();
+  assert_value_is_utf8(&rt, value, "SyntaxError");
+
+  // %GeneratorFunction%
+  let value = rt
+    .exec_script(
+      r#"
+        (function () {
+          const GeneratorFunction = Object.getPrototypeOf(function*(){}).constructor;
+          try {
+            GeneratorFunction("const x;");
+            return "no";
+          } catch (e) {
+            return e.name;
+          }
+        })()
+      "#,
+    )
+    .unwrap();
+  assert_value_is_utf8(&rt, value, "SyntaxError");
+}

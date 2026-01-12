@@ -11,7 +11,7 @@ use parse_js::ast::expr::{
 };
 use parse_js::ast::func::{Func, FuncBody};
 use parse_js::ast::node::{Node, ParenthesizedExpr};
-use parse_js::ast::stmt::decl::{ClassDecl, FuncDecl, ParamDecl, VarDecl};
+use parse_js::ast::stmt::decl::{ClassDecl, FuncDecl, ParamDecl, VarDecl, VarDeclMode};
 use parse_js::ast::stmt::{
   BlockStmt, CatchBlock, ForBody, ForInOfLhs, ForInStmt, ForOfStmt, ForTripleStmt, ForTripleStmtInit,
   ContinueStmt, IfStmt, LabelStmt, ReturnStmt, Stmt, SwitchBranch, SwitchStmt, TryStmt, WhileStmt,
@@ -696,17 +696,25 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
 
   fn visit_var_decl(&mut self, ctx: &mut ControlContext, decl: &VarDecl) -> Result<(), VmError> {
     for declarator in &decl.declarators {
-      // Destructuring `var`/`let` declarations require an initializer (early error).
-      //
-      // Note: `for (var {x} in obj)` / `for (let {x} of iter)` are valid because the binding
-      // pattern is parsed as `ForInOfLhs::Decl` (not a `VarDecl` with an omitted initializer).
       if declarator.initializer.is_none()
-        && !matches!(&*declarator.pattern.stx.pat.stx, Pat::Id(_))
       {
-        self.push_error(
-          declarator.pattern.loc,
-          "Missing initializer in destructuring declaration",
-        )?;
+        if decl.mode == VarDeclMode::Const {
+          self.push_error(
+            declarator.pattern.loc,
+            "Missing initializer in const declaration",
+          )?;
+        } else {
+          // Destructuring `var`/`let` declarations require an initializer (early error).
+          //
+          // Note: `for (var {x} in obj)` / `for (let {x} of iter)` are valid because the binding
+          // pattern is parsed as `ForInOfLhs::Decl` (not a `VarDecl` with an omitted initializer).
+          if !matches!(&*declarator.pattern.stx.pat.stx, Pat::Id(_)) {
+            self.push_error(
+              declarator.pattern.loc,
+              "Missing initializer in destructuring declaration",
+            )?;
+          }
+        }
       }
       self.visit_pat(ctx, &declarator.pattern.stx.pat, PatRole::Binding)?;
       if let Some(expr) = &declarator.initializer {
