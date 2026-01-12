@@ -5,6 +5,7 @@ use crate::js::options::JsExecutionOptions;
 use crate::resource::{
   cors_enforcement_enabled, ensure_cors_allows_origin, ensure_http_success, ensure_script_mime_sane,
   is_data_url, origin_from_url, CorsMode, DocumentOrigin, FetchDestination, FetchRequest,
+  ReferrerPolicy,
   ResourceFetcher,
 };
 use std::cell::RefCell;
@@ -106,6 +107,16 @@ pub struct ModuleLoader {
   /// can change as `<base href>` elements are encountered.
   document_origin: Option<DocumentOrigin>,
   cors_mode: CorsMode,
+  referrer_policy: ReferrerPolicy,
+  /// Integrity metadata override for the next module-script *entry* fetch.
+  ///
+  /// HTML module scripts can specify Subresource Integrity metadata via the `<script>` element's
+  /// `integrity` attribute. This must be applied to the entry module fetch (and must take
+  /// precedence over import-map `"integrity"` metadata for the same URL).
+  ///
+  /// Note: This override is intentionally *not* applied to module dependencies, which continue to
+  /// use import-map `"integrity"` metadata only.
+  entry_module_integrity_override: Option<String>,
   fetcher: Option<Arc<dyn ResourceFetcher>>,
   import_map_state: ImportMapState,
   max_script_bytes: usize,
@@ -141,6 +152,8 @@ impl ModuleLoader {
       document_url,
       document_origin,
       cors_mode: CorsMode::Anonymous,
+      referrer_policy: ReferrerPolicy::default(),
+      entry_module_integrity_override: None,
       fetcher: None,
       import_map_state: ImportMapState::new_empty(),
       max_script_bytes: defaults.max_script_bytes,
@@ -175,6 +188,18 @@ impl ModuleLoader {
 
   pub fn set_cors_mode(&mut self, mode: CorsMode) {
     self.cors_mode = mode;
+  }
+
+  pub fn set_referrer_policy(&mut self, policy: ReferrerPolicy) {
+    self.referrer_policy = policy;
+  }
+
+  /// Override integrity metadata for the next module-script entry fetch.
+  ///
+  /// When set, this metadata is used instead of import-map `"integrity"` metadata for the entry
+  /// module fetch performed by [`ModuleLoader::get_or_fetch_module`].
+  pub fn set_entry_module_integrity_override(&mut self, integrity: Option<String>) {
+    self.entry_module_integrity_override = integrity;
   }
 
   pub fn set_js_execution_options(&mut self, options: JsExecutionOptions) {
@@ -307,6 +332,7 @@ impl ModuleLoader {
       if let Some(origin) = self.document_origin.as_ref() {
         req = req.with_client_origin(origin);
       }
+      req = req.with_referrer_policy(self.referrer_policy);
       req = req.with_credentials_mode(self.cors_mode.credentials_mode());
 
       if self.max_script_bytes == usize::MAX && remaining_total == usize::MAX {
@@ -348,17 +374,23 @@ impl ModuleLoader {
       ));
     }
 
-    let integrity = Url::parse(&key.url)
-      .ok()
-      .map(|url| {
-        self
-          .import_map_state
-          .resolve_module_integrity_metadata(&url)
-      })
-      .unwrap_or("");
-    if !integrity.is_empty() {
+    if let Some(integrity) = self.entry_module_integrity_override.as_deref() {
+      // If the `<script type="module">` element provides integrity metadata, enforce it for the
+      // entry module fetch. (This is applied even for empty/invalid metadata, which must block
+      // execution deterministically.)
       if crate::js::sri::verify_integrity(&fetched.bytes, integrity).is_err() {
         return Err(VmError::TypeError(MODULE_SRI_INTEGRITY_TYPE_ERROR));
+      }
+    } else {
+      // Fall back to import-map integrity metadata ("integrity" top-level key).
+      let integrity = Url::parse(&key.url)
+        .ok()
+        .map(|url| self.import_map_state.resolve_module_integrity_metadata(&url))
+        .unwrap_or("");
+      if !integrity.is_empty() {
+        if crate::js::sri::verify_integrity(&fetched.bytes, integrity).is_err() {
+          return Err(VmError::TypeError(MODULE_SRI_INTEGRITY_TYPE_ERROR));
+        }
       }
     }
 
@@ -660,6 +692,7 @@ impl ModuleLoader {
         if let Some(origin) = self.document_origin.as_ref() {
           req = req.with_client_origin(origin);
         }
+        req = req.with_referrer_policy(self.referrer_policy);
         req = req.with_credentials_mode(self.cors_mode.credentials_mode());
         if self.max_script_bytes == usize::MAX && remaining_total == usize::MAX {
           fetcher.fetch_with_request(req)

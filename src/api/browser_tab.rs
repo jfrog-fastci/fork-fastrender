@@ -49,6 +49,14 @@ const MODULE_GRAPH_FETCH_UNSUPPORTED_MESSAGE: &str =
   "module graph fetching is not supported by this BrowserTabJsExecutor";
 
 pub trait BrowserTabJsExecutor {
+  /// Notify the executor that the document referrer policy has been set/updated for the current
+  /// navigation.
+  ///
+  /// This is used by module graph loading so module fetch requests can honor:
+  /// - `<script referrerpolicy>` overrides, and
+  /// - the document's default referrer policy (e.g. `<meta name="referrer">` / `Referrer-Policy` header).
+  fn on_document_referrer_policy_updated(&mut self, _policy: ReferrerPolicy) {}
+
   fn execute_classic_script(
     &mut self,
     script_text: &str,
@@ -697,11 +705,10 @@ impl BrowserTabHost {
       .as_deref()
       .and_then(|url| origin_from_url(url));
     self.document_referrer_policy = document_referrer_policy;
+    self.executor.on_document_referrer_policy_updated(document_referrer_policy);
     self.pending_navigation = None;
     self.pending_navigation_deadline = None;
-    self
-      .executor
-      .on_navigation_committed(self.document_url.as_deref());
+    self.executor.on_navigation_committed(self.document_url.as_deref());
     // Mirror the renderer's view of the active CSP policy (populated when navigating to a URL).
     // HTML-string entry points may overwrite this with `<meta http-equiv="Content-Security-Policy">`
     // extraction before scripts run.
@@ -2975,8 +2982,8 @@ impl BrowserTabHost {
                 .map(|entry| entry.node_id)
                 .ok_or_else(|| Error::Other("internal error: missing script entry".to_string()))?;
               host.dispatch_script_event_in_event_loop(node_id, "error", event_loop)?;
-              host.finish_script_execution(script_id, event_loop)?;
             }
+            host.finish_script_execution(script_id, event_loop)?;
             return Ok(());
           };
           match host.fetch_script_source(script_id, url, FetchDestination::ScriptCors) {
@@ -2994,8 +3001,8 @@ impl BrowserTabHost {
                     Error::Other("internal error: missing script entry".to_string())
                   })?;
                 host.dispatch_script_event_in_event_loop(node_id, "error", event_loop)?;
-                host.finish_script_execution(script_id, event_loop)?;
               }
+              host.finish_script_execution(script_id, event_loop)?;
               if matches!(err, Error::Render(_)) {
                 return Err(err);
               }
@@ -3037,8 +3044,10 @@ impl BrowserTabHost {
               .map(|entry| entry.node_id)
               .ok_or_else(|| Error::Other("internal error: missing script entry".to_string()))?;
             host.dispatch_script_event_in_event_loop(node_id, "error", event_loop)?;
-            host.finish_script_execution(script_id, event_loop)?;
           }
+          // Module graph fetch failures must be treated as script completion for lifecycle/load
+          // blocker purposes (matching classic script fetch failures).
+          host.finish_script_execution(script_id, event_loop)?;
 
           // Uncaught module graph errors should not abort parsing/task scheduling (browser
           // behavior). Still propagate host-level render timeouts/cancellation.
@@ -11345,6 +11354,210 @@ document.body.appendChild(second);"#,
         .get_attribute(body, "data-value")
         .expect("get_attribute should succeed"),
       Some("42")
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn module_script_integrity_match_executes() -> Result<()> {
+    let mut js_options = JsExecutionOptions::default();
+    js_options.supports_module_scripts = true;
+
+    let source = r#"document.body.setAttribute("data-integrity", "ok");"#;
+    let integrity = sri_sha256_token(source.as_bytes());
+    let html = format!(
+      r#"<!doctype html><body>
+        <script type="module" src="https://example.com/a.js" integrity="{integrity}"></script>
+      </body>"#
+    );
+
+    let mut tab = BrowserTab::from_html_with_js_execution_options(
+      &html,
+      RenderOptions::default(),
+      crate::api::VmJsBrowserTabExecutor::default(),
+      js_options,
+    )?;
+    tab.register_script_source("https://example.com/a.js", source);
+    tab.run_event_loop_until_idle(RunLimits::unbounded())?;
+
+    let dom = tab.dom();
+    let body = dom.body().expect("body should exist");
+    assert_eq!(
+      dom.get_attribute(body, "data-integrity")
+        .expect("get_attribute should succeed"),
+      Some("ok")
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn module_script_integrity_mismatch_dispatches_error_and_skips_execution() -> Result<()> {
+    let mut js_options = JsExecutionOptions::default();
+    js_options.supports_module_scripts = true;
+
+    let source = r#"document.body.setAttribute("data-integrity", "ran");"#;
+    let wrong = sri_sha256_token(b"other");
+    let html = format!(
+      r#"<!doctype html><body>
+        <script type="module" src="https://example.com/a.js" integrity="{wrong}"></script>
+      </body>"#
+    );
+
+    let mut tab = BrowserTab::from_html_with_js_execution_options(
+      &html,
+      RenderOptions::default(),
+      crate::api::VmJsBrowserTabExecutor::default(),
+      js_options,
+    )?;
+    tab.register_script_source("https://example.com/a.js", source);
+
+    let event_log: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+    tab.set_event_listener_invoker(Box::new(RecordingInvoker {
+      log: Rc::clone(&event_log),
+    }));
+
+    let script_node_id = tab
+      .host
+      .scripts
+      .values()
+      .next()
+      .expect("expected module script entry")
+      .node_id;
+
+    tab.dom().events().add_event_listener(
+      EventTargetId::Node(script_node_id),
+      "error",
+      ListenerId::new(1),
+      AddEventListenerOptions::default(),
+    );
+
+    tab.run_event_loop_until_idle(RunLimits::unbounded())?;
+
+    assert_eq!(&*event_log.borrow(), &["error".to_string()]);
+
+    let dom = tab.dom();
+    let body = dom.body().expect("body should exist");
+    assert_eq!(
+      dom.get_attribute(body, "data-integrity")
+        .expect("get_attribute should succeed"),
+      None
+    );
+    assert_eq!(dom.ready_state(), DocumentReadyState::Complete);
+    Ok(())
+  }
+
+  #[test]
+  fn module_fetches_propagate_script_referrerpolicy() -> Result<()> {
+    #[derive(Clone)]
+    struct RecordingFetcher {
+      entries: Arc<HashMap<String, FetchedResource>>,
+      calls: Arc<Mutex<Vec<(String, ReferrerPolicy)>>>,
+    }
+
+    impl RecordingFetcher {
+      fn new(entries: HashMap<String, FetchedResource>) -> Self {
+        Self {
+          entries: Arc::new(entries),
+          calls: Arc::new(Mutex::new(Vec::new())),
+        }
+      }
+
+      fn calls(&self) -> Vec<(String, ReferrerPolicy)> {
+        self
+          .calls
+          .lock()
+          .unwrap_or_else(|poisoned| poisoned.into_inner())
+          .clone()
+      }
+    }
+
+    impl ResourceFetcher for RecordingFetcher {
+      fn fetch(&self, url: &str) -> Result<FetchedResource> {
+        self
+          .entries
+          .get(url)
+          .cloned()
+          .ok_or_else(|| Error::Other(format!("missing fetcher entry for {url}")))
+      }
+
+      fn fetch_with_request(&self, req: crate::resource::FetchRequest<'_>) -> Result<FetchedResource> {
+        self
+          .calls
+          .lock()
+          .unwrap_or_else(|poisoned| poisoned.into_inner())
+          .push((req.url.to_string(), req.referrer_policy));
+        self.fetch(req.url)
+      }
+    }
+
+    let mut js_options = JsExecutionOptions::default();
+    js_options.supports_module_scripts = true;
+
+    let document_url = "https://example.invalid/doc.html";
+    let entry_url = "https://example.invalid/entry.js";
+    let dep_url = "https://example.invalid/dep.js";
+
+    let entry_source = r#"import "./dep.js";
+      document.body.setAttribute("data-rp", "ok");"#;
+    let dep_source = r#"export const value = 1;"#;
+
+    let mut entries: HashMap<String, FetchedResource> = HashMap::new();
+
+    let mut entry_res = FetchedResource::new(
+      entry_source.as_bytes().to_vec(),
+      Some("application/javascript".to_string()),
+    );
+    entry_res.status = Some(200);
+    entry_res.final_url = Some(entry_url.to_string());
+    entry_res.access_control_allow_origin = Some("*".to_string());
+    entry_res.access_control_allow_credentials = true;
+    entries.insert(entry_url.to_string(), entry_res);
+
+    let mut dep_res = FetchedResource::new(
+      dep_source.as_bytes().to_vec(),
+      Some("application/javascript".to_string()),
+    );
+    dep_res.status = Some(200);
+    dep_res.final_url = Some(dep_url.to_string());
+    dep_res.access_control_allow_origin = Some("*".to_string());
+    dep_res.access_control_allow_credentials = true;
+    entries.insert(dep_url.to_string(), dep_res);
+
+    let fetcher = Arc::new(RecordingFetcher::new(entries));
+    let fetcher_trait: Arc<dyn ResourceFetcher> = fetcher.clone();
+
+    let html = format!(
+      r#"<!doctype html><head><meta name="referrer" content="origin"></head><body>
+        <script type="module" src="{entry_url}" referrerpolicy="no-referrer"></script>
+      </body>"#
+    );
+
+    let mut tab = BrowserTab::from_html_with_document_url_and_fetcher_and_js_execution_options(
+      &html,
+      document_url,
+      RenderOptions::default(),
+      crate::api::VmJsBrowserTabExecutor::default(),
+      fetcher_trait,
+      js_options,
+    )?;
+    tab.run_event_loop_until_idle(RunLimits::unbounded())?;
+
+    let dom = tab.dom();
+    let body = dom.body().expect("body should exist");
+    assert_eq!(
+      dom.get_attribute(body, "data-rp")
+        .expect("get_attribute should succeed"),
+      Some("ok")
+    );
+
+    let calls = fetcher.calls();
+    assert!(
+      calls.iter().any(|(url, policy)| url == entry_url && *policy == ReferrerPolicy::NoReferrer),
+      "expected entry module fetch to use referrerpolicy=no-referrer, got {calls:?}"
+    );
+    assert!(
+      calls.iter().any(|(url, policy)| url == dep_url && *policy == ReferrerPolicy::NoReferrer),
+      "expected dependency module fetch to use referrerpolicy=no-referrer, got {calls:?}"
     );
     Ok(())
   }

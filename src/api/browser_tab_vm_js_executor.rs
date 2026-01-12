@@ -13,7 +13,7 @@ use crate::js::{
   JsExecutionOptions, LocationNavigationRequest, ModuleKey, ScriptElementSpec, WindowFetchBindings,
   WindowFetchEnv, WindowXhrBindings, WindowXhrEnv,
 };
-use crate::resource::{origin_from_url, CorsMode, ResourceFetcher};
+use crate::resource::{origin_from_url, CorsMode, ReferrerPolicy, ResourceFetcher};
 use crate::style::media::{MediaContext, MediaType};
 use crate::web::events::{Event, EventTargetId};
 use std::ptr::NonNull;
@@ -44,6 +44,7 @@ pub struct VmJsBrowserTabExecutor {
   js_execution_options: JsExecutionOptions,
   inline_module_id_counter: u64,
   document_url: String,
+  document_referrer_policy: ReferrerPolicy,
   pending_module_evaluation: Option<PendingModuleEvaluation>,
   pending_navigation: Option<LocationNavigationRequest>,
   diagnostics: Option<SharedRenderDiagnostics>,
@@ -65,6 +66,7 @@ impl VmJsBrowserTabExecutor {
       js_execution_options: JsExecutionOptions::default(),
       inline_module_id_counter: 0,
       document_url: "about:blank".to_string(),
+      document_referrer_policy: ReferrerPolicy::default(),
       pending_module_evaluation: None,
       pending_navigation: None,
       diagnostics: None,
@@ -107,6 +109,10 @@ impl Drop for VmJsBrowserTabExecutor {
   }
 }
 impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
+  fn on_document_referrer_policy_updated(&mut self, policy: ReferrerPolicy) {
+    self.document_referrer_policy = policy;
+  }
+
   fn set_webidl_bindings_host(&mut self, host: &mut dyn WebIdlBindingsHost) {
     self.webidl_bindings_host = Some(NonNull::from(host));
   }
@@ -254,6 +260,7 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
     let source = Arc::new(SourceText::new(name, Arc::from(script_text)));
     let js_execution_options = self.js_execution_options;
     let module_loader = realm.module_loader_handle();
+    let effective_referrer_policy = spec.referrer_policy.unwrap_or(self.document_referrer_policy);
 
     update_time_bindings_clock(realm.heap(), clock.clone())
       .map_err(|err| Error::Other(err.to_string()))?;
@@ -266,6 +273,8 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
       let mut loader = module_loader.borrow_mut();
       loader.set_fetcher(document.fetcher());
       loader.set_cors_mode(CorsMode::Anonymous);
+      loader.set_referrer_policy(effective_referrer_policy);
+      loader.set_entry_module_integrity_override(None);
       loader.set_js_execution_options(js_execution_options);
     }
     let webidl_bindings_host = match webidl_bindings_host {
@@ -342,6 +351,18 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
     // HTML: module scripts are fetched in CORS mode by default. When the `crossorigin` attribute is
     // missing, the default state is "anonymous" (same-origin credentials for same-origin requests).
     let cors_mode = spec.crossorigin.unwrap_or(CorsMode::Anonymous);
+    let effective_referrer_policy = spec.referrer_policy.unwrap_or(self.document_referrer_policy);
+    let entry_integrity_override = if spec.src_attr_present && spec.integrity_attr_present {
+      let Some(integrity) = spec.integrity.clone() else {
+        return Err(Error::Other(format!(
+          "SRI blocked module script {entry_specifier}: integrity attribute exceeded max length of {} bytes",
+          crate::js::sri::MAX_INTEGRITY_ATTRIBUTE_BYTES
+        )));
+      };
+      Some(integrity)
+    } else {
+      None
+    };
 
     let diagnostics = self.diagnostics.clone();
     let clock = event_loop.clock();
@@ -363,7 +384,11 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
         let mut loader = module_loader.borrow_mut();
         loader.set_fetcher(Arc::clone(&fetcher));
         loader.set_cors_mode(cors_mode);
+        loader.set_referrer_policy(effective_referrer_policy);
         loader.set_js_execution_options(js_execution_options);
+        // Only the entry module fetch is eligible for the `<script>` integrity attribute override.
+        // Clear any previous value so inline modules do not leak an override into subsequent loads.
+        loader.set_entry_module_integrity_override(None);
       }
 
       // Route Promise jobs (including module-loading promise reactions) through FastRender's
@@ -415,8 +440,12 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
       let entry_module: std::result::Result<ModuleId, VmError> = {
         let mut loader = module_loader.borrow_mut();
         if spec.src_attr_present {
-          loader.get_or_fetch_module(module_graph, entry_key.clone())
+          loader.set_entry_module_integrity_override(entry_integrity_override.clone());
+          let result = loader.get_or_fetch_module(module_graph, entry_key.clone());
+          loader.set_entry_module_integrity_override(None);
+          result
         } else {
+          loader.set_entry_module_integrity_override(None);
           loader.get_or_parse_inline_module(
             module_graph,
             entry_key.clone(),
@@ -492,6 +521,7 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
     let clock = event_loop.clock();
     let webidl_bindings_host = self.webidl_bindings_host;
     let js_execution_options = self.js_execution_options;
+    let effective_referrer_policy = spec.referrer_policy.unwrap_or(self.document_referrer_policy);
     let entry_key = ModuleKey {
       url: entry_specifier.clone(),
       attributes: Vec::new(),
@@ -512,6 +542,10 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
       let mut loader = module_loader.borrow_mut();
       loader.set_fetcher(document.fetcher());
       loader.set_cors_mode(cors_mode);
+      loader.set_referrer_policy(effective_referrer_policy);
+      // Entry module source is provided inline (either actual inline text or host-fetched bytes),
+      // so `<script integrity>` does not apply here.
+      loader.set_entry_module_integrity_override(None);
       loader.set_js_execution_options(js_execution_options);
     }
     realm.reset_interrupt();
