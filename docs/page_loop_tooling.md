@@ -228,15 +228,28 @@ bash scripts/cargo_agent.sh run --release --bin inspect_frag -- \
 
 Live pages motivate fixes, but regressions keep them fixed. Prefer (in order):
 
-1. **Unit tests** (parser/cascade/computed values) where possible.
-2. **Layout tests** under `tests/layout/`.
-3. **Paint tests** under `tests/paint/`.
-4. A **tiny offline page fixture** only when the interaction can’t be expressed in the existing harnesses.
+1. **Unit tests** in `src/` next to the code you’re changing (parsing/cascade/layout/paint internals).
+2. **Integration tests** in `tests/` only when you need to exercise the public API (fixtures, WPT, or consumer-style end-to-end behavior).
+3. A **tiny offline page fixture** only when necessary to reproduce a real-world interaction.
 
 Test organization is non-negotiable:
 
-- Keep tests in the existing harnesses (see `AGENTS.md` “Test organization”).
-- Do **not** add new top-level `tests/*.rs` integration test crates.
+- There are exactly **two** integration-test binaries: `tests/integration.rs` and `tests/allocation_failure.rs`.
+  Do **not** add any other `tests/*.rs` files.
+- Do **not** use `#[path = "..."]` shims in `tests/`. Put tests in the appropriate module and run them via filters.
+
+Run the relevant scopes like this:
+
+```bash
+# Unit tests (in src/)
+bash scripts/cargo_agent.sh test -p fastrender --lib <filter>
+
+# Integration tests (public API / fixtures / WPT)
+bash scripts/cargo_agent.sh test -p fastrender --test integration <filter>
+
+# Allocation-failure tests (only if relevant)
+bash scripts/cargo_agent.sh test -p fastrender --test allocation_failure <filter>
+```
 
 ## Guardrails (do not skip)
 
