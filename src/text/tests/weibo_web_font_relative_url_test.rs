@@ -1,7 +1,6 @@
-use fastrender::style::media::MediaContext;
-use fastrender::text::font_db::{FontStretch, FontStyle};
-use fastrender::text::font_loader::{FontContext, FontLoadStatus, WebFontLoadOptions};
-use std::path::Path;
+use crate::style::media::MediaContext;
+use crate::text::font_db::{FontStretch, FontStyle};
+use crate::text::font_loader::{FontContext, FontLoadStatus, WebFontLoadOptions};
 use url::Url;
 
 #[test]
@@ -9,8 +8,8 @@ fn weibo_fixture_font_face_relative_url_resolves_against_document_base_url() {
   // The `weibo.cn` page fixture declares a CJK font using `@font-face` inside an inline `<style>`
   // block. Inline styles do not have a stylesheet URL, so `url(...)` sources must resolve against
   // the document URL passed as `base_url` to `FontContext::load_web_fonts`.
-  let doc_path = Path::new("tests/pages/fixtures/weibo.cn/index.html");
-  let font_path = Path::new("tests/fixtures/fonts/NotoSansSC-subset.ttf");
+  let doc_path = crate::testing::tests_dir().join("pages/fixtures/weibo.cn/index.html");
+  let font_path = crate::testing::fixtures_dir().join("fonts/NotoSansSC-subset.ttf");
   if !(doc_path.exists() && font_path.exists()) {
     return;
   }
@@ -30,7 +29,7 @@ fn weibo_fixture_font_face_relative_url_resolves_against_document_base_url() {
       font-display: block;
     }
   "#;
-  let sheet = fastrender::css::parser::parse_stylesheet(css).expect("stylesheet should parse");
+  let sheet = crate::css::parser::parse_stylesheet(css).expect("stylesheet should parse");
   let media_ctx = MediaContext::screen(800.0, 600.0);
   let faces = sheet.collect_font_face_rules(&media_ctx);
   assert_eq!(faces.len(), 1);
@@ -60,4 +59,3 @@ fn weibo_fixture_font_face_relative_url_resolves_against_document_base_url() {
     .expect("web font should be available");
   assert_eq!(font.family, "WeiboCJKTest");
 }
-
