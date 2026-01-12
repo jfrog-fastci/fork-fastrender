@@ -1547,6 +1547,10 @@ impl Heap {
     index: usize,
   ) -> Result<Option<Value>, VmError> {
     let view = self.get_typed_array(obj)?;
+    // Integer-indexed element access must treat detached *and* out-of-bounds views as empty.
+    //
+    // Spec: `IsValidIntegerIndex` returns false when `IsTypedArrayOutOfBounds` is true, which makes
+    // element reads return `undefined`.
     if self.typed_array_view_is_out_of_bounds(view)? {
       return Ok(None);
     }
@@ -9039,6 +9043,36 @@ mod typed_array_helper_tests {
       Err(other) => panic!("expected TypeError, got {other:?}"),
       Ok(_) => panic!("expected error for out-of-bounds typed array view"),
     }
+
+    Ok(())
+  }
+
+  #[test]
+  fn typed_array_accessors_treat_out_of_bounds_views_as_empty() -> Result<(), VmError> {
+    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut scope = heap.scope();
+
+    let ab = scope.alloc_array_buffer(2)?;
+    scope.push_root(Value::Object(ab))?;
+
+    // Ensure byteOffset is non-zero so `byteOffset` returning 0 is meaningful when out-of-bounds.
+    let view = scope.alloc_uint8_array(ab, 1, 1)?;
+    scope.push_root(Value::Object(view))?;
+
+    // Corrupt the view's element length so `byteOffset + byteLength` exceeds the backing buffer.
+    match scope.heap_mut().get_heap_object_mut(view.0)? {
+      HeapObject::TypedArray(arr) => {
+        assert_eq!(arr.kind, TypedArrayKind::Uint8);
+        arr.length = 3;
+      }
+      _ => panic!("expected Uint8Array"),
+    }
+
+    // Out-of-bounds views behave like empty typed arrays per ECMA-262.
+    assert_eq!(scope.heap().typed_array_length(view)?, 0);
+    assert_eq!(scope.heap().typed_array_byte_length(view)?, 0);
+    assert_eq!(scope.heap().typed_array_byte_offset(view)?, 0);
+    assert_eq!(scope.heap().typed_array_get_element_value(view, 0)?, None);
 
     Ok(())
   }
