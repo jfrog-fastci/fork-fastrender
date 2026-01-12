@@ -2255,6 +2255,13 @@ fn generate_bindings_module_for_target_vmjs_unformatted(
   let is_global_iface = |name: &str| global_interfaces.iter().any(|g| *g == name);
 
   let selected = select_interfaces(resolved, analyzed, config)?;
+  // Prototype chains are installed by looking up the parent constructor's `.prototype` from the
+  // global object. That means parent prototypes must be installed before derived interfaces.
+  //
+  // Keep the *generated* per-interface installer functions in stable name order (matching
+  // `selected`, a `BTreeMap`), but emit the *aggregator* (`install_window_bindings_vm_js`) in
+  // parent-before-child order so prototype chains can be wired correctly on first install.
+  let install_order = order_selected_interfaces_by_inheritance_vmjs(&selected, &is_global_iface)?;
   let type_ctx = build_type_context(resolved).context("build WebIDL type context")?;
   let referenced_dicts = collect_referenced_dictionaries(resolved, &type_ctx, &selected);
 
@@ -2330,6 +2337,7 @@ fn generate_bindings_module_for_target_vmjs_unformatted(
   }
 
   let mut interface_installers: Vec<String> = Vec::new();
+  let mut interface_installer_by_name: BTreeMap<String, String> = BTreeMap::new();
 
   for iface in selected.values() {
     let global_iface = is_global_iface(&iface.name);
@@ -2345,6 +2353,7 @@ fn generate_bindings_module_for_target_vmjs_unformatted(
       )
     };
     interface_installers.push(install_name.clone());
+    interface_installer_by_name.insert(iface.name.clone(), install_name.clone());
 
     out.push_str(&format!(
       "pub fn {install_name}(\n  vm: &mut Vm,\n  heap: &mut Heap,\n  realm: &Realm,\n) -> Result<(), VmError> {{\n",
@@ -2601,7 +2610,10 @@ fn generate_bindings_module_for_target_vmjs_unformatted(
   out.push_str(&format!(
     "pub fn {install_fn_name}(\n  vm: &mut Vm,\n  heap: &mut Heap,\n  realm: &Realm,\n) -> Result<(), VmError> {{\n",
   ));
-  for install in &interface_installers {
+  for iface in install_order {
+    let install = interface_installer_by_name
+      .get(&iface.name)
+      .with_context(|| format!("missing installer name for `{}`", iface.name))?;
     out.push_str(&format!(
       "  {install}(vm, heap, realm)?;\n",
       install = install
@@ -2639,6 +2651,59 @@ fn generate_bindings_module_for_target_vmjs_unformatted(
   );
 
   Ok((out, interface_installers))
+}
+
+fn order_selected_interfaces_by_inheritance_vmjs<'a>(
+  selected: &'a BTreeMap<String, SelectedInterface>,
+  is_global_iface: &impl Fn(&str) -> bool,
+) -> Result<Vec<&'a SelectedInterface>> {
+  let mut ordered: Vec<&'a SelectedInterface> = Vec::new();
+  let mut visiting: BTreeSet<String> = BTreeSet::new();
+  let mut visited: BTreeSet<String> = BTreeSet::new();
+  let mut globals: Vec<&'a SelectedInterface> = Vec::new();
+
+  fn visit<'a>(
+    name: &str,
+    selected: &'a BTreeMap<String, SelectedInterface>,
+    is_global_iface: &impl Fn(&str) -> bool,
+    visiting: &mut BTreeSet<String>,
+    visited: &mut BTreeSet<String>,
+    ordered: &mut Vec<&'a SelectedInterface>,
+  ) -> Result<()> {
+    if visited.contains(name) {
+      return Ok(());
+    }
+    if !visiting.insert(name.to_string()) {
+      bail!("cycle detected in WebIDL interface inheritance graph (at `{name}`)");
+    }
+
+    let iface = selected
+      .get(name)
+      .with_context(|| format!("missing selected interface `{name}` during sort"))?;
+    if !is_global_iface(&iface.name) {
+      if let Some(parent) = iface.inherits.as_deref() {
+        if selected.contains_key(parent) && !is_global_iface(parent) {
+          visit(parent, selected, is_global_iface, visiting, visited, ordered)?;
+        }
+      }
+    }
+
+    visiting.remove(name);
+    visited.insert(name.to_string());
+    ordered.push(iface);
+    Ok(())
+  }
+
+  for name in selected.keys() {
+    if is_global_iface(name) {
+      globals.push(&selected[name]);
+    } else {
+      visit(name, selected, is_global_iface, &mut visiting, &mut visited, &mut ordered)?;
+    }
+  }
+
+  ordered.extend(globals);
+  Ok(ordered)
 }
 
 fn write_constant_define_vmjs(

@@ -319,6 +319,144 @@ mod tests {
     Ok(())
   }
 
+  #[test]
+  fn vmjs_bindings_install_dom_constructor_prototype_chains() -> Result<(), VmError> {
+    let mut heap = Heap::new(HeapLimits::new(64 * 1024 * 1024, 64 * 1024 * 1024));
+    let mut vm = Vm::new(VmOptions::default());
+    let mut realm = Realm::new(&mut vm, &mut heap)?;
+
+    install_window_bindings_vm_js(&mut vm, &mut heap, &realm)?;
+
+    let global = realm.global_object();
+
+    let mut scope = heap.scope();
+    scope.push_root(Value::Object(global))?;
+
+    let mut get_ctor = |name: &str| -> Result<GcObject, VmError> {
+      let ctor_key = alloc_key(&mut scope, name)?;
+      let ctor = scope
+        .heap()
+        .object_get_own_data_property_value(global, &ctor_key)?
+        .ok_or(VmError::TypeError("missing global constructor"))?;
+      scope.push_root(ctor)?;
+      let Value::Object(obj) = ctor else {
+        return Err(VmError::TypeError("global constructor should be an object"));
+      };
+      Ok(obj)
+    };
+
+    let event_target_ctor = get_ctor("EventTarget")?;
+    let node_ctor = get_ctor("Node")?;
+    let character_data_ctor = get_ctor("CharacterData")?;
+    let text_ctor = get_ctor("Text")?;
+    let document_ctor = get_ctor("Document")?;
+    let element_ctor = get_ctor("Element")?;
+    let document_fragment_ctor = get_ctor("DocumentFragment")?;
+
+    let proto_key = alloc_key(&mut scope, "prototype")?;
+
+    let event_target_proto = vm.get(&mut scope, event_target_ctor, proto_key)?;
+    let node_proto = vm.get(&mut scope, node_ctor, proto_key)?;
+    let character_data_proto = vm.get(&mut scope, character_data_ctor, proto_key)?;
+    let text_proto = vm.get(&mut scope, text_ctor, proto_key)?;
+    let document_proto = vm.get(&mut scope, document_ctor, proto_key)?;
+    let element_proto = vm.get(&mut scope, element_ctor, proto_key)?;
+    let document_fragment_proto = vm.get(&mut scope, document_fragment_ctor, proto_key)?;
+
+    let Value::Object(event_target_proto_obj) = event_target_proto else {
+      return Err(VmError::TypeError("EventTarget.prototype should be an object"));
+    };
+    let Value::Object(node_proto_obj) = node_proto else {
+      return Err(VmError::TypeError("Node.prototype should be an object"));
+    };
+    let Value::Object(character_data_proto_obj) = character_data_proto else {
+      return Err(VmError::TypeError("CharacterData.prototype should be an object"));
+    };
+    let Value::Object(text_proto_obj) = text_proto else {
+      return Err(VmError::TypeError("Text.prototype should be an object"));
+    };
+    let Value::Object(document_proto_obj) = document_proto else {
+      return Err(VmError::TypeError("Document.prototype should be an object"));
+    };
+    let Value::Object(element_proto_obj) = element_proto else {
+      return Err(VmError::TypeError("Element.prototype should be an object"));
+    };
+    let Value::Object(document_fragment_proto_obj) = document_fragment_proto else {
+      return Err(VmError::TypeError("DocumentFragment.prototype should be an object"));
+    };
+
+    assert_eq!(
+      scope.object_get_prototype(node_proto_obj)?,
+      Some(event_target_proto_obj),
+      "Node.prototype should inherit from EventTarget.prototype",
+    );
+    assert_eq!(
+      scope.object_get_prototype(character_data_proto_obj)?,
+      Some(node_proto_obj),
+      "CharacterData.prototype should inherit from Node.prototype",
+    );
+    assert_eq!(
+      scope.object_get_prototype(text_proto_obj)?,
+      Some(character_data_proto_obj),
+      "Text.prototype should inherit from CharacterData.prototype",
+    );
+    assert_eq!(
+      scope.object_get_prototype(document_proto_obj)?,
+      Some(node_proto_obj),
+      "Document.prototype should inherit from Node.prototype",
+    );
+    assert_eq!(
+      scope.object_get_prototype(element_proto_obj)?,
+      Some(node_proto_obj),
+      "Element.prototype should inherit from Node.prototype",
+    );
+    assert_eq!(
+      scope.object_get_prototype(document_fragment_proto_obj)?,
+      Some(node_proto_obj),
+      "DocumentFragment.prototype should inherit from Node.prototype",
+    );
+
+    // `.prototype` and `.constructor` links should be installed with spec-like attributes.
+    let proto_desc = scope
+      .heap()
+      .object_get_own_property(text_ctor, &proto_key)?
+      .ok_or(VmError::TypeError("missing Text.prototype data property"))?;
+    assert!(!proto_desc.enumerable);
+    assert!(!proto_desc.configurable);
+    match proto_desc.kind {
+      PropertyKind::Data { value, writable } => {
+        assert!(!writable);
+        assert_eq!(value, Value::Object(text_proto_obj));
+      }
+      _ => return Err(VmError::TypeError("Text.prototype should be a data property")),
+    }
+
+    let ctor_prop_key = alloc_key(&mut scope, "constructor")?;
+    let ctor_desc = scope
+      .heap()
+      .object_get_own_property(text_proto_obj, &ctor_prop_key)?
+      .ok_or(VmError::TypeError(
+        "missing Text.prototype.constructor data property",
+      ))?;
+    assert!(!ctor_desc.enumerable);
+    assert!(!ctor_desc.configurable);
+    match ctor_desc.kind {
+      PropertyKind::Data { value, writable } => {
+        assert!(!writable);
+        assert_eq!(value, Value::Object(text_ctor));
+      }
+      _ => {
+        return Err(VmError::TypeError(
+          "Text.prototype.constructor should be a data property",
+        ))
+      }
+    }
+
+    drop(scope);
+    realm.teardown(&mut heap);
+    Ok(())
+  }
+
   #[derive(Default)]
   struct UrlSearchParamsHost {
     limits: UrlLimits,

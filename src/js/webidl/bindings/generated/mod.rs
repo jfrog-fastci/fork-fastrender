@@ -7541,14 +7541,14 @@ pub mod window {
     heap: &mut Heap,
     realm: &Realm,
   ) -> Result<(), VmError> {
+    install_event_target_bindings_vm_js(vm, heap, realm)?;
+    install_node_bindings_vm_js(vm, heap, realm)?;
     install_character_data_bindings_vm_js(vm, heap, realm)?;
     install_dom_token_list_bindings_vm_js(vm, heap, realm)?;
     install_document_bindings_vm_js(vm, heap, realm)?;
     install_document_fragment_bindings_vm_js(vm, heap, realm)?;
     install_element_bindings_vm_js(vm, heap, realm)?;
-    install_event_target_bindings_vm_js(vm, heap, realm)?;
     install_html_collection_bindings_vm_js(vm, heap, realm)?;
-    install_node_bindings_vm_js(vm, heap, realm)?;
     install_node_list_bindings_vm_js(vm, heap, realm)?;
     install_text_bindings_vm_js(vm, heap, realm)?;
     install_url_bindings_vm_js(vm, heap, realm)?;
