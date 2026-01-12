@@ -6637,6 +6637,20 @@ impl ImageCache {
       return Ok(());
     };
 
+    // Determine the base URL for resolving `xml:base` chains. Inline SVGs are rendered with the
+    // synthetic URL `"inline-svg"`, so we must fall back to the embedding document URL when
+    // available; otherwise `xml:base` values like `//cdn.example/...` would incorrectly resolve
+    // against the dummy base and could bypass policy enforcement on cached pixmaps.
+    let document_base_url = Url::parse(svg_url)
+      .ok()
+      .map(|_| svg_url)
+      .or_else(|| {
+        ctx
+          .document_url
+          .as_deref()
+          .filter(|doc_url| Url::parse(doc_url).is_ok())
+      });
+
     // Avoid paying the cost of an XML parse when the SVG clearly cannot trigger any external
     // subresource fetches. Large SVG exports (Illustrator/Figma/etc.) can contain hundreds of
     // thousands of nodes and attributes (filters, clip paths, patterns, ...). Parsing those
@@ -7114,8 +7128,11 @@ impl ImageCache {
     for node in doc.descendants() {
       if node.is_element() {
         let xml_base_chain = svg_xml_base_chain_for_node(node);
-        let base = apply_svg_xml_base_chain(Some(svg_url), &xml_base_chain)
-          .unwrap_or_else(|| svg_url.to_string());
+        let base = apply_svg_xml_base_chain(document_base_url, &xml_base_chain).unwrap_or_else(|| {
+          document_base_url
+            .unwrap_or(svg_url)
+            .to_string()
+        });
 
         for attr in node.attributes() {
           let local_name = attr
@@ -16638,6 +16655,42 @@ mod tests_inline {
     cache.set_resource_context(Some(ctx));
 
     let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" xml:base="https://cross.test/" width="1" height="1"><image href="a.png" width="1" height="1"/></svg>"#;
+
+    let err = cache
+      .enforce_svg_resource_policy(svg, svg_url)
+      .expect_err("expected policy block based on xml:base");
+    match err {
+      Error::Image(ImageError::LoadFailed { url, reason }) => {
+        assert_eq!(url, blocked_url);
+        assert!(
+          reason.contains("Blocked SVG subresource"),
+          "unexpected policy reason: {reason}"
+        );
+      }
+      other => panic!("expected ImageError::LoadFailed, got {other:?}"),
+    }
+  }
+
+  #[test]
+  fn svg_policy_scan_respects_xml_base_with_inline_svg_url() {
+    let doc_url = "https://doc.test/page.html";
+    let svg_url = "inline-svg";
+    let blocked_url = "https://cross.test/a.png";
+
+    let fetcher = MapFetcher::default();
+    let mut cache = ImageCache::with_fetcher(Arc::new(fetcher));
+    let doc_origin = origin_from_url(doc_url).expect("document origin");
+    let mut ctx = ResourceContext::default();
+    ctx.document_url = Some(doc_url.to_string());
+    ctx.policy.document_origin = Some(doc_origin);
+    ctx.policy.same_origin_only = true;
+    cache.set_resource_context(Some(ctx));
+
+    // Use a "scheme-relative" xml:base that relies on the base URL to fill in the scheme. When
+    // the SVG is rendered with a dummy `svg_url` (`inline-svg`), we must still apply xml:base
+    // relative to the document URL; otherwise policy scans can miss cross-origin references and
+    // cached pixmaps might bypass the policy.
+    let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" xml:base="//cross.test/" width="1" height="1"><image href="a.png" width="1" height="1"/></svg>"#;
 
     let err = cache
       .enforce_svg_resource_policy(svg, svg_url)
