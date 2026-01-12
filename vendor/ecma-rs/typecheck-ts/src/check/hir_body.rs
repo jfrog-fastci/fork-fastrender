@@ -9549,7 +9549,13 @@ impl<'a> FlowBodyChecker<'a> {
       ExprKind::FunctionExpr { .. } => prim.unknown,
       ExprKind::ClassExpr { .. } => prim.unknown,
       ExprKind::Template(_) => prim.string,
-      ExprKind::TaggedTemplate { .. } => prim.unknown,
+      ExprKind::TaggedTemplate { tag, template } => {
+        let _ = self.eval_expr(*tag, env);
+        for span in template.spans.iter() {
+          let _ = self.eval_expr(span.expr, env);
+        }
+        prim.unknown
+      }
       ExprKind::Await { expr } => {
         let inner = self.eval_expr(*expr, env).0;
         awaited_type(self.store.as_ref(), inner, self.ref_expander)
@@ -9613,6 +9619,16 @@ impl<'a> FlowBodyChecker<'a> {
         let ty = self.eval_expr(*expr, env).0;
         self.widen_object_literals = prev;
         ty
+      }
+      ExprKind::ImportCall {
+        argument,
+        attributes,
+      } => {
+        let _ = self.eval_expr(*argument, env);
+        if let Some(attrs) = attributes {
+          let _ = self.eval_expr(*attrs, env);
+        }
+        prim.unknown
       }
       ExprKind::Jsx(elem) => {
         for attr in elem.attributes.iter() {
