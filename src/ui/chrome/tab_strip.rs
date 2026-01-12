@@ -1,6 +1,7 @@
 use crate::ui::browser_app::{BrowserAppState, BrowserTabState};
 use crate::ui::a11y;
 use crate::ui::messages::TabId;
+use crate::ui::motion::UiMotion;
 use egui::{Align2, Color32, FontId, Pos2, Rect, Sense, Stroke, Vec2};
 
 use super::ChromeAction;
@@ -16,6 +17,31 @@ const ICON_SIZE: f32 = 16.0;
 const ICON_GAP: f32 = 8.0;
 const CLOSE_BUTTON_SIZE: f32 = 28.0;
 const ACTIVE_UNDERLINE_HEIGHT: f32 = 2.0;
+
+fn lerp(a: f32, b: f32, t: f32) -> f32 {
+  a + (b - a) * t
+}
+
+fn lerp_u8(a: u8, b: u8, t: f32) -> u8 {
+  lerp(a as f32, b as f32, t).round().clamp(0.0, 255.0) as u8
+}
+
+fn lerp_color(a: egui::Color32, b: egui::Color32, t: f32) -> egui::Color32 {
+  let [ar, ag, ab, aa] = a.to_array();
+  let [br, bg, bb, ba] = b.to_array();
+  egui::Color32::from_rgba_unmultiplied(
+    lerp_u8(ar, br, t),
+    lerp_u8(ag, bg, t),
+    lerp_u8(ab, bb, t),
+    lerp_u8(aa, ba, t),
+  )
+}
+
+fn with_alpha(color: egui::Color32, alpha: f32) -> egui::Color32 {
+  let [r, g, b, a] = color.to_array();
+  let a = ((a as f32) * alpha).round().clamp(0.0, 255.0) as u8;
+  egui::Color32::from_rgba_unmultiplied(r, g, b, a)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(super) struct TabStripSizing {
@@ -92,6 +118,7 @@ fn placeholder_favicon(painter: &egui::Painter, rect: Rect, visuals: &egui::Visu
 
 fn tab_ui(
   ui: &mut egui::Ui,
+  motion: UiMotion,
   tab: &BrowserTabState,
   is_active: bool,
   can_close_tabs: bool,
@@ -111,28 +138,27 @@ fn tab_ui(
 
   let visuals = ui.style().visuals.clone();
 
+  // Micro-interaction: fade hover highlight in/out for inactive tabs.
+  let hover_t = if is_active {
+    0.0
+  } else {
+    motion.animate_bool(
+      ui.ctx(),
+      tab_id.with("hover"),
+      response.hovered(),
+      motion.durations.hover_fade,
+    )
+  };
+
   let bg = if is_active {
     visuals.widgets.active.bg_fill
-  } else if response.hovered() {
-    visuals.widgets.hovered.bg_fill
   } else {
-    visuals.widgets.inactive.bg_fill
+    lerp_color(visuals.widgets.inactive.bg_fill, visuals.widgets.hovered.bg_fill, hover_t)
   };
   let rounding = visuals.widgets.inactive.rounding;
   {
     let painter = ui.painter();
     painter.rect_filled(tab_rect, rounding, bg);
-
-    if is_active {
-      let y = tab_rect.max.y - ACTIVE_UNDERLINE_HEIGHT * 0.5;
-      painter.line_segment(
-        [
-          Pos2::new(tab_rect.min.x + 10.0, y),
-          Pos2::new(tab_rect.max.x - 10.0, y),
-        ],
-        Stroke::new(ACTIVE_UNDERLINE_HEIGHT, visuals.selection.stroke.color),
-      );
-    }
   }
 
   // Favicon.
@@ -180,13 +206,20 @@ fn tab_ui(
     });
     close_clicked = close_resp.clicked();
 
-    if close_resp.hovered() {
-      let close_rounding =
-        egui::Rounding::same((visuals.widgets.inactive.rounding.nw * 0.8).clamp(4.0, 6.0));
+    // Micro-interaction: fade close button hover fill in/out.
+    let close_rounding =
+      egui::Rounding::same((visuals.widgets.inactive.rounding.nw * 0.8).clamp(4.0, 6.0));
+    let close_hover_t = motion.animate_bool(
+      ui.ctx(),
+      close_id.with("hover"),
+      close_resp.hovered(),
+      motion.durations.hover_fade,
+    );
+    if close_hover_t > 0.0 {
       ui.painter().rect_filled(
         close_rect,
         close_rounding,
-        visuals.widgets.hovered.bg_fill.gamma_multiply(0.85),
+        with_alpha(visuals.widgets.hovered.bg_fill.gamma_multiply(0.85), close_hover_t),
       );
     }
 
@@ -238,6 +271,7 @@ pub(super) fn tab_strip_ui(
   ui: &mut egui::Ui,
   app: &BrowserAppState,
   favicon_for_tab: &mut impl FnMut(TabId) -> Option<egui::TextureId>,
+  motion: UiMotion,
 ) -> Vec<ChromeAction> {
   let mut actions = Vec::new();
 
@@ -256,12 +290,16 @@ pub(super) fn tab_strip_ui(
   let can_close_tabs = tab_count > 1;
   let sizing = compute_tab_strip_sizing(tabs_viewport_width, tab_count);
 
+  #[cfg(test)]
   let mut tab_rects_for_test: Vec<Rect> = Vec::new();
+
+  let mut active_tab_rect: Option<Rect> = None;
+  let mut scroll_offset_x: f32 = 0.0;
 
   if tabs_viewport_width > 0.0 {
     let mut tabs_ui = ui.child_ui(tabs_rect, egui::Layout::left_to_right(egui::Align::Center));
     tabs_ui.set_clip_rect(tabs_rect);
-    egui::ScrollArea::horizontal()
+    let scroll_output = egui::ScrollArea::horizontal()
       .id_source("tab_strip_scroll")
       .auto_shrink([false, true])
       .show(&mut tabs_ui, |ui| {
@@ -272,12 +310,17 @@ pub(super) fn tab_strip_ui(
             let favicon_tex = favicon_for_tab(tab.id);
             let (tab_rect, maybe_action) = tab_ui(
               ui,
+              motion,
               tab,
               is_active,
               can_close_tabs,
               sizing.tab_width,
               favicon_tex,
             );
+            if is_active {
+              active_tab_rect = Some(tab_rect);
+            }
+            #[cfg(test)]
             tab_rects_for_test.push(tab_rect);
 
             if let Some(action) = maybe_action {
@@ -286,6 +329,39 @@ pub(super) fn tab_strip_ui(
           }
         });
       });
+    scroll_offset_x = scroll_output.state.offset.x;
+  }
+
+  // Micro-interaction: animate the active tab underline position/width.
+  if let Some(active_rect) = active_tab_rect {
+    let underline_id = ui.make_persistent_id("tab_strip_active_underline");
+    // Animate in scroll-content coordinates so the underline tracks scrolling without lag.
+    let target_center_content_x = active_rect.center().x - tabs_rect.min.x + scroll_offset_x;
+    let target_width = (active_rect.width() - 20.0).max(0.0);
+    let center_content_x = motion.animate_f32(
+      ui.ctx(),
+      underline_id.with("x"),
+      target_center_content_x,
+      motion.durations.tab_underline,
+    );
+    let width = motion.animate_f32(
+      ui.ctx(),
+      underline_id.with("w"),
+      target_width,
+      motion.durations.tab_underline,
+    );
+
+    let center_screen_x = tabs_rect.min.x - scroll_offset_x + center_content_x;
+    let x0 = center_screen_x - width * 0.5;
+    let x1 = center_screen_x + width * 0.5;
+    let y = active_rect.max.y - ACTIVE_UNDERLINE_HEIGHT * 0.5;
+    ui
+      .painter()
+      .with_clip_rect(tabs_rect)
+      .line_segment(
+        [Pos2::new(x0, y), Pos2::new(x1, y)],
+        Stroke::new(ACTIVE_UNDERLINE_HEIGHT, ui.visuals().selection.stroke.color),
+      );
   }
 
   // New tab button stays visible even when the tab list overflows.

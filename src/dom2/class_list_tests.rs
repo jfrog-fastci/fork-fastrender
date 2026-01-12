@@ -9,6 +9,7 @@ fn make_element(doc: &mut Document) -> NodeId {
     NodeKind::Element {
       tag_name: "div".to_string(),
       namespace: "".to_string(),
+      prefix: None,
       attributes: Vec::new(),
     },
     Some(doc.root()),

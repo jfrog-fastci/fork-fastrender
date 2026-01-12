@@ -329,7 +329,7 @@ pub fn chrome_ui(
     actions.push(ChromeAction::Forward);
   }
   egui::TopBottomPanel::top("chrome").show(ctx, |ui| {
-    actions.extend(tab_strip::tab_strip_ui(ui, app, &mut favicon_for_tab));
+    actions.extend(tab_strip::tab_strip_ui(ui, app, &mut favicon_for_tab, motion));
 
     ui.separator();
 
@@ -867,6 +867,8 @@ mod tests {
       egui::Pos2::new(0.0, 0.0),
       screen_size,
     ));
+    // Keep unit tests deterministic: avoid egui falling back to OS time for animations.
+    raw.time = Some(0.0);
     raw.events = events;
     ctx.begin_frame(raw);
   }

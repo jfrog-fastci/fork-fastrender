@@ -125,6 +125,7 @@ fn query_selector_scope_limits_to_subtree_and_detached_scope_returns_none() {
     NodeKind::Element {
       tag_name: "div".to_string(),
       namespace: "".to_string(),
+      prefix: None,
       attributes: Vec::new(),
     },
     None,
@@ -141,6 +142,7 @@ fn query_selector_scope_limits_to_subtree_and_detached_scope_returns_none() {
     NodeKind::Element {
       tag_name: "div".to_string(),
       namespace: "".to_string(),
+      prefix: None,
       attributes: vec![("class".to_string(), "x".to_string())],
     },
     Some(detached),
