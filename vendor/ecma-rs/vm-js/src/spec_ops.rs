@@ -83,48 +83,8 @@ pub fn internal_has_property_with_host_and_hooks(
   obj: GcObject,
   key: PropertyKey,
 ) -> Result<bool, VmError> {
-  // Root `obj`/`key` for the duration of the operation.
-  let mut scope = scope.reborrow();
-  let key_root = match key {
-    PropertyKey::String(s) => Value::String(s),
-    PropertyKey::Symbol(s) => Value::Symbol(s),
-  };
-  scope.push_roots(&[Value::Object(obj), key_root])?;
-
-  if !scope.heap().is_proxy_object(obj) {
-    return scope.ordinary_has_property_with_tick(obj, key, || vm.tick());
-  }
-
-  // Proxy.[[HasProperty]]
-  let proxy = scope
-    .heap()
-    .get_proxy_data(obj)?
-    .ok_or(VmError::invalid_handle())?;
-  let (Some(target), Some(handler)) = (proxy.target, proxy.handler) else {
-    return Err(VmError::TypeError(
-      "Cannot perform 'has' on a proxy that has been revoked",
-    ));
-  };
-  // Root `target`/`handler` across trap lookup + invocation; see comment in `internal_get_*`.
-  scope.push_roots(&[Value::Object(target), Value::Object(handler)])?;
-
-  // trap = ? GetMethod(handler, "has")
-  let has_key_s = scope.alloc_string("has")?;
-  scope.push_root(Value::String(has_key_s))?;
-  let has_key = PropertyKey::from_string(has_key_s);
-  let trap = get_method_with_host_and_hooks(vm, &mut scope, host, hooks, Value::Object(handler), has_key)?;
-  let Some(trap) = trap else {
-    // No trap: forward to target.
-    return internal_has_property_with_host_and_hooks(vm, &mut scope, host, hooks, target, key);
-  };
-  // Root the trap: it may be the result of an accessor getter and not otherwise reachable.
-  scope.push_root(trap)?;
-
-  // trapResult = ToBoolean(? Call(trap, handler, « target, P »))
-  let trap_args = [Value::Object(target), key_root];
-  let trap_result =
-    vm.call_with_host_and_hooks(host, &mut scope, hooks, trap, Value::Object(handler), &trap_args)?;
-  scope.heap().to_boolean(trap_result)
+  let mut tick = Vm::tick;
+  scope.has_property_with_host_and_hooks_with_tick(vm, host, hooks, obj, key, &mut tick)
 }
 
 /// ECMAScript `[[Set]](P, V, Receiver)` internal method dispatch for ordinary and Proxy exotic

@@ -2,7 +2,7 @@ use vm_js::{Heap, HeapLimits, JsRuntime, Value, Vm, VmOptions};
 
 fn new_runtime() -> JsRuntime {
   let vm = Vm::new(VmOptions::default());
-  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let heap = Heap::new(HeapLimits::new(2 * 1024 * 1024, 2 * 1024 * 1024));
   JsRuntime::new(vm, heap).unwrap()
 }
 
@@ -282,6 +282,47 @@ fn proxy_object_rest_destructuring_excludes_symbol_keys() {
       });
       var { [sym]: x, ...rest } = p;
       log === "get:sym|ownKeys|gOPD:a|get:a|" && x === 1 && rest.a === 2 && !(sym in rest)
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn proxy_in_prototype_chain_uses_get_set_has_traps() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      var log = "";
+      var target = {};
+      var obj;
+      var proto = new Proxy(target, {
+        get: function(t, prop, receiver) {
+          log += "get:" + prop + ":" + (receiver === obj) + "|";
+          return 123;
+        },
+        set: function(t, prop, value, receiver) {
+          log += "set:" + prop + ":" + value + ":" + (receiver === obj) + "|";
+          t[prop] = value;
+          return true;
+        },
+        has: function(t, prop) {
+          log += "has:" + prop + "|";
+          return prop in t;
+        }
+      });
+      obj = Object.create(proto);
+      var a = obj.foo;
+      obj.bar = 2;
+      var inFoo = ("foo" in obj);
+      var inBar = ("bar" in obj);
+      log === "get:foo:true|set:bar:2:true|has:foo|has:bar|" &&
+        a === 123 &&
+        inFoo === false &&
+        inBar === true &&
+        !Object.prototype.hasOwnProperty.call(obj, "bar") &&
+        target.bar === 2
     "#,
     )
     .unwrap();

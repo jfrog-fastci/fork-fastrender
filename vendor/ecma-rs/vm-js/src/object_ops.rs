@@ -273,11 +273,159 @@ impl<'a> Scope<'a> {
     key: PropertyKey,
     tick: &mut impl FnMut(&mut Vm) -> Result<(), VmError>,
   ) -> Result<bool, VmError> {
-    if self.heap().is_proxy_object(obj) {
-      return proxy_has_property_with_tick(vm, self, host, hooks, obj, key, tick);
+    // Fully implement `[[HasProperty]]` dispatch so Proxy objects can participate in prototype
+    // chains (e.g. `('x' in Object.create(new Proxy(...)))`).
+    //
+    // This must be host-aware because Proxy `"has"` traps can invoke user code.
+    //
+    // Keep all temporary roots local to this operation.
+    let mut scope = self.reborrow();
+    let key_value = match key {
+      PropertyKey::String(s) => Value::String(s),
+      PropertyKey::Symbol(s) => Value::Symbol(s),
+    };
+    scope.push_roots(&[Value::Object(obj), key_value])?;
+
+    let mut visited: HashSet<GcObject> = HashSet::new();
+    if visited.try_reserve(1).is_err() {
+      return Err(VmError::OutOfMemory);
     }
-    let mut tick0 = || tick(vm);
-    self.ordinary_has_property_with_tick(obj, key, &mut tick0)
+    visited.insert(obj);
+
+    // Cache the `"has"` trap key across Proxy hops so we only allocate it once per operation.
+    let mut has_trap_key: Option<PropertyKey> = None;
+
+    let mut current = obj;
+    let mut steps = 0usize;
+    loop {
+      // Budget prototype/proxy traversal so deep chains can't run unbounded work inside a single
+      // `HasProperty` operation.
+      const TICK_EVERY: usize = 1024;
+      if steps != 0 && steps % TICK_EVERY == 0 {
+        tick(vm)?;
+      }
+      if steps >= crate::MAX_PROTOTYPE_CHAIN {
+        return Err(VmError::PrototypeChainTooDeep);
+      }
+      steps += 1;
+
+      // --- Proxy [[HasProperty]] dispatch (partial) ---
+      if scope.heap().is_proxy_object(current) {
+        let Some(target) = scope.heap().proxy_target(current)? else {
+          return Err(VmError::TypeError("Cannot perform 'has' on a revoked Proxy"));
+        };
+        let Some(handler) = scope.heap().proxy_handler(current)? else {
+          return Err(VmError::TypeError("Cannot perform 'has' on a revoked Proxy"));
+        };
+
+        // Root `target`/`handler` across trap lookup + invocation. `GetMethod(handler, "has")` can
+        // invoke user code via accessors, which can revoke this Proxy and then trigger a GC.
+        scope.push_roots(&[Value::Object(target), Value::Object(handler)])?;
+
+        // Let trap be ? GetMethod(handler, "has").
+        let trap_key = match has_trap_key {
+          Some(k) => k,
+          None => {
+            let s = scope.alloc_string("has")?;
+            scope.push_root(Value::String(s))?;
+            let k = PropertyKey::from_string(s);
+            has_trap_key = Some(k);
+            k
+          }
+        };
+        let trap =
+          vm.get_method_with_host_and_hooks(host, &mut scope, hooks, Value::Object(handler), trap_key)?;
+
+        // If trap is undefined, forward to the target.
+        let Some(trap) = trap else {
+          current = target;
+          // Root the forwarded `target` so it remains valid even if the Proxy was revoked while
+          // looking up the trap.
+          scope.push_root(Value::Object(current))?;
+          if visited.try_reserve(1).is_err() {
+            return Err(VmError::OutOfMemory);
+          }
+          if !visited.insert(current) {
+            return Err(VmError::PrototypeCycle);
+          }
+          continue;
+        };
+        // Root the trap: it may be the result of an accessor getter and not otherwise reachable.
+        scope.push_root(trap)?;
+
+        let trap_args = [Value::Object(target), key_value];
+        let trap_result = vm.call_with_host_and_hooks(
+          host,
+          &mut scope,
+          hooks,
+          trap,
+          Value::Object(handler),
+          &trap_args,
+        )?;
+        return scope.heap().to_boolean(trap_result);
+      }
+
+      // --- Ordinary [[HasProperty]] ---
+      //
+      // Integer-indexed exotic objects (typed arrays): canonical numeric index strings are handled
+      // without consulting the prototype chain.
+      //
+      // https://tc39.es/ecma262/#sec-integer-indexed-exotic-objects-hasproperty-p
+      if scope.heap().is_typed_array_object(current) {
+        if let PropertyKey::String(s) = key {
+          if let Some(numeric_index) = scope.heap().canonical_numeric_index_string(s)? {
+            // `IsValidIntegerIndex`
+            if numeric_index == 0.0 && numeric_index.is_sign_negative() {
+              // -0 is a canonical numeric index string but never a valid integer index.
+              return Ok(false);
+            }
+            if !numeric_index.is_finite() || numeric_index.fract() != 0.0 {
+              return Ok(false);
+            }
+            if numeric_index < 0.0 {
+              return Ok(false);
+            }
+            if numeric_index > usize::MAX as f64 {
+              return Ok(false);
+            }
+            let index = numeric_index as usize;
+            let len = scope.heap().typed_array_length(current)?;
+            return Ok(index < len);
+          }
+        }
+      }
+
+      // Own property check.
+      if scope
+        .heap()
+        .object_get_own_property_with_tick(current, &key, || tick(vm))?
+        .is_some()
+      {
+        return Ok(true);
+      }
+      let mut tick0 = || tick(vm);
+      if scope
+        .string_object_in_range_index_with_tick(current, &key, &mut tick0)?
+        .is_some()
+      {
+        return Ok(true);
+      }
+
+      let Some(proto) = scope.heap().object_prototype(current)? else {
+        return Ok(false);
+      };
+
+      current = proto;
+      // Root prototypes so a `__proto__` mutation during user code (Proxy traps) cannot invalidate
+      // the iterator's internal object handle before we reach it.
+      scope.push_root(Value::Object(current))?;
+      if visited.try_reserve(1).is_err() {
+        return Err(VmError::OutOfMemory);
+      }
+      if !visited.insert(current) {
+        return Err(VmError::PrototypeCycle);
+      }
+    }
   }
 
   pub fn object_get_prototype(&self, obj: GcObject) -> Result<Option<GcObject>, VmError> {
@@ -1957,6 +2105,9 @@ impl<'a> Scope<'a> {
     let Some(proto) = scope.heap().object_prototype(obj)? else {
       return Ok(Value::Undefined);
     };
+    // Root the initial prototype so it remains valid even if a Proxy trap later in the chain runs
+    // user code that mutates the prototype chain and triggers GC.
+    scope.push_root(Value::Object(proto))?;
 
     // Walk the prototype chain iteratively so Proxy objects in the chain are handled by their
     // `[[Get]]` internal method (including `get` traps and revoked-proxy errors).
@@ -1995,6 +2146,9 @@ impl<'a> Scope<'a> {
         let Some(handler) = scope.heap().proxy_handler(current)? else {
           return Err(VmError::TypeError("Cannot perform 'get' on a revoked Proxy"));
         };
+        // Root `target`/`handler` across trap lookup + invocation. `Get` can run user code via
+        // accessors on the handler, which can revoke this Proxy and then trigger a GC.
+        scope.push_roots(&[Value::Object(target), Value::Object(handler)])?;
 
         // Let trap be ? GetMethod(handler, "get").
         let get_key = match get_trap_key {
@@ -2027,11 +2181,15 @@ impl<'a> Scope<'a> {
           if !visited.insert(current) {
             return Err(VmError::PrototypeCycle);
           }
+          // Root the forwarded target so it remains valid across GC while the traversal continues.
+          scope.push_root(Value::Object(current))?;
           continue;
         }
         if !scope.heap().is_callable(trap)? {
           return Err(VmError::TypeError("Proxy get trap is not callable"));
         }
+        // Root the trap: it may be the result of an accessor getter and not otherwise reachable.
+        scope.push_root(trap)?;
 
         let args = [Value::Object(target), key_value, receiver];
         return vm.call_with_host_and_hooks(
@@ -2098,6 +2256,9 @@ impl<'a> Scope<'a> {
       if !visited.insert(current) {
         return Err(VmError::PrototypeCycle);
       }
+      // Root prototypes so a `__proto__` mutation during user code (Proxy traps) cannot invalidate
+      // the iterator's internal object handle before we reach it.
+      scope.push_root(Value::Object(current))?;
     }
   }
 
@@ -2429,10 +2590,15 @@ impl<'a> Scope<'a> {
       return Ok(result);
     }
 
-    let mut desc = self
-      .heap()
-      .get_property_with_tick(obj, &key, || vm.tick())?;
+    // OrdinarySet (ECMA-262): we must not scan the prototype chain as ordinary objects, since the
+    // prototype can contain Proxy objects. If the property is not an own property, delegate to
+    // `proto.[[Set]]` so Proxy `set` traps are observed.
+    let mut desc = self.ordinary_get_own_property_with_tick(obj, key, || vm.tick())?;
     if desc.is_none() {
+      if let Some(proto) = self.heap().object_prototype(obj)? {
+        return self.set_with_host_and_hooks(vm, host, hooks, proto, key, value, receiver);
+      }
+      // No prototype: treat as a new writable data property.
       desc = Some(PropertyDescriptor {
         enumerable: true,
         configurable: true,
