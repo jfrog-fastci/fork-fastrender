@@ -45,7 +45,9 @@ impl BrowserIcon {
       Self::ArrowUp => "arrow_up",
       Self::ArrowDown => "arrow_down",
       Self::Reload => "reload",
-      Self::StopLoading => "stop_loading",
+      // `StopLoading` reuses the close-tab SVG asset, so use the shared name to avoid caching the
+      // same texture multiple times under different semantic variants.
+      Self::StopLoading => "close_tab",
       Self::Home => "home",
       Self::Menu => "menu",
       Self::Search => "search",
@@ -53,7 +55,9 @@ impl BrowserIcon {
       Self::Tab => "tab",
       Self::Copy => "copy",
       Self::Check => "check",
-      Self::Close => "close",
+      // `Close` and `CloseTab` intentionally share the same glyph/asset; keep distinct variants for
+      // accessibility labels while deduplicating the underlying texture cache entry.
+      Self::Close => "close_tab",
       Self::CloseTab => "close_tab",
       Self::NewTab => "new_tab",
       Self::ZoomIn => "zoom_in",
@@ -170,7 +174,7 @@ fn lerp_stroke(a: egui::Stroke, b: egui::Stroke, t: f32) -> egui::Stroke {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct CacheKey {
-  icon: BrowserIcon,
+  asset: &'static str,
   side_px: u32,
   dark_mode: bool,
 }
@@ -327,7 +331,7 @@ fn icon_texture(
   let side_px = points_to_pixels(side_points, pixels_per_point);
   let side_points = actual_points_for_pixels(side_px, pixels_per_point);
   let key = CacheKey {
-    icon,
+    asset: icon.name(),
     side_px,
     dark_mode,
   };
@@ -636,6 +640,37 @@ mod tests {
   }
 
   #[test]
+  fn icons_sharing_svg_assets_share_cache_entries() {
+    let ctx = egui::Context::default();
+
+    let (id_close_tab, _size_close_tab) = icon_texture(&ctx, BrowserIcon::CloseTab, 16.0, false);
+    let calls_after_first = ctx.data_mut(|d| {
+      d.get_temp_mut_or_default::<IconCache>(cache_id()).rasterize_calls
+    });
+    assert_eq!(calls_after_first, 1);
+
+    let (id_close, _size_close) = icon_texture(&ctx, BrowserIcon::Close, 16.0, false);
+    let calls_after_close = ctx.data_mut(|d| {
+      d.get_temp_mut_or_default::<IconCache>(cache_id()).rasterize_calls
+    });
+    assert_eq!(id_close_tab, id_close);
+    assert_eq!(
+      calls_after_close, 1,
+      "expected Close to reuse the CloseTab SVG texture"
+    );
+
+    let (id_stop, _size_stop) = icon_texture(&ctx, BrowserIcon::StopLoading, 16.0, false);
+    let calls_after_stop = ctx.data_mut(|d| {
+      d.get_temp_mut_or_default::<IconCache>(cache_id()).rasterize_calls
+    });
+    assert_eq!(id_close_tab, id_stop);
+    assert_eq!(
+      calls_after_stop, 1,
+      "expected StopLoading to reuse the CloseTab SVG texture"
+    );
+  }
+
+  #[test]
   fn all_icons_rasterize_to_non_empty_alpha_mask() {
     // Guard against accidentally shipping empty/malformed SVG assets.
     let icons = [
@@ -650,6 +685,8 @@ mod tests {
       BrowserIcon::Search,
       BrowserIcon::History,
       BrowserIcon::Tab,
+      BrowserIcon::Copy,
+      BrowserIcon::Check,
       BrowserIcon::Close,
       BrowserIcon::CloseTab,
       BrowserIcon::NewTab,
