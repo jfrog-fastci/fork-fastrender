@@ -486,11 +486,12 @@ function installResolutionTracing(host, options, collector) {
     for (let i = 0; i < moduleNames.length; i++) {
       const specifier = moduleNames[i];
       const resolved = results?.[i]?.resolvedFileName ?? null;
+      const { kind } = resolveModeAndKind(containingSourceFile, i, effectiveOptions);
       recordResolutionTrace(collector, {
         from: normalizePath(containingFile),
         specifier,
         resolved: resolved ? normalizePath(resolved) : null,
-        kind: null,
+        kind,
         mode,
       });
     }
