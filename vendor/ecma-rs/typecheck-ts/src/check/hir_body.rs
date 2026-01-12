@@ -1164,7 +1164,6 @@ enum ArrayLiteralContext {
 struct JsxActualProps {
   ty: TypeId,
   props: HashSet<String>,
-  has_spread: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -4175,7 +4174,6 @@ impl<'a> Checker<'a> {
     let mut props = HashSet::new();
     let mut shape = Shape::new();
     let mut spreads = Vec::new();
-    let mut has_spread = false;
     for attr in attrs {
       match attr {
         JsxAttr::Named { name, value } => {
@@ -4184,7 +4182,12 @@ impl<'a> Checker<'a> {
           } else {
             name.stx.name.clone()
           };
-          props.insert(key_string.clone());
+          // JSX attributes with hyphens (e.g. `data-test`) are permitted even when the props type
+          // doesn't include a corresponding string-literal key. `tsc` excludes these keys from
+          // excess property checking, so only track non-hyphenated attribute names here.
+          if !key_string.contains('-') {
+            props.insert(key_string.clone());
+          }
           let key = PropKey::String(self.store.intern_name_ref(&key_string));
           let value_ty = match value {
             None => self.store.intern_type(TypeKind::BooleanLiteral(true)),
@@ -4234,7 +4237,6 @@ impl<'a> Checker<'a> {
           });
         }
         JsxAttr::Spread { value } => {
-          has_spread = true;
           let expected_ty = expected
             .filter(|ty| !matches!(self.store.type_kind(*ty), TypeKind::Any | TypeKind::Unknown))
             .unwrap_or(prim.unknown);
@@ -4278,7 +4280,6 @@ impl<'a> Checker<'a> {
     JsxActualProps {
       ty,
       props,
-      has_spread,
     }
   }
 
@@ -4566,7 +4567,7 @@ impl<'a> Checker<'a> {
     ) {
       return;
     }
-    if !actual.has_spread && !self.type_accepts_props(expected, &actual.props) {
+    if !self.type_accepts_props(expected, &actual.props) {
       self.diagnostics.push(codes::EXCESS_PROPERTY.error(
         "excess property",
         Span::new(self.file, loc_to_range(self.file, loc)),
