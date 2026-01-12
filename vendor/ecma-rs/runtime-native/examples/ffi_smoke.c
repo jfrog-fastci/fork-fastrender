@@ -241,7 +241,10 @@ static const CoroutineVTable NATIVE_ASYNC_SMOKE_VTABLE = {
   // Use conservative values: this smoke test treats PromiseHeader as opaque.
   .promise_size = 64,
   .promise_align = 16,
-  .promise_shape_id = 0,
+  // The native async ABI requires a valid shape id for the promise allocation.
+  // This smoke test uses a single opaque promise shape descriptor with no pointer
+  // fields (ptr_offsets_len=0).
+  .promise_shape_id = 2,
   .abi_version = RT_ASYNC_ABI_VERSION,
   .reserved = {0, 0, 0, 0},
 };
@@ -259,7 +262,7 @@ static const CoroutineVTable NATIVE_ASYNC_HEAP_VTABLE = {
   .destroy = native_async_heap_destroy,
   .promise_size = 64,
   .promise_align = 16,
-  .promise_shape_id = 0,
+  .promise_shape_id = 2,
   .abi_version = RT_ASYNC_ABI_VERSION,
   .reserved = {0, 0, 0, 0},
 };
@@ -278,7 +281,8 @@ int main(void) {
   char* no_error = rt_async_take_last_error();
   if (check(no_error == NULL)) { rc = 48; goto done; }
   rt_async_free_c_string(no_error);
-  static const RtShapeDescriptor kShapes[1] = {
+  static const RtShapeDescriptor kShapes[2] = {
+    // Shape 1: small opaque objects allocated by this smoke test.
     {
       .size = 16,
       .align = 16,
@@ -287,8 +291,18 @@ int main(void) {
       .ptr_offsets_len = 0,
       .reserved = 0,
     },
+    // Shape 2: opaque native Promise allocations used by the async ABI smoke
+    // tests above. The payload is treated as opaque here (no pointer offsets).
+    {
+      .size = 64,
+      .align = 16,
+      .flags = 0,
+      .ptr_offsets = (const uint32_t*)0,
+      .ptr_offsets_len = 0,
+      .reserved = 0,
+    },
   };
-  rt_register_shape_table(kShapes, 1);
+  rt_register_shape_table(kShapes, 2);
 
   RtShapeId shape = (RtShapeId)1;
   GcPtr obj1 = rt_alloc_pinned(16, shape);
