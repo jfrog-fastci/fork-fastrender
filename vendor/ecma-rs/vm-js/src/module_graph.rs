@@ -1524,6 +1524,8 @@ impl ModuleGraph {
       if record.status == ModuleStatus::EvaluatingAsync {
         // Async evaluation is driven by SCC evaluation promises stored on the SCC (cycle) root's
         // `[[TopLevelCapability]]`.
+        // Async module evaluation is per-SCC (cycle root). The spec-visible evaluation promise is
+        // cached on the SCC root's module record (the one that `ensure_scc_promise` is invoked for).
         let scc_root = record.cycle_root.unwrap_or(module);
         let root_idx = module_index(scc_root);
         let Some(roots) = self

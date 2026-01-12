@@ -78,7 +78,12 @@ enum HostObjectKind {
   Error {
     name: &'static str,
   },
-  // Built-in internal-slot stubs (not yet provided by `vm-js`).
+  // Built-in internal-slot stubs (legacy fallback for embeddings that need heap-only objects).
+  //
+  // Note: `vm-js` now provides real `ArrayBuffer` / `DataView` / typed array heap object kinds, so
+  // the runtime prefers using `Heap` internal-slot checks. These variants remain as a migration
+  // escape hatch for unit tests or hosts that still fabricate buffer-like objects without the
+  // `vm-js` builtins.
   #[allow(dead_code)]
   ArrayBuffer {
     shared: bool,
@@ -1579,6 +1584,9 @@ impl WebIdlJsRuntime for VmJsRuntime {
     if !self.heap.is_valid_object(obj) {
       return false;
     }
+    if self.heap.is_array_buffer_object(obj) {
+      return true;
+    }
     matches!(
       self.host_objects.get(&WeakGcObject::from(obj)),
       Some(HostObjectKind::ArrayBuffer { .. })
@@ -1605,6 +1613,9 @@ impl WebIdlJsRuntime for VmJsRuntime {
     if !self.heap.is_valid_object(obj) {
       return false;
     }
+    if self.heap.is_data_view_object(obj) {
+      return true;
+    }
     matches!(
       self.host_objects.get(&WeakGcObject::from(obj)),
       Some(HostObjectKind::DataView)
@@ -1617,6 +1628,9 @@ impl WebIdlJsRuntime for VmJsRuntime {
     };
     if !self.heap.is_valid_object(obj) {
       return None;
+    }
+    if let Some(name) = self.heap.typed_array_name(obj) {
+      return Some(name);
     }
     match self.host_objects.get(&WeakGcObject::from(obj))? {
       HostObjectKind::TypedArray { name } => Some(name),
@@ -1842,6 +1856,38 @@ mod tests {
     let a = rt.alloc_string_value("document").unwrap();
     let b = rt.alloc_string_value("document").unwrap();
     assert_ne!(a, b, "alloc_string_value(\"document\") should not be implicitly interned");
+  }
+
+  #[test]
+  fn buffer_source_internal_slot_checks_use_vm_js_heap_objects() -> Result<(), VmError> {
+    let mut rt = VmJsRuntime::with_limits(HeapLimits::new(16 * 1024 * 1024, 16 * 1024 * 1024));
+
+    // Allocate a real `vm-js` ArrayBuffer + Uint8Array on the heap. Root them so subsequent
+    // allocations (including during predicate checks in debug builds) can't collect them.
+    let (buf, buf_root, u8, u8_root) = {
+      let mut scope = rt.heap_mut().scope();
+      let buf = scope.alloc_array_buffer(8)?;
+      let buf_root = scope.heap_mut().add_root(Value::Object(buf))?;
+
+      let u8 = scope.alloc_uint8_array(buf, 0, 8)?;
+      let u8_root = scope.heap_mut().add_root(Value::Object(u8))?;
+
+      (buf, buf_root, u8, u8_root)
+    };
+
+    assert!(
+      WebIdlJsRuntime::is_array_buffer(&rt, Value::Object(buf)),
+      "expected vm-js ArrayBuffer heap objects to satisfy WebIDL is_array_buffer"
+    );
+
+    assert_eq!(
+      WebIdlJsRuntime::typed_array_name(&rt, Value::Object(u8)),
+      Some("Uint8Array")
+    );
+
+    rt.heap_mut().remove_root(buf_root);
+    rt.heap_mut().remove_root(u8_root);
+    Ok(())
   }
 
   #[test]

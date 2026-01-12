@@ -1,6 +1,6 @@
 use vm_js::Value;
 use webidl::ir::{IdlType, StringType, TypeAnnotation, TypeContext};
-use webidl_js_runtime::{convert_to_idl, ConvertedValue, JsRuntime, VmJsRuntime};
+use webidl_runtime::{convert_to_idl, ConvertedValue, JsRuntime, VmJsRuntime};
 
 #[test]
 fn usvstring_replaces_lone_surrogates() {

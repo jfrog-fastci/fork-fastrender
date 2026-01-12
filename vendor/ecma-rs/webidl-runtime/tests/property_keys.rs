@@ -1,5 +1,5 @@
 use vm_js::{Value, VmError};
-use webidl_js_runtime::{JsRuntime, VmJsRuntime, WebIdlJsRuntime};
+use webidl_runtime::{JsRuntime, VmJsRuntime, WebIdlJsRuntime};
 
 #[test]
 fn string_property_key_roundtrips_with_get() -> Result<(), VmError> {
