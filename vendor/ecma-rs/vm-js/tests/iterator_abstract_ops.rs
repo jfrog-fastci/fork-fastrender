@@ -132,6 +132,88 @@ fn iterator_step_value_sets_done_true_when_done_getter_throws() -> Result<(), Vm
 }
 
 #[test]
+fn iterator_step_value_sets_done_true_when_value_getter_throws() -> Result<(), VmError> {
+  let mut vm = Vm::new(VmOptions::default());
+  let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut realm = Realm::new(&mut vm, &mut heap)?;
+
+  let mut host = ();
+  let mut hooks = NoopHooks::default();
+
+  let mut scope = heap.scope();
+
+  let throw_id = vm.register_native_call(throw_1)?;
+  let throw_name = scope.alloc_string("throw")?;
+  let throw_fn = scope.alloc_native_function(throw_id, None, throw_name, 0)?;
+
+  // Iterator result object whose `value` getter throws.
+  let iter_result = scope.alloc_object()?;
+  let done_key = PropertyKey::from_string(scope.alloc_string("done")?);
+  scope.define_property(iter_result, done_key, data_desc(Value::Bool(false)))?;
+  let value_key = PropertyKey::from_string(scope.alloc_string("value")?);
+  scope.define_property(
+    iter_result,
+    value_key,
+    PropertyDescriptor {
+      enumerable: true,
+      configurable: true,
+      kind: PropertyKind::Accessor {
+        get: Value::Object(throw_fn),
+        set: Value::Undefined,
+      },
+    },
+  )?;
+
+  // `next()` returns the iterator result object.
+  let return_slot0_id = vm.register_native_call(return_slot0)?;
+  let next_name = scope.alloc_string("next")?;
+  let next_fn = scope.alloc_native_function_with_slots(
+    return_slot0_id,
+    None,
+    next_name,
+    0,
+    &[Value::Object(iter_result)],
+  )?;
+
+  // Iterator object.
+  let iterator_obj = scope.alloc_object()?;
+  let next_key = PropertyKey::from_string(scope.alloc_string("next")?);
+  scope.define_property(iterator_obj, next_key, data_desc(Value::Object(next_fn)))?;
+
+  // Iterator method returns the iterator object.
+  let iter_method_name = scope.alloc_string("@@iterator")?;
+  let iter_method = scope.alloc_native_function_with_slots(
+    return_slot0_id,
+    None,
+    iter_method_name,
+    0,
+    &[Value::Object(iterator_obj)],
+  )?;
+
+  let mut record = iterator::get_iterator_from_method(
+    &mut vm,
+    &mut host,
+    &mut hooks,
+    &mut scope,
+    Value::Undefined,
+    Value::Object(iter_method),
+  )?;
+  scope.push_roots(&[record.iterator, record.next_method])?;
+
+  let err = iterator::iterator_step_value(&mut vm, &mut host, &mut hooks, &mut scope, &mut record)
+    .expect_err("value getter should throw");
+  assert_eq!(err.thrown_value(), Some(Value::Number(1.0)));
+  assert!(
+    record.done,
+    "IteratorStepValue must set IteratorRecord.done=true when value getter throws"
+  );
+
+  drop(scope);
+  realm.teardown(&mut heap);
+  Ok(())
+}
+
+#[test]
 fn iterator_close_suppresses_get_method_error_for_throw_completion() -> Result<(), VmError> {
   let mut vm = Vm::new(VmOptions::default());
   let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));

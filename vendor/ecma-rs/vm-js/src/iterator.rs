@@ -237,7 +237,8 @@ pub fn iterator_step(
 
   let result = iterator_next(vm, host, hooks, scope, record, None)?;
 
-  // Spec: if `IteratorComplete` throws, set `[[Done]] = true` so callers skip `IteratorClose`.
+  // Spec: if `IteratorComplete` throws, set `[[Done]] = true` before propagating the error so
+  // callers skip `IteratorClose` after an iterator protocol error.
   let done = match iterator_complete(vm, host, hooks, scope, result) {
     Ok(v) => v,
     Err(err) => {
@@ -274,6 +275,8 @@ pub fn iterator_step_value(
   match iterator_value(vm, host, hooks, scope, result) {
     Ok(v) => Ok(Some(v)),
     Err(err) => {
+      // Spec: if `IteratorValue` throws, set `[[Done]] = true` before propagating the error so
+      // callers skip `IteratorClose` after an iterator protocol error.
       record.done = true;
       Err(err)
     }
