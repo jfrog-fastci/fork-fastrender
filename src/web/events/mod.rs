@@ -1117,8 +1117,6 @@ pub fn dispatch_event(
     shadow_adjusted_prefix.push(last_shadow_adjusted_target);
   }
 
-  let mut reached_dispatch_target = false;
-
   let dispatch_res: std::result::Result<(), DomError> = (|| {
     // Capturing pass: iterate path in reverse order.
     for idx in (0..event.path.len()).rev() {
@@ -1140,25 +1138,10 @@ pub fn dispatch_event(
         invoker,
         /* capture */ true,
       )?;
-      if idx == 0 {
-        reached_dispatch_target = true;
-      }
-    }
-
-    // If propagation was stopped before reaching the dispatch target, the event never enters the
-    // at-target/bubbling steps.
-    if !reached_dispatch_target {
-      return Ok(());
     }
 
     // Bubbling pass: iterate path in tree order.
     for idx in 0..event.path.len() {
-      // `stopPropagation()` should not prevent bubble listeners on the dispatch target itself, but
-      // must prevent reaching subsequent targets.
-      if event.propagation_stopped && idx > 0 {
-        break;
-      }
-
       let entry = event.path[idx];
       if entry.shadow_adjusted_target.is_some() {
         event.event_phase = EventPhase::AtTarget;
@@ -1170,6 +1153,15 @@ pub fn dispatch_event(
       }
 
       event.target = shadow_adjusted_prefix[idx];
+
+      // DOM: the "stop propagation" flag is checked at the start of each `invoke` step.
+      //
+      // When it is set we still continue walking the path (so `event.target` can be retargeted for
+      // subsequent structs), but skip invoking listeners.
+      if event.propagation_stopped {
+        continue;
+      }
+
       event.current_target = Some(entry.invocation_target);
       invoke_listeners(
         entry.invocation_target,
