@@ -1,5 +1,5 @@
 use native_js::compiler::compile_typescript_to_artifact;
-use native_js::{CompileOptions, EmitKind};
+use native_js::{CompileOptions, EmitKind, OptLevel};
 use std::io::Read;
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -203,6 +203,8 @@ fn aot_smoke_debug_keeps_intermediates() {
   let mut opts = CompileOptions::default();
   opts.emit = EmitKind::Executable;
   opts.debug = true;
+  // Keep compilation fast; this test only asserts debug intermediates are written to disk.
+  opts.opt_level = OptLevel::O0;
 
   compile_typescript_to_artifact(source, opts, Some(exe_path.clone())).unwrap();
 

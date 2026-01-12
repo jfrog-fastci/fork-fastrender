@@ -1,4 +1,4 @@
-use native_js::{compile_program, CompilerOptions, EmitKind};
+use native_js::{compile_program, CompilerOptions, EmitKind, OptLevel};
 use object::{Object, ObjectSection};
 use typecheck_ts::lib_support::{CompilerOptions as TsCompilerOptions, LibName};
 use typecheck_ts::{FileKey, MemoryHost, Program};
@@ -31,6 +31,9 @@ fn debug_info_emits_global_var_names() {
   let mut opts = CompilerOptions::default();
   opts.emit = EmitKind::Object;
   opts.debug = true;
+  // Keep compilation fast/deterministic; this test only cares that debug info is present and
+  // references the global variable name.
+  opts.opt_level = OptLevel::O0;
 
   let artifact = compile_program(&program, entry, &opts).unwrap();
   assert_eq!(artifact.kind, EmitKind::Object);
@@ -66,4 +69,3 @@ fn debug_info_emits_global_var_names() {
 
   let _ = std::fs::remove_file(&artifact.path);
 }
-
