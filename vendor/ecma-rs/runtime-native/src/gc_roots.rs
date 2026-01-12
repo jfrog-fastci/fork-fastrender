@@ -378,7 +378,9 @@ fn visit_callsite_reloc_pairs(
   f: &mut dyn FnMut(RelocPair),
 ) -> bool {
   // LLVM StackMaps `Indirect [SP + off]` locations are based on the caller's stack pointer at the
-  // stackmap record PC (return address after the call, before any cleanup).
+  // stackmap record PC (return address after the call, before any cleanup). Stackmaps may also
+  // contain `Indirect [FP + off]` locations, which are evaluated directly from the caller frame
+  // pointer.
   //
   // Under our forced-frame-pointer ABI contract this callsite SP is recoverable from the callee
   // frame pointer as `callee_fp + 16` (exposed by `FrameView::caller_sp`).
