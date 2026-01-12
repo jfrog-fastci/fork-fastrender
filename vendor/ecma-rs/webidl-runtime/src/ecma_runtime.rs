@@ -365,14 +365,27 @@ impl VmJsRuntime {
   /// `vm-js` `Value` equality compares string handles (not string contents). Most runtime code
   /// should continue to use [`VmJsRuntime::alloc_string_value`], but when host code needs a stable
   /// JS-visible identity sentinel it can opt into interning via this method.
+  ///
+  /// Note: interned strings are rooted for the lifetime of the runtime. Callers should only intern
+  /// a small, bounded set of fixed strings.
   pub fn intern_string_value(&mut self, s: &str) -> Result<Value, VmError> {
     if let Some(handle) = self.interned_strings.get(s).copied() {
       return Ok(Value::String(handle));
     }
-    let handle = self.alloc_string_handle(s)?;
+
+    // Ensure we can insert into the intern table without risking an OOM abort during `insert`.
+    self
+      .interned_strings
+      .try_reserve(1)
+      .map_err(|_| VmError::OutOfMemory)?;
+    let mut key = String::new();
+    key.try_reserve(s.len()).map_err(|_| VmError::OutOfMemory)?;
+    key.push_str(s);
+
+    let handle = self.alloc_string_handle(&key)?;
     // Keep this handle alive for the lifetime of the runtime.
     let _ = self.heap.add_root(Value::String(handle))?;
-    self.interned_strings.insert(s.to_string(), handle);
+    self.interned_strings.insert(key, handle);
     Ok(Value::String(handle))
   }
 
