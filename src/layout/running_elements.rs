@@ -3,6 +3,7 @@ use crate::style::content::{RunningElementSelect, RunningElementValues};
 use crate::tree::box_tree::BoxNode;
 use crate::tree::fragment_tree::{FragmentContent, FragmentNode};
 use std::collections::HashMap;
+use std::cmp::Ordering;
 use std::sync::Arc;
 
 const EPSILON: f32 = 0.01;
@@ -70,12 +71,18 @@ pub fn collect_running_element_events(
     false,
     &mut events,
   );
-  events.sort_by(|a, b| {
-    a.abs_block
+  let mut indexed: Vec<(usize, RunningElementEvent)> = events.into_iter().enumerate().collect();
+  indexed.sort_by(|(idx_a, a), (idx_b, b)| {
+    match a
+      .abs_block
       .partial_cmp(&b.abs_block)
-      .unwrap_or(std::cmp::Ordering::Equal)
+      .unwrap_or(Ordering::Equal)
+    {
+      Ordering::Equal => idx_a.cmp(idx_b),
+      other => other,
+    }
   });
-  events
+  indexed.into_iter().map(|(_, event)| event).collect()
 }
 
 /// Collect running element events from a page subtree.
@@ -94,12 +101,21 @@ pub fn collect_running_element_events_for_page(
   let root_start = axes.block_start(&bounds, block_size);
   let mut events = Vec::new();
   collect_running_element_occurrences(root, -root_start, block_size, axes, false, &mut events);
-  events.sort_by(|a, b| {
-    a.abs_block
+  let mut indexed: Vec<(usize, RunningElementEvent)> = events.into_iter().enumerate().collect();
+  indexed.sort_by(|(idx_a, a), (idx_b, b)| {
+    match a
+      .abs_block
       .partial_cmp(&b.abs_block)
-      .unwrap_or(std::cmp::Ordering::Equal)
+      .unwrap_or(Ordering::Equal)
+    {
+      Ordering::Equal => idx_a.cmp(idx_b),
+      other => other,
+    }
   });
-  (events, block_size)
+  (
+    indexed.into_iter().map(|(_, event)| event).collect(),
+    block_size,
+  )
 }
 
 /// Computes running element values for a single page subtree.
@@ -322,6 +338,51 @@ mod tests {
   use super::*;
   use crate::geometry::Rect;
   use crate::style::ComputedStyle;
+
+  #[test]
+  fn running_element_events_are_stable_for_equal_positions() {
+    let axes = FragmentAxes::default();
+    let snapshot_a = FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, 10.0, 10.0), Vec::new());
+    let snapshot_b = FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, 20.0, 20.0), Vec::new());
+    let anchor_a = FragmentNode::new_running_anchor(
+      Rect::from_xywh(0.0, 10.0, 0.0, 0.0),
+      "header".to_string(),
+      snapshot_a,
+    );
+    let anchor_b = FragmentNode::new_running_anchor(
+      Rect::from_xywh(0.0, 10.0, 0.0, 0.0),
+      "header".to_string(),
+      snapshot_b,
+    );
+    let root = FragmentNode::new_block(
+      Rect::from_xywh(0.0, 0.0, 100.0, 100.0),
+      vec![anchor_a, anchor_b],
+    );
+
+    let events = collect_running_element_events(&root, axes);
+    assert_eq!(events.len(), 2);
+    assert_eq!(events[0].name, "header");
+    assert_eq!(events[1].name, "header");
+    assert_eq!(events[0].snapshot.bounds.width(), 10.0);
+    assert_eq!(events[1].snapshot.bounds.width(), 20.0);
+
+    let mut state = RunningElementState::default();
+    let mut idx = 0;
+    let page_values = running_elements_for_page(&events, &mut idx, &mut state, 0.0, 100.0);
+    let values = page_values
+      .get("header")
+      .expect("expected header running element values");
+    assert_eq!(
+      values.first.as_ref().unwrap().bounds.width(),
+      10.0,
+      "first occurrence should use traversal order when abs_block ties"
+    );
+    assert_eq!(
+      values.last.as_ref().unwrap().bounds.width(),
+      20.0,
+      "last occurrence should use traversal order when abs_block ties"
+    );
+  }
 
   #[test]
   fn clear_running_position_visits_footnote_body() {
