@@ -5694,6 +5694,15 @@ version = "0.1.0"
 dependencies = [
  "vm-js",
  "webidl",
+ "webidl-runtime",
+]
+
+[[package]]
+name = "webidl-runtime"
+version = "0.1.0"
+dependencies = [
+ "vm-js",
+ "webidl",
  "webidl-vm-js",
 ]
 
