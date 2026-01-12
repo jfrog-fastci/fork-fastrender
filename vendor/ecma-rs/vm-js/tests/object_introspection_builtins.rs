@@ -148,3 +148,31 @@ fn generator_prototype_chain_has_expected_own_names() -> Result<(), VmError> {
     Err(err) => Err(err),
   }
 }
+
+#[test]
+fn internal_symbols_are_hidden_from_own_property_keys() {
+  let mut rt = new_runtime();
+  let script = r#"
+    (() => {
+      // Array iterator objects: should not expose internal symbol-keyed slots.
+      const arrIter = [1, 2][Symbol.iterator]();
+      if (Reflect.ownKeys(arrIter).length !== 0) return false;
+      if (Object.getOwnPropertySymbols(arrIter).length !== 0) return false;
+
+      // String iterator objects: should not expose internal symbol-keyed slots.
+      const strIter = "ab"[Symbol.iterator]();
+      if (Reflect.ownKeys(strIter).length !== 0) return false;
+      if (Object.getOwnPropertySymbols(strIter).length !== 0) return false;
+
+      // RegExp matchAll iterator objects: should only expose the (temporary) iterable plumbing, not
+      // internal slot markers.
+      const reIter = /a/g[Symbol.matchAll]("a");
+      const keys = Reflect.ownKeys(reIter);
+      const syms = Object.getOwnPropertySymbols(reIter);
+      return keys.length === 2 && keys[0] === "next" && keys[1] === Symbol.iterator &&
+        syms.length === 1 && syms[0] === Symbol.iterator;
+    })()
+  "#;
+  let value = rt.exec_script(script).unwrap();
+  assert_eq!(value, Value::Bool(true));
+}

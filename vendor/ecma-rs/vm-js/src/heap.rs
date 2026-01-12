@@ -4322,17 +4322,26 @@ impl Heap {
       }
     }
 
-    // vm-js uses a small number of reserved `Symbol.for("vm-js.internal.*")` markers to model
-    // internal slots on some built-in exotic objects (e.g. String/Number/Boolean wrapper objects).
+    // vm-js uses a reserved `"vm-js.internal.*"` symbol description prefix to model internal slots
+    // on some built-in exotic objects.
     //
     // These must not be observable via `[[OwnPropertyKeys]]` / `Reflect.ownKeys` / etc.
-    let internal_marker_symbols = [
-      self.internal_string_data_symbol(),
-      self.internal_number_data_symbol(),
-      self.internal_boolean_data_symbol(),
-      self.internal_bigint_data_symbol(),
-      self.internal_symbol_data_symbol(),
-      self.internal_generator_state_symbol(),
+    const INTERNAL_SYMBOL_PREFIX: [u16; 15] = [
+      b'v' as u16,
+      b'm' as u16,
+      b'-' as u16,
+      b'j' as u16,
+      b's' as u16,
+      b'.' as u16,
+      b'i' as u16,
+      b'n' as u16,
+      b't' as u16,
+      b'e' as u16,
+      b'r' as u16,
+      b'n' as u16,
+      b'a' as u16,
+      b'l' as u16,
+      b'.' as u16,
     ];
 
     for (i, prop) in properties.iter().enumerate() {
@@ -4342,8 +4351,11 @@ impl Heap {
       let PropertyKey::Symbol(sym) = prop.key else {
         continue;
       };
-      if internal_marker_symbols.iter().flatten().any(|s| *s == sym) {
-        continue;
+      if let Some(desc) = self.get_symbol_description(sym)? {
+        let units = self.get_string(desc)?.as_code_units();
+        if units.starts_with(&INTERNAL_SYMBOL_PREFIX) {
+          continue;
+        }
       }
       out.push(prop.key);
     }
