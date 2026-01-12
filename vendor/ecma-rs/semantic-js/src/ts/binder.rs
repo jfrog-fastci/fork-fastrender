@@ -532,6 +532,65 @@ impl<'a, HP: Fn(FileId) -> Arc<HirFile>> Binder<'a, HP> {
     for aug in pending {
       match &aug.target {
         AugmentationTarget::File(target) => {
+          let introduces_value_exports = aug.module.decls.iter().any(|decl| {
+            decl.exported != Exported::No && decl.kind.namespaces().contains(Namespace::VALUE)
+          });
+
+          if introduces_value_exports {
+            let should_error_ts2649 = self.modules.get(target).is_some_and(|state| {
+              let Some(path) = state.export_specs.iter().find_map(|spec| match spec {
+                ExportSpec::ExportAssignment { path, .. } => Some(path),
+                _ => None,
+              }) else {
+                return false;
+              };
+
+              let Some(base) = path.first() else {
+                return false;
+              };
+              let Some(group) = state.symbols.get(base) else {
+                return false;
+              };
+
+              // TS2649 is only for `export =` modules that *can* be augmented (i.e. the export
+              // assignment target has namespace meaning) but still resolve to a non-module value.
+              if group
+                .symbol_for(Namespace::NAMESPACE, &self.symbols)
+                .is_none()
+              {
+                return false;
+              }
+
+              let Some(value_sym) = group.symbol_for(Namespace::VALUE, &self.symbols) else {
+                return false;
+              };
+              let Some(value_decl) = self
+                .symbols
+                .symbol(value_sym)
+                .decls_for(Namespace::VALUE)
+                .iter()
+                .find(|decl| self.symbols.decl(**decl).kind != DeclKind::Namespace)
+              else {
+                return false;
+              };
+
+              matches!(self.symbols.decl(*value_decl).kind, DeclKind::Var)
+            });
+
+            if should_error_ts2649 {
+              self.diagnostics.push(Diagnostic::error(
+                "TS2649",
+                format!(
+                  "Cannot augment module '{}' with value exports because it resolves to a non-module entity.",
+                  aug.module.name
+                ),
+                Span::new(aug.origin, aug.module.name_span),
+              ));
+              applied_any = true;
+              continue;
+            }
+          }
+
           if let Some(mut state) = self.modules.remove(target) {
             if !self.is_module_augmentable_for_augmentation(&state) {
               self.diagnostics.push(Diagnostic::error(
@@ -1558,8 +1617,7 @@ impl<'a, HP: Fn(FileId) -> Arc<HirFile>> Binder<'a, HP> {
       }
     } else if !function_decls.is_empty() || !var_decls.is_empty() || !namespace_decls.is_empty() {
       // Build the value-side symbol. If there are namespace declarations, we
-      // can only merge them with functions (or with each other). Vars are
-      // handled separately and never merge with namespaces.
+      // can merge them with functions and (in ambient contexts) vars/consts.
       if !namespace_decls.is_empty() {
         let mask = Namespace::VALUE | Namespace::NAMESPACE;
         let sym = self
@@ -1567,6 +1625,11 @@ impl<'a, HP: Fn(FileId) -> Arc<HirFile>> Binder<'a, HP> {
           .alloc_symbol(owner, name, mask, SymbolOrigin::Local);
         reset_symbol(&mut self.symbols, sym, mask, SymbolOrigin::Local);
         for decl in &function_decls {
+          self
+            .symbols
+            .add_decl_to_symbol(sym, *decl, self.symbols.decl(*decl).namespaces);
+        }
+        for decl in &var_decls {
           self
             .symbols
             .add_decl_to_symbol(sym, *decl, self.symbols.decl(*decl).namespaces);
@@ -3244,6 +3307,12 @@ fn decls_are_compatible(a: &DeclData, b: &DeclData) -> bool {
     (DeclKind::Enum, _) | (_, DeclKind::Enum) => false,
     (DeclKind::Namespace, DeclKind::Namespace) => true,
     (DeclKind::Namespace, DeclKind::Function) | (DeclKind::Function, DeclKind::Namespace) => true,
+    // Allow lodash-style `declare const X; declare namespace X {}` merges, but
+    // only in ambient contexts. Non-ambient var + namespace merges are illegal
+    // in TypeScript and should still surface as duplicate identifiers.
+    (DeclKind::Namespace, DeclKind::Var) | (DeclKind::Var, DeclKind::Namespace) => {
+      a.is_ambient && b.is_ambient
+    }
     (DeclKind::Function, DeclKind::Function) => true,
     (DeclKind::Function, DeclKind::Var) | (DeclKind::Var, DeclKind::Function) => true,
     (DeclKind::Var, DeclKind::Var) => true,
@@ -3764,22 +3833,38 @@ fn should_merge_value_namespace(
   namespace: &Option<SymbolId>,
   symbols: &SymbolTable,
 ) -> bool {
-  if value.is_none() || namespace.is_none() {
+  let (Some(value_sym), Some(namespace_sym)) = (value, namespace) else {
     return false;
-  }
-  if let Some(sym) = value {
-    let sym = symbols.symbol(*sym);
-    if let Some(first) = sym.decls_for(Namespace::VALUE).first() {
-      let decl_kind = &symbols.decl(*first).kind;
-      matches!(
-        decl_kind,
-        DeclKind::Function | DeclKind::Class | DeclKind::Enum
-      )
-    } else {
-      false
+  };
+
+  // Namespace declarations themselves also live in the value namespace, but for
+  // mergeability we care about the value-side declaration kind (function/class/
+  // enum/var) being augmented by the namespace.
+  let Some(value_decl) = symbols
+    .symbol(*value_sym)
+    .decls_for(Namespace::VALUE)
+    .iter()
+    .find(|decl| symbols.decl(**decl).kind != DeclKind::Namespace)
+  else {
+    return false;
+  };
+  let value_decl = symbols.decl(*value_decl);
+
+  match value_decl.kind {
+    DeclKind::Function | DeclKind::Class | DeclKind::Enum => true,
+    DeclKind::Var => {
+      if !value_decl.is_ambient {
+        return false;
+      }
+
+      // Var + namespace merges are only permitted when both sides are ambient.
+      symbols
+        .symbol(*namespace_sym)
+        .decls_for(Namespace::NAMESPACE)
+        .iter()
+        .any(|decl| symbols.decl(*decl).is_ambient)
     }
-  } else {
-    false
+    _ => false,
   }
 }
 

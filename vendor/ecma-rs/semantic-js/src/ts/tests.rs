@@ -5416,3 +5416,102 @@ fn declare_global_without_module_syntax_is_script() {
     "d.ts files without imports/exports should use script semantics"
   );
 }
+
+#[test]
+fn ambient_var_namespace_merge_matches_lodash_export_equals_pattern() {
+  let file = FileId(9000);
+  let resolver = StaticResolver::new(HashMap::new());
+
+  let mut hir = HirFile::module(file);
+  hir.file_kind = FileKind::Dts;
+  hir.exports.push(Export::ExportAssignment {
+    path: Some(vec!["_".to_string()]),
+    expr_span: span(10),
+    span: span(11),
+  });
+  hir.export_as_namespace.push(ExportAsNamespace {
+    name: "_".to_string(),
+    span: span(12),
+  });
+
+  let mut value_decl = mk_decl(0, "_", DeclKind::Var, Exported::No);
+  value_decl.is_ambient = true;
+  let mut ns_decl = mk_decl(1, "_", DeclKind::Namespace, Exported::No);
+  ns_decl.is_ambient = true;
+  hir.decls.extend([value_decl, ns_decl]);
+
+  let files: HashMap<FileId, Arc<HirFile>> = maplit::hashmap! { file => Arc::new(hir) };
+  let (_semantics, diags) =
+    bind_ts_program(&[file], &resolver, |f| files.get(&f).unwrap().clone());
+  assert!(diags.is_empty(), "unexpected diagnostics: {:?}", diags);
+}
+
+#[test]
+fn export_equals_module_augmentation_with_value_exports_reports_ts2649() {
+  let lib_file = FileId(9010);
+  let extender_file = FileId(9011);
+
+  let mut lib = HirFile::module(lib_file);
+  lib.file_kind = FileKind::Dts;
+  let mut lib_var = mk_decl(0, "lib", DeclKind::Var, Exported::No);
+  lib_var.is_ambient = true;
+  let mut lib_ns = mk_decl(1, "lib", DeclKind::Namespace, Exported::No);
+  lib_ns.is_ambient = true;
+  lib.decls.extend([lib_var, lib_ns]);
+  lib.exports.push(Export::ExportAssignment {
+    path: Some(vec!["lib".to_string()]),
+    expr_span: span(10),
+    span: span(11),
+  });
+
+  let mut extender = HirFile::module(extender_file);
+  extender.file_kind = FileKind::Dts;
+  extender.imports.push(Import {
+    specifier: "lib".to_string(),
+    specifier_span: span(20),
+    default: None,
+    namespace: Some(ImportNamespace {
+      local: "lib".to_string(),
+      local_span: span(21),
+      is_type_only: false,
+    }),
+    named: Vec::new(),
+    is_type_only: false,
+  });
+
+  let mut fn_decl = mk_decl(2, "fn", DeclKind::Function, Exported::Named);
+  fn_decl.is_ambient = true;
+  let augmentation = AmbientModule {
+    name: "lib".to_string(),
+    name_span: span(200),
+    decls: vec![fn_decl],
+    imports: Vec::new(),
+    type_imports: Vec::new(),
+    import_equals: Vec::new(),
+    exports: Vec::new(),
+    export_as_namespace: Vec::new(),
+    ambient_modules: Vec::new(),
+  };
+  extender.ambient_modules.push(augmentation);
+
+  let files: HashMap<FileId, Arc<HirFile>> = maplit::hashmap! {
+    lib_file => Arc::new(lib),
+    extender_file => Arc::new(extender),
+  };
+  let resolver = StaticResolver::new(maplit::hashmap! {
+    "lib".to_string() => lib_file,
+  });
+
+  let (_semantics, diags) = bind_ts_program(&[extender_file], &resolver, |f| {
+    files.get(&f).unwrap().clone()
+  });
+  assert_eq!(diags.len(), 1, "expected one diagnostic, got {:?}", diags);
+  let diag = &diags[0];
+  assert_eq!(diag.code, "TS2649");
+  assert_eq!(
+    diag.message,
+    "Cannot augment module 'lib' with value exports because it resolves to a non-module entity."
+  );
+  assert_eq!(diag.primary.file, extender_file);
+  assert_eq!(diag.primary.range, span(200));
+}
