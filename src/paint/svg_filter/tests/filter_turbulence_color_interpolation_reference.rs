@@ -1,6 +1,6 @@
-use fastrender::image_loader::ImageCache;
-use fastrender::paint::svg_filter::{apply_svg_filter, parse_svg_filter_from_svg_document};
-use fastrender::Rect;
+use crate::image_loader::ImageCache;
+use crate::paint::svg_filter::{apply_svg_filter, parse_svg_filter_from_svg_document};
+use crate::Rect;
 use resvg::tiny_skia::{Pixmap, PremultipliedColorU8, Transform};
 
 const WIDTH: u32 = 4;

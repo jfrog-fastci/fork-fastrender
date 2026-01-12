@@ -1,11 +1,11 @@
-use fastrender::geometry::Rect;
-use fastrender::image_loader::ImageCache;
-use fastrender::paint::svg_filter::{
+use crate::geometry::Rect;
+use crate::image_loader::ImageCache;
+use crate::paint::svg_filter::{
   apply_svg_filter, ColorInterpolationFilters, CompositeOperator, FilterInput, FilterPrimitive,
   FilterStep, SvgFilter, SvgFilterPrimitiveRegionOverride, SvgFilterRegion, SvgFilterUnits,
   SvgLength, TurbulenceType,
 };
-use fastrender::Rgba;
+use crate::Rgba;
 use tiny_skia::{Pixmap, PremultipliedColorU8};
 
 fn pixel(pixmap: &Pixmap, x: u32, y: u32) -> (u8, u8, u8, u8) {

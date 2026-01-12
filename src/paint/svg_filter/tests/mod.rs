@@ -1,6 +1,7 @@
-//! SVG integration tests consolidated from tests/svg_*.rs
-
-mod document_css_policy_test;
+//! Unit tests for the SVG filter engine.
+//!
+//! These were migrated from the old standalone SVG integration-test harness so they compile as part
+//! of the library test suite.
 mod filter_region;
 mod filter_tests;
 mod filter_turbulence;

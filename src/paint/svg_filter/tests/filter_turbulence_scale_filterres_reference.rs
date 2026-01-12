@@ -1,5 +1,5 @@
-use fastrender::geometry::Rect;
-use fastrender::paint::svg_filter::{
+use crate::geometry::Rect;
+use crate::paint::svg_filter::{
   apply_svg_filter, ColorInterpolationFilters, FilterPrimitive, FilterStep, SvgFilter,
   SvgFilterRegion, SvgFilterUnits, SvgLength, TurbulenceType,
 };

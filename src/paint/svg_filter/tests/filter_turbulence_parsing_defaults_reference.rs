@@ -1,6 +1,6 @@
-use fastrender::geometry::Rect;
-use fastrender::image_loader::ImageCache;
-use fastrender::paint::svg_filter::{apply_svg_filter, parse_svg_filter_from_svg_document};
+use crate::geometry::Rect;
+use crate::image_loader::ImageCache;
+use crate::paint::svg_filter::{apply_svg_filter, parse_svg_filter_from_svg_document};
 use tiny_skia::{Color, Pixmap};
 
 const W: u32 = 32;
