@@ -1353,8 +1353,8 @@ impl Heap {
   /// `index` is out of bounds or `bytes` is empty, this returns `Ok(0)` (mirroring typed array
   /// out-of-bounds write semantics).
   ///
-  /// Writes are ignored (returns `Ok(0)`) if the backing `ArrayBuffer` is detached or the view is
-  /// out of bounds.
+  /// Returns a `TypeError` if the backing `ArrayBuffer` is detached or if the view is out of
+  /// bounds.
   ///
   /// # Errors
   ///
@@ -1385,23 +1385,24 @@ impl Heap {
       .checked_add(max_write)
       .ok_or(VmError::InvariantViolation("Uint8Array byte offset overflow"))?;
 
-    // Detached buffers behave like out-of-bounds views; writes are ignored.
+    // Validate the backing buffer is attached and compute its length.
     let buf_len = {
       let buf = self.get_array_buffer(buffer)?;
-      let Some(data) = buf.data.as_deref() else {
-        return Ok(0);
-      };
+      let data = buf
+        .data
+        .as_deref()
+        .ok_or(VmError::TypeError("ArrayBuffer is detached"))?;
       data.len()
     };
     if view_end > buf_len {
-      // Out-of-bounds views behave like out-of-bounds indices: writes are ignored.
-      return Ok(0);
+      return Err(VmError::TypeError("Uint8Array view out of bounds"));
     }
 
     let buf = self.get_array_buffer_mut(buffer)?;
-    let Some(data) = buf.data.as_deref_mut() else {
-      return Ok(0);
-    };
+    let data = buf
+      .data
+      .as_deref_mut()
+      .ok_or(VmError::TypeError("ArrayBuffer is detached"))?;
     data[abs_start..abs_end].copy_from_slice(&bytes[..max_write]);
     Ok(max_write)
   }
