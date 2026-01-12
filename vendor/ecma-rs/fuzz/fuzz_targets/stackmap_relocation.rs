@@ -207,25 +207,44 @@ fuzz_target!(|data: &[u8]| {
 
     // Validate the relocation invariants. If these assertions fire, we found a bug in the derived
     // root relocation logic.
-    for pair in pairs {
-      let base_new_expected = if pair.base_old == 0 {
-        0
-      } else {
-        relocate_base(pair.base_old)
-      };
+    let mut base_new_expected_by_loc: HashMap<StackMapLocation, usize> = HashMap::new();
+    let mut derived_new_expected_by_loc: HashMap<StackMapLocation, usize> = HashMap::new();
+
+    for pair in &pairs {
+      // Base slots are written once per unique location; duplicates should converge to the same
+      // value.
+      base_new_expected_by_loc.entry(pair.base.clone()).or_insert_with(|| {
+        if pair.base_old == 0 {
+          0
+        } else {
+          relocate_base(pair.base_old)
+        }
+      });
+
+      // Derived slots are written once per *pair* in record order. If a derived location is
+      // duplicated (possible on malformed stackmaps), the final value corresponds to the last
+      // occurrence. Mirror that behavior to avoid treating ambiguous duplicate-location records as
+      // bugs in the relocation algorithm itself.
+      let base_new_expected = *base_new_expected_by_loc
+        .get(&pair.base)
+        .expect("base expected value should be computed");
       let derived_new_expected = if pair.base_old == 0 || pair.derived_old == 0 || base_new_expected == 0 {
         0
       } else {
         let delta = pair.derived_old.wrapping_sub(pair.base_old);
         base_new_expected.wrapping_add(delta)
       };
+      derived_new_expected_by_loc.insert(pair.derived.clone(), derived_new_expected);
+    }
 
-      let base_new_actual = *access.values.get(&pair.base).unwrap_or(&0);
-      let derived_new_actual = *access.values.get(&pair.derived).unwrap_or(&0);
-
+    for (base_loc, base_new_expected) in base_new_expected_by_loc {
+      let base_new_actual = *access.values.get(&base_loc).unwrap_or(&0);
       assert_eq!(base_new_actual, base_new_expected);
+    }
+
+    for (derived_loc, derived_new_expected) in derived_new_expected_by_loc {
+      let derived_new_actual = *access.values.get(&derived_loc).unwrap_or(&0);
       assert_eq!(derived_new_actual, derived_new_expected);
     }
   }
 });
-
