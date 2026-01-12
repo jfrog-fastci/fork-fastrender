@@ -502,6 +502,7 @@ impl<'a> Compiler<'a> {
       crate::codegen::CodegenOptions {
         module_name: "native-js".to_string(),
         debug: self.opts.debug,
+        opt_level: self.opts.opt_level,
       },
     )
     .map_err(|diagnostics| NativeJsError::Rejected { diagnostics })

@@ -6,10 +6,19 @@ use inkwell::debug_info::{
   DWARFEmissionKind, DWARFSourceLanguage, DebugInfoBuilder,
 };
 use inkwell::module::Module;
-use inkwell::values::{GlobalValue, PointerValue};
+use inkwell::values::{AsValueRef, BasicValueEnum, GlobalValue, PointerValue};
+use llvm_sys::core::{
+  LLVMAddFunction, LLVMBuildCall2, LLVMFunctionType, LLVMGetModuleContext, LLVMGetNamedFunction,
+  LLVMMetadataAsValue, LLVMMetadataTypeInContext, LLVMSetCurrentDebugLocation2, LLVMValueAsMetadata,
+  LLVMVoidTypeInContext,
+};
+use llvm_sys::prelude::{LLVMMetadataRef, LLVMTypeRef, LLVMValueRef};
+use std::ffi::CString;
 use std::collections::HashMap;
+use std::os::raw::c_uint;
 use typecheck_ts::Program;
 
+use crate::OptLevel;
 use super::TsAbiKind;
 
 /// Debug info state for the HIR-driven native-js codegen backend.
@@ -17,6 +26,7 @@ use super::TsAbiKind;
 /// This is intentionally minimal: just enough DWARF structure (compile unit, files, basic types,
 /// subprograms) to hang parameter/local variable info off `llvm.dbg.declare`.
 pub(crate) struct CodegenDebug<'ctx> {
+  optimized: bool,
   builder: DebugInfoBuilder<'ctx>,
   compile_unit: DICompileUnit<'ctx>,
   files: HashMap<FileId, DIFile<'ctx>>,
@@ -30,7 +40,8 @@ struct DebugTypes<'ctx> {
 }
 
 impl<'ctx> CodegenDebug<'ctx> {
-  pub(crate) fn new(module: &Module<'ctx>, program: &Program, entry_file: FileId) -> Self {
+  pub(crate) fn new(module: &Module<'ctx>, program: &Program, entry_file: FileId, opt_level: OptLevel) -> Self {
+    let optimized = !matches!(opt_level, OptLevel::O0);
     // `inkwell` bundles compile-unit creation into `Module::create_debug_info_builder` and returns
     // both the `DebugInfoBuilder` and the newly created `DICompileUnit`.
     //
@@ -46,7 +57,7 @@ impl<'ctx> CodegenDebug<'ctx> {
       &entry_name,
       ".",
       "native-js",
-      false,
+      optimized,
       "",
       0,
       "",
@@ -80,6 +91,7 @@ impl<'ctx> CodegenDebug<'ctx> {
     };
 
     Self {
+      optimized,
       builder,
       compile_unit,
       files: HashMap::new(),
@@ -89,6 +101,10 @@ impl<'ctx> CodegenDebug<'ctx> {
 
   pub(crate) fn finalize(&self) {
     self.builder.finalize();
+  }
+
+  pub(crate) fn optimized(&self) -> bool {
+    self.optimized
   }
 
   pub(crate) fn file(&mut self, program: &Program, file: FileId) -> DIFile<'ctx> {
@@ -179,7 +195,7 @@ impl<'ctx> CodegenDebug<'ctx> {
     arg_no: u32,
     ty: DIType<'ctx>,
     slot: PointerValue<'ctx>,
-  ) {
+  ) -> DILocalVariable<'ctx> {
     let var = self.builder.create_parameter_variable(
       scope.as_debug_info_scope(),
       name,
@@ -192,6 +208,7 @@ impl<'ctx> CodegenDebug<'ctx> {
     );
 
     self.insert_declare(context, builder, slot, var, scope, line, col);
+    var
   }
 
   pub(crate) fn declare_local(
@@ -205,7 +222,7 @@ impl<'ctx> CodegenDebug<'ctx> {
     name: &str,
     ty: DIType<'ctx>,
     slot: PointerValue<'ctx>,
-  ) {
+  ) -> DILocalVariable<'ctx> {
     let var = self.builder.create_auto_variable(
       scope.as_debug_info_scope(),
       name,
@@ -218,6 +235,7 @@ impl<'ctx> CodegenDebug<'ctx> {
     );
 
     self.insert_declare(context, builder, slot, var, scope, line, col);
+    var
   }
 
   pub(crate) fn declare_global_var(
@@ -269,6 +287,82 @@ impl<'ctx> CodegenDebug<'ctx> {
       self
         .builder
         .insert_declare_at_end(slot, Some(var), Some(expr), loc, bb);
+      // `insert_*_at_end` does not update the IR builder's insertion point; re-position at the end
+      // of the current block so future IR continues after the newly inserted debug intrinsic.
+      builder.position_at_end(bb);
+    }
+  }
+
+  pub(crate) fn insert_value(
+    &self,
+    context: &'ctx Context,
+    builder: &Builder<'ctx>,
+    module: &Module<'ctx>,
+    scope: DISubprogram<'ctx>,
+    var: DILocalVariable<'ctx>,
+    value: BasicValueEnum<'ctx>,
+    line: u32,
+    col: u32,
+  ) {
+    let expr: DIExpression<'ctx> = self.builder.create_expression(Vec::new());
+    let loc = self.location(context, line, col, scope);
+    if let Some(bb) = builder.get_insert_block() {
+      unsafe {
+        // Declare the `llvm.dbg.value` intrinsic (if not already present). This uses the "generic"
+        // signature:
+        //
+        //   declare void @llvm.dbg.value(metadata, metadata, metadata)
+        //
+        // The first operand ("metadata <value>") is encoded by wrapping a normal SSA value via
+        // `LLVMValueAsMetadata` + `LLVMMetadataAsValue`.
+        let module_ref = module.as_mut_ptr();
+        let llvm_ctx = LLVMGetModuleContext(module_ref);
+
+        let mut arg_tys: [LLVMTypeRef; 3] = [
+          LLVMMetadataTypeInContext(llvm_ctx),
+          LLVMMetadataTypeInContext(llvm_ctx),
+          LLVMMetadataTypeInContext(llvm_ctx),
+        ];
+        let fn_ty = LLVMFunctionType(LLVMVoidTypeInContext(llvm_ctx), arg_tys.as_mut_ptr(), 3, 0);
+
+        let name = CString::new("llvm.dbg.value").expect("llvm.dbg.value contains NUL");
+        let mut func: LLVMValueRef = LLVMGetNamedFunction(module_ref, name.as_ptr());
+        if func.is_null() {
+          func = LLVMAddFunction(module_ref, name.as_ptr(), fn_ty);
+        }
+
+        let val_md = LLVMValueAsMetadata(value.as_value_ref());
+        // `inkwell`'s debug-info wrapper types currently do not expose the underlying
+        // `LLVMMetadataRef`. We still need the raw metadata pointers to build `llvm.dbg.value`
+        // operands, so we rely on their layout being a transparent wrapper over `LLVMMetadataRef`.
+        //
+        // This matches how `DebugInfoBuilder::insert_declare_at_end` is implemented internally.
+        let var_md: LLVMMetadataRef = std::mem::transmute(var);
+        let expr_md: LLVMMetadataRef = std::mem::transmute(expr);
+        let loc_md: LLVMMetadataRef = std::mem::transmute(loc);
+        let args: [LLVMValueRef; 3] = [
+          LLVMMetadataAsValue(llvm_ctx, val_md),
+          LLVMMetadataAsValue(llvm_ctx, var_md),
+          LLVMMetadataAsValue(llvm_ctx, expr_md),
+        ];
+
+        LLVMSetCurrentDebugLocation2(builder.as_mut_ptr(), loc_md);
+        LLVMBuildCall2(
+          builder.as_mut_ptr(),
+          fn_ty,
+          func,
+          args.as_ptr() as *mut LLVMValueRef,
+          args.len() as c_uint,
+          b"\0".as_ptr().cast(),
+        );
+        // Do not leak the debug location to subsequent instructions; we currently emit debug
+        // locations only on debug intrinsics.
+        LLVMSetCurrentDebugLocation2(builder.as_mut_ptr(), std::ptr::null_mut());
+      }
+
+      // Ensure the builder stays positioned in the current block; `LLVMSetCurrentDebugLocation2`
+      // does not affect insertion, but the debug value emission above uses the raw LLVM builder API.
+      builder.position_at_end(bb);
     }
   }
 }

@@ -73,7 +73,15 @@ use typecheck_ts::{DefId, FileId, Program, TypeKindSummary};
 
 pub struct CodegenOptions {
   pub module_name: String,
+  /// Whether to emit DWARF debug info metadata (`llvm.dbg.*` intrinsics, `!DI*` nodes, etc).
+  ///
+  /// This is primarily used by the typechecked/native pipeline (`native-js-cli`, `native-js`).
   pub debug: bool,
+  /// The optimization level the final artifact will be built with.
+  ///
+  /// This is used as a heuristic for emitting "optimized debug info" (variable tracking via
+  /// `llvm.dbg.value` instead of only `llvm.dbg.declare` attached to allocas).
+  pub opt_level: crate::OptLevel,
 }
 
 impl Default for CodegenOptions {
@@ -81,6 +89,7 @@ impl Default for CodegenOptions {
     Self {
       module_name: "native_js".to_string(),
       debug: false,
+      opt_level: crate::OptLevel::O0,
     }
   }
 }
@@ -293,7 +302,7 @@ impl<'ctx, 'p> ProgramCodegen<'ctx, 'p> {
     let module = context.create_module(&options.module_name);
     let debug = options
       .debug
-      .then(|| debuginfo::CodegenDebug::new(&module, program, entry_file));
+      .then(|| debuginfo::CodegenDebug::new(&module, program, entry_file, options.opt_level));
     Self {
       context,
       module,
@@ -664,26 +673,27 @@ impl<'ctx, 'p> ProgramCodegen<'ctx, 'p> {
 
       let slot = cg.ensure_local_slot(binding, param_kind, debug_name, Span::new(file, hir_body.span))?;
       let value = func.get_nth_param(idx as u32).expect("missing param");
-      match param_kind {
+      let native = match param_kind {
         TsAbiKind::Number => {
-          cg.builder
-            .build_store(slot, value.into_float_value())
-            .expect("store param");
+          let v = value.into_float_value();
+          cg.builder.build_store(slot, v).expect("store param");
+          NativeValue::Number(v)
         }
         TsAbiKind::Boolean => {
-          cg.builder
-            .build_store(slot, value.into_int_value())
-            .expect("store param");
+          let v = value.into_int_value();
+          cg.builder.build_store(slot, v).expect("store param");
+          NativeValue::Boolean(v)
         }
         TsAbiKind::Void => unreachable!("void is not a valid parameter ABI kind"),
-      }
+      };
 
       let pat_span = hir_body
         .pats
         .get(param.pat.0 as usize)
         .map(|pat| pat.span)
         .unwrap_or(hir_body.span);
-      cg.dbg_declare_param(debug_name, (idx + 1) as u32, param_kind, slot, pat_span);
+      cg.dbg_declare_param(binding, debug_name, (idx + 1) as u32, param_kind, slot, pat_span);
+      cg.dbg_value(binding, native, pat_span);
 
       if let Some(name) = cg.pat_ident_name(param.pat) {
         cg.env.bind(name, binding);
@@ -1059,6 +1069,7 @@ struct FnCodegen<'ctx, 'p, 'a> {
   mode: CodegenMode,
   return_kind: TsAbiKind,
   debug_subprogram: Option<inkwell::debug_info::DISubprogram<'ctx>>,
+  debug_vars: HashMap<BindingId, inkwell::debug_info::DILocalVariable<'ctx>>,
 }
 
 impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
@@ -1095,6 +1106,7 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
       mode,
       return_kind,
       debug_subprogram: None,
+      debug_vars: HashMap::new(),
     }
   }
 
@@ -1130,6 +1142,7 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
 
   fn dbg_declare_param(
     &mut self,
+    binding: BindingId,
     name: &str,
     arg_no: u32,
     kind: TsAbiKind,
@@ -1149,7 +1162,7 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
     let (line, col) = debuginfo::line_col(self.cg.program, self.file, span.start);
     let di_file = debug.file(self.cg.program, self.file);
     let ty = debug.basic_type(kind);
-    debug.declare_parameter(
+    let var = debug.declare_parameter(
       self.cg.context,
       &self.builder,
       scope,
@@ -1161,9 +1174,17 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
       ty,
       slot,
     );
+    self.debug_vars.insert(binding, var);
   }
 
-  fn dbg_declare_local(&mut self, name: &str, kind: TsAbiKind, slot: PointerValue<'ctx>, span: TextRange) {
+  fn dbg_declare_local(
+    &mut self,
+    binding: BindingId,
+    name: &str,
+    kind: TsAbiKind,
+    slot: PointerValue<'ctx>,
+    span: TextRange,
+  ) {
     let Some(debug) = self.cg.debug.as_mut() else {
       return;
     };
@@ -1177,7 +1198,7 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
     let (line, col) = debuginfo::line_col(self.cg.program, self.file, span.start);
     let di_file = debug.file(self.cg.program, self.file);
     let ty = debug.basic_type(kind);
-    debug.declare_local(
+    let var = debug.declare_local(
       self.cg.context,
       &self.builder,
       scope,
@@ -1188,6 +1209,27 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
       ty,
       slot,
     );
+    self.debug_vars.insert(binding, var);
+  }
+
+  fn dbg_value(&self, binding: BindingId, value: NativeValue<'ctx>, span: TextRange) {
+    let Some(value) = value.as_basic_value() else {
+      return;
+    };
+    let Some(debug) = self.cg.debug.as_ref() else {
+      return;
+    };
+    if !debug.optimized() {
+      return;
+    }
+    let Some(scope) = self.debug_subprogram else {
+      return;
+    };
+    let Some(var) = self.debug_vars.get(&binding).copied() else {
+      return;
+    };
+    let (line, col) = debuginfo::line_col(self.cg.program, self.file, span.start);
+    debug.insert_value(self.cg.context, &self.builder, &self.cg.module, scope, var, value, line, col);
   }
 
   fn stmt(&self, stmt: StmtId) -> Result<&hir_js::Stmt, Vec<Diagnostic>> {
@@ -2199,7 +2241,8 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
               .get(declarator.pat.0 as usize)
               .map(|pat| pat.span)
               .unwrap_or(span.range);
-            self.dbg_declare_local(name, expected_kind, slot, pat_span);
+            self.dbg_declare_local(binding, name, expected_kind, slot, pat_span);
+            self.dbg_value(binding, value, pat_span);
           }
 
           if let Some(name) = self.pat_ident_name(declarator.pat) {
@@ -2542,7 +2585,9 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
 
         let slot = self.slot_for_binding(binding, span)?;
         let rhs = self.codegen_expr(value)?;
-        self.codegen_assignment_to_slot(slot, span, &op, rhs)
+        let out = self.codegen_assignment_to_slot(slot, span, &op, rhs)?;
+        self.dbg_value(binding, out, span.range);
+        Ok(out)
       }
 
       ExprKind::Update { op, expr, prefix } => {
@@ -2595,6 +2640,7 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
           .builder
           .build_store(slot.ptr, new)
           .expect("failed to build store");
+        self.dbg_value(binding, NativeValue::Number(new), inner_span);
         Ok(NativeValue::Number(if prefix { new } else { old }))
       }
 
