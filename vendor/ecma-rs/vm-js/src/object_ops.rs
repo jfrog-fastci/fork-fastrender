@@ -1,7 +1,140 @@
 use crate::property::{PropertyDescriptor, PropertyDescriptorPatch, PropertyKey, PropertyKind};
 use crate::property_descriptor_ops;
 use crate::{GcObject, GcString, Scope, Value, Vm, VmError, VmHost, VmHostHooks};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+
+fn fnv1a_hash_code_units(units: &[u16]) -> u64 {
+  // 64-bit FNV-1a.
+  let mut hash: u64 = 14695981039346656037;
+  for &u in units {
+    hash ^= u as u64;
+    hash = hash.wrapping_mul(1099511628211);
+  }
+  hash
+}
+
+fn hash_property_key(heap: &crate::Heap, key: &PropertyKey) -> Result<u64, VmError> {
+  Ok(match key {
+    PropertyKey::String(s) => fnv1a_hash_code_units(heap.get_string(*s)?.as_code_units()),
+    // Symbols compare by identity; hashing by handle bits is fine.
+    PropertyKey::Symbol(s) => ((s.index() as u64) << 32) | (s.generation() as u64),
+  })
+}
+
+/// A set of [`PropertyKey`]s using ECMAScript equality semantics.
+///
+/// - String keys compare by UTF-16 code units.
+/// - Symbol keys compare by identity.
+///
+/// This is used for Proxy `ownKeys` invariants, where the spec compares keys by value (not by
+/// `GcString` handle identity).
+#[derive(Debug)]
+struct PropertyKeySet {
+  buckets: HashMap<u64, Vec<PropertyKey>>,
+  len: usize,
+}
+
+impl PropertyKeySet {
+  fn with_capacity(capacity: usize) -> Result<Self, VmError> {
+    let mut buckets = HashMap::new();
+    buckets.try_reserve(capacity).map_err(|_| VmError::OutOfMemory)?;
+    Ok(Self { buckets, len: 0 })
+  }
+
+  fn is_empty(&self) -> bool {
+    self.len == 0
+  }
+
+  fn insert_unique(&mut self, heap: &crate::Heap, key: PropertyKey) -> Result<bool, VmError> {
+    let h = hash_property_key(heap, &key)?;
+    let bucket = self.buckets.entry(h).or_default();
+
+    for existing in bucket.iter() {
+      if heap.property_key_eq(existing, &key) {
+        return Ok(false);
+      }
+    }
+
+    bucket.try_reserve_exact(1).map_err(|_| VmError::OutOfMemory)?;
+    bucket.push(key);
+    self.len += 1;
+    Ok(true)
+  }
+
+  fn remove(&mut self, heap: &crate::Heap, key: &PropertyKey) -> Result<bool, VmError> {
+    let h = hash_property_key(heap, key)?;
+    let Some(bucket) = self.buckets.get_mut(&h) else {
+      return Ok(false);
+    };
+
+    for i in 0..bucket.len() {
+      if heap.property_key_eq(&bucket[i], key) {
+        bucket.swap_remove(i);
+        self.len -= 1;
+        if bucket.is_empty() {
+          self.buckets.remove(&h);
+        }
+        return Ok(true);
+      }
+    }
+    Ok(false)
+  }
+}
+
+fn validate_proxy_own_keys_trap_result(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  target: GcObject,
+  trap_result: &[PropertyKey],
+) -> Result<(), VmError> {
+  // Spec: https://tc39.es/ecma262/#sec-proxy-object-internal-methods-and-internal-slots-ownpropertykeys
+  //
+  // Invariants summary:
+  // - Trap result must not contain duplicates.
+  // - If the target is extensible, trap result must include all non-configurable target keys.
+  // - If the target is not extensible, trap result must include *all* target keys and no extras.
+
+  const TICK_EVERY: usize = 1024;
+  let mut unchecked = PropertyKeySet::with_capacity(trap_result.len())?;
+  for (i, key) in trap_result.iter().enumerate() {
+    if i != 0 && i % TICK_EVERY == 0 {
+      vm.tick()?;
+    }
+    if !unchecked.insert_unique(scope.heap(), *key)? {
+      return Err(VmError::TypeError("Proxy ownKeys trap returned duplicate keys"));
+    }
+  }
+
+  let extensible_target = scope.is_extensible_with_host_and_hooks(vm, host, hooks, target)?;
+  let target_keys = scope.object_own_property_keys_with_host_and_hooks(vm, host, hooks, target)?;
+
+  for (i, key) in target_keys.iter().enumerate() {
+    if i != 0 && i % TICK_EVERY == 0 {
+      vm.tick()?;
+    }
+
+    let desc = scope.object_get_own_property_with_host_and_hooks(vm, host, hooks, target, *key)?;
+    let is_non_configurable = desc.is_some_and(|d| !d.configurable);
+
+    if is_non_configurable || !extensible_target {
+      if !unchecked.remove(scope.heap(), key)? {
+        return Err(VmError::TypeError(
+          "Proxy ownKeys trap omitted a required target key",
+        ));
+      }
+    }
+  }
+
+  if !extensible_target && !unchecked.is_empty() {
+    return Err(VmError::TypeError(
+      "Proxy ownKeys trap returned extra keys for a non-extensible target",
+    ));
+  }
+
+  Ok(())
+}
 
 fn proxy_own_keys_result_to_property_keys(
   vm: &mut Vm,
@@ -1292,6 +1425,7 @@ impl<'a> Scope<'a> {
         }
       }
 
+      validate_proxy_own_keys_trap_result(vm, self, host, hooks, target, &out)?;
       return Ok(out);
     }
   }
@@ -2613,7 +2747,9 @@ impl<'a> Scope<'a> {
           }
         }
       }
- 
+
+      validate_proxy_own_keys_trap_result(vm, &mut trap_scope, host, hooks, target, &out)?;
+
       // Root the returned key values in the caller scope so they remain valid across GC while the
       // returned `Vec<PropertyKey>` is in use.
       //
@@ -3347,6 +3483,7 @@ fn proxy_own_property_keys_with_tick(
     }
   }
 
+  validate_proxy_own_keys_trap_result(vm, &mut scope, host, hooks, target, &out)?;
   Ok(out)
 }
 
