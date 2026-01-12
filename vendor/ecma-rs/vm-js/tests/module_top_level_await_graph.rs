@@ -77,6 +77,11 @@ fn drain_microtasks(vm: &mut Vm, heap: &mut Heap, hooks: &mut MicrotaskQueue) ->
   Ok(())
 }
 
+fn teardown_jobs(vm: &mut Vm, heap: &mut Heap, hooks: &mut MicrotaskQueue) {
+  let mut ctx = JobCtx { vm, heap };
+  hooks.teardown(&mut ctx);
+}
+
 fn ns_get(
   vm: &mut Vm,
   host: &mut dyn VmHost,
@@ -172,6 +177,7 @@ fn tla_basic_module_evaluation_promise_is_pending_until_microtasks_run() -> Resu
     heap.remove_root(root);
   }
   graph.teardown(&mut vm, &mut heap);
+  teardown_jobs(&mut vm, &mut heap, &mut hooks);
   realm.teardown(&mut heap);
   result
 }
@@ -237,6 +243,7 @@ fn tla_in_dependency_makes_importer_evaluation_async() -> Result<(), VmError> {
     heap.remove_root(root);
   }
   graph.teardown(&mut vm, &mut heap);
+  teardown_jobs(&mut vm, &mut heap, &mut hooks);
   realm.teardown(&mut heap);
   result
 }
@@ -325,6 +332,7 @@ fn tla_async_cycle_evaluates_without_deadlock() -> Result<(), VmError> {
     heap.remove_root(root);
   }
   graph.teardown(&mut vm, &mut heap);
+  teardown_jobs(&mut vm, &mut heap, &mut hooks);
   realm.teardown(&mut heap);
   result
 }
@@ -389,6 +397,7 @@ fn tla_evaluation_promise_is_cached_for_single_module() -> Result<(), VmError> {
     heap.remove_root(root);
   }
   graph.teardown(&mut vm, &mut heap);
+  teardown_jobs(&mut vm, &mut heap, &mut hooks);
   realm.teardown(&mut heap);
   result
 }
@@ -470,6 +479,7 @@ fn tla_evaluation_promise_is_cached_per_scc() -> Result<(), VmError> {
     heap.remove_root(root);
   }
   graph.teardown(&mut vm, &mut heap);
+  teardown_jobs(&mut vm, &mut heap, &mut hooks);
   realm.teardown(&mut heap);
   result
 }
@@ -535,6 +545,7 @@ fn tla_error_propagates_through_async_parents() -> Result<(), VmError> {
     heap.remove_root(root);
   }
   graph.teardown(&mut vm, &mut heap);
+  teardown_jobs(&mut vm, &mut heap, &mut hooks);
   realm.teardown(&mut heap);
   result
 }
@@ -595,6 +606,7 @@ fn tla_reexport_from_dependency_is_awaited() -> Result<(), VmError> {
   if let Some(root) = promise_root {
     heap.remove_root(root);
   }
+  teardown_jobs(&mut vm, &mut heap, &mut hooks);
   realm.teardown(&mut heap);
   result
 }
