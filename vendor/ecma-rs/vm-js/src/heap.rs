@@ -1696,7 +1696,8 @@ impl Heap {
   /// `index` is out of bounds or `bytes` is empty, this returns `Ok(0)` (mirroring typed array
   /// out-of-bounds write semantics).
   ///
-  /// If the backing `ArrayBuffer` is detached, this returns `Ok(0)`.
+  /// If the backing `ArrayBuffer` is detached, this returns `Ok(0)` (treating the view as empty),
+  /// matching integer-indexed writes on detached typed arrays.
   ///
   /// If the view is out of bounds (e.g. due to internal corruption or a resizable `ArrayBuffer`
   /// shrinking), this returns `Ok(0)` to mirror out-of-bounds write semantics while avoiding host
@@ -1732,13 +1733,11 @@ impl Heap {
       .ok_or(VmError::InvariantViolation("Uint8Array byte offset overflow"))?;
 
     // Validate the backing buffer is attached and compute its length.
-    let buf_len = {
-      let buf = self.get_array_buffer(buffer)?;
-      let Some(data) = buf.data.as_deref() else {
-        return Ok(0);
-      };
-      data.len()
+    let buf = self.get_array_buffer(buffer)?;
+    let Some(data) = buf.data.as_deref() else {
+      return Ok(0);
     };
+    let buf_len = data.len();
     if view_end > buf_len {
       // Out-of-bounds views behave like empty typed arrays for host byte writes.
       return Ok(0);
@@ -8909,11 +8908,8 @@ mod detached_array_buffer_tests {
       Ok(_) => panic!("expected error for Uint8Array backed by a detached ArrayBuffer"),
     }
 
-    match scope.heap_mut().uint8_array_write(view, 0, &[1, 2, 3]) {
-      Ok(0) => {}
-      Ok(n) => panic!("expected Ok(0) for detached Uint8Array write, got Ok({n})"),
-      Err(other) => panic!("expected Ok(0), got {other:?}"),
-    }
+    // Writes on detached buffers are a safe no-op.
+    assert_eq!(scope.heap_mut().uint8_array_write(view, 0, &[1, 2, 3])?, 0);
 
     Ok(())
   }

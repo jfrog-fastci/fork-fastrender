@@ -5230,12 +5230,13 @@ impl<'a> Evaluator<'a> {
     catch: &CatchBlock,
     thrown: Value,
   ) -> Result<Completion, VmError> {
+    let outer = self.env.lexical_env;
+
     // Root the thrown value across all catch setup, including `env_create`, which may allocate and
     // trigger GC before we instantiate bindings.
     let mut catch_scope = scope.reborrow();
     catch_scope.push_root(thrown)?;
 
-    let outer = self.env.lexical_env;
     let catch_env = catch_scope.env_create(Some(outer))?;
     self.env.set_lexical_env(catch_scope.heap_mut(), catch_env);
 
@@ -5247,7 +5248,6 @@ impl<'a> Evaluator<'a> {
         }
         self.eval_stmt_list(&mut catch_scope, &catch.body)
       });
-
     self.env.set_lexical_env(catch_scope.heap_mut(), outer);
     result
   }
