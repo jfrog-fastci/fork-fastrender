@@ -114,6 +114,7 @@ of the registration) through any of these surfaces:
 
 - `reactor::Reactor::{register,reregister}`
 - `async_rt::AsyncRuntime::{register_fd,register_io,register_io_rooted,register_io_with_drop,update_io}`
+- `async_rt::register_fd`
 - `reactor_driver::ReactorDriver::register_fd`
 - C ABI: `rt_io_{register,register_with_drop,register_rooted,register_rooted_h,register_handle,register_handle_with_drop,update,unregister}`
 - Rust convenience API: `io::AsyncFd` (fails with `InvalidInput` on first await if the fd is blocking)

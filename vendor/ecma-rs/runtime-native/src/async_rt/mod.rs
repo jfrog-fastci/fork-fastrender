@@ -483,6 +483,15 @@ impl AsyncRuntime {
     self.loop_.cancel_timer(id)
   }
 
+  /// Register an fd with the async runtime's reactor.
+  ///
+  /// ## Nonblocking / edge-triggered contract
+  ///
+  /// The provided fd **must already be set to `O_NONBLOCK`** and must remain `O_NONBLOCK` for the
+  /// lifetime of the registration.
+  ///
+  /// The underlying reactor is **edge-triggered**, so tasks must drain reads/writes until they
+  /// return `EAGAIN`/`WouldBlock` after being woken.
   pub fn register_fd(
     &self,
     fd: std::os::fd::RawFd,
@@ -492,6 +501,15 @@ impl AsyncRuntime {
     self.loop_.register_fd(fd, interest, task)
   }
 
+  /// Register an fd for RT_IO_* readiness notifications.
+  ///
+  /// ## Nonblocking / edge-triggered contract
+  ///
+  /// The provided fd **must already be set to `O_NONBLOCK`** and must remain `O_NONBLOCK` for the
+  /// lifetime of the registration.
+  ///
+  /// Readiness notifications are **edge-triggered**; callbacks must drain reads/writes until they
+  /// return `EAGAIN`/`WouldBlock`, otherwise no further readiness edges may be delivered.
   pub fn register_io(
     &self,
     fd: std::os::fd::RawFd,
@@ -502,6 +520,7 @@ impl AsyncRuntime {
     self.loop_.register_io(fd, interests, cb, data)
   }
 
+  /// Like [`AsyncRuntime::register_io`], but provides a teardown hook for `data`.
   pub fn register_io_with_drop(
     &self,
     fd: std::os::fd::RawFd,
@@ -514,6 +533,8 @@ impl AsyncRuntime {
       .register_io_with_drop(fd, interests, cb, data, drop)
   }
 
+  /// Like [`AsyncRuntime::register_io`], but treats `gc_root` as a strong GC root for the lifetime
+  /// of the watcher.
   pub fn register_io_rooted(
     &self,
     fd: std::os::fd::RawFd,
@@ -526,6 +547,10 @@ impl AsyncRuntime {
       .register_io_rooted(fd, interests, cb, data, gc_root)
   }
 
+  /// Update the interest mask for an I/O watcher.
+  ///
+  /// Returns `false` if the watcher id is invalid or the underlying fd no longer satisfies the
+  /// nonblocking contract.
   pub fn update_io(&self, id: WatcherId, interests: u32) -> bool {
     self.loop_.update_io(id, interests)
   }
@@ -747,6 +772,15 @@ pub fn schedule_timer(deadline: Instant, callback: TaskFn, data: *mut u8) -> Tim
   global().schedule_timer(deadline, Task::new(callback, data))
 }
 
+/// Register an fd with the process-global async runtime reactor.
+///
+/// ## Nonblocking / edge-triggered contract
+///
+/// The provided fd **must already be set to `O_NONBLOCK`** and must remain `O_NONBLOCK` for the
+/// lifetime of the registration.
+///
+/// The underlying reactor is **edge-triggered**, so tasks must drain reads/writes until they return
+/// `EAGAIN`/`WouldBlock` after being woken.
 pub fn register_fd(
   fd: std::os::fd::RawFd,
   interest: Interest,
