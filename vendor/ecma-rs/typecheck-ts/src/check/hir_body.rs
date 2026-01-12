@@ -3127,37 +3127,32 @@ impl<'a> Checker<'a> {
         } else {
           obj_ty
         };
-        let mut prop_ty = if chain_optional && base_obj_ty == prim.never {
+        let prop_ty = if chain_optional && base_obj_ty == prim.never {
           prim.undefined
         } else {
-          self.member_type(base_obj_ty, &mem.stx.right)
+          match self.member_type_opt(base_obj_ty, &mem.stx.right) {
+            Some(ty) => ty,
+            None => {
+              if !matches!(
+                self.store.type_kind(base_obj_ty),
+                TypeKind::Any | TypeKind::Unknown | TypeKind::Never
+              ) {
+                let name_len = mem.stx.right.len() as u32;
+                let start = full_range.end.saturating_sub(name_len);
+                let range = TextRange::new(start, full_range.end);
+                self.diagnostics.push(codes::PROPERTY_DOES_NOT_EXIST.error(
+                  format!(
+                    "Property '{}' does not exist on type '{}'.",
+                    mem.stx.right,
+                    TypeDisplay::new(self.store.as_ref(), base_obj_ty)
+                  ),
+                  Span::new(self.file, range),
+                ));
+              }
+              prim.any
+            }
+          }
         };
-
-        let is_callable =
-          !callable_signatures_with_expander(self.store.as_ref(), base_obj_ty, self.ref_expander)
-            .is_empty();
-
-        if is_callable
-          && prop_ty == prim.unknown
-          && !matches!(
-            self.store.type_kind(base_obj_ty),
-            TypeKind::Any | TypeKind::Unknown | TypeKind::Never
-          )
-          && !self.type_has_prop(base_obj_ty, &mem.stx.right)
-        {
-          let name_len = mem.stx.right.len() as u32;
-          let start = full_range.end.saturating_sub(name_len);
-          let range = TextRange::new(start, full_range.end);
-          self.diagnostics.push(codes::PROPERTY_DOES_NOT_EXIST.error(
-            format!(
-              "Property '{}' does not exist on type '{}'.",
-              mem.stx.right,
-              TypeDisplay::new(self.store.as_ref(), base_obj_ty)
-            ),
-            Span::new(self.file, range),
-          ));
-          prop_ty = prim.any;
-        }
         if self.native_define_class_fields {
           if let Some(props) = self.current_class_field_param_props {
             if matches!(mem.stx.left.stx.as_ref(), AstExpr::This(_))
@@ -3208,10 +3203,39 @@ impl<'a> Checker<'a> {
           },
         };
 
+        let key_is_string_or_number = matches!(
+          mem.stx.member.stx.as_ref(),
+          AstExpr::LitStr(_) | AstExpr::LitNum(_)
+        ) || matches!(
+          self.store.type_kind(key_ty),
+          TypeKind::StringLiteral(_) | TypeKind::NumberLiteral(_)
+        );
+
         let mut ty = if chain_optional && base_obj_ty == prim.never {
           prim.undefined
         } else if let Some(key) = literal_key {
-          self.member_type(base_obj_ty, &key)
+          match self.member_type_opt(base_obj_ty, &key) {
+            Some(ty) => ty,
+            None => {
+              if key_is_string_or_number
+                && !matches!(
+                  self.store.type_kind(base_obj_ty),
+                  TypeKind::Any | TypeKind::Unknown | TypeKind::Never
+                )
+              {
+                let range = loc_to_range(self.file, mem.stx.member.loc);
+                self.diagnostics.push(codes::PROPERTY_DOES_NOT_EXIST.error(
+                  format!(
+                    "Property '{}' does not exist on type '{}'.",
+                    key,
+                    TypeDisplay::new(self.store.as_ref(), base_obj_ty)
+                  ),
+                  Span::new(self.file, range),
+                ));
+              }
+              prim.any
+            }
+          }
         } else {
           self.member_type_for_index_key(base_obj_ty, key_ty)
         };
@@ -6352,19 +6376,26 @@ impl<'a> Checker<'a> {
 
   fn member_type(&mut self, obj: TypeId, prop: &str) -> TypeId {
     let prim = self.store.primitive_ids();
+    self.member_type_opt(obj, prop).unwrap_or(prim.unknown)
+  }
+
+  fn member_type_opt(&mut self, obj: TypeId, prop: &str) -> Option<TypeId> {
+    let prim = self.store.primitive_ids();
     let obj = self.expand_ref(obj);
     match self.store.type_kind(obj) {
       // `expand_ref` above follows any resolvable references with a local
       // cycle guard. If we still have a `Ref`, treat it as unknown to avoid
       // infinitely recursing on self-referential expansions (e.g. during
       // in-progress type computation).
-      TypeKind::Ref { .. } => prim.unknown,
+      TypeKind::Ref { .. } => Some(prim.unknown),
+      TypeKind::Any => Some(prim.any),
+      TypeKind::Unknown => Some(prim.unknown),
       TypeKind::Callable { .. } if prop == "call" => {
         let sigs = callable_signatures(self.store.as_ref(), obj);
         if sigs.is_empty() {
-          prim.unknown
+          Some(prim.unknown)
         } else {
-          self.build_call_method_type(sigs)
+          Some(self.build_call_method_type(sigs))
         }
       }
       // Callables have `Function.prototype` members (e.g. `apply`/`bind`) even if
@@ -6373,29 +6404,29 @@ impl<'a> Checker<'a> {
       //
       // We currently treat them as `any` until the full lib surface is plumbed
       // through in a principled way.
-      TypeKind::Callable { .. } if matches!(prop, "apply" | "bind") => prim.any,
+      TypeKind::Callable { .. } if matches!(prop, "apply" | "bind") => Some(prim.any),
+      TypeKind::Callable { .. } => None,
       TypeKind::Object(obj_id) => {
         let shape = self.store.shape(self.store.object(obj_id).shape);
         for candidate in shape.properties.iter() {
-          match &candidate.key {
-            PropKey::String(name_id) => {
-              if self.store.name(*name_id) == prop {
-                return candidate.data.ty;
-              }
+          let matches = match &candidate.key {
+            PropKey::String(name_id) => self.store.name(*name_id) == prop,
+            PropKey::Number(num) => prop.parse::<i64>().ok() == Some(*num),
+            _ => false,
+          };
+          if matches {
+            let mut ty = candidate.data.ty;
+            if candidate.data.optional {
+              ty = self.store.union(vec![ty, prim.undefined]);
             }
-            PropKey::Number(num) => {
-              if prop.parse::<i64>().ok() == Some(*num) {
-                return candidate.data.ty;
-              }
-            }
-            _ => {}
+            return Some(ty);
           }
         }
         if prop == "call" && !shape.call_signatures.is_empty() {
-          return self.build_call_method_type(shape.call_signatures.clone());
+          return Some(self.build_call_method_type(shape.call_signatures.clone()));
         }
         if matches!(prop, "apply" | "bind") && !shape.call_signatures.is_empty() {
-          return prim.any;
+          return Some(prim.any);
         }
         let key = if let Some(idx) = parse_canonical_index_str(prop) {
           PropKey::Number(idx)
@@ -6409,47 +6440,38 @@ impl<'a> Checker<'a> {
           }
         }
         if matches.is_empty() {
-          prim.unknown
-        } else if matches.len() == 1 {
-          matches[0]
+          None
         } else {
-          matches.sort_by(|a, b| self.store.type_cmp(*a, *b));
-          matches.dedup();
-          self.store.union(matches)
+          Some(self.store.union(matches))
         }
       }
       TypeKind::Union(members) => {
         let mut collected = Vec::new();
         for member in members {
-          let ty = self.member_type(member, prop);
-          if ty != prim.unknown {
-            collected.push(ty);
+          match self.member_type_opt(member, prop) {
+            Some(ty) => collected.push(ty),
+            None => return None,
           }
         }
-        if collected.is_empty() {
-          prim.unknown
-        } else {
-          self.store.union(collected)
-        }
+        Some(self.store.union(collected))
       }
       TypeKind::Intersection(members) => {
         let mut collected = Vec::new();
         for member in members {
-          let ty = self.member_type(member, prop);
-          if ty != prim.unknown {
+          if let Some(ty) = self.member_type_opt(member, prop) {
             collected.push(ty);
           }
         }
         if collected.is_empty() {
-          prim.unknown
+          None
         } else if collected.len() == 1 {
-          collected[0]
+          Some(collected[0])
         } else {
-          self.store.intersection(collected)
+          Some(self.store.intersection(collected))
         }
       }
-      TypeKind::Tuple(elems) => elems.get(0).map(|e| e.ty).unwrap_or(prim.unknown),
-      _ => prim.unknown,
+      TypeKind::Tuple(elems) => Some(elems.get(0).map(|e| e.ty).unwrap_or(prim.unknown)),
+      _ => Some(prim.unknown),
     }
   }
 
@@ -13378,15 +13400,10 @@ impl<'a> FlowBodyChecker<'a> {
       TypeKind::Union(members) => {
         let mut tys = Vec::new();
         for member in members {
-          if let Some(prop_ty) = self.object_prop_type(member, key) {
-            tys.push(prop_ty);
-          }
+          let prop_ty = self.object_prop_type(member, key)?;
+          tys.push(prop_ty);
         }
-        if tys.is_empty() {
-          None
-        } else {
-          Some(self.store.union(tys))
-        }
+        Some(self.store.union(tys))
       }
       TypeKind::Intersection(members) => {
         let mut tys = Vec::new();
@@ -13412,7 +13429,11 @@ impl<'a> FlowBodyChecker<'a> {
             _ => false,
           };
           if matches {
-            return Some(prop.data.ty);
+            let mut ty = prop.data.ty;
+            if prop.data.optional {
+              ty = self.store.union(vec![ty, prim.undefined]);
+            }
+            return Some(ty);
           }
         }
         if key == "call" && !shape.call_signatures.is_empty() {
@@ -13433,12 +13454,8 @@ impl<'a> FlowBodyChecker<'a> {
           }
         }
         if matches.is_empty() {
-          Some(prim.unknown)
-        } else if matches.len() == 1 {
-          Some(matches[0])
+          None
         } else {
-          matches.sort_by(|a, b| self.store.type_cmp(*a, *b));
-          matches.dedup();
           Some(self.store.union(matches))
         }
       }
