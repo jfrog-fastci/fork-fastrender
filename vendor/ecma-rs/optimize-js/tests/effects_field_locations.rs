@@ -115,24 +115,18 @@ fn two_writes_to_different_fields_produce_distinct_field_locations() {
     );
     let loc = inst.meta.effects.writes.iter().next().unwrap();
     match loc {
-      EffectLocation::AllocField { alloc, key } => fields.push((alloc.clone(), key.clone())),
-      other => panic!("expected EffectLocation::AllocField but got {other:?}"),
+      EffectLocation::Field { shape, key } => fields.push((*shape, key.clone())),
+      other => panic!("expected EffectLocation::Field but got {other:?}"),
     }
   }
 
   assert_eq!(
     fields[0].0, fields[1].0,
-    "expected both writes to use the same allocation site"
+    "expected both writes to use the same shape"
   );
   assert_ne!(
     fields[0].1, fields[1].1,
     "expected writes to have different field keys"
-  );
-
-  let keys: Vec<_> = fields.into_iter().map(|(_, key)| key).collect();
-  assert!(
-    keys.contains(&"x".to_string()) && keys.contains(&"y".to_string()),
-    "expected keys \"x\" and \"y\" but got {keys:?}"
   );
 
   assert!(
@@ -264,14 +258,14 @@ fn non_strict_native_falls_back_to_heap_effects() {
       .effects
       .writes
       .iter()
-      .any(|loc| matches!(loc, EffectLocation::AllocField { .. })),
-    "expected no AllocField locations in non-strict-native mode but got {:?}",
+      .any(|loc| matches!(loc, EffectLocation::Field { .. })),
+    "expected no Field locations in non-strict-native mode but got {:?}",
     assign.meta.effects.writes
   );
 }
 
 #[test]
-fn two_allocations_same_field_do_not_conflict() {
+fn two_allocations_same_field_conflict_under_shape_based_modeling() {
   let (mut program, type_program) = compile_with_typecheck(
     r#"
       interface Obj { x: number; }
@@ -321,13 +315,13 @@ fn two_allocations_same_field_do_not_conflict() {
     .next()
     .expect("expected a write location")
     .clone();
-  assert_ne!(loc_a, loc_b, "expected different allocation sites to differ");
+  assert_eq!(loc_a, loc_b, "expected same field location for x");
   assert!(
-    !prop_assigns[0]
+    prop_assigns[0]
       .meta
       .effects
       .conflicts_with(&prop_assigns[1].meta.effects),
-    "expected writes to different allocations to not conflict"
+    "expected writes to the same field to conflict"
   );
 }
 
@@ -422,8 +416,8 @@ fn dynamic_key_falls_back_to_heap_effects_even_in_strict_native() {
       .effects
       .writes
       .iter()
-      .any(|loc| matches!(loc, EffectLocation::AllocField { .. })),
-    "expected no AllocField locations for dynamic key but got {:?}",
+      .any(|loc| matches!(loc, EffectLocation::Field { .. })),
+    "expected no Field locations for dynamic key but got {:?}",
     assign.meta.effects.writes
   );
 }

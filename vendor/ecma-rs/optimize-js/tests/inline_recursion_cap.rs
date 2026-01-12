@@ -25,6 +25,12 @@ fn recursive_calls_are_not_endlessly_inlined() {
   let src = r#"
     function f(n) {
       if (n) {
+        return g(n - 1);
+      }
+      return 0;
+    }
+    function g(n) {
+      if (n) {
         return f(n - 1);
       }
       return 0;

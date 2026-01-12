@@ -388,7 +388,6 @@ fn earlier_prop_assign_borrows_when_value_is_used_again() {
     var_x, var_y,
     "expected both prop stores to write the same value"
   );
- 
   let inst_y = &cfg.bblocks.get(label_y)[idx_y];
   let inst_x = &cfg.bblocks.get(label_x)[idx_x];
 
