@@ -139,4 +139,4 @@ mod vm_js_webidl_generated_constructors;
 mod vm_js_webidl_generated_descriptors;
 mod vm_js_webidl_incremental_installers;
 mod vm_js_window_host_import_maps_dynamic_import;
-mod webidl_vm_js_workspace_guard;
+mod webidl_consolidation_guard;
