@@ -31,11 +31,15 @@ If a bug bypasses ticking, a fuzz run can still hang. For that reason, always ru
 From the repo root:
 
 ```bash
-cd vendor/ecma-rs/fuzz
+# Install `cargo-fuzz` (one-time).
+timeout -k 10 600 bash scripts/cargo_agent.sh install cargo-fuzz
 
-# Always wrap with `timeout` so a missed tick can't hang the agent indefinitely.
-timeout 30s cargo fuzz run parse_js -- ../vm-js/fuzz/corpus/parse_js
-timeout 30s cargo fuzz run vm_js_exec -- ../vm-js/fuzz/corpus/vm_js_exec
+# Always wrap with `timeout -k` so a missed tick can't hang the agent indefinitely.
+#
+# Use the repo's cargo wrapper: it bumps RLIMIT_AS for fuzz runs (ASan shadow memory),
+# and it automatically runs Cargo from the right workspace root.
+timeout -k 10 600 bash vendor/ecma-rs/scripts/cargo_agent.sh fuzz run parse_js vm-js/fuzz/corpus/parse_js -- -max_total_time=10
+timeout -k 10 600 bash vendor/ecma-rs/scripts/cargo_agent.sh fuzz run vm_js_exec vm-js/fuzz/corpus/vm_js_exec -- -max_total_time=10
 ```
 
 Tip: add `-- -max_len=8192` to cap libFuzzer's generated input size (the harness also caps).
@@ -51,14 +55,14 @@ Recommended workflow:
 1. **Minimize** the crashing input:
 
    ```bash
-   cd vendor/ecma-rs/fuzz
-   cargo fuzz tmin vm_js_exec artifacts/vm_js_exec/crash-... > /tmp/vm-js.min
+   # `cargo fuzz tmin` runs the target to minimize it; wrap with timeout.
+   timeout -k 10 600 bash vendor/ecma-rs/scripts/cargo_agent.sh fuzz tmin vm_js_exec fuzz/artifacts/vm_js_exec/crash-... > /tmp/vm-js.min
    ```
 
 2. **Commit the minimized seed** into the tracked regression corpus:
 
    ```bash
-   cp /tmp/vm-js.min ../vm-js/fuzz/corpus/vm_js_exec/<short_name>.js
+   cp /tmp/vm-js.min vendor/ecma-rs/vm-js/fuzz/corpus/vm_js_exec/<short_name>.js
    ```
 
 3. **Add a unit test reproducer** under `vendor/ecma-rs/vm-js/tests/` using `include_str!`:
@@ -69,4 +73,3 @@ Recommended workflow:
    ```
 
 Keeping the seed + test in-tree ensures the bug stays fixed even if the fuzzer corpus is pruned.
-
