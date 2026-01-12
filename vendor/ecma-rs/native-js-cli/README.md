@@ -327,6 +327,19 @@ Pass `--project/-p` to load a `tsconfig.json` from disk and apply its settings (
 - `compilerOptions.baseUrl` / `paths` are honored for non-relative imports
 - `compilerOptions.typeRoots` / `types` packages are loaded (e.g. `@types/node`)
 
+### `typeRoots` / `types` packages
+
+`native-js-cli` follows the `typecheck-ts` core policy for ambient type packages:
+
+- Both `compilerOptions.types` and `/// <reference types="..." />` are resolved by `typecheck-ts`
+  via the host's `Host::resolve` hook, with a fallback that maps `foo` to `@types/foo` and
+  `@scope/pkg` to `@types/scope__pkg` (matching `tsc`'s `@types` naming).
+- When `compilerOptions.types` is omitted in `tsconfig.json`, `native-js-cli` matches `tsc` by
+  including all discoverable packages under `typeRoots` (in stable, sorted order) by expanding
+  them into `CompilerOptions.types` before invoking the checker.
+- The host uses `compilerOptions.typeRoots` (or default `node_modules/@types` ancestors) to resolve
+  `@types/*` specifiers to their `.d.ts` entrypoints.
+
 Example (installed binary):
 
 ```bash
