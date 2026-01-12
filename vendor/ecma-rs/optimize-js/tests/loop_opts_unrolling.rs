@@ -183,3 +183,104 @@ fn non_constant_trip_count_loop_is_not_unrolled() {
     "expected CFG to still contain the loop header, got {loops:?}"
   );
 }
+
+#[test]
+fn strength_reduction_rewrites_uses_on_loop_exit() {
+  // Similar counted loop shape, but compute `t = i * 4` in the header and consume it on the exit
+  // edge. Strength reduction must rewrite that use even though the exit block is outside the loop.
+  //
+  // Trip count is 16 (> MAX_FULL_UNROLL_TRIP_COUNT) so the loop is not unrolled.
+  let mut graph = CfgGraph::default();
+  graph.connect(0, 1);
+  graph.connect(1, 2);
+  graph.connect(1, 3);
+  graph.connect(2, 1);
+  graph.ensure_label(3);
+
+  let mut bblocks = CfgBBlocks::default();
+  bblocks.add(0, vec![]);
+
+  // i = phi { 0: 0, 2: i_next }
+  let mut phi = Inst::phi_empty(0);
+  phi.insert_phi(0, Arg::Const(Const::Num(JsNumber(0.0))));
+  phi.insert_phi(2, Arg::Var(2));
+
+  // t = i * 4
+  // cond = i < 16
+  bblocks.add(
+    1,
+    vec![
+      phi,
+      Inst::bin(
+        4,
+        Arg::Var(0),
+        BinOp::Mul,
+        Arg::Const(Const::Num(JsNumber(4.0))),
+      ),
+      Inst::bin(
+        1,
+        Arg::Var(0),
+        BinOp::Lt,
+        Arg::Const(Const::Num(JsNumber(16.0))),
+      ),
+      Inst::cond_goto(Arg::Var(1), 2, 3),
+    ],
+  );
+
+  // i_next = i + 1
+  bblocks.add(
+    2,
+    vec![Inst::bin(
+      2,
+      Arg::Var(0),
+      BinOp::Add,
+      Arg::Const(Const::Num(JsNumber(1.0))),
+    )],
+  );
+
+  // use t on loop exit
+  bblocks.add(3, vec![Inst::unknown_store("y".to_string(), Arg::Var(4))]);
+
+  let mut cfg = Cfg {
+    graph,
+    bblocks,
+    entry: 0,
+  };
+
+  let pass = optpass_loop_opts(&mut cfg);
+  assert!(
+    pass.changed && !pass.cfg_changed,
+    "expected strength reduction to change IL but not CFG, got {pass:?}"
+  );
+
+  // Loop should still exist (we intentionally picked a large trip count).
+  let dom = Dom::calculate(&cfg);
+  let loops = find_loops(&cfg, &dom);
+  assert!(
+    loops.contains_key(&1),
+    "expected CFG to still contain the loop header, got {loops:?}"
+  );
+
+  // The Mul should be eliminated and the exit use must be rewritten to the derived induction phi.
+  let header = cfg.bblocks.get(1);
+  assert!(
+    header.iter().all(|inst| !(inst.t == optimize_js::il::inst::InstTyp::Bin && inst.bin_op == BinOp::Mul)),
+    "expected Mul to be eliminated from the loop header, got {header:?}"
+  );
+
+  let sr_phi = header
+    .iter()
+    .filter(|inst| inst.t == optimize_js::il::inst::InstTyp::Phi)
+    .map(|inst| inst.tgts[0])
+    .find(|&tgt| tgt != 0)
+    .expect("expected strength reduction to insert a derived phi in the header");
+
+  let exit = cfg.bblocks.get(3);
+  assert!(
+    matches!(
+      exit[0].args.as_slice(),
+      [Arg::Var(v)] if *v == sr_phi
+    ),
+    "expected exit use to be rewritten to derived phi %{sr_phi}, got {exit:?}"
+  );
+}

@@ -783,16 +783,44 @@ fn strength_reduce_mul_by_const(
         result.mark_changed();
         continue;
       }
+      idx += 1;
+    }
+  }
 
-      // Rewrite uses.
-      for arg in bb[idx].args.iter_mut() {
-        if let Arg::Var(v) = arg {
-          if let Some(&sr) = replace_vars.get(v) {
-            *arg = Arg::Var(sr);
+  // Rewrite uses of the removed mul temps across the entire CFG (not just inside the loop).
+  //
+  // This matters for values computed in the header that are used on the loop-exit edge.
+  let mut all_labels: Vec<u32> = cfg.bblocks.all().map(|(label, _)| label).collect();
+  all_labels.sort_unstable();
+  for label in all_labels {
+    let bb = cfg.bblocks.get_mut(label);
+    for inst in bb.iter_mut() {
+      for arg in inst.args.iter_mut() {
+        let Arg::Var(v) = arg else { continue };
+        let Some(&sr) = replace_vars.get(v) else {
+          continue;
+        };
+        *arg = Arg::Var(sr);
+      }
+
+      if let Some(narrowing) = inst.meta.nullability_narrowing.as_mut() {
+        if let Some(&sr) = replace_vars.get(&narrowing.var) {
+          narrowing.var = sr;
+        }
+      }
+      if let Some(hint) = inst.meta.in_place_hint.as_mut() {
+        use crate::il::meta::InPlaceHint;
+        match hint {
+          InPlaceHint::MoveNoClone { src, tgt } => {
+            if let Some(&sr) = replace_vars.get(src) {
+              *src = sr;
+            }
+            if let Some(&sr) = replace_vars.get(tgt) {
+              *tgt = sr;
+            }
           }
         }
       }
-      idx += 1;
     }
   }
 
