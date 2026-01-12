@@ -597,12 +597,42 @@ impl LayoutStore {
       return *id;
     }
 
-    let Shape { mut properties, .. } = store.shape(shape_id);
+    let Shape {
+      mut properties,
+      call_signatures,
+      construct_signatures,
+      ..
+    } = store.shape(shape_id);
     properties.sort_by(|a, b| store.compare_prop_keys(&a.key, &b.key));
+
+    let is_callable_object = !call_signatures.is_empty() || !construct_signatures.is_empty();
 
     let mut offset: u32 = 0;
     let mut align: u32 = 1;
-    let mut fields = Vec::with_capacity(properties.len());
+    let mut fields = Vec::with_capacity(properties.len().saturating_add(if is_callable_object { 2 } else { 0 }));
+
+    if is_callable_object {
+      let fn_ptr = self.intern_layout(Layout::Ptr { to: PtrKind::Opaque });
+      let env = self.intern_layout(Layout::Ptr { to: PtrKind::GcAny });
+
+      fields.push(FieldLayout {
+        key: FieldKey::Internal("fn_ptr".to_string()),
+        offset: 0,
+        size: PTR_SIZE,
+        align: PTR_ALIGN,
+        layout: fn_ptr,
+      });
+      fields.push(FieldLayout {
+        key: FieldKey::Internal("env".to_string()),
+        offset: PTR_SIZE,
+        size: PTR_SIZE,
+        align: PTR_ALIGN,
+        layout: env,
+      });
+
+      offset = PTR_SIZE * 2;
+      align = PTR_ALIGN;
+    }
 
     for prop in properties {
       let child = self.layout_of_type(store, prop.data.ty);

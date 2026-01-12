@@ -321,6 +321,60 @@ fn callables_share_a_canonical_layout() {
 }
 
 #[test]
+fn callable_object_shapes_include_closure_header_fields() {
+  use types_ts_interned::Signature;
+
+  let store = TypeStore::new();
+  let primitives = store.primitive_ids();
+
+  let sig = store.intern_signature(Signature::new(Vec::new(), primitives.number));
+
+  let name_x = store.intern_name("x");
+  let mut shape = Shape::new();
+  shape.call_signatures.push(sig);
+  shape.properties.push(Property {
+    key: PropKey::String(name_x),
+    data: PropData {
+      ty: primitives.string,
+      optional: false,
+      readonly: false,
+      accessibility: None,
+      is_method: false,
+      origin: None,
+      declared_on: None,
+    },
+  });
+  let shape = store.intern_shape(shape);
+  let obj = store.intern_object(ObjectType { shape });
+  let obj_ty = store.intern_type(TypeKind::Object(obj));
+
+  let layout = store.layout_of(obj_ty);
+  let Layout::Ptr { to } = store.layout(layout) else {
+    panic!("expected callable object to lower to Ptr layout");
+  };
+  let types_ts_interned::PtrKind::GcObject { layout: payload } = to else {
+    panic!("expected callable object to lower to PtrKind::GcObject");
+  };
+
+  let Layout::Struct { fields, .. } = store.layout(payload) else {
+    panic!("expected callable object payload layout to be Struct");
+  };
+  assert!(
+    fields.len() >= 3,
+    "expected fn_ptr + env + at least one property field"
+  );
+  assert_eq!(fields[0].key, FieldKey::Internal("fn_ptr".to_string()));
+  assert_eq!(fields[0].offset, 0);
+  assert_eq!(fields[1].key, FieldKey::Internal("env".to_string()));
+  assert_eq!(fields[1].offset, 8);
+  assert_eq!(fields[2].key, FieldKey::Prop(PropKey::String(name_x)));
+
+  // `env` + the string property are GC pointers.
+  assert!(store.gc_ptr_offsets(payload).contains(&8));
+  assert!(store.gc_ptr_offsets(payload).contains(&fields[2].offset));
+}
+
+#[test]
 fn closure_layout_ids_are_deterministic_across_stores() {
   use types_ts_interned::Signature;
 
