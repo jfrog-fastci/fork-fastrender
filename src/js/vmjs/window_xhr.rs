@@ -638,6 +638,10 @@ fn xhr_with_credentials_set(
       .xhrs
       .get_mut(&xhr_id)
       .ok_or(VmError::TypeError("XMLHttpRequest: invalid backing state"))?;
+    // XHR spec: withCredentials can only be set in UNSENT/OPENED and before send().
+    if xhr.send_in_progress || !matches!(xhr.ready_state, XHR_UNSENT | XHR_OPENED) {
+      return Err(VmError::TypeError("XMLHttpRequest.withCredentials invalid state"));
+    }
     xhr.with_credentials = value;
     Ok(())
   })?;
@@ -710,15 +714,20 @@ fn xhr_response_text_get(
   _args: &[Value],
 ) -> Result<Value, VmError> {
   let (env_id, xhr_id, _) = xhr_info_from_this(scope, this)?;
-  let (response_type, text) = with_env_state(env_id, |state| {
+  let (ready_state, response_type, text) = with_env_state(env_id, |state| {
     let xhr = state
       .xhrs
       .get(&xhr_id)
       .ok_or(VmError::TypeError("XMLHttpRequest: invalid backing state"))?;
-    Ok((xhr.response_type.clone(), xhr.response_text.clone()))
+    Ok((xhr.ready_state, xhr.response_type.clone(), xhr.response_text.clone()))
   })?;
 
   if response_type == "arraybuffer" || response_type == "json" {
+    let s = scope.alloc_string("")?;
+    return Ok(Value::String(s));
+  }
+  // Spec-ish: responseText is only non-empty in LOADING/DONE.
+  if ready_state < XHR_LOADING {
     let s = scope.alloc_string("")?;
     return Ok(Value::String(s));
   }
@@ -737,12 +746,14 @@ fn xhr_response_get(
   _args: &[Value],
 ) -> Result<Value, VmError> {
   let (env_id, xhr_id, _) = xhr_info_from_this(scope, this)?;
-  let (response_type, bytes, text) = with_env_state(env_id, |state| {
+  let (ready_state, status, response_type, bytes, text) = with_env_state(env_id, |state| {
     let xhr = state
       .xhrs
       .get(&xhr_id)
       .ok_or(VmError::TypeError("XMLHttpRequest: invalid backing state"))?;
     Ok((
+      xhr.ready_state,
+      xhr.status,
       xhr.response_type.clone(),
       xhr.response_bytes.clone(),
       xhr.response_text.clone(),
@@ -750,6 +761,9 @@ fn xhr_response_get(
   })?;
 
   if response_type == "arraybuffer" {
+    if ready_state != XHR_DONE || status == 0 {
+      return Ok(Value::Null);
+    }
     let intr = vm
       .intrinsics()
       .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
@@ -761,11 +775,20 @@ fn xhr_response_get(
   }
 
   if response_type == "json" {
+    if ready_state != XHR_DONE || status == 0 {
+      return Ok(Value::Null);
+    }
     let parsed: Result<JsonValue, _> = serde_json::from_slice(&bytes);
     return match parsed {
       Ok(value) => json_to_js(vm, scope, &value),
       Err(_) => Ok(Value::Null),
     };
+  }
+
+  // Spec-ish: response is only non-empty in LOADING/DONE for text modes.
+  if ready_state < XHR_LOADING {
+    let s = scope.alloc_string("")?;
+    return Ok(Value::String(s));
   }
 
   let s = scope.alloc_string(&text)?;
