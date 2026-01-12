@@ -1850,7 +1850,7 @@ mod tests {
   use tempfile::TempDir;
 
   fn create_test_renderer() -> fastrender::FastRender {
-    build_offline_renderer().unwrap()
+    crate::create_test_renderer()
   }
 
   #[test]
