@@ -138,31 +138,7 @@ pub fn internal_set_with_host_and_hooks(
   let trap = get_method_with_host_and_hooks(vm, &mut scope, host, hooks, Value::Object(handler), set_key)?;
   let Some(trap) = trap else {
     // No trap: forward to target.
-    //
-    // NOTE: `Proxy.[[Set]]` forwards the original Receiver. However, `vm-js` currently implements
-    // `OrdinarySet` only for receivers that have ordinary object internal slots. When the receiver
-    // is the Proxy itself, forwarding can fail with `InvalidHandle` when `OrdinarySet` tries to
-    // define an own property on the receiver.
-    //
-    // To avoid crashing on `proxy.prop = ...` when no `set` trap is installed, we retry the
-    // forwarding operation using `receiver = target` if the receiver was the current Proxy and the
-    // forwarded `[[Set]]` failed due to `InvalidHandle`.
-    let forwarded = internal_set_with_host_and_hooks(vm, &mut scope, host, hooks, target, key, value, receiver);
-    if let Err(VmError::InvalidHandle { .. }) = forwarded {
-      if receiver == Value::Object(obj) {
-        return internal_set_with_host_and_hooks(
-          vm,
-          &mut scope,
-          host,
-          hooks,
-          target,
-          key,
-          value,
-          Value::Object(target),
-        );
-      }
-    }
-    return forwarded;
+    return internal_set_with_host_and_hooks(vm, &mut scope, host, hooks, target, key, value, receiver);
   };
   scope.push_root(trap)?;
 

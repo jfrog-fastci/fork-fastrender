@@ -2,6 +2,8 @@ use vm_js::{Heap, HeapLimits, JsRuntime, Value, Vm, VmOptions};
 
 fn new_runtime() -> JsRuntime {
   let vm = Vm::new(VmOptions::default());
+  // These tests exercise object spread/rest on Proxies, which currently needs slightly more than
+  // 1MiB of heap headroom in debug builds.
   let heap = Heap::new(HeapLimits::new(2 * 1024 * 1024, 2 * 1024 * 1024));
   JsRuntime::new(vm, heap).unwrap()
 }

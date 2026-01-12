@@ -136,17 +136,6 @@ fn validate_proxy_own_keys_trap_result(
   Ok(())
 }
 
-fn data_desc(value: Value) -> PropertyDescriptor {
-  PropertyDescriptor {
-    enumerable: true,
-    configurable: true,
-    kind: PropertyKind::Data {
-      value,
-      writable: true,
-    },
-  }
-}
-
 fn property_key_to_value(key: PropertyKey) -> Value {
   match key {
     PropertyKey::String(s) => Value::String(s),
@@ -3916,8 +3905,8 @@ fn proxy_define_own_property_with_tick(
   // descriptor argument object.
   scope.push_root(trap)?;
 
-  // `descObj = FromPropertyDescriptor(desc)` (partial): create a fresh descriptor object with only
-  // present fields.
+  // Spec: `descObj = FromPropertyDescriptor(desc)` (partial): create a fresh descriptor object with
+  // only present fields.
   let desc_obj = property_descriptor_ops::from_property_descriptor_patch(&mut scope, desc)?;
   scope.push_root(Value::Object(desc_obj))?;
 
@@ -3930,8 +3919,8 @@ fn proxy_define_own_property_with_tick(
     &[Value::Object(target), key_val, Value::Object(desc_obj)],
   )?;
 
-  let trap_ok = scope.heap().to_boolean(trap_result)?;
-  if !trap_ok {
+  let ok = scope.heap().to_boolean(trap_result)?;
+  if !ok {
     return Ok(false);
   }
 
@@ -3943,7 +3932,30 @@ fn proxy_define_own_property_with_tick(
   //   property.
   let target_desc =
     scope.object_get_own_property_with_host_and_hooks_complete(vm, host, hooks, target, key)?;
+
+  // Root any values from `target_desc` across `IsExtensible(target)` (which can invoke Proxy traps
+  // and allocate).
+  let mut desc_value_roots = [Value::Undefined; 2];
+  let mut desc_value_root_count = 0usize;
+  if let Some(d) = &target_desc {
+    match d.kind {
+      PropertyKind::Data { value, .. } => {
+        desc_value_roots[desc_value_root_count] = value;
+        desc_value_root_count += 1;
+      }
+      PropertyKind::Accessor { get, set } => {
+        desc_value_roots[desc_value_root_count] = get;
+        desc_value_root_count += 1;
+        desc_value_roots[desc_value_root_count] = set;
+        desc_value_root_count += 1;
+      }
+    }
+  }
+  if desc_value_root_count != 0 {
+    scope.push_roots(&desc_value_roots[..desc_value_root_count])?;
+  }
   let extensible_target = scope.is_extensible_with_host_and_hooks(vm, host, hooks, target)?;
+
   let compatible = property_descriptor_ops::is_compatible_property_descriptor(
     extensible_target,
     desc,
@@ -3956,6 +3968,8 @@ fn proxy_define_own_property_with_tick(
     ));
   }
 
+  // Spec: if `Desc.[[Configurable]]` is `false`, the target must already have a non-configurable
+  // property.
   if desc.configurable == Some(false) {
     let Some(target_desc) = target_desc else {
       return Err(VmError::TypeError(
@@ -3968,7 +3982,6 @@ fn proxy_define_own_property_with_tick(
       ));
     }
   }
-
   Ok(true)
 }
 
