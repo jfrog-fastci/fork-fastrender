@@ -26,99 +26,173 @@ fn conformance_doc_links_to_real_code_and_tests() {
   let content = std::fs::read_to_string(&conformance_path).expect("read docs/conformance.md");
 
   // Keep links in docs/conformance.md grounded in real modules and tests for each feature area.
-  let required_paths = [
-    "src/dom.rs",
-    "src/html/mod.rs",
-    "src/html/encoding.rs",
-    "src/html/viewport.rs",
-    "src/css/parser.rs",
-    "src/css/selectors.rs",
-    "src/css/types.rs",
-    "src/style/cascade.rs",
-    "src/style/media.rs",
-    "src/style/values.rs",
-    "src/style/color.rs",
-    "src/tree/box_generation.rs",
-    "src/tree/box_tree.rs",
-    "src/tree/table_fixup.rs",
-    "src/layout/table.rs",
-    "src/layout/contexts/block/mod.rs",
-    "src/layout/contexts/inline/mod.rs",
-    "src/layout/absolute_positioning.rs",
-    "src/layout/contexts/flex.rs",
-    "src/layout/contexts/grid.rs",
-    "src/layout/taffy_integration.rs",
-    "src/layout/fragmentation.rs",
-    "src/layout/pagination.rs",
-    "src/scroll.rs",
-    "src/paint/stacking.rs",
-    "src/paint/display_list.rs",
-    "src/paint/clip_path.rs",
-    "src/paint/display_list_renderer.rs",
-    "src/paint/svg_filter.rs",
-    "src/paint/text_rasterize.rs",
-    "src/paint/text_shadow.rs",
-    "src/text/pipeline.rs",
-    "src/text/line_break.rs",
-    "src/text/hyphenation.rs",
-    "src/text/justify.rs",
-    "src/animation/mod.rs",
-    "src/accessibility.rs",
-    "src/js/legacy/ecma_embed.rs",
-    "src/js/vmjs/window.rs",
-    "src/js/vmjs/window_realm.rs",
-    "src/js/event_loop.rs",
-    "src/js/html_script_processing.rs",
-    "src/js/webidl/mod.rs",
-    "src/js/legacy/vm_dom.rs",
-    "src/js/vmjs/window_timers.rs",
-    "src/js/url.rs",
-    "src/js/vmjs/window_url.rs",
-    "src/js/fetch.rs",
-    "src/js/vmjs/window_fetch.rs",
-    "src/js/legacy/quickjs/fetch.rs",
-    "tests/dom_integration/compatibility_test.rs",
-    "tests/tree/shadow_dom.rs",
-    "tests/css_integration/loader_tests.rs",
-    "tests/style/has_selector_test.rs",
-    "tests/style/layer_important_test.rs",
-    "tests/style/media_test.rs",
-    "tests/style/supports_rule_test.rs",
-    "tests/style/css_numeric_functions.rs",
-    "tests/paint/color_mix_display_list_test.rs",
-    "tests/tree/test_anonymous_boxes.rs",
-    "tests/tree/form_option_nonrendered.rs",
-    "tests/layout/table_columns_test.rs",
-    "tests/layout/test_inline_float.rs",
-    "tests/layout/test_positioned.rs",
-    "tests/layout/flex_box_sizing_test.rs",
-    "tests/layout/subgrid.rs",
-    "tests/layout/table_anonymous_inheritance.rs",
-    "tests/layout/multicol.rs",
-    "tests/layout/paged_media.rs",
-    "tests/layout/scrollbar_gutter.rs",
-    "tests/paint/stacking_test.rs",
-    "tests/paint/display_list_test.rs",
-    "tests/paint/display_list_renderer_test.rs",
-    "tests/paint/text_rasterize_test.rs",
-    "tests/paint/display_list_font_palette_overrides_test.rs",
-    "tests/text/pipeline_test.rs",
-    "tests/text/line_break_test.rs",
-    "tests/text/hyphenation_test.rs",
-    "tests/text/justify_test.rs",
-    "tests/animation/mod.rs",
-    "tests/bin/fetch_and_render_animation_time_test.rs",
-    "tests/accessibility/test.rs",
-    "tests/accessibility/name_computation.rs",
-    "tests/misc/integration_test.rs",
-    "tests/style/container_style_queries.rs",
-    "tests/html_script_processing.rs",
-    "tests/bin/fetch_and_render_js_test.rs",
-  ];
+  //
+  // Test architecture note:
+  // - Unit tests live in `src/` alongside the implementation.
+  // - Integration tests live under `tests/` and are included by `tests/integration.rs`.
+  //
+  // This guardrail intentionally has a "pre-cleanup" and "post-cleanup" mode so it remains useful
+  // while the repository migrates. Once `tests/integration.rs` exists, we enforce the post-cleanup
+  // paths (and stop requiring the old `tests/{style,layout,paint,...}` files that are deleted).
+  let required_paths: &[&str] = if root.join("tests/integration.rs").exists() {
+    &[
+      // Source files (implementation + unit-test destinations).
+      "src/dom.rs",
+      "src/html/mod.rs",
+      "src/html/encoding.rs",
+      "src/html/viewport.rs",
+      "src/css/parser.rs",
+      "src/css/loader.rs",
+      "src/css/selectors.rs",
+      "src/css/types.rs",
+      "src/style/cascade.rs",
+      "src/style/media.rs",
+      "src/style/values.rs",
+      "src/style/color.rs",
+      "src/tree/box_generation.rs",
+      "src/tree/box_tree.rs",
+      "src/tree/table_fixup.rs",
+      "src/layout/table.rs",
+      "src/layout/contexts/block/mod.rs",
+      "src/layout/contexts/inline/mod.rs",
+      "src/layout/absolute_positioning.rs",
+      "src/layout/contexts/flex.rs",
+      "src/layout/contexts/grid.rs",
+      "src/layout/taffy_integration.rs",
+      "src/layout/fragmentation.rs",
+      "src/layout/pagination.rs",
+      "src/scroll.rs",
+      "src/paint/stacking.rs",
+      "src/paint/display_list.rs",
+      "src/paint/clip_path.rs",
+      "src/paint/display_list_renderer.rs",
+      "src/paint/svg_filter.rs",
+      "src/paint/text_rasterize.rs",
+      "src/paint/text_shadow.rs",
+      "src/text/pipeline.rs",
+      "src/text/line_break.rs",
+      "src/text/hyphenation.rs",
+      "src/text/justify.rs",
+      "src/animation/mod.rs",
+      "src/accessibility.rs",
+      "src/js/legacy/ecma_embed.rs",
+      "src/js/vmjs/window.rs",
+      "src/js/vmjs/window_realm.rs",
+      "src/js/event_loop.rs",
+      "src/js/html_script_processing.rs",
+      "src/js/webidl/mod.rs",
+      "src/js/legacy/vm_dom.rs",
+      "src/js/vmjs/window_timers.rs",
+      "src/js/url.rs",
+      "src/js/vmjs/window_url.rs",
+      "src/js/fetch.rs",
+      "src/js/vmjs/window_fetch.rs",
+      "src/js/legacy/quickjs/fetch.rs",
+      // Integration test module roots (included by `tests/integration.rs`).
+      "tests/integration.rs",
+      "tests/common/mod.rs",
+      "tests/api/mod.rs",
+      "tests/fixtures/mod.rs",
+      "tests/wpt/mod.rs",
+    ]
+  } else {
+    &[
+      // Legacy (pre-cleanup) paths.
+      "src/dom.rs",
+      "src/html/mod.rs",
+      "src/html/encoding.rs",
+      "src/html/viewport.rs",
+      "src/css/parser.rs",
+      "src/css/selectors.rs",
+      "src/css/types.rs",
+      "src/style/cascade.rs",
+      "src/style/media.rs",
+      "src/style/values.rs",
+      "src/style/color.rs",
+      "src/tree/box_generation.rs",
+      "src/tree/box_tree.rs",
+      "src/tree/table_fixup.rs",
+      "src/layout/table.rs",
+      "src/layout/contexts/block/mod.rs",
+      "src/layout/contexts/inline/mod.rs",
+      "src/layout/absolute_positioning.rs",
+      "src/layout/contexts/flex.rs",
+      "src/layout/contexts/grid.rs",
+      "src/layout/taffy_integration.rs",
+      "src/layout/fragmentation.rs",
+      "src/layout/pagination.rs",
+      "src/scroll.rs",
+      "src/paint/stacking.rs",
+      "src/paint/display_list.rs",
+      "src/paint/clip_path.rs",
+      "src/paint/display_list_renderer.rs",
+      "src/paint/svg_filter.rs",
+      "src/paint/text_rasterize.rs",
+      "src/paint/text_shadow.rs",
+      "src/text/pipeline.rs",
+      "src/text/line_break.rs",
+      "src/text/hyphenation.rs",
+      "src/text/justify.rs",
+      "src/animation/mod.rs",
+      "src/accessibility.rs",
+      "src/js/legacy/ecma_embed.rs",
+      "src/js/vmjs/window.rs",
+      "src/js/vmjs/window_realm.rs",
+      "src/js/event_loop.rs",
+      "src/js/html_script_processing.rs",
+      "src/js/webidl/mod.rs",
+      "src/js/legacy/vm_dom.rs",
+      "src/js/vmjs/window_timers.rs",
+      "src/js/url.rs",
+      "src/js/vmjs/window_url.rs",
+      "src/js/fetch.rs",
+      "src/js/vmjs/window_fetch.rs",
+      "src/js/legacy/quickjs/fetch.rs",
+      // Legacy integration tests (pre-cleanup).
+      "tests/dom_integration/compatibility_test.rs",
+      "tests/tree/shadow_dom.rs",
+      "tests/css_integration/loader_tests.rs",
+      "tests/style/has_selector_test.rs",
+      "tests/style/layer_important_test.rs",
+      "tests/style/media_test.rs",
+      "tests/style/supports_rule_test.rs",
+      "tests/style/css_numeric_functions.rs",
+      "tests/paint/color_mix_display_list_test.rs",
+      "tests/tree/test_anonymous_boxes.rs",
+      "tests/tree/form_option_nonrendered.rs",
+      "tests/layout/table_columns_test.rs",
+      "tests/layout/test_inline_float.rs",
+      "tests/layout/test_positioned.rs",
+      "tests/layout/flex_box_sizing_test.rs",
+      "tests/layout/subgrid.rs",
+      "tests/layout/table_anonymous_inheritance.rs",
+      "tests/layout/multicol.rs",
+      "tests/layout/paged_media.rs",
+      "tests/layout/scrollbar_gutter.rs",
+      "tests/paint/stacking_test.rs",
+      "tests/paint/display_list_test.rs",
+      "tests/paint/display_list_renderer_test.rs",
+      "tests/paint/text_rasterize_test.rs",
+      "tests/paint/display_list_font_palette_overrides_test.rs",
+      "tests/text/pipeline_test.rs",
+      "tests/text/line_break_test.rs",
+      "tests/text/hyphenation_test.rs",
+      "tests/text/justify_test.rs",
+      "tests/animation/mod.rs",
+      "tests/bin/fetch_and_render_animation_time_test.rs",
+      "tests/accessibility/test.rs",
+      "tests/accessibility/name_computation.rs",
+      "tests/misc/integration_test.rs",
+      "tests/style/container_style_queries.rs",
+      "tests/html_script_processing.rs",
+      "tests/bin/fetch_and_render_js_test.rs",
+    ]
+  };
 
   for path in required_paths {
+    let link_target = format!("../{path}");
     assert!(
-      content.contains(path),
+      content.contains(path) || content.contains(&link_target),
       "docs/conformance.md should mention {path} so the matrix stays tied to the code/tests"
     );
     assert!(
@@ -218,23 +292,14 @@ fn conformance_doc_links_to_real_code_and_tests() {
     linked.insert(raw_target.to_string());
   }
 
-  assert!(
-    linked.iter().any(|p| p.starts_with("../src/")),
-    "docs/conformance.md should link to at least one source file under ../src/"
-  );
-  assert!(
-    linked.iter().any(|p| p.starts_with("../tests/")),
-    "docs/conformance.md should link to at least one test file under ../tests/"
-  );
-
   let docs_dir = conformance_path
     .parent()
     .expect("docs/conformance.md should have a parent directory");
   let mut missing = Vec::<(String, PathBuf)>::new();
-  for path in linked {
-    let resolved = docs_dir.join(&path);
+  for path in &linked {
+    let resolved = docs_dir.join(path);
     if !resolved.exists() {
-      missing.push((path, resolved));
+      missing.push((path.clone(), resolved));
     }
   }
 
@@ -247,4 +312,40 @@ fn conformance_doc_links_to_real_code_and_tests() {
       .join("\n");
     panic!("docs/conformance.md contains links to paths that do not exist:\n{formatted}");
   }
+
+  assert!(
+    linked.iter().any(|p| p.starts_with("../src/")),
+    "docs/conformance.md should link to at least one source file under ../src/"
+  );
+
+  // Post-cleanup, conformance.md may link to unit tests in `src/` instead of `tests/`.
+  //
+  // Keep this guardrail strict enough to fail if the document loses any concrete linkage to tests,
+  // while allowing either:
+  // - `../tests/...` integration modules (included by `tests/integration.rs`), or
+  // - `../src/...` files that actually contain Rust tests.
+  let has_test_link = linked.iter().any(|target| {
+    if target.starts_with("../tests/") {
+      return true;
+    }
+    if !target.starts_with("../src/") {
+      return false;
+    }
+
+    let resolved = docs_dir.join(target);
+    if !resolved.is_file() || resolved.extension().and_then(|ext| ext.to_str()) != Some("rs") {
+      return false;
+    }
+
+    let Ok(file) = std::fs::read_to_string(&resolved) else {
+      return false;
+    };
+
+    file.contains("#[test]") || file.contains("#[tokio::test]") || file.contains("cfg(test)")
+  });
+
+  assert!(
+    has_test_link,
+    "docs/conformance.md should link to at least one test (either a `../tests/...` integration module or a `../src/...` Rust file containing tests)"
+  );
 }
