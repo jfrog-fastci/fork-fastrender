@@ -1165,6 +1165,17 @@ fn read_only_data_desc(value: Value) -> PropertyDescriptor {
   }
 }
 
+fn non_configurable_read_only_data_desc(value: Value) -> PropertyDescriptor {
+  PropertyDescriptor {
+    enumerable: false,
+    configurable: false,
+    kind: PropertyKind::Data {
+      value,
+      writable: false,
+    },
+  }
+}
+
 fn create_error(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -5030,15 +5041,23 @@ fn document_create_document_fragment_native(
 
 fn event_constructor_native(
   _vm: &mut Vm,
-  scope: &mut Scope<'_>,
+  _scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
   _hooks: &mut dyn VmHostHooks,
-  callee: GcObject,
+  _callee: GcObject,
   _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  Err(VmError::TypeError(
+    "Event constructor cannot be invoked without 'new'",
+  ))
+}
+
+fn event_constructor_impl(
+  scope: &mut Scope<'_>,
+  ctor: GcObject,
   args: &[Value],
 ) -> Result<Value, VmError> {
-  // Note: for MVP, we do not enforce `new` (calling as a function also produces a new object), which
-  // matches `src/js/dom_bindings` behavior.
   let type_arg = args.get(0).copied().unwrap_or(Value::Undefined);
   let type_string = scope.heap_mut().to_string(type_arg)?;
 
@@ -5076,7 +5095,7 @@ fn event_constructor_native(
   let prototype_key = alloc_key(scope, "prototype")?;
   let proto = scope
     .heap()
-    .object_get_own_data_property_value(callee, &prototype_key)?
+    .object_get_own_data_property_value(ctor, &prototype_key)?
     .and_then(|v| match v {
       Value::Object(obj) => Some(obj),
       _ => None,
@@ -5111,11 +5130,21 @@ fn event_constructor_native(
 
 fn custom_event_constructor_native(
   _vm: &mut Vm,
-  scope: &mut Scope<'_>,
+  _scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
   _hooks: &mut dyn VmHostHooks,
-  callee: GcObject,
+  _callee: GcObject,
   _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  Err(VmError::TypeError(
+    "CustomEvent constructor cannot be invoked without 'new'",
+  ))
+}
+
+fn custom_event_constructor_impl(
+  scope: &mut Scope<'_>,
+  ctor: GcObject,
   args: &[Value],
 ) -> Result<Value, VmError> {
   let type_arg = args.get(0).copied().unwrap_or(Value::Undefined);
@@ -5166,7 +5195,7 @@ fn custom_event_constructor_native(
   let prototype_key = alloc_key(scope, "prototype")?;
   let proto = scope
     .heap()
-    .object_get_own_data_property_value(callee, &prototype_key)?
+    .object_get_own_data_property_value(ctor, &prototype_key)?
     .and_then(|v| match v {
       Value::Object(obj) => Some(obj),
       _ => None,
@@ -5361,11 +5390,21 @@ fn storage_event_constructor_native(
 
 fn promise_rejection_event_constructor_native(
   _vm: &mut Vm,
-  scope: &mut Scope<'_>,
+  _scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
   _hooks: &mut dyn VmHostHooks,
-  callee: GcObject,
+  _callee: GcObject,
   _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  Err(VmError::TypeError(
+    "PromiseRejectionEvent constructor cannot be invoked without 'new'",
+  ))
+}
+
+fn promise_rejection_event_constructor_impl(
+  scope: &mut Scope<'_>,
+  ctor: GcObject,
   args: &[Value],
 ) -> Result<Value, VmError> {
   let type_arg = args.get(0).copied().unwrap_or(Value::Undefined);
@@ -5421,7 +5460,7 @@ fn promise_rejection_event_constructor_native(
   let prototype_key = alloc_key(scope, "prototype")?;
   let proto = scope
     .heap()
-    .object_get_own_data_property_value(callee, &prototype_key)?
+    .object_get_own_data_property_value(ctor, &prototype_key)?
     .and_then(|v| match v {
       Value::Object(obj) => Some(obj),
       _ => None,
@@ -5805,10 +5844,10 @@ fn page_transition_event_constructor_native(
 }
 
 fn event_constructor_construct_native(
-  vm: &mut Vm,
+  _vm: &mut Vm,
   scope: &mut Scope<'_>,
-  host: &mut dyn VmHost,
-  hooks: &mut dyn VmHostHooks,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
   callee: GcObject,
   args: &[Value],
   new_target: Value,
@@ -5817,14 +5856,14 @@ fn event_constructor_construct_native(
     Value::Object(obj) => obj,
     _ => callee,
   };
-  event_constructor_native(vm, scope, host, hooks, ctor, Value::Undefined, args)
+  event_constructor_impl(scope, ctor, args)
 }
 
 fn custom_event_constructor_construct_native(
-  vm: &mut Vm,
+  _vm: &mut Vm,
   scope: &mut Scope<'_>,
-  host: &mut dyn VmHost,
-  hooks: &mut dyn VmHostHooks,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
   callee: GcObject,
   args: &[Value],
   new_target: Value,
@@ -5833,7 +5872,7 @@ fn custom_event_constructor_construct_native(
     Value::Object(obj) => obj,
     _ => callee,
   };
-  custom_event_constructor_native(vm, scope, host, hooks, ctor, Value::Undefined, args)
+  custom_event_constructor_impl(scope, ctor, args)
 }
 
 fn storage_event_constructor_construct_native(
@@ -5853,10 +5892,10 @@ fn storage_event_constructor_construct_native(
 }
 
 fn promise_rejection_event_constructor_construct_native(
-  vm: &mut Vm,
+  _vm: &mut Vm,
   scope: &mut Scope<'_>,
-  host: &mut dyn VmHost,
-  hooks: &mut dyn VmHostHooks,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
   callee: GcObject,
   args: &[Value],
   new_target: Value,
@@ -5865,7 +5904,7 @@ fn promise_rejection_event_constructor_construct_native(
     Value::Object(obj) => obj,
     _ => callee,
   };
-  promise_rejection_event_constructor_native(vm, scope, host, hooks, ctor, Value::Undefined, args)
+  promise_rejection_event_constructor_impl(scope, ctor, args)
 }
 
 fn error_event_constructor_construct_native(
@@ -14943,6 +14982,27 @@ fn init_window_globals(
     data_desc(Value::Object(event_ctor_func)),
   )?;
 
+  // DOM Event phase constants (Event.NONE .. Event.BUBBLING_PHASE). These are WebIDL `const`s and
+  // must be non-writable/non-configurable.
+  for (name, value) in [
+    ("NONE", 0.0),
+    ("CAPTURING_PHASE", 1.0),
+    ("AT_TARGET", 2.0),
+    ("BUBBLING_PHASE", 3.0),
+  ] {
+    let key = alloc_key(&mut scope, name)?;
+    scope.define_property(
+      event_ctor_func,
+      key,
+      non_configurable_read_only_data_desc(Value::Number(value)),
+    )?;
+    scope.define_property(
+      event_proto,
+      key,
+      non_configurable_read_only_data_desc(Value::Number(value)),
+    )?;
+  }
+
   let custom_event_ctor_call_id = vm.register_native_call(custom_event_constructor_native)?;
   let custom_event_ctor_construct_id =
     vm.register_native_construct(custom_event_constructor_construct_native)?;
@@ -17923,6 +17983,85 @@ mod tests {
     let referrer = realm.exec_script("document.referrer")?;
     assert_eq!(get_string(realm.heap(), referrer), "");
 
+    Ok(())
+  }
+
+  #[test]
+  fn event_constructors_require_new_and_expose_phase_constants() -> Result<(), VmError> {
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+
+    let err = realm.exec_script("Event('x')");
+    let err = err.expect_err("expected Event('x') to throw");
+    match err {
+      VmError::TypeError(msg) => assert_eq!(msg, "Event constructor cannot be invoked without 'new'"),
+      other => {
+        let obj = unwrap_thrown_object(other);
+        let (vm, heap) = realm.vm_and_heap_mut();
+        let mut scope = heap.scope();
+        scope.push_root(Value::Object(obj))?;
+        let name = get_prop(vm, &mut scope, obj, "name")?;
+        assert_eq!(get_string(scope.heap(), name), "TypeError");
+        let message = get_prop(vm, &mut scope, obj, "message")?;
+        assert_eq!(
+          get_string(scope.heap(), message),
+          "Event constructor cannot be invoked without 'new'"
+        );
+      }
+    }
+
+    assert!(matches!(realm.exec_script("new Event('x')")?, Value::Object(_)));
+
+    let err = realm.exec_script("CustomEvent('x')");
+    let err = err.expect_err("expected CustomEvent('x') to throw");
+    match err {
+      VmError::TypeError(msg) => {
+        assert_eq!(msg, "CustomEvent constructor cannot be invoked without 'new'")
+      }
+      other => {
+        let obj = unwrap_thrown_object(other);
+        let (vm, heap) = realm.vm_and_heap_mut();
+        let mut scope = heap.scope();
+        scope.push_root(Value::Object(obj))?;
+        let name = get_prop(vm, &mut scope, obj, "name")?;
+        assert_eq!(get_string(scope.heap(), name), "TypeError");
+        let message = get_prop(vm, &mut scope, obj, "message")?;
+        assert_eq!(
+          get_string(scope.heap(), message),
+          "CustomEvent constructor cannot be invoked without 'new'"
+        );
+      }
+    }
+
+    assert!(matches!(
+      realm.exec_script("new CustomEvent('x')")?,
+      Value::Object(_)
+    ));
+
+    // DOM constants should be present and numeric.
+    assert_eq!(realm.exec_script("Event.NONE")?, Value::Number(0.0));
+    assert_eq!(realm.exec_script("Event.CAPTURING_PHASE")?, Value::Number(1.0));
+    assert_eq!(realm.exec_script("Event.AT_TARGET")?, Value::Number(2.0));
+    assert_eq!(realm.exec_script("Event.BUBBLING_PHASE")?, Value::Number(3.0));
+
+    // Constants are mirrored onto the interface prototype in browsers / WebIDL.
+    assert_eq!(realm.exec_script("Event.prototype.CAPTURING_PHASE")?, Value::Number(1.0));
+
+    // Constants are non-writable and non-configurable.
+    assert_eq!(
+      realm.exec_script(
+        "(() => {\n\
+          let threw = false;\n\
+          try {\n\
+            (function () { 'use strict'; Event.CAPTURING_PHASE = 9; })();\n\
+          } catch (e) {\n\
+            threw = true;\n\
+          }\n\
+          return threw || Event.CAPTURING_PHASE === 1;\n\
+        })()",
+      )?,
+      Value::Bool(true)
+    );
+    assert_eq!(realm.exec_script("delete Event.CAPTURING_PHASE")?, Value::Bool(false));
     Ok(())
   }
 
