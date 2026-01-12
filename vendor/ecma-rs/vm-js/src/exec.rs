@@ -638,6 +638,84 @@ impl RuntimeEnv {
   }
 
   fn declare_var(&mut self, vm: &mut Vm, scope: &mut Scope<'_>, name: &str) -> Result<(), VmError> {
+    // `var` declarations can be introduced dynamically via `eval` (direct or indirect). Those
+    // declarations must not conflict with existing lexical bindings in the same variable scope.
+    //
+    // For example (Node.js):
+    //   function f(){ let x = 1; eval("var x = 2"); }
+    //
+    // This is not an early error in the *caller* because the `var` declaration is parsed at runtime
+    // from the eval string. The engine must reject it by throwing a catchable `SyntaxError`.
+    match self.var_env {
+      VarEnv::GlobalObject => {
+        // Global `var` declarations must not collide with existing global lexical bindings.
+        //
+        // vm-js models the global lexical environment as a standalone declarative env record whose
+        // outer is `None` (identifier resolution falls back to the global object separately), so we
+        // recover it by walking to the outermost env.
+        let mut current = self.lexical_env;
+        loop {
+          let outer = scope.heap().env_outer(current)?;
+          let Some(outer) = outer else {
+            break;
+          };
+          current = outer;
+        }
+
+        // Only declarative env records can contain lexical bindings (`let`/`const`/`class`).
+        if matches!(
+          scope.heap().get_env_record(current)?,
+          crate::env::EnvRecord::Declarative(_)
+        ) && scope.heap().env_has_binding(current, name)?
+        {
+          let intr = vm
+            .intrinsics()
+            .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+          let err_obj = crate::error_object::new_syntax_error_object(
+            scope,
+            &intr,
+            "Identifier has already been declared",
+          )?;
+          return Err(VmError::Throw(err_obj));
+        }
+      }
+      VarEnv::Env(var_env) => {
+        // Function `var` declarations must not collide with lexical bindings in the function-body
+        // lexical environment record (which is the env whose outer is the VariableEnvironment).
+        //
+        // Note: This intentionally does *not* consider inner block/catch env records, which are
+        // separate lexical scopes and are allowed to shadow var bindings.
+        let mut current = Some(self.lexical_env);
+        let mut var_scope_lex: Option<GcEnv> = None;
+        while let Some(env) = current {
+          let outer = scope.heap().env_outer(env)?;
+          if outer == Some(var_env) {
+            var_scope_lex = Some(env);
+            break;
+          }
+          current = outer;
+        }
+
+        if let Some(var_scope_lex) = var_scope_lex {
+          if matches!(
+            scope.heap().get_env_record(var_scope_lex)?,
+            crate::env::EnvRecord::Declarative(_)
+          ) && scope.heap().env_has_binding(var_scope_lex, name)?
+          {
+            let intr = vm
+              .intrinsics()
+              .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+            let err_obj = crate::error_object::new_syntax_error_object(
+              scope,
+              &intr,
+              "Identifier has already been declared",
+            )?;
+            return Err(VmError::Throw(err_obj));
+          }
+        }
+      }
+    }
+
     match self.var_env {
       VarEnv::GlobalObject => {
         let global_object = self.global_object;
@@ -1930,6 +2008,16 @@ impl<'a> Evaluator<'a> {
     }
 
     if let Some(FuncBody::Block(stmts)) = &func.stx.body {
+      // Create a dedicated function-body lexical environment nested inside the function's var/env
+      // record.
+      //
+      // This matches the spec's execution-context split where `var`/parameter bindings live in the
+      // VariableEnvironment and `let`/`const`/`class` bindings live in a separate
+      // LexicalEnvironment.
+      let outer = self.env.lexical_env;
+      let body_lex = scope.env_create(Some(outer))?;
+      self.env.set_lexical_env(scope.heap_mut(), body_lex);
+
       self.instantiate_stmt_list(scope, stmts)?;
     }
     Ok(())

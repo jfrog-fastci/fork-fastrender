@@ -845,6 +845,7 @@ impl Intrinsics {
     let generator_prototype_next = vm.register_native_call(builtins::generator_prototype_next)?;
     let generator_prototype_return = vm.register_native_call(builtins::generator_prototype_return)?;
     let generator_prototype_throw = vm.register_native_call(builtins::generator_prototype_throw)?;
+
     // `%Number%`, `%Boolean%`, `%Date%`, and global functions.
     let number_call = vm.register_native_call(builtins::number_constructor_call)?;
     let number_construct = vm.register_native_construct(builtins::number_constructor_construct)?;

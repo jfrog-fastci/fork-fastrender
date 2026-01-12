@@ -90,6 +90,27 @@ fn eval_syntax_errors_are_catchable() {
 }
 
 #[test]
+fn direct_eval_var_decl_conflicts_with_outer_let() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        function f(){
+          let x = 1;
+          try { eval("var x = 2"); return "no error"; }
+          catch (e) { return e.name; }
+        }
+        f()
+      "#,
+    )
+    .unwrap();
+  let Value::String(s) = value else {
+    panic!("expected string from caught error name");
+  };
+  assert_eq!(rt.heap().get_string(s).unwrap().to_utf8_lossy(), "SyntaxError");
+}
+
+#[test]
 fn strict_direct_eval_does_not_leak_var_declarations() {
   let mut rt = new_runtime();
   let value = rt
