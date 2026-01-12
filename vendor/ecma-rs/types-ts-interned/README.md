@@ -18,6 +18,34 @@ bash scripts/cargo_agent.sh run -p types-ts-interned --example types_ts_interned
 This example shows how to create a [`TypeStore`], intern structural types, and
 run assignability checks via [`RelateCtx`].
 
+## Native layout model (experimental)
+
+`types-ts-interned` also contains an LLVM-agnostic native layout engine used by
+the strict-native AOT pipeline.
+
+- Compute a native runtime layout for a type via `TypeStore::layout_of`.
+- Inspect a layout via `TypeStore::layout(LayoutId) -> Layout`.
+- For types that contain `TypeKind::Ref` nodes, callers can expand refs via
+  `TypeStore::layout_of_evaluated` (using a `TypeExpander`) before computing a
+  layout.
+
+Function/closure representation:
+
+- `TypeKind::Callable` lowers to a GC-managed pointer to a canonical closure
+  object payload layout:
+  - `fn_ptr` (opaque code pointer)
+  - `env` (`PtrKind::GcAny`, a GC-managed pointer with unknown pointee layout)
+- Object shapes with `call_signatures` / `construct_signatures` use the same
+  `fn_ptr` + `env` header as a prefix before regular object properties, making
+  callables-with-properties representable.
+
+GC tracing helpers:
+
+- `TypeStore::gc_trace(LayoutId)` produces a trace plan that includes tagged
+  unions.
+- `TypeStore::gc_ptr_offsets(LayoutId)` extracts unconditional GC pointer
+  offsets (pointers that are present regardless of union discriminants).
+
 ## Fuzzing
 
 This crate exposes a fuzz entry point behind the `fuzzing` and `serde-json`
