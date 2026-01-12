@@ -375,6 +375,57 @@ Reflect.apply(e, null, ["1"]);
 }
 
 #[test]
+fn strict_native_reports_forbidden_eval_via_reflect_apply_destructuring_alias_with_destructuring_alias_target(
+) {
+  let tmp = tempdir().expect("temp dir");
+  let entry = tmp.path().join("main.ts");
+  fs::write(
+    &entry,
+    r#"
+declare const globalThis: { eval: unknown };
+declare const Reflect: { apply(target: unknown, thisArg: unknown, args: unknown[]): unknown };
+const { eval: e } = globalThis;
+const { apply: a } = Reflect;
+a(e, null, ["1"]);
+"#,
+  )
+  .expect("write main.ts");
+
+  typecheck_cli()
+    .timeout(CLI_TIMEOUT)
+    .args(["typecheck", "--lib", "es5"])
+    .arg("--strict-native")
+    .arg(entry.as_os_str())
+    .assert()
+    .failure()
+    .stdout(contains(codes::NATIVE_STRICT_EVAL.as_str()));
+}
+
+#[test]
+fn strict_native_reports_forbidden_eval_via_function_call_invoker_with_destructuring_alias_target() {
+  let tmp = tempdir().expect("temp dir");
+  let entry = tmp.path().join("main.ts");
+  fs::write(
+    &entry,
+    r#"
+declare const globalThis: { eval: unknown };
+const { eval: e } = globalThis;
+Function.prototype.call.call(e, null, "1");
+"#,
+  )
+  .expect("write main.ts");
+
+  typecheck_cli()
+    .timeout(CLI_TIMEOUT)
+    .args(["typecheck", "--lib", "es5"])
+    .arg("--strict-native")
+    .arg(entry.as_os_str())
+    .assert()
+    .failure()
+    .stdout(contains(codes::NATIVE_STRICT_EVAL.as_str()));
+}
+
+#[test]
 fn strict_native_reports_eval_through_outer_destructuring_alias() {
   let tmp = tempdir().expect("temp dir");
   let entry = tmp.path().join("main.ts");
