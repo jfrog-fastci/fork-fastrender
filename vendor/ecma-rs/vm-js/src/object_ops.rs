@@ -353,12 +353,14 @@ impl<'a> Scope<'a> {
           &trap_args,
         )?;
         let trap_bool = scope.heap().to_boolean(trap_result)?;
-
+ 
         // Proxy invariants: if the trap reports `false`, the target must not have a non-configurable
         // property, and if the target is non-extensible it must not have any property at all.
+        //
+        // Spec: https://tc39.es/ecma262/#sec-proxy-object-internal-methods-and-internal-slots-hasproperty-p
         if !trap_bool {
           if let Some(target_desc) =
-            scope.object_get_own_property_with_host_and_hooks(vm, host, hooks, target, key)?
+            scope.get_own_property_with_host_and_hooks_with_tick(vm, host, hooks, target, key, tick)?
           {
             if !target_desc.configurable {
               return Err(VmError::TypeError(
@@ -1244,7 +1246,6 @@ impl<'a> Scope<'a> {
         &trap_args,
       )?;
       let trap_bool = self.heap().to_boolean(trap_result)?;
-
       // Proxy invariants: if the trap reports `false`, the target must not have a non-configurable
       // property, and if the target is non-extensible it must not have any property at all.
       if !trap_bool {
@@ -1599,23 +1600,22 @@ impl<'a> Scope<'a> {
         Value::Object(handler),
         &trap_args,
       )?;
-      let trap_ok = self.heap().to_boolean(trap_result)?;
-      if !trap_ok {
+      let trap_bool = self.heap().to_boolean(trap_result)?;
+      if !trap_bool {
         return Ok(false);
       }
 
-      // Proxy invariants: a successful delete must not report deleting a non-configurable target
-      // property.
-      if let Some(target_desc) =
-        self.object_get_own_property_with_host_and_hooks(vm, host, hooks, target, key)?
-      {
-        if !target_desc.configurable {
+      // Proxy invariants: the trap cannot report success if the target has a non-configurable own
+      // property with the same key.
+      //
+      // Spec: https://tc39.es/ecma262/#sec-proxy-object-internal-methods-and-internal-slots-delete-p
+      if let Some(desc) = self.object_get_own_property_with_host_and_hooks(vm, host, hooks, target, key)? {
+        if !desc.configurable {
           return Err(VmError::TypeError(
             "Proxy deleteProperty trap returned true for a non-configurable target property",
           ));
         }
       }
-
       return Ok(true);
     }
   }
@@ -4306,7 +4306,30 @@ fn proxy_has_property_with_tick(
     &[Value::Object(target), key_val],
   )?;
 
-  Ok(scope.heap().to_boolean(trap_result)?)
+  let trap_bool = scope.heap().to_boolean(trap_result)?;
+  if trap_bool {
+    return Ok(true);
+  }
+ 
+  // Proxy invariants (same as `Proxy.[[HasProperty]]`):
+  // - the trap cannot report `false` if the target has a non-configurable own property,
+  // - and it cannot report `false` for an existing property on a non-extensible target.
+  let target_desc = scope.get_own_property_with_host_and_hooks_with_tick(vm, host, hooks, target, key, tick)?;
+  let Some(target_desc) = target_desc else {
+    return Ok(false);
+  };
+  if !target_desc.configurable {
+    return Err(VmError::TypeError(
+      "Proxy has trap returned false for a non-configurable target property",
+    ));
+  }
+  let extensible_target = scope.is_extensible_with_host_and_hooks(vm, host, hooks, target)?;
+  if !extensible_target {
+    return Err(VmError::TypeError(
+      "Proxy has trap returned false for an existing property on a non-extensible target",
+    ));
+  }
+  Ok(false)
 }
 
 fn proxy_set(

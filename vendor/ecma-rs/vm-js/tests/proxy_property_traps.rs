@@ -565,12 +565,17 @@ fn proxy_has_trap_invariants_are_enforced() -> Result<(), VmError> {
       let ok2 = false;
       try { "x" in p2; } catch (e) { ok2 = e instanceof TypeError; }
 
-      // Allowed when the target property is truly absent.
-      const t3 = {};
+      // Allowed for configurable existing properties on an extensible target.
+      const t3 = { x: 1 };
       const p3 = new Proxy(t3, { has() { return false; } });
-      const ok3 = ("x" in p3) === false;
+      const ok3 = ("x" in p3) === false && t3.x === 1;
 
-      return ok1 && ok2 && ok3;
+      // Allowed when the target property is truly absent.
+      const t4 = {};
+      const p4 = new Proxy(t4, { has() { return false; } });
+      const ok4 = ("x" in p4) === false;
+
+      return ok1 && ok2 && ok3 && ok4;
     })()
   "#;
   let value = rt.exec_script(script)?;
@@ -593,10 +598,16 @@ fn proxy_delete_property_trap_invariants_are_enforced() -> Result<(), VmError> {
       let ok1 = false;
       try { Reflect.deleteProperty(p1, "x"); } catch (e) { ok1 = e instanceof TypeError; }
 
+      // If the trap reports failure, no invariants are enforced.
+      const t1b = {};
+      Object.defineProperty(t1b, "x", { value: 1, configurable: false });
+      const p1b = new Proxy(t1b, { deleteProperty() { return false; } });
+      const ok1b = Reflect.deleteProperty(p1b, "x") === false && t1b.x === 1;
+
       // Allowed for configurable properties.
       const t2 = { x: 1 };
       const p2 = new Proxy(t2, { deleteProperty() { return true; } });
-      const ok2 = Reflect.deleteProperty(p2, "x") === true;
+      const ok2 = Reflect.deleteProperty(p2, "x") === true && t2.x === 1;
 
       // String index properties are non-configurable, so deletion success is also forbidden.
       const t3 = new String("abc");
@@ -604,7 +615,7 @@ fn proxy_delete_property_trap_invariants_are_enforced() -> Result<(), VmError> {
       let ok3 = false;
       try { Reflect.deleteProperty(p3, "0"); } catch (e) { ok3 = e instanceof TypeError; }
 
-      return ok1 && ok2 && ok3;
+      return ok1 && ok1b && ok2 && ok3;
     })()
   "#;
   let value = rt.exec_script(script)?;
