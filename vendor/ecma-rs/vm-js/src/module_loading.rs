@@ -332,69 +332,77 @@ impl GraphLoadingState {
         }
       };
 
-      let intr = vm.intrinsics().ok_or(VmError::Unimplemented(
-        "dynamic import requires intrinsics (create a Realm first)",
-      ))?;
-
-      // `PerformPromiseThen(evaluatePromise, onFulfilled, onRejected)`.
-      let on_fulfilled_call = vm.dynamic_import_eval_on_fulfilled_call_id()?;
-      let on_rejected_call = vm.dynamic_import_eval_on_rejected_call_id()?;
-
-      let mut eval_scope = scope.reborrow();
-      eval_scope.push_root(eval_promise)?;
-      let Value::Object(_) = eval_promise else {
-        let Some((state, _module)) = modules.take_pending_dynamic_import_evaluation(vm, continuation_id) else {
-          return Ok(());
+      // Attach Promise reactions to the module evaluation promise.
+      //
+      // Important: this must be done even when `eval_promise` is already fulfilled/rejected, since
+      // `ContinueDynamicImport` uses `PerformPromiseThen` and therefore settles the import() promise
+      // via a microtask.
+      let attach_result = (|| -> Result<(), VmError> {
+        let intr = vm.intrinsics().ok_or(VmError::Unimplemented(
+          "dynamic import requires intrinsics (create a Realm first)",
+        ))?;
+ 
+        // `PerformPromiseThen(evaluatePromise, onFulfilled, onRejected)`.
+        let on_fulfilled_call = vm.dynamic_import_eval_on_fulfilled_call_id()?;
+        let on_rejected_call = vm.dynamic_import_eval_on_rejected_call_id()?;
+ 
+        let mut eval_scope = scope.reborrow();
+        eval_scope.push_root(eval_promise)?;
+        let Value::Object(_) = eval_promise else {
+          return Err(VmError::InvariantViolation(
+            "module evaluation did not return a promise object",
+          ));
         };
-        state.teardown_roots(eval_scope.heap_mut());
-        return Err(VmError::InvariantViolation(
-          "module evaluation did not return a promise object",
-        ));
-      };
+ 
+        let on_fulfilled_name = eval_scope.alloc_string("dynamicImportEvalOnFulfilled")?;
+        eval_scope.push_root(Value::String(on_fulfilled_name))?;
+        let on_rejected_name = eval_scope.alloc_string("dynamicImportEvalOnRejected")?;
+        eval_scope.push_root(Value::String(on_rejected_name))?;
+ 
+        let slots = [Value::Number(continuation_id as f64)];
+ 
+        let on_fulfilled = eval_scope.alloc_native_function_with_slots(
+          on_fulfilled_call,
+          None,
+          on_fulfilled_name,
+          1,
+          &slots,
+        )?;
+        eval_scope
+          .heap_mut()
+          .object_set_prototype(on_fulfilled, Some(intr.function_prototype()))?;
+        eval_scope.push_root(Value::Object(on_fulfilled))?;
+ 
+        let on_rejected = eval_scope.alloc_native_function_with_slots(
+          on_rejected_call,
+          None,
+          on_rejected_name,
+          1,
+          &slots,
+        )?;
+        eval_scope
+          .heap_mut()
+          .object_set_prototype(on_rejected, Some(intr.function_prototype()))?;
+        eval_scope.push_root(Value::Object(on_rejected))?;
+ 
+        crate::promise_ops::perform_promise_then_with_host_and_hooks(
+          vm,
+          &mut eval_scope,
+          host_ctx,
+          hooks,
+          eval_promise,
+          Some(Value::Object(on_fulfilled)),
+          Some(Value::Object(on_rejected)),
+        )?;
+        Ok(())
+      })();
 
-      let on_fulfilled_name = eval_scope.alloc_string("dynamicImportEvalOnFulfilled")?;
-      eval_scope.push_root(Value::String(on_fulfilled_name))?;
-      let on_rejected_name = eval_scope.alloc_string("dynamicImportEvalOnRejected")?;
-      eval_scope.push_root(Value::String(on_rejected_name))?;
-
-      let slots = [Value::Number(continuation_id as f64)];
-
-      let on_fulfilled = eval_scope.alloc_native_function_with_slots(
-        on_fulfilled_call,
-        None,
-        on_fulfilled_name,
-        1,
-        &slots,
-      )?;
-      eval_scope
-        .heap_mut()
-        .object_set_prototype(on_fulfilled, Some(intr.function_prototype()))?;
-      eval_scope.push_root(Value::Object(on_fulfilled))?;
-
-      let on_rejected = eval_scope.alloc_native_function_with_slots(
-        on_rejected_call,
-        None,
-        on_rejected_name,
-        1,
-        &slots,
-      )?;
-      eval_scope
-        .heap_mut()
-        .object_set_prototype(on_rejected, Some(intr.function_prototype()))?;
-      eval_scope.push_root(Value::Object(on_rejected))?;
-
-      if let Err(err) = crate::promise_ops::perform_promise_then_with_host_and_hooks(
-        vm,
-        &mut eval_scope,
-        host_ctx,
-        hooks,
-        eval_promise,
-        Some(Value::Object(on_fulfilled)),
-        Some(Value::Object(on_rejected)),
-      ) {
-        // Clean up continuation state before propagating.
+      if let Err(err) = attach_result {
+        // Clean up continuation state before propagating. (The import() promise will not be settled
+        // if we fail before installing the Promise reactions, so ensure we don't leak its
+        // capability roots.)
         if let Some((state, _module)) = modules.take_pending_dynamic_import_evaluation(vm, continuation_id) {
-          state.teardown_roots(eval_scope.heap_mut());
+          state.teardown_roots(scope.heap_mut());
         }
         return Err(err);
       }
