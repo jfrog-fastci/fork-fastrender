@@ -78,6 +78,32 @@ impl RootRegistry {
     inner.alloc(Entry::Pinned(Box::new(ptr)))
   }
 
+  /// Like [`RootRegistry::pin`], but reads the pointer value from an addressable slot *after*
+  /// acquiring the root registry lock.
+  ///
+  /// This is intended for moving-GC-safe exported entrypoints that accept GC-managed pointers as
+  /// [`crate::roots::GcHandle`] (pointer-to-slot) handles: if lock acquisition blocks and the thread
+  /// enters a GC-safe region, a moving GC may update the caller's slot before the lock is acquired.
+  ///
+  /// # Safety
+  /// `slot` must be a valid, aligned pointer to a writable `*mut u8` slot.
+  pub unsafe fn pin_from_slot(&self, slot: *mut *mut u8) -> u32 {
+    if slot.is_null() {
+      std::process::abort();
+    }
+    if (slot as usize) % core::mem::align_of::<*mut u8>() != 0 {
+      std::process::abort();
+    }
+
+    // Acquire the lock before reading from `slot`: if lock acquisition blocks, the thread may enter
+    // a GC-safe region and a moving GC may update the slot.
+    let mut inner = self.inner.lock();
+
+    // Safety: caller guarantees `slot` is valid for reads of `*mut u8`.
+    let ptr = unsafe { slot.read() };
+    inner.alloc(Entry::Pinned(Box::new(ptr)))
+  }
+
   /// Unregister a previously registered root slot handle.
   pub fn unregister(&self, handle: u32) {
     let mut inner = self.inner.lock();
@@ -139,6 +165,34 @@ impl RootRegistry {
     // Safety: see [`RootRegistry::get`].
     unsafe {
       slot_ptr.write(ptr);
+    }
+    true
+  }
+
+  /// Like [`RootRegistry::set`], but reads the pointer value from an addressable slot *after*
+  /// acquiring the root registry lock.
+  ///
+  /// # Safety
+  /// `slot` must be a valid, aligned pointer to a writable `*mut u8` slot.
+  pub unsafe fn set_from_slot(&self, handle: u32, slot: *mut *mut u8) -> bool {
+    if slot.is_null() {
+      std::process::abort();
+    }
+    if (slot as usize) % core::mem::align_of::<*mut u8>() != 0 {
+      std::process::abort();
+    }
+
+    let mut inner = self.inner.lock();
+    let Some(dst_slot_ptr) = inner.get_slot_ptr(handle) else {
+      return false;
+    };
+
+    // Safety: caller guarantees `slot` is valid for reads of `*mut u8`.
+    let ptr = unsafe { slot.read() };
+    // Safety: `dst_slot_ptr` is returned only for live entries, and the caller guarantees borrowed
+    // slots remain valid until unregistered.
+    unsafe {
+      dst_slot_ptr.write(ptr);
     }
     true
   }
@@ -453,6 +507,201 @@ mod tests {
     registry.unregister(handle);
     assert_eq!(registry.get(handle), None);
     assert!(!registry.set(handle, std::ptr::null_mut()));
+  }
+
+  #[test]
+  fn pin_from_slot_reads_pointer_after_lock_acquired() {
+    let _rt = crate::test_util::TestRuntimeGuard::new();
+
+    const TIMEOUT: Duration = Duration::from_secs(2);
+    let registry = RootRegistry::new();
+
+    // Treat pointers as opaque addresses; they do not need to be dereferenceable in this test.
+    let mut slot_value: *mut u8 = 0x1111usize as *mut u8;
+    let new_value: *mut u8 = 0x2222usize as *mut u8;
+    // Raw pointers are `!Send` on newer Rust versions; pass as an integer across threads.
+    let slot_ptr: usize = (&mut slot_value as *mut *mut u8) as usize;
+
+    std::thread::scope(|scope| {
+      let registry = &registry;
+      // Thread A holds the registry lock.
+      let (a_locked_tx, a_locked_rx) = mpsc::channel::<()>();
+      let (a_release_tx, a_release_rx) = mpsc::channel::<()>();
+
+      // Thread C attempts to pin from a slot while the lock is held.
+      let (c_registered_tx, c_registered_rx) = mpsc::channel::<threading::ThreadId>();
+      let (c_start_tx, c_start_rx) = mpsc::channel::<()>();
+      let (c_done_tx, c_done_rx) = mpsc::channel::<u32>();
+
+      scope.spawn(move || {
+        threading::register_current_thread(ThreadKind::Worker);
+        let guard = registry.inner.lock();
+        a_locked_tx.send(()).unwrap();
+        a_release_rx.recv().unwrap();
+        drop(guard);
+        threading::unregister_current_thread();
+      });
+
+      a_locked_rx
+        .recv_timeout(TIMEOUT)
+        .expect("thread A should acquire the registry lock");
+
+      scope.spawn(move || {
+        let id = threading::register_current_thread(ThreadKind::Worker);
+        c_registered_tx.send(id).unwrap();
+
+        c_start_rx.recv().unwrap();
+
+        let slot_ptr = slot_ptr as *mut *mut u8;
+        // Safety: `slot_ptr` is a valid slot pointer.
+        let handle = unsafe { registry.pin_from_slot(slot_ptr) };
+        c_done_tx.send(handle).unwrap();
+
+        threading::unregister_current_thread();
+      });
+
+      let c_id = c_registered_rx
+        .recv_timeout(TIMEOUT)
+        .expect("thread C should register with the thread registry");
+
+      // Start thread C's pin attempt (it should block on the registry lock).
+      c_start_tx.send(()).unwrap();
+
+      // Wait until thread C is marked NativeSafe (meaning it's blocked on the GC-aware lock).
+      let start = Instant::now();
+      loop {
+        let mut native_safe = false;
+        threading::registry::for_each_thread(|t| {
+          if t.id() == c_id {
+            native_safe = t.is_native_safe();
+          }
+        });
+
+        if native_safe {
+          break;
+        }
+        if start.elapsed() > TIMEOUT {
+          panic!("thread C did not enter a GC-safe region while blocked on the root registry lock");
+        }
+        std::thread::yield_now();
+      }
+
+      // Update the slot while thread C is blocked. If `pin_from_slot` incorrectly read the slot
+      // before acquiring the lock, it would still observe the old value.
+      slot_value = new_value;
+
+      // Release the lock so `pin_from_slot` can proceed and read the updated slot value.
+      a_release_tx.send(()).unwrap();
+
+      let handle = c_done_rx
+        .recv_timeout(TIMEOUT)
+        .expect("pin should complete after lock is released");
+      assert_eq!(
+        registry.get(handle),
+        Some(new_value),
+        "pin_from_slot must read the slot after acquiring the lock"
+      );
+
+      registry.unregister(handle);
+    });
+  }
+
+  #[test]
+  fn set_from_slot_reads_pointer_after_lock_acquired() {
+    let _rt = crate::test_util::TestRuntimeGuard::new();
+
+    const TIMEOUT: Duration = Duration::from_secs(2);
+    let registry = RootRegistry::new();
+
+    let handle = registry.pin(0x1111usize as *mut u8);
+    assert_eq!(registry.get(handle), Some(0x1111usize as *mut u8));
+
+    let mut slot_value: *mut u8 = 0x2222usize as *mut u8;
+    let new_value: *mut u8 = 0x3333usize as *mut u8;
+      let slot_ptr: usize = (&mut slot_value as *mut *mut u8) as usize;
+
+    std::thread::scope(|scope| {
+      let registry = &registry;
+      // Thread A holds the registry lock.
+      let (a_locked_tx, a_locked_rx) = mpsc::channel::<()>();
+      let (a_release_tx, a_release_rx) = mpsc::channel::<()>();
+
+      // Thread C attempts to set from a slot while the lock is held.
+      let (c_registered_tx, c_registered_rx) = mpsc::channel::<threading::ThreadId>();
+      let (c_start_tx, c_start_rx) = mpsc::channel::<()>();
+      let (c_done_tx, c_done_rx) = mpsc::channel::<bool>();
+
+      scope.spawn(move || {
+        threading::register_current_thread(ThreadKind::Worker);
+        let guard = registry.inner.lock();
+        a_locked_tx.send(()).unwrap();
+        a_release_rx.recv().unwrap();
+        drop(guard);
+        threading::unregister_current_thread();
+      });
+
+      a_locked_rx
+        .recv_timeout(TIMEOUT)
+        .expect("thread A should acquire the registry lock");
+
+      scope.spawn(move || {
+        let id = threading::register_current_thread(ThreadKind::Worker);
+        c_registered_tx.send(id).unwrap();
+
+        c_start_rx.recv().unwrap();
+
+        let slot_ptr = slot_ptr as *mut *mut u8;
+        // Safety: `slot_ptr` is a valid slot pointer.
+        let ok = unsafe { registry.set_from_slot(handle, slot_ptr) };
+        c_done_tx.send(ok).unwrap();
+
+        threading::unregister_current_thread();
+      });
+
+      let c_id = c_registered_rx
+        .recv_timeout(TIMEOUT)
+        .expect("thread C should register with the thread registry");
+
+      // Start thread C's set attempt (it should block on the registry lock).
+      c_start_tx.send(()).unwrap();
+
+      // Wait until thread C is marked NativeSafe.
+      let start = Instant::now();
+      loop {
+        let mut native_safe = false;
+        threading::registry::for_each_thread(|t| {
+          if t.id() == c_id {
+            native_safe = t.is_native_safe();
+          }
+        });
+
+        if native_safe {
+          break;
+        }
+        if start.elapsed() > TIMEOUT {
+          panic!("thread C did not enter a GC-safe region while blocked on the root registry lock");
+        }
+        std::thread::yield_now();
+      }
+
+      // Update the slot while thread C is blocked.
+      slot_value = new_value;
+
+      // Release the lock so `set_from_slot` can proceed and read the updated slot value.
+      a_release_tx.send(()).unwrap();
+
+      let ok = c_done_rx
+        .recv_timeout(TIMEOUT)
+        .expect("set should complete after lock is released");
+      assert!(ok);
+      assert_eq!(
+        registry.get(handle),
+        Some(new_value),
+        "set_from_slot must read the slot after acquiring the lock"
+      );
+    });
+
+    registry.unregister(handle);
   }
 
   #[test]

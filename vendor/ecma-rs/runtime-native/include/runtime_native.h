@@ -474,6 +474,8 @@ void rt_gc_unregister_root_slot(uint32_t handle);
 // Convenience: allocate an internal slot initialized to `ptr` and register it
 // as a root. The returned handle must later be passed to `rt_gc_unpin`.
 uint32_t rt_gc_pin(GcPtr ptr);
+// Like `rt_gc_pin`, but takes the pointer as a `GcHandle` (pointer-to-slot).
+uint32_t rt_gc_pin_h(GcHandle ptr);
 void rt_gc_unpin(uint32_t handle);
 // Read/write the current pointer value stored in a root handle.
 //
@@ -481,6 +483,8 @@ void rt_gc_unpin(uint32_t handle);
 // (instead of a raw `GcPtr`, which may be relocated by the GC).
 GcPtr rt_gc_root_get(uint32_t handle);
 bool rt_gc_root_set(uint32_t handle, GcPtr ptr);
+// Like `rt_gc_root_set`, but takes the pointer as a `GcHandle` (pointer-to-slot).
+bool rt_gc_root_set_h(uint32_t handle, GcHandle ptr);
 
 // -----------------------------------------------------------------------------
 // Persistent handles (stable u64 ids)

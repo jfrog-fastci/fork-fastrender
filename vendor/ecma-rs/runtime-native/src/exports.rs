@@ -1062,6 +1062,19 @@ pub extern "C" fn rt_gc_pin(ptr: crate::roots::GcPtr) -> u32 {
   abort_on_panic(|| crate::roots::global_root_registry().pin(ptr))
 }
 
+/// Like [`rt_gc_pin`], but takes the GC-managed pointer as a `GcHandle` (pointer-to-slot) handle.
+///
+/// This is the moving-GC-safe variant: the runtime will only read the pointer value from `slot`
+/// *after* acquiring the root registry lock, so a GC can update the slot if lock acquisition blocks.
+///
+/// # Safety
+/// `slot` must be a valid, aligned pointer to a writable `*mut u8` slot containing a GC-managed
+/// object base pointer.
+#[no_mangle]
+pub unsafe extern "C" fn rt_gc_pin_h(slot: crate::roots::GcHandle) -> u32 {
+  abort_on_panic(|| unsafe { crate::roots::global_root_registry().pin_from_slot(slot) })
+}
+
 /// Destroy a handle created by [`rt_gc_pin`].
 #[no_mangle]
 pub extern "C" fn rt_gc_unpin(handle: u32) {
@@ -1090,6 +1103,16 @@ pub extern "C" fn rt_gc_root_get(handle: u32) -> *mut u8 {
 #[no_mangle]
 pub extern "C" fn rt_gc_root_set(handle: u32, ptr: *mut u8) -> bool {
   abort_on_panic(|| crate::roots::global_root_registry().set(handle, ptr))
+}
+
+/// Like [`rt_gc_root_set`], but takes the GC-managed pointer as a `GcHandle` (pointer-to-slot).
+///
+/// # Safety
+/// `slot` must be a valid, aligned pointer to a writable `*mut u8` slot containing a GC-managed
+/// object base pointer.
+#[no_mangle]
+pub unsafe extern "C" fn rt_gc_root_set_h(handle: u32, slot: crate::roots::GcHandle) -> bool {
+  abort_on_panic(|| unsafe { crate::roots::global_root_registry().set_from_slot(handle, slot) })
 }
 
 // -----------------------------------------------------------------------------

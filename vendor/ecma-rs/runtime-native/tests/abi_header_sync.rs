@@ -19,11 +19,13 @@ fn runtime_native_c_header_contains_expected_abi_symbols() {
     "rt_gc_register_root_slot(",
     "rt_gc_unregister_root_slot(",
     "rt_gc_pin(",
+    "rt_gc_pin_h(",
     "rt_gc_unpin(",
     "rt_global_root_register(",
     "rt_global_root_unregister(",
     "rt_gc_root_get(",
     "rt_gc_root_set(",
+    "rt_gc_root_set_h(",
     "rt_handle_alloc(",
     "rt_handle_alloc_h(",
     "rt_handle_free(",
@@ -274,11 +276,14 @@ fn runtime_native_exports_match_expected_abi_signatures() {
     runtime_native::rt_gc_register_root_slot;
   let _unregister_root_slot: extern "C" fn(u32) = runtime_native::rt_gc_unregister_root_slot;
   let _pin: extern "C" fn(*mut u8) -> u32 = runtime_native::rt_gc_pin;
+  let _pin_h: unsafe extern "C" fn(runtime_native::roots::GcHandle) -> u32 = runtime_native::rt_gc_pin_h;
   let _unpin: extern "C" fn(u32) = runtime_native::rt_gc_unpin;
   let _global_root_register: extern "C" fn(*mut usize) = runtime_native::rt_global_root_register;
   let _global_root_unregister: extern "C" fn(*mut usize) = runtime_native::rt_global_root_unregister;
   let _root_get: extern "C" fn(u32) -> *mut u8 = runtime_native::rt_gc_root_get;
   let _root_set: extern "C" fn(u32, *mut u8) -> bool = runtime_native::rt_gc_root_set;
+  let _root_set_h: unsafe extern "C" fn(u32, runtime_native::roots::GcHandle) -> bool =
+    runtime_native::rt_gc_root_set_h;
 
   // Persistent handles (stable u64 IDs).
   let _handle_alloc: extern "C" fn(*mut u8) -> u64 = runtime_native::rt_handle_alloc;
@@ -469,11 +474,13 @@ fn runtime_native_exports_match_expected_abi_signatures() {
     _register_root_slot,
     _unregister_root_slot,
     _pin,
+    _pin_h,
     _unpin,
     _global_root_register,
     _global_root_unregister,
     _root_get,
     _root_set,
+    _root_set_h,
     _handle_alloc,
     _handle_alloc_h,
     _handle_free,

@@ -582,9 +582,11 @@ extern "C" {
   pub fn rt_gc_register_root_slot(slot: GcHandle) -> u32;
   pub fn rt_gc_unregister_root_slot(handle: u32);
   pub fn rt_gc_pin(ptr: GcPtr) -> u32;
+  pub fn rt_gc_pin_h(ptr: GcHandle) -> u32;
   pub fn rt_gc_unpin(handle: u32);
   pub fn rt_gc_root_get(handle: u32) -> GcPtr;
   pub fn rt_gc_root_set(handle: u32, ptr: GcPtr) -> bool;
+  pub fn rt_gc_root_set_h(handle: u32, ptr: GcHandle) -> bool;
 
   // Persistent handles (stable u64 ids).
   pub fn rt_handle_alloc(ptr: GcPtr) -> HandleId;
@@ -1146,9 +1148,11 @@ mod tests {
       "rt_gc_register_root_slot(",
       "rt_gc_unregister_root_slot(",
       "rt_gc_pin(",
+      "rt_gc_pin_h(",
       "rt_gc_unpin(",
       "rt_gc_root_get(",
       "rt_gc_root_set(",
+      "rt_gc_root_set_h(",
       "rt_handle_alloc(",
       "rt_handle_free(",
       "rt_handle_load(",

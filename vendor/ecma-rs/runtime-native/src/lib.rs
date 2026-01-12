@@ -912,9 +912,11 @@ mod tests {
       "uint32_t rt_gc_register_root_slot(GcHandle slot);",
       "void rt_gc_unregister_root_slot(uint32_t handle);",
       "uint32_t rt_gc_pin(GcPtr ptr);",
+      "uint32_t rt_gc_pin_h(GcHandle ptr);",
       "void rt_gc_unpin(uint32_t handle);",
       "GcPtr rt_gc_root_get(uint32_t handle);",
       "bool rt_gc_root_set(uint32_t handle, GcPtr ptr);",
+      "bool rt_gc_root_set_h(uint32_t handle, GcHandle ptr);",
       "HandleId rt_handle_alloc(GcPtr ptr);",
       "void rt_handle_free(HandleId handle);",
       "GcPtr rt_handle_load(HandleId handle);",
@@ -1068,12 +1070,15 @@ mod tests {
     let _stackmaps_unregister: extern "C" fn(*const u8) -> bool = rt_stackmaps_unregister;
     let _global_root_register: extern "C" fn(*mut usize) = rt_global_root_register;
     let _global_root_unregister: extern "C" fn(*mut usize) = rt_global_root_unregister;
+    let _gc_pin: extern "C" fn(*mut u8) -> u32 = rt_gc_pin;
+    let _gc_pin_h: unsafe extern "C" fn(crate::roots::GcHandle) -> u32 = rt_gc_pin_h;
     let _handle_alloc: extern "C" fn(*mut u8) -> u64 = rt_handle_alloc;
     let _handle_free: extern "C" fn(u64) = rt_handle_free;
     let _handle_load: extern "C" fn(u64) -> *mut u8 = rt_handle_load;
     let _handle_store: extern "C" fn(u64, *mut u8) = rt_handle_store;
     let _root_get: extern "C" fn(u32) -> *mut u8 = rt_gc_root_get;
     let _root_set: extern "C" fn(u32, *mut u8) -> bool = rt_gc_root_set;
+    let _root_set_h: unsafe extern "C" fn(u32, crate::roots::GcHandle) -> bool = rt_gc_root_set_h;
     let _weak_add: extern "C" fn(*mut u8) -> u64 = rt_weak_add;
     let _weak_get: extern "C" fn(u64) -> *mut u8 = rt_weak_get;
     let _weak_remove: extern "C" fn(u64) = rt_weak_remove;
