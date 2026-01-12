@@ -314,10 +314,12 @@ jobs:
             status=1
           else
             # Ensure the report is valid JSON so downstream triage tooling can rely on it.
-            if ! python3 - <<PY
+            if ! REPORT_PATH="${report_path}" python3 - <<'PY'
           import json
+          import os
           from pathlib import Path
-          path = Path("${report_path}")
+          
+          path = Path(os.environ["REPORT_PATH"])
           data = json.loads(path.read_text(encoding="utf-8"))
           if not isinstance(data, dict):
             raise SystemExit("report JSON should be an object")
