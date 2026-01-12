@@ -5946,6 +5946,18 @@ impl App {
             if self.pointer_captured {
               return;
             }
+
+            // Clicking anywhere outside the rendered page should immediately clear page focus so
+            // subsequent keyboard input is routed to egui/chrome even before the next redraw. This
+            // prevents the first typed character after a chrome click (e.g. the address bar) from
+            // being forwarded to the page when winit batches the click + keypress before the next
+            // `RedrawRequested`.
+            if fastrender::ui::input_routing::should_clear_page_focus_on_pointer_press(
+              self.page_rect_points,
+              pos_points,
+            ) {
+              self.page_has_focus = false;
+            }
             if self.page_loading_overlay_blocks_input
               && self
                 .page_rect_points

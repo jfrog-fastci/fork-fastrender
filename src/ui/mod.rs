@@ -93,6 +93,10 @@ pub use messages::{
 #[cfg(feature = "browser_ui")]
 pub mod input_mapping;
 
+// Input routing helpers used by the windowed browser UI.
+#[cfg(feature = "browser_ui")]
+pub mod input_routing;
+
 #[cfg(feature = "browser_ui")]
 pub use input_mapping::{InputMapping, WheelDelta, CSS_PX_PER_WHEEL_LINE};
 

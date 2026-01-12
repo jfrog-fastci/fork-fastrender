@@ -11395,7 +11395,10 @@ fn dom_parser_parse_from_string_native(
   copy_wrapper_shared_methods(scope, host_document_obj, document_obj)?;
 
   let document_id = gc_object_id(document_obj);
-  data.owned_dom2_documents.insert(document_id, Box::new(dom));
+  data
+    .owned_dom2_documents
+    .borrow_mut()
+    .insert(document_id, Box::new(dom));
 
   Ok(Value::Object(document_obj))
 }
