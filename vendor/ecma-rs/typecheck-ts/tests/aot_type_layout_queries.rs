@@ -300,10 +300,12 @@ type FnObj = { (x: number): boolean; x: string };
   assert_eq!(fields[2].offset, 16);
   assert!(matches!(
     store.layout(fields[2].layout),
-    Layout::Ptr { to: PtrKind::GcString }
+    // Native AOT represents `string` as an interned id (`u32`), not a GC-managed pointer.
+    Layout::Scalar { abi: AbiScalar::U32 }
   ));
 
-  assert_eq!(store.gc_ptr_offsets(payload_layout_id), vec![8, 16]);
+  // Callable objects include the closure header `{ fn_ptr, env }`; only `env` is a GC pointer.
+  assert_eq!(store.gc_ptr_offsets(payload_layout_id), vec![8]);
 }
 
 #[test]
@@ -351,8 +353,8 @@ type FnWithProp = ((x: number) => boolean) & { x: string };
   assert_eq!(fields[2].offset, 16);
   assert!(matches!(
     store.layout(fields[2].layout),
-    Layout::Ptr { to: PtrKind::GcString }
+    Layout::Scalar { abi: AbiScalar::U32 }
   ));
 
-  assert_eq!(store.gc_ptr_offsets(payload_layout_id), vec![8, 16]);
+  assert_eq!(store.gc_ptr_offsets(payload_layout_id), vec![8]);
 }
