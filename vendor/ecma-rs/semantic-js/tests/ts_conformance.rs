@@ -185,6 +185,17 @@ fn symbol_table_snapshot(table: &SymbolTable) -> (Vec<SymbolData>, Vec<DeclData>
   (symbols, decls)
 }
 
+fn normalize_fixture_filename(name: &str) -> String {
+  let mut out = name.trim();
+  if let Some(stripped) = out.strip_prefix('/') {
+    out = stripped;
+  }
+  while let Some(stripped) = out.strip_prefix("./") {
+    out = stripped;
+  }
+  out.to_string()
+}
+
 fn split_multifile_fixture(source: &str) -> Vec<(String, String)> {
   let mut out = Vec::<(String, String)>::new();
   let mut current_name: Option<String> = None;
@@ -192,14 +203,22 @@ fn split_multifile_fixture(source: &str) -> Vec<(String, String)> {
 
   for line in source.split_inclusive('\n') {
     let trimmed = line.trim_start();
-    if let Some(rest) = trimmed
-      .strip_prefix("// @filename:")
-      .or_else(|| trimmed.strip_prefix("// @Filename:"))
-    {
+    let rest = trimmed.strip_prefix("//").and_then(|rest| {
+      let rest = rest.trim_start();
+      let marker = "@filename:";
+      let prefix = rest.get(..marker.len())?;
+      if prefix.eq_ignore_ascii_case(marker) {
+        Some(rest.get(marker.len()..).unwrap_or_default())
+      } else {
+        None
+      }
+    });
+
+    if let Some(rest) = rest {
       if let Some(name) = current_name.take() {
         out.push((name, std::mem::take(&mut current_src)));
       }
-      current_name = Some(rest.trim().to_string());
+      current_name = Some(normalize_fixture_filename(rest));
       continue;
     }
 
@@ -244,7 +263,7 @@ impl TsConformanceCase {
     let files = split_multifile_fixture(&source);
     assert!(
       !files.is_empty(),
-      "fixture {path:?} did not contain any // @filename: sections"
+      "fixture {path:?} did not contain any // @filename: or // @Filename: sections"
     );
 
     let mut names: Vec<String> = files.iter().map(|(name, _)| name.clone()).collect();
@@ -271,7 +290,11 @@ impl TsConformanceCase {
       .unwrap_or_else(|e| panic!("failed to parse {name:?}: {e:?}"));
       let lower = lower_file(file_id, hir_kind_for_filename(&name), &ast);
       let ts_hir = lower_to_ts_hir(&ast, &lower, file_source.as_str());
-      hir_by_id.insert(file_id, Arc::new(ts_hir));
+      let previous = hir_by_id.insert(file_id, Arc::new(ts_hir));
+      assert!(
+        previous.is_none(),
+        "fixture {path:?} defined multiple bodies for {name:?}"
+      );
     }
 
     let mut all_files: Vec<FileId> = files_by_name.values().copied().collect();
@@ -392,7 +415,6 @@ fn ts_conformance_module_augmentation_imports_and_exports_2() {
 
   assert_eq!(ts2666, 1, "expected TS2666 exactly once; got {diags:?}");
   assert_eq!(ts2667, 1, "expected TS2667 exactly once; got {diags:?}");
-
   let codes: BTreeSet<String> = diags.iter().map(|d| d.code.to_string()).collect();
   let expected_codes: BTreeSet<String> = ["TS2666", "TS2667"]
     .into_iter()
@@ -455,20 +477,31 @@ fn ts_conformance_module_augmentation_no_new_names() {
 }
 
 #[test]
-fn ts_conformance_type_only_import_is_namespace_qualifier_circular4() {
+fn ts_conformance_type_only_circular4() {
   let case = TsConformanceCase::load("conformance/externalModules/typeOnly/circular4.ts");
   let (sem, diags) = case.bind_and_assert_deterministic();
   assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
 
-  let a = case.file_id("/a.ts");
-  let b = case.file_id("/b.ts");
+  let a = case.file_id("a.ts");
+  let b = case.file_id("b.ts");
 
-  let ns2 = sem
+  assert!(
+    sem.resolve_in_module(a, "ns2", Namespace::VALUE).is_none(),
+    "type-only import should not introduce a value binding"
+  );
+  let ns2_type = sem
+    .resolve_in_module(a, "ns2", Namespace::TYPE)
+    .expect("ns2 should exist in the type namespace");
+  let ns2_namespace = sem
     .resolve_in_module(a, "ns2", Namespace::NAMESPACE)
-    .expect("a.ts should import ns2 as a namespace qualifier");
+    .expect("ns2 should exist in the namespace namespace");
+  assert_eq!(
+    ns2_namespace, ns2_type,
+    "type-only imports should be usable as namespace qualifiers"
+  );
 
   let symbols = sem.symbols();
-  match &symbols.symbol(ns2).origin {
+  match &symbols.symbol(ns2_type).origin {
     SymbolOrigin::Import {
       from: ModuleRef::File(from),
       imported,
@@ -478,59 +511,30 @@ fn ts_conformance_type_only_import_is_namespace_qualifier_circular4() {
     }
     other => panic!("expected imported ns2 symbol origin, got {other:?}"),
   }
-
-  assert!(
-    sem.resolve_in_module(a, "ns2", Namespace::VALUE).is_none(),
-    "ns2 should not be present in the value namespace for a type-only import"
-  );
 }
 
 #[test]
-fn ts_conformance_type_only_namespace_export_namespace2() {
-  let case = TsConformanceCase::load("conformance/externalModules/typeOnly/exportNamespace2.ts");
+fn ts_conformance_type_only_filter_namespace_default_import() {
+  let case = TsConformanceCase::load("conformance/externalModules/typeOnly/filterNamespace_import.ts");
   let (sem, diags) = case.bind_and_assert_deterministic();
   assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
 
-  let c = case.file_id("c.ts");
-
-  assert!(
-    sem.resolve_export(c, "a", Namespace::TYPE).is_some(),
-    "c.ts should export a in the type namespace"
-  );
-  assert!(
-    sem.resolve_export(c, "a", Namespace::NAMESPACE).is_some(),
-    "c.ts should export a in the namespace namespace"
-  );
-  assert!(
-    sem.resolve_export(c, "a", Namespace::VALUE).is_none(),
-    "c.ts should not export a in the value namespace (type-only import)"
-  );
-}
-
-#[test]
-fn ts_conformance_type_only_default_import_is_namespace_qualifier_filter_namespace_import() {
-  let case =
-    TsConformanceCase::load("conformance/externalModules/typeOnly/filterNamespace_import.ts");
-  let (sem, diags) = case.bind_and_assert_deterministic();
-  assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
-
-  let a = case.file_id("/a.ts");
-  let ns_file = case.file_id("/ns.ts");
+  let a = case.file_id("a.ts");
+  let ns = case.file_id("ns.ts");
 
   assert!(
     sem.resolve_in_module(a, "ns", Namespace::VALUE).is_none(),
-    "ns should not be present in the value namespace for a type-only default import"
+    "type-only default import should not introduce a value binding"
   );
-
   let ns_type = sem
     .resolve_in_module(a, "ns", Namespace::TYPE)
-    .expect("a.ts should import ns in the type namespace");
+    .expect("ns should exist in the type namespace");
   let ns_namespace = sem
     .resolve_in_module(a, "ns", Namespace::NAMESPACE)
-    .expect("a.ts should import ns as a namespace qualifier");
+    .expect("ns should exist in the namespace namespace");
   assert_eq!(
-    ns_type, ns_namespace,
-    "type-only default import should resolve to the same symbol for type and namespace namespaces"
+    ns_namespace, ns_type,
+    "type-only imports should be usable as namespace qualifiers"
   );
 
   let symbols = sem.symbols();
@@ -539,9 +543,31 @@ fn ts_conformance_type_only_default_import_is_namespace_qualifier_filter_namespa
       from: ModuleRef::File(from),
       imported,
     } => {
-      assert_eq!(*from, ns_file);
+      assert_eq!(*from, ns);
       assert_eq!(imported, "default");
     }
     other => panic!("expected imported ns symbol origin, got {other:?}"),
   }
+}
+
+#[test]
+fn ts_conformance_type_only_export_namespace2() {
+  let case = TsConformanceCase::load("conformance/externalModules/typeOnly/exportNamespace2.ts");
+  let (sem, diags) = case.bind_and_assert_deterministic();
+  assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+
+  let c = case.file_id("c.ts");
+
+  assert!(
+    sem.resolve_export(c, "a", Namespace::VALUE).is_none(),
+    "type-only re-export should not introduce a value export"
+  );
+  assert!(
+    sem.resolve_export(c, "a", Namespace::TYPE).is_some(),
+    "expected a to be exported in the type namespace"
+  );
+  assert!(
+    sem.resolve_export(c, "a", Namespace::NAMESPACE).is_some(),
+    "expected a to be exported in the namespace namespace"
+  );
 }

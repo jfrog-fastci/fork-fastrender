@@ -896,7 +896,20 @@ impl<'a, HP: Fn(FileId) -> Arc<HirFile>> Binder<'a, HP> {
           .or_insert(decl.def_id);
         continue;
       }
-      let exported = if implicit_export && !decl.is_global && matches!(decl.exported, Exported::No) {
+      let implicit_named =
+        implicit_export && !decl.is_global && matches!(decl.exported, Exported::No);
+      // Ambient module declarations implicitly export their members for
+      // consumption, but merge-mismatch diagnostics (TS2395) are based on whether
+      // declarations are explicitly exported. Preserve the original exported
+      // flag for ambient modules so we still surface TS2395 when a symbol mixes
+      // explicit exports (e.g. `export function Foo`) with implicit exports.
+      let exported_for_decl = if implicit_named && !matches!(owner, SymbolOwner::AmbientModule(_))
+      {
+        Exported::Named
+      } else {
+        decl.exported.clone()
+      };
+      let exported_for_exports = if implicit_named {
         Exported::Named
       } else {
         decl.exported.clone()
@@ -911,7 +924,7 @@ impl<'a, HP: Fn(FileId) -> Arc<HirFile>> Binder<'a, HP> {
         namespaces,
         decl.is_ambient,
         decl.is_global,
-        exported.clone(),
+        exported_for_decl.clone(),
         decl.span,
         decl.name_span,
         order,
@@ -945,7 +958,7 @@ impl<'a, HP: Fn(FileId) -> Arc<HirFile>> Binder<'a, HP> {
           &SymbolOwner::Global,
         );
       }
-      match exported {
+      match exported_for_exports {
         Exported::No => {}
         Exported::Named => {
           has_exports = true;
