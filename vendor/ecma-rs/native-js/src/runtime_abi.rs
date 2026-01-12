@@ -534,3 +534,46 @@ pub fn emit_runtime_call<'ctx>(
   crate::stack_walking::mark_call_notail(call);
   Ok(call)
 }
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use inkwell::context::Context;
+
+  #[test]
+  fn validate_runtime_call_abi_uses_known_signature_for_handle_args() {
+    let context = Context::create();
+
+    let i64 = context.i64_type();
+    let i32 = context.i32_type();
+    let handle_ptr = context.ptr_type(AddressSpace::default());
+
+    // Construct an ABI where the handle argument is *not* the final parameter.
+    // This ensures our `Some(abi)` validation path doesn't rely on the legacy "handle args are last"
+    // convention.
+    const CODEGEN_PARAMS: &[AbiTy] = &[AbiTy::I64, AbiTy::GcHandle, AbiTy::I32];
+
+    let abi = RuntimeFnAbi {
+      runtime_ret: AbiTy::Void,
+      runtime_params: CODEGEN_PARAMS,
+      codegen_ret: AbiTy::Void,
+      codegen_params: CODEGEN_PARAMS,
+    };
+
+    let spec = RuntimeFnSpec {
+      name: "rt_test_handle_middle",
+      may_gc: true,
+      gc_ptr_args: 0,
+      gc_handle_args: 1,
+      arg_rooting: ArgRootingPolicy::NoGcPointersAllowedIfMayGc,
+    };
+
+    let args = [
+      i64.const_zero().into(),
+      handle_ptr.const_null().into(),
+      i32.const_zero().into(),
+    ];
+
+    validate_runtime_call_abi(spec, Some(abi), &args).expect("ABI validation should pass");
+  }
+}
