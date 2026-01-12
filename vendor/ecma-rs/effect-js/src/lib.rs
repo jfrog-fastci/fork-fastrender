@@ -3,6 +3,7 @@
 mod api_use;
 pub mod callback;
 pub mod encoding;
+pub mod effects;
 pub mod eval;
 mod js_string;
 pub mod pattern;
@@ -33,6 +34,9 @@ pub use encoding::{analyze_string_encodings, EncodingResult, StringEncoding};
 #[cfg(feature = "typed")]
 pub use encoding::analyze_string_encodings_typed;
 pub use eval::{eval_api_call, CallSemantics, CallSiteInfo as EvalCallSiteInfo};
+pub use effects::{analyze_effects_untyped, EffectsTables};
+#[cfg(feature = "typed")]
+pub use effects::analyze_effects_typed;
 pub use kb::load_default_api_database;
 pub use db::{BodyTables, CallSiteInfo, EffectDb};
 pub use db::analyze_body_tables_untyped;

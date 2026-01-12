@@ -95,11 +95,14 @@ pub fn eval_callsite_info_for_args(
   };
   let callback = analyze_inline_callback(lowered, body, callback_expr, kb);
 
-  crate::eval::CallSiteInfo {
-    callback_purity: callback.map(|cb| cb.purity),
-    callback_effects: callback.map(|cb| cb.effects),
-    callback_uses_index: callback.map(|cb| cb.uses_index).unwrap_or(false),
-    callback_uses_array: callback.map(|cb| cb.uses_array).unwrap_or(false),
+  match callback {
+    Some(cb) => crate::eval::CallSiteInfo {
+      arg_purity: vec![cb.purity],
+      arg_effects: vec![cb.effects],
+      callback_uses_index: cb.uses_index,
+      callback_uses_array: cb.uses_array,
+    },
+    None => crate::eval::CallSiteInfo::default(),
   }
 }
 
@@ -1261,8 +1264,8 @@ impl CallbackAnalyzer<'_> {
         let callback = callback.and_then(|expr| analyze_inline_callback(self.lowered, self.body, expr, self.kb));
         let site = callback
           .map(|cb| crate::eval::CallSiteInfo {
-            callback_purity: Some(cb.purity),
-            callback_effects: Some(cb.effects),
+            arg_purity: vec![cb.purity],
+            arg_effects: vec![cb.effects],
             callback_uses_index: cb.uses_index,
             callback_uses_array: cb.uses_array,
           })
@@ -1299,8 +1302,8 @@ impl CallbackAnalyzer<'_> {
     let cb = callback_expr.and_then(|expr| analyze_inline_callback(self.lowered, self.body, expr, self.kb));
     let site = cb
       .map(|cb| crate::eval::CallSiteInfo {
-        callback_purity: Some(cb.purity),
-        callback_effects: Some(cb.effects),
+        arg_purity: vec![cb.purity],
+        arg_effects: vec![cb.effects],
         callback_uses_index: cb.uses_index,
         callback_uses_array: cb.uses_array,
       })
@@ -2255,8 +2258,8 @@ mod tests {
     let (body, call_expr) = first_stmt_expr(&lowered);
 
     let info = eval_callsite_info_for_args(&lowered, body, call_expr, &kb);
-    assert_eq!(info.callback_purity, Some(Purity::Pure));
-    assert_eq!(info.callback_effects, Some(EffectSet::empty()));
+    assert_eq!(info.arg_purity.get(0).copied(), Some(Purity::Pure));
+    assert_eq!(info.arg_effects.get(0).copied(), Some(EffectSet::empty()));
     assert!(!info.callback_uses_index);
     assert!(info.callback_uses_array);
   }

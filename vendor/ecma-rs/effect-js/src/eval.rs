@@ -1,9 +1,17 @@
 use effect_model::{EffectSet, EffectTemplate, Purity, PurityTemplate};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CallSiteInfo {
-  pub callback_purity: Option<Purity>,
-  pub callback_effects: Option<EffectSet>,
+  /// Per-argument effect models used when an API's semantics depends on runtime
+  /// callback behavior (`EffectTemplate::DependsOnArgs` / `PurityTemplate::DependsOnArgs`).
+  ///
+  /// When `arg_effects.len() <= idx`, the argument is treated as unknown (i.e.
+  /// `EffectSet::UNKNOWN_CALL`).
+  pub arg_effects: Vec<EffectSet>,
+  /// Per-argument purity models (see [`CallSiteInfo::arg_effects`]).
+  ///
+  /// When `arg_purity.len() <= idx`, the argument is treated as unknown/impure.
+  pub arg_purity: Vec<Purity>,
   pub callback_uses_index: bool,
   pub callback_uses_array: bool,
 }
@@ -11,8 +19,8 @@ pub struct CallSiteInfo {
 impl Default for CallSiteInfo {
   fn default() -> Self {
     Self {
-      callback_purity: None,
-      callback_effects: None,
+      arg_effects: Vec::new(),
+      arg_purity: Vec::new(),
       callback_uses_index: false,
       callback_uses_array: false,
     }
@@ -62,6 +70,9 @@ fn build_arg_models(api: &knowledge_base::Api, site: &CallSiteInfo) -> (Vec<Effe
     }
   }
 
+  len = len.max(site.arg_effects.len());
+  len = len.max(site.arg_purity.len());
+
   if len == 0 {
     return (Vec::new(), Vec::new());
   }
@@ -69,21 +80,26 @@ fn build_arg_models(api: &knowledge_base::Api, site: &CallSiteInfo) -> (Vec<Effe
   let mut arg_effects = vec![EffectSet::UNKNOWN_CALL; len];
   let mut arg_purity = vec![Purity::Impure; len];
 
-  // We only model argument 0 (the callback) via `CallSiteInfo`. All other args are
-  // treated as unknown/impure.
-  let cb_effects = site
-    .callback_effects
-    .or_else(|| site.callback_purity.map(callback_effects_from_purity))
-    .unwrap_or(EffectSet::UNKNOWN_CALL);
-  let cb_purity = match (site.callback_purity, site.callback_effects) {
-    (Some(p), Some(e)) => Purity::join(p, e.inferred_purity()),
-    (Some(p), None) => p,
-    (None, Some(e)) => e.inferred_purity(),
-    (None, None) => Purity::Impure,
-  };
+  for idx in 0..len {
+    let purity = site.arg_purity.get(idx).copied();
+    let effects = site.arg_effects.get(idx).copied();
 
-  arg_effects[0] = cb_effects;
-  arg_purity[0] = cb_purity;
+    match (purity, effects) {
+      (Some(p), Some(e)) => {
+        arg_effects[idx] = e;
+        arg_purity[idx] = Purity::join(p, e.inferred_purity());
+      }
+      (Some(p), None) => {
+        arg_purity[idx] = p;
+        arg_effects[idx] = callback_effects_from_purity(p);
+      }
+      (None, Some(e)) => {
+        arg_effects[idx] = e;
+        arg_purity[idx] = e.inferred_purity();
+      }
+      (None, None) => {}
+    }
+  }
 
   (arg_effects, arg_purity)
 }
@@ -98,8 +114,8 @@ mod tests {
     let api = kb.get("Array.prototype.map").unwrap();
 
     let site = CallSiteInfo {
-      callback_purity: Some(Purity::Pure),
-      callback_effects: Some(EffectSet::empty()),
+      arg_purity: vec![Purity::Pure],
+      arg_effects: vec![EffectSet::empty()],
       callback_uses_index: false,
       callback_uses_array: false,
     };
@@ -116,8 +132,8 @@ mod tests {
     let api = kb.get("Array.prototype.map").unwrap();
 
     let site = CallSiteInfo {
-      callback_purity: Some(Purity::Impure),
-      callback_effects: Some(EffectSet::IO | EffectSet::NETWORK),
+      arg_purity: vec![Purity::Impure],
+      arg_effects: vec![EffectSet::IO | EffectSet::NETWORK],
       callback_uses_index: false,
       callback_uses_array: false,
     };
@@ -191,8 +207,8 @@ mod tests {
     let sem = eval_api_call(
       api,
       &CallSiteInfo {
-        callback_purity: Some(Purity::Pure),
-        callback_effects: Some(EffectSet::empty()),
+        arg_purity: vec![Purity::Pure],
+        arg_effects: vec![EffectSet::empty()],
         ..CallSiteInfo::default()
       },
     );
@@ -207,8 +223,8 @@ mod tests {
     let sem = eval_api_call(
       api,
       &CallSiteInfo {
-        callback_purity: Some(Purity::Pure),
-        callback_effects: Some(EffectSet::empty()),
+        arg_purity: vec![Purity::Pure],
+        arg_effects: vec![EffectSet::empty()],
         ..CallSiteInfo::default()
       },
     );
@@ -224,8 +240,8 @@ mod tests {
     let sem = eval_api_call(
       api,
       &CallSiteInfo {
-        callback_purity: Some(Purity::Impure),
-        callback_effects: Some(EffectSet::IO),
+        arg_purity: vec![Purity::Impure],
+        arg_effects: vec![EffectSet::IO],
         ..CallSiteInfo::default()
       },
     );
@@ -240,8 +256,8 @@ mod tests {
     let sem = eval_api_call(
       api,
       &CallSiteInfo {
-        callback_purity: Some(Purity::Allocating),
-        callback_effects: None,
+        arg_purity: vec![Purity::Allocating],
+        arg_effects: vec![],
         ..CallSiteInfo::default()
       },
     );
