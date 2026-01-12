@@ -4584,6 +4584,7 @@ impl App {
     let mut retry_requests: Vec<(fastrender::ui::TabId, String)> = Vec::new();
     let mut open_requests: Vec<std::path::PathBuf> = Vec::new();
     let mut reveal_requests: Vec<std::path::PathBuf> = Vec::new();
+    let motion = fastrender::ui::motion::UiMotion::from_ctx(ctx);
 
     egui::SidePanel::right("downloads_panel")
       .resizable(true)
@@ -4650,7 +4651,7 @@ impl App {
                       ui.add(
                         egui::ProgressBar::new(0.0)
                           .desired_width(f32::INFINITY)
-                          .animate(true),
+                          .animate(motion.enabled),
                       );
                     }
 

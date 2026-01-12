@@ -1587,7 +1587,7 @@ pub fn chrome_ui_with_bookmarks(
               ui.add(
                 egui::ProgressBar::new(0.0)
                   .desired_width(50.0)
-                  .animate(true)
+                  .animate(motion.enabled)
                   .text(""),
               );
             }
