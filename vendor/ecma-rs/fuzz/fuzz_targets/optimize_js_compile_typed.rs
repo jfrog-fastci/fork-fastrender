@@ -8,8 +8,7 @@
 //! # One-time: create a gitignored output corpus directory.
 //! mkdir -p vendor/ecma-rs/fuzz/corpus/optimize_js_compile_typed
 //!
-//! timeout -k 10 600 bash vendor/ecma-rs/scripts/cargo_agent.sh fuzz run optimize_js_compile_typed \
-//!   --features typed \
+//! timeout -k 10 600 bash vendor/ecma-rs/scripts/cargo_agent.sh fuzz run --features typed optimize_js_compile_typed \
 //!   fuzz/corpus/optimize_js_compile_typed -- -max_total_time=10
 //! ```
 #![no_main]
@@ -25,6 +24,19 @@ fuzz_target!(|data: &[u8]| {
   let data = &data[..data.len().min(MAX_SOURCE_BYTES)];
   let source = String::from_utf8_lossy(data);
 
+  // `compile_source_typed_cfg_options` loads TypeScript lib files by default (e.g. `lib.es2015.d.ts`).
+  // Parsing+checking those libs dominates per-input runtime and makes fuzzing impractically slow.
+  //
+  // Force `/// <reference no-default-lib="true" />` so the internal typed memory host can skip
+  // bundled libs and keep per-input work bounded.
+  let source = {
+    const NO_DEFAULT_LIB: &str = "/// <reference no-default-lib=\"true\" />\n";
+    let mut out = String::with_capacity(NO_DEFAULT_LIB.len() + source.len());
+    out.push_str(NO_DEFAULT_LIB);
+    out.push_str(source.as_ref());
+    out
+  };
+
   let cfg_options = optimize_js::CompileCfgOptions {
     keep_ssa: true,
     run_opt_passes: true,
@@ -32,7 +44,7 @@ fuzz_target!(|data: &[u8]| {
   };
 
   let Ok(mut program) = optimize_js::compile_source_typed_cfg_options(
-    source.as_ref(),
+    &source,
     optimize_js::TopLevelMode::Module,
     false,
     cfg_options,
