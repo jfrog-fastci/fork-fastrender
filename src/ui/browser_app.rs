@@ -1756,17 +1756,40 @@ mod browser_app_tests {
   }
 
   #[test]
-  fn stage_loading_progress_is_monotonic_in_stage_order() {
-    let mut prev = 0.0;
-    for &stage in StageHeartbeat::all() {
-      let p = stage.loading_progress();
-      assert!(p.is_finite());
-      assert!(p > prev, "expected progress to increase (prev={prev}, next={p})");
-      assert!(p >= 0.0);
-      assert!(p <= 1.0);
-      prev = p;
+  fn stage_loading_progress_is_monotonic() {
+    assert!(
+      StageHeartbeat::ReadCache.loading_progress() > 0.0,
+      "expected ReadCache to map to a progress value > 0.0 so 0.0 can represent \"no stage yet\""
+    );
+    assert_eq!(
+      StageHeartbeat::Done.loading_progress(),
+      1.0,
+      "expected Done to map to exactly 1.0"
+    );
+
+    let mut prev = 0.0_f32;
+
+    for stage in StageHeartbeat::all() {
+      let progress = stage.loading_progress();
+      assert!(
+        progress.is_finite(),
+        "expected StageHeartbeat::{stage:?}.loading_progress() to be finite, got {progress}"
+      );
+      assert!(
+        (0.0..=1.0).contains(&progress),
+        "expected progress in [0,1], got {progress} for StageHeartbeat::{stage:?}"
+      );
+      assert!(
+        progress > prev,
+        "expected strictly increasing progress: StageHeartbeat::{stage:?} ({progress}) <= previous ({prev})"
+      );
+      prev = progress;
     }
-    assert!((prev - 1.0).abs() < 1e-6);
+
+    assert!(
+      (prev - 1.0).abs() <= f32::EPSILON,
+      "expected final stage to map to 1.0, got {prev}"
+    );
   }
 
   #[test]
@@ -1818,35 +1841,53 @@ mod browser_app_tests {
   }
 
   #[test]
-  fn out_of_order_stages_do_not_reduce_load_progress() {
+  fn chrome_loading_progress_is_monotonic_across_out_of_order_stage_events() {
     let mut app = BrowserAppState::new_with_initial_tab("about:newtab".to_string());
     let tab_id = app.active_tab_id().unwrap();
+
     app.apply_worker_msg(WorkerToUi::NavigationStarted {
       tab_id,
       url: "https://example.com/".to_string(),
     });
 
-    app.apply_worker_msg(WorkerToUi::Stage {
-      tab_id,
-      stage: StageHeartbeat::Layout,
-    });
-    let p1 = app.active_tab().unwrap().load_progress.unwrap();
+    let mut prev = app
+      .active_tab()
+      .expect("tab exists")
+      .chrome_loading_progress()
+      .expect("tab should be loading");
+    assert!(
+      (prev - 0.0).abs() <= f32::EPSILON,
+      "expected initial progress to be 0.0 after NavigationStarted, got {prev}"
+    );
 
-    // Regressing heartbeat must not reduce progress.
-    app.apply_worker_msg(WorkerToUi::Stage {
-      tab_id,
-      stage: StageHeartbeat::ReadCache,
-    });
-    let p2 = app.active_tab().unwrap().load_progress.unwrap();
-
-    assert!((p2 - p1).abs() < 1e-6);
+    for stage in [
+      StageHeartbeat::Layout,
+      // Regressing stage heartbeat must not reduce chrome progress.
+      StageHeartbeat::ReadCache,
+      StageHeartbeat::PaintRasterize,
+      StageHeartbeat::DomParse,
+      StageHeartbeat::Done,
+    ] {
+      app.apply_worker_msg(WorkerToUi::Stage { tab_id, stage });
+      let next = app
+        .active_tab()
+        .expect("tab exists")
+        .chrome_loading_progress()
+        .expect("tab should be loading");
+      assert!(
+        next + f32::EPSILON >= prev,
+        "expected chrome loading progress to be monotonic (prev={prev}, next={next}, stage={stage:?})"
+      );
+      prev = next;
+    }
   }
 
   #[test]
-  fn load_progress_resets_on_navigation_started() {
+  fn chrome_loading_progress_resets_across_navigations() {
     let mut app = BrowserAppState::new_with_initial_tab("about:newtab".to_string());
     let tab_id = app.active_tab_id().unwrap();
 
+    // Navigation 1: start → observe stage progress.
     app.apply_worker_msg(WorkerToUi::NavigationStarted {
       tab_id,
       url: "https://example.com/".to_string(),
@@ -1856,17 +1897,46 @@ mod browser_app_tests {
       stage: StageHeartbeat::Layout,
     });
 
-    let before = app.active_tab().unwrap().load_progress.unwrap();
-    assert!(before > 0.0);
+    let progress_before = app
+      .active_tab()
+      .expect("tab exists")
+      .chrome_loading_progress()
+      .expect("tab should be loading");
+    assert!(
+      progress_before > 0.0,
+      "expected non-zero progress after a stage heartbeat, got {progress_before}"
+    );
 
+    // Navigation 2: should clear stage/progress.
     app.apply_worker_msg(WorkerToUi::NavigationStarted {
       tab_id,
       url: "https://second.example/".to_string(),
     });
 
-    let tab = app.active_tab().unwrap();
-    assert_eq!(tab.load_stage, None);
-    assert_eq!(tab.load_progress, Some(0.0));
+    {
+      let tab = app.active_tab().unwrap();
+      assert_eq!(tab.load_stage, None);
+      assert_eq!(tab.load_progress, Some(0.0));
+      assert_eq!(
+        tab.chrome_loading_progress(),
+        Some(0.0),
+        "expected progress to reset to 0.0 on navigation start"
+      );
+    }
+
+    // Navigation commit should stop showing progress entirely.
+    app.apply_worker_msg(WorkerToUi::NavigationCommitted {
+      tab_id,
+      url: "https://second.example/".to_string(),
+      title: None,
+      can_go_back: false,
+      can_go_forward: false,
+    });
+    assert_eq!(
+      app.active_tab().expect("tab exists").chrome_loading_progress(),
+      None,
+      "expected progress to be hidden once loading=false"
+    );
   }
 
   #[test]
