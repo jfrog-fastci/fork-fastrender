@@ -858,7 +858,9 @@ fn parse_image_set_type_descriptor(token: &str) -> Option<String> {
             }
             mime = Some(s.as_ref().to_string());
           }
-          _ => return Err(nested.new_custom_error::<_, ()>(())),
+          _ => {
+            return Err(nested.new_custom_error::<_, ()>(()));
+          }
         }
       }
       mime.ok_or_else(|| nested.new_custom_error::<_, ()>(()))
