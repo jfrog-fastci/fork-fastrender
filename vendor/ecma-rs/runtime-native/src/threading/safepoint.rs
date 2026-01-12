@@ -1475,7 +1475,6 @@ mod tests {
         unsafe {
           assert_eq!((*(root as *mut Obj)).value, idx);
         }
-  
         completed.fetch_add(1, Ordering::Release);
         // Unregistering the thread may contend on GC-aware locks, which can temporarily transition
         // into a GC-safe region. Ensure the per-thread handle stack is empty before that happens:

@@ -79,22 +79,24 @@ impl LargeObjectSpace {
   pub(crate) fn sweep(&mut self, current_epoch: u8) -> usize {
     let mut freed = 0usize;
     self.entries.retain(|entry| unsafe {
-      let hdr = &*(entry.obj_base.as_ptr() as *const ObjHeader);
-      if hdr.is_marked(current_epoch) {
-        true
-      } else {
-        let card_table = hdr.card_table_ptr();
-        if !card_table.is_null() {
-          // Clear the header pointer before unmapping the object so other GC
-          // bookkeeping (e.g. the card table registry) can't accidentally try
-          // to free it twice.
-          (&mut *(entry.obj_base.as_ptr() as *mut ObjHeader)).set_card_table_ptr(core::ptr::null_mut());
-          crate::gc::free_card_table(card_table, entry.obj_size);
-        }
-        os_free(entry.map_base.as_ptr(), entry.mmap_size);
-        freed += entry.mmap_size;
-        false
+      // Avoid creating long-lived `&ObjHeader` references here: sweeping may need
+      // to mutate the header (to clear the card table pointer) before freeing.
+      let hdr_ptr = entry.obj_base.as_ptr() as *mut ObjHeader;
+      if (*hdr_ptr).is_marked(current_epoch) {
+        return true;
       }
+
+      let card_table = (*hdr_ptr).card_table_ptr();
+      if !card_table.is_null() {
+        // Clear the header pointer before unmapping the object so other GC
+        // bookkeeping (e.g. the card table registry) can't accidentally try
+        // to free it twice.
+        (&mut *hdr_ptr).set_card_table_ptr(core::ptr::null_mut());
+        crate::gc::free_card_table(card_table, entry.obj_size);
+      }
+      os_free(entry.map_base.as_ptr(), entry.mmap_size);
+      freed += entry.mmap_size;
+      false
     });
     freed
   }
