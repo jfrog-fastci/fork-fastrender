@@ -283,16 +283,6 @@ fn save_json_atomic<T: Serialize>(path: &Path, value: &T) -> Result<(), String> 
 #[cfg(test)]
 mod tests {
   use super::*;
-  use std::sync::{Mutex, OnceLock};
-
-  static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-
-  fn lock_env() -> std::sync::MutexGuard<'static, ()> {
-    ENV_LOCK
-      .get_or_init(|| Mutex::new(()))
-      .lock()
-      .expect("env test lock poisoned")
-  }
 
   struct EnvVarGuard {
     bookmarks_prev: Option<std::ffi::OsString>,
@@ -323,7 +313,7 @@ mod tests {
 
   #[test]
   fn bookmarks_path_env_override_wins() {
-    let _lock = lock_env();
+    let _lock = crate::testing::global_test_lock();
     let _guard = EnvVarGuard::new();
 
     std::env::set_var(BOOKMARKS_ENV_PATH, "/tmp/fastr_bookmarks_override.json");
@@ -335,7 +325,7 @@ mod tests {
 
   #[test]
   fn history_path_env_override_wins() {
-    let _lock = lock_env();
+    let _lock = crate::testing::global_test_lock();
     let _guard = EnvVarGuard::new();
 
     std::env::set_var(HISTORY_ENV_PATH, "/tmp/fastr_history_override.json");
