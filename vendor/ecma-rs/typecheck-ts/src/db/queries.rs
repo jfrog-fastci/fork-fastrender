@@ -552,7 +552,7 @@ fn global_augmentation_diagnostics_for(db: &dyn Db, file: FileInput) -> Arc<[Dia
   let source = file_text_for(db, file);
   let file_kind = file.kind(db);
   let is_external_module = sem_ts::module_syntax::ast_has_module_syntax(ast);
-  let is_dts_script = matches!(file_kind, FileKind::Dts) && !is_external_module;
+  let is_dts_file = matches!(file_kind, FileKind::Dts);
 
   use parse_js::ast::class_or_object::ClassOrObjVal;
   use parse_js::ast::func::FuncBody;
@@ -869,9 +869,19 @@ fn global_augmentation_diagnostics_for(db: &dyn Db, file: FileInput) -> Arc<[Dia
         }
         Stmt::ModuleDecl(module) => {
           if let Some(body) = module.stx.body.as_ref() {
+            // TypeScript treats global augmentations (`global {}` / `declare global {}`)
+            // as module augmentations and only permits them in the same contexts as
+            // external module augmentations:
+            // - at the file top-level when the file is an external module, or
+            // - nested in a *top-level* ambient module declaration when the file is
+            //   a non-external script.
+            //
+            // See `isModuleAugmentationExternal` in TypeScript's `utilities.ts`.
             let body_parent = match &module.stx.name {
-              ModuleName::String(_) => ParentKind::AmbientModuleBody,
-              ModuleName::Identifier(_) => ParentKind::Nested,
+              ModuleName::String(_) if matches!(parent, ParentKind::FileTopLevel) && !is_external_module => {
+                ParentKind::AmbientModuleBody
+              }
+              _ => ParentKind::Nested,
             };
             let body_ambient =
               ambient || module.stx.declare || matches!(&module.stx.name, ModuleName::String(_));
@@ -1080,7 +1090,7 @@ fn global_augmentation_diagnostics_for(db: &dyn Db, file: FileInput) -> Arc<[Dia
     is_external_module,
     file_id,
     source.as_ref(),
-    is_dts_script,
+    is_dts_file,
     &mut diagnostics,
   );
 

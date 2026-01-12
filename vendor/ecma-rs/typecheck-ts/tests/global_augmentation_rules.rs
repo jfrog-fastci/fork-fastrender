@@ -254,3 +254,76 @@ fn module_augmentation_global_inside_ambient_module_is_allowed() {
     "did not expect TS2670 diagnostics, got: {diagnostics:?}"
   );
 }
+
+#[test]
+fn module_augmentation_global_inside_ambient_module_in_external_module_errors() {
+  let mut host = host_with_libs();
+  let key = FileKey::new("main.ts");
+  host.insert(
+    key.clone(),
+    Arc::<str>::from(
+      "export {};\ndeclare module \"A\" { global { interface Something { x: number; } } }",
+    ),
+  );
+
+  let program = Program::new(host, vec![key.clone()]);
+  let diagnostics = program.check();
+
+  assert_eq!(
+    find_ts2669(&diagnostics).len(),
+    1,
+    "expected TS2669 diagnostic, got: {diagnostics:?}"
+  );
+  assert!(
+    find_ts2670(&diagnostics).is_empty(),
+    "did not expect TS2670 diagnostics, got: {diagnostics:?}"
+  );
+}
+
+#[test]
+fn module_augmentation_global_nested_inside_nested_ambient_module_errors() {
+  let mut host = host_with_libs();
+  let key = FileKey::new("main.ts");
+  host.insert(
+    key.clone(),
+    Arc::<str>::from(
+      "declare module \"A\" { declare module \"B\" { global { interface Something { x: number; } } } }",
+    ),
+  );
+
+  let program = Program::new(host, vec![key.clone()]);
+  let diagnostics = program.check();
+
+  assert_eq!(
+    find_ts2669(&diagnostics).len(),
+    1,
+    "expected TS2669 diagnostic, got: {diagnostics:?}"
+  );
+  assert!(
+    find_ts2670(&diagnostics).is_empty(),
+    "did not expect TS2670 diagnostics, got: {diagnostics:?}"
+  );
+}
+
+#[test]
+fn module_augmentation_global_in_dts_external_module_is_ambient() {
+  let mut host = host_with_libs();
+  host.options.skip_lib_check = false;
+  let key = FileKey::new("main.d.ts");
+  host.insert(
+    key.clone(),
+    Arc::<str>::from("export {};\nglobal { interface Array<T> { x: number; } }"),
+  );
+
+  let program = Program::new(host, vec![key]);
+  let diagnostics = program.check();
+
+  assert!(
+    find_ts2669(&diagnostics).is_empty(),
+    "did not expect TS2669 diagnostics, got: {diagnostics:?}"
+  );
+  assert!(
+    find_ts2670(&diagnostics).is_empty(),
+    "did not expect TS2670 diagnostics, got: {diagnostics:?}"
+  );
+}
