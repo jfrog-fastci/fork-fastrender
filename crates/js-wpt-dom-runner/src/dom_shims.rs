@@ -3556,19 +3556,33 @@ mod tests {
           input.value = "hello";
           input.checked = true;
           input.disabled = true;
+          var inputCheckedAfterTrue = input.checked;
+          var inputDisabledAfterTrue = input.disabled;
+          input.checked = false;
+          input.disabled = false;
+          var inputCheckedAfterFalse = input.checked;
+          var inputDisabledAfterFalse = input.disabled;
 
           var textarea = document.createElement("textarea");
           textarea.value = "world";
 
           var select = document.createElement("select");
+          var options = select.options;
+          var optionsSame = options === select.options;
+          var optionsIsHTMLOptionsCollection = options instanceof HTMLOptionsCollection;
+          var optionsLen0 = options.length;
           var optA = document.createElement("option");
           optA.value = "a";
           optA.textContent = "A";
           select.appendChild(optA);
+          var optionsLen1 = options.length;
           var optB = document.createElement("option");
           optB.value = "b";
           optB.textContent = "B";
           select.appendChild(optB);
+          var optionsLen2 = options.length;
+          var options0IsOptA = options[0] === optA;
+          var options1IsOptB = options[1] === optB;
 
           select.selectedIndex = 1;
           var selectSelectedIndexAfterSelectedIndex = select.selectedIndex;
@@ -3579,49 +3593,88 @@ mod tests {
           var selectValueAfterValue = select.value;
 
           var form = document.createElement("form");
-          var formLen0 = form.elements.length;
+          var elements = form.elements;
+          var elementsSame = elements === form.elements;
+          var elementsIsHTMLFormControlsCollection = elements instanceof HTMLFormControlsCollection;
+          var formLen0 = elements.length;
           form.appendChild(input);
-          var formLen1 = form.elements.length;
+          var formLen1 = elements.length;
           form.appendChild(textarea);
           form.appendChild(select);
-          var formLen3 = form.elements.length;
+          var formLen3 = elements.length;
+          var elements0IsInput = elements[0] === input;
+          var elements1IsTextarea = elements[1] === textarea;
+          var elements2IsSelect = elements[2] === select;
+          var elementsOrder = Array.from(elements).map(function (n) { return n.tagName; }).join(",");
 
           return JSON.stringify({
             inputValue: input.value,
-            inputChecked: input.checked,
-            inputDisabled: input.disabled,
+            inputCheckedAfterTrue: inputCheckedAfterTrue,
+            inputDisabledAfterTrue: inputDisabledAfterTrue,
+            inputCheckedAfterFalse: inputCheckedAfterFalse,
+            inputDisabledAfterFalse: inputDisabledAfterFalse,
 
             textareaValue: textarea.value,
             textareaTextContent: textarea.textContent,
+
+            optionsSame: optionsSame,
+            optionsIsHTMLOptionsCollection: optionsIsHTMLOptionsCollection,
+            optionsLen0: optionsLen0,
+            optionsLen1: optionsLen1,
+            optionsLen2: optionsLen2,
+            options0IsOptA: options0IsOptA,
+            options1IsOptB: options1IsOptB,
 
             selectSelectedIndexAfterSelectedIndex: selectSelectedIndexAfterSelectedIndex,
             selectValueAfterSelectedIndex: selectValueAfterSelectedIndex,
             selectSelectedIndexAfterValue: selectSelectedIndexAfterValue,
             selectValueAfterValue: selectValueAfterValue,
 
+            elementsSame: elementsSame,
+            elementsIsHTMLFormControlsCollection: elementsIsHTMLFormControlsCollection,
             formLen0: formLen0,
             formLen1: formLen1,
             formLen3: formLen3,
+            elements0IsInput: elements0IsInput,
+            elements1IsTextarea: elements1IsTextarea,
+            elements2IsSelect: elements2IsSelect,
+            elementsOrder: elementsOrder,
           });
         })()
         "#,
       );
 
       assert_eq!(v["inputValue"], "hello");
-      assert_eq!(v["inputChecked"], true);
-      assert_eq!(v["inputDisabled"], true);
+      assert_eq!(v["inputCheckedAfterTrue"], true);
+      assert_eq!(v["inputDisabledAfterTrue"], true);
+      assert_eq!(v["inputCheckedAfterFalse"], false);
+      assert_eq!(v["inputDisabledAfterFalse"], false);
 
       assert_eq!(v["textareaValue"], "world");
       assert_eq!(v["textareaTextContent"], "world");
+
+      assert_eq!(v["optionsSame"], true);
+      assert_eq!(v["optionsIsHTMLOptionsCollection"], true);
+      assert_eq!(v["optionsLen0"], 0);
+      assert_eq!(v["optionsLen1"], 1);
+      assert_eq!(v["optionsLen2"], 2);
+      assert_eq!(v["options0IsOptA"], true);
+      assert_eq!(v["options1IsOptB"], true);
 
       assert_eq!(v["selectSelectedIndexAfterSelectedIndex"], 1);
       assert_eq!(v["selectValueAfterSelectedIndex"], "b");
       assert_eq!(v["selectSelectedIndexAfterValue"], 0);
       assert_eq!(v["selectValueAfterValue"], "a");
 
+      assert_eq!(v["elementsSame"], true);
+      assert_eq!(v["elementsIsHTMLFormControlsCollection"], true);
       assert_eq!(v["formLen0"], 0);
       assert_eq!(v["formLen1"], 1);
       assert_eq!(v["formLen3"], 3);
+      assert_eq!(v["elements0IsInput"], true);
+      assert_eq!(v["elements1IsTextarea"], true);
+      assert_eq!(v["elements2IsSelect"], true);
+      assert_eq!(v["elementsOrder"], "INPUT,TEXTAREA,SELECT");
     });
   }
 }
