@@ -181,3 +181,69 @@ pub fn parse_with_options_cancellable_by_with_init<'a>(
     }
   }
 }
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use crate::error::SyntaxErrorType;
+
+  fn ecma_script_opts() -> ParseOptions {
+    ParseOptions {
+      dialect: Dialect::Ecma,
+      source_type: SourceType::Script,
+    }
+  }
+
+  #[test]
+  fn meta_properties_in_arrow_functions_require_enclosing_context() {
+    let opts = ecma_script_opts();
+
+    // `new.target` is not allowed in arrow functions unless an enclosing function provides the
+    // binding.
+    let err = parse_with_options("(() => new.target)", opts).unwrap_err();
+    assert_eq!(
+      err.typ,
+      SyntaxErrorType::ExpectedSyntax("new.target expression not allowed outside functions")
+    );
+
+    // Seed the initial grammar context as if the snippet were enclosed by a function/class element.
+    parse_with_options_cancellable_by_with_init(
+      "(() => new.target)",
+      opts,
+      || false,
+      |p| p.set_initial_meta_property_context(true, true, true),
+    )
+    .unwrap();
+
+    // `super` is similarly only allowed when inherited from an enclosing method/constructor.
+    let err = parse_with_options("(() => super.foo)", opts).unwrap_err();
+    assert_eq!(
+      err.typ,
+      SyntaxErrorType::ExpectedSyntax(
+        "super property access not allowed outside methods and class elements"
+      )
+    );
+
+    parse_with_options_cancellable_by_with_init(
+      "(() => super.foo)",
+      opts,
+      || false,
+      |p| p.set_initial_meta_property_context(true, true, true),
+    )
+    .unwrap();
+
+    let err = parse_with_options("(() => super())", opts).unwrap_err();
+    assert_eq!(
+      err.typ,
+      SyntaxErrorType::ExpectedSyntax("super call not allowed outside derived constructors")
+    );
+
+    parse_with_options_cancellable_by_with_init(
+      "(() => super())",
+      opts,
+      || false,
+      |p| p.set_initial_meta_property_context(true, true, true),
+    )
+    .unwrap();
+  }
+}
