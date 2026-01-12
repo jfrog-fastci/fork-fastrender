@@ -381,7 +381,7 @@ pip install -r tests/fixtures/fonts/requirements.txt
 ### `PaletteTestCOLRv1.ttf`
 - **Source:** Existing COLR v1 palette test fixture included with the FastRender test suite.
 - **License:** Not specified in the font metadata; used only for automated tests.
-- **Glyphs:** U+0041 (`A`) provides layered color data used by `tests/text/font_palette.rs` to
+- **Glyphs:** U+0041 (`A`) provides layered color data used by `src/text/cpal.rs` unit tests to
   exercise CPAL palette selection.
 
 ### `svg-color-glyph-test.ttf`
