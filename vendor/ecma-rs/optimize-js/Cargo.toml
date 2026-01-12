@@ -16,6 +16,7 @@ serde = [
   "dep:rmp-serde",
   "ahash/serde",
   "dashmap/serde",
+  "diagnostics/serde",
   "effect-model/serde",
   "hir-js/serde",
   "num-bigint/serde",
