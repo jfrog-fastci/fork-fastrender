@@ -18,7 +18,6 @@ mod dom_integration;
 mod iframe;
 mod image_integration;
 mod grid;
-mod display_list;
 mod misc;
 mod progress;
 mod render;
