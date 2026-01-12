@@ -27,6 +27,7 @@ fn run_flow(
   initial: &HashMap<hir_js::NameId, types_ts_interned::TypeId>,
 ) -> typecheck_ts::BodyCheckResult {
   let relate = RelateCtx::new(Arc::clone(store), store.options());
+  let prim = store.primitive_ids();
   check_body_with_env(
     body_id,
     body,
@@ -37,6 +38,8 @@ fn run_flow(
     initial,
     relate,
     None,
+    prim.unknown,
+    prim.unknown,
   )
 }
 
@@ -66,4 +69,3 @@ fn substitution_is_flow_checked() {
     res.diagnostics()
   );
 }
-

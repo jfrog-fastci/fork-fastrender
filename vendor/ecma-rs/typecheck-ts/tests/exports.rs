@@ -1397,6 +1397,81 @@ fn export_star_ambiguity_reports_on_export_statement_span() {
 }
 
 #[test]
+fn export_star_ambiguity_between_value_and_type_export_star_reports_on_later_statement_span() {
+  // Mirrors TypeScript's `exportNamespace9` TS2308 scenario where a value export-star
+  // and a type-only export-star collide.
+  let mut host = MemoryHost::default();
+  let key_a = fk(610);
+  let key_e = fk(611);
+  let key_f = fk(612);
+
+  host.insert(key_a.clone(), "export type A = number;\n");
+  host.insert(key_e.clone(), "export const A = 1;\n");
+  let f_source = "export * from \"./e\";\nexport type * from \"./a\";\n";
+  host.insert(key_f.clone(), f_source);
+
+  host.link(key_f.clone(), "./a", key_a.clone());
+  host.link(key_f.clone(), "./e", key_e.clone());
+
+  let program = Program::new(host, vec![key_f.clone()]);
+  let diagnostics = program.check();
+
+  let file_f = program.file_id(&key_f).expect("f file id");
+  let bind_1001: Vec<_> = diagnostics
+    .iter()
+    .filter(|diag| diag.code.as_str() == "BIND1001" && diag.primary.file == file_f)
+    .collect();
+  assert_eq!(
+    bind_1001.len(),
+    1,
+    "expected one export-star ambiguity diagnostic in f.ts, got {bind_1001:?}"
+  );
+
+  let needle = "export type * from \"./a\";";
+  let start = f_source.find(needle).expect("needle in f.ts") as u32;
+  let end = start + needle.len() as u32;
+  let expected_span = TextRange::new(start, end);
+  assert_eq!(bind_1001[0].primary.range, expected_span);
+}
+
+#[test]
+fn export_type_star_value_export_star_collision_reports_on_later_statement_span() {
+  // Mirrors TypeScript's `exportNamespace8` TS2308 scenario:
+  // `export type *` first, then `export *`, with a collision.
+  let mut host = MemoryHost::default();
+  let key_a = fk(620);
+  let key_b = fk(621);
+  let key_c = fk(622);
+
+  host.insert(key_a.clone(), "export class B {}\n");
+  host.insert(key_b.clone(), "export class B {}\n");
+  let c_source = "export type * from \"./a\";\nexport * from \"./b\";\n";
+  host.insert(key_c.clone(), c_source);
+  host.link(key_c.clone(), "./a", key_a.clone());
+  host.link(key_c.clone(), "./b", key_b.clone());
+
+  let program = Program::new(host, vec![key_c.clone()]);
+  let diagnostics = program.check();
+
+  let file_c = program.file_id(&key_c).expect("c file id");
+  let bind_1001: Vec<_> = diagnostics
+    .iter()
+    .filter(|diag| diag.code.as_str() == "BIND1001" && diag.primary.file == file_c)
+    .collect();
+  assert_eq!(
+    bind_1001.len(),
+    1,
+    "expected one export-star ambiguity diagnostic in c.ts, got {bind_1001:?}"
+  );
+
+  let needle = "export * from \"./b\";";
+  let start = c_source.find(needle).expect("needle in c.ts") as u32;
+  let end = start + needle.len() as u32;
+  let expected_span = TextRange::new(start, end);
+  assert_eq!(bind_1001[0].primary.range, expected_span);
+}
+
+#[test]
 fn export_namespace_all_is_supported() {
   let mut host = MemoryHost::default();
   let key_a = fk(300);

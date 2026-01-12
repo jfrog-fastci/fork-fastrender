@@ -27,6 +27,7 @@ fn run_flow(
   initial: &HashMap<NameId, types_ts_interned::TypeId>,
 ) -> typecheck_ts::BodyCheckResult {
   let relate = RelateCtx::new(Arc::clone(store), store.options());
+  let prim = store.primitive_ids();
   check_body_with_env(
     body_id,
     body,
@@ -37,6 +38,8 @@ fn run_flow(
     initial,
     relate,
     None,
+    prim.unknown,
+    prim.unknown,
   )
 }
 
@@ -99,4 +102,3 @@ fn computed_getter_name_expression_is_evaluated() {
   );
   assert!(has_use_before_assignment(res.diagnostics()));
 }
-
