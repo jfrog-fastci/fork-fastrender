@@ -26644,6 +26644,17 @@ fn init_window_globals(
     Some(realm.intrinsics().object_prototype()),
   )?;
 
+  // `Object.prototype.toString.call(localStorage)` should yield `[object Storage]`.
+  let storage_to_string_tag_key =
+    PropertyKey::from_symbol(realm.intrinsics().well_known_symbols().to_string_tag);
+  let storage_to_string_tag_value = scope.alloc_string("Storage")?;
+  scope.push_root(Value::String(storage_to_string_tag_value))?;
+  scope.define_property(
+    storage_proto,
+    storage_to_string_tag_key,
+    read_only_data_desc(Value::String(storage_to_string_tag_value)),
+  )?;
+
   let make_method = |scope: &mut Scope<'_>,
                      call_id: vm_js::NativeFunctionId,
                      name: &str,
@@ -27847,6 +27858,8 @@ mod tests {
       realm.exec_script("localStorage instanceof Storage && sessionStorage instanceof Storage")?,
       Value::Bool(true)
     );
+    let tag = realm.exec_script("Object.prototype.toString.call(localStorage)")?;
+    assert_eq!(get_string(realm.heap(), tag), "[object Storage]");
     assert_eq!(
       realm.exec_script("localStorage.hasOwnProperty('getItem')")?,
       Value::Bool(false)
