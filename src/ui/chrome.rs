@@ -204,9 +204,9 @@ pub fn chrome_ui_with_bookmarks(
   // matching typical browser behaviour. Some shortcuts (e.g. Alt+Left/Right) are suppressed while
   // editing to avoid interfering with word-wise cursor movement on some platforms.
   //
-  // Ctrl/Cmd+L should not steal focus from other egui text fields (e.g. devtools inputs), but we
-  // still want it to re-select the URL when the address bar is already focused.
-  let allow_focus_address_bar = !ctx.wants_keyboard_input() || app.chrome.address_bar_has_focus;
+  // Ctrl/Cmd+L is expected to focus the address bar regardless of which chrome widget currently
+  // has focus (e.g. find-in-page input, history search). Treat it as a global browser shortcut.
+  let allow_focus_address_bar = true;
   let allow_history_navigation = if cfg!(target_os = "macos") {
     // On macOS, the canonical back/forward shortcuts are Cmd+[ / Cmd+]. These do not interfere with
     // word-wise cursor movement in text fields, so allow history navigation even while the address
@@ -1915,6 +1915,54 @@ mod tests {
         .any(|action| matches!(action, ChromeAction::OpenFindInPage)),
       "expected ChromeAction::OpenFindInPage, got {actions:?}"
     );
+  }
+
+  #[test]
+  fn ctrl_l_focuses_address_bar_even_when_find_bar_has_focus() {
+    let mut app = BrowserAppState::new();
+    let tab_id = TabId(1);
+    app.push_tab(BrowserTabState::new(tab_id, "about:newtab".to_string()), true);
+
+    let ctx = egui::Context::default();
+    let modifiers = egui::Modifiers {
+      command: true,
+      ..Default::default()
+    };
+
+    // Frame 1: open find bar (Ctrl/Cmd+F), which focuses the find input.
+    begin_frame(
+      &ctx,
+      vec![egui::Event::Key {
+        key: egui::Key::F,
+        pressed: true,
+        repeat: false,
+        modifiers,
+      }],
+    );
+    let _actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
+    let _ = ctx.end_frame();
+    assert!(app.active_tab().is_some_and(|tab| tab.find.open));
+
+    // Frame 2: Ctrl/Cmd+L should still focus the address bar (even though egui wants keyboard input).
+    begin_frame(
+      &ctx,
+      vec![egui::Event::Key {
+        key: egui::Key::L,
+        pressed: true,
+        repeat: false,
+        modifiers,
+      }],
+    );
+    let actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
+    let _ = ctx.end_frame();
+
+    assert!(
+      actions
+        .iter()
+        .any(|action| matches!(action, ChromeAction::FocusAddressBar)),
+      "expected ChromeAction::FocusAddressBar, got {actions:?}"
+    );
+    assert!(app.chrome.address_bar_has_focus);
   }
 
   #[test]
