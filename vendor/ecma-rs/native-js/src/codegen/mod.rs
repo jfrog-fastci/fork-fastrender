@@ -2406,7 +2406,7 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
     let value = self.codegen_expr(arg_expr)?;
     match value {
       NativeValue::Number(v) => self.emit_print_f64(v),
-      NativeValue::String(v) => self.emit_print_i32(v),
+      NativeValue::String(v) => self.emit_print_interned_string(v),
       other => {
         return Err(vec![codes::UNSUPPORTED_NATIVE_TYPE.error(
           format!(
@@ -2458,11 +2458,11 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
     crate::stack_walking::mark_call_notail(call);
   }
 
-  fn emit_print_i32(&self, value: IntValue<'ctx>) {
-    let rt_print = declare_rt_print_i32(self.cg.context, &self.cg.module);
+  fn emit_print_interned_string(&self, value: IntValue<'ctx>) {
+    let rt_print = declare_rt_print_interned_string(self.cg.context, &self.cg.module);
     let call = self
       .builder
-      .build_call(rt_print, &[value.into()], "native_js_print_i32")
+      .build_call(rt_print, &[value.into()], "native_js_print_interned_string")
       .expect("failed to build print call");
     crate::stack_walking::mark_call_notail(call);
   }
@@ -4782,15 +4782,18 @@ fn is_toplevel_def(program: &Program, def: DefId) -> bool {
   true
 }
 
-fn declare_rt_print_i32<'ctx>(context: &'ctx Context, module: &Module<'ctx>) -> FunctionValue<'ctx> {
-  if let Some(existing) = module.get_function("rt_print_i32") {
+fn declare_rt_print_interned_string<'ctx>(context: &'ctx Context, module: &Module<'ctx>) -> FunctionValue<'ctx> {
+  if let Some(existing) = module.get_function("rt_print_interned_string") {
     return existing;
   }
 
   let void_ty = context.void_type();
   let i32_ty = context.i32_type();
+  let i64_ty = context.i64_type();
+  let ptr_ty = context.ptr_type(AddressSpace::default());
+
   let func = module.add_function(
-    "rt_print_i32",
+    "rt_print_interned_string",
     void_ty.fn_type(&[i32_ty.into()], false),
     Some(Linkage::Internal),
   );
@@ -4802,22 +4805,99 @@ fn declare_rt_print_i32<'ctx>(context: &'ctx Context, module: &Module<'ctx>) -> 
   let bb = context.append_basic_block(func, "entry");
   builder.position_at_end(bb);
 
+  // Runtime ABI: `bool rt_string_lookup_pinned(InternedId id, StringRef* out)`.
+  // We only use the pinned lookup because it returns a GC-stable pointer (stored out-of-line in the
+  // interner). This makes it safe to pass through normal syscalls/stdio without holding GC handles.
+  let lookup = declare_rt_string_lookup_pinned(context, module);
+
+  // `StringRef` layout is `{ ptr: *const u8, len: usize }` (runtime-native ABI is 64-bit only).
+  let string_ref_ty = context.struct_type(&[ptr_ty.into(), i64_ty.into()], false);
+  let out = builder
+    .build_alloca(string_ref_ty, "strref.out")
+    .expect("alloca StringRef");
+
+  let id = func
+    .get_nth_param(0)
+    .expect("missing interned string id")
+    .into_int_value();
+
+  let ok = builder
+    .build_call(lookup, &[id.into(), out.into()], "lookup_pinned")
+    .expect("call rt_string_lookup_pinned")
+    .try_as_basic_value()
+    .left()
+    .expect("rt_string_lookup_pinned should return a value")
+    .into_int_value();
+
+  let ok_bb = context.append_basic_block(func, "ok");
+  let fail_bb = context.append_basic_block(func, "fail");
+  let end_bb = context.append_basic_block(func, "end");
+  builder
+    .build_conditional_branch(ok, ok_bb, fail_bb)
+    .expect("branch on lookup_pinned result");
+
+  // Success path: write raw bytes + newline to stdout (fd=1).
+  builder.position_at_end(ok_bb);
+  let write = declare_write(context, module);
+  let fd_stdout = i32_ty.const_int(1, false);
+
+  let ptr_gep = builder
+    .build_struct_gep(string_ref_ty, out, 0, "ptr.gep")
+    .expect("gep ptr");
+  let len_gep = builder
+    .build_struct_gep(string_ref_ty, out, 1, "len.gep")
+    .expect("gep len");
+
+  let bytes_ptr = builder
+    .build_load(ptr_ty, ptr_gep, "bytes.ptr")
+    .expect("load bytes ptr")
+    .into_pointer_value();
+  let bytes_len = builder
+    .build_load(i64_ty, len_gep, "bytes.len")
+    .expect("load bytes len")
+    .into_int_value();
+
+  let call = builder
+    .build_call(write, &[fd_stdout.into(), bytes_ptr.into(), bytes_len.into()], "write.str")
+    .expect("call write(str)");
+  crate::stack_walking::mark_call_notail(call);
+
+  let nl = builder
+    .build_global_string_ptr("\n", "native_js_print_str_nl")
+    .expect("create newline string");
+  let one = i64_ty.const_int(1, false);
+  let call = builder
+    .build_call(
+      write,
+      &[fd_stdout.into(), nl.as_pointer_value().into(), one.into()],
+      "write.nl",
+    )
+    .expect("call write(nl)");
+  crate::stack_walking::mark_call_notail(call);
+
+  builder
+    .build_unconditional_branch(end_bb)
+    .expect("branch to end");
+
+  // Failure path: fall back to printing the numeric interned id (`u32`).
+  builder.position_at_end(fail_bb);
   let printf = declare_printf(context, module);
   let fmt = builder
-    .build_global_string_ptr("%u\n", "native_js_print_i32_fmt")
+    .build_global_string_ptr("%u\n", "native_js_print_interned_fallback_fmt")
     .expect("failed to create printf format string");
-  let value = func
-    .get_nth_param(0)
-    .expect("missing print arg")
-    .into_int_value();
   let call = builder
     .build_call(
       printf,
-      &[fmt.as_pointer_value().into(), value.into()],
-      "native_js_print_i32",
+      &[fmt.as_pointer_value().into(), id.into()],
+      "native_js_print_interned_fallback",
     )
     .expect("failed to build printf call");
   crate::stack_walking::mark_call_notail(call);
+  builder
+    .build_unconditional_branch(end_bb)
+    .expect("branch to end");
+
+  builder.position_at_end(end_bb);
   builder.build_return(None).expect("failed to build return");
 
   func
@@ -4872,6 +4952,26 @@ fn declare_printf<'ctx>(context: &'ctx Context, module: &Module<'ctx>) -> Functi
   let i32_ty = context.i32_type();
   let ptr_ty = context.ptr_type(AddressSpace::default());
   module.add_function("printf", i32_ty.fn_type(&[ptr_ty.into()], true), None)
+}
+
+fn declare_write<'ctx>(context: &'ctx Context, module: &Module<'ctx>) -> FunctionValue<'ctx> {
+  if let Some(existing) = module.get_function("write") {
+    return existing;
+  }
+  let i32_ty = context.i32_type();
+  let i64_ty = context.i64_type();
+  let ptr_ty = context.ptr_type(AddressSpace::default());
+  module.add_function("write", i64_ty.fn_type(&[i32_ty.into(), ptr_ty.into(), i64_ty.into()], false), None)
+}
+
+fn declare_rt_string_lookup_pinned<'ctx>(context: &'ctx Context, module: &Module<'ctx>) -> FunctionValue<'ctx> {
+  if let Some(existing) = module.get_function("rt_string_lookup_pinned") {
+    return existing;
+  }
+  let i1_ty = context.bool_type();
+  let i32_ty = context.i32_type();
+  let ptr_ty = context.ptr_type(AddressSpace::default());
+  module.add_function("rt_string_lookup_pinned", i1_ty.fn_type(&[i32_ty.into(), ptr_ty.into()], false), None)
 }
 
 mod builtins;

@@ -536,8 +536,9 @@ Currently supported intrinsics:
 - `declare function print(value: number | string): void;`
 
 > Note: in the checked pipeline, `string` values are represented as runtime-native interned IDs
-> (`InternedId` / `u32`). When passed to `print`, native-js prints the numeric interned ID (not the
-> string bytes). Full string printing would require a runtime lookup API.
+> (`InternedId` / `u32`). `print(string)` uses `rt_string_lookup_pinned` to print the UTF-8 bytes for
+> pinned interned strings (native-js pins all string literals during file initialization). If lookup
+> fails, it falls back to printing the numeric interned ID.
 
 ## Strict compilation subset (`native_js::validate`)
 

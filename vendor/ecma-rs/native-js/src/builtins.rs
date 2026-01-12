@@ -27,7 +27,7 @@ pub const NATIVE_JS_BUILTINS_LIB_KEY: &str = CHECKED_BUILTINS_FILE_KEY;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum NativeJsIntrinsic {
-  /// Print a `number` (or interned `string` id) to stdout with a trailing newline.
+  /// Print a `number` or `string` to stdout with a trailing newline.
   Print,
 }
 

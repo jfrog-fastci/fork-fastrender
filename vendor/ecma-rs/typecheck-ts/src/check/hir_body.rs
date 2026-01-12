@@ -3861,9 +3861,6 @@ impl<'a> Checker<'a> {
     contextual_return: Option<TypeId>,
   ) -> TypeId {
     let prim = self.store.primitive_ids();
-    if matches!(call.stx.callee.stx.as_ref(), AstExpr::Super(_)) {
-      return self.check_super_call_expr(call, contextual_return);
-    }
     let callee_ty = self.check_expr(&call.stx.callee);
 
     let call_optional = call.stx.optional_chaining || self.is_optional_chain_expr(&call.stx.callee);
