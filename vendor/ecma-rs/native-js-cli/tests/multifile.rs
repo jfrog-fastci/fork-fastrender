@@ -484,6 +484,39 @@ fn supports_importing_from_reexport_modules() {
 }
 
 #[test]
+fn supports_importing_from_local_reexports() {
+  let dir = tempdir().unwrap();
+  let dep = dir.path().join("dep.ts");
+  let reexport = dir.path().join("reexport.ts");
+  let main = dir.path().join("main.ts");
+
+  fs::write(
+    &dep,
+    "console.log(\"dep\");\nexport function value(a:number,b:number){return a+b}\n",
+  )
+  .unwrap();
+  fs::write(
+    &reexport,
+    "import { value } from './dep';\nconsole.log(\"reexport\");\nexport { value };\n",
+  )
+  .unwrap();
+  fs::write(
+    &main,
+    "import {value} from './reexport';\nexport function main(){console.log(value(20,22));}\n",
+  )
+  .unwrap();
+
+  native_js_cli()
+    .timeout(CLI_TIMEOUT)
+    .arg("--entry-fn")
+    .arg("main")
+    .arg(main)
+    .assert()
+    .success()
+    .stdout(predicate::eq("dep\nreexport\n42\n"));
+}
+
+#[test]
 fn supports_importing_from_export_all_reexports() {
   let dir = tempdir().unwrap();
   let dep = dir.path().join("dep.ts");

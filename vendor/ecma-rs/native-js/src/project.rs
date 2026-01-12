@@ -610,47 +610,6 @@ pub fn compile_project_to_llvm_ir(
     params.is_empty().then_some("main")
   });
 
-  // Compute which exports must be materialized for runtime imports.
-  let mut used_exports: BTreeMap<FileId, BTreeSet<String>> = BTreeMap::new();
-  for file in all_files.iter().copied() {
-    let Some(info) = modules.get(&file) else {
-      continue;
-    };
-    for binding in &info.import_bindings {
-      used_exports
-        .entry(binding.dep)
-        .or_default()
-        .insert(binding.export_name.clone());
-    }
-  }
-
-  let mut export_locals: BTreeMap<FileId, BTreeMap<String, String>> = BTreeMap::new();
-  for (file, exports) in &used_exports {
-    let export_map = program.exports_of(*file);
-    for export_name in exports {
-      let entry = export_map
-        .get(export_name)
-        .ok_or_else(|| NativeJsError::MissingExport {
-          file: file_label(program, *file),
-          export: export_name.clone(),
-        })?;
-      let def = entry.def.ok_or_else(|| NativeJsError::UnsupportedExport {
-        file: file_label(program, *file),
-        export: export_name.clone(),
-      })?;
-      let local = program
-        .def_name(def)
-        .ok_or_else(|| NativeJsError::UnsupportedExport {
-          file: file_label(program, *file),
-          export: export_name.clone(),
-        })?;
-      export_locals
-        .entry(*file)
-        .or_default()
-        .insert(export_name.clone(), local);
-    }
-  }
-
   // Build call target tables per file.
   let mut call_targets: BTreeMap<FileId, BTreeMap<String, UserFunctionSig>> = BTreeMap::new();
   for file in all_files.iter().copied() {
@@ -670,16 +629,27 @@ pub fn compile_project_to_llvm_ir(
 
     if let Some(info) = modules.get(&file) {
       for binding in &info.import_bindings {
-        let target_local = export_locals
-          .get(&binding.dep)
-          .and_then(|m| m.get(&binding.export_name))
-          .ok_or_else(|| NativeJsError::MissingExport {
+        let export_map = program.exports_of(binding.dep);
+        if !export_map.contains_key(&binding.export_name) {
+          return Err(NativeJsError::MissingExport {
             file: file_label(program, binding.dep),
             export: binding.export_name.clone(),
-          })?;
+          });
+        }
+
+        let def = resolve_export_def(program, binding.dep, &binding.export_name).ok_or_else(|| {
+          NativeJsError::UnsupportedExport {
+            file: file_label(program, binding.dep),
+            export: binding.export_name.clone(),
+          }
+        })?;
+        let local = program.def_name(def).ok_or_else(|| NativeJsError::UnsupportedExport {
+          file: file_label(program, binding.dep),
+          export: binding.export_name.clone(),
+        })?;
         let (params, ret) = local_fn_sigs
-          .get(&binding.dep)
-          .and_then(|m| m.get(target_local))
+          .get(&def.file())
+          .and_then(|m| m.get(&local))
           .cloned()
           .ok_or_else(|| NativeJsError::UnsupportedExport {
             file: file_label(program, binding.dep),
@@ -688,7 +658,7 @@ pub fn compile_project_to_llvm_ir(
         table.insert(
           binding.local_name.clone(),
           UserFunctionSig {
-            llvm_name: llvm_fn_symbol(binding.dep, target_local),
+            llvm_name: llvm_fn_symbol(def.file(), &local),
             ret,
             params,
           },
