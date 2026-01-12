@@ -6916,10 +6916,24 @@ impl<'a> Evaluator<'a> {
     object: Value,
   ) -> Result<bool, VmError> {
     // Bound functions delegate `instanceof` checks to their target.
-    if let Ok(func) = scope.heap().get_function(constructor) {
-      if let Some(bound_target) = func.bound_target {
-        return self.instanceof_operator(scope, object, Value::Object(bound_target));
+    //
+    // Important: this is `OrdinaryHasInstance` (not `InstanceofOperator`), so we must *not* consult
+    // the target function's `@@hasInstance` method here.
+    //
+    // Spec: https://tc39.es/ecma262/#sec-ordinaryhasinstance
+    let mut constructor = constructor;
+    loop {
+      match scope.heap().get_function(constructor) {
+        Ok(func) => {
+          if let Some(bound_target) = func.bound_target {
+            constructor = bound_target;
+            continue;
+          }
+        }
+        // Non-function objects can't be bound functions.
+        Err(_) => {}
       }
+      break;
     }
 
     // If the LHS is not an object, `instanceof` is `false` without further observable actions.

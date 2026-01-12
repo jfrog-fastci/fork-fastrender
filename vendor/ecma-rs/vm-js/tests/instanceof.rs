@@ -117,3 +117,19 @@ fn bound_function_instanceof_delegates_to_bound_target() {
     .unwrap();
   assert_eq!(value, Value::Bool(true));
 }
+
+#[test]
+fn bound_function_instanceof_does_not_use_bound_target_has_instance() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      function Target() {}
+      Target[Symbol.hasInstance] = function () { return true; };
+      var Bound = Target.bind(null);
+      ({} instanceof Bound) === false
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
