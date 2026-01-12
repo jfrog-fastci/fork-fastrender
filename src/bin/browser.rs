@@ -992,6 +992,7 @@ struct OpenContextMenu {
   pos_css: (f32, f32),
   anchor_points: egui::Pos2,
   link_url: Option<String>,
+  selected_idx: usize,
 }
 
 #[cfg(feature = "browser_ui")]
@@ -1860,6 +1861,7 @@ error: {err}",
             pos_css: *pos_css,
             anchor_points: pending.anchor_points,
             link_url: link_url.clone(),
+            selected_idx: 0,
           });
           self.open_context_menu_rect = None;
           request_redraw = true;
@@ -2157,12 +2159,13 @@ error: {err}",
   fn render_context_menu(&mut self, ctx: &egui::Context) {
     use fastrender::ui::ChromeAction;
 
-    let (tab_id, pos_css, anchor_points, link_url) = match self.open_context_menu.as_ref() {
+    let (tab_id, pos_css, anchor_points, link_url, selected_idx) = match self.open_context_menu.as_ref() {
       Some(menu) => (
         menu.tab_id,
         menu.pos_css,
         menu.anchor_points,
         menu.link_url.clone(),
+        menu.selected_idx,
       ),
       None => {
         self.open_context_menu_rect = None;
@@ -2182,46 +2185,283 @@ error: {err}",
       return;
     }
 
+    #[derive(Clone)]
     enum Action {
       OpenInNewTab(String),
       CopyLink(String),
       Reload,
     }
 
-    let popup = egui::Area::new(egui::Id::new((
+    struct MenuItem {
+      icon: &'static str,
+      label: &'static str,
+      action: Action,
+    }
+
+    const MENU_CONTENT_WIDTH: f32 = 220.0;
+    const MENU_INNER_MARGIN: f32 = 4.0;
+    const MENU_ITEM_HEIGHT: f32 = 28.0;
+    const MENU_SEPARATOR_HEIGHT: f32 = 9.0;
+    const MENU_EDGE_MARGIN: f32 = 4.0;
+
+    let mut items: Vec<MenuItem> = Vec::new();
+    let show_separator = link_url.is_some();
+    if let Some(url) = link_url.as_deref() {
+      items.push(MenuItem {
+        icon: "↗",
+        label: "Open Link in New Tab",
+        action: Action::OpenInNewTab(url.to_string()),
+      });
+      items.push(MenuItem {
+        icon: "⧉",
+        label: "Copy Link Address",
+        action: Action::CopyLink(url.to_string()),
+      });
+    }
+    items.push(MenuItem {
+      icon: "⟳",
+      label: "Reload",
+      action: Action::Reload,
+    });
+
+    if items.is_empty() {
+      self.close_context_menu();
+      self.window.request_redraw();
+      return;
+    }
+
+    let mut selected_idx = selected_idx.min(items.len().saturating_sub(1));
+
+    // Keyboard navigation / activation.
+    let (nav_delta, activate_selected, jump_char) = ctx.input(|i| {
+      let mut nav_delta: isize = 0;
+      let mut activate_selected = false;
+      let mut jump_char: Option<char> = None;
+
+      for event in &i.events {
+        match event {
+          egui::Event::Key {
+            key,
+            pressed: true,
+            repeat: _,
+            modifiers,
+          } => {
+            // Don't steal browser/chrome shortcuts while the menu is open.
+            if modifiers.alt || modifiers.command || modifiers.ctrl || modifiers.mac_cmd {
+              continue;
+            }
+
+            match key {
+              egui::Key::ArrowUp => nav_delta = nav_delta.saturating_sub(1),
+              egui::Key::ArrowDown => nav_delta = nav_delta.saturating_add(1),
+              egui::Key::Enter | egui::Key::Space => {
+                activate_selected = true;
+              }
+              egui::Key::Home => nav_delta = isize::MIN,
+              egui::Key::End => nav_delta = isize::MAX,
+              _ => {}
+            }
+          }
+          egui::Event::Text(text) => {
+            if let Some(ch) = text.chars().next().filter(|ch| ch.is_alphanumeric()) {
+              jump_char = Some(ch.to_ascii_lowercase());
+            }
+          }
+          _ => {}
+        }
+      }
+
+      (nav_delta, activate_selected, jump_char)
+    });
+
+    if nav_delta == isize::MIN {
+      selected_idx = 0;
+    } else if nav_delta == isize::MAX {
+      selected_idx = items.len().saturating_sub(1);
+    } else if nav_delta > 0 {
+      selected_idx = (selected_idx + nav_delta as usize).min(items.len() - 1);
+    } else if nav_delta < 0 {
+      selected_idx = selected_idx.saturating_sub((-nav_delta) as usize);
+    }
+
+    if let Some(ch) = jump_char {
+      // Search forward from the current selection (wrapping) for the first matching item.
+      for offset in 1..=items.len() {
+        let idx = (selected_idx + offset) % items.len();
+        let first = items[idx]
+          .label
+          .chars()
+          .find(|ch| !ch.is_whitespace())
+          .map(|ch| ch.to_ascii_lowercase());
+        if first == Some(ch) {
+          selected_idx = idx;
+          break;
+        }
+      }
+    }
+
+    let keyboard_action = activate_selected.then(|| items[selected_idx].action.clone());
+
+    let screen_rect = ctx.input(|i| i.screen_rect());
+    let bounds = fastrender::Rect::from_xywh(
+      screen_rect.min.x,
+      screen_rect.min.y,
+      screen_rect.width(),
+      screen_rect.height(),
+    );
+
+    let content_height = (items.len() as f32) * MENU_ITEM_HEIGHT
+      + if show_separator {
+        MENU_SEPARATOR_HEIGHT
+      } else {
+        0.0
+      };
+    let menu_size = fastrender::Size::new(
+      MENU_CONTENT_WIDTH + MENU_INNER_MARGIN * 2.0,
+      content_height + MENU_INNER_MARGIN * 2.0,
+    );
+    let menu_origin = fastrender::ui::context_menu::place_menu(
+      fastrender::Point::new(anchor_points.x, anchor_points.y),
+      menu_size,
+      bounds,
+      MENU_EDGE_MARGIN,
+    );
+
+    let popup_id = egui::Id::new((
       "fastr_page_context_menu",
       tab_id.0,
       pos_css.0.to_bits(),
       pos_css.1.to_bits(),
-    )))
-    .order(egui::Order::Foreground)
-    .fixed_pos(anchor_points)
-    .show(ctx, |ui| {
-      let frame = egui::Frame::popup(ui.style()).show(ui, |ui| {
-        let mut action: Option<Action> = None;
+    ));
 
-        if let Some(url) = link_url.as_deref() {
-          if ui.button("Open Link in New Tab").clicked() {
-            action = Some(Action::OpenInNewTab(url.to_string()));
+    let popup = egui::Area::new(popup_id)
+      .order(egui::Order::Foreground)
+      .fixed_pos(egui::pos2(menu_origin.x, menu_origin.y))
+      .show(ctx, |ui| {
+        let dark_mode = ui.visuals().dark_mode;
+        let selection_bg_fill = ui.visuals().selection.bg_fill;
+        let hovered_bg_fill = ui.visuals().widgets.hovered.bg_fill;
+
+        let bg_fill = if dark_mode {
+          egui::Color32::from_rgb(32, 33, 36)
+        } else {
+          egui::Color32::from_rgb(255, 255, 255)
+        };
+        let border = if dark_mode {
+          egui::Stroke::new(1.0, egui::Color32::from_rgb(60, 64, 67))
+        } else {
+          egui::Stroke::new(1.0, egui::Color32::from_rgb(218, 220, 224))
+        };
+
+        // Slightly softer shadow than egui's default popup style.
+        let shadow_color = if dark_mode {
+          egui::Color32::from_rgba_unmultiplied(0, 0, 0, 180)
+        } else {
+          egui::Color32::from_rgba_unmultiplied(0, 0, 0, 90)
+        };
+
+        let frame = egui::Frame::none()
+          .fill(bg_fill)
+          .stroke(border)
+          .rounding(egui::Rounding::same(8.0))
+          .shadow(egui::epaint::Shadow {
+            extrusion: 12.0,
+            color: shadow_color,
+          })
+          .inner_margin(egui::Margin::same(MENU_INNER_MARGIN));
+
+        let frame = frame.show(ui, |ui| {
+          ui.set_min_width(MENU_CONTENT_WIDTH);
+          ui.set_max_width(MENU_CONTENT_WIDTH);
+          ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
+
+          let mut action: Option<Action> = None;
+          let mut selected_idx = selected_idx;
+
+          let item_rounding = egui::Rounding::same(4.0);
+          let selected_fill = selection_bg_fill;
+          let hover_fill = hovered_bg_fill;
+
+          let mut draw_item = |ui: &mut egui::Ui, idx: usize, item: &MenuItem| {
+            let (rect, response) = ui.allocate_exact_size(
+              egui::vec2(MENU_CONTENT_WIDTH, MENU_ITEM_HEIGHT),
+              egui::Sense::click(),
+            );
+
+            let is_selected = idx == selected_idx;
+            let bg = if is_selected {
+              selected_fill
+            } else if response.hovered() {
+              hover_fill
+            } else {
+              egui::Color32::TRANSPARENT
+            };
+
+            if bg != egui::Color32::TRANSPARENT {
+              ui.painter()
+                .rect_filled(rect.shrink(1.0), item_rounding, bg);
+            }
+
+            ui.allocate_ui_at_rect(rect, |ui| {
+              ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                ui.add_space(10.0);
+                ui.add_sized(
+                  egui::vec2(16.0, MENU_ITEM_HEIGHT),
+                  egui::Label::new(egui::RichText::new(item.icon)),
+                );
+                ui.add_space(8.0);
+                ui.label(item.label);
+              });
+            });
+
+            if is_selected {
+              response.request_focus();
+            }
+
+            if response.hovered() {
+              selected_idx = idx;
+            }
+            if response.clicked() {
+              action = Some(item.action.clone());
+            }
+          };
+
+          for (idx, item) in items.iter().enumerate() {
+            if show_separator && idx == 2 {
+              let (sep_rect, _) = ui.allocate_exact_size(
+                egui::vec2(MENU_CONTENT_WIDTH, MENU_SEPARATOR_HEIGHT),
+                egui::Sense::hover(),
+              );
+              let y = sep_rect.center().y;
+              let inset = 8.0;
+              let separator_color = if dark_mode {
+                egui::Color32::from_rgb(70, 70, 70)
+              } else {
+                egui::Color32::from_rgb(200, 200, 200)
+              };
+              ui.painter().line_segment(
+                [
+                  egui::pos2(sep_rect.min.x + inset, y),
+                  egui::pos2(sep_rect.max.x - inset, y),
+                ],
+                egui::Stroke::new(1.0, separator_color),
+              );
+            }
+            draw_item(ui, idx, item);
           }
-          if ui.button("Copy Link Address").clicked() {
-            action = Some(Action::CopyLink(url.to_string()));
-          }
-          ui.separator();
-        }
 
-        if ui.button("Reload").clicked() {
-          action = Some(Action::Reload);
-        }
+          (action.or(keyboard_action), selected_idx)
+        });
 
-        action
+        (frame.response.rect, frame.inner)
       });
 
-      (frame.response.rect, frame.inner)
-    });
-
-    let (popup_rect, action) = popup.inner;
+    let (popup_rect, (action, new_selected_idx)) = popup.inner;
     self.open_context_menu_rect = Some(popup_rect);
+
+    if let Some(menu) = self.open_context_menu.as_mut() {
+      menu.selected_idx = new_selected_idx;
+    }
 
     let Some(action) = action else {
       return;

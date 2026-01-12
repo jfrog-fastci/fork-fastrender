@@ -18,6 +18,7 @@ pub mod theme_parsing;
 // `worker` contains small render-thread utilities (stage heartbeat forwarding, thread builder), but
 // does **not** implement a separate UI worker loop.
 pub mod cancel;
+pub mod context_menu;
 pub mod frame_upload;
 pub mod history;
 pub mod messages;
