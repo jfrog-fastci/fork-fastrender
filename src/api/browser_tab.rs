@@ -1566,6 +1566,46 @@ impl BrowserTabHost {
               continue;
             }
 
+            // In real browsers, async external scripts can execute before later parser-inserted
+            // scripts when they load quickly (e.g. from cache). FastRender does not have true
+            // background network concurrency, so we yield back to the event loop so the async
+            // fetch + execution tasks can run before we resume parsing.
+            //
+            // Avoid yielding for scripts whose sources are not immediately available. Many tests
+            // register in-memory script sources *after* construction (before running the event
+            // loop), so yielding here would not help interleaving and would instead stall parsing
+            // on a script fetch that is guaranteed to fail.
+            let should_yield_for_async = {
+              let eligible_script_type = match spec.script_type {
+                // Classic async scripts can execute as soon as they load, so yield to the event loop
+                // so the fetch/execution tasks can run before parsing continues.
+                ScriptType::Classic => true,
+                // Module scripts behave similarly: async module scripts execute ASAP once their
+                // module graph is ready. Only yield when module scripts are enabled.
+                ScriptType::Module => self.js_execution_options.supports_module_scripts,
+                _ => false,
+              };
+              eligible_script_type
+                && spec.src_attr_present
+                && spec.async_attr
+                && spec
+                  .src
+                  .as_deref()
+                  .filter(|src| !src.is_empty())
+                  .is_some_and(|src| {
+                    // Avoid eager network fetches during parsing when the script source is not
+                    // immediately available. Many tests register in-memory script sources *after*
+                    // construction (before running the event loop), so only yield for "fast" sources.
+                    self
+                      .external_script_sources
+                      .lock()
+                      .unwrap_or_else(|poisoned| poisoned.into_inner())
+                      .contains_key(src)
+                      || Url::parse(src)
+                        .ok()
+                        .is_some_and(|parsed| parsed.scheme() == "file")
+                  })
+            };
             let base_url_at_discovery = spec.base_url.clone();
 
             let _script_id = with_active_streaming_parser(&state.parser, || {
@@ -1592,6 +1632,11 @@ impl BrowserTabHost {
             // Sync any DOM mutations from the executed script back into the streaming parser's live
             // DOM before resuming parsing.
             self.sync_host_dom_to_streaming_parser(&mut state)?;
+            if should_yield_for_async {
+              // Yield so the script's fetch/execution tasks can run before we parse further HTML (and
+              // potentially discover later parser-inserted scripts).
+              return Ok(Outcome::BudgetExhausted);
+            }
           }
           StreamingParserYield::Finished { document } => {
             // Parsing has completed; any subsequent scripts (deferred/async) should treat
@@ -2026,6 +2071,35 @@ impl BrowserTabHost {
           }
           continue;
         };
+
+        // Respect document CSP image restrictions, if present. When a policy blocks an image-like
+        // subresource, treat it as if the load immediately errored (i.e. do not start a fetch and
+        // do not register a load blocker).
+        if let Some(csp) = self.csp.as_ref() {
+          let document_origin = self.document_origin.as_ref();
+          match Url::parse(&url) {
+            Ok(parsed) => {
+              if !csp.allows_url(
+                crate::html::content_security_policy::CspDirective::ImgSrc,
+                document_origin,
+                &parsed,
+              ) {
+                if self.image_load_state.contains_key(&node_id) {
+                  clear_state.push(node_id);
+                }
+                continue;
+              }
+            }
+            Err(_) => {
+              // Be conservative: if we can't parse the URL for CSP matching, treat it as blocked
+              // when a CSP policy is present.
+              if self.image_load_state.contains_key(&node_id) {
+                clear_state.push(node_id);
+              }
+              continue;
+            }
+          }
+        }
 
         if self
           .image_load_state
@@ -10251,6 +10325,64 @@ html, body { margin: 0; padding: 0; }
   }
 
   #[test]
+  fn async_module_script_can_execute_before_later_parser_inserted_scripts() -> Result<()> {
+    // Fast async module scripts (e.g. cache hits) can execute before later parser-inserted scripts.
+    // Ensure the streaming parser yields to the event loop at async module script boundaries so the
+    // module graph fetch + execution tasks run before parsing continues.
+    let mut js_execution_options = JsExecutionOptions::default();
+    js_execution_options.supports_module_scripts = true;
+
+    let log = Rc::new(RefCell::new(Vec::<String>::new()));
+    let renderer = crate::FastRender::builder()
+      .dom_scripting_enabled(true)
+      .build()?;
+    let options = RenderOptions::default();
+    let document = BrowserDocumentDom2::new(renderer, "", options.clone())?;
+
+    let host = BrowserTabHost::new(
+      document,
+      Box::new(TestExecutor { log: Rc::clone(&log) }),
+      TraceHandle::default(),
+      js_execution_options,
+    )?;
+    let mut tab = BrowserTab {
+      trace: TraceHandle::default(),
+      trace_output: None,
+      diagnostics: None,
+      host,
+      event_loop: EventLoop::new(),
+      pending_frame: None,
+      history: TabHistory::new(),
+    };
+
+    let document_url = "https://example.com/".to_string();
+    tab
+      .host
+      .reset_scripting_state(Some(document_url.clone()), ReferrerPolicy::default())?;
+    tab.host.register_external_script_source(
+      "https://example.com/module.js".to_string(),
+      "MOD".to_string(),
+    );
+
+    let html = r#"<!doctype html>
+      <script type="module" async src="https://example.com/module.js"></script>
+      <script>CLASSIC</script>
+    "#;
+    tab.parse_html_streaming_and_schedule_scripts(html, Some(&document_url), &options)?;
+    tab.run_event_loop_until_idle(RunLimits::unbounded())?;
+
+    let entries = log.borrow().clone();
+    let module_idx = log_index(&entries, "module:MOD").expect("expected module script execution");
+    let classic_idx =
+      log_index(&entries, "script:CLASSIC").expect("expected classic script execution");
+    assert!(
+      module_idx < classic_idx,
+      "expected async module script to execute before later parser-inserted scripts; log={entries:?}"
+    );
+    Ok(())
+  }
+
+  #[test]
   fn template_contents_do_not_register_script_blocking_stylesheets_or_scripts() -> Result<()> {
     let temp = tempdir().map_err(Error::Io)?;
     std::fs::write(temp.path().join("style.css"), "body { color: red; }").map_err(Error::Io)?;
@@ -11979,6 +12111,103 @@ html, body { margin: 0; padding: 0; }
         .get_attribute(body, "data-load")
         .expect("get_attribute"),
       Some("1")
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn window_load_does_not_wait_for_csp_blocked_images() -> Result<()> {
+    #[derive(Debug, Default, Clone)]
+    struct RecordingFetcher {
+      calls: Arc<AtomicUsize>,
+    }
+
+    impl ResourceFetcher for RecordingFetcher {
+      fn fetch(&self, _url: &str) -> Result<FetchedResource> {
+        Err(Error::Other("RecordingFetcher::fetch should not be used".to_string()))
+      }
+
+      fn fetch_with_request(&self, req: FetchRequest<'_>) -> Result<FetchedResource> {
+        // If this is called, the page load logic attempted to fetch a resource. Record and return
+        // deterministic bytes so the test can assert the call count precisely.
+        let _ = req;
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        Ok(FetchedResource::new(
+          b"fake-bytes".to_vec(),
+          Some("application/octet-stream".to_string()),
+        ))
+      }
+    }
+
+    let fetcher = Arc::new(RecordingFetcher::default());
+    let html = r#"<!doctype html>
+      <head>
+        <meta http-equiv="Content-Security-Policy" content="img-src 'none'">
+      </head>
+      <body>
+        <img src="https://example.com/a.png">
+        <script>
+          document.addEventListener('DOMContentLoaded', function () {
+            document.body.setAttribute('data-dom', '1');
+          });
+          window.addEventListener('load', function () {
+            document.body.setAttribute('data-load', '1');
+          });
+        </script>
+      </body>"#;
+
+    let mut tab = BrowserTab::from_html_with_vmjs_and_document_url_and_fetcher(
+      html,
+      "https://example.com/",
+      RenderOptions::default(),
+      Arc::clone(&fetcher) as Arc<dyn ResourceFetcher>,
+    )?;
+
+    let body = tab.dom().body().expect("body should exist");
+
+    // DOMContentLoaded barrier + DOMContentLoaded.
+    {
+      let BrowserTab { host, event_loop, .. } = &mut tab;
+      assert!(event_loop.run_next_task(host)?); // barrier
+      assert!(event_loop.run_next_task(host)?); // DOMContentLoaded
+    }
+
+    assert_eq!(
+      tab.dom()
+        .get_attribute(body, "data-dom")
+        .expect("get_attribute"),
+      Some("1")
+    );
+    assert_eq!(
+      tab.dom()
+        .get_attribute(body, "data-load")
+        .expect("get_attribute"),
+      None
+    );
+
+    // CSP should suppress the image fetch; only the `load` task should remain.
+    assert_eq!(
+      fetcher.calls.load(Ordering::SeqCst),
+      0,
+      "expected CSP to prevent image fetch"
+    );
+
+    // `load` event dispatch.
+    {
+      let BrowserTab { host, event_loop, .. } = &mut tab;
+      assert!(event_loop.run_next_task(host)?);
+    }
+
+    assert_eq!(
+      tab.dom()
+        .get_attribute(body, "data-load")
+        .expect("get_attribute"),
+      Some("1")
+    );
+    assert_eq!(
+      fetcher.calls.load(Ordering::SeqCst),
+      0,
+      "expected CSP to prevent image fetch even after window load"
     );
     Ok(())
   }
