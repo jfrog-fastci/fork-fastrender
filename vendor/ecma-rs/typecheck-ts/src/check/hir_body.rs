@@ -8170,7 +8170,7 @@ impl<'a> Checker<'a> {
       return false;
     }
 
-    let Some(current_class) = self.current_class_def else {
+    let Some(current_class_type_def) = self.current_class_def else {
       if is_private {
         self.diagnostics.push(codes::PRIVATE_MEMBER_ACCESS.error(
           format!("Property '{prop}' is private and only accessible within class."),
@@ -8190,18 +8190,22 @@ impl<'a> Checker<'a> {
     let declaring = prop_data.declared_on;
     let declaring_is_value_def =
       declaring.is_some_and(|decl| self.value_defs.values().any(|value_def| *value_def == decl));
-    let current_class = if declaring_is_value_def {
-      self.value_defs.get(&current_class).copied().unwrap_or(current_class)
+    let current_class_for_chain_check = if declaring_is_value_def {
+      self
+        .value_defs
+        .get(&current_class_type_def)
+        .copied()
+        .unwrap_or(current_class_type_def)
     } else {
-      current_class
+      current_class_type_def
     };
 
     let allowed_by_class = if is_private {
-      declaring.is_none() || declaring == Some(current_class)
+      declaring.is_none() || declaring == Some(current_class_for_chain_check)
     } else {
       declaring.is_none()
-        || declaring == Some(current_class)
-        || declaring.is_some_and(|decl| self.is_subclass_of(current_class, decl))
+        || declaring == Some(current_class_for_chain_check)
+        || declaring.is_some_and(|decl| self.is_subclass_of(current_class_for_chain_check, decl))
     };
 
     if !allowed_by_class {
@@ -8235,8 +8239,53 @@ impl<'a> Checker<'a> {
     if is_protected
       && declaring.is_some()
       && matches!(receiver_kind, MemberAccessReceiver::Other)
-      && !self.receiver_is_derived_from_current_class(receiver_ty, current_class)
     {
+      fn uses_value_side_def(
+        checker: &Checker<'_>,
+        ty: TypeId,
+        seen: &mut HashSet<TypeId>,
+        depth: usize,
+      ) -> bool {
+        if depth > 64 {
+          return false;
+        }
+        let ty = checker.store.canon(ty);
+        if !seen.insert(ty) {
+          return false;
+        }
+        match checker.store.type_kind(ty) {
+          TypeKind::Ref { def, .. } => checker
+            .value_defs
+            .values()
+            .any(|value_def| *value_def == def),
+          TypeKind::Union(members) => members
+            .iter()
+            .copied()
+            .all(|member| uses_value_side_def(checker, member, seen, depth + 1)),
+          TypeKind::Intersection(members) => members
+            .iter()
+            .copied()
+            .any(|member| uses_value_side_def(checker, member, seen, depth + 1)),
+          _ => false,
+        }
+      }
+
+      let receiver_targets_value_side =
+        uses_value_side_def(self, receiver_ty, &mut HashSet::new(), 0);
+      let current_receiver_def = if receiver_targets_value_side {
+        self
+          .value_defs
+          .get(&current_class_type_def)
+          .copied()
+          .unwrap_or(current_class_type_def)
+      } else {
+        current_class_type_def
+      };
+
+      if self.receiver_is_derived_from_current_class(receiver_ty, current_receiver_def) {
+        return false;
+      }
+
       self
         .diagnostics
         .push(codes::PROTECTED_MEMBER_ACCESS.error(
