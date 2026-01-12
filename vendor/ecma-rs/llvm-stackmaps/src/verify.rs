@@ -166,6 +166,8 @@ pub fn verify_stackmaps_bytes(bytes: &[u8], opts: VerifyOptions) -> Verification
     report.records = maps.records.len();
     report.callsites = maps.callsites().len();
 
+    let record_function_addresses = map_record_function_addresses(&maps);
+
     // Best-effort mapping from record index to section byte offsets for actionable diagnostics.
     let record_offsets: Option<Vec<usize>> = match scan_record_offsets(bytes) {
         Ok(v) => {
@@ -205,7 +207,13 @@ pub fn verify_stackmaps_bytes(bytes: &[u8], opts: VerifyOptions) -> Verification
     verify_callsite_record_linkage(&maps, &mut report, &record_offsets);
 
     // Statepoint-specific invariants.
-    verify_statepoints(&maps, opts, &mut report, &record_offsets);
+    verify_statepoints(
+        &maps,
+        opts,
+        &mut report,
+        &record_offsets,
+        &record_function_addresses,
+    );
 
     report
 }
@@ -347,6 +355,7 @@ fn verify_statepoints(
     opts: VerifyOptions,
     report: &mut VerificationReport,
     record_offsets: &Option<Vec<usize>>,
+    record_function_addresses: &[Option<u64>],
 ) {
     for (record_index, rec) in maps.records.iter().enumerate() {
         if !looks_like_statepoint_record(rec) {
@@ -359,7 +368,9 @@ fn verify_statepoints(
                 message: "record has constant statepoint header but does not match expected statepoint layout".to_string(),
                 offset: record_offsets.as_ref().and_then(|v| v.get(record_index).copied()),
                 pc: Some(rec.callsite_pc),
-                function_address: None,
+                function_address: record_function_addresses
+                    .get(record_index)
+                    .and_then(|v| *v),
                 record_index: Some(record_index),
             });
             continue;
@@ -374,7 +385,9 @@ fn verify_statepoints(
                 message: format!("statepoint flags out of range: {} (expected 0..=3)", sp.flags),
                 offset: record_offsets.as_ref().and_then(|v| v.get(record_index).copied()),
                 pc: Some(rec.callsite_pc),
-                function_address: None,
+                function_address: record_function_addresses
+                    .get(record_index)
+                    .and_then(|v| *v),
                 record_index: Some(record_index),
             });
         }
@@ -389,17 +402,23 @@ fn verify_statepoints(
                 ),
                 offset: record_offsets.as_ref().and_then(|v| v.get(record_index).copied()),
                 pc: Some(rec.callsite_pc),
-                function_address: None,
+                function_address: record_function_addresses
+                    .get(record_index)
+                    .and_then(|v| *v),
                 record_index: Some(record_index),
             });
         }
 
         for (pair_idx, pair) in sp.gc_root_pairs().enumerate() {
+            let function_address = record_function_addresses
+                .get(record_index)
+                .and_then(|v| *v);
             verify_gc_root_location(
                 opts.pointer_width,
                 report,
                 record_offsets.as_ref().and_then(|v| v.get(record_index).copied()),
                 rec.callsite_pc,
+                function_address,
                 record_index,
                 pair_idx,
                 "base",
@@ -410,6 +429,7 @@ fn verify_statepoints(
                 report,
                 record_offsets.as_ref().and_then(|v| v.get(record_index).copied()),
                 rec.callsite_pc,
+                function_address,
                 record_index,
                 pair_idx,
                 "derived",
@@ -424,29 +444,28 @@ fn verify_gc_root_location(
     report: &mut VerificationReport,
     record_offset: Option<usize>,
     pc: u64,
+    function_address: Option<u64>,
     record_index: usize,
     pair_index: usize,
     role: &'static str,
     loc: &Location,
 ) {
     let kind = loc.kind();
-    let supported = matches!(
+    // For GC roots, the runtime expects an addressable location: either a register root or a stack
+    // slot / memory reference. Constants should never appear as relocation targets.
+    let supported_root_kind = matches!(
         kind,
-        LocationKind::Register
-            | LocationKind::Direct
-            | LocationKind::Indirect
-            | LocationKind::Constant
-            | LocationKind::ConstantIndex
+        LocationKind::Register | LocationKind::Direct | LocationKind::Indirect
     );
-    if !supported {
-        // This should be impossible because the parser only produces these variants, but keep the
-        // check defensive (and future-proof if LLVM adds new kinds).
+    if !supported_root_kind {
         report.failures.push(VerificationFailure {
-            kind: "unsupported_location_kind",
-            message: format!("unsupported location kind for gc root ({role}#{pair_index})"),
+            kind: "gc_root_unsupported_location_kind",
+            message: format!(
+                "gc root {role}#{pair_index} uses unsupported location kind {kind:?} ({loc})"
+            ),
             offset: record_offset,
             pc: Some(pc),
-            function_address: None,
+            function_address,
             record_index: Some(record_index),
         });
         return;
@@ -461,7 +480,7 @@ fn verify_gc_root_location(
             ),
             offset: record_offset,
             pc: Some(pc),
-            function_address: None,
+            function_address,
             record_index: Some(record_index),
         });
     }
@@ -766,4 +785,25 @@ fn scan_record_offsets(bytes: &[u8]) -> Result<Vec<usize>, ParseError> {
     }
 
     Ok(out)
+}
+
+fn map_record_function_addresses(maps: &StackMaps) -> Vec<Option<u64>> {
+    let mut out: Vec<Option<u64>> = vec![None; maps.records.len()];
+
+    let mut record_index: usize = 0;
+    for func in &maps.functions {
+        let record_count = match usize::try_from(func.record_count) {
+            Ok(v) => v,
+            Err(_) => break,
+        };
+        for _ in 0..record_count {
+            let Some(slot) = out.get_mut(record_index) else {
+                return out;
+            };
+            *slot = Some(func.address);
+            record_index += 1;
+        }
+    }
+
+    out
 }

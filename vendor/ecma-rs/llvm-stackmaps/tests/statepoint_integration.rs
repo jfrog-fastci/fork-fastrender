@@ -138,4 +138,24 @@ fn integration_statepoint_stackmap_lookup() {
         }
         other => panic!("unexpected root pair: {other:?}"),
     }
+
+    // Verify the full ELF->section extraction path used by the offline verifier binary.
+    let verifier = env!("CARGO_BIN_EXE_verify_stackmaps");
+    let out = Command::new(verifier)
+        .arg("--elf")
+        .arg(&obj)
+        .output()
+        .expect("run verify_stackmaps");
+    assert!(
+        out.status.success(),
+        "verify_stackmaps failed (status={})\nstdout={}\nstderr={}",
+        out.status,
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("\"ok\":true"),
+        "expected ok=true in verifier JSON output, got: {stdout}"
+    );
 }
