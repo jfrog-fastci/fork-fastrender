@@ -458,6 +458,14 @@ fn with_time_context<T>(
   Ok(f(ctx))
 }
 
+/// Returns the monotonic clock timestamp for the given `vm-js` heap/scope.
+///
+/// This is the same underlying clock used by `performance.now()` and `Date.now()` via the time
+/// bindings installed by [`install_time_bindings`].
+pub(crate) fn clock_now(scope: &Scope<'_>) -> Result<Duration, VmError> {
+  with_time_context(scope, |ctx| ctx.clock.now())
+}
+
 fn date_constructor_call_native(
   _vm: &mut Vm,
   scope: &mut Scope<'_>,

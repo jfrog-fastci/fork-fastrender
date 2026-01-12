@@ -40,6 +40,7 @@ use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::sync::OnceLock;
+use std::time::Duration;
 use url::Url;
 use vm_js::{
   GcObject, GcString, Heap, HeapLimits, HostSlots, JsRuntime as VmJsRuntime, ModuleGraph,
@@ -234,6 +235,8 @@ pub(crate) struct WindowRealmUserData {
   /// Cached JS `document` object for rooting event listener callbacks and mapping
   /// `EventTargetId::Document` back into JS.
   document_obj: Option<GcObject>,
+  console_counts: HashMap<String, u32>,
+  console_timers: HashMap<String, Duration>,
 }
 
 impl std::fmt::Debug for WindowRealmUserData {
@@ -274,6 +277,8 @@ impl WindowRealmUserData {
       events_dom_fallback: dom2::Document::new(QuirksMode::NoQuirks),
       window_obj: None,
       document_obj: None,
+      console_counts: HashMap::new(),
+      console_timers: HashMap::new(),
     }
   }
 
@@ -2128,6 +2133,234 @@ fn console_noop_native(
   _this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
+  Ok(Value::Undefined)
+}
+
+fn console_sink_from_callee_and_this(
+  scope: &mut Scope<'_>,
+  callee: GcObject,
+  this: Value,
+) -> Result<Option<ConsoleSink>, VmError> {
+  let slots = scope.heap().get_function_native_slots(callee)?;
+  let console_obj = match this {
+    Value::Object(obj) => obj,
+    _ => match slots.get(CONSOLE_THIS_SLOT).copied().unwrap_or(Value::Undefined) {
+      Value::Object(obj) => obj,
+      _ => return Ok(None),
+    },
+  };
+  let sink_key_s = match slots
+    .get(CONSOLE_SINK_KEY_SLOT)
+    .copied()
+    .unwrap_or(Value::Undefined)
+  {
+    Value::String(s) => s,
+    _ => return Ok(None),
+  };
+
+  let sink_id_key = PropertyKey::from_string(sink_key_s);
+  let id = match scope
+    .heap()
+    .object_get_own_data_property_value(console_obj, &sink_id_key)?
+  {
+    Some(Value::Number(n)) => n as u64,
+    _ => return Ok(None),
+  };
+
+  Ok(console_sinks().lock().get(&id).cloned())
+}
+
+fn console_assert_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let condition = args.get(0).copied().unwrap_or(Value::Undefined);
+  if scope.heap().to_boolean(condition)? {
+    return Ok(Value::Undefined);
+  }
+
+  let Some(sink) = console_sink_from_callee_and_this(scope, callee, this)? else {
+    return Ok(Value::Undefined);
+  };
+
+  if args.len() <= 1 {
+    let msg_s = scope.alloc_string("Assertion failed")?;
+    scope.push_root(Value::String(msg_s))?;
+    let msg = [Value::String(msg_s)];
+    sink(ConsoleMessageLevel::Error, scope.heap_mut(), &msg);
+    return Ok(Value::Undefined);
+  }
+
+  let prefix_s = scope.alloc_string("Assertion failed:")?;
+  scope.push_root(Value::String(prefix_s))?;
+
+  let mut out: Vec<Value> = Vec::new();
+  out
+    .try_reserve_exact(args.len())
+    .map_err(|_| VmError::OutOfMemory)?;
+  out.push(Value::String(prefix_s));
+  out.extend_from_slice(&args[1..]);
+  sink(ConsoleMessageLevel::Error, scope.heap_mut(), &out);
+
+  Ok(Value::Undefined)
+}
+
+fn console_count_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let sink = console_sink_from_callee_and_this(scope, callee, this)?;
+  let label = if args.is_empty() {
+    "default".to_string()
+  } else {
+    crate::js::vm_error_format::format_console_arguments_limited(scope.heap_mut(), &args[..1])
+  };
+
+  let count = if let Some(user_data) = vm.user_data_mut::<WindowRealmUserData>() {
+    let entry = user_data.console_counts.entry(label.clone()).or_insert(0);
+    *entry = entry.saturating_add(1);
+    *entry
+  } else {
+    0
+  };
+
+  if let Some(sink) = sink {
+    let msg = format!("{label}: {count}");
+    let msg_s = scope.alloc_string(&msg)?;
+    scope.push_root(Value::String(msg_s))?;
+    let msg_v = [Value::String(msg_s)];
+    sink(ConsoleMessageLevel::Log, scope.heap_mut(), &msg_v);
+  }
+
+  Ok(Value::Undefined)
+}
+
+fn console_time_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let sink = console_sink_from_callee_and_this(scope, callee, this)?;
+  let label = if args.is_empty() {
+    "default".to_string()
+  } else {
+    crate::js::vm_error_format::format_console_arguments_limited(scope.heap_mut(), &args[..1])
+  };
+
+  let Some(user_data) = vm.user_data_mut::<WindowRealmUserData>() else {
+    return Ok(Value::Undefined);
+  };
+
+  if user_data.console_timers.contains_key(&label) {
+    if let Some(sink) = sink {
+      let msg = format!("Timer '{label}' already exists");
+      let msg_s = scope.alloc_string(&msg)?;
+      scope.push_root(Value::String(msg_s))?;
+      let msg_v = [Value::String(msg_s)];
+      sink(ConsoleMessageLevel::Warn, scope.heap_mut(), &msg_v);
+    }
+    return Ok(Value::Undefined);
+  }
+
+  let start = crate::js::time::clock_now(scope)?;
+  user_data.console_timers.insert(label, start);
+  Ok(Value::Undefined)
+}
+
+fn console_time_end_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let sink = console_sink_from_callee_and_this(scope, callee, this)?;
+  let label = if args.is_empty() {
+    "default".to_string()
+  } else {
+    crate::js::vm_error_format::format_console_arguments_limited(scope.heap_mut(), &args[..1])
+  };
+
+  let Some(user_data) = vm.user_data_mut::<WindowRealmUserData>() else {
+    return Ok(Value::Undefined);
+  };
+
+  let Some(start) = user_data.console_timers.remove(&label) else {
+    if let Some(sink) = sink {
+      let msg = format!("Timer '{label}' does not exist");
+      let msg_s = scope.alloc_string(&msg)?;
+      scope.push_root(Value::String(msg_s))?;
+      let msg_v = [Value::String(msg_s)];
+      sink(ConsoleMessageLevel::Warn, scope.heap_mut(), &msg_v);
+    }
+    return Ok(Value::Undefined);
+  };
+
+  let end = crate::js::time::clock_now(scope)?;
+  let delta = end.checked_sub(start).unwrap_or(Duration::from_secs(0));
+  let ms = crate::js::time::duration_to_ms_f64(delta);
+  if let Some(sink) = sink {
+    let msg = format!("{label}: {:.3}ms", ms);
+    let msg_s = scope.alloc_string(&msg)?;
+    scope.push_root(Value::String(msg_s))?;
+    let msg_v = [Value::String(msg_s)];
+    sink(ConsoleMessageLevel::Log, scope.heap_mut(), &msg_v);
+  }
+
+  Ok(Value::Undefined)
+}
+
+fn console_dir_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Some(sink) = console_sink_from_callee_and_this(scope, callee, this)? else {
+    return Ok(Value::Undefined);
+  };
+
+  let fallback = [Value::Undefined];
+  let args = if args.is_empty() { &fallback } else { &args[..1] };
+  sink(ConsoleMessageLevel::Log, scope.heap_mut(), args);
+  Ok(Value::Undefined)
+}
+
+fn console_table_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Some(sink) = console_sink_from_callee_and_this(scope, callee, this)? else {
+    return Ok(Value::Undefined);
+  };
+
+  let fallback = [Value::Undefined];
+  let args = if args.is_empty() { &fallback } else { &args[..1] };
+  sink(ConsoleMessageLevel::Log, scope.heap_mut(), args);
   Ok(Value::Undefined)
 }
 
@@ -18855,6 +19088,12 @@ fn init_window_globals(
   scope.push_root(Value::Object(console_obj))?;
   let console_call_id = vm.register_native_call(console_call_native)?;
   let console_noop_call_id = vm.register_native_call(console_noop_native)?;
+  let console_assert_call_id = vm.register_native_call(console_assert_native)?;
+  let console_count_call_id = vm.register_native_call(console_count_native)?;
+  let console_time_call_id = vm.register_native_call(console_time_native)?;
+  let console_time_end_call_id = vm.register_native_call(console_time_end_native)?;
+  let console_dir_call_id = vm.register_native_call(console_dir_native)?;
+  let console_table_call_id = vm.register_native_call(console_table_native)?;
   let sink_id_key_s = scope.alloc_string(CONSOLE_SINK_ID_KEY)?;
   scope.push_root(Value::String(sink_id_key_s))?;
 
@@ -18897,6 +19136,26 @@ fn init_window_globals(
       Ok(Value::Object(func))
     };
 
+  let define_console_standard_method = |scope: &mut Scope<'_>,
+                                       call_id: vm_js::NativeFunctionId,
+                                       name: &str,
+                                       length: u32|
+   -> Result<Value, VmError> {
+    let slots = [
+      Value::Undefined,
+      Value::Object(console_obj),
+      Value::String(sink_id_key_s),
+    ];
+    let name_s = scope.alloc_string(name)?;
+    scope.push_root(Value::String(name_s))?;
+    let func = scope.alloc_native_function_with_slots(call_id, None, name_s, length, &slots)?;
+    scope
+      .heap_mut()
+      .object_set_prototype(func, Some(realm.intrinsics().function_prototype()))?;
+    scope.push_root(Value::Object(func))?;
+    Ok(Value::Object(func))
+  };
+
   let log_key = alloc_key(&mut scope, "log")?;
   let info_key = alloc_key(&mut scope, "info")?;
   let warn_key = alloc_key(&mut scope, "warn")?;
@@ -18907,6 +19166,12 @@ fn init_window_globals(
   let group_collapsed_key = alloc_key(&mut scope, "groupCollapsed")?;
   let group_end_key = alloc_key(&mut scope, "groupEnd")?;
   let clear_key = alloc_key(&mut scope, "clear")?;
+  let assert_key = alloc_key(&mut scope, "assert")?;
+  let count_key = alloc_key(&mut scope, "count")?;
+  let time_key = alloc_key(&mut scope, "time")?;
+  let time_end_key = alloc_key(&mut scope, "timeEnd")?;
+  let dir_key = alloc_key(&mut scope, "dir")?;
+  let table_key = alloc_key(&mut scope, "table")?;
 
   let log_func = define_console_method(&mut scope, "log", ConsoleMessageLevel::Log)?;
   let info_func = define_console_method(&mut scope, "info", ConsoleMessageLevel::Info)?;
@@ -18918,6 +19183,13 @@ fn init_window_globals(
   let group_collapsed_func = define_console_noop_method(&mut scope, "groupCollapsed")?;
   let group_end_func = define_console_noop_method(&mut scope, "groupEnd")?;
   let clear_func = define_console_noop_method(&mut scope, "clear")?;
+  let assert_func = define_console_standard_method(&mut scope, console_assert_call_id, "assert", 0)?;
+  let count_func = define_console_standard_method(&mut scope, console_count_call_id, "count", 0)?;
+  let time_func = define_console_standard_method(&mut scope, console_time_call_id, "time", 0)?;
+  let time_end_func =
+    define_console_standard_method(&mut scope, console_time_end_call_id, "timeEnd", 0)?;
+  let dir_func = define_console_standard_method(&mut scope, console_dir_call_id, "dir", 0)?;
+  let table_func = define_console_standard_method(&mut scope, console_table_call_id, "table", 0)?;
 
   scope.define_property(console_obj, log_key, data_desc(log_func))?;
   scope.define_property(console_obj, info_key, data_desc(info_func))?;
@@ -18929,6 +19201,12 @@ fn init_window_globals(
   scope.define_property(console_obj, group_collapsed_key, data_desc(group_collapsed_func))?;
   scope.define_property(console_obj, group_end_key, data_desc(group_end_func))?;
   scope.define_property(console_obj, clear_key, data_desc(clear_func))?;
+  scope.define_property(console_obj, assert_key, data_desc(assert_func))?;
+  scope.define_property(console_obj, count_key, data_desc(count_func))?;
+  scope.define_property(console_obj, time_key, data_desc(time_func))?;
+  scope.define_property(console_obj, time_end_key, data_desc(time_end_func))?;
+  scope.define_property(console_obj, dir_key, data_desc(dir_func))?;
+  scope.define_property(console_obj, table_key, data_desc(table_func))?;
 
   let console_sink_guard = config.console_sink.clone().map(ConsoleSinkGuard::new);
   if let Some(guard) = console_sink_guard.as_ref() {
@@ -22106,6 +22384,114 @@ mod tests {
       })()",
     )?;
     assert_eq!(ok, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn console_standard_methods_exist_and_behave() -> Result<(), VmError> {
+    let _lock = console_sink_test_lock()
+      .lock()
+      .expect("console sink test mutex should not be poisoned");
+    let url = "https://example.com/path";
+    let captured: Arc<Mutex<Vec<(ConsoleMessageLevel, String)>>> = Arc::new(Mutex::new(Vec::new()));
+    let captured_for_sink = captured.clone();
+
+    let sink: ConsoleSink = Arc::new(move |level, heap, args| {
+      let message = crate::js::vm_error_format::format_console_arguments_limited(heap, args);
+      captured_for_sink.lock().push((level, message));
+    });
+
+    let clock = Arc::new(VirtualClock::new());
+    let clock_for_config: Arc<dyn Clock> = clock.clone();
+
+    let mut config = WindowRealmConfig::new(url).with_clock(clock_for_config);
+    config.console_sink = Some(sink);
+    let mut realm = new_realm(config)?;
+
+    assert_eq!(
+      realm.exec_script(
+        "typeof console.assert === 'function' && \
+         typeof console.count === 'function' && \
+         typeof console.time === 'function' && \
+         typeof console.timeEnd === 'function' && \
+         typeof console.dir === 'function' && \
+         typeof console.table === 'function'"
+      )?,
+      Value::Bool(true)
+    );
+
+    captured.lock().clear();
+    realm.exec_script("console.assert(true, 'x')")?;
+    assert!(captured.lock().is_empty());
+
+    realm.exec_script("console.assert(false, 'x')")?;
+    assert_eq!(
+      &*captured.lock(),
+      &[(ConsoleMessageLevel::Error, "Assertion failed: x".to_string())]
+    );
+
+    captured.lock().clear();
+    realm.exec_script(
+      "console.count(); console.count(); console.count('x'); console.count('x'); console.count();"
+    )?;
+    assert_eq!(
+      &*captured.lock(),
+      &[
+        (ConsoleMessageLevel::Log, "default: 1".to_string()),
+        (ConsoleMessageLevel::Log, "default: 2".to_string()),
+        (ConsoleMessageLevel::Log, "x: 1".to_string()),
+        (ConsoleMessageLevel::Log, "x: 2".to_string()),
+        (ConsoleMessageLevel::Log, "default: 3".to_string()),
+      ]
+    );
+
+    // Methods must work even when extracted from the console object.
+    captured.lock().clear();
+    realm.exec_script("const c = console.count; c();")?;
+    assert_eq!(
+      &*captured.lock(),
+      &[(ConsoleMessageLevel::Log, "default: 4".to_string())]
+    );
+
+    // `console.time`/`console.timeEnd` must follow the same monotonic clock as `performance.now()`.
+    captured.lock().clear();
+    clock.set_now(Duration::from_millis(0));
+    realm.exec_script("console.time('t')")?;
+    assert!(captured.lock().is_empty());
+
+    clock.set_now(Duration::from_nanos(1_234_567_890)); // 1234.56789ms
+    realm.exec_script("console.timeEnd('t')")?;
+    assert_eq!(
+      &*captured.lock(),
+      &[(ConsoleMessageLevel::Log, "t: 1234.568ms".to_string())]
+    );
+
+    captured.lock().clear();
+    realm.exec_script("console.time('dup'); console.time('dup');")?;
+    assert_eq!(
+      &*captured.lock(),
+      &[(ConsoleMessageLevel::Warn, "Timer 'dup' already exists".to_string())]
+    );
+
+    captured.lock().clear();
+    realm.exec_script("console.timeEnd('missing')")?;
+    assert_eq!(
+      &*captured.lock(),
+      &[(ConsoleMessageLevel::Warn, "Timer 'missing' does not exist".to_string())]
+    );
+
+    captured.lock().clear();
+    let ok = realm.exec_script("try { console.dir({}); console.table({}); true } catch (e) { false }")?;
+    assert_eq!(ok, Value::Bool(true));
+    let calls = captured.lock().clone();
+    assert!(
+      calls.len() >= 2
+        && calls
+          .iter()
+          .all(|(level, _)| *level == ConsoleMessageLevel::Log),
+      "expected console.dir/table to emit log messages, got {calls:?}"
+    );
+
     Ok(())
   }
 
