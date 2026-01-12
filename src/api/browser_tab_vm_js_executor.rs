@@ -1,3 +1,4 @@
+use crate::debug::runtime::runtime_toggles;
 use crate::error::{Error, Result};
 use crate::js::console_sink::{fanout_console_sink, stderr_console_sink};
 use crate::js::time::update_time_bindings_clock;
@@ -46,10 +47,11 @@ struct PendingModuleEvaluation {
 fn console_stderr_enabled() -> bool {
   // Local debugging hook: allow printing JS `console.*` output to stderr even when render
   // diagnostics collection is disabled (kept opt-in to avoid noisy tests/CI logs).
-  let raw = std::env::var("FASTR_JS_CONSOLE_STDERR")
-    .ok()
+  let toggles = runtime_toggles();
+  let raw = toggles
+    .get("FASTR_JS_CONSOLE_STDERR")
     // Backwards-compatible alias used by some tooling/scripts.
-    .or_else(|| std::env::var("FASTR_CONSOLE_STDERR").ok());
+    .or_else(|| toggles.get("FASTR_CONSOLE_STDERR"));
   let Some(raw) = raw else {
     return false;
   };
@@ -1287,11 +1289,12 @@ fn ensure_promise_fulfilled(
 mod tests {
   use super::*;
   use crate::api::{BrowserTab, FastRender, RenderDiagnostics, RenderOptions};
+  use crate::debug::runtime::{with_runtime_toggles, RuntimeToggles};
   use crate::js::ImportMapLimits;
   use crate::resource::{FetchRequest, FetchedResource};
   use crate::text::font_db::FontConfig;
   use std::collections::HashMap;
-  use std::sync::{Mutex, OnceLock};
+  use std::sync::Mutex;
   use vm_js::PropertyKey;
 
   #[derive(Default)]
@@ -1390,129 +1393,112 @@ mod tests {
     }
   }
 
-  fn env_lock() -> &'static Mutex<()> {
-    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    LOCK.get_or_init(|| Mutex::new(()))
-  }
-
-  struct EnvVarGuard {
-    key: &'static str,
-    prev: Option<String>,
-  }
-
-  impl EnvVarGuard {
-    fn set(key: &'static str, value: &str) -> Self {
-      let prev = std::env::var(key).ok();
-      std::env::set_var(key, value);
-      Self { key, prev }
-    }
-  }
-
-  impl Drop for EnvVarGuard {
-    fn drop(&mut self) {
-      match &self.prev {
-        Some(value) => std::env::set_var(self.key, value),
-        None => std::env::remove_var(self.key),
-      }
-    }
-  }
-
   #[test]
   fn vm_js_browser_tab_executor_emits_console_to_stderr_when_env_flag_set() -> Result<()> {
-    let _lock = env_lock()
-      .lock()
-      .expect("env var test mutex should not be poisoned");
-    let _guard = EnvVarGuard::set("FASTR_CONSOLE_STDERR", "1");
+    with_runtime_toggles(
+      Arc::new(RuntimeToggles::from_map(HashMap::from([
+        ("FASTR_JS_CONSOLE_STDERR".to_string(), "1".to_string()),
+        ("FASTR_CONSOLE_STDERR".to_string(), "0".to_string()),
+      ]))),
+      || {
+        // Diagnostics default to off; with `FASTR_JS_CONSOLE_STDERR=1` we should still install a
+        // console sink so output is visible (and the call must not crash).
+        let mut document = BrowserDocumentDom2::from_html(
+          "<!doctype html><html></html>",
+          RenderOptions::default(),
+        )?;
+        let current_script = CurrentScriptStateHandle::default();
+        let mut executor = VmJsBrowserTabExecutor::new();
+        executor.reset_for_navigation(
+          Some("https://example.com/doc.html"),
+          &mut document,
+          &current_script,
+          JsExecutionOptions::default(),
+        )?;
 
-    // Diagnostics default to off; with `FASTR_CONSOLE_STDERR=1` we should still install a console
-    // sink so output is visible (and the call must not crash).
-    let mut document =
-      BrowserDocumentDom2::from_html("<!doctype html><html></html>", RenderOptions::default())?;
-    let current_script = CurrentScriptStateHandle::default();
-    let mut executor = VmJsBrowserTabExecutor::new();
-    executor.reset_for_navigation(
-      Some("https://example.com/doc.html"),
-      &mut document,
-      &current_script,
-      JsExecutionOptions::default(),
-    )?;
+        let realm = executor.realm.as_mut().expect("realm initialized");
+        let has_sink = realm
+          .exec_script("typeof console.__fastrender_console_sink_id === 'number'")
+          .map_err(|err| Error::Other(err.to_string()))?;
+        assert_eq!(
+          has_sink,
+          Value::Bool(true),
+          "expected env flag to install a console sink even when diagnostics are disabled"
+        );
 
-    let realm = executor.realm.as_mut().expect("realm initialized");
-    let has_sink = realm
-      .exec_script("typeof console.__fastrender_console_sink_id === 'number'")
-      .map_err(|err| Error::Other(err.to_string()))?;
-    assert_eq!(
-      has_sink,
-      Value::Bool(true),
-      "expected env flag to install a console sink even when diagnostics are disabled"
-    );
+        realm
+          .exec_script("console.log('x')")
+          .map_err(|err| Error::Other(err.to_string()))?;
 
-    realm
-      .exec_script("console.log('x')")
-      .map_err(|err| Error::Other(err.to_string()))?;
-
-    Ok(())
+        Ok(())
+      },
+    )
   }
 
   #[test]
   fn vm_js_browser_tab_executor_records_formatted_console_messages_when_diagnostics_enabled(
   ) -> Result<()> {
-    let _lock = env_lock()
-      .lock()
-      .expect("env var test mutex should not be poisoned");
-    let _guard = EnvVarGuard::set("FASTR_CONSOLE_STDERR", "0");
+    with_runtime_toggles(
+      Arc::new(RuntimeToggles::from_map(HashMap::from([
+        ("FASTR_JS_CONSOLE_STDERR".to_string(), "0".to_string()),
+        ("FASTR_CONSOLE_STDERR".to_string(), "1".to_string()),
+      ]))),
+      || {
+        let mut document = BrowserDocumentDom2::from_html(
+          "<!doctype html><html></html>",
+          RenderOptions::default(),
+        )?;
+        let diag = Arc::new(Mutex::new(RenderDiagnostics::default()));
+        document
+          .renderer_mut()
+          .set_diagnostics_sink(Some(Arc::clone(&diag)));
 
-    let mut document =
-      BrowserDocumentDom2::from_html("<!doctype html><html></html>", RenderOptions::default())?;
-    let diag = Arc::new(Mutex::new(RenderDiagnostics::default()));
-    document
-      .renderer_mut()
-      .set_diagnostics_sink(Some(Arc::clone(&diag)));
+        let current_script = CurrentScriptStateHandle::default();
+        let mut executor = VmJsBrowserTabExecutor::new();
+        let mut event_loop = crate::js::EventLoop::<BrowserTabHost>::new();
+        executor.reset_for_navigation(
+          Some("https://example.com/doc.html"),
+          &mut document,
+          &current_script,
+          JsExecutionOptions::default(),
+        )?;
 
-    let current_script = CurrentScriptStateHandle::default();
-    let mut executor = VmJsBrowserTabExecutor::new();
-    let mut event_loop = crate::js::EventLoop::<BrowserTabHost>::new();
-    executor.reset_for_navigation(
-      Some("https://example.com/doc.html"),
-      &mut document,
-      &current_script,
-      JsExecutionOptions::default(),
-    )?;
+        assert!(
+          diag.lock().unwrap().console_messages.is_empty(),
+          "expected console messages to start empty"
+        );
 
-    assert!(
-      diag.lock().unwrap().console_messages.is_empty(),
-      "expected console messages to start empty"
-    );
+        let script_text = "console.log('[%s %d %% %cX]', 'hi', 3, 'color:red');";
+        let spec = ScriptElementSpec {
+          base_url: Some("https://example.com/doc.html".to_string()),
+          src: None,
+          src_attr_present: false,
+          inline_text: script_text.to_string(),
+          async_attr: false,
+          force_async: false,
+          defer_attr: false,
+          nomodule_attr: false,
+          crossorigin: None,
+          integrity_attr_present: false,
+          integrity: None,
+          referrer_policy: None,
+          fetch_priority: None,
+          parser_inserted: true,
+          node_id: None,
+          script_type: crate::js::ScriptType::Classic,
+        };
+        executor.execute_classic_script(script_text, &spec, None, &mut document, &mut event_loop)?;
 
-    let script_text = "console.log('[%s %d %% %cX]', 'hi', 3, 'color:red');";
-    let spec = ScriptElementSpec {
-      base_url: Some("https://example.com/doc.html".to_string()),
-      src: None,
-      src_attr_present: false,
-      inline_text: script_text.to_string(),
-      async_attr: false,
-      force_async: false,
-      defer_attr: false,
-      nomodule_attr: false,
-      crossorigin: None,
-      integrity_attr_present: false,
-      integrity: None,
-      referrer_policy: None,
-      fetch_priority: None,
-      parser_inserted: true,
-      node_id: None,
-      script_type: crate::js::ScriptType::Classic,
-    };
-    executor.execute_classic_script(script_text, &spec, None, &mut document, &mut event_loop)?;
-
-    let messages = diag.lock().unwrap().console_messages.clone();
-    assert!(
-      !messages.is_empty(),
-      "expected console message to be recorded when diagnostics are enabled"
-    );
-    assert_eq!(messages[0].level, ConsoleMessageLevel::Log);
-    assert_eq!(messages[0].message, "[hi 3 % X]");
-    Ok(())
+        let messages = diag.lock().unwrap().console_messages.clone();
+        assert!(
+          !messages.is_empty(),
+          "expected console message to be recorded when diagnostics are enabled"
+        );
+        assert_eq!(messages[0].level, ConsoleMessageLevel::Log);
+        assert_eq!(messages[0].message, "[hi 3 % X]");
+        Ok(())
+      },
+    )
   }
 
   #[test]
