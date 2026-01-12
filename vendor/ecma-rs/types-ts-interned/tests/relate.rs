@@ -1,3 +1,4 @@
+use ordered_float::OrderedFloat;
 use types_ts_interned::Accessibility;
 use types_ts_interned::DefId;
 use types_ts_interned::Indexer;
@@ -2025,6 +2026,28 @@ fn string_literal_not_assignable_to_template_literal_pattern() {
   }));
 
   assert!(!ctx.is_assignable(bar, template));
+}
+
+#[test]
+fn string_literal_matches_template_number_literal_js_format() {
+  let store = TypeStore::new();
+  let ctx = RelateCtx::new(store.clone(), default_options());
+
+  let ok = store.intern_type(TypeKind::StringLiteral(store.intern_name_ref("1e+21")));
+  let bad = store.intern_type(TypeKind::StringLiteral(store.intern_name_ref(
+    "1000000000000000000000",
+  )));
+
+  let template = store.intern_type(TypeKind::TemplateLiteral(TemplateLiteralType {
+    head: "".into(),
+    spans: vec![TemplateChunk {
+      ty: store.intern_type(TypeKind::NumberLiteral(OrderedFloat::from(1e21))),
+      literal: "".into(),
+    }],
+  }));
+
+  assert!(ctx.is_assignable(ok, template));
+  assert!(!ctx.is_assignable(bad, template));
 }
 
 #[test]

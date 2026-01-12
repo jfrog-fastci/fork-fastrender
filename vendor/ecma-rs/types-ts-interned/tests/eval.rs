@@ -2899,6 +2899,75 @@ fn template_literal_undefined_is_finite() {
 }
 
 #[test]
+fn template_literal_number_literal_uses_js_stringification_large_exponent() {
+  let store = TypeStore::new();
+
+  let literal = store.intern_type(TypeKind::NumberLiteral(OrderedFloat::from(1e21)));
+  let tpl = store.intern_type(TypeKind::TemplateLiteral(TemplateLiteralType {
+    head: "".into(),
+    spans: vec![TemplateChunk {
+      literal: "".into(),
+      ty: literal,
+    }],
+  }));
+
+  let default_expander = MockExpander::default();
+  let mut eval = evaluator(store.clone(), &default_expander);
+  let result = eval.evaluate(tpl);
+
+  let TypeKind::StringLiteral(id) = store.type_kind(result) else {
+    panic!("expected string literal, got {:?}", store.type_kind(result));
+  };
+  assert_eq!(store.name(id), "1e+21".to_string());
+}
+
+#[test]
+fn template_literal_number_literal_uses_js_stringification_small_exponent() {
+  let store = TypeStore::new();
+
+  let literal = store.intern_type(TypeKind::NumberLiteral(OrderedFloat::from(1e-7)));
+  let tpl = store.intern_type(TypeKind::TemplateLiteral(TemplateLiteralType {
+    head: "".into(),
+    spans: vec![TemplateChunk {
+      literal: "".into(),
+      ty: literal,
+    }],
+  }));
+
+  let default_expander = MockExpander::default();
+  let mut eval = evaluator(store.clone(), &default_expander);
+  let result = eval.evaluate(tpl);
+
+  let TypeKind::StringLiteral(id) = store.type_kind(result) else {
+    panic!("expected string literal, got {:?}", store.type_kind(result));
+  };
+  assert_eq!(store.name(id), "1e-7".to_string());
+}
+
+#[test]
+fn template_literal_number_literal_negative_zero_formats_as_zero() {
+  let store = TypeStore::new();
+
+  let literal = store.intern_type(TypeKind::NumberLiteral(OrderedFloat::from(-0.0)));
+  let tpl = store.intern_type(TypeKind::TemplateLiteral(TemplateLiteralType {
+    head: "".into(),
+    spans: vec![TemplateChunk {
+      literal: "".into(),
+      ty: literal,
+    }],
+  }));
+
+  let default_expander = MockExpander::default();
+  let mut eval = evaluator(store.clone(), &default_expander);
+  let result = eval.evaluate(tpl);
+
+  let TypeKind::StringLiteral(id) = store.type_kind(result) else {
+    panic!("expected string literal, got {:?}", store.type_kind(result));
+  };
+  assert_eq!(store.name(id), "0".to_string());
+}
+
+#[test]
 fn template_literal_expands_boolean_in_mixed_template() {
   let store = TypeStore::new();
   let primitives = store.primitive_ids();

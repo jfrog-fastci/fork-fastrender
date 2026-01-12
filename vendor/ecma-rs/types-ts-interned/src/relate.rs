@@ -5,6 +5,7 @@ use crate::eval::EvaluatorCaches;
 use crate::eval::ExpandedType;
 use crate::eval::TypeEvaluator;
 use crate::eval::TypeExpander as EvalTypeExpander;
+use crate::number_format::js_number_to_string;
 use crate::shape::Indexer;
 use crate::shape::Property;
 use crate::shape::Shape;
@@ -1761,7 +1762,7 @@ impl<'a> RelateCtx<'a> {
         (len <= max_len && len <= max_total).then_some(vec![self.store.name(id)])
       }
       TypeKind::NumberLiteral(num) => {
-        let s = num.0.to_string();
+        let s = js_number_to_string(num.0);
         let len = s.len();
         (len <= max_len && len <= max_total).then_some(vec![s])
       }

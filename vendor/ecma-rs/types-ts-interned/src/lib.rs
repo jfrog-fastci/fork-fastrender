@@ -59,6 +59,7 @@ mod gc_trace;
 mod ids;
 mod kind;
 mod layout;
+mod number_format;
 mod options;
 mod relate;
 mod shape;

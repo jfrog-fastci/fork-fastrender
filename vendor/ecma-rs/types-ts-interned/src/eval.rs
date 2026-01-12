@@ -3,6 +3,7 @@ use crate::ids::{DefId, ObjectId, TypeId, TypeParamId};
 use crate::kind::{
   IntrinsicKind, MappedModifier, MappedType, TemplateChunk, TemplateLiteralType, TypeKind,
 };
+use crate::number_format::js_number_to_string;
 use crate::relate::RelateCtx;
 use crate::shape::{PropData, PropKey, Property, Shape};
 use crate::store::TypeStore;
@@ -2929,7 +2930,7 @@ impl<'a, E: TypeExpander> TypeEvaluator<'a, E> {
         }
       }
       TypeKind::NumberLiteral(num) => {
-        let value = num.0.to_string();
+        let value = js_number_to_string(num.0);
         if value.len() > self.limits.max_template_string_len
           || value.len() > self.limits.max_template_total_bytes
         {
