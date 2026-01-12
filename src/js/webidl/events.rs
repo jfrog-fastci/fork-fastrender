@@ -230,15 +230,15 @@ impl EventWrapper {
       rt.alloc_function_value(move |rt, this, _args| {
         let id = get_event_id(rt, this, key_event_id)?;
         with_active_event_result(rt, &active, id, |rt, event| {
-           let arr = rt.alloc_array()?;
-           let arr_root = rt.heap_mut().add_root(arr)?;
-           let res = (|| {
-             let composed = event.composed_path();
-             for (idx, target) in composed.iter().copied().enumerate() {
-               let key = rt.property_key_from_u32(idx as u32)?;
-               let value = match target {
-                 EventTargetId::Window => window_target,
-                 EventTargetId::Document => document_target,
+          let arr = rt.alloc_array()?;
+          let arr_root = rt.heap_mut().add_root(arr)?;
+          let res = (|| {
+            let targets = event.composed_path();
+            for (idx, target) in targets.iter().copied().enumerate() {
+              let key = rt.property_key_from_u32(idx as u32)?;
+              let value = match target {
+                EventTargetId::Window => window_target,
+                EventTargetId::Document => document_target,
                 EventTargetId::Node(node_id) => Value::Number(node_id.index() as f64),
                 EventTargetId::Opaque(_) => Value::Null,
               };

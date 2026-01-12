@@ -3492,3 +3492,123 @@ fn composed_path_hides_closed_shadow_tree_from_outside() {
     "closed shadow tree target should be hidden from outside listeners"
   );
 }
+
+#[test]
+fn composed_path_is_stable_across_capture_target_and_bubble_for_open_shadow_roots() {
+  let html = "<!doctype html><div id=host><template shadowroot=open><span id=inner></span></template></div>";
+  let doc = crate::dom2::parse_html(html).unwrap();
+  let host = find_node_by_id(&doc, doc.root(), "host").expect("host not found");
+  let shadow_root = find_shadow_root(&doc, host).expect("shadow root not found");
+  let inner = find_node_by_id(&doc, shadow_root, "inner").expect("inner not found");
+
+  let registry = EventListenerRegistry::new();
+  let type_ = "x";
+
+  let id_window_capture = ListenerId::new(1);
+  let id_document_capture = ListenerId::new(2);
+  let id_host_capture = ListenerId::new(3);
+  let id_shadow_root_capture = ListenerId::new(4);
+  let id_inner_capture = ListenerId::new(5);
+  let id_inner_bubble = ListenerId::new(6);
+  let id_shadow_root_bubble = ListenerId::new(7);
+  let id_host_bubble = ListenerId::new(8);
+  let id_document_bubble = ListenerId::new(9);
+  let id_window_bubble = ListenerId::new(10);
+
+  for (id, target, capture) in [
+    (id_window_capture, EventTargetId::Window, true),
+    (id_document_capture, EventTargetId::Document, true),
+    (id_host_capture, EventTargetId::Node(host), true),
+    (id_shadow_root_capture, EventTargetId::Node(shadow_root), true),
+    (id_inner_capture, EventTargetId::Node(inner), true),
+    (id_inner_bubble, EventTargetId::Node(inner), false),
+    (id_shadow_root_bubble, EventTargetId::Node(shadow_root), false),
+    (id_host_bubble, EventTargetId::Node(host), false),
+    (id_document_bubble, EventTargetId::Document, false),
+    (id_window_bubble, EventTargetId::Window, false),
+  ] {
+    assert!(registry.add_event_listener(
+      target,
+      type_,
+      id,
+      AddEventListenerOptions {
+        capture,
+        ..Default::default()
+      }
+    ));
+  }
+
+  let mut invoker = TraceInvoker {
+    labels: HashMap::from([
+      (id_window_capture, "window_capture"),
+      (id_document_capture, "document_capture"),
+      (id_host_capture, "host_capture"),
+      (id_shadow_root_capture, "shadow_root_capture"),
+      (id_inner_capture, "inner_capture"),
+      (id_inner_bubble, "inner_bubble"),
+      (id_shadow_root_bubble, "shadow_root_bubble"),
+      (id_host_bubble, "host_bubble"),
+      (id_document_bubble, "document_bubble"),
+      (id_window_bubble, "window_bubble"),
+    ]),
+    calls: Vec::new(),
+  };
+
+  let mut event = Event::new(
+    type_,
+    EventInit {
+      bubbles: true,
+      composed: true,
+      ..Default::default()
+    },
+  );
+  dispatch_event(
+    EventTargetId::Node(inner),
+    &mut event,
+    &doc,
+    &registry,
+    &mut invoker,
+  )
+  .unwrap();
+
+  assert!(
+    invoker.calls.iter().any(|c| c.event_phase == EventPhase::Capturing),
+    "expected at least one capturing-phase invocation"
+  );
+  assert!(
+    invoker.calls.iter().any(|c| c.event_phase == EventPhase::AtTarget),
+    "expected at least one at-target invocation"
+  );
+  assert!(
+    invoker.calls.iter().any(|c| c.event_phase == EventPhase::Bubbling),
+    "expected at least one bubbling-phase invocation"
+  );
+
+  let first = invoker
+    .calls
+    .first()
+    .expect("expected at least one listener invocation");
+  let baseline = first.composed_path.clone();
+  assert_eq!(
+    baseline.first().copied(),
+    Some(EventTargetId::Node(inner)),
+    "expected composedPath to start at the original target for open shadow roots"
+  );
+  assert!(
+    baseline.contains(&EventTargetId::Node(shadow_root)),
+    "expected composedPath to include the shadow root for open mode"
+  );
+  assert_eq!(
+    baseline.last().copied(),
+    Some(EventTargetId::Window),
+    "expected composedPath to end at Window"
+  );
+
+  for call in &invoker.calls {
+    assert_eq!(
+      call.composed_path, baseline,
+      "composedPath should be stable across capture/target/bubble for open shadow roots (call: {})",
+      call.label
+    );
+  }
+}

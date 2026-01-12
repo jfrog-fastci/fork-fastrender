@@ -481,6 +481,33 @@ fn install_event_prototype(
     })?
   };
 
+  let composed_path = {
+    let ctx = ctx.clone();
+    rt.alloc_function_value(move |rt, this, _args| {
+      with_event_ref(
+        rt,
+        &ctx,
+        this,
+        "Event.composedPath: receiver is not an Event",
+        |rt, event| {
+          let targets = event.composed_path();
+          let arr = rt.alloc_array()?;
+          let arr_root = rt.heap_mut().add_root(arr)?;
+          let res = (|| {
+            for (idx, target) in targets.iter().copied().enumerate() {
+              let key = rt.property_key_from_u32(idx as u32)?;
+              let value = ctx.object_for_event_target(rt, Some(target))?;
+              rt.define_data_property(arr, key, value, true)?;
+            }
+            Ok(arr)
+          })();
+          rt.heap_mut().remove_root(arr_root);
+          res
+        },
+      )
+    })?
+  };
+
   let get_type = {
     let ctx = ctx.clone();
     rt.alloc_function_value(move |rt, this, _args| {
@@ -584,9 +611,11 @@ fn install_event_prototype(
   let stop_key = prop_key_str(rt, "stopPropagation")?;
   let stop_immediate_key = prop_key_str(rt, "stopImmediatePropagation")?;
   let prevent_key = prop_key_str(rt, "preventDefault")?;
+  let composed_path_key = prop_key_str(rt, "composedPath")?;
   rt.define_data_property(proto, stop_key, stop, false)?;
   rt.define_data_property(proto, stop_immediate_key, stop_immediate, false)?;
   rt.define_data_property(proto, prevent_key, prevent, false)?;
+  rt.define_data_property(proto, composed_path_key, composed_path, false)?;
 
   define_getter(rt, proto, "type", get_type)?;
   define_getter(rt, proto, "bubbles", get_bubbles)?;
