@@ -129,8 +129,13 @@ assert.sameValue = function (actual, expected) {
   // It also calls `assert.sameValue` to ensure the harness prelude created a *global* `assert`
   // binding visible from all modules (not just the entry module).
   fs::write(
+    test_dir.join("dep2.js"),
+    "assert.sameValue(1, 1);\nexport const z = 1;\n",
+  )
+  .unwrap();
+  fs::write(
     test_dir.join("dep.js"),
-    "assert.sameValue(1, 1);\nexport const y = 1;\n",
+    "import { z } from './dep2.js';\nassert.sameValue(z, 1);\nexport const y = z;\n",
   )
   .unwrap();
 
