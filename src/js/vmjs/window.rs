@@ -1376,6 +1376,9 @@ mod tests {
     let out = host.exec_script("document.createElement('div') instanceof EventTarget")?;
     assert_eq!(out, Value::Bool(true));
 
+    let out = host.exec_script("new AbortController().signal instanceof EventTarget")?;
+    assert_eq!(out, Value::Bool(true));
+
     Ok(())
   }
 
