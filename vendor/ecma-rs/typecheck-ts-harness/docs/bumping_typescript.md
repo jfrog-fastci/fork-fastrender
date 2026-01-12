@@ -111,6 +111,11 @@ bash scripts/cargo_agent.sh run -p typecheck-ts-harness --release -- \
   --manifest typecheck-ts-harness/fixtures/difftsc/manifest.toml
 ```
 
+Note: CI runs `typecheck-ts-harness lint-baselines` which checks that committed
+baseline JSON includes `metadata.typescript_version` matching the pinned version
+from `typecheck-ts-harness/package-lock.json`. If you bump TypeScript but forget
+to regenerate baselines, CI will fail with a mismatch error.
+
 ### 6) Verify (and/or update) conformance snapshots
 
 Snapshot integrity checks compare *stored snapshots* against *live tsc* for the

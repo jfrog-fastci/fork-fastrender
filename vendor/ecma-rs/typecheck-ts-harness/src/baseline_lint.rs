@@ -2,6 +2,7 @@ use crate::diagnostic_norm::sort_diagnostics;
 use crate::strict_native::{StrictNativeBaseline, STRICT_NATIVE_BASELINE_SCHEMA_VERSION};
 use crate::tsc::{TscDiagnostics, TSC_BASELINE_SCHEMA_VERSION};
 use anyhow::{Context, Result};
+use serde_json::Value;
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
@@ -23,6 +24,9 @@ pub fn lint_baselines() -> Result<()> {
     );
   }
 
+  let pinned_typescript_version = pinned_typescript_version(manifest_dir)
+    .context("lint-baselines: read pinned TypeScript version from package-lock.json")?;
+
   let mut files: Vec<(String, PathBuf)> = WalkDir::new(&baselines_root)
     .into_iter()
     .filter_map(|entry| entry.ok())
@@ -43,7 +47,7 @@ pub fn lint_baselines() -> Result<()> {
   let mut errors: Vec<String> = Vec::new();
   for (rel, path) in files {
     let raw = std::fs::read_to_string(&path).with_context(|| format!("{rel}: read baseline"))?;
-    let file_errors = lint_baseline_file(&baselines_root, &path, &raw);
+    let file_errors = lint_baseline_file(&baselines_root, &path, &raw, &pinned_typescript_version);
     for err in file_errors {
       errors.push(format!("{rel}: {err}"));
     }
@@ -60,7 +64,58 @@ pub fn lint_baselines() -> Result<()> {
   );
 }
 
-fn lint_baseline_file(baselines_root: &Path, path: &Path, raw: &str) -> Vec<String> {
+fn pinned_typescript_version(manifest_dir: &Path) -> Result<String> {
+  let lock_path = manifest_dir.join("package-lock.json");
+  let raw =
+    std::fs::read_to_string(&lock_path).with_context(|| format!("read {}", lock_path.display()))?;
+  let lock: Value =
+    serde_json::from_str(&raw).with_context(|| format!("parse {}", lock_path.display()))?;
+
+  // npm lockfile v3 (npm 7+) layout:
+  //
+  // "packages": {
+  //   "": { "dependencies": { "typescript": "5.x.y" } },
+  //   "node_modules/typescript": { "version": "5.x.y", ... }
+  // }
+  //
+  // Use the pinned dependency string from the root package entry when present;
+  // it matches `typecheck-ts-harness/package.json`.
+  if let Some(version) = lock
+    .pointer("/packages//dependencies/typescript")
+    .and_then(|v| v.as_str())
+  {
+    return Ok(version.to_string());
+  }
+
+  // Fallback for older lockfile layouts where the installed package version is
+  // recorded under `dependencies.typescript.version`.
+  if let Some(version) = lock
+    .pointer("/dependencies/typescript/version")
+    .and_then(|v| v.as_str())
+  {
+    return Ok(version.to_string());
+  }
+
+  // Last resort: use the resolved `node_modules/typescript` version if present.
+  if let Some(version) = lock
+    .pointer("/packages/node_modules~1typescript/version")
+    .and_then(|v| v.as_str())
+  {
+    return Ok(version.to_string());
+  }
+
+  anyhow::bail!(
+    "failed to locate TypeScript version in {}; expected npm lockfile v3 (packages[\"\"] deps) or v1/v2 (dependencies.typescript.version)",
+    lock_path.display()
+  )
+}
+
+fn lint_baseline_file(
+  baselines_root: &Path,
+  path: &Path,
+  raw: &str,
+  pinned_typescript_version: &str,
+) -> Vec<String> {
   let rel = path
     .strip_prefix(baselines_root)
     .unwrap_or(path)
@@ -71,11 +126,11 @@ fn lint_baseline_file(baselines_root: &Path, path: &Path, raw: &str) -> Vec<Stri
     "strict-native" => lint_strict_native_baseline(raw),
     // Everything else under `baselines/**` currently uses the `TscDiagnostics`
     // snapshot schema (difftsc + conformance snapshots).
-    _ => lint_tsc_diagnostics_baseline(raw),
+    _ => lint_tsc_diagnostics_baseline(raw, pinned_typescript_version),
   }
 }
 
-fn lint_tsc_diagnostics_baseline(raw: &str) -> Vec<String> {
+fn lint_tsc_diagnostics_baseline(raw: &str, pinned_typescript_version: &str) -> Vec<String> {
   let baseline: TscDiagnostics = match serde_json::from_str(raw) {
     Ok(baseline) => baseline,
     Err(err) => {
@@ -92,13 +147,16 @@ fn lint_tsc_diagnostics_baseline(raw: &str) -> Vec<String> {
     ));
   }
 
-  let ts_version_ok = baseline
-    .metadata
-    .typescript_version
-    .as_deref()
-    .is_some_and(|v| !v.trim().is_empty());
-  if !ts_version_ok {
-    errors.push("metadata.typescript_version missing or empty".to_string());
+  match baseline.metadata.typescript_version.as_deref() {
+    Some(v) if !v.trim().is_empty() => {
+      let v = v.trim();
+      if v != pinned_typescript_version {
+        errors.push(format!(
+          "metadata.typescript_version mismatch (expected {pinned_typescript_version}, got {v})"
+        ));
+      }
+    }
+    _ => errors.push("metadata.typescript_version missing or empty".to_string()),
   }
 
   if !is_tsc_diagnostics_sorted(&baseline.diagnostics) {
