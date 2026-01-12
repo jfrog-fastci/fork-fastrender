@@ -1,0 +1,83 @@
+## Expected difftsc failures.
+##
+## The difftsc suite is intended to be runnable without passing `--manifest`:
+## `difftsc` automatically loads this file when present.
+##
+## Keep this list small and remove entries as the checker reaches parity with tsc.
+##
+## IMPORTANT: ids include the suite prefix (`difftsc/...`).
+
+[[expectations]]
+id = "difftsc/await_using_valid"
+status = "xfail"
+reason = "await using / AsyncDisposable parity gap"
+
+[[expectations]]
+id = "difftsc/function_namespace_export"
+status = "xfail"
+reason = "namespace/function merge diagnostic parity gap"
+
+[[expectations]]
+id = "difftsc/jsx_tuple_children"
+status = "xfail"
+reason = "JSX tuple children typing parity gap"
+
+[[expectations]]
+id = "difftsc/module_resolution_classic"
+status = "xfail"
+reason = "Classic moduleResolution + type facts parity gap"
+
+[[expectations]]
+id = "difftsc/narrowing"
+status = "xfail"
+reason = "type narrowing parity gap"
+
+[[expectations]]
+id = "difftsc/triple_slash_lib_imported"
+status = "xfail"
+reason = "triple-slash lib reference typing parity gap"
+
+[[expectations]]
+id = "difftsc/jsx_element_type_constraint"
+status = "xfail"
+reason = "JSX element type constraint diagnostic parity gap"
+
+[[expectations]]
+id = "difftsc/jsx_runtime_missing"
+status = "xfail"
+reason = "JSX runtime import diagnostic parity gap"
+
+[[expectations]]
+id = "difftsc/narrowing_types"
+status = "xfail"
+reason = "type narrowing + marker type-facts parity gap"
+
+[[expectations]]
+id = "difftsc/jsx_children_attribute_ignored_react_jsx"
+status = "xfail"
+reason = "JSX children attribute diagnostic parity gap"
+
+[[expectations]]
+id = "difftsc/jsx_element_attributes_property_missing_member"
+status = "xfail"
+reason = "JSX attributes property span parity gap"
+
+[[expectations]]
+id = "difftsc/jsx_children_specified_twice"
+status = "xfail"
+reason = "JSX children specified twice span parity gap"
+
+[[expectations]]
+id = "difftsc/jsx_element_attributes_property_multiple_properties"
+status = "xfail"
+reason = "JSX ElementAttributesProperty diagnostic parity gap"
+
+[[expectations]]
+id = "difftsc/jsx_fragment_factory_missing"
+status = "xfail"
+reason = "JSX fragment factory diagnostic parity gap"
+
+[[expectations]]
+id = "difftsc/skip_lib_check_missing_import_type_used"
+status = "xfail"
+reason = "skipLibCheck behavior parity gap for import() types"

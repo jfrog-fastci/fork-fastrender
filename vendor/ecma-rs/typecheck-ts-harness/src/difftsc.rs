@@ -390,7 +390,18 @@ fn run_impl(args: DifftscArgs) -> Result<CommandStatus> {
     .join("baselines")
     .join(&suite_name);
 
-  let expectations = match &args.manifest {
+  // If the caller didn't pass an expectations manifest, default to using a
+  // `manifest.toml` file located alongside the suite. This keeps the common
+  // invocation:
+  //   difftsc --suite fixtures/difftsc --compare-rust --use-baselines
+  // ergonomic while still allowing suites to track known gaps via `xfail` /
+  // `flaky` entries.
+  let manifest_path = args.manifest.clone().or_else(|| {
+    let candidate = suite_path.join("manifest.toml");
+    candidate.is_file().then_some(candidate)
+  });
+
+  let expectations = match &manifest_path {
     Some(path) => Expectations::from_path(path).map_err(|err| anyhow!(err.to_string()))?,
     None => Expectations::empty(),
   };
