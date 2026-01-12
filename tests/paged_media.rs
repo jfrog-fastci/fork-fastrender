@@ -1,8 +1,8 @@
 //! Dedicated test target for focused paged media / pagination regressions.
 //!
-//! Note: The full paged-media suite currently lives under the aggregated `layout_tests` binary
-//! (via `tests/layout/paged_media.rs`). This target exists so automation can run a small slice of
-//! paged-media assertions without compiling/executing the entire layout test suite.
+//! Note: The full paged-media suite lives under the main integration test harness
+//! (`tests/integration.rs`, via `tests/layout/paged_media.rs`). This target exists so automation
+//! can run a small slice of paged-media assertions without executing the entire integration suite.
 
 use fastrender::api::FastRender;
 use fastrender::style::media::MediaType;
