@@ -1,7 +1,6 @@
 use crate::dom2;
 use crate::geometry::{Point, Rect, Size};
 use crate::scroll::ScrollState;
-use crate::style::ComputedStyle;
 use crate::tree::box_tree::BoxNode;
 use crate::tree::fragment_tree::ScrollbarReservation;
 
@@ -110,7 +109,11 @@ impl<'a> Dom2GeometryContext<'a> {
         continue;
       };
       let border_box = self.translate_to_viewport(border_box_page);
-      let padding_box = padding_rect_for_border_rect(border_box, &box_node.style, self.viewport_size);
+      let padding_box = crate::interaction::padding_rect_for_border_rect(
+        border_box,
+        &box_node.style,
+        self.viewport_size,
+      );
       out = Some(match out {
         Some(existing) => existing.union(padding_box),
         None => padding_box,
@@ -170,56 +173,3 @@ impl<'a> Dom2GeometryContext<'a> {
     ))
   }
 }
-
-fn inset_rect(rect: Rect, left: f32, top: f32, right: f32, bottom: f32) -> Rect {
-  let new_x = rect.x() + left;
-  let new_y = rect.y() + top;
-  let new_w = (rect.width() - left - right).max(0.0);
-  let new_h = (rect.height() - top - bottom).max(0.0);
-  Rect::from_xywh(new_x, new_y, new_w, new_h)
-}
-
-fn padding_rect_for_border_rect(border_rect: Rect, style: &ComputedStyle, viewport_size: Size) -> Rect {
-  let font_size = style.font_size;
-  let base = border_rect.width().max(0.0);
-  let viewport = (viewport_size.width.is_finite() && viewport_size.height.is_finite())
-    .then_some((viewport_size.width, viewport_size.height));
-
-  let border_left = crate::paint::paint_bounds::resolve_length_for_paint(
-    &style.used_border_left_width(),
-    font_size,
-    style.root_font_size,
-    base,
-    viewport,
-  );
-  let border_right = crate::paint::paint_bounds::resolve_length_for_paint(
-    &style.used_border_right_width(),
-    font_size,
-    style.root_font_size,
-    base,
-    viewport,
-  );
-  let border_top = crate::paint::paint_bounds::resolve_length_for_paint(
-    &style.used_border_top_width(),
-    font_size,
-    style.root_font_size,
-    base,
-    viewport,
-  );
-  let border_bottom = crate::paint::paint_bounds::resolve_length_for_paint(
-    &style.used_border_bottom_width(),
-    font_size,
-    style.root_font_size,
-    base,
-    viewport,
-  );
-
-  inset_rect(
-    border_rect,
-    border_left,
-    border_top,
-    border_right,
-    border_bottom,
-  )
-}
-

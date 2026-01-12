@@ -53,3 +53,4 @@ fn dom2_geometry_scrollport_accounts_for_scrollbar_gutter_reservation() {
     "expected scrollport height to shrink by {expected_gutter}px, got {delta_h}px (padding={padding_box:?}, scrollport={scrollport_box:?})"
   );
 }
+
