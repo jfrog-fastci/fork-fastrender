@@ -147,6 +147,10 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 if [[ -f "${repo_root}/tools/cmake_wrapper.sh" ]]; then
   chmod +x "${repo_root}/tools/cmake_wrapper.sh" 2>/dev/null || true
 fi
+# See `.cargo/config.toml` for why this exists.
+if [[ -f "${repo_root}/tools/clang_wrapper.sh" ]]; then
+  chmod +x "${repo_root}/tools/clang_wrapper.sh" 2>/dev/null || true
+fi
 # Directory to run `cargo` in.
 #
 # By default, we execute cargo from the monorepo root so it picks up:

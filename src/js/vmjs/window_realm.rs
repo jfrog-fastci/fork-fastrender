@@ -2309,6 +2309,7 @@ const EVENT_TARGET_CONTEXT_ABORT_CLEANUP_CALL_ID_SLOT: usize = 2;
 const EVENT_HANDLER_WRAPPER_CALL_ID_SLOT: usize = 2;
 const EVENT_HANDLER_EVENT_TYPE_SLOT: usize = 3;
 pub(crate) const EVENT_TARGET_HOST_TAG: u64 = u64::from_be_bytes(*b"EVTARGET");
+const EVENT_TARGET_BRAND_KEY: &str = "__fastrender_event_target";
 const EVENT_TARGET_PARENT_KEY: &str = "__fastrender_event_target_parent";
 const DOM_PARSER_BRAND_KEY: &str = "__fastrender_dom_parser";
 const DOM_PARSER_PARSE_FROM_STRING_DOCUMENT_SLOT: usize = 0;
@@ -13792,13 +13793,12 @@ fn alloc_mutation_records_array(
   Ok(array)
 }
 
-/// Allocates a minimal `IntersectionObserverEntry`-shaped object whose rect fields are real
-/// `DOMRectReadOnly` instances.
+/// Allocates an `IntersectionObserverEntry`-shaped object with `DOMRectReadOnly` fields.
 ///
 /// This helper is currently used by the `DOMRectReadOnly` unit tests while the full observer
 /// delivery pipeline is still being wired up.
 #[allow(dead_code)]
-pub(crate) fn alloc_intersection_observer_entry_object(
+pub(crate) fn alloc_intersection_observer_entry_dom_rect_object(
   scope: &mut Scope<'_>,
   global: GcObject,
   root_bounds: Option<(f64, f64, f64, f64)>,

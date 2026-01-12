@@ -588,6 +588,8 @@ fn diff_renders_dimension_mismatch_reports_overlap_perceptual_and_region() {
 
 #[test]
 fn diff_renders_reports_perceptual_metric() {
+  use fastrender::image_compare::PERCEPTUAL_METRIC_ID;
+
   let tmp = tempfile::TempDir::new().expect("tempdir");
   let before = tmp.path().join("before");
   let after = tmp.path().join("after");
@@ -619,7 +621,7 @@ fn diff_renders_reports_perceptual_metric() {
   let metric_id = report["perceptual_metric"]
     .as_str()
     .expect("perceptual_metric missing");
-  assert_eq!(metric_id, fastrender::image_compare::PERCEPTUAL_METRIC_ID);
+  assert_eq!(metric_id, PERCEPTUAL_METRIC_ID);
   let dist = report["results"][0]["metrics"]["perceptual_distance"]
     .as_f64()
     .expect("perceptual_distance missing");
@@ -629,7 +631,7 @@ fn diff_renders_reports_perceptual_metric() {
   assert!(
     html.contains(&format!(
       "<strong>Perceptual metric:</strong> {}",
-      fastrender::image_compare::PERCEPTUAL_METRIC_ID
+      PERCEPTUAL_METRIC_ID
     )),
     "expected perceptual metric id in HTML report:\n{html}"
   );

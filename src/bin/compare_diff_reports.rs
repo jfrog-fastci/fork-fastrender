@@ -1,10 +1,5 @@
-use fastrender::cli_utils as common;
-
 use clap::Parser;
-use common::report::{
-  display_path, ensure_parent_dir, entry_anchor_id, escape_html, format_linked_image,
-  path_for_report,
-};
+use pathdiff::diff_paths;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -14,6 +9,76 @@ use std::path::{Path, PathBuf};
 const SCHEMA_VERSION: u32 = 2;
 const METRIC_EPS: f64 = 1e-9;
 const TOP_N: usize = 20;
+
+/// Escape HTML entities for safe embedding.
+fn escape_html(input: &str) -> String {
+  input
+    .replace('&', "&amp;")
+    .replace('<', "&lt;")
+    .replace('>', "&gt;")
+    .replace('"', "&quot;")
+    .replace('\'', "&#39;")
+}
+
+/// Produce a path relative to the HTML/JSON output (falls back to absolute).
+fn path_for_report(base: &Path, target: &Path) -> String {
+  let path = diff_paths(target, base).unwrap_or_else(|| target.to_path_buf());
+  let rendered = path.display().to_string();
+  if cfg!(windows) {
+    rendered.replace('\\', "/")
+  } else {
+    rendered
+  }
+}
+
+/// Canonicalize for display while tolerating missing paths.
+fn display_path(path: &Path) -> String {
+  fs::canonicalize(path)
+    .unwrap_or_else(|_| path.to_path_buf())
+    .display()
+    .to_string()
+}
+
+/// Ensure the parent directory for a file exists.
+fn ensure_parent_dir(path: &Path) -> Result<(), String> {
+  if let Some(parent) = path.parent() {
+    if !parent.as_os_str().is_empty() {
+      fs::create_dir_all(parent).map_err(|e| {
+        format!(
+          "failed to create parent directory {}: {e}",
+          parent.display()
+        )
+      })?;
+    }
+  }
+  Ok(())
+}
+
+/// Produce a stable HTML anchor ID for a report entry name.
+///
+/// We hash the name (FNV-1a 64-bit) so that:
+/// - anchors remain stable across runs,
+/// - we don't have to worry about unsafe characters in IDs,
+/// - links are compact and copy/paste friendly.
+fn entry_anchor_id(name: &str) -> String {
+  let mut hash: u64 = 14695981039346656037;
+  for byte in name.as_bytes() {
+    hash ^= u64::from(*byte);
+    hash = hash.wrapping_mul(1099511628211);
+  }
+  format!("entry-{hash:016x}")
+}
+
+/// Render a small thumbnail block for an image path that links to the full-size asset.
+fn format_linked_image(label: &str, path: &str) -> String {
+  let escaped = escape_html(path);
+  let label = escape_html(label);
+  format!(
+    r#"<div class="thumb"><a href="{p}">{l}</a><br><a href="{p}"><img src="{p}" alt="{l}" loading="lazy"></a></div>"#,
+    p = escaped,
+    l = label
+  )
+}
 
 #[derive(Parser, Debug)]
 #[command(
@@ -2066,4 +2131,54 @@ fn format_failing_regressions_block(report: &DeltaReport) -> String {
 </table>"#,
     rows = rows
   )
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  fn empty_report() -> DiffReport {
+    DiffReport {
+      before_dir: "before".to_string(),
+      after_dir: "after".to_string(),
+      tolerance: 0,
+      max_diff_percent: 0.0,
+      max_perceptual_distance: None,
+      perceptual_metric: None,
+      ignore_alpha: false,
+      shard: None,
+      results: Vec::new(),
+    }
+  }
+
+  #[test]
+  fn diff_config_detects_perceptual_metric_mismatch_for_missing_field() {
+    let baseline = empty_report();
+    let mut new_report = empty_report();
+    new_report.perceptual_metric = Some("ssim_windowed_v2".to_string());
+
+    let mismatches = diff_config(&baseline, &new_report);
+    assert_eq!(mismatches.len(), 1);
+    assert_eq!(mismatches[0].field, "perceptual_metric");
+    assert_eq!(mismatches[0].baseline, "-");
+    assert_eq!(mismatches[0].new, "ssim_windowed_v2");
+  }
+
+  #[test]
+  fn diff_config_allows_matching_perceptual_metric() {
+    let mut baseline = empty_report();
+    baseline.perceptual_metric = Some("ssim_global_v1".to_string());
+    let mut new_report = empty_report();
+    new_report.perceptual_metric = Some("ssim_global_v1".to_string());
+
+    let mismatches = diff_config(&baseline, &new_report);
+    if !mismatches.is_empty() {
+      let details = mismatches
+        .iter()
+        .map(|m| format!("{}={}!={}", m.field, m.baseline, m.new))
+        .collect::<Vec<_>>()
+        .join(", ");
+      panic!("unexpected mismatches: {details}");
+    }
+  }
 }

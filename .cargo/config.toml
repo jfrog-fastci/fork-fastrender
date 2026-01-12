@@ -37,14 +37,11 @@ rustc-workspace-wrapper = ""
 rustflags = ["-C", "force-frame-pointers=yes"]
 [target.'cfg(target_os = "linux")']
 # Use `clang` as the linker driver on Linux.
-linker = "clang"
+#
+# Prefer `mold` when available via a small wrapper to keep linking fast for huge debug/test
+# binaries, while remaining portable in environments that don't ship `mold`.
+linker = "tools/clang_wrapper.sh"
 rustflags = ["-C", "force-frame-pointers=yes"]
 #
-# We intentionally avoid pinning a specific linker implementation via `-fuse-ld=...` because:
-# - Some environments (including CI) don't ship with newer linkers like `mold`.
-# - `clang` errors out on unknown `-fuse-ld=` values, which would make *all* builds fail.
-#
-# The system default linker is reliably available, and developers/CI can still opt into a faster
-# linker via `RUSTFLAGS` (e.g. install `mold` and export:
-#   RUSTFLAGS="${RUSTFLAGS:-} -C link-arg=-fuse-ld=mold"
-# ).
+# NOTE: We intentionally avoid hard-coding `-fuse-ld=mold` here because `clang` errors when `ld.mold`
+# is missing. `tools/clang_wrapper.sh` enables it conditionally when available.
