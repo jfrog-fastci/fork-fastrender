@@ -112,6 +112,7 @@ impl<'ctx> CodegenDebug<'ctx> {
     // Keep the module-level `source_filename` in sync with the DWARF compile-unit file so tools
     // that inspect LLVM IR (or fall back to the module header) see a meaningful entry filename.
     module.set_source_file_name(&entry_name);
+
     let (builder, compile_unit) = module.create_debug_info_builder(
       true,
       // DWARF's `DW_AT_language` is used by some debuggers/IDEs for language-specific presentation

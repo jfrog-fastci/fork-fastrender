@@ -1,12 +1,21 @@
+use std::cell::Cell;
 use std::mem;
 use std::slice;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
-static GC_IN_PROGRESS_DEPTH: AtomicUsize = AtomicUsize::new(0);
+thread_local! {
+  /// Tracks whether the current thread is executing a GC cycle.
+  ///
+  /// `GcHeap` values are frequently instantiated in tests (and in some cases can be collected in
+  /// parallel). GC is stop-the-world *per heap*, so treating "GC in progress" as a process-global
+  /// flag makes unrelated heap collections interfere with each other, leading to flaky assertions in
+  /// other threads (e.g. shadow stack root management).
+  static GC_IN_PROGRESS_DEPTH: Cell<usize> = Cell::new(0);
+}
 
 /// Returns `true` while a GC cycle (minor or major) is actively running.
 pub(crate) fn gc_in_progress() -> bool {
-  GC_IN_PROGRESS_DEPTH.load(Ordering::Acquire) != 0
+  GC_IN_PROGRESS_DEPTH.with(|depth| depth.get() != 0)
 }
 
 /// RAII guard that marks a GC cycle as active for the duration of its lifetime.
@@ -18,14 +27,18 @@ pub(crate) struct GcInProgressGuard(());
 
 impl GcInProgressGuard {
   pub(crate) fn new() -> Self {
-    GC_IN_PROGRESS_DEPTH.fetch_add(1, Ordering::SeqCst);
+    GC_IN_PROGRESS_DEPTH.with(|depth| depth.set(depth.get().saturating_add(1)));
     Self(())
   }
 }
 
 impl Drop for GcInProgressGuard {
   fn drop(&mut self) {
-    GC_IN_PROGRESS_DEPTH.fetch_sub(1, Ordering::SeqCst);
+    GC_IN_PROGRESS_DEPTH.with(|depth| {
+      let cur = depth.get();
+      debug_assert!(cur != 0, "gc in progress depth underflow");
+      depth.set(cur.saturating_sub(1));
+    });
   }
 }
 
