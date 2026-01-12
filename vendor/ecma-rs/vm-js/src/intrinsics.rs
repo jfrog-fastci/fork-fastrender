@@ -32,6 +32,7 @@ pub struct Intrinsics {
   well_known_symbols: WellKnownSymbols,
   object_prototype: GcObject,
   function_prototype: GcObject,
+  iterator_prototype: GcObject,
   array_prototype: GcObject,
   array_iterator_prototype: GcObject,
   string_prototype: GcObject,
@@ -379,6 +380,11 @@ impl Intrinsics {
       .heap_mut()
       .object_set_prototype(function_prototype, Some(object_prototype))?;
 
+    let iterator_prototype = alloc_rooted_object(scope, roots)?;
+    scope
+      .heap_mut()
+      .object_set_prototype(iterator_prototype, Some(object_prototype))?;
+
     let array_prototype = alloc_rooted_object(scope, roots)?;
     scope
       .heap_mut()
@@ -454,6 +460,8 @@ impl Intrinsics {
     let object_prototype_to_string = vm.register_native_call(builtins::object_prototype_to_string)?;
     let object_prototype_has_own_property =
       vm.register_native_call(builtins::object_prototype_has_own_property)?;
+    let iterator_prototype_symbol_iterator =
+      vm.register_native_call(builtins::iterator_prototype_symbol_iterator)?;
     let function_prototype_call_method =
       vm.register_native_call(builtins::function_prototype_call_method)?;
     let function_prototype_apply_method =
@@ -663,9 +671,25 @@ impl Intrinsics {
         scope
           .heap_mut()
           .object_set_prototype(func, Some(function_prototype))?;
+       scope.define_property(
+         object_prototype,
+         key,
+         data_desc(Value::Object(func), true, false, true),
+       )?;
+     }
+
+    // `%IteratorPrototype%[@@iterator]`
+    {
+      let iter_s = scope.alloc_string("[Symbol.iterator]")?;
+      scope.push_root(Value::String(iter_s))?;
+      let func = scope.alloc_native_function(iterator_prototype_symbol_iterator, None, iter_s, 0)?;
+      scope.push_root(Value::Object(func))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(func, Some(function_prototype))?;
       scope.define_property(
-        object_prototype,
-        key,
+        iterator_prototype,
+        PropertyKey::Symbol(well_known_symbols.iterator),
         data_desc(Value::Object(func), true, false, true),
       )?;
     }
@@ -2979,6 +3003,7 @@ impl Intrinsics {
       well_known_symbols,
       object_prototype,
       function_prototype,
+      iterator_prototype,
       array_prototype,
       array_iterator_prototype,
       string_prototype,
@@ -3051,6 +3076,10 @@ impl Intrinsics {
 
   pub fn function_prototype(&self) -> GcObject {
     self.function_prototype
+  }
+
+  pub fn iterator_prototype(&self) -> GcObject {
+    self.iterator_prototype
   }
 
   pub fn array_prototype(&self) -> GcObject {
