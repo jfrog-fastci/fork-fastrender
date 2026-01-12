@@ -1174,7 +1174,8 @@ mod tests {
 
         c_start_rx.recv().unwrap();
 
-        track_pending_reactions(ptr);
+        // `RtPromise` embeds `PromiseHeader` at offset 0.
+        track_pending_reactions(ptr.cast::<PromiseHeader>());
         // Drop cleans up the tracking set entry too.
         promise_drop(p);
 

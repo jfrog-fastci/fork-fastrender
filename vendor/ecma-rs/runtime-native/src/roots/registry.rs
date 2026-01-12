@@ -458,13 +458,21 @@ mod tests {
           let p2 = (base ^ 0x55aa) as *mut u8;
 
           let h = crate::exports::rt_handle_alloc(p1);
+          // Ensure the thread polls at multiple points while the handle table lock is hotly
+          // contended so stop-the-world coordination doesn't rely on a single poll at the end of
+          // the iteration.
+          crate::threading::safepoint_poll();
           let _ = crate::exports::rt_handle_load(h);
+          crate::threading::safepoint_poll();
           crate::exports::rt_handle_store(h, p2);
+          crate::threading::safepoint_poll();
           let _ = crate::exports::rt_handle_load(h);
+          crate::threading::safepoint_poll();
           crate::exports::rt_handle_free(h);
 
           // Cooperate with stop-the-world requests.
           crate::threading::safepoint_poll();
+          std::thread::yield_now();
 
           i = i.wrapping_add(1);
         }
