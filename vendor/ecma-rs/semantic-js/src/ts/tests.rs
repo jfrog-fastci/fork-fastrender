@@ -2171,7 +2171,7 @@ fn ambient_module_in_dts_script_reports_ts2395_for_namespace_merge() {
   // (`replace-in-file/types/index.d.ts`).
   let source = r#"
     declare module 'replace-in-file' {
-      function replaceInFile(config: unknown): Promise<unknown[]>;
+      export function replaceInFile(config: unknown): Promise<unknown[]>;
       export default replaceInFile;
 
       namespace replaceInFile {
@@ -4301,6 +4301,7 @@ fn unresolved_module_augmentation_reports_diagnostic() {
   let resolver = StaticResolver::new(HashMap::new());
 
   let (_semantics, diags) = bind_ts_program(&[file], &resolver, |f| files.get(&f).unwrap().clone());
+  assert_eq!(diags.len(), 1, "unexpected diagnostics: {diags:?}");
   let bind1005 = diags
     .iter()
     .find(|d| d.code == "BIND1005")
@@ -4428,6 +4429,7 @@ fn relative_module_augmentation_reports_ts2664_when_target_missing() {
     files.get(&f).unwrap().clone()
   });
 
+  assert_eq!(diags.len(), 1, "unexpected diagnostics: {diags:?}");
   let ts2664 = diags
     .iter()
     .find(|d| d.code == "TS2664")
@@ -5485,17 +5487,8 @@ fn export_equals_module_augmentation_with_value_exports_reports_ts2649() {
   let mut fn_decl = mk_decl(2, "fn", DeclKind::Function, Exported::Named);
   fn_decl.is_ambient = true;
   let augmentation = AmbientModule {
-    name: "lib".to_string(),
-    name_span: span(200),
-    export_modifier: false,
-    export_modifier_span: None,
     decls: vec![fn_decl],
-    imports: Vec::new(),
-    type_imports: Vec::new(),
-    import_equals: Vec::new(),
-    exports: Vec::new(),
-    export_as_namespace: Vec::new(),
-    ambient_modules: Vec::new(),
+    ..ambient_module("lib", span(200))
   };
   extender.ambient_modules.push(augmentation);
 
