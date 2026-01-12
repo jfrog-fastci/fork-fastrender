@@ -273,6 +273,30 @@ fn dom_is_text_input(node: &crate::dom::DomNode) -> bool {
     && !t.eq_ignore_ascii_case("image")
 }
 
+fn dom_is_input(node: &crate::dom::DomNode) -> bool {
+  node
+    .tag_name()
+    .is_some_and(|tag| tag.eq_ignore_ascii_case("input"))
+}
+
+fn dom_is_textarea(node: &crate::dom::DomNode) -> bool {
+  node
+    .tag_name()
+    .is_some_and(|tag| tag.eq_ignore_ascii_case("textarea"))
+}
+
+fn dom_is_select(node: &crate::dom::DomNode) -> bool {
+  node
+    .tag_name()
+    .is_some_and(|tag| tag.eq_ignore_ascii_case("select"))
+}
+
+fn dom_is_button(node: &crate::dom::DomNode) -> bool {
+  node
+    .tag_name()
+    .is_some_and(|tag| tag.eq_ignore_ascii_case("button"))
+}
+
 fn mouse_event_button(button: PointerButton) -> i16 {
   match button {
     PointerButton::Primary => 0,
@@ -3956,7 +3980,6 @@ impl BrowserRuntime {
       let Some(tab) = self.tabs.get_mut(&tab_id) else {
         return;
       };
-      let focus_none = tab.interaction.focused_node_id().is_none();
       let base_url = base_url_for_links(tab).to_string();
       let document_url = tab
         .last_committed_url
@@ -3985,16 +4008,27 @@ impl BrowserRuntime {
             .map(|id| id.to_string())
         });
         let focused = tab.interaction.focused_node_id();
-        let (focused_element_id, focused_is_text_input) = focused
+        let (
+          focused_element_id,
+          focused_is_text_input,
+          focused_is_input,
+          focused_is_textarea,
+          focused_is_select,
+          focused_is_button,
+        ) = focused
           .and_then(|focused_id| {
             crate::dom::find_node_mut_by_preorder_id(dom, focused_id).map(|node| {
               (
                 node.get_attribute_ref("id").map(|id| id.to_string()),
                 dom_is_text_input(node),
+                dom_is_input(node),
+                dom_is_textarea(node),
+                dom_is_select(node),
+                dom_is_button(node),
               )
             })
           })
-          .unwrap_or((None, false));
+          .unwrap_or((None, false, false, false, false, false));
         let focus_scroll = match &action {
           InteractionAction::FocusChanged {
             node_id: Some(node_id),
@@ -4017,6 +4051,10 @@ impl BrowserRuntime {
             focused,
             focused_element_id,
             focused_is_text_input,
+            focused_is_input,
+            focused_is_textarea,
+            focused_is_select,
+            focused_is_button,
           ),
         )
       });
@@ -4029,6 +4067,10 @@ impl BrowserRuntime {
         focused,
         focused_element_id,
         focused_is_text_input,
+        focused_is_input,
+        focused_is_textarea,
+        focused_is_select,
+        focused_is_button,
       ) = match result {
         Ok(result) => result,
         Err(_) => {
@@ -4038,6 +4080,10 @@ impl BrowserRuntime {
           let mut focused: Option<usize> = None;
           let mut focused_element_id: Option<String> = None;
           let mut focused_is_text_input = false;
+          let mut focused_is_input = false;
+          let mut focused_is_textarea = false;
+          let mut focused_is_select = false;
+          let mut focused_is_button = false;
           let changed = doc.mutate_dom(|dom| {
             let (dom_changed, next_action) =
               tab
@@ -4051,18 +4097,26 @@ impl BrowserRuntime {
                 .map(|id| id.to_string())
             });
             focused = tab.interaction.focused_node_id();
-            let (id, is_text_input) = focused
+            let (id, is_text_input, is_input, is_textarea, is_select, is_button) = focused
               .and_then(|focused_id| {
                 crate::dom::find_node_mut_by_preorder_id(dom, focused_id).map(|node| {
                   (
                     node.get_attribute_ref("id").map(|id| id.to_string()),
                     dom_is_text_input(node),
+                    dom_is_input(node),
+                    dom_is_textarea(node),
+                    dom_is_select(node),
+                    dom_is_button(node),
                   )
                 })
               })
-              .unwrap_or((None, false));
+              .unwrap_or((None, false, false, false, false, false));
             focused_element_id = id;
             focused_is_text_input = is_text_input;
+            focused_is_input = is_input;
+            focused_is_textarea = is_textarea;
+            focused_is_select = is_select;
+            focused_is_button = is_button;
             dom_changed
           });
           (
@@ -4074,6 +4128,10 @@ impl BrowserRuntime {
             focused,
             focused_element_id,
             focused_is_text_input,
+            focused_is_input,
+            focused_is_textarea,
+            focused_is_select,
+            focused_is_button,
           )
         }
       };
@@ -4300,11 +4358,32 @@ impl BrowserRuntime {
           }
         }
         _ => {
-          // Basic keyboard scrolling: when nothing is focused, treat Home/End/Space as viewport
-          // scrolling shortcuts (matching common browser behaviour). Focused form controls should
-          // keep receiving these keys for caret/selection/option navigation.
-          if focus_none && !changed && !scroll_changed && action_is_none {
-            keyboard_scroll = match key {
+          // Basic keyboard scrolling: when scroll keys are pressed and the focused element is not a
+          // form control that would normally consume them, treat the key as a viewport scrolling
+          // shortcut (matching common browser behaviour like Space scrolling even when a link is
+          // focused).
+          if action_is_none {
+            let focus_consumes_space =
+              focused_is_input || focused_is_textarea || focused_is_select || focused_is_button;
+            let focus_consumes_arrows = focused_is_input || focused_is_textarea || focused_is_select;
+            let focus_consumes_home_end = focus_consumes_arrows;
+
+            let allow_scroll = match key {
+              crate::interaction::KeyAction::Space | crate::interaction::KeyAction::ShiftSpace => {
+                !focus_consumes_space
+              }
+              crate::interaction::KeyAction::ArrowDown | crate::interaction::KeyAction::ArrowUp => {
+                !focus_consumes_arrows
+              }
+              crate::interaction::KeyAction::Home
+              | crate::interaction::KeyAction::End
+              | crate::interaction::KeyAction::ShiftHome
+              | crate::interaction::KeyAction::ShiftEnd => !focus_consumes_home_end,
+              _ => false,
+            };
+
+            if allow_scroll {
+              keyboard_scroll = match key {
               crate::interaction::KeyAction::Home | crate::interaction::KeyAction::ShiftHome => {
                 Some(UiToWorker::ScrollTo {
                   tab_id,
@@ -4347,6 +4426,7 @@ impl BrowserRuntime {
               }
               _ => None,
             };
+            }
           }
           if changed || scroll_changed {
             tab.cancel.bump_paint();

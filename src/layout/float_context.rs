@@ -1064,7 +1064,7 @@ impl FloatContext {
         self.record_timeout(elapsed);
         break;
       }
-  
+
       let segment_start = cache.sweep_state.current_y;
       let segment_end =
         self.next_float_boundary_after_internal_for_range_cache(&mut cache.sweep_state, segment_start);

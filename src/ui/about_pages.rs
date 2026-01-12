@@ -1105,10 +1105,12 @@ fn test_scroll_html() -> String {
     <style>
 {shared}
       body {{ margin: 0; padding: 0; font: 14px/1.3 system-ui, -apple-system, Segoe UI, sans-serif; }}
+      a {{ display: block; padding: 8px; }}
       .spacer {{ height: 4000px; background: linear-gradient(#eee, #ccc); }}
     </style>
   </head>
   <body>
+    <a href=\"about:blank\">focus link</a>
     <div class=\"spacer\">scroll</div>
   </body>
 </html>",

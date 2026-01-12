@@ -18385,12 +18385,11 @@ impl webidl_vm_js::WebIdlBindingsHost for WindowRealmWebIdlBindingsHost {
         };
 
         let options_value = args.get(2).copied().unwrap_or(Value::Undefined);
-        let options = if let Some(options) = with_active_vm_host_and_hooks(vm, |vm, host, hooks| {
+        let options = match with_active_vm_host_and_hooks(vm, |vm, host, hooks| {
           parse_add_event_listener_options(vm, scope, host, hooks, options_value)
         })? {
-          options
-        } else {
-          parse_add_event_listener_options_without_host(vm, scope, options_value)?
+          Some(opts) => opts,
+          None => parse_add_event_listener_options_without_host(vm, scope, options_value)?,
         };
         let listener_id = web_events::ListenerId::from_gc_object(callback_obj);
 
@@ -18441,12 +18440,11 @@ impl webidl_vm_js::WebIdlBindingsHost for WindowRealmWebIdlBindingsHost {
         };
 
         let options_value = args.get(2).copied().unwrap_or(Value::Undefined);
-        let capture = if let Some(capture) = with_active_vm_host_and_hooks(vm, |vm, host, hooks| {
+        let capture = match with_active_vm_host_and_hooks(vm, |vm, host, hooks| {
           parse_event_listener_capture(vm, scope, host, hooks, options_value)
         })? {
-          capture
-        } else {
-          parse_event_listener_capture_without_host(vm, scope, options_value)?
+          Some(capture) => capture,
+          None => parse_event_listener_capture_without_host(vm, scope, options_value)?,
         };
         let listener_id = web_events::ListenerId::from_gc_object(callback_obj);
 

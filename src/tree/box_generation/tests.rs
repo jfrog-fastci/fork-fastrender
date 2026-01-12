@@ -9441,7 +9441,7 @@ fn css_transform_overrides_svg_transform_attribute_in_serialized_svg() {
       <rect width="10" height="10"></rect>
     </g>
   </svg>
-"#;
+  "#;
   let stylesheet = parse_stylesheet("g { transform: translate(100px, 0px); }").unwrap();
   let serialized = serialized_inline_svg_with_stylesheet(svg_markup, &stylesheet);
   let doc = roxmltree::Document::parse(&serialized).expect("parse serialized svg");
@@ -9462,7 +9462,7 @@ fn css_transform_none_removes_svg_transform_attribute_in_serialized_svg() {
       <rect width="10" height="10"></rect>
     </g>
   </svg>
-"#;
+  "#;
   let stylesheet = parse_stylesheet("g { transform: none; }").unwrap();
   let serialized = serialized_inline_svg_with_stylesheet(svg_markup, &stylesheet);
   let doc = roxmltree::Document::parse(&serialized).expect("parse serialized svg");
