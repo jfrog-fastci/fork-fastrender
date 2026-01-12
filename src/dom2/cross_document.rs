@@ -339,4 +339,3 @@ impl Document {
     Ok(AdoptedSubtree { new_root, mapping })
   }
 }
-

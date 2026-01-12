@@ -3360,16 +3360,18 @@ fn parse_page_block<'i, 't>(
           }
 
           let decls = parser
-            .parse_nested_block(|nested| -> std::result::Result<
-              Vec<Declaration>,
-              ParseError<'_, SelectorParseErrorKind<'_>>,
-            > {
-              parse_declaration_list(nested, DeclarationContext::Style).map_err(|_| {
-                nested.new_custom_error::<_, SelectorParseErrorKind<'i>>(
-                  SelectorParseErrorKind::UnexpectedIdent("declaration".into()),
-                )
-              })
-            })
+            .parse_nested_block(
+              |nested| -> std::result::Result<
+                Vec<Declaration>,
+                ParseError<'_, SelectorParseErrorKind<'_>>,
+              > {
+                parse_declaration_list(nested, DeclarationContext::Style).map_err(|_| {
+                  nested.new_custom_error::<_, SelectorParseErrorKind<'i>>(
+                    SelectorParseErrorKind::UnexpectedIdent("declaration".into()),
+                  )
+                })
+              },
+            )
             .unwrap_or_default();
           footnote_rules.push(PageFootnoteRule { declarations: decls });
           continue;
