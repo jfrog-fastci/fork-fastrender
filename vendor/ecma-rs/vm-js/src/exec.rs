@@ -14069,15 +14069,8 @@ fn async_for_await_of_await_next(
       match err {
         VmError::Throw(_) | VmError::ThrowWithStack { .. } => {
           let completion = completion_from_expr_result(Err(err))?;
-          return async_for_await_of_close(
-            evaluator,
-            scope,
-            v_root,
-            iterator_root,
-            next_method_root,
-            &iterator_record,
-            completion,
-          );
+          async_for_await_of_cleanup(scope, v_root, iterator_root, next_method_root);
+          return Ok(AsyncEval::Complete(completion));
         }
         other => {
           async_for_await_of_cleanup(scope, v_root, iterator_root, next_method_root);
@@ -14150,15 +14143,8 @@ fn async_for_await_of_after_next(
       match err {
         VmError::Throw(_) | VmError::ThrowWithStack { .. } => {
           let completion = completion_from_expr_result(Err(err))?;
-          return async_for_await_of_close(
-            evaluator,
-            &mut step_scope,
-            v_root,
-            iterator_root,
-            next_method_root,
-            &iterator_record,
-            completion,
-          );
+          async_for_await_of_cleanup(&mut step_scope, v_root, iterator_root, next_method_root);
+          return Ok(AsyncEval::Complete(completion));
         }
         other => {
           async_for_await_of_cleanup(&mut step_scope, v_root, iterator_root, next_method_root);
@@ -14186,15 +14172,8 @@ fn async_for_await_of_after_next(
       match err {
         VmError::Throw(_) | VmError::ThrowWithStack { .. } => {
           let completion = completion_from_expr_result(Err(err))?;
-          return async_for_await_of_close(
-            evaluator,
-            &mut step_scope,
-            v_root,
-            iterator_root,
-            next_method_root,
-            &iterator_record,
-            completion,
-          );
+          async_for_await_of_cleanup(&mut step_scope, v_root, iterator_root, next_method_root);
+          return Ok(AsyncEval::Complete(completion));
         }
         other => {
           async_for_await_of_cleanup(&mut step_scope, v_root, iterator_root, next_method_root);
