@@ -27,6 +27,7 @@ pub enum TaskSource {
   Networking,
   DOMManipulation,
   Timer,
+  MediaQueryList,
 }
 
 fn task_source_name(source: TaskSource) -> &'static str {
@@ -36,6 +37,7 @@ fn task_source_name(source: TaskSource) -> &'static str {
     TaskSource::Networking => "Networking",
     TaskSource::DOMManipulation => "DOMManipulation",
     TaskSource::Timer => "Timer",
+    TaskSource::MediaQueryList => "MediaQueryList",
   }
 }
 

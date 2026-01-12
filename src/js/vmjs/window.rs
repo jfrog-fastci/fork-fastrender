@@ -18,6 +18,7 @@ use crate::js::{
 };
 use crate::js::{Clock, RealClock};
 use crate::resource::{origin_from_url, HttpFetcher, ResourceFetcher};
+use crate::style::media::MediaContext;
 use std::sync::Arc;
 
 /// Host-owned "window" state for executing scripts against a single DOM document.
@@ -218,6 +219,53 @@ impl WindowHost {
 
   pub fn run_until_idle(&mut self, limits: RunLimits) -> Result<RunUntilIdleOutcome> {
     self.event_loop.run_until_idle(&mut self.host, limits)
+  }
+
+  /// Update the window's [`MediaContext`] (viewport size, DPR, etc).
+  ///
+  /// This updates the `matchMedia()` environment immediately, and schedules `MediaQueryList`
+  /// `change` event dispatch on the window's [`EventLoop`] so listeners run asynchronously (avoids
+  /// re-entrancy hazards).
+  pub fn set_media_context(&mut self, media: MediaContext) -> Result<()> {
+    let Some(env_id) = self.host.window_mut().set_media_context(media) else {
+      return Ok(());
+    };
+
+    if !crate::js::window_env::queue_match_media_mql_update(env_id) {
+      return Ok(());
+    }
+
+    self.queue_task(TaskSource::MediaQueryList, move |host_state, event_loop| {
+      use crate::js::window_timers::VmJsEventLoopHooks;
+
+      let mut hooks = VmJsEventLoopHooks::<WindowHostState>::new_with_host(host_state);
+      hooks.set_event_loop(event_loop);
+
+      let result: Result<()> = {
+        let (vm_host, window) = host_state.vm_host_and_window_realm();
+        let (vm, _realm, heap) = window.vm_realm_and_heap_mut();
+        let vm_result = {
+          let mut scope = heap.scope();
+          crate::js::window_env::process_match_media_mql_update_for_env(
+            vm,
+            &mut scope,
+            vm_host,
+            &mut hooks,
+            env_id,
+          )
+        };
+        vm_result.map_err(|err| vm_error_format::vm_error_to_error(heap, err))
+      };
+
+      // Ensure any queued Promise jobs are properly discarded even if dispatch fails.
+      if let Some(err) = hooks.finish(host_state.window_mut().heap_mut()) {
+        return Err(err);
+      }
+
+      result
+    })?;
+
+    Ok(())
   }
 
   /// Execute a classic script in this window's JS realm.

@@ -5,8 +5,8 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::OnceLock;
 use vm_js::{
-  GcObject, PropertyDescriptor, PropertyKey, PropertyKind, Realm, Scope, Value, Vm, VmError,
-  VmHost, VmHostHooks,
+  GcObject, NativeFunctionId, PropertyDescriptor, PropertyKey, PropertyKind, Realm, Scope, Value, Vm,
+  VmError, VmHost, VmHostHooks, WeakGcObject,
 };
 use webidl_js_runtime::JsRuntime as _;
 
@@ -26,7 +26,23 @@ const MAX_MATCH_MEDIA_QUERY_CODE_UNITS: usize = 4096;
 const MAX_SEND_BEACON_URL_CODE_UNITS: usize = 8192;
 
 const MATCH_MEDIA_SLOT_ENV_ID: usize = 0;
-const MATCH_MEDIA_SLOT_NOOP_LISTENER: usize = 1;
+const MATCH_MEDIA_SLOT_MQL_MATCHES_GET_CALL_ID: usize = 1;
+const MATCH_MEDIA_SLOT_MQL_ADD_EVENT_LISTENER_CALL_ID: usize = 2;
+const MATCH_MEDIA_SLOT_MQL_REMOVE_EVENT_LISTENER_CALL_ID: usize = 3;
+const MATCH_MEDIA_SLOT_MQL_ADD_LISTENER_CALL_ID: usize = 4;
+const MATCH_MEDIA_SLOT_MQL_REMOVE_LISTENER_CALL_ID: usize = 5;
+const MATCH_MEDIA_SLOT_MQL_ONCHANGE_GET_CALL_ID: usize = 6;
+const MATCH_MEDIA_SLOT_MQL_ONCHANGE_SET_CALL_ID: usize = 7;
+
+const MAX_TRACKED_MEDIA_QUERY_LISTS_PER_ENV: usize = 1024;
+const MAX_MQL_CHANGE_DISPATCHES_PER_ENV_UPDATE: usize = 1024;
+
+const MQL_LISTENERS_KEY: &str = "__fastrender_mql_change_listeners";
+const MQL_ONCHANGE_KEY: &str = "__fastrender_mql_onchange";
+
+const MQL_MATCHES_GET_SLOT_ENV_ID: usize = 0;
+const MQL_MATCHES_GET_SLOT_TOO_LONG: usize = 1;
+const MQL_MATCHES_GET_SLOT_QUERY_STRING: usize = 2;
 
 /// Window-like environment configuration used to install browser shims.
 #[derive(Debug, Clone)]
@@ -53,9 +69,38 @@ impl WindowEnv {
 
 static NEXT_MATCH_MEDIA_ENV_ID: AtomicU64 = AtomicU64::new(1);
 static MATCH_MEDIA_ENVS: OnceLock<Mutex<HashMap<u64, MediaContext>>> = OnceLock::new();
+static MATCH_MEDIA_MQLS: OnceLock<Mutex<HashMap<u64, MatchMediaMqlEnvRegistry>>> = OnceLock::new();
+
+#[derive(Debug)]
+struct MatchMediaMqlEnvRegistry {
+  /// Live `MediaQueryList` objects created by this realm, stored as weak handles so the host does
+  /// not keep them alive.
+  mqls: Vec<TrackedMediaQueryList>,
+  /// Whether a `MediaQueryList` update task has already been queued for this environment.
+  update_task_queued: bool,
+}
+
+#[derive(Debug)]
+struct TrackedMediaQueryList {
+  weak: WeakGcObject,
+  /// The query string used for parsing/evaluation.
+  ///
+  /// This is truncated to [`MAX_MATCH_MEDIA_QUERY_CODE_UNITS`] UTF-16 code units when the original
+  /// `matchMedia(..)` input exceeds that bound (in which case `too_long == true` and the query is
+  /// treated as invalid).
+  query_text: String,
+  /// Parsed query list for `query_text`, when available.
+  queries: Option<Vec<MediaQuery>>,
+  too_long: bool,
+  last_matches: bool,
+}
 
 fn match_media_envs() -> &'static Mutex<HashMap<u64, MediaContext>> {
   MATCH_MEDIA_ENVS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn match_media_mqls() -> &'static Mutex<HashMap<u64, MatchMediaMqlEnvRegistry>> {
+  MATCH_MEDIA_MQLS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 fn register_match_media_env(media: MediaContext) -> u64 {
@@ -66,12 +111,38 @@ fn register_match_media_env(media: MediaContext) -> u64 {
 
 pub(crate) fn unregister_match_media_env(id: u64) {
   match_media_envs().lock().remove(&id);
+  match_media_mqls().lock().remove(&id);
 }
 
 fn with_match_media_env<T>(id: u64, f: impl FnOnce(&MediaContext) -> T) -> Option<T> {
   let lock = match_media_envs().lock();
   let env = lock.get(&id)?;
   Some(f(env))
+}
+
+pub(crate) fn set_match_media_env_media(id: u64, media: MediaContext) {
+  let mut envs = match_media_envs().lock();
+  if envs.contains_key(&id) {
+    envs.insert(id, media);
+  }
+}
+
+/// Marks `env_id` as needing a `MediaQueryList` update.
+///
+/// Returns `true` if the caller should enqueue a task to process the update.
+pub(crate) fn queue_match_media_mql_update(env_id: u64) -> bool {
+  let mut regs = match_media_mqls().lock();
+  let Some(env) = regs.get_mut(&env_id) else {
+    return false;
+  };
+  if env.mqls.is_empty() {
+    return false;
+  }
+  if env.update_task_queued {
+    return false;
+  }
+  env.update_task_queued = true;
+  true
 }
 
 pub(crate) struct MatchMediaEnvGuard {
@@ -195,19 +266,7 @@ fn define_read_only_vm_js(
   scope.define_property(obj, key, read_only_data_desc(value))
 }
 
-fn noop_listener_native(
-  _vm: &mut Vm,
-  _scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
-  _callee: GcObject,
-  _this: Value,
-  _args: &[Value],
-) -> Result<Value, VmError> {
-  Ok(Value::Undefined)
-}
-
-fn env_id_from_callee(scope: &Scope<'_>, callee: GcObject) -> Result<u64, VmError> {
+fn env_id_from_match_media_callee(scope: &Scope<'_>, callee: GcObject) -> Result<u64, VmError> {
   let slots = scope.heap().get_function_native_slots(callee)?;
   match slots
     .get(MATCH_MEDIA_SLOT_ENV_ID)
@@ -221,22 +280,390 @@ fn env_id_from_callee(scope: &Scope<'_>, callee: GcObject) -> Result<u64, VmErro
   }
 }
 
-fn noop_from_callee(scope: &Scope<'_>, callee: GcObject) -> Result<Value, VmError> {
+fn native_call_id_from_match_media_callee(
+  scope: &Scope<'_>,
+  callee: GcObject,
+  slot: usize,
+  name: &'static str,
+) -> Result<NativeFunctionId, VmError> {
   let slots = scope.heap().get_function_native_slots(callee)?;
-  match slots
-    .get(MATCH_MEDIA_SLOT_NOOP_LISTENER)
-    .copied()
-    .unwrap_or(Value::Undefined)
-  {
-    Value::Object(obj) => Ok(Value::Object(obj)),
-    _ => Err(VmError::InvariantViolation(
-      "matchMedia missing noop listener native slot",
-    )),
+  match slots.get(slot).copied().unwrap_or(Value::Undefined) {
+    Value::Number(n) if n.is_finite() && n >= 0.0 && n <= u32::MAX as f64 => Ok(NativeFunctionId(n as u32)),
+    _ => Err(VmError::InvariantViolation(name)),
   }
 }
 
-fn match_media_native(
+fn get_or_create_mql_listeners(
+  vm: &Vm,
+  scope: &mut Scope<'_>,
+  mql: GcObject,
+) -> Result<GcObject, VmError> {
+  let key = alloc_key_vm_js(scope, MQL_LISTENERS_KEY)?;
+  if let Some(Value::Object(obj)) = scope.heap().object_get_own_data_property_value(mql, &key)? {
+    return Ok(obj);
+  }
+
+  let arr = scope.alloc_array(0)?;
+  if let Some(intrinsics) = vm.intrinsics() {
+    scope
+      .heap_mut()
+      .object_set_prototype(arr, Some(intrinsics.array_prototype()))?;
+  }
+  scope.push_root(Value::Object(arr))?;
+
+  scope.define_property(
+    mql,
+    key,
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: true,
+      kind: PropertyKind::Data {
+        value: Value::Object(arr),
+        writable: true,
+      },
+    },
+  )?;
+
+  Ok(arr)
+}
+
+fn mql_event_type_is_change(scope: &mut Scope<'_>, value: Value) -> bool {
+  // Most real-world usage passes the literal string `"change"`. Avoid allocations for that fast
+  // path by comparing UTF-16 code units.
+  const CHANGE: [u16; 6] = [99, 104, 97, 110, 103, 101]; // "change"
+  match value {
+    Value::String(s) => scope
+      .heap()
+      .get_string(s)
+      .ok()
+      .is_some_and(|js| js.as_code_units() == CHANGE),
+    Value::Null | Value::Undefined => false,
+    other => match scope.heap_mut().to_string(other) {
+      Ok(s) => scope
+        .heap()
+        .get_string(s)
+        .ok()
+        .is_some_and(|js| js.as_code_units() == CHANGE),
+      Err(_) => false,
+    },
+  }
+}
+
+fn mql_listener_is_acceptable(_scope: &mut Scope<'_>, listener: Value) -> Result<bool, VmError> {
+  // Keep listener registration forgiving: accept any object, and defer `handleEvent` resolution
+  // until dispatch time.
+  Ok(matches!(listener, Value::Object(_)))
+}
+
+fn mql_add_listener_value(
+  vm: &Vm,
+  scope: &mut Scope<'_>,
+  mql: GcObject,
+  listener: Value,
+) -> Result<(), VmError> {
+  if !mql_listener_is_acceptable(scope, listener)? {
+    return Ok(());
+  }
+
+  let listeners = get_or_create_mql_listeners(vm, scope, mql)?;
+  scope.push_root(Value::Object(listeners))?;
+
+  let length_key = alloc_key_vm_js(scope, "length")?;
+  let len = match scope.heap().object_get_own_data_property_value(listeners, &length_key)? {
+    Some(Value::Number(n)) if n.is_finite() && n >= 0.0 => n as usize,
+    _ => 0,
+  };
+
+  for idx in 0..len {
+    let idx_key = alloc_key_vm_js(scope, &idx.to_string())?;
+    if let Some(existing) = scope.heap().object_get_own_data_property_value(listeners, &idx_key)? {
+      if existing == listener {
+        return Ok(());
+      }
+    }
+  }
+
+  let idx_key = alloc_key_vm_js(scope, &len.to_string())?;
+  scope.define_property(
+    listeners,
+    idx_key,
+    PropertyDescriptor {
+      enumerable: true,
+      configurable: true,
+      kind: PropertyKind::Data {
+        value: listener,
+        writable: true,
+      },
+    },
+  )?;
+  Ok(())
+}
+
+fn mql_remove_listener_value(
+  vm: &Vm,
+  scope: &mut Scope<'_>,
+  mql: GcObject,
+  listener: Value,
+) -> Result<(), VmError> {
+  let Value::Object(_listener_obj) = listener else {
+    return Ok(());
+  };
+
+  let key = alloc_key_vm_js(scope, MQL_LISTENERS_KEY)?;
+  let Some(Value::Object(listeners)) = scope.heap().object_get_own_data_property_value(mql, &key)? else {
+    return Ok(());
+  };
+  scope.push_root(Value::Object(listeners))?;
+
+  let length_key = alloc_key_vm_js(scope, "length")?;
+  let len = match scope.heap().object_get_own_data_property_value(listeners, &length_key)? {
+    Some(Value::Number(n)) if n.is_finite() && n >= 0.0 => n as usize,
+    _ => 0,
+  };
+
+  // Snapshot and filter.
+  let mut remaining: Vec<Value> = Vec::new();
+  remaining.try_reserve_exact(len).map_err(|_| VmError::OutOfMemory)?;
+  for idx in 0..len {
+    let idx_key = alloc_key_vm_js(scope, &idx.to_string())?;
+    let v = scope
+      .heap()
+      .object_get_own_data_property_value(listeners, &idx_key)?
+      .unwrap_or(Value::Undefined);
+    if v == listener {
+      continue;
+    }
+    remaining.push(v);
+  }
+
+  let new_arr = scope.alloc_array(0)?;
+  if let Some(intrinsics) = vm.intrinsics() {
+    scope
+      .heap_mut()
+      .object_set_prototype(new_arr, Some(intrinsics.array_prototype()))?;
+  }
+  scope.push_root(Value::Object(new_arr))?;
+
+  for (idx, v) in remaining.into_iter().enumerate() {
+    let idx_key = alloc_key_vm_js(scope, &idx.to_string())?;
+    scope.define_property(
+      new_arr,
+      idx_key,
+      PropertyDescriptor {
+        enumerable: true,
+        configurable: true,
+        kind: PropertyKind::Data { value: v, writable: true },
+      },
+    )?;
+  }
+
+  scope.define_property(
+    mql,
+    key,
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: true,
+      kind: PropertyKind::Data {
+        value: Value::Object(new_arr),
+        writable: true,
+      },
+    },
+  )?;
+  Ok(())
+}
+
+fn mql_add_event_listener_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(mql) = this else {
+    return Ok(Value::Undefined);
+  };
+  let type_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  if !mql_event_type_is_change(scope, type_value) {
+    return Ok(Value::Undefined);
+  }
+  let listener = args.get(1).copied().unwrap_or(Value::Undefined);
+  if matches!(listener, Value::Null | Value::Undefined) {
+    return Ok(Value::Undefined);
+  }
+  mql_add_listener_value(vm, scope, mql, listener)?;
+  Ok(Value::Undefined)
+}
+
+fn mql_remove_event_listener_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(mql) = this else {
+    return Ok(Value::Undefined);
+  };
+  let type_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  if !mql_event_type_is_change(scope, type_value) {
+    return Ok(Value::Undefined);
+  }
+  let listener = args.get(1).copied().unwrap_or(Value::Undefined);
+  if matches!(listener, Value::Null | Value::Undefined) {
+    return Ok(Value::Undefined);
+  }
+  mql_remove_listener_value(vm, scope, mql, listener)?;
+  Ok(Value::Undefined)
+}
+
+fn mql_add_listener_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(mql) = this else {
+    return Ok(Value::Undefined);
+  };
+  let listener = args.get(0).copied().unwrap_or(Value::Undefined);
+  if matches!(listener, Value::Null | Value::Undefined) {
+    return Ok(Value::Undefined);
+  }
+  mql_add_listener_value(vm, scope, mql, listener)?;
+  Ok(Value::Undefined)
+}
+
+fn mql_remove_listener_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(mql) = this else {
+    return Ok(Value::Undefined);
+  };
+  let listener = args.get(0).copied().unwrap_or(Value::Undefined);
+  if matches!(listener, Value::Null | Value::Undefined) {
+    return Ok(Value::Undefined);
+  }
+  mql_remove_listener_value(vm, scope, mql, listener)?;
+  Ok(Value::Undefined)
+}
+
+fn mql_onchange_get_native(
   _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(mql) = this else {
+    return Ok(Value::Null);
+  };
+  let key = alloc_key_vm_js(scope, MQL_ONCHANGE_KEY)?;
+  Ok(
+    scope
+      .heap()
+      .object_get_own_data_property_value(mql, &key)?
+      .unwrap_or(Value::Null),
+  )
+}
+
+fn mql_onchange_set_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(mql) = this else {
+    return Ok(Value::Undefined);
+  };
+  let value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let value = match value {
+    Value::Null | Value::Undefined => Value::Null,
+    other if scope.heap().is_callable(other).unwrap_or(false) => other,
+    _ => Value::Null,
+  };
+
+  let key = alloc_key_vm_js(scope, MQL_ONCHANGE_KEY)?;
+  scope.define_property(
+    mql,
+    key,
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: true,
+      kind: PropertyKind::Data {
+        value,
+        writable: true,
+      },
+    },
+  )?;
+  Ok(Value::Undefined)
+}
+
+fn mql_matches_get_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let slots = scope.heap().get_function_native_slots(callee)?;
+  let env_id = match slots.get(MQL_MATCHES_GET_SLOT_ENV_ID).copied().unwrap_or(Value::Undefined) {
+    Value::Number(n) if n.is_finite() && n >= 0.0 && n <= u64::MAX as f64 => n as u64,
+    _ => return Ok(Value::Bool(false)),
+  };
+  let too_long = match slots
+    .get(MQL_MATCHES_GET_SLOT_TOO_LONG)
+    .copied()
+    .unwrap_or(Value::Bool(false))
+  {
+    Value::Bool(b) => b,
+    _ => false,
+  };
+  if too_long {
+    return Ok(Value::Bool(false));
+  }
+  let query_s = match slots
+    .get(MQL_MATCHES_GET_SLOT_QUERY_STRING)
+    .copied()
+    .unwrap_or(Value::Undefined)
+  {
+    Value::String(s) => s,
+    _ => return Ok(Value::Bool(false)),
+  };
+
+  let query_text = match scope.heap().get_string(query_s) {
+    Ok(s) => s.to_utf8_lossy(),
+    Err(_) => return Ok(Value::Bool(false)),
+  };
+
+  let matches = MediaQuery::parse_list(&query_text)
+    .ok()
+    .and_then(|queries| with_match_media_env(env_id, |ctx| ctx.evaluate_list(&queries)))
+    .unwrap_or(false);
+  Ok(Value::Bool(matches))
+}
+
+fn match_media_native(
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
   _hooks: &mut dyn VmHostHooks,
@@ -245,8 +672,54 @@ fn match_media_native(
   args: &[Value],
 ) -> Result<Value, VmError> {
   let mut scope = scope.reborrow();
-  let env_id = env_id_from_callee(&scope, callee)?;
-  let noop = noop_from_callee(&scope, callee)?;
+  let env_id = env_id_from_match_media_callee(&scope, callee)?;
+  let matches_get_call_id = native_call_id_from_match_media_callee(
+    &scope,
+    callee,
+    MATCH_MEDIA_SLOT_MQL_MATCHES_GET_CALL_ID,
+    "matchMedia missing matches getter native call id slot",
+  )?;
+  let add_event_listener_call_id = native_call_id_from_match_media_callee(
+    &scope,
+    callee,
+    MATCH_MEDIA_SLOT_MQL_ADD_EVENT_LISTENER_CALL_ID,
+    "matchMedia missing MediaQueryList.addEventListener native call id slot",
+  )?;
+  let remove_event_listener_call_id = native_call_id_from_match_media_callee(
+    &scope,
+    callee,
+    MATCH_MEDIA_SLOT_MQL_REMOVE_EVENT_LISTENER_CALL_ID,
+    "matchMedia missing MediaQueryList.removeEventListener native call id slot",
+  )?;
+  let add_listener_call_id = native_call_id_from_match_media_callee(
+    &scope,
+    callee,
+    MATCH_MEDIA_SLOT_MQL_ADD_LISTENER_CALL_ID,
+    "matchMedia missing MediaQueryList.addListener native call id slot",
+  )?;
+  let remove_listener_call_id = native_call_id_from_match_media_callee(
+    &scope,
+    callee,
+    MATCH_MEDIA_SLOT_MQL_REMOVE_LISTENER_CALL_ID,
+    "matchMedia missing MediaQueryList.removeListener native call id slot",
+  )?;
+  let onchange_get_call_id = native_call_id_from_match_media_callee(
+    &scope,
+    callee,
+    MATCH_MEDIA_SLOT_MQL_ONCHANGE_GET_CALL_ID,
+    "matchMedia missing MediaQueryList.onchange getter native call id slot",
+  )?;
+  let onchange_set_call_id = native_call_id_from_match_media_callee(
+    &scope,
+    callee,
+    MATCH_MEDIA_SLOT_MQL_ONCHANGE_SET_CALL_ID,
+    "matchMedia missing MediaQueryList.onchange setter native call id slot",
+  )?;
+
+  let intrinsics = vm
+    .intrinsics()
+    .ok_or(VmError::Unimplemented("matchMedia requires intrinsics"))?;
+  let func_proto = intrinsics.function_prototype();
 
   let query_value = args.get(0).copied().unwrap_or(Value::Undefined);
   let s = match query_value {
@@ -263,29 +736,462 @@ fn match_media_native(
     js_string.to_utf8_lossy()
   };
 
-  let (matches, media_value) = if too_long {
+  let media_value = if too_long {
     let truncated = scope.alloc_string(&query_text)?;
     scope.push_root(Value::String(truncated))?;
-    (false, Value::String(truncated))
+    Value::String(truncated)
   } else {
-    let matches = MediaQuery::parse_list(&query_text)
-      .ok()
-      .is_some_and(|queries| {
-        with_match_media_env(env_id, |ctx| ctx.evaluate_list(&queries)).unwrap_or(false)
-      });
-    (matches, Value::String(s))
+    Value::String(s)
   };
+
+  let parsed_queries = if too_long {
+    None
+  } else {
+    MediaQuery::parse_list(&query_text).ok()
+  };
+
+  let initial_matches = parsed_queries
+    .as_ref()
+    .is_some_and(|queries| with_match_media_env(env_id, |ctx| ctx.evaluate_list(queries)).unwrap_or(false));
 
   let mql = scope.alloc_object()?;
   scope.push_root(Value::Object(mql))?;
-  define_read_only_vm_js(&mut scope, mql, "matches", Value::Bool(matches))?;
   define_read_only_vm_js(&mut scope, mql, "media", media_value)?;
-  define_read_only_vm_js(&mut scope, mql, "addListener", noop)?;
-  define_read_only_vm_js(&mut scope, mql, "removeListener", noop)?;
-  define_read_only_vm_js(&mut scope, mql, "addEventListener", noop)?;
-  define_read_only_vm_js(&mut scope, mql, "removeEventListener", noop)?;
+
+  // `matches` is readonly but dynamic: implement as an accessor that re-evaluates against the
+  // current `MediaContext`.
+  let matches_get_name = scope.alloc_string("get matches")?;
+  scope.push_root(Value::String(matches_get_name))?;
+  scope.push_root(media_value)?;
+  let matches_get_func = scope.alloc_native_function_with_slots(
+    matches_get_call_id,
+    None,
+    matches_get_name,
+    0,
+    &[
+      Value::Number(env_id as f64),
+      Value::Bool(too_long),
+      media_value,
+    ],
+  )?;
+  scope
+    .heap_mut()
+    .object_set_prototype(matches_get_func, Some(func_proto))?;
+  scope.push_root(Value::Object(matches_get_func))?;
+
+  let matches_key = alloc_key_vm_js(&mut scope, "matches")?;
+  scope.define_property(
+    mql,
+    matches_key,
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: true,
+      kind: PropertyKind::Accessor {
+        get: Value::Object(matches_get_func),
+        set: Value::Undefined,
+      },
+    },
+  )?;
+
+  // Listener methods.
+  let add_event_listener_name = scope.alloc_string("addEventListener")?;
+  scope.push_root(Value::String(add_event_listener_name))?;
+  let add_event_listener_func =
+    scope.alloc_native_function(add_event_listener_call_id, None, add_event_listener_name, 2)?;
+  scope
+    .heap_mut()
+    .object_set_prototype(add_event_listener_func, Some(func_proto))?;
+  scope.push_root(Value::Object(add_event_listener_func))?;
+  define_read_only_vm_js(
+    &mut scope,
+    mql,
+    "addEventListener",
+    Value::Object(add_event_listener_func),
+  )?;
+
+  let remove_event_listener_name = scope.alloc_string("removeEventListener")?;
+  scope.push_root(Value::String(remove_event_listener_name))?;
+  let remove_event_listener_func = scope.alloc_native_function(
+    remove_event_listener_call_id,
+    None,
+    remove_event_listener_name,
+    2,
+  )?;
+  scope
+    .heap_mut()
+    .object_set_prototype(remove_event_listener_func, Some(func_proto))?;
+  scope.push_root(Value::Object(remove_event_listener_func))?;
+  define_read_only_vm_js(
+    &mut scope,
+    mql,
+    "removeEventListener",
+    Value::Object(remove_event_listener_func),
+  )?;
+
+  let add_listener_name = scope.alloc_string("addListener")?;
+  scope.push_root(Value::String(add_listener_name))?;
+  let add_listener_func = scope.alloc_native_function(add_listener_call_id, None, add_listener_name, 1)?;
+  scope
+    .heap_mut()
+    .object_set_prototype(add_listener_func, Some(func_proto))?;
+  scope.push_root(Value::Object(add_listener_func))?;
+  define_read_only_vm_js(&mut scope, mql, "addListener", Value::Object(add_listener_func))?;
+
+  let remove_listener_name = scope.alloc_string("removeListener")?;
+  scope.push_root(Value::String(remove_listener_name))?;
+  let remove_listener_func =
+    scope.alloc_native_function(remove_listener_call_id, None, remove_listener_name, 1)?;
+  scope
+    .heap_mut()
+    .object_set_prototype(remove_listener_func, Some(func_proto))?;
+  scope.push_root(Value::Object(remove_listener_func))?;
+  define_read_only_vm_js(
+    &mut scope,
+    mql,
+    "removeListener",
+    Value::Object(remove_listener_func),
+  )?;
+
+  // `onchange` EventHandler attribute.
+  let onchange_hidden_key = alloc_key_vm_js(&mut scope, MQL_ONCHANGE_KEY)?;
+  scope.define_property(
+    mql,
+    onchange_hidden_key,
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: true,
+      kind: PropertyKind::Data {
+        value: Value::Null,
+        writable: true,
+      },
+    },
+  )?;
+
+  let onchange_get_name = scope.alloc_string("get onchange")?;
+  scope.push_root(Value::String(onchange_get_name))?;
+  let onchange_get_func =
+    scope.alloc_native_function(onchange_get_call_id, None, onchange_get_name, 0)?;
+  scope
+    .heap_mut()
+    .object_set_prototype(onchange_get_func, Some(func_proto))?;
+  scope.push_root(Value::Object(onchange_get_func))?;
+
+  let onchange_set_name = scope.alloc_string("set onchange")?;
+  scope.push_root(Value::String(onchange_set_name))?;
+  let onchange_set_func =
+    scope.alloc_native_function(onchange_set_call_id, None, onchange_set_name, 1)?;
+  scope
+    .heap_mut()
+    .object_set_prototype(onchange_set_func, Some(func_proto))?;
+  scope.push_root(Value::Object(onchange_set_func))?;
+
+  let onchange_key = alloc_key_vm_js(&mut scope, "onchange")?;
+  scope.define_property(
+    mql,
+    onchange_key,
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: true,
+      kind: PropertyKind::Accessor {
+        get: Value::Object(onchange_get_func),
+        set: Value::Object(onchange_set_func),
+      },
+    },
+  )?;
+
+  register_media_query_list_for_env(
+    env_id,
+    mql,
+    query_text,
+    parsed_queries,
+    too_long,
+    initial_matches,
+    scope.heap(),
+  );
 
   Ok(Value::Object(mql))
+}
+
+fn register_media_query_list_for_env(
+  env_id: u64,
+  mql: GcObject,
+  query_text: String,
+  queries: Option<Vec<MediaQuery>>,
+  too_long: bool,
+  initial_matches: bool,
+  heap: &vm_js::Heap,
+) {
+  // `matches` is always `false` for too-long inputs or invalid queries; no change events will ever
+  // fire, so avoid tracking these and consuming the per-env cap.
+  if too_long || queries.is_none() {
+    return;
+  }
+
+  let mut regs = match_media_mqls().lock();
+  let reg = regs.entry(env_id).or_insert_with(|| MatchMediaMqlEnvRegistry {
+    mqls: Vec::new(),
+    update_task_queued: false,
+  });
+
+  // Best-effort cleanup: keep the registry bounded even under scripts that create many temporary
+  // MediaQueryLists.
+  reg.mqls.retain(|entry| entry.weak.upgrade(heap).is_some());
+
+  if reg.mqls.len() >= MAX_TRACKED_MEDIA_QUERY_LISTS_PER_ENV {
+    return;
+  }
+
+  reg.mqls.push(TrackedMediaQueryList {
+    weak: WeakGcObject::new(mql),
+    query_text,
+    queries,
+    too_long,
+    last_matches: initial_matches,
+  });
+}
+
+/// Process a queued `MediaQueryList` update for `env_id`.
+///
+/// This recomputes `matches` for all tracked MediaQueryLists, and dispatches `change` events for
+/// those whose state toggled.
+pub(crate) fn process_match_media_mql_update_for_env(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  env_id: u64,
+) -> Result<(), VmError> {
+  let Some(media_ctx) = match_media_envs().lock().get(&env_id).cloned() else {
+    // Realm already torn down.
+    match_media_mqls().lock().remove(&env_id);
+    return Ok(());
+  };
+
+  #[derive(Clone)]
+  struct PendingChange {
+    weak: WeakGcObject,
+    matches: bool,
+    media: String,
+  }
+
+  let mut changes: Vec<PendingChange> = Vec::new();
+
+  {
+    let mut regs = match_media_mqls().lock();
+    let Some(reg) = regs.get_mut(&env_id) else {
+      return Ok(());
+    };
+
+    // Allow future updates to queue another task even if this dispatch errors out.
+    reg.update_task_queued = false;
+
+    // Sweep dead entries and collect changes without holding the lock across JS execution.
+    reg.mqls.retain(|entry| entry.weak.upgrade(scope.heap()).is_some());
+
+    for entry in reg.mqls.iter_mut() {
+      let new_matches = if entry.too_long {
+        false
+      } else {
+        entry
+          .queries
+          .as_ref()
+          .is_some_and(|queries| media_ctx.evaluate_list(queries))
+      };
+
+      if new_matches != entry.last_matches {
+        entry.last_matches = new_matches;
+        if changes.len() < MAX_MQL_CHANGE_DISPATCHES_PER_ENV_UPDATE {
+          changes.push(PendingChange {
+            weak: entry.weak,
+            matches: new_matches,
+            media: entry.query_text.clone(),
+          });
+        }
+      }
+    }
+
+    if reg.mqls.is_empty() {
+      regs.remove(&env_id);
+    }
+  }
+
+  for change in changes {
+    let Some(mql) = change.weak.upgrade(scope.heap()) else {
+      continue;
+    };
+    dispatch_mql_change_event(vm, scope, host, hooks, mql, change.matches, &change.media)?;
+  }
+
+  Ok(())
+}
+
+fn dispatch_mql_change_event(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  mql: GcObject,
+  matches: bool,
+  media: &str,
+) -> Result<(), VmError> {
+  let mut scope = scope.reborrow();
+
+  // Root `mql` before allocating anything else so a GC triggered by allocation cannot collect the
+  // target mid-dispatch.
+  scope.push_root(Value::Object(mql))?;
+
+  let event = scope.alloc_object()?;
+  scope.push_root(Value::Object(event))?;
+
+  let type_key = alloc_key_vm_js(&mut scope, "type")?;
+  let type_s = scope.alloc_string("change")?;
+  scope.push_root(Value::String(type_s))?;
+  scope.define_property(
+    event,
+    type_key,
+    PropertyDescriptor {
+      enumerable: true,
+      configurable: true,
+      kind: PropertyKind::Data {
+        value: Value::String(type_s),
+        writable: true,
+      },
+    },
+  )?;
+
+  let matches_key = alloc_key_vm_js(&mut scope, "matches")?;
+  scope.define_property(
+    event,
+    matches_key,
+    PropertyDescriptor {
+      enumerable: true,
+      configurable: true,
+      kind: PropertyKind::Data {
+        value: Value::Bool(matches),
+        writable: true,
+      },
+    },
+  )?;
+
+  let media_key = alloc_key_vm_js(&mut scope, "media")?;
+  let media_s = scope.alloc_string(media)?;
+  scope.push_root(Value::String(media_s))?;
+  scope.define_property(
+    event,
+    media_key,
+    PropertyDescriptor {
+      enumerable: true,
+      configurable: true,
+      kind: PropertyKind::Data {
+        value: Value::String(media_s),
+        writable: true,
+      },
+    },
+  )?;
+
+  // Snapshot listeners.
+  let mut listeners: Vec<Value> = Vec::new();
+  let listeners_key = alloc_key_vm_js(&mut scope, MQL_LISTENERS_KEY)?;
+  if let Some(Value::Object(listeners_obj)) =
+    scope.heap().object_get_own_data_property_value(mql, &listeners_key)?
+  {
+    scope.push_root(Value::Object(listeners_obj))?;
+    let length_key = alloc_key_vm_js(&mut scope, "length")?;
+    let len = match scope
+      .heap()
+      .object_get_own_data_property_value(listeners_obj, &length_key)?
+    {
+      Some(Value::Number(n)) if n.is_finite() && n >= 0.0 => n as usize,
+      _ => 0,
+    };
+
+    listeners.try_reserve_exact(len).map_err(|_| VmError::OutOfMemory)?;
+    for idx in 0..len {
+      let idx_key = alloc_key_vm_js(&mut scope, &idx.to_string())?;
+      let v = scope
+        .heap()
+        .object_get_own_data_property_value(listeners_obj, &idx_key)?
+        .unwrap_or(Value::Undefined);
+      listeners.push(v);
+    }
+  }
+
+  let event_value = Value::Object(event);
+
+  for listener in listeners {
+    let Value::Object(listener_obj) = listener else {
+      continue;
+    };
+
+    if scope.heap().is_callable(listener).unwrap_or(false) {
+      match vm.call_with_host_and_hooks(
+        host,
+        &mut scope,
+        hooks,
+        listener,
+        Value::Object(mql),
+        &[event_value],
+      ) {
+        Ok(_) => {}
+        Err(e @ VmError::Termination(_)) => return Err(e),
+        Err(_) => {}
+      }
+      continue;
+    }
+
+    // EventListener object with `handleEvent`.
+    let handle_event_key = alloc_key_vm_js(&mut scope, "handleEvent")?;
+    let handle_event = scope.ordinary_get_with_host_and_hooks(
+      vm,
+      host,
+      hooks,
+      listener_obj,
+      handle_event_key,
+      listener,
+    )?;
+    if matches!(handle_event, Value::Undefined) {
+      continue;
+    }
+    if !scope.heap().is_callable(handle_event).unwrap_or(false) {
+      continue;
+    }
+    match vm.call_with_host_and_hooks(
+      host,
+      &mut scope,
+      hooks,
+      handle_event,
+      Value::Object(listener_obj),
+      &[event_value],
+    ) {
+      Ok(_) => {}
+      Err(e @ VmError::Termination(_)) => return Err(e),
+      Err(_) => {}
+    }
+  }
+
+  // Invoke `onchange` after the listener list for deterministic ordering.
+  let onchange_key = alloc_key_vm_js(&mut scope, MQL_ONCHANGE_KEY)?;
+  if let Some(handler) = scope
+    .heap()
+    .object_get_own_data_property_value(mql, &onchange_key)?
+  {
+    if scope.heap().is_callable(handler).unwrap_or(false) {
+      match vm.call_with_host_and_hooks(
+        host,
+        &mut scope,
+        hooks,
+        handler,
+        Value::Object(mql),
+        &[event_value],
+      ) {
+        Ok(_) => {}
+        Err(e @ VmError::Termination(_)) => return Err(e),
+        Err(_) => {}
+      }
+    }
+  }
+
+  Ok(())
 }
 
 fn navigator_send_beacon_native(
@@ -423,14 +1329,14 @@ pub(crate) fn install_window_shims_vm_js(
 
   define_read_only_vm_js(scope, window, "navigator", Value::Object(navigator))?;
 
-  let noop_call_id = vm.register_native_call(noop_listener_native)?;
-  let noop_name = scope.alloc_string("matchMedia listener noop")?;
-  scope.push_root(Value::String(noop_name))?;
-  let noop_func = scope.alloc_native_function(noop_call_id, None, noop_name, 0)?;
-  scope
-    .heap_mut()
-    .object_set_prototype(noop_func, Some(realm.intrinsics().function_prototype()))?;
-  scope.push_root(Value::Object(noop_func))?;
+  // `matchMedia` / `MediaQueryList` shims.
+  let mql_matches_get_call_id = vm.register_native_call(mql_matches_get_native)?;
+  let mql_add_event_listener_call_id = vm.register_native_call(mql_add_event_listener_native)?;
+  let mql_remove_event_listener_call_id = vm.register_native_call(mql_remove_event_listener_native)?;
+  let mql_add_listener_call_id = vm.register_native_call(mql_add_listener_native)?;
+  let mql_remove_listener_call_id = vm.register_native_call(mql_remove_listener_native)?;
+  let mql_onchange_get_call_id = vm.register_native_call(mql_onchange_get_native)?;
+  let mql_onchange_set_call_id = vm.register_native_call(mql_onchange_set_native)?;
 
   let match_media_call_id = vm.register_native_call(match_media_native)?;
   let match_media_name = scope.alloc_string("matchMedia")?;
@@ -442,7 +1348,13 @@ pub(crate) fn install_window_shims_vm_js(
     1,
     &[
       Value::Number(match_media_env_id as f64),
-      Value::Object(noop_func),
+      Value::Number(mql_matches_get_call_id.0 as f64),
+      Value::Number(mql_add_event_listener_call_id.0 as f64),
+      Value::Number(mql_remove_event_listener_call_id.0 as f64),
+      Value::Number(mql_add_listener_call_id.0 as f64),
+      Value::Number(mql_remove_listener_call_id.0 as f64),
+      Value::Number(mql_onchange_get_call_id.0 as f64),
+      Value::Number(mql_onchange_set_call_id.0 as f64),
     ],
   )?;
   scope.heap_mut().object_set_prototype(
@@ -601,9 +1513,10 @@ pub fn install_window_shims(
 mod tests {
   use super::*;
   use crate::dom2;
-  use crate::js::WindowHost;
+  use crate::js::{RunLimits, RunUntilIdleOutcome, WindowHost};
   use crate::style::media::MediaContext;
   use selectors::context::QuirksMode;
+  use std::time::Duration;
 
   fn get_prop(rt: &mut VmJsRuntime, obj: Value, name: &str) -> Value {
     let key = prop_key(rt, name).unwrap();
@@ -678,6 +1591,141 @@ mod tests {
     let mql = rt.call_function(match_media_fn, window, &[query]).unwrap();
     let matches = get_prop(&mut rt, mql, "matches");
     assert!(matches == Value::Bool(false));
+  }
+
+  #[test]
+  fn match_media_add_event_listener_fires_on_media_context_update() {
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut host = WindowHost::new(dom, "https://example.invalid/").unwrap();
+    host
+      .exec_script(
+        r#"
+        globalThis.__calls = 0;
+        globalThis.__last = null;
+        const mql = matchMedia("(min-width: 700px)");
+        mql.addEventListener("change", e => { globalThis.__calls++; globalThis.__last = e.matches; });
+        "#,
+      )
+      .unwrap();
+    assert_eq!(
+      host.exec_script(r#"matchMedia("(min-width: 700px)").matches"#).unwrap(),
+      Value::Bool(true)
+    );
+
+    host
+      .set_media_context(MediaContext::screen(600.0, 600.0))
+      .unwrap();
+
+    assert_eq!(
+      host
+        .run_until_idle(RunLimits {
+          max_tasks: 10,
+          max_microtasks: 100,
+          max_wall_time: Some(Duration::from_secs(5)),
+        })
+        .unwrap(),
+      RunUntilIdleOutcome::Idle
+    );
+
+    assert_eq!(host.exec_script("globalThis.__calls").unwrap(), Value::Number(1.0));
+    assert_eq!(host.exec_script("globalThis.__last").unwrap(), Value::Bool(false));
+  }
+
+  #[test]
+  fn match_media_add_listener_fires_on_media_context_update() {
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut host = WindowHost::new(dom, "https://example.invalid/").unwrap();
+    host
+      .exec_script(
+        r#"
+        globalThis.__calls = 0;
+        globalThis.__last = null;
+        const mql = matchMedia("(max-width: 700px)");
+        mql.addListener(e => { globalThis.__calls++; globalThis.__last = e.matches; });
+        "#,
+      )
+      .unwrap();
+    assert_eq!(
+      host.exec_script(r#"matchMedia("(max-width: 700px)").matches"#).unwrap(),
+      Value::Bool(false)
+    );
+
+    host
+      .set_media_context(MediaContext::screen(600.0, 600.0))
+      .unwrap();
+
+    assert_eq!(
+      host
+        .run_until_idle(RunLimits {
+          max_tasks: 10,
+          max_microtasks: 100,
+          max_wall_time: Some(Duration::from_secs(5)),
+        })
+        .unwrap(),
+      RunUntilIdleOutcome::Idle
+    );
+
+    assert_eq!(host.exec_script("globalThis.__calls").unwrap(), Value::Number(1.0));
+    assert_eq!(host.exec_script("globalThis.__last").unwrap(), Value::Bool(true));
+  }
+
+  #[test]
+  fn match_media_onchange_is_invoked() {
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut host = WindowHost::new(dom, "https://example.invalid/").unwrap();
+    host
+      .exec_script(
+        r#"
+        globalThis.__calls = 0;
+        globalThis.__last = null;
+        const mql = matchMedia("(min-width: 700px)");
+        mql.onchange = e => { globalThis.__calls++; globalThis.__last = e.matches; };
+        "#,
+      )
+      .unwrap();
+
+    host
+      .set_media_context(MediaContext::screen(600.0, 600.0))
+      .unwrap();
+
+    assert_eq!(
+      host
+        .run_until_idle(RunLimits {
+          max_tasks: 10,
+          max_microtasks: 100,
+          max_wall_time: Some(Duration::from_secs(5)),
+        })
+        .unwrap(),
+      RunUntilIdleOutcome::Idle
+    );
+
+    assert_eq!(host.exec_script("globalThis.__calls").unwrap(), Value::Number(1.0));
+    assert_eq!(host.exec_script("globalThis.__last").unwrap(), Value::Bool(false));
+  }
+
+  #[test]
+  fn match_media_overlong_query_is_truncated_and_non_throwing() {
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut host = WindowHost::new(dom, "https://example.invalid/").unwrap();
+    host
+      .exec_script(&format!(
+        r#"
+        globalThis.__mql = matchMedia("a".repeat({}));
+        globalThis.__len = globalThis.__mql.media.length;
+        globalThis.__matches = globalThis.__mql.matches;
+        "#,
+        MAX_MATCH_MEDIA_QUERY_CODE_UNITS + 16
+      ))
+      .unwrap();
+
+    assert_eq!(
+      host.exec_script("globalThis.__len").unwrap(),
+      Value::Number(MAX_MATCH_MEDIA_QUERY_CODE_UNITS as f64)
+    );
+    assert_eq!(
+      host.exec_script("globalThis.__matches").unwrap(),
+      Value::Bool(false)
+    );
   }
 
   #[test]

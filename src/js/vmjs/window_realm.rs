@@ -11,7 +11,8 @@ use crate::js::realm_module_loader::{ModuleLoader, ModuleLoaderHandle};
 use crate::js::time::{TimeBindings, WebTime};
 use crate::js::web_storage;
 use crate::js::window_env::{
-  install_window_shims_vm_js, unregister_match_media_env, MatchMediaEnvGuard, WindowEnv,
+  install_window_shims_vm_js, set_match_media_env_media, unregister_match_media_env, MatchMediaEnvGuard,
+  WindowEnv,
 };
 use crate::js::window_timers::{
   event_loop_mut_from_hooks, hooks_have_event_loop, VmJsEventLoopHooks,
@@ -729,6 +730,16 @@ impl WindowRealm {
         Ok(())
       }
     }
+  }
+
+  /// Updates the realm's [`MediaContext`], backing `matchMedia()` and other environment shims.
+  ///
+  /// Returns the internal `match_media_env_id` used by the `window_env` registry when present (real
+  /// window realms), or `None` for minimal realms without `matchMedia` shims.
+  pub fn set_media_context(&mut self, media: MediaContext) -> Option<u64> {
+    let id = self.match_media_env_id?;
+    set_match_media_env_media(id, media);
+    Some(id)
   }
 
   pub fn module_loader_handle(&self) -> ModuleLoaderHandle {
