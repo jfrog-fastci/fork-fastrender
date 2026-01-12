@@ -288,11 +288,24 @@ pub fn optpass_licm(cfg: &mut Cfg, dom: &Dom) -> PassResult {
   let mut next_label = next_unused_label(cfg);
   let mut next_var = next_unused_var(cfg);
 
+  enum DomHolder<'a> {
+    Borrowed(&'a Dom),
+    Owned(Dom),
+  }
+
+  impl<'a> DomHolder<'a> {
+    fn get(&self) -> &Dom {
+      match self {
+        DomHolder::Borrowed(dom) => dom,
+        DomHolder::Owned(dom) => dom,
+      }
+    }
+  }
+
   // 1) Ensure canonical preheaders for all natural loops.
-  let mut computed_dom: Option<Dom> = None;
-  let mut dom_ref: &Dom = dom;
+  let mut dom_holder = DomHolder::Borrowed(dom);
   loop {
-    let loops = find_loops(cfg, dom_ref);
+    let loops = find_loops(cfg, dom_holder.get());
     if loops.is_empty() {
       return result;
     }
@@ -320,11 +333,11 @@ pub fn optpass_licm(cfg: &mut Cfg, dom: &Dom) -> PassResult {
       break;
     }
 
-    computed_dom = Some(Dom::calculate(cfg));
-    dom_ref = computed_dom.as_ref().expect("assigned above");
+    dom_holder = DomHolder::Owned(Dom::calculate(cfg));
   }
 
   // 2) Hoist invariant pure instructions into the corresponding loop preheaders.
+  let dom_ref = dom_holder.get();
   let dominates = dom_ref.dominates_graph();
   let loops = find_loops(cfg, dom_ref);
 
