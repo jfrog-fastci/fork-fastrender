@@ -16470,6 +16470,57 @@ fn node_has_child_nodes_native(
   Ok(Value::Bool(dom.first_child(node_id).is_some()))
 }
 
+fn node_get_root_node_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(wrapper_obj) = this else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+
+  let node_id = dom_platform_mut(vm)
+    .ok_or(VmError::TypeError("Illegal invocation"))?
+    .require_node_id(scope.heap(), Value::Object(wrapper_obj))?;
+  let dom = dom_from_vm_host(host).ok_or(VmError::TypeError("Illegal invocation"))?;
+
+  let options = args.get(0).copied().unwrap_or(Value::Undefined);
+  let composed = match options {
+    Value::Undefined | Value::Null => false,
+    Value::Object(obj) => {
+      let composed_key = alloc_key(scope, "composed")?;
+      match scope
+        .heap()
+        .object_get_own_data_property_value(obj, &composed_key)?
+      {
+        Some(v) => scope.heap().to_boolean(v)?,
+        None => false,
+      }
+    }
+    _ => false,
+  };
+
+  let mut root = node_id;
+  let mut remaining = dom.nodes_len().saturating_add(1);
+  while remaining != 0 {
+    remaining -= 1;
+    if !composed && matches!(&dom.node(root).kind, NodeKind::ShadowRoot { .. }) {
+      break;
+    }
+    let Some(parent) = dom.parent_node(root) else {
+      break;
+    };
+    root = parent;
+  }
+
+  let document_obj = node_wrapper_document_obj(scope, wrapper_obj, node_id)?;
+  get_or_create_node_wrapper(vm, scope, document_obj, Some(dom), root)
+}
+
 fn node_contains_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -24625,6 +24676,23 @@ fn init_window_globals(
       node_proto,
       has_child_nodes_key,
       data_desc(Value::Object(has_child_nodes_func)),
+    )?;
+
+    let get_root_node_call_id = vm.register_native_call(node_get_root_node_native)?;
+    let get_root_node_name = scope.alloc_string("getRootNode")?;
+    scope.push_root(Value::String(get_root_node_name))?;
+    let get_root_node_func =
+      scope.alloc_native_function(get_root_node_call_id, None, get_root_node_name, 1)?;
+    scope.heap_mut().object_set_prototype(
+      get_root_node_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(get_root_node_func))?;
+    let get_root_node_key = alloc_key(&mut scope, "getRootNode")?;
+    scope.define_property(
+      node_proto,
+      get_root_node_key,
+      data_desc(Value::Object(get_root_node_func)),
     )?;
 
     // Element.tagName
