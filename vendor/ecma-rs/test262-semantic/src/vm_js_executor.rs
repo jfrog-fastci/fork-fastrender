@@ -5,7 +5,8 @@ use crate::runner::TestCase;
 use diagnostics::render::render_diagnostic;
 use diagnostics::SimpleFiles;
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::ffi::OsStr;
+use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use vm_js::format_stack_trace;
@@ -37,15 +38,31 @@ struct Test262ModuleHooks {
   microtasks: MicrotaskQueue,
   /// Directory used to resolve `ModuleReferrer::Realm` (dynamic import from classic scripts).
   test_dir: PathBuf,
+  /// Sandbox root for module loading. All resolved module paths must stay within this directory.
+  ///
+  /// Derived as the nearest ancestor directory of the entry test case whose name is `test`.
+  test_root_dir_normalized: PathBuf,
+  test_root_dir_canonical: PathBuf,
   module_paths: HashMap<ModuleId, PathBuf>,
   module_cache: HashMap<ModuleCacheKey, ModuleId>,
 }
 
 impl Test262ModuleHooks {
   fn new(test_path: &Path) -> Self {
+    let test_root_dir = derive_test_root_dir(test_path);
+    let test_root_dir_canonical =
+      std::fs::canonicalize(&test_root_dir).unwrap_or_else(|_| test_root_dir.clone());
+    let test_root_dir_normalized = normalize_path(&test_root_dir_canonical);
+
+    let test_dir = test_path.parent().unwrap_or_else(|| Path::new(""));
+    // Canonicalize so that sandbox prefix checks compare like-for-like with module paths.
+    let test_dir = std::fs::canonicalize(test_dir).unwrap_or_else(|_| test_dir.to_path_buf());
+
     Self {
       microtasks: MicrotaskQueue::new(),
-      test_dir: test_path.parent().unwrap_or_else(|| Path::new("")).to_path_buf(),
+      test_dir,
+      test_root_dir_normalized,
+      test_root_dir_canonical,
       module_paths: HashMap::new(),
       module_cache: HashMap::new(),
     }
@@ -128,14 +145,111 @@ impl VmHostHooks for Test262ModuleHooks {
     let base_dir = self.resolve_base_dir(referrer)?;
     let specifier = module_request.specifier.clone();
 
-    let candidate = base_dir.join(&specifier);
-    let canonical = match std::fs::canonicalize(&candidate) {
-      Ok(p) => p,
+    // Validate the import specifier before touching the filesystem.
+    if specifier.is_empty() {
+      let result = Err(module_load_type_error(vm, scope, "import specifier must not be empty")?);
+      return finish_loading_imported_module(
+        vm,
+        scope,
+        modules,
+        self,
+        referrer,
+        module_request,
+        payload,
+        result,
+      );
+    }
+    if specifier.contains('\0') {
+      let result = Err(module_load_type_error(vm, scope, "import specifier contains NUL")?);
+      return finish_loading_imported_module(
+        vm,
+        scope,
+        modules,
+        self,
+        referrer,
+        module_request,
+        payload,
+        result,
+      );
+    }
+    if is_absolute_filesystem_specifier(&specifier) {
+      let result = Err(module_load_type_error(vm, scope, "import specifier must not be an absolute path")?);
+      return finish_loading_imported_module(
+        vm,
+        scope,
+        modules,
+        self,
+        referrer,
+        module_request,
+        payload,
+        result,
+      );
+    }
+
+    let joined = base_dir.join(&specifier);
+    let normalized = normalize_path(&joined);
+    if !normalized.starts_with(&self.test_root_dir_normalized) {
+      let result = Err(module_load_type_error(
+        vm,
+        scope,
+        &format!("import specifier escapes test262 sandbox: {specifier}"),
+      )?);
+      return finish_loading_imported_module(
+        vm,
+        scope,
+        modules,
+        self,
+        referrer,
+        module_request,
+        payload,
+        result,
+      );
+    }
+
+    // Canonicalize for symlink-aware sandboxing. Missing files are rejected deterministically.
+    let canonical = match std::fs::canonicalize(&normalized) {
+      Ok(path) => {
+        if !path.starts_with(&self.test_root_dir_canonical) {
+          let result = Err(module_load_type_error(
+            vm,
+            scope,
+            &format!("import specifier escapes test262 sandbox: {specifier}"),
+          )?);
+          return finish_loading_imported_module(
+            vm,
+            scope,
+            modules,
+            self,
+            referrer,
+            module_request,
+            payload,
+            result,
+          );
+        }
+        path
+      }
+      Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+        let result = Err(module_load_type_error(
+          vm,
+          scope,
+          &format!("module not found: {specifier}"),
+        )?);
+        return finish_loading_imported_module(
+          vm,
+          scope,
+          modules,
+          self,
+          referrer,
+          module_request,
+          payload,
+          result,
+        );
+      }
       Err(_) => {
         let result = Err(module_load_type_error(
           vm,
           scope,
-          &format!("Cannot find module '{specifier}'"),
+          &format!("module not found: {specifier}"),
         )?);
         return finish_loading_imported_module(
           vm,
@@ -167,13 +281,14 @@ impl VmHostHooks for Test262ModuleHooks {
       );
     }
 
-    let source_text = match std::fs::read_to_string(&canonical) {
-      Ok(src) => Arc::new(SourceText::new(canonical.to_string_lossy().into_owned(), src)),
-      Err(err) => {
+    // Avoid platform-dependent IO/UTF-8 error messages: map to deterministic TypeErrors.
+    let bytes = match std::fs::read(&canonical) {
+      Ok(bytes) => bytes,
+      Err(_) => {
         let result = Err(module_load_type_error(
           vm,
           scope,
-          &format!("Failed to read module '{}': {err}", canonical.display()),
+          &format!("module not found: {specifier}"),
         )?);
         return finish_loading_imported_module(
           vm,
@@ -187,6 +302,25 @@ impl VmHostHooks for Test262ModuleHooks {
         );
       }
     };
+
+    let source = match String::from_utf8(bytes) {
+      Ok(s) => s,
+      Err(_) => {
+        let result = Err(module_load_type_error(vm, scope, "module source was not valid UTF-8")?);
+        return finish_loading_imported_module(
+          vm,
+          scope,
+          modules,
+          self,
+          referrer,
+          module_request,
+          payload,
+          result,
+        );
+      }
+    };
+
+    let source_text = Arc::new(SourceText::new(canonical.to_string_lossy().into_owned(), source));
 
     let record = match SourceTextModuleRecord::parse_source_with_vm(vm, source_text) {
       Ok(record) => record,
@@ -212,6 +346,45 @@ impl VmHostHooks for Test262ModuleHooks {
 
     finish_loading_imported_module(vm, scope, modules, self, referrer, module_request, payload, Ok(id))
   }
+}
+
+fn derive_test_root_dir(case_path: &Path) -> PathBuf {
+  for ancestor in case_path.ancestors() {
+    if ancestor.file_name() == Some(OsStr::new("test")) {
+      return ancestor.to_path_buf();
+    }
+  }
+  case_path
+    .parent()
+    .unwrap_or(case_path)
+    .to_path_buf()
+}
+
+fn normalize_path(path: &Path) -> PathBuf {
+  let mut out = PathBuf::new();
+  for component in path.components() {
+    match component {
+      Component::CurDir => {}
+      Component::ParentDir => {
+        let _ = out.pop();
+      }
+      Component::Prefix(_) | Component::RootDir | Component::Normal(_) => out.push(component.as_os_str()),
+    }
+  }
+  out
+}
+
+fn is_absolute_filesystem_specifier(specifier: &str) -> bool {
+  if specifier.starts_with('/') {
+    return true;
+  }
+  // Windows UNC and `\` rooted paths.
+  if specifier.starts_with('\\') || specifier.starts_with("//") {
+    return true;
+  }
+  // Windows drive-letter paths.
+  let bytes = specifier.as_bytes();
+  bytes.len() >= 2 && bytes[1] == b':' && bytes[0].is_ascii_alphabetic()
 }
 
 /// A `test262-semantic` executor backed by the `vm-js` interpreter.
