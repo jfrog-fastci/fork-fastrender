@@ -1537,7 +1537,8 @@ impl ModuleGraph {
         };
         let promise = roots.capability(scope.heap()).ok_or_else(VmError::invalid_handle)?.promise;
 
-        // Keep the module graph pointer installed until the in-progress evaluation completes.
+        // Keep the module graph pointer installed until the in-progress evaluation completes (it
+        // will be restored when the module-graph-pointer refcount drops back to zero).
         graph_guard.disarm();
         return Ok(promise);
       }

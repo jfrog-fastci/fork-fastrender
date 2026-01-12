@@ -3981,9 +3981,7 @@ impl<'a> Scope<'a> {
       return self.ordinary_define_own_property(obj, length_key, desc);
     };
 
-    let Some(new_len) = array_length_from_value(value) else {
-      return Ok(false);
-    };
+    let new_len = array_length_from_value(self, value)?;
 
     let old_len = self.heap().array_length(obj)?;
 
@@ -4916,23 +4914,56 @@ fn proxy_set(
   }
 }
 
-fn array_length_from_value(value: Value) -> Option<u32> {
-  let Value::Number(n) = value else {
-    return None;
+fn array_length_from_value(scope: &mut Scope<'_>, value: Value) -> Result<u32, VmError> {
+  // ECMA-262 `ArraySetLength` converts the incoming value via `ToNumber` and then rejects the
+  // definition if `ToUint32(numberLen) !== numberLen` by throwing a RangeError.
+  //
+  // `vm-js` implements `ToNumber` for primitives here (and also supports unboxing the VM's primitive
+  // wrapper objects) so `[].length = "1"` and `[].length = new Number(1)` behave per spec.
+  //
+  // Full `ToNumber` for arbitrary objects requires `ToPrimitive` which can invoke user code and
+  // therefore needs a `Vm` + host context; those cases remain unimplemented for now.
+  let prim = match value {
+    Value::Object(obj) => {
+      let heap = scope.heap();
+      let unbox = |sym: Option<crate::GcSymbol>| -> Result<Option<Value>, VmError> {
+        let Some(sym) = sym else {
+          return Ok(None);
+        };
+        heap.object_get_own_data_property_value(obj, &PropertyKey::from_symbol(sym))
+      };
+
+      // Note: order matches `ToNumber` / `ToPrimitive` behaviour for the builtin wrappers.
+      if let Some(v) = unbox(heap.internal_number_data_symbol())? {
+        if matches!(v, Value::Number(_)) {
+          v
+        } else {
+          value
+        }
+      } else if let Some(v) = unbox(heap.internal_string_data_symbol())? {
+        if matches!(v, Value::String(_)) {
+          v
+        } else {
+          value
+        }
+      } else if let Some(v) = unbox(heap.internal_boolean_data_symbol())? {
+        if matches!(v, Value::Bool(_)) {
+          v
+        } else {
+          value
+        }
+      } else {
+        value
+      }
+    }
+    other => other,
   };
-  if !n.is_finite() {
-    return None;
+
+  let n = crate::ops::to_number(scope.heap_mut(), prim)?;
+  if !n.is_finite() || n < 0.0 || n.fract() != 0.0 || n > u32::MAX as f64 {
+    return Err(VmError::RangeError("Invalid array length"));
   }
-  if n < 0.0 {
-    return None;
-  }
-  if n.fract() != 0.0 {
-    return None;
-  }
-  if n > u32::MAX as f64 {
-    return None;
-  }
-  Some(n as u32)
+  Ok(n as u32)
 }
 
 fn validate_and_apply_property_descriptor(

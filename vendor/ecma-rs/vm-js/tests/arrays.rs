@@ -185,15 +185,20 @@ fn invalid_length_value_is_rejected() -> Result<(), VmError> {
   scope.push_root(Value::Object(array))?;
 
   let len_key = length_key(&mut scope)?;
-  let ok = scope.define_own_property(
+  let err = scope
+    .define_own_property(
     array,
     len_key,
     PropertyDescriptorPatch {
       value: Some(Value::Number(3.5)),
       ..Default::default()
     },
-  )?;
-  assert!(!ok);
+  )
+    .unwrap_err();
+  match err {
+    VmError::RangeError("Invalid array length") => {}
+    other => panic!("expected RangeError(\"Invalid array length\"), got {other:?}"),
+  }
 
   let len_key = length_key(&mut scope)?;
   assert_eq!(get_length(&scope, array, len_key)?, Value::Number(0.0));

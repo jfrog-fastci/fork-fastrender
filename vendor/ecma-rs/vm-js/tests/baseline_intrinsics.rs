@@ -72,6 +72,14 @@ fn realm_installs_baseline_globals_and_intrinsic_graph() -> Result<(), VmError> 
     heap.object_prototype(intr.array_prototype())?,
     Some(intr.object_prototype())
   );
+  assert!(
+    heap.object_is_array(intr.array_prototype())?,
+    "Array.prototype should be an Array exotic object"
+  );
+  assert_eq!(
+    get_own_data_property(&mut heap, intr.array_prototype(), "length")?,
+    Some(Value::Number(0.0))
+  );
 
   assert_eq!(
     heap.object_prototype(intr.object_constructor())?,

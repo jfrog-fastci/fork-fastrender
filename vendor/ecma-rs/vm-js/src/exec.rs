@@ -9200,6 +9200,26 @@ impl<'a> Evaluator<'a> {
           Ok(value)
         }
       },
+      OperatorName::AssignmentExponentiation => match &*expr.left.stx {
+        Expr::ObjPat(_) | Expr::ArrPat(_) => Err(VmError::Unimplemented(
+          "assignment exponentiation to destructuring patterns",
+        )),
+        _ => {
+          let reference = self.eval_reference(scope, &expr.left)?;
+          let mut op_scope = scope.reborrow();
+          self.root_reference(&mut op_scope, &reference)?;
+
+          let left = self.get_value_from_reference(&mut op_scope, &reference)?;
+          // Root `left` across evaluation of the RHS in case it allocates and triggers GC.
+          op_scope.push_root(left)?;
+          let right = self.eval_expr(&mut op_scope, &expr.right)?;
+
+          let value = self.exponentiation_operator(&mut op_scope, left, right)?;
+          op_scope.push_root(value)?;
+          self.put_value_to_reference(&mut op_scope, &reference, value)?;
+          Ok(value)
+        }
+      },
       OperatorName::LogicalAnd => {
         let left = self.eval_expr(scope, &expr.left)?;
         if !to_boolean(scope.heap(), left)? {
@@ -9319,6 +9339,14 @@ impl<'a> Evaluator<'a> {
         let right = self.eval_expr(&mut rhs_scope, &expr.right)?;
         self.addition_operator(&mut rhs_scope, left, right)
       }
+      OperatorName::Exponentiation => {
+        let left = self.eval_expr(scope, &expr.left)?;
+        // Root `left` across evaluation of `right` in case the RHS allocates and triggers GC.
+        let mut rhs_scope = scope.reborrow();
+        rhs_scope.push_root(left)?;
+        let right = self.eval_expr(&mut rhs_scope, &expr.right)?;
+        self.exponentiation_operator(&mut rhs_scope, left, right)
+      }
       OperatorName::Multiplication => {
         let left = self.eval_expr(scope, &expr.left)?;
         // Root `left` across evaluation of `right` in case the RHS allocates and triggers GC.
@@ -9336,41 +9364,6 @@ impl<'a> Evaluator<'a> {
               let a = rhs_scope.heap().get_bigint(a)?;
               let b = rhs_scope.heap().get_bigint(b)?;
               a.mul_with_tick(b, &mut || self.tick())?
-            };
-            let out = rhs_scope.alloc_bigint(out)?;
-            Ok(Value::BigInt(out))
-          }
-          _ => Err(throw_type_error(
-            self.vm,
-            &mut rhs_scope,
-            "Cannot mix BigInt and other types",
-          )?),
-        }
-      }
-      OperatorName::Exponentiation => {
-        let left = self.eval_expr(scope, &expr.left)?;
-        // Root `left` across evaluation of `right` in case the RHS allocates and triggers GC.
-        let mut rhs_scope = scope.reborrow();
-        rhs_scope.push_root(left)?;
-        let right = self.eval_expr(&mut rhs_scope, &expr.right)?;
-        rhs_scope.push_root(right)?;
-
-        let left_num = self.to_numeric(&mut rhs_scope, left)?;
-        let right_num = self.to_numeric(&mut rhs_scope, right)?;
-        match (left_num, right_num) {
-          (NumericValue::Number(a), NumericValue::Number(b)) => Ok(Value::Number(a.powf(b))),
-          (NumericValue::BigInt(a), NumericValue::BigInt(b)) => {
-            let out = {
-              let base = rhs_scope.heap().get_bigint(a)?;
-              let exp = rhs_scope.heap().get_bigint(b)?;
-              if exp.is_negative() {
-                return Err(throw_range_error(
-                  self.vm,
-                  &mut rhs_scope,
-                  "Exponent must be positive",
-                )?);
-              }
-              base.pow_with_tick(exp, &mut || self.tick())?
             };
             let out = rhs_scope.alloc_bigint(out)?;
             Ok(Value::BigInt(out))
@@ -10146,6 +10139,42 @@ impl<'a> Evaluator<'a> {
           )?)
         }
       })
+    }
+  }
+
+  fn exponentiation_operator(
+    &mut self,
+    scope: &mut Scope<'_>,
+    left: Value,
+    right: Value,
+  ) -> Result<Value, VmError> {
+    // Root both operands for the duration of the operation: `ToNumeric` can allocate (via
+    // `ToPrimitive`) and trigger GC.
+    let mut op_scope = scope.reborrow();
+    op_scope.push_roots(&[left, right])?;
+
+    let left_num = self.to_numeric(&mut op_scope, left)?;
+    let right_num = self.to_numeric(&mut op_scope, right)?;
+    match (left_num, right_num) {
+      (NumericValue::Number(a), NumericValue::Number(b)) => Ok(Value::Number(a.powf(b))),
+      (NumericValue::BigInt(a), NumericValue::BigInt(b)) => {
+        let out = {
+          let base = op_scope.heap().get_bigint(a)?;
+          let exp = op_scope.heap().get_bigint(b)?;
+          if exp.is_negative() {
+            return Err(throw_range_error(self.vm, &mut op_scope, "BigInt exponent must be >= 0")?);
+          }
+          let mut tick = || self.tick();
+          base.pow_with_tick(exp, &mut tick)?
+        };
+        let out = op_scope.alloc_bigint(out)?;
+        Ok(Value::BigInt(out))
+      }
+      _ => Err(throw_type_error(
+        self.vm,
+        &mut op_scope,
+        "Cannot mix BigInt and other types",
+      )?),
     }
   }
 
@@ -19379,6 +19408,7 @@ fn async_binary_after_left(
       async_eval_expr(evaluator, scope, &expr.right)
     }
     OperatorName::Addition
+    | OperatorName::Exponentiation
     | OperatorName::Multiplication
     | OperatorName::BitwiseAnd
     | OperatorName::BitwiseOr
@@ -19444,6 +19474,9 @@ fn async_apply_binary_operator(
   match operator {
     OperatorName::Addition => evaluator
       .addition_operator(&mut op_scope, left, right)
+      .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut op_scope, err)),
+    OperatorName::Exponentiation => evaluator
+      .exponentiation_operator(&mut op_scope, left, right)
       .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut op_scope, err)),
     OperatorName::Multiplication => {
       let left_num = evaluator
@@ -26480,7 +26513,12 @@ fn gen_apply_unary_operator(
 ) -> Result<Value, VmError> {
   match expr.operator {
     OperatorName::LogicalNot => Ok(Value::Bool(!to_boolean(scope.heap(), argument)?)),
-    OperatorName::UnaryPlus => Ok(Value::Number(evaluator.to_number_operator(scope, argument)?)),
+    OperatorName::UnaryPlus => {
+      // Root the argument: `ToNumber` can allocate/invoke user code via `ToPrimitive`.
+      let mut scope = scope.reborrow();
+      scope.push_root(argument)?;
+      Ok(Value::Number(evaluator.to_number_operator(&mut scope, argument)?))
+    }
     OperatorName::UnaryNegation => {
       // `ToNumeric` can allocate/GC (via `ToPrimitive`), so root `argument` across the conversion.
       let mut neg_scope = scope.reborrow();
@@ -27158,11 +27196,28 @@ fn gen_resume_from_frames(
           };
 
           let Some(throw_method) = throw_method else {
-            // No `throw` method: close the iterator and rethrow the original reason.
-            match evaluator.iterator_close_on_completion(scope, &iterator_record, Completion::Throw(thrown)) {
-              Ok(c) => state = c,
-              Err(err) => state = gen_error_to_completion(evaluator, scope, err)?,
+            // No `throw` method: close then throw TypeError (yield* protocol violation).
+            //
+            // Node/V8 throws a TypeError like "The iterator does not provide a 'throw' method." in
+            // this case (instead of propagating the original throw completion).
+            if let Err(close_err) = iterator::iterator_close(
+              evaluator.vm,
+              &mut *evaluator.host,
+              &mut *evaluator.hooks,
+              scope,
+              &iterator_record,
+              iterator::CloseCompletionKind::NonThrow,
+            ) {
+              state = gen_error_to_completion(evaluator, scope, close_err)?;
+              continue;
             }
+
+            let err = throw_type_error(
+              evaluator.vm,
+              scope,
+              "yield*: iterator does not have a throw method",
+            )?;
+            state = completion_from_expr_result(Err(err))?;
             continue;
           };
 
@@ -27262,210 +27317,6 @@ fn gen_resume_from_frames(
 
           scope.push_root(return_method)?;
           let call_args = [v];
-          let iter_result = match evaluator.vm.call_with_host_and_hooks(
-            &mut *evaluator.host,
-            scope,
-            &mut *evaluator.hooks,
-            return_method,
-            iterator_record.iterator,
-            &call_args,
-          ) {
-            Ok(v) => v,
-            Err(err) => {
-              state = gen_error_to_completion(evaluator, scope, err)?;
-              continue;
-            }
-          };
-
-          let done = match iterator::iterator_complete(
-            evaluator.vm,
-            &mut *evaluator.host,
-            &mut *evaluator.hooks,
-            scope,
-            iter_result,
-          ) {
-            Ok(b) => b,
-            Err(err) => {
-              state = gen_error_to_completion(evaluator, scope, err)?;
-              continue;
-            }
-          };
-
-          if done {
-            let value = match iterator::iterator_value(
-              evaluator.vm,
-              &mut *evaluator.host,
-              &mut *evaluator.hooks,
-              scope,
-              iter_result,
-            ) {
-              Ok(v) => v,
-              Err(err) => {
-                state = gen_error_to_completion(evaluator, scope, err)?;
-                continue;
-              }
-            };
-            state = Completion::Return(value);
-            continue;
-          }
-
-          returning = true;
-          let mut out_frames: VecDeque<GenFrame> = VecDeque::new();
-          gen_frames_push(
-            &mut out_frames,
-            GenFrame::YieldStar {
-              iterator_record,
-              returning,
-            },
-          )?;
-          out_frames.append(&mut frames);
-          return Ok(GenEval::Suspend(GenSuspend {
-            yielded: GenYield::IteratorResult(iter_result),
-            frames: out_frames,
-          }));
-        }
-        Completion::Throw(thrown) => {
-          let reason = thrown.value;
-
-          // `yield*` abrupt resumption (`.throw(..)`) delegates to the iterator's `throw` method when
-          // present. If absent, the iterator is closed and a TypeError is thrown per ECMA-262.
-          scope.push_root(reason)?;
-
-          let throw_key_s = scope.alloc_string("throw")?;
-          scope.push_root(Value::String(throw_key_s))?;
-          let throw_key = PropertyKey::from_string(throw_key_s);
-
-          let throw_method = match crate::spec_ops::get_method_with_host_and_hooks(
-            evaluator.vm,
-            scope,
-            &mut *evaluator.host,
-            &mut *evaluator.hooks,
-            iterator_record.iterator,
-            throw_key,
-          ) {
-            Ok(m) => m,
-            Err(err) => {
-              state = gen_error_to_completion(evaluator, scope, err)?;
-              continue;
-            }
-          };
-
-          let Some(throw_method) = throw_method else {
-            // No `throw` method: close then throw TypeError (yield* protocol violation).
-            if let Err(close_err) = iterator::iterator_close(
-              evaluator.vm,
-              &mut *evaluator.host,
-              &mut *evaluator.hooks,
-              scope,
-              &iterator_record,
-              iterator::CloseCompletionKind::NonThrow,
-            ) {
-              state = gen_error_to_completion(evaluator, scope, close_err)?;
-              continue;
-            }
-
-            let err = throw_type_error(
-              evaluator.vm,
-              scope,
-              "yield*: iterator does not have a throw method",
-            )?;
-            state = completion_from_expr_result(Err(err))?;
-            continue;
-          };
-
-          let call_args = [reason];
-          let iter_result = match evaluator.vm.call_with_host_and_hooks(
-            &mut *evaluator.host,
-            scope,
-            &mut *evaluator.hooks,
-            throw_method,
-            iterator_record.iterator,
-            &call_args,
-          ) {
-            Ok(v) => v,
-            Err(err) => {
-              state = gen_error_to_completion(evaluator, scope, err)?;
-              continue;
-            }
-          };
-
-          let done = match iterator::iterator_complete(
-            evaluator.vm,
-            &mut *evaluator.host,
-            &mut *evaluator.hooks,
-            scope,
-            iter_result,
-          ) {
-            Ok(b) => b,
-            Err(err) => {
-              state = gen_error_to_completion(evaluator, scope, err)?;
-              continue;
-            }
-          };
-
-          if done {
-            let value = match iterator::iterator_value(
-              evaluator.vm,
-              &mut *evaluator.host,
-              &mut *evaluator.hooks,
-              scope,
-              iter_result,
-            ) {
-              Ok(v) => v,
-              Err(err) => {
-                state = gen_error_to_completion(evaluator, scope, err)?;
-                continue;
-              }
-            };
-            state = Completion::normal(value);
-            continue;
-          }
-
-          let mut out_frames: VecDeque<GenFrame> = VecDeque::new();
-          gen_frames_push(
-            &mut out_frames,
-            GenFrame::YieldStar {
-              iterator_record,
-              returning,
-            },
-          )?;
-          out_frames.append(&mut frames);
-          return Ok(GenEval::Suspend(GenSuspend {
-            yielded: GenYield::IteratorResult(iter_result),
-            frames: out_frames,
-          }));
-        }
-        Completion::Return(return_value) => {
-          // `yield*` abrupt resumption (`.return(..)`) delegates to the iterator's `return` method
-          // when present; otherwise the return completion is propagated out of the `yield*`
-          // expression.
-          scope.push_root(return_value)?;
-
-          let return_key_s = scope.alloc_string("return")?;
-          scope.push_root(Value::String(return_key_s))?;
-          let return_key = PropertyKey::from_string(return_key_s);
-
-          let return_method = match crate::spec_ops::get_method_with_host_and_hooks(
-            evaluator.vm,
-            scope,
-            &mut *evaluator.host,
-            &mut *evaluator.hooks,
-            iterator_record.iterator,
-            return_key,
-          ) {
-            Ok(m) => m,
-            Err(err) => {
-              state = gen_error_to_completion(evaluator, scope, err)?;
-              continue;
-            }
-          };
-
-          let Some(return_method) = return_method else {
-            state = Completion::Return(return_value);
-            continue;
-          };
-
-          let call_args = [return_value];
           let iter_result = match evaluator.vm.call_with_host_and_hooks(
             &mut *evaluator.host,
             scope,

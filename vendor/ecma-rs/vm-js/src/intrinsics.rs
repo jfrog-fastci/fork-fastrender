@@ -663,7 +663,14 @@ impl Intrinsics {
     scope
       .heap_mut()
       .object_set_prototype(set_iterator_prototype, Some(iterator_prototype))?;
-    let array_prototype = alloc_rooted_object(scope, roots)?;
+
+    // `%Array.prototype%` is itself an Array exotic object (i.e. `Array.isArray(Array.prototype)` is
+    // `true`, and it has an own `length` data property whose value is `0`).
+    //
+    // Keep it rooted in the intrinsic graph like other prototypes so it cannot be GC'd even if the
+    // embedding deletes the global `Array` binding.
+    let array_prototype = scope.alloc_array(0)?;
+    roots.push(scope.heap_mut().add_root(Value::Object(array_prototype))?);
     scope
       .heap_mut()
       .object_set_prototype(array_prototype, Some(object_prototype))?;

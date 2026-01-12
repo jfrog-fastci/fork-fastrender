@@ -887,6 +887,12 @@ impl<'vm> HirEvaluator<'vm> {
             % crate::ops::to_number_with_tick(scope.heap_mut(), r, &mut tick)?,
         ))
       }
+      hir_js::BinaryOp::Exponent => {
+        let mut tick = || self.vm.tick();
+        let base = crate::ops::to_number_with_tick(scope.heap_mut(), l, &mut tick)?;
+        let exp = crate::ops::to_number_with_tick(scope.heap_mut(), r, &mut tick)?;
+        Ok(Value::Number(base.powf(exp)))
+      }
       hir_js::BinaryOp::Equality => Ok(Value::Bool(self.abstract_equality_comparison(scope, l, r)?)),
       hir_js::BinaryOp::Inequality => Ok(Value::Bool(!self.abstract_equality_comparison(scope, l, r)?)),
       hir_js::BinaryOp::StrictEquality => Ok(Value::Bool(l == r)),

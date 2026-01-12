@@ -53,6 +53,54 @@ fn numeric_operators_use_tonumber_for_strings() {
 }
 
 #[test]
+fn exponentiation_operator_and_assignment_work_for_numbers() {
+  let mut rt = new_runtime();
+  let ok = rt.exec_script("2 ** 3 === 8 && 2 ** 3 ** 2 === 512").unwrap();
+  assert_eq!(ok, Value::Bool(true));
+
+  let ok = rt.exec_script("let x = 2; x **= 3; x === 8").unwrap();
+  assert_eq!(ok, Value::Bool(true));
+}
+
+#[test]
+fn exponentiation_operator_and_assignment_work_for_bigint() {
+  let mut rt = new_runtime();
+  let ok = rt.exec_script("2n ** 3n === 8n && 2n ** 0n === 1n").unwrap();
+  assert_eq!(ok, Value::Bool(true));
+
+  let ok = rt.exec_script("let x = 2n; x **= 3n; x === 8n").unwrap();
+  assert_eq!(ok, Value::Bool(true));
+
+  let ok = rt
+    .exec_script(
+      "(() => {\n\
+        try {\n\
+          2n ** (-1n);\n\
+          return false;\n\
+        } catch (e) {\n\
+          return e && e.name === 'RangeError';\n\
+        }\n\
+      })()",
+    )
+    .unwrap();
+  assert_eq!(ok, Value::Bool(true));
+
+  let ok = rt
+    .exec_script(
+      "(() => {\n\
+        try {\n\
+          2n ** 2;\n\
+          return false;\n\
+        } catch (e) {\n\
+          return e && e.name === 'TypeError';\n\
+        }\n\
+      })()",
+    )
+    .unwrap();
+  assert_eq!(ok, Value::Bool(true));
+}
+
+#[test]
 fn abstract_equality_matches_ecmascript_primitives() {
   let mut rt = new_runtime();
 
