@@ -15,3 +15,15 @@ mode = "pass"
 [fixture.promise_all]
 mode = "xfail-compile"
 reason = "native-js does not support Promises yet"
+
+[fixture.for_loop]
+mode = "xfail-compile"
+reason = "native-js does not support `for` statements yet"
+
+[fixture.modulo]
+mode = "xfail-compile"
+reason = "native-js does not support `%` (remainder) yet"
+
+[fixture.ternary]
+mode = "xfail-compile"
+reason = "native-js does not support the conditional (ternary) operator yet"
