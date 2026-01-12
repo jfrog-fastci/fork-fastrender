@@ -154,6 +154,9 @@ pub fn bookmarks_manager_side_panel(
           ui.horizontal(|ui| {
             ui.label("Title:");
             let resp = ui.text_edit_singleline(&mut create.title);
+            resp.widget_info(|| {
+              egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, "Folder title")
+            });
             if create.request_focus_title {
               resp.request_focus();
               create.request_focus_title = false;
@@ -247,6 +250,9 @@ pub fn bookmarks_manager_side_panel(
               .hint_text(profile_path.display().to_string())
               .desired_width(f32::INFINITY),
           );
+          resp.widget_info(|| {
+            egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, "Export path")
+          });
           if resp.has_focus() || resp.clicked() {
             out.unfocus_page = true;
           }
@@ -281,6 +287,9 @@ pub fn bookmarks_manager_side_panel(
               .lock_focus(true)
               .desired_width(f32::INFINITY),
           );
+          resp.widget_info(|| {
+            egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, "Exported bookmarks JSON")
+          });
           if resp.has_focus() || resp.clicked() {
             out.unfocus_page = true;
           }
@@ -296,6 +305,9 @@ pub fn bookmarks_manager_side_panel(
               .hint_text(profile_path.display().to_string())
               .desired_width(f32::INFINITY),
           );
+          resp.widget_info(|| {
+            egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, "Import path")
+          });
           if resp.has_focus() || resp.clicked() {
             out.unfocus_page = true;
           }
@@ -339,6 +351,9 @@ pub fn bookmarks_manager_side_panel(
             .hint_text("Paste bookmarks JSON here…")
             .desired_width(f32::INFINITY),
         );
+        resp.widget_info(|| {
+          egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, "Import bookmarks JSON")
+        });
         if resp.has_focus() || resp.clicked() {
           out.unfocus_page = true;
         }
@@ -475,6 +490,7 @@ fn render_bookmark_row(
     ui.horizontal(|ui| {
       ui.label("Title:");
       let resp = ui.text_edit_singleline(&mut edit.title);
+      resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, "Bookmark title"));
       if edit.request_focus_title {
         resp.request_focus();
         edit.request_focus_title = false;
@@ -487,6 +503,7 @@ fn render_bookmark_row(
     ui.horizontal(|ui| {
       ui.label("URL:");
       let resp = ui.text_edit_singleline(&mut edit.url);
+      resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, "Bookmark URL"));
       if resp.has_focus() || resp.clicked() {
         out.unfocus_page = true;
       }
