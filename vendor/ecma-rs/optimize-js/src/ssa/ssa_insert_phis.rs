@@ -47,6 +47,8 @@ pub fn insert_phis_for_ssa_construction(
   #[derive(Clone, Copy, Debug)]
   struct VarFacts {
     type_id: FactState<TypeId>,
+    #[cfg(feature = "typed")]
+    native_layout: FactState<types_ts_interned::LayoutId>,
     hir_expr: FactState<ExprId>,
     type_summary: FactState<ValueTypeSummary>,
     excludes_nullish: FactState<bool>,
@@ -56,6 +58,8 @@ pub fn insert_phis_for_ssa_construction(
     fn default() -> Self {
       Self {
         type_id: FactState::Unknown,
+        #[cfg(feature = "typed")]
+        native_layout: FactState::Unknown,
         hir_expr: FactState::Unknown,
         type_summary: FactState::Unknown,
         excludes_nullish: FactState::Unknown,
@@ -75,6 +79,10 @@ pub fn insert_phis_for_ssa_construction(
         if let Some(type_id) = inst.meta.type_id {
           state.type_id.update(type_id);
         }
+        #[cfg(feature = "typed")]
+        if let Some(layout) = inst.meta.native_layout {
+          state.native_layout.update(layout);
+        }
         if let Some(expr_id) = inst.meta.hir_expr {
           state.hir_expr.update(expr_id);
         }
@@ -91,6 +99,7 @@ pub fn insert_phis_for_ssa_construction(
     }
   }
 
+  #[cfg(not(feature = "typed"))]
   let facts: HashMap<u32, (Option<TypeId>, Option<ExprId>, Option<ValueTypeSummary>, bool)> =
     fact_state
       .into_iter()
@@ -106,6 +115,32 @@ pub fn insert_phis_for_ssa_construction(
         )
       })
       .collect();
+
+  #[cfg(feature = "typed")]
+  let facts: HashMap<
+    u32,
+    (
+      Option<TypeId>,
+      Option<types_ts_interned::LayoutId>,
+      Option<ExprId>,
+      Option<ValueTypeSummary>,
+      bool,
+    ),
+  > = fact_state
+    .into_iter()
+    .map(|(v, state)| {
+      (
+        v,
+        (
+          state.type_id.into_option(),
+          state.native_layout.into_option(),
+          state.hir_expr.into_option(),
+          state.type_summary.into_option(),
+          matches!(state.excludes_nullish, FactState::Known(true)),
+        ),
+      )
+    })
+    .collect();
 
   let domfront = dom.dominance_frontiers(cfg);
   let mut vars = defs.keys().cloned().collect_vec();
@@ -131,8 +166,22 @@ pub fn insert_phis_for_ssa_construction(
         already_inserted.insert(label);
         // We'll populate this new Phi inst later.
         let mut phi = Inst::phi_empty(v);
+        #[cfg(not(feature = "typed"))]
         if let Some((type_id, hir_expr, type_summary, excludes_nullish)) = facts.get(&v).copied() {
           phi.meta.type_id = type_id;
+          phi.meta.hir_expr = hir_expr;
+          phi.meta.type_summary = type_summary;
+          phi.meta.excludes_nullish = excludes_nullish;
+          if let Some(summary) = type_summary {
+            phi.value_type |= summary;
+          }
+        }
+        #[cfg(feature = "typed")]
+        if let Some((type_id, native_layout, hir_expr, type_summary, excludes_nullish)) =
+          facts.get(&v).copied()
+        {
+          phi.meta.type_id = type_id;
+          phi.meta.native_layout = native_layout;
           phi.meta.hir_expr = hir_expr;
           phi.meta.type_summary = type_summary;
           phi.meta.excludes_nullish = excludes_nullish;

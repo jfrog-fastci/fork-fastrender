@@ -148,6 +148,18 @@ impl<'p> HirSourceToInst<'p> {
       .types
       .expr_value_type_summary(self.body_id, expr);
     inst.meta.type_id = self.expr_type_id(expr);
+    #[cfg(feature = "typed")]
+    {
+      inst.meta.native_layout = inst.meta.type_id.and_then(|ty| {
+        let program = self.program.types.program.as_ref()?;
+        let store = program.interned_type_store();
+        if !store.contains_type_id(ty) {
+          return None;
+        }
+        let ty = store.canon(ty);
+        Some(store.layout_of(ty))
+      });
+    }
     inst.value_type |= summary;
     #[cfg(feature = "typed")]
     {
@@ -168,6 +180,18 @@ impl<'p> HirSourceToInst<'p> {
       .types
       .expr_value_type_summary(self.body_id, expr);
     inst.meta.type_id = self.expr_type_id(expr);
+    #[cfg(feature = "typed")]
+    {
+      inst.meta.native_layout = inst.meta.type_id.and_then(|ty| {
+        let program = self.program.types.program.as_ref()?;
+        let store = program.interned_type_store();
+        if !store.contains_type_id(ty) {
+          return None;
+        }
+        let ty = store.canon(ty);
+        Some(store.layout_of(ty))
+      });
+    }
     inst.value_type |= summary;
     #[cfg(feature = "typed")]
     {

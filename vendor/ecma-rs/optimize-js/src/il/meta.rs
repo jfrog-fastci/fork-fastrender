@@ -371,6 +371,12 @@ pub struct InstMeta {
     )
   )]
   pub type_id: Option<TypeId>,
+  #[cfg(feature = "typed")]
+  #[cfg_attr(
+    feature = "serde",
+    serde(default, skip_serializing_if = "Option::is_none")
+  )]
+  pub native_layout: Option<types_ts_interned::LayoutId>,
   #[cfg_attr(
     feature = "serde",
     serde(
@@ -451,6 +457,10 @@ impl InstMeta {
   pub fn clear_result_var_metadata(&mut self) {
     self.result_type = TypeInfo::default();
     self.type_id = None;
+    #[cfg(feature = "typed")]
+    {
+      self.native_layout = None;
+    }
     self.hir_expr = None;
     self.type_summary = None;
     self.excludes_nullish = false;
@@ -466,6 +476,10 @@ impl InstMeta {
   pub fn copy_result_var_metadata_from(&mut self, src: &Self) {
     self.result_type = src.result_type.clone();
     self.type_id = src.type_id;
+    #[cfg(feature = "typed")]
+    {
+      self.native_layout = src.native_layout;
+    }
     self.hir_expr = src.hir_expr;
     self.type_summary = src.type_summary;
     self.excludes_nullish = src.excludes_nullish;
@@ -476,16 +490,34 @@ impl InstMeta {
 
   pub fn set_type_id(&mut self, type_id: Option<TypeId>) {
     self.type_id = type_id;
+    #[cfg(feature = "typed")]
+    {
+      self.native_layout = None;
+    }
   }
 
   pub fn clear_type_id(&mut self) {
     self.type_id = None;
+    #[cfg(feature = "typed")]
+    {
+      self.native_layout = None;
+    }
   }
 
   pub fn is_default(&self) -> bool {
     self.effects.is_default()
       && self.result_type.is_default()
       && self.type_id.is_none()
+      && {
+        #[cfg(feature = "typed")]
+        {
+          self.native_layout.is_none()
+        }
+        #[cfg(not(feature = "typed"))]
+        {
+          true
+        }
+      }
       && self.hir_expr.is_none()
       && self.type_summary.is_none()
       && !self.excludes_nullish
