@@ -2275,6 +2275,8 @@ pub fn proxy_revocable(
     &[Value::Object(proxy)],
   )?;
   scope.push_root(Value::Object(revoke))?;
+  // Match `CreateBuiltinFunction` semantics: the revoker should be associated with the current
+  // realm so any job/microtask bookkeeping stays consistent if the function is passed around.
   set_function_job_realm_to_current(vm, &mut scope, revoke)?;
   scope
     .heap_mut()
