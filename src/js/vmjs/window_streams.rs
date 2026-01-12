@@ -152,7 +152,7 @@ fn realm_id_for_binding_call(vm: &Vm, scope: &Scope<'_>, callee: GcObject) -> Re
 
 fn with_realm_state_mut<R>(
   vm: &mut Vm,
-  scope: &mut Scope<'_>,
+  scope: &Scope<'_>,
   callee: GcObject,
   f: impl FnOnce(&mut StreamRealmState, &Heap) -> Result<R, VmError>,
 ) -> Result<R, VmError> {
