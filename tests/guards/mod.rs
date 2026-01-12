@@ -18,4 +18,5 @@ mod stage_listener_guard_tests;
 mod style_regressions_presence;
 mod test_cleanup_inventory_guard;
 mod webidl_consolidation_guard;
+mod webidl_stale_crates_paths_guard;
 mod webidl_vm_js_workspace_guard;
