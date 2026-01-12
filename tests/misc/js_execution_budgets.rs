@@ -23,7 +23,7 @@ fn exec_script(realm: &mut WindowRealm, source: &str) -> std::result::Result<Val
 }
 
 fn with_interrupt_watchdog<R>(timeout: Duration, f: impl FnOnce() -> R) -> (R, bool) {
-  let _lock = super::global_test_lock();
+  let _lock = crate::common::env::global_test_lock();
   let interrupt_flag = render_control::interrupt_flag();
   interrupt_flag.store(false, Ordering::Relaxed);
 

@@ -1,4 +1,4 @@
-use crate::common::net::net_test_lock;
+use crate::common::net::{net_test_lock, try_bind_localhost};
 use fastrender::debug::runtime::{with_thread_runtime_toggles, RuntimeToggles};
 #[cfg(feature = "disk_cache")]
 use fastrender::resource::DiskCachingFetcher;
@@ -13,22 +13,6 @@ use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 use url::Url;
-
-fn try_bind_localhost(context: &str) -> Option<TcpListener> {
-  match TcpListener::bind("127.0.0.1:0") {
-    Ok(listener) => Some(listener),
-    Err(err)
-      if matches!(
-        err.kind(),
-        io::ErrorKind::PermissionDenied | io::ErrorKind::AddrNotAvailable
-      ) =>
-    {
-      eprintln!("skipping {context}: cannot bind localhost in this environment: {err}");
-      None
-    }
-    Err(err) => panic!("bind {context}: {err}"),
-  }
-}
 
 fn read_http_headers(stream: &mut TcpStream) -> io::Result<String> {
   stream.set_read_timeout(Some(Duration::from_secs(1)))?;

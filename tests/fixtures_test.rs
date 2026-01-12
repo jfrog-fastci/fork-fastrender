@@ -33,8 +33,10 @@
 //! UPDATE_GOLDEN=1 cargo test fixtures
 //! ```
 
+mod common;
 mod r#ref;
 
+use crate::common::stack::with_large_stack;
 use fastrender::FastRender;
 use r#ref::compare::load_png_from_bytes;
 use r#ref::image_compare::{compare_config_from_env, compare_pngs, CompareEnvVars};
@@ -117,56 +119,51 @@ fn should_update_golden() -> bool {
 fn test_fixture(name: &str) -> Result<(), String> {
   ensure_bundled_fonts();
   let name_owned = name.to_string();
-  std::thread::Builder::new()
-    .stack_size(64 * 1024 * 1024)
-    .spawn(move || {
-      let compare_config = compare_config_from_env(CompareEnvVars::fixtures())?;
-      let name = name_owned;
-      let html = load_fixture(&name);
-      let golden = load_golden(&name);
-      let (render_width, render_height) = golden
-        .as_ref()
-        .and_then(|bytes| load_png_from_bytes(bytes).ok())
-        .map(|png| (png.width(), png.height()))
-        .unwrap_or((FIXTURE_WIDTH, FIXTURE_HEIGHT));
-      let mut renderer =
-        FastRender::new().map_err(|e| format!("Failed to create renderer: {:?}", e))?;
+  with_large_stack(move || {
+    let compare_config = compare_config_from_env(CompareEnvVars::fixtures())?;
+    let name = name_owned;
+    let html = load_fixture(&name);
+    let golden = load_golden(&name);
+    let (render_width, render_height) = golden
+      .as_ref()
+      .and_then(|bytes| load_png_from_bytes(bytes).ok())
+      .map(|png| (png.width(), png.height()))
+      .unwrap_or((FIXTURE_WIDTH, FIXTURE_HEIGHT));
+    let mut renderer =
+      FastRender::new().map_err(|e| format!("Failed to create renderer: {:?}", e))?;
 
-      // Render the fixture
-      let rendered = renderer
-        .render_to_png(&html, render_width, render_height)
-        .map_err(|e| format!("Render failed for {}: {:?}", name, e))?;
+    // Render the fixture
+    let rendered = renderer
+      .render_to_png(&html, render_width, render_height)
+      .map_err(|e| format!("Render failed for {}: {:?}", name, e))?;
 
-      // Handle golden image comparison/update
-      if should_update_golden() {
-        save_golden(&name, &rendered);
-        eprintln!("Updated golden image for: {}", name);
-        return Ok(());
-      }
+    // Handle golden image comparison/update
+    if should_update_golden() {
+      save_golden(&name, &rendered);
+      eprintln!("Updated golden image for: {}", name);
+      return Ok(());
+    }
 
-      // If golden exists, compare
-      if let Some(golden) = golden {
-        compare_pngs(
-          &name,
-          &rendered,
-          &golden,
-          &compare_config,
-          &fixtures_diff_dir(),
-        )
-      } else {
-        // No golden exists - just verify rendering succeeds
-        load_png_from_bytes(&rendered)
-          .map_err(|e| format!("Invalid PNG output for {}: {}", name, e))?;
-        eprintln!(
-          "Warning: No golden image for {}. Run with UPDATE_GOLDEN=1 to create.",
-          name
-        );
-        Ok(())
-      }
-    })
-    .unwrap()
-    .join()
-    .unwrap()
+    // If golden exists, compare
+    if let Some(golden) = golden {
+      compare_pngs(
+        &name,
+        &rendered,
+        &golden,
+        &compare_config,
+        &fixtures_diff_dir(),
+      )
+    } else {
+      // No golden exists - just verify rendering succeeds
+      load_png_from_bytes(&rendered)
+        .map_err(|e| format!("Invalid PNG output for {}: {}", name, e))?;
+      eprintln!(
+        "Warning: No golden image for {}. Run with UPDATE_GOLDEN=1 to create.",
+        name
+      );
+      Ok(())
+    }
+  })
 }
 
 //

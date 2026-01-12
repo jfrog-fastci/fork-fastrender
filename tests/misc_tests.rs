@@ -4,5 +4,5 @@
 //! When adding new tests, prefer adding them to a more specific category
 //! harness if one exists.
 
-mod misc;
 mod common;
+mod misc;

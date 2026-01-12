@@ -6,9 +6,8 @@ use std::sync::Arc;
 
 #[test]
 fn stage_listener_guard_restores_previous_listener() {
-  let _lock = super::global_test_lock();
+  let _lock = crate::common::global_test_lock();
   let render_thread = std::thread::current().id();
-
   let a_hits = Arc::new(AtomicUsize::new(0));
   let a_hits_for_listener = Arc::clone(&a_hits);
   let render_thread_a = render_thread;

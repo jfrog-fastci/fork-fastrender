@@ -3,7 +3,6 @@
 // harness pulls the nested modules into a single test crate.
 
 mod common;
-pub(crate) use common::rayon_test_util;
 
 mod backdrop;
 mod paint;

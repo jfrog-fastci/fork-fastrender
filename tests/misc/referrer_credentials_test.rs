@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 #[test]
 fn referer_header_strips_url_credentials() {
-  let _lock = super::global_test_lock();
+  let _lock = crate::common::global_test_lock();
   let toggles = Arc::new(RuntimeToggles::from_map(HashMap::from([(
     // Ensure browser-like headers are enabled even when developers have opted out locally.
     "FASTR_HTTP_BROWSER_HEADERS".to_string(),

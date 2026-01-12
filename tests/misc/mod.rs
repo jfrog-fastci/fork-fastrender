@@ -1,20 +1,5 @@
 //! Miscellaneous tests consolidated from tests/*.rs
 
-use std::sync::{Mutex, MutexGuard, OnceLock};
-
-/// Serialises tests that mutate process-wide state (environment variables, stage listeners, etc).
-///
-/// Historically, many of these tests lived in their own `tests/*.rs` integration binaries, so they
-/// ran in isolated processes. After consolidating into harnesses, they now share global state and
-/// must coordinate to remain deterministic.
-pub(crate) fn global_test_lock() -> MutexGuard<'static, ()> {
-  static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-  LOCK
-    .get_or_init(|| Mutex::new(()))
-    .lock()
-    .unwrap_or_else(|poisoned| poisoned.into_inner())
-}
-
 mod audio_without_controls_hidden;
 mod background_clip_text_parallel;
 mod base_url_dom_override;

@@ -7,7 +7,7 @@ use fastrender::{
 
 #[test]
 fn text_decoration_auto_uses_font_thickness_and_snaps_solid_underlines() {
-  crate::rayon_test_util::init_rayon_for_tests(2);
+  crate::common::rayon::init_rayon_for_tests(2);
 
   let mut renderer = FastRender::builder()
     .font_sources(FontConfig::bundled_only())

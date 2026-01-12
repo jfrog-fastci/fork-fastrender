@@ -10,7 +10,7 @@ fn ensure_small_rayon_thread_pool() {
     .and_then(|v| v.parse::<usize>().ok())
     .unwrap_or(4)
     .max(1);
-  crate::rayon_test_util::init_rayon_for_tests(threads);
+  crate::common::rayon::init_rayon_for_tests(threads);
 }
 
 fn render(html: &str, width: u32, height: u32) -> tiny_skia::Pixmap {

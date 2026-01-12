@@ -4,52 +4,47 @@ use super::*;
 fn wpt_local_suite_passes() {
   use std::path::{Path, PathBuf};
 
-  std::thread::Builder::new()
-    .stack_size(64 * 1024 * 1024)
-    .spawn(|| {
-      let renderer = create_test_renderer();
-      let mut config = HarnessConfig::default();
-      // The discovery directory under `tests/wpt/tests/` contains harness-focused metadata fixtures
-      // (expected failures, disables, etc.). Keep the smoke-test suite focused on the curated
-      // manifest entries so UPDATE_WPT_EXPECTED mode doesn't trip over those fixtures.
-      config.discovery_mode = DiscoveryMode::ManifestOnly;
-      config.expected_dir = std::env::var_os("WPT_EXPECTED_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("tests/wpt/expected"));
-      config.update_expected = std::env::var_os("UPDATE_WPT_EXPECTED").is_some();
-      let filter = std::env::var("WPT_FILTER")
-        .ok()
-        .map(|value| value.trim().to_string())
-        .and_then(|value| (!value.is_empty()).then_some(value));
-      config.filter = filter.clone();
+  crate::common::with_large_stack(|| {
+    let renderer = create_test_renderer();
+    let mut config = HarnessConfig::default();
+    // The discovery directory under `tests/wpt/tests/` contains harness-focused metadata fixtures
+    // (expected failures, disables, etc.). Keep the smoke-test suite focused on the curated
+    // manifest entries so UPDATE_WPT_EXPECTED mode doesn't trip over those fixtures.
+    config.discovery_mode = DiscoveryMode::ManifestOnly;
+    config.expected_dir = std::env::var_os("WPT_EXPECTED_DIR")
+      .map(PathBuf::from)
+      .unwrap_or_else(|| PathBuf::from("tests/wpt/expected"));
+    config.update_expected = std::env::var_os("UPDATE_WPT_EXPECTED").is_some();
+    let filter = std::env::var("WPT_FILTER")
+      .ok()
+      .map(|value| value.trim().to_string())
+      .and_then(|value| (!value.is_empty()).then_some(value));
+    config.filter = filter.clone();
 
-      let mut runner = WptRunner::with_config(renderer, config);
+    let mut runner = WptRunner::with_config(renderer, config);
 
-      let results = runner.run_suite(Path::new("tests/wpt/tests"));
-      assert!(!results.is_empty());
+    let results = runner.run_suite(Path::new("tests/wpt/tests"));
+    assert!(!results.is_empty());
 
-      let runnable = results
-        .iter()
-        .filter(|result| result.status != TestStatus::Skip)
-        .count();
+    let runnable = results
+      .iter()
+      .filter(|result| result.status != TestStatus::Skip)
+      .count();
+    assert!(
+      runnable > 0,
+      "WPT filter matched no runnable tests (WPT_FILTER={})",
+      filter.as_deref().unwrap_or("<unset>")
+    );
+
+    for result in &results {
       assert!(
-        runnable > 0,
-        "WPT filter matched no runnable tests (WPT_FILTER={})",
-        filter.as_deref().unwrap_or("<unset>")
+        !result.status.is_failure(),
+        "{} failed with status {:?}",
+        result.metadata.id,
+        result.status
       );
-
-      for result in &results {
-        assert!(
-          !result.status.is_failure(),
-          "{} failed with status {:?}",
-          result.metadata.id,
-          result.status
-        );
-      }
-    })
-    .unwrap()
-    .join()
-    .unwrap();
+    }
+  });
 }
 
 mod wpt_runner_tests {

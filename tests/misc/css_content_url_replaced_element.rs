@@ -3,7 +3,7 @@ use fastrender::RenderOptions;
 
 #[test]
 fn css_content_url_replaces_img_source() {
-  let _lock = super::global_test_lock();
+  let _lock = crate::common::env::global_test_lock();
   let mut renderer = FastRender::new().unwrap();
 
   // Chrome applies `content: url(...)` to replaced elements like `<img>`, allowing CSS to override
