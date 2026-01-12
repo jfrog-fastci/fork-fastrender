@@ -2026,3 +2026,113 @@ fn string_literal_not_assignable_to_template_literal_pattern() {
 
   assert!(!ctx.is_assignable(bar, template));
 }
+
+#[test]
+fn template_literal_number_atom_is_constrained() {
+  let store = TypeStore::new();
+  let primitives = store.primitive_ids();
+  let ctx = RelateCtx::new(store.clone(), default_options());
+
+  let ok = store.intern_type(TypeKind::StringLiteral(store.intern_name("100%")));
+  let bad = store.intern_type(TypeKind::StringLiteral(store.intern_name("foo%")));
+
+  // TypeScript treats `${number}` as constrained to number-like strings rather
+  // than a wildcard (unlike `${string}`).
+  let template = store.intern_type(TypeKind::TemplateLiteral(TemplateLiteralType {
+    head: "".into(),
+    spans: vec![TemplateChunk {
+      ty: primitives.number,
+      literal: "%".into(),
+    }],
+  }));
+
+  assert!(ctx.is_assignable(ok, template));
+  assert!(!ctx.is_assignable(bad, template));
+
+  // We choose to reject leading zeros for multi-digit decimals, which matches
+  // JS/TS decimal literal grammar under strict mode.
+  let leading_zero = store.intern_type(TypeKind::StringLiteral(store.intern_name("01%")));
+  assert!(!ctx.is_assignable(leading_zero, template));
+}
+
+#[test]
+fn template_literal_boolean_atom_matches_true_or_false() {
+  let store = TypeStore::new();
+  let primitives = store.primitive_ids();
+  let ctx = RelateCtx::new(store.clone(), default_options());
+
+  let yes = store.intern_type(TypeKind::StringLiteral(store.intern_name("true")));
+  let nope = store.intern_type(TypeKind::StringLiteral(store.intern_name("nope")));
+
+  let template = store.intern_type(TypeKind::TemplateLiteral(TemplateLiteralType {
+    head: "".into(),
+    spans: vec![TemplateChunk {
+      ty: primitives.boolean,
+      literal: "".into(),
+    }],
+  }));
+
+  assert!(ctx.is_assignable(yes, template));
+  assert!(!ctx.is_assignable(nope, template));
+}
+
+#[test]
+fn template_literal_bigint_atom_is_constrained() {
+  let store = TypeStore::new();
+  let primitives = store.primitive_ids();
+  let ctx = RelateCtx::new(store.clone(), default_options());
+
+  let ok = store.intern_type(TypeKind::StringLiteral(store.intern_name("10")));
+  let bad = store.intern_type(TypeKind::StringLiteral(store.intern_name("10n")));
+
+  let template = store.intern_type(TypeKind::TemplateLiteral(TemplateLiteralType {
+    head: "".into(),
+    spans: vec![TemplateChunk {
+      ty: primitives.bigint,
+      literal: "".into(),
+    }],
+  }));
+
+  assert!(ctx.is_assignable(ok, template));
+  assert!(!ctx.is_assignable(bad, template));
+}
+
+#[test]
+fn template_literal_number_atom_respects_match_state_limit() {
+  let store = TypeStore::new();
+  let primitives = store.primitive_ids();
+
+  let ctx = RelateCtx::new(store.clone(), default_options()).with_limits(RelationLimits {
+    max_template_match_states: 8,
+    ..RelationLimits::default()
+  });
+
+  // This cannot match because the final `x` is not number-like, but a naive
+  // matcher would still have to explore many splits between the numeric spans.
+  let src = store.intern_type(TypeKind::StringLiteral(store.intern_name(
+    "111111111111111111111111111111111111111111111111111111111111x",
+  )));
+  let template = store.intern_type(TypeKind::TemplateLiteral(TemplateLiteralType {
+    head: "".into(),
+    spans: vec![
+      TemplateChunk {
+        ty: primitives.number,
+        literal: "".into(),
+      },
+      TemplateChunk {
+        ty: primitives.number,
+        literal: "".into(),
+      },
+      TemplateChunk {
+        ty: primitives.number,
+        literal: "".into(),
+      },
+      TemplateChunk {
+        ty: primitives.number,
+        literal: "".into(),
+      },
+    ],
+  }));
+
+  assert!(!ctx.is_assignable(src, template));
+}

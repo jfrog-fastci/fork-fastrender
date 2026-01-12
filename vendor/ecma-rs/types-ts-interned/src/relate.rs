@@ -1644,6 +1644,8 @@ impl<'a> RelateCtx<'a> {
       TypeKind::StringLiteral(id) => Some(vec![self.store.name(id)]),
       TypeKind::NumberLiteral(num) => Some(vec![num.0.to_string()]),
       TypeKind::BooleanLiteral(val) => Some(vec![val.to_string()]),
+      TypeKind::BigIntLiteral(val) => Some(vec![val.to_string()]),
+      TypeKind::Boolean => Some(vec!["false".into(), "true".into()]),
       TypeKind::TemplateLiteral(tpl) => self.template_strings(&tpl, depth + 1, visited),
       TypeKind::Union(members) => {
         let mut out = Vec::new();
@@ -1737,10 +1739,121 @@ impl<'a> RelateCtx<'a> {
       return false;
     }
 
-    let mut span_atoms: Vec<Option<Vec<String>>> = Vec::with_capacity(tpl.spans.len());
+    #[derive(Clone, Debug)]
+    enum TemplateAtom {
+      Enum(Vec<String>),
+      AnyString,
+      NumberString,
+      BigIntString,
+    }
+
+    fn is_valid_bigint_string(s: &str) -> bool {
+      let bytes = s.as_bytes();
+      if bytes.is_empty() {
+        return false;
+      }
+
+      let mut idx = 0usize;
+      if bytes[0] == b'-' {
+        idx += 1;
+        if idx == bytes.len() {
+          return false;
+        }
+      }
+
+      let digits = &bytes[idx..];
+      if digits.len() > 1 && digits[0] == b'0' {
+        return false;
+      }
+      digits.iter().all(|b| b.is_ascii_digit())
+    }
+
+    fn is_valid_number_string(s: &str) -> bool {
+      let bytes = s.as_bytes();
+      if bytes.is_empty() {
+        return false;
+      }
+
+      let mut idx = 0usize;
+      if bytes[0] == b'-' {
+        idx += 1;
+        if idx == bytes.len() {
+          return false;
+        }
+      }
+
+      if idx == bytes.len() {
+        return false;
+      }
+
+      if bytes[idx] == b'.' {
+        // Decimal literal in `.5` form.
+        idx += 1;
+        let frac_start = idx;
+        while idx < bytes.len() && bytes[idx].is_ascii_digit() {
+          idx += 1;
+        }
+        if idx == frac_start {
+          return false;
+        }
+      } else {
+        // Decimal literal in `1` / `1.` / `1.5` forms.
+        let int_start = idx;
+        while idx < bytes.len() && bytes[idx].is_ascii_digit() {
+          idx += 1;
+        }
+        if idx == int_start {
+          return false;
+        }
+        if idx - int_start > 1 && bytes[int_start] == b'0' {
+          return false;
+        }
+        if idx < bytes.len() && bytes[idx] == b'.' {
+          idx += 1;
+          while idx < bytes.len() && bytes[idx].is_ascii_digit() {
+            idx += 1;
+          }
+        }
+      }
+
+      // Optional exponent part.
+      if idx < bytes.len() && (bytes[idx] == b'e' || bytes[idx] == b'E') {
+        idx += 1;
+        if idx == bytes.len() {
+          return false;
+        }
+        if bytes[idx] == b'+' || bytes[idx] == b'-' {
+          idx += 1;
+          if idx == bytes.len() {
+            return false;
+          }
+        }
+        let exp_start = idx;
+        while idx < bytes.len() && bytes[idx].is_ascii_digit() {
+          idx += 1;
+        }
+        if idx == exp_start {
+          return false;
+        }
+      }
+
+      idx == bytes.len()
+    }
+
+    let mut span_atoms: Vec<TemplateAtom> = Vec::with_capacity(tpl.spans.len());
     for span in tpl.spans.iter() {
       let mut visited = HashSet::new();
-      span_atoms.push(self.template_atom_strings(span.ty, depth + 1, &mut visited));
+      if let Some(strings) = self.template_atom_strings(span.ty, depth + 1, &mut visited) {
+        span_atoms.push(TemplateAtom::Enum(strings));
+        continue;
+      }
+
+      match self.store.type_kind(span.ty) {
+        TypeKind::Number => span_atoms.push(TemplateAtom::NumberString),
+        TypeKind::BigInt => span_atoms.push(TemplateAtom::BigIntString),
+        TypeKind::Boolean => span_atoms.push(TemplateAtom::Enum(vec!["false".into(), "true".into()])),
+        _ => span_atoms.push(TemplateAtom::AnyString),
+      }
     }
 
     let mut queue = VecDeque::new();
@@ -1771,7 +1884,7 @@ impl<'a> RelateCtx<'a> {
       };
 
       match &span_atoms[idx] {
-        Some(atoms) => {
+        TemplateAtom::Enum(atoms) => {
           for atom in atoms {
             if !remainder.starts_with(atom) {
               continue;
@@ -1786,7 +1899,7 @@ impl<'a> RelateCtx<'a> {
             queue.push_back((idx + 1, after_atom + span.literal.len()));
           }
         }
-        None => {
+        TemplateAtom::AnyString => {
           if span.literal.is_empty() {
             queue.push_back((idx + 1, pos));
             for (off, _) in remainder.char_indices().skip(1) {
@@ -1810,6 +1923,84 @@ impl<'a> RelateCtx<'a> {
               if processed + queue.len() >= self.limits.max_template_match_states {
                 break;
               }
+              let Some(ch) = value.get(found..).and_then(|s| s.chars().next()) else {
+                break;
+              };
+              search_pos = found + ch.len_utf8();
+            }
+          }
+        }
+        TemplateAtom::NumberString | TemplateAtom::BigIntString => {
+          let predicate: fn(&str) -> bool = match &span_atoms[idx] {
+            TemplateAtom::NumberString => is_valid_number_string,
+            TemplateAtom::BigIntString => is_valid_bigint_string,
+            _ => unreachable!(),
+          };
+
+          if span.literal.is_empty() {
+            let mut budget = self
+              .limits
+              .max_template_match_states
+              .saturating_sub(processed + queue.len());
+            if budget == 0 {
+              continue;
+            }
+
+            // Always include the state where the atom consumes the rest of the
+            // string, since that is the only successful state when this is the
+            // last span.
+            budget -= 1;
+            for (off, _) in remainder.char_indices().skip(1) {
+              if budget == 0 {
+                break;
+              }
+              budget -= 1;
+
+              let end = pos + off;
+              let Some(atom) = value.get(pos..end) else {
+                continue;
+              };
+              if predicate(atom) {
+                queue.push_back((idx + 1, end));
+              }
+            }
+
+            if let Some(atom) = value.get(pos..) {
+              if predicate(atom) {
+                queue.push_back((idx + 1, value.len()));
+              }
+            }
+          } else {
+            let mut budget = self
+              .limits
+              .max_template_match_states
+              .saturating_sub(processed + queue.len());
+            if budget == 0 {
+              continue;
+            }
+
+            let mut search_pos = pos;
+            while search_pos <= value.len() {
+              if budget == 0 {
+                break;
+              }
+
+              let Some(search_slice) = value.get(search_pos..) else {
+                break;
+              };
+              let Some(found_rel) = search_slice.find(&span.literal) else {
+                break;
+              };
+              let found = search_pos + found_rel;
+              budget -= 1;
+
+              let Some(atom) = value.get(pos..found) else {
+                break;
+              };
+              if predicate(atom) {
+                queue.push_back((idx + 1, found + span.literal.len()));
+              }
+
               let Some(ch) = value.get(found..).and_then(|s| s.chars().next()) else {
                 break;
               };

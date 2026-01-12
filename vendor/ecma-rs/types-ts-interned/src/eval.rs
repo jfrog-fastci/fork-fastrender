@@ -2263,6 +2263,10 @@ impl<'a, E: TypeExpander> TypeEvaluator<'a, E> {
       TypeKind::StringLiteral(id) => TemplateStringComputation::Finite(vec![self.store.name(id)]),
       TypeKind::NumberLiteral(num) => TemplateStringComputation::Finite(vec![num.0.to_string()]),
       TypeKind::BooleanLiteral(val) => TemplateStringComputation::Finite(vec![val.to_string()]),
+      TypeKind::BigIntLiteral(val) => TemplateStringComputation::Finite(vec![val.to_string()]),
+      TypeKind::Boolean => {
+        TemplateStringComputation::Finite(vec!["false".into(), "true".into()])
+      }
       TypeKind::TemplateLiteral(tpl) => self.compute_template_strings(&tpl, subst, depth + 1),
       TypeKind::Union(members) => {
         let mut out = Vec::new();
