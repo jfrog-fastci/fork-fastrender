@@ -17,11 +17,14 @@ pub struct IteratorRecord {
 pub enum CloseCompletionKind {
   /// Closing on a *throw* completion.
   ///
-  /// Per ECMA-262 `IteratorClose`, errors from `GetMethod("return")` / `Call(return)` are still
-  /// propagated and override the incoming completion. The only special-case for throw completions
-  /// is that the non-object return-result TypeError check is skipped.
+  /// Per ECMA-262 `IteratorClose`, errors from getting/calling `iterator.return` are **suppressed**
+  /// when the incoming completion is itself a throw completion, and the non-object return-result
+  /// TypeError check is also skipped.
   Throw,
   /// Closing on a *non-throw* completion.
+  ///
+  /// Per ECMA-262 `IteratorClose`, throw completions produced while closing (`GetMethod`/`Call`)
+  /// override the incoming completion.
   NonThrow,
 }
 
@@ -310,30 +313,49 @@ pub fn iterator_close(
   close_scope.push_root(record.iterator)?;
 
   let return_key = string_key(&mut close_scope, "return")?;
-  let Some(return_method) = crate::spec_ops::get_method_with_host_and_hooks(
+  let return_method = match crate::spec_ops::get_method_with_host_and_hooks(
     vm,
     &mut close_scope,
     host,
     hooks,
     record.iterator,
     return_key,
-  )?
-  else {
+  ) {
+    Ok(m) => m,
+    Err(err) => {
+      // Spec: `IteratorClose` suppresses iterator-closing errors when the incoming completion is a
+      // throw completion.
+      if completion_kind == CloseCompletionKind::Throw && err.is_throw_completion() {
+        return Ok(());
+      }
+      return Err(err);
+    }
+  };
+  let Some(return_method) = return_method else {
     return Ok(());
   };
 
   close_scope.push_root(return_method)?;
-  let result = vm.call_with_host_and_hooks(
+  let result = match vm.call_with_host_and_hooks(
     host,
     &mut close_scope,
     hooks,
     return_method,
     record.iterator,
     &[],
-  )?;
+  ) {
+    Ok(v) => v,
+    Err(err) => {
+      if completion_kind == CloseCompletionKind::Throw && err.is_throw_completion() {
+        return Ok(());
+      }
+      return Err(err);
+    }
+  };
 
   if completion_kind == CloseCompletionKind::Throw {
-    // Spec: for throw completions, ignore non-object `return` results.
+    // Spec: for throw completions, ignore iterator-closing errors and skip the return-result type
+    // check.
     return Ok(());
   }
 
@@ -355,9 +377,9 @@ pub fn iterator_close(
 /// This is a convenience wrapper for callers that need the *full* `IteratorClose` semantics from
 /// ECMA-262 (which takes an input completion):
 /// - Always attempts `GetMethod(iterator, "return")` and calls it when present.
-/// - If `completion_is_throw` is `true`, the "return result is not object" TypeError check is
-///   suppressed.
-/// - Closing errors are always propagated, overriding the incoming completion.
+/// - If `completion_is_throw` is `true`, iterator-closing errors are suppressed and the "return
+///   result is not object" TypeError check is skipped.
+/// - If `completion_is_throw` is `false`, iterator-closing errors override the incoming completion.
 pub fn iterator_close_strict(
   vm: &mut Vm,
   host: &mut dyn VmHost,
@@ -377,8 +399,10 @@ pub fn iterator_close_strict(
 /// `IteratorClose(iteratorRecord, completion)` (ECMA-262).
 ///
 /// This is the spec-shaped form of iterator closing used by `for..of` and iterator-consuming
-/// algorithms: closing errors override the incoming completion, except that the non-object return
-/// result TypeError check is skipped when closing due to a throw completion.
+/// algorithms:
+/// - For throw completions, iterator-closing errors are suppressed (and the return-result type
+///   check is skipped).
+/// - For non-throw completions, iterator-closing errors override the incoming completion.
 pub fn iterator_close_with_completion(
   vm: &mut Vm,
   host: &mut dyn VmHost,

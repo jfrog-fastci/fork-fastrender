@@ -3060,6 +3060,26 @@ impl Heap {
       }
     }
 
+    // Module Namespace Exotic Object `[[GetOwnProperty]]` (ECMA-262 §9.4.6).
+    //
+    // Exported bindings are *virtual* properties backed by the namespace's `[[Exports]]` list and
+    // are not stored in the object's ordinary property table.
+    if self.object_is_module_namespace(obj)? {
+      if let PropertyKey::String(s) = key {
+        if let Some(export) = self.module_namespace_export(obj, *s)? {
+          return Ok(Some(PropertyDescriptor {
+            enumerable: true,
+            configurable: false,
+            kind: PropertyKind::Accessor {
+              get: Value::Object(export.getter),
+              set: Value::Undefined,
+            },
+          }));
+        }
+        return Ok(None);
+      }
+    }
+
     let obj = self.get_object_base(obj)?;
     // Property lookups can scan very large property tables (especially for missing keys). Budget
     // the scan so deadline/interrupt checks can be observed inside a single `Get(O, P)` operation.
@@ -6727,6 +6747,7 @@ impl<'a> Scope<'a> {
       .map_err(|_| VmError::OutOfMemory)?;
     for export in exports.iter() {
       roots.push(Value::String(export.name));
+      roots.push(Value::Object(export.getter));
       match export.value {
         ModuleNamespaceExportValue::Binding { name, .. } => {
           roots.push(Value::String(name));
@@ -8698,6 +8719,8 @@ struct ModuleNamespaceExportsData {
 pub(crate) struct ModuleNamespaceExport {
   /// The exported name (property key).
   pub(crate) name: GcString,
+  /// Getter function object used by `[[GetOwnProperty]]`.
+  pub(crate) getter: GcObject,
   pub(crate) value: ModuleNamespaceExportValue,
 }
 
@@ -8719,6 +8742,7 @@ impl Trace for ModuleNamespaceExportsData {
   fn trace(&self, tracer: &mut Tracer<'_>) {
     for export in self.exports.iter() {
       tracer.trace_value(Value::String(export.name));
+      tracer.trace_value(Value::Object(export.getter));
       match export.value {
         ModuleNamespaceExportValue::Binding { env, name } => {
           tracer.trace_env(env);

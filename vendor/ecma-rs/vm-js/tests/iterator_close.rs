@@ -231,7 +231,7 @@ fn iterator_close_get_method_throw_overrides_break() {
 }
 
 #[test]
-fn iterator_close_get_method_throw_overrides_throw_completion() {
+fn iterator_close_get_method_throw_suppressed_on_throw_completion() {
   let mut rt = new_runtime();
   let err = rt
     .exec_script(
@@ -244,14 +244,14 @@ fn iterator_close_get_method_throw_overrides_throw_completion() {
         };
        };
        for (var x of iterable) { throw "body"; }
-     "#,
+      "#,
     )
     .unwrap_err();
 
   let thrown = err
     .thrown_value()
     .unwrap_or_else(|| panic!("expected thrown exception, got {err:?}"));
-  assert_value_is_utf8(&rt, thrown, "getter");
+  assert_value_is_utf8(&rt, thrown, "body");
 }
 
 #[test]
@@ -281,12 +281,11 @@ fn iterator_close_get_method_non_callable_overrides_break() {
 }
 
 #[test]
-fn iterator_close_get_method_non_callable_overrides_throw_completion() {
+fn iterator_close_get_method_non_callable_suppressed_on_throw_completion() {
   let mut rt = new_runtime();
-  let value = rt
+  let err = rt
     .exec_script(
       r#"
-      var ok = false;
       var iterable = {};
       iterable[Symbol.iterator] = function () {
         return {
@@ -294,16 +293,15 @@ fn iterator_close_get_method_non_callable_overrides_throw_completion() {
           "return": 1
         };
       };
-      try {
-        for (var x of iterable) { throw "body"; }
-      } catch (e) {
-        ok = e && e.name === "TypeError";
-      }
-      ok
+      for (var x of iterable) { throw "body"; }
     "#,
     )
-    .unwrap();
-  assert_eq!(value, Value::Bool(true));
+    .unwrap_err();
+
+  let thrown = err
+    .thrown_value()
+    .unwrap_or_else(|| panic!("expected thrown exception, got {err:?}"));
+  assert_value_is_utf8(&rt, thrown, "body");
 }
 
 #[test]

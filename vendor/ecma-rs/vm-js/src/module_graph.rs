@@ -973,6 +973,7 @@ impl ModuleGraph {
     let intr = vm
       .intrinsics()
       .ok_or(VmError::Unimplemented("module namespaces require intrinsics"))?;
+    let getter_call = vm.module_namespace_getter_call_id()?;
 
     // Allocate the export list and capture binding resolution information.
     //
@@ -999,7 +1000,7 @@ impl ModuleGraph {
       let export_key_s = inner.alloc_string(export_name)?;
       inner.push_root(Value::String(export_key_s))?;
 
-      let value = match resolution.binding_name {
+      let (value, getter_slots, getter_env) = match resolution.binding_name {
         crate::module_record::BindingName::Name(local_name) => {
           let env_root = self.modules[module_index(resolution.module)]
             .environment
@@ -1012,20 +1013,35 @@ impl ModuleGraph {
           let binding_name_s = inner.alloc_string(&local_name)?;
           inner.push_root(Value::String(binding_name_s))?;
 
-          ModuleNamespaceExportValue::Binding {
-            env,
-            name: binding_name_s,
-          }
+          (
+            ModuleNamespaceExportValue::Binding {
+              env,
+              name: binding_name_s,
+            },
+            [Value::String(binding_name_s), Value::String(export_key_s)],
+            Some(env),
+          )
         }
         crate::module_record::BindingName::Namespace => {
           let ns = self.get_module_namespace(resolution.module, vm, &mut inner)?;
           inner.push_root(Value::Object(ns))?;
-          ModuleNamespaceExportValue::Namespace { namespace: ns }
+          (
+            ModuleNamespaceExportValue::Namespace { namespace: ns },
+            [Value::Object(ns), Value::String(export_key_s)],
+            None,
+          )
         }
       };
 
+      let getter = inner.alloc_native_function_with_slots_and_env(getter_call, None, export_key_s, 0, &getter_slots, getter_env)?;
+      inner
+        .heap_mut()
+        .object_set_prototype(getter, Some(intr.function_prototype()))?;
+      inner.push_root(Value::Object(getter))?;
+
       export_entries.push(ModuleNamespaceExport {
         name: export_key_s,
+        getter,
         value,
       });
     }

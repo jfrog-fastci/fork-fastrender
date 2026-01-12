@@ -622,24 +622,12 @@ impl<'a> Scope<'a> {
         return Ok(None);
       };
 
-      // `[[GetOwnProperty]]` computes the value via `[[Get]]`.
-      //
-      // `ordinary_get_own_property_with_tick` does not have access to a `Vm` to translate TDZ
-      // sentinels to real `ReferenceError` objects, so we currently preserve the heap-layer TDZ
-      // sentinel (`Throw(Null)`). Entry points that need to be realm-aware should use
-      // `Scope::ordinary_get` / `Scope::ordinary_get_with_host_and_hooks`, which perform the proper
-      // translation.
-      let value = match export.value {
-        ModuleNamespaceExportValue::Namespace { namespace } => Value::Object(namespace),
-        ModuleNamespaceExportValue::Binding { env, name } => self.heap().env_get_binding_value_by_gc_string(env, name)?,
-      };
-
       return Ok(Some(PropertyDescriptor {
         enumerable: true,
         configurable: false,
-        kind: PropertyKind::Data {
-          value,
-          writable: true,
+        kind: PropertyKind::Accessor {
+          get: Value::Object(export.getter),
+          set: Value::Undefined,
         },
       }));
     }
