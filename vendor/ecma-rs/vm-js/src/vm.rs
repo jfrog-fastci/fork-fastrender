@@ -337,6 +337,8 @@ pub struct Vm {
   async_resume_call: Option<NativeFunctionId>,
   module_tla_on_fulfilled_call: Option<NativeFunctionId>,
   module_tla_on_rejected_call: Option<NativeFunctionId>,
+  async_from_sync_iterator_unwrap_call: Option<NativeFunctionId>,
+  async_from_sync_iterator_close_call: Option<NativeFunctionId>,
   next_async_continuation_id: u32,
   async_continuations: HashMap<u32, AsyncContinuation>,
   /// Optional pointer to an embedding-owned [`ModuleGraph`].
@@ -567,6 +569,8 @@ impl Vm {
       async_resume_call: None,
       module_tla_on_fulfilled_call: None,
       module_tla_on_rejected_call: None,
+      async_from_sync_iterator_unwrap_call: None,
+      async_from_sync_iterator_close_call: None,
       next_async_continuation_id: 0,
       async_continuations: HashMap::new(),
       module_graph: None,
@@ -648,6 +652,28 @@ impl Vm {
     }
     let id = self.register_native_call(crate::module_graph::module_tla_on_rejected)?;
     self.module_tla_on_rejected_call = Some(id);
+    Ok(id)
+  }
+
+  pub(crate) fn async_from_sync_iterator_unwrap_call_id(
+    &mut self,
+  ) -> Result<NativeFunctionId, VmError> {
+    if let Some(id) = self.async_from_sync_iterator_unwrap_call {
+      return Ok(id);
+    }
+    let id = self.register_native_call(crate::iterator::async_from_sync_iterator_unwrap_call)?;
+    self.async_from_sync_iterator_unwrap_call = Some(id);
+    Ok(id)
+  }
+
+  pub(crate) fn async_from_sync_iterator_close_call_id(
+    &mut self,
+  ) -> Result<NativeFunctionId, VmError> {
+    if let Some(id) = self.async_from_sync_iterator_close_call {
+      return Ok(id);
+    }
+    let id = self.register_native_call(crate::iterator::async_from_sync_iterator_close_call)?;
+    self.async_from_sync_iterator_close_call = Some(id);
     Ok(id)
   }
 
@@ -3176,5 +3202,24 @@ mod tests {
     // Ensure no handlers were recorded.
     assert_eq!(vm.native_calls.len(), 0);
     assert_eq!(vm.native_constructs.len(), 0);
+  }
+
+  #[test]
+  fn async_from_sync_iterator_internal_native_call_ids_are_cached() -> Result<(), VmError> {
+    let mut vm = Vm::new(VmOptions::default());
+
+    let unwrap_first = vm.async_from_sync_iterator_unwrap_call_id()?;
+    let unwrap_len = vm.native_calls.len();
+    let unwrap_second = vm.async_from_sync_iterator_unwrap_call_id()?;
+    assert_eq!(unwrap_first, unwrap_second);
+    assert_eq!(unwrap_len, vm.native_calls.len());
+
+    let close_first = vm.async_from_sync_iterator_close_call_id()?;
+    let close_len = vm.native_calls.len();
+    let close_second = vm.async_from_sync_iterator_close_call_id()?;
+    assert_eq!(close_first, close_second);
+    assert_eq!(close_len, vm.native_calls.len());
+
+    Ok(())
   }
 }

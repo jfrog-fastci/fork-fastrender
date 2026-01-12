@@ -1,5 +1,5 @@
 use crate::property::PropertyKey;
-use crate::{Scope, Value, Vm, VmError, VmHost, VmHostHooks};
+use crate::{GcObject, Scope, Value, Vm, VmError, VmHost, VmHostHooks};
 
 /// ECMAScript "IteratorRecord" (ECMA-262).
 #[derive(Debug, Clone, Copy)]
@@ -10,7 +10,9 @@ pub struct IteratorRecord {
 }
 
 fn string_key(scope: &mut Scope<'_>, s: &str) -> Result<PropertyKey, VmError> {
-  Ok(PropertyKey::from_string(scope.alloc_string(s)?))
+  let key_s = scope.alloc_string(s)?;
+  scope.push_root(Value::String(key_s))?;
+  Ok(PropertyKey::from_string(key_s))
 }
 
 /// `GetIterator` (ECMA-262).
@@ -207,4 +209,92 @@ pub fn iterator_close(
     ));
   }
   Ok(())
+}
+
+/// Native call handler for the `unwrap` closure in `AsyncFromSyncIteratorContinuation`.
+///
+/// This is used as the `onFulfilled` Promise reaction handler when awaiting an iterator result's
+/// `value`.
+///
+/// Slot layout:
+/// - slot 0: `done` boolean
+pub(crate) fn async_from_sync_iterator_unwrap_call(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let done = match scope
+    .heap()
+    .get_function_native_slots(callee)?
+    .get(0)
+    .copied()
+    .unwrap_or(Value::Undefined)
+  {
+    Value::Bool(b) => b,
+    _ => return Err(VmError::InvariantViolation("AsyncFromSyncIterator unwrap missing done slot")),
+  };
+  let v = args.get(0).copied().unwrap_or(Value::Undefined);
+
+  let intr = vm
+    .intrinsics()
+    .ok_or(VmError::Unimplemented("AsyncFromSyncIterator requires intrinsics"))?;
+
+  // Root inputs across allocations while constructing the iterator result object.
+  let mut scope = scope.reborrow();
+  scope.push_root(v)?;
+
+  let out = scope.alloc_object()?;
+  scope.push_root(Value::Object(out))?;
+  scope
+    .heap_mut()
+    .object_set_prototype(out, Some(intr.object_prototype()))?;
+
+  let value_key = string_key(&mut scope, "value")?;
+  let done_key = string_key(&mut scope, "done")?;
+  crate::spec_ops::create_data_property_or_throw(&mut scope, out, value_key, v)?;
+  crate::spec_ops::create_data_property_or_throw(&mut scope, out, done_key, Value::Bool(done))?;
+
+  Ok(Value::Object(out))
+}
+
+/// Native call handler for the `closeIterator` closure in `AsyncFromSyncIteratorContinuation`.
+///
+/// This is used as the `onRejected` Promise reaction handler when awaiting an iterator result's
+/// `value`, ensuring the underlying sync iterator is closed if the value is a rejected promise.
+///
+/// Slot layout:
+/// - slot 0: `syncIteratorRecord.[[Iterator]]` value
+pub(crate) fn async_from_sync_iterator_close_call(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let iterator = scope
+    .heap()
+    .get_function_native_slots(callee)?
+    .get(0)
+    .copied()
+    .unwrap_or(Value::Undefined);
+  let reason = args.get(0).copied().unwrap_or(Value::Undefined);
+
+  // Root the iterator + reason across the IteratorClose call, which can allocate / run user JS.
+  let mut scope = scope.reborrow();
+  scope.push_roots(&[iterator, reason])?;
+
+  let record = IteratorRecord {
+    iterator,
+    next_method: Value::Undefined,
+    done: false,
+  };
+
+  iterator_close(vm, host, hooks, &mut scope, &record)?;
+  Err(VmError::Throw(reason))
 }
