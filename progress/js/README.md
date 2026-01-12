@@ -27,4 +27,3 @@ Copy those outputs into:
 
 If `pages_with_js` is `0`, the committed progress artifacts do not currently contain JS telemetry.
 In that case, the report will be empty/zeroed until the pageset harness records `diagnostics.stats.js`.
-

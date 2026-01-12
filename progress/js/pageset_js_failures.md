@@ -22,4 +22,4 @@
 
 (none)
 
-Note: `diagnostics.stats.js` telemetry is not present in the committed pageset progress artifacts at the time this report was generated, so `pages_with_js` is currently 0.
+Note: `diagnostics.stats.js` telemetry is not present in the committed pageset progress artifacts at the time this report was generated, so `pages_with_js` is currently 0. The report becomes useful once pageset runs record JS failure telemetry in `diagnostics.stats.js`.
