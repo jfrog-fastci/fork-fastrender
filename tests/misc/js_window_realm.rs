@@ -858,6 +858,21 @@ fn js_execution_can_observe_window_globals() -> Result<()> {
 }
 
 #[test]
+fn location_stringifier_returns_href() -> Result<()> {
+  let url = "https://example.com/path?x=1#y";
+  let mut realm = WindowRealm::new_with_js_execution_options(WindowRealmConfig::new(url), js_opts_for_test())
+    .map_err(|e| Error::Other(e.to_string()))?;
+
+  let ok = realm
+    .exec_script(
+      "String(location) === location.href && '' + location === location.href && location.toString() === location.href",
+    )
+    .map_err(|e| Error::Other(e.to_string()))?;
+  assert_eq!(ok, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
 fn event_loop_microtask_checkpoint_uses_dom_shim_hooks() -> Result<()> {
   let renderer_dom = fastrender::dom::parse_html(
     "<!doctype html><html><head></head><body><div id=t></div></body></html>",

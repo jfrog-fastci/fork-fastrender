@@ -16037,6 +16037,21 @@ fn init_window_globals(
     data_desc(Value::Object(to_string_func)),
   )?;
 
+  let to_json_key = alloc_key(&mut scope, "toJSON")?;
+  let to_json_name = scope.alloc_string("toJSON")?;
+  scope.push_root(Value::String(to_json_name))?;
+  let to_json_func = scope.alloc_native_function(location_to_string_call_id, None, to_json_name, 0)?;
+  scope.heap_mut().object_set_prototype(
+    to_json_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(to_json_func))?;
+  scope.define_property(
+    location_obj,
+    to_json_key,
+    data_desc(Value::Object(to_json_func)),
+  )?;
+
   let value_of_key = alloc_key(&mut scope, "valueOf")?;
   let value_of_name = scope.alloc_string("valueOf")?;
   scope.push_root(Value::String(value_of_name))?;
