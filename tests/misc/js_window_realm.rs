@@ -3736,7 +3736,7 @@ fn document_current_script_is_visible_to_js_execution() -> Result<()> {
     wrapper_identity_ok: Vec<bool>,
   }
 
-  impl ScriptBlockExecutor<WindowHostState> for JsExecutor {
+impl ScriptBlockExecutor<WindowHostState> for JsExecutor {
     fn execute_script(
       &mut self,
       host: &mut WindowHostState,

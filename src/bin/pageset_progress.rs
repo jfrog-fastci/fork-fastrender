@@ -13373,3 +13373,347 @@ fn exit_silently_on_broken_pipe_panic() {
     default_hook(info);
   }));
 }
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use fastrender::api::{RenderDiagnostics, ResourceFetchError, ResourceKind};
+  use fastrender::error::RenderStage;
+  use fastrender::render_control::StageHeartbeat;
+  use serde_json::json;
+  use std::collections::HashMap;
+  use std::ffi::OsString;
+  use std::sync::{Mutex, MutexGuard, OnceLock};
+  use std::time::Duration;
+
+  fn global_test_lock() -> MutexGuard<'static, ()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK
+      .get_or_init(|| Mutex::new(()))
+      .lock()
+      .unwrap_or_else(|poisoned| poisoned.into_inner())
+  }
+
+  struct EnvVarGuard {
+    key: &'static str,
+    previous: Option<OsString>,
+  }
+
+  impl EnvVarGuard {
+    fn set(key: &'static str, value: impl Into<OsString>) -> Self {
+      let previous = std::env::var_os(key);
+      std::env::set_var(key, value.into());
+      Self { key, previous }
+    }
+  }
+
+  impl Drop for EnvVarGuard {
+    fn drop(&mut self) {
+      match self.previous.take() {
+        Some(value) => std::env::set_var(self.key, value),
+        None => std::env::remove_var(self.key),
+      }
+    }
+  }
+
+  fn progress_with_status(
+    status: &str,
+    last_good_commit: &str,
+    last_regression_commit: &str,
+  ) -> PageProgress {
+    serde_json::from_value(json!({
+      "url": "https://example.test/",
+      "status": status,
+      "total_ms": 1.0,
+      "stages_ms": {
+        "fetch": 0.0,
+        "css": 0.0,
+        "cascade": 0.0,
+        "layout": 0.0,
+        "paint": 0.0
+      },
+      "notes": "",
+      "hotspot": "",
+      "last_good_commit": last_good_commit,
+      "last_regression_commit": last_regression_commit
+    }))
+    .expect("progress JSON parses")
+  }
+
+  fn last_good_commit(progress: &PageProgress) -> String {
+    serde_json::to_value(progress).expect("serialize progress")["last_good_commit"]
+      .as_str()
+      .unwrap_or("")
+      .to_string()
+  }
+
+  fn last_regression_commit(progress: &PageProgress) -> String {
+    serde_json::to_value(progress).expect("serialize progress")["last_regression_commit"]
+      .as_str()
+      .unwrap_or("")
+      .to_string()
+  }
+
+  #[test]
+  fn ok_to_timeout_records_regression_commit_once() {
+    let previous = progress_with_status("ok", "good123", "");
+    let next = progress_with_status("timeout", "", "");
+    let merged = next.merge_preserving_manual(Some(previous), Some("reg456"));
+
+    assert_eq!(last_regression_commit(&merged), "reg456");
+    assert_eq!(last_good_commit(&merged), "good123");
+  }
+
+  #[test]
+  fn timeout_to_ok_sets_last_good_commit() {
+    let previous = progress_with_status("timeout", "", "reg111");
+    let next = progress_with_status("ok", "", "");
+    let merged = next.merge_preserving_manual(Some(previous), Some("good222"));
+
+    assert_eq!(last_good_commit(&merged), "good222");
+    assert_eq!(last_regression_commit(&merged), "reg111");
+  }
+
+  #[test]
+  fn ok_to_ok_keeps_last_good_stable() {
+    let previous = progress_with_status("ok", "stable_good", "");
+    let next = progress_with_status("ok", "", "");
+    let merged = next.merge_preserving_manual(Some(previous), Some("newsha"));
+
+    assert_eq!(last_good_commit(&merged), "stable_good");
+    assert_eq!(last_regression_commit(&merged), "");
+  }
+
+  #[test]
+  fn timeout_to_timeout_keeps_commits_stable() {
+    let previous = progress_with_status("timeout", "historic_good", "historic_regression");
+    let next = progress_with_status("timeout", "", "");
+    let merged = next.merge_preserving_manual(Some(previous), Some("othersha"));
+
+    assert_eq!(last_good_commit(&merged), "historic_good");
+    assert_eq!(last_regression_commit(&merged), "historic_regression");
+  }
+
+  #[test]
+  fn current_git_sha_uses_env_fallback() {
+    let expected = "env-fallback-sha";
+    let _lock = global_test_lock();
+    let _fastr_sha = EnvVarGuard::set("FASTR_GIT_SHA", expected);
+    let _github_sha = EnvVarGuard::set("GITHUB_SHA", "wrong-sha");
+
+    // `current_git_sha()` should prefer env vars over spawning `git`, so this remains stable even
+    // when `git` is available on PATH.
+    let detected = current_git_sha();
+
+    assert_eq!(detected.as_deref(), Some(expected));
+  }
+
+  #[test]
+  fn timeout_records_stage_and_hotspot() {
+    let mut progress = PageProgress::new("https://timeout.test/".to_string());
+
+    populate_timeout_progress(&mut progress, RenderStage::Cascade, Duration::from_millis(1200));
+
+    let value = serde_json::to_value(&progress).expect("serialize progress");
+    assert_eq!(value["status"], json!("timeout"));
+    assert_eq!(
+      value["hotspot"],
+      json!(hotspot_from_timeout_stage(RenderStage::Cascade))
+    );
+    assert_eq!(value["timeout_stage"], json!("cascade"));
+  }
+
+  #[test]
+  fn diagnostics_failure_stage_is_propagated() {
+    let mut progress = PageProgress::new("https://css.test/".to_string());
+    let mut diagnostics = RenderDiagnostics::default();
+    diagnostics.fetch_errors.push(ResourceFetchError {
+      kind: ResourceKind::Image,
+      url: "https://img.test/missing.png".to_string(),
+      message: "missing".to_string(),
+      status: None,
+      final_url: None,
+      etag: None,
+      last_modified: None,
+    });
+
+    apply_diagnostics_to_progress(&mut progress, &diagnostics);
+
+    let value = serde_json::to_value(&progress).expect("serialize progress");
+    assert_eq!(value["failure_stage"], json!("paint"));
+  }
+
+  #[test]
+  fn heartbeat_stage_maps_to_timeout_stage() {
+    #[derive(serde::Serialize)]
+    struct TimeoutStageFields {
+      timeout_stage: Option<ProgressStage>,
+    }
+
+    let fields = TimeoutStageFields {
+      timeout_stage: progress_stage_from_heartbeat(StageHeartbeat::ReadCache),
+    };
+
+    let value = serde_json::to_value(&fields).expect("serialize timeout_stage");
+    assert_eq!(value["timeout_stage"], json!("dom_parse"));
+  }
+
+  fn make_fetch_error(
+    kind: ResourceKind,
+    url: &str,
+    status: Option<u16>,
+    final_url: Option<&str>,
+    message: &str,
+  ) -> ResourceFetchError {
+    ResourceFetchError {
+      kind,
+      url: url.to_string(),
+      message: message.to_string(),
+      status,
+      final_url: final_url.map(|u| u.to_string()),
+      etag: None,
+      last_modified: None,
+    }
+  }
+
+  #[test]
+  fn bot_mitigation_classifier_requires_status_and_marker() {
+    let blocked = make_fetch_error(
+      ResourceKind::Image,
+      "https://example.com/image.jpg",
+      Some(405),
+      Some("https://example.com/image.jpg?captcha=123"),
+      "HTTP status 405",
+    );
+    assert!(is_bot_mitigation_fetch_error(&blocked));
+
+    let blocked_font = make_fetch_error(
+      ResourceKind::Font,
+      "https://example.com/font.woff2",
+      Some(405),
+      Some("https://example.com/font.woff2?captcha=123"),
+      "HTTP status 405",
+    );
+    assert!(is_bot_mitigation_fetch_error(&blocked_font));
+
+    let missing_marker = make_fetch_error(
+      ResourceKind::Image,
+      "https://example.com/image.jpg",
+      Some(405),
+      None,
+      "HTTP status 405",
+    );
+    assert!(!is_bot_mitigation_fetch_error(&missing_marker));
+
+    let missing_marker_font = make_fetch_error(
+      ResourceKind::Font,
+      "https://example.com/font.woff2",
+      Some(405),
+      None,
+      "HTTP status 405",
+    );
+    assert!(!is_bot_mitigation_fetch_error(&missing_marker_font));
+
+    let missing_status = make_fetch_error(
+      ResourceKind::Image,
+      "https://example.com/image.jpg?captcha=123",
+      None,
+      None,
+      "connection error",
+    );
+    assert!(!is_bot_mitigation_fetch_error(&missing_status));
+  }
+
+  #[test]
+  fn external_network_failure_classifier_is_narrow() {
+    let dns_error = make_fetch_error(
+      ResourceKind::Stylesheet,
+      "https://cdn.example.com/all.css",
+      None,
+      None,
+      "dns error: failed to lookup address information",
+    );
+    assert!(is_external_network_failure_fetch_error(&dns_error));
+
+    let http_error = make_fetch_error(
+      ResourceKind::Stylesheet,
+      "https://cdn.example.com/all.css",
+      Some(404),
+      None,
+      "HTTP status 404",
+    );
+    assert!(!is_external_network_failure_fetch_error(&http_error));
+
+    let invalid_url = make_fetch_error(
+      ResourceKind::Stylesheet,
+      "not a url",
+      None,
+      None,
+      "error sending request for url",
+    );
+    assert!(!is_external_network_failure_fetch_error(&invalid_url));
+  }
+
+  #[test]
+  fn bot_mitigation_classifier_matches_expected_status_and_url_patterns() {
+    assert!(
+      is_bot_mitigation_block(Some(405), "https://example.test/block?captcha=1234"),
+      "expected 405 + captcha marker to match"
+    );
+    assert!(
+      is_bot_mitigation_block(Some(405), "https://example.test/block?CAPTCHA=1234"),
+      "expected case-insensitive marker to match"
+    );
+    assert!(
+      is_bot_mitigation_block(Some(405), "https://example.test/block?foo=1&captcha=1234"),
+      "expected query param marker to match in non-leading position"
+    );
+    assert!(
+      is_bot_mitigation_block(Some(403), "https://example.test/block?captcha=1234"),
+      "expected 403 + captcha marker to match"
+    );
+    assert!(
+      is_bot_mitigation_block(Some(429), "https://example.test/block?captcha=1234"),
+      "expected 429 + captcha marker to match"
+    );
+
+    assert!(
+      !is_bot_mitigation_block(Some(404), "https://example.test/block?captcha=1234"),
+      "unexpected status codes should not match"
+    );
+    assert!(
+      !is_bot_mitigation_block(Some(405), "https://example.test/block"),
+      "missing captcha marker should not match"
+    );
+    assert!(
+      !is_bot_mitigation_block(Some(405), "https://example.test/block?recaptcha=1"),
+      "should not match unrelated query param names containing `captcha=` as a substring"
+    );
+  }
+
+  #[test]
+  fn bot_mitigation_classifier_only_applies_to_subresources() {
+    let blocked = ResourceFetchError {
+      kind: ResourceKind::Image,
+      url: "https://example.test/image.png".to_string(),
+      message: "HTTP status 405".to_string(),
+      status: Some(405),
+      final_url: Some("https://example.test/block?captcha=1234".to_string()),
+      etag: None,
+      last_modified: None,
+    };
+    assert!(
+      is_bot_mitigation_fetch_error(&blocked),
+      "expected image fetch to be classified as bot mitigation"
+    );
+
+    let doc_blocked = ResourceFetchError {
+      kind: ResourceKind::Document,
+      ..blocked
+    };
+    assert!(
+      !is_bot_mitigation_fetch_error(&doc_blocked),
+      "document fetches should not be classified as bot mitigation blocks"
+    );
+  }
+}

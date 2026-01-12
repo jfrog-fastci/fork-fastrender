@@ -94,9 +94,7 @@ impl<E: BrowserTabJsExecutor> BrowserTabJsExecutor for ExecutorWithWindow<E> {
 }
 
 impl<E> WindowRealmHost for ExecutorWithWindow<E> {
-  fn vm_host_and_window_realm(
-    &mut self,
-  ) -> Result<(&mut dyn vm_js::VmHost, &mut WindowRealm)> {
+  fn vm_host_and_window_realm(&mut self) -> Result<(&mut dyn vm_js::VmHost, &mut WindowRealm)> {
     let ExecutorWithWindow {
       host_ctx, window, ..
     } = self;

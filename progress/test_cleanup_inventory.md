@@ -112,6 +112,7 @@ section in sync with `ls tests/*.rs`.
 | `tests/svg_integration_tests.rs` | unit | `src/image_loader/tests.rs` + `src/paint/svg_filter/tests/**` | Migrated SVG rasterization + filter tests into unit tests and removed the standalone test binary. | DONE |
 | `tests/taffy_cache_tests.rs` | unit | `src/layout/taffy_integration.rs` | Migrated to unit tests; old `tests/taffy_cache/**` directory removed. | DONE |
 | `tests/wpt_test.rs` | integration | `tests/wpt/tests.rs` | Top-level harness removed; runner tests now live under `tests/wpt/**` (must be wired into `tests/integration.rs`). | DONE |
+| `tests/wpt_tests.rs` | integration (shim) | delete | Redundant dedicated WPT harness removed; run the WPT suite via `tests/integration.rs::wpt` (and the `tests/wpt/**` module tree). | DONE |
 | `tests/wpt_offline_invariants_test.rs` | delete | delete | Top-level harness removed; offline invariants now live under `tests/wpt/offline_invariants.rs` and run via `tests/integration.rs::wpt`. | DONE |
 
 ## `tests/` subdirectory summary (first pass)
