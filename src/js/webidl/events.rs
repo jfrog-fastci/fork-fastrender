@@ -127,10 +127,11 @@ impl EventWrapper {
 
     // Stable JS-visible sentinels for non-node event targets.
     //
-    // `vm-js` string values are not interned. Explicitly intern these once per `JsDomEvents` runtime
-    // so they have stable identity and remain GC-reachable.
-    let window_target = rt.intern_string_value("window")?;
-    let document_target = rt.intern_string_value("document")?;
+    // `vm-js` string values are not automatically interned. `webidl_js_runtime::VmJsRuntime`
+    // special-cases `"window"`/`"document"` in `alloc_string_value` to return stable, rooted string
+    // handles.
+    let window_target = rt.alloc_string_value("window")?;
+    let document_target = rt.alloc_string_value("document")?;
 
     // Prototype with methods/getters that mutate the active Rust `Event`.
     let prototype = rt.alloc_object_value()?;

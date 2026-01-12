@@ -1,24 +1,27 @@
-//! Guard against accidentally depending on both the workspace-local and vendored `webidl-vm-js`.
+//! Guard against regressing the post-consolidation `webidl-vm-js` dependency layout.
 //!
-//! FastRender keeps a workspace-local copy of `webidl-vm-js` at `crates/webidl-vm-js`. The vendored
-//! `ecma-rs` copy (`vendor/ecma-rs/webidl-vm-js`) should not be pulled into the FastRender workspace
-//! dependency graph to avoid ambiguity/divergence.
+//! After WebIDL consolidation, FastRender should depend on the vendored `ecma-rs` crate at
+//! `vendor/ecma-rs/webidl-vm-js` (and must not re-introduce a workspace-local copy under `crates/`).
 
 use std::fs;
 use std::path::{Path, PathBuf};
 
 const VENDORED_WEBIDL_VM_JS_PATH_FRAGMENT: &str = "vendor/ecma-rs/webidl-vm-js";
+const WEBIDL_VM_JS_PKG_DIR: &str = "webidl-vm-js";
+const CRATES_DIR: &str = "crates";
 
 #[test]
-fn no_workspace_cargo_toml_depends_on_vendored_webidl_vm_js() {
+fn workspace_does_not_reference_workspace_local_webidl_vm_js() {
   let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
   let manifest_paths = cargo_toml_files(&repo_root);
+
+  let workspace_local_fragment = format!("{CRATES_DIR}/{WEBIDL_VM_JS_PKG_DIR}");
 
   let mut offenders = Vec::new();
   for path in manifest_paths {
     let contents = fs::read_to_string(&path)
       .unwrap_or_else(|err| panic!("failed to read {}: {err}", path.display()));
-    if contents.contains(VENDORED_WEBIDL_VM_JS_PATH_FRAGMENT) {
+    if contents.contains(&workspace_local_fragment) {
       let rel_path = path
         .strip_prefix(&repo_root)
         .map(|p| p.display().to_string())
@@ -29,8 +32,8 @@ fn no_workspace_cargo_toml_depends_on_vendored_webidl_vm_js() {
 
   if !offenders.is_empty() {
     panic!(
-      "FastRender must not depend on the vendored `webidl-vm-js` crate ({VENDORED_WEBIDL_VM_JS_PATH_FRAGMENT}).\n\
-       Use the workspace-local adapter at `crates/webidl-vm-js`.\n\
+      "FastRender's Cargo manifests must not reference a workspace-local `webidl-vm-js` copy.\n\
+       `webidl-vm-js` is vendored at {VENDORED_WEBIDL_VM_JS_PATH_FRAGMENT}.\n\
        \n\
        Offending Cargo.toml files:\n\
        {}",
@@ -90,4 +93,3 @@ fn cargo_toml_files(repo_root: &Path) -> Vec<PathBuf> {
   files.sort();
   files
 }
-

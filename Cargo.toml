@@ -10,16 +10,11 @@ publish = false
 members = [
   "xtask",
   "crates/js-wpt-dom-runner",
-  "crates/webidl-js-runtime",
 ]
-# NOTE: WebIDL/JS infrastructure should live in `vendor/ecma-rs/` per
-# instructions/ecma_rs_ownership.md and instructions/webidl_consolidation.md.
-# These workspace members are temporary until consolidation is complete.
 default-members = [
   ".",
   "xtask",
   "crates/js-wpt-dom-runner",
-  "crates/webidl-js-runtime",
 ]
 # `vendor/ecma-rs` is a nested workspace (vendored). Exclude it so Cargo can build `vm-js`
 # and friends using their own workspace-inherited metadata.
@@ -139,7 +134,7 @@ rquickjs = { version = "0.9", optional = true, features = ["classes", "macro"] }
 read-fonts = "0.20"
 skrifa = "0.20"
 walkdir = "2"
-webidl-js-runtime = { path = "crates/webidl-js-runtime" }
+webidl-js-runtime = { path = "vendor/ecma-rs/webidl-runtime" }
 webidl-vm-js = { path = "vendor/ecma-rs/webidl-vm-js" }
 vm-js = { path = "vendor/ecma-rs/vm-js" }
 parse-js = { path = "vendor/ecma-rs/parse-js", features = ["diagnostics"] }

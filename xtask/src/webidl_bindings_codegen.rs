@@ -17,8 +17,8 @@ use crate::webidl::type_resolution;
 use crate::webidl::type_resolution::{build_type_context, expand_typedefs_in_type};
 use crate::webidl::ExtendedAttribute;
 use webidl::ir::{
-  DefaultValue as IrDefaultValue, IdlType as IrIdlType, NamedTypeKind, NumericType as IrNumericType,
-  TypeAnnotation as IrTypeAnnotation, TypeContext,
+  DefaultValue as IrDefaultValue, IdlType as IrIdlType, NamedTypeKind,
+  NumericType as IrNumericType, TypeAnnotation as IrTypeAnnotation, TypeContext,
 };
 
 #[derive(Args, Debug)]
