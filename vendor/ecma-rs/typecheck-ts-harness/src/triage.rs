@@ -1,5 +1,6 @@
 use crate::diagnostic_norm::DiagnosticCode;
 use crate::diagnostic_norm::NormalizedDiagnostic;
+use crate::directives::IgnoredDirectiveSummary;
 use crate::expectations::ExpectationKind;
 use crate::runner::EngineDiagnostics;
 use crate::runner::MismatchDetail;
@@ -73,6 +74,8 @@ pub struct TriageReport {
   pub mismatches: usize,
   #[serde(default)]
   pub xpass: usize,
+  #[serde(default, skip_serializing_if = "IgnoredDirectiveSummary::is_empty")]
+  pub directives: IgnoredDirectiveSummary,
   #[serde(skip_serializing_if = "Option::is_none")]
   pub unexpected_mismatches: Option<usize>,
   pub mismatches_without_code: usize,
@@ -87,6 +90,8 @@ pub struct TriageReport {
 
 #[derive(Debug, Deserialize)]
 struct ConformanceReportInput {
+  #[serde(default)]
+  directives: IgnoredDirectiveSummary,
   results: Vec<ConformanceCaseInput>,
 }
 
@@ -116,6 +121,8 @@ struct ExpectationInput {
 struct DifftscReportInput {
   #[serde(default)]
   suite: Option<String>,
+  #[serde(default)]
+  directives: IgnoredDirectiveSummary,
   results: Vec<DifftscCaseInput>,
 }
 
@@ -267,6 +274,9 @@ pub fn print_human_summary(report: &TriageReport, out: &mut impl Write) -> io::R
     "triage: kind={:?} total={} mismatches={} xpass={}",
     report.kind, report.total, report.mismatches, report.xpass
   )?;
+  if let Some(line) = report.directives.human_summary() {
+    writeln!(out, "  {line}")?;
+  }
 
   if let Some(unexpected) = report.unexpected_mismatches {
     writeln!(out, "  unexpected mismatches: {unexpected}")?;
@@ -581,6 +591,7 @@ fn compute_baseline_diff(
 }
 
 fn analyze_conformance(input: ConformanceReportInput, top: usize) -> Result<TriageReport> {
+  let ConformanceReportInput { directives, results } = input;
   let mut outcome_counts: BTreeMap<String, usize> = BTreeMap::new();
   let mut code_counts: BTreeMap<String, usize> = BTreeMap::new();
   let mut prefix_counts: BTreeMap<String, usize> = BTreeMap::new();
@@ -593,7 +604,7 @@ fn analyze_conformance(input: ConformanceReportInput, top: usize) -> Result<Tria
   let mut regressions = Vec::new();
   let mut xpasses = Vec::new();
 
-  for case in &input.results {
+  for case in &results {
     if case.outcome == TestOutcome::Match {
       if case.expectation.as_ref().is_some_and(|e| {
         e.from_manifest
@@ -652,9 +663,10 @@ fn analyze_conformance(input: ConformanceReportInput, top: usize) -> Result<Tria
   Ok(TriageReport {
     kind: ReportKind::Conformance,
     top,
-    total: input.results.len(),
+    total: results.len(),
     mismatches,
     xpass,
+    directives,
     unexpected_mismatches: Some(unexpected_mismatches),
     mismatches_without_code,
     top_outcomes: top_groups(outcome_counts, top),
@@ -667,6 +679,11 @@ fn analyze_conformance(input: ConformanceReportInput, top: usize) -> Result<Tria
 }
 
 fn analyze_difftsc(input: DifftscReportInput, top: usize) -> Result<TriageReport> {
+  let DifftscReportInput {
+    suite,
+    directives,
+    results,
+  } = input;
   let mut outcome_counts: BTreeMap<String, usize> = BTreeMap::new();
   let mut code_counts: BTreeMap<String, usize> = BTreeMap::new();
   let mut prefix_counts: BTreeMap<String, usize> = BTreeMap::new();
@@ -678,7 +695,7 @@ fn analyze_difftsc(input: DifftscReportInput, top: usize) -> Result<TriageReport
   let mut regressions = Vec::new();
   let mut xpasses = Vec::new();
 
-  for case in &input.results {
+  for case in &results {
     if case.status == DifftscCaseStatus::Matched {
       if case.expectation.as_ref().is_some_and(|e| {
         matches!(
@@ -734,19 +751,19 @@ fn analyze_difftsc(input: DifftscReportInput, top: usize) -> Result<TriageReport
   regressions.sort_by(|a, b| a.id.cmp(&b.id));
   xpasses.sort();
   let regressions_top: Vec<_> = regressions.into_iter().take(top).collect();
-  let mut suggestions =
-    suggest_manifest_entries_for_regressions(&regressions_top, input.suite.as_deref());
+  let mut suggestions = suggest_manifest_entries_for_regressions(&regressions_top, suite.as_deref());
   suggestions.extend(suggest_manifest_entries_for_xpasses(
     &xpasses.into_iter().take(top).collect::<Vec<_>>(),
-    input.suite.as_deref(),
+    suite.as_deref(),
   ));
 
   Ok(TriageReport {
     kind: ReportKind::Difftsc,
     top,
-    total: input.results.len(),
+    total: results.len(),
     mismatches,
     xpass,
+    directives,
     unexpected_mismatches: None,
     mismatches_without_code,
     top_outcomes: top_groups(outcome_counts, top),
