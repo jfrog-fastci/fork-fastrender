@@ -237,9 +237,9 @@ impl Test262ModuleHooks {
           .unwrap_or_else(|| self.test_dir.clone()),
       ),
       ModuleReferrer::Realm(_) => Ok(self.test_dir.clone()),
-      ModuleReferrer::Script(_) => Err(VmError::Unimplemented(
-        "module loading from Script referrer (no ScriptId->path mapping)",
-      )),
+      // test262 runs each case as a single entry script, so resolving relative specifiers against
+      // the test directory is sufficient (even though we don't track ScriptId->path mappings yet).
+      ModuleReferrer::Script(_) => Ok(self.test_dir.clone()),
     }
   }
 

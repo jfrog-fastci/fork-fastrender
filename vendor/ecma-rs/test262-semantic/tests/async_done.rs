@@ -216,3 +216,57 @@ Promise.resolve().then(() => $DONE(new Error("boom")));
     );
   }
 }
+
+#[test]
+fn async_script_dynamic_import_resolves_relative_to_test_dir() {
+  let temp = tempdir().unwrap();
+  write_minimal_harness(temp.path());
+
+  let test_dir = temp.path().join("test");
+  fs::create_dir_all(&test_dir).unwrap();
+
+  // Name the dependency as a FIXTURE so `discover_tests` skips it (fixtures can contain module
+  // syntax without test262 frontmatter).
+  fs::write(test_dir.join("dep_FIXTURE.js"), "export const x = 1;\n").unwrap();
+
+  fs::write(
+    test_dir.join("async-script-dynamic-import.js"),
+    r#"/*---
+flags: [async]
+---*/
+import("./dep_FIXTURE.js").then(
+  (m) => {
+    assert.sameValue(m.x, 1);
+    $DONE();
+  },
+  $DONE
+);
+"#,
+  )
+  .unwrap();
+
+  let discovered = discover_tests(temp.path()).unwrap();
+  let cases = expand_cases(&discovered, &Filter::All).unwrap();
+
+  let expectations = Expectations::empty();
+  let executor = default_executor();
+  let timeout_manager = TimeoutManager::new();
+
+  let results = test262_semantic::runner::run_cases(
+    temp.path(),
+    HarnessMode::Test262,
+    &cases,
+    &expectations,
+    executor.as_ref(),
+    Duration::from_secs(1),
+    &timeout_manager,
+  );
+
+  for variant in [Variant::NonStrict, Variant::Strict] {
+    let result = results
+      .iter()
+      .find(|r| r.id == "async-script-dynamic-import.js" && r.variant == variant)
+      .unwrap();
+    assert_eq!(result.outcome, TestOutcome::Passed);
+  }
+}
