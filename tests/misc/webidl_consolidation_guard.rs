@@ -2,17 +2,14 @@
 //!
 //! After `instructions/webidl_consolidation.md` is complete, FastRender must only depend on the
 //! vendored `ecma-rs` WebIDL stack (`vendor/ecma-rs/webidl*`). The workspace-local WebIDL crates
-//! under `crates/webidl-*` are expected to be deleted.
+//! under the repo's `crates/` directory are expected to be deleted.
 
 use std::fs;
 use std::path::{Path, PathBuf};
 
-const DELETED_WEBIDL_CRATE_PATH_FRAGMENTS: [&str; 4] = [
-  "crates/webidl-ir",
-  "crates/webidl-bindings-core",
-  "crates/webidl-vm-js",
-  "crates/webidl-js-runtime",
-];
+const CRATES_DIR: &str = "crates";
+const WEBIDL_CRATE_PREFIX: &str = "webidl-";
+const DELETED_WEBIDL_CRATE_SUFFIXES: [&str; 4] = ["ir", "bindings-core", "vm-js", "js-runtime"];
 
 const VENDORED_WEBIDL_VM_JS_PATH_FRAGMENT: &str = "vendor/ecma-rs/webidl-vm-js";
 
@@ -25,9 +22,13 @@ fn no_workspace_cargo_toml_references_deleted_webidl_crates() {
   for path in manifest_paths {
     let contents = fs::read_to_string(&path)
       .unwrap_or_else(|err| panic!("failed to read {}: {err}", path.display()));
-    for fragment in DELETED_WEBIDL_CRATE_PATH_FRAGMENTS {
-      if contents.contains(fragment) {
-        offenders.push(format!("{} contains {fragment:?}", display_repo_relative(&repo_root, &path)));
+    for suffix in DELETED_WEBIDL_CRATE_SUFFIXES {
+      let fragment = format!("{CRATES_DIR}/{WEBIDL_CRATE_PREFIX}{suffix}");
+      if contents.contains(&fragment) {
+        offenders.push(format!(
+          "{} contains {fragment:?}",
+          display_repo_relative(&repo_root, &path)
+        ));
       }
     }
   }
@@ -63,9 +64,10 @@ fn workspace_does_not_list_deleted_webidl_crates() {
       continue;
     };
     for member in list.iter().filter_map(|value| value.as_str()) {
-      for fragment in DELETED_WEBIDL_CRATE_PATH_FRAGMENTS {
+      for suffix in DELETED_WEBIDL_CRATE_SUFFIXES {
+        let fragment = format!("{CRATES_DIR}/{WEBIDL_CRATE_PREFIX}{suffix}");
         assert!(
-          !member.contains(fragment),
+          !member.contains(&fragment),
           "root Cargo.toml [workspace].{key} must not include deleted WebIDL crates (found {member:?})"
         );
       }
@@ -201,4 +203,3 @@ fn cargo_toml_files(repo_root: &Path) -> Vec<PathBuf> {
   files.sort();
   files
 }
-

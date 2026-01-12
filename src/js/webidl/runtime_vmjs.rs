@@ -25,7 +25,7 @@ pub struct JsOwnPropertyDescriptor {
 /// `vm_js::iterator` module (which includes an Array fast-path while
 /// `%Array.prototype%[@@iterator]` is not implemented).
 ///
-/// For the legacy heap-only runtime (`crates/webidl-js-runtime`) we keep a small in-tree iterator
+/// For the legacy heap-only runtime (`vendor/ecma-rs/webidl-runtime`) we keep a small in-tree iterator
 /// record implementation so WebIDL `sequence<T>` conversions can still accept arrays.
 #[derive(Debug, Clone, Copy)]
 pub struct IteratorRecord<V: Copy> {
@@ -48,8 +48,9 @@ enum IteratorRecordKind<V: Copy> {
 
 /// A host function callback used by generated WebIDL bindings.
 ///
-/// This matches the calling convention used by `crates/webidl-js-runtime`, but is implemented here
-/// so new bindings can target the canonical `vendor/ecma-rs/webidl` + `crates/webidl-vm-js` stack.
+/// This matches the calling convention used by the legacy heap-only runtime, but is implemented
+/// here so new bindings can target the canonical `vendor/ecma-rs/webidl` + `vendor/ecma-rs/webidl-vm-js`
+/// stack.
 pub type NativeHostFunction<R, Host> = fn(
   rt: &mut R,
   host: &mut Host,
@@ -2235,7 +2236,7 @@ impl<Host> webidl_js_runtime::WebIdlJsRuntime for VmJsWebIdlBindingsCx<'_, Host>
 }
 
 /// Compatibility shim: allow existing generated bindings to continue compiling against the legacy
-/// `crates/webidl-js-runtime::VmJsRuntime` during migration.
+/// `webidl_js_runtime::VmJsRuntime` during migration.
 impl<Host: 'static> WebIdlBindingsRuntime<Host> for webidl_js_runtime::VmJsRuntime {
   type JsValue = Value;
   type PropertyKey = PropertyKey;

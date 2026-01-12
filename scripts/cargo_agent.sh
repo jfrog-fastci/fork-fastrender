@@ -230,8 +230,8 @@ if [[ "${has_manifest_path}" -eq 0 ]]; then
         # the nested `vendor/ecma-rs` workspace.
         #
         # Example: During WebIDL consolidation, `webidl-js-runtime` existed both
-        # as a monorepo crate (`crates/webidl-js-runtime`) and as a vendored
-        # package (located at `vendor/ecma-rs/webidl-runtime/`, i.e. the package
+        # as a monorepo workspace crate (under `crates/`) and as a vendored
+        # package (located at `vendor/ecma-rs/webidl-runtime/`; the Cargo package
         # name intentionally does not match the directory name). In that case
         # `scripts/cargo_agent.sh test -p webidl-js-runtime` should continue to
         # target the monorepo crate until it is removed, and then seamlessly
