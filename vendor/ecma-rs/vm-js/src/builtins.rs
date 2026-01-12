@@ -1749,11 +1749,9 @@ fn proxy_constructor_impl(
   // Spec: https://tc39.es/ecma262/#sec-proxycreate
   let target = require_object(target)?;
   let handler = require_object(handler)?;
-
   // Root inputs across allocation/GC while creating the proxy object.
   let mut proxy_scope = scope.reborrow();
   proxy_scope.push_roots(&[Value::Object(target), Value::Object(handler)])?;
-
   let proxy = proxy_scope.alloc_proxy(Some(target), Some(handler))?;
   Ok(Value::Object(proxy))
 }
