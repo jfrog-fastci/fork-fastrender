@@ -28,7 +28,7 @@ use crate::resource::{origin_from_url, FetchDestination, FetchRequest, ReferrerP
 use crate::style::media::{MediaContext, MediaQuery, MediaQueryCache, MediaType};
 use crate::ui::TabHistory;
 use crate::web::dom::DocumentVisibilityState;
-use crate::web::events::{Event, EventInit, EventTargetId};
+use crate::web::events::{Event, EventInit, EventTargetId, MouseEvent};
 
 use encoding_rs::{Encoding, UTF_8};
 
@@ -5226,6 +5226,23 @@ impl BrowserTab {
       event,
       event_loop,
     )
+  }
+
+  /// Dispatch a trusted mouse DOM event to `node_id`.
+  ///
+  /// Returns `true` when the event's default was **not** prevented.
+  pub fn dispatch_mouse_event(
+    &mut self,
+    node_id: NodeId,
+    type_: &str,
+    init: EventInit,
+    mouse: MouseEvent,
+  ) -> Result<bool> {
+    let mut event = Event::new(type_, init);
+    event.is_trusted = true;
+    event.mouse = Some(mouse);
+    let (host, event_loop) = (&mut self.host, &mut self.event_loop);
+    host.dispatch_dom_event_in_event_loop(EventTargetId::Node(node_id).normalize(), event, event_loop)
   }
 
   /// Dispatch a trusted `submit` DOM event to `node_id`.

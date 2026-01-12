@@ -243,7 +243,50 @@ pub struct Event {
   ///
   /// For non-`storage` events, this remains `None`.
   pub storage: Option<StorageEventData>,
+  /// Mouse event payload for `MouseEvent`-backed event types.
+  ///
+  /// This is populated by host-driven UI input dispatch (e.g. `mousedown`, `mousemove`, ...), and
+  /// is used by JS bindings to synthesize `MouseEvent` objects with appropriate fields.
+  pub mouse: Option<MouseEvent>,
   pub(crate) in_passive_listener: bool,
+}
+
+/// Mouse event payload for host-dispatched DOM events.
+///
+/// This is a lightweight subset of WHATWG UI Events `MouseEvent` fields, sufficient for common
+/// real-world event handlers (`clientX/Y`, `button/buttons`, modifier keys, and hover transitions).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MouseEvent {
+  pub client_x: f64,
+  pub client_y: f64,
+  /// Button that changed for this event (`MouseEvent.button`).
+  pub button: i16,
+  /// Currently pressed buttons bitfield (`MouseEvent.buttons`).
+  pub buttons: u16,
+  pub ctrl_key: bool,
+  pub shift_key: bool,
+  pub alt_key: bool,
+  pub meta_key: bool,
+  /// Related target for hover transition events (`mouseover/out/enter/leave`).
+  ///
+  /// Best-effort: hosts may set this to `None` when unavailable.
+  pub related_target: Option<EventTargetId>,
+}
+
+impl Default for MouseEvent {
+  fn default() -> Self {
+    Self {
+      client_x: 0.0,
+      client_y: 0.0,
+      button: 0,
+      buttons: 0,
+      ctrl_key: false,
+      shift_key: false,
+      alt_key: false,
+      meta_key: false,
+      related_target: None,
+    }
+  }
 }
 
 impl Event {
@@ -265,6 +308,7 @@ impl Event {
       is_trusted: false,
       detail: None,
       storage: None,
+      mouse: None,
       in_passive_listener: false,
     }
   }

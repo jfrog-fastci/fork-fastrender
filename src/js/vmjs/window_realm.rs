@@ -1852,6 +1852,7 @@ const EVENT_BRAND_KEY: &str = "__fastrender_event";
 const EVENT_KIND_KEY: &str = "__fastrender_event_kind";
 const EVENT_PROTOTYPE_KEY: &str = "__fastrender_event_prototype";
 const CUSTOM_EVENT_PROTOTYPE_KEY: &str = "__fastrender_custom_event_prototype";
+const MOUSE_EVENT_PROTOTYPE_KEY: &str = "__fastrender_mouse_event_prototype";
 const POP_STATE_EVENT_PROTOTYPE_KEY: &str = "__fastrender_pop_state_event_prototype";
 const HASH_CHANGE_EVENT_PROTOTYPE_KEY: &str = "__fastrender_hash_change_event_prototype";
 const STORAGE_EVENT_PROTOTYPE_KEY: &str = "__fastrender_storage_event_prototype";
@@ -9450,6 +9451,186 @@ fn hash_change_event_constructor_impl(
   Ok(Value::Object(obj))
 }
 
+fn mouse_event_constructor_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let type_arg = args.get(0).copied().unwrap_or(Value::Undefined);
+  let type_string = scope.heap_mut().to_string(type_arg)?;
+
+  let mut bubbles = false;
+  let mut cancelable = false;
+  let mut composed = false;
+
+  let mut client_x = 0.0f64;
+  let mut client_y = 0.0f64;
+  let mut button = 0.0f64;
+  let mut buttons = 0.0f64;
+  let mut ctrl_key = false;
+  let mut shift_key = false;
+  let mut alt_key = false;
+  let mut meta_key = false;
+  let mut related_target = Value::Null;
+
+  if let Some(init_value) = args.get(1).copied() {
+    if let Value::Object(init_obj) = init_value {
+      let bubbles_key = alloc_key(scope, "bubbles")?;
+      if let Some(value) = scope
+        .heap()
+        .object_get_own_data_property_value(init_obj, &bubbles_key)?
+      {
+        bubbles = scope.heap().to_boolean(value)?;
+      }
+
+      let cancelable_key = alloc_key(scope, "cancelable")?;
+      if let Some(value) = scope
+        .heap()
+        .object_get_own_data_property_value(init_obj, &cancelable_key)?
+      {
+        cancelable = scope.heap().to_boolean(value)?;
+      }
+
+      let composed_key = alloc_key(scope, "composed")?;
+      if let Some(value) = scope
+        .heap()
+        .object_get_own_data_property_value(init_obj, &composed_key)?
+      {
+        composed = scope.heap().to_boolean(value)?;
+      }
+
+      let client_x_key = alloc_key(scope, "clientX")?;
+      if let Some(value) = scope
+        .heap()
+        .object_get_own_data_property_value(init_obj, &client_x_key)?
+      {
+        client_x = scope.heap_mut().to_number(value)?;
+      }
+      let client_y_key = alloc_key(scope, "clientY")?;
+      if let Some(value) = scope
+        .heap()
+        .object_get_own_data_property_value(init_obj, &client_y_key)?
+      {
+        client_y = scope.heap_mut().to_number(value)?;
+      }
+
+      let button_key = alloc_key(scope, "button")?;
+      if let Some(value) = scope
+        .heap()
+        .object_get_own_data_property_value(init_obj, &button_key)?
+      {
+        button = scope.heap_mut().to_number(value)?;
+      }
+      let buttons_key = alloc_key(scope, "buttons")?;
+      if let Some(value) = scope
+        .heap()
+        .object_get_own_data_property_value(init_obj, &buttons_key)?
+      {
+        buttons = scope.heap_mut().to_number(value)?;
+      }
+
+      let ctrl_key_key = alloc_key(scope, "ctrlKey")?;
+      if let Some(value) = scope
+        .heap()
+        .object_get_own_data_property_value(init_obj, &ctrl_key_key)?
+      {
+        ctrl_key = scope.heap().to_boolean(value)?;
+      }
+      let shift_key_key = alloc_key(scope, "shiftKey")?;
+      if let Some(value) = scope
+        .heap()
+        .object_get_own_data_property_value(init_obj, &shift_key_key)?
+      {
+        shift_key = scope.heap().to_boolean(value)?;
+      }
+      let alt_key_key = alloc_key(scope, "altKey")?;
+      if let Some(value) = scope
+        .heap()
+        .object_get_own_data_property_value(init_obj, &alt_key_key)?
+      {
+        alt_key = scope.heap().to_boolean(value)?;
+      }
+      let meta_key_key = alloc_key(scope, "metaKey")?;
+      if let Some(value) = scope
+        .heap()
+        .object_get_own_data_property_value(init_obj, &meta_key_key)?
+      {
+        meta_key = scope.heap().to_boolean(value)?;
+      }
+
+      let related_target_key = alloc_key(scope, "relatedTarget")?;
+      if let Some(value) = scope
+        .heap()
+        .object_get_own_data_property_value(init_obj, &related_target_key)?
+      {
+        if !matches!(value, Value::Undefined) {
+          related_target = value;
+        }
+      }
+    }
+  }
+
+  let prototype_key = alloc_key(scope, "prototype")?;
+  let proto = scope
+    .heap()
+    .object_get_own_data_property_value(callee, &prototype_key)?
+    .and_then(|v| match v {
+      Value::Object(obj) => Some(obj),
+      _ => None,
+    });
+
+  let obj = scope.alloc_object()?;
+  scope.push_root(Value::Object(obj))?;
+  if let Some(proto) = proto {
+    scope.heap_mut().object_set_prototype(obj, Some(proto))?;
+  }
+
+  let type_key = alloc_key(scope, "type")?;
+  scope.define_property(obj, type_key, data_desc(Value::String(type_string)))?;
+
+  let bubbles_key = alloc_key(scope, "bubbles")?;
+  scope.define_property(obj, bubbles_key, data_desc(Value::Bool(bubbles)))?;
+
+  let cancelable_key = alloc_key(scope, "cancelable")?;
+  scope.define_property(obj, cancelable_key, data_desc(Value::Bool(cancelable)))?;
+
+  let composed_key = alloc_key(scope, "composed")?;
+  scope.define_property(obj, composed_key, data_desc(Value::Bool(composed)))?;
+
+  let default_prevented_key = alloc_key(scope, "defaultPrevented")?;
+  scope.define_property(obj, default_prevented_key, data_desc(Value::Bool(false)))?;
+
+  let cancel_bubble_key = alloc_key(scope, "cancelBubble")?;
+  scope.define_property(obj, cancel_bubble_key, data_desc(Value::Bool(false)))?;
+
+  let client_x_key = alloc_key(scope, "clientX")?;
+  scope.define_property(obj, client_x_key, data_desc(Value::Number(client_x)))?;
+  let client_y_key = alloc_key(scope, "clientY")?;
+  scope.define_property(obj, client_y_key, data_desc(Value::Number(client_y)))?;
+  let button_key = alloc_key(scope, "button")?;
+  scope.define_property(obj, button_key, data_desc(Value::Number(button)))?;
+  let buttons_key = alloc_key(scope, "buttons")?;
+  scope.define_property(obj, buttons_key, data_desc(Value::Number(buttons)))?;
+
+  let ctrl_key_key = alloc_key(scope, "ctrlKey")?;
+  scope.define_property(obj, ctrl_key_key, data_desc(Value::Bool(ctrl_key)))?;
+  let shift_key_key = alloc_key(scope, "shiftKey")?;
+  scope.define_property(obj, shift_key_key, data_desc(Value::Bool(shift_key)))?;
+  let alt_key_key = alloc_key(scope, "altKey")?;
+  scope.define_property(obj, alt_key_key, data_desc(Value::Bool(alt_key)))?;
+  let meta_key_key = alloc_key(scope, "metaKey")?;
+  scope.define_property(obj, meta_key_key, data_desc(Value::Bool(meta_key)))?;
+
+  let related_target_key = alloc_key(scope, "relatedTarget")?;
+  scope.define_property(obj, related_target_key, data_desc(related_target))?;
+
+  Ok(Value::Object(obj))
+}
+
 fn promise_rejection_event_constructor_native(
   _vm: &mut Vm,
   _scope: &mut Scope<'_>,
@@ -10012,6 +10193,22 @@ fn hash_change_event_constructor_construct_native(
     _ => callee,
   };
   hash_change_event_constructor_impl(scope, ctor, args)
+}
+
+fn mouse_event_constructor_construct_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  args: &[Value],
+  new_target: Value,
+) -> Result<Value, VmError> {
+  let ctor = match new_target {
+    Value::Object(obj) => obj,
+    _ => callee,
+  };
+  mouse_event_constructor_native(vm, scope, host, hooks, ctor, Value::Undefined, args)
 }
 
 fn promise_rejection_event_constructor_construct_native(
@@ -12566,7 +12763,9 @@ impl<Host: WindowRealmHost + 'static> WindowRealmDomEventListenerInvoker<Host> {
   ) -> Result<GcObject, VmError> {
     let wants_storage_event =
       event.storage.is_some() || (event.type_ == "storage" && event.detail.is_none());
-    let (kind, proto_key_name) = if wants_storage_event {
+    let (kind, proto_key_name) = if event.mouse.is_some() {
+      (BrandedEventKind::Event, MOUSE_EVENT_PROTOTYPE_KEY)
+    } else if wants_storage_event {
       (BrandedEventKind::StorageEvent, STORAGE_EVENT_PROTOTYPE_KEY)
     } else if event.detail.is_some() {
       (BrandedEventKind::CustomEvent, CUSTOM_EVENT_PROTOTYPE_KEY)
@@ -12630,6 +12829,7 @@ impl<Host: WindowRealmHost + 'static> WindowRealmDomEventListenerInvoker<Host> {
         return Err(VmError::InvariantViolation(match proto_key_name {
           STORAGE_EVENT_PROTOTYPE_KEY => "document is missing required StorageEvent prototype",
           CUSTOM_EVENT_PROTOTYPE_KEY => "document is missing required CustomEvent prototype",
+          MOUSE_EVENT_PROTOTYPE_KEY => "document is missing required MouseEvent prototype",
           _ => "document is missing required Event prototype",
         }))
       }
@@ -12761,6 +12961,46 @@ impl<Host: WindowRealmHost + 'static> WindowRealmDomEventListenerInvoker<Host> {
       )?;
     }
 
+    if let Some(mouse) = event.mouse {
+      let client_x_key = alloc_key(scope, "clientX")?;
+      scope.define_property(
+        event_obj,
+        client_x_key,
+        data_desc(Value::Number(mouse.client_x)),
+      )?;
+      let client_y_key = alloc_key(scope, "clientY")?;
+      scope.define_property(
+        event_obj,
+        client_y_key,
+        data_desc(Value::Number(mouse.client_y)),
+      )?;
+      let button_key = alloc_key(scope, "button")?;
+      scope.define_property(
+        event_obj,
+        button_key,
+        data_desc(Value::Number(mouse.button as f64)),
+      )?;
+      let buttons_key = alloc_key(scope, "buttons")?;
+      scope.define_property(
+        event_obj,
+        buttons_key,
+        data_desc(Value::Number(mouse.buttons as f64)),
+      )?;
+      let ctrl_key = alloc_key(scope, "ctrlKey")?;
+      scope.define_property(event_obj, ctrl_key, data_desc(Value::Bool(mouse.ctrl_key)))?;
+      let shift_key = alloc_key(scope, "shiftKey")?;
+      scope.define_property(event_obj, shift_key, data_desc(Value::Bool(mouse.shift_key)))?;
+      let alt_key = alloc_key(scope, "altKey")?;
+      scope.define_property(event_obj, alt_key, data_desc(Value::Bool(mouse.alt_key)))?;
+      let meta_key = alloc_key(scope, "metaKey")?;
+      scope.define_property(event_obj, meta_key, data_desc(Value::Bool(mouse.meta_key)))?;
+
+      // `relatedTarget` is best-effort: resolve it to a full JS wrapper in `sync_event_object` once
+      // we have access to the embedder's DOM host (if any).
+      let related_target_key = alloc_key(scope, "relatedTarget")?;
+      scope.define_property(event_obj, related_target_key, data_desc(Value::Null))?;
+    }
+
     Ok(event_obj)
   }
 
@@ -12835,6 +13075,19 @@ impl<Host: WindowRealmHost + 'static> WindowRealmDomEventListenerInvoker<Host> {
       immediate_key,
       data_desc(Value::Bool(event.immediate_propagation_stopped)),
     )?;
+
+    if let Some(mouse) = event.mouse {
+      let related_target_key = alloc_key(scope, "relatedTarget")?;
+      let related_target_v = Self::js_value_for_target(
+        vm,
+        scope,
+        window_obj,
+        document_obj,
+        dom,
+        mouse.related_target,
+      )?;
+      scope.define_property(event_obj, related_target_key, data_desc(related_target_v))?;
+    }
 
     // Cache the dispatch path on the JS Event object so `Event.prototype.composedPath()` works even
     // when the embedder does not provide an `ActiveEventStack`.
@@ -14736,6 +14989,7 @@ fn document_create_event_native(
   enum Kind {
     Event,
     CustomEvent,
+    MouseEvent,
     PopStateEvent,
     HashChangeEvent,
     StorageEvent,
@@ -14745,6 +14999,8 @@ fn document_create_event_native(
     Kind::Event
   } else if name.eq_ignore_ascii_case("CustomEvent") {
     Kind::CustomEvent
+  } else if name.eq_ignore_ascii_case("MouseEvent") {
+    Kind::MouseEvent
   } else if name.eq_ignore_ascii_case("PopStateEvent") {
     Kind::PopStateEvent
   } else if name.eq_ignore_ascii_case("HashChangeEvent") {
@@ -14762,6 +15018,7 @@ fn document_create_event_native(
   let proto_key = match kind {
     Kind::Event => EVENT_PROTOTYPE_KEY,
     Kind::CustomEvent => CUSTOM_EVENT_PROTOTYPE_KEY,
+    Kind::MouseEvent => MOUSE_EVENT_PROTOTYPE_KEY,
     Kind::PopStateEvent => POP_STATE_EVENT_PROTOTYPE_KEY,
     Kind::HashChangeEvent => HASH_CHANGE_EVENT_PROTOTYPE_KEY,
     Kind::StorageEvent => STORAGE_EVENT_PROTOTYPE_KEY,
@@ -14840,11 +15097,33 @@ fn document_create_event_native(
   let branded_kind = match kind {
     Kind::Event => BrandedEventKind::Event,
     Kind::CustomEvent => BrandedEventKind::CustomEvent,
+    Kind::MouseEvent => BrandedEventKind::Event,
     Kind::PopStateEvent => BrandedEventKind::PopStateEvent,
     Kind::HashChangeEvent => BrandedEventKind::HashChangeEvent,
     Kind::StorageEvent => BrandedEventKind::StorageEvent,
   };
   brand_event_object(scope, obj, branded_kind)?;
+
+  if matches!(kind, Kind::MouseEvent) {
+    let client_x_key = alloc_key(scope, "clientX")?;
+    scope.define_property(obj, client_x_key, data_desc(Value::Number(0.0)))?;
+    let client_y_key = alloc_key(scope, "clientY")?;
+    scope.define_property(obj, client_y_key, data_desc(Value::Number(0.0)))?;
+    let button_key = alloc_key(scope, "button")?;
+    scope.define_property(obj, button_key, data_desc(Value::Number(0.0)))?;
+    let buttons_key = alloc_key(scope, "buttons")?;
+    scope.define_property(obj, buttons_key, data_desc(Value::Number(0.0)))?;
+    let ctrl_key = alloc_key(scope, "ctrlKey")?;
+    scope.define_property(obj, ctrl_key, data_desc(Value::Bool(false)))?;
+    let shift_key = alloc_key(scope, "shiftKey")?;
+    scope.define_property(obj, shift_key, data_desc(Value::Bool(false)))?;
+    let alt_key = alloc_key(scope, "altKey")?;
+    scope.define_property(obj, alt_key, data_desc(Value::Bool(false)))?;
+    let meta_key = alloc_key(scope, "metaKey")?;
+    scope.define_property(obj, meta_key, data_desc(Value::Bool(false)))?;
+    let related_target_key = alloc_key(scope, "relatedTarget")?;
+    scope.define_property(obj, related_target_key, data_desc(Value::Null))?;
+  }
 
   Ok(Value::Object(obj))
 }
@@ -22494,6 +22773,12 @@ fn init_window_globals(
     .heap_mut()
     .object_set_prototype(custom_event_proto, Some(event_proto))?;
 
+  let mouse_event_proto = scope.alloc_object()?;
+  scope.push_root(Value::Object(mouse_event_proto))?;
+  scope
+    .heap_mut()
+    .object_set_prototype(mouse_event_proto, Some(event_proto))?;
+
   let init_custom_event_call_id = vm.register_native_call(custom_event_init_custom_event_native)?;
   let init_custom_event_name = scope.alloc_string("initCustomEvent")?;
   scope.push_root(Value::String(init_custom_event_name))?;
@@ -22658,6 +22943,39 @@ fn init_window_globals(
     global,
     custom_event_ctor_key,
     data_desc(Value::Object(custom_event_ctor_func)),
+  )?;
+
+  let mouse_event_ctor_call_id = vm.register_native_call(mouse_event_constructor_native)?;
+  let mouse_event_ctor_construct_id =
+    vm.register_native_construct(mouse_event_constructor_construct_native)?;
+  let mouse_event_ctor_name = scope.alloc_string("MouseEvent")?;
+  scope.push_root(Value::String(mouse_event_ctor_name))?;
+  let mouse_event_ctor_func = scope.alloc_native_function(
+    mouse_event_ctor_call_id,
+    Some(mouse_event_ctor_construct_id),
+    mouse_event_ctor_name,
+    1,
+  )?;
+  scope.heap_mut().object_set_prototype(
+    mouse_event_ctor_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(mouse_event_ctor_func))?;
+  scope.define_property(
+    mouse_event_ctor_func,
+    prototype_key,
+    data_desc(Value::Object(mouse_event_proto)),
+  )?;
+  scope.define_property(
+    mouse_event_proto,
+    constructor_key,
+    data_desc(Value::Object(mouse_event_ctor_func)),
+  )?;
+  let mouse_event_ctor_key = alloc_key(&mut scope, "MouseEvent")?;
+  scope.define_property(
+    global,
+    mouse_event_ctor_key,
+    data_desc(Value::Object(mouse_event_ctor_func)),
   )?;
 
   let storage_event_ctor_call_id = vm.register_native_call(storage_event_constructor_native)?;
@@ -22907,6 +23225,12 @@ fn init_window_globals(
     document_obj,
     custom_event_proto_key,
     data_desc(Value::Object(custom_event_proto)),
+  )?;
+  let mouse_event_proto_key = alloc_key(&mut scope, MOUSE_EVENT_PROTOTYPE_KEY)?;
+  scope.define_property(
+    document_obj,
+    mouse_event_proto_key,
+    data_desc(Value::Object(mouse_event_proto)),
   )?;
   let storage_event_proto_key = alloc_key(&mut scope, STORAGE_EVENT_PROTOTYPE_KEY)?;
   scope.define_property(
@@ -28646,6 +28970,160 @@ mod tests {
       );
     }
 
+    Ok(())
+  }
+
+  #[test]
+  fn host_dom_event_dispatch_synthesizes_mouse_events() -> Result<(), VmError> {
+    let renderer_dom = crate::dom::parse_html(
+      "<!doctype html><html><body><div id=target></div></body></html>",
+    )
+    .unwrap();
+    let mut host = crate::js::HostDocumentState::from_renderer_dom(&renderer_dom);
+
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+    exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      "globalThis.__log = [];\n\
+       const target = document.getElementById('target');\n\
+       function cap(e) {\n\
+         __log.push([\n\
+           e.type,\n\
+           e instanceof MouseEvent,\n\
+           e.clientX,\n\
+           e.clientY,\n\
+           e.button,\n\
+           e.buttons,\n\
+           e.ctrlKey,\n\
+           e.shiftKey,\n\
+           e.altKey,\n\
+           e.metaKey,\n\
+         ].join('|'));\n\
+       }\n\
+       target.addEventListener('mousedown', cap);\n\
+       target.addEventListener('mousemove', cap);\n\
+       target.addEventListener('mouseup', cap);",
+    )?;
+
+    struct DummyHost;
+    impl WindowRealmHost for DummyHost {
+      fn vm_host_and_window_realm(&mut self) -> (&mut dyn VmHost, &mut WindowRealm) {
+        unreachable!("DummyHost is only used as a type parameter for VmJsEventLoopHooks");
+      }
+    }
+
+    let mut realm_slot = Some(realm);
+    let mut vm_host_ctx = ();
+    let mut vm_host_slot: Option<NonNull<dyn VmHost>> =
+      Some(NonNull::from(&mut vm_host_ctx as &mut dyn VmHost));
+    let mut webidl_bindings_host_slot: Option<NonNull<dyn WebIdlBindingsHost>> = None;
+    let mut invoker =
+      WindowRealmDomEventListenerInvoker::<DummyHost>::new(
+        &mut realm_slot,
+        &mut vm_host_slot,
+        &mut webidl_bindings_host_slot,
+      );
+
+    let target = host.dom().get_element_by_id("target").expect("missing #target");
+
+    let mut down = web_events::Event::new(
+      "mousedown",
+      web_events::EventInit {
+        bubbles: true,
+        cancelable: true,
+        composed: false,
+      },
+    );
+    down.is_trusted = true;
+    down.mouse = Some(web_events::MouseEvent {
+      client_x: 10.0,
+      client_y: 20.0,
+      button: 0,
+      buttons: 1,
+      ctrl_key: true,
+      shift_key: false,
+      alt_key: true,
+      meta_key: false,
+      related_target: None,
+    });
+    web_events::dispatch_event(
+      web_events::EventTargetId::Node(target).normalize(),
+      &mut down,
+      host.dom(),
+      host.dom().events(),
+      &mut invoker,
+    )
+    .expect("mousedown dispatch should succeed");
+
+    let mut move_ev = web_events::Event::new(
+      "mousemove",
+      web_events::EventInit {
+        bubbles: true,
+        cancelable: false,
+        composed: false,
+      },
+    );
+    move_ev.is_trusted = true;
+    move_ev.mouse = Some(web_events::MouseEvent {
+      client_x: 11.0,
+      client_y: 22.0,
+      button: 0,
+      buttons: 1,
+      ctrl_key: false,
+      shift_key: true,
+      alt_key: false,
+      meta_key: true,
+      related_target: None,
+    });
+    web_events::dispatch_event(
+      web_events::EventTargetId::Node(target).normalize(),
+      &mut move_ev,
+      host.dom(),
+      host.dom().events(),
+      &mut invoker,
+    )
+    .expect("mousemove dispatch should succeed");
+
+    let mut up = web_events::Event::new(
+      "mouseup",
+      web_events::EventInit {
+        bubbles: true,
+        cancelable: true,
+        composed: false,
+      },
+    );
+    up.is_trusted = true;
+    up.mouse = Some(web_events::MouseEvent {
+      client_x: 12.0,
+      client_y: 24.0,
+      button: 0,
+      buttons: 0,
+      ctrl_key: false,
+      shift_key: false,
+      alt_key: false,
+      meta_key: false,
+      related_target: None,
+    });
+    web_events::dispatch_event(
+      web_events::EventTargetId::Node(target).normalize(),
+      &mut up,
+      host.dom(),
+      host.dom().events(),
+      &mut invoker,
+    )
+    .expect("mouseup dispatch should succeed");
+
+    let realm = realm_slot.as_mut().expect("expected realm slot");
+    let ok = realm.exec_script(
+      "(() => {\n\
+         return __log.length === 3 &&\n\
+           __log[0] === 'mousedown|true|10|20|0|1|true|false|true|false' &&\n\
+           __log[1] === 'mousemove|true|11|22|0|1|false|true|false|true' &&\n\
+           __log[2] === 'mouseup|true|12|24|0|0|false|false|false|false';\n\
+       })()",
+    )?;
+    assert_eq!(ok, Value::Bool(true));
     Ok(())
   }
 

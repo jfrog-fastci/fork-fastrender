@@ -34,6 +34,7 @@ use crate::ui::messages::{
   WorkerToUi,
 };
 use crate::ui::{resolve_link_url, validate_user_navigation_url_scheme};
+use crate::web::events as web_events;
 use image::imageops::FilterType;
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
@@ -127,7 +128,6 @@ const FAVICON_MAX_EDGE_PX: u32 = 32;
 /// Maximum bytes allowed in a `WorkerToUi::Favicon` payload.
 const MAX_FAVICON_BYTES: usize =
   (FAVICON_MAX_EDGE_PX as usize) * (FAVICON_MAX_EDGE_PX as usize) * 4;
-
 #[derive(Debug, Clone, Default)]
 struct FindInPageWorkerState {
   query: String,
@@ -154,6 +154,9 @@ struct TabState {
   last_base_url: Option<String>,
 
   last_pointer_pos_css: Option<(f32, f32)>,
+  pointer_buttons: u16,
+  last_hovered_dom_node_id: Option<usize>,
+  last_hovered_dom_element_id: Option<String>,
   last_hovered_url: Option<String>,
   last_cursor: CursorKind,
 
@@ -183,6 +186,9 @@ impl TabState {
       last_committed_url: None,
       last_base_url: None,
       last_pointer_pos_css: None,
+      pointer_buttons: 0,
+      last_hovered_dom_node_id: None,
+      last_hovered_dom_element_id: None,
       last_hovered_url: None,
       last_cursor: CursorKind::Default,
       pending_navigation: None,
@@ -260,6 +266,37 @@ fn dom_is_text_input(node: &crate::dom::DomNode) -> bool {
     && !t.eq_ignore_ascii_case("color")
     && !t.eq_ignore_ascii_case("file")
     && !t.eq_ignore_ascii_case("image")
+}
+
+fn mouse_event_button(button: PointerButton) -> i16 {
+  match button {
+    PointerButton::Primary => 0,
+    PointerButton::Middle => 1,
+    PointerButton::Secondary => 2,
+    PointerButton::Back => 3,
+    PointerButton::Forward => 4,
+    PointerButton::Other(code) => i16::try_from(code).unwrap_or(i16::MAX),
+    PointerButton::None => 0,
+  }
+}
+
+fn mouse_buttons_mask_for_button(button: PointerButton) -> u16 {
+  match button {
+    PointerButton::Primary => 1,
+    PointerButton::Secondary => 2,
+    PointerButton::Middle => 4,
+    PointerButton::Back => 8,
+    PointerButton::Forward => 16,
+    _ => 0,
+  }
+}
+
+fn mouse_client_coord(value: f32) -> f64 {
+  if value.is_finite() {
+    value as f64
+  } else {
+    0.0
+  }
 }
 
 fn js_dom_node_for_preorder_id(
@@ -1350,7 +1387,12 @@ impl BrowserRuntime {
         }
 
         if let Some(pos_css) = hover_update_pos_css {
-          self.handle_pointer_move(tab_id, pos_css);
+          self.handle_pointer_move(
+            tab_id,
+            pos_css,
+            PointerButton::None,
+            crate::ui::PointerModifiers::NONE,
+          );
         }
       }
       UiToWorker::ScrollTo { tab_id, pos_css } => {
@@ -1399,9 +1441,12 @@ impl BrowserRuntime {
         }
       }
       UiToWorker::PointerMove {
-        tab_id, pos_css, ..
+        tab_id,
+        pos_css,
+        button,
+        modifiers,
       } => {
-        self.handle_pointer_move(tab_id, pos_css);
+        self.handle_pointer_move(tab_id, pos_css, button, modifiers);
       }
       UiToWorker::PointerDown {
         tab_id,
@@ -2232,7 +2277,13 @@ impl BrowserRuntime {
     });
   }
 
-  fn handle_pointer_move(&mut self, tab_id: TabId, pos_css: (f32, f32)) {
+  fn handle_pointer_move(
+    &mut self,
+    tab_id: TabId,
+    pos_css: (f32, f32),
+    button: PointerButton,
+    modifiers: crate::ui::PointerModifiers,
+  ) {
     let Some(tab) = self.tabs.get_mut(&tab_id) else {
       return;
     };
@@ -2243,7 +2294,7 @@ impl BrowserRuntime {
     let viewport_point = viewport_point_for_pos_css(scroll, pos_css);
     let base_url = base_url_for_links(tab).to_string();
 
-    let (changed, hovered_url, cursor) = {
+    let (changed, hovered_url, cursor, hovered_dom_node_id, hovered_dom_element_id) = {
       let Some(doc) = tab.document.as_mut() else {
         return;
       };
@@ -2253,28 +2304,44 @@ impl BrowserRuntime {
           (!scroll.elements.is_empty()).then(|| fragment_tree_with_scroll(fragment_tree, scroll));
         let fragment_tree = scrolled.as_ref().unwrap_or(fragment_tree);
         let changed = engine.pointer_move(dom, box_tree, fragment_tree, scroll, viewport_point);
-        let (hovered_url, cursor) = if !pointer_in_page {
-          (None, CursorKind::Default)
+        let (hovered_url, cursor, hovered_dom_node_id, hovered_dom_element_id) = if !pointer_in_page
+        {
+          (None, CursorKind::Default, None, None)
         } else {
           let page_point = viewport_point.translate(scroll.viewport);
           match hit_test_dom(dom, box_tree, fragment_tree, page_point) {
-            Some(hit) => match hit.kind {
-              HitTestKind::Link => {
-                let resolved = hit
-                  .href
-                  .as_deref()
-                  .and_then(|href| resolve_link_url(&base_url, href));
-                // Keep showing the hand cursor over links even when we reject the URL scheme (e.g.
-                // `javascript:`).
-                (resolved, CursorKind::Pointer)
-              }
-              HitTestKind::FormControl => (None, cursor_for_form_control(dom, hit.dom_node_id)),
-              _ => (None, CursorKind::Default),
-            },
-            None => (None, CursorKind::Default),
+            Some(hit) => {
+              let element_id = crate::dom::find_node_mut_by_preorder_id(dom, hit.dom_node_id)
+                .and_then(|node| node.get_attribute_ref("id"))
+                .map(|id| id.to_string());
+              let (hovered_url, cursor) = match hit.kind {
+                HitTestKind::Link => {
+                  let resolved = hit
+                    .href
+                    .as_deref()
+                    .and_then(|href| resolve_link_url(&base_url, href));
+                  // Keep showing the hand cursor over links even when we reject the URL scheme (e.g.
+                  // `javascript:`).
+                  (resolved, CursorKind::Pointer)
+                }
+                HitTestKind::FormControl => (None, cursor_for_form_control(dom, hit.dom_node_id)),
+                _ => (None, CursorKind::Default),
+              };
+              (hovered_url, cursor, Some(hit.dom_node_id), element_id)
+            }
+            None => (None, CursorKind::Default, None, None),
           }
         };
-        (changed, (changed, hovered_url, cursor))
+        (
+          changed,
+          (
+            changed,
+            hovered_url,
+            cursor,
+            hovered_dom_node_id,
+            hovered_dom_element_id,
+          ),
+        )
       }) {
         Ok(changed) => changed,
         Err(_) => return,
@@ -2286,6 +2353,179 @@ impl BrowserRuntime {
     }
 
     Self::maybe_emit_hover_changed(&self.ui_tx, tab_id, tab, hovered_url, cursor);
+
+    // ---------------------------------------------------------------------------
+    // DOM mouse events (`mousemove` + hover transitions)
+    // ---------------------------------------------------------------------------
+    let prev_hovered_dom_node_id = tab.last_hovered_dom_node_id;
+    let prev_hovered_dom_element_id = tab.last_hovered_dom_element_id.clone();
+    let hover_changed = prev_hovered_dom_node_id != hovered_dom_node_id;
+    tab.last_hovered_dom_node_id = hovered_dom_node_id;
+    tab.last_hovered_dom_element_id = hovered_dom_element_id.clone();
+
+    let pointer_buttons = tab.pointer_buttons;
+    let Some(js_tab) = tab.js_tab.as_mut() else {
+      return;
+    };
+
+    let mouse_base = web_events::MouseEvent {
+      client_x: mouse_client_coord(pos_css.0),
+      client_y: mouse_client_coord(pos_css.1),
+      button: mouse_event_button(button),
+      buttons: pointer_buttons,
+      ctrl_key: modifiers.ctrl(),
+      shift_key: modifiers.shift(),
+      alt_key: modifiers.alt(),
+      meta_key: modifiers.meta(),
+      related_target: None,
+    };
+
+    let current_target = hovered_dom_node_id.and_then(|preorder_id| {
+      js_dom_node_for_preorder_id(js_tab, preorder_id, hovered_dom_element_id.as_deref())
+    });
+
+    let should_mousemove = current_target.is_some_and(|target_node_id| {
+      let dom = js_tab.dom();
+      dom.events().has_listeners_for_dispatch(
+        web_events::EventTargetId::Node(target_node_id),
+        "mousemove",
+        dom,
+        /* bubbles */ true,
+        /* composed */ false,
+      )
+    });
+    if should_mousemove {
+      if let Some(target_node_id) = current_target {
+        let _ = js_tab.dispatch_mouse_event(
+          target_node_id,
+          "mousemove",
+          web_events::EventInit {
+            bubbles: true,
+            cancelable: false,
+            composed: false,
+          },
+          mouse_base,
+        );
+      }
+    }
+
+    if !hover_changed {
+      return;
+    }
+
+    let prev_target = prev_hovered_dom_node_id.and_then(|preorder_id| {
+      js_dom_node_for_preorder_id(js_tab, preorder_id, prev_hovered_dom_element_id.as_deref())
+    });
+
+    let should_mouseout = prev_target.is_some_and(|prev_node_id| {
+      let dom = js_tab.dom();
+      dom.events().has_listeners_for_dispatch(
+        web_events::EventTargetId::Node(prev_node_id),
+        "mouseout",
+        dom,
+        /* bubbles */ true,
+        /* composed */ false,
+      )
+    });
+    let should_mouseleave = prev_target.is_some_and(|prev_node_id| {
+      let dom = js_tab.dom();
+      dom.events().has_listeners_for_dispatch(
+        web_events::EventTargetId::Node(prev_node_id),
+        "mouseleave",
+        dom,
+        /* bubbles */ false,
+        /* composed */ false,
+      )
+    });
+
+    // out/leave on previous target.
+    if let Some(prev_node_id) = prev_target {
+      let related = current_target.map(|id| web_events::EventTargetId::Node(id).normalize());
+
+      let mut mouse = mouse_base;
+      mouse.related_target = related;
+
+      if should_mouseout {
+        let _ = js_tab.dispatch_mouse_event(
+          prev_node_id,
+          "mouseout",
+          web_events::EventInit {
+            bubbles: true,
+            cancelable: true,
+            composed: false,
+          },
+          mouse,
+        );
+      }
+
+      if should_mouseleave {
+        let _ = js_tab.dispatch_mouse_event(
+          prev_node_id,
+          "mouseleave",
+          web_events::EventInit {
+            bubbles: false,
+            cancelable: false,
+            composed: false,
+          },
+          mouse,
+        );
+      }
+    }
+
+    let should_mouseover = current_target.is_some_and(|new_node_id| {
+      let dom = js_tab.dom();
+      dom.events().has_listeners_for_dispatch(
+        web_events::EventTargetId::Node(new_node_id),
+        "mouseover",
+        dom,
+        /* bubbles */ true,
+        /* composed */ false,
+      )
+    });
+    let should_mouseenter = current_target.is_some_and(|new_node_id| {
+      let dom = js_tab.dom();
+      dom.events().has_listeners_for_dispatch(
+        web_events::EventTargetId::Node(new_node_id),
+        "mouseenter",
+        dom,
+        /* bubbles */ false,
+        /* composed */ false,
+      )
+    });
+
+    // over/enter on new target.
+    if let Some(new_node_id) = current_target {
+      let related = prev_target.map(|id| web_events::EventTargetId::Node(id).normalize());
+
+      let mut mouse = mouse_base;
+      mouse.related_target = related;
+
+      if should_mouseover {
+        let _ = js_tab.dispatch_mouse_event(
+          new_node_id,
+          "mouseover",
+          web_events::EventInit {
+            bubbles: true,
+            cancelable: true,
+            composed: false,
+          },
+          mouse,
+        );
+      }
+
+      if should_mouseenter {
+        let _ = js_tab.dispatch_mouse_event(
+          new_node_id,
+          "mouseenter",
+          web_events::EventInit {
+            bubbles: false,
+            cancelable: false,
+            composed: false,
+          },
+          mouse,
+        );
+      }
+    }
   }
 
   fn handle_pointer_down(
@@ -2296,12 +2536,10 @@ impl BrowserRuntime {
     modifiers: crate::ui::PointerModifiers,
     click_count: u8,
   ) {
-    if !matches!(button, PointerButton::Primary | PointerButton::Middle) {
-      return;
-    }
     let Some(tab) = self.tabs.get_mut(&tab_id) else {
       return;
     };
+    tab.pointer_buttons |= mouse_buttons_mask_for_button(button);
     let Some(doc) = tab.document.as_mut() else {
       return;
     };
@@ -2309,26 +2547,78 @@ impl BrowserRuntime {
     let viewport_point = viewport_point_for_pos_css(scroll, pos_css);
     let engine = &mut tab.interaction;
 
-    let changed = match doc.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
-      let scrolled =
-        (!scroll.elements.is_empty()).then(|| fragment_tree_with_scroll(fragment_tree, scroll));
-      let fragment_tree = scrolled.as_ref().unwrap_or(fragment_tree);
-      let changed = engine.pointer_down_with_click_count(
-        dom,
-        box_tree,
-        fragment_tree,
-        scroll,
-        viewport_point,
-        button,
-        modifiers,
-        click_count,
-      );
-      (changed, changed)
-    }) {
-      Ok(changed) => changed,
-      Err(_) => return,
-    };
+    let (changed, target_id, target_element_id) =
+      match doc.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
+        let scrolled =
+          (!scroll.elements.is_empty()).then(|| fragment_tree_with_scroll(fragment_tree, scroll));
+        let fragment_tree = scrolled.as_ref().unwrap_or(fragment_tree);
+
+        let changed = if matches!(button, PointerButton::Primary | PointerButton::Middle) {
+          engine.pointer_down_with_click_count(
+            dom,
+            box_tree,
+            fragment_tree,
+            scroll,
+            viewport_point,
+            button,
+            modifiers,
+            click_count,
+          )
+        } else {
+          false
+        };
+
+        let page_point = viewport_point.translate(scroll.viewport);
+        let hit = hit_test_dom(dom, box_tree, fragment_tree, page_point);
+        let target_id = hit.as_ref().map(|hit| hit.dom_node_id);
+        let target_element_id = target_id.and_then(|target_id| {
+          crate::dom::find_node_mut_by_preorder_id(dom, target_id)
+            .and_then(|node| node.get_attribute_ref("id"))
+            .map(|id| id.to_string())
+        });
+
+        (changed, (changed, target_id, target_element_id))
+      }) {
+        Ok(changed) => changed,
+        Err(_) => return,
+      };
+
+    if let Some(target_id) = target_id {
+      let pointer_buttons = tab.pointer_buttons;
+      if let Some(js_tab) = tab.js_tab.as_mut() {
+        let target = js_dom_node_for_preorder_id(js_tab, target_id, target_element_id.as_deref());
+        if let Some(node_id) = target {
+          let mouse = web_events::MouseEvent {
+            client_x: mouse_client_coord(pos_css.0),
+            client_y: mouse_client_coord(pos_css.1),
+            button: mouse_event_button(button),
+            buttons: pointer_buttons,
+            ctrl_key: modifiers.ctrl(),
+            shift_key: modifiers.shift(),
+            alt_key: modifiers.alt(),
+            meta_key: modifiers.meta(),
+            related_target: None,
+          };
+          if let Err(err) = js_tab.dispatch_mouse_event(
+            node_id,
+            "mousedown",
+            web_events::EventInit {
+              bubbles: true,
+              cancelable: true,
+              composed: false,
+            },
+            mouse,
+          ) {
+            let _ = self.ui_tx.send(WorkerToUi::DebugLog {
+              tab_id,
+              line: format!("js mousedown event dispatch failed: {err}"),
+            });
+          }
+        }
+      }
+    }
     if changed {
+      // Preserve existing repaint behaviour for interaction-engine state changes.
       tab.cancel.bump_paint();
       tab.needs_repaint = true;
     }
@@ -2341,12 +2631,80 @@ impl BrowserRuntime {
     button: PointerButton,
     modifiers: crate::ui::PointerModifiers,
   ) {
-    if !matches!(button, PointerButton::Primary | PointerButton::Middle) {
-      return;
-    }
     let Some(tab) = self.tabs.get_mut(&tab_id) else {
       return;
     };
+    tab.pointer_buttons &= !mouse_buttons_mask_for_button(button);
+
+    if !matches!(button, PointerButton::Primary | PointerButton::Middle) {
+      // Right-click/etc: no default interaction engine actions, but still dispatch a DOM `mouseup`
+      // event so JS can observe non-primary buttons.
+      let Some(doc) = tab.document.as_mut() else {
+        return;
+      };
+      let scroll = &tab.scroll_state;
+      let viewport_point = viewport_point_for_pos_css(scroll, pos_css);
+      let pointer_buttons = tab.pointer_buttons;
+
+      let (target_id, target_element_id) =
+        match doc.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
+          let scrolled =
+            (!scroll.elements.is_empty()).then(|| fragment_tree_with_scroll(fragment_tree, scroll));
+          let fragment_tree = scrolled.as_ref().unwrap_or(fragment_tree);
+
+          let page_point = viewport_point.translate(scroll.viewport);
+          let hit = hit_test_dom(dom, box_tree, fragment_tree, page_point);
+          let target_id = hit.as_ref().map(|hit| hit.dom_node_id);
+          let target_element_id = target_id.and_then(|target_id| {
+            crate::dom::find_node_mut_by_preorder_id(dom, target_id)
+              .and_then(|node| node.get_attribute_ref("id"))
+              .map(|id| id.to_string())
+          });
+
+          (false, (target_id, target_element_id))
+        }) {
+          Ok(result) => result,
+          Err(_) => (None, None),
+        };
+
+      if let Some(target_id) = target_id {
+        if let Some(js_tab) = tab.js_tab.as_mut() {
+          let target = js_dom_node_for_preorder_id(js_tab, target_id, target_element_id.as_deref());
+          if let Some(node_id) = target {
+            let mouse = web_events::MouseEvent {
+              client_x: mouse_client_coord(pos_css.0),
+              client_y: mouse_client_coord(pos_css.1),
+              button: mouse_event_button(button),
+              buttons: pointer_buttons,
+              ctrl_key: modifiers.ctrl(),
+              shift_key: modifiers.shift(),
+              alt_key: modifiers.alt(),
+              meta_key: modifiers.meta(),
+              related_target: None,
+            };
+            if let Err(err) = js_tab.dispatch_mouse_event(
+              node_id,
+              "mouseup",
+              web_events::EventInit {
+                bubbles: true,
+                cancelable: true,
+                composed: false,
+              },
+              mouse,
+            ) {
+              let _ = self.ui_tx.send(WorkerToUi::DebugLog {
+                tab_id,
+                line: format!("js mouseup event dispatch failed: {err}"),
+              });
+            }
+          }
+        }
+      }
+      return;
+    }
+
+    let pointer_buttons = tab.pointer_buttons;
+
     let base_url = base_url_for_links(tab).to_string();
     let document_url = tab
       .last_committed_url
@@ -2360,6 +2718,8 @@ impl BrowserRuntime {
       action,
       anchor_css,
       scroll_changed,
+      mouseup_target,
+      mouseup_target_element_id,
       click_target,
       click_target_element_id,
       form_submitter,
@@ -2374,6 +2734,8 @@ impl BrowserRuntime {
         action,
         anchor_css,
         focus_scroll,
+        mouseup_target,
+        mouseup_target_element_id,
         click_target,
         click_target_element_id,
         form_submitter,
@@ -2393,6 +2755,15 @@ impl BrowserRuntime {
           &document_url,
           &base_url,
         );
+
+        let page_point = viewport_point.translate(scroll_snapshot.viewport);
+        let mouseup_target =
+          hit_test_dom(dom, box_tree, hit_tree, page_point).map(|hit| hit.dom_node_id);
+        let mouseup_target_element_id = mouseup_target.and_then(|target_id| {
+          crate::dom::find_node_mut_by_preorder_id(dom, target_id)
+            .and_then(|node| node.get_attribute_ref("id"))
+            .map(|id| id.to_string())
+        });
 
         let click_target = engine.take_last_click_target();
         let click_target_element_id = click_target.and_then(|target_id| {
@@ -2446,6 +2817,8 @@ impl BrowserRuntime {
             action,
             anchor_css,
             focus_scroll,
+            mouseup_target,
+            mouseup_target_element_id,
             click_target,
             click_target_element_id,
             form_submitter,
@@ -2473,12 +2846,49 @@ impl BrowserRuntime {
         action,
         anchor_css,
         scroll_changed,
+        mouseup_target,
+        mouseup_target_element_id,
         click_target,
         click_target_element_id,
         form_submitter,
         form_submitter_element_id,
       )
     };
+
+    if let Some(target_id) = mouseup_target {
+      if let Some(js_tab) = tab.js_tab.as_mut() {
+        let target =
+          js_dom_node_for_preorder_id(js_tab, target_id, mouseup_target_element_id.as_deref());
+        if let Some(node_id) = target {
+          let mouse = web_events::MouseEvent {
+            client_x: mouse_client_coord(pos_css.0),
+            client_y: mouse_client_coord(pos_css.1),
+            button: mouse_event_button(button),
+            buttons: pointer_buttons,
+            ctrl_key: modifiers.ctrl(),
+            shift_key: modifiers.shift(),
+            alt_key: modifiers.alt(),
+            meta_key: modifiers.meta(),
+            related_target: None,
+          };
+          if let Err(err) = js_tab.dispatch_mouse_event(
+            node_id,
+            "mouseup",
+            web_events::EventInit {
+              bubbles: true,
+              cancelable: true,
+              composed: false,
+            },
+            mouse,
+          ) {
+            let _ = self.ui_tx.send(WorkerToUi::DebugLog {
+              tab_id,
+              line: format!("js mouseup event dispatch failed: {err}"),
+            });
+          }
+        }
+      }
+    }
 
     let mut default_allowed = true;
     if let Some(target_id) = click_target {
