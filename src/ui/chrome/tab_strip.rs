@@ -10,6 +10,7 @@ const TAB_STRIP_HEIGHT: f32 = 34.0;
 const TAB_HEIGHT: f32 = 32.0;
 const TAB_MIN_WIDTH: f32 = 140.0;
 const TAB_MAX_WIDTH: f32 = 240.0;
+const PINNED_TAB_WIDTH: f32 = 44.0;
 const TAB_GAP: f32 = 6.0;
 const TAB_PADDING_X: f32 = 10.0;
 const CONTROL_BUTTON_SIZE: f32 = 28.0;
@@ -128,9 +129,17 @@ fn tab_ui(
   let (_, tab_rect) = ui.allocate_space(Vec2::new(tab_width, TAB_HEIGHT));
   let tab_id = ui.make_persistent_id(("tab_strip_tab", tab.id));
   let title = tab.display_title();
+  let mut menu_action: Option<ChromeAction> = None;
   let response = ui
     .interact(tab_rect, tab_id, Sense::click())
-    .on_hover_text(title.as_str());
+    .on_hover_text(title.as_str())
+    .context_menu(|ui| {
+      let label = if tab.pinned { "Unpin Tab" } else { "Pin Tab" };
+      if ui.button(label).clicked() {
+        menu_action = Some(ChromeAction::TogglePinTab(tab.id));
+        ui.close_menu();
+      }
+    });
   response.widget_info({
     let title = title.clone();
     move || egui::WidgetInfo::labeled(egui::WidgetType::Button, title.clone())
@@ -253,8 +262,110 @@ fn tab_ui(
   }
 
   // Input semantics.
+  if let Some(action) = menu_action {
+    return (tab_rect, Some(action));
+  }
   if close_clicked && can_close_tabs {
     return (tab_rect, Some(ChromeAction::CloseTab(tab.id)));
+  }
+  if response.clicked_by(egui::PointerButton::Middle) {
+    if can_close_tabs {
+      return (tab_rect, Some(ChromeAction::CloseTab(tab.id)));
+    }
+  } else if response.clicked() {
+    return (tab_rect, Some(ChromeAction::ActivateTab(tab.id)));
+  }
+
+  (tab_rect, None)
+}
+
+fn pinned_tab_ui(
+  ui: &mut egui::Ui,
+  motion: UiMotion,
+  tab: &BrowserTabState,
+  is_active: bool,
+  can_close_tabs: bool,
+  favicon_tex: Option<egui::TextureId>,
+) -> (Rect, Option<ChromeAction>) {
+  let (_, tab_rect) = ui.allocate_space(Vec2::new(PINNED_TAB_WIDTH, TAB_HEIGHT));
+  let tab_id = ui.make_persistent_id(("tab_strip_tab", tab.id));
+  let title = tab.display_title();
+  let mut menu_action: Option<ChromeAction> = None;
+  let response = ui
+    .interact(tab_rect, tab_id, Sense::click())
+    .on_hover_text(title.as_str())
+    .context_menu(|ui| {
+      let label = if tab.pinned { "Unpin Tab" } else { "Pin Tab" };
+      if ui.button(label).clicked() {
+        menu_action = Some(ChromeAction::TogglePinTab(tab.id));
+        ui.close_menu();
+      }
+    });
+  response.widget_info({
+    let title = title.clone();
+    move || egui::WidgetInfo::labeled(egui::WidgetType::Button, title.clone())
+  });
+
+  let visuals = ui.style().visuals.clone();
+
+  // Micro-interaction: fade hover highlight in/out for inactive tabs.
+  let hover_t = if is_active {
+    0.0
+  } else {
+    motion.animate_bool(
+      ui.ctx(),
+      tab_id.with("hover"),
+      response.hovered(),
+      motion.durations.hover_fade,
+    )
+  };
+
+  let bg = if is_active {
+    visuals.widgets.active.bg_fill
+  } else {
+    lerp_color(visuals.widgets.inactive.bg_fill, visuals.widgets.hovered.bg_fill, hover_t)
+  };
+  let rounding = visuals.widgets.inactive.rounding;
+  ui.painter().rect_filled(tab_rect, rounding, bg);
+
+  // Favicon (centered).
+  let icon_min = Pos2::new(
+    tab_rect.center().x - ICON_SIZE * 0.5,
+    tab_rect.center().y - ICON_SIZE * 0.5,
+  );
+  let icon_rect = Rect::from_min_size(icon_min, Vec2::splat(ICON_SIZE));
+  if let Some(tex_id) = favicon_tex {
+    let _ = ui.put(
+      icon_rect,
+      egui::Image::new((tex_id, icon_rect.size())).sense(Sense::hover()),
+    );
+  } else {
+    placeholder_favicon(ui.painter(), icon_rect, &visuals);
+    let glyph = title
+      .trim()
+      .chars()
+      .next()
+      .map(|ch| ch.to_ascii_uppercase().to_string())
+      .unwrap_or_else(|| "□".to_string());
+    ui.painter().text(
+      icon_rect.center(),
+      Align2::CENTER_CENTER,
+      glyph,
+      FontId::proportional(14.0),
+      visuals.text_color(),
+    );
+  }
+
+  if tab.loading {
+    // Spinner overlay around the favicon.
+    ui.ctx().request_repaint();
+    let time = ui.input(|i| i.time);
+    paint_spinner(ui.painter(), icon_rect.expand(2.0), time, visuals.text_color());
+  }
+
+  // Input semantics.
+  if let Some(action) = menu_action {
+    return (tab_rect, Some(action));
   }
   if response.clicked_by(egui::PointerButton::Middle) {
     if can_close_tabs {
@@ -283,60 +394,129 @@ pub(super) fn tab_strip_ui(
     Vec2::splat(button_size),
   );
   let tabs_viewport_max_x = (button_rect.min.x - 8.0).max(strip_rect.min.x);
-  let tabs_rect = Rect::from_min_max(strip_rect.min, Pos2::new(tabs_viewport_max_x, strip_rect.max.y));
+  let tabs_rect =
+    Rect::from_min_max(strip_rect.min, Pos2::new(tabs_viewport_max_x, strip_rect.max.y));
   let tabs_viewport_width = tabs_rect.width().max(0.0);
 
   let tab_count = app.tabs.len();
   let can_close_tabs = tab_count > 1;
-  let sizing = compute_tab_strip_sizing(tabs_viewport_width, tab_count);
+  let pinned_len = app.tabs.iter().take_while(|t| t.pinned).count();
+  let (pinned_tabs, unpinned_tabs) = app.tabs.split_at(pinned_len);
+  let pinned_count = pinned_tabs.len();
+  let unpinned_count = unpinned_tabs.len();
+
+  let pinned_content_width = if pinned_count == 0 {
+    0.0
+  } else {
+    (pinned_count as f32) * PINNED_TAB_WIDTH + (pinned_count.saturating_sub(1) as f32) * TAB_GAP
+  };
+  let segment_gap = if pinned_count > 0 && unpinned_count > 0 {
+    TAB_GAP
+  } else {
+    0.0
+  };
+
+  let pinned_viewport_max_x = (tabs_rect.min.x + pinned_content_width).min(tabs_rect.max.x);
+  let pinned_viewport_rect =
+    Rect::from_min_max(tabs_rect.min, Pos2::new(pinned_viewport_max_x, tabs_rect.max.y));
+
+  let unpinned_viewport_min_x = (pinned_viewport_max_x + segment_gap).min(tabs_rect.max.x);
+  let unpinned_viewport_rect = Rect::from_min_max(
+    Pos2::new(unpinned_viewport_min_x, tabs_rect.min.y),
+    tabs_rect.max,
+  );
+  let unpinned_viewport_width = unpinned_viewport_rect.width().max(0.0);
+
+  let sizing = compute_tab_strip_sizing(unpinned_viewport_width, unpinned_count);
 
   #[cfg(test)]
   let mut tab_rects_for_test: Vec<Rect> = Vec::new();
 
   let mut active_tab_rect: Option<Rect> = None;
+  let mut active_tab_is_pinned = false;
   let mut scroll_offset_x: f32 = 0.0;
 
   if tabs_viewport_width > 0.0 {
-    let mut tabs_ui = ui.child_ui(tabs_rect, egui::Layout::left_to_right(egui::Align::Center));
-    tabs_ui.set_clip_rect(tabs_rect);
-    let scroll_output = egui::ScrollArea::horizontal()
-      .id_source("tab_strip_scroll")
-      .auto_shrink([false, true])
-      .show(&mut tabs_ui, |ui| {
-        ui.spacing_mut().item_spacing = Vec2::new(TAB_GAP, 0.0);
-        ui.horizontal(|ui| {
-          for tab in &app.tabs {
-            let is_active = app.active_tab_id() == Some(tab.id);
-            let favicon_tex = favicon_for_tab(tab.id);
-            let (tab_rect, maybe_action) = tab_ui(
-              ui,
-              motion,
-              tab,
-              is_active,
-              can_close_tabs,
-              sizing.tab_width,
-              favicon_tex,
-            );
-            if is_active {
-              active_tab_rect = Some(tab_rect);
-            }
-            #[cfg(test)]
-            tab_rects_for_test.push(tab_rect);
-
-            if let Some(action) = maybe_action {
-              actions.push(action);
-            }
+    if pinned_count > 0 && pinned_viewport_rect.width() > 0.0 {
+      let mut pinned_ui = ui.child_ui(
+        pinned_viewport_rect,
+        egui::Layout::left_to_right(egui::Align::Center),
+      );
+      pinned_ui.set_clip_rect(pinned_viewport_rect);
+      pinned_ui.spacing_mut().item_spacing = Vec2::new(TAB_GAP, 0.0);
+      pinned_ui.horizontal(|ui| {
+        for tab in pinned_tabs {
+          let is_active = app.active_tab_id() == Some(tab.id);
+          let favicon_tex = favicon_for_tab(tab.id);
+          let (tab_rect, maybe_action) =
+            pinned_tab_ui(ui, motion, tab, is_active, can_close_tabs, favicon_tex);
+          if is_active {
+            active_tab_rect = Some(tab_rect);
+            active_tab_is_pinned = true;
           }
-        });
+          #[cfg(test)]
+          tab_rects_for_test.push(tab_rect);
+
+          if let Some(action) = maybe_action {
+            actions.push(action);
+          }
+        }
       });
-    scroll_offset_x = scroll_output.state.offset.x;
+    }
+
+    if unpinned_count > 0 && unpinned_viewport_rect.width() > 0.0 {
+      let mut unpinned_ui = ui.child_ui(
+        unpinned_viewport_rect,
+        egui::Layout::left_to_right(egui::Align::Center),
+      );
+      unpinned_ui.set_clip_rect(unpinned_viewport_rect);
+
+      let scroll_output = egui::ScrollArea::horizontal()
+        .id_source("tab_strip_scroll")
+        .auto_shrink([false, true])
+        .show(&mut unpinned_ui, |ui| {
+          ui.spacing_mut().item_spacing = Vec2::new(TAB_GAP, 0.0);
+          ui.horizontal(|ui| {
+            for tab in unpinned_tabs {
+              let is_active = app.active_tab_id() == Some(tab.id);
+              let favicon_tex = favicon_for_tab(tab.id);
+              let (tab_rect, maybe_action) = tab_ui(
+                ui,
+                motion,
+                tab,
+                is_active,
+                can_close_tabs,
+                sizing.tab_width,
+                favicon_tex,
+              );
+              if is_active {
+                active_tab_rect = Some(tab_rect);
+                active_tab_is_pinned = false;
+              }
+              #[cfg(test)]
+              tab_rects_for_test.push(tab_rect);
+
+              if let Some(action) = maybe_action {
+                actions.push(action);
+              }
+            }
+          });
+        });
+      scroll_offset_x = scroll_output.state.offset.x;
+    }
   }
 
   // Micro-interaction: animate the active tab underline position/width.
   if let Some(active_rect) = active_tab_rect {
     let underline_id = ui.make_persistent_id("tab_strip_active_underline");
-    // Animate in scroll-content coordinates so the underline tracks scrolling without lag.
-    let target_center_content_x = active_rect.center().x - tabs_rect.min.x + scroll_offset_x;
+    let pinned_offset = unpinned_viewport_rect.min.x - tabs_rect.min.x;
+    // Animate in a unified content coordinate space so the underline tracks scroll (unpinned tabs)
+    // without lag, while still supporting pinned tabs which sit outside the scroll area.
+    let target_center_content_x = if active_tab_is_pinned {
+      active_rect.center().x - tabs_rect.min.x
+    } else {
+      pinned_offset + (active_rect.center().x - unpinned_viewport_rect.min.x + scroll_offset_x)
+    };
     let target_width = (active_rect.width() - 20.0).max(0.0);
     let center_content_x = motion.animate_f32(
       ui.ctx(),
@@ -351,7 +531,11 @@ pub(super) fn tab_strip_ui(
       motion.durations.tab_underline,
     );
 
-    let center_screen_x = tabs_rect.min.x - scroll_offset_x + center_content_x;
+    let center_screen_x = if active_tab_is_pinned {
+      tabs_rect.min.x + center_content_x
+    } else {
+      unpinned_viewport_rect.min.x + (center_content_x - pinned_offset) - scroll_offset_x
+    };
     let x0 = center_screen_x - width * 0.5;
     let x1 = center_screen_x + width * 0.5;
     let y = active_rect.max.y - ACTIVE_UNDERLINE_HEIGHT * 0.5;

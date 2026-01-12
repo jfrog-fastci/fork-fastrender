@@ -36,6 +36,7 @@ pub enum ChromeAction {
   CloseTab(TabId),
   ReopenClosedTab,
   ActivateTab(TabId),
+  TogglePinTab(TabId),
   NavigateTo(String),
   Back,
   Forward,
@@ -1273,6 +1274,29 @@ mod tests {
       .collect()
   }
 
+  fn count_drawn_glyph_in_rect(output: &egui::FullOutput, glyph: &str, rect: egui::Rect) -> usize {
+    fn count_in_shape(shape: &egui::epaint::Shape, glyph: &str, rect: egui::Rect) -> usize {
+      match shape {
+        egui::epaint::Shape::Text(text) => {
+          if rect.contains(text.pos) {
+            text.galley.text().matches(glyph).count()
+          } else {
+            0
+          }
+        }
+        egui::epaint::Shape::Vec(shapes) => {
+          shapes.iter().map(|s| count_in_shape(s, glyph, rect)).sum()
+        }
+        _ => 0,
+      }
+    }
+
+    output
+      .shapes
+      .iter()
+      .map(|clipped| count_in_shape(&clipped.shape, glyph, rect))
+      .sum()
+  }
   #[test]
   fn address_bar_blur_reverts_uncommitted_text() {
     let mut app = BrowserAppState::new();
@@ -2242,6 +2266,66 @@ mod tests {
       actions.iter().any(|action| matches!(action, ChromeAction::NewTab)),
       "expected ChromeAction::NewTab, got {actions:?}"
     );
+  }
+
+  #[test]
+  fn pinned_tab_can_be_activated_by_click() {
+    let mut app = BrowserAppState::new();
+    let tab_a = TabId(1);
+    let tab_b = TabId(2);
+    app.push_tab(BrowserTabState::new(tab_a, "about:newtab".to_string()), false);
+    app.push_tab(BrowserTabState::new(tab_b, "about:newtab".to_string()), true);
+    assert!(app.pin_tab(tab_a));
+
+    let ctx = egui::Context::default();
+
+    // Frame 1: warm up layout.
+    begin_frame(&ctx, Vec::new());
+    let _ = chrome_ui(&ctx, &mut app, |_| None);
+    let _ = ctx.end_frame();
+
+    // Frame 2: measure the pinned tab rect.
+    begin_frame(&ctx, Vec::new());
+    let _ = chrome_ui(&ctx, &mut app, |_| None);
+    let (_strip_rect, tab_rects) =
+      super::tab_strip::load_test_layout(&ctx).expect("missing tab strip layout metrics");
+    let tab_rect = tab_rects
+      .first()
+      .copied()
+      .expect("expected pinned tab rect to be recorded");
+    let _ = ctx.end_frame();
+
+    // Frame 3: click the pinned tab.
+    begin_frame(&ctx, left_click_at(tab_rect.center()));
+    let actions = chrome_ui(&ctx, &mut app, |_| None);
+    let _ = ctx.end_frame();
+
+    assert!(
+      actions
+        .iter()
+        .any(|action| matches!(action, ChromeAction::ActivateTab(id) if *id == tab_a)),
+      "expected click to activate pinned tab {tab_a:?}, got {actions:?}"
+    );
+  }
+
+  #[test]
+  fn pinned_tabs_do_not_render_close_button() {
+    let mut app = BrowserAppState::new();
+    let tab_a = TabId(1);
+    let tab_b = TabId(2);
+    app.push_tab(BrowserTabState::new(tab_a, "about:newtab".to_string()), true);
+    app.push_tab(BrowserTabState::new(tab_b, "about:newtab".to_string()), false);
+    assert!(app.pin_tab(tab_a));
+
+    let ctx = egui::Context::default();
+    begin_frame(&ctx, Vec::new());
+    let _actions = chrome_ui(&ctx, &mut app, |_| None);
+    let (strip_rect, _tab_rects) =
+      super::tab_strip::load_test_layout(&ctx).expect("missing tab strip layout metrics");
+    let output = ctx.end_frame();
+
+    // Only the unpinned tab should render a close button ("×").
+    assert_eq!(count_drawn_glyph_in_rect(&output, "×", strip_rect), 1);
   }
 
   #[test]

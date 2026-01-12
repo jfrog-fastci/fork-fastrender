@@ -120,6 +120,11 @@ impl std::fmt::Debug for FrameReadyUpdate {
 #[derive(Debug)]
 pub struct BrowserTabState {
   pub id: TabId,
+  /// Whether this tab is pinned in the tab strip.
+  ///
+  /// Invariant (enforced by [`BrowserAppState`]): all pinned tabs are stored contiguously at the
+  /// start of [`BrowserAppState::tabs`].
+  pub pinned: bool,
   /// Shared cancellation generations for this tab.
   ///
   /// The UI thread can bump these counters (without blocking on the worker) to cancel in-flight
@@ -174,6 +179,7 @@ impl BrowserTabState {
     let committed_url = initial_url.clone();
     Self {
       id: tab_id,
+      pinned: false,
       cancel: CancelGens::new(),
       current_url: Some(initial_url),
       committed_url: Some(committed_url),
@@ -312,6 +318,7 @@ impl BrowserTabState {
 pub struct ClosedTabState {
   pub url: String,
   pub title: Option<String>,
+  pub pinned: bool,
 }
 
 #[cfg(test)]
@@ -549,9 +556,61 @@ impl BrowserAppState {
     let _ = self.set_active_tab(tab_id);
   }
 
+  fn pinned_len(&self) -> usize {
+    let pinned = self.tabs.iter().take_while(|t| t.pinned).count();
+    debug_assert!(
+      self.tabs[pinned..].iter().all(|t| !t.pinned),
+      "pinned tabs must be contiguous at the start of BrowserAppState::tabs"
+    );
+    pinned
+  }
+
+  pub fn pin_tab(&mut self, tab_id: TabId) -> bool {
+    let Some(idx) = self.tabs.iter().position(|t| t.id == tab_id) else {
+      return false;
+    };
+    if self.tabs[idx].pinned {
+      return false;
+    }
+    let pinned_end = self.pinned_len();
+    let mut tab = self.tabs.remove(idx);
+    tab.pinned = true;
+    let insert_at = pinned_end.min(self.tabs.len());
+    self.tabs.insert(insert_at, tab);
+    true
+  }
+
+  pub fn unpin_tab(&mut self, tab_id: TabId) -> bool {
+    let Some(idx) = self.tabs.iter().position(|t| t.id == tab_id) else {
+      return false;
+    };
+    if !self.tabs[idx].pinned {
+      return false;
+    }
+    let pinned_end = self.pinned_len();
+    let mut tab = self.tabs.remove(idx);
+    tab.pinned = false;
+    let insert_at = pinned_end.saturating_sub(1).min(self.tabs.len());
+    self.tabs.insert(insert_at, tab);
+    true
+  }
+
+  pub fn toggle_pin_tab(&mut self, tab_id: TabId) -> bool {
+    match self.tab(tab_id).map(|t| t.pinned) {
+      Some(true) => self.unpin_tab(tab_id),
+      Some(false) => self.pin_tab(tab_id),
+      None => false,
+    }
+  }
+
   pub fn push_tab(&mut self, tab: BrowserTabState, make_active: bool) {
     let tab_id = tab.id;
-    self.tabs.push(tab);
+    if tab.pinned {
+      let idx = self.pinned_len();
+      self.tabs.insert(idx, tab);
+    } else {
+      self.tabs.push(tab);
+    }
     if make_active || self.active_tab.is_none() {
       self.active_tab = Some(tab_id);
       self.chrome.address_bar_editing = false;
@@ -601,10 +660,8 @@ impl BrowserAppState {
         .clone()
         .or_else(|| closed.current_url.clone())
         .unwrap_or_else(|| about_pages::ABOUT_NEWTAB.to_string()),
-      title: closed
-        .committed_title
-        .clone()
-        .or_else(|| closed.title.clone()),
+      title: closed.committed_title.clone().or_else(|| closed.title.clone()),
+      pinned: closed.pinned,
     });
 
     let was_active = self.active_tab == Some(tab_id);
@@ -1303,6 +1360,7 @@ mod browser_app_tests {
       vec![ClosedTabState {
         url: "https://committed.example/".to_string(),
         title: Some("Committed".to_string()),
+        pinned: false,
       }]
     );
 
@@ -1312,6 +1370,7 @@ mod browser_app_tests {
       ClosedTabState {
         url: "https://committed.example/".to_string(),
         title: Some("Committed".to_string()),
+        pinned: false,
       }
     );
     assert!(app.closed_tabs.is_empty());
@@ -1501,6 +1560,115 @@ mod browser_app_tests {
     let b = app.tab(tab_b).unwrap();
     assert!(!b.find.open);
     assert_eq!(b.find, FindInPageState::default());
+  }
+
+  fn assert_pinned_invariant(app: &BrowserAppState) {
+    let pinned = app.tabs.iter().take_while(|t| t.pinned).count();
+    assert!(
+      app.tabs[..pinned].iter().all(|t| t.pinned),
+      "expected pinned tabs at start"
+    );
+    assert!(
+      app.tabs[pinned..].iter().all(|t| !t.pinned),
+      "expected unpinned tabs after pinned segment"
+    );
+  }
+
+  #[test]
+  fn pin_and_unpin_move_tabs_and_preserve_contiguous_pinned_segment() {
+    let mut app = BrowserAppState::new();
+    let a = TabId(1);
+    let b = TabId(2);
+    let c = TabId(3);
+    let d = TabId(4);
+    app.push_tab(BrowserTabState::new(a, "about:newtab".to_string()), true);
+    app.push_tab(BrowserTabState::new(b, "about:newtab".to_string()), false);
+    app.push_tab(BrowserTabState::new(c, "about:newtab".to_string()), false);
+    app.push_tab(BrowserTabState::new(d, "about:newtab".to_string()), false);
+
+    // Pin an unpinned tab moves it into the pinned segment at the far left.
+    assert!(app.pin_tab(c));
+    assert_pinned_invariant(&app);
+    assert_eq!(
+      app.tabs.iter().map(|t| t.id).collect::<Vec<_>>(),
+      vec![c, a, b, d]
+    );
+    assert!(app.tab(c).unwrap().pinned);
+
+    // Pinning another tab appends it to the pinned segment (preserve order among pinned).
+    assert!(app.pin_tab(a));
+    assert_pinned_invariant(&app);
+    assert_eq!(
+      app.tabs.iter().map(|t| t.id).collect::<Vec<_>>(),
+      vec![c, a, b, d]
+    );
+    // After pinning `a`, the pinned segment should be [c, a].
+    assert!(app.tabs[0].pinned);
+    assert!(app.tabs[1].pinned);
+
+    // Unpinning a tab moves it to the start of the unpinned segment.
+    assert!(app.unpin_tab(c));
+    assert_pinned_invariant(&app);
+    assert_eq!(
+      app.tabs.iter().map(|t| t.id).collect::<Vec<_>>(),
+      vec![a, c, b, d]
+    );
+    assert!(!app.tab(c).unwrap().pinned);
+  }
+
+  #[test]
+  fn active_tab_id_survives_pin_and_unpin_reordering() {
+    let mut app = BrowserAppState::new();
+    let a = TabId(1);
+    let b = TabId(2);
+    let c = TabId(3);
+    app.push_tab(BrowserTabState::new(a, "about:newtab".to_string()), true);
+    app.push_tab(BrowserTabState::new(b, "about:newtab".to_string()), false);
+    app.push_tab(BrowserTabState::new(c, "about:newtab".to_string()), false);
+
+    app.set_active(b);
+    assert_eq!(app.active_tab_id(), Some(b));
+
+    assert!(app.pin_tab(c));
+    assert_eq!(app.active_tab_id(), Some(b));
+    assert_active_is_valid(&app);
+
+    assert!(app.pin_tab(b));
+    assert_eq!(app.active_tab_id(), Some(b));
+    assert_active_is_valid(&app);
+
+    assert!(app.unpin_tab(b));
+    assert_eq!(app.active_tab_id(), Some(b));
+    assert_active_is_valid(&app);
+  }
+
+  #[test]
+  fn closed_tab_state_preserves_pinned_and_reopen_can_restore_it() {
+    let mut app = BrowserAppState::new();
+    let a = TabId(1);
+    let b = TabId(2);
+    app.push_tab(BrowserTabState::new(a, "about:newtab".to_string()), true);
+    app.push_tab(BrowserTabState::new(b, "about:newtab".to_string()), false);
+
+    assert!(app.pin_tab(a));
+    assert!(app.tab(a).unwrap().pinned);
+    assert_pinned_invariant(&app);
+
+    let _ = app.remove_tab(a);
+    let closed = app.pop_closed_tab().expect("expected closed tab state");
+    assert!(closed.pinned);
+
+    // Simulate "reopen closed tab": create a new tab from the closed state and preserve `pinned`.
+    let reopened = TabId(3);
+    let mut tab = BrowserTabState::new(reopened, closed.url);
+    tab.title = closed.title.clone();
+    tab.committed_title = closed.title;
+    tab.pinned = closed.pinned;
+    app.push_tab(tab, true);
+
+    assert!(app.tab(reopened).unwrap().pinned);
+    assert_pinned_invariant(&app);
+    assert_eq!(app.tabs.first().map(|t| t.id), Some(reopened));
   }
 
   // Note: scroll restoration is worker-owned (see `ui::render_worker`), so the windowed UI state

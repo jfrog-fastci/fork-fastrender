@@ -541,6 +541,7 @@ mod tests {
     let closed_tabs = vec![ClosedTabState {
       url: "https://example.org/".to_string(),
       title: Some("Example Org".to_string()),
+      pinned: false,
     }];
 
     let mut visited = VisitedUrlStore::with_capacity(10);

@@ -5610,6 +5610,7 @@ impl App {
           let mut tab_state = fastrender::ui::BrowserTabState::new(tab_id, url.clone());
           tab_state.title = closed.title.clone();
           tab_state.committed_title = closed.title;
+          tab_state.pinned = closed.pinned;
           tab_state.loading = true;
 
           let cancel = tab_state.cancel.clone();
@@ -5636,6 +5637,13 @@ impl App {
 
           // Request a second frame so chrome UI reflects the newly created tab immediately.
           self.window.request_redraw();
+        }
+        ChromeAction::TogglePinTab(tab_id) => {
+          if self.browser_state.toggle_pin_tab(tab_id) {
+            // `chrome_ui` has already been built for this frame; request another redraw so the tab
+            // strip reflects the new ordering immediately.
+            self.window.request_redraw();
+          }
         }
         ChromeAction::CloseTab(tab_id) => {
           if self.browser_state.tabs.len() <= 1 || self.browser_state.tab(tab_id).is_none() {
