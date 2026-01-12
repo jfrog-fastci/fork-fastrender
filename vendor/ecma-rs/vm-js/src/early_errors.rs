@@ -73,6 +73,7 @@ where
   let mut ctx = ControlContext {
     strict: opts.strict,
     await_allowed: opts.allow_top_level_await,
+    yield_allowed: false,
     return_allowed: false,
     loop_depth: 0,
     breakable_depth: 0,
@@ -93,6 +94,10 @@ struct ControlContext {
   ///
   /// This is true at module top-level (top-level await) and inside async functions.
   await_allowed: bool,
+  /// Whether `yield` expressions are permitted in the current context.
+  ///
+  /// This is true only inside generator function bodies.
+  yield_allowed: bool,
   /// Whether `return` statements are permitted in the current statement list.
   ///
   /// This is true only inside function bodies. (Notably, class static blocks are **not** function
@@ -106,6 +111,7 @@ struct ControlContext {
 struct SavedFunctionContext {
   strict: bool,
   await_allowed: bool,
+  yield_allowed: bool,
   return_allowed: bool,
   loop_depth: u32,
   breakable_depth: u32,
@@ -184,10 +190,12 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
     ctx: &mut ControlContext,
     strict: bool,
     await_allowed: bool,
+    yield_allowed: bool,
   ) -> SavedFunctionContext {
     let saved = SavedFunctionContext {
       strict: ctx.strict,
       await_allowed: ctx.await_allowed,
+      yield_allowed: ctx.yield_allowed,
       return_allowed: ctx.return_allowed,
       loop_depth: ctx.loop_depth,
       breakable_depth: ctx.breakable_depth,
@@ -195,6 +203,7 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
     };
     ctx.strict = strict;
     ctx.await_allowed = await_allowed;
+    ctx.yield_allowed = yield_allowed;
     ctx.return_allowed = true;
     ctx.loop_depth = 0;
     ctx.breakable_depth = 0;
@@ -205,6 +214,7 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
   fn restore_function(&mut self, ctx: &mut ControlContext, saved: SavedFunctionContext) {
     ctx.strict = saved.strict;
     ctx.await_allowed = saved.await_allowed;
+    ctx.yield_allowed = saved.yield_allowed;
     ctx.return_allowed = saved.return_allowed;
     ctx.loop_depth = saved.loop_depth;
     ctx.breakable_depth = saved.breakable_depth;
@@ -547,13 +557,24 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
     ctx: &mut ControlContext,
     stmts: &[Node<Stmt>],
   ) -> Result<(), VmError> {
-    // Class bodies are strict, but static blocks are not function bodies: `return` is always an
-    // early error inside them.
-    let saved = self.save_scope_flags(ctx);
-    ctx.strict = true;
+    // Static initialization blocks introduce early-error boundaries:
+    // - `return` is always invalid (they are not function bodies),
+    // - `await` is always invalid (even inside async functions or modules),
+    // - `yield` is always invalid (even inside generator functions),
+    // - `break`/`continue` target resolution must not cross static-block boundaries.
+    //
+    // Spec tests:
+    // - language/statements/class/static-init-invalid-{await,yield,return}.js
+    // - language/statements/{break,continue}/static-init-*.js
+    let saved = self.save_and_enter_function(
+      ctx,
+      /* strict */ true,
+      /* await_allowed */ false,
+      /* yield_allowed */ false,
+    );
     ctx.return_allowed = false;
     let res = self.visit_stmt_list(ctx, stmts);
-    self.restore_scope_flags(ctx, saved);
+    self.restore_function(ctx, saved);
     res
   }
 
@@ -650,7 +671,7 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
     }
 
     // Enter the function context when traversing parameter initializers and the function body.
-    let saved = self.save_and_enter_function(ctx, func_strict, func.stx.async_);
+    let saved = self.save_and_enter_function(ctx, func_strict, func.stx.async_, func.stx.generator);
 
     for param in params {
       self.visit_pat(ctx, &param.stx.pattern.stx.pat, PatRole::Binding)?;
@@ -796,6 +817,11 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
       OperatorName::Await => {
         if !ctx.await_allowed {
           self.push_error(loc, "await is only valid in async functions and modules")?;
+        }
+      }
+      OperatorName::Yield | OperatorName::YieldDelegated => {
+        if !ctx.yield_allowed {
+          self.push_error(loc, "yield is only valid in generator functions")?;
         }
       }
       OperatorName::Delete => {

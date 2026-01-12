@@ -1599,6 +1599,7 @@ impl Heap {
       data.len()
     };
     if view_end > buf_len {
+      // Out-of-bounds views behave like empty typed arrays for host byte writes.
       return Ok(0);
     }
 

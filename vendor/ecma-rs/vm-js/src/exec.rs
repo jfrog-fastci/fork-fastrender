@@ -24564,6 +24564,54 @@ mod tests {
   }
 
   #[test]
+  fn class_static_block_contains_await_is_syntax_error() -> Result<(), VmError> {
+    let vm = Vm::new(VmOptions::default());
+    let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut rt = JsRuntime::new(vm, heap)?;
+    let err = rt
+      .exec_script(
+        r#"
+        async function f() {
+          class C {
+            static {
+              await 0;
+            }
+          }
+        }
+      "#,
+      )
+      .unwrap_err();
+    match err {
+      VmError::Syntax(_) => Ok(()),
+      other => panic!("expected VmError::Syntax, got {other:?}"),
+    }
+  }
+
+  #[test]
+  fn class_static_block_contains_yield_is_syntax_error() -> Result<(), VmError> {
+    let vm = Vm::new(VmOptions::default());
+    let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut rt = JsRuntime::new(vm, heap)?;
+    let err = rt
+      .exec_script(
+        r#"
+        function *g() {
+          class C {
+            static {
+              yield;
+            }
+          }
+        }
+      "#,
+      )
+      .unwrap_err();
+    match err {
+      VmError::Syntax(_) => Ok(()),
+      other => panic!("expected VmError::Syntax, got {other:?}"),
+    }
+  }
+
+  #[test]
   fn prototype_cycle_throw_captures_statement_location() -> Result<(), VmError> {
     let vm = Vm::new(VmOptions::default());
     let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
