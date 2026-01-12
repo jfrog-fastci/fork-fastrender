@@ -1529,7 +1529,7 @@ fn storage_require_this(scope: &Scope<'_>, this: Value) -> Result<web_storage::S
   let Some(slots) = slots else {
     return Err(VmError::TypeError(STORAGE_ILLEGAL_INVOCATION_ERROR));
   };
-  if slots.b != STORAGE_HOST_KIND {
+  if slots.b != STORAGE_HOST_TAG {
     return Err(VmError::TypeError(STORAGE_ILLEGAL_INVOCATION_ERROR));
   }
   match slots.a {
@@ -1719,7 +1719,7 @@ fn install_storage_object(
     storage_obj,
     HostSlots {
       a: kind_host_slot,
-      b: STORAGE_HOST_KIND,
+      b: STORAGE_HOST_TAG,
     },
   )?;
 
@@ -1833,7 +1833,12 @@ const WINDOW_REALM_CONSOLE_HOST_TAG: u64 = u64::from_be_bytes(*b"CONSOLE_");
 const DOM_TOKEN_LIST_HOST_TAG: u64 = 3;
 const DOM_STRING_MAP_HOST_KIND: u64 = 4;
 const CSS_STYLE_DECL_HOST_TAG: u64 = 5;
-const STORAGE_HOST_KIND: u64 = 6;
+// Brand for the Web Storage objects (`localStorage` / `sessionStorage`).
+//
+// NOTE: This must stay unique amongst *all* objects that use `HostSlots`, otherwise `Storage`
+// prototype methods could accidentally treat a different host object (e.g. MutationObserver) as a
+// Storage instance.
+const STORAGE_HOST_TAG: u64 = 0x5354_4F52_4147_4520; // "STORAGE "
 const WRAPPER_DOCUMENT_KEY: &str = "__fastrender_wrapper_document";
 const DOCUMENT_WINDOW_KEY: &str = "__fastrender_document_window";
 const EVENT_BRAND_KEY: &str = "__fastrender_event";
@@ -27442,6 +27447,20 @@ mod tests {
     );
     assert_eq!(
       realm.exec_script("localStorage instanceof Storage && sessionStorage instanceof Storage")?,
+      Value::Bool(true)
+    );
+    assert_eq!(
+      realm.exec_script(
+        "(() => {\n\
+          try {\n\
+            const obs = new MutationObserver(() => {});\n\
+            Storage.prototype.getItem.call(obs, 'a');\n\
+            return false;\n\
+          } catch (e) {\n\
+            return e && e.name === 'TypeError' && String(e.message).includes('Illegal invocation');\n\
+          }\n\
+        })()",
+      )?,
       Value::Bool(true)
     );
 
