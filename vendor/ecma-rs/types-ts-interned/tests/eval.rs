@@ -4335,7 +4335,7 @@ fn intersection_distributes_over_unions_to_narrow() {
 fn intersection_distribution_respects_limit() {
   let store = TypeStore::new();
 
-  let mk = |value: &str| store.intern_type(TypeKind::StringLiteral(store.intern_name(value)));
+  let mk = |value: &str| store.intern_type(TypeKind::StringLiteral(store.intern_name_ref(value)));
   let u1 = store.union(vec![mk("a"), mk("b"), mk("c")]);
   let u2 = store.union(vec![mk("d"), mk("e"), mk("f")]);
   let u3 = store.union(vec![mk("g"), mk("h"), mk("i")]);
