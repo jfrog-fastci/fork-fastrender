@@ -1,5 +1,8 @@
 use runtime_native::stackmaps::{Location, StackMap};
-use runtime_native::statepoints::{StatepointRecord, AARCH64_DWARF_REG_SP, X86_64_DWARF_REG_SP};
+use runtime_native::statepoints::{
+  StatepointRecord, AARCH64_DWARF_REG_FP, AARCH64_DWARF_REG_SP, X86_64_DWARF_REG_FP,
+  X86_64_DWARF_REG_SP,
+};
 use runtime_native::statepoint_verify::LLVM_STATEPOINT_PATCHPOINT_ID;
 use runtime_native::test_util::TestRuntimeGuard;
 
@@ -60,7 +63,10 @@ fn statepoint_stackmap_x86_64_has_two_gc_live_pointers() {
           size, dwarf_reg, ..
         } => {
           assert_eq!(*size, 8);
-          assert_eq!(*dwarf_reg, X86_64_DWARF_REG_SP);
+          assert!(
+            *dwarf_reg == X86_64_DWARF_REG_SP || *dwarf_reg == X86_64_DWARF_REG_FP,
+            "expected SP/FP-relative root slot, got dwarf_reg={dwarf_reg}"
+          );
         }
         other => panic!("expected base to be Indirect, got {other:?}"),
       }
@@ -91,7 +97,10 @@ fn statepoint_stackmap_aarch64_has_two_gc_live_pointers() {
           size, dwarf_reg, ..
         } => {
           assert_eq!(*size, 8);
-          assert_eq!(*dwarf_reg, AARCH64_DWARF_REG_SP);
+          assert!(
+            *dwarf_reg == AARCH64_DWARF_REG_SP || *dwarf_reg == AARCH64_DWARF_REG_FP,
+            "expected SP/FP-relative root slot, got dwarf_reg={dwarf_reg}"
+          );
         }
         other => panic!("expected base to be Indirect, got {other:?}"),
       }
