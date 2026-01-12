@@ -1059,7 +1059,8 @@ one turn:
 
 ```c
 // Drive the event loop for one turn.
-// Returns true iff there is still pending work after the turn; false when fully idle.
+// Returns true iff there is still pending work after the turn (including outstanding external work
+// like an in-flight `rt_parallel_spawn_promise`); false when fully idle.
 bool rt_async_poll(void);
 ```
 

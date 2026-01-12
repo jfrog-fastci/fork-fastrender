@@ -3864,7 +3864,8 @@ pub fn rt_async_spawn(coro: CoroutineId /* = u64 */) -> PromiseRef;
 // synchronously (strict microtask semantics / `queueMicrotask` behavior).
 pub fn rt_async_spawn_deferred(coro: CoroutineId /* = u64 */) -> PromiseRef;
 // Drive the async runtime for one event-loop turn.
-// Returns true iff there is still pending work after the turn; false when fully idle.
+// Returns true iff there is still pending work after the turn (including outstanding external work
+// like an in-flight `rt_parallel_spawn_promise`); false when fully idle.
 pub fn rt_async_poll() -> bool;
 // Drain only the microtask queue (non-blocking microtask checkpoint).
 pub fn rt_drain_microtasks() -> bool;
