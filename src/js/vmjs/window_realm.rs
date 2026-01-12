@@ -16454,10 +16454,15 @@ impl webidl_vm_js::WebIdlBindingsHost for WindowRealmWebIdlBindingsHost {
         let event_value = args.get(0).copied().unwrap_or(Value::Undefined);
         let Value::Object(event_obj) = event_value else {
           return Err(VmError::TypeError(
-            "EventTarget.dispatchEvent: event is not an object",
+            "EventTarget.dispatchEvent: event is not an Event",
           ));
         };
         scope.push_root(Value::Object(event_obj))?;
+        if !is_branded_event(scope, event_obj)? {
+          return Err(VmError::TypeError(
+            "EventTarget.dispatchEvent: event is not an Event",
+          ));
+        }
 
         let document_obj = resolved.document_obj;
         let window_obj = resolved.window_obj;
@@ -34349,7 +34354,7 @@ mod tests {
         globalThis.__ran = 0;
         const t = new EventTarget();
         t.addEventListener('x', () => { globalThis.__ran += 1; });
-        t.dispatchEvent({ type: 'x' });
+        t.dispatchEvent(new Event('x'));
         globalThis.__ran;
       "#,
     )?;
@@ -34397,7 +34402,7 @@ mod tests {
         Promise.resolve().then(() => {
           const t = new EventTarget();
           t.addEventListener('x', () => { globalThis.__ran = 1; });
-          t.dispatchEvent({ type: 'x' });
+          t.dispatchEvent(new Event('x'));
         });
       "#,
     )?;
