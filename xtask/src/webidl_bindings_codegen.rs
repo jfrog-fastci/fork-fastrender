@@ -283,6 +283,9 @@ pub fn generate_bindings_module_from_idl_with_config(
   let formatted = crate::webidl::generate::rustfmt(&raw, rustfmt_config_path)?;
   crate::webidl::generate::ensure_no_forbidden_tokens(&formatted)?;
   ensure_no_duplicate_rust_fns_in_bindings_modules(&formatted)?;
+  if backend == WebIdlBindingsBackend::Legacy {
+    ensure_all_runtime_callbacks_defined_in_bindings_modules(&formatted)?;
+  }
   Ok(formatted)
 }
 
@@ -345,6 +348,116 @@ fn ensure_no_duplicate_rust_fns_in_single_module(module_name: &str, src: &str) -
   bail!(
     "generated WebIDL bindings contain duplicate `fn` definitions in module `{module_name}`: {}",
     duplicates.join(", ")
+  );
+}
+
+fn ensure_all_runtime_callbacks_defined_in_bindings_modules(src: &str) -> Result<()> {
+  // The legacy bindings backend uses `webidl-js-runtime` which requires passing Rust function items
+  // to `rt.create_function`/`rt.create_constructor`. If codegen installs an accessor or method but
+  // forgets to emit the corresponding wrapper function, compilation fails with an unresolved name
+  // error.
+  //
+  // Keep this check lightweight (string-based) so it can run as part of `xtask webidl-bindings
+  // --check`, providing an actionable generator error before the broken output lands in-tree.
+  let mut modules: Vec<(&str, usize)> = Vec::new();
+  for name in ["window", "worker"] {
+    if let Some(idx) = src.find(&format!("pub mod {name} {{")) {
+      modules.push((name, idx));
+    }
+  }
+  if modules.is_empty() {
+    return Ok(());
+  }
+  modules.sort_by_key(|(_, idx)| *idx);
+
+  for (idx, (name, start)) in modules.iter().copied().enumerate() {
+    let end = modules
+      .get(idx + 1)
+      .map(|(_, next_start)| *next_start)
+      .unwrap_or(src.len());
+    ensure_all_runtime_callbacks_defined_in_single_module(name, &src[start..end])?;
+  }
+
+  Ok(())
+}
+
+fn ensure_all_runtime_callbacks_defined_in_single_module(module_name: &str, src: &str) -> Result<()> {
+  use std::collections::BTreeSet;
+
+  // 1) Collect all function definitions in this module.
+  let mut defined: BTreeSet<String> = BTreeSet::new();
+  for line in src.lines() {
+    let trimmed = line.trim_start();
+    let rest = trimmed
+      .strip_prefix("pub fn ")
+      .or_else(|| trimmed.strip_prefix("fn "));
+    let Some(rest) = rest else {
+      continue;
+    };
+    let name = rest
+      .chars()
+      .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+      .collect::<String>();
+    if !name.is_empty() {
+      defined.insert(name);
+    }
+  }
+
+  // 2) Collect all callback function names referenced in `create_function`/`create_constructor`.
+  //
+  // These calls are often formatted over multiple lines, so scan across complete call blocks (from
+  // the first line mentioning `create_function(` until the terminating `)?;` line).
+  let mut referenced: BTreeSet<String> = BTreeSet::new();
+  let mut in_create_call = false;
+  let mut buf = String::new();
+
+  for line in src.lines() {
+    if !in_create_call {
+      if line.contains("create_function(") || line.contains("create_constructor(") {
+        in_create_call = true;
+        buf.clear();
+      } else {
+        continue;
+      }
+    }
+
+    buf.push_str(line);
+    buf.push('\n');
+
+    if !line.contains(")?;") {
+      continue;
+    }
+
+    // Call complete; extract any `foo::<Host, R>` occurrences.
+    in_create_call = false;
+    let mut haystack = buf.as_str();
+    while let Some(idx) = haystack.find("::<Host, R>") {
+      let before = &haystack[..idx];
+      let start = before
+        .rfind(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+        .map(|i| i + 1)
+        .unwrap_or(0);
+      let name = &before[start..];
+      if !name.is_empty() {
+        referenced.insert(name.to_string());
+      }
+      haystack = &haystack[idx + "::<Host, R>".len()..];
+    }
+    buf.clear();
+  }
+
+  let missing: Vec<String> = referenced
+    .into_iter()
+    .filter(|name| !defined.contains(name))
+    .collect();
+  if missing.is_empty() {
+    return Ok(());
+  }
+
+  bail!(
+    "generated legacy WebIDL bindings reference undefined callbacks in module `{}`: {}",
+    module_name,
+    missing.join(", ")
   );
 }
 

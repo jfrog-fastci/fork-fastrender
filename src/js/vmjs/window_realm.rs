@@ -9503,7 +9503,6 @@ fn document_doctype_get_native(
 
   get_or_create_node_wrapper(vm, scope, document_obj, Some(dom), node_id)
 }
-
 fn document_scrolling_element_get_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -11845,6 +11844,20 @@ fn document_create_document_fragment_native(
   let node_id = unsafe { dom_ptr.as_mut() }.create_document_fragment();
   let dom = unsafe { dom_ptr.as_ref() };
   get_or_create_node_wrapper(vm, scope, document_obj, Some(dom), node_id)
+}
+
+fn dom_parser_constructor_native(
+  _vm: &mut Vm,
+  _scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  Err(VmError::TypeError(
+    "DOMParser constructor cannot be invoked without 'new'",
+  ))
 }
 
 fn dom_parser_constructor_native(

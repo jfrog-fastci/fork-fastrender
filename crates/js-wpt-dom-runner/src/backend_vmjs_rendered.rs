@@ -9,7 +9,7 @@ use fastrender::js::window_timers::VmJsEventLoopHooks;
 use fastrender::js::{
   install_window_animation_frame_bindings, install_window_fetch_bindings_with_guard, install_window_timers_bindings,
   install_window_xhr_bindings_with_guard, EventLoop, JsExecutionOptions, MicrotaskCheckpointLimitedOutcome,
-  RunLimits, RunNextTaskLimitedOutcome, RunState, VirtualClock, WindowFetchBindings, WindowFetchEnv,
+  DomHost, RunLimits, RunNextTaskLimitedOutcome, RunState, VirtualClock, WindowFetchBindings, WindowFetchEnv,
   WindowRealm, WindowRealmConfig, WindowRealmHost, WindowXhrBindings, WindowXhrEnv,
 };
 use fastrender::resource::origin_from_url;
@@ -43,6 +43,22 @@ impl WindowRealmHost for RenderedHost {
 
   fn webidl_bindings_host(&mut self) -> Option<&mut dyn webidl_vm_js::WebIdlBindingsHost> {
     Some(&mut self.webidl_bindings_host)
+  }
+}
+
+impl DomHost for RenderedHost {
+  fn with_dom<R, F>(&self, f: F) -> R
+  where
+    F: FnOnce(&fastrender::dom2::Document) -> R,
+  {
+    DomHost::with_dom(&self.document, f)
+  }
+
+  fn mutate_dom<R, F>(&mut self, f: F) -> R
+  where
+    F: FnOnce(&mut fastrender::dom2::Document) -> (R, bool),
+  {
+    DomHost::mutate_dom(&mut self.document, f)
   }
 }
 

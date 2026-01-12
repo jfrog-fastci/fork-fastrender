@@ -7,13 +7,13 @@ use super::{Document, NodeId, NodeKind, NULL_NAMESPACE};
 ///
 /// `dom2` normalizes HTML namespace elements to store `namespace=""`; for XML serialization we need
 /// to treat that as the XHTML namespace.
-fn namespace_uri_for_storage(namespace: &str) -> &str {
+fn namespace_uri_for_storage(namespace: &str) -> Option<&str> {
   if namespace == NULL_NAMESPACE {
-    ""
+    None
   } else if namespace.is_empty() {
-    HTML_NAMESPACE
+    Some(HTML_NAMESPACE)
   } else {
-    namespace
+    Some(namespace)
   }
 }
 
@@ -212,6 +212,7 @@ fn serialize_node(doc: &Document, node: NodeId) -> Result<String, DomException> 
           } => {
             let is_html = doc.is_html_case_insensitive_namespace(namespace);
             let ns_uri = namespace_uri_for_storage(namespace.as_str());
+            let expected_xmlns_value = ns_uri.unwrap_or("");
             let prefix_str = prefix.as_deref();
 
             // Validate any explicit `xmlns` attribute matches the element's actual namespace.
@@ -223,7 +224,7 @@ fn serialize_node(doc: &Document, node: NodeId) -> Result<String, DomException> 
               }
             });
             if let Some(explicit) = explicit_xmlns {
-              if explicit != ns_uri {
+              if explicit != expected_xmlns_value {
                 return Err(invalid_state());
               }
             }
@@ -240,12 +241,13 @@ fn serialize_node(doc: &Document, node: NodeId) -> Result<String, DomException> 
               })
             });
             if let Some(explicit) = explicit_prefix_xmlns {
-              if explicit != ns_uri {
+              let ns_uri_for_prefix = ns_uri.ok_or_else(invalid_state)?;
+              if explicit != ns_uri_for_prefix {
                 return Err(invalid_state());
               }
             }
 
-            let needs_xmlns = inherited_ns != Some(ns_uri);
+            let needs_xmlns = inherited_ns != ns_uri;
             let inject_xmlns = needs_xmlns && explicit_xmlns.is_none();
             let inject_prefix_xmlns = prefix_str.is_some() && explicit_prefix_xmlns.is_none();
 
@@ -276,13 +278,14 @@ fn serialize_node(doc: &Document, node: NodeId) -> Result<String, DomException> 
 
             if inject_xmlns {
               out.push_str(" xmlns=\"");
-              escape_attr_value(&mut out, ns_uri);
+              escape_attr_value(&mut out, expected_xmlns_value);
               out.push('"');
             }
             if inject_prefix_xmlns {
               let Some(prefix) = prefix_str else {
                 return Err(invalid_state());
               };
+              let ns_uri_for_prefix = ns_uri.ok_or_else(invalid_state)?;
               out.push_str(" xmlns:");
               if is_html {
                 push_lowercase_ascii(&mut out, prefix);
@@ -290,7 +293,7 @@ fn serialize_node(doc: &Document, node: NodeId) -> Result<String, DomException> 
                 out.push_str(prefix);
               }
               out.push_str("=\"");
-              escape_attr_value(&mut out, ns_uri);
+              escape_attr_value(&mut out, ns_uri_for_prefix);
               out.push('"');
             }
 
@@ -321,7 +324,7 @@ fn serialize_node(doc: &Document, node: NodeId) -> Result<String, DomException> 
               }
               stack.push(Frame::Enter {
                 node: child,
-                inherited_ns: Some(ns_uri),
+                inherited_ns: ns_uri,
               });
             }
           }
@@ -333,6 +336,7 @@ fn serialize_node(doc: &Document, node: NodeId) -> Result<String, DomException> 
           } => {
             let is_html = doc.is_html_case_insensitive_namespace(namespace);
             let ns_uri = namespace_uri_for_storage(namespace.as_str());
+            let expected_xmlns_value = ns_uri.unwrap_or("");
 
             let explicit_xmlns = attributes.iter().find_map(|(name, value)| {
               if is_html {
@@ -342,12 +346,12 @@ fn serialize_node(doc: &Document, node: NodeId) -> Result<String, DomException> 
               }
             });
             if let Some(explicit) = explicit_xmlns {
-              if explicit != ns_uri {
+              if explicit != expected_xmlns_value {
                 return Err(invalid_state());
               }
             }
 
-            let needs_xmlns = inherited_ns != Some(ns_uri);
+            let needs_xmlns = inherited_ns != ns_uri;
             let inject_xmlns = needs_xmlns && explicit_xmlns.is_none();
 
             let mut has_child = false;
@@ -361,7 +365,7 @@ fn serialize_node(doc: &Document, node: NodeId) -> Result<String, DomException> 
             out.push_str("<slot");
             if inject_xmlns {
               out.push_str(" xmlns=\"");
-              escape_attr_value(&mut out, ns_uri);
+              escape_attr_value(&mut out, expected_xmlns_value);
               out.push('"');
             }
 
@@ -391,7 +395,7 @@ fn serialize_node(doc: &Document, node: NodeId) -> Result<String, DomException> 
               }
               stack.push(Frame::Enter {
                 node: child,
-                inherited_ns: Some(ns_uri),
+                inherited_ns: ns_uri,
               });
             }
           }
