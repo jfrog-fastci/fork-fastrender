@@ -139,8 +139,41 @@ fn accepts_non_i32_numeric_literals() {
 }
 
 #[test]
-fn rejects_array_literal() {
-  let err = validate("const xs = [1, 2];\nxs;\n", FileKind::Ts).unwrap_err();
+fn accepts_array_literal() {
+  let ok = validate("const xs = [1, 2];\nxs;\n", FileKind::Ts);
+  assert!(ok.is_ok(), "expected strict-subset validation to pass, got: {ok:#?}");
+}
+
+#[test]
+fn rejects_array_literal_holes() {
+  let err = validate("const xs = [1, , 2];\nxs;\n", FileKind::Ts).unwrap_err();
+  assert_has_code(&err, "NJS0009");
+}
+
+#[test]
+fn rejects_array_literal_spread() {
+  let err = validate(
+    "const ys = [1, 2];\nconst xs = [0, ...ys];\nxs;\n",
+    FileKind::Ts,
+  )
+  .unwrap_err();
+  assert_has_code(&err, "NJS0009");
+}
+
+#[test]
+fn accepts_array_indexing_and_length() {
+  // Note: member-expression type inference is currently more complete in function bodies than in
+  // the root/module body, so exercise array indexing + `.length` inside a function.
+  let ok = validate(
+    "export function f(): number { const xs = [1, 2]; return xs[0] + xs.length; }\n",
+    FileKind::Ts,
+  );
+  assert!(ok.is_ok(), "expected strict-subset validation to pass, got: {ok:#?}");
+}
+
+#[test]
+fn rejects_array_non_length_member_access() {
+  let err = validate("const xs = [1, 2];\nxs.foo;\n", FileKind::Ts).unwrap_err();
   assert_has_code(&err, "NJS0009");
 }
 

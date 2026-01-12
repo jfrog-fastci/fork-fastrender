@@ -563,13 +563,14 @@ The strict subset validator currently rejects (non-exhaustive, but directly
 matching the validator’s checks):
 
 - Unsupported syntax (`NJS0009`), including:
-  - numeric literals that are not 32-bit signed integers (floats/`1e3` literals are rejected)
-  - string literals, `null`, and `undefined` (the current checked backend is still i32-only)
+  - string literals, `null`, and `undefined` (the current checked backend is still primitive-only)
   - `this`
   - classes / class expressions
   - `async` / generator functions, `await`, `yield`
-  - object literals, array literals, and destructuring patterns
-  - property access (`obj.prop`, `obj["prop"]`)
+  - object literals and destructuring patterns
+  - array literals with holes/spreads (`[1, , 2]`, `[...xs]`)
+  - most property access (`obj.prop`, `obj["prop"]`)
+    - array/tuple indexing (`arr[i]`) and `.length` are supported
   - conditional expressions (`cond ? a : b`)
   - function/arrow expressions
   - some operators are not supported yet (non-exhaustive):
@@ -594,7 +595,7 @@ matching the validator’s checks):
   - use of the `arguments` identifier/object
 - Unsupported types (`NJS0010`):
   - anything other than the primitive types `number`/`boolean`/`string` plus
-    `null`/`undefined`/`void`/`never` and their literal types
+    `null`/`undefined`/`void`/`never`, arrays, tuples, and their literal types
   - e.g. unions/intersections, object types, function types, nominal/reference
     types, `bigint`, `symbol`, template-literal types, etc.
   - builtin intrinsics may provide exceptions:
