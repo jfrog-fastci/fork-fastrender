@@ -25179,6 +25179,29 @@ mod tests {
   }
 
   #[test]
+  fn class_static_block_contains_super_call_is_syntax_error() -> Result<(), VmError> {
+    let vm = Vm::new(VmOptions::default());
+    let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut rt = JsRuntime::new(vm, heap)?;
+    let err = rt
+      .exec_script(
+        r#"
+        class Base {}
+        class C extends Base {
+          static {
+            super();
+          }
+        }
+      "#,
+      )
+      .unwrap_err();
+    match err {
+      VmError::Syntax(_) => Ok(()),
+      other => panic!("expected VmError::Syntax, got {other:?}"),
+    }
+  }
+
+  #[test]
   fn prototype_cycle_throw_captures_statement_location() -> Result<(), VmError> {
     let vm = Vm::new(VmOptions::default());
     let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));

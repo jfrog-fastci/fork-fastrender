@@ -19,6 +19,7 @@ use parse_js::ast::stmt::{
 };
 use parse_js::loc::Loc;
 use parse_js::operator::OperatorName;
+use parse_js::token::TT;
 use std::collections::HashMap;
 
 const EARLY_ERROR_CODE: &str = "VMJS0004";
@@ -79,6 +80,7 @@ where
     strict: opts.strict,
     await_allowed: opts.allow_top_level_await,
     yield_allowed: false,
+    super_call_allowed: false,
     return_allowed: false,
     loop_depth: 0,
     breakable_depth: 0,
@@ -103,6 +105,11 @@ struct ControlContext {
   ///
   /// This is true only inside generator function bodies.
   yield_allowed: bool,
+  /// Whether `super()` calls are permitted in the current context.
+  ///
+  /// `super()` is only valid in derived class constructors (and arrow functions lexically nested
+  /// within those constructors).
+  super_call_allowed: bool,
   /// Whether `return` statements are permitted in the current statement list.
   ///
   /// This is true only inside function bodies. (Notably, class static blocks are **not** function
@@ -117,6 +124,7 @@ struct SavedFunctionContext {
   strict: bool,
   await_allowed: bool,
   yield_allowed: bool,
+  super_call_allowed: bool,
   return_allowed: bool,
   loop_depth: u32,
   breakable_depth: u32,
@@ -125,6 +133,7 @@ struct SavedFunctionContext {
 
 struct SavedScopeFlags {
   strict: bool,
+  super_call_allowed: bool,
   return_allowed: bool,
 }
 
@@ -196,11 +205,13 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
     strict: bool,
     await_allowed: bool,
     yield_allowed: bool,
+    super_call_allowed: bool,
   ) -> SavedFunctionContext {
     let saved = SavedFunctionContext {
       strict: ctx.strict,
       await_allowed: ctx.await_allowed,
       yield_allowed: ctx.yield_allowed,
+      super_call_allowed: ctx.super_call_allowed,
       return_allowed: ctx.return_allowed,
       loop_depth: ctx.loop_depth,
       breakable_depth: ctx.breakable_depth,
@@ -209,6 +220,7 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
     ctx.strict = strict;
     ctx.await_allowed = await_allowed;
     ctx.yield_allowed = yield_allowed;
+    ctx.super_call_allowed = super_call_allowed;
     ctx.return_allowed = true;
     ctx.loop_depth = 0;
     ctx.breakable_depth = 0;
@@ -220,6 +232,7 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
     ctx.strict = saved.strict;
     ctx.await_allowed = saved.await_allowed;
     ctx.yield_allowed = saved.yield_allowed;
+    ctx.super_call_allowed = saved.super_call_allowed;
     ctx.return_allowed = saved.return_allowed;
     ctx.loop_depth = saved.loop_depth;
     ctx.breakable_depth = saved.breakable_depth;
@@ -229,12 +242,14 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
   fn save_scope_flags(&self, ctx: &ControlContext) -> SavedScopeFlags {
     SavedScopeFlags {
       strict: ctx.strict,
+      super_call_allowed: ctx.super_call_allowed,
       return_allowed: ctx.return_allowed,
     }
   }
 
   fn restore_scope_flags(&self, ctx: &mut ControlContext, saved: SavedScopeFlags) {
     ctx.strict = saved.strict;
+    ctx.super_call_allowed = saved.super_call_allowed;
     ctx.return_allowed = saved.return_allowed;
   }
 
@@ -532,7 +547,7 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
     if let Some(extends) = &decl.extends {
       self.visit_expr(ctx, extends)?;
     }
-    self.visit_class_members(ctx, &decl.members)
+    self.visit_class_members(ctx, &decl.members, decl.extends.is_some())
   }
 
   fn visit_class_expr(&mut self, ctx: &mut ControlContext, expr: &ClassExpr) -> Result<(), VmError> {
@@ -549,28 +564,67 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
     if let Some(extends) = &expr.extends {
       self.visit_expr(ctx, extends)?;
     }
-    self.visit_class_members(ctx, &expr.members)
+    self.visit_class_members(ctx, &expr.members, expr.extends.is_some())
   }
 
-  fn visit_class_members(&mut self, ctx: &mut ControlContext, members: &[Node<ClassMember>]) -> Result<(), VmError> {
+  fn visit_class_members(
+    &mut self,
+    ctx: &mut ControlContext,
+    members: &[Node<ClassMember>],
+    derived: bool,
+  ) -> Result<(), VmError> {
     // Class bodies are always strict mode code.
     let saved = self.save_scope_flags(ctx);
     ctx.strict = true;
+    // Do not allow `super()` to leak into nested classes (e.g. from derived constructors), since
+    // `super()` is only valid within derived constructor bodies.
+    ctx.super_call_allowed = false;
 
     for member in members {
-      self.visit_class_member(ctx, &member.stx)?;
+      self.visit_class_member(ctx, &member.stx, derived)?;
     }
 
     self.restore_scope_flags(ctx, saved);
     Ok(())
   }
 
-  fn visit_class_member(&mut self, ctx: &mut ControlContext, member: &ClassMember) -> Result<(), VmError> {
+  fn visit_class_member(
+    &mut self,
+    ctx: &mut ControlContext,
+    member: &ClassMember,
+    derived: bool,
+  ) -> Result<(), VmError> {
     self.visit_class_or_obj_key(ctx, &member.key)?;
     match &member.val {
-      ClassOrObjVal::Getter(getter) => self.visit_func(ctx, None, &getter.stx.func, /* unique */ true),
-      ClassOrObjVal::Setter(setter) => self.visit_func(ctx, None, &setter.stx.func, /* unique */ true),
-      ClassOrObjVal::Method(method) => self.visit_func(ctx, None, &method.stx.func, /* unique */ true),
+      ClassOrObjVal::Getter(getter) => self.visit_func(
+        ctx,
+        None,
+        &getter.stx.func,
+        /* unique */ true,
+        /* super_call_allowed */ false,
+      ),
+      ClassOrObjVal::Setter(setter) => self.visit_func(
+        ctx,
+        None,
+        &setter.stx.func,
+        /* unique */ true,
+        /* super_call_allowed */ false,
+      ),
+      ClassOrObjVal::Method(method) => {
+        let is_constructor = !member.static_
+          && matches!(
+            &member.key,
+            ClassOrObjKey::Direct(key)
+              if key.stx.key == "constructor" && key.stx.tt == TT::KeywordConstructor
+          );
+        self.visit_func(
+          ctx,
+          None,
+          &method.stx.func,
+          /* unique */ true,
+          /* super_call_allowed */ derived && is_constructor,
+        )
+      }
       ClassOrObjVal::Prop(Some(expr)) => self.visit_expr(ctx, expr),
       ClassOrObjVal::Prop(None) => Ok(()),
       ClassOrObjVal::StaticBlock(block) => self.visit_class_static_block(ctx, &block.stx.body),
@@ -598,6 +652,7 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
       /* strict */ true,
       /* await_allowed */ false,
       /* yield_allowed */ false,
+      /* super_call_allowed */ false,
     );
     ctx.return_allowed = false;
     let res = self.visit_stmt_list(ctx, stmts);
@@ -617,7 +672,13 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
   }
 
   fn visit_func_decl(&mut self, ctx: &mut ControlContext, decl: &FuncDecl) -> Result<(), VmError> {
-    self.visit_func(ctx, decl.name.as_ref(), &decl.function, /* unique */ false)
+    self.visit_func(
+      ctx,
+      decl.name.as_ref(),
+      &decl.function,
+      /* unique */ false,
+      /* super_call_allowed */ false,
+    )
   }
 
   fn visit_var_decl(&mut self, ctx: &mut ControlContext, decl: &VarDecl) -> Result<(), VmError> {
@@ -670,6 +731,7 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
     name: Option<&Node<ClassOrFuncName>>,
     func: &Node<Func>,
     unique_formals: bool,
+    super_call_allowed: bool,
   ) -> Result<(), VmError> {
     self.step()?;
 
@@ -729,7 +791,13 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
     }
 
     // Enter the function context when traversing parameter initializers and the function body.
-    let saved = self.save_and_enter_function(ctx, func_strict, func.stx.async_, func.stx.generator);
+    let saved = self.save_and_enter_function(
+      ctx,
+      func_strict,
+      func.stx.async_,
+      func.stx.generator,
+      super_call_allowed,
+    );
 
     for param in params {
       self.visit_pat(ctx, &param.stx.pattern.stx.pat, PatRole::Binding)?;
@@ -777,11 +845,23 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
   }
 
   fn visit_arrow_func_expr(&mut self, ctx: &mut ControlContext, expr: &ArrowFuncExpr) -> Result<(), VmError> {
-    self.visit_func(ctx, None, &expr.func, /* unique */ true)
+    self.visit_func(
+      ctx,
+      None,
+      &expr.func,
+      /* unique */ true,
+      /* super_call_allowed */ ctx.super_call_allowed,
+    )
   }
 
   fn visit_func_expr(&mut self, ctx: &mut ControlContext, expr: &FuncExpr) -> Result<(), VmError> {
-    self.visit_func(ctx, expr.name.as_ref(), &expr.func, /* unique */ false)
+    self.visit_func(
+      ctx,
+      expr.name.as_ref(),
+      &expr.func,
+      /* unique */ false,
+      /* super_call_allowed */ false,
+    )
   }
 
   fn visit_import(&mut self, ctx: &mut ControlContext, expr: &ImportExpr) -> Result<(), VmError> {
@@ -812,6 +892,12 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
   }
 
   fn visit_call(&mut self, ctx: &mut ControlContext, expr: &CallExpr) -> Result<(), VmError> {
+    if matches!(&*expr.callee.stx, Expr::Super(_)) && !ctx.super_call_allowed {
+      self.push_error(
+        expr.callee.loc,
+        "super() is only valid in derived class constructors",
+      )?;
+    }
     self.visit_expr(ctx, &expr.callee)?;
     for arg in &expr.arguments {
       self.visit_call_arg(ctx, &arg.stx)?;
@@ -1028,9 +1114,27 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
         ObjMemberType::Valued { key, val } => {
           self.visit_class_or_obj_key(ctx, key)?;
           match val {
-            ClassOrObjVal::Getter(getter) => self.visit_func(ctx, None, &getter.stx.func, true)?,
-            ClassOrObjVal::Setter(setter) => self.visit_func(ctx, None, &setter.stx.func, true)?,
-            ClassOrObjVal::Method(method) => self.visit_func(ctx, None, &method.stx.func, true)?,
+            ClassOrObjVal::Getter(getter) => self.visit_func(
+              ctx,
+              None,
+              &getter.stx.func,
+              /* unique */ true,
+              /* super_call_allowed */ false,
+            )?,
+            ClassOrObjVal::Setter(setter) => self.visit_func(
+              ctx,
+              None,
+              &setter.stx.func,
+              /* unique */ true,
+              /* super_call_allowed */ false,
+            )?,
+            ClassOrObjVal::Method(method) => self.visit_func(
+              ctx,
+              None,
+              &method.stx.func,
+              /* unique */ true,
+              /* super_call_allowed */ false,
+            )?,
             ClassOrObjVal::Prop(Some(expr)) => self.visit_expr(ctx, expr)?,
             ClassOrObjVal::Prop(None) => {}
             // Static blocks not valid in object literals; ignore others.
