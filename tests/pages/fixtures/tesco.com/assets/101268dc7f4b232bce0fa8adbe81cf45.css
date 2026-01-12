@@ -1,0 +1,67 @@
+@layer ddsweb-molecules {
+  @layer ddsweb-global-navigation {
+    .bRvbba_container {
+      height: var(--dds-spacing-space-32);
+      background-color: var(--dds-background-colour-background-dark-primary);
+      font-family: var(--ddsweb-theme-font-family-text);
+      margin-inline: auto;
+      display: none;}
+
+    .bRvbba_container:before {
+      z-index: -1;
+      width: 100vw;
+      height: var(--dds-spacing-space-32);
+      background: var(--dds-background-colour-background-dark-primary);
+      content: '';
+      display: block;
+      position: absolute;
+      left: 0;}
+
+    @media (min-width: 757px) {
+      .bRvbba_container {
+        justify-content: flex-end;
+        align-items: center;
+        display: flex;}}
+
+    .bRvbba_container .ddsweb-link__anchor {
+      --ddsweb-link-text-decoration: none;
+      --ddsweb-link-text-decoration-hover: underline;
+      --ddsweb-link-text-decoration-focus-visible: underline;
+      display: flex;}
+
+    .bRvbba_container .ddsweb-link__anchor:focus-visible {
+      outline: none;}
+
+    .bRvbba_container .ddsweb-link__text {
+      font-size: var(--dds-typography-tokens-size-fontsize-14);
+      --ddsweb-text-font-size: var(--dds-typography-tokens-size-fontsize-14);
+      align-self: center;}
+
+    .bRvbba_navItems {
+      justify-content: end;
+      width: 100%;
+      height: 100%;
+      margin: 0 auto;
+      padding: 0;
+      list-style: none;
+      display: flex;}
+
+    .bRvbba_navItem {
+      border-left: 1px solid rgb(var(--dds-interaction-colour-interactive-inverse-rgb), 0.3);}
+
+    .bRvbba_navItem:last-child {
+      border-right: 1px solid rgb(var(--dds-interaction-colour-interactive-inverse-rgb), 0.3);}
+
+    .bRvbba_navItem > * {
+      height: 100%;
+      padding: 0 var(--dds-spacing-space-20);}
+
+    .bRvbba_navItems .ddsweb-button--link-button {
+      height: 100%;
+      font-size: var(--dds-typography-tokens-size-fontsize-14);
+      text-decoration: none;}
+
+    :is(.bRvbba_navItems .ddsweb-button--link-button:hover, .bRvbba_navItems .ddsweb-button--link-button:active, .bRvbba_navItems .ddsweb-button--link-button:focus, .bRvbba_navItems .ddsweb-button--link-button:focus-visible) {
+      border: none;
+      outline: none;
+      text-decoration: underline;}}}

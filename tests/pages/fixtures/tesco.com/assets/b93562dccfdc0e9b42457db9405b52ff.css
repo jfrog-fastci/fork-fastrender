@@ -1,0 +1,49 @@
+@layer ddsweb-small-atoms {
+  @layer ddsweb-heading {
+    .Khviia_heading {
+      color: var(--ddsweb-heading-color, var(--dds-typography-colour-text-header-primary, 'inherit'));
+      font-weight: var(--dds-typography-tokens-weight-sans-bold);
+      font-size: var(--ddsweb-heading-font-size);
+      line-height: var(--ddsweb-heading-line-height);
+      font-family: var(--dds-typography-tokens-family-heading);
+      margin: 0;}
+
+    .Khviia_oversizedXxxl {
+      --ddsweb-heading-font-size: var(--dds-typography-tokens-size-fontsize-64);
+      --ddsweb-heading-line-height: var(--ddsweb-theme-line-height-next-heading);}
+
+    .Khviia_oversizedXxl {
+      --ddsweb-heading-font-size: var(--dds-typography-tokens-size-fontsize-56);
+      --ddsweb-heading-line-height: var(--ddsweb-theme-line-height-next-heading);}
+
+    .Khviia_oversizedXl {
+      --ddsweb-heading-font-size: var(--dds-typography-tokens-size-fontsize-48);
+      --ddsweb-heading-line-height: var(--ddsweb-theme-line-height-next-heading);}
+
+    .Khviia_oversizedLg {
+      --ddsweb-heading-font-size: var(--dds-typography-tokens-size-fontsize-40);
+      --ddsweb-heading-line-height: var(--ddsweb-theme-line-height-next-heading);}
+
+    .Khviia_headlineXxxl {
+      --ddsweb-heading-font-size: var(--dds-typography-tokens-size-fontsize-32);
+      --ddsweb-heading-line-height: var(--ddsweb-theme-line-height-next-heading);}
+
+    .Khviia_headlineXxl {
+      --ddsweb-heading-font-size: var(--dds-typography-tokens-size-fontsize-28);
+      --ddsweb-heading-line-height: var(--ddsweb-theme-line-height-next-heading);}
+
+    .Khviia_headlineXl {
+      --ddsweb-heading-font-size: var(--dds-typography-tokens-size-fontsize-24);
+      --ddsweb-heading-line-height: var(--ddsweb-theme-line-height-next-heading);}
+
+    .Khviia_headlineLg {
+      --ddsweb-heading-font-size: var(--dds-typography-tokens-size-fontsize-20);
+      --ddsweb-heading-line-height: var(--ddsweb-theme-line-height-next-heading);}
+
+    .Khviia_headlineMd {
+      --ddsweb-heading-font-size: var(--dds-typography-tokens-size-fontsize-16);
+      --ddsweb-heading-line-height: var(--ddsweb-theme-line-height-next-heading);}
+
+    .Khviia_headlineSm {
+      --ddsweb-heading-font-size: var(--dds-typography-tokens-size-fontsize-14);
+      --ddsweb-heading-line-height: var(--ddsweb-theme-line-height-next-heading);}}}

@@ -1,0 +1,19 @@
+/* src/components/icon/src/components/icon/styles.module.css */
+@layer ddsweb-small-atoms {
+  @layer ddsweb-icon {
+    ._n3p1W_baseIconStyles {
+      -webkit-tap-highlight-color: var(--ddsweb-theme-base-tap-highlight-color);
+      box-sizing: border-box;
+      outline: var(--ddsweb-theme-base-outline);}
+    ._n3p1W_background {
+      width: var(--icon-size);
+      height: var(--icon-size);
+      background-color: var(--icon-bg-color);
+      vertical-align: middle;
+      border-radius: 50%;
+      justify-content: center;
+      align-items: center;
+      display: inline-flex;}
+    ._n3p1W_svg {
+      stroke-width: 1.2px;
+      overflow: visible;}}}

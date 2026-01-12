@@ -1,0 +1,14 @@
+@layer ddsweb-small-atoms {
+  @layer ddsweb-branding {
+    .VNopZq_logoTesco {
+      fill: var(--ddsweb-branding-fill);}
+
+    .VNopZq_inversed {
+      --ddsweb-branding-fill: var(--dds-typography-colour-text-on-dark);}
+
+    .VNopZq_grayscaled {
+      --ddsweb-branding-fill: var(--dds-typography-colour-text-body);}
+
+    .VNopZq_noScaled {
+      width: var(--ddsweb-theme-branding-width, 121px);
+      height: var(--ddsweb-theme-branding-height, 35px);}}}

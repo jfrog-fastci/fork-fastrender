@@ -1,0 +1,48 @@
+@layer ddsweb-molecules {
+  @layer ddsweb-messaging {
+    @layer ddsweb-messaging-icons {
+      ._4OKcFq_icon {
+        width: var(--icon-size);
+        height: var(--icon-size);}
+
+      ._4OKcFq_lg {
+        --icon-size: var(--ddsweb-tc-messaging-icons-lg, var(--dds-typography-tokens-size-fontsize-64));}
+
+      ._4OKcFq_md {
+        --icon-size: var(--ddsweb-tc-messaging-icons-md, var(--dds-typography-tokens-size-fontsize-40));}
+
+      ._4OKcFq_sm {
+        --icon-size: var(--ddsweb-tc-messaging-icons-sm, var(--dds-typography-tokens-size-fontsize-24));}
+
+      ._4OKcFq_xs {
+        --icon-size: var(--ddsweb-tc-messaging-icons-xs, var(--dds-typography-tokens-size-fontsize-16));}
+
+      ._4OKcFq_bg {
+        fill: var(--icon-bg);}
+
+      ._4OKcFq_fg {
+        fill: var(--icon-fg);}
+
+      ._4OKcFq_iconOnLight {
+        --icon-bg: var(--dds-background-colour-background-1);}
+
+      ._4OKcFq_iconOnTheme {
+        --icon-bg: var(--bg-color-dark);}
+
+      ._4OKcFq_iconFillLight {
+        --icon-fg: var(--dds-background-colour-background-dark-primary);}
+
+      ._4OKcFq_iconFillPlain {
+        --icon-fg: var(--dds-background-colour-background-1);}
+
+      ._4OKcFq_iconFillColor {
+        --icon-fg: var(--bg-color-dark);}}}}
+
+._4OKcFq_onboarding {
+  min-width: var(--icon-size);
+  background-color: var(--icon-bg);
+  color: var(--icon-fg);
+  border-radius: 50%;
+  justify-content: center;
+  align-items: center;
+  display: inline-flex;}

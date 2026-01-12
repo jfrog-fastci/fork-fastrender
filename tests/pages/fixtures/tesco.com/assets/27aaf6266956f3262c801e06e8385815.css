@@ -1,0 +1,777 @@
+.gtYACW1aWlP9_6E {
+  display: flex;}
+
+.gtYACW1aWlP9_6E .ddsweb-text-input__wrapper {
+  flex-grow: 1;
+  padding-right: var(--ddsweb-theme-spacing-sm);}
+
+.MGEPdQiYLVyLWm4 {
+  padding-left: auto;}
+
+.bc8n_di31DA9_S8 {
+  margin-bottom: var(--ddsweb-theme-spacing-md);
+  margin-top: 0;}
+
+.XLSSDf6t1TV4nrl {
+  width: 420px;}
+
+.SseM9jL8gflJ0vH {
+  margin: 0 var(--ddsweb-theme-spacing-xx);}
+
+@layer ddsweb-base {
+  @layer ddsweb-fonts {
+    @font-face {
+      font-style: normal;
+      font-weight: 700;
+      src:
+        url(5f9c15b61eb2e0552290225807a6826c.woff2) format('woff2');
+      font-family: 'TESCO Modern';
+      font-display: swap;}
+
+    @font-face {
+      font-style: italic;
+      font-weight: 700;
+      src:
+        url(237ab5e3003080627289e6af8e2227f0.woff2) format('woff2');
+      font-family: 'TESCO Modern';
+      font-display: swap;}
+
+    @font-face {
+      font-style: italic;
+      font-weight: 400;
+      src:
+        url(60ad6bf1a3009b02c8619664a3442146.woff2) format('woff2');
+      font-family: 'TESCO Modern';
+      font-display: swap;}
+
+    @font-face {
+      font-style: normal;
+      font-weight: 100;
+      src:
+        url(fc3de12503ecb116a9f44677fa8d2b1c.woff2) format('woff2');
+      font-family: 'TESCO Modern';
+      font-display: swap;}
+
+    @font-face {
+      font-style: italic;
+      font-weight: 100;
+      src:
+        url(8a34d5bf04784d240998095d06dbfd63.woff2)
+          format('woff2');
+      font-family: 'TESCO Modern';
+      font-display: swap;}
+
+    @font-face {
+      font-style: normal;
+      font-weight: 500;
+      src:
+        url(568219ca839f8425765048f6ff3214e8.woff2) format('woff2');
+      font-family: 'TESCO Modern';
+      font-display: swap;}
+
+    @font-face {
+      font-style: italic;
+      font-weight: 500;
+      src:
+        url(c325cfc7876b0151ecb8e16214cf0694.woff2)
+          format('woff2');
+      font-family: 'TESCO Modern';
+      font-display: swap;}
+
+    @font-face {
+      font-style: normal;
+      font-weight: 400;
+      src:
+        url(22c07af3234f9d6dc7f9a781740625e4.woff2) format('woff2');
+      font-family: 'TESCO Modern';
+      font-display: swap;}}}
+
+@layer ddsweb-base {
+  @layer ddsweb-theme {
+    :root {
+      --ddsweb-theme-font-family-heading:
+        'TESCO Modern',
+        Arial,
+        sans-serif;
+      --ddsweb-theme-font-family-text:
+        'TESCO Modern',
+        Arial,
+        sans-serif;}}}
+
+@layer ddsweb-base {
+  @layer ddsweb-theme {
+    :root {
+      --ddsweb-theme-base-font-family:
+        'TESCO Modern',
+        Arial,
+        sans-serif;
+      --ddsweb-theme-base-font-size: var( --dds-typography-tokens-size-fontsize-16);
+      --ddsweb-theme-base-hyphens: auto;
+      --ddsweb-theme-base-line-height: 1.25;
+      --ddsweb-theme-base-logo: default;
+      --ddsweb-theme-base-outline: none;
+      --ddsweb-theme-base-overflow-wrap: break-word;
+      --ddsweb-theme-base-tap-highlight-color: transparent;
+      --ddsweb-theme-base-transition-duration: 0.3s;
+      --ddsweb-theme-base-rgb-opacity: 0.4;
+      --ddsweb-theme-base-focus-outline-width: 3px;}}}
+
+@layer ddsweb-base {
+  @layer ddsweb-theme {
+    :root {
+      --ddsweb-theme-branding-width: 121px;
+      --ddsweb-theme-branding-height: 35px;}}}
+
+@layer ddsweb-base {
+  @layer ddsweb-theme {
+    :root {
+      --ddsweb-theme-buttons-size-xs: var(--dds-sizing-size-24);
+      --ddsweb-theme-buttons-size-sm: var(--dds-sizing-size-32);
+      --ddsweb-theme-buttons-size-md: var(--dds-sizing-size-40);}}}
+
+@layer ddsweb-base {
+  @layer ddsweb-theme {
+    :root {
+      --ddsweb-theme-colors-active-rgb: var( --dds-interaction-colour-interactive-active-rgb);
+      --ddsweb-theme-colors-active: var( --dds-interaction-colour-interactive-active);
+      --ddsweb-theme-colors-background-base-rgb: var( --dds-background-colour-background-1-rgb);
+      --ddsweb-theme-colors-background-base: #ffffff;
+      --ddsweb-theme-colors-background-dark-rgb: var( --dds-background-colour-background-2-rgb);
+      --ddsweb-theme-colors-background-dark: var( --dds-background-colour-background-2);
+      --ddsweb-theme-colors-background-darkest-rgb: var( --dds-background-colour-background-3-rgb);
+      --ddsweb-theme-colors-background-darkest: var( --dds-background-colour-background-3);
+      --ddsweb-theme-colors-background-error-rgb: var( --dds-messaging-colour-messaging-error-tint-rgb);
+      --ddsweb-theme-colors-background-error: var( --dds-messaging-colour-messaging-error-tint);
+      --ddsweb-theme-colors-background-info-rgb: var( --dds-messaging-colour-messaging-info-tint-rgb);
+      --ddsweb-theme-colors-background-info: var( --dds-messaging-colour-messaging-info-tint);
+      --ddsweb-theme-colors-background-success-rgb: var( --dds-messaging-colour-messaging-success-tint-rgb);
+      --ddsweb-theme-colors-background-success: var( --dds-messaging-colour-messaging-success-tint);
+      --ddsweb-theme-colors-background-warning-rgb: var( --dds-messaging-colour-messaging-warning-tint-rgb);
+      --ddsweb-theme-colors-background-warning: var( --dds-messaging-colour-messaging-warning-tint);
+      --ddsweb-theme-colors-base-rgb: var( --dds-typography-colour-text-header-primary-rgb);
+      --ddsweb-theme-colors-base: var( --dds-typography-colour-text-header-primary);
+      --ddsweb-theme-colors-black-rgb:
+        0,
+        0,
+        0;
+      --ddsweb-theme-colors-black: #000000;
+      --ddsweb-theme-colors-disabled-base-rgb:
+        204,
+        204,
+        204;
+      --ddsweb-theme-colors-disabled-base: #cccccc;
+      --ddsweb-theme-colors-disabled-with-background-rgb: var( --dds-interaction-colour-interactive-form-rgb);
+      --ddsweb-theme-colors-disabled-with-background: var( --dds-interaction-colour-interactive-form);
+      --ddsweb-theme-colors-error-rgb: var( --dds-interaction-colour-interactive-error-form-rgb);
+      --ddsweb-theme-colors-error: #cc3333;
+      --ddsweb-theme-colors-grayscale-rgb: var( --dds-interaction-colour-interactive-form-rgb);
+      --ddsweb-theme-colors-grayscale: #666666;
+      --ddsweb-theme-colors-heading-rgb: var( --dds-typography-colour-text-header-primary-rgb);
+      --ddsweb-theme-colors-heading: var( --dds-typography-colour-text-header-primary);
+      --ddsweb-theme-colors-info-rgb: var( --dds-messaging-colour-messaging-info-rgb);
+      --ddsweb-theme-colors-info: #007eb3;
+      --ddsweb-theme-colors-info-messaging-rgb: var( --dds-messaging-colour-messaging-info-rgb);
+      --ddsweb-theme-colors-info-messaging: var( --dds-messaging-colour-messaging-info);
+      --ddsweb-theme-colors-inverse-rgb: var( --dds-interaction-colour-interactive-inverse-rgb);
+      --ddsweb-theme-colors-inverse: #ffffff;
+      --ddsweb-theme-colors-lines-base-rgb: var( --dds-line-colour-border-primary-rgb);
+      --ddsweb-theme-colors-lines-base: var(--dds-line-colour-border-primary);
+      --ddsweb-theme-colors-lines-light-rgb: var( --dds-line-colour-border-secondary-rgb);
+      --ddsweb-theme-colors-lines-light: #e5e5e5;
+      --ddsweb-theme-colors-link-active-rgb:
+        0,
+        126,
+        179;
+      --ddsweb-theme-colors-link-active: var( --dds-interaction-colour-interactive-active);
+      --ddsweb-theme-colors-link-base-rgb: var( --dds-interaction-colour-interactive-default-rgb);
+      --ddsweb-theme-colors-link-base: #00539f;
+      --ddsweb-theme-colors-nutrition-green-rgb: var( --dds-nutrition-colour-nutri-green-rgb);
+      --ddsweb-theme-colors-nutrition-green: var( --dds-nutrition-colour-nutri-green);
+      --ddsweb-theme-colors-nutrition-red-rgb: var( --dds-nutrition-colour-nutri-red-rgb);
+      --ddsweb-theme-colors-nutrition-red: var( --dds-nutrition-colour-nutri-red);
+      --ddsweb-theme-colors-nutrition-yellow-rgb: var( --dds-nutrition-colour-nutri-amber-rgb);
+      --ddsweb-theme-colors-nutrition-yellow: var( --dds-nutrition-colour-nutri-amber);
+      --ddsweb-theme-colors-messaging-info-messaging-light-rgb: var( --dds-messaging-colour-messaging-info-tint-rgb);
+      --ddsweb-theme-colors-messaging-info-messaging-light: #e0eefb;
+      --ddsweb-theme-colors-messaging-success-messaging-rgb: var( --dds-messaging-colour-messaging-success-tint-rgb);
+      --ddsweb-theme-colors-messaging-success-messaging: var( --dds-messaging-colour-messaging-success-tint);
+      --ddsweb-theme-colors-messaging-error-messaging-rgb: var( --dds-messaging-colour-messaging-error-tint-rgb);
+      --ddsweb-theme-colors-messaging-error-messaging: var( --dds-messaging-colour-messaging-error-tint);
+      --ddsweb-theme-colors-messaging-warning-messaging-rgb: var( --dds-messaging-colour-messaging-warning-tint-rgb);
+      --ddsweb-theme-colors-messaging-warning-messaging: var( --dds-messaging-colour-messaging-warning-tint);
+      --ddsweb-theme-colors-messaging-amber-messaging-rgb: var( --dds-messaging-colour-messaging-warning-rgb);
+      --ddsweb-theme-colors-messaging-amber-messaging: var( --dds-messaging-colour-messaging-warning);
+      --ddsweb-theme-colors-messaging-info-messaging-rgb: var( --dds-messaging-colour-messaging-info-rgb);
+      --ddsweb-theme-colors-messaging-info-messaging: var( --dds-messaging-colour-messaging-info);
+      --ddsweb-theme-colors-messaging-amend-messaging-rgb: var( --dds-messaging-colour-messaging-active-rgb);
+      --ddsweb-theme-colors-messaging-amend-messaging: var( --dds-messaging-colour-messaging-active);
+      --ddsweb-theme-colors-messaging-amend-messaging-light-rgb: var( --dds-messaging-colour-messaging-active-tint-rgb);
+      --ddsweb-theme-colors-messaging-amend-messaging-light: var( --dds-messaging-colour-messaging-active-tint);
+      --ddsweb-theme-colors-messaging-orange-rgb: var( --dds-messaging-colour-messaging-warning-rgb);
+      --ddsweb-theme-colors-messaging-orange: var( --dds-messaging-colour-messaging-warning);
+      --ddsweb-theme-colors-tag-fullstop-red-rgb: var( --dds-fullstop-colour-fullstop-rgb);
+      --ddsweb-theme-colors-tag-fullstop-red: var( --dds-fullstop-colour-fullstop);
+      --ddsweb-theme-colors-primary-rgb:
+        0,
+        83,
+        159;
+      --ddsweb-theme-colors-primary: #00539f;
+      --ddsweb-theme-colors-promo-rgb: var(--dds-value-colour-value-yellow-rgb);
+      --ddsweb-theme-colors-promo: var(--dds-value-colour-value-yellow);
+      --ddsweb-theme-colors-ratings-rgb:
+        252,
+        215,
+        0;
+      --ddsweb-theme-colors-ratings: #fcd700;
+      --ddsweb-theme-colors-secondary-rgb:
+        238,
+        28,
+        46;
+      --ddsweb-theme-colors-secondary: #ee1c2e;
+      --ddsweb-theme-colors-success-rgb: var( --dds-messaging-colour-messaging-success-rgb);
+      --ddsweb-theme-colors-success: var( --dds-messaging-colour-messaging-success);
+      --ddsweb-theme-colors-tesco-blue-rgb: var( --dds-background-colour-background-dark-primary-rgb);
+      --ddsweb-theme-colors-tesco-blue: #00539f;
+      --ddsweb-theme-colors-tesco-red-rgb: var( --dds-fullstop-colour-fullstop-rgb);
+      --ddsweb-theme-colors-tesco-red: var(--dds-fullstop-colour-fullstop);
+      --ddsweb-theme-colors-text-base-rgb: var( --dds-typography-colour-text-body-rgb);
+      --ddsweb-theme-colors-text-base: #666666;
+      --ddsweb-theme-colors-text-dark-rgb: var( --dds-typography-colour-text-header-primary-rgb);
+      --ddsweb-theme-colors-text-dark: var( --dds-typography-colour-text-header-primary);
+      --ddsweb-theme-colors-orange-rgb: var( --dds-messaging-colour-messaging-warning-rgb);
+      --ddsweb-theme-colors-orange: var( --dds-messaging-colour-messaging-warning);
+      --ddsweb-theme-colors-white-rgb:
+        255,
+        255,
+        255;
+      --ddsweb-theme-colors-white: #ffffff;}}}
+
+@layer ddsweb-base {
+  @layer ddsweb-theme {
+    :root {
+      --ddsweb-theme-font-size-next-text-xs: var( --dds-typography-tokens-size-fontsize-12);
+      --ddsweb-theme-font-size-next-text-sm: var( --dds-typography-tokens-size-fontsize-14);
+      --ddsweb-theme-font-size-next-text-md: var( --dds-typography-tokens-size-fontsize-16);
+      --ddsweb-theme-font-size-next-text-lg: var( --dds-typography-tokens-size-fontsize-20);
+      --ddsweb-theme-font-size-next-headline-sm: var( --dds-typography-tokens-size-fontsize-14);
+      --ddsweb-theme-font-size-next-headline-md: var( --dds-typography-tokens-size-fontsize-16);
+      --ddsweb-theme-font-size-next-headline-lg: var( --dds-typography-tokens-size-fontsize-20);
+      --ddsweb-theme-font-size-next-headline-xl: var( --dds-typography-tokens-size-fontsize-24);
+      --ddsweb-theme-font-size-next-headline-xxl: var( --dds-typography-tokens-size-fontsize-28);
+      --ddsweb-theme-font-size-next-headline-xxxl: var( --dds-typography-tokens-size-fontsize-32);
+      --ddsweb-theme-font-size-next-oversized-lg: var( --dds-typography-tokens-size-fontsize-40);
+      --ddsweb-theme-font-size-next-oversized-xl: var( --dds-typography-tokens-size-fontsize-48);
+      --ddsweb-theme-font-size-next-oversized-xxl: var( --dds-typography-tokens-size-fontsize-56);
+      --ddsweb-theme-font-size-next-oversized-xxxl: var( --dds-typography-tokens-size-fontsize-64);}}}
+
+@layer ddsweb-base {
+  @layer ddsweb-theme {
+    :root {
+      --ddsweb-theme-font-size-xxx: var( --dds-typography-tokens-size-fontsize-12);
+      --ddsweb-theme-font-size-xx: var( --dds-typography-tokens-size-fontsize-14);
+      --ddsweb-theme-font-size-xs: var( --dds-typography-tokens-size-fontsize-16);
+      --ddsweb-theme-font-size-sm: var( --dds-typography-tokens-size-fontsize-20);
+      --ddsweb-theme-font-size-md: var( --dds-typography-tokens-size-fontsize-24);
+      --ddsweb-theme-font-size-lg: var( --dds-typography-tokens-size-fontsize-28);
+      --ddsweb-theme-font-size-xl: var( --dds-typography-tokens-size-fontsize-32);
+      --ddsweb-theme-font-size-xxl: var( --dds-typography-tokens-size-fontsize-36);
+      --ddsweb-theme-font-size-xxxl: var( --dds-typography-tokens-size-fontsize-40);}}}
+
+@layer ddsweb-base {
+  @layer ddsweb-theme {
+    :root {
+      --ddsweb-theme-font-weight-heading: var( --dds-typography-tokens-weight-sans-bold);
+      --ddsweb-theme-font-weight-text: var( --dds-typography-tokens-weight-sans-regular);}}}
+
+@layer ddsweb-base {
+  @layer ddsweb-theme {
+    :root {
+      --ddsweb-theme-forms-small-field-diameter: var(--dds-sizing-size-24);
+      --ddsweb-theme-forms-field-diameter: var(--dds-sizing-size-32);
+      --ddsweb-theme-forms-field-height: var(--dds-sizing-size-40);
+      --ddsweb-theme-forms-small-field-height: var(--dds-sizing-size-32);}}}
+
+@layer ddsweb-base {
+  @layer ddsweb-theme {
+    :root {
+      --ddsweb-theme-icons-background-sizes-xx: var(--dds-sizing-size-16);
+      --ddsweb-theme-icons-background-sizes-xs: var(--dds-sizing-size-24);
+      --ddsweb-theme-icons-background-sizes-sm: var(--dds-sizing-size-40);
+      --ddsweb-theme-icons-background-sizes-xl: 70px;
+      --ddsweb-theme-icons-background-sizes-xxxl: 120px;
+      --ddsweb-theme-icons-sizes-base: 22px;
+      --ddsweb-theme-icons-sizes-xx: 0.5;
+      --ddsweb-theme-icons-sizes-xs: 0.666667;
+      --ddsweb-theme-icons-sizes-sm: 1;
+      --ddsweb-theme-icons-sizes-xl: 1.85;
+      --ddsweb-theme-icons-sizes-xxxl: 3.65;}}}
+
+@layer ddsweb-base {
+  @layer ddsweb-theme {
+    :root {
+      --ddsweb-theme-line-height-next-heading: calc(1em + 0.25rem);
+      --ddsweb-theme-line-height-next-text-sm: calc(1em + 0.25rem);
+      --ddsweb-theme-line-height-next-text-md: calc(1em + 0.5rem);}}}
+
+@layer ddsweb-base {
+  @layer ddsweb-theme {
+    :root {
+      --ddsweb-theme-line-height-heading-xs: 1.25;
+      --ddsweb-theme-line-height-heading-sm: 1.2;
+      --ddsweb-theme-line-height-heading-md: 1.17;
+      --ddsweb-theme-line-height-heading-lg: 1.14;
+      --ddsweb-theme-line-height-heading-xl: 1.13;
+      --ddsweb-theme-line-height-text-xx: 1.57;
+      --ddsweb-theme-line-height-text-xs: 1.5;
+      --ddsweb-theme-line-height-text-sm: 1.4;}}}
+
+@layer ddsweb-base {
+  @layer ddsweb-theme {
+    :root {
+      --ddsweb-theme-spacing-xxx: var(--dds-spacing-space-2);
+      --ddsweb-theme-spacing-xx: var(--dds-spacing-space-4);
+      --ddsweb-theme-spacing-xs: var(--dds-spacing-space-8);
+      --ddsweb-theme-spacing-sm: var(--dds-spacing-space-12);
+      --ddsweb-theme-spacing-md: var(--dds-spacing-space-16);
+      --ddsweb-theme-spacing-lg: var(--dds-spacing-space-20);
+      --ddsweb-theme-spacing-xl: var(--dds-spacing-space-24);
+      --ddsweb-theme-spacing-xxl: var(--dds-spacing-space-28);
+      --ddsweb-theme-spacing-xxxl: var(--dds-spacing-space-32);}}}
+
+@layer ddsweb-base {
+  @layer ddsweb-tokens {
+    :root {
+      --dds-interaction-colour-interactive-default: #00539f;
+      --dds-interaction-colour-interactive-active: #007eb3;
+      --dds-interaction-colour-interactive-inverse: #ffffff;
+      --dds-interaction-colour-interactive-form: #666666;
+      --dds-interaction-colour-interactive-error-form: #cc3333;
+      --dds-messaging-colour-messaging-error: #cc3333;
+      --dds-messaging-colour-messaging-error-tint: #f9e6e6;
+      --dds-messaging-colour-messaging-warning: #bd5800;
+      --dds-messaging-colour-messaging-warning-tint: #ffe4cc;
+      --dds-messaging-colour-messaging-success: #008800;
+      --dds-messaging-colour-messaging-success-tint: #dff4df;
+      --dds-messaging-colour-messaging-info: #0074e0;
+      --dds-messaging-colour-messaging-info-tint: #deefff;
+      --dds-messaging-colour-messaging-active: #007eb3;
+      --dds-messaging-colour-messaging-active-tint: #dcf0f9;
+      --dds-nutrition-colour-nutri-green: #b9d479;
+      --dds-nutrition-colour-nutri-amber: #fdd285;
+      --dds-nutrition-colour-nutri-red: #f08275;
+      --dds-tables-colour-table-header: #e5e5e5;
+      --dds-tables-colour-table-cell-1: #ffffff;
+      --dds-tables-colour-table-cell-2: #f6f6f6;
+      --dds-tables-colour-table-border: #e5e5e5;
+      --dds-typography-colour-text-header-primary: #333333;
+      --dds-typography-colour-text-body: #666666;
+      --dds-typography-colour-text-on-dark: #ffffff;
+      --dds-typography-colour-text-header-secondary: #00539f;
+      --dds-typography-tokens-family-display: 'Tesco Modern';
+      --dds-typography-tokens-family-oversize-heading: 'Tesco Modern';
+      --dds-typography-tokens-family-heading: 'Tesco Modern';
+      --dds-typography-tokens-family-body: 'Tesco Modern';
+      --dds-typography-tokens-family-label: 'Tesco Modern';
+      --dds-typography-tokens-family-links: 'Tesco Modern';
+      --dds-typography-tokens-weight-sans-bold: Bold;
+      --dds-typography-tokens-weight-sans-regular: Regular;
+      --dds-typography-tokens-weight-sans-italic: Italic;
+      --dds-typography-tokens-weight-serif-bold: Bold;
+      --dds-typography-tokens-weight-serif-regular: Regular;
+      --dds-typography-tokens-weight-serif-italic: Italic;
+      --dds-typography-tokens-size-fontsize-64: 64px;
+      --dds-typography-tokens-size-fontsize-56: 56px;
+      --dds-typography-tokens-size-fontsize-48: 48px;
+      --dds-typography-tokens-size-fontsize-40: 40px;
+      --dds-typography-tokens-size-fontsize-32: 32px;
+      --dds-typography-tokens-size-fontsize-28: 28px;
+      --dds-typography-tokens-size-fontsize-24: 24px;
+      --dds-typography-tokens-size-fontsize-20: 20px;
+      --dds-typography-tokens-size-fontsize-16: 16px;
+      --dds-typography-tokens-size-fontsize-14: 14px;
+      --dds-typography-tokens-size-fontsize-12: 12px;
+      --dds-typography-tokens-line-height-lineheight-68: 68px;
+      --dds-typography-tokens-line-height-lineheight-60: 60px;
+      --dds-typography-tokens-line-height-lineheight-52: 52px;
+      --dds-typography-tokens-line-height-lineheight-44: 44px;
+      --dds-typography-tokens-line-height-lineheight-36: 36px;
+      --dds-typography-tokens-line-height-lineheight-32: 32px;
+      --dds-typography-tokens-line-height-lineheight-28: 28px;
+      --dds-typography-tokens-line-height-lineheight-24: 24px;
+      --dds-typography-tokens-line-height-lineheight-22: 22px;
+      --dds-typography-tokens-line-height-lineheight-20: 20px;
+      --dds-typography-tokens-line-height-lineheight-18: 18px;
+      --dds-typography-tokens-line-height-lineheight-16: 16px;
+      --dds-retain-colour-in-dark-mode-retain-interactive-default: #00539f;
+      --dds-retain-colour-in-dark-mode-retain-interactive-active: #007eb3;
+      --dds-retain-colour-in-dark-mode-retain-interactive-inverse: #ffffff;
+      --dds-retain-colour-in-dark-mode-retain-value-yellow: #fcd700;
+      --dds-retain-colour-in-dark-mode-retain-header-primary: #333333;
+      --dds-retain-colour-in-dark-mode-retain-text-body: #666666;
+      --dds-retain-colour-in-dark-mode-retain-brand-tesco: #00539f;
+      --dds-value-colour-value-yellow: #fcd700;
+      --dds-value-colour-value-black: #000000;
+      --dds-fullstop-colour-fullstop: #e81c2d;
+      --dds-overlays-colour-overlay: #000000b3;
+      --dds-overlays-colour-overlay-2: #ffffffcc;
+      --dds-overlays-colour-overlay-rgba: rgba(0, 0, 0, 0.7);
+      --dds-overlays-colour-overlay-2-rgba: rgba(255, 255, 255, 0.8);
+      --dds-line-colour-border-primary: #cccccc;
+      --dds-line-colour-border-secondary: #e5e5e5;
+      --dds-background-colour-background-1: #ffffff;
+      --dds-background-colour-background-2: #f6f6f6;
+      --dds-background-colour-background-3: #e5e5e5;
+      --dds-background-colour-background-dark-primary: #00539f;
+      --dds-background-colour-background-dark-secondary: #002343;
+      --dds-spacing-space-0: 0px;
+      --dds-spacing-space-4: 4px;
+      --dds-spacing-space-8: 8px;
+      --dds-spacing-space-12: 12px;
+      --dds-spacing-space-16: 16px;
+      --dds-spacing-space-20: 20px;
+      --dds-spacing-space-24: 24px;
+      --dds-spacing-space-28: 28px;
+      --dds-spacing-space-32: 32px;
+      --dds-spacing-space-36: 36px;
+      --dds-spacing-space-40: 40px;
+      --dds-spacing-space-48: 48px;
+      --dds-spacing-space-56: 56px;
+      --dds-spacing-space-60: 60px;
+      --dds-spacing-space-72: 72px;
+      --dds-spacing-space-80: 80px;
+      --dds-spacing-space-2: 2px;
+      --dds-sizing-size-0: 0px;
+      --dds-sizing-size-2: 2px;
+      --dds-sizing-size-4: 4px;
+      --dds-sizing-size-8: 8px;
+      --dds-sizing-size-12: 12px;
+      --dds-sizing-size-16: 16px;
+      --dds-sizing-size-20: 20px;
+      --dds-sizing-size-24: 24px;
+      --dds-sizing-size-28: 28px;
+      --dds-sizing-size-32: 32px;
+      --dds-sizing-size-36: 36px;
+      --dds-sizing-size-40: 40px;
+      --dds-sizing-size-48: 48px;
+      --dds-sizing-size-56: 56px;
+      --dds-sizing-size-60: 60px;
+      --dds-sizing-size-64: 64px;
+      --dds-sizing-size-72: 72px;
+      --dds-sizing-size-80: 80px;
+      --dds-border-radius-borderradius-0: 0px;
+      --dds-border-radius-borderradius-4: 4px;
+      --dds-border-radius-borderradius-8: 8px;
+      --dds-border-radius-borderradius-12: 12px;
+      --dds-border-radius-borderradius-16: 16px;
+      --dds-border-radius-borderradius-20: 20px;
+      --dds-border-radius-borderradius-24: 24px;
+      --dds-border-radius-borderradius-28: 28px;
+      --dds-border-radius-borderradius-32: 32px;
+      --dds-border-radius-borderradius-36: 36px;
+      --dds-border-radius-borderradius-40: 40px;
+      --dds-strokeweight-strokeweight-1: 1px;
+      --dds-strokeweight-strokeweight-1-half: 1.5px;
+      --dds-strokeweight-strokeweight-2: 2px;
+      --dds-strokeweight-strokeweight-3: 3px;
+      --dds-typography-colour-text-header-primary-rgb:
+        51,
+        51,
+        51;
+      --dds-typography-colour-text-body-rgb:
+        102,
+        102,
+        102;
+      --dds-typography-colour-text-on-dark-rgb:
+        255,
+        255,
+        255;
+      --dds-typography-colour-text-header-secondary-rgb:
+        0,
+        83,
+        159;
+      --dds-interaction-colour-interactive-default-rgb:
+        0,
+        83,
+        159;
+      --dds-interaction-colour-interactive-active-rgb:
+        0,
+        126,
+        179;
+      --dds-interaction-colour-interactive-inverse-rgb:
+        255,
+        255,
+        255;
+      --dds-interaction-colour-interactive-form-rgb:
+        102,
+        102,
+        102;
+      --dds-interaction-colour-interactive-error-form-rgb:
+        204,
+        51,
+        51;
+      --dds-line-colour-border-primary-rgb:
+        204,
+        204,
+        204;
+      --dds-line-colour-border-secondary-rgb:
+        229,
+        229,
+        229;
+      --dds-background-colour-background-1-rgb:
+        255,
+        255,
+        255;
+      --dds-background-colour-background-2-rgb:
+        246,
+        246,
+        246;
+      --dds-background-colour-background-3-rgb:
+        229,
+        229,
+        229;
+      --dds-background-colour-background-dark-primary-rgb:
+        0,
+        83,
+        159;
+      --dds-background-colour-background-dark-secondary-rgb:
+        0,
+        35,
+        67;
+      --dds-messaging-colour-messaging-error-rgb:
+        204,
+        51,
+        51;
+      --dds-messaging-colour-messaging-error-tint-rgb:
+        249,
+        230,
+        230;
+      --dds-messaging-colour-messaging-warning-rgb:
+        189,
+        88,
+        0;
+      --dds-messaging-colour-messaging-warning-tint-rgb:
+        255,
+        228,
+        204;
+      --dds-messaging-colour-messaging-success-rgb:
+        0,
+        136,
+        0;
+      --dds-messaging-colour-messaging-success-tint-rgb:
+        223,
+        244,
+        223;
+      --dds-messaging-colour-messaging-info-rgb:
+        0,
+        116,
+        224;
+      --dds-messaging-colour-messaging-info-tint-rgb:
+        222,
+        239,
+        255;
+      --dds-messaging-colour-messaging-active-rgb:
+        0,
+        126,
+        179;
+      --dds-messaging-colour-messaging-active-tint-rgb:
+        220,
+        240,
+        249;
+      --dds-tables-colour-table-header-rgb:
+        229,
+        229,
+        229;
+      --dds-tables-colour-table-cell-1-rgb:
+        255,
+        255,
+        255;
+      --dds-tables-colour-table-cell-2-rgb:
+        246,
+        246,
+        246;
+      --dds-tables-colour-table-border-rgb:
+        229,
+        229,
+        229;
+      --dds-nutrition-colour-nutri-green-rgb:
+        185,
+        212,
+        121;
+      --dds-nutrition-colour-nutri-amber-rgb:
+        253,
+        210,
+        133;
+      --dds-nutrition-colour-nutri-red-rgb:
+        240,
+        130,
+        117;
+      --dds-value-colour-value-yellow-rgb:
+        252,
+        215,
+        0;
+      --dds-value-colour-value-black-rgb:
+        0,
+        0,
+        0;
+      --dds-fullstop-colour-fullstop-rgb:
+        232,
+        28,
+        45;
+      --dds-retain-colour-in-dark-mode-retain-interactive-default-rgb:
+        0,
+        83,
+        159;
+      --dds-retain-colour-in-dark-mode-retain-interactive-active-rgb:
+        0,
+        126,
+        179;
+      --dds-retain-colour-in-dark-mode-retain-interactive-inverse-rgb:
+        255,
+        255,
+        255;
+      --dds-retain-colour-in-dark-mode-retain-value-yellow-rgb:
+        252,
+        215,
+        0;
+      --dds-retain-colour-in-dark-mode-retain-header-primary-rgb:
+        51,
+        51,
+        51;
+      --dds-retain-colour-in-dark-mode-retain-text-body-rgb:
+        102,
+        102,
+        102;
+      --dds-retain-colour-in-dark-mode-retain-brand-tesco-rgb:
+        0,
+        83,
+        159;
+      --dds-dds-tokens-version: 'dds-tokens-version: 1.0.0';}}}
+
+
+
+@layer ddsweb-base, ddsweb-small-atoms, ddsweb-large-atoms, ddsweb-molecules, ddsweb-organisms, ddsweb-overrides;
+@layer ddsweb-base {
+  @layer ddsweb-normalise, ddsweb-tokens, ddsweb-theme, ddsweb-theme-smaller, ddsweb-theme-fandf, ddsweb-fonts, ddsweb-foundation, ddsweb-grid, ddsweb-helpers;}
+@layer ddsweb-small-atoms {
+  @layer ddsweb-divider, ddsweb-heading, ddsweb-icon, ddsweb-icons, ddsweb-branding, ddsweb-label, ddsweb-logos, ddsweb-tag, ddsweb-text;}
+@layer ddsweb-large-atoms {
+  @layer ddsweb-spinner, ddsweb-button, ddsweb-link, ddsweb-rating, ddsweb-responsive-image, ddsweb-card, ddsweb-back-to-top;}
+@layer ddsweb-molecules {
+  @layer ddsweb-calendar, ddsweb-action-menu, ddsweb-messaging, ddsweb-fab, ddsweb-form-group, ddsweb-checkbox, ddsweb-checkbox-with-label, ddsweb-checkbox-group, ddsweb-text-input, ddsweb-time-input, ddsweb-textarea, ddsweb-textarea-group, ddsweb-date-input, ddsweb-date-picker, ddsweb-dropdown, ddsweb-filter-tabs, ddsweb-password-entry, ddsweb-password-entry-group, ddsweb-password-creation, ddsweb-radio-button, ddsweb-radio-button-with-label, ddsweb-radio-button-group, ddsweb-skip-to-content, ddsweb-multiselect-dropdown, ddsweb-toggle, ddsweb-progress-bar, ddsweb-breadcrumb, ddsweb-link-list, ddsweb-messaging-card, ddsweb-nutritional-info, ddsweb-page-action-control, ddsweb-product-header, ddsweb-pagination-bar, ddsweb-pagination, ddsweb-popover, ddsweb-search-input, ddsweb-segmented-controller, ddsweb-step-indicator, ddsweb-tabs-menu, ddsweb-tabs, ddsweb-accordion, ddsweb-colleague-table, ddsweb-table, ddsweb-footer, ddsweb-value-bar, ddsweb-value-tile, ddsweb-global-navigation, ddsweb-sidebar-panel, ddsweb-sidebar-navigation, ddsweb-toolkit-navigation, ddsweb-local-navigation, ddsweb-bottom-sheet;}
+@layer ddsweb-organisms {
+  @layer ddsweb-colleague-news-tile, ddsweb-banner, ddsweb-carousel, ddsweb-consent-banner, ddsweb-content-group, ddsweb-content-stamps, ddsweb-context-card, ddsweb-cookies-notification, ddsweb-icon-stamps, ddsweb-modal, ddsweb-sidebar, ddsweb-rewards-tile, ddsweb-one-tile;}
+@layer ddsweb-base {
+  @layer ddsweb-theme {
+    :root {
+      --ddsweb-theme-name: default;}}}
+
+
+
+.OaOVgk4qpOoezPg {
+  margin-bottom: var(--ddsweb-theme-spacing-sm);
+  margin-top: var(--ddsweb-theme-spacing-lg);}
+
+.ZCciFKudbakOqaN {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--ddsweb-theme-spacing-xs) var(--ddsweb-theme-spacing-xs);
+  justify-content: flex-start;
+  margin-bottom: var(--ddsweb-theme-spacing-md);}
+
+.G1rLR64ZgAHvHfu {
+  display: flex;
+  gap: var(--ddsweb-theme-spacing-sm);
+  padding: var(--ddsweb-theme-spacing-sm) var(--ddsweb-theme-spacing-md)
+  var(--ddsweb-theme-spacing-xx) var(--ddsweb-theme-spacing-md);
+  border-top: 1px solid var(--ddsweb-theme-colors-lines-light);
+  margin: 0 calc(-1 * var(--ddsweb-theme-spacing-md));}
+._c6vLa_giW1G_7e {
+  padding: 0 var(--ddsweb-theme-spacing-md);}
+
+.UtzFpN_OJPY15Lc {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  margin-top: var(--ddsweb-theme-spacing-xl);
+  margin-bottom: var(--ddsweb-theme-spacing-sm);
+  text-align: center;}
+
+.vyH4lQoO35c9ESl {
+  background-color: var(--ddsweb-theme-colors-tesco-blue);
+  color: var(--ddsweb-theme-colors-white);
+  width: 64px;
+  height: 64px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: var(--ddsweb-theme-spacing-sm);}
+
+.wBpzfoPE24cM4r6 {
+  margin-bottom: var(--ddsweb-theme-spacing-xs);}
+
+.hvzM1X2qW3kaB7r {
+  font-size: var(--ddsweb-theme-font-size-sm);}
+
+.Q1hRh_l3igizLmm {
+  padding: var(--ddsweb-theme-spacing-sm) var(--ddsweb-theme-spacing-sm)
+    var(--ddsweb-theme-spacing-xl) var(--ddsweb-theme-spacing-sm);}
+
+.rjDS4fUIMqCk9GX {
+  padding: 0;
+  list-style-position: inside;
+  margin-bottom: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--ddsweb-theme-spacing-xx);
+  color: var(--ddsweb-theme-colors-text-base);}
+
+.HTBYcpDDWCt9OqA {
+  margin-top: var(--ddsweb-theme-spacing-lg);}
+
+@media (max-width: 504px) {
+  .wBpzfoPE24cM4r6 {
+    font-size: var(--ddsweb-theme-font-size-sm);}
+
+  .hvzM1X2qW3kaB7r {
+    font-size: var(--ddsweb-theme-font-size-xs);}
+
+  .vyH4lQoO35c9ESl {
+    width: var(--ddsweb-theme-icons-background-sizes-sm);
+    height: var(--ddsweb-theme-icons-background-sizes-sm);}
+
+  .vyH4lQoO35c9ESl .ddsweb-icon {
+    width: var(--ddsweb-theme-spacing-lg);
+    height: var(--ddsweb-theme-spacing-lg);}
+
+  .Q1hRh_l3igizLmm {
+    font-size: var(--ddsweb-theme-font-size-xx);}}
+
+.ur4DshS1vXEvYtF {
+  margin: 0 var(--ddsweb-theme-spacing-xx);}
+
+.swuS3OQyonVw1W8 {
+  display: grid;
+  gap: var(--ddsweb-theme-spacing-sm);
+  grid-template-columns: auto auto;
+  margin-top: var(--ddsweb-theme-spacing-sm);
+
+  @media (max-width: 504px) {
+    grid-template-columns: 1fr;
+    margin-bottom: var(--ddsweb-theme-spacing-xs);}}
+
+.S5IqbGwbahotujx {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ddsweb-theme-spacing-sm);
+  margin-top: 0;
+  max-width: 448px;}
+
+.gfd0Y1I_TUUu6Gz {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ddsweb-theme-spacing-sm);}
+
+.cKLIl8gRvhwnlnC {
+  margin: 0 var(--ddsweb-theme-spacing-xx);}

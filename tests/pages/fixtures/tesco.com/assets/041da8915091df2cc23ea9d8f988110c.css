@@ -1,0 +1,466 @@
+@layer ddsweb-large-atoms {
+  @layer ddsweb-button {
+    .w0dElG_base {
+      --ddsweb-button-min-hit-area: var(--ddsweb-tc-button-min-hit-area, 44px);
+      --ddsweb-button-font-family: var(--ddsweb-theme-base-font-family);
+      --ddsweb-button-font-size: var(--ddsweb-theme-base-font-size);
+      --ddsweb-button-line-height: var(--ddsweb-theme-base-line-height);
+      --ddsweb-button-font-weight: var(--ddsweb-tc-button-font-weight, 700);
+      --ddsweb-button-border-width: var(--ddsweb-tc-button-border-width, 2px);
+      --ddsweb-button-border-radius: var(--ddsweb-tc-button-border-radius, 99px);
+      --ddsweb-button-transition-duration: var(--ddsweb-theme-base-transition-duration);
+      --ddsweb-button-shadow-width: var(--ddsweb-tc-button-shadow-width, 3px);
+      --ddsweb-button-shadow-position-inset: var(--ddsweb-tc-button-shadow-position-inset, -3px);
+      --ddsweb-button-outline-color: var(--dds-interaction-colour-interactive-default);
+      --ddsweb-button-icon-color: var(--dds-interaction-colour-interactive-default);
+      --ddsweb-button-icon-color-inversed: var(--dds-interaction-colour-interactive-default);
+      box-sizing: border-box;
+      display: var(--ddsweb-button-display, block);
+      border: var(--ddsweb-button-border-width) solid var(--ddsweb-button-border-color);
+      background: var(--ddsweb-button-background);
+      color: var(--ddsweb-button-color, var(--dds-interaction-colour-interactive-default));
+      font-weight: var(--ddsweb-button-font-weight);
+      font-size: var(--ddsweb-button-font-size);
+      line-height: var(--ddsweb-button-line-height);
+      font-family: var(--ddsweb-button-font-family);
+      cursor: pointer;
+      -webkit-font-smoothing: antialiased;
+      -webkit-tap-highlight-color: var(--ddsweb-theme-base-tap-highlight-color);
+      -moz-osx-font-smoothing: grayscale;
+      outline: none;
+      padding: 0;
+      text-decoration: none;
+      text-decoration-thickness: 1px;
+      position: relative;}
+
+    :is(.w0dElG_externalTextButton.w0dElG_hasStrikeThrough, .w0dElG_hasStrikeThrough .ddsweb-button__inner-container) {
+      text-decoration: line-through;
+      text-decoration-thickness: 2px;}
+
+    .w0dElG_base:disabled {
+      cursor: not-allowed;
+      opacity: 0.4;}
+
+    .w0dElG_base:before {
+      z-index: 0;
+      width: 100%;
+      min-width: var(--ddsweb-button-min-hit-area);
+      height: 100%;
+      min-height: var(--ddsweb-button-min-hit-area);
+      content: '';
+      display: block;
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);}
+
+    @media (forced-colors: active) {
+      .w0dElG_spinnerWrapper {
+        forced-color-adjust: preserve-parent-color;}}
+
+    @media (forced-colors: active) {
+      .w0dElG_container {
+        forced-color-adjust: preserve-parent-color;}}
+
+    .w0dElG_md {
+      --ddsweb-button-icon-container-size: var(--ddsweb-tc-button-md-icon-container-size, 40px);}
+
+    .w0dElG_sm {
+      --ddsweb-button-icon-container-size: var(--ddsweb-tc-button-sm-icon-container-size, 32px);}
+
+    .w0dElG_xs {
+      --ddsweb-button-min-hit-area: var(--ddsweb-tc-button-xs-min-hit-area, 32px);
+      --ddsweb-button-icon-container-size: var(--ddsweb-tc-button-xs-icon-container-size, 24px);}
+
+    .w0dElG_spinnerWrapper {
+      justify-content: center;
+      align-items: center;
+      width: 100%;
+      height: 100%;
+      display: flex;
+      position: absolute;
+      top: 0;
+      left: 0;}
+
+    .w0dElG_spinnerWrapper svg {
+      margin: 0;
+      display: block;}
+
+    .w0dElG_container {
+      justify-content: center;
+      align-items: center;
+      display: flex;}
+
+    .w0dElG_loading .w0dElG_container {
+      visibility: hidden;}
+
+    .w0dElG_iconContainer {
+      --ddsweb-button-icon-margin: var(--ddsweb-tc-button-icon-container-icon-margin, 4px);
+      max-height: var(--ddsweb-tc-button-icon-container-max-height, 24px);
+      margin-top: var(--ddsweb-tc-button-icon-container-margin-top, -2px);
+      margin-bottom: var(--ddsweb-tc-button-icon-container-margin-bottom, -2px);
+      justify-content: center;
+      display: flex;}
+
+    .w0dElG_iconLeft {
+      margin-right: var(--ddsweb-button-icon-margin);}
+
+    .w0dElG_iconRight {
+      margin-left: var(--ddsweb-button-icon-margin);}
+
+    .w0dElG_textRight .w0dElG_iconContainer {
+      margin-right: unset;
+      margin-left: var(--ddsweb-tc-button-icon-container-text-right-icon-margin, 4px);}
+
+    svg.w0dElG_selectedIcon {
+      box-sizing: border-box;
+      z-index: 1;
+      width: var(--ddsweb-theme-spacing-lg);
+      height: var(--ddsweb-theme-spacing-lg);
+      border: 2px solid var(--ddsweb-button-icon-color);
+      background-color: var(--dds-interaction-colour-interactive-inverse);
+      cursor: default;
+      border-radius: 50%;
+      align-items: center;
+      display: flex;
+      position: absolute;
+      top: -6px;
+      right: -6px;}
+
+    .w0dElG_selectedIcon path:first-child {
+      fill: var(--dds-interaction-colour-interactive-inverse);}
+
+    .w0dElG_selectedIcon path:nth-child(2) {
+      fill: var(--ddsweb-button-icon-color);}
+
+    .w0dElG_hasOutline:after {
+      z-index: 0;
+      inset: var(--ddsweb-button-shadow-position-inset);
+      border-radius: var(--ddsweb-button-border-radius);
+      box-shadow: 0 0 0 var(--ddsweb-button-shadow-width) var(--ddsweb-button-shadow-color, var(--ddsweb-button-outline-color));
+      content: '';
+      opacity: 0;
+      transition: opacity var(--ddsweb-button-transition-duration);
+      position: absolute;}
+
+    .w0dElG_hasOutline:hover:after, .w0dElG_hasOutline:focus:after {
+      opacity: 1;}
+
+    .w0dElG_hasOutline:disabled:after {
+      display: none;}
+
+    @media (forced-colors: active) {
+      .w0dElG_hasOutline:after {
+        box-shadow: none;
+        outline: 3px solid canvastext;}}
+
+    .w0dElG_primary {
+      --ddsweb-button-color: var(--dds-retain-colour-in-dark-mode-retain-interactive-inverse);
+      --ddsweb-button-background: var(--dds-retain-colour-in-dark-mode-retain-interactive-default);
+      --ddsweb-button-border-color: transparent;
+      --ddsweb-button-color-inversed: var(--dds-interaction-colour-interactive-default);
+      --ddsweb-button-background-inversed: var(--dds-interaction-colour-interactive-inverse);
+      --ddsweb-button-border-color-inversed: transparent;}
+
+    @media (forced-colors: active) {
+      .w0dElG_primary {
+        --ddsweb-button-color: Canvas;
+        --ddsweb-button-background: CanvasText;
+        --ddsweb-button-color-inversed: Canvas;
+        --ddsweb-button-background-inversed: CanvasText;}
+
+      .w0dElG_primary .ddsweb-spinner circle {
+        stroke: canvas;}}
+
+    .w0dElG_secondary {
+      --ddsweb-button-color: var(--dds-interaction-colour-interactive-default);
+      --ddsweb-button-background: var(--dds-interaction-colour-interactive-inverse);
+      --ddsweb-button-border-color: var(--dds-interaction-colour-interactive-default);
+      --ddsweb-button-color-inversed: var(--dds-interaction-colour-interactive-inverse);
+      --ddsweb-button-background-inversed: transparent;
+      --ddsweb-button-border-color-inversed: var(--dds-interaction-colour-interactive-inverse);}
+
+    @media (forced-colors: active) {
+      .w0dElG_secondary {
+        --ddsweb-button-color: CanvasText;
+        --ddsweb-button-background: Canvas;
+        --ddsweb-button-color-inversed: CanvasText;
+        --ddsweb-button-background-inversed: Canvas;
+        --ddsweb-button-border-color-inversed: CanvasText;}
+
+      .w0dElG_secondary .ddsweb-spinner circle {
+        stroke: canvastext;}}
+
+    .w0dElG_tertiary {
+      --ddsweb-button-color: var(--dds-interaction-colour-interactive-form);
+      --ddsweb-button-background: transparent;
+      --ddsweb-button-border-color: var(--dds-interaction-colour-interactive-form);
+      --ddsweb-button-outline-color: var(--dds-interaction-colour-interactive-form);
+      --ddsweb-button-shadow-color: var(--dds-interaction-colour-interactive-form);
+      --ddsweb-button-icon-color: var(--dds-interaction-colour-interactive-form);
+      --ddsweb-button-border-width: var(--ddsweb-tc-button-border-width, 1px);
+      --ddsweb-button-color-inversed: var(--dds-interaction-colour-interactive-inverse);
+      --ddsweb-button-background-inversed: transparent;
+      --ddsweb-button-border-color-inversed: var(--dds-interaction-colour-interactive-inverse);
+      --ddsweb-button-outline-color-inversed: var(--dds-interaction-colour-interactive-inverse);
+      --ddsweb-button-icon-color-inversed: var(--dds-interaction-colour-interactive-default);
+      font-weight: normal;}
+
+    @media (forced-colors: active) {
+      .w0dElG_tertiary {
+        --ddsweb-button-color: CanvasText;
+        --ddsweb-button-background: Canvas;
+        --ddsweb-button-color-inversed: CanvasText;
+        --ddsweb-button-background-inversed: Canvas;
+        --ddsweb-button-border-color-inversed: CanvasText;}
+
+      .w0dElG_tertiary .ddsweb-spinner circle {
+        stroke: canvastext;}}
+
+    .w0dElG_tertiarySelected {
+      --ddsweb-button-border-width: var(--ddsweb-tc-button-border-width, 2px);}
+
+    .w0dElG_inversed {
+      --ddsweb-button-color: var(--ddsweb-button-color-inversed);
+      --ddsweb-button-background: var(--ddsweb-button-background-inversed);
+      --ddsweb-button-border-color: var(--ddsweb-button-border-color-inversed);
+      --ddsweb-button-shadow-color: var(--dds-interaction-colour-interactive-inverse);
+      --ddsweb-button-outline-color: var(--ddsweb-button-outline-color-inversed);
+      --ddsweb-button-icon-color: var(--ddsweb-button-icon-color-inversed);}
+
+    .w0dElG_textLeft {
+      text-align: left;}
+
+    .w0dElG_textRight {
+      text-align: right;}
+
+    .w0dElG_fullWidth {
+      width: 100%;}
+
+    .w0dElG_loading:disabled {
+      opacity: 1;}
+
+    .w0dElG_externalTextButton {
+      --ddsweb-button-shadow-width: var(--ddsweb-tc-button-external-text-shadow-width, 3px);
+      --ddsweb-button-external-text-icon-spacing: var(--ddsweb-tc-button-external-text-icon-spacing, 8px);
+      --ddsweb-button-external-text-icon-loading-extra-space: var(--ddsweb-tc-button-external-text-icon-loading-extra-space, 0);
+      --ddsweb-button-text-color: var(--dds-interaction-colour-interactive-default);
+      --ddsweb-button-display: flex;
+      --ddsweb-button-border-radius: 100%;
+      background: none;
+      border: none;
+      align-items: center;}
+
+    .w0dElG_externalTextButton.w0dElG_tertiary {
+      --ddsweb-button-text-color: var(--dds-interaction-colour-interactive-form);}
+
+    .w0dElG_externalTextButton.w0dElG_hasStrikeThrough {
+      color: var(--dds-interaction-colour-interactive-default);}
+
+    .w0dElG_externalTextButton.w0dElG_inversed.w0dElG_hasStrikeThrough {
+      color: var(--dds-interaction-colour-interactive-inverse);}
+
+    .w0dElG_externalTextButton:hover > .w0dElG_externalTextButtonTextContainer, .w0dElG_externalTextButton:focus > .w0dElG_externalTextButtonTextContainer {
+      text-decoration: underline;
+      text-decoration-thickness: 1px;}
+
+    .w0dElG_externalTextButton:disabled > .w0dElG_externalTextButtonTextContainer {
+      text-decoration: none;}
+
+    .w0dElG_externalTextButtonTextContainer {
+      color: var(--ddsweb-button-text-color);
+      padding: 0;}
+
+    .w0dElG_externalTextButtonInversed {
+      --ddsweb-button-color: var(--dds-interaction-colour-interactive-inverse);
+      --ddsweb-button-text-color: var(--dds-interaction-colour-interactive-inverse);}
+
+    @media (forced-colors: active) {
+      .w0dElG_externalTextButtonInversed {
+        --ddsweb-button-color: CanvasText;}}
+
+    .w0dElG_externalTextButtonPrimaryInversed {
+      --ddsweb-button-color: var(--dds-interaction-colour-interactive-default);}
+
+    @media (forced-colors: active) {
+      .w0dElG_externalTextButtonPrimaryInversed {
+        --ddsweb-button-color: Canvas;}}
+
+    .w0dElG_externalTextButtonMd {
+      --ddsweb-button-external-text-icon-spacing: var(--ddsweb-tc-button-external-text-icon-spacing, 12px);}
+
+    .w0dElG_externalTextButtonXs {
+      --ddsweb-button-external-text-icon-loading-extra-space: var(--ddsweb-tc-button-external-text-icon-loading-extra-space, 0);}
+
+    .w0dElG_externalTextButton .w0dElG_hasOutline:after {
+      display: none;}
+
+    .w0dElG_externalTextButton:focus .w0dElG_hasOutline:after, .w0dElG_externalTextButton:hover .w0dElG_hasOutline:after, .w0dElG_externalTextButton:hover .w0dElG_focus:after {
+      display: unset;
+      opacity: 1;}
+
+    .w0dElG_externalTextButtonBaseIconContainer {
+      box-sizing: border-box;
+      margin-right: var(--ddsweb-button-external-margin-right);
+      margin-left: var(--ddsweb-button-external-margin-left);
+      color: var(--ddsweb-button-color);}
+
+    .w0dElG_externalTextButtonIconLeft {
+      margin-right: var(--ddsweb-button-external-text-icon-spacing);
+      margin-left: 0;}
+
+    .w0dElG_externalTextButtonIconRight {
+      margin-right: 0;
+      margin-left: var(--ddsweb-button-external-text-icon-spacing);}
+
+    .w0dElG_externalTextButtonIconContainer {
+      width: var(--ddsweb-button-icon-container-size);
+      height: var(--ddsweb-button-icon-container-size);
+      border: var(--ddsweb-tc-button-border-width, 2px) solid var(--ddsweb-button-border-color);
+      border-radius: var(--ddsweb-button-border-radius);
+      background: var(--ddsweb-button-background);
+      justify-content: center;
+      align-items: center;
+      display: flex;
+      position: relative;}
+
+    .w0dElG_externalTextButtonSpinnerWrapper {
+      padding: 0;
+      padding-right: var(--ddsweb-button-external-text-icon-loading-extra-space);
+      background: none;
+      border: 0;
+      display: inline-flex;}
+
+    @media (forced-colors: active) {
+      .w0dElG_externalTextButtonSpinnerWrapper {
+        --ddsweb-button-border-color: none;
+        --ddsweb-button-color: CanvasText;}
+
+      .w0dElG_externalTextButtonSpinnerWrapper .ddsweb-spinner circle {
+        stroke: canvastext;}}
+
+    .w0dElG_iconButton {
+      --ddsweb-button-shadow-color: var(--dds-interaction-colour-interactive-default);
+      --ddsweb-button-border-radius: 100%;
+      aspect-ratio: 1;
+      width: var(--ddsweb-button-icon-container-size);
+      height: var(--ddsweb-button-icon-container-size);
+      border-radius: var(--ddsweb-button-border-radius);
+      justify-content: center;
+      align-items: center;
+      display: flex;}
+
+    .w0dElG_iconButton.w0dElG_tertiary {
+      --ddsweb-button-shadow-color: var(--dds-interaction-colour-interactive-form);}
+
+    .w0dElG_iconButtonLink {
+      --ddsweb-button-color: var(--dds-interaction-colour-interactive-default);
+      --ddsweb-button-background: transparent;
+      --ddsweb-button-border-color: transparent;
+      --ddsweb-button-color-inversed: var(--dds-interaction-colour-interactive-inverse);}
+
+    .w0dElG_iconButtonInversed {
+      --ddsweb-button-color: var(--ddsweb-button-color-inversed);
+      --ddsweb-button-shadow-color: var(--dds-interaction-colour-interactive-inverse);}
+
+    .w0dElG_iconButtonLoading {
+      --ddsweb-button-background: none;
+      --ddsweb-button-container-visibility: hidden;}
+
+    .w0dElG_iconButtonLoadingDark {
+      --ddsweb-button-border-color: var(--dds-interaction-colour-interactive-default);}
+
+    .w0dElG_iconButtonLoadingNormal {
+      --ddsweb-button-border-color: var(--dds-interaction-colour-interactive-inverse);}
+
+    @media (forced-colors: active) {
+      .w0dElG_iconButtonLoading {
+        --ddsweb-button-border-color: none;
+        --ddsweb-button-color: CanvasText;}
+
+      .w0dElG_iconButtonLoading .ddsweb-spinner circle {
+        stroke: canvastext;}}
+
+    .w0dElG_iconButtonContainer {
+      display: inherit;
+      visibility: var(--ddsweb-button-container-visibility, unset);}
+
+    .w0dElG_linkButton {
+      --ddsweb-button-color: var(--dds-interaction-colour-interactive-default);
+      -webkit-text-decoration: var(--ddsweb-link-text-decoration, underline);
+      text-decoration: var(--ddsweb-link-text-decoration, underline);
+      padding: 0;}
+
+    .w0dElG_linkButton:focus, .w0dElG_linkButton:hover {
+      -webkit-text-decoration: var(--ddsweb-link-text-decoration-hover, none);
+      text-decoration: var(--ddsweb-link-text-decoration-hover, none);}
+
+    .w0dElG_linkButton:disabled {
+      -webkit-text-decoration: var(--ddsweb-link-text-decoration, none);
+      text-decoration: var(--ddsweb-link-text-decoration, none);
+      opacity: 0.4;}
+
+    .w0dElG_linkButton:not([aria-disabled='true']):focus-visible {
+      outline: var(--ddsweb-button-outline-color) solid 3px;
+      outline-offset: 1px;
+      -webkit-text-decoration: var(--ddsweb-link-text-decoration, none);
+      text-decoration: var(--ddsweb-link-text-decoration, none);}
+
+    @media (forced-colors: active) {
+      .w0dElG_linkButton .ddsweb-spinner circle {
+        stroke: canvastext;}}
+
+    .w0dElG_linkWithIcon {
+      -webkit-text-decoration: var(--ddsweb-link-text-decoration, none);
+      text-decoration: var(--ddsweb-link-text-decoration, none);}
+
+    .w0dElG_linkWithIcon:focus, .w0dElG_linkWithIcon:hover {
+      -webkit-text-decoration: var(--ddsweb-link-text-decoration-hover, underline);
+      text-decoration: var(--ddsweb-link-text-decoration-hover, underline);}
+
+    .w0dElG_linkButtonInversed, .w0dElG_linkButtonInversed:focus, .w0dElG_linkButtonInversed:hover {
+      --ddsweb-button-color: var(--dds-interaction-colour-interactive-inverse);}
+
+    .w0dElG_linkButtonInversed:not([aria-disabled]):focus-visible {
+      outline: var(--dds-interaction-colour-interactive-inverse) solid 3px;
+      outline-offset: 1px;
+      -webkit-text-decoration: var(--ddsweb-link-text-decoration, none);
+      text-decoration: var(--ddsweb-link-text-decoration, none);}
+
+    .w0dElG_textButton {
+      --ddsweb-button-padding-vertical: calc(var(--ddsweb-tc-button-padding-vertical, 10px)  - var(--ddsweb-button-border-width));
+      --ddsweb-button-padding-horizontal: calc(var(--ddsweb-tc-button-padding-horizontal, 20px)  - var(--ddsweb-button-border-width));
+      padding: var(--ddsweb-button-padding-vertical) var(--ddsweb-button-padding-horizontal);
+      border-radius: var(--ddsweb-button-border-radius);}
+
+    .w0dElG_textButton:hover, .w0dElG_textButton:focus {
+      text-decoration: underline;}
+
+    .w0dElG_textButton:disabled {
+      text-decoration: none;}
+
+    .w0dElG_textButtonSm {
+      --ddsweb-button-padding-vertical: calc(var(--ddsweb-tc-button-sm-padding-vertical, calc(var(--ddsweb-theme-spacing-sm) / 2))  - var(--ddsweb-button-border-width));
+      --ddsweb-button-padding-horizontal: calc(var(--ddsweb-tc-button-sm-padding-horizontal, var(--ddsweb-theme-spacing-lg))  - var(--ddsweb-button-border-width));}
+
+    .w0dElG_icon {
+      width: var(--icon-size);
+      height: var(--icon-size);}
+
+    .w0dElG_lg {
+      --icon-size: var(--ddsweb-tc-messaging-icons-lg, var(--ddsweb-theme-font-size-next-oversized-xxxl));}
+
+    .w0dElG_md {
+      --icon-size: var(--ddsweb-tc-messaging-icons-md, var(--ddsweb-theme-font-size-next-oversized-lg));}
+
+    .w0dElG_sm {
+      --icon-size: var(--ddsweb-tc-messaging-icons-sm, var(--ddsweb-theme-font-size-next-headline-xl));}
+
+    .w0dElG_xs {
+      --icon-size: var(--ddsweb-tc-messaging-icons-xs, var(--ddsweb-theme-font-size-next-headline-md));}
+
+    .w0dElG_bg {
+      fill: var(--icon-bg);}
+
+    .w0dElG_fg {
+      fill: var(--icon-fg);}}}

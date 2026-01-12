@@ -1,0 +1,101 @@
+@layer ddsweb-molecules {
+  @layer ddsweb-form-group {
+    .IwyKvq_container {
+      --form-group-gap: var(--ddsweb-theme-spacing-xs);
+      grid-template-columns: auto 1fr;
+      grid-template-areas: 'IwyKvq_inputs IwyKvq_inputs';
+      display: grid;}
+
+    .IwyKvq_withError {
+      --form-group-optional-color: var(--ddsweb-theme-colors-error);}
+
+    .IwyKvq_containerWithMessage {
+      grid-template-areas: 'IwyKvq_inputs IwyKvq_inputs'
+                           'IwyKvq_message IwyKvq_message';}
+
+    .IwyKvq_containerWithTopLabel {
+      grid-template-areas: 'IwyKvq_legend IwyKvq_helplink'
+                           'IwyKvq_inputs IwyKvq_inputs';
+      align-items: flex-start;}
+
+    .IwyKvq_containerWithTopLabelAndMessage {
+      grid-template-areas: 'IwyKvq_legend IwyKvq_helplink'
+                           'IwyKvq_inputs IwyKvq_inputs'
+                           'IwyKvq_message IwyKvq_message';}
+
+    .IwyKvq_containerWithLeftLabel {
+      align-items: center;}
+
+    .IwyKvq_containerWithLeftLabelAndFieldset {
+      grid-template-areas: 'IwyKvq_legend IwyKvq_inputs';}
+
+    .IwyKvq_children {
+      display: var(--ddsweb-formgroup-chidren-display, block);}
+
+    .IwyKvq_children > * {
+      margin-bottom: var(--ddsweb-form-group-children-margin-bottom, var(--ddsweb-theme-spacing-xs));}
+
+    .IwyKvq_children > :last-child {
+      margin-bottom: 0;}
+
+    .IwyKvq_childrenWithTopLabel {
+      margin-top: var(--form-group-gap);
+      grid-area: IwyKvq_inputs;}
+
+    .IwyKvq_childrenWithSpacing {
+      display: var(--ddsweb-formgroup-chidren-display, block);
+      margin-top: var(--ddsweb-theme-spacing-md);}
+
+    .IwyKvq_childrenWithLeftLabel {
+      margin-top: 0;
+      display: contents;}
+
+    .IwyKvq_childrenWithLeftLabel > * {
+      margin-bottom: 0;}
+
+    .IwyKvq_childrenWithHideLabelAndNoHelpLink {
+      margin-top: 0;}
+
+    .IwyKvq_optional {
+      color: var(--form-group-optional-color, var(--ddsweb-theme-colors-text-base));
+      font-weight: normal;}
+
+    .IwyKvq_legend {
+      float: left;
+      grid-area: IwyKvq_legend;
+      padding: 0;}
+
+    .IwyKvq_message {
+      margin-top: var(--form-group-gap);
+      grid-area: IwyKvq_message;}
+
+    .IwyKvq_messageWithLeftLabel {
+      grid-column: 2;}
+
+    p.IwyKvq_messageWithError {
+      --ddsweb-text-color: var(--ddsweb-theme-colors-error);}
+
+    .IwyKvq_message .ddsweb-messaging__icon-svg {
+      margin-top: 2px;
+      display: block;}
+
+    .IwyKvq_withMaxWidth {
+      max-width: 200px;}
+
+    .IwyKvq_leftLabel {
+      margin-right: var(--form-group-gap);}
+
+    .IwyKvq_labelContainer {
+      place-content: center space-between;
+      display: flex;}
+
+    .IwyKvq_helpLinkText {
+      grid-area: IwyKvq_helplink;
+      min-width: 95px;
+      display: inline-block;}
+
+    .IwyKvq_helpLinkText > * {
+      white-space: normal;
+      word-break: break-word;
+      justify-content: flex-end;
+      display: flex;}}}

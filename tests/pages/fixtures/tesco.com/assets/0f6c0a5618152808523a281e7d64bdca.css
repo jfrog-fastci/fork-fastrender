@@ -1,0 +1,12 @@
+@layer ddsweb-organisms {
+  @layer ddsweb-carousel {
+    @layer ddsweb-hooks-carousel {
+      .dcCQGq_scrollable {
+        gap: var(--dds-spacing-space-8);
+        scrollbar-width: none;
+        width: 100%;
+        margin: 0;
+        padding: 0;
+        list-style: none;
+        display: flex;
+        overflow: auto hidden;}}}}

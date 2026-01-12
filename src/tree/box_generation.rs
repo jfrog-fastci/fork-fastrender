@@ -5081,12 +5081,37 @@ fn generate_boxes_for_styled_into(
           .formatting_context_type()
           .unwrap_or(FormattingContextType::Block);
 
+        // HTML `<button>` elements behave like atomic inline-level block containers even when
+        // author styles force `display: inline` (Chrome/WebKit do not apply the generic CSS2
+        // "block-in-inline splitting" to `<button>` descendants). If we generate `<button>` as a
+        // normal inline box, anonymous-box fixup can hoist block descendants (e.g. `display: flex`
+        // spans used as link-like buttons), shifting layout substantially (tesco.com consent banner).
+        //
+        // Model `<button style="display:inline">` as an inline-block-like box by attaching a block
+        // formatting context to its inline box. This keeps descendants inside the button and makes
+        // layout match browser behavior.
+        let is_html_button = match &styled.node.node_type {
+          DomNodeType::Element {
+            tag_name,
+            namespace,
+            ..
+          } => (namespace.is_empty() || namespace == HTML_NAMESPACE)
+            && tag_name.eq_ignore_ascii_case("button"),
+          _ => false,
+        };
+
         let mut box_node = match display {
           Display::Block | Display::FlowRoot | Display::ListItem => {
             BoxNode::new_block(style, fc_type, children)
           }
-          Display::Inline
-          | Display::Ruby
+          Display::Inline => {
+            if is_html_button {
+              BoxNode::new_inline_block(style, FormattingContextType::Block, children)
+            } else {
+              BoxNode::new_inline(style, children)
+            }
+          }
+          Display::Ruby
           | Display::RubyBase
           | Display::RubyText
           | Display::RubyBaseContainer

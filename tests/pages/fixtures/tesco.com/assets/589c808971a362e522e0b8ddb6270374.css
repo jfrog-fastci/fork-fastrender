@@ -1,0 +1,48 @@
+@layer ddsweb-molecules {
+  @layer ddsweb-skip-to-content {
+    .PoZcda_skipToContent {
+      z-index: 1;
+      list-style-type: none;
+      position: relative;}
+
+    @media (max-width: 755px) {
+      .PoZcda_skipToContent {
+        display: none;}}
+
+    .PoZcda_item {
+      line-height: 2.5px;}
+
+    .PoZcda_item:not(:focus-within) {
+      clip-path: inset(50%);
+      clip: rect(0 0 0 0);
+      white-space: nowrap;
+      width: 1px;
+      height: 1px;
+      position: absolute;
+      overflow: hidden;}
+
+    .PoZcda_skipToContent .ddsweb-link__anchor:focus-visible {
+      outline: none;}
+
+    .PoZcda_skipToContent .PoZcda_item:focus-within, .PoZcda_skipToContent .PoZcda_hasFocus {
+      height: var(--ddsweb-tc-skip-to-content-height, var(--dds-sizing-size-40));
+      padding-right: var(--ddsweb-tc-skip-to-content-padding-right, var(--dds-spacing-space-12));
+      padding-left: var(--ddsweb-tc-skip-to-content-padding-left, var(--dds-spacing-space-12));
+      background-color: var(--dds-interaction-colour-interactive-inverse);
+      box-shadow: inset 0 0 0 4px rgb(var(--dds-interaction-colour-interactive-active-rgb));
+      clip-path: unset;
+      transition: border-color var(--ddsweb-theme-base-transition-duration), box-shadow var(--ddsweb-theme-base-transition-duration), color var(--ddsweb-theme-base-transition-duration), top var(--ddsweb-theme-base-transition-duration);
+      clip: unset;
+      width: unset;
+      overflow: unset;
+      white-space: unset;
+      line-height: 2.2;
+      position: fixed;
+      top: 0;}
+
+    .PoZcda_skipToContent .PoZcda_link {
+      --ddsweb-link-color-base: var(--dds-interaction-colour-interactive-active);
+      --ddsweb-link-color-visited: var(--dds-interaction-colour-interactive-active);}
+
+    .PoZcda_skipToContent .PoZcda_link:focus-visible {
+      text-decoration: underline;}}}

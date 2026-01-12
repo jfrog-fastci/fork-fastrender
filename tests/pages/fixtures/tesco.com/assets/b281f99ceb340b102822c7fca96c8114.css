@@ -1,0 +1,69 @@
+@layer ddsweb-molecules {
+  @layer ddsweb-text-input {
+    .r-Gq-q_wrapper {
+      position: relative;}
+
+    .r-Gq-q_container {
+      box-sizing: border-box;
+      height: var(--ddsweb-tc-input-height, var(--dds-sizing-size-40));
+      padding: 0 var(--dds-spacing-space-12);
+      outline-width: 0;
+      align-items: center;
+      display: flex;}
+
+    .r-Gq-q_container > * {
+      height: calc(100% - 2px);}
+
+    .r-Gq-q_container:focus-within {
+      --foundation-base-form-border-color: var(--dds-interaction-colour-interactive-active);
+      --foundation-base-form-outline-color: var(--dds-interaction-colour-interactive-active);
+      outline-width: 3px;}
+
+    .r-Gq-q_disabled {
+      box-shadow: none;
+      cursor: default;
+      opacity: var(--ddsweb-theme-base-rgb-opacity);}
+
+    .r-Gq-q_disabled:focus-within {
+      --foundation-base-form-outline-color: transparent;
+      --foundation-base-form-border-color: var(--foundation-base-form-border-color, var(--dds-interaction-colour-interactive-form));}
+
+    .r-Gq-q_error {
+      --foundation-base-form-border-color: var(--dds-interaction-colour-interactive-error-form);}
+
+    .r-Gq-q_error:focus-within {
+      --foundation-base-form-border-color: var(--dds-interaction-colour-interactive-error-form);
+      --foundation-base-form-outline-color: var(--dds-interaction-colour-interactive-error-form);}
+
+    .r-Gq-q_input {
+      line-height: var(--ddsweb-tc-input-line-height, normal);
+      outline: none;
+      flex-grow: 1;}
+
+    .r-Gq-q_input:disabled {
+      background-color: unset;}
+
+    .r-Gq-q_inputError::selection {
+      background-color: rgb(var(--dds-interaction-colour-interactive-error-form-rgb), 0.4);}
+
+    .r-Gq-q_sm {
+      height: var(--ddsweb-tc-input-sm-height, 32px);}
+
+    .r-Gq-q_hint {
+      margin-bottom: var(--dds-spacing-space-8);
+      color: var(--dds-typography-colour-text-body);}
+
+    .r-Gq-q_adjacentChildren {
+      align-items: center;
+      gap: var(--dds-spacing-space-4);
+      white-space: nowrap;
+      display: flex;}
+
+    .r-Gq-q_leftChildren {
+      padding-right: var(--dds-spacing-space-4);}
+
+    .r-Gq-q_rightChildren {
+      padding-left: var(--dds-spacing-space-4);}
+
+    .r-Gq-q_container ::placeholder {
+      font-style: inherit;}}}

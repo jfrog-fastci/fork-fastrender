@@ -1,0 +1,58 @@
+/* src/components/content-stamp/src/components/content-stamp/index.module.css */
+@layer ddsweb-organisms {
+  @layer ddsweb-content-stamps {
+    .ma7GBa_container {
+      box-sizing: border-box;
+      border: 1px solid var(--ddsweb-theme-colors-lines-base);
+      background-color: var(--ddsweb-content-stamp-background-color, var(--ddsweb-theme-colors-background-dark));
+      color: initial;
+      cursor: var(--content-stamp-cursor, 'default');
+      flex-direction: column;
+      text-decoration: none;
+      display: flex;}
+    :is(.ma7GBa_container:hover .ma7GBa_linkContainer .ddsweb-link__text, .ma7GBa_container:focus-visible .ma7GBa_linkContainer .ddsweb-link__text) {
+      text-decoration: underline;}
+    .ma7GBa_imageContainer {
+      --ddsweb-content-stamp-background-color: var(--ddsweb-theme-colors-background-base);
+      position: relative;}
+    .ma7GBa_whiteBkground {
+      --ddsweb-content-stamp-background-color: var(--ddsweb-theme-colors-background-base);}
+    .ma7GBa_linkContainer {
+      box-sizing: border-box;
+      outline: none;
+      display: flex;
+      position: relative;}
+    .ma7GBa_panelContainer {
+      padding: var(--ddsweb-theme-spacing-md) var(--ddsweb-theme-spacing-sm) var(--ddsweb-theme-spacing-sm) var(--ddsweb-theme-spacing-sm);
+      flex-direction: column;
+      flex-grow: 1;
+      order: 1;
+      justify-content: space-between;
+      display: flex;}
+    .ma7GBa_logo {
+      right: var(--ddsweb-theme-spacing-sm);
+      bottom: var(--ddsweb-theme-spacing-sm);
+      display: block;
+      position: absolute;}
+    .ma7GBa_headline {
+      max-width: 480px;
+      margin-top: 0;
+      margin-bottom: 0;}
+    .ma7GBa_text {
+      --ddsweb-text-margin-top: var(--ddsweb-theme-spacing-xs);
+      max-width: 480px;}
+    .ma7GBa_hasHref {
+      --content-stamp-cursor: pointer;}
+    .ma7GBa_hasHref:focus-visible {
+      outline: 3px solid var(--ddsweb-theme-colors-primary);
+      outline-offset: 1px;}
+    .ma7GBa_inverse {
+      --ddsweb-content-stamp-background-color: var(--ddsweb-theme-colors-primary);
+      --ddsweb-heading-color: var(--ddsweb-theme-colors-inverse);
+      --ddsweb-text-color: var(--ddsweb-theme-colors-inverse);}
+    .ma7GBa_hasTextOrHeadline {
+      margin-top: var(--ddsweb-theme-spacing-sm);}
+    @media (width <= 756px) {
+      .ma7GBa_panelContainer .ma7GBa_headline {
+        --ddsweb-heading-font-size: var(--ddsweb-theme-font-size-next-headline-lg);
+        --ddsweb-heading-line-height: var(--ddsweb-theme-line-height-next-heading);}}}}

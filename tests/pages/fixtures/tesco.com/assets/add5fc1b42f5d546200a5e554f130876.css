@@ -1,0 +1,60 @@
+@layer ddsweb-large-atoms {
+  @layer ddsweb-spinner {
+    .rOBrpW_image {
+      width: var(--size);
+      height: var(--size);
+      transform-origin: center;
+      animation-duration: 1s;
+      animation-timing-function: linear;
+      animation-iteration-count: var(--animation-repeat);
+      animation-fill-mode: forwards;
+      animation-play-state: var(--animation-play-state);
+      animation-name: rOBrpW_spin;}
+
+    .rOBrpW_image circle {
+      transform-origin: center;
+      transition: stroke-dashoffset 0.3s ease-in-out;
+      transform: rotate(-90deg);}
+
+    @media (prefers-reduced-motion: reduce) {
+      .rOBrpW_image {
+        animation-duration: 2s;}
+
+      .rOBrpW_image circle {
+        transition-duration: 0s;}}
+
+    @keyframes rOBrpW_spin {
+      0% {
+        transform: rotate(0);}
+
+      100% {
+        transform: rotate(360deg);}}
+
+    .rOBrpW_indeterminate {
+      --animation-repeat: infinite;
+      --animation-play-state: running;}
+
+    .rOBrpW_determinate {
+      --animation-repeat: 1;
+      --animation-play-state: paused;}
+
+    .rOBrpW_xx, .rOBrpW_xs {
+      --size: var(--ddsweb-tc-spinner-xs-size, 16px);}
+
+    .rOBrpW_sm {
+      --size: var(--ddsweb-tc-spinner-sm-size, 24px);}
+
+    .rOBrpW_md {
+      --size: var(--ddsweb-tc-spinner-md-size, 32px);}
+
+    .rOBrpW_lg {
+      --size: var(--ddsweb-tc-spinner-lg-size, 40px);}
+
+    .rOBrpW_xl {
+      --size: var(--ddsweb-tc-spinner-xl-size, 64px);}
+
+    .rOBrpW_dark circle {
+      stroke: var(--dds-retain-colour-in-dark-mode-retain-interactive-inverse);}
+
+    .rOBrpW_normal circle {
+      stroke: var(--dds-retain-colour-in-dark-mode-retain-interactive-default);}}}

@@ -1,0 +1,274 @@
+/* src/styles/src/styles/index.module.css */
+@layer ddsweb-molecules {
+  @layer ddsweb-value-tile {
+    .yymQPq_cssVariables {
+      --value-tile-horizontal-large-lg: 20px;
+      --value-tile-horizontal-large-sm: 20px;
+      --value-tile-horizontal-large-xl: 20px;
+      --value-tile-horizontal-large-xs: 20px;
+      --value-tile-horizontal-large-xx: 20px;
+      --value-tile-horizontal-large-xxl: 20px;
+      --value-tile-horizontal-large-xxx: 20px;
+      --value-tile-horizontal-large-xxxl: 20px;
+      --value-tile-horizontal-lg: 16px;
+      --value-tile-horizontal-md: 16px;
+      --value-tile-horizontal-micro-lg: 20px;
+      --value-tile-horizontal-micro-sm: 16px;
+      --value-tile-horizontal-micro-xs: 12px;
+      --value-tile-horizontal-micro-xx: 10px;
+      --value-tile-horizontal-micro-xxx: 8px;
+      --value-tile-horizontal-sm: 16px;
+      --value-tile-horizontal-xs: 16px;
+      --value-tile-horizontal-xsc: 12px;
+      --value-tile-horizontal-xxx: 16px;
+      --value-tile-square-large-lg: 36px;
+      --value-tile-square-large-md: 32px;
+      --value-tile-square-large-sm: 28px;
+      --value-tile-square-large-xl: 40px;
+      --value-tile-square-large-xs: 24px;
+      --value-tile-square-large-xx: 20px;
+      --value-tile-square-large-xxl: 48px;
+      --value-tile-square-large-xxx: 16px;
+      --value-tile-square-large-xxxl: 52px;
+      --value-tile-square-large-xxxx: 12px;
+      --value-tile-square-large-xxxxx: 10px;
+      --value-tile-square-lg: 32px;
+      --value-tile-square-md: 28px;
+      --value-tile-square-sm: 24px;
+      --value-tile-square-small-lg: 32px;
+      --value-tile-square-small-md: 28px;
+      --value-tile-square-small-sm: 24px;
+      --value-tile-square-small-xl: 36px;
+      --value-tile-square-small-xs: 20px;
+      --value-tile-square-small-xx: 18px;
+      --value-tile-square-small-xxl: 40px;
+      --value-tile-square-small-xxx: 14px;
+      --value-tile-square-small-xxxl: 48px;
+      --value-tile-square-small-xxxx: 10px;
+      --value-tile-square-xl: 36px;
+      --value-tile-square-xs: 20px;
+      --value-tile-square-xx: 18px;
+      --value-tile-square-xxl: 40px;
+      --value-tile-square-xxx: 14px;
+      --value-tile-square-xxxl: 48px;
+      --value-tile-square-xxxx: 12px;}
+    .yymQPq_container {
+      box-sizing: border-box;
+      align-items: center;
+      justify-content: var(--value-tile-container-justify-content, center);
+      background-color: var(--value-tile-container-bg-color, var(--ddsweb-theme-colors-promo));
+      color: var(--value-tile-container-color, var(--ddsweb-theme-colors-black));
+      text-align: center;
+      line-height: 1;
+      display: inline-flex;}
+    .yymQPq_stretch {
+      --value-tile-container-justify-content: space-evenly;}
+    .yymQPq_position {
+      top: var(--value-tile-container-position-top);
+      right: var(--value-tile-container-position-right);
+      bottom: var(--value-tile-container-position-bottom);
+      left: var(--value-tile-container-position-left);
+      position: absolute;}
+    .yymQPq_horizontal {
+      width: auto;
+      height: 40px;
+      padding: var(--ddsweb-theme-spacing-sm);
+      --value-tile-container-position-top: auto;
+      --value-tile-container-position-right: auto;
+      --value-tile-container-position-bottom: 0;
+      --value-tile-container-position-left: 0;
+      flex-direction: row;}
+    .yymQPq_square {
+      width: var(--value-tile-container-width, 100px);
+      height: var(--value-tile-container-height, 100px);
+      padding: var(--ddsweb-theme-spacing-sm) var(--ddsweb-theme-spacing-xs);
+      --value-tile-container-position-top: 0;
+      --value-tile-container-position-right: 0;
+      --value-tile-container-position-bottom: auto;
+      --value-tile-container-position-left: auto;
+      flex-direction: column;}
+    .yymQPq_squareSmall {
+      --value-tile-container-width: 56px;
+      --value-tile-container-height: 56px;}
+    .yymQPq_squareLarge {
+      --value-tile-container-width: 110px;
+      --value-tile-container-height: 110px;}
+    .yymQPq_contentLine {
+      margin-right: var(--value-tile-content-line-margin-right, 0);
+      font-weight: bold;
+      font-size: var(--value-tile-content-line-font-size);
+      white-space: nowrap;
+      text-decoration: none;
+      position: relative;}
+    .yymQPq_spacing {
+      padding: var(--value-tile-content-line-spacing, 0) 0;}
+    .yymQPq_strikeThrough {
+      --value-tile-content-line-margin-right: var(--ddsweb-theme-spacing-xs);
+      text-decoration: line-through;}
+    .yymQPq_horizontal .yymQPq_contentLine {
+      width: auto;}
+    .yymQPq_horizontal .yymQPq_contentLine:before {
+      content: ' ';
+      white-space: pre;}
+    .yymQPq_horizontal .yymQPq_contentLine:first-child:before {
+      content: '';}
+    .yymQPq_square .yymQPq_contentLine,
+    .yymQPq_squareLarge .yymQPq_contentLine,
+    .yymQPq_squareSmall .yymQPq_contentLine {
+      width: 100%;}
+    .yymQPq_square .yymQPq_contentLine {
+      --value-tile-content-line-margin-right: 0;}
+    .yymQPq_square .yymQPq_contentLine:before {
+      content: '';}
+    .yymQPq_square .yymQPq_asterisk:after {
+      --value-tile-asterisk-position: absolute;
+      --value-tile-asterisk-font-size: var(--ddsweb-theme-font-size-md);}
+    .yymQPq_square .yymQPq_asterisk:after,
+    .yymQPq_horizontal .yymQPq_asterisk:after {
+      position: var(--value-tile-asterisk-position, initial);
+      content: '*';
+      font-size: var(--value-tile-asterisk-font-size);
+      top: 0;}
+    .yymQPq_newValueTile {
+      --value-tile-container-bg-color: var(--ddsweb-theme-colors-primary);
+      --value-tile-container-color: var(--ddsweb-theme-colors-inverse);}
+    .yymQPq_regularPrice {
+      --value-tile-container-bg-color: var(--ddsweb-theme-colors-white);
+      --value-tile-container-justify-content: space-between;}
+    .yymQPq_clubcard {
+      --value-tile-container-bg-color: var(--ddsweb-theme-colors-promo);}
+    .yymQPq_regularPrice span:nth-child(odd) {
+      text-align: left;}
+    .yymQPq_regularPrice span:nth-child(2n) {
+      text-align: right;}
+    .yymQPq_horizontal.yymQPq_regularPrice {
+      padding: var(--ddsweb-theme-spacing-xs);}
+    .yymQPq_horizontal.yymQPq_regularPrice > span:first-child {
+      white-space: normal;
+      word-spacing: 9999px;
+      max-width: 50%;}
+    .yymQPq_horizontal.yymQPq_clubcard {
+      padding: var(--ddsweb-theme-spacing-xs);}
+    .yymQPq_horizontal.yymQPq_clubcard > span:first-child {
+      white-space: normal;
+      word-spacing: 9999px;
+      max-width: 50%;}
+    .yymQPq_horizontalMicro.yymQPq_regularPrice {
+      width: 110px;
+      height: 28px;
+      padding: 0 var(--ddsweb-theme-spacing-xs);}
+    .yymQPq_horizontalMicro.yymQPq_regularPrice span:nth-child(odd) {
+      white-space: normal;
+      word-spacing: 5px;
+      max-width: 50%;}
+    .yymQPq_horizontalLarge.yymQPq_clubcard {
+      padding: var(--ddsweb-theme-spacing-sm);}
+    .yymQPq_horizontalLarge.yymQPq_clubcard > span:first-child {
+      max-width: unset;
+      white-space: unset;
+      word-spacing: unset;}
+    .yymQPq_eu {
+      --value-tile-container-bg-color: var(--ddsweb-theme-colors-primary);}
+    .yymQPq_eu.yymQPq_horizontal {
+      --value-tile-container-bg-color: var(--ddsweb-theme-colors-promo);}
+    .yymQPq_eu.yymQPq_square {
+      padding: var(--ddsweb-theme-spacing-xs);}
+    .yymQPq_eu.yymQPq_squareSmall {
+      padding: var(--ddsweb-theme-spacing-xx);}
+    .yymQPq_rounded {
+      background-color: var(--ddsweb-theme-colors-promo);
+      border-radius: 10px;
+      flex-direction: column;
+      justify-content: center;
+      width: 100%;
+      height: 100%;
+      display: flex;}
+    .yymQPq_offerContainer {
+      box-sizing: border-box;
+      height: 45%;
+      padding: var(--ddsweb-theme-spacing-xx) 0 0 0;
+      flex-direction: column;
+      justify-content: center;
+      display: flex;}
+    .yymQPq_multiline {
+      padding: 0 0 var(--ddsweb-theme-spacing-xx) 0;}
+    .yymQPq_uk {
+      row-gap: var(--ddsweb-theme-spacing-xx);
+      border-radius: var(--ddsweb-theme-spacing-xs);
+      background-color: var(--ddsweb-theme-colors-background-base);
+      white-space: initial;
+      padding: 0;
+      display: flex;}
+    .yymQPq_uk.yymQPq_horizontal {
+      column-gap: var(--ddsweb-theme-spacing-xx);
+      width: unset;
+      height: unset;
+      flex-wrap: wrap;}
+    .yymQPq_uk.yymQPq_square {
+      width: 102px;
+      height: auto;}
+    .yymQPq_uk.yymQPq_square div {
+      box-sizing: border-box;
+      text-align: center;
+      place-content: center;
+      width: 100%;}
+    .yymQPq_uk > :first-child {
+      width: 100%;
+      display: inline-block;}
+    .yymQPq_uk > :last-child {
+      text-align: left;
+      flex: 1;
+      height: 56px;}
+    .yymQPq_uk .yymQPq_regularPrice {
+      box-sizing: border-box;
+      border: 1px solid var(--ddsweb-theme-colors-black);
+      background-color: var(--ddsweb-theme-colors-white);
+      height: 18px;
+      color: var(--ddsweb-theme-colors-black);
+      font-weight: 700;
+      font-size: var(--ddsweb-theme-font-size-next-text-sm);
+      text-align: center;
+      border-radius: 4px;
+      padding-bottom: 1px;
+      line-height: 1;}
+    .yymQPq_uk .yymQPq_clubcardLogo {
+      border-radius: var(--ddsweb-theme-spacing-xs) 0 0 var(--ddsweb-theme-spacing-xs);
+      background-color: var(--ddsweb-theme-colors-primary);
+      width: 56px;
+      height: 56px;
+      color: var(--ddsweb-theme-colors-white);
+      text-align: center;
+      align-items: center;
+      font-size: 10px;
+      font-weight: 700;
+      line-height: 1;
+      display: flex;}
+    .yymQPq_uk .yymQPq_contentWrapper {
+      box-sizing: border-box;
+      padding: var(--ddsweb-theme-spacing-xs);
+      border-radius: 0 var(--ddsweb-theme-spacing-xs) var(--ddsweb-theme-spacing-xs) 0;
+      background-color: var(--ddsweb-theme-colors-promo);
+      color: var(--ddsewb-theme-colors-black);
+      line-height: var(--ddsweb-theme-line-height-heading-xs);
+      flex-flow: column;
+      justify-content: center;
+      display: flex;}
+    .yymQPq_uk .yymQPq_squareOfferContentWrapper {
+      box-sizing: border-box;
+      height: 49px;
+      padding: var(--ddsweb-theme-spacing-xx);
+      border-radius: var(--ddsweb-theme-spacing-xs) var(--ddsweb-theme-spacing-xs) 0 0;
+      background-color: var(--ddsweb-theme-colors-promo);
+      color: var(--ddsweb-theme-colors-black);
+      flex-direction: column;
+      display: flex;}
+    .yymQPq_uk .yymQPq_squareClubcardLogo {
+      box-sizing: border-box;
+      height: 49px;
+      padding: 0 var(--ddsweb-theme-spacing-xx);
+      border-radius: 0 0 var(--ddsweb-theme-spacing-xs) var(--ddsweb-theme-spacing-xs);
+      background-color: var(--ddsweb-theme-colors-primary);
+      color: #fff;
+      font-weight: 700;
+      font-size: var(--ddsweb-theme-font-size-xx);
+      flex: auto;}}}

@@ -2458,6 +2458,53 @@ fn button_elements_with_element_children_do_not_generate_replaced_form_controls(
 }
 
 #[test]
+fn inline_buttons_are_atomic_inline_level_block_containers() {
+  // Chrome/WebKit treat `<button style="display:inline">` as an atomic inline-level container for
+  // its descendants (block descendants do not escape via CSS2 "block-in-inline splitting"). This
+  // matters for real-world patterns where a button is styled like a link and contains flex/block
+  // descendants.
+  let html = "<html><body><p>Before <button style=\"display:inline\"><span style=\"display:flex\">FLEX</span></button> After</p></body></html>";
+  let dom = crate::dom::parse_html(html).expect("parse");
+  let styled = crate::style::cascade::apply_styles(&dom, &crate::css::types::StyleSheet::new());
+  let box_tree = generate_box_tree_with_anonymous_fixup(&styled);
+
+  fn find_button_id(node: &StyledNode) -> Option<usize> {
+    if let DomNodeType::Element { tag_name, .. } = &node.node.node_type {
+      if tag_name.eq_ignore_ascii_case("button") {
+        return Some(node.node_id);
+      }
+    }
+    node.children.iter().find_map(find_button_id)
+  }
+
+  fn find_box_by_styled_id<'a>(node: &'a BoxNode, id: usize) -> Option<&'a BoxNode> {
+    if node.styled_node_id == Some(id) && node.generated_pseudo.is_none() {
+      return Some(node);
+    }
+    node
+      .children
+      .iter()
+      .find_map(|child| find_box_by_styled_id(child, id))
+  }
+
+  let button_id = find_button_id(&styled).expect("button node id");
+  let button_box = find_box_by_styled_id(&box_tree.root, button_id)
+    .expect("button box should remain present after anonymous fixup");
+  assert_eq!(
+    button_box.formatting_context(),
+    Some(FormattingContextType::Block),
+    "inline buttons should establish an internal block formatting context"
+  );
+
+  let mut texts = Vec::new();
+  collect_text(button_box, &mut texts);
+  assert!(
+    texts.iter().any(|t| t == "FLEX"),
+    "expected button subtree to contain its flex descendant text (texts={texts:?})"
+  );
+}
+
+#[test]
 fn input_type_image_is_treated_as_replaced_image() {
   let html = "<html><body><input type=\"image\" src=\"test.png\"></body></html>";
   let dom = crate::dom::parse_html(html).expect("parse");

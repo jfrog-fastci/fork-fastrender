@@ -1,0 +1,141 @@
+@layer ddsweb-molecules {
+  @layer ddsweb-messaging {
+    @layer ddsweb-messaging-base {
+      .dc0Swq_container {
+        --bg-color: var(--bg-color-light);
+        --outer-padding: var(--dds-spacing-space-12);
+        padding: var(--outer-padding);
+        background-color: var(--bg-color);
+        font-family: var(--ddsweb-font-family-text);
+        display: flex;}
+
+      .dc0Swq_success {
+        --bg-color-light: var(--dds-messaging-colour-messaging-success-tint);
+        --bg-color-dark: var(--dds-messaging-colour-messaging-success);}
+
+      .dc0Swq_warning {
+        --bg-color-light: var(--dds-messaging-colour-messaging-warning-tint);
+        --bg-color-dark: var(--dds-messaging-colour-messaging-warning);}
+
+      .dc0Swq_error {
+        --bg-color-light: var(--dds-messaging-colour-messaging-error-tint);
+        --bg-color-dark: var(--dds-messaging-colour-messaging-error);}
+
+      .dc0Swq_info {
+        --bg-color-light: var(--dds-messaging-colour-messaging-info-tint);
+        --bg-color-dark: var(--dds-messaging-colour-messaging-info);}
+
+      .dc0Swq_amend {
+        --bg-color-light: var(--dds-messaging-colour-messaging-active);
+        --bg-color-dark: var(--dds-messaging-colour-messaging-active);}
+
+      .dc0Swq_global {
+        --bg-color: var(--bg-color-dark);}
+
+      .dc0Swq_status {
+        --bg-color: transparent;
+        --outer-padding: 0;
+        --spacing: var(--ddsweb-tc-messaging-status-content-spacing, 2px);}
+
+      .dc0Swq_inpage, .dc0Swq_inline, .dc0Swq_status {
+        --button-color: var(--dds-interaction-colour-interactive-default);}
+
+      .dc0Swq_global, .dc0Swq_onboarding, .dc0Swq_onDark {
+        --button-color: var(--dds-interaction-colour-interactive-inverse);}
+
+      .dc0Swq_global, .dc0Swq_onboarding, .dc0Swq_inpage {
+        --spacing: var(--ddsweb-tc-messaging-global-content-spacing, var(--dds-spacing-space-12));
+        --footer-spacing: var(--ddsweb-tc-messaging-global-footer-spacing, var(--dds-spacing-space-16));
+        --button-spacing: calc(var(--dds-spacing-space-8)  + 1px);}
+
+      .dc0Swq_inline {
+        --spacing: var(--dds-spacing-space-4);}
+
+      .dc0Swq_inline, .dc0Swq_status {
+        --footer-spacing: var(--ddsweb-tc-messaging-inline-footer-spacing, var(--dds-spacing-space-12));
+        --button-spacing: var(--dds-spacing-space-2);}
+
+      .dc0Swq_status {
+        --icon-spacing: var(--dds-spacing-space-8);}
+
+      .dc0Swq_inner {
+        --ddsweb-heading-color: var(--dds-typography-colour-text-header-primary);
+        --ddsweb-text-color: var(--dds-typography-colour-text-body);}
+
+      .dc0Swq_onDark .dc0Swq_inner {
+        --ddsweb-heading-color: var(--dds-typography-colour-text-on-dark);
+        --ddsweb-text-color: var(--dds-typography-colour-text-on-dark);}
+
+      .dc0Swq_message {
+        flex-grow: 1;}
+
+      .dc0Swq_message:nth-child(2) {
+        margin-left: var(--icon-spacing, var(--dds-spacing-space-12));}
+
+      .dc0Swq_content {
+        margin-top: calc(var(--spacing)  - 2px);
+        align-items: flex-start;
+        gap: var(--dds-spacing-space-12);
+        grid-template-columns: 1fr auto;
+        display: grid;}
+
+      .dc0Swq_inner {
+        flex-grow: 1;}
+
+      .dc0Swq_title {
+        margin-bottom: var(--dds-spacing-space-8);}
+
+      .dc0Swq_title:last-child {
+        margin-bottom: 0;}
+
+      .dc0Swq_title > * {
+        word-break: break-word;
+        overflow-wrap: anywhere;}
+
+      .dc0Swq_footer {
+        margin-top: var(--footer-spacing);
+        align-items: center;
+        gap: var(--dds-spacing-space-12);
+        flex-wrap: wrap;
+        display: flex;}
+
+      @media (max-width: 480px) {
+        .dc0Swq_footer {
+          display: grid;}
+
+        .dc0Swq_footer > .dc0Swq_ddsweb-button--text-button {
+          width: 100%;}}
+
+      .dc0Swq_close {
+        margin-top: calc(-1 * var(--button-spacing));
+        color: var(--button-color, var(--dds-interaction-colour-interactive-default));
+        flex-shrink: 0;}
+
+      .dc0Swq_visuallyHidden {
+        clip: rect(0 0 0 0);
+        border: 0;
+        width: 1px;
+        height: 1px;
+        margin: -1px;
+        padding: 0;
+        position: absolute;
+        overflow: hidden;}
+
+      .dc0Swq_onboarding {
+        --bg-color-light: var(--dds-messaging-colour-messaging-info);
+        --bg-color-dark: var(--dds-messaging-colour-messaging-info);}
+
+      .dc0Swq_onboarding .dc0Swq_inner {
+        --ddsweb-heading-color: var(--dds-typography-colour-text-on-dark);
+        --ddsweb-text-color: var(--dds-typography-colour-text-on-dark);}
+
+      .dc0Swq_onboarding-icon-container {
+        background-color: var(--bg-color-light);
+        border-radius: 50%;
+        justify-content: center;
+        align-items: center;
+        width: 48px;
+        height: 48px;
+        display: flex;}}
+
+    @layer ddsweb-messaging-icons, ddsweb-messaging-inline;}}

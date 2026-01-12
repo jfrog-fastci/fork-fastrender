@@ -1,0 +1,7 @@
+@layer ddsweb-small-atoms {
+  @layer ddsweb-label {
+    .-P_O-a_label {
+      display: inline-block;}
+
+    .-P_O-a_lineHeightShort {
+      line-height: var(--ddsweb-theme-line-height-text-xs);}}}

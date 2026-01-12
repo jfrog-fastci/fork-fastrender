@@ -1,0 +1,191 @@
+@layer ddsweb-base {
+  @layer ddsweb-foundation {
+    .Rzgr1q_root {
+      -moz-osx-font-smoothing: var(--ddsweb-foundation-root-osx-font-smoothing, grayscale);
+      -webkit-font-smoothing: var(--ddsweb-foundation-root-webkit-font-smoothing, antialiased);
+      box-sizing: var(--ddsweb-foundation-root-box-sizing, border-box);
+      font-weight: var(--ddsweb-foundation-root-font-weight, normal);
+      font-size: var(--ddsweb-foundation-root-font-size, var(--dds-typography-tokens-size-fontsize-16));
+      line-height: var(--ddsweb-foundation-root-line-height, var(--ddsweb-theme-base-line-height));
+      font-family: var(--ddsweb-foundation-root-font-family, var(--ddsweb-theme-base-font-family));}
+
+    .Rzgr1q_base {
+      -webkit-tap-highlight-color: var(--ddsweb-theme-base-tap-highlight-color);
+      box-sizing: border-box;
+      outline: var(--ddsweb-theme-base-outline);
+      position: relative;}
+
+    .Rzgr1q_reset {
+      margin: var(--ddsweb-foundation-reset-margin-top, 0) var(--ddsweb-foundation-reset-margin-right, 0) var(--ddsweb-foundation-reset-margin-bottom, 0) var(--ddsweb-foundation-reset-margin-left, 0);
+      padding: var(--ddsweb-foundation-reset-padding-top, 0) var(--ddsweb-foundation-reset-padding-right, 0) var(--ddsweb-foundation-reset-padding-bottom, 0) var(--ddsweb-foundation-reset-padding-left, 0);
+      border: var(--ddsweb-foundation-reset-border, 0);}
+
+    .Rzgr1q_visuallyHidden {
+      white-space: nowrap;
+      clip-path: inset(50%);
+      width: 1px;
+      height: 1px;
+      position: absolute;
+      overflow: hidden;}
+
+    .Rzgr1q_centerAlign {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);}
+
+    .Rzgr1q_cursorDefault {
+      cursor: default;}
+
+    .Rzgr1q_cursorPointer {
+      cursor: pointer;}
+
+    .Rzgr1q_cover {
+      width: 100%;
+      height: 100%;
+      position: absolute;
+      top: 0;
+      left: 0;}
+
+    .Rzgr1q_truncate {
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      overflow: hidden;}
+
+    .Rzgr1q_verticallyAlign {
+      position: absolute;
+      top: 50%;
+      transform: translate(0, -50%);}
+
+    .Rzgr1q_base {
+      color: var(--dds-typography-colour-text-body);}
+
+    .Rzgr1q_dark {
+      color: var(--dds-typography-colour-text-header-primary);}
+
+    .Rzgr1q_inverse {
+      color: var(--dds-typography-colour-text-on-dark);}
+
+    .Rzgr1q_success {
+      color: var(--dds-messaging-colour-messaging-success);}
+
+    .Rzgr1q_error {
+      color: var(--dds-messaging-colour-messaging-error);}
+
+    .Rzgr1q_disabled {
+      color: var(--dds-line-colour-border-primary);}
+
+    .Rzgr1q_font {
+      font-family: var(--ddsweb-theme-font-family-text);}
+
+    .Rzgr1q_xs {
+      font-size: var(--dds-typography-tokens-size-fontsize-12);}
+
+    .Rzgr1q_sm {
+      font-size: var(--dds-typography-tokens-size-fontsize-14);}
+
+    .Rzgr1q_md {
+      font-size: var(--dds-typography-tokens-size-fontsize-16);}
+
+    .Rzgr1q_lg {
+      font-size: var(--dds-typography-tokens-size-fontsize-20);}
+
+    .Rzgr1q_lineHeightShort {
+      line-height: var(--ddsweb-theme-line-height-next-text-sm);}
+
+    .Rzgr1q_lineHeightLong {
+      line-height: var(--ddsweb-theme-line-height-next-text-md);}
+
+    .Rzgr1q_normal {
+      font-weight: var(--dds-typography-tokens-weight-sans-regular);}
+
+    .Rzgr1q_emphasized {
+      font-weight: bold;}
+
+    .Rzgr1q_bareForm {
+      appearance: none;
+      width: 100%;
+      color: var(--dds-typography-colour-text-body);
+      background-image: none;}
+
+    .Rzgr1q_bareInput:focus-visible {
+      --base-form-outline-color: transparent;}
+
+    .Rzgr1q_bareInput::placeholder {
+      color: var(--dds-typography-colour-text-body);
+      font-family: inherit;
+      font-style: italic;}
+
+    .Rzgr1q_bareInput::selection {
+      background-color: rgb(var(--dds-interaction-colour-interactive-active-rgb), 0.4);}
+
+    .Rzgr1q_baseForm {
+      border-style: solid;
+      border-width: 1px;
+      border-color: var(--foundation-base-form-border-color, var(--dds-interaction-colour-interactive-form));
+      outline-color: var(--foundation-base-form-outline-color, transparent);
+      outline-offset: 1px;
+      background-color: var(--foundation-base-form-background-color, var(--dds-interaction-colour-interactive-inverse));
+      transition: border-color var(--ddsweb-theme-base-transition-duration), outline-color var(--ddsweb-theme-base-transition-duration);
+      border-radius: 0;
+      outline-width: 3px;
+      outline-style: solid;}
+
+    .Rzgr1q_baseForm:disabled {
+      --base-form-background-color: var(--dds-interaction-colour-interactive-inverse);
+      --base-form-border-color: var(--dds-interaction-colour-interactive-form);
+      box-shadow: none;
+      cursor: default;
+      opacity: var(--ddsweb-theme-base-rgb-opacity);}
+
+    .Rzgr1q_baseForm:focus {
+      --foundation-base-form-border-color: var(--dds-interaction-colour-interactive-active);
+      --foundation-base-form-outline-color: var(--dds-interaction-colour-interactive-active);}
+
+    .Rzgr1q_baseForm:invalid {
+      box-shadow: none;}
+
+    .Rzgr1q_error {
+      --foundation-base-form-border-color: var(--dds-interaction-colour-interactive-error-form);}
+
+    .Rzgr1q_error:focus {
+      --foundation-base-form-border-color: var(--dds-interaction-colour-interactive-error-form);
+      --foundation-base-form-outline-color: var(--dds-interaction-colour-interactive-error-form);}
+
+    .Rzgr1q_error::selection {
+      --foundation-base-form-background-color: rgb(var(--dds-interaction-colour-interactive-error-form-rgb), 0.4);}
+
+    .Rzgr1q_scrollableVertical {
+      -webkit-overflow-scrolling: touch;
+      -ms-overflow-style: -ms-autohiding-scrollbar;
+      overflow: hidden auto;}
+
+    .Rzgr1q_scrollableHorizontal {
+      -webkit-overflow-scrolling: touch;
+      -ms-overflow-style: -ms-autohiding-scrollbar;
+      white-space: nowrap;
+      overflow: auto hidden;}
+
+    .Rzgr1q_fadeIn {
+      animation: Rzgr1q_ddsWebFadeIn var(--ddsweb-theme-base-transition-duration);
+      animation-fill-mode: forwards;}
+
+    .Rzgr1q_fadeOut {
+      animation: Rzgr1q_ddsWebFadeOut var(--ddsweb-theme-base-transition-duration);
+      animation-fill-mode: forwards;}
+
+    @keyframes Rzgr1q_ddsWebFadeIn {
+      0% {
+        visibility: visible;
+        opacity: 0;}
+
+      100% {
+        opacity: 1;}}
+
+    @keyframes Rzgr1q_ddsWebFadeOut {
+      0% {
+        opacity: 1;}
+
+      100% {
+        visibility: hidden;
+        opacity: 0;}}}}
