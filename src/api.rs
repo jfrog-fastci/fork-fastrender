@@ -15304,15 +15304,18 @@ impl FastRender {
     // latency, but when pageset runners spawn many worker processes we need to keep the per-worker
     // thread count under control.
     //
-    // `scripts/pageset.sh` and friends cap per-worker Rayon threads via `RAYON_NUM_THREADS`; use it
-    // as the default scaling input when present so the intrinsic probe pool tracks the same
-    // "threads per worker" intent.
-    let base_parallelism = std::env::var("RAYON_NUM_THREADS")
-      .ok()
-      .and_then(|value| value.parse::<usize>().ok())
-      .filter(|threads| *threads > 0)
-      .unwrap_or_else(crate::system::cpu_budget)
-      .max(1);
+    // `scripts/pageset.sh` and friends cap per-worker Rayon threads via `RAYON_NUM_THREADS`. Rather
+    // than re-parsing that env var here, use the already-initialised global pool size as the
+    // scaling input. This keeps all `RAYON_NUM_THREADS` parsing/validation in
+    // `crate::rayon_global`.
+    let base_parallelism = if crate::rayon_global::ensure_global_pool().is_ok() {
+      rayon::current_num_threads()
+        .max(1)
+        .min(crate::system::cpu_budget().max(1))
+        .max(1)
+    } else {
+      1
+    };
     let default_parallelism = base_parallelism.saturating_mul(8).min(64).max(1);
     self
       .runtime_toggles
