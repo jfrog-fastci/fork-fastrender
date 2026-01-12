@@ -1367,6 +1367,65 @@ mod tests {
     )?;
     assert_eq!(out, Value::Bool(true));
 
+    // Element attribute methods should also be inherited from `Element.prototype` when present.
+    let out = host.exec_script(
+      "(() => {\n\
+        const el = document.createElement('div');\n\
+        return Object.prototype.hasOwnProperty.call(el, 'getAttribute');\n\
+      })()",
+    )?;
+    assert_eq!(out, Value::Bool(false));
+
+    let out = host.exec_script(
+      "(() => {\n\
+        const el = document.createElement('div');\n\
+        return el.getAttribute === Element.prototype.getAttribute;\n\
+      })()",
+    )?;
+    assert_eq!(out, Value::Bool(true));
+
+    let out = host.exec_script(
+      "(() => {\n\
+        const el = document.createElement('div');\n\
+        return Object.prototype.hasOwnProperty.call(el, 'setAttribute');\n\
+      })()",
+    )?;
+    assert_eq!(out, Value::Bool(false));
+
+    let out = host.exec_script(
+      "(() => {\n\
+        const el = document.createElement('div');\n\
+        return el.setAttribute === Element.prototype.setAttribute;\n\
+      })()",
+    )?;
+    assert_eq!(out, Value::Bool(true));
+
+    let out = host.exec_script(
+      "(() => {\n\
+        const el = document.createElement('div');\n\
+        return Object.prototype.hasOwnProperty.call(el, 'removeAttribute');\n\
+      })()",
+    )?;
+    assert_eq!(out, Value::Bool(false));
+
+    let out = host.exec_script(
+      "(() => {\n\
+        const el = document.createElement('div');\n\
+        return el.removeAttribute === Element.prototype.removeAttribute;\n\
+      })()",
+    )?;
+    assert_eq!(out, Value::Bool(true));
+
+    // Prove the inherited Element.prototype methods still work.
+    let out = host.exec_script(
+      "(() => {\n\
+        const el = document.createElement('div');\n\
+        el.setAttribute('data-x', 'y');\n\
+        return el.getAttribute('data-x') === 'y';\n\
+      })()",
+    )?;
+    assert_eq!(out, Value::Bool(true));
+
     // Prove that inherited EventTarget.prototype methods still work on node wrappers.
     let out = host.exec_script(
       "(() => {\n\
