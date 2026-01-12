@@ -1,8 +1,11 @@
 # `cargo fuzz` output
 artifacts/
-corpus/
+# Corpus grows during fuzzing. Ignore everything by default, but keep checked-in seed inputs.
+corpus/**
+!corpus/
+!corpus/**/
+!corpus/**/seed_*
 
 # Most fuzz builds place outputs under the workspace `target/`, but `cargo fuzz`
 # can also be configured to use a local target directory.
 target/
-

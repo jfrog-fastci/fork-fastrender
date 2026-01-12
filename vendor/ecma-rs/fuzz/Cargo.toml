@@ -8,15 +8,15 @@ edition = "2021"
 cargo-fuzz = true
 
 [features]
-# Enable the typed optimizer pipeline by default so `cargo fuzz run optimize_js_compile_typed`
-# works without extra flags.
+# Enable the typed optimizer pipeline by default so typed targets work without extra flags.
 default = ["typed"]
-typed = ["optimize-js/typed"]
+typed = ["dep:typecheck-ts", "optimize-js/typed"]
 
 [dependencies]
 libfuzzer-sys = "0.4"
 parse-js = { path = "../parse-js" }
 vm-js = { path = "../vm-js" }
+typecheck-ts = { path = "../typecheck-ts", optional = true }
 
 [dependencies.llvm-stackmaps]
 path = "../llvm-stackmaps"
@@ -75,7 +75,25 @@ test = false
 doc = false
 
 [[bin]]
+name = "optimize_js_untyped_compile"
+path = "fuzz_targets/optimize_js_untyped_compile.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "optimize_js_typed_compile"
+path = "fuzz_targets/optimize_js_typed_compile.rs"
+test = false
+doc = false
+
+[[bin]]
 name = "stackmap_relocate_statepoint"
 path = "fuzz_targets/stackmap_relocate_statepoint.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "stackmap_relocation"
+path = "fuzz_targets/stackmap_relocation.rs"
 test = false
 doc = false
