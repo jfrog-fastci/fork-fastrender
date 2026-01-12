@@ -59,47 +59,79 @@ fn decl_queries_match_program_types() {
   let program_map_ty = program.type_of_def_interned(map_def);
   let program_wrapper_ty = program.type_of_def_interned(wrapper_def);
 
-  let snapshot = program.snapshot();
-  let canonical_defs: HashMap<(FileId, String), DefId> =
-    snapshot.canonical_defs.iter().cloned().collect();
-  let def_names: HashMap<DefId, String> = snapshot
-    .def_data
-    .iter()
-    .map(|entry| (entry.def, entry.data.name.clone()))
-    .collect();
+  // This test exercises the standalone `TypesDatabase` query engine by seeding
+  // it with the declared types for a small program and asserting that
+  // `type_of_def` matches the main `Program` API.
+  //
+  // Do not iterate over every definition from the default lib set: TypeScript's
+  // bundled `.d.ts` files contain thousands of declarations and many deeply
+  // recursive types. Walking all of them (and forcing every type to intern) is
+  // both unnecessary for this test and can lead to pathologically long runtimes
+  // in debug builds.
+  let compiler_options = program.compiler_options();
+  let interned_store_snapshot = program.interned_type_store().snapshot();
 
-  let mut decls_by_file: BTreeMap<_, BTreeMap<DefId, DeclInfo>> = BTreeMap::new();
-  for def in snapshot.def_data.iter() {
-    if let Some(expected) = canonical_defs.get(&(def.data.file, def.data.name.clone())) {
-      if *expected != def.def {
-        continue;
-      }
-    }
-    let entry = DeclInfo {
-      file: def.data.file,
-      name: def.data.name.clone(),
-      kind: DeclKind::Var,
-      declared_type: Some(program.type_of_def_interned(def.def)),
-      initializer: None,
-    };
-    decls_by_file
-      .entry(def.data.file)
-      .or_default()
-      .insert(def.def, entry);
-  }
+  let mut decls_by_file: BTreeMap<FileId, BTreeMap<DefId, DeclInfo>> = BTreeMap::new();
+  decls_by_file
+    .entry(file_a_id)
+    .or_default()
+    .insert(
+      box_def,
+      DeclInfo {
+        file: file_a_id,
+        name: "Box".to_string(),
+        kind: DeclKind::Interface,
+        declared_type: Some(program_box_ty),
+        initializer: None,
+      },
+    );
+  decls_by_file
+    .entry(file_b_id)
+    .or_default()
+    .insert(
+      map_def,
+      DeclInfo {
+        file: file_b_id,
+        name: "MapBox".to_string(),
+        kind: DeclKind::TypeAlias,
+        declared_type: Some(program_map_ty),
+        initializer: None,
+      },
+    );
+  decls_by_file
+    .entry(file_b_id)
+    .or_default()
+    .insert(
+      wrapper_def,
+      DeclInfo {
+        file: file_b_id,
+        name: "Wrapper".to_string(),
+        kind: DeclKind::Interface,
+        declared_type: Some(program_wrapper_ty),
+        initializer: None,
+      },
+    );
 
   let mut db = TypesDatabase::new();
-  db.set_compiler_options(snapshot.compiler_options.clone());
+  db.set_compiler_options(compiler_options);
   db.set_type_store(SharedTypeStore(TypeStore::from_snapshot(
-    snapshot.interned_type_store.clone(),
+    interned_store_snapshot,
   )));
-  db.set_files(Arc::new(snapshot.files.iter().map(|f| f.file).collect()));
+  db.set_files(Arc::new(vec![file_a_id, file_b_id]));
   for (file, decls) in decls_by_file {
     db.set_decl_types_in_file(file, Arc::new(decls));
   }
 
   let store = type_store(&db).arc();
-  let resolver_names = Arc::new(def_names);
+  let resolver_names: Arc<HashMap<DefId, String>> = Arc::new(
+    [
+      (box_def, "Box".to_string()),
+      (map_def, "MapBox".to_string()),
+      (wrapper_def, "Wrapper".to_string()),
+    ]
+    .into_iter()
+    .collect(),
+  );
   let resolver: Arc<dyn Fn(DefId) -> Option<String> + Send + Sync> = {
     let names = Arc::clone(&resolver_names);
     Arc::new(move |def: DefId| names.get(&def).cloned())
