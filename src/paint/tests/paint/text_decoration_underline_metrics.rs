@@ -1,16 +1,14 @@
-mod common;
-
-use fastrender::paint::display_list::DisplayItem;
-use fastrender::paint::display_list_builder::DisplayListBuilder;
-use fastrender::style::types::{TextDecorationLine, TextDecorationThickness};
-use fastrender::{ComputedStyle, FontConfig, FontContext, FragmentNode, FragmentTree, Rect, Rgba};
+use crate::paint::display_list::DisplayItem;
+use crate::paint::display_list_builder::DisplayListBuilder;
+use crate::style::types::{TextDecorationLine, TextDecorationThickness};
+use crate::{ComputedStyle, FontConfig, FontContext, FragmentNode, FragmentTree, Rect, Rgba};
 use std::sync::Arc;
 
 #[test]
 fn underline_center_uses_font_metrics_without_double_counting_thickness() {
   // Make Rayon initialization deterministic; DisplayListBuilder and font shaping can hit the global
   // pool in some configs.
-  common::rayon_test_util::init_rayon_for_tests(2);
+  crate::testing::init_rayon_for_tests(2);
 
   let mut style = ComputedStyle::default();
   style.color = Rgba::BLACK;
@@ -23,12 +21,16 @@ fn underline_center_uses_font_metrics_without_double_counting_thickness() {
   let style = Arc::new(style);
 
   let font_ctx = FontContext::with_config(FontConfig::bundled_only());
-  let shaper = fastrender::ShapingPipeline::new();
+  let shaper = crate::text::ShapingPipeline::new();
   let runs = shaper.shape("Hi", &style, &font_ctx).expect("shape");
   let first_run = runs.first().expect("expected at least one run");
 
   let scaled = font_ctx
-    .get_scaled_metrics_with_variations(first_run.font.as_ref(), first_run.font_size, &first_run.variations)
+    .get_scaled_metrics_with_variations(
+      first_run.font.as_ref(),
+      first_run.font_size,
+      &first_run.variations,
+    )
     .expect("scaled metrics");
 
   // Fragment baseline is rect.y + baseline_offset for horizontal text.
