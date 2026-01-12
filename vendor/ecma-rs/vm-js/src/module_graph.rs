@@ -10,7 +10,6 @@ use crate::import_meta::{create_import_meta_object, VmImportMetaHostHooks};
 use crate::module_loading::DynamicImportState;
 use crate::module_record::ModuleNamespaceCache;
 use crate::module_record::ModuleStatus;
-use crate::module_record::PromiseCapabilityRoots;
 use crate::module_record::ResolveExportResult;
 use crate::module_record::SourceTextModuleRecord;
 use crate::property::{PropertyDescriptor, PropertyKey, PropertyKind};
@@ -176,8 +175,8 @@ fn attach_stack_property_for_promise_rejection(scope: &mut Scope<'_>, reason: Va
 ///
 /// For async module evaluation (top-level await), the pointer must remain installed until the
 /// module evaluation promise settles (fulfilled/rejected) or evaluation is aborted. In that case,
-/// callers must [`ModuleGraphPtrGuard::disarm`] the guard and arrange restoration later (see
-/// `TlaEvaluationState.prev_graph`).
+/// callers must [`ModuleGraphPtrGuard::disarm`] the guard and arrange restoration later via
+/// [`ModuleGraph::retain_module_graph_ptr`] / [`ModuleGraph::release_module_graph_ptr`].
 struct ModuleGraphPtrGuard {
   vm: *mut Vm,
   prev_graph: Option<*mut ModuleGraph>,
@@ -236,10 +235,39 @@ pub struct ModuleGraph {
   modules: Vec<SourceTextModuleRecord>,
   host_resolve: Vec<(ModuleRequest, ModuleId)>,
   tla_states: Vec<Option<TlaEvaluationState>>,
+  /// Per-module async module evaluation progress for each SCC (cycle root).
+  ///
+  /// Indexed by `module_index(scc_root)`. Non-root modules store `None`.
+  scc_eval_states: Vec<Option<SccEvaluationState>>,
+  /// Cached SCC membership list keyed by cycle root module index.
+  ///
+  /// Recomputed when `scc_dirty` is set.
+  scc_members: Vec<Vec<ModuleId>>,
+  /// Cached SCC dependency list keyed by cycle root module index.
+  ///
+  /// Each entry lists the *cycle roots* of SCCs that must be evaluated before this SCC can execute.
+  scc_deps: Vec<Vec<ModuleId>>,
+  /// Cached SCC reverse-dependency list keyed by cycle root module index.
+  ///
+  /// Each entry lists the *cycle roots* of SCCs that depend on this SCC.
+  scc_parents: Vec<Vec<ModuleId>>,
+  scc_dirty: bool,
   global_lexical_env: Option<GcEnv>,
   pending_dynamic_import_evaluations: HashMap<u32, PendingDynamicImportEvaluation>,
-  pending_dynamic_import_prev_graph: Option<*mut ModuleGraph>,
   next_pending_dynamic_import_evaluation_id: u32,
+  /// `vm.module_graph_ptr()` value to restore once all pending async work that depends on a module
+  /// graph pointer has completed.
+  ///
+  /// This is managed via `module_graph_ptr_refcount` so top-level await evaluation and dynamic
+  /// import can overlap without racing to restore the pointer.
+  module_graph_ptr_prev: Option<*mut ModuleGraph>,
+  /// Number of in-flight async operations that require `vm.module_graph_ptr()` to point at this
+  /// graph.
+  ///
+  /// Currently this counts:
+  /// - pending top-level await module evaluation continuations, and
+  /// - pending dynamic import evaluation continuations.
+  module_graph_ptr_refcount: usize,
   torn_down: bool,
   async_eval_states: Vec<AsyncModuleEvalState>,
 }
@@ -250,10 +278,16 @@ impl Default for ModuleGraph {
       modules: Vec::new(),
       host_resolve: Vec::new(),
       tla_states: Vec::new(),
+      scc_eval_states: Vec::new(),
+      scc_members: Vec::new(),
+      scc_deps: Vec::new(),
+      scc_parents: Vec::new(),
+      scc_dirty: true,
       global_lexical_env: None,
       pending_dynamic_import_evaluations: HashMap::new(),
-      pending_dynamic_import_prev_graph: None,
       next_pending_dynamic_import_evaluation_id: 0,
+      module_graph_ptr_prev: None,
+      module_graph_ptr_refcount: 0,
       // A freshly-created graph does not own any persistent roots yet, and can be dropped safely.
       torn_down: true,
       async_eval_states: Vec::new(),
@@ -276,6 +310,46 @@ impl ModuleGraph {
     self.global_lexical_env = Some(env);
   }
 
+  /// Retain this graph as the VM's `module_graph_ptr` until a matching call to
+  /// [`ModuleGraph::release_module_graph_ptr`].
+  ///
+  /// This is used by async features (top-level await module evaluation, dynamic import) that need
+  /// to recover the active graph from Promise jobs / microtasks via `vm.module_graph_ptr()`.
+  ///
+  /// `prev_graph` is the value that should be restored once the refcount drops back to zero.
+  fn retain_module_graph_ptr(&mut self, vm: &mut Vm, prev_graph: Option<*mut ModuleGraph>) {
+    if self.module_graph_ptr_refcount == 0 {
+      self.module_graph_ptr_prev = prev_graph;
+    }
+    self.module_graph_ptr_refcount = self.module_graph_ptr_refcount.saturating_add(1);
+    vm.set_module_graph(self);
+  }
+
+  /// Releases a previous [`ModuleGraph::retain_module_graph_ptr`] reference.
+  fn release_module_graph_ptr(&mut self, vm: &mut Vm) {
+    debug_assert!(
+      self.module_graph_ptr_refcount > 0,
+      "release_module_graph_ptr underflow"
+    );
+    if self.module_graph_ptr_refcount == 0 {
+      return;
+    }
+    self.module_graph_ptr_refcount = self.module_graph_ptr_refcount.saturating_sub(1);
+    if self.module_graph_ptr_refcount != 0 {
+      return;
+    }
+
+    let prev = self.module_graph_ptr_prev.take();
+    let self_ptr: *mut ModuleGraph = self;
+    match prev {
+      Some(ptr) if ptr == self_ptr => vm.set_module_graph(self),
+      Some(ptr) => unsafe {
+        vm.set_module_graph(&mut *ptr);
+      },
+      None => vm.clear_module_graph(),
+    }
+  }
+
   pub(crate) fn insert_pending_dynamic_import_evaluation(
     &mut self,
     vm: &mut Vm,
@@ -291,12 +365,12 @@ impl ModuleGraph {
       .map_err(|_| VmError::OutOfMemory)?;
 
     // Promise jobs use `vm.module_graph_ptr()` to recover the active module graph when resolving
-    // dynamic `import()` promises. If this is the first pending dynamic import evaluation, install
+    // dynamic `import()` promises. If this is the first pending dynamic import evaluation, retain
     // a pointer to this graph so callbacks can run even when the embedding did not permanently
     // attach a module graph.
     if self.pending_dynamic_import_evaluations.is_empty() {
-      self.pending_dynamic_import_prev_graph = vm.module_graph_ptr();
-      vm.set_module_graph(self);
+      let prev = vm.module_graph_ptr();
+      self.retain_module_graph_ptr(vm, prev);
     }
 
     let id = self.next_pending_dynamic_import_evaluation_id;
@@ -319,19 +393,7 @@ impl ModuleGraph {
     let entry = self.pending_dynamic_import_evaluations.remove(&id)?;
 
     if self.pending_dynamic_import_evaluations.is_empty() {
-      match self.pending_dynamic_import_prev_graph.take() {
-        Some(ptr) => {
-          let self_ptr: *mut ModuleGraph = self;
-          if ptr == self_ptr {
-            vm.set_module_graph(self);
-          } else {
-            unsafe {
-              vm.set_module_graph(&mut *ptr);
-            }
-          }
-        }
-        None => vm.clear_module_graph(),
-      }
+      self.release_module_graph_ptr(vm);
     }
 
     Some((entry.state, entry.module))
@@ -341,6 +403,11 @@ impl ModuleGraph {
     let id = ModuleId::from_raw(self.modules.len() as u64);
     self.modules.push(record);
     self.tla_states.push(None);
+    self.scc_eval_states.push(None);
+    self.scc_members.push(Vec::new());
+    self.scc_deps.push(Vec::new());
+    self.scc_parents.push(Vec::new());
+    self.scc_dirty = true;
     self.async_eval_states.push(AsyncModuleEvalState::default());
     id
   }
@@ -447,17 +514,16 @@ impl ModuleGraph {
     // Ensure the VM does not retain a raw pointer to this graph after teardown.
     let self_ptr: *mut ModuleGraph = self;
     if vm.module_graph_ptr() == Some(self_ptr) {
-      match self.pending_dynamic_import_prev_graph.take() {
-        Some(ptr) if ptr != self_ptr => unsafe {
-          vm.set_module_graph(&mut *ptr);
-        },
+      match self.module_graph_ptr_prev.take() {
+        Some(ptr) if ptr != self_ptr => unsafe { vm.set_module_graph(&mut *ptr) },
         _ => vm.clear_module_graph(),
-      }
+      };
     } else {
       // If the module graph pointer already changed, drop any saved pointer to avoid retaining a
       // stale raw pointer unnecessarily.
-      self.pending_dynamic_import_prev_graph = None;
+      self.module_graph_ptr_prev = None;
     }
+    self.module_graph_ptr_refcount = 0;
   }
 
   /// Alias for [`ModuleGraph::teardown`].
@@ -659,114 +725,150 @@ impl ModuleGraph {
   /// deterministically when evaluation remains pending after draining microtasks.
   pub fn abort_tla_evaluation(&mut self, vm: &mut Vm, heap: &mut Heap, module: ModuleId) {
     let idx = module_index(module);
-    let Some(slot) = self.tla_states.get_mut(idx) else {
+    if idx >= self.modules.len() {
       return;
-    };
-    let Some(mut state) = slot.take() else {
-      return;
-    };
-
-    // Restore the previous module graph pointer early: once we abort, any queued resume callbacks
-    // should no-op (they will early-return because their evaluation state is removed).
-    state.restore_module_graph(vm);
-
-    // Best-effort: abort any pending async continuations that belong to the in-progress module
-    // evaluation. When the host calls `abort_tla_evaluation`, it is explicitly not going to drive
-    // the event loop further, so we must ensure no rooted async state remains.
-    for id in state.async_continuation_ids.drain(..) {
-      vm.abort_async_continuation(heap, id);
     }
 
-    if let Some(roots) = state.promise_roots.take() {
-      let mut scope = heap.scope();
+    // Create a stable abort reason (`TypeError`) when possible.
+    let mut scope = heap.scope();
+    let reason = match vm.intrinsics() {
+      Some(intr) => crate::error_object::new_type_error_object(&mut scope, &intr, TLA_ABORT_REASON)
+        .unwrap_or(Value::Undefined),
+      None => Value::Undefined,
+    };
+    // Root the reason across any Promise/job allocations below.
+    if scope.push_root(reason).is_err() {
+      // If we can't root the reason, aborting is best-effort; still attempt to tear down state and
+      // restore the module graph pointer.
+    }
 
-      let reason = match vm.intrinsics() {
-        Some(intr) => {
-          crate::error_object::new_type_error_object(&mut scope, &intr, TLA_ABORT_REASON)
-            .unwrap_or(Value::Undefined)
-        }
-        None => Value::Undefined,
+    // Reject evaluation promises best-effort. Route any resulting Promise jobs into a local queue
+    // and discard them immediately: hosts that call `abort_tla_evaluation` are explicitly *not*
+    // going to drive the event loop, but we still need to clean up any persistent roots owned by
+    // queued jobs.
+    let mut abort_hooks = crate::MicrotaskQueue::new();
+
+    // Collect SCC roots that are currently in-progress so we can mark them errored and reject their
+    // evaluation promises.
+    let mut scc_roots: Vec<ModuleId> = Vec::new();
+    for (root_idx, state) in self.scc_eval_states.iter().enumerate() {
+      if state.is_some() {
+        scc_roots.push(ModuleId::from_raw(root_idx as u64));
+      }
+    }
+
+    // Ensure the entry module's SCC root is included even if it is not currently evaluating.
+    let entry_scc_root = self.modules[idx].cycle_root.unwrap_or(module);
+    if !scc_roots.contains(&entry_scc_root) {
+      scc_roots.push(entry_scc_root);
+    }
+    scc_roots.sort_by_key(|m| m.to_raw());
+    scc_roots.dedup();
+
+    for scc_root in &scc_roots {
+      let root_idx = module_index(*scc_root);
+      if root_idx >= self.modules.len() {
+        continue;
+      }
+
+      // Mark all members of the SCC as errored with the abort reason.
+      let members = self
+        .scc_members
+        .get(root_idx)
+        .cloned()
+        .unwrap_or_else(Vec::new);
+      let members = if members.is_empty() {
+        vec![*scc_root]
+      } else {
+        members
       };
-
-      // Mark the module as errored so further evaluation attempts fail deterministically. Cache the
-      // abort reason so future `Evaluate()` calls can rethrow/reject with the same value.
-      if idx < self.modules.len() {
-        self.modules[idx].status = ModuleStatus::Errored;
-        let _ = self.cache_module_error_value(&mut scope, idx, reason);
+      for member in members {
+        let midx = module_index(member);
+        if midx >= self.modules.len() {
+          continue;
+        }
+        self.modules[midx].status = ModuleStatus::Errored;
+        let _ = self.cache_module_error_value(&mut scope, midx, reason);
       }
 
-      if let Some(reject) = scope.heap().get_root(roots.reject_root()) {
-        // Best-effort: ensure the promise settles deterministically so embeddings that inspect the
-        // evaluation promise see a rejection instead of a forever-pending promise.
-        //
-        // Route any resulting Promise jobs into a local queue and discard them immediately: hosts
-        // that call `abort_tla_evaluation` are explicitly *not* going to drive the event loop, but
-        // we still need to clean up any persistent roots owned by queued jobs.
-        let mut abort_hooks = crate::MicrotaskQueue::new();
-        let _ = vm.call_with_host(&mut scope, &mut abort_hooks, reject, Value::Undefined, &[reason]);
-
-        struct AbortJobCtx<'a> {
-          heap: &'a mut Heap,
-        }
-
-        impl crate::VmJobContext for AbortJobCtx<'_> {
-          fn call(
-            &mut self,
-            _host: &mut dyn VmHostHooks,
-            _callee: Value,
-            _this: Value,
-            _args: &[Value],
-          ) -> Result<Value, VmError> {
-            Err(VmError::Unimplemented("abort_tla_evaluation job call"))
-          }
-
-          fn construct(
-            &mut self,
-            _host: &mut dyn VmHostHooks,
-            _callee: Value,
-            _args: &[Value],
-            _new_target: Value,
-          ) -> Result<Value, VmError> {
-            Err(VmError::Unimplemented("abort_tla_evaluation job construct"))
-          }
-
-          fn add_root(&mut self, value: Value) -> Result<RootId, VmError> {
-            self.heap.add_root(value)
-          }
-
-          fn remove_root(&mut self, id: RootId) {
-            self.heap.remove_root(id);
-          }
-        }
-
-        {
-          let mut ctx = AbortJobCtx { heap: scope.heap_mut() };
-          abort_hooks.teardown(&mut ctx);
+      // Reject the evaluation promise if one exists.
+      if let Some(roots) = self.modules[root_idx].top_level_capability.as_ref() {
+        if let Some(cap) = roots.capability(scope.heap()) {
+          let reject = cap.reject;
+          let _ = vm.call_with_host(&mut scope, &mut abort_hooks, reject, Value::Undefined, &[reason]);
         }
       }
 
-      roots.teardown(scope.heap_mut());
+      // Stop any in-progress evaluation state machine for this SCC.
+      if root_idx < self.scc_eval_states.len() {
+        self.scc_eval_states[root_idx] = None;
+      }
     }
 
-    // Mark the module as errored so further evaluation attempts fail deterministically.
-    if idx < self.modules.len() {
-      self.modules[idx].status = ModuleStatus::Errored;
-      if self.modules[idx].error.is_none() {
-        let mut scope = heap.scope();
-        let reason = match vm.intrinsics() {
-          Some(intr) => {
-            crate::error_object::new_type_error_object(&mut scope, &intr, TLA_ABORT_REASON)
-              .unwrap_or(Value::Undefined)
-          }
-          None => Value::Undefined,
-        };
-        let _ = self.cache_module_error_value(&mut scope, idx, reason);
-      }
+    // Tear down any pending dynamic import continuations and their roots.
+    let had_dynamic_imports = !self.pending_dynamic_import_evaluations.is_empty();
+    for (_id, entry) in self.pending_dynamic_import_evaluations.drain() {
+      entry.state.teardown_roots(scope.heap_mut());
     }
 
     // Always tear down any remaining async module evaluation state (continuation frames, awaited
     // promise root, etc) so persistent roots do not leak across heap reuse.
-    state.teardown(vm, heap);
+    for slot in &mut self.tla_states {
+      if let Some(state) = slot.take() {
+        state.teardown(vm, scope.heap_mut());
+      }
+    }
+
+    // Restore `vm.module_graph_ptr` and clear the refcount. This ensures any queued resume callbacks
+    // become no-ops (they early-return because evaluation state was removed, and the VM no longer
+    // points at this graph).
+    while self.module_graph_ptr_refcount > 0 {
+      self.release_module_graph_ptr(vm);
+    }
+    if had_dynamic_imports {
+      // Draining the dynamic import map bypasses `take_pending_dynamic_import_evaluation`, so ensure
+      // we do not retain the module graph pointer unnecessarily.
+      self.module_graph_ptr_prev = None;
+    }
+
+    struct AbortJobCtx<'a> {
+      heap: &'a mut Heap,
+    }
+
+    impl crate::VmJobContext for AbortJobCtx<'_> {
+      fn call(
+        &mut self,
+        _host: &mut dyn VmHostHooks,
+        _callee: Value,
+        _this: Value,
+        _args: &[Value],
+      ) -> Result<Value, VmError> {
+        Err(VmError::Unimplemented("abort_tla_evaluation job call"))
+      }
+
+      fn construct(
+        &mut self,
+        _host: &mut dyn VmHostHooks,
+        _callee: Value,
+        _args: &[Value],
+        _new_target: Value,
+      ) -> Result<Value, VmError> {
+        Err(VmError::Unimplemented("abort_tla_evaluation job construct"))
+      }
+
+      fn add_root(&mut self, value: Value) -> Result<RootId, VmError> {
+        self.heap.add_root(value)
+      }
+
+      fn remove_root(&mut self, id: RootId) {
+        self.heap.remove_root(id);
+      }
+    }
+
+    {
+      let mut ctx = AbortJobCtx { heap: scope.heap_mut() };
+      abort_hooks.teardown(&mut ctx);
+    }
   }
 
   /// Implements `GetModuleNamespace` (ECMA-262 `#sec-getmodulenamespace`) for a module in this
@@ -939,6 +1041,9 @@ impl ModuleGraph {
         module.status = ModuleStatus::Unlinked;
       }
     }
+
+    // SCC structure depends on the resolved `[[LoadedModules]]` edges.
+    self.scc_dirty = true;
   }
 
   /// Implements ECMA-262 `GetImportedModule(referrer, request)`.
@@ -1412,38 +1517,21 @@ impl ModuleGraph {
 
     let result = (|| -> Result<Value, VmError> {
       let mut eval_scope = scope.reborrow();
-      let intr = vm
-        .intrinsics()
-        .ok_or(VmError::Unimplemented("module evaluation requires intrinsics"))?;
-      let cap = crate::builtins::new_promise_capability_with_host_and_hooks(
-        vm,
-        &mut eval_scope,
-        host,
-        hooks,
-        Value::Object(intr.promise()),
-      )?;
 
-      let promise = cap.promise;
-      let roots = [cap.promise, cap.resolve, cap.reject];
-      eval_scope.push_roots(&roots)?;
+      // Cache SCC structure (cycle roots, dependency edges) before starting evaluation.
+      self.ensure_scc_info(vm)?;
 
+      // Determine the SCC (cycle) root for this module.
       let idx = module_index(module);
+      let scc_root = self
+        .modules
+        .get(idx)
+        .ok_or_else(|| VmError::invalid_handle())?
+        .cycle_root
+        .unwrap_or(module);
 
-      fn reject_promise(
-        vm: &mut Vm,
-        scope: &mut Scope<'_>,
-        host: &mut dyn VmHost,
-        hooks: &mut dyn VmHostHooks,
-        reject: Value,
-        reason: Value,
-        err: &VmError,
-        ) -> Result<(), VmError> {
-        attach_stack_property_for_promise_rejection(scope, reason, err);
-        scope.push_roots(&[reject, reason])?;
-        let _ =
-          vm.call_with_host_and_hooks(host, scope, hooks, reject, Value::Undefined, &[reason])?;
-        Ok(())
-      }
+      // Ensure an evaluation promise exists for the SCC root and return it to the host.
+      let promise = self.ensure_scc_promise(vm, &mut eval_scope, host, hooks, scc_root)?;
 
       // Link before evaluating. If linking fails (including the module already being in an errored
       // state), reject the evaluation promise with the thrown/cached value.
@@ -1456,157 +1544,19 @@ impl ModuleGraph {
           self.cache_module_error_from_err(vm, &mut eval_scope, idx, &err)?;
           self.module_errored_value(vm, &mut eval_scope, idx)?
         };
-        reject_promise(vm, &mut eval_scope, host, hooks, cap.reject, reason, &err)?;
+        self.reject_scc_promise(vm, &mut eval_scope, host, hooks, scc_root, reason, Some(&err))?;
         return Ok(promise);
       }
 
-      if !self.modules[idx].has_tla {
-        let result = self.eval_inner(
-          vm,
-          &mut eval_scope,
-          global_object,
-          realm_id,
-          module,
-          host,
-          hooks,
-        );
-
-        match result {
-          Ok(()) => {
-            eval_scope.push_root(cap.resolve)?;
-            let _ = vm.call_with_host_and_hooks(
-              host,
-              &mut eval_scope,
-              hooks,
-              cap.resolve,
-              Value::Undefined,
-              &[Value::Undefined],
-            )?;
-          }
-          Err(err) => {
-            let reason = if let Some(thrown) = err.thrown_value() {
-              thrown
-            } else {
-              // `eval_inner` should have transitioned the module to `Errored` and cached a thrown
-              // value; re-use it for a deterministic rejection reason.
-              self.module_errored_value(vm, &mut eval_scope, idx)?
-            };
-            reject_promise(vm, &mut eval_scope, host, hooks, cap.reject, reason, &err)?;
-          }
-        }
-
-        return Ok(promise);
-      }
-
-      // Top-level await: evaluate the module body using the async evaluator, suspending/resuming via
-      // Promise jobs.
-      let step = self.eval_tla_start(
-        vm,
-        &mut eval_scope,
-        global_object,
-        realm_id,
-        module,
-        host,
-        hooks,
-      );
-
-      match step {
-        Ok(ModuleTlaStepResult::Completed) => {
-          eval_scope.push_root(cap.resolve)?;
-          let _ = vm.call_with_host_and_hooks(
-            host,
-            &mut eval_scope,
-            hooks,
-            cap.resolve,
-            Value::Undefined,
-            &[Value::Undefined],
-          )?;
-        }
-        Ok(ModuleTlaStepResult::Await {
-          promise: awaited_promise,
-          continuation_id,
-        }) => {
-          // Keep the module graph pointer installed until async evaluation completes.
-
-          // Root the capability values in the heap so they survive across microtasks.
-          let roots = PromiseCapabilityRoots::new(&mut eval_scope, cap)?;
-          self.torn_down = false;
-
-          // Store async evaluation state for resume/reject callbacks.
-          if self.tla_states.len() <= idx {
-            self
-              .tla_states
-              .resize_with(idx.saturating_add(1), || None);
-          }
-          let mut async_continuation_ids = Vec::<u32>::new();
-          async_continuation_ids
-            .try_reserve(1)
-            .map_err(|_| VmError::OutOfMemory)?;
-          async_continuation_ids.push(continuation_id);
-          self.tla_states[idx] = Some(TlaEvaluationState {
-            continuation_id,
-            promise_roots: Some(roots),
-            global_object,
-            realm_id,
-            prev_graph: graph_guard.prev_graph(),
-            async_continuation_ids,
-          });
-
-          // Schedule the first resume step.
-          match self.schedule_tla_resume(vm, &mut eval_scope, host, hooks, module, awaited_promise) {
-            Ok(()) => {
-              // Keep the module graph pointer installed until async evaluation completes.
-              graph_guard.disarm();
-            }
-            Err(err) => {
-              // Async evaluation didn't start successfully; treat this as an evaluation failure and
-              // reject the evaluation promise.
-              let Some(state) = self.tla_states.get_mut(idx).and_then(|s| s.take()) else {
-                return Err(VmError::InvariantViolation(
-                  "missing async module evaluation state after scheduling failure",
-                ));
-              };
-              self.modules[idx].status = ModuleStatus::Errored;
-
-              let cache_res = self.cache_module_error_from_err(vm, &mut eval_scope, idx, &err);
-              let reason_res = if let Some(thrown) = err.thrown_value() {
-                Ok(thrown)
-              } else {
-                self.module_errored_value(vm, &mut eval_scope, idx)
-              };
-              let reject_res = match reason_res {
-                Ok(reason) => {
-                  reject_promise(vm, &mut eval_scope, host, hooks, cap.reject, reason, &err)
-                }
-                Err(err) => Err(err),
-              };
-
-              state.teardown(vm, eval_scope.heap_mut());
-
-              cache_res?;
-              reject_res?;
-            }
-          }
-        }
-        Err(err) => {
-          let reason = if let Some(thrown) = err.thrown_value() {
-            thrown
-          } else {
-            self.module_errored_value(vm, &mut eval_scope, idx)?
-          };
-          reject_promise(vm, &mut eval_scope, host, hooks, cap.reject, reason, &err)?;
-        }
-      };
+      // Start (or continue) evaluating the SCC rooted at `scc_root`.
+      self.start_scc_evaluation(vm, &mut eval_scope, global_object, realm_id, scc_root, host, hooks)?;
 
       Ok(promise)
     })();
 
-    // If module evaluation initiated a dynamic `import()` continuation whose Promise reactions are
-    // still pending, keep `vm.module_graph_ptr` installed until those reactions run.
-    //
-    // This is important for embeddings that complete module loading synchronously: the imported
-    // module's evaluation promise might be pending due to top-level await, and its resume microtask
-    // needs to recover the module graph via `vm.module_graph_ptr`.
+    // If module evaluation initiated an async continuation whose Promise reactions are still
+    // pending (top-level await or dynamic import), keep `vm.module_graph_ptr` installed until those
+    // reactions run.
     //
     // Note: `insert_pending_dynamic_import_evaluation` captures the VM's current module graph
     // pointer as the "previous" value to restore. When dynamic import begins during this
@@ -1614,16 +1564,719 @@ impl ModuleGraph {
     // pointer before disarming the guard so completion restores correctly.
     if result.is_ok()
       && graph_guard.restore_on_drop
-      && !self.pending_dynamic_import_evaluations.is_empty()
+      && self.module_graph_ptr_refcount > 0
     {
       let self_ptr: *mut ModuleGraph = self;
-      if self.pending_dynamic_import_prev_graph == Some(self_ptr) {
-        self.pending_dynamic_import_prev_graph = graph_guard.prev_graph();
+      if self.module_graph_ptr_prev == Some(self_ptr) && graph_guard.prev_graph() != Some(self_ptr) {
+        self.module_graph_ptr_prev = graph_guard.prev_graph();
       }
       graph_guard.disarm();
     }
 
     result
+  }
+
+  fn ensure_scc_info(&mut self, vm: &mut Vm) -> Result<(), VmError> {
+    if !self.scc_dirty {
+      return Ok(());
+    }
+
+    let module_count = self.modules.len();
+    for slot in &mut self.scc_members {
+      slot.clear();
+    }
+    for slot in &mut self.scc_deps {
+      slot.clear();
+    }
+    for slot in &mut self.scc_parents {
+      slot.clear();
+    }
+    if self.scc_members.len() != module_count {
+      self.scc_members.resize_with(module_count, Vec::new);
+    }
+    if self.scc_deps.len() != module_count {
+      self.scc_deps.resize_with(module_count, Vec::new);
+    }
+    if self.scc_parents.len() != module_count {
+      self.scc_parents.resize_with(module_count, Vec::new);
+    }
+
+    for module in &mut self.modules {
+      module.cycle_root = None;
+    }
+
+    // --- Tarjan SCC over the module graph ---
+    let graph: &ModuleGraph = &*self;
+    let mut index: usize = 0;
+    let mut stack: Vec<usize> = Vec::new();
+    let mut on_stack = vec![false; module_count];
+    let mut indices: Vec<Option<usize>> = vec![None; module_count];
+    let mut lowlink: Vec<usize> = vec![0; module_count];
+    let mut sccs: Vec<Vec<usize>> = Vec::new();
+
+    fn strongconnect(
+      v: usize,
+      graph: &ModuleGraph,
+      vm: &mut Vm,
+      index: &mut usize,
+      stack: &mut Vec<usize>,
+      on_stack: &mut [bool],
+      indices: &mut [Option<usize>],
+      lowlink: &mut [usize],
+      sccs: &mut Vec<Vec<usize>>,
+    ) -> Result<(), VmError> {
+      vm.tick()?;
+
+      indices[v] = Some(*index);
+      lowlink[v] = *index;
+      *index = index.saturating_add(1);
+      stack.push(v);
+      on_stack[v] = true;
+
+      let module = ModuleId::from_raw(v as u64);
+      let requests = &graph.modules[v].requested_modules;
+      const EDGE_TICK_EVERY: usize = 32;
+      for (i, request) in requests.iter().enumerate() {
+        if i % EDGE_TICK_EVERY == 0 && i != 0 {
+          vm.tick()?;
+        }
+        let Some(imported) = graph.get_imported_module(module, request) else {
+          continue;
+        };
+        let w = module_index(imported);
+        if w >= indices.len() {
+          return Err(VmError::invalid_handle());
+        }
+        if indices[w].is_none() {
+          strongconnect(w, graph, vm, index, stack, on_stack, indices, lowlink, sccs)?;
+          lowlink[v] = lowlink[v].min(lowlink[w]);
+        } else if on_stack[w] {
+          let w_index = indices[w].unwrap_or(usize::MAX);
+          lowlink[v] = lowlink[v].min(w_index);
+        }
+      }
+
+      let v_index = indices[v].unwrap_or(usize::MAX);
+      if lowlink[v] == v_index {
+        let mut scc: Vec<usize> = Vec::new();
+        loop {
+          let Some(w) = stack.pop() else {
+            return Err(VmError::InvariantViolation("SCC stack underflow"));
+          };
+          on_stack[w] = false;
+          scc.push(w);
+          if w == v {
+            break;
+          }
+        }
+        sccs.push(scc);
+      }
+
+      Ok(())
+    }
+
+    for v in 0..module_count {
+      if indices[v].is_none() {
+        strongconnect(
+          v,
+          graph,
+          vm,
+          &mut index,
+          &mut stack,
+          &mut on_stack,
+          &mut indices,
+          &mut lowlink,
+          &mut sccs,
+        )?;
+      }
+    }
+
+    // --- Assign canonical cycle roots (minimum module id per SCC) and cache member lists ---
+    for scc in sccs {
+      let Some(&root_idx) = scc.iter().min() else {
+        continue;
+      };
+      let root = ModuleId::from_raw(root_idx as u64);
+
+      let mut members: Vec<ModuleId> = Vec::new();
+      members
+        .try_reserve_exact(scc.len())
+        .map_err(|_| VmError::OutOfMemory)?;
+      for &idx in &scc {
+        let id = ModuleId::from_raw(idx as u64);
+        members.push(id);
+      }
+      members.sort_by_key(|m| m.to_raw());
+
+      // Record the SCC membership on the cycle root.
+      self.scc_members[root_idx] = members.clone();
+
+      // Assign the canonical cycle root to each member.
+      for &idx in &scc {
+        if let Some(record) = self.modules.get_mut(idx) {
+          record.cycle_root = Some(root);
+        }
+      }
+    }
+
+    // --- Compute SCC dependencies and reverse dependencies ---
+    for root_idx in 0..module_count {
+      let Some(members) = self.scc_members.get(root_idx) else {
+        continue;
+      };
+      if members.is_empty() {
+        continue;
+      }
+      let root = ModuleId::from_raw(root_idx as u64);
+
+      let mut deps: Vec<ModuleId> = Vec::new();
+      for (mi, member) in members.iter().copied().enumerate() {
+        if mi % 32 == 0 && mi != 0 {
+          vm.tick()?;
+        }
+        let member_idx = module_index(member);
+        let requests = self.modules[member_idx].requested_modules.clone();
+        for (ri, request) in requests.iter().enumerate() {
+          if ri % 64 == 0 && ri != 0 {
+            vm.tick()?;
+          }
+          let Some(imported) = self.get_imported_module(member, request) else {
+            continue;
+          };
+          let imported_idx = module_index(imported);
+          let dep_root = self.modules[imported_idx].cycle_root.unwrap_or(imported);
+          if dep_root == root {
+            continue;
+          }
+          if !deps.contains(&dep_root) {
+            deps.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
+            deps.push(dep_root);
+          }
+        }
+      }
+
+      deps.sort_by_key(|m| m.to_raw());
+      self.scc_deps[root_idx] = deps.clone();
+
+      for dep_root in deps {
+        let dep_idx = module_index(dep_root);
+        let parents = &mut self.scc_parents[dep_idx];
+        if !parents.contains(&root) {
+          parents.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
+          parents.push(root);
+        }
+      }
+    }
+
+    for parents in &mut self.scc_parents {
+      parents.sort_by_key(|m| m.to_raw());
+    }
+
+    self.scc_dirty = false;
+    Ok(())
+  }
+
+  fn ensure_scc_promise(
+    &mut self,
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    scc_root: ModuleId,
+  ) -> Result<Value, VmError> {
+    let root_idx = module_index(scc_root);
+    let record = self
+      .modules
+      .get_mut(root_idx)
+      .ok_or_else(|| VmError::invalid_handle())?;
+
+    if let Some(roots) = record.top_level_capability.as_ref() {
+      let cap = roots.capability(scope.heap()).ok_or_else(VmError::invalid_handle)?;
+      return Ok(cap.promise);
+    }
+
+    let intr = vm
+      .intrinsics()
+      .ok_or(VmError::Unimplemented("module evaluation requires intrinsics"))?;
+    let cap = crate::builtins::new_promise_capability_with_host_and_hooks(
+      vm,
+      scope,
+      host,
+      hooks,
+      Value::Object(intr.promise()),
+    )?;
+
+    record.set_top_level_capability(scope, cap)?;
+    self.torn_down = false;
+    Ok(cap.promise)
+  }
+
+  fn resolve_scc_promise(
+    &mut self,
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    scc_root: ModuleId,
+  ) -> Result<(), VmError> {
+    let root_idx = module_index(scc_root);
+    let Some(roots) = self
+      .modules
+      .get(root_idx)
+      .and_then(|r| r.top_level_capability.as_ref())
+    else {
+      return Ok(());
+    };
+    let cap = roots.capability(scope.heap()).ok_or_else(VmError::invalid_handle)?;
+    let resolve = cap.resolve;
+    let mut call_scope = scope.reborrow();
+    call_scope.push_root(resolve)?;
+    let _ = vm.call_with_host_and_hooks(
+      host,
+      &mut call_scope,
+      hooks,
+      resolve,
+      Value::Undefined,
+      &[Value::Undefined],
+    )?;
+    Ok(())
+  }
+
+  fn reject_scc_promise(
+    &mut self,
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    scc_root: ModuleId,
+    reason: Value,
+    err: Option<&VmError>,
+  ) -> Result<(), VmError> {
+    if let Some(err) = err {
+      attach_stack_property_for_promise_rejection(scope, reason, err);
+    }
+
+    let root_idx = module_index(scc_root);
+    let Some(roots) = self
+      .modules
+      .get(root_idx)
+      .and_then(|r| r.top_level_capability.as_ref())
+    else {
+      return Ok(());
+    };
+    let cap = roots.capability(scope.heap()).ok_or_else(VmError::invalid_handle)?;
+    let reject = cap.reject;
+    let mut call_scope = scope.reborrow();
+    call_scope.push_roots(&[reject, reason])?;
+    let _ = vm.call_with_host_and_hooks(
+      host,
+      &mut call_scope,
+      hooks,
+      reject,
+      Value::Undefined,
+      &[reason],
+    )?;
+    Ok(())
+  }
+
+  fn start_scc_evaluation(
+    &mut self,
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    global_object: GcObject,
+    realm_id: RealmId,
+    scc_root: ModuleId,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+  ) -> Result<(), VmError> {
+    let root_idx = module_index(scc_root);
+
+    // If the SCC already completed (success or error), ensure its evaluation promise is settled and
+    // return.
+    let root_status = self
+      .modules
+      .get(root_idx)
+      .ok_or_else(|| VmError::invalid_handle())?
+      .status;
+    match root_status {
+      ModuleStatus::Evaluated => {
+        self.resolve_scc_promise(vm, scope, host, hooks, scc_root)?;
+        return Ok(());
+      }
+      ModuleStatus::Errored => {
+        let reason = self.module_errored_value(vm, scope, root_idx)?;
+        self.reject_scc_promise(vm, scope, host, hooks, scc_root, reason, None)?;
+        return Ok(());
+      }
+      ModuleStatus::EvaluatingAsync => {
+        // In progress.
+      }
+      _ => {}
+    }
+
+    if self.scc_eval_states.get(root_idx).and_then(|s| s.as_ref()).is_some() {
+      return Ok(());
+    }
+
+    // Mark all members in this SCC as evaluating-async so recursive graph walks treat them as "in
+    // progress" until the SCC settles.
+    let members = self
+      .scc_members
+      .get(root_idx)
+      .cloned()
+      .unwrap_or_else(Vec::new);
+    let members = if members.is_empty() {
+      vec![scc_root]
+    } else {
+      members
+    };
+
+    for (i, member) in members.iter().copied().enumerate() {
+      if i % 32 == 0 && i != 0 {
+        vm.tick()?;
+      }
+      let idx = module_index(member);
+      if idx >= self.modules.len() {
+        return Err(VmError::invalid_handle());
+      }
+      match self.modules[idx].status {
+        ModuleStatus::Linked | ModuleStatus::Evaluating | ModuleStatus::EvaluatingAsync => {
+          self.modules[idx].status = ModuleStatus::EvaluatingAsync;
+        }
+        ModuleStatus::Evaluated | ModuleStatus::Errored => {}
+        _ => {}
+      }
+    }
+
+    // Compute pending SCC dependencies.
+    let deps = self
+      .scc_deps
+      .get(root_idx)
+      .cloned()
+      .unwrap_or_else(Vec::new);
+
+    let mut pending_deps: usize = 0;
+    for (i, dep_root) in deps.iter().copied().enumerate() {
+      if i % 32 == 0 && i != 0 {
+        vm.tick()?;
+      }
+
+      // Ensure the dependency has an evaluation promise for caching, and start evaluation.
+      let _ = self.ensure_scc_promise(vm, scope, host, hooks, dep_root)?;
+      self.start_scc_evaluation(vm, scope, global_object, realm_id, dep_root, host, hooks)?;
+
+      let dep_status = self.modules[module_index(dep_root)].status;
+      match dep_status {
+        ModuleStatus::Evaluated => {}
+        ModuleStatus::Errored => {
+          let reason = self.module_errored_value(vm, scope, module_index(dep_root))?;
+          self.fail_scc(vm, scope, scc_root, host, hooks, reason, None)?;
+          return Ok(());
+        }
+        _ => pending_deps = pending_deps.saturating_add(1),
+      }
+    }
+
+    self.scc_eval_states[root_idx] = Some(SccEvaluationState {
+      members,
+      pending_deps,
+      next_member_index: 0,
+      waiting_on: None,
+      global_object,
+      realm_id,
+    });
+    self.torn_down = false;
+
+    if pending_deps == 0 {
+      self.execute_scc(vm, scope, scc_root, host, hooks)?;
+    }
+
+    Ok(())
+  }
+
+  fn execute_scc(
+    &mut self,
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    scc_root: ModuleId,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+  ) -> Result<(), VmError> {
+    let root_idx = module_index(scc_root);
+    let Some(mut state) = self
+      .scc_eval_states
+      .get_mut(root_idx)
+      .and_then(|s| s.take())
+    else {
+      return Ok(());
+    };
+
+    if state.pending_deps != 0 || state.waiting_on.is_some() {
+      self.scc_eval_states[root_idx] = Some(state);
+      return Ok(());
+    }
+
+    // Execute remaining modules in this SCC sequentially until we either:
+    // - suspend at a top-level await, or
+    // - complete the SCC.
+    while state.next_member_index < state.members.len() {
+      // Ensure module-level work observes VM budgets even when module bodies are empty.
+      vm.tick()?;
+
+      let module = state.members[state.next_member_index];
+      let idx = module_index(module);
+
+      // Execute the module body.
+      let env_root = self.modules[idx]
+        .environment
+        .ok_or(VmError::InvariantViolation("module environment missing"))?;
+      let module_env = scope
+        .heap()
+        .get_env_root(env_root)
+        .ok_or_else(|| VmError::invalid_handle())?;
+      let source = self.modules[idx]
+        .source
+        .clone()
+        .ok_or(VmError::Unimplemented("module source missing"))?;
+      let ast = self.modules[idx]
+        .ast
+        .clone()
+        .ok_or(VmError::Unimplemented("module AST missing"))?;
+
+      if self.modules[idx].has_tla {
+        match start_module_tla_evaluation(
+          vm,
+          scope,
+          host,
+          hooks,
+          state.global_object,
+          state.realm_id,
+          module,
+          module_env,
+          source,
+          &ast.stx.body,
+        ) {
+          Ok(ModuleTlaStepResult::Completed) => {
+            state.next_member_index = state.next_member_index.saturating_add(1);
+            continue;
+          }
+          Ok(ModuleTlaStepResult::Await {
+            promise: awaited_promise,
+            continuation_id,
+          }) => {
+            let mut async_continuation_ids = Vec::<u32>::new();
+            async_continuation_ids
+              .try_reserve(1)
+              .map_err(|_| VmError::OutOfMemory)?;
+            async_continuation_ids.push(continuation_id);
+
+            self.tla_states[idx] = Some(TlaEvaluationState {
+              continuation_id,
+              global_object: state.global_object,
+              realm_id: state.realm_id,
+              async_continuation_ids,
+            });
+            self.torn_down = false;
+
+            // Schedule the first resume step.
+            if let Err(err) =
+              self.schedule_tla_resume(vm, scope, host, hooks, module, awaited_promise)
+            {
+              // Scheduling failed: reject the SCC promise.
+              self.tla_states[idx].take().map(|s| s.teardown(vm, scope.heap_mut()));
+
+              let reason = if let Some(thrown) = err.thrown_value() {
+                thrown
+              } else {
+                self.cache_module_error_from_err(vm, scope, idx, &err)?;
+                self.module_errored_value(vm, scope, idx)?
+              };
+              self.scc_eval_states[root_idx] = None;
+              self.fail_scc(vm, scope, scc_root, host, hooks, reason, Some(&err))?;
+              return Ok(());
+            }
+
+            // Keep the module graph pointer installed for Promise job callbacks.
+            self.retain_module_graph_ptr(vm, vm.module_graph_ptr());
+
+            state.waiting_on = Some(module);
+            self.scc_eval_states[root_idx] = Some(state);
+            return Ok(());
+          }
+          Err(err) => {
+            let reason = if let Some(thrown) = err.thrown_value() {
+              thrown
+            } else {
+              self.cache_module_error_from_err(vm, scope, idx, &err)?;
+              self.module_errored_value(vm, scope, idx)?
+            };
+            self.scc_eval_states[root_idx] = None;
+            self.fail_scc(vm, scope, scc_root, host, hooks, reason, Some(&err))?;
+            return Ok(());
+          }
+        }
+      } else {
+        match run_module(
+          vm,
+          scope,
+          host,
+          hooks,
+          state.global_object,
+          state.realm_id,
+          module,
+          module_env,
+          source,
+          &ast.stx.body,
+        ) {
+          Ok(()) => {
+            state.next_member_index = state.next_member_index.saturating_add(1);
+            continue;
+          }
+          Err(err) => {
+            let reason = if let Some(thrown) = err.thrown_value() {
+              thrown
+            } else {
+              self.cache_module_error_from_err(vm, scope, idx, &err)?;
+              self.module_errored_value(vm, scope, idx)?
+            };
+            self.scc_eval_states[root_idx] = None;
+            self.fail_scc(vm, scope, scc_root, host, hooks, reason, Some(&err))?;
+            return Ok(());
+          }
+        }
+      }
+    }
+
+    // SCC completed successfully: mark all members as evaluated and resolve the evaluation promise.
+    let members = state.members.clone();
+    self.scc_eval_states[root_idx] = None;
+    self.complete_scc(vm, scope, scc_root, host, hooks, &members)?;
+    Ok(())
+  }
+
+  fn complete_scc(
+    &mut self,
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    scc_root: ModuleId,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    members: &[ModuleId],
+  ) -> Result<(), VmError> {
+    let root_idx = module_index(scc_root);
+
+    for (i, member) in members.iter().copied().enumerate() {
+      if i % 32 == 0 && i != 0 {
+        vm.tick()?;
+      }
+      let idx = module_index(member);
+      if idx < self.modules.len() {
+        self.modules[idx].status = ModuleStatus::Evaluated;
+      }
+    }
+
+    self.scc_eval_states[root_idx] = None;
+
+    self.resolve_scc_promise(vm, scope, host, hooks, scc_root)?;
+
+    // Notify async parents that this SCC is now available.
+    let parents = self
+      .scc_parents
+      .get(root_idx)
+      .cloned()
+      .unwrap_or_else(Vec::new);
+    let mut ready_parents: Vec<ModuleId> = Vec::new();
+    for (i, parent_root) in parents.into_iter().enumerate() {
+      if i % 32 == 0 && i != 0 {
+        vm.tick()?;
+      }
+      let parent_idx = module_index(parent_root);
+      let Some(parent_state) = self
+        .scc_eval_states
+        .get_mut(parent_idx)
+        .and_then(|s| s.as_mut())
+      else {
+        continue;
+      };
+      if parent_state.pending_deps == 0 {
+        continue;
+      }
+      parent_state.pending_deps = parent_state.pending_deps.saturating_sub(1);
+      if parent_state.pending_deps == 0 {
+        ready_parents.push(parent_root);
+      }
+    }
+    for parent_root in ready_parents {
+      self.execute_scc(vm, scope, parent_root, host, hooks)?;
+    }
+
+    Ok(())
+  }
+
+  fn fail_scc(
+    &mut self,
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    scc_root: ModuleId,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    reason: Value,
+    err: Option<&VmError>,
+  ) -> Result<(), VmError> {
+    // Root the rejection reason across error caching + promise rejection: both can allocate and
+    // trigger GC.
+    scope.push_root(reason)?;
+
+    let root_idx = module_index(scc_root);
+
+    // Mark members as errored and cache a deterministic error value.
+    let members = self
+      .scc_members
+      .get(root_idx)
+      .cloned()
+      .unwrap_or_else(Vec::new);
+    let members = if members.is_empty() {
+      vec![scc_root]
+    } else {
+      members
+    };
+
+    for (i, member) in members.iter().copied().enumerate() {
+      if i % 32 == 0 && i != 0 {
+        vm.tick()?;
+      }
+      let idx = module_index(member);
+      if idx >= self.modules.len() {
+        continue;
+      }
+      self.modules[idx].status = ModuleStatus::Errored;
+      // Best-effort: cache the thrown value for deterministic future operations.
+      let _ = self.cache_module_error_value(scope, idx, reason);
+    }
+
+    self.scc_eval_states[root_idx] = None;
+
+    self.reject_scc_promise(vm, scope, host, hooks, scc_root, reason, err)?;
+
+    // Propagate the rejection to async parents.
+    let parents = self
+      .scc_parents
+      .get(root_idx)
+      .cloned()
+      .unwrap_or_else(Vec::new);
+    for parent_root in parents {
+      let parent_idx = module_index(parent_root);
+      if parent_idx >= self.modules.len() {
+        continue;
+      }
+      if self.modules[parent_idx].status == ModuleStatus::Errored {
+        continue;
+      }
+      // Parents reject with the same reason.
+      let _ = self.fail_scc(vm, scope, parent_root, host, hooks, reason, None);
+    }
+
+    Ok(())
   }
 
   /// Evaluates a module synchronously and returns its completion as a direct `Result`.
@@ -1965,10 +2618,8 @@ impl Drop for ModuleGraph {
 #[derive(Debug)]
 struct TlaEvaluationState {
   continuation_id: u32,
-  promise_roots: Option<PromiseCapabilityRoots>,
   global_object: GcObject,
   realm_id: RealmId,
-  prev_graph: Option<*mut ModuleGraph>,
   /// Async continuation ids created solely for this module's top-level await evaluation.
   ///
   /// When an embedding aborts async module evaluation, these continuations must be torn down so
@@ -1977,25 +2628,9 @@ struct TlaEvaluationState {
 }
 
 impl TlaEvaluationState {
-  fn restore_module_graph(self: &Self, vm: &mut Vm) {
-    match self.prev_graph {
-      Some(ptr) => unsafe {
-        vm.set_module_graph(&mut *ptr);
-      },
-      None => vm.clear_module_graph(),
-    }
-  }
-
   fn teardown(mut self, vm: &mut Vm, heap: &mut Heap) {
-    // Restore the previous graph pointer so any queued resume callbacks cannot access a graph that
-    // is being torn down.
-    self.restore_module_graph(vm);
-
     for id in self.async_continuation_ids.drain(..) {
       vm.abort_async_continuation(heap, id);
-    }
-    if let Some(roots) = self.promise_roots.take() {
-      roots.teardown(heap);
     }
   }
 }
@@ -2007,10 +2642,27 @@ impl Drop for TlaEvaluationState {
       return;
     }
     debug_assert!(
-      self.promise_roots.is_none() && self.async_continuation_ids.is_empty(),
+      self.async_continuation_ids.is_empty(),
       "TlaEvaluationState dropped with leaked persistent roots; ensure the module evaluation promise is settled or aborted"
     );
   }
+}
+
+/// Per-SCC (cycle-root) module evaluation progress for async module evaluation graphs.
+///
+/// This is an engine-internal state machine that drives module execution across a dependency graph,
+/// including:
+/// - waiting for async dependencies (top-level await in imported modules),
+/// - executing the modules within an SCC sequentially, and
+/// - resuming execution after awaited promises settle.
+#[derive(Debug)]
+struct SccEvaluationState {
+  members: Vec<ModuleId>,
+  pending_deps: usize,
+  next_member_index: usize,
+  waiting_on: Option<ModuleId>,
+  global_object: GcObject,
+  realm_id: RealmId,
 }
 
 fn module_id_from_native_slot(scope: &Scope<'_>, callee: GcObject) -> Result<ModuleId, VmError> {
@@ -2066,17 +2718,30 @@ fn module_tla_resume_inner(
   };
   let graph = unsafe { &mut *ptr };
   let idx = module_index(module);
+
   let Some(mut state) = graph.tla_states.get_mut(idx).and_then(|s| s.take()) else {
     // State was already cleaned up (module finished or was aborted).
     return Ok(());
   };
 
-  // `vm.tick` is a potential termination point. Ensure we restore `vm.module_graph_ptr` and free
-  // persistent roots even if it returns an error (termination, OOM, etc).
+  let scc_root = graph
+    .modules
+    .get(idx)
+    .and_then(|m| m.cycle_root)
+    .unwrap_or(module);
+  let scc_root_idx = module_index(scc_root);
+
+  // `vm.tick` is a potential termination point. Ensure we free persistent roots even if it returns
+  // an error (termination, OOM, etc).
   if let Err(err) = vm.tick() {
-    graph.modules[idx].status = ModuleStatus::Errored;
-    let _ = graph.cache_module_error_from_err(vm, scope, idx, &err);
+    if idx < graph.modules.len() {
+      graph.modules[idx].status = ModuleStatus::Errored;
+      let _ = graph.cache_module_error_from_err(vm, scope, idx, &err);
+    }
     state.teardown(vm, scope.heap_mut());
+    if graph.module_graph_ptr_refcount > 0 {
+      graph.release_module_graph_ptr(vm);
+    }
     return Err(err);
   }
 
@@ -2096,45 +2761,27 @@ fn module_tla_resume_inner(
 
   match result {
     Ok(ModuleTlaStepResult::Completed) => {
-      graph.modules[idx].status = ModuleStatus::Evaluated;
+      // Mark the SCC evaluation state as ready to continue.
+      if scc_root_idx < graph.scc_eval_states.len() {
+        if let Some(scc_state) = graph.scc_eval_states[scc_root_idx].as_mut() {
+          scc_state.waiting_on = None;
+          scc_state.next_member_index = scc_state.next_member_index.saturating_add(1);
+        }
+      }
 
-      let Some(roots) = state.promise_roots.take() else {
-        state.teardown(vm, scope.heap_mut());
-        return Err(VmError::InvariantViolation(
-          "missing async module evaluation promise roots on completion",
-        ));
-      };
-
-      // Ensure we always release the persistent roots even if calling the resolve function fails
-      // (e.g. termination due to budgets/interrupts).
-      let resolve_res = (|| {
-        let cap = roots
-          .capability(scope.heap())
-          .ok_or_else(VmError::invalid_handle)?;
-        let resolve = cap.resolve;
-        let mut call_scope = scope.reborrow();
-        call_scope.push_root(resolve)?;
-        let _ = vm.call_with_host_and_hooks(
-          host,
-          &mut call_scope,
-          hooks,
-          resolve,
-          Value::Undefined,
-          &[Value::Undefined],
-        )?;
-        Ok::<(), VmError>(())
-      })();
-
-      roots.teardown(scope.heap_mut());
+      let exec_res = graph.execute_scc(vm, scope, scc_root, host, hooks);
       state.teardown(vm, scope.heap_mut());
-
-      resolve_res?;
-      Ok(())
+      if graph.module_graph_ptr_refcount > 0 {
+        graph.release_module_graph_ptr(vm);
+      }
+      exec_res
     }
     Ok(ModuleTlaStepResult::Await {
       promise: awaited_promise,
       continuation_id,
     }) => {
+      // Track the updated continuation id (should remain stable, but preserve the value returned by
+      // the evaluator).
       state.continuation_id = continuation_id;
       if !state.async_continuation_ids.contains(&continuation_id) {
         state
@@ -2144,111 +2791,70 @@ fn module_tla_resume_inner(
         state.async_continuation_ids.push(continuation_id);
       }
       graph.tla_states[idx] = Some(state);
+
+      // Ensure the SCC knows which module we are waiting on.
+      if scc_root_idx < graph.scc_eval_states.len() {
+        if let Some(scc_state) = graph.scc_eval_states[scc_root_idx].as_mut() {
+          scc_state.waiting_on = Some(module);
+        }
+      }
+
       if let Err(err) =
         graph.schedule_tla_resume(vm, scope, host, hooks, module, awaited_promise)
       {
-        // Scheduling failed: treat this as a module evaluation failure and reject the evaluation
-        // promise.
-        let Some(mut state) = graph.tla_states.get_mut(idx).and_then(|s| s.take()) else {
+        // Scheduling failed: treat this as a module evaluation failure and reject the SCC's
+        // evaluation promise.
+        let Some(state) = graph.tla_states.get_mut(idx).and_then(|s| s.take()) else {
           return Err(VmError::InvariantViolation(
             "missing async module evaluation state after scheduling failure",
           ));
         };
-        graph.modules[idx].status = ModuleStatus::Errored;
-        let cache_res = graph.cache_module_error_from_err(vm, scope, idx, &err);
 
-        let Some(roots) = state.promise_roots.take() else {
-          state.teardown(vm, scope.heap_mut());
-          return Err(VmError::InvariantViolation(
-            "missing async module evaluation promise roots after scheduling failure",
-          ));
-        };
+        if idx < graph.modules.len() {
+          graph.modules[idx].status = ModuleStatus::Errored;
+        }
 
-        let reason_res = if let Some(thrown) = err.thrown_value() {
-          Ok(thrown)
+        let reason = if let Some(thrown) = err.thrown_value() {
+          thrown
         } else {
-          graph.module_errored_value(vm, scope, idx)
-        };
-        let reject_res = match reason_res {
-          Ok(reason) => {
-            attach_stack_property_for_promise_rejection(scope, reason, &err);
-            (|| {
-              let cap = roots
-                .capability(scope.heap())
-                .ok_or_else(VmError::invalid_handle)?;
-              let reject = cap.reject;
-              let mut call_scope = scope.reborrow();
-              call_scope.push_roots(&[reject, reason])?;
-              let _ = vm.call_with_host_and_hooks(
-                host,
-                &mut call_scope,
-                hooks,
-                reject,
-                Value::Undefined,
-                &[reason],
-              )?;
-              Ok::<(), VmError>(())
-            })()
-          }
-          Err(err) => Err(err),
+          graph.cache_module_error_from_err(vm, scope, idx, &err)?;
+          graph.module_errored_value(vm, scope, idx)?
         };
 
-        roots.teardown(scope.heap_mut());
+        let fail_res = graph.fail_scc(vm, scope, scc_root, host, hooks, reason, Some(&err));
         state.teardown(vm, scope.heap_mut());
+        if graph.module_graph_ptr_refcount > 0 {
+          graph.release_module_graph_ptr(vm);
+        }
 
-        cache_res?;
+        fail_res?;
         if matches!(err, VmError::Termination(_)) {
           return Err(err);
         }
-        reject_res?;
       }
+
       Ok(())
     }
     Err(err) => {
-      graph.modules[idx].status = ModuleStatus::Errored;
-      graph.cache_module_error_from_err(vm, scope, idx, &err)?;
-
-      let Some(roots) = state.promise_roots.take() else {
-        state.teardown(vm, scope.heap_mut());
-        return Err(VmError::InvariantViolation(
-          "missing async module evaluation promise roots on error",
-        ));
-      };
-
       let reason = if let Some(thrown) = err.thrown_value() {
         thrown
       } else {
+        graph.cache_module_error_from_err(vm, scope, idx, &err)?;
         graph.module_errored_value(vm, scope, idx)?
       };
-      attach_stack_property_for_promise_rejection(scope, reason, &err);
 
-      let reject_res = (|| {
-        let cap = roots
-          .capability(scope.heap())
-          .ok_or_else(VmError::invalid_handle)?;
-        let reject = cap.reject;
-        let mut call_scope = scope.reborrow();
-        call_scope.push_roots(&[reject, reason])?;
-        let _ = vm.call_with_host_and_hooks(
-          host,
-          &mut call_scope,
-          hooks,
-          reject,
-          Value::Undefined,
-          &[reason],
-        )?;
-        Ok::<(), VmError>(())
-      })();
-
-      roots.teardown(scope.heap_mut());
+      let fail_res = graph.fail_scc(vm, scope, scc_root, host, hooks, reason, Some(&err));
       state.teardown(vm, scope.heap_mut());
+      if graph.module_graph_ptr_refcount > 0 {
+        graph.release_module_graph_ptr(vm);
+      }
 
       if matches!(err, VmError::Termination(_)) {
         return Err(err);
       }
       // Do not propagate the original error: module evaluation failures are represented by rejecting
       // the module evaluation promise (per ECMA-262).
-      reject_res?;
+      fail_res?;
       Ok(())
     }
   }

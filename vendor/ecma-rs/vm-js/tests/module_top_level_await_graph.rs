@@ -3,14 +3,10 @@
 //! These tests lock in spec-correct behavior for top-level await (TLA) when modules have
 //! dependencies, cycles (SCCs), caching of evaluation promises, and error propagation.
 //!
-//! The current engine implementation intentionally does **not** implement the full async module
-//! evaluation algorithms yet, so these tests are expected to fail until Task 73/74 lands. Un-ignore
-//! them once Task 73/74 is implemented and passing.
-//!
 //! Run these tests explicitly with:
 //!
 //! ```bash
-//! cargo test -p vm-js --test module_top_level_await_graph -- --ignored
+//! cargo test -p vm-js --test module_top_level_await_graph
 //! ```
 //!
 //! Spec algorithms/sections under test (non-exhaustive):
@@ -122,31 +118,7 @@ fn expect_promise_object(value: Value) -> GcObject {
   }
 }
 
-fn is_unimplemented_tla_graph(
-  vm: &mut Vm,
-  host: &mut dyn VmHost,
-  hooks: &mut dyn VmHostHooks,
-  scope: &mut Scope<'_>,
-  promise_obj: GcObject,
-) -> Result<bool, VmError> {
-  if scope.heap().promise_state(promise_obj)? != PromiseState::Rejected {
-    return Ok(false);
-  }
-  let Some(reason) = scope.heap().promise_result(promise_obj)? else {
-    return Ok(false);
-  };
-  let Value::Object(err_obj) = reason else {
-    return Ok(false);
-  };
-  let Value::String(msg_s) = ns_get(vm, host, hooks, scope, err_obj, "message")? else {
-    return Ok(false);
-  };
-  let msg = scope.heap().get_string(msg_s)?.to_utf8_lossy();
-  Ok(msg == "unary operator" || msg.contains("before initialization"))
-}
-
 #[test]
-#[ignore = "requires spec-correct async module evaluation across module graph (Task 74)"]
 fn tla_basic_module_evaluation_promise_is_pending_until_microtasks_run() -> Result<(), VmError> {
   let (mut vm, mut heap, mut realm) = new_vm_heap_realm()?;
   let mut hooks = MicrotaskQueue::new();
@@ -171,18 +143,6 @@ fn tla_basic_module_evaluation_promise_is_pending_until_microtasks_run() -> Resu
       &mut hooks,
     )?;
     let promise_obj = expect_promise_object(promise);
-
-    // `vm-js` currently implements only a minimal subset of top-level await, and does not support
-    // `await` as an expression in variable initializers. If the evaluation promise is rejected with
-    // that unimplemented error, treat this test as a no-op until full TLA graph semantics land.
-    let skip = {
-      let mut scope = heap.scope();
-      is_unimplemented_tla_graph(&mut vm, &mut host, &mut hooks, &mut scope, promise_obj)?
-    };
-    if skip {
-      graph.teardown(&mut vm, &mut heap);
-      return Ok(());
-    }
 
     promise_root = Some(root_value(&mut heap, promise)?);
     assert_eq!(heap.promise_state(promise_obj)?, PromiseState::Pending);
@@ -217,7 +177,6 @@ fn tla_basic_module_evaluation_promise_is_pending_until_microtasks_run() -> Resu
 }
 
 #[test]
-#[ignore = "requires spec-correct async module evaluation across module graph (Task 74)"]
 fn tla_in_dependency_makes_importer_evaluation_async() -> Result<(), VmError> {
   let (mut vm, mut heap, mut realm) = new_vm_heap_realm()?;
   let mut hooks = MicrotaskQueue::new();
@@ -246,15 +205,6 @@ fn tla_in_dependency_makes_importer_evaluation_async() -> Result<(), VmError> {
       &mut hooks,
     )?;
     let promise_obj = expect_promise_object(promise);
-
-    let skip = {
-      let mut scope = heap.scope();
-      is_unimplemented_tla_graph(&mut vm, &mut host, &mut hooks, &mut scope, promise_obj)?
-    };
-    if skip {
-      graph.teardown(&mut vm, &mut heap);
-      return Ok(());
-    }
 
     promise_root = Some(root_value(&mut heap, promise)?);
     assert_eq!(heap.promise_state(promise_obj)?, PromiseState::Pending);
@@ -289,7 +239,6 @@ fn tla_in_dependency_makes_importer_evaluation_async() -> Result<(), VmError> {
 }
 
 #[test]
-#[ignore = "requires spec-correct async module evaluation across module graph (Task 74)"]
 fn tla_async_cycle_evaluates_without_deadlock() -> Result<(), VmError> {
   let (mut vm, mut heap, mut realm) = new_vm_heap_realm()?;
   let mut hooks = MicrotaskQueue::new();
@@ -329,15 +278,6 @@ fn tla_async_cycle_evaluates_without_deadlock() -> Result<(), VmError> {
       &mut hooks,
     )?;
     let promise_obj = expect_promise_object(promise);
-
-    let skip = {
-      let mut scope = heap.scope();
-      is_unimplemented_tla_graph(&mut vm, &mut host, &mut hooks, &mut scope, promise_obj)?
-    };
-    if skip {
-      graph.teardown(&mut vm, &mut heap);
-      return Ok(());
-    }
 
     promise_root = Some(root_value(&mut heap, promise)?);
     assert_eq!(heap.promise_state(promise_obj)?, PromiseState::Pending);
@@ -385,7 +325,6 @@ fn tla_async_cycle_evaluates_without_deadlock() -> Result<(), VmError> {
 }
 
 #[test]
-#[ignore = "requires spec-correct async module evaluation across module graph (Task 74)"]
 fn tla_evaluation_promise_is_cached_for_single_module() -> Result<(), VmError> {
   let (mut vm, mut heap, mut realm) = new_vm_heap_realm()?;
   let mut hooks = MicrotaskQueue::new();
@@ -410,15 +349,6 @@ fn tla_evaluation_promise_is_cached_for_single_module() -> Result<(), VmError> {
       &mut hooks,
     )?;
     let promise1_obj = expect_promise_object(promise1);
-
-    let skip = {
-      let mut scope = heap.scope();
-      is_unimplemented_tla_graph(&mut vm, &mut host, &mut hooks, &mut scope, promise1_obj)?
-    };
-    if skip {
-      graph.teardown(&mut vm, &mut heap);
-      return Ok(());
-    }
 
     promise_root = Some(root_value(&mut heap, promise1)?);
 
@@ -459,7 +389,6 @@ fn tla_evaluation_promise_is_cached_for_single_module() -> Result<(), VmError> {
 }
 
 #[test]
-#[ignore = "requires spec-correct async module evaluation across module graph (Task 74)"]
 fn tla_evaluation_promise_is_cached_per_scc() -> Result<(), VmError> {
   let (mut vm, mut heap, mut realm) = new_vm_heap_realm()?;
   let mut hooks = MicrotaskQueue::new();
@@ -500,15 +429,6 @@ fn tla_evaluation_promise_is_cached_per_scc() -> Result<(), VmError> {
     )?;
     let promise_a_obj = expect_promise_object(promise_a);
 
-    let skip = {
-      let mut scope = heap.scope();
-      is_unimplemented_tla_graph(&mut vm, &mut host, &mut hooks, &mut scope, promise_a_obj)?
-    };
-    if skip {
-      graph.teardown(&mut vm, &mut heap);
-      return Ok(());
-    }
-
     promise_root = Some(root_value(&mut heap, promise_a)?);
 
     let promise_b = graph.evaluate(
@@ -548,7 +468,6 @@ fn tla_evaluation_promise_is_cached_per_scc() -> Result<(), VmError> {
 }
 
 #[test]
-#[ignore = "requires spec-correct async module evaluation across module graph (Task 74)"]
 fn tla_error_propagates_through_async_parents() -> Result<(), VmError> {
   let (mut vm, mut heap, mut realm) = new_vm_heap_realm()?;
   let mut hooks = MicrotaskQueue::new();
@@ -578,15 +497,6 @@ fn tla_error_propagates_through_async_parents() -> Result<(), VmError> {
     )?;
     let promise_obj = expect_promise_object(promise);
 
-    let skip = {
-      let mut scope = heap.scope();
-      is_unimplemented_tla_graph(&mut vm, &mut host, &mut hooks, &mut scope, promise_obj)?
-    };
-    if skip {
-      graph.teardown(&mut vm, &mut heap);
-      return Ok(());
-    }
-
     promise_root = Some(root_value(&mut heap, promise)?);
     assert_eq!(heap.promise_state(promise_obj)?, PromiseState::Pending);
 
@@ -615,6 +525,66 @@ fn tla_error_propagates_through_async_parents() -> Result<(), VmError> {
     heap.remove_root(root);
   }
   graph.teardown(&mut vm, &mut heap);
+  realm.teardown(&mut heap);
+  result
+}
+
+#[test]
+fn tla_reexport_from_dependency_is_awaited() -> Result<(), VmError> {
+  let (mut vm, mut heap, mut realm) = new_vm_heap_realm()?;
+  let mut hooks = MicrotaskQueue::new();
+  let mut host = ();
+  let mut promise_root: Option<RootId> = None;
+
+  let result = (|| -> Result<(), VmError> {
+    let mut graph = ModuleGraph::new();
+    graph.add_module_with_specifier(
+      "dep.js",
+      SourceTextModuleRecord::parse("export const v = await Promise.resolve(7);")?,
+    );
+    let reexport = graph.add_module_with_specifier(
+      "reexport.js",
+      SourceTextModuleRecord::parse("export { v } from 'dep.js';")?,
+    );
+    graph.link_all_by_specifier();
+
+    let promise = graph.evaluate(
+      &mut vm,
+      &mut heap,
+      realm.global_object(),
+      realm.id(),
+      reexport,
+      &mut host,
+      &mut hooks,
+    )?;
+    let promise_obj = expect_promise_object(promise);
+
+    promise_root = Some(root_value(&mut heap, promise)?);
+    assert_eq!(heap.promise_state(promise_obj)?, PromiseState::Pending);
+
+    drain_microtasks(&mut vm, &mut heap, &mut hooks)?;
+
+    let promise = heap
+      .get_root(promise_root.ok_or_else(|| VmError::InvariantViolation("promise root missing"))?)
+      .ok_or_else(VmError::invalid_handle)?;
+    let promise_obj = expect_promise_object(promise);
+    assert_eq!(heap.promise_state(promise_obj)?, PromiseState::Fulfilled);
+
+    let mut scope = heap.scope();
+    let ns = graph.get_module_namespace(reexport, &mut vm, &mut scope)?;
+    assert_eq!(
+      ns_get(&mut vm, &mut host, &mut hooks, &mut scope, ns, "v")?,
+      Value::Number(7.0)
+    );
+
+    drop(scope);
+    graph.teardown(&mut vm, &mut heap);
+    Ok(())
+  })();
+
+  if let Some(root) = promise_root {
+    heap.remove_root(root);
+  }
   realm.teardown(&mut heap);
   result
 }
