@@ -122,3 +122,63 @@ fn strict_mode_with_is_syntax_error_and_does_not_pollute_var_env() {
   assert!(matches!(err, VmError::ThrowWithStack { .. }));
 }
 
+#[test]
+fn with_statement_proxy_traps_are_observable() -> Result<(), VmError> {
+  let mut agent = new_agent();
+  let value = agent.run_script(
+    "with_proxy_traps.js",
+    r#"
+      var log = [];
+      var p = new Proxy({ x: 1 }, {
+        has(t, k) { log.push("has:" + String(k)); return Reflect.has(t, k); },
+        get(t, k, r) { log.push("get:" + String(k)); return Reflect.get(t, k, r); },
+        set(t, k, v, r) { log.push("set:" + String(k)); return Reflect.set(t, k, v); },
+        deleteProperty(t, k) { log.push("del:" + String(k)); return Reflect.deleteProperty(t, k); },
+      });
+      with (p) { x; x = 2; delete x; }
+      log.join(",")
+    "#,
+    Budget::unlimited(1),
+    None,
+  )?;
+
+  let log = agent.value_to_error_string(value);
+  assert!(log.contains("has:x"), "expected Proxy has trap to be observed, got {log}");
+  assert!(log.contains("get:x"), "expected Proxy get trap to be observed, got {log}");
+  assert!(log.contains("set:x"), "expected Proxy set trap to be observed, got {log}");
+  assert!(log.contains("del:x"), "expected Proxy deleteProperty trap to be observed, got {log}");
+  Ok(())
+}
+
+#[test]
+fn with_statement_proxy_unscopables_get_is_observable() -> Result<(), VmError> {
+  let mut agent = new_gc_stress_agent();
+  let value = agent.run_script(
+    "with_proxy_unscopables_trap.js",
+    r#"
+      var log = [];
+      var target = { x: 1 };
+      target[Symbol.unscopables] = { x: true };
+      var p = new Proxy(target, {
+        get(t, k, r) { log.push("get:" + String(k)); return Reflect.get(t, k, r); },
+      });
+      let x = 2;
+      var t;
+      with (p) { t = typeof x; }
+      t + "|" + log.join(",")
+    "#,
+    Budget::unlimited(1),
+    None,
+  )?;
+
+  let out = agent.value_to_error_string(value);
+  assert!(
+    out.starts_with("number|"),
+    "expected unscopables to force identifier resolution to outer binding, got {out}"
+  );
+  assert!(
+    out.contains("Symbol.unscopables"),
+    "expected @@unscopables Get to be observable via Proxy get trap, got {out}"
+  );
+  Ok(())
+}

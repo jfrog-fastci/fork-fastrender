@@ -596,7 +596,14 @@ impl RuntimeEnv {
     let name_key = PropertyKey::from_string(name_s);
 
     // HasProperty(O, N)
-    if !check_scope.ordinary_has_property_with_tick(binding_object, name_key, || vm.tick())? {
+    if !crate::spec_ops::internal_has_property_with_host_and_hooks(
+      vm,
+      &mut check_scope,
+      host,
+      hooks,
+      binding_object,
+      name_key,
+    )? {
       return Ok(false);
     }
 
@@ -851,8 +858,9 @@ impl RuntimeEnv {
         let key_s = key_scope.alloc_string(name)?;
         key_scope.push_root(Value::String(key_s))?;
         let key = PropertyKey::from_string(key_s);
-        let ok = key_scope.ordinary_set_with_host_and_hooks(
+        let ok = crate::spec_ops::internal_set_with_host_and_hooks(
           vm,
+          &mut key_scope,
           host,
           hooks,
           binding_object,
@@ -6547,8 +6555,9 @@ impl<'a> Evaluator<'a> {
                 let key_s = key_scope.alloc_string(&id.stx.name)?;
                 key_scope.push_root(Value::String(key_s))?;
                 let key = PropertyKey::from_string(key_s);
-                return Ok(Value::Bool(key_scope.ordinary_delete_with_host_and_hooks(
+                return Ok(Value::Bool(crate::spec_ops::internal_delete_with_host_and_hooks(
                   self.vm,
+                  &mut key_scope,
                   &mut *self.host,
                   &mut *self.hooks,
                   binding_object,
@@ -6601,8 +6610,9 @@ impl<'a> Evaluator<'a> {
                 let key_s = key_scope.alloc_string(&id.stx.name)?;
                 key_scope.push_root(Value::String(key_s))?;
                 let key = PropertyKey::from_string(key_s);
-                return Ok(Value::Bool(key_scope.ordinary_delete_with_host_and_hooks(
+                return Ok(Value::Bool(crate::spec_ops::internal_delete_with_host_and_hooks(
                   self.vm,
+                  &mut key_scope,
                   &mut *self.host,
                   &mut *self.hooks,
                   binding_object,
