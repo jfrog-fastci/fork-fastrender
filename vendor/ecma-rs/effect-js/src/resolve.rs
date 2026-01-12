@@ -1,6 +1,6 @@
 use hir_js::{Body, BodyId, ExprId, ExprKind, LowerResult, ObjectKey};
 #[cfg(feature = "hir-semantic-ops")]
-use hir_js::ArrayElement;
+use hir_js::{ArrayChainOp, ArrayElement};
 use knowledge_base::{ApiDatabase, ApiId, KnowledgeBase};
 
 use crate::types::TypeProvider;
@@ -579,6 +579,81 @@ pub fn resolve_call(
         receiver: Some(*array),
         args: vec![*callback],
       });
+    }
+    ExprKind::ArrayChain { array, ops } => {
+      let terminal = ops.last()?;
+      match terminal {
+        ArrayChainOp::Map(callback) => {
+          let api = db.get("Array.prototype.map")?;
+          let api_id = api.id;
+          return Some(ResolvedCall {
+            call: call_expr,
+            api: api.name.clone(),
+            api_id,
+            receiver: Some(*array),
+            args: vec![*callback],
+          });
+        }
+        ArrayChainOp::Filter(callback) => {
+          let api = db.get("Array.prototype.filter")?;
+          let api_id = api.id;
+          return Some(ResolvedCall {
+            call: call_expr,
+            api: api.name.clone(),
+            api_id,
+            receiver: Some(*array),
+            args: vec![*callback],
+          });
+        }
+        ArrayChainOp::Reduce(callback, init) => {
+          let api = db.get("Array.prototype.reduce")?;
+          let api_id = api.id;
+          let mut args = vec![*callback];
+          if let Some(init) = init {
+            args.push(*init);
+          }
+          return Some(ResolvedCall {
+            call: call_expr,
+            api: api.name.clone(),
+            api_id,
+            receiver: Some(*array),
+            args,
+          });
+        }
+        ArrayChainOp::Find(callback) => {
+          let api = db.get("Array.prototype.find")?;
+          let api_id = api.id;
+          return Some(ResolvedCall {
+            call: call_expr,
+            api: api.name.clone(),
+            api_id,
+            receiver: Some(*array),
+            args: vec![*callback],
+          });
+        }
+        ArrayChainOp::Every(callback) => {
+          let api = db.get("Array.prototype.every")?;
+          let api_id = api.id;
+          return Some(ResolvedCall {
+            call: call_expr,
+            api: api.name.clone(),
+            api_id,
+            receiver: Some(*array),
+            args: vec![*callback],
+          });
+        }
+        ArrayChainOp::Some(callback) => {
+          let api = db.get("Array.prototype.some")?;
+          let api_id = api.id;
+          return Some(ResolvedCall {
+            call: call_expr,
+            api: api.name.clone(),
+            api_id,
+            receiver: Some(*array),
+            args: vec![*callback],
+          });
+        }
+      }
     }
     ExprKind::KnownApiCall { api: hir_api, args } => {
       let api_id = ApiId::from_raw(hir_api.raw());

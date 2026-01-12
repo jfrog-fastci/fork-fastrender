@@ -35,6 +35,7 @@ pub use encoding::analyze_string_encodings_typed;
 pub use eval::{eval_api_call, CallSemantics, CallSiteInfo as EvalCallSiteInfo};
 pub use kb::load_default_api_database;
 pub use db::{BodyTables, CallSiteInfo, EffectDb};
+pub use db::analyze_body_tables_untyped;
 #[cfg(feature = "typed")]
 pub use db::analyze_body_tables_typed;
 pub use patterns::{

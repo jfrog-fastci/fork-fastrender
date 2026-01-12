@@ -1,6 +1,7 @@
 use anyhow::{anyhow, Result};
 
 use knowledge_base::{Api, KnowledgeBase};
+use smallvec::SmallVec;
 
 use crate::{ApiId, EffectSet, Purity};
 
@@ -35,6 +36,12 @@ pub struct CallSiteInfo {
 /// Per-body side tables produced by `effect-js` analyses.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct BodyTables {
+  /// `CallExpr` + semantic-op call resolution table, indexed by `ExprId`.
+  pub resolved_call: Vec<Option<ApiId>>,
+  /// Per-call receiver expression, indexed by `ExprId`.
+  pub resolved_call_receiver: Vec<Option<hir_js::ExprId>>,
+  /// Per-call argument list, indexed by `ExprId`.
+  pub resolved_call_args: Vec<SmallVec<[hir_js::ExprId; 4]>>,
   /// `ExprKind::Member` resolution table, indexed by `ExprId`.
   pub resolved_member: Vec<Option<ApiId>>,
 }
@@ -56,6 +63,43 @@ impl EffectDb {
   }
 }
 
+/// Compute per-body side tables without type information.
+///
+/// Member resolution is intentionally disabled in untyped mode: property reads like `obj.prop`
+/// are frequently ambiguous without a proven receiver type (global vs prototype vs userland),
+/// and `effect-js` prefers to be conservative rather than emitting incorrect KB identifiers.
+pub fn analyze_body_tables_untyped(
+  kb: &KnowledgeBase,
+  lowered: &hir_js::LowerResult,
+) -> std::collections::HashMap<hir_js::BodyId, BodyTables> {
+  use hir_js::ExprId;
+  use std::collections::HashMap;
+
+  let mut out = HashMap::new();
+  for (&body_id, idx) in lowered.body_index.iter() {
+    let body = &lowered.bodies[*idx];
+    let expr_len = body.exprs.len();
+    let mut tables = BodyTables {
+      resolved_call: vec![None; expr_len],
+      resolved_call_receiver: vec![None; expr_len],
+      resolved_call_args: std::iter::repeat_with(SmallVec::new).take(expr_len).collect(),
+      resolved_member: vec![None; expr_len],
+    };
+
+    for expr_idx in 0..expr_len {
+      let expr_id = ExprId(expr_idx as u32);
+      if let Some(res) = crate::resolve::resolve_call(lowered, body_id, body, expr_id, kb, None) {
+        tables.resolved_call[expr_idx] = Some(res.api_id);
+        tables.resolved_call_receiver[expr_idx] = res.receiver;
+        tables.resolved_call_args[expr_idx] = res.args.into_iter().collect();
+      }
+    }
+
+    out.insert(body_id, tables);
+  }
+  out
+}
+
 /// Compute per-body side tables using type information.
 #[cfg(feature = "typed")]
 pub fn analyze_body_tables_typed(
@@ -69,11 +113,28 @@ pub fn analyze_body_tables_typed(
   let mut out = HashMap::new();
   for (&body_id, idx) in lowered.body_index.iter() {
     let body = &lowered.bodies[*idx];
+    let expr_len = body.exprs.len();
     let mut tables = BodyTables {
-      resolved_member: vec![None; body.exprs.len()],
+      resolved_call: vec![None; expr_len],
+      resolved_call_receiver: vec![None; expr_len],
+      resolved_call_args: std::iter::repeat_with(SmallVec::new).take(expr_len).collect(),
+      resolved_member: vec![None; expr_len],
     };
 
     for (expr_idx, expr) in body.exprs.iter().enumerate() {
+      if let Some(res) = crate::resolve::resolve_call(
+        lowered,
+        body_id,
+        body,
+        ExprId(expr_idx as u32),
+        kb,
+        Some(types),
+      ) {
+        tables.resolved_call[expr_idx] = Some(res.api_id);
+        tables.resolved_call_receiver[expr_idx] = res.receiver;
+        tables.resolved_call_args[expr_idx] = res.args.into_iter().collect();
+      }
+
       if !matches!(expr.kind, ExprKind::Member(_)) {
         continue;
       }

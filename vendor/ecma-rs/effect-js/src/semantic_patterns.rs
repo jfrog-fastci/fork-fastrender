@@ -111,22 +111,9 @@ pub fn recognize_pattern_tables(
 ) -> PatternTables {
   // Build an ExprId-aligned table of resolved calls.
   let mut resolved_call: Vec<Option<ApiId>> = vec![None; body.exprs.len()];
-  for (idx, expr) in body.exprs.iter().enumerate() {
+  for (idx, _) in body.exprs.iter().enumerate() {
     let expr_id = ExprId(idx as u32);
-    resolved_call[idx] = match &expr.kind {
-      // `hir-js` `ArrayChain` nodes are not calls themselves, but they represent a
-      // chain ending in a known array operation. Map the terminal op to the same
-      // API ID the call-based representation would have had, so typed patterns can
-      // be recognized against the semantic-op HIR.
-      #[cfg(all(feature = "typed", feature = "hir-semantic-ops"))]
-      ExprKind::ArrayChain { ops, .. } => match ops.last() {
-        Some(hir_js::ArrayChainOp::Map(_)) => Some(ApiId::from_name("Array.prototype.map")),
-        Some(hir_js::ArrayChainOp::Filter(_)) => Some(ApiId::from_name("Array.prototype.filter")),
-        Some(hir_js::ArrayChainOp::Reduce(..)) => Some(ApiId::from_name("Array.prototype.reduce")),
-        _ => None,
-      },
-      _ => resolve_call(lowered, body_id, body, expr_id, db, types).map(|c| c.api_id),
-    };
+    resolved_call[idx] = resolve_call(lowered, body_id, body, expr_id, db, types).map(|c| c.api_id);
   }
 
   let typed_json_parse = collect_typed_json_parse_targets(body_id, body, &resolved_call, types);
