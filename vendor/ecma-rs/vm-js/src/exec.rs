@@ -2824,9 +2824,12 @@ impl<'a> Evaluator<'a> {
   /// Implements `IteratorClose` error precedence for operations that return `Result<_, VmError>`.
   ///
   /// Per ECMA-262 `IteratorClose(iteratorRecord, completion)`, errors thrown while getting/calling
-  /// `iterator.return` override *non-throw* incoming completions, but are suppressed for throw
-  /// completions (the original throw is preserved). `vm-js` also has non-catchable VM failures
-  /// (termination, OOM, etc) which are never suppressed.
+  /// `iterator.return` override the incoming completion (even when the incoming completion is
+  /// itself a throw completion). Only the non-object return-result TypeError check is skipped for
+  /// throw completions.
+  ///
+  /// `vm-js` also has non-catchable VM failures (termination, OOM, etc) which must never be
+  /// replaced by a catchable close-time throw.
   fn iterator_close_on_error(
     &mut self,
     scope: &mut Scope<'_>,
@@ -2853,13 +2856,7 @@ impl<'a> Evaluator<'a> {
     ) {
       Ok(_) => err,
       Err(close_err) => {
-        if original_is_throw && close_err.is_throw_completion() {
-          err
-        } else if original_is_throw {
-          close_err
-        } else {
-          err
-        }
+        if original_is_throw { close_err } else { err }
       }
     }
   }
@@ -20443,10 +20440,11 @@ fn async_iterator_close_on_error(
   }
 
   // `IteratorClose` precedence rules:
-  // - Per ECMA-262 `IteratorClose`, when we're already throwing then iterator closing is
-  //   best-effort: any throw-completion produced while getting/calling `iterator.return` is
-  //   suppressed (original error preserved).
-  // - vm-js also has non-catchable VM failures (OOM/termination/etc); those are never suppressed.
+  // - Per ECMA-262 `IteratorClose`, errors thrown while getting/calling `iterator.return` override
+  //   the incoming completion (even when the incoming completion is a throw completion).
+  // - Only the non-object return-result TypeError check is skipped for throw completions.
+  // - vm-js also has non-catchable VM failures (OOM/termination/etc); those must never be replaced
+  //   by a catchable close-time throw.
   let original_is_throw = err.is_throw_completion();
 
   // Root the thrown value across `IteratorClose`, which can allocate and trigger GC.
@@ -20471,13 +20469,7 @@ fn async_iterator_close_on_error(
     Ok(()) => err,
     Err(close_err) => {
       let close_err = coerce_error_to_throw_for_async(evaluator.vm, scope, close_err);
-      if original_is_throw && close_err.is_throw_completion() {
-        err
-      } else if original_is_throw {
-        close_err
-      } else {
-        err
-      }
+      if original_is_throw { close_err } else { err }
     }
   }
 }
