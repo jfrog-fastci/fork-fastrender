@@ -369,7 +369,6 @@ pub fn install_url_bindings<'js>(ctx: Ctx<'js>, globals: &Object<'js>) -> Result
 #[cfg(test)]
 mod tests {
   use super::install_url_bindings;
-
   use rquickjs::{Context, Runtime};
 
   #[test]

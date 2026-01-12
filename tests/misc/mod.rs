@@ -64,8 +64,6 @@ mod js_css_supports;
 mod js_dom_wrapper_identity;
 mod js_event_loop_timers;
 mod js_execution_budgets;
-#[cfg(feature = "quickjs")]
-mod js_fetch_bindings;
 mod js_fetch_tests;
 mod js_intersection_observer;
 mod js_runtime_consolidation_guard;
