@@ -10960,6 +10960,86 @@ fn async_call_cleanup(scope: &mut Scope<'_>, callee_root: RootId, this_root: Roo
   }
 }
 
+fn async_iterator_close_on_error(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  iter: &iterator::IteratorRecord,
+  err: VmError,
+) -> VmError {
+  // `IteratorClose` is only observable for iterator-protocol iterators. Our `IteratorRecord`
+  // fast-path for Array iteration uses `next_method = undefined` and has no concept of `return()`.
+  //
+  // Additionally, if the iterator is already marked done, it should not be closed.
+  if iter.done || matches!(iter.next_method, Value::Undefined) {
+    return err;
+  }
+
+  // Only replace the original error with a closing error when the original is a JS throw. For
+  // fatal/non-catchable errors (OOM, termination, etc), attempt to close best-effort but preserve
+  // the original error.
+  let original_is_throw = matches!(err, VmError::Throw(_) | VmError::ThrowWithStack { .. });
+
+  // Root the thrown value across `IteratorClose`, which can allocate and trigger GC.
+  if original_is_throw {
+    if let Some(thrown) = err.thrown_value() {
+      if let Err(root_err) = scope.push_root(thrown) {
+        return root_err;
+      }
+    }
+  }
+
+  let close_res: Result<(), VmError> = (|| {
+    let return_key = PropertyKey::from_string(scope.alloc_string("return")?);
+    let Some(return_method) = crate::spec_ops::get_method_with_host_and_hooks(
+      evaluator.vm,
+      scope,
+      &mut *evaluator.host,
+      &mut *evaluator.hooks,
+      iter.iterator,
+      return_key,
+    )?
+    else {
+      return Ok(());
+    };
+
+    // Root the method across the call in case it allocates/triggers GC.
+    scope.push_root(return_method)?;
+
+    // `Call(return, iterator, « »)`.
+    let return_result = evaluator.vm.call_with_host_and_hooks(
+      &mut *evaluator.host,
+      scope,
+      &mut *evaluator.hooks,
+      return_method,
+      iter.iterator,
+      &[],
+    )?;
+
+    // If we are already throwing, `IteratorClose` returns the original throw completion and does
+    // not validate the `return` result type.
+    if original_is_throw {
+      return Ok(());
+    }
+
+    // For non-throw completions, `IteratorClose` requires the `return` result to be an object.
+    if !matches!(return_result, Value::Object(_)) {
+      return Err(VmError::TypeError(
+        "IteratorClose: iterator.return did not return an object",
+      ));
+    }
+
+    Ok(())
+  })();
+
+  match close_res {
+    Ok(()) => err,
+    Err(close_err) => {
+      let close_err = coerce_error_to_throw_for_async(evaluator.vm, scope, close_err);
+      if original_is_throw { close_err } else { err }
+    }
+  }
+}
+
 fn async_call_store_arg_value(
   evaluator: &mut Evaluator<'_>,
   scope: &mut Scope<'_>,
@@ -10978,28 +11058,70 @@ fn async_call_store_arg_value(
       value,
     )
     .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut iter_scope, err))?;
-    iter_scope.push_roots(&[iter.iterator, iter.next_method])?;
-    while let Some(v) = iterator::iterator_step_value(
-      evaluator.vm,
-      &mut *evaluator.host,
-      &mut *evaluator.hooks,
-      &mut iter_scope,
-      &mut iter,
-    )
-    .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut iter_scope, err))?
-    {
-      evaluator.tick()?;
+
+    // Root the iterator and next method for the duration of spread expansion.
+    //
+    // Use separate pushes so if rooting `next_method` fails we still have a rooted `iterator` for
+    // `IteratorClose`.
+    iter_scope
+      .push_root(iter.iterator)
+      .map_err(|err| async_iterator_close_on_error(evaluator, &mut iter_scope, &iter, err))?;
+    iter_scope
+      .push_root(iter.next_method)
+      .map_err(|err| async_iterator_close_on_error(evaluator, &mut iter_scope, &iter, err))?;
+
+    loop {
+      let step = iterator::iterator_step_value(
+        evaluator.vm,
+        &mut *evaluator.host,
+        &mut *evaluator.hooks,
+        &mut iter_scope,
+        &mut iter,
+      )
+      .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut iter_scope, err));
+
+      let Some(v) = (match step {
+        Ok(v) => v,
+        Err(err) => {
+          return Err(async_iterator_close_on_error(
+            evaluator,
+            &mut iter_scope,
+            &iter,
+            err,
+          ))
+        }
+      }) else {
+        break;
+      };
+
+      // Per-spread-element tick: spreading large iterators should be budgeted even when no `await`
+      // occurs inside the spread.
+      if let Err(err) = evaluator.tick() {
+        return Err(async_iterator_close_on_error(evaluator, &mut iter_scope, &iter, err));
+      }
+
       let mut root_scope = iter_scope.reborrow();
-      root_scope.push_root(v)?;
-      let id = root_scope.heap_mut().add_root(v)?;
-      arg_roots.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
+      if let Err(err) = root_scope.push_root(v) {
+        return Err(async_iterator_close_on_error(evaluator, &mut root_scope, &iter, err));
+      }
+
+      // Ensure we can record the persistent root before allocating it so we don't leak roots on
+      // `Vec` allocation failure.
+      if let Err(err) = arg_roots.try_reserve(1).map_err(|_| VmError::OutOfMemory) {
+        return Err(async_iterator_close_on_error(evaluator, &mut root_scope, &iter, err));
+      }
+
+      let id = match root_scope.heap_mut().add_root(v) {
+        Ok(id) => id,
+        Err(err) => return Err(async_iterator_close_on_error(evaluator, &mut root_scope, &iter, err)),
+      };
       arg_roots.push(id);
     }
   } else {
     let mut root_scope = scope.reborrow();
     root_scope.push_root(value)?;
-    let id = root_scope.heap_mut().add_root(value)?;
     arg_roots.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
+    let id = root_scope.heap_mut().add_root(value)?;
     arg_roots.push(id);
   }
   Ok(())
@@ -11018,7 +11140,12 @@ fn async_call_continue_args(
   for (idx, arg) in call.arguments.iter().enumerate().skip(start_index) {
     match async_eval_expr(evaluator, scope, &arg.stx.value) {
       Ok(AsyncEval::Complete(v)) => {
-        async_call_store_arg_value(evaluator, scope, arg.stx.spread, v, &mut arg_roots)?;
+        if let Err(err) =
+          async_call_store_arg_value(evaluator, scope, arg.stx.spread, v, &mut arg_roots)
+        {
+          async_call_cleanup(scope, callee_root, this_root, &mut arg_roots);
+          return Err(err);
+        }
       }
       Ok(AsyncEval::Suspend(mut suspend)) => {
         async_frames_push(
