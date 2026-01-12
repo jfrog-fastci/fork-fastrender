@@ -94,11 +94,19 @@ impl CompareEnvVars<'_> {
 
 /// Build a comparison config honoring common fuzz/tolerance env vars.
 pub fn compare_config_from_env(env: CompareEnvVars<'_>) -> Result<CompareConfig, String> {
-  let fuzzy = std::env::var(env.fuzzy).ok();
-  let tolerance = std::env::var(env.tolerance).ok();
-  let max_diff_percent = std::env::var(env.max_diff_percent).ok();
-  let ignore_alpha = std::env::var(env.ignore_alpha).ok();
-  let max_perceptual_distance = std::env::var(env.max_perceptual_distance).ok();
+  compare_config_from_vars(env, |key| std::env::var(key).ok())
+}
+
+fn compare_config_from_vars(
+  env: CompareEnvVars<'_>,
+  get: impl Fn(&str) -> Option<String>,
+) -> Result<CompareConfig, String> {
+  // Cache fetched values so the lookup closure can hand out `&str` references without allocating.
+  let fuzzy = get(env.fuzzy);
+  let tolerance = get(env.tolerance);
+  let max_diff_percent = get(env.max_diff_percent);
+  let ignore_alpha = get(env.ignore_alpha);
+  let max_perceptual_distance = get(env.max_perceptual_distance);
 
   compare_config_from_lookup(env, |key| {
     if key == env.fuzzy {
@@ -245,75 +253,59 @@ mod tests {
   use std::collections::HashMap;
 
   #[test]
-  fn compare_config_from_env_supports_fixture_ignore_alpha_and_perceptual_distance() {
-    let env = CompareEnvVars::fixtures();
+  fn compare_config_from_env_map_supports_ignore_alpha_and_perceptual_distance() {
+    for env in [CompareEnvVars::fixtures(), CompareEnvVars::pages()] {
+      let config = compare_config_from_env_map(env, &HashMap::new()).expect("config");
+      assert!(config.compare_alpha);
+      assert!(config.max_perceptual_distance.is_none());
 
-    let config = compare_config_from_env_map(env, &HashMap::new()).expect("config");
-    assert!(config.compare_alpha);
-    assert!(config.max_perceptual_distance.is_none());
+      let config =
+        compare_config_from_env_map(env, &HashMap::from([(env.ignore_alpha, "1")])).expect("config");
+      assert!(!config.compare_alpha);
 
-    let config =
-      compare_config_from_env_map(env, &HashMap::from([("FIXTURE_IGNORE_ALPHA", "1")]))
-        .expect("config");
-    assert!(!config.compare_alpha);
-
-    let config = compare_config_from_env_map(
-      env,
-      &HashMap::from([("FIXTURE_MAX_PERCEPTUAL_DISTANCE", "0.123")]),
-    )
-    .expect("config");
-    let parsed = config
-      .max_perceptual_distance
-      .expect("max perceptual distance");
-    assert!((parsed - 0.123).abs() < 1e-12);
-
-    let config = compare_config_from_env_map(
-      env,
-      &HashMap::from([
-        ("FIXTURE_FUZZY", "1"),
-        ("FIXTURE_MAX_PERCEPTUAL_DISTANCE", "0.01"),
-      ]),
-    )
-    .expect("config");
-    let parsed = config
-      .max_perceptual_distance
-      .expect("max perceptual distance");
-    assert!((parsed - 0.01).abs() < 1e-12);
-    assert!(!config.compare_alpha);
+      let config = compare_config_from_env_map(
+        env,
+        &HashMap::from([(env.max_perceptual_distance, "0.123")]),
+      )
+      .expect("config");
+      let parsed = config
+        .max_perceptual_distance
+        .expect("max perceptual distance");
+      assert!((parsed - 0.123).abs() < 1e-12);
+    }
   }
 
   #[test]
-  fn compare_config_from_env_supports_pages_ignore_alpha_and_perceptual_distance() {
-    let env = CompareEnvVars::pages();
+  fn compare_config_from_env_map_selects_fuzzy_mode() {
+    for env in [CompareEnvVars::fixtures(), CompareEnvVars::pages()] {
+      let strict = compare_config_from_env_map(env, &HashMap::new()).expect("config");
+      assert_eq!(strict.channel_tolerance, 0);
+      assert_eq!(strict.max_different_percent, 0.0);
 
-    let config = compare_config_from_env_map(env, &HashMap::new()).expect("config");
-    assert!(config.compare_alpha);
-    assert!(config.max_perceptual_distance.is_none());
+      let config = compare_config_from_env_map(
+        env,
+        &HashMap::from([(env.fuzzy, "1"), (env.max_perceptual_distance, "0.01")]),
+      )
+      .expect("config");
+      assert_eq!(config.channel_tolerance, 10);
+      assert_eq!(config.max_different_percent, 1.0);
+      assert!(!config.compare_alpha);
 
-    let config = compare_config_from_env_map(
-      env,
-      &HashMap::from([
-        ("PAGES_IGNORE_ALPHA", "1"),
-        ("PAGES_MAX_PERCEPTUAL_DISTANCE", "0.2"),
-      ]),
-    )
-    .expect("config");
-    assert!(!config.compare_alpha);
-    let parsed = config
-      .max_perceptual_distance
-      .expect("max perceptual distance");
-    assert!((parsed - 0.2).abs() < 1e-12);
+      let parsed = config
+        .max_perceptual_distance
+        .expect("max perceptual distance");
+      assert!((parsed - 0.01).abs() < 1e-12);
+    }
   }
 
   #[test]
-  fn compare_config_from_env_rejects_invalid_perceptual_distance() {
+  fn compare_config_from_env_map_rejects_invalid_perceptual_distance() {
     let env = CompareEnvVars::fixtures();
-
     let err = compare_config_from_env_map(
       env,
-      &HashMap::from([("FIXTURE_MAX_PERCEPTUAL_DISTANCE", "not-a-number")]),
+      &HashMap::from([(env.max_perceptual_distance, "not-a-number")]),
     )
       .expect_err("invalid perceptual distance should fail");
-    assert!(err.contains("FIXTURE_MAX_PERCEPTUAL_DISTANCE"), "{err}");
+    assert!(err.contains(env.max_perceptual_distance), "{err}");
   }
 }
