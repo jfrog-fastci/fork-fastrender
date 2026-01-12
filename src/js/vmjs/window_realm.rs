@@ -4392,10 +4392,27 @@ fn history_state_change_native(
     scope.push_root(Value::String(url_value))?;
     let url_input = scope.heap().get_string(url_value)?.to_utf8_lossy();
 
-    let resolved = crate::js::url_resolve::resolve_url(&url_input, Some(&current_document_url))
-      .map_err(|err| throw_type_error(vm, scope, host, hooks, &err.to_string()))?;
-    let parsed = Url::parse(&resolved)
-      .map_err(|err| throw_type_error(vm, scope, host, hooks, &err.to_string()))?;
+    let resolved =
+      match crate::js::url_resolve::resolve_url(&url_input, Some(&current_document_url)) {
+        Ok(resolved) => resolved,
+        Err(err) => {
+          return Err(VmError::Throw(make_dom_exception(
+            scope,
+            "SecurityError",
+            &err.to_string(),
+          )?));
+        }
+      };
+    let parsed = match Url::parse(&resolved) {
+      Ok(parsed) => parsed,
+      Err(err) => {
+        return Err(VmError::Throw(make_dom_exception(
+          scope,
+          "SecurityError",
+          &err.to_string(),
+        )?));
+      }
+    };
 
     match parsed.scheme() {
       "http" | "https" | "file" | "data" | "about" => {}

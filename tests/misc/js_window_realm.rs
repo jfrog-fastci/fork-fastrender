@@ -1102,6 +1102,19 @@ fn history_state_change_cross_origin_throws_security_error() -> Result<()> {
 }
 
 #[test]
+fn history_state_change_invalid_url_throws_security_error() -> Result<()> {
+  let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))
+    .map_err(|e| Error::Other(e.to_string()))?;
+
+  let value = realm
+    .exec_script("try { history.pushState({}, '', 'http://'); } catch(e) { e && e.name; }")
+    .map_err(|e| Error::Other(e.to_string()))?;
+
+  assert_eq!(get_string(realm.heap(), value), "SecurityError");
+  Ok(())
+}
+
+#[test]
 fn js_execution_can_observe_window_globals() -> Result<()> {
   let url = "https://example.com/path";
   let mut realm =
