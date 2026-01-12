@@ -233,54 +233,6 @@ fn reject_rs4gc_unsupported_calls_in_gc_functions(module: &Module<'_>) -> Result
   Ok(())
 }
 
-/// Strip `llvm.dbg.*` intrinsic calls from all defined functions in `module`.
-///
-/// Why this exists:
-/// - We emit `llvm.dbg.declare`/`llvm.dbg.value` in the checked HIR backend when debug info is
-///   enabled (useful for IR inspection and future variable-level DWARF work).
-/// - However, LLVM 18's `place-safepoints` / `rewrite-statepoints-for-gc` pipeline has been observed
-///   to segfault when these debug intrinsics are present in GC-managed functions.
-///
-/// Until that LLVM issue is understood/fixed, we conservatively strip debug intrinsic *calls*
-/// immediately before running the GC/statepoint pass pipeline. This still leaves compile units,
-/// subprograms, and instruction-level `!dbg` locations intact so line tables are usable.
-fn strip_llvm_dbg_intrinsics(module: &Module<'_>) {
-  unsafe {
-    let mut func = LLVMGetFirstFunction(module.as_mut_ptr());
-    while !func.is_null() {
-      // Skip declarations.
-      if LLVMCountBasicBlocks(func) == 0 {
-        func = LLVMGetNextFunction(func);
-        continue;
-      }
-
-      let mut bb = LLVMGetFirstBasicBlock(func);
-      while !bb.is_null() {
-        let mut inst = LLVMGetFirstInstruction(bb);
-        while !inst.is_null() {
-          let next = LLVMGetNextInstruction(inst);
-
-          let opcode = LLVMGetInstructionOpcode(inst);
-          if opcode == LLVMOpcode::LLVMCall || opcode == LLVMOpcode::LLVMInvoke {
-            let callee = strip_callee_pointer_casts(get_call_callee_operand(inst));
-            if !LLVMIsAFunction(callee).is_null() {
-              let name = value_name(callee);
-              if name.starts_with("llvm.dbg.") {
-                LLVMInstructionEraseFromParent(inst);
-              }
-            }
-          }
-
-          inst = next;
-        }
-        bb = LLVMGetNextBasicBlock(bb);
-      }
-
-      func = LLVMGetNextFunction(func);
-    }
-  }
-}
-
 /// Runs LLVM's `rewrite-statepoints-for-gc` pass on `module`.
 ///
 /// This rewrites normal calls into `llvm.experimental.gc.statepoint.*` and
@@ -294,7 +246,6 @@ pub fn rewrite_statepoints_for_gc(
   target_machine: &TargetMachine,
 ) -> Result<(), PassError> {
   reject_rs4gc_unsupported_calls_in_gc_functions(module)?;
-  strip_llvm_dbg_intrinsics(module);
   validate_rt_gc_epoch_decl_if_present(module)?;
   validate_rt_gc_safepoint_slow_decl_if_present(module)?;
   super::debug_lint_module_gc_pointer_discipline(module)?;
@@ -342,7 +293,6 @@ pub fn place_safepoints_and_rewrite_statepoints_for_gc(
   target_machine: &TargetMachine,
 ) -> Result<(), PassError> {
   reject_rs4gc_unsupported_calls_in_gc_functions(module)?;
-  strip_llvm_dbg_intrinsics(module);
   validate_rt_gc_epoch_decl_if_present(module)?;
   validate_rt_gc_safepoint_slow_decl_if_present(module)?;
   super::debug_lint_module_gc_pointer_discipline(module)?;

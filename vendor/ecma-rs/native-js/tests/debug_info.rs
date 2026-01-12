@@ -176,3 +176,47 @@ fn release_object_has_no_dwarf_debug_sections() {
     "expected no .debug_line section in non-debug object"
   );
 }
+
+#[test]
+fn debug_info_emits_param_and_local_names() {
+  let mut host = es5_host();
+  let key = FileKey::new("main.ts");
+  host.insert(
+    key.clone(),
+    r#"
+export function add(param_debug_info: number): number {
+  let local_debug_info = param_debug_info + 1;
+  return local_debug_info;
+}
+
+export function main(): number {
+  return add(41);
+}
+"#,
+  );
+
+  let program = Program::new(host, vec![key.clone()]);
+  let diags = program.check();
+  assert!(diags.is_empty(), "{diags:#?}");
+  let entry = program.file_id(&key).unwrap();
+
+  let mut opts = CompilerOptions::default();
+  opts.emit = EmitKind::Object;
+  opts.debug = true;
+  opts.opt_level = OptLevel::O0;
+
+  let artifact = compile_program(&program, entry, &opts).unwrap();
+  let bytes = std::fs::read(&artifact.path).unwrap();
+  let _ = std::fs::remove_file(&artifact.path);
+
+  let file = object::File::parse(&*bytes).unwrap();
+
+  assert!(
+    debug_sections_contain(&file, "param_debug_info"),
+    "expected DWARF debug sections to contain parameter name `param_debug_info`"
+  );
+  assert!(
+    debug_sections_contain(&file, "local_debug_info"),
+    "expected DWARF debug sections to contain local variable name `local_debug_info`"
+  );
+}

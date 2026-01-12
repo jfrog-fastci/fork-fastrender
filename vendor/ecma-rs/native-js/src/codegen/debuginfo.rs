@@ -23,23 +23,12 @@ use super::TsAbiKind;
 
 /// Debug info state for the HIR-driven native-js codegen backend.
 ///
-/// This intentionally focuses on *source-level mapping*:
-/// - DWARF compile unit + file entries
+/// This provides enough DWARF metadata for basic source-level debugging:
+/// - compile unit + file entries
 /// - function/subprogram metadata
-/// - instruction-level `!dbg` locations for line tables
-///
-/// NOTE: We do emit `llvm.dbg.declare`/`llvm.dbg.value` intrinsics when debug info is enabled so the
-/// **textual LLVM IR** contains variable debug metadata, but LLVM 18's GC/statepoint pipeline
-/// (`place-safepoints` + `rewrite-statepoints-for-gc`) has been observed to segfault when these
-/// intrinsics are present in GC-managed functions.
-///
-/// As a temporary workaround, `native-js` strips `llvm.dbg.*` *call instructions* immediately before
-/// running the GC/statepoint pass pipeline (see `llvm::passes`). This keeps line tables and
-/// subprogram/file mapping usable end-to-end while variable debug info remains best-effort.
+/// - instruction-level `!dbg` locations (line tables)
+/// - parameter/local variable locations (`llvm.dbg.declare` / `llvm.dbg.value`)
 pub(crate) struct CodegenDebug<'ctx> {
-  // NOTE: This is currently unused because native-js intentionally omits `llvm.dbg.value`
-  // emission (see module docs). Keep it around for future variable-level debug work.
-  #[allow(dead_code)]
   optimized: bool,
   builder: DebugInfoBuilder<'ctx>,
   compile_unit: DICompileUnit<'ctx>,
@@ -117,7 +106,6 @@ impl<'ctx> CodegenDebug<'ctx> {
     self.builder.finalize();
   }
 
-  #[allow(dead_code)]
   pub(crate) fn optimized(&self) -> bool {
     self.optimized
   }
@@ -197,8 +185,6 @@ impl<'ctx> CodegenDebug<'ctx> {
       .builder
       .create_debug_location(context, line, col, scope.as_debug_info_scope(), None)
   }
-
-  #[allow(dead_code)]
   pub(crate) fn declare_parameter(
     &self,
     context: &'ctx Context,
@@ -227,7 +213,6 @@ impl<'ctx> CodegenDebug<'ctx> {
     var
   }
 
-  #[allow(dead_code)]
   pub(crate) fn declare_local(
     &self,
     context: &'ctx Context,
@@ -288,7 +273,6 @@ impl<'ctx> CodegenDebug<'ctx> {
     global.set_metadata(gv_expr.as_metadata_value(context), dbg_kind_id);
   }
 
-  #[allow(dead_code)]
   fn insert_declare(
     &self,
     context: &'ctx Context,
@@ -311,7 +295,6 @@ impl<'ctx> CodegenDebug<'ctx> {
     }
   }
 
-  #[allow(dead_code)]
   pub(crate) fn insert_value(
     &self,
     context: &'ctx Context,
@@ -374,9 +357,6 @@ impl<'ctx> CodegenDebug<'ctx> {
           args.len() as c_uint,
           b"\0".as_ptr().cast(),
         );
-        // Do not leak the debug location to subsequent instructions; we currently emit debug
-        // locations only on debug intrinsics.
-        LLVMSetCurrentDebugLocation2(builder.as_mut_ptr(), std::ptr::null_mut());
       }
 
       // Ensure the builder stays positioned in the current block; `LLVMSetCurrentDebugLocation2`

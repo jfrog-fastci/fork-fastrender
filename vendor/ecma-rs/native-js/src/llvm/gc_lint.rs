@@ -5,13 +5,14 @@ use llvm_sys::core::{
   LLVMGetFirstBasicBlock, LLVMGetFirstFunction, LLVMGetFirstInstruction, LLVMGetFirstUse, LLVMGetGC,
   LLVMGetGEPSourceElementType, LLVMGetInstructionOpcode, LLVMGetNextBasicBlock, LLVMGetNextFunction,
   LLVMGetNextInstruction, LLVMGetNextUse, LLVMGetNumArgOperands, LLVMGetNumOperands, LLVMGetOperand,
-  LLVMGetParam, LLVMGetPointerAddressSpace, LLVMGetTypeKind, LLVMGetUser, LLVMGlobalGetValueType,
+  LLVMGetParam, LLVMGetPointerAddressSpace, LLVMGetTypeKind, LLVMGetUser, LLVMGetValueKind,
+  LLVMGlobalGetValueType,
   LLVMIsAAllocaInst, LLVMIsABitCastInst, LLVMIsAConstantExpr, LLVMIsAConstantInt,
   LLVMIsAGetElementPtrInst, LLVMIsAGlobalVariable, LLVMPrintTypeToString, LLVMPrintValueToString,
   LLVMStructGetTypeAtIndex, LLVMTypeOf,
 };
 use llvm_sys::prelude::{LLVMModuleRef, LLVMTypeRef, LLVMUseRef, LLVMValueRef};
-use llvm_sys::{LLVMOpcode, LLVMTypeKind};
+use llvm_sys::{LLVMOpcode, LLVMTypeKind, LLVMValueKind};
 use std::collections::HashSet;
 use std::ffi::CStr;
 use std::fmt;
@@ -605,6 +606,17 @@ unsafe fn scan_forbidden_constexprs(
     return;
   }
   visited.insert(value);
+
+  // Debug intrinsics (`llvm.dbg.*`) carry `MetadataAsValue` operands such as `metadata !DI*`.
+  //
+  // LLVM's C API does not treat metadata values as normal SSA operands; querying operands on them
+  // (e.g. via `LLVMGetNumOperands`) is not supported and can segfault.
+  //
+  // Since these operands cannot contain GC pointers or constant-expression address space casts
+  // relevant to the GC lint, skip them entirely.
+  if LLVMGetValueKind(value) == LLVMValueKind::LLVMMetadataAsValueValueKind {
+    return;
+  }
 
   if !LLVMIsAConstantExpr(value).is_null() {
     let opcode = LLVMGetConstOpcode(value);
