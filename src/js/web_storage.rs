@@ -427,7 +427,19 @@ pub fn get_session_area(session: SessionNamespaceId, origin: Option<&str>) -> Ar
     let quota_bytes = with_default_hub(|hub| hub.limits.max_bytes_per_area);
     return Arc::new(Mutex::new(StorageArea::new_with_quota(quota_bytes)));
   };
-  with_default_hub_mut(|hub| hub.get_or_create_session_area(session, origin))
+  with_default_hub_mut(|hub| {
+    // Session storage must only persist for *active* session namespaces (i.e. namespaces with at
+    // least one live window/tab registered). This prevents unbounded growth in `session_areas` for
+    // ephemeral realms/tests that allocate a namespace but never model a browsing-context lifetime.
+    //
+    // Callers that want persistent `sessionStorage` must hold a `StorageListenerGuard` for the
+    // lifetime of the top-level browsing context.
+    if hub.active_session_namespace_refcount(session) == 0 {
+      let quota_bytes = hub.limits.max_bytes_per_area;
+      return Arc::new(Mutex::new(StorageArea::new_with_quota(quota_bytes)));
+    }
+    hub.get_or_create_session_area(session, origin)
+  })
 }
 
 /// Reset the thread-local default Web Storage hub.
@@ -623,5 +635,41 @@ mod tests {
     let _window_3 = with_default_hub_mut(|hub| hub.register_window(ns));
     let session_a2 = get_session_area(ns, Some("https://example.com"));
     assert_eq!(session_a2.lock().get_item("k"), None);
+  }
+
+  #[test]
+  fn session_storage_is_ephemeral_without_active_namespace_registration() {
+    reset_default_web_storage_hub_for_tests();
+    // Ensure this test leaves the thread-local hub in a clean state even if it fails (the Rust test
+    // harness may reuse worker threads between tests).
+    struct ResetGuard;
+    impl Drop for ResetGuard {
+      fn drop(&mut self) {
+        reset_default_web_storage_hub_for_tests();
+      }
+    }
+    let _guard = ResetGuard;
+
+    let ns = SessionNamespaceId(999);
+
+    // Without a registered window/tab, `get_session_area` must not store anything in the hub.
+    let area_1 = get_session_area(ns, Some("https://example.com"));
+    area_1.lock().set_item("k", "v").unwrap();
+    assert_eq!(with_default_hub(|hub| hub.session_areas.len()), 0);
+
+    let area_2 = get_session_area(ns, Some("https://example.com"));
+    assert_eq!(area_2.lock().get_item("k"), None);
+    assert_eq!(area_1.lock().get_item("k").as_deref(), Some("v"));
+
+    // Once a window is registered, session storage should be persistent within the namespace.
+    let window = with_default_hub_mut(|hub| hub.register_window(ns));
+    let persistent_1 = get_session_area(ns, Some("https://example.com"));
+    persistent_1.lock().set_item("k", "v2").unwrap();
+    let persistent_2 = get_session_area(ns, Some("https://example.com"));
+    assert_eq!(persistent_2.lock().get_item("k").as_deref(), Some("v2"));
+    assert_eq!(with_default_hub(|hub| hub.session_areas.len()), 1);
+
+    drop(window);
+    assert_eq!(with_default_hub(|hub| hub.session_areas.len()), 0);
   }
 }
