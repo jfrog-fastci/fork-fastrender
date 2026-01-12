@@ -77,9 +77,12 @@ fn pie_stackmaps_are_in_gnu_relro_and_no_load_segment_is_rwx() {
     return;
   };
 
-  // Use GNU ld (bfd) for this test. lld is intentionally not used here: it rejects placing custom
-  // writable sections inside its RELRO block, and therefore cannot cover
-  // `.data.rel.ro.llvm_stackmaps` with `PT_GNU_RELRO`.
+  // Use GNU ld (bfd) for this test: it specifically exercises the GNU-ld fragment
+  // (`link/stackmaps_gnuld.ld`) which places stackmaps/faultmaps into dedicated
+  // `.data.rel.ro.llvm_*` output sections and keeps them covered by `PT_GNU_RELRO`.
+  //
+  // lld uses a different fragment (`link/stackmaps.ld`) that appends the rewritten
+  // `.data.rel.ro.llvm_*` *input* sections into the standard `.data.rel.ro` output section.
 
   let tmp = tempfile::tempdir().expect("tempdir");
   let dir = tmp.path();
