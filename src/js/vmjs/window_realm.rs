@@ -11743,6 +11743,30 @@ fn node_owner_document_get_native(
   Ok(Value::Object(document_obj))
 }
 
+fn node_base_uri_get_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(wrapper_obj) = this else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+  let _ = dom_platform_mut(vm)
+    .ok_or(VmError::TypeError("Illegal invocation"))?
+    .require_node_id(scope.heap(), Value::Object(wrapper_obj))?;
+
+  // `Node.baseURI` should reflect the document base URL for this single-document realm.
+  let base_url = vm
+    .user_data_mut::<WindowRealmUserData>()
+    .map(|data| data.base_url.clone().unwrap_or_else(|| data.document_url.clone()))
+    .unwrap_or_default();
+  Ok(Value::String(scope.alloc_string(&base_url)?))
+}
+
 fn node_is_connected_get_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -16428,6 +16452,63 @@ fn document_base_uri_get_native(
   Ok(Value::String(scope.alloc_string(&base_url)?))
 }
 
+fn document_document_uri_get_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  // `document.documentURI` is a legacy alias for the document URL.
+  let document_url = vm
+    .user_data_mut::<WindowRealmUserData>()
+    .map(|data| data.document_url.clone())
+    .unwrap_or_default();
+  Ok(Value::String(scope.alloc_string(&document_url)?))
+}
+
+fn document_compat_mode_get_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let dom = dom_from_vm_host(host).or_else(|| {
+    vm.user_data_mut::<WindowRealmUserData>()
+      .map(|data| &data.events_dom_fallback)
+  });
+  let quirks_mode = dom
+    .and_then(|dom| match &dom.node(NodeId::from_index(0)).kind {
+      NodeKind::Document { quirks_mode, .. } => Some(*quirks_mode),
+      _ => None,
+    })
+    .unwrap_or(QuirksMode::NoQuirks);
+  let mode = if quirks_mode == QuirksMode::Quirks {
+    "BackCompat"
+  } else {
+    "CSS1Compat"
+  };
+  Ok(Value::String(scope.alloc_string(mode)?))
+}
+
+fn document_content_type_get_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  // The current harness only constructs HTML documents.
+  Ok(Value::String(scope.alloc_string("text/html")?))
+}
+
 fn document_cookie_get_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -17214,6 +17295,81 @@ fn init_window_globals(
     );
   }
   scope.define_property(document_obj, document_url_key, data_desc(url_v))?;
+
+  // `Document.documentURI` is a legacy alias for the document URL.
+  let document_uri_key = alloc_key(&mut scope, "documentURI")?;
+  let document_uri_call_id = vm.register_native_call(document_document_uri_get_native)?;
+  let document_uri_name = scope.alloc_string("get documentURI")?;
+  scope.push_root(Value::String(document_uri_name))?;
+  let document_uri_func =
+    scope.alloc_native_function(document_uri_call_id, None, document_uri_name, 0)?;
+  scope.heap_mut().object_set_prototype(
+    document_uri_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(document_uri_func))?;
+  scope.define_property(
+    document_obj,
+    document_uri_key,
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: true,
+      kind: PropertyKind::Accessor {
+        get: Value::Object(document_uri_func),
+        set: Value::Undefined,
+      },
+    },
+  )?;
+
+  // Document.compatMode: "BackCompat" for quirks mode, otherwise "CSS1Compat".
+  let compat_mode_key = alloc_key(&mut scope, "compatMode")?;
+  let compat_mode_call_id = vm.register_native_call(document_compat_mode_get_native)?;
+  let compat_mode_name = scope.alloc_string("get compatMode")?;
+  scope.push_root(Value::String(compat_mode_name))?;
+  let compat_mode_func =
+    scope.alloc_native_function(compat_mode_call_id, None, compat_mode_name, 0)?;
+  scope.heap_mut().object_set_prototype(
+    compat_mode_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(compat_mode_func))?;
+  scope.define_property(
+    document_obj,
+    compat_mode_key,
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: true,
+      kind: PropertyKind::Accessor {
+        get: Value::Object(compat_mode_func),
+        set: Value::Undefined,
+      },
+    },
+  )?;
+
+  // Document.contentType: MIME type for the document.
+  let content_type_key = alloc_key(&mut scope, "contentType")?;
+  let content_type_call_id = vm.register_native_call(document_content_type_get_native)?;
+  let content_type_name = scope.alloc_string("get contentType")?;
+  scope.push_root(Value::String(content_type_name))?;
+  let content_type_func =
+    scope.alloc_native_function(content_type_call_id, None, content_type_name, 0)?;
+  scope.heap_mut().object_set_prototype(
+    content_type_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(content_type_func))?;
+  scope.define_property(
+    document_obj,
+    content_type_key,
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: true,
+      kind: PropertyKind::Accessor {
+        get: Value::Object(content_type_func),
+        set: Value::Undefined,
+      },
+    },
+  )?;
 
   // Document.baseURI (read-only): the document base URL used for resolving relative URLs.
   //
@@ -18577,8 +18733,13 @@ fn init_window_globals(
 
     for (name, value) in [
       ("ELEMENT_NODE", 1.0),
+      ("ATTRIBUTE_NODE", 2.0),
       ("TEXT_NODE", 3.0),
+      ("CDATA_SECTION_NODE", 4.0),
+      ("PROCESSING_INSTRUCTION_NODE", 7.0),
+      ("COMMENT_NODE", 8.0),
       ("DOCUMENT_NODE", 9.0),
+      ("DOCUMENT_TYPE_NODE", 10.0),
       ("DOCUMENT_FRAGMENT_NODE", 11.0),
     ] {
       let key = alloc_key(&mut scope, name)?;
@@ -18861,6 +19022,30 @@ fn init_window_globals(
         configurable: true,
         kind: PropertyKind::Accessor {
           get: Value::Object(owner_document_get_func),
+          set: Value::Undefined,
+        },
+      },
+    )?;
+
+    let base_uri_get_call_id = vm.register_native_call(node_base_uri_get_native)?;
+    let base_uri_get_name = scope.alloc_string("get baseURI")?;
+    scope.push_root(Value::String(base_uri_get_name))?;
+    let base_uri_get_func =
+      scope.alloc_native_function(base_uri_get_call_id, None, base_uri_get_name, 0)?;
+    scope.heap_mut().object_set_prototype(
+      base_uri_get_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(base_uri_get_func))?;
+    let base_uri_key = alloc_key(&mut scope, "baseURI")?;
+    scope.define_property(
+      node_proto,
+      base_uri_key,
+      PropertyDescriptor {
+        enumerable: false,
+        configurable: true,
+        kind: PropertyKind::Accessor {
+          get: Value::Object(base_uri_get_func),
           set: Value::Undefined,
         },
       },

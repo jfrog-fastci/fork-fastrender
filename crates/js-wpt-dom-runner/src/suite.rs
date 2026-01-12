@@ -135,6 +135,15 @@ fn build_filter(pattern: Option<&str>) -> Result<Filter> {
         return Ok(Filter::All);
       }
 
+      // Prefer regex semantics for patterns that are unambiguously regex-like. In particular, `|`
+      // is not supported as alternation in glob patterns, but is commonly used for "OR" filters
+      // (e.g. `--filter "documentURI|compatMode"`). Without this, such filters are parsed as globs
+      // and end up selecting zero tests.
+      if raw.contains('|') {
+        let regex = Regex::new(raw).map_err(|err| anyhow!("invalid regex: {err}"))?;
+        return Ok(Filter::Regex(regex));
+      }
+
       // Support a comma-separated list of glob patterns for suite presets that want a union of
       // directories (e.g. `dom/**,event_loop/**,events/**`).
       //
