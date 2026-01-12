@@ -425,6 +425,8 @@ impl ModuleGraph {
       prop_scope.define_property(obj, PropertyKey::String(key), desc)?;
     }
 
+    inner.heap_mut().object_set_extensible(obj, false)?;
+
     Ok((obj, sorted_exports))
   }
 

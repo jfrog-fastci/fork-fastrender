@@ -340,6 +340,16 @@ fn install_object_static_methods(
     2,
     builtins::object_set_prototype_of,
   )?;
+  install_object_static_method(
+    vm,
+    scope,
+    roots,
+    function_prototype,
+    object_constructor,
+    "isExtensible",
+    1,
+    builtins::object_is_extensible,
+  )?;
   Ok(())
 }
 

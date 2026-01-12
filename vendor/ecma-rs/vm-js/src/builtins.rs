@@ -975,6 +975,25 @@ pub fn object_set_prototype_of(
   }
 }
 
+pub fn object_is_extensible(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  // Spec: https://tc39.es/ecma262/#sec-object.isextensible
+  //
+  // `Object.isExtensible` returns `false` for non-objects (it does not perform `ToObject`).
+  let arg0 = args.get(0).copied().unwrap_or(Value::Undefined);
+  let Value::Object(obj) = arg0 else {
+    return Ok(Value::Bool(false));
+  };
+  Ok(Value::Bool(scope.object_is_extensible(obj)?))
+}
+
 pub fn reflect_apply(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
