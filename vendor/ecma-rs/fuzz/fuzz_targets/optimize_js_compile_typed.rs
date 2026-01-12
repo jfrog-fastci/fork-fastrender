@@ -26,6 +26,7 @@ fuzz_target!(|data: &[u8]| {
   let cfg_options = optimize_js::CompileCfgOptions {
     keep_ssa: true,
     run_opt_passes: true,
+    ..Default::default()
   };
 
   let Ok(mut program) = optimize_js::compile_source_typed_cfg_options(

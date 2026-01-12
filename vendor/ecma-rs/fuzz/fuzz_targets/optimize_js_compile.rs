@@ -23,6 +23,7 @@ fuzz_target!(|data: &[u8]| {
   let cfg_options = CompileCfgOptions {
     keep_ssa: true,
     run_opt_passes: true,
+    ..Default::default()
   };
 
   let Ok(mut program) =
