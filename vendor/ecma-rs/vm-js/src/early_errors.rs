@@ -20,7 +20,7 @@ use parse_js::ast::stmt::{
 use parse_js::loc::Loc;
 use parse_js::operator::OperatorName;
 use parse_js::token::TT;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 const EARLY_ERROR_CODE: &str = "VMJS0004";
 
@@ -86,6 +86,7 @@ where
     loop_depth: 0,
     breakable_depth: 0,
     labels: Vec::new(),
+    private_names: Vec::new(),
   };
   walker.visit_stmt_list(&mut ctx, stmts)?;
   Ok(walker.diags)
@@ -125,6 +126,11 @@ struct ControlContext {
   loop_depth: u32,
   breakable_depth: u32,
   labels: Vec<LabelInfo>,
+  /// Stack of declared private names for the innermost active class body.
+  ///
+  /// Private names are not inherited across class boundaries (nested classes introduce a fresh
+  /// private name environment), so validation consults only the last element.
+  private_names: Vec<HashSet<String>>,
 }
 
 struct SavedFunctionContext {
@@ -592,12 +598,35 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
     // `super()` is only valid within derived constructor bodies.
     ctx.super_call_allowed = false;
 
+    // Collect declared private names in this class body so `AllPrivateNamesValid` can validate
+    // private-name MemberExpressions and private identifiers.
+    let mut declared_private_names: HashSet<String> = HashSet::new();
     for member in members {
-      self.visit_class_member(ctx, &member.stx, derived)?;
+      if let ClassOrObjKey::Direct(key) = &member.stx.key {
+        if key.stx.tt == TT::PrivateMember {
+          declared_private_names
+            .try_reserve(1)
+            .map_err(|_| VmError::OutOfMemory)?;
+          declared_private_names.insert(key.stx.key.clone());
+        }
+      }
     }
+    ctx
+      .private_names
+      .try_reserve(1)
+      .map_err(|_| VmError::OutOfMemory)?;
+    ctx.private_names.push(declared_private_names);
 
+    let res = (|| {
+      for member in members {
+        self.visit_class_member(ctx, &member.stx, derived)?;
+      }
+      Ok(())
+    })();
+
+    ctx.private_names.pop();
     self.restore_scope_flags(ctx, saved);
-    Ok(())
+    res
   }
 
   fn visit_class_member(
@@ -884,10 +913,19 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
         if id.stx.name == "arguments" && !ctx.arguments_allowed {
           self.push_error(expr.loc, "arguments is not allowed in class static initialization blocks")?;
         }
+        if id.stx.name.starts_with('#') {
+          let ok = ctx
+            .private_names
+            .last()
+            .is_some_and(|names| names.contains(&id.stx.name));
+          if !ok {
+            self.push_error(expr.loc, "invalid private name")?;
+          }
+        }
         Ok(())
       }
       Expr::Import(import) => self.visit_import(ctx, &import.stx),
-      Expr::Member(member) => self.visit_member(ctx, &member.stx),
+      Expr::Member(member) => self.visit_member(ctx, expr.loc, &member.stx),
       Expr::TaggedTemplate(tagged) => self.visit_tagged_template(ctx, &tagged.stx),
       Expr::Unary(unary) => self.visit_unary(ctx, &unary.stx, expr.loc),
       Expr::UnaryPostfix(unary) => self.visit_unary_postfix(ctx, &unary.stx, expr.loc),
@@ -898,6 +936,19 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
       Expr::LitTemplate(template) => self.visit_lit_template(ctx, &template.stx.parts),
       Expr::ObjPat(obj) => self.visit_obj_pat(ctx, &obj.stx, PatRole::Assignment),
       Expr::ArrPat(arr) => self.visit_arr_pat(ctx, &arr.stx, PatRole::Assignment),
+
+      Expr::IdPat(id) => {
+        if id.stx.name.starts_with('#') {
+          let ok = ctx
+            .private_names
+            .last()
+            .is_some_and(|names| names.contains(&id.stx.name));
+          if !ok {
+            self.push_error(expr.loc, "invalid private name")?;
+          }
+        }
+        Ok(())
+      }
 
       // Leaves (or TS-only nodes) are ignored for this early error set.
       _ => Ok(()),
@@ -938,8 +989,23 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
     self.visit_expr(ctx, &expr.alternate)
   }
 
-  fn visit_member(&mut self, ctx: &mut ControlContext, expr: &MemberExpr) -> Result<(), VmError> {
-    self.visit_expr(ctx, &expr.left)
+  fn visit_member(
+    &mut self,
+    ctx: &mut ControlContext,
+    loc: Loc,
+    expr: &MemberExpr,
+  ) -> Result<(), VmError> {
+    self.visit_expr(ctx, &expr.left)?;
+    if expr.right.starts_with('#') {
+      let ok = ctx
+        .private_names
+        .last()
+        .is_some_and(|names| names.contains(&expr.right));
+      if !ok {
+        self.push_error(loc, "invalid private name")?;
+      }
+    }
+    Ok(())
   }
 
   fn visit_computed_member(

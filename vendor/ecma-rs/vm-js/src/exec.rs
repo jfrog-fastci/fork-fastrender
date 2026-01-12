@@ -528,6 +528,14 @@ fn throw_type_error(vm: &Vm, scope: &mut Scope<'_>, message: &str) -> Result<VmE
   Ok(VmError::Throw(value))
 }
 
+fn throw_syntax_error(vm: &Vm, scope: &mut Scope<'_>, message: &str) -> Result<VmError, VmError> {
+  let intr = vm
+    .intrinsics()
+    .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+  let value = crate::error_object::new_syntax_error_object(scope, &intr, message)?;
+  Ok(VmError::Throw(value))
+}
+
 fn throw_range_error(vm: &Vm, scope: &mut Scope<'_>, message: &str) -> Result<VmError, VmError> {
   let intr = vm
     .intrinsics()
@@ -583,6 +591,15 @@ pub(crate) struct RuntimeEnv {
   /// temporary root only for the duration of a single `.next/.throw/.return` call.
   lexical_root: Option<EnvRootId>,
   var_env: VarEnv,
+  /// Whether new global `var`/function declarations should create **deletable** (configurable)
+  /// bindings on the global object.
+  ///
+  /// This is used for Annex B semantics of **non-strict direct eval** in the global scope, where
+  /// `var`/function declarations are introduced as configurable properties and must not count as
+  /// `[[VarNames]]` for future global lexical declaration collisions.
+  ///
+  /// For ordinary scripts and indirect eval, this remains `false`.
+  global_var_deletable: bool,
   source: Arc<SourceText>,
   base_offset: u32,
   prefix_len: u32,
@@ -612,6 +629,7 @@ impl RuntimeEnv {
       lexical_env,
       lexical_root,
       var_env: VarEnv::GlobalObject,
+      global_var_deletable: false,
       source: Arc::new(SourceText::new("<init>", "")),
       base_offset: 0,
       prefix_len: 0,
@@ -637,6 +655,7 @@ impl RuntimeEnv {
       lexical_env,
       lexical_root,
       var_env: VarEnv::Env(var_env),
+      global_var_deletable: false,
       source: Arc::new(SourceText::new("<init>", "")),
       base_offset: 0,
       prefix_len: 0,
@@ -659,6 +678,7 @@ impl RuntimeEnv {
       lexical_env,
       lexical_root,
       var_env: VarEnv::GlobalObject,
+      global_var_deletable: false,
       source: Arc::new(SourceText::new("<init>", "")),
       base_offset: 0,
       prefix_len: 0,
@@ -715,6 +735,14 @@ impl RuntimeEnv {
 
   fn set_var_env(&mut self, var_env: VarEnv) {
     self.var_env = var_env;
+  }
+
+  fn global_var_deletable(&self) -> bool {
+    self.global_var_deletable
+  }
+
+  fn set_global_var_deletable(&mut self, deletable: bool) {
+    self.global_var_deletable = deletable;
   }
 
   fn resolve_lexical_binding(
@@ -941,7 +969,11 @@ impl RuntimeEnv {
         key_scope.define_property(
           global_object,
           key,
-          global_var_binding_desc(Value::Undefined),
+          if self.global_var_deletable {
+            global_var_desc(Value::Undefined)
+          } else {
+            global_var_binding_desc(Value::Undefined)
+          },
         )?;
         Ok(())
       }
@@ -1252,7 +1284,15 @@ impl RuntimeEnv {
         }
 
         // If the binding was inherited through the prototype chain, define an own data property.
-        key_scope.define_property(global_object, key, global_var_binding_desc(value))?;
+        key_scope.define_property(
+          global_object,
+          key,
+          if self.global_var_deletable {
+            global_var_desc(value)
+          } else {
+            global_var_binding_desc(value)
+          },
+        )?;
         Ok(())
       }
       VarEnv::Env(env) => outer_scope
@@ -2073,6 +2113,18 @@ impl<'a> Evaluator<'a> {
     scope: &mut Scope<'_>,
     stmts: &[Node<Stmt>],
   ) -> Result<(), VmError> {
+    // Detect classic script execution in the realm's global environment:
+    // - var environment is the global object, and
+    // - lexical environment is the realm's global lexical environment (outermost env record).
+    //
+    // This is distinct from non-strict eval-in-global, which also uses `VarEnv::GlobalObject` but
+    // executes with a fresh inner lexical environment whose outer is the global lexical env.
+    if matches!(self.env.var_env(), VarEnv::GlobalObject)
+      && scope.heap().env_outer(self.env.lexical_env)? == None
+    {
+      return self.instantiate_global_script(scope, stmts);
+    }
+
     self.instantiate_stmt_list(scope, stmts)
   }
 
@@ -2236,6 +2288,286 @@ impl<'a> Evaluator<'a> {
 
       self.instantiate_stmt_list(scope, stmts)?;
     }
+    Ok(())
+  }
+
+  fn instantiate_global_script(
+    &mut self,
+    scope: &mut Scope<'_>,
+    stmts: &[Node<Stmt>],
+  ) -> Result<(), VmError> {
+    // GlobalDeclarationInstantiation (ECMA-262).
+    //
+    // vm-js uses a declarative Environment Record (`global_lexical_env`) to store global lexical
+    // bindings (`let`/`const`/`class`) and uses the realm global object as the backing store for
+    // global var/function bindings.
+
+    // --- Early errors (parse-phase) ---
+    //
+    // These must run before any binding creation so invalid programs do not partially pollute the
+    // global environment.
+    for stmt in stmts {
+      self.destructuring_decl_without_initializer_early_error(stmt)?;
+    }
+
+    if self.strict {
+      for stmt in stmts {
+        self.strict_mode_with_early_error(stmt)?;
+      }
+    }
+
+    self.label_early_errors_in_stmt_list(stmts)?;
+
+    // Minimal statement-list early error checks:
+    // - Duplicate lexical declarations (let/const/class) in the script body.
+    // - Lexical declarations may not collide with var-scoped names (var + function declarations).
+    //
+    // These are syntax (parse-phase) errors and should surface as `VmError::Syntax`.
+    let mut var_names = HashSet::<String>::new();
+    for stmt in stmts {
+      self.collect_var_names(&stmt.stx, &mut var_names)?;
+    }
+
+    if self.strict {
+      // Strict mode: only top-level function declarations are var-scoped; block function
+      // declarations are instantiated at block entry.
+      for stmt in stmts {
+        self.tick()?;
+        let Stmt::FunctionDecl(decl) = &*stmt.stx else {
+          continue;
+        };
+        let Some(name) = &decl.stx.name else {
+          if decl.stx.export_default {
+            continue;
+          }
+          return Err(VmError::Unimplemented("anonymous function declaration"));
+        };
+        var_names.insert(name.stx.name.clone());
+      }
+    } else {
+      // Non-strict mode: treat block function declarations as var-scoped (Annex B-ish).
+      for stmt in stmts {
+        self.collect_sloppy_function_decl_names(&stmt.stx, &mut var_names)?;
+      }
+    }
+
+    let mut lexical_seen = HashSet::<String>::new();
+    let mut lexical_bindings: Vec<(String, parse_js::loc::Loc)> = Vec::new();
+    for stmt in stmts {
+      self.tick()?;
+      match &*stmt.stx {
+        Stmt::VarDecl(var) => {
+          if var.stx.mode != VarDeclMode::Let && var.stx.mode != VarDeclMode::Const {
+            continue;
+          }
+          for declarator in &var.stx.declarators {
+            self.tick()?;
+            if var.stx.mode == VarDeclMode::Const && declarator.initializer.is_none() {
+              return Err(syntax_error(
+                declarator.pattern.loc,
+                "Missing initializer in const declaration",
+              ));
+            }
+            self.collect_lexical_decl_names_from_pat(
+              &declarator.pattern.stx.pat.stx,
+              stmt.loc,
+              &mut lexical_seen,
+              &mut lexical_bindings,
+            )?;
+          }
+        }
+        Stmt::ClassDecl(class) => {
+          let Some(name) = class.stx.name.as_ref() else {
+            continue;
+          };
+          if !lexical_seen.insert(name.stx.name.clone()) {
+            return Err(syntax_error(
+              stmt.loc,
+              "Identifier has already been declared",
+            ));
+          }
+          lexical_bindings.push((name.stx.name.clone(), stmt.loc));
+        }
+        _ => {}
+      }
+    }
+
+    for (name, loc) in &lexical_bindings {
+      self.tick()?;
+      if var_names.contains(name) {
+        return Err(syntax_error(*loc, "Identifier has already been declared"));
+      }
+    }
+
+    // --- GlobalDeclarationInstantiation runtime checks ---
+    let global_object = self.env.global_object();
+    let global_lex = self.env.lexical_env;
+
+    // Step 5: For each name in lexNames, validate against the existing global environment.
+    for (name, _loc) in &lexical_bindings {
+      self.tick()?;
+
+      if self.vm.global_var_names_contains(name) {
+        return Err(throw_syntax_error(
+          self.vm,
+          scope,
+          "Identifier has already been declared",
+        )?);
+      }
+      if scope.heap().env_has_binding(global_lex, name)? {
+        return Err(throw_syntax_error(
+          self.vm,
+          scope,
+          "Identifier has already been declared",
+        )?);
+      }
+      if self.has_restricted_global_property(scope, global_object, name)? {
+        return Err(throw_syntax_error(
+          self.vm,
+          scope,
+          "Identifier has already been declared",
+        )?);
+      }
+    }
+
+    // Collect var-scoped function declarations (in source order) for steps 10/17.
+    let mut function_decls: Vec<&Node<FuncDecl>> = Vec::new();
+    self.collect_var_scoped_function_decls_in_stmt_list(stmts, &mut function_decls)?;
+
+    // Collect var-declared names (in source order) for steps 6/12/18.
+    let mut var_decl_names: Vec<String> = Vec::new();
+    self.collect_var_declared_names_in_stmt_list(stmts, &mut var_decl_names)?;
+
+    // Step 6: For each name in varNames, reject collisions with existing lexical declarations.
+    let mut var_names_to_check: Vec<String> = Vec::new();
+    let mut seen_var_name: HashSet<String> = HashSet::new();
+    for name in var_decl_names
+      .iter()
+      .cloned()
+      .chain(function_decls.iter().filter_map(|decl| decl.stx.name.as_ref().map(|n| n.stx.name.clone())))
+    {
+      if seen_var_name.try_reserve(1).is_err() {
+        return Err(VmError::OutOfMemory);
+      }
+      if !seen_var_name.insert(name.clone()) {
+        continue;
+      }
+      var_names_to_check
+        .try_reserve(1)
+        .map_err(|_| VmError::OutOfMemory)?;
+      var_names_to_check.push(name);
+    }
+
+    for name in &var_names_to_check {
+      self.tick()?;
+      if scope.heap().env_has_binding(global_lex, name)? {
+        return Err(throw_syntax_error(
+          self.vm,
+          scope,
+          "Identifier has already been declared",
+        )?);
+      }
+    }
+
+    // Step 10: Determine which function declarations to initialize (last declaration wins), and
+    // validate CanDeclareGlobalFunction for each.
+    let mut declared_function_names: HashSet<String> = HashSet::new();
+    let mut functions_to_initialize_rev: Vec<&Node<FuncDecl>> = Vec::new();
+    for decl in function_decls.iter().rev() {
+      self.tick()?;
+      let Some(name) = &decl.stx.name else {
+        return Err(VmError::Unimplemented("anonymous function declaration"));
+      };
+      if declared_function_names.contains(&name.stx.name) {
+        continue;
+      }
+      if !self.can_declare_global_function(scope, global_object, &name.stx.name)? {
+        return Err(throw_type_error(
+          self.vm,
+          scope,
+          "Cannot declare global function",
+        )?);
+      }
+      if declared_function_names.try_reserve(1).is_err() {
+        return Err(VmError::OutOfMemory);
+      }
+      declared_function_names.insert(name.stx.name.clone());
+      functions_to_initialize_rev
+        .try_reserve(1)
+        .map_err(|_| VmError::OutOfMemory)?;
+      functions_to_initialize_rev.push(*decl);
+    }
+    let mut functions_to_initialize = functions_to_initialize_rev;
+    functions_to_initialize.reverse();
+
+    // Step 12: Validate CanDeclareGlobalVar for each var-declared name (excluding function names),
+    // and compute the final `declaredVarNames` list.
+    let mut declared_var_names: Vec<String> = Vec::new();
+    let mut declared_var_set: HashSet<String> = HashSet::new();
+    for name in &var_decl_names {
+      self.tick()?;
+      if declared_function_names.contains(name) {
+        continue;
+      }
+      if declared_var_set.contains(name) {
+        continue;
+      }
+      if !self.can_declare_global_var(scope, global_object, name)? {
+        return Err(throw_type_error(self.vm, scope, "Cannot declare global variable")?);
+      }
+      if declared_var_set.try_reserve(1).is_err() {
+        return Err(VmError::OutOfMemory);
+      }
+      declared_var_set.insert(name.clone());
+      declared_var_names
+        .try_reserve(1)
+        .map_err(|_| VmError::OutOfMemory)?;
+      declared_var_names.push(name.clone());
+    }
+
+    // Step 15/16: Create global lexical bindings (uninitialized).
+    self.instantiate_lexical_decls_in_stmt_list(scope, global_lex, stmts)?;
+
+    // Step 17: Instantiate functions and create their global bindings.
+    for decl in &functions_to_initialize {
+      self.tick()?;
+      let Some(name) = &decl.stx.name else {
+        return Err(VmError::Unimplemented("anonymous function declaration"));
+      };
+      let func_obj = self.create_function_object_for_decl(scope, decl, &name.stx.name)?;
+
+      // Root the function object across key allocation and property definition.
+      let mut def_scope = scope.reborrow();
+      def_scope.push_root(Value::Object(func_obj))?;
+
+      let key = PropertyKey::from_string(def_scope.alloc_string(&name.stx.name)?);
+      def_scope.define_property(
+        global_object,
+        key,
+        global_var_binding_desc(Value::Object(func_obj)),
+      )?;
+    }
+
+    // Step 18: Create global var bindings (undefined-initialized properties on the global object).
+    for name in &declared_var_names {
+      self.tick()?;
+      self.env.declare_var(self.vm, scope, name)?;
+    }
+
+    // Record `var`/function declaration names for future GlobalDeclarationInstantiation checks.
+    let mut record: Vec<String> = Vec::new();
+    record
+      .try_reserve(declared_var_names.len().saturating_add(functions_to_initialize.len()))
+      .map_err(|_| VmError::OutOfMemory)?;
+    record.extend(declared_var_names.into_iter());
+    for decl in functions_to_initialize {
+      // Safe: scripts always have named function declarations here.
+      if let Some(name) = &decl.stx.name {
+        record.push(name.stx.name.clone());
+      }
+    }
+    self.vm.global_var_names_insert_all(record)?;
+
     Ok(())
   }
 
@@ -3389,6 +3721,297 @@ impl<'a> Evaluator<'a> {
       Pat::AssignTarget(_) => Err(VmError::Unimplemented(
         "lexical declaration assignment targets",
       )),
+    }
+  }
+
+  fn has_restricted_global_property(
+    &mut self,
+    scope: &mut Scope<'_>,
+    global_object: GcObject,
+    name: &str,
+  ) -> Result<bool, VmError> {
+    // GlobalEnvironmentRecord.HasRestrictedGlobalProperty (ECMA-262).
+    //
+    // Returns true iff the global object has an own property `name` that is non-configurable.
+    let mut key_scope = scope.reborrow();
+    key_scope.push_root(Value::Object(global_object))?;
+    let key = PropertyKey::from_string(key_scope.alloc_string(name)?);
+    let existing =
+      key_scope
+        .heap()
+        .object_get_own_property_with_tick(global_object, &key, || self.tick())?;
+    Ok(existing.is_some_and(|d| !d.configurable))
+  }
+
+  fn can_declare_global_var(
+    &mut self,
+    scope: &mut Scope<'_>,
+    global_object: GcObject,
+    name: &str,
+  ) -> Result<bool, VmError> {
+    // GlobalEnvironmentRecord.CanDeclareGlobalVar (ECMA-262).
+    //
+    // Returns true if:
+    // - the global object already has an own property for `name`, or
+    // - the global object is extensible.
+    let mut key_scope = scope.reborrow();
+    key_scope.push_root(Value::Object(global_object))?;
+    let key = PropertyKey::from_string(key_scope.alloc_string(name)?);
+    if key_scope
+      .heap()
+      .object_get_own_property_with_tick(global_object, &key, || self.tick())?
+      .is_some()
+    {
+      return Ok(true);
+    }
+    key_scope.heap().object_is_extensible(global_object)
+  }
+
+  fn can_declare_global_function(
+    &mut self,
+    scope: &mut Scope<'_>,
+    global_object: GcObject,
+    name: &str,
+  ) -> Result<bool, VmError> {
+    // GlobalEnvironmentRecord.CanDeclareGlobalFunction (ECMA-262).
+    //
+    // Returns true if:
+    // - the global object does not have an own property for `name` and is extensible, or
+    // - the existing property is configurable, or
+    // - the existing property is a non-configurable data descriptor that is writable + enumerable.
+    let mut key_scope = scope.reborrow();
+    key_scope.push_root(Value::Object(global_object))?;
+    let key = PropertyKey::from_string(key_scope.alloc_string(name)?);
+    let existing =
+      key_scope
+        .heap()
+        .object_get_own_property_with_tick(global_object, &key, || self.tick())?;
+    let Some(existing) = existing else {
+      return key_scope.heap().object_is_extensible(global_object);
+    };
+
+    if existing.configurable {
+      return Ok(true);
+    }
+
+    match existing.kind {
+      PropertyKind::Data { writable: true, .. } if existing.enumerable => Ok(true),
+      _ => Ok(false),
+    }
+  }
+
+  fn collect_var_scoped_function_decls_in_stmt_list<'s>(
+    &mut self,
+    stmts: &'s [Node<Stmt>],
+    out: &mut Vec<&'s Node<FuncDecl>>,
+  ) -> Result<(), VmError> {
+    if self.strict {
+      for stmt in stmts {
+        self.tick()?;
+        let Stmt::FunctionDecl(decl) = &*stmt.stx else {
+          continue;
+        };
+        out.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
+        out.push(decl);
+      }
+      return Ok(());
+    }
+
+    for stmt in stmts {
+      self.collect_var_scoped_function_decls_in_stmt(&stmt.stx, out)?;
+    }
+    Ok(())
+  }
+
+  fn collect_var_scoped_function_decls_in_stmt<'s>(
+    &mut self,
+    stmt: &'s Stmt,
+    out: &mut Vec<&'s Node<FuncDecl>>,
+  ) -> Result<(), VmError> {
+    self.tick()?;
+    match stmt {
+      Stmt::FunctionDecl(decl) => {
+        out.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
+        out.push(decl);
+        Ok(())
+      }
+      Stmt::Block(block) => self.collect_var_scoped_function_decls_in_stmt_list(&block.stx.body, out),
+      Stmt::If(stmt) => {
+        self.collect_var_scoped_function_decls_in_stmt(&stmt.stx.consequent.stx, out)?;
+        if let Some(alt) = &stmt.stx.alternate {
+          self.collect_var_scoped_function_decls_in_stmt(&alt.stx, out)?;
+        }
+        Ok(())
+      }
+      Stmt::Try(stmt) => {
+        self.collect_var_scoped_function_decls_in_stmt_list(&stmt.stx.wrapped.stx.body, out)?;
+        if let Some(catch) = &stmt.stx.catch {
+          self.collect_var_scoped_function_decls_in_stmt_list(&catch.stx.body, out)?;
+        }
+        if let Some(finally) = &stmt.stx.finally {
+          self.collect_var_scoped_function_decls_in_stmt_list(&finally.stx.body, out)?;
+        }
+        Ok(())
+      }
+      Stmt::With(stmt) => self.collect_var_scoped_function_decls_in_stmt(&stmt.stx.body.stx, out),
+      Stmt::While(stmt) => self.collect_var_scoped_function_decls_in_stmt(&stmt.stx.body.stx, out),
+      Stmt::DoWhile(stmt) => self.collect_var_scoped_function_decls_in_stmt(&stmt.stx.body.stx, out),
+      Stmt::ForTriple(stmt) => {
+        self.collect_var_scoped_function_decls_in_stmt_list(&stmt.stx.body.stx.body, out)
+      }
+      Stmt::ForIn(stmt) => self.collect_var_scoped_function_decls_in_stmt_list(&stmt.stx.body.stx.body, out),
+      Stmt::ForOf(stmt) => self.collect_var_scoped_function_decls_in_stmt_list(&stmt.stx.body.stx.body, out),
+      Stmt::Label(stmt) => self.collect_var_scoped_function_decls_in_stmt(&stmt.stx.statement.stx, out),
+      Stmt::Switch(stmt) => {
+        const BRANCH_TICK_EVERY: usize = 32;
+        for (i, branch) in stmt.stx.branches.iter().enumerate() {
+          if i % BRANCH_TICK_EVERY == 0 {
+            self.tick()?;
+          }
+          self.collect_var_scoped_function_decls_in_stmt_list(&branch.stx.body, out)?;
+        }
+        Ok(())
+      }
+      _ => Ok(()),
+    }
+  }
+
+  fn collect_var_declared_names_in_stmt_list(
+    &mut self,
+    stmts: &[Node<Stmt>],
+    out: &mut Vec<String>,
+  ) -> Result<(), VmError> {
+    for stmt in stmts {
+      self.collect_var_declared_names_in_stmt(&stmt.stx, out)?;
+    }
+    Ok(())
+  }
+
+  fn collect_var_declared_names_in_stmt(
+    &mut self,
+    stmt: &Stmt,
+    out: &mut Vec<String>,
+  ) -> Result<(), VmError> {
+    // `VarDeclaredNames` but preserving source order.
+    self.tick()?;
+    match stmt {
+      Stmt::VarDecl(var) => {
+        if var.stx.mode != VarDeclMode::Var {
+          return Ok(());
+        }
+        for decl in &var.stx.declarators {
+          self.tick()?;
+          self.collect_var_declared_names_from_pat_decl(&decl.pattern.stx, out)?;
+        }
+        Ok(())
+      }
+      Stmt::Block(block) => self.collect_var_declared_names_in_stmt_list(&block.stx.body, out),
+      Stmt::If(stmt) => {
+        self.collect_var_declared_names_in_stmt(&stmt.stx.consequent.stx, out)?;
+        if let Some(alt) = &stmt.stx.alternate {
+          self.collect_var_declared_names_in_stmt(&alt.stx, out)?;
+        }
+        Ok(())
+      }
+      Stmt::Try(stmt) => {
+        self.collect_var_declared_names_in_stmt_list(&stmt.stx.wrapped.stx.body, out)?;
+        if let Some(catch) = &stmt.stx.catch {
+          self.collect_var_declared_names_in_stmt_list(&catch.stx.body, out)?;
+        }
+        if let Some(finally) = &stmt.stx.finally {
+          self.collect_var_declared_names_in_stmt_list(&finally.stx.body, out)?;
+        }
+        Ok(())
+      }
+      Stmt::With(stmt) => self.collect_var_declared_names_in_stmt(&stmt.stx.body.stx, out),
+      Stmt::While(stmt) => self.collect_var_declared_names_in_stmt(&stmt.stx.body.stx, out),
+      Stmt::DoWhile(stmt) => self.collect_var_declared_names_in_stmt(&stmt.stx.body.stx, out),
+      Stmt::ForTriple(stmt) => {
+        if let parse_js::ast::stmt::ForTripleStmtInit::Decl(decl) = &stmt.stx.init {
+          if decl.stx.mode == VarDeclMode::Var {
+            for d in &decl.stx.declarators {
+              self.tick()?;
+              self.collect_var_declared_names_from_pat_decl(&d.pattern.stx, out)?;
+            }
+          }
+        }
+        self.collect_var_declared_names_in_stmt_list(&stmt.stx.body.stx.body, out)
+      }
+      Stmt::ForIn(stmt) => {
+        if let ForInOfLhs::Decl((mode, pat_decl)) = &stmt.stx.lhs {
+          if *mode == VarDeclMode::Var {
+            self.collect_var_declared_names_from_pat_decl(&pat_decl.stx, out)?;
+          }
+        }
+        self.collect_var_declared_names_in_stmt_list(&stmt.stx.body.stx.body, out)
+      }
+      Stmt::ForOf(stmt) => {
+        if let ForInOfLhs::Decl((mode, pat_decl)) = &stmt.stx.lhs {
+          if *mode == VarDeclMode::Var {
+            self.collect_var_declared_names_from_pat_decl(&pat_decl.stx, out)?;
+          }
+        }
+        self.collect_var_declared_names_in_stmt_list(&stmt.stx.body.stx.body, out)
+      }
+      Stmt::Label(stmt) => self.collect_var_declared_names_in_stmt(&stmt.stx.statement.stx, out),
+      Stmt::Switch(stmt) => {
+        const BRANCH_TICK_EVERY: usize = 32;
+        for (i, branch) in stmt.stx.branches.iter().enumerate() {
+          if i % BRANCH_TICK_EVERY == 0 {
+            self.tick()?;
+          }
+          self.collect_var_declared_names_in_stmt_list(&branch.stx.body, out)?;
+        }
+        Ok(())
+      }
+      _ => Ok(()),
+    }
+  }
+
+  fn collect_var_declared_names_from_pat_decl(
+    &mut self,
+    pat_decl: &PatDecl,
+    out: &mut Vec<String>,
+  ) -> Result<(), VmError> {
+    self.collect_var_declared_names_from_pat(&pat_decl.pat.stx, out)
+  }
+
+  fn collect_var_declared_names_from_pat(
+    &mut self,
+    pat: &Pat,
+    out: &mut Vec<String>,
+  ) -> Result<(), VmError> {
+    match pat {
+      Pat::Id(id) => {
+        out.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
+        out.push(id.stx.name.clone());
+        Ok(())
+      }
+      Pat::Obj(obj) => {
+        for prop in &obj.stx.properties {
+          self.tick()?;
+          self.collect_var_declared_names_from_pat(&prop.stx.target.stx, out)?;
+        }
+        if let Some(rest) = &obj.stx.rest {
+          self.tick()?;
+          self.collect_var_declared_names_from_pat(&rest.stx, out)?;
+        }
+        Ok(())
+      }
+      Pat::Arr(arr) => {
+        for elem in &arr.stx.elements {
+          self.tick()?;
+          if let Some(elem) = elem {
+            self.collect_var_declared_names_from_pat(&elem.target.stx, out)?;
+          }
+        }
+        if let Some(rest) = &arr.stx.rest {
+          self.tick()?;
+          self.collect_var_declared_names_from_pat(&rest.stx, out)?;
+        }
+        Ok(())
+      }
+      Pat::AssignTarget(_) => Err(VmError::Unimplemented("var declaration assignment targets")),
     }
   }
 
@@ -7491,6 +8114,7 @@ impl<'a> Evaluator<'a> {
     let prev_prefix_len = self.env.prefix_len();
     let prev_lexical_env = self.env.lexical_env;
     let prev_var_env = self.env.var_env();
+    let prev_global_var_deletable = self.env.global_var_deletable();
     let prev_strict = self.strict;
 
     let eval_lex = scope.env_create(Some(prev_lexical_env))?;
@@ -7501,6 +8125,11 @@ impl<'a> Evaluator<'a> {
     self
       .env
       .set_var_env(if strict { VarEnv::Env(eval_lex) } else { prev_var_env });
+    // Annex B: non-strict *direct* eval in the global scope creates deletable (configurable) global
+    // var/function bindings.
+    self
+      .env
+      .set_global_var_deletable(!strict && matches!(prev_var_env, VarEnv::GlobalObject));
     self.strict = strict;
 
     let result = (|| {
@@ -7528,6 +8157,7 @@ impl<'a> Evaluator<'a> {
     self.strict = prev_strict;
     self.env.set_lexical_env(scope.heap_mut(), prev_lexical_env);
     self.env.set_var_env(prev_var_env);
+    self.env.set_global_var_deletable(prev_global_var_deletable);
     self
       .env
       .set_source_info(prev_source, prev_base_offset, prev_prefix_len);

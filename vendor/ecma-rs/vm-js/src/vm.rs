@@ -39,7 +39,7 @@ use parse_js::ast::stmt::Stmt;
 use parse_js::error::SyntaxErrorType;
 use parse_js::{parse_with_options_cancellable_by_with_init, Dialect, ParseOptions, SourceType};
 use std::any::Any;
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -334,6 +334,16 @@ pub struct Vm {
   // For now `vm-js` assumes a single active realm per `Vm`. When multiple realms are supported,
   // this will likely become realm-indexed state.
   intrinsics: Option<Intrinsics>,
+  /// Set of global `var`/function declaration names in the current realm.
+  ///
+  /// This models the GlobalEnvironmentRecord's internal `[[VarNames]]` list, which is used by
+  /// `GlobalDeclarationInstantiation` to reject global lexical declarations that would conflict
+  /// with pre-existing global `var`/function declarations (even when the corresponding global
+  /// property is configurable).
+  ///
+  /// Note: This is VM-owned (not GC-managed) state. `vm-js` currently assumes a single active
+  /// realm per `Vm`; when multiple realms are supported, this will need to become realm-indexed.
+  global_var_names: HashSet<String>,
   #[cfg(test)]
   native_calls_len_override: Option<usize>,
   #[cfg(test)]
@@ -360,6 +370,7 @@ impl std::fmt::Debug for Vm {
     ds.field("async_continuations", &self.async_continuations.len());
     ds.field("module_graph", &self.module_graph.is_some());
     ds.field("intrinsics", &self.intrinsics);
+    ds.field("global_var_names", &self.global_var_names.len());
     #[cfg(test)]
     {
       ds.field("native_calls_len_override", &self.native_calls_len_override);
@@ -559,6 +570,7 @@ impl Vm {
       async_continuations: HashMap::new(),
       module_graph: None,
       intrinsics: None,
+      global_var_names: HashSet::new(),
       #[cfg(test)]
       native_calls_len_override: None,
       #[cfg(test)]
@@ -566,6 +578,38 @@ impl Vm {
     };
     vm.reset_budget_to_default();
     vm
+  }
+
+  pub(crate) fn global_var_names_contains(&self, name: &str) -> bool {
+    self.global_var_names.contains(name)
+  }
+
+  pub(crate) fn global_var_names_insert_all<I>(&mut self, names: I) -> Result<(), VmError>
+  where
+    I: IntoIterator<Item = String>,
+  {
+    let iter = names.into_iter();
+    // Best-effort capacity hint to avoid OOM aborts on large scripts.
+    let (lower, _) = iter.size_hint();
+    if lower != 0 {
+      self
+        .global_var_names
+        .try_reserve(lower)
+        .map_err(|_| VmError::OutOfMemory)?;
+    }
+    for name in iter {
+      // Ensure each insert cannot abort on OOM.
+      self
+        .global_var_names
+        .try_reserve(1)
+        .map_err(|_| VmError::OutOfMemory)?;
+      self.global_var_names.insert(name);
+    }
+    Ok(())
+  }
+
+  pub(crate) fn global_var_names_clear(&mut self) {
+    self.global_var_names.clear();
   }
 
   /// Returns the next pseudorandom `u64` output for `Math.random()` and advances the VM's internal
