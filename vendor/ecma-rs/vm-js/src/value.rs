@@ -336,7 +336,15 @@ impl U256 {
     };
     let mut s = first.to_string();
     for part in parts.iter().rev() {
-      s.push_str(&format!("{:019}", part));
+      // Each `part` is in base 1e19, so it always fits in 19 decimal digits.
+      let mut buf = [0u8; 19];
+      let mut n = *part;
+      for slot in buf.iter_mut().rev() {
+        *slot = b'0' + (n % 10) as u8;
+        n /= 10;
+      }
+      // Safe: ASCII digits.
+      s.push_str(std::str::from_utf8(&buf).expect("decimal digits are valid utf-8"));
     }
     s
   }
@@ -785,7 +793,10 @@ impl JsBigInt {
   pub fn to_decimal_string(self) -> String {
     let mag_str = self.magnitude.to_decimal_string();
     if self.is_negative() {
-      format!("-{mag_str}")
+      let mut out = String::new();
+      out.push('-');
+      out.push_str(&mag_str);
+      out
     } else {
       mag_str
     }

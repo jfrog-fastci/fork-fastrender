@@ -999,7 +999,10 @@ pub fn inner_module_loading_with_host_and_hooks(
       if let Some(unsupported_key) = unsupported_key {
         // Per ECMA-262, unsupported import attributes are a thrown SyntaxError.
         if let Some(intrinsics) = vm.intrinsics() {
-          let message = format!("Unsupported import attribute: {unsupported_key}");
+          let message = crate::fallible_format::try_format_identifier_error(
+            "Unsupported import attribute: ",
+            unsupported_key,
+          )?;
 
           let err_value = crate::new_error(
             scope,
@@ -1862,7 +1865,10 @@ pub fn start_dynamic_import_with_host_and_hooks(
         ImportCallTypeError::AttributeValueNotString => "import() attribute values must be strings",
         ImportCallTypeError::UnsupportedImportAttribute { key } => {
           return {
-            let msg = format!("Unsupported import attribute: {key}");
+            let msg = crate::fallible_format::try_format_identifier_error(
+              "Unsupported import attribute: ",
+              &key,
+            )?;
             let err_value = crate::new_error(
               &mut import_scope,
               intr.type_error_prototype(),

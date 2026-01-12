@@ -486,7 +486,11 @@ impl RuntimeEnv {
         Ok(v) => return Ok(Some(v)),
         // TDZ sentinel from `Heap::{env_get_binding_value, env_set_mutable_binding}`.
         Err(VmError::Throw(Value::Null)) => {
-          let msg = format!("Cannot access '{}' before initialization", name);
+          let msg = crate::fallible_format::try_format_error_message(
+            "Cannot access '",
+            name,
+            "' before initialization",
+          )?;
           return Err(throw_reference_error(vm, scope, &msg)?);
         }
         Err(err) => return Err(err),
@@ -565,7 +569,11 @@ impl RuntimeEnv {
         Ok(()) => return Ok(()),
         // TDZ sentinel from `Heap::{env_get_binding_value, env_set_mutable_binding}`.
         Err(VmError::Throw(Value::Null)) => {
-          let msg = format!("Cannot access '{}' before initialization", name);
+          let msg = crate::fallible_format::try_format_error_message(
+            "Cannot access '",
+            name,
+            "' before initialization",
+          )?;
           return Err(throw_reference_error(vm, scope, &msg)?);
         }
         // `const` assignment sentinel from `Heap::env_set_mutable_binding`.
@@ -588,7 +596,8 @@ impl RuntimeEnv {
       key_scope.ordinary_has_property_with_tick(global_object, key, || vm.tick())?;
     if !has_binding {
       if strict {
-        let msg = format!("{name} is not defined");
+        let msg =
+          crate::fallible_format::try_format_error_message("", name, " is not defined")?;
         return Err(throw_reference_error(vm, &mut key_scope, &msg)?);
       }
 
@@ -613,7 +622,11 @@ impl RuntimeEnv {
           writable: false, ..
         } => {
           if strict {
-            let msg = format!("Cannot assign to read only property '{name}'");
+            let msg = crate::fallible_format::try_format_error_message(
+              "Cannot assign to read only property '",
+              name,
+              "'",
+            )?;
             return Err(throw_type_error(vm, &mut key_scope, &msg)?);
           }
           return Ok(());
@@ -633,7 +646,11 @@ impl RuntimeEnv {
             return Ok(());
           }
           if strict {
-            let msg = format!("Cannot assign to read only property '{name}'");
+            let msg = crate::fallible_format::try_format_error_message(
+              "Cannot assign to read only property '",
+              name,
+              "'",
+            )?;
             return Err(throw_type_error(vm, &mut key_scope, &msg)?);
           }
           return Ok(());
@@ -1521,7 +1538,7 @@ impl<'a> Evaluator<'a> {
           if !lexical_seen.insert(name.stx.name.clone()) {
             return Err(syntax_error(
               stmt.loc,
-              format!("Identifier '{}' has already been declared", name.stx.name),
+              "Identifier has already been declared",
             ));
           }
           lexical_bindings.push((name.stx.name.clone(), stmt.loc));
@@ -1536,10 +1553,7 @@ impl<'a> Evaluator<'a> {
       // while checking each name against the var-scoped set.
       self.tick()?;
       if var_names.contains(name) {
-        return Err(syntax_error(
-          *loc,
-          format!("Identifier '{name}' has already been declared"),
-        ));
+        return Err(syntax_error(*loc, "Identifier has already been declared"));
       }
     }
 
@@ -1821,10 +1835,7 @@ impl<'a> Evaluator<'a> {
     match pat {
       Pat::Id(id) => {
         if !seen.insert(id.stx.name.clone()) {
-          return Err(syntax_error(
-            loc,
-            format!("Identifier '{}' has already been declared", id.stx.name),
-          ));
+          return Err(syntax_error(loc, "Identifier has already been declared"));
         }
         out.push((id.stx.name.clone(), loc));
         Ok(())
@@ -2073,10 +2084,7 @@ impl<'a> Evaluator<'a> {
             continue;
           };
           if !seen.insert(name.stx.name.clone()) {
-            return Err(syntax_error(
-              stmt.loc,
-              format!("Identifier '{}' has already been declared", name.stx.name),
-            ));
+            return Err(syntax_error(stmt.loc, "Identifier has already been declared"));
           }
         }
         Stmt::FunctionDecl(decl) if self.strict => {
@@ -2084,10 +2092,7 @@ impl<'a> Evaluator<'a> {
             return Err(VmError::Unimplemented("anonymous function declaration"));
           };
           if !seen.insert(name.stx.name.clone()) {
-            return Err(syntax_error(
-              stmt.loc,
-              format!("Identifier '{}' has already been declared", name.stx.name),
-            ));
+            return Err(syntax_error(stmt.loc, "Identifier has already been declared"));
           }
         }
         _ => {}
@@ -2132,10 +2137,7 @@ impl<'a> Evaluator<'a> {
 
     // Block-scoped functions are lexically scoped in strict mode.
     if scope.heap().env_has_binding(env, &name.stx.name)? {
-      return Err(syntax_error(
-        decl.loc,
-        format!("Identifier '{}' has already been declared", name.stx.name),
-      ));
+      return Err(syntax_error(decl.loc, "Identifier has already been declared"));
     }
 
     scope.env_create_mutable_binding(env, &name.stx.name)?;
@@ -2192,10 +2194,7 @@ impl<'a> Evaluator<'a> {
           };
 
           if scope.heap().env_has_binding(env, &name.stx.name)? {
-            return Err(syntax_error(
-              stmt.loc,
-              format!("Identifier '{}' has already been declared", name.stx.name),
-            ));
+            return Err(syntax_error(stmt.loc, "Identifier has already been declared"));
           }
           scope.env_create_mutable_binding(env, &name.stx.name)?;
         }
@@ -2216,10 +2215,7 @@ impl<'a> Evaluator<'a> {
     match pat {
       Pat::Id(id) => {
         if scope.heap().env_has_binding(env, &id.stx.name)? {
-          return Err(syntax_error(
-            loc,
-            format!("Identifier '{}' has already been declared", id.stx.name),
-          ));
+          return Err(syntax_error(loc, "Identifier has already been declared"));
         }
         if mutable {
           scope.env_create_mutable_binding(env, &id.stx.name)?;
@@ -4580,7 +4576,7 @@ impl<'a> Evaluator<'a> {
         match self.env.get(self.vm, self.host, self.hooks, scope, name)? {
           Some(v) => Ok(v),
           None => {
-            let msg = format!("{name} is not defined");
+            let msg = crate::fallible_format::try_format_error_message("", name, " is not defined")?;
             Err(throw_reference_error(self.vm, scope, &msg)?)
           }
         }
@@ -5583,7 +5579,8 @@ impl<'a> Evaluator<'a> {
     )? {
       Some(v) => Ok(v),
       None => {
-        let msg = format!("{name} is not defined", name = expr.name);
+        let msg =
+          crate::fallible_format::try_format_error_message("", &expr.name, " is not defined")?;
         Err(throw_reference_error(self.vm, scope, &msg)?)
       }
     }
@@ -5599,7 +5596,8 @@ impl<'a> Evaluator<'a> {
     )? {
       Some(v) => Ok(v),
       None => {
-        let msg = format!("{name} is not defined", name = expr.name);
+        let msg =
+          crate::fallible_format::try_format_error_message("", &expr.name, " is not defined")?;
         Err(throw_reference_error(self.vm, scope, &msg)?)
       }
     }

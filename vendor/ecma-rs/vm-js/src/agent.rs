@@ -159,7 +159,12 @@ impl Agent {
       Err(VmError::Throw(v) | VmError::ThrowWithStack { value: v, .. }) => {
         return self.value_to_error_string(v);
       }
-      Err(_) => return format!("{value:?}"),
+      Err(_) => {
+        let mut out = String::new();
+        // Best-effort debug formatting; ignore fmt errors (only possible on OOM).
+        let _ = std::fmt::Write::write_fmt(&mut out, format_args!("{value:?}"));
+        return out;
+      }
     };
 
     self
@@ -178,7 +183,11 @@ impl Agent {
         if stack.is_empty() {
           msg
         } else {
-          format!("{msg}\n{stack}", stack = format_stack_trace(stack))
+          let stack_trace = format_stack_trace(stack);
+          let mut out = msg;
+          out.push('\n');
+          out.push_str(&stack_trace);
+          out
         }
       }
       VmError::Termination(term) => format_termination(term),
@@ -192,6 +201,10 @@ pub fn format_termination(term: &Termination) -> String {
   if term.stack.is_empty() {
     term.to_string()
   } else {
-    format!("{term}\n{stack}", stack = format_stack_trace(&term.stack))
+    let stack_trace = format_stack_trace(&term.stack);
+    let mut out = term.to_string();
+    out.push('\n');
+    out.push_str(&stack_trace);
+    out
   }
 }

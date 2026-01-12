@@ -17,6 +17,33 @@ const MAX_REJECTION_STACK_FRAMES: usize = 32;
 const MAX_REJECTION_STACK_BYTES: usize = 16 * 1024;
 const TLA_ABORT_REASON: &str = "asynchronous module loading/evaluation is not supported";
 
+fn non_throw_vm_error_message(err: &VmError) -> &'static str {
+  match err {
+    VmError::OutOfMemory => "out of memory",
+    VmError::InvariantViolation(msg) => msg,
+    VmError::LimitExceeded(msg) => msg,
+    VmError::InvalidHandle { .. } => "invalid handle",
+    VmError::PrototypeCycle => "prototype cycle",
+    VmError::PrototypeChainTooDeep => "prototype chain too deep",
+    VmError::Unimplemented(msg) => msg,
+    VmError::InvalidPropertyDescriptorPatch => "invalid property descriptor patch",
+    VmError::PropertyNotFound => "property not found",
+    VmError::PropertyNotData => "property is not a data property",
+    VmError::TypeError(msg) => msg,
+    VmError::NotCallable => "value is not callable",
+    VmError::NotConstructable => "value is not a constructor",
+    VmError::Throw(_) | VmError::ThrowWithStack { .. } => "exception",
+    VmError::Termination(term) => match term.reason {
+      crate::TerminationReason::OutOfFuel => "execution terminated: out of fuel",
+      crate::TerminationReason::DeadlineExceeded => "execution terminated: deadline exceeded",
+      crate::TerminationReason::Interrupted => "execution terminated: interrupted",
+      crate::TerminationReason::OutOfMemory => "execution terminated: out of memory",
+      crate::TerminationReason::StackOverflow => "execution terminated: stack overflow",
+    },
+    VmError::Syntax(_) => "syntax error",
+  }
+}
+
 fn format_rejection_stack_trace_limited(frames: &[StackFrame]) -> String {
   let slice = &frames[..frames.len().min(MAX_REJECTION_STACK_FRAMES)];
   let mut out = crate::format_stack_trace(slice);
@@ -751,8 +778,8 @@ impl ModuleGraph {
             let reason = if let Some(thrown) = err.thrown_value() {
               thrown
             } else {
-              let message = err.to_string();
-              crate::new_error(&mut eval_scope, intr.error_prototype(), "Error", &message)
+              let message = non_throw_vm_error_message(&err);
+              crate::new_error(&mut eval_scope, intr.error_prototype(), "Error", message)
                 .unwrap_or(Value::Undefined)
             };
             attach_stack_property_for_promise_rejection(&mut eval_scope, reason, &err);
@@ -825,8 +852,8 @@ impl ModuleGraph {
           let reason = if let Some(thrown) = err.thrown_value() {
             thrown
           } else {
-            let message = err.to_string();
-            crate::new_error(&mut eval_scope, intr.error_prototype(), "Error", &message)
+            let message = non_throw_vm_error_message(&err);
+            crate::new_error(&mut eval_scope, intr.error_prototype(), "Error", message)
               .unwrap_or(Value::Undefined)
           };
           attach_stack_property_for_promise_rejection(&mut eval_scope, reason, &err);
@@ -1361,8 +1388,8 @@ pub(crate) fn module_tla_on_fulfilled(
         let intr = vm
           .intrinsics()
           .ok_or(VmError::Unimplemented("module evaluation requires intrinsics"))?;
-        let message = err.to_string();
-        crate::new_error(scope, intr.error_prototype(), "Error", &message).unwrap_or(Value::Undefined)
+        let message = non_throw_vm_error_message(&err);
+        crate::new_error(scope, intr.error_prototype(), "Error", message).unwrap_or(Value::Undefined)
       };
 
       scope.push_root(reject)?;
@@ -1490,7 +1517,11 @@ fn module_namespace_getter(
         let intr = vm.intrinsics().ok_or(VmError::Unimplemented(
           "module namespace getter requires intrinsics for ReferenceError",
         ))?;
-        let message = format!("Cannot access '{}' before initialization", export_name);
+        let message = crate::fallible_format::try_format_error_message(
+          "Cannot access '",
+          &export_name,
+          "' before initialization",
+        )?;
         let err_obj = crate::new_reference_error(scope, intr, &message)?;
         return Err(VmError::Throw(err_obj));
       }
@@ -1501,7 +1532,11 @@ fn module_namespace_getter(
           let intr = vm.intrinsics().ok_or(VmError::Unimplemented(
             "module namespace getter requires intrinsics for ReferenceError",
           ))?;
-          let message = format!("Cannot access '{}' before initialization", export_name);
+          let message = crate::fallible_format::try_format_error_message(
+            "Cannot access '",
+            &export_name,
+            "' before initialization",
+          )?;
           let err_obj = crate::new_reference_error(scope, intr, &message)?;
           Err(VmError::Throw(err_obj))
         }

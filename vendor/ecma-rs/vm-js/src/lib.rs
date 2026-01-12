@@ -131,6 +131,7 @@ mod destructure;
 mod env;
 mod error;
 mod error_object;
+mod fallible_format;
 mod exec;
 mod for_in;
 mod execution_context;
