@@ -1979,18 +1979,35 @@ pub mod body_check {
       let this_super_context = (|| {
         let mut ctx_super = BodyThisSuperContext::default();
 
-        let Some(owner_def) = lowered.def(body.owner) else {
-          return ctx_super;
-        };
-        let Some(class_def) = owner_def.parent else {
-          return ctx_super;
-        };
-        let Some(class_def) = lowered.def(class_def) else {
-          return ctx_super;
-        };
-        if class_def.path.kind != hir_js::DefKind::Class {
-          return ctx_super;
+        // Find the enclosing class and whether `super` is evaluated in a static
+        // context. Arrow functions can reference `super`, so we cannot assume
+        // the body owner’s direct parent is the class.
+        let mut is_static = false;
+        let mut current_def = Some(body.owner);
+        let mut class_def_id = None;
+        while let Some(def_id) = current_def {
+          let Some(def) = lowered.def(def_id) else {
+            break;
+          };
+          match def.path.kind {
+            hir_js::DefKind::Method
+            | hir_js::DefKind::Constructor
+            | hir_js::DefKind::Getter
+            | hir_js::DefKind::Setter
+            | hir_js::DefKind::StaticBlock => {
+              is_static = def.is_static;
+            }
+            hir_js::DefKind::Class => {
+              class_def_id = Some(def_id);
+              break;
+            }
+            _ => {}
+          }
+          current_def = def.parent;
         }
+        let Some(class_def) = class_def_id.and_then(|id| lowered.def(id)) else {
+          return ctx_super;
+        };
 
         // Prefer deriving the base constructor type from the containing class's
         // value type: `lower_class_instance_and_value` models `class Derived
@@ -2068,23 +2085,29 @@ pub mod body_check {
 
         if let Some(base_value_ty) = base_value_ty.filter(|ty| *ty != prim.unknown) {
           ctx_super.super_value_ty = Some(base_value_ty);
-          let ctor_sigs = crate::check::overload::construct_signatures_with_expander(
-            ctx.store.as_ref(),
-            base_value_ty,
-            Some(&expander),
-          );
-          if !ctor_sigs.is_empty() {
-            let mut rets: Vec<_> = ctor_sigs
-              .iter()
-              .map(|sig_id| ctx.store.signature(*sig_id).ret)
-              .collect();
-            rets.sort_by(|a, b| ctx.store.type_cmp(*a, *b));
-            rets.dedup();
-            ctx_super.super_instance_ty = Some(if rets.len() == 1 {
-              rets[0]
-            } else {
-              ctx.store.union(rets)
-            });
+          if is_static {
+            // `super.prop` inside static class elements refers to the base
+            // constructor value (not an instance type).
+            ctx_super.super_instance_ty = Some(base_value_ty);
+          } else {
+            let ctor_sigs = crate::check::overload::construct_signatures_with_expander(
+              ctx.store.as_ref(),
+              base_value_ty,
+              Some(&expander),
+            );
+            if !ctor_sigs.is_empty() {
+              let mut rets: Vec<_> = ctor_sigs
+                .iter()
+                .map(|sig_id| ctx.store.signature(*sig_id).ret)
+                .collect();
+              rets.sort_by(|a, b| ctx.store.type_cmp(*a, *b));
+              rets.dedup();
+              ctx_super.super_instance_ty = Some(if rets.len() == 1 {
+                rets[0]
+              } else {
+                ctx.store.union(rets)
+              });
+            }
           }
         }
 

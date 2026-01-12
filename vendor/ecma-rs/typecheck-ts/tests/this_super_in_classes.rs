@@ -90,3 +90,44 @@ fn arrow_captures_this_from_enclosing_method() {
   assert_eq!(program.display_type(ty).to_string(), "number");
 }
 
+#[test]
+fn arrow_captures_super_from_enclosing_method_for_flow_narrowing() {
+  let mut host = MemoryHost::with_options(CompilerOptions {
+    no_default_lib: true,
+    ..CompilerOptions::default()
+  });
+  host.add_lib(common::core_globals_lib());
+  let file = FileKey::new("a.ts");
+  let src = r#"
+class B {
+  isString(x: string | number): x is string {
+    return typeof x === "string";
+  }
+}
+
+class C extends B {
+  m(x: string | number) {
+    const f = () => {
+      if (super.isString(x)) {
+        return x;
+      }
+      return x;
+    };
+    return f();
+  }
+}
+"#;
+  host.insert(file.clone(), src);
+
+  let program = Program::new(host, vec![file.clone()]);
+  let diagnostics = program.check();
+  assert!(diagnostics.is_empty(), "diagnostics: {diagnostics:?}");
+
+  let file_id = program.file_id(&file).expect("file id");
+  let offset = src
+    .find("return x;")
+    .expect("return x offset") as u32
+    + "return ".len() as u32;
+  let ty = program.type_at(file_id, offset).expect("type at narrowed x inside arrow");
+  assert_eq!(program.display_type(ty).to_string(), "string");
+}
