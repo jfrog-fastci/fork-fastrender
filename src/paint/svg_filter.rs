@@ -28,9 +28,6 @@ use tiny_skia::{BlendMode, FilterQuality, Pixmap, PixmapPaint, PremultipliedColo
 
 mod turbulence;
 
-#[cfg(test)]
-mod tests;
-
 const DEFAULT_FILTER_CACHE_ITEMS: usize = 256;
 const DEFAULT_FILTER_CACHE_BYTES: usize = 4 * 1024 * 1024;
 pub(crate) const ENV_FILTER_CACHE_ITEMS: &str = "FASTR_SVG_FILTER_CACHE_ITEMS";

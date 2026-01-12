@@ -154,7 +154,7 @@ fn with_realm_state_mut<R>(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
   callee: GcObject,
-  f: impl FnOnce(&mut StreamRealmState) -> Result<R, VmError>,
+  f: impl FnOnce(&mut StreamRealmState, &Heap) -> Result<R, VmError>,
 ) -> Result<R, VmError> {
   let realm_id = realm_id_for_binding_call(vm, scope, callee)?;
 
@@ -169,15 +169,15 @@ fn with_realm_state_mut<R>(
     ))?;
 
   // Opportunistically sweep dead objects when GC has run.
-  let gc_runs = scope.heap().gc_runs();
+  let heap = scope.heap();
+  let gc_runs = heap.gc_runs();
   if gc_runs != state.last_gc_runs {
     state.last_gc_runs = gc_runs;
-    let heap = scope.heap();
     state.streams.retain(|k, _| k.upgrade(heap).is_some());
     state.readers.retain(|k, _| k.upgrade(heap).is_some());
   }
 
-  f(state)
+  f(state, heap)
 }
 
 fn readable_stream_ctor_call(
@@ -201,13 +201,14 @@ fn readable_stream_ctor_construct(
   _args: &[Value],
   _new_target: Value,
 ) -> Result<Value, VmError> {
-  let proto = with_realm_state_mut(vm, scope, callee, |state| Ok(state.readable_stream_proto))?;
+  let proto =
+    with_realm_state_mut(vm, scope, callee, |state, _heap| Ok(state.readable_stream_proto))?;
 
   let obj = scope.alloc_object()?;
   scope.push_root(Value::Object(obj))?;
   scope.heap_mut().object_set_prototype(obj, Some(proto))?;
 
-  with_realm_state_mut(vm, scope, callee, |state| {
+  with_realm_state_mut(vm, scope, callee, |state, _heap| {
     state
       .streams
       .insert(WeakGcObject::from(obj), StreamState::new_from_bytes(Vec::new()));
@@ -230,7 +231,7 @@ fn readable_stream_get_reader_native(
     return Err(VmError::TypeError("ReadableStream.getReader: illegal invocation"));
   };
 
-  let reader_proto = with_realm_state_mut(vm, scope, callee, |state| {
+  let reader_proto = with_realm_state_mut(vm, scope, callee, |state, _heap| {
     let stream_state = state
       .streams
       .get_mut(&WeakGcObject::from(stream_obj))
@@ -248,7 +249,7 @@ fn readable_stream_get_reader_native(
     .heap_mut()
     .object_set_prototype(reader_obj, Some(reader_proto))?;
 
-  with_realm_state_mut(vm, scope, callee, |state| {
+  with_realm_state_mut(vm, scope, callee, |state, _heap| {
     state.readers.insert(
       WeakGcObject::from(reader_obj),
       ReaderState {
@@ -281,7 +282,7 @@ fn readable_stream_cancel_native(
   scope.push_root(cap.reject)?;
 
   // Perform the cancel synchronously, but reject if the stream is locked.
-  let cancel_result = with_realm_state_mut(vm, scope, callee, |state| {
+  let cancel_result = with_realm_state_mut(vm, scope, callee, |state, _heap| {
     let stream_state = state
       .streams
       .get_mut(&WeakGcObject::from(stream_obj))
@@ -325,7 +326,7 @@ fn readable_stream_locked_get_native(
     return Err(VmError::TypeError("ReadableStream.locked: illegal invocation"));
   };
 
-  with_realm_state_mut(vm, scope, callee, |state| {
+  with_realm_state_mut(vm, scope, callee, |state, _heap| {
     let stream_state = state
       .streams
       .get(&WeakGcObject::from(stream_obj))
@@ -399,7 +400,7 @@ fn reader_read_native(
     .intrinsics()
     .ok_or(VmError::Unimplemented("ReadableStream requires intrinsics"))?;
 
-  let outcome = with_realm_state_mut(vm, scope, callee, |state| {
+  let outcome = with_realm_state_mut(vm, scope, callee, |state, _heap| {
     let reader_state = state
       .readers
       .get_mut(&WeakGcObject::from(reader_obj))
@@ -549,7 +550,7 @@ fn reader_release_lock_native(
     ));
   };
 
-  with_realm_state_mut(vm, scope, callee, |state| {
+  with_realm_state_mut(vm, scope, callee, |state, _heap| {
     let reader_state = state
       .readers
       .get_mut(&WeakGcObject::from(reader_obj))
@@ -593,7 +594,7 @@ fn reader_cancel_native(
     .intrinsics()
     .ok_or(VmError::Unimplemented("ReadableStream requires intrinsics"))?;
 
-  let outcome = with_realm_state_mut(vm, scope, callee, |state| {
+  let outcome = with_realm_state_mut(vm, scope, callee, |state, _heap| {
     let reader_state = state
       .readers
       .get_mut(&WeakGcObject::from(reader_obj))
@@ -636,13 +637,14 @@ pub(crate) fn create_readable_byte_stream_from_bytes(
   callee: GcObject,
   bytes: Vec<u8>,
 ) -> Result<GcObject, VmError> {
-  let proto = with_realm_state_mut(vm, scope, callee, |state| Ok(state.readable_stream_proto))?;
+  let proto =
+    with_realm_state_mut(vm, scope, callee, |state, _heap| Ok(state.readable_stream_proto))?;
 
   let obj = scope.alloc_object()?;
   scope.push_root(Value::Object(obj))?;
   scope.heap_mut().object_set_prototype(obj, Some(proto))?;
 
-  with_realm_state_mut(vm, scope, callee, |state| {
+  with_realm_state_mut(vm, scope, callee, |state, _heap| {
     state
       .streams
       .insert(WeakGcObject::from(obj), StreamState::new_from_bytes(bytes));
@@ -658,13 +660,14 @@ pub(crate) fn create_readable_byte_stream_lazy(
   callee: GcObject,
   init: impl FnOnce() -> Result<Vec<u8>, VmError> + Send + 'static,
 ) -> Result<GcObject, VmError> {
-  let proto = with_realm_state_mut(vm, scope, callee, |state| Ok(state.readable_stream_proto))?;
+  let proto =
+    with_realm_state_mut(vm, scope, callee, |state, _heap| Ok(state.readable_stream_proto))?;
 
   let obj = scope.alloc_object()?;
   scope.push_root(Value::Object(obj))?;
   scope.heap_mut().object_set_prototype(obj, Some(proto))?;
 
-  with_realm_state_mut(vm, scope, callee, |state| {
+  with_realm_state_mut(vm, scope, callee, |state, _heap| {
     state.streams.insert(
       WeakGcObject::from(obj),
       StreamState::new_lazy(Box::new(init)),
