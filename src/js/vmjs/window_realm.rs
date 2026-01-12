@@ -42796,6 +42796,92 @@ mod tests {
   }
 
   #[test]
+  fn node_iterator_pre_remove_steps_run_for_inner_html() -> Result<(), VmError> {
+    // Spec: https://dom.spec.whatwg.org/#nodeiterator-pre-removing-steps
+    //
+    // Ensure `Element.innerHTML = ""` removes nodes via DOM remove steps so active NodeIterators
+    // update their reference/pointer state.
+    let renderer_dom = crate::dom::parse_html(
+      "<!doctype html><html><body><div id=root><div id=a><div id=a1></div></div><div id=b></div></div></body></html>",
+    )
+    .unwrap();
+    let mut host = crate::js::HostDocumentState::from_renderer_dom(&renderer_dom);
+
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+
+    let result = exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      "(() => {\n\
+        const root = document.getElementById('root');\n\
+        const a = document.getElementById('a');\n\
+        const a1 = document.getElementById('a1');\n\
+        const b = document.getElementById('b');\n\
+\n\
+        // whatToShow=1 == NodeFilter.SHOW_ELEMENT.\n\
+        const it = document.createNodeIterator(root, 1);\n\
+        if (it.nextNode() !== root) return 'step1';\n\
+        if (it.nextNode() !== a) return 'step2';\n\
+        if (it.nextNode() !== a1) return 'step3';\n\
+        if (it.referenceNode !== a1) return 'ref_before';\n\
+        if (it.pointerBeforeReferenceNode !== false) return 'ptr_before';\n\
+\n\
+        a.innerHTML = '';\n\
+        if (it.referenceNode !== a) return 'ref_after';\n\
+        if (it.pointerBeforeReferenceNode !== false) return 'ptr_after';\n\
+\n\
+        const next = it.nextNode();\n\
+        if (next !== b) return 'next:' + (next && next.id);\n\
+        return 'ok';\n\
+      })()",
+    )?;
+    assert_eq!(get_string(realm.heap(), result), "ok");
+    Ok(())
+  }
+
+  #[test]
+  fn node_iterator_pre_remove_steps_run_for_text_content() -> Result<(), VmError> {
+    // Ensure `Node.textContent = ""` removes nodes via DOM remove steps so active NodeIterators
+    // update their reference/pointer state.
+    let renderer_dom = crate::dom::parse_html(
+      "<!doctype html><html><body><div id=root><div id=a><div id=a1></div></div><div id=b></div></div></body></html>",
+    )
+    .unwrap();
+    let mut host = crate::js::HostDocumentState::from_renderer_dom(&renderer_dom);
+
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+
+    let result = exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      "(() => {\n\
+        const root = document.getElementById('root');\n\
+        const a = document.getElementById('a');\n\
+        const a1 = document.getElementById('a1');\n\
+        const b = document.getElementById('b');\n\
+\n\
+        // whatToShow=1 == NodeFilter.SHOW_ELEMENT.\n\
+        const it = document.createNodeIterator(root, 1);\n\
+        if (it.nextNode() !== root) return 'step1';\n\
+        if (it.nextNode() !== a) return 'step2';\n\
+        if (it.nextNode() !== a1) return 'step3';\n\
+        if (it.referenceNode !== a1) return 'ref_before';\n\
+        if (it.pointerBeforeReferenceNode !== false) return 'ptr_before';\n\
+\n\
+        a.textContent = '';\n\
+        if (it.referenceNode !== a) return 'ref_after';\n\
+        if (it.pointerBeforeReferenceNode !== false) return 'ptr_after';\n\
+\n\
+        const next = it.nextNode();\n\
+        if (next !== b) return 'next:' + (next && next.id);\n\
+        return 'ok';\n\
+      })()",
+    )?;
+    assert_eq!(get_string(realm.heap(), result), "ok");
+    Ok(())
+  }
+
+  #[test]
   fn node_remove_child_detaches_and_returns_child() -> Result<(), VmError> {
     let renderer_dom = crate::dom::parse_html(
       "<!doctype html><html><body><div id=root><span id=child>hi</span><b id=other></b></div></body></html>",
