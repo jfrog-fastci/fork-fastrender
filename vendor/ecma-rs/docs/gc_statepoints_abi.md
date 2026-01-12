@@ -181,15 +181,21 @@ elide frames and destroy the “return address identifies the safepoint” prope
 
 ### 2.3 Stackmaps section must survive to the final binary
 
-LLVM emits stackmap metadata into a dedicated ELF section (`.llvm_stackmaps`, and in this repo often
-an output section named `.data.rel.ro.llvm_stackmaps`).
+LLVM emits stackmap metadata into a dedicated ELF section (`.llvm_stackmaps`).
+In this repo we often rewrite the *input* section name to `.data.rel.ro.llvm_stackmaps` so dynamic
+relocations under PIE apply to writable memory.
+Depending on the linker fragment used, the final payload may end up either in a dedicated
+`.data.rel.ro.llvm_stackmaps` output section (GNU ld / compat scripts) or appended into the standard
+`.data.rel.ro` output section (lld), with the precise byte range exposed via exported boundary
+symbols.
 
 This metadata is **not referenced by code**, so link-time dead-section elimination can discard it.
 
 The runtime reads stackmaps at runtime. Therefore:
 
-- The final linked artifact **must contain** stackmaps bytes (either `.llvm_stackmaps` or the
-  repo’s preferred `.data.rel.ro.llvm_stackmaps` output section).
+- The final linked artifact **must contain** stackmaps bytes (either `.llvm_stackmaps`, a dedicated
+  `.data.rel.ro.llvm_stackmaps` output section, or an lld link that appends stackmaps into
+  `.data.rel.ro` and exposes the byte range via exported symbols).
 - The section must be readable by the runtime **in memory** (after relocations).
   The simplest way to guarantee this is that `.llvm_stackmaps` is emitted as an
   **allocated** section (ELF `SHF_ALLOC`) and ends up in a loadable segment.
@@ -206,6 +212,10 @@ Verification:
 
 ```bash
 llvm-readobj --sections <binary> | rg llvm_stackmaps
+
+# For lld PIE/DSO links, stackmaps may be appended into `.data.rel.ro` and
+# discoverable only via exported boundary symbols.
+readelf -Ws <binary> | rg '__start_llvm_stackmaps|__stop_llvm_stackmaps'
 ```
 
 If stripping is required for release binaries, the build must be configured to

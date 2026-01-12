@@ -516,7 +516,12 @@ cc ... -pie -Wl,-T,runtime-native/link/stackmaps.ld ...
 Verify the linked output still contains the stackmaps section (or its relocated variant):
 
 ```bash
+# Note: Some link setups keep a dedicated output section name (so this will match).
 llvm-readobj --sections <bin> | rg llvm_stackmaps
+
+# For lld PIE/DSO links, stackmaps may be appended into `.data.rel.ro` and the
+# precise byte range is exposed only via the exported boundary symbols.
+readelf -Ws <bin> | rg '__start_llvm_stackmaps|__stop_llvm_stackmaps'
 ```
 
 When linking from Rust/Cargo:
