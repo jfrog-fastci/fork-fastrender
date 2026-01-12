@@ -369,9 +369,12 @@ fn callable_object_shapes_include_closure_header_fields() {
   assert_eq!(fields[1].offset, 8);
   assert_eq!(fields[2].key, FieldKey::Prop(PropKey::String(name_x)));
 
-  // `env` + the string property are GC pointers.
-  assert!(store.gc_ptr_offsets(payload).contains(&8));
-  assert!(store.gc_ptr_offsets(payload).contains(&fields[2].offset));
+  // Callable objects include the closure header `{ fn_ptr, env }`; only `env` is a GC pointer.
+  // `string` properties lower to interned ids (`u32`) and therefore do not contribute GC pointer
+  // slots.
+  let ptrs = store.gc_ptr_offsets(payload);
+  assert!(ptrs.contains(&8));
+  assert!(!ptrs.contains(&fields[2].offset));
 }
 
 #[test]
@@ -480,8 +483,8 @@ fn callable_and_object_intersection_lowers_to_callable_object_layout() {
   assert_eq!(fields[2].key, FieldKey::Prop(PropKey::String(name_x)));
   assert_eq!(fields[2].offset, 16);
 
-  // `env` + the string property are GC pointers.
-  assert_eq!(store.gc_ptr_offsets(payload), vec![8, 16]);
+  // Only `env` is a GC pointer; `string` properties lower to interned ids (`u32`).
+  assert_eq!(store.gc_ptr_offsets(payload), vec![8]);
 }
 
 #[test]
@@ -580,15 +583,17 @@ fn gc_ptr_offsets_include_pointers_common_to_all_union_variants() {
   let store = TypeStore::new();
   let primitives = store.primitive_ids();
 
+  let obj = object_with_prop(store.as_ref(), "a", primitives.number);
+
   let tuple1 = store.intern_type(TypeKind::Tuple(vec![TupleElem {
-    ty: primitives.string,
+    ty: obj,
     optional: false,
     rest: false,
     readonly: false,
   }]));
   let tuple2 = store.intern_type(TypeKind::Tuple(vec![
     TupleElem {
-      ty: primitives.string,
+      ty: obj,
       optional: false,
       rest: false,
       readonly: false,
@@ -612,7 +617,7 @@ fn gc_ptr_offsets_include_pointers_common_to_all_union_variants() {
   assert_eq!(store.gc_ptr_offsets(union_layout), vec![payload_offset]);
 
   // Mixed pointer/scalar union has no unconditional GC pointer slots.
-  let mixed_union = store.intern_type(TypeKind::Union(vec![primitives.string, primitives.number]));
+  let mixed_union = store.intern_type(TypeKind::Union(vec![obj, primitives.number]));
   let mixed_layout = store.layout_of(mixed_union);
   assert!(store.gc_ptr_offsets(mixed_layout).is_empty());
 }
@@ -639,10 +644,14 @@ fn union_of_gc_pointers_lowers_to_ptr_layout() {
   let shape_id = store.intern_shape(shape);
   let obj_id = store.intern_object(ObjectType { shape: shape_id });
   let obj_ty = store.intern_type(TypeKind::Object(obj_id));
+  let arr_ty = store.intern_type(TypeKind::Array {
+    ty: primitives.number,
+    readonly: false,
+  });
 
   // Both members are GC pointers, so the union layout should be a single pointer
   // word rather than a tagged union.
-  let union = store.intern_type(TypeKind::Union(vec![primitives.string, obj_ty]));
+  let union = store.intern_type(TypeKind::Union(vec![arr_ty, obj_ty]));
   let layout = store.layout_of(union);
   let Layout::Ptr { to } = store.layout(layout) else {
     panic!("expected union of GC pointers to lower to Ptr layout");
@@ -656,14 +665,18 @@ fn union_of_gc_pointer_and_null_lowers_to_ptr_layout() {
   let store = TypeStore::new();
   let primitives = store.primitive_ids();
 
-  let union = store.intern_type(TypeKind::Union(vec![primitives.string, primitives.null]));
+  let arr_ty = store.intern_type(TypeKind::Array {
+    ty: primitives.number,
+    readonly: false,
+  });
+  let union = store.intern_type(TypeKind::Union(vec![arr_ty, primitives.null]));
   let layout = store.layout_of(union);
   let Layout::Ptr { to } = store.layout(layout) else {
-    panic!("expected string|null union to lower to Ptr layout");
+    panic!("expected array|null union to lower to Ptr layout");
   };
   assert!(
-    matches!(to, types_ts_interned::PtrKind::GcString),
-    "expected string|null union to retain GcString ptr kind, got {to:?}"
+    matches!(to, types_ts_interned::PtrKind::GcArray { .. }),
+    "expected array|null union to retain GcArray ptr kind, got {to:?}"
   );
   assert_eq!(store.gc_ptr_offsets(layout), vec![0]);
 }
@@ -786,9 +799,10 @@ fn layout_classification_struct_with_gc_pointer_needs_boxing_in_arrays() {
   let store = TypeStore::new();
   let primitives = store.primitive_ids();
 
+  let obj = object_with_prop(store.as_ref(), "a", primitives.number);
   let tuple = store.intern_type(TypeKind::Tuple(vec![
     TupleElem {
-      ty: primitives.string,
+      ty: obj,
       optional: false,
       rest: false,
       readonly: false,
@@ -806,8 +820,18 @@ fn layout_classification_struct_with_gc_pointer_needs_boxing_in_arrays() {
   assert_eq!(store.layout_gc_trace_kind(tuple_layout), GcTraceKind::Flat);
   assert_eq!(store.array_elem_repr(tuple_layout), ArrayElemRepr::NeedsBoxing);
 
+  let obj_layout = store.layout_of(obj);
+  assert_eq!(store.array_elem_repr(obj_layout), ArrayElemRepr::GcPointer);
+
+  // `string` lowers to an interned id (`u32`) and is therefore plain old data.
   let string_layout = store.layout_of(primitives.string);
-  assert_eq!(store.array_elem_repr(string_layout), ArrayElemRepr::GcPointer);
+  assert_eq!(
+    store.array_elem_repr(string_layout),
+    ArrayElemRepr::PlainOldData {
+      elem_size: 4,
+      elem_align: 4
+    }
+  );
 }
 
 #[test]
@@ -815,7 +839,8 @@ fn layout_classification_tagged_union_requires_tag_dispatch() {
   let store = TypeStore::new();
   let primitives = store.primitive_ids();
 
-  let union = store.intern_type(TypeKind::Union(vec![primitives.number, primitives.string]));
+  let obj = object_with_prop(store.as_ref(), "a", primitives.number);
+  let union = store.intern_type(TypeKind::Union(vec![primitives.number, obj]));
   let union_layout = store.layout_of(union);
 
   assert!(!store.layout_is_pointer_free(union_layout));

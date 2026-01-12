@@ -78,7 +78,9 @@ fn callable_object_payload_traces_header_and_property_pointers() {
   };
 
   let trace = store.gc_trace_layout(payload);
-  assert_eq!(trace.as_flat_ptr_offsets(), Some(&[8, 16][..]));
+  // Callable objects include the closure header `{ fn_ptr, env }`; only `env` is a GC pointer.
+  // `string` properties lower to interned ids (`u32`), so they do not contribute GC pointer slots.
+  assert_eq!(trace.as_flat_ptr_offsets(), Some(&[8][..]));
   assert!(!trace.requires_tag_dispatch());
 }
 
@@ -97,7 +99,8 @@ fn struct_with_mixed_scalar_and_gc_ptr_fields_is_flat() {
   let layout = store.layout_of(tuple);
   let trace = store.gc_trace_layout(layout);
 
-  assert_eq!(trace.as_flat_ptr_offsets(), Some(&[8, 24][..]));
+  // `string` lowers to an interned id (`u32`), so this tuple is pointer-free.
+  assert_eq!(trace.as_flat_ptr_offsets(), Some(&[][..]));
   assert!(!trace.requires_tag_dispatch());
 }
 
@@ -118,7 +121,8 @@ fn nested_struct_offsets_reflect_recursion() {
   let layout = store.layout_of(outer);
   let trace = store.gc_trace_layout(layout);
 
-  assert_eq!(trace.as_flat_ptr_offsets(), Some(&[16][..]));
+  // `string` lowers to an interned id (`u32`), so this nested tuple is pointer-free.
+  assert_eq!(trace.as_flat_ptr_offsets(), Some(&[][..]));
   assert!(!trace.requires_tag_dispatch());
 }
 
