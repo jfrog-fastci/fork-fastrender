@@ -134,6 +134,70 @@ impl BookmarkStore {
       .any(|node| matches!(node, BookmarkNode::Bookmark(b) if b.url == url))
   }
 
+  /// Search bookmarks by title and URL (tokenized, case-insensitive).
+  ///
+  /// - `query` is split by whitespace into tokens; every token must match either the bookmark title
+  ///   or URL.
+  /// - Matching is ASCII case-insensitive (non-ASCII bytes must match exactly).
+  /// - Results are returned in the user-defined ordering (roots + folder children).
+  /// - `scan_limit` caps the number of bookmark entries examined (folders do not count toward this
+  ///   limit). This is useful for UI surfaces that need to remain cheap (e.g. the omnibox).
+  pub fn search(&self, query: &str, scan_limit: usize) -> Vec<BookmarkId> {
+    let tokens: Vec<&str> = query.split_whitespace().filter(|t| !t.is_empty()).collect();
+    if tokens.is_empty() || scan_limit == 0 {
+      return Vec::new();
+    }
+
+    let mut out = Vec::new();
+    let mut scanned = 0usize;
+
+    // Traverse nodes in the user-defined store ordering (roots + folder children). This keeps
+    // results deterministic even when we early-exit at `scan_limit`.
+    let mut stack: Vec<BookmarkId> = self.roots.iter().rev().copied().collect();
+    'nodes: while let Some(id) = stack.pop() {
+      let Some(node) = self.nodes.get(&id) else {
+        // Shouldn't happen in a validated store, but skip gracefully.
+        continue;
+      };
+
+      match node {
+        BookmarkNode::Bookmark(entry) => {
+          if scanned >= scan_limit {
+            break 'nodes;
+          }
+          scanned += 1;
+
+          let url = entry.url.trim();
+          if url.is_empty() {
+            continue 'nodes;
+          }
+
+          let title = entry
+            .title
+            .as_deref()
+            .map(|t| t.trim())
+            .filter(|t| !t.is_empty());
+
+          for token in &tokens {
+            if !contains_case_insensitive(url, token)
+              && !title.is_some_and(|t| contains_case_insensitive(t, token))
+            {
+              continue 'nodes;
+            }
+          }
+
+          out.push(id);
+        }
+        BookmarkNode::Folder(folder) => {
+          // Depth-first traversal: push children in reverse so pop() visits them in order.
+          stack.extend(folder.children.iter().rev().copied());
+        }
+      }
+    }
+
+    out
+  }
+
   pub fn toggle(&mut self, url: &str, title: Option<&str>) -> bool {
     let url = url.trim();
     if url.is_empty() {
@@ -678,6 +742,34 @@ impl BookmarkStore {
   }
 }
 
+fn contains_case_insensitive(haystack: &str, needle: &str) -> bool {
+  // ASCII-only case-insensitive substring search.
+  if needle.is_empty() {
+    return true;
+  }
+
+  let hay = haystack.as_bytes();
+  let needle = needle.as_bytes();
+  if needle.len() > hay.len() {
+    return false;
+  }
+
+  for i in 0..=(hay.len() - needle.len()) {
+    let mut ok = true;
+    for j in 0..needle.len() {
+      if hay[i + j].to_ascii_lowercase() != needle[j].to_ascii_lowercase() {
+        ok = false;
+        break;
+      }
+    }
+    if ok {
+      return true;
+    }
+  }
+
+  false
+}
+
 fn normalize_optional_string(value: Option<String>) -> Option<String> {
   value.and_then(|raw| {
     let trimmed = raw.trim();
@@ -1092,6 +1184,52 @@ mod tests {
 
     let json = serde_json::to_string(&store).unwrap();
     let decoded: BookmarkStore = serde_json::from_str(&json).unwrap();
+    assert_eq!(decoded, store);
+  }
+
+  #[test]
+  fn search_tokenized_case_insensitive_matches_title_and_url() {
+    let mut store = BookmarkStore::default();
+    let folder = store.create_folder("Folder".to_string(), None).unwrap();
+    let a = store
+      .add(
+        "https://example.com/rust".to_string(),
+        Some("Rust Lang".to_string()),
+        None,
+      )
+      .unwrap();
+    let b = store
+      .add(
+        "https://mozilla.org/".to_string(),
+        Some("Mozilla".to_string()),
+        Some(folder),
+      )
+      .unwrap();
+
+    assert_eq!(store.search("rust", usize::MAX), vec![a]);
+    assert_eq!(store.search("RUST lang", usize::MAX), vec![a]);
+    assert_eq!(store.search("example RUST", usize::MAX), vec![a]);
+    assert_eq!(store.search("moz", usize::MAX), vec![b]);
+
+    // Scan limit: only the first bookmark in store order is examined (the folder's child `b`).
+    assert_eq!(store.search("rust", 1), Vec::<BookmarkId>::new());
+  }
+
+  #[test]
+  fn export_import_roundtrip_json_migrating() {
+    let mut store = BookmarkStore::default();
+    let folder = store.create_folder("Folder".to_string(), None).unwrap();
+    let _ = store
+      .add(
+        "https://example.com/".to_string(),
+        Some("Example".to_string()),
+        Some(folder),
+      )
+      .unwrap();
+
+    let json = serde_json::to_string_pretty(&store).unwrap();
+    let (decoded, migration) = BookmarkStore::from_json_str_migrating(&json).unwrap();
+    assert_eq!(migration, BookmarkStoreMigration::None);
     assert_eq!(decoded, store);
   }
 

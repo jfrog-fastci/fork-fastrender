@@ -1843,6 +1843,7 @@ struct App {
   history_panel_open: bool,
   bookmarks_panel_open: bool,
   clear_browsing_data_dialog_open: bool,
+  bookmarks_manager: fastrender::ui::bookmarks_manager::BookmarksManagerState,
 
   tab_textures: std::collections::HashMap<fastrender::ui::TabId, fastrender::ui::WgpuPixmapTexture>,
   tab_favicons: std::collections::HashMap<fastrender::ui::TabId, fastrender::ui::WgpuPixmapTexture>,
@@ -2258,6 +2259,7 @@ impl App {
       open_context_menu_rect: None,
       open_select_dropdown: None,
       open_select_dropdown_rect: None,
+      bookmarks_manager: fastrender::ui::bookmarks_manager::BookmarksManagerState::default(),
       debug_log: std::collections::VecDeque::new(),
       debug_log_ui_enabled,
       debug_log_ui_open: debug_log_ui_enabled,
@@ -2933,55 +2935,58 @@ impl App {
     self.destroy_all_textures();
   }
 
+  fn open_url_in_new_tab(&mut self, url: String) -> bool {
+    use fastrender::ui::cancel::CancelGens;
+    use fastrender::ui::messages::{NavigationReason, RepaintReason, UiToWorker};
+    use fastrender::ui::{BrowserTabState, PointerButton, TabId};
+
+    // Close any transient UI state before switching tabs.
+    if self.open_select_dropdown.is_some() {
+      self.cancel_select_dropdown();
+    }
+    if self.pointer_captured {
+      self.cancel_pointer_capture();
+    }
+
+    let new_tab_id = TabId::new();
+    let mut tab_state = BrowserTabState::new(new_tab_id, url.clone());
+    tab_state.loading = true;
+    let cancel: CancelGens = tab_state.cancel.clone();
+    self.tab_cancel.insert(new_tab_id, cancel.clone());
+    self.browser_state.push_tab(tab_state, true);
+
+    // Reset per-tab cached state; mimic `ChromeAction::NewTab`/`ActivateTab` behaviour.
+    self.page_has_focus = true;
+    self.viewport_cache_tab = None;
+    self.pointer_captured = false;
+    self.captured_button = PointerButton::None;
+    self.cursor_in_page = false;
+    self.hover_sync_pending = true;
+    self.pending_pointer_move = None;
+
+    self.send_worker_msg(UiToWorker::CreateTab {
+      tab_id: new_tab_id,
+      initial_url: None,
+      cancel,
+    });
+    self.send_worker_msg(UiToWorker::SetActiveTab { tab_id: new_tab_id });
+    self.send_worker_msg(UiToWorker::Navigate {
+      tab_id: new_tab_id,
+      url,
+      reason: NavigationReason::LinkClick,
+    });
+    self.send_worker_msg(UiToWorker::RequestRepaint {
+      tab_id: new_tab_id,
+      reason: RepaintReason::Explicit,
+    });
+
+    true
+  }
+
   fn handle_worker_message(&mut self, msg: fastrender::ui::WorkerToUi) -> bool {
     // Worker-initiated tab creation/navigation.
     if let fastrender::ui::WorkerToUi::RequestOpenInNewTab { tab_id: _, url } = msg {
-      use fastrender::ui::cancel::CancelGens;
-      use fastrender::ui::messages::{NavigationReason, RepaintReason, UiToWorker};
-      use fastrender::ui::{BrowserTabState, PointerButton, TabId};
-
-      // Close any transient UI state before switching tabs.
-      if self.open_select_dropdown.is_some() {
-        self.cancel_select_dropdown();
-      }
-      if self.pointer_captured {
-        self.cancel_pointer_capture();
-      }
-
-      let new_tab_id = TabId::new();
-      let mut tab_state = BrowserTabState::new(new_tab_id, url.clone());
-      tab_state.loading = true;
-      let cancel: CancelGens = tab_state.cancel.clone();
-      self.tab_cancel.insert(new_tab_id, cancel.clone());
-      self.browser_state.push_tab(tab_state, true);
-
-      // Reset per-tab cached state; mimic `ChromeAction::NewTab`/`ActivateTab` behaviour.
-      // Opening a link in a new tab should behave like a regular tab activation: keyboard input
-      // should target the page unless the chrome has explicit focus.
-      self.page_has_focus = true;
-      self.viewport_cache_tab = None;
-      self.pointer_captured = false;
-      self.captured_button = PointerButton::None;
-      self.cursor_in_page = false;
-      self.hover_sync_pending = true;
-      self.pending_pointer_move = None;
-
-      self.send_worker_msg(UiToWorker::CreateTab {
-        tab_id: new_tab_id,
-        initial_url: None,
-        cancel,
-      });
-      self.send_worker_msg(UiToWorker::SetActiveTab { tab_id: new_tab_id });
-      self.send_worker_msg(UiToWorker::Navigate {
-        tab_id: new_tab_id,
-        url,
-        reason: NavigationReason::LinkClick,
-      });
-      self.send_worker_msg(UiToWorker::RequestRepaint {
-        tab_id: new_tab_id,
-        reason: RepaintReason::Explicit,
-      });
-
+      self.open_url_in_new_tab(url);
       return true;
     }
 
@@ -5575,6 +5580,7 @@ impl App {
               // can respect its editing focus rules. Ensure they never reach page input.
               ShortcutAction::FocusAddressBar
               | ShortcutAction::FindInPage
+              | ShortcutAction::ToggleBookmarksManager
               | ShortcutAction::NewWindow
               | ShortcutAction::NewTab
               | ShortcutAction::CloseTab
@@ -5595,20 +5601,20 @@ impl App {
 
               // Page-level shortcuts only apply when the rendered page has focus and egui isn't
               // actively editing text (e.g. address bar).
-              ShortcutAction::Copy
-              | ShortcutAction::Cut
-              | ShortcutAction::Paste
-              | ShortcutAction::SelectAll
-              | ShortcutAction::PageUp
-              | ShortcutAction::PageDown => {
-                // If egui is actively editing text (e.g. the address bar), don't handle page-level
-                // key events.
-                if self.egui_ctx.wants_keyboard_input() {
-                  return;
-                }
-                if !self.page_has_focus {
-                  return;
-                }
+               ShortcutAction::Copy
+               | ShortcutAction::Cut
+               | ShortcutAction::Paste
+               | ShortcutAction::SelectAll
+               | ShortcutAction::PageUp
+               | ShortcutAction::PageDown => {
+                  // If egui is actively editing text (e.g. the address bar), don't handle page-level
+                  // key events.
+                  if self.egui_ctx.wants_keyboard_input() {
+                    return;
+                  }
+                  if !self.page_has_focus {
+                    return;
+                  }
                 let Some(tab_id) = self.browser_state.active_tab_id() else {
                   return;
                 };
@@ -5959,7 +5965,7 @@ impl App {
           // When the address bar has focus, keyboard input should not be forwarded to the page.
           // When it loses focus (via Enter/Escape/clicking elsewhere), restore page focus so common
           // scrolling shortcuts work without requiring an extra click.
-          self.page_has_focus = !has_focus;
+          self.page_has_focus = !has_focus && !self.bookmarks_panel_open && !self.history_panel_open;
         }
         ChromeAction::ToggleBookmarkForActiveTab => {
           self.toggle_bookmark_for_active_tab();
@@ -5985,6 +5991,13 @@ impl App {
           self.bookmarks_panel_open = !self.bookmarks_panel_open;
           if self.bookmarks_panel_open {
             self.history_panel_open = false;
+            self.bookmarks_manager.request_focus_search();
+            // While the manager is open, do not forward keyboard focus to the page. The manager
+            // itself will request focus for its search box.
+            self.page_has_focus = false;
+          } else {
+            self.bookmarks_manager.clear_transient();
+            self.page_has_focus = !self.browser_state.chrome.address_bar_has_focus;
           }
           self.window.request_redraw();
         }
@@ -6408,179 +6421,38 @@ impl App {
     let mut open_clear_browsing_data_dialog = false;
 
     if self.bookmarks_panel_open {
-      egui::SidePanel::right("fastr_bookmarks_panel")
-        .resizable(true)
-        .default_width(320.0)
-        .show(&ctx, |ui| {
-          ui.horizontal(|ui| {
-            ui.heading("Bookmarks");
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-              let close_resp = ui.button("✕").on_hover_text("Close");
-              close_resp.widget_info(|| {
-                egui::WidgetInfo::labeled(egui::WidgetType::Button, "Close bookmarks panel")
-              });
-              if close_resp.clicked() {
-                close_bookmarks_panel = true;
-              }
-            });
-          });
-          ui.separator();
-          ui.add(
-            egui::TextEdit::singleline(&mut self.browser_state.chrome.bookmarks_manager_search_text)
-              .hint_text("Search bookmarks…")
-              .desired_width(f32::INFINITY),
-          );
-          ui.separator();
+      let output = fastrender::ui::bookmarks_manager::bookmarks_manager_side_panel(
+        &ctx,
+        &mut self.bookmarks_manager,
+        &mut self.bookmarks,
+      );
+      if output.close_requested {
+        close_bookmarks_panel = true;
+      }
+      if output.unfocus_page {
+        self.page_has_focus = false;
+      }
+      if output.changed {
+        self.autosave_bookmarks();
+        self.sync_about_newtab_bookmarks_snapshot();
 
-          if self.bookmarks.roots.is_empty() {
-            ui.label("No bookmarks.");
-            return;
+        if output.request_flush {
+          if let Some(autosave) = self.profile_autosave.as_ref() {
+            let _ = autosave.flush(std::time::Duration::from_millis(200));
           }
+        }
+      }
 
-          let query = self
-            .browser_state
-            .chrome
-            .bookmarks_manager_search_text
-            .trim()
-            .to_ascii_lowercase();
-          let mut matches = 0usize;
-          let mut remove_bookmark_ids: Vec<fastrender::ui::BookmarkId> = Vec::new();
-
-          egui::ScrollArea::vertical()
-            .auto_shrink([false, false])
-            .show(ui, |ui| {
-              fn node_matches_query(
-                store: &fastrender::ui::BookmarkStore,
-                id: fastrender::ui::BookmarkId,
-                query: &str,
-              ) -> bool {
-                if query.is_empty() {
-                  return true;
-                }
-
-                let Some(node) = store.nodes.get(&id) else {
-                  return false;
-                };
-
-                match node {
-                  fastrender::ui::BookmarkNode::Bookmark(entry) => {
-                    entry.url.to_ascii_lowercase().contains(query)
-                      || entry
-                        .title
-                        .as_deref()
-                        .unwrap_or("")
-                        .to_ascii_lowercase()
-                        .contains(query)
-                  }
-                  fastrender::ui::BookmarkNode::Folder(folder) => {
-                    folder.title.to_ascii_lowercase().contains(query)
-                      || folder
-                        .children
-                        .iter()
-                        .copied()
-                        .any(|child| node_matches_query(store, child, query))
-                  }
-                }
-              }
-
-              fn render_nodes(
-                ui: &mut egui::Ui,
-                store: &fastrender::ui::BookmarkStore,
-                ids: &[fastrender::ui::BookmarkId],
-                query: &str,
-                matches: &mut usize,
-                remove_ids: &mut Vec<fastrender::ui::BookmarkId>,
-                panel_actions: &mut Vec<fastrender::ui::ChromeAction>,
-              ) {
-                for id in ids {
-                  if !query.is_empty() && !node_matches_query(store, *id, query) {
-                    continue;
-                  }
-
-                  let Some(node) = store.nodes.get(id) else {
-                    continue;
-                  };
-
-                  match node {
-                    fastrender::ui::BookmarkNode::Bookmark(entry) => {
-                      *matches += 1;
-
-                      ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui
-                          .button("✕")
-                          .on_hover_text("Remove bookmark")
-                          .clicked()
-                        {
-                          remove_ids.push(*id);
-                        }
-
-                        let label = entry
-                          .title
-                          .as_deref()
-                          .map(str::trim)
-                          .filter(|t| !t.is_empty())
-                          .map(str::to_string)
-                          .unwrap_or_else(|| {
-                            fastrender::ui::url_display::truncate_url_middle(&entry.url, 64)
-                          });
-
-                        let resp = ui
-                          .add_sized([ui.available_width(), 0.0], egui::Button::new(label))
-                          .on_hover_text(&entry.url);
-                        if resp.clicked() {
-                          panel_actions.push(fastrender::ui::ChromeAction::NavigateTo(
-                            entry.url.clone(),
-                          ));
-                        }
-                      });
-                    }
-                    fastrender::ui::BookmarkNode::Folder(folder) => {
-                      egui::CollapsingHeader::new(folder.title.as_str())
-                        .id_source(folder.id.0)
-                        .default_open(true)
-                        .show(ui, |ui| {
-                          render_nodes(
-                            ui,
-                            store,
-                            &folder.children,
-                            query,
-                            matches,
-                            remove_ids,
-                            panel_actions,
-                          );
-                        });
-                    }
-                  }
-                }
-              }
-
-              render_nodes(
-                ui,
-                &self.bookmarks,
-                &self.bookmarks.roots,
-                query.as_str(),
-                &mut matches,
-                &mut remove_bookmark_ids,
-                &mut panel_actions,
-              );
-            });
-
-          if !query.is_empty() && matches == 0 {
-            ui.label("No matching bookmarks.");
+      for action in output.actions {
+        match action {
+          fastrender::ui::bookmarks_manager::BookmarksManagerAction::Open(url) => {
+            panel_actions.push(fastrender::ui::ChromeAction::NavigateTo(url));
           }
-
-          if !remove_bookmark_ids.is_empty() {
-            let mut changed = false;
-            for id in remove_bookmark_ids {
-              changed |= self.bookmarks.remove_by_id(id);
-            }
-            if changed {
-              self.autosave_bookmarks();
-              self.sync_about_newtab_bookmarks_snapshot();
-              self.window.request_redraw();
-            }
+          fastrender::ui::bookmarks_manager::BookmarksManagerAction::OpenInNewTab(url) => {
+            session_dirty |= self.open_url_in_new_tab(url);
           }
-        });
+        }
+      }
     } else if self.history_panel_open {
       egui::SidePanel::right("fastr_history_panel")
         .resizable(true)
@@ -6684,9 +6556,12 @@ impl App {
 
     if close_bookmarks_panel {
       self.bookmarks_panel_open = false;
+      self.bookmarks_manager.clear_transient();
+      self.page_has_focus = !self.browser_state.chrome.address_bar_has_focus;
     }
     if close_history_panel {
       self.history_panel_open = false;
+      self.page_has_focus = !self.browser_state.chrome.address_bar_has_focus;
     }
     if open_clear_browsing_data_dialog {
       self.clear_browsing_data_dialog_open = true;

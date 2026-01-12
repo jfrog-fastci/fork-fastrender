@@ -307,7 +307,6 @@ mod tests {
 
     let mut bookmarks = BookmarkStore::default();
     bookmarks.toggle("https://final.example/", Some("final"));
-
     autosave
       .send(AutosaveMsg::UpdateBookmarks(bookmarks.clone()))
       .unwrap();

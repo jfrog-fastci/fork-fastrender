@@ -2,7 +2,7 @@ use crate::ui::browser_app::{BrowserTabState, ClosedTabState};
 use crate::ui::url::{resolve_omnibox_input, OmniboxInputResolution};
 use crate::ui::messages::TabId;
 use crate::ui::about_pages;
-use crate::ui::{BookmarkId, BookmarkNode, BookmarkStore};
+use crate::ui::{BookmarkNode, BookmarkStore};
 use crate::ui::visited::VisitedUrlStore;
 use std::cmp::Ordering;
 use std::collections::HashSet;
@@ -297,72 +297,47 @@ impl OmniboxProvider for BookmarksProvider {
     // Cap the number of bookmark entries we consider per query so omnibox completion stays cheap.
     const BOOKMARK_SCAN_LIMIT: usize = 500;
 
-    let tokens: Vec<&str> = input.split_whitespace().filter(|t| !t.is_empty()).collect();
-    if tokens.is_empty() {
+    let matches = bookmarks.search(input, BOOKMARK_SCAN_LIMIT);
+    if matches.is_empty() {
       return Vec::new();
     }
 
     let mut out = Vec::new();
-    let mut scanned = 0usize;
     let mut seen_urls: HashSet<String> = HashSet::new();
 
-    // Traverse nodes in the user-defined store ordering (roots + folder children). This keeps
-    // results deterministic even when we early-exit at `BOOKMARK_SCAN_LIMIT`.
-    let mut stack: Vec<BookmarkId> = bookmarks.roots.iter().rev().copied().collect();
-    'nodes: while let Some(id) = stack.pop() {
-      let Some(node) = bookmarks.nodes.get(&id) else {
-        // Shouldn't happen in a validated store, but skip gracefully.
+    for id in matches {
+      let Some(BookmarkNode::Bookmark(entry)) = bookmarks.nodes.get(&id) else {
         continue;
       };
 
-      match node {
-        BookmarkNode::Bookmark(entry) => {
-          if scanned >= BOOKMARK_SCAN_LIMIT {
-            break 'nodes;
-          }
-          scanned += 1;
-
-          let url = entry.url.trim();
-          if url.is_empty() {
-            continue 'nodes;
-          }
-
-          let title = entry
-            .title
-            .as_deref()
-            .map(|t| t.trim())
-            .filter(|t| !t.is_empty());
-
-          for token in &tokens {
-            if !contains_case_insensitive(url, token)
-              && !title.is_some_and(|t| contains_case_insensitive(t, token))
-            {
-              continue 'nodes;
-            }
-          }
-
-          // Avoid suggesting the same URL multiple times when the bookmark store contains duplicates
-          // (possible via import).
-          if !seen_urls.insert(url.to_ascii_lowercase()) {
-            continue 'nodes;
-          }
-
-          let url_owned = url.to_string();
-          out.push(OmniboxSuggestion {
-            action: OmniboxAction::NavigateToUrl(url_owned.clone()),
-            title: title
-              .map(|t| t.to_string())
-              .or_else(|| Some(url_owned.clone())),
-            url: Some(url_owned),
-            source: OmniboxSuggestionSource::Url(OmniboxUrlSource::Bookmark),
-          });
-        }
-        BookmarkNode::Folder(folder) => {
-          // Depth-first traversal: push children in reverse so pop() visits them in order.
-          stack.extend(folder.children.iter().rev().copied());
-        }
+      let url = entry.url.trim();
+      if url.is_empty() {
+        continue;
       }
+
+      // Avoid suggesting the same URL multiple times when the bookmark store contains duplicates
+      // (possible via import).
+      if !seen_urls.insert(url.to_ascii_lowercase()) {
+        continue;
+      }
+
+      let title = entry
+        .title
+        .as_deref()
+        .map(|t| t.trim())
+        .filter(|t| !t.is_empty());
+
+      let url_owned = url.to_string();
+      out.push(OmniboxSuggestion {
+        action: OmniboxAction::NavigateToUrl(url_owned.clone()),
+        title: title
+          .map(|t| t.to_string())
+          .or_else(|| Some(url_owned.clone())),
+        url: Some(url_owned),
+        source: OmniboxSuggestionSource::Url(OmniboxUrlSource::Bookmark),
+      });
     }
+
     out
   }
 }
@@ -505,35 +480,6 @@ fn match_score(haystack: &str, needle_lower: &str) -> Option<i64> {
   let prefix_bonus = if idx == 0 { 1_000 } else { 0 };
   let position_bonus = (200 - idx).max(0);
   Some(prefix_bonus + position_bonus)
-}
-
-fn contains_case_insensitive(haystack: &str, needle: &str) -> bool {
-  // For omnibox usage we want lightweight, allocation-free matching. We use ASCII-only
-  // case-insensitivity: non-ASCII bytes are compared exactly.
-  if needle.is_empty() {
-    return true;
-  }
-
-  let hay = haystack.as_bytes();
-  let needle = needle.as_bytes();
-  if needle.len() > hay.len() {
-    return false;
-  }
-
-  for i in 0..=(hay.len() - needle.len()) {
-    let mut ok = true;
-    for j in 0..needle.len() {
-      if hay[i + j].to_ascii_lowercase() != needle[j].to_ascii_lowercase() {
-        ok = false;
-        break;
-      }
-    }
-    if ok {
-      return true;
-    }
-  }
-
-  false
 }
 
 fn compare_scored_suggestions(a: &ScoredSuggestion, b: &ScoredSuggestion) -> Ordering {

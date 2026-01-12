@@ -8,6 +8,7 @@ pub enum ShortcutAction {
   /// Focus the address bar and select all contents.
   FocusAddressBar,
   FindInPage,
+  ToggleBookmarksManager,
   NewWindow,
   NewTab,
   CloseTab,
@@ -341,6 +342,9 @@ pub fn map_shortcut_with_platform(event: KeyEvent, platform: Platform) -> Option
     (Key::X, Modifiers { shift: false, .. }) if cmd => Some(ShortcutAction::Cut),
     (Key::V, Modifiers { shift: false, .. }) if cmd => Some(ShortcutAction::Paste),
     (Key::A, Modifiers { shift: false, .. }) if cmd => Some(ShortcutAction::SelectAll),
+
+    // Bookmarks.
+    (Key::O, Modifiers { shift: true, .. }) if cmd => Some(ShortcutAction::ToggleBookmarksManager),
 
     // Scrolling / page keys.
     (
@@ -864,6 +868,24 @@ mod tests {
         Platform::Other
       ),
       Some(ShortcutAction::ZoomReset)
+    );
+  }
+
+  #[test]
+  fn ctrl_shift_o_toggles_bookmarks_manager() {
+    assert_eq!(
+      map_shortcut_with_platform(
+        KeyEvent::new(Key::O, Modifiers::new(true, true, false, false)),
+        Platform::Other
+      ),
+      Some(ShortcutAction::ToggleBookmarksManager)
+    );
+    assert_eq!(
+      map_shortcut_with_platform(
+        KeyEvent::new(Key::O, Modifiers::new(false, true, false, true)),
+        Platform::Mac
+      ),
+      Some(ShortcutAction::ToggleBookmarksManager)
     );
   }
 

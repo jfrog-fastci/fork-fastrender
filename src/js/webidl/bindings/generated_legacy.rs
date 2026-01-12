@@ -820,8 +820,6 @@ pub mod window {
     let result = host.get_attribute(rt, Some(this), "URL", "searchParams")?;
     binding_value_to_js::<Host, R>(rt, result)
   }
-
-  #[allow(dead_code)]
   fn u_r_l_constructor<Host, R>(
     rt: &mut R,
     host: &mut Host,
@@ -2940,8 +2938,6 @@ pub mod worker {
     let result = host.get_attribute(rt, Some(this), "URL", "searchParams")?;
     binding_value_to_js::<Host, R>(rt, result)
   }
-
-  #[allow(dead_code)]
   fn u_r_l_constructor<Host, R>(
     rt: &mut R,
     host: &mut Host,

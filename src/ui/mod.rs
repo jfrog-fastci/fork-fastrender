@@ -53,6 +53,9 @@ pub mod a11y;
 #[cfg(feature = "browser_ui")]
 pub mod chrome;
 
+#[cfg(feature = "browser_ui")]
+pub mod bookmarks_manager;
+
 // SVG→egui icon rasterization + caching for browser chrome widgets.
 #[cfg(feature = "browser_ui")]
 pub mod icons;

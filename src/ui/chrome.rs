@@ -221,6 +221,7 @@ pub fn chrome_ui_with_bookmarks(
   let (
     focus_address_bar,
     open_find_in_page,
+    toggle_bookmarks_manager,
     new_tab,
     close_tab,
     reopen_closed_tab,
@@ -239,6 +240,7 @@ pub fn chrome_ui_with_bookmarks(
     // modifiers via events, and using the event snapshot keeps this robust in unit tests as well.
     let mut focus_address_bar = false;
     let mut open_find_in_page = false;
+    let mut toggle_bookmarks_manager = false;
     let mut new_tab = false;
     let mut close_tab = false;
     let mut reopen_closed_tab = false;
@@ -277,6 +279,7 @@ pub fn chrome_ui_with_bookmarks(
           focus_address_bar = true;
         }
         ShortcutAction::FindInPage => open_find_in_page = true,
+        ShortcutAction::ToggleBookmarksManager => toggle_bookmarks_manager = true,
         ShortcutAction::NewTab => new_tab = true,
         ShortcutAction::CloseTab => close_tab = true,
         ShortcutAction::ReopenClosedTab => reopen_closed_tab = true,
@@ -300,6 +303,7 @@ pub fn chrome_ui_with_bookmarks(
     (
       focus_address_bar,
       open_find_in_page,
+      toggle_bookmarks_manager,
       new_tab,
       close_tab,
       reopen_closed_tab,
@@ -363,6 +367,9 @@ pub fn chrome_ui_with_bookmarks(
   }
   if open_find_in_page {
     actions.push(ChromeAction::OpenFindInPage);
+  }
+  if toggle_bookmarks_manager {
+    actions.push(ChromeAction::ToggleBookmarksManager);
   }
   if new_tab {
     actions.push(ChromeAction::NewTab);
@@ -2320,6 +2327,34 @@ mod tests {
     let _actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
     let _ = ctx.end_frame();
     assert!((app.active_tab().unwrap().zoom - crate::ui::zoom::DEFAULT_ZOOM).abs() < f32::EPSILON);
+  }
+
+  #[test]
+  fn ctrl_shift_o_emits_toggle_bookmarks_manager_action() {
+    let mut app = BrowserAppState::new();
+    let tab_id = TabId(1);
+    app.push_tab(
+      BrowserTabState::new(tab_id, "about:newtab".to_string()),
+      true,
+    );
+
+    let ctx = new_context_with_key(
+      egui::Key::O,
+      egui::Modifiers {
+        command: true,
+        shift: true,
+        ..Default::default()
+      },
+    );
+    let actions = chrome_ui(&ctx, &mut app, |_| None);
+    let _ = ctx.end_frame();
+
+    assert!(
+      actions
+        .iter()
+        .any(|action| matches!(action, ChromeAction::ToggleBookmarksManager)),
+      "expected ChromeAction::ToggleBookmarksManager, got {actions:?}"
+    );
   }
 
   #[test]
