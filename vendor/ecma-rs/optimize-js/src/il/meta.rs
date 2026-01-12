@@ -640,6 +640,23 @@ pub struct InstMeta {
     serde(default, skip_serializing_if = "Option::is_none")
   )]
   pub value: Option<ValueFacts>,
+  /// Element representation hint for array operations (`ArrayLoad`/`ArrayStore`/`ArrayLen`).
+  ///
+  /// Note: `optimize-js`'s IL currently represents array operations via generic
+  /// property accesses. Downstream native backends treat `array_elem_repr` as a
+  /// best-effort classification attached to the relevant instructions.
+  #[cfg_attr(
+    feature = "serde",
+    serde(default, skip_serializing_if = "Option::is_none")
+  )]
+  pub array_elem_repr: Option<ArrayElemRepr>,
+  /// Loop-level vectorization hint attached to a representative instruction
+  /// (usually the loop header's `CondGoto`).
+  #[cfg_attr(
+    feature = "serde",
+    serde(default, skip_serializing_if = "Option::is_none")
+  )]
+  pub vectorize_hint: Option<VectorizeHint>,
   #[cfg_attr(
     feature = "serde",
     serde(default, skip_serializing_if = "Option::is_none")
@@ -735,7 +752,8 @@ impl InstMeta {
       && self.nullability_narrowing.is_none()
       && self.await_behavior.is_none()
       && self.value.is_none()
-      && self.parallel.is_none()
+      && self.array_elem_repr.is_none()
+      && self.vectorize_hint.is_none()
       && self.parallel.is_none();
 
     #[cfg(feature = "native-async-ops")]
@@ -764,4 +782,45 @@ impl InstMeta {
       .copied()
       .unwrap_or(ArgUseMode::Borrow)
   }
+}
+
+/// Inferred element representation for native array backends.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
+pub enum ArrayElemRepr {
+  /// GC pointer elements (objects/strings/functions/etc).
+  Ptr,
+  I32,
+  I64,
+  F64,
+  /// Could not infer a stable element representation.
+  Unknown,
+}
+
+impl ArrayElemRepr {
+  pub fn is_numeric(self) -> bool {
+    matches!(self, Self::I32 | Self::I64 | Self::F64)
+  }
+}
+
+/// Loop-level hint indicating whether downstream codegen should attempt SIMD
+/// vectorization.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
+pub enum VectorizeHint {
+  Yes,
+  No { reason: VectorizeNoReason },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
+pub enum VectorizeNoReason {
+  Unknown,
+  NonNumericElems,
+  NonContiguousIndex,
+  MayAlias,
+  HasSideEffects,
 }

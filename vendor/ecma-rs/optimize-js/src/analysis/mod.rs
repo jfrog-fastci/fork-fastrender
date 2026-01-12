@@ -4,6 +4,7 @@ pub mod dataflow;
 pub mod dataflow_edge;
 pub mod defs;
 pub mod driver;
+pub mod array_repr;
 pub mod effect;
 pub mod escape;
 pub mod interproc_escape;

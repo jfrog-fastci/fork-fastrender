@@ -13,8 +13,8 @@ use ahash::HashMap;
 use ahash::HashMapExt;
 
 use super::{
-  alias, call_summary, consume, effect, encoding, escape, interproc_escape, nullability, ownership,
-  parallelize, purity, range,
+  alias, array_repr, call_summary, consume, effect, encoding, escape, interproc_escape, nullability,
+  ownership, parallelize, purity, range,
 };
 
 /// Per-function analysis bundle.
@@ -119,6 +119,11 @@ pub struct ProgramAnalyses {
     serde(serialize_with = "crate::analysis::serde::serialize_hashmap_sorted")
   )]
   pub ownership: HashMap<FunctionKey, ownership::OwnershipResult>,
+  #[cfg_attr(
+    feature = "serde",
+    serde(serialize_with = "crate::analysis::serde::serialize_hashmap_sorted")
+  )]
+  pub array_repr: HashMap<FunctionKey, array_repr::ArrayReprResult>,
 
   #[cfg_attr(
     feature = "serde",
@@ -429,6 +434,22 @@ pub fn analyze_program(program: &Program) -> ProgramAnalyses {
       );
   }
 
+  // 4.5) array element representation (needs alias + escape)
+  for &key in &keys {
+    let cfg = cfg_for_key(program, key);
+    let alias = analyses
+      .alias
+      .get(&key)
+      .expect("alias results should be populated before array repr");
+    let escapes = analyses
+      .escape
+      .get(&key)
+      .expect("escape results should be populated before array repr");
+    analyses
+      .array_repr
+      .insert(key, array_repr::analyze_array_repr(cfg, alias, Some(escapes)));
+  }
+
   // 5) ownership
   for &key in &keys {
     let cfg = cfg_for_key(program, key);
@@ -590,6 +611,23 @@ where
     );
     annotate_cfg_escape_states(cfg_for_key_deconstructed_mut(program, key), &deconstructed_escape);
     deconstructed_escapes.insert(key, deconstructed_escape);
+  }
+
+  // 4.5) array element representation + vectorization hints (analyzed CFG only)
+  for &key in &keys {
+    let alias = analyses
+      .alias
+      .get(&key)
+      .expect("alias results should be populated before array repr");
+    let escapes = analyses
+      .escape
+      .get(&key)
+      .expect("escape results should be populated before array repr");
+    let cfg = cfg_for_key_mut(program, key);
+    let array_repr = array_repr::analyze_array_repr(cfg, alias, Some(escapes));
+    array_repr::annotate_cfg_array_elem_repr(cfg, &array_repr);
+    array_repr::annotate_cfg_vectorize_hints(cfg, &array_repr, alias);
+    analyses.array_repr.insert(key, array_repr);
   }
 
   // 5) ownership
