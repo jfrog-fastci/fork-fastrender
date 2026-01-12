@@ -379,6 +379,8 @@ There is a self-contained WPT-style runner under `tests/wpt/` for local “rende
 - Artifacts always land in `target/wpt-output/<id>/{actual,expected,diff}.png` with a filterable `report.html`.
 - Viewport/DPR are fixed per-test from metadata. CI can pin fonts for deterministic renders via `HarnessConfig::with_font_dir`/`WptRunnerBuilder::font_dir` (for example, point at `tests/fonts/`).
 - The runner supports parallel execution and per-test timeouts (see `HarnessConfig`).
+  - Each render is executed with a per-document timeout via `RenderOptions::with_timeout(...)`, derived from the manifest/INI metadata (falling back to `HarnessConfig::default_timeout_ms`).
+  - These timeouts are *aborting* (best-effort cooperative deadlines inside the renderer) and are intended to prevent pathological inputs from hanging the entire WPT run.
 - Comparisons use the shared image comparison module (same as fixtures/ref tests) with configurable tolerance, alpha handling, pixel difference thresholds, and perceptual distance thresholds to reduce platform noise.
   - Defaults are strict: `tolerance=0`, `max_different_percent=0.0`, `compare_alpha=true`, and no perceptual threshold.
   - Local overrides (env vars):

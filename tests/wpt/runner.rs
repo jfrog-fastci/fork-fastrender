@@ -1133,17 +1133,15 @@ impl WptRunner {
       renderer,
       &test_html,
       &metadata.path,
-      metadata.viewport_width,
-      metadata.viewport_height,
-      metadata.media_type,
-      metadata.fit_canvas_to_content,
+      metadata,
     ) {
       Ok(img) => img,
       Err(e) => {
-        return TestResult::error(
-          metadata.clone(),
+        return Self::test_result_for_render_error(
+          metadata,
           start.elapsed(),
-          format!("Failed to render test: {}", e),
+          e,
+          "Failed to render test",
         );
       }
     };
@@ -1153,17 +1151,15 @@ impl WptRunner {
       renderer,
       &ref_html,
       ref_path,
-      metadata.viewport_width,
-      metadata.viewport_height,
-      metadata.media_type,
-      metadata.fit_canvas_to_content,
+      metadata,
     ) {
       Ok(img) => img,
       Err(e) => {
-        return TestResult::error(
-          metadata.clone(),
+        return Self::test_result_for_render_error(
+          metadata,
           start.elapsed(),
-          format!("Failed to render reference: {}", e),
+          e,
+          "Failed to render reference",
         );
       }
     };
@@ -1221,17 +1217,15 @@ impl WptRunner {
       renderer,
       &test_html,
       &metadata.path,
-      metadata.viewport_width,
-      metadata.viewport_height,
-      metadata.media_type,
-      metadata.fit_canvas_to_content,
+      metadata,
     ) {
       Ok(img) => img,
       Err(e) => {
-        return TestResult::error(
-          metadata.clone(),
+        return Self::test_result_for_render_error(
+          metadata,
           start.elapsed(),
-          format!("Failed to render test: {}", e),
+          e,
+          "Failed to render test",
         );
       }
     };
@@ -1293,10 +1287,7 @@ impl WptRunner {
       renderer,
       &test_html,
       &metadata.path,
-      metadata.viewport_width,
-      metadata.viewport_height,
-      metadata.media_type,
-      metadata.fit_canvas_to_content,
+      metadata,
     ) {
       Ok(rendered) => {
         let mut result = TestResult::pass(metadata.clone(), start.elapsed())
@@ -1311,12 +1302,36 @@ impl WptRunner {
         }
         result
       }
-      Err(e) => TestResult::error(
-        metadata.clone(),
+      Err(e) => Self::test_result_for_render_error(
+        metadata,
         start.elapsed(),
-        format!("Render error (not a crash): {}", e),
+        e,
+        "Render error (not a crash)",
       ),
     }
+  }
+
+  fn render_options_for(metadata: &TestMetadata) -> fastrender::RenderOptions {
+    fastrender::RenderOptions::new()
+      .with_viewport(metadata.viewport_width, metadata.viewport_height)
+      .with_media_type(metadata.media_type)
+      .with_fit_canvas_to_content(metadata.fit_canvas_to_content)
+      .with_timeout(Some(Duration::from_millis(metadata.timeout_ms)))
+  }
+
+  fn test_result_for_render_error(
+    metadata: &TestMetadata,
+    duration: Duration,
+    error: fastrender::Error,
+    context: &str,
+  ) -> TestResult {
+    if error.is_timeout() {
+      let timeout = Duration::from_millis(metadata.timeout_ms);
+      let mut result = TestResult::timeout(metadata.clone(), duration);
+      result.message = Some(format!("{context} timed out (limit {timeout:?}): {error}"));
+      return result;
+    }
+    TestResult::error(metadata.clone(), duration, format!("{context}: {error}"))
   }
 
   /// Renders HTML for a given source file path and returns PNG bytes.
@@ -1327,28 +1342,15 @@ impl WptRunner {
     renderer: &mut fastrender::FastRender,
     html: &str,
     path: &Path,
-    viewport_width: u32,
-    viewport_height: u32,
-    media_type: MediaType,
-    fit_canvas_to_content: bool,
-  ) -> Result<Vec<u8>, String> {
+    metadata: &TestMetadata,
+  ) -> fastrender::Result<Vec<u8>> {
     let canonical = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
     let base_url = Url::from_file_path(&canonical)
-      .map_err(|_| format!("Failed to convert path to file URL: {canonical:?}"))?;
+      .map_err(|_| fastrender::Error::Other(format!("Failed to convert path to file URL: {canonical:?}")))?;
     renderer.set_base_url(base_url.to_string());
     let pixmap = renderer
-      .render_html_with_options(
-        html,
-        fastrender::RenderOptions {
-          viewport: Some((viewport_width, viewport_height)),
-          media_type,
-          fit_canvas_to_content: Some(fit_canvas_to_content),
-          ..fastrender::RenderOptions::default()
-        },
-      )
-      .map_err(|e| format!("Render error: {}", e))?;
+      .render_html_with_options(html, Self::render_options_for(metadata))?;
     fastrender::image_output::encode_image(&pixmap, fastrender::OutputFormat::Png)
-      .map_err(|e| format!("Render error: {}", e))
   }
 
   /// Compares two images and creates the appropriate result
@@ -2111,6 +2113,22 @@ mod tests {
 
     assert_eq!(stats.total, 0);
     assert_eq!(stats.passed, 0);
+  }
+
+  #[test]
+  fn test_render_options_for_metadata() {
+    let metadata = TestMetadata::from_path(PathBuf::from("test.html"))
+      .with_viewport(640, 480)
+      .with_timeout(1234)
+      .with_media_type(MediaType::Print)
+      .with_fit_canvas_to_content(true);
+
+    let options = WptRunner::render_options_for(&metadata);
+
+    assert_eq!(options.viewport, Some((640, 480)));
+    assert_eq!(options.media_type, MediaType::Print);
+    assert_eq!(options.fit_canvas_to_content, Some(true));
+    assert_eq!(options.timeout, Some(Duration::from_millis(1234)));
   }
 
   #[test]
