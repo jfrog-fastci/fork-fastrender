@@ -3,6 +3,7 @@ use crate::dom::HTML_NAMESPACE;
 use crate::dom::MATHML_NAMESPACE;
 use selectors::context::QuirksMode;
 
+use super::live_mutation::{LiveMutationEvent, LiveMutationTestRecorder};
 use super::{Document, DomError, MutationObserverInit, MutationRecordType, NodeId, NodeKind};
 
 fn find_element_by_id(doc: &Document, id: &str) -> NodeId {
@@ -946,6 +947,8 @@ fn set_inner_html_removals_and_insertions_use_structured_mutation_apis() {
   // - ShadowRoot children under the host are preserved (not removed).
 
   let mut doc = Document::new(QuirksMode::NoQuirks);
+  let recorder = LiveMutationTestRecorder::default();
+  doc.set_live_mutation_hook(Some(Box::new(recorder.clone())));
   let root = doc.root();
 
   let host = doc.create_element("div", HTML_NAMESPACE);
@@ -979,9 +982,60 @@ fn set_inner_html_removals_and_insertions_use_structured_mutation_apis() {
     )
     .unwrap();
 
+  let _ = recorder.take();
   doc
     .set_inner_html(host, r#"<span id="n1"></span><span id="n2"></span>"#)
     .unwrap();
+
+  let n1 = doc
+    .get_element_by_id("n1")
+    .expect("expected <span id=n1> inserted via innerHTML");
+  let n2 = doc
+    .get_element_by_id("n2")
+    .expect("expected <span id=n2> inserted via innerHTML");
+
+  let live_events = recorder.take();
+  let fragment_parent = live_events.iter().find_map(|event| match event {
+    LiveMutationEvent::PreRemove { node, old_parent, .. } if *node == n1 => Some(*old_parent),
+    _ => None,
+  });
+  let fragment_parent = fragment_parent.expect("expected innerHTML fragment insertion pre_remove hook");
+  assert!(
+    matches!(doc.node(fragment_parent).kind, NodeKind::DocumentFragment),
+    "expected inserted nodes to be removed from a DocumentFragment before insertion"
+  );
+
+  assert_eq!(
+    live_events,
+    vec![
+      LiveMutationEvent::PreRemove {
+        node: a,
+        old_parent: host,
+        old_index: 1
+      },
+      LiveMutationEvent::PreRemove {
+        node: b,
+        old_parent: host,
+        old_index: 1
+      },
+      LiveMutationEvent::PreRemove {
+        node: n1,
+        old_parent: fragment_parent,
+        old_index: 0
+      },
+      LiveMutationEvent::PreRemove {
+        node: n2,
+        old_parent: fragment_parent,
+        old_index: 1
+      },
+      LiveMutationEvent::PreInsert {
+        parent: host,
+        index: 1,
+        count: 2
+      }
+    ],
+    "unexpected live mutation hook sequence for innerHTML"
+  );
 
   // Collect childList mutation records recorded on the host element.
   let records = doc.mutation_observer_take_records(1);
