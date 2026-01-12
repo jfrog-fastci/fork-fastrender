@@ -13328,7 +13328,6 @@ impl Painter {
 
     self.paint_inside_border_rect(icon_rect, Rgba::rgb(192, 192, 192), clip_mask);
   }
-
   fn paint_missing_image_placeholder(&mut self, content_rect: Rect, clip_mask: Option<&Mask>) {
     self.paint_inside_border_rect(content_rect, Rgba::rgb(192, 192, 192), clip_mask);
     let icon_inset = 2.0;

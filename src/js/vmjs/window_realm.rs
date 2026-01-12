@@ -32045,7 +32045,6 @@ fn init_window_globals(
 mod tests {
   use super::*;
   use crate::js::clock::VirtualClock;
-  use crate::js::vm_error_format;
   use crate::js::window_env::FASTRENDER_USER_AGENT;
   use crate::js::RunLimits;
   use crate::js::window::WindowHost;
@@ -32262,6 +32261,136 @@ mod tests {
     // Keep the heap limits configured by `WindowRealmConfig` (some tests tweak it).
     js_execution_options.max_vm_heap_bytes = None;
     WindowRealm::new_with_js_execution_options(config, js_execution_options)
+  }
+
+  fn new_host_document_state() -> crate::js::HostDocumentState {
+    let renderer_dom =
+      crate::dom::parse_html("<!doctype html><html><head></head><body></body></html>").unwrap();
+    crate::js::HostDocumentState::from_renderer_dom(&renderer_dom)
+  }
+
+  // Multi-document DOM regression tests.
+  //
+  // The vm-js DOM shims are currently single-document (host-only) and do not yet expose:
+  // - `document.implementation.createHTMLDocument`
+  // - `document.implementation.createDocumentType`
+  // - `document.importNode` / `document.adoptNode`
+  // - cross-document `appendChild` auto-adoption
+  //
+  // Keep these tests ignored until the multi-document refactor lands.
+
+  #[test]
+  #[ignore]
+  fn dom_implementation_create_html_document_basics() -> Result<(), VmError> {
+    let mut host = new_host_document_state();
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+    let result = exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      r#"(() => {
+        const doc2 = document.implementation.createHTMLDocument('t');
+        if (doc2 === document) throw new Error('expected createHTMLDocument to create a new Document');
+        if (doc2.defaultView !== null) throw new Error('expected doc2.defaultView === null');
+        if (doc2.location !== null) throw new Error('expected doc2.location === null');
+        if (doc2.baseURI !== 'about:blank') throw new Error(`expected doc2.baseURI === about:blank, got ${doc2.baseURI}`);
+        if ('URL' in doc2 && doc2.URL !== 'about:blank') throw new Error(`expected doc2.URL === about:blank, got ${doc2.URL}`);
+        if (doc2.documentElement.tagName !== 'HTML') throw new Error('expected HTML documentElement');
+        if (doc2.head.tagName !== 'HEAD') throw new Error('expected HEAD element');
+        if (doc2.body.tagName !== 'BODY') throw new Error('expected BODY element');
+        return true;
+      })()"#,
+    )?;
+    assert_eq!(result, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  #[ignore]
+  fn dom_implementation_create_document_type_basics() -> Result<(), VmError> {
+    let mut host = new_host_document_state();
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+    let result = exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      r#"(() => {
+        const dt = document.implementation.createDocumentType('html', '', '');
+        if (dt.nodeType !== 10) throw new Error(`expected nodeType 10, got ${dt.nodeType}`);
+        if (dt.nodeName !== 'html') throw new Error(`expected nodeName html, got ${dt.nodeName}`);
+        if (dt.name !== 'html') throw new Error(`expected name html, got ${dt.name}`);
+        if (dt.publicId !== '') throw new Error(`expected publicId empty, got ${dt.publicId}`);
+        if (dt.systemId !== '') throw new Error(`expected systemId empty, got ${dt.systemId}`);
+        return true;
+      })()"#,
+    )?;
+    assert_eq!(result, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  #[ignore]
+  fn document_import_node_across_documents() -> Result<(), VmError> {
+    let mut host = new_host_document_state();
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+    let result = exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      r#"(() => {
+        const doc2 = document.implementation.createHTMLDocument('');
+        const el = doc2.createElement('div');
+        el.setAttribute('id', 'x');
+        doc2.body.appendChild(el);
+        const clone = document.importNode(el, true);
+        if (clone === el) throw new Error('expected importNode to clone, not reuse the node');
+        if (clone.ownerDocument !== document) throw new Error('expected clone.ownerDocument === document');
+        if (clone.getAttribute('id') !== 'x') throw new Error(`expected id x, got ${clone.getAttribute('id')}`);
+        return true;
+      })()"#,
+    )?;
+    assert_eq!(result, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  #[ignore]
+  fn document_adopt_node_preserves_js_identity() -> Result<(), VmError> {
+    let mut host = new_host_document_state();
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+    let result = exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      r#"(() => {
+        const doc2 = document.implementation.createHTMLDocument('');
+        const el = doc2.createElement('div');
+        doc2.body.appendChild(el);
+        const adopted = document.adoptNode(el);
+        if (adopted !== el) throw new Error('expected adoptNode to preserve JS identity');
+        if (el.ownerDocument !== document) throw new Error('expected ownerDocument to update on adoption');
+        return true;
+      })()"#,
+    )?;
+    assert_eq!(result, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  #[ignore]
+  fn cross_document_append_child_auto_adopts() -> Result<(), VmError> {
+    let mut host = new_host_document_state();
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+    let result = exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      r#"(() => {
+        const doc2 = document.implementation.createHTMLDocument('');
+        const el = doc2.createElement('div');
+        document.body.appendChild(el);
+        if (el.ownerDocument !== document) throw new Error('expected ownerDocument to update on cross-document append');
+        if (el.parentNode !== document.body) throw new Error('expected node to be inserted into document.body');
+        return true;
+      })()"#,
+    )?;
+    assert_eq!(result, Value::Bool(true));
+    Ok(())
   }
 
   #[test]
