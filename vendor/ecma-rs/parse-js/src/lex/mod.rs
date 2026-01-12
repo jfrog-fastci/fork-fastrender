@@ -1152,6 +1152,26 @@ pub fn lex_next(lexer: &mut Lexer<'_>, mode: LexMode, dialect: Dialect, source_t
   let mut at_line_start = lexer.next() == 0;
   let mut preceded_by_line_terminator = false;
   let allow_html_comments = matches!(source_type, SourceType::Script);
+
+  // Hashbang comment support (`#!...`).
+  //
+  // ECMAScript (ES2023) treats a leading `#!` line as a comment (a.k.a. "hashbang").
+  // TypeScript also accepts this, and it's common in Node.js entrypoint scripts.
+  //
+  // Important: hashbang is only recognized at the start of the file. We also
+  // allow a UTF-8 BOM prefix (`\u{FEFF}`), mirroring other tooling that treats
+  // it as whitespace.
+  if lexer.next() == 0 {
+    if lexer.source.starts_with('\u{FEFF}') {
+      lexer.skip_expect('\u{FEFF}'.len_utf8());
+    }
+    if lexer.source[lexer.next..].starts_with("#!") {
+      let comment_has_line_terminator = lex_single_comment(lexer, Match(2));
+      at_line_start |= comment_has_line_terminator;
+      preceded_by_line_terminator |= comment_has_line_terminator;
+    }
+  }
+
   while let Ok((tt, mat)) = INSIG.find(lexer) {
     // HTML comment tokens (`<!--` and `-->`) are only enabled for Script goal.
     // In modules they should be tokenised as normal punctuation so parsing fails.

@@ -133,7 +133,17 @@ pub(crate) fn resolve_module_specifier(
   let fs = HarnessResolveFs {
     files: files.clone(),
   };
-  let resolver = Resolver::with_fs(fs, resolve_options_for_module_resolution(module_resolution));
+  let mut resolve_options = resolve_options_for_module_resolution(module_resolution);
+  // TypeScript resolves `/// <reference types="..." />` and `compilerOptions.types`
+  // through the `@types/*` lookup regardless of the `moduleResolution` setting.
+  //
+  // `typecheck-ts` owns the `@types/*` fallback mapping, but hosts still need to
+  // resolve `@types/*` specifiers via node_modules. Enable that narrow case even
+  // when running in Classic module resolution mode.
+  if !resolve_options.node_modules && specifier.starts_with("@types/") {
+    resolve_options.node_modules = true;
+  }
+  let resolver = Resolver::with_fs(fs, resolve_options);
   let from_path = Path::new(from.as_str());
   let mut resolved = resolver.resolve(from_path, specifier);
   if resolved.is_none()

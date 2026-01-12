@@ -17,6 +17,34 @@ fn check<const N: usize>(code: &str, expecteds: [TT; N], dialect: Dialect) {
 }
 
 #[test]
+fn test_lex_hashbang_comment() {
+  // Hashbang comments are supported in scripts and modules and should be treated
+  // as whitespace/comments for subsequent tokenization.
+  let mut lexer = Lexer::new("#!/usr/bin/env node\nconst x = 1;");
+  let t = lex_next(&mut lexer, LexMode::Standard, Dialect::Ts, SourceType::Module);
+  assert_eq!(t.typ, KeywordConst);
+  assert!(
+    t.preceded_by_line_terminator,
+    "token after hashbang should be preceded by line terminator"
+  );
+  let t = lex_next(&mut lexer, LexMode::Standard, Dialect::Ts, SourceType::Module);
+  assert_eq!(t.typ, Identifier);
+  let t = lex_next(&mut lexer, LexMode::Standard, Dialect::Ts, SourceType::Module);
+  assert_eq!(t.typ, Equals);
+  let t = lex_next(&mut lexer, LexMode::Standard, Dialect::Ts, SourceType::Module);
+  assert_eq!(t.typ, LiteralNumber);
+  let t = lex_next(&mut lexer, LexMode::Standard, Dialect::Ts, SourceType::Module);
+  assert_eq!(t.typ, Semicolon);
+  let t = lex_next(&mut lexer, LexMode::Standard, Dialect::Ts, SourceType::Module);
+  assert_eq!(t.typ, EOF);
+
+  // Hashbang after a UTF-8 BOM is also treated as a comment.
+  let mut lexer = Lexer::new("\u{feff}#!/usr/bin/env node\nconst y = 2;");
+  let t = lex_next(&mut lexer, LexMode::Standard, Dialect::Ts, SourceType::Module);
+  assert_eq!(t.typ, KeywordConst);
+}
+
+#[test]
 fn test_lex_keywords() {
   check("class", [KeywordClass], Dialect::Tsx);
   check("instanceof", [KeywordInstanceof], Dialect::Tsx);

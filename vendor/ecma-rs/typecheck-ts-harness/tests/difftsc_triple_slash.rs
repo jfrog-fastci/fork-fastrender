@@ -21,6 +21,7 @@ fn run_difftsc() -> Value {
     "triple_slash_no_default_lib.ts",
     "triple_slash_path_imported",
     "triple_slash_types_imported",
+    "compiler_options_types",
   ]);
 
   let output = harness_cli()
@@ -90,6 +91,7 @@ fn difftsc_selected_cases_match_baselines() {
     "triple_slash_no_default_lib",
     "triple_slash_path_imported",
     "triple_slash_types_imported",
+    "compiler_options_types",
   ] {
     let case = find_case(&report, name);
     assert_matched(case, name);

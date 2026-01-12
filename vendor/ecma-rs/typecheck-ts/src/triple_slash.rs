@@ -223,6 +223,7 @@ pub fn scan_triple_slash_directives(source: &str) -> TripleSlashDirectives {
   if bytes.starts_with(&[0xef, 0xbb, 0xbf]) {
     idx = 3;
   }
+  let start_idx = idx;
 
   let mut directives = TripleSlashDirectives::default();
   while idx < bytes.len() {
@@ -231,6 +232,24 @@ pub fn scan_triple_slash_directives(source: &str) -> TripleSlashDirectives {
     }
     if idx >= bytes.len() {
       break;
+    }
+
+    // Hashbang (#!) is treated as a comment by modern JavaScript runtimes and
+    // TypeScript (ES2023). It can appear before triple-slash directives.
+    if idx == start_idx && bytes.get(idx) == Some(&b'#') && bytes.get(idx + 1) == Some(&b'!') {
+      idx += 2;
+      while idx < bytes.len() && !matches!(bytes[idx], b'\n' | b'\r') {
+        idx += 1;
+      }
+      if idx < bytes.len() && bytes[idx] == b'\r' {
+        idx += 1;
+        if idx < bytes.len() && bytes[idx] == b'\n' {
+          idx += 1;
+        }
+      } else if idx < bytes.len() && bytes[idx] == b'\n' {
+        idx += 1;
+      }
+      continue;
     }
 
     if bytes.get(idx) == Some(&b'/') && bytes.get(idx + 1) == Some(&b'/') {
@@ -361,5 +380,17 @@ mod tests {
       normalize_reference_path_specifier("C:\\dep.ts").as_ref(),
       "C:/dep.ts"
     );
+  }
+
+  #[test]
+  fn parses_directives_after_hashbang() {
+    let source = "#!/usr/bin/env node\n/// <reference path=\"./dep.ts\" />\nconst x = 1;";
+    assert_eq!(
+      values(source),
+      vec![(TripleSlashReferenceKind::Path, "./dep.ts".to_string())]
+    );
+
+    let source = "#!/usr/bin/env node\n/// <reference no-default-lib=\"true\" />\n";
+    assert!(scan_triple_slash_directives(source).no_default_lib);
   }
 }
