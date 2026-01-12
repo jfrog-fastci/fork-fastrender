@@ -667,6 +667,8 @@ fn builtin_styles() -> &'static [CounterStyle] {
   &[
     CounterStyle::Decimal,
     CounterStyle::DecimalLeadingZero,
+    CounterStyle::ArabicIndic,
+    CounterStyle::Persian,
     CounterStyle::Armenian,
     CounterStyle::LowerArmenian,
     CounterStyle::Georgian,
@@ -702,6 +704,24 @@ fn builtin_style_symbols(
     CounterStyle::DecimalLeadingZero => (
       CounterSystem::Numeric,
       (0..=9).map(|d| d.to_string()).collect(),
+      Vec::new(),
+      vec![(i64::MIN, i64::MAX)],
+    ),
+    CounterStyle::ArabicIndic => (
+      CounterSystem::Numeric,
+      ['٠', '١', '٢', '٣', '٤', '٥', '٦', '٧', '٨', '٩']
+        .iter()
+        .map(|c| c.to_string())
+        .collect(),
+      Vec::new(),
+      vec![(i64::MIN, i64::MAX)],
+    ),
+    CounterStyle::Persian => (
+      CounterSystem::Numeric,
+      ['۰', '۱', '۲', '۳', '۴', '۵', '۶', '۷', '۸', '۹']
+        .iter()
+        .map(|c| c.to_string())
+        .collect(),
       Vec::new(),
       vec![(i64::MIN, i64::MAX)],
     ),
@@ -856,6 +876,31 @@ fn roman_symbols(lowercase: bool) -> Vec<(i32, String)> {
 mod tests {
   use super::CounterStyleName;
   use super::{CounterStyleRegistry, CounterStyleRule, CounterSystem};
+
+  #[test]
+  fn builtin_numeric_digit_styles_format_with_localized_digits() {
+    let registry = CounterStyleRegistry::with_builtins();
+
+    assert_eq!(registry.format_value(42, CounterStyleName::from("arabic-indic")), "٤٢");
+    assert_eq!(
+      registry.format_value(-12, CounterStyleName::from("arabic-indic")),
+      "-١٢"
+    );
+    assert_eq!(
+      registry.format_marker_string(1, CounterStyleName::from("arabic-indic")),
+      "١. "
+    );
+
+    assert_eq!(registry.format_value(42, CounterStyleName::from("persian")), "۴۲");
+    assert_eq!(
+      registry.format_value(-12, CounterStyleName::from("persian")),
+      "-۱۲"
+    );
+    assert_eq!(
+      registry.format_marker_string(1, CounterStyleName::from("persian")),
+      "۱. "
+    );
+  }
 
   #[test]
   fn non_ascii_whitespace_counter_style_name_does_not_trim_nbsp() {

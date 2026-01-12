@@ -493,6 +493,16 @@ pub enum CounterStyle {
   /// Decimal with leading zeros (01, 02, ...)
   DecimalLeadingZero,
 
+  /// Arabic-Indic digits (٠, ١, ٢, ...).
+  ///
+  /// Reference: CSS Counter Styles Level 3
+  ArabicIndic,
+
+  /// Persian digits (۰, ۱, ۲, ...).
+  ///
+  /// Reference: CSS Counter Styles Level 3
+  Persian,
+
   /// Uppercase Armenian numerals (Ա, Բ, Գ, ...)
   Armenian,
 
@@ -552,6 +562,14 @@ impl CounterStyle {
     match self {
       CounterStyle::Decimal => value.to_string(),
       CounterStyle::DecimalLeadingZero => format_decimal_leading_zero(value),
+      CounterStyle::ArabicIndic => format_decimal_with_digit_symbols(
+        value,
+        ['٠', '١', '٢', '٣', '٤', '٥', '٦', '٧', '٨', '٩'],
+      ),
+      CounterStyle::Persian => format_decimal_with_digit_symbols(
+        value,
+        ['۰', '۱', '۲', '۳', '۴', '۵', '۶', '۷', '۸', '۹'],
+      ),
       CounterStyle::Armenian => format_additive(value, ARMENIAN_UPPER, 9999),
       CounterStyle::LowerArmenian => format_additive(value, ARMENIAN_LOWER, 9999),
       CounterStyle::Georgian => format_additive(value, GEORGIAN_SYMBOLS, 19999),
@@ -584,6 +602,8 @@ impl CounterStyle {
     match trim_ascii_whitespace(s).to_ascii_lowercase().as_str() {
       "decimal" => Some(CounterStyle::Decimal),
       "decimal-leading-zero" => Some(CounterStyle::DecimalLeadingZero),
+      "arabic-indic" => Some(CounterStyle::ArabicIndic),
+      "persian" => Some(CounterStyle::Persian),
       "armenian" | "upper-armenian" => Some(CounterStyle::Armenian),
       "lower-armenian" => Some(CounterStyle::LowerArmenian),
       "georgian" => Some(CounterStyle::Georgian),
@@ -614,6 +634,8 @@ impl fmt::Display for CounterStyle {
     let s = match self {
       CounterStyle::Decimal => "decimal",
       CounterStyle::DecimalLeadingZero => "decimal-leading-zero",
+      CounterStyle::ArabicIndic => "arabic-indic",
+      CounterStyle::Persian => "persian",
       CounterStyle::Armenian => "armenian",
       CounterStyle::LowerArmenian => "lower-armenian",
       CounterStyle::Georgian => "georgian",
@@ -780,6 +802,32 @@ fn format_decimal_leading_zero(n: i32) -> String {
     let abs = (n as i64).abs();
     format!("-{:02}", abs)
   }
+}
+
+fn format_decimal_with_digit_symbols(value: i32, digits: [char; 10]) -> String {
+  let mut value = value as i64;
+  let negative = value < 0;
+  if negative {
+    value = -value;
+  }
+
+  let ascii = value.to_string();
+  let mut out = String::with_capacity(ascii.len() + usize::from(negative));
+  if negative {
+    out.push('-');
+  }
+
+  for ch in ascii.chars() {
+    if let Some(digit) = ch.to_digit(10) {
+      out.push(digits[digit as usize]);
+    } else {
+      // Decimal formatting should only yield ASCII digits, but preserve any unexpected output
+      // rather than panicking.
+      out.push(ch);
+    }
+  }
+
+  out
 }
 
 /// Converts a number to Roman numerals
@@ -1884,6 +1932,22 @@ mod tests {
   }
 
   #[test]
+  fn test_counter_style_arabic_indic() {
+    assert_eq!(CounterStyle::ArabicIndic.format(0), "٠");
+    assert_eq!(CounterStyle::ArabicIndic.format(5), "٥");
+    assert_eq!(CounterStyle::ArabicIndic.format(42), "٤٢");
+    assert_eq!(CounterStyle::ArabicIndic.format(-12), "-١٢");
+  }
+
+  #[test]
+  fn test_counter_style_persian() {
+    assert_eq!(CounterStyle::Persian.format(0), "۰");
+    assert_eq!(CounterStyle::Persian.format(5), "۵");
+    assert_eq!(CounterStyle::Persian.format(42), "۴۲");
+    assert_eq!(CounterStyle::Persian.format(-12), "-۱۲");
+  }
+
+  #[test]
   fn test_counter_style_lower_roman() {
     assert_eq!(CounterStyle::LowerRoman.format(1), "i");
     assert_eq!(CounterStyle::LowerRoman.format(4), "iv");
@@ -1959,6 +2023,11 @@ mod tests {
   #[test]
   fn test_counter_style_parse() {
     assert_eq!(CounterStyle::parse("decimal"), Some(CounterStyle::Decimal));
+    assert_eq!(
+      CounterStyle::parse("arabic-indic"),
+      Some(CounterStyle::ArabicIndic)
+    );
+    assert_eq!(CounterStyle::parse("persian"), Some(CounterStyle::Persian));
     assert_eq!(
       CounterStyle::parse("lower-roman"),
       Some(CounterStyle::LowerRoman)
