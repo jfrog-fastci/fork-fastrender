@@ -45,9 +45,24 @@ fn bench_compute_float_position(c: &mut Criterion) {
   });
 }
 
+fn bench_available_width_in_range(c: &mut Criterion) {
+  common::bench_print_config_once("float_bench", &[]);
+  let ctx = build_float_context(5_000);
+  c.bench_function("float_available_width_in_range_dense", |b| {
+    b.iter(|| {
+      let mut y = 0.0f32;
+      while y < 5_000.0 {
+        black_box(ctx.available_width_in_range(y, y + 20.0));
+        y += 0.5;
+      }
+    })
+  });
+}
+
 criterion_group!(
   float_benches,
   bench_available_width,
+  bench_available_width_in_range,
   bench_compute_float_position
 );
 criterion_main!(float_benches);

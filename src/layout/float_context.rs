@@ -338,7 +338,7 @@ impl Ord for FloatEvent {
   }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 struct FloatSweepState {
   current_y: f32,
   pending_events: BinaryHeap<Reverse<FloatEvent>>,
@@ -380,11 +380,88 @@ impl FloatSweepState {
   }
 }
 
+impl Clone for FloatSweepState {
+  fn clone(&self) -> Self {
+    profile_count_sweep_state_clone();
+    Self {
+      current_y: self.current_y,
+      pending_events: self.pending_events.clone(),
+      pending_start_events: self.pending_start_events.clone(),
+      active: self.active.clone(),
+      active_left: self.active_left.clone(),
+      active_right: self.active_right.clone(),
+      active_end: self.active_end.clone(),
+      active_shape_left: self.active_shape_left.clone(),
+      active_shape_right: self.active_shape_right.clone(),
+    }
+  }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct FloatRangeSegment {
+  start_y: f32,
+  end_y: f32,
+  left_edge: f32,
+  right_edge: f32,
+}
+
+#[derive(Debug, Clone)]
+struct FloatRangeCache {
+  float_count: usize,
+  events_len: usize,
+  sweep_state: FloatSweepState,
+  segments: Vec<FloatRangeSegment>,
+}
+
+impl FloatRangeCache {
+  fn new() -> Self {
+    Self {
+      float_count: 0,
+      events_len: 0,
+      sweep_state: FloatSweepState::new(0, &[]),
+      segments: Vec::new(),
+    }
+  }
+
+  fn invalidate(&mut self) {
+    // Keep capacity so repeated insert/query cycles reuse allocated storage.
+    self.float_count = 0;
+    self.events_len = 0;
+    self.segments.clear();
+    self.sweep_state = FloatSweepState::new(0, &[]);
+  }
+
+  fn ensure_current(&mut self, float_count: usize, events: &[FloatEvent]) {
+    if self.float_count == float_count && self.events_len == events.len() {
+      return;
+    }
+    self.float_count = float_count;
+    self.events_len = events.len();
+    self.segments.clear();
+    self.sweep_state = FloatSweepState::new(float_count, events);
+  }
+
+  fn segment_index(&self, y: f32) -> usize {
+    if self.segments.is_empty() {
+      return 0;
+    }
+    match self
+      .segments
+      .binary_search_by(|seg| seg.start_y.total_cmp(&y))
+    {
+      Ok(idx) => idx,
+      Err(idx) => idx.saturating_sub(1),
+    }
+  }
+}
+
 #[derive(Debug, Clone, Copy, Default)]
 pub struct FloatProfileStats {
   pub width_queries: u64,
   pub range_queries: u64,
   pub boundary_steps: u64,
+  pub sweep_state_clones: u64,
+  pub range_boundaries_scanned: u64,
   pub clearance_queries: u64,
   pub clearance_steps: u64,
 }
@@ -392,6 +469,8 @@ pub struct FloatProfileStats {
 static FLOAT_WIDTH_QUERIES: AtomicU64 = AtomicU64::new(0);
 static FLOAT_RANGE_QUERIES: AtomicU64 = AtomicU64::new(0);
 static FLOAT_BOUNDARY_STEPS: AtomicU64 = AtomicU64::new(0);
+static FLOAT_SWEEP_STATE_CLONES: AtomicU64 = AtomicU64::new(0);
+static FLOAT_RANGE_BOUNDARIES_SCANNED: AtomicU64 = AtomicU64::new(0);
 static FLOAT_CLEARANCE_QUERIES: AtomicU64 = AtomicU64::new(0);
 static FLOAT_CLEARANCE_STEPS: AtomicU64 = AtomicU64::new(0);
 
@@ -417,6 +496,18 @@ fn profile_count_width_query() {
 fn profile_count_range_query() {
   if profile_enabled() {
     FLOAT_RANGE_QUERIES.fetch_add(1, AtomicOrdering::Relaxed);
+  }
+}
+
+fn profile_count_sweep_state_clone() {
+  if profile_enabled() {
+    FLOAT_SWEEP_STATE_CLONES.fetch_add(1, AtomicOrdering::Relaxed);
+  }
+}
+
+fn profile_count_range_boundary_scanned(delta: u64) {
+  if profile_enabled() {
+    FLOAT_RANGE_BOUNDARIES_SCANNED.fetch_add(delta, AtomicOrdering::Relaxed);
   }
 }
 
@@ -450,6 +541,8 @@ pub fn reset_float_profile_counters() {
   FLOAT_WIDTH_QUERIES.store(0, AtomicOrdering::Relaxed);
   FLOAT_RANGE_QUERIES.store(0, AtomicOrdering::Relaxed);
   FLOAT_BOUNDARY_STEPS.store(0, AtomicOrdering::Relaxed);
+  FLOAT_SWEEP_STATE_CLONES.store(0, AtomicOrdering::Relaxed);
+  FLOAT_RANGE_BOUNDARIES_SCANNED.store(0, AtomicOrdering::Relaxed);
   FLOAT_CLEARANCE_QUERIES.store(0, AtomicOrdering::Relaxed);
   FLOAT_CLEARANCE_STEPS.store(0, AtomicOrdering::Relaxed);
 }
@@ -459,6 +552,8 @@ pub fn float_profile_stats() -> FloatProfileStats {
     width_queries: FLOAT_WIDTH_QUERIES.load(AtomicOrdering::Relaxed),
     range_queries: FLOAT_RANGE_QUERIES.load(AtomicOrdering::Relaxed),
     boundary_steps: FLOAT_BOUNDARY_STEPS.load(AtomicOrdering::Relaxed),
+    sweep_state_clones: FLOAT_SWEEP_STATE_CLONES.load(AtomicOrdering::Relaxed),
+    range_boundaries_scanned: FLOAT_RANGE_BOUNDARIES_SCANNED.load(AtomicOrdering::Relaxed),
     clearance_queries: FLOAT_CLEARANCE_QUERIES.load(AtomicOrdering::Relaxed),
     clearance_steps: FLOAT_CLEARANCE_STEPS.load(AtomicOrdering::Relaxed),
   }
@@ -532,6 +627,10 @@ pub struct FloatContext {
   /// Sweep state used to answer monotonic Y queries efficiently.
   sweep_state: RefCell<FloatSweepState>,
 
+  /// Cached piecewise-constant float constraints by Y boundary, used to answer range queries without
+  /// cloning and re-advancing heaps per call.
+  range_cache: RefCell<FloatRangeCache>,
+
   /// Cached maximum bottom edge of all left floats in this context.
   ///
   /// This is used to implement CSS2.1 §9.5.2 `clear`, which requires clearing below *any* earlier
@@ -575,6 +674,7 @@ impl FloatContext {
       float_map: Vec::new(),
       events: Vec::new(),
       sweep_state: RefCell::new(FloatSweepState::new(0, &[])),
+      range_cache: RefCell::new(FloatRangeCache::new()),
       clearance_left_max_bottom: f32::NEG_INFINITY,
       clearance_right_max_bottom: f32::NEG_INFINITY,
       timeout_elapsed: Cell::new(None),
@@ -599,6 +699,7 @@ impl FloatContext {
 
   fn reset_sweep_state(&mut self) {
     self.sweep_state = RefCell::new(FloatSweepState::new(self.float_map.len(), &self.events));
+    self.range_cache = RefCell::new(FloatRangeCache::new());
   }
 
   fn record_timeout(&self, elapsed: Duration) {
@@ -803,35 +904,47 @@ impl FloatContext {
     )
   }
 
-  fn edges_in_range_with_state(
-    &self,
-    state: &mut FloatSweepState,
-    start: f32,
-    end: f32,
-    containing_left: f32,
-    containing_right: f32,
-  ) -> (f32, f32) {
-    let (mut left_edge, mut right_edge) =
-      self.rect_edges_in_containing_block(state, containing_left, containing_right);
-    if !state.active_shape_left.is_empty() {
-      for id in state.active_shape_left.iter().copied() {
-        if let Some(shape) = self.float_info(id).shape.as_ref() {
-          if let Some((_min_x, max_x)) = shape.span_in_range(start, end) {
-            left_edge = left_edge.max(max_x);
-          }
-        }
+  fn ensure_range_cache_coverage(&self, cache: &mut FloatRangeCache, target_y: f32) {
+    // Range scanning is guarded by the layout deadline, so cache construction must also be.
+    let mut counter = 0usize;
+    while cache.sweep_state.current_y < target_y && cache.sweep_state.current_y.is_finite() {
+      if let Err(RenderError::Timeout { elapsed, .. }) =
+        check_active_periodic(&mut counter, 256, RenderStage::Layout)
+      {
+        self.record_timeout(elapsed);
+        break;
       }
+
+      let start_y = cache.sweep_state.current_y;
+      let end_y = self.next_float_boundary_after_internal(&cache.sweep_state, start_y);
+      let (left_edge, right_edge) = self.edges_at_in_containing_block_with_state(
+        &mut cache.sweep_state,
+        start_y,
+        f32::NEG_INFINITY,
+        f32::INFINITY,
+      );
+      cache.segments.push(FloatRangeSegment {
+        start_y,
+        end_y,
+        left_edge,
+        right_edge,
+      });
+
+      // Advance to the next boundary so the active set is correct for the next segment. This
+      // mirrors the range scan loop which advances after consuming a segment.
+      self.advance_sweep_to(end_y, &mut cache.sweep_state);
     }
-    if !state.active_shape_right.is_empty() {
-      for id in state.active_shape_right.iter().copied() {
-        if let Some(shape) = self.float_info(id).shape.as_ref() {
-          if let Some((min_x, _max_x)) = shape.span_in_range(start, end) {
-            right_edge = right_edge.min(min_x);
-          }
-        }
-      }
+
+    // Guarantee at least one segment so callers can always binary-search by Y. This is important
+    // when there are no floats or cache construction aborts early due to timeout.
+    if cache.segments.is_empty() {
+      cache.segments.push(FloatRangeSegment {
+        start_y: f32::NEG_INFINITY,
+        end_y: f32::INFINITY,
+        left_edge: f32::NEG_INFINITY,
+        right_edge: f32::INFINITY,
+      });
     }
-    (left_edge, right_edge)
   }
 
   fn edges_in_range_min_width_with_state(
@@ -842,6 +955,7 @@ impl FloatContext {
     containing_left: f32,
     containing_right: f32,
   ) -> (f32, f32, f32) {
+    profile_count_range_query();
     let containing_left = if containing_left.is_finite() {
       containing_left
     } else {
@@ -877,29 +991,37 @@ impl FloatContext {
       }
     }
 
-    // Full scan: range queries need to advance a sweep state boundary-by-boundary. Historically we
-    // reused the shared `state` for this scan, which meant queries at the same (or slightly earlier)
-    // `y` had to rebuild the entire sweep from scratch after each call. To avoid this amplification,
-    // we clone a local sweep snapshot and keep the shared state pinned at `start`.
-    let mut scan_state = state.clone();
+    // Full scan: use a cached piecewise representation rather than cloning and re-advancing heaps
+    // for each query.
+    let mut cache = self.range_cache.borrow_mut();
+    cache.ensure_current(self.float_map.len(), &self.events);
+    if end.is_finite() {
+      self.ensure_range_cache_coverage(&mut cache, end);
+    } else {
+      // Unbounded range: build at least the segment that contains `start`.
+      self.ensure_range_cache_coverage(&mut cache, start);
+    }
 
-    let mut counter = 0usize;
-    let mut scan_start = start;
+    let start_idx = cache.segment_index(start);
     let mut best_left = containing_left;
     let mut best_right = containing_right;
     let mut best_width = (best_right - best_left).max(0.0);
-    // `next_boundary` is used by callers to decide how far to advance when the current
-    // y-position does not fit. It is important that this boundary reflects when float-driven
-    // constraints can actually change, not merely the end of the query range (which can cause
-    // callers to "step" by element height even though nothing changes until the next float
-    // start/end).
-    //
-    // We therefore return the next float boundary *after* the scan region, even when it lies
-    // below `end`. Callers can safely skip to this boundary because the active float set (and
-    // therefore available width) is constant within a segment with no boundaries.
-    let mut next_boundary = self.next_float_boundary_after_internal(&scan_state, start);
 
-    loop {
+    // See the comment in the previous implementation: `next_boundary` should point to the next
+    // float boundary after the most constrained segment inside the scanned range.
+    let mut next_boundary = cache
+      .segments
+      .get(start_idx)
+      .map(|seg| seg.end_y)
+      .unwrap_or_else(|| self.next_float_boundary_after_internal(&*state, start));
+
+    let mut counter = 0usize;
+    let mut scanned = 0u64;
+    for seg in cache.segments.iter().skip(start_idx) {
+      if seg.start_y >= end {
+        break;
+      }
+
       if let Err(RenderError::Timeout { elapsed, .. }) =
         check_active_periodic(&mut counter, 256, RenderStage::Layout)
       {
@@ -907,30 +1029,23 @@ impl FloatContext {
         break;
       }
 
-      let next = self.next_float_boundary_after_internal(&scan_state, scan_start);
-      let boundary = next.min(end);
-      let (left_edge, right_edge) = self.edges_in_range_with_state(
-        &mut scan_state,
-        scan_start,
-        boundary,
-        containing_left,
-        containing_right,
-      );
+      let left_edge = seg.left_edge.max(containing_left);
+      let right_edge = seg.right_edge.min(containing_right);
       let width = (right_edge - left_edge).max(0.0);
+      scanned += 1;
+
       if width < best_width - f32::EPSILON
-        || (width - best_width).abs() < f32::EPSILON && left_edge > best_left
+        || ((width - best_width).abs() < f32::EPSILON && left_edge > best_left)
       {
         best_left = left_edge;
         best_right = right_edge;
         best_width = width;
-        next_boundary = next;
+        next_boundary = seg.end_y;
       }
+    }
 
-      if boundary >= end || !boundary.is_finite() || boundary <= scan_start {
-        break;
-      }
-      scan_start = boundary;
-      self.advance_sweep_to(scan_start, &mut scan_state);
+    if scanned > 0 {
+      profile_count_range_boundary_scanned(scanned);
     }
 
     (best_left, best_right, next_boundary)
@@ -1229,7 +1344,6 @@ impl FloatContext {
   /// A tuple of (left_edge, available_width) representing the most
   /// constrained position within the range.
   pub fn available_width_in_range(&self, y_start: f32, y_end: f32) -> (f32, f32) {
-    profile_count_range_query();
     let end = if y_end > y_start { y_end } else { y_start };
     let (left_edge, right_edge, _) = self.edges_in_range_min_width(y_start, end);
     (left_edge, (right_edge - left_edge).max(0.0))
@@ -1243,7 +1357,6 @@ impl FloatContext {
     containing_block_left: f32,
     containing_block_width: f32,
   ) -> (f32, f32) {
-    profile_count_range_query();
     let end = if y_end > y_start { y_end } else { y_start };
     let containing_left = if containing_block_left.is_finite() {
       containing_block_left

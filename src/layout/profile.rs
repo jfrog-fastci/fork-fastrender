@@ -195,10 +195,16 @@ pub fn log_layout_profile(total: Duration) {
   if float_stats.width_queries > 0
     || float_stats.range_queries > 0
     || float_stats.boundary_steps > 0
+    || float_stats.sweep_state_clones > 0
+    || float_stats.range_boundaries_scanned > 0
   {
     parts.push(format!(
-      "float_width_queries={} float_range_queries={} float_boundaries={}",
-      float_stats.width_queries, float_stats.range_queries, float_stats.boundary_steps
+      "float_width_queries={} float_range_queries={} float_boundaries={} float_sweep_state_clones={} float_range_boundaries_scanned={}",
+      float_stats.width_queries,
+      float_stats.range_queries,
+      float_stats.boundary_steps,
+      float_stats.sweep_state_clones,
+      float_stats.range_boundaries_scanned
     ));
   }
   eprintln!(
