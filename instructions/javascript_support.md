@@ -146,6 +146,9 @@ Implementation strategy:
 Contributor workflow details (WebIDL extraction/codegen, determinism, committed snapshot): see
 [`docs/webidl_bindings.md`](../docs/webidl_bindings.md).
 
+For the consolidated WebIDL crate layout and ownership boundaries (what belongs in `vendor/ecma-rs/`
+vs `src/js/`), see [`docs/webidl_stack.md`](../docs/webidl_stack.md).
+
 ### C) Event loop + microtasks
 
 Implement a minimal event loop model aligned with the HTML Standard terminology:
