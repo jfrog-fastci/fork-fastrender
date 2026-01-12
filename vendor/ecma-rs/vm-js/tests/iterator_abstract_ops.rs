@@ -52,10 +52,7 @@ fn throw_1(
 #[test]
 fn iterator_step_value_sets_done_true_when_done_getter_throws() -> Result<(), VmError> {
   let mut vm = Vm::new(VmOptions::default());
-  // These tests allocate a fair amount of iterator scaffolding (functions/objects/strings). As
-  // vm-js grows, a 1MiB heap can become flaky and trigger GC mid-setup (collecting unrooted Rust
-  // locals). Use a slightly larger heap to keep the tests focused on iterator semantics.
-  let mut heap = Heap::new(HeapLimits::new(4 * 1024 * 1024, 4 * 1024 * 1024));
+  let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
   let mut realm = Realm::new(&mut vm, &mut heap)?;
 
   let mut host = ();
@@ -137,7 +134,7 @@ fn iterator_step_value_sets_done_true_when_done_getter_throws() -> Result<(), Vm
 #[test]
 fn iterator_close_suppresses_get_method_error_for_throw_completion() -> Result<(), VmError> {
   let mut vm = Vm::new(VmOptions::default());
-  let mut heap = Heap::new(HeapLimits::new(4 * 1024 * 1024, 4 * 1024 * 1024));
+  let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
   let mut realm = Realm::new(&mut vm, &mut heap)?;
 
   let mut host = ();
@@ -243,7 +240,7 @@ fn inc_host_and_return_number(
 #[test]
 fn iterator_close_non_object_return_value_ignored_for_throw_completion() -> Result<(), VmError> {
   let mut vm = Vm::new(VmOptions::default());
-  let mut heap = Heap::new(HeapLimits::new(4 * 1024 * 1024, 4 * 1024 * 1024));
+  let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
   let mut realm = Realm::new(&mut vm, &mut heap)?;
 
   let mut host = CounterHost::default();

@@ -88,7 +88,13 @@ pub fn get_iterator_from_method(
   iterable: Value,
   method: Value,
 ) -> Result<IteratorRecord, VmError> {
-  let iterator = vm.call_with_host_and_hooks(host, scope, hooks, method, iterable, &[])?;
+  // Root the inputs across the call to the iterator method: the call can allocate/GC, and the
+  // `method`/`iterable` values may not be reachable from any heap object (e.g. when
+  // `GetIteratorFromMethod` is invoked directly with a native function in tests).
+  let mut scope = scope.reborrow();
+  scope.push_roots(&[iterable, method])?;
+
+  let iterator = vm.call_with_host_and_hooks(host, &mut scope, hooks, method, iterable, &[])?;
   let Value::Object(iterator_obj) = iterator else {
     return Err(VmError::TypeError(
       "GetIteratorFromMethod: iterator method did not return an object",
@@ -97,11 +103,10 @@ pub fn get_iterator_from_method(
 
   // Root the iterator object while allocating/reading the `next` method in case those operations
   // trigger GC.
-  let mut next_scope = scope.reborrow();
-  next_scope.push_root(iterator)?;
+  scope.push_root(iterator)?;
 
-  let next_key = string_key(&mut next_scope, "next")?;
-  let next = next_scope.get_with_host_and_hooks(
+  let next_key = string_key(&mut scope, "next")?;
+  let next = scope.get_with_host_and_hooks(
     vm,
     host,
     hooks,
@@ -109,7 +114,7 @@ pub fn get_iterator_from_method(
     next_key,
     Value::Object(iterator_obj),
   )?;
-  if !next_scope.heap().is_callable(next)? {
+  if !scope.heap().is_callable(next)? {
     return Err(VmError::TypeError(
       "GetIteratorFromMethod: iterator.next is not callable",
     ));
@@ -747,18 +752,20 @@ fn get_async_iterator_from_method(
   iterable: Value,
   method: Value,
 ) -> Result<AsyncIteratorRecord, VmError> {
-  let iterator = vm.call_with_host_and_hooks(host, scope, hooks, method, iterable, &[])?;
+  // Root `iterable`/`method` across the call for the same reason as `GetIteratorFromMethod`.
+  let mut scope = scope.reborrow();
+  scope.push_roots(&[iterable, method])?;
+  let iterator = vm.call_with_host_and_hooks(host, &mut scope, hooks, method, iterable, &[])?;
   let Value::Object(iterator_obj) = iterator else {
     return Err(VmError::TypeError(
       "GetAsyncIterator: iterator method did not return an object",
     ));
   };
 
-  let mut next_scope = scope.reborrow();
-  next_scope.push_root(iterator)?;
+  scope.push_root(iterator)?;
 
-  let next_key = string_key(&mut next_scope, "next")?;
-  let next = next_scope.get_with_host_and_hooks(
+  let next_key = string_key(&mut scope, "next")?;
+  let next = scope.get_with_host_and_hooks(
     vm,
     host,
     hooks,
@@ -766,7 +773,7 @@ fn get_async_iterator_from_method(
     next_key,
     Value::Object(iterator_obj),
   )?;
-  if !next_scope.heap().is_callable(next)? {
+  if !scope.heap().is_callable(next)? {
     return Err(VmError::TypeError("GetAsyncIterator: iterator.next is not callable"));
   }
 
