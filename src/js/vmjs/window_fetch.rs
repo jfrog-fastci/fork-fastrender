@@ -51,6 +51,7 @@ const HEADERS_OWNER_KEY: &str = "__fastrender_headers_owner";
 
 const REQUEST_ID_KEY: &str = "__fastrender_request_id";
 const RESPONSE_ID_KEY: &str = "__fastrender_response_id";
+const REQUEST_BODY_STREAM_KEY: &str = "__fastrender_request_body_stream";
 
 // Hidden per-instance properties for stream wrappers.
 const RESPONSE_BODY_STREAM_KEY: &str = "__fastrender_response_body_stream";
@@ -376,6 +377,41 @@ fn set_data_prop(
   scope.push_root(value)?;
   let key = alloc_key(&mut scope, name)?;
   scope.define_property(obj, key, data_desc(value, writable))
+}
+
+fn readable_stream_is_locked(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  host_hooks: &mut dyn VmHostHooks,
+  stream: GcObject,
+) -> Result<bool, VmError> {
+  // Use the standard `ReadableStream.locked` surface rather than peeking at ad-hoc internal slots.
+  // This keeps the check compatible with any future/alternate ReadableStream implementation.
+  let mut scope = scope.reborrow();
+  scope.push_root(Value::Object(stream))?;
+  let locked_key = alloc_key(&mut scope, "locked")?;
+  let locked = vm.get_with_host_and_hooks(host, &mut scope, host_hooks, stream, locked_key)?;
+  scope.heap().to_boolean(locked)
+}
+
+fn request_wrapper_cached_body_stream_is_locked(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  host_hooks: &mut dyn VmHostHooks,
+  request: GcObject,
+) -> Result<bool, VmError> {
+  // Task 85 stores the `Request.body` stream on the instance (so future reads return the same
+  // stream object). When cloning a Request without overriding `init.body`, the Fetch spec requires
+  // throwing if the input body stream is locked.
+  let mut scope = scope.reborrow();
+  scope.push_root(Value::Object(request))?;
+  let body_stream = get_data_prop(&mut scope, request, REQUEST_BODY_STREAM_KEY)?;
+  let Value::Object(body_stream_obj) = body_stream else {
+    return Ok(false);
+  };
+  readable_stream_is_locked(vm, &mut scope, host, host_hooks, body_stream_obj)
 }
 
 const FETCH_URL_TOO_LONG_ERROR: &str = "fetch URL exceeds maximum length";
@@ -2101,14 +2137,16 @@ fn apply_request_init(
   limits: &WebFetchLimits,
   request: &mut CoreRequest,
   init: Value,
-) -> Result<(), VmError> {
+) -> Result<bool, VmError> {
   if matches!(init, Value::Undefined | Value::Null) {
-    return Ok(());
+    return Ok(false);
   }
 
   let Value::Object(init_obj) = init else {
     return Err(VmError::TypeError("Request init must be an object"));
   };
+
+  let mut init_body_provided = false;
 
   // `mode` must be applied before headers so the correct guard is enforced when filling.
   let mode_key = alloc_key(scope, "mode")?;
@@ -2267,6 +2305,7 @@ fn apply_request_init(
   let body_key = alloc_key(scope, "body")?;
   let body_val = vm.get_with_host_and_hooks(host, scope, host_hooks, init_obj, body_key)?;
   if !matches!(body_val, Value::Undefined | Value::Null) {
+    init_body_provided = true;
     let max_body_bytes = request.headers.limits().max_request_body_bytes;
     let mut inferred_content_type: Option<String> = None;
 
@@ -2404,7 +2443,7 @@ fn apply_request_init(
     }
   }
 
-  Ok(())
+  Ok(init_body_provided)
 }
 
 fn request_ctor_call(
@@ -2482,7 +2521,7 @@ fn request_ctor_construct(
   let mut signal: Option<Value> = None;
   let mut init_specified_signal = false;
 
-  apply_request_init(
+  let init_body_provided = apply_request_init(
     vm,
     scope,
     host,
@@ -2528,6 +2567,20 @@ fn request_ctor_construct(
         host_hooks,
         "Request.mode \"no-cors\" requires a CORS-safelisted method (GET/HEAD/POST)",
       ));
+    }
+  }
+
+  if !init_body_provided {
+    if let Some(input_obj) = input_request_obj {
+      if request_wrapper_cached_body_stream_is_locked(vm, scope, host, host_hooks, input_obj)? {
+        return Err(throw_type_error(
+          vm,
+          scope,
+          host,
+          host_hooks,
+          "Request body is locked",
+        ));
+      }
     }
   }
 
@@ -4865,7 +4918,7 @@ fn fetch_call<Host: WindowRealmHost + 'static>(
     CoreRequest::new_with_limits("GET", url, &limits)
   };
 
-  apply_request_init(
+  let init_body_provided = apply_request_init(
     vm,
     scope,
     host,
@@ -4911,6 +4964,20 @@ fn fetch_call<Host: WindowRealmHost + 'static>(
         host_hooks,
         "Request.mode \"no-cors\" requires a CORS-safelisted method (GET/HEAD/POST)",
       ));
+    }
+  }
+
+  if !init_body_provided {
+    if let Some(input_obj) = input_request_obj {
+      if request_wrapper_cached_body_stream_is_locked(vm, scope, host, host_hooks, input_obj)? {
+        return Err(throw_type_error(
+          vm,
+          scope,
+          host,
+          host_hooks,
+          "Request body is locked",
+        ));
+      }
     }
   }
 
@@ -8576,6 +8643,228 @@ mod tests {
       scope.heap().get_string(msg_s)?.to_utf8_lossy(),
       "Request body is already used"
     );
+
+    drop(scope);
+    drop(bindings);
+    realm.teardown(&mut heap);
+    Ok(())
+  }
+
+  #[test]
+  fn request_ctor_and_fetch_reject_locked_body_input_request() -> Result<(), VmError> {
+    struct NoopHooks;
+
+    impl VmHostHooks for NoopHooks {
+      fn host_enqueue_promise_job(&mut self, _job: Job, _realm: Option<RealmId>) {}
+    }
+
+    fn readable_stream_get_reader_native(
+      _vm: &mut Vm,
+      scope: &mut Scope<'_>,
+      _host: &mut dyn VmHost,
+      _host_hooks: &mut dyn VmHostHooks,
+      _callee: GcObject,
+      this: Value,
+      _args: &[Value],
+    ) -> Result<Value, VmError> {
+      let Value::Object(stream_obj) = this else {
+        return Err(VmError::TypeError("ReadableStream.getReader: illegal invocation"));
+      };
+      set_data_prop(scope, stream_obj, "locked", Value::Bool(true), true)?;
+      Ok(Value::Object(scope.alloc_object()?))
+    }
+
+    let mut vm = Vm::new(VmOptions::default());
+    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut realm = Realm::new(&mut vm, &mut heap)?;
+    let bindings = install_window_fetch_bindings_with_guard::<DummyHost>(
+      &mut vm,
+      &realm,
+      &mut heap,
+      WindowFetchEnv::for_document(Arc::new(crate::resource::HttpFetcher::new()), None),
+    )?;
+    let mut scope = heap.scope();
+
+    let global = realm.global_object();
+    let Value::Object(request_ctor) = get_data_prop(&mut scope, global, "Request")? else {
+      return Err(VmError::InvariantViolation("Request constructor missing"));
+    };
+    let Value::Object(fetch_fn) = get_data_prop(&mut scope, global, "fetch")? else {
+      return Err(VmError::InvariantViolation("fetch function missing"));
+    };
+
+    let url_s = scope.alloc_string("https://example.com/")?;
+    scope.push_root(Value::String(url_s))?;
+
+    // new Request(url, { method: "POST", body: "hello" })
+    let init_obj = scope.alloc_object()?;
+    scope.push_root(Value::Object(init_obj))?;
+    let body_s = scope.alloc_string("hello")?;
+    scope.push_root(Value::String(body_s))?;
+    let method_s = scope.alloc_string("POST")?;
+    scope.push_root(Value::String(method_s))?;
+    set_data_prop(
+      &mut scope,
+      init_obj,
+      "method",
+      Value::String(method_s),
+      true,
+    )?;
+    set_data_prop(&mut scope, init_obj, "body", Value::String(body_s), true)?;
+
+    let mut host_state = ();
+    let mut hooks = NoopHooks;
+    let Value::Object(req_obj) = request_ctor_construct(
+      &mut vm,
+      &mut scope,
+      &mut host_state,
+      &mut hooks,
+      request_ctor,
+      &[Value::String(url_s), Value::Object(init_obj)],
+      Value::Object(request_ctor),
+    )?
+    else {
+      return Err(VmError::InvariantViolation(
+        "Request constructor must return an object",
+      ));
+    };
+    scope.push_root(Value::Object(req_obj))?;
+
+    // Attach a synthetic ReadableStream body and lock it via `req.body.getReader()`.
+    let stream_obj = scope.alloc_object()?;
+    scope.push_root(Value::Object(stream_obj))?;
+    set_data_prop(&mut scope, stream_obj, "locked", Value::Bool(false), true)?;
+    let get_reader_id = vm.register_native_call(readable_stream_get_reader_native)?;
+    let get_reader_name = scope.alloc_string("getReader")?;
+    scope.push_root(Value::String(get_reader_name))?;
+    let get_reader_fn = scope.alloc_native_function(get_reader_id, None, get_reader_name, 0)?;
+    let func_proto = realm.intrinsics().function_prototype();
+    scope
+      .heap_mut()
+      .object_set_prototype(get_reader_fn, Some(func_proto))?;
+    set_data_prop(
+      &mut scope,
+      stream_obj,
+      "getReader",
+      Value::Object(get_reader_fn),
+      true,
+    )?;
+
+    set_data_prop(
+      &mut scope,
+      req_obj,
+      REQUEST_BODY_STREAM_KEY,
+      Value::Object(stream_obj),
+      true,
+    )?;
+    set_data_prop(&mut scope, req_obj, "body", Value::Object(stream_obj), true)?;
+
+    let body_key = alloc_key(&mut scope, "body")?;
+    let body_val = vm.get(&mut scope, req_obj, body_key)?;
+    let Value::Object(body_stream_obj) = body_val else {
+      return Err(VmError::InvariantViolation("Request.body must be an object"));
+    };
+    let get_reader_key = alloc_key(&mut scope, "getReader")?;
+    let get_reader = vm.get(&mut scope, body_stream_obj, get_reader_key)?;
+    vm.call_with_host_and_hooks(
+      &mut host_state,
+      &mut scope,
+      &mut hooks,
+      get_reader,
+      Value::Object(body_stream_obj),
+      &[],
+    )?;
+
+    // new Request(existingRequest) should throw if the input body stream is locked and init.body is
+    // not specified.
+    let err = request_ctor_construct(
+      &mut vm,
+      &mut scope,
+      &mut host_state,
+      &mut hooks,
+      request_ctor,
+      &[Value::Object(req_obj)],
+      Value::Object(request_ctor),
+    )
+    .expect_err("expected TypeError for locked body");
+
+    let Some(Value::Object(err_obj)) = err.thrown_value() else {
+      panic!("expected thrown TypeError object, got {err:?}");
+    };
+    scope.push_root(Value::Object(err_obj))?;
+    let name_key = alloc_key(&mut scope, "name")?;
+    let msg_key = alloc_key(&mut scope, "message")?;
+    let Value::String(name_s) = vm.get(&mut scope, err_obj, name_key)? else {
+      return Err(VmError::InvariantViolation("TypeError.name missing"));
+    };
+    let Value::String(msg_s) = vm.get(&mut scope, err_obj, msg_key)? else {
+      return Err(VmError::InvariantViolation("TypeError.message missing"));
+    };
+    assert_eq!(
+      scope.heap().get_string(name_s)?.to_utf8_lossy(),
+      "TypeError"
+    );
+    let msg = scope.heap().get_string(msg_s)?.to_utf8_lossy();
+    assert!(msg.contains("body") && msg.contains("locked"), "msg={msg:?}");
+
+    // fetch(existingRequest) should also throw/reject with TypeError in the locked-body case.
+    let err = fetch_call::<DummyHost>(
+      &mut vm,
+      &mut scope,
+      &mut host_state,
+      &mut hooks,
+      fetch_fn,
+      Value::Undefined,
+      &[Value::Object(req_obj)],
+    )
+    .expect_err("expected TypeError for locked body");
+    let Some(Value::Object(err_obj)) = err.thrown_value() else {
+      panic!("expected thrown TypeError object, got {err:?}");
+    };
+    scope.push_root(Value::Object(err_obj))?;
+    let msg_key = alloc_key(&mut scope, "message")?;
+    let Value::String(msg_s) = vm.get(&mut scope, err_obj, msg_key)? else {
+      return Err(VmError::InvariantViolation("TypeError.message missing"));
+    };
+    let msg = scope.heap().get_string(msg_s)?.to_utf8_lossy();
+    assert!(msg.contains("body") && msg.contains("locked"), "msg={msg:?}");
+
+    // Overriding init.body should skip the locked-input-body check.
+    let override_init = scope.alloc_object()?;
+    scope.push_root(Value::Object(override_init))?;
+    let override_body = scope.alloc_string("override")?;
+    scope.push_root(Value::String(override_body))?;
+    let override_method = scope.alloc_string("POST")?;
+    scope.push_root(Value::String(override_method))?;
+    set_data_prop(
+      &mut scope,
+      override_init,
+      "method",
+      Value::String(override_method),
+      true,
+    )?;
+    set_data_prop(
+      &mut scope,
+      override_init,
+      "body",
+      Value::String(override_body),
+      true,
+    )?;
+
+    let Value::Object(_override_req) = request_ctor_construct(
+      &mut vm,
+      &mut scope,
+      &mut host_state,
+      &mut hooks,
+      request_ctor,
+      &[Value::Object(req_obj), Value::Object(override_init)],
+      Value::Object(request_ctor),
+    )?
+    else {
+      return Err(VmError::InvariantViolation(
+        "Request constructor must return an object",
+      ));
+    };
 
     drop(scope);
     drop(bindings);
