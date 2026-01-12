@@ -6,7 +6,7 @@
 //! Run these tests explicitly with:
 //!
 //! ```bash
-//! cargo test -p vm-js --test module_top_level_await_graph
+//! timeout -k 10 600 bash vendor/ecma-rs/scripts/cargo_agent.sh test -p vm-js --test module_top_level_await_graph
 //! ```
 //!
 //! Spec algorithms/sections under test (non-exhaustive):
