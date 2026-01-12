@@ -1077,6 +1077,32 @@ mod tests {
   }
 
   #[test]
+  fn resolves_worker_threads_message_port_prototype_call() {
+    let calls = resolved_calls(
+      r#"
+        require('node:worker_threads').MessagePort.prototype.postMessage('x');
+      "#,
+    );
+    assert_eq!(
+      calls,
+      vec!["node:worker_threads.MessagePort.prototype.postMessage"]
+    );
+  }
+
+  #[test]
+  fn resolves_worker_threads_message_port_prototype_call_without_node_prefix() {
+    let calls = resolved_calls(
+      r#"
+        require('worker_threads').MessagePort.prototype.postMessage('x');
+      "#,
+    );
+    assert_eq!(
+      calls,
+      vec!["node:worker_threads.MessagePort.prototype.postMessage"]
+    );
+  }
+
+  #[test]
   fn resolves_destructure_from_require_member_chain() {
     let calls = resolved_calls(
       r#"
