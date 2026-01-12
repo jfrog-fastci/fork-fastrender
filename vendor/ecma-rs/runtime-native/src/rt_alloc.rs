@@ -240,18 +240,20 @@ struct GlobalHeap {
 fn global_heap() -> &'static GlobalHeap {
   static GLOBAL: OnceLock<GlobalHeap> = OnceLock::new();
   GLOBAL.get_or_init(|| {
-    let (mut config, mut limits, apply_config, apply_limits) = {
-      let config_guard = GLOBAL_HEAP_CONFIG.lock();
-      let limits_guard = GLOBAL_HEAP_LIMITS.lock();
-      // Freeze config/limits for this process-global heap instance. From this point onward, setter
-      // calls must fail, and initialization must see a consistent snapshot.
-      GLOBAL_HEAP_INIT_STATE.store(1, Ordering::Release);
-      let config = *config_guard;
-      let limits = *limits_guard;
-      let apply_config = !GLOBAL_HEAP_CONFIG_SET.load(Ordering::Acquire);
-      let apply_limits = !GLOBAL_HEAP_LIMITS_SET.load(Ordering::Acquire);
-      (config, limits, apply_config, apply_limits)
-    };
+    let mut config_guard = GLOBAL_HEAP_CONFIG.lock();
+    let mut limits_guard = GLOBAL_HEAP_LIMITS.lock();
+
+    // Freeze config/limits for this process-global heap instance. From this point onward, setter
+    // calls must fail, and initialization must see a consistent snapshot.
+    GLOBAL_HEAP_INIT_STATE.store(1, Ordering::Release);
+
+    let mut config = *config_guard;
+    let mut limits = *limits_guard;
+
+    // Env overrides apply only to defaults: embedders that explicitly call `rt_gc_set_config` /
+    // `rt_gc_set_limits` are expected to handle env overrides at a higher layer if desired.
+    let apply_config = !GLOBAL_HEAP_CONFIG_SET.load(Ordering::Acquire);
+    let apply_limits = !GLOBAL_HEAP_LIMITS_SET.load(Ordering::Acquire);
 
     crate::gc::config::apply_env_overrides(&mut config, &mut limits, apply_config, apply_limits);
     if let Err(msg) = config.validate() {
@@ -263,6 +265,13 @@ fn global_heap() -> &'static GlobalHeap {
     if let Err(msg) = crate::gc::config::validate_config_and_limits(&config, &limits) {
       crate::trap::rt_trap_invalid_arg(msg);
     }
+
+    // Publish the final config/limits (including any env overrides) so that `rt_gc_get_*` can return
+    // the effective values even while heap initialization is in progress.
+    *config_guard = config;
+    *limits_guard = limits;
+    drop(config_guard);
+    drop(limits_guard);
 
     let mut heap = Box::new(crate::gc::GcHeap::with_config(config, limits));
     heap.reserve_card_table_objects_for_minor_gc();
