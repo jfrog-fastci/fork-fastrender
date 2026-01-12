@@ -50,7 +50,7 @@ fn skip_lib_check_suppresses_dts_type_diagnostics() {
 }
 
 #[test]
-fn skip_lib_check_keeps_dts_module_resolution_diagnostics() {
+fn skip_lib_check_suppresses_dts_module_resolution_diagnostics() {
   let lib_key = FileKey::new("dep.d.ts");
   let entry_key = FileKey::new("entry.ts");
 
@@ -72,10 +72,10 @@ fn skip_lib_check_keeps_dts_module_resolution_diagnostics() {
 
     host.insert(entry_key.clone(), "import \"./dep\";\nexport {};\n");
     host.link(entry_key.clone(), "./dep", lib_key.clone());
-    Program::new(host, vec![entry_key.clone()])
+     Program::new(host, vec![entry_key.clone()])
   };
 
-  let program = build_program(true);
+  let program = build_program(false);
   let lib_id = program
     .file_id(&lib_key)
     .expect("dep .d.ts file should be loaded");
@@ -85,18 +85,25 @@ fn skip_lib_check_keeps_dts_module_resolution_diagnostics() {
     diagnostics.iter().any(|diag| {
       diag.primary.file == lib_id && diag.code.as_str() == codes::UNRESOLVED_MODULE.as_str()
     }),
-    "expected unresolved module diagnostics from .d.ts (import/export specifiers) even when skip_lib_check is enabled, got {diagnostics:?}"
+    "expected unresolved module diagnostics from .d.ts (import/export specifiers) when skip_lib_check is disabled, got {diagnostics:?}"
   );
   assert!(
-    !diagnostics.iter().any(|diag| {
-      diag.primary.file == lib_id && diag.code.as_str() == codes::UNRESOLVED_IMPORT_TYPE.as_str()
+    diagnostics.iter().any(|diag| {
+      diag.primary.file == lib_id && diag.message.contains("missing2")
     }),
-    "expected unresolved import() type diagnostics from .d.ts to be suppressed when skip_lib_check is enabled, got {diagnostics:?}"
+    "expected unresolved module diagnostics for import() type specifiers from .d.ts when skip_lib_check is disabled, got {diagnostics:?}"
+  );
+
+  let program = build_program(true);
+  let diagnostics = program.check();
+  assert!(
+    diagnostics.is_empty(),
+    "expected .d.ts module resolution diagnostics to be suppressed when skip_lib_check is enabled, got {diagnostics:?}"
   );
 }
 
 #[test]
-fn skip_lib_check_keeps_dts_triple_slash_reference_diagnostics() {
+fn skip_lib_check_suppresses_dts_triple_slash_reference_diagnostics() {
   let lib_key = FileKey::new("broken.d.ts");
   let entry_key = FileKey::new("entry.ts");
   let lib_source = "/// <reference path=\"./missing.d.ts\" />\n";
@@ -130,20 +137,15 @@ fn skip_lib_check_keeps_dts_triple_slash_reference_diagnostics() {
   );
 
   let program = build_program(true);
-  let lib_id = program
-    .file_id(&lib_key)
-    .expect("broken .d.ts file should be loaded");
   let diagnostics = program.check();
   assert!(
-    diagnostics.iter().any(|diag| {
-      diag.primary.file == lib_id && diag.code.as_str() == codes::FILE_NOT_FOUND.as_str()
-    }),
-    "expected triple-slash reference diagnostics from .d.ts to remain visible when skip_lib_check is enabled, got {diagnostics:?}"
+    diagnostics.is_empty(),
+    "expected triple-slash reference diagnostics from .d.ts to be suppressed when skip_lib_check is enabled, got {diagnostics:?}"
   );
 }
 
 #[test]
-fn skip_lib_check_keeps_dts_triple_slash_reference_types_diagnostics() {
+fn skip_lib_check_suppresses_dts_triple_slash_reference_types_diagnostics() {
   let lib_key = FileKey::new("broken.d.ts");
   let entry_key = FileKey::new("entry.ts");
   let lib_source = "/// <reference types=\"missing-types\" />\n";
@@ -178,21 +180,15 @@ fn skip_lib_check_keeps_dts_triple_slash_reference_types_diagnostics() {
   );
 
   let program = build_program(true);
-  let lib_id = program
-    .file_id(&lib_key)
-    .expect("broken .d.ts file should be loaded");
   let diagnostics = program.check();
   assert!(
-    diagnostics.iter().any(|diag| {
-      diag.primary.file == lib_id
-        && diag.code.as_str() == codes::TYPE_DEFINITION_FILE_NOT_FOUND.as_str()
-    }),
-    "expected triple-slash reference types diagnostics from .d.ts to remain visible when skip_lib_check is enabled, got {diagnostics:?}"
+    diagnostics.is_empty(),
+    "expected triple-slash reference types diagnostics from .d.ts to be suppressed when skip_lib_check is enabled, got {diagnostics:?}"
   );
 }
 
 #[test]
-fn skip_lib_check_keeps_dts_triple_slash_reference_lib_diagnostics() {
+fn skip_lib_check_suppresses_dts_triple_slash_reference_lib_diagnostics() {
   let lib_key = FileKey::new("broken.d.ts");
   let entry_key = FileKey::new("entry.ts");
   let lib_source = "/// <reference lib=\"missing-lib\" />\n";
@@ -227,16 +223,10 @@ fn skip_lib_check_keeps_dts_triple_slash_reference_lib_diagnostics() {
   );
 
   let program = build_program(true);
-  let lib_id = program
-    .file_id(&lib_key)
-    .expect("broken .d.ts file should be loaded");
   let diagnostics = program.check();
   assert!(
-    diagnostics.iter().any(|diag| {
-      diag.primary.file == lib_id
-        && diag.code.as_str() == codes::LIB_DEFINITION_FILE_NOT_FOUND.as_str()
-    }),
-    "expected triple-slash reference lib diagnostics from .d.ts to remain visible when skip_lib_check is enabled, got {diagnostics:?}"
+    diagnostics.is_empty(),
+    "expected triple-slash reference lib diagnostics from .d.ts to be suppressed when skip_lib_check is enabled, got {diagnostics:?}"
   );
 }
 

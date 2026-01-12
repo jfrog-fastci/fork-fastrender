@@ -114,29 +114,17 @@ impl ProgramState {
         return true;
       }
       let code = diag.code.as_str();
-      if code.starts_with("TC") {
-        // `skipLibCheck` suppresses semantic diagnostics originating from `.d.ts`
-        // files, but `tsc` still reports "program construction" failures even
-        // when they come from declaration files.
-        //
-        // Audited against TypeScript 5.9.3 (see difftsc baselines):
-        // - Keep unresolved *import/export* module specifiers (TS2307), e.g.
-        //   `skip_lib_check_missing_module`.
-        // - Suppress `import("...")` type resolution failures (also TS2307 when
-        //   `skipLibCheck=false`), e.g. `skip_lib_check_missing_import_type_used`.
-        // - Suppress other semantic `.d.ts` diagnostics like TS2608 from JSX
-        //   container types, e.g. `jsx_element_attributes_property_multiple_properties`.
-        return matches!(code, "TC1001" | "TC1007");
-      }
-      if code.starts_with("BIND") {
+      // `skipLibCheck` matches `tsc` by suppressing semantic diagnostics
+      // originating from `.d.ts` files, including module resolution failures
+      // and triple-slash reference errors inside declaration files.
+      //
+      // Keep diagnostics that are not tied to semantic checking (parse errors,
+      // host errors, etc).
+      //
+      // Note: this intentionally supersedes an earlier plan (Task 183) to keep
+      // some `.d.ts` resolution/reference errors when `skipLibCheck` is enabled.
+      if code.starts_with("TC") || code.starts_with("BIND") || code.starts_with("TS") {
         return false;
-      }
-
-      // Keep a small allow-list of non-type-checking TS codes for `.d.ts` files
-      // so failures like missing `/// <reference lib=\"...\" />` targets remain
-      // visible.
-      if code.starts_with("TS") {
-        return matches!(code, "TS6053" | "TS2688" | "TS2726");
       }
 
       true
