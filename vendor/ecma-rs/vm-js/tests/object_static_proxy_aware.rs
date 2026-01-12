@@ -353,6 +353,52 @@ fn object_set_prototype_of_observes_set_prototype_of_trap() {
 }
 
 #[test]
+fn object_set_prototype_of_throws_type_error_when_proxy_trap_returns_false() {
+  let mut rt = new_runtime();
+  assert_throws_type_error(
+    &mut rt,
+    r#"
+      const proto = {};
+      const proxy = new Proxy({}, { setPrototypeOf() { return false; } });
+      Object.setPrototypeOf(proxy, proto);
+    "#,
+  );
+}
+
+#[test]
+fn object_set_prototype_of_trap_true_must_match_non_extensible_target_prototype() {
+  let mut rt = new_runtime();
+  assert_throws_type_error(
+    &mut rt,
+    r#"
+      const proto1 = {};
+      const proto2 = {};
+      const target = Object.create(proto1);
+      Object.preventExtensions(target);
+      const proxy = new Proxy(target, { setPrototypeOf() { return true; } });
+      Object.setPrototypeOf(proxy, proto2);
+    "#,
+  );
+}
+
+#[test]
+fn object_set_prototype_of_trap_true_allows_matching_non_extensible_target_prototype() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        const proto = {};
+        const target = Object.create(proto);
+        Object.preventExtensions(target);
+        const proxy = new Proxy(target, { setPrototypeOf() { return true; } });
+        Object.setPrototypeOf(proxy, proto) === proxy && Object.getPrototypeOf(proxy) === proto
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn object_set_prototype_of_throws_type_error_on_revoked_proxy() {
   let mut rt = new_runtime();
   assert_throws_type_error(

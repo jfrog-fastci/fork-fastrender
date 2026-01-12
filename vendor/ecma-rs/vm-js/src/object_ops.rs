@@ -3768,7 +3768,31 @@ fn proxy_set_prototype_of(
       Value::Object(handler),
       &[Value::Object(target), proto_val],
     )?;
-    return Ok(scope.heap().to_boolean(result)?);
+
+    // ECMAScript Proxy `[[SetPrototypeOf]]` invariants (ECMA-262):
+    // - If the trap reports failure, propagate `false`.
+    // - If the trap reports success:
+    //   - If the target is extensible, success is accepted.
+    //   - Otherwise (non-extensible), the requested prototype must match the target's actual
+    //     prototype, or we throw a TypeError.
+    let trap_result = scope.heap().to_boolean(result)?;
+    if !trap_result {
+      return Ok(false);
+    }
+
+    let extensible_target = scope.is_extensible_with_host_and_hooks(vm, host, hooks, target)?;
+    if extensible_target {
+      return Ok(true);
+    }
+
+    let target_proto = scope.get_prototype_of_with_host_and_hooks(vm, host, hooks, target)?;
+    if target_proto == proto {
+      return Ok(true);
+    }
+
+    return Err(VmError::TypeError(
+      "Proxy setPrototypeOf trap returned true for non-extensible target with different prototype",
+    ));
   }
 }
 
