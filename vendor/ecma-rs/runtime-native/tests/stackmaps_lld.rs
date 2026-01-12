@@ -66,7 +66,8 @@ edition = "2021"
   // In PIE/DSO mode, native-js rewrites `.llvm_stackmaps` to
   // `.data.rel.ro.llvm_stackmaps` so any relocations can be applied to writable
   // memory without requiring text relocations. `link/stackmaps.ld` therefore
-  // keeps `.data.rel.ro.llvm_stackmaps` under `--gc-sections`.
+  // `KEEP()`s `.data.rel.ro.llvm_stackmaps` inputs under `--gc-sections` (and may
+  // append the payload into the standard `.data.rel.ro` output section).
   std::fs::write(
     project_dir.join("src/main.rs"),
     r##"use std::arch::global_asm;
