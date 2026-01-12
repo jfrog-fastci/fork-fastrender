@@ -93,6 +93,7 @@ mod ui_browser_worker_live_tab;
 mod ui_browser_worker_thread_naming;
 mod ui_cancellation;
 mod ui_clipboard;
+mod ui_document_selection_clipboard;
 mod ui_context_menu;
 mod ui_fragment_navigation;
 mod ui_frame_upload_coalescing;

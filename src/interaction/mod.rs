@@ -9,6 +9,7 @@ pub mod fragment_geometry;
 pub mod hit_test;
 pub mod hit_testing;
 mod image_maps;
+pub mod selection_serialize;
 pub mod scroll_wheel;
 pub mod state;
 pub mod url;

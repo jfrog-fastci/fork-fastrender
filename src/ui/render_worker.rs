@@ -2311,10 +2311,22 @@ impl BrowserRuntime {
     };
 
     let mut copied: Option<String> = None;
-    let _ = doc.mutate_dom(|dom| {
-      copied = tab.interaction.clipboard_copy(dom);
-      false
-    });
+    if doc
+      .mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
+        copied = tab
+          .interaction
+          .clipboard_copy_with_layout(dom, box_tree, fragment_tree);
+        (false, ())
+      })
+      .is_err()
+    {
+      // If we haven't rendered a frame yet, there is no cached layout to serialize the document
+      // selection. Fall back to the focused text-control clipboard path.
+      let _ = doc.mutate_dom(|dom| {
+        copied = tab.interaction.clipboard_copy(dom);
+        false
+      });
+    }
 
     if let Some(text) = copied {
       let _ = self

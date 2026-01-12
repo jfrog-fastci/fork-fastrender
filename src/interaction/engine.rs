@@ -17,6 +17,7 @@ use crate::tree::box_tree::SelectControl;
 use crate::tree::box_tree::SelectItem;
 use crate::tree::fragment_tree::FragmentTree;
 use crate::ui::messages::{PointerButton, PointerModifiers};
+use crate::interaction::selection_serialize::{serialize_document_selection, DocumentSelection};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -88,6 +89,7 @@ pub struct InteractionEngine {
   number_spin: Option<NumberSpinState>,
   text_drag: Option<TextDragState>,
   text_edit: Option<TextEditState>,
+  document_selection: Option<DocumentSelection>,
   modality: InputModality,
   last_click_target: Option<usize>,
   last_form_submitter: Option<usize>,
@@ -2630,6 +2632,7 @@ impl InteractionEngine {
       number_spin: None,
       text_drag: None,
       text_edit: None,
+      document_selection: None,
       modality: InputModality::Pointer,
       last_click_target: None,
       last_form_submitter: None,
@@ -2919,6 +2922,8 @@ impl InteractionEngine {
       self.state.ime_preedit = None;
       self.text_edit = None;
       self.text_drag = None;
+      // Focus changes collapse any existing document selection (e.g. a prior Ctrl+A selection).
+      self.document_selection = None;
     }
 
     self.state.focused = new_focused;
@@ -3249,6 +3254,8 @@ impl InteractionEngine {
     self.range_drag = None;
     self.number_spin = None;
     self.text_drag = None;
+    // Pointer interaction collapses any active document selection.
+    self.document_selection = None;
 
     let page_point = viewport_point.translate(scroll.viewport);
 
@@ -3477,6 +3484,32 @@ impl InteractionEngine {
           remap_opt(&mut state.focus_before, old_index, new_ids);
         }
         None => self.text_drag = None,
+      }
+    }
+
+    // Remap document selection endpoints (used for clipboard copy of document text).
+    if let Some(selection) = &mut self.document_selection {
+      if let DocumentSelection::Range(range) = selection {
+        let mut ok = true;
+        for point in [&mut range.start, &mut range.end] {
+          let ptr = old_index
+            .id_to_node
+            .get(point.node_id)
+            .copied()
+            .unwrap_or(std::ptr::null_mut());
+          if ptr.is_null() {
+            ok = false;
+            break;
+          }
+          let Some(&new_id) = new_ids.get(&(ptr as *const DomNode)) else {
+            ok = false;
+            break;
+          };
+          point.node_id = new_id;
+        }
+        if !ok {
+          self.document_selection = None;
+        }
       }
     }
 
@@ -4029,69 +4062,89 @@ impl InteractionEngine {
   /// and text-editing actions.
   pub fn clipboard_select_all(&mut self, dom: &mut DomNode) -> bool {
     self.modality = InputModality::Keyboard;
-    let Some(focused) = self.state.focused else {
-      return false;
-    };
-
+    let focused = self.state.focused;
     let mut index = DomIndexMut::new(dom);
 
     // Ensure focus-visible when the keyboard is used.
-    let mut changed = self.set_focus(&mut index, Some(focused), true);
+    let mut changed = false;
+    if let Some(focused) = focused {
+      changed |= self.set_focus(&mut index, Some(focused), true);
+    }
 
-    if node_or_ancestor_is_inert(&index, focused) || node_is_disabled(&index, focused) {
+    let mut handled_text_control = false;
+    if let Some(focused) = focused {
+      if !(node_or_ancestor_is_inert(&index, focused) || node_is_disabled(&index, focused)) {
+        if let Some(node) = index.node(focused) {
+          let is_text_input = is_text_input(node);
+          let is_textarea = is_textarea(node);
+          if is_text_input || is_textarea {
+            handled_text_control = true;
+
+            let current = if is_textarea {
+              textarea_value_for_editing(node)
+            } else {
+              node.get_attribute_ref("value").unwrap_or("").to_string()
+            };
+            let len = current.chars().count();
+
+            let mut edit = self.text_edit.unwrap_or(TextEditState {
+              node_id: focused,
+              caret: len,
+              caret_affinity: CaretAffinity::Downstream,
+              selection_anchor: None,
+              preferred_column: None,
+            });
+            if edit.node_id != focused {
+              edit = TextEditState {
+                node_id: focused,
+                caret: len,
+                caret_affinity: CaretAffinity::Downstream,
+                selection_anchor: None,
+                preferred_column: None,
+              };
+            }
+            edit.preferred_column = None;
+
+            if len == 0 {
+              edit.caret = 0;
+              edit.caret_affinity = CaretAffinity::Downstream;
+              edit.selection_anchor = None;
+            } else {
+              edit.caret = len;
+              edit.caret_affinity = CaretAffinity::Downstream;
+              edit.selection_anchor = Some(0);
+            }
+
+            let prev = self.text_edit;
+            self.text_edit = Some(edit);
+            changed |= prev != self.text_edit;
+            changed |= self.sync_text_edit_paint_state();
+
+            // Text-control selection is distinct from document selection.
+            if self.document_selection.is_some() {
+              self.document_selection = None;
+              changed = true;
+            }
+          }
+        }
+      }
+    }
+
+    if handled_text_control {
       return changed;
     }
 
-    let Some(node) = index.node(focused) else {
-      return changed;
-    };
-    let is_text_input = is_text_input(node);
-    let is_textarea = is_textarea(node);
-    if !(is_text_input || is_textarea) {
+    // No focused text control: fall back to document selection.
+    let prev_doc = self.document_selection;
+    self.document_selection = Some(DocumentSelection::All);
+    if prev_doc != self.document_selection {
+      changed = true;
+    }
+
+    if self.text_edit.is_some() {
       self.text_edit = None;
       changed |= self.sync_text_edit_paint_state();
-      return changed;
     }
-
-    let current = if is_textarea {
-      textarea_value_for_editing(node)
-    } else {
-      node.get_attribute_ref("value").unwrap_or("").to_string()
-    };
-    let len = current.chars().count();
-
-    let mut edit = self.text_edit.unwrap_or(TextEditState {
-      node_id: focused,
-      caret: len,
-      caret_affinity: CaretAffinity::Downstream,
-      selection_anchor: None,
-      preferred_column: None,
-    });
-    if edit.node_id != focused {
-      edit = TextEditState {
-        node_id: focused,
-        caret: len,
-        caret_affinity: CaretAffinity::Downstream,
-        selection_anchor: None,
-        preferred_column: None,
-      };
-    }
-    edit.preferred_column = None;
-
-    if len == 0 {
-      edit.caret = 0;
-      edit.caret_affinity = CaretAffinity::Downstream;
-      edit.selection_anchor = None;
-    } else {
-      edit.caret = len;
-      edit.caret_affinity = CaretAffinity::Downstream;
-      edit.selection_anchor = Some(0);
-    }
-
-    let prev = self.text_edit;
-    self.text_edit = Some(edit);
-    changed |= prev != self.text_edit;
-    changed |= self.sync_text_edit_paint_state();
 
     changed
   }
@@ -4140,6 +4193,27 @@ impl InteractionEngine {
       return None;
     }
     Some(value[start_byte..end_byte].to_string())
+  }
+
+  /// Return the current selection text for either:
+  /// - a focused text control (`<input>` / `<textarea>`), or
+  /// - an active document selection (e.g. from `SelectAll` when no text control is focused).
+  ///
+  /// This does not mutate the DOM.
+  pub fn clipboard_copy_with_layout(
+    &mut self,
+    dom: &mut DomNode,
+    box_tree: &BoxTree,
+    fragment_tree: &FragmentTree,
+  ) -> Option<String> {
+    // Prefer the focused text control selection when present.
+    if let Some(text) = self.clipboard_copy(dom) {
+      return Some(text);
+    }
+
+    let selection = self.document_selection?;
+    let text = serialize_document_selection(box_tree, fragment_tree, selection);
+    (!text.is_empty()).then_some(text)
   }
 
   /// Cut the current selection into the clipboard, deleting it when the control is editable.
