@@ -2087,6 +2087,17 @@ fn collects_defs_in_module_item_attributes() {
   "#;
   let result = lower_from_source_with_kind(FileKind::Ts, source).expect("lower");
 
+  let arrow_defs: Vec<_> = result
+    .defs
+    .iter()
+    .filter(|def| def.path.kind == DefKind::Function && result.names.resolve(def.name) == Some("<arrow>"))
+    .collect();
+  assert_eq!(
+    arrow_defs.len(),
+    2,
+    "expected one arrow def per attributes expression"
+  );
+
   assert_eq!(result.hir.imports.len(), 1);
   let import = match &result.hir.imports[0].kind {
     ImportKind::Es(es) => es,

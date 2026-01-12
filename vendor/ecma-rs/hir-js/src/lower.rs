@@ -3533,17 +3533,6 @@ fn collect_stmt<'a>(
           kind: ModuleItemKind::Import(stmt_import),
         });
       }
-      if let Some(attributes) = &stmt_import.stx.attributes {
-        collect_expr(
-          attributes,
-          descriptors,
-          module_items,
-          names,
-          ambient,
-          in_global,
-          ctx,
-        );
-      }
       if let Some(default) = &stmt_import.stx.default {
         let pat_names = collect_pat_names(&default.stx.pat, names, ctx);
         for (id, span) in pat_names {
@@ -3595,8 +3584,16 @@ fn collect_stmt<'a>(
           }
         }
       }
-      if let Some(attrs) = &stmt_import.stx.attributes {
-        collect_expr(attrs, descriptors, module_items, names, ambient, in_global, ctx);
+      if let Some(attributes) = &stmt_import.stx.attributes {
+        collect_expr(
+          attributes,
+          descriptors,
+          module_items,
+          names,
+          ambient,
+          in_global,
+          ctx,
+        );
       }
     }
     AstStmt::ExportList(export) => {
