@@ -731,12 +731,30 @@ impl<'a> VmJsWebIdlCx<'a> {
   }
 
   fn call_js(&mut self, callee: Value, this: Value, args: &[Value]) -> Result<Value, VmError> {
-    match (self.host, self.host_hooks) {
-      (Some(mut host), Some(mut hooks)) => {
-        // SAFETY: pointers are installed by `from_native_call`/`from_native_call_unchecked` and are
-        // required to remain valid for the lifetime of this conversion context.
+    // Prefer the currently-active host hooks override if one is installed on the VM.
+    //
+    // `VmJsWebIdlCx::from_native_call(_unchecked)` stores a raw pointer to the `VmHostHooks`
+    // passed into a native handler, but the embedding may temporarily override host hooks via
+    // `Vm::with_host_hooks_override` (e.g. to route Promise jobs into a different microtask queue).
+    //
+    // When we need to invoke user code (accessor getters, @@toPrimitive, iterator methods, etc),
+    // we must preserve *both*:
+    // - the embedder host context (`VmHost`) captured by `from_native_call*`, and
+    // - the dynamically active host hooks override.
+    let hooks_ptr = self
+      .vm
+      .active_host_hooks_ptr()
+      .or_else(|| self.host_hooks.map(|h| h.as_ptr()));
+
+    match (self.host, hooks_ptr) {
+      (Some(mut host), Some(hooks_ptr)) => {
+        // SAFETY: `host` is installed by `from_native_call(_unchecked)` and is required to remain
+        // valid for the lifetime of this conversion context.
         let host = unsafe { host.as_mut() };
-        let hooks = unsafe { hooks.as_mut() };
+        // SAFETY: `hooks_ptr` comes either from `Vm::active_host_hooks_ptr` (valid within the
+        // dynamic extent of a VM entry point) or from `from_native_call(_unchecked)` (caller
+        // promises validity for the lifetime of the context).
+        let hooks = unsafe { &mut *hooks_ptr };
         self
           .vm
           .call_with_host_and_hooks(host, &mut self.scope, hooks, callee, this, args)
@@ -746,9 +764,9 @@ impl<'a> VmJsWebIdlCx<'a> {
         let host = unsafe { host.as_mut() };
         self.vm.call(host, &mut self.scope, callee, this, args)
       }
-      (None, Some(mut hooks)) => {
+      (None, Some(hooks_ptr)) => {
         // SAFETY: see above.
-        let hooks = unsafe { hooks.as_mut() };
+        let hooks = unsafe { &mut *hooks_ptr };
         self
           .vm
           .call_with_host(&mut self.scope, hooks, callee, this, args)
@@ -2668,6 +2686,72 @@ mod tests {
       drop(cx);
       assert_eq!(host_ctx.host_calls, 1);
       assert_eq!(host_hooks.value_of_calls, 1);
+      Ok(())
+    })();
+
+    realm.teardown(&mut heap);
+    result
+  }
+
+  #[test]
+  fn to_number_with_host_context_respects_vm_host_hooks_override() -> Result<(), VmError> {
+    let mut vm = Vm::new(VmOptions::default());
+    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut realm = Realm::new(&mut vm, &mut heap)?;
+    let webidl_hooks = NoHooks;
+    let limits = WebIdlLimits::default();
+
+    let result = (|| -> Result<(), VmError> {
+      let value_of_id = vm.register_native_call(value_of_observes_host_ctx_and_hooks)?;
+
+      let mut scope = heap.scope();
+      let obj = scope.alloc_object()?;
+      scope.push_root(Value::Object(obj))?;
+
+      let value_of_name = scope.alloc_string("valueOf")?;
+      let value_of_fn = scope.alloc_native_function(value_of_id, None, value_of_name, 0)?;
+      scope.push_root(Value::Object(value_of_fn))?;
+
+      let value_of_key = VmPropertyKey::from_string(scope.alloc_string("valueOf")?);
+      scope.define_property(
+        obj,
+        value_of_key,
+        PropertyDescriptor {
+          enumerable: true,
+          configurable: true,
+          kind: PropertyKind::Data {
+            value: Value::Object(value_of_fn),
+            writable: true,
+          },
+        },
+      )?;
+
+      let mut host_ctx = TestHostCtx::default();
+      let mut original_hooks = TestHostHooks::default();
+      let mut override_hooks = TestHostHooks::default();
+
+      vm.with_host_hooks_override(&mut override_hooks, |vm| -> Result<(), VmError> {
+        let mut cx = VmJsWebIdlCx::from_native_call(
+          vm,
+          &mut scope,
+          &mut host_ctx,
+          &mut original_hooks,
+          limits,
+          &webidl_hooks,
+        );
+        cx.scope.push_root(Value::Object(obj))?;
+
+        let n = cx.to_number(Value::Object(obj))?;
+        assert_eq!(n, 42.0);
+        Ok(())
+      })?;
+
+      // The `valueOf` native handler should observe the host context from `from_native_call`, but
+      // it must also observe the dynamically active host hooks override (not the `host_hooks`
+      // pointer captured by `from_native_call`).
+      assert_eq!(host_ctx.host_calls, 1);
+      assert_eq!(override_hooks.value_of_calls, 1);
+      assert_eq!(original_hooks.value_of_calls, 0);
       Ok(())
     })();
 
