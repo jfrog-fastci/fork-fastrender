@@ -1,7 +1,7 @@
 use crate::dom::HTML_NAMESPACE;
 
 use super::{Document, DomError, NodeId, NodeKind};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 pub type MutationObserverId = u64;
 
@@ -124,6 +124,97 @@ impl MutationObserverRegistry {
 
   pub(crate) fn set_limits(&mut self, limits: MutationObserverLimits) {
     self.limits = limits;
+  }
+
+  /// Remap internal [`NodeId`] references after a DOM subtree has been adopted/imported via
+  /// clone+mapping.
+  ///
+  /// Some host integrations preserve JS identity by updating wrapper objects to point at new
+  /// `dom2::NodeId`s. Mutation observer state stores `NodeId`s in:
+  /// - each observer's observed target list
+  /// - queued mutation records
+  ///
+  /// This helper updates those references so subsequent deliveries return the correct JS nodes.
+  ///
+  /// Entries absent from `mapping` are left unchanged. Observed target lists are deduplicated after
+  /// remapping (preserving order).
+  pub(crate) fn remap_node_ids(&mut self, mapping: &HashMap<NodeId, NodeId>) {
+    for state in self.observers.values_mut() {
+      if !state.observed_targets.is_empty() {
+        let mut deduped: Vec<NodeId> = Vec::with_capacity(state.observed_targets.len());
+        let mut seen: HashSet<NodeId> = HashSet::with_capacity(state.observed_targets.len());
+        for &id in &state.observed_targets {
+          let remapped = mapping.get(&id).copied().unwrap_or(id);
+          if seen.insert(remapped) {
+            deduped.push(remapped);
+          }
+        }
+        state.observed_targets = deduped;
+      }
+
+      for record in &mut state.records {
+        if let Some(&new_target) = mapping.get(&record.target) {
+          record.target = new_target;
+        }
+        for node in &mut record.added_nodes {
+          if let Some(&new_node) = mapping.get(node) {
+            *node = new_node;
+          }
+        }
+        for node in &mut record.removed_nodes {
+          if let Some(&new_node) = mapping.get(node) {
+            *node = new_node;
+          }
+        }
+        if let Some(prev) = record.previous_sibling {
+          if let Some(&new_prev) = mapping.get(&prev) {
+            record.previous_sibling = Some(new_prev);
+          }
+        }
+        if let Some(next) = record.next_sibling {
+          if let Some(&new_next) = mapping.get(&next) {
+            record.next_sibling = Some(new_next);
+          }
+        }
+      }
+    }
+  }
+
+  /// Move per-node observer registrations from `old` to `new`.
+  ///
+  /// Mutation observer registrations are stored separately from `Node` in `dom2`. When a node is
+  /// adopted/imported by cloning and remapping wrapper identities, the embedding layer should move
+  /// registrations to the new node so future DOM mutations continue to queue records.
+  pub(crate) fn move_registrations(&mut self, old: NodeId, new: NodeId) {
+    if old == new {
+      return;
+    }
+    let old_idx = old.index();
+    let new_idx = new.index();
+    if old_idx >= self.registrations.len() || new_idx >= self.registrations.len() {
+      return;
+    }
+    if old_idx == new_idx {
+      return;
+    }
+
+    let (old_list, new_list) = if old_idx < new_idx {
+      let (left, right) = self.registrations.split_at_mut(new_idx);
+      (&mut left[old_idx], &mut right[0])
+    } else {
+      let (left, right) = self.registrations.split_at_mut(old_idx);
+      (&mut right[0], &mut left[new_idx])
+    };
+
+    if old_list.is_empty() {
+      return;
+    }
+
+    let moved = std::mem::take(old_list);
+    for reg in moved {
+      new_list.retain(|r| r.observer != reg.observer);
+      new_list.push(reg);
+    }
   }
 
   fn state_for_observer_mut(

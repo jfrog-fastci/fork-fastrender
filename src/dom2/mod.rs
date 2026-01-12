@@ -1971,6 +1971,7 @@ mod mapping_tests;
 mod mutation_generation_tests;
 #[cfg(test)]
 mod mutation_tests;
+mod mutation_observer_remap_tests;
 #[cfg(test)]
 mod query_tests;
 #[cfg(test)]
