@@ -1,4 +1,4 @@
-use crate::common::global_state::global_test_lock;
+use crate::common::global_test_lock;
 use fastrender::api::{DiagnosticsLevel, FastRender, RenderOptions};
 use fastrender::debug::runtime::RuntimeToggles;
 use fastrender::style::cascade::{

@@ -1,4 +1,4 @@
-use crate::common::global_state::global_test_lock;
+use crate::common::global_test_lock;
 use crate::r#ref::image_compare::{compare_config_from_env, compare_pngs, CompareEnvVars};
 use fastrender::debug::runtime::RuntimeToggles;
 use fastrender::{FastRender, FontConfig, RenderOptions};
