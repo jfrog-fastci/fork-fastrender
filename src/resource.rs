@@ -12355,10 +12355,10 @@ mod tests {
   use super::data_url;
   use super::*;
   use brotli::CompressorWriter;
+  use crate::debug::runtime::RuntimeToggles;
   use flate2::write::GzEncoder;
   use flate2::Compression;
   use std::collections::VecDeque;
-  use std::ffi::OsString;
   use std::io;
   use std::io::Read;
   use std::io::Write;
@@ -12369,43 +12369,10 @@ mod tests {
   use std::sync::Arc;
   use std::sync::Barrier;
   use std::sync::Mutex;
-  use std::sync::MutexGuard;
   use std::sync::OnceLock;
   use std::thread;
   use std::time::{Duration, Instant};
   use tempfile::NamedTempFile;
-
-  /// Serialises tests that mutate process-wide state (environment variables, stage listeners,
-  /// etc).
-  fn global_test_lock() -> MutexGuard<'static, ()> {
-    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    LOCK
-      .get_or_init(|| Mutex::new(()))
-      .lock()
-      .unwrap_or_else(|poisoned| poisoned.into_inner())
-  }
-
-  struct EnvVarGuard {
-    key: &'static str,
-    previous: Option<OsString>,
-  }
-
-  impl EnvVarGuard {
-    fn set(key: &'static str, value: &str) -> Self {
-      let previous = std::env::var_os(key);
-      std::env::set_var(key, value);
-      Self { key, previous }
-    }
-  }
-
-  impl Drop for EnvVarGuard {
-    fn drop(&mut self) {
-      match self.previous.take() {
-        Some(value) => std::env::set_var(self.key, value),
-        None => std::env::remove_var(self.key),
-      }
-    }
-  }
 
   fn try_bind_localhost(context: &str) -> Option<TcpListener> {
     let listener = match TcpListener::bind("127.0.0.1:0") {
@@ -17558,55 +17525,60 @@ mod tests {
 
   #[test]
   fn referer_header_strips_url_credentials() {
-    let _lock = global_test_lock();
     // The `Referer` header should never include embedded URL credentials (`user:pass@`).
     // Ensure browser-like headers are enabled for deterministic header generation.
-    let _guard = EnvVarGuard::set("FASTR_HTTP_BROWSER_HEADERS", "1");
+    crate::debug::runtime::with_runtime_toggles(
+      Arc::new(RuntimeToggles::from_map(HashMap::from([(
+        "FASTR_HTTP_BROWSER_HEADERS".to_string(),
+        "1".to_string(),
+      )]))),
+      || {
+        let fetcher = HttpFetcher::new();
+        for (referrer_url, expected) in [
+          (
+            // Strict URL parsing succeeds.
+            "https://user:pass@example.com/path/page.html?q=1#frag",
+            "https://example.com/path/page.html?q=1",
+          ),
+          (
+            // Tolerant path (invalid `|` in query) should still strip credentials.
+            "https://user:pass@example.com/path/page.html?q=|#frag",
+            "https://example.com/path/page.html?q=|",
+          ),
+          (
+            // Tolerant path should also normalize scheme/host case and drop default ports.
+            "HTTPS://user:pass@EXAMPLE.COM:443/path/page.html?q=|#frag",
+            "https://example.com/path/page.html?q=|",
+          ),
+          (
+            // Same for HTTP default port.
+            "HTTP://user:pass@EXAMPLE.COM:80/path/page.html?q=|#frag",
+            "http://example.com/path/page.html?q=|",
+          ),
+        ] {
+          let req = FetchRequest::new("https://example.com/img.png", FetchDestination::Image)
+            .with_referrer_url(referrer_url)
+            .with_referrer_policy(ReferrerPolicy::NoReferrerWhenDowngrade);
 
-    let fetcher = HttpFetcher::new();
-    for (referrer_url, expected) in [
-      (
-        // Strict URL parsing succeeds.
-        "https://user:pass@example.com/path/page.html?q=1#frag",
-        "https://example.com/path/page.html?q=1",
-      ),
-      (
-        // Tolerant path (invalid `|` in query) should still strip credentials.
-        "https://user:pass@example.com/path/page.html?q=|#frag",
-        "https://example.com/path/page.html?q=|",
-      ),
-      (
-        // Tolerant path should also normalize scheme/host case and drop default ports.
-        "HTTPS://user:pass@EXAMPLE.COM:443/path/page.html?q=|#frag",
-        "https://example.com/path/page.html?q=|",
-      ),
-      (
-        // Same for HTTP default port.
-        "HTTP://user:pass@EXAMPLE.COM:80/path/page.html?q=|#frag",
-        "http://example.com/path/page.html?q=|",
-      ),
-    ] {
-      let req = FetchRequest::new("https://example.com/img.png", FetchDestination::Image)
-        .with_referrer_url(referrer_url)
-        .with_referrer_policy(ReferrerPolicy::NoReferrerWhenDowngrade);
+          let referer = fetcher
+            .request_header_value(req, "Referer")
+            .expect("HttpFetcher should deterministically construct Referer");
 
-      let referer = fetcher
-        .request_header_value(req, "Referer")
-        .expect("HttpFetcher should deterministically construct Referer");
+          assert_eq!(referer, expected);
+        }
 
-      assert_eq!(referer, expected);
-    }
-
-    // Referrer URLs that contain raw control characters must not be reflected into headers.
-    let req = FetchRequest::new("https://example.com/img.png", FetchDestination::Image)
-      .with_referrer_url("https://user:pass@example.com/path/page.html?q=1\r\nInjected: x")
-      .with_referrer_policy(ReferrerPolicy::NoReferrerWhenDowngrade);
-    let referer = fetcher
-      .request_header_value(req, "Referer")
-      .expect("HttpFetcher should deterministically construct Referer");
-    assert_eq!(
-      referer, "",
-      "expected control characters to suppress the Referer header"
+        // Referrer URLs that contain raw control characters must not be reflected into headers.
+        let req = FetchRequest::new("https://example.com/img.png", FetchDestination::Image)
+          .with_referrer_url("https://user:pass@example.com/path/page.html?q=1\r\nInjected: x")
+          .with_referrer_policy(ReferrerPolicy::NoReferrerWhenDowngrade);
+        let referer = fetcher
+          .request_header_value(req, "Referer")
+          .expect("HttpFetcher should deterministically construct Referer");
+        assert_eq!(
+          referer, "",
+          "expected control characters to suppress the Referer header"
+        );
+      },
     );
   }
 
