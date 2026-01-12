@@ -102,6 +102,12 @@ pub struct WindowRealmConfig {
   pub clock: Arc<dyn Clock>,
   /// Deterministic web time model (`performance.timeOrigin`, and the epoch offset for `Date.now()`).
   pub web_time: WebTime,
+  /// Optional override for the per-realm deterministic PRNG seed used by `window.crypto`.
+  ///
+  /// When unset, the seed defaults to a deterministic value derived from `document_url` so render
+  /// output and tests remain reproducible across runs. Callers that prefer per-process randomness
+  /// (e.g. a production browser embedding) can provide a random seed here.
+  pub crypto_rng_seed: Option<u64>,
 }
 
 /// Navigation request emitted by `window.location` APIs (`href`, `assign`, `replace`).
@@ -125,6 +131,7 @@ impl WindowRealmConfig {
       vm_options: VmOptions::default(),
       clock: Arc::new(RealClock::default()),
       web_time: WebTime::default(),
+      crypto_rng_seed: None,
     }
   }
 
@@ -163,6 +170,11 @@ impl WindowRealmConfig {
 
   pub fn with_web_time(mut self, web_time: WebTime) -> Self {
     self.web_time = web_time;
+    self
+  }
+
+  pub fn with_crypto_rng_seed(mut self, seed: u64) -> Self {
+    self.crypto_rng_seed = Some(seed);
     self
   }
 }
@@ -233,9 +245,14 @@ impl std::fmt::Debug for WindowRealmUserData {
 }
 
 impl WindowRealmUserData {
-  pub(crate) fn new(document_url: String, module_loader: ModuleLoaderHandle) -> Self {
-    let crypto_rng_state =
-      crate::js::window_crypto::crypto_rng_seed_from_document_url(&document_url);
+  pub(crate) fn new(
+    document_url: String,
+    module_loader: ModuleLoaderHandle,
+    crypto_rng_seed: Option<u64>,
+  ) -> Self {
+    let crypto_rng_state = crypto_rng_seed
+      .map(crate::js::window_crypto::crypto_rng_seed_from_u64)
+      .unwrap_or_else(|| crate::js::window_crypto::crypto_rng_seed_from_document_url(&document_url));
     Self {
       base_url: Some(document_url.clone()),
       pending_navigation: None,
@@ -292,6 +309,7 @@ impl WindowRealm {
     runtime.vm.set_user_data(WindowRealmUserData::new(
       config.document_url.clone(),
       Rc::clone(&module_loader),
+      config.crypto_rng_seed,
     ));
     let realm_id = runtime.realm().id();
 

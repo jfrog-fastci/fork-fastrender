@@ -9,7 +9,10 @@
 //!
 //! FastRender's JS embedding intentionally avoids OS randomness so renderer outputs and unit tests
 //! are stable. We implement a per-realm deterministic PRNG using **xorshift64\***, seeded from a
-//! stable hash of `WindowRealmConfig.document_url`.
+//! stable hash of `WindowRealmConfig.document_url` by default.
+//!
+//! Embeddings/tests can override the seed via `WindowRealmConfig.crypto_rng_seed` to force a
+//! specific stream of random values.
 //!
 //! The PRNG state is stored in `WindowRealmUserData` so each realm has an
 //! isolated RNG stream.
@@ -124,6 +127,16 @@ pub(crate) fn crypto_rng_seed_from_document_url(document_url: &str) -> u64 {
   seed
 }
 
+pub(crate) fn crypto_rng_seed_from_u64(seed: u64) -> u64 {
+  // xorshift64* requires a non-zero state; normalize 0 to a fixed non-zero constant so
+  // callers/tests can pass `0` without crashing the PRNG.
+  if seed == 0 {
+    0x2545F4914F6CDD1D
+  } else {
+    seed
+  }
+}
+
 fn xorshift64star_next(state: &mut u64) -> u64 {
   // xorshift64*
   let mut x = *state;
@@ -186,13 +199,13 @@ fn crypto_get_random_values_native(
   let arg = args.get(0).copied().unwrap_or(Value::Undefined);
   let Value::Object(array_obj) = arg else {
     return Err(VmError::TypeError(
-      "crypto.getRandomValues expects a Uint8Array",
+      "crypto.getRandomValues expects an integer TypedArray",
     ));
   };
 
   if !scope.heap().is_uint8_array_object(array_obj) {
     return Err(VmError::TypeError(
-      "crypto.getRandomValues expects a Uint8Array",
+      "crypto.getRandomValues expects an integer TypedArray",
     ));
   }
 
@@ -567,4 +580,117 @@ pub(crate) fn install_window_crypto_bindings(
   )?;
 
   Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use crate::js::window_realm::{WindowRealm, WindowRealmConfig};
+  use vm_js::{GcString, Value};
+
+  fn js_value_to_utf8(heap: &Heap, v: Value) -> String {
+    match v {
+      Value::String(s) => heap.get_string(s).map(|s| s.to_utf8_lossy()).unwrap_or_default(),
+      Value::Undefined => "undefined".to_string(),
+      Value::Null => "null".to_string(),
+      Value::Bool(b) => b.to_string(),
+      Value::Number(n) => n.to_string(),
+      Value::BigInt(b) => format!("{b:?}"),
+      Value::Object(_) => "[object]".to_string(),
+      Value::Symbol(_) => "[symbol]".to_string(),
+    }
+  }
+
+  fn get_string(heap: &Heap, s: GcString) -> String {
+    heap.get_string(s).map(|s| s.to_utf8_lossy()).unwrap_or_default()
+  }
+
+  #[test]
+  fn crypto_get_random_values_type_error_for_non_typed_array() {
+    let mut realm = WindowRealm::new(
+      WindowRealmConfig::new("https://example.invalid/").with_crypto_rng_seed(1),
+    )
+    .expect("create realm");
+
+    let v = realm
+      .exec_script(
+        r#"
+        (() => {
+          try { crypto.getRandomValues(123); return "no-error"; }
+          catch (e) { return e && e.name || String(e); }
+        })()
+        "#,
+      )
+      .expect("script should catch and return");
+
+    assert_eq!(js_value_to_utf8(realm.heap(), v), "TypeError");
+  }
+
+  #[test]
+  fn crypto_get_random_values_enforces_quota() {
+    let mut realm = WindowRealm::new(
+      WindowRealmConfig::new("https://example.invalid/").with_crypto_rng_seed(1),
+    )
+    .expect("create realm");
+
+    let v = realm
+      .exec_script(
+        r#"
+        (() => {
+          try { crypto.getRandomValues(new Uint8Array(65537)); return "no-error"; }
+          catch (e) { return e && e.name || String(e); }
+        })()
+        "#,
+      )
+      .expect("script should catch and return");
+
+    assert_eq!(js_value_to_utf8(realm.heap(), v), "QuotaExceededError");
+  }
+
+  #[test]
+  fn crypto_deterministic_get_random_values_and_random_uuid_with_fixed_seed() {
+    {
+      let mut realm = WindowRealm::new(
+        WindowRealmConfig::new("https://example.invalid/").with_crypto_rng_seed(1),
+      )
+      .expect("create realm");
+
+      let value = realm
+        .exec_script(
+          "(() => { const a = new Uint8Array(16); crypto.getRandomValues(a); return a; })()",
+        )
+        .expect("getRandomValues");
+
+      let Value::Object(obj) = value else {
+        panic!("expected Uint8Array object, got {value:?}");
+      };
+
+      let bytes = realm
+        .heap()
+        .uint8_array_data(obj)
+        .expect("uint8_array_data");
+      assert_eq!(
+        bytes,
+        &[
+          29, 221, 108, 137, 75, 206, 228, 71, 29, 101, 121, 224, 168, 166, 207, 171
+        ][..]
+      );
+    }
+
+    {
+      let mut realm = WindowRealm::new(
+        WindowRealmConfig::new("https://example.invalid/").with_crypto_rng_seed(1),
+      )
+      .expect("create realm");
+
+      let value = realm.exec_script("crypto.randomUUID()").expect("randomUUID");
+      let Value::String(s) = value else {
+        panic!("expected string, got {value:?}");
+      };
+      assert_eq!(
+        get_string(realm.heap(), s),
+        "1ddd6c89-4bce-4447-9d65-79e0a8a6cfab"
+      );
+    }
+  }
 }

@@ -5179,7 +5179,7 @@ mod tests {
   fn make_user_data(document_url: &str) -> WindowRealmUserData {
     let url = document_url.to_string();
     let module_loader = Rc::new(RefCell::new(ModuleLoader::new(Some(url.clone()))));
-    WindowRealmUserData::new(url, module_loader)
+    WindowRealmUserData::new(url, module_loader, None)
   }
 
   struct DummyHost;
