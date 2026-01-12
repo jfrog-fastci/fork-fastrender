@@ -1,5 +1,5 @@
 use fastrender::FastRender;
-use resvg::tiny_skia::Pixmap;
+use tiny_skia::Pixmap;
 
 fn pixel(pixmap: &Pixmap, x: u32, y: u32) -> [u8; 4] {
   let p = pixmap.pixel(x, y).expect("pixel");
@@ -205,7 +205,3 @@ fn mask_image_url_fragment_resolves_use_targets_outside_defs() {
   assert_eq!(pixel(&pixmap, 40, 10), [255, 255, 255, 255]);
 }
 
-mod paint {
-  // Keep the bulk of SVG mask reference coverage in the deterministic display-list paint pipeline.
-  include!("../paint/svg_mask_image_reference_test.rs");
-}
