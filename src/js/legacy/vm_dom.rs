@@ -1753,20 +1753,14 @@ fn dom_node_node_value_setter(
       }
     }
     TargetKind::Comment => {
-      let node = dom.node_mut(node_id);
-      let NodeKind::Comment { content } = &mut node.kind else {
-        return Ok(Value::Undefined);
-      };
-      content.clear();
-      content.push_str(&new_value);
+      if let Err(err) = dom.set_comment_data(node_id, &new_value) {
+        return throw_dom_error(scope, host, err);
+      }
     }
     TargetKind::ProcessingInstruction => {
-      let node = dom.node_mut(node_id);
-      let NodeKind::ProcessingInstruction { data, .. } = &mut node.kind else {
-        return Ok(Value::Undefined);
-      };
-      data.clear();
-      data.push_str(&new_value);
+      if let Err(err) = dom.set_processing_instruction_data(node_id, &new_value) {
+        return throw_dom_error(scope, host, err);
+      }
     }
     TargetKind::None => {}
   }

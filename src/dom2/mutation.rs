@@ -1,6 +1,7 @@
 use crate::dom::HTML_NAMESPACE;
 
 use super::DomError;
+use super::live_mutation::utf16_len;
 use super::{Document, Node, NodeId, NodeKind};
 
 struct CloneNodeData {
@@ -819,24 +820,28 @@ impl Document {
       _ => return Err(DomError::InvalidNodeType),
     };
 
+    let is_text_node = matches!(target_kind, ReplaceTarget::Text);
+
+    // NOTE: DOM `CharacterData.replaceData` offsets/counts are defined in UTF-16 code units.
     let mut units: Vec<u16> = old_value.encode_utf16().collect();
     let offset = offset.min(units.len());
     let end = offset.saturating_add(count).min(units.len());
     let removed_len = end.saturating_sub(offset);
-    let inserted_units: Vec<u16> = data.encode_utf16().collect();
-    let inserted_len = inserted_units.len();
+
+    // Drive live Range/NodeIterator updates via the DOM "replace data" primitive. Call the hook
+    // after computing the final splice parameters, but before applying the mutation to the actual
+    // `dom2` node's string storage.
+    let has_live_subscribers = self.live_mutation.has_subscribers();
+    let inserted_len = has_live_subscribers.then(|| utf16_len(data)).unwrap_or(0);
 
     // `Vec::splice` applies its mutation when the returned iterator is dropped; we discard it.
-    let _ = units.splice(offset..end, inserted_units);
+    let _ = units.splice(offset..end, data.encode_utf16());
     let new_value = String::from_utf16_lossy(&units);
     if new_value == old_value {
       return Ok(false);
     }
 
-    // Drive live Range/NodeIterator updates via the DOM "replace data" primitive. Call the hook
-    // after computing the final splice parameters, but before applying the mutation to the actual
-    // `dom2` node's string storage.
-    if self.live_mutation.has_subscribers() {
+    if has_live_subscribers {
       self
         .live_mutation
         .replace_data(node_id, offset, removed_len, inserted_len);
@@ -856,7 +861,7 @@ impl Document {
 
     // Only text node mutations are render-affecting today; comments and processing instructions are
     // ignored by renderer snapshots.
-    if matches!(target_kind, ReplaceTarget::Text) {
+    if is_text_node {
       self.record_text_mutation(node_id);
       self.bump_mutation_generation();
     }
@@ -880,8 +885,8 @@ impl Document {
     self.live_mutation.replace_data(
       node_id,
       /* offset */ 0,
-      /* removed_len */ old_value.encode_utf16().count(),
-      /* inserted_len */ data.encode_utf16().count(),
+      /* removed_len */ utf16_len(&old_value),
+      /* inserted_len */ utf16_len(data),
     );
 
     {
@@ -913,8 +918,8 @@ impl Document {
     self.live_mutation.replace_data(
       node_id,
       /* offset */ 0,
-      /* removed_len */ old_value.encode_utf16().count(),
-      /* inserted_len */ data.encode_utf16().count(),
+      /* removed_len */ utf16_len(&old_value),
+      /* inserted_len */ utf16_len(data),
     );
 
     {
@@ -947,8 +952,8 @@ impl Document {
     self.live_mutation.replace_data(
       node_id,
       /* offset */ 0,
-      /* removed_len */ old_value.encode_utf16().count(),
-      /* inserted_len */ data.encode_utf16().count(),
+      /* removed_len */ utf16_len(&old_value),
+      /* inserted_len */ utf16_len(data),
     );
 
     {

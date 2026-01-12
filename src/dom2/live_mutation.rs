@@ -2,6 +2,15 @@ use super::{Document, NodeId};
 use std::collections::HashMap;
 use vm_js::{GcObject, Heap, WeakGcObject};
 
+/// Return the length of a UTF-8 string in UTF-16 code units.
+///
+/// DOM character-data offsets (e.g. `CharacterData.replaceData` and `Range` boundary points) are
+/// defined in terms of UTF-16 code units, matching the semantics of JavaScript strings.
+#[inline]
+pub(crate) fn utf16_len(s: &str) -> usize {
+  s.chars().map(|ch| ch.len_utf16()).sum()
+}
+
 /// Stable monotonic identifier for a live `Range` (DOM Standard) registered against a `dom2::Document`.
 ///
 /// Host-side only: the ID is used by the embedding / bindings layer and is not exposed to JS.
@@ -49,7 +58,8 @@ pub(crate) trait LiveMutationHook {
 
   /// A pending character-data replacement in `node`.
   ///
-  /// Lengths are measured in UTF-16 code units, matching DOM `CharacterData`/`Range` offset units.
+  /// `offset`, `removed_len`, and `inserted_len` are measured in UTF-16 code units (not bytes and
+  /// not Unicode scalar values), matching DOM `CharacterData` / `Range` offset units.
   fn replace_data(&mut self, node: NodeId, offset: usize, removed_len: usize, inserted_len: usize);
 }
 

@@ -14,7 +14,7 @@ use std::cell::{Ref, RefCell, RefMut};
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use super::{Document, NodeId, NodeKind};
+use super::{live_mutation::utf16_len, Document, NodeId, NodeKind};
 
 /// Sentinel handle returned by TreeSink hooks for node types that are intentionally ignored during
 /// parsing (comments, doctypes, processing instructions).
@@ -283,22 +283,22 @@ impl Dom2TreeSink {
     if reference.is_none() {
       if !break_text_merge {
         if let Some(last_child) = doc.node(parent).children.last().copied() {
-          if matches!(&doc.node(last_child).kind, NodeKind::Text { .. }) {
-            if doc.live_mutation.has_subscribers() {
-              let offset = match &doc.node(last_child).kind {
-                NodeKind::Text { content } => content.encode_utf16().count(),
-                _ => 0,
-              };
-              doc.live_mutation.replace_data(
-                last_child,
-                offset,
-                /* removed_len */ 0,
-                /* inserted_len */ text.encode_utf16().count(),
-              );
-            }
-            if let NodeKind::Text { content } = &mut doc.node_mut(last_child).kind {
-              content.push_str(text);
-            }
+            if matches!(&doc.node(last_child).kind, NodeKind::Text { .. }) {
+              if doc.live_mutation.has_subscribers() {
+                let offset = match &doc.node(last_child).kind {
+                  NodeKind::Text { content } => utf16_len(content),
+                  _ => 0,
+                };
+                doc.live_mutation.replace_data(
+                  last_child,
+                  offset,
+                  /* removed_len */ 0,
+                  /* inserted_len */ utf16_len(text),
+                );
+              }
+              if let NodeKind::Text { content } = &mut doc.node_mut(last_child).kind {
+                content.push_str(text);
+              }
             return;
           }
         }
@@ -343,22 +343,22 @@ impl Dom2TreeSink {
         debug_assert!(false, "can_merge_prev implies a previous sibling exists");
         return;
       };
-      if doc.live_mutation.has_subscribers() {
-        let offset = match &doc.node(prev_id).kind {
-          NodeKind::Text { content } => content.encode_utf16().count(),
-          _ => 0,
-        };
-        let inserted_len = text.encode_utf16().count();
-        doc
-          .live_mutation
-          .replace_data(prev_id, offset, /* removed_len */ 0, inserted_len);
-        if can_merge_next {
-          let next_len = match &doc.node(reference).kind {
-            NodeKind::Text { content } => content.encode_utf16().count(),
-            _ => 0,
-          };
-          doc.live_mutation.replace_data(
-            prev_id,
+       if doc.live_mutation.has_subscribers() {
+         let offset = match &doc.node(prev_id).kind {
+           NodeKind::Text { content } => utf16_len(content),
+           _ => 0,
+         };
+         let inserted_len = utf16_len(text);
+         doc
+           .live_mutation
+           .replace_data(prev_id, offset, /* removed_len */ 0, inserted_len);
+         if can_merge_next {
+           let next_len = match &doc.node(reference).kind {
+             NodeKind::Text { content } => utf16_len(content),
+             _ => 0,
+           };
+           doc.live_mutation.replace_data(
+             prev_id,
             offset + inserted_len,
             /* removed_len */ 0,
             next_len,
@@ -384,18 +384,18 @@ impl Dom2TreeSink {
       return;
     }
 
-    if can_merge_next {
-      if doc.live_mutation.has_subscribers() {
-        doc.live_mutation.replace_data(
-          reference,
-          /* offset */ 0,
-          /* removed_len */ 0,
-          /* inserted_len */ text.encode_utf16().count(),
-        );
-      }
-      if let NodeKind::Text { content } = &mut doc.node_mut(reference).kind {
-        content.insert_str(0, text);
-      }
+     if can_merge_next {
+       if doc.live_mutation.has_subscribers() {
+         doc.live_mutation.replace_data(
+           reference,
+           /* offset */ 0,
+           /* removed_len */ 0,
+           /* inserted_len */ utf16_len(text),
+         );
+       }
+       if let NodeKind::Text { content } = &mut doc.node_mut(reference).kind {
+         content.insert_str(0, text);
+       }
       return;
     }
 
@@ -992,18 +992,18 @@ impl TreeSink for Dom2TreeSink {
           }
         };
         if let Some(next_content) = next_content {
-          if doc.live_mutation.has_subscribers() {
-            let offset = match &doc.node(prev).kind {
-              NodeKind::Text { content } => content.encode_utf16().count(),
-              _ => 0,
-            };
-            doc.live_mutation.replace_data(
-              prev,
-              offset,
-              /* removed_len */ 0,
-              /* inserted_len */ next_content.encode_utf16().count(),
-            );
-          }
+           if doc.live_mutation.has_subscribers() {
+             let offset = match &doc.node(prev).kind {
+               NodeKind::Text { content } => utf16_len(content),
+               _ => 0,
+             };
+             doc.live_mutation.replace_data(
+               prev,
+               offset,
+               /* removed_len */ 0,
+               /* inserted_len */ utf16_len(&next_content),
+             );
+           }
           if let NodeKind::Text { content } = &mut doc.node_mut(prev).kind {
             content.push_str(&next_content);
           } else {
