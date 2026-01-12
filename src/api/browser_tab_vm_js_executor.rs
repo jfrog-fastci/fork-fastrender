@@ -2030,7 +2030,7 @@ mod tests {
   }
 
   #[test]
-  fn session_storage_namespace_is_cleaned_up_when_executor_is_dropped() -> Result<()> {
+  fn session_storage_is_persisted_within_executor_and_cleared_when_executor_is_dropped() -> Result<()> {
     crate::js::web_storage::reset_default_web_storage_hub_for_tests();
     struct ResetGuard;
     impl Drop for ResetGuard {
@@ -2040,28 +2040,59 @@ mod tests {
     }
     let _guard = ResetGuard;
 
-    let url = "https://example.com/doc.html";
-    let ns: u64 = 424242;
+    let url_a = "https://example.com/doc-a.html";
+    let url_b = "https://example.com/doc-b.html";
+    let ns1: u64 = 424242;
+    let ns2: u64 = 424243;
 
+    // Session storage should persist across navigations within the same executor/tab.
     {
-      let mut document =
-        BrowserDocumentDom2::from_html("<!doctype html><html></html>", RenderOptions::default())?;
       let current_script = CurrentScriptStateHandle::default();
       let mut executor = VmJsBrowserTabExecutor::new();
-      executor.session_storage_namespace = ns;
+      executor.session_storage_namespace = ns1;
+
+      let mut document_a =
+        BrowserDocumentDom2::from_html("<!doctype html><html></html>", RenderOptions::default())?;
       executor.reset_for_navigation(
-        Some(url),
-        &mut document,
+        Some(url_a),
+        &mut document_a,
         &current_script,
         JsExecutionOptions::default(),
       )?;
 
-      let origin_key = crate::js::web_storage::origin_key_from_document_url(url);
-      let area = crate::js::web_storage::get_session_area(SessionNamespaceId(ns), origin_key.as_deref());
-      area.lock().set_item("k", "v").unwrap();
+      let realm = executor.realm.as_mut().expect("realm initialized");
+      realm
+        .exec_script("sessionStorage.setItem('k', 'v');")
+        .map_err(|err| Error::Other(err.to_string()))?;
       assert_eq!(
         crate::js::web_storage::with_default_hub(|hub| hub.session_areas.len()),
         1
+      );
+
+      let mut document_b =
+        BrowserDocumentDom2::from_html("<!doctype html><html></html>", RenderOptions::default())?;
+      executor.reset_for_navigation(
+        Some(url_b),
+        &mut document_b,
+        &current_script,
+        JsExecutionOptions::default(),
+      )?;
+      let realm = executor.realm.as_mut().expect("realm initialized");
+      let v = realm
+        .exec_script("sessionStorage.getItem('k')")
+        .map_err(|err| Error::Other(err.to_string()))?;
+      let Value::String(v) = v else {
+        return Err(Error::Other(
+          "expected sessionStorage.getItem('k') to return a string".to_string(),
+        ));
+      };
+      assert_eq!(
+        realm
+          .heap()
+          .get_string(v)
+          .map_err(|err| Error::Other(err.to_string()))?
+          .to_utf8_lossy(),
+        "v"
       );
     }
 
@@ -2070,6 +2101,51 @@ mod tests {
       crate::js::web_storage::with_default_hub(|hub| hub.session_areas.len()),
       0
     );
+
+    // Different session namespace should not observe the old value.
+    {
+      let mut document =
+        BrowserDocumentDom2::from_html("<!doctype html><html></html>", RenderOptions::default())?;
+      let current_script = CurrentScriptStateHandle::default();
+      let mut executor = VmJsBrowserTabExecutor::new();
+      executor.session_storage_namespace = ns2;
+      executor.reset_for_navigation(
+        Some(url_a),
+        &mut document,
+        &current_script,
+        JsExecutionOptions::default(),
+      )?;
+      let realm = executor.realm.as_mut().expect("realm initialized");
+      assert_eq!(
+        realm
+          .exec_script("sessionStorage.getItem('k')")
+          .map_err(|err| Error::Other(err.to_string()))?,
+        Value::Null
+      );
+    }
+
+    // Reusing the same session namespace after the original executor is dropped must start empty.
+    {
+      let mut document =
+        BrowserDocumentDom2::from_html("<!doctype html><html></html>", RenderOptions::default())?;
+      let current_script = CurrentScriptStateHandle::default();
+      let mut executor = VmJsBrowserTabExecutor::new();
+      executor.session_storage_namespace = ns1;
+      executor.reset_for_navigation(
+        Some(url_a),
+        &mut document,
+        &current_script,
+        JsExecutionOptions::default(),
+      )?;
+      let realm = executor.realm.as_mut().expect("realm initialized");
+      assert_eq!(
+        realm
+          .exec_script("sessionStorage.getItem('k')")
+          .map_err(|err| Error::Other(err.to_string()))?,
+        Value::Null
+      );
+    }
+
     Ok(())
   }
 }
