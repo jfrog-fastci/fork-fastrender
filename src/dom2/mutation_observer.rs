@@ -569,7 +569,22 @@ impl Document {
           .entry(reg.observer)
           .or_insert_with(|| reg.options.clone());
       }
-      current = self.nodes[node.index()].parent;
+      // MutationObserver walks the inclusive ancestors in the DOM tree. Shadow roots form a tree
+      // boundary: observers registered outside the shadow tree must not observe mutations inside it.
+      //
+      // `dom2` stores shadow roots as nodes whose `parent` points at the host, so treat ShadowRoot as
+      // having no parent for the purpose of this ancestor walk.
+      if matches!(self.nodes[node.index()].kind, NodeKind::ShadowRoot { .. }) {
+        break;
+      }
+      let parent = self.nodes[node.index()].parent;
+      // Template contents are represented in `dom2` as descendants of the `<template>` element with
+      // `inert_subtree=true` on that template. These nodes are not part of the DOM tree, so do not
+      // allow MutationObserver registrations outside the inert subtree to observe them.
+      if parent.is_some_and(|parent| self.nodes[parent.index()].inert_subtree) {
+        break;
+      }
+      current = parent;
     }
 
     let mut agent = self.mutation_observer_agent.borrow_mut();
@@ -616,7 +631,14 @@ impl Document {
           .entry(reg.observer)
           .or_insert_with(|| reg.options.clone());
       }
-      current = self.nodes[node.index()].parent;
+      if matches!(self.nodes[node.index()].kind, NodeKind::ShadowRoot { .. }) {
+        break;
+      }
+      let parent = self.nodes[node.index()].parent;
+      if parent.is_some_and(|parent| self.nodes[parent.index()].inert_subtree) {
+        break;
+      }
+      current = parent;
     }
 
     let mut agent = self.mutation_observer_agent.borrow_mut();
@@ -666,7 +688,14 @@ impl Document {
           .entry(reg.observer)
           .or_insert_with(|| reg.options.clone());
       }
-      current = self.nodes[node.index()].parent;
+      if matches!(self.nodes[node.index()].kind, NodeKind::ShadowRoot { .. }) {
+        break;
+      }
+      let parent = self.nodes[node.index()].parent;
+      if parent.is_some_and(|parent| self.nodes[parent.index()].inert_subtree) {
+        break;
+      }
+      current = parent;
     }
 
     if interested.is_empty() {

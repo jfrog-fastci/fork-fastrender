@@ -1975,6 +1975,14 @@ impl Document {
 
     let mut current = element;
     loop {
+      // The DOM Standard defines `Element.closest()` in terms of the element's inclusive ancestors
+      // in the *tree*; it must not cross a shadow root boundary. In `dom2`, shadow roots are stored
+      // as nodes whose `parent` points at the host, so we need an explicit boundary check here to
+      // avoid returning the host when called from inside a shadow tree.
+      if matches!(self.node(current).kind, NodeKind::ShadowRoot { .. }) {
+        return Ok(None);
+      }
+
       if self.matches_selector_list(current, &selector_list) {
         return Ok(Some(current));
       }
@@ -1982,6 +1990,9 @@ impl Document {
       let Some(parent) = self.parent_node(current) else {
         return Ok(None);
       };
+      if matches!(self.node(parent).kind, NodeKind::ShadowRoot { .. }) {
+        return Ok(None);
+      }
       if self.node(parent).inert_subtree {
         return Ok(None);
       }
@@ -2034,6 +2045,9 @@ mod script_internal_slots_tests;
 mod selector_query_tests;
 #[cfg(test)]
 mod selectors_detached_tests;
+#[cfg(test)]
+mod shadow_boundary_tests;
+#[cfg(test)]
 mod wbr_tests;
 
 #[cfg(test)]
