@@ -3,6 +3,7 @@
 use runtime_native::scan::scan_reloc_pairs;
 use runtime_native::stackmaps::{Location, StackMaps};
 use runtime_native::statepoints::StatepointRecord;
+use runtime_native::statepoints::X86_64_DWARF_REG_FP;
 use stackmap_context::{ThreadContext, DWARF_REG_IP, DWARF_REG_SP};
 
 const FIXTURE: &[u8] = include_bytes!("fixtures/bin/statepoint_base_derived_x86_64.bin");
@@ -48,15 +49,21 @@ fn add_signed(base: u64, offset: i32) -> u64 {
   }
 }
 
-fn slot_addr(sp_base: u64, loc: &Location) -> usize {
+fn slot_addr(sp_base: u64, fp_base: u64, loc: &Location) -> usize {
   match *loc {
     Location::Indirect {
       dwarf_reg,
       offset,
       size: _,
     } => {
-      assert_eq!(dwarf_reg, DWARF_REG_SP, "fixture should use SP-relative Indirect slots");
-      add_signed(sp_base, offset) as usize
+      let base = if dwarf_reg == DWARF_REG_SP {
+        sp_base
+      } else if dwarf_reg == X86_64_DWARF_REG_FP {
+        fp_base
+      } else {
+        panic!("unexpected dwarf_reg={dwarf_reg} (expected SP={DWARF_REG_SP} or FP={X86_64_DWARF_REG_FP})");
+      };
+      add_signed(base, offset) as usize
     }
     _ => panic!("expected Indirect location, got {loc:?}"),
   }
@@ -89,18 +96,23 @@ fn scan_reloc_pairs_reports_base_and_derived_spill_slots() {
   };
 
   // Synthetic stack memory (word-aligned).
-  let mut stack: Vec<usize> = vec![0; 256];
-  let sp_base = stack.as_mut_ptr() as u64;
+  let mut stack: Vec<usize> = vec![0; 512];
+  let base = stack.as_mut_ptr() as u64;
+  // Use a base pointer in the middle of the scratch space so both positive (SP-style) and negative
+  // (FP-style) offsets remain in-bounds.
+  let reg_base = base + (256 * std::mem::size_of::<usize>()) as u64;
+  let sp_base = reg_base;
+  let fp_base = reg_base;
 
-  let same_base_addr = slot_addr(sp_base, &same_pair.base);
-  let same_derived_addr = slot_addr(sp_base, &same_pair.derived);
+  let same_base_addr = slot_addr(sp_base, fp_base, &same_pair.base);
+  let same_derived_addr = slot_addr(sp_base, fp_base, &same_pair.derived);
   assert_eq!(
     same_base_addr, same_derived_addr,
     "base==derived pair must point to the same spill slot"
   );
 
-  let derived_base_addr = slot_addr(sp_base, &derived_pair.base);
-  let derived_derived_addr = slot_addr(sp_base, &derived_pair.derived);
+  let derived_base_addr = slot_addr(sp_base, fp_base, &derived_pair.base);
+  let derived_derived_addr = slot_addr(sp_base, fp_base, &derived_pair.derived);
   assert_ne!(
     derived_base_addr, derived_derived_addr,
     "base!=derived pair must use distinct spill slots"
@@ -119,6 +131,7 @@ fn scan_reloc_pairs_reports_base_and_derived_spill_slots() {
   let mut ctx = ThreadContext::default();
   ctx.set_dwarf_reg_u64(DWARF_REG_IP, callsite_ra).unwrap();
   ctx.set_dwarf_reg_u64(DWARF_REG_SP, sp_base).unwrap();
+  ctx.set_dwarf_reg_u64(X86_64_DWARF_REG_FP, fp_base).unwrap();
 
   let mut seen: Vec<(usize, usize, usize, usize)> = Vec::new();
   let pairs = scan_reloc_pairs(&mut ctx, &stackmaps).expect("scan");
@@ -184,8 +197,11 @@ fn scan_reloc_pairs_accepts_custom_statepoint_id() {
   );
 
   // Synthetic stack memory (word-aligned).
-  let mut stack: Vec<usize> = vec![0; 256];
-  let sp_base = stack.as_mut_ptr() as u64;
+  let mut stack: Vec<usize> = vec![0; 512];
+  let base = stack.as_mut_ptr() as u64;
+  let reg_base = base + (256 * std::mem::size_of::<usize>()) as u64;
+  let sp_base = reg_base;
+  let fp_base = reg_base;
 
   // Seed the spill slots with a base pointer and a derived pointer (base + 16).
   let base_ptr: usize = 0x1111_2222_3333_4444;
@@ -196,8 +212,8 @@ fn scan_reloc_pairs_accepts_custom_statepoint_id() {
     .iter()
     .find(|p| p.base != p.derived)
     .expect("missing base!=derived pair");
-  let base_addr = slot_addr(sp_base, &derived_pair.base);
-  let derived_addr = slot_addr(sp_base, &derived_pair.derived);
+  let base_addr = slot_addr(sp_base, fp_base, &derived_pair.base);
+  let derived_addr = slot_addr(sp_base, fp_base, &derived_pair.derived);
   unsafe {
     (base_addr as *mut usize).write_unaligned(base_ptr);
     (derived_addr as *mut usize).write_unaligned(base_ptr + delta);
@@ -205,6 +221,7 @@ fn scan_reloc_pairs_accepts_custom_statepoint_id() {
   let mut ctx = ThreadContext::default();
   ctx.set_dwarf_reg_u64(DWARF_REG_IP, callsite_ra).unwrap();
   ctx.set_dwarf_reg_u64(DWARF_REG_SP, sp_base).unwrap();
+  ctx.set_dwarf_reg_u64(X86_64_DWARF_REG_FP, fp_base).unwrap();
 
   let pairs = scan_reloc_pairs(&mut ctx, &stackmaps).expect("scan");
   assert!(
@@ -226,15 +243,19 @@ fn scan_reloc_pairs_skips_deopt_operands() {
   assert_eq!(sp.deopt_locations().len(), 2);
 
   // Synthetic stack memory (word-aligned).
-  let mut stack: Vec<usize> = vec![0; 256];
-  let sp_base = stack.as_mut_ptr() as u64;
+  let mut stack: Vec<usize> = vec![0; 512];
+  let base = stack.as_mut_ptr() as u64;
+  let reg_base = base + (256 * std::mem::size_of::<usize>()) as u64;
+  let sp_base = reg_base;
+  let fp_base = reg_base;
 
   let deopt0 = &sp.deopt_locations()[0];
-  let deopt0_addr = slot_addr(sp_base, deopt0);
+  let deopt0_addr = slot_addr(sp_base, fp_base, deopt0);
 
   let mut ctx = ThreadContext::default();
   ctx.set_dwarf_reg_u64(DWARF_REG_IP, callsite_ra).unwrap();
   ctx.set_dwarf_reg_u64(DWARF_REG_SP, sp_base).unwrap();
+  ctx.set_dwarf_reg_u64(X86_64_DWARF_REG_FP, fp_base).unwrap();
 
   let pairs = scan_reloc_pairs(&mut ctx, &stackmaps).expect("scan");
 
