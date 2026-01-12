@@ -1925,7 +1925,7 @@ const EVENT_TARGET_CONTEXT_GLOBAL_SLOT: usize = 1;
 const EVENT_TARGET_CONTEXT_ABORT_CLEANUP_CALL_ID_SLOT: usize = 2;
 const EVENT_HANDLER_WRAPPER_CALL_ID_SLOT: usize = 2;
 const EVENT_HANDLER_EVENT_TYPE_SLOT: usize = 3;
-const EVENT_TARGET_BRAND_KEY: &str = "__fastrender_event_target";
+pub(crate) const EVENT_TARGET_HOST_TAG: u64 = u64::from_be_bytes(*b"EVTARGET");
 const EVENT_TARGET_PARENT_KEY: &str = "__fastrender_event_target_parent";
 const ABORT_SIGNAL_BRAND_KEY: &str = "__fastrender_abort_signal";
 const NODE_ID_KEY: &str = "__fastrender_node_id";
@@ -11211,19 +11211,9 @@ fn event_target_constructor_construct_native(
   }
   // Brand-check for EventTarget.prototype methods (so borrowing the methods onto random objects
   // throws, matching web platform behavior).
-  let brand_key = alloc_key(scope, EVENT_TARGET_BRAND_KEY)?;
-  scope.define_property(
-    obj,
-    brand_key,
-    PropertyDescriptor {
-      enumerable: false,
-      configurable: false,
-      kind: PropertyKind::Data {
-        value: Value::Bool(true),
-        writable: false,
-      },
-    },
-  )?;
+  scope
+    .heap_mut()
+    .object_set_host_slots(obj, HostSlots { a: EVENT_TARGET_HOST_TAG, b: 0 })?;
 
   let child_id = gc_object_id(obj);
 
@@ -12299,10 +12289,17 @@ fn gc_object_id(obj: GcObject) -> u64 {
 }
 
 fn is_branded_event_target(scope: &mut Scope<'_>, obj: GcObject) -> Result<bool, VmError> {
-  let key = alloc_key(scope, EVENT_TARGET_BRAND_KEY)?;
+  // `resolve_event_target` must treat unknown objects as non-EventTargets. `Heap::object_host_slots`
+  // is only defined for ordinary objects/functions; for other heap object kinds, treat "unsupported"
+  // as "unbranded" rather than surfacing an internal error.
+  let slots = match scope.heap().object_host_slots(obj) {
+    Ok(slots) => slots,
+    Err(VmError::InvalidHandle { .. }) if scope.heap().is_valid_object(obj) => None,
+    Err(err) => return Err(err),
+  };
   Ok(matches!(
-    scope.heap().object_get_own_data_property_value(obj, &key)?,
-    Some(Value::Bool(true))
+    slots,
+    Some(slots) if slots.a == EVENT_TARGET_HOST_TAG || slots.b == EVENT_TARGET_HOST_TAG
   ))
 }
 
@@ -12898,19 +12895,9 @@ impl webidl_vm_js::WebIdlBindingsHost for WindowRealmWebIdlBindingsHost {
         let obj = Self::require_receiver_object(receiver)?;
 
         // Brand-check for EventTarget.prototype methods.
-        let brand_key = alloc_key(scope, EVENT_TARGET_BRAND_KEY)?;
-        scope.define_property(
-          obj,
-          brand_key,
-          PropertyDescriptor {
-            enumerable: false,
-            configurable: false,
-            kind: PropertyKind::Data {
-              value: Value::Bool(true),
-              writable: false,
-            },
-          },
-        )?;
+        scope
+          .heap_mut()
+          .object_set_host_slots(obj, HostSlots { a: EVENT_TARGET_HOST_TAG, b: 0 })?;
 
         // Register the opaque target so event dispatch can map `EventTargetId::Opaque` back into a
         // JS object wrapper.
@@ -30126,7 +30113,34 @@ mod tests {
       })()",
     )?;
     assert_eq!(get_string(realm.heap(), add_null_is_noop), "ok");
+    Ok(())
+  }
 
+  #[test]
+  fn abort_signal_is_branded_as_event_target() -> Result<(), VmError> {
+    let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
+
+    let called = realm.exec_script(
+      "(() => {\n\
+        const ac = new AbortController();\n\
+        let count = 0;\n\
+        ac.signal.addEventListener('abort', () => { count++; });\n\
+        ac.abort();\n\
+        return count;\n\
+      })()",
+    )?;
+    assert_eq!(called, Value::Number(1.0));
+
+    let dispatched = realm.exec_script(
+      "(() => {\n\
+        const ac = new AbortController();\n\
+        let count = 0;\n\
+        ac.signal.addEventListener('abort', () => { count++; });\n\
+        ac.signal.dispatchEvent(new Event('abort'));\n\
+        return count;\n\
+      })()",
+    )?;
+    assert_eq!(dispatched, Value::Number(1.0));
     Ok(())
   }
 

@@ -21,14 +21,12 @@ use vm_js::{
 
 use crate::js::event_loop::TaskSource;
 use crate::js::window_blob::{self, BlobData};
-use crate::js::window_realm::WindowRealmHost;
+use crate::js::window_realm::{WindowRealmHost, EVENT_TARGET_HOST_TAG};
 use crate::js::window_timers::{event_loop_mut_from_hooks, vm_error_to_event_loop_error, VmJsEventLoopHooks};
 
 const REALM_ID_SLOT: usize = 0;
 
 const FILE_READER_HOST_TAG: u64 = 0x4649_4C45_5245_4144; // "FILEREAD"
-
-const EVENT_TARGET_BRAND_KEY: &str = "__fastrender_event_target";
 
 const READY_STATE_EMPTY: u8 = 0;
 const READY_STATE_LOADING: u8 = 1;
@@ -432,16 +430,14 @@ fn file_reader_ctor_construct(
   if let Some(proto) = proto {
     scope.heap_mut().object_set_prototype(reader, Some(proto))?;
   }
+  // Brand the object as a `FileReader` (host slots `a`) and an `EventTarget` (host slots `b`).
   scope.heap_mut().object_set_host_slots(
     reader,
     HostSlots {
       a: FILE_READER_HOST_TAG,
-      b: 0,
+      b: EVENT_TARGET_HOST_TAG,
     },
   )?;
-
-  // Brand-check for EventTarget.prototype methods.
-  set_brand(scope, reader, EVENT_TARGET_BRAND_KEY)?;
 
   // Public instance properties.
   set_own_data_prop(

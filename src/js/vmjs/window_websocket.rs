@@ -13,7 +13,7 @@
 use crate::js::event_loop::{ExternalTaskQueueHandle, TaskSource};
 use crate::js::url_resolve::{resolve_url, UrlResolveError};
 use crate::js::window_blob;
-use crate::js::window_realm::{WindowRealmHost, WindowRealmUserData};
+use crate::js::window_realm::{WindowRealmHost, WindowRealmUserData, EVENT_TARGET_HOST_TAG};
 use crate::js::window_timers::{event_loop_mut_from_hooks, vm_error_to_event_loop_error, VmJsEventLoopHooks};
 use std::borrow::Cow;
 use std::char::decode_utf16;
@@ -35,12 +35,8 @@ const SLOT_ENV_ID: usize = 0;
 const ENV_ID_KEY: &str = "__fastrender_websocket_env_id";
 const WS_ID_KEY: &str = "__fastrender_websocket_id";
 
-// Must match the brand key used by `WindowRealm`'s `EventTarget` implementation.
-const EVENT_TARGET_BRAND_KEY: &str = "__fastrender_event_target";
-
 // Brand WebSocket wrappers as platform objects via HostSlots so structuredClone rejects them.
 const WEBSOCKET_HOST_TAG: u64 = 0x5745_4253_4F43_4B54; // "WEBSOCKT"
-
 pub const WS_CONNECTING: u16 = 0;
 pub const WS_OPEN: u16 = 1;
 pub const WS_CLOSING: u16 = 2;
@@ -529,26 +525,12 @@ fn websocket_ctor_construct<Host: WindowRealmHost + 'static>(
   if let Some(proto) = proto {
     scope.heap_mut().object_set_prototype(obj, Some(proto))?;
   }
+  // Brand the wrapper as both a WebSocket (slot `a`) and an EventTarget (slot `b`).
   scope.heap_mut().object_set_host_slots(
     obj,
     HostSlots {
       a: WEBSOCKET_HOST_TAG,
-      b: 0,
-    },
-  )?;
-
-  // Brand the object as an EventTarget so `addEventListener` works.
-  let brand_key = alloc_key(scope, EVENT_TARGET_BRAND_KEY)?;
-  scope.define_property(
-    obj,
-    brand_key,
-    PropertyDescriptor {
-      enumerable: false,
-      configurable: false,
-      kind: PropertyKind::Data {
-        value: Value::Bool(true),
-        writable: false,
-      },
+      b: EVENT_TARGET_HOST_TAG,
     },
   )?;
 

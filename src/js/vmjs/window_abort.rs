@@ -28,12 +28,13 @@ use vm_js::{
   VmError, VmHost, VmHostHooks,
 };
 
+use crate::js::window_realm::EVENT_TARGET_HOST_TAG;
+
 const ABORT_CONTROLLER_HOST_TAG: u64 = 0x4142_4F52_5443_5452; // "ABORTCTR"
 const ABORT_SIGNAL_HOST_TAG: u64 = 0x4142_4F52_5453_4947; // "ABORTSIG"
 
 const CONTROLLER_SIGNAL_INTERNAL_KEY: &str = "__fastrender_abort_controller_signal";
 const SIGNAL_BRAND_KEY: &str = "__fastrender_abort_signal";
-const EVENT_TARGET_BRAND_KEY: &str = "__fastrender_event_target";
 /// Internal reference to the realm's `Event` constructor.
 ///
 /// AbortSignal dispatches an `abort` event when transitioning to the aborted state. Once
@@ -347,23 +348,10 @@ fn abort_controller_ctor_construct(
     signal,
     HostSlots {
       a: ABORT_SIGNAL_HOST_TAG,
-      b: 0,
+      b: EVENT_TARGET_HOST_TAG,
     },
   )?;
-  set_own_data_prop(
-    scope,
-    signal,
-    EVENT_TARGET_BRAND_KEY,
-    Value::Bool(true),
-    /* writable */ false,
-  )?;
-  set_own_data_prop(
-    scope,
-    signal,
-    SIGNAL_BRAND_KEY,
-    Value::Bool(true),
-    /* writable */ false,
-  )?;
+  set_own_data_prop(scope, signal, SIGNAL_BRAND_KEY, Value::Bool(true), /* writable */ false)?;
   let event_ctor = match get_own_data_prop(scope, signal_proto, SIGNAL_EVENT_CTOR_INTERNAL_KEY)? {
     Value::Object(obj) => Value::Object(obj),
     _ => {
@@ -542,23 +530,10 @@ fn abort_signal_static_abort_native(
     signal,
     HostSlots {
       a: ABORT_SIGNAL_HOST_TAG,
-      b: 0,
+      b: EVENT_TARGET_HOST_TAG,
     },
   )?;
-  set_own_data_prop(
-    scope,
-    signal,
-    EVENT_TARGET_BRAND_KEY,
-    Value::Bool(true),
-    /* writable */ false,
-  )?;
-  set_own_data_prop(
-    scope,
-    signal,
-    SIGNAL_BRAND_KEY,
-    Value::Bool(true),
-    /* writable */ false,
-  )?;
+  set_own_data_prop(scope, signal, SIGNAL_BRAND_KEY, Value::Bool(true), /* writable */ false)?;
   let event_ctor = match get_own_data_prop(scope, proto, SIGNAL_EVENT_CTOR_INTERNAL_KEY)? {
     Value::Object(obj) => Value::Object(obj),
     _ => {
@@ -631,23 +606,10 @@ fn abort_signal_static_timeout_native(
     signal,
     HostSlots {
       a: ABORT_SIGNAL_HOST_TAG,
-      b: 0,
+      b: EVENT_TARGET_HOST_TAG,
     },
   )?;
-  set_own_data_prop(
-    scope,
-    signal,
-    EVENT_TARGET_BRAND_KEY,
-    Value::Bool(true),
-    /* writable */ false,
-  )?;
-  set_own_data_prop(
-    scope,
-    signal,
-    SIGNAL_BRAND_KEY,
-    Value::Bool(true),
-    /* writable */ false,
-  )?;
+  set_own_data_prop(scope, signal, SIGNAL_BRAND_KEY, Value::Bool(true), /* writable */ false)?;
   let event_ctor = match get_own_data_prop(scope, proto, SIGNAL_EVENT_CTOR_INTERNAL_KEY)? {
     Value::Object(obj) => Value::Object(obj),
     _ => {
@@ -771,23 +733,10 @@ fn abort_signal_static_any_native(
     signal,
     HostSlots {
       a: ABORT_SIGNAL_HOST_TAG,
-      b: 0,
+      b: EVENT_TARGET_HOST_TAG,
     },
   )?;
-  set_own_data_prop(
-    scope,
-    signal,
-    EVENT_TARGET_BRAND_KEY,
-    Value::Bool(true),
-    /* writable */ false,
-  )?;
-  set_own_data_prop(
-    scope,
-    signal,
-    SIGNAL_BRAND_KEY,
-    Value::Bool(true),
-    /* writable */ false,
-  )?;
+  set_own_data_prop(scope, signal, SIGNAL_BRAND_KEY, Value::Bool(true), /* writable */ false)?;
   let event_ctor = match get_own_data_prop(scope, proto, SIGNAL_EVENT_CTOR_INTERNAL_KEY)? {
     Value::Object(obj) => Value::Object(obj),
     _ => {
