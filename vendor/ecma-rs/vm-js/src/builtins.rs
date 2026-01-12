@@ -9,11 +9,87 @@ use crate::{
 };
 use parse_js::ast::expr::Expr;
 use parse_js::ast::func::FuncBody;
-use parse_js::ast::node::ParenthesizedExpr;
+use parse_js::ast::node::{Node, ParenthesizedExpr};
 use parse_js::ast::stmt::Stmt;
 use parse_js::{Dialect, ParseOptions, SourceType};
 use std::collections::HashSet;
 use std::sync::Arc;
+
+fn strict_mode_stmts_contain_with(
+  vm: &mut Vm,
+  stmts: &[Node<Stmt>],
+) -> Result<bool, VmError> {
+  const TICK_EVERY: usize = 32;
+  for (i, stmt) in stmts.iter().enumerate() {
+    if i % TICK_EVERY == 0 {
+      vm.tick()?;
+    }
+    if strict_mode_stmt_contains_with(vm, stmt)? {
+      return Ok(true);
+    }
+  }
+  Ok(false)
+}
+
+fn strict_mode_stmt_contains_with(vm: &mut Vm, stmt: &Node<Stmt>) -> Result<bool, VmError> {
+  // `with` is a strict mode early error (ECMA-262 14.11.1 Static Semantics: Early Errors).
+  //
+  // This helper is intentionally lightweight and is reused by dynamic function constructors (e.g.
+  // `Function(...)` / `GeneratorFunction(...)`) so strict-mode syntax errors are reported at
+  // *construction time* rather than at first execution.
+  vm.tick()?;
+
+  match &*stmt.stx {
+    Stmt::With(_) => Ok(true),
+    Stmt::Block(block) => strict_mode_stmts_contain_with(vm, &block.stx.body),
+    Stmt::If(stmt) => {
+      if strict_mode_stmt_contains_with(vm, &stmt.stx.consequent)? {
+        return Ok(true);
+      }
+      if let Some(alt) = &stmt.stx.alternate {
+        if strict_mode_stmt_contains_with(vm, alt)? {
+          return Ok(true);
+        }
+      }
+      Ok(false)
+    }
+    Stmt::Try(stmt) => {
+      if strict_mode_stmts_contain_with(vm, &stmt.stx.wrapped.stx.body)? {
+        return Ok(true);
+      }
+      if let Some(catch) = &stmt.stx.catch {
+        if strict_mode_stmts_contain_with(vm, &catch.stx.body)? {
+          return Ok(true);
+        }
+      }
+      if let Some(finally) = &stmt.stx.finally {
+        if strict_mode_stmts_contain_with(vm, &finally.stx.body)? {
+          return Ok(true);
+        }
+      }
+      Ok(false)
+    }
+    Stmt::While(stmt) => strict_mode_stmt_contains_with(vm, &stmt.stx.body),
+    Stmt::DoWhile(stmt) => strict_mode_stmt_contains_with(vm, &stmt.stx.body),
+    Stmt::ForTriple(stmt) => strict_mode_stmts_contain_with(vm, &stmt.stx.body.stx.body),
+    Stmt::ForIn(stmt) => strict_mode_stmts_contain_with(vm, &stmt.stx.body.stx.body),
+    Stmt::ForOf(stmt) => strict_mode_stmts_contain_with(vm, &stmt.stx.body.stx.body),
+    Stmt::Label(stmt) => strict_mode_stmt_contains_with(vm, &stmt.stx.statement),
+    Stmt::Switch(stmt) => {
+      const BRANCH_TICK_EVERY: usize = 32;
+      for (i, branch) in stmt.stx.branches.iter().enumerate() {
+        if i % BRANCH_TICK_EVERY == 0 {
+          vm.tick()?;
+        }
+        if strict_mode_stmts_contain_with(vm, &branch.stx.body)? {
+          return Ok(true);
+        }
+      }
+      Ok(false)
+    }
+    _ => Ok(false),
+  }
+}
 
 fn data_desc(
   value: Value,
@@ -2904,6 +2980,7 @@ pub fn function_constructor_construct(
   // Derive strictness and length from the parsed function node.
   let mut is_strict = false;
   let mut length: u32 = 0;
+  let mut body_stmts: Option<&[Node<Stmt>]> = None;
   if parsed.stx.body.len() == 1 {
     if let Stmt::FunctionDecl(decl) = &*parsed.stx.body[0].stx {
       let func = &decl.stx.function.stx;
@@ -2941,6 +3018,22 @@ pub fn function_constructor_construct(
             break;
           }
         }
+        body_stmts = Some(stmts);
+      }
+    }
+  }
+
+  if is_strict {
+    // Strict-mode `with` is required to be rejected during dynamic function creation (spec
+    // `CreateDynamicFunction`), not deferred until first execution.
+    if let Some(stmts) = body_stmts {
+      if strict_mode_stmts_contain_with(vm, stmts)? {
+        let err_obj = crate::error_object::new_syntax_error_object(
+          scope,
+          &intr,
+          "with statements are not allowed in strict mode",
+        )?;
+        return Err(VmError::Throw(err_obj));
       }
     }
   }
@@ -2981,6 +3074,10 @@ pub fn function_constructor_construct(
 }
 
 /// `%GeneratorFunction%` (ECMA-262).
+///
+/// Note: generator function *execution* semantics are implemented in a separate task. This
+/// constructor implements dynamic creation semantics so code can observe `%GeneratorFunction%` and
+/// create generator function objects.
 pub fn generator_function_constructor_call(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -3100,6 +3197,7 @@ pub fn generator_function_constructor_construct(
   // Derive strictness and length from the parsed function node.
   let mut is_strict = false;
   let mut length: u32 = 0;
+  let mut body_stmts: Option<&[Node<Stmt>]> = None;
   if parsed.stx.body.len() == 1 {
     if let Stmt::FunctionDecl(decl) = &*parsed.stx.body[0].stx {
       let func = &decl.stx.function.stx;
@@ -3137,6 +3235,22 @@ pub fn generator_function_constructor_construct(
             break;
           }
         }
+        body_stmts = Some(stmts);
+      }
+    }
+  }
+
+  if is_strict {
+    // Strict-mode `with` is required to be rejected during dynamic generator function creation
+    // (spec `CreateDynamicFunction`), not deferred until first execution.
+    if let Some(stmts) = body_stmts {
+      if strict_mode_stmts_contain_with(vm, stmts)? {
+        let err_obj = crate::error_object::new_syntax_error_object(
+          scope,
+          &intr,
+          "with statements are not allowed in strict mode",
+        )?;
+        return Err(VmError::Throw(err_obj));
       }
     }
   }

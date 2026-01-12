@@ -60,6 +60,7 @@ pub struct Intrinsics {
   weak_set_prototype: GcObject,
   object_constructor: GcObject,
   function_constructor: GcObject,
+  generator_function_constructor: GcObject,
   array_constructor: GcObject,
   proxy_constructor: GcObject,
   string_constructor: GcObject,
@@ -4547,6 +4548,7 @@ impl Intrinsics {
       weak_set_prototype,
       object_constructor,
       function_constructor,
+      generator_function_constructor: generator_function,
       array_constructor,
       proxy_constructor,
       string_constructor,
@@ -4736,6 +4738,10 @@ impl Intrinsics {
 
   pub fn function_constructor(&self) -> GcObject {
     self.function_constructor
+  }
+
+  pub fn generator_function_constructor(&self) -> GcObject {
+    self.generator_function_constructor
   }
 
   pub fn array_constructor(&self) -> GcObject {

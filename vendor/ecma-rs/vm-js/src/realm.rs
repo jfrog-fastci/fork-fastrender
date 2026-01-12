@@ -163,6 +163,9 @@ impl Realm {
       scope
         .heap_mut()
         .set_function_closure_env(intrinsics.eval(), Some(env))?;
+      scope
+        .heap_mut()
+        .set_function_closure_env(intrinsics.generator_function_constructor(), Some(env))?;
 
       // Populate `[[Realm]]` + `[[JobRealm]]` on all intrinsic function objects.
       set_intrinsic_function_realm_metadata(scope.heap_mut(), &roots, global_object, id)?;
