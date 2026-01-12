@@ -6062,7 +6062,9 @@ fn get_or_create_node_wrapper(
 
   if let Some(Value::Object(func)) = element_get_bounding_client_rect {
     let key = alloc_key(scope, "getBoundingClientRect")?;
-    scope.define_property(wrapper, key, data_desc(Value::Object(func)))?;
+    if !proto_chain_has_own_property(scope.heap(), wrapper, &key)? {
+      scope.define_property(wrapper, key, data_desc(Value::Object(func)))?;
+    }
   }
 
   if let (Some(Value::Object(get)), Some(Value::Object(set))) = (class_name_get, class_name_set) {
@@ -6103,66 +6105,74 @@ fn get_or_create_node_wrapper(
 
   if let (Some(Value::Object(get)), Some(Value::Object(set))) = (title_get, title_set) {
     let key = alloc_key(scope, "title")?;
-    scope.define_property(
-      wrapper,
-      key,
-      PropertyDescriptor {
-        enumerable: false,
-        configurable: true,
-        kind: PropertyKind::Accessor {
-          get: Value::Object(get),
-          set: Value::Object(set),
+    if !proto_chain_has_own_property(scope.heap(), wrapper, &key)? {
+      scope.define_property(
+        wrapper,
+        key,
+        PropertyDescriptor {
+          enumerable: false,
+          configurable: true,
+          kind: PropertyKind::Accessor {
+            get: Value::Object(get),
+            set: Value::Object(set),
+          },
         },
-      },
-    )?;
+      )?;
+    }
   }
 
   if let (Some(Value::Object(get)), Some(Value::Object(set))) = (lang_get, lang_set) {
     let key = alloc_key(scope, "lang")?;
-    scope.define_property(
-      wrapper,
-      key,
-      PropertyDescriptor {
-        enumerable: false,
-        configurable: true,
-        kind: PropertyKind::Accessor {
-          get: Value::Object(get),
-          set: Value::Object(set),
+    if !proto_chain_has_own_property(scope.heap(), wrapper, &key)? {
+      scope.define_property(
+        wrapper,
+        key,
+        PropertyDescriptor {
+          enumerable: false,
+          configurable: true,
+          kind: PropertyKind::Accessor {
+            get: Value::Object(get),
+            set: Value::Object(set),
+          },
         },
-      },
-    )?;
+      )?;
+    }
   }
 
   if let (Some(Value::Object(get)), Some(Value::Object(set))) = (dir_get, dir_set) {
     let key = alloc_key(scope, "dir")?;
-    scope.define_property(
-      wrapper,
-      key,
-      PropertyDescriptor {
-        enumerable: false,
-        configurable: true,
-        kind: PropertyKind::Accessor {
-          get: Value::Object(get),
-          set: Value::Object(set),
+    if !proto_chain_has_own_property(scope.heap(), wrapper, &key)? {
+      scope.define_property(
+        wrapper,
+        key,
+        PropertyDescriptor {
+          enumerable: false,
+          configurable: true,
+          kind: PropertyKind::Accessor {
+            get: Value::Object(get),
+            set: Value::Object(set),
+          },
         },
-      },
-    )?;
+      )?;
+    }
   }
 
   if let (Some(Value::Object(get)), Some(Value::Object(set))) = (hidden_get, hidden_set) {
     let key = alloc_key(scope, "hidden")?;
-    scope.define_property(
-      wrapper,
-      key,
-      PropertyDescriptor {
-        enumerable: false,
-        configurable: true,
-        kind: PropertyKind::Accessor {
-          get: Value::Object(get),
-          set: Value::Object(set),
+    if !proto_chain_has_own_property(scope.heap(), wrapper, &key)? {
+      scope.define_property(
+        wrapper,
+        key,
+        PropertyDescriptor {
+          enumerable: false,
+          configurable: true,
+          kind: PropertyKind::Accessor {
+            get: Value::Object(get),
+            set: Value::Object(set),
+          },
         },
-      },
-    )?;
+      )?;
+    }
   }
 
   if let (Some(Value::Object(get)), Some(Value::Object(set))) = (src_get, src_set) {
@@ -6484,38 +6494,44 @@ fn get_or_create_node_wrapper(
       {
         let is_html = namespace.is_empty() || namespace == crate::dom::HTML_NAMESPACE;
         if is_html && tag_name.eq_ignore_ascii_case("input") {
-          if let (Some(Value::Object(get)), Some(Value::Object(set))) = (input_value_get, input_value_set) {
+          if let (Some(Value::Object(get)), Some(Value::Object(set))) =
+            (input_value_get, input_value_set)
+          {
             let key = alloc_key(scope, "value")?;
-            scope.define_property(
-              wrapper,
-              key,
-              PropertyDescriptor {
-                enumerable: false,
-                configurable: true,
-                kind: PropertyKind::Accessor {
-                  get: Value::Object(get),
-                  set: Value::Object(set),
+            if !proto_chain_has_own_property(scope.heap(), wrapper, &key)? {
+              scope.define_property(
+                wrapper,
+                key,
+                PropertyDescriptor {
+                  enumerable: false,
+                  configurable: true,
+                  kind: PropertyKind::Accessor {
+                    get: Value::Object(get),
+                    set: Value::Object(set),
+                  },
                 },
-              },
-            )?;
+              )?;
+            }
           }
 
           if let (Some(Value::Object(get)), Some(Value::Object(set))) =
             (input_checked_get, input_checked_set)
           {
             let key = alloc_key(scope, "checked")?;
-            scope.define_property(
-              wrapper,
-              key,
-              PropertyDescriptor {
-                enumerable: false,
-                configurable: true,
-                kind: PropertyKind::Accessor {
-                  get: Value::Object(get),
-                  set: Value::Object(set),
+            if !proto_chain_has_own_property(scope.heap(), wrapper, &key)? {
+              scope.define_property(
+                wrapper,
+                key,
+                PropertyDescriptor {
+                  enumerable: false,
+                  configurable: true,
+                  kind: PropertyKind::Accessor {
+                    get: Value::Object(get),
+                    set: Value::Object(set),
+                  },
                 },
-              },
-            )?;
+              )?;
+            }
           }
         }
 
@@ -6524,25 +6540,29 @@ fn get_or_create_node_wrapper(
             (textarea_value_get, textarea_value_set)
           {
             let key = alloc_key(scope, "value")?;
-            scope.define_property(
-              wrapper,
-              key,
-              PropertyDescriptor {
-                enumerable: false,
-                configurable: true,
-                kind: PropertyKind::Accessor {
-                  get: Value::Object(get),
-                  set: Value::Object(set),
+            if !proto_chain_has_own_property(scope.heap(), wrapper, &key)? {
+              scope.define_property(
+                wrapper,
+                key,
+                PropertyDescriptor {
+                  enumerable: false,
+                  configurable: true,
+                  kind: PropertyKind::Accessor {
+                    get: Value::Object(get),
+                    set: Value::Object(set),
+                  },
                 },
-              },
-            )?;
+              )?;
+            }
           }
         }
 
         if is_html && tag_name.eq_ignore_ascii_case("form") {
           if let Some(Value::Object(func)) = form_reset {
             let key = alloc_key(scope, "reset")?;
-            scope.define_property(wrapper, key, data_desc(Value::Object(func)))?;
+            if !proto_chain_has_own_property(scope.heap(), wrapper, &key)? {
+              scope.define_property(wrapper, key, data_desc(Value::Object(func)))?;
+            }
           }
         }
       }
