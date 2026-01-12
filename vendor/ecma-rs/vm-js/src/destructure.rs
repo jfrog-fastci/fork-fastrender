@@ -28,14 +28,32 @@ fn iterator_close_on_err(
   iterator_record: &crate::iterator::IteratorRecord,
   err: VmError,
 ) -> Result<(), VmError> {
-  if !iterator_record.done {
-    match crate::iterator::iterator_close(vm, host, hooks, scope, iterator_record) {
-      Ok(()) => {}
-      // Per spec, errors from `IteratorClose` override the original abrupt completion.
-      Err(close_err) => return Err(close_err),
+  if iterator_record.done {
+    return Err(err);
+  }
+
+  // Per spec, errors from `IteratorClose` override a throw completion. However, vm-js also has
+  // non-catchable VM failures (termination, OOM, etc) which must never be replaced by user-code
+  // iterator closing (otherwise JS could "catch" termination and continue).
+  let original_is_throw = err.is_throw_completion();
+
+  // Root the pending thrown value across `IteratorClose`, which can allocate and trigger GC.
+  if original_is_throw {
+    if let Some(thrown) = err.thrown_value() {
+      scope.push_root(thrown)?;
     }
   }
-  Err(err)
+
+  match crate::iterator::iterator_close(vm, host, hooks, scope, iterator_record) {
+    Ok(()) => Err(err),
+    Err(close_err) => {
+      if original_is_throw {
+        Err(close_err)
+      } else {
+        Err(err)
+      }
+    }
+  }
 }
 
 #[derive(Clone, Copy, Debug)]
