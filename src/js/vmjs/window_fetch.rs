@@ -549,6 +549,19 @@ fn response_wrapper_cached_body_stream_is_locked(
   ))
 }
 
+fn request_body_stream_locked(vm: &Vm, env_id: u64, request_id: u64, heap: &Heap) -> Result<bool, VmError> {
+  with_env_state(env_id, heap, |state| {
+    let Some(stream) = state
+      .request_body_stream_wrappers
+      .get(&request_id)
+      .and_then(|weak| weak.upgrade(heap))
+    else {
+      return Ok(false);
+    };
+    Ok(window_streams::readable_stream_is_locked(vm, heap, stream))
+  })
+}
+
 const FETCH_URL_TOO_LONG_ERROR: &str = "fetch URL exceeds maximum length";
 const FETCH_METHOD_TOO_LONG_ERROR: &str = "fetch method exceeds maximum length";
 const FETCH_HEADER_NAME_TOO_LONG_ERROR: &str = "fetch header name exceeds maximum length";
@@ -2753,7 +2766,7 @@ fn request_clone_native(
     ));
   }
 
-  if request_body_stream_locked(env_id, request_id, scope.heap())? {
+  if request_body_stream_locked(vm, env_id, request_id, scope.heap())? {
     return Err(throw_type_error(
       vm,
       scope,
