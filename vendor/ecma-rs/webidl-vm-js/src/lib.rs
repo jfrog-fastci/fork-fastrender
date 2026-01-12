@@ -121,6 +121,54 @@ pub trait WebIdlBindingsHost: 'static {
     let _ = (vm, scope, receiver, interface, kind);
     Err(VmError::TypeError("unimplemented host iterable snapshot"))
   }
+
+  /// Optional extension point for WebIDL-backed exotic `[[Get]]` behavior.
+  ///
+  /// This is invoked from the embedding's `VmHostHooks::host_exotic_get` implementation after any
+  /// embedder-specific DOM shims. Returning `Ok(Some(value))` signals that the host handled the get
+  /// operation.
+  #[inline]
+  fn exotic_get(
+    &mut self,
+    scope: &mut Scope<'_>,
+    obj: GcObject,
+    key: VmPropertyKey,
+    receiver: Value,
+  ) -> Result<Option<Value>, VmError> {
+    let _ = (scope, obj, key, receiver);
+    Ok(None)
+  }
+
+  /// Optional extension point for WebIDL-backed exotic `[[Set]]` behavior.
+  ///
+  /// Returning `Ok(Some(true))`/`Ok(Some(false))` signals that the host handled the set operation.
+  #[inline]
+  fn exotic_set(
+    &mut self,
+    scope: &mut Scope<'_>,
+    obj: GcObject,
+    key: VmPropertyKey,
+    value: Value,
+    receiver: Value,
+  ) -> Result<Option<bool>, VmError> {
+    let _ = (scope, obj, key, value, receiver);
+    Ok(None)
+  }
+
+  /// Optional extension point for WebIDL-backed exotic `[[Delete]]` behavior.
+  ///
+  /// Returning `Ok(Some(true))`/`Ok(Some(false))` signals that the host handled the delete
+  /// operation.
+  #[inline]
+  fn exotic_delete(
+    &mut self,
+    scope: &mut Scope<'_>,
+    obj: GcObject,
+    key: VmPropertyKey,
+  ) -> Result<Option<bool>, VmError> {
+    let _ = (scope, obj, key);
+    Ok(None)
+  }
 }
 
 /// Sized container used for exposing a `dyn WebIdlBindingsHost` through `VmHostHooks::as_any_mut`.
@@ -268,6 +316,15 @@ impl VmJsHostHooksPayload {
   #[inline]
   pub fn webidl_bindings_host_slot_mut(&mut self) -> &mut WebIdlBindingsHostSlot {
     &mut self.webidl_bindings_host
+  }
+
+  /// Returns the currently installed [`WebIdlBindingsHost`], if present.
+  ///
+  /// Unlike [`host_from_hooks`], this accessor is non-throwing and is suitable for "ordinary"
+  /// operations like property access shims (e.g. `VmHostHooks::host_exotic_get`).
+  #[inline]
+  pub fn webidl_bindings_host_mut(&mut self) -> Option<&mut dyn WebIdlBindingsHost> {
+    self.webidl_bindings_host.get_mut()
   }
 
   /// Install a mutable pointer to an embedder-owned event loop for the duration of a single JS
