@@ -609,18 +609,7 @@ fn auto_backend_ureq_timeout_slice(total: Duration) -> Duration {
 }
 
 fn http_browser_headers_enabled() -> bool {
-  static ENABLED: OnceLock<bool> = OnceLock::new();
-  *ENABLED.get_or_init(|| {
-    std::env::var("FASTR_HTTP_BROWSER_HEADERS")
-      .ok()
-      .map(|raw| {
-        !matches!(
-          raw.trim().to_ascii_lowercase().as_str(),
-          "0" | "false" | "no" | "off"
-        )
-      })
-      .unwrap_or(true)
-  })
+  runtime::runtime_toggles().truthy_with_default("FASTR_HTTP_BROWSER_HEADERS", true)
 }
 
 /// Best-effort origin extraction for use in browser-like header generation.
